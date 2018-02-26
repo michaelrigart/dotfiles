@@ -14,3 +14,7 @@ export CLICOLOR=1 # set color to ls
 export LSCOLORS=ExFxCxDxBxegedabagacad # set special colors for files / directories in ls
 
 HISTFILE=~/.cache/bash/history
+
+export BUNDLE_USER_CACHE='~/.cache/bundler/cache'
+export BUNDLE_USER_CONFIG='~/.config/bundler/config'
+export BUNDLE_USER_PLUGIN='~/.cache/bundler/plugin'
