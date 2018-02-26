@@ -1,0 +1,16 @@
+# Init rbenv
+eval "$(rbenv init -)"
+
+# Set locales
+export LC_CTYPE=en_US.UTF-8
+export LC_ALL=en_US.UTF-8
+
+# Nicer prompt.
+export PS1="\[\e]2;\u@\H:\w\a\]\[$(tput setaf 2)\]\u \[$(tput bold)\] \[$(tput sgr0)\]\[$(tput setaf 2)\]\h\[$(tput setaf 7)\] \w\[$(tput bold)\]\[$(tput setaf 7)\] $ \[$(tput sgr0)\]"
+export SUDO_PS1="\[\e]2;\u@\H:\w\a\]\[$(tput setaf 1)\]\u \[$(tput bold)\] \[$(tput sgr0)\]\[$(tput setaf 1)\]\h\[$(tput setaf 7)\] \w\[$(tput bold)\]\[$(tput setaf 7)\] $ \[$(tput sgr0)\]"
+
+# Use colors.
+export CLICOLOR=1 # set color to ls
+export LSCOLORS=ExFxCxDxBxegedabagacad # set special colors for files / directories in ls
+
+HISTFILE=~/.cache/bash/history

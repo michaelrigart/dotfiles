@@ -1,0 +1,12 @@
+#!/bin/bash
+
+# make sure fnotify process gets killed afterwards
+on_exit() {
+    ssh irssi -O exit
+    pkill -f mqtt-notify.py    
+}
+trap on_exit INT TERM KILL EXIT
+
+~/.config/bash/bin/mqtt-notify.py > /dev/null &
+ssh -f -N irssi
+ssh irssi -t .irssi/screen

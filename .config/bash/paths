@@ -1,0 +1,1 @@
+export PATH="$HOME/.config/bash/bin:/usr/local/sbin:/usr/local/bin:$PATH"
