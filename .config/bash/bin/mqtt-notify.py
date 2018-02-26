@@ -36,21 +36,21 @@ def timestamp():
 def on_connect(client, userdata, flags, rc):
     ''' Assign a callback for connect and disconnect '''
     if rc == 0:
-        print '%s Connected successfully to %s:%s' % (timestamp(), broker,
-                                                      port)
+        print('%s Connected successfully to %s:%s' % (timestamp(), broker, port))
     # Subscribe to topic 'test'
     client.subscribe(topic, qos)
 
 def on_disconnect(client, userdata, rc):
-    print '%s Disconnected from %s:%s' % (timestamp(), broker, port)
+    print('%s Disconnected from %s:%s' % (timestamp(), broker, port))
 
 
-def on_message(client, useruserdataa, msg):
+def on_message(client, useruserdata, msg):
     ''' Send a notification after a new message has arrived'''
-    message = msg.payload.split('\n')
+    print(msg)
+    message = msg.payload.decode().split('\n')
     summary = message[0]
-    body = '\n'.join(message[1:])
-    print timestamp(), summary, body
+    body = '\n.'.join(message[1:])
+    print(timestamp(), summary, body)
     notify(summary=summary, body=body)
 
 def notify(summary, body):
