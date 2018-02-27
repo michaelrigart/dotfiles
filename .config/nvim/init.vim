@@ -28,6 +28,7 @@ if dein#load_state(expand('~/.cache/dein'))
   call dein#add('tpope/vim-rhubarb')
   call dein#add('shumphrey/fugitive-gitlab.vim')
 
+  call dein#add('brookhong/ag.vim')
 
   call dein#add('uplus/deoplete-solargraph')
   call dein#add('fishbullet/deoplete-ruby')
