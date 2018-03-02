@@ -28,6 +28,7 @@ if dein#load_state(expand('~/.cache/dein'))
   call dein#add('tpope/vim-rhubarb')
   call dein#add('shumphrey/fugitive-gitlab.vim')
 
+  call dein#add('airblade/vim-gitgutter')
   call dein#add('brookhong/ag.vim')
 
   call dein#add('uplus/deoplete-solargraph')
@@ -57,17 +58,24 @@ colorscheme vim-material
 set encoding=utf-8
 set guifont=Fura_Code_Retina_Nerd_Font_Complete:h12
 
-set colorcolumn=120
 
 let g:deoplete#enable_at_startup = 1
 let g:WebDevIconsUnicodeDecorateFolderNodes = 1
 let g:airline_powerline_fonts = 1
 "let NERDTreeShowHidden=1 (shift + i om te toggelen)
+let NERDTreeIgnore = ['\.DS_Store']
 
 let g:airline#extensions#tabline#enabled = 1
 let g:airline#extensions#tabline#buffer_nr_show = 1
 
+  " Gitgutter
+  set updatetime=100
+  let g:gitgutter_highlight_lines=1
+  set signcolumn=yes
+
 set cursorline 
+set number
+set colorcolumn=120
 
 " deoplete tab for autocomplete
 inoremap <expr> <Tab> pumvisible() ? "\<C-n>" : "\<Tab>"
@@ -77,6 +85,5 @@ function BuildEditor ()
   execute ":NERDTree"
   :exe "normal \<S-i>"
   :exe "normal \<C-W>\<C-w>"
-  set nu
 endfunction	
 command IDE call BuildEditor()
