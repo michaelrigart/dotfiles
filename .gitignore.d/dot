@@ -10,6 +10,8 @@
 !/.config/bash/config
 !/.config/bash/fzf
 !/.config/bash/paths
+!/.config/bundler
+!/.config/bundler/config
 !/.config/nvim
 !/.config/nvim/init.vim
 !/.gemrc
