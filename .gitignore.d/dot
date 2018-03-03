@@ -14,6 +14,7 @@
 !/.config/bundler/config
 !/.config/nvim
 !/.config/nvim/init.vim
+!/.editorconfig
 !/.gemrc
 !/.gitconfig
 !/.gitignore.d
