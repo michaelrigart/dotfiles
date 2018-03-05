@@ -1,2 +1,2 @@
-gem-ctags
-bundler
+gem-ctags   # generate ctags for gems, used for autocompletion
+bundler     # ruby package manager
