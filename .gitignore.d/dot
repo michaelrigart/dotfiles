@@ -23,5 +23,7 @@
 !/.inputrc
 !/.irbrc
 !/.pryrc
+!/.pyenv
+!/.pyenv/default-packages
 !/.rbenv
 !/.rbenv/default-gems
