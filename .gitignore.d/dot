@@ -12,6 +12,15 @@
 !/.config/bash/paths
 !/.config/bundler
 !/.config/bundler/config
+!/.config/git
+!/.config/git/gitk
+!/.config/git/templates
+!/.config/git/templates/hooks
+!/.config/git/templates/hooks/ctags
+!/.config/git/templates/hooks/post-checkout
+!/.config/git/templates/hooks/post-commit
+!/.config/git/templates/hooks/post-merge
+!/.config/git/templates/hooks/post-rewrite
 !/.config/nvim
 !/.config/nvim/init.vim
 !/.editorconfig
