@@ -37,5 +37,6 @@
     textconv = hexdump -v -C
 [commit]
     gpgsign = true
+    template = ~/.config/git/templates/gitmessage
 [init]
 	templatedir = ~/.config/git/templates

@@ -15,6 +15,7 @@
 !/.config/git
 !/.config/git/gitk
 !/.config/git/templates
+!/.config/git/templates/gitmessage
 !/.config/git/templates/hooks
 !/.config/git/templates/hooks/ctags
 !/.config/git/templates/hooks/post-checkout
