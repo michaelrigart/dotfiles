@@ -10,8 +10,6 @@
 !/.config/bash/config
 !/.config/bash/fzf
 !/.config/bash/paths
-!/.config/bundler
-!/.config/bundler/config
 !/.config/git
 !/.config/git/gitk
 !/.config/git/templates
