@@ -4,7 +4,7 @@
 !/.config/bash
 !/.config/bash/aliases
 !/.config/bash/bin
-!/.config/bash/bin/irssi
+!/.config/bash/bin/weechat
 !/.config/bash/bin/launch-screen
 !/.config/bash/bin/mqtt-notify.py
 !/.config/bash/config

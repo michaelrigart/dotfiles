@@ -20,11 +20,11 @@ import socket
 
 from pync import Notifier
 
-app_name = 'irssi'
-mqtt_client_name = 'irssi'
+app_name = 'weechat'
+mqtt_client_name = 'weechat'
 broker = '127.0.0.1'
 port = 1883
-topic = 'irssi'
+topic = 'weechat'
 qos = 2
 
 
