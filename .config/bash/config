@@ -3,6 +3,16 @@ if which rbenv > /dev/null; then eval "$(rbenv init -)"; fi
 # Init pyenv
 if which pyenv > /dev/null; then eval "$(pyenv init -)"; fi
 
+# Run bash_completion
+[ -f /usr/local/etc/bash_completion ] && . /usr/local/etc/bash_completion
+
+# Git prompt
+if [ -f "/usr/local/opt/bash-git-prompt/share/gitprompt.sh" ]; then
+    GIT_PROMPT_ONLY_IN_REPO=1
+    __GIT_PROMPT_DIR="/usr/local/opt/bash-git-prompt/share"
+    source "/usr/local/opt/bash-git-prompt/share/gitprompt.sh"
+fi
+
 # Set locales
 export LC_CTYPE=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
