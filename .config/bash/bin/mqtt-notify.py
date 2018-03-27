@@ -16,12 +16,14 @@ import time
 import datetime
 #import dbus
 import paho.mqtt.client as paho
+import os
 import socket
+import json
 
 from pync import Notifier
 
-app_name = 'weechat'
-mqtt_client_name = 'weechat'
+app_name = 'mqtt-notify'
+mqtt_client_name = (app_name + '-' + socket.gethostname() + '-' + str(os.getpid()))
 broker = '127.0.0.1'
 port = 1883
 topic = 'weechat'
@@ -46,12 +48,14 @@ def on_disconnect(client, userdata, rc):
 
 def on_message(client, useruserdata, msg):
     ''' Send a notification after a new message has arrived'''
-    print(msg)
-    message = msg.payload.decode().split('\n')
-    summary = message[0]
-    body = '\n.'.join(message[1:])
-    print(timestamp(), summary, body)
-    notify(summary=summary, body=body)
+    message = json.loads(msg.payload)
+
+    if message['highlight'] == 1 or 'notify_private' in message['tags']:
+        summary = message['sender']
+        '''body = '%s (%s)' % (message['message'], message['buffer'])'''
+        body = message['message']
+        print(timestamp(), summary, body)
+        notify(summary=summary, body=body)
 
 def notify(summary, body):
     if platform.system() == "Linux":
