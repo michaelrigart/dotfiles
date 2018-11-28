@@ -8,7 +8,6 @@ if dein#load_state(expand('~/.cache/dein'))
   call dein#begin(expand('~/.cache/dein'))
 
   call dein#add('Shougo/dein.vim')
-  call dein#add('Shougo/deoplete.nvim')
   call dein#add('scrooloose/nerdtree')
   call dein#add('hzchirs/vim-material')
   call dein#add('ryanoasis/vim-devicons')
@@ -30,8 +29,6 @@ if dein#load_state(expand('~/.cache/dein'))
   call dein#add('airblade/vim-gitgutter')
   call dein#add('brookhong/ag.vim')
 
-  call dein#add('uplus/deoplete-solargraph')
-  call dein#add('fishbullet/deoplete-ruby')
   call dein#add('vim-ruby/vim-ruby')
   call dein#add('tpope/vim-haml')
   call dein#add('sunaku/vim-ruby-minitest')
@@ -78,7 +75,13 @@ let g:gitgutter_highlight_lines=1 " highlight changed lines
 
 
 " Plugin options
-let g:deoplete#enable_at_startup = 1
+set wildmenu
+set completeopt=menu,longest
+set completeopt -=preview
+
+" Close the documentation window when completion is done
+autocmd InsertLeave,CompleteDone * if pumvisible() == 0 | pclose | endif
+
 let g:WebDevIconsUnicodeDecorateFolderNodes = 1
 let g:airline_powerline_fonts = 1
 "let NERDTreeShowHidden=1 "(shift + i om te toggelen)
@@ -86,9 +89,3 @@ let NERDTreeIgnore = ['\.DS_Store']
 let g:airline#extensions#tabline#enabled = 1
 let g:airline#extensions#tabline#buffer_nr_show = 1
 
-function BuildEditor ()
-  execute ":NERDTree"
-  :exe "normal \<S-i>"
-  :exe "normal \<C-W>\<C-w>"
-endfunction
-command IDE call BuildEditor()
