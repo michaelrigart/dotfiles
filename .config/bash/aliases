@@ -7,12 +7,9 @@ alias reload='. ~/.bash_profile'
 # Flush DNS Cache
 alias flush-dns='sudo killall -HUP mDNSResponder'
 
-# Docker cleanup images <none>
-alias dockercleanup='docker rmi -f $(docker images --filter "dangling=true" -q --no-trunc)'
-
 # Truncate Rails logs
 alias truncatelogs='find ~/Sites -type f -name '*.log' -exec truncate -s 0 {} +'
 
-# Alias vi/vim to neovim 
+# Alias vi/vim to neovim
 alias vi='nvim'
 alias vim='nvim'
