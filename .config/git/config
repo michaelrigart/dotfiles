@@ -4,7 +4,7 @@
     signingkey = 6A48E395326ED58A
 [core]
     editor = vim
-    excludesfile = ~/.gitignore_global
+    excludesfile = ~/.config/git/gitignore_global
 [color]
     ui = auto
 [alias]
