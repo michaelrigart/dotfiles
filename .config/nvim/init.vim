@@ -26,6 +26,8 @@ if dein#load_state(expand('~/.cache/dein'))
   call dein#add('tpope/vim-rhubarb')
   call dein#add('shumphrey/fugitive-gitlab.vim')
 
+"  call dein#add('majutsushi/tagbar')
+
   call dein#add('airblade/vim-gitgutter')
   call dein#add('brookhong/ag.vim')
 
@@ -57,6 +59,7 @@ set guifont=Fura_Code_Retina_Nerd_Font_Complete:h12 " patched font for icons
 set cursorline
 set number
 set colorcolumn=120
+set mouse=nv
 
 " Indentation and whitespace settings
 set smartindent
@@ -71,16 +74,12 @@ set smarttab
 " Gitgutter options
 set updatetime=100 " faster update times so signs are show faster
 set signcolumn=yes " show git changes next to numbers
-let g:gitgutter_highlight_lines=1 " highlight changed lines
-
+let g:gitgutter_highlight_lines=0 " highlight changed lines
 
 " Plugin options
 set wildmenu
 set completeopt=menu,longest
 set completeopt -=preview
-
-" Close the documentation window when completion is done
-autocmd InsertLeave,CompleteDone * if pumvisible() == 0 | pclose | endif
 
 let g:WebDevIconsUnicodeDecorateFolderNodes = 1
 let g:airline_powerline_fonts = 1
