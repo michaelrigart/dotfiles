@@ -35,3 +35,4 @@
 !/.pyenv/default-packages
 !/.rbenv
 !/.rbenv/default-gems
+!/.tmux.conf
