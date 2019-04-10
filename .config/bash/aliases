@@ -1,3 +1,5 @@
+#!/bin/bash
+
 # Show remote ip address
 alias remoteip='dig txt +short o-o.myaddr.l.google.com @ns1.google.com'
 
@@ -13,3 +15,6 @@ alias truncatelogs='find ~/Sites -type f -name '*.log' -exec truncate -s 0 {} +'
 # Alias vi/vim to neovim
 alias vi='nvim'
 alias vim='nvim'
+
+# Fix screen colors
+alias tmux="TERM=screen-256color-bce tmux"
