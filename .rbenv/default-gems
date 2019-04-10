@@ -1,2 +1,3 @@
-bundler     # ruby package manager
-pry         # Irb alternative
+bundler     # Manage your Ruby application's gem dependencies
+pry         # A runtime developer console and IRB alternative with powerful introspection capabilities
+tmuxinator  # Manage complex tmux sessions easily
