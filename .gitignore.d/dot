@@ -11,6 +11,8 @@
 !/.config/bash/fzf
 !/.config/bash/paths
 !/.config/git
+!/.config/git/config
+!/.config/git/gitignore_global
 !/.config/git/gitk
 !/.config/git/templates
 !/.config/git/templates/gitmessage
@@ -24,10 +26,8 @@
 !/.config/nvim/init.vim
 !/.editorconfig
 !/.gemrc
-!/.gitconfig
 !/.gitignore.d
 !/.gitignore.d/dot
-!/.gitignore_global
 !/.inputrc
 !/.irbrc
 !/.pryrc
