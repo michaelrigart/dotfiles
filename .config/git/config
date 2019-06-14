@@ -40,3 +40,5 @@
     template = ~/.config/git/templates/gitmessage
 [init]
 	templatedir = ~/.config/git/templates
+[gpg]
+	program = gpg2
