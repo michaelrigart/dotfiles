@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+
+# Show remote ip address
+alias remoteip='dig txt +short o-o.myaddr.l.google.com @ns1.google.com'
+
+#Reload bash settings
+alias reload='. ~/.bash_profile'
+
+# Flush DNS Cache
+alias flush-dns='sudo killall -HUP mDNSResponder'
+
+# Truncate Rails logs
+alias truncatelogs='find ~/Sites -type f -name '*.log' -exec truncate -s 0 {} +'
+
+# Alias vi/vim to neovim
+alias vi='nvim'
+alias vim='nvim'
+
+# Fix screen colors
+alias tmux="TERM=screen-256color-bce tmux"

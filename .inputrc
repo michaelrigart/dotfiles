@@ -1,0 +1,2 @@
+# ignore cases when using autocomplete
+set completion-ignore-case on
