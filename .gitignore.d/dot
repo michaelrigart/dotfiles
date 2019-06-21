@@ -1,15 +1,5 @@
 *
-!/.bash_profile
 !/.config
-!/.config/bash
-!/.config/bash/aliases
-!/.config/bash/bin
-!/.config/bash/bin/weechat
-!/.config/bash/bin/launch-screen
-!/.config/bash/bin/mqtt-notify.py
-!/.config/bash/config
-!/.config/bash/fzf
-!/.config/bash/paths
 !/.config/git
 !/.config/git/config
 !/.config/git/gitignore_global
@@ -24,11 +14,14 @@
 !/.config/git/templates/hooks/post-rewrite
 !/.config/nvim
 !/.config/nvim/init.vim
+!/.config/zsh
+!/.config/zsh/aliases
+!/.config/zsh/config
+!/.config/zsh/zshenv
 !/.editorconfig
 !/.gemrc
 !/.gitignore.d
 !/.gitignore.d/dot
-!/.inputrc
 !/.irbrc
 !/.pryrc
 !/.pyenv
@@ -36,3 +29,4 @@
 !/.rbenv
 !/.rbenv/default-gems
 !/.tmux.conf
+!/.zshrc
