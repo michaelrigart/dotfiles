@@ -13,8 +13,6 @@ if dein#load_state(expand('~/.cache/dein'))
   call dein#add('ryanoasis/vim-devicons')
   call dein#add('vim-airline/vim-airline')
 
-  call dein#add('junegunn/fzf.vim')
-
   call dein#add('Shougo/neosnippet.vim')
   call dein#add('Shougo/neosnippet-snippets')
 
