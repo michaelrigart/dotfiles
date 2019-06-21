@@ -1,0 +1,40 @@
+#!/usr/bin/env zsh
+
+# Set XDG Base Directory Specification environment variables
+test "$XDG_BIN_HOME"    || export XDG_BIN_HOME="$HOME/.local/bin"
+test "$XDG_CACHE_HOME"  || export XDG_CACHE_HOME="$HOME/.cache"
+test "$XDG_CONFIG_HOME" || export XDG_CONFIG_HOME="$HOME/.config"
+test "$XDG_DATA_HOME"   || export XDG_DATA_HOME="$HOME/.local/share"
+test "$XDG_LIB_HOME"    || export XDG_LIB_HOME="$HOME/.local/lib"
+
+# Set $PATH environment variable
+export PATH=$XDG_BIN_HOME:$PATH
+
+# Set ZSH comdump file
+export ZSH_COMPDUMP="$XDG_CACHE_HOME/zsh/zcompdump-${HOST}-${ZSH_VERSION}"
+
+# Path to oh-my-zsh installation.
+export ZSH="$XDG_LIB_HOME/oh-my-zsh"
+
+# Set language environment
+export LANG=en_US.UTF-8
+export LC_CTYPE=en_US.UTF-8
+export LC_ALL=en_US.UTF-8
+
+# Preferred editor for local and remote sessions
+if [[ -n $SSH_CONNECTION ]]; then
+  export EDITOR='vim'
+else
+  export EDITOR='nvim'
+fi
+
+# Compilation flags
+export ARCHFLAGS="-arch x86_64"
+
+# Set GNUPG directory
+export GNUPGHOME="$XDG_CONFIG_HOME/gnupg"
+
+# Bundler config vars
+export BUNDLE_USER_CACHE="$XDG_CACHE_HOME/bundler/cache"
+export BUNDLE_USER_CONFIG="$XDG_USER_CONFIG/bundler/config"
+export BUNDLE_USER_PLUGIN="$XDG_CACHE_HOME/bundler/plugin"

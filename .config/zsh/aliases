@@ -1,0 +1,23 @@
+#!/usr/bin/env zsh
+
+# Show remote ip address
+alias remoteip='dig txt +short o-o.myaddr.l.google.com @ns1.google.com'
+
+#Reload bash settings
+alias reload="source $HOME/.zshrc"
+
+# Flush DNS Cache
+alias flush-dns='sudo killall -HUP mDNSResponder'
+
+# Truncate Rails logs
+alias truncatelogs='find ~/Sites -type f -name "*.log" -exec truncate -s 0 {} +'
+
+# Alias vi/vim to neovim
+alias vi='nvim'
+alias vim='nvim'
+
+# Fix screen colors
+alias tmux="TERM=screen-256color-bce tmux"
+
+alias showFiles="defaults write com.apple.finder AppleShowAllFiles YES; killall Finder /System/Library/CoreServices/Finder.app"
+alias hideFiles="defaults write com.apple.finder AppleShowAllFiles NO; killall Finder /System/Library/CoreServices/Finder.app"
