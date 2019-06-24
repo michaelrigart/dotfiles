@@ -86,3 +86,5 @@ let NERDTreeIgnore = ['\.DS_Store']
 let g:airline#extensions#tabline#enabled = 1
 let g:airline#extensions#tabline#buffer_nr_show = 1
 
+" set viminfo path
+let viminfopath=$XDG_CACHE_HOME."/vim/viminfo"
