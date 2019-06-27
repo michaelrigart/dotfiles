@@ -37,7 +37,7 @@ do
 done
 
 echo '========== Set default shell to zsh =========='
-sudo /usr/bin/env zsh -c 'echo /usr/local/bin/zsh >> /etc/shells'
+sudo /usr/bin/env zsh -c 'grep -qxF /usr/local/bin/zsh /etc/shells || echo /usr/local/bin/zsh >> /etc/shells'
 chsh -s /usr/local/bin/zsh
 
 echo '========== Upgrading CLI apps =========='
