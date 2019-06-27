@@ -1,5 +1,8 @@
 *
 !/.config
+!/.config/asdf
+!/.config/asdf/asdfrc
+!/.config/asdf/tool-versions
 !/.config/git
 !/.config/git/config
 !/.config/git/gitignore_global
@@ -12,12 +15,17 @@
 !/.config/git/templates/hooks/post-commit
 !/.config/git/templates/hooks/post-merge
 !/.config/git/templates/hooks/post-rewrite
+!/.config/macos
+!/.config/macos/configure.sh
+!/.config/macos/provision.sh
 !/.config/nvim
 !/.config/nvim/init.vim
 !/.config/zsh
 !/.config/zsh/aliases
 !/.config/zsh/config
 !/.config/zsh/zshenv
+!/.default-gems
+!/.default-python-packages
 !/.editorconfig
 !/.gemrc
 !/.gitignore.d
