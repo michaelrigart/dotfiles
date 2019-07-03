@@ -78,6 +78,24 @@ done
 echo '========== Cleanup brew installation =========='
 brew cleanup
 
+echo '========== Installing oh-my-zsh =========='
+if [ -d "${XDG_DATA_HOME}/oh-my-zsh" ]; then
+  echo ' ---- oh-my-zsh already installed'
+else
+  ' ---- install oh-my-zsh'
+  sh -c "$(curl -fsSL https://raw.githubusercontent.com/robbyrussell/oh-my-zsh/master/tools/install.sh)"
+fi
+
+echo '========== Installing powerlevel10 theme =========='
+if [ -d "${XDG_DATA_HOME}/oh-my-zsh/custom/themes/powerlevel10k" ]; then
+  echo ' ---- update powerlevel10k theme'
+  cd "${XDG_DATA_HOME}/oh-my-zsh/custom/themes/powerlevel10k"
+  git pull
+  cd
+else
+  echo ' ---- install powerlevel10k theme'
+  git clone https://github.com/romkatv/powerlevel10k.git "${XDG_DATA_HOME}/oh-my-zsh/custom/themes/powerlevel10k"
+fi
 
 # Need to login into some apps in order to install checkout sdots before continuing
 # keybase / dropbox / 1password
