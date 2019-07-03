@@ -14,7 +14,7 @@ export PATH=$XDG_BIN_HOME:$PATH
 export ZSH_COMPDUMP="$XDG_CACHE_HOME/zsh/zcompdump-${HOST}-${ZSH_VERSION}"
 
 # Path to oh-my-zsh installation.
-export ZSH="$XDG_LIB_HOME/oh-my-zsh"
+export ZSH="$XDG_DATA_HOME/oh-my-zsh"
 
 # Set language environment
 export LANG=en_US.UTF-8
