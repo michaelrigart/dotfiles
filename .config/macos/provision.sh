@@ -64,7 +64,6 @@ declare -a guiApps=(
   'postman'                  # Postman for API development
   'signal'                   # secure messing app
   'skype'                    # Still used a lot for conf-calls
-  'spideroakone'             # Secure cloud storage
   'viscosity'                # VPN client
 )
 
