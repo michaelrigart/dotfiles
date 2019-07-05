@@ -86,14 +86,25 @@ else
 fi
 
 echo '========== Installing powerlevel10 theme =========='
-if [ -d "${XDG_DATA_HOME}/oh-my-zsh/custom/themes/powerlevel10k" ]; then
+if [ -d "${ZSH_CUSTOM}/themes/powerlevel10k" ]; then
   echo ' ---- update powerlevel10k theme'
-  cd "${XDG_DATA_HOME}/oh-my-zsh/custom/themes/powerlevel10k"
+  cd "${ZSH_CUSTOM}/themes/powerlevel10k"
   git pull
-  cd
+  cd $HOME
 else
   echo ' ---- install powerlevel10k theme'
-  git clone https://github.com/romkatv/powerlevel10k.git "${XDG_DATA_HOME}/oh-my-zsh/custom/themes/powerlevel10k"
+  git clone https://github.com/romkatv/powerlevel10k.git "${ZSH_CUSTOM}/themes/powerlevel10k"
+fi
+
+echo '========== Installing zsh-syntax-highlighting =========='
+if [ -d "${ZSH_CUSTOM}/plugins/zsh-syntax-highlighting" ]; then
+  echo '---- update zsh-syntax-highlighting'
+  cd "${ZSH_CUSTOM}/plugins/zsh-syntax-highlighting"
+  git pull
+  cd $HOME
+else
+  echo '---- install zsh-syntax-highlighting plugin'
+  git clone https://github.com/zsh-users/zsh-syntax-highlighting.git "${$ZSH_CUSTOM}/plugins/zsh-syntax-highlighting"
 fi
 
 # Need to login into some apps in order to install checkout sdots before continuing
