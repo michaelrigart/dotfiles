@@ -48,6 +48,7 @@ syntax enable
 " enable swapfiles but store them in a single directory
 set swapfile
 set dir=~/.cache/vim
+set viminfo+=n~/.cache/vim/viminfo
 
 " Appearance
 set termguicolors
