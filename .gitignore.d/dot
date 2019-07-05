@@ -41,3 +41,6 @@
 !/.rbenv/default-gems
 !/.tmux.conf
 !/.zshrc
+!/Library
+!/Library/LaunchAgents
+!/Library/LaunchAgents/setenv.gnupghome.plist
