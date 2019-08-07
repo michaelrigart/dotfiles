@@ -36,7 +36,7 @@ export GNUPGHOME="$XDG_CONFIG_HOME/gnupg"
 
 # Bundler config vars
 export BUNDLE_USER_CACHE="$XDG_CACHE_HOME/bundler/cache"
-export BUNDLE_USER_CONFIG="$XDG_USER_CONFIG/bundler/config"
+export BUNDLE_USER_CONFIG="$XDG_CONFIG_HOME/bundler/config"
 export BUNDLE_USER_PLUGIN="$XDG_CACHE_HOME/bundler/plugin"
 
 # Node / NPM config vars
