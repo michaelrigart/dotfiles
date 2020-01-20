@@ -38,6 +38,8 @@ if dein#load_state(expand('~/.cache/dein'))
   call dein#add('tpope/vim-surround')
   call dein#add('jiangmiao/auto-pairs')
 
+"  call dein#add('neoclide/coc.nvim', {'merged':0, 'rev': 'release'})
+
   call dein#end()
   call dein#save_state()
 endif
