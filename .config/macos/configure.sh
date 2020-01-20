@@ -1,4 +1,5 @@
 #!/usr/bin/env zsh
+# https://github.com/drduh/macOS-Security-and-Privacy-Guide
 
 while [[ ! $answer = 'y' ]]; do
     echo -n 'Enter the hostname: '
@@ -25,7 +26,6 @@ csrutil status
 echo '========== Disble some LaunchAgents =========='
 launchctl remove /System/Library/LaunchAgents/com.apple.gamed.plist
 launchctl remove /System/Library/LaunchAgents/com.apple.touristd.plist
-launchctl remove /System/Library/LaunchAgents/com.apple.security.keychainsyncingoveridsproxy.plist
 launchctl remove /System/Library/LaunchAgents/com.apple.CallHistorySyncHelper.plist
 launchctl remove /System/Library/LaunchAgents/com.apple.syncdefaultsd.plist
 launchctl remove /System/Library/LaunchAgents/com.apple.CalendarAgent.plist
