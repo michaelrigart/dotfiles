@@ -11,14 +11,13 @@ fi
 declare -a cliApps=(
   'ansible'               # Ansible is a radically simple IT automation platform that makes your applications and systems easier to deploy.
   'asdf'                  # Extendable version manager with support for Ruby, Node.js, Elixir, Erlang & more
-  'codeclimate'           # Code Climate CLI
   'freetds'               # Unix lib to connect to MSSQL
+  'fzf'                   # A command-line fuzzy finder
   'git'                   # update system git with latest version
   'git-flow'              # Tool for gitflow branching model
   'htop'                  # htop is an interactive text-mode process viewer for Unix systems. It aims to be a better 'top'.
   'libpq'                 # programming interface for postgresql
   'neovim'                # Drop-in replacement for Vim
-  'node'
   'terminal-notifier'     # command-line tool to send macOS user notifications
   'the_silver_searcher'   # A code-searching tool similar to ack, but faster ag command used in Vim / CLI
   'tmux'
@@ -45,11 +44,15 @@ brew upgrade
 
 echo '========== Tap fonts caskroom'
 brew tap homebrew/cask-fonts
-
+# ulysses
+# pages
+# endpoint security vpn
 declare -a guiApps=(
   '1password'                # 1Password password manager
   'docker-edge'              # Containerize, but not all things
+#  'drawio'
   'dropbox'                  # Some cloud storage
+#  'figma'                    # Figma helps teams create, test, and ship better designs from start to finish.
   'firefox'                  # Using firefox as default browser
   'font-firacode-nerd-font'  # Currently using this patched font in vim. Includes icons
   'freemind'                 # Mindmapping tool
@@ -60,10 +63,15 @@ declare -a guiApps=(
   'libreoffice'              # For some basic office stuff
   'little-snitch'            # macOS firewall
   'micro-snitch'             # macOS mic & cam detection
+  'miro-formerly-realtimeboard'
   'nordvpn'                  # secure connection with VPN
+  'notion'
   'postman'                  # Postman for API development
   'signal'                   # secure messing app
   'skype'                    # Still used a lot for conf-calls
+  'slack'
+  'spotify'
+  'virtualbox'
   'viscosity'                # VPN client
 )
 
@@ -144,8 +152,8 @@ source $HOME/.zshrc
 echo '========== Add ASDF Ruby plugin =========='
 asdf plugin-add ruby
 
-echo '========== Install Ruby 2.6.2 =========='
-asdf install ruby 2.6.2
+echo '========== Install Ruby 2.6.5 =========='
+asdf install ruby 2.6.5
 
 echo '========== Install Ruby 2.6.3 =========='
 asdf install ruby 2.6.3
@@ -159,11 +167,14 @@ gem update --system
 echo '========== Add ASDF Python plugin =========='
 asdf plugin-add python
 
-echo '========== Install Python 3.7.3 =========='
-asdf install python 3.7.3
+echo '========== Install Python 2.7.17 =========='
+asdf install python 2.7.17
 
-echo '========== Set default python version to 3.7.3 =========='
-asdf global python 3.7.3
+echo '========== Install Python 3.8.0 =========='
+asdf install python 3.8.0
+
+echo '========== Set default python version to 3.8.0 =========='
+asdf global python 3.8.0
 
 echo '========== Update Pip =========='
 pip install --upgrade pip
