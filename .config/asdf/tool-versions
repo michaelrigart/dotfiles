@@ -1,2 +1,5 @@
-ruby 2.6.5
-python 3.7.3 2.7.17
+ruby 2.7.1
+python 3.8.0
+java openjdk-14.0.2
+nodejs 14.8.0
+yarn 1.22.4
