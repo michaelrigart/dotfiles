@@ -1,5 +1,5 @@
 ruby 2.7.1
-python 3.8.0
+python 3.9.0
 java openjdk-14.0.2
-nodejs 14.8.0
+nodejs 12.19.0
 yarn 1.22.4
