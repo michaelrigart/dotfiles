@@ -1,0 +1,4 @@
+_auth = ${NPM_TOKEN}
+//registry.yarnpkg.com/:_authToken=${NPM_TOKEN}'
+
+cache=${XDG_CACHE_HOME}/npm

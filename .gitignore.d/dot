@@ -21,6 +21,8 @@
 !/.config/macos
 !/.config/macos/configure.sh
 !/.config/macos/provision.sh
+!/.config/npm
+!/.config/npm/config
 !/.config/nvim
 !/.config/nvim/init.vim
 !/.config/zsh
