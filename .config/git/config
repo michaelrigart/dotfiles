@@ -55,3 +55,5 @@
 	templatedir = ~/.config/git/templates
 [gpg]
 	program = gpg2
+[pull]
+	ff = only
