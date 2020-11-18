@@ -33,6 +33,7 @@ export ARCHFLAGS="-arch x86_64"
 
 # Set GNUPG directory
 export GNUPGHOME="$XDG_CONFIG_HOME/gnupg"
+export GPG_TTY=$(tty)
 
 # Bundler config vars
 export BUNDLE_USER_CACHE="$XDG_CACHE_HOME/bundler/cache"

@@ -5,6 +5,7 @@
 [core]
     editor = vim
     excludesfile = ~/.config/git/gitignore_global
+    filemode = true
 [color]
     ui = auto
 [color "branch"]
@@ -54,6 +55,6 @@
 [init]
 	templatedir = ~/.config/git/templates
 [gpg]
-	program = gpg2
+	program = gpg
 [pull]
 	ff = only
