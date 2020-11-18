@@ -21,6 +21,7 @@ declare -a cliApps=(
   'fzf'                   # A command-line fuzzy finder
   'git'                   # update system git with latest version
   'git-flow'              # Tool for gitflow branching model
+  'gpg2'
   'htop'                  # htop is an interactive text-mode process viewer for Unix systems. It aims to be a better 'top'.
   'libpq'                 # programming interface for postgresql
   'neovim'                # Drop-in replacement for Vim
@@ -62,22 +63,21 @@ declare -a guiApps=(
   'dropbox'                  # Some cloud storage
   'eul'
   'firefox'                  # Using firefox as default browser
-  'font-firacode-nerd-font'  # Currently using this patched font in vim. Includes icons
+  'font-fira-code-nerd-font'  # Currently using this patched font in vim. Includes icons
   'freemind'                 # Mindmapping tool
   'geekbench'
   'google-chrome'
-  'gpg-suite'                # Install GPG suite for handling GPG keys
   'iterm2'                   # Iterm2 is so much better than macOS Terminal
   'jetbrains-toolbox'        # Currently still using IntelliJ
   'keybase'                  # Security APP for end-to-end encryption
   'little-snitch'            # macOS firewall
   'micro-snitch'             # macOS mic & cam detection
   'microsoft-teams'
-  'miro-formerly-realtimeboard'
+  'miro'
   'nordvpn'                  # secure connection with VPN
   'notion'
+  'obs'
   'onlyoffice'
-  'streamlabs-obs'
 #  'pocket-casts'
   'postman'                  # Postman for API development
   'signal'                   # secure messing app
@@ -85,7 +85,6 @@ declare -a guiApps=(
   'slack'
 #  'sony-ps4-remote-play'
   'spotify'
-  'streamlabs-obs'
 #  'viscosity'                # VPN client
 )
 
@@ -160,7 +159,7 @@ if [ -d "${ZSH}/custom/themes/powerlevel10k" ]; then
   cd $HOME
 else
   echo ' ---- install powerlevel10k theme'
-  git clone https://github.com/romkatv/powerlevel10k.git "${ZSH_CUSTOM}/themes/powerlevel10k"
+  git clone https://github.com/romkatv/powerlevel10k.git "${ZSH}/custom/themes/powerlevel10k"
 fi
 
 echo '========== Installing zsh-syntax-highlighting =========='
@@ -171,7 +170,7 @@ if [ -d "${ZSH}/custom/plugins/zsh-syntax-highlighting" ]; then
   cd $HOME
 else
   echo '---- install zsh-syntax-highlighting plugin'
-  git clone https://github.com/zsh-users/zsh-syntax-highlighting.git "${ZSH_CUSTOM}/plugins/zsh-syntax-highlighting"
+  git clone https://github.com/zsh-users/zsh-syntax-highlighting.git "${ZSH}/custom/plugins/zsh-syntax-highlighting"
 fi
 
 echo '========== Resource zsh profile =========='
