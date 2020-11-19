@@ -21,7 +21,7 @@ declare -a cliApps=(
   'fzf'                   # A command-line fuzzy finder
   'git'                   # update system git with latest version
   'git-flow'              # Tool for gitflow branching model
-  'gpg2'
+  'gnupg'
   'htop'                  # htop is an interactive text-mode process viewer for Unix systems. It aims to be a better 'top'.
   'libpq'                 # programming interface for postgresql
   'neovim'                # Drop-in replacement for Vim
