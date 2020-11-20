@@ -28,6 +28,7 @@
 !/.config/zsh
 !/.config/zsh/aliases
 !/.config/zsh/config
+!/.config/zsh/gpg
 !/.config/zsh/zshenv
 !/.default-gems
 !/.default-python-packages
