@@ -39,7 +39,6 @@
 !/.irbrc
 !/.local
 !/.local/bin
-!/.local/bin/mqtt-notify.py
 !/.pryrc
 !/.pyenv
 !/.pyenv/default-packages
