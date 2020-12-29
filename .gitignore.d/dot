@@ -39,6 +39,7 @@
 !/.irbrc
 !/.local
 !/.local/bin
+!/.local/bin/app-cleaner
 !/.pryrc
 !/.pyenv
 !/.pyenv/default-packages
