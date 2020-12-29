@@ -25,7 +25,6 @@ declare -a cliApps=(
   'htop'                  # htop is an interactive text-mode process viewer for Unix systems. It aims to be a better 'top'.
   'libpq'                 # programming interface for postgresql
   'neovim'                # Drop-in replacement for Vim
-  'terminal-notifier'     # command-line tool to send macOS user notifications
   'the_silver_searcher'   # A code-searching tool similar to ack, but faster ag command used in Vim / CLI
   'tmux'
   'tmuxinator-completion'
