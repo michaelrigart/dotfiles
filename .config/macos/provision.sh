@@ -68,6 +68,7 @@ declare -a guiApps=(
   'google-chrome'
   'iterm2'                   # Iterm2 is so much better than macOS Terminal
   'jetbrains-toolbox'        # Currently still using IntelliJ
+  'kap'
   'keybase'                  # Security APP for end-to-end encryption
   'little-snitch'            # macOS firewall
   'micro-snitch'             # macOS mic & cam detection
@@ -91,7 +92,7 @@ declare -a guiApps=(
 echo '========== Installing GUI apps =========='
 for app in "${guiApps[@]}"
 do
-  brew cask install $app
+  brew install --cask $app
 done
 
 echo '========== Tap drivers caskroom =========='
