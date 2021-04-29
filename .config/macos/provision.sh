@@ -86,6 +86,8 @@ declare -a guiApps=(
 #  'sony-ps4-remote-play'
   'spotify'
 #  'viscosity'                # VPN client
+  'yubico-yubikey-manager'
+  'yubico-authenticator'
 )
 
 
