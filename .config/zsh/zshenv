@@ -38,6 +38,7 @@ export BUNDLE_USER_PLUGIN="$XDG_CACHE_HOME/bundler/plugin"
 
 # Node / NPM config vars
 export NODE_REPL_HISTORY="$XDG_CACHE_HOME/node/node_repl_history"
+#export NPM_CONFIG_USERCONFIG="$XDG_CONFIG_HOME/npm/config"
 export NPM_CONFIG_CACHE="$XDG_CACHE_HOME/npm"
 
 # Docker config folder location
@@ -55,5 +56,3 @@ export ASDF_DATA_DIR="$XDG_DATA_HOME/asdf"
 export GEMRC="$XDG_CONFIG_HOME/gem/config"
 export GEM_SPEC_CACHE="$XDG_CACHE_HOME/gem/specs"
 
-# Set NPM user config path
-export NPM_CONFIG_USERCONFIG=$XDG_CONFIG_HOME/npm/config
