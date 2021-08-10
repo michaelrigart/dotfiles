@@ -1,6 +1,6 @@
 ruby 2.7.2
 python 3.9.0
-java openjdk-14.0.2
+java openjdk-16.0.1
 nodejs 15.5.0
 yarn 1.22.4
 rust 1.51.0
