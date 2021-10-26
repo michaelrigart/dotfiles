@@ -17,7 +17,6 @@ declare -a cliApps=(
   'ansible'               # Ansible is a radically simple IT automation platform that makes your applications and systems easier to deploy.
   'asdf'                  # Extendable version manager with support for Ruby, Node.js, Elixir, Erlang & more
   'coreutils'
-  'freetds'               # Unix lib to connect to MSSQL
   'fzf'                   # A command-line fuzzy finder
   'git'                   # update system git with latest version
   'git-flow'              # Tool for gitflow branching model
