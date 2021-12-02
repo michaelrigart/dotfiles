@@ -18,6 +18,8 @@
 !/.config/iterm
 !/.config/iterm/shell_integration.zsh
 !/.config/jesseduffield/lazydocker/config.yml
+!/.config/kitty
+!/.config/kitty/kitty.conf
 !/.config/macos
 !/.config/macos/configure.sh
 !/.config/macos/provision.sh
