@@ -15,7 +15,6 @@
 !/.config/git/templates/hooks/post-commit
 !/.config/git/templates/hooks/post-merge
 !/.config/git/templates/hooks/post-rewrite
-!/.config/jesseduffield/lazydocker/config.yml
 !/.config/kitty
 !/.config/kitty/kitty.conf
 !/.config/macos
