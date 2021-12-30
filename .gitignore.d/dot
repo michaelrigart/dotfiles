@@ -24,7 +24,9 @@
 !/.config/npm
 !/.config/npm/config
 !/.config/nvim
-!/.config/nvim/init.vim
+!/.config/nvim/init.lua
+!/.config/nvim/lua/
+!/.config/nvim/lua/plugins.lua
 !/.config/zsh
 !/.config/zsh/aliases
 !/.config/zsh/config
