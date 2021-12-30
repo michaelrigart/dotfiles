@@ -2,4 +2,12 @@
 
 # Set GNUPG directory
 export GNUPGHOME="$XDG_CONFIG_HOME/gnupg"
-export GPG_TTY=$(tty)
+
+
+#if [ -d "${GNUPGHOME}/gpg-agent-info -a -n $(pgrep gpg-agent)" ]; then
+#  source "${GNUPGHOME}/gpg-agent-info"
+#  export GPG_AGENT_INFO
+#  export GPG_TTY=$(tty)
+#else
+#  gpg-agent --daemon
+#fi
