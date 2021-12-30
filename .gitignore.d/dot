@@ -41,12 +41,6 @@
 !/.local
 !/.local/bin
 !/.local/bin/app-cleaner
-!/.pryrc
-!/.pyenv
-!/.pyenv/default-packages
-!/.rbenv
-!/.rbenv/default-gems
-!/.tmux.conf
 !/.zshrc
 !/Library
 !/Library/LaunchAgents
