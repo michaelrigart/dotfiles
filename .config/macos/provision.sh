@@ -1,6 +1,6 @@
 #!/usr/bin/env zsh
 
-RUBY_VERSION=2.7.1
+RUBY_VERSION=3.1.0
 PYTHON_VERSION=3.9.0
 YARN_VERSION=latest
 NODEJS_VERSION=12.19.0
@@ -14,19 +14,20 @@ else
 fi
 
 declare -a cliApps=(
-  'ansible'               # Ansible is a radically simple IT automation platform that makes your applications and systems easier to deploy.
+  # 'ansible'               # Ansible is a radically simple IT automation platform that makes your applications and systems easier to deploy.
   'asdf'                  # Extendable version manager with support for Ruby, Node.js, Elixir, Erlang & more
   'coreutils'
-  'fzf'                   # A command-line fuzzy finder
+  # 'fzf'                   # A command-line fuzzy finder
   'git'                   # update system git with latest version
-  'git-flow'              # Tool for gitflow branching model
+  # 'git-flow'              # Tool for gitflow branching model
   'gnupg'
-  'htop'                  # htop is an interactive text-mode process viewer for Unix systems. It aims to be a better 'top'.
-  'libpq'                 # programming interface for postgresql
+  'pinetry-mac'
+  # 'htop'                  # htop is an interactive text-mode process viewer for Unix systems. It aims to be a better 'top'.
+  # 'libpq'                 # programming interface for postgresql
   'neovim'                # Drop-in replacement for Vim
-  'the_silver_searcher'   # A code-searching tool similar to ack, but faster ag command used in Vim / CLI
-  'tmux'
-  'tmuxinator-completion'
+  # 'the_silver_searcher'   # A code-searching tool similar to ack, but faster ag command used in Vim / CLI
+  # 'tmux'
+  # 'tmuxinator-completion'
   'vcsh'                  # config manager based on Git
   'zsh'                   # Zsh is a shell designed for interactive use, although it is also a powerful scripting language.
   'zsh-completion'        # Additional completion definitions for Zsh.
@@ -54,37 +55,35 @@ brew tap homebrew/cask-fonts
 # endpoint security vpn
 declare -a guiApps=(
   '1password'                # 1Password password manager
-  'adobe-acrobat-reader'
+  # 'adobe-acrobat-reader'
   'alfred'
-  'discord'
+  # 'discord'
   'docker'                   # Containerize, but not all things
   'dropbox'                  # Some cloud storage
   'eul'
   'firefox'                  # Using firefox as default browser
   'font-fira-code-nerd-font'  # Currently using this patched font in vim. Includes icons
-  'freemind'                 # Mindmapping tool
-  'geekbench'
+  # 'geekbench'
   'google-chrome'
-  'iterm2'                   # Iterm2 is so much better than macOS Terminal
   'jetbrains-toolbox'        # Currently still using IntelliJ
   'kap'
   'keybase'                  # Security APP for end-to-end encryption
+  'kitty'
   'little-snitch'            # macOS firewall
   'micro-snitch'             # macOS mic & cam detection
   'microsoft-teams'
   'miro'
-  'nordvpn'                  # secure connection with VPN
   'notion'
-  'obs'
+  # 'obs'
   'onlyoffice'
-#  'pocket-casts'
-  'postman'                  # Postman for API development
+  # 'pocket-casts'
+  # 'postman'                  # Postman for API development
   'signal'                   # secure messing app
-  'skype'                    # Still used a lot for conf-calls
+  # 'skype'                    # Still used a lot for conf-calls
   'slack'
-#  'sony-ps4-remote-play'
-  'spotify'
-#  'viscosity'                # VPN client
+  # 'sony-ps4-remote-play'
+  # 'spotify'
+  # 'viscosity'                # VPN client
   'yubico-yubikey-manager'
   'yubico-authenticator'
 )
@@ -221,14 +220,3 @@ asdf global nodejs $NODEJS_VERSION
 
 echo '========== Create cache directories =========='
 mkdir -p "${XDG_CACHE_HOME}/irb"
-
-echo "========== Install dein.vim plugin manager =========="
-if [ -d "${XDG_CACHE_HOME}/dein" ]; then
-  echo ' ---- dein.vim already installed'
-else
-  cd $HOME
-  curl https://raw.githubusercontent.com/Shougo/dein.vim/master/bin/installer.sh > installer.sh
-  sh ./installer.sh  "${XDG_CACHE_HOME}/dein"
-  rm installer.sh
-  echo ' ----- run :call dein#install() from within vim'
-fi
