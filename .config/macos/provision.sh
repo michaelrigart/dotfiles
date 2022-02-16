@@ -17,14 +17,16 @@ declare -a cliApps=(
   # 'ansible'               # Ansible is a radically simple IT automation platform that makes your applications and systems easier to deploy.
   'asdf'                  # Extendable version manager with support for Ruby, Node.js, Elixir, Erlang & more
   'coreutils'
-  # 'fzf'                   # A command-line fuzzy finder
+  'fzf'                   # A command-line fuzzy finder
   'git'                   # update system git with latest version
   # 'git-flow'              # Tool for gitflow branching model
   'gnupg'
   'pinetry-mac'
   # 'htop'                  # htop is an interactive text-mode process viewer for Unix systems. It aims to be a better 'top'.
-  # 'libpq'                 # programming interface for postgresql
+  'libpq'                 # programming interface for postgresql
   'neovim'                # Drop-in replacement for Vim
+  'strongswan'
+
   # 'the_silver_searcher'   # A code-searching tool similar to ack, but faster ag command used in Vim / CLI
   # 'tmux'
   # 'tmuxinator-completion'
@@ -78,6 +80,7 @@ declare -a guiApps=(
   'onlyoffice'
   # 'pocket-casts'
   # 'postman'                  # Postman for API development
+  'protonvpn'
   'signal'                   # secure messing app
   # 'skype'                    # Still used a lot for conf-calls
   'slack'
