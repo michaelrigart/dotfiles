@@ -212,9 +212,6 @@ asdf install yarn $YARN_VERSION
 echo '========== Install ASDF NodeJS plugin =========='
 asdf plugin-add nodejs https://github.com/asdf-vm/asdf-nodejs.git
 
-echo '========== Install Node.js OpenPGP keys =========='
-bash -c "${ASDF_DATA_DIR:=$HOME/.asdf}/plugins/nodejs/bin/import-release-team-keyring"
-
 echo "========== Install Node.js $NODEJS_VERSION =========="
 asdf install nodejs $NODEJS_VERSION
 
