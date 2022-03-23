@@ -54,6 +54,7 @@
     template = ~/.config/git/templates/gitmessage
 [init]
 	templatedir = ~/.config/git/templates
+	defaultBranch = main
 [gpg]
     program = gpg
 [pull]
