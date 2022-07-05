@@ -1,5 +1,7 @@
 *
 !/.config
+!/.config/alacritty
+!/.config/alacritty/alacritty.yml
 !/.config/asdf
 !/.config/asdf/asdfrc
 !/.config/asdf/tool-versions
