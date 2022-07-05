@@ -8,7 +8,7 @@ test "$XDG_DATA_HOME"   || export XDG_DATA_HOME="$HOME/.local/share"
 test "$XDG_LIB_HOME"    || export XDG_LIB_HOME="$HOME/.local/lib"
 
 # Set $PATH environment variable
-export PATH=$XDG_BIN_HOME:$PATH
+export PATH=$XDG_BIN_HOME:/usr/local/opt/libpq/bin:$PATH
 
 # Set ZSH comdump file
 export ZSH_COMPDUMP="$XDG_CACHE_HOME/zsh/zcompdump-${HOST}-${ZSH_VERSION}"
