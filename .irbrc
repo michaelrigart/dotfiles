@@ -1,12 +1,12 @@
-require 'irb/completion'
+#require 'irb/completion'
 require 'irb/ext/save-history'
 
 IRB.conf[:SAVE_HISTORY] = 1000
 IRB.conf[:HISTORY_FILE] = "#{ENV['XDG_CACHE_HOME']}/irb/irb_history"
 IRB.conf[:AUTO_INDENT]  = true
 IRB.conf[:PROMPT_MODE]  = :SIMPLE
-
-
+IRB.conf[:USE_AUTOCOMPLETE] = true
+IRB.conf[:USE_COLORIZE] = false
 
 if defined?(Rails)
   app = Rails.application.class.name.split('::').first
