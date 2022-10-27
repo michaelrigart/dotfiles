@@ -1,7 +1,9 @@
 #!/usr/bin/env zsh
 
+eval "$(/opt/homebrew/bin/brew shellenv)"
+
 # Set ZSH default completions
-fpath=(/usr/local/share/zsh-completions $fpath)
+fpath=(/opt/homebrew/share/zsh-completions $fpath)
 
 # Set name of the theme to load --- if set to "random", it will
 # load a random theme each time oh-my-zsh is loaded, in which case,

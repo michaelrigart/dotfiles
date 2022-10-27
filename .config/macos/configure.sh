@@ -44,7 +44,7 @@ defaults write com.apple.finder NewWindowTarget -string 'PfHm'
 defaults write com.apple.finder NewWindowTargetPath -string "file://${HOME}/"
 
 echo '========== Show battery percentage next to icon =========='
-defaults write com.apple.menuextra.battery ShowPercent -string "YES"
+#defaults write com.apple.menuextra.battery ShowPercent -string "YES"
 
 echo '========== DO NOT FORGET =========='
 echo ' ---- Set Spotlight preferences'

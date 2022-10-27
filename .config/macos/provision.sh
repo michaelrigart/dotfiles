@@ -1,9 +1,9 @@
 #!/usr/bin/env zsh
 
-RUBY_VERSION=3.1.0
-PYTHON_VERSION=3.9.0
+RUBY_VERSION=3.1.2
+PYTHON_VERSION=3.10.5
 YARN_VERSION=latest
-NODEJS_VERSION=12.19.0
+NODEJS_VERSION=16.15.1
 
 if ! [ -x "$(command -v brew)" ]; then
   echo '========== Installing Homebrew =========='
@@ -21,11 +21,11 @@ declare -a cliApps=(
   'git'                   # update system git with latest version
   # 'git-flow'              # Tool for gitflow branching model
   'gnupg'
-  'pinetry-mac'
+  'pinentry-mac'
   # 'htop'                  # htop is an interactive text-mode process viewer for Unix systems. It aims to be a better 'top'.
   'libpq'                 # programming interface for postgresql
   'neovim'                # Drop-in replacement for Vim
-  'strongswan'
+ # 'strongswan'
 
   # 'the_silver_searcher'   # A code-searching tool similar to ack, but faster ag command used in Vim / CLI
   # 'tmux'
@@ -49,8 +49,8 @@ do
 done
 
 echo '========== Set default shell to zsh =========='
-sudo /usr/bin/env zsh -c 'grep -qxF /usr/local/bin/zsh /etc/shells || echo /usr/local/bin/zsh >> /etc/shells'
-chsh -s /usr/local/bin/zsh
+sudo /usr/bin/env zsh -c 'grep -qxF /opt/homebrew/bin/zsh /etc/shells || echo /opt/homebrew/bin/zsh >> /etc/shells'
+chsh -s /opopt/homebrew/bin/zsh
 
 echo '========== Tap fonts caskroom'
 brew tap homebrew/cask-fonts
@@ -59,36 +59,40 @@ declare -a guiApps=(
   '1password'                # 1Password password manager
   # 'adobe-acrobat-reader'
   'alfred'
-  # 'discord'
+  'alacritty'
+# 'discord'
   'docker'                   # Containerize, but not all things
   'dropbox'                  # Some cloud storage
-  'eul'
+ # 'eul'
   'firefox'                  # Using firefox as default browser
   'font-fira-code-nerd-font'  # Currently using this patched font in vim. Includes icons
-  # 'geekbench'
+  'font-jetbrains-mono-font'
+# 'geekbench'
   'google-chrome'
+  'grammarly'
   'jetbrains-toolbox'        # Currently still using IntelliJ
-  'kap'
+#  'kap'
   'keybase'                  # Security APP for end-to-end encryption
-  'kitty'
   'little-snitch'            # macOS firewall
+  'mattermost'
   'micro-snitch'             # macOS mic & cam detection
   'microsoft-teams'
   'miro'
   'notion'
   # 'obs'
+  'onedrive'
   'onlyoffice'
   # 'pocket-casts'
   # 'postman'                  # Postman for API development
-  'protonvpn'
+ # 'protonvpn'
   'signal'                   # secure messing app
   # 'skype'                    # Still used a lot for conf-calls
   'slack'
   # 'sony-ps4-remote-play'
   # 'spotify'
   # 'viscosity'                # VPN client
-  'yubico-yubikey-manager'
-  'yubico-authenticator'
+  #'yubico-yubikey-manager'
+  #'yubico-authenticator'
 )
 
 
@@ -201,7 +205,7 @@ echo "========== Set default python version to $PYTHON_VERSION =========="
 asdf global python $PYTHON_VERSION
 
 echo '========== Update Pip =========='
-pip install --upgrade pip
+pasdf plugin-add nodejs https://github.com/asdf-vm/asdf-nodejs.gitip install --upgrade pip
 
 echo '========== Add ASDF Yarn plugin =========='
 asdf plugin-add yarn

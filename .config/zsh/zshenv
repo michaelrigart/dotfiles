@@ -7,8 +7,13 @@ test "$XDG_CONFIG_HOME" || export XDG_CONFIG_HOME="$HOME/.config"
 test "$XDG_DATA_HOME"   || export XDG_DATA_HOME="$HOME/.local/share"
 test "$XDG_LIB_HOME"    || export XDG_LIB_HOME="$HOME/.local/lib"
 
+# Set ARCHFLAGS to force target arm64 builds
+export ARCHFLAGS="-arch arm64"
+
 # Set $PATH environment variable
-export PATH=$XDG_BIN_HOME:/usr/local/opt/libpq/bin:$PATH
+export PATH=$XDG_BIN_HOME:/opt/homebrew/opt/libpq/bin:$PATH
+
+export TERM="xterm-256color"
 
 # Set ZSH comdump file
 export ZSH_COMPDUMP="$XDG_CACHE_HOME/zsh/zcompdump-${HOST}-${ZSH_VERSION}"

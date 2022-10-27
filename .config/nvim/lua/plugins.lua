@@ -35,27 +35,27 @@ end
 local function configure_colorschema()
   local nightfox = require('nightfox')
   nightfox.setup({
-    fox = "nightfox", -- Which fox style should be applied
     transparent = false, -- Disable setting the background color
-    alt_nc = true, -- Non current window bg to alt color see `hl-NormalNC`
     terminal_colors = false, -- Configure the colors used when opening :terminal
-    styles = {
-      comments = "italic", -- Style that is applied to comments: see `highlight-args` for options
-      functions = "NONE", -- Style that is applied to functions: see `highlight-args` for options
-      keywords = "NONE", -- Style that is applied to keywords: see `highlight-args` for options
-      strings = "NONE", -- Style that is applied to strings: see `highlight-args` for options
-      variables = "NONE", -- Style that is applied to variables: see `highlight-args` for options
+    options = {
+      dim_inactive = true, -- Non current window bg to alt color see `hl-NormalNC`
+      styles = {
+        comments = "italic", -- Style that is applied to comments: see `highlight-args` for options
+        functions = "NONE", -- Style that is applied to functions: see `highlight-args` for options
+        keywords = "NONE", -- Style that is applied to keywords: see `highlight-args` for options
+        strings = "NONE", -- Style that is applied to strings: see `highlight-args` for options
+        variables = "NONE", -- Style that is applied to variables: see `highlight-args` for options
+      },
+      inverse = {
+        match_paren = false, -- Enable/Disable inverse highlighting for match parens
+        visual = false, -- Enable/Disable inverse highlighting for visual selection
+        search = false, -- Enable/Disable inverse highlights for search highlights
+      },
     },
-    inverse = {
-      match_paren = false, -- Enable/Disable inverse highlighting for match parens
-      visual = false, -- Enable/Disable inverse highlighting for visual selection
-      search = false, -- Enable/Disable inverse highlights for search highlights
-    },
-    colors = {}, -- Override default colors
-    hlgroups = {}, -- Override highlight groups
+    palettes = {}, -- Override default colors
+    groups = {} -- Override highlight groups
   })
-  nightfox.load()
-
+  vim.cmd('colorscheme nightfox')
  -- vim.g.lightline = {'colorscheme': 'nightfox'}
 
 end
@@ -64,38 +64,38 @@ local function configure()
   configure_colorschema()
 	
     -- @plugin lualine
-  require('lualine').setup {
-      options = {
-          theme = 'auto',
-      },
-      extensions = {'quickfix', 'fzf', 'fugitive'},
-      sections = {
-  lualine_a = {
-    {
-      'buffers',
-      show_filename_only = true, -- shows shortened relative path when false
-      show_modified_status = true, -- shows indicator then buffer is modified
-      mode = 2, -- 0 shows buffer name
+--  require('lualine').setup {
+--      options = {
+--          theme = 'auto',
+--      },
+--      extensions = {'quickfix', 'fzf', 'fugitive'},
+--      sections = {
+--  lualine_a = {
+--    {
+--      'buffers',
+--      show_filename_only = true, -- shows shortened relative path when false
+--      show_modified_status = true, -- shows indicator then buffer is modified
+--      mode = 2, -- 0 shows buffer name
                 -- 1 buffer index (bufnr)
                 -- 2 shows buffer name + buffer index (bufnr)
-      max_length = vim.o.columns * 2 / 3, -- maximum width of buffers component
+--      max_length = vim.o.columns * 2 / 3, -- maximum width of buffers component
                                           -- can also be a function that returns value of max_length dynamicaly
-      filetype_names = {
-        TelescopePrompt = 'Telescope',
-        dashboard = 'Dashboard',
-        packer = 'Packer',
-        fzf = 'FZF',
-        alpha = 'Alpha'
-      }, -- shows specific buffer name for that filetype ( { `filetype` = `buffer_name`, ... } )
-      buffers_color = {
+ --     filetype_names = {
+ --       TelescopePrompt = 'Telescope',
+ --       dashboard = 'Dashboard',
+ --       packer = 'Packer',
+ --       fzf = 'FZF',
+ --       alpha = 'Alpha'
+ --     }, -- shows specific buffer name for that filetype ( { `filetype` = `buffer_name`, ... } )
+ --     buffers_color = {
         -- Same values like general color option can be used here.
-        active = 'lualine_{section}_normal', -- color for active buffer
-        inactive = 'lualine_{section}_inactive', -- color for inactive buffer
-      },
-    }
-  }
-}
-  }
+  --      active = 'lualine_{section}_normal', -- color for active buffer
+  --      inactive = 'lualine_{section}_inactive', -- color for inactive buffer
+  --    },
+  --  }
+ -- }
+--}
+--  }
 
 end
 
