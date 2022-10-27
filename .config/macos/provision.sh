@@ -19,12 +19,12 @@ declare -a cliApps=(
   'coreutils'
   'fzf'                   # A command-line fuzzy finder
   'git'                   # update system git with latest version
-  # 'git-flow'              # Tool for gitflow branching model
+  'git-flow-avh'              # Tool for gitflow branching model
   'gnupg'
-  'pinentry-mac'
-  # 'htop'                  # htop is an interactive text-mode process viewer for Unix systems. It aims to be a better 'top'.
+# 'htop'                  # htop is an interactive text-mode process viewer for Unix systems. It aims to be a better 'top'.
   'libpq'                 # programming interface for postgresql
   'neovim'                # Drop-in replacement for Vim
+  'pinentry-mac'
  # 'strongswan'
 
   # 'the_silver_searcher'   # A code-searching tool similar to ack, but faster ag command used in Vim / CLI
@@ -58,13 +58,14 @@ brew tap homebrew/cask-fonts
 declare -a guiApps=(
   '1password'                # 1Password password manager
   # 'adobe-acrobat-reader'
-  'alfred'
   'alacritty'
+  'alfred'
 # 'discord'
   'docker'                   # Containerize, but not all things
   'dropbox'                  # Some cloud storage
  # 'eul'
   'firefox'                  # Using firefox as default browser
+  'focusrite-control'
   'font-fira-code-nerd-font'  # Currently using this patched font in vim. Includes icons
   'font-jetbrains-mono-font'
 # 'geekbench'
@@ -76,20 +77,23 @@ declare -a guiApps=(
   'little-snitch'            # macOS firewall
   'mattermost'
   'micro-snitch'             # macOS mic & cam detection
+  'microsoft-remote-desktop'
   'microsoft-teams'
   'miro'
   'notion'
-  # 'obs'
+  'obs'
   'onedrive'
   'onlyoffice'
   # 'pocket-casts'
-  # 'postman'                  # Postman for API development
+  'postman'                  # Postman for API development
  # 'protonvpn'
+  'rectangle'		     # Move and resize windows on macOS with keyboard shortcuts and snap areas
   'signal'                   # secure messing app
   # 'skype'                    # Still used a lot for conf-calls
   'slack'
   # 'sony-ps4-remote-play'
-  # 'spotify'
+  'spotify'
+  'stats'
   # 'viscosity'                # VPN client
   #'yubico-yubikey-manager'
   #'yubico-authenticator'
