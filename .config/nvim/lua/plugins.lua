@@ -57,7 +57,6 @@ local function configure_colorschema()
   })
   vim.cmd('colorscheme nightfox')
  -- vim.g.lightline = {'colorscheme': 'nightfox'}
-
 end
 
 local function configure()

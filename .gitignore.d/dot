@@ -28,6 +28,7 @@
 !/.config/nvim/init.lua
 !/.config/nvim/lua/
 !/.config/nvim/lua/plugins.lua
+!/.config/nvim/lua/setttings.lua
 !/.config/zsh
 !/.config/zsh/aliases
 !/.config/zsh/config
