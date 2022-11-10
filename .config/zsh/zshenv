@@ -7,8 +7,8 @@ test "$XDG_CONFIG_HOME" || export XDG_CONFIG_HOME="$HOME/.config"
 test "$XDG_DATA_HOME"   || export XDG_DATA_HOME="$HOME/.local/share"
 test "$XDG_LIB_HOME"    || export XDG_LIB_HOME="$HOME/.local/lib"
 
-# Set ARCHFLAGS to force target arm64 builds
-export ARCHFLAGS="-arch arm64"
+# Set ARCHFLAGS to force target builds
+export ARCHFLAGS="-arch $(uname -m)"
 
 # Set $PATH environment variable
 export PATH=$XDG_BIN_HOME:/opt/homebrew/opt/libpq/bin:$PATH
@@ -32,9 +32,6 @@ if [[ -n $SSH_CONNECTION ]]; then
 else
   export EDITOR='nvim'
 fi
-
-# Compilation flags
-export ARCHFLAGS="-arch x86_64"
 
 # Bundler config vars
 export BUNDLE_USER_CACHE="$XDG_CACHE_HOME/bundler/cache"
