@@ -10,16 +10,21 @@ local function load()
         requires = {'kyazdani42/nvim-web-devicons', opt = true}
     }
 
-
     use {
-    'kyazdani42/nvim-tree.lua',
-    requires = {'kyazdani42/nvim-web-devicons', opt = true},
-    config = function() require'nvim-tree'.setup {} end
+      'akinsho/bufferline.nvim', 
+        requires = 'nvim-tree/nvim-web-devicons'
+    }
+
+
+    use { 'kyazdani42/nvim-tree.lua',
+      requires = { 'kyazdani42/nvim-web-devicons', opt = true }
     }
 
     use { 'ibhagwan/fzf-lua',
       requires = { 'vijaymarupudi/nvim-fzf', 'kyazdani42/nvim-web-devicons' } -- optional for icons
     }
+
+    use { 'gpanders/editorconfig.nvim' }
 
     use 'vim-ruby/vim-ruby'
     use 'tpope/vim-rails'
@@ -62,40 +67,20 @@ end
 local function configure()
   configure_colorschema()
 	
-    -- @plugin lualine
---  require('lualine').setup {
---      options = {
---          theme = 'auto',
---      },
---      extensions = {'quickfix', 'fzf', 'fugitive'},
---      sections = {
---  lualine_a = {
---    {
---      'buffers',
---      show_filename_only = true, -- shows shortened relative path when false
---      show_modified_status = true, -- shows indicator then buffer is modified
---      mode = 2, -- 0 shows buffer name
-                -- 1 buffer index (bufnr)
-                -- 2 shows buffer name + buffer index (bufnr)
---      max_length = vim.o.columns * 2 / 3, -- maximum width of buffers component
-                                          -- can also be a function that returns value of max_length dynamicaly
- --     filetype_names = {
- --       TelescopePrompt = 'Telescope',
- --       dashboard = 'Dashboard',
- --       packer = 'Packer',
- --       fzf = 'FZF',
- --       alpha = 'Alpha'
- --     }, -- shows specific buffer name for that filetype ( { `filetype` = `buffer_name`, ... } )
- --     buffers_color = {
-        -- Same values like general color option can be used here.
-  --      active = 'lualine_{section}_normal', -- color for active buffer
-  --      inactive = 'lualine_{section}_inactive', -- color for inactive buffer
-  --    },
-  --  }
- -- }
---}
---  }
-
+  require('lualine').setup()
+  require('nvim-tree').setup()
+  require('bufferline').setup({
+    options = {
+      offsets = {
+        {
+          filetype = "NvimTree",
+          text = "File Explorer",
+          highlight = "Directory",
+          separator = true -- use a "true" to enable the default, or set your own character
+        }
+      }
+    }
+  })
 end
 
 
