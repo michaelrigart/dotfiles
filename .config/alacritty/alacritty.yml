@@ -2,28 +2,18 @@ font:
   # The normal (roman) font face to use.
   # Style can be specified to pick a specific face.
   normal:
-    family: "JetBrains Mono" 
-    style: Regular  
-    family: "FiraCode Nerd Font"
-    style: Retina
-    # family: "Source Code Pro"
-    # style: Retina
+    family: "JetBrainsMono Nerd Font"
+    style: Regular
 
   # The bold font face
   bold:
-    family: "JetBrains Mono"
+    family: "JetBrainsMono Nerd Font"
     style: Bold
-    # family: "Fira Code"
-    # family: "Source Code Pro"
 
   # The italic font face
   italic:
-    family: "JetBrains Mono"
+    family: "JetBrainsMono Nerd Font"
     style: Italic
-    # style: "Light Oblique"
-    # family: "Fira Code"
-    # family: "Source Code Pro"
-    # style: "Medium Italic"
 
   # Point size of the font
   size: 12.0
