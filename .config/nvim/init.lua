@@ -4,8 +4,32 @@ if fn.empty(fn.glob(install_path)) > 0 then
   packer_bootstrap = fn.system({'git', 'clone', '--depth', '1', 'https://github.com/wbthomason/packer.nvim', install_path})
 end
 
--- vim.cmd [[ let mapleader = " " ]]
-  require('plugins').setup()
-  require('settings').setup()
+vim.cmd [[ let mapleader = "," ]]
+
+-- Toggle NvimTree
+vim.cmd [[ nnoremap <leader>t :NvimTreeToggle<cr> ]]
+
+
+-- -----------------------------------------------------------------------------
+--  Buffers
+-- -----------------------------------------------------------------------------
+
+-- Open new buffer
+vim.cmd [[ nnoremap <leader>N :enew<cr> ]]
+-- Move to the next buffer
+vim.cmd [[ nnoremap <leader>bn :bnext<CR> ]]
+-- Move to the previous buffer
+vim.cmd [[ nnoremap <leader>bp :bprevious<CR> ]]
+-- Close the current buffer and move to the previous one.
+-- This replicates the idea of closing a tab
+vim.cmd [[ nnoremap <leader>w :bp <BAR> bd #<CR> ]]
+-- Show all open buffers and their status
+vim.cmd [[ nnoremap <leader>bl :ls<CR> ]]
+
+-- Search files using FzfLua
+vim.cmd [[ nnoremap <leader>o :FzfLua files<CR> ]]
+
+require('plugins').setup()
+require('settings').setup()
 --require('options').setup()
 --require('keybindings').setup()

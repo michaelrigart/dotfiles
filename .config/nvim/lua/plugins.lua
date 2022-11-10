@@ -7,17 +7,17 @@ local function load()
     use 'EdenEast/nightfox.nvim'
     use {
       'nvim-lualine/lualine.nvim',
-        requires = {'kyazdani42/nvim-web-devicons', opt = true}
+        requires = {'kyazdani42/nvim-web-devicons' }
     }
 
     use {
-      'akinsho/bufferline.nvim', 
+      'akinsho/bufferline.nvim',
         requires = 'nvim-tree/nvim-web-devicons'
     }
 
 
     use { 'kyazdani42/nvim-tree.lua',
-      requires = { 'kyazdani42/nvim-web-devicons', opt = true }
+      requires = { 'kyazdani42/nvim-web-devicons' }
     }
 
     use { 'ibhagwan/fzf-lua',
@@ -29,7 +29,7 @@ local function load()
     use 'vim-ruby/vim-ruby'
     use 'tpope/vim-rails'
     use 'tpope/vim-bundler'
-    
+
     if packer_bootstrap then
       require('packer').sync()
     end
@@ -66,7 +66,7 @@ end
 
 local function configure()
   configure_colorschema()
-	
+
   require('lualine').setup()
   require('nvim-tree').setup()
   require('bufferline').setup({
