@@ -66,8 +66,7 @@ declare -a guiApps=(
  # 'eul'
   'firefox'                  # Using firefox as default browser
   'focusrite-control'
-  'font-fira-code-nerd-font'  # Currently using this patched font in vim. Includes icons
-  'font-jetbrains-mono-font'
+  'font-jetbrains-mono-nerd-font'  # Currently using this patched font in vim. Includes icons
 # 'geekbench'
   'google-chrome'
   'grammarly'
