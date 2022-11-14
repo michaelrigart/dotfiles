@@ -26,10 +26,10 @@ vim.cmd [[ nnoremap <leader>w :bp <BAR> bd #<CR> ]]
 -- Show all open buffers and their status
 vim.cmd [[ nnoremap <leader>bl :ls<CR> ]]
 
--- Search files using FzfLua
-vim.cmd [[ nnoremap <leader>o :FzfLua files<CR> ]]
-
 require('plugins').setup()
 require('settings').setup()
 --require('options').setup()
 --require('keybindings').setup()
+
+vim.cmd [[ nnoremap <leader>ff <cmd>Telescope find_files<CR> ]]
+vim.cmd [[ nnoremap <leader>fg <cmd>Telescope live_grep<CR> ]]

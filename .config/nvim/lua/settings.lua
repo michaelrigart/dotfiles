@@ -11,6 +11,9 @@ local function load()
   -- Show line numbers
   o.number = true
 
+  -- TODO
+  g.ru = true
+
 end
 
 local function setup()
