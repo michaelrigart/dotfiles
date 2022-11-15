@@ -22,21 +22,25 @@ local function load()
     use { 'nvim-treesitter/nvim-treesitter' }
     require('plugins/nvim-treesitter').setup()
 
+    use { 'RRethy/nvim-treesitter-endwise', requires = { 'nvim-treesitter/nvim-treesitter' } }
+    require('plugins/nvim-treesitter-endwise').setup()
+
     use { 'gpanders/editorconfig.nvim' }
 
 
     use { 'neovim/nvim-lspconfig' }     -- enable LSP
-    use ({"hrsh7th/nvim-cmp"})          -- Autocompletion plugin
-    use ({"hrsh7th/cmp-nvim-lsp"})      -- LSP source for nvim-cmp
-    use ({"hrsh7th/cmp-buffer"})        -- Buffer source for nvim-cmp
-    use ({"L3MON4D3/LuaSnip"})          -- nvim-cmp needs a snippet engine
-    use ({"saadparwaiz1/cmp_luasnip"})  -- nvim-cmp needs a snippet engine (dep)
+    use { 'hrsh7th/nvim-cmp' }          -- Autocompletion plugin
+    use { 'hrsh7th/cmp-nvim-lsp' }      -- LSP source for nvim-cmp
+    use { 'hrsh7th/cmp-buffer' }        -- Buffer source for nvim-cmp
+    use { 'L3MON4D3/LuaSnip' }          -- nvim-cmp needs a snippet engine
+    use { 'saadparwaiz1/cmp_luasnip' }  -- nvim-cmp needs a snippet engine (dep)
 
     use 'vim-ruby/vim-ruby'
     use 'tpope/vim-rails'
     use 'tpope/vim-bundler'
 
     if packer_bootstrap then
+      require('packer').install()
       require('packer').sync()
     end
   end)
