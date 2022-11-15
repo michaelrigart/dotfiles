@@ -29,6 +29,13 @@
 !/.config/nvim/lua/
 !/.config/nvim/lua/plugins.lua
 !/.config/nvim/lua/setttings.lua
+!/.config/nvim/plugins
+!/.config/nvim/plugins/bufferline.lua
+!/.config/nvim/plugins/lualine.lua
+!/.config/nvim/plugins/nightfox.lua
+!/.config/nvim/plugins/nvim-tree.lua
+!/.config/nvim/plugins/nvim-treesitter.lua
+!/.config/nvim/plugins/telescope.lua
 !/.config/zsh
 !/.config/zsh/aliases
 !/.config/zsh/config

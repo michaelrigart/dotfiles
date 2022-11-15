@@ -12,8 +12,8 @@ local function load()
   o.number = true
 
   -- TODO
-  g.ru = true
-
+  vim.o.ruler = true
+  vim.o.cursorline = true
 end
 
 local function setup()
