@@ -1,5 +1,7 @@
 
 local function setup()
+  require('neodev').setup()
+
   require('lspconfig').solargraph.setup({})
   local nvim_lsp = require('lspconfig')
 
