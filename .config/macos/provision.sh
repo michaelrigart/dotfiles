@@ -25,11 +25,8 @@ declare -a cliApps=(
   'libpq'                 # programming interface for postgresql
   'neovim'                # Drop-in replacement for Vim
   'pinentry-mac'
- # 'strongswan'
-
   # 'the_silver_searcher'   # A code-searching tool similar to ack, but faster ag command used in Vim / CLI
-  # 'tmux'
-  # 'tmuxinator-completion'
+  'tmux'
   'vcsh'                  # config manager based on Git
   'zsh'                   # Zsh is a shell designed for interactive use, although it is also a powerful scripting language.
   'zsh-completion'        # Additional completion definitions for Zsh.
