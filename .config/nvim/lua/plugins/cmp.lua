@@ -23,6 +23,7 @@ local function setup()
       { name = 'nvim_lsp' },
       { name = 'luasnip' },
       { name = 'buffer' },
+      { name = 'path' }
     }),
     formatting = {
       format = function(entry, vim_item)
@@ -30,6 +31,7 @@ local function setup()
           nvim_lsp = '[LSP]',
           luasnip = '[SNIP]',
           buffer = '[BUF]',
+          path = '[PATH]'
         }
         vim_item.menu = menu_source[entry.source.name]
         return vim_item
@@ -43,6 +45,16 @@ local function setup()
     sources = {
       { name = 'buffer' },
     }
+  })
+
+  -- Use cmdline & path source for ':' (if you enabled `native_menu`, this won't work anymore).
+  cmp.setup.cmdline(':', {
+    mapping = cmp.mapping.preset.cmdline(),
+    sources = cmp.config.sources({
+      { name = 'path' }
+    }, {
+      { name = 'cmdline' }
+    })
   })
 end
 
