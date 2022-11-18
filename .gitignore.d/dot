@@ -31,6 +31,7 @@
 !/.config/nvim/lua/setttings.lua
 !/.config/nvim/plugins
 !/.config/nvim/plugins/bufferline.lua
+!/.config/nvim/plugins/cmp.lua
 !/.config/nvim/plugins/lsp-config.lua
 !/.config/nvim/plugins/lualine.lua
 !/.config/nvim/plugins/nightfox.lua

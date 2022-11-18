@@ -27,7 +27,7 @@ local function setup()
   vim.opt.completeopt = { "menuone", "noselect" }
 
   -- faster completion
-  vim.opt.updatetime = 300
+  vim.opt.updatetime = 200
 
   --
 end

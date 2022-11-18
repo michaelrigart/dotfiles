@@ -1,8 +1,5 @@
 
 local function setup()
-  require('neodev').setup()
-
-  require('lspconfig').solargraph.setup({})
   local nvim_lsp = require('lspconfig')
 
   -- Use an on_attach function to only map the following keys
@@ -37,59 +34,25 @@ local function setup()
     buf_set_keymap("n", "<space>f", "<cmd>lua vim.lsp.buf.formatting()<CR>", opts)
   end
 
-  local cmp = require 'cmp'
-
-  cmp.setup {
-    snippet = {
-      -- REQUIRED - you must specify a snippet engine
-      expand = function(args)
-        require('luasnip').lsp_expand(args.body) -- For `luasnip` users.
-      end,
-    },
-    mapping = cmp.mapping.preset.insert({
-      ['<C-Space>'] = cmp.mapping.complete(),
-      ['<C-e>'] = cmp.mapping.close(),
-      ['<CR>'] = cmp.mapping.confirm({ select = true }), -- Accept currently selected item. Set `select` to `false` to only confirm explicitly selected items.
-    }),
-    sources = cmp.config.sources({
-      { name = 'nvim_lsp', group_index = 1 },
-      { name = 'buffer', keyword_length = 4, group_index = 2 },
-    }),
-    formatting = {
-      format = function(entry, vim_item)
-        local menu_source = {
-          nvim_lsp = '[LSP]',
-          buffer = '[BUF]',
-        }
-        vim_item.menu = menu_source[entry.source.name]
-        return vim_item
-      end,
-    },
-  }
-
-  -- Autocomplete searches
-  cmp.setup.cmdline('/', {
-    mapping = cmp.mapping.preset.cmdline(),
-    sources = {
-      { name = 'buffer' },
-    }
-  })
-
   -- Wire up with LSP
   local capabilities = require('cmp_nvim_lsp').default_capabilities(vim.lsp.protocol.make_client_capabilities())
 
-  -- Use a loop to conveniently call 'setup' on multiple servers and
-  -- map buffer local keybindings when the language server attaches
-  local servers = { "solargraph" }
-  for _, lsp in ipairs(servers) do
-    nvim_lsp[lsp].setup {
-      on_attach = on_attach,
-      capabilities = capabilities,
-      flags = {
-        debounce_text_changes = 150,
+  nvim_lsp.solargraph.setup {
+    cmd = { 'bundle', 'exec', 'solargraph', 'stdio'},
+    settings = {
+      solargraph = {
+        diagnostics = true,
+        completion = true
       }
+    },
+    on_attach = on_attach,
+    capabilities = capabilities,
+    flags = {
+      debounce_text_changes = 150,
     }
-  end
+  }
+
+
 end
 
 return {

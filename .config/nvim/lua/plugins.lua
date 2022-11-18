@@ -30,19 +30,13 @@ local function setup()
 
     use { 'gpanders/editorconfig.nvim' }
 
-    use { 'neovim/nvim-lspconfig' }     -- enable LSP
-    use { 'hrsh7th/nvim-cmp' }          -- Autocompletion plugin
-    use { 'hrsh7th/cmp-nvim-lsp' }      -- LSP source for nvim-cmp
-    use { 'hrsh7th/cmp-buffer' }        -- Buffer source for nvim-cmp
-    use { 'L3MON4D3/LuaSnip' }          -- nvim-cmp needs a snippet engine
-    use { 'saadparwaiz1/cmp_luasnip' }  -- nvim-cmp needs a snippet engine (dep)
-    use { 'folke/neodev.nvim' }
+    -- Autocompletion plugin
+    use { 'hrsh7th/nvim-cmp', requires = { 'hrsh7th/cmp-nvim-lsp', 'hrsh7th/cmp-buffer', 'L3MON4D3/LuaSnip', 'saadparwaiz1/cmp_luasnip', 'rafamadriz/friendly-snippets' } }
+    require('plugins/cmp').setup()
+
+    -- enable LSP
+    use { 'neovim/nvim-lspconfig' }
     require('plugins/lsp-config').setup()
-
-    use { "williamboman/mason.nvim", "williamboman/mason-lspconfig.nvim", }
-    require("mason").setup()
-    require("mason-lspconfig").setup()
-
 
     use 'vim-ruby/vim-ruby'
     use 'tpope/vim-rails'
