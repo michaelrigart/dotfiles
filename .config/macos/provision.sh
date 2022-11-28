@@ -26,6 +26,7 @@ declare -a cliApps=(
   'neovim'                # Drop-in replacement for Vim
   'pinentry-mac'
   # 'the_silver_searcher'   # A code-searching tool similar to ack, but faster ag command used in Vim / CLI
+  'starship'
   'tmux'
   'vcsh'                  # config manager based on Git
   'zsh'                   # Zsh is a shell designed for interactive use, although it is also a powerful scripting language.
@@ -156,17 +157,6 @@ if [ -d "${XDG_DATA_HOME}/oh-my-zsh" ]; then
 else
   echo ' ---- install oh-my-zsh'
   sh -c "$(curl -fsSL https://raw.githubusercontent.com/robbyrussell/oh-my-zsh/master/tools/install.sh)"
-fi
-
-echo '========== Installing powerlevel10 theme =========='
-if [ -d "${ZSH}/custom/themes/powerlevel10k" ]; then
-  echo ' ---- update powerlevel10k theme'
-  cd "${ZSH}/custom/themes/powerlevel10k"
-  git pull
-  cd $HOME
-else
-  echo ' ---- install powerlevel10k theme'
-  git clone https://github.com/romkatv/powerlevel10k.git "${ZSH}/custom/themes/powerlevel10k"
 fi
 
 echo '========== Installing zsh-syntax-highlighting =========='
