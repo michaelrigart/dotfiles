@@ -2,11 +2,13 @@ format = "$all"
 
 [username]
 show_always = true
+style_user = "#719cd6"
+style_root = "#c94f6d"
 format = '[$user]($style)'
 
 [hostname]
 ssh_only = false
-format = "[$ssh_symbol](bold blue)@[$hostname](bold red) "
+format = "[$ssh_symbol](bold blue)@[$hostname](bold #84cee4) "
 disabled = false
 
 [directory]
