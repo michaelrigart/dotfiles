@@ -4,7 +4,9 @@
 !/.config/alacritty/alacritty.yml
 !/.config/asdf
 !/.config/asdf/asdfrc
-!/.config/asdf/tool-versions
+!/.config/asdf/default-gems
+!/.config/asdf/default-python-packages
+!/.tool-versions
 !/.config/git
 !/.config/git/config
 !/.config/git/gitignore_global
@@ -49,8 +51,6 @@
 !/.config/zsh/config
 !/.config/zsh/gpg
 !/.config/zsh/zshenv
-!/.default-gems
-!/.default-python-packages
 !/.editorconfig
 !/.gemrc
 !/.gitignore.d
