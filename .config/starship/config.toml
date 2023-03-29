@@ -1,3 +1,5 @@
+command_timeout = 700
+
 format = "$all"
 
 [username]
