@@ -5,8 +5,14 @@ if [ $(uname -m) = "arm64" ]; then
 elif [ $(uname -m) = "x86_64" ]; then
   eval "$(/usr/local/bin/brew shellenv)"
 fi
+
 # Set ZSH default completions
-fpath=(/opt/homebrew/share/zsh-completions $fpath)
+if type brew &>/dev/null; then
+  FPATH=$(brew --prefix)/share/zsh-completions:$FPATH
+
+  autoload -Uz compinit
+  compinit
+fi
 
 # Set name of the theme to load --- if set to "random", it will
 # load a random theme each time oh-my-zsh is loaded, in which case,
