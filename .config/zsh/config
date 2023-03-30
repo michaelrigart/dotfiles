@@ -1,4 +1,6 @@
 #!/usr/bin/env zsh
+ssh-add --apple-load-keychain &> /dev/null
+
 
 if [ $(uname -m) = "arm64" ]; then
   eval "$(/opt/homebrew/bin/brew shellenv)"
