@@ -62,3 +62,7 @@ export GEM_SPEC_CACHE="$XDG_CACHE_HOME/gem/specs"
 
 # Starship config location
 export STARSHIP_CONFIG=$XDG_CONFIG_HOME/starship/config.toml
+
+# AWS CLI settings
+export AWS_CONFIG_FILE=$XDG_CONFIG_HOME/aws/config
+export AWS_SHARED_CREDENTIALS_FILE=$XDG_CONFIG_HOME/aws/credentials
