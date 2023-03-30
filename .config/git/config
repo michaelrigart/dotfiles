@@ -1,7 +1,7 @@
 [user]
     name = Michaël Rigart
     email = michael@netronix.be
-    signingkey = ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAj8RUp9U790WMjDHLRk2BFJ5+RGKJe+6czGmFuL0VJx
+    signingkey = /Users/michael/.ssh/michael.pub
     #signingkey = 6A48E395326ED58A
 [core]
     editor = vim
