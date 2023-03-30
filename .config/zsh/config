@@ -1,5 +1,5 @@
 #!/usr/bin/env zsh
-ssh-add --apple-load-keychain &> /dev/null
+(ssh-add --apple-load-keychain > /dev/null 2>&1 &)
 
 
 if [ $(uname -m) = "arm64" ]; then
