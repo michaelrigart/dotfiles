@@ -13,12 +13,6 @@
 !/.config/git/gitk
 !/.config/git/templates
 !/.config/git/templates/gitmessage
-!/.config/git/templates/hooks
-!/.config/git/templates/hooks/ctags
-!/.config/git/templates/hooks/post-checkout
-!/.config/git/templates/hooks/post-commit
-!/.config/git/templates/hooks/post-merge
-!/.config/git/templates/hooks/post-rewrite
 !/.config/kitty
 !/.config/kitty/kitty.conf
 !/.config/macos
