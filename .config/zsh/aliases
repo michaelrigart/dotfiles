@@ -10,7 +10,7 @@ alias reload="source $HOME/.zshrc"
 alias flush-dns='sudo killall -HUP mDNSResponder'
 
 # Truncate Rails logs
-alias truncatelogs='find ~/Sites -type f -name "*.log" -exec truncate -s 0 {} +'
+alias truncatelogs='find ~/Documents/Code -type f -name "*.log" -exec truncate -s 0 {} +'
 
 # Alias vi/vim to neovim
 alias vi='nvim'
