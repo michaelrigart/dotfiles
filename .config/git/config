@@ -43,7 +43,6 @@
     gnc = goodness --cached
     fa = fetch --all
     pom = push origin master
-	ctags = !.git/hooks/ctags
 [format]
     pretty=format:%C(yellow)%h%Creset -%C(red)%d%Creset %s %Cgreen(%ar) %C(bold blue)<%an>%Creset
 [merge]
