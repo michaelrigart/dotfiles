@@ -14,7 +14,7 @@ else
 fi
 
 declare -a cliApps=(
-  # 'ansible'               # Ansible is a radically simple IT automation platform that makes your applications and systems easier to deploy.
+  'ansible'               # Ansible is a radically simple IT automation platform that makes your applications and systems easier to deploy.
   'asdf'                  # Extendable version manager with support for Ruby, Node.js, Elixir, Erlang & more
   'coreutils'
   'fzf'                   # A command-line fuzzy finder
@@ -55,7 +55,7 @@ brew tap homebrew/cask-fonts
 # endpoint security vpn
 declare -a guiApps=(
   '1password'                # 1Password password manager
-  # 'adobe-acrobat-reader'
+  'adobe-acrobat-reader'
   'alacritty'
   'alfred'
 # 'discord'
@@ -83,7 +83,8 @@ declare -a guiApps=(
   'onlyoffice'
   # 'pocket-casts'
   'postman'                  # Postman for API development
- # 'protonvpn'
+  'protonvpn'
+  'readwise-ibooks'
   'rectangle'		     # Move and resize windows on macOS with keyboard shortcuts and snap areas
   'signal'                   # secure messing app
   # 'skype'                    # Still used a lot for conf-calls
