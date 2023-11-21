@@ -87,3 +87,4 @@ HISTFILE="$XDG_CACHE_HOME/zsh/zsh_history"
 # Add wisely, as too many plugins slow down shell startup.
 plugins=(brew docker gem git yarn asdf zsh-syntax-highlighting)
 
+eval "$(direnv hook zsh)"
