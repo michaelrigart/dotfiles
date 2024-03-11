@@ -1,7 +1,7 @@
 *
 !/.config
 !/.config/alacritty
-!/.config/alacritty/alacritty.yml
+!/.config/alacritty/alacritty.toml
 !/.config/asdf
 !/.config/asdf/asdfrc
 !/.config/asdf/default-gems
