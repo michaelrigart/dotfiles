@@ -35,6 +35,7 @@
 !/.config/nvim/plugins/nvim-treesitter.lua
 !/.config/nvim/plugins/nvim-treesitter-endwise.lua
 !/.config/nvim/plugins/telescope.lua
+!/.config/nvim/plugins/tokyonight.lua
 !/.tmux.conf
 !/.config/starship
 !/.config/starship/config.toml
