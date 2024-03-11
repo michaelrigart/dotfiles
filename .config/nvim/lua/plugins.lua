@@ -7,19 +7,21 @@ local function setup()
   packer.startup(function(use)
     use { 'wbthomason/packer.nvim' }
 
-    use { 'EdenEast/nightfox.nvim' }
-    require('plugins/nightfox').setup()
+    -- use { 'EdenEast/nightfox.nvim' }
+    -- require('plugins/nightfox').setup()
+    use { 'folke/tokyonight.nvim' }
+    require('plugins/tokyonight').setup()
 
-    use { 'nvim-lualine/lualine.nvim', requires = {'kyazdani42/nvim-web-devicons' } }
+    use { 'nvim-lualine/lualine.nvim', requires = {'nvim-tree/nvim-web-devicons' } }
     require('plugins/lualine').setup()
 
     use { 'akinsho/bufferline.nvim', requires = { 'nvim-tree/nvim-web-devicons' } }
     require('plugins/bufferline').setup()
 
-    use { 'kyazdani42/nvim-tree.lua', requires = { 'kyazdani42/nvim-web-devicons' } }
+    use { 'nvim-tree/nvim-tree.lua', requires = { 'nvim-tree/nvim-web-devicons' } }
     require('plugins/nvim-tree').setup()
 
-    use { 'nvim-telescope/telescope.nvim', requires = { 'nvim-lua/plenary.nvim', 'kyazdani42/nvim-web-devicons', { 'nvim-telescope/telescope-fzf-native.nvim', run = 'make' } } }
+    use { 'nvim-telescope/telescope.nvim', requires = { 'nvim-lua/plenary.nvim', 'nvim-tree/nvim-web-devicons', { 'nvim-telescope/telescope-fzf-native.nvim', run = 'make' } } }
     require('plugins/telescope').setup()
 
     use { 'nvim-treesitter/nvim-treesitter' }
