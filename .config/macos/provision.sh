@@ -14,6 +14,7 @@ else
 fi
 
 declare -a cliApps=(
+  'asitop'
   'ansible'               # Ansible is a radically simple IT automation platform that makes your applications and systems easier to deploy.
   'asdf'                  # Extendable version manager with support for Ruby, Node.js, Elixir, Erlang & more
   'coreutils'
@@ -21,7 +22,6 @@ declare -a cliApps=(
   'git'                   # update system git with latest version
   'git-flow-avh'              # Tool for gitflow branching model
   'gnupg'
-# 'htop'                  # htop is an interactive text-mode process viewer for Unix systems. It aims to be a better 'top'.
   'libpq'                 # programming interface for postgresql
   'neovim'                # Drop-in replacement for Vim
   'pinentry-mac'
