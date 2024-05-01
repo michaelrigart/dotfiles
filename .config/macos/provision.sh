@@ -14,6 +14,7 @@ else
 fi
 
 declare -a cliApps=(
+  '1password-cli'
   'asitop'
   'ansible'               # Ansible is a radically simple IT automation platform that makes your applications and systems easier to deploy.
   'asdf'                  # Extendable version manager with support for Ruby, Node.js, Elixir, Erlang & more
