@@ -55,6 +55,7 @@
 !/.local/bin
 !/.local/bin/app-cleaner
 !/.zshrc
+!/.kube/kubie.yml
 !/Library
 !/Library/LaunchAgents
 !/Library/LaunchAgents/setenv.gnupghome.plist
