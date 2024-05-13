@@ -68,6 +68,7 @@ declare -a guiApps=(
   'font-jetbrains-mono-nerd-font'  # Currently using this patched font in vim. Includes icons
 # 'geekbench'
   'google-chrome'
+  'google-cloud-sdk'
   'grammarly'
   'jetbrains-toolbox'        # Currently still using IntelliJ
 #  'kap'
