@@ -58,3 +58,4 @@
 !/Library
 !/Library/LaunchAgents
 !/Library/LaunchAgents/setenv.gnupghome.plist
+!/.warp/themes
