@@ -81,7 +81,7 @@ declare -a guiApps=(
   'notion'
   'obs'
   'onedrive'
-  'onlyoffice'
+  # 'onlyoffice'
   # 'pocket-casts'
   'postman'                  # Postman for API development
   'protonvpn'
