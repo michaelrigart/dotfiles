@@ -1,0 +1,19 @@
+require "irb/kit"
+
+IRB.conf[:SAVE_HISTORY] = 1000
+IRB.conf[:HISTORY_FILE] = "#{Dir.home}/.cache/irb/irb_history"
+
+
+
+IRB::Kit.register_helpers :all
+
+IRB.conf[:PROMPT][:TEST] = {
+  PROMPT_I: "[#{IRB::Kit.prompt}]> ",
+  PROMPT_N: "[#{IRB::Kit.prompt}]| ",
+  PROMPT_C: "[#{IRB::Kit.prompt}]| ",
+  PROMPT_S: "[#{IRB::Kit.prompt}]%l ",
+  RETURN: "=> %s\n"
+}
+
+IRB.conf[:PROMPT_MODE] = :TEST
+

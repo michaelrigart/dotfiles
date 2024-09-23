@@ -1,0 +1,67 @@
+#!/usr/bin/env zsh
+
+# Set XDG Base Directory Specification environment variables
+test "$XDG_BIN_HOME"    || export XDG_BIN_HOME="$HOME/.local/bin"
+test "$XDG_CACHE_HOME"  || export XDG_CACHE_HOME="$HOME/.cache"
+test "$XDG_CONFIG_HOME" || export XDG_CONFIG_HOME="$HOME/.config"
+test "$XDG_DATA_HOME"   || export XDG_DATA_HOME="$HOME/.local/share"
+test "$XDG_LIB_HOME"    || export XDG_LIB_HOME="$HOME/.local/lib"
+
+# Set ARCHFLAGS to force target builds
+export ARCHFLAGS="-arch $(uname -m)"
+
+# Set $PATH environment variable
+export PATH=$XDG_BIN_HOME:$PATH
+export PATH="${KREW_ROOT:-$HOME/.krew}/bin:$PATH"
+
+# Homebrew configuration
+export HOMEBREW_PREFIX=$(brew --prefix)
+export HOMEBREW_NO_ANALYTICS=1
+export HOMEBREW_BUNDLE_FILE="$XDG_CONFIG_HOME/homebrew/Brewfile"
+
+export TERM="xterm-256color"
+
+# Set ZSH comdump file
+export ZSH_COMPDUMP="$XDG_CACHE_HOME/zsh/zcompdump-${HOST}-${ZSH_VERSION}"
+
+# Path to oh-my-zsh installation.
+export ZSH="$XDG_DATA_HOME/oh-my-zsh"
+
+# Set language environment
+export LANG=en_US.UTF-8
+export LC_CTYPE=en_US.UTF-8
+export LC_ALL=en_US.UTF-8
+
+# Preferred editor for local and remote sessions
+if [[ -n $SSH_CONNECTION ]]; then
+  export EDITOR='vim'
+else
+  export EDITOR='nvim'
+fi
+
+# Bundler config vars
+export BUNDLE_USER_CACHE="$XDG_CACHE_HOME/bundler/cache"
+export BUNDLE_USER_CONFIG="$XDG_CONFIG_HOME/bundler/config"
+export BUNDLE_USER_PLUGIN="$XDG_CACHE_HOME/bundler/plugin"
+
+# Docker config folder location
+export DOCKER_CONFIG="$XDG_CONFIG_HOME/docker"
+
+# ASDF configuration
+export ASDF_CONFIG_FILE="$XDG_CONFIG_HOME/asdf/asdfrc"
+export ASDF_DIR="$XDG_CONFIG_HOME/asdf"
+export ASDF_DATA_DIR="$XDG_DATA_HOME/asdf"
+export ASDF_GEM_DEFAULT_PACKAGES_FILE=${XDG_CONFIG_HOME}/asdf/default-gems
+export ASDF_PYTHON_DEFAULT_PACKAGES_FILE=${XDG_CONFIG_HOME}/asdf/default-python-packages
+
+# GEMRC file location
+export GEMRC="$XDG_CONFIG_HOME/gem/config"
+export GEM_SPEC_CACHE="$XDG_CACHE_HOME/gem/specs"
+
+# Starship config location
+export STARSHIP_CONFIG=$XDG_CONFIG_HOME/starship/config.toml
+
+# Ruby jemalloc
+export LDFLAGS="-L$HOMEBREW_PREFIX/opt/jemalloc/lib"
+export CPPFLAGS="-I$HOMEBREW_PREFIX/opt/jemalloc/include"
+export RUBY_CONFIGURE_OPTS="--with-jemalloc=$(brew --prefix jemalloc)"
