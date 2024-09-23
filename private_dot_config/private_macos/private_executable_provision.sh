@@ -21,6 +21,7 @@ fi
 echo '========== Install needed software =========='
 curl -o ~/Downloads/Brewfile https://raw.githubusercontent.com/michaelrigart/dotfiles/refs/heads/main/private_dot_config/homebrew/Brewfile
 brew bundle install --file ~/Downloads/Brewfile
+rm ~/Downloads/Brewfile
 
 echo '========== Set default shell to zsh =========='
 sudo /usr/bin/env zsh -c 'grep -qxF ${HOMEBREW_PREFIX}/bin/zsh /etc/shells || echo ${HOMEBREW_PREFIX}/bin/zsh >> /etc/shells'
