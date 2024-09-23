@@ -19,7 +19,7 @@ else
 fi
 
 echo '========== Install needed software =========='
-curl -o ~/Downloads/Brewfile https://github.com/michaelrigart/dotfiles/.config/homebrew/Brewfile
+curl -o ~/Downloads/Brewfile https://raw.githubusercontent.com/michaelrigart/dotfiles/refs/heads/main/private_dot_config/homebrew/Brewfile
 brew bundle install --file ~~/Downloads/Brewfile
 
 echo '========== Set default shell to zsh =========='
