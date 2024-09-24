@@ -71,5 +71,5 @@ HISTFILE="$XDG_CACHE_HOME/zsh/zsh_history"
 # Custom plugins may be added to ~/.oh-my-zsh/custom/plugins/
 # Example format: plugins=(rails git textmate ruby lighthouse)
 # Add wisely, as too many plugins slow down shell startup.
-plugins=(1password ansible asdf brew bundler direnv docker fzf gem git python rails rake ruby ssh sudo zsh-syntax-highlighting)
+plugins=(1password ansible asdf brew bundler direnv docker fzf gem git python rails rake ruby ssh sudo)
 
