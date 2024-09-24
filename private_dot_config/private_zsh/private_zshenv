@@ -13,9 +13,17 @@ export ARCHFLAGS="-arch $(uname -m)"
 # Set $PATH environment variable
 export PATH=$XDG_BIN_HOME:$PATH
 export PATH="${KREW_ROOT:-$HOME/.krew}/bin:$PATH"
+export PATH="$PATH:${HOME}/Library/Application Support/JetBrains/Toolbox/scripts"
 
 # Homebrew configuration
+# Homebrew configuration
+if [[ $OSTYPE == darwin* && $CPUTYPE == arm64 ]]; then
+  eval "$(/opt/homebrew/bin/brew shellenv)"
+else
+  eval "$(/usr/local/Homebrew/bin/brew shellenv)"
+fi
 export HOMEBREW_PREFIX=$(brew --prefix)
+export FPATH="$HOMEBREW_PREFIX/share/zsh/site-functions:${FPATH}"
 export HOMEBREW_NO_ANALYTICS=1
 export HOMEBREW_BUNDLE_FILE="$XDG_CONFIG_HOME/homebrew/Brewfile"
 
