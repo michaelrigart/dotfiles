@@ -1,4 +1,5 @@
 #!/usr/bin/env zsh
+# Install by running /bin/zsh -c "$(curl -fsSL https://raw.githubusercontent.com/michaelrigart/dotfiles/refs/heads/main/private_dot_config/private_macos/private_executable_provision.sh)"
 
 RUBY_VERSION=3.3.5
 PYTHON_VERSION=3.12.6
@@ -13,6 +14,8 @@ done
 if ! [ -x "$(command -v brew)" ]; then
   echo '========== Installing Homebrew =========='
   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+  (echo; echo 'eval "$(/opt/homebrew/bin/brew shellenv)"') >> /Users/michael/.zprofile
+  eval "$(/opt/homebrew/bin/brew shellenv)"
 else
   echo "========== Update Homebrew ========="
   brew update
@@ -29,6 +32,9 @@ chsh -s $HOMEBREW_PREFIX/bin/zsh
 
 echo '========== Cleanup brew installation =========='
 brew cleanup
+
+echo '========== Install other dependencies =========='
+gcloud components install gke-gcloud-auth-plugin
 
 # Need to login into some apps in order to install checkout sdots before continuing
 # keybase / dropbox / 1password
@@ -47,6 +53,11 @@ if [ -d "${HOME}/.local/share/chezmoi" ]; then
 else
   echo ' ---- install dotfiles'
   chezmoi init --apply git@github.com:michaelrigart/dotfiles.git
+fi
+
+if [ -f "${HOME}/.zprofile" ]; then
+  rm "${HOME}/.zprofile"
+  source "${HOME}/.zshrc"
 fi
 
 echo '========== Installing oh-my-zsh =========='
@@ -84,3 +95,23 @@ asdf global python $PYTHON_VERSION
 
 echo '========== Create cache directories =========='
 mkdir -p "${XDG_CACHE_HOME}/irb"
+
+echo '========== Cleanup ==========' 
+if [ -f "${HOME}/.zprofile" ]; then
+  rm "${HOME}/.zprofile"
+  source "${HOME}/.zshrc"
+fi
+
+if [ -f "${HOME}/.zprofile.bak" ]; then
+  rm "${HOME}/.zprofile.bak"
+fi
+
+if [ -f "${HOME}/.zshrc.pre-oh-my-zsh" ]; then
+  source "${HOME}/.zshrc.pre-oh-my-zsh"
+fi
+
+
+
+
+rm .zshrc.pre-oh-my-zsh
+
