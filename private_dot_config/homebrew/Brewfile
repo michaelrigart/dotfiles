@@ -2,7 +2,6 @@
 # tap repositories and their packages
 
 brew "ansible"
-brew "asdf"
 brew "asitop"
 brew "azure-cli"
 brew "chezmoi"
@@ -17,6 +16,7 @@ brew "krew"
 brew "kubie"
 brew "Azure/kubelogin/kubelogin"
 brew "libpq"
+brew "mise"
 brew "neovim"
 brew "starship"
 brew "teleport"

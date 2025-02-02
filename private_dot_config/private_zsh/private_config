@@ -10,6 +10,9 @@ eval "$(starship init zsh)"
 # Hook direnv into the shell
 eval "$(direnv hook zsh)"
 
+# Activate mise
+eval "$(mise activate zsh)"
+
 # Set list of themes to pick from when loading at random
 # Setting this variable when ZSH_THEME=random will cause zsh to load
 # a theme from this variable instead of looking in ~/.oh-my-zsh/themes/

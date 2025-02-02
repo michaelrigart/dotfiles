@@ -15,7 +15,7 @@ after-login-command = []
 after-startup-command = []
 
 # Start AeroSpace at login
-start-at-login = true
+start-at-login = false
 
 # Normalizations. See: https://nikitabobko.github.io/AeroSpace/guide#normalization
 enable-normalization-flatten-containers = true
@@ -120,21 +120,21 @@ alt-8 = 'workspace 8'
 alt-9 = 'workspace 9'
 alt-a = 'workspace A' # In your config, you can drop workspace bindings that you don't need
 alt-b = 'workspace B'
-alt-c = 'workspace C' # Coding
+alt-c = 'workspace C' # Chat
 alt-d = 'workspace D'
-alt-e = 'workspace E'
+#alt-e = 'workspace E'
 alt-f = 'workspace F'
 alt-g = 'workspace G'
-alt-i = 'workspace I'
+alt-i = 'workspace I' # IDE 
 alt-m = 'workspace M' # Mail
 alt-n = 'workspace N' # Notes
 alt-o = 'workspace O'
-alt-p = 'workspace P'
+alt-p = 'workspace P' # Projects
 alt-q = 'workspace Q'
 alt-r = 'workspace R'
 alt-s = 'workspace S'
-alt-t = 'workspace T' 
-alt-u = 'workspace U'
+alt-t = 'workspace T' # Terminal
+#alt-u = 'workspace U'
 alt-v = 'workspace V'
 alt-w = 'workspace W'
 alt-x = 'workspace X'
@@ -185,20 +185,32 @@ alt-shift-tab = 'move-workspace-to-monitor --wrap-around next'
 alt-shift-semicolon = 'mode service'
 
 [[on-window-detected]]
+if.app-id = 'org.whispersystems.signal-desktop'
+run = ["move-node-to-workspace C"]
+
+[[on-window-detected]]
+if.app-id = 'com.microsoft.teams2'
+run = ["move-node-to-workspace C"]
+
+[[on-window-detected]]
 if.app-id = 'com.jetbrains.rubymine'
-run = "move-node-to-workspace C"
+run = "move-node-to-workspace I"
 
 [[on-window-detected]]
 if.app-id = 'com.jetbrains.pycharm'
-run = "move-node-to-workspace C"
+run = "move-node-to-workspace I"
 
 [[on-window-detected]]
-if.app-id = 'com.microsoft.Outlook'
-run = "move-node-to-workspace M"
+if.app-id = 'com.jetbrains.intellij'
+run = "move-node-to-workspace I"
 
 [[on-window-detected]]
 if.app-id = 'ch.protonmail.desktop'
-run = "move-node-to-workspace M"
+run = ["move-node-to-workspace M"]
+
+[[on-window-detected]]
+if.app-id = 'com.microsoft.Outlook'
+run = ["move-node-to-workspace M"]
 
 [[on-window-detected]]
 if.app-id = 'com.apple.Notes'
@@ -219,6 +231,10 @@ run = "move-node-to-workspace P"
 [[on-window-detected]]
 if.app-id = 'com.clickup.desktop-app'
 run = "move-node-to-workspace P"
+
+[[on-window-detected]]
+if.app-id = 'dev.warp.Warp-Stable'
+run = "move-node-to-workspace T"
 
 [[on-window-detected]]
 if.workspace = "1"

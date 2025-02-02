@@ -1,2 +1,0 @@
-# Let plugins handle versions files used by other version managers like .ruby-version
-legacy_version_file=false
