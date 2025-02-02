@@ -1,5 +1,5 @@
 ---
 BUNDLE_GITHUB__COM: "{{ onepasswordRead "op://Private/GitHub Personal Access Token/token" }}:x-oauth-basic"
 BUNDLE_GITLAB__COM: "oauth2:{{ onepasswordRead "op://Private/GitLab Personal Access Token/token" }}"
-BUNDLE_BUILD__PG: "--with-opt-dir=$HOMEBREW_PREFIX/opt/libpq"
+BUNDLE_BUILD__PG: "--with-opt-dir=/opt/homebrew/opt/libpq"
 BUNDLE_JOBS: "8"
