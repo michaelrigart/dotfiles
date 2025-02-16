@@ -72,31 +72,19 @@ fi
 echo '========== Resource zsh profile =========='
 source $HOME/.zshrc
 
-echo '========== Add ASDF Ruby plugin =========='
-asdf plugin-add ruby
-
 echo "========== Install Ruby $RUBY_VERSION =========="
-asdf install ruby $RUBY_VERSION
-
-echo "========== Set default ruby version to $RUBY_VERSION =========="
-asdf global ruby $RUBY_VERSION
+mise use -g ruby@$RUBY_VERSION
 
 echo '========== Update RubyGems =========='
 gem update --system
 
-echo '========== Add ASDF Python plugin =========='
-asdf plugin-add python
-
 echo "========== Install Python $PYTHON_VERSION =========="
-asdf install python $PYTHON_VERSION
-
-echo "========== Set default python version to $PYTHON_VERSION =========="
-asdf global python $PYTHON_VERSION
+mise use -g python@$PYTHON_VERSION
 
 echo '========== Create cache directories =========='
 mkdir -p "${XDG_CACHE_HOME}/irb"
 
-echo '========== Cleanup ==========' 
+echo '========== Cleanup =========='
 if [ -f "${HOME}/.zprofile" ]; then
   rm "${HOME}/.zprofile"
   source "${HOME}/.zshrc"
