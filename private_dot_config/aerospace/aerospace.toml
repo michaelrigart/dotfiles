@@ -237,6 +237,10 @@ if.app-id = 'dev.warp.Warp-Stable'
 run = "move-node-to-workspace T"
 
 [[on-window-detected]]
+if.app-id = 'org.alacritty'
+run = "move-node-to-workspace T"
+
+[[on-window-detected]]
 if.workspace = "1"
 run = "layout floating"
 
