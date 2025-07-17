@@ -1,7 +1,7 @@
 #!/usr/bin/env zsh
 # Install by running /bin/zsh -c "$(curl -fsSL https://raw.githubusercontent.com/michaelrigart/dotfiles/refs/heads/main/private_dot_config/private_macos/private_executable_provision.sh)"
 
-RUBY_VERSION=3.4.4
+RUBY_VERSION=3.4.5
 PYTHON_VERSION=3.12.6
 
 while read "REPLY?Ready preparing for dotfile installation? .ssh keys must be present! [y]es|[n]o: " && [[ $REPLY != 'y' ]]; do
