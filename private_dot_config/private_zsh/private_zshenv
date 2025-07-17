@@ -14,8 +14,8 @@ export ARCHFLAGS="-arch $(uname -m)"
 export PATH=$XDG_BIN_HOME:$PATH
 export PATH="${KREW_ROOT:-$HOME/.krew}/bin:$PATH"
 export PATH="$PATH:${HOME}/Library/Application Support/JetBrains/Toolbox/scripts"
+export PATH="$PATH:/Users/michael/.lmstudio/bin"
 
-# Homebrew configuration
 # Homebrew configuration
 if [[ $OSTYPE == darwin* && $CPUTYPE == arm64 ]]; then
   eval "$(/opt/homebrew/bin/brew shellenv)"
