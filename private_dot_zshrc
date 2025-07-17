@@ -8,3 +8,5 @@ source "$HOMEBREW_PREFIX/share/zsh-syntax-highlighting/zsh-syntax-highlighting.z
 source "$HOME/.config/zsh/aliases"
 source "$HOME/.config/zsh/gcloud"
 
+# Run fastfetch when opening new shell
+fastfetch
