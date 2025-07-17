@@ -1,7 +1,7 @@
 #!/usr/bin/env zsh
 # Install by running /bin/zsh -c "$(curl -fsSL https://raw.githubusercontent.com/michaelrigart/dotfiles/refs/heads/main/private_dot_config/private_macos/private_executable_provision.sh)"
 
-RUBY_VERSION=3.4.2
+RUBY_VERSION=3.4.4
 PYTHON_VERSION=3.12.6
 
 while read "REPLY?Ready preparing for dotfile installation? .ssh keys must be present! [y]es|[n]o: " && [[ $REPLY != 'y' ]]; do
@@ -83,7 +83,6 @@ mise use -g python@$PYTHON_VERSION
 
 echo '========== Create cache directories =========='
 mkdir -p "${XDG_CACHE_HOME}/irb"
-mkdir -p "${XDG_CACHE_HOME}/zsh"
 
 echo '========== Cleanup =========='
 if [ -f "${HOME}/.zprofile" ]; then
@@ -102,4 +101,5 @@ fi
 
 
 
+rm .zshrc.pre-oh-my-zsh
 
