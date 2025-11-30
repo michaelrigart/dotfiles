@@ -1,0 +1,8 @@
+[tools]
+dotnet = "8"
+python = "3.13.7"
+ruby = "3.4.7"
+rust = "1.88.0"
+
+[settings]
+idiomatic_version_file_enable_tools = ["ruby"]

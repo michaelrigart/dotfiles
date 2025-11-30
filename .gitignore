@@ -1,0 +1,65 @@
+# Editor files
+*.swp
+*.swo
+*.swn
+*~
+.*.sw?
+*.bak
+*.tmp
+*.temp
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Vim
+[._]*.s[a-v][a-z]
+[._]*.sw[a-p]
+[._]s[a-rt-v][a-z]
+[._]ss[a-gi-z]
+[._]sw[a-p]
+Session.vim
+Sessionx.vim
+.netrwhist
+
+# IDE files
+.vscode/
+.idea/
+*.iml
+
+# Chezmoi working files
+*.actual
+*.expected
+*.diff
+
+# Sensitive files (extra safety layer)
+# Note: SSH keys and secrets should use templates with 1Password
+# but this prevents accidental commits of any credentials
+**/id_rsa
+**/id_ed25519
+**/id_ecdsa
+**/*.pem
+**/secrets.yml
+**/secrets.yaml
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env.template
+
+# Logs
+*.log
+
+# Backup files from editors
+*~
+\#*\#
+.\#*
+
+# Chezmoi state files (shouldn't be in source, but just in case)
+.chezmoidata.toml
+.chezmoidata.yaml
+.chezmoidata.json

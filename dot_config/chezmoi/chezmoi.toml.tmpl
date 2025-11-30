@@ -1,0 +1,55 @@
+{{- $name := "Michaël Rigart" -}}
+{{- $email := "michael@netronix.be" -}}
+{{- $hostname := output "scutil" "--get" "ComputerName" | trim -}}
+
+[edit]
+    command = "nvim"
+
+[diff]
+    command = "nvim"
+    args = ["-d"]
+    # Exclude certain paths from diffs
+    exclude = ["scripts"]
+
+[merge]
+    command = "nvim"
+    args = ["-d"]
+
+[data]
+    # User information
+    name = {{ $name | quote }}
+    email = {{ $email | quote }}
+    hostname = {{ $hostname | quote }}
+
+    # System information
+    is_darwin = {{ eq .chezmoi.os "darwin" }}
+    is_linux = {{ eq .chezmoi.os "linux" }}
+    is_arm = {{ eq .chezmoi.arch "arm64" }}
+
+    # XDG directories
+    xdg_config_home = "{{ .chezmoi.homeDir }}/.config"
+    xdg_data_home = "{{ .chezmoi.homeDir }}/.local/share"
+    xdg_cache_home = "{{ .chezmoi.homeDir }}/.cache"
+    xdg_state_home = "{{ .chezmoi.homeDir }}/.local/state"
+
+[git]
+    # Auto-commit and auto-push changes
+    autoCommit = false
+    autoPush = false
+
+[status]
+    # Exclude certain entries from status
+    exclude = ["scripts"]
+
+[template]
+    options = ["missingkey=error"]
+
+[update]
+    # Update configuration
+    command = "git"
+    args = ["pull", "--rebase"]
+
+# 1Password integration
+[onepassword]
+    # Use 1Password CLI for secrets
+    command = "op"

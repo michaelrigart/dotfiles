@@ -1,0 +1,36 @@
+# Chezmoi ignore file
+# Files and directories that should not be copied to the target directory
+
+# Documentation
+README.md
+claude.md
+
+# Version control
+.git
+.gitignore
+.gitattributes
+
+# Scripts directory (these are helpers, not dotfiles to install)
+.scripts/
+
+# Backgrounds directory (copied by configure.sh, not managed by chezmoi)
+.backgrounds/
+
+# Editor files
+*.swp
+*.swo
+*~
+.*.sw?
+.DS_Store
+
+# Chezmoi metadata files (already handled by chezmoi)
+.chezmoiignore
+.chezmoiremove
+.chezmoitemplates
+.chezmoiversion
+.chezmoiexternal*
+
+# Temporary files
+*.bak
+*.tmp
+*.temp

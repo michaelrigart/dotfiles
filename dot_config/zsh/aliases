@@ -1,0 +1,30 @@
+#!/usr/bin/env zsh
+
+# Show remote ip address
+alias remote-ip='dig txt +short o-o.myaddr.l.google.com @ns1.google.com'
+
+#Reload bash settings
+alias reload="source $HOME/.zshrc"
+
+# Flush DNS Cache
+alias flush-dns='sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder'
+
+# Truncate Rails logs
+alias truncate-logs='find ~/Code -type f -name "*.log" -exec truncate -s 0 {} +'
+
+# Alias vi/vim to neovim
+alias vi='nvim'
+alias vim='nvim'
+
+alias showFiles="defaults write com.apple.Finder AppleShowAllFiles true; killall Finder"
+alias hideFiles="defaults write com.apple.Finder AppleShowAllFiles false; killall Finder"
+
+# File system
+alias cd='z'
+alias ls='eza -lh --group-directories-first --icons=auto'
+alias lsa='ls -a'
+alias lt='eza --tree --level=2 --long --icons --git'
+alias lta='lt -a'
+
+# Start Cloud-code in Second Brain
+alias brain='cd /Users/michael/Library/Mobile\ Documents/iCloud\~md\~obsidian/Documents/MSB/ && claude'

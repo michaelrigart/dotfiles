@@ -1,0 +1,49 @@
+# Git attributes for chezmoi dotfiles repository
+
+# Auto-detect text files and normalize line endings to LF
+* text=auto eol=lf
+
+# Explicitly declare text files
+*.sh text eol=lf
+*.bash text eol=lf
+*.zsh text eol=lf
+*.fish text eol=lf
+*.conf text eol=lf
+*.config text eol=lf
+*.toml text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.json text eol=lf
+*.xml text eol=lf
+*.txt text eol=lf
+*.md text eol=lf
+*.tmpl text eol=lf
+
+# Scripts should always have LF endings (even on Windows)
+.scripts/* text eol=lf
+run_* text eol=lf
+*.tmpl text eol=lf
+
+# Binary files
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.tar binary
+*.gz binary
+*.bz2 binary
+*.7z binary
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary
+
+# Diff settings for specific file types
+*.tmpl diff=text
+*.toml diff=toml
+*.yaml diff=yaml
+*.yml diff=yaml
+*.json diff=json
