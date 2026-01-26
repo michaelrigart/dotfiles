@@ -1,0 +1,67 @@
+# Theme and Colors - Using Ghostty's built-in theme system
+
+# Font Configuration
+font-family = "JetBrains Mono"
+font-size = 13
+font-style = normal
+font-style-bold = bold
+font-style-italic = italic
+font-style-bold-italic = bold-italic
+
+
+# Theme and Colors
+theme = "tokyo-night-storm"
+background-opacity = 1
+background-blur = 0
+unfocused-split-opacity = 0.7
+
+
+# macOS specific
+macos-titlebar-style = tabs
+macos-option-as-alt = true
+macos-titlebar-proxy-icon = visible
+
+# Cursor
+cursor-style = block
+cursor-style-blink = false
+
+# Shell Integration
+shell-integration = detect
+shell-integration-features = cursor,sudo,title
+
+# Mouse
+mouse-hide-while-typing = true
+copy-on-select = clipboard
+
+# Scrollback
+scrollback-limit = 10000
+
+# Performance
+resize-overlay = never
+resize-overlay-position = center
+resize-overlay-duration = 0
+
+# URL Handling
+click-repeat-interval = 300
+
+# Window Management
+window-decoration = true
+window-theme = auto
+
+# Claude shift+enter
+keybind = shift+enter=text:\x1b\r
+
+# Navigate splits with Cmd+Arrow
+keybind = cmd+left=goto_split:left
+keybind = cmd+right=goto_split:right
+keybind = cmd+up=goto_split:top
+keybind = cmd+down=goto_split:bottom
+
+# Cmd+Plus/Minus for font size
+keybind = cmd+plus=increase_font_size:1
+keybind = cmd+minus=decrease_font_size:1
+keybind = cmd+0=reset_font_size
+
+# Search
+#keybind = cmd+f=search:Ghostty
+#keybind = shift+cmd+f=search:
