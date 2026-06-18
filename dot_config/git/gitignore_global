@@ -1,6 +1,6 @@
 # Compiled source #
 ###################
-*.com
+#*.com
 *.class
 *.dll
 *.exe
@@ -18,12 +18,12 @@
 *.jar
 *.rar
 *.tar
-#*.zip
+*.zip
 
 # Logs and databases #
 ######################
 *.log
-#*.sql
+*.sql
 *.sqlite
 *.sqlite3
 
@@ -40,7 +40,6 @@ Thumbs.db
 *.swp
 .idea
 *.iml
-.~*
 
 # Ruby & Rails files #
 ######################
@@ -56,3 +55,5 @@ test/dummy/tmp/
 # Ansible files #
 #################
 *.retry
+
+**/.claude/settings.local.json

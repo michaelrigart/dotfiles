@@ -13,8 +13,16 @@ eval "$(direnv hook zsh)"
 # Activate mise
 eval "$(mise activate zsh)"
 
-# enable zoxide
-eval "$(zoxide init zsh)"
+# enable zoxide — deferred so it initializes after oh-my-zsh installs its
+# chpwd hook (config is sourced before oh-my-zsh.sh in .zshrc); avoids the
+# "initialize zoxide at the end of your shell config" warning.
+autoload -Uz add-zsh-hook
+__init_zoxide() {
+  eval "$(zoxide init zsh)"
+  add-zsh-hook -d precmd __init_zoxide
+  unset -f __init_zoxide
+}
+add-zsh-hook precmd __init_zoxide
 
 
 # Set list of themes to pick from when loading at random

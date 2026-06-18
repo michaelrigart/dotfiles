@@ -20,7 +20,7 @@ alias showFiles="defaults write com.apple.Finder AppleShowAllFiles true; killall
 alias hideFiles="defaults write com.apple.Finder AppleShowAllFiles false; killall Finder"
 
 # File system
-alias cd='z'
+[[ -o interactive ]] && alias cd='z'
 alias ls='eza -lh --group-directories-first --icons=auto'
 alias lsa='ls -a'
 alias lt='eza --tree --level=2 --long --icons --git'
