@@ -9,6 +9,7 @@ k9s:
   noExitOnCtrlC: false
   portForwardAddress: localhost
   ui:
+    skin: tokyonight
     enableMouse: false
     headless: false
     logoless: false
