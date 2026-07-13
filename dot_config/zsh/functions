@@ -1,0 +1,95 @@
+#!/usr/bin/env zsh
+# Custom shell functions
+
+# op-edit — edit a 1Password-backed dotfile, then re-apply the chezmoi targets
+# that render from it.
+#
+# Some dotfiles keep their contents in a 1Password secure note instead of the
+# public dotfiles repo, rendered by chezmoi with:
+#     {{ onepasswordRead "op://<vault>/<item>/notes" }}
+# e.g. ~/.ssh/config.
+#
+# Usage:
+#   op-edit                  # list op-backed dotfiles (file ⇐ 1Password item)
+#   op-edit ~/.ssh/config    # by file path — resolves the note automatically
+#   op-edit "SSH config"     # or by 1Password item name
+#
+# The note is written to a private temp file (mode 600) while editing and passed
+# to `op item edit` as an argument (briefly visible via `ps`).
+op-edit() {
+  emulate -L zsh
+  local src; src="$(chezmoi source-path)" || return 1
+
+  # No argument: list op-backed dotfiles as "file ⇐ item".
+  if [[ -z "$1" ]]; then
+    print -r -- "op-edit <file|item> — 1Password-backed dotfiles:"
+    local f r i t
+    while IFS= read -r f; do
+      r="$(grep -m1 -oE 'op://[^"]+/notes' "$f" 2>/dev/null)" || continue
+      [[ -n "$r" ]] || continue
+      i="${${r#op://*/}%/notes}"
+      t="$(chezmoi target-path "$f" 2>/dev/null)"
+      printf '  %-30s ⇐  %s\n' "${t/#$HOME/~}" "$i"
+    done < <(grep -rlE 'op://[^"]+/notes' "$src" --include='*.tmpl' 2>/dev/null) | sort -u
+    return 0
+  fi
+
+  # Resolve the argument to an op reference: a managed file path, or an item name.
+  local arg="${1/#\~/$HOME}" srcfile ref
+  if srcfile="$(chezmoi source-path "$arg" 2>/dev/null)"; then
+    ref="$(grep -m1 -oE 'op://[^"]+' "$srcfile" 2>/dev/null)"
+    if [[ -z "$ref" ]]; then
+      print -ru2 -- "op-edit: '$1' is chezmoi-managed but not backed by a 1Password note."
+      return 1
+    fi
+  else
+    ref="op://Private/$1/notes"
+  fi
+
+  # Parse op://<vault>/<item>/<field>.
+  local rest="${ref#op://}"
+  local vault="${rest%%/*}"; rest="${rest#*/}"
+  local item="${rest%/*}" field="${rest##*/}"
+  if [[ "$field" != "notes" ]]; then
+    print -ru2 -- "op-edit: '$1' maps to op field '$field', not a note — edit it in 1Password directly."
+    return 1
+  fi
+
+  # Pull current note content into a private temp file.
+  local tmp; tmp="$(mktemp -t op-edit)" || return 1
+  if ! op read "$ref" >| "$tmp" 2>/dev/null; then
+    print -ru2 -- "op-edit: can't read $ref — does '$item' exist in '$vault'?"
+    rm -f "$tmp"; return 1
+  fi
+
+  # Edit; bail out if nothing changed.
+  local before; before="$(shasum "$tmp" | awk '{print $1}')"
+  "${EDITOR:-nvim}" "$tmp"
+  if [[ "$before" == "$(shasum "$tmp" | awk '{print $1}')" ]]; then
+    print -r -- "op-edit: no changes to '$item'."
+    rm -f "$tmp"; return 0
+  fi
+
+  # Push the edited content back to the note.
+  if ! op item edit "$item" --vault "$vault" "notesPlain=$(<"$tmp")" >/dev/null; then
+    print -ru2 -- "op-edit: failed to update '$item'."
+    rm -f "$tmp"; return 1
+  fi
+  rm -f "$tmp"
+
+  # Re-apply every chezmoi target that renders from this note.
+  local -a targets=()
+  local f t
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    t="$(chezmoi target-path "$f" 2>/dev/null)"
+    [[ -n "$t" ]] && targets+=("$t")
+  done < <(grep -rlF "op://$vault/$item/" "$src" --include='*.tmpl' 2>/dev/null)
+
+  if (( ${#targets} )); then
+    chezmoi apply "${targets[@]}" \
+      && print -r -- "✓ '$item' updated → applied: ${targets[*]/#$HOME/~}"
+  else
+    print -r -- "✓ '$item' updated."
+  fi
+}
