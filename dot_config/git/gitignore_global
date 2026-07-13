@@ -57,3 +57,5 @@ test/dummy/tmp/
 *.retry
 
 **/.claude/settings.local.json
+
+**/.claude/.cc-writes/

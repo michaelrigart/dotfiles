@@ -21,7 +21,7 @@ A modern, security-focused macOS development environment featuring:
 - 🔧 **XDG Base Directory** compliant configuration
 - 🛡️ **1Password integration** for SSH keys and secrets
 - ⚡ **Modern CLI tools** replacing traditional Unix utilities
-- 🎨 **Customized terminal** with Alacritty, Starship, and Zsh
+- 🎨 **Customized terminal** with Ghostty, Starship, and Zsh
 - 📦 **Automated setup** with a single command
 - 🔐 **Security hardened** macOS configuration
 
@@ -58,7 +58,7 @@ This will:
 
 - **Shell:** Zsh with Oh My Zsh framework
 - **Prompt:** Starship for a fast, informative prompt
-- **Terminal:** Alacritty GPU-accelerated terminal
+- **Terminal:** Ghostty GPU-accelerated terminal
 - **Editor:** Neovim with custom configuration
 - **Version Manager:** mise for development tools
 
@@ -199,7 +199,7 @@ cd $ZSH && git pull              # Update Oh My Zsh
 ├── .backgrounds/          # Desktop wallpapers
 ├── .scripts/              # Bootstrap and configuration scripts
 ├── dot_config/            # Application configs (~/.config)
-│   ├── alacritty/        # Terminal
+│   ├── ghostty/          # Terminal
 │   ├── git/              # Git configuration
 │   ├── homebrew/         # Brewfile
 │   ├── nvim/             # Neovim
