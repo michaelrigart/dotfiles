@@ -4,7 +4,7 @@
     signingkey = /Users/michael/.ssh/michael.pub
     #signingkey = 6A48E395326ED58A
 [core]
-    editor = vim
+    pager = delta
     excludesfile = ~/.config/git/gitignore_global
     filemode = true
 [color]
@@ -22,6 +22,11 @@
     added = green
     changed = yellow
     untracked = red
+[interactive]
+    diffFilter = delta --color-only
+[delta]
+    navigate = true
+    line-numbers = true
 [alias]
     st = status
     ci = commit
@@ -47,6 +52,7 @@
     pretty=format:%C(yellow)%h%Creset -%C(red)%d%Creset %s %Cgreen(%ar) %C(bold blue)<%an>%Creset
 [merge]
     tool = vimdiff
+    conflictStyle = zdiff3
 [diff "bin"]
     textconv = hexdump -v -C
 [commit]

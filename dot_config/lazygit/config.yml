@@ -1,0 +1,9 @@
+# lazygit — managed by chezmoi (dot_config/lazygit/config.yml → ~/.config/lazygit/config.yml).
+# XDG_CONFIG_HOME is set, so lazygit reads this path (not ~/Library/Application Support).
+#
+# Route lazygit's diffs through delta (unified — lazygit's panel is narrow; --paging=never
+# because lazygit does its own scrolling). Picks up [delta] settings from ~/.config/git/config.
+git:
+  paging:
+    colorArg: always
+    pager: delta --dark --paging=never
