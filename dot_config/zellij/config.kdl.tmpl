@@ -1,0 +1,77 @@
+// Zellij configuration — managed by chezmoi
+// (source: dot_config/zellij/config.kdl.tmpl → ~/.config/zellij/config.kdl)
+//
+// Keybinding model:
+//   Ctrl-h/j/k/l  → seamless navigation across Neovim splits AND Zellij panes
+//                   (vim-zellij-navigator plugin here + smart-splits.nvim in Neovim)
+//   Alt + <key>   → Zellij's own actions (tabs, zoom, panes, detach, scroll, quit)
+//   Everything else falls through to your shell / Neovim / fzf untouched.
+//
+// clear-defaults=true wipes Zellij's stock Ctrl leaders (Ctrl-p/n/h/t/s/o/b/g/q) that
+// would otherwise shadow shell readline + Neovim keys. We re-declare only what we use,
+// so the status bar advertises exactly these bindings. (Exact Alt letters for
+// new-pane/tab/detach are a stage-5 audit item; these are collision-free placeholders.)
+
+keybinds clear-defaults=true {
+    // Available in every mode except "locked".
+    shared_except "locked" {
+        // --- Seamless navigation (move_mod defaults to ctrl, so it's omitted).
+        //     h/l also hop to the adjacent tab when already at the edge.
+        bind "Ctrl h" {
+            MessagePlugin "file:{{ .chezmoi.homeDir }}/.config/zellij/plugins/vim-zellij-navigator.wasm" {
+                name "move_focus_or_tab"
+                payload "left"
+            }
+        }
+        bind "Ctrl j" {
+            MessagePlugin "file:{{ .chezmoi.homeDir }}/.config/zellij/plugins/vim-zellij-navigator.wasm" {
+                name "move_focus"
+                payload "down"
+            }
+        }
+        bind "Ctrl k" {
+            MessagePlugin "file:{{ .chezmoi.homeDir }}/.config/zellij/plugins/vim-zellij-navigator.wasm" {
+                name "move_focus"
+                payload "up"
+            }
+        }
+        bind "Ctrl l" {
+            MessagePlugin "file:{{ .chezmoi.homeDir }}/.config/zellij/plugins/vim-zellij-navigator.wasm" {
+                name "move_focus_or_tab"
+                payload "right"
+            }
+        }
+
+        // --- Tabs: jump directly by number.
+        bind "Alt 1" { GoToTab 1; }
+        bind "Alt 2" { GoToTab 2; }
+        bind "Alt 3" { GoToTab 3; }
+        bind "Alt 4" { GoToTab 4; }
+
+        // --- Pane / tab / view.
+        bind "Alt z" { ToggleFocusFullscreen; }   // zoom the focused pane
+        bind "Alt n" { NewPane; }
+        bind "Alt t" { NewTab; }
+
+        // --- Session.
+        bind "Alt w" { Detach; }                   // step away; the session keeps running
+        bind "Alt q" { Quit; }                     // WARNING: kills this session (all panes)
+
+        // --- Enter scroll mode (Esc/Enter always returns to Normal — no getting stuck).
+        bind "Alt s" { SwitchToMode "Scroll"; }
+    }
+
+    // Scroll mode. The escape route is mandatory because clear-defaults removed it.
+    scroll {
+        bind "Esc" "Enter" { SwitchToMode "Normal"; }
+        bind "j" { ScrollDown; }
+        bind "k" { ScrollUp; }
+        bind "Ctrl d" { HalfPageScrollDown; }
+        bind "Ctrl u" { HalfPageScrollUp; }
+        bind "G" { ScrollToBottom; }
+    }
+}
+
+// Copy selections straight to the macOS clipboard (coordinates with Ghostty copy-on-select).
+copy_command "pbcopy"
+copy_on_select true

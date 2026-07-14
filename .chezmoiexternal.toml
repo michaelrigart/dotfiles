@@ -1,0 +1,12 @@
+# Externally-fetched files managed by chezmoi.
+#
+# vim-zellij-navigator: WASM plugin that lets Ctrl-h/j/k/l move seamlessly between
+# Neovim splits and Zellij panes (paired with smart-splits.nvim). Pinned to a
+# specific release and checksum-verified; chezmoi downloads it once on apply, then
+# Zellij loads it offline from disk. Little Snitch will prompt on the first fetch.
+[".config/zellij/plugins/vim-zellij-navigator.wasm"]
+    type = "file"
+    url = "https://github.com/hiasr/vim-zellij-navigator/releases/download/0.3.0/vim-zellij-navigator.wasm"
+    checksum.sha256 = "77e5a2f62f7c1a698caf2574493d5d75587e0fd877cfba34c48caf731c24c58d"
+    # URL is version-pinned + checksummed, so never re-download unless forced.
+    refreshPeriod = "0"

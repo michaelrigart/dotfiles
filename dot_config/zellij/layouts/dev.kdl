@@ -1,0 +1,46 @@
+// Zellij "dev" layout — the 4-tab project workspace launched by `dev <project>`.
+// Managed by chezmoi (source: dot_config/zellij/layouts/dev.kdl).
+//
+// Panes inherit the session's working directory — the `dev` function cd's to the
+// repo before launching, so nothing hardcodes a path. Command panes stay open
+// when their program exits (Zellij's default): press Enter to re-run.
+
+layout {
+    // Custom layouts don't inherit Zellij's UI chrome, so declare the bars here.
+    default_tab_template {
+        pane size=1 borderless=true {
+            plugin location="zellij:tab-bar"
+        }
+        children
+        pane size=2 borderless=true {
+            plugin location="zellij:status-bar"
+        }
+    }
+
+    // Tab 1 — AI agents, side by side (Claude | Codex), auto-launched.
+    tab name="agents" {
+        pane split_direction="vertical" {
+            pane command="claude"
+            pane command="codex"
+        }
+    }
+
+    // Tab 2 — editor, full tab, focused on launch.
+    tab name="editor" focus=true {
+        pane command="nvim"
+    }
+
+    // Tab 3 — runtime: two plain shells (nothing auto-run). Start bin/dev,
+    // docker compose, a Rails console (floating), etc. by hand.
+    tab name="runtime" {
+        pane split_direction="horizontal" {
+            pane name="app"
+            pane name="docker"
+        }
+    }
+
+    // Tab 4 — git.
+    tab name="git" {
+        pane command="lazygit"
+    }
+}

@@ -23,7 +23,9 @@ export FPATH="$HOMEBREW_PREFIX/share/zsh/site-functions:${FPATH}"
 export HOMEBREW_NO_ANALYTICS=1
 export HOMEBREW_BUNDLE_FILE="$XDG_CONFIG_HOME/homebrew/Brewfile"
 
-export TERM="xterm-256color"
+# NOTE: TERM is intentionally NOT forced here — Ghostty sets xterm-ghostty
+# locally (full features). Terminfo-poor remotes are handled per-tool: ssh via
+# Ghostty's ssh-env/ssh-terminfo, Teleport via the tsh() wrapper in zsh/functions.
 
 # Set ZSH compdump file
 export ZSH_COMPDUMP="$XDG_CACHE_HOME/zsh/zcompdump-${HOST}-${ZSH_VERSION}"

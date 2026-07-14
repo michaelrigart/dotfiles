@@ -27,7 +27,7 @@ cursor-style-blink = false
 
 # Shell Integration
 shell-integration = detect
-shell-integration-features = cursor,sudo,title
+shell-integration-features = cursor,sudo,title,ssh-env,ssh-terminfo
 
 # Mouse
 mouse-hide-while-typing = true

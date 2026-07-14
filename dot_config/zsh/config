@@ -94,3 +94,7 @@ setopt hist_verify
 # Add wisely, as too many plugins slow down shell startup.
 plugins=(bundler direnv docker fzf gem git mise rails rake ssh sudo)
 
+# Disable terminal flow control (Ctrl-s / Ctrl-q) so a stray Ctrl-s in a shell
+# pane can't XOFF-freeze it. Ctrl-s is no longer a Zellij leader (clear-defaults).
+[[ -t 0 ]] && stty -ixon
+

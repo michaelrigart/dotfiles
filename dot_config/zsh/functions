@@ -93,3 +93,89 @@ op-edit() {
     print -r -- "✓ '$item' updated."
   fi
 }
+
+# tsh — Teleport SSH with a portable TERM. Ghostty's ssh-env/ssh-terminfo cover
+# the plain `ssh` binary, but not `tsh`, and edge nodes lack xterm-ghostty
+# terminfo. Only the `ssh` subcommand needs the downgrade; other subcommands
+# (tsh login, kube, db, …) run untouched.
+tsh() {
+  if [[ "$1" == "ssh" ]]; then
+    TERM=xterm-256color command tsh "$@"
+  else
+    command tsh "$@"
+  fi
+}
+
+# dev — open (or return to) a project in its Zellij "dev" layout.
+#   dev                  pick from all repos under ~/Code (fzf)
+#   dev curato           by name: exact basename → case-insensitive substring → fzf
+#   dev Netronix/curato  path relative to ~/Code
+#   dev .                the git repo containing the current directory
+#
+# Session name = the repo's path under ~/Code, lowercased, "/" → "--" (Zellij
+# rejects "/"). Repos outside ~/Code, over-length names, or worktrees get a short
+# hash of the canonical git root appended to stay unique and within Zellij's limit.
+dev() {
+  emulate -L zsh
+  setopt local_options null_glob extended_glob
+
+  local code="$HOME/Code" repo name arg="$1"
+  local -a repos=( "$code"/*/.git(N:h) "$code"/*/*/.git(N:h) )
+
+  # 1) "." or an existing directory → the git repo that contains it
+  if [[ "$arg" == "." || ( -n "$arg" && -d "$arg" ) ]]; then
+    repo="$(git -C "${arg:-$PWD}" rev-parse --show-toplevel 2>/dev/null)" \
+      || { print -ru2 -- "dev: '${arg:-$PWD}' is not inside a git repo."; return 1; }
+
+  # 2) exact path relative to ~/Code (e.g. Netronix/curato)
+  elif [[ -n "$arg" && -e "$code/$arg/.git" ]]; then
+    repo="$code/$arg"
+
+  # 3) by name, or the fzf picker
+  else
+    local -a hits
+    if [[ -z "$arg" ]]; then
+      hits=( $repos )
+    else
+      hits=( ${(M)repos:#*/$arg} )                        # exact basename
+      (( ${#hits} )) || hits=( ${(M)repos:#(#i)*$arg*} )  # case-insensitive substring
+    fi
+    if (( ${#hits} == 1 )); then
+      repo="${hits[1]}"
+    else
+      local -a pool; (( ${#hits} )) && pool=( $hits ) || pool=( $repos )
+      local sel
+      sel="$(print -rl -- ${pool[@]#$code/} | fzf --prompt='dev > ' ${arg:+--query=$arg})" || return 0
+      [[ -n "$sel" ]] || return 0
+      repo="$code/$sel"
+    fi
+  fi
+
+  repo="${repo:A}"
+  [[ -n "$repo" && -e "$repo/.git" ]] || { print -ru2 -- "dev: no git repo resolved."; return 1; }
+
+  # --- session name ---
+  if [[ "$repo" == "$code/"* ]]; then
+    local slug="${repo#$code/}"; slug="${slug//\//--}"; name="${(L)slug}"
+    if (( ${#name} > 36 )); then
+      local h; h="$(shasum -a 256 <<<"$repo")"; name="${name[1,26]}--${h[1,8]}"
+    fi
+  else
+    local h; h="$(shasum -a 256 <<<"$repo")"; name="${repo:t:l}--${h[1,8]}"
+  fi
+
+  # --- launch / attach / switch ---
+  local exists=
+  zellij list-sessions -s 2>/dev/null | grep -Fqx -- "$name" && exists=1
+  if [[ -n "$ZELLIJ" ]]; then
+    if [[ -n "$exists" ]]; then
+      zellij action switch-session "$name"
+    else
+      zellij action switch-session "$name" --layout dev --cwd "$repo"
+    fi
+  elif [[ -n "$exists" ]]; then
+    zellij attach "$name"
+  else
+    ( cd "$repo" && zellij --session "$name" --new-session-with-layout dev )
+  fi
+}
