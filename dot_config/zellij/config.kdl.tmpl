@@ -15,11 +15,11 @@
 keybinds clear-defaults=true {
     // Available in every mode except "locked".
     shared_except "locked" {
-        // --- Seamless navigation (move_mod defaults to ctrl, so it's omitted).
-        //     h/l also hop to the adjacent tab when already at the edge.
+        // --- Seamless navigation across nvim splits + Zellij panes (move_mod
+        //     defaults to ctrl, so it's omitted). Never changes tabs — Alt-a/e/r/g does.
         bind "Ctrl h" {
             MessagePlugin "file:{{ .chezmoi.homeDir }}/.config/zellij/plugins/vim-zellij-navigator.wasm" {
-                name "move_focus_or_tab"
+                name "move_focus"
                 payload "left"
             }
         }
@@ -37,7 +37,7 @@ keybinds clear-defaults=true {
         }
         bind "Ctrl l" {
             MessagePlugin "file:{{ .chezmoi.homeDir }}/.config/zellij/plugins/vim-zellij-navigator.wasm" {
-                name "move_focus_or_tab"
+                name "move_focus"
                 payload "right"
             }
         }
