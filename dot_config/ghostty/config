@@ -18,7 +18,9 @@ unfocused-split-opacity = 0.7
 
 # macOS specific
 macos-titlebar-style = tabs
-macos-option-as-alt = true
+# left Option = Alt (Zellij/shell shortcuts); right Option stays macOS Option so
+# AZERTY special chars (@ # [ ] { } | \) still type. (Was `true`, which ate them.)
+macos-option-as-alt = left
 macos-titlebar-proxy-icon = visible
 
 # Cursor
