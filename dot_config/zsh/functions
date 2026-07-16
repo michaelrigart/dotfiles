@@ -113,8 +113,9 @@ tsh() {
 #   dev .                the git repo containing the current directory
 #
 # Session name = the repo's path under ~/Code, lowercased, "/" → "--" (Zellij
-# rejects "/"). Repos outside ~/Code, over-length names, or worktrees get a short
-# hash of the canonical git root appended to stay unique and within Zellij's limit.
+# rejects "/"). That path slug is already unique — worktrees included — so it needs
+# no hash. Repos outside ~/Code, and over-length slugs, are truncated to 26 plus a
+# short hash of the canonical git root, staying inside Zellij's 36-char limit.
 dev() {
   emulate -L zsh
   setopt local_options null_glob extended_glob

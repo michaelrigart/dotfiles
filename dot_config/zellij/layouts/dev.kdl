@@ -31,8 +31,9 @@ layout {
         }
     }
 
-    // Tab 2 — editor, full tab. `nvim .` opens the project's file tree (neo-tree)
-    // instead of LazyVim's dashboard — the pane's cwd is the repo, set by `dev`.
+    // Tab 2 — editor, full tab. `nvim .` opens the project's file tree (the Snacks
+    // explorer, which replaces netrw) rather than LazyVim's dashboard — the pane's
+    // cwd is the repo, set by `dev`.
     tab name="editor" {
         pane command="nvim" {
             args "."
