@@ -72,6 +72,14 @@ keybinds clear-defaults=true {
     }
 }
 
+// Match Ghostty and the rest of the setup.
+theme "tokyo-night"
+
+// Don't serialize/resurrect dead sessions. `dev` recreates the full layout anyway,
+// so resurrection adds nothing but the confusing "Waiting to run" banners. Live
+// detach/reattach still works; only dead-session resurrection is disabled.
+session_serialization false
+
 // Copy selections straight to the macOS clipboard (coordinates with Ghostty copy-on-select).
 copy_command "pbcopy"
 copy_on_select true

@@ -17,16 +17,22 @@ layout {
         }
     }
 
-    // Tab 1 — AI agents, side by side (Claude | Codex), auto-launched.
-    tab name="agents" {
+    // Tab 1 — AI agents, side by side (Claude | Codex). Each launches inside a
+    // shell and drops back to a prompt on exit (`exec zsh`), so closing the tool
+    // leaves you a ready shell to relaunch or resume from.
+    tab name="agents" focus=true {
         pane split_direction="vertical" {
-            pane command="claude"
-            pane command="codex"
+            pane command="zsh" {
+                args "-c" "claude; exec zsh"
+            }
+            pane command="zsh" {
+                args "-c" "codex; exec zsh"
+            }
         }
     }
 
-    // Tab 2 — editor, full tab, focused on launch.
-    tab name="editor" focus=true {
+    // Tab 2 — editor, full tab.
+    tab name="editor" {
         pane command="nvim"
     }
 
