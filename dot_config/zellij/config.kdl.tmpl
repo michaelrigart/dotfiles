@@ -53,6 +53,9 @@ keybinds clear-defaults=true {
         bind "Alt z" { ToggleFocusFullscreen; }   // zoom the focused pane
         bind "Alt n" { NewPane; }
         bind "Alt t" { NewTab; }
+        // Floating "popup" layer — show/hide it with Alt-p; while it's visible, Alt-n
+        // adds a floating pane (this is the on-demand `bin/rails console` slot).
+        bind "Alt p" { ToggleFloatingPanes; }
 
         // --- Session.
         bind "Alt w" { Detach; }                   // step away; the session keeps running
