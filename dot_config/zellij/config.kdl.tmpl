@@ -42,11 +42,12 @@ keybinds clear-defaults=true {
             }
         }
 
-        // --- Tabs: jump directly by number.
-        bind "Alt 1" { GoToTab 1; }
-        bind "Alt 2" { GoToTab 2; }
-        bind "Alt 3" { GoToTab 3; }
-        bind "Alt 4" { GoToTab 4; }
+        // --- Tabs: jump directly by mnemonic (works on AZERTY + QWERTY, unlike digits).
+        //     a = agents, e = editor, r = runtime, g = git.
+        bind "Alt a" { GoToTab 1; }
+        bind "Alt e" { GoToTab 2; }
+        bind "Alt r" { GoToTab 3; }
+        bind "Alt g" { GoToTab 4; }
 
         // --- Pane / tab / view.
         bind "Alt z" { ToggleFocusFullscreen; }   // zoom the focused pane
