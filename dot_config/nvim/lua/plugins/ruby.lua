@@ -16,6 +16,11 @@ return {
           mason = false,
           cmd = { "mise", "x", "--", "ruby-lsp" },
         },
+        -- LazyVim's ruby extra enables the standalone rubocop LSP whenever the
+        -- formatter is rubocop (it only guards against the Solargraph overlap).
+        -- ruby-lsp's composed bundle already runs RuboCop, so leaving this on
+        -- means two processes and duplicated diagnostics.
+        rubocop = { enabled = false },
       },
     },
   },
