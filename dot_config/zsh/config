@@ -98,3 +98,11 @@ plugins=(bundler direnv docker fzf gem git mise rails rake ssh sudo)
 # pane can't XOFF-freeze it. Ctrl-s is no longer a Zellij leader (clear-defaults).
 [[ -t 0 ]] && stty -ixon
 
+# Raise (never lower) the open-file limit. launchd hands GUI apps — Ghostty included —
+# a soft limit of only 256, which LSP file watchers blow straight through: ruby-lsp
+# watches ~3k directories in a Rails repo and Neovim then throws EMFILE
+# (vim/_watch.lua). The hard limit is unlimited, so lifting the soft limit is enough.
+if [[ "$(ulimit -n)" != unlimited ]] && (( $(ulimit -n) < 8192 )); then
+  ulimit -n 8192 2>/dev/null
+fi
+
