@@ -3,7 +3,10 @@
 #
 # Route lazygit's diffs through delta (unified — lazygit's panel is narrow; --paging=never
 # because lazygit does its own scrolling). Picks up [delta] settings from ~/.config/git/config.
+#
+# NOTE: lazygit 0.63+ uses `git.pagers` (a list). The older `git.paging` map gets
+# auto-migrated on start, which would fight chezmoi on every apply — so use `pagers` here.
 git:
-  paging:
-    colorArg: always
-    pager: delta --dark --paging=never
+  pagers:
+    - colorArg: always
+      pager: delta --dark --paging=never
