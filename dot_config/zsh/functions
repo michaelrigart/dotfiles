@@ -161,7 +161,11 @@ dev() {
       local h; h="$(shasum -a 256 <<<"$repo")"; name="${name[1,26]}--${h[1,8]}"
     fi
   else
-    local h; h="$(shasum -a 256 <<<"$repo")"; name="${repo:t:l}--${h[1,8]}"
+    # Outside ~/Code: basename + hash of the canonical root (a bare basename would
+    # collide, e.g. /tmp/curato-review vs other/curato-review). Truncate to 26 so
+    # 26 + "--" + 8 stays inside Zellij's 36-char session-name limit.
+    local h b; h="$(shasum -a 256 <<<"$repo")"; b="${repo:t:l}"
+    name="${b[1,26]}--${h[1,8]}"
   fi
 
   # --- launch / attach / switch ---
