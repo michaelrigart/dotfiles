@@ -31,9 +31,12 @@ layout {
         }
     }
 
-    // Tab 2 — editor, full tab.
+    // Tab 2 — editor, full tab. `nvim .` opens the project's file tree (neo-tree)
+    // instead of LazyVim's dashboard — the pane's cwd is the repo, set by `dev`.
     tab name="editor" {
-        pane command="nvim"
+        pane command="nvim" {
+            args "."
+        }
     }
 
     // Tab 3 — runtime: two plain shells (nothing auto-run). Start bin/dev,
