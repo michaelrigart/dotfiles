@@ -1,0 +1,10 @@
+# Gems mise installs into every Ruby it builds (ruby-build's default-gems mechanism).
+# Pointed here by `ruby.default_packages_file` in config.toml so it stays XDG-compliant
+# instead of living at ~/.default-gems.
+#
+# ruby-lsp: the Neovim LSP. It's deliberately NOT in any project Gemfile — it builds its
+# own composed bundle at runtime — so it has to exist per-Ruby. Listing it here means new
+# Ruby versions get it automatically instead of a manual `mise x -- gem install ruby-lsp`.
+# Note: ruby-lsp needs Ruby >= 3.0, so installing an older Ruby (2.6/2.7) will log a
+# failure for this gem — the Ruby itself still installs fine.
+ruby-lsp

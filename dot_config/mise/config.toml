@@ -6,3 +6,9 @@ rust = "1.88.0"
 
 [settings]
 idiomatic_version_file_enable_tools = ["ruby"]
+
+# Install the gems listed in default-gems into every Ruby mise builds (keeps ruby-lsp
+# available per-Ruby without polluting project Gemfiles). Default would be ~/.default-gems;
+# pointed at the XDG location instead.
+[settings.ruby]
+default_packages_file = "~/.config/mise/default-gems"
