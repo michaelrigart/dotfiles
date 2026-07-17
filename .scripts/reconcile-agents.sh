@@ -105,6 +105,21 @@ run_json() {
   return 0
 }
 
+# project <json> <jq-filter> <outvar> <label>  -> set outvar to the projection. Returns
+# non-zero (warns, status=1) when jq cannot apply the filter — i.e. the JSON is malformed
+# or doesn't have the expected shape — so the caller skips that block instead of treating
+# an unparseable response as "nothing installed" and re-adding everything. A valid-but-
+# empty result (e.g. no plugins installed) is jq exit 0 and reconciles normally.
+project() {
+  local __json=$1 __filter=$2 __outvar=$3 __label=$4 __data
+  if ! __data=$(printf '%s' "$__json" | jq -r "$__filter" 2>/dev/null); then
+    log_warn "$__label: unexpected JSON shape — skipping"
+    status=1; return 1
+  fi
+  printf -v "$__outvar" '%s' "$__data"
+  return 0
+}
+
 # ---------------------------------------------------------------------------
 # Claude
 # ---------------------------------------------------------------------------
@@ -116,8 +131,8 @@ reconcile_claude() {
 
   # Marketplaces (query once, add missing) — must precede plugin install.
   local json have repo
-  if run_json json "claude plugin marketplace list" claude plugin marketplace list --json; then
-    have=$(printf '%s' "$json" | jq -r '.[].repo' 2>/dev/null)
+  if run_json json "claude plugin marketplace list" claude plugin marketplace list --json \
+     && project "$json" '.[].repo' have "claude marketplace list"; then
     for repo in "${claude_mkts[@]}"; do
       if printf '%s\n' "$have" | grep -qxF "$repo"; then
         log_info "claude marketplace present: $repo"
@@ -130,11 +145,12 @@ reconcile_claude() {
 
   # Plugins (query once, AFTER marketplace adds). Projection: "<id>\t<enabled>", user scope.
   local proj id enabled line
-  if run_json json "claude plugin list" claude plugin list --json; then
-    proj=$(printf '%s' "$json" | jq -r '.[] | select(.scope=="user") | "\(.id)\t\(.enabled)"' 2>/dev/null)
-    # Install missing / report disabled.
+  if run_json json "claude plugin list" claude plugin list --json \
+     && project "$json" '.[] | select(.scope=="user") | "\(.id)\t\(.enabled)"' proj "claude plugin list"; then
+    # Install missing / report disabled. Exact match on field 1 (an id can be a substring
+    # of another, e.g. code-review vs xcode-review), so awk on the tab-delimited field.
     for id in "${claude_plugins[@]}"; do
-      line=$(printf '%s\n' "$proj" | grep -F "$id	" | head -n 1)
+      line=$(printf '%s\n' "$proj" | awk -F '\t' -v id="$id" '$1 == id { print; exit }')
       if [ -n "$line" ]; then
         enabled=${line#*	}
         if [ "$enabled" = "false" ]; then
@@ -167,15 +183,16 @@ reconcile_codex() {
   fi
 
   # Marketplaces (query once, add missing) — normalized exact match on GitHub source.
-  local json src norm repo
+  local json src norm repo srcs
   local have_norm=()
-  if run_json json "codex plugin marketplace list" codex plugin marketplace list --json; then
+  if run_json json "codex plugin marketplace list" codex plugin marketplace list --json \
+     && project "$json" '.marketplaces[].marketplaceSource.source // empty' srcs "codex marketplace list"; then
     while IFS= read -r src; do
       [ -z "$src" ] && continue
       norm=$(normalize_gh "$src")
       [ -n "$norm" ] && have_norm+=("$norm")
     done <<EOF
-$(printf '%s' "$json" | jq -r '.marketplaces[].marketplaceSource.source // empty' 2>/dev/null)
+$srcs
 EOF
     for repo in "${codex_mkts[@]}"; do
       if in_list "$repo" "${have_norm[@]}"; then
@@ -189,10 +206,10 @@ EOF
 
   # Plugins (query once, AFTER marketplace adds). Projection: "<pluginId>\t<enabled>\t<marketplace>".
   local proj pid enabled mkt line
-  if run_json json "codex plugin list" codex plugin list --json; then
-    proj=$(printf '%s' "$json" | jq -r '.installed[] | "\(.pluginId)\t\(.enabled)\t\(.marketplaceName)"' 2>/dev/null)
+  if run_json json "codex plugin list" codex plugin list --json \
+     && project "$json" '.installed[] | "\(.pluginId)\t\(.enabled)\t\(.marketplaceName)"' proj "codex plugin list"; then
     for pid in "${codex_plugins[@]}"; do
-      line=$(printf '%s\n' "$proj" | grep -F "$pid	" | head -n 1)
+      line=$(printf '%s\n' "$proj" | awk -F '\t' -v id="$pid" '$1 == id { print; exit }')
       if [ -n "$line" ]; then
         enabled=${line#*	}; enabled=${enabled%%	*}
         if [ "$enabled" = "false" ]; then

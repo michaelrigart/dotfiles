@@ -54,8 +54,8 @@ keybinds clear-defaults=true {
         bind "Alt n" { NewPane; }
         bind "Alt t" { NewTab; }
         // Floating "popup" pane — Alt-p opens it (and hides/shows it again); this is the
-        // on-demand `bin/rails console` slot. Note Alt-n always makes a *tiled* pane,
-        // whether or not the floating layer is showing.
+        // on-demand `bin/rails console` slot. Note: while the floating layer is showing,
+        // Alt-n's NewPane adds another *floating* pane, not a tiled one.
         bind "Alt p" { ToggleFloatingPanes; }
 
         // --- Session.

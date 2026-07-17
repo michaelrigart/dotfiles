@@ -7,12 +7,12 @@ palette = 5=#bb9af7
 palette = 6=#7dcfff
 palette = 7=#a9b1d6
 palette = 8=#414868
-palette = 9=#f7768e
-palette = 10=#9ece6a
-palette = 11=#e0af68
-palette = 12=#7aa2f7
-palette = 13=#bb9af7
-palette = 14=#7dcfff
+palette = 9=#ff899d
+palette = 10=#9fe044
+palette = 11=#faba4a
+palette = 12=#8db0ff
+palette = 13=#c7a9ff
+palette = 14=#a4daff
 palette = 15=#c0caf5
 
 background = #1a1b26
