@@ -10,5 +10,13 @@ idiomatic_version_file_enable_tools = ["ruby"]
 # Install the gems listed in default-gems into every Ruby mise builds (keeps ruby-lsp
 # available per-Ruby without polluting project Gemfiles). Default would be ~/.default-gems;
 # pointed at the XDG location instead.
+#
+# DEPRECATION (intentional, kept on purpose): mise deprecates default_packages_file —
+# warnings begin in 2026.11.0, removal planned for 2027.11.0. The official replacement is a
+# tool-level `postinstall` hook, but it was TESTED (2026-07-18, isolated mise env) and does
+# NOT fire for project-overridden Ruby versions — a `.ruby-version` override installs a Ruby
+# with no postinstall, so ruby-lsp would be missing there. That per-Ruby-including-overrides
+# behavior is the whole reason for this file, so we keep default_packages_file until removal
+# forces a revisit (2027.11.0) or mise ships a replacement that covers overrides.
 [settings.ruby]
 default_packages_file = "~/.config/mise/default-gems"
