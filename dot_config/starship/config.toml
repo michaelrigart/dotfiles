@@ -8,17 +8,17 @@ disabled = true
 
 [username]
 show_always = true
-style_user = "#719cd6"
-style_root = "#c94f6d"
+style_user = "#7aa2f7"
+style_root = "#f7768e"
 format = " [╭─ $user]($style)"
 
 [hostname]
 ssh_only = false
-format = "[$ssh_symbol](bold blue)@[$hostname](bold #84cee4) "
+format = "[$ssh_symbol](bold blue)@[$hostname](bold #7dcfff) "
 
 [character]
-error_symbol = " [╰─ λ](bold #c94f6d)"
-success_symbol = " [╰─ λ](bold #719cd6)"
+error_symbol = " [╰─ λ](bold #f7768e)"
+success_symbol = " [╰─ λ](bold #7aa2f7)"
 
 [directory]
 truncation_symbol = "…/"
