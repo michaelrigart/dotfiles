@@ -28,7 +28,8 @@ macOS dotfiles managed with chezmoi, featuring XDG compliance, 1Password secret 
 - ❌ Do NOT add "nice to have" packages - only what's actually used
 
 ### Permissions
-- Scripts (`.scripts/*.sh`): `700`
+- Scripts (`.scripts/*.sh`): `755` — non-secret helpers; Git only stores the exec bit
+  (mode `100755`), so a fresh clone produces `755`, not `700`. Do not rely on `700` here.
 - SSH directory: `700`, private keys: `600`, public keys: `644`
 - Sensitive configs: `600`
 - Regular dotfiles: `644`
@@ -199,8 +200,8 @@ chezmoi apply --dry-run --verbose
 
 ### Script permissions wrong
 ```bash
-# Scripts should be executable
-chmod 700 ~/.local/share/chezmoi/.scripts/*.sh
+# Scripts should be executable (Git stores only the exec bit → 755 on clone)
+chmod 755 ~/.local/share/chezmoi/.scripts/*.sh
 git add --chmod=+x .scripts/*.sh
 ```
 

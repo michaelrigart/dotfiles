@@ -134,7 +134,17 @@ else
 fi
 
 # ============================================================================
-# 9. Set default shell to Homebrew zsh
+# 9. Reconcile AI agent plugins (Claude Code + Codex)
+# ============================================================================
+if [ -x "${XDG_DATA_HOME}/chezmoi/.scripts/reconcile-agents.sh" ]; then
+  log_info "Reconciling AI agent plugins..."
+  "${XDG_DATA_HOME}/chezmoi/.scripts/reconcile-agents.sh" || log_warn "Agent plugin reconcile had issues (non-fatal)"
+else
+  log_warn "reconcile-agents.sh not found, skipping agent plugin setup"
+fi
+
+# ============================================================================
+# 10. Set default shell to Homebrew zsh
 # ============================================================================
 log_info "Setting default shell to Homebrew zsh..."
 if [[ "$SHELL" != "${HOMEBREW_PREFIX}/bin/zsh" ]]; then
@@ -149,7 +159,7 @@ else
 fi
 
 # ============================================================================
-# 10. Install oh-my-zsh (with XDG support)
+# 11. Install oh-my-zsh (with XDG support)
 # ============================================================================
 log_info "Installing oh-my-zsh..."
 if [ -d "${XDG_DATA_HOME}/oh-my-zsh" ]; then
@@ -164,7 +174,7 @@ else
 fi
 
 # ============================================================================
-# 11. Install mise tools
+# 12. Install mise tools
 # ============================================================================
 if command -v mise &>/dev/null; then
   log_info "Installing mise tools..."
@@ -174,7 +184,7 @@ else
 fi
 
 # ============================================================================
-# 12. Create necessary cache directories
+# 13. Create necessary cache directories
 # ============================================================================
 log_info "Creating cache directories..."
 mkdir -p "${XDG_CACHE_HOME}/zsh"
@@ -184,7 +194,7 @@ mkdir -p "${XDG_CACHE_HOME}/bundler/plugin"
 mkdir -p "${XDG_CACHE_HOME}/gem/specs"
 
 # ============================================================================
-# 13. Cleanup oh-my-zsh artifacts
+# 14. Cleanup oh-my-zsh artifacts
 # ============================================================================
 log_info "Cleaning up installation artifacts..."
 rm -f "${HOME}/.zprofile"
@@ -193,13 +203,13 @@ rm -f "${HOME}/.zshrc.pre-oh-my-zsh"
 rm -f "${HOME}/.shell.pre-oh-my-zsh"
 
 # ============================================================================
-# 14. Homebrew cleanup
+# 15. Homebrew cleanup
 # ============================================================================
 log_info "Cleaning up Homebrew..."
 brew cleanup
 
 # ============================================================================
-# 15. Run macOS configuration
+# 16. Run macOS configuration
 # ============================================================================
 if [ -f "${XDG_DATA_HOME}/chezmoi/.scripts/configure.sh" ]; then
   log_info "Running macOS configuration..."
