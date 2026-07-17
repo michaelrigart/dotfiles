@@ -1,30 +1,62 @@
 
 # tap repositories and their packages
+#
+# Inline comments record where a package is actually used, so a future audit can
+# tell a live dependency from a leftover. Undocumented entries are self-evident.
+# pkgconf and poppler are deliberately NOT declared: they arrive transitively via
+# vips/hdf5/libmatio, and declaring them would promote them to permanent
+# top-level requirements they aren't.
+
+tap "basecamp/tap"
+tap "borgbackup/tap"
+tap "skyhook-io/tap"
 
 brew "ansible"
+brew "arping"                          # edge-node network diagnostics
 brew "asitop"
+brew "awscli"
 brew "azure-cli"
+brew "borgbackup/tap/borgbackup-fuse"  # Borg + `borg mount` (needs the macfuse cask)
 brew "btop"
 brew "chezmoi"
 brew "coreutils"
 brew "direnv"
+brew "exiftool"                        # Trainvault lib/active_storage/exif_analyzer.rb (mini_exiftool); Curato
 brew "eza"
 brew "fastfetch"
 brew "fd"
 brew "ffmpeg"
 brew "fzf"
+brew "gh"
 brew "git"
 brew "git-delta"
-brew "jemalloc"
+brew "glab"                            # GitLab CLI; dot_config/bundler/config.tmpl templates GitLab tokens
+brew "iperf3"                          # edge-node bandwidth testing
+brew "jemalloc"                        # Rails
+brew "jpegoptim"                       # michaelrigart Rakefile:82 image optimization
+brew "jq"
+brew "k9s"
 brew "krew"
 brew "kubie"
 brew "lazygit"
-brew "libpq"
+brew "libpq"                           # Rails / pg
 brew "mise"
+brew "mono-libgdiplus"                 # Iris.WeInspect Reporting Service — System.Drawing.Common on macOS
+brew "mtr"
 brew "neovim"
+brew "nmap"
+brew "oxipng"                          # michaelrigart Rakefile:88 PNG optimization
+brew "ripgrep"                         # `rg`; also a hard dependency of the codex cask
+brew "s3cmd"
+brew "shellcheck"                      # curato ops/backup/*.sh lint clean under it (see 257a032); zsh provisioning scripts out of scope
+brew "skyhook-io/tap/radar"            # Kubernetes topology/traffic viewer
+brew "sshpass"                         # Ansible password-based SSH (VM.Provisioning.Ansible inventories)
 brew "starship"
+brew "svgo"                            # michaelrigart Rakefile:96 SVG optimization
 brew "teleport"
-brew "vips"
+brew "vips"                            # Rails image processing
+brew "watch"
+brew "wget"
 brew "zellij"
 brew "zoxide"
 brew "zsh"
@@ -34,37 +66,51 @@ brew "zsh-syntax-highlighting"
 cask "1password"
 cask "1password-cli"
 cask "alfred"
+cask "basecamp-cli"
+cask "chatgpt"
 cask "claude"
+cask "claude-code@latest"              # @latest channel — plain `claude-code` is a different, pinned cask
+cask "codex"                           # depends on the ripgrep formula
 cask "docker-desktop"
 cask "elgato-control-center"
 cask "firefox"
+cask "focusrite-control"
 cask "ghostty"
+cask "google-chrome"
 cask "grammarly-desktop"
 cask "jetbrains-toolbox"
+cask "jiggler"
+cask "jordanbaird-ice"
 cask "kap"
 cask "little-snitch"
+cask "macfuse"                         # required to `borg mount` a backup archive
 cask "micro-snitch"
+cask "microsoft-auto-update"
 cask "microsoft-azure-storage-explorer"
 cask "microsoft-office"
 cask "microsoft-teams"
 cask "miro"
 cask "notion"
 cask "obs"
+cask "obsidian"                        # the MSB vault
+cask "openvpn-connect"
 cask "postman"
 cask "proton-drive"
 cask "proton-mail"
 cask "protonvpn"
-cask "rectangle"
 cask "readwise-ibooks"
+cask "rectangle"
 cask "signal"
 cask "slack"
 cask "spotify"
-cask "vorta"
+cask "tigervnc"
+cask "vorta"                           # Borg scheduling frontend
+cask "whatsapp"
 cask "yubico-authenticator"
 cask "zen"
-cask "focusrite-control"
 
 cask "font-fira-code-nerd-font"
+cask "font-hack-nerd-font"
 cask "font-jetbrains-mono"
 cask "font-jetbrains-mono-nerd-font"
-
+cask "font-sf-pro"
