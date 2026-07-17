@@ -105,17 +105,24 @@ run_json() {
   return 0
 }
 
-# project <json> <jq-filter> <outvar> <label>  -> set outvar to the projection. Returns
-# non-zero (warns, status=1) when jq cannot apply the filter — i.e. the JSON is malformed
-# or doesn't have the expected shape — so the caller skips that block instead of treating
-# an unparseable response as "nothing installed" and re-adding everything. A valid-but-
-# empty result (e.g. no plugins installed) is jq exit 0 and reconciles normally.
+# project <json> <schema-check> <jq-filter> <outvar> <label>  -> validate the response
+# against an explicit schema (container type + required field types) BEFORE projecting,
+# then set outvar to the projection. Returns non-zero (warns, status=1) on schema failure
+# so the caller skips that block instead of re-adding everything.
+#
+# jq's exit status alone is NOT enough: empty stdout, {}, and [{}] all let a projection
+# exit 0 with an empty result, which would make the reconciler treat every declared item
+# as missing. The schema check rejects those while still passing a valid-but-empty
+# response ([] or {"installed":[]}), which reconciles normally.
 project() {
-  local __json=$1 __filter=$2 __outvar=$3 __label=$4 __data
-  if ! __data=$(printf '%s' "$__json" | jq -r "$__filter" 2>/dev/null); then
+  local __json=$1 __schema=$2 __filter=$3 __outvar=$4 __label=$5 __data
+  if ! printf '%s' "$__json" | jq -e "$__schema" >/dev/null 2>&1; then
     log_warn "$__label: unexpected JSON shape — skipping"
     status=1; return 1
   fi
+  __data=$(printf '%s' "$__json" | jq -r "$__filter" 2>/dev/null) || {
+    log_warn "$__label: projection failed — skipping"; status=1; return 1
+  }
   printf -v "$__outvar" '%s' "$__data"
   return 0
 }
@@ -132,7 +139,9 @@ reconcile_claude() {
   # Marketplaces (query once, add missing) — must precede plugin install.
   local json have repo
   if run_json json "claude plugin marketplace list" claude plugin marketplace list --json \
-     && project "$json" '.[].repo' have "claude marketplace list"; then
+     && project "$json" \
+          '(type=="array") and all(.[]; has("repo") and (.repo|type=="string"))' \
+          '.[].repo' have "claude marketplace list"; then
     for repo in "${claude_mkts[@]}"; do
       if printf '%s\n' "$have" | grep -qxF "$repo"; then
         log_info "claude marketplace present: $repo"
@@ -146,7 +155,9 @@ reconcile_claude() {
   # Plugins (query once, AFTER marketplace adds). Projection: "<id>\t<enabled>", user scope.
   local proj id enabled line
   if run_json json "claude plugin list" claude plugin list --json \
-     && project "$json" '.[] | select(.scope=="user") | "\(.id)\t\(.enabled)"' proj "claude plugin list"; then
+     && project "$json" \
+          '(type=="array") and all(.[]; has("id") and (.id|type=="string") and has("scope") and has("enabled"))' \
+          '.[] | select(.scope=="user") | "\(.id)\t\(.enabled)"' proj "claude plugin list"; then
     # Install missing / report disabled. Exact match on field 1 (an id can be a substring
     # of another, e.g. code-review vs xcode-review), so awk on the tab-delimited field.
     for id in "${claude_plugins[@]}"; do
@@ -186,7 +197,9 @@ reconcile_codex() {
   local json src norm repo srcs
   local have_norm=()
   if run_json json "codex plugin marketplace list" codex plugin marketplace list --json \
-     && project "$json" '.marketplaces[].marketplaceSource.source // empty' srcs "codex marketplace list"; then
+     && project "$json" \
+          '(type=="object") and has("marketplaces") and (.marketplaces|type=="array")' \
+          '.marketplaces[].marketplaceSource.source // empty' srcs "codex marketplace list"; then
     while IFS= read -r src; do
       [ -z "$src" ] && continue
       norm=$(normalize_gh "$src")
@@ -207,7 +220,9 @@ EOF
   # Plugins (query once, AFTER marketplace adds). Projection: "<pluginId>\t<enabled>\t<marketplace>".
   local proj pid enabled mkt line
   if run_json json "codex plugin list" codex plugin list --json \
-     && project "$json" '.installed[] | "\(.pluginId)\t\(.enabled)\t\(.marketplaceName)"' proj "codex plugin list"; then
+     && project "$json" \
+          '(type=="object") and has("installed") and (.installed|type=="array") and all(.installed[]; has("pluginId") and (.pluginId|type=="string"))' \
+          '.installed[] | "\(.pluginId)\t\(.enabled)\t\(.marketplaceName)"' proj "codex plugin list"; then
     for pid in "${codex_plugins[@]}"; do
       line=$(printf '%s\n' "$proj" | awk -F '\t' -v id="$pid" '$1 == id { print; exit }')
       if [ -n "$line" ]; then
