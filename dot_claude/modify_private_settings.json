@@ -4,8 +4,10 @@
 # settings.json mixes Michael's stable config with keys Claude Code writes at runtime
 # (`enabledPlugins` from `claude plugin install`, `extraKnownMarketplaces` from marketplace
 # adds). chezmoi can't own the whole file without the two sides clobbering each other, so
-# this receives the CURRENT file on stdin, emits the owned config, and carries the two
-# tool-written keys through untouched. The plugin/marketplace *intent* is declared in
+# this receives the CURRENT file on stdin, enforces the strictly-owned keys, carries the
+# tool-written keys through untouched, and seeds model/effortLevel as defaults only (they
+# are mutable via /model and /effort, so runtime changes persist). The plugin/marketplace
+# *intent* is declared in
 # .scripts/reconcile-agents.sh + dot_config/agents/plugins.conf; this just avoids reverting
 # the tool's writes on `chezmoi apply`.
 #
@@ -25,9 +27,12 @@ fi
 printf '%s' "$input" | jq \
   --arg sl "bash $HOME/.claude/statusline.sh" \
   --arg subsl "bash $HOME/.claude/subagent-statusline.sh" '
-  # capture the tool-written keys from the current file (null when absent)
+  # capture from the current file (null when absent): tool-written keys are carried
+  # through as-is; model/effortLevel are seeded as defaults only (applied at the end).
   .enabledPlugins as $plugins
   | .extraKnownMarketplaces as $mkts
+  | .model as $curmodel
+  | .effortLevel as $cureffort
   | {
       "theme": "custom:tokyo-night",
       "cleanupPeriodDays": 14,
@@ -44,7 +49,6 @@ printf '%s' "$input" | jq \
         ],
         "defaultMode": "default"
       },
-      "model": "opus[1m]",
       "enableAllProjectMcpServers": false,
       "statusLine": { "type": "command", "command": $sl, "padding": 0 },
       "subagentStatusLine": { "type": "command", "command": $subsl },
@@ -57,7 +61,6 @@ printf '%s' "$input" | jq \
           "allowLocalBinding": true
         }
       },
-      "effortLevel": "xhigh",
       "tui": "fullscreen",
       "voice": { "enabled": false, "mode": "hold" },
       "skipWorkflowUsageWarning": true,
@@ -71,4 +74,8 @@ printf '%s' "$input" | jq \
   # carry the tool-written keys through if the current file had them
   | (if $plugins then .enabledPlugins = $plugins else . end)
   | (if $mkts then .extraKnownMarketplaces = $mkts else . end)
+  # default-only: keep the current value if set (runtime /model, /effort persist),
+  # otherwise seed the default; deleting the key and re-applying restores the default.
+  | .model = ($curmodel // "opus[1m]")
+  | .effortLevel = ($cureffort // "xhigh")
 '
