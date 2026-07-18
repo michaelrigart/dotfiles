@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# chezmoi modify_ script for the target ~/.claude/settings.json.
+#
+# settings.json mixes Michael's stable config with keys Claude Code writes at runtime
+# (`enabledPlugins` from `claude plugin install`, `extraKnownMarketplaces` from marketplace
+# adds). chezmoi can't own the whole file without the two sides clobbering each other, so
+# this receives the CURRENT file on stdin, emits the owned config, and carries the two
+# tool-written keys through untouched. The plugin/marketplace *intent* is declared in
+# .scripts/reconcile-agents.sh + dot_config/agents/plugins.conf; this just avoids reverting
+# the tool's writes on `chezmoi apply`.
+#
+# private_ prefix => target is deployed 0600. Bash 3.2 compatible. $HOME (not a hardcoded
+# path) keeps the statusline commands correct on any machine.
+set -euo pipefail
+
+input=$(cat)
+# Fresh machine: no existing file => empty stdin => start from {}.
+[ -z "${input//[[:space:]]/}" ] && input='{}'
+# Never overwrite a broken file: bail with no stdout if the current content isn't valid JSON.
+if ! printf '%s' "$input" | jq empty >/dev/null 2>&1; then
+  echo "modify settings.json: current file is not valid JSON — refusing to overwrite" >&2
+  exit 1
+fi
+
+printf '%s' "$input" | jq \
+  --arg sl "bash $HOME/.claude/statusline.sh" \
+  --arg subsl "bash $HOME/.claude/subagent-statusline.sh" '
+  # capture the tool-written keys from the current file (null when absent)
+  .enabledPlugins as $plugins
+  | .extraKnownMarketplaces as $mkts
+  | {
+      "theme": "custom:tokyo-night",
+      "cleanupPeriodDays": 14,
+      "env": { "EDITOR": "nvim" },
+      "includeCoAuthoredBy": false,
+      "permissions": {
+        "deny": [
+          "**/.ssh/*_rsa", "**/.ssh/*_rsa.pub", "**/.ssh/id_*", "**/.aws/credentials",
+          "**/.config/op/config", "**/secrets.*.yml", "**/.env.production*", "**/*.key", "**/*.pem"
+        ],
+        "ask": [
+          "**/.kube/config", "**/Dockerfile*", "**/docker-compose*.yml",
+          "**/.github/workflows/**", "**/terraform/**", "**/ansible/**"
+        ],
+        "defaultMode": "default"
+      },
+      "model": "opus[1m]",
+      "enableAllProjectMcpServers": false,
+      "statusLine": { "type": "command", "command": $sl, "padding": 0 },
+      "subagentStatusLine": { "type": "command", "command": $subsl },
+      "sandbox": {
+        "enabled": true,
+        "autoAllowBashIfSandboxed": true,
+        "allowUnsandboxedCommands": true,
+        "network": {
+          "allowUnixSockets": ["/run/docker.sock", "~/.docker/run/docker.sock", "~/.1password/agent.sock"],
+          "allowLocalBinding": true
+        }
+      },
+      "effortLevel": "xhigh",
+      "tui": "fullscreen",
+      "voice": { "enabled": false, "mode": "hold" },
+      "skipWorkflowUsageWarning": true,
+      "preferredNotifChannel": "ghostty",
+      "showTurnDuration": true,
+      "showMessageTimestamps": true,
+      "terminalProgressBarEnabled": true,
+      "skipAutoPermissionPrompt": true,
+      "voiceEnabled": false
+    }
+  # carry the tool-written keys through if the current file had them
+  | (if $plugins then .enabledPlugins = $plugins else . end)
+  | (if $mkts then .extraKnownMarketplaces = $mkts else . end)
+'
