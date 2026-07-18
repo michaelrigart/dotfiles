@@ -1,4 +1,5 @@
 [tools]
+# Uses mise's core backend; first SDK download may require Little Snitch approval for dot.net.
 dotnet = "latest"
 python = "3.13.7"
 ruby = "4.0.5"
