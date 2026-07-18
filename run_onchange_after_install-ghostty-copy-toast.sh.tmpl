@@ -1,0 +1,30 @@
+#!/bin/sh
+# Rebuild + reload ghostty-copy-toast when its source or launch agent changes.
+# The hashes below make chezmoi re-run this script whenever either file changes.
+# source hash: {{ include "dot_local/share/ghostty-copy-toast/main.swift" | sha256sum }}
+# plist  hash: {{ include "Library/LaunchAgents/be.netronix.ghostty-copy-toast.plist.tmpl" | sha256sum }}
+set -eu
+
+label="be.netronix.ghostty-copy-toast"
+home="{{ .chezmoi.homeDir }}"
+src="$home/.local/share/ghostty-copy-toast/main.swift"
+bin_dir="$home/.local/bin"
+bin="$bin_dir/ghostty-copy-toast"
+plist="$home/Library/LaunchAgents/$label.plist"
+domain="gui/$(id -u)"
+
+if ! command -v swiftc >/dev/null 2>&1; then
+    echo "ghostty-copy-toast: swiftc not found (install Xcode Command Line Tools); skipping build" >&2
+    exit 0
+fi
+
+mkdir -p "$bin_dir"
+echo "ghostty-copy-toast: compiling…" >&2
+swiftc -O "$src" -o "$bin.tmp"
+mv -f "$bin.tmp" "$bin"
+
+# Reload the launch agent (bootout is a no-op the first time).
+launchctl bootout "$domain/$label" 2>/dev/null || true
+launchctl bootstrap "$domain" "$plist"
+launchctl kickstart -k "$domain/$label" 2>/dev/null || true
+echo "ghostty-copy-toast: installed and (re)loaded" >&2
