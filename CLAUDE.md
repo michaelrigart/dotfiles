@@ -65,7 +65,9 @@ macOS dotfiles managed with chezmoi, featuring XDG compliance, 1Password secret 
 ├── .backgrounds/              # [IGNORED] Wallpapers, copied by configure.sh
 ├── .scripts/                  # [IGNORED] Ad-hoc scripts
 │   ├── provision.sh          # Full bootstrap (rarely re-run)
-│   └── configure.sh          # macOS settings (safe to re-run)
+│   ├── configure.sh          # macOS settings (safe to re-run)
+│   ├── reconcile-agents.sh   # Claude/Codex marketplaces + plugins (idempotent)
+│   └── test-reconcile-agents.sh  # mocked test for reconcile-agents.sh
 ├── dot_config/               # → ~/.config/
 │   ├── bundler/config.tmpl   # ⚠️  Contains 1Password secrets
 │   ├── chezmoi/              # Chezmoi configuration
