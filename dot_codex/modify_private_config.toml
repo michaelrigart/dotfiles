@@ -1,0 +1,44 @@
+{{- /* chezmoi:modify-template */ -}}
+{{- /* Manage ~/.codex/config.toml declaratively.                             */ -}}
+{{- /* Parse the live file so Codex-managed state is preserved, then:         */ -}}
+{{- /*   - seed model/effort/tier prefs ONLY when absent (so /model and       */ -}}
+{{- /*     fast-mode changes persist),                                        */ -}}
+{{- /*   - enforce UI / keybindings / notify / prevent_idle_sleep,            */ -}}
+{{- /*   - drop the obsolete js_repl flag.                                    */ -}}
+{{- /* NB: TOML comments and key ordering are not preserved (parse→serialize).*/ -}}
+{{- $config := dict -}}
+{{- if .chezmoi.stdin -}}
+{{-   $config = fromToml .chezmoi.stdin -}}
+{{- end -}}
+
+{{- /* Seed model preferences only when absent */ -}}
+{{- if not (hasKey $config "model") -}}
+{{-   $config = setValueAtPath "model" "gpt-5.6-sol" $config -}}
+{{- end -}}
+{{- if not (hasKey $config "model_reasoning_effort") -}}
+{{-   $config = setValueAtPath "model_reasoning_effort" "high" $config -}}
+{{- end -}}
+{{- if not (hasKey $config "service_tier") -}}
+{{-   $config = setValueAtPath "service_tier" "fast" $config -}}
+{{- end -}}
+{{- if not (hasKey $config "plan_mode_reasoning_effort") -}}
+{{-   $config = setValueAtPath "plan_mode_reasoning_effort" "xhigh" $config -}}
+{{- end -}}
+
+{{- /* Enforce the notify hook (path derived from home dir, not hardcoded) */ -}}
+{{- $notify := list (printf "%s/.codex/computer-use/Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient" .chezmoi.homeDir) "turn-ended" -}}
+{{- $config = setValueAtPath "notify" $notify $config -}}
+
+{{- /* Enforce TUI appearance and behavior */ -}}
+{{- $config = setValueAtPath "tui.theme" "tokyo-night" $config -}}
+{{- $config = setValueAtPath "tui.status_line" (list "current-dir" "git-branch" "model-with-reasoning" "fast-mode" "context-remaining") $config -}}
+{{- $config = setValueAtPath "tui.notifications" (list "approval-requested") $config -}}
+{{- $config = setValueAtPath "tui.notification_condition" "unfocused" $config -}}
+{{- $config = setValueAtPath "tui.keymap.global.open_transcript" "ctrl-t" $config -}}
+{{- $config = setValueAtPath "tui.keymap.chat.interrupt_turn" "f12" $config -}}
+
+{{- /* Enforce feature flags; drop obsolete js_repl */ -}}
+{{- $config = setValueAtPath "features.prevent_idle_sleep" true $config -}}
+{{- $_ := unset (get $config "features") "js_repl" -}}
+
+{{- $config | toToml -}}

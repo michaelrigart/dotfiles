@@ -34,3 +34,30 @@ CLAUDE.md
 *.bak
 *.tmp
 *.temp
+
+# Claude Code & Codex: allowlist-only (defense in depth).
+# These dirs hold credentials (~/.codex/auth.json), session transcripts,
+# sqlite state, caches, telemetry and memories that must never reach this
+# PUBLIC repo. Ignore each dir's contents, then re-include ONLY the files
+# chezmoi is meant to manage. chezmoi honors .chezmoiignore during
+# `chezmoi add`, so this also blocks accidental recursive ingestion of
+# secrets/state (e.g. an errant `chezmoi add ~/.codex`).
+#
+# NB: gitignore/chezmoi cannot re-include a file under an ignored directory,
+# so ignore one level at a time (dir/*) and re-include each parent dir we
+# need to descend into — NOT dir/** (which ignores the dirs themselves).
+.claude/*
+!.claude/CLAUDE.md
+!.claude/settings.json
+!.claude/statusline.sh
+!.claude/subagent-statusline.sh
+!.claude/themes/
+.claude/themes/*
+!.claude/themes/tokyo-night.json
+
+.codex/*
+!.codex/AGENTS.md
+!.codex/config.toml
+!.codex/themes/
+.codex/themes/*
+!.codex/themes/tokyo-night.tmTheme
