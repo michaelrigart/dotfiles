@@ -6,8 +6,13 @@
     command = "nvim"
 
 [diff]
-    command = "nvim"
-    args = ["-d"]
+    # Builtin unified diff piped through delta (same colorizer as git) so it
+    # renders cleanly during `chezmoi apply` prompts. `nvim -d` is kept for
+    # [merge], which chezmoi runs fully interactively.
+    # --paging=never dumps the diff into the terminal's normal scrollback
+    # (instead of an alt-screen `less`), so it stays fully scrollable and
+    # selectable for copy.
+    pager = "delta --paging=never"
     # Exclude certain paths from diffs
     exclude = ["scripts"]
 
