@@ -53,6 +53,11 @@ window-theme = auto
 # Claude shift+enter
 keybind = shift+enter=text:\x1b\r
 
+# Clear screen — Ghostty's built-in clear_screen is a no-op in the alternate
+# screen (i.e. inside Zellij/TUIs), so send Alt-k instead. Zellij binds Alt-k to
+# Clear; a bare shell can bind '\ek' to clear-screen. Works in and out of Zellij.
+keybind = cmd+k=text:\x1bk
+
 # Navigate splits with Cmd+Arrow
 keybind = cmd+left=goto_split:left
 keybind = cmd+right=goto_split:right

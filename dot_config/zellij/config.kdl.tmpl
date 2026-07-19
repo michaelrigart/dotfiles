@@ -58,6 +58,14 @@ keybinds clear-defaults=true {
         // Alt-n's NewPane adds another *floating* pane, not a tiled one.
         bind "Alt p" { ToggleFloatingPanes; }
 
+        // --- Clear the focused pane (screen + scrollback). Bound to Alt-k
+        //     because Ghostty maps Cmd-k → Alt-k, so cmd+k clears inside Zellij
+        //     (Ghostty's own clear_screen no-ops in the alternate screen).
+        //     `Write 12` sends Ctrl-L to the program afterwards so the shell
+        //     repaints its prompt (Clear alone leaves a blank pane; in Neovim
+        //     Ctrl-L just forces a redraw).
+        bind "Alt k" { Clear; Write 12; }
+
         // --- Session.
         bind "Alt w" { Detach; }                   // step away; the session keeps running
         bind "Alt q" { Quit; }                     // WARNING: kills this session (all panes)

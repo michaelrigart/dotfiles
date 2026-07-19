@@ -7,6 +7,12 @@ source "$HOMEBREW_PREFIX/share/zsh-syntax-highlighting/zsh-syntax-highlighting.z
 source "$HOME/.config/zsh/aliases"
 source "$HOME/.config/zsh/functions"
 
+# Keybindings — must come after oh-my-zsh.sh, which resets the emacs keymap and
+# drops any custom bind set earlier. Ghostty maps Cmd-k → Alt-k (its built-in
+# clear_screen no-ops in the alternate screen / inside Zellij); Zellij handles
+# Alt-k itself, and this makes Cmd-k clear at a bare shell prompt too.
+bindkey '\ek' clear-screen
+
 # Added by LM Studio CLI (lms)
 export PATH="$PATH:/Users/michael/.lmstudio/bin"
 # End of LM Studio CLI section
