@@ -184,3 +184,38 @@ dev() {
     ( cd "$repo" && zellij --session "$name" --new-session-with-layout dev )
   fi
 }
+
+# wt — spin up (or reopen) a git worktree for the current repo in its own Zellij
+# "dev" session. Complements `dev`, which only *finds* existing checkouts; `wt`
+# *creates* one first, as a sibling under the same org dir so `dev`'s repo glob and
+# session-slug naming pick it up. The worktree dir and session are named after the
+# branch, with any "/" flattened to "-" so the paths stay valid (curato +
+# "feature/foo" → ~/Code/Netronix/curato-feature-foo, session
+# netronix--curato-feature-foo).
+#   wt test           worktree ../<repo>-test        on branch "test"
+#   wt feature/foo    worktree ../<repo>-feature-foo on branch "feature/foo"
+# Run from anywhere inside the repo (or one of its worktrees).
+wt() {
+  emulate -L zsh
+  local branch="$1"
+  [[ -n "$branch" ]] || { print -ru2 -- "usage: wt <branch>"; return 1; }
+  local slug="${branch//\//-}"          # flatten "/" so the dir/session stay valid
+
+  local common root
+  common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" \
+    || { print -ru2 -- "wt: not inside a git repo."; return 1; }
+  root="${common:h}"                    # .../<repo>/.git → .../<repo> (main worktree)
+  # NB: not `path` — that's zsh's special var tied to $PATH; assigning it breaks
+  # command lookup for the rest of the function.
+  local dest="${root:h}/${root:t}-${slug}"
+
+  if [[ -d "$dest" ]]; then
+    print -ru2 -- "wt: reopening $dest"
+  elif git -C "$root" show-ref --quiet --verify "refs/heads/$branch"; then
+    git -C "$root" worktree add "$dest" "$branch"    || return
+  else
+    git -C "$root" worktree add "$dest" -b "$branch" || return
+  fi
+
+  dev "$dest"
+}
