@@ -190,17 +190,24 @@ dev() {
       # `attach --create-background` can spin up a *detached* session, and it can't
       # take a layout, so: create it detached (in the worktree), graft the dev layout
       # on as tabs, then switch to the now-existing session (the safe vanilla path).
-      ( cd "$repo" && zellij attach --create-background "$name" ) \
-        && zellij -s "$name" action new-tab --layout dev --cwd "$repo" >/dev/null \
-        && zellij action switch-session "$name"
-      # attach -b leaves a stray default tab in front of the grafted dev tabs. Once a
-      # client has switched over, focus it by name and close it. Matching by name (no
-      # --create) is a safe no-op if it's absent or renamed, so a real dev tab is
-      # never closed; the brief sleep lets the client finish attaching, and `|| true`
-      # keeps a failed close from failing wt.
-      sleep 0.2
-      zellij -s "$name" action go-to-tab-name "Tab #1" 2>/dev/null \
-        && zellij -s "$name" action close-tab 2>/dev/null || true
+      if ( cd "$repo" && zellij attach --create-background "$name" ) \
+         && zellij -s "$name" action new-tab --layout dev --cwd "$repo" >/dev/null \
+         && zellij action switch-session "$name"; then
+        # attach -b leaves a stray default tab in front of the grafted dev tabs. Now
+        # that a client has switched over, focus it by name and close it. Matching by
+        # name (no --create) is a safe no-op if it's absent or renamed, so a real dev
+        # tab is never closed; the brief sleep lets the client finish attaching, and
+        # `|| true` keeps a failed close from failing the caller.
+        sleep 0.2
+        zellij -s "$name" action go-to-tab-name "Tab #1" 2>/dev/null \
+          && zellij -s "$name" action close-tab 2>/dev/null || true
+      else
+        # Usually this shell and the running client disagree about ZELLIJ_SOCKET_DIR
+        # — a session started before that setting changed lives in the old dir, so
+        # the switch can't reach the current client. Say so: the session is built and
+        # waiting, and silently staying put looks like nothing happened at all.
+        print -ru2 -- "dev: '$name' is ready but switching failed — attach with: zellij attach $name"
+      fi
     fi
   elif [[ -n "$exists" ]]; then
     zellij attach "$name"
