@@ -213,6 +213,7 @@ dev() {
 # Run from anywhere inside the repo (or one of its worktrees).
 wt() {
   emulate -L zsh
+  setopt local_options extended_glob   # the .worktreeinclude trim below needs it
   local branch="$1"
   [[ -n "$branch" ]] || { print -ru2 -- "usage: wt <branch>"; return 1; }
   local slug="${branch//\//-}"          # flatten "/" so the dir/session stay valid
@@ -225,12 +226,38 @@ wt() {
   # command lookup for the rest of the function.
   local dest="${root:h}/${root:t}-${slug}"
 
+  local created=1
   if [[ -d "$dest" ]]; then
-    print -ru2 -- "wt: reopening $dest"
+    print -ru2 -- "wt: reopening $dest"; created=
   elif git -C "$root" show-ref --quiet --verify "refs/heads/$branch"; then
     git -C "$root" worktree add "$dest" "$branch"    || return
   else
     git -C "$root" worktree add "$dest" -b "$branch" || return
+  fi
+
+  # A fresh worktree has none of the repo's gitignored files, so it can't run
+  # (missing env/secrets). Copy the ones this repo lists in .worktreeinclude from
+  # the main checkout via wtcp (rsync; refuses to clobber). Only carry paths that
+  # actually exist, and only on first creation — reopening leaves them untouched.
+  if [[ -n "$created" && -f "$root/.worktreeinclude" ]]; then
+    if (( $+commands[wtcp] )); then
+      # `|| [[ -n "$line" ]]` so a final line with no trailing newline still counts;
+      # entries are trimmed, and anything missing is reported rather than skipped in
+      # silence (a dropped env file only surfaces later as a confusing boot failure).
+      local -a carry; local line
+      while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${${line##[[:space:]]##}%%[[:space:]]##}"
+        [[ -z "$line" || "$line" == '#'* ]] && continue
+        if [[ -e "$root/$line" ]]; then
+          carry+=( "$line" )
+        else
+          print -ru2 -- "wt: .worktreeinclude lists '$line', not found in $root — skipping."
+        fi
+      done < "$root/.worktreeinclude"
+      (( ${#carry} )) && ( cd "$dest" && wtcp --from "$root" "${carry[@]}" )
+    else
+      print -ru2 -- "wt: .worktreeinclude present but wtcp missing; skipping file copy (brew install satococoa/tap/wtcp)"
+    fi
   fi
 
   dev "$dest"
