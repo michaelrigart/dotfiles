@@ -112,10 +112,11 @@ tsh() {
 #   dev Netronix/curato  path relative to ~/Code
 #   dev .                the git repo containing the current directory
 #
-# Session name = the repo's path under ~/Code, lowercased, "/" → "--" (Zellij
-# rejects "/"). That path slug is already unique — worktrees included — so it needs
-# no hash. Repos outside ~/Code, and over-length slugs, are truncated to 26 plus a
-# short hash of the canonical git root, staying inside Zellij's 36-char limit.
+# Session name = the checkout's directory name, lowercased, so the same string
+# works everywhere: `dev <name>`, `zellij list-sessions` and `zellij attach <name>`.
+# It is only qualified when that would be ambiguous — the org-prefixed path slug
+# ("/" → "--", which Zellij rejects) when two repos share a basename, or basename
+# plus a short hash for a repo outside ~/Code, which the glob above can't see.
 dev() {
   emulate -L zsh
   setopt local_options null_glob extended_glob
@@ -156,17 +157,24 @@ dev() {
   [[ -n "$repo" && -e "$repo/.git" ]] || { print -ru2 -- "dev: no git repo resolved."; return 1; }
 
   # --- session name ---
+  local base="${repo:t:l}" h
   if [[ "$repo" == "$code/"* ]]; then
-    local slug="${repo#$code/}"; slug="${slug//\//--}"; name="${(L)slug}"
-    if (( ${#name} > 36 )); then
-      local h; h="$(shasum -a 256 <<<"$repo")"; name="${name[1,26]}--${h[1,8]}"
+    local -a same=( ${(M)repos:#*/${repo:t}} )
+    if (( ${#same} > 1 )); then          # two orgs own this basename → qualify it
+      local slug="${repo#$code/}"; name="${(L)${slug//\//--}}"
+    else
+      name="$base"
     fi
   else
-    # Outside ~/Code: basename + hash of the canonical root (a bare basename would
-    # collide, e.g. /tmp/curato-review vs other/curato-review). Truncate to 26 so
-    # 26 + "--" + 8 stays inside Zellij's 36-char session-name limit.
-    local h b; h="$(shasum -a 256 <<<"$repo")"; b="${repo:t:l}"
-    name="${b[1,26]}--${h[1,8]}"
+    # Outside ~/Code the glob can't prove the basename is unique (e.g.
+    # /tmp/curato-review vs other/curato-review), so pin it to the canonical root.
+    h="$(shasum -a 256 <<<"$repo")"; name="${base}--${h[1,8]}"
+  fi
+  # The IPC socket path (ZELLIJ_SOCKET_DIR + contract dir + name) must stay under
+  # 104 bytes; the short socket dir leaves ~68 for the name. Long branch names can
+  # still approach that, so fold the tail into a hash rather than let zellij abort.
+  if (( ${#name} > 60 )); then
+    h="$(shasum -a 256 <<<"$repo")"; name="${name[1,50]}--${h[1,8]}"
   fi
 
   # --- launch / attach / switch ---
