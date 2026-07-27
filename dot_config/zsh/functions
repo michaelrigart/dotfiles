@@ -107,16 +107,19 @@ tsh() {
 }
 
 # dev — open (or return to) a project in its Zellij "dev" layout.
-#   dev                  pick from all repos under ~/Code (fzf)
-#   dev curato           by name: exact basename → case-insensitive substring → fzf
-#   dev Netronix/curato  path relative to ~/Code
-#   dev .                the git repo containing the current directory
+#   dev                   pick from all repos under ~/Code (fzf)
+#   dev curato            by name: exact basename → case-insensitive substring → fzf
+#   dev netronix--curato  by session name, exactly as `zellij list-sessions` prints it
+#   dev Netronix/curato   path relative to ~/Code
+#   dev .                 the git repo containing the current directory
 #
-# Session name = the checkout's directory name, lowercased, so the same string
-# works everywhere: `dev <name>`, `zellij list-sessions` and `zellij attach <name>`.
-# It is only qualified when that would be ambiguous — the org-prefixed path slug
-# ("/" → "--", which Zellij rejects) when two repos share a basename, or basename
-# plus a short hash for a repo outside ~/Code, which the glob above can't see.
+# Session name = the repo's path under ~/Code, lowercased, "/" → "--" (Zellij rejects
+# "/"). Always org-qualified, so a name is stable: cloning an unrelated repo that
+# happens to share a basename never renames a session you already use. No hash is
+# needed — the short ZELLIJ_SOCKET_DIR leaves ~68 chars of IPC socket path — and `dev`
+# takes that same name back, so what list-sessions prints is always a valid argument.
+# Repos outside ~/Code are invisible to the glob, so they keep basename + a hash of
+# the canonical root; anything past 60 chars keeps a hashed tail for the socket path.
 dev() {
   emulate -L zsh
   setopt local_options null_glob extended_glob
@@ -139,7 +142,10 @@ dev() {
     if [[ -z "$arg" ]]; then
       hits=( $repos )
     else
-      hits=( ${(M)repos:#*/$arg} )                        # exact basename
+      # Session-name form first (netronix--curato): "--" maps back to the path
+      # separator, so what `zellij list-sessions` prints can be pasted straight back.
+      hits=( ${(M)repos:#(#i)$code/${arg//--//}} )
+      (( ${#hits} )) || hits=( ${(M)repos:#*/$arg} )      # exact basename
       (( ${#hits} )) || hits=( ${(M)repos:#(#i)*$arg*} )  # case-insensitive substring
     fi
     if (( ${#hits} == 1 )); then
@@ -157,18 +163,13 @@ dev() {
   [[ -n "$repo" && -e "$repo/.git" ]] || { print -ru2 -- "dev: no git repo resolved."; return 1; }
 
   # --- session name ---
-  local base="${repo:t:l}" h
+  local h
   if [[ "$repo" == "$code/"* ]]; then
-    local -a same=( ${(M)repos:#*/${repo:t}} )
-    if (( ${#same} > 1 )); then          # two orgs own this basename → qualify it
-      local slug="${repo#$code/}"; name="${(L)${slug//\//--}}"
-    else
-      name="$base"
-    fi
+    local slug="${repo#$code/}"; name="${(L)${slug//\//--}}"
   else
     # Outside ~/Code the glob can't prove the basename is unique (e.g.
     # /tmp/curato-review vs other/curato-review), so pin it to the canonical root.
-    h="$(shasum -a 256 <<<"$repo")"; name="${base}--${h[1,8]}"
+    h="$(shasum -a 256 <<<"$repo")"; name="${repo:t:l}--${h[1,8]}"
   fi
   # The IPC socket path (ZELLIJ_SOCKET_DIR + contract dir + name) must stay under
   # 104 bytes; the short socket dir leaves ~68 for the name. Long branch names can
