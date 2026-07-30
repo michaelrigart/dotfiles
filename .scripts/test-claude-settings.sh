@@ -84,5 +84,18 @@ jq_is '.sandbox.network.strictAllowlist // false' false "strictAllowlist off in 
 echo "I. layer 2 deferred — preflight returned exit 2"
 jq_is '.sandbox | has("credentials")' false "no credentials block (layer 2 deferred)"
 
+echo "J. defaultMode is seeded, not enforced"
+# Runtime-mutable via /permissions, like model and effortLevel. Enforcing it would revert
+# a deliberate plan-mode choice on every apply.
+emit '{"permissions":{"defaultMode":"plan"}}'
+jq_is '.permissions.defaultMode' 'plan'    "live defaultMode survives (plan preserved)"
+emit '{"permissions":{"defaultMode":"acceptEdits"}}'
+jq_is '.permissions.defaultMode' 'acceptEdits' "any live defaultMode survives"
+emit '{}'
+jq_is '.permissions.defaultMode' 'default' "absent defaultMode seeded to default"
+# The seeding must not disturb the rules themselves.
+emit '{"permissions":{"defaultMode":"plan"}}'
+jq_is '.permissions.deny | length' 14 "deny rules intact when defaultMode carried"
+
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

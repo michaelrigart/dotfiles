@@ -560,12 +560,17 @@ Task 3 ran**; `enabledPlugins` and `extraKnownMarketplaces` unchanged.
 |---|---|---|---|
 | `theme` | `custom:tokyo-night` | `custom:tokyo-night` | No-op. Same value; only its position in the file changes, so the diff shows it as added |
 | `model` | absent | `opus[1m]` | Intended. The template seeds it as a default; the deployed file predates that line |
-| `permissions.defaultMode` | `plan` | `default` | **Behavioral.** Applying takes the session out of plan mode. Must be an explicit decision — see below |
+| `permissions.defaultMode` | `plan` | `plan` | **Resolved.** Now carried through, not enforced — see below |
 
-If `defaultMode` is to be preserved rather than overwritten, it belongs in the modify
-script's carry-through set alongside `model` and `effortLevel`, which commit `71aaae2`
-already established as "seed as default, not enforced" precisely because they are
-runtime-mutable. `defaultMode` is runtime-mutable too, via `/permissions`.
+`defaultMode` was originally enforced as `default`, which would have silently dropped the
+live `plan` setting on every apply. It is runtime-mutable via `/permissions`, exactly like
+`model` and `effortLevel`, which commit `71aaae2` had already converted to "seed as
+default, not enforced" for that reason. `defaultMode` now joins them: an existing value is
+preserved, and `default` is seeded only when the key is absent.
+
+**Net behavioural change on apply is therefore the `model` key alone.** Verified at value
+level rather than by reading diff text — chezmoi's side-by-side output shows relocated
+context lines that are easily misread as changes.
 
 - [ ] **Step 2: Apply**
 
