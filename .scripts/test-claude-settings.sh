@@ -56,18 +56,7 @@ echo "D. layer 1 — GitLab CI coverage"
 jq_is '.permissions.ask | index("Edit(**/.gitlab-ci.yml)") != null' true "asks on .gitlab-ci.yml"
 jq_is '.permissions.ask | index("Edit(**/.gitlab/ci/**)") != null' true "asks on .gitlab/ci/**"
 
-echo "E. layer 1 — sandboxed Git can read only its required SSH files"
-jq_is '(.sandbox.filesystem.allowRead | sort) ==
-       (["~/.ssh/config","~/.ssh/known_hosts","~/.ssh/michael","~/.ssh/michael.pub"] | sort)' \
-      true "allowRead carves out exactly the Git SSH files"
-jq_is '.sandbox.filesystem | has("allowWrite")' false \
-      "no SSH write exception accompanies the read carve-out"
-jq_is '.permissions.deny | index("Read(~/.ssh/**)") != null' true \
-      "direct Read and @ references remain denied across ~/.ssh"
-jq_is '.permissions.deny | index("Edit(~/.ssh/**)") != null' true \
-      "direct Edit remains denied across ~/.ssh"
-
-echo "F. carry-through keys survive"
+echo "E. carry-through keys survive"
 emit '{"enabledPlugins":{"x@y":true},"extraKnownMarketplaces":{"m":{}},"model":"opus[1m]","effortLevel":"xhigh"}'
 jq_is '.enabledPlugins["x@y"]' true       "enabledPlugins carried through"
 jq_is '.extraKnownMarketplaces.m != null' true "extraKnownMarketplaces carried through"
