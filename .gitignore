@@ -63,3 +63,9 @@ Sessionx.vim
 .chezmoidata.toml
 .chezmoidata.yaml
 .chezmoidata.json
+
+# Superpowers execution state and generated artifacts — task briefs, per-task
+# reports, review diffs, progress ledgers. Approved specs and plans under
+# docs/superpowers/{specs,plans}/ ARE tracked; only the execution exhaust is not.
+.superpowers/
+docs/superpowers/runs/

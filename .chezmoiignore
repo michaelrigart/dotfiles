@@ -5,6 +5,10 @@
 README.md
 CLAUDE.md
 
+# Design records — versioned with the code, never deployed. Without this,
+# `chezmoi apply` would create ~/docs/superpowers/... in $HOME.
+docs/
+
 # Version control
 .git
 .gitignore
