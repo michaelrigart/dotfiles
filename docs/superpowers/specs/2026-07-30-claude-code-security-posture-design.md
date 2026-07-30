@@ -265,46 +265,79 @@ explicitly.
 ## Implementation
 
 Sequenced so the security repair lands and is verified before egress policy changes.
+Layer 2 is deferred — see *Layer 2 status* above — so the ordering below reflects what
+actually ships.
 
-1. `fix(claude): repair permission and credential boundaries` — layers 1 and 2, plus the
-   SSH inventory regression test.
-2. `fix(claude): harden sandbox escape and network policy` — layer 4 only.
-   `strictAllowlist` stays **off**.
-3. Apply and verify 1–2 with `strictAllowlist` off.
-4. Domain-discovery checkpoint — reproduce GitLab, Basecamp, Teleport (`tsh`) and
-   Kubernetes (`kubectl`) traffic; record **every destination observed**, including
-   classifier-approved ones, not only rejections.
-5. `fix(claude): enable deterministic egress` — `allowedDomains` and
-   `strictAllowlist: true` together.
-6. Apply and verify allowed *and* denied egress.
-7. `chore(agents): remove redundant Claude plugins` — see below.
+| # | Change | Status |
+|---|---|---|
+| 0 | SSH-agent preflight (`.scripts/preflight-ssh-agent.sh`) | Done — returned exit 2 |
+| 1 | `fix(claude): repair inert permission rules` — layer 1 + settings test suite | Done |
+| 2 | `fix(claude): harden sandbox escape routes` — layer 4. `strictAllowlist` stays **off** | Done |
+| 3 | Apply and verify 1–2 with `strictAllowlist` off | Next |
+| 4 | Domain-discovery checkpoint — record **every destination observed**, including classifier-approved ones, not only rejections | Pending |
+| 5 | `fix(claude): enable deterministic egress` — `allowedDomains` and `strictAllowlist: true` together | Pending |
+| 6 | Apply and verify allowed *and* denied egress | Pending |
+| 7 | `chore(agents): remove redundant Claude plugins` | Pending |
+| — | Layer 2 credential isolation + SSH inventory test | **Deferred** — blocked on an allowlistable agent socket |
+
+Applying step 3 also changes `permissions.defaultMode` from the live `plan` to the
+template's `default`, and adds the `model` key. Both are behavioural and must be
+acknowledged before the apply, not discovered after it.
 
 Plugin removal, given the add-only reconciler:
 
 - Remove `code-review@claude-plugins-official` from `plugins.conf`.
 - Uninstall **both** `frontend-design@claude-code-plugins` (enabled but never declared)
   and `code-review@claude-plugins-official`.
-- Confirm absence via `claude plugin list --json`.
+- Confirm absence via `claude plugin list --json | jq -r '.[].id'` — the field is `.id`;
+  `.name` returns `null` for every row and would falsely confirm removal.
 - Confirm `/help` exposes the built-in `/code-review`.
 - Run `.scripts/test-reconcile-agents.sh`.
 
 ## Verification
 
+**Never test a deny rule against a real secret.** If the rule is broken — the failure under
+test — a Read leaks key material and an Edit destroys the key. Tool-layer checks use a
+disposable sentinel under `~/.ssh`, which the directory-wide rules cover identically.
+Subprocess checks use a no-output read (`dd if="$HOME/..." of=/dev/null`) and assert the
+exit code. Use `"$HOME"`, never `~`: the shell does not tilde-expand after `if=`, so
+`if=~/.ssh/x` fails on an unresolved path and its non-zero rc is indistinguishable from a
+working deny.
+
+All chezmoi commands must pass `-S <worktree>` until this branch merges; the default source
+is main, and an unqualified invocation silently verifies the wrong configuration.
+
+### Always
+
 - `/status`, `/permissions`, `/sandbox` reflect the intended rules, with no
   unknown-tool-name warnings at startup.
-- Denied **Read** and denied **Edit** tested separately against a credential path; both
-  refused, and neither refusal leaks file contents.
-- Bash-level credential denial tested separately from Claude's file tools — a sandboxed
-  `cat` of a denied key must fail independently of the Read-tool deny.
-- `~/.ssh/config` remains readable to sandboxed subprocesses.
-- A sandboxed Git operation against GitLab authenticates successfully via whatever agent
-  socket the preflight gate identified. If the gate found no allowlistable socket, layer 2
-  is not deployed and this test is a stop condition rather than a pass/fail.
-- SSH inventory regression test passes: 12 files enumerated under `~/.ssh`, each with a
-  `credentials.files` entry. Those 12 are a subset of **14** total `credentials.files`
-  entries — the other two being `~/.aws/credentials` and `~/.config/op/config`, which are
-  outside `~/.ssh` and therefore outside the inventory test's scope.
+- Denied **Read** and denied **Edit** tested separately against the sentinel; both refused,
+  and neither refusal leaks file contents.
 - Both new ask rules fire: a Docker command and an unsandboxed retry each prompt.
-- Allowed egress succeeds and non-allowlisted egress fails closed (after step 5).
-- A second targeted `chezmoi apply ~/.claude/settings.json` is idempotent — no diff.
+- `excludedCommands` is exactly `["docker *"]` and `allowUnixSockets` is exactly `[]` —
+  pinned, so a later addition cannot widen the boundary unnoticed.
+- A second targeted `chezmoi -S <worktree> apply ~/.claude/settings.json` is idempotent.
 - `.scripts/test-reconcile-agents.sh` passes after the plugin change.
+- Allowed egress succeeds and non-allowlisted egress fails closed (after layer 3).
+
+### Only if layer 2 deployed
+
+Currently **not applicable** — the preflight returned exit 2 and layer 2 is deferred. These
+apply if and when it ships:
+
+- Bash-level credential denial tested separately from Claude's file tools — a no-output read
+  of a denied key must fail independently of the Read-tool deny.
+- `~/.ssh/config` remains readable to sandboxed subprocesses (no-output read returns 0).
+- A sandboxed Git operation against GitLab authenticates via the agent socket the preflight
+  identified.
+- SSH inventory regression test passes: 12 files enumerated under `~/.ssh`, each with a
+  `credentials.files` entry — a subset of 14 total, the other two being
+  `~/.aws/credentials` and `~/.config/op/config`.
+
+### While layer 2 is deferred
+
+- `.sandbox | has("credentials")` is **false** — asserted by the settings suite, so a
+  partial layer 2 cannot be applied while the agent problem is unresolved.
+- The inventory script does not exist; its absence is expected, not a failure.
+- A no-output read of a key by a sandboxed subprocess **succeeds**. This is the residual
+  exposure the deferral accepts and must be reported as such.

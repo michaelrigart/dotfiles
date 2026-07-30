@@ -70,12 +70,13 @@ jq_is '.sandbox.allowUnsandboxedCommands' true "escape hatch retained (ask-gated
 jq_is '.permissions.ask | index("Bash(dangerouslyDisableSandbox:true)") != null' true \
       "unsandboxed retry is ask-gated"
 jq_is '.permissions.ask | index("Bash(docker *)") != null' true "docker commands ask-gated"
-jq_is '[.sandbox.network.allowUnixSockets[] | select(test("docker"))] | length' 0 \
-      "no docker sockets allowlisted"
-jq_is '.sandbox.network.allowUnixSockets | index("~/.1password/agent.sock")' null \
-      "dead 1Password socket entry removed"
-jq_is '[.sandbox.network.allowUnixSockets[] | select(test("launchd"))] | length' 0 \
-      "no launchd wildcard"
+# Pin exactly, not by exclusion. Asserting "no docker socket" would still admit an
+# arbitrary socket added later, and "contains docker *" would admit extra excluded
+# commands — each a hole in the boundary this layer exists to draw.
+jq_is '.sandbox.excludedCommands == ["docker *"]' true \
+      "excludedCommands is exactly [\"docker *\"]"
+jq_is '.sandbox.network.allowUnixSockets == []' true \
+      "allowUnixSockets is exactly []"
 
 echo "H. layer 3 stays off until domains are known"
 jq_is '.sandbox.network.strictAllowlist // false' false "strictAllowlist off in this phase"

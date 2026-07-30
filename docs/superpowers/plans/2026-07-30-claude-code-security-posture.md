@@ -539,18 +539,41 @@ still off. This is the checkpoint before egress changes.
 
 - [ ] **Step 1: Preview the apply**
 
-Run: `chezmoi diff ~/.claude/settings.json`
-Expected: the new permissions and `excludedCommands`; the `credentials` block **only if
-Task 3 ran**; `enabledPlugins` and `extraKnownMarketplaces` unchanged; `model` appears (the
-deployed file lacks it — known drift from the template default `opus[1m]`).
+> **Every chezmoi command in this plan MUST pass `-S "$PWD"` from the worktree.**
+> `chezmoi` defaults to its configured source directory — `~/.local/share/chezmoi`, i.e.
+> **main** — not this branch worktree. Verified: the unqualified `chezmoi diff` shows only
+> the theme and `defaultMode` lines and **none of the repaired rules**, so an unqualified
+> apply would deploy the old config while appearing to succeed.
+>
+> **After applying, an ordinary `chezmoi apply` from main will revert this deployment**
+> until the branch merges. That is expected; do not re-apply from main to "fix" it.
+
+Run: `chezmoi -S "$PWD" diff ~/.claude/settings.json`
+
+Expected: the deny array replaced with `Read(...)`/`Edit(...)` rules (9 → 14 entries),
+`excludedCommands` added, `allowUnixSockets` emptied; the `credentials` block **only if
+Task 3 ran**; `enabledPlugins` and `extraKnownMarketplaces` unchanged.
+
+**Acknowledged drift — confirm all three before applying:**
+
+| Key | Live | Template | Nature |
+|---|---|---|---|
+| `theme` | `custom:tokyo-night` | `custom:tokyo-night` | No-op. Same value; only its position in the file changes, so the diff shows it as added |
+| `model` | absent | `opus[1m]` | Intended. The template seeds it as a default; the deployed file predates that line |
+| `permissions.defaultMode` | `plan` | `default` | **Behavioral.** Applying takes the session out of plan mode. Must be an explicit decision — see below |
+
+If `defaultMode` is to be preserved rather than overwritten, it belongs in the modify
+script's carry-through set alongside `model` and `effortLevel`, which commit `71aaae2`
+already established as "seed as default, not enforced" precisely because they are
+runtime-mutable. `defaultMode` is runtime-mutable too, via `/permissions`.
 
 - [ ] **Step 2: Apply**
 
-Run: `chezmoi apply ~/.claude/settings.json`
+Run: `chezmoi -S "$PWD" apply ~/.claude/settings.json`
 
 - [ ] **Step 3: Verify idempotence**
 
-Run: `chezmoi apply ~/.claude/settings.json && chezmoi diff ~/.claude/settings.json`
+Run: `chezmoi -S "$PWD" apply ~/.claude/settings.json && chezmoi -S "$PWD" diff ~/.claude/settings.json`
 Expected: empty diff on the second run.
 
 - [ ] **Step 4: Verify in a fresh session**
@@ -771,7 +794,7 @@ Expected: PASS.
 - [ ] **Step 5: Apply and verify both directions**
 
 ```bash
-chezmoi apply ~/.claude/settings.json
+chezmoi -S "$PWD" apply ~/.claude/settings.json      # -S: never the default main source
 ```
 
 In a fresh session verify **both**: an allowed request succeeds, and a non-allowlisted host
@@ -867,7 +890,9 @@ The reconciler never uninstalls, so both were removed explicitly."
 - [ ] `bash .scripts/test-ssh-credential-inventory.sh` green — **only if Task 3 ran.** If
       layer 2 was deferred this script does not exist; skip it and record why, rather than
       reporting a missing-file error as a failure
-- [ ] `chezmoi diff ~/.claude/settings.json` empty
+- [ ] `chezmoi -S "$PWD" diff ~/.claude/settings.json` empty (run from the worktree; an
+      unqualified invocation reads main and is meaningless here)
+- [ ] Noted that `chezmoi apply` from main reverts this deployment until the branch merges
 - [ ] Spec still reads `**Status:** In progress` (set in *Before starting*) with no MR
       link. Do **not** set `Implemented` here — this plan ends without pushing, so the MR
       does not exist yet. The reference is added after the MR is opened; `Implemented`
