@@ -106,20 +106,42 @@ tsh() {
   fi
 }
 
+# _wt_session_name <path> — the Zellij session name for a checkout. Single source of
+# truth, shared by `dev`, `wt` and `wt-rm`.
+#
+# Name = the repo's path under ~/Code, lowercased, "/" → "--" (Zellij rejects "/").
+# Always org-qualified, so a name is stable: cloning an unrelated repo that happens to
+# share a basename never renames a session you already use. Repos outside ~/Code are
+# invisible to `dev`'s glob, so they keep basename + a hash of the canonical root.
+#
+# The IPC socket path (ZELLIJ_SOCKET_DIR + contract dir + name) must stay under 104
+# bytes; the short socket dir leaves ~68 for the name. Long branch names can approach
+# that, so fold the tail into a hash rather than let zellij abort.
+#
+# NB: this is deliberately NOT invertible — both the hashed form above and any repo
+# directory containing "--" collide with a naive "--" → "/" reversal. Callers resolving
+# a session name back to a path must generate names and compare, never reverse.
+_wt_session_name() {
+  emulate -L zsh
+  # Both sides resolved: git reports real paths, and ~/Code may sit behind a symlink.
+  local repo="${1:A}" code="${HOME:A}/Code" name h
+  if [[ "$repo" == "$code/"* ]]; then
+    local slug="${repo#$code/}"; name="${(L)${slug//\//--}}"
+  else
+    h="$(shasum -a 256 <<<"$repo")"; name="${repo:t:l}--${h[1,8]}"
+  fi
+  if (( ${#name} > 60 )); then
+    h="$(shasum -a 256 <<<"$repo")"; name="${name[1,50]}--${h[1,8]}"
+  fi
+  print -r -- "$name"
+}
+
 # dev — open (or return to) a project in its Zellij "dev" layout.
 #   dev                   pick from all repos under ~/Code (fzf)
 #   dev curato            by name: exact basename → case-insensitive substring → fzf
 #   dev netronix--curato  by session name, exactly as `zellij list-sessions` prints it
 #   dev Netronix/curato   path relative to ~/Code
 #   dev .                 the git repo containing the current directory
-#
-# Session name = the repo's path under ~/Code, lowercased, "/" → "--" (Zellij rejects
-# "/"). Always org-qualified, so a name is stable: cloning an unrelated repo that
-# happens to share a basename never renames a session you already use. No hash is
-# needed — the short ZELLIJ_SOCKET_DIR leaves ~68 chars of IPC socket path — and `dev`
-# takes that same name back, so what list-sessions prints is always a valid argument.
-# Repos outside ~/Code are invisible to the glob, so they keep basename + a hash of
-# the canonical root; anything past 60 chars keeps a hashed tail for the socket path.
 dev() {
   emulate -L zsh
   setopt local_options null_glob extended_glob
@@ -142,9 +164,14 @@ dev() {
     if [[ -z "$arg" ]]; then
       hits=( $repos )
     else
-      # Session-name form first (netronix--curato): "--" maps back to the path
-      # separator, so what `zellij list-sessions` prints can be pasted straight back.
-      hits=( ${(M)repos:#(#i)$code/${arg//--//}} )
+      # Session-name form first (netronix--curato), so what `zellij list-sessions`
+      # prints can be pasted straight back. Generate each repo's name and compare:
+      # the transformation isn't invertible, so the old "--" → "/" reversal silently
+      # failed to find hashed names and any repo directory containing "--".
+      local r
+      for r in $repos; do
+        if [[ "$(_wt_session_name "$r")" == "${(L)arg}" ]]; then hits=( "$r" ); break; fi
+      done
       (( ${#hits} )) || hits=( ${(M)repos:#*/$arg} )      # exact basename
       (( ${#hits} )) || hits=( ${(M)repos:#(#i)*$arg*} )  # case-insensitive substring
     fi
@@ -162,21 +189,7 @@ dev() {
   repo="${repo:A}"
   [[ -n "$repo" && -e "$repo/.git" ]] || { print -ru2 -- "dev: no git repo resolved."; return 1; }
 
-  # --- session name ---
-  local h
-  if [[ "$repo" == "$code/"* ]]; then
-    local slug="${repo#$code/}"; name="${(L)${slug//\//--}}"
-  else
-    # Outside ~/Code the glob can't prove the basename is unique (e.g.
-    # /tmp/curato-review vs other/curato-review), so pin it to the canonical root.
-    h="$(shasum -a 256 <<<"$repo")"; name="${repo:t:l}--${h[1,8]}"
-  fi
-  # The IPC socket path (ZELLIJ_SOCKET_DIR + contract dir + name) must stay under
-  # 104 bytes; the short socket dir leaves ~68 for the name. Long branch names can
-  # still approach that, so fold the tail into a hash rather than let zellij abort.
-  if (( ${#name} > 60 )); then
-    h="$(shasum -a 256 <<<"$repo")"; name="${name[1,50]}--${h[1,8]}"
-  fi
+  name="$(_wt_session_name "$repo")"
 
   # --- launch / attach / switch ---
   local exists=
@@ -191,24 +204,34 @@ dev() {
       # `attach --create-background` can spin up a *detached* session, and it can't
       # take a layout, so: create it detached (in the worktree), graft the dev layout
       # on as tabs, then switch to the now-existing session (the safe vanilla path).
-      if ( cd "$repo" && zellij attach --create-background "$name" ) \
-         && zellij -s "$name" action new-tab --layout dev --cwd "$repo" >/dev/null \
-         && zellij action switch-session "$name"; then
-        # attach -b leaves a stray default tab in front of the grafted dev tabs. Now
-        # that a client has switched over, focus it by name and close it. Matching by
-        # name (no --create) is a safe no-op if it's absent or renamed, so a real dev
-        # tab is never closed; the brief sleep lets the client finish attaching, and
-        # `|| true` keeps a failed close from failing the caller.
-        sleep 0.2
-        zellij -s "$name" action go-to-tab-name "Tab #1" 2>/dev/null \
-          && zellij -s "$name" action close-tab 2>/dev/null || true
-      else
+      # Each step is checked separately: they fail differently and leave different
+      # amounts of session behind. Collapsing them into one && chain reported
+      # "'$name' is ready" even when creation itself failed — sending you off to
+      # attach a session that was never made — and returned success either way.
+      if ! ( cd "$repo" && zellij attach --create-background "$name" ); then
+        print -ru2 -- "dev: failed to create session '$name'."
+        return 1
+      fi
+      if ! zellij -s "$name" action new-tab --layout dev --cwd "$repo" >/dev/null; then
+        print -ru2 -- "dev: '$name' created but the dev layout failed to load — inspect it with: zellij attach $name"
+        return 1
+      fi
+      if ! zellij action switch-session "$name"; then
         # Usually this shell and the running client disagree about ZELLIJ_SOCKET_DIR
         # — a session started before that setting changed lives in the old dir, so
         # the switch can't reach the current client. Say so: the session is built and
         # waiting, and silently staying put looks like nothing happened at all.
         print -ru2 -- "dev: '$name' is ready but switching failed — attach with: zellij attach $name"
+        return 1
       fi
+      # attach -b leaves a stray default tab in front of the grafted dev tabs. Now
+      # that a client has switched over, focus it by name and close it. Matching by
+      # name (no --create) is a safe no-op if it's absent or renamed, so a real dev
+      # tab is never closed; the brief sleep lets the client finish attaching, and
+      # `|| true` keeps a failed close from failing the caller.
+      sleep 0.2
+      zellij -s "$name" action go-to-tab-name "Tab #1" 2>/dev/null \
+        && zellij -s "$name" action close-tab 2>/dev/null || true
     fi
   elif [[ -n "$exists" ]]; then
     zellij attach "$name"
@@ -224,14 +247,18 @@ dev() {
 # branch, with any "/" flattened to "-" so the paths stay valid (curato +
 # "feature/foo" → ~/Code/Netronix/curato-feature-foo, session
 # netronix--curato-feature-foo).
-#   wt test           worktree ../<repo>-test        on branch "test"
-#   wt feature/foo    worktree ../<repo>-feature-foo on branch "feature/foo"
+#   wt test                worktree ../<repo>-test        on branch "test"
+#   wt feature/foo         worktree ../<repo>-feature-foo on branch "feature/foo"
+#   wt hotfix origin/main  branch "hotfix" from an explicit start point
 # Run from anywhere inside the repo (or one of its worktrees).
+#
+# A new branch starts from the *caller's* HEAD, matching plain `git worktree add -b`:
+# branch from where you are, and keep working offline. Pass a start point to override.
 wt() {
   emulate -L zsh
   setopt local_options extended_glob   # the .worktreeinclude trim below needs it
-  local branch="$1"
-  [[ -n "$branch" ]] || { print -ru2 -- "usage: wt <branch>"; return 1; }
+  local branch="$1" start="${2-}"
+  [[ -n "$branch" ]] || { print -ru2 -- "usage: wt <branch> [start-point]"; return 1; }
   local slug="${branch//\//-}"          # flatten "/" so the dir/session stay valid
 
   local common root
@@ -244,11 +271,30 @@ wt() {
 
   local created=1
   if [[ -d "$dest" ]]; then
+    # A bare -d check is not enough to call this "reopen": the directory may be a husk
+    # left by a failed removal (no .git at all), or — because "feature/foo" and
+    # "feature-foo" flatten to the same slug — a worktree on a *different* branch,
+    # which would silently drop you into the wrong code.
+    _wt_assert_worktree "$root" "$dest" "$branch" || return 1
     print -ru2 -- "wt: reopening $dest"; created=
   elif git -C "$root" show-ref --quiet --verify "refs/heads/$branch"; then
-    git -C "$root" worktree add "$dest" "$branch"    || return
+    [[ -z "$start" ]] || {
+      print -ru2 -- "wt: branch '$branch' already exists — drop the start point."; return 1 }
+    git worktree add "$dest" "$branch" || return
   else
-    git -C "$root" worktree add "$dest" -b "$branch" || return
+    # Deliberately NOT `git -C "$root"`: running against the main checkout pinned every
+    # new branch to main's HEAD, so `wt child` from inside another worktree branched off
+    # main rather than the work it was started from. Report the base either way —
+    # branching off a detached commit is sometimes deliberate, so show it, don't warn.
+    local base
+    if [[ -n "$start" ]]; then
+      base="$start"
+    else
+      base="$(git symbolic-ref --quiet --short HEAD 2>/dev/null)" \
+        || base="detached@$(git rev-parse --short HEAD 2>/dev/null)"
+    fi
+    print -r -- "wt: branching '$branch' from $base"
+    git worktree add "$dest" -b "$branch" ${start:+"$start"} || return
   fi
 
   # A fresh worktree has none of the repo's gitignored files, so it can't run
@@ -256,25 +302,137 @@ wt() {
   # the main checkout via wtcp (rsync; refuses to clobber). Only carry paths that
   # actually exist, and only on first creation — reopening leaves them untouched.
   if [[ -n "$created" && -f "$root/.worktreeinclude" ]]; then
-    if (( $+commands[wtcp] )); then
-      # `|| [[ -n "$line" ]]` so a final line with no trailing newline still counts;
-      # entries are trimmed, and anything missing is reported rather than skipped in
-      # silence (a dropped env file only surfaces later as a confusing boot failure).
-      local -a carry; local line
-      while IFS= read -r line || [[ -n "$line" ]]; do
-        line="${${line##[[:space:]]##}%%[[:space:]]##}"
-        [[ -z "$line" || "$line" == '#'* ]] && continue
-        if [[ -e "$root/$line" ]]; then
-          carry+=( "$line" )
-        else
-          print -ru2 -- "wt: .worktreeinclude lists '$line', not found in $root — skipping."
-        fi
-      done < "$root/.worktreeinclude"
-      (( ${#carry} )) && ( cd "$dest" && wtcp --from "$root" "${carry[@]}" )
-    else
-      print -ru2 -- "wt: .worktreeinclude present but wtcp missing; skipping file copy (brew install satococoa/tap/wtcp)"
+    if (( ! $+commands[wtcp] )); then
+      # These files are the reason the worktree can run at all, so don't hand back a
+      # half-built checkout that fails confusingly at boot.
+      print -ru2 -- "wt: .worktreeinclude present but wtcp is missing (brew install satococoa/tap/wtcp)."
+      print -ru2 -- "    The worktree exists — install wtcp, copy the files, then: dev $dest"
+      return 1
+    fi
+    # `|| [[ -n "$line" ]]` so a final line with no trailing newline still counts;
+    # entries are trimmed. A listed path that doesn't exist is a stale
+    # .worktreeinclude — and that file is *tracked*, so hard-failing there would block
+    # every worktree in the repo until someone commits a fix. Warn, carry the rest.
+    local -a carry; local line
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      line="${${line##[[:space:]]##}%%[[:space:]]##}"
+      [[ -z "$line" || "$line" == '#'* ]] && continue
+      if [[ -e "$root/$line" ]]; then
+        carry+=( "$line" )
+      else
+        print -ru2 -- "wt: .worktreeinclude lists '$line', not found in $root — skipping."
+      fi
+    done < "$root/.worktreeinclude"
+    # A failed copy, by contrast, was previously invisible: the status went unchecked
+    # and wt walked straight into dev with an unrunnable worktree.
+    if (( ${#carry} )) && ! ( cd "$dest" && wtcp --from "$root" "${carry[@]}" ); then
+      print -ru2 -- "wt: copying .worktreeinclude files into $dest failed."
+      print -ru2 -- "    The worktree exists — fix the copy, then: dev $dest"
+      return 1
     fi
   fi
 
   dev "$dest"
+}
+
+# _wt_assert_worktree <root> <dest> <branch> — succeed only if <dest> is a worktree
+# registered to <root> and currently on <branch>. Shared by `wt` (reopen) and `wt-rm`
+# (removal): both must refuse husks and slug collisions rather than act on the wrong
+# directory. Paths are resolved before comparison — git reports real paths, and ~/Code
+# may sit behind a symlink.
+_wt_assert_worktree() {
+  emulate -L zsh
+  local root="$1" dest="$2" branch="$3"
+  local -a lines paths; local p
+  lines=( ${(f)"$(git -C "$root" worktree list --porcelain 2>/dev/null)"} )
+  for p in ${${(M)lines:#worktree *}#worktree }; do paths+=( "${p:A}" ); done
+  if (( ! ${paths[(Ie)${dest:A}]} )); then
+    print -ru2 -- "wt: $dest is not a registered worktree of $root."
+    print -ru2 -- "    Leftover directory? Remove it, or use a different branch name."
+    return 1
+  fi
+  local have; have="$(git -C "$dest" symbolic-ref --quiet --short HEAD 2>/dev/null)"
+  if [[ "$have" != "$branch" ]]; then
+    print -ru2 -- "wt: $dest is on '${have:-a detached HEAD}', not '$branch'."
+    print -ru2 -- "    Branch names differing only by '/' vs '-' share one directory."
+    return 1
+  fi
+}
+
+# wt-rm — retire a worktree made by `wt`: confirm it's clean, stop its Zellij session,
+# remove the worktree, then delete the branch.
+#   wt-rm <branch>
+# Run from another checkout of the same repo, never from inside the one being removed.
+#
+# Ordering matters. The dirty check runs BEFORE the session is stopped: `git worktree
+# remove` refuses on a dirty tree anyway, but by then the session would already be gone
+# — you'd lose the workspace and still be left with the worktree. Git stays the
+# authority for anything that changes in between; this is a preflight, not a substitute.
+wt-rm() {
+  emulate -L zsh
+  local branch="$1"
+  [[ -n "$branch" ]] || { print -ru2 -- "usage: wt-rm <branch>"; return 1; }
+  local slug="${branch//\//-}"
+
+  local common root
+  common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" \
+    || { print -ru2 -- "wt-rm: not inside a git repo."; return 1; }
+  root="${common:h}"
+  local dest="${root:h}/${root:t}-${slug}"
+
+  [[ -d "$dest" ]] || { print -ru2 -- "wt-rm: $dest does not exist."; return 1; }
+  _wt_assert_worktree "$root" "$dest" "$branch" || return 1
+
+  # Removing the worktree you're standing in pulls the cwd out from under this shell,
+  # and the session about to be stopped is the one running the command.
+  local here; here="$(git rev-parse --path-format=absolute --show-toplevel 2>/dev/null)"
+  if [[ "${here:A}" == "${dest:A}" ]]; then
+    print -ru2 -- "wt-rm: you're inside $dest — run this from another checkout."
+    return 1
+  fi
+
+  # Capture status and exit code separately. Testing the output alone read a *failed*
+  # `git status` (corrupt index, unreadable worktree) as "no changes" — the one case
+  # where we know least about the tree would have sailed through to removal.
+  # Split the assignment from `local`: `local x="$(...)"` reports the *builtin's* status,
+  # not the command substitution's, so the failure would still be invisible.
+  local dirty rc
+  dirty="$(git -C "$dest" status --porcelain 2>/dev/null)"; rc=$?
+  if (( rc )); then
+    print -ru2 -- "wt-rm: cannot determine whether $dest is clean — refusing."
+    git -C "$dest" status --porcelain >/dev/null   # re-run to surface git's own error
+    return 1
+  fi
+  if [[ -n "$dirty" ]]; then
+    print -ru2 -- "wt-rm: $dest has uncommitted changes — commit, stash or discard them first."
+    return 1
+  fi
+
+  # Stop the session before removal so nothing holds the directory open: a live app
+  # process is what leaves an empty tmp/ husk behind after `git worktree remove`.
+  # If stopping fails, abort rather than continue — carrying on would remove the
+  # directory out from under a running session, which is exactly the husk this
+  # ordering exists to prevent.
+  local name; name="$(_wt_session_name "$dest")"
+  if zellij list-sessions -s 2>/dev/null | grep -Fqx -- "$name"; then
+    if ! zellij delete-session --force "$name" >/dev/null 2>&1; then
+      print -ru2 -- "wt-rm: could not stop session '$name' — refusing to remove $dest."
+      print -ru2 -- "    Close it by hand (zellij delete-session --force $name), then retry."
+      return 1
+    fi
+  fi
+
+  git worktree remove "$dest" || return   # authoritative; still refuses on a race
+  print -r -- "✓ removed worktree $dest"
+
+  # -d, never -D: an unmerged branch is work, and once the worktree is gone a forced
+  # delete is not something you recover from casually.
+  git -C "$root" branch -d "$branch" \
+    || print -ru2 -- "wt-rm: branch '$branch' kept (not fully merged) — inspect or merge it before deleting it explicitly."
+
+  # Removal can still leave a husk if something recreated files mid-flight. Say so,
+  # rather than leave a stray directory that `wt` will later refuse to reuse.
+  [[ -d "$dest" ]] \
+    && print -ru2 -- "wt-rm: $dest still exists (files recreated during removal) — remove it manually."
+  return 0
 }

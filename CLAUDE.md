@@ -67,7 +67,8 @@ macOS dotfiles managed with chezmoi, featuring XDG compliance, 1Password secret 
 │   ├── provision.sh          # Full bootstrap (rarely re-run)
 │   ├── configure.sh          # macOS settings (safe to re-run)
 │   ├── reconcile-agents.sh   # Claude/Codex marketplaces + plugins (idempotent)
-│   └── test-reconcile-agents.sh  # mocked test for reconcile-agents.sh
+│   ├── test-reconcile-agents.sh  # mocked test for reconcile-agents.sh
+│   └── test-wt-functions.sh  # mocked test for dev/wt/wt-rm in dot_config/zsh/functions
 ├── dot_config/               # → ~/.config/
 │   ├── bundler/config.tmpl   # ⚠️  Contains 1Password secrets
 │   ├── chezmoi/              # Chezmoi configuration
