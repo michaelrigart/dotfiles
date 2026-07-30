@@ -549,26 +549,51 @@ Start a new Claude Code session and check:
 
 - [ ] **Step 5a: Adversarial verification — always run**
 
+**Never test a deny rule against a real secret.** If the rule is broken — precisely the
+failure under test — a Read leaks real key material into the transcript and an Edit
+destroys the key. Use a disposable sentinel instead. `Read(~/.ssh/**)` and `Edit(~/.ssh/**)`
+are directory-wide, so a sentinel under `~/.ssh` exercises the identical rule.
+
+```bash
+printf 'sentinel-not-a-key\n' > ~/.ssh/zz-claude-rule-check
+```
+
 Read and Edit are distinct rules; test both. These hold whether or not layer 2 deployed.
 
 | Check | Expectation |
 |---|---|
-| Read tool on `~/.ssh/borg-fenrir` | Refused, **and the refusal shows no file contents** |
-| Edit tool on `~/.ssh/borg-fenrir` | Refused (a Read-only deny would still allow overwrite) |
-| Read tool on `~/.aws/credentials` | Refused |
-| Edit tool on `**/secrets.*.yml` in a repo | Refused |
+| Read tool on `~/.ssh/zz-claude-rule-check` | Refused, and the refusal shows no file contents |
+| Edit tool on `~/.ssh/zz-claude-rule-check` | Refused (a Read-only deny would still allow overwrite) |
+| Read tool on a scratch `secrets.test.yml` | Refused |
+| Edit tool on that same scratch file | Refused |
 | A `docker ps` command | Prompts (ask rule fires) |
 | Any `dangerouslyDisableSandbox: true` retry | Prompts (ask rule fires) |
 | `/permissions` output | No unknown-tool-name warnings |
+
+```bash
+rm -f ~/.ssh/zz-claude-rule-check
+```
+
+**Remove the sentinel before Step 5b.** The inventory test enumerates every regular file
+under `~/.ssh`, so a leftover sentinel would be reported as an uncovered credential.
 
 - [ ] **Step 5b: Branch on whether layer 2 deployed**
 
 **If Task 3 ran (preflight exited 0):**
 
+`credentials.files` is an explicit path list, so a sentinel is not covered by it — these
+must run against the real entries. Use a **no-output read**: bytes go to `/dev/null`, never
+the transcript, so a broken rule cannot leak key material.
+
+```bash
+dd if=~/.ssh/borg-fenrir of=/dev/null bs=1 count=1 2>/dev/null; echo "rc=$?"   # expect non-zero
+dd if=~/.ssh/config      of=/dev/null bs=1 count=1 2>/dev/null; echo "rc=$?"   # expect 0
+```
+
 | Check | Expectation |
 |---|---|
-| Sandboxed `cat ~/.ssh/borg-fenrir` via Bash | Refused by `credentials`, independently of the tool rules |
-| Sandboxed `cat ~/.ssh/config` | **Succeeds** — ssh config must stay readable |
+| No-output read of `~/.ssh/borg-fenrir` via Bash | Non-zero rc — refused by `credentials`, independently of the tool rules |
+| No-output read of `~/.ssh/config` via Bash | rc 0 — ssh config must stay readable |
 | `bash .scripts/test-ssh-credential-inventory.sh` | Passes: 12 covered, 0 failed |
 | Sandboxed `git fetch` against GitLab | **Succeeds.** If it fails, layer 2 is wrong — revert Task 3's commit and re-run Task 1 rather than working around it |
 
@@ -578,7 +603,7 @@ Read and Edit are distinct rules; test both. These hold whether or not layer 2 d
 |---|---|
 | `.scripts/test-ssh-credential-inventory.sh` | **Not run — the script does not exist.** Skip, do not treat as failure |
 | `jq '.sandbox \| has("credentials")' ~/.claude/settings.json` | `false` — confirms layer 2 genuinely absent rather than half-applied |
-| Sandboxed `cat ~/.ssh/borg-fenrir` via Bash | **Succeeds** — expected; the tool-layer deny does not cover subprocesses. This is the residual exposure the deferral accepts |
+| No-output read of `~/.ssh/borg-fenrir` via Bash (`dd ... of=/dev/null`) | rc 0 — expected; the tool-layer deny does not cover subprocesses. This is the residual exposure the deferral accepts. Still never `cat` it: the point is to observe the rc, not the bytes |
 | Sandboxed `git fetch` against GitLab | Succeeds (keys still readable) |
 
 - [ ] **Step 6: Record results and report the residual gap**
@@ -604,16 +629,31 @@ protected". Continue to Task 6; the egress work is independent of layer 2.
 
 Running a workflow and watching it succeed does **not** reveal which hosts it contacted.
 Redirects, OAuth token endpoints, CDN backends and classifier-approved calls are all
-invisible at the command's own output. Two independent sources are required, and they must
-be reconciled — neither alone is sufficient:
+invisible at the command's own output.
 
-| Source | Captures | Blind to |
-|---|---|---|
-| `/sandbox` network history in the session | Hosts Claude's sandbox saw, including ones the classifier approved | Traffic from processes outside the sandbox |
-| Little Snitch monitor, filtered to the workflow's process | Every real outbound connection, including redirect targets and OAuth endpoints | Which Claude tool call caused it |
+**Primary source — Little Snitch monitor.** Filter to the workflow's process. Captures
+every real outbound connection including redirect targets and OAuth endpoints; blind to
+which Claude tool call caused it. This is the source of record.
 
-Start Little Snitch's monitor and clear the sandbox history before Step 2, so the window
-is attributable.
+**A `/sandbox` network-history view is UNVERIFIED — do not plan around it.** Every
+`/sandbox` reference in the local changelog concerns configuration UI (tabs, dependency
+status, layout), and the official documentation describes `/sandbox` as configuration,
+recommending a custom proxy where request logging is required. Before relying on any
+in-session history, open `/sandbox` and confirm such a view exists. If it does not, use
+the fallback rather than substituting guesswork.
+
+**Fallback — logging proxy.** `sandbox.network.httpProxyPort` and `socksProxyPort` exist in
+the shipped example settings and are the documented mechanism for request logging. Point
+them at a local logging proxy for the discovery window only, then remove them.
+
+**Trap:** `glab`, `kubectl` and `tsh` are Go binaries, and Go does not use the system trust
+store the way most tools do. Release 2.1.69 — *"Added `sandbox.enableWeakerNetworkIsolation`
+setting (macOS only) to allow Go programs like `gh`, `gcloud`, and `terraform` to verify
+TLS certificates when using a custom MITM proxy with `httpProxyPort`"* — records that they need
+`sandbox.enableWeakerNetworkIsolation` (macOS only) to verify TLS against a MITM proxy on
+`httpProxyPort`. Without it, exactly the four workflows being measured will fail TLS and
+produce an empty capture that looks like "no hosts contacted". Set it for the discovery
+window, and **remove it afterwards** — it weakens network isolation.
 
 - [ ] **Step 2: Exercise each destination**
 
@@ -630,13 +670,17 @@ With `strictAllowlist` still off, run each workflow and capture from **both** so
 - [ ] **Step 3: Reconcile the two sources**
 
 For each workflow, write the union of hosts to the run file, tagging each with its source
-(`sandbox`, `snitch`, or `both`) and whether it was allowed or denied.
+(`snitch`, `proxy`, or `both`) and whether it was allowed or denied.
 
-**Any host seen by only one source is a finding, not noise** — a snitch-only host means
-the sandbox never saw it (likely a subprocess outside the boundary), and a sandbox-only
-host means Little Snitch attributed it elsewhere. Resolve each before proceeding; an
-unexplained gap means the inventory is incomplete and Task 7 would fail closed on real
-traffic.
+**If two sources were available, any host seen by only one is a finding, not noise** — a
+snitch-only host means the proxy never saw it (likely a subprocess bypassing it), and a
+proxy-only host means Little Snitch attributed it to a different process. Resolve each
+before proceeding; an unexplained gap means the inventory is incomplete and Task 7 would
+fail closed on real traffic.
+
+**If only Little Snitch was available**, say so in the run file and treat the resulting
+allowlist as provisional: expect Task 7 Step 5 to surface misses, and be prepared to add
+hosts and re-apply rather than assuming the first list is complete.
 
 `launchpad.37signals.com` is the only host previously evidenced, and Basecamp auth is
 expected to need more — treat a single-host Basecamp result as evidence the capture is
@@ -793,9 +837,10 @@ The reconciler never uninstalls, so both were removed explicitly."
       layer 2 was deferred this script does not exist; skip it and record why, rather than
       reporting a missing-file error as a failure
 - [ ] `chezmoi diff ~/.claude/settings.json` empty
-- [ ] Spec updated to `**Status:** In progress` with the MR reference. **Not
-      `Implemented`** — this plan ends without pushing, and the policy reserves
-      `Implemented` for after merge. Update it to `Implemented` once the MR merges
+- [ ] Spec set to `**Status:** In progress` **with no MR link** — this plan ends without
+      pushing, so no MR exists yet and a reference cannot be fabricated. Set this when
+      execution begins, not at the end. Add the MR reference after the user pushes and
+      opens it; set `Implemented` only after merge
 - [ ] If layer 2 was deferred, the report states the residual exposure explicitly
       (sandboxed subprocesses can still read the keys) rather than describing credentials
       as protected
