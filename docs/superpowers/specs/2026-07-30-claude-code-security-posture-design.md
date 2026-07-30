@@ -181,6 +181,29 @@ will break sandboxed Git authentication to GitLab.
 fail once the keys are denied. This is intended. Vorta runs outside Claude's sandbox and is
 unaffected, so scheduled backups continue normally.
 
+#### Layer 2 status: DEFERRED (2026-07-30)
+
+The preflight gate ran and returned **exit 2**. `.scripts/preflight-ssh-agent.sh` reports:
+
+- `~/.1password/agent.sock` — absent (`~/.1password/` does not exist)
+- 1Password group-container socket — absent
+- `SSH_AUTH_SOCK` — `/var/run/com.apple.launchd.<random>/Listeners`, no stable component
+
+`ssh-add -l` against the live agent additionally returns rc 2 (cannot connect), so there
+is no agent holding identities to fall back on either.
+
+Layer 2 is therefore **not deployed**. Layers 1 and 4 ship without it.
+
+**Residual exposure, stated plainly:** Claude's own Read and Edit tools cannot touch the
+keys, but **sandboxed subprocesses still can**. This is a narrower gap than before, not a
+completed fix. Credentials must not be described as protected while this note stands.
+
+Unblocking requires one of:
+
+1. Configure the 1Password SSH agent so a stable socket exists, then re-run the preflight.
+2. Accept the deferral and revisit when the agent situation changes.
+3. Move sandboxed GitLab access to HTTPS + token, removing the key dependency entirely.
+
 ### Layer 3 — network
 
 `sandbox.network.allowedDomains` populated **only from observed traffic**, with
