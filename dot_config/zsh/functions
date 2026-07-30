@@ -300,6 +300,49 @@ _wt_clean() {
   return 0
 }
 
+# _wt_lock <common-dir> <slug> / _wt_unlock — serialize lifecycle commands per
+# target worktree, so `wt-prepare` cannot copy into a directory `wt-rm` is
+# removing.
+#
+# `zsystem flock` is an fcntl(2) record lock despite the name, and its semantics
+# drive three requirements:
+#
+#   1. The lock file must already exist — zsystem opens it and will not create it.
+#   2. Release must be explicit. These are *sourced functions*: returning does not
+#      close the descriptor, so without an unlock the fd stays open in the
+#      interactive shell and every later run against that target refuses for the
+#      rest of the session. Kernel release on process death is only a backstop.
+#   3. Locks are per-process, not per-descriptor. A nested acquisition inside the
+#      same shell SUCCEEDS, and unlocking any one descriptor drops the process's
+#      lock on the file entirely — so a routine that took its own lock would
+#      silently release its caller's. Only the outermost command locks; see the
+#      command/routine split in wt-prepare.
+#
+# Consequently there is no intra-process exclusion. That is fine: one shell runs
+# one lifecycle command at a time, and the case being defended is concurrent
+# commands in different terminals.
+_wt_lock() {
+  emulate -L zsh
+  zmodload zsh/system 2>/dev/null || {
+    print -ru2 -- "wt: zsh/system unavailable — refusing to run unlocked."; return 1 }
+  local dir="$1/wt-locks" lf="$1/wt-locks/$2.lock"
+  mkdir -p "$dir" && : >> "$lf" || {
+    print -ru2 -- "wt: cannot create lock file $lf."; return 1 }
+  # _WT_LOCK_FD is intentionally global: the caller unlocks it.
+  if ! zsystem flock -t 0 -f _WT_LOCK_FD "$lf" 2>/dev/null; then
+    print -ru2 -- "wt: another lifecycle command is working on '$2' — retry when it finishes."
+    return 1
+  fi
+}
+
+_wt_unlock() {
+  emulate -L zsh
+  [[ -n "${_WT_LOCK_FD:-}" ]] || return 0
+  zsystem flock -u $_WT_LOCK_FD 2>/dev/null
+  unset _WT_LOCK_FD
+  return 0
+}
+
 # wt — spin up (or reopen) a git worktree for the current repo in its own Zellij
 # "dev" session. Complements `dev`, which only *finds* existing checkouts; `wt`
 # *creates* one first, as a sibling under the same org dir so `dev`'s repo glob and

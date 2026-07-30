@@ -339,6 +339,35 @@ print -r -- "garbage" > "$REPO/.git/worktrees/repo-c1/index"
 run "$REPO" _wt_clean "$D"
 rc_is 2 "corrupt index returns 2 (unknown), not 0"
 
+print -r -- "I. locking"
+setup
+CD="$REPO/.git"
+run "$REPO" _wt_lock "$CD" slug1
+rc_is 0 "lock acquires"
+[[ -f "$REPO/.git/wt-locks/slug1.lock" ]] && _pass "lock file is created" || _fail "lock file is created"
+
+# Held by another process -> refused.
+OUT="$(cd "$REPO" && source "$FUNCS" && _wt_lock "$CD" slug2 && \
+        zsh -c "source '$FUNCS'; _wt_lock '$CD' slug2" 2>&1)"; RC=$?
+has "another lifecycle command" "a lock held by another process is refused"
+
+# Persistent-shell release: two sequential runs in ONE shell must both succeed.
+# Without the explicit unlock the fd stays open and the second refuses.
+OUT="$(cd "$REPO" && source "$FUNCS" && \
+        { _wt_lock "$CD" slug3 && _wt_unlock; } && \
+        { _wt_lock "$CD" slug3 && _wt_unlock; } && print OK)"; RC=$?
+eq "$OUT" "OK" "lock is reacquirable in the same shell after explicit unlock"
+
+# A holder killed with SIGKILL leaves nothing behind: the kernel releases it.
+zsh -c "source '$FUNCS'; _wt_lock '$CD' slug5 && kill -9 \$\$" 2>/dev/null
+OUT="$(cd "$REPO" && source "$FUNCS" && _wt_lock "$CD" slug5 && print OK)"; RC=$?
+eq "$OUT" "OK" "a SIGKILLed holder's lock is acquirable with no manual cleanup"
+
+# Module missing -> refuse rather than run unlocked.
+OUT="$(cd "$REPO" && source "$FUNCS" && \
+        zmodload() { return 1 } && _wt_lock "$CD" slug4 2>&1)"; RC=$?
+rc_is 1 "missing zsh/system refuses instead of running unlocked"
+
 export HOME="$REAL_HOME"
 print -r -- ""
 print -r -- "passed: $pass  failed: $fail"
