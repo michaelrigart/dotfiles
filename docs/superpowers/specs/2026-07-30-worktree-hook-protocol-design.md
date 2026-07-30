@@ -331,7 +331,15 @@ a directory `wt-rm` is removing, or two `wt-prepare` runs invoking setup
 simultaneously against hooks that assume they are alone.
 
 Each of `wt`, `wt-prepare`, and `wt-rm` therefore holds a per-target advisory
-lock for its whole run, acquired before validation and released on exit.
+lock across its lifecycle work: acquired before validation, released once that
+work completes.
+
+The lock covers lifecycle work, **not** the session handoff. `wt` releases before
+calling `dev`, because `dev` attaches a session that outlives the command by
+hours; holding across it would block every later lifecycle command on that target
+for the lifetime of the session. The window this opens is the same one §8 already
+declares unsupported — a concurrent `dev` racing a removal — and closing it here
+would not close it there, since `dev` takes no lock of its own.
 
 The lock is held by the **command**, not by the shared preparation routine. `wt`
 acquires it once and calls the routine directly; the routine never acquires.
