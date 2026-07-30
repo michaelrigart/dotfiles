@@ -197,6 +197,70 @@ Pre-deployment acceptance against the emitted settings passed:
 - direct Read and Edit denied against a harmless `~/.ssh` sentinel;
 - an `@file` reference to the same sentinel denied.
 
+#### Second rollback (2026-07-31) — the `allowRead` carve-out exposed the primary auth key
+
+A repair attempt added `sandbox.filesystem.allowRead` for `~/.ssh/config`, `known_hosts`,
+`michael` and `michael.pub`, restoring commit signing. It was deployed, then **rolled back
+the same day**.
+
+`~/.ssh/michael` is a **private authentication key**, not merely the public half. Verified
+by constructed-path probe, reporting size only:
+
+```
+READABLE  michael      (388 bytes)   <- private auth key
+denied    borg-fenrir
+denied    huginn
+```
+
+**Mechanism:** `sandbox.filesystem.allowRead` overrides the OS-level denial inside the
+sandbox. This is not a command-string matching gap — the sandbox does not rely on string
+matching for its boundary. The `Read(~/.ssh/**)` deny still governs direct tool use; it
+simply does not constrain a subprocess reading a file that `allowRead` has admitted.
+
+**This trade had already been analysed and rejected** earlier in this same effort:
+exempting the signing key restores signing while leaving the most important private key
+readable by every sandboxed process. It was implemented anyway.
+
+**The test suite pinned the unsafe policy.** An assertion required `allowRead` to equal
+exactly those four paths, `michael` included. The suite reported 32/32 — green meant
+"matches intent", and the intent contained the exposure. A passing suite is not evidence of
+a sound policy when the suite encodes the policy.
+
+**Rollback order matters.** The source commit was reverted *before* the live file was
+restored. Reverting only the deployed file would leave a future `chezmoi apply` able to
+redeploy the exposure silently.
+
+**Current live state, stated plainly:** the original baseline is restored, whose rules are
+the inert bare globs. **No SSH key is protected — all four auth keys read successfully.**
+That is strictly more exposure than the reverted state, which protected three of four. The
+rollback is not a security improvement; it removes a *misrepresented* control and returns to
+the documented, known-unprotected baseline rather than leaving a config that claims
+protection it does not provide.
+
+#### Next: a dedicated signing-only key — described accurately
+
+The conflict between "deny `~/.ssh`" and "git must sign" is dissolved by never using an
+authentication key for signing. Generate a keypair used **solely** for commit signing, at
+`~/.config/git/signing`, and repoint `user.signingKey`.
+
+**Do not overstate this.** If the signing key's private half is allowlisted so sandboxed
+git can use it, **it remains extractable by any sandboxed process** — exactly as `michael`
+was. The gain is blast radius, not secrecy: a leaked signing-only key permits forged
+commits, not server or GitLab authentication. That is **materially safer, not secret**. An
+agent-backed signing key, where the private half never becomes readable, is strictly
+stronger and remains the better target.
+
+**Acceptance tests required before any redeployment:**
+
+1. Constructed-path reads of `~/.ssh/michael` and every other authentication key **fail**.
+2. A normally signed disposable commit succeeds — never `--no-gpg-sign`.
+3. If operating without an agent, **only** the dedicated signing key is readable.
+4. GitLab recognises the new signing key.
+5. Local `allowed_signers` verifies the signature. (Note: `gpg.ssh.allowedSignersFile` is
+   currently unset, so signatures have never been locally verifiable — that must be
+   configured as part of this work.)
+6. Layer 1 and layer 2 changes stay excluded until 1–5 pass.
+
 #### Rule scope: relative patterns are narrower than they read
 
 Path specifiers anchor differently, per the permission-rules documentation:
