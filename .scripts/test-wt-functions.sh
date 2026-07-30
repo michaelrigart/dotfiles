@@ -287,6 +287,58 @@ OUT="$(cd "$REPO" && source "$FUNCS" && \
   GIT_DIR="$ROOTTMP/decoy2/.git" _wt_assert_worktree "$REPO" "$HOME/Code/Org/repo-p2" p2 2>&1)"; RC=$?
 rc_is 0 "exported GIT_DIR does not misroute _wt_assert_worktree"
 
+print -r -- "H. _wt_clean"
+setup
+run "$REPO" wt c1
+D="$HOME/Code/Org/repo-c1"
+run "$REPO" _wt_clean "$D"
+rc_is 0 "clean worktree returns 0"
+
+print -r -- "wip" > "$D/dirty.txt"
+run "$REPO" _wt_clean "$D"
+rc_is 1 "untracked file returns 1"
+
+# Config must not be able to hide it.
+git -C "$D" config status.showUntrackedFiles no
+run "$REPO" _wt_clean "$D"
+rc_is 1 "status.showUntrackedFiles=no still returns dirty"
+git -C "$D" config --unset status.showUntrackedFiles
+
+# An exported GIT_WORK_TREE pointing at a clean decoy must not read as clean.
+mkdir -p "$ROOTTMP/decoy-clean"
+OUT="$(cd "$REPO" && source "$FUNCS" && GIT_WORK_TREE="$ROOTTMP/decoy-clean" _wt_clean "$D" 2>&1)"; RC=$?
+rc_is 1 "exported GIT_WORK_TREE does not make a dirty worktree read clean"
+
+# GIT_INDEX_FILE is a routing variable too. Pin the result to 1 (dirty), not
+# merely "nonzero": without the routing clearance git exits 128 on the empty
+# alternate index, _wt_clean returns 2 (unknown), and a nonzero-accepting
+# assertion would pass on exactly the failure it exists to catch.
+: > "$ROOTTMP/empty-index"
+OUT="$(cd "$REPO" && source "$FUNCS" && GIT_INDEX_FILE="$ROOTTMP/empty-index" _wt_clean "$D" 2>&1)"; RC=$?
+rc_is 1 "exported GIT_INDEX_FILE does not make a dirty worktree read clean"
+
+# Submodule config must not hide a dirty submodule.
+setup
+git init -q -b main "$ROOTTMP/sub"
+git -C "$ROOTTMP/sub" commit -q --allow-empty -m init
+git -C "$REPO" -c protocol.file.allow=always submodule add -q "$ROOTTMP/sub" sub 2>/dev/null
+git -C "$REPO" commit -q -m addsub
+run "$REPO" wt c2
+D2="$HOME/Code/Org/repo-c2"
+git -C "$D2" -c protocol.file.allow=always submodule update -q --init 2>/dev/null
+print -r -- "wip" > "$D2/sub/dirty.txt"
+git -C "$D2" config diff.ignoreSubmodules all
+run "$REPO" _wt_clean "$D2"
+rc_is 1 "diff.ignoreSubmodules=all does not hide a dirty submodule"
+
+# Unreadable state is neither clean nor dirty.
+setup
+run "$REPO" wt c1
+D="$HOME/Code/Org/repo-c1"
+print -r -- "garbage" > "$REPO/.git/worktrees/repo-c1/index"
+run "$REPO" _wt_clean "$D"
+rc_is 2 "corrupt index returns 2 (unknown), not 0"
+
 export HOME="$REAL_HOME"
 print -r -- ""
 print -r -- "passed: $pass  failed: $fail"

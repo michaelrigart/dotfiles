@@ -274,6 +274,32 @@ _wt_primary() {
   print -r -- "${f[1]#worktree }"
 }
 
+# _wt_clean <worktree> — 0 clean, 1 dirty, 2 state unknown.
+#
+# Three-state on purpose. A failed `git status` (corrupt index, unreadable
+# worktree) produces empty output, so testing output alone reads the case where
+# we know least as "no changes" — the most dangerous possible misreading.
+#
+# Each flag closes a way a dirty tree can report clean:
+#   --untracked-files=normal   defeats status.showUntrackedFiles=no
+#   --ignore-submodules=none   defeats diff.ignoreSubmodules / submodule.*.ignore
+#   --porcelain=v1             pins the format against a default change
+# and _wt_git clears GIT_WORK_TREE/GIT_DIR, which otherwise redirect the check to
+# a different checkout entirely and return empty output with exit status 0.
+#
+# The assignment is deliberately split from `local`: `local x="$(cmd)"` reports
+# the *builtin's* status, not the command substitution's, hiding the failure this
+# helper exists to catch.
+_wt_clean() {
+  emulate -L zsh
+  local wt="$1" out rc
+  out="$(_wt_git -C "$wt" status --porcelain=v1 --untracked-files=normal \
+                 --ignore-submodules=none 2>/dev/null)"; rc=$?
+  (( rc )) && return 2
+  [[ -n "$out" ]] && return 1
+  return 0
+}
+
 # wt — spin up (or reopen) a git worktree for the current repo in its own Zellij
 # "dev" session. Complements `dev`, which only *finds* existing checkouts; `wt`
 # *creates* one first, as a sibling under the same org dir so `dev`'s repo glob and
