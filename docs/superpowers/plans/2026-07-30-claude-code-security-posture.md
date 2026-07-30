@@ -699,10 +699,39 @@ pass.
 
 If layer 2 deployed and all checks pass, continue to Task 6.
 
-If layer 2 was deferred, **state the residual exposure explicitly** when reporting: Claude's
-own tools cannot read the keys, but sandboxed subprocesses still can. That is a real and
-narrower gap than before, not a completed fix — do not describe the work as "credentials
-protected". Continue to Task 6; the egress work is independent of layer 2.
+If layer 2 was deferred, **state the residual exposure explicitly** when reporting:
+Claude's direct Read, Edit, and `@file` paths cannot access SSH files. Sandboxed
+subprocesses can read only `config`, `known_hosts`, `michael`, and `michael.pub`; the
+signing private key remains the credential exception. Continue to Task 6; the egress work
+is independent of layer 2.
+
+#### Task 5 correction after rollback
+
+The first deployment disproved the assumed layer separation: permission Read/Edit paths
+also merge into the Bash sandbox, so `Read(~/.ssh/**)` blocked commit signing. The live
+file was restored byte-identically before continuing.
+
+The corrected template adds `sandbox.filesystem.allowRead` for exactly:
+
+```text
+~/.ssh/config
+~/.ssh/known_hosts
+~/.ssh/michael
+~/.ssh/michael.pub
+```
+
+Anthropic documents that `allowRead` takes precedence over the merged sandbox denial. It
+does not override the permission decision for direct tools, and no `allowWrite` exception
+is present.
+
+Regression and live acceptance tests:
+
+- settings suite pins the exact four-file array and the absence of `allowWrite`;
+- normally signed disposable commit succeeds inside Claude's sandbox and contains
+  `gpgsig`;
+- direct Read, direct Edit, and `@file` access to a harmless SSH sentinel are denied;
+- a no-output Bash probe reads `michael` but cannot read another SSH private key;
+- a second targeted chezmoi diff is empty.
 
 ---
 
@@ -936,7 +965,7 @@ The reconciler never uninstalls, so both were removed explicitly."
       link. Do **not** set `Implemented` here — this plan ends without pushing, so the MR
       does not exist yet. The reference is added after the MR is opened; `Implemented`
       only after merge
-- [ ] If layer 2 was deferred, the report states the residual exposure explicitly
-      (sandboxed subprocesses can still read the keys) rather than describing credentials
-      as protected
+- [ ] If layer 2 was deferred, the report states the residual exposure explicitly:
+      sandboxed subprocesses can read the signing key carve-out, while other SSH keys
+      remain denied
 - [ ] Report to the user; **do not push** — pushing is the user's call

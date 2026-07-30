@@ -90,17 +90,17 @@ Runtime validation of the schema remains an acceptance test, not an assumption.
 
 ## Design
 
-> **CORRECTION (2026-07-30): the layer separation below is DISPROVEN.** The design assumed
-> layer 1 governs only Claude's own file tools while layer 2 governs sandboxed subprocesses.
-> It does not: **Read/Edit denials merge into the Bash sandbox boundary**, so a layer-1 deny
-> also blocks every sandboxed subprocess touching that path. Deploying `Read(~/.ssh/**)`
-> broke `git commit` signing immediately — see *Task 5 rollback* below. Layer 1 as specified
-> must not be deployed until the agent prerequisite is solved. Layers 3 and 4 are unaffected.
+> **CORRECTION (2026-07-30): Read/Edit denials also constrain Bash, but the sandbox has a
+> narrower override.** Permission paths merge into the Bash sandbox boundary. The first
+> deployment therefore broke SSH commit signing. Anthropic's documented
+> `sandbox.filesystem.allowRead` takes precedence inside the sandbox without overriding the
+> direct-tool permission decision. The corrected design uses that override for four
+> Git-required SSH files; see *Task 5 rollback and repair* below.
 
 Four complementary control layers:
 
-1. **Tool rules** — what Claude's own Read/Edit tools may touch. **In practice also
-   constrains sandboxed subprocesses**, per the correction above.
+1. **Tool rules** — what Claude's own Read/Edit tools may touch, plus the default
+   subprocess boundary formed when those paths merge into the sandbox.
 2. **Credential isolation** — what sandboxed subprocesses may read, including env vars.
 3. **Network allowlist** — where sandboxed commands may connect, denied without prompt.
 4. **Explicit approval for escape routes** — unsandboxed execution and Docker.
@@ -136,10 +136,11 @@ workflows only, while the primary hosting is GitLab, and GitLab pipelines common
 `~/.ssh/**` is denied wholesale at this layer, which is immune to the key-naming drift
 that defeated the old globs. **Trade-off:** this intentionally sacrifices direct Claude
 inspection of SSH configuration — diagnosing `~/.ssh/config` or `known_hosts` will require
-an explicit unsandboxed override or manual paste. That cost is accepted in exchange for a
-rule that cannot be outrun by a new key name.
+manual paste. The sandbox separately re-admits the minimum files required by Git:
+`config`, `known_hosts`, `michael`, and `michael.pub`. This does not restore direct Read,
+Edit, or `@file` access.
 
-#### Task 5 rollback (2026-07-30) — `~/.ssh/**` breaks commit signing
+#### Task 5 rollback and repair (2026-07-30)
 
 Layer 1 was applied and **rolled back the same day**. The deployed
 `Read(~/.ssh/**)` blocked git from reading the SSH signing key, and every signed commit
@@ -158,28 +159,43 @@ on the grounds that public keys are not secret — then `Read(~/.ssh/**)` re-cov
 `.pub` wholesale. Public keys turn out to be load-bearing for signing. The recorded
 trade-off ("sacrifices direct Claude inspection of SSH configuration") was far too narrow.
 
-**Two obvious repairs are both invalid at present:**
+Two initial repairs were rejected:
 
 | Repair | Why it fails |
 |---|---|
-| Move the public key out of `~/.ssh` | Git permits `user.signingKey` to name a *public* key only when the matching private key is reachable through `ssh-agent`; otherwise it must name the private key directly. There is no supported "strip `.pub` and load the adjacent private key" behaviour in `ssh-keygen -Y`. With no reachable agent, relocating the public key achieves nothing |
-| Exempt `michael` from the deny | Restores signing by leaving the most important private key readable by sandboxed processes — the opposite of the goal. `michael.pub` was merely the *first* failure; permitting it would surface the unavailable-agent/private-key failure next |
+| Move only the public key out of `~/.ssh` | A controlled test with `SSH_AUTH_SOCK` disabled returned 0 for `~/.ssh/michael.pub`, where the adjacent private key exists, and 255 for a relocated copy. Relocating only the public half therefore breaks the current signing path |
+| Replace the rule with a hook | A `PreToolUse` hook can block direct Read/Edit, but Anthropic documents that `@file` references bypass it. A hook alone is not the same boundary |
 
-**Prerequisite, therefore: do not deploy any `.ssh` denial that reaches sandboxed
-subprocesses until the agent is reachable inside the sandbox.** That is the same blocker
-that already deferred layer 2 — it now blocks layer 1 as well.
+The repaired configuration keeps `Read(~/.ssh/**)` and `Edit(~/.ssh/**)`, then adds:
 
-**Redesign direction:**
+```json
+"sandbox": {
+  "filesystem": {
+    "allowRead": [
+      "~/.ssh/config",
+      "~/.ssh/known_hosts",
+      "~/.ssh/michael",
+      "~/.ssh/michael.pub"
+    ]
+  }
+}
+```
 
-1. Make the 1Password agent reachable over a stable, allowlistable socket.
-2. Copy the public signing key to `~/.config/git/signing.pub` and repoint `user.signingKey`.
-3. Keep private key material under the `~/.ssh/**` denial.
-4. **Acceptance test before any redeployment: a signed disposable commit made from inside
-   the sandbox must succeed.** Applying without this test is what produced this rollback.
+`allowRead` has higher precedence than the merged sandbox denial, so Git can read those
+four files. It does not override the permission rule, so Claude's direct Read, Edit, and
+`@file` paths remain denied across all of `~/.ssh`. There is no `allowWrite` exception.
 
-An interim option worth investigating: a narrowly scoped, schema-verified hook blocking only
-direct Read/Edit operations, leaving subprocesses untouched — with the subprocess exposure
-documented explicitly rather than assumed away.
+This is an explicit residual capability: a sandboxed subprocess can read the `michael`
+private key because current signing depends on it. Every other private key and archive
+under `~/.ssh` stays denied to both direct tools and sandboxed subprocesses. Moving the
+signing operation fully to an allowlistable agent would remove this carve-out, but it is
+not a prerequisite for deploying the corrected layer 1.
+
+Pre-deployment acceptance against the emitted settings passed:
+
+- a normally signed disposable commit inside Claude's sandbox, with a `gpgsig` header;
+- direct Read and Edit denied against a harmless `~/.ssh` sentinel;
+- an `@file` reference to the same sentinel denied.
 
 #### Rule scope: relative patterns are narrower than they read
 
@@ -213,15 +229,16 @@ repositories without sweeping caches and language runtimes.
 
 ### Layer 2 — credential isolation
 
-**The stated distinction between this layer and layer 1 is disproven** — layer 1 already
-reaches sandboxed subprocesses. What remains genuinely unique to this layer is **secret
-environment variables**, which no path-based rule can cover. The file entries are largely
-redundant with layer 1 rather than complementary to it.
+Layer 1 already denies sandboxed reads except for its four explicit Git carve-outs. The
+file entries in this layer are therefore redundant for the other SSH keys, but remain the
+mechanism that can remove the `michael` carve-out once signing uses an allowlistable agent.
+Secret environment variables remain unique to this layer; no path rule can cover them.
 
-**Design chosen: targeted `credentials.files` entries, not a directory deny.** A
-directory-wide deny would require proving that `filesystem.allowRead` re-admits `config`,
-`known_hosts`, the public keys, and the agent socket *without* re-admitting private keys —
-an unproven claim. Enumerating the private keys is directly verifiable.
+**Design chosen: targeted `credentials.files` entries, not another directory deny.**
+Layer 1 already supplies the directory boundary. Its `filesystem.allowRead` exception is
+proven for `config`, `known_hosts`, `michael`, and `michael.pub`; layer 2's future job is
+to remove the private-key exception after agent-backed signing works. Enumerating private
+keys remains the directly verifiable way to prevent naming drift.
 
 Entries: the 10 private keys listed above, both `borg-config-*.tar.gz` archives,
 `~/.aws/credentials`, and `~/.config/op/config`. Left readable: `config`, `known_hosts`,
@@ -270,14 +287,15 @@ The preflight gate ran and returned **exit 2**. `.scripts/preflight-ssh-agent.sh
 - 1Password group-container socket — absent
 - `SSH_AUTH_SOCK` — `/var/run/com.apple.launchd.<random>/Listeners`, no stable component
 
-`ssh-add -l` against the live agent additionally returns rc 2 (cannot connect), so there
-is no agent holding identities to fall back on either.
+`ssh-add -l` returns rc 2 from inside the sandbox but rc 0 outside it. The agent exists and
+holds identities; its per-boot launchd socket is not safely allowlistable in the sandbox.
 
-Layer 2 is therefore **not deployed**. Layers 1 and 4 ship without it.
+Layer 2 is therefore **not deployed**. Corrected layers 1 and 4 ship without it.
 
-**Residual exposure, stated plainly:** Claude's own Read and Edit tools cannot touch the
-keys, but **sandboxed subprocesses still can**. This is a narrower gap than before, not a
-completed fix. Credentials must not be described as protected while this note stands.
+**Residual exposure, stated plainly:** Claude's direct Read, Edit, and `@file` paths cannot
+touch any SSH file. Sandboxed subprocesses can read only `config`, `known_hosts`,
+`michael`, and `michael.pub`; the signing private key is the remaining credential
+exception. Other SSH keys and archives are denied.
 
 Unblocking requires one of:
 
@@ -350,7 +368,7 @@ this deployment until the branch merges.
 | Docker socket in `allowUnixSockets` | Root-equivalent host access; defeats the sandbox. |
 | `allowUnsandboxedCommands: false` | Would not affect `chezmoi apply` run directly from a terminal — it disables only Claude Code's Bash escape hatch. It may, however, require unsandboxed execution for Claude-initiated `op`-backed applies. Ask-gating achieves the audit boundary without risking that path. |
 | `envVars` mode `mask` | Introduces TLS-proxy requirements; `deny` is sufficient. |
-| Directory-wide `~/.ssh` deny at layer 2 | Would require proving `allowRead` re-admits config/known_hosts/socket but not private keys. Targeted file entries are directly verifiable. |
+| A second directory-wide `~/.ssh` deny at layer 2 | Layer 1 already supplies that boundary and its four `allowRead` exceptions are verified. Targeted credential entries are the mechanism for removing the signing-key exception after agent-backed signing works. |
 | Mode-based private-key classification | `config`, `known_hosts`, `known_hosts.old`, and `allowed_signers` are all mode 600; `.pub` files are inconsistently 644 and 600. Mode misclassifies in both directions. Deny-by-default with an explicit exemption list instead. |
 | Wildcarding the launchd socket directory | `SSH_AUTH_SOCK`'s random component is the only thing distinguishing it; a wildcard would admit every launchd listener. |
 | Guessed `allowedDomains` entries | Fabricated hosts produce false coverage and mask the real ones. Observed traffic only. |
@@ -365,18 +383,17 @@ actually ships.
 | # | Change | Status |
 |---|---|---|
 | 0 | SSH-agent preflight (`.scripts/preflight-ssh-agent.sh`) | Done — returned exit 2 |
-| 1 | `fix(claude): repair inert permission rules` — layer 1 + settings test suite | Committed, **not deployed** |
-| 2 | `fix(claude): harden sandbox escape routes` — layer 4. `strictAllowlist` stays **off** | Committed, **not deployed** |
-| 3 | Apply and verify 1–2 with `strictAllowlist` off | **ROLLED BACK** — layer 1 broke commit signing; live settings restored from backup, byte-identical |
+| 1 | `fix(claude): repair inert permission rules` — layer 1 + settings test suite | Committed and deployed with the signing carve-out |
+| 2 | `fix(claude): harden sandbox escape routes` — layer 4. `strictAllowlist` stays **off** | Committed and deployed |
+| 3 | Apply and verify 1–2 with `strictAllowlist` off | First attempt rolled back; corrected deployment verified |
 | 4 | Domain-discovery checkpoint — record **every destination observed**, including classifier-approved ones, not only rejections | Pending |
 | 5 | `fix(claude): enable deterministic egress` — `allowedDomains` and `strictAllowlist: true` together | Pending |
 | 6 | Apply and verify allowed *and* denied egress | Pending |
 | 7 | `chore(agents): remove redundant Claude plugins` | Pending |
 | — | Layer 2 credential isolation + SSH inventory test | **Deferred** — blocked on an allowlistable agent socket |
 
-Applying step 3 also changes `permissions.defaultMode` from the live `plan` to the
-template's `default`, and adds the `model` key. Both are behavioural and must be
-acknowledged before the apply, not discovered after it.
+Applying step 3 preserves the live `permissions.defaultMode` and adds the default `model`
+key when absent.
 
 Plugin removal, given the add-only reconciler:
 
@@ -407,6 +424,11 @@ is main, and an unqualified invocation silently verifies the wrong configuration
   unknown-tool-name warnings at startup.
 - Denied **Read** and denied **Edit** tested separately against the sentinel; both refused,
   and neither refusal leaks file contents.
+- An `@file` reference to the sentinel is refused.
+- A normally signed disposable commit succeeds inside the sandbox and carries a `gpgsig`
+  header.
+- A no-output Bash read of `~/.ssh/michael` succeeds while the same probe against another
+  private key fails.
 - Both new ask rules fire: a Docker command and an unsandboxed retry each prompt.
 - `excludedCommands` is exactly `["docker *"]` and `allowUnixSockets` is exactly `[]` —
   pinned, so a later addition cannot widen the boundary unnoticed.
@@ -433,5 +455,6 @@ apply if and when it ships:
 - `.sandbox | has("credentials")` is **false** — asserted by the settings suite, so a
   partial layer 2 cannot be applied while the agent problem is unresolved.
 - The inventory script does not exist; its absence is expected, not a failure.
-- A no-output read of a key by a sandboxed subprocess **succeeds**. This is the residual
-  exposure the deferral accepts and must be reported as such.
+- A no-output read of `~/.ssh/michael` by a sandboxed subprocess succeeds because signing
+  requires it. The same probe against any other private key fails under the merged
+  `Read(~/.ssh/**)` sandbox boundary.
