@@ -70,52 +70,62 @@ Layer 2 must not deploy until this is settled.
 ```bash
 #!/usr/bin/env bash
 # Resolve the SSH agent socket that sandboxed git actually uses, so allowUnixSockets can
-# be narrowed to it. Read-only: prints findings, changes nothing. Bash 3.2 compatible.
+# be narrowed to it. Read-only: changes nothing. Bash 3.2 compatible.
 #
-# Exit 0 -> stable socket path on stdout (allowlist it)
-# Exit 2 -> no stable socket found; layer 2 (credential denial) MUST NOT deploy, because
+# CONTRACT: stdout carries ONLY the socket path, and only on success. Every diagnostic
+# goes to stderr, so `sock=$(preflight-ssh-agent.sh)` yields a clean path.
+#
+# Exit 0 -> protocol-validated socket path on stdout (allowlist exactly it)
+# Exit 2 -> no usable socket; layer 2 (credential denial) MUST NOT deploy, because
 #           denying on-disk keys without a working agent path breaks sandboxed git auth.
 set -u
 
-echo "== SSH agent preflight =="
-sock="${SSH_AUTH_SOCK:-}"
-echo "SSH_AUTH_SOCK: ${sock:-(unset)}"
+log() { printf '%s\n' "$*" >&2; }
 
-candidates="
-$HOME/.1password/agent.sock
-$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock
-"
-found=""
-IFS='
-'
-for c in $candidates; do
-  [ -n "$c" ] || continue
-  if [ -S "$c" ]; then echo "  stable socket present: $c"; found="$c"; break
-  else echo "  absent: $c"; fi
+log "== SSH agent preflight =="
+log "SSH_AUTH_SOCK: ${SSH_AUTH_SOCK:-(unset)}"
+
+# A socket file existing proves nothing — it may be stale, or belong to an agent holding
+# no identities. Once the on-disk keys are denied, ssh_config's `AddKeysToAgent yes`
+# cannot recover (it would have to read the key file), so identities must be present NOW.
+validate() {  # validate <path> -> 0 only if the agent answers AND holds >=1 identity
+  [ -S "$1" ] || { log "  absent or not a socket: $1"; return 1; }
+  SSH_AUTH_SOCK="$1" ssh-add -l >/dev/null 2>&1
+  case $? in
+    0) log "  agent responds, identities present: $1"; return 0 ;;
+    1) log "  agent responds but holds NO identities: $1"; return 1 ;;
+    *) log "  cannot connect to agent at: $1"; return 1 ;;
+  esac
+}
+
+for c in "$HOME/.1password/agent.sock" \
+         "$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"; do
+  if validate "$c"; then
+    log "RESULT: allowlist $c"
+    printf '%s\n' "$c"          # the ONLY write to stdout
+    exit 0
+  fi
 done
-unset IFS
 
-if [ -n "$found" ]; then
-  echo "RESULT: allowlist $found"
-  printf '%s\n' "$found"
-  exit 0
-fi
-
-case "$sock" in
+case "${SSH_AUTH_SOCK:-}" in
   /var/run/com.apple.launchd.*/Listeners)
-    echo "RESULT: launchd agent only — path contains a per-boot random component." >&2
-    echo "Refusing to emit a wildcard: it would admit every launchd listener." >&2
+    log "RESULT: launchd agent only — the path has a per-boot random component."
+    log "Refusing to emit a wildcard: it would admit every launchd listener."
     exit 2 ;;
   "")
-    echo "RESULT: no SSH agent in this environment." >&2; exit 2 ;;
+    log "RESULT: no SSH agent in this environment."; exit 2 ;;
   *)
-    if [ -S "$sock" ]; then
-      echo "RESULT: non-standard socket $sock — confirm stability across reboot before use." >&2
-      exit 2
+    if validate "${SSH_AUTH_SOCK}"; then
+      log "RESULT: socket is live, but its path stability across reboot is unproven."
+      log "Confirm stability before allowlisting; failing closed for now."
     fi
-    echo "RESULT: SSH_AUTH_SOCK set but not a socket." >&2; exit 2 ;;
+    exit 2 ;;
 esac
 ```
+
+This validates the agent protocol rather than trusting a path. Whether GitLab specifically
+authenticates remains Task 5's acceptance test — this gate only establishes that an agent
+worth allowlisting exists.
 
 - [ ] **Step 2: Run it and record the outcome**
 
@@ -173,16 +183,32 @@ jq_is() { # jq_is <filter> <expected> <label>
   if [ "$got" = "$2" ]; then _pass "$3"; else _fail "$3" "$got"; fi
 }
 
-echo "A. layer 1 — permission rules are Tool(spec) form"
+echo "A. layer 1 — permission rules match the approved set exactly"
 emit '{}'
-jq_is '[.permissions.deny[]  | select(test("^[A-Za-z]+\\("))] | length' \
-      "$(printf '%s' "$OUT" | jq '.permissions.deny | length')" \
-      "every deny rule is Tool(spec) form"
-jq_is '[.permissions.ask[]   | select(test("^[A-Za-z]+\\("))] | length' \
-      "$(printf '%s' "$OUT" | jq '.permissions.ask | length')" \
-      "every ask rule is Tool(spec) form"
-jq_is '.permissions.deny | index("Read(~/.ssh/**)") != null' true "denies Read(~/.ssh/**)"
-jq_is '.permissions.deny | index("Edit(~/.ssh/**)") != null' true "denies Edit(~/.ssh/**)"
+
+# Exact-array comparison, not a shape heuristic. A prefix/regex check would accept a typo
+# like "Raed(~/.ssh/**)" or an unclosed "Typo(" and report green while the rule is inert —
+# the same class of silent failure being repaired.
+EXP_DENY='["Read(~/.ssh/**)","Edit(~/.ssh/**)",
+ "Read(~/.aws/credentials)","Edit(~/.aws/credentials)",
+ "Read(~/.config/op/config)","Edit(~/.config/op/config)",
+ "Read(**/secrets.*.yml)","Edit(**/secrets.*.yml)",
+ "Read(**/.env.production*)","Edit(**/.env.production*)",
+ "Read(**/*.key)","Edit(**/*.key)",
+ "Read(**/*.pem)","Edit(**/*.pem)"]'
+EXP_ASK='["Read(~/.kube/config)","Edit(~/.kube/config)",
+ "Edit(**/Dockerfile*)","Edit(**/docker-compose*.yml)",
+ "Edit(**/.github/workflows/**)","Edit(**/.gitlab-ci.yml)",
+ "Edit(**/.gitlab/ci/**)","Edit(**/terraform/**)","Edit(**/ansible/**)",
+ "Bash(dangerouslyDisableSandbox:true)","Bash(docker *)"]'
+
+jq_is "(.permissions.deny | sort) == ($EXP_DENY | sort)" true "deny array matches approved set exactly"
+jq_is "(.permissions.ask  | sort) == ($EXP_ASK  | sort)" true "ask array matches approved set exactly"
+
+# Belt and braces: every rule is a COMPLETE, closed form naming a tool we actually use.
+jq_is '[.permissions.deny[], .permissions.ask[]
+        | select(test("^(Read|Edit|Bash)\\([^)]+\\)$") | not)] | length' 0 \
+      "every rule is a complete Read/Edit/Bash(spec) form"
 
 echo "B. layer 1 — read/edit pairing on every secret pattern"
 for p in '**/secrets.*.yml' '**/.env.production*' '**/*.key' '**/*.pem' \
@@ -306,27 +332,35 @@ is_exempt() {
 
 entries=$(printf '{}' | /bin/bash "$MOD" | jq -r '.sandbox.credentials.files[]?.path')
 
-missing=0
-for path in "$HOME"/.ssh/*; do
-  [ -f "$path" ] || continue          # skips agent/ and any other directory
-  name=$(basename "$path")
+# find, not a glob: "$HOME"/.ssh/* does NOT enumerate dotfiles, so a hidden private key
+# would pass unnoticed — which is exactly the silent-gap failure this test exists to
+# prevent. -print0 also survives spaces in filenames.
+while IFS= read -r -d '' path; do
+  name=${path##*/}
   is_exempt "$name" && continue
   if printf '%s\n' "$entries" | grep -qxF "~/.ssh/$name"; then
     echo "  PASS: covered ~/.ssh/$name"; pass=$((pass + 1))
   else
-    echo "  FAIL: UNCOVERED ~/.ssh/$name"; fail=$((fail + 1)); missing=$((missing + 1))
+    echo "  FAIL: UNCOVERED ~/.ssh/$name"; fail=$((fail + 1))
   fi
-done
+done < <(find "$HOME/.ssh" -maxdepth 1 -type f -print0)
 
-# Guard the other direction: an entry for a file that no longer exists is stale.
-printf '%s\n' "$entries" | while IFS= read -r e; do
+# Guard the other direction. A configured path that no longer exists is a FAILURE, not a
+# warning: it means the inventory has drifted, and a renamed key may now be uncovered
+# while the entry count still looks correct. Heredoc (not a pipe) so $fail survives.
+while IFS= read -r e; do
   [ -n "$e" ] || continue
   case "$e" in
-    "~/.ssh/"*) [ -f "$HOME/${e#\~/}" ] || echo "  WARN: stale entry $e (file absent)" ;;
+    "~/.ssh/"*)
+      if [ ! -f "$HOME/${e#\~/}" ]; then
+        echo "  FAIL: stale entry $e (file absent)"; fail=$((fail + 1))
+      fi ;;
   esac
-done
+done <<EOF
+$entries
+EOF
 
-echo; echo "RESULT: $pass covered, $missing uncovered"
+echo; echo "RESULT: $pass covered, $fail failed"
 [ "$fail" -eq 0 ]
 ```
 
@@ -474,24 +508,26 @@ Two of the three allowUnixSockets entries were already dead:
 /run/docker.sock is a Linux path never valid on macOS, and
 ~/.1password/agent.sock points at a directory that does not exist.
 
-Keeps allowUnsandboxedCommands true — disabling it would block
-Claude-initiated op-backed chezmoi applies — and ask-gates it instead."
+Keeps allowUnsandboxedCommands true and ask-gates it instead. Disabling
+it would not affect chezmoi apply run directly from a terminal, but may
+require unsandboxed execution for Claude-initiated op-backed applies."
 ```
 
 ---
 
-### Task 5: Apply and verify layers 1, 2 and 4
+### Task 5: Apply and verify the deployed layers
 
-`strictAllowlist` is still off. This is the checkpoint before egress changes.
+Covers layers 1 and 4 always, and layer 2 **only if Task 3 ran**. `strictAllowlist` is
+still off. This is the checkpoint before egress changes.
 
 **Files:** none modified — verification only.
 
 - [ ] **Step 1: Preview the apply**
 
 Run: `chezmoi diff ~/.claude/settings.json`
-Expected: the new permissions, credentials and excludedCommands; `enabledPlugins` and
-`extraKnownMarketplaces` unchanged; `model` appears (the deployed file lacks it — known
-drift from the template default `opus[1m]`).
+Expected: the new permissions and `excludedCommands`; the `credentials` block **only if
+Task 3 ran**; `enabledPlugins` and `extraKnownMarketplaces` unchanged; `model` appears (the
+deployed file lacks it — known drift from the template default `opus[1m]`).
 
 - [ ] **Step 2: Apply**
 
@@ -507,29 +543,52 @@ Expected: empty diff on the second run.
 Start a new Claude Code session and check:
 
 - `/permissions` lists the Tool(spec) rules; **no unknown-tool-name warnings at startup**.
-- `/sandbox` shows `excludedCommands: ["docker *"]`, no Docker sockets, and the
-  `credentials` block.
+- `/sandbox` shows `excludedCommands: ["docker *"]` and no Docker sockets — plus the
+  `credentials` block if Task 3 ran.
 - `/status` shows the expected model and effort.
 
-- [ ] **Step 5: Adversarial verification — each control separately**
+- [ ] **Step 5a: Adversarial verification — always run**
 
-Read and Edit are distinct rules; test both. Bash-level denial is a different layer from
-the file tools; test it independently.
+Read and Edit are distinct rules; test both. These hold whether or not layer 2 deployed.
 
 | Check | Expectation |
 |---|---|
 | Read tool on `~/.ssh/borg-fenrir` | Refused, **and the refusal shows no file contents** |
 | Edit tool on `~/.ssh/borg-fenrir` | Refused (a Read-only deny would still allow overwrite) |
-| Sandboxed `cat ~/.ssh/borg-fenrir` via Bash | Refused by `credentials`, independently of the tool rules |
-| Sandboxed `cat ~/.ssh/config` | **Succeeds** — ssh config must stay readable |
+| Read tool on `~/.aws/credentials` | Refused |
+| Edit tool on `**/secrets.*.yml` in a repo | Refused |
 | A `docker ps` command | Prompts (ask rule fires) |
 | Any `dangerouslyDisableSandbox: true` retry | Prompts (ask rule fires) |
-| Sandboxed `git fetch` against GitLab | Succeeds if Task 1 exited 0. If Task 1 exited 2, this is the **stop condition** — record the failure and report, do not work around it |
+| `/permissions` output | No unknown-tool-name warnings |
 
-- [ ] **Step 6: Record results**
+- [ ] **Step 5b: Branch on whether layer 2 deployed**
 
-If every check passes, continue to Task 6. If the Git check fails because Task 1 exited 2,
-stop and report to the user with the three options from Task 1 Step 3.
+**If Task 3 ran (preflight exited 0):**
+
+| Check | Expectation |
+|---|---|
+| Sandboxed `cat ~/.ssh/borg-fenrir` via Bash | Refused by `credentials`, independently of the tool rules |
+| Sandboxed `cat ~/.ssh/config` | **Succeeds** — ssh config must stay readable |
+| `bash .scripts/test-ssh-credential-inventory.sh` | Passes: 12 covered, 0 failed |
+| Sandboxed `git fetch` against GitLab | **Succeeds.** If it fails, layer 2 is wrong — revert Task 3's commit and re-run Task 1 rather than working around it |
+
+**If Task 3 was skipped (preflight exited 2):**
+
+| Check | Expectation |
+|---|---|
+| `.scripts/test-ssh-credential-inventory.sh` | **Not run — the script does not exist.** Skip, do not treat as failure |
+| `jq '.sandbox \| has("credentials")' ~/.claude/settings.json` | `false` — confirms layer 2 genuinely absent rather than half-applied |
+| Sandboxed `cat ~/.ssh/borg-fenrir` via Bash | **Succeeds** — expected; the tool-layer deny does not cover subprocesses. This is the residual exposure the deferral accepts |
+| Sandboxed `git fetch` against GitLab | Succeeds (keys still readable) |
+
+- [ ] **Step 6: Record results and report the residual gap**
+
+If layer 2 deployed and all checks pass, continue to Task 6.
+
+If layer 2 was deferred, **state the residual exposure explicitly** when reporting: Claude's
+own tools cannot read the keys, but sandboxed subprocesses still can. That is a real and
+narrower gap than before, not a completed fix — do not describe the work as "credentials
+protected". Continue to Task 6; the egress work is independent of layer 2.
 
 ---
 
@@ -541,12 +600,24 @@ stop and report to the user with the three options from Task 1 Step 3.
 - Create: `docs/superpowers/runs/2026-07-30-domain-discovery.md` (untracked — generated
   execution state, per the design-records policy)
 
-- [ ] **Step 1: Exercise each destination**
+- [ ] **Step 1: Establish the evidence sources before running anything**
 
-With `strictAllowlist` still off, run each and record **every host contacted**, not only
-rejected ones. Under auto mode the classifier approves most requests, so a denial-only
-sweep would miss hosts that currently succeed and produce an allowlist that fails closed
-on normal traffic the moment Task 7 lands.
+Running a workflow and watching it succeed does **not** reveal which hosts it contacted.
+Redirects, OAuth token endpoints, CDN backends and classifier-approved calls are all
+invisible at the command's own output. Two independent sources are required, and they must
+be reconciled — neither alone is sufficient:
+
+| Source | Captures | Blind to |
+|---|---|---|
+| `/sandbox` network history in the session | Hosts Claude's sandbox saw, including ones the classifier approved | Traffic from processes outside the sandbox |
+| Little Snitch monitor, filtered to the workflow's process | Every real outbound connection, including redirect targets and OAuth endpoints | Which Claude tool call caused it |
+
+Start Little Snitch's monitor and clear the sandbox history before Step 2, so the window
+is attributable.
+
+- [ ] **Step 2: Exercise each destination**
+
+With `strictAllowlist` still off, run each workflow and capture from **both** sources.
 
 | Workflow | Command |
 |---|---|
@@ -556,16 +627,25 @@ on normal traffic the moment Task 7 lands.
 | Kubernetes | `kubectl get nodes` |
 | Ruby toolchain | `bundle install --dry-run` in a Rails repo |
 
-- [ ] **Step 2: Record the hosts**
+- [ ] **Step 3: Reconcile the two sources**
 
-Write each host to the run file with the workflow that needed it and whether it was
-allowed or denied. Note that `launchpad.37signals.com` is the only host previously
-evidenced, and Basecamp auth is expected to need more.
+For each workflow, write the union of hosts to the run file, tagging each with its source
+(`sandbox`, `snitch`, or `both`) and whether it was allowed or denied.
 
-- [ ] **Step 3: Report to the user**
+**Any host seen by only one source is a finding, not noise** — a snitch-only host means
+the sandbox never saw it (likely a subprocess outside the boundary), and a sandbox-only
+host means Little Snitch attributed it elsewhere. Resolve each before proceeding; an
+unexplained gap means the inventory is incomplete and Task 7 would fail closed on real
+traffic.
 
-Present the host list for approval before Task 7 writes it into settings. Guessed hosts
-are explicitly rejected by the spec.
+`launchpad.37signals.com` is the only host previously evidenced, and Basecamp auth is
+expected to need more — treat a single-host Basecamp result as evidence the capture is
+incomplete rather than as a finished answer.
+
+- [ ] **Step 4: Report to the user**
+
+Present the reconciled host list for approval before Task 7 writes it into settings.
+Guessed hosts are explicitly rejected by the spec.
 
 ---
 
@@ -630,8 +710,8 @@ git commit -m "fix(claude): enable deterministic egress
 
 Adds allowedDomains from observed traffic and enables strictAllowlist in
 the same change. Auto mode auto-approves sandbox network prompts and
-accounts for 3083 of 3318 recorded messages, so prompting was not acting
-as a control during unattended runs."
+accounts for 3083 of 3318 recorded messages, so egress during unattended
+runs was classifier-mediated rather than deterministically restricted."
 ```
 
 ---
@@ -660,8 +740,13 @@ claude plugin uninstall frontend-design@claude-code-plugins
 - [ ] **Step 3: Confirm absence**
 
 ```bash
-claude plugin list --json | jq -r '.[].name' | sort
+claude plugin list --json | jq -r '.[].id' | sort
 ```
+The field is `.id`, **not `.name`** — verified against the installed 2.1.220 CLI, whose
+objects expose `enabled`, `id`, `installPath`, `installedAt`, `lastUpdated`, `scope`,
+`version`. `jq -r '.[].name'` returns `null` for every row, which would silently print
+nothing and falsely confirm removal.
+
 Expected: neither `code-review@claude-plugins-official` nor
 `frontend-design@claude-code-plugins` appears. `frontend-design@claude-plugins-official`
 **remains** — it is the declared one.
@@ -680,7 +765,7 @@ Expected: `RESULT: N passed, 0 failed`.
 
 ```bash
 bash .scripts/reconcile-agents.sh
-claude plugin list --json | jq -r '.[].name' | sort
+claude plugin list --json | jq -r '.[].id' | sort
 ```
 Expected: neither plugin returns.
 
@@ -702,8 +787,16 @@ The reconciler never uninstalls, so both were removed explicitly."
 
 ## Completion
 
-- [ ] All tests green: `bash .scripts/test-claude-settings.sh`,
-      `bash .scripts/test-ssh-credential-inventory.sh`, `bash .scripts/test-reconcile-agents.sh`
+- [ ] `bash .scripts/test-claude-settings.sh` green
+- [ ] `bash .scripts/test-reconcile-agents.sh` green
+- [ ] `bash .scripts/test-ssh-credential-inventory.sh` green — **only if Task 3 ran.** If
+      layer 2 was deferred this script does not exist; skip it and record why, rather than
+      reporting a missing-file error as a failure
 - [ ] `chezmoi diff ~/.claude/settings.json` empty
-- [ ] Spec updated to `**Status:** Implemented` with the merge reference
+- [ ] Spec updated to `**Status:** In progress` with the MR reference. **Not
+      `Implemented`** — this plan ends without pushing, and the policy reserves
+      `Implemented` for after merge. Update it to `Implemented` once the MR merges
+- [ ] If layer 2 was deferred, the report states the residual exposure explicitly
+      (sandboxed subprocesses can still read the keys) rather than describing credentials
+      as protected
 - [ ] Report to the user; **do not push** — pushing is the user's call
