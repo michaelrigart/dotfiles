@@ -63,5 +63,25 @@ jq_is '.extraKnownMarketplaces.m != null' true "extraKnownMarketplaces carried t
 jq_is '.model'                'opus[1m]'  "model carried through"
 jq_is '.effortLevel'          'xhigh'     "effortLevel carried through"
 
+echo "G. layer 4 — escape routes"
+emit '{}'
+jq_is '.sandbox.excludedCommands | index("docker *") != null' true "docker excluded from sandbox"
+jq_is '.sandbox.allowUnsandboxedCommands' true "escape hatch retained (ask-gated)"
+jq_is '.permissions.ask | index("Bash(dangerouslyDisableSandbox:true)") != null' true \
+      "unsandboxed retry is ask-gated"
+jq_is '.permissions.ask | index("Bash(docker *)") != null' true "docker commands ask-gated"
+jq_is '[.sandbox.network.allowUnixSockets[] | select(test("docker"))] | length' 0 \
+      "no docker sockets allowlisted"
+jq_is '.sandbox.network.allowUnixSockets | index("~/.1password/agent.sock")' null \
+      "dead 1Password socket entry removed"
+jq_is '[.sandbox.network.allowUnixSockets[] | select(test("launchd"))] | length' 0 \
+      "no launchd wildcard"
+
+echo "H. layer 3 stays off until domains are known"
+jq_is '.sandbox.network.strictAllowlist // false' false "strictAllowlist off in this phase"
+
+echo "I. layer 2 deferred — preflight returned exit 2"
+jq_is '.sandbox | has("credentials")' false "no credentials block (layer 2 deferred)"
+
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

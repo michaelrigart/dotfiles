@@ -66,8 +66,9 @@ printf '%s' "$input" | jq \
         "enabled": true,
         "autoAllowBashIfSandboxed": true,
         "allowUnsandboxedCommands": true,
+        "excludedCommands": ["docker *"],
         "network": {
-          "allowUnixSockets": ["/run/docker.sock", "~/.docker/run/docker.sock", "~/.1password/agent.sock"],
+          "allowUnixSockets": [],
           "allowLocalBinding": true
         }
       },
