@@ -35,6 +35,21 @@ guards against credential coverage rotting as SSH keys are added.
 - **Never print key material.** Inventory and tests operate on filenames only.
 - **Do not push.** Commits only; the user pushes.
 
+## Before starting
+
+- [ ] **Mark the spec in progress.** Do this now, before Task 2 makes the first
+      configuration change — not at the end. The status line tracks current state, so
+      leaving it `Approved` while the template is being edited makes it false.
+
+```bash
+# In docs/superpowers/specs/2026-07-30-claude-code-security-posture-design.md:
+#   **Status:** Approved   ->   **Status:** In progress
+git commit -am "docs(claude): mark security posture spec in progress"
+```
+
+No MR link — this plan ends without pushing, so none exists yet. Add the reference after
+the MR is opened; set `Implemented` only after merge.
+
 ## File Structure
 
 | File | Responsibility |
@@ -554,16 +569,21 @@ failure under test — a Read leaks real key material into the transcript and an
 destroys the key. Use a disposable sentinel instead. `Read(~/.ssh/**)` and `Edit(~/.ssh/**)`
 are directory-wide, so a sentinel under `~/.ssh` exercises the identical rule.
 
+**Create and remove the sentinel from a separate terminal**, or via a command you
+explicitly approve as unsandboxed. Creating it from inside a sandboxed Claude session
+should *fail* — `Edit(~/.ssh/**)` is denied, which is the whole point. If sandboxed
+creation succeeds, stop: the deny rule is not working and that is the finding.
+
 ```bash
-printf 'sentinel-not-a-key\n' > ~/.ssh/zz-claude-rule-check
+printf 'sentinel-not-a-key\n' > "$HOME/.ssh/zz-claude-rule-check"
 ```
 
 Read and Edit are distinct rules; test both. These hold whether or not layer 2 deployed.
 
 | Check | Expectation |
 |---|---|
-| Read tool on `~/.ssh/zz-claude-rule-check` | Refused, and the refusal shows no file contents |
-| Edit tool on `~/.ssh/zz-claude-rule-check` | Refused (a Read-only deny would still allow overwrite) |
+| Read tool on `/Users/michael/.ssh/zz-claude-rule-check` | Refused, and the refusal shows no file contents |
+| Edit tool on `/Users/michael/.ssh/zz-claude-rule-check` | Refused (a Read-only deny would still allow overwrite) |
 | Read tool on a scratch `secrets.test.yml` | Refused |
 | Edit tool on that same scratch file | Refused |
 | A `docker ps` command | Prompts (ask rule fires) |
@@ -571,11 +591,12 @@ Read and Edit are distinct rules; test both. These hold whether or not layer 2 d
 | `/permissions` output | No unknown-tool-name warnings |
 
 ```bash
-rm -f ~/.ssh/zz-claude-rule-check
+rm -f "$HOME/.ssh/zz-claude-rule-check"
 ```
 
-**Remove the sentinel before Step 5b.** The inventory test enumerates every regular file
-under `~/.ssh`, so a leftover sentinel would be reported as an uncovered credential.
+**Remove the sentinel before Step 5b**, again from a separate terminal. The inventory test
+enumerates every regular file under `~/.ssh`, so a leftover sentinel would be reported as
+an uncovered credential.
 
 - [ ] **Step 5b: Branch on whether layer 2 deployed**
 
@@ -586,9 +607,15 @@ must run against the real entries. Use a **no-output read**: bytes go to `/dev/n
 the transcript, so a broken rule cannot leak key material.
 
 ```bash
-dd if=~/.ssh/borg-fenrir of=/dev/null bs=1 count=1 2>/dev/null; echo "rc=$?"   # expect non-zero
-dd if=~/.ssh/config      of=/dev/null bs=1 count=1 2>/dev/null; echo "rc=$?"   # expect 0
+# "$HOME", never ~ : the shell does NOT tilde-expand after if=, so `if=~/.ssh/x` is passed
+# literally and dd fails with rc 1 on the unresolved path. On the denied probe that
+# non-zero rc looks exactly like a working deny — a false pass on the control itself.
+dd if="$HOME/.ssh/borg-fenrir" of=/dev/null bs=1 count=1 2>/dev/null; echo "rc=$?"  # expect non-zero
+dd if="$HOME/.ssh/config"      of=/dev/null bs=1 count=1 2>/dev/null; echo "rc=$?"  # expect 0
 ```
+
+Sanity-check the probe itself before trusting either result: `dd if="$HOME/.ssh/config"`
+must return 0. If it does not, the probe is broken, not the rule.
 
 | Check | Expectation |
 |---|---|
@@ -603,7 +630,7 @@ dd if=~/.ssh/config      of=/dev/null bs=1 count=1 2>/dev/null; echo "rc=$?"   #
 |---|---|
 | `.scripts/test-ssh-credential-inventory.sh` | **Not run — the script does not exist.** Skip, do not treat as failure |
 | `jq '.sandbox \| has("credentials")' ~/.claude/settings.json` | `false` — confirms layer 2 genuinely absent rather than half-applied |
-| No-output read of `~/.ssh/borg-fenrir` via Bash (`dd ... of=/dev/null`) | rc 0 — expected; the tool-layer deny does not cover subprocesses. This is the residual exposure the deferral accepts. Still never `cat` it: the point is to observe the rc, not the bytes |
+| No-output read of `~/.ssh/borg-fenrir` via Bash (`dd if="$HOME/..." of=/dev/null`) | rc 0 — expected; the tool-layer deny does not cover subprocesses. This is the residual exposure the deferral accepts. Use `"$HOME"`, never `~`, and never `cat`: observe the rc, not the bytes |
 | Sandboxed `git fetch` against GitLab | Succeeds (keys still readable) |
 
 - [ ] **Step 6: Record results and report the residual gap**
@@ -646,18 +673,22 @@ the fallback rather than substituting guesswork.
 the shipped example settings and are the documented mechanism for request logging. Point
 them at a local logging proxy for the discovery window only, then remove them.
 
-**Trap:** `glab`, `kubectl` and `tsh` are Go binaries, and Go does not use the system trust
-store the way most tools do. Release 2.1.69 — *"Added `sandbox.enableWeakerNetworkIsolation`
-setting (macOS only) to allow Go programs like `gh`, `gcloud`, and `terraform` to verify
-TLS certificates when using a custom MITM proxy with `httpProxyPort`"* — records that they need
-`sandbox.enableWeakerNetworkIsolation` (macOS only) to verify TLS against a MITM proxy on
-`httpProxyPort`. Without it, exactly the four workflows being measured will fail TLS and
-produce an empty capture that looks like "no hosts contacted". Set it for the discovery
-window, and **remove it afterwards** — it weakens network isolation.
+**Trap:** all four CLIs being measured — `glab`, `kubectl`, `tsh` and `basecamp` — are Go
+binaries, and Go does not use the system trust store the way most tools do. Release
+2.1.69: *"Added `sandbox.enableWeakerNetworkIsolation` setting (macOS only) to allow Go
+programs like `gh`, `gcloud`, and `terraform` to verify TLS certificates when using a
+custom MITM proxy with `httpProxyPort`"*.
+
+Without that setting, **every** workflow in the table fails TLS and produces an empty
+capture that reads as "no hosts contacted" rather than as an error — yielding a
+confidently wrong allowlist that fails closed on all real traffic once Task 7 lands. Set
+it for the discovery window only and **remove it afterwards**; it weakens network
+isolation.
 
 - [ ] **Step 2: Exercise each destination**
 
-With `strictAllowlist` still off, run each workflow and capture from **both** sources.
+With `strictAllowlist` still off, run each workflow and capture from **all available
+sources** — both if the proxy fallback is in use, Little Snitch alone otherwise.
 
 | Workflow | Command |
 |---|---|
@@ -837,10 +868,10 @@ The reconciler never uninstalls, so both were removed explicitly."
       layer 2 was deferred this script does not exist; skip it and record why, rather than
       reporting a missing-file error as a failure
 - [ ] `chezmoi diff ~/.claude/settings.json` empty
-- [ ] Spec set to `**Status:** In progress` **with no MR link** — this plan ends without
-      pushing, so no MR exists yet and a reference cannot be fabricated. Set this when
-      execution begins, not at the end. Add the MR reference after the user pushes and
-      opens it; set `Implemented` only after merge
+- [ ] Spec still reads `**Status:** In progress` (set in *Before starting*) with no MR
+      link. Do **not** set `Implemented` here — this plan ends without pushing, so the MR
+      does not exist yet. The reference is added after the MR is opened; `Implemented`
+      only after merge
 - [ ] If layer 2 was deferred, the report states the residual exposure explicitly
       (sandboxed subprocesses can still read the keys) rather than describing credentials
       as protected
