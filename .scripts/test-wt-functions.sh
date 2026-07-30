@@ -159,9 +159,12 @@ setup
 print -r -- "env.local" > "$REPO/.worktreeinclude"
 print -r -- "secret" > "$REPO/env.local"
 # Simulating absence needs a stripped PATH, not a moved stub: wtcp is really installed
-# on this machine, so hiding the stub just falls through to the real binary. wt only
-# needs git before it reaches the wtcp check, so a PATH with git alone is enough.
-CLEANP=$(mkd); ln -s "$(command -v git)" "$CLEANP/git"
+# on this machine, so hiding the stub just falls through to the real binary.
+CLEANP=$(mkd)
+# Every external the lifecycle reaches before the wtcp check. wtcp is absent on
+# purpose. If a helper later grows a new external dependency, add it here too, or
+# this test starts failing for a reason that has nothing to do with wtcp.
+for b in env git awk mkdir; do ln -s "$(command -v $b)" "$CLEANP/$b"; done
 OUT="$(cd "$REPO" && source "$FUNCS" && export PATH="$CLEANP" && wt g 2>&1)"; RC=$?
 rc_is 1 "missing wtcp aborts instead of silently skipping the copy"
 has "wtcp is missing" "abort names the missing tool"
@@ -248,6 +251,41 @@ export ZELLIJ=1 MOCK_ZJ_SWITCH_RC=1
 run "$REPO" dev "$REPO"
 rc_is 1 "failed switch returns nonzero"
 has "is ready but switching failed" "switch failure keeps its actionable message"
+
+print -r -- "G. _wt_git / _wt_primary"
+setup
+run "$REPO" _wt_primary
+eq "$OUT" "$REPO" "primary resolves to the main checkout"
+
+run "$REPO" wt p1
+run "$HOME/Code/Org/repo-p1" _wt_primary
+eq "$OUT" "$REPO" "primary resolves to main from inside a linked worktree"
+
+# An exported GIT_DIR must not redirect resolution to another repository.
+setup
+git init -q -b main "$ROOTTMP/decoy"
+git -C "$ROOTTMP/decoy" commit -q --allow-empty -m init
+OUT="$(cd "$REPO" && source "$FUNCS" && GIT_DIR="$ROOTTMP/decoy/.git" _wt_primary 2>&1)"; RC=$?
+eq "$OUT" "$REPO" "exported GIT_DIR does not misroute primary resolution"
+
+setup
+git init -q --bare -b main "$ROOTTMP/bare.git"
+# Tested from inside the bare repo itself, deliberately. Adding a worktree to a
+# commitless bare repo happens to work on current Git (it infers --orphan), but
+# relying on that is a version dependency this test does not need.
+run "$ROOTTMP/bare.git" _wt_primary
+rc_is 1 "bare repository is refused"
+has "bare" "bare refusal says why"
+
+
+# _wt_assert_worktree enumerates the same paths and must be equally protected.
+setup
+run "$REPO" wt p2
+git init -q -b main "$ROOTTMP/decoy2"
+git -C "$ROOTTMP/decoy2" commit -q --allow-empty -m init
+OUT="$(cd "$REPO" && source "$FUNCS" && \
+  GIT_DIR="$ROOTTMP/decoy2/.git" _wt_assert_worktree "$REPO" "$HOME/Code/Org/repo-p2" p2 2>&1)"; RC=$?
+rc_is 0 "exported GIT_DIR does not misroute _wt_assert_worktree"
 
 export HOME="$REAL_HOME"
 print -r -- ""

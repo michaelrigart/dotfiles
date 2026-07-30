@@ -151,7 +151,7 @@ dev() {
 
   # 1) "." or an existing directory → the git repo that contains it
   if [[ "$arg" == "." || ( -n "$arg" && -d "$arg" ) ]]; then
-    repo="$(git -C "${arg:-$PWD}" rev-parse --show-toplevel 2>/dev/null)" \
+    repo="$(_wt_git -C "${arg:-$PWD}" rev-parse --show-toplevel 2>/dev/null)" \
       || { print -ru2 -- "dev: '${arg:-$PWD}' is not inside a git repo."; return 1; }
 
   # 2) exact path relative to ~/Code (e.g. Netronix/curato)
@@ -238,6 +238,40 @@ dev() {
   else
     ( cd "$repo" && zellij --session "$name" --new-session-with-layout dev )
   fi
+}
+
+# _wt_git — git with its routing environment cleared. Every Git call in the
+# worktree lifecycle goes through this. An exported GIT_DIR or GIT_WORK_TREE
+# silently redirects git to another checkout: `status` then reports a dirty
+# worktree as clean *with exit status 0*, and `worktree list`, `ls-files`,
+# `worktree remove` and `branch -d` all act on the wrong repository.
+_wt_git() {
+  emulate -L zsh
+  command env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR \
+    -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_NAMESPACE \
+    git "$@"
+}
+
+# _wt_primary — absolute path of the repository's primary worktree.
+#
+# Resolved from `worktree list`, never by path arithmetic on --git-common-dir:
+# taking the parent of the common dir is correct for a standard repo
+# (/…/repo/.git → /…/repo) but yields the *containing directory* for a bare one
+# (/…/repo.git → /…/), which is not a worktree at all.
+#
+# -z is required: the line-based porcelain format gives no guarantee that a path
+# is emitted raw, so a path needing quoting cannot be parsed unambiguously.
+# Records are NUL-terminated; ${(0)} drops the empty separator records, leaving
+# field 1 = "worktree <path>" and, for a bare repo, field 2 = "bare".
+_wt_primary() {
+  emulate -L zsh
+  local -a f
+  f=( ${(0)"$(_wt_git worktree list --porcelain -z 2>/dev/null)"} )
+  [[ "${f[1]}" == 'worktree '* ]] || {
+    print -ru2 -- "wt: not inside a git repository."; return 1 }
+  [[ "${f[2]}" == bare ]] && {
+    print -ru2 -- "wt: repository is bare — there is no primary worktree to run from."; return 1 }
+  print -r -- "${f[1]#worktree }"
 }
 
 # wt — spin up (or reopen) a git worktree for the current repo in its own Zellij
@@ -343,15 +377,15 @@ wt() {
 _wt_assert_worktree() {
   emulate -L zsh
   local root="$1" dest="$2" branch="$3"
-  local -a lines paths; local p
-  lines=( ${(f)"$(git -C "$root" worktree list --porcelain 2>/dev/null)"} )
-  for p in ${${(M)lines:#worktree *}#worktree }; do paths+=( "${p:A}" ); done
+  local -a recs paths; local p
+  recs=( ${(0)"$(_wt_git -C "$root" worktree list --porcelain -z 2>/dev/null)"} )
+  for p in ${${(M)recs:#worktree *}#worktree }; do paths+=( "${p:A}" ); done
   if (( ! ${paths[(Ie)${dest:A}]} )); then
     print -ru2 -- "wt: $dest is not a registered worktree of $root."
     print -ru2 -- "    Leftover directory? Remove it, or use a different branch name."
     return 1
   fi
-  local have; have="$(git -C "$dest" symbolic-ref --quiet --short HEAD 2>/dev/null)"
+  local have; have="$(_wt_git -C "$dest" symbolic-ref --quiet --short HEAD 2>/dev/null)"
   if [[ "$have" != "$branch" ]]; then
     print -ru2 -- "wt: $dest is on '${have:-a detached HEAD}', not '$branch'."
     print -ru2 -- "    Branch names differing only by '/' vs '-' share one directory."
