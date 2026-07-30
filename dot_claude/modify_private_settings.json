@@ -69,6 +69,14 @@ printf '%s' "$input" | jq \
         "autoAllowBashIfSandboxed": true,
         "allowUnsandboxedCommands": true,
         "excludedCommands": ["docker *"],
+        "filesystem": {
+          "allowRead": [
+            "~/.ssh/config",
+            "~/.ssh/known_hosts",
+            "~/.ssh/michael",
+            "~/.ssh/michael.pub"
+          ]
+        },
         "network": {
           "allowUnixSockets": [],
           "allowLocalBinding": true
