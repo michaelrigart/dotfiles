@@ -574,7 +574,23 @@ context lines that are easily misread as changes.
 
 - [ ] **Step 2: Apply**
 
+Back up the live file first — this overwrites a security config.
+
 Run: `chezmoi -S "$PWD" apply ~/.claude/settings.json`
+
+**Expect this to fail under the sandbox** with `rename ...: operation not permitted`.
+`~/.claude/settings.json` is on the sandbox's write-deny list, so the atomic rename is
+blocked. This is not a plan defect.
+
+**Before retrying, confirm the live file is unchanged** — the failure occurs before the
+rename, so it should be byte-identical and still valid JSON:
+
+```bash
+jq -e '.permissions.deny | length' ~/.claude/settings.json   # expect the pre-apply count
+```
+
+Only then retry the same command unsandboxed. `Bash(dangerouslyDisableSandbox:true)` is now
+in `ask`, so this prompts on every apply — intended, not friction to remove.
 
 - [ ] **Step 3: Verify idempotence**
 
@@ -660,6 +676,24 @@ must return 0. If it does not, the probe is broken, not the rule.
 | `jq '.sandbox \| has("credentials")' ~/.claude/settings.json` | `false` — confirms layer 2 genuinely absent rather than half-applied |
 | No-output read of `~/.ssh/borg-fenrir` via Bash (`dd if="$HOME/..." of=/dev/null`) | rc 0 — expected; the tool-layer deny does not cover subprocesses. This is the residual exposure the deferral accepts. Use `"$HOME"`, never `~`, and never `cat`: observe the rc, not the bytes |
 | Sandboxed `git fetch` against GitLab | Succeeds (keys still readable) |
+
+- [ ] **Step 5c: Fresh-session checks — cannot be done from the applying session**
+
+Permission rules load at session start, and slash commands are user-driven. **Task 5 stays
+PARTIALLY VERIFIED until a fresh session confirms all of:**
+
+| Check | Why it needs a fresh session |
+|---|---|
+| `/permissions` lists the Tool(spec) rules | Slash command, user-invoked |
+| `/sandbox` shows `excludedCommands` and empty sockets | Slash command, user-invoked |
+| `/status` shows expected model and effort | Slash command, user-invoked |
+| **No unknown-tool-name warnings at startup** | Emitted only at session start |
+| `docker ps` prompts | Requires the ask rule to be exercised interactively |
+| An unsandboxed retry prompts | Same |
+| Sentinel Read + Edit both refused | The sentinel must be created from a separate terminal, since the deny rule correctly blocks creating it from a sandboxed session |
+
+Do not mark Task 5 complete, and do not describe the deployment as verified, until these
+pass.
 
 - [ ] **Step 6: Record results and report the residual gap**
 

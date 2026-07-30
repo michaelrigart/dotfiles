@@ -90,9 +90,17 @@ Runtime validation of the schema remains an acceptance test, not an assumption.
 
 ## Design
 
+> **CORRECTION (2026-07-30): the layer separation below is DISPROVEN.** The design assumed
+> layer 1 governs only Claude's own file tools while layer 2 governs sandboxed subprocesses.
+> It does not: **Read/Edit denials merge into the Bash sandbox boundary**, so a layer-1 deny
+> also blocks every sandboxed subprocess touching that path. Deploying `Read(~/.ssh/**)`
+> broke `git commit` signing immediately — see *Task 5 rollback* below. Layer 1 as specified
+> must not be deployed until the agent prerequisite is solved. Layers 3 and 4 are unaffected.
+
 Four complementary control layers:
 
-1. **Tool rules** — what Claude's own Read/Edit tools may touch.
+1. **Tool rules** — what Claude's own Read/Edit tools may touch. **In practice also
+   constrains sandboxed subprocesses**, per the correction above.
 2. **Credential isolation** — what sandboxed subprocesses may read, including env vars.
 3. **Network allowlist** — where sandboxed commands may connect, denied without prompt.
 4. **Explicit approval for escape routes** — unsandboxed execution and Docker.
@@ -131,11 +139,84 @@ inspection of SSH configuration — diagnosing `~/.ssh/config` or `known_hosts` 
 an explicit unsandboxed override or manual paste. That cost is accepted in exchange for a
 rule that cannot be outrun by a new key name.
 
+#### Task 5 rollback (2026-07-30) — `~/.ssh/**` breaks commit signing
+
+Layer 1 was applied and **rolled back the same day**. The deployed
+`Read(~/.ssh/**)` blocked git from reading the SSH signing key, and every signed commit
+failed with `fatal: failed to write commit object`. Because the git config is global, this
+affected every repository, not just this one.
+
+```
+gpg.format = ssh   commit.gpgsign = true   user.signingKey = ~/.ssh/michael.pub
+```
+
+Git reported `No such file or directory`, which is misleading: the file exists and the read
+was denied.
+
+**This contradicts a decision made earlier in this spec.** `**/.ssh/*_rsa.pub` was dropped
+on the grounds that public keys are not secret — then `Read(~/.ssh/**)` re-covered every
+`.pub` wholesale. Public keys turn out to be load-bearing for signing. The recorded
+trade-off ("sacrifices direct Claude inspection of SSH configuration") was far too narrow.
+
+**Two obvious repairs are both invalid at present:**
+
+| Repair | Why it fails |
+|---|---|
+| Move the public key out of `~/.ssh` | Git permits `user.signingKey` to name a *public* key only when the matching private key is reachable through `ssh-agent`; otherwise it must name the private key directly. There is no supported "strip `.pub` and load the adjacent private key" behaviour in `ssh-keygen -Y`. With no reachable agent, relocating the public key achieves nothing |
+| Exempt `michael` from the deny | Restores signing by leaving the most important private key readable by sandboxed processes — the opposite of the goal. `michael.pub` was merely the *first* failure; permitting it would surface the unavailable-agent/private-key failure next |
+
+**Prerequisite, therefore: do not deploy any `.ssh` denial that reaches sandboxed
+subprocesses until the agent is reachable inside the sandbox.** That is the same blocker
+that already deferred layer 2 — it now blocks layer 1 as well.
+
+**Redesign direction:**
+
+1. Make the 1Password agent reachable over a stable, allowlistable socket.
+2. Copy the public signing key to `~/.config/git/signing.pub` and repoint `user.signingKey`.
+3. Keep private key material under the `~/.ssh/**` denial.
+4. **Acceptance test before any redeployment: a signed disposable commit made from inside
+   the sandbox must succeed.** Applying without this test is what produced this rollback.
+
+An interim option worth investigating: a narrowly scoped, schema-verified hook blocking only
+direct Read/Edit operations, leaving subprocesses untouched — with the subprocess exposure
+documented explicitly rather than assumed away.
+
+#### Rule scope: relative patterns are narrower than they read
+
+Path specifiers anchor differently, per the permission-rules documentation:
+
+| Form | Anchored to |
+|---|---|
+| `path`, `./path` | the current directory |
+| `~/path` | the home directory |
+| `//path` | the filesystem root |
+
+Read/Edit denials also merge into the Bash sandbox boundary, so a denied path blocks
+shell commands referencing it, not only the file tools.
+
+**Consequence:** the four relative pairs — `**/secrets.*.yml`, `**/.env.production*`,
+`**/*.key`, `**/*.pem` — protect the **active project tree**, not arbitrary matching files
+elsewhere on disk. The `~/...` rules (`~/.ssh/**`, `~/.aws/credentials`,
+`~/.config/op/config`, `~/.kube/config`) are machine-wide.
+
+Observed 2026-07-30 after deployment: a dummy `.pem` at an absolute path outside the
+working tree was created and read successfully, while the identical operation inside the
+worktree was denied. The old bare globs matched nothing at all, so this is a narrowing of a
+claim, not a regression — but the protection is project-scoped and should be described that
+way.
+
+**Follow-up — inventory before widening.** Do **not** add `//**/*.pem` or broad
+`~/**/*.pem` companions blindly: they would likely block legitimate CA bundles, toolchain
+certificates, and runtime fixtures, producing constant false denials. Inventory the
+matching files first. The likely shape is targeted `~/Code/**` companions, covering sibling
+repositories without sweeping caches and language runtimes.
+
 ### Layer 2 — credential isolation
 
-Layer 1 governs Claude's tools; this layer governs **sandboxed subprocesses**, which is
-why the two differ. Env vars are also the reason this layer is not redundant: no
-path-based rule can cover them.
+**The stated distinction between this layer and layer 1 is disproven** — layer 1 already
+reaches sandboxed subprocesses. What remains genuinely unique to this layer is **secret
+environment variables**, which no path-based rule can cover. The file entries are largely
+redundant with layer 1 rather than complementary to it.
 
 **Design chosen: targeted `credentials.files` entries, not a directory deny.** A
 directory-wide deny would require proving that `filesystem.allowRead` re-admits `config`,
@@ -245,6 +326,19 @@ uninstalls, and respects deliberately-disabled plugins." Removing a declaration 
 `plugins.conf` therefore does *not* uninstall the plugin; removal must be performed
 explicitly.
 
+**Applying requires an approved unsandboxed retry.** `~/.claude/settings.json` sits on the
+sandbox's write-deny list, so `chezmoi apply` fails from inside the sandbox with
+`rename ...: operation not permitted`. Observed 2026-07-30. The failure is safe — it aborts
+before the atomic rename, leaving the live file byte-identical — and **that must be
+confirmed before retrying**, so a partial write is never compounded. The retry runs
+unsandboxed, which `Bash(dangerouslyDisableSandbox:true)` in `ask` now gates, so every
+apply prompts. That is intended, not friction to design away.
+
+**Use `-S <worktree>` until this branch merges.** chezmoi defaults to its configured source
+directory (`~/.local/share/chezmoi`, i.e. main), so an unqualified apply deploys main's
+configuration while appearing to succeed. A routine apply from main will likewise revert
+this deployment until the branch merges.
+
 ## Decision log — rejected
 
 | Rejected | Reason |
@@ -271,9 +365,9 @@ actually ships.
 | # | Change | Status |
 |---|---|---|
 | 0 | SSH-agent preflight (`.scripts/preflight-ssh-agent.sh`) | Done — returned exit 2 |
-| 1 | `fix(claude): repair inert permission rules` — layer 1 + settings test suite | Done |
-| 2 | `fix(claude): harden sandbox escape routes` — layer 4. `strictAllowlist` stays **off** | Done |
-| 3 | Apply and verify 1–2 with `strictAllowlist` off | Next |
+| 1 | `fix(claude): repair inert permission rules` — layer 1 + settings test suite | Committed, **not deployed** |
+| 2 | `fix(claude): harden sandbox escape routes` — layer 4. `strictAllowlist` stays **off** | Committed, **not deployed** |
+| 3 | Apply and verify 1–2 with `strictAllowlist` off | **ROLLED BACK** — layer 1 broke commit signing; live settings restored from backup, byte-identical |
 | 4 | Domain-discovery checkpoint — record **every destination observed**, including classifier-approved ones, not only rejections | Pending |
 | 5 | `fix(claude): enable deterministic egress` — `allowedDomains` and `strictAllowlist: true` together | Pending |
 | 6 | Apply and verify allowed *and* denied egress | Pending |
