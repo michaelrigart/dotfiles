@@ -40,12 +40,22 @@ printf '%s' "$input" | jq \
       "includeCoAuthoredBy": false,
       "permissions": {
         "deny": [
-          "**/.ssh/*_rsa", "**/.ssh/*_rsa.pub", "**/.ssh/id_*", "**/.aws/credentials",
-          "**/.config/op/config", "**/secrets.*.yml", "**/.env.production*", "**/*.key", "**/*.pem"
+          "Read(~/.ssh/**)",             "Edit(~/.ssh/**)",
+          "Read(~/.aws/credentials)",    "Edit(~/.aws/credentials)",
+          "Read(~/.config/op/config)",   "Edit(~/.config/op/config)",
+          "Read(**/secrets.*.yml)",      "Edit(**/secrets.*.yml)",
+          "Read(**/.env.production*)",   "Edit(**/.env.production*)",
+          "Read(**/*.key)",              "Edit(**/*.key)",
+          "Read(**/*.pem)",              "Edit(**/*.pem)"
         ],
         "ask": [
-          "**/.kube/config", "**/Dockerfile*", "**/docker-compose*.yml",
-          "**/.github/workflows/**", "**/terraform/**", "**/ansible/**"
+          "Read(~/.kube/config)",        "Edit(~/.kube/config)",
+          "Edit(**/Dockerfile*)",        "Edit(**/docker-compose*.yml)",
+          "Edit(**/.github/workflows/**)",
+          "Edit(**/.gitlab-ci.yml)",     "Edit(**/.gitlab/ci/**)",
+          "Edit(**/terraform/**)",       "Edit(**/ansible/**)",
+          "Bash(dangerouslyDisableSandbox:true)",
+          "Bash(docker *)"
         ],
         "defaultMode": "default"
       },
