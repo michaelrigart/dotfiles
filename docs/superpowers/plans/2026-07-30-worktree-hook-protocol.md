@@ -1088,6 +1088,37 @@ rc_is 1 "invalid hook aborts prepare before copying"
   && _fail "manifest file is not copied when the hook is invalid" \
   || _pass "manifest file is not copied when the hook is invalid"
 has "wt-prepare n4 && wt n4" "recovery message names both steps"
+
+# The wtcp-presence guard (`if (( ${#_WT_CARRY} ))`) is scoped to when a copy
+# is actually needed: a repository whose destinations are already fully
+# populated must not require wtcp to be installed. Discriminating: with that
+# guard removed, the presence check fires unconditionally and this fails
+# even though nothing needs copying. Stripped PATH, not a moved stub — wtcp
+# is really installed on this machine, so hiding the stub just falls through
+# to the real binary (same rationale as section D's CLEANP).
+setup
+run "$REPO" wt n5
+print -r -- "a.env" > "$REPO/.worktreeinclude"; print -r -- "A" > "$REPO/a.env"
+print -r -- "A" > "$HOME/Code/Org/repo-n5/a.env"   # already present at the destination
+CLEANP=$(mkd)
+# Every external the lifecycle reaches before the wtcp check. wtcp is absent
+# on purpose. If a helper later grows a new external dependency, add it here
+# too, or this test starts failing for a reason that has nothing to do with
+# wtcp.
+for b in env git awk mkdir; do ln -s "$(command -v $b)" "$CLEANP/$b"; done
+OUT="$(cd "$REPO" && source "$FUNCS" && export PATH="$CLEANP" && wt-prepare n5 2>&1)"; RC=$?
+rc_is 0 "already-populated destinations don't require wtcp"
+
+# Mirrors section D's coverage of a missing wtcp during copy, for
+# wt-prepare's own path (D only exercises this through `wt`).
+setup
+run "$REPO" wt n6
+print -r -- "a.env" > "$REPO/.worktreeinclude"; print -r -- "A" > "$REPO/a.env"
+CLEANP=$(mkd)
+for b in env git awk mkdir; do ln -s "$(command -v $b)" "$CLEANP/$b"; done
+OUT="$(cd "$REPO" && source "$FUNCS" && export PATH="$CLEANP" && wt-prepare n6 2>&1)"; RC=$?
+rc_is 1 "missing destination with wtcp absent aborts instead of silently skipping"
+has "wtcp is missing" "abort names the missing tool"
 ```
 
 - [ ] **Step 3: Run the tests to verify they fail**
