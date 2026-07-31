@@ -424,6 +424,76 @@ _wt_hook_run() {
   return 1
 }
 
+# _wt_manifest <main> <dest> — validate .worktreeinclude and fill _WT_CARRY with
+# the entries whose destination is still missing.
+#
+# Filtering is required for correctness, not tidiness: wtcp refuses existing
+# destinations and returns NONZERO while still copying the missing ones, so
+# passing the whole manifest on a retry fails every second run by construction.
+#
+# Containment is checked lexically *and* through the filesystem. A path with no
+# ".." still escapes if a directory component is a symlink — the target worktree's
+# tree comes from the feature branch, so a branch committing `config` as a symlink
+# redirects `config/master.key` on write. The rule is asymmetric:
+#
+#   source:      no component may be a symlink, INCLUDING the final one. A final
+#                source symlink is dereferenced on read, so pointing it at an
+#                external directory copies that directory's contents in.
+#   destination: no PARENT component may be a symlink. An existing final symlink
+#                is fine precisely because it is filtered out below as "already
+#                present" — skipped, never followed, never written through.
+_wt_manifest() {
+  emulate -L zsh
+  setopt local_options extended_glob
+  local main="$1" dest="$2" line p comp
+  local -a parts
+  _WT_CARRY=()
+  [[ -f "$main/.worktreeinclude" ]] || return 0
+
+  # `|| [[ -n "$line" ]]` so a final line with no trailing newline still counts.
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${${line##[[:space:]]##}%%[[:space:]]##}"
+    [[ -z "$line" || "$line" == '#'* ]] && continue
+
+    if [[ "$line" == /* || "$line" == '~'* ]]; then
+      print -ru2 -- "wt: .worktreeinclude entry '$line' is not repo-relative — refusing."
+      return 1
+    fi
+    parts=( ${(s:/:)line} )
+    if (( ${parts[(I)..]} )); then
+      print -ru2 -- "wt: .worktreeinclude entry '$line' contains '..' — refusing."
+      return 1
+    fi
+
+    if [[ ! -e "$main/$line" && ! -L "$main/$line" ]]; then
+      print -ru2 -- "wt: .worktreeinclude lists '$line', not found in $main — skipping."
+      continue
+    fi
+
+    p="$main"
+    for comp in $parts; do
+      p="$p/$comp"
+      if [[ -L "$p" ]]; then
+        print -ru2 -- "wt: .worktreeinclude entry '$line' resolves through a symlink in $main — refusing."
+        return 1
+      fi
+    done
+
+    p="$dest"
+    for comp in ${parts[1,-2]}; do
+      p="$p/$comp"
+      if [[ -L "$p" ]]; then
+        print -ru2 -- "wt: .worktreeinclude entry '$line' resolves through a symlink in $dest — refusing."
+        return 1
+      fi
+    done
+
+    [[ -e "$dest/$line" || -L "$dest/$line" ]] && continue   # already present: done
+    _WT_CARRY+=( "$line" )
+  done < "$main/.worktreeinclude"
+  return 0
+}
+
 # wt — spin up (or reopen) a git worktree for the current repo in its own Zellij
 # "dev" session. Complements `dev`, which only *finds* existing checkouts; `wt`
 # *creates* one first, as a sibling under the same org dir so `dev`'s repo glob and

@@ -573,6 +573,71 @@ rc_is 1 "invalid hook (untracked, though executable on disk) is refused"
   && _fail "the operative gate blocks execution, not just the return code" \
   || _pass "the operative gate blocks execution, not just the return code"
 
+print -r -- "L. manifest validation"
+setup
+run "$REPO" wt m1
+D="$HOME/Code/Org/repo-m1"
+print -r -- "a.env" > "$REPO/.worktreeinclude"; print -r -- "A" > "$REPO/a.env"
+OUT="$(cd "$REPO" && source "$FUNCS" && _wt_manifest "$REPO" "$D" && print -r -- "${_WT_CARRY[*]}")"
+eq "$OUT" "a.env" "a missing destination is carried"
+
+print -r -- "A" > "$D/a.env"
+OUT="$(cd "$REPO" && source "$FUNCS" && _wt_manifest "$REPO" "$D" && print -r -- "${#_WT_CARRY[@]}")"
+eq "$OUT" "0" "an existing destination is filtered out"
+
+for bad in "/etc/passwd" "~/x" "../outside" "a/../../b"; do
+  print -r -- "$bad" > "$REPO/.worktreeinclude"
+  run "$REPO" _wt_manifest "$REPO" "$D"
+  rc_is 1 "unsafe entry '$bad' is refused"
+done
+
+# Symlinked SOURCE parent.
+setup
+run "$REPO" wt m2; D="$HOME/Code/Org/repo-m2"
+mkdir -p "$ROOTTMP/outside"; print -r -- "S" > "$ROOTTMP/outside/s.env"
+ln -s "$ROOTTMP/outside" "$REPO/linked"
+print -r -- "linked/s.env" > "$REPO/.worktreeinclude"
+run "$REPO" _wt_manifest "$REPO" "$D"
+rc_is 1 "symlinked source parent is refused"
+
+# Symlinked FINAL source component: dereferenced on read, so it escapes too.
+setup
+run "$REPO" wt m3; D="$HOME/Code/Org/repo-m3"
+mkdir -p "$ROOTTMP/outdir"; print -r -- "X" > "$ROOTTMP/outdir/x"
+ln -s "$ROOTTMP/outdir" "$REPO/final"
+print -r -- "final" > "$REPO/.worktreeinclude"
+run "$REPO" _wt_manifest "$REPO" "$D"
+rc_is 1 "symlinked final source component is refused"
+
+# Symlinked DESTINATION parent.
+setup
+run "$REPO" wt m4; D="$HOME/Code/Org/repo-m4"
+mkdir -p "$ROOTTMP/dst"; mkdir -p "$REPO/cfg"; print -r -- "C" > "$REPO/cfg/c.env"
+ln -s "$ROOTTMP/dst" "$D/cfg"
+print -r -- "cfg/c.env" > "$REPO/.worktreeinclude"
+run "$REPO" _wt_manifest "$REPO" "$D"
+rc_is 1 "symlinked destination parent is refused"
+
+# A final DESTINATION symlink is allowed — but only because it is filtered out as
+# already-present, never followed and never written through.
+setup
+run "$REPO" wt m6; D="$HOME/Code/Org/repo-m6"
+mkdir -p "$ROOTTMP/elsewhere"; print -r -- "UNTOUCHED" > "$ROOTTMP/elsewhere/t.env"
+print -r -- "SOURCE" > "$REPO/t.env"
+ln -s "$ROOTTMP/elsewhere/t.env" "$D/t.env"
+print -r -- "t.env" > "$REPO/.worktreeinclude"
+OUT="$(cd "$REPO" && source "$FUNCS" && _wt_manifest "$REPO" "$D" && print -r -- "${#_WT_CARRY[@]}")"
+eq "$OUT" "0" "an existing final destination symlink is filtered, not carried"
+eq "$(<"$ROOTTMP/elsewhere/t.env")" "UNTOUCHED" "the symlink target is never written through"
+
+# Missing source warns and continues.
+setup
+run "$REPO" wt m5; D="$HOME/Code/Org/repo-m5"
+printf 'gone.env\nthere.env\n' > "$REPO/.worktreeinclude"; print -r -- "T" > "$REPO/there.env"
+OUT="$(cd "$REPO" && source "$FUNCS" && _wt_manifest "$REPO" "$D" 2>&1 && print -r -- "carry=${_WT_CARRY[*]}")"
+has "gone.env" "missing source is reported"
+has "carry=there.env" "the remaining entry is still carried"
+
 export HOME="$REAL_HOME"
 print -r -- ""
 print -r -- "passed: $pass  failed: $fail"
