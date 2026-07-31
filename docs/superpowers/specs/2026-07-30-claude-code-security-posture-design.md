@@ -94,8 +94,9 @@ Runtime validation of the schema remains an acceptance test, not an assumption.
 > narrower override.** Permission paths merge into the Bash sandbox boundary. The first
 > deployment therefore broke SSH commit signing. Anthropic's documented
 > `sandbox.filesystem.allowRead` takes precedence inside the sandbox without overriding the
-> direct-tool permission decision. The corrected design uses that override for four
-> Git-required SSH files; see *Task 5 rollback and repair* below.
+> direct-tool permission decision. The final design uses that override only for SSH
+> metadata and public keys, while agent-backed operations remove every private-key
+> exception; see *Final repair* below.
 
 Four complementary control layers:
 
@@ -137,8 +138,8 @@ workflows only, while the primary hosting is GitLab, and GitLab pipelines common
 that defeated the old globs. **Trade-off:** this intentionally sacrifices direct Claude
 inspection of SSH configuration — diagnosing `~/.ssh/config` or `known_hosts` will require
 manual paste. The sandbox separately re-admits the minimum files required by Git:
-`config`, `known_hosts`, `michael`, and `michael.pub`. This does not restore direct Read,
-Edit, or `@file` access.
+`config`, `known_hosts`, and the ten public keys. No private key is re-admitted. This does
+not restore direct Read, Edit, or `@file` access.
 
 #### Task 5 rollback and repair (2026-07-30)
 
@@ -230,36 +231,59 @@ a sound policy when the suite encodes the policy.
 restored. Reverting only the deployed file would leave a future `chezmoi apply` able to
 redeploy the exposure silently.
 
-**Current live state, stated plainly:** the original baseline is restored, whose rules are
+**Post-rollback state at that checkpoint:** the original baseline was restored, whose rules were
 the inert bare globs. **No SSH key is protected — all four auth keys read successfully.**
 That is strictly more exposure than the reverted state, which protected three of four. The
 rollback is not a security improvement; it removes a *misrepresented* control and returns to
 the documented, known-unprotected baseline rather than leaving a config that claims
 protection it does not provide.
 
-#### Next: a dedicated signing-only key — described accurately
+#### Final repair (2026-07-31) — existing identity, agent-backed private operation
 
-The conflict between "deny `~/.ssh`" and "git must sign" is dissolved by never using an
-authentication key for signing. Generate a keypair used **solely** for commit signing, at
-`~/.config/git/signing`, and repoint `user.signingKey`.
+The 1Password SSH agent was enabled and the existing `michael` identity imported. The
+stable group-container socket now answers the agent protocol with identities present, and
+`.scripts/preflight-ssh-agent.sh` returns exit 0. No new key was generated, nothing was
+registered again with GitLab, and commit identity/metadata did not change.
 
-**Do not overstate this.** If the signing key's private half is allowlisted so sandboxed
-git can use it, **it remains extractable by any sandboxed process** — exactly as `michael`
-was. The gain is blast radius, not secrecy: a leaked signing-only key permits forged
-commits, not server or GitLab authentication. That is **materially safer, not secret**. An
-agent-backed signing key, where the private half never becomes readable, is strictly
-stronger and remains the better target.
+The public half is rendered from the existing 1Password item to:
 
-**Acceptance tests required before any redeployment:**
+```text
+~/.config/git/signing.pub
+~/.config/git/allowed_signers
+```
 
-1. Constructed-path reads of `~/.ssh/michael` and every other authentication key **fail**.
-2. A normally signed disposable commit succeeds — never `--no-gpg-sign`.
-3. If operating without an agent, **only** the dedicated signing key is readable.
-4. GitLab recognises the new signing key.
-5. Local `allowed_signers` verifies the signature. (Note: `gpg.ssh.allowedSignersFile` is
-   currently unset, so signatures have never been locally verifiable — that must be
-   configured as part of this work.)
-6. Layer 1 and layer 2 changes stay excluded until 1–5 pass.
+Git now uses `~/.config/git/signing.pub` as `user.signingKey` and
+`~/.config/git/allowed_signers` as `gpg.ssh.allowedSignersFile`. The private operation is
+performed by the agent. Claude receives `SSH_AUTH_SOCK` in its own `env` block, so no
+global `Host * / IdentityAgent` change was required.
+
+The sandbox re-admits only `~/.ssh/config`, `known_hosts`, and the ten `*.pub` files.
+`sandbox.credentials.files` denies the 10 private keys, two Borg configuration archives,
+`~/.aws/credentials`, and `~/.config/op/config`. `allowUnixSockets` contains only the
+stable 1Password socket.
+
+Claude Code 2.1.220 injects an unauthenticated macOS `nc` `GIT_SSH_COMMAND`, while its
+local proxies require authentication. GitLab SSH therefore failed before key exchange.
+The deployed repair is Claude-scoped:
+
+- `~/.local/bin/git` replaces the injected command only when `CLAUDECODE` and a sandbox
+  proxy are present; otherwise it execs `/usr/bin/git` unchanged.
+- `~/.local/bin/ssh-sandbox-proxy` uses the authenticated SOCKS5 endpoint from
+  `FTP_PROXY`, passes credentials through `NCAT_PROXY_AUTH` rather than process arguments,
+  restricts the proxy endpoint to loopback, and normalizes `localhost` to IPv4 because the
+  proxy listens on `127.0.0.1`.
+- Claude's subprocess `PATH` is deterministic with `~/.local/bin` first. `gitlab.com` is
+  pre-allowed from observed traffic, while `strictAllowlist` remains off pending complete
+  domain discovery.
+
+All redeployment gates passed in fresh 2.1.220 sessions:
+
+1. No-output reads of all 10 private keys and both Borg archives fail.
+2. `config` and `michael.pub` remain readable to sandboxed subprocesses.
+3. The agent responds with identities.
+4. A normally signed disposable commit succeeds and contains `gpgsig`.
+5. The XDG `allowed_signers` file verifies that signature.
+6. `git ls-remote` against a known-good GitLab repository succeeds through the sandbox.
 
 #### Rule scope: relative patterns are narrower than they read
 
@@ -293,16 +317,14 @@ repositories without sweeping caches and language runtimes.
 
 ### Layer 2 — credential isolation
 
-Layer 1 already denies sandboxed reads except for its four explicit Git carve-outs. The
-file entries in this layer are therefore redundant for the other SSH keys, but remain the
-mechanism that can remove the `michael` carve-out once signing uses an allowlistable agent.
-Secret environment variables remain unique to this layer; no path rule can cover them.
+Layer 1 denies direct tool access. Layer 2 supplies the explicit OS-level credential
+boundary for sandboxed subprocesses. Secret environment variables remain unique to this
+layer; no path rule can cover them.
 
 **Design chosen: targeted `credentials.files` entries, not another directory deny.**
-Layer 1 already supplies the directory boundary. Its `filesystem.allowRead` exception is
-proven for `config`, `known_hosts`, `michael`, and `michael.pub`; layer 2's future job is
-to remove the private-key exception after agent-backed signing works. Enumerating private
-keys remains the directly verifiable way to prevent naming drift.
+`filesystem.allowRead` is limited to `config`, `known_hosts`, and public keys. Enumerating
+private keys is the directly verifiable way to prevent naming drift without denying SSH
+metadata that Git needs.
 
 Entries: the 10 private keys listed above, both `borg-config-*.tar.gz` archives,
 `~/.aws/credentials`, and `~/.config/op/config`. Left readable: `config`, `known_hosts`,
@@ -320,8 +342,8 @@ archives and future keys regardless of naming or permissions. Current result: **
 — the 10 private keys plus both `borg-config-*.tar.gz` archives.
 
 **Preflight gate — resolve the SSH agent before touching `allowUnixSockets`.**
-The prior assumption that agent-backed Git runs over a 1Password socket is false on this
-machine, verified 2026-07-30:
+The initial assumption that agent-backed Git ran over a 1Password socket was false on this
+machine when checked on 2026-07-30:
 
 - `~/.1password/` does not exist; `~/.1password/agent.sock` is absent.
 - No 1Password group-container agent socket exists either.
@@ -366,6 +388,20 @@ Unblocking requires one of:
 1. Configure the 1Password SSH agent so a stable socket exists, then re-run the preflight.
 2. Accept the deferral and revisit when the agent situation changes.
 3. Move sandboxed GitLab access to HTTPS + token, removing the key dependency entirely.
+
+#### Layer 2 status: DEPLOYED (2026-07-31)
+
+The first unblocking route was completed. The group-container socket exists, answers
+`ssh-add -l`, holds the existing `michael` identity, and is stable across sessions:
+
+```text
+~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock
+```
+
+The preflight now returns exit 0 with that path as its only stdout. Layer 2 is deployed
+with all 14 credential entries, the stable socket is the only `allowUnixSockets` entry,
+and `SSH_AUTH_SOCK` is scoped to Claude's environment. The former `michael` private-key
+exception does not exist.
 
 ### Layer 3 — network
 
@@ -432,7 +468,7 @@ this deployment until the branch merges.
 | Docker socket in `allowUnixSockets` | Root-equivalent host access; defeats the sandbox. |
 | `allowUnsandboxedCommands: false` | Would not affect `chezmoi apply` run directly from a terminal — it disables only Claude Code's Bash escape hatch. It may, however, require unsandboxed execution for Claude-initiated `op`-backed applies. Ask-gating achieves the audit boundary without risking that path. |
 | `envVars` mode `mask` | Introduces TLS-proxy requirements; `deny` is sufficient. |
-| A second directory-wide `~/.ssh` deny at layer 2 | Layer 1 already supplies that boundary and its four `allowRead` exceptions are verified. Targeted credential entries are the mechanism for removing the signing-key exception after agent-backed signing works. |
+| A second directory-wide `~/.ssh` deny at layer 2 | Targeted credential entries protect private material while explicit read exceptions preserve SSH metadata and public keys needed by Git. |
 | Mode-based private-key classification | `config`, `known_hosts`, `known_hosts.old`, and `allowed_signers` are all mode 600; `.pub` files are inconsistently 644 and 600. Mode misclassifies in both directions. Deny-by-default with an explicit exemption list instead. |
 | Wildcarding the launchd socket directory | `SSH_AUTH_SOCK`'s random component is the only thing distinguishing it; a wildcard would admit every launchd listener. |
 | Guessed `allowedDomains` entries | Fabricated hosts produce false coverage and mask the real ones. Observed traffic only. |
@@ -440,21 +476,18 @@ this deployment until the branch merges.
 
 ## Implementation
 
-Sequenced so the security repair lands and is verified before egress policy changes.
-Layer 2 is deferred — see *Layer 2 status* above — so the ordering below reflects what
-actually ships.
+Sequenced so the security repair lands and is verified before the full egress policy.
 
 | # | Change | Status |
 |---|---|---|
-| 0 | SSH-agent preflight (`.scripts/preflight-ssh-agent.sh`) | Done — returned exit 2 |
-| 1 | `fix(claude): repair inert permission rules` — layer 1 + settings test suite | Committed and deployed with the signing carve-out |
-| 2 | `fix(claude): harden sandbox escape routes` — layer 4. `strictAllowlist` stays **off** | Committed and deployed |
-| 3 | Apply and verify 1–2 with `strictAllowlist` off | First attempt rolled back; corrected deployment verified |
+| 0 | SSH-agent preflight (`.scripts/preflight-ssh-agent.sh`) | Done — returns exit 0 with the stable 1Password socket |
+| 1 | Repair inert permission rules and deploy credential isolation | Deployed and verified; no private-key carve-out |
+| 2 | Harden sandbox escape routes; `strictAllowlist` stays **off** | Deployed and verified |
+| 3 | Preserve signing and GitLab SSH through the agent | Deployed and verified in fresh 2.1.220 sessions |
 | 4 | Domain-discovery checkpoint — record **every destination observed**, including classifier-approved ones, not only rejections | Pending |
 | 5 | `fix(claude): enable deterministic egress` — `allowedDomains` and `strictAllowlist: true` together | Pending |
 | 6 | Apply and verify allowed *and* denied egress | Pending |
 | 7 | `chore(agents): remove redundant Claude plugins` | Pending |
-| — | Layer 2 credential isolation + SSH inventory test | **Deferred** — blocked on an allowlistable agent socket |
 
 Applying step 3 preserves the live `permissions.defaultMode` and adds the default `model`
 key when absent.
@@ -491,19 +524,18 @@ is main, and an unqualified invocation silently verifies the wrong configuration
 - An `@file` reference to the sentinel is refused.
 - A normally signed disposable commit succeeds inside the sandbox and carries a `gpgsig`
   header.
-- A no-output Bash read of `~/.ssh/michael` succeeds while the same probe against another
-  private key fails.
+- No-output Bash reads of all 10 SSH private keys and both Borg configuration archives
+  fail; `config` and public keys remain readable.
+- A sandboxed Git operation against GitLab authenticates through the agent and
+  authenticated proxy helper.
 - Both new ask rules fire: a Docker command and an unsandboxed retry each prompt.
-- `excludedCommands` is exactly `["docker *"]` and `allowUnixSockets` is exactly `[]` —
-  pinned, so a later addition cannot widen the boundary unnoticed.
+- `excludedCommands` is exactly `["docker *"]` and `allowUnixSockets` contains only the
+  stable 1Password socket — pinned so a later addition cannot widen the boundary unnoticed.
 - A second targeted `chezmoi -S <worktree> apply ~/.claude/settings.json` is idempotent.
 - `.scripts/test-reconcile-agents.sh` passes after the plugin change.
 - Allowed egress succeeds and non-allowlisted egress fails closed (after layer 3).
 
-### Only if layer 2 deployed
-
-Currently **not applicable** — the preflight returned exit 2 and layer 2 is deferred. These
-apply if and when it ships:
+### Layer 2
 
 - Bash-level credential denial tested separately from Claude's file tools — a no-output read
   of a denied key must fail independently of the Read-tool deny.
@@ -513,12 +545,3 @@ apply if and when it ships:
 - SSH inventory regression test passes: 12 files enumerated under `~/.ssh`, each with a
   `credentials.files` entry — a subset of 14 total, the other two being
   `~/.aws/credentials` and `~/.config/op/config`.
-
-### While layer 2 is deferred
-
-- `.sandbox | has("credentials")` is **false** — asserted by the settings suite, so a
-  partial layer 2 cannot be applied while the agent problem is unresolved.
-- The inventory script does not exist; its absence is expected, not a failure.
-- A no-output read of `~/.ssh/michael` by a sandboxed subprocess succeeds because signing
-  requires it. The same probe against any other private key fails under the merged
-  `Read(~/.ssh/**)` sandbox boundary.

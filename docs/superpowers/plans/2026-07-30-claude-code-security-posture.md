@@ -1,5 +1,7 @@
 # Claude Code Security Posture Implementation Plan
 
+**Status:** In progress
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace the 15 inert permission rules with enforcing ones, isolate credentials
@@ -951,13 +953,33 @@ The reconciler never uninstalls, so both were removed explicitly."
 
 ---
 
+## Execution correction — agent-backed existing identity (2026-07-31)
+
+Task 1's original exit 2 was a point-in-time gate result, not a permanent deferral. After
+the 1Password SSH agent was enabled, the same preflight returned exit 0 with the stable
+group-container socket. Task 3 and the credential-dependent parts of Task 5 then ran.
+
+No dedicated key was created. The existing `michael` public identity is rendered to XDG
+Git paths, while the private operation remains in the agent. The implementation adds:
+
+- `dot_config/git/signing.pub.tmpl` and `allowed_signers.tmpl`;
+- `sandbox.credentials.files` with all 14 entries;
+- the stable agent socket as the only `allowUnixSockets` entry and Claude-scoped
+  `SSH_AUTH_SOCK`;
+- `~/.ssh/config`, `known_hosts`, and public keys as the only read exceptions;
+- `gitlab.com` as an observed pre-allowed domain, with `strictAllowlist` still off;
+- a Claude-only Git shim and authenticated proxy helper because 2.1.220 injects an
+  unauthenticated macOS `nc` command for a proxy that requires authentication.
+
+Fresh-session gates passed: all 12 SSH credential files denied, agent ready, signed commit
+created and locally verified, and GitLab SSH authentication succeeded. These results
+supersede the conditional deferred-layer instructions in the original task sequence.
+
 ## Completion
 
 - [ ] `bash .scripts/test-claude-settings.sh` green
 - [ ] `bash .scripts/test-reconcile-agents.sh` green
-- [ ] `bash .scripts/test-ssh-credential-inventory.sh` green — **only if Task 3 ran.** If
-      layer 2 was deferred this script does not exist; skip it and record why, rather than
-      reporting a missing-file error as a failure
+- [ ] `bash .scripts/test-ssh-credential-inventory.sh` green
 - [ ] `chezmoi -S "$PWD" diff ~/.claude/settings.json` empty (run from the worktree; an
       unqualified invocation reads main and is meaningless here)
 - [ ] Noted that `chezmoi apply` from main reverts this deployment until the branch merges
@@ -965,7 +987,4 @@ The reconciler never uninstalls, so both were removed explicitly."
       link. Do **not** set `Implemented` here — this plan ends without pushing, so the MR
       does not exist yet. The reference is added after the MR is opened; `Implemented`
       only after merge
-- [ ] If layer 2 was deferred, the report states the residual exposure explicitly:
-      sandboxed subprocesses can read the signing key carve-out, while other SSH keys
-      remain denied
 - [ ] Report to the user; **do not push** — pushing is the user's call
