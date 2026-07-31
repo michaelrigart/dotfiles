@@ -358,11 +358,13 @@ semantics, described under **Mechanism** below.
 - **Acquisition:** `zsystem flock -t 0 -f FD <lockfile>`, capturing the descriptor.
   `-t 0` makes a busy target refuse immediately rather than block.
 - **Release:** an unconditional explicit `zsystem flock -u $FD`, in an
-  always-runs block, plus a function-local `INT`/`TERM` trap that does the same
-  (§9.4). The trap is not redundant: zsh does not run an always block when a
-  signal unwinds the function under its default disposition. Kernel release on
-  process death is a backstop for shell death and `SIGKILL`, **not** the primary
-  mechanism.
+  always-runs block. That covers every *ordinary* exit: success, failure, and
+  early return alike. It does **not** cover an interruption — zsh does not run an
+  always block when a signal unwinds the function under its default disposition —
+  and no `INT`/`TERM` trap is installed to compensate. §9.4 records why that
+  requirement was withdrawn and what an interrupted command leaves behind.
+  Kernel release on process death is the backstop for shell death, `SIGKILL`,
+  and any interrupt that takes the shell down with it.
 - **Availability:** if `zmodload zsh/system` fails, the command refuses rather
   than running unlocked.
 
@@ -373,8 +375,10 @@ per run. Because locks are held per *process* — see the `fcntl(2)` paragraph
 below — a leaked descriptor does **not** block the shell that leaked it: a later
 `wt` there re-acquires successfully. What it blocks is every *other* process's
 lifecycle command on that target, which refuses until the leaking shell exits.
-The lock must therefore be released on every exit path, including failures, early
-returns, and the `INT`/`TERM` interruption covered in §9.4.
+The lock must therefore be released on every ordinary exit path, including
+failures and early returns. Interruption is the one documented exception: a shell
+that survives an interrupt may keep the descriptor, and §9.4 states why that is
+accepted and how to recover from it.
 
 `fcntl(2)` semantics also give the command/routine split described above a
 stronger justification than deadlock avoidance. Locks are held per *process*, not per
@@ -662,8 +666,39 @@ the safety guarantee, and it differs by entry point:
 - **Teardown:** the worktree remains, because removal follows the hook, and the
   session is already stopped.
 
-The lock is released on `INT` and `TERM` so an interrupted command does not
-block the retry.
+**The lock and interruption.** Ordinary exits release the lock explicitly, in the
+always-runs block of §6 — success, failure and early return alike. An
+interruption is not one of those paths:
+
+- If the interrupt takes the shell down, the kernel releases the lock with the
+  process and nothing is left behind.
+- If the shell survives — the interactive case, where `Ctrl-C` aborts the command
+  but not the terminal — that shell **may retain the lock**. Because `fcntl(2)`
+  locks are held per *process*, a retained lock does not block the shell holding
+  it: retrying the command from that same shell works, and exiting the shell
+  releases it. What it blocks is other processes' lifecycle commands on the same
+  target, until then. Safe recovery is therefore: retry from that shell, or exit
+  it.
+
+**Withdrawn requirement.** An earlier revision of this design required the
+opposite — "the lock is released on `INT` and `TERM` so an interrupted command
+does not block the retry" — and the implementation installed
+`trap '_wt_unlock; return 130' INT TERM` in each lifecycle command. That
+requirement is withdrawn, and the trap with it, because the trap is fail-open on
+the destructive path. `return` inside a zsh trap handler unwinds only the
+*innermost* function, and zsh discards the handler's status, so an interrupted
+helper reports success to its caller. `0` is the permissive answer for every
+helper the lifecycle gates on — `_wt_clean` "clean", `_wt_hook_check` "valid",
+the worktree validator "correct worktree on the correct branch". On the removal
+path that meant an interrupted cleanliness check made a **dirty worktree read as
+clean**, after which the command stopped the session and removed it. A rare,
+self-inflicted and self-recoverable retained lock is by far the smaller cost.
+
+The alternative — a global interrupt flag consulted after every interruptible
+call — was rejected as too fragile for lifecycle code that performs destructive
+operations. It obliges every present and future call site to remember an
+out-of-band status check, and a single forgotten one silently becomes fail-open:
+the exact defect class this protocol exists to eliminate.
 
 ## 10. Manual Git operations
 
@@ -819,13 +854,29 @@ every printed recovery command. Cover `x&y`, `x|y`, and `x'q` — all three are
 valid Git branch names, and all three change the meaning of a pasted command if
 emitted raw. Assert the emitted text, not merely that a message was printed.
 
-### 11.7 Interruption is a proxy
+### 11.7 Interruption: a proxy, and a real signal
 
-A fixture hook exiting `130` verifies preserved state. This is explicitly a
-proxy: a hook that signals only itself is indistinguishable from `exit 130` at
-the caller, and simulating a real foreground `Ctrl-C` means signalling the whole
-process group, which takes the test runner down with it. Real signal delivery
-rests on the ordering argument in §9.4, not on a test.
+A fixture hook exiting `130` verifies preserved state. That much is explicitly a
+proxy: at the caller, a hook that signals only itself is indistinguishable from
+`exit 130`.
+
+Real signal delivery is tested as well, because §9.4's fail-open analysis is not
+something an ordering argument can establish. A real `SIGINT` is delivered **to
+one pid** — the child shell running the lifecycle command — never to the process
+group, which would take the test runner down with it. The signal is timed from
+inside that child, at a named `git` call, so it lands inside worktree validation
+and inside the first cleanliness check deterministically rather than by racing a
+sleep. Assertions are made from the parent against resulting state — the worktree
+still present, no `delete-session` logged, the teardown marker absent, the branch
+still listed — never against a status the interrupted child reports, since
+fabricating that status is precisely the regression under test. A control run of
+the same fixture with the signal disarmed proves the command would otherwise
+destroy all four.
+
+The honest limit: the interrupted child dies of the signal, so this covers the
+non-interactive case only. It does not reproduce an interactive shell surviving
+its own `Ctrl-C` and retaining the lock descriptor. That retention is an accepted
+cost recorded in §9.4, not a tested property.
 
 ### 11.8 Project-level obligations
 
