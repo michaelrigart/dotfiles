@@ -660,7 +660,14 @@ read line || line="(no stdin)"
 printf "stdin=%s\n" "$line" >> "$WT_MAIN/hook.out"
 echo "to-stdout"; echo "to-stderr" >&2
 exit 0'
-run "$REPO" wt k1
+# `</dev/null` is mandatory, not tidiness: this hook blocks in `read` until its
+# stdin yields a line or EOF, and `wt` deliberately hands the hook the caller's
+# stdin. Run the suite with stdin on a tty or an open pipe — which is what an
+# unattended runner or `foo | zsh test-wt-functions.sh` gives it — and this call
+# hangs forever. The stdin-inheritance assertion is unaffected: it is proven by
+# the explicit `print -r -- "fed" | _wt_hook_run` below, whose hook.out record
+# overwrites this one.
+run "$REPO" wt k1 </dev/null
 OUT="$(cd "$REPO" && source "$FUNCS" && \
   print -r -- "fed" | _wt_hook_run "$REPO" "$HOME/Code/Org/repo-k1" "k1" "k1" setup 2>&1)"; RC=$?
 rc_is 0 "successful hook returns 0"
