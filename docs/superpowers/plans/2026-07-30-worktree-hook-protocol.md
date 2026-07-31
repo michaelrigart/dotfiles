@@ -1010,8 +1010,8 @@ STUB
 chmod +x "$STUBS/wtcp"
 ```
 
-Run the suite now: the pre-existing 46 assertions must still pass against the
-faithful stub before any new behaviour is added.
+Run the suite now: the pre-existing assertions must still pass against the
+faithful stub before any new behaviour is added — `failed: 0`.
 
 Run: `zsh .scripts/test-wt-functions.sh`
 Expected: PASS, `failed: 0`.
@@ -1068,6 +1068,26 @@ run "$REPO" wt-prepare 'x&y'
 rc_is 1 "setup failure fails prepare"
 has "wt-prepare 'x&y'" "recovery message quotes a hostile branch name"
 has "wt 'x&y'" "recovery message includes the reopening step"
+
+# The hook-invalid bail-out must actually block copying, not just return
+# nonzero: section J already proves _wt_hook_check rejects an untracked-but-
+# executable hook; this proves _wt_do_prepare acts on that rejection instead
+# of copying first, so a misconfigured repository changes nothing. Untracked-
+# but-executable, not chmod -x: a non-executable hook would be refused by the
+# kernel regardless, which would mask whether the software gate did the work
+# — the same trap called out in section K's operative-gate comment.
+setup
+run "$REPO" wt n4
+print -r -- "a.env" > "$REPO/.worktreeinclude"; print -r -- "A" > "$REPO/a.env"
+print -r -- '#!/bin/sh
+exit 0' > "$REPO/.worktreehook"
+chmod +x "$REPO/.worktreehook"          # executable on disk, but untracked: invalid
+run "$REPO" wt-prepare n4
+rc_is 1 "invalid hook aborts prepare before copying"
+[[ -f "$HOME/Code/Org/repo-n4/a.env" ]] \
+  && _fail "manifest file is not copied when the hook is invalid" \
+  || _pass "manifest file is not copied when the hook is invalid"
+has "wt-prepare n4 && wt n4" "recovery message names both steps"
 ```
 
 - [ ] **Step 3: Run the tests to verify they fail**
