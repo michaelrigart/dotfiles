@@ -114,7 +114,7 @@ printf '%s' "$input" | jq \
         "network": {
           "allowUnixSockets": [$agent_socket],
           "allowLocalBinding": true,
-          "allowedDomains": ["gitlab.com"]
+          "allowedDomains": ["gitlab.com", "github.com"]
         }
       },
       "tui": "fullscreen",
@@ -134,5 +134,5 @@ printf '%s' "$input" | jq \
   # persist), otherwise seed the default; deleting the key and re-applying restores it.
   | .model = ($curmodel // "opus[1m]")
   | .effortLevel = ($cureffort // "xhigh")
-  | .permissions.defaultMode = ($curmode // "default")
+  | .permissions.defaultMode = ($curmode // "auto")
 '

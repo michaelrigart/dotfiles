@@ -135,8 +135,8 @@ jq_is ".sandbox.network.allowUnixSockets == [\"$AGENT_SOCKET\"]" true \
       "allowUnixSockets contains only the stable agent socket"
 
 echo "H. layer 3 stays off until domains are known"
-jq_is '.sandbox.network.allowedDomains == ["gitlab.com"]' true \
-      "observed GitLab host is pre-allowed"
+jq_is '.sandbox.network.allowedDomains == ["gitlab.com", "github.com"]' true \
+      "observed GitLab and GitHub hosts are pre-allowed"
 jq_is '.sandbox.network.strictAllowlist // false' false "strictAllowlist off in this phase"
 
 echo "J. defaultMode is seeded, not enforced"
@@ -147,7 +147,7 @@ jq_is '.permissions.defaultMode' 'plan'    "live defaultMode survives (plan pres
 emit '{"permissions":{"defaultMode":"acceptEdits"}}'
 jq_is '.permissions.defaultMode' 'acceptEdits' "any live defaultMode survives"
 emit '{}'
-jq_is '.permissions.defaultMode' 'default' "absent defaultMode seeded to default"
+jq_is '.permissions.defaultMode' 'auto' "absent defaultMode seeded to auto"
 # The seeding must not disturb the rules themselves.
 emit '{"permissions":{"defaultMode":"plan"}}'
 jq_is '.permissions.deny | length' 14 "deny rules intact when defaultMode carried"
