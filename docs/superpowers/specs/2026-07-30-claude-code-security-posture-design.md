@@ -1,6 +1,6 @@
 # Claude Code security posture
 
-**Status:** In progress
+**Status:** Implemented — merged in a73948b
 
 Repairs the permission and sandbox boundaries in the chezmoi-managed Claude Code
 configuration. The existing `permissions.deny` / `permissions.ask` rules are inert: they
