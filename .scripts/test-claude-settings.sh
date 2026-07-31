@@ -152,5 +152,18 @@ jq_is '.permissions.defaultMode' 'default' "absent defaultMode seeded to default
 emit '{"permissions":{"defaultMode":"plan"}}'
 jq_is '.permissions.deny | length' 14 "deny rules intact when defaultMode carried"
 
+echo "K. git SSH proxying is env-based, not a PATH shim"
+# A ~/.local/bin/git shim is PATH-order dependent, and this settings block puts
+# ~/.local/bin FIRST — so a shim would intercept every git call inside Claude and, as
+# written, exec'd Apple's /usr/bin/git instead of the Homebrew git used everywhere else.
+# GIT_SSH_COMMAND achieves the same routing with the real git binary.
+emit '{}'
+jq_is '.env.GIT_SSH_COMMAND | endswith("/.local/bin/ssh-sandbox-proxy")' true \
+      "GIT_SSH_COMMAND points at the sandbox proxy helper"
+jq_is '.env.SSH_AUTH_SOCK | endswith("/t/agent.sock")' true \
+      "SSH_AUTH_SOCK points at the 1Password agent socket"
+jq_is '.env.PATH | split(":") | index("\($ENV.HOME)/.local/bin") == 0' true \
+      "~/.local/bin is first — so any executable there shadows system tools in-session"
+
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
