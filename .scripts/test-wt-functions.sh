@@ -628,7 +628,14 @@ ln -s "$ROOTTMP/elsewhere/t.env" "$D/t.env"
 print -r -- "t.env" > "$REPO/.worktreeinclude"
 OUT="$(cd "$REPO" && source "$FUNCS" && _wt_manifest "$REPO" "$D" && print -r -- "${#_WT_CARRY[@]}")"
 eq "$OUT" "0" "an existing final destination symlink is filtered, not carried"
-eq "$(<"$ROOTTMP/elsewhere/t.env")" "UNTOUCHED" "the symlink target is never written through"
+# No separate write-through assertion: the property is pinned entirely by
+# _WT_CARRY being empty above. _wt_manifest performs no writes under any code
+# path, so a direct "the target file is unchanged" check would pass whether
+# filtering works, is broken, or the function doesn't exist at all — it was
+# tried and proven vacuous. An end-to-end version (through wtcp) wouldn't
+# discriminate either: wtcp refuses an existing destination (a symlink counts
+# as existing) and returns nonzero before writing anything, so a broken filter
+# would surface as a nonzero wt-prepare, never as a modified external file.
 
 # Missing source warns and continues.
 setup
