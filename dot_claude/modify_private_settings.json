@@ -70,6 +70,26 @@ printf '%s' "$input" | jq \
       "enableAllProjectMcpServers": false,
       "statusLine": { "type": "command", "command": $sl, "padding": 0 },
       "subagentStatusLine": { "type": "command", "command": $subsl },
+      # Claude Code injects an UNAUTHENTICATED `nc` GIT_SSH_COMMAND at runtime, which
+      # overrides the env block above — so setting it there is inert (see the
+      # 2026-07-31 post-implementation correction in the security-posture design record).
+      # CLAUDE_ENV_FILE is the documented fix: Claude Code runs it as a script preamble
+      # before EVERY Bash command, i.e. after the injection, so an export here wins.
+      # $HOME and $CLAUDE_ENV_FILE stay literal here and expand when the hook runs.
+      # NOTE: `>` truncates. A second writer to CLAUDE_ENV_FILE (direnv, etc.) must
+      # append, or the two hooks will clobber each other.
+      "hooks": {
+        "SessionStart": [
+          {
+            "hooks": [
+              {
+                "type": "command",
+                "command": "echo \"export GIT_SSH_COMMAND=$HOME/.local/bin/ssh-sandbox-proxy\" > \"$CLAUDE_ENV_FILE\""
+              }
+            ]
+          }
+        ]
+      },
       "sandbox": {
         "enabled": true,
         "autoAllowBashIfSandboxed": true,

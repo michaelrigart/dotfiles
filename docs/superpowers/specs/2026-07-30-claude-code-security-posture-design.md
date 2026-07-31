@@ -323,6 +323,44 @@ a fresh sandboxed session. `ffdbe07` also left `test-ssh-sandbox-proxy.sh` asser
 it had just deleted, so that suite failed for the right reason and the wrong purpose. Both
 suites now assert the restored mechanism, including the Homebrew delegation.
 
+#### Correction to the correction (2026-07-31) — the shim was never reachable
+
+Restoring the shim was necessary but **not sufficient**. Measured after deploying it:
+
+```
+CLAUDECODE=1 ~/.local/bin/git ls-remote gitlab.com   -> exit 0    (mechanism correct)
+git ls-remote gitlab.com                             -> exit 128  (shim never invoked)
+
+actual PATH:  ... 5. /opt/homebrew/bin ... 8. ~/.local/bin
+```
+
+The premise "Claude subprocess PATH is deterministic with `~/.local/bin` first" does not
+hold. `zshenv` prepends `$XDG_BIN_HOME` (line 15), then `eval "$(brew shellenv)"` (line 20)
+moves Homebrew ahead of it; mise and cargo prepend later still. `~/.local/bin` lands at
+position 8, so `git` resolves to Homebrew git and the shim is never entered.
+
+Both PATH assertions in `test-claude-settings.sh` check the **declared** `env.PATH` inside
+`settings.json`, never a real shell, so they passed throughout. This is likely why the shim
+appeared to work: it may never have been reachable, before or after `ffdbe07`.
+
+**Mechanism adopted: `CLAUDE_ENV_FILE` via a `SessionStart` hook.** Anthropic documents it
+as a script preamble Claude Code runs before *every* Bash command — i.e. after the runtime
+injection — which is the same "export in a parent process" property the shim relied on,
+without depending on PATH order, shell choice, or an intercepting wrapper.
+
+Rejected alternatives, narrowest-first:
+
+- **Reordering `zshenv` so `$XDG_BIN_HOME` leads globally.** Both PATH lines arrived in the
+  initial commit and the ordering has never been revisited, so there is no evidence the
+  current precedence is unintended. A global reorder would route every git call on the
+  machine through a wrapper to fix a Claude-scoped defect. Whether `~/.local/bin` *should*
+  outrank Homebrew is a separate user-level decision, on its own merits.
+- **A `CLAUDECODE`-guarded export in `zshenv`.** Claude-scoped and PATH-independent, but
+  couples the fix to zsh, where `CLAUDE_ENV_FILE` is the supported Bash-tool boundary.
+
+The shim is retained for now as an inert fallback and should be removed once the hook is
+validated from a fresh session.
+
 #### Rule scope: relative patterns are narrower than they read
 
 Path specifiers anchor differently, per the permission-rules documentation:

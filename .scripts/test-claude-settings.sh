@@ -152,15 +152,23 @@ jq_is '.permissions.defaultMode' 'auto' "absent defaultMode seeded to auto"
 emit '{"permissions":{"defaultMode":"plan"}}'
 jq_is '.permissions.deny | length' 14 "deny rules intact when defaultMode carried"
 
-echo "K. git SSH proxying is shim-based; setting it here is ineffective"
-# Claude Code injects its own GIT_SSH_COMMAND at runtime and that injection OVERRIDES this
-# env block, so a value here is accepted but never used — git runs the injected
-# unauthenticated `nc` and fails proxy auth. dot_local/bin/executable_git re-exports the
-# variable inside the process git inherits, which is the only place that wins. The
-# ~/.local/bin PATH ordering asserted below is what makes that shim load-bearing.
+echo "K. git SSH proxying rides CLAUDE_ENV_FILE, not the env block"
+# Claude Code injects an unauthenticated `nc` GIT_SSH_COMMAND at runtime and that injection
+# OVERRIDES the env block here, so a value there is accepted but never used — git runs the
+# injected command and fails proxy auth. Claude Code runs CLAUDE_ENV_FILE as a script
+# preamble before EVERY Bash command, i.e. after the injection, so a SessionStart hook
+# writing the export there is what actually wins.
+#
+# The ~/.local/bin PATH assertion below checks the DECLARED value only. It does not observe
+# a real shell, where the zsh profile (brew shellenv) moves Homebrew ahead of ~/.local/bin —
+# which is why the PATH-dependent git shim never engaged. Runtime resolution is covered by
+# test-live-agent-auth.sh, which must run inside a Claude session.
 emit '{}'
 jq_is '.env | has("GIT_SSH_COMMAND")' false \
-      "GIT_SSH_COMMAND absent here — the runtime overrides it; the git shim owns routing"
+      "GIT_SSH_COMMAND absent from env — the runtime overrides it there"
+jq_is '.hooks.SessionStart[0].hooks[0].command
+       | contains("CLAUDE_ENV_FILE") and contains("GIT_SSH_COMMAND") and contains("ssh-sandbox-proxy")' true \
+      "SessionStart hook exports GIT_SSH_COMMAND to CLAUDE_ENV_FILE via the proxy helper"
 jq_is '.env.SSH_AUTH_SOCK | endswith("/t/agent.sock")' true \
       "SSH_AUTH_SOCK points at the 1Password agent socket"
 jq_is '.env.PATH | split(":") | index("\($ENV.HOME)/.local/bin") == 0' true \
