@@ -494,6 +494,82 @@ _wt_manifest() {
   return 0
 }
 
+# _wt_do_prepare <main> <dest> <branch> <slug> — copy missing manifest entries,
+# then run the project setup hook. The UNLOCKED routine: `wt` calls it under the
+# lock it already holds, and `wt-prepare` is the thin locked wrapper. It must not
+# lock itself — fcntl locks are per-process, so a nested acquire/release here
+# would silently drop the caller's lock (see _wt_lock).
+_wt_do_prepare() {
+  emulate -L zsh
+  local main="$1" dest="$2" branch="$3" slug="$4" qb="${(q-)branch}"
+
+  # Validate the hook before copying, so a misconfigured repository changes
+  # nothing. This mirrors wt-rm, which validates before disrupting the session.
+  _wt_hook_check "$main" >/dev/null 2>&1
+  local hrc=$?
+  if (( hrc == 1 )); then
+    _wt_hook_check "$main"          # re-run for the message
+    print -ru2 -- "    The worktree exists — fix the hook, then: wt-prepare $qb && wt $qb"
+    return 1
+  fi
+
+  _wt_manifest "$main" "$dest" || {
+    print -ru2 -- "    The worktree exists — fix .worktreeinclude, then: wt-prepare $qb && wt $qb"
+    return 1
+  }
+
+  if (( ${#_WT_CARRY} )); then
+    if (( ! $+commands[wtcp] )); then
+      print -ru2 -- "wt: files need copying but wtcp is missing (brew install satococoa/tap/wtcp)."
+      print -ru2 -- "    The worktree exists — install wtcp, then: wt-prepare $qb && wt $qb"
+      return 1
+    fi
+    # `--` is mandatory: manifest entries are arbitrary strings, and one named
+    # "-h" is otherwise parsed as an option and prints usage instead of copying.
+    if ! ( cd "$dest" && wtcp --from "$main" -- "${_WT_CARRY[@]}" ); then
+      print -ru2 -- "wt: copying .worktreeinclude files into $dest failed."
+      print -ru2 -- "    The worktree exists — fix the copy, then: wt-prepare $qb && wt $qb"
+      return 1
+    fi
+  fi
+
+  if ! _wt_hook_run "$main" "$dest" "$branch" "$slug" setup; then
+    print -ru2 -- "wt: .worktreehook setup failed for $dest."
+    print -ru2 -- "    The worktree exists — fix it, then: wt-prepare $qb && wt $qb"
+    return 1
+  fi
+  return 0
+}
+
+# wt-prepare <branch> — re-run preparation against an existing worktree.
+#
+# The named recovery path for a partial copy or a failed setup hook. Re-running
+# `wt` cannot do this: on an existing worktree `wt` takes the reopen path, which
+# deliberately skips preparation.
+#
+# It never creates, stops, attaches or switches a Zellij session, so it may run
+# while the target session and application are live. Project hooks must tolerate
+# that or document their own restriction.
+wt-prepare() {
+  emulate -L zsh
+  local branch="$1"
+  [[ -n "$branch" ]] || { print -ru2 -- "usage: wt-prepare <branch>"; return 1; }
+  local slug="${branch//\//-}" main common dest
+  main="$(_wt_primary)" || return 1
+  common="$(_wt_git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
+  dest="${main:h}/${main:t}-${slug}"
+
+  [[ -d "$dest" ]] || { print -ru2 -- "wt-prepare: $dest does not exist."; return 1; }
+  _wt_lock "$common" "$slug" || return 1
+  {
+    _wt_assert_worktree "$main" "$dest" "$branch" || return 1
+    _wt_do_prepare "$main" "$dest" "$branch" "$slug" || return 1
+    print -r -- "✓ prepared $dest"
+  } always {
+    _wt_unlock
+  }
+}
+
 # wt — spin up (or reopen) a git worktree for the current repo in its own Zellij
 # "dev" session. Complements `dev`, which only *finds* existing checkouts; `wt`
 # *creates* one first, as a sibling under the same org dir so `dev`'s repo glob and

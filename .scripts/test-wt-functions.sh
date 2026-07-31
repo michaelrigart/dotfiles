@@ -52,8 +52,33 @@ esac
 STUB
 cat > "$STUBS/wtcp" <<'STUB'
 #!/usr/bin/env bash
+# Faithful enough for the properties the protocol depends on: honors --from,
+# treats `--` as end-of-options (so an entry named -h is copied rather than
+# parsed), refuses an existing destination with a NONZERO exit while still
+# copying the missing ones — the behaviour that makes destination filtering a
+# correctness requirement — and can still be forced to fail via MOCK_WTCP_RC.
 printf '%s\n' "$*" >> "$WLOG"
-exit "$MOCK_WTCP_RC"
+[ "${MOCK_WTCP_RC:-0}" -ne 0 ] && exit "$MOCK_WTCP_RC"
+from="."; rc=0; endopts=0; paths=()
+while [ $# -gt 0 ]; do
+  if [ "$endopts" -eq 0 ]; then
+    case "$1" in
+      --from) from="$2"; shift 2; continue ;;
+      --)     endopts=1; shift; continue ;;
+      -h|--help) echo "wtcp: usage"; exit 1 ;;
+      -*)     echo "wtcp: unknown option $1" >&2; exit 1 ;;
+    esac
+  fi
+  paths+=("$1"); shift
+done
+for p in "${paths[@]}"; do
+  if [ -e "$PWD/$p" ]; then
+    echo "wtcp: destination exists (use --force): $p" >&2; rc=1; continue
+  fi
+  mkdir -p "$(dirname "$PWD/$p")"
+  cp -R "$from/$p" "$PWD/$p" && echo "copied: $p"
+done
+exit $rc
 STUB
 chmod +x "$STUBS/zellij" "$STUBS/wtcp"
 export PATH="$STUBS:$PATH"
@@ -644,6 +669,56 @@ printf 'gone.env\nthere.env\n' > "$REPO/.worktreeinclude"; print -r -- "T" > "$R
 OUT="$(cd "$REPO" && source "$FUNCS" && _wt_manifest "$REPO" "$D" 2>&1 && print -r -- "carry=${_WT_CARRY[*]}")"
 has "gone.env" "missing source is reported"
 has "carry=there.env" "the remaining entry is still carried"
+
+print -r -- "M. wt-prepare"
+setup
+run "$REPO" wt-prepare nope
+rc_is 1 "absent target is refused"
+has "does not exist" "absent target error is specific"
+
+setup
+run "$REPO" wt n1
+print -r -- "a.env" > "$REPO/.worktreeinclude"; print -r -- "A" > "$REPO/a.env"
+: > "$ZLOG"
+run "$REPO" wt-prepare n1
+rc_is 0 "prepare succeeds"
+[[ -f "$HOME/Code/Org/repo-n1/a.env" ]] && _pass "missing file is copied" || _fail "missing file is copied"
+# Assert the log is EMPTY. `unlogged "zellij"` would be vacuous: the stub logs its
+# arguments, which never contain the word "zellij".
+[[ -s "$ZLOG" ]] && _fail "prepare makes no Zellij calls" || _pass "prepare makes no Zellij calls"
+
+print -r -- "LOCAL" > "$HOME/Code/Org/repo-n1/a.env"
+run "$REPO" wt-prepare n1
+rc_is 0 "repeat prepare succeeds"
+eq "$(<"$HOME/Code/Org/repo-n1/a.env")" "LOCAL" "existing destination is left byte-identical"
+
+# An entry named -h must be copied, not parsed as an option.
+setup
+run "$REPO" wt n2
+print -r -- "-h" > "$REPO/.worktreeinclude"; print -r -- "DASH" > "$REPO/-h"
+run "$REPO" wt-prepare n2
+rc_is 0 "an entry named -h is copied, not parsed as an option"
+eq "$(<"$HOME/Code/Org/repo-n2/-h")" "DASH" "the -h entry's contents actually arrived"
+
+# wtcp failure aborts before setup.
+setup
+run "$REPO" wt n3
+print -r -- "a.env" > "$REPO/.worktreeinclude"; print -r -- "A" > "$REPO/a.env"
+mkhook "$REPO" '#!/bin/sh
+touch "$WT_MAIN/setup-ran"; exit 0'
+MOCK_WTCP_RC=1 run "$REPO" wt-prepare n3
+rc_is 1 "wtcp failure fails prepare"
+[[ -f "$REPO/setup-ran" ]] && _fail "setup is skipped after a copy failure" || _pass "setup is skipped after a copy failure"
+
+# Setup failure is reported with both recovery steps, branch name quoted.
+setup
+run "$REPO" 'wt' 'x&y'
+mkhook "$REPO" '#!/bin/sh
+exit 7'
+run "$REPO" wt-prepare 'x&y'
+rc_is 1 "setup failure fails prepare"
+has "wt-prepare 'x&y'" "recovery message quotes a hostile branch name"
+has "wt 'x&y'" "recovery message includes the reopening step"
 
 export HOME="$REAL_HOME"
 print -r -- ""
