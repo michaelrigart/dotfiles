@@ -335,12 +335,14 @@ OUT="$(cd "$REPO" && source "$FUNCS" && _wt_lock "$CD" slug2 && \
         zsh -c "source '$FUNCS'; _wt_lock '$CD' slug2" 2>&1)"; RC=$?
 has "another lifecycle command" "a lock held by another process is refused"
 
-# Persistent-shell release: two sequential runs in ONE shell must both succeed.
-# Without the explicit unlock the fd stays open and the second refuses.
-OUT="$(cd "$REPO" && source "$FUNCS" && \
-        { _wt_lock "$CD" slug3 && _wt_unlock; } && \
-        { _wt_lock "$CD" slug3 && _wt_unlock; } && print OK)"; RC=$?
-eq "$OUT" "OK" "lock is reacquirable in the same shell after explicit unlock"
+# Persistent-shell release: acquire and unlock in ONE shell, then have a SEPARATE
+# process acquire. This is the regression test for the explicit-unlock rule —
+# without `zsystem flock -u` the fd stays open here and the child is refused.
+# It must cross a process boundary: fcntl locks are per-process, so a same-shell
+# reacquisition succeeds whether or not the first was ever released.
+OUT="$(cd "$REPO" && source "$FUNCS" && _wt_lock "$CD" slug3 && _wt_unlock && \
+        zsh -c "source '$FUNCS'; _wt_lock '$CD' slug3 && print RELEASED")"
+eq "$OUT" "RELEASED" "explicit unlock releases the lock for other processes"
 
 # A holder killed with SIGKILL leaves nothing behind: the kernel releases it.
 zsh -c "source '$FUNCS'; _wt_lock '$CD' slug5 && kill -9 \$\$" 2>/dev/null
