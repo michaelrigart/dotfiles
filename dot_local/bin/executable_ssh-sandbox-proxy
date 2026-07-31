@@ -54,6 +54,11 @@ esac
 
 username=${userinfo%%:*}
 password=${userinfo#*:}
+# Percent-decode via printf %b. Escape literal backslashes FIRST: %b interprets every
+# backslash sequence, so an undecoded value containing e.g. `\n` would silently become a
+# newline and the proxy auth would fail with no useful diagnostic.
+username=${username//\\/\\\\}
+password=${password//\\/\\\\}
 username=$(printf '%b' "${username//%/\\x}")
 password=$(printf '%b' "${password//%/\\x}")
 export NCAT_PROXY_AUTH="$username:$password"
