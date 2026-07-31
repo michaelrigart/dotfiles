@@ -370,6 +370,67 @@ OUT="$(cd "$REPO" && source "$FUNCS" && \
         zmodload() { return 1 } && _wt_lock "$CD" slug4 2>&1)"; RC=$?
 rc_is 1 "missing zsh/system refuses instead of running unlocked"
 
+print -r -- "J. hook validation"
+mkhook() {   # mkhook <repo> <body>  — tracked, executable, committed
+  print -r -- "$2" > "$1/.worktreehook"
+  chmod +x "$1/.worktreehook"
+  git -C "$1" add --chmod=+x .worktreehook >/dev/null
+  git -C "$1" commit -q -m hook
+}
+
+setup
+run "$REPO" _wt_hook_check "$REPO"
+rc_is 2 "absent hook reports not-opted-in"
+
+setup
+mkhook "$REPO" '#!/bin/sh
+exit 0'
+run "$REPO" _wt_hook_check "$REPO"
+rc_is 0 "tracked 100755 regular executable is valid"
+
+setup
+print -r -- '#!/bin/sh' > "$REPO/.worktreehook"; chmod +x "$REPO/.worktreehook"
+run "$REPO" _wt_hook_check "$REPO"
+rc_is 1 "untracked hook is refused"
+
+setup
+print -r -- '#!/bin/sh' > "$REPO/.worktreehook"
+git -C "$REPO" add .worktreehook >/dev/null; git -C "$REPO" commit -q -m h
+run "$REPO" _wt_hook_check "$REPO"
+rc_is 1 "100644 hook is refused"
+has "chmod=+x" "100644 refusal gives the repair command"
+
+setup
+ln -s /bin/echo "$REPO/.worktreehook"
+git -C "$REPO" add .worktreehook >/dev/null; git -C "$REPO" commit -q -m h
+run "$REPO" _wt_hook_check "$REPO"
+rc_is 1 "tracked symlink hook is refused"
+
+setup
+mkhook "$REPO" '#!/bin/sh
+exit 0'
+rm "$REPO/.worktreehook"; ln -s /bin/echo "$REPO/.worktreehook"
+run "$REPO" _wt_hook_check "$REPO"
+rc_is 1 "index-100755 replaced locally by a symlink is refused"
+
+setup
+mkhook "$REPO" '#!/bin/sh
+exit 0'
+chmod -x "$REPO/.worktreehook"
+run "$REPO" _wt_hook_check "$REPO"
+rc_is 1 "index-100755 without the working-tree exec bit is refused"
+
+# Fails CLOSED when the index cannot be read. Without the separate status
+# capture, ls-files returns empty and a repository with an unreadable index is
+# reported as "not opted in" (2) — silently skipping a hook that may exist.
+setup
+mkhook "$REPO" '#!/bin/sh
+exit 0'
+print -r -- "garbage" > "$REPO/.git/index"
+run "$REPO" _wt_hook_check "$REPO"
+rc_is 1 "unreadable index is refused, not treated as not-opted-in"
+has "cannot read the index" "the refusal says the index state is unknown"
+
 export HOME="$REAL_HOME"
 print -r -- ""
 print -r -- "passed: $pass  failed: $fail"

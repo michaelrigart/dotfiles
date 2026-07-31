@@ -343,6 +343,54 @@ _wt_unlock() {
   return 0
 }
 
+# _wt_hook_check <main> — 0 valid, 1 invalid, 2 absent (not opted in).
+#
+# Both the index entry and the working-tree path must be checked. A tracked
+# symlink satisfies "tracked" and "executable" (test -x follows it) while the code
+# that actually runs lives outside the repository; conversely the index mode alone
+# cannot see an unstaged local swap.
+#
+# Requiring 100755 *in the index* — not merely on disk — makes opt-in
+# reproducible: a hook tracked as 100644 arrives non-executable in every clone.
+# Selecting stage 0 rejects a conflicted hook, which has no stage-0 entry.
+_wt_hook_check() {
+  emulate -L zsh
+  local main="$1" hook="$1/.worktreehook" raw mode rc
+  # Status captured separately, for the same reason as _wt_clean: if ls-files
+  # fails, `raw` is empty, and treating that as "absent" would report a
+  # repository with an unreadable index as "not opted in" — silently skipping a
+  # hook that may well exist. Unknown index state is refused, not assumed empty.
+  raw="$(_wt_git -C "$main" ls-files --stage -- .worktreehook 2>/dev/null)"; rc=$?
+  if (( rc )); then
+    print -ru2 -- "wt: cannot read the index of $main to validate .worktreehook — refusing."
+    return 1
+  fi
+  mode="$(print -r -- "$raw" | awk '$3 == 0 { print $1 }')"
+
+  if [[ -z "$raw" ]]; then
+    [[ -e "$hook" || -L "$hook" ]] || return 2          # not opted in
+    print -ru2 -- "wt: $hook exists but is not tracked — commit it or remove it."
+    return 1
+  fi
+  if [[ -z "$mode" ]]; then
+    print -ru2 -- "wt: .worktreehook has no stage-0 index entry (unresolved conflict) — resolve it first."
+    return 1
+  fi
+  if [[ "$mode" != 100755 ]]; then
+    print -ru2 -- "wt: .worktreehook is indexed as $mode, not 100755."
+    [[ "$mode" == 100644 ]] && \
+      print -ru2 -- "    Fix with: git add --chmod=+x .worktreehook"
+    return 1
+  fi
+  if [[ -L "$hook" ]]; then
+    print -ru2 -- "wt: .worktreehook is a symlink in the working tree — refusing."
+    return 1
+  fi
+  [[ -f "$hook" ]] || { print -ru2 -- "wt: .worktreehook is not a regular file."; return 1 }
+  [[ -x "$hook" ]] || { print -ru2 -- "wt: .worktreehook is not executable."; return 1 }
+  return 0
+}
+
 # wt — spin up (or reopen) a git worktree for the current repo in its own Zellij
 # "dev" session. Complements `dev`, which only *finds* existing checkouts; `wt`
 # *creates* one first, as a sibling under the same org dir so `dev`'s repo glob and
