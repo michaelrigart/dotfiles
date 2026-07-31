@@ -656,7 +656,11 @@ run "$REPO" wt k3
 run "$REPO" _wt_hook_run "$REPO" "$HOME/Code/Org/repo-k3" k3 k3 setup
 rc_is 0 "absent hook is a successful no-op"
 
-# The hook is executed, not sourced: a variable it sets must not leak out.
+# The hook runs inside a subshell: a variable it sets must not leak into the
+# caller. This proves subshell isolation — it does NOT by itself prove the hook
+# is executed rather than sourced, since sourcing *inside* the same subshell
+# would isolate LEAKED identically. See the shebang-honoring assertion below
+# for the property that actually distinguishes execution from sourcing.
 setup
 mkhook "$REPO" '#!/bin/sh
 LEAKED=yes
@@ -664,7 +668,29 @@ exit 0'
 run "$REPO" wt k4
 OUT="$(cd "$REPO" && source "$FUNCS" && \
   _wt_hook_run "$REPO" "$HOME/Code/Org/repo-k4" k4 k4 setup >/dev/null 2>&1; print -r -- "${LEAKED:-unset}")"
-eq "$OUT" "unset" "hook runs as a process, not sourced"
+eq "$OUT" "unset" "hook's variables don't leak into the caller (subshell isolation)"
+
+# The hook must be executed as a process, never sourced, so its own shebang
+# selects the interpreter — the property spec §11.1 requires ("Shebang:
+# honored; hook is not sourced"), and what makes the protocol stack-agnostic
+# (a project's hook can be Python, .NET, anything with a shebang). A hook
+# body zsh cannot parse is the only fixture that can tell "executed" and
+# "sourced inside the isolating subshell" apart: `source` hands zsh's own
+# parser this file, so non-zsh syntax either errors out or is silently
+# misparsed, and the marker is never written; `exec` hands it to python3,
+# which writes the marker normally.
+if command -v python3 >/dev/null 2>&1; then
+  setup
+  mkhook "$REPO" '#!/usr/bin/env python3
+open("py.marker", "w").close()'
+  run "$REPO" wt k5
+  run "$REPO" _wt_hook_run "$REPO" "$HOME/Code/Org/repo-k5" k5 k5 setup
+  [[ -f "$HOME/Code/Org/repo-k5/py.marker" ]] \
+    && _pass "shebang is honored: a python3 hook runs, it is not parsed as zsh" \
+    || _fail "shebang is honored: a python3 hook runs, it is not parsed as zsh"
+else
+  print -r -- "  SKIP: shebang-honored assertion — python3 not found on PATH (not counted as pass or fail)"
+fi
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
