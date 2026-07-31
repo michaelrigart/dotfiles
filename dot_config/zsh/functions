@@ -310,8 +310,10 @@ _wt_clean() {
 #   1. The lock file must already exist — zsystem opens it and will not create it.
 #   2. Release must be explicit. These are *sourced functions*: returning does not
 #      close the descriptor, so without an unlock the fd stays open in the
-#      interactive shell and every later run against that target refuses for the
-#      rest of the session. Kernel release on process death is only a backstop.
+#      interactive shell. Because locks are per-process (requirement 3) that does
+#      NOT block the same shell — it blocks every OTHER process's lifecycle
+#      command on that target until this shell exits, while leaking one descriptor
+#      per run. Kernel release on process death is only a backstop.
 #   3. Locks are per-process, not per-descriptor. A nested acquisition inside the
 #      same shell SUCCEEDS, and unlocking any one descriptor drops the process's
 #      lock on the file entirely — so a routine that took its own lock would
@@ -342,6 +344,40 @@ _wt_unlock() {
   unset _WT_LOCK_FD
   return 0
 }
+
+# --- INT/TERM release ------------------------------------------------------
+#
+# Every lifecycle command installs `trap '_wt_unlock; return 130' INT TERM`
+# immediately before acquiring the lock, per spec §9.4: "The lock is released on
+# INT and TERM so an interrupted command does not block the retry."
+#
+# An `always` block is not enough. zsh does NOT run one when SIGINT unwinds a
+# function under its default disposition, so Ctrl-C — which §9.4 designates as
+# *the* interrupt mechanism, since hooks may prompt and there is no timeout —
+# would leave the descriptor open in the interactive shell and refuse every other
+# terminal's lifecycle command on that target until the shell exits.
+#
+# `emulate -L zsh` sets LOCAL_TRAPS, so `trap` inside a function is function-local
+# and restored on return. _wt_unlock is idempotent, so the always block that also
+# runs on the normal path stays safe.
+#
+# Two zsh behaviours shape the handler body, both verified rather than assumed:
+#
+#   * `return` inside a `trap` handler unwinds only the INNERMOST function, not
+#     the whole call stack. Every helper call in the lifecycle is status-checked,
+#     so 130 propagates outward as an ordinary failure — except after _wt_clean,
+#     whose callers match on specific statuses; those match `*` for exactly this
+#     reason (see wt-rm).
+#   * zsh discards the handler's `return` status: the interrupted command reports
+#     0, not 130. The TRAPINT function form does propagate it, but only by then
+#     performing SIGINT's default action, which kills a non-interactive shell
+#     outright. Aborting the work and releasing the lock is what matters here;
+#     after a real foreground Ctrl-C the shell has been signalled too and its
+#     `$?` is moot.
+#
+# The handler is written out at each call site rather than held in a variable:
+# `trap "$var" INT` with an empty var expands to `trap '' INT`, which *ignores*
+# the signal — a silent, far worse failure than the one being fixed.
 
 # _wt_hook_check <main> — 0 valid, 1 invalid, 2 absent (not opted in).
 #
@@ -560,6 +596,7 @@ wt-prepare() {
   dest="${main:h}/${main:t}-${slug}"
 
   [[ -d "$dest" ]] || { print -ru2 -- "wt-prepare: $dest does not exist."; return 1; }
+  trap '_wt_unlock; return 130' INT TERM
   _wt_lock "$common" "$slug" || return 1
   {
     _wt_assert_worktree "$main" "$dest" "$branch" || return 1
@@ -601,6 +638,7 @@ wt() {
   common="$(_wt_git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
   dest="${main:h}/${main:t}-${slug}"
 
+  trap '_wt_unlock; return 130' INT TERM
   _wt_lock "$common" "$slug" || return 1
   {
     local created=1
@@ -670,7 +708,8 @@ _wt_assert_worktree() {
 # Run from another checkout of the same repo, never from inside the one being removed.
 #
 # Runs under the per-target lock (see _wt_lock), released in an `always` block so
-# every return path — including a mid-sequence abort — unlocks.
+# every return path — including a mid-sequence abort — unlocks, and on INT/TERM,
+# which no `always` block covers.
 #
 # Ordering follows the sequence of things that can go wrong, each guarded right before
 # it happens rather than once up front:
@@ -709,6 +748,7 @@ wt-rm() {
   dest="${main:h}/${main:t}-${slug}"
 
   [[ -d "$dest" ]] || { print -ru2 -- "wt-rm: $dest does not exist."; return 1; }
+  trap '_wt_unlock; return 130' INT TERM
   _wt_lock "$common" "$slug" || return 1
   {
     _wt_assert_worktree "$main" "$dest" "$branch" || return 1
@@ -718,10 +758,17 @@ wt-rm() {
       print -ru2 -- "wt-rm: you're inside $dest — run this from another checkout."; return 1 }
 
     # Check 1 — before anything is disrupted.
+    #
+    # `*`, not `2`: _wt_clean documents 0/1/2, but the INT/TERM handler installed
+    # above returns 130 out of whatever function was running when the signal
+    # arrived — including this one. Matching `2` alone would let an interrupted
+    # cleanliness check fall through as "clean" and take the session down.
+    # Anything that is not a definite 0 is an unknown state and fails closed.
     _wt_clean "$dest"
     case $? in
+      0) ;;
       1) print -ru2 -- "wt-rm: $dest has uncommitted changes — commit, stash or discard them first."; return 1 ;;
-      2) print -ru2 -- "wt-rm: cannot determine whether $dest is clean — refusing."
+      *) print -ru2 -- "wt-rm: cannot determine whether $dest is clean — refusing."
          _wt_git -C "$dest" status --porcelain >/dev/null; return 1 ;;
     esac
 
@@ -743,8 +790,9 @@ wt-rm() {
     # Check 2 — shutdown can flush files; that is how the Bootsnap husks arose.
     _wt_clean "$dest"
     case $? in
+      0) ;;
       1) print -ru2 -- "wt-rm: stopping the session left changes in $dest — inspect it, then retry."; return 1 ;;
-      2) print -ru2 -- "wt-rm: cannot determine whether $dest is clean after session shutdown — refusing."; return 1 ;;
+      *) print -ru2 -- "wt-rm: cannot determine whether $dest is clean after session shutdown — refusing."; return 1 ;;
     esac
 
     if ! _wt_hook_run "$main" "$dest" "$branch" "$slug" teardown; then
@@ -758,14 +806,24 @@ wt-rm() {
     # generic removal refusal appears one step later.
     _wt_clean "$dest"
     case $? in
+      0) ;;
       1) print -ru2 -- "wt-rm: teardown left changes in $dest — removal aborted. Resources may already be reclaimed."
          print -ru2 -- "    Hook output must be git-ignored or written outside the worktree."
          return 1 ;;
-      2) print -ru2 -- "wt-rm: cannot determine whether $dest is clean after teardown — refusing. Resources may already be reclaimed."
+      *) print -ru2 -- "wt-rm: cannot determine whether $dest is clean after teardown — refusing. Resources may already be reclaimed."
          return 1 ;;
     esac
 
-    _wt_git worktree remove "$dest" || return 1
+    # Removal is the third post-shutdown failure mode (spec §9.3), and reports the
+    # same exact partial state as the other two. Git's own refusal names only the
+    # obstruction; on its own it leaves the reader unsure whether teardown ran, so
+    # the reclamation state and both recovery routes are spelled out here.
+    if ! _wt_git worktree remove "$dest"; then
+      print -ru2 -- "wt-rm: removing $dest failed — worktree kept, session stopped. Resources may already be reclaimed."
+      print -ru2 -- "    Fix the obstruction and retry: wt-rm $qb    (teardown is idempotent)"
+      print -ru2 -- "    Or resume work with: wt-prepare $qb && wt $qb"
+      return 1
+    fi
     print -r -- "✓ removed worktree $dest"
 
     _wt_git -C "$main" branch -d "$branch" \
