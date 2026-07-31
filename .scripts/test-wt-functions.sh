@@ -22,7 +22,9 @@
 # zellij and wtcp are stubbed on PATH and every invocation is logged, so the tests can
 # assert *ordering* — notably that a dirty worktree never loses its Zellij session —
 # without launching anything. Git is NOT stubbed: real repos are used, because git's own
-# refusals (unmerged branch, dirty tree) are part of what's under test.
+# refusals (unmerged branch, dirty tree) are part of what's under test. The one `git` on
+# PATH is the SIGINT delay injector, and it is a pass-through: it decides when a real
+# signal lands, then execs the real git with the identical argv.
 #
 # Run: zsh .scripts/test-wt-functions.sh
 set -u
@@ -51,7 +53,8 @@ unlogged() { [[ "$(<$ZLOG)" == *"$1"* ]] && _fail "$2" || _pass "$2" }
 TMPROOT="${TMPDIR:-/tmp}"
 mkd() { mktemp -d "${TMPROOT%/}/wt-test.XXXXXX" }
 STUBS=$(mkd)
-trap 'rm -rf "$STUBS" "${ROOTTMP:-}"' EXIT
+SIGSTUBS=$(mkd)
+trap 'rm -rf "$STUBS" "$SIGSTUBS" "${ROOTTMP:-}"' EXIT
 
 cat > "$STUBS/zellij" <<'STUB'
 #!/usr/bin/env bash
@@ -99,6 +102,34 @@ exit $rc
 STUB
 chmod +x "$STUBS/zellij" "$STUBS/wtcp"
 export PATH="$STUBS:$PATH"
+
+# --- SIGINT delay injector --------------------------------------------------
+# A `git` that delivers one real SIGINT to a named pid immediately before
+# handing the IDENTICAL argv to the real git. It is not a git stub: git does the
+# real work and returns its own status, so nothing about the code under test is
+# faked — the shim only decides *when* the signal lands.
+#
+# It lives in its own directory, prepended to PATH for the signalled child shell
+# alone (see sigint_run), and is an inert pass-through unless WT_SIG_MATCH is
+# set. The rest of the suite never sees it.
+#
+# The signal has to be timed from inside the child, not by the parent: nothing
+# the parent can observe says which helper the child is currently executing, and
+# a sleep-then-kill would be a race — precisely the kind of assertion that
+# passes for the wrong reason. Matching on argv puts it inside one named git
+# call, deterministically. Delivery is still what §11.7 requires: a real SIGINT
+# to one pid, never to the process group, which would take the harness down.
+REALGIT="$(whence -p git)" || { print -ru2 -- "cannot locate git"; exit 1 }
+cat > "$SIGSTUBS/git" <<STUB
+#!/bin/sh
+if [ -n "\${WT_SIG_MATCH:-}" ] && [ ! -e "\$WT_SIG_ONCE" ]; then
+  case " \$* " in
+    *" \$WT_SIG_MATCH "*) : > "\$WT_SIG_ONCE"; kill -INT "\$WT_SIG_TARGET" ;;
+  esac
+fi
+exec $REALGIT "\$@"
+STUB
+chmod +x "$SIGSTUBS/git"
 
 # --- fixture ----------------------------------------------------------------
 ROOTTMP=""
@@ -153,6 +184,29 @@ runp() {
 # _wt_lock requirement 3), and an assertion built on it could never fail.
 other_process_can_lock() {
   zsh -c "source '$FUNCS'; _wt_lock '$1' '$2' >/dev/null 2>&1 && print -r -- RELEASED"
+}
+# sigint_run <argv-match> <command...> — run one lifecycle command in a child zsh
+# that receives a real SIGINT, by pid, during the first git call whose argv
+# contains <argv-match>. An empty match disarms the injector, which is how the
+# control runs prove the shim is a transparent pass-through.
+#
+# The child is driven through a command substitution on purpose: a `&`
+# background job inherits SIG_IGN for INT in a non-interactive shell, so the
+# signal would simply be discarded and every assertion would pass vacuously. A
+# command-substitution child dies of the signal as intended and reports 130,
+# while the harness itself is untouched.
+#
+# SIGFIRED reports whether the injector matched anything at all, so a pattern
+# that silently stopped matching cannot be mistaken for a clean interrupt.
+SIGFIRED=no
+sigint_run() {
+  local match="$1"; shift
+  local once="$ROOTTMP/sig-once"
+  rm -f "$once"
+  OUT="$(cd "$REPO" && PATH="$SIGSTUBS:$PATH" WT_SIG_MATCH="$match" WT_SIG_ONCE="$once" \
+         zsh -c 'export WT_SIG_TARGET=$$; source "$1"; shift; "$@"' _ "$FUNCS" "$@" 2>&1)"
+  RC=$?
+  [[ -e "$once" ]] && SIGFIRED=yes || SIGFIRED=no
 }
 sha() { git -C "$1" rev-parse HEAD 2>/dev/null }
 mkhook() {   # mkhook <repo> <body>  — tracked, executable, committed
@@ -521,40 +575,50 @@ rc_is 1 "wt-rm fails inside the locked block"
 eq "$(other_process_can_lock "$CD" z4)" "RELEASED" \
    "the lock is released after a failed wt-rm, so a retry is not blocked"
 
-# 4) Real SIGINT. Spec §9.4: "The lock is released on INT and TERM so an
-#    interrupted command does not block the retry." A zsh `always` block does
-#    not run when a signal unwinds a function under its default disposition, so
-#    the INT/TERM trap — not the always block — is what covers Ctrl-C.
+# 4) Real SIGINT (spec §9.4). No INT/TERM trap exists — see the interruption
+#    note beside _wt_unlock in dot_config/zsh/functions for why one was removed.
+#    What is guaranteed instead is that the interrupt unwinds the whole command,
+#    and that the kernel releases the lock along with the shell it takes down.
 #
-#    The signal is delivered by the setup hook to one specific pid (never the
-#    process group), so the harness is untouched. The target is a child zsh that
-#    must still be ALIVE afterwards to say anything at all: without the trap the
-#    default disposition terminates it and neither marker is printed.
+#    The setup hook does the killing because it is the only place that can time
+#    the signal to land INSIDE the command. It targets one pid — the probe shell
+#    — never the process group, which would take the harness down with it (spec
+#    §11.7). Every assertion is then made out here, from state the child cannot
+#    fabricate.
 #
-#    HONEST LIMIT: this proves the trap is installed and effective — the shell
-#    survives a real SIGINT and holds no lock afterwards. It does NOT isolate the
-#    trap's unlock from the always block's. In a non-interactive shell the trap's
-#    `return 130` propagates outward through ordinary status checks, so the
-#    always block runs too; only an interactive unwind skips it, and the harness
-#    cannot host an interactive shell. Isolating that is not attempted here
-#    rather than faked.
+#    HONEST LIMIT — this covers the non-interactive case only. It proves the
+#    interrupt stops the work and that a shell the interrupt kills leaves no
+#    lock behind. It cannot reproduce the INTERACTIVE case, where the shell
+#    survives its own Ctrl-C and keeps the lock descriptor open: the harness
+#    cannot host an interactive shell, and nothing below should be read as
+#    covering it. That retention is an accepted, documented cost (spec §9.4),
+#    not a tested property.
 setup
 CD="$REPO/.git"
-mkhook "$REPO" '#!/bin/sh
-[ "$1" = setup ] && kill -INT "$TEST_SIGTARGET"
-exit 0'
 cat > "$ROOTTMP/int-probe.zsh" <<'PROBE'
 source "$1"
 export TEST_SIGTARGET=$$          # the hook signals THIS shell, by pid
-wt z5 >/dev/null 2>&1
+wt "$2" >/dev/null 2>&1
 print -r -- "SURVIVED"
-zsh -c "source '$1'; _wt_lock '$2' z5 >/dev/null 2>&1 && print -r -- RELEASED"
 PROBE
+# Control, run first and with no signalling hook committed yet: the probe must
+# reach its last line unaided. Without this, "SURVIVED is absent" below would be
+# satisfied just as well by a probe that never ran at all.
 : > "$ZLOG"
-OUT="$(cd "$REPO" && zsh "$ROOTTMP/int-probe.zsh" "$FUNCS" "$CD" 2>&1)"; RC=$?
-has "SURVIVED" "a real SIGINT during wt does not take the running shell down"
-has "RELEASED" "the interrupted command leaves no lock behind in the surviving shell"
+OUT="$(cd "$REPO" && zsh "$ROOTTMP/int-probe.zsh" "$FUNCS" z5c 2>&1)"; RC=$?
+has "SURVIVED" "control: an uninterrupted wt lets the probe shell reach its last line"
+logged "--session org--repo-z5c" "control: the uninterrupted wt reaches dev"
+
+mkhook "$REPO" '#!/bin/sh
+[ "$1" = setup ] && kill -INT "$TEST_SIGTARGET"
+exit 0'
+: > "$ZLOG"
+OUT="$(cd "$REPO" && zsh "$ROOTTMP/int-probe.zsh" "$FUNCS" z5 2>&1)"; RC=$?
+rc_is 130 "a real SIGINT during wt unwinds the command and the shell running it"
+hasnt "SURVIVED" "the interrupted shell does not carry on past the command"
 unlogged "--session org--repo-z5" "the interrupted wt never reached dev"
+eq "$(other_process_can_lock "$CD" z5)" "RELEASED" \
+   "the interrupted shell's death releases the lock, so a retry is not blocked"
 
 print -r -- "J. hook validation"
 setup
@@ -1244,34 +1308,86 @@ eq "$OUT" "  q11" "the branch is not deleted when removal fails"
 chmod 700 "$HOME/Code/Org/repo-q11/blocked" 2>/dev/null
 export MOCK_ZJ_SESSIONS=""
 
-# All three cleanliness checks fail closed on ANY status that is not a definite
-# 0, not merely on _wt_clean's documented 2. That matters because the INT/TERM
-# handler each lifecycle command installs returns 130 out of whichever function
-# was running when the signal arrived — including _wt_clean — and a `case` that
-# matched only 1 and 2 would read an interrupted check as "clean" and go on to
-# stop the session, tear down and remove.
+# --- a real SIGINT during wt-rm must destroy nothing -------------------------
 #
-# _wt_clean is overridden per scenario rather than driven by a fixture: the
-# status has to appear at one specific call out of three, and no fixture can
-# time a real signal to land inside a particular `git status`. The counter picks
-# the call, so each check is exercised independently.
-setup
-run "$REPO" wt w1
-export MOCK_ZJ_SESSIONS="org--repo-w1"
-for n in 1 2 3; do
+# This replaces a set of assertions that overrode _wt_clean to return a
+# synthetic 130. Those tested a status the code cannot produce, and they stayed
+# green across a Critical regression: an INT/TERM trap whose `return 130`
+# unwound only the innermost function, so an interrupted _wt_clean reported 0 to
+# wt-rm and a DIRTY worktree lost its session to `delete-session --force`.
+#
+# The replacement runs the real command, takes a real SIGINT delivered by pid,
+# and asserts from OUT HERE — from state the child cannot fabricate — rather
+# than from any status the child reports. A return code is exactly what the
+# regression corrupted, so it is not evidence.
+#
+# Each scenario interrupts one named git call inside the pre-shutdown region of
+# wt-rm (validation, then cleanliness check 1). Both are ahead of the session
+# shutdown, the teardown hook, the removal and the branch deletion, so all four
+# must be absent afterwards.
+#
+# The fixture is deliberately CLEAN and its session deliberately present: left
+# alone, this exact wt-rm removes the worktree, stops the session, runs teardown
+# and deletes the branch. The control below runs it and checks that it does.
+# Every assertion in the interrupted runs is therefore load-bearing — it can
+# only hold because the interrupt stopped the command.
+#
+# HONEST LIMIT, restated where it matters most: the child shell dies of the
+# signal, so this proves destructive work stops and that process death releases
+# the lock. It says nothing about an interactive shell that survives its own
+# Ctrl-C and keeps the lock descriptor open; see the note in section I.
+sigfixture() {   # sigfixture <slug> — clean worktree, live session, marking hook
+  setup
+  mkhook "$REPO" '#!/bin/sh
+[ "$1" = teardown ] && : > "$WT_MAIN/torn-$WT_SLUG"
+exit 0'
+  run "$REPO" wt "$1"
+  export MOCK_ZJ_SESSIONS="org--repo-$1"
   : > "$ZLOG"
-  OUT="$(cd "$REPO" && source "$FUNCS" && c=0 && \
-    _wt_clean() { c=$((c + 1)); (( c == $n )) && return 130; return 0 } && \
-    wt-rm w1 2>&1)"; RC=$?
-  rc_is 1 "an undeterminable status at check $n refuses"
-  has "cannot determine whether" "check $n's refusal says the state is unknown"
-  [[ -d "$HOME/Code/Org/repo-w1" ]] && _pass "check $n preserves the worktree" \
-                                    || _fail "check $n preserves the worktree"
-done
-# Check 1 additionally guards the session, which the two later checks cannot.
-: > "$ZLOG"
-OUT="$(cd "$REPO" && source "$FUNCS" && _wt_clean() { return 130 } && wt-rm w1 2>&1)"; RC=$?
-unlogged "delete-session" "an undeterminable check 1 refuses before the session is stopped"
+}
+
+# Control: identical fixture, identical child shell, injector disarmed.
+sigfixture s0
+sigint_run "" wt-rm s0
+rc_is 0 "control: wt-rm in the child shell completes with the injector disarmed"
+eq "$SIGFIRED" "no" "control: no signal was delivered"
+logged "delete-session" "control: the uninterrupted run does stop the session"
+[[ -f "$REPO/torn-s0" ]] && _pass "control: the uninterrupted run does run teardown" \
+                         || _fail "control: the uninterrupted run does run teardown"
+[[ -d "$HOME/Code/Org/repo-s0" ]] && _fail "control: the uninterrupted run does remove the worktree" \
+                                  || _pass "control: the uninterrupted run does remove the worktree"
+
+# Scenario 1 — the signal lands in worktree validation. `_wt_primary` runs its
+# own `worktree list` first, with no -C, so matching the -C form pins this to
+# _wt_assert_worktree.
+sigfixture s1
+sigint_run "-C $REPO worktree list" wt-rm s1
+eq "$SIGFIRED" "yes" "the injector fired inside worktree validation"
+rc_is 130 "a SIGINT during validation takes the child shell down"
+[[ -d "$HOME/Code/Org/repo-s1" ]] && _pass "interrupted validation leaves the worktree in place" \
+                                  || _fail "interrupted validation leaves the worktree in place"
+unlogged "delete-session" "interrupted validation stops no session"
+[[ -f "$REPO/torn-s1" ]] && _fail "interrupted validation runs no hook" \
+                         || _pass "interrupted validation runs no hook"
+run "$REPO" git branch --list --format="%(refname:short)" s1
+eq "$OUT" "s1" "interrupted validation deletes no branch"
+
+# Scenario 2 — the signal lands in cleanliness check 1. Only _wt_clean passes
+# --porcelain=v1, and the injector is one-shot, so this is the first of the
+# three checks: the one that still guards the session.
+sigfixture s2
+sigint_run "status --porcelain=v1" wt-rm s2
+eq "$SIGFIRED" "yes" "the injector fired inside a cleanliness check"
+rc_is 130 "a SIGINT during cleanliness check 1 takes the child shell down"
+[[ -d "$HOME/Code/Org/repo-s2" ]] && _pass "an interrupted check 1 leaves the worktree in place" \
+                                  || _fail "an interrupted check 1 leaves the worktree in place"
+unlogged "delete-session" "an interrupted check 1 stops no session"
+[[ -f "$REPO/torn-s2" ]] && _fail "an interrupted check 1 runs no hook" \
+                         || _pass "an interrupted check 1 runs no hook"
+run "$REPO" git branch --list --format="%(refname:short)" s2
+eq "$OUT" "s2" "an interrupted check 1 deletes no branch"
+eq "$(other_process_can_lock "$REPO/.git" s2)" "RELEASED" \
+   "the interrupted child's death releases the lock, so a retry is not blocked"
 export MOCK_ZJ_SESSIONS=""
 
 # Hostile-but-valid branch names are quoted in every recovery message.

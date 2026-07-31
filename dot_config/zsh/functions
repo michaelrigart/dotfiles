@@ -313,7 +313,10 @@ _wt_clean() {
 #      interactive shell. Because locks are per-process (requirement 3) that does
 #      NOT block the same shell — it blocks every OTHER process's lifecycle
 #      command on that target until this shell exits, while leaking one descriptor
-#      per run. Kernel release on process death is only a backstop.
+#      per run. Kernel release on process death is the backstop for every path
+#      an explicit unlock cannot reach — chiefly an interrupt, which unwinds the
+#      command without running the `always` block (see the interruption note
+#      below _wt_unlock).
 #   3. Locks are per-process, not per-descriptor. A nested acquisition inside the
 #      same shell SUCCEEDS, and unlocking any one descriptor drops the process's
 #      lock on the file entirely — so a routine that took its own lock would
@@ -345,39 +348,37 @@ _wt_unlock() {
   return 0
 }
 
-# --- INT/TERM release ------------------------------------------------------
+# --- Interruption and the lock ---------------------------------------------
 #
-# Every lifecycle command installs `trap '_wt_unlock; return 130' INT TERM`
-# immediately before acquiring the lock, per spec §9.4: "The lock is released on
-# INT and TERM so an interrupted command does not block the retry."
+# There is deliberately NO `trap ... INT TERM` in any lifecycle command. An
+# earlier revision installed `trap '_wt_unlock; return 130' INT TERM` in all
+# three, to satisfy a spec §9.4 requirement — "the lock is released on INT and
+# TERM" — that has since been withdrawn. The trap was removed because it is
+# fail-open, and fail-open on the destructive path:
 #
-# An `always` block is not enough. zsh does NOT run one when SIGINT unwinds a
-# function under its default disposition, so Ctrl-C — which §9.4 designates as
-# *the* interrupt mechanism, since hooks may prompt and there is no timeout —
-# would leave the descriptor open in the interactive shell and refuse every other
-# terminal's lifecycle command on that target until the shell exits.
+#   * `return` inside a trap handler unwinds only the INNERMOST function, not
+#     the call stack, and zsh discards the handler's return status. The
+#     interrupted helper therefore reports 0 to its caller, never 130.
+#   * 0 is the permissive answer for every helper the lifecycle gates on:
+#     _wt_clean 0 is "clean", _wt_hook_check 0 is "valid", _wt_assert_worktree 0
+#     is "the right worktree on the right branch". An interrupted check reads as
+#     permission to proceed. This is not theoretical: with the trap installed, a
+#     real SIGINT during wt-rm's first cleanliness check made a DIRTY worktree
+#     read as clean and ran `zellij delete-session --force` on it.
 #
-# `emulate -L zsh` sets LOCAL_TRAPS, so `trap` inside a function is function-local
-# and restored on return. _wt_unlock is idempotent, so the always block that also
-# runs on the normal path stays safe.
+# Under SIGINT's default disposition the whole command unwinds instead, so no
+# helper's status is ever fabricated. That is the property these commands need.
 #
-# Two zsh behaviours shape the handler body, both verified rather than assumed:
+# The accepted cost, documented in spec §9.4: an interactive shell that survives
+# an interruption may still hold the descriptor. Because fcntl locks are held per
+# *process*, that does NOT block the shell holding it — retrying from that same
+# shell works — it blocks other processes' lifecycle commands on the same target
+# until that shell exits. Trading a rare, self-inflicted and self-recoverable
+# lock retention for a destructive fail-open is the right way round.
 #
-#   * `return` inside a `trap` handler unwinds only the INNERMOST function, not
-#     the whole call stack. Every helper call in the lifecycle is status-checked,
-#     so 130 propagates outward as an ordinary failure — except after _wt_clean,
-#     whose callers match on specific statuses; those match `*` for exactly this
-#     reason (see wt-rm).
-#   * zsh discards the handler's `return` status: the interrupted command reports
-#     0, not 130. The TRAPINT function form does propagate it, but only by then
-#     performing SIGINT's default action, which kills a non-interactive shell
-#     outright. Aborting the work and releasing the lock is what matters here;
-#     after a real foreground Ctrl-C the shell has been signalled too and its
-#     `$?` is moot.
-#
-# The handler is written out at each call site rather than held in a variable:
-# `trap "$var" INT` with an empty var expands to `trap '' INT`, which *ignores*
-# the signal — a silent, far worse failure than the one being fixed.
+# `always { _wt_unlock }` still covers every ordinary exit path: success,
+# failure, and early return. Kernel release on process death covers a shell that
+# the interrupt actually takes down.
 
 # _wt_hook_check <main> — 0 valid, 1 invalid, 2 absent (not opted in).
 #
@@ -596,7 +597,6 @@ wt-prepare() {
   dest="${main:h}/${main:t}-${slug}"
 
   [[ -d "$dest" ]] || { print -ru2 -- "wt-prepare: $dest does not exist."; return 1; }
-  trap '_wt_unlock; return 130' INT TERM
   _wt_lock "$common" "$slug" || return 1
   {
     _wt_assert_worktree "$main" "$dest" "$branch" || return 1
@@ -638,7 +638,6 @@ wt() {
   common="$(_wt_git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
   dest="${main:h}/${main:t}-${slug}"
 
-  trap '_wt_unlock; return 130' INT TERM
   _wt_lock "$common" "$slug" || return 1
   {
     local created=1
@@ -708,8 +707,10 @@ _wt_assert_worktree() {
 # Run from another checkout of the same repo, never from inside the one being removed.
 #
 # Runs under the per-target lock (see _wt_lock), released in an `always` block so
-# every return path — including a mid-sequence abort — unlocks, and on INT/TERM,
-# which no `always` block covers.
+# every return path — including a mid-sequence abort — unlocks. An interruption
+# is not an exit path this block covers: SIGINT unwinds the command outright and
+# the kernel releases the lock with the process. See the interruption note under
+# _wt_unlock for why no INT/TERM trap is installed.
 #
 # Ordering follows the sequence of things that can go wrong, each guarded right before
 # it happens rather than once up front:
@@ -748,7 +749,6 @@ wt-rm() {
   dest="${main:h}/${main:t}-${slug}"
 
   [[ -d "$dest" ]] || { print -ru2 -- "wt-rm: $dest does not exist."; return 1; }
-  trap '_wt_unlock; return 130' INT TERM
   _wt_lock "$common" "$slug" || return 1
   {
     _wt_assert_worktree "$main" "$dest" "$branch" || return 1
@@ -759,11 +759,13 @@ wt-rm() {
 
     # Check 1 — before anything is disrupted.
     #
-    # `*`, not `2`: _wt_clean documents 0/1/2, but the INT/TERM handler installed
-    # above returns 130 out of whatever function was running when the signal
-    # arrived — including this one. Matching `2` alone would let an interrupted
-    # cleanliness check fall through as "clean" and take the session down.
-    # Anything that is not a definite 0 is an unknown state and fails closed.
+    # `*`, not `2`: 2 is the only unknown status _wt_clean can currently produce,
+    # so this arm is unreachable defensive code, kept so that anything which is
+    # not a definite 0 fails closed rather than falling through as "clean".
+    #
+    # It is NOT protection against an interrupt-produced status. That premise was
+    # wrong: an interrupt unwinds the whole command rather than handing this
+    # `case` a status at all (see the interruption note under _wt_unlock).
     _wt_clean "$dest"
     case $? in
       0) ;;
