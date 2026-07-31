@@ -393,6 +393,37 @@ _wt_hook_check() {
   return 0
 }
 
+# _wt_hook_run <main> <worktree> <branch> <slug> <verb> — run the project hook.
+#
+# Validation happens here, immediately before execution, not only at the earlier
+# pre-flight. Validation checks a pathname while execution happens later, so the
+# early check in `wt` is a usability guard that avoids creating a worktree for a
+# misconfigured repository — it does not substitute for this one. Concurrent
+# mutation of the primary hook during a command remains unsupported (see the spec,
+# §5.1 "Validation is point-in-time").
+#
+# Executed as a process so its shebang picks the interpreter, in a subshell so cwd
+# and WT_* never leak back into the caller.
+_wt_hook_run() {
+  emulate -L zsh
+  local main="$1" wt="$2" branch="$3" slug="$4" verb="$5"
+  _wt_hook_check "$main"
+  case $? in
+    2) return 0 ;;   # repository has not opted in
+    1) return 1 ;;
+  esac
+  ( cd "$wt" \
+    && WT_MAIN="$main" WT_WORKTREE="$wt" WT_BRANCH="$branch" WT_SLUG="$slug" \
+       "$main/.worktreehook" "$verb" )
+  local hrc=$?
+  (( hrc == 0 )) && return 0
+  # Normalized to 1: the documented interface is 0/1, and callers branch on
+  # success or failure only. The hook's own status is surfaced in the message
+  # rather than returned, so `exit 130` and `exit 3` are handled identically.
+  print -ru2 -- "wt: .worktreehook $verb exited $hrc."
+  return 1
+}
+
 # wt — spin up (or reopen) a git worktree for the current repo in its own Zellij
 # "dev" session. Complements `dev`, which only *finds* existing checkouts; `wt`
 # *creates* one first, as a sibling under the same org dir so `dev`'s repo glob and

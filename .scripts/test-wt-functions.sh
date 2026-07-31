@@ -473,6 +473,48 @@ run "$REPO" _wt_hook_check "$REPO"
 rc_is 1 "unreadable index with a tracked hook on disk is still refused"
 has "cannot read the index" "the refusal names the index as the reason, not 'untracked'"
 
+print -r -- "K. hook execution"
+setup
+mkhook "$REPO" '#!/bin/sh
+printf "%s|%s|%s|%s|%s\n" "$1" "$(pwd)" "$WT_MAIN" "$WT_BRANCH" "$WT_SLUG" > "$WT_MAIN/hook.out"
+read line || line="(no stdin)"
+printf "stdin=%s\n" "$line" >> "$WT_MAIN/hook.out"
+echo "to-stdout"; echo "to-stderr" >&2
+exit 0'
+run "$REPO" wt k1
+OUT="$(cd "$REPO" && source "$FUNCS" && \
+  print -r -- "fed" | _wt_hook_run "$REPO" "$HOME/Code/Org/repo-k1" "k1" "k1" setup 2>&1)"; RC=$?
+rc_is 0 "successful hook returns 0"
+has "to-stdout" "hook stdout reaches the caller"
+has "to-stderr" "hook stderr reaches the caller"
+REC="$(<"$REPO/hook.out")"
+[[ "$REC" == "setup|$HOME/Code/Org/repo-k1|$REPO|k1|k1"* ]] \
+  && _pass "verb, cwd and WT_* are correct" || _fail "verb, cwd and WT_* are correct"
+[[ "$REC" == *"stdin=fed"* ]] && _pass "stdin is inherited" || _fail "stdin is inherited"
+
+setup
+mkhook "$REPO" '#!/bin/sh
+exit 3'
+run "$REPO" wt k2
+run "$REPO" _wt_hook_run "$REPO" "$HOME/Code/Org/repo-k2" k2 k2 setup
+rc_is 1 "hook exit 3 is normalized to 1"
+has "exited 3" "the hook's real exit status is reported, not returned"
+
+setup
+run "$REPO" wt k3
+run "$REPO" _wt_hook_run "$REPO" "$HOME/Code/Org/repo-k3" k3 k3 setup
+rc_is 0 "absent hook is a successful no-op"
+
+# The hook is executed, not sourced: a variable it sets must not leak out.
+setup
+mkhook "$REPO" '#!/bin/sh
+LEAKED=yes
+exit 0'
+run "$REPO" wt k4
+OUT="$(cd "$REPO" && source "$FUNCS" && \
+  _wt_hook_run "$REPO" "$HOME/Code/Org/repo-k4" k4 k4 setup >/dev/null 2>&1; print -r -- "${LEAKED:-unset}")"
+eq "$OUT" "unset" "hook runs as a process, not sourced"
+
 export HOME="$REAL_HOME"
 print -r -- ""
 print -r -- "passed: $pass  failed: $fail"
