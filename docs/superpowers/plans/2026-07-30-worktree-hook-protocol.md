@@ -627,7 +627,7 @@ git commit -m "feat(zsh): validate .worktreehook index entry and working-tree pa
 print -r -- "K. hook execution"
 setup
 mkhook "$REPO" '#!/bin/sh
-printf "%s|%s|%s|%s|%s\n" "$1" "$(pwd)" "$WT_MAIN" "$WT_BRANCH" "$WT_SLUG" > "$WT_MAIN/hook.out"
+printf "%s|%s|%s|%s|%s|%s\n" "$1" "$(pwd)" "$WT_MAIN" "$WT_WORKTREE" "$WT_BRANCH" "$WT_SLUG" > "$WT_MAIN/hook.out"
 read line || line="(no stdin)"
 printf "stdin=%s\n" "$line" >> "$WT_MAIN/hook.out"
 echo "to-stdout"; echo "to-stderr" >&2
@@ -639,8 +639,14 @@ rc_is 0 "successful hook returns 0"
 has "to-stdout" "hook stdout reaches the caller"
 has "to-stderr" "hook stderr reaches the caller"
 REC="$(<"$REPO/hook.out")"
-[[ "$REC" == "setup|$HOME/Code/Org/repo-k1|$REPO|k1|k1"* ]] \
+[[ "$REC" == "setup|$HOME/Code/Org/repo-k1|$REPO|$HOME/Code/Org/repo-k1|k1|k1"* ]] \
   && _pass "verb, cwd and WT_* are correct" || _fail "verb, cwd and WT_* are correct"
+# The cwd check above proves `cd "$wt"` landed in the right place; it does not by
+# itself prove WT_WORKTREE holds the right value — a bug that set WT_WORKTREE
+# wrong while cd still worked would pass it undetected. Isolate the field and
+# compare it exactly, independent of the cwd check.
+FIELDS=( "${(@s:|:)${REC%%$'\n'*}}" )
+eq "${FIELDS[4]}" "$HOME/Code/Org/repo-k1" "WT_WORKTREE holds the correct absolute worktree path"
 [[ "$REC" == *"stdin=fed"* ]] && _pass "stdin is inherited" || _fail "stdin is inherited"
 
 setup
@@ -691,6 +697,32 @@ open("py.marker", "w").close()'
 else
   print -r -- "  SKIP: shebang-honored assertion — python3 not found on PATH (not counted as pass or fail)"
 fi
+
+# The operative gate: `_wt_hook_run` re-validates immediately before executing,
+# not merely at some earlier pre-flight (see the comment above its definition).
+# Nothing above feeds it an invalid hook, so that re-validation is unproven on
+# `_wt_hook_run` itself — a `case` arm swap that let an invalid result fall
+# through to execution would go undetected by rc_is alone if the hook's exit
+# code still happened to be nonzero. The marker-absence check is what actually
+# proves the hook was never reached: `rc_is 1` alone is satisfied even by a bug
+# that executes the hook and then returns 1 regardless.
+#
+# The invalid fixture must be executable on disk: a hook the kernel itself
+# refuses to exec (e.g. missing the working-tree +x bit) would leave the marker
+# absent even with the gate removed, proving nothing about the gate itself.
+# Untracked-but-executable is invalid (section J) yet the kernel would happily
+# run it, so only the gate stands between it and execution.
+setup
+print -r -- '#!/bin/sh
+: > "$WT_MAIN/should-not-run.marker"
+exit 0' > "$REPO/.worktreehook"
+chmod +x "$REPO/.worktreehook"          # executable on disk, but untracked: invalid
+run "$REPO" wt k6
+run "$REPO" _wt_hook_run "$REPO" "$HOME/Code/Org/repo-k6" k6 k6 setup
+rc_is 1 "invalid hook (untracked, though executable on disk) is refused"
+[[ -f "$REPO/should-not-run.marker" ]] \
+  && _fail "the operative gate blocks execution, not just the return code" \
+  || _pass "the operative gate blocks execution, not just the return code"
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
