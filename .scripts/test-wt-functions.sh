@@ -1,8 +1,23 @@
 #!/usr/bin/env zsh
-# Mocked test for the worktree/session helpers in dot_config/zsh/functions:
-# _wt_session_name (canonical naming + round-trip lookup), dev (partial-creation
-# reporting), wt (destination validation, branch-base semantics, copy-failure
-# propagation) and wt-rm (dirty preflight ordering, refusal cases).
+# Mocked test for the worktree/session helpers and the .worktreehook protocol in
+# dot_config/zsh/functions. Fifteen sections, in dependency order — helpers
+# first, then the commands composed from them:
+#
+#   A  _wt_session_name    canonical naming, round-trip lookup through dev
+#   B  wt                  destination validation (husks, slug collisions)
+#   C  wt                  branch base: caller's HEAD, explicit start point, detached
+#   D  wt                  .worktreeinclude copy failures and missing wtcp
+#   E  wt-rm               dirty preflight ordering and refusal cases
+#   F  dev                 partial session creation is reported accurately
+#   G  _wt_git/_wt_primary routing clearance, bare repos, linked worktrees
+#   H  _wt_clean           three-state cleanliness, config- and routing-resistant
+#   I  locking             helper semantics, then command-level acquire/release
+#   J  _wt_hook_check      index + working-tree validation, fail-closed index reads
+#   K  _wt_hook_run        interface, subshell isolation, shebang, trust boundary
+#   L  _wt_manifest        containment, filtering, missing sources
+#   M  wt-prepare          copy/setup recovery path, quoting, wtcp presence
+#   N  wt                  creation paths, pre-validation consequences, reopening
+#   O  wt-rm               teardown ordering, the three cleanliness checks, retry
 #
 # zellij and wtcp are stubbed on PATH and every invocation is logged, so the tests can
 # assert *ordering* — notably that a dirty worktree never loses its Zellij session —
@@ -108,7 +123,44 @@ run() {
   local dir="$1"; shift
   OUT="$(cd "$dir" && source "$FUNCS" && "$@" 2>&1)"; RC=$?
 }
+# runp <dir> <command...> — like run(), but in THIS shell's own process.
+#
+# run() wraps the command in a command substitution, so every lifecycle command
+# it drives gets a fresh subshell whose exit closes any descriptor the command
+# opened. That makes run() structurally incapable of observing the lock:
+# neutering all three `always { _wt_unlock }` blocks leaves a run()-only suite
+# entirely green, because the kernel cleans up on the subshell's exit either way.
+# Section I's command-level tests therefore run in the process that is still
+# alive afterwards, capturing output through a file instead of `$(...)`.
+#
+# The trade-off is that state leaks between runp calls, so each caller does its
+# own `setup` first and treats the shell as the long-lived one it is simulating.
+runp() {
+  local dir="$1"; shift
+  local prev="$PWD" tf="$ROOTTMP/runp.out"
+  OUT=""; RC=127
+  cd "$dir" || return 1
+  source "$FUNCS"
+  "$@" > "$tf" 2>&1
+  RC=$?
+  OUT="$(<$tf)"
+  cd "$prev"
+}
+# other_process_can_lock <common-dir> <slug> — "RELEASED" if a SEPARATE process
+# can take the lock right now. The only way to observe release from inside the
+# shell that ran the command: fcntl locks are per-process, so a same-shell
+# reacquisition succeeds whether or not the first was ever released (see
+# _wt_lock requirement 3), and an assertion built on it could never fail.
+other_process_can_lock() {
+  zsh -c "source '$FUNCS'; _wt_lock '$1' '$2' >/dev/null 2>&1 && print -r -- RELEASED"
+}
 sha() { git -C "$1" rev-parse HEAD 2>/dev/null }
+mkhook() {   # mkhook <repo> <body>  — tracked, executable, committed
+  print -r -- "$2" > "$1/.worktreehook"
+  chmod +x "$1/.worktreehook"
+  git -C "$1" add --chmod=+x .worktreehook >/dev/null
+  git -C "$1" commit -q -m hook
+}
 
 print -r -- "A. _wt_session_name — canonical naming and round-trip lookup"
 setup
@@ -406,14 +458,105 @@ OUT="$(cd "$REPO" && source "$FUNCS" && \
         zmodload() { return 1 } && _wt_lock "$CD" slug4 2>&1)"; RC=$?
 rc_is 1 "missing zsh/system refuses instead of running unlocked"
 
-print -r -- "J. hook validation"
-mkhook() {   # mkhook <repo> <body>  — tracked, executable, committed
-  print -r -- "$2" > "$1/.worktreehook"
-  chmod +x "$1/.worktreehook"
-  git -C "$1" add --chmod=+x .worktreehook >/dev/null
-  git -C "$1" commit -q -m hook
-}
+# --- command-level locking (spec §11.5) -------------------------------------
+# Everything above tests the helpers in isolation; nothing above drives a
+# *command* under contention. That gap was structural, not accidental: see the
+# runp() comment. These use runp/other_process_can_lock so the descriptor's
+# fate is actually observable.
 
+# 1) A lock held by another process makes every lifecycle command refuse and
+#    name the slug. Held here in the test shell, contended from run()'s
+#    subshell — a different process, which is the only kind fcntl locks exclude.
+#    The target is created first: `wt-rm` and `wt-prepare` refuse an absent
+#    directory BEFORE they reach the lock, so an empty fixture would produce the
+#    wrong refusal and prove nothing about contention.
+setup
+CD="$REPO/.git"
+run "$REPO" wt z1
+rc_is 0 "the contention fixture's target is created"
+source "$FUNCS"
+_wt_lock "$CD" z1 >/dev/null 2>&1; RC=$?
+rc_is 0 "the test shell takes the target lock directly"
+run "$REPO" wt z1
+rc_is 1 "wt refuses while another process holds the target lock"
+has "another lifecycle command is working on 'z1'" "the refusal names the busy slug"
+run "$REPO" wt-prepare z1
+rc_is 1 "wt-prepare refuses on the same held lock"
+has "another lifecycle command is working on 'z1'" "wt-prepare's refusal names the slug"
+run "$REPO" wt-rm z1
+rc_is 1 "wt-rm refuses on the same held lock"
+has "another lifecycle command is working on 'z1'" "wt-rm's refusal names the slug"
+[[ -d "$HOME/Code/Org/repo-z1" ]] && _pass "the refused wt-rm removed nothing" \
+                                  || _fail "the refused wt-rm removed nothing"
+_wt_unlock
+
+# 2) Release after a SUCCESSFUL command, observed from the shell that ran it.
+setup
+CD="$REPO/.git"
+runp "$REPO" wt z2
+rc_is 0 "wt succeeds when driven in the test shell's own process"
+eq "$(other_process_can_lock "$CD" z2)" "RELEASED" \
+   "a completed wt leaves no lock behind in the shell that ran it"
+
+# 3) Release after a FAILED command — spec §11.5, "the lock is released after a
+#    failed command, so retry is not blocked". The failure has to happen INSIDE
+#    the locked block, so an untracked-but-executable hook is used: `wt` takes
+#    the lock, then refuses at pre-validation.
+setup
+CD="$REPO/.git"
+print -r -- '#!/bin/sh
+exit 0' > "$REPO/.worktreehook"
+chmod +x "$REPO/.worktreehook"          # executable on disk, but untracked: invalid
+runp "$REPO" wt z3
+rc_is 1 "wt fails inside the locked block"
+eq "$(other_process_can_lock "$CD" z3)" "RELEASED" \
+   "the lock is released after a failed wt, so a retry is not blocked"
+
+setup
+CD="$REPO/.git"
+runp "$REPO" wt z4
+print -r -- "wip" > "$HOME/Code/Org/repo-z4/dirty.txt"
+runp "$REPO" wt-rm z4
+rc_is 1 "wt-rm fails inside the locked block"
+eq "$(other_process_can_lock "$CD" z4)" "RELEASED" \
+   "the lock is released after a failed wt-rm, so a retry is not blocked"
+
+# 4) Real SIGINT. Spec §9.4: "The lock is released on INT and TERM so an
+#    interrupted command does not block the retry." A zsh `always` block does
+#    not run when a signal unwinds a function under its default disposition, so
+#    the INT/TERM trap — not the always block — is what covers Ctrl-C.
+#
+#    The signal is delivered by the setup hook to one specific pid (never the
+#    process group), so the harness is untouched. The target is a child zsh that
+#    must still be ALIVE afterwards to say anything at all: without the trap the
+#    default disposition terminates it and neither marker is printed.
+#
+#    HONEST LIMIT: this proves the trap is installed and effective — the shell
+#    survives a real SIGINT and holds no lock afterwards. It does NOT isolate the
+#    trap's unlock from the always block's. In a non-interactive shell the trap's
+#    `return 130` propagates outward through ordinary status checks, so the
+#    always block runs too; only an interactive unwind skips it, and the harness
+#    cannot host an interactive shell. Isolating that is not attempted here
+#    rather than faked.
+setup
+CD="$REPO/.git"
+mkhook "$REPO" '#!/bin/sh
+[ "$1" = setup ] && kill -INT "$TEST_SIGTARGET"
+exit 0'
+cat > "$ROOTTMP/int-probe.zsh" <<'PROBE'
+source "$1"
+export TEST_SIGTARGET=$$          # the hook signals THIS shell, by pid
+wt z5 >/dev/null 2>&1
+print -r -- "SURVIVED"
+zsh -c "source '$1'; _wt_lock '$2' z5 >/dev/null 2>&1 && print -r -- RELEASED"
+PROBE
+: > "$ZLOG"
+OUT="$(cd "$REPO" && zsh "$ROOTTMP/int-probe.zsh" "$FUNCS" "$CD" 2>&1)"; RC=$?
+has "SURVIVED" "a real SIGINT during wt does not take the running shell down"
+has "RELEASED" "the interrupted command leaves no lock behind in the surviving shell"
+unlogged "--session org--repo-z5" "the interrupted wt never reached dev"
+
+print -r -- "J. hook validation"
 setup
 run "$REPO" _wt_hook_check "$REPO"
 rc_is 2 "absent hook reports not-opted-in"
@@ -609,6 +752,60 @@ rc_is 1 "invalid hook (untracked, though executable on disk) is refused"
   && _fail "the operative gate blocks execution, not just the return code" \
   || _pass "the operative gate blocks execution, not just the return code"
 
+# --- trust boundary (spec §11.1, Goal 3) ------------------------------------
+# "Hook present only in the target branch: never executed" and "Primary-worktree
+# hook used even when the target is another branch" are the security guarantee
+# of the whole design, and every other fixture in sections J/K runs
+# `mkhook "$REPO"` BEFORE branching — so the target worktree always carries a
+# byte-identical copy and "which copy ran" is unfalsifiable. Pointing
+# _wt_hook_run at "$wt/.worktreehook" passes all of them. These two fixtures put
+# the two copies in different places, and each carries a guard asserting the
+# split is real, so neither can decay into a fixture that proves nothing.
+
+# 1) Hook committed on the TARGET branch only. The primary never opted in, so
+#    nothing may run — a feature branch cannot introduce code that `wt` executes.
+setup
+git -C "$REPO" checkout -q -b t1
+print -r -- '#!/bin/sh
+: > "$WT_MAIN/target-branch-hook-ran.marker"
+exit 0' > "$REPO/.worktreehook"
+chmod +x "$REPO/.worktreehook"
+git -C "$REPO" add --chmod=+x .worktreehook >/dev/null
+git -C "$REPO" commit -q -m "hook on the target branch only"
+git -C "$REPO" checkout -q main         # the primary loses the file with the branch
+[[ -e "$REPO/.worktreehook" || -L "$REPO/.worktreehook" ]] \
+  && _fail "fixture guard: the primary genuinely carries no hook" \
+  || _pass "fixture guard: the primary genuinely carries no hook"
+run "$REPO" wt t1
+rc_is 0 "a worktree for a branch carrying its own hook is still created"
+[[ -x "$HOME/Code/Org/repo-t1/.worktreehook" ]] \
+  && _pass "fixture guard: the target worktree genuinely carries an executable hook" \
+  || _fail "fixture guard: the target worktree genuinely carries an executable hook"
+[[ -f "$REPO/target-branch-hook-ran.marker" ]] \
+  && _fail "a hook present only in the target branch is never executed by wt" \
+  || _pass "a hook present only in the target branch is never executed by wt"
+run "$REPO" _wt_hook_run "$REPO" "$HOME/Code/Org/repo-t1" t1 t1 setup
+rc_is 0 "_wt_hook_run treats a target-only hook as not-opted-in, a successful no-op"
+[[ -f "$REPO/target-branch-hook-ran.marker" ]] \
+  && _fail "a direct _wt_hook_run does not execute the target-only hook either" \
+  || _pass "a direct _wt_hook_run does not execute the target-only hook either"
+
+# 2) Hook on the PRIMARY only, with the target branched BEFORE the hook commit,
+#    so the target's tree cannot contain it. The primary's copy must still run.
+setup
+git -C "$REPO" branch t2                # branched before the hook exists
+mkhook "$REPO" '#!/bin/sh
+: > "$WT_MAIN/primary-hook-ran-$WT_SLUG"
+exit 0'
+run "$REPO" wt t2
+rc_is 0 "a worktree for a branch predating the hook is created and prepared"
+[[ -e "$HOME/Code/Org/repo-t2/.worktreehook" || -L "$HOME/Code/Org/repo-t2/.worktreehook" ]] \
+  && _fail "fixture guard: the target branch genuinely lacks the hook" \
+  || _pass "fixture guard: the target branch genuinely lacks the hook"
+[[ -f "$REPO/primary-hook-ran-t2" ]] \
+  && _pass "the primary worktree's hook runs even when the target branch lacks it" \
+  || _fail "the primary worktree's hook runs even when the target branch lacks it"
+
 print -r -- "L. manifest validation"
 setup
 run "$REPO" wt m1
@@ -782,6 +979,26 @@ OUT="$(cd "$REPO" && source "$FUNCS" && export PATH="$CLEANP" && wt-prepare n6 2
 rc_is 1 "missing destination with wtcp absent aborts instead of silently skipping"
 has "wtcp is missing" "abort names the missing tool"
 
+# Spec §11.3 wants "no Zellij calls, *including with an active session*". The
+# n1 fixture above runs with MOCK_ZJ_SESSIONS empty, which is the easy half: a
+# regression that stopped or switched the session would plausibly guard on the
+# session existing first, and would sail past it. This is the half that matters
+# — wt-prepare is documented as safe to run against a live session.
+setup
+run "$REPO" wt n7
+print -r -- "a.env" > "$REPO/.worktreeinclude"; print -r -- "A" > "$REPO/a.env"
+mkhook "$REPO" '#!/bin/sh
+exit 0'
+export MOCK_ZJ_SESSIONS="org--repo-n7"
+: > "$ZLOG"
+run "$REPO" wt-prepare n7
+rc_is 0 "prepare succeeds against an active session"
+[[ -f "$HOME/Code/Org/repo-n7/a.env" ]] && _pass "prepare still copies with a session live" \
+                                        || _fail "prepare still copies with a session live"
+[[ -s "$ZLOG" ]] && _fail "prepare makes no Zellij calls even with an active session" \
+                 || _pass "prepare makes no Zellij calls even with an active session"
+export MOCK_ZJ_SESSIONS=""
+
 print -r -- "N. wt creation paths"
 # Invalid hook must leave NOTHING behind.
 setup
@@ -817,6 +1034,39 @@ run "$REPO" wt o4
 rc_is 1 "setup failure fails wt"
 unlogged "--session" "dev is not launched after a setup failure"
 [[ -d "$HOME/Code/Org/repo-o4" ]] && _pass "worktree is preserved" || _fail "worktree is preserved"
+
+# Reopening (spec §7.4, §11.3 "Reopening calls dev with no copy and no setup").
+# Nothing else in the suite reopens an existing worktree at all, so a regression
+# that re-ran a project's setup hook on every `wt <branch>` would ship green —
+# and for an adopting repository that means re-provisioning databases and ports
+# on every return to a checkout.
+#
+# Both side effects are made observable by DELETING their traces after creation:
+# a re-run setup recreates the marker, and a re-run copy restores the removed
+# a.env. Checking the logs alone would not distinguish "did not copy" from
+# "copied over an identical file".
+setup
+mkhook "$REPO" '#!/bin/sh
+: > "$WT_MAIN/setup-ran-$WT_SLUG"
+exit 0'
+print -r -- "a.env" > "$REPO/.worktreeinclude"; print -r -- "A" > "$REPO/a.env"
+run "$REPO" wt o5
+rc_is 0 "the worktree is created and prepared once"
+[[ -f "$REPO/setup-ran-o5" ]] && _pass "creation ran setup" || _fail "creation ran setup"
+[[ -f "$HOME/Code/Org/repo-o5/a.env" ]] && _pass "creation copied the manifest entry" \
+                                        || _fail "creation copied the manifest entry"
+rm "$REPO/setup-ran-o5" "$HOME/Code/Org/repo-o5/a.env"
+: > "$ZLOG"; : > "$WLOG"
+run "$REPO" wt o5                        # reopen
+rc_is 0 "reopening an existing worktree succeeds"
+has "reopening" "the reopen path is announced"
+[[ -f "$REPO/setup-ran-o5" ]] && _fail "reopening does not re-run setup" \
+                              || _pass "reopening does not re-run setup"
+[[ -f "$HOME/Code/Org/repo-o5/a.env" ]] && _fail "reopening does not re-copy the manifest" \
+                                        || _pass "reopening does not re-copy the manifest"
+[[ -s "$WLOG" ]] && _fail "reopening invokes wtcp not at all" \
+                 || _pass "reopening invokes wtcp not at all"
+logged "--session org--repo-o5" "reopening still hands off to dev"
 
 print -r -- "O. wt-rm teardown"
 setup
@@ -881,6 +1131,14 @@ run "$REPO" wt q6; export MOCK_ZJ_SESSIONS="org--repo-q6"
 run "$REPO" wt-rm q6
 rc_is 1 "unreadable status after teardown fails closed"
 [[ -d "$HOME/Code/Org/repo-q6" ]] && _pass "worktree preserved when state is unknown" || _fail "worktree preserved when state is unknown"
+# Neither assertion above can fail on its own: with cleanliness check 3 deleted
+# outright, `git worktree remove` still refuses the corrupt index (rc 128) and
+# still leaves the directory. Spec §11.4 wants this fixture to exercise the
+# third status call independently, so the discriminating evidence is the
+# message — only check 3 says the state is undeterminable, Git says the index is
+# broken. Checks 1 and 2 ran before teardown corrupted anything, so this text
+# can only have come from check 3.
+has "cannot determine whether" "the refusal names check 3, not Git's own"
 
 # An absent session counts as successful shutdown, so retry works.
 setup
@@ -912,6 +1170,102 @@ export MOCK_ZJ_SESSIONS="org--repo-q9"
 run "$REPO" wt-rm q9
 rc_is 1 "invalid hook refuses wt-rm"
 unlogged "delete-session" "the session is not stopped when hook config is invalid"
+
+# Retry reruns teardown idempotently (spec §11.4). Everything above stops at the
+# failure, so the recovery contract the whole protocol rests on — "retrying
+# wt-rm reruns the idempotent teardown hook from the stopped state" — was
+# untested. The hook counts its own teardown calls, so a retry that skipped the
+# hook (jumping straight to removal because the session was already stopped)
+# would leave the count at 1.
+#
+# The retry runs with MOCK_ZJ_SESSIONS emptied, because that is the real state a
+# retry starts from: the first attempt stopped the session before teardown
+# failed. Leaving the session mocked as still-present would let a "nothing was
+# stopped, so nothing needs tearing down" regression slip through.
+setup
+mkhook "$REPO" '#!/bin/sh
+if [ "$1" = teardown ]; then
+  echo call >> "$WT_MAIN/teardown-calls"
+  [ -f "$WT_MAIN/fail-teardown" ] && exit 4
+fi
+exit 0'
+run "$REPO" wt q10
+: > "$REPO/fail-teardown"
+export MOCK_ZJ_SESSIONS="org--repo-q10"
+run "$REPO" wt-rm q10
+rc_is 1 "the first wt-rm fails at teardown"
+[[ -d "$HOME/Code/Org/repo-q10" ]] && _pass "the failed attempt leaves the worktree in place" \
+                                   || _fail "the failed attempt leaves the worktree in place"
+rm "$REPO/fail-teardown"                 # fix whatever teardown was complaining about
+export MOCK_ZJ_SESSIONS=""               # the first attempt already stopped it
+run "$REPO" wt-rm q10
+rc_is 0 "the retry removes the worktree once teardown is fixed"
+eq "$(grep -c call "$REPO/teardown-calls")" "2" "the retry reran teardown rather than skipping it"
+[[ -d "$HOME/Code/Org/repo-q10" ]] && _fail "the retry actually removes the worktree" \
+                                   || _pass "the retry actually removes the worktree"
+export MOCK_ZJ_SESSIONS=""
+
+# A removal that fails after a SUCCESSFUL teardown is spec §9.3's third
+# post-shutdown failure mode, and must report the same exact partial state as
+# the other two — Git's bare refusal names the obstruction but not whether
+# resources were already reclaimed. The obstruction is a git-ignored directory
+# stripped of write permission by teardown itself: ignored files leave all three
+# cleanliness checks satisfied (so the code under test is genuinely reached),
+# while the unwritable directory makes Git's own recursive delete fail.
+setup
+print -r -- "blocked/" > "$REPO/.gitignore"
+git -C "$REPO" add .gitignore >/dev/null; git -C "$REPO" commit -q -m ignore
+mkhook "$REPO" '#!/bin/sh
+if [ "$1" = teardown ]; then
+  mkdir -p "$WT_WORKTREE/blocked"
+  : > "$WT_WORKTREE/blocked/pinned"
+  chmod 500 "$WT_WORKTREE/blocked"
+fi
+exit 0'
+run "$REPO" wt q11
+export MOCK_ZJ_SESSIONS="org--repo-q11"
+run "$REPO" wt-rm q11
+rc_is 1 "a failed removal after a successful teardown fails wt-rm"
+has "worktree kept, session stopped" "the failure reports the exact partial state"
+has "Resources may already be reclaimed" "it says resources may already be gone"
+has "retry: wt-rm q11" "it offers the fix-and-retry recovery route"
+has "wt-prepare q11 && wt q11" "it offers the resume-work recovery route"
+[[ -d "$HOME/Code/Org/repo-q11" ]] && _pass "the worktree is kept when removal fails" \
+                                   || _fail "the worktree is kept when removal fails"
+run "$REPO" git branch --list q11
+eq "$OUT" "  q11" "the branch is not deleted when removal fails"
+chmod 700 "$HOME/Code/Org/repo-q11/blocked" 2>/dev/null
+export MOCK_ZJ_SESSIONS=""
+
+# All three cleanliness checks fail closed on ANY status that is not a definite
+# 0, not merely on _wt_clean's documented 2. That matters because the INT/TERM
+# handler each lifecycle command installs returns 130 out of whichever function
+# was running when the signal arrived — including _wt_clean — and a `case` that
+# matched only 1 and 2 would read an interrupted check as "clean" and go on to
+# stop the session, tear down and remove.
+#
+# _wt_clean is overridden per scenario rather than driven by a fixture: the
+# status has to appear at one specific call out of three, and no fixture can
+# time a real signal to land inside a particular `git status`. The counter picks
+# the call, so each check is exercised independently.
+setup
+run "$REPO" wt w1
+export MOCK_ZJ_SESSIONS="org--repo-w1"
+for n in 1 2 3; do
+  : > "$ZLOG"
+  OUT="$(cd "$REPO" && source "$FUNCS" && c=0 && \
+    _wt_clean() { c=$((c + 1)); (( c == $n )) && return 130; return 0 } && \
+    wt-rm w1 2>&1)"; RC=$?
+  rc_is 1 "an undeterminable status at check $n refuses"
+  has "cannot determine whether" "check $n's refusal says the state is unknown"
+  [[ -d "$HOME/Code/Org/repo-w1" ]] && _pass "check $n preserves the worktree" \
+                                    || _fail "check $n preserves the worktree"
+done
+# Check 1 additionally guards the session, which the two later checks cannot.
+: > "$ZLOG"
+OUT="$(cd "$REPO" && source "$FUNCS" && _wt_clean() { return 130 } && wt-rm w1 2>&1)"; RC=$?
+unlogged "delete-session" "an undeterminable check 1 refuses before the session is stopped"
+export MOCK_ZJ_SESSIONS=""
 
 # Hostile-but-valid branch names are quoted in every recovery message.
 setup
