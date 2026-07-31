@@ -46,7 +46,9 @@ case "$*" in
   *"attach --create-background"*) exit "$MOCK_ZJ_ATTACH_RC" ;;
   *"action new-tab"*)             exit "$MOCK_ZJ_NEWTAB_RC" ;;
   *"action switch-session"*)      exit "$MOCK_ZJ_SWITCH_RC" ;;
-  "delete-session"*)              exit "$MOCK_ZJ_DELETE_RC" ;;
+  "delete-session"*)
+    [ -n "${MOCK_ZJ_DELETE_TOUCH:-}" ] && : > "$MOCK_ZJ_DELETE_TOUCH"
+    exit "$MOCK_ZJ_DELETE_RC" ;;
   *) exit 0 ;;
 esac
 STUB
@@ -97,7 +99,7 @@ setup() {   # fresh $HOME with Code/Org/repo, fresh logs, default mock behaviour
   export ZLOG="$ROOTTMP/zellij.log" WLOG="$ROOTTMP/wtcp.log"
   : > "$ZLOG"; : > "$WLOG"
   export MOCK_ZJ_SESSIONS="" MOCK_ZJ_ATTACH_RC=0 MOCK_ZJ_NEWTAB_RC=0 \
-         MOCK_ZJ_SWITCH_RC=0 MOCK_ZJ_DELETE_RC=0 MOCK_WTCP_RC=0
+         MOCK_ZJ_SWITCH_RC=0 MOCK_ZJ_DELETE_RC=0 MOCK_WTCP_RC=0 MOCK_ZJ_DELETE_TOUCH=""
   unset ZELLIJ
 }
 # run <dir> <command...> — source the functions fresh and run one command in $dir.
@@ -815,6 +817,115 @@ run "$REPO" wt o4
 rc_is 1 "setup failure fails wt"
 unlogged "--session" "dev is not launched after a setup failure"
 [[ -d "$HOME/Code/Org/repo-o4" ]] && _pass "worktree is preserved" || _fail "worktree is preserved"
+
+print -r -- "O. wt-rm teardown"
+setup
+mkhook "$REPO" '#!/bin/sh
+[ "$1" = teardown ] && touch "$WT_MAIN/torn-$WT_SLUG"
+exit 0'
+run "$REPO" wt q1
+export MOCK_ZJ_SESSIONS="org--repo-q1"
+run "$REPO" wt-rm q1
+rc_is 0 "teardown path removes the worktree"
+[[ -f "$REPO/torn-q1" ]] && _pass "teardown hook ran" || _fail "teardown hook ran"
+
+# Teardown failure preserves the worktree with its session stopped.
+setup
+mkhook "$REPO" '#!/bin/sh
+[ "$1" = teardown ] && exit 4
+exit 0'
+run "$REPO" wt q2
+export MOCK_ZJ_SESSIONS="org--repo-q2"
+run "$REPO" wt-rm q2
+rc_is 1 "teardown failure fails wt-rm"
+[[ -d "$HOME/Code/Org/repo-q2" ]] && _pass "worktree preserved after teardown failure" || _fail "worktree preserved after teardown failure"
+
+# Hook exit 130 is the interruption proxy.
+setup
+mkhook "$REPO" '#!/bin/sh
+[ "$1" = teardown ] && exit 130
+exit 0'
+run "$REPO" wt q3; export MOCK_ZJ_SESSIONS="org--repo-q3"
+run "$REPO" wt-rm q3
+rc_is 1 "hook exit 130 preserves the stopped worktree"
+[[ -d "$HOME/Code/Org/repo-q3" ]] && _pass "worktree preserved on interruption proxy" || _fail "worktree preserved on interruption proxy"
+
+# Non-ignored teardown output is caught by check 3.
+setup
+mkhook "$REPO" '#!/bin/sh
+[ "$1" = teardown ] && echo report > "$WT_WORKTREE/teardown-report.txt"
+exit 0'
+run "$REPO" wt q4; export MOCK_ZJ_SESSIONS="org--repo-q4"
+run "$REPO" wt-rm q4
+rc_is 1 "non-ignored teardown output aborts removal"
+has "teardown" "the refusal ties the state to teardown"
+[[ -d "$HOME/Code/Org/repo-q4" ]] && _pass "worktree preserved" || _fail "worktree preserved"
+
+# Git-ignored teardown output is fine.
+setup
+print -r -- "teardown.log" > "$REPO/.gitignore"
+git -C "$REPO" add .gitignore >/dev/null; git -C "$REPO" commit -q -m ignore
+mkhook "$REPO" '#!/bin/sh
+[ "$1" = teardown ] && echo x > "$WT_WORKTREE/teardown.log"
+exit 0'
+run "$REPO" wt q5; export MOCK_ZJ_SESSIONS="org--repo-q5"
+run "$REPO" wt-rm q5
+rc_is 0 "git-ignored teardown output still allows removal"
+
+# Check 3 fails closed when teardown makes status unreadable.
+setup
+mkhook "$REPO" '#!/bin/sh
+[ "$1" = teardown ] && echo garbage > "$WT_MAIN/.git/worktrees/repo-q6/index"
+exit 0'
+run "$REPO" wt q6; export MOCK_ZJ_SESSIONS="org--repo-q6"
+run "$REPO" wt-rm q6
+rc_is 1 "unreadable status after teardown fails closed"
+[[ -d "$HOME/Code/Org/repo-q6" ]] && _pass "worktree preserved when state is unknown" || _fail "worktree preserved when state is unknown"
+
+# An absent session counts as successful shutdown, so retry works.
+setup
+run "$REPO" wt q7
+export MOCK_ZJ_SESSIONS=""
+run "$REPO" wt-rm q7
+rc_is 0 "absent session counts as successful shutdown"
+
+# Check 2: dirt introduced BY session shutdown is caught before teardown runs.
+# The zellij stub writes a non-ignored file when asked to delete the session.
+setup
+mkhook "$REPO" '#!/bin/sh
+[ "$1" = teardown ] && touch "$WT_MAIN/teardown-ran-$WT_SLUG"
+exit 0'
+run "$REPO" wt q8
+export MOCK_ZJ_SESSIONS="org--repo-q8" MOCK_ZJ_DELETE_TOUCH="$HOME/Code/Org/repo-q8/flushed.txt"
+run "$REPO" wt-rm q8
+rc_is 1 "dirt from session shutdown is caught at check 2"
+[[ -f "$REPO/teardown-ran-q8" ]] && _fail "teardown does not run after check 2 fails" \
+                                 || _pass "teardown does not run after check 2 fails"
+unset MOCK_ZJ_DELETE_TOUCH
+
+# Hook validation happens BEFORE the session is stopped.
+setup
+run "$REPO" wt q9
+print -r -- '#!/bin/sh' > "$REPO/.worktreehook"; chmod +x "$REPO/.worktreehook"   # untracked
+export MOCK_ZJ_SESSIONS="org--repo-q9"
+: > "$ZLOG"
+run "$REPO" wt-rm q9
+rc_is 1 "invalid hook refuses wt-rm"
+unlogged "delete-session" "the session is not stopped when hook config is invalid"
+
+# Hostile-but-valid branch names are quoted in every recovery message.
+setup
+mkhook "$REPO" '#!/bin/sh
+[ "$1" = teardown ] && exit 4
+exit 0'
+for b in 'x|y' "x'q"; do
+  run "$REPO" wt "$b"
+  run "$REPO" wt-rm "$b"
+  OUTQ="$OUT"
+  run "$REPO" print -r -- "${(q-)b}"
+  [[ "$OUTQ" == *"$OUT"* ]] && _pass "branch '$b' is quoted in recovery output" \
+                            || _fail "branch '$b' is quoted in recovery output"
+done
 
 export HOME="$REAL_HOME"
 print -r -- ""

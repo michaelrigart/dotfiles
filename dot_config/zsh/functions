@@ -663,80 +663,118 @@ _wt_assert_worktree() {
   fi
 }
 
-# wt-rm — retire a worktree made by `wt`: confirm it's clean, stop its Zellij session,
-# remove the worktree, then delete the branch.
+# wt-rm — retire a worktree made by `wt`: validate the project hook, run three
+# cleanliness checks around a Zellij session shutdown and the teardown hook, remove
+# the worktree, then delete the branch.
 #   wt-rm <branch>
 # Run from another checkout of the same repo, never from inside the one being removed.
 #
-# Ordering matters. The dirty check runs BEFORE the session is stopped: `git worktree
-# remove` refuses on a dirty tree anyway, but by then the session would already be gone
-# — you'd lose the workspace and still be left with the worktree. Git stays the
-# authority for anything that changes in between; this is a preflight, not a substitute.
+# Runs under the per-target lock (see _wt_lock), released in an `always` block so
+# every return path — including a mid-sequence abort — unlocks.
+#
+# Ordering follows the sequence of things that can go wrong, each guarded right before
+# it happens rather than once up front:
+#
+#   1. Hook validation, before anything is disrupted. A misconfigured repository must
+#      never cost you the session or the worktree just for running `wt-rm`.
+#   2. Check 1 (_wt_clean), before anything is disrupted. Catches pre-existing
+#      uncommitted work — the case `git worktree remove` would refuse anyway, but by
+#      then the session would already be gone.
+#   3. Stop the Zellij session. An absent session counts as successful shutdown — the
+#      normal state on a retry — but a session that exists and cannot be stopped
+#      aborts unconditionally: a live process holding the directory open is exactly
+#      how an empty tmp/ husk is left behind, so stopping first is an invariant here,
+#      not a courtesy.
+#   4. Check 2 (_wt_clean), after shutdown, before teardown. Session shutdown can
+#      itself flush files to disk — a live app writing on exit is exactly how the
+#      observed Bootsnap husks arose — so this check exists specifically to catch
+#      dirt introduced BY stopping the session, distinct from check 1's pre-existing
+#      dirt.
+#   5. Run the .worktreehook teardown verb. Idempotent by contract, which matters
+#      because a failure here preserves the worktree with its session already
+#      stopped — retrying `wt-rm` re-runs teardown from that state.
+#   6. Check 3 (_wt_clean), after teardown, before removal. Ties any non-ignored
+#      teardown output to its cause before Git's more generic removal refusal would
+#      otherwise appear a step later with a less specific message.
+#
+# All three checks fail closed on _wt_clean's unknown state (2), same as every other
+# consumer of that helper.
 wt-rm() {
   emulate -L zsh
   local branch="$1"
   [[ -n "$branch" ]] || { print -ru2 -- "usage: wt-rm <branch>"; return 1; }
-  local slug="${branch//\//-}"
-
-  local common root
-  common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" \
-    || { print -ru2 -- "wt-rm: not inside a git repo."; return 1; }
-  root="${common:h}"
-  local dest="${root:h}/${root:t}-${slug}"
+  local slug="${branch//\//-}" qb="${(q-)branch}" main common dest
+  main="$(_wt_primary)" || return 1
+  common="$(_wt_git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
+  dest="${main:h}/${main:t}-${slug}"
 
   [[ -d "$dest" ]] || { print -ru2 -- "wt-rm: $dest does not exist."; return 1; }
-  _wt_assert_worktree "$root" "$dest" "$branch" || return 1
+  _wt_lock "$common" "$slug" || return 1
+  {
+    _wt_assert_worktree "$main" "$dest" "$branch" || return 1
 
-  # Removing the worktree you're standing in pulls the cwd out from under this shell,
-  # and the session about to be stopped is the one running the command.
-  local here; here="$(git rev-parse --path-format=absolute --show-toplevel 2>/dev/null)"
-  if [[ "${here:A}" == "${dest:A}" ]]; then
-    print -ru2 -- "wt-rm: you're inside $dest — run this from another checkout."
-    return 1
-  fi
+    local here; here="$(_wt_git rev-parse --path-format=absolute --show-toplevel 2>/dev/null)"
+    [[ "${here:A}" == "${dest:A}" ]] && {
+      print -ru2 -- "wt-rm: you're inside $dest — run this from another checkout."; return 1 }
 
-  # Capture status and exit code separately. Testing the output alone read a *failed*
-  # `git status` (corrupt index, unreadable worktree) as "no changes" — the one case
-  # where we know least about the tree would have sailed through to removal.
-  # Split the assignment from `local`: `local x="$(...)"` reports the *builtin's* status,
-  # not the command substitution's, so the failure would still be invisible.
-  local dirty rc
-  dirty="$(git -C "$dest" status --porcelain 2>/dev/null)"; rc=$?
-  if (( rc )); then
-    print -ru2 -- "wt-rm: cannot determine whether $dest is clean — refusing."
-    git -C "$dest" status --porcelain >/dev/null   # re-run to surface git's own error
-    return 1
-  fi
-  if [[ -n "$dirty" ]]; then
-    print -ru2 -- "wt-rm: $dest has uncommitted changes — commit, stash or discard them first."
-    return 1
-  fi
+    # Check 1 — before anything is disrupted.
+    _wt_clean "$dest"
+    case $? in
+      1) print -ru2 -- "wt-rm: $dest has uncommitted changes — commit, stash or discard them first."; return 1 ;;
+      2) print -ru2 -- "wt-rm: cannot determine whether $dest is clean — refusing."
+         _wt_git -C "$dest" status --porcelain >/dev/null; return 1 ;;
+    esac
 
-  # Stop the session before removal so nothing holds the directory open: a live app
-  # process is what leaves an empty tmp/ husk behind after `git worktree remove`.
-  # If stopping fails, abort rather than continue — carrying on would remove the
-  # directory out from under a running session, which is exactly the husk this
-  # ordering exists to prevent.
-  local name; name="$(_wt_session_name "$dest")"
-  if zellij list-sessions -s 2>/dev/null | grep -Fqx -- "$name"; then
-    if ! zellij delete-session --force "$name" >/dev/null 2>&1; then
-      print -ru2 -- "wt-rm: could not stop session '$name' — refusing to remove $dest."
-      print -ru2 -- "    Close it by hand (zellij delete-session --force $name), then retry."
+    # Hook configuration, still before anything is disrupted.
+    _wt_hook_check "$main" >/dev/null 2>&1
+    (( $? == 1 )) && { _wt_hook_check "$main"; return 1 }
+
+    # Stop the session. An absent session IS successful shutdown — that is the
+    # normal state on a retry. Stopping first is an invariant: a live process
+    # holding the directory open is what leaves an empty tmp/ husk behind.
+    local name; name="$(_wt_session_name "$dest")"
+    if zellij list-sessions -s 2>/dev/null | grep -Fqx -- "$name"; then
+      zellij delete-session --force "$name" >/dev/null 2>&1 || {
+        print -ru2 -- "wt-rm: could not stop session '$name' — refusing to remove $dest."
+        print -ru2 -- "    Close it by hand (zellij delete-session --force $name), then retry."
+        return 1 }
+    fi
+
+    # Check 2 — shutdown can flush files; that is how the Bootsnap husks arose.
+    _wt_clean "$dest"
+    case $? in
+      1) print -ru2 -- "wt-rm: stopping the session left changes in $dest — inspect it, then retry."; return 1 ;;
+      2) print -ru2 -- "wt-rm: cannot determine whether $dest is clean after session shutdown — refusing."; return 1 ;;
+    esac
+
+    if ! _wt_hook_run "$main" "$dest" "$branch" "$slug" teardown; then
+      print -ru2 -- "wt-rm: .worktreehook teardown failed — $dest kept, session stopped."
+      print -ru2 -- "    Fix it and retry: wt-rm $qb    (teardown is idempotent)"
+      print -ru2 -- "    Or resume work with: wt-prepare $qb && wt $qb"
       return 1
     fi
-  fi
 
-  git worktree remove "$dest" || return   # authoritative; still refuses on a race
-  print -r -- "✓ removed worktree $dest"
+    # Check 3 — ties non-ignored hook output to its cause, before Git's more
+    # generic removal refusal appears one step later.
+    _wt_clean "$dest"
+    case $? in
+      1) print -ru2 -- "wt-rm: teardown left changes in $dest — removal aborted. Resources may already be reclaimed."
+         print -ru2 -- "    Hook output must be git-ignored or written outside the worktree."
+         return 1 ;;
+      2) print -ru2 -- "wt-rm: cannot determine whether $dest is clean after teardown — refusing. Resources may already be reclaimed."
+         return 1 ;;
+    esac
 
-  # -d, never -D: an unmerged branch is work, and once the worktree is gone a forced
-  # delete is not something you recover from casually.
-  git -C "$root" branch -d "$branch" \
-    || print -ru2 -- "wt-rm: branch '$branch' kept (not fully merged) — inspect or merge it before deleting it explicitly."
+    _wt_git worktree remove "$dest" || return 1
+    print -r -- "✓ removed worktree $dest"
 
-  # Removal can still leave a husk if something recreated files mid-flight. Say so,
-  # rather than leave a stray directory that `wt` will later refuse to reuse.
-  [[ -d "$dest" ]] \
-    && print -ru2 -- "wt-rm: $dest still exists (files recreated during removal) — remove it manually."
-  return 0
+    _wt_git -C "$main" branch -d "$branch" \
+      || print -ru2 -- "wt-rm: branch $qb kept (not fully merged) — inspect or merge it before deleting it explicitly."
+
+    [[ -d "$dest" ]] \
+      && print -ru2 -- "wt-rm: $dest still exists (files recreated during removal) — remove it manually."
+    return 0
+  } always {
+    _wt_unlock
+  }
 }
