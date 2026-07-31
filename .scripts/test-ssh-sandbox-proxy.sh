@@ -72,22 +72,15 @@ else
   fail=$((fail + 1))
 fi
 
-if [ -x "$GIT_SHIM" ] && /bin/bash -n "$GIT_SHIM"; then
-  echo "  PASS: Git shim exists, is executable, and parses as Bash"
+# The git PATH shim was replaced by GIT_SSH_COMMAND. Assert its ABSENCE rather than
+# its shape: ~/.local/bin leads PATH in-session, so a reintroduced shim would silently
+# take precedence over the env-based mechanism and this suite would still pass.
+# GIT_SSH_COMMAND itself is asserted in test-claude-settings.sh.
+if [ ! -e "$GIT_SHIM" ]; then
+  echo "  PASS: no git PATH shim — SSH routes via GIT_SSH_COMMAND, not PATH"
   pass=$((pass + 1))
 else
-  echo "  FAIL: Git shim exists, is executable, and parses as Bash"
-  fail=$((fail + 1))
-fi
-
-if [ -f "$GIT_SHIM" ] &&
-   grep -q 'CLAUDECODE' "$GIT_SHIM" &&
-   grep -q 'GIT_SSH_COMMAND=' "$GIT_SHIM" &&
-   grep -qF 'exec /usr/bin/git "$@"' "$GIT_SHIM"; then
-  echo "  PASS: Git shim overrides SSH only inside Claude and execs system Git"
-  pass=$((pass + 1))
-else
-  echo "  FAIL: Git shim must be Claude-scoped and transparent elsewhere"
+  echo "  FAIL: a git PATH shim reappeared at $GIT_SHIM; GIT_SSH_COMMAND is the supported mechanism"
   fail=$((fail + 1))
 fi
 
