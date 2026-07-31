@@ -72,15 +72,36 @@ else
   fail=$((fail + 1))
 fi
 
-# The git PATH shim was replaced by GIT_SSH_COMMAND. Assert its ABSENCE rather than
-# its shape: ~/.local/bin leads PATH in-session, so a reintroduced shim would silently
-# take precedence over the env-based mechanism and this suite would still pass.
-# GIT_SSH_COMMAND itself is asserted in test-claude-settings.sh.
-if [ ! -e "$GIT_SHIM" ]; then
-  echo "  PASS: no git PATH shim — SSH routes via GIT_SSH_COMMAND, not PATH"
+if [ -x "$GIT_SHIM" ] && /bin/bash -n "$GIT_SHIM"; then
+  echo "  PASS: git shim exists, is executable, and parses as Bash"
   pass=$((pass + 1))
 else
-  echo "  FAIL: a git PATH shim reappeared at $GIT_SHIM; GIT_SSH_COMMAND is the supported mechanism"
+  echo "  FAIL: git shim must exist, be executable, and parse as Bash"
+  fail=$((fail + 1))
+fi
+
+# Gate on CLAUDECODE ONLY: ssh-sandbox-proxy owns proxy selection, and a second copy of
+# that logic here could drift out of step with it and silently stop firing.
+if [ -f "$GIT_SHIM" ] &&
+   grep -q 'CLAUDECODE' "$GIT_SHIM" &&
+   grep -qF 'GIT_SSH_COMMAND="$HOME/.local/bin/ssh-sandbox-proxy"' "$GIT_SHIM" &&
+   ! grep -vE '^[[:space:]]*#' "$GIT_SHIM" | grep -qE 'ALL_PROXY|FTP_PROXY'; then
+  echo "  PASS: shim is Claude-scoped and delegates proxy selection to the helper"
+  pass=$((pass + 1))
+else
+  echo "  FAIL: shim must gate on CLAUDECODE alone and not duplicate proxy selection"
+  fail=$((fail + 1))
+fi
+
+# ~/.local/bin leads PATH in-session, so this shim intercepts EVERY git call. Exec'ing
+# Apple's git would silently downgrade them — that downgrade is why ffdbe07 removed the
+# shim, so delegating to Homebrew git is what allows it to exist at all.
+if [ -f "$GIT_SHIM" ] &&
+   grep -qF 'exec /opt/homebrew/bin/git "$@"' "$GIT_SHIM"; then
+  echo "  PASS: shim delegates to Homebrew git, not Apple's /usr/bin/git"
+  pass=$((pass + 1))
+else
+  echo "  FAIL: shim must exec /opt/homebrew/bin/git so in-session git is not downgraded"
   fail=$((fail + 1))
 fi
 

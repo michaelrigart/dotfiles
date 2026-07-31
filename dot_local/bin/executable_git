@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# PATH shim for git inside Claude Code.
+#
+# WHY A SHIM AND NOT settings.json env: Claude Code injects its own GIT_SSH_COMMAND at
+# runtime (an UNAUTHENTICATED macOS `nc`), and that injection overrides the env block in
+# settings.json. Setting the variable there is accepted but ineffective — git still runs
+# the unauthenticated command and fails against Claude's authenticated local proxy with
+# "nc: authentication method negotiation failed". Only a shim on git itself can win,
+# because it re-exports the variable inside the process git actually inherits.
+#
+# PROXY SELECTION IS NOT DUPLICATED HERE. ssh-sandbox-proxy owns it: FTP_PROXY/ftp_proxy
+# first, then ALL_PROXY/all_proxy, then a plain /usr/bin/ssh passthrough when no proxy is
+# set. Gating only on CLAUDECODE keeps one source of truth — a second copy of that logic
+# here could drift out of step with the helper and silently stop firing.
+#
+# DELEGATES TO HOMEBREW GIT, NOT /usr/bin/git. The settings block puts ~/.local/bin first
+# on PATH, so this shim intercepts every in-session git call; exec'ing Apple's git would
+# silently downgrade them (2.55.0 -> 2.50.1). That downgrade is why the shim was removed
+# in ffdbe07; delegating correctly is what lets it come back.
+set -euo pipefail
+
+if [ -n "${CLAUDECODE:-}" ]; then
+  export GIT_SSH_COMMAND="$HOME/.local/bin/ssh-sandbox-proxy"
+fi
+
+# Absolute paths only: a bare `git` would re-resolve through PATH straight back to here.
+if [ -x /opt/homebrew/bin/git ]; then
+  exec /opt/homebrew/bin/git "$@"
+fi
+exec /usr/bin/git "$@"

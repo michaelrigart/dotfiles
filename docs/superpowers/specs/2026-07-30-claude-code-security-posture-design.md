@@ -285,6 +285,44 @@ All redeployment gates passed in fresh 2.1.220 sessions:
 5. The XDG `allowed_signers` file verifies that signature.
 6. `git ls-remote` against a known-good GitLab repository succeeds through the sandbox.
 
+#### Post-implementation correction (2026-07-31) — the settings-level `GIT_SSH_COMMAND` is inert
+
+`ffdbe07` removed `~/.local/bin/git` and moved `GIT_SSH_COMMAND` into the `settings.json`
+`env` block. The motivation was sound: `~/.local/bin` leads PATH in-session, so the shim
+intercepts **every** git call, and it exec'd Apple's `/usr/bin/git` (2.50.1) instead of the
+Homebrew git (2.55.0) used everywhere else — a silent downgrade.
+
+The replacement does not work. Claude Code injects its own `GIT_SSH_COMMAND` at runtime,
+and that injection **overrides the `env` block**. The setting is present but never used.
+Measured in a sandboxed session after `chezmoi apply`:
+
+```
+settings.json sets:  ~/.local/bin/ssh-sandbox-proxy
+actual environment:  ssh -o ProxyCommand='nc -X 5 -x localhost:52377 %h %p'
+
+git ls-remote gitlab.com   (an ALLOWLISTED host)  -> exit 128
+  nc: authentication method negotiation failed
+```
+
+Testing against an allowlisted host rules out `allowedDomains` as the cause: the failure is
+the injected **unauthenticated** `nc` meeting Claude's authenticated local proxy — the exact
+condition this design was written to repair.
+
+**Correction, not revert.** The shim is restored, with the downgrade fixed rather than
+reintroduced:
+
+- gated on `CLAUDECODE` **alone** — `ssh-sandbox-proxy` owns proxy selection, so a second
+  copy of that logic here could drift out of step with it and silently stop firing;
+- `exec /opt/homebrew/bin/git "$@"`, falling back to `/usr/bin/git` only if absent;
+- `GIT_SSH_COMMAND` removed from `settings.json`, where it is accepted but inert;
+- `ffdbe07`'s credential-inventory improvements retained.
+
+**Why it went unnoticed:** `test-live-agent-auth.sh` already asserted the shim and would
+have caught this immediately — it had simply never been run, because the live suites require
+a fresh sandboxed session. `ffdbe07` also left `test-ssh-sandbox-proxy.sh` asserting a file
+it had just deleted, so that suite failed for the right reason and the wrong purpose. Both
+suites now assert the restored mechanism, including the Homebrew delegation.
+
 #### Rule scope: relative patterns are narrower than they read
 
 Path specifiers anchor differently, per the permission-rules documentation:
