@@ -1,6 +1,6 @@
 # Worktree hook protocol
 
-**Status:** In progress
+**Status:** Implemented — merged in 0e5dde9
 **Date:** 2026-07-30
 
 ## 1. Problem
