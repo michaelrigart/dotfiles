@@ -515,6 +515,18 @@ working deny.
 All chezmoi commands must pass `-S <worktree>` until this branch merges; the default source
 is main, and an unqualified invocation silently verifies the wrong configuration.
 
+**A locked 1Password agent fails the signing acceptance test.** With the vault locked,
+`git commit` reports `Couldn't sign message (signer): communication with agent failed?`
+and `.scripts/test-live-agent-signing.sh` returns `COMMIT=FAILED` — indistinguishable, at
+a glance, from a genuine misconfiguration. Note that `ssh-add -l` may still succeed while
+signing does not. **Unlock 1Password and re-run before treating a signing failure as real.**
+The first signing operation after unlock may also prompt for authorization.
+
+**Config-file changes must be applied, not just edited in the source.** `plugins.conf` is
+read by the reconciler from its *deployed* path. Editing the chezmoi source alone leaves
+the old declaration live — verified 2026-07-31, when a reconciler run reinstalled a plugin
+whose declaration had been removed from the source but not yet applied.
+
 ### Always
 
 - `/status`, `/permissions`, `/sandbox` reflect the intended rules, with no
