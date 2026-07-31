@@ -159,10 +159,15 @@ echo "K. git SSH proxying rides CLAUDE_ENV_FILE, not the env block"
 # preamble before EVERY Bash command, i.e. after the injection, so a SessionStart hook
 # writing the export there is what actually wins.
 #
-# The ~/.local/bin PATH assertion below checks the DECLARED value only. It does not observe
-# a real shell, where the zsh profile (brew shellenv) moves Homebrew ahead of ~/.local/bin —
-# which is why the PATH-dependent git shim never engaged. Runtime resolution is covered by
-# test-live-agent-auth.sh, which must run inside a Claude session.
+# The ~/.local/bin PATH assertion below checks the DECLARED value only; runtime resolution
+# is covered by test-live-agent-auth.sh, which must run inside a Claude session.
+#
+# It previously claimed the zsh profile (brew shellenv) moves Homebrew ahead of ~/.local/bin,
+# so the PATH-dependent git shim "never engaged". That was wrong. Measured in-session on
+# 2026-07-31, sandboxed and unsandboxed alike, the effective PATH matches this declared
+# env.PATH entry-for-entry and ~/.local/bin leads it — `command -v git` returned the shim,
+# not Homebrew git. The profile does not reorder it. The shim was reachable and WAS entered,
+# which is what broke three assertions in test-wt-functions.sh.
 emit '{}'
 jq_is '.env | has("GIT_SSH_COMMAND")' false \
       "GIT_SSH_COMMAND absent from env — the runtime overrides it there"

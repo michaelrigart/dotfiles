@@ -72,36 +72,32 @@ else
   fail=$((fail + 1))
 fi
 
-if [ -x "$GIT_SHIM" ] && /bin/bash -n "$GIT_SHIM"; then
-  echo "  PASS: git shim exists, is executable, and parses as Bash"
+# The git PATH shim was replaced by GIT_SSH_COMMAND, exported from a SessionStart hook via
+# CLAUDE_ENV_FILE (asserted in test-claude-settings.sh). Assert the shim's ABSENCE rather
+# than its shape: ~/.local/bin leads PATH in-session, so a reintroduced shim silently takes
+# precedence over the env-based mechanism and this suite would still pass.
+#
+# A shim is not merely redundant, it is actively harmful. It is a `#!/usr/bin/env bash`
+# script, so it needs `bash` on PATH; test-wt-functions.sh builds a deliberately stripped
+# PATH (env, git, awk, mkdir) to simulate a missing wtcp, and there `git` dies with
+# "env: bash: No such file or directory" (rc=127) before the lifecycle reaches the wtcp
+# check. That cost three assertions in that suite while this one stayed green.
+if [ ! -e "$GIT_SHIM" ]; then
+  echo "  PASS: no git PATH shim in the chezmoi source — SSH routes via GIT_SSH_COMMAND"
   pass=$((pass + 1))
 else
-  echo "  FAIL: git shim must exist, be executable, and parse as Bash"
+  echo "  FAIL: a git PATH shim reappeared at $GIT_SHIM; GIT_SSH_COMMAND is the supported mechanism"
   fail=$((fail + 1))
 fi
 
-# Gate on CLAUDECODE ONLY: ssh-sandbox-proxy owns proxy selection, and a second copy of
-# that logic here could drift out of step with it and silently stop firing.
-if [ -f "$GIT_SHIM" ] &&
-   grep -q 'CLAUDECODE' "$GIT_SHIM" &&
-   grep -qF 'GIT_SSH_COMMAND="$HOME/.local/bin/ssh-sandbox-proxy"' "$GIT_SHIM" &&
-   ! grep -vE '^[[:space:]]*#' "$GIT_SHIM" | grep -qE 'ALL_PROXY|FTP_PROXY'; then
-  echo "  PASS: shim is Claude-scoped and delegates proxy selection to the helper"
+# Deleting the source does NOT retract an already-deployed target: chezmoi only removes
+# targets listed in .chezmoiremove. A stale ~/.local/bin/git keeps breaking git for the
+# whole session, so the deployed path is checked independently of the source.
+if [ ! -e "$HOME/.local/bin/git" ]; then
+  echo "  PASS: no deployed git shim at ~/.local/bin/git — git resolves to the real binary"
   pass=$((pass + 1))
 else
-  echo "  FAIL: shim must gate on CLAUDECODE alone and not duplicate proxy selection"
-  fail=$((fail + 1))
-fi
-
-# ~/.local/bin leads PATH in-session, so this shim intercepts EVERY git call. Exec'ing
-# Apple's git would silently downgrade them — that downgrade is why ffdbe07 removed the
-# shim, so delegating to Homebrew git is what allows it to exist at all.
-if [ -f "$GIT_SHIM" ] &&
-   grep -qF 'exec /opt/homebrew/bin/git "$@"' "$GIT_SHIM"; then
-  echo "  PASS: shim delegates to Homebrew git, not Apple's /usr/bin/git"
-  pass=$((pass + 1))
-else
-  echo "  FAIL: shim must exec /opt/homebrew/bin/git so in-session git is not downgraded"
+  echo "  FAIL: a deployed git shim remains at ~/.local/bin/git; remove it, not just the source"
   fail=$((fail + 1))
 fi
 

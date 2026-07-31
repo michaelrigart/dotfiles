@@ -20,10 +20,22 @@ esac
 diagnostic=$(mktemp "${TMPDIR%/}/claude-agent-auth.XXXXXX") || exit 1
 trap 'rm -f "$diagnostic"' EXIT
 
-if [ "$(command -v git)" != "$HOME/.local/bin/git" ]; then
-  echo "AUTH=GIT_SHIM_MISSING"
+# Preconditions describe the CURRENT mechanism: GIT_SSH_COMMAND, exported from a
+# SessionStart hook via CLAUDE_ENV_FILE. This gate previously required `git` to resolve to
+# ~/.local/bin/git and reported GIT_SHIM_MISSING otherwise — a leftover of the shim design
+# that outlived both ffdbe07 (shim removed) and 72b8963 (hook adopted), and which inverted
+# the meaning of this suite: it failed precisely when the setup was correct.
+if [ "${GIT_SSH_COMMAND:-}" != "$HOME/.local/bin/ssh-sandbox-proxy" ]; then
+  echo "AUTH=PROXY_ENV_MISSING"
   exit 1
 fi
+
+# A reintroduced shim wins on PATH and would mask whether the env mechanism works at all.
+case "$(command -v git)" in
+  "$HOME/.local/bin/"*)
+    echo "AUTH=GIT_SHIM_PRESENT"
+    exit 1 ;;
+esac
 
 if git -C "$repo" ls-remote origin HEAD >/dev/null 2>"$diagnostic"; then
   echo "AUTH=READY"

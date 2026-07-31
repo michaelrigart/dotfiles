@@ -325,6 +325,10 @@ suites now assert the restored mechanism, including the Homebrew delegation.
 
 #### Correction to the correction (2026-07-31) — the shim was never reachable
 
+> **CONTRADICTED — see "The shim was reachable after all" below.** The conclusion in this
+> subsection is false and its PATH measurement does not reproduce. It is kept as the dated
+> record of what was believed at the time; do not cite it as fact.
+
 Restoring the shim was necessary but **not sufficient**. Measured after deploying it:
 
 ```
@@ -360,6 +364,49 @@ Rejected alternatives, narrowest-first:
 
 The shim is retained for now as an inert fallback and should be removed once the hook is
 validated from a fresh session.
+
+#### The shim was reachable after all (2026-07-31, later session) — hook validated, shim removed
+
+The `CLAUDE_ENV_FILE` hook is **validated**. Measured from a fresh session after `72b8963`:
+
+```
+GIT_SSH_COMMAND                                      -> ~/.local/bin/ssh-sandbox-proxy
+/opt/homebrew/bin/git ls-remote gitlab.com           -> exit 0   (shim BYPASSED — the control)
+git ls-remote gitlab.com / github.com (shim deleted) -> exit 0
+```
+
+The proxy was verified against the Homebrew binary **directly**, so the shim could not set
+the same variable and fake a pass. `GIT_SSH_COMMAND` is absent from `settings.json` `env`
+and from all of `~/.config/zsh`, leaving the hook as the only source.
+
+**The "never reachable" conclusion above is false.** `command -v git` returned
+`~/.local/bin/git` — the shim — and `~/.local/bin` led PATH at **position 1**, identical
+sandboxed and unsandboxed, matching the declared `env.PATH` entry-for-entry. The shim was
+entered on every in-session git call.
+
+**The position-8 figure does not reproduce and its origin is unresolved.** In the Bash tool
+`~/.local/bin` is position 1; in a profile-only `zsh -l` it is position 13 with
+`/opt/homebrew/bin` at 16 — so Homebrew does not precede `~/.local/bin` in *either*
+environment, and the stated cause (`brew shellenv` reordering) is not observed anywhere.
+Note `/usr/bin` sits at position 8, a plausible misread. `env.PATH` was introduced in
+`380c77a` (10:58), before the 11:59 measurement, so a session predating the applied config
+is a candidate — but that alone does not explain the ordering claim. Recorded as
+contradicted-and-unexplained rather than guessed at.
+
+**Consequence: the shim was not inert, it was harmful.** Being a `#!/usr/bin/env bash`
+script, it needs `bash` on PATH. `test-wt-functions.sh` builds a deliberately stripped PATH
+(`env git awk mkdir`) to simulate a missing `wtcp`; there the shim died with
+`env: bash: No such file or directory` (rc=127) before the lifecycle reached the `wtcp`
+check, failing three assertions for a reason unrelated to `wtcp` — precisely what that
+suite's own comment warned about. The same run with `/opt/homebrew/bin/git` exits 0.
+
+**Resolution.** `dot_local/bin/executable_git` deleted, source and deployed copy both —
+deleting the source does not retract a deployed target, since chezmoi only removes targets
+listed in `.chezmoiremove`. The three shim-shape assertions in `test-ssh-sandbox-proxy.sh`
+are inverted back to absence-guards (as `8b23cf1` first wrote them), now covering the
+deployed path as well as the source, and confirmed to fail while the shim was still present
+before being made to pass by its removal. `git` resolves to Homebrew git 2.55.0 — no
+downgrade to Apple's 2.50.1, the defect that motivated `ffdbe07`.
 
 #### Rule scope: relative patterns are narrower than they read
 
