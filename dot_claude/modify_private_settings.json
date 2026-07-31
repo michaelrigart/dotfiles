@@ -26,26 +26,46 @@ fi
 
 printf '%s' "$input" | jq \
   --arg sl "bash $HOME/.claude/statusline.sh" \
-  --arg subsl "bash $HOME/.claude/subagent-statusline.sh" '
+  --arg subsl "bash $HOME/.claude/subagent-statusline.sh" \
+  --arg agent_socket "$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock" \
+  --arg git_ssh "$HOME/.local/bin/ssh-sandbox-proxy" \
+  --arg tool_path "$HOME/.local/bin:$HOME/.local/share/mise/shims:$HOME/.cargo/bin:/opt/homebrew/bin:/opt/homebrew/sbin:$HOME/.krew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$HOME/Library/Application Support/JetBrains/Toolbox/scripts" '
   # capture from the current file (null when absent): tool-written keys are carried
-  # through as-is; model/effortLevel are seeded as defaults only (applied at the end).
+  # through as-is; model/effortLevel/defaultMode are seeded as defaults only (applied at
+  # the end) — all three are mutable at runtime via /model, /effort and /permissions.
   .enabledPlugins as $plugins
   | .extraKnownMarketplaces as $mkts
   | .model as $curmodel
   | .effortLevel as $cureffort
+  | .permissions.defaultMode as $curmode
   | {
       "theme": "custom:tokyo-night",
       "cleanupPeriodDays": 14,
-      "env": { "EDITOR": "nvim" },
+      "env": {
+        "EDITOR": "nvim",
+        "SSH_AUTH_SOCK": $agent_socket,
+        "GIT_SSH_COMMAND": $git_ssh,
+        "PATH": $tool_path
+      },
       "includeCoAuthoredBy": false,
       "permissions": {
         "deny": [
-          "**/.ssh/*_rsa", "**/.ssh/*_rsa.pub", "**/.ssh/id_*", "**/.aws/credentials",
-          "**/.config/op/config", "**/secrets.*.yml", "**/.env.production*", "**/*.key", "**/*.pem"
+          "Read(~/.ssh/**)",             "Edit(~/.ssh/**)",
+          "Read(~/.aws/credentials)",    "Edit(~/.aws/credentials)",
+          "Read(~/.config/op/config)",   "Edit(~/.config/op/config)",
+          "Read(**/secrets.*.yml)",      "Edit(**/secrets.*.yml)",
+          "Read(**/.env.production*)",   "Edit(**/.env.production*)",
+          "Read(**/*.key)",              "Edit(**/*.key)",
+          "Read(**/*.pem)",              "Edit(**/*.pem)"
         ],
         "ask": [
-          "**/.kube/config", "**/Dockerfile*", "**/docker-compose*.yml",
-          "**/.github/workflows/**", "**/terraform/**", "**/ansible/**"
+          "Read(~/.kube/config)",        "Edit(~/.kube/config)",
+          "Edit(**/Dockerfile*)",        "Edit(**/docker-compose*.yml)",
+          "Edit(**/.github/workflows/**)",
+          "Edit(**/.gitlab-ci.yml)",     "Edit(**/.gitlab/ci/**)",
+          "Edit(**/terraform/**)",       "Edit(**/ansible/**)",
+          "Bash(dangerouslyDisableSandbox:true)",
+          "Bash(docker *)"
         ],
         "defaultMode": "default"
       },
@@ -56,9 +76,45 @@ printf '%s' "$input" | jq \
         "enabled": true,
         "autoAllowBashIfSandboxed": true,
         "allowUnsandboxedCommands": true,
+        "credentials": {
+          "files": [
+            { "path": "~/.ssh/borg",                           "mode": "deny" },
+            { "path": "~/.ssh/borg-append-only",               "mode": "deny" },
+            { "path": "~/.ssh/borg-append-only-fenrir",        "mode": "deny" },
+            { "path": "~/.ssh/borg-config-michelangelo.tar.gz","mode": "deny" },
+            { "path": "~/.ssh/borg-config-raphael.tar.gz",     "mode": "deny" },
+            { "path": "~/.ssh/borg-fenrir",                    "mode": "deny" },
+            { "path": "~/.ssh/borg-hercules",                  "mode": "deny" },
+            { "path": "~/.ssh/borg-synology",                  "mode": "deny" },
+            { "path": "~/.ssh/huginn",                         "mode": "deny" },
+            { "path": "~/.ssh/michael",                        "mode": "deny" },
+            { "path": "~/.ssh/michael_rsa",                    "mode": "deny" },
+            { "path": "~/.ssh/viumore_rsa",                    "mode": "deny" },
+            { "path": "~/.aws/credentials",                    "mode": "deny" },
+            { "path": "~/.config/op/config",                   "mode": "deny" }
+          ]
+        },
+        "excludedCommands": ["docker *"],
+        "filesystem": {
+          "allowRead": [
+            "~/.ssh/config",
+            "~/.ssh/known_hosts",
+            "~/.ssh/borg-append-only-fenrir.pub",
+            "~/.ssh/borg-append-only.pub",
+            "~/.ssh/borg-fenrir.pub",
+            "~/.ssh/borg-hercules.pub",
+            "~/.ssh/borg-synology.pub",
+            "~/.ssh/borg.pub",
+            "~/.ssh/huginn.pub",
+            "~/.ssh/michael.pub",
+            "~/.ssh/michael_rsa.pub",
+            "~/.ssh/viumore_rsa.pub"
+          ]
+        },
         "network": {
-          "allowUnixSockets": ["/run/docker.sock", "~/.docker/run/docker.sock", "~/.1password/agent.sock"],
-          "allowLocalBinding": true
+          "allowUnixSockets": [$agent_socket],
+          "allowLocalBinding": true,
+          "allowedDomains": ["gitlab.com"]
         }
       },
       "tui": "fullscreen",
@@ -74,8 +130,9 @@ printf '%s' "$input" | jq \
   # carry the tool-written keys through if the current file had them
   | (if $plugins then .enabledPlugins = $plugins else . end)
   | (if $mkts then .extraKnownMarketplaces = $mkts else . end)
-  # default-only: keep the current value if set (runtime /model, /effort persist),
-  # otherwise seed the default; deleting the key and re-applying restores the default.
+  # default-only: keep the current value if set (runtime /model, /effort, /permissions
+  # persist), otherwise seed the default; deleting the key and re-applying restores it.
   | .model = ($curmodel // "opus[1m]")
   | .effortLevel = ($cureffort // "xhigh")
+  | .permissions.defaultMode = ($curmode // "default")
 '

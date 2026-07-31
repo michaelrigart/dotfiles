@@ -51,6 +51,12 @@ Sessionx.vim
 !**/.env.example
 !**/.env.template
 
+# Superpowers execution state — never tracked (design-records policy).
+# Specs and plans under docs/superpowers/ ARE tracked; only generated run
+# artifacts and local execution state are not.
+.superpowers/
+docs/superpowers/runs/
+
 # Logs
 *.log
 

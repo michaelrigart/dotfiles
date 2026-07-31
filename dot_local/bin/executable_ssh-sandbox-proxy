@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+proxy=${FTP_PROXY:-${ftp_proxy:-}}
+case "$proxy" in
+  socks5://*|socks5h://*) ;;
+  *) proxy=${ALL_PROXY:-${all_proxy:-}} ;;
+esac
+if [ -z "$proxy" ]; then
+  exec /usr/bin/ssh "$@"
+fi
+
+case "$proxy" in
+  socks5://*|socks5h://*) proxy_type=socks5 ;;
+  http://*) proxy_type=http ;;
+  *)
+    echo "ssh-sandbox-proxy: unsupported proxy scheme" >&2
+    exit 2 ;;
+esac
+
+authority=${proxy#*://}
+authority=${authority%%/*}
+case "$authority" in
+  *@*:*) ;;
+  *)
+    echo "ssh-sandbox-proxy: authenticated proxy URL required" >&2
+    exit 2 ;;
+esac
+
+userinfo=${authority%@*}
+endpoint=${authority##*@}
+case "$userinfo" in
+  *:*) ;;
+  *)
+    echo "ssh-sandbox-proxy: proxy password missing" >&2
+    exit 2 ;;
+esac
+
+case "$endpoint" in
+  127.0.0.1:*) port=${endpoint#127.0.0.1:} ;;
+  localhost:*)
+    port=${endpoint#localhost:}
+    endpoint="127.0.0.1:$port" ;;
+  \[::1\]:*) port=${endpoint#\[::1\]:} ;;
+  *)
+    echo "ssh-sandbox-proxy: proxy endpoint is not loopback" >&2
+    exit 2 ;;
+esac
+case "$port" in
+  ''|*[!0-9]*)
+    echo "ssh-sandbox-proxy: invalid proxy port" >&2
+    exit 2 ;;
+esac
+
+username=${userinfo%%:*}
+password=${userinfo#*:}
+username=$(printf '%b' "${username//%/\\x}")
+password=$(printf '%b' "${password//%/\\x}")
+export NCAT_PROXY_AUTH="$username:$password"
+
+exec /usr/bin/ssh \
+  -o "ProxyCommand=/opt/homebrew/bin/ncat --proxy $endpoint --proxy-type $proxy_type --proxy-dns remote %h %p" \
+  "$@"

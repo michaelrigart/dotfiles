@@ -1,7 +1,7 @@
 [user]
     name = Michaël Rigart
     email = michael@netronix.be
-    signingkey = /Users/michael/.ssh/michael.pub
+    signingkey = ~/.config/git/signing.pub
     #signingkey = 6A48E395326ED58A
 [core]
     pager = delta
@@ -64,5 +64,7 @@
 [gpg]
   #program = gpg
 	format = ssh
+[gpg "ssh"]
+	allowedSignersFile = ~/.config/git/allowed_signers
 [pull]
 	ff = only
