@@ -63,6 +63,62 @@ jq_is '.extraKnownMarketplaces.m != null' true "extraKnownMarketplaces carried t
 jq_is '.model'                'opus[1m]'  "model carried through"
 jq_is '.effortLevel'          'xhigh'     "effortLevel carried through"
 
+echo "F. layer 2 — agent-backed credential isolation"
+emit '{}'
+AGENT_SOCKET="$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
+EXP_CREDENTIALS='[
+  "~/.ssh/borg",
+  "~/.ssh/borg-append-only",
+  "~/.ssh/borg-append-only-fenrir",
+  "~/.ssh/borg-config-michelangelo.tar.gz",
+  "~/.ssh/borg-config-raphael.tar.gz",
+  "~/.ssh/borg-fenrir",
+  "~/.ssh/borg-hercules",
+  "~/.ssh/borg-synology",
+  "~/.ssh/huginn",
+  "~/.ssh/michael",
+  "~/.ssh/michael_rsa",
+  "~/.ssh/viumore_rsa",
+  "~/.aws/credentials",
+  "~/.config/op/config"
+]'
+EXP_ALLOW_READ='[
+  "~/.ssh/config",
+  "~/.ssh/known_hosts",
+  "~/.ssh/borg-append-only-fenrir.pub",
+  "~/.ssh/borg-append-only.pub",
+  "~/.ssh/borg-fenrir.pub",
+  "~/.ssh/borg-hercules.pub",
+  "~/.ssh/borg-synology.pub",
+  "~/.ssh/borg.pub",
+  "~/.ssh/huginn.pub",
+  "~/.ssh/michael.pub",
+  "~/.ssh/michael_rsa.pub",
+  "~/.ssh/viumore_rsa.pub"
+]'
+jq_is '.env.SSH_AUTH_SOCK' "$AGENT_SOCKET" "Claude uses the stable 1Password agent socket"
+jq_is '.env.PATH | split(":")[0]' "$HOME/.local/bin" "Claude resolves XDG executables first"
+jq_is ".env.PATH | split(\":\") | index(\"$HOME/.local/share/mise/shims\") != null" true \
+      "Claude PATH includes mise shims"
+jq_is '.env.PATH | contains("/.codex/tmp/")' false "Claude PATH contains no session-local agent path"
+jq_is ".sandbox.credentials.files
+       | map(.path)
+       | sort == ($EXP_CREDENTIALS | sort)" true \
+      "credential path set matches the approved inventory exactly"
+jq_is '[.sandbox.credentials.files[] | select(.mode != "deny")] | length' 0 \
+      "every credential entry is mode deny"
+jq_is '.sandbox.credentials | has("envVars")' false "phase 1 ships no envVars entries"
+jq_is '[.sandbox.credentials.files[].path | select(startswith("~/.ssh/"))] | length' 12 \
+      "12 ~/.ssh credential entries"
+jq_is '[.sandbox.credentials.files[].path | select(endswith(".pub"))] | length' 0 \
+      "no public keys denied as credentials"
+jq_is ".sandbox.filesystem.allowRead | sort == ($EXP_ALLOW_READ | sort)" true \
+      "only SSH metadata and public keys bypass the merged read denial"
+jq_is '[.sandbox.filesystem.allowRead[]
+        | select((endswith(".pub") or . == "~/.ssh/config" or . == "~/.ssh/known_hosts") | not)]
+       | length' 0 "no private key path is readable through allowRead"
+jq_is '.sandbox.filesystem | has("allowWrite")' false "no SSH write exception"
+
 echo "G. layer 4 — escape routes"
 emit '{}'
 jq_is '.sandbox.excludedCommands | index("docker *") != null' true "docker excluded from sandbox"
@@ -75,14 +131,13 @@ jq_is '.permissions.ask | index("Bash(docker *)") != null' true "docker commands
 # commands — each a hole in the boundary this layer exists to draw.
 jq_is '.sandbox.excludedCommands == ["docker *"]' true \
       "excludedCommands is exactly [\"docker *\"]"
-jq_is '.sandbox.network.allowUnixSockets == []' true \
-      "allowUnixSockets is exactly []"
+jq_is ".sandbox.network.allowUnixSockets == [\"$AGENT_SOCKET\"]" true \
+      "allowUnixSockets contains only the stable agent socket"
 
 echo "H. layer 3 stays off until domains are known"
+jq_is '.sandbox.network.allowedDomains == ["gitlab.com"]' true \
+      "observed GitLab host is pre-allowed"
 jq_is '.sandbox.network.strictAllowlist // false' false "strictAllowlist off in this phase"
-
-echo "I. layer 2 deferred — preflight returned exit 2"
-jq_is '.sandbox | has("credentials")' false "no credentials block (layer 2 deferred)"
 
 echo "J. defaultMode is seeded, not enforced"
 # Runtime-mutable via /permissions, like model and effortLevel. Enforcing it would revert

@@ -26,7 +26,9 @@ fi
 
 printf '%s' "$input" | jq \
   --arg sl "bash $HOME/.claude/statusline.sh" \
-  --arg subsl "bash $HOME/.claude/subagent-statusline.sh" '
+  --arg subsl "bash $HOME/.claude/subagent-statusline.sh" \
+  --arg agent_socket "$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock" \
+  --arg tool_path "$HOME/.local/bin:$HOME/.local/share/mise/shims:$HOME/.cargo/bin:/opt/homebrew/bin:/opt/homebrew/sbin:$HOME/.krew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$HOME/Library/Application Support/JetBrains/Toolbox/scripts" '
   # capture from the current file (null when absent): tool-written keys are carried
   # through as-is; model/effortLevel/defaultMode are seeded as defaults only (applied at
   # the end) — all three are mutable at runtime via /model, /effort and /permissions.
@@ -38,7 +40,11 @@ printf '%s' "$input" | jq \
   | {
       "theme": "custom:tokyo-night",
       "cleanupPeriodDays": 14,
-      "env": { "EDITOR": "nvim" },
+      "env": {
+        "EDITOR": "nvim",
+        "SSH_AUTH_SOCK": $agent_socket,
+        "PATH": $tool_path
+      },
       "includeCoAuthoredBy": false,
       "permissions": {
         "deny": [
@@ -68,10 +74,45 @@ printf '%s' "$input" | jq \
         "enabled": true,
         "autoAllowBashIfSandboxed": true,
         "allowUnsandboxedCommands": true,
+        "credentials": {
+          "files": [
+            { "path": "~/.ssh/borg",                           "mode": "deny" },
+            { "path": "~/.ssh/borg-append-only",               "mode": "deny" },
+            { "path": "~/.ssh/borg-append-only-fenrir",        "mode": "deny" },
+            { "path": "~/.ssh/borg-config-michelangelo.tar.gz","mode": "deny" },
+            { "path": "~/.ssh/borg-config-raphael.tar.gz",     "mode": "deny" },
+            { "path": "~/.ssh/borg-fenrir",                    "mode": "deny" },
+            { "path": "~/.ssh/borg-hercules",                  "mode": "deny" },
+            { "path": "~/.ssh/borg-synology",                  "mode": "deny" },
+            { "path": "~/.ssh/huginn",                         "mode": "deny" },
+            { "path": "~/.ssh/michael",                        "mode": "deny" },
+            { "path": "~/.ssh/michael_rsa",                    "mode": "deny" },
+            { "path": "~/.ssh/viumore_rsa",                    "mode": "deny" },
+            { "path": "~/.aws/credentials",                    "mode": "deny" },
+            { "path": "~/.config/op/config",                   "mode": "deny" }
+          ]
+        },
         "excludedCommands": ["docker *"],
+        "filesystem": {
+          "allowRead": [
+            "~/.ssh/config",
+            "~/.ssh/known_hosts",
+            "~/.ssh/borg-append-only-fenrir.pub",
+            "~/.ssh/borg-append-only.pub",
+            "~/.ssh/borg-fenrir.pub",
+            "~/.ssh/borg-hercules.pub",
+            "~/.ssh/borg-synology.pub",
+            "~/.ssh/borg.pub",
+            "~/.ssh/huginn.pub",
+            "~/.ssh/michael.pub",
+            "~/.ssh/michael_rsa.pub",
+            "~/.ssh/viumore_rsa.pub"
+          ]
+        },
         "network": {
-          "allowUnixSockets": [],
-          "allowLocalBinding": true
+          "allowUnixSockets": [$agent_socket],
+          "allowLocalBinding": true,
+          "allowedDomains": ["gitlab.com"]
         }
       },
       "tui": "fullscreen",

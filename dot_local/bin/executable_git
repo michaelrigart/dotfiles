@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ -n "${CLAUDECODE:-}" ] &&
+   [ -n "${ALL_PROXY:-${all_proxy:-}}" ]; then
+  export GIT_SSH_COMMAND="$HOME/.local/bin/ssh-sandbox-proxy"
+fi
+
+exec /usr/bin/git "$@"
