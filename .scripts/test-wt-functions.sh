@@ -152,14 +152,18 @@ git -C "$HOME/Code/Org/repo-a" commit -q --allow-empty -m ahead
 run "$HOME/Code/Org/repo-a" wt b                   # invoked from inside worktree a
 eq "$(sha "$HOME/Code/Org/repo-b")" "$(sha "$HOME/Code/Org/repo-a")" \
    "new branch starts from the caller's HEAD, not main's"
-has "branching 'b' from a" "base is reported"
+# Task 8 rework: the base message now shell-quotes the branch with ${(q-)...}
+# instead of hardcoded literal quotes, so a plain name like "b" prints
+# unquoted — quoting only appears when actually needed (see section M's
+# hostile-branch-name coverage of the same convention in _wt_do_prepare).
+has "branching b from a" "base is reported"
 
 run "$HOME/Code/Org/repo-a" wt c main               # explicit start point
 eq "$(sha "$HOME/Code/Org/repo-c")" "$(sha "$REPO")" "explicit start-point wins"
 
 git -C "$HOME/Code/Org/repo-a" checkout -q --detach
 run "$HOME/Code/Org/repo-a" wt d
-has "branching 'd' from detached@" "detached HEAD base is shown, not warned about"
+has "branching d from detached@" "detached HEAD base is shown, not warned about"
 rc_is 0 "detached HEAD is allowed"
 
 print -r -- "D. wt — .worktreeinclude copy failures"
@@ -168,7 +172,12 @@ print -r -- "env.local" > "$REPO/.worktreeinclude"
 print -r -- "secret" > "$REPO/env.local"
 MOCK_WTCP_RC=1 run "$REPO" wt e
 rc_is 1 "wtcp failure propagates"
-has "dev $HOME/Code/Org/repo-e" "failure message prints the dev command to recover"
+# Task 8 rework: creation now delegates preparation to the shared
+# _wt_do_prepare (see wt-prepare), so a copy failure's recovery message is
+# _wt_do_prepare's own ("wt-prepare <branch> && wt <branch>"), not wt's old
+# inline "dev $dest" — re-running wt-prepare is now the correct next step
+# because wt-prepare itself did not exist when this assertion was written.
+has "wt-prepare e && wt e" "failure message prints the recovery command"
 [[ -d "$HOME/Code/Org/repo-e" ]] && _pass "worktree is left in place to recover" \
                                  || _fail "worktree is left in place to recover"
 
@@ -770,6 +779,42 @@ for b in env git awk mkdir; do ln -s "$(command -v $b)" "$CLEANP/$b"; done
 OUT="$(cd "$REPO" && source "$FUNCS" && export PATH="$CLEANP" && wt-prepare n6 2>&1)"; RC=$?
 rc_is 1 "missing destination with wtcp absent aborts instead of silently skipping"
 has "wtcp is missing" "abort names the missing tool"
+
+print -r -- "N. wt creation paths"
+# Invalid hook must leave NOTHING behind.
+setup
+print -r -- '#!/bin/sh' > "$REPO/.worktreehook"; chmod +x "$REPO/.worktreehook"   # untracked
+run "$REPO" wt o1
+rc_is 1 "invalid hook refuses creation"
+[[ -d "$HOME/Code/Org/repo-o1" ]] && _fail "no worktree is created" || _pass "no worktree is created"
+run "$REPO" git branch --list o1
+eq "$OUT" "" "no branch is created"
+
+# Existing local branch, no worktree: same pre-validation, prepare and dev gating.
+setup
+git -C "$REPO" branch o2
+mkhook "$REPO" '#!/bin/sh
+touch "$WT_MAIN/setup-$WT_BRANCH"; exit 0'
+: > "$ZLOG"
+run "$REPO" wt o2
+rc_is 0 "creating a worktree for an existing branch succeeds"
+[[ -f "$REPO/setup-o2" ]] && _pass "setup runs on the existing-branch path" || _fail "setup runs on the existing-branch path"
+logged "--session org--repo-o2" "dev is launched after preparation"
+
+setup
+git -C "$REPO" branch o3
+run "$REPO" wt o3 main
+rc_is 1 "start-point with an existing branch is refused"
+
+# Setup failure gates dev.
+setup
+mkhook "$REPO" '#!/bin/sh
+exit 5'
+: > "$ZLOG"
+run "$REPO" wt o4
+rc_is 1 "setup failure fails wt"
+unlogged "--session" "dev is not launched after a setup failure"
+[[ -d "$HOME/Code/Org/repo-o4" ]] && _pass "worktree is preserved" || _fail "worktree is preserved"
 
 export HOME="$REAL_HOME"
 print -r -- ""

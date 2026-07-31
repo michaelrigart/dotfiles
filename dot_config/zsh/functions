@@ -584,83 +584,57 @@ wt-prepare() {
 #
 # A new branch starts from the *caller's* HEAD, matching plain `git worktree add -b`:
 # branch from where you are, and keep working offline. Pass a start point to override.
+#
+# Creation runs under the per-target lock (see _wt_lock) and pre-validates the
+# project hook before touching anything: a misconfigured repository leaves no
+# worktree and no branch behind. Once the worktree exists (fresh or an existing
+# branch with none yet), preparation — manifest copy, then the setup hook — is
+# delegated to the shared, unlocked `_wt_do_prepare` (see wt-prepare). `dev` runs
+# OUTSIDE the lock and only on success, so a long-lived session never holds the
+# lock and a failed setup never attaches you to a half-built worktree.
 wt() {
   emulate -L zsh
-  setopt local_options extended_glob   # the .worktreeinclude trim below needs it
   local branch="$1" start="${2-}"
   [[ -n "$branch" ]] || { print -ru2 -- "usage: wt <branch> [start-point]"; return 1; }
-  local slug="${branch//\//-}"          # flatten "/" so the dir/session stay valid
+  local slug="${branch//\//-}" qb="${(q-)branch}" main common dest
+  main="$(_wt_primary)" || return 1
+  common="$(_wt_git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
+  dest="${main:h}/${main:t}-${slug}"
 
-  local common root
-  common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" \
-    || { print -ru2 -- "wt: not inside a git repo."; return 1; }
-  root="${common:h}"                    # .../<repo>/.git → .../<repo> (main worktree)
-  # NB: not `path` — that's zsh's special var tied to $PATH; assigning it breaks
-  # command lookup for the rest of the function.
-  local dest="${root:h}/${root:t}-${slug}"
-
-  local created=1
-  if [[ -d "$dest" ]]; then
-    # A bare -d check is not enough to call this "reopen": the directory may be a husk
-    # left by a failed removal (no .git at all), or — because "feature/foo" and
-    # "feature-foo" flatten to the same slug — a worktree on a *different* branch,
-    # which would silently drop you into the wrong code.
-    _wt_assert_worktree "$root" "$dest" "$branch" || return 1
-    print -ru2 -- "wt: reopening $dest"; created=
-  elif git -C "$root" show-ref --quiet --verify "refs/heads/$branch"; then
-    [[ -z "$start" ]] || {
-      print -ru2 -- "wt: branch '$branch' already exists — drop the start point."; return 1 }
-    git worktree add "$dest" "$branch" || return
-  else
-    # Deliberately NOT `git -C "$root"`: running against the main checkout pinned every
-    # new branch to main's HEAD, so `wt child` from inside another worktree branched off
-    # main rather than the work it was started from. Report the base either way —
-    # branching off a detached commit is sometimes deliberate, so show it, don't warn.
-    local base
-    if [[ -n "$start" ]]; then
-      base="$start"
+  _wt_lock "$common" "$slug" || return 1
+  {
+    local created=1
+    if [[ -d "$dest" ]]; then
+      _wt_assert_worktree "$main" "$dest" "$branch" || return 1
+      print -ru2 -- "wt: reopening $dest"; created=
     else
-      base="$(git symbolic-ref --quiet --short HEAD 2>/dev/null)" \
-        || base="detached@$(git rev-parse --short HEAD 2>/dev/null)"
-    fi
-    print -r -- "wt: branching '$branch' from $base"
-    git worktree add "$dest" -b "$branch" ${start:+"$start"} || return
-  fi
+      # Pre-validate before creating anything: a misconfigured repository should
+      # leave no worktree and no branch behind. This does NOT replace the check
+      # inside _wt_hook_run immediately before execution.
+      _wt_hook_check "$main" >/dev/null 2>&1
+      (( $? == 1 )) && { _wt_hook_check "$main"; return 1 }
 
-  # A fresh worktree has none of the repo's gitignored files, so it can't run
-  # (missing env/secrets). Copy the ones this repo lists in .worktreeinclude from
-  # the main checkout via wtcp (rsync; refuses to clobber). Only carry paths that
-  # actually exist, and only on first creation — reopening leaves them untouched.
-  if [[ -n "$created" && -f "$root/.worktreeinclude" ]]; then
-    if (( ! $+commands[wtcp] )); then
-      # These files are the reason the worktree can run at all, so don't hand back a
-      # half-built checkout that fails confusingly at boot.
-      print -ru2 -- "wt: .worktreeinclude present but wtcp is missing (brew install satococoa/tap/wtcp)."
-      print -ru2 -- "    The worktree exists — install wtcp, copy the files, then: dev $dest"
-      return 1
-    fi
-    # `|| [[ -n "$line" ]]` so a final line with no trailing newline still counts;
-    # entries are trimmed. A listed path that doesn't exist is a stale
-    # .worktreeinclude — and that file is *tracked*, so hard-failing there would block
-    # every worktree in the repo until someone commits a fix. Warn, carry the rest.
-    local -a carry; local line
-    while IFS= read -r line || [[ -n "$line" ]]; do
-      line="${${line##[[:space:]]##}%%[[:space:]]##}"
-      [[ -z "$line" || "$line" == '#'* ]] && continue
-      if [[ -e "$root/$line" ]]; then
-        carry+=( "$line" )
+      if _wt_git -C "$main" show-ref --quiet --verify "refs/heads/$branch"; then
+        [[ -z "$start" ]] || {
+          print -ru2 -- "wt: branch $qb already exists — drop the start point."; return 1 }
+        _wt_git worktree add "$dest" "$branch" || return 1
       else
-        print -ru2 -- "wt: .worktreeinclude lists '$line', not found in $root — skipping."
+        local base
+        if [[ -n "$start" ]]; then
+          base="$start"
+        else
+          base="$(_wt_git symbolic-ref --quiet --short HEAD 2>/dev/null)" \
+            || base="detached@$(_wt_git rev-parse --short HEAD 2>/dev/null)"
+        fi
+        print -r -- "wt: branching $qb from $base"
+        _wt_git worktree add "$dest" -b "$branch" ${start:+"$start"} || return 1
       fi
-    done < "$root/.worktreeinclude"
-    # A failed copy, by contrast, was previously invisible: the status went unchecked
-    # and wt walked straight into dev with an unrunnable worktree.
-    if (( ${#carry} )) && ! ( cd "$dest" && wtcp --from "$root" "${carry[@]}" ); then
-      print -ru2 -- "wt: copying .worktreeinclude files into $dest failed."
-      print -ru2 -- "    The worktree exists — fix the copy, then: dev $dest"
-      return 1
     fi
-  fi
+
+    [[ -n "$created" ]] && { _wt_do_prepare "$main" "$dest" "$branch" "$slug" || return 1 }
+  } always {
+    _wt_unlock
+  }
 
   dev "$dest"
 }
