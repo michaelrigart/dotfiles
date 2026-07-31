@@ -484,16 +484,58 @@ chmod -x "$REPO/.worktreehook"
 run "$REPO" _wt_hook_check "$REPO"
 rc_is 1 "index-100755 without the working-tree exec bit is refused"
 
-# Fails CLOSED when the index cannot be read. Without the separate status
-# capture, ls-files returns empty and a repository with an unreadable index is
-# reported as "not opted in" (2) — silently skipping a hook that may exist.
+# Selecting stage 0 specifically is what rejects a conflicted hook, which has
+# no stage-0 entry. Construct a real merge conflict rather than staging by
+# hand, so the fixture depends on Git's own conflict semantics, not on this
+# test's assumptions about them.
+setup
+mkhook "$REPO" '#!/bin/sh
+exit 0'
+git -C "$REPO" checkout -q -b feature
+print -r -- '#!/bin/sh
+exit 1' > "$REPO/.worktreehook"
+git -C "$REPO" commit -q -am "feature change"
+git -C "$REPO" checkout -q main
+print -r -- '#!/bin/sh
+exit 2' > "$REPO/.worktreehook"
+git -C "$REPO" commit -q -am "main change"
+git -C "$REPO" merge --no-edit feature >/dev/null 2>&1
+run "$REPO" _wt_hook_check "$REPO"
+rc_is 1 "conflicted hook (no stage-0 entry) is refused"
+has "unresolved conflict" "conflicted-hook refusal names the conflict"
+# Guard the guard: if Git ever stopped leaving this path with no stage-0 entry
+# during a conflict, the assertions above would start testing nothing. Fail
+# loudly instead of silently validating an already-resolved file.
+STAGE0="$(git -C "$REPO" ls-files --stage -- .worktreehook | awk '$3 == 0 { print $1 }')"
+eq "$STAGE0" "" "fixture genuinely leaves .worktreehook with no stage-0 entry"
+
+# Fails CLOSED when the index cannot be read — two variants, because no single
+# fixture proves both halves at once.
+#
+# Variant 1: the hook is absent from the working tree too. Without the `rc`
+# gate, ls-files's failure leaves `raw` empty with nothing on disk to fall
+# back on, so the function would misread this as "not opted in" (2) instead
+# of refusing. This is the fixture where `rc_is 1` alone is meaningful:
+# removing the gate flips this exact assertion.
+setup
+print -r -- "garbage" > "$REPO/.git/index"
+run "$REPO" _wt_hook_check "$REPO"
+rc_is 1 "unreadable index with no on-disk hook is refused, not read as not-opted-in"
+has "cannot read the index" "the refusal says the index state is unknown"
+
+# Variant 2: the hook is tracked, committed, and still present on disk when
+# the index is corrupted. Here `rc_is 1` cannot discriminate on its own —
+# without the gate the function still returns 1, just via the "untracked"
+# fallback path, because the on-disk file survives the index corruption. What
+# this fixture proves is the *message*: only the gate produces "cannot read
+# the index"; the fallback path names the wrong reason.
 setup
 mkhook "$REPO" '#!/bin/sh
 exit 0'
 print -r -- "garbage" > "$REPO/.git/index"
 run "$REPO" _wt_hook_check "$REPO"
-rc_is 1 "unreadable index is refused, not treated as not-opted-in"
-has "cannot read the index" "the refusal says the index state is unknown"
+rc_is 1 "unreadable index with a tracked hook on disk is still refused"
+has "cannot read the index" "the refusal names the index as the reason, not 'untracked'"
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -517,10 +559,12 @@ Expected: FAIL — `_wt_hook_check` undefined.
 _wt_hook_check() {
   emulate -L zsh
   local main="$1" hook="$1/.worktreehook" raw mode rc
-  # Status captured separately, for the same reason as _wt_clean: if ls-files
-  # fails, `raw` is empty, and treating that as "absent" would report a
-  # repository with an unreadable index as "not opted in" — silently skipping a
-  # hook that may well exist. Unknown index state is refused, not assumed empty.
+  # Status captured separately, for the same reason as _wt_clean: a failed
+  # ls-files also leaves `raw` empty, and falling through on that emptiness
+  # would misread an unreadable index by whatever happens to be on disk —
+  # "not opted in" (2) when no working-tree file exists, or a bogus "untracked"
+  # refusal (1, wrong message) when one does. Either way the true index state
+  # is unknown, so it is refused unconditionally, before `raw` is inspected.
   raw="$(_wt_git -C "$main" ls-files --stage -- .worktreehook 2>/dev/null)"; rc=$?
   if (( rc )); then
     print -ru2 -- "wt: cannot read the index of $main to validate .worktreehook — refusing."

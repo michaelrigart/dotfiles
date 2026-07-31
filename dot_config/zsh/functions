@@ -356,10 +356,12 @@ _wt_unlock() {
 _wt_hook_check() {
   emulate -L zsh
   local main="$1" hook="$1/.worktreehook" raw mode rc
-  # Status captured separately, for the same reason as _wt_clean: if ls-files
-  # fails, `raw` is empty, and treating that as "absent" would report a
-  # repository with an unreadable index as "not opted in" — silently skipping a
-  # hook that may well exist. Unknown index state is refused, not assumed empty.
+  # Status captured separately, for the same reason as _wt_clean: a failed
+  # ls-files also leaves `raw` empty, and falling through on that emptiness
+  # would misread an unreadable index by whatever happens to be on disk —
+  # "not opted in" (2) when no working-tree file exists, or a bogus "untracked"
+  # refusal (1, wrong message) when one does. Either way the true index state
+  # is unknown, so it is refused unconditionally, before `raw` is inspected.
   raw="$(_wt_git -C "$main" ls-files --stage -- .worktreehook 2>/dev/null)"; rc=$?
   if (( rc )); then
     print -ru2 -- "wt: cannot read the index of $main to validate .worktreehook — refusing."
