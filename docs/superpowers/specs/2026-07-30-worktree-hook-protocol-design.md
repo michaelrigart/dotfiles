@@ -1,6 +1,6 @@
 # Worktree hook protocol
 
-**Status:** Approved
+**Status:** In progress
 **Date:** 2026-07-30
 
 ## 1. Problem
@@ -358,16 +358,23 @@ semantics, described under **Mechanism** below.
 - **Acquisition:** `zsystem flock -t 0 -f FD <lockfile>`, capturing the descriptor.
   `-t 0` makes a busy target refuse immediately rather than block.
 - **Release:** an unconditional explicit `zsystem flock -u $FD`, in an
-  always-runs block. Kernel release on process death is a backstop for shell
-  death and `SIGKILL`, **not** the primary mechanism.
+  always-runs block, plus a function-local `INT`/`TERM` trap that does the same
+  (§9.4). The trap is not redundant: zsh does not run an always block when a
+  signal unwinds the function under its default disposition. Kernel release on
+  process death is a backstop for shell death and `SIGKILL`, **not** the primary
+  mechanism.
 - **Availability:** if `zmodload zsh/system` fails, the command refuses rather
   than running unlocked.
 
 Explicit unlock is required because these are sourced shell functions, not
 scripts. Returning from a function does not close the descriptor: the fd stays
-open in the interactive shell, so the lock persists for the rest of the session
-and every later `wt` against that target refuses. The lock must be released on
-every exit path, including failures and early returns.
+open in the interactive shell for the rest of the session, leaking one descriptor
+per run. Because locks are held per *process* — see the `fcntl(2)` paragraph
+below — a leaked descriptor does **not** block the shell that leaked it: a later
+`wt` there re-acquires successfully. What it blocks is every *other* process's
+lifecycle command on that target, which refuses until the leaking shell exits.
+The lock must therefore be released on every exit path, including failures, early
+returns, and the `INT`/`TERM` interruption covered in §9.4.
 
 `fcntl(2)` semantics also give the command/routine split described above a
 stronger justification than deadlock avoidance. Locks are held per *process*, not per
