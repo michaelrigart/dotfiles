@@ -151,7 +151,7 @@ dev() {
 
   # 1) "." or an existing directory → the git repo that contains it
   if [[ "$arg" == "." || ( -n "$arg" && -d "$arg" ) ]]; then
-    repo="$(git -C "${arg:-$PWD}" rev-parse --show-toplevel 2>/dev/null)" \
+    repo="$(_wt_git -C "${arg:-$PWD}" rev-parse --show-toplevel 2>/dev/null)" \
       || { print -ru2 -- "dev: '${arg:-$PWD}' is not inside a git repo."; return 1; }
 
   # 2) exact path relative to ~/Code (e.g. Netronix/curato)
@@ -240,6 +240,373 @@ dev() {
   fi
 }
 
+# _wt_git — git with its routing environment cleared. Every Git call in the
+# worktree lifecycle goes through this. An exported GIT_DIR or GIT_WORK_TREE
+# silently redirects git to another checkout: `status` then reports a dirty
+# worktree as clean *with exit status 0*, and `worktree list`, `ls-files`,
+# `worktree remove` and `branch -d` all act on the wrong repository.
+_wt_git() {
+  emulate -L zsh
+  command env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR \
+    -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_NAMESPACE \
+    git "$@"
+}
+
+# _wt_primary — absolute path of the repository's primary worktree.
+#
+# Resolved from `worktree list`, never by path arithmetic on --git-common-dir:
+# taking the parent of the common dir is correct for a standard repo
+# (/…/repo/.git → /…/repo) but yields the *containing directory* for a bare one
+# (/…/repo.git → /…/), which is not a worktree at all.
+#
+# -z is required: the line-based porcelain format gives no guarantee that a path
+# is emitted raw, so a path needing quoting cannot be parsed unambiguously.
+# Records are NUL-terminated; ${(0)} drops the empty separator records, leaving
+# field 1 = "worktree <path>" and, for a bare repo, field 2 = "bare".
+_wt_primary() {
+  emulate -L zsh
+  local -a f
+  f=( ${(0)"$(_wt_git worktree list --porcelain -z 2>/dev/null)"} )
+  [[ "${f[1]}" == 'worktree '* ]] || {
+    print -ru2 -- "wt: not inside a git repository."; return 1 }
+  [[ "${f[2]}" == bare ]] && {
+    print -ru2 -- "wt: repository is bare — there is no primary worktree to run from."; return 1 }
+  print -r -- "${f[1]#worktree }"
+}
+
+# _wt_clean <worktree> — 0 clean, 1 dirty, 2 state unknown.
+#
+# Three-state on purpose. A failed `git status` (corrupt index, unreadable
+# worktree) produces empty output, so testing output alone reads the case where
+# we know least as "no changes" — the most dangerous possible misreading.
+#
+# Each flag closes a way a dirty tree can report clean:
+#   --untracked-files=normal   defeats status.showUntrackedFiles=no
+#   --ignore-submodules=none   defeats diff.ignoreSubmodules / submodule.*.ignore
+#   --porcelain=v1             pins the format against a default change
+# and _wt_git clears GIT_WORK_TREE/GIT_DIR, which otherwise redirect the check to
+# a different checkout entirely and return empty output with exit status 0.
+#
+# The assignment is deliberately split from `local`: `local x="$(cmd)"` reports
+# the *builtin's* status, not the command substitution's, hiding the failure this
+# helper exists to catch.
+_wt_clean() {
+  emulate -L zsh
+  local wt="$1" out rc
+  out="$(_wt_git -C "$wt" status --porcelain=v1 --untracked-files=normal \
+                 --ignore-submodules=none 2>/dev/null)"; rc=$?
+  (( rc )) && return 2
+  [[ -n "$out" ]] && return 1
+  return 0
+}
+
+# _wt_lock <common-dir> <slug> / _wt_unlock — serialize lifecycle commands per
+# target worktree, so `wt-prepare` cannot copy into a directory `wt-rm` is
+# removing.
+#
+# `zsystem flock` is an fcntl(2) record lock despite the name, and its semantics
+# drive three requirements:
+#
+#   1. The lock file must already exist — zsystem opens it and will not create it.
+#   2. Release must be explicit. These are *sourced functions*: returning does not
+#      close the descriptor, so without an unlock the fd stays open in the
+#      interactive shell. Because locks are per-process (requirement 3) that does
+#      NOT block the same shell — it blocks every OTHER process's lifecycle
+#      command on that target until this shell exits, while leaking one descriptor
+#      per run. Kernel release on process death is the backstop for every path
+#      an explicit unlock cannot reach — chiefly an interrupt, which unwinds the
+#      command without running the `always` block (see the interruption note
+#      below _wt_unlock).
+#   3. Locks are per-process, not per-descriptor. A nested acquisition inside the
+#      same shell SUCCEEDS, and unlocking any one descriptor drops the process's
+#      lock on the file entirely — so a routine that took its own lock would
+#      silently release its caller's. Only the outermost command locks; see the
+#      command/routine split in wt-prepare.
+#
+# Consequently there is no intra-process exclusion. That is fine: one shell runs
+# one lifecycle command at a time, and the case being defended is concurrent
+# commands in different terminals.
+_wt_lock() {
+  emulate -L zsh
+  zmodload zsh/system 2>/dev/null || {
+    print -ru2 -- "wt: zsh/system unavailable — refusing to run unlocked."; return 1 }
+  local dir="$1/wt-locks" lf="$1/wt-locks/$2.lock"
+  mkdir -p "$dir" && : >> "$lf" || {
+    print -ru2 -- "wt: cannot create lock file $lf."; return 1 }
+  # _WT_LOCK_FD is intentionally global: the caller unlocks it.
+  if ! zsystem flock -t 0 -f _WT_LOCK_FD "$lf" 2>/dev/null; then
+    print -ru2 -- "wt: another lifecycle command is working on '$2' — retry when it finishes."
+    return 1
+  fi
+}
+
+_wt_unlock() {
+  emulate -L zsh
+  [[ -n "${_WT_LOCK_FD:-}" ]] || return 0
+  zsystem flock -u $_WT_LOCK_FD 2>/dev/null
+  unset _WT_LOCK_FD
+  return 0
+}
+
+# --- Interruption and the lock ---------------------------------------------
+#
+# There is deliberately NO `trap ... INT TERM` in any lifecycle command. An
+# earlier revision installed `trap '_wt_unlock; return 130' INT TERM` in all
+# three, to satisfy a spec §9.4 requirement — "the lock is released on INT and
+# TERM" — that has since been withdrawn. The trap was removed because it is
+# fail-open, and fail-open on the destructive path:
+#
+#   * `return` inside a trap handler unwinds only the INNERMOST function, not
+#     the call stack, and zsh discards the handler's return status. The
+#     interrupted helper therefore reports 0 to its caller, never 130.
+#   * 0 is the permissive answer for every helper the lifecycle gates on:
+#     _wt_clean 0 is "clean", _wt_hook_check 0 is "valid", _wt_assert_worktree 0
+#     is "the right worktree on the right branch". An interrupted check reads as
+#     permission to proceed. This is not theoretical: with the trap installed, a
+#     real SIGINT during wt-rm's first cleanliness check made a DIRTY worktree
+#     read as clean and ran `zellij delete-session --force` on it.
+#
+# Under SIGINT's default disposition the whole command unwinds instead, so no
+# helper's status is ever fabricated. That is the property these commands need.
+#
+# The accepted cost, documented in spec §9.4: an interactive shell that survives
+# an interruption may still hold the descriptor. Because fcntl locks are held per
+# *process*, that does NOT block the shell holding it — retrying from that same
+# shell works — it blocks other processes' lifecycle commands on the same target
+# until that shell exits. Trading a rare, self-inflicted and self-recoverable
+# lock retention for a destructive fail-open is the right way round.
+#
+# `always { _wt_unlock }` still covers every ordinary exit path: success,
+# failure, and early return. Kernel release on process death covers a shell that
+# the interrupt actually takes down.
+
+# _wt_hook_check <main> — 0 valid, 1 invalid, 2 absent (not opted in).
+#
+# Both the index entry and the working-tree path must be checked. A tracked
+# symlink satisfies "tracked" and "executable" (test -x follows it) while the code
+# that actually runs lives outside the repository; conversely the index mode alone
+# cannot see an unstaged local swap.
+#
+# Requiring 100755 *in the index* — not merely on disk — makes opt-in
+# reproducible: a hook tracked as 100644 arrives non-executable in every clone.
+# Selecting stage 0 rejects a conflicted hook, which has no stage-0 entry.
+_wt_hook_check() {
+  emulate -L zsh
+  local main="$1" hook="$1/.worktreehook" raw mode rc
+  # Status captured separately, for the same reason as _wt_clean: a failed
+  # ls-files also leaves `raw` empty, and falling through on that emptiness
+  # would misread an unreadable index by whatever happens to be on disk —
+  # "not opted in" (2) when no working-tree file exists, or a bogus "untracked"
+  # refusal (1, wrong message) when one does. Either way the true index state
+  # is unknown, so it is refused unconditionally, before `raw` is inspected.
+  raw="$(_wt_git -C "$main" ls-files --stage -- .worktreehook 2>/dev/null)"; rc=$?
+  if (( rc )); then
+    print -ru2 -- "wt: cannot read the index of $main to validate .worktreehook — refusing."
+    return 1
+  fi
+  mode="$(print -r -- "$raw" | awk '$3 == 0 { print $1 }')"
+
+  if [[ -z "$raw" ]]; then
+    [[ -e "$hook" || -L "$hook" ]] || return 2          # not opted in
+    print -ru2 -- "wt: $hook exists but is not tracked — commit it or remove it."
+    return 1
+  fi
+  if [[ -z "$mode" ]]; then
+    print -ru2 -- "wt: .worktreehook has no stage-0 index entry (unresolved conflict) — resolve it first."
+    return 1
+  fi
+  if [[ "$mode" != 100755 ]]; then
+    print -ru2 -- "wt: .worktreehook is indexed as $mode, not 100755."
+    [[ "$mode" == 100644 ]] && \
+      print -ru2 -- "    Fix with: git add --chmod=+x .worktreehook"
+    return 1
+  fi
+  if [[ -L "$hook" ]]; then
+    print -ru2 -- "wt: .worktreehook is a symlink in the working tree — refusing."
+    return 1
+  fi
+  [[ -f "$hook" ]] || { print -ru2 -- "wt: .worktreehook is not a regular file."; return 1 }
+  [[ -x "$hook" ]] || { print -ru2 -- "wt: .worktreehook is not executable."; return 1 }
+  return 0
+}
+
+# _wt_hook_run <main> <worktree> <branch> <slug> <verb> — run the project hook.
+#
+# Validation happens here, immediately before execution, not only at the earlier
+# pre-flight. Validation checks a pathname while execution happens later, so the
+# early check in `wt` is a usability guard that avoids creating a worktree for a
+# misconfigured repository — it does not substitute for this one. Concurrent
+# mutation of the primary hook during a command remains unsupported (see the spec,
+# §5.1 "Validation is point-in-time").
+#
+# Executed as a process so its shebang picks the interpreter, in a subshell so cwd
+# and WT_* never leak back into the caller.
+_wt_hook_run() {
+  emulate -L zsh
+  local main="$1" wt="$2" branch="$3" slug="$4" verb="$5"
+  _wt_hook_check "$main"
+  case $? in
+    2) return 0 ;;   # repository has not opted in
+    1) return 1 ;;
+  esac
+  ( cd "$wt" \
+    && WT_MAIN="$main" WT_WORKTREE="$wt" WT_BRANCH="$branch" WT_SLUG="$slug" \
+       "$main/.worktreehook" "$verb" )
+  local hrc=$?
+  (( hrc == 0 )) && return 0
+  # Normalized to 1: the documented interface is 0/1, and callers branch on
+  # success or failure only. The hook's own status is surfaced in the message
+  # rather than returned, so `exit 130` and `exit 3` are handled identically.
+  print -ru2 -- "wt: .worktreehook $verb exited $hrc."
+  return 1
+}
+
+# _wt_manifest <main> <dest> — validate .worktreeinclude and fill _WT_CARRY with
+# the entries whose destination is still missing.
+#
+# Filtering is required for correctness, not tidiness: wtcp refuses existing
+# destinations and returns NONZERO while still copying the missing ones, so
+# passing the whole manifest on a retry fails every second run by construction.
+#
+# Containment is checked lexically *and* through the filesystem. A path with no
+# ".." still escapes if a directory component is a symlink — the target worktree's
+# tree comes from the feature branch, so a branch committing `config` as a symlink
+# redirects `config/master.key` on write. The rule is asymmetric:
+#
+#   source:      no component may be a symlink, INCLUDING the final one. A final
+#                source symlink is dereferenced on read, so pointing it at an
+#                external directory copies that directory's contents in.
+#   destination: no PARENT component may be a symlink. An existing final symlink
+#                is fine precisely because it is filtered out below as "already
+#                present" — skipped, never followed, never written through.
+_wt_manifest() {
+  emulate -L zsh
+  setopt local_options extended_glob
+  local main="$1" dest="$2" line p comp
+  local -a parts
+  _WT_CARRY=()
+  [[ -f "$main/.worktreeinclude" ]] || return 0
+
+  # `|| [[ -n "$line" ]]` so a final line with no trailing newline still counts.
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${${line##[[:space:]]##}%%[[:space:]]##}"
+    [[ -z "$line" || "$line" == '#'* ]] && continue
+
+    if [[ "$line" == /* || "$line" == '~'* ]]; then
+      print -ru2 -- "wt: .worktreeinclude entry '$line' is not repo-relative — refusing."
+      return 1
+    fi
+    parts=( ${(s:/:)line} )
+    if (( ${parts[(I)..]} )); then
+      print -ru2 -- "wt: .worktreeinclude entry '$line' contains '..' — refusing."
+      return 1
+    fi
+
+    if [[ ! -e "$main/$line" && ! -L "$main/$line" ]]; then
+      print -ru2 -- "wt: .worktreeinclude lists '$line', not found in $main — skipping."
+      continue
+    fi
+
+    p="$main"
+    for comp in $parts; do
+      p="$p/$comp"
+      if [[ -L "$p" ]]; then
+        print -ru2 -- "wt: .worktreeinclude entry '$line' resolves through a symlink in $main — refusing."
+        return 1
+      fi
+    done
+
+    p="$dest"
+    for comp in ${parts[1,-2]}; do
+      p="$p/$comp"
+      if [[ -L "$p" ]]; then
+        print -ru2 -- "wt: .worktreeinclude entry '$line' resolves through a symlink in $dest — refusing."
+        return 1
+      fi
+    done
+
+    [[ -e "$dest/$line" || -L "$dest/$line" ]] && continue   # already present: done
+    _WT_CARRY+=( "$line" )
+  done < "$main/.worktreeinclude"
+  return 0
+}
+
+# _wt_do_prepare <main> <dest> <branch> <slug> — copy missing manifest entries,
+# then run the project setup hook. The UNLOCKED routine: `wt` calls it under the
+# lock it already holds, and `wt-prepare` is the thin locked wrapper. It must not
+# lock itself — fcntl locks are per-process, so a nested acquire/release here
+# would silently drop the caller's lock (see _wt_lock).
+_wt_do_prepare() {
+  emulate -L zsh
+  local main="$1" dest="$2" branch="$3" slug="$4" qb="${(q-)branch}"
+
+  # Validate the hook before copying, so a misconfigured repository changes
+  # nothing. This mirrors wt-rm, which validates before disrupting the session.
+  _wt_hook_check "$main" >/dev/null 2>&1
+  local hrc=$?
+  if (( hrc == 1 )); then
+    _wt_hook_check "$main"          # re-run for the message
+    print -ru2 -- "    The worktree exists — fix the hook, then: wt-prepare $qb && wt $qb"
+    return 1
+  fi
+
+  _wt_manifest "$main" "$dest" || {
+    print -ru2 -- "    The worktree exists — fix .worktreeinclude, then: wt-prepare $qb && wt $qb"
+    return 1
+  }
+
+  if (( ${#_WT_CARRY} )); then
+    if (( ! $+commands[wtcp] )); then
+      print -ru2 -- "wt: files need copying but wtcp is missing (brew install satococoa/tap/wtcp)."
+      print -ru2 -- "    The worktree exists — install wtcp, then: wt-prepare $qb && wt $qb"
+      return 1
+    fi
+    # `--` is mandatory: manifest entries are arbitrary strings, and one named
+    # "-h" is otherwise parsed as an option and prints usage instead of copying.
+    if ! ( cd "$dest" && wtcp --from "$main" -- "${_WT_CARRY[@]}" ); then
+      print -ru2 -- "wt: copying .worktreeinclude files into $dest failed."
+      print -ru2 -- "    The worktree exists — fix the copy, then: wt-prepare $qb && wt $qb"
+      return 1
+    fi
+  fi
+
+  if ! _wt_hook_run "$main" "$dest" "$branch" "$slug" setup; then
+    print -ru2 -- "wt: .worktreehook setup failed for $dest."
+    print -ru2 -- "    The worktree exists — fix it, then: wt-prepare $qb && wt $qb"
+    return 1
+  fi
+  return 0
+}
+
+# wt-prepare <branch> — re-run preparation against an existing worktree.
+#
+# The named recovery path for a partial copy or a failed setup hook. Re-running
+# `wt` cannot do this: on an existing worktree `wt` takes the reopen path, which
+# deliberately skips preparation.
+#
+# It never creates, stops, attaches or switches a Zellij session, so it may run
+# while the target session and application are live. Project hooks must tolerate
+# that or document their own restriction.
+wt-prepare() {
+  emulate -L zsh
+  local branch="$1"
+  [[ -n "$branch" ]] || { print -ru2 -- "usage: wt-prepare <branch>"; return 1; }
+  local slug="${branch//\//-}" main common dest
+  main="$(_wt_primary)" || return 1
+  common="$(_wt_git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
+  dest="${main:h}/${main:t}-${slug}"
+
+  [[ -d "$dest" ]] || { print -ru2 -- "wt-prepare: $dest does not exist."; return 1; }
+  _wt_lock "$common" "$slug" || return 1
+  {
+    _wt_assert_worktree "$main" "$dest" "$branch" || return 1
+    _wt_do_prepare "$main" "$dest" "$branch" "$slug" || return 1
+    print -r -- "✓ prepared $dest"
+  } always {
+    _wt_unlock
+  }
+}
+
 # wt — spin up (or reopen) a git worktree for the current repo in its own Zellij
 # "dev" session. Complements `dev`, which only *finds* existing checkouts; `wt`
 # *creates* one first, as a sibling under the same org dir so `dev`'s repo glob and
@@ -254,83 +621,57 @@ dev() {
 #
 # A new branch starts from the *caller's* HEAD, matching plain `git worktree add -b`:
 # branch from where you are, and keep working offline. Pass a start point to override.
+#
+# Creation runs under the per-target lock (see _wt_lock) and pre-validates the
+# project hook before touching anything: a misconfigured repository leaves no
+# worktree and no branch behind. Once the worktree exists (fresh or an existing
+# branch with none yet), preparation — manifest copy, then the setup hook — is
+# delegated to the shared, unlocked `_wt_do_prepare` (see wt-prepare). `dev` runs
+# OUTSIDE the lock and only on success, so a long-lived session never holds the
+# lock and a failed setup never attaches you to a half-built worktree.
 wt() {
   emulate -L zsh
-  setopt local_options extended_glob   # the .worktreeinclude trim below needs it
   local branch="$1" start="${2-}"
   [[ -n "$branch" ]] || { print -ru2 -- "usage: wt <branch> [start-point]"; return 1; }
-  local slug="${branch//\//-}"          # flatten "/" so the dir/session stay valid
+  local slug="${branch//\//-}" qb="${(q-)branch}" main common dest
+  main="$(_wt_primary)" || return 1
+  common="$(_wt_git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
+  dest="${main:h}/${main:t}-${slug}"
 
-  local common root
-  common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" \
-    || { print -ru2 -- "wt: not inside a git repo."; return 1; }
-  root="${common:h}"                    # .../<repo>/.git → .../<repo> (main worktree)
-  # NB: not `path` — that's zsh's special var tied to $PATH; assigning it breaks
-  # command lookup for the rest of the function.
-  local dest="${root:h}/${root:t}-${slug}"
-
-  local created=1
-  if [[ -d "$dest" ]]; then
-    # A bare -d check is not enough to call this "reopen": the directory may be a husk
-    # left by a failed removal (no .git at all), or — because "feature/foo" and
-    # "feature-foo" flatten to the same slug — a worktree on a *different* branch,
-    # which would silently drop you into the wrong code.
-    _wt_assert_worktree "$root" "$dest" "$branch" || return 1
-    print -ru2 -- "wt: reopening $dest"; created=
-  elif git -C "$root" show-ref --quiet --verify "refs/heads/$branch"; then
-    [[ -z "$start" ]] || {
-      print -ru2 -- "wt: branch '$branch' already exists — drop the start point."; return 1 }
-    git worktree add "$dest" "$branch" || return
-  else
-    # Deliberately NOT `git -C "$root"`: running against the main checkout pinned every
-    # new branch to main's HEAD, so `wt child` from inside another worktree branched off
-    # main rather than the work it was started from. Report the base either way —
-    # branching off a detached commit is sometimes deliberate, so show it, don't warn.
-    local base
-    if [[ -n "$start" ]]; then
-      base="$start"
+  _wt_lock "$common" "$slug" || return 1
+  {
+    local created=1
+    if [[ -d "$dest" ]]; then
+      _wt_assert_worktree "$main" "$dest" "$branch" || return 1
+      print -ru2 -- "wt: reopening $dest"; created=
     else
-      base="$(git symbolic-ref --quiet --short HEAD 2>/dev/null)" \
-        || base="detached@$(git rev-parse --short HEAD 2>/dev/null)"
-    fi
-    print -r -- "wt: branching '$branch' from $base"
-    git worktree add "$dest" -b "$branch" ${start:+"$start"} || return
-  fi
+      # Pre-validate before creating anything: a misconfigured repository should
+      # leave no worktree and no branch behind. This does NOT replace the check
+      # inside _wt_hook_run immediately before execution.
+      _wt_hook_check "$main" >/dev/null 2>&1
+      (( $? == 1 )) && { _wt_hook_check "$main"; return 1 }
 
-  # A fresh worktree has none of the repo's gitignored files, so it can't run
-  # (missing env/secrets). Copy the ones this repo lists in .worktreeinclude from
-  # the main checkout via wtcp (rsync; refuses to clobber). Only carry paths that
-  # actually exist, and only on first creation — reopening leaves them untouched.
-  if [[ -n "$created" && -f "$root/.worktreeinclude" ]]; then
-    if (( ! $+commands[wtcp] )); then
-      # These files are the reason the worktree can run at all, so don't hand back a
-      # half-built checkout that fails confusingly at boot.
-      print -ru2 -- "wt: .worktreeinclude present but wtcp is missing (brew install satococoa/tap/wtcp)."
-      print -ru2 -- "    The worktree exists — install wtcp, copy the files, then: dev $dest"
-      return 1
-    fi
-    # `|| [[ -n "$line" ]]` so a final line with no trailing newline still counts;
-    # entries are trimmed. A listed path that doesn't exist is a stale
-    # .worktreeinclude — and that file is *tracked*, so hard-failing there would block
-    # every worktree in the repo until someone commits a fix. Warn, carry the rest.
-    local -a carry; local line
-    while IFS= read -r line || [[ -n "$line" ]]; do
-      line="${${line##[[:space:]]##}%%[[:space:]]##}"
-      [[ -z "$line" || "$line" == '#'* ]] && continue
-      if [[ -e "$root/$line" ]]; then
-        carry+=( "$line" )
+      if _wt_git -C "$main" show-ref --quiet --verify "refs/heads/$branch"; then
+        [[ -z "$start" ]] || {
+          print -ru2 -- "wt: branch $qb already exists — drop the start point."; return 1 }
+        _wt_git worktree add "$dest" "$branch" || return 1
       else
-        print -ru2 -- "wt: .worktreeinclude lists '$line', not found in $root — skipping."
+        local base
+        if [[ -n "$start" ]]; then
+          base="$start"
+        else
+          base="$(_wt_git symbolic-ref --quiet --short HEAD 2>/dev/null)" \
+            || base="detached@$(_wt_git rev-parse --short HEAD 2>/dev/null)"
+        fi
+        print -r -- "wt: branching $qb from $base"
+        _wt_git worktree add "$dest" -b "$branch" ${start:+"$start"} || return 1
       fi
-    done < "$root/.worktreeinclude"
-    # A failed copy, by contrast, was previously invisible: the status went unchecked
-    # and wt walked straight into dev with an unrunnable worktree.
-    if (( ${#carry} )) && ! ( cd "$dest" && wtcp --from "$root" "${carry[@]}" ); then
-      print -ru2 -- "wt: copying .worktreeinclude files into $dest failed."
-      print -ru2 -- "    The worktree exists — fix the copy, then: dev $dest"
-      return 1
     fi
-  fi
+
+    [[ -n "$created" ]] && { _wt_do_prepare "$main" "$dest" "$branch" "$slug" || return 1 }
+  } always {
+    _wt_unlock
+  }
 
   dev "$dest"
 }
@@ -343,15 +684,15 @@ wt() {
 _wt_assert_worktree() {
   emulate -L zsh
   local root="$1" dest="$2" branch="$3"
-  local -a lines paths; local p
-  lines=( ${(f)"$(git -C "$root" worktree list --porcelain 2>/dev/null)"} )
-  for p in ${${(M)lines:#worktree *}#worktree }; do paths+=( "${p:A}" ); done
+  local -a recs paths; local p
+  recs=( ${(0)"$(_wt_git -C "$root" worktree list --porcelain -z 2>/dev/null)"} )
+  for p in ${${(M)recs:#worktree *}#worktree }; do paths+=( "${p:A}" ); done
   if (( ! ${paths[(Ie)${dest:A}]} )); then
     print -ru2 -- "wt: $dest is not a registered worktree of $root."
     print -ru2 -- "    Leftover directory? Remove it, or use a different branch name."
     return 1
   fi
-  local have; have="$(git -C "$dest" symbolic-ref --quiet --short HEAD 2>/dev/null)"
+  local have; have="$(_wt_git -C "$dest" symbolic-ref --quiet --short HEAD 2>/dev/null)"
   if [[ "$have" != "$branch" ]]; then
     print -ru2 -- "wt: $dest is on '${have:-a detached HEAD}', not '$branch'."
     print -ru2 -- "    Branch names differing only by '/' vs '-' share one directory."
@@ -359,80 +700,141 @@ _wt_assert_worktree() {
   fi
 }
 
-# wt-rm — retire a worktree made by `wt`: confirm it's clean, stop its Zellij session,
-# remove the worktree, then delete the branch.
+# wt-rm — retire a worktree made by `wt`: validate the project hook, run three
+# cleanliness checks around a Zellij session shutdown and the teardown hook, remove
+# the worktree, then delete the branch.
 #   wt-rm <branch>
 # Run from another checkout of the same repo, never from inside the one being removed.
 #
-# Ordering matters. The dirty check runs BEFORE the session is stopped: `git worktree
-# remove` refuses on a dirty tree anyway, but by then the session would already be gone
-# — you'd lose the workspace and still be left with the worktree. Git stays the
-# authority for anything that changes in between; this is a preflight, not a substitute.
+# Runs under the per-target lock (see _wt_lock), released in an `always` block so
+# every return path — including a mid-sequence abort — unlocks. An interruption
+# is not an exit path this block covers: SIGINT unwinds the command outright and
+# the kernel releases the lock with the process. See the interruption note under
+# _wt_unlock for why no INT/TERM trap is installed.
+#
+# Ordering follows the sequence of things that can go wrong, each guarded right before
+# it happens rather than once up front:
+#
+#   1. Hook validation, before anything is disrupted. A misconfigured repository must
+#      never cost you the session or the worktree just for running `wt-rm`.
+#   2. Check 1 (_wt_clean), before anything is disrupted. Catches pre-existing
+#      uncommitted work — the case `git worktree remove` would refuse anyway, but by
+#      then the session would already be gone.
+#   3. Stop the Zellij session. An absent session counts as successful shutdown — the
+#      normal state on a retry — but a session that exists and cannot be stopped
+#      aborts unconditionally: a live process holding the directory open is exactly
+#      how an empty tmp/ husk is left behind, so stopping first is an invariant here,
+#      not a courtesy.
+#   4. Check 2 (_wt_clean), after shutdown, before teardown. Session shutdown can
+#      itself flush files to disk — a live app writing on exit is exactly how the
+#      observed Bootsnap husks arose — so this check exists specifically to catch
+#      dirt introduced BY stopping the session, distinct from check 1's pre-existing
+#      dirt.
+#   5. Run the .worktreehook teardown verb. Idempotent by contract, which matters
+#      because a failure here preserves the worktree with its session already
+#      stopped — retrying `wt-rm` re-runs teardown from that state.
+#   6. Check 3 (_wt_clean), after teardown, before removal. Ties any non-ignored
+#      teardown output to its cause before Git's more generic removal refusal would
+#      otherwise appear a step later with a less specific message.
+#
+# All three checks fail closed on _wt_clean's unknown state (2), same as every other
+# consumer of that helper.
 wt-rm() {
   emulate -L zsh
   local branch="$1"
   [[ -n "$branch" ]] || { print -ru2 -- "usage: wt-rm <branch>"; return 1; }
-  local slug="${branch//\//-}"
-
-  local common root
-  common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" \
-    || { print -ru2 -- "wt-rm: not inside a git repo."; return 1; }
-  root="${common:h}"
-  local dest="${root:h}/${root:t}-${slug}"
+  local slug="${branch//\//-}" qb="${(q-)branch}" main common dest
+  main="$(_wt_primary)" || return 1
+  common="$(_wt_git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
+  dest="${main:h}/${main:t}-${slug}"
 
   [[ -d "$dest" ]] || { print -ru2 -- "wt-rm: $dest does not exist."; return 1; }
-  _wt_assert_worktree "$root" "$dest" "$branch" || return 1
+  _wt_lock "$common" "$slug" || return 1
+  {
+    _wt_assert_worktree "$main" "$dest" "$branch" || return 1
 
-  # Removing the worktree you're standing in pulls the cwd out from under this shell,
-  # and the session about to be stopped is the one running the command.
-  local here; here="$(git rev-parse --path-format=absolute --show-toplevel 2>/dev/null)"
-  if [[ "${here:A}" == "${dest:A}" ]]; then
-    print -ru2 -- "wt-rm: you're inside $dest — run this from another checkout."
-    return 1
-  fi
+    local here; here="$(_wt_git rev-parse --path-format=absolute --show-toplevel 2>/dev/null)"
+    [[ "${here:A}" == "${dest:A}" ]] && {
+      print -ru2 -- "wt-rm: you're inside $dest — run this from another checkout."; return 1 }
 
-  # Capture status and exit code separately. Testing the output alone read a *failed*
-  # `git status` (corrupt index, unreadable worktree) as "no changes" — the one case
-  # where we know least about the tree would have sailed through to removal.
-  # Split the assignment from `local`: `local x="$(...)"` reports the *builtin's* status,
-  # not the command substitution's, so the failure would still be invisible.
-  local dirty rc
-  dirty="$(git -C "$dest" status --porcelain 2>/dev/null)"; rc=$?
-  if (( rc )); then
-    print -ru2 -- "wt-rm: cannot determine whether $dest is clean — refusing."
-    git -C "$dest" status --porcelain >/dev/null   # re-run to surface git's own error
-    return 1
-  fi
-  if [[ -n "$dirty" ]]; then
-    print -ru2 -- "wt-rm: $dest has uncommitted changes — commit, stash or discard them first."
-    return 1
-  fi
+    # Check 1 — before anything is disrupted.
+    #
+    # `*`, not `2`: 2 is the only unknown status _wt_clean can currently produce,
+    # so this arm is unreachable defensive code, kept so that anything which is
+    # not a definite 0 fails closed rather than falling through as "clean".
+    #
+    # It is NOT protection against an interrupt-produced status. That premise was
+    # wrong: an interrupt unwinds the whole command rather than handing this
+    # `case` a status at all (see the interruption note under _wt_unlock).
+    _wt_clean "$dest"
+    case $? in
+      0) ;;
+      1) print -ru2 -- "wt-rm: $dest has uncommitted changes — commit, stash or discard them first."; return 1 ;;
+      *) print -ru2 -- "wt-rm: cannot determine whether $dest is clean — refusing."
+         _wt_git -C "$dest" status --porcelain >/dev/null; return 1 ;;
+    esac
 
-  # Stop the session before removal so nothing holds the directory open: a live app
-  # process is what leaves an empty tmp/ husk behind after `git worktree remove`.
-  # If stopping fails, abort rather than continue — carrying on would remove the
-  # directory out from under a running session, which is exactly the husk this
-  # ordering exists to prevent.
-  local name; name="$(_wt_session_name "$dest")"
-  if zellij list-sessions -s 2>/dev/null | grep -Fqx -- "$name"; then
-    if ! zellij delete-session --force "$name" >/dev/null 2>&1; then
-      print -ru2 -- "wt-rm: could not stop session '$name' — refusing to remove $dest."
-      print -ru2 -- "    Close it by hand (zellij delete-session --force $name), then retry."
+    # Hook configuration, still before anything is disrupted.
+    _wt_hook_check "$main" >/dev/null 2>&1
+    (( $? == 1 )) && { _wt_hook_check "$main"; return 1 }
+
+    # Stop the session. An absent session IS successful shutdown — that is the
+    # normal state on a retry. Stopping first is an invariant: a live process
+    # holding the directory open is what leaves an empty tmp/ husk behind.
+    local name; name="$(_wt_session_name "$dest")"
+    if zellij list-sessions -s 2>/dev/null | grep -Fqx -- "$name"; then
+      zellij delete-session --force "$name" >/dev/null 2>&1 || {
+        print -ru2 -- "wt-rm: could not stop session '$name' — refusing to remove $dest."
+        print -ru2 -- "    Close it by hand (zellij delete-session --force $name), then retry."
+        return 1 }
+    fi
+
+    # Check 2 — shutdown can flush files; that is how the Bootsnap husks arose.
+    _wt_clean "$dest"
+    case $? in
+      0) ;;
+      1) print -ru2 -- "wt-rm: stopping the session left changes in $dest — inspect it, then retry."; return 1 ;;
+      *) print -ru2 -- "wt-rm: cannot determine whether $dest is clean after session shutdown — refusing."; return 1 ;;
+    esac
+
+    if ! _wt_hook_run "$main" "$dest" "$branch" "$slug" teardown; then
+      print -ru2 -- "wt-rm: .worktreehook teardown failed — $dest kept, session stopped."
+      print -ru2 -- "    Fix it and retry: wt-rm $qb    (teardown is idempotent)"
+      print -ru2 -- "    Or resume work with: wt-prepare $qb && wt $qb"
       return 1
     fi
-  fi
 
-  git worktree remove "$dest" || return   # authoritative; still refuses on a race
-  print -r -- "✓ removed worktree $dest"
+    # Check 3 — ties non-ignored hook output to its cause, before Git's more
+    # generic removal refusal appears one step later.
+    _wt_clean "$dest"
+    case $? in
+      0) ;;
+      1) print -ru2 -- "wt-rm: teardown left changes in $dest — removal aborted. Resources may already be reclaimed."
+         print -ru2 -- "    Hook output must be git-ignored or written outside the worktree."
+         return 1 ;;
+      *) print -ru2 -- "wt-rm: cannot determine whether $dest is clean after teardown — refusing. Resources may already be reclaimed."
+         return 1 ;;
+    esac
 
-  # -d, never -D: an unmerged branch is work, and once the worktree is gone a forced
-  # delete is not something you recover from casually.
-  git -C "$root" branch -d "$branch" \
-    || print -ru2 -- "wt-rm: branch '$branch' kept (not fully merged) — inspect or merge it before deleting it explicitly."
+    # Removal is the third post-shutdown failure mode (spec §9.3), and reports the
+    # same exact partial state as the other two. Git's own refusal names only the
+    # obstruction; on its own it leaves the reader unsure whether teardown ran, so
+    # the reclamation state and both recovery routes are spelled out here.
+    if ! _wt_git worktree remove "$dest"; then
+      print -ru2 -- "wt-rm: removing $dest failed — worktree kept, session stopped. Resources may already be reclaimed."
+      print -ru2 -- "    Fix the obstruction and retry: wt-rm $qb    (teardown is idempotent)"
+      print -ru2 -- "    Or resume work with: wt-prepare $qb && wt $qb"
+      return 1
+    fi
+    print -r -- "✓ removed worktree $dest"
 
-  # Removal can still leave a husk if something recreated files mid-flight. Say so,
-  # rather than leave a stray directory that `wt` will later refuse to reuse.
-  [[ -d "$dest" ]] \
-    && print -ru2 -- "wt-rm: $dest still exists (files recreated during removal) — remove it manually."
-  return 0
+    _wt_git -C "$main" branch -d "$branch" \
+      || print -ru2 -- "wt-rm: branch $qb kept (not fully merged) — inspect or merge it before deleting it explicitly."
+
+    [[ -d "$dest" ]] \
+      && print -ru2 -- "wt-rm: $dest still exists (files recreated during removal) — remove it manually."
+    return 0
+  } always {
+    _wt_unlock
+  }
 }

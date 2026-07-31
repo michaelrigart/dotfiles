@@ -1,6 +1,6 @@
 # Worktree Hook Protocol Implementation Plan
 
-**Status:** Approved
+**Status:** In progress
 **Date:** 2026-07-30
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -335,12 +335,14 @@ OUT="$(cd "$REPO" && source "$FUNCS" && _wt_lock "$CD" slug2 && \
         zsh -c "source '$FUNCS'; _wt_lock '$CD' slug2" 2>&1)"; RC=$?
 has "another lifecycle command" "a lock held by another process is refused"
 
-# Persistent-shell release: two sequential runs in ONE shell must both succeed.
-# Without the explicit unlock the fd stays open and the second refuses.
-OUT="$(cd "$REPO" && source "$FUNCS" && \
-        { _wt_lock "$CD" slug3 && _wt_unlock; } && \
-        { _wt_lock "$CD" slug3 && _wt_unlock; } && print OK)"; RC=$?
-eq "$OUT" "OK" "lock is reacquirable in the same shell after explicit unlock"
+# Persistent-shell release: acquire and unlock in ONE shell, then have a SEPARATE
+# process acquire. This is the regression test for the explicit-unlock rule —
+# without `zsystem flock -u` the fd stays open here and the child is refused.
+# It must cross a process boundary: fcntl locks are per-process, so a same-shell
+# reacquisition succeeds whether or not the first was ever released.
+OUT="$(cd "$REPO" && source "$FUNCS" && _wt_lock "$CD" slug3 && _wt_unlock && \
+        zsh -c "source '$FUNCS'; _wt_lock '$CD' slug3 && print RELEASED")"
+eq "$OUT" "RELEASED" "explicit unlock releases the lock for other processes"
 
 # A holder killed with SIGKILL leaves nothing behind: the kernel releases it.
 zsh -c "source '$FUNCS'; _wt_lock '$CD' slug5 && kill -9 \$\$" 2>/dev/null
@@ -482,16 +484,58 @@ chmod -x "$REPO/.worktreehook"
 run "$REPO" _wt_hook_check "$REPO"
 rc_is 1 "index-100755 without the working-tree exec bit is refused"
 
-# Fails CLOSED when the index cannot be read. Without the separate status
-# capture, ls-files returns empty and a repository with an unreadable index is
-# reported as "not opted in" (2) — silently skipping a hook that may exist.
+# Selecting stage 0 specifically is what rejects a conflicted hook, which has
+# no stage-0 entry. Construct a real merge conflict rather than staging by
+# hand, so the fixture depends on Git's own conflict semantics, not on this
+# test's assumptions about them.
+setup
+mkhook "$REPO" '#!/bin/sh
+exit 0'
+git -C "$REPO" checkout -q -b feature
+print -r -- '#!/bin/sh
+exit 1' > "$REPO/.worktreehook"
+git -C "$REPO" commit -q -am "feature change"
+git -C "$REPO" checkout -q main
+print -r -- '#!/bin/sh
+exit 2' > "$REPO/.worktreehook"
+git -C "$REPO" commit -q -am "main change"
+git -C "$REPO" merge --no-edit feature >/dev/null 2>&1
+run "$REPO" _wt_hook_check "$REPO"
+rc_is 1 "conflicted hook (no stage-0 entry) is refused"
+has "unresolved conflict" "conflicted-hook refusal names the conflict"
+# Guard the guard: if Git ever stopped leaving this path with no stage-0 entry
+# during a conflict, the assertions above would start testing nothing. Fail
+# loudly instead of silently validating an already-resolved file.
+STAGE0="$(git -C "$REPO" ls-files --stage -- .worktreehook | awk '$3 == 0 { print $1 }')"
+eq "$STAGE0" "" "fixture genuinely leaves .worktreehook with no stage-0 entry"
+
+# Fails CLOSED when the index cannot be read — two variants, because no single
+# fixture proves both halves at once.
+#
+# Variant 1: the hook is absent from the working tree too. Without the `rc`
+# gate, ls-files's failure leaves `raw` empty with nothing on disk to fall
+# back on, so the function would misread this as "not opted in" (2) instead
+# of refusing. This is the fixture where `rc_is 1` alone is meaningful:
+# removing the gate flips this exact assertion.
+setup
+print -r -- "garbage" > "$REPO/.git/index"
+run "$REPO" _wt_hook_check "$REPO"
+rc_is 1 "unreadable index with no on-disk hook is refused, not read as not-opted-in"
+has "cannot read the index" "the refusal says the index state is unknown"
+
+# Variant 2: the hook is tracked, committed, and still present on disk when
+# the index is corrupted. Here `rc_is 1` cannot discriminate on its own —
+# without the gate the function still returns 1, just via the "untracked"
+# fallback path, because the on-disk file survives the index corruption. What
+# this fixture proves is the *message*: only the gate produces "cannot read
+# the index"; the fallback path names the wrong reason.
 setup
 mkhook "$REPO" '#!/bin/sh
 exit 0'
 print -r -- "garbage" > "$REPO/.git/index"
 run "$REPO" _wt_hook_check "$REPO"
-rc_is 1 "unreadable index is refused, not treated as not-opted-in"
-has "cannot read the index" "the refusal says the index state is unknown"
+rc_is 1 "unreadable index with a tracked hook on disk is still refused"
+has "cannot read the index" "the refusal names the index as the reason, not 'untracked'"
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -515,10 +559,12 @@ Expected: FAIL — `_wt_hook_check` undefined.
 _wt_hook_check() {
   emulate -L zsh
   local main="$1" hook="$1/.worktreehook" raw mode rc
-  # Status captured separately, for the same reason as _wt_clean: if ls-files
-  # fails, `raw` is empty, and treating that as "absent" would report a
-  # repository with an unreadable index as "not opted in" — silently skipping a
-  # hook that may well exist. Unknown index state is refused, not assumed empty.
+  # Status captured separately, for the same reason as _wt_clean: a failed
+  # ls-files also leaves `raw` empty, and falling through on that emptiness
+  # would misread an unreadable index by whatever happens to be on disk —
+  # "not opted in" (2) when no working-tree file exists, or a bogus "untracked"
+  # refusal (1, wrong message) when one does. Either way the true index state
+  # is unknown, so it is refused unconditionally, before `raw` is inspected.
   raw="$(_wt_git -C "$main" ls-files --stage -- .worktreehook 2>/dev/null)"; rc=$?
   if (( rc )); then
     print -ru2 -- "wt: cannot read the index of $main to validate .worktreehook — refusing."
@@ -581,7 +627,7 @@ git commit -m "feat(zsh): validate .worktreehook index entry and working-tree pa
 print -r -- "K. hook execution"
 setup
 mkhook "$REPO" '#!/bin/sh
-printf "%s|%s|%s|%s|%s\n" "$1" "$(pwd)" "$WT_MAIN" "$WT_BRANCH" "$WT_SLUG" > "$WT_MAIN/hook.out"
+printf "%s|%s|%s|%s|%s|%s\n" "$1" "$(pwd)" "$WT_MAIN" "$WT_WORKTREE" "$WT_BRANCH" "$WT_SLUG" > "$WT_MAIN/hook.out"
 read line || line="(no stdin)"
 printf "stdin=%s\n" "$line" >> "$WT_MAIN/hook.out"
 echo "to-stdout"; echo "to-stderr" >&2
@@ -593,8 +639,14 @@ rc_is 0 "successful hook returns 0"
 has "to-stdout" "hook stdout reaches the caller"
 has "to-stderr" "hook stderr reaches the caller"
 REC="$(<"$REPO/hook.out")"
-[[ "$REC" == "setup|$HOME/Code/Org/repo-k1|$REPO|k1|k1"* ]] \
+[[ "$REC" == "setup|$HOME/Code/Org/repo-k1|$REPO|$HOME/Code/Org/repo-k1|k1|k1"* ]] \
   && _pass "verb, cwd and WT_* are correct" || _fail "verb, cwd and WT_* are correct"
+# The cwd check above proves `cd "$wt"` landed in the right place; it does not by
+# itself prove WT_WORKTREE holds the right value — a bug that set WT_WORKTREE
+# wrong while cd still worked would pass it undetected. Isolate the field and
+# compare it exactly, independent of the cwd check.
+FIELDS=( "${(@s:|:)${REC%%$'\n'*}}" )
+eq "${FIELDS[4]}" "$HOME/Code/Org/repo-k1" "WT_WORKTREE holds the correct absolute worktree path"
 [[ "$REC" == *"stdin=fed"* ]] && _pass "stdin is inherited" || _fail "stdin is inherited"
 
 setup
@@ -610,7 +662,11 @@ run "$REPO" wt k3
 run "$REPO" _wt_hook_run "$REPO" "$HOME/Code/Org/repo-k3" k3 k3 setup
 rc_is 0 "absent hook is a successful no-op"
 
-# The hook is executed, not sourced: a variable it sets must not leak out.
+# The hook runs inside a subshell: a variable it sets must not leak into the
+# caller. This proves subshell isolation — it does NOT by itself prove the hook
+# is executed rather than sourced, since sourcing *inside* the same subshell
+# would isolate LEAKED identically. See the shebang-honoring assertion below
+# for the property that actually distinguishes execution from sourcing.
 setup
 mkhook "$REPO" '#!/bin/sh
 LEAKED=yes
@@ -618,7 +674,55 @@ exit 0'
 run "$REPO" wt k4
 OUT="$(cd "$REPO" && source "$FUNCS" && \
   _wt_hook_run "$REPO" "$HOME/Code/Org/repo-k4" k4 k4 setup >/dev/null 2>&1; print -r -- "${LEAKED:-unset}")"
-eq "$OUT" "unset" "hook runs as a process, not sourced"
+eq "$OUT" "unset" "hook's variables don't leak into the caller (subshell isolation)"
+
+# The hook must be executed as a process, never sourced, so its own shebang
+# selects the interpreter — the property spec §11.1 requires ("Shebang:
+# honored; hook is not sourced"), and what makes the protocol stack-agnostic
+# (a project's hook can be Python, .NET, anything with a shebang). A hook
+# body zsh cannot parse is the only fixture that can tell "executed" and
+# "sourced inside the isolating subshell" apart: `source` hands zsh's own
+# parser this file, so non-zsh syntax either errors out or is silently
+# misparsed, and the marker is never written; `exec` hands it to python3,
+# which writes the marker normally.
+if command -v python3 >/dev/null 2>&1; then
+  setup
+  mkhook "$REPO" '#!/usr/bin/env python3
+open("py.marker", "w").close()'
+  run "$REPO" wt k5
+  run "$REPO" _wt_hook_run "$REPO" "$HOME/Code/Org/repo-k5" k5 k5 setup
+  [[ -f "$HOME/Code/Org/repo-k5/py.marker" ]] \
+    && _pass "shebang is honored: a python3 hook runs, it is not parsed as zsh" \
+    || _fail "shebang is honored: a python3 hook runs, it is not parsed as zsh"
+else
+  print -r -- "  SKIP: shebang-honored assertion — python3 not found on PATH (not counted as pass or fail)"
+fi
+
+# The operative gate: `_wt_hook_run` re-validates immediately before executing,
+# not merely at some earlier pre-flight (see the comment above its definition).
+# Nothing above feeds it an invalid hook, so that re-validation is unproven on
+# `_wt_hook_run` itself — a `case` arm swap that let an invalid result fall
+# through to execution would go undetected by rc_is alone if the hook's exit
+# code still happened to be nonzero. The marker-absence check is what actually
+# proves the hook was never reached: `rc_is 1` alone is satisfied even by a bug
+# that executes the hook and then returns 1 regardless.
+#
+# The invalid fixture must be executable on disk: a hook the kernel itself
+# refuses to exec (e.g. missing the working-tree +x bit) would leave the marker
+# absent even with the gate removed, proving nothing about the gate itself.
+# Untracked-but-executable is invalid (section J) yet the kernel would happily
+# run it, so only the gate stands between it and execution.
+setup
+print -r -- '#!/bin/sh
+: > "$WT_MAIN/should-not-run.marker"
+exit 0' > "$REPO/.worktreehook"
+chmod +x "$REPO/.worktreehook"          # executable on disk, but untracked: invalid
+run "$REPO" wt k6
+run "$REPO" _wt_hook_run "$REPO" "$HOME/Code/Org/repo-k6" k6 k6 setup
+rc_is 1 "invalid hook (untracked, though executable on disk) is refused"
+[[ -f "$REPO/should-not-run.marker" ]] \
+  && _fail "the operative gate blocks execution, not just the return code" \
+  || _pass "the operative gate blocks execution, not just the return code"
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -743,7 +847,14 @@ ln -s "$ROOTTMP/elsewhere/t.env" "$D/t.env"
 print -r -- "t.env" > "$REPO/.worktreeinclude"
 OUT="$(cd "$REPO" && source "$FUNCS" && _wt_manifest "$REPO" "$D" && print -r -- "${#_WT_CARRY[@]}")"
 eq "$OUT" "0" "an existing final destination symlink is filtered, not carried"
-eq "$(<"$ROOTTMP/elsewhere/t.env")" "UNTOUCHED" "the symlink target is never written through"
+# No separate write-through assertion: the property is pinned entirely by
+# _WT_CARRY being empty above. _wt_manifest performs no writes under any code
+# path, so a direct "the target file is unchanged" check would pass whether
+# filtering works, is broken, or the function doesn't exist at all — it was
+# tried and proven vacuous. An end-to-end version (through wtcp) wouldn't
+# discriminate either: wtcp refuses an existing destination (a symlink counts
+# as existing) and returns nonzero before writing anything, so a broken filter
+# would surface as a nonzero wt-prepare, never as a modified external file.
 
 # Missing source warns and continues.
 setup
@@ -899,8 +1010,8 @@ STUB
 chmod +x "$STUBS/wtcp"
 ```
 
-Run the suite now: the pre-existing 46 assertions must still pass against the
-faithful stub before any new behaviour is added.
+Run the suite now: the pre-existing assertions must still pass against the
+faithful stub before any new behaviour is added — `failed: 0`.
 
 Run: `zsh .scripts/test-wt-functions.sh`
 Expected: PASS, `failed: 0`.
@@ -957,6 +1068,57 @@ run "$REPO" wt-prepare 'x&y'
 rc_is 1 "setup failure fails prepare"
 has "wt-prepare 'x&y'" "recovery message quotes a hostile branch name"
 has "wt 'x&y'" "recovery message includes the reopening step"
+
+# The hook-invalid bail-out must actually block copying, not just return
+# nonzero: section J already proves _wt_hook_check rejects an untracked-but-
+# executable hook; this proves _wt_do_prepare acts on that rejection instead
+# of copying first, so a misconfigured repository changes nothing. Untracked-
+# but-executable, not chmod -x: a non-executable hook would be refused by the
+# kernel regardless, which would mask whether the software gate did the work
+# — the same trap called out in section K's operative-gate comment.
+setup
+run "$REPO" wt n4
+print -r -- "a.env" > "$REPO/.worktreeinclude"; print -r -- "A" > "$REPO/a.env"
+print -r -- '#!/bin/sh
+exit 0' > "$REPO/.worktreehook"
+chmod +x "$REPO/.worktreehook"          # executable on disk, but untracked: invalid
+run "$REPO" wt-prepare n4
+rc_is 1 "invalid hook aborts prepare before copying"
+[[ -f "$HOME/Code/Org/repo-n4/a.env" ]] \
+  && _fail "manifest file is not copied when the hook is invalid" \
+  || _pass "manifest file is not copied when the hook is invalid"
+has "wt-prepare n4 && wt n4" "recovery message names both steps"
+
+# The wtcp-presence guard (`if (( ${#_WT_CARRY} ))`) is scoped to when a copy
+# is actually needed: a repository whose destinations are already fully
+# populated must not require wtcp to be installed. Discriminating: with that
+# guard removed, the presence check fires unconditionally and this fails
+# even though nothing needs copying. Stripped PATH, not a moved stub — wtcp
+# is really installed on this machine, so hiding the stub just falls through
+# to the real binary (same rationale as section D's CLEANP).
+setup
+run "$REPO" wt n5
+print -r -- "a.env" > "$REPO/.worktreeinclude"; print -r -- "A" > "$REPO/a.env"
+print -r -- "A" > "$HOME/Code/Org/repo-n5/a.env"   # already present at the destination
+CLEANP=$(mkd)
+# Every external the lifecycle reaches before the wtcp check. wtcp is absent
+# on purpose. If a helper later grows a new external dependency, add it here
+# too, or this test starts failing for a reason that has nothing to do with
+# wtcp.
+for b in env git awk mkdir; do ln -s "$(command -v $b)" "$CLEANP/$b"; done
+OUT="$(cd "$REPO" && source "$FUNCS" && export PATH="$CLEANP" && wt-prepare n5 2>&1)"; RC=$?
+rc_is 0 "already-populated destinations don't require wtcp"
+
+# Mirrors section D's coverage of a missing wtcp during copy, for
+# wt-prepare's own path (D only exercises this through `wt`).
+setup
+run "$REPO" wt n6
+print -r -- "a.env" > "$REPO/.worktreeinclude"; print -r -- "A" > "$REPO/a.env"
+CLEANP=$(mkd)
+for b in env git awk mkdir; do ln -s "$(command -v $b)" "$CLEANP/$b"; done
+OUT="$(cd "$REPO" && source "$FUNCS" && export PATH="$CLEANP" && wt-prepare n6 2>&1)"; RC=$?
+rc_is 1 "missing destination with wtcp absent aborts instead of silently skipping"
+has "wtcp is missing" "abort names the missing tool"
 ```
 
 - [ ] **Step 3: Run the tests to verify they fail**
