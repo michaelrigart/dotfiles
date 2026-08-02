@@ -128,6 +128,68 @@ project() {
 }
 
 # ---------------------------------------------------------------------------
+# Claude state readers
+#
+# Claude's state is read from FILES, not the CLI. `claude plugin list` does not exist and
+# `claude plugin marketplace list` lost `--json` (verified against 2.0.33) — the previous
+# CLI queries failed their guard, so BOTH reconcile blocks were skipped and the script
+# quietly reconciled nothing while still exiting 1. Install/add still go through the CLI;
+# only the queries moved.
+#
+# Each reader re-emits the historical CLI shape so the schema checks and projections below
+# are untouched. On unreadable/undecodable input it passes the raw bytes through, letting
+# project() raise the same "unexpected JSON shape" warning as before — one validation point.
+CLAUDE_HOME="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+CLAUDE_MKT_FILE="$CLAUDE_HOME/plugins/known_marketplaces.json"
+CLAUDE_INST_FILE="$CLAUDE_HOME/plugins/installed_plugins.json"
+CLAUDE_SETTINGS_FILE="$CLAUDE_HOME/settings.json"
+CLAUDE_INST_SCHEMA_VERSION=2
+
+# claude_marketplaces_json <outvar> -> legacy [{"repo":"owner/name"}]
+claude_marketplaces_json() {
+  local __out=$1 __d
+  if [ ! -r "$CLAUDE_MKT_FILE" ]; then
+    log_warn "claude marketplace list failed: $CLAUDE_MKT_FILE not readable"
+    status=1; return 1
+  fi
+  __d=$(jq -c '[ to_entries[]
+                 | select((.value.source.repo? // "") != "")
+                 | {repo: .value.source.repo} ]' "$CLAUDE_MKT_FILE" 2>/dev/null) \
+    || __d=$(cat "$CLAUDE_MKT_FILE")
+  printf -v "$__out" '%s' "$__d"
+  return 0
+}
+
+# claude_plugins_json <outvar> -> legacy [{"id":..,"scope":"user","enabled":bool}].
+# Installed set and enabled set live in different files: installed_plugins.json records
+# what is on disk, settings.json.enabledPlugins records what loads. Absent from
+# enabledPlugins means NOT enabled — that is how a disabled plugin presents.
+claude_plugins_json() {
+  local __out=$1 __d __ver __settings=$CLAUDE_SETTINGS_FILE
+  if [ ! -r "$CLAUDE_INST_FILE" ]; then
+    log_warn "claude plugin list failed: $CLAUDE_INST_FILE not readable"
+    status=1; return 1
+  fi
+  # Pin the schema: a bump must fail loudly here rather than silently read as "nothing
+  # installed", which would make the reconciler reinstall every declared plugin.
+  __ver=$(jq -r '.version // empty' "$CLAUDE_INST_FILE" 2>/dev/null)
+  if [ -n "$__ver" ] && [ "$__ver" != "$CLAUDE_INST_SCHEMA_VERSION" ]; then
+    log_warn "claude plugin list: installed_plugins.json schema version $__ver (expected $CLAUDE_INST_SCHEMA_VERSION) — skipping"
+    status=1; return 1
+  fi
+  [ -r "$__settings" ] || __settings=/dev/null   # no settings file = nothing enabled
+  __d=$(jq -c -n --slurpfile i "$CLAUDE_INST_FILE" --slurpfile s "$__settings" '
+          ((($s[0].enabledPlugins?) // {})) as $en
+          | [ $i[0].plugins | to_entries[]
+              | select(any(.value[]; .scope == "user"))
+              | {id: .key, scope: "user", enabled: (($en[.key]) == true)} ]
+        ' 2>/dev/null) \
+    || __d=$(cat "$CLAUDE_INST_FILE")
+  printf -v "$__out" '%s' "$__d"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # Claude
 # ---------------------------------------------------------------------------
 reconcile_claude() {
@@ -138,7 +200,7 @@ reconcile_claude() {
 
   # Marketplaces (query once, add missing) — must precede plugin install.
   local json have repo
-  if run_json json "claude plugin marketplace list" claude plugin marketplace list --json \
+  if claude_marketplaces_json json \
      && project "$json" \
           '(type=="array") and all(.[]; has("repo") and (.repo|type=="string"))' \
           '.[].repo' have "claude marketplace list"; then
@@ -154,7 +216,7 @@ reconcile_claude() {
 
   # Plugins (query once, AFTER marketplace adds). Projection: "<id>\t<enabled>", user scope.
   local proj id enabled line
-  if run_json json "claude plugin list" claude plugin list --json \
+  if claude_plugins_json json \
      && project "$json" \
           '(type=="array") and all(.[]; has("id") and (.id|type=="string") and has("scope") and has("enabled"))' \
           '.[] | select(.scope=="user") | "\(.id)\t\(.enabled)"' proj "claude plugin list"; then

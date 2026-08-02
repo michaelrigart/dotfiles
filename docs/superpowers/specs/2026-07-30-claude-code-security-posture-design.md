@@ -650,6 +650,23 @@ read by the reconciler from its *deployed* path. Editing the chezmoi source alon
 the old declaration live — verified 2026-07-31, when a reconciler run reinstalled a plugin
 whose declaration had been removed from the source but not yet applied.
 
+**Claude plugin state is read from files, not the CLI (2026-08-01).** `reconcile-agents.sh`
+queried `claude plugin list --json` and `claude plugin marketplace list --json`. Against
+Claude Code 2.0.33 the first subcommand does not exist and the second lost `--json`, so both
+guarded blocks were skipped: the script reconciled *nothing* while exiting 1. It now reads
+`~/.claude/plugins/installed_plugins.json` (pinned to `version: 2`) and
+`known_marketplaces.json`, joining the former against `settings.json.enabledPlugins` —
+installed and enabled live in different files, and absent-from-`enabledPlugins` is how a
+disabled plugin presents. Install and marketplace-add still shell out; only the queries
+moved.
+
+The mocked suite stayed green throughout, because it stubbed the exact command strings it
+was asserting — it agreed with itself while the real CLI moved underneath it. Section I of
+`test-reconcile-agents.sh` now asserts the live file schemas and the live `claude plugin`
+help surface, and was confirmed to go RED against a simulated schema bump. **A mock of an
+external interface cannot detect that interface changing; something in the suite must touch
+the real one.**
+
 ### Always
 
 - `/status`, `/permissions`, `/sandbox` reflect the intended rules, with no
