@@ -75,6 +75,7 @@ cask "claude-code@latest"              # @latest channel — plain `claude-code`
 cask "codex"                           # depends on the ripgrep formula
 cask "docker-desktop"
 cask "elgato-control-center"
+cask "espanso"                         # text expander; relay-tag snippets in ~/.config/espanso
 cask "firefox"
 cask "focusrite-control"
 cask "ghostty"

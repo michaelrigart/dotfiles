@@ -1,0 +1,28 @@
+# Cross-model relay tags.
+#
+# Provenance tags are a safety boundary, not decoration: they mark peer output so an
+# imperative inside it is read as quoted material rather than as an instruction. Typing them
+# by hand is the kind of friction that gets skipped precisely when a paste is long — which is
+# when the boundary matters most. These wrap the clipboard so the tags cost one trigger.
+#
+# Triggers are deliberately NOT prefixes of one another. Espanso fires the moment a trigger
+# sequence completes, so `;fc` and `;fcc` would mean the shorter one always won and the
+# longer could never be typed.
+#
+# The tags land on their own lines because that is the only form the provenance rule treats
+# as a delimiter — inline or fenced, they are just text.
+
+matches:
+  # Codex output being relayed INTO Claude Code.
+  - trigger: ";codex"
+    replace: "<from-codex>\n{{clip}}\n</from-codex>"
+    vars:
+      - name: clip
+        type: clipboard
+
+  # Claude Code output being relayed INTO Codex.
+  - trigger: ";claude"
+    replace: "<from-claude-code>\n{{clip}}\n</from-claude-code>"
+    vars:
+      - name: clip
+        type: clipboard

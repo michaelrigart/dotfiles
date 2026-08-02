@@ -1,0 +1,8 @@
+# Espanso lives at $XDG_CONFIG_HOME/espanso rather than the macOS default of
+# ~/Library/Application Support/espanso, via ESPANSO_CONFIG_DIR (set in zshenv, and in the
+# launchd service so the daemon sees it too — the daemon does not read the shell profile).
+#
+# Clipboard backend: relayed model output is long and multi-line. The Inject backend types
+# it key by key, which is slow and drops characters in TUIs; Clipboard pastes it in one
+# operation. Espanso restores the previous clipboard afterwards.
+backend: Clipboard
