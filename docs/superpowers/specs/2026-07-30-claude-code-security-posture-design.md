@@ -683,6 +683,36 @@ old `superpowers/6.1.1` survived their uninstall/upgrade. Compute orphans by dif
 directory tree against `.plugins[][].installPath` rather than by name — versioned
 subdirectories mean a plugin can be simultaneously in use and stale.
 
+#### Sandbox writes widened so ordinary work stops escaping (2026-08-02)
+
+Measured over the 50 most recent transcripts: **739 of 3,039 Bash calls (24%) ran with
+`dangerouslyDisableSandbox`**, and every one hit the `ask` gate. Two independent causes.
+`sandbox.filesystem` declared `allowRead` but no `allowWrite`, so the write set was the
+built-in default plus `.`; and `.` is resolved **once, at session start**, from the session's
+cwd. A session started in `~/Code/<Org>/<repo>` therefore could not write to `~/.config`,
+`~/.local/bin`, a *sibling* `wt` worktree, `~/Documents`, or the Obsidian vault without
+escaping — which is exactly where the escapes clustered (~290 in `~/Code`, 47 in `~/.local`).
+
+`allowWrite` now covers those areas, and the package registries are on `allowedDomains` so
+dependency installs run sandboxed too. **This is not a credential decision:**
+`credentials.files` and the `Read`/`Edit` denials outrank `allowWrite`, verified after the
+change — all 12 private keys still `DENIED`, only `~/.ssh/config` and `.pub` files readable.
+The `ask` gate on `dangerouslyDisableSandbox` is deliberately **kept**: the goal was to make
+escapes rare, not unremarkable, so the remaining ones still stop for a human.
+
+A small `permissions.allow` covers read-only inspection with tools this machine drives
+(`glab`, `chezmoi`, `basecamp`). Nearly everything else in the transcripts was already
+auto-allowed by Claude Code, and the frequent remainder — `mise exec` (68), `python3 -c`,
+`.venv/bin/python` — is arbitrary code execution that must never be allowlisted. `glab api`
+is excluded for the same reason `gh api` is limited to GET: it can POST. Tests pin the
+*kind* of rule, not just the contents: no interpreter, shell, or package-runner pattern, and
+no mutating verb, may appear in `allow`.
+
+**Live boundary suites must run sandboxed.** Running
+`test-live-credential-boundary.sh` with `dangerouslyDisableSandbox` reports every key
+readable (exit 12) — the suite measures the sandbox, so disabling it inverts the result. That
+is the suite working, not a regression.
+
 ### Always
 
 - `/status`, `/permissions`, `/sandbox` reflect the intended rules, with no

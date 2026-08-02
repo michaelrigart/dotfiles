@@ -41,6 +41,23 @@ jq_is '[.permissions.deny[], .permissions.ask[]
         | select(test("^(Read|Edit|Bash)\\([^)]+\\)$") | not)] | length' 0 \
       "every rule is a complete Read/Edit/Bash(spec) form"
 
+# The allow list exists to stop prompting on read-only inspection of tools this machine
+# actually drives (glab, chezmoi, basecamp). Its danger is not breadth but KIND: an
+# interpreter, shell, or package-runner pattern is arbitrary code execution with the prompt
+# removed, and a mutating verb silently approves writes. Both are pinned closed here rather
+# than trusted to review. `mise exec` and `glab api` are deliberately absent — the first
+# runs anything, the second can POST.
+jq_is '[.permissions.allow[]
+        | select(test("^Bash\\((sudo|eval|exec|ssh|bash|sh|zsh|fish|python[0-9.]*|node|bun|deno|ruby|perl|php|lua|npx|bunx|uvx|mise|make|just|cargo|go)\\b"))]
+       | length' 0 "no interpreter, shell, or package-runner is allowlisted"
+jq_is '[.permissions.allow[]
+        | select(test("\\b(create|delete|remove|rm|push|merge|apply|install|publish|close|edit|update|set)\\b"))]
+       | length' 0 "no mutating verb is allowlisted"
+jq_is '[.permissions.allow[] | select(test("^Bash\\([^)]+\\)$") | not)] | length' 0 \
+      "every allow rule is a complete Bash(spec) form"
+jq_is '.permissions.allow | index("Bash(glab api *)")' null \
+      "glab api stays out — it is not read-only"
+
 echo "B. layer 1 — read/edit pairing on every secret pattern"
 for p in '**/secrets.*.yml' '**/.env.production*' '**/*.key' '**/*.pem' \
          '~/.aws/credentials' '~/.config/op/config'; do
@@ -117,7 +134,18 @@ jq_is ".sandbox.filesystem.allowRead | sort == ($EXP_ALLOW_READ | sort)" true \
 jq_is '[.sandbox.filesystem.allowRead[]
         | select((endswith(".pub") or . == "~/.ssh/config" or . == "~/.ssh/known_hosts") | not)]
        | length' 0 "no private key path is readable through allowRead"
-jq_is '.sandbox.filesystem | has("allowWrite")' false "no SSH write exception"
+# allowWrite exists so ordinary work (source trees, chezmoi source + its apply targets, the
+# Obsidian vault) runs INSIDE the sandbox instead of escaping it — 24% of Bash calls were
+# escaping, and every escape hit the ask-gate. Widening writes is not a credential decision:
+# credentials.files and the Read/Edit denials outrank allowWrite, which section F above and
+# test-live-credential-boundary.sh both pin. What must never appear here is an SSH, AWS, or
+# op path — that would be a write exception over a denied credential.
+jq_is '.sandbox.filesystem.allowWrite | length > 0' true "allowWrite is present so routine work stays sandboxed"
+jq_is '[.sandbox.filesystem.allowWrite[]
+        | select(test("(^|/)\\.ssh(/|$)") or test("(^|/)\\.aws(/|$)") or test("/op(/|$)"))]
+       | length' 0 "no credential path is writable through allowWrite"
+jq_is '.sandbox.filesystem.allowWrite | index("~") != null' false \
+      "allowWrite is scoped, never all of \$HOME"
 
 echo "G. layer 4 — escape routes"
 emit '{}'
@@ -135,8 +163,15 @@ jq_is ".sandbox.network.allowUnixSockets == [\"$AGENT_SOCKET\"]" true \
       "allowUnixSockets contains only the stable agent socket"
 
 echo "H. layer 3 stays off until domains are known"
-jq_is '.sandbox.network.allowedDomains == ["gitlab.com", "github.com"]' true \
-      "observed GitLab and GitHub hosts are pre-allowed"
+# Pinned exactly, not by containment: the point of an egress allowlist is that additions are
+# deliberate. The package registries are here so dependency installs run sandboxed rather
+# than escaping — the same reasoning as allowWrite. Note Little Snitch is a second,
+# independent gate, so a domain here is necessary but not sufficient for egress.
+EXP_DOMAINS='["gitlab.com","github.com","registry.npmjs.org","registry.yarnpkg.com","pypi.org","files.pythonhosted.org","rubygems.org","index.crates.io","static.crates.io"]'
+jq_is ".sandbox.network.allowedDomains == $EXP_DOMAINS" true \
+      "egress allowlist is exactly the declared hosts and registries"
+jq_is '[.sandbox.network.allowedDomains[] | select(test("^\\*") or . == "*")] | length' 0 \
+      "no wildcard domain widens the allowlist"
 jq_is '.sandbox.network.strictAllowlist // false' false "strictAllowlist off in this phase"
 
 echo "J. defaultMode is seeded, not enforced"

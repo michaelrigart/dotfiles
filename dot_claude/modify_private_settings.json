@@ -47,6 +47,15 @@ printf '%s' "$input" | jq \
       },
       "includeCoAuthoredBy": false,
       "permissions": {
+        "allow": [
+          "Bash(glab ci list *)",     "Bash(glab ci get *)",
+          "Bash(glab mr view *)",     "Bash(glab issue view *)",
+          "Bash(glab auth status)",
+          "Bash(chezmoi diff)",       "Bash(chezmoi diff *)",
+          "Bash(chezmoi status)",     "Bash(chezmoi status *)",
+          "Bash(chezmoi cat *)",
+          "Bash(basecamp cards show *)"
+        ],
         "deny": [
           "Read(~/.ssh/**)",             "Edit(~/.ssh/**)",
           "Read(~/.aws/credentials)",    "Edit(~/.aws/credentials)",
@@ -127,12 +136,26 @@ printf '%s' "$input" | jq \
             "~/.ssh/michael.pub",
             "~/.ssh/michael_rsa.pub",
             "~/.ssh/viumore_rsa.pub"
+          ],
+          "allowWrite": [
+            "~/Code",
+            "~/.local/share/chezmoi",
+            "~/.local/bin",
+            "~/.config",
+            "~/Documents",
+            "~/Library/Mobile Documents/iCloud~md~obsidian"
           ]
         },
         "network": {
           "allowUnixSockets": [$agent_socket],
           "allowLocalBinding": true,
-          "allowedDomains": ["gitlab.com", "github.com"]
+          "allowedDomains": [
+            "gitlab.com", "github.com",
+            "registry.npmjs.org", "registry.yarnpkg.com",
+            "pypi.org", "files.pythonhosted.org",
+            "rubygems.org",
+            "index.crates.io", "static.crates.io"
+          ]
         }
       },
       "tui": "fullscreen",
