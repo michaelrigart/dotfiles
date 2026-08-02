@@ -667,6 +667,22 @@ help surface, and was confirmed to go RED against a simulated schema bump. **A m
 external interface cannot detect that interface changing; something in the suite must touch
 the real one.**
 
+**`claude plugin uninstall` could not remove `pr-review-toolkit` (2026-08-01).** It was
+present in `installed_plugins.json` at user scope but had no `enabledPlugins` entry at all.
+Both `uninstall` and `enable` refused it — "not found in installed plugins" / "not found in
+disabled plugins" — and adding an explicit `false` did not help, so the CLI's registry is
+neither of those files. The plugin was *not* delisted (it is still in the marketplace
+manifest). The entry was removed directly from `installed_plugins.json` and
+`settings.json.enabledPlugins`, which is what the reconciler reads. Note the CLI's
+"disabled" means an explicit `false`; **absent is a third state** the CLI will not manage,
+though it behaves as disabled at load time — which is why the reader maps absent to
+`enabled=false` (safe: reported as disabled, never reinstalled).
+
+Orphaned cache under `~/.claude/plugins/cache/` is not self-pruning: `code-review` and an
+old `superpowers/6.1.1` survived their uninstall/upgrade. Compute orphans by diffing the
+directory tree against `.plugins[][].installPath` rather than by name — versioned
+subdirectories mean a plugin can be simultaneously in use and stale.
+
 ### Always
 
 - `/status`, `/permissions`, `/sandbox` reflect the intended rules, with no

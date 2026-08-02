@@ -67,6 +67,9 @@ run() {  # run <manifest> (\n allowed) ; sets $OUT and $RC
 }
 _pass() { echo "  PASS: $1"; pass=$((pass + 1)); }
 _fail() { echo "  FAIL: $1"; printf '%s\n' "$OUT" | sed 's/^/    | /'; fail=$((fail + 1)); }
+# Live assertions (section I) do not run the reconciler, so $OUT holds unrelated output
+# from the last mocked scenario — dumping it there misdirects whoever is debugging.
+_fail_live() { echo "  FAIL: $1"; fail=$((fail + 1)); }
 has()   { case "$OUT" in *"$1"*) _pass "$2" ;; *) _fail "$2" ;; esac; }
 hasnt() { case "$OUT" in *"$1"*) _fail "$2" ;; *) _pass "$2" ;; esac; }
 rc_is() { if [ "$RC" -eq "$1" ]; then _pass "$2"; else _fail "$2"; fi; }
@@ -147,13 +150,13 @@ LIVE_MKT="$LIVE_HOME/plugins/known_marketplaces.json"
 if [ -r "$LIVE_INST" ]; then
   ver=$(jq -r '.version // empty' "$LIVE_INST" 2>/dev/null)
   if [ "$ver" = "2" ]; then _pass "installed_plugins.json is schema version 2 (reader is pinned to it)"
-  else _fail "installed_plugins.json schema version is '$ver', reader expects 2"; fi
+  else _fail_live "installed_plugins.json schema version is '$ver', reader expects 2"; fi
   if jq -e '(.plugins | type) == "object"' "$LIVE_INST" >/dev/null 2>&1; then
     _pass "installed_plugins.json .plugins is an object keyed by plugin id"
-  else _fail "installed_plugins.json .plugins is not an object"; fi
+  else _fail_live "installed_plugins.json .plugins is not an object"; fi
   if jq -e '[.plugins[][] | select(has("scope"))] | length > 0' "$LIVE_INST" >/dev/null 2>&1; then
     _pass "install records carry .scope (user-scope projection depends on it)"
-  else _fail "install records have no .scope field"; fi
+  else _fail_live "install records have no .scope field"; fi
 else
   _skip "installed_plugins.json absent — live schema unverified"
 fi
@@ -161,10 +164,10 @@ fi
 if [ -r "$LIVE_MKT" ]; then
   if jq -e 'type == "object" and (to_entries | length > 0) and all(.[]; has("source"))' "$LIVE_MKT" >/dev/null 2>&1; then
     _pass "known_marketplaces.json is an object whose entries carry .source"
-  else _fail "known_marketplaces.json shape changed"; fi
+  else _fail_live "known_marketplaces.json shape changed"; fi
   if jq -e '[.[] | select((.source.repo? // "") != "")] | length > 0' "$LIVE_MKT" >/dev/null 2>&1; then
     _pass "at least one marketplace exposes .source.repo (the projection field)"
-  else _fail "no marketplace exposes .source.repo"; fi
+  else _fail_live "no marketplace exposes .source.repo"; fi
 else
   _skip "known_marketplaces.json absent — live schema unverified"
 fi
@@ -175,15 +178,15 @@ if command -v claude >/dev/null 2>&1; then
   cl_help=$(claude plugin --help 2>&1)
   case "$cl_help" in
     *install*) _pass "claude plugin install still exists (used to add missing plugins)" ;;
-    *)         _fail "claude plugin install is gone — reconciler cannot install" ;;
+    *)         _fail_live "claude plugin install is gone — reconciler cannot install" ;;
   esac
   case "$cl_help" in
     *marketplace*) _pass "claude plugin marketplace still exists" ;;
-    *)             _fail "claude plugin marketplace is gone" ;;
+    *)             _fail_live "claude plugin marketplace is gone" ;;
   esac
   case "$(claude plugin marketplace --help 2>&1)" in
     *add*) _pass "claude plugin marketplace add still exists (used to add marketplaces)" ;;
-    *)     _fail "claude plugin marketplace add is gone — reconciler cannot add marketplaces" ;;
+    *)     _fail_live "claude plugin marketplace add is gone — reconciler cannot add marketplaces" ;;
   esac
 else
   _skip "claude not on PATH — live CLI surface unverified"
