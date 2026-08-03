@@ -175,11 +175,18 @@ jq_is ".sandbox.network.allowedDomains == $EXP_DOMAINS" true \
       "egress allowlist is exactly the declared hosts and registries"
 jq_is '[.sandbox.network.allowedDomains[] | select(test("^\\*") or . == "*")] | length' 0 \
       "no wildcard domain widens the allowlist"
-# strictAllowlist (Claude Code >= 2.1.219) is what makes allowedDomains DENY rather than
-# prompt. Without it the list is only a prompt-suppressor: measured in-session on 2026-08-03,
-# sandboxed curl reached example.com and en.wikipedia.org — neither allowlisted — and returned
-# real page content with no prompt. The list is not a boundary until this is true.
-jq_is '.sandbox.network.strictAllowlist' true "strictAllowlist makes the egress allowlist deny, not prompt"
+# strictAllowlist (Claude Code >= 2.1.219) would make allowedDomains DENY a non-allowlisted
+# host outright. It is deliberately OFF: the owner's stated preference (2026-08-03) is to be
+# prompted for an unknown host, not blocked by one, so a new registry or docs host stays a
+# decision rather than a failed command.
+#
+# Know what that costs before flipping it. Measured the same day, sandboxed curl reached
+# example.com and en.wikipedia.org — neither allowlisted — and returned real page content
+# with NO prompt. So today allowedDomains only pre-approves hosts to suppress a prompt that
+# does not appear anyway; it is not an egress boundary. Little Snitch remains the independent
+# outbound gate. Turning this on is the only thing that makes the list deny, so if the "get
+# prompted" behaviour ever materialises and is still unwanted, revisit here.
+jq_is '.sandbox.network.strictAllowlist // false' false "strictAllowlist stays off — prompt on unknown hosts, never block"
 
 echo "J. defaultMode is seeded, not enforced"
 # Runtime-mutable via /permissions, like model and effortLevel. Enforcing it would revert

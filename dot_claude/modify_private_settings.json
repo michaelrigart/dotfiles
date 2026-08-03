@@ -156,8 +156,7 @@ printf '%s' "$input" | jq \
             "pypi.org", "files.pythonhosted.org",
             "rubygems.org",
             "index.crates.io", "static.crates.io"
-          ],
-          "strictAllowlist": true
+          ]
         }
       },
       "tui": "fullscreen",
