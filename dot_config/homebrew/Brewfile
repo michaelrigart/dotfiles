@@ -12,7 +12,8 @@ tap "borgbackup/tap"
 tap "satococoa/tap"
 tap "skyhook-io/tap"
 
-brew "ansible"
+# ansible: managed by mise (~/.config/mise/config.toml), not Homebrew, so provisioning
+# repos can pin their own version via a project mise.toml.
 brew "arping"                          # edge-node network diagnostics
 brew "asitop"
 brew "awscli"

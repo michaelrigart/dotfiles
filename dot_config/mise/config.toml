@@ -5,6 +5,15 @@ python = "3.13.7"
 ruby = "4.0.6"
 rust = "1.88.0"
 
+# Replaces the Homebrew ansible formula (dropped from the Brewfile 2026-08-03) so provisioning
+# repos can pin their own version via a project mise.toml.
+#
+# pipx is required, not optional: the registry entry for the `ansible` package sets `uvx = false`,
+# so mise refuses to install it through uv even though uv is present. pipx is here purely as that
+# backend — nothing else uses it directly.
+pipx = "latest"
+ansible = "14.2.0"
+
 [settings]
 idiomatic_version_file_enable_tools = ["ruby"]
 
