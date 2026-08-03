@@ -31,7 +31,16 @@ EXP_ASK='["Read(~/.kube/config)","Edit(~/.kube/config)",
  "Edit(**/Dockerfile*)","Edit(**/docker-compose*.yml)",
  "Edit(**/.github/workflows/**)","Edit(**/.gitlab-ci.yml)",
  "Edit(**/.gitlab/ci/**)","Edit(**/terraform/**)","Edit(**/ansible/**)",
- "Bash(dangerouslyDisableSandbox:true)","Bash(docker *)","Bash(glab api *)"]'
+ "Bash(glab api *)","Bash(glab mr merge*)","Bash(sudo *)",
+ "Bash(git push --force*)","Bash(git push -f *)","Bash(git reset --hard*)",
+ "Bash(git clean -f*)","Bash(git branch -D*)","Bash(git filter-branch*)",
+ "Bash(rm -rf ~/*)","Bash(rm -rf /Users/michael/*)",
+ "Bash(rm -r ~/*)","Bash(rm -r /Users/michael/*)",
+ "Bash(brew uninstall*)","Bash(brew remove*)","Bash(kubectl delete*)",
+ "Bash(borg *)","Bash(vorta *)",
+ "Bash(op item create*)","Bash(op item edit*)","Bash(op item delete*)",
+ "Bash(docker rm*)","Bash(docker rmi*)","Bash(docker system prune*)",
+ "Bash(docker volume rm*)","Bash(docker compose down*)"]'
 
 jq_is "(.permissions.deny | sort) == ($EXP_DENY | sort)" true "deny array matches approved set exactly"
 jq_is "(.permissions.ask  | sort) == ($EXP_ASK  | sort)" true "ask array matches approved set exactly"
@@ -153,10 +162,28 @@ jq_is '.sandbox.filesystem.allowWrite | index("~") != null' false \
 echo "G. layer 4 — escape routes"
 emit '{}'
 jq_is '.sandbox.excludedCommands | index("docker *") != null' true "docker excluded from sandbox"
-jq_is '.sandbox.allowUnsandboxedCommands' true "escape hatch retained (ask-gated)"
-jq_is '.permissions.ask | index("Bash(dangerouslyDisableSandbox:true)") != null' true \
-      "unsandboxed retry is ask-gated"
-jq_is '.permissions.ask | index("Bash(docker *)") != null' true "docker commands ask-gated"
+jq_is '.sandbox.allowUnsandboxedCommands' true "escape hatch retained"
+# The gate is on DANGER, not on mechanism. "Bash(dangerouslyDisableSandbox:true)" asked about
+# how a command ran, not what it did: it fired on `git status` unsandboxed and stayed silent
+# on `rm -rf` sandboxed. Measured over 30 days of transcripts on 2026-08-03 it produced 2497
+# of 10834 Bash calls (23%, ~83/day) — and only 5 calls were ever actually denied. That volume
+# is what trains a human to approve on reflex; the erosion it caused is section L's subject.
+# The replacement set below fires 22 times over the same 30 days (~0.7/day), and every hit is
+# genuinely irreversible. Rules stay content-scoped so they gate sandboxed commands too
+# (docs: "content-scoped ask rules like Bash(git push *) still force a prompt even for
+# sandboxed commands"). rm/rmdir against / or $HOME is separately gated by Claude Code itself.
+jq_is '.permissions.ask | index("Bash(dangerouslyDisableSandbox:true)")' null \
+      "the mechanism-based gate is gone — escaping the sandbox is not itself dangerous"
+jq_is '.permissions.ask | index("Bash(docker *)")' null \
+      "blanket docker gate is gone — read-only docker no longer prompts"
+# rm -rf is pinned to LITERAL home paths on purpose. Rules match the command as written, and
+# scratchpad/$TMPDIR cleanup never spells one: of ~154 rm -rf calls in 30 days, 110 targeted
+# $TMPDIR/scratchpad and only 10 a real path. A blanket "Bash(rm -rf *)" would have re-created
+# 107 of the prompts this change exists to remove.
+for r in "Bash(git push --force*)" "Bash(git reset --hard*)" "Bash(rm -rf ~/*)" \
+         "Bash(sudo *)" "Bash(borg *)" "Bash(op item edit*)"; do
+  jq_is ".permissions.ask | index(\"$r\") != null" true "danger gate present: $r"
+done
 # Pin exactly, not by exclusion. Asserting "no docker socket" would still admit an
 # arbitrary socket added later, and "contains docker *" would admit extra excluded
 # commands — each a hole in the boundary this layer exists to draw.
