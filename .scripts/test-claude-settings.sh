@@ -31,7 +31,7 @@ EXP_ASK='["Read(~/.kube/config)","Edit(~/.kube/config)",
  "Edit(**/Dockerfile*)","Edit(**/docker-compose*.yml)",
  "Edit(**/.github/workflows/**)","Edit(**/.gitlab-ci.yml)",
  "Edit(**/.gitlab/ci/**)","Edit(**/terraform/**)","Edit(**/ansible/**)",
- "Bash(dangerouslyDisableSandbox:true)","Bash(docker *)"]'
+ "Bash(dangerouslyDisableSandbox:true)","Bash(docker *)","Bash(glab api *)"]'
 
 jq_is "(.permissions.deny | sort) == ($EXP_DENY | sort)" true "deny array matches approved set exactly"
 jq_is "(.permissions.ask  | sort) == ($EXP_ASK  | sort)" true "ask array matches approved set exactly"
@@ -47,8 +47,11 @@ jq_is '[.permissions.deny[], .permissions.ask[]
 # removed, and a mutating verb silently approves writes. Both are pinned closed here rather
 # than trusted to review. `mise exec` and `glab api` are deliberately absent — the first
 # runs anything, the second can POST.
+# The (?:[^ )]*/)? prefix matters: anchoring the interpreter at "Bash(" alone lets a
+# path-qualified one through. A live rule "Bash(./.venv/bin/python -m pytest ...)" sat in
+# ~/.claude/settings.local.json un-flagged until 2026-08-03 for exactly that reason.
 jq_is '[.permissions.allow[]
-        | select(test("^Bash\\((sudo|eval|exec|ssh|bash|sh|zsh|fish|python[0-9.]*|node|bun|deno|ruby|perl|php|lua|npx|bunx|uvx|mise|make|just|cargo|go)\\b"))]
+        | select(test("^Bash\\((?:[^ )]*/)?(sudo|eval|exec|ssh|bash|sh|zsh|fish|python[0-9.]*|node|bun|deno|ruby|perl|php|lua|npx|bunx|uvx|mise|make|just|cargo|go)\\b"))]
        | length' 0 "no interpreter, shell, or package-runner is allowlisted"
 jq_is '[.permissions.allow[]
         | select(test("\\b(create|delete|remove|rm|push|merge|apply|install|publish|close|edit|update|set)\\b"))]
@@ -172,7 +175,11 @@ jq_is ".sandbox.network.allowedDomains == $EXP_DOMAINS" true \
       "egress allowlist is exactly the declared hosts and registries"
 jq_is '[.sandbox.network.allowedDomains[] | select(test("^\\*") or . == "*")] | length' 0 \
       "no wildcard domain widens the allowlist"
-jq_is '.sandbox.network.strictAllowlist // false' false "strictAllowlist off in this phase"
+# strictAllowlist (Claude Code >= 2.1.219) is what makes allowedDomains DENY rather than
+# prompt. Without it the list is only a prompt-suppressor: measured in-session on 2026-08-03,
+# sandboxed curl reached example.com and en.wikipedia.org — neither allowlisted — and returned
+# real page content with no prompt. The list is not a boundary until this is true.
+jq_is '.sandbox.network.strictAllowlist' true "strictAllowlist makes the egress allowlist deny, not prompt"
 
 echo "J. defaultMode is seeded, not enforced"
 # Runtime-mutable via /permissions, like model and effortLevel. Enforcing it would revert
@@ -213,6 +220,40 @@ jq_is '.env.SSH_AUTH_SOCK | endswith("/t/agent.sock")' true \
       "SSH_AUTH_SOCK points at the 1Password agent socket"
 jq_is '.env.PATH | split(":") | index("\($ENV.HOME)/.local/bin") == 0' true \
       "~/.local/bin is first — so any executable there shadows system tools in-session"
+
+echo "L. the allow guard covers UNMANAGED settings too"
+# Sections A-H test the modify script's output, i.e. ~/.claude/settings.json only. But
+# Claude Code merges permissions from ~/.claude/settings.local.json and every project
+# .claude/settings*.json, and none of those pass through the modify script. Measured on
+# 2026-08-03, that blind spot held five rules the guard above forbids — including
+# "Bash(glab api *)" in two repos, the single rule section A pins closed by name. They get
+# there by clicking "don't ask again", so this drifts on its own and needs a live check.
+#
+# Precedence (docs: "deny, then ask, then allow"; "a user-level deny blocks a project-level
+# allow") means the managed ask rule already neutralises a local allow. This section is
+# defence in depth: it keeps the local files honest so the managed rule is a backstop, not
+# the only thing standing between a click and an allowlisted POST.
+FORBID_KIND='^Bash\((?:[^ )]*/)?(sudo|eval|exec|ssh|bash|sh|zsh|fish|python[0-9.]*|node|bun|deno|ruby|perl|php|lua|npx|bunx|uvx|mise|make|just|cargo|go)\b'
+FORBID_VERB='\b(create|delete|remove|rm|push|merge|apply|install|publish|close|edit|update|set)\b'
+local_files=$(
+  { ls "$HOME/.claude/settings.local.json" 2>/dev/null
+    find "$HOME/Code" -maxdepth 4 -path '*/.claude/settings*.json' 2>/dev/null
+  } | sort -u
+)
+offenders=""
+for f in $local_files; do
+  jq -e . "$f" >/dev/null 2>&1 || { offenders="$offenders$f: UNPARSEABLE"$'\n'; continue; }
+  while IFS= read -r rule; do
+    [ -n "$rule" ] && offenders="$offenders${f#$HOME/}: $rule"$'\n'
+  done < <(jq -r --arg k "$FORBID_KIND" --arg v "$FORBID_VERB" '
+      (.permissions.allow // [])[]
+      | select(test($k) or test($v) or . == "Bash(glab api *)")' "$f" 2>/dev/null)
+done
+if [ -z "$offenders" ]; then
+  _pass "no unmanaged allow rule defeats the managed guard"
+else
+  _fail "no unmanaged allow rule defeats the managed guard" "$(printf '%s' "$offenders" | tr '\n' '; ')"
+fi
 
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
