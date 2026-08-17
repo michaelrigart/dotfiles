@@ -4,9 +4,12 @@
 # Route lazygit's diffs through delta (unified — lazygit's panel is narrow; --paging=never
 # because lazygit does its own scrolling). Picks up [delta] settings from ~/.config/git/config.
 #
-# NOTE: lazygit 0.63+ uses `git.pagers` (a list). The older `git.paging` map gets
-# auto-migrated on start, which would fight chezmoi on every apply — so use `pagers` here.
+# NOTE: this key has been renamed twice. The `git.paging` map became `git.pagers` (a list)
+# in 0.63, which became `git.diffRenderers` with a `command` field in 0.64. lazygit migrates
+# the old spelling on start and rewrites the file, so tracking a superseded name here means
+# chezmoi and lazygit overwrite each other on every apply. Match the installed version
+# (currently 0.64.1); re-check this after a lazygit major bump.
 git:
-  pagers:
+  diffRenderers:
     - colorArg: always
-      pager: delta --dark --paging=never
+      command: delta --dark --paging=never
