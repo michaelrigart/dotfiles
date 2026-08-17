@@ -23,11 +23,6 @@ export FPATH="$HOMEBREW_PREFIX/share/zsh/site-functions:${FPATH}"
 export HOMEBREW_NO_ANALYTICS=1
 export HOMEBREW_BUNDLE_FILE="$XDG_CONFIG_HOME/homebrew/Brewfile"
 
-# Espanso defaults to ~/Library/Application Support/espanso on macOS; keep it XDG. This
-# covers the CLI only — the launchd daemon does not read the shell profile, so the same
-# variable is baked into the service plist (see .scripts/test-espanso-relay.sh).
-export ESPANSO_CONFIG_DIR="$XDG_CONFIG_HOME/espanso"
-
 # NOTE: TERM is intentionally NOT forced here — Ghostty sets xterm-ghostty
 # locally (full features). Terminfo-poor remotes are handled per-tool: ssh via
 # Ghostty's ssh-env/ssh-terminfo, Teleport via the tsh() wrapper in zsh/functions.
