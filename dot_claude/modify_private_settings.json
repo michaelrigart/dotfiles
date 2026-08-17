@@ -3,7 +3,8 @@
 #
 # settings.json mixes Michael's stable config with keys Claude Code writes at runtime
 # (`enabledPlugins` from `claude plugin install`, `extraKnownMarketplaces` from marketplace
-# adds). chezmoi can't own the whole file without the two sides clobbering each other, so
+# adds, `autoMode` from auto-mode learning). chezmoi can't own the whole file without the two
+# sides clobbering each other, so
 # this receives the CURRENT file on stdin, enforces the strictly-owned keys, carries the
 # tool-written keys through untouched, and seeds model/effortLevel as defaults only (they
 # are mutable via /model and /effort, so runtime changes persist). The plugin/marketplace
@@ -34,6 +35,7 @@ printf '%s' "$input" | jq \
   # the end) — all three are mutable at runtime via /model, /effort and /permissions.
   .enabledPlugins as $plugins
   | .extraKnownMarketplaces as $mkts
+  | .autoMode as $automode
   | .model as $curmodel
   | .effortLevel as $cureffort
   | .permissions.defaultMode as $curmode
@@ -184,6 +186,12 @@ printf '%s' "$input" | jq \
   # carry the tool-written keys through if the current file had them
   | (if $plugins then .enabledPlugins = $plugins else . end)
   | (if $mkts then .extraKnownMarketplaces = $mkts else . end)
+  # autoMode holds the learned environment profile for auto-mode plus the allow rules it has
+  # earned. Claude Code writes it at runtime, per project, and it records internal detail
+  # (repo and org names, where secrets live) that must never reach this PUBLIC repo — so it
+  # is carried through, never declared here. NB: no apostrophes in this comment; it lives
+  # inside the single-quoted jq program and one would end the shell string.
+  | (if $automode then .autoMode = $automode else . end)
   # default-only: keep the current value if set (runtime /model, /effort, /permissions
   # persist), otherwise seed the default; deleting the key and re-applying restores it.
   | .model = ($curmodel // "opus[1m]")
