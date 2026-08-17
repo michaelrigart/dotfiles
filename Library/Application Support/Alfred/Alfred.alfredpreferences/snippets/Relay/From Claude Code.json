@@ -1,0 +1,8 @@
+{
+  "alfredsnippet" : {
+    "snippet" : "<from-claude-code>\n{clipboard}\n<\/from-claude-code>",
+    "uid" : "616C4665-C477-4920-83FD-4A31A2AA8633",
+    "name" : "From Claude Code",
+    "keyword" : "claude"
+  }
+}

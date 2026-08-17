@@ -257,6 +257,51 @@ else
 fi
 
 # ============================================================================
+# Alfred Snippets (cross-model relay tags)
+# ============================================================================
+log_info "Configuring Alfred snippet auto-expansion..."
+
+# The relay snippet COLLECTION is chezmoi-managed (Library/Application Support/Alfred/...),
+# but the switch that makes it fire is not: Alfred stores autoExpandSnippets under
+# preferences/local/<localhash>/, and that hash is machine-specific. Tracking the path
+# literally would apply on this Mac and silently no-op on the next one — the snippets would
+# land, the toggle would not, and `;codex` would quietly do nothing. So it is computed here.
+alfred_prefs_json="${HOME}/Library/Application Support/Alfred/prefs.json"
+if [[ -f "$alfred_prefs_json" ]]; then
+  alfred_localhash=$(sed -n 's/.*"localhash" *: *"\([^"]*\)".*/\1/p' "$alfred_prefs_json")
+  if [[ -n "$alfred_localhash" ]]; then
+    alfred_clip_prefs="${HOME}/Library/Application Support/Alfred/Alfred.alfredpreferences/preferences/local/${alfred_localhash}/features/clipboard/prefs.plist"
+
+    # Order matters, and not for tidiness: while Alfred is running it owns these prefs and
+    # `defaults write` is silently discarded — it reports success, and both the file and the
+    # cache keep their old value. Alfred must be stopped BEFORE the write.
+    alfred_was_running=false
+    if pgrep -x "Alfred" &> /dev/null; then
+      alfred_was_running=true
+      osascript -e 'tell application "Alfred 5" to quit' &> /dev/null || true
+      sleep 2
+    fi
+
+    mkdir -p "$(dirname "$alfred_clip_prefs")"
+    defaults write "${alfred_clip_prefs%.plist}" autoExpandSnippets -bool true
+
+    # Alfred indexes a file added to a collection it already knows about live, but discovers
+    # a NEW collection directory only on launch. After a fresh `chezmoi apply` it must be
+    # (re)started or the Relay snippets exist on disk and in no index.
+    if [[ "$alfred_was_running" == true ]]; then
+      open -a "Alfred 5" &> /dev/null || true
+      log_info "Alfred restarted to apply the toggle and index snippet collections"
+    else
+      log_warn "Alfred is not running — launch it to index the relay snippets"
+    fi
+  else
+    log_warn "Could not read Alfred localhash — enable snippet auto-expansion manually"
+  fi
+else
+  log_warn "Alfred has not been launched yet — re-run this script after first launch"
+fi
+
+# ============================================================================
 # Apply Changes
 # ============================================================================
 log_info "Applying changes..."

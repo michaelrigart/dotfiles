@@ -65,3 +65,15 @@ docs/
 !.codex/themes/
 .codex/themes/*
 !.codex/themes/tokyo-night.tmTheme
+
+# Alfred: allowlist-only, same reasoning as above. Only the cross-model relay snippet
+# collection belongs in this PUBLIC repo. The rest of the preferences bundle holds
+# workflow configuration, which routinely contains API keys and tokens, plus clipboard
+# history and machine-local state. Descend one level at a time — a re-include cannot
+# reach inside an ignored directory.
+Library/Application Support/Alfred/*
+!Library/Application Support/Alfred/Alfred.alfredpreferences/
+Library/Application Support/Alfred/Alfred.alfredpreferences/*
+!Library/Application Support/Alfred/Alfred.alfredpreferences/snippets/
+Library/Application Support/Alfred/Alfred.alfredpreferences/snippets/*
+!Library/Application Support/Alfred/Alfred.alfredpreferences/snippets/Relay/
