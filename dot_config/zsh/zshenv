@@ -14,7 +14,6 @@ export ARCHFLAGS="-arch $(uname -m)"
 # Set $PATH environment variable
 export PATH=$XDG_BIN_HOME:$PATH
 export PATH="${KREW_ROOT:-$HOME/.krew}/bin:$PATH"
-export PATH="$PATH:${HOME}/Library/Application Support/JetBrains/Toolbox/scripts"
 
 # Homebrew configuration
 eval "$(/opt/homebrew/bin/brew shellenv)"

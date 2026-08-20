@@ -29,7 +29,7 @@ printf '%s' "$input" | jq \
   --arg sl "bash $HOME/.claude/statusline.sh" \
   --arg subsl "bash $HOME/.claude/subagent-statusline.sh" \
   --arg agent_socket "$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock" \
-  --arg tool_path "$HOME/.local/bin:$HOME/.local/share/mise/shims:$HOME/.cargo/bin:/opt/homebrew/bin:/opt/homebrew/sbin:$HOME/.krew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$HOME/Library/Application Support/JetBrains/Toolbox/scripts" '
+  --arg tool_path "$HOME/.local/bin:$HOME/.local/share/mise/shims:$HOME/.cargo/bin:/opt/homebrew/bin:/opt/homebrew/sbin:$HOME/.krew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" '
   # capture from the current file (null when absent): tool-written keys are carried
   # through as-is; model/effortLevel/defaultMode are seeded as defaults only (applied at
   # the end) — all three are mutable at runtime via /model, /effort and /permissions.
