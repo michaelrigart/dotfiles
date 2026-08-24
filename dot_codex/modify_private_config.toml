@@ -4,7 +4,7 @@
 {{- /*   - seed model/effort/tier prefs ONLY when absent (so /model and       */ -}}
 {{- /*     fast-mode changes persist),                                        */ -}}
 {{- /*   - enforce UI / keybindings / notify / prevent_idle_sleep,            */ -}}
-{{- /*   - drop the obsolete js_repl flag.                                    */ -}}
+{{- /*   - keep js_repl explicitly off.                                       */ -}}
 {{- /* NB: TOML comments and key ordering are not preserved (parse→serialize).*/ -}}
 {{- $config := dict -}}
 {{- if .chezmoi.stdin -}}
@@ -37,9 +37,13 @@
 {{- $config = setValueAtPath "tui.keymap.global.open_transcript" "ctrl-t" $config -}}
 {{- $config = setValueAtPath "tui.keymap.chat.interrupt_turn" "f12" $config -}}
 
-{{- /* Enforce feature flags; drop obsolete js_repl */ -}}
+{{- /* Enforce feature flags. js_repl is NOT obsolete — 0.149.1 still ships it as a
+       live flag (alongside code_mode_only / js_repl_tools_only) plus js_repl_node_path
+       and js_repl_node_module_dirs. It is off by default today, so unsetting it looked
+       harmless, but that also guaranteed an explicit guard could never persist: one
+       upstream default flip and Codex gets a JS REPL silently. Pin it off instead. */ -}}
 {{- $config = setValueAtPath "features.memories" true $config -}}
 {{- $config = setValueAtPath "features.prevent_idle_sleep" true $config -}}
-{{- $_ := unset (get $config "features") "js_repl" -}}
+{{- $config = setValueAtPath "features.js_repl" false $config -}}
 
 {{- $config | toToml -}}
