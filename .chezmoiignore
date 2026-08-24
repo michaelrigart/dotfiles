@@ -55,6 +55,7 @@ docs/
 !.claude/settings.json
 !.claude/statusline.sh
 !.claude/subagent-statusline.sh
+!.claude/git-forge-guard.sh
 !.claude/themes/
 .claude/themes/*
 !.claude/themes/tokyo-night.json

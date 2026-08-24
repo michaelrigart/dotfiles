@@ -47,6 +47,13 @@ printf '%s' "$input" | jq \
         "SSH_AUTH_SOCK": $agent_socket,
         "PATH": $tool_path
       },
+      # No agent attribution in git history or MR/PR descriptions. `attribution`
+      # supersedes the deprecated `includeCoAuthoredBy` and adds `sessionUrl`, which is
+      # a SEPARATE gate: `includeCoAuthoredBy: false` alone still appended the
+      # `Claude-Session:` trailer and the claude.ai link in PR bodies. Empty strings hide
+      # the commit/PR attribution text. The deprecated key is kept as a fallback for
+      # builds that predate `attribution`; both settings say the same thing.
+      "attribution": { "commit": "", "pr": "", "sessionUrl": false },
       "includeCoAuthoredBy": false,
       "permissions": {
         "allow": [
@@ -110,6 +117,20 @@ printf '%s' "$input" | jq \
                 "type": "command",
                 "command": "echo \"export GIT_SSH_COMMAND=$HOME/.local/bin/ssh-sandbox-proxy\" > \"$CLAUDE_ENV_FILE\""
               }
+            ]
+          }
+        ],
+        # Backstop for the two "Merge & pull requests" rules in GLOBAL.md that prose
+        # alone cannot guarantee: no agent attribution in commits/MRs/PRs, and follow
+        # the repo MR/PR template. Denies (never asks) with a reason the model acts on,
+        # so a violation costs a retry and never reaches Michael. Fires on every Bash
+        # call, so the script fast-paths out in ~6ms; tests in
+        # .scripts/test-git-forge-guard.sh. $HOME stays literal, expanded when it runs.
+        "PreToolUse": [
+          {
+            "matcher": "Bash",
+            "hooks": [
+              { "type": "command", "command": "bash $HOME/.claude/git-forge-guard.sh" }
             ]
           }
         ]

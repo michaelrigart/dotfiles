@@ -289,5 +289,25 @@ else
   _fail "no unmanaged allow rule defeats the managed guard" "$(printf '%s' "$offenders" | tr '\n' '; ')"
 fi
 
+echo "M. no agent attribution reaches the published record"
+emit '{}'
+# `includeCoAuthoredBy: false` is NOT sufficient and was the actual 2026-08-24 bug: it is
+# deprecated, and the claude.ai session link rides a SEPARATE `attribution.sessionUrl` gate,
+# so MRs kept carrying a Claude-Session trailer while co-authorship was already off. Pin all
+# three, and keep the deprecated key as the fallback for builds predating `attribution`.
+jq_is '.attribution.sessionUrl' 'false' "session link suppressed (attribution.sessionUrl)"
+jq_is '.attribution.commit'     ''      "commit attribution text empty"
+jq_is '.attribution.pr'         ''      "PR attribution text empty"
+jq_is '.includeCoAuthoredBy'    'false' "deprecated co-authored-by fallback still false"
+
+echo "N. the forge guard is wired as a PreToolUse hook"
+jq_is '.hooks.PreToolUse | length' 1 "exactly one PreToolUse entry"
+jq_is '.hooks.PreToolUse[0].matcher' 'Bash' "matches the Bash tool"
+jq_is '.hooks.PreToolUse[0].hooks[0].command' 'bash $HOME/.claude/git-forge-guard.sh' \
+      'runs the forge guard, $HOME left for the shell to expand'
+# The SessionStart hook must survive alongside it — adding PreToolUse replaced the whole
+# hooks object once during development.
+jq_is '.hooks.SessionStart | length' 1 "SessionStart hook still present"
+
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
