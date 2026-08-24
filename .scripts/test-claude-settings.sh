@@ -212,23 +212,26 @@ jq_is ".sandbox.network.allowedDomains == $EXP_DOMAINS" true \
       "egress allowlist is exactly the declared hosts and registries"
 jq_is '[.sandbox.network.allowedDomains[] | select(test("^\\*") or . == "*")] | length' 0 \
       "no wildcard domain widens the allowlist"
-# strictAllowlist is OFF, but NOT for the reason recorded here on 2026-08-03. That note said
-# the preference was to be PROMPTED for an unknown host rather than blocked. There is no
-# prompt: re-measured 2026-08-24 on 2.1.241, sandboxed `curl https://example.com` (not
-# allowlisted) returned HTTP 200 silently, because autoAllowBashIfSandboxed suppresses the
-# prompt that strictAllowlist=false would otherwise raise. So the real choice is
-# silently-allow-anything vs block, and this list is decorative today. Little Snitch is the
-# actual outbound gate.
+# strictAllowlist ON since 2026-08-24, after the question was finally settled by measurement.
+# The 2026-08-03 note kept it off to "be prompted rather than blocked". There is no prompt:
+# autoAllowBashIfSandboxed suppresses it, so sandboxed curl to a non-allowlisted host just
+# returned 200. The real choice was silently-allow-anything vs block.
 #
-# It was switched ON on 2026-08-24 and reverted the same hour. The revert was triggered by
-# `git ls-remote` failing, which was MISATTRIBUTED to the flag — the real cause was the
-# 1Password agent refusing to sign. Note for whoever retries: DNS (`dig`) and raw TCP to
-# port 22 are blocked in this sandbox *either way*; git does not use them, it goes through
-# the ssh-sandbox-proxy in GIT_SSH_COMMAND. So the open question is narrow — does the proxy
-# still work under strictAllowlist? Test that with 1Password unlocked before flipping it.
-# The widened allowlist below is kept regardless: it is harmless while the flag is off and
-# it is what a future flip would need.
-jq_is '.sandbox.network.strictAllowlist // false' false "strictAllowlist off — see comment; retest needs 1Password unlocked"
+# It was flipped on earlier the same day and reverted because `git ls-remote` failed. That
+# was a MISDIAGNOSIS — the cause was the 1Password agent refusing to sign. Retested properly
+# with a baseline first: with the flag ON, `git ls-remote` succeeds against both github and
+# gitlab through the ssh-sandbox-proxy, while example.com is refused. git is unaffected.
+#
+# Two failures seen during that test are PRE-EXISTING and unrelated — verified by reproducing
+# them with the flag off. `gh` and `glab` are Go binaries that reject the sandbox HTTPS
+# proxy certificate (x509 OSStatus -26276) regardless of this setting; `gh` additionally
+# cannot connect even unsandboxed because Little Snitch blocks it (ad-hoc signed binary,
+# "connect: bad file descriptor" — same root cause as tsh/tctl). Do not blame this flag.
+#
+# The cost of ON is real: a host missing from EXP_DOMAINS is a failed command, not a prompt.
+# Adding one is a two-line change here and in the modify script. Little Snitch stays the
+# second, independent gate.
+jq_is '.sandbox.network.strictAllowlist' true "strictAllowlist is on — non-allowlisted hosts are denied"
 
 echo "J. defaultMode is seeded, not enforced"
 # Runtime-mutable via /permissions, like model and effortLevel. Enforcing it would revert

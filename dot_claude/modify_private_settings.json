@@ -205,6 +205,7 @@ printf '%s' "$input" | jq \
         "network": {
           "allowUnixSockets": [$agent_socket],
           "allowLocalBinding": true,
+          "strictAllowlist": true,
           "allowedDomains": [
             "gitlab.com", "registry.gitlab.com",
             "github.com", "api.github.com", "uploads.github.com", "codeload.github.com",
