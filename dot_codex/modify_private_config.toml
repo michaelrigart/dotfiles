@@ -38,6 +38,7 @@
 {{- $config = setValueAtPath "tui.keymap.chat.interrupt_turn" "f12" $config -}}
 
 {{- /* Enforce feature flags; drop obsolete js_repl */ -}}
+{{- $config = setValueAtPath "features.memories" true $config -}}
 {{- $config = setValueAtPath "features.prevent_idle_sleep" true $config -}}
 {{- $_ := unset (get $config "features") "js_repl" -}}
 
