@@ -56,6 +56,11 @@ docs/
 !.claude/statusline.sh
 !.claude/subagent-statusline.sh
 !.claude/git-forge-guard.sh
+!.claude/agents/
+.claude/agents/*
+!.claude/agents/sp-mechanical.md
+!.claude/agents/sp-standard.md
+!.claude/agents/sp-architect.md
 !.claude/themes/
 .claude/themes/*
 !.claude/themes/tokyo-night.json
