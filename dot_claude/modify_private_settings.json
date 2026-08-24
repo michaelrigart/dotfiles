@@ -63,7 +63,17 @@ printf '%s' "$input" | jq \
           "Bash(chezmoi diff)",       "Bash(chezmoi diff *)",
           "Bash(chezmoi status)",     "Bash(chezmoi status *)",
           "Bash(chezmoi cat *)",
-          "Bash(basecamp cards show *)"
+          # Basecamp: read-only verbs only. These were auto-learned into
+          # settings.local.json as `basecamp auth *` / `basecamp projects *`, which
+          # quietly pre-approved `auth token` (prints the live OAuth token) and
+          # `projects delete`. Everything not listed here falls through to the auto-mode
+          # classifier, which is what should be judging a delete.
+          "Bash(basecamp accounts list*)", "Bash(basecamp accounts show*)",
+          "Bash(basecamp projects list*)", "Bash(basecamp projects show*)",
+          "Bash(basecamp cards show *)",   "Bash(basecamp show *)",
+          "Bash(basecamp search *)",       "Bash(basecamp url *)",
+          "Bash(basecamp auth status)",
+          "WebFetch(domain:launchpad.37signals.com)"
         ],
         "deny": [
           "Read(~/.ssh/**)",             "Edit(~/.ssh/**)",
@@ -72,7 +82,8 @@ printf '%s' "$input" | jq \
           "Read(**/secrets.*.yml)",      "Edit(**/secrets.*.yml)",
           "Read(**/.env.production*)",   "Edit(**/.env.production*)",
           "Read(**/*.key)",              "Edit(**/*.key)",
-          "Read(**/*.pem)",              "Edit(**/*.pem)"
+          "Read(**/*.pem)",              "Edit(**/*.pem)",
+          "Bash(basecamp auth token*)"
         ],
         "ask": [
           "Read(~/.kube/config)",        "Edit(~/.kube/config)",

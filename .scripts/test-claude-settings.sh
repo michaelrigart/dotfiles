@@ -26,7 +26,8 @@ EXP_DENY='["Read(~/.ssh/**)","Edit(~/.ssh/**)",
  "Read(**/secrets.*.yml)","Edit(**/secrets.*.yml)",
  "Read(**/.env.production*)","Edit(**/.env.production*)",
  "Read(**/*.key)","Edit(**/*.key)",
- "Read(**/*.pem)","Edit(**/*.pem)"]'
+ "Read(**/*.pem)","Edit(**/*.pem)",
+ "Bash(basecamp auth token*)"]'
 EXP_ASK='["Read(~/.kube/config)","Edit(~/.kube/config)",
  "Edit(**/Dockerfile*)","Edit(**/docker-compose*.yml)",
  "Edit(**/.github/workflows/**)","Edit(**/.gitlab-ci.yml)",
@@ -65,8 +66,13 @@ jq_is '[.permissions.allow[]
 jq_is '[.permissions.allow[]
         | select(test("\\b(create|delete|remove|rm|push|merge|apply|install|publish|close|edit|update|set)\\b"))]
        | length' 0 "no mutating verb is allowlisted"
-jq_is '[.permissions.allow[] | select(test("^Bash\\([^)]+\\)$") | not)] | length' 0 \
-      "every allow rule is a complete Bash(spec) form"
+# Bash(spec) or a single-host WebFetch(domain:host) — still a closed form. Widened
+# 2026-08-24 when the launchpad.37signals.com rule (basecamp OAuth) moved here out of
+# settings.local.json; anything looser would re-admit the unclosed-paren class of typo.
+jq_is '[.permissions.allow[]
+        | select(test("^Bash\\([^)]+\\)$") or test("^WebFetch\\(domain:[a-z0-9.-]+\\)$") | not)]
+       | length' 0 \
+      "every allow rule is a complete Bash(spec) or WebFetch(domain:host) form"
 jq_is '.permissions.allow | index("Bash(glab api *)")' null \
       "glab api stays out — it is not read-only"
 
@@ -226,7 +232,7 @@ emit '{}'
 jq_is '.permissions.defaultMode' 'auto' "absent defaultMode seeded to auto"
 # The seeding must not disturb the rules themselves.
 emit '{"permissions":{"defaultMode":"plan"}}'
-jq_is '.permissions.deny | length' 14 "deny rules intact when defaultMode carried"
+jq_is '.permissions.deny | length' 15 "deny rules intact when defaultMode carried"
 
 echo "K. git SSH proxying rides CLAUDE_ENV_FILE, not the env block"
 # Claude Code injects an unauthenticated `nc` GIT_SSH_COMMAND at runtime and that injection
@@ -308,6 +314,16 @@ jq_is '.hooks.PreToolUse[0].hooks[0].command' 'bash $HOME/.claude/git-forge-guar
 # The SessionStart hook must survive alongside it — adding PreToolUse replaced the whole
 # hooks object once during development.
 jq_is '.hooks.SessionStart | length' 1 "SessionStart hook still present"
+
+echo "O. basecamp is allowlisted read-only"
+# `basecamp auth token` prints the live OAuth token and `basecamp projects delete` trashes a
+# project; both were pre-approved by the auto-learned `basecamp auth *` / `basecamp projects *`
+# rules in settings.local.json until 2026-08-24.
+jq_is '.permissions.deny | index("Bash(basecamp auth token*)") != null' true \
+      "basecamp auth token is denied outright"
+jq_is '[.permissions.allow[] | select(startswith("Bash(basecamp"))
+        | select(test("(list|show|search|url|status)\\b") | not)] | length' 0 \
+      "every allowlisted basecamp rule is a read-only verb"
 
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
