@@ -25,6 +25,10 @@
 {{-   $config = setValueAtPath "plan_mode_reasoning_effort" "xhigh" $config -}}
 {{- end -}}
 
+{{- /* Enforce project instruction discovery */ -}}
+{{- $config = setValueAtPath "project_doc_fallback_filenames" (list "CLAUDE.md") $config -}}
+{{- $config = setValueAtPath "project_doc_max_bytes" 65536 $config -}}
+
 {{- /* Enforce the notify hook (path derived from home dir, not hardcoded) */ -}}
 {{- $notify := list (printf "%s/.codex/computer-use/Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient" .chezmoi.homeDir) "turn-ended" -}}
 {{- $config = setValueAtPath "notify" $notify $config -}}
