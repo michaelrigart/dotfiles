@@ -33,7 +33,9 @@ printf '%s' "$input" | jq \
   # capture from the current file (null when absent): tool-written keys are carried
   # through as-is; model/effortLevel/defaultMode are seeded as defaults only (applied at
   # the end) — all three are mutable at runtime via /model, /effort and /permissions.
-  .enabledPlugins as $plugins
+  .agentPushNotifEnabled as $pushnotif
+  | .inputNeededNotifEnabled as $inputnotif
+  | .enabledPlugins as $plugins
   | .extraKnownMarketplaces as $mkts
   | .autoMode as $automode
   | .model as $curmodel
@@ -251,6 +253,13 @@ printf '%s' "$input" | jq \
   # is carried through, never declared here. NB: no apostrophes in this comment; it lives
   # inside the single-quoted jq program and one would end the shell string.
   | (if $automode then .autoMode = $automode else . end)
+  # Notification toggles are set from the UI, not declared here. They were dropped on every
+  # apply until 2026-08-24 - the third instance this session of a runtime-set key vanishing
+  # because this script rebuilds the object and carries only a named whitelist through
+  # (see also js_repl in the Codex template, and strictAllowlist). If a setting changed via
+  # /config does not survive an apply, this whitelist is why.
+  | (if $pushnotif != null then .agentPushNotifEnabled = $pushnotif else . end)
+  | (if $inputnotif != null then .inputNeededNotifEnabled = $inputnotif else . end)
   # default-only: keep the current value if set (runtime /model, /effort, /permissions
   # persist), otherwise seed the default; deleting the key and re-applying restores it.
   | .model = ($curmodel // "opus[1m]")

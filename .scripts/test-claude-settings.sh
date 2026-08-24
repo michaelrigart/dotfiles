@@ -92,11 +92,15 @@ jq_is '.permissions.ask | index("Edit(**/.gitlab-ci.yml)") != null' true "asks o
 jq_is '.permissions.ask | index("Edit(**/.gitlab/ci/**)") != null' true "asks on .gitlab/ci/**"
 
 echo "E. carry-through keys survive"
-emit '{"enabledPlugins":{"x@y":true},"extraKnownMarketplaces":{"m":{}},"model":"opus[1m]","effortLevel":"xhigh"}'
+emit '{"enabledPlugins":{"x@y":true},"extraKnownMarketplaces":{"m":{}},"model":"opus[1m]","effortLevel":"xhigh","agentPushNotifEnabled":true,"inputNeededNotifEnabled":true}'
 jq_is '.enabledPlugins["x@y"]' true       "enabledPlugins carried through"
 jq_is '.extraKnownMarketplaces.m != null' true "extraKnownMarketplaces carried through"
 jq_is '.model'                'opus[1m]'  "model carried through"
 jq_is '.effortLevel'          'xhigh'     "effortLevel carried through"
+# UI-set notification toggles. Dropped on every apply until 2026-08-24 because this script
+# rebuilds the object and carries only a named whitelist; a key nobody listed just vanished.
+jq_is '.agentPushNotifEnabled'  'true' "agentPushNotifEnabled carried through"
+jq_is '.inputNeededNotifEnabled' 'true' "inputNeededNotifEnabled carried through"
 
 echo "F. layer 2 — agent-backed credential isolation"
 emit '{}'
