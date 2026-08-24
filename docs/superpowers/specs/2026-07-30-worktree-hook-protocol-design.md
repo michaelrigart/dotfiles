@@ -3,6 +3,11 @@
 **Status:** Implemented — merged in 0e5dde9
 **Date:** 2026-07-30
 
+> **2026-08-24 — extended.** [Worktree lifecycle invocation surface](./2026-08-24-worktree-lifecycle-invocation-surface-design.md)
+> adds non-interactive entry points for `wt-rm` and `wt-prepare`, and a guard against
+> the raw `git worktree remove` this record's §10 leaves unguaranteed. No protocol
+> semantics in this document changed; it remains accurate as written.
+
 ## 1. Problem
 
 The dotfiles repository provides a general development workflow:
