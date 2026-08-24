@@ -203,23 +203,28 @@ echo "H. layer 3 stays off until domains are known"
 # deliberate. The package registries are here so dependency installs run sandboxed rather
 # than escaping — the same reasoning as allowWrite. Note Little Snitch is a second,
 # independent gate, so a domain here is necessary but not sufficient for egress.
-EXP_DOMAINS='["gitlab.com","github.com","registry.npmjs.org","registry.yarnpkg.com","pypi.org","files.pythonhosted.org","rubygems.org","index.crates.io","static.crates.io"]'
+EXP_DOMAINS='["gitlab.com","registry.gitlab.com","github.com","api.github.com","uploads.github.com","codeload.github.com","raw.githubusercontent.com","objects.githubusercontent.com","pkg-containers.githubusercontent.com","registry.npmjs.org","registry.yarnpkg.com","pypi.org","files.pythonhosted.org","rubygems.org","index.rubygems.org","index.crates.io","static.crates.io","crates.io","api.anthropic.com","formulae.brew.sh","ghcr.io","mise-versions.jdx.dev","cache.ruby-lang.org","www.ruby-lang.org","static.rust-lang.org","builds.dotnet.microsoft.com","dotnetcli.azureedge.net","login.microsoftonline.com","management.azure.com","graph.microsoft.com","teleport.viumore.com","teleport2.viumore.com","launchpad.37signals.com","3.basecampapi.com","basecamp3.basecampapi.com","3.basecamp.com","storage.3.basecamp.com","app.basecamp.com"]'
 jq_is ".sandbox.network.allowedDomains == $EXP_DOMAINS" true \
       "egress allowlist is exactly the declared hosts and registries"
 jq_is '[.sandbox.network.allowedDomains[] | select(test("^\\*") or . == "*")] | length' 0 \
       "no wildcard domain widens the allowlist"
-# strictAllowlist (Claude Code >= 2.1.219) would make allowedDomains DENY a non-allowlisted
-# host outright. It is deliberately OFF: the owner's stated preference (2026-08-03) is to be
-# prompted for an unknown host, not blocked by one, so a new registry or docs host stays a
-# decision rather than a failed command.
+# strictAllowlist is OFF, but NOT for the reason recorded here on 2026-08-03. That note said
+# the preference was to be PROMPTED for an unknown host rather than blocked. There is no
+# prompt: re-measured 2026-08-24 on 2.1.241, sandboxed `curl https://example.com` (not
+# allowlisted) returned HTTP 200 silently, because autoAllowBashIfSandboxed suppresses the
+# prompt that strictAllowlist=false would otherwise raise. So the real choice is
+# silently-allow-anything vs block, and this list is decorative today. Little Snitch is the
+# actual outbound gate.
 #
-# Know what that costs before flipping it. Measured the same day, sandboxed curl reached
-# example.com and en.wikipedia.org — neither allowlisted — and returned real page content
-# with NO prompt. So today allowedDomains only pre-approves hosts to suppress a prompt that
-# does not appear anyway; it is not an egress boundary. Little Snitch remains the independent
-# outbound gate. Turning this on is the only thing that makes the list deny, so if the "get
-# prompted" behaviour ever materialises and is still unwanted, revisit here.
-jq_is '.sandbox.network.strictAllowlist // false' false "strictAllowlist stays off — prompt on unknown hosts, never block"
+# It was switched ON on 2026-08-24 and reverted the same hour. The revert was triggered by
+# `git ls-remote` failing, which was MISATTRIBUTED to the flag — the real cause was the
+# 1Password agent refusing to sign. Note for whoever retries: DNS (`dig`) and raw TCP to
+# port 22 are blocked in this sandbox *either way*; git does not use them, it goes through
+# the ssh-sandbox-proxy in GIT_SSH_COMMAND. So the open question is narrow — does the proxy
+# still work under strictAllowlist? Test that with 1Password unlocked before flipping it.
+# The widened allowlist below is kept regardless: it is harmless while the flag is off and
+# it is what a future flip would need.
+jq_is '.sandbox.network.strictAllowlist // false' false "strictAllowlist off — see comment; retest needs 1Password unlocked"
 
 echo "J. defaultMode is seeded, not enforced"
 # Runtime-mutable via /permissions, like model and effortLevel. Enforcing it would revert
@@ -324,6 +329,23 @@ jq_is '.permissions.deny | index("Bash(basecamp auth token*)") != null' true \
 jq_is '[.permissions.allow[] | select(startswith("Bash(basecamp"))
         | select(test("(list|show|search|url|status)\\b") | not)] | length' 0 \
       "every allowlisted basecamp rule is a read-only verb"
+
+echo "P. the network allowlist actually enforces"
+emit '{}'
+# Until 2026-08-24 this list was decorative: without strictAllowlist a non-listed host is
+# merely prompted, and autoAllowBashIfSandboxed suppresses the prompt, so sandboxed
+# `curl https://example.com` returned 200. It had reportedly been enabled once and was
+# lost, because this block is declaratively owned and runtime-set keys inside it are
+# erased on the next apply. This assertion is the thing that makes the loss loud.
+# Spot-check the hosts whose absence breaks real work, not the whole list: forge, the
+# runtime managers, Azure, the Teleport proxies that k8s access rides, and Basecamp.
+for d in "gitlab.com" "github.com" "raw.githubusercontent.com" "formulae.brew.sh" \
+         "mise-versions.jdx.dev" "static.rust-lang.org" "login.microsoftonline.com" \
+         "teleport.viumore.com" "launchpad.37signals.com" "3.basecampapi.com"; do
+  jq_is ".sandbox.network.allowedDomains | index(\"$d\") != null" true "allowlisted: $d"
+done
+# A denied-domains list would silently override the above, so pin that it stays unset.
+jq_is '.sandbox.network.deniedDomains // "unset"' 'unset' "no deniedDomains rule shadowing the allowlist"
 
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

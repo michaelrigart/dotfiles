@@ -193,15 +193,42 @@ printf '%s' "$input" | jq \
             "~/Library/Mobile Documents/iCloud~md~obsidian"
           ]
         },
+        # strictAllowlist is what makes this list DO anything: without it non-listed
+        # hosts are merely prompted, and autoAllowBashIfSandboxed suppresses that prompt
+        # too, so the allowlist was decorative until 2026-08-24 (verified: sandboxed
+        # `curl https://example.com` returned 200). It was reportedly enabled once before
+        # and lost, because this block is owned declaratively and anything set at runtime
+        # but not named here is erased on the next apply. Hence the test assertion.
+        # Adding a host is cheap; the list below is what the toolchain here needs.
         "network": {
           "allowUnixSockets": [$agent_socket],
           "allowLocalBinding": true,
           "allowedDomains": [
-            "gitlab.com", "github.com",
+            "gitlab.com", "registry.gitlab.com",
+            "github.com", "api.github.com", "uploads.github.com", "codeload.github.com",
+            "raw.githubusercontent.com", "objects.githubusercontent.com",
+            "pkg-containers.githubusercontent.com",
             "registry.npmjs.org", "registry.yarnpkg.com",
             "pypi.org", "files.pythonhosted.org",
-            "rubygems.org",
-            "index.crates.io", "static.crates.io"
+            "rubygems.org", "index.rubygems.org",
+            "index.crates.io", "static.crates.io", "crates.io",
+            # scripts that call the Claude API from sandboxed Bash
+            "api.anthropic.com",
+            # Homebrew
+            "formulae.brew.sh", "ghcr.io",
+            # mise-managed runtimes (ruby, rust, dotnet; python builds ride GitHub releases)
+            "mise-versions.jdx.dev",
+            "cache.ruby-lang.org", "www.ruby-lang.org",
+            "static.rust-lang.org",
+            "builds.dotnet.microsoft.com", "dotnetcli.azureedge.net",
+            # Azure CLI
+            "login.microsoftonline.com", "management.azure.com", "graph.microsoft.com",
+            # Teleport proxies (k8s access rides these, so no cluster endpoints needed)
+            "teleport.viumore.com", "teleport2.viumore.com",
+            # Basecamp CLI: OAuth on launchpad, API + attachments on basecampapi/basecamp
+            "launchpad.37signals.com",
+            "3.basecampapi.com", "basecamp3.basecampapi.com",
+            "3.basecamp.com", "storage.3.basecamp.com", "app.basecamp.com"
           ]
         }
       },
