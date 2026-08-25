@@ -1422,6 +1422,219 @@ for b in 'x|y' "x'q"; do
                             || _fail "branch '$b' is quoted in recovery output"
 done
 
+# --- non-interactive wrappers (invocation-surface design §4.3, §7) -----------
+# The wrappers exist because the lifecycle functions are only defined in an
+# interactive shell. These cases run them the way an agent would: a bare `zsh`
+# with no interactive rc, invoking the file by path.
+print -r -- ""
+print -r -- "Q. PATH wrappers reach the functions from a non-interactive shell"
+
+WRAPDIR="$(cd "${0:h}/.." && pwd)/dot_local/bin"
+
+# Source mode is NOT asserted: chezmoi derives the deployed 0755 from the
+# `executable_` prefix, and the tracked modes in this repo are inconsistent
+# (executable_git-forge-guard.sh is 100644, executable_app-cleaner is 100755).
+# Step 6 verifies the mode that actually matters, on the deployed file.
+for w in wt-rm wt-prepare; do
+  [[ -f "$WRAPDIR/executable_$w" && -r "$WRAPDIR/executable_$w" ]] \
+    && _pass "$w wrapper source exists and is readable" \
+    || _fail "$w wrapper source exists and is readable"
+done
+
+# Every other case in this suite pins the repo's own copy of the functions via
+# $FUNCS; these wrapper cases must too. Left to fall through to
+# `${XDG_CONFIG_HOME:-$HOME/.config}`, they'd read whatever is actually
+# deployed on this machine, not the repo under test — green only by
+# coincidence that the deployed copy currently matches.
+setup
+REPOCONF="$ROOTTMP/repoconf"
+mkdir -p "$REPOCONF/zsh"
+cp "$(cd "${0:h}/.." && pwd)/dot_config/zsh/zshenv"    "$REPOCONF/zsh/zshenv"
+cp "$(cd "${0:h}/.." && pwd)/dot_config/zsh/functions" "$REPOCONF/zsh/functions"
+# Point ZELLIJ_SOCKET_DIR at a fixture path that is never created, so these
+# dispatch-only cases hit "nothing to check" in the wrapper's zellij-unreachable
+# preflight (section R) rather than the real, genuinely-live sockets this
+# machine's own zellij sessions leave in the real ZELLIJ_SOCKET_DIR — zshenv
+# exports that unconditionally, so an env override alone would be clobbered.
+print -r -- "" >> "$REPOCONF/zsh/zshenv"
+print -r -- "export ZELLIJ_SOCKET_DIR=\"$ROOTTMP/repoconf-zellijsock\"" >> "$REPOCONF/zsh/zshenv"
+
+# A wrapper with no arguments must reach the function and hit its own usage
+# error — proof the dispatch happened, not that the file merely ran.
+for w in wt-rm wt-prepare; do
+  OUT="$(XDG_CONFIG_HOME="$REPOCONF" zsh "$WRAPDIR/executable_$w" 2>&1)"; RC=$?
+  has "usage: $w <branch>" "$w wrapper dispatches to the function"
+  rc_is 1 "$w wrapper propagates the function's exit status"
+done
+
+# Arguments must survive, including a branch containing a slash. `wt-rm` reports
+# the derived sibling path in its does-not-exist refusal, so the slug proves the
+# argument arrived intact.
+OUT="$(cd "$REPO" && XDG_CONFIG_HOME="$REPOCONF" zsh "$WRAPDIR/executable_wt-rm" 'feature/foo' 2>&1)"; RC=$?
+has "repo-feature-foo" "wrapper preserves an argument containing a slash"
+
+# Degenerate functions files. The empty case is the one that exercises the
+# recursion guard: the file is readable, so the readability check passes, and
+# only `$+functions` stands between the bare call and an infinite PATH loop.
+FAKECONF="$ROOTTMP/fakeconf"
+mkdir -p "$FAKECONF/zsh"
+cp "$(cd "${0:h}/.." && pwd)/dot_config/zsh/zshenv" "$FAKECONF/zsh/zshenv"
+
+# Recursion must be REACHABLE for this case to mean anything: an executable
+# `wt-rm` has to exist on PATH. Without the $+functions guard, that plus a
+# functions file that defines nothing would make the bare call resolve back to
+# this script and recurse without limit.
+FAKEBIN="$ROOTTMP/fakebin"
+mkdir -p "$FAKEBIN"
+# A COPY, chmod +x — never the source, which must stay 644. A symlink to the
+# non-executable source yields `permission denied` (126), so the bare call would
+# never reach the recursion this guard exists to prevent.
+cp "$WRAPDIR/executable_wt-rm" "$FAKEBIN/wt-rm"
+chmod +x "$FAKEBIN/wt-rm"
+
+: > "$FAKECONF/zsh/functions"
+OUT="$(PATH="$FAKEBIN:$PATH" XDG_CONFIG_HOME="$FAKECONF" \
+       zsh "$FAKEBIN/wt-rm" x 2>&1)"; RC=$?
+has "did not define wt-rm" "empty functions file is refused, not recursed into"
+rc_is 1 "empty functions file exits 1"
+
+rm -f "$FAKECONF/zsh/functions"
+OUT="$(XDG_CONFIG_HOME="$FAKECONF" zsh "$WRAPDIR/executable_wt-rm" x 2>&1)"; RC=$?
+has "cannot read" "missing functions file is refused"
+rc_is 1 "missing functions file exits 1"
+
+# --- zellij-unreachable preflight (final-review FIX 1) ----------------------
+# `zellij list-sessions -s` can report "no sessions" for a reason other than
+# there being none: when zellij cannot reach its own sockets — as reproduced
+# under the Claude Code sandbox — it reports the same nothing-here output.
+# wt-rm's own session-shutdown step (dot_config/zsh/functions, out of scope
+# here) reads that as "successful shutdown" and proceeds to remove the
+# worktree while the session is still live. The wrapper's preflight exists to
+# catch exactly that discrepancy — live session sockets on disk, no sessions
+# reported — before wt-rm ever runs.
+print -r -- ""
+print -r -- "R. wt-rm wrapper refuses when zellij reports no sessions but sockets exist"
+
+# A stub `zellij` that reproduces the discrepancy verbatim: it reports no
+# sessions (to stderr, like the real binary — the wrapper's check reads only
+# stdout, same as wt-rm's own check) and exits 0, regardless of what is
+# actually on disk. Switchable via MOCK_ZJ_LIST: unset, it prints the
+# nothing-here message (the discrepancy case below); set, it names that
+# session on stdout instead — the real binary's behaviour when zellij CAN
+# see the session, needed for the genuinely-reachable case below.
+ZBIN="$ROOTTMP/zellijbin"
+mkdir -p "$ZBIN"
+cat > "$ZBIN/zellij" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+  "list-sessions -s")
+    if [ -n "${MOCK_ZJ_LIST:-}" ]; then
+      echo "$MOCK_ZJ_LIST"
+    else
+      echo "No active zellij sessions found." >&2
+    fi
+    exit 0 ;;
+  *) exit 0 ;;
+esac
+STUB
+chmod +x "$ZBIN/zellij"
+
+# A private ZELLIJ_SOCKET_DIR fixture, so the check runs against a directory
+# this test controls rather than whatever is genuinely live on the host.
+# zshenv exports ZELLIJ_SOCKET_DIR unconditionally (no `test ... ||` guard —
+# see zshenv:34), so a plain env override would be clobbered the instant the
+# wrapper sources it. This fixture zshenv is the real file with two lines
+# appended AFTER its content: the override, and a PATH prepend that puts the
+# stub `zellij` ahead of the real one Homebrew's shellenv (also run by
+# zshenv) would otherwise put first.
+ZSOCK="$ROOTTMP/zellijsock"
+ZCONF="$ROOTTMP/zellijconf"
+mkdir -p "$ZCONF/zsh"
+cp "$(cd "${0:h}/.." && pwd)/dot_config/zsh/functions" "$ZCONF/zsh/functions"
+{
+  cat "$(cd "${0:h}/.." && pwd)/dot_config/zsh/zshenv"
+  print -r -- ""
+  print -r -- "export ZELLIJ_SOCKET_DIR=\"$ZSOCK\""
+  print -r -- "export PATH=\"$ZBIN:\$PATH\""
+} > "$ZCONF/zsh/zshenv"
+
+# Positive case: a live-looking session socket sits in contract_version_1/,
+# but the stub reports no sessions — the discrepancy itself.
+rm -rf "$ZSOCK"; mkdir -p "$ZSOCK/contract_version_1"
+: > "$ZSOCK/contract_version_1/some-session"
+
+OUT="$(cd "$REPO" && XDG_CONFIG_HOME="$ZCONF" zsh "$WRAPDIR/executable_wt-rm" nonexistent-branch 2>&1)"; RC=$?
+rc_is 1 "wrapper refuses on the zellij-unreachable discrepancy"
+has "wt-rm: zellij is unreachable" "refusal names the problem"
+has "sandbox" "refusal message names the sandbox as the likely cause"
+
+# Genuinely-reachable case: same socket fixture as the positive case above —
+# entries present in contract_version_1/ — but `zellij list-sessions -s` now
+# names a live session on stdout instead of reporting none. This is the
+# missing direction: every case so far holds the stub's "no sessions" output
+# constant and only varies the socket directory, so a preflight degraded to
+# "refuse whenever entries exist" — never actually consulting list-sessions —
+# would still pass all of them. Only this case, where zellij CAN see a
+# session, distinguishes that broken preflight from the real one.
+export MOCK_ZJ_LIST="org--repo-nonexistent-branch"
+OUT="$(cd "$REPO" && XDG_CONFIG_HOME="$ZCONF" zsh "$WRAPDIR/executable_wt-rm" nonexistent-branch 2>&1)"; RC=$?
+hasnt "wt-rm: zellij is unreachable" "a genuinely reachable live session does not trip the preflight"
+has "does not exist" "wrapper proceeds past the preflight when zellij can see the session"
+unset MOCK_ZJ_LIST
+
+# Negative case: same stub, same fixture, but the socket directory is empty —
+# genuinely no sessions, nothing to check. The wrapper must proceed past the
+# preflight to wt-rm's own "does not exist" refusal for the bogus branch, not
+# stop at the zellij-unreachable one — otherwise the check could be refusing
+# unconditionally and the positive case above would still read green.
+rm -rf "$ZSOCK"; mkdir -p "$ZSOCK/contract_version_1"
+
+OUT="$(cd "$REPO" && XDG_CONFIG_HOME="$ZCONF" zsh "$WRAPDIR/executable_wt-rm" nonexistent-branch 2>&1)"; RC=$?
+hasnt "wt-rm: zellij is unreachable" "empty socket dir does not trip the preflight"
+has "does not exist" "wrapper proceeds past the preflight to wt-rm's own checks"
+
+# Same negative case again with the socket directory absent entirely — the
+# other "nothing to check" path (not existing at all, not merely empty).
+rm -rf "$ZSOCK"
+
+OUT="$(cd "$REPO" && XDG_CONFIG_HOME="$ZCONF" zsh "$WRAPDIR/executable_wt-rm" nonexistent-branch 2>&1)"; RC=$?
+hasnt "wt-rm: zellij is unreachable" "absent socket dir does not trip the preflight"
+has "does not exist" "wrapper proceeds past the preflight when there is no socket dir at all"
+
+# --- `command` defeats function shadowing (invocation-surface design §4.6) --
+# Every case above invokes the wrapper by absolute path, which bypasses PATH
+# resolution and shell-function lookup entirely — none of them exercise real
+# command resolution, which is where the actual hazard lives: a shell FUNCTION
+# named wt-rm shadows a PATH wrapper of the same name (functions win the
+# lookup), and Claude Code's Bash tool initialises its shell from a snapshot
+# that defines wt-rm/wt-prepare as functions — so a bare `wt-rm` there never
+# reaches the wrapper, and never runs the zellij-unreachable preflight proven
+# above in section R. `command wt-rm` bypasses the function and resolves the
+# PATH executable instead. Both halves run inside a command-substitution
+# subshell so the shadowing function defined here cannot leak into any other
+# case in this file.
+print -r -- ""
+print -r -- "S. \`command\` defeats a same-named shell function shadowing the wrapper"
+
+SHADOWBIN="$ROOTTMP/shadowbin"
+mkdir -p "$SHADOWBIN"
+cp "$WRAPDIR/executable_wt-rm" "$SHADOWBIN/wt-rm"
+chmod +x "$SHADOWBIN/wt-rm"
+
+OUT="$(
+  wt-rm() { print -r -- "SHADOW-RAN"; return 0 }
+  PATH="$SHADOWBIN:$PATH" XDG_CONFIG_HOME="$REPOCONF" wt-rm 2>&1
+)"; RC=$?
+has "SHADOW-RAN" "bare wt-rm resolves the shadowing function, not the PATH wrapper"
+hasnt "usage: wt-rm <branch>" "bare wt-rm never reaches the wrapper"
+
+OUT="$(
+  wt-rm() { print -r -- "SHADOW-RAN"; return 0 }
+  PATH="$SHADOWBIN:$PATH" XDG_CONFIG_HOME="$REPOCONF" command wt-rm 2>&1
+)"; RC=$?
+has "usage: wt-rm <branch>" "command wt-rm bypasses the function and reaches the wrapper"
+hasnt "SHADOW-RAN" "command wt-rm does not run the shadowing function"
+
 export HOME="$REAL_HOME"
 print -r -- ""
 print -r -- "passed: $pass  failed: $fail"

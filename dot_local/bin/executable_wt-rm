@@ -1,0 +1,70 @@
+#!/usr/bin/env zsh
+# wt-rm — non-interactive entry point for worktree retirement.
+#
+# The lifecycle commands are zsh functions sourced by ~/.zshrc, so they resolve
+# only in an interactive shell. Agents, scripts and cron run non-interactively,
+# where raw `git worktree remove` was the only reachable option — and that path
+# gets none of the protocol's guarantees (hook-protocol design §10). Six husk
+# directories under ~/Code/Netronix came from exactly that.
+#
+# Interactive shells never reach this file: a zsh function shadows a PATH command.
+#
+# See docs/superpowers/specs/2026-08-24-worktree-lifecycle-invocation-surface-design.md §4.3
+
+emulate -L zsh
+
+conf="${XDG_CONFIG_HOME:-$HOME/.config}"
+
+# zshenv is not optional: without it a bare zsh has no XDG variables, no wtcp or
+# zellij on PATH, and no ZELLIJ_SOCKET_DIR — which wt-rm needs to find the session
+# it must stop. Only the XDG base variables are guarded with `test "$X" ||`, so
+# sourcing re-prepends PATH and re-runs `brew --prefix`; both are harmless in a
+# process that exits immediately.
+#
+# No `set -u`: zshenv tests unset variables by design.
+for f in zshenv functions; do
+  [[ -r "$conf/zsh/$f" ]] || {
+    print -ru2 -- "wt-rm: cannot read $conf/zsh/$f"; exit 1 }
+  source "$conf/zsh/$f"
+done
+
+# The script and the function share a name. If the functions file is present but
+# does not define wt-rm, the bare call below resolves back to THIS script through
+# PATH and recurses without limit. A readability check does not cover that: the
+# dangerous case is a file that exists and is readable but empty.
+(( $+functions[wt-rm] )) || {
+  print -ru2 -- "wt-rm: $conf/zsh/functions did not define wt-rm."; exit 1 }
+
+# Preflight: is zellij actually reachable, not "are we in a sandbox".
+#
+# wt-rm's session-shutdown step treats an absent Zellij session as successful
+# shutdown — the normal state on a retry (dot_config/zsh/functions). But
+# `zellij list-sessions -s` can report "no sessions" for a reason other than
+# there being none: when zellij cannot reach its own sockets (most commonly
+# because this process is sandboxed and the socket directory is denied), it
+# prints the same nothing-here output, and nothing about its own exit status
+# tells the two cases apart. Read as "absent", that reads as "successful
+# shutdown" — wt-rm proceeds straight through teardown to `git worktree
+# remove` while the session's processes are still alive and holding the
+# directory open, recreating exactly the husk this wrapper exists to prevent.
+#
+# So this checks the DISCREPANCY, never the environment: live session sockets
+# on disk that `list-sessions` cannot see. No socket directory at all, or no
+# `zellij` on PATH, both mean "nothing to check" — proceed normally, same as
+# the retry-safe absent-session case this preflight is protecting.
+if (( $+commands[zellij] )); then
+  sockdir="${ZELLIJ_SOCKET_DIR}/contract_version_1"
+  if [[ -d "$sockdir" ]]; then
+    entries=("$sockdir"/*(ND))
+    if (( ${#entries} )) && [[ -z "$(zellij list-sessions -s 2>/dev/null)" ]]; then
+      print -ru2 -- "wt-rm: zellij is unreachable — refusing to remove a worktree without confirming its session is stopped."
+      print -ru2 -- "    $sockdir has live session sockets, but \`zellij list-sessions\` reports none."
+      print -ru2 -- "    This is most commonly caused by running inside a sandbox that zellij cannot reach."
+      print -ru2 -- "    Removing the worktree now would leave its session running, and its processes would"
+      print -ru2 -- "    rewrite back into the deleted directory — a husk. Re-run with the sandbox disabled."
+      exit 1
+    fi
+  fi
+fi
+
+wt-rm "$@"

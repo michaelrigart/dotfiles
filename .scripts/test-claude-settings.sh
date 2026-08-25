@@ -326,13 +326,18 @@ jq_is '.attribution.commit'     ''      "commit attribution text empty"
 jq_is '.attribution.pr'         ''      "PR attribution text empty"
 jq_is '.includeCoAuthoredBy'    'false' "deprecated co-authored-by fallback still false"
 
-echo "N. the forge guard is wired as a PreToolUse hook"
-jq_is '.hooks.PreToolUse | length' 1 "exactly one PreToolUse entry"
-jq_is '.hooks.PreToolUse[0].matcher' 'Bash' "matches the Bash tool"
+echo "N. both Bash guards are wired as PreToolUse hooks"
+# Index-pinned, not just length-checked. These assertions are positional, so a
+# reordering would silently retarget them at the wrong guard rather than fail.
+jq_is '.hooks.PreToolUse | length' 2 "exactly two PreToolUse entries"
+jq_is '.hooks.PreToolUse[0].matcher' 'Bash' "forge guard matches the Bash tool"
 jq_is '.hooks.PreToolUse[0].hooks[0].command' 'bash $HOME/.claude/git-forge-guard.sh' \
-      'runs the forge guard, $HOME left for the shell to expand'
-# The SessionStart hook must survive alongside it — adding PreToolUse replaced the whole
-# hooks object once during development.
+      'entry 0 runs the forge guard, $HOME left for the shell to expand'
+jq_is '.hooks.PreToolUse[1].matcher' 'Bash' "worktree guard matches the Bash tool"
+jq_is '.hooks.PreToolUse[1].hooks[0].command' 'bash $HOME/.claude/worktree-guard.sh' \
+      'entry 1 runs the worktree guard, $HOME left for the shell to expand'
+# The SessionStart hook must survive alongside them — adding PreToolUse replaced the
+# whole hooks object once during development.
 jq_is '.hooks.SessionStart | length' 1 "SessionStart hook still present"
 
 echo "O. basecamp is allowlisted read-only"
@@ -361,6 +366,33 @@ for d in "gitlab.com" "github.com" "raw.githubusercontent.com" "formulae.brew.sh
 done
 # A denied-domains list would silently override the above, so pin that it stays unset.
 jq_is '.sandbox.network.deniedDomains // "unset"' 'unset' "no deniedDomains rule shadowing the allowlist"
+
+echo "X. every wired hook script is actually managed by chezmoi"
+# A hook wired to an unmanaged path never deploys and fails open — silently inert.
+# This is what a `.chezmoiignore` allowlist omission (task-3 fix-round-1) looks like:
+# 41 guard tests, 83 settings tests, and three task reviews all stayed green while the
+# hook pointed at a file chezmoi never deployed. Derive the hook list from the emitted
+# settings rather than hardcoding it, so a future third hook is covered automatically.
+if command -v chezmoi >/dev/null 2>&1; then
+  managed=$(chezmoi managed 2>/dev/null)
+  hooks=$(printf '%s' "$OUT" | jq -r '[.hooks.PreToolUse[]?.hooks[]?.command] | .[]' \
+            | grep -o '\.claude/[A-Za-z0-9._-]*\.sh' | sort -u)
+  # An empty $hooks would make the loop below assert nothing at all — a silent
+  # pass in the exact section that exists to catch a silently-inert hook wiring.
+  # Fail loudly instead of skipping.
+  if [ -z "$hooks" ]; then
+    _fail "at least one PreToolUse hook script is wired" "no .claude/*.sh command found in emitted settings"
+  else
+    for f in $hooks; do
+      case "$managed" in
+        *"$f"*) _pass "hook script $f is chezmoi-managed" ;;
+        *)      _fail "hook script $f is chezmoi-managed" "not in \`chezmoi managed\`" ;;
+      esac
+    done
+  fi
+else
+  echo "  SKIP: chezmoi absent — hook-script management unverified"
+fi
 
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
