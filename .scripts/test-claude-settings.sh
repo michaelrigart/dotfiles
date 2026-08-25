@@ -359,5 +359,25 @@ done
 # A denied-domains list would silently override the above, so pin that it stays unset.
 jq_is '.sandbox.network.deniedDomains // "unset"' 'unset' "no deniedDomains rule shadowing the allowlist"
 
+echo "X. every wired hook script is actually managed by chezmoi"
+# A hook wired to an unmanaged path never deploys and fails open — silently inert.
+# This is what a `.chezmoiignore` allowlist omission (task-3 fix-round-1) looks like:
+# 41 guard tests, 83 settings tests, and three task reviews all stayed green while the
+# hook pointed at a file chezmoi never deployed. Derive the hook list from the emitted
+# settings rather than hardcoding it, so a future third hook is covered automatically.
+if command -v chezmoi >/dev/null 2>&1; then
+  managed=$(chezmoi managed 2>/dev/null)
+  hooks=$(printf '%s' "$OUT" | jq -r '[.hooks.PreToolUse[]?.hooks[]?.command] | .[]' \
+            | grep -o '\.claude/[A-Za-z0-9._-]*\.sh' | sort -u)
+  for f in $hooks; do
+    case "$managed" in
+      *"$f"*) _pass "hook script $f is chezmoi-managed" ;;
+      *)      _fail "hook script $f is chezmoi-managed" "not in \`chezmoi managed\`" ;;
+    esac
+  done
+else
+  echo "  SKIP: chezmoi absent — hook-script management unverified"
+fi
+
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
