@@ -784,11 +784,13 @@ Expected: both print `/Users/michael/.local/bin/...`. This is the check the orig
 
 Present this for the "Development" section of the agent instructions, after the existing `wt <branch>` sentence:
 
-> Worktree teardown goes through `wt-rm <branch>`, never raw `git worktree remove`.
+> Worktree teardown goes through `command wt-rm <branch>`, never raw `git worktree remove`.
 > Raw removal skips the Zellij session shutdown and the project teardown hook, so
 > live processes write back into the deleted directory and leave a husk behind.
 > `wt-rm` and `wt-prepare` are on `$PATH`, so they work from a non-interactive
-> shell too. Agents do not create `wt`-managed sibling worktrees — that stays an
+> shell too — but invoke them as `command wt-rm` / `command wt-prepare`, because a
+> shell function of the same name shadows the `$PATH` wrapper that carries the
+> zellij safety preflight. Agents do not create `wt`-managed sibling worktrees — that stays an
 > interactive command, because `wt` attaches to a Zellij session. Native or
 > harness worktrees (`EnterWorktree`, an agent's `isolation: "worktree"`) are
 > owned by their own lifecycle tool and are outside this rule.
