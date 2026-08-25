@@ -147,6 +147,59 @@ worse: a hook whose `read` returns empty may proceed on a wrong default silently
 where blocking fails visibly. The wrapper does not alter the hook contract; the
 consequence is documented instead.
 
+### 4.5 Zellij-unreachable preflight
+
+Both wrappers land on a caller class the base protocol never had to consider:
+sandboxed processes. `wt-rm`'s own session-shutdown step (base protocol §8) treats
+an absent Zellij session as successful shutdown — the normal state on a retry. But
+`zellij list-sessions -s` can report "no sessions" for a reason other than there
+being none: when zellij cannot reach its own sockets, most commonly because the
+process is sandboxed and the socket directory is denied, it prints the same
+nothing-here output and exits 0 — nothing about the output or the exit status
+distinguishes the two cases. Read as absent, that reads as successful shutdown,
+and `wt-rm` proceeds straight through teardown to `git worktree remove` while the
+session's processes are still alive and holding the directory open — reproducing
+the §1 husk mechanism through the very surface this record introduces, and
+reporting success while doing it.
+
+This belongs in the wrapper, not in `dot_config/zsh/functions`. The wrapper is the
+new entry point this record adds, and it is the caller class this record makes
+reachable — non-interactive, and therefore sandboxable — that is exposed to the
+discrepancy; the interactive path was never at risk. Moving the check into the
+shared teardown step would change what step 7 treats as failure for every caller,
+interactive included, which §2 goal 2 rules out for this record. Fixing it there
+is a change to protocol failure states and needs its own design record, not a
+clause added under cover of this one.
+
+The check, in `dot_local/bin/executable_wt-rm`: refuse when the Zellij socket
+directory (`$ZELLIJ_SOCKET_DIR/contract_version_1`) holds entries but
+`zellij list-sessions -s` names none. That is the discrepancy itself, not a proxy
+for it — the check does not key on any sandbox-specific variable, or on any other
+signal that this particular caller is a sandbox. Keying on such a variable would
+encode an undocumented, implementation-specific detail of one caller as the
+trigger, when the actual hazard is the mismatch between what the sockets say and
+what zellij reports, regardless of why the two disagree.
+
+Every ambiguous case is open, not closed: no `zellij` on `PATH`, no socket
+directory, or a socket directory that is empty or unreadable all proceed —
+"nothing to check," the same as the retry-safe absent-session case the check is
+protecting. Only the discrepancy itself refuses. This follows §2 goal 4 the same
+way the correctness guard in §5 does: a preflight that failed closed on ambiguity
+would block retirement in states the base protocol already treats as fine.
+
+The accepted cost is a false refusal: a zellij server killed by a crash can leave
+a socket file behind with no process left to answer for it, and the preflight
+cannot distinguish that from a live, merely-unreachable session. It refuses until
+the stale socket is removed. That is the safe direction — the alternative is the
+husk this record exists to stop — and the refusal message names both the socket
+directory and the discrepancy, so the fix is legible rather than a bare exit 1.
+
+A known limit: the socket subdirectory name (`contract_version_1`) is hard-coded.
+A future Zellij release that bumps its socket contract would change that name, and
+the preflight would find no directory to check — not a false refusal, but a silent
+return to the hazard this section describes. That is fail-open, consistent with
+§2 goal 4, and a candidate follow-up rather than something solved here.
+
 ## 5. Correctness guard
 
 A `PreToolUse(Bash)` hook, `dot_claude/executable_worktree-guard.sh`, following the
@@ -384,6 +437,9 @@ would recommend `wt-rm` for worktrees `wt-rm` cannot address.
   preserves the worktree intact (`dot_config/zsh/functions:786`). This record makes
   the correct path available and the common wrong path visible; it does not make
   husks unreachable.
+- A sandboxed caller whose Zellij session is genuinely live is refused by the §4.5
+  preflight, rather than the wrapper silently reporting success while producing a
+  husk.
 - A new hook fires on every Bash call, so its fast path must stay cheap.
 
 ## 10. Open questions

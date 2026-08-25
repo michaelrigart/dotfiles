@@ -1500,13 +1500,22 @@ print -r -- "R. wt-rm wrapper refuses when zellij reports no sessions but socket
 # A stub `zellij` that reproduces the discrepancy verbatim: it reports no
 # sessions (to stderr, like the real binary — the wrapper's check reads only
 # stdout, same as wt-rm's own check) and exits 0, regardless of what is
-# actually on disk.
+# actually on disk. Switchable via MOCK_ZJ_LIST: unset, it prints the
+# nothing-here message (the discrepancy case below); set, it names that
+# session on stdout instead — the real binary's behaviour when zellij CAN
+# see the session, needed for the genuinely-reachable case below.
 ZBIN="$ROOTTMP/zellijbin"
 mkdir -p "$ZBIN"
 cat > "$ZBIN/zellij" <<'STUB'
 #!/usr/bin/env bash
 case "$*" in
-  "list-sessions -s") echo "No active zellij sessions found." >&2; exit 0 ;;
+  "list-sessions -s")
+    if [ -n "${MOCK_ZJ_LIST:-}" ]; then
+      echo "$MOCK_ZJ_LIST"
+    else
+      echo "No active zellij sessions found." >&2
+    fi
+    exit 0 ;;
   *) exit 0 ;;
 esac
 STUB
@@ -1540,6 +1549,20 @@ OUT="$(cd "$REPO" && XDG_CONFIG_HOME="$ZCONF" zsh "$WRAPDIR/executable_wt-rm" no
 rc_is 1 "wrapper refuses on the zellij-unreachable discrepancy"
 has "wt-rm: zellij is unreachable" "refusal names the problem"
 has "sandbox" "refusal message names the sandbox as the likely cause"
+
+# Genuinely-reachable case: same socket fixture as the positive case above —
+# entries present in contract_version_1/ — but `zellij list-sessions -s` now
+# names a live session on stdout instead of reporting none. This is the
+# missing direction: every case so far holds the stub's "no sessions" output
+# constant and only varies the socket directory, so a preflight degraded to
+# "refuse whenever entries exist" — never actually consulting list-sessions —
+# would still pass all of them. Only this case, where zellij CAN see a
+# session, distinguishes that broken preflight from the real one.
+export MOCK_ZJ_LIST="org--repo-nonexistent-branch"
+OUT="$(cd "$REPO" && XDG_CONFIG_HOME="$ZCONF" zsh "$WRAPDIR/executable_wt-rm" nonexistent-branch 2>&1)"; RC=$?
+hasnt "wt-rm: zellij is unreachable" "a genuinely reachable live session does not trip the preflight"
+has "does not exist" "wrapper proceeds past the preflight when zellij can see the session"
+unset MOCK_ZJ_LIST
 
 # Negative case: same stub, same fixture, but the socket directory is empty —
 # genuinely no sessions, nothing to check. The wrapper must proceed past the
