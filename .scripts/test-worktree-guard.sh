@@ -44,6 +44,21 @@ expect() {
   fi
 }
 
+# expect_reason_contains <label> <cwd> <command> <substring>
+# Asserts a DENY's permissionDecisionReason contains the given substring. The
+# `expect()` helper above only classifies allow/deny and never looks at the
+# reason text, so it can't catch a wording regression in the remedy it quotes.
+expect_reason_contains() {
+  local label=$1 cwd=$2 cmd=$3 substring=$4 out reason
+  out=$(run "$cwd" "$cmd")
+  reason=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty' 2>/dev/null)
+  if printf '%s' "$reason" | grep -qF "$substring"; then
+    pass=$((pass + 1)); printf '  ok   %s\n' "$label"
+  else
+    fail=$((fail + 1)); printf '  FAIL %s (reason did not contain: %s)\n' "$label" "$substring"
+  fi
+}
+
 # raw <stdin> -> asserts the guard allows whatever degenerate input it is handed
 expect_raw_allow() {
   local label=$1 payload=$2 out
@@ -74,6 +89,8 @@ SPACED="$TMP/my repo-topic"; mkdir -p "$SPACED"
 
 echo "== the one denied shape: literal absolute wt sibling =="
 expect deny  "absolute sibling target"      "$TMP" "git worktree remove $SIB"
+expect_reason_contains "deny reason names the command-prefixed remedy" \
+  "$TMP" "git worktree remove $SIB" "command wt-rm <branch>"
 expect deny  "with -C, absolute target"     "$TMP" "git -C $REPO worktree remove $SIB"
 expect deny  "--force before the target"    "$TMP" "git worktree remove --force $SIB"
 # The exact shapes of the six commands that produced the husks.
