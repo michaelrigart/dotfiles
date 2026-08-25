@@ -28,11 +28,17 @@ EXP_DENY='["Read(~/.ssh/**)","Edit(~/.ssh/**)",
  "Read(**/*.key)","Edit(**/*.key)",
  "Read(**/*.pem)","Edit(**/*.pem)",
  "Bash(basecamp auth token*)"]'
+# "Bash(glab api *)" is DELIBERATELY ABSENT — do not add it back. It gated the mechanism,
+# not the danger: 156 fires in an 11-day window against 2 real rejections, every sampled
+# call a read-only GET piped into jq. It could not be narrowed here either, because an ask
+# rule is absolute (a PreToolUse hook returning allow loses to it — measured 2026-08-25).
+# The write half is gated in git-forge-guard.sh rule 3, and test-git-forge-guard.sh pins
+# both sides of that. See the header comment in the guard.
 EXP_ASK='["Read(~/.kube/config)","Edit(~/.kube/config)",
  "Edit(**/Dockerfile*)","Edit(**/docker-compose*.yml)",
  "Edit(**/.github/workflows/**)","Edit(**/.gitlab-ci.yml)",
  "Edit(**/.gitlab/ci/**)","Edit(**/terraform/**)","Edit(**/ansible/**)",
- "Bash(glab api *)","Bash(glab mr merge*)","Bash(sudo *)",
+ "Bash(glab mr merge*)","Bash(sudo *)",
  "Bash(git push --force*)","Bash(git push -f *)","Bash(git reset --hard*)",
  "Bash(git clean -f*)","Bash(git branch -D*)","Bash(git filter-branch*)",
  "Bash(rm -rf ~/*)","Bash(rm -rf /Users/michael/*)",
@@ -281,10 +287,12 @@ echo "L. the allow guard covers UNMANAGED settings too"
 # "Bash(glab api *)" in two repos, the single rule section A pins closed by name. They get
 # there by clicking "don't ask again", so this drifts on its own and needs a live check.
 #
-# Precedence (docs: "deny, then ask, then allow"; "a user-level deny blocks a project-level
-# allow") means the managed ask rule already neutralises a local allow. This section is
-# defence in depth: it keeps the local files honest so the managed rule is a backstop, not
-# the only thing standing between a click and an allowlisted POST.
+# The managed ask rule used to neutralise a local allow. It is gone now (see EXP_ASK), so
+# what actually stops a clicked-in "Bash(glab api *)" allow is git-forge-guard.sh rule 3 —
+# and that holds: measured 2026-08-25, a hook returning permissionDecision=ask BEATS an
+# allow rule, just as an ask rule beats a hook returning allow. Hooks can only tighten.
+# This section stays as defence in depth: it keeps the local files honest so the hook is a
+# backstop, not the only thing standing between a click and an allowlisted POST.
 FORBID_KIND='^Bash\((?:[^ )]*/)?(sudo|eval|exec|ssh|bash|sh|zsh|fish|python[0-9.]*|node|bun|deno|ruby|perl|php|lua|npx|bunx|uvx|mise|make|just|cargo|go)\b'
 FORBID_VERB='\b(create|delete|remove|rm|push|merge|apply|install|publish|close|edit|update|set)\b'
 local_files=$(

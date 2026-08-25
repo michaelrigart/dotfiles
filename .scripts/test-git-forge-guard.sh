@@ -2,7 +2,9 @@
 # Mocked tests for dot_claude/executable_git-forge-guard.sh.
 #
 # The guard is a PreToolUse(Bash) hook: it reads the hook payload on stdin and
-# either stays silent (allow) or prints a permissionDecision=deny JSON object.
+# either stays silent (allow) or prints a permissionDecision JSON object —
+# "deny" for rules 1-2 (correctness catches, bounced back to the model) or "ask"
+# for rule 3 (a danger gate, surfaced to the user).
 # It fires on every Bash call Claude Code makes, so a false deny blocks real
 # work — most of these cases pin the ALLOW side.
 #
@@ -35,6 +37,8 @@ expect() {
     got=allow
   elif printf '%s' "$out" | jq -e '.hookSpecificOutput.permissionDecision=="deny"' >/dev/null 2>&1; then
     got=deny
+  elif printf '%s' "$out" | jq -e '.hookSpecificOutput.permissionDecision=="ask"' >/dev/null 2>&1; then
+    got=ask
   else
     got="malformed: $out"
   fi
@@ -185,6 +189,48 @@ expect allow "no template in repo"      "$BARE" 'glab mr create --description "A
 expect allow "not a git repo"           "$TMP"  'glab mr create --description "Anything at all."'
 expect allow "mr update is not create"  "$HEADS" 'glab mr update 42 --description "Just some prose."'
 expect allow "bypass switch"            "$HEADS" 'FORGE_GUARD=off glab mr create --description "Just some prose."'
+
+echo "== rule 3: glab api reads pass, writes ask =="
+# This gate exists because "Bash(glab api *)" was REMOVED from permissions.ask: it fired
+# 156x in a fortnight against 2 real rejections, all reads. The read cases below are the
+# whole point — if any of them starts asking, the gate has regressed into the mechanism
+# gate it replaced. The write cases are the danger it actually buys.
+expect allow "read: pipeline jobs"      "$BARE" 'glab api "projects/x%2Fy/pipelines/276/jobs?per_page=50" 2>/dev/null | jq -r ".[] | .name"'
+expect allow "read: job trace"          "$BARE" 'glab api "projects/x/jobs/159/trace" 2>/dev/null | rg -o "Ops::[A-Za-z]+Test" | sort | uniq -c'
+expect allow "read: MR description"     "$BARE" 'glab api "projects/x/merge_requests/104" | jq -r ".description" | head -80'
+expect allow "read: explicit -X GET"    "$BARE" 'glab api -X GET "projects/x/issues"'
+expect allow "read: --method GET"       "$BARE" 'glab api --method GET "projects/x"'
+expect allow "read: --paginate +header" "$BARE" 'glab api --paginate "projects/x/jobs" -H "X-Foo: bar"'
+expect allow "read: jq filter has a |"  "$BARE" 'glab api "projects/x" | jq -r ".files[] | select(.f==1)"'
+expect allow "mention is not a call"    "$BARE" 'rg "glab api" docs/ | head'
+expect ask   "write: -X DELETE"         "$BARE" 'glab api -X DELETE "projects/1"'
+expect ask   "write: flag after path"   "$BARE" 'glab api "projects/1" -X DELETE'
+expect ask   "write: --method=PUT"      "$BARE" 'glab api --method=PUT "projects/1"'
+expect ask   "write: -f field"          "$BARE" 'glab api "projects/1/issues" -f title=boom'
+expect ask   "write: --field"           "$BARE" 'glab api "projects/1/issues" --field title=boom'
+expect ask   "write: chained to a read" "$BARE" 'glab api "p/1" | jq . && glab api -X DELETE "p/2"'
+# A quoted pipe inside the URL must not truncate the scan before the method flag, and a
+# call smuggled into a single token must still be seen. Both were real leaks in drafting.
+expect ask   "write: pipe inside URL"   "$BARE" 'glab api "p/1?x=a|b" -X POST'
+expect ask   "write: hidden in bash -c" "$BARE" "bash -c 'glab api -X DELETE p/1'"
+# Line continuations: the shell joins `\<newline>` before splitting words, shlex does not.
+# Before the join was added, BOTH checks missed the flag here and the write ran silently.
+expect ask   "write: line continuation" "$BARE" 'glab api "projects/1" \
+  -X DELETE'
+expect allow "read: line continuation"  "$BARE" 'glab api "projects/x/jobs" \
+  2>/dev/null | jq -r ".[].name"'
+# QUOTING IS NOT CALLING. A first draft regex-scanned the raw command text and fired on
+# every heredoc, python literal and rg pattern that merely mentioned a write — prompting
+# on a mention, the exact failure rule 3 exists to remove. These pin that shut.
+expect allow "quoted: rg for the text"  "$BARE" 'rg "glab api -X DELETE" docs/'
+expect allow "quoted: echo the docs"    "$BARE" 'echo "use glab api -X POST to create"'
+expect allow "quoted: heredoc fixture"  "$BARE" "cat > t.sh <<'"'"'EOF'"'"'
+expect ask 'glab api -X DELETE p/1'
+EOF"
+expect allow "quoted: python literal"   "$BARE" 'python3 -c '"'"'cmd = "glab api p/1 -X DELETE"'"'"''
+# Fail direction is INVERTED for rule 3: doubt asks, it does not allow.
+expect ask   "unparseable asks"         "$BARE" 'glab api "unbalanced'
+expect allow "bypass switch, rule 3"    "$BARE" 'FORGE_GUARD=off glab api -X DELETE "projects/1"'
 
 echo
 echo "passed: $pass  failed: $fail"

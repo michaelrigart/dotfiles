@@ -93,7 +93,12 @@ printf '%s' "$input" | jq \
           "Edit(**/.github/workflows/**)",
           "Edit(**/.gitlab-ci.yml)",     "Edit(**/.gitlab/ci/**)",
           "Edit(**/terraform/**)",       "Edit(**/ansible/**)",
-          "Bash(glab api *)",           "Bash(glab mr merge*)",
+          # NOTE: no "Bash(glab api *)" here on purpose. It gated the mechanism, not
+          # the danger — 156 fires in one fortnight, 2 real rejections, every sampled
+          # call a read-only GET. An ask rule is absolute (a hook allow loses to it),
+          # so it cannot be narrowed from this side. The write half is gated in
+          # git-forge-guard.sh rule 3 instead; see the comment there.
+          "Bash(glab mr merge*)",
           "Bash(sudo *)",
           "Bash(git push --force*)",    "Bash(git push -f *)",
           "Bash(git reset --hard*)",    "Bash(git clean -f*)",
