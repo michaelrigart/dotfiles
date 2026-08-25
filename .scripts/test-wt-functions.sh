@@ -1433,6 +1433,13 @@ REPOCONF="$ROOTTMP/repoconf"
 mkdir -p "$REPOCONF/zsh"
 cp "$(cd "${0:h}/.." && pwd)/dot_config/zsh/zshenv"    "$REPOCONF/zsh/zshenv"
 cp "$(cd "${0:h}/.." && pwd)/dot_config/zsh/functions" "$REPOCONF/zsh/functions"
+# Point ZELLIJ_SOCKET_DIR at a fixture path that is never created, so these
+# dispatch-only cases hit "nothing to check" in the wrapper's zellij-unreachable
+# preflight (section R) rather than the real, genuinely-live sockets this
+# machine's own zellij sessions leave in the real ZELLIJ_SOCKET_DIR — zshenv
+# exports that unconditionally, so an env override alone would be clobbered.
+print -r -- "" >> "$REPOCONF/zsh/zshenv"
+print -r -- "export ZELLIJ_SOCKET_DIR=\"$ROOTTMP/repoconf-zellijsock\"" >> "$REPOCONF/zsh/zshenv"
 
 # A wrapper with no arguments must reach the function and hit its own usage
 # error — proof the dispatch happened, not that the file merely ran.
@@ -1477,6 +1484,81 @@ rm -f "$FAKECONF/zsh/functions"
 OUT="$(XDG_CONFIG_HOME="$FAKECONF" zsh "$WRAPDIR/executable_wt-rm" x 2>&1)"; RC=$?
 has "cannot read" "missing functions file is refused"
 rc_is 1 "missing functions file exits 1"
+
+# --- zellij-unreachable preflight (final-review FIX 1) ----------------------
+# `zellij list-sessions -s` can report "no sessions" for a reason other than
+# there being none: when zellij cannot reach its own sockets — as reproduced
+# under the Claude Code sandbox — it reports the same nothing-here output.
+# wt-rm's own session-shutdown step (dot_config/zsh/functions, out of scope
+# here) reads that as "successful shutdown" and proceeds to remove the
+# worktree while the session is still live. The wrapper's preflight exists to
+# catch exactly that discrepancy — live session sockets on disk, no sessions
+# reported — before wt-rm ever runs.
+print -r -- ""
+print -r -- "R. wt-rm wrapper refuses when zellij reports no sessions but sockets exist"
+
+# A stub `zellij` that reproduces the discrepancy verbatim: it reports no
+# sessions (to stderr, like the real binary — the wrapper's check reads only
+# stdout, same as wt-rm's own check) and exits 0, regardless of what is
+# actually on disk.
+ZBIN="$ROOTTMP/zellijbin"
+mkdir -p "$ZBIN"
+cat > "$ZBIN/zellij" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+  "list-sessions -s") echo "No active zellij sessions found." >&2; exit 0 ;;
+  *) exit 0 ;;
+esac
+STUB
+chmod +x "$ZBIN/zellij"
+
+# A private ZELLIJ_SOCKET_DIR fixture, so the check runs against a directory
+# this test controls rather than whatever is genuinely live on the host.
+# zshenv exports ZELLIJ_SOCKET_DIR unconditionally (no `test ... ||` guard —
+# see zshenv:34), so a plain env override would be clobbered the instant the
+# wrapper sources it. This fixture zshenv is the real file with two lines
+# appended AFTER its content: the override, and a PATH prepend that puts the
+# stub `zellij` ahead of the real one Homebrew's shellenv (also run by
+# zshenv) would otherwise put first.
+ZSOCK="$ROOTTMP/zellijsock"
+ZCONF="$ROOTTMP/zellijconf"
+mkdir -p "$ZCONF/zsh"
+cp "$(cd "${0:h}/.." && pwd)/dot_config/zsh/functions" "$ZCONF/zsh/functions"
+{
+  cat "$(cd "${0:h}/.." && pwd)/dot_config/zsh/zshenv"
+  print -r -- ""
+  print -r -- "export ZELLIJ_SOCKET_DIR=\"$ZSOCK\""
+  print -r -- "export PATH=\"$ZBIN:\$PATH\""
+} > "$ZCONF/zsh/zshenv"
+
+# Positive case: a live-looking session socket sits in contract_version_1/,
+# but the stub reports no sessions — the discrepancy itself.
+rm -rf "$ZSOCK"; mkdir -p "$ZSOCK/contract_version_1"
+: > "$ZSOCK/contract_version_1/some-session"
+
+OUT="$(cd "$REPO" && XDG_CONFIG_HOME="$ZCONF" zsh "$WRAPDIR/executable_wt-rm" nonexistent-branch 2>&1)"; RC=$?
+rc_is 1 "wrapper refuses on the zellij-unreachable discrepancy"
+has "wt-rm: zellij is unreachable" "refusal names the problem"
+has "sandbox" "refusal message names the sandbox as the likely cause"
+
+# Negative case: same stub, same fixture, but the socket directory is empty —
+# genuinely no sessions, nothing to check. The wrapper must proceed past the
+# preflight to wt-rm's own "does not exist" refusal for the bogus branch, not
+# stop at the zellij-unreachable one — otherwise the check could be refusing
+# unconditionally and the positive case above would still read green.
+rm -rf "$ZSOCK"; mkdir -p "$ZSOCK/contract_version_1"
+
+OUT="$(cd "$REPO" && XDG_CONFIG_HOME="$ZCONF" zsh "$WRAPDIR/executable_wt-rm" nonexistent-branch 2>&1)"; RC=$?
+hasnt "wt-rm: zellij is unreachable" "empty socket dir does not trip the preflight"
+has "does not exist" "wrapper proceeds past the preflight to wt-rm's own checks"
+
+# Same negative case again with the socket directory absent entirely — the
+# other "nothing to check" path (not existing at all, not merely empty).
+rm -rf "$ZSOCK"
+
+OUT="$(cd "$REPO" && XDG_CONFIG_HOME="$ZCONF" zsh "$WRAPDIR/executable_wt-rm" nonexistent-branch 2>&1)"; RC=$?
+hasnt "wt-rm: zellij is unreachable" "absent socket dir does not trip the preflight"
+has "does not exist" "wrapper proceeds past the preflight when there is no socket dir at all"
 
 export HOME="$REAL_HOME"
 print -r -- ""

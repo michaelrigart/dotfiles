@@ -369,12 +369,19 @@ if command -v chezmoi >/dev/null 2>&1; then
   managed=$(chezmoi managed 2>/dev/null)
   hooks=$(printf '%s' "$OUT" | jq -r '[.hooks.PreToolUse[]?.hooks[]?.command] | .[]' \
             | grep -o '\.claude/[A-Za-z0-9._-]*\.sh' | sort -u)
-  for f in $hooks; do
-    case "$managed" in
-      *"$f"*) _pass "hook script $f is chezmoi-managed" ;;
-      *)      _fail "hook script $f is chezmoi-managed" "not in \`chezmoi managed\`" ;;
-    esac
-  done
+  # An empty $hooks would make the loop below assert nothing at all — a silent
+  # pass in the exact section that exists to catch a silently-inert hook wiring.
+  # Fail loudly instead of skipping.
+  if [ -z "$hooks" ]; then
+    _fail "at least one PreToolUse hook script is wired" "no .claude/*.sh command found in emitted settings"
+  else
+    for f in $hooks; do
+      case "$managed" in
+        *"$f"*) _pass "hook script $f is chezmoi-managed" ;;
+        *)      _fail "hook script $f is chezmoi-managed" "not in \`chezmoi managed\`" ;;
+      esac
+    done
+  fi
 else
   echo "  SKIP: chezmoi absent — hook-script management unverified"
 fi

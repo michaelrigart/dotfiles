@@ -129,7 +129,7 @@ done
 # Unquoted only: word splitting leaves a trailing shell metacharacter glued to
 # the token (`... remove /path;`). Inside quotes those are literal filename
 # characters, so trimming them there would corrupt a legitimate target.
-[ -z "$quoted" ] && target=${target%%[;&|)]*}
+[ -z "$quoted" ] && target=${target%%[;&|)<>]*}
 target=${target%/}
 [ -d "$target" ] || allow
 

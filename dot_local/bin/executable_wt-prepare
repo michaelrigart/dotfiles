@@ -10,7 +10,6 @@
 # See docs/superpowers/specs/2026-08-24-worktree-lifecycle-invocation-surface-design.md §4.3
 
 emulate -L zsh
-set -f          # no globbing on branch names
 
 conf="${XDG_CONFIG_HOME:-$HOME/.config}"
 

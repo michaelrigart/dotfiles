@@ -81,6 +81,11 @@ expect deny  "observed: pipe after"         "$TMP" "git worktree remove $SIB 2>&
 expect deny  "observed: && echo after"      "$TMP" "git worktree remove $SIB && echo done"
 expect deny  "observed: --force + pipe"     "$TMP" "git worktree remove --force $SIB 2>&1 | tail -2"
 expect deny  "trailing semicolon"           "$TMP" "git worktree remove $SIB;"
+# A redirect glued straight onto the target with no separating space. The
+# unquoted-target trim must terminate on `<`/`>` the same way the quoted-target
+# "after" check already does, or this shape names a path git never receives
+# and falls through to allow.
+expect deny  "glued redirect after target"  "$TMP" "git worktree remove $SIB>log"
 # Scope is a standalone, beginning-anchored invocation. A PRECEDING command puts
 # the removal mid-string, where no regex can bind a target to the right
 # invocation — so it fails open, by design rather than by accident.

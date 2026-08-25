@@ -12,7 +12,6 @@
 # See docs/superpowers/specs/2026-08-24-worktree-lifecycle-invocation-surface-design.md §4.3
 
 emulate -L zsh
-set -f          # no globbing on branch names
 
 conf="${XDG_CONFIG_HOME:-$HOME/.config}"
 
@@ -35,5 +34,37 @@ done
 # dangerous case is a file that exists and is readable but empty.
 (( $+functions[wt-rm] )) || {
   print -ru2 -- "wt-rm: $conf/zsh/functions did not define wt-rm."; exit 1 }
+
+# Preflight: is zellij actually reachable, not "are we in a sandbox".
+#
+# wt-rm's session-shutdown step treats an absent Zellij session as successful
+# shutdown — the normal state on a retry (dot_config/zsh/functions). But
+# `zellij list-sessions -s` can report "no sessions" for a reason other than
+# there being none: when zellij cannot reach its own sockets (most commonly
+# because this process is sandboxed and the socket directory is denied), it
+# prints the same nothing-here output, and nothing about its own exit status
+# tells the two cases apart. Read as "absent", that reads as "successful
+# shutdown" — wt-rm proceeds straight through teardown to `git worktree
+# remove` while the session's processes are still alive and holding the
+# directory open, recreating exactly the husk this wrapper exists to prevent.
+#
+# So this checks the DISCREPANCY, never the environment: live session sockets
+# on disk that `list-sessions` cannot see. No socket directory at all, or no
+# `zellij` on PATH, both mean "nothing to check" — proceed normally, same as
+# the retry-safe absent-session case this preflight is protecting.
+if (( $+commands[zellij] )); then
+  sockdir="${ZELLIJ_SOCKET_DIR}/contract_version_1"
+  if [[ -d "$sockdir" ]]; then
+    entries=("$sockdir"/*(ND))
+    if (( ${#entries} )) && [[ -z "$(zellij list-sessions -s 2>/dev/null)" ]]; then
+      print -ru2 -- "wt-rm: zellij is unreachable — refusing to remove a worktree without confirming its session is stopped."
+      print -ru2 -- "    $sockdir has live session sockets, but \`zellij list-sessions\` reports none."
+      print -ru2 -- "    This is most commonly caused by running inside a sandbox that zellij cannot reach."
+      print -ru2 -- "    Removing the worktree now would leave its session running, and its processes would"
+      print -ru2 -- "    rewrite back into the deleted directory — a husk. Re-run with the sandbox disabled."
+      exit 1
+    fi
+  fi
+fi
 
 wt-rm "$@"
