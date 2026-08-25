@@ -1423,10 +1423,21 @@ for w in wt-rm wt-prepare; do
     || _fail "$w wrapper source exists and is readable"
 done
 
+# Every other case in this suite pins the repo's own copy of the functions via
+# $FUNCS; these wrapper cases must too. Left to fall through to
+# `${XDG_CONFIG_HOME:-$HOME/.config}`, they'd read whatever is actually
+# deployed on this machine, not the repo under test — green only by
+# coincidence that the deployed copy currently matches.
+setup
+REPOCONF="$ROOTTMP/repoconf"
+mkdir -p "$REPOCONF/zsh"
+cp "$(cd "${0:h}/.." && pwd)/dot_config/zsh/zshenv"    "$REPOCONF/zsh/zshenv"
+cp "$(cd "${0:h}/.." && pwd)/dot_config/zsh/functions" "$REPOCONF/zsh/functions"
+
 # A wrapper with no arguments must reach the function and hit its own usage
 # error — proof the dispatch happened, not that the file merely ran.
 for w in wt-rm wt-prepare; do
-  OUT="$(zsh "$WRAPDIR/executable_$w" 2>&1)"; RC=$?
+  OUT="$(XDG_CONFIG_HOME="$REPOCONF" zsh "$WRAPDIR/executable_$w" 2>&1)"; RC=$?
   has "usage: $w <branch>" "$w wrapper dispatches to the function"
   rc_is 1 "$w wrapper propagates the function's exit status"
 done
@@ -1434,8 +1445,7 @@ done
 # Arguments must survive, including a branch containing a slash. `wt-rm` reports
 # the derived sibling path in its does-not-exist refusal, so the slug proves the
 # argument arrived intact.
-setup
-OUT="$(cd "$REPO" && zsh "$WRAPDIR/executable_wt-rm" 'feature/foo' 2>&1)"; RC=$?
+OUT="$(cd "$REPO" && XDG_CONFIG_HOME="$REPOCONF" zsh "$WRAPDIR/executable_wt-rm" 'feature/foo' 2>&1)"; RC=$?
 has "repo-feature-foo" "wrapper preserves an argument containing a slash"
 
 # Degenerate functions files. The empty case is the one that exercises the
@@ -1445,12 +1455,17 @@ FAKECONF="$ROOTTMP/fakeconf"
 mkdir -p "$FAKECONF/zsh"
 cp "$(cd "${0:h}/.." && pwd)/dot_config/zsh/zshenv" "$FAKECONF/zsh/zshenv"
 
-# Recursion must be REACHABLE for this case to mean anything: a command named
-# `wt-rm` has to exist on PATH, or removing the guard would give
-# command-not-found rather than the infinite loop the guard exists to stop.
+# Recursion must be REACHABLE for this case to mean anything: an executable
+# `wt-rm` has to exist on PATH. Without the $+functions guard, that plus a
+# functions file that defines nothing would make the bare call resolve back to
+# this script and recurse without limit.
 FAKEBIN="$ROOTTMP/fakebin"
 mkdir -p "$FAKEBIN"
-ln -sf "$WRAPDIR/executable_wt-rm" "$FAKEBIN/wt-rm"
+# A COPY, chmod +x — never the source, which must stay 644. A symlink to the
+# non-executable source yields `permission denied` (126), so the bare call would
+# never reach the recursion this guard exists to prevent.
+cp "$WRAPDIR/executable_wt-rm" "$FAKEBIN/wt-rm"
+chmod +x "$FAKEBIN/wt-rm"
 
 : > "$FAKECONF/zsh/functions"
 OUT="$(PATH="$FAKEBIN:$PATH" XDG_CONFIG_HOME="$FAKECONF" \
