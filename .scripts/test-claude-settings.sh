@@ -318,13 +318,18 @@ jq_is '.attribution.commit'     ''      "commit attribution text empty"
 jq_is '.attribution.pr'         ''      "PR attribution text empty"
 jq_is '.includeCoAuthoredBy'    'false' "deprecated co-authored-by fallback still false"
 
-echo "N. the forge guard is wired as a PreToolUse hook"
-jq_is '.hooks.PreToolUse | length' 1 "exactly one PreToolUse entry"
-jq_is '.hooks.PreToolUse[0].matcher' 'Bash' "matches the Bash tool"
+echo "N. both Bash guards are wired as PreToolUse hooks"
+# Index-pinned, not just length-checked. These assertions are positional, so a
+# reordering would silently retarget them at the wrong guard rather than fail.
+jq_is '.hooks.PreToolUse | length' 2 "exactly two PreToolUse entries"
+jq_is '.hooks.PreToolUse[0].matcher' 'Bash' "forge guard matches the Bash tool"
 jq_is '.hooks.PreToolUse[0].hooks[0].command' 'bash $HOME/.claude/git-forge-guard.sh' \
-      'runs the forge guard, $HOME left for the shell to expand'
-# The SessionStart hook must survive alongside it — adding PreToolUse replaced the whole
-# hooks object once during development.
+      'entry 0 runs the forge guard, $HOME left for the shell to expand'
+jq_is '.hooks.PreToolUse[1].matcher' 'Bash' "worktree guard matches the Bash tool"
+jq_is '.hooks.PreToolUse[1].hooks[0].command' 'bash $HOME/.claude/worktree-guard.sh' \
+      'entry 1 runs the worktree guard, $HOME left for the shell to expand'
+# The SessionStart hook must survive alongside them — adding PreToolUse replaced the
+# whole hooks object once during development.
 jq_is '.hooks.SessionStart | length' 1 "SessionStart hook still present"
 
 echo "O. basecamp is allowlisted read-only"
