@@ -392,6 +392,19 @@ logged   "--layout dev"          "the layout is applied by the attaching client"
 unlogged "attach --create-background" "no detached session is created first"
 unlogged "action new-tab"        "the layout is never grafted onto a headless session"
 
+# Regression guard for the 2026-08-25 "missing agents tab". A follow-up cleanup ran
+#   zellij action go-to-tab-name "Tab #1" && zellij action close-tab
+# to drop a hypothetical default tab. `go-to-tab-name` exits 0 even when NO tab by
+# that name exists (verified against zellij 0.45.0), so the `&&` always fired and
+# `close-tab` closed whatever was FOCUSED — which dev.kdl pins to `agents`
+# (focus=true). The layout came up as editor/runtime/git, and the transient
+# draw-then-reflow was the "bad render" that preceded it.
+#
+# Asserted on the invocation log, not exit status: every command in the broken
+# sequence returned 0, exactly as the real binary does.
+unlogged "action close-tab"      "no tab is closed on the session-create path"
+unlogged "go-to-tab-name"        "no default-tab cleanup probe runs at all"
+
 setup
 export ZELLIJ=1 MOCK_ZJ_SWITCH_RC=1
 run "$REPO" dev "$REPO"

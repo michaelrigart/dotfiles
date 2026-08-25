@@ -222,12 +222,15 @@ dev() {
         print -ru2 -- "    From outside Zellij, start it with: dev $repo"
         return 1
       fi
-      # Defensive no-op: if a build ever lands us on a default tab in front of the
-      # layout's own tabs, close it. Matching by name without --create is safe when
-      # absent, so a real dev tab is never closed.
-      sleep 0.2
-      zellij -s "$name" action go-to-tab-name "Tab #1" 2>/dev/null \
-        && zellij -s "$name" action close-tab 2>/dev/null || true
+      # No default-tab cleanup here, deliberately. A previous version ran
+      #   go-to-tab-name "Tab #1" && close-tab
+      # to drop a stray default tab left by the old detached-session approach.
+      # `go-to-tab-name` exits 0 even when no tab by that name exists (zellij
+      # 0.45.0), so the `&&` always fired and `close-tab` closed the FOCUSED tab —
+      # `agents`, which dev.kdl pins with focus=true. `switch-session --layout`
+      # creates exactly the layout's tabs, so there is nothing to clean up.
+      # If a stray tab ever does appear, gate the close on `query-tab-names`
+      # actually listing it; exit status cannot be the guard.
     fi
   elif [[ -n "$exists" ]]; then
     zellij attach "$name"
