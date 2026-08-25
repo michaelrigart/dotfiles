@@ -1,0 +1,32 @@
+#!/usr/bin/env zsh
+# wt-prepare — non-interactive entry point for worktree recovery.
+#
+# Companion to the wt-rm wrapper. `wt-prepare <branch> && wt <branch>` is the
+# documented resume path after a failed teardown (hook-protocol design §9.3), so a
+# non-interactive caller that aborts a removal needs it to finish the job.
+#
+# Interactive shells never reach this file: a zsh function shadows a PATH command.
+#
+# See docs/superpowers/specs/2026-08-24-worktree-lifecycle-invocation-surface-design.md §4.3
+
+emulate -L zsh
+set -f          # no globbing on branch names
+
+conf="${XDG_CONFIG_HOME:-$HOME/.config}"
+
+# zshenv is not optional: without it a bare zsh has no XDG variables and no wtcp
+# on PATH, which wt-prepare needs to copy the manifest. Only the XDG base
+# variables are guarded, so sourcing re-prepends PATH; harmless in a process that
+# exits immediately. No `set -u`: zshenv tests unset variables by design.
+for f in zshenv functions; do
+  [[ -r "$conf/zsh/$f" ]] || {
+    print -ru2 -- "wt-prepare: cannot read $conf/zsh/$f"; exit 1 }
+  source "$conf/zsh/$f"
+done
+
+# Recursion guard: script and function share a name, so a functions file that
+# loads but defines nothing would send the bare call back through PATH to here.
+(( $+functions[wt-prepare] )) || {
+  print -ru2 -- "wt-prepare: $conf/zsh/functions did not define wt-prepare."; exit 1 }
+
+wt-prepare "$@"

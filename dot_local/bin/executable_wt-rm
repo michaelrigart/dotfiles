@@ -1,0 +1,39 @@
+#!/usr/bin/env zsh
+# wt-rm — non-interactive entry point for worktree retirement.
+#
+# The lifecycle commands are zsh functions sourced by ~/.zshrc, so they resolve
+# only in an interactive shell. Agents, scripts and cron run non-interactively,
+# where raw `git worktree remove` was the only reachable option — and that path
+# gets none of the protocol's guarantees (hook-protocol design §10). Six husk
+# directories under ~/Code/Netronix came from exactly that.
+#
+# Interactive shells never reach this file: a zsh function shadows a PATH command.
+#
+# See docs/superpowers/specs/2026-08-24-worktree-lifecycle-invocation-surface-design.md §4.3
+
+emulate -L zsh
+set -f          # no globbing on branch names
+
+conf="${XDG_CONFIG_HOME:-$HOME/.config}"
+
+# zshenv is not optional: without it a bare zsh has no XDG variables, no wtcp or
+# zellij on PATH, and no ZELLIJ_SOCKET_DIR — which wt-rm needs to find the session
+# it must stop. Only the XDG base variables are guarded with `test "$X" ||`, so
+# sourcing re-prepends PATH and re-runs `brew --prefix`; both are harmless in a
+# process that exits immediately.
+#
+# No `set -u`: zshenv tests unset variables by design.
+for f in zshenv functions; do
+  [[ -r "$conf/zsh/$f" ]] || {
+    print -ru2 -- "wt-rm: cannot read $conf/zsh/$f"; exit 1 }
+  source "$conf/zsh/$f"
+done
+
+# The script and the function share a name. If the functions file is present but
+# does not define wt-rm, the bare call below resolves back to THIS script through
+# PATH and recurses without limit. A readability check does not cover that: the
+# dangerous case is a file that exists and is readable but empty.
+(( $+functions[wt-rm] )) || {
+  print -ru2 -- "wt-rm: $conf/zsh/functions did not define wt-rm."; exit 1 }
+
+wt-rm "$@"

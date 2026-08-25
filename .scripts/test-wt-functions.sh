@@ -1404,6 +1404,65 @@ for b in 'x|y' "x'q"; do
                             || _fail "branch '$b' is quoted in recovery output"
 done
 
+# --- non-interactive wrappers (invocation-surface design §4.3, §7) -----------
+# The wrappers exist because the lifecycle functions are only defined in an
+# interactive shell. These cases run them the way an agent would: a bare `zsh`
+# with no interactive rc, invoking the file by path.
+print -r -- ""
+print -r -- "Q. PATH wrappers reach the functions from a non-interactive shell"
+
+WRAPDIR="$(cd "${0:h}/.." && pwd)/dot_local/bin"
+
+# Source mode is NOT asserted: chezmoi derives the deployed 0755 from the
+# `executable_` prefix, and the tracked modes in this repo are inconsistent
+# (executable_git-forge-guard.sh is 100644, executable_app-cleaner is 100755).
+# Step 6 verifies the mode that actually matters, on the deployed file.
+for w in wt-rm wt-prepare; do
+  [[ -f "$WRAPDIR/executable_$w" && -r "$WRAPDIR/executable_$w" ]] \
+    && _pass "$w wrapper source exists and is readable" \
+    || _fail "$w wrapper source exists and is readable"
+done
+
+# A wrapper with no arguments must reach the function and hit its own usage
+# error — proof the dispatch happened, not that the file merely ran.
+for w in wt-rm wt-prepare; do
+  OUT="$(zsh "$WRAPDIR/executable_$w" 2>&1)"; RC=$?
+  has "usage: $w <branch>" "$w wrapper dispatches to the function"
+  rc_is 1 "$w wrapper propagates the function's exit status"
+done
+
+# Arguments must survive, including a branch containing a slash. `wt-rm` reports
+# the derived sibling path in its does-not-exist refusal, so the slug proves the
+# argument arrived intact.
+setup
+OUT="$(cd "$REPO" && zsh "$WRAPDIR/executable_wt-rm" 'feature/foo' 2>&1)"; RC=$?
+has "repo-feature-foo" "wrapper preserves an argument containing a slash"
+
+# Degenerate functions files. The empty case is the one that exercises the
+# recursion guard: the file is readable, so the readability check passes, and
+# only `$+functions` stands between the bare call and an infinite PATH loop.
+FAKECONF="$ROOTTMP/fakeconf"
+mkdir -p "$FAKECONF/zsh"
+cp "$(cd "${0:h}/.." && pwd)/dot_config/zsh/zshenv" "$FAKECONF/zsh/zshenv"
+
+# Recursion must be REACHABLE for this case to mean anything: a command named
+# `wt-rm` has to exist on PATH, or removing the guard would give
+# command-not-found rather than the infinite loop the guard exists to stop.
+FAKEBIN="$ROOTTMP/fakebin"
+mkdir -p "$FAKEBIN"
+ln -sf "$WRAPDIR/executable_wt-rm" "$FAKEBIN/wt-rm"
+
+: > "$FAKECONF/zsh/functions"
+OUT="$(PATH="$FAKEBIN:$PATH" XDG_CONFIG_HOME="$FAKECONF" \
+       zsh "$FAKEBIN/wt-rm" x 2>&1)"; RC=$?
+has "did not define wt-rm" "empty functions file is refused, not recursed into"
+rc_is 1 "empty functions file exits 1"
+
+rm -f "$FAKECONF/zsh/functions"
+OUT="$(XDG_CONFIG_HOME="$FAKECONF" zsh "$WRAPDIR/executable_wt-rm" x 2>&1)"; RC=$?
+has "cannot read" "missing functions file is refused"
+rc_is 1 "missing functions file exits 1"
+
 export HOME="$REAL_HOME"
 print -r -- ""
 print -r -- "passed: $pass  failed: $fail"
