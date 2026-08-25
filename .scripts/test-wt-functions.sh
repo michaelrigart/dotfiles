@@ -1583,6 +1583,40 @@ OUT="$(cd "$REPO" && XDG_CONFIG_HOME="$ZCONF" zsh "$WRAPDIR/executable_wt-rm" no
 hasnt "wt-rm: zellij is unreachable" "absent socket dir does not trip the preflight"
 has "does not exist" "wrapper proceeds past the preflight when there is no socket dir at all"
 
+# --- `command` defeats function shadowing (invocation-surface design §4.6) --
+# Every case above invokes the wrapper by absolute path, which bypasses PATH
+# resolution and shell-function lookup entirely — none of them exercise real
+# command resolution, which is where the actual hazard lives: a shell FUNCTION
+# named wt-rm shadows a PATH wrapper of the same name (functions win the
+# lookup), and Claude Code's Bash tool initialises its shell from a snapshot
+# that defines wt-rm/wt-prepare as functions — so a bare `wt-rm` there never
+# reaches the wrapper, and never runs the zellij-unreachable preflight proven
+# above in section R. `command wt-rm` bypasses the function and resolves the
+# PATH executable instead. Both halves run inside a command-substitution
+# subshell so the shadowing function defined here cannot leak into any other
+# case in this file.
+print -r -- ""
+print -r -- "S. \`command\` defeats a same-named shell function shadowing the wrapper"
+
+SHADOWBIN="$ROOTTMP/shadowbin"
+mkdir -p "$SHADOWBIN"
+cp "$WRAPDIR/executable_wt-rm" "$SHADOWBIN/wt-rm"
+chmod +x "$SHADOWBIN/wt-rm"
+
+OUT="$(
+  wt-rm() { print -r -- "SHADOW-RAN"; return 0 }
+  PATH="$SHADOWBIN:$PATH" XDG_CONFIG_HOME="$REPOCONF" wt-rm 2>&1
+)"; RC=$?
+has "SHADOW-RAN" "bare wt-rm resolves the shadowing function, not the PATH wrapper"
+hasnt "usage: wt-rm <branch>" "bare wt-rm never reaches the wrapper"
+
+OUT="$(
+  wt-rm() { print -r -- "SHADOW-RAN"; return 0 }
+  PATH="$SHADOWBIN:$PATH" XDG_CONFIG_HOME="$REPOCONF" command wt-rm 2>&1
+)"; RC=$?
+has "usage: wt-rm <branch>" "command wt-rm bypasses the function and reaches the wrapper"
+hasnt "SHADOW-RAN" "command wt-rm does not run the shadowing function"
+
 export HOME="$REAL_HOME"
 print -r -- ""
 print -r -- "passed: $pass  failed: $fail"

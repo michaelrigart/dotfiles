@@ -164,7 +164,10 @@ Removing it with raw git skips session shutdown and the project teardown hook.
 Live processes then write back into the deleted path, which is what leaves husk
 directories behind. Retire it through the protocol instead:
 
-    wt-rm <branch>
+    command wt-rm <branch>
+
+(\`command\` is required — a shell function of the same name can shadow the
+PATH wrapper that carries the safety preflight.)
 
 The directory slug is \"$slug\". That is not always the branch name — a slug maps
 '/' to '-', so a branch containing a slash differs. Use the branch you were

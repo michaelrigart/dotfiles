@@ -200,6 +200,50 @@ the preflight would find no directory to check — not a false refusal, but a si
 return to the hazard this section describes. That is fail-open, consistent with
 §2 goal 4, and a candidate follow-up rather than something solved here.
 
+### 4.6 Shell-function shadowing, and `command` as the canonical invocation
+
+§4.3 treats shadowing as settled in the wrapper's favor for one caller class: "an
+interactive `wt-rm` continues to call the function directly," which is fine there —
+the function has no §4.5 preflight to miss, but an interactive terminal is not the
+sandboxed caller this record targets. That reasoning assumes shadowing tracks
+interactivity. It does not, for at least one caller this record exists to serve.
+
+Claude Code's Bash tool initialises its shell from a snapshot under
+`~/.claude/shell-snapshots/`. That snapshot defines `wt-rm` and `wt-prepare` as the
+same zsh functions `.zshrc` sources interactively, so a bare `wt-rm` inside a Claude
+Code Bash call resolves to the function exactly as it would at an interactive
+prompt — even though the call is scripted, unattended, and, per §1, drawn from
+precisely the caller class that produced all six husks. A zsh function shadows a
+`PATH` command regardless of who is asking; nothing about being an agent exempts a
+caller from that resolution rule.
+
+This matters specifically because of §4.5: the zellij-unreachable preflight lives
+only in the wrapper, by design — `dot_config/zsh/functions` is out of scope for this
+record, and moving the check there would change protocol failure states for every
+caller, not just this one. The function a shadowed call resolves to has never seen
+that preflight and will not unless a future record puts it there. A shadowed call
+does not fail loudly for lacking it; it simply runs the retirement path §4.5 exists
+to gate, without gating it.
+
+`command wt-rm <branch>` and `command wt-prepare <branch>` are therefore the
+canonical invocation for any non-interactive caller, Claude Code's Bash tool
+included. The POSIX `command` builtin bypasses function and alias lookup and
+resolves the `$PATH` executable directly. Where nothing shadows the name it is a
+harmless no-op, so the form is strictly safer everywhere — one form to teach, not a
+workaround reserved for callers known to be affected. The guard's denial message
+(§5.4) recommends it for the same reason.
+
+The present failure mode is safe only by accident. Verified on this machine: inside
+a Claude Code Bash call, `wt-rm some-branch` fails with
+`zsh: command not found: _wt_primary`, while `command wt-rm some-branch` correctly
+reaches the wrapper and its preflight. The snapshot captures the top-level `wt-rm`
+and `wt-prepare` functions but not the nine `_wt_*` helpers they call (§8) — so the
+shadowed function errors out before it can do anything. That is not a guarantee, and
+nothing enforces it. A future snapshot that happened to capture the helpers too
+would let the shadowed call complete: straight through to `git worktree remove`
+with no preflight and no visible error, reproducing the exact husk mechanism this
+record exists to close, from the exact caller class it was written for.
+
 ## 5. Correctness guard
 
 A `PreToolUse(Bash)` hook, `dot_claude/executable_worktree-guard.sh`, following the
@@ -441,6 +485,10 @@ would recommend `wt-rm` for worktrees `wt-rm` cannot address.
   preflight, rather than the wrapper silently reporting success while producing a
   husk.
 - A new hook fires on every Bash call, so its fast path must stay cheap.
+- Claude Code's Bash tool shell-snapshot shadows both wrappers with the interactive
+  functions (§4.6); `command wt-rm`/`command wt-prepare` is the canonical
+  invocation, and today's fail-safe (`_wt_primary` undefined) is incidental, not
+  guaranteed.
 
 ## 10. Open questions
 
