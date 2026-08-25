@@ -98,7 +98,7 @@ jq_is '.permissions.ask | index("Edit(**/.gitlab-ci.yml)") != null' true "asks o
 jq_is '.permissions.ask | index("Edit(**/.gitlab/ci/**)") != null' true "asks on .gitlab/ci/**"
 
 echo "E. carry-through keys survive"
-emit '{"enabledPlugins":{"x@y":true},"extraKnownMarketplaces":{"m":{}},"model":"opus[1m]","effortLevel":"xhigh","agentPushNotifEnabled":true,"inputNeededNotifEnabled":true}'
+emit '{"enabledPlugins":{"x@y":true},"extraKnownMarketplaces":{"m":{}},"model":"opus[1m]","effortLevel":"xhigh","agentPushNotifEnabled":true,"inputNeededNotifEnabled":true,"autoContinueAtUsageLimit":true}'
 jq_is '.enabledPlugins["x@y"]' true       "enabledPlugins carried through"
 jq_is '.extraKnownMarketplaces.m != null' true "extraKnownMarketplaces carried through"
 jq_is '.model'                'opus[1m]'  "model carried through"
@@ -107,6 +107,13 @@ jq_is '.effortLevel'          'xhigh'     "effortLevel carried through"
 # rebuilds the object and carries only a named whitelist; a key nobody listed just vanished.
 jq_is '.agentPushNotifEnabled'  'true' "agentPushNotifEnabled carried through"
 jq_is '.inputNeededNotifEnabled' 'true' "inputNeededNotifEnabled carried through"
+# Same failure, found 2026-08-25 when auto-resume at the usage limit silently never fired.
+# This one hides better than the notification toggles: the binary reads it as
+# `?? true`, so once apply drops the key /config still SHOWS "true" while nothing is
+# armed. Assert both directions — carried when present, never invented when absent.
+jq_is '.autoContinueAtUsageLimit' 'true' "autoContinueAtUsageLimit carried through"
+emit '{}'
+jq_is '.autoContinueAtUsageLimit == null' true "autoContinueAtUsageLimit not invented when absent"
 
 echo "F. layer 2 — agent-backed credential isolation"
 emit '{}'

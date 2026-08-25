@@ -35,6 +35,7 @@ printf '%s' "$input" | jq \
   # the end) — all three are mutable at runtime via /model, /effort and /permissions.
   .agentPushNotifEnabled as $pushnotif
   | .inputNeededNotifEnabled as $inputnotif
+  | .autoContinueAtUsageLimit as $autocontinue
   | .enabledPlugins as $plugins
   | .extraKnownMarketplaces as $mkts
   | .autoMode as $automode
@@ -276,6 +277,11 @@ printf '%s' "$input" | jq \
   # /config does not survive an apply, this whitelist is why.
   | (if $pushnotif != null then .agentPushNotifEnabled = $pushnotif else . end)
   | (if $inputnotif != null then .inputNeededNotifEnabled = $inputnotif else . end)
+  # Set from /config, and it defaults to TRUE when the key is absent — so a drop here
+  # is invisible: the toggle still READS true while nothing is armed, and the session
+  # silently fails to resume at the usage limit. Same class as the notification
+  # toggles above (b2c04a6); this one cost a real diagnosis before it was spotted.
+  | (if $autocontinue != null then .autoContinueAtUsageLimit = $autocontinue else . end)
   # default-only: keep the current value if set (runtime /model, /effort, /permissions
   # persist), otherwise seed the default; deleting the key and re-applying restores it.
   | .model = ($curmodel // "opus[1m]")
