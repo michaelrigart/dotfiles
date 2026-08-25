@@ -1,6 +1,6 @@
 # Worktree lifecycle invocation surface
 
-**Status:** Approved
+**Status:** In progress
 **Date:** 2026-08-24
 
 Extends [2026-07-30 Worktree hook protocol](./2026-07-30-worktree-hook-protocol-design.md),
