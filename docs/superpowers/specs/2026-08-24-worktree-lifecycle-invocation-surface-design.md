@@ -159,9 +159,17 @@ each other.
 
 ### 5.1 What it denies
 
-Exactly one shape: a `git worktree remove` whose target is a **literal absolute
-path** matching the `wt` sibling convention. All six observed commands were of this
-shape.
+Exactly one shape: a **standalone, beginning-anchored** `git worktree remove` whose
+target is a **literal absolute path** matching the `wt` sibling convention. All six
+observed commands were of this shape — each began with the removal, with pipes,
+redirections and `&& echo` following it and nothing preceding it.
+
+Anchoring is a correctness requirement, not a simplification. A pattern that matches
+mid-command cannot bind a target to the invocation that owns it: in
+`echo remove /a && git worktree remove /b`, scanning for a `remove` token finds the
+decoy and would deny `/a` — a directory git was never asked to remove. Extraction is
+therefore performed on the remainder of the *matched* invocation, and a command with
+anything before the removal falls open.
 
 The restriction to absolute paths is not conservatism, it is correctness. Git offers
 two other ways to name a worktree that a text-matching guard cannot resolve:
@@ -226,9 +234,16 @@ The guard sees only literal command text passed to the Bash tool. It cannot see:
   repo — resolvable, but only through shell-aware parsing, and so out of scope (§5.1);
 - **unique-suffix identifiers** such as `curato-issue-92`, which name a worktree
   without being a path (§5.1);
+- **quoted paths containing spaces**, which split across whitespace-separated
+  tokens. The guard deliberately bails rather than act on the truncated leading
+  fragment: a fragment can itself name a real sibling, so guessing would deny the
+  wrong directory and name it in the message;
+- **any removal not at the start of the command** — one preceded by another command
+  (`cd x && git worktree remove …`), or a second removal in a later clause. Only the
+  leading invocation is examined (§5.1);
 - the deliberate `WT_GUARD=off` bypass.
 
-All six fail open. This is a correctness catch aimed at the observed failure — a
+All eight fail open. This is a correctness catch aimed at the observed failure — a
 literal absolute raw command issued directly — and is not a boundary. Closing the
 relative case would take shell-aware argument parsing and the suffix case a
 `git worktree list` query (§5.1); both are rejected as unnecessary complexity for
