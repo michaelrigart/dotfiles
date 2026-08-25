@@ -374,25 +374,43 @@ has "refusing to remove" "abort explains the session could not be stopped"
 [[ -d "$HOME/Code/Org/repo-l" ]] && _pass "worktree survives a failed session stop" \
                                  || _fail "worktree survives a failed session stop"
 
-print -r -- "F. dev — partial session creation is reported accurately"
+print -r -- "F. dev — a new session is created WITH its layout, never grafted headlessly"
+# Regression guard for the 2026-08-25 crash. The old path created a DETACHED session
+# and grafted the dev layout onto it with `action new-tab --layout`. A detached
+# session has no terminal dimensions, so every pane failed with "Not enough room for
+# panes" while `new-tab` still exited 0. The session was left holding tabs that were
+# never laid out, and the next client to attach panicked the server —
+# "active tab 1 does not exist" — taking the whole terminal with it.
+#
+# Asserted on the zellij INVOCATION LOG, deliberately: every step of the broken path
+# returned 0, so exit status could not have caught this and must not be the guard.
 setup
-export ZELLIJ=1 MOCK_ZJ_ATTACH_RC=1
+export ZELLIJ=1
 run "$REPO" dev "$REPO"
-rc_is 1 "failed creation returns nonzero"
-has "failed to create session" "failed creation is not reported as ready"
-hasnt "is ready" "does not claim readiness when nothing was created"
+logged   "action switch-session" "a new session is created through switch-session"
+logged   "--layout dev"          "the layout is applied by the attaching client"
+unlogged "attach --create-background" "no detached session is created first"
+unlogged "action new-tab"        "the layout is never grafted onto a headless session"
 
-setup
-export ZELLIJ=1 MOCK_ZJ_NEWTAB_RC=1
-run "$REPO" dev "$REPO"
-rc_is 1 "failed layout load returns nonzero"
-has "dev layout failed" "layout failure is distinguished from a switch failure"
+# Regression guard for the 2026-08-25 "missing agents tab". A follow-up cleanup ran
+#   zellij action go-to-tab-name "Tab #1" && zellij action close-tab
+# to drop a hypothetical default tab. `go-to-tab-name` exits 0 even when NO tab by
+# that name exists (verified against zellij 0.45.0), so the `&&` always fired and
+# `close-tab` closed whatever was FOCUSED — which dev.kdl pins to `agents`
+# (focus=true). The layout came up as editor/runtime/git, and the transient
+# draw-then-reflow was the "bad render" that preceded it.
+#
+# Asserted on the invocation log, not exit status: every command in the broken
+# sequence returned 0, exactly as the real binary does.
+unlogged "action close-tab"      "no tab is closed on the session-create path"
+unlogged "go-to-tab-name"        "no default-tab cleanup probe runs at all"
 
 setup
 export ZELLIJ=1 MOCK_ZJ_SWITCH_RC=1
 run "$REPO" dev "$REPO"
-rc_is 1 "failed switch returns nonzero"
-has "is ready but switching failed" "switch failure keeps its actionable message"
+rc_is 1 "a failed create-and-switch returns nonzero"
+has "failed to create and switch" "the failure says what could not be done"
+has "From outside Zellij" "the message offers the out-of-Zellij recovery"
 
 print -r -- "G. _wt_git / _wt_primary"
 setup

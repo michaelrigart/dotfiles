@@ -198,40 +198,39 @@ dev() {
     if [[ -n "$exists" ]]; then
       zellij action switch-session "$name"
     else
-      # New session from inside Zellij: do NOT let `switch-session` create it while
-      # applying the full command layout — in 0.44.x that wedges the client and the
-      # whole terminal goes with it (the session is never created). Only
-      # `attach --create-background` can spin up a *detached* session, and it can't
-      # take a layout, so: create it detached (in the worktree), graft the dev layout
-      # on as tabs, then switch to the now-existing session (the safe vanilla path).
-      # Each step is checked separately: they fail differently and leave different
-      # amounts of session behind. Collapsing them into one && chain reported
-      # "'$name' is ready" even when creation itself failed — sending you off to
-      # attach a session that was never made — and returned success either way.
-      if ! ( cd "$repo" && zellij attach --create-background "$name" ); then
-        print -ru2 -- "dev: failed to create session '$name'."
+      # Create and switch in ONE step, letting the attaching client apply the layout.
+      #
+      # The previous shape — create detached with `attach --create-background`, graft
+      # the layout on with `action new-tab --layout`, then switch — was written for
+      # 0.44.x, where `switch-session` could not take a layout. On 0.45 that shape is
+      # actively destructive. A detached session has no terminal dimensions, so every
+      # pane of the grafted layout fails with "Not enough room for panes" while
+      # `new-tab` still exits 0. The session is left holding tabs that were never laid
+      # out, and the moment a client attaches the server dies:
+      #
+      #   Failed to switch to active tab at position 0 ... active tab 1 does not exist
+      #   Panic occurred: thread: screen ... Program terminates
+      #
+      # which takes the whole terminal with it — precisely the wedge the old
+      # workaround existed to prevent. Exit status is no guard here: every step
+      # returned 0 while the layout silently failed.
+      #
+      # 0.45 added `switch-session --layout`, so the layout is only ever applied by a
+      # client that already has real dimensions. Requires zellij >= 0.45.
+      if ! zellij action switch-session --layout dev --cwd "$repo" "$name"; then
+        print -ru2 -- "dev: failed to create and switch to session '$name'."
+        print -ru2 -- "    From outside Zellij, start it with: dev $repo"
         return 1
       fi
-      if ! zellij -s "$name" action new-tab --layout dev --cwd "$repo" >/dev/null; then
-        print -ru2 -- "dev: '$name' created but the dev layout failed to load — inspect it with: zellij attach $name"
-        return 1
-      fi
-      if ! zellij action switch-session "$name"; then
-        # Usually this shell and the running client disagree about ZELLIJ_SOCKET_DIR
-        # — a session started before that setting changed lives in the old dir, so
-        # the switch can't reach the current client. Say so: the session is built and
-        # waiting, and silently staying put looks like nothing happened at all.
-        print -ru2 -- "dev: '$name' is ready but switching failed — attach with: zellij attach $name"
-        return 1
-      fi
-      # attach -b leaves a stray default tab in front of the grafted dev tabs. Now
-      # that a client has switched over, focus it by name and close it. Matching by
-      # name (no --create) is a safe no-op if it's absent or renamed, so a real dev
-      # tab is never closed; the brief sleep lets the client finish attaching, and
-      # `|| true` keeps a failed close from failing the caller.
-      sleep 0.2
-      zellij -s "$name" action go-to-tab-name "Tab #1" 2>/dev/null \
-        && zellij -s "$name" action close-tab 2>/dev/null || true
+      # No default-tab cleanup here, deliberately. A previous version ran
+      #   go-to-tab-name "Tab #1" && close-tab
+      # to drop a stray default tab left by the old detached-session approach.
+      # `go-to-tab-name` exits 0 even when no tab by that name exists (zellij
+      # 0.45.0), so the `&&` always fired and `close-tab` closed the FOCUSED tab —
+      # `agents`, which dev.kdl pins with focus=true. `switch-session --layout`
+      # creates exactly the layout's tabs, so there is nothing to clean up.
+      # If a stray tab ever does appear, gate the close on `query-tab-names`
+      # actually listing it; exit status cannot be the guard.
     fi
   elif [[ -n "$exists" ]]; then
     zellij attach "$name"
