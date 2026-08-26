@@ -17,6 +17,9 @@ docs/
 # Scripts directory (these are helpers, not dotfiles to install)
 .scripts/
 
+# Test suites for the managed scripts — versioned with them, never deployed.
+tests/
+
 # Backgrounds directory (copied by configure.sh, not managed by chezmoi)
 .backgrounds/
 
