@@ -198,20 +198,120 @@ printf '%s' "$cmd" | grep -Eq "$verb_re" || allow
 # not, the command names the file holding it. Scan both — that beats trying to
 # parse shell quoting, and a marker matching anywhere in the command means the
 # text is present either way.
+#
+# `unresolved` records that the command named a body file this hook could NOT
+# read. That distinction matters because the two rules fail in opposite
+# directions: rule 1 denies on POSITIVE evidence (attribution found), so an
+# unread file can only make it miss, never misfire. Rule 2 denies on the ABSENCE
+# of template markers, so judging a body it never saw is precisely how this
+# guard produces a false deny — hence the fail-open before rule 2's deny.
 haystack=$cmd
+unresolved=0
+
+# Expand ~, $VAR and ${VAR} using this hook's own environment.
+#
+# Deliberately NOT eval. The command is untrusted model output, and `eval` on it
+# to resolve a path would execute whatever else it contains — a guard that runs
+# the string it is inspecting is a hole, not a check. Indirect expansion reads
+# variables without executing anything. A variable this process cannot see
+# resolves to empty, the path then fails the -f test, and the fail-open covers
+# it: worst case is the pre-existing "cannot read it" branch, never a wrong deny.
+#
+# KNOWN LIMIT, measured 2026-08-27 by probing the live hook: this process does
+# NOT share $TMPDIR with the Bash tool it is inspecting. Claude Code points the
+# sandboxed command at a per-session temp dir; the hook inherits the parent's.
+# $HOME-relative and literal absolute paths resolve correctly (verified live);
+# a $TMPDIR-relative body file does not, and lands in `unresolved`. That is why
+# the fail-open below is load-bearing rather than belt-and-braces — for the
+# scratchpad paths agents are told to use, it is the ONLY thing standing between
+# a compliant description and a false deny.
+expand_path() {
+  local p=$1 out='' name
+  local re='^([^$]*)\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?(.*)$'
+  # SC2088 fires on the "~/" case pattern below. It is a false positive here:
+  # these match a LITERAL tilde in the untrusted path text, which is exactly the
+  # unexpanded form that needs resolving. $HOME is what it expands to.
+  # shellcheck disable=SC2088
+  case "$p" in
+    "~")   printf '%s' "$HOME"; return ;;
+    "~/"*) p="$HOME/${p#\~/}" ;;
+  esac
+  while [[ $p =~ $re ]]; do
+    name=${BASH_REMATCH[2]}
+    out="$out${BASH_REMATCH[1]}${!name-}"
+    p=${BASH_REMATCH[3]}
+  done
+  printf '%s' "$out$p"
+}
+
+# Trim leading blanks without a subprocess (bash 3.2 has no ${var##+([ ])}).
+ltrim() {
+  local s=$1
+  while [ "${s# }" != "$s" ] || [ "${s#	}" != "$s" ]; do s=${s# }; s=${s#	}; done
+  printf '%s' "$s"
+}
+
+# Candidate file references. Values may be quoted (paths with spaces) or bare.
+# `$(cat …)`/`$(< …)` stop at the first `)`, so a nested command substitution is
+# not resolved — that lands in `unresolved` and fails open rather than denying.
+sq=\'
+ref_re="\\\$\\((cat|<)[^)]*\\)|(--body-file|--description-file|--file|-F)[=[:space:]]+(\"[^\"]*\"|${sq}[^${sq}]*${sq}|[^[:space:]]+)"
+
 while IFS= read -r ref; do
   [ -n "$ref" ] || continue
+
+  # `unambiguous` distinguishes a token that can only be a file reference from a
+  # bare `-F`, which is also grep's fixed-string flag and sort's field
+  # separator. Both still contribute to the haystack when they resolve; only an
+  # unambiguous one is allowed to set `unresolved` and so relax rule 2. Without
+  # this, `glab mr create --description 'freeform' | grep -F foo` fails open and
+  # the template check silently stops running.
+  unambiguous=1
+
+  # Strip whichever wrapper the pattern matched, down to the bare path.
+  case "$ref" in
+    '$('*)
+      ref=${ref#\$\(}; ref=${ref%\)}
+      ref=$(ltrim "$ref")
+      ref=${ref#cat}; ref=${ref#<}
+      ref=$(ltrim "$ref")
+      ref=${ref#--}                 # `cat -- file`
+      ref=$(ltrim "$ref")
+      ;;
+    -F*)
+      ref=${ref#-F}; ref=${ref#=}
+      ref=$(ltrim "$ref")
+      unambiguous=0
+      ;;
+    *)
+      ref=${ref#--body-file}; ref=${ref#--description-file}
+      ref=${ref#--file}
+      ref=${ref#=}
+      ref=$(ltrim "$ref")
+      ;;
+  esac
+
   ref=${ref%\"}; ref=${ref#\"}
   ref=${ref%\'}; ref=${ref#\'}
-  case "$ref" in "~/"*) ref="$HOME/${ref#\~/}" ;; esac
+  [ -n "$ref" ] || continue
+
+  ref=$(expand_path "$ref")
+
   if [ -f "$ref" ] && [ -r "$ref" ]; then
     haystack="$haystack
 $(cat "$ref" 2>/dev/null)"
+  elif [ "$unambiguous" -eq 1 ]; then
+    unresolved=1
+  else
+    # A bare `-F` value that is not a readable file: treat it as a path only if
+    # it is shaped like one, so `grep -F foo` is ignored while
+    # `git commit -F $VAR/msg.txt` (unset VAR) still fails open.
+    case "$ref" in
+      */*|~*|\$*) unresolved=1 ;;
+    esac
   fi
 done <<EOF
-$(printf '%s' "$cmd" \
-   | grep -oE '\$\(cat [^)]+\)|--body-file[= ][^ ]+|--description-file[= ][^ ]+|-F[= ][^ ]+' \
-   | sed -E 's/^\$\(cat //; s/\)$//; s/^--body-file[= ]//; s/^--description-file[= ]//; s/^-F[= ]//')
+$(printf '%s' "$cmd" | grep -oE "$ref_re")
 EOF
 
 # ---------------------------------------------------------------- rule 1: attribution
@@ -288,6 +388,16 @@ EOF
 
 [ "$best_total" -gt 0 ] || allow
 
+# Fail open when the command named a body file this hook could not read. Rule 2
+# infers non-compliance from markers being ABSENT, and a body it never saw is
+# indistinguishable from an empty one — so denying here punishes a description
+# that may well be perfect. This is the "a guard that breaks unrelated commands
+# is worse than no guard" rule applied to its own blind spot. Observed 2026-08-26:
+# `--description "$(cat $TMPDIR/mr.md)"` denied a fully compliant body, because
+# $TMPDIR was never expanded, so the only marker that matched was the word
+# "description" in the flag name itself.
+[ "$unresolved" -eq 1 ] && allow
+
 deny "This repo ships an MR/PR template and the description does not follow it.
 
 Template: ${best_tpl#$root/}
@@ -306,6 +416,10 @@ Note that neither glab nor gh expands the template when the body is passed as a
 flag — render the filled-in text yourself, e.g.
   gh pr create --body-file <file>
   glab mr create --description \"\$(cat <file>)\"
+
+Give that file a LITERAL absolute path. This hook does not share \$TMPDIR with
+the command it is checking, so a \$TMPDIR-relative body is one it cannot read:
+it will not be denied, but it will not be checked for attribution either.
 
 If the description genuinely should not follow the template, say so and re-run
 with FORGE_GUARD=off in the command."
