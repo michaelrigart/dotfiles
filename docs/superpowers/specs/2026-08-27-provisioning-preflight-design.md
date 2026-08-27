@@ -437,7 +437,7 @@ what it does to recorded state and to preflight:
 | *(none)* | starts fresh; refuses to run if state exists, directing to `--resume` or `--restart` | full | asked |
 | `--resume` | read; completed phases skipped | decisions re-used; credentials revalidated | skipped **only** if `confirmed` is recorded |
 | `--restart` | discarded **after** flag validation, never during a `--dry-run` | full | asked |
-| `--phase NAME` | read; requires `confirmed`; only `NAME` runs | decisions re-used; credentials that phase needs revalidated; unknown `NAME` is an error, not a no-op | not asked |
+| `--phase NAME` | read; requires **both** `confirmed` and `identity_applied`; only `NAME` runs | decisions re-used; live identity revalidated; credentials that phase needs revalidated; unknown `NAME` is an error, not a no-op | not asked |
 | `--dry-run` | neither read nor written | skipped | not asked |
 | `--repair-identity` | see below — depends on whether a state file exists and whether the identity changes | identity questions only | **always asked**, before any `scutil --set` |
 
@@ -452,14 +452,24 @@ repair can *change the identity a previous run was consented to*:
 |---|---|
 | none | works standalone; sets and verifies the identity; creates **no** provisioning state |
 | exists, identity unchanged | repairs the fields, then marks `identity_applied` — the previous consent still describes this machine |
-| exists, identity **changed** | clears `confirmed`, `identity_applied` **and every completed-phase record**, then exits directing to a fresh run |
+| exists, identity **changed** | **deletes the state file entirely**, then exits telling the user to run `provision.sh` with no flags |
 
 The third row is the one worth stating explicitly. Consent was given for a specific
-identity; it does not transfer to a different one. Neither do the completed phases —
+identity and does not transfer to a different one. Neither do the completed phases —
 they ran against the old identity, and on a hostname-conditional Brewfile that means
 they may have installed the wrong machine's packages. Carrying either forward would
-let a `--resume` treat approval of `fenrir` as approval of `studio`, which is the
+let a `--resume` treat approval of `fenrir` as approval of `studio`: the
 consent-laundering bug of §4.2 arriving by a different route.
+
+**It deletes the whole file rather than selectively clearing markers**, and that
+choice is deliberate. An earlier draft cleared `confirmed`, `identity_applied` and
+the phase records but left the recorded *answer* — so a repair from `fenrir` to
+`studio` left `machine_name=fenrir` in state, and the next `--resume` would have
+displayed `fenrir` and renamed the machine straight back. Selective clearing has now
+produced a cross-identity carryover bug three times in this design's review; the
+state file describes one provisioning run of one machine, and once the identity
+changes, none of it describes anything. Re-entering one answer is cheaper than
+reasoning about which fields survive.
 
 Three failure modes this table exists to prevent, all of which a naive
 implementation exhibits:
@@ -475,6 +485,12 @@ implementation exhibits:
   under `set -u`. Process-environment setup belongs outside phase completion.
 - **`--phase` running without an identity.** `--phase macos-config` needs the machine
   name; without loading recorded answers it passes an empty string.
+- **`--phase` running *before* the identity was applied.** Requiring only `confirmed`
+  is not enough: from a state with `confirmed` but no `identity_applied`,
+  `--phase chezmoi-init` would capture whatever the machine is currently called —
+  reintroducing the §5.1 ordering defect through the flag surface rather than through
+  the phase order. `--phase` therefore requires both markers *and* revalidates the
+  live identity, refusing and naming `--resume` or `--repair-identity` otherwise.
 
 **Decisions persist; credentials do not.** `--resume` re-uses every answer, but sudo
 times out after five minutes and a 1Password CLI session after ten. A resumed run
@@ -572,12 +588,18 @@ Assertions that earn their place:
     `identity_applied` applies then continues; `identity_applied` with a since-changed
     live identity aborts to `--repair-identity`; a changed answer set clears both
     markers.
-16. **`--repair-identity` to a *different* identity, with existing state, clears
-    `confirmed`, `identity_applied` and every completed-phase record.** The following
-    `--resume` must then re-ask rather than treating the old approval as consent for
-    the new identity, and must not skip phases that ran under the old one.
+16. **`--repair-identity` from `fenrir` to `studio`, with existing state, leaves no
+    state file at all.** Asserted on the file's absence, not on individual markers.
+    The following invocation must prompt from scratch and **display `studio`** — the
+    assertion checks the identity shown, since a run that merely asks for
+    confirmation while displaying `fenrir` is the exact bug this prevents.
 17. `--repair-identity` combined with `--resume`, `--restart`, `--phase` or
     `--dry-run` is rejected as a usage error.
+18. `--phase` from a state with `confirmed` but **no** `identity_applied` is refused,
+    naming `--resume` — not silently run, which would let `chezmoi-init` capture a
+    pre-migration name.
+19. `--phase` from a state with `identity_applied` whose live identity has since
+    drifted is refused, naming `--repair-identity`.
 
 Per repo convention the suite is fully mocked and runs under either sandbox mode.
 Its assertion count is added to the running baseline once green.
