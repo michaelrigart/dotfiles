@@ -3,9 +3,11 @@
 **Status:** Approved
 **Date:** 2026-08-27
 
-Restructures `.scripts/provision.sh` around a single rule: every question is asked
-before any long-running work starts. Introduces machine identity as a real, validated
-concept, because a second Mac now exists.
+Restructures `.scripts/provision.sh` around a single rule: **every decision is made
+before the unattended work starts.** Bootstrap is the bounded exception — it installs
+the prerequisites needed to ask anything at all, and requires one macOS dialog (§4.1).
+Introduces machine identity as a real, validated concept, because a second Mac now
+exists.
 
 Depends on the source-root relocation of `.chezmoi.toml.tmpl` (landed 2026-08-27,
 same working tree). That change is a prerequisite, not part of this design — but it
@@ -124,7 +126,9 @@ and touches nothing machine-specific. The confirm gates everything that is a cho
 was wrong. Installing the Xcode Command Line Tools opens a GUI dialog that macOS
 owns and that a human must accept. The honest contract is narrower and worth stating
 exactly: *bootstrap may require Xcode CLT interaction; everything after a successful
-confirm is unattended.*
+confirm is unattended for the remainder of that uninterrupted run.* A later `--resume`
+may still reacquire lapsed credentials (§6.3) — it re-asks no decisions, which is a
+different promise.
 
 Because macOS gives no completion signal, the CLT install is detected by polling
 `xcode-select -p`. Two failure modes need explicit handling, since neither raises an
@@ -156,8 +160,10 @@ Everything that can ask a question, in this order:
    Acquiring it here is what lets stage 2 run unattended. Nothing is applied yet.
 4. **Summary and confirm.** Every decision echoed, then one `[y/N]`.
 5. **Apply the identity.** Only now: `scutil --set` for `ComputerName`, `HostName`
-   and `LocalHostName`, followed by a read-back asserting all three equal the chosen
-   name (§11.1). This is the first machine-specific mutation in the entire run.
+   and `LocalHostName`, followed by a read-back asserting `ComputerName` and
+   `HostName` equal the chosen name exactly and `LocalHostName` matches
+   `^<identity>(-[0-9]+)?$` (§5.2 explains the suffix tolerance). This is the first
+   machine-specific mutation in the entire run.
 
 Steps 3 and 5 are deliberately split. An earlier draft applied the hostname in step
 3, before the confirm — which meant declining at step 4 still left the machine
@@ -179,6 +185,20 @@ the questions, decline at the confirm, resume a week later, and the machine is
 renamed and provisioned without anyone ever having said yes. **Resuming a run whose
 state lacks `confirmed` re-displays the summary and asks again.** `--resume` skips
 the confirm only when `confirmed` is present.
+
+The markers are a state machine, and a resume must handle every boundary:
+
+| State found | Action on resume |
+|---|---|
+| no `confirmed` | re-display the summary and ask again; nothing is applied |
+| `confirmed`, no `identity_applied` | apply the identity, then continue |
+| `identity_applied` | **revalidate live** before trusting it — the machine may have been renamed since; a mismatch aborts and directs to `--repair-identity` |
+| answers differ from those recorded | clear `confirmed` and `identity_applied`; a changed answer set has never been consented to |
+
+`scutil --set` is idempotent, so a crash between applying the identity and recording
+`identity_applied` is safe: the retry re-applies the same values and the read-back
+passes. The marker records that the step *completed*, and is never the sole evidence
+that it happened — the read-back is.
 
 ### 4.3 Stage 2 — run
 
@@ -241,17 +261,26 @@ chezmoi execute-template .hostname → fenrir          (stored)
 A rename therefore leaves `.hostname` reporting the old name indefinitely, and a
 guard comparing it to the allowlist passes forever.
 
-**The guard reads `ComputerName` live.** `Brewfile.tmpl` opens with:
+**The guard reads the machine live, from a shared partial.** `.chezmoitemplates/identity-guard`
+holds the rules; every template keying off identity opens the same way:
 
 ```gotemplate
 {{- $live := output "scutil" "--get" "ComputerName" | trim -}}
-{{- if not (has $live .known_hostnames) -}}
-{{-   fail (printf "unknown machine %q — add it to .chezmoidata/machines.toml" $live) -}}
-{{- end -}}
-{{- if ne $live .hostname -}}
-{{-   fail (printf "identity drift: chezmoi has %q, machine is %q — run: chezmoi init" .hostname $live) -}}
-{{- end -}}
+{{- template "identity-guard" (dict "live" $live "stored" .hostname "known" .known_hostnames) -}}
 ```
+
+The caller binds `$live` itself and passes it in. That is not redundancy: a Go
+template partial cannot export a variable back into its caller's scope, so a partial
+that bound `$live` internally would leave the caller with nothing to write its
+conditionals against. Binding once in the caller and passing it down keeps the
+`ComputerName` lookup to a single subprocess and gives the conditionals the same
+value the guard validated. The partial reads `HostName` itself, since no caller
+needs it.
+
+Verified on chezmoi v2.72.0 with a stubbed `scutil`, all five paths: agreement
+renders; a non-matching machine renders without the guarded casks; unset `HostName`
+fails with the migration message; a `HostName` disagreeing with `ComputerName` fails
+naming both; and stored-versus-live drift fails naming both.
 
 `ComputerName` is the live key because macOS always has one; `HostName` can be
 unset, and `scutil --get HostName` then exits **0** while printing the literal
@@ -278,12 +307,26 @@ network, so requiring permanent exact equality would fail for reasons outside th
 machine's control. Provisioning sets it and tolerates a numeric suffix; nothing keys
 off it.
 
-**Reconciliation needs its own path.** `chezmoi init` refreshes the *stored*
-`.hostname` and nothing else — it cannot set `HostName`, so it is the wrong remedy
-for a genuine field divergence and the drift message must not name it alone. The
-remedy is `provision.sh --phase identity`, which re-applies all three fields, reads
-them back, and then re-runs `chezmoi init` to refresh stored data. `chezmoi init` on
-its own remains correct for the narrow case where only stored data is stale.
+**Reconciliation needs its own mode, not a phase.** `chezmoi init` refreshes the
+*stored* `.hostname` and nothing else — it cannot set `HostName`, so it is the wrong
+remedy for field divergence and no message may offer it alone.
+
+`--phase identity` is equally wrong, and an earlier draft proposed it: there is no
+`identity` phase in the table (§6.1), `--phase` requires a state file a legacy
+machine does not have, and `--phase` skips the confirm — which would make identity
+mutation possible without consent, the exact hole §4.2 closes.
+
+The remedy is a distinct top-level mode, **`provision.sh --repair-identity`**, which:
+
+1. runs without any recorded state, so it works on a legacy or externally-renamed
+   machine;
+2. prompts for the identity and validates it against `known_hostnames`;
+3. **displays the proposed before/after for all three fields** and requires an
+   explicit `y` — identity mutation always requires consent, in every mode;
+4. applies `scutil --set`, reads all three back, and fails if any disagrees;
+5. re-runs `chezmoi init` so stored data matches.
+
+It shares the read-back validator with preflight rather than reimplementing it.
 
 **What each layer actually catches**, stated narrowly because the earlier draft
 overclaimed:
@@ -293,7 +336,8 @@ overclaimed:
 | Unlisted name typed during provisioning | rejected, re-prompts | — |
 | `chezmoi init` on a machine with an unlisted identity | — | **not caught** — init renders no targets and exits 0 |
 | `chezmoi apply` with an unlisted stored identity | — | fails the render |
-| Machine renamed after init, then `apply` | — | fails on the drift check |
+| `ComputerName` or `HostName` changed after init, then `apply` | — | fails on the drift check |
+| `LocalHostName` gains a `-N` suffix from a Bonjour collision | — | **deliberately passes** — not a rename |
 
 Verified: `chezmoi init` against an unlisted identity exits 0, stores
 `hostname = "MacBook Pro"`, and writes zero targets. Only the following `apply`
@@ -377,7 +421,8 @@ warnings. That is what turns the failure into `⚠ microsoft-office — licence`
 ### 6.3 State and resume
 
 `$XDG_STATE_HOME/provision/state` records completed phase names **and the preflight
-answers**, so `--resume` re-asks nothing.
+answers**, so `--resume` re-asks no decisions. Credentials are separate (below), and
+consent is gated on the `confirmed` marker (§4.2), not on the answers' presence.
 
 Flags are explicit state transitions, not independent booleans. Each is defined by
 what it does to recorded state and to preflight:
@@ -423,9 +468,18 @@ defaults. It becomes phase 9 rather than being absorbed.
 
 Three changes:
 
-- Accepts `--hostname <name>`. When supplied, it does not prompt. When run
-  standalone with no flag it prompts exactly as today, and skips the `scutil --set`
-  calls when the current name already matches.
+- Accepts `--hostname <name>`. **In this mode it validates and never renames.** If
+  the live identity disagrees with the supplied name it aborts and directs to
+  `--repair-identity`; it does not call `scutil --set` at all.
+
+  This is a correctness requirement, not tidiness. `configure.sh` is phase 9, and
+  phase 9 is best-effort and reachable via `--phase macos-config`, which skips the
+  confirm. If it could rename, that path would be an unconfirmed identity mutation —
+  the same hole §4.2 closes at the front door, left open at the back. Renaming
+  happens in exactly two places, both explicitly confirmed: preflight step 5, and
+  `--repair-identity`.
+
+  Run standalone with no flag, it prompts and renames exactly as today.
 - Trackpad (`TrackpadThreeFingerDrag`, `Clicking`) and battery-percentage `defaults`
   gain hostname guards. They are harmless no-ops on a desktop, but under a design
   that models divergence explicitly, leaving them unguarded is inconsistent.
@@ -476,6 +530,20 @@ Assertions that earn their place:
    revalidates both rather than proceeding with stale authority.
 10. The source clone is recorded before preflight reads `known_hostnames` — the
     dependency that makes preflight validation possible at all.
+11. A `HostName` that is *set but wrong* fails the guard, distinctly from one that is
+    unset — the two produce different messages and must not be conflated.
+12. `LocalHostName` of `fenrir-2` is accepted by the preflight read-back; `fenrir-x`
+    and `studio` are rejected. The suffix tolerance is a specific pattern, not a
+    prefix match.
+13. `--repair-identity` runs to completion with **no state file present** — the
+    legacy path — and still refuses to apply anything without an explicit `y`.
+14. **`--phase macos-config` never records a `scutil --set` call.** Asserted directly
+    against the call log, because this is the back-door identity mutation §7 exists
+    to prevent.
+15. Resume across each marker boundary: no `confirmed` re-asks; `confirmed` without
+    `identity_applied` applies then continues; `identity_applied` with a since-changed
+    live identity aborts to `--repair-identity`; a changed answer set clears both
+    markers.
 
 Per repo convention the suite is fully mocked and runs under either sandbox mode.
 Its assertion count is added to the running baseline once green.
@@ -566,13 +634,17 @@ Setting `HostName` in preflight (§4.2) makes the name local rather than
 network-supplied. That is a fix, but it makes preflight load-bearing for backups:
 **`scutil --set HostName` may never be skipped or made best-effort.**
 
-**All three fields are validated, not just the one the template reads.** Preflight
-sets `ComputerName`, `HostName` and `LocalHostName`, then reads all three back and
-fails if any disagrees with the chosen identity. The template guard (§5.2) reads
-`ComputerName`, because that is the field macOS always populates — but Borg reads
-the static hostname, which comes from `HostName`. Validating only the field the
-template happens to read would leave `HostName` free to drift, recreating the exact
-backup risk this section exists to close.
+**All three fields are validated; two of them exactly.** Preflight sets
+`ComputerName`, `HostName` and `LocalHostName`, then reads all three back: the first
+two must equal the chosen identity exactly, and `LocalHostName` must match
+`^<identity>(-[0-9]+)?$`. The template guard (§5.2) checks `ComputerName` **and**
+`HostName` — an earlier draft checked only `ComputerName`, which would have left
+`HostName` free to drift past every render, and `HostName` is the field Borg reads.
+
+`LocalHostName` is excluded from the template and matched loosely because macOS
+appends a number to it on its own when the name collides on the local network. A
+template failing on `fenrir-2` would be failing on something the machine's owner
+neither chose nor can prevent, and nothing keys off `LocalHostName` anyway.
 
 **The currently-unset `HostName` is a one-time legacy migration, not a supported
 state.** After provisioning, an unset `HostName` is a failure, not a fallback.
