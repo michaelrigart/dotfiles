@@ -19,31 +19,59 @@ log_info "========== macOS System Configuration =========="
 echo ""
 
 # Ask for sudo password upfront and keep alive
+# --hostname <name>: driven by provision.sh, which already owns the identity. In that
+# mode this script VERIFIES and never renames — it is invoked after preflight, so a
+# rename here would be a machine change nobody confirmed.
+HOSTNAME_ARG=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --hostname) shift; HOSTNAME_ARG="$1" ;;
+    *) log_error "unknown option: $1"; exit 2 ;;
+  esac
+  shift
+done
+
 sudo -v
-while true; do sudo -n true; sleep 60; kill -0 "$$" || exit; done 2>/dev/null &
+# stdout closed as well as stderr: a background loop holding stdout hangs any caller
+# capturing this script's output with $( ).
+while true; do sudo -n true; sleep 60; kill -0 "$$" 2>/dev/null || exit; done >/dev/null 2>&1 &
 
 # ============================================================================
 # Set Hostname
 # ============================================================================
-while [[ ! $answer = 'y' ]]; do
-    echo -n 'Enter the hostname: '
+if [ -n "$HOSTNAME_ARG" ]; then
+  HOSTNAME="$HOSTNAME_ARG"
+  # All three, not just ComputerName: HostName drives hostname(1) and Borg archive
+  # naming, so checking only the first would let the Borg-critical field drift.
+  if [ "$(scutil --get ComputerName)" != "$HOSTNAME" ]; then
+    log_error "ComputerName is '$(scutil --get ComputerName)' but --hostname says '${HOSTNAME}'"
+    exit 1
+  fi
+  if [ "$(scutil --get HostName)" != "$HOSTNAME" ]; then
+    log_error "HostName is '$(scutil --get HostName)' but --hostname says '${HOSTNAME}'"
+    exit 1
+  fi
+  case "$(scutil --get LocalHostName)" in
+    "$HOSTNAME"|"$HOSTNAME"-<->) ;;
+    *) log_error "LocalHostName is '$(scutil --get LocalHostName)', expected ${HOSTNAME} or ${HOSTNAME}-N"; exit 1 ;;
+  esac
+  log_info "✓ identity verified: ${HOSTNAME}"
+else
+  while true; do
+    echo -n "Enter the hostname for this machine: "
     read HOSTNAME
-
     echo -n "You have entered $HOSTNAME, is this correct (y/n)? "
     read answer
-done
-
-log_info "Setting hostname to $HOSTNAME..."
-if ! scutil --get ComputerName | grep -q "$HOSTNAME" 2>/dev/null; then
-  sudo scutil --set ComputerName "$HOSTNAME"
+    case "$answer" in y|Y) break ;; esac
+  done
+  log_info "Setting hostname to $HOSTNAME..."
+  # Exact comparison: the old `grep -q` substring match treated "studio" as already
+  # set on a machine named "studio-2".
+  [ "$(scutil --get ComputerName)"  = "$HOSTNAME" ] || sudo scutil --set ComputerName  "$HOSTNAME"
+  [ "$(scutil --get HostName)"      = "$HOSTNAME" ] || sudo scutil --set HostName      "$HOSTNAME"
+  [ "$(scutil --get LocalHostName)" = "$HOSTNAME" ] || sudo scutil --set LocalHostName "$HOSTNAME"
+  log_info "✓ Hostname set to $HOSTNAME"
 fi
-if ! scutil --get HostName | grep -q "$HOSTNAME" 2>/dev/null; then
-  sudo scutil --set HostName "$HOSTNAME"
-fi
-if ! scutil --get LocalHostName | grep -q "$HOSTNAME" 2>/dev/null; then
-  sudo scutil --set LocalHostName "$HOSTNAME"
-fi
-log_info "✓ Hostname set to $HOSTNAME"
 
 # ============================================================================
 # Security Settings
@@ -141,13 +169,15 @@ log_info "✓ Screenshots will be saved to ~/Pictures/Screenshots"
 log_info "Configuring trackpad and mouse..."
 
 # Enable tap to click for this user and for the login screen
-defaults write com.apple.driver.AppleBluetoothMultitouch.trackpad Clicking -bool true
-defaults -currentHost write NSGlobalDomain com.apple.mouse.tapBehavior -int 1
-defaults write NSGlobalDomain com.apple.mouse.tapBehavior -int 1
+if [ "$HOSTNAME" = "fenrir" ]; then
+  defaults write com.apple.driver.AppleBluetoothMultitouch.trackpad Clicking -bool true
+  defaults -currentHost write NSGlobalDomain com.apple.mouse.tapBehavior -int 1
+  defaults write NSGlobalDomain com.apple.mouse.tapBehavior -int 1
 
-# Trackpad: enable three finger drag
-defaults write com.apple.driver.AppleBluetoothMultitouch.trackpad TrackpadThreeFingerDrag -bool true
-defaults write com.apple.AppleMultitouchTrackpad TrackpadThreeFingerDrag -bool true
+  # Trackpad: enable three finger drag
+  defaults write com.apple.driver.AppleBluetoothMultitouch.trackpad TrackpadThreeFingerDrag -bool true
+  defaults write com.apple.AppleMultitouchTrackpad TrackpadThreeFingerDrag -bool true
+fi
 
 log_info "✓ Trackpad configured"
 
@@ -224,7 +254,7 @@ log_info "✓ Text input configured"
 log_info "Configuring menu bar..."
 
 # Show battery percentage
-defaults write com.apple.menuextra.battery ShowPercent -string "YES"
+[ "$HOSTNAME" = "fenrir" ] && defaults write com.apple.menuextra.battery ShowPercent -string "YES"
 
 # Show date and time in menu bar
 defaults write com.apple.menuextra.clock DateFormat -string "EEE MMM d  h:mm a"

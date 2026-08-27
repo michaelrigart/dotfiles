@@ -1,11 +1,28 @@
 # Provisioning preflight
 
-**Status:** Approved
+**Status:** Superseded — see [Provisioning preflight (minimal)](./2026-08-27-provisioning-preflight-minimal-design.md)
 **Date:** 2026-08-27
 
-Restructures `.scripts/provision.sh` around a single rule: every question is asked
-before any long-running work starts. Introduces machine identity as a real, validated
-concept, because a second Mac now exists.
+> **Scope reduction, 2026-08-27.** Only a reduced subset of this design was built.
+> Implemented on this branch (unmerged at the time of writing): preflight (all questions before one confirm), the machine allowlist and the
+> live-identity guard, three-field identity with read-back, `NONINTERACTIVE=1`, bounded
+> Xcode CLT polling, `sudo chsh`, non-blocking SSH verification, Brewfile failures as
+> warnings, and `configure.sh --hostname` verifying rather than renaming.
+>
+> Deliberately **not** built: the phase framework, the state file, `--resume`,
+> `--phase`, `--dry-run`, `--repair-identity`, and the consent markers. Those emerged
+> from design review rather than from the original problem — four interruptions in a
+> bootstrap script — and were judged disproportionate to a script that runs a handful
+> of times per machine lifetime. The implementation keeps `set -e`; the recovery model
+> is re-running from the start, which is safe because every step is idempotent.
+>
+> See `.scripts/provision.sh` and `.scripts/test-provision.sh` for what exists.
+
+Restructures `.scripts/provision.sh` around a single rule: **every decision is made
+before the unattended work starts.** Bootstrap is the bounded exception — it installs
+the prerequisites needed to ask anything at all, and requires one macOS dialog (§4.1).
+Introduces machine identity as a real, validated concept, because a second Mac now
+exists.
 
 Depends on the source-root relocation of `.chezmoi.toml.tmpl` (landed 2026-08-27,
 same working tree). That change is a prerequisite, not part of this design — but it
@@ -59,7 +76,11 @@ harmless the moment anything keys off it.
 
 ## 2. Goals
 
-- All human input collected before the first mutating phase, then an unattended run.
+- All human input collected before the **confirm**, which gates hostname mutation
+  and phases 4–10. Bootstrap (phases 1–3) is an explicit exception: it installs
+  software before anything can be asked, because nothing can be asked until it has.
+  See §4.1 — this is a narrower promise than "no mutation before input", and the
+  narrower one is the true one.
 - A failure surfaces what needs attention without discarding completed work.
 - `hostname` becomes accurate and load-bearing, with unknown machines rejected
   loudly rather than silently taking a default branch.
@@ -72,8 +93,8 @@ harmless the moment anything keys off it.
   considered and rejected (§9). The bootstrap constraint is real: a fresh Mac has
   no package manager when `provision.sh` starts.
 - **No profile/role concept.** A `profile = desktop|laptop` key decoupled from
-  machine name was considered and rejected (§9). Conditionals key off `.hostname`
-  directly.
+  machine name was considered and rejected (§9). Conditionals key off the live
+  identity (§5.2), not a stored value.
 - **No rollback.** Phases are idempotent and resumable; they do not undo.
 - **`configure.sh` is not absorbed.** It stays independently re-runnable (§7).
 - **No Vorta or BorgBase automation.** Provisioning sets the hostname that backup
@@ -91,10 +112,11 @@ Xcode CLT (waits for completion rather than exiting), Homebrew,
 `brew install chezmoi 1password-cli git`, `brew install --cask 1password`, then a
 plain `git clone` of the dotfiles repo over HTTPS into `$XDG_DATA_HOME/chezmoi`.
 
-This stage makes no decisions, so it needs no input — which is why it precedes
-preflight rather than being folded into it. Homebrew must exist before the
-1Password cask can be installed, and the 1Password gate in stage 1 needs that cask.
-Naming the stage honestly is preferable to pretending preflight comes first.
+This stage makes no *decisions* — which is why it precedes preflight rather than
+being folded into it. Homebrew must exist before the 1Password cask can be
+installed, and the 1Password gate in stage 1 needs that cask. Naming the stage
+honestly is preferable to pretending preflight comes first. It does still require
+one interaction, the Xcode CLT dialog; see below.
 
 **The clone is separated from `chezmoi init` deliberately.** `chezmoi init` does two
 things — clone the source, and render the config from it. Preflight needs the source
@@ -107,6 +129,33 @@ existing source directory was verified to do exactly that on v2.72.0.
 Xcode CLT changes behaviour: today an uninstalled CLT triggers the dialog, prints
 "re-run this script", and exits 0. It instead polls `xcode-select -p` until the
 dialog is satisfied. A user who cancels gets a clear abort, not a silent success.
+
+**Stage 0 mutates the machine before anything has been confirmed, and that is not
+avoidable.** Installing Homebrew, the 1Password cask and the dotfiles source is the
+prerequisite for asking any question at all. What stage 0 must not do is make a
+*decision*: it installs a fixed set of prerequisites identically on every machine,
+and touches nothing machine-specific. The confirm gates everything that is a choice
+— hostname mutation included (§4.2).
+
+**Stage 0 is also not input-free**, and an earlier draft claiming it "needs no input"
+was wrong. Installing the Xcode Command Line Tools opens a GUI dialog that macOS
+owns and that a human must accept. The honest contract is narrower and worth stating
+exactly: *bootstrap may require Xcode CLT interaction; everything after a successful
+confirm is unattended for the remainder of that uninterrupted run.* A later `--resume`
+may still reacquire lapsed credentials (§6.3) — it re-asks no decisions, which is a
+different promise.
+
+Because macOS gives no completion signal, the CLT install is detected by polling
+`xcode-select -p`. Two failure modes need explicit handling, since neither raises an
+error on its own: the user **cancels** the dialog, and the user **never responds**.
+Both present identically — `xcode-select -p` simply keeps failing — so both resolve
+through one bounded wait that aborts with a message naming the dialog, rather than
+hanging forever or reporting a false success the way the current script's `exit 0`
+does.
+
+Homebrew's installer prompts for confirmation by default, so it is invoked with
+`NONINTERACTIVE=1`. Without it, stage 0 stops on a "Press RETURN to continue" that
+the design promises does not exist.
 
 Stage 0's work is recorded in the state file like any other phase, so `--resume`
 skips it.
@@ -123,17 +172,52 @@ Everything that can ask a question, in this order:
    just-cloned `.chezmoidata/machines.toml` (§5.2). The answer is recorded, not yet
    applied — `scutil --set` needs sudo, which is not held until step 3.
 3. **sudo.** `sudo -v` plus the existing keepalive loop, held for the whole run.
-   With it in hand, the name recorded in step 2 is applied now: `scutil --set` for
-   `ComputerName`, `HostName`, and `LocalHostName`. Acquiring sudo here is also what
-   lets stage 2 run unattended.
+   Acquiring it here is what lets stage 2 run unattended. Nothing is applied yet.
 4. **Summary and confirm.** Every decision echoed, then one `[y/N]`.
+5. **Apply the identity.** Only now: `scutil --set` for `ComputerName`, `HostName`
+   and `LocalHostName`, followed by a read-back asserting `ComputerName` and
+   `HostName` equal the chosen name exactly and `LocalHostName` matches
+   `^<identity>(-[0-9]+)?$` (§5.2 explains the suffix tolerance). This is the first
+   machine-specific mutation in the entire run.
 
-Preflight answers are written to the state file before the confirm, so `--resume`
-re-asks nothing.
+Steps 3 and 5 are deliberately split. An earlier draft applied the hostname in step
+3, before the confirm — which meant declining at step 4 still left the machine
+renamed, and silently changed the basis of Borg's archive naming. Declining must
+leave the machine exactly as it was found.
+
+**Recorded answers are not recorded consent.** State carries three distinct
+markers, written at three different moments:
+
+| Marker | Written when | Means |
+|---|---|---|
+| `answers_collected` | after step 2 | the questions have been answered |
+| `confirmed` | after a `y` at step 4 | the user approved *this* answer set |
+| `identity_applied` | after step 5's read-back succeeds | the machine has been renamed |
+
+An earlier draft wrote the answers before the confirm and let `--resume` treat their
+presence as proof consent had been given. That is a consent-laundering bug: answer
+the questions, decline at the confirm, resume a week later, and the machine is
+renamed and provisioned without anyone ever having said yes. **Resuming a run whose
+state lacks `confirmed` re-displays the summary and asks again.** `--resume` skips
+the confirm only when `confirmed` is present.
+
+The markers are a state machine, and a resume must handle every boundary:
+
+| State found | Action on resume |
+|---|---|
+| no `confirmed` | re-display the summary and ask again; nothing is applied |
+| `confirmed`, no `identity_applied` | apply the identity, then continue |
+| `identity_applied` | **revalidate live** before trusting it — the machine may have been renamed since; a mismatch aborts and directs to `--repair-identity` |
+| answers differ from those recorded | clear `confirmed` and `identity_applied`; a changed answer set has never been consented to |
+
+`scutil --set` is idempotent, so a crash between applying the identity and recording
+`identity_applied` is safe: the retry re-applies the same values and the read-back
+passes. The marker records that the step *completed*, and is never the sole evidence
+that it happened — the read-back is.
 
 ### 4.3 Stage 2 — run
 
-Ten phases, unattended. See §6.
+Seven phases (4–10 of the ten; phases 1–3 are stage 0's). Unattended. See §6.
 
 ### 4.4 Stage 3 — report
 
@@ -159,7 +243,12 @@ proposed:  git clone (stage 0) → scutil --set (stage 1) → chezmoi init (stag
 ordering constraint the whole design exists to protect, and it gets a dedicated
 test (§8).
 
-### 5.2 Allowlist, enforced in two independent places
+Note what this ordering does and does not buy. It makes the *stored* `.hostname`
+correct at the moment of provisioning. It does nothing about drift afterwards —
+that is §5.2's problem, and it is why the template guard reads the machine live
+rather than trusting what init captured.
+
+### 5.2 Identity must be read live, not from stored data
 
 `.chezmoidata/machines.toml` at the source root:
 
@@ -171,21 +260,109 @@ Verified against chezmoi v2.72.0: `.chezmoidata/` entries load into template dat
 (`{{ .known_hostnames | join "," }}` → `fenrir,studio`), and sprig's `fail` aborts
 a render with exit 1.
 
-**Layer 1 — preflight.** An unlisted name is rejected interactively, with the
-manifest path named so the fix is obvious.
+**`.hostname` is stored, not live — so a guard built on it cannot detect drift.**
+An earlier draft of this section keyed the template guard on `.hostname` and claimed
+it would catch a machine renamed outside provisioning. That claim was false.
+`.chezmoi.toml.tmpl` evaluates `scutil --get ComputerName` **once, at `chezmoi init`**,
+and writes the result into `~/.config/chezmoi/chezmoi.toml`. Every later `apply`
+reads the stored value. Measured on the primary workstation, which already exhibits
+exactly this drift:
 
-**Layer 2 — the template itself.** `Brewfile.tmpl` opens with:
-
-```gotemplate
-{{ if not (has .hostname .known_hostnames) }}
-{{- fail (printf "unknown machine %q — add it to .chezmoidata/machines.toml" .hostname) }}
-{{- end }}
+```
+scutil --get ComputerName          → MacBook Pro     (live)
+chezmoi execute-template .hostname → fenrir          (stored)
 ```
 
-Layer 2 is the one that matters long-term. It catches a bare `chezmoi apply` on a
-machine renamed outside provisioning — a path the script never observes. Without
-it, an unknown hostname silently takes the else-branch: nothing errors, nothing
-installs, and the divergence is invisible until someone notices a missing app.
+A rename therefore leaves `.hostname` reporting the old name indefinitely, and a
+guard comparing it to the allowlist passes forever.
+
+**The guard reads the machine live, from a shared partial.** `.chezmoitemplates/identity-guard`
+holds the rules; every template keying off identity opens the same way:
+
+```gotemplate
+{{- $live := output "scutil" "--get" "ComputerName" | trim -}}
+{{- template "identity-guard" (dict "live" $live "stored" .hostname "known" .known_hostnames) -}}
+```
+
+The caller binds `$live` itself and passes it in. That is not redundancy: a Go
+template partial cannot export a variable back into its caller's scope, so a partial
+that bound `$live` internally would leave the caller with nothing to write its
+conditionals against. Binding once in the caller and passing it down keeps the
+`ComputerName` lookup to a single subprocess and gives the conditionals the same
+value the guard validated. The partial reads `HostName` itself, since no caller
+needs it.
+
+Verified on chezmoi v2.72.0 with a stubbed `scutil`, all five paths: agreement
+renders; a non-matching machine renders without the guarded casks; unset `HostName`
+fails with the migration message; a `HostName` disagreeing with `ComputerName` fails
+naming both; and stored-versus-live drift fails naming both.
+
+`ComputerName` is the live key because macOS always has one; `HostName` can be
+unset, and `scutil --get HostName` then exits **0** while printing the literal
+string `HostName: not set`, which a naive guard would happily compare against the
+allowlist. Every conditional in the file keys off `$live`, never `.hostname` — a
+conditional on stored data has the same staleness bug as a guard on it.
+
+**The guard checks `HostName` too, because `ComputerName` alone does not enforce the
+invariant.** §11.1 requires all three identity fields to agree; a guard reading only
+`ComputerName` passes a machine whose `HostName` has drifted — and `HostName` is the
+Borg-critical field, so that is precisely the drift that must not pass silently. The
+checks live in a shared partial under `.chezmoitemplates/`, included by any template
+that keys off identity, so the rule is defined once:
+
+| Field | Checked where | Rule |
+|---|---|---|
+| `ComputerName` | template + preflight | equals the chosen identity; equals stored `.hostname` |
+| `HostName` | template + preflight | equals the chosen identity; unset is a *named migration state*, reported as such rather than as a mismatch |
+| `LocalHostName` | preflight only | matches `^<identity>(-[0-9]+)?$` |
+
+`LocalHostName` is deliberately excluded from the template and matched loosely:
+macOS appends `-2`, `-3`, `-4` on its own when the Bonjour name collides on the
+network, so requiring permanent exact equality would fail for reasons outside the
+machine's control. Provisioning sets it and tolerates a numeric suffix; nothing keys
+off it.
+
+**Reconciliation needs its own mode, not a phase.** `chezmoi init` refreshes the
+*stored* `.hostname` and nothing else — it cannot set `HostName`, so it is the wrong
+remedy for field divergence and no message may offer it alone.
+
+`--phase identity` is equally wrong, and an earlier draft proposed it: there is no
+`identity` phase in the table (§6.1), `--phase` requires a state file a legacy
+machine does not have, and `--phase` skips the confirm — which would make identity
+mutation possible without consent, the exact hole §4.2 closes.
+
+The remedy is a distinct top-level mode, **`provision.sh --repair-identity`**, which:
+
+1. runs without any recorded state, so it works on a legacy or externally-renamed
+   machine;
+2. prompts for the identity and validates it against `known_hostnames`;
+3. **displays the proposed before/after for all three fields** and requires an
+   explicit `y` — identity mutation always requires consent, in every mode;
+4. applies `scutil --set`, reads all three back, and fails if any disagrees;
+5. re-runs `chezmoi init` so stored data matches.
+
+It shares the read-back validator with preflight rather than reimplementing it.
+
+What it does to an *existing* state file — including the case where the repair
+changes the identity a previous run was consented to — is specified in §6.3, with
+the flag matrix, because that is a state-transition question rather than an identity
+one.
+
+**What each layer actually catches**, stated narrowly because the earlier draft
+overclaimed:
+
+| Situation | Preflight | Template |
+|---|---|---|
+| Unlisted name typed during provisioning | rejected, re-prompts | — |
+| `chezmoi init` on a machine with an unlisted identity | — | **not caught** — init renders no targets and exits 0 |
+| `chezmoi apply` with an unlisted stored identity | — | fails the render |
+| `ComputerName` or `HostName` changed after init, then `apply` | — | fails on the drift check |
+| `LocalHostName` gains a `-N` suffix from a Bonjour collision | — | **deliberately passes** — not a rename |
+
+Verified: `chezmoi init` against an unlisted identity exits 0, stores
+`hostname = "MacBook Pro"`, and writes zero targets. Only the following `apply`
+rejects it. Provisioning is what prevents an unlisted identity being stored in the
+first place; the template is what prevents one being *used*.
 
 ### 5.3 `Brewfile` becomes `Brewfile.tmpl`
 
@@ -193,12 +370,17 @@ The direct consequence of hostname-keyed conditionals. Three peripheral casks mo
 behind a guard:
 
 ```gotemplate
-{{ if eq .hostname "fenrir" -}}
+{{ if eq $live "fenrir" -}}
 cask "elgato-control-center"
 cask "focusrite-control"
 cask "jiggler"
 {{ end -}}
 ```
+
+`$live` is the live-read identity bound at the top of the file (§5.2), not
+`.hostname`. A conditional keyed on stored data carries the same staleness bug as a
+guard keyed on it: after a rename the machine would keep receiving the old machine's
+casks.
 
 `chezmoi edit ~/.config/homebrew/Brewfile` continues to work on templates.
 `provision.sh`'s tap-trust loop seds the *rendered* file at
@@ -241,6 +423,14 @@ one-line manual fix.
 password mid-run; routed through the sudo credential already cached in preflight,
 it does not. This removes an interruption at no cost.
 
+The `dotfiles` phase's `ssh -T git@github.com` check is a **pre-existing** prompt,
+not one this design introduces — but the promise of an unattended run is new, and it
+makes the prompt a contract violation. `ssh -G github.com` resolves
+`stricthostkeychecking ask`, and no `known_hosts` is managed, so on a fresh machine
+the check blocks on "Are you sure you want to continue connecting?". Either it runs
+with `-o StrictHostKeyChecking=accept-new`, or GitHub's host keys become managed
+content. Which one is an implementation detail; leaving it prompting is not.
+
 ### 6.2 Brewfile per-item reporting
 
 `brew bundle` exits non-zero if any single item fails, which by itself yields
@@ -251,26 +441,122 @@ warnings. That is what turns the failure into `⚠ microsoft-office — licence`
 ### 6.3 State and resume
 
 `$XDG_STATE_HOME/provision/state` records completed phase names **and the preflight
-answers**, so `--resume` re-asks nothing.
+answers**, so `--resume` re-asks no decisions. Credentials are separate (below), and
+consent is gated on the `confirmed` marker (§4.2), not on the answers' presence.
 
-Flags: `--resume`, `--phase <name>`, `--restart`, `--dry-run`.
+Flags are explicit state transitions, not independent booleans. Each is defined by
+what it does to recorded state and to preflight:
+
+| Flag | Recorded state | Preflight | Confirm |
+|---|---|---|---|
+| *(none)* | starts fresh; refuses to run if state exists, directing to `--resume` or `--restart` | full | asked |
+| `--resume` | read; completed phases skipped | decisions re-used; credentials revalidated | skipped **only** if `confirmed` is recorded |
+| `--restart` | discarded **after** flag validation, never during a `--dry-run` | full | asked |
+| `--phase NAME` | read; requires **both** `confirmed` and `identity_applied`; only `NAME` runs | decisions re-used; live identity revalidated; credentials that phase needs revalidated; unknown `NAME` is an error, not a no-op | not asked |
+| `--dry-run` | neither read nor written | skipped | not asked |
+| `--repair-identity` | see below — depends on whether a state file exists and whether the identity changes | identity questions only | **always asked**, before any `scutil --set` |
+
+`--repair-identity` is **mutually exclusive** with `--resume`, `--restart`, `--phase`
+and `--dry-run`; combining them is a usage error, not a merge of behaviours. It is a
+repair mode, not a provisioning mode, and it never runs a provisioning phase.
+
+Its interaction with existing state is the part that must be nailed down, because
+repair can *change the identity a previous run was consented to*:
+
+| State found | What repair does |
+|---|---|
+| none | works standalone; sets and verifies the identity; creates **no** provisioning state |
+| exists, identity unchanged | repairs the fields, then marks `identity_applied` — the previous consent still describes this machine |
+| exists, identity **changed** | **deletes the state file entirely — after the `y`, before the first `scutil --set`** — then exits telling the user to run `provision.sh` with no flags |
+
+The third row is the one worth stating explicitly. Consent was given for a specific
+identity and does not transfer to a different one. Neither do the completed phases —
+they ran against the old identity, and on a hostname-conditional Brewfile that means
+they may have installed the wrong machine's packages. Carrying either forward would
+let a `--resume` treat approval of `fenrir` as approval of `studio`: the
+consent-laundering bug of §4.2 arriving by a different route.
+
+**When it deletes matters as much as what it deletes.** The window is narrow and
+both edges are load-bearing: after the explicit `y`, and before the first
+`scutil --set`.
+
+Deleting *after* a successful repair would be wrong, because repair is not atomic —
+it issues three `scutil --set` calls and then a `chezmoi init`, any of which can
+fail. A failure partway through would leave the machine partly renamed to `studio`
+while a state file describing a confirmed, half-completed `fenrir` run sat beside it,
+and the natural next move — `--resume` — would consume it. Deleting *before* the `y`
+would be worse in the other direction: declining the repair would have destroyed the
+state of a perfectly good in-progress run.
+
+So: declining preserves the state file untouched. Consenting destroys it before the
+machine changes at all, which means every failure path from that point forward —
+including a crash between two `scutil` calls — leaves no cross-identity state for
+anything to resume from. The invariant is that a state file and a machine identity
+are never simultaneously in disagreement.
+
+**It deletes the whole file rather than selectively clearing markers**, and that
+choice is deliberate. An earlier draft cleared `confirmed`, `identity_applied` and
+the phase records but left the recorded *answer* — so a repair from `fenrir` to
+`studio` left `machine_name=fenrir` in state, and the next `--resume` would have
+displayed `fenrir` and renamed the machine straight back. Selective clearing has now
+produced a cross-identity carryover bug three times in this design's review; the
+state file describes one provisioning run of one machine, and once the identity
+changes, none of it describes anything. Re-entering one answer is cheaper than
+reasoning about which fields survive.
+
+Three failure modes this table exists to prevent, all of which a naive
+implementation exhibits:
+
+- **An already-confirmed `--resume` blocking on the confirm.** Re-approving what was
+  already approved makes `--resume` unusable non-interactively. This applies only
+  once `confirmed` is recorded — an *unconfirmed* resume correctly asks again (§4.2),
+  and that is not the failure mode.
+- **A skipped phase skipping its side effects.** The `homebrew` phase both installs
+  Homebrew *and* initialises `HOMEBREW_PREFIX` and `PATH` for the process. Resuming
+  past it must still perform the second part, or every later phase runs against an
+  unconfigured environment — and `${HOMEBREW_PREFIX}` is an unbound-variable abort
+  under `set -u`. Process-environment setup belongs outside phase completion.
+- **`--phase` running without an identity.** `--phase macos-config` needs the machine
+  name; without loading recorded answers it passes an empty string.
+- **`--phase` running *before* the identity was applied.** Requiring only `confirmed`
+  is not enough: from a state with `confirmed` but no `identity_applied`,
+  `--phase chezmoi-init` would capture whatever the machine is currently called —
+  reintroducing the §5.1 ordering defect through the flag surface rather than through
+  the phase order. `--phase` therefore requires both markers *and* revalidates the
+  live identity, refusing and naming `--resume` or `--repair-identity` otherwise.
+
+**Decisions persist; credentials do not.** `--resume` re-uses every answer, but sudo
+times out after five minutes and a 1Password CLI session after ten. A resumed run
+must revalidate both — `sudo -v` and `op whoami`, reacquiring if either has lapsed —
+before entering the unattended phases. "Nothing is prompted on resume" is therefore
+true of *decisions* and false of *credentials*, and the design should not claim
+otherwise: a resume hours later will ask for a password, and that is correct.
 
 Invoked via curl, flags pass as `/bin/zsh -c "$(curl -fsSL …)" provision --resume`
-(`zsh -c` takes `$0` then positional arguments). Once the dotfiles are cloned, the
-local path at `~/.local/share/chezmoi/.scripts/provision.sh` is the better entry
-point and the report says so.
+(`zsh -c` takes `$0` then positional arguments). Under that invocation `$0` is the
+literal word `provision`, so recovery messages must print a resolved path to the
+cloned script — never `$0`, which would print a command that does not exist.
 
 ## 7. Boundary with `configure.sh`
 
 `configure.sh` remains a standalone, independently re-runnable script — documented
 as such in `CLAUDE.md`, and genuinely useful on its own for re-applying macOS
-defaults. It becomes phase 8 rather than being absorbed.
+defaults. It becomes phase 9 rather than being absorbed.
 
 Three changes:
 
-- Accepts `--hostname <name>`. When supplied, it does not prompt. When run
-  standalone with no flag it prompts exactly as today, and skips the `scutil --set`
-  calls when the current name already matches.
+- Accepts `--hostname <name>`. **In this mode it validates and never renames.** If
+  the live identity disagrees with the supplied name it aborts and directs to
+  `--repair-identity`; it does not call `scutil --set` at all.
+
+  This is a correctness requirement, not tidiness. `configure.sh` is phase 9, and
+  phase 9 is best-effort and reachable via `--phase macos-config`, which skips the
+  confirm. If it could rename, that path would be an unconfirmed identity mutation —
+  the same hole §4.2 closes at the front door, left open at the back. Renaming
+  happens in exactly two places, both explicitly confirmed: preflight step 5, and
+  `--repair-identity`.
+
+  Run standalone with no flag, it prompts and renames exactly as today.
 - Trackpad (`TrackpadThreeFingerDrag`, `Clicking`) and battery-percentage `defaults`
   gain hostname guards. They are harmless no-ops on a desktop, but under a design
   that models divergence explicitly, leaving them unguarded is inconsistent.
@@ -279,23 +565,79 @@ Three changes:
 
 ## 8. Testing strategy
 
-New `.scripts/test-provision.sh`, bash, mocked in the existing house style: stub
-`brew`, `chezmoi`, `op`, `scutil`, and `sudo` on `PATH` and assert on the recorded
-call sequence. Assertions that earn their place:
+New `.scripts/test-provision.sh`, bash, mocked in the existing house style.
+
+**Isolation is a correctness requirement of the suite, not a nicety.** `provision.sh`
+deletes files in `$HOME`, chmods `~/.ssh`, installs packages and rewrites macOS
+defaults. A harness that isolates only `PATH` and `XDG_STATE_HOME` leaves all of that
+pointed at the real machine — and `eval "$(/opt/homebrew/bin/brew shellenv)"`, an
+absolute path, puts real Homebrew ahead of the stubs mid-run. The suite therefore
+runs against a temporary `HOME` and temporary values for **every** XDG root, and
+opens with a guard that aborts if any of them still resolves inside the real home
+directory. Scripts invoked by path rather than through `PATH` (`configure.sh`,
+`reconcile-agents.sh`) must be stubbed by path too.
+
+Assertions must read the recorded call log, not the script's stdout: a stub that
+records to a file contributes nothing to stdout, so a substring assertion against
+output silently passes or fails for the wrong reason.
+
+Assertions that earn their place:
 
 1. **`scutil --set ComputerName` is recorded before `chezmoi init`.** The ordering
    regression in §5.1 — the single most important assertion in the suite.
 2. Preflight rejects a hostname absent from `known_hostnames`.
-3. `Brewfile.tmpl` renders `fail` (exit 1) for an unknown hostname, driven through
-   `chezmoi execute-template` as `test-codex-config.sh` already does.
+3. The identity partial renders `fail` (exit 1) for a live identity absent from the
+   allowlist, **and separately** for a live identity that disagrees with stored
+   `.hostname`, **and separately** for an unset `HostName` with the migration message
+   rather than a mismatch one. Driven through `chezmoi execute-template` with a
+   stubbed `scutil`, as `test-codex-config.sh` already drives templates.
 4. `Brewfile.tmpl` renders the exact three peripheral casks for `fenrir` and omits
    exactly those three for `studio` — asserted as exact cask lists, never as counts.
-5. `--resume` skips phases recorded in the state file and asks no questions.
+5. `--resume` skips phases recorded in the state file and re-asks no *decisions*
+   (credentials are a separate matter — see 9).
 6. A critical phase failure aborts; a best-effort failure continues and appears in
    the stage 3 report.
-7. No mutating phase runs before the confirm.
-8. The source clone is recorded before preflight reads `known_hostnames` — the
-   dependency that makes layer-1 validation possible at all.
+7. No *machine-specific* mutation runs before the confirm — specifically, no
+   `scutil --set`. Bootstrap's installs are the acknowledged exception (§4.1), so
+   this is asserted against the identity calls, not against mutation in general.
+8. Decline at the confirm, then `--resume`: the summary is shown and consent asked
+   again, and no `scutil --set` is recorded until a second explicit `y`. This is the
+   consent-laundering regression from §4.2.
+9. A resume with a lapsed sudo credential and a locked 1Password session
+   revalidates both rather than proceeding with stale authority.
+10. The source clone is recorded before preflight reads `known_hostnames` — the
+    dependency that makes preflight validation possible at all.
+11. A `HostName` that is *set but wrong* fails the guard, distinctly from one that is
+    unset — the two produce different messages and must not be conflated.
+12. `LocalHostName` of `fenrir-2` is accepted by the preflight read-back; `fenrir-x`
+    and `studio` are rejected. The suffix tolerance is a specific pattern, not a
+    prefix match.
+13. `--repair-identity` runs to completion with **no state file present** — the
+    legacy path — and still refuses to apply anything without an explicit `y`.
+14. **`--phase macos-config` never records a `scutil --set` call.** Asserted directly
+    against the call log, because this is the back-door identity mutation §7 exists
+    to prevent.
+15. Resume across each marker boundary: no `confirmed` re-asks; `confirmed` without
+    `identity_applied` applies then continues; `identity_applied` with a since-changed
+    live identity aborts to `--repair-identity`; a changed answer set clears both
+    markers.
+16. **`--repair-identity` from `fenrir` to `studio`, with existing state, leaves no
+    state file at all.** Asserted on the file's absence, not on individual markers.
+    The following invocation must prompt from scratch and **display `studio`** — the
+    assertion checks the identity shown, since a run that merely asks for
+    confirmation while displaying `fenrir` is the exact bug this prevents.
+17. `--repair-identity` combined with `--resume`, `--restart`, `--phase` or
+    `--dry-run` is rejected as a usage error.
+18. `--phase` from a state with `confirmed` but **no** `identity_applied` is refused,
+    naming `--resume` — not silently run, which would let `chezmoi-init` capture a
+    pre-migration name.
+19. `--phase` from a state with `identity_applied` whose live identity has since
+    drifted is refused, naming `--repair-identity`.
+20. **Deletion timing.** With a failure injected after the first `scutil --set` — and
+    again with one injected during `chezmoi init` — the old state file is already
+    absent. Asserted on the file, not on the exit status: the point is that a repair
+    which dies halfway leaves nothing resumable behind. The mirror case is asserted
+    too: **declining** the repair leaves the state file byte-identical.
 
 Per repo convention the suite is fully mocked and runs under either sandbox mode.
 Its assertion count is added to the running baseline once green.
@@ -340,6 +682,17 @@ a single flat list.
   execution exhaust and is never tracked.
 - `scutil --set HostName` becomes load-bearing for backups, not merely cosmetic
   (§11.1). It is critical-path in preflight and may not be downgraded.
+- An unset `HostName` changes from the status quo to a failure state (§11.1).
+- `Brewfile.tmpl` shells out to `scutil` on every render, including during
+  `chezmoi diff` and `chezmoi status`. That is the price of live identity, and it
+  is the right trade: a guard on stored data cannot detect the drift it exists to
+  catch (§5.2).
+- Declining the confirm leaves the machine's *identity and configuration* exactly as
+  found — no `scutil --set`, no dotfiles applied, no packages beyond bootstrap. It is
+  not byte-identical: bootstrap has by then installed Homebrew, the 1Password cask
+  and the dotfiles source. Those are machine-independent and identical on every
+  machine, which is what makes them acceptable before consent — but the honest claim
+  is "nothing machine-specific", not "nothing".
 - Two Borg keys remain unmanaged by chezmoi (§11.3). Tracked as follow-up; a
   rebuild of the existing machine currently omits them.
 
@@ -371,10 +724,24 @@ succeeding while retention quietly stops working. And chezmoi's `.hostname`
 (from `ComputerName`) and Borg's `{hostname}` (from DNS) are *different values on
 the same machine today*.
 
-Setting `HostName` in preflight (§4.2) makes them agree and makes the name local
-rather than network-supplied. That is a fix, but it means preflight is load-bearing
-for backups and must be treated as such: **`scutil --set HostName` may never be
-skipped or made best-effort.**
+Setting `HostName` in preflight (§4.2) makes the name local rather than
+network-supplied. That is a fix, but it makes preflight load-bearing for backups:
+**`scutil --set HostName` may never be skipped or made best-effort.**
+
+**All three fields are validated; two of them exactly.** Preflight sets
+`ComputerName`, `HostName` and `LocalHostName`, then reads all three back: the first
+two must equal the chosen identity exactly, and `LocalHostName` must match
+`^<identity>(-[0-9]+)?$`. The template guard (§5.2) checks `ComputerName` **and**
+`HostName` — an earlier draft checked only `ComputerName`, which would have left
+`HostName` free to drift past every render, and `HostName` is the field Borg reads.
+
+`LocalHostName` is excluded from the template and matched loosely because macOS
+appends a number to it on its own when the name collides on the local network. A
+template failing on `fenrir-2` would be failing on something the machine's owner
+neither chose nor can prevent, and nothing keys off `LocalHostName` anyway.
+
+**The currently-unset `HostName` is a one-time legacy migration, not a supported
+state.** After provisioning, an unset `HostName` is a failure, not a fallback.
 
 ### 11.2 Separate repo per machine
 

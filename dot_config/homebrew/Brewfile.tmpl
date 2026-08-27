@@ -1,3 +1,20 @@
+{{- /* Identity is read LIVE from scutil, not from chezmoi's .hostname: .hostname is
+     captured once at `chezmoi init` and never refreshed, so after a rename it reports
+     the old name forever and a guard built on it could never fire. */ -}}
+{{- $live := output "scutil" "--get" "ComputerName" | trim -}}
+{{- $hn := output "scutil" "--get" "HostName" | trim -}}
+{{- if not (has $live .known_hostnames) -}}
+{{-   fail (printf "unknown machine %q — add it to .chezmoidata/machines.toml" $live) -}}
+{{- end -}}
+{{- /* HostName is checked too: it is what hostname(1) and therefore Borg archive
+     naming resolve to, so ComputerName=fenrir with HostName=studio would silently
+     back up under the wrong identity. Unset prints "HostName: not set" on exit 0. */ -}}
+{{- if hasPrefix "HostName: not set" $hn -}}
+{{-   fail (printf "HostName is unset on %q — run: sudo scutil --set HostName %s" $live $live) -}}
+{{- end -}}
+{{- if ne $hn $live -}}
+{{-   fail (printf "identity mismatch: ComputerName %q but HostName %q" $live $hn) -}}
+{{- end -}}
 
 # tap repositories and their packages
 #
@@ -33,6 +50,7 @@ brew "gh"
 brew "git"
 brew "git-delta"
 brew "glab"                            # GitLab CLI; dot_config/bundler/config.tmpl templates GitLab tokens
+brew "herdr"                           # agent multiplexer; the hdev() function in zsh/functions + ~/.config/herdr. On trial alongside zellij
 brew "iperf3"                          # edge-node bandwidth testing
 brew "jemalloc"                        # Rails
 brew "jpegoptim"                       # michaelrigart Rakefile:82 image optimization
@@ -75,13 +93,15 @@ cask "claude"
 cask "claude-code@latest"              # @latest channel — plain `claude-code` is a different, pinned cask
 cask "codex"                           # depends on the ripgrep formula
 cask "docker-desktop"
+{{ if eq $live "fenrir" -}}
 cask "elgato-control-center"
-cask "firefox"
 cask "focusrite-control"
+cask "jiggler"
+{{ end -}}
+cask "firefox"
 cask "ghostty"
 cask "google-chrome"
 cask "grammarly-desktop"
-cask "jiggler"
 cask "jordanbaird-ice"
 cask "kap"
 cask "little-snitch"
