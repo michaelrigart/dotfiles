@@ -39,7 +39,7 @@ S
 # sudo must DELEGATE, or `sudo scutil --set` never reaches the scutil stub and the
 # identity assertions become vacuous.
 printf '#!/usr/bin/env bash\necho "sudo $*" >> "$CALLS"\ncase "$1" in -v|-n) exit 0;; esac\nexec "$@"\n' > "$T/bin/sudo"
-printf '#!/usr/bin/env bash\necho "brew $*" >> "$CALLS"\ncase "$1" in shellenv) echo "export PATH=\\"%s/brew/bin:\\$PATH\\"";; --prefix) echo "%s/brew";; esac\nexit 0\n' "$T" "$T" > "$T/brew/bin/brew"
+printf '#!/usr/bin/env bash\necho "brew[$0] $*" >> "$CALLS"\ncase "$1" in shellenv) echo "export PATH=\\"%s/brew/bin:\\$PATH\\"";; --prefix) echo "%s/brew";; esac\nexit 0\n' "$T" "$T" > "$T/brew/bin/brew"
 cp "$T/brew/bin/brew" "$T/bin/brew"
 # tee is stubbed because step 10 pipes into `sudo tee -a /etc/shells`; without it the
 # delegating sudo reaches the real /etc/shells. Anything the script writes outside the
@@ -63,9 +63,19 @@ run(){ local ans=$1; shift
     zsh "$SRC/.scripts/provision.sh" "$@" 2>&1); RC=$?; }
 
 echo "A. containment"
+REAL_HOME="$HOME"
 reset; run 'studio\ny\n'
-not_called "/opt/homebrew" "the real Homebrew is never invoked"
-[ -f "$HOME/.zprofile" ] || [ ! -e "$HOME/.zprofile" ] && _pass "the real HOME is not the target" || _fail "the real HOME is not the target"
+# Which brew actually ran. The old assertion grepped the stub log for "/opt/homebrew",
+# which the real brew would never write to -- it could not fail.
+if grep -q "brew\[$T/brew/bin/brew\]" "$CALLS"; then _pass "PROVISION_BREW_BIN is honoured (sandbox brew ran)"
+else _fail "PROVISION_BREW_BIN is honoured (sandbox brew ran)"; fi
+not_called "brew[/opt/homebrew/bin/brew]" "the real Homebrew binary is never the one invoked"
+# Every stubbed call's paths stay inside the temp roots. This observes only what the
+# stubs see; an unstubbed binary would not appear here, which is why the stub list
+# above must cover everything the script can reach.
+if grep -F "$REAL_HOME/" "$CALLS" | grep -vF "$T" | head -1 | grep -q .; then
+  _fail "no call targets the real HOME: $(grep -F "$REAL_HOME/" "$CALLS" | grep -vF "$T" | head -1)"
+else _pass "no call targets the real HOME"; fi
 
 echo "B. preflight asks first, then applies"
 reset; run 'studio\ny\n'
@@ -99,6 +109,29 @@ n_chsh=$(grep -c '^chsh ' "$CALLS" || true); n_sudo_chsh=$(grep -c '^sudo chsh '
   || _fail "no chsh call bypasses sudo (chsh=$n_chsh via-sudo=$n_sudo_chsh)"
 called "StrictHostKeyChecking=accept-new" "the SSH check cannot block on a host key"
 called "configure.sh --hostname studio" "configure.sh is told the identity, not asked"
+
+echo "F. identity guard in Brewfile.tmpl"
+mkdir -p "$T/tbin"
+printf '#!/bin/sh\ncase "$2" in ComputerName) echo "$FCN";; HostName) echo "$FHN";; esac\n' > "$T/tbin/scutil"
+chmod +x "$T/tbin/scutil"
+render(){ printf '[data]\n  hostname = "%s"\n' "$1" > "$T/c.toml"
+  OUT=$(FCN="$1" FHN="$2" PATH="$T/tbin:$PATH" chezmoi execute-template --source "$SRC" \
+        --config "$T/c.toml" --file "$SRC/dot_config/homebrew/Brewfile.tmpl" 2>&1); RC=$?; }
+render fenrir fenrir
+rc_is 0 "matching identity renders"
+has 'cask "jiggler"' "fenrir gets the peripheral casks"
+render studio studio
+rc_is 0 "the other machine renders"
+hasnt 'cask "jiggler"' "studio does not get the peripheral casks"
+render "MacBook Pro" "MacBook Pro"
+rc_is 1 "an unlisted machine fails the render"
+has "unknown machine" "unlisted machine is named"
+render fenrir studio
+rc_is 1 "ComputerName/HostName mismatch fails"
+has "identity mismatch" "the mismatch is reported as such"
+render fenrir "HostName: not set"
+rc_is 1 "unset HostName fails"
+has "HostName is unset" "unset HostName gets its own message"
 
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

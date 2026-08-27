@@ -39,11 +39,20 @@ while true; do sudo -n true; sleep 60; kill -0 "$$" || exit; done 2>/dev/null &
 # ============================================================================
 if [ -n "$HOSTNAME_ARG" ]; then
   HOSTNAME="$HOSTNAME_ARG"
+  # All three, not just ComputerName: HostName drives hostname(1) and Borg archive
+  # naming, so checking only the first would let the Borg-critical field drift.
   if [ "$(scutil --get ComputerName)" != "$HOSTNAME" ]; then
     log_error "ComputerName is '$(scutil --get ComputerName)' but --hostname says '${HOSTNAME}'"
-    log_error "Refusing to rename from here. Re-run provisioning, or set it deliberately."
     exit 1
   fi
+  if [ "$(scutil --get HostName)" != "$HOSTNAME" ]; then
+    log_error "HostName is '$(scutil --get HostName)' but --hostname says '${HOSTNAME}'"
+    exit 1
+  fi
+  case "$(scutil --get LocalHostName)" in
+    "$HOSTNAME"|"$HOSTNAME"-<->) ;;
+    *) log_error "LocalHostName is '$(scutil --get LocalHostName)', expected ${HOSTNAME} or ${HOSTNAME}-N"; exit 1 ;;
+  esac
   log_info "✓ identity verified: ${HOSTNAME}"
 else
   while true; do

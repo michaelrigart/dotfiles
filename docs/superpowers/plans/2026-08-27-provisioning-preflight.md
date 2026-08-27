@@ -1,10 +1,10 @@
 # Provisioning Preflight Implementation Plan
 
-**Status:** Superseded — never executed; see the scope note below
+**Status:** Superseded — never executed; see [the spec](../specs/2026-08-27-provisioning-preflight-design.md)
 **Date:** 2026-08-27
 
-> **Scope reduction, 2026-08-27.** Only a reduced subset of this design was built. What
-> shipped: preflight (all questions before one confirm), the machine allowlist and the
+> **Scope reduction, 2026-08-27.** Only a reduced subset of this design was built.
+> Implemented on this branch (unmerged at the time of writing): preflight (all questions before one confirm), the machine allowlist and the
 > live-identity guard, three-field identity with read-back, `NONINTERACTIVE=1`, bounded
 > Xcode CLT polling, `sudo chsh`, non-blocking SSH verification, Brewfile failures as
 > warnings, and `configure.sh --hostname` verifying rather than renaming.

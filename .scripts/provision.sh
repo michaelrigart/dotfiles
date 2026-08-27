@@ -84,7 +84,11 @@ log_info "Installing essential bootstrap tools..."
 brew install chezmoi 1password-cli git
 # The desktop app supplies CLI integration, so it is bootstrap work, not Brewfile work:
 # step 6 renders op:// templates and cannot wait for step 8.
-brew install --cask 1password || warn "could not install the 1Password cask"
+# NOT optional, so not a warning: every op:// template depends on it, and without the
+# app the gate below would poll for 15 minutes waiting for something never installed.
+if ! op whoami &>/dev/null; then
+  brew install --cask 1password
+fi
 
 # ============================================================================
 # 4. Clone the dotfiles source
