@@ -76,6 +76,9 @@ harmless the moment anything keys off it.
   directly.
 - **No rollback.** Phases are idempotent and resumable; they do not undo.
 - **`configure.sh` is not absorbed.** It stays independently re-runnable (§7).
+- **No Vorta or BorgBase automation.** Provisioning sets the hostname that backup
+  identity depends on, and reports Borg setup as outstanding; it creates no repos,
+  keys, or backup profiles (§11.4).
 
 ## 4. Stage structure
 
@@ -335,12 +338,80 @@ a single flat list.
 - `configure.sh` gains a flag and stops being the owner of machine naming.
 - Provisioning gains resumable state at `$XDG_STATE_HOME/provision/`, which is
   execution exhaust and is never tracked.
+- `scutil --set HostName` becomes load-bearing for backups, not merely cosmetic
+  (§11.1). It is critical-path in preflight and may not be downgraded.
+- Two Borg keys remain unmanaged by chezmoi (§11.3). Tracked as follow-up; a
+  rebuild of the existing machine currently omits them.
 
-## 11. Open questions
+## 11. Borg identity
 
-- **Borg identity is out of scope here but adjacent.** The Borg repo name
-  (`fenrir`) and key (`~/.ssh/borg-fenrir`) encode machine identity independently
-  of `.hostname`. A second machine needs its own repo and key. Whether those should
-  derive from `.hostname` is a separate decision, deliberately not settled by this
-  design — the SSH key templates read from 1Password and changing their naming
-  touches credential material.
+Resolved 2026-08-27, during spec review. Recorded here because it constrains what
+preflight may do to the system hostname.
+
+### 11.1 Backup identity does not come from `.hostname`
+
+Measured from Vorta's `settings.db` on the primary workstation:
+
+```
+archive name  : {hostname}-{now:%Y-%m-%d-%H%M%S}
+prune prefix  : {hostname}-
+recent archive: fenrir-2026-08-26-101429
+profile key   : borg-append-only-fenrir
+repo url      : an opaque BorgBase repo id, not a machine name
+```
+
+`{hostname}` is Borg's placeholder, resolved through `socket.gethostname()`, which
+returns `fenrir`. But `ComputerName` is `MacBook Pro` and `HostName` is unset — so
+`fenrir` is supplied by DHCP/DNS, not configured on the machine. Backup identity
+currently depends on the network.
+
+Two consequences follow. Because `prune_prefix` is `{hostname}-`, a DHCP-supplied
+rename silently stops prune from matching existing archives: backups keep
+succeeding while retention quietly stops working. And chezmoi's `.hostname`
+(from `ComputerName`) and Borg's `{hostname}` (from DNS) are *different values on
+the same machine today*.
+
+Setting `HostName` in preflight (§4.2) makes them agree and makes the name local
+rather than network-supplied. That is a fix, but it means preflight is load-bearing
+for backups and must be treated as such: **`scutil --set HostName` may never be
+skipped or made best-effort.**
+
+### 11.2 Separate repo per machine
+
+Each machine gets its own BorgBase repo, its own keypair, and its own quota. A
+prefix mistake or a hostname collision cannot reach another machine's archives, and
+either machine can be restored or purged without reasoning about the other.
+
+Rejected: one shared repo with per-machine archive prefixes. It deduplicates across
+both Macs — not nothing, given both would hold `~/Code` and the Obsidian vault —
+but prune is prefix-scoped, so a prefix collision merges two machines' retention
+silently, and both machines contend on one repository lock. Isolation is worth more
+than dedup for irreplaceable data.
+
+### 11.3 The Borg keys are unmanaged
+
+`private_dot_ssh/` templates cover `borg`, `borg-append-only`, `borg-hercules`, and
+`borg-synology`. The keys the Vorta profile actually uses — `borg-fenrir` and
+`borg-append-only-fenrir` — exist on disk but are **not chezmoi-managed** and not in
+the public repo.
+
+This is a restore gap for the existing machine, not only a provisioning gap for the
+new one: a rebuild of fenrir reproduces every other credential from 1Password and
+silently omits the two that reach the backups. Closing it is out of scope for this
+design and is tracked as follow-up work.
+
+### 11.4 What provisioning does, and does not, do
+
+**Does:** set `HostName` authoritatively in preflight, so `{hostname}` is local and
+stable.
+
+**Does not:** create BorgBase repos, generate or register Borg keypairs, or write
+Vorta profiles. Repo creation needs the BorgBase UI, and the passphrase belongs in
+1Password — neither is scriptable from `provision.sh`, and inventing a half-automated
+path around credential material is worse than a named manual step. Stage 3 reports
+Borg setup as outstanding on a machine with no configured repo.
+
+**Separately, on the existing machine:** replace `{hostname}` with the literal
+machine name in the archive template and prune prefix, so backup identity stops
+depending on DNS resolution. This edits a live backup profile and is therefore a
+deliberate, separately-confirmed change — not something provisioning performs.
