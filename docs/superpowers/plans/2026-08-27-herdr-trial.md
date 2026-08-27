@@ -1,0 +1,1668 @@
+# Herdr Trial Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Run Herdr beside Zellij as a reversible trial — a four-tab project workspace built by one script, reachable from a shell (`hdev`) and from inside Herdr (a plugin action), with Zellij and the `dev`/`wt`/`wt-rm` lifecycle untouched.
+
+**Architecture:** `layout.sh` owns the topology and is the only thing that talks to the Herdr CLI. `hdev` (zsh) resolves a repo and delegates; a plugin action calls the same script in `--current` mode to repair a workspace in place. Identity is the canonical repo path, read from pane `cwd`; correctness comes from a lock taken before any scan and a "managed baseline" classification that tolerates the user's own tabs and refuses to guess about malformed ones.
+
+**Tech Stack:** zsh, herdr 0.8.2 CLI + JSON socket API, `jq`, chezmoi (source-first, `modify_` scripts for merge-preserving JSON/TOML), Homebrew.
+
+**Spec:** `docs/superpowers/specs/2026-08-27-herdr-trial-design.md`
+
+## Global Constraints
+
+- **Branch:** `feat/herdr-trial`. Commit per task. **Never add agent attribution** to commit messages — no `Co-authored-by`, no "Generated with", no session links.
+- **chezmoi is source-first.** Never edit a deployed file in `$HOME`. Edit `~/.local/share/chezmoi/...` then `chezmoi apply <target>`. `chezmoi apply` needs an **unsandboxed** shell: `Brewfile.tmpl` reads `scutil --get ComputerName`, which returns a generic `"MacBook Pro"` under the sandbox and fails the machine guard.
+- **herdr version floor: 0.8.2.** Exact CLI forms, verified — no others exist:
+  - `herdr workspace create [--cwd PATH] [--label TEXT] [--focus|--no-focus]`
+  - `herdr tab create [--workspace <workspace_id>] [--cwd PATH] [--label TEXT] [--focus|--no-focus]`
+  - `herdr tab list [--workspace <workspace_id>]`, `tab focus <tab_id>`, `tab rename <tab_id> <label>`
+  - `herdr pane split [PANE_ID] | --pane <ID> --direction <right|down> [--cwd PATH] [--no-focus]`
+  - `herdr pane run <PANE_ID> <COMMAND>...`, `herdr pane list [--workspace <id>]`
+  - **`--workspace-id` and `--target-pane-id` do not exist.** Using them fails.
+  - There is **no** `tab move` and **no** pane-clear method.
+- **IDs are parsed from JSON, never predicted.** `workspace create` → `.result.workspace.workspace_id`, `.result.tab.tab_id`, `.result.root_pane.pane_id`. `tab create` → `.result.tab.tab_id`, `.result.root_pane.pane_id`. `pane split` → `.result.pane.pane_id`.
+- **Managed labels:** exactly `agents`, `editor`, `runtime`, `git`. Geometry: `agents` = 2 panes (split right), `runtime` = 2 panes (split down), `editor` and `git` = 1 pane.
+- **Unmanaged tabs are never created, closed, renamed or counted.**
+- **Malformed workspaces fail without mutation** — no `create`, `close`, `split` or `rename` may be issued.
+- **Lock before scan**, always. Released on every exit path.
+- **Tab jumps resolve by unique label, never by index.**
+- **Construction passes `--cwd <repo>` explicitly and runs `--no-focus`** until complete.
+- Tests pin exact values. A test that cannot go red is not coverage.
+
+---
+
+### Task 1: Herdr config, and falsifying the Alt keybindings
+
+The spec names Alt-key viability as the most likely thing to fail. Do it first: everything else is wasted if `alt+a` never arrives.
+
+**Files:**
+- Create: `dot_config/herdr/config.toml`
+
+**Interfaces:**
+- Consumes: nothing.
+- Produces: `~/.config/herdr/config.toml` with `[keys]` bindings that later tasks' `[[keys.command]]` entries extend.
+
+- [ ] **Step 1: Write the config**
+
+Create `dot_config/herdr/config.toml`. Only deliberate divergences from `herdr --default-config` — everything omitted stays on the shipped default so an upstream change stays visible.
+
+```toml
+# Herdr configuration — managed by chezmoi
+# (source: dot_config/herdr/config.toml → ~/.config/herdr/config.toml)
+#
+# Only deliberate divergences from `herdr --default-config` live here. Anything
+# omitted follows the shipped default, so an upstream default change surfaces as a
+# behaviour change rather than being silently pinned.
+#
+# Keybinding model mirrors the Zellij setup it runs beside:
+#   Ctrl-h/j/k/l  → move between panes
+#   Alt + <key>   → tabs, zoom, panes, detach
+# Alt rather than digits because digits need Shift on AZERTY. Ghostty is configured
+# `macos-option-as-alt = left`, so this works from the LEFT Option key only.
+
+# First run otherwise shows onboarding and may write back to this file, which chezmoi
+# owns — the write would surface as drift and be reverted on the next apply.
+onboarding = false
+
+[theme]
+name = "tokyo-night"
+
+[session]
+# The single setting the Claude/Codex integrations exist to serve. It is the shipped
+# default but arrives commented out; pinning it keeps the dependency legible.
+resume_agents_on_restore = true
+
+[keys]
+# Kept as an escape hatch. Unlike Zellij's stock Ctrl leaders, herdr's prefix does not
+# shadow shell readline or Neovim keys, so nothing needs clearing.
+prefix = "ctrl+b"
+
+zoom = "alt+z"
+split_vertical = "alt+n"
+new_tab = "alt+t"
+detach = "alt+w"
+toggle_sidebar = "alt+b"
+
+focus_pane_left = "ctrl+h"
+focus_pane_down = "ctrl+j"
+focus_pane_up = "ctrl+k"
+focus_pane_right = "ctrl+l"
+
+# The on-demand `bin/rails console` slot. Session-modal, so it does not disturb the
+# tab layout — better than Zellij's floating layer, where Alt-n added *floating* panes
+# while the layer was visible.
+[[keys.command]]
+key = "alt+p"
+type = "popup"
+command = "exec \"${SHELL:-sh}\""
+description = "scratch shell"
+width = "80%"
+height = "80%"
+```
+
+Note there is deliberately **no `alt+k`**: herdr 0.8.2 has no clear method, and the only implementation would inject control sequences into whatever occupies the pane.
+
+- [ ] **Step 2: Apply it**
+
+```bash
+chezmoi apply ~/.config/herdr/config.toml
+```
+
+Run **unsandboxed**. Expected: file appears at `~/.config/herdr/config.toml`.
+
+- [ ] **Step 3: Verify the config parses**
+
+```bash
+herdr status client
+```
+
+Expected: version `0.8.2`, no config parse error on stderr. A bad key name is reported here.
+
+- [ ] **Step 4: Falsify the Alt bindings by hand**
+
+Start herdr, then in the TUI press each of: `alt+z`, `alt+n`, `alt+t`, `alt+w`, `alt+b`, `alt+p` — using the **left** Option key.
+
+```bash
+herdr
+```
+
+Expected: each performs its action. `alt+w` detaches back to the shell.
+
+**If Alt does not arrive**, stop and report before continuing. The fallback is `[keys.indexed]` with `ctrl` (`ctrl+1..9`), which loses the AZERTY property — that is a decision for the user, not a silent substitution.
+
+- [ ] **Step 5: Verify the theme**
+
+Confirm the TUI renders in Tokyo Night, matching Ghostty. Then detach with `alt+w`.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add dot_config/herdr/config.toml
+git commit -m "Add the herdr config: Tokyo Night, Alt keybindings"
+```
+
+---
+
+### Task 2: Test harness and the `herdr` stub
+
+Everything downstream is tested through this. Build it once, properly.
+
+**Files:**
+- Create: `.scripts/test-hdev.sh`
+
+**Interfaces:**
+- Produces: helpers `_pass`/`_fail`/`has`/`hasnt`/`rc_is`/`eq`/`logged`/`unlogged`, a `herdr` stub on `PATH` logging every invocation to `$HLOG`, and `mock_reset`/`mock_workspace`/`mock_panes`/`mock_tabs` for shaping stub responses. Later tasks add sections to this file.
+
+- [ ] **Step 1: Write the harness**
+
+Mirrors `.scripts/test-wt-functions.sh`: real git repos, stubbed multiplexer, assertions on a logged invocation trail so *ordering* and *absence* are both testable.
+
+```zsh
+#!/usr/bin/env zsh
+# Mocked test for hdev/layout.sh — the Herdr trial's shell surface.
+#
+#   A  hdev            repo resolution cascade
+#   B  hdev            the linked-worktree guard
+#   C  layout.sh       bootstrap: server probe and readiness
+#   D  layout.sh       identity: lock-before-scan, path matching, ambiguity
+#   E  layout.sh       classification: complete / provisional / malformed
+#   F  layout.sh       build: construction sequence, explicit IDs, trap
+#   G  layout.sh       repair: missing tabs, the rename window
+#   H  tab-goto.sh     label resolution
+#
+# herdr is stubbed on PATH and every invocation is logged, so tests can assert on
+# ordering and — for malformed workspaces — on the ABSENCE of mutation. Git is NOT
+# stubbed: real repos are used, because git's own answers about worktrees are part of
+# what is under test.
+#
+# Run: zsh .scripts/test-hdev.sh
+set -u
+
+ROOT="$(cd "${0:h}/.." && pwd)"
+FUNCS="$ROOT/dot_config/zsh/functions"
+LAYOUT="$ROOT/dot_config/herdr/executable_layout.sh"
+TABGOTO="$ROOT/dot_config/herdr/executable_tab-goto.sh"
+[[ -r "$FUNCS" ]] || { print -ru2 -- "cannot read $FUNCS"; exit 1 }
+
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
+
+pass=0 fail=0 OUT="" RC=0
+_pass() { print -r -- "  PASS: $1"; pass=$((pass + 1)) }
+_fail() { print -r -- "  FAIL: $1"; print -r -- "$OUT" | sed 's/^/    | /'; fail=$((fail + 1)) }
+has()      { [[ "$OUT" == *"$1"* ]] && _pass "$2" || _fail "$2" }
+hasnt()    { [[ "$OUT" == *"$1"* ]] && _fail "$2" || _pass "$2" }
+rc_is()    { [[ "$RC" == "$1" ]] && _pass "$2" || _fail "$2 (rc=$RC)" }
+eq()       { [[ "$1" == "$2" ]] && _pass "$3" || _fail "$3 ('$1' != '$2')" }
+logged()   { [[ "$(<$HLOG)" == *"$1"* ]] && _pass "$2" || _fail "$2" }
+unlogged() { [[ "$(<$HLOG)" == *"$1"* ]] && _fail "$2" || _pass "$2" }
+# Count exact-match invocation lines — presence alone cannot catch a duplicate.
+count_logged() { grep -Fxc -- "$1" "$HLOG" 2>/dev/null || print -r -- 0 }
+
+TMPROOT="${TMPDIR:-/tmp}"
+mkd() { mktemp -d "${TMPROOT%/}/hdev-test.XXXXXX" }
+STUBS=$(mkd)
+trap 'rm -rf "$STUBS" "${ROOTTMP:-}"' EXIT
+
+# --- herdr stub -------------------------------------------------------------
+# Returns JSON from MOCK_* variables so tests control what the server "contains".
+# Deliberately returns NON-sequential ids (w7, w7:t4, w7:p3) so any code that
+# predicts w1/w1:p1 instead of parsing fails loudly.
+cat > "$STUBS/herdr" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$HLOG"
+case "$*" in
+  "status server"|"status")
+    printf '%s\n' "${MOCK_STATUS:-server:
+  status: not running}" ;;
+  "workspace list")
+    [ "${MOCK_SERVER_UP:-1}" = "0" ] && {
+      printf '%s' '{"error":{"code":"server_not_running","message":"no herdr server"}}'
+      exit 1; }
+    printf '%s' "${MOCK_WS_LIST:-{\"result\":{\"workspaces\":[]}}}" ;;
+  "pane list"*)    printf '%s' "${MOCK_PANE_LIST:-{\"result\":{\"panes\":[]}}}" ;;
+  "tab list"*)     printf '%s' "${MOCK_TAB_LIST:-{\"result\":{\"tabs\":[]}}}" ;;
+  "workspace create"*)
+    exit_rc="${MOCK_WS_CREATE_RC:-0}"; [ "$exit_rc" != 0 ] && exit "$exit_rc"
+    printf '%s' '{"result":{"workspace":{"workspace_id":"w7"},"tab":{"tab_id":"w7:t4"},"root_pane":{"pane_id":"w7:p3"}}}' ;;
+  "tab create"*)
+    n="${MOCK_TAB_SEQ:-1}"
+    if [ -n "${MOCK_TAB_CREATE_FAIL_AT:-}" ] && [ "$n" = "$MOCK_TAB_CREATE_FAIL_AT" ]; then
+      printf '%s' '{"error":{"code":"internal","message":"boom"}}' >&2; exit 1
+    fi
+    printf '%s' "{\"result\":{\"tab\":{\"tab_id\":\"w7:t$((n+4))\"},\"root_pane\":{\"pane_id\":\"w7:p$((n+3))\"}}}" ;;
+  "pane split"*)   printf '%s' '{"result":{"pane":{"pane_id":"w7:p9"}}}' ;;
+  *) exit 0 ;;
+esac
+STUB
+chmod +x "$STUBS/herdr"
+export PATH="$STUBS:$PATH"
+
+mock_reset() {
+  export HLOG="$(mktemp "${TMPROOT%/}/hlog.XXXXXX")"
+  export MOCK_SERVER_UP=1 MOCK_WS_LIST='{"result":{"workspaces":[]}}'
+  export MOCK_PANE_LIST='{"result":{"panes":[]}}'
+  export MOCK_TAB_LIST='{"result":{"tabs":[]}}'
+  export MOCK_WS_CREATE_RC=0
+  unset MOCK_TAB_CREATE_FAIL_AT MOCK_STATUS
+}
+
+# Shape helpers. Keep them tiny and literal — a clever fixture builder is one more
+# thing that can be wrong in a way the tests cannot see.
+mock_workspace() {  # <id> <label>
+  export MOCK_WS_LIST="{\"result\":{\"workspaces\":[{\"workspace_id\":\"$1\",\"label\":\"$2\"}]}}"
+}
+mock_panes() {      # <cwd>  — one pane in workspace w7, that cwd
+  export MOCK_PANE_LIST="{\"result\":{\"panes\":[{\"pane_id\":\"w7:p3\",\"tab_id\":\"w7:t4\",\"workspace_id\":\"w7\",\"cwd\":\"$1\"}]}}"
+}
+mock_tabs() {       # <label>...  — tabs w7:t1.. with the given labels
+  local i=1 out="" ; for l in "$@"; do
+    [[ -n "$out" ]] && out+=","
+    out+="{\"tab_id\":\"w7:t$i\",\"label\":\"$l\"}"; i=$((i+1))
+  done
+  export MOCK_TAB_LIST="{\"result\":{\"tabs\":[$out]}}"
+}
+
+mkrepo() {  # <path> — a real git repo
+  mkdir -p "$1" && git -C "$1" init -q && git -C "$1" commit -q --allow-empty -m init
+  print -r -- "${1:A}"
+}
+
+print -r -- "=== hdev test suite ==="
+mock_reset
+```
+
+- [ ] **Step 2: Run it**
+
+```bash
+zsh .scripts/test-hdev.sh
+```
+
+Expected: prints the header, exits 0, no tests yet. **Must be run with `zsh`, not `bash`** — the harness uses zsh-only syntax (`${0:h}`, `${1:A}`).
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add .scripts/test-hdev.sh
+git commit -m "Add the hdev test harness and herdr stub"
+```
+
+---
+
+### Task 3: `hdev` — resolution and the linked-worktree guard
+
+The guard is the safety-critical half. `wt-rm` stops Zellij sessions before removing a worktree because a live process holding the directory open is what leaves husks; it cannot see Herdr. Confining Herdr to primary checkouts is what keeps that invariant true.
+
+**Files:**
+- Modify: `dot_config/zsh/functions` (append `hdev`; **do not touch `dev`, `wt`, `wt-rm`**)
+- Modify: `.scripts/test-hdev.sh` (sections A, B)
+
+**Interfaces:**
+- Consumes: `_wt_git` (existing, clears `GIT_DIR`/`GIT_WORK_TREE` routing).
+- Produces: `hdev [target]` → resolves a repo, refuses linked worktrees, then `exec`s `~/.config/herdr/layout.sh <canonical-repo-path>`.
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to `.scripts/test-hdev.sh`:
+
+```zsh
+# --- A: resolution ----------------------------------------------------------
+print -r -- "-- A: hdev resolution"
+ROOTTMP=$(mkd); CODE="$ROOTTMP/Code"
+R1=$(mkrepo "$CODE/Netronix/curato")
+R2=$(mkrepo "$CODE/ViuMore/curato")     # same basename, different org
+mkdir -p "$ROOTTMP/notrepo"
+
+# Stub layout.sh: record the path it was handed, do nothing else.
+LSTUB="$STUBS/layout.sh"
+cat > "$LSTUB" <<'S'
+#!/usr/bin/env bash
+printf '%s\n' "$1" > "$LAYOUT_ARG"
+S
+chmod +x "$LSTUB"
+
+run_hdev() {
+  mock_reset
+  export LAYOUT_ARG="$(mktemp "${TMPROOT%/}/larg.XXXXXX")"
+  OUT="$(HOME="$ROOTTMP" HDEV_LAYOUT="$LSTUB" zsh -c "
+    source '$FUNCS'; hdev $1" 2>&1)"; RC=$?
+}
+
+run_hdev "'$R1'"
+eq "$(<$LAYOUT_ARG)" "$R1" "A1 explicit path resolves to that repo"
+
+run_hdev "Netronix/curato"
+eq "$(<$LAYOUT_ARG)" "$R1" "A2 path relative to ~/Code resolves"
+
+run_hdev "'$ROOTTMP/notrepo'"
+rc_is 1 "A3 a non-repo directory fails"
+has "not inside a git repo" "A3 says why"
+eq "$(<$LAYOUT_ARG)" "" "A3 layout.sh is never invoked"
+
+# Ambiguity must not silently pick one: two repos named curato exist.
+run_hdev "curato"
+[[ "$(<$LAYOUT_ARG)" == "$R1" || "$(<$LAYOUT_ARG)" == "$R2" || -z "$(<$LAYOUT_ARG)" ]] \
+  && _pass "A4 ambiguous basename does not resolve to an unrelated repo" \
+  || _fail "A4 ambiguous basename resolved to '$(<$LAYOUT_ARG)'"
+
+# --- B: the linked-worktree guard -------------------------------------------
+print -r -- "-- B: linked-worktree guard"
+WT="$CODE/Netronix/curato-feature"
+git -C "$R1" worktree add -q -b feature "$WT" 2>/dev/null
+
+run_hdev "'$WT'"
+rc_is 1 "B1 a linked worktree is refused"
+has "linked worktree" "B1 names the reason"
+has "dev" "B1 points at dev"
+eq "$(<$LAYOUT_ARG)" "" "B1 layout.sh is never invoked"
+
+run_hdev "'$R1'"
+eq "$(<$LAYOUT_ARG)" "$R1" "B2 the primary checkout is still allowed"
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+```bash
+zsh .scripts/test-hdev.sh
+```
+
+Expected: FAIL on A1 — `hdev: command not found`.
+
+- [ ] **Step 3: Implement `hdev`**
+
+Append to `dot_config/zsh/functions`, after `dev`. `dev` itself is not modified.
+
+```zsh
+# hdev — open (or return to) a project in its Herdr workspace. The Herdr-side
+# counterpart to `dev`, running beside it during the trial; `dev` is unchanged.
+#   hdev                   pick from all repos under ~/Code (fzf)
+#   hdev curato            by name: exact basename → case-insensitive substring → fzf
+#   hdev Netronix/curato   path relative to ~/Code
+#   hdev .                 the git repo containing the current directory
+#
+# Resolution only. Everything about Herdr lives in layout.sh, which is also what the
+# `dev.layout.apply` plugin action calls — one topology definition, two entry points.
+hdev() {
+  emulate -L zsh
+  setopt local_options null_glob extended_glob
+
+  local code="$HOME/Code" repo arg="$1"
+  local -a repos=( "$code"/*/.git(N:h) "$code"/*/*/.git(N:h) )
+
+  if [[ "$arg" == "." || ( -n "$arg" && -d "$arg" ) ]]; then
+    repo="$(_wt_git -C "${arg:-$PWD}" rev-parse --show-toplevel 2>/dev/null)" \
+      || { print -ru2 -- "hdev: '${arg:-$PWD}' is not inside a git repo."; return 1 }
+  elif [[ -n "$arg" && -e "$code/$arg/.git" ]]; then
+    repo="$code/$arg"
+  else
+    local -a hits
+    if [[ -z "$arg" ]]; then
+      hits=( $repos )
+    else
+      hits=( ${(M)repos:#*/$arg} )                      # exact basename
+      (( ${#hits} )) || hits=( ${(M)repos:#(#i)*$arg*} ) # case-insensitive substring
+    fi
+    if (( ${#hits} == 1 )); then
+      repo="${hits[1]}"
+    else
+      local -a pool; (( ${#hits} )) && pool=( $hits ) || pool=( $repos )
+      local sel
+      sel="$(print -rl -- ${pool[@]#$code/} | fzf --prompt='hdev > ' ${arg:+--query=$arg})" || return 0
+      [[ -n "$sel" ]] || return 0
+      repo="$code/$sel"
+    fi
+  fi
+
+  repo="${repo:A}"
+  [[ -n "$repo" && -e "$repo/.git" ]] || { print -ru2 -- "hdev: no git repo resolved."; return 1 }
+
+  # Refuse linked worktrees. wt-rm's teardown stops the *Zellij* session before
+  # removing a checkout — "a live process holding the directory open is what leaves
+  # an empty tmp/ husk behind" — and it cannot see Herdr. A Herdr workspace on a wt
+  # worktree would survive that shutdown and write into a deleted directory. Keeping
+  # the trial on primary checkouts means no teardown lifecycle competes with it.
+  #
+  # A primary checkout has .git as a directory; a linked worktree has it as a file
+  # pointing elsewhere, and its common dir sits outside the checkout.
+  if [[ -f "$repo/.git" ]]; then
+    print -ru2 -- "hdev: $repo is a linked worktree — refusing."
+    print -ru2 -- "    Herdr is not wired into wt-rm's teardown, so a workspace here could"
+    print -ru2 -- "    outlive the checkout. Use: dev $repo"
+    return 1
+  fi
+
+  "${HDEV_LAYOUT:-$HOME/.config/herdr/layout.sh}" "$repo"
+}
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+```bash
+zsh .scripts/test-hdev.sh
+```
+
+Expected: sections A and B all PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add dot_config/zsh/functions .scripts/test-hdev.sh
+git commit -m "Add hdev: repo resolution and the linked-worktree guard"
+```
+
+---
+
+### Task 4: `layout.sh` — bootstrap and readiness
+
+**Files:**
+- Create: `dot_config/herdr/executable_layout.sh`
+- Modify: `.scripts/test-hdev.sh` (section C)
+
+**Interfaces:**
+- Consumes: `hdev` passes a canonical repo path as `$1`.
+- Produces: `layout.sh <repo>` / `layout.sh --current`. Internal functions later tasks extend: `hl_server_ready`, `hl_ensure_server`, `hl_api` (runs `herdr` and returns JSON on stdout, non-zero on error).
+
+- [ ] **Step 1: Write the failing tests**
+
+```zsh
+# --- C: bootstrap -----------------------------------------------------------
+print -r -- "-- C: bootstrap"
+
+run_layout() {  # remaining args go to layout.sh
+  mock_reset
+  eval "$1"     # per-test mock overrides
+  shift
+  OUT="$(zsh "$LAYOUT" "$@" 2>&1)"; RC=$?
+}
+
+# Inside herdr: never starts a server, never attaches a client.
+run_layout "export HERDR_ENV=1" "$R1"
+unlogged "server" "C1 inside herdr, no server is started"
+
+# Outside herdr with a server already up: also must not start a second one.
+run_layout "unset HERDR_ENV; export MOCK_SERVER_UP=1" "$R1"
+eq "$(count_logged 'server')" "0" "C2 an existing server is not restarted"
+
+# Outside herdr with no server: probes, then starts exactly one.
+run_layout "unset HERDR_ENV; export MOCK_SERVER_UP=0 HDEV_NO_ATTACH=1 HL_READY_TRIES=2" "$R1"
+logged "workspace list" "C3 readiness is probed with a real failing call"
+rc_is 1 "C3 unreachable server fails rather than hanging"
+has "did not become ready" "C3 reports the timeout"
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Expected: FAIL — `layout.sh` does not exist.
+
+- [ ] **Step 3: Implement the bootstrap half**
+
+Create `dot_config/herdr/executable_layout.sh`:
+
+```zsh
+#!/usr/bin/env zsh
+# layout.sh — build, focus or repair a project's Herdr workspace.
+# Managed by chezmoi (source: dot_config/herdr/executable_layout.sh).
+#
+#   layout.sh <repo-path>   build-or-focus, called by hdev from a shell
+#   layout.sh --current     repair in place, called by the dev.layout.apply plugin
+#
+# The single definition of what a project workspace looks like. Both entry points go
+# through it, so there is no second copy to drift.
+emulate -L zsh
+setopt local_options err_return no_unset pipe_fail
+
+MANAGED_TABS=(agents editor runtime git)
+BUILDING_SUFFIX=" (building)"
+
+die() { print -ru2 -- "layout.sh: $*"; exit 1 }
+
+# hl_api — run a herdr CLI call, return its JSON on stdout. Non-zero on failure, with
+# the server's message. Every call goes through here so failures are uniform: the old
+# Zellij shape returned 0 from every step while the layout silently failed, and exit
+# status was no guard.
+hl_api() {
+  local out rc
+  out="$(command herdr "$@" 2>&1)"; rc=$?
+  if (( rc != 0 )) || [[ "$out" == *'"error"'* ]]; then
+    print -ru2 -- "layout.sh: herdr $* failed: $out"
+    return 1
+  fi
+  print -r -- "$out"
+}
+
+# hl_server_ready — is a server actually answering? `herdr status server` exits 0 even
+# while reporting "not running", so exit status is not a readiness signal and there is
+# no CLI `ping`. The probe is therefore a real call that fails when the server is down.
+hl_server_ready() {
+  local out
+  out="$(command herdr workspace list 2>&1)" || return 1
+  [[ "$out" == *server_not_running* ]] && return 1
+  return 0
+}
+
+hl_ensure_server() {
+  hl_server_ready && return 0
+  # `herdr server` runs in the foreground: background and detach it explicitly. A
+  # second hdev racing this must neither fail nor start a second server, so the
+  # start is fire-and-forget and readiness is what we actually wait on.
+  (command herdr server >/dev/null 2>&1 &) || true
+  local tries="${HL_READY_TRIES:-40}" i=1
+  while (( i <= tries )); do
+    hl_server_ready && return 0
+    sleep 0.25
+    (( i++ ))
+  done
+  die "the herdr server did not become ready after $(( tries / 4 ))s"
+}
+
+main() {
+  local mode repo
+  if [[ "${1:-}" == "--current" ]]; then
+    mode=current
+  else
+    mode=path
+    repo="${1:?usage: layout.sh <repo-path> | --current}"
+    [[ -d "$repo" ]] || die "no such directory: $repo"
+    repo="${repo:A}"
+  fi
+
+  if [[ -z "${HERDR_ENV:-}" ]]; then
+    hl_ensure_server
+  fi
+
+  # Workspace handling arrives in Tasks 5-8.
+}
+
+main "$@"
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+```bash
+zsh .scripts/test-hdev.sh
+```
+
+Expected: section C passes.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add dot_config/herdr/executable_layout.sh .scripts/test-hdev.sh
+git commit -m "Add layout.sh bootstrap: headless server start and readiness probe"
+```
+
+---
+
+### Task 5: Identity — lock before scan, path matching, loud ambiguity
+
+**Files:**
+- Modify: `dot_config/herdr/executable_layout.sh`
+- Modify: `.scripts/test-hdev.sh` (section D)
+
+**Interfaces:**
+- Produces: `hl_lock <canonical-path>`, `hl_find_workspace <canonical-path>` → prints a `workspace_id` or nothing; exits non-zero on ambiguity.
+
+- [ ] **Step 1: Write the failing tests**
+
+```zsh
+# --- D: identity ------------------------------------------------------------
+print -r -- "-- D: identity"
+
+# A workspace whose panes sit at this repo → found.
+run_layout "export HERDR_ENV=1; mock_workspace w7 'Netronix/curato'; mock_panes '$R1'; mock_tabs agents editor runtime git" "$R1"
+logged "workspace focus w7" "D1 a path match is focused"
+unlogged "workspace create" "D1 nothing is created"
+
+# Same basename, different org: must NOT match.
+run_layout "export HERDR_ENV=1; mock_workspace w7 'Netronix/curato'; mock_panes '$R1'; mock_tabs agents editor runtime git" "$R2"
+logged "workspace create" "D2 a different repo with the same basename builds its own"
+unlogged "workspace focus w7" "D2 the other workspace is not focused"
+
+# Label says curato, panes say elsewhere → refuse rather than trust the label.
+run_layout "export HERDR_ENV=1; mock_workspace w7 'Netronix/curato'; mock_panes '/somewhere/else'; mock_tabs agents editor runtime git" "$R1"
+logged "workspace create" "D3 a label match with a mismatched path is not focused"
+
+# The lock is taken before any scan.
+run_layout "export HERDR_ENV=1; export HL_TRACE_LOCK=1; mock_panes '$R1'" "$R1"
+has "LOCK-ACQUIRED" "D4 the lock is acquired"
+[[ "$OUT" == *"LOCK-ACQUIRED"*"SCAN"* ]] \
+  && _pass "D4 lock precedes scan" || _fail "D4 scan happened before the lock"
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Expected: FAIL — nothing is focused or created yet.
+
+- [ ] **Step 3: Implement**
+
+Add to `layout.sh` above `main`:
+
+```zsh
+# hl_lock — serialise per canonical repo path. Acquired BEFORE any scan, and the scan
+# repeated underneath it: classifying first and locking second permits a delayed
+# duplicate, where B scans empty, waits while A builds and releases, then acts on its
+# stale observation and creates a second workspace for the same repo.
+hl_lock() {
+  local key="${1//\//-}" dir="${TMPDIR:-/tmp}/herdr-layout-lock"
+  mkdir -p "$dir"
+  HL_LOCKFILE="$dir/${key#-}.lock"
+  exec {HL_LOCKFD}>"$HL_LOCKFILE"
+  # zsh has no flock builtin; use a directory as the atomic primitive.
+  HL_LOCKDIR="${HL_LOCKFILE%.lock}.d"
+  local i=0
+  while ! mkdir "$HL_LOCKDIR" 2>/dev/null; do
+    (( i++ > 200 )) && die "another layout.sh holds the lock for $1"
+    sleep 0.05
+  done
+  trap 'rmdir "$HL_LOCKDIR" 2>/dev/null' EXIT INT TERM
+  [[ -n "${HL_TRACE_LOCK:-}" ]] && print -r -- "LOCK-ACQUIRED"
+}
+
+# hl_find_workspace — the workspace whose panes live at this path, if any.
+# Identity is the canonical path, not the label: WorkspaceInfo carries no cwd, but
+# PaneInfo carries `cwd`, and labels are mutable and non-unique.
+hl_find_workspace() {
+  local repo="$1" ws panes ids
+  [[ -n "${HL_TRACE_LOCK:-}" ]] && print -r -- "SCAN"
+  panes="$(hl_api pane list)" || return 1
+  ids=( ${(f)"$(print -r -- "$panes" | jq -r --arg d "$repo" \
+        '.result.panes[] | select(.cwd == $d) | .workspace_id' | sort -u)"} )
+  ids=( ${ids:#} )
+  (( ${#ids} == 0 )) && return 0
+  (( ${#ids} > 1 )) && die "panes for $repo span workspaces: ${ids[*]} — refusing to guess"
+  print -r -- "${ids[1]}"
+}
+```
+
+And extend `main` after `hl_ensure_server`:
+
+```zsh
+  if [[ "$mode" == path ]]; then
+    hl_lock "$repo"
+    local ws; ws="$(hl_find_workspace "$repo")" || exit 1
+    if [[ -n "$ws" ]]; then
+      hl_reconcile "$ws" "$repo"
+    else
+      hl_build "$repo"
+    fi
+  fi
+```
+
+- [ ] **Step 4: Add temporary stubs so the file runs**
+
+```zsh
+hl_reconcile() { hl_api workspace focus "$1" >/dev/null }
+hl_build()     { hl_api workspace create --cwd "$1" --label "x" --no-focus >/dev/null }
+```
+
+These are replaced in Tasks 6-7. They exist so section D can go green now.
+
+- [ ] **Step 5: Run tests to verify they pass**
+
+Expected: section D passes.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add dot_config/herdr/executable_layout.sh .scripts/test-hdev.sh
+git commit -m "Add path-based workspace identity with lock-before-scan"
+```
+
+---
+
+### Task 6: Classification — the managed baseline
+
+**Files:**
+- Modify: `dot_config/herdr/executable_layout.sh`
+- Modify: `.scripts/test-hdev.sh` (section E)
+
+**Interfaces:**
+- Produces: `hl_classify <workspace_id> <final-label>` → prints `complete`, `provisional`, or `malformed:<reason>`.
+
+- [ ] **Step 1: Write the failing tests**
+
+```zsh
+# --- E: classification ------------------------------------------------------
+print -r -- "-- E: the managed baseline"
+L="Netronix/curato"
+
+cls() {  # <mock-setup> → OUT is the classification
+  mock_reset; eval "$1"
+  OUT="$(zsh -c "source '$LAYOUT' --source-only; hl_classify w7 '$L'" 2>&1)"; RC=$?
+}
+
+cls "mock_workspace w7 '$L'; mock_tabs agents editor runtime git"
+eq "$OUT" "complete" "E1 four managed tabs and the final label = complete"
+
+cls "mock_workspace w7 '$L'; mock_tabs agents editor runtime git notes scratch"
+eq "$OUT" "complete" "E2 extra unmanaged tabs do not demote it"
+
+cls "mock_workspace w7 '$L'; mock_tabs agents editor git"
+eq "$OUT" "provisional" "E3 a missing managed tab = provisional"
+
+# The rename window: correct topology, non-final label. Complete in every respect
+# except the one that marks it finished.
+cls "mock_workspace w7 '$L (building)'; mock_tabs agents editor runtime git"
+eq "$OUT" "provisional" "E4 correct topology under a (building) label = provisional"
+
+cls "mock_workspace w7 '$L'; mock_tabs agents agents editor runtime git"
+has "malformed" "E5 a duplicated managed label = malformed"
+
+# Malformed must not mutate anything.
+mock_reset; mock_workspace w7 "$L"; mock_tabs agents agents editor runtime git
+mock_panes "$R1"
+OUT="$(HERDR_ENV=1 zsh "$LAYOUT" "$R1" 2>&1)"; RC=$?
+rc_is 1 "E6 malformed fails"
+unlogged "tab create"   "E6 no tab is created"
+unlogged "tab close"    "E6 no tab is closed"
+unlogged "pane split"   "E6 no pane is split"
+unlogged "workspace rename" "E6 nothing is renamed"
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Expected: FAIL — `hl_classify` undefined.
+
+- [ ] **Step 3: Implement**
+
+Add a source-only guard at the very bottom of `layout.sh`, replacing the bare `main "$@"`:
+
+```zsh
+# Allow the test suite to source the helpers without running anything.
+if [[ "${1:-}" == "--source-only" ]]; then
+  return 0 2>/dev/null || exit 0
+fi
+main "$@"
+```
+
+And add `hl_classify`:
+
+```zsh
+# hl_classify — complete / provisional / malformed, over the MANAGED baseline only.
+#
+# Counting all tabs is wrong in both directions: alt+t exists, so a user's fifth tab
+# is ordinary use and must not demote a healthy workspace; and a dead build can carry
+# all four names while missing a split, which a name-only check would certify.
+#
+# Malformed never triggers repair. Fixing a duplicated label means choosing which one
+# to destroy, and nothing here knows enough to choose safely.
+hl_classify() {
+  local ws="$1" final="$2" tabs labels count label tab_id panes n
+  tabs="$(hl_api tab list --workspace "$ws")" || return 1
+
+  for label in $MANAGED_TABS; do
+    count=$(print -r -- "$tabs" | jq -r --arg l "$label" \
+              '[.result.tabs[] | select(.label == $l)] | length')
+    (( count > 1 )) && { print -r -- "malformed: $count tabs labelled '$label'"; return 0 }
+  done
+
+  local missing=0
+  for label in $MANAGED_TABS; do
+    tab_id=$(print -r -- "$tabs" | jq -r --arg l "$label" \
+              '.result.tabs[] | select(.label == $l) | .tab_id' | head -1)
+    if [[ -z "$tab_id" ]]; then missing=1; continue; fi
+
+    # Geometry: agents and runtime hold two panes, editor and git one.
+    panes="$(hl_api pane list --workspace "$ws")" || return 1
+    n=$(print -r -- "$panes" | jq -r --arg t "$tab_id" \
+          '[.result.panes[] | select(.tab_id == $t)] | length')
+    local want=1
+    [[ "$label" == agents || "$label" == runtime ]] && want=2
+    if [[ "$n" != "$want" && "$n" != "0" ]]; then
+      print -r -- "malformed: tab '$label' has $n panes, expected $want"; return 0
+    fi
+  done
+
+  local current
+  current=$(hl_api workspace list | jq -r --arg w "$ws" \
+              '.result.workspaces[] | select(.workspace_id == $w) | .label')
+
+  # The label matters independently of the tabs. A build killed after the last
+  # `tab create` but before the rename leaves correct topology under a (building)
+  # label — provisional, repaired by renaming alone.
+  if (( missing )) || [[ "$current" != "$final" ]]; then
+    print -r -- "provisional"
+  else
+    print -r -- "complete"
+  fi
+}
+```
+
+- [ ] **Step 4: Wire it into `hl_reconcile`**
+
+Replace the temporary stub:
+
+```zsh
+hl_reconcile() {
+  local ws="$1" repo="$2" verdict
+  verdict="$(hl_classify "$ws" "$(hl_label "$repo")")" || exit 1
+  case "$verdict" in
+    complete)     hl_api workspace focus "$ws" >/dev/null ;;
+    provisional)  hl_repair "$ws" "$repo" ;;
+    malformed:*)  die "$ws is ${verdict#malformed: } — fix it by hand, or close it" ;;
+  esac
+}
+
+# hl_label — the display label. Deterministic from the path so it is stable, but
+# purely cosmetic: identity is the canonical path, checked via pane cwd.
+hl_label() {
+  local repo="$1"
+  case "$repo" in
+    "$HOME/Code/"*) print -r -- "${repo#$HOME/Code/}" ;;
+    "$HOME/"*)      print -r -- "${repo#$HOME/}" ;;
+    *)              print -r -- "$repo" ;;
+  esac
+}
+```
+
+- [ ] **Step 5: Run tests to verify they pass**
+
+Expected: section E passes, including all four no-mutation assertions in E6.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add dot_config/herdr/executable_layout.sh .scripts/test-hdev.sh
+git commit -m "Classify workspaces against a managed baseline"
+```
+
+---
+
+### Task 7: Build and repair
+
+**Files:**
+- Modify: `dot_config/herdr/executable_layout.sh`
+- Modify: `.scripts/test-hdev.sh` (sections F, G)
+
+**Interfaces:**
+- Produces: `hl_build <repo>`, `hl_repair <workspace_id> <repo>`, `hl_make_tab <ws> <label> <repo>`.
+
+- [ ] **Step 1: Write the failing tests**
+
+```zsh
+# --- F: build ---------------------------------------------------------------
+print -r -- "-- F: build"
+mock_reset; mock_panes "/nowhere"
+OUT="$(HERDR_ENV=1 zsh "$LAYOUT" "$R1" 2>&1)"; RC=$?
+rc_is 0 "F1 a clean build succeeds"
+logged "workspace create --cwd $R1 --label Netronix/curato (building) --no-focus" \
+  "F1 created under the provisional label, unfocused, with an explicit cwd"
+logged "pane split --pane w7:p3 --direction right" "F2 the agents pane splits by parsed id"
+logged "pane run w7:p3 claude" "F2 claude runs in the parsed pane id, not a guessed one"
+logged "pane run w7:p9 codex"  "F2 codex runs in the split's parsed id"
+logged "tab create --workspace w7 --label editor"  "F3 tabs are created with --workspace"
+unlogged "--workspace-id" "F3 the non-existent --workspace-id flag is never used"
+unlogged "--target-pane-id" "F3 the non-existent --target-pane-id flag is never used"
+logged "workspace rename w7 Netronix/curato" "F4 renamed to the final label last"
+logged "workspace focus w7" "F4 focused only once complete"
+
+# The runtime split must target that tab's own root pane.
+[[ "$(<$HLOG)" == *"pane split --pane w7:p6 --direction down"* ]] \
+  && _pass "F5 the runtime split targets its own parsed root pane" \
+  || _fail "F5 the runtime split had no or the wrong target"
+
+# Trap: a mid-build failure closes what it created.
+mock_reset; mock_panes "/nowhere"; export MOCK_TAB_CREATE_FAIL_AT=1
+OUT="$(HERDR_ENV=1 zsh "$LAYOUT" "$R1" 2>&1)"; RC=$?
+rc_is 1 "F6 a failed build fails loudly"
+logged "workspace close w7" "F6 the trap closes the partial workspace"
+unset MOCK_TAB_CREATE_FAIL_AT
+
+# --- G: repair --------------------------------------------------------------
+print -r -- "-- G: repair"
+mock_reset; mock_workspace w7 "Netronix/curato"; mock_panes "$R1"; mock_tabs agents editor
+OUT="$(HERDR_ENV=1 zsh "$LAYOUT" "$R1" 2>&1)"; RC=$?
+logged "tab create --workspace w7 --label runtime" "G1 the missing runtime tab is created"
+logged "tab create --workspace w7 --label git"     "G1 the missing git tab is created"
+unlogged "--label agents" "G1 the existing agents tab is not recreated"
+unlogged "--label editor" "G1 the existing editor tab is not recreated"
+unlogged "workspace create" "G1 no duplicate workspace"
+
+# The rename window: everything present, only the label wrong. Rename ALONE.
+mock_reset; mock_workspace w7 "Netronix/curato (building)"; mock_panes "$R1"
+mock_tabs agents editor runtime git
+OUT="$(HERDR_ENV=1 zsh "$LAYOUT" "$R1" 2>&1)"; RC=$?
+rc_is 0 "G2 the rename window is repaired"
+eq "$(count_logged 'tab create --workspace w7 --label agents')" "0" "G2 no tab is created"
+logged "workspace rename w7 Netronix/curato" "G2 renamed to the final label"
+
+# Extra tabs survive repair untouched.
+mock_reset; mock_workspace w7 "Netronix/curato"; mock_panes "$R1"
+mock_tabs agents editor notes
+OUT="$(HERDR_ENV=1 zsh "$LAYOUT" "$R1" 2>&1)"; RC=$?
+unlogged "tab close" "G3 the user's own tab is never closed"
+unlogged "--label notes" "G3 the user's own tab is never recreated"
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Expected: FAIL — the stub `hl_build` only creates a workspace.
+
+- [ ] **Step 3: Implement**
+
+Replace the temporary `hl_build` stub:
+
+```zsh
+# hl_make_tab — create one managed tab and populate it. Returns its root pane id.
+# Every id is parsed from the response: public ids are opaque, closed ids are not
+# reused, and order must not be inferred.
+hl_make_tab() {
+  local ws="$1" label="$2" repo="$3" out pane
+  out="$(hl_api tab create --workspace "$ws" --label "$label" --cwd "$repo" --no-focus)" || return 1
+  pane="$(print -r -- "$out" | jq -r '.result.root_pane.pane_id')"
+  [[ -n "$pane" && "$pane" != null ]] || die "tab create '$label' returned no root pane"
+
+  case "$label" in
+    editor)  hl_api pane run "$pane" "nvim ." >/dev/null ;;
+    git)     hl_api pane run "$pane" "lazygit" >/dev/null ;;
+    runtime) hl_api pane split --pane "$pane" --direction down --cwd "$repo" --no-focus >/dev/null ;;
+    agents)
+      local right
+      right="$(hl_api pane split --pane "$pane" --direction right --cwd "$repo" --no-focus \
+               | jq -r '.result.pane.pane_id')"
+      [[ -n "$right" && "$right" != null ]] || die "the agents split returned no pane"
+      # pane run, not agent start: agent start blocks until the agent is detected
+      # ready (30s default), serialising every build behind two boot sequences, and
+      # it changes exit semantics. A shell pane leaves a live prompt on quit, exactly
+      # as dev.kdl's `claude; exec zsh` did.
+      hl_api pane run "$pane" "claude" >/dev/null
+      hl_api pane run "$right" "codex" >/dev/null ;;
+  esac
+  print -r -- "$pane"
+}
+
+hl_build() {
+  local repo="$1" label out ws
+  label="$(hl_label "$repo")"
+  out="$(hl_api workspace create --cwd "$repo" --label "$label$BUILDING_SUFFIX" --no-focus)" || exit 1
+  ws="$(print -r -- "$out" | jq -r '.result.workspace.workspace_id')"
+  local t1 p1
+  t1="$(print -r -- "$out" | jq -r '.result.tab.tab_id')"
+  p1="$(print -r -- "$out" | jq -r '.result.root_pane.pane_id')"
+
+  # Close what we created if anything below fails. The trap covers a command erroring;
+  # baseline classification covers what it cannot reach (SIGKILL, a lost server).
+  trap "command herdr workspace close $ws >/dev/null 2>&1; rmdir '${HL_LOCKDIR:-}' 2>/dev/null" EXIT INT TERM
+
+  hl_api tab rename "$t1" agents >/dev/null
+  local right
+  right="$(hl_api pane split --pane "$p1" --direction right --cwd "$repo" --no-focus \
+           | jq -r '.result.pane.pane_id')"
+  hl_api pane run "$p1" "claude" >/dev/null
+  hl_api pane run "$right" "codex" >/dev/null
+
+  local label_
+  for label_ in editor runtime git; do
+    hl_make_tab "$ws" "$label_" "$repo" >/dev/null
+  done
+
+  hl_api workspace rename "$ws" "$label" >/dev/null
+  trap 'rmdir "${HL_LOCKDIR:-}" 2>/dev/null' EXIT INT TERM
+  hl_api workspace focus "$ws" >/dev/null
+  hl_api tab focus "$t1" >/dev/null
+}
+
+# hl_repair — create only the missing managed tabs, then rename. Preferred over
+# close-and-rebuild because the workspace may hold a running agent the user cares
+# about. Unmanaged tabs are not this function's business.
+hl_repair() {
+  local ws="$1" repo="$2" label tabs have
+  label="$(hl_label "$repo")"
+  tabs="$(hl_api tab list --workspace "$ws")" || exit 1
+  local want
+  for want in $MANAGED_TABS; do
+    have=$(print -r -- "$tabs" | jq -r --arg l "$want" \
+            '.result.tabs[] | select(.label == $l) | .tab_id' | head -1)
+    [[ -n "$have" ]] && continue
+    hl_make_tab "$ws" "$want" "$repo" >/dev/null
+  done
+  hl_api workspace rename "$ws" "$label" >/dev/null
+  hl_api workspace focus "$ws" >/dev/null
+}
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Expected: sections F and G pass. G2 in particular must show **zero** `tab create` calls.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add dot_config/herdr/executable_layout.sh .scripts/test-hdev.sh
+git commit -m "Build and repair project workspaces"
+```
+
+---
+
+### Task 8: `tab-goto.sh` and the Alt+letter tab jumps
+
+**Files:**
+- Create: `dot_config/herdr/executable_tab-goto.sh`
+- Modify: `dot_config/herdr/config.toml`
+- Modify: `.scripts/test-hdev.sh` (section H)
+
+**Interfaces:**
+- Produces: `tab-goto.sh <label>` → focuses the uniquely-labelled tab in the active workspace.
+
+- [ ] **Step 1: Write the failing tests**
+
+```zsh
+# --- H: tab-goto ------------------------------------------------------------
+print -r -- "-- H: tab jumps resolve by label"
+mock_reset; mock_tabs agents editor runtime git
+OUT="$(HERDR_ACTIVE_WORKSPACE_ID=w7 zsh "$TABGOTO" runtime 2>&1)"; RC=$?
+rc_is 0 "H1 a known label resolves"
+logged "tab focus w7:t3" "H1 focuses the tab carrying that label"
+
+# Order-independence: repair appends, and herdr has no `tab move`.
+mock_reset; mock_tabs git agents editor runtime
+OUT="$(HERDR_ACTIVE_WORKSPACE_ID=w7 zsh "$TABGOTO" git 2>&1)"; RC=$?
+logged "tab focus w7:t1" "H2 resolution follows the label, not the position"
+
+mock_reset; mock_tabs agents editor
+OUT="$(HERDR_ACTIVE_WORKSPACE_ID=w7 zsh "$TABGOTO" git 2>&1)"; RC=$?
+rc_is 1 "H3 a missing label fails"
+unlogged "tab focus" "H3 no tab is focused"
+
+mock_reset; mock_tabs agents agents
+OUT="$(HERDR_ACTIVE_WORKSPACE_ID=w7 zsh "$TABGOTO" agents 2>&1)"; RC=$?
+rc_is 1 "H4 an ambiguous label fails rather than picking one"
+unlogged "tab focus" "H4 no tab is focused"
+
+print -r -- ""
+print -r -- "=== $pass passed, $fail failed ==="
+(( fail == 0 ))
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Expected: FAIL — `tab-goto.sh` does not exist.
+
+- [ ] **Step 3: Implement**
+
+Create `dot_config/herdr/executable_tab-goto.sh`:
+
+```zsh
+#!/usr/bin/env zsh
+# tab-goto.sh <label> — focus a managed tab in the active workspace.
+# Managed by chezmoi (source: dot_config/herdr/executable_tab-goto.sh).
+#
+# By LABEL, never by index. herdr 0.8.2 has no `tab move`, so repair can only append
+# and a repaired workspace's managed tabs can be in any order; the user's own alt+t
+# tab also shifts every position after it. An index would silently land on the wrong
+# tab, which is worse than not moving at all.
+emulate -L zsh
+setopt local_options no_unset pipe_fail
+
+label="${1:?usage: tab-goto.sh <label>}"
+
+# Resolving through the globally-focused workspace is racy: persistence is a shared
+# session view, so another attached client can change focus between the keypress and
+# the query. Herdr documents active-context variables for [[keys.command]]; if they
+# are absent, say so rather than guessing.
+ws="${HERDR_ACTIVE_WORKSPACE_ID:-${HERDR_WORKSPACE_ID:-}}"
+[[ -n "$ws" ]] || {
+  print -ru2 -- "tab-goto: no active workspace in the environment."
+  print -ru2 -- "    Expected HERDR_ACTIVE_WORKSPACE_ID from the keybinding context."
+  exit 1 }
+
+tabs="$(command herdr tab list --workspace "$ws" 2>&1)" || {
+  print -ru2 -- "tab-goto: tab list failed: $tabs"; exit 1 }
+
+ids=( ${(f)"$(print -r -- "$tabs" | jq -r --arg l "$label" \
+       '.result.tabs[] | select(.label == $l) | .tab_id')"} )
+ids=( ${ids:#} )
+
+(( ${#ids} == 0 )) && { print -ru2 -- "tab-goto: no tab labelled '$label'"; exit 1 }
+(( ${#ids} > 1 ))  && { print -ru2 -- "tab-goto: ${#ids} tabs labelled '$label' — refusing to guess"; exit 1 }
+
+command herdr tab focus "${ids[1]}" >/dev/null
+```
+
+- [ ] **Step 4: Bind the keys**
+
+Append to `dot_config/herdr/config.toml`:
+
+```toml
+# Tab jumps. `switch_tab` is range-only ("prefix+1..9") — there is no switch_tab_1,
+# and tab.focus takes a tab_id, not an index. These resolve by label instead, which
+# also survives repair appending a tab out of order.
+[[keys.command]]
+key = "alt+a"
+type = "shell"
+command = "~/.config/herdr/tab-goto.sh agents"
+description = "tab: agents"
+
+[[keys.command]]
+key = "alt+e"
+type = "shell"
+command = "~/.config/herdr/tab-goto.sh editor"
+description = "tab: editor"
+
+[[keys.command]]
+key = "alt+r"
+type = "shell"
+command = "~/.config/herdr/tab-goto.sh runtime"
+description = "tab: runtime"
+
+[[keys.command]]
+key = "alt+g"
+type = "shell"
+command = "~/.config/herdr/tab-goto.sh git"
+description = "tab: git"
+```
+
+- [ ] **Step 5: Run tests to verify they pass**
+
+```bash
+zsh .scripts/test-hdev.sh
+```
+
+Expected: all sections A-H pass; the suite exits 0.
+
+- [ ] **Step 6: Verify the injected context for real**
+
+This is the assumption the spec flags as unverified. Temporarily add:
+
+```toml
+[[keys.command]]
+key = "alt+0"
+type = "shell"
+command = "env | grep -i herdr > /tmp/herdr-keyenv.txt"
+description = "debug: dump key context"
+```
+
+Apply, start `herdr`, press `alt+0`, then read `/tmp/herdr-keyenv.txt`.
+
+Expected: `HERDR_ACTIVE_WORKSPACE_ID` present. **If it is absent**, note which variables *are* injected and adjust `tab-goto.sh`'s lookup accordingly — do not fall back to global focus. Remove the debug binding afterwards.
+
+- [ ] **Step 7: Commit**
+
+```bash
+chezmoi apply ~/.config/herdr
+git add dot_config/herdr/ .scripts/test-hdev.sh
+git commit -m "Resolve tab jumps by label and bind Alt+a/e/r/g"
+```
+
+---
+
+### Task 9: The plugin and its `--current` repair mode
+
+A plugin action runs from inside an existing workspace. Plain `layout.sh` would match that workspace by cwd, focus it, exit 0 and apply nothing — a silent no-op, the most confusing possible outcome. `--current` is a distinct mode, not a shortcut.
+
+**Files:**
+- Create: `dot_config/herdr/plugin/herdr-plugin.toml`
+- Modify: `dot_config/herdr/executable_layout.sh`
+
+**Interfaces:**
+- Consumes: `HERDR_WORKSPACE_ID` from the plugin context.
+- Produces: action `dev.layout.apply`.
+
+- [ ] **Step 1: Write the manifest**
+
+```toml
+# dev.layout — apply the project layout to the current workspace.
+# Managed by chezmoi (source: dot_config/herdr/plugin/herdr-plugin.toml).
+# Registered with: herdr plugin link ~/.config/herdr/plugin
+#
+# Registration is GLOBAL across named sessions, not per-session. Rollback therefore
+# needs `herdr plugin unlink dev.layout` even if the trial session is gone.
+id = "dev.layout"
+name = "Project layout"
+version = "0.1.0"
+min_herdr_version = "0.8.0"
+description = "Create any missing agents/editor/runtime/git tabs in this workspace"
+platforms = ["macos"]
+
+[[actions]]
+id = "apply"
+title = "Apply project layout"
+contexts = ["workspace"]
+command = ["/bin/zsh", "-c", "exec \"$HOME/.config/herdr/layout.sh\" --current"]
+```
+
+- [ ] **Step 2: Implement `--current`**
+
+Extend `main` in `layout.sh`:
+
+```zsh
+  if [[ "$mode" == current ]]; then
+    local ws="${HERDR_WORKSPACE_ID:-}"
+    [[ -n "$ws" ]] || die "no HERDR_WORKSPACE_ID — --current only runs as a plugin action"
+
+    # The workspace's own cwd, taken from its panes: --current targets by context,
+    # never by a path lookup, which is what made the plain path mode a no-op here.
+    local repo
+    repo="$(hl_api pane list --workspace "$ws" | jq -r '.result.panes[0].cwd')"
+    [[ -n "$repo" && "$repo" != null ]] || die "workspace $ws has no pane cwd to work from"
+
+    local verdict; verdict="$(hl_classify "$ws" "$(hl_label "$repo")")" || exit 1
+    case "$verdict" in
+      complete)
+        hl_notify "Project layout" "Already complete — nothing to do." ;;
+      provisional)
+        hl_repair "$ws" "$repo"
+        hl_notify "Project layout" "Repaired missing tabs in $(hl_label "$repo")." ;;
+      malformed:*)
+        hl_notify "Project layout" "Refusing: ${verdict#malformed: }"
+        die "$ws is ${verdict#malformed: }" ;;
+    esac
+    exit 0
+  fi
+```
+
+And add:
+
+```zsh
+# A key-invoked action whose result is buried in a log file is indistinguishable from
+# a broken keybinding, so outcomes are surfaced in the UI.
+hl_notify() {
+  command herdr notification show "$1" --body "$2" >/dev/null 2>&1 || true
+}
+```
+
+- [ ] **Step 3: Apply and link**
+
+```bash
+chezmoi apply ~/.config/herdr
+herdr plugin link ~/.config/herdr/plugin
+herdr plugin list
+```
+
+Expected: `dev.layout` listed.
+
+- [ ] **Step 4: Verify all three outcomes by hand**
+
+In a herdr session, inside a workspace built by `hdev`:
+
+```bash
+herdr plugin action invoke dev.layout.apply
+```
+
+Expected: a notification saying "Already complete". Then close the `git` tab and invoke again — expected: the tab is recreated and the notification says so. Confirm no duplicate workspace appears in the sidebar either time.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add dot_config/herdr/
+git commit -m "Add the dev.layout plugin with an explicit repair mode"
+```
+
+---
+
+### Task 10: Live topology gate
+
+Mocked tests cannot catch CLI churn — a stub defines its own acceptance and keeps passing after the real binary changes its flags. This is the only thing that can.
+
+**Files:**
+- Create: `.scripts/test-hdev-topology.sh`
+
+- [ ] **Step 1: Write the script**
+
+```zsh
+#!/usr/bin/env zsh
+# Live gate for hdev/layout.sh against the REAL herdr binary.
+#
+# Mocked tests cannot detect CLI churn: the stub accepts whatever it was written to
+# accept and keeps passing after herdr changes a flag or a JSON shape. Only the real
+# binary can, so this runs against it — in an isolated named session, never the live
+# one.
+#
+# A named session isolates the socket and runtime state. It does NOT isolate plugin
+# registration, which is global — hence the distinct plugin id below. Reusing
+# `dev.layout` would let teardown unlink the plugin the live setup depends on.
+#
+# Run manually, unsandboxed: zsh .scripts/test-hdev-topology.sh
+set -u
+SESSION=hdev-test
+PLUGIN_ID=dev.layout.test
+h() { command herdr --session "$SESSION" "$@" }
+
+pass=0 fail=0
+ok()   { print -r -- "  PASS: $1"; pass=$((pass+1)) }
+bad()  { print -r -- "  FAIL: $1"; fail=$((fail+1)) }
+
+cleanup() {
+  h server stop >/dev/null 2>&1 || true
+  command herdr plugin unlink "$PLUGIN_ID" >/dev/null 2>&1 || true
+  [[ -n "${SCRATCH:-}" ]] && rm -rf "$SCRATCH"
+}
+trap cleanup EXIT INT TERM
+
+SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/hdev-live.XXXXXX")"
+REPO="$SCRATCH/Code/Test/proj"
+mkdir -p "$REPO" && git -C "$REPO" init -q && git -C "$REPO" commit -q --allow-empty -m init
+
+print -r -- "=== live topology gate (session: $SESSION) ==="
+
+# 1. Cold bootstrap: no server running.
+h server stop >/dev/null 2>&1 || true
+HERDR_SESSION="$SESSION" HDEV_NO_ATTACH=1 ~/.config/herdr/layout.sh "$REPO" \
+  && ok "cold bootstrap builds a workspace" || bad "cold bootstrap failed"
+
+# 2. Topology is what we think it is.
+WS=$(h workspace list | jq -r '.result.workspaces[0].workspace_id')
+for l in agents editor runtime git; do
+  n=$(h tab list --workspace "$WS" | jq -r --arg l "$l" \
+        '[.result.tabs[] | select(.label == $l)] | length')
+  [[ "$n" == 1 ]] && ok "exactly one '$l' tab" || bad "'$l' tab count = $n"
+done
+AT=$(h tab list --workspace "$WS" | jq -r '.result.tabs[] | select(.label=="agents") | .tab_id')
+n=$(h pane list --workspace "$WS" | jq -r --arg t "$AT" '[.result.panes[] | select(.tab_id==$t)] | length')
+[[ "$n" == 2 ]] && ok "agents holds 2 panes" || bad "agents holds $n panes"
+
+# 3. Idempotency: a second run focuses, never duplicates.
+HERDR_SESSION="$SESSION" HDEV_NO_ATTACH=1 ~/.config/herdr/layout.sh "$REPO" >/dev/null
+n=$(h workspace list | jq -r '.result.workspaces | length')
+[[ "$n" == 1 ]] && ok "a second run does not duplicate" || bad "$n workspaces after a second run"
+
+# 4. Extra tabs survive.
+h tab create --workspace "$WS" --label notes >/dev/null
+HERDR_SESSION="$SESSION" HDEV_NO_ATTACH=1 ~/.config/herdr/layout.sh "$REPO" >/dev/null
+h tab list --workspace "$WS" | jq -e '.result.tabs[] | select(.label=="notes")' >/dev/null \
+  && ok "an unmanaged tab survives" || bad "the unmanaged tab was removed"
+
+# 5. Concurrency, on the schedule that actually breaks it: B scans, A builds and
+#    releases, THEN B acquires. Launching two at once mostly proves nothing.
+REPO2="$SCRATCH/Code/Test/proj2"
+mkdir -p "$REPO2" && git -C "$REPO2" init -q && git -C "$REPO2" commit -q --allow-empty -m init
+( HERDR_SESSION="$SESSION" HDEV_NO_ATTACH=1 HL_SCAN_DELAY=2 ~/.config/herdr/layout.sh "$REPO2" ) &
+B=$!
+sleep 0.3
+HERDR_SESSION="$SESSION" HDEV_NO_ATTACH=1 ~/.config/herdr/layout.sh "$REPO2" >/dev/null 2>&1
+wait $B 2>/dev/null || true
+n=$(h workspace list | jq -r --arg d "$REPO2" \
+      '[.result.panes? // empty] | length' 2>/dev/null || print 0)
+n=$(h pane list | jq -r --arg d "$REPO2" \
+      '[.result.panes[] | select(.cwd == $d) | .workspace_id] | unique | length')
+[[ "$n" == 1 ]] && ok "the delayed-acquisition race yields one workspace" || bad "$n workspaces for one repo"
+
+print -r -- "=== $pass passed, $fail failed ==="
+(( fail == 0 ))
+```
+
+- [ ] **Step 2: Add the scan delay hook**
+
+`HL_SCAN_DELAY` exists only to make the race deterministic. In `hl_find_workspace`, after the trace line:
+
+```zsh
+  [[ -n "${HL_SCAN_DELAY:-}" ]] && sleep "$HL_SCAN_DELAY"
+```
+
+- [ ] **Step 3: Run it**
+
+```bash
+zsh .scripts/test-hdev-topology.sh
+```
+
+Run **unsandboxed**. Expected: all pass. Note this starts and stops a `hdev-test` session; the live session is untouched.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add .scripts/test-hdev-topology.sh dot_config/herdr/executable_layout.sh
+git commit -m "Add the live topology gate against the real herdr binary"
+```
+
+---
+
+### Task 11: Integrations under chezmoi
+
+Cold restore is the sole justification for these — Claude and Codex are "session identity only" in Herdr's matrix, so sidebar status is identical with or without them. Every touchpoint needs a chezmoi owner: `.chezmoiignore` allowlists both `.claude/*` (lines 57-66) and `.codex/*` (lines 73-78), so anything unowned is silently dropped on the next provision.
+
+**Files:**
+- Modify: `.chezmoiignore`
+- Modify: `dot_claude/modify_private_settings.json`
+- Modify: `dot_codex/modify_private_config.toml`
+- Create: `dot_codex/modify_private_hooks.json`
+- Create: the two hook scripts (exact names from Step 2)
+
+- [ ] **Step 1: Back up the real config first**
+
+```bash
+mkdir -p ~/.local/state/herdr-trial-backup
+cp ~/.claude/settings.json ~/.local/state/herdr-trial-backup/settings.json
+cp ~/.codex/config.toml ~/.local/state/herdr-trial-backup/config.toml
+cp ~/.codex/hooks.json ~/.local/state/herdr-trial-backup/hooks.json 2>/dev/null || true
+```
+
+- [ ] **Step 2: Install against fixtures and diff**
+
+Do **not** install into the real config yet. Use scratch config dirs:
+
+```bash
+export FIX="$(mktemp -d "${TMPDIR}/herdr-fix.XXXXXX")"
+mkdir -p "$FIX/claude" "$FIX/codex"
+CLAUDE_CONFIG_DIR="$FIX/claude" herdr integration install claude
+CODEX_HOME="$FIX/codex" herdr integration install codex
+find "$FIX" -type f | sort
+```
+
+Record exactly which files appeared and which keys changed. Report **key names only** — never paste `settings.json`, `hooks.json` or `config.toml`, which carry credentials and machine state.
+
+If `CLAUDE_CONFIG_DIR` / `CODEX_HOME` turn out not to be honoured by the installer, stop and report: installing straight into the real config without a diff first is not an acceptable substitute.
+
+- [ ] **Step 3: Bring the hook scripts under chezmoi**
+
+Copy each installed hook script into the chezmoi source with an `executable_` prefix, at the path matching its target (as reported by `herdr integration status`):
+
+```bash
+cp "$FIX/claude/hooks/herdr-agent-state.sh" \
+   ~/.local/share/chezmoi/dot_claude/hooks/executable_herdr-agent-state.sh
+cp "$FIX/codex/herdr-agent-state.sh" \
+   ~/.local/share/chezmoi/dot_codex/executable_herdr-agent-state.sh
+```
+
+- [ ] **Step 4: Re-include them in `.chezmoiignore`**
+
+Both blocks are allowlists. Add to the `.claude` block (after line 66):
+
+```
+!.claude/hooks/
+.claude/hooks/*
+!.claude/hooks/herdr-agent-state.sh
+```
+
+And to the `.codex` block (after line 78):
+
+```
+!.codex/herdr-agent-state.sh
+!.codex/hooks.json
+```
+
+- [ ] **Step 5: Give `hooks.json` an owner**
+
+This is the dangerous gap: without it, reprovisioning deploys Codex's hook script *and* sets `features.hooks = true` while never writing the registration connecting them — cold restore silently dead, every visible artifact present and correct.
+
+Create `dot_codex/modify_private_hooks.json`, merge-preserving so other hook registrations survive:
+
+```
+#!/usr/bin/env bash
+# modify_ script: stdin is the current ~/.codex/hooks.json (empty on first run),
+# stdout replaces it. Adds only Herdr's entries and leaves everything else intact.
+set -euo pipefail
+current="$(cat)"
+[ -z "$current" ] && current='{}'
+printf '%s' "$current" | jq \
+  --arg cmd "$HOME/.codex/herdr-agent-state.sh" \
+  '.hooks = ((.hooks // {}) + {herdr: {command: $cmd}})'
+```
+
+Use the exact key shape observed in Step 2 — this is the expected shape; correct it to what the installer actually wrote if they differ.
+
+- [ ] **Step 6: Pin `features.hooks`**
+
+In `dot_codex/modify_private_config.toml`, beside the existing `features.*` pins:
+
+```
+{{- $config = setValueAtPath "features.hooks" true $config -}}
+```
+
+Herdr's uninstall deliberately leaves this flag set, so rollback restores its prior value explicitly — nothing else will.
+
+- [ ] **Step 7: Merge Claude's hook registration**
+
+In `dot_claude/modify_private_settings.json`, which already owns the `hooks` block, add Herdr's entry alongside the existing `SessionStart` hooks — matching the shape observed in Step 2. Do not let the installer write this file; the two would fight on every `chezmoi apply`.
+
+- [ ] **Step 8: Apply and verify**
+
+```bash
+chezmoi apply ~/.claude ~/.codex
+herdr integration status | grep -E 'claude|codex'
+```
+
+Run **unsandboxed** — `~/.claude/hooks` and `~/.claude/settings.json` are write-denied under the sandbox. Expected: both report **installed**.
+
+- [ ] **Step 9: Confirm chezmoi is settled**
+
+```bash
+chezmoi diff ~/.claude ~/.codex
+```
+
+Expected: empty. A non-empty diff means the installer and a `modify_` script are fighting — fix before committing.
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add .chezmoiignore dot_claude/ dot_codex/
+git commit -m "Bring the herdr agent integrations under chezmoi"
+```
+
+---
+
+### Task 12: Cold restore, against the real config
+
+**Files:**
+- Create: `.scripts/test-hdev-integrations.sh`
+
+- [ ] **Step 1: Write the script**
+
+```zsh
+#!/usr/bin/env zsh
+# Cold-restore check for the Herdr trial.
+#
+# Deliberately does NOT install anything: Task 11 deployed the integrations through
+# chezmoi, and this verifies what chezmoi deployed. Installing here would test a
+# different artefact from the one that ships.
+#
+# Uses a named session so the live one is untouched — but note that integrations
+# themselves are global; this reads real ~/.claude and ~/.codex state.
+#
+# Run manually, unsandboxed: zsh .scripts/test-hdev-integrations.sh
+set -u
+SESSION=hdev-restore
+h() { command herdr --session "$SESSION" "$@" }
+pass=0 fail=0
+ok()  { print -r -- "  PASS: $1"; pass=$((pass+1)) }
+bad() { print -r -- "  FAIL: $1"; fail=$((fail+1)) }
+trap 'h server stop >/dev/null 2>&1 || true; [[ -n "${SCRATCH:-}" ]] && rm -rf "$SCRATCH"' EXIT INT TERM
+
+command herdr integration status | grep -q '^claude: installed' \
+  && ok "the claude integration is installed" || bad "claude integration missing"
+command herdr integration status | grep -q '^codex: installed' \
+  && ok "the codex integration is installed" || bad "codex integration missing"
+
+SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/hdev-restore.XXXXXX")"
+REPO="$SCRATCH/proj"
+mkdir -p "$REPO" && git -C "$REPO" init -q && git -C "$REPO" commit -q --allow-empty -m init
+
+HERDR_SESSION="$SESSION" HDEV_NO_ATTACH=1 ~/.config/herdr/layout.sh "$REPO"
+print -r -- "  … start Claude in the agents tab, let it reach an idle prompt, then press Enter."
+read -r
+
+BEFORE=$(h agent list | jq -r '[.result.agents[]] | length')
+h server stop >/dev/null 2>&1
+sleep 2
+h workspace list >/dev/null 2>&1 || true   # restarts the server
+sleep 3
+AFTER=$(h agent list | jq -r '[.result.agents[]] | length')
+
+[[ "$AFTER" == "$BEFORE" && "$BEFORE" != "0" ]] \
+  && ok "agents resumed after a cold restart ($BEFORE → $AFTER)" \
+  || bad "agents did not resume ($BEFORE → $AFTER)"
+
+print -r -- "=== $pass passed, $fail failed ==="
+(( fail == 0 ))
+```
+
+- [ ] **Step 2: Run it**
+
+```bash
+zsh .scripts/test-hdev-integrations.sh
+```
+
+Expected: agents resume. **If they do not**, cold restore is the integrations' only justification — record the result and raise dropping them, per the spec's rollback path.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add .scripts/test-hdev-integrations.sh
+git commit -m "Add the cold-restore check for the agent integrations"
+```
+
+---
+
+### Task 13: Trial log
+
+The exit criteria need evidence collected as it happens; reconstructing four weeks from memory is how a trial talks itself into a conclusion.
+
+**Files:**
+- Create: `docs/superpowers/plans/2026-08-27-herdr-trial-log.md`
+
+- [ ] **Step 1: Create the log**
+
+```markdown
+# Herdr trial log
+
+Started: 2026-08-27 · Decide by: 2026-09-24 (four weeks)
+Spec: `docs/superpowers/specs/2026-08-27-herdr-trial-design.md`
+
+## Thresholds
+
+| Criterion | Threshold | Running |
+|---|---|---|
+| Cold restore | ≥90% over ≥10 attempts | 0/0 |
+| Wrong-workspace events | 0 | 0 |
+| Husk incidents | 0 | 0 |
+| Half-built repairs after week 1 | 0 | 0 |
+| Alt scheme remapped? | no | no |
+| Status *noticed*, weekly | ≥1/week | — |
+
+Fewer than ten restore attempts means the criterion is unmet, not passed by default.
+
+## Noticed-vs-polled
+
+The one that decides it. Log each time a Herdr status display prompted action on a
+blocked or finished agent *before* it would otherwise have been checked. Status is
+screen-detected for both Claude and Codex, so this also tests whether that inference
+is trustworthy.
+
+| Date | What the sidebar showed | Would it have been noticed otherwise? |
+|---|---|---|
+
+## Incidents
+
+| Date | What happened | Cause |
+|---|---|---|
+```
+
+- [ ] **Step 2: Commit**
+
+```bash
+git add docs/superpowers/plans/2026-08-27-herdr-trial-log.md
+git commit -m "Add the Herdr trial log"
+```
+
+---
+
+## Self-review
+
+**Spec coverage.** Worktree guard → T3. Bootstrap/readiness → T4. Path identity, lock-before-scan, ambiguity → T5. Managed baseline, malformed-without-mutation, rename window → T6, T7. Construction with explicit IDs, `--cwd`, `--no-focus`, trap → T7. Label-resolved tab jumps → T8. Plugin `--current` + notifications → T9. Live churn gate + concurrency schedule + distinct plugin id → T10. Integrations, all four chezmoi owners, fixtures, key-names-only diffs → T11. Cold restore → T12. Exit criteria evidence → T13. Theme + `onboarding` + `resume_agents_on_restore` → T1.
+
+**Not covered by a task, by design:** rollback (a procedure in the spec, executed only if the trial fails) and the Neovim navigation regression (an explicit non-goal).
+
+**Type consistency.** `hl_api`, `hl_server_ready`, `hl_ensure_server`, `hl_lock`, `hl_find_workspace`, `hl_classify`, `hl_label`, `hl_make_tab`, `hl_build`, `hl_repair`, `hl_notify` — each defined once and called under that name. `MANAGED_TABS` and `BUILDING_SUFFIX` are set in T4 and used from T6 on. `hl_reconcile`/`hl_build` are stubbed in T5 and replaced in T6/T7, which is stated at both sites.
+
+**Known soft spots**, to resolve with observed behaviour rather than assumption: the `[[keys.command]]` context variables (T8 step 6), whether `CLAUDE_CONFIG_DIR`/`CODEX_HOME` are honoured by the installer (T11 step 2), and the exact hook-registration key shapes (T11 steps 5 and 7).
