@@ -35,6 +35,7 @@ tests/
 .chezmoiremove
 .chezmoitemplates
 .chezmoiversion
+.chezmoi.toml.tmpl
 .chezmoiexternal*
 
 # Temporary files

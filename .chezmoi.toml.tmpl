@@ -1,3 +1,17 @@
+{{/*
+Chezmoi's OWN config, rendered by `chezmoi init` into ~/.config/chezmoi/chezmoi.toml.
+
+It lives at the source ROOT, not under dot_config/, and that placement is load-bearing.
+As a normal target it was a chicken-and-egg: `chezmoi init` generates no config, so the
+first `chezmoi apply` ran with an empty [data] and died on the first template needing it
+(dot_config/git/allowed_signers.tmpl -> `map has no entry for key "email"`). chezmoi
+aborts at the first failing template, and provision.sh runs under `set -e`, so a fresh
+machine stopped dead before the Brewfile. At the root, init writes this file BEFORE any
+apply and the data is there from the first pass.
+
+Consequence: edits here take effect on `chezmoi init`, NOT on `chezmoi apply`. To pick
+up a change on a machine that is already provisioned, re-run `chezmoi init`.
+*/ -}}
 {{- $name := "Michaël Rigart" -}}
 {{- $email := "michael@netronix.be" -}}
 {{- $hostname := output "scutil" "--get" "ComputerName" | trim -}}
