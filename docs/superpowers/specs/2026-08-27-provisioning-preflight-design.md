@@ -455,11 +455,15 @@ Assertions that earn their place:
 1. **`scutil --set ComputerName` is recorded before `chezmoi init`.** The ordering
    regression in §5.1 — the single most important assertion in the suite.
 2. Preflight rejects a hostname absent from `known_hostnames`.
-3. `Brewfile.tmpl` renders `fail` (exit 1) for an unknown hostname, driven through
-   `chezmoi execute-template` as `test-codex-config.sh` already does.
+3. The identity partial renders `fail` (exit 1) for a live identity absent from the
+   allowlist, **and separately** for a live identity that disagrees with stored
+   `.hostname`, **and separately** for an unset `HostName` with the migration message
+   rather than a mismatch one. Driven through `chezmoi execute-template` with a
+   stubbed `scutil`, as `test-codex-config.sh` already drives templates.
 4. `Brewfile.tmpl` renders the exact three peripheral casks for `fenrir` and omits
    exactly those three for `studio` — asserted as exact cask lists, never as counts.
-5. `--resume` skips phases recorded in the state file and asks no questions.
+5. `--resume` skips phases recorded in the state file and re-asks no *decisions*
+   (credentials are a separate matter — see 9).
 6. A critical phase failure aborts; a best-effort failure continues and appears in
    the stage 3 report.
 7. No *machine-specific* mutation runs before the confirm — specifically, no
@@ -470,8 +474,8 @@ Assertions that earn their place:
    consent-laundering regression from §4.2.
 9. A resume with a lapsed sudo credential and a locked 1Password session
    revalidates both rather than proceeding with stale authority.
-8. The source clone is recorded before preflight reads `known_hostnames` — the
-   dependency that makes layer-1 validation possible at all.
+10. The source clone is recorded before preflight reads `known_hostnames` — the
+    dependency that makes preflight validation possible at all.
 
 Per repo convention the suite is fully mocked and runs under either sandbox mode.
 Its assertion count is added to the running baseline once green.
