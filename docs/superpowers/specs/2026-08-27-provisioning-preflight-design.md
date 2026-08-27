@@ -76,8 +76,8 @@ harmless the moment anything keys off it.
   considered and rejected (§9). The bootstrap constraint is real: a fresh Mac has
   no package manager when `provision.sh` starts.
 - **No profile/role concept.** A `profile = desktop|laptop` key decoupled from
-  machine name was considered and rejected (§9). Conditionals key off `.hostname`
-  directly.
+  machine name was considered and rejected (§9). Conditionals key off the live
+  identity (§5.2), not a stored value.
 - **No rollback.** Phases are idempotent and resumable; they do not undo.
 - **`configure.sh` is not absorbed.** It stays independently re-runnable (§7).
 - **No Vorta or BorgBase automation.** Provisioning sets the hostname that backup
@@ -95,10 +95,11 @@ Xcode CLT (waits for completion rather than exiting), Homebrew,
 `brew install chezmoi 1password-cli git`, `brew install --cask 1password`, then a
 plain `git clone` of the dotfiles repo over HTTPS into `$XDG_DATA_HOME/chezmoi`.
 
-This stage makes no decisions, so it needs no input — which is why it precedes
-preflight rather than being folded into it. Homebrew must exist before the
-1Password cask can be installed, and the 1Password gate in stage 1 needs that cask.
-Naming the stage honestly is preferable to pretending preflight comes first.
+This stage makes no *decisions* — which is why it precedes preflight rather than
+being folded into it. Homebrew must exist before the 1Password cask can be
+installed, and the 1Password gate in stage 1 needs that cask. Naming the stage
+honestly is preferable to pretending preflight comes first. It does still require
+one interaction, the Xcode CLT dialog; see below.
 
 **The clone is separated from `chezmoi init` deliberately.** `chezmoi init` does two
 things — clone the source, and render the config from it. Preflight needs the source
@@ -118,6 +119,20 @@ prerequisite for asking any question at all. What stage 0 must not do is make a
 *decision*: it installs a fixed set of prerequisites identically on every machine,
 and touches nothing machine-specific. The confirm gates everything that is a choice
 — hostname mutation included (§4.2).
+
+**Stage 0 is also not input-free**, and an earlier draft claiming it "needs no input"
+was wrong. Installing the Xcode Command Line Tools opens a GUI dialog that macOS
+owns and that a human must accept. The honest contract is narrower and worth stating
+exactly: *bootstrap may require Xcode CLT interaction; everything after a successful
+confirm is unattended.*
+
+Because macOS gives no completion signal, the CLT install is detected by polling
+`xcode-select -p`. Two failure modes need explicit handling, since neither raises an
+error on its own: the user **cancels** the dialog, and the user **never responds**.
+Both present identically — `xcode-select -p` simply keeps failing — so both resolve
+through one bounded wait that aborts with a message naming the dialog, rather than
+hanging forever or reporting a false success the way the current script's `exit 0`
+does.
 
 Homebrew's installer prompts for confirmation by default, so it is invoked with
 `NONINTERACTIVE=1`. Without it, stage 0 stops on a "Press RETURN to continue" that
@@ -149,13 +164,25 @@ Steps 3 and 5 are deliberately split. An earlier draft applied the hostname in s
 renamed, and silently changed the basis of Borg's archive naming. Declining must
 leave the machine exactly as it was found.
 
-Preflight answers are written to the state file before the confirm, so `--resume`
-re-asks nothing. The confirm itself is **not** re-asked on `--resume`: a recorded
-answer set means it was already given.
+**Recorded answers are not recorded consent.** State carries three distinct
+markers, written at three different moments:
+
+| Marker | Written when | Means |
+|---|---|---|
+| `answers_collected` | after step 2 | the questions have been answered |
+| `confirmed` | after a `y` at step 4 | the user approved *this* answer set |
+| `identity_applied` | after step 5's read-back succeeds | the machine has been renamed |
+
+An earlier draft wrote the answers before the confirm and let `--resume` treat their
+presence as proof consent had been given. That is a consent-laundering bug: answer
+the questions, decline at the confirm, resume a week later, and the machine is
+renamed and provisioned without anyone ever having said yes. **Resuming a run whose
+state lacks `confirmed` re-displays the summary and asks again.** `--resume` skips
+the confirm only when `confirmed` is present.
 
 ### 4.3 Stage 2 — run
 
-Ten phases, unattended. See §6.
+Seven phases (4–10 of the ten; phases 1–3 are stage 0's). Unattended. See §6.
 
 ### 4.4 Stage 3 — report
 
@@ -232,8 +259,31 @@ string `HostName: not set`, which a naive guard would happily compare against th
 allowlist. Every conditional in the file keys off `$live`, never `.hostname` — a
 conditional on stored data has the same staleness bug as a guard on it.
 
-The second check is what closes the loop: stored-versus-live disagreement is
-precisely the drift condition, and it names the remedy.
+**The guard checks `HostName` too, because `ComputerName` alone does not enforce the
+invariant.** §11.1 requires all three identity fields to agree; a guard reading only
+`ComputerName` passes a machine whose `HostName` has drifted — and `HostName` is the
+Borg-critical field, so that is precisely the drift that must not pass silently. The
+checks live in a shared partial under `.chezmoitemplates/`, included by any template
+that keys off identity, so the rule is defined once:
+
+| Field | Checked where | Rule |
+|---|---|---|
+| `ComputerName` | template + preflight | equals the chosen identity; equals stored `.hostname` |
+| `HostName` | template + preflight | equals the chosen identity; unset is a *named migration state*, reported as such rather than as a mismatch |
+| `LocalHostName` | preflight only | matches `^<identity>(-[0-9]+)?$` |
+
+`LocalHostName` is deliberately excluded from the template and matched loosely:
+macOS appends `-2`, `-3`, `-4` on its own when the Bonjour name collides on the
+network, so requiring permanent exact equality would fail for reasons outside the
+machine's control. Provisioning sets it and tolerates a numeric suffix; nothing keys
+off it.
+
+**Reconciliation needs its own path.** `chezmoi init` refreshes the *stored*
+`.hostname` and nothing else — it cannot set `HostName`, so it is the wrong remedy
+for a genuine field divergence and the drift message must not name it alone. The
+remedy is `provision.sh --phase identity`, which re-applies all three fields, reads
+them back, and then re-runs `chezmoi init` to refresh stored data. `chezmoi init` on
+its own remains correct for the narrow case where only stored data is stale.
 
 **What each layer actually catches**, stated narrowly because the earlier draft
 overclaimed:
@@ -335,7 +385,7 @@ what it does to recorded state and to preflight:
 | Flag | Recorded state | Preflight | Confirm |
 |---|---|---|---|
 | *(none)* | starts fresh; refuses to run if state exists, directing to `--resume` or `--restart` | full | asked |
-| `--resume` | read; completed phases skipped | answers re-used, nothing prompted | **not** re-asked |
+| `--resume` | read; completed phases skipped | decisions re-used; credentials revalidated | skipped **only** if `confirmed` is recorded |
 | `--restart` | discarded **after** flag validation, never during a `--dry-run` | full | asked |
 | `--phase NAME` | read; only `NAME` runs | answers re-used; unknown `NAME` is an error, not a no-op | not asked |
 | `--dry-run` | neither read nor written | skipped | not asked |
@@ -353,6 +403,13 @@ implementation exhibits:
 - **`--phase` running without an identity.** `--phase macos-config` needs the machine
   name; without loading recorded answers it passes an empty string.
 
+**Decisions persist; credentials do not.** `--resume` re-uses every answer, but sudo
+times out after five minutes and a 1Password CLI session after ten. A resumed run
+must revalidate both — `sudo -v` and `op whoami`, reacquiring if either has lapsed —
+before entering the unattended phases. "Nothing is prompted on resume" is therefore
+true of *decisions* and false of *credentials*, and the design should not claim
+otherwise: a resume hours later will ask for a password, and that is correct.
+
 Invoked via curl, flags pass as `/bin/zsh -c "$(curl -fsSL …)" provision --resume`
 (`zsh -c` takes `$0` then positional arguments). Under that invocation `$0` is the
 literal word `provision`, so recovery messages must print a resolved path to the
@@ -362,7 +419,7 @@ cloned script — never `$0`, which would print a command that does not exist.
 
 `configure.sh` remains a standalone, independently re-runnable script — documented
 as such in `CLAUDE.md`, and genuinely useful on its own for re-applying macOS
-defaults. It becomes phase 8 rather than being absorbed.
+defaults. It becomes phase 9 rather than being absorbed.
 
 Three changes:
 
@@ -405,7 +462,14 @@ Assertions that earn their place:
 5. `--resume` skips phases recorded in the state file and asks no questions.
 6. A critical phase failure aborts; a best-effort failure continues and appears in
    the stage 3 report.
-7. No mutating phase runs before the confirm.
+7. No *machine-specific* mutation runs before the confirm — specifically, no
+   `scutil --set`. Bootstrap's installs are the acknowledged exception (§4.1), so
+   this is asserted against the identity calls, not against mutation in general.
+8. Decline at the confirm, then `--resume`: the summary is shown and consent asked
+   again, and no `scutil --set` is recorded until a second explicit `y`. This is the
+   consent-laundering regression from §4.2.
+9. A resume with a lapsed sudo credential and a locked 1Password session
+   revalidates both rather than proceeding with stale authority.
 8. The source clone is recorded before preflight reads `known_hostnames` — the
    dependency that makes layer-1 validation possible at all.
 
@@ -457,8 +521,12 @@ a single flat list.
   `chezmoi diff` and `chezmoi status`. That is the price of live identity, and it
   is the right trade: a guard on stored data cannot detect the drift it exists to
   catch (§5.2).
-- Declining the confirm now leaves the machine byte-identical to how it was found.
-  Bootstrap's installs are the sole exception, and they are machine-independent.
+- Declining the confirm leaves the machine's *identity and configuration* exactly as
+  found — no `scutil --set`, no dotfiles applied, no packages beyond bootstrap. It is
+  not byte-identical: bootstrap has by then installed Homebrew, the 1Password cask
+  and the dotfiles source. Those are machine-independent and identical on every
+  machine, which is what makes them acceptable before consent — but the honest claim
+  is "nothing machine-specific", not "nothing".
 - Two Borg keys remain unmanaged by chezmoi (§11.3). Tracked as follow-up; a
   rebuild of the existing machine currently omits them.
 
