@@ -256,12 +256,17 @@ The direct consequence of hostname-keyed conditionals. Three peripheral casks mo
 behind a guard:
 
 ```gotemplate
-{{ if eq .hostname "fenrir" -}}
+{{ if eq $live "fenrir" -}}
 cask "elgato-control-center"
 cask "focusrite-control"
 cask "jiggler"
 {{ end -}}
 ```
+
+`$live` is the live-read identity bound at the top of the file (§5.2), not
+`.hostname`. A conditional keyed on stored data carries the same staleness bug as a
+guard keyed on it: after a rename the machine would keep receiving the old machine's
+casks.
 
 `chezmoi edit ~/.config/homebrew/Brewfile` continues to work on templates.
 `provision.sh`'s tap-trust loop seds the *rendered* file at
@@ -324,12 +329,34 @@ warnings. That is what turns the failure into `⚠ microsoft-office — licence`
 `$XDG_STATE_HOME/provision/state` records completed phase names **and the preflight
 answers**, so `--resume` re-asks nothing.
 
-Flags: `--resume`, `--phase <name>`, `--restart`, `--dry-run`.
+Flags are explicit state transitions, not independent booleans. Each is defined by
+what it does to recorded state and to preflight:
+
+| Flag | Recorded state | Preflight | Confirm |
+|---|---|---|---|
+| *(none)* | starts fresh; refuses to run if state exists, directing to `--resume` or `--restart` | full | asked |
+| `--resume` | read; completed phases skipped | answers re-used, nothing prompted | **not** re-asked |
+| `--restart` | discarded **after** flag validation, never during a `--dry-run` | full | asked |
+| `--phase NAME` | read; only `NAME` runs | answers re-used; unknown `NAME` is an error, not a no-op | not asked |
+| `--dry-run` | neither read nor written | skipped | not asked |
+
+Three failure modes this table exists to prevent, all of which a naive
+implementation exhibits:
+
+- **`--resume` blocking on the confirm.** Resuming is not a new decision; re-asking
+  makes `--resume` unusable non-interactively.
+- **A skipped phase skipping its side effects.** The `homebrew` phase both installs
+  Homebrew *and* initialises `HOMEBREW_PREFIX` and `PATH` for the process. Resuming
+  past it must still perform the second part, or every later phase runs against an
+  unconfigured environment — and `${HOMEBREW_PREFIX}` is an unbound-variable abort
+  under `set -u`. Process-environment setup belongs outside phase completion.
+- **`--phase` running without an identity.** `--phase macos-config` needs the machine
+  name; without loading recorded answers it passes an empty string.
 
 Invoked via curl, flags pass as `/bin/zsh -c "$(curl -fsSL …)" provision --resume`
-(`zsh -c` takes `$0` then positional arguments). Once the dotfiles are cloned, the
-local path at `~/.local/share/chezmoi/.scripts/provision.sh` is the better entry
-point and the report says so.
+(`zsh -c` takes `$0` then positional arguments). Under that invocation `$0` is the
+literal word `provision`, so recovery messages must print a resolved path to the
+cloned script — never `$0`, which would print a command that does not exist.
 
 ## 7. Boundary with `configure.sh`
 
