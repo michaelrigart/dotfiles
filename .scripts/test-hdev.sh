@@ -179,4 +179,65 @@ finish() {
   print -r -- "=== $pass passed, $fail failed ==="
   (( fail == 0 ))
 }
+# --- A: resolution ----------------------------------------------------------
+print -r -- "-- A: hdev resolution"
+ROOTTMP=$(mkd); CODE="$ROOTTMP/Code"
+R1=$(mkrepo "$CODE/Netronix/curato")
+R2=$(mkrepo "$CODE/ViuMore/curato")     # same basename, different org
+mkdir -p "$ROOTTMP/notrepo"
+
+# Stub layout.sh: record the path it was handed, do nothing else.
+LSTUB="$STUBS/layout.sh"
+cat > "$LSTUB" <<'S'
+#!/usr/bin/env bash
+printf '%s\n' "$1" > "$LAYOUT_ARG"
+S
+chmod +x "$LSTUB"
+
+# fzf declines (exit 1), so an ambiguous name must resolve to nothing.
+cat > "$STUBS/fzf" <<'S'
+#!/usr/bin/env bash
+printf '%s\n' "fzf-invoked" >> "$FZFLOG"
+exit 1
+S
+chmod +x "$STUBS/fzf"
+
+run_hdev() {
+  mock_reset
+  export LAYOUT_ARG="$(mktemp "${TMPROOT%/}/larg.XXXXXX")"
+  export FZFLOG="$(mktemp "${TMPROOT%/}/fzflog.XXXXXX")"
+  OUT="$(HOME="$ROOTTMP" HDEV_LAYOUT="$LSTUB" zsh -c "
+    source '$FUNCS'; hdev $1" 2>&1)"; RC=$?
+}
+
+run_hdev "'$R1'"
+eq "$(<$LAYOUT_ARG)" "$R1" "A1 explicit path resolves to that repo"
+
+run_hdev "Netronix/curato"
+eq "$(<$LAYOUT_ARG)" "$R1" "A2 path relative to ~/Code resolves"
+
+run_hdev "'$ROOTTMP/notrepo'"
+rc_is 1 "A3 a non-repo directory fails"
+has "not inside a git repo" "A3 says why"
+eq "$(<$LAYOUT_ARG)" "" "A3 layout.sh is never invoked"
+
+# Ambiguity must reach the picker, never silently pick one.
+run_hdev "curato"
+eq "$(<$LAYOUT_ARG)" "" "A4 an ambiguous basename resolves to nothing"
+[[ -s "$FZFLOG" ]] && _pass "A4 the picker is consulted" || _fail "A4 the picker was never invoked"
+
+# --- B: the linked-worktree guard -------------------------------------------
+print -r -- "-- B: linked-worktree guard"
+WT="$CODE/Netronix/curato-feature"
+git -C "$R1" worktree add -q -b feature "$WT" 2>/dev/null
+
+run_hdev "'$WT'"
+rc_is 1 "B1 a linked worktree is refused"
+has "linked worktree" "B1 names the reason"
+has "Use: dev " "B1 points at dev"
+eq "$(<$LAYOUT_ARG)" "" "B1 layout.sh is never invoked"
+
+run_hdev "'$R1'"
+eq "$(<$LAYOUT_ARG)" "$R1" "B2 the primary checkout is still allowed"
+
 finish

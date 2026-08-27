@@ -239,6 +239,67 @@ dev() {
   fi
 }
 
+# hdev — open (or return to) a project in its Herdr workspace. The Herdr-side
+# counterpart to `dev`, running beside it during the trial; `dev` is unchanged.
+#   hdev                   pick from all repos under ~/Code (fzf)
+#   hdev curato            by name: exact basename → case-insensitive substring → fzf
+#   hdev Netronix/curato   path relative to ~/Code
+#   hdev .                 the git repo containing the current directory
+#
+# Resolution only. Everything about Herdr lives in layout.sh, which is also what the
+# `dev.layout.apply` plugin action calls — one topology definition, two entry points.
+hdev() {
+  emulate -L zsh
+  setopt local_options null_glob extended_glob
+
+  local code="$HOME/Code" repo arg="$1"
+  local -a repos=( "$code"/*/.git(N:h) "$code"/*/*/.git(N:h) )
+
+  if [[ "$arg" == "." || ( -n "$arg" && -d "$arg" ) ]]; then
+    repo="$(_wt_git -C "${arg:-$PWD}" rev-parse --show-toplevel 2>/dev/null)" \
+      || { print -ru2 -- "hdev: '${arg:-$PWD}' is not inside a git repo."; return 1 }
+  elif [[ -n "$arg" && -e "$code/$arg/.git" ]]; then
+    repo="$code/$arg"
+  else
+    local -a hits
+    if [[ -z "$arg" ]]; then
+      hits=( $repos )
+    else
+      hits=( ${(M)repos:#*/$arg} )                       # exact basename
+      (( ${#hits} )) || hits=( ${(M)repos:#(#i)*$arg*} ) # case-insensitive substring
+    fi
+    if (( ${#hits} == 1 )); then
+      repo="${hits[1]}"
+    else
+      local -a pool; (( ${#hits} )) && pool=( $hits ) || pool=( $repos )
+      local sel
+      sel="$(print -rl -- ${pool[@]#$code/} | fzf --prompt='hdev > ' ${arg:+--query=$arg})" || return 0
+      [[ -n "$sel" ]] || return 0
+      repo="$code/$sel"
+    fi
+  fi
+
+  repo="${repo:A}"
+  [[ -n "$repo" && -e "$repo/.git" ]] || { print -ru2 -- "hdev: no git repo resolved."; return 1 }
+
+  # Refuse linked worktrees. wt-rm's teardown stops the *Zellij* session before
+  # removing a checkout — "a live process holding the directory open is what leaves
+  # an empty tmp/ husk behind" — and it cannot see Herdr. A Herdr workspace on a wt
+  # worktree would survive that shutdown and write into a deleted directory. Keeping
+  # the trial on primary checkouts means no teardown lifecycle competes with it.
+  #
+  # A primary checkout has .git as a directory; a linked worktree has it as a file
+  # pointing at the common dir elsewhere.
+  if [[ -f "$repo/.git" ]]; then
+    print -ru2 -- "hdev: $repo is a linked worktree — refusing."
+    print -ru2 -- "    Herdr is not wired into wt-rm's teardown, so a workspace here could"
+    print -ru2 -- "    outlive the checkout. Use: dev $repo"
+    return 1
+  fi
+
+  "${HDEV_LAYOUT:-$HOME/.config/herdr/layout.sh}" "$repo"
+}
+
 # _wt_git — git with its routing environment cleared. Every Git call in the
 # worktree lifecycle goes through this. An exported GIT_DIR or GIT_WORK_TREE
 # silently redirects git to another checkout: `status` then reports a dirty

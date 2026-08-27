@@ -492,10 +492,12 @@ print -r -- "-- B: linked-worktree guard"
 WT="$CODE/Netronix/curato-feature"
 git -C "$R1" worktree add -q -b feature "$WT" 2>/dev/null
 
+# `has "dev"` would be vacuous here: the failure output during the red phase is
+# "command not found: hdev", which contains "dev". Match the guidance line itself.
 run_hdev "'$WT'"
 rc_is 1 "B1 a linked worktree is refused"
 has "linked worktree" "B1 names the reason"
-has "dev" "B1 points at dev"
+has "Use: dev " "B1 points at dev"
 eq "$(<$LAYOUT_ARG)" "" "B1 layout.sh is never invoked"
 
 run_hdev "'$R1'"
