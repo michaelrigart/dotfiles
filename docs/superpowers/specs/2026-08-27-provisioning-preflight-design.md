@@ -1,7 +1,22 @@
 # Provisioning preflight
 
-**Status:** Approved
+**Status:** Superseded — partially implemented; see the scope note below
 **Date:** 2026-08-27
+
+> **Scope reduction, 2026-08-27.** Only a reduced subset of this design was built. What
+> shipped: preflight (all questions before one confirm), the machine allowlist and the
+> live-identity guard, three-field identity with read-back, `NONINTERACTIVE=1`, bounded
+> Xcode CLT polling, `sudo chsh`, non-blocking SSH verification, Brewfile failures as
+> warnings, and `configure.sh --hostname` verifying rather than renaming.
+>
+> Deliberately **not** built: the phase framework, the state file, `--resume`,
+> `--phase`, `--dry-run`, `--repair-identity`, and the consent markers. Those emerged
+> from design review rather than from the original problem — four interruptions in a
+> bootstrap script — and were judged disproportionate to a script that runs a handful
+> of times per machine lifetime. The implementation keeps `set -e`; the recovery model
+> is re-running from the start, which is safe because every step is idempotent.
+>
+> See `.scripts/provision.sh` and `.scripts/test-provision.sh` for what exists.
 
 Restructures `.scripts/provision.sh` around a single rule: **every decision is made
 before the unattended work starts.** Bootstrap is the bounded exception — it installs

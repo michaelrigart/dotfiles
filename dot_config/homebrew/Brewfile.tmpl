@@ -1,3 +1,10 @@
+{{- /* Identity is read LIVE from scutil, not from chezmoi's .hostname: .hostname is
+     captured once at `chezmoi init` and never refreshed, so after a rename it reports
+     the old name forever and a guard built on it could never fire. */ -}}
+{{- $live := output "scutil" "--get" "ComputerName" | trim -}}
+{{- if not (has $live .known_hostnames) -}}
+{{-   fail (printf "unknown machine %q — add it to .chezmoidata/machines.toml" $live) -}}
+{{- end -}}
 
 # tap repositories and their packages
 #
@@ -75,13 +82,15 @@ cask "claude"
 cask "claude-code@latest"              # @latest channel — plain `claude-code` is a different, pinned cask
 cask "codex"                           # depends on the ripgrep formula
 cask "docker-desktop"
+{{ if eq $live "fenrir" -}}
 cask "elgato-control-center"
-cask "firefox"
 cask "focusrite-control"
+cask "jiggler"
+{{ end -}}
+cask "firefox"
 cask "ghostty"
 cask "google-chrome"
 cask "grammarly-desktop"
-cask "jiggler"
 cask "jordanbaird-ice"
 cask "kap"
 cask "little-snitch"
