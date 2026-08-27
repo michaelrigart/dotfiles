@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-27-herdr-trial-design.md`
 
-**Status:** Approved — not started
+**Status:** Approved
 
 ## Global Constraints
 
@@ -297,13 +297,40 @@ mock_workspace() {  # <id> <label>
 mock_panes() {      # <cwd>  — one pane in workspace w7, that cwd
   export MOCK_PANE_LIST="{\"result\":{\"panes\":[{\"pane_id\":\"w7:p3\",\"tab_id\":\"w7:t4\",\"workspace_id\":\"w7\",\"cwd\":\"$1\"}]}}"
 }
-mock_tabs() {       # <label>...  — tabs w7:t1.. with the given labels
+mock_tabs() {       # <label>...  — tabs w7:t1.. with the given labels, no panes
   local i=1 out="" ; for l in "$@"; do
     [[ -n "$out" ]] && out+=","
     out+="{\"tab_id\":\"w7:t$i\",\"label\":\"$l\"}"; i=$((i+1))
   done
   export MOCK_TAB_LIST="{\"result\":{\"tabs\":[$out]}}"
 }
+
+# mock_topology <cwd> <label> <tab:panecount>...
+# Tabs, panes and the workspace label in ONE call. Setting them separately is how the
+# fixtures drifted: a workspace with four tabs and zero panes is not "four good tabs",
+# it is malformed, and separate helpers made a correct classifier look broken.
+mock_topology() {
+  local cwd="$1" label="$2"; shift 2
+  local i=1 pn=1 tabs="" panes="" spec name n k
+  for spec in "$@"; do
+    name="${spec%%:*}"; n="${spec##*:}"
+    [[ -n "$tabs" ]] && tabs+=","
+    tabs+="{\"tab_id\":\"w7:t$i\",\"label\":\"$name\"}"
+    k=1
+    while (( k <= n )); do
+      [[ -n "$panes" ]] && panes+=","
+      panes+="{\"pane_id\":\"w7:p$pn\",\"tab_id\":\"w7:t$i\",\"workspace_id\":\"w7\",\"cwd\":\"$cwd\"}"
+      (( pn++ )); (( k++ ))
+    done
+    (( i++ ))
+  done
+  export MOCK_TAB_LIST="{\"result\":{\"tabs\":[$tabs]}}"
+  export MOCK_PANE_LIST="{\"result\":{\"panes\":[$panes]}}"
+  export MOCK_WS_LIST="{\"result\":{\"workspaces\":[{\"workspace_id\":\"w7\",\"label\":\"$label\"}]}}"
+}
+
+# The complete, healthy baseline — the shape every "good workspace" test starts from.
+FULL=(agents:2 editor:1 runtime:2 git:1)
 
 mkrepo() {  # <path> — a real git repo
   mkdir -p "$1" && git -C "$1" init -q && git -C "$1" commit -q --allow-empty -m init
@@ -394,11 +421,19 @@ rc_is 1 "A3 a non-repo directory fails"
 has "not inside a git repo" "A3 says why"
 eq "$(<$LAYOUT_ARG)" "" "A3 layout.sh is never invoked"
 
-# Ambiguity must not silently pick one: two repos named curato exist.
+# Ambiguity must reach the picker, never silently pick one. fzf is stubbed to decline
+# (exit 1), so a correct hdev resolves nothing and invokes nothing.
+cat > "$STUBS/fzf" <<'S'
+#!/usr/bin/env bash
+printf '%s\n' "fzf-invoked" >> "$FZFLOG"
+exit 1
+S
+chmod +x "$STUBS/fzf"
+
+export FZFLOG="$(mktemp "${TMPROOT%/}/fzflog.XXXXXX")"
 run_hdev "curato"
-[[ "$(<$LAYOUT_ARG)" == "$R1" || "$(<$LAYOUT_ARG)" == "$R2" || -z "$(<$LAYOUT_ARG)" ]] \
-  && _pass "A4 ambiguous basename does not resolve to an unrelated repo" \
-  || _fail "A4 ambiguous basename resolved to '$(<$LAYOUT_ARG)'"
+eq "$(<$LAYOUT_ARG)" "" "A4 an ambiguous basename resolves to nothing"
+[[ -s "$FZFLOG" ]] && _pass "A4 the picker is consulted" || _fail "A4 the picker was never invoked"
 
 # --- B: the linked-worktree guard -------------------------------------------
 print -r -- "-- B: linked-worktree guard"
@@ -677,21 +712,21 @@ git commit -m "Add layout.sh bootstrap: headless server start and readiness prob
 print -r -- "-- D: identity"
 
 # A workspace whose panes sit at this repo → found.
-run_layout "export HERDR_ENV=1; mock_workspace w7 'Netronix/curato'; mock_panes '$R1'; mock_tabs agents editor runtime git" "$R1"
+run_layout "export HERDR_ENV=1; mock_topology '$R1' 'Netronix/curato' \$FULL" "$R1"
 logged "workspace focus w7" "D1 a path match is focused"
 unlogged "workspace create" "D1 nothing is created"
 
 # Same basename, different org: must NOT match.
-run_layout "export HERDR_ENV=1; mock_workspace w7 'Netronix/curato'; mock_panes '$R1'; mock_tabs agents editor runtime git" "$R2"
+run_layout "export HERDR_ENV=1; mock_topology '$R1' 'Netronix/curato' \$FULL" "$R2"
 logged "workspace create" "D2 a different repo with the same basename builds its own"
 unlogged "workspace focus w7" "D2 the other workspace is not focused"
 
 # Label says curato, panes say elsewhere → refuse rather than trust the label.
-run_layout "export HERDR_ENV=1; mock_workspace w7 'Netronix/curato'; mock_panes '/somewhere/else'; mock_tabs agents editor runtime git" "$R1"
+run_layout "export HERDR_ENV=1; mock_topology '/somewhere/else' 'Netronix/curato' \$FULL" "$R1"
 logged "workspace create" "D3 a label match with a mismatched path is not focused"
 
 # The lock is taken before any scan.
-run_layout "export HERDR_ENV=1; export HL_TRACE_LOCK=1; mock_panes '$R1'" "$R1"
+run_layout "export HERDR_ENV=1; export HL_TRACE_LOCK=1; mock_topology '$R1' 'Netronix/curato' \$FULL" "$R1"
 has "LOCK-ACQUIRED" "D4 the lock is acquired"
 [[ "$OUT" == *"LOCK-ACQUIRED"*"SCAN"* ]] \
   && _pass "D4 lock precedes scan" || _fail "D4 scan happened before the lock"
@@ -730,7 +765,7 @@ hl_lock() {
   if ! zsystem flock -t 10 "$HL_LOCKFILE" 2>/dev/null; then
     die "another layout.sh has held the lock for $1 for over 10s"
   fi
-  [[ -n "${HL_TRACE_LOCK:-}" ]] && print -r -- "LOCK-ACQUIRED"
+  [[ -n "${HL_TRACE_LOCK:-}" ]] && print -ru2 -- "LOCK-ACQUIRED"
 }
 
 # hl_find_workspace — the workspace whose panes live at this path, if any.
@@ -738,7 +773,9 @@ hl_lock() {
 # PaneInfo carries `cwd`, and labels are mutable and non-unique.
 hl_find_workspace() {
   local repo="$1" ws panes ids
-  [[ -n "${HL_TRACE_LOCK:-}" ]] && print -r -- "SCAN"
+  # stderr, not stdout: this function's stdout IS its return value (ws="$(...)"), so a
+  # trace line printed there would be captured into the workspace id and corrupt it.
+  [[ -n "${HL_TRACE_LOCK:-}" ]] && print -ru2 -- "SCAN"
   panes="$(hl_api pane list)" || return 1
   ids=( ${(f)"$(print -r -- "$panes" | jq -r --arg d "$repo" \
         '.result.panes[] | select(.cwd == $d) | .workspace_id' | sort -u)"} )
@@ -803,30 +840,33 @@ L="Netronix/curato"
 
 cls() {  # <mock-setup> → OUT is the classification
   mock_reset; eval "$1"
-  OUT="$(zsh -c "source '$LAYOUT' --source-only; hl_classify w7 '$L'" 2>&1)"; RC=$?
+  OUT="$(HOME="$ROOTTMP" zsh -c "source '$LAYOUT' --source-only; hl_classify w7 '$L'" 2>&1)"; RC=$?
 }
 
-cls "mock_workspace w7 '$L'; mock_tabs agents editor runtime git"
-eq "$OUT" "complete" "E1 four managed tabs and the final label = complete"
+cls "mock_topology '$R1' '$L' \$FULL"
+eq "$OUT" "complete" "E1 the full baseline = complete"
 
-cls "mock_workspace w7 '$L'; mock_tabs agents editor runtime git notes scratch"
+cls "mock_topology '$R1' '$L' \$FULL notes:1 scratch:1"
 eq "$OUT" "complete" "E2 extra unmanaged tabs do not demote it"
 
-cls "mock_workspace w7 '$L'; mock_tabs agents editor git"
+cls "mock_topology '$R1' '$L' agents:2 editor:1 git:1"
 eq "$OUT" "provisional" "E3 a missing managed tab = provisional"
 
 # The rename window: correct topology, non-final label. Complete in every respect
 # except the one that marks it finished.
-cls "mock_workspace w7 '$L (building)'; mock_tabs agents editor runtime git"
+cls "mock_topology '$R1' '$L (building)' \$FULL"
 eq "$OUT" "provisional" "E4 correct topology under a (building) label = provisional"
 
-cls "mock_workspace w7 '$L'; mock_tabs agents agents editor runtime git"
+cls "mock_topology '$R1' '$L' agents:2 agents:2 editor:1 runtime:2 git:1"
 has "malformed" "E5 a duplicated managed label = malformed"
 
+# Geometry, not just names: a single-pane agents tab is malformed, and this is the
+# case a name-only check certified as healthy.
+cls "mock_topology '$R1' '$L' agents:1 editor:1 runtime:2 git:1"
+has "malformed" "E5b a managed tab with the wrong pane count = malformed"
+
 # Malformed must not mutate anything.
-mock_reset; mock_workspace w7 "$L"; mock_tabs agents agents editor runtime git
-mock_panes "$R1"
-OUT="$(HERDR_ENV=1 zsh "$LAYOUT" "$R1" 2>&1)"; RC=$?
+run_layout "export HERDR_ENV=1; mock_topology '$R1' '$L' agents:2 agents:2 editor:1 runtime:2 git:1" "$R1"
 rc_is 1 "E6 malformed fails"
 unlogged "tab create"   "E6 no tab is created"
 unlogged "tab close"    "E6 no tab is closed"
@@ -960,8 +1000,7 @@ git commit -m "Classify workspaces against a managed baseline"
 ```zsh
 # --- F: build ---------------------------------------------------------------
 print -r -- "-- F: build"
-mock_reset; mock_panes "/nowhere"
-OUT="$(HERDR_ENV=1 zsh "$LAYOUT" "$R1" 2>&1)"; RC=$?
+run_layout "export HERDR_ENV=1; mock_panes '/nowhere'" "$R1"
 rc_is 0 "F1 a clean build succeeds"
 logged "workspace create --cwd $R1 --label Netronix/curato (building) --no-focus" \
   "F1 created under the provisional label, unfocused, with an explicit cwd"
@@ -979,17 +1018,17 @@ logged "workspace focus w7" "F4 focused only once complete"
   && _pass "F5 the runtime split targets its own parsed root pane" \
   || _fail "F5 the runtime split had no or the wrong target"
 
-# Trap: a mid-build failure closes what it created.
-mock_reset; mock_panes "/nowhere"; export MOCK_TAB_CREATE_FAIL_AT=1
-OUT="$(HERDR_ENV=1 zsh "$LAYOUT" "$R1" 2>&1)"; RC=$?
+# Trap: a mid-build failure closes what it created. Fail on the THIRD tab create, so
+# the workspace is genuinely half-built — failing on the first would also pass a trap
+# that only handled the trivial case.
+run_layout "export HERDR_ENV=1; mock_panes '/nowhere'; export MOCK_TAB_CREATE_FAIL_AT=3" "$R1"
 rc_is 1 "F6 a failed build fails loudly"
 logged "workspace close w7" "F6 the trap closes the partial workspace"
-unset MOCK_TAB_CREATE_FAIL_AT
+logged "tab create --workspace w7 --label editor" "F6 it got as far as the third tab"
 
 # --- G: repair --------------------------------------------------------------
 print -r -- "-- G: repair"
-mock_reset; mock_workspace w7 "Netronix/curato"; mock_panes "$R1"; mock_tabs agents editor
-OUT="$(HERDR_ENV=1 zsh "$LAYOUT" "$R1" 2>&1)"; RC=$?
+run_layout "export HERDR_ENV=1; mock_topology '$R1' 'Netronix/curato' agents:2 editor:1" "$R1"
 logged "tab create --workspace w7 --label runtime" "G1 the missing runtime tab is created"
 logged "tab create --workspace w7 --label git"     "G1 the missing git tab is created"
 unlogged "--label agents" "G1 the existing agents tab is not recreated"
@@ -997,17 +1036,13 @@ unlogged "--label editor" "G1 the existing editor tab is not recreated"
 unlogged "workspace create" "G1 no duplicate workspace"
 
 # The rename window: everything present, only the label wrong. Rename ALONE.
-mock_reset; mock_workspace w7 "Netronix/curato (building)"; mock_panes "$R1"
-mock_tabs agents editor runtime git
-OUT="$(HERDR_ENV=1 zsh "$LAYOUT" "$R1" 2>&1)"; RC=$?
+run_layout "export HERDR_ENV=1; mock_topology '$R1' 'Netronix/curato (building)' \$FULL" "$R1"
 rc_is 0 "G2 the rename window is repaired"
 eq "$(count_logged 'tab create --workspace w7 --label agents')" "0" "G2 no tab is created"
 logged "workspace rename w7 Netronix/curato" "G2 renamed to the final label"
 
 # Extra tabs survive repair untouched.
-mock_reset; mock_workspace w7 "Netronix/curato"; mock_panes "$R1"
-mock_tabs agents editor notes
-OUT="$(HERDR_ENV=1 zsh "$LAYOUT" "$R1" 2>&1)"; RC=$?
+run_layout "export HERDR_ENV=1; mock_topology '$R1' 'Netronix/curato' agents:2 editor:1 notes:1" "$R1"
 unlogged "tab close" "G3 the user's own tab is never closed"
 unlogged "--label notes" "G3 the user's own tab is never recreated"
 ```
@@ -1482,7 +1517,9 @@ sed "s/^id = .*/id = \"$PLUGIN_ID\"/" ~/.config/herdr/plugin/herdr-plugin.toml >
 command herdr plugin link "$PDIR" >/dev/null \
   && ok "the plugin links" || bad "plugin link failed"
 h tab close "$(h tab list --workspace "$WS" | jq -r '.result.tabs[] | select(.label=="git") | .tab_id')" >/dev/null
-command herdr plugin action invoke "$PLUGIN_ID.apply" >/dev/null 2>&1
+h plugin action invoke "$PLUGIN_ID.apply" >/dev/null 2>&1   # session-scoped: the
+# topology lives in hdev-test, and a bare `herdr plugin action invoke` would run it
+# against the default session instead.
 n=$(h tab list --workspace "$WS" | jq -r '[.result.tabs[] | select(.label=="git")] | length')
 [[ "$n" == 1 ]] && ok "the plugin action repairs a closed managed tab" || bad "git tab count = $n after repair"
 
@@ -1598,10 +1635,15 @@ configuration.
 
 Copy each installed hook script into the chezmoi source with an `executable_` prefix, at the path matching its target (as reported by `herdr integration status`):
 
+Copy from `$FIX.before` — the snapshot taken in Step 2b **before** the uninstall. `$FIX`
+itself no longer holds the hook scripts; the uninstall deleted them, which is exactly
+what Step 2b proved.
+
 ```bash
-cp "$FIX/claude/hooks/herdr-agent-state.sh" \
+mkdir -p ~/.local/share/chezmoi/dot_claude/hooks
+cp "$FIX.before/claude/hooks/herdr-agent-state.sh" \
    ~/.local/share/chezmoi/dot_claude/hooks/executable_herdr-agent-state.sh
-cp "$FIX/codex/herdr-agent-state.sh" \
+cp "$FIX.before/codex/herdr-agent-state.sh" \
    ~/.local/share/chezmoi/dot_codex/executable_herdr-agent-state.sh
 ```
 
@@ -1719,13 +1761,26 @@ REPO="$SCRATCH/proj"
 mkdir -p "$REPO" && git -C "$REPO" init -q && git -C "$REPO" commit -q --allow-empty -m init
 
 HERDR_SESSION="$SESSION" HDEV_NO_ATTACH=1 ~/.config/herdr/layout.sh "$REPO"
-print -r -- "  … start Claude in the agents tab, let it reach an idle prompt, then press Enter."
+print -r -- "  Attach with:  herdr --session $SESSION"
+print -r -- "  Wait until BOTH agents in the 'agents' tab have started and are at an idle"
+print -r -- "  prompt — layout.sh launches them, so do not start them by hand. They must"
+print -r -- "  each report a session ref before the restart, which the next check enforces."
+print -r -- "  Then detach (alt+w) and press Enter here."
 read -r
 
 # Identity, not just a count: two agents before and two after proves nothing if they
 # are different sessions. Capture the native session refs and compare them.
-BEFORE=$(h agent list | jq -rS '[.result.agents[] | {kind, session: .agent_session}] | sort')
+# AgentInfo's field is `agent`, not `kind`, and `agent_session` is NULLABLE. Comparing
+# {kind, agent_session} would have compared {null, null} against {null, null} and
+# passed no matter what happened — so require a non-null ref first.
+BEFORE=$(h agent list | jq -rS '[.result.agents[] | {agent, session: .agent_session}] | sort')
 BEFORE_N=$(h agent list | jq -r '[.result.agents[]] | length')
+NOREF=$(h agent list | jq -r '[.result.agents[] | select(.agent_session == null)] | length')
+
+[[ "$NOREF" == "0" && "$BEFORE_N" != "0" ]] \
+  && ok "every agent reports a native session ref ($BEFORE_N agents)" \
+  || { bad "$NOREF of $BEFORE_N agents have no session ref — restore cannot be tested"; \
+       print -r -- "=== $pass passed, $fail failed ==="; exit 1; }
 
 h server stop >/dev/null 2>&1
 sleep 2
