@@ -452,7 +452,7 @@ repair can *change the identity a previous run was consented to*:
 |---|---|
 | none | works standalone; sets and verifies the identity; creates **no** provisioning state |
 | exists, identity unchanged | repairs the fields, then marks `identity_applied` — the previous consent still describes this machine |
-| exists, identity **changed** | **deletes the state file entirely**, then exits telling the user to run `provision.sh` with no flags |
+| exists, identity **changed** | **deletes the state file entirely — after the `y`, before the first `scutil --set`** — then exits telling the user to run `provision.sh` with no flags |
 
 The third row is the one worth stating explicitly. Consent was given for a specific
 identity and does not transfer to a different one. Neither do the completed phases —
@@ -460,6 +460,24 @@ they ran against the old identity, and on a hostname-conditional Brewfile that m
 they may have installed the wrong machine's packages. Carrying either forward would
 let a `--resume` treat approval of `fenrir` as approval of `studio`: the
 consent-laundering bug of §4.2 arriving by a different route.
+
+**When it deletes matters as much as what it deletes.** The window is narrow and
+both edges are load-bearing: after the explicit `y`, and before the first
+`scutil --set`.
+
+Deleting *after* a successful repair would be wrong, because repair is not atomic —
+it issues three `scutil --set` calls and then a `chezmoi init`, any of which can
+fail. A failure partway through would leave the machine partly renamed to `studio`
+while a state file describing a confirmed, half-completed `fenrir` run sat beside it,
+and the natural next move — `--resume` — would consume it. Deleting *before* the `y`
+would be worse in the other direction: declining the repair would have destroyed the
+state of a perfectly good in-progress run.
+
+So: declining preserves the state file untouched. Consenting destroys it before the
+machine changes at all, which means every failure path from that point forward —
+including a crash between two `scutil` calls — leaves no cross-identity state for
+anything to resume from. The invariant is that a state file and a machine identity
+are never simultaneously in disagreement.
 
 **It deletes the whole file rather than selectively clearing markers**, and that
 choice is deliberate. An earlier draft cleared `confirmed`, `identity_applied` and
@@ -600,6 +618,11 @@ Assertions that earn their place:
     pre-migration name.
 19. `--phase` from a state with `identity_applied` whose live identity has since
     drifted is refused, naming `--repair-identity`.
+20. **Deletion timing.** With a failure injected after the first `scutil --set` — and
+    again with one injected during `chezmoi init` — the old state file is already
+    absent. Asserted on the file, not on the exit status: the point is that a repair
+    which dies halfway leaves nothing resumable behind. The mirror case is asserted
+    too: **declining** the repair leaves the state file byte-identical.
 
 Per repo convention the suite is fully mocked and runs under either sandbox mode.
 Its assertion count is added to the running baseline once green.
