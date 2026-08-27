@@ -18,8 +18,8 @@ Two smaller defects compounded it. `op signin` at step 4 assumed a configured
 1Password account, but the desktop cask that supplies CLI integration was not
 installed until step 8 — two steps *after* the apply that renders `op://` templates.
 And `configure.sh` set the hostname at the very end, long after `chezmoi init` had
-captured it, which is why `~/.config/chezmoi/chezmoi.toml` recorded `fenrir` while
-the machine answered `MacBook Pro`.
+captured it — so on a fresh machine the identity chezmoi recorded was whatever the
+machine happened to be called at clone time, not the name being provisioned.
 
 ## 2. What was built
 
@@ -92,19 +92,21 @@ suite go red.
 
 ## 5. Known consequence
 
-The live guard fails on any machine whose `ComputerName` is not in the allowlist.
-The primary workstation's `ComputerName` is `MacBook Pro` — `fenrir` comes from DHCP —
-so `chezmoi apply` fails there until the identity is set deliberately:
+The live guard fails on any machine whose `ComputerName` is not in `known_hostnames`,
+or whose `HostName` disagrees with it. Adding a machine therefore means adding it to
+`.chezmoidata/machines.toml` *before* the first `chezmoi apply`.
 
-```
-sudo scutil --set ComputerName fenrir
-sudo scutil --set HostName fenrir
-sudo scutil --set LocalHostName fenrir
-chezmoi init
-```
+The primary workstation satisfies the guard as-is: `ComputerName` and `HostName` are
+both `fenrir`, and `LocalHostName` is `fenrir-4` — the numeric suffix macOS appends on
+a Bonjour name collision, which is exactly why `LocalHostName` is excluded from the
+template guard and matched with a suffix tolerance in preflight. No migration is
+required.
 
-That is a user-authorized operation, not something provisioning performs on an
-existing machine.
+**A caution about verifying this.** During development, the agent's sandboxed shell
+consistently reported `MacBook Pro` / unset / `MacBook-Pro` for the same three
+`scutil` reads that the user's interactive shell reported as `fenrir` / `fenrir` /
+`fenrir-4`. The discrepancy was never explained. Identity claims about this machine
+should be taken from an interactive terminal, not from tooling.
 
 ## 6. Out of scope
 
