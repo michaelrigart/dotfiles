@@ -1,6 +1,6 @@
 # Provisioning Preflight (minimal) Implementation Plan
 
-**Status:** In progress — branch `feat/provisioning-preflight`, under review
+**Status:** Implemented — merged to `main` in f670f33
 **Date:** 2026-08-27
 
 **Spec:** [2026-08-27 Provisioning preflight (minimal)](../specs/2026-08-27-provisioning-preflight-minimal-design.md)
