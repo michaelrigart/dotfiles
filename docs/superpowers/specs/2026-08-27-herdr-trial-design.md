@@ -4,10 +4,11 @@
 
 **Date:** 2026-08-27
 
-**Amended:** 2026-08-27, twice, after peer review against the installed binary.
-The second pass corrected the interrupted-build contradiction, the bootstrap and
-construction sequences (which would not have run), the plugin's no-op failure mode,
-and the integration contract.
+**Amended:** 2026-08-27, three times, after peer review against the installed binary.
+The passes corrected, in order: the worktree hazard, bootstrap and path identity; the
+interrupted-build contradiction, the CLI sequence (which would not have run), the
+plugin's no-op failure mode and the integration contract; then the managed baseline,
+lock ordering, and the unowned `hooks.json`.
 
 ## Problem
 
@@ -147,10 +148,11 @@ rename would misroute `hdev`.
 Identity is the **canonical repo path**, verified through panes:
 
 1. Resolve the repo to a canonical absolute path.
-2. `herdr workspace list`, then `herdr pane list` for candidates; match on pane `cwd`.
-3. Exactly one **complete** match → `workspace focus`, exit 0.
-4. Zero matches → build.
-5. More than one match, or a label match whose path disagrees → **fail loudly**.
+2. **Acquire the per-path lock** (see "Lock ordering") — before any scan.
+3. `herdr workspace list`, then `herdr pane list` for candidates; match on pane `cwd`.
+4. Exactly one match → classify it (see "The managed baseline") and focus or repair.
+5. Zero matches → build.
+6. More than one match, or a label match whose path disagrees → **fail loudly**.
    Ambiguity is a bug, not something to guess through.
 
 Labels remain human-readable display strings (`Netronix/curato`), matching what
@@ -163,29 +165,65 @@ and its transformation is not invertible.
 
 The previous amendment introduced a provisional `(building)` label but kept
 path-based identity, which contradicted itself: a half-built workspace still has
-panes with the right `cwd`, so step 2 matches it and step 3 focuses the husk — the
-exact failure the provisional label was meant to prevent.
+panes with the right `cwd`, so the scan matches it and the focus step lands on the
+husk — the exact failure the provisional label was meant to prevent.
 
-Completeness is therefore an explicit, checked property, not an inference:
+#### The managed baseline
 
-- A workspace is **complete** when it carries the final label *and* its topology
-  matches the definition — four tabs, named `agents`, `editor`, `runtime`, `git`.
-- Anything else found at the target path is **provisional**: a build that died, or
-  one racing in another shell.
+"Four tabs named `agents`, `editor`, `runtime`, `git`" is the wrong test in both
+directions. `alt+t` exists, so adding a fifth tab is ordinary use — and would demote
+a perfectly healthy workspace to provisional, triggering repair on something that
+needs none. Meanwhile a dead build can carry all four names while missing the runtime
+split or an agent pane, and would certify as complete.
 
-`layout.sh` handles the three cases distinctly:
+Completeness is therefore defined over a **managed baseline**, not over the workspace
+as a whole:
+
+- For each managed label (`agents`, `editor`, `runtime`, `git`) there must be
+  **exactly one** tab, with its expected pane geometry — `agents` split right into
+  two panes, `runtime` split down into two, `editor` and `git` single-pane.
+- **Unmanaged tabs are ignored.** Extra tabs the user added are none of this
+  script's business, and it must never close or renumber them.
+- A workspace is **complete** when every managed label is present and well-formed,
+  and carries the final label.
+- **Provisional** means one or more managed tabs are missing.
+- **Malformed** means a managed label appears more than once, or its geometry is
+  wrong. This **fails non-destructively** — reported, never silently "fixed".
+  Repairing a duplicate means choosing which one to destroy, and nothing here knows
+  enough to make that choice safely.
+
+`layout.sh` then handles:
 
 - **Complete** → focus, exit 0.
-- **Provisional, not locked** → stale. Repair it by creating the missing tabs, then
-  rename to the final label. Repair is preferred over close-and-rebuild because the
-  workspace may contain a running agent the user cares about.
-- **Provisional, lock held** → another build is in flight. Fail with a message
-  saying so; do not race it.
+- **Provisional** → repair: create only the missing managed tabs, then rename to the
+  final label. Repair beats close-and-rebuild because the workspace may hold a
+  running agent the user cares about.
+- **Malformed** → fail with what was found and what was expected.
 
 Belt and braces: the build runs under a trap that closes the workspace it created if
-it fails partway. The trap handles the common case (a command errors); stale
-detection handles the case the trap cannot (SIGKILL, a lost server). Both are
+it fails partway. The trap covers the common case (a command errors); baseline
+detection covers what the trap cannot reach (SIGKILL, a lost server). Both are
 needed — neither alone is sufficient.
+
+#### Repair cannot reorder, so nothing may depend on order
+
+`herdr tab` offers `list`, `create`, `get`, `focus`, `rename` and `close` — there is
+**no move**. A repaired tab is therefore appended, and a repaired workspace can have
+its managed tabs in any order.
+
+Any position-based tab jump is consequently unsound: after one repair, `alt+e` could
+land on `git`. Tab jumps resolve by **unique label**, never by index. See
+"Keybindings".
+
+#### Lock ordering
+
+The lock must be acquired **before any classification**, and the scan repeated
+underneath it.
+
+Classifying first and locking second permits a delayed duplicate: caller B scans and
+sees no workspace, waits while A builds and releases, then acquires the lock and acts
+on its stale observation — creating a second workspace for the same repo. Scanning
+under the lock is what makes the decision and the action atomic.
 
 The lock is per canonical repo path, in the style of `_wt_lock`, released on every
 exit path.
@@ -202,23 +240,33 @@ Flags below are as the installed 0.8.2 accepts them. An earlier draft used
 have failed at the first tab.
 
 ```
-workspace create --cwd <repo> --label "<label> (building)" --focus
+workspace create --cwd <repo> --label "<label> (building)" --no-focus
   → ws = .result.workspace.workspace_id
     t1 = .result.tab.tab_id          (rename → "agents")
     p1 = .result.root_pane.pane_id
 
-pane split --pane <p1> --direction right      → p2 = .result.pane.pane_id
+pane split --pane <p1> --direction right --cwd <repo>   → p2 = .result.pane.pane_id
 pane run <p1> "claude"
 pane run <p2> "codex"
 
-tab create --workspace <ws> --label editor    → root pane pe  → pane run <pe> "nvim ."
-tab create --workspace <ws> --label runtime   → root pane pr
-pane split --pane <pr> --direction down                        (two shells, nothing auto-run)
-tab create --workspace <ws> --label git       → root pane pg  → pane run <pg> "lazygit"
+tab create --workspace <ws> --label editor  --cwd <repo> → root pane pe → pane run <pe> "nvim ."
+tab create --workspace <ws> --label runtime --cwd <repo> → root pane pr
+pane split --pane <pr> --direction down --cwd <repo>      (two shells, nothing auto-run)
+tab create --workspace <ws> --label git     --cwd <repo> → root pane pg → pane run <pg> "lazygit"
 
 workspace rename <ws> "<label>"
+workspace focus <ws>
 tab focus <t1>
 ```
+
+`--cwd <repo>` is passed explicitly at every creation rather than relying on
+`new_cwd = "follow"`, whose inheritance depends on the source pane — which, during a
+scripted build with focus deliberately withheld, is not a well-defined thing to
+inherit from.
+
+Construction runs `--no-focus` and focuses only once the workspace is complete. A
+half-built workspace should never be the thing the user is looking at, and on a
+repair the user is by definition already somewhere they chose to be.
 
 Capturing each tab's `root_pane` is load-bearing. `tab create` does not focus new
 tabs by default, so a bare `pane split --direction down` has no defined target and
@@ -253,8 +301,9 @@ apply nothing — a silent no-op, and the most confusing possible outcome.
   a path lookup.
 - Inspect its topology and create only what is missing, reusing the repair path
   above.
-- No-op with an explicit message when the topology is already complete, rather than
-  silently.
+- Report the outcome — repaired, already complete, or malformed — through
+  `herdr notification show`, not only the plugin log. A key-invoked action whose
+  result is buried in a log file is indistinguishable from a broken keybinding.
 
 This makes the action genuinely useful — repairing a workspace whose tabs were
 closed — rather than decorative.
@@ -289,12 +338,12 @@ Touchpoints, to be confirmed by install-and-diff before anything is committed:
 | Claude | `~/.claude/hooks/herdr-agent-state.sh`, hook entries in `settings.json` | removes both |
 | Codex | `~/.codex/herdr-agent-state.sh`, entries in `hooks.json`, `[features] hooks = true` in `config.toml` | removes hook + `hooks.json` entries; **deliberately leaves `config.toml` unchanged** |
 
-Three mechanics follow, all of which must be solved in chezmoi rather than left to
-the installer:
+Four mechanics follow, all of which must be solved in chezmoi rather than left to the
+installer. **Every touchpoint needs an owner**: `.chezmoiignore` allowlists both
+`.claude/*` (lines 57-66) and `.codex/*` (lines 73-78), so anything without one is
+silently dropped on the next provision.
 
-- **`.chezmoiignore` is an allowlist for `.claude`.** Lines 57-66 ignore `.claude/*`
-  and re-include named entries individually. Both hook scripts need explicit `!`
-  re-inclusions or they will never deploy.
+- **Both hook scripts need explicit `!` re-inclusions** or they will never deploy.
 - **`settings.json` is already rewritten in place** by
   `dot_claude/modify_private_settings.json`, which owns the `hooks` block. Herdr's
   hook registration must merge into that script; leaving it to the installer means
@@ -303,6 +352,16 @@ the installer:
   which pins `features.*` via `setValueAtPath`. `features.hooks` must be pinned
   there. Because Herdr's uninstall deliberately leaves the flag set, rollback has to
   restore its prior value explicitly — nothing else will.
+- **`~/.codex/hooks.json` has no owner at all**, and that is the dangerous one. The
+  re-inclusion list is `AGENTS.md`, `config.toml` and `themes/` — `hooks.json` is
+  not among them. Reprovisioning a machine would therefore deploy Codex's hook
+  script *and* set `features.hooks = true`, while never writing the registration
+  that connects them: Codex cold restore would silently stop working, with every
+  visible artifact present and correct.
+
+  It needs a merge-preserving `dot_codex/modify_private_hooks.json` that adds only
+  Herdr's entries and leaves any other hook registration intact, plus its own
+  `.chezmoiignore` re-inclusion. Rollback removes Herdr's entries, not the file.
 
 Sandbox note: `~/.claude/hooks` and `~/.claude/settings.json` are write-denied, so
 installation and the subsequent `chezmoi apply` need an unsandboxed shell.
@@ -312,9 +371,16 @@ installation and the subsequent `chezmoi apply` need an unsandboxed shell.
 `~/.config/herdr/config.toml`, chezmoi-managed, carrying only deliberate divergences
 from `herdr --default-config` so upstream default changes stay visible.
 
-`onboarding = false` is pinned. Left unset, first run shows onboarding and may write
-back to the config file — which chezmoi manages, so the write would show up as drift
-and be reverted on the next apply.
+Two settings are pinned rather than left to defaults:
+
+- `onboarding = false`. Left unset, first run shows onboarding and may write back to
+  the config file — which chezmoi manages, so the write would surface as drift and be
+  reverted on the next apply.
+- `session.resume_agents_on_restore = true`. It is the shipped default but arrives
+  commented out, and it is the single setting the integrations exist to serve. The
+  default config notes it "requires official integrations that report session refs",
+  which is exactly what installing Claude and Codex provides. Pinning it makes the
+  dependency legible in one place.
 
 ### Theme
 
@@ -342,7 +408,11 @@ Two bindings have no native equivalent:
 
 - **Tab jumps (`alt+a`/`e`/`r`/`g`).** `switch_tab` is range-only (`"prefix+1..9"`);
   there is no `switch_tab_1`, and `tab.focus` takes a `tab_id`, not an index. Each
-  key runs `tab-goto.sh <n>` via `[[keys.command]]`.
+  key runs `tab-goto.sh <label>` via `[[keys.command]]`, resolving the **label** —
+  `agents`, `editor`, `runtime`, `git` — to its `tab_id` in the active workspace.
+  Never an index: repair appends, `herdr tab` has no move, and a user's own `alt+t`
+  tab shifts every position after it. A label that is missing or ambiguous produces a
+  message, not a jump to the wrong tab.
 - **Scratch popup (`alt+p`).** `type = "popup"` — session-modal, does not disturb the
   tab layout. The on-demand `bin/rails console` slot, and a better fit than Zellij's
   floating layer, where `Alt+n` created *floating* panes while the layer was visible.
@@ -384,9 +454,10 @@ dot_config/herdr/executable_layout.sh      → topology definition, both modes
 dot_config/herdr/executable_tab-goto.sh    → tab focus by index
 dot_config/herdr/plugin/herdr-plugin.toml  → registers dev.layout.apply
 dot_config/zsh/functions                   → += hdev()   (dev/wt/wt-rm untouched)
-.chezmoiignore                             → re-include both agent hook scripts
+.chezmoiignore                             → re-include both hook scripts + hooks.json
 dot_claude/modify_private_settings.json    → merge Herdr hook registration
 dot_codex/modify_private_config.toml       → pin features.hooks
+dot_codex/modify_private_hooks.json        → merge Herdr entries into hooks.json (new owner)
 dot_claude/…, dot_codex/…                  → the two hook scripts
 .scripts/test-hdev.sh                      → mocked test
 .scripts/test-hdev-topology.sh             → live, isolated session
@@ -437,23 +508,45 @@ Against `herdr --session hdev-test`, never the live session:
 
 - Cold bootstrap with no server running, including the backgrounding and the
   readiness probe.
-- Concurrent `hdev` invocations: one server, one workspace.
-- Actual resulting topology: four tabs, correct pane counts and split directions.
-- Duplicate-path handling and interrupted-build repair.
+- **Concurrency, on the schedule that actually breaks it.** Launching two `hdev`
+  calls at once mostly proves nothing — the interesting interleaving is B scanning,
+  A building and releasing, *then* B acquiring. Force that order explicitly; a race
+  test that only ever passes by luck is not a test.
+- Actual resulting topology: managed labels present, correct pane counts and split
+  directions.
+- Extra unmanaged tabs are tolerated, not "repaired" away.
+- A duplicated managed label fails non-destructively.
+- Interrupted-build repair, and label-resolved tab jumps landing correctly *after* a
+  repair has appended a tab out of order.
 - Key-command context: what is actually injected.
 
 A named session isolates the socket and runtime state. It does **not** isolate plugin
-registration, which is global — so `plugin link` / `unlink` is exercised here with
-that understood, and torn down explicitly.
+registration, which is global — so this test links under a **distinct plugin id**
+(`dev.layout.test`). Reusing the real id would let teardown unlink the plugin the
+live setup depends on.
 
 ### Live, uncontained — `.scripts/test-hdev-integrations.sh`
 
 Integrations touch real `~/.claude` and `~/.codex`; no named session isolates them.
-Run deliberately, unsandboxed, with the files backed up first:
+The test is therefore split in two, so that only the part which *must* touch real
+config does.
+
+**Against temporary fixtures** — `CLAUDE_CONFIG_DIR` and `CODEX_HOME` pointed at
+scratch directories (both to be confirmed as honoured by the installer before the
+plan relies on them):
 
 - Install, and diff what actually changed against the table above.
-- Cold restore across a full server restart: agents resumed by session reference.
-- Uninstall, confirming `features.hooks` is left set and rollback restores it.
+- Uninstall, confirming `features.hooks` is left set and that removal touches only
+  Herdr's entries in `hooks.json`.
+
+**Against the real config, once** — after the chezmoi sources are in place and
+applied normally, cold restore is exercised in a dedicated named session. It does
+**not** reinstall the integrations; it verifies the ones chezmoi deployed.
+
+Every test runs under a cleanup trap that restores prior registry and config state on
+any exit path, including interruption. Diffs report *which keys* changed — never a
+dump of `settings.json`, `hooks.json` or `config.toml`, which carry credentials and
+machine state.
 
 ## Known limitations
 
@@ -501,16 +594,22 @@ if agent status proves a novelty that does not change behaviour.
 
 1. `herdr integration uninstall claude` and `… codex`. Restore `features.hooks` to
    its prior value in `dot_codex/modify_private_config.toml` — Herdr's uninstall
-   deliberately will not. Revert the `modify_private_settings.json` merge and the
-   `.chezmoiignore` re-inclusions.
+   deliberately will not. Revert the `modify_private_settings.json` merge, remove
+   `dot_codex/modify_private_hooks.json`, and revert the `.chezmoiignore`
+   re-inclusions.
 2. `herdr plugin unlink <plugin-id>` — registration is global, so this is required
    even if the trial session is gone.
-3. Confirm no pane processes are worth keeping — **`herdr server stop` terminates
-   every process in every pane** — then stop the server.
-4. Delete `dot_config/herdr/`, `hdev`, all three test scripts.
+3. **Enumerate sessions and stop each**, default and named alike. Each named session
+   has its own socket and survives independently; stopping the default one leaves the
+   others running. Before each: confirm no pane processes are worth keeping —
+   **`herdr server stop` terminates every process in every pane.**
+4. Delete `dot_config/herdr/`, `hdev`, all three test scripts, then `chezmoi apply`
+   so the reverted sources actually reach `$HOME` — deleting a chezmoi source alone
+   changes nothing on disk. Reload open shells, which still hold the old `hdev`.
 5. Drop the Brewfile line; `brew uninstall herdr`.
-6. Remove leftover unmanaged state: `~/.config/herdr/` (logs, session state, plugin
-   registry) and `~/.herdr/` if present.
+6. `~/.config/herdr/` holds logs, stopped-session state and the plugin registry, so
+   it is **archived, not deleted** — moved aside, with removal left as an explicit
+   separate decision once nothing is needed from it. Same for `~/.herdr/` if present.
 
 Zellij, `dev`, `wt` and `wt-rm` are untouched throughout, so rollback is deletion
 plus an uninstall, never a restoration.
