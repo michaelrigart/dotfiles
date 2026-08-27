@@ -292,8 +292,15 @@ case "$*" in
     # Direction is per-pane, looked up in a map file the fixture writes: "<pane> <dir>"
     # per line. A map beats an env var because the stub is a separate process and the
     # answer differs per tab — agents is split right, runtime down.
-    pid="${*##*--pane }"; pid="${pid%% *}"
-    dir=$(awk -v p="$pid" '$1==p {print $2; exit}' "${MOCK_LAYOUT_FILE:-/dev/null}" 2>/dev/null)
+    # Walk argv for --pane. NOT "${*##*--pane }": on $* bash applies the pattern to
+    # each positional parameter rather than the joined string, so the id never
+    # extracted, every lookup missed, and the direction check silently always passed.
+    pid=""; prev=""
+    for a in "$@"; do [ "$prev" = "--pane" ] && pid="$a"; prev="$a"; done
+    # LAST match wins: mock_topology writes the healthy defaults, then a test appends
+    # mock_split_dir to override one pane. First-match-wins would ignore the override
+    # and quietly turn the wrong-direction test into one that can never detect it.
+    dir=$(awk -v p="$pid" '$1==p {d=$2} END {print d}' "${MOCK_LAYOUT_FILE:-/dev/null}" 2>/dev/null)
     printf '{"result":{"splits":[{"direction":"%s"}]}}' "${dir:-right}" ;;
   *) exit 0 ;;
 esac
