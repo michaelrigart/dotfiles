@@ -71,12 +71,12 @@ macOS dotfiles managed with chezmoi, featuring XDG compliance, 1Password secret 
 │   └── test-wt-functions.sh  # mocked test for dev/wt/wt-rm in dot_config/zsh/functions
 ├── dot_config/               # → ~/.config/
 │   ├── bundler/config.tmpl   # ⚠️  Contains 1Password secrets
-│   ├── chezmoi/              # Chezmoi configuration
 │   ├── git/                  # Git config, aliases, templates
 │   ├── homebrew/Brewfile     # Package definitions
 │   ├── zsh/                  # Shell: zshenv, config, aliases
 │   └── ...                   # Other app configs
 ├── private_dot_ssh/          # ⚠️  SSH key templates from 1Password
+├── .chezmoi.toml.tmpl       # Chezmoi's own config; MUST stay at the source root
 ├── .chezmoiignore           # Excludes from chezmoi apply
 ├── .chezmoiversion          # Minimum version: 2.40.0
 ├── .gitignore               # Protects against committing secrets
@@ -155,7 +155,7 @@ grep -L "onepassword" private_dot_ssh/private_*.tmpl
 ```
 
 ### Available Data Variables
-From `dot_config/chezmoi/chezmoi.toml.tmpl`:
+From `.chezmoi.toml.tmpl` (source root — rendered by `chezmoi init`, not by `apply`):
 - `{{ .name }}` - "Michaël Rigart"
 - `{{ .email }}` - "michael@netronix.be"
 - `{{ .hostname }}` - Computer name
