@@ -1,0 +1,55 @@
+# Herdr configuration — managed by chezmoi
+# (source: dot_config/herdr/config.toml → ~/.config/herdr/config.toml)
+#
+# Only deliberate divergences from `herdr --default-config` live here. Anything
+# omitted follows the shipped default, so an upstream default change surfaces as a
+# behaviour change rather than being silently pinned.
+#
+# Keybinding model mirrors the Zellij setup it runs beside:
+#   Ctrl-h/j/k/l  → move between panes
+#   Alt + <key>   → tabs, zoom, panes, detach
+# Alt rather than digits because digits need Shift on AZERTY. Ghostty is configured
+# `macos-option-as-alt = left`, so this works from the LEFT Option key only.
+
+# First run otherwise shows onboarding and may write back to this file, which chezmoi
+# owns — the write would surface as drift and be reverted on the next apply.
+onboarding = false
+
+[theme]
+name = "tokyo-night"
+
+[session]
+# The single setting the Claude/Codex integrations exist to serve. It is the shipped
+# default but arrives commented out; pinning it keeps the dependency legible.
+resume_agents_on_restore = true
+
+[keys]
+# Kept as an escape hatch. Unlike Zellij's stock Ctrl leaders, herdr's prefix does not
+# shadow shell readline or Neovim keys, so nothing needs clearing.
+prefix = "ctrl+b"
+
+zoom = "alt+z"
+split_vertical = "alt+n"
+new_tab = "alt+t"
+detach = "alt+w"
+toggle_sidebar = "alt+b"
+
+focus_pane_left = "ctrl+h"
+focus_pane_down = "ctrl+j"
+focus_pane_up = "ctrl+k"
+focus_pane_right = "ctrl+l"
+
+# Deliberately no alt+k: herdr 0.8.2 has no clear method. The only implementation
+# would inject control sequences into whatever occupies the pane, which corrupts
+# Neovim's state or sends stray input to a live agent.
+
+# The on-demand `bin/rails console` slot. Session-modal, so it does not disturb the
+# tab layout — better than Zellij's floating layer, where Alt-n added *floating* panes
+# while the layer was visible.
+[[keys.command]]
+key = "alt+p"
+type = "popup"
+command = "exec \"${SHELL:-sh}\""
+description = "scratch shell"
+width = "80%"
+height = "80%"

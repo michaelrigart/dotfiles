@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-27-herdr-trial-design.md`
 
-**Status:** Approved
+**Status:** In progress
 
 ## Global Constraints
 
@@ -145,13 +145,28 @@ chezmoi apply ~/.config/herdr/config.toml
 
 Run **unsandboxed**. Expected: file appears at `~/.config/herdr/config.toml`.
 
-- [ ] **Step 3: Verify the config parses**
+- [ ] **Step 3: Validate the config**
+
+Use `herdr config check`. **Not** `herdr status client` — that reports nothing about
+config validity: a file containing `not_a_real_action = "alt+q"` produces byte-identical
+output to a good one, so checking there is a step that cannot fail.
 
 ```bash
-herdr status client
+herdr config check
 ```
 
-Expected: version `0.8.2`, no config parse error on stderr. A bad key name is reported here.
+Expected: `config: ok`.
+
+Note `config check` **exits 0 either way** — the same exit-status trap as
+`herdr status server`. The string is the signal. Confirm the check can go red before
+trusting it green:
+
+```bash
+printf '[keys]\nnot_a_real_action = "alt+q"\n' > "$TMPDIR/bad.toml"
+HERDR_CONFIG_PATH="$TMPDIR/bad.toml" herdr config check
+```
+
+Expected: `config: issues found` / `unknown config key keys.not_a_real_action`.
 
 - [ ] **Step 4: Falsify the Alt bindings by hand**
 
