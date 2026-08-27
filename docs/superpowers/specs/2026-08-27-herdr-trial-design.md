@@ -152,8 +152,14 @@ Identity is the **canonical repo path**, verified through panes:
 3. `herdr workspace list`, then `herdr pane list` for candidates; match on pane `cwd`.
 4. Exactly one match → classify it (see "The managed baseline") and focus or repair.
 5. Zero matches → build.
-6. More than one match, or a label match whose path disagrees → **fail loudly**.
-   Ambiguity is a bug, not something to guess through.
+6. More than one match → **fail loudly**. Ambiguity is a bug, not something to guess
+   through.
+
+A workspace whose *label* looks right but whose panes sit elsewhere is simply **not a
+match**, and the repo builds its own workspace. An earlier revision called for failing
+loudly there too; that was vestigial label-thinking. Once identity is the path, the
+label carries no authority, and treating a cosmetic string collision as an error would
+make renaming a workspace break `hdev`.
 
 Labels remain human-readable display strings (`Netronix/curato`), matching what
 `dev`'s picker prints. They are no longer load-bearing.

@@ -10,6 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-27-herdr-trial-design.md`
 
+**Status:** Approved — not started
+
 ## Global Constraints
 
 - **Branch:** `feat/herdr-trial`. Commit per task. **Never add agent attribution** to commit messages — no `Co-authored-by`, no "Generated with", no session links.
@@ -30,6 +32,37 @@
 - **Tab jumps resolve by unique label, never by index.**
 - **Construction passes `--cwd <repo>` explicitly and runs `--no-focus`** until complete.
 - Tests pin exact values. A test that cannot go red is not coverage.
+
+---
+
+### Task 0: Branch and preflight
+
+Everything after this touches deployed config. Do it from a branch, not `main`.
+
+**Files:** none.
+
+- [ ] **Step 1: Confirm a clean tree and branch**
+
+```bash
+cd ~/.local/share/chezmoi
+git status --short          # must be empty
+git checkout -b feat/herdr-trial
+```
+
+Expected: empty status, then `feat/herdr-trial`. **If the tree is dirty, stop** — an
+unrelated in-flight change must not be swept into this work.
+
+- [ ] **Step 2: Confirm the binary matches the plan's assumptions**
+
+```bash
+herdr --version                                  # expect 0.8.2 or later
+herdr tab create -h  | grep -q -- --workspace  && echo "tab --workspace OK"
+herdr pane split -h  | grep -q -- --pane       && echo "pane --pane OK"
+herdr tab 2>&1       | grep -q "tab move"      && echo "WARNING: tab move now exists"
+```
+
+Expected: both `OK` lines; no warning. A newer herdr that renamed a flag invalidates
+the construction sequence — stop and report rather than adapting silently.
 
 ---
 
@@ -199,7 +232,9 @@ eq()       { [[ "$1" == "$2" ]] && _pass "$3" || _fail "$3 ('$1' != '$2')" }
 logged()   { [[ "$(<$HLOG)" == *"$1"* ]] && _pass "$2" || _fail "$2" }
 unlogged() { [[ "$(<$HLOG)" == *"$1"* ]] && _fail "$2" || _pass "$2" }
 # Count exact-match invocation lines — presence alone cannot catch a duplicate.
-count_logged() { grep -Fxc -- "$1" "$HLOG" 2>/dev/null || print -r -- 0 }
+# grep -c prints "0" *and* exits 1 on no match, so `|| print 0` would emit two zeroes
+# and every count comparison would silently compare against "0\n0".
+count_logged() { grep -Fxc -- "$1" "$HLOG" 2>/dev/null | head -1 }
 
 TMPROOT="${TMPDIR:-/tmp}"
 mkd() { mktemp -d "${TMPROOT%/}/hdev-test.XXXXXX" }
@@ -228,7 +263,11 @@ case "$*" in
     exit_rc="${MOCK_WS_CREATE_RC:-0}"; [ "$exit_rc" != 0 ] && exit "$exit_rc"
     printf '%s' '{"result":{"workspace":{"workspace_id":"w7"},"tab":{"tab_id":"w7:t4"},"root_pane":{"pane_id":"w7:p3"}}}' ;;
   "tab create"*)
-    n="${MOCK_TAB_SEQ:-1}"
+    # The counter lives in a FILE, not a variable: the stub is a separate process per
+    # call, so an exported variable could never advance and every tab would come back
+    # with identical ids — a fixture that hides exactly the id-reuse bug it should catch.
+    n=$(( $(cat "$MOCK_TAB_SEQ_FILE" 2>/dev/null || echo 0) + 1 ))
+    printf '%s' "$n" > "$MOCK_TAB_SEQ_FILE"
     if [ -n "${MOCK_TAB_CREATE_FAIL_AT:-}" ] && [ "$n" = "$MOCK_TAB_CREATE_FAIL_AT" ]; then
       printf '%s' '{"error":{"code":"internal","message":"boom"}}' >&2; exit 1
     fi
@@ -246,6 +285,7 @@ mock_reset() {
   export MOCK_PANE_LIST='{"result":{"panes":[]}}'
   export MOCK_TAB_LIST='{"result":{"tabs":[]}}'
   export MOCK_WS_CREATE_RC=0
+  export MOCK_TAB_SEQ_FILE="$(mktemp "${TMPROOT%/}/tabseq.XXXXXX")"; print -n 0 > "$MOCK_TAB_SEQ_FILE"
   unset MOCK_TAB_CREATE_FAIL_AT MOCK_STATUS
 }
 
@@ -272,7 +312,20 @@ mkrepo() {  # <path> — a real git repo
 
 print -r -- "=== hdev test suite ==="
 mock_reset
+
+# --- summary ----------------------------------------------------------------
+# Defined NOW, not in the last task. Without it Tasks 3-7 exit 0 while assertions
+# fail, and each of those tasks commits green on a suite that never gated anything.
+# Every later task inserts its section ABOVE this block.
+finish() {
+  print -r -- ""
+  print -r -- "=== $pass passed, $fail failed ==="
+  (( fail == 0 ))
+}
+finish
 ```
+
+Later tasks insert their sections immediately **above** the `finish` call — never after it.
 
 - [ ] **Step 2: Run it**
 
@@ -470,11 +523,13 @@ git commit -m "Add hdev: repo resolution and the linked-worktree guard"
 # --- C: bootstrap -----------------------------------------------------------
 print -r -- "-- C: bootstrap"
 
-run_layout() {  # remaining args go to layout.sh
+# HOME must be the fixture root: hl_label derives the label from $HOME/Code, so
+# without it every expected label in this suite would be wrong.
+run_layout() {  # <mock-setup> <layout.sh args...>
   mock_reset
-  eval "$1"     # per-test mock overrides
+  eval "$1"
   shift
-  OUT="$(zsh "$LAYOUT" "$@" 2>&1)"; RC=$?
+  OUT="$(HOME="$ROOTTMP" HDEV_NO_ATTACH=1 zsh "$LAYOUT" "$@" 2>&1)"; RC=$?
 }
 
 # Inside herdr: never starts a server, never attaches a client.
@@ -573,6 +628,17 @@ main() {
   fi
 
   # Workspace handling arrives in Tasks 5-8.
+
+  hl_attach
+}
+
+# hl_attach — from a shell, the point of hdev is to end up *inside* Herdr. Build or
+# focus first, then hand the terminal over. Inside Herdr there is nothing to attach to,
+# and HDEV_NO_ATTACH lets tests and scripted runs stop short of a blocking TUI.
+hl_attach() {
+  [[ -n "${HERDR_ENV:-}" ]] && return 0
+  [[ -n "${HDEV_NO_ATTACH:-}" ]] && return 0
+  exec command herdr
 }
 
 main "$@"
@@ -644,19 +710,26 @@ Add to `layout.sh` above `main`:
 # repeated underneath it: classifying first and locking second permits a delayed
 # duplicate, where B scans empty, waits while A builds and releases, then acts on its
 # stale observation and creates a second workspace for the same repo.
+#
+# `zsystem flock`, matching _wt_lock in zsh/functions — NOT a mkdir sentinel. The
+# reason is stated there: an fcntl record lock is released by the kernel when the
+# process dies, "the backstop for every path an explicit unlock cannot reach." A
+# mkdir lock has no such backstop, so one SIGKILL would wedge that repository until
+# someone removed the directory by hand.
+#
+# zsystem opens but does not create the lock file, so it must exist first.
 hl_lock() {
-  local key="${1//\//-}" dir="${TMPDIR:-/tmp}/herdr-layout-lock"
+  local key="${1//\//-}" dir="${XDG_STATE_HOME:-$HOME/.local/state}/herdr-layout"
   mkdir -p "$dir"
   HL_LOCKFILE="$dir/${key#-}.lock"
-  exec {HL_LOCKFD}>"$HL_LOCKFILE"
-  # zsh has no flock builtin; use a directory as the atomic primitive.
-  HL_LOCKDIR="${HL_LOCKFILE%.lock}.d"
-  local i=0
-  while ! mkdir "$HL_LOCKDIR" 2>/dev/null; do
-    (( i++ > 200 )) && die "another layout.sh holds the lock for $1"
-    sleep 0.05
-  done
-  trap 'rmdir "$HL_LOCKDIR" 2>/dev/null' EXIT INT TERM
+  : >>"$HL_LOCKFILE"
+  zmodload -F zsh/system b:zsystem 2>/dev/null
+
+  [[ -n "${HL_LOCK_DELAY:-}" ]] && sleep "$HL_LOCK_DELAY"
+
+  if ! zsystem flock -t 10 "$HL_LOCKFILE" 2>/dev/null; then
+    die "another layout.sh has held the lock for $1 for over 10s"
+  fi
   [[ -n "${HL_TRACE_LOCK:-}" ]] && print -r -- "LOCK-ACQUIRED"
 }
 
@@ -810,7 +883,10 @@ hl_classify() {
           '[.result.panes[] | select(.tab_id == $t)] | length')
     local want=1
     [[ "$label" == agents || "$label" == runtime ]] && want=2
-    if [[ "$n" != "$want" && "$n" != "0" ]]; then
+    # Zero panes is malformed, not "not yet checked". An earlier draft exempted 0 to
+    # keep a thin fixture green — precisely the escape hatch that makes a test unable
+    # to go red.
+    if [[ "$n" != "$want" ]]; then
       print -r -- "malformed: tab '$label' has $n panes, expected $want"; return 0
     fi
   done
@@ -984,7 +1060,7 @@ hl_build() {
 
   # Close what we created if anything below fails. The trap covers a command erroring;
   # baseline classification covers what it cannot reach (SIGKILL, a lost server).
-  trap "command herdr workspace close $ws >/dev/null 2>&1; rmdir '${HL_LOCKDIR:-}' 2>/dev/null" EXIT INT TERM
+  trap "command herdr workspace close $ws >/dev/null 2>&1" EXIT INT TERM
 
   hl_api tab rename "$t1" agents >/dev/null
   local right
@@ -999,7 +1075,7 @@ hl_build() {
   done
 
   hl_api workspace rename "$ws" "$label" >/dev/null
-  trap 'rmdir "${HL_LOCKDIR:-}" 2>/dev/null' EXIT INT TERM
+  trap - EXIT INT TERM   # the workspace is complete; stop closing it on exit
   hl_api workspace focus "$ws" >/dev/null
   hl_api tab focus "$t1" >/dev/null
 }
@@ -1070,11 +1146,9 @@ mock_reset; mock_tabs agents agents
 OUT="$(HERDR_ACTIVE_WORKSPACE_ID=w7 zsh "$TABGOTO" agents 2>&1)"; RC=$?
 rc_is 1 "H4 an ambiguous label fails rather than picking one"
 unlogged "tab focus" "H4 no tab is focused"
-
-print -r -- ""
-print -r -- "=== $pass passed, $fail failed ==="
-(( fail == 0 ))
 ```
+
+(Inserted above the existing `finish` call from Task 2, which already gates the exit status.)
 
 - [ ] **Step 2: Run to verify they fail**
 
@@ -1237,6 +1311,19 @@ Extend `main` in `layout.sh`:
     local repo
     repo="$(hl_api pane list --workspace "$ws" | jq -r '.result.panes[0].cwd')"
     [[ -n "$repo" && "$repo" != null ]] || die "workspace $ws has no pane cwd to work from"
+    repo="${repo:A}"
+
+    # The worktree guard is a property of the design, not of one entry point. A
+    # workspace created by hand in a wt worktree could otherwise be repaired — and
+    # grown — through the plugin, reopening the husk hazard hdev refuses.
+    if [[ -f "$repo/.git" ]]; then
+      hl_notify "Project layout" "Refusing: $repo is a linked worktree."
+      die "$repo is a linked worktree — refusing (see the worktree guard)"
+    fi
+
+    # Same lock as the path mode. Two plugin invocations, or a plugin racing an hdev,
+    # would otherwise both see a tab missing and both create it.
+    hl_lock "$repo"
 
     local verdict; verdict="$(hl_classify "$ws" "$(hl_label "$repo")")" || exit 1
     case "$verdict" in
@@ -1368,28 +1455,52 @@ h tab list --workspace "$WS" | jq -e '.result.tabs[] | select(.label=="notes")' 
 #    releases, THEN B acquires. Launching two at once mostly proves nothing.
 REPO2="$SCRATCH/Code/Test/proj2"
 mkdir -p "$REPO2" && git -C "$REPO2" init -q && git -C "$REPO2" commit -q --allow-empty -m init
-( HERDR_SESSION="$SESSION" HDEV_NO_ATTACH=1 HL_SCAN_DELAY=2 ~/.config/herdr/layout.sh "$REPO2" ) &
+# B sleeps BEFORE taking the lock, so it arrives after A has built and released —
+# the stale-observation schedule. Launching two at once would usually serialise
+# harmlessly and prove nothing.
+( HERDR_SESSION="$SESSION" HDEV_NO_ATTACH=1 HL_LOCK_DELAY=3 ~/.config/herdr/layout.sh "$REPO2" ) &
 B=$!
-sleep 0.3
+sleep 0.2
 HERDR_SESSION="$SESSION" HDEV_NO_ATTACH=1 ~/.config/herdr/layout.sh "$REPO2" >/dev/null 2>&1
 wait $B 2>/dev/null || true
-n=$(h workspace list | jq -r --arg d "$REPO2" \
-      '[.result.panes? // empty] | length' 2>/dev/null || print 0)
 n=$(h pane list | jq -r --arg d "$REPO2" \
       '[.result.panes[] | select(.cwd == $d) | .workspace_id] | unique | length')
 [[ "$n" == 1 ]] && ok "the delayed-acquisition race yields one workspace" || bad "$n workspaces for one repo"
+
+# 6. Split directions, not just pane counts. Two panes side by side and two stacked
+#    are both "2"; only the geometry says which layout was actually built.
+RT=$(h tab list --workspace "$WS" | jq -r '.result.tabs[] | select(.label=="runtime") | .tab_id')
+h pane layout --pane "$(h pane list --workspace "$WS" | jq -r --arg t "$RT" \
+    '[.result.panes[] | select(.tab_id==$t)][0].pane_id')" \
+  | jq -e '.result | tostring | test("down|vertical|row")' >/dev/null \
+  && ok "runtime is split down" || bad "runtime is not split down"
+
+# 7. The plugin: link under a DISTINCT id, invoke it, unlink. Registration is global,
+#    so reusing dev.layout would let this teardown unlink the real one.
+PDIR="$SCRATCH/plugin"; mkdir -p "$PDIR"
+sed "s/^id = .*/id = \"$PLUGIN_ID\"/" ~/.config/herdr/plugin/herdr-plugin.toml > "$PDIR/herdr-plugin.toml"
+command herdr plugin link "$PDIR" >/dev/null \
+  && ok "the plugin links" || bad "plugin link failed"
+h tab close "$(h tab list --workspace "$WS" | jq -r '.result.tabs[] | select(.label=="git") | .tab_id')" >/dev/null
+command herdr plugin action invoke "$PLUGIN_ID.apply" >/dev/null 2>&1
+n=$(h tab list --workspace "$WS" | jq -r '[.result.tabs[] | select(.label=="git")] | length')
+[[ "$n" == 1 ]] && ok "the plugin action repairs a closed managed tab" || bad "git tab count = $n after repair"
 
 print -r -- "=== $pass passed, $fail failed ==="
 (( fail == 0 ))
 ```
 
-- [ ] **Step 2: Add the scan delay hook**
+- [ ] **Step 2: Confirm the race hook is in the right place**
 
-`HL_SCAN_DELAY` exists only to make the race deterministic. In `hl_find_workspace`, after the trace line:
+`HL_LOCK_DELAY` (added in Task 5's `hl_lock`) sleeps **before** acquiring the lock, which is what makes the delayed-acquisition schedule deterministic: B arrives late, A completes and releases, then B acquires and must rescan underneath the lock.
+
+A delay placed *after* acquisition would prove nothing — it would only slow down a caller that already holds the lock, which is the case that was never in doubt. Verify `hl_lock` contains:
 
 ```zsh
-  [[ -n "${HL_SCAN_DELAY:-}" ]] && sleep "$HL_SCAN_DELAY"
+  [[ -n "${HL_LOCK_DELAY:-}" ]] && sleep "$HL_LOCK_DELAY"
 ```
+
+immediately before the `zsystem flock` call.
 
 - [ ] **Step 3: Run it**
 
@@ -1443,6 +1554,45 @@ find "$FIX" -type f | sort
 Record exactly which files appeared and which keys changed. Report **key names only** — never paste `settings.json`, `hooks.json` or `config.toml`, which carry credentials and machine state.
 
 If `CLAUDE_CONFIG_DIR` / `CODEX_HOME` turn out not to be honoured by the installer, stop and report: installing straight into the real config without a diff first is not an acceptable substitute.
+
+- [ ] **Step 2b: Prove the uninstall is clean, still against fixtures**
+
+Reversibility is what makes this task acceptable, so demonstrate it before touching
+real config. Seed an unrelated hook first, so preservation is actually tested:
+
+```bash
+jq '.hooks += {mine: {command: "/bin/true"}}' "$FIX/codex/hooks.json" > "$FIX/codex/hooks.json.new" \
+  && mv "$FIX/codex/hooks.json.new" "$FIX/codex/hooks.json"
+cp -R "$FIX" "$FIX.before"
+
+CLAUDE_CONFIG_DIR="$FIX/claude" herdr integration uninstall claude
+CODEX_HOME="$FIX/codex" herdr integration uninstall codex
+
+diff -r "$FIX.before" "$FIX" | sed 's/^/  /'
+jq -e '.hooks.mine' "$FIX/codex/hooks.json" >/dev/null && echo "unrelated hook preserved"
+jq -e '.hooks.herdr' "$FIX/codex/hooks.json" >/dev/null && echo "WARNING: herdr entry survived"
+grep -q 'hooks = true' "$FIX/codex/config.toml" && echo "features.hooks left set (expected)"
+```
+
+Expected: the unrelated hook survives, Herdr's entry is gone, `features.hooks` remains
+set. **If the unrelated hook does not survive, stop** — the uninstall is destructive to
+config it does not own, and rollback would cost you unrelated settings.
+
+- [ ] **Step 2c: Immutable baseline, then authorise**
+
+The Step 1 copies live in a directory chezmoi and Herdr both write to. Take a
+read-only snapshot outside it:
+
+```bash
+BK=~/.local/state/herdr-trial-backup/$(date +%Y%m%d-%H%M%S)
+mkdir -p "$BK" && cp ~/.claude/settings.json ~/.codex/config.toml "$BK"/ 2>/dev/null
+cp ~/.codex/hooks.json "$BK"/ 2>/dev/null || true
+chmod -R a-w "$BK" && ls -l "$BK"
+```
+
+**Stop here and get explicit confirmation before Step 3.** Everything to this point is
+reversible by deleting a scratch directory; everything after modifies real agent
+configuration.
 
 - [ ] **Step 3: Bring the hook scripts under chezmoi**
 
@@ -1572,16 +1722,28 @@ HERDR_SESSION="$SESSION" HDEV_NO_ATTACH=1 ~/.config/herdr/layout.sh "$REPO"
 print -r -- "  … start Claude in the agents tab, let it reach an idle prompt, then press Enter."
 read -r
 
-BEFORE=$(h agent list | jq -r '[.result.agents[]] | length')
+# Identity, not just a count: two agents before and two after proves nothing if they
+# are different sessions. Capture the native session refs and compare them.
+BEFORE=$(h agent list | jq -rS '[.result.agents[] | {kind, session: .agent_session}] | sort')
+BEFORE_N=$(h agent list | jq -r '[.result.agents[]] | length')
+
 h server stop >/dev/null 2>&1
 sleep 2
-h workspace list >/dev/null 2>&1 || true   # restarts the server
-sleep 3
-AFTER=$(h agent list | jq -r '[.result.agents[]] | length')
 
-[[ "$AFTER" == "$BEFORE" && "$BEFORE" != "0" ]] \
-  && ok "agents resumed after a cold restart ($BEFORE → $AFTER)" \
-  || bad "agents did not resume ($BEFORE → $AFTER)"
+# `workspace list` does NOT start a server — it returns server_not_running. Start one
+# explicitly, the same way layout.sh does.
+(command herdr --session "$SESSION" server >/dev/null 2>&1 &)
+for i in {1..40}; do h workspace list >/dev/null 2>&1 && break; sleep 0.25; done
+sleep 3
+
+AFTER=$(h agent list | jq -rS '[.result.agents[] | {kind, session: .agent_session}] | sort')
+AFTER_N=$(h agent list | jq -r '[.result.agents[]] | length')
+
+[[ "$BEFORE_N" != "0" ]] && ok "agents were running before the restart ($BEFORE_N)" \
+  || bad "no agents were running — the test proves nothing"
+[[ "$AFTER" == "$BEFORE" && "$BEFORE_N" != "0" ]] \
+  && ok "the same native agent sessions resumed" \
+  || bad "sessions differ after restart (before=$BEFORE_N after=$AFTER_N)"
 
 print -r -- "=== $pass passed, $fail failed ==="
 (( fail == 0 ))
@@ -1606,12 +1768,28 @@ git commit -m "Add the cold-restore check for the agent integrations"
 
 ### Task 13: Trial log
 
-The exit criteria need evidence collected as it happens; reconstructing four weeks from memory is how a trial talks itself into a conclusion.
+The exit criteria need evidence collected as it happens; reconstructing four weeks from
+memory is how a trial talks itself into a conclusion.
 
 **Files:**
-- Create: `docs/superpowers/plans/2026-08-27-herdr-trial-log.md`
+- Create: `docs/superpowers/runs/2026-08-27-herdr-trial-log.md` — **untracked**
 
-- [ ] **Step 1: Create the log**
+A running log is execution state, not a design record. Per the storage policy,
+`docs/superpowers/runs/` is never tracked; only the durable conclusion is folded back
+into the spec at the end. Committing the log under `plans/` would track exhaust.
+
+- [ ] **Step 1: Confirm the directory is ignored**
+
+```bash
+mkdir -p docs/superpowers/runs
+git check-ignore -v docs/superpowers/runs/probe.md || echo "WARNING: runs/ is NOT ignored"
+```
+
+Expected: a `.gitignore` rule is printed. **If the warning appears**, add
+`docs/superpowers/runs/` to `.gitignore` and commit that one-line change — the log must
+not become tracked by accident.
+
+- [ ] **Step 2: Create the log**
 
 ```markdown
 # Herdr trial log
@@ -1623,12 +1801,12 @@ Spec: `docs/superpowers/specs/2026-08-27-herdr-trial-design.md`
 
 | Criterion | Threshold | Running |
 |---|---|---|
-| Cold restore | ≥90% over ≥10 attempts | 0/0 |
+| Cold restore | >=90% over >=10 attempts | 0/0 |
 | Wrong-workspace events | 0 | 0 |
 | Husk incidents | 0 | 0 |
 | Half-built repairs after week 1 | 0 | 0 |
 | Alt scheme remapped? | no | no |
-| Status *noticed*, weekly | ≥1/week | — |
+| Status *noticed*, weekly | >=1/week | - |
 
 Fewer than ten restore attempts means the criterion is unmet, not passed by default.
 
@@ -1648,18 +1826,21 @@ is trustworthy.
 |---|---|---|
 ```
 
-- [ ] **Step 2: Commit**
+- [ ] **Step 3: Confirm it is untracked**
 
 ```bash
-git add docs/superpowers/plans/2026-08-27-herdr-trial-log.md
-git commit -m "Add the Herdr trial log"
+git status --short docs/superpowers/runs/
 ```
+
+Expected: empty. Nothing to commit for this task.
 
 ---
 
 ## Self-review
 
 **Spec coverage.** Worktree guard → T3. Bootstrap/readiness → T4. Path identity, lock-before-scan, ambiguity → T5. Managed baseline, malformed-without-mutation, rename window → T6, T7. Construction with explicit IDs, `--cwd`, `--no-focus`, trap → T7. Label-resolved tab jumps → T8. Plugin `--current` + notifications → T9. Live churn gate + concurrency schedule + distinct plugin id → T10. Integrations, all four chezmoi owners, fixtures, key-names-only diffs → T11. Cold restore → T12. Exit criteria evidence → T13. Theme + `onboarding` + `resume_agents_on_restore` → T1.
+
+Branch/preflight → T0. Attach after build (`exec herdr`) → T4. `--current` inheriting the worktree guard and the lock → T9.
 
 **Not covered by a task, by design:** rollback (a procedure in the spec, executed only if the trial fails) and the Neovim navigation regression (an explicit non-goal).
 
