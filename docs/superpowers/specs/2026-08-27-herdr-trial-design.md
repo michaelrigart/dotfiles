@@ -186,7 +186,13 @@ as a whole:
   script's business, and it must never close or renumber them.
 - A workspace is **complete** when every managed label is present and well-formed,
   and carries the final label.
-- **Provisional** means one or more managed tabs are missing.
+- **Provisional** means no malformed condition holds, but the final label is missing,
+  or one or more managed tabs are, or both. The label matters independently of the
+  tabs: a build killed after the last `tab create` but before the rename leaves
+  correct topology under a `(building)` label. That state is complete in every
+  respect except the one that marks it finished, and an earlier definition keyed only
+  on missing tabs classified it as neither complete nor provisional. Repair creates
+  whatever managed tabs are missing — possibly none — and renames.
 - **Malformed** means a managed label appears more than once, or its geometry is
   wrong. This **fails non-destructively** — reported, never silently "fixed".
   Repairing a duplicate means choosing which one to destroy, and nothing here knows
@@ -451,7 +457,7 @@ only. This is the most likely thing to fail, and it fails visibly. Test it first
 ```
 dot_config/herdr/config.toml               → ~/.config/herdr/config.toml
 dot_config/herdr/executable_layout.sh      → topology definition, both modes
-dot_config/herdr/executable_tab-goto.sh    → tab focus by index
+dot_config/herdr/executable_tab-goto.sh    → tab focus by unique label
 dot_config/herdr/plugin/herdr-plugin.toml  → registers dev.layout.apply
 dot_config/zsh/functions                   → += hdev()   (dev/wt/wt-rm untouched)
 .chezmoiignore                             → re-include both hook scripts + hooks.json
@@ -483,8 +489,19 @@ stubbed multiplexer, following `test-wt-functions.sh`.
   disagrees fails rather than focusing; two matches fail rather than guessing.
 - **Idempotency.** A second `hdev` emits exactly one `workspace focus` and zero
   `create` calls.
-- **Completeness.** A workspace at the right path with three tabs is treated as
-  provisional, not focused as complete.
+- **Completeness.** A workspace at the right path with three managed tabs is treated
+  as provisional, not focused as complete. One with four managed tabs plus two the
+  user added is treated as complete, and neither extra tab is touched.
+- **The rename window.** A workspace with correct topology but still carrying the
+  `(building)` label — the state a SIGKILL between the last `tab create` and the
+  rename produces — is classified provisional and repaired by renaming alone, with
+  **zero** `tab create` calls. This is the narrowest interrupted state and the one a
+  tab-count-only check misses entirely.
+- **Malformed fails without mutating.** A workspace with two tabs labelled `agents`,
+  and separately one whose `runtime` tab has a single pane, each fail with a report —
+  and the invocation log shows no `create`, `close`, `split` or `rename` at all.
+  Asserting the absence of mutation is the point of the test; a "safe" failure that
+  still touched the workspace would pass a weaker assertion.
 - **Interrupted build, both paths.** A stub failing at the third `tab create`
   triggers the trap and closes the workspace. A pre-seeded stale provisional
   workspace is *repaired* — missing tabs created, then renamed — not duplicated and
