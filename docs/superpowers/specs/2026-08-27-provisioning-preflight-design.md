@@ -1,6 +1,6 @@
 # Provisioning preflight
 
-**Status:** Superseded — see the scope note below and `.scripts/provision.sh`
+**Status:** Superseded — see [Provisioning preflight (minimal)](./2026-08-27-provisioning-preflight-minimal-design.md)
 **Date:** 2026-08-27
 
 > **Scope reduction, 2026-08-27.** Only a reduced subset of this design was built.

@@ -22,7 +22,7 @@ T=$(cd "$T" && pwd -P)                       # /tmp is a symlink to /private/tmp
 [ -n "$T" ] && [ -d "$T" ] || { echo "REFUSING: temp root did not resolve"; exit 2; }
 case "$T" in "$HOME"|"$HOME"/*) echo "REFUSING: temp root is inside the real HOME"; exit 2;; esac
 mkdir -p "$T"/{bin,home,src/.chezmoidata,src/.scripts,brew/bin}
-CALLS="$T/calls"; IDDB="$T/identity"
+CALLS="$T/calls"; IDDB="$T/identity"; MUTLOG="$T/refused"; SBX_ROOT="$T"
 cp "$SRC/.chezmoidata/machines.toml" "$T/src/.chezmoidata/"
 mkdir -p "$T/src/.git"
 
@@ -51,15 +51,43 @@ done
 for sc in configure.sh reconcile-agents.sh; do
   printf '#!/usr/bin/env bash\necho "%s $*" >> "$CALLS"\nexit 0\n' "$sc" > "$T/src/.scripts/$sc"
 done
+# Mutators are wrapped, not merely logged: they delegate inside the temp root and
+# refuse outside it. Logging alone is fail-open -- an unstubbed rm simply runs.
+cat > "$T/bin/_mut" <<'M'
+#!/usr/bin/env bash
+tool=$1; shift
+for a in "$@"; do
+  case "$a" in
+    -*) continue ;;
+    /*) r=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$a")
+        case "$r" in "$SBX_ROOT"|"$SBX_ROOT"/*) ;;
+          *) echo "MUTATOR-REFUSED: $tool $a" | tee -a "$MUTLOG" >&2; exit 99 ;; esac ;;
+  esac
+done
+echo "$tool $*" >> "$CALLS"; exec "/bin/$tool" "$@"
+M
+chmod +x "$T/bin/_mut"
+for t in rm chmod find; do
+  printf '#!/usr/bin/env bash\nexec "%s/bin/_mut" %s "$@"\n' "$T" "$t" > "$T/bin/$t"
+done
 chmod +x "$T"/bin/* "$T"/brew/bin/brew "$T"/src/.scripts/*
 
-reset(){ : > "$CALLS"; printf 'ComputerName=MacBook Pro\nLocalHostName=MacBook-Pro\n' > "$IDDB"; }
+# Guard the harness against itself. Verifying that a containment assertion CAN fail
+# must never be done by pointing an override at the real binary -- that executes it.
+# Twice during development this ran the host's Homebrew and advanced its git HEAD.
+assert_inside(){ case "$2" in "$T"|"$T"/*) ;; *) echo "REFUSING: $1='$2' is outside $T"; exit 2 ;; esac; }
+
+reset(){ : > "$CALLS"; : > "$MUTLOG"; printf 'ComputerName=MacBook Pro\nLocalHostName=MacBook-Pro\n' > "$IDDB"; }
+SBX_SRC="$T/src"; SBX_BREW="$T/brew/bin/brew"
 run(){ local ans=$1; shift
+  assert_inside PROVISION_BREW_BIN "$SBX_BREW"
+  assert_inside PROVISION_SRC_OVERRIDE "$SBX_SRC"
   OUT=$(printf '%b' "$ans" | env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" USER=tester SHELL=/bin/zsh \
     XDG_CACHE_HOME="$T/home/.cache" XDG_CONFIG_HOME="$T/home/.config" \
     XDG_DATA_HOME="$T/home/.local/share" XDG_STATE_HOME="$T/home/.local/state" \
     XDG_BIN_HOME="$T/home/.local/bin" CALLS="$CALLS" IDDB="$IDDB" \
-    PROVISION_SRC_OVERRIDE="$T/src" PROVISION_BREW_BIN="$T/brew/bin/brew" \
+    MUTLOG="$MUTLOG" SBX_ROOT="$SBX_ROOT" \
+    PROVISION_SRC_OVERRIDE="$SBX_SRC" PROVISION_BREW_BIN="$SBX_BREW" \
     zsh "$SRC/.scripts/provision.sh" "$@" 2>&1); RC=$?; }
 
 echo "A. containment"
@@ -76,6 +104,7 @@ not_called "brew[/opt/homebrew/bin/brew]" "the real Homebrew binary is never the
 if grep -F "$REAL_HOME/" "$CALLS" | grep -vF "$T" | head -1 | grep -q .; then
   _fail "no call targets the real HOME: $(grep -F "$REAL_HOME/" "$CALLS" | grep -vF "$T" | head -1)"
 else _pass "no call targets the real HOME"; fi
+[ -s "$MUTLOG" ] && _fail "no mutator was refused: $(head -1 "$MUTLOG")" || _pass "no mutator attempted to leave the temp root"
 
 echo "B. preflight asks first, then applies"
 reset; run 'studio\ny\n'
@@ -132,6 +161,31 @@ has "identity mismatch" "the mismatch is reported as such"
 render fenrir "HostName: not set"
 rc_is 1 "unset HostName fails"
 has "HostName is unset" "unset HostName gets its own message"
+
+echo "G. configure.sh identity validation (the real script, not a stub)"
+# The harness stubs configure.sh for provision.sh's benefit, so its own validation was
+# never exercised: deleting the HostName check left every assertion green. These call
+# the real script. Mismatches exit before configure.sh touches anything.
+cfg(){ printf 'ComputerName=%s\nHostName=%s\nLocalHostName=%s\n' "$1" "$2" "$3" > "$IDDB"
+  OUT=$(env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" USER=tester \
+        CALLS="$CALLS" IDDB="$IDDB" MUTLOG="$MUTLOG" SBX_ROOT="$SBX_ROOT" \
+        zsh "$SRC/.scripts/configure.sh" --hostname "$4" 2>&1); RC=$?; }
+cfg fenrir fenrir fenrir fenrir
+has "identity verified" "matching identity passes validation"
+# `rc_is 1` alone is NOT discriminating here: configure.sh exits 1 for plenty of
+# unrelated reasons once it gets past validation. Deleting the HostName check left
+# every assertion green until these keyed on "identity verified" NOT being reached.
+cfg studio fenrir fenrir fenrir
+hasnt "identity verified" "ComputerName mismatch stops before verification"
+has "ComputerName is" "the ComputerName error names the field"
+cfg fenrir studio fenrir fenrir
+hasnt "identity verified" "HostName mismatch stops before verification"
+has "HostName is" "the HostName error names the field"
+cfg fenrir fenrir studio fenrir
+hasnt "identity verified" "LocalHostName mismatch stops before verification"
+has "LocalHostName is" "the LocalHostName error names the field"
+cfg fenrir fenrir fenrir-3 fenrir
+has "identity verified" "a Bonjour numeric suffix on LocalHostName is accepted"
 
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

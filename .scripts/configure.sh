@@ -32,7 +32,9 @@ while [ $# -gt 0 ]; do
 done
 
 sudo -v
-while true; do sudo -n true; sleep 60; kill -0 "$$" || exit; done 2>/dev/null &
+# stdout closed as well as stderr: a background loop holding stdout hangs any caller
+# capturing this script's output with $( ).
+while true; do sudo -n true; sleep 60; kill -0 "$$" 2>/dev/null || exit; done >/dev/null 2>&1 &
 
 # ============================================================================
 # Set Hostname

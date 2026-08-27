@@ -1,6 +1,6 @@
 # Provisioning Preflight Implementation Plan
 
-**Status:** Superseded — never executed; see [the spec](../specs/2026-08-27-provisioning-preflight-design.md)
+**Status:** Superseded — see [Provisioning preflight (minimal) plan](./2026-08-27-provisioning-preflight-minimal.md)
 **Date:** 2026-08-27
 
 > **Scope reduction, 2026-08-27.** Only a reduced subset of this design was built.
