@@ -1,6 +1,6 @@
 # Provisioning Preflight (minimal) Implementation Plan
 
-**Status:** Implemented — branch `feat/provisioning-preflight`
+**Status:** In progress — branch `feat/provisioning-preflight`, under review
 **Date:** 2026-08-27
 
 **Spec:** [2026-08-27 Provisioning preflight (minimal)](../specs/2026-08-27-provisioning-preflight-minimal-design.md)
@@ -11,6 +11,11 @@ never executed.
 > **Retrospective record.** This plan documents work already done, in the order it was
 > done. It is written down because the lifecycle policy tracks a plan alongside every
 > spec, not because it was followed prospectively. Do not re-execute it.
+>
+> Strict checkpoint compliance would place this record *before* the implementation
+> commits in branch history. Reordering history was not done, because it requires
+> explicit authorization and rewrites commits already reviewed. Noted rather than
+> silently ignored.
 
 ## Tasks, as executed
 

@@ -38,7 +38,20 @@ esac; exit 0
 S
 # sudo must DELEGATE, or `sudo scutil --set` never reaches the scutil stub and the
 # identity assertions become vacuous.
-printf '#!/usr/bin/env bash\necho "sudo $*" >> "$CALLS"\ncase "$1" in -v|-n) exit 0;; esac\nexec "$@"\n' > "$T/bin/sudo"
+cat > "$T/bin/sudo" <<'SU'
+#!/usr/bin/env bash
+echo "sudo $*" >> "$CALLS"
+case "$1" in -v|-n) exit 0 ;; esac
+# An absolute command path bypasses PATH stubbing. configure.sh runs
+# `sudo /usr/libexec/ApplicationFirewall/socketfilterfw`, which reached the host
+# binary through this stub's exec. Refuse anything outside the sandbox.
+case "$1" in
+  /*) r=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1")
+      case "$r" in "$SBX_ROOT"|"$SBX_ROOT"/*) ;;
+        *) echo "SUDO-REFUSED: $1" | tee -a "$MUTLOG" >&2; exit 99 ;; esac ;;
+esac
+exec "$@"
+SU
 printf '#!/usr/bin/env bash\necho "brew[$0] $*" >> "$CALLS"\ncase "$1" in shellenv) echo "export PATH=\\"%s/brew/bin:\\$PATH\\"";; --prefix) echo "%s/brew";; esac\nexit 0\n' "$T" "$T" > "$T/brew/bin/brew"
 cp "$T/brew/bin/brew" "$T/bin/brew"
 # tee is stubbed because step 10 pipes into `sudo tee -a /etc/shells`; without it the
@@ -57,12 +70,10 @@ cat > "$T/bin/_mut" <<'M'
 #!/usr/bin/env bash
 tool=$1; shift
 for a in "$@"; do
-  case "$a" in
-    -*) continue ;;
-    /*) r=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$a")
-        case "$r" in "$SBX_ROOT"|"$SBX_ROOT"/*) ;;
-          *) echo "MUTATOR-REFUSED: $tool $a" | tee -a "$MUTLOG" >&2; exit 99 ;; esac ;;
-  esac
+  case "$a" in -*) continue ;; esac
+  r=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$a")
+  case "$r" in "$SBX_ROOT"|"$SBX_ROOT"/*) ;;
+    *) echo "MUTATOR-REFUSED: $tool $a -> $r" | tee -a "$MUTLOG" >&2; exit 99 ;; esac
 done
 echo "$tool $*" >> "$CALLS"; exec "/bin/$tool" "$@"
 M
@@ -75,14 +86,16 @@ chmod +x "$T"/bin/* "$T"/brew/bin/brew "$T"/src/.scripts/*
 # Guard the harness against itself. Verifying that a containment assertion CAN fail
 # must never be done by pointing an override at the real binary -- that executes it.
 # Twice during development this ran the host's Homebrew and advanced its git HEAD.
-assert_inside(){ case "$2" in "$T"|"$T"/*) ;; *) echo "REFUSING: $1='$2' is outside $T"; exit 2 ;; esac; }
+canon(){ python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1"; }
+assert_inside(){ local r; r=$(canon "$2")
+  case "$r" in "$T"|"$T"/*) ;; *) echo "REFUSING: $1='$2' resolves to '$r', outside $T"; exit 2 ;; esac; }
 
 reset(){ : > "$CALLS"; : > "$MUTLOG"; printf 'ComputerName=MacBook Pro\nLocalHostName=MacBook-Pro\n' > "$IDDB"; }
 SBX_SRC="$T/src"; SBX_BREW="$T/brew/bin/brew"
 run(){ local ans=$1; shift
   assert_inside PROVISION_BREW_BIN "$SBX_BREW"
   assert_inside PROVISION_SRC_OVERRIDE "$SBX_SRC"
-  OUT=$(printf '%b' "$ans" | env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" USER=tester SHELL=/bin/zsh \
+  OUT=$(cd "$T" && printf '%b' "$ans" | env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" USER=tester SHELL=/bin/zsh \
     XDG_CACHE_HOME="$T/home/.cache" XDG_CONFIG_HOME="$T/home/.config" \
     XDG_DATA_HOME="$T/home/.local/share" XDG_STATE_HOME="$T/home/.local/state" \
     XDG_BIN_HOME="$T/home/.local/bin" CALLS="$CALLS" IDDB="$IDDB" \
@@ -167,7 +180,7 @@ echo "G. configure.sh identity validation (the real script, not a stub)"
 # never exercised: deleting the HostName check left every assertion green. These call
 # the real script. Mismatches exit before configure.sh touches anything.
 cfg(){ printf 'ComputerName=%s\nHostName=%s\nLocalHostName=%s\n' "$1" "$2" "$3" > "$IDDB"
-  OUT=$(env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" USER=tester \
+  OUT=$(cd "$T" && env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" USER=tester \
         CALLS="$CALLS" IDDB="$IDDB" MUTLOG="$MUTLOG" SBX_ROOT="$SBX_ROOT" \
         zsh "$SRC/.scripts/configure.sh" --hostname "$4" 2>&1); RC=$?; }
 cfg fenrir fenrir fenrir fenrir
