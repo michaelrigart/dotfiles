@@ -328,6 +328,11 @@ The remedy is a distinct top-level mode, **`provision.sh --repair-identity`**, w
 
 It shares the read-back validator with preflight rather than reimplementing it.
 
+What it does to an *existing* state file — including the case where the repair
+changes the identity a previous run was consented to — is specified in §6.3, with
+the flag matrix, because that is a state-transition question rather than an identity
+one.
+
 **What each layer actually catches**, stated narrowly because the earlier draft
 overclaimed:
 
@@ -432,14 +437,37 @@ what it does to recorded state and to preflight:
 | *(none)* | starts fresh; refuses to run if state exists, directing to `--resume` or `--restart` | full | asked |
 | `--resume` | read; completed phases skipped | decisions re-used; credentials revalidated | skipped **only** if `confirmed` is recorded |
 | `--restart` | discarded **after** flag validation, never during a `--dry-run` | full | asked |
-| `--phase NAME` | read; only `NAME` runs | answers re-used; unknown `NAME` is an error, not a no-op | not asked |
+| `--phase NAME` | read; requires `confirmed`; only `NAME` runs | decisions re-used; credentials that phase needs revalidated; unknown `NAME` is an error, not a no-op | not asked |
 | `--dry-run` | neither read nor written | skipped | not asked |
+| `--repair-identity` | see below — depends on whether a state file exists and whether the identity changes | identity questions only | **always asked**, before any `scutil --set` |
+
+`--repair-identity` is **mutually exclusive** with `--resume`, `--restart`, `--phase`
+and `--dry-run`; combining them is a usage error, not a merge of behaviours. It is a
+repair mode, not a provisioning mode, and it never runs a provisioning phase.
+
+Its interaction with existing state is the part that must be nailed down, because
+repair can *change the identity a previous run was consented to*:
+
+| State found | What repair does |
+|---|---|
+| none | works standalone; sets and verifies the identity; creates **no** provisioning state |
+| exists, identity unchanged | repairs the fields, then marks `identity_applied` — the previous consent still describes this machine |
+| exists, identity **changed** | clears `confirmed`, `identity_applied` **and every completed-phase record**, then exits directing to a fresh run |
+
+The third row is the one worth stating explicitly. Consent was given for a specific
+identity; it does not transfer to a different one. Neither do the completed phases —
+they ran against the old identity, and on a hostname-conditional Brewfile that means
+they may have installed the wrong machine's packages. Carrying either forward would
+let a `--resume` treat approval of `fenrir` as approval of `studio`, which is the
+consent-laundering bug of §4.2 arriving by a different route.
 
 Three failure modes this table exists to prevent, all of which a naive
 implementation exhibits:
 
-- **`--resume` blocking on the confirm.** Resuming is not a new decision; re-asking
-  makes `--resume` unusable non-interactively.
+- **An already-confirmed `--resume` blocking on the confirm.** Re-approving what was
+  already approved makes `--resume` unusable non-interactively. This applies only
+  once `confirmed` is recorded — an *unconfirmed* resume correctly asks again (§4.2),
+  and that is not the failure mode.
 - **A skipped phase skipping its side effects.** The `homebrew` phase both installs
   Homebrew *and* initialises `HOMEBREW_PREFIX` and `PATH` for the process. Resuming
   past it must still perform the second part, or every later phase runs against an
@@ -544,6 +572,12 @@ Assertions that earn their place:
     `identity_applied` applies then continues; `identity_applied` with a since-changed
     live identity aborts to `--repair-identity`; a changed answer set clears both
     markers.
+16. **`--repair-identity` to a *different* identity, with existing state, clears
+    `confirmed`, `identity_applied` and every completed-phase record.** The following
+    `--resume` must then re-ask rather than treating the old approval as consent for
+    the new identity, and must not skip phases that ran under the old one.
+17. `--repair-identity` combined with `--resume`, `--restart`, `--phase` or
+    `--dry-run` is rejected as a usage error.
 
 Per repo convention the suite is fully mocked and runs under either sandbox mode.
 Its assertion count is added to the running baseline once green.
