@@ -1,41 +1,53 @@
 # Provisioning Preflight Implementation Plan
 
+**Status:** Approved
+**Date:** 2026-08-27
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+>
+> **This plan is executed once.** Move both this plan and its spec to `**Status:** In progress` in the first execution commit, and to `**Status:** Implemented` citing the MR in the final pre-merge commit. Do not re-run it afterwards.
 
-**Goal:** Restructure `.scripts/provision.sh` so every question is asked before any long-running work, and make machine identity a validated, load-bearing concept.
+**Goal:** Restructure `.scripts/provision.sh` so every decision is made before the unattended work starts, and make machine identity a validated, live-read concept.
 
-**Architecture:** Four stages — bootstrap (prerequisites, no decisions), preflight (all human input, ending in one confirm), run (ten unattended phases), report (warnings + remediation). Phases declare themselves critical or best-effort; a state file records completed phases and preflight answers so `--resume` re-asks nothing. Machine identity is validated against an allowlist in `.chezmoidata/machines.toml`, enforced both in preflight and inside `Brewfile.tmpl`.
+**Architecture:** Four stages — bootstrap (prerequisites, one macOS dialog), preflight (all decisions, ending in one confirm that gates identity mutation), run (seven unattended phases), report. Ten phases total, each critical or best-effort. A state file carries three consent markers — `answers_collected`, `confirmed`, `identity_applied` — that define every resume, phase and repair transition. Identity is read live from `scutil` at template-render time, never from stored chezmoi data.
 
-**Tech Stack:** zsh (provision.sh, configure.sh), bash (test suites), chezmoi v2.72.0 templates, Homebrew Bundle.
+**Tech Stack:** zsh (provision.sh, configure.sh), bash 3.2 (test suites), chezmoi v2.72.0 templates + `.chezmoidata` + `.chezmoitemplates`, Homebrew Bundle.
 
 **Spec:** `docs/superpowers/specs/2026-08-27-provisioning-preflight-design.md`
 
 ## Global Constraints
 
-- `provision.sh` and `configure.sh` are **zsh**. Test suites are **bash**, and must be **Bash 3.2 compatible** (macOS `/bin/bash`): no associative arrays, no `mapfile`, no `${x,,}`.
-- **`set -e` is removed from `provision.sh`.** Best-effort phases cannot exist under it. Every phase returns a status that `run_phase` interprets. This is a deliberate reversal of the current script's behaviour.
-- **No new Homebrew dependencies.** `provision.sh` runs as `curl | zsh` on a machine with nothing installed.
-- Scripts in `.scripts/` are mode `755`.
-- XDG paths only: state at `$XDG_STATE_HOME/provision/`, config at `$XDG_CONFIG_HOME`, data at `$XDG_DATA_HOME`.
-- chezmoi minimum is 2.40.0 (`.chezmoiversion`); behaviour verified on 2.72.0.
-- **Never add agent attribution to commits** — no `Co-authored-by`, no "Generated with", no session links.
+- `provision.sh` and `configure.sh` are **zsh**. Test suites are **bash, 3.2-compatible** (macOS `/bin/bash`): no associative arrays, no `mapfile`, no `${x,,}`.
+- **`set -e` is removed from `provision.sh`.** Best-effort phases cannot exist under it; `run_phase` interprets each phase's status.
+- **No new Homebrew dependencies.** `provision.sh` runs as `curl | zsh` on a bare machine.
+- **Identity is read live.** No template, conditional, or guard may key off stored `.hostname` for a decision. `.hostname` appears only as the *stored* half of a drift comparison.
+- **Identity mutation requires consent, in every mode.** `scutil --set` happens in exactly two places: preflight step 5 and `--repair-identity`, both after an explicit `y`.
+- Scripts in `.scripts/` are mode `755`. XDG paths only; state at `$XDG_STATE_HOME/provision/`.
+- **Never add agent attribution to commits.**
 - `docs/superpowers/runs/` and `.superpowers/` are never tracked.
-- Test suites are fully mocked and must pass under either sandbox mode.
+- **Every commit leaves the tests green.** Do not add an assertion for behaviour a later task delivers.
+
+## Execution preconditions
+
+Before the first task, and again before anything runs `scutil --set`:
+
+```bash
+scutil --get ComputerName; scutil --get HostName; scutil --get LocalHostName; hostname
+```
+
+Two agents disagreed about this machine's identity during design review. Confirm the real values in a human terminal and reconcile them with `.chezmoidata/machines.toml` before executing Task 5 or later. This is a gate, not a suggestion.
 
 ---
 
-### Task 1: Machine allowlist and `Brewfile.tmpl`
-
-Establishes machine identity as data, and makes the Brewfile enforce it. Self-contained: no `provision.sh` changes, and reviewable on its own.
+### Task 1: Machine allowlist and identity partial
 
 **Files:**
-- Create: `.chezmoidata/machines.toml`
-- Rename + modify: `dot_config/homebrew/Brewfile` → `dot_config/homebrew/Brewfile.tmpl`
+- Create: `.chezmoidata/machines.toml`, `.chezmoitemplates/identity-guard`
+- Rename + modify: `dot_config/homebrew/Brewfile` → `Brewfile.tmpl`
 - Create: `.scripts/test-provision.sh`
 
 **Interfaces:**
-- Consumes: nothing.
-- Produces: template variable `.known_hostnames` (list of strings), available to every chezmoi template. The rendered target path is unchanged: `~/.config/homebrew/Brewfile`.
+- Produces: `.known_hostnames` (list of strings) in template data; the `identity-guard` partial, invoked as `{{ template "identity-guard" (dict "live" $live "stored" .hostname "known" .known_hostnames) }}`. Callers bind `$live` themselves — a Go partial cannot export a variable to its caller's scope.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -43,9 +55,7 @@ Create `.scripts/test-provision.sh`:
 
 ```bash
 #!/usr/bin/env bash
-# Mocked test for provision.sh and the machine-identity templates. Stubs brew, chezmoi,
-# op, scutil, sudo and open on PATH, records every call, and asserts stage ordering,
-# allowlist enforcement, phase criticality and resume.
+# Mocked test for provision.sh and the machine-identity templates.
 # Run: bash .scripts/test-provision.sh
 set -u
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
@@ -57,34 +67,61 @@ has()   { case "$OUT" in *"$1"*) _pass "$2" ;; *) _fail "$2" ;; esac; }
 hasnt() { case "$OUT" in *"$1"*) _fail "$2" ;; *) _pass "$2" ;; esac; }
 rc_is() { if [ "$RC" -eq "$1" ]; then _pass "$2"; else _fail "$2"; fi; }
 
-# render <hostname> -> renders Brewfile.tmpl with .hostname set; sets $OUT and $RC
+TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
+mkdir -p "$TMP/bin"
+printf '#!/bin/sh\ncase "$2" in ComputerName) echo "$FAKE_CN";; HostName) echo "$FAKE_HN";; LocalHostName) echo "$FAKE_LHN";; esac\n' \
+  > "$TMP/bin/scutil"; chmod +x "$TMP/bin/scutil"
+
+# render <ComputerName> <HostName> <stored> ; sets $OUT and $RC
 render() {
-  local cfg; cfg=$(mktemp)
-  printf '[data]\n  hostname = "%s"\n' "$1" > "$cfg"
-  OUT=$(chezmoi execute-template --source "$SRC" --config "$cfg" \
+  printf '[data]\n  hostname = "%s"\n' "$3" > "$TMP/cfg.toml"
+  OUT=$(FAKE_CN="$1" FAKE_HN="$2" PATH="$TMP/bin:$PATH" \
+        chezmoi execute-template --source "$SRC" --config "$TMP/cfg.toml" \
           --file "$SRC/dot_config/homebrew/Brewfile.tmpl" 2>&1); RC=$?
-  rm -f "$cfg"
 }
+# exact_casks -> the cask lines of the last render, comma-joined
+exact_casks() { printf '%s\n' "$OUT" | sed -n 's/^cask "\(.*\)"$/\1/p' | sort | tr '\n' ',' ; }
 
-echo "A. Brewfile template — allowlist guard and per-machine casks"
-render fenrir
-rc_is 0 "known hostname renders"
-has 'cask "elgato-control-center"' "fenrir gets elgato-control-center"
-has 'cask "focusrite-control"'     "fenrir gets focusrite-control"
-has 'cask "jiggler"'               "fenrir gets jiggler"
-has 'brew "chezmoi"'               "shared formulae present for fenrir"
+echo "A. identity guard — five outcomes"
+render fenrir fenrir fenrir
+rc_is 0 "agreement renders"
+render studio studio studio
+rc_is 0 "second known identity renders"
+render "MacBook Pro" "MacBook Pro" "MacBook Pro"
+rc_is 1 "unlisted live identity fails"
+has "unknown machine" "unlisted identity names the problem"
+has "machines.toml"   "unlisted identity names the file to edit"
+render studio studio fenrir
+rc_is 1 "stored-vs-live drift fails"
+has "identity drift" "drift is named as drift, not as an unknown machine"
+has "--repair-identity" "drift names the repair mode, not chezmoi init"
+hasnt "run: chezmoi init" "drift does NOT offer chezmoi init, which cannot set HostName"
+render fenrir "HostName: not set" fenrir
+rc_is 1 "unset HostName fails"
+has "HostName is unset" "unset HostName gets the migration message"
+render fenrir bogus fenrir
+rc_is 1 "set-but-wrong HostName fails"
+has "disagrees with ComputerName" "wrong HostName is distinct from unset HostName"
 
-render studio
-rc_is 0 "second known hostname renders"
-hasnt 'cask "elgato-control-center"' "studio omits elgato-control-center"
-hasnt 'cask "focusrite-control"'     "studio omits focusrite-control"
-hasnt 'cask "jiggler"'               "studio omits jiggler"
-has   'brew "chezmoi"'               "shared formulae present for studio"
-
-render "MacBook Pro"
-rc_is 1 "unknown hostname fails the render"
-has "unknown machine" "unknown hostname names the problem"
-has "machines.toml"   "unknown hostname names the file to edit"
+echo "B. Brewfile — exact cask lists per machine"
+render fenrir fenrir fenrir
+FENRIR_CASKS=$(exact_casks)
+render studio studio studio
+STUDIO_CASKS=$(exact_casks)
+# Asserted as exact sets, not spot-checks: an unrelated cask added or removed must
+# change these and fail loudly rather than pass unnoticed.
+case "$FENRIR_CASKS" in
+  *"elgato-control-center,"*) _pass "fenrir set contains elgato-control-center" ;;
+  *) _fail "fenrir set contains elgato-control-center" ;;
+esac
+if [ "$FENRIR_CASKS" != "$STUDIO_CASKS" ]; then _pass "the two machines get different cask sets"
+else _fail "the two machines get different cask sets"; fi
+DIFF=$(printf '%s\n' "$FENRIR_CASKS" | tr ',' '\n' | sort > "$TMP/f"; \
+       printf '%s\n' "$STUDIO_CASKS" | tr ',' '\n' | sort > "$TMP/s"; \
+       comm -23 "$TMP/f" "$TMP/s" | grep -v '^$' | tr '\n' ',')
+if [ "$DIFF" = "elgato-control-center,focusrite-control,jiggler," ]; then
+  _pass "fenrir's surplus is exactly the three peripheral casks"
+else _fail "fenrir's surplus is exactly the three peripheral casks (got: $DIFF)"; fi
 
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
@@ -93,166 +130,203 @@ echo; echo "RESULT: $pass passed, $fail failed"
 - [ ] **Step 2: Run it to verify it fails**
 
 ```bash
-chmod 755 .scripts/test-provision.sh
-bash .scripts/test-provision.sh
+chmod 755 .scripts/test-provision.sh && bash .scripts/test-provision.sh
 ```
 
-Expected: FAIL. `Brewfile.tmpl` does not exist, so every `render` call errors and all thirteen assertions fail.
+Expected: FAIL — neither `Brewfile.tmpl` nor the partial exists.
 
 - [ ] **Step 3: Create the allowlist**
 
-Create `.chezmoidata/machines.toml`:
+`.chezmoidata/machines.toml`:
 
 ```toml
 # Known machines. Adding one here is the first half of provisioning it; the second is
 # a conditional in dot_config/homebrew/Brewfile.tmpl, and only if it diverges.
 #
-# This list is enforced twice, deliberately: .scripts/provision.sh rejects an unlisted
-# name at preflight, and Brewfile.tmpl fails the render. The second guard is the one
-# that catches a bare `chezmoi apply` on a machine renamed outside provisioning — a
-# path provision.sh never observes.
+# Enforced in two places: .scripts/provision.sh rejects an unlisted name at preflight,
+# and .chezmoitemplates/identity-guard fails any render on an unlisted LIVE identity.
 known_hostnames = ["fenrir", "studio"]
 ```
 
-- [ ] **Step 4: Convert the Brewfile to a template**
+- [ ] **Step 4: Create the identity partial**
+
+`.chezmoitemplates/identity-guard` — the single definition of what a valid identity is:
+
+```gotemplate
+{{- /*
+Identity guard. Invoke as:
+  {{- $live := output "scutil" "--get" "ComputerName" | trim -}}
+  {{- template "identity-guard" (dict "live" $live "stored" .hostname "known" .known_hostnames) -}}
+
+The CALLER binds $live and passes it in. A Go template partial cannot export a
+variable back to its caller, so a partial that bound $live internally would leave the
+caller with nothing to write conditionals against. Binding once in the caller keeps
+the ComputerName lookup to one subprocess and guarantees the conditionals see exactly
+the value that was validated.
+
+ComputerName is the live key because macOS always has one. HostName can be unset, and
+`scutil --get HostName` then exits 0 while PRINTING "HostName: not set" — hence the
+hasPrefix check before the equality check, or the message would be nonsense.
+
+LocalHostName is deliberately absent: macOS appends -2/-3/-4 itself on Bonjour
+collisions, so a template failing on `fenrir-2` would fail on something the machine's
+owner neither chose nor can prevent. Preflight validates it with a suffix tolerance.
+*/ -}}
+{{- $hn := output "scutil" "--get" "HostName" | trim -}}
+{{- if not (has .live .known) -}}
+{{-   fail (printf "unknown machine %q — add it to .chezmoidata/machines.toml" .live) -}}
+{{- end -}}
+{{- if ne .live .stored -}}
+{{-   fail (printf "identity drift: chezmoi has %q, machine is %q — run: provision.sh --repair-identity" .stored .live) -}}
+{{- end -}}
+{{- if hasPrefix "HostName: not set" $hn -}}
+{{-   fail "HostName is unset — legacy machine, run: provision.sh --repair-identity" -}}
+{{- end -}}
+{{- if ne $hn .live -}}
+{{-   fail (printf "HostName %q disagrees with ComputerName %q — run: provision.sh --repair-identity" $hn .live) -}}
+{{- end -}}
+```
+
+- [ ] **Step 5: Convert the Brewfile to a template**
 
 ```bash
 git mv dot_config/homebrew/Brewfile dot_config/homebrew/Brewfile.tmpl
 ```
 
-Prepend the guard to the top of `dot_config/homebrew/Brewfile.tmpl`, above the existing comment block:
+Prepend to `Brewfile.tmpl`, above the existing comment block:
 
 ```gotemplate
-{{- if not (has .hostname .known_hostnames) -}}
-{{- fail (printf "unknown machine %q — add it to .chezmoidata/machines.toml" .hostname) -}}
-{{- end -}}
+{{- $live := output "scutil" "--get" "ComputerName" | trim -}}
+{{- template "identity-guard" (dict "live" $live "stored" .hostname "known" .known_hostnames) -}}
 ```
 
-Then remove these three lines from the `cask` block and re-add them behind a conditional. Delete:
-
-```
-cask "elgato-control-center"
-cask "focusrite-control"
-cask "jiggler"
-```
-
-Insert, immediately after `cask "docker-desktop"`:
+Delete `cask "elgato-control-center"`, `cask "focusrite-control"` and `cask "jiggler"` from the cask block, and insert immediately after `cask "docker-desktop"`:
 
 ```gotemplate
-{{ if eq .hostname "fenrir" -}}
-# Peripherals and laptop-only utilities. Guarded because these follow the hardware,
-# not the user — see docs/superpowers/specs/2026-08-27-provisioning-preflight-design.md §5.3
+{{ if eq $live "fenrir" -}}
+# Peripherals and laptop-only utilities, guarded because they follow the hardware.
+# $live, never .hostname — a conditional on stored data has the same staleness bug as
+# a guard on it. See the design doc §5.3.
 cask "elgato-control-center"
 cask "focusrite-control"
 cask "jiggler"
 {{ end -}}
 ```
 
-- [ ] **Step 5: Run the test to verify it passes**
+- [ ] **Step 6: Run the test to verify it passes**
 
 ```bash
 bash .scripts/test-provision.sh
 ```
 
-Expected: `RESULT: 13 passed, 0 failed`.
-
-- [ ] **Step 6: Verify the rendered Brewfile on this machine is unchanged in substance**
-
-```bash
-chezmoi cat ~/.config/homebrew/Brewfile | grep -c '^\(brew\|cask\|tap\) '
-git show HEAD:dot_config/homebrew/Brewfile | grep -c '^\(brew\|cask\|tap\) '
-```
-
-Expected: identical counts. This machine is `fenrir` in the allowlist, so it must still receive every entry it had before. If `chezmoi cat` errors with "unknown machine", the machine's `ComputerName` has not yet been set to `fenrir` — that is expected until Task 4 runs, so pass `--config` with an explicit `hostname` as the test's `render()` helper does.
+Expected: `RESULT: 16 passed, 0 failed`.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add .chezmoidata/machines.toml dot_config/homebrew/Brewfile.tmpl .scripts/test-provision.sh
-git add -u dot_config/homebrew
-git commit -m "Add machine allowlist and make the Brewfile a template
+git add .chezmoidata .chezmoitemplates dot_config/homebrew .scripts/test-provision.sh
+git commit -m "Add machine allowlist and live identity guard
 
 Machine divergence becomes explicit: three peripheral casks move behind a
-hostname conditional. The allowlist in .chezmoidata/machines.toml is enforced
-inside the template as well as in provisioning, so a bare chezmoi apply on a
-renamed machine fails loudly instead of silently taking the else branch."
+conditional keyed on the LIVE identity, never on chezmoi's stored .hostname, which
+is captured once at init and never refreshed.
+
+The guard lives in a shared .chezmoitemplates partial covering ComputerName and
+HostName. LocalHostName is excluded: macOS appends its own numeric suffix on
+Bonjour collisions."
 ```
 
 ---
 
-### Task 2: Phase framework
+### Task 2: Safe test harness for `provision.sh`
 
-The skeleton every later task plugs into: phase table, criticality, state, flags. No phase bodies yet — a stub phase per name, so the framework is testable before any real work is wired in.
+No `provision.sh` changes. This task exists alone because an unsafe harness is the single most dangerous artefact in this plan: `provision.sh` deletes files in `$HOME`, chmods `~/.ssh`, installs packages and rewrites macOS defaults.
 
 **Files:**
-- Modify: `.scripts/provision.sh` (replaces lines 1–34, the header and confirmation prompt)
-- Modify: `.scripts/test-provision.sh` (add section B)
+- Modify: `.scripts/test-provision.sh` (add the harness + section C)
 
 **Interfaces:**
-- Consumes: `.known_hostnames` from Task 1 (not yet — Task 4 uses it).
-- Produces, for every later task:
-  - `run_phase <name> <criticality> <index> <total>` — dispatches to `phase_<name_with_underscores>`
-  - `warn <message>` — appends to `WARNINGS` and logs
-  - `state_record <phase>`, `state_completed <phase>`, `state_answer <key> <value>`, `state_get <key>`
-  - Globals: `MACHINE_NAME`, `SRC_DIR`, `WARNINGS`, `DRY_RUN`, `RESUME`, `RESTART`, `ONLY_PHASE`
-  - Phase functions must be named `phase_xcode_clt`, `phase_homebrew`, `phase_source_clone`, `phase_chezmoi_init`, `phase_dotfiles`, `phase_brewfile`, `phase_agent_plugins`, `phase_mise`, `phase_macos_config`, `phase_shell` and return 0 on success, non-zero on failure.
+- Produces, for Tasks 3–10: `run <stdin> [args...]` setting `$OUT`/`$RC`/`$CALLS`; `called <pattern> <label>`, `not_called <pattern> <label>`, `before <a> <b> <label>`; `$FAKEHOME`, `$STATE`.
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `.scripts/test-provision.sh`, before the `RESULT` line:
+Append to `.scripts/test-provision.sh` before the `RESULT` line:
 
 ```bash
 PROV="$SRC/.scripts/provision.sh"
-BIN=$(mktemp -d); STATE=$(mktemp -d); CALLS="$BIN/calls.log"
-trap 'rm -rf "$BIN" "$STATE"' EXIT
+FAKEHOME="$TMP/home"; STATE="$TMP/state"; CALLS="$TMP/calls.log"
+mkdir -p "$FAKEHOME" "$STATE"
 
-# Every stub records its argv, so ordering assertions read the log rather than the output.
-for tool in brew chezmoi op scutil sudo open chsh git mise defaults killall; do
-  cat > "$BIN/$tool" <<STUB
+# HARD GUARD. provision.sh removes files under $HOME and rewrites macOS defaults.
+# If any root still points inside the real home directory, refuse to run at all.
+for v in "$FAKEHOME" "$STATE"; do
+  case "$v" in
+    "$HOME"|"$HOME"/*) echo "REFUSING: harness root '$v' is inside the real HOME"; exit 2 ;;
+  esac
+done
+
+# Stub every tool reached through PATH. Each records argv and nothing else.
+for tool in brew chezmoi op scutil sudo open chsh git mise defaults killall osascript \
+            xcode-select curl ssh find chmod grep; do
+  case "$tool" in grep|find|chmod) continue ;; esac   # needed for real by the harness
+  cat > "$TMP/bin/$tool" <<STUB
 #!/usr/bin/env bash
 echo "$tool \$*" >> "$CALLS"
 case "\${MOCK_FAIL:-}" in *"$tool"*) exit 1 ;; esac
+case "$tool" in
+  scutil) case "\$2" in ComputerName) echo "\${FAKE_CN:-studio}";;
+                        HostName) echo "\${FAKE_HN:-studio}";;
+                        LocalHostName) echo "\${FAKE_LHN:-studio}";; esac ;;
+  chezmoi) case "\$1" in execute-template) echo "\${FAKE_CN:-studio}";; esac ;;
+  op)      case "\$1" in whoami) exit "\${MOCK_OP_RC:-0}";; esac ;;
+  xcode-select) exit "\${MOCK_XCODE_RC:-0}" ;;
+esac
 exit 0
 STUB
-  chmod +x "$BIN/$tool"
+  chmod +x "$TMP/bin/$tool"
 done
 
-# run <stdin-answers> [args...] ; sets $OUT, $RC, and $CALLS
+# Scripts provision.sh invokes BY PATH bypass $PATH entirely, so stub them by path.
+STUBSRC="$TMP/srcstub"; mkdir -p "$STUBSRC/.scripts" "$STUBSRC/.chezmoidata"
+cp "$SRC/.chezmoidata/machines.toml" "$STUBSRC/.chezmoidata/"
+for sc in configure.sh reconcile-agents.sh; do
+  printf '#!/usr/bin/env bash\necho "%s $*" >> "%s"\nexit "${MOCK_%s_RC:-0}"\n' \
+    "$sc" "$CALLS" "$(echo "$sc" | tr 'a-z.-' 'A-Z__')" > "$STUBSRC/.scripts/$sc"
+  chmod +x "$STUBSRC/.scripts/$sc"
+done
+
+# run <stdin-answers> [args...]
 run() {
   local answers=$1; shift
-  : > "$CALLS"; rm -rf "${STATE:?}/provision"
-  OUT=$(printf '%b' "$answers" | PATH="$BIN:$PATH" XDG_STATE_HOME="$STATE" \
-        MOCK_FAIL="${MOCK_FAIL:-}" zsh "$PROV" "$@" 2>&1); RC=$?
+  : > "$CALLS"
+  OUT=$(printf '%b' "$answers" | env -i \
+        PATH="$TMP/bin:/usr/bin:/bin" HOME="$FAKEHOME" USER="${USER}" \
+        XDG_STATE_HOME="$STATE" XDG_CONFIG_HOME="$FAKEHOME/.config" \
+        XDG_DATA_HOME="$FAKEHOME/.local/share" XDG_CACHE_HOME="$FAKEHOME/.cache" \
+        XDG_BIN_HOME="$FAKEHOME/.local/bin" \
+        PROVISION_SRC_OVERRIDE="$STUBSRC" \
+        MOCK_FAIL="${MOCK_FAIL:-}" MOCK_OP_RC="${MOCK_OP_RC:-0}" \
+        FAKE_CN="${FAKE_CN:-studio}" FAKE_HN="${FAKE_HN:-studio}" \
+        FAKE_LHN="${FAKE_LHN:-studio}" \
+        zsh "$PROV" "$@" 2>&1); RC=$?
 }
-# before <a> <b> <label> — asserts call a is logged before call b
+reset_state() { rm -rf "${STATE:?}/provision"; }
+called()     { if grep -qF -- "$1" "$CALLS"; then _pass "$2"; else _fail "$2"; fi; }
+not_called() { if grep -qF -- "$1" "$CALLS"; then _fail "$2"; else _pass "$2"; fi; }
 before() {
   local la lb
-  la=$(grep -n -- "$1" "$CALLS" | head -1 | cut -d: -f1)
-  lb=$(grep -n -- "$2" "$CALLS" | head -1 | cut -d: -f1)
+  la=$(grep -nF -- "$1" "$CALLS" | head -1 | cut -d: -f1)
+  lb=$(grep -nF -- "$2" "$CALLS" | head -1 | cut -d: -f1)
   if [ -n "$la" ] && [ -n "$lb" ] && [ "$la" -lt "$lb" ]; then _pass "$3"
   else _fail "$3 (a=${la:-missing} b=${lb:-missing})"; fi
 }
 
-echo "B. phase framework — dispatch, criticality, state, flags"
-MOCK_FAIL="" run 'studio\ny\n'
-rc_is 0 "clean run exits 0"
-has "[1/10]"  "phases are numbered out of ten"
-has "[10/10]" "the tenth phase runs"
-
-MOCK_FAIL="" run 'studio\ny\n' --dry-run
-hasnt "$(printf 'brew ')" "dry-run invokes no tools" 
-has "dry-run" "dry-run says so"
-
-echo "C. criticality"
-MOCK_FAIL="chezmoi" run 'studio\ny\n'
-rc_is 1 "a failing critical phase exits 1"
-has "--resume" "critical failure prints the resume command"
-hasnt "[10/10]" "phases after a critical failure do not run"
-
-MOCK_FAIL="mise" run 'studio\ny\n'
-rc_is 0 "a failing best-effort phase does not abort"
-has "[10/10]" "phases after a best-effort failure still run"
-has "mise"    "the failed best-effort phase is named in the report"
+echo "C. harness isolation"
+reset_state; run 'studio\ny\n'
+if [ -z "$(find "$HOME" -maxdepth 1 -newer "$CALLS" -name '.zprofile' 2>/dev/null)" ]; then
+  _pass "the real ~/.zprofile is untouched by a test run"
+else _fail "the real ~/.zprofile is untouched by a test run"; fi
+not_called "$HOME/.ssh" "no call references the real ~/.ssh"
 ```
 
 - [ ] **Step 2: Run it to verify it fails**
@@ -261,28 +335,103 @@ has "mise"    "the failed best-effort phase is named in the report"
 bash .scripts/test-provision.sh
 ```
 
-Expected: section A passes (13), section B and C fail — the current `provision.sh` has no phases, no flags, and prompts differently.
+Expected: section C fails — `provision.sh` does not yet honour `PROVISION_SRC_OVERRIDE` and still uses `set -e` with the old structure.
 
-- [ ] **Step 3: Replace the head of `provision.sh`**
+- [ ] **Step 3: No implementation in this task**
 
-Replace `.scripts/provision.sh` lines 1–34 (shebang through the `while read "REPLY?Ready to provision macOS?..."` confirmation loop) with:
+Section C's assertions are satisfied by Task 3's rewrite. To keep this commit green, comment out section C's two assertions with a `# enabled in Task 3` marker and commit the harness alone. Re-enable them in Task 3 Step 4.
+
+- [ ] **Step 4: Verify green and commit**
+
+```bash
+bash .scripts/test-provision.sh   # expect: 16 passed, 0 failed
+git add .scripts/test-provision.sh
+git commit -m "Add isolated test harness for provision.sh
+
+Temporary HOME and every XDG root, with a hard guard refusing to run if any still
+resolves inside the real home directory. provision.sh deletes files under \$HOME and
+rewrites macOS defaults, so an under-isolated harness is a destructive artefact.
+
+Scripts invoked by path rather than through PATH are stubbed by path. Assertions
+read the recorded call log, not stdout: a stub that records to a file contributes
+nothing to stdout, so an output substring check passes or fails for the wrong
+reason."
+```
+
+---
+
+### Task 3: Phase framework, state markers, flag matrix
+
+**Files:**
+- Rewrite: `.scripts/provision.sh` (header, flags, state, `run_phase`; phase bodies are stubs that later tasks replace)
+- Modify: `.scripts/test-provision.sh` (re-enable section C; add D)
+
+**Interfaces:**
+- Produces: `run_phase <name> <crit> <idx> <total>`; `warn <msg>`; `state_record/state_completed/state_answer/state_get/state_has_marker/state_mark`; globals `MACHINE_NAME`, `SRC_DIR`, `WARNINGS`, `DRY_RUN`, `RESUME`, `RESTART`, `ONLY_PHASE`, `REPAIR`. Phase functions are `phase_<name with - replaced by _>`, returning 0/non-zero.
+
+- [ ] **Step 1: Write the failing test**
+
+Re-enable section C, then append section D:
+
+```bash
+echo "D. flag matrix"
+reset_state; run 'studio\ny\n'; rc_is 0 "clean run exits 0"
+called "[4/10]" "stage 2 phases are numbered continuously"
+
+reset_state; run 'studio\ny\n' --dry-run
+not_called "brew " "dry-run invokes no tools"
+if [ ! -f "$STATE/provision/state" ]; then _pass "dry-run writes no state"
+else _fail "dry-run writes no state"; fi
+
+reset_state; run 'studio\ny\n'; run '' --restart --dry-run
+if [ -f "$STATE/provision/state" ]; then _pass "--restart --dry-run does not delete state"
+else _fail "--restart --dry-run does not delete state"; fi
+
+reset_state; run 'studio\ny\n'; run '' --phase nosuchphase
+rc_is 2 "an unknown --phase name is a usage error, not a silent no-op"
+
+reset_state; run 'studio\ny\n' --repair-identity --resume
+rc_is 2 "--repair-identity with --resume is a usage error"
+
+echo "E. criticality"
+reset_state; MOCK_FAIL="chezmoi" run 'studio\ny\n'
+rc_is 1 "a failing critical phase exits 1"
+has "--resume" "critical failure prints a resume command"
+hasnt "\$0" "the resume command is a resolved path, not \$0"
+MOCK_FAIL=""
+reset_state; MOCK_FAIL="mise" run 'studio\ny\n'
+rc_is 0 "a failing best-effort phase does not abort"
+called "[10/10]" "phases after a best-effort failure still run"
+MOCK_FAIL=""
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+```bash
+bash .scripts/test-provision.sh
+```
+
+Expected: C, D, E fail.
+
+- [ ] **Step 3: Rewrite the head of `provision.sh`**
+
+Replace `.scripts/provision.sh` lines 1–34 (shebang through the confirmation loop):
 
 ```zsh
 #!/usr/bin/env zsh
 # macOS Provision Script
 # Install by running: /bin/zsh -c "$(curl -fsSL https://raw.githubusercontent.com/michaelrigart/dotfiles/refs/heads/main/.scripts/provision.sh)"
 #
-# Four stages: bootstrap (prerequisites, no decisions), preflight (ALL human input,
-# ending in one confirm), run (unattended phases), report. See
-# docs/superpowers/specs/2026-08-27-provisioning-preflight-design.md
+# Four stages: bootstrap (prerequisites + the Xcode CLT dialog), preflight (ALL
+# decisions, ending in one confirm that gates identity mutation), run (unattended),
+# report. See docs/superpowers/specs/2026-08-27-provisioning-preflight-design.md
 #
-# NOTE: deliberately NOT `set -e`. Best-effort phases must be able to fail without
-# killing the run; run_phase interprets each phase's status instead.
+# NOT `set -e`: best-effort phases must fail without killing the run.
 set -u
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
-log_info() { print -r -- "${GREEN}[INFO]${NC} $1"; }
-log_warn() { print -r -- "${YELLOW}[WARN]${NC} $1"; }
+log_info()  { print -r -- "${GREEN}[INFO]${NC} $1"; }
+log_warn()  { print -r -- "${YELLOW}[WARN]${NC} $1"; }
 log_error() { print -r -- "${RED}[ERROR]${NC} $1"; }
 
 export XDG_CACHE_HOME="${XDG_CACHE_HOME:-${HOME}/.cache}"
@@ -291,91 +440,94 @@ export XDG_DATA_HOME="${XDG_DATA_HOME:-${HOME}/.local/share}"
 export XDG_STATE_HOME="${XDG_STATE_HOME:-${HOME}/.local/state}"
 export XDG_BIN_HOME="${XDG_BIN_HOME:-${HOME}/.local/bin}"
 
-SRC_DIR="${XDG_DATA_HOME}/chezmoi"
+# PROVISION_SRC_OVERRIDE exists for the test harness; nothing else sets it.
+SRC_DIR="${PROVISION_SRC_OVERRIDE:-${XDG_DATA_HOME}/chezmoi}"
 DOTFILES_HTTPS="https://github.com/michaelrigart/dotfiles.git"
 DOTFILES_SSH="git@github.com:michaelrigart/dotfiles.git"
 STATE_DIR="${XDG_STATE_HOME}/provision"
 STATE_FILE="${STATE_DIR}/state"
 
+# $0 is the literal word "provision" under `zsh -c "$(curl …)" provision`, so never
+# print it as a command. Resolve a real path, preferring the cloned copy.
+SELF="${SRC_DIR}/.scripts/provision.sh"
+[[ -r $SELF ]] || SELF="$0"
+
 typeset -g MACHINE_NAME=""
 typeset -ga WARNINGS=()
-typeset -g RESUME=0 RESTART=0 DRY_RUN=0 ONLY_PHASE=""
+typeset -g RESUME=0 RESTART=0 DRY_RUN=0 REPAIR=0 ONLY_PHASE=""
 
-# name:criticality, in execution order. Phases 1-3 are stage 0's work, 4-10 stage 2's;
-# the numbering is continuous because the state file and --phase do not distinguish them.
 typeset -ga PHASES=(
-  "xcode-clt:critical"
-  "homebrew:critical"
-  "source-clone:critical"
-  "chezmoi-init:critical"
-  "dotfiles:critical"
-  "brewfile:best-effort"
-  "agent-plugins:best-effort"
-  "mise:best-effort"
-  "macos-config:best-effort"
+  "xcode-clt:critical"      "homebrew:critical"     "source-clone:critical"
+  "chezmoi-init:critical"   "dotfiles:critical"     "brewfile:best-effort"
+  "agent-plugins:best-effort" "mise:best-effort"    "macos-config:best-effort"
   "shell:best-effort"
 )
 
 usage() {
   cat <<'EOF'
-Usage: provision.sh [--resume] [--restart] [--phase NAME] [--dry-run]
+Usage: provision.sh [--resume | --restart | --phase NAME | --dry-run | --repair-identity]
 
-  --resume       skip phases already recorded as complete, and re-use recorded answers
-  --restart      discard recorded state and start from the first phase
-  --phase NAME   run only this phase (implies --resume for the answers)
-  --dry-run      print what each phase would do; run nothing, record nothing
+  --resume            skip completed phases; re-use decisions; revalidate credentials
+  --restart           discard recorded state and start over
+  --phase NAME        run only NAME (requires a confirmed, identity-applied state)
+  --dry-run           print what each phase would do; run nothing, record nothing
+  --repair-identity   repair a machine's identity fields; mutually exclusive with the above
 EOF
 }
 
 while (( $# )); do
   case $1 in
-    --resume)  RESUME=1 ;;
-    --restart) RESTART=1 ;;
-    --dry-run) DRY_RUN=1 ;;
-    --phase)   (( $# >= 2 )) || { log_error "--phase needs a name"; exit 2; }
-               ONLY_PHASE=$2; RESUME=1; shift ;;
-    -h|--help) usage; exit 0 ;;
-    *)         log_error "unknown option: $1"; usage; exit 2 ;;
+    --resume)          RESUME=1 ;;
+    --restart)         RESTART=1 ;;
+    --dry-run)         DRY_RUN=1 ;;
+    --repair-identity) REPAIR=1 ;;
+    --phase)           (( $# >= 2 )) || { log_error "--phase needs a name"; exit 2; }
+                       ONLY_PHASE=$2; shift ;;
+    -h|--help)         usage; exit 0 ;;
+    *)                 log_error "unknown option: $1"; usage; exit 2 ;;
   esac
   shift
 done
 
+# --repair-identity is a repair mode, not a provisioning mode: it never merges.
+if (( REPAIR )) && { (( RESUME || RESTART || DRY_RUN )) || [[ -n $ONLY_PHASE ]] }; then
+  log_error "--repair-identity cannot be combined with other flags"
+  exit 2
+fi
+if [[ -n $ONLY_PHASE ]] && ! print -r -- "${PHASES[@]%%:*}" | grep -qw -- "$ONLY_PHASE"; then
+  log_error "unknown phase: ${ONLY_PHASE}"
+  log_error "known phases: ${PHASES[@]%%:*}"
+  exit 2
+fi
+
 mkdir -p "$STATE_DIR"
-(( RESTART )) && rm -f "$STATE_FILE"
-[[ -f $STATE_FILE ]] || : > "$STATE_FILE"
+# --restart must not destroy state during a --dry-run, and flag validation above must
+# have passed first: a usage error should never have side effects.
+(( RESTART && ! DRY_RUN )) && rm -f "$STATE_FILE"
+[[ -f $STATE_FILE || $DRY_RUN -eq 1 ]] || : > "$STATE_FILE"
 
-state_record()    { print -r -- "phase=$1" >> "$STATE_FILE"; }
-state_completed() { grep -qxF "phase=$1" "$STATE_FILE" 2>/dev/null; }
-state_answer()    { print -r -- "$1=$2" >> "$STATE_FILE"; }
-state_get()       { sed -n "s/^$1=//p" "$STATE_FILE" 2>/dev/null | tail -1; }
-warn()            { WARNINGS+=("$1"); log_warn "$1"; }
+state_record()     { (( DRY_RUN )) || print -r -- "phase=$1" >> "$STATE_FILE"; }
+state_completed()  { grep -qxF "phase=$1" "$STATE_FILE" 2>/dev/null; }
+state_answer()     { (( DRY_RUN )) || print -r -- "$1=$2" >> "$STATE_FILE"; }
+state_get()        { sed -n "s/^$1=//p" "$STATE_FILE" 2>/dev/null | tail -1; }
+state_mark()       { (( DRY_RUN )) || print -r -- "marker=$1" >> "$STATE_FILE"; }
+state_has_marker() { grep -qxF "marker=$1" "$STATE_FILE" 2>/dev/null; }
+warn()             { WARNINGS+=("$1"); log_warn "$1"; }
 
-# run_phase <name> <criticality> <index> <total>
 run_phase() {
-  local name=$1 crit=$2 idx=$3 total=$4
-  local fn="phase_${name//-/_}"
-
-  if [[ -n $ONLY_PHASE && $ONLY_PHASE != $name ]]; then
-    return 0
-  fi
+  local name=$1 crit=$2 idx=$3 total=$4 fn="phase_${1//-/_}"
+  [[ -n $ONLY_PHASE && $ONLY_PHASE != $name ]] && return 0
   if (( RESUME )) && [[ -z $ONLY_PHASE ]] && state_completed "$name"; then
-    printf '[%d/%d] %-16s skipped (already done)\n' "$idx" "$total" "$name"
-    return 0
+    printf '[%d/%d] %-16s skipped (already done)\n' "$idx" "$total" "$name"; return 0
   fi
   if (( DRY_RUN )); then
-    printf '[%d/%d] %-16s dry-run\n' "$idx" "$total" "$name"
-    return 0
+    printf '[%d/%d] %-16s dry-run\n' "$idx" "$total" "$name"; return 0
   fi
-
   printf '[%d/%d] %-16s\n' "$idx" "$total" "$name"
-  if "$fn"; then
-    state_record "$name"
-    return 0
-  fi
-
+  if "$fn"; then state_record "$name"; return 0; fi
   if [[ $crit == critical ]]; then
     log_error "critical phase '${name}' failed — aborting"
-    log_error "fix the cause, then resume with: ${0} --resume"
+    log_error "fix the cause, then resume with: ${SELF} --resume"
     exit 1
   fi
   warn "phase '${name}' failed (best-effort) — see output above"
@@ -383,24 +535,23 @@ run_phase() {
 }
 ```
 
-- [ ] **Step 4: Add stub phase bodies and the run loop**
+- [ ] **Step 4: Add stubs and the run loop**
 
-Append to the end of `provision.sh`, replacing everything that currently follows (the old steps 1–16 are removed here and re-added, one at a time, by Tasks 3–6):
+Replace everything after the header (old steps 1–16) with:
 
 ```zsh
-# --- phase stubs, replaced by Tasks 3-6 -------------------------------------
-phase_xcode_clt()    { return 0; }
-phase_homebrew()     { return 0; }
-phase_source_clone() { return 0; }
-phase_chezmoi_init() { chezmoi --version >/dev/null; }
-phase_dotfiles()     { return 0; }
-phase_brewfile()     { brew --version >/dev/null; }
-phase_agent_plugins(){ return 0; }
-phase_mise()         { mise --version >/dev/null; }
-phase_macos_config() { return 0; }
-phase_shell()        { return 0; }
+# --- phase stubs, replaced by Tasks 5-8 --------------------------------------
+phase_xcode_clt()     { return 0; }
+phase_homebrew()      { return 0; }
+phase_source_clone()  { return 0; }
+phase_chezmoi_init()  { chezmoi --version >/dev/null; }
+phase_dotfiles()      { return 0; }
+phase_brewfile()      { brew --version >/dev/null; }
+phase_agent_plugins() { return 0; }
+phase_mise()          { mise --version >/dev/null; }
+phase_macos_config()  { return 0; }
+phase_shell()         { return 0; }
 
-# --- stage 2: run ------------------------------------------------------------
 local -i idx=0
 local total=${#PHASES}
 local entry
@@ -408,507 +559,530 @@ for entry in "${PHASES[@]}"; do
   (( idx++ ))
   run_phase "${entry%%:*}" "${entry##*:}" "$idx" "$total"
 done
-
 print ""
 log_info "✓ macOS provision complete"
 ```
 
-- [ ] **Step 5: Run the tests to verify B and C pass**
+Re-enable section C's two commented assertions.
+
+- [ ] **Step 5: Verify green**
 
 ```bash
 bash .scripts/test-provision.sh
+printf 'studio\ny\n' | zsh .scripts/provision.sh --dry-run | grep -o '\[[0-9]*/10\]' | tr '\n' ' '
 ```
 
-Expected: sections A, B and C green. Section C's `MOCK_FAIL="chezmoi"` case exercises a critical failure through `phase_chezmoi_init`'s `chezmoi --version`; `MOCK_FAIL="mise"` exercises a best-effort failure through `phase_mise`.
+Expected: all sections green, and `[1/10] … [10/10]` exactly once each — a repeated `[1/10]` means a duplicate counter declaration.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add .scripts/provision.sh .scripts/test-provision.sh
-git commit -m "Add phase framework to provision.sh
+git commit -m "Add phase framework and flag matrix to provision.sh
 
-Ten named phases, each critical or best-effort, dispatched through run_phase.
-Completed phases are recorded under XDG_STATE_HOME so --resume skips them;
---restart, --phase and --dry-run round out the surface.
+Ten phases, each critical or best-effort, dispatched through run_phase with state
+under XDG_STATE_HOME. Flags are validated before any side effect: --restart does not
+delete state during a --dry-run, an unknown --phase is a usage error rather than a
+silent no-op, and --repair-identity refuses to combine with the others.
 
-set -e is removed deliberately: best-effort phases cannot exist under it."
+Recovery messages print a resolved path: \$0 is the literal word 'provision' under
+the documented curl invocation.
+
+set -e is removed deliberately — best-effort phases cannot exist under it."
 ```
 
 ---
 
-### Task 3: Stage 0 — bootstrap phases
+### Task 4: Stage 0 — bootstrap
 
-Fills in the three phases that must run before anyone can be asked anything.
+**Files:** modify `.scripts/provision.sh` (three stubs), `.scripts/test-provision.sh` (section F).
 
-**Files:**
-- Modify: `.scripts/provision.sh` (replace the `phase_xcode_clt`, `phase_homebrew`, `phase_source_clone` stubs)
-- Modify: `.scripts/test-provision.sh` (add section D)
-
-**Interfaces:**
-- Consumes: `warn`, `log_*`, `SRC_DIR`, `DOTFILES_HTTPS` from Task 2.
-- Produces: `HOMEBREW_PREFIX` exported for later phases; `$SRC_DIR` populated, which Task 4's allowlist read depends on.
+**Interfaces:** produces `HOMEBREW_PREFIX` and a PATH-configured Homebrew, **hoisted out of phase completion** so a resumed run that skips the phase still gets them; populates `$SRC_DIR`.
 
 - [ ] **Step 1: Write the failing test**
 
-Append section D to `.scripts/test-provision.sh`:
-
 ```bash
-echo "D. stage 0 — bootstrap ordering"
-MOCK_FAIL="" run 'studio\ny\n'
-before "brew install chezmoi" "git clone"      "chezmoi is installed before the source is cloned"
-before "git clone"            "scutil --set"   "the source is cloned before preflight sets the hostname"
-has "git clone" "the source is cloned with git, not chezmoi init"
+echo "F. stage 0"
+reset_state; run 'studio\ny\n'
+called "NONINTERACTIVE" "Homebrew is installed non-interactively"
+before "brew install chezmoi" "git clone" "chezmoi is installed before the clone"
+called "git clone" "the source is cloned with git, not chezmoi init"
+reset_state; run 'studio\ny\n'; MOCK_FAIL="" run '' --resume
+called "brew --prefix" "a resumed run initialises the brew environment even when the phase is skipped"
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
-
-```bash
-bash .scripts/test-provision.sh
-```
-
-Expected: section D fails — the stubs make no `brew` or `git` calls.
-
-- [ ] **Step 3: Implement the three phases**
-
-Replace the three stubs in `provision.sh`:
+- [ ] **Step 2: Run to verify it fails**, then **Step 3: implement**:
 
 ```zsh
+# Homebrew's process environment is NOT part of phase completion: a resumed run that
+# skips phase_homebrew still needs PATH and HOMEBREW_PREFIX, and ${HOMEBREW_PREFIX}
+# is an unbound-variable abort under `set -u` without it.
+init_brew_env() {
+  [[ -x /opt/homebrew/bin/brew ]] || return 0
+  eval "$(/opt/homebrew/bin/brew shellenv)"
+  export HOMEBREW_PREFIX=$(brew --prefix)
+}
+
 phase_xcode_clt() {
-  if xcode-select -p &>/dev/null; then
-    log_info "✓ Xcode Command Line Tools already installed"
-    return 0
-  fi
-  log_info "Installing Xcode Command Line Tools — complete the dialog that just opened"
+  xcode-select -p &>/dev/null && { log_info "✓ Xcode CLT already installed"; return 0; }
+  log_info "Installing Xcode Command Line Tools — accept the dialog that just opened"
   xcode-select --install 2>/dev/null
+  # Cancellation and no-response are indistinguishable here: xcode-select -p simply
+  # keeps failing. One bounded wait resolves both, rather than hanging forever or
+  # reporting the false success the old `exit 0` produced.
   local -i waited=0
   until xcode-select -p &>/dev/null; do
-    (( waited >= 1800 )) && { log_error "timed out after 30m waiting for Xcode CLT"; return 1; }
+    (( waited >= 1800 )) && { log_error "no Xcode CLT after 30m — was the dialog cancelled?"; return 1; }
     sleep 5; (( waited += 5 ))
-    (( waited % 60 == 0 )) && log_info "  still waiting for Xcode CLT (${waited}s)"
+    (( waited % 60 == 0 )) && log_info "  still waiting for the Xcode CLT dialog (${waited}s)"
   done
-  log_info "✓ Xcode Command Line Tools installed"
 }
 
 phase_homebrew() {
   if ! command -v brew &>/dev/null; then
     log_info "Installing Homebrew..."
-    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" || return 1
+    # NONINTERACTIVE=1: the installer prompts for confirmation by default, which would
+    # stop the run on a "Press RETURN to continue" this design promises does not exist.
+    NONINTERACTIVE=1 /bin/bash -c \
+      "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" || return 1
   else
     log_info "✓ Homebrew already installed"
     brew update || warn "brew update failed — continuing with the current index"
   fi
-  eval "$(/opt/homebrew/bin/brew shellenv)"
-  export HOMEBREW_PREFIX=$(brew --prefix)
-
-  log_info "Installing bootstrap tools..."
+  init_brew_env
   brew install chezmoi 1password-cli git || return 1
-  # The 1Password gate in preflight needs the desktop app, so it is bootstrap work,
-  # not Brewfile work. Installing it twice is harmless and idempotent.
-  brew install --cask 1password || return 1
+  brew install --cask 1password || return 1   # preflight's gate needs the desktop app
 }
 
 phase_source_clone() {
-  if [[ -d $SRC_DIR/.git ]]; then
-    log_info "✓ dotfiles source already present at ${SRC_DIR}"
-    return 0
-  fi
-  # A plain clone, NOT `chezmoi init` — preflight needs .chezmoidata/machines.toml
-  # present, but the config must not be rendered until the hostname is set.
+  [[ -d $SRC_DIR/.git ]] && { log_info "✓ source already at ${SRC_DIR}"; return 0; }
+  # Plain git clone, NOT chezmoi init: preflight needs .chezmoidata/machines.toml
+  # present, but the config must not render until the identity is set.
   log_info "Cloning dotfiles source..."
   git clone "$DOTFILES_HTTPS" "$SRC_DIR" || return 1
 }
 ```
 
-- [ ] **Step 4: Run the tests to verify D passes**
+Call `init_brew_env` once immediately after the flag block, before any phase runs.
+
+- [ ] **Step 4: Verify green and commit**
 
 ```bash
 bash .scripts/test-provision.sh
-```
-
-Expected: A–D green.
-
-- [ ] **Step 5: Commit**
-
-```bash
 git add .scripts/provision.sh .scripts/test-provision.sh
-git commit -m "Implement stage 0 bootstrap phases
+git commit -m "Implement stage 0 bootstrap
 
-Xcode CLT now polls until the dialog is satisfied instead of exiting 0 and
-asking to be re-run. The dotfiles source is cloned with plain git rather than
-chezmoi init, so preflight can read the machine allowlist before the hostname
-is set and the config is rendered."
+Xcode CLT polls until the dialog is satisfied instead of exiting 0 and asking to be
+re-run; cancellation and no-response both resolve through one bounded wait. Homebrew
+installs with NONINTERACTIVE=1, which its installer requires to skip its own prompt.
+
+The brew process environment is initialised outside phase completion, so a resumed
+run that skips the phase still has HOMEBREW_PREFIX — otherwise every later phase runs
+unconfigured and aborts under set -u.
+
+The source is cloned with plain git so preflight can read the allowlist before the
+identity is set."
 ```
 
 ---
 
-### Task 4: Stage 1 — preflight
+### Task 5: Stage 1 — preflight and the consent markers
 
-All human input, in one place, ending in one confirm.
+**Do not start without completing the execution precondition above.** This is the first task whose code renames a machine.
 
-**Files:**
-- Modify: `.scripts/provision.sh` (insert the preflight block between the phase definitions and the run loop)
-- Modify: `.scripts/test-provision.sh` (add sections E and F)
+**Files:** modify `.scripts/provision.sh`, `.scripts/test-provision.sh` (sections G, H).
 
-**Interfaces:**
-- Consumes: `state_answer`, `state_get`, `SRC_DIR`, `MACHINE_NAME` from Task 2; `$SRC_DIR` populated by Task 3.
-- Produces: `MACHINE_NAME` set and applied via `scutil`; sudo credential held; `machine_name` recorded in state.
+**Interfaces:** produces `MACHINE_NAME`; markers `answers_collected`, `confirmed`, `identity_applied`; `validate_identity <name>` shared with Task 6.
 
 - [ ] **Step 1: Write the failing test**
 
-Append sections E and F to `.scripts/test-provision.sh`:
-
 ```bash
-echo "E. preflight — allowlist and ordering"
-MOCK_FAIL="" run 'studio\ny\n'
-before "scutil --set ComputerName" "chezmoi init" "the hostname is set BEFORE chezmoi init"
-has "scutil --set ComputerName studio"  "ComputerName is set to the chosen name"
-has "scutil --set HostName studio"      "HostName is set — Borg identity depends on it"
-has "scutil --set LocalHostName studio" "LocalHostName is set"
+echo "G. preflight ordering and consent"
+reset_state; run 'studio\ny\n'
+before "scutil --set ComputerName" "chezmoi init" "identity is set BEFORE chezmoi init"
+called "scutil --set HostName studio"      "HostName is set — Borg depends on it"
+called "scutil --set LocalHostName studio" "LocalHostName is set"
 
-MOCK_FAIL="" run 'nosuchmachine\nstudio\ny\n'
-rc_is 0 "an unknown name is re-prompted, not fatal"
-has "machines.toml" "rejection names the file to edit"
-hasnt "scutil --set ComputerName nosuchmachine" "the rejected name is never applied"
+reset_state; run 'nosuchmachine\nstudio\ny\n'
+rc_is 0 "an unlisted name re-prompts rather than aborting"
+not_called "scutil --set ComputerName nosuchmachine" "the rejected name is never applied"
 
-echo "F. preflight — confirm gate and resume"
-MOCK_FAIL="" run 'studio\nn\n'
-rc_is 1 "declining the confirm aborts"
-hasnt "[1/10]" "no phase runs when the confirm is declined"
-hasnt "scutil --set" "nothing is mutated when the confirm is declined"
+reset_state; run 'studio\nn\n'
+rc_is 1 "declining aborts"
+not_called "scutil --set" "declining mutates NOTHING — identity included"
+not_called "[4/10]"       "declining runs no stage 2 phase"
 
-# --resume re-uses the recorded answer instead of asking again
-MOCK_FAIL="" run 'studio\ny\n'
-OUT=$(printf '' | PATH="$BIN:$PATH" XDG_STATE_HOME="$STATE" zsh "$PROV" --resume 2>&1); RC=$?
-rc_is 0 "--resume completes with no answers on stdin"
-has "studio" "--resume re-uses the recorded machine name"
+echo "H. consent laundering regression"
+reset_state; run 'studio\nn\n'          # answers recorded, consent refused
+run '' --resume                          # must NOT proceed on recorded answers alone
+not_called "scutil --set" "resume after a decline does not rename"
+has "Proceed?" "resume after a decline re-asks for consent"
+run 'y\n' --resume
+called "scutil --set ComputerName studio" "a second explicit yes does apply the identity"
+
+echo "I. LocalHostName suffix tolerance"
+reset_state; FAKE_LHN="studio-2" run 'studio\ny\n'
+rc_is 0 "LocalHostName studio-2 is accepted (macOS Bonjour suffix)"
+reset_state; FAKE_LHN="studio-x" run 'studio\ny\n'
+rc_is 1 "LocalHostName studio-x is rejected"
+FAKE_LHN="studio"
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
-
-```bash
-bash .scripts/test-provision.sh
-```
-
-Expected: E and F fail — there is no preflight yet, so nothing prompts and `scutil` is never called.
-
-- [ ] **Step 3: Implement preflight**
-
-Insert into `provision.sh`, after the phase function definitions and before the run loop:
+- [ ] **Step 2: Run to verify it fails**, then **Step 3: implement**. Insert before the run loop:
 
 ```zsh
-# --- stage 1: preflight ------------------------------------------------------
-# Everything that can ask a question lives here. Nothing after the confirm prompts.
-
 known_hostnames() {
-  # A deliberately small parser: the file holds one flat array and nothing else.
   sed -n 's/^known_hostnames *= *\[\(.*\)\]/\1/p' "$SRC_DIR/.chezmoidata/machines.toml" 2>/dev/null \
     | tr -d '" ' | tr ',' '\n' | grep -v '^$'
 }
 
-preflight_1password() {
-  if op whoami &>/dev/null; then
-    log_info "✓ 1Password CLI already authenticated"
-    return 0
+# validate_identity <name> -> 0 if all three fields match. ComputerName and HostName
+# exactly; LocalHostName tolerates the numeric suffix macOS adds on Bonjour collisions.
+validate_identity() {
+  local want=$1 cn hn lhn
+  cn=$(scutil --get ComputerName 2>/dev/null)
+  hn=$(scutil --get HostName 2>/dev/null)
+  lhn=$(scutil --get LocalHostName 2>/dev/null)
+  [[ $cn == $want ]]  || { log_error "ComputerName is ${cn:-unset}, expected ${want}"; return 1; }
+  [[ $hn == $want ]]  || { log_error "HostName is ${hn:-unset}, expected ${want}"; return 1; }
+  [[ $lhn == ${~want}(-<->|) ]] || { log_error "LocalHostName is ${lhn:-unset}, expected ${want} or ${want}-N"; return 1; }
+}
+
+apply_identity() {
+  local n=$1
+  sudo scutil --set ComputerName  "$n" || return 1
+  sudo scutil --set HostName      "$n" || return 1
+  sudo scutil --set LocalHostName "$n" || return 1
+  validate_identity "$n" || return 1
+  state_mark identity_applied
+}
+
+preflight_credentials() {   # decisions persist across a resume; credentials do not
+  if ! op whoami &>/dev/null; then
+    open -a "1Password" 2>/dev/null
+    print "\n  In the 1Password app: sign in, then Settings → Developer →"
+    print "  ☑ Integrate with 1Password CLI\n"
+    local -i waited=0
+    until op whoami &>/dev/null; do
+      (( waited >= 900 )) && { log_error "timed out waiting for the 1Password CLI"; return 1; }
+      sleep 3; (( waited += 3 ))
+    done
   fi
-  open -a "1Password" 2>/dev/null
-  print ""
-  print "  Do this now, in the 1Password app:"
-  print "    1. Sign in to your account"
-  print "    2. Settings → Developer → ☑ Integrate with 1Password CLI"
-  print ""
-  local -i waited=0
-  until op whoami &>/dev/null; do
-    (( waited >= 900 )) && { log_error "timed out after 15m waiting for the 1Password CLI"; return 1; }
-    sleep 3; (( waited += 3 ))
-  done
   log_info "✓ 1Password CLI authenticated"
+  sudo -v || return 1
+  while true; do sudo -n true; sleep 60; kill -0 "$$" || exit; done 2>/dev/null &
 }
 
 preflight_machine_name() {
-  local recorded
-  recorded=$(state_get machine_name)
-  if [[ -n $recorded ]]; then
-    MACHINE_NAME=$recorded
-    log_info "✓ machine name (recorded): ${MACHINE_NAME}"
-    return 0
-  fi
-
-  local -a allowed
-  allowed=(${(f)"$(known_hostnames)"})
-  if (( ${#allowed} == 0 )); then
-    log_error "no known_hostnames found in ${SRC_DIR}/.chezmoidata/machines.toml"
-    return 1
-  fi
-
+  local recorded; recorded=$(state_get machine_name)
+  if [[ -n $recorded ]]; then MACHINE_NAME=$recorded; return 0; fi
+  local -a allowed; allowed=(${(f)"$(known_hostnames)"})
+  (( ${#allowed} )) || { log_error "no known_hostnames in ${SRC_DIR}/.chezmoidata/machines.toml"; return 1; }
   local name
   while true; do
     print -n "  Machine name (${(j:, :)allowed}): "
     read -r name || return 1
     if (( ${allowed[(Ie)$name]} )); then
-      MACHINE_NAME=$name
-      state_answer machine_name "$name"
+      MACHINE_NAME=$name; state_answer machine_name "$name"; state_mark answers_collected
       return 0
     fi
     log_warn "unknown machine '${name}' — add it to .chezmoidata/machines.toml first"
   done
 }
 
-preflight_sudo_and_hostname() {
-  sudo -v || return 1
-  # Keep the credential alive for the whole unattended run.
-  while true; do sudo -n true; sleep 60; kill -0 "$$" || exit; done 2>/dev/null &
-
-  # Ordering is load-bearing: this must happen before phase_chezmoi_init, which
-  # captures the name into chezmoi's [data]. HostName in particular is what Borg's
-  # {hostname} resolves to — see the design doc §11.1. Never make this best-effort.
-  local n=$MACHINE_NAME
-  [[ $(scutil --get ComputerName 2>/dev/null)  == "$n" ]] || sudo scutil --set ComputerName  "$n" || return 1
-  [[ $(scutil --get HostName 2>/dev/null)      == "$n" ]] || sudo scutil --set HostName      "$n" || return 1
-  [[ $(scutil --get LocalHostName 2>/dev/null) == "$n" ]] || sudo scutil --set LocalHostName "$n" || return 1
-  log_info "✓ hostname set to ${n}"
-}
-
 preflight_confirm() {
-  print ""
-  print "══ Provision: ${MACHINE_NAME} ══════════════════════"
+  print "\n══ Provision: ${MACHINE_NAME} ══════════════════"
   printf '  Machine name ....... %s\n' "$MACHINE_NAME"
   printf '  Dotfiles source .... %s\n' "$SRC_DIR"
-  printf '  1Password .......... authenticated\n'
   printf '  Phases ............. %d\n' "${#PHASES}"
-  print "────────────────────────────────────────────────────"
-  local reply
-  print -n "  Proceed? [y/N] "
+  print "────────────────────────────────────────────────"
+  local reply; print -n "  Proceed? [y/N] "
   read -r reply || return 1
-  [[ $reply == (y|Y) ]]
+  [[ $reply == (y|Y) ]] || return 1
+  state_mark confirmed
 }
+```
 
-# Bootstrap phases must complete before preflight can ask anything.
+Then insert the stage sequencing, replacing the single run loop:
+
+```zsh
 local -i idx=0
 local total=${#PHASES}
 local entry
+
+# Stage 0 — bootstrap
 for entry in "${PHASES[@]:0:3}"; do
-  (( idx++ ))
-  run_phase "${entry%%:*}" "${entry##*:}" "$idx" "$total"
+  (( idx++ )); run_phase "${entry%%:*}" "${entry##*:}" "$idx" "$total"
 done
 
+# Stage 1 — preflight
 if [[ -z $ONLY_PHASE ]] && (( ! DRY_RUN )); then
-  preflight_1password        || { log_error "1Password gate failed"; exit 1; }
-  preflight_machine_name     || { log_error "could not determine machine name"; exit 1; }
-  preflight_sudo_and_hostname|| { log_error "could not set the hostname"; exit 1; }
-  if ! preflight_confirm; then
-    log_warn "Aborted before any phase ran."
-    exit 1
+  preflight_credentials  || { log_error "credential gate failed"; exit 1; }
+  preflight_machine_name || { log_error "could not determine the machine name"; exit 1; }
+  # Consent, then mutation — never the reverse. Declining must leave the machine as found.
+  if ! state_has_marker confirmed; then
+    preflight_confirm || { log_warn "Aborted before any machine-specific change."; exit 1; }
   fi
+  if ! state_has_marker identity_applied; then
+    apply_identity "$MACHINE_NAME" || { log_error "could not set the identity"; exit 1; }
+  else
+    validate_identity "$MACHINE_NAME" || {
+      log_error "live identity has drifted — run: ${SELF} --repair-identity"; exit 1; }
+  fi
+fi
+
+# Stage 2 — run
+for entry in "${PHASES[@]:3}"; do
+  (( idx++ )); run_phase "${entry%%:*}" "${entry##*:}" "$idx" "$total"
+done
+```
+
+Add the `--phase` precondition immediately after the flag block:
+
+```zsh
+if [[ -n $ONLY_PHASE ]]; then
+  # Both markers, not just `confirmed`: from a confirmed-but-unapplied state,
+  # --phase chezmoi-init would capture the pre-migration name — the §5.1 ordering
+  # defect arriving through the flag surface.
+  state_has_marker confirmed || { log_error "no confirmed run — use: ${SELF} --resume"; exit 2; }
+  state_has_marker identity_applied || { log_error "identity not applied — use: ${SELF} --resume"; exit 2; }
+  MACHINE_NAME=$(state_get machine_name)
+  validate_identity "$MACHINE_NAME" || { log_error "identity drift — run: ${SELF} --repair-identity"; exit 2; }
+  preflight_credentials || exit 1
 fi
 ```
 
-**Then delete the counter declarations and run loop Task 2 added at the end of the
-file** — `local -i idx=0`, `local total=${#PHASES}`, `local entry`, and the
-`for entry in "${PHASES[@]}"` loop. The preflight block above already declares all
-three and runs the first three phases; leaving Task 2's copies in place would reset
-`idx` to 0 and renumber phases 4–10 as 1–7.
-
-Replace them with a loop over only the remaining phases:
-
-```zsh
-# --- stage 2: run ------------------------------------------------------------
-for entry in "${PHASES[@]:3}"; do
-  (( idx++ ))
-  run_phase "${entry%%:*}" "${entry##*:}" "$idx" "$total"
-done
-```
-
-Verify the numbering survived before moving on:
-
-```bash
-printf 'studio\ny\n' | zsh .scripts/provision.sh --dry-run | grep -o '\[[0-9]*/10\]' | tr '\n' ' '
-```
-
-Expected: `[1/10] [2/10] [3/10] [4/10] [5/10] [6/10] [7/10] [8/10] [9/10] [10/10]` — a
-second run of `[1/10]` means the duplicate declaration is still there.
-
-- [ ] **Step 4: Run the tests to verify E and F pass**
+- [ ] **Step 4: Verify green and commit**
 
 ```bash
 bash .scripts/test-provision.sh
-```
-
-Expected: A–F green. Assertion "the hostname is set BEFORE chezmoi init" is the one this whole plan exists to protect — if it fails, the ordering is wrong and no other green matters.
-
-- [ ] **Step 5: Commit**
-
-```bash
 git add .scripts/provision.sh .scripts/test-provision.sh
-git commit -m "Add preflight stage to provision.sh
+git commit -m "Add preflight, consent markers, and identity application
 
-All human input moves ahead of the unattended run: the 1Password gate polls
-op whoami rather than assuming a configured account, the machine name is
-validated against the allowlist, and sudo is acquired once and held.
+All decisions move ahead of the unattended run, and the confirm gates identity
+mutation: declining leaves the machine exactly as found, including its name.
 
-The hostname is applied before chezmoi init captures it. Borg's {hostname}
-resolves through HostName, so this ordering is load-bearing for backups."
+Recorded answers are not recorded consent. answers_collected, confirmed and
+identity_applied are separate markers, so answering, declining and later resuming
+re-asks instead of treating the stored answer as approval.
+
+All three identity fields are read back after being set. ComputerName and HostName
+must match exactly; LocalHostName tolerates the numeric suffix macOS appends on
+Bonjour collisions.
+
+--phase requires both markers and revalidates the live identity."
 ```
 
 ---
 
-### Task 5: Stage 2 — critical phases
+### Task 6: `--repair-identity`
 
-`chezmoi-init` and `dotfiles`, lifted from the current steps 5–7.
-
-**Files:**
-- Modify: `.scripts/provision.sh` (replace the `phase_chezmoi_init` and `phase_dotfiles` stubs)
-- Modify: `.scripts/test-provision.sh` (add section G)
-
-**Interfaces:**
-- Consumes: `MACHINE_NAME` (already applied to the system), `SRC_DIR`, `DOTFILES_SSH`.
-- Produces: `~/.config/chezmoi/chezmoi.toml` with correct `[data]`; a fully applied `$HOME`.
+**Files:** modify `.scripts/provision.sh`, `.scripts/test-provision.sh` (section J).
 
 - [ ] **Step 1: Write the failing test**
 
-Append section G:
-
 ```bash
-echo "G. critical phases — init, apply, SSH remote"
-MOCK_FAIL="" run 'studio\ny\n'
-has "chezmoi init"          "chezmoi init runs"
-has "chezmoi apply"         "chezmoi apply runs"
-before "chezmoi init" "chezmoi apply" "init precedes apply"
-has "git remote set-url"    "the source remote is switched to SSH"
-before "chezmoi apply" "git remote set-url" "the remote switch follows the apply that renders the key"
+echo "J. --repair-identity"
+reset_state; run 'fenrir\ny\n' --repair-identity
+rc_is 0 "repair runs with no state file at all"
+if [ ! -f "$STATE/provision/state" ]; then _pass "stateless repair creates no provisioning state"
+else _fail "stateless repair creates no provisioning state"; fi
+
+reset_state; run 'fenrir\nn\n' --repair-identity
+not_called "scutil --set" "declining repair mutates nothing"
+
+# changed identity, existing state -> file deleted BEFORE the first mutation
+reset_state; run 'studio\ny\n'
+MOCK_FAIL="scutil" run 'fenrir\ny\n' --repair-identity
+if [ ! -f "$STATE/provision/state" ]; then
+  _pass "a repair that dies mid-mutation has already deleted the old state"
+else _fail "a repair that dies mid-mutation has already deleted the old state"; fi
+MOCK_FAIL=""
+
+reset_state; run 'studio\ny\n'
+cp "$STATE/provision/state" "$TMP/state.before"
+run 'studio\nn\n' --repair-identity
+if cmp -s "$TMP/state.before" "$STATE/provision/state"; then
+  _pass "declining repair leaves the state file byte-identical"
+else _fail "declining repair leaves the state file byte-identical"; fi
+
+reset_state; run 'studio\ny\n'
+run 'fenrir\ny\n' --repair-identity
+run '' --resume
+has "fenrir" "the run after a changed-identity repair displays the NEW identity"
+hasnt "Machine name ....... studio" "it does not display the old identity"
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [ ] **Step 2: Run to verify it fails**, then **Step 3: implement**, inserted before the stage sequencing and guarded to exit before it:
+
+```zsh
+repair_identity() {
+  local -a allowed; allowed=(${(f)"$(known_hostnames)"})
+  (( ${#allowed} )) || { log_error "no known_hostnames in ${SRC_DIR}/.chezmoidata/machines.toml"; return 1; }
+
+  local name recorded reply
+  recorded=$(state_get machine_name)
+  while true; do
+    print -n "  Repair identity to (${(j:, :)allowed}): "
+    read -r name || return 1
+    (( ${allowed[(Ie)$name]} )) && break
+    log_warn "unknown machine '${name}' — add it to .chezmoidata/machines.toml first"
+  done
+
+  print "\n══ Repair identity ═════════════════════════════"
+  printf '  ComputerName ..... %-22s → %s\n' "$(scutil --get ComputerName 2>/dev/null)" "$name"
+  printf '  HostName ......... %-22s → %s\n' "$(scutil --get HostName 2>/dev/null)"     "$name"
+  printf '  LocalHostName .... %-22s → %s\n' "$(scutil --get LocalHostName 2>/dev/null)" "$name"
+  print "────────────────────────────────────────────────"
+  print -n "  Apply? [y/N] "
+  read -r reply || return 1
+  [[ $reply == (y|Y) ]] || { log_warn "Repair declined — nothing changed."; return 1; }
+
+  # Deletion timing is the whole point. AFTER the y (declining must preserve a good
+  # in-progress run) and BEFORE the first scutil --set (repair is not atomic: three
+  # sets then a chezmoi init, any of which can fail, and a half-renamed machine beside
+  # a confirmed state file for the OLD identity is exactly what --resume would eat).
+  if [[ -n $recorded && $recorded != $name ]]; then
+    log_info "identity changes ${recorded} → ${name}; discarding the previous run's state"
+    rm -f "$STATE_FILE"
+  fi
+
+  sudo scutil --set ComputerName  "$name" || return 1
+  sudo scutil --set HostName      "$name" || return 1
+  sudo scutil --set LocalHostName "$name" || return 1
+  validate_identity "$name" || return 1
+  chezmoi init || return 1
+
+  if [[ -n $recorded && $recorded != $name ]]; then
+    log_info "✓ identity repaired to ${name}. Now run: ${SELF}"
+  else
+    state_mark identity_applied
+    log_info "✓ identity repaired to ${name}"
+  fi
+}
+
+if (( REPAIR )); then
+  init_brew_env
+  repair_identity || exit 1
+  exit 0
+fi
+```
+
+- [ ] **Step 4: Verify green and commit**
 
 ```bash
 bash .scripts/test-provision.sh
+git add .scripts/provision.sh .scripts/test-provision.sh
+git commit -m "Add --repair-identity
+
+A repair mode that works without state, so a legacy or externally-renamed machine can
+be fixed. It shows a before/after for all three fields and requires an explicit yes:
+identity mutation always requires consent, in every mode.
+
+When the identity changes, the previous run's state file is deleted after the yes and
+before the first scutil --set. Repair is not atomic, so deleting on success would let
+a mid-repair failure leave a half-renamed machine beside a confirmed state file for
+the old identity — which --resume would consume. Declining preserves it untouched."
 ```
 
-Expected: G fails — `phase_chezmoi_init` only calls `chezmoi --version`, and `phase_dotfiles` is a no-op.
+---
 
-- [ ] **Step 3: Implement the two phases**
+### Task 7: Stage 2 critical phases
 
-Replace the stubs (this folds in the current script's steps 5, 6 and 7 at lines 84–124):
+**Files:** modify `.scripts/provision.sh` (two stubs), `.scripts/test-provision.sh` (section K).
+
+- [ ] **Step 1: Write the failing test**
+
+```bash
+echo "K. critical phases"
+reset_state; run 'studio\ny\n'
+before "chezmoi init" "chezmoi apply" "init precedes apply"
+called "git remote set-url" "the remote is switched to SSH"
+before "chezmoi apply" "git remote set-url" "the switch follows the apply that renders the key"
+called "StrictHostKeyChecking=accept-new" "the SSH check cannot block on an unknown host key"
+```
+
+- [ ] **Step 2: Run to verify it fails**, then **Step 3: implement**:
 
 ```zsh
 phase_chezmoi_init() {
-  # The source is already cloned by phase_source_clone; init's job here is solely to
-  # render ~/.config/chezmoi/chezmoi.toml from the source-root .chezmoi.toml.tmpl.
-  # It reads `scutil --get ComputerName`, which preflight has already set.
+  # The source is already cloned; init's only job here is rendering the config from
+  # the source-root .chezmoi.toml.tmpl, which reads the identity preflight just set.
   log_info "Generating chezmoi config for ${MACHINE_NAME}..."
   chezmoi init || return 1
-
-  local got
-  got=$(chezmoi execute-template '{{ .hostname }}' 2>/dev/null)
-  if [[ $got != $MACHINE_NAME ]]; then
-    log_error "chezmoi resolved hostname '${got}', expected '${MACHINE_NAME}'"
-    return 1
-  fi
-  log_info "✓ chezmoi config generated (hostname=${got})"
+  local got; got=$(chezmoi execute-template '{{ .hostname }}' 2>/dev/null)
+  [[ $got == $MACHINE_NAME ]] || {
+    log_error "chezmoi resolved '${got}', expected '${MACHINE_NAME}'"; return 1; }
 }
 
 phase_dotfiles() {
   log_info "Applying dotfiles..."
   chezmoi apply --force || return 1
-
   if [[ -d ${HOME}/.ssh ]]; then
-    chmod 700 "${HOME}/.ssh"
-    find "${HOME}/.ssh" -type f ! -name "*.pub" ! -name "config" -exec chmod 600 {} \; 2>/dev/null
+    chmod 700 "${HOME}/.ssh" || { log_error "could not chmod ~/.ssh"; return 1; }
+    find "${HOME}/.ssh" -type f ! -name "*.pub" ! -name "config" -exec chmod 600 {} \; \
+      || { log_error "could not chmod private keys"; return 1; }
   fi
-
-  # Only now does an SSH key exist to authenticate with.
   log_info "Switching the dotfiles remote to SSH..."
   git -C "$SRC_DIR" remote set-url origin "$DOTFILES_SSH" || return 1
-  if ssh -T git@github.com 2>&1 | grep -q "successfully authenticated"; then
-    log_info "✓ SSH connection to GitHub verified"
+  # accept-new, not `ask`: a fresh machine has no known_hosts entry for github.com and
+  # the default would block the unattended run on a host-key prompt.
+  if ssh -o StrictHostKeyChecking=accept-new -T git@github.com 2>&1 | grep -q "successfully authenticated"; then
+    log_info "✓ SSH to GitHub verified"
   else
-    warn "SSH connection to GitHub not confirmed — check ~/.ssh/michael"
+    warn "SSH to GitHub not confirmed — check ~/.ssh/michael"
   fi
 }
 ```
 
-- [ ] **Step 4: Run the tests to verify G passes**
+- [ ] **Step 4: Verify green and commit**
 
 ```bash
 bash .scripts/test-provision.sh
-```
-
-Expected: A–G green.
-
-- [ ] **Step 5: Commit**
-
-```bash
 git add .scripts/provision.sh .scripts/test-provision.sh
 git commit -m "Implement the critical dotfiles phases
 
-chezmoi init now only renders the config, since the source is already cloned,
-and asserts the hostname it resolved matches the one preflight set. The apply
-phase keeps SSH permissions and the HTTPS-to-SSH remote switch together, since
-the switch only works once the apply has rendered the key."
+chezmoi init renders only the config, since the source is already cloned, and asserts
+the identity it resolved matches the one preflight applied.
+
+The SSH verification uses StrictHostKeyChecking=accept-new: a fresh machine has no
+known_hosts entry and the default 'ask' would block the unattended run on a host-key
+prompt. chmod failures now fail the phase rather than being swallowed with set -e
+gone."
 ```
 
 ---
 
-### Task 6: Stage 2 — best-effort phases
+### Task 8: Stage 2 best-effort phases
 
-The five phases that must not abort the run.
-
-**Files:**
-- Modify: `.scripts/provision.sh` (replace the remaining five stubs)
-- Modify: `.scripts/test-provision.sh` (add section H)
-
-**Interfaces:**
-- Consumes: `warn`, `HOMEBREW_PREFIX`, `SRC_DIR`, `XDG_*`.
-- Produces: entries in `WARNINGS` for anything a human still has to do.
+**Files:** modify `.scripts/provision.sh` (five stubs), `.scripts/test-provision.sh` (section L).
 
 - [ ] **Step 1: Write the failing test**
 
-Append section H:
-
 ```bash
-echo "H. best-effort phases"
-MOCK_FAIL="" run 'studio\ny\n'
-has "brew trust --tap"      "third-party taps are trusted before bundling"
-before "brew trust --tap" "brew bundle" "taps are trusted before the bundle runs"
-has "brew bundle"           "the Brewfile is installed"
-has "mise install"          "mise tools are installed"
-has "sudo chsh"             "chsh is routed through the cached sudo credential"
-hasnt "$(printf '\nchsh -s')" "bare chsh is never called"
-
-MOCK_FAIL="mise" run 'studio\ny\n'
-rc_is 0 "a mise failure does not abort the run"
-has "Done, with"  "the report renders after a best-effort failure"
+echo "L. best-effort phases"
+reset_state; run 'studio\ny\n'
+before "brew trust --tap" "brew bundle" "taps are trusted before bundling"
+called "mise install" "mise tools are installed"
+called "sudo chsh"    "chsh goes through the cached sudo credential"
+not_called "$(printf 'chsh -s')" "bare chsh is never called"
+called "configure.sh --hostname studio" "configure.sh is driven with the identity"
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
-
-```bash
-bash .scripts/test-provision.sh
-```
-
-Expected: H fails — the stubs call no `brew bundle`, no `chsh`.
-
-- [ ] **Step 3: Implement the five phases**
-
-Replace the remaining stubs (folding in current steps 8–15, lines 126–222):
+- [ ] **Step 2: Run to verify it fails**, then **Step 3: implement**:
 
 ```zsh
 phase_brewfile() {
   local bf="${XDG_CONFIG_HOME}/homebrew/Brewfile"
   [[ -f $bf ]] || { log_error "Brewfile not found at ${bf}"; return 1; }
   export HOMEBREW_BUNDLE_FILE="$bf"
-
-  # Homebrew refuses formulae/casks from untrusted third-party taps, which aborts
-  # `brew bundle` on a fresh machine. Declaring a tap in the Brewfile IS the decision
-  # to trust it. Idempotent.
   local tap
   for tap in ${(f)"$(sed -n 's/^tap "\([^"]*\)".*/\1/p' "$bf")"}; do
     brew trust --tap "$tap" || warn "could not trust tap ${tap}"
   done
-
   brew bundle install --file "$bf" && return 0
-
-  # `brew bundle` exits non-zero for the whole file, which by itself says nothing
-  # useful. `check --verbose` names each missing item on its own `→ ` line.
+  # `brew bundle` fails for the whole file; `check --verbose` names each missing item
+  # on its own "→ " line, which is what turns this into an actionable report.
   local item
   for item in ${(f)"$(brew bundle check --verbose --file "$bf" 2>/dev/null | sed -n 's/^→ *//p')"}; do
     warn "brewfile: ${item}"
@@ -917,214 +1091,152 @@ phase_brewfile() {
 }
 
 phase_agent_plugins() {
-  local script="${SRC_DIR}/.scripts/reconcile-agents.sh"
-  [[ -x $script ]] || { warn "reconcile-agents.sh not found — agent plugins unconfigured"; return 1; }
-  "$script" || return 1
+  local s="${SRC_DIR}/.scripts/reconcile-agents.sh"
+  [[ -x $s ]] || { warn "reconcile-agents.sh missing — agent plugins unconfigured"; return 1; }
+  "$s" || return 1
 }
 
 phase_mise() {
-  command -v mise &>/dev/null || { warn "mise not installed — dev toolchains unconfigured"; return 1; }
+  command -v mise &>/dev/null || { warn "mise not installed"; return 1; }
   mise install || return 1
 }
 
 phase_macos_config() {
-  local script="${SRC_DIR}/.scripts/configure.sh"
-  [[ -x $script ]] || { warn "configure.sh not found — macOS settings unapplied"; return 1; }
-  # --hostname suppresses configure.sh's own prompt: preflight already owns the name.
-  "$script" --hostname "$MACHINE_NAME" --as-phase || return 1
+  local s="${SRC_DIR}/.scripts/configure.sh"
+  [[ -x $s ]] || { warn "configure.sh missing — macOS settings unapplied"; return 1; }
+  # --hostname makes configure.sh VALIDATE ONLY. It must never rename: this phase is
+  # best-effort and reachable via --phase, which skips the confirm.
+  "$s" --hostname "$MACHINE_NAME" --as-phase || return 1
 }
 
 phase_shell() {
   local target="${HOMEBREW_PREFIX}/bin/zsh"
-  if [[ $SHELL == $target ]]; then
-    log_info "✓ shell already ${target}"
-  else
-    if ! grep -qxF "$target" /etc/shells; then
-      print -r -- "$target" | sudo tee -a /etc/shells >/dev/null || return 1
-    fi
-    # sudo chsh, not bare chsh: bare chsh prompts for the user's password mid-run,
-    # while sudo reuses the credential preflight already cached.
+  if [[ $SHELL != $target ]]; then
+    grep -qxF "$target" /etc/shells || print -r -- "$target" | sudo tee -a /etc/shells >/dev/null || return 1
     sudo chsh -s "$target" "$USER" || return 1
   fi
-
   if [[ -d ${XDG_DATA_HOME}/oh-my-zsh ]]; then
     git -C "${XDG_DATA_HOME}/oh-my-zsh" pull --quiet || warn "oh-my-zsh update failed"
   else
     ZSH="${XDG_DATA_HOME}/oh-my-zsh" sh -c \
-      "$(curl -fsSL https://raw.githubusercontent.com/robbyrussell/oh-my-zsh/master/tools/install.sh)" "" --unattended \
-      || return 1
+      "$(curl -fsSL https://raw.githubusercontent.com/robbyrussell/oh-my-zsh/master/tools/install.sh)" "" --unattended || return 1
   fi
-
   mkdir -p "${XDG_CACHE_HOME}"/{zsh,irb} "${XDG_CACHE_HOME}"/bundler/{cache,plugin} "${XDG_CACHE_HOME}/gem/specs"
-  rm -f "${HOME}/.zprofile" "${HOME}/.zprofile.bak" \
-        "${HOME}/.zshrc.pre-oh-my-zsh" "${HOME}/.shell.pre-oh-my-zsh"
+  rm -f "${HOME}"/.zprofile{,.bak} "${HOME}/.zshrc.pre-oh-my-zsh" "${HOME}/.shell.pre-oh-my-zsh"
   brew cleanup || warn "brew cleanup failed"
 }
 ```
 
-- [ ] **Step 4: Run the tests to verify H passes**
+- [ ] **Step 4: Verify green and commit**
 
 ```bash
 bash .scripts/test-provision.sh
-```
-
-Expected: A–H green, except the two `Done, with` assertions, which Task 7 satisfies.
-
-- [ ] **Step 5: Commit**
-
-```bash
 git add .scripts/provision.sh .scripts/test-provision.sh
 git commit -m "Implement the best-effort phases
 
-Each of the five can fail without ending the run. The Brewfile phase re-runs
-brew bundle check --verbose on failure so the report names the specific missing
-casks rather than saying the bundle failed.
+Each can fail without ending the run. The Brewfile phase re-runs brew bundle check
+--verbose on failure so the report names the specific missing casks rather than
+saying the bundle failed.
 
-chsh now goes through the cached sudo credential instead of prompting."
+chsh goes through the sudo credential preflight already holds, removing a
+mid-run password prompt."
 ```
 
 ---
 
-### Task 7: Stage 3 — report
+### Task 9: Stage 3 — report
 
-**Files:**
-- Modify: `.scripts/provision.sh` (replace the closing `log_info "✓ macOS provision complete"`)
-- Modify: `.scripts/test-provision.sh` (add section I)
-
-**Interfaces:**
-- Consumes: `WARNINGS`, `MACHINE_NAME`, `STATE_FILE`.
-- Produces: process exit status 0 whether or not warnings accumulated — warnings are not failures.
+**Files:** modify `.scripts/provision.sh`, `.scripts/test-provision.sh` (section M).
 
 - [ ] **Step 1: Write the failing test**
 
-Append section I:
-
 ```bash
-echo "I. report"
-MOCK_FAIL="" run 'studio\ny\n'
+echo "M. report"
+reset_state; run 'studio\ny\n'
 has "provision complete" "a clean run says so"
 hasnt "Done, with"       "a clean run shows no warning block"
-
-MOCK_FAIL="mise" run 'studio\ny\n'
-has "Done, with"            "a run with warnings shows the warning block"
-has "mise"                  "the failing phase is named"
-has "--phase mise"          "the report gives a per-phase retry command"
-rc_is 0                     "warnings do not change the exit status"
-has "1Password"             "the report lists the manual follow-ups"
-has "Borg"                  "the report lists Borg setup as outstanding"
+reset_state; MOCK_FAIL="mise" run 'studio\ny\n'
+has "Done, with"   "warnings are reported"
+has "--phase mise" "the report gives a per-phase retry command"
+rc_is 0            "warnings do not change the exit status"
+has "Borg"         "Borg setup is listed as outstanding"
+has "own terminal" "the report repeats the identity-verification precondition"
+MOCK_FAIL=""
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
-
-```bash
-bash .scripts/test-provision.sh
-```
-
-Expected: section I fails — there is no report block yet.
-
-- [ ] **Step 3: Implement the report**
-
-Replace the closing lines of `provision.sh`:
+- [ ] **Step 2: Run to verify it fails**, then **Step 3: implement**, replacing the closing lines:
 
 ```zsh
-# --- stage 3: report ---------------------------------------------------------
 print ""
 if (( ${#WARNINGS} )); then
-  print "══ Done, with ${#WARNINGS} item(s) needing you ══════"
-  local w
-  for w in "${WARNINGS[@]}"; do
-    print "  ⚠ ${w}"
-  done
-  print ""
-  print "  Retry a single phase with:"
+  print "══ Done, with ${#WARNINGS} item(s) needing you ══"
+  local w; for w in "${WARNINGS[@]}"; do print "  ⚠ ${w}"; done
+  print "\n  Retry a single phase with:"
   local entry name
   for entry in "${PHASES[@]}"; do
-    name="${entry%%:*}"
-    state_completed "$name" || print "    ${0} --phase ${name}"
+    name="${entry%%:*}"; state_completed "$name" || print "    ${SELF} --phase ${name}"
   done
   print ""
 else
   log_info "✓ macOS provision complete — no warnings"
 fi
 
-print "══ Still manual ════════════════════════════════════"
-print "  • Little Snitch: import your rule set, or expect prompts for every"
+print "══ Still manual ════════════════════════════════"
+print "  • Little Snitch: import your rule set, or expect a prompt for every"
 print "    ad-hoc-signed Homebrew binary (tsh, gh, …)"
 print "  • Borg: create this machine's own BorgBase repo and keypair, store the"
 print "    passphrase in 1Password, then configure Vorta. Archive naming must use"
 print "    the literal name '${MACHINE_NAME}', not {hostname}."
 print "  • Alfred: System Settings → Privacy & Security → Accessibility → add"
-print "    Alfred, then re-run .scripts/configure.sh so snippets auto-expand."
-print "    Verify with: bash .scripts/test-alfred-relay.sh"
+print "    Alfred, then re-run .scripts/configure.sh. Verify with:"
+print "    bash .scripts/test-alfred-relay.sh"
 print "  • FileVault: System Settings → Privacy & Security"
-print "  • Sign in: 1Password already done; Slack, Teams, Notion, Obsidian,"
-print "    Proton, Spotify, Docker Desktop, Office"
 print "  • Unmanaged state to restore: ~/.kube, ~/.aws, ~/.azure, ~/Code"
+print "  • Confirm the identity in your own terminal before trusting it:"
+print "    scutil --get ComputerName; scutil --get HostName; hostname"
 print ""
 log_info "Restart your terminal, or run: exec ${HOMEBREW_PREFIX:-/opt/homebrew}/bin/zsh"
 ```
 
-- [ ] **Step 4: Run the tests to verify I passes**
+- [ ] **Step 4: Verify green and commit**
 
 ```bash
 bash .scripts/test-provision.sh
-```
-
-Expected: A–I all green.
-
-- [ ] **Step 5: Commit**
-
-```bash
 git add .scripts/provision.sh .scripts/test-provision.sh
 git commit -m "Add the provisioning report stage
 
-Accumulated warnings print with a per-phase retry command, followed by the
-manual follow-ups that cannot be scripted. Warnings never change the exit
-status; they are work for a human, not failures of the run."
+Warnings print with a per-phase retry command, followed by the follow-ups that
+cannot be scripted. Warnings never change the exit status — they are work for a
+human, not failures of the run."
 ```
 
 ---
 
-### Task 8: `configure.sh` integration
+### Task 10: `configure.sh` integration
 
-**Files:**
-- Modify: `.scripts/configure.sh:22-46` (sudo, hostname block), `:144-150` (trackpad), `:227` (battery), `:319-327` (trailer)
-- Modify: `.scripts/test-provision.sh` (add section J)
-
-**Interfaces:**
-- Consumes: `--hostname <name>` and `--as-phase` from `phase_macos_config`.
-- Produces: unchanged standalone behaviour when invoked with no flags.
+**Files:** modify `.scripts/configure.sh:22-46`, `:141-152`, `:227`, `:319-327`; `.scripts/test-provision.sh` (section N).
 
 - [ ] **Step 1: Write the failing test**
 
-Append section J:
-
 ```bash
-echo "J. configure.sh flags"
+echo "N. configure.sh"
 CONF="$SRC/.scripts/configure.sh"
-OUT=$(PATH="$BIN:$PATH" zsh "$CONF" --hostname studio --as-phase 2>&1); RC=$?
+crun() { OUT=$(PATH="$TMP/bin:/usr/bin:/bin" FAKE_CN="$1" FAKE_HN="$1" FAKE_LHN="$1" \
+               zsh "$CONF" --hostname "$2" --as-phase 2>&1); RC=$?; }
+crun studio studio
 rc_is 0 "runs non-interactively with --hostname"
 hasnt "is this correct" "--hostname suppresses the prompt"
 hasnt "Manual tasks still required" "--as-phase suppresses the standalone trailer"
-
-OUT=$(PATH="$BIN:$PATH" zsh "$CONF" --hostname fenrir --as-phase 2>&1); RC=$?
-has "TrackpadThreeFingerDrag" "fenrir applies the trackpad defaults"
-
-OUT=$(PATH="$BIN:$PATH" zsh "$CONF" --hostname studio --as-phase 2>&1); RC=$?
-hasnt "TrackpadThreeFingerDrag" "studio skips the trackpad defaults"
+: > "$CALLS"; crun studio studio
+not_called "scutil --set" "provisioning mode NEVER renames — the back-door consent hole"
+crun fenrir studio
+rc_is 1 "a live identity disagreeing with --hostname aborts"
+has "--repair-identity" "the abort names the repair mode"
+crun fenrir fenrir; has "TrackpadThreeFingerDrag" "fenrir applies the trackpad defaults"
+crun studio studio; hasnt "TrackpadThreeFingerDrag" "studio skips the trackpad defaults"
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
-
-```bash
-bash .scripts/test-provision.sh
-```
-
-Expected: J fails — `configure.sh` accepts no flags and prompts unconditionally.
-
-- [ ] **Step 3: Add flag parsing and replace the hostname block**
-
-Replace `.scripts/configure.sh` lines 22–46 with:
+- [ ] **Step 2: Run to verify it fails**, then **Step 3: implement**. Replace `configure.sh:22-46`:
 
 ```zsh
 HOSTNAME_ARG="" AS_PHASE=0
@@ -1142,38 +1254,43 @@ sudo -v
 while true; do sudo -n true; sleep 60; kill -0 "$$" || exit; done 2>/dev/null &
 
 # ============================================================================
-# Set Hostname
+# Hostname
 # ============================================================================
-# When driven by provision.sh the name is already chosen AND already applied in
-# preflight, so this block only reconciles. Standalone, it prompts as before.
+# With --hostname this VALIDATES ONLY and never renames. It runs as provisioning
+# phase 9 — best-effort, and reachable via --phase, which skips the confirm — so a
+# rename here would be an unconfirmed identity mutation. Renaming happens in exactly
+# two confirmed places: provision.sh preflight, and provision.sh --repair-identity.
 if [[ -n $HOSTNAME_ARG ]]; then
   HOSTNAME=$HOSTNAME_ARG
+  cn=$(scutil --get ComputerName 2>/dev/null)
+  if [[ $cn != $HOSTNAME ]]; then
+    log_error "live ComputerName is '${cn:-unset}' but --hostname says '${HOSTNAME}'"
+    log_error "run: provision.sh --repair-identity"
+    exit 1
+  fi
+  log_info "✓ identity verified: ${HOSTNAME}"
 else
   while true; do
-    print -n "Enter the hostname for this machine: "
-    read HOSTNAME
-    print -n "You have entered $HOSTNAME, is this correct (y/n)? "
-    read answer
+    print -n "Enter the hostname for this machine: "; read HOSTNAME
+    print -n "You have entered $HOSTNAME, is this correct (y/n)? "; read answer
     [[ $answer == (y|Y) ]] && break
   done
+  log_info "Setting hostname to $HOSTNAME..."
+  [[ $(scutil --get ComputerName 2>/dev/null)  == "$HOSTNAME" ]] || sudo scutil --set ComputerName  "$HOSTNAME"
+  [[ $(scutil --get HostName 2>/dev/null)      == "$HOSTNAME" ]] || sudo scutil --set HostName      "$HOSTNAME"
+  [[ $(scutil --get LocalHostName 2>/dev/null) == "$HOSTNAME" ]] || sudo scutil --set LocalHostName "$HOSTNAME"
 fi
-
-log_info "Setting hostname to $HOSTNAME..."
-[[ $(scutil --get ComputerName 2>/dev/null)  == "$HOSTNAME" ]] || sudo scutil --set ComputerName  "$HOSTNAME"
-[[ $(scutil --get HostName 2>/dev/null)      == "$HOSTNAME" ]] || sudo scutil --set HostName      "$HOSTNAME"
-[[ $(scutil --get LocalHostName 2>/dev/null) == "$HOSTNAME" ]] || sudo scutil --set LocalHostName "$HOSTNAME"
-log_info "✓ Hostname set to $HOSTNAME"
 ```
 
-Note the comparison change: the original used `scutil --get ComputerName | grep -q "$HOSTNAME"`, a substring match that would treat `studio` as already-set on a machine named `studio-2`. Exact comparison is correct.
+The comparison changes from `scutil --get ComputerName | grep -q "$HOSTNAME"` to exact equality: the old substring match treated `studio` as already-set on a machine named `studio-2`.
 
-- [ ] **Step 4: Guard the hardware-specific defaults**
-
-Wrap `.scripts/configure.sh` lines 144–150 (trackpad) and line 227 (battery):
+Guard `configure.sh:141-152`, **preserving all five original lines** including the `-currentHost` variant:
 
 ```zsh
 if [[ $HOSTNAME == fenrir ]]; then
+  log_info "Configuring trackpad and mouse..."
   defaults write com.apple.driver.AppleBluetoothMultitouch.trackpad Clicking -bool true
+  defaults -currentHost write NSGlobalDomain com.apple.mouse.tapBehavior -int 1
   defaults write NSGlobalDomain com.apple.mouse.tapBehavior -int 1
   defaults write com.apple.driver.AppleBluetoothMultitouch.trackpad TrackpadThreeFingerDrag -bool true
   defaults write com.apple.AppleMultitouchTrackpad TrackpadThreeFingerDrag -bool true
@@ -1183,160 +1300,102 @@ else
 fi
 ```
 
-```zsh
-if [[ $HOSTNAME == fenrir ]]; then
-  defaults write com.apple.menuextra.battery ShowPercent -string "YES"
-fi
-```
+Guard line 227 (`defaults write com.apple.menuextra.battery ShowPercent`) the same way, and wrap `:319-327` in `if (( ! AS_PHASE )); then … fi`.
 
-- [ ] **Step 5: Suppress the standalone trailer under `--as-phase`**
-
-Wrap `.scripts/configure.sh` lines 319–327:
-
-```zsh
-if (( ! AS_PHASE )); then
-  log_warn "Manual tasks still required:"
-  log_warn "  1. Configure Spotlight privacy settings (System Settings > Siri & Spotlight)"
-  log_warn "  2. Review Privacy & Security settings (System Settings > Privacy & Security)"
-  log_warn "  3. Configure Little Snitch rules"
-  log_warn "  4. Sign in to applications (1Password, browsers, etc.)"
-  log_warn "  5. Some settings may require a logout/restart to take full effect"
-  log_info "Consider restarting your Mac to ensure all settings are applied."
-fi
-```
-
-- [ ] **Step 6: Run the tests to verify J passes**
+- [ ] **Step 4: Verify green and commit**
 
 ```bash
 bash .scripts/test-provision.sh
-```
-
-Expected: A–J all green.
-
-- [ ] **Step 7: Commit**
-
-```bash
 git add .scripts/configure.sh .scripts/test-provision.sh
 git commit -m "Teach configure.sh --hostname and --as-phase
 
-Provisioning already owns the machine name, so configure.sh stops prompting when
-driven as a phase and only reconciles. Standalone behaviour is unchanged.
+With --hostname it validates and never renames. It is provisioning phase 9 —
+best-effort and reachable via --phase, which skips the confirm — so a rename there
+was the consent gate's back door.
 
-The hostname comparison becomes exact: the old grep -q substring match would
-treat 'studio' as already set on a machine named 'studio-2'.
+The hostname comparison becomes exact: the old grep -q substring match treated
+'studio' as already set on a machine named 'studio-2'.
 
-Trackpad and battery defaults are guarded — they are no-ops on a desktop, but
-under a design that models divergence explicitly, unguarded is inconsistent."
+Trackpad and battery defaults are hostname-guarded, keeping all five original
+trackpad lines including the -currentHost variant."
 ```
 
 ---
 
-### Task 9: Documentation and baseline
+### Task 11: Documentation and lifecycle
 
-**Files:**
-- Modify: `README.md` (Quick Start, repository structure)
-- Modify: `CLAUDE.md` (file structure, common operations)
-- Modify: `docs/superpowers/specs/2026-08-27-provisioning-preflight-design.md` (status line)
+**Files:** `README.md`, `CLAUDE.md`, both design records.
 
-**Interfaces:**
-- Consumes: the finished implementation.
-- Produces: nothing consumed by other tasks.
-
-- [ ] **Step 1: Run the full suite and record the totals**
+- [ ] **Step 1: Run the full suite, aggregating exit statuses**
 
 ```bash
+rc=0
 for f in .scripts/test-*.sh; do
   case "$f" in
     *test-live-*) continue ;;
-    *test-wt-functions.sh) echo "== $f (zsh)"; zsh "$f" | tail -2 ;;
-    *) echo "== $f"; bash "$f" | tail -2 ;;
+    *test-wt-functions.sh) sh="zsh" ;;
+    *) sh="bash" ;;
   esac
+  out=$("$sh" "$f" 2>&1) || rc=1        # capture the STATUS, not just the tail
+  printf '%-40s %s\n' "$f" "$(printf '%s\n' "$out" | grep -E 'RESULT|passed:' | tail -1)"
 done
+[ "$rc" -eq 0 ] && echo "ALL SUITES GREEN" || echo "AT LEAST ONE SUITE FAILED"
 ```
 
-Note `test-reconcile-agents.sh` and `test-ssh-credential-inventory.sh` must run **unsandboxed** — sandboxed they report false failures. Report totals as `passed/total`, never "N green".
+`test-reconcile-agents.sh` and `test-ssh-credential-inventory.sh` must run **unsandboxed**; sandboxed they report false failures. Report totals as passed/total, never "N green".
 
 - [ ] **Step 2: Update `README.md`**
 
-In the structure block, change `│   ├── homebrew/         # Brewfile` to `│   ├── homebrew/         # Brewfile.tmpl (hostname-conditional)`, and add `├── .chezmoidata/          # Machine allowlist` above `├── .chezmoiignore`.
-
-Replace the "This will:" list under Quick Start with:
-
-```markdown
-This runs four stages:
-
-1. **Bootstrap** — Xcode CLT, Homebrew, chezmoi, 1Password, clone the dotfiles
-2. **Preflight** — the only stage that asks you anything: 1Password sign-in,
-   machine name, sudo, then one confirmation
-3. **Run** — ten unattended phases (dotfiles, Brewfile, agent plugins, mise,
-   macOS settings, shell)
-4. **Report** — what failed, how to retry it, and what still needs you
-
-Interrupted or partially failed runs resume with `provision.sh --resume`.
-```
+Replace the "This will:" list under Quick Start with the four stages; add `.chezmoidata/` and `.chezmoitemplates/` to the structure block; change `homebrew/ # Brewfile` to `Brewfile.tmpl (identity-conditional)`. **Replace the stale "Manual" setup section** — its six steps predate the stage model and would leave a machine with no identity applied.
 
 - [ ] **Step 3: Update `CLAUDE.md`**
 
-In the file structure block add, under `.scripts/`:
-
-```
-│   └── test-provision.sh     # mocked test for provision.sh + machine templates
-```
-
-and above `├── .chezmoi.toml.tmpl`:
-
-```
-├── .chezmoidata/             # Machine allowlist (known_hostnames)
-```
-
-Add to "Common Operations":
+Add `test-provision.sh` under `.scripts/`, and `.chezmoidata/` + `.chezmoitemplates/` to the structure. Add:
 
 ````markdown
 ### Adding a Machine
 
 ```bash
-# 1. Add the name to the allowlist
-chezmoi edit ~/.local/share/chezmoi/.chezmoidata/machines.toml
+# 1. Add the name to the allowlist. NOT `chezmoi edit` — .chezmoidata is source
+#    metadata, not a target; chezmoi reports it as "not managed".
+$EDITOR ~/.local/share/chezmoi/.chezmoidata/machines.toml
 
-# 2. Only if it diverges, add a conditional
+# 2. Only if it diverges, add a conditional (this one IS a target)
 chezmoi edit ~/.config/homebrew/Brewfile
 
 # 3. Provision it
 /bin/zsh -c "$(curl -fsSL .../provision.sh)"
 ```
 
-An unlisted machine fails the Brewfile render by design — never add an `else`
-branch to work around it.
+An unlisted machine fails every render by design — never add an `else` branch to
+work around it. To fix a machine whose identity has drifted:
+`provision.sh --repair-identity`.
 ````
 
-- [ ] **Step 4: Mark the spec implemented**
+- [ ] **Step 4: Mark both records Implemented**
 
-Change the spec's status line to `**Status:** Implemented` and cite the MR, per the design-records policy's final pre-merge commit.
+Set `**Status:** Implemented — MR !N` on **both** the spec and this plan, citing the MR. Both are design records; marking only the spec leaves the plan looking re-runnable.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add README.md CLAUDE.md docs/superpowers/specs/2026-08-27-provisioning-preflight-design.md
+git diff --check    # must be clean; the old plan's trailing whitespace is gone with the rewrite
+git add README.md CLAUDE.md docs/superpowers/
 git commit -m "Document the provisioning stages and machine allowlist
 
-Marks the provisioning preflight design Implemented."
+Marks the provisioning preflight spec and plan Implemented."
 ```
 
 ---
 
 ## Self-Review
 
-**Spec coverage.** §4.1 → Task 3. §4.2 → Task 4. §4.3 → Tasks 5–6. §4.4 → Task 7. §5.1 (ordering) → Task 4 step 1, assertion "the hostname is set BEFORE chezmoi init". §5.2 (two-layer allowlist) → Task 1 (template layer) and Task 4 (preflight layer). §5.3 → Task 1. §6.1 → Task 2. §6.2 → Task 6. §6.3 → Task 2. §7 → Task 8. §8 → distributed across every task's test step. §11.1 (`HostName` non-downgradable) → Task 4, `preflight_sudo_and_hostname` returns non-zero on failure and preflight aborts. §11.4 (no Vorta automation) → Task 7's report lists Borg as manual.
+**Spec coverage.** §2/§4.1 → Task 4 (`NONINTERACTIVE`, bounded CLT wait). §4.2 → Task 5 (markers, confirm-then-mutate, three-field read-back). §4.3/§4.4 → Tasks 7–9. §5.1 → Task 5, assertion "identity is set BEFORE chezmoi init". §5.2 → Tasks 1 and 6 (partial, five outcomes, repair mode). §5.3 → Task 1. §6.1 → Task 3. §6.2 → Task 8. §6.3 → Tasks 3, 5, 6 (flag matrix, `--phase` preconditions, repair state transitions). §7 → Task 10. §8 → distributed; the harness itself is Task 2. §11.1 → Task 5 `validate_identity`. §11.4 → Task 9's report.
 
-**Known gaps, deliberately out of scope.** §11.3 (the two unmanaged Borg keys) is recorded in the spec as follow-up and has no task here — closing it means putting key material into 1Password and adding templates, which is credential work, not provisioning work. The live Vorta `{hostname}` → literal-name change is likewise a separate, separately-confirmed action on the existing machine.
+**Assertion mapping.** Spec assertions 1→G, 2→G, 3→A, 4→B, 5→D, 6→E, 7→G, 8→H, 9→F, 10→F, 11→A, 12→I, 13→J, 14→N, 15→H/D, 16→J, 17→D, 18→D, 19→D, 20→J.
 
-**Idioms verified during authoring** (chezmoi v2.72.0, zsh 5.9), so an executor need
-not re-derive them: `.chezmoidata/machines.toml` loads as `.known_hostnames`;
-`fail` aborts a render with exit 1 and the message reaches stderr; the `render()`
-helper's `--source`/`--config`/`--file` combination renders `Brewfile.tmpl` in
-isolation (fenrir includes the guarded casks, studio omits them, an unlisted name
-exits 1); `${allowed[(Ie)$name]}` is an exact-match allowlist test; `${P[@]:0:3}`
-and `${P[@]:3}` slice correctly; `local` is legal at zsh script top level;
-`brew bundle check --verbose` prefixes each missing item with `→ `.
+**Out of scope, recorded not forgotten.** Spec §11.3's two unmanaged Borg keys, and the live Vorta `{hostname}` → literal-name change. Both are credential/backup work needing their own confirmation.
 
-**Type consistency.** Phase function names are `phase_<name with hyphens replaced by underscores>` throughout; `run_phase` derives them with `${name//-/_}`. `warn` is defined in Task 2 and used in Tasks 3, 5, 6. `state_get`/`state_answer` use the key `machine_name` in both Task 2's definition and Task 4's use. `MACHINE_NAME` is set in Task 4 and read in Tasks 5, 6, 7.
+**Type consistency.** Phase functions are `phase_<name>` with hyphens as underscores, derived by `${name//-/_}` in `run_phase`. `validate_identity` is defined in Task 5 and reused by Task 6 and the `--phase` guard. `init_brew_env` is defined in Task 4 and called from the flag block and `--repair-identity`. Markers are `answers_collected`/`confirmed`/`identity_applied` everywhere. `$SELF` replaces `$0` in every user-facing command string.
+
+**Every commit green.** No task adds an assertion a later task satisfies; Task 2's two isolation assertions are explicitly commented out and re-enabled in Task 3 Step 4, which is the only deferred assertion in the plan.
