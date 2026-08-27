@@ -170,13 +170,25 @@ Expected: `config: issues found` / `unknown config key keys.not_a_real_action`.
 
 - [ ] **Step 4: Falsify the Alt bindings by hand**
 
-Start herdr, then in the TUI press each of: `alt+z`, `alt+n`, `alt+t`, `alt+w`, `alt+b`, `alt+p` — using the **left** Option key.
-
 ```bash
 herdr
 ```
 
-Expected: each performs its action. `alt+w` detaches back to the shell.
+Order matters. Each step must produce a **visible** change, or the check is vacuous —
+`alt+z` in a single-pane tab, for instance, can look identical zoomed and not. Use the
+**left** Option key throughout:
+
+1. `alt+n` — a second pane appears.
+2. `alt+z` twice — that pane visibly zooms, then restores.
+3. `alt+t` — a new tab appears.
+4. `alt+b` twice — the sidebar hides, then returns.
+5. `alt+p` — the popup opens; exit it.
+6. Confirm the Tokyo Night palette matches Ghostty.
+7. `alt+w` — detaches back to the shell. Last, because it ends the session view.
+
+**If any binding does nothing, stop before Task 3.** The fallback is `[keys.indexed]`
+with `ctrl` (`ctrl+1..9`), which loses the AZERTY property that motivated the scheme —
+a decision for the user, not a silent substitution.
 
 **If Alt does not arrive**, stop and report before continuing. The fallback is `[keys.indexed]` with `ctrl` (`ctrl+1..9`), which loses the AZERTY property — that is a decision for the user, not a silent substitution.
 
