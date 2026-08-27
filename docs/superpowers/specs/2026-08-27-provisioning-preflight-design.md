@@ -59,7 +59,11 @@ harmless the moment anything keys off it.
 
 ## 2. Goals
 
-- All human input collected before the first mutating phase, then an unattended run.
+- All human input collected before the **confirm**, which gates hostname mutation
+  and phases 4–10. Bootstrap (phases 1–3) is an explicit exception: it installs
+  software before anything can be asked, because nothing can be asked until it has.
+  See §4.1 — this is a narrower promise than "no mutation before input", and the
+  narrower one is the true one.
 - A failure surfaces what needs attention without discarding completed work.
 - `hostname` becomes accurate and load-bearing, with unknown machines rejected
   loudly rather than silently taking a default branch.
@@ -108,6 +112,17 @@ Xcode CLT changes behaviour: today an uninstalled CLT triggers the dialog, print
 "re-run this script", and exits 0. It instead polls `xcode-select -p` until the
 dialog is satisfied. A user who cancels gets a clear abort, not a silent success.
 
+**Stage 0 mutates the machine before anything has been confirmed, and that is not
+avoidable.** Installing Homebrew, the 1Password cask and the dotfiles source is the
+prerequisite for asking any question at all. What stage 0 must not do is make a
+*decision*: it installs a fixed set of prerequisites identically on every machine,
+and touches nothing machine-specific. The confirm gates everything that is a choice
+— hostname mutation included (§4.2).
+
+Homebrew's installer prompts for confirmation by default, so it is invoked with
+`NONINTERACTIVE=1`. Without it, stage 0 stops on a "Press RETURN to continue" that
+the design promises does not exist.
+
 Stage 0's work is recorded in the state file like any other phase, so `--resume`
 skips it.
 
@@ -123,13 +138,20 @@ Everything that can ask a question, in this order:
    just-cloned `.chezmoidata/machines.toml` (§5.2). The answer is recorded, not yet
    applied — `scutil --set` needs sudo, which is not held until step 3.
 3. **sudo.** `sudo -v` plus the existing keepalive loop, held for the whole run.
-   With it in hand, the name recorded in step 2 is applied now: `scutil --set` for
-   `ComputerName`, `HostName`, and `LocalHostName`. Acquiring sudo here is also what
-   lets stage 2 run unattended.
+   Acquiring it here is what lets stage 2 run unattended. Nothing is applied yet.
 4. **Summary and confirm.** Every decision echoed, then one `[y/N]`.
+5. **Apply the identity.** Only now: `scutil --set` for `ComputerName`, `HostName`
+   and `LocalHostName`, followed by a read-back asserting all three equal the chosen
+   name (§11.1). This is the first machine-specific mutation in the entire run.
+
+Steps 3 and 5 are deliberately split. An earlier draft applied the hostname in step
+3, before the confirm — which meant declining at step 4 still left the machine
+renamed, and silently changed the basis of Borg's archive naming. Declining must
+leave the machine exactly as it was found.
 
 Preflight answers are written to the state file before the confirm, so `--resume`
-re-asks nothing.
+re-asks nothing. The confirm itself is **not** re-asked on `--resume`: a recorded
+answer set means it was already given.
 
 ### 4.3 Stage 2 — run
 
@@ -159,7 +181,12 @@ proposed:  git clone (stage 0) → scutil --set (stage 1) → chezmoi init (stag
 ordering constraint the whole design exists to protect, and it gets a dedicated
 test (§8).
 
-### 5.2 Allowlist, enforced in two independent places
+Note what this ordering does and does not buy. It makes the *stored* `.hostname`
+correct at the moment of provisioning. It does nothing about drift afterwards —
+that is §5.2's problem, and it is why the template guard reads the machine live
+rather than trusting what init captured.
+
+### 5.2 Identity must be read live, not from stored data
 
 `.chezmoidata/machines.toml` at the source root:
 
@@ -171,21 +198,57 @@ Verified against chezmoi v2.72.0: `.chezmoidata/` entries load into template dat
 (`{{ .known_hostnames | join "," }}` → `fenrir,studio`), and sprig's `fail` aborts
 a render with exit 1.
 
-**Layer 1 — preflight.** An unlisted name is rejected interactively, with the
-manifest path named so the fix is obvious.
+**`.hostname` is stored, not live — so a guard built on it cannot detect drift.**
+An earlier draft of this section keyed the template guard on `.hostname` and claimed
+it would catch a machine renamed outside provisioning. That claim was false.
+`.chezmoi.toml.tmpl` evaluates `scutil --get ComputerName` **once, at `chezmoi init`**,
+and writes the result into `~/.config/chezmoi/chezmoi.toml`. Every later `apply`
+reads the stored value. Measured on the primary workstation, which already exhibits
+exactly this drift:
 
-**Layer 2 — the template itself.** `Brewfile.tmpl` opens with:
-
-```gotemplate
-{{ if not (has .hostname .known_hostnames) }}
-{{- fail (printf "unknown machine %q — add it to .chezmoidata/machines.toml" .hostname) }}
-{{- end }}
+```
+scutil --get ComputerName          → MacBook Pro     (live)
+chezmoi execute-template .hostname → fenrir          (stored)
 ```
 
-Layer 2 is the one that matters long-term. It catches a bare `chezmoi apply` on a
-machine renamed outside provisioning — a path the script never observes. Without
-it, an unknown hostname silently takes the else-branch: nothing errors, nothing
-installs, and the divergence is invisible until someone notices a missing app.
+A rename therefore leaves `.hostname` reporting the old name indefinitely, and a
+guard comparing it to the allowlist passes forever.
+
+**The guard reads `ComputerName` live.** `Brewfile.tmpl` opens with:
+
+```gotemplate
+{{- $live := output "scutil" "--get" "ComputerName" | trim -}}
+{{- if not (has $live .known_hostnames) -}}
+{{-   fail (printf "unknown machine %q — add it to .chezmoidata/machines.toml" $live) -}}
+{{- end -}}
+{{- if ne $live .hostname -}}
+{{-   fail (printf "identity drift: chezmoi has %q, machine is %q — run: chezmoi init" .hostname $live) -}}
+{{- end -}}
+```
+
+`ComputerName` is the live key because macOS always has one; `HostName` can be
+unset, and `scutil --get HostName` then exits **0** while printing the literal
+string `HostName: not set`, which a naive guard would happily compare against the
+allowlist. Every conditional in the file keys off `$live`, never `.hostname` — a
+conditional on stored data has the same staleness bug as a guard on it.
+
+The second check is what closes the loop: stored-versus-live disagreement is
+precisely the drift condition, and it names the remedy.
+
+**What each layer actually catches**, stated narrowly because the earlier draft
+overclaimed:
+
+| Situation | Preflight | Template |
+|---|---|---|
+| Unlisted name typed during provisioning | rejected, re-prompts | — |
+| `chezmoi init` on a machine with an unlisted identity | — | **not caught** — init renders no targets and exits 0 |
+| `chezmoi apply` with an unlisted stored identity | — | fails the render |
+| Machine renamed after init, then `apply` | — | fails on the drift check |
+
+Verified: `chezmoi init` against an unlisted identity exits 0, stores
+`hostname = "MacBook Pro"`, and writes zero targets. Only the following `apply`
+rejects it. Provisioning is what prevents an unlisted identity being stored in the
+first place; the template is what prevents one being *used*.
 
 ### 5.3 `Brewfile` becomes `Brewfile.tmpl`
 
@@ -241,6 +304,14 @@ one-line manual fix.
 password mid-run; routed through the sudo credential already cached in preflight,
 it does not. This removes an interruption at no cost.
 
+The `dotfiles` phase's `ssh -T git@github.com` check is a **pre-existing** prompt,
+not one this design introduces — but the promise of an unattended run is new, and it
+makes the prompt a contract violation. `ssh -G github.com` resolves
+`stricthostkeychecking ask`, and no `known_hosts` is managed, so on a fresh machine
+the check blocks on "Are you sure you want to continue connecting?". Either it runs
+with `-o StrictHostKeyChecking=accept-new`, or GitHub's host keys become managed
+content. Which one is an implementation detail; leaving it prompting is not.
+
 ### 6.2 Brewfile per-item reporting
 
 `brew bundle` exits non-zero if any single item fails, which by itself yields
@@ -279,9 +350,23 @@ Three changes:
 
 ## 8. Testing strategy
 
-New `.scripts/test-provision.sh`, bash, mocked in the existing house style: stub
-`brew`, `chezmoi`, `op`, `scutil`, and `sudo` on `PATH` and assert on the recorded
-call sequence. Assertions that earn their place:
+New `.scripts/test-provision.sh`, bash, mocked in the existing house style.
+
+**Isolation is a correctness requirement of the suite, not a nicety.** `provision.sh`
+deletes files in `$HOME`, chmods `~/.ssh`, installs packages and rewrites macOS
+defaults. A harness that isolates only `PATH` and `XDG_STATE_HOME` leaves all of that
+pointed at the real machine — and `eval "$(/opt/homebrew/bin/brew shellenv)"`, an
+absolute path, puts real Homebrew ahead of the stubs mid-run. The suite therefore
+runs against a temporary `HOME` and temporary values for **every** XDG root, and
+opens with a guard that aborts if any of them still resolves inside the real home
+directory. Scripts invoked by path rather than through `PATH` (`configure.sh`,
+`reconcile-agents.sh`) must be stubbed by path too.
+
+Assertions must read the recorded call log, not the script's stdout: a stub that
+records to a file contributes nothing to stdout, so a substring assertion against
+output silently passes or fails for the wrong reason.
+
+Assertions that earn their place:
 
 1. **`scutil --set ComputerName` is recorded before `chezmoi init`.** The ordering
    regression in §5.1 — the single most important assertion in the suite.
@@ -340,6 +425,13 @@ a single flat list.
   execution exhaust and is never tracked.
 - `scutil --set HostName` becomes load-bearing for backups, not merely cosmetic
   (§11.1). It is critical-path in preflight and may not be downgraded.
+- An unset `HostName` changes from the status quo to a failure state (§11.1).
+- `Brewfile.tmpl` shells out to `scutil` on every render, including during
+  `chezmoi diff` and `chezmoi status`. That is the price of live identity, and it
+  is the right trade: a guard on stored data cannot detect the drift it exists to
+  catch (§5.2).
+- Declining the confirm now leaves the machine byte-identical to how it was found.
+  Bootstrap's installs are the sole exception, and they are machine-independent.
 - Two Borg keys remain unmanaged by chezmoi (§11.3). Tracked as follow-up; a
   rebuild of the existing machine currently omits them.
 
@@ -371,10 +463,20 @@ succeeding while retention quietly stops working. And chezmoi's `.hostname`
 (from `ComputerName`) and Borg's `{hostname}` (from DNS) are *different values on
 the same machine today*.
 
-Setting `HostName` in preflight (§4.2) makes them agree and makes the name local
-rather than network-supplied. That is a fix, but it means preflight is load-bearing
-for backups and must be treated as such: **`scutil --set HostName` may never be
-skipped or made best-effort.**
+Setting `HostName` in preflight (§4.2) makes the name local rather than
+network-supplied. That is a fix, but it makes preflight load-bearing for backups:
+**`scutil --set HostName` may never be skipped or made best-effort.**
+
+**All three fields are validated, not just the one the template reads.** Preflight
+sets `ComputerName`, `HostName` and `LocalHostName`, then reads all three back and
+fails if any disagrees with the chosen identity. The template guard (§5.2) reads
+`ComputerName`, because that is the field macOS always populates — but Borg reads
+the static hostname, which comes from `HostName`. Validating only the field the
+template happens to read would leave `HostName` free to drift, recreating the exact
+backup risk this section exists to close.
+
+**The currently-unset `HostName` is a one-time legacy migration, not a supported
+state.** After provisioning, an unset `HostName` is a failure, not a fallback.
 
 ### 11.2 Separate repo per machine
 
