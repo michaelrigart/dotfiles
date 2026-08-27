@@ -273,6 +273,13 @@ case "$*" in
     fi
     printf '%s' "{\"result\":{\"tab\":{\"tab_id\":\"w7:t$((n+4))\"},\"root_pane\":{\"pane_id\":\"w7:p$((n+3))\"}}}" ;;
   "pane split"*)   printf '%s' '{"result":{"pane":{"pane_id":"w7:p9"}}}' ;;
+  "pane layout"*)
+    # Direction is per-pane, looked up in a map file the fixture writes: "<pane> <dir>"
+    # per line. A map beats an env var because the stub is a separate process and the
+    # answer differs per tab — agents is split right, runtime down.
+    pid="${*##*--pane }"; pid="${pid%% *}"
+    dir=$(awk -v p="$pid" '$1==p {print $2; exit}' "${MOCK_LAYOUT_FILE:-/dev/null}" 2>/dev/null)
+    printf '{"result":{"splits":[{"direction":"%s"}]}}' "${dir:-right}" ;;
   *) exit 0 ;;
 esac
 STUB
@@ -284,6 +291,7 @@ mock_reset() {
   export MOCK_SERVER_UP=1 MOCK_WS_LIST='{"result":{"workspaces":[]}}'
   export MOCK_PANE_LIST='{"result":{"panes":[]}}'
   export MOCK_TAB_LIST='{"result":{"tabs":[]}}'
+  export MOCK_LAYOUT_FILE="$(mktemp "${TMPROOT%/}/layout.XXXXXX")"
   export MOCK_WS_CREATE_RC=0
   export MOCK_TAB_SEQ_FILE="$(mktemp "${TMPROOT%/}/tabseq.XXXXXX")"; print -n 0 > "$MOCK_TAB_SEQ_FILE"
   unset MOCK_TAB_CREATE_FAIL_AT MOCK_STATUS
@@ -320,6 +328,12 @@ mock_topology() {
     while (( k <= n )); do
       [[ -n "$panes" ]] && panes+=","
       panes+="{\"pane_id\":\"w7:p$pn\",\"tab_id\":\"w7:t$i\",\"workspace_id\":\"w7\",\"cwd\":\"$cwd\"}"
+      # The direction the baseline expects for this label, so a healthy fixture is
+      # healthy without every test restating its geometry.
+      case "$name" in
+        runtime) print -r -- "w7:p$pn down"  >> "$MOCK_LAYOUT_FILE" ;;
+        *)       print -r -- "w7:p$pn right" >> "$MOCK_LAYOUT_FILE" ;;
+      esac
       (( pn++ )); (( k++ ))
     done
     (( i++ ))
@@ -328,6 +342,10 @@ mock_topology() {
   export MOCK_PANE_LIST="{\"result\":{\"panes\":[$panes]}}"
   export MOCK_WS_LIST="{\"result\":{\"workspaces\":[{\"workspace_id\":\"w7\",\"label\":\"$label\"}]}}"
 }
+
+# mock_split_dir <pane_id> <right|down> — override one pane's split direction, so a
+# test can make exactly one managed tab wrong and leave the rest healthy.
+mock_split_dir() { print -r -- "$1 $2" >> "$MOCK_LAYOUT_FILE" }
 
 # The complete, healthy baseline — the shape every "good workspace" test starts from.
 FULL=(agents:2 editor:1 runtime:2 git:1)
@@ -865,6 +883,11 @@ has "malformed" "E5 a duplicated managed label = malformed"
 cls "mock_topology '$R1' '$L' agents:1 editor:1 runtime:2 git:1"
 has "malformed" "E5b a managed tab with the wrong pane count = malformed"
 
+# Two panes stacked and two side by side both count 2. Only direction separates them,
+# and a fresh-build live gate would never see a split changed after the fact.
+cls "mock_topology '$R1' '$L' \$FULL; mock_split_dir w7:p1 down"
+has "malformed" "E5c an agents tab split the wrong way = malformed"
+
 # Malformed must not mutate anything.
 run_layout "export HERDR_ENV=1; mock_topology '$R1' '$L' agents:2 agents:2 editor:1 runtime:2 git:1" "$R1"
 rc_is 1 "E6 malformed fails"
@@ -928,6 +951,24 @@ hl_classify() {
     # to go red.
     if [[ "$n" != "$want" ]]; then
       print -r -- "malformed: tab '$label' has $n panes, expected $want"; return 0
+    fi
+
+    # Direction, not just count: two panes side by side and two stacked both count 2.
+    # PaneLayoutSnapshot exposes .splits[].direction, so this is checkable here — and
+    # it has to be, because a live gate that only ever inspects a fresh build cannot
+    # see a workspace whose split was changed afterwards. That drift is exactly what
+    # classification exists to catch.
+    local want_dir="" first_pane dir
+    [[ "$label" == agents ]]  && want_dir=right
+    [[ "$label" == runtime ]] && want_dir=down
+    if [[ -n "$want_dir" ]]; then
+      first_pane=$(print -r -- "$panes" | jq -r --arg t "$tab_id" \
+                    '[.result.panes[] | select(.tab_id == $t)][0].pane_id')
+      dir=$(hl_api pane layout --pane "$first_pane" \
+            | jq -r '[.result.splits[].direction] | unique | join(",")')
+      if [[ "$dir" != "$want_dir" ]]; then
+        print -r -- "malformed: tab '$label' is split '$dir', expected '$want_dir'"; return 0
+      fi
     fi
   done
 
@@ -1791,7 +1832,7 @@ sleep 2
 for i in {1..40}; do h workspace list >/dev/null 2>&1 && break; sleep 0.25; done
 sleep 3
 
-AFTER=$(h agent list | jq -rS '[.result.agents[] | {kind, session: .agent_session}] | sort')
+AFTER=$(h agent list | jq -rS '[.result.agents[] | {agent, session: .agent_session}] | sort')
 AFTER_N=$(h agent list | jq -r '[.result.agents[]] | length')
 
 [[ "$BEFORE_N" != "0" ]] && ok "agents were running before the restart ($BEFORE_N)" \
