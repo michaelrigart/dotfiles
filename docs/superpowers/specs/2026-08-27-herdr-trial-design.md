@@ -4,9 +4,10 @@
 
 **Date:** 2026-08-27
 
-**Amended:** 2026-08-27, after peer review against the installed binary. Corrections
-are recorded inline; the sections most changed are Bootstrap, Workspace identity,
-Integrations, and Testing.
+**Amended:** 2026-08-27, twice, after peer review against the installed binary.
+The second pass corrected the interrupted-build contradiction, the bootstrap and
+construction sequences (which would not have run), the plugin's no-op failure mode,
+and the integration contract.
 
 ## Problem
 
@@ -26,7 +27,7 @@ The second is that session persistence was actively turned off. `config.kdl` set
 "Waiting to run" banners rather than working agents — `dev` rebuilds the layout
 faster and more reliably than Zellij restores it.
 
-Herdr addresses both directly: it identifies coding agents inside panes, tracks a
+Herdr addresses both: it identifies coding agents inside panes, tracks a
 `working` / `blocked` / `idle` / `done` lifecycle per agent, aggregates that into a
 sidebar spanning every workspace, and restores sessions with agents resumed.
 
@@ -38,10 +39,9 @@ Run Herdr **beside** Zellij as a reversible trial. `dev`, `wt`, `wt-rm` and
 This spec covers the trial. Whether to migrate is a separate decision, made against
 the exit criteria below, and would get its own spec.
 
-### Scope correction: the trial is not purely additive
+### The trial is not purely additive
 
-The original draft claimed the trial touched only new files. That was wrong in two
-ways, both now in scope:
+An early draft claimed it touched only new files. Two exceptions are in scope:
 
 - Agent integrations modify `~/.claude` and `~/.codex` (see "Integrations").
 - `hdev` must actively refuse a class of directory to avoid weakening `wt-rm`
@@ -51,39 +51,35 @@ ways, both now in scope:
 
 - Migrating `dev`, `wt` or `wt-rm` to Herdr.
 - Porting `wt-rm`'s session-shutdown preflight to also stop Herdr workspaces. The
-  trial sidesteps the need by refusing to open workspaces in linked worktrees at
-  all.
-- Adopting Herdr's built-in worktree support (`[worktrees]`, `new_worktree`,
-  `worktree.created`). It overlaps `wt`.
-- Automating the Claude/Codex relay. Herdr can do it (`agent prompt`, `agent wait
-  --until blocked`), but GLOBAL.md defines the relay as manual and deliberate:
-  "One relay, one turn." That constraint is a workflow choice, not a capability gap.
+  trial sidesteps the need by refusing to open workspaces in linked worktrees.
+- Adopting Herdr's built-in worktree support. It overlaps `wt`.
+- Automating the Claude/Codex relay. Herdr can (`agent prompt`, `agent wait`), but
+  GLOBAL.md defines the relay as manual: "One relay, one turn." That is a workflow
+  choice, not a capability gap.
 - Neovim navigation integration. See "Known limitations".
 
 ## The worktree guard
 
-`wt-rm` maintains a hard invariant, stated at `dot_config/zsh/functions:781-789`:
-stop the session **before** removing the worktree, because "a live process holding
-the directory open is what leaves an empty `tmp/` husk behind." Its shutdown step
-knows exactly one multiplexer:
+`wt-rm` maintains a hard invariant at `dot_config/zsh/functions:781-789`: stop the
+session **before** removing the worktree, because "a live process holding the
+directory open is what leaves an empty `tmp/` husk behind." Its shutdown step knows
+exactly one multiplexer:
 
 ```zsh
 if zellij list-sessions -s 2>/dev/null | grep -Fqx -- "$name"; then
   zellij delete-session --force "$name" ...
 ```
 
-A Herdr workspace opened on a `wt`-managed worktree is invisible to that check.
-`wt-rm` would report a clean shutdown, remove the checkout, and leave Herdr panes
-writing into a deleted directory — reproducing precisely the husk the preflight was
-built to prevent.
+A Herdr workspace on a `wt`-managed worktree is invisible to that check. `wt-rm`
+would report clean shutdown, remove the checkout, and leave Herdr panes writing into
+a deleted directory — reproducing the husk the preflight exists to prevent.
 
-**Therefore `hdev` refuses linked worktrees.** A repo whose `--git-common-dir`
-resolves outside its own `.git` is a linked worktree; `hdev` reports that and points
-at `dev`. The plugin action inherits the same guard, since both call `layout.sh`.
+**`hdev` therefore refuses linked worktrees.** A repo whose `--git-common-dir`
+resolves outside its own `.git` is a linked worktree; `hdev` says so and points at
+`dev`. The plugin path inherits the guard, since both go through `layout.sh`.
 
-This keeps the trial confined to primary checkouts, where no teardown lifecycle
-competes with it. Extending Herdr to worktrees requires porting the preflight first,
-and that belongs to a migration decision, not a trial.
+Extending Herdr to worktrees requires porting the preflight first, which belongs to
+a migration decision, not a trial.
 
 ## Model mapping
 
@@ -94,32 +90,25 @@ and that belongs to a migration decision, not a trial.
 | Four tabs from `dev.kdl` | Four tabs built by `layout.sh` |
 | Status bar, per session | Sidebar, spanning every workspace |
 
-The single-server choice is the point of the exercise. Session-per-repo would mirror
-today's muscle memory more closely, but the sidebar would then only ever show one
-project's agents — discarding the cross-project visibility that motivates the trial.
+Session-per-repo would mirror today's muscle memory more closely, but the sidebar
+would then only ever show one project's agents — discarding the cross-project
+visibility that motivates the trial.
 
 ## Architecture
 
-One layout definition, two entry points.
-
 ```
-                    ┌─────────────────────────┐
-   hdev curato ────▶│                         │
-   (zsh function)   │  ~/.config/herdr/       │──▶ herdr workspace create
-                    │      layout.sh          │    herdr tab create
-   plugin action ──▶│                         │    herdr pane split / run
-   dev.layout.apply └─────────────────────────┘
+   hdev curato ───▶ layout.sh <repo>       (build-or-focus, from a shell)
+   dev.layout.apply ─▶ layout.sh --current (repair-in-place, from inside a workspace)
 ```
 
-`layout.sh` is the single source of truth for what a project workspace looks like.
-Neither entry point duplicates any part of it.
+`layout.sh` owns the topology definition. Its two modes differ in *entry condition*,
+not in what a finished workspace looks like.
 
 ### Bootstrap
 
-The original draft said `hdev` outside Herdr "starts or attaches the client
-(`herdr`), then applies the layout". That is not implementable: `herdr` is a
-blocking TUI that returns only on detach, and socket commands fail without a server.
-Verified:
+An earlier draft said `hdev` outside Herdr "starts or attaches the client (`herdr`),
+then applies the layout". Not implementable: `herdr` is a blocking TUI returning only
+on detach, and socket commands fail with no server:
 
 ```
 $ herdr workspace list
@@ -127,87 +116,119 @@ $ herdr workspace list
           "message":"no herdr server is running at …/herdr.sock; run `herdr` to start or attach it"}}
 ```
 
-The correct sequence, outside Herdr:
+Two further corrections, both verified:
 
-1. If no server is running (`herdr status`), start one headlessly: `herdr server`.
-2. Wait for socket readiness by polling a cheap read (`ping`), with a bounded
-   timeout and a clear failure message. Do not sleep a fixed interval and hope.
-3. Build or focus the workspace over the socket.
-4. `exec herdr` to attach the client.
+- `herdr server` runs in the **foreground**. It must be explicitly backgrounded and
+  detached from the calling shell, and concurrent starters tolerated — a second
+  `hdev` racing the first must not fail, and must not start a second server.
+- **`herdr status server` exits 0 while reporting `not running`.** Exit status is
+  not a readiness signal. There is also no CLI `ping`; `ping` is a raw socket method.
 
-Inside Herdr (`HERDR_ENV=1`), steps 1, 2 and 4 are skipped.
+The readiness probe is therefore an explicit failing CLI call — `herdr workspace
+list` — testing for the `server_not_running` error code, retried with a bounded
+timeout and a clear message on exhaustion. Never a fixed sleep.
 
-First-run behaviour is proven against the real binary, not asserted — see "Testing".
+Outside Herdr: probe → background a server if absent → wait for readiness → build or
+focus → `exec herdr`. Inside Herdr (`HERDR_ENV=1`), only the middle step runs.
+
+First-run behaviour is proven against the real binary, not asserted.
 
 ### Workspace identity
 
 `WorkspaceInfo` exposes `workspace_id`, `label`, `number`, `focused`, `agent_status`
-and `worktree`, but **no working directory**. The original draft concluded that path
-identity was therefore unavailable and made the label the key. That was wrong:
-`PaneInfo` carries both **`cwd`** and **`foreground_cwd`**.
+and `worktree`, but **no working directory**. An earlier draft concluded path
+identity was unavailable and made the label the key. Wrong: `PaneInfo` carries both
+**`cwd`** and **`foreground_cwd`**.
 
 The label-only scheme was also not injective — `~/Code/Netronix/curato` and
-`~/Netronix/curato` both rendered as `Netronix/curato` — and labels are mutable and
-non-unique, so a rename or a duplicate would silently misroute `hdev`.
+`~/Netronix/curato` both rendered `Netronix/curato` — and labels are mutable, so a
+rename would misroute `hdev`.
 
-Identity is therefore the **canonical repo path**, verified through panes:
+Identity is the **canonical repo path**, verified through panes:
 
 1. Resolve the repo to a canonical absolute path.
-2. `herdr workspace list`; for candidates, inspect their panes' `cwd` via
-   `herdr pane list`.
-3. Exactly one workspace whose panes match the canonical path → `workspace focus`,
-   exit 0.
+2. `herdr workspace list`, then `herdr pane list` for candidates; match on pane `cwd`.
+3. Exactly one **complete** match → `workspace focus`, exit 0.
 4. Zero matches → build.
 5. More than one match, or a label match whose path disagrees → **fail loudly**.
    Ambiguity is a bug, not something to guess through.
 
 Labels remain human-readable display strings (`Netronix/curato`), matching what
-`dev`'s picker prints (`${pool[@]#$code/}`). They are no longer load-bearing.
+`dev`'s picker prints. They are no longer load-bearing.
 
-`_wt_session_name` is not reused. It exists to satisfy Zellij's session-name
-constraints — lowercasing, `/` → `--`, hashing on collision or names over 60
-characters — and its transformation is deliberately not invertible.
+`_wt_session_name` is not reused: it exists for Zellij's session-name constraints
+and its transformation is not invertible.
 
-### Building safely
+### Completeness, and recovering from an interrupted build
 
-Three failure modes get explicit handling:
+The previous amendment introduced a provisional `(building)` label but kept
+path-based identity, which contradicted itself: a half-built workspace still has
+panes with the right `cwd`, so step 2 matches it and step 3 focuses the husk — the
+exact failure the provisional label was meant to prevent.
 
-- **Interrupted builds.** A workspace is created under a provisional label
-  (`…  (building)`) and renamed to its final label only once all four tabs exist.
-  Without this, an interrupted build leaves something the next `hdev` finds, focuses,
-  and reports success on — a half-built workspace presented as ready.
-- **Implicit targeting.** Every `tab create` passes the captured `workspace_id`
-  explicitly. Relying on the focused workspace races against the user and any other
-  attached client.
-- **Concurrency.** `hdev` takes a per-repo lock for the build, in the style of
-  `_wt_lock`, so two invocations cannot both decide to create.
+Completeness is therefore an explicit, checked property, not an inference:
+
+- A workspace is **complete** when it carries the final label *and* its topology
+  matches the definition — four tabs, named `agents`, `editor`, `runtime`, `git`.
+- Anything else found at the target path is **provisional**: a build that died, or
+  one racing in another shell.
+
+`layout.sh` handles the three cases distinctly:
+
+- **Complete** → focus, exit 0.
+- **Provisional, not locked** → stale. Repair it by creating the missing tabs, then
+  rename to the final label. Repair is preferred over close-and-rebuild because the
+  workspace may contain a running agent the user cares about.
+- **Provisional, lock held** → another build is in flight. Fail with a message
+  saying so; do not race it.
+
+Belt and braces: the build runs under a trap that closes the workspace it created if
+it fails partway. The trap handles the common case (a command errors); stale
+detection handles the case the trap cannot (SIGKILL, a lost server). Both are
+needed — neither alone is sufficient.
+
+The lock is per canonical repo path, in the style of `_wt_lock`, released on every
+exit path.
 
 ### Construction sequence
 
-IDs are parsed from JSON responses, never predicted. Herdr's public IDs (`w1`,
-`w1:t1`, `w1:p1`) are opaque; its agent skill file is explicit that closed IDs are
-not reused and order must not be inferred.
+IDs are parsed from JSON responses, never predicted, and passed explicitly to
+**every** operation — not only tab creation. Herdr's public IDs (`w1`, `w1:t1`,
+`w1:p1`) are opaque, and its agent skill file is explicit that closed IDs are not
+reused and order must not be inferred.
+
+Flags below are as the installed 0.8.2 accepts them. An earlier draft used
+`--workspace-id` and `--target-pane-id`; **neither exists**, and the sequence would
+have failed at the first tab.
 
 ```
 workspace create --cwd <repo> --label "<label> (building)" --focus
-  → w1, tab w1:t1 (rename → "agents"), root pane w1:p1
-pane split --target-pane-id w1:p1 --direction right   → w1:p2
-pane run w1:p1 "claude"
-pane run w1:p2 "codex"
+  → ws = .result.workspace.workspace_id
+    t1 = .result.tab.tab_id          (rename → "agents")
+    p1 = .result.root_pane.pane_id
 
-tab create --workspace-id w1 --label editor   → pane run "nvim ."
-tab create --workspace-id w1 --label runtime  → pane split --direction down
-tab create --workspace-id w1 --label git      → pane run "lazygit"
+pane split --pane <p1> --direction right      → p2 = .result.pane.pane_id
+pane run <p1> "claude"
+pane run <p2> "codex"
 
-workspace rename w1 "<label>"
-tab focus <agents tab id>
+tab create --workspace <ws> --label editor    → root pane pe  → pane run <pe> "nvim ."
+tab create --workspace <ws> --label runtime   → root pane pr
+pane split --pane <pr> --direction down                        (two shells, nothing auto-run)
+tab create --workspace <ws> --label git       → root pane pg  → pane run <pg> "lazygit"
+
+workspace rename <ws> "<label>"
+tab focus <t1>
 ```
 
+Capturing each tab's `root_pane` is load-bearing. `tab create` does not focus new
+tabs by default, so a bare `pane split --direction down` has no defined target and
+could split the agents pane instead of the runtime tab's.
+
 **`pane run`, not `agent start`.** `agent start` blocks until Herdr detects the agent
-is ready, with a 30-second default timeout — two of those serialize every workspace
-creation behind two agent boot sequences. It also changes exit semantics: `dev.kdl`
-runs `zsh -c "claude; exec zsh"` so quitting the tool leaves a live prompt. `pane
-run` in a shell pane preserves that exactly.
+is ready, with a 30-second default — two of those serialize every workspace creation
+behind two agent boot sequences. It also changes exit semantics: `dev.kdl` runs
+`zsh -c "claude; exec zsh"` so quitting the tool leaves a live prompt. `pane run` in
+a shell pane preserves that exactly.
 
 ### `hdev` (zsh function)
 
@@ -215,56 +236,85 @@ Repo resolution only, then delegation. The cascade is `dev`'s, unchanged: `.` or
 directory → its git repo; a path relative to `~/Code`; exact basename →
 case-insensitive substring → `fzf`. `dev`'s session-name lookup branch is dropped.
 
-`hdev` is added to `dot_config/zsh/functions` alongside `dev`. `dev` is not modified.
+Added to `dot_config/zsh/functions` alongside `dev`. `dev` is not modified.
 
 ### Plugin
 
-`~/.config/herdr/plugin/herdr-plugin.toml` registers `layout.sh` as action
-`dev.layout.apply`, making the same layout reachable from Herdr's menu and bindable
-to a key, without a shell and without a second copy of the layout logic. Registered
-with `herdr plugin link`, which runs no build step.
+`herdr-plugin.toml` registers `layout.sh --current` as action `dev.layout.apply`.
 
-Peer review suggested dropping this for simplicity. It is retained deliberately: it
-is a second caller of an already-tested script, carrying no new failure mode, and
-the two-entry-point shape was the approved design.
+A previous amendment claimed the plugin was "a second caller carrying no new failure
+mode". **That was wrong.** A plugin action runs from inside an existing workspace,
+so plain `layout.sh` would match that workspace by `cwd`, focus it, exit 0, and
+apply nothing — a silent no-op, and the most confusing possible outcome.
 
-No `[[startup]]` hook is declared — Herdr already restores workspaces on restart, and
-a hook that re-applied layouts would fight it.
+`--current` is therefore a distinct mode, not a shortcut:
+
+- Target the workspace from `HERDR_WORKSPACE_ID` / `HERDR_PLUGIN_CONTEXT_JSON`, not
+  a path lookup.
+- Inspect its topology and create only what is missing, reusing the repair path
+  above.
+- No-op with an explicit message when the topology is already complete, rather than
+  silently.
+
+This makes the action genuinely useful — repairing a workspace whose tabs were
+closed — rather than decorative.
+
+Registered with `herdr plugin link` (no build step). Registration is **global across
+named sessions**, not per-session, which matters for both the live tests and
+rollback: `herdr plugin unlink <plugin-id>`.
+
+No `[[startup]]` hook — Herdr restores workspaces on restart, and a hook re-applying
+layouts would fight it.
 
 ## Integrations
 
-Herdr detects agents from foreground processes and screen manifests, so the sidebar
-populates without integrations. What integrations add is *authoritative* lifecycle
-state (`idle` / `working` / `blocked` reported by the agent rather than inferred from
-the terminal buffer) and native session identity for cold restore.
+An earlier draft claimed integrations provide authoritative lifecycle state. **They
+do not, for these two agents.** Herdr's matrix has two tiers, and Claude Code and
+Codex are both in the lower one:
 
-All 18 are currently uninstalled:
+> **Lifecycle Authority** — Pi, OMP, Kimi, OpenCode, Kilo, MastraCode: report
+> semantic `idle` / `working` / `blocked`.
+> **Session Identity Only** — **Claude Code, Codex**, Copilot, Devin, Droid, Qoder,
+> Qwen, Cursor, Hermes, Antigravity, Grok: native session references for restore,
+> with state sourced from Herdr's screen detection.
 
-```
-$ herdr integration status
-claude: not installed (/Users/michael/.claude/hooks/herdr-agent-state.sh)
-codex:  not installed (/Users/michael/.codex/herdr-agent-state.sh)
-```
+Sidebar status is therefore identical with or without them. What they buy is cold
+restore: agents resumed by native session reference across a server restart. That
+is the sole justification, and the exit criteria reflect it.
 
-The trial installs `claude` and `codex`, and brings the result under chezmoi rather
-than leaving drift in generated directories. Two mechanics must be solved, and both
-are verified by installing and diffing before anything is committed:
+Touchpoints, to be confirmed by install-and-diff before anything is committed:
+
+| Agent | Install writes | Uninstall |
+|---|---|---|
+| Claude | `~/.claude/hooks/herdr-agent-state.sh`, hook entries in `settings.json` | removes both |
+| Codex | `~/.codex/herdr-agent-state.sh`, entries in `hooks.json`, `[features] hooks = true` in `config.toml` | removes hook + `hooks.json` entries; **deliberately leaves `config.toml` unchanged** |
+
+Three mechanics follow, all of which must be solved in chezmoi rather than left to
+the installer:
 
 - **`.chezmoiignore` is an allowlist for `.claude`.** Lines 57-66 ignore `.claude/*`
-  and re-include named entries individually. A hook at `.claude/hooks/…` is ignored
-  by default and will not deploy without an explicit `!` re-inclusion.
-- **`settings.json` is already rewritten in place.** `dot_claude/modify_private_settings.json`
-  is a chezmoi `modify_` script. If the integration also edits `settings.json` to
-  register its hook, the two will fight on every `chezmoi apply`. If it does, hook
-  registration must move into the `modify_` script and not be left to the installer.
+  and re-include named entries individually. Both hook scripts need explicit `!`
+  re-inclusions or they will never deploy.
+- **`settings.json` is already rewritten in place** by
+  `dot_claude/modify_private_settings.json`, which owns the `hooks` block. Herdr's
+  hook registration must merge into that script; leaving it to the installer means
+  the two fight on every `chezmoi apply`.
+- **`config.toml` is already managed** by `dot_codex/modify_private_config.toml`,
+  which pins `features.*` via `setValueAtPath`. `features.hooks` must be pinned
+  there. Because Herdr's uninstall deliberately leaves the flag set, rollback has to
+  restore its prior value explicitly — nothing else will.
 
-Sandbox note: `~/.claude/hooks` and `~/.claude/settings.json` are both write-denied,
-so installation and the subsequent `chezmoi apply` require an unsandboxed shell.
+Sandbox note: `~/.claude/hooks` and `~/.claude/settings.json` are write-denied, so
+installation and the subsequent `chezmoi apply` need an unsandboxed shell.
 
 ## Configuration
 
 `~/.config/herdr/config.toml`, chezmoi-managed, carrying only deliberate divergences
-from `herdr --default-config` so that upstream default changes stay visible.
+from `herdr --default-config` so upstream default changes stay visible.
+
+`onboarding = false` is pinned. Left unset, first run shows onboarding and may write
+back to the config file — which chezmoi manages, so the write would show up as drift
+and be reverted on the next apply.
 
 ### Theme
 
@@ -291,19 +341,17 @@ shadowed shell and Neovim keys; Herdr's prefix model has no such problem.
 Two bindings have no native equivalent:
 
 - **Tab jumps (`alt+a`/`e`/`r`/`g`).** `switch_tab` is range-only (`"prefix+1..9"`);
-  there is no `switch_tab_1`, and `tab.focus` takes a `tab_id`, not an index. Each key
-  runs `tab-goto.sh <n>` via `[[keys.command]]`.
-- **Scratch popup (`alt+p`).** `type = "popup"` — a session-modal terminal that does
-  not disturb the tab layout. This is the on-demand `bin/rails console` slot, and a
-  better fit than Zellij's floating layer, where `Alt+n` created *floating* panes
-  while the layer was visible.
+  there is no `switch_tab_1`, and `tab.focus` takes a `tab_id`, not an index. Each
+  key runs `tab-goto.sh <n>` via `[[keys.command]]`.
+- **Scratch popup (`alt+p`).** `type = "popup"` — session-modal, does not disturb the
+  tab layout. The on-demand `bin/rails console` slot, and a better fit than Zellij's
+  floating layer, where `Alt+n` created *floating* panes while the layer was visible.
 
-**`alt+k` (clear) is dropped.** The original draft specified a `clear-pane.sh`
-helper without confirming a mechanism existed. There is none: the `pane.*` API
-surface has no clear or reset method, only `send_text` / `send_keys`. Clearing could
-only be done by injecting control sequences into whatever occupies the pane, which
-in Neovim or an agent TUI risks corrupting state or sending input to an agent. Not
-worth it for a convenience binding.
+**`alt+k` (clear) is dropped.** An earlier draft specified a helper without
+confirming a mechanism existed. There is none: the `pane.*` API has no clear or reset
+method, only `send_text` / `send_keys`. Clearing could only inject control sequences
+into whatever occupies the pane — corrupting state in Neovim, or sending input to a
+live agent. Not worth it for a convenience binding.
 
 `alt+s` (scroll mode) is also dropped — Herdr has no modal scroll; it uses the mouse
 and `prefix+e` (`edit_scrollback`).
@@ -311,20 +359,20 @@ and `prefix+e` (`edit_scrollback`).
 ### Helper context
 
 `tab-goto.sh` must target the workspace the keypress came from. Resolving via the
-globally-focused workspace is racy: the persistence model is a shared session view,
-so another attached client can change focus between the keypress and the query.
+globally-focused workspace is racy: persistence is a shared session view, so another
+attached client can change focus between keypress and query.
 
-Herdr is reported to expose active-context variables to `[[keys.command]]`
-(`HERDR_ACTIVE_WORKSPACE_ID`, `HERDR_ACTIVE_TAB_ID`, `HERDR_ACTIVE_PANE_ID`,
-`HERDR_ACTIVE_PANE_CWD`). These do **not** appear in `herdr --default-config` and are
-unverified. The implementation plan's first task is to dump the environment from a
-bound key and use whatever is actually injected; the helper fails with a clear
-message rather than falling back to global focus if nothing is.
+Herdr documents active-context variables for `[[keys.command]]`:
+`HERDR_ACTIVE_WORKSPACE_ID`, `HERDR_ACTIVE_TAB_ID`, `HERDR_ACTIVE_PANE_ID`,
+`HERDR_ACTIVE_PANE_CWD`. They do not appear in `herdr --default-config`, so the
+implementation verifies them at runtime as a compatibility check — dumping the
+environment from a bound key — and the helper fails with a clear message rather than
+falling back to global focus if they are absent.
 
 ### Alt-key viability
 
-Herdr's own config warns `alt+…` bindings "may depend on your terminal/tmux setup"
-and that `ctrl+letter` and function keys are the most reliable. Ghostty is configured
+Herdr's config warns `alt+…` bindings "may depend on your terminal/tmux setup" and
+that `ctrl+letter` and function keys are most reliable. Ghostty is configured
 `macos-option-as-alt = left`, so the scheme is viable via the **left** Option key
 only. This is the most likely thing to fail, and it fails visibly. Test it first.
 
@@ -332,17 +380,20 @@ only. This is the most likely thing to fail, and it fails visibly. Test it first
 
 ```
 dot_config/herdr/config.toml               → ~/.config/herdr/config.toml
-dot_config/herdr/executable_layout.sh      → the single layout definition
+dot_config/herdr/executable_layout.sh      → topology definition, both modes
 dot_config/herdr/executable_tab-goto.sh    → tab focus by index
 dot_config/herdr/plugin/herdr-plugin.toml  → registers dev.layout.apply
 dot_config/zsh/functions                   → += hdev()   (dev/wt/wt-rm untouched)
-.chezmoiignore                             → re-include the herdr agent hooks
-dot_claude/…, dot_codex/…                  → integration hooks, exact paths TBD by install-and-diff
+.chezmoiignore                             → re-include both agent hook scripts
+dot_claude/modify_private_settings.json    → merge Herdr hook registration
+dot_codex/modify_private_config.toml       → pin features.hooks
+dot_claude/…, dot_codex/…                  → the two hook scripts
 .scripts/test-hdev.sh                      → mocked test
-.scripts/test-hdev-live.sh                 → real-binary gate, run manually
+.scripts/test-hdev-topology.sh             → live, isolated session
+.scripts/test-hdev-integrations.sh         → live, controlled install/restore/uninstall
 ```
 
-`brew "herdr"` landed in `dot_config/homebrew/Brewfile.tmpl` in commit `01bd008`.
+`brew "herdr"` landed in `Brewfile.tmpl` in commit `01bd008`.
 
 No `brew services start herdr`. A trial does not earn a login daemon.
 
@@ -356,40 +407,53 @@ stubbed multiplexer, following `test-wt-functions.sh`.
 - **Resolution.** Every branch of the cascade; a non-repo argument fails without
   calling `herdr` at all.
 - **The worktree guard.** A linked worktree is refused, with zero `herdr` calls.
-- **Identity.** Path-based matching focuses the right workspace; two repos sharing a
-  basename in different orgs resolve to two workspaces; a label match whose pane
-  `cwd` disagrees fails rather than focusing; two matches fail rather than guessing.
+- **Identity.** Path matching focuses the right workspace; two repos sharing a
+  basename across orgs resolve to two workspaces; a label match whose pane `cwd`
+  disagrees fails rather than focusing; two matches fail rather than guessing.
 - **Idempotency.** A second `hdev` emits exactly one `workspace focus` and zero
   `create` calls.
-- **Interrupted build.** A stub failing at the third `tab create` leaves no workspace
-  under the final label, and the next run rebuilds rather than focusing a husk.
+- **Completeness.** A workspace at the right path with three tabs is treated as
+  provisional, not focused as complete.
+- **Interrupted build, both paths.** A stub failing at the third `tab create`
+  triggers the trap and closes the workspace. A pre-seeded stale provisional
+  workspace is *repaired* — missing tabs created, then renamed — not duplicated and
+  not focused as-is.
 - **Ordering.** Panes split before commands run in them; workspace before tabs.
-- **ID handling.** Stub JSON returning `w7:p3` must produce `pane run w7:p3 …`, not a
-  guessed `w1:p1`.
+- **Explicit IDs.** Stub JSON returning `w7:p3` must produce `pane run w7:p3 …`, and
+  `pane split --pane w7:p3 …`, never a guessed `w1:p1` and never an untargeted split.
 - **Failure reporting.** A mid-sequence failure is reported, never silently
   presented as success. `dev` learned this the hard way: every step of the old
   detached-session shape returned 0 while the layout silently failed.
 
 Assertions pin exact values. A test that cannot go red is not coverage.
 
-### Live — `.scripts/test-hdev-live.sh`
+### Live, isolated — `.scripts/test-hdev-topology.sh`
 
-The original draft claimed the mocked suite would catch Herdr CLI churn. **It cannot**
-— a stub defines its own acceptance and keeps passing after the real binary changes
-its flags or JSON shapes. That claim is withdrawn.
+An earlier draft claimed the mocked suite would catch Herdr CLI churn. **It cannot** —
+a stub defines its own acceptance and keeps passing after the real binary changes its
+flags or JSON shapes. That claim is withdrawn; this script replaces it.
 
-Churn detection needs the real binary, against an isolated named session
-(`herdr --session hdev-test`), never the live one:
+Against `herdr --session hdev-test`, never the live session:
 
-- Cold bootstrap with no server running.
-- The actual resulting topology: four tabs, correct pane counts and split directions.
-- Duplicate-path and concurrent invocation.
-- Interrupted-build recovery.
-- `plugin link` succeeding and the action being invocable.
+- Cold bootstrap with no server running, including the backgrounding and the
+  readiness probe.
+- Concurrent `hdev` invocations: one server, one workspace.
+- Actual resulting topology: four tabs, correct pane counts and split directions.
+- Duplicate-path handling and interrupted-build repair.
 - Key-command context: what is actually injected.
-- Claude/Codex detection and cold restore across a server restart.
 
-Run manually and unsandboxed; not part of the mocked suite.
+A named session isolates the socket and runtime state. It does **not** isolate plugin
+registration, which is global — so `plugin link` / `unlink` is exercised here with
+that understood, and torn down explicitly.
+
+### Live, uncontained — `.scripts/test-hdev-integrations.sh`
+
+Integrations touch real `~/.claude` and `~/.codex`; no named session isolates them.
+Run deliberately, unsandboxed, with the files backed up first:
+
+- Install, and diff what actually changed against the table above.
+- Cold restore across a full server restart: agents resumed by session reference.
+- Uninstall, confirming `features.hooks` is left set and rollback restores it.
 
 ## Known limitations
 
@@ -398,16 +462,19 @@ consumes them before Neovim, so inside `nvim` they move between Herdr panes rath
 than splits. smart-splits.nvim cannot see across the boundary without a Herdr-aware
 counterpart to vim-zellij-navigator. Community options exist (`herdr-splits.nvim`,
 `herdr-nvim-nav`, ports of vim-tmux-navigator); none is first-party, and adopting one
-is a Neovim config change deliberately excluded here. `<C-w>hjkl` still works inside
-Neovim. Closing this is a small, separately-approved follow-up.
+is a Neovim config change deliberately excluded. `<C-w>hjkl` still works inside
+Neovim. A small, separately-approved follow-up.
 
 **Shared session view.** Per the 0.8.2 CHANGELOG: "The current persistence model is a
 shared session view across attached clients. It is not yet full tmux-style per-client
 independent navigation." Two attached clients move together.
 
+**Agent status is screen-detected**, not agent-reported, for both Claude and Codex.
+Whatever the sidebar shows is inference from the terminal buffer. The exit criteria
+must judge that inference, not assume it.
+
 **Version 0.8.2** is younger and moving faster than Zellij 0.45, and the CLI surface
-is the contract this design depends on. The live gate above is the only thing that
-detects churn.
+is the contract this design depends on. The live gates are the only churn detector.
 
 ## Exit criteria
 
@@ -415,27 +482,32 @@ Fixed window: **four weeks** of ordinary use across at least three projects.
 
 Migrate if all of:
 
-- **Restore:** ≥90% of server restarts come back with workspaces and agents usable
-  without manual repair.
+- **Restore:** ≥90% success over **at least ten** cold-restoration attempts —
+  workspaces and agents usable without manual repair. Fewer than ten attempts means
+  the criterion is unmet, not passed by default.
 - **Correctness:** zero wrong-workspace events, zero husk incidents, zero manual
   repairs of a half-built workspace after the first week.
 - **Keybindings:** the Alt scheme survives four weeks in Ghostty without remapping.
 - **The actual question:** agent state was *noticed* rather than polled for — at
   least weekly, a Herdr status display prompted action on a blocked or finished agent
-  before it would otherwise have been checked. If this fails, nothing else matters:
-  it is the entire reason to move.
+  before it would otherwise have been checked. Since that state is screen-detected,
+  this also tests whether the inference is trustworthy. If it fails, nothing else
+  matters: it is the entire reason to move.
 
 Abandon if restore is unreliable, if the CLI churns enough to need regular repair, or
-if agent status proves to be a novelty that does not change behaviour.
+if agent status proves a novelty that does not change behaviour.
 
 ## Rollback
 
-1. `herdr integration uninstall claude` and `… codex`; revert the `.chezmoiignore`
-   re-inclusions and any `modify_private_settings.json` change.
-2. `herdr plugin unlink`.
+1. `herdr integration uninstall claude` and `… codex`. Restore `features.hooks` to
+   its prior value in `dot_codex/modify_private_config.toml` — Herdr's uninstall
+   deliberately will not. Revert the `modify_private_settings.json` merge and the
+   `.chezmoiignore` re-inclusions.
+2. `herdr plugin unlink <plugin-id>` — registration is global, so this is required
+   even if the trial session is gone.
 3. Confirm no pane processes are worth keeping — **`herdr server stop` terminates
    every process in every pane** — then stop the server.
-4. Delete `dot_config/herdr/`, `hdev`, both test scripts.
+4. Delete `dot_config/herdr/`, `hdev`, all three test scripts.
 5. Drop the Brewfile line; `brew uninstall herdr`.
 6. Remove leftover unmanaged state: `~/.config/herdr/` (logs, session state, plugin
    registry) and `~/.herdr/` if present.
