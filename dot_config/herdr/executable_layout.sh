@@ -8,7 +8,11 @@
 # The single definition of what a project workspace looks like. Both entry points go
 # through it, so there is no second copy to drift.
 emulate -L zsh
-setopt local_options no_unset pipe_fail
+# no_bg_nice: zsh sets BG_NICE by default, so `cmd &` renices the job. That renice
+# fails outright where setpriority is denied (a sandbox, some CI), taking the
+# backgrounded server with it — and even where it succeeds, quietly deprioritising the
+# Herdr server every agent runs inside is not what anyone wants.
+setopt local_options no_unset pipe_fail no_bg_nice
 
 MANAGED_TABS=(agents editor runtime git)
 BUILDING_SUFFIX=" (building)"
@@ -144,10 +148,14 @@ main() {
   if [[ "$mode" == path ]]; then
     hl_lock "$repo"
     local ws; ws="$(hl_find_workspace "$repo")" || exit 1
+    # Explicit propagation, not `setopt err_return`: err_return does not fire for a
+    # command whose status is already being tested, so it gives false confidence in
+    # exactly the shapes used here. Without this, a failed focus or a failed create
+    # fell through to hl_attach and the whole run reported success.
     if [[ -n "$ws" ]]; then
-      hl_reconcile "$ws" "$repo"
+      hl_reconcile "$ws" "$repo" || exit 1
     else
-      hl_build "$repo"
+      hl_build "$repo" || exit 1
     fi
   fi
 

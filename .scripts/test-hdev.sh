@@ -57,13 +57,23 @@ case "$*" in
   "status server"|"status")
     printf '%s\n' "${MOCK_STATUS:-server:
   status: not running}" ;;
+  "server")
+    # Starting the server makes subsequent probes succeed, so the bootstrap is tested
+    # as the state transition it actually is rather than as two frozen states.
+    # MOCK_SERVER_NEVER_READY models a server that starts but never answers, which is
+    # what the timeout path needs.
+    [ -z "${MOCK_SERVER_NEVER_READY:-}" ] && : > "$MOCK_SERVER_STARTED_FILE"
+    exit 0 ;;
   "workspace list")
-    [ "${MOCK_SERVER_UP:-1}" = "0" ] && {
+    if [ "${MOCK_SERVER_UP:-1}" = "0" ] && \
+       { [ -z "${MOCK_SERVER_STARTED_FILE:-}" ] || [ ! -e "$MOCK_SERVER_STARTED_FILE" ]; }; then
       printf '%s' '{"error":{"code":"server_not_running","message":"no herdr server"}}'
-      exit 1; }
+      exit 1
+    fi
     printf '%s' "${MOCK_WS_LIST:-{\"result\":{\"workspaces\":[]}}}" ;;
   "pane list"*)    printf '%s' "${MOCK_PANE_LIST:-{\"result\":{\"panes\":[]}}}" ;;
   "tab list"*)     printf '%s' "${MOCK_TAB_LIST:-{\"result\":{\"tabs\":[]}}}" ;;
+  "workspace focus"*) exit "${MOCK_FOCUS_RC:-0}" ;;
   "workspace create"*)
     exit_rc="${MOCK_WS_CREATE_RC:-0}"; [ "$exit_rc" != 0 ] && exit "$exit_rc"
     printf '%s' '{"result":{"workspace":{"workspace_id":"w7"},"tab":{"tab_id":"w7:t4"},"root_pane":{"pane_id":"w7:p3"}}}' ;;
@@ -104,9 +114,19 @@ mock_reset() {
   export MOCK_PANE_LIST='{"result":{"panes":[]}}'
   export MOCK_TAB_LIST='{"result":{"tabs":[]}}'
   export MOCK_LAYOUT_FILE="$(mktemp "${TMPROOT%/}/layout.XXXXXX")"
-  export MOCK_WS_CREATE_RC=0
+  export MOCK_WS_CREATE_RC=0 MOCK_FOCUS_RC=0
+  # Created here rather than in each test: building the path inside an eval'd setup
+  # string needs three levels of quoting, and getting it wrong leaves the variable
+  # empty, the marker unwritten, and the failure looking like a broken timeout.
+  export MOCK_SERVER_STARTED_FILE="$(mktemp "${TMPROOT%/}/started.XXXXXX")"
+  rm -f "$MOCK_SERVER_STARTED_FILE"
+  unset MOCK_SERVER_NEVER_READY
   export MOCK_TAB_SEQ_FILE="$(mktemp "${TMPROOT%/}/tabseq.XXXXXX")"; print -n 0 > "$MOCK_TAB_SEQ_FILE"
   unset MOCK_TAB_CREATE_FAIL_AT MOCK_STATUS
+  # The HL_* knobs are exported by individual tests and would otherwise leak into
+  # every later one — HL_READY_TRIES=2 from a timeout test silently shortening an
+  # unrelated bootstrap, for instance, which is how C4 first failed.
+  unset HL_READY_TRIES HL_TRACE_LOCK HL_LOCK_DELAY HL_SCAN_DELAY
 }
 
 # Shape helpers. Keep them tiny and literal — a clever fixture builder is one more
@@ -273,10 +293,17 @@ rc_is 0 "C2 with a server up, layout.sh runs"
 eq "$(count_logged 'server')" "0" "C2 an existing server is not restarted"
 
 # Outside herdr with no server: probes, fails cleanly rather than hanging.
-run_layout "unset HERDR_ENV; export MOCK_SERVER_UP=0 HL_READY_TRIES=2" "$R1"
+run_layout "unset HERDR_ENV; export MOCK_SERVER_UP=0 MOCK_SERVER_NEVER_READY=1 HL_READY_TRIES=2" "$R1"
 logged "workspace list" "C3 readiness is probed with a real failing call"
 rc_is 1 "C3 an unreachable server fails rather than hanging"
 has "did not become ready" "C3 reports the timeout"
+
+# C4: the start itself. C3 only covers probing and the timeout — deleting the
+# `herdr server` line entirely would leave every other assertion green.
+run_layout "unset HERDR_ENV; export MOCK_SERVER_UP=0
+  mock_topology '$R1' 'Netronix/curato' $FULL" "$R1"
+rc_is 0 "C4 a down server is started and the run completes"
+eq "$(count_logged 'server')" "1" "C4 the server is started exactly once"
 
 # --- D: identity ------------------------------------------------------------
 print -r -- "-- D: identity"
@@ -311,5 +338,14 @@ rc_is 1 "D5 panes spanning two workspaces fails"
 has "refusing to guess" "D5 says why"
 unlogged "workspace create" "D5 nothing is created"
 unlogged "workspace focus" "D5 nothing is focused"
+
+# D6/D7: a failing herdr call must not be reported as success. Before explicit
+# propagation both of these exited 0 and went on to attach.
+run_layout "export HERDR_ENV=1; export MOCK_FOCUS_RC=1
+  mock_topology '$R1' 'Netronix/curato' $FULL" "$R1"
+rc_is 1 "D6 a failed focus fails the run"
+
+run_layout "export HERDR_ENV=1; export MOCK_WS_CREATE_RC=1; mock_panes '/nowhere'" "$R1"
+rc_is 1 "D7 a failed create fails the run"
 
 finish

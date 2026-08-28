@@ -329,6 +329,10 @@ mock_reset() {
   export MOCK_WS_CREATE_RC=0
   export MOCK_TAB_SEQ_FILE="$(mktemp "${TMPROOT%/}/tabseq.XXXXXX")"; print -n 0 > "$MOCK_TAB_SEQ_FILE"
   unset MOCK_TAB_CREATE_FAIL_AT MOCK_STATUS
+  # The HL_* knobs are exported by individual tests and would otherwise leak into
+  # every later one — HL_READY_TRIES=2 from a timeout test silently shortening an
+  # unrelated bootstrap, for instance, which is how C4 first failed.
+  unset HL_READY_TRIES HL_TRACE_LOCK HL_LOCK_DELAY HL_SCAN_DELAY
 }
 
 # Shape helpers. Keep them tiny and literal — a clever fixture builder is one more
