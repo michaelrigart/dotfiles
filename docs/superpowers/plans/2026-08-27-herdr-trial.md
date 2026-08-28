@@ -337,7 +337,10 @@ case "$*" in
     # mock_split_dir to override one pane. First-match-wins would ignore the override
     # and quietly turn the wrong-direction test into one that can never detect it.
     dir=$(awk -v p="$pid" '$1==p {d=$2} END {print d}' "${MOCK_LAYOUT_FILE:-/dev/null}" 2>/dev/null)
-    printf '{"result":{"splits":[{"direction":"%s"}]}}' "${dir:-right}" ;;
+    # Mirrors the real envelope: the snapshot sits under .result.layout, not
+    # .result. Getting this wrong is invisible to a mocked suite — it just validates
+    # whatever shape the stub invents.
+    printf '{"result":{"layout":{"splits":[{"direction":"%s"}]}}}' "${dir:-right}" ;;
   *) exit 0 ;;
 esac
 STUB
@@ -1568,6 +1571,7 @@ Mocked tests cannot catch CLI churn — a stub defines its own acceptance and ke
 #
 # Run manually, unsandboxed: zsh .scripts/test-hdev-topology.sh
 set -u
+setopt no_bg_nice   # see the same note in layout.sh
 SESSION=hdev-test
 PLUGIN_ID=dev.layout.test
 h() { command herdr --session "$SESSION" "$@" }
@@ -1577,7 +1581,12 @@ ok()   { print -r -- "  PASS: $1"; pass=$((pass+1)) }
 bad()  { print -r -- "  FAIL: $1"; fail=$((fail+1)) }
 
 cleanup() {
+  # `server stop` does NOT delete session state — herdr persists workspaces to
+  # ~/.config/herdr/sessions/<name> and restores them next start. Without an explicit
+  # delete, every run inherited the previous run's workspaces and `workspace list`
+  # answered about stale ones.
   h server stop >/dev/null 2>&1 || true
+  command herdr session delete "$SESSION" >/dev/null 2>&1 || true
   command herdr plugin unlink "$PLUGIN_ID" >/dev/null 2>&1 || true
   [[ -n "${SCRATCH:-}" ]] && rm -rf "$SCRATCH"
 }
@@ -1586,6 +1595,12 @@ trap cleanup EXIT INT TERM
 SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/hdev-live.XXXXXX")"
 REPO="$SCRATCH/Code/Test/proj"
 mkdir -p "$REPO" && git -C "$REPO" init -q && git -C "$REPO" commit -q --allow-empty -m init
+# Resolved: mktemp hands back /tmp/... or /var/folders/..., layout.sh stores
+# "${repo:A}" (/private/...), so an unresolved comparison never matches a pane cwd.
+REPO="${REPO:A}"
+
+# Start clean as well as finish clean: a run killed mid-way leaves state behind.
+command herdr session delete "$SESSION" >/dev/null 2>&1 || true
 
 print -r -- "=== live topology gate (session: $SESSION) ==="
 
@@ -1620,6 +1635,7 @@ h tab list --workspace "$WS" | jq -e '.result.tabs[] | select(.label=="notes")' 
 #    releases, THEN B acquires. Launching two at once mostly proves nothing.
 REPO2="$SCRATCH/Code/Test/proj2"
 mkdir -p "$REPO2" && git -C "$REPO2" init -q && git -C "$REPO2" commit -q --allow-empty -m init
+REPO2="${REPO2:A}"
 # B sleeps BEFORE taking the lock, so it arrives after A has built and released —
 # the stale-observation schedule. Launching two at once would usually serialise
 # harmlessly and prove nothing.
@@ -1637,7 +1653,7 @@ n=$(h pane list | jq -r --arg d "$REPO2" \
 RT=$(h tab list --workspace "$WS" | jq -r '.result.tabs[] | select(.label=="runtime") | .tab_id')
 h pane layout --pane "$(h pane list --workspace "$WS" | jq -r --arg t "$RT" \
     '[.result.panes[] | select(.tab_id==$t)][0].pane_id')" \
-  | jq -e '.result | tostring | test("down|vertical|row")' >/dev/null \
+  | jq -e '[.result.layout.splits[].direction] == ["down"]' >/dev/null \
   && ok "runtime is split down" || bad "runtime is not split down"
 
 # 7. The plugin: link under a DISTINCT id, invoke it, unlink. Registration is global,
@@ -1653,10 +1669,19 @@ grep -q '^id = "apply"' "$PDIR/herdr-plugin.toml" \
 command herdr plugin link "$PDIR" >/dev/null \
   && ok "the plugin links" || bad "plugin link failed"
 h tab close "$(h tab list --workspace "$WS" | jq -r '.result.tabs[] | select(.label=="git") | .tab_id')" >/dev/null
+# The action's context is taken from the FOCUSED workspace, so focus it first —
+# otherwise the plugin repairs whichever workspace happens to be focused.
+h workspace focus "$WS" >/dev/null
 h plugin action invoke "$PLUGIN_ID.apply" >/dev/null 2>&1   # session-scoped: the
 # topology lives in hdev-test, and a bare `herdr plugin action invoke` would run it
 # against the default session instead.
-n=$(h tab list --workspace "$WS" | jq -r '[.result.tabs[] | select(.label=="git")] | length')
+# `plugin action invoke` returns while the action is still "running" — poll rather
+# than assuming it finished.
+for i in {1..20}; do
+  n=$(h tab list --workspace "$WS" | jq -r '[.result.tabs[] | select(.label=="git")] | length')
+  [[ "$n" == 1 ]] && break
+  sleep 0.5
+done
 [[ "$n" == 1 ]] && ok "the plugin action repairs a closed managed tab" || bad "git tab count = $n after repair"
 
 # 7b. The jump must still land after repair. This is the whole reason tab-goto.sh
@@ -1682,16 +1707,17 @@ ACTIVE=$(h workspace get "$WS" | jq -r '.result.workspace.active_tab_id')
 #    `notification show` was invoked.
 #
 #    NotificationShowReason is ["shown","disabled","rate_limited",
-#    "no_foreground_client","busy"]. Only busy and rate_limited are transient;
-#    no_foreground_client is a stable property of a headless run, not something a
-#    retry can clear.
+#    "no_foreground_client","busy"]. Observed live: a headless session returns `busy`
+#    persistently, not transiently — retrying it five times still ended in `busy`, so
+#    treating it as transient failed a working setup. Only `disabled` means delivery
+#    is actually off, and that is the single state this gate exists to catch.
 enabled=0
 for i in 1 2 3 4 5; do
   r=$(h notification show "gate" --body "live gate probe" | jq -r '.result.reason')
   case "$r" in
-    shown|no_foreground_client) enabled=1; break ;;   # delivery is on
+    shown|no_foreground_client|busy) enabled=1; break ;;  # delivery is on; see below
     disabled)                   break ;;              # the real defect; fail fast
-    busy|rate_limited)          sleep 1.5 ;;          # transient; retry
+    rate_limited)               sleep 1.5 ;;          # transient; retry
     *)                          break ;;
   esac
 done
@@ -2095,7 +2121,11 @@ built. Each was found by running the code, not by reading it.
 | 18 | `--current` resolves the pane cwd to the git root and **fails closed** | `.git` is a file only at the root, so a pane in a worktree *subdirectory* walked past the guard; and keeping the raw cwd when `rev-parse` failed meant a non-repo workspace — the plain `~` one — was classified provisional and "repaired" into four tabs with two agents launched in `$HOME` (K7, K9) |
 | 19 | `hl_lock` returns non-zero instead of calling `die` | `die` exits the process, so a caller's `\|\| hl_die_notify` could never run and lock contention stayed stderr-only — invisible under detached execution (K10) |
 | 20 | The suite isolates `XDG_STATE_HOME` | `zshenv` exports it to the real `~/.local/state`, so every run wrote lock files there — 176 stale files had accumulated from long-gone fixture temp dirs, and a contention test silently locked a different file than the code under test |
-| 21 | Stub gained `MOCK_SERVER_NEVER_READY` and a marker file | Lets the bootstrap be tested as a down → start → ready transition rather than two frozen states |
+| 21 | **`pane layout` returns `.result.layout.splits`, not `.result.splits`** | The stub encoded the wrong envelope and validated it, so 178 mocked tests passed while `hl_classify` errored on every real workspace with an agents tab — failing reconcile and `--current` outright. Exactly the CLI-shape blindness the live gate exists for, and structurally invisible to mocks |
+| 22 | The live gate deletes its session, at start and at teardown | `herdr server stop` does not delete session state — herdr persists workspaces under `~/.config/herdr/sessions/<name>` and restores them. Every run inherited the previous run's workspaces, so `workspace list` answered about stale ones |
+| 23 | The gate resolves fixture paths with `:A`, and focuses before invoking the action | `mktemp` returns `/tmp/…` while `layout.sh` stores `${repo:A}` (`/private/tmp/…`), so `select(.cwd == $d)` never matched; and a plugin action takes its context from the **focused** workspace |
+| 24 | `busy` is treated as "delivery enabled", not transient | Observed live: a headless session returns `busy` persistently. Retrying it five times still ended in `busy`, failing a working setup. Only `disabled` means delivery is off |
+| 25 | Stub gained `MOCK_SERVER_NEVER_READY` and a marker file | Lets the bootstrap be tested as a down → start → ready transition rather than two frozen states |
 
 Assertions about **absence** (`unlogged`, `count_logged … 0`) always pass when nothing
 ran at all. Every one is paired with a presence assertion, and each gate was confirmed

@@ -237,8 +237,11 @@ hl_classify() {
     if [[ -n "$want_dir" ]]; then
       first_pane=$(print -r -- "$panes" | jq -r --arg t "$tab_id" \
                     '[.result.panes[] | select(.tab_id == $t)][0].pane_id') || return 1
+      # .result.layout.splits — NOT .result.splits. The stub encoded the latter and
+      # validated the wrong assumption; against the real binary every classification
+      # of a workspace with an agents tab errored out, failing reconcile entirely.
       dir=$(hl_api_json pane layout --pane "$first_pane" \
-            | jq -r '[.result.splits[].direction] | unique | join(",")') || return 1
+            | jq -r '[.result.layout.splits[].direction] | unique | join(",")') || return 1
       if [[ "$dir" != "$want_dir" ]]; then
         print -r -- "malformed: tab '$label' is split '$dir', expected '$want_dir'"; return 0
       fi

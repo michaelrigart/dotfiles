@@ -127,7 +127,10 @@ case "$*" in
     # mock_split_dir to override one pane. First-match-wins would ignore the override
     # and quietly turn the wrong-direction test into one that can never detect it.
     dir=$(awk -v p="$pid" '$1==p {d=$2} END {print d}' "${MOCK_LAYOUT_FILE:-/dev/null}" 2>/dev/null)
-    printf '{"result":{"splits":[{"direction":"%s"}]}}' "${dir:-right}" ;;
+    # Mirrors the real envelope: the snapshot sits under .result.layout, not
+    # .result. Getting this wrong is invisible to a mocked suite — it just validates
+    # whatever shape the stub invents.
+    printf '{"result":{"layout":{"splits":[{"direction":"%s"}]}}}' "${dir:-right}" ;;
   *) exit 0 ;;
 esac
 STUB
