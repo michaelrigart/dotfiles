@@ -17,6 +17,10 @@
 #
 # Run: zsh .scripts/test-hdev.sh
 set -u
+# zsh sets BG_NICE by default, so backgrounding K10's lock holder tries to renice it
+# and prints "nice(5) failed" wherever setpriority is denied. Same reason layout.sh
+# sets it: environment-dependent noise that obscures real failures.
+setopt no_bg_nice
 
 ROOT="$(cd "${0:h}/.." && pwd)"
 FUNCS="$ROOT/dot_config/zsh/functions"
