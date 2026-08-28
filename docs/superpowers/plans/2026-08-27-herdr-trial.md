@@ -266,7 +266,13 @@ count_logged() { grep -Fxc -- "$1" "$HLOG" 2>/dev/null | head -1 }
 TMPROOT="${TMPDIR:-/tmp}"
 mkd() { mktemp -d "${TMPROOT%/}/hdev-test.XXXXXX" }
 STUBS=$(mkd)
-trap 'rm -rf "$STUBS" "${ROOTTMP:-}"' EXIT
+# layout.sh derives its lock path from XDG_STATE_HOME, which zshenv exports to the
+# REAL ~/.local/state — so without this every run littered the user's state directory
+# with lock files named after long-gone fixture temp dirs, and a test that tried to
+# contend the lock silently locked a different file.
+XDGSTATE=$(mkd)
+export XDG_STATE_HOME="$XDGSTATE"
+trap 'rm -rf "$STUBS" "$XDGSTATE" "${ROOTTMP:-}"' EXIT
 
 # --- herdr stub -------------------------------------------------------------
 # Returns JSON from MOCK_* variables so tests control what the server "contains".
@@ -2082,7 +2088,10 @@ built. Each was found by running the code, not by reading it.
 | 15 | `hl_id` requires a non-empty JSON **string**, and the trap argument is `${(q)}`-quoted | `jq -er` only rejects null/false: `7` and `{}` pass with exit 0, so an API reshape could hand nonsense to herdr, and that value is interpolated into a trap command (G7c) |
 | 16 | `[ui.toast] delivery = "herdr"` pinned alongside `onboarding = false` | The shipped default is `delivery = "off"`, and onboarding is what would otherwise prompt for a choice. Pinning onboarding off — correct, to stop it rewriting a chezmoi-managed file — left `herdr notification show` returning `{"reason":"disabled","shown":false}`, silently removing the only feedback channel a detached `[[keys.command]]` or plugin action has |
 | 17 | Verified live: all four `HERDR_ACTIVE_*` variables **are** injected into `[[keys.command]]` | Documented but absent from `--default-config`; `tab-goto.sh` depended on it. Confirmed by dumping the environment from a bound key: `HERDR_ACTIVE_WORKSPACE_ID/TAB_ID/PANE_ID/PANE_CWD`, plus `HERDR_BIN_PATH` and `HERDR_SOCKET_PATH` |
-| 18 | Stub gained `MOCK_SERVER_NEVER_READY` and a marker file | Lets the bootstrap be tested as a down → start → ready transition rather than two frozen states |
+| 18 | `--current` resolves the pane cwd to the git root and **fails closed** | `.git` is a file only at the root, so a pane in a worktree *subdirectory* walked past the guard; and keeping the raw cwd when `rev-parse` failed meant a non-repo workspace — the plain `~` one — was classified provisional and "repaired" into four tabs with two agents launched in `$HOME` (K7, K9) |
+| 19 | `hl_lock` returns non-zero instead of calling `die` | `die` exits the process, so a caller's `\|\| hl_die_notify` could never run and lock contention stayed stderr-only — invisible under detached execution (K10) |
+| 20 | The suite isolates `XDG_STATE_HOME` | `zshenv` exports it to the real `~/.local/state`, so every run wrote lock files there — 176 stale files had accumulated from long-gone fixture temp dirs, and a contention test silently locked a different file than the code under test |
+| 21 | Stub gained `MOCK_SERVER_NEVER_READY` and a marker file | Lets the bootstrap be tested as a down → start → ready transition rather than two frozen states |
 
 Assertions about **absence** (`unlogged`, `count_logged … 0`) always pass when nothing
 ran at all. Every one is paired with a presence assertion, and each gate was confirmed

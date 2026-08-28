@@ -44,7 +44,13 @@ count_logged() { grep -Fxc -- "$1" "$HLOG" 2>/dev/null | head -1 }
 TMPROOT="${TMPDIR:-/tmp}"
 mkd() { mktemp -d "${TMPROOT%/}/hdev-test.XXXXXX" }
 STUBS=$(mkd)
-trap 'rm -rf "$STUBS" "${ROOTTMP:-}"' EXIT
+# layout.sh derives its lock path from XDG_STATE_HOME, which zshenv exports to the
+# REAL ~/.local/state — so without this every run littered the user's state directory
+# with lock files named after long-gone fixture temp dirs, and a test that tried to
+# contend the lock silently locked a different file.
+XDGSTATE=$(mkd)
+export XDG_STATE_HOME="$XDGSTATE"
+trap 'rm -rf "$STUBS" "$XDGSTATE" "${ROOTTMP:-}"' EXIT
 
 # --- herdr stub -------------------------------------------------------------
 # Returns JSON from MOCK_* variables so tests control what the server "contains".
@@ -692,12 +698,43 @@ rc_is 1 "K7 a worktree SUBDIRECTORY is refused too"
 has "linked worktree" "K7 says why"
 unlogged "tab create" "K7 nothing is created"
 
-# K8: failures that are not verdicts must be visible as well. A lock timeout or a
-# classification error is exactly as invisible as a wrong verdict when the action runs
-# detached.
+# K8: failures that are not verdicts must be visible as well. A classification error
+# is exactly as invisible as a wrong verdict when the action runs detached.
 cur "export HERDR_WORKSPACE_ID=w7; mock_topology '$R1' 'Netronix/curato' \$FULL
   export MOCK_EMPTY_FOR='tab list'"
 rc_is 1 "K8 a classification failure fails the action"
 logged "notification show" "K8 a non-verdict failure is still announced"
+
+# K9: a workspace whose panes are NOT in a git repo. Failing open here meant the plain
+# ~ workspace got classified provisional and "repaired" into four tabs, launching two
+# agents in $HOME.
+cur "export HERDR_WORKSPACE_ID=w7; mock_topology '$ROOTTMP/notrepo' 'notrepo' agents:2 editor:1"
+rc_is 1 "K9 a non-repo workspace is refused"
+has "not inside a git repository" "K9 says why"
+logged "notification show" "K9 the refusal is announced"
+unlogged "tab create" "K9 nothing is created"
+unlogged "workspace rename" "K9 nothing is renamed"
+
+# K10: real lock contention, with the lock genuinely held by another process. hl_lock
+# used to call die, which exits before any caller's `|| hl_die_notify` can run, so
+# contention was stderr-only — invisible under detached execution.
+LOCKDIR="$XDG_STATE_HOME/herdr-layout"
+mkdir -p "$LOCKDIR"
+LKEY="${R1//\//-}"; LKEY="${LKEY#-}"
+LOCKFILE="$LOCKDIR/$LKEY.lock"
+: >> "$LOCKFILE"
+zsh -c "zmodload -F zsh/system b:zsystem; zsystem flock '$LOCKFILE'; sleep 8" &
+HOLDER=$!
+sleep 0.7
+mock_reset
+export HERDR_WORKSPACE_ID=w7 HL_LOCK_TIMEOUT=1
+mock_topology "$R1" "Netronix/curato" agents:2 editor:1
+OUT="$(HOME="$ROOTTMP" HERDR_ENV=1 zsh "$LAYOUT" --current 2>&1)"; RC=$?
+kill $HOLDER 2>/dev/null; wait $HOLDER 2>/dev/null
+unset HL_LOCK_TIMEOUT HERDR_WORKSPACE_ID
+rc_is 1 "K10 a held lock fails the action"
+has "held the lock" "K10 says why"
+logged "notification show" "K10 lock contention is announced"
+unlogged "tab create" "K10 nothing is created"
 
 finish

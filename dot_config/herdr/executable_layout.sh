@@ -152,8 +152,13 @@ hl_lock() {
 
   [[ -n "${HL_LOCK_DELAY:-}" ]] && sleep "$HL_LOCK_DELAY"
 
-  if ! zsystem flock -t 10 "$HL_LOCKFILE" 2>/dev/null; then
-    die "another layout.sh has held the lock for $1 for over 10s"
+  # Returns non-zero rather than calling die: `die` exits the process, so a caller's
+  # `|| hl_die_notify` could never run and lock contention stayed stderr-only —
+  # invisible under detached execution.
+  local t="${HL_LOCK_TIMEOUT:-10}"
+  if ! zsystem flock -t "$t" "$HL_LOCKFILE" 2>/dev/null; then
+    print -ru2 -- "layout.sh: another layout.sh has held the lock for $1 for over ${t}s"
+    return 1
   fi
   [[ -n "${HL_TRACE_LOCK:-}" ]] && print -ru2 -- "LOCK-ACQUIRED"
   return 0
@@ -395,9 +400,15 @@ main() {
     # the user last cd'd, and `.git` is a file only at the root — so checking the raw
     # cwd lets any subdirectory of a linked worktree walk straight past the guard.
     # hdev never had this problem: it resolves with rev-parse before guarding.
-    if root="$(hl_git -C "$wrepo" rev-parse --show-toplevel 2>/dev/null)" && [[ -n "$root" ]]; then
-      wrepo="${root:A}"
-    fi
+    #
+    # Fail CLOSED. Keeping the raw cwd when rev-parse fails meant a workspace sitting
+    # in a non-repo directory — the plain ~ workspace being the obvious one — was
+    # classified provisional and "repaired" into four tabs with two agents launched in
+    # $HOME. Refusing costs nothing; the action is only meaningful in a repo.
+    root="$(hl_git -C "$wrepo" rev-parse --show-toplevel 2>/dev/null)" \
+      || hl_die_notify "$wrepo is not inside a git repository — refusing"
+    [[ -n "$root" ]] || hl_die_notify "$wrepo is not inside a git repository — refusing"
+    wrepo="${root:A}"
 
     # The worktree guard belongs to the design, not to one entry point. A workspace
     # created by hand in a wt worktree could otherwise be grown through the plugin,
@@ -423,7 +434,7 @@ main() {
   fi
 
   if [[ "$mode" == path ]]; then
-    hl_lock "$repo"
+    hl_lock "$repo" || exit 1
     local ws; ws="$(hl_find_workspace "$repo")" || exit 1
     # Explicit propagation, not `setopt err_return`: err_return does not fire for a
     # command whose status is already being tested, so it gives false confidence in
