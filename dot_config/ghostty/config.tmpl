@@ -9,6 +9,11 @@ font-style-bold = bold
 font-style-italic = italic
 font-style-bold-italic = bold-italic
 
+# Light-on-dark text rasterizes thinner than dark-on-light, and Tokyo Night is always
+# light-on-dark. This is a gamma correction, not DPI compensation, so unlike
+# font-thicken below it applies to every machine regardless of pixel density.
+alpha-blending = linear-corrected
+
 {{ if eq $live "fenrir" -}}
 # Low-DPI compensation, fenrir only. Its LG 38GN950 is 3840x1600 at 1x — roughly
 # 111 PPI, and macOS offers no HiDPI mode for it — so glyph stems rasterize thinner
