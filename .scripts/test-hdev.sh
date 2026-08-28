@@ -195,9 +195,13 @@ S
 chmod +x "$LSTUB"
 
 # fzf declines (exit 1), so an ambiguous name must resolve to nothing.
+# Declines by default; MOCK_FZF_SELECT makes it choose, so both the cancel and the
+# select path are covered. Cancellation alone would let an implementation that always
+# bails after fzf pass every assertion.
 cat > "$STUBS/fzf" <<'S'
 #!/usr/bin/env bash
 printf '%s\n' "fzf-invoked" >> "$FZFLOG"
+[ -n "${MOCK_FZF_SELECT:-}" ] && { printf '%s\n' "$MOCK_FZF_SELECT"; exit 0; }
 exit 1
 S
 chmod +x "$STUBS/fzf"
@@ -225,6 +229,10 @@ eq "$(<$LAYOUT_ARG)" "" "A3 layout.sh is never invoked"
 run_hdev "curato"
 eq "$(<$LAYOUT_ARG)" "" "A4 an ambiguous basename resolves to nothing"
 [[ -s "$FZFLOG" ]] && _pass "A4 the picker is consulted" || _fail "A4 the picker was never invoked"
+
+# The other half: when the picker DOES choose, that choice must be honoured.
+MOCK_FZF_SELECT="ViuMore/curato" run_hdev "curato"
+eq "$(<$LAYOUT_ARG)" "$R2" "A5 a picker selection resolves to the chosen repo"
 
 # --- B: the linked-worktree guard -------------------------------------------
 print -r -- "-- B: linked-worktree guard"
