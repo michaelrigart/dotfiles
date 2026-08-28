@@ -4,4 +4,4 @@
 # .scripts/provision.sh refuses an unlisted name at preflight, and Brewfile.tmpl fails
 # the render for an unlisted machine — without that second check an unknown machine
 # would silently take the else branch and quietly install the wrong package set.
-known_hostnames = ["fenrir", "studio"]
+known_hostnames = ["fenrir", "hercules", "studio"]
