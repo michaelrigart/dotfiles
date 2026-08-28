@@ -1819,8 +1819,12 @@ env HOME="$FIX/home" XDG_CONFIG_HOME="$FIX/xdg" \
 
 find "$FIX" -type f | sort
 real_fp > "$FIX/after.fp"
-diff "$FIX/before.fp" "$FIX/after.fp" && echo "REAL CONFIG UNTOUCHED" \
-  || echo "STOP: the installer modified real config despite the redirects"
+if diff "$FIX/before.fp" "$FIX/after.fp"; then
+  echo "REAL CONFIG UNTOUCHED"
+else
+  echo "STOP: the installer modified real config despite the redirects"
+  exit 1     # must ABORT, not merely print: `|| echo ...` exits 0 and the run
+fi           # would continue straight past the one check that matters
 ```
 
 **If that diff is non-empty, stop entirely** — the overrides are not honoured, and the
@@ -1844,13 +1848,30 @@ jq '.hooks += {mine: {command: "/bin/true"}}' "$FIX/codex/hooks.json" > "$FIX/co
   && mv "$FIX/codex/hooks.json.new" "$FIX/codex/hooks.json"
 cp -R "$FIX" "$FIX.before"
 
-CLAUDE_CONFIG_DIR="$FIX/claude" herdr integration uninstall claude
-CODEX_HOME="$FIX/codex" herdr integration uninstall codex
+# The SAME four redirects as the install. Uninstall resolves its own paths, and an
+# uninstall-specific resolution failure would modify real config just as silently.
+env HOME="$FIX/home" XDG_CONFIG_HOME="$FIX/xdg" \
+    CLAUDE_CONFIG_DIR="$FIX/claude" herdr integration uninstall claude
+env HOME="$FIX/home" XDG_CONFIG_HOME="$FIX/xdg" \
+    CODEX_HOME="$FIX/codex" herdr integration uninstall codex
+
+# Fingerprint again: the install being contained says nothing about the uninstall.
+real_fp > "$FIX/after-uninstall.fp"
+if ! diff "$FIX/before.fp" "$FIX/after-uninstall.fp"; then
+  echo "STOP: the uninstaller modified real config despite the redirects"; exit 1
+fi
 
 diff -r "$FIX.before" "$FIX" | sed 's/^/  /'
-jq -e '.hooks.mine' "$FIX/codex/hooks.json" >/dev/null && echo "unrelated hook preserved"
-jq -e '.hooks.herdr' "$FIX/codex/hooks.json" >/dev/null && echo "WARNING: herdr entry survived"
-grep -q 'hooks = true' "$FIX/codex/config.toml" && echo "features.hooks left set (expected)"
+
+# Every one of these aborts on failure. Printing a warning and exiting 0 is how a
+# destructive uninstall would sail past its own safety check.
+jq -e '.hooks.mine' "$FIX/codex/hooks.json" >/dev/null \
+  || { echo "STOP: the uninstall destroyed an unrelated hook"; exit 1; }
+jq -e '.hooks.herdr' "$FIX/codex/hooks.json" >/dev/null \
+  && { echo "STOP: herdr's own entry survived the uninstall"; exit 1; }
+grep -q 'hooks = true' "$FIX/codex/config.toml" \
+  || echo "note: features.hooks was NOT left set — rollback need not restore it"
+echo "uninstall is contained and non-destructive"
 ```
 
 Expected: the unrelated hook survives, Herdr's entry is gone, `features.hooks` remains
