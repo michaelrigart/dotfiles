@@ -48,7 +48,12 @@ case "$1" in -v|-n) exit 0 ;; esac
 case "$1" in
   /*) r=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1")
       case "$r" in "$SBX_ROOT"|"$SBX_ROOT"/*) ;;
-        *) echo "SUDO-REFUSED: $1" | tee -a "$MUTLOG" >&2; exit 99 ;; esac ;;
+        # Record and DO NOT execute, but exit 0. The scripts under test run with set -e,
+        # so failing here truncates them at the first system call -- configure.sh died at
+        # `sudo /usr/libexec/.../socketfilterfw` and never reached the later blocks, which
+        # silently made every assertion about them vacuous. Containment is unchanged: the
+        # command still never runs, and MUTLOG makes the refusal assertable.
+        *) echo "SUDO-REFUSED: $1" >> "$MUTLOG"; exit 0 ;; esac ;;
 esac
 exec "$@"
 SU
@@ -199,6 +204,19 @@ hasnt "identity verified" "LocalHostName mismatch stops before verification"
 has "LocalHostName is" "the LocalHostName error names the field"
 cfg fenrir fenrir fenrir-3 fenrir
 has "identity verified" "a Bonjour numeric suffix on LocalHostName is accepted"
+
+echo "H. containment during the real configure.sh run"
+: > "$MUTLOG"; cfg fenrir fenrir fenrir fenrir
+grep -q 'SUDO-REFUSED: /usr/libexec/ApplicationFirewall' "$MUTLOG" \
+  && _pass "the firewall call is refused, not executed on the host" \
+  || _fail "the firewall call is refused, not executed on the host"
+
+echo "I. Universal Control is per-machine"
+cfg fenrir fenrir fenrir fenrir
+hasnt "Disabling Universal Control" "fenrir keeps Universal Control (pairs with the iPad)"
+has   "Leaving Universal Control enabled" "and says so"
+cfg hercules hercules hercules hercules
+has   "Disabling Universal Control" "hercules disables it (conflicts with Screen Sharing)"
 
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

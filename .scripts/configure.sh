@@ -182,6 +182,28 @@ fi
 log_info "✓ Trackpad configured"
 
 # ============================================================================
+# Universal Control
+# ============================================================================
+# Keyboard/pointer shared with a nearby Mac or iPad. Wanted on the laptop, which
+# pairs with the iPad; unwanted on a desktop, where it competes with Screen Sharing
+# for pointer control and causes the two to fight.
+#
+# Keys verified against /System/Library/CoreServices/UniversalControl.app (2026-08-28):
+# Disable, DisableMagicEdges and AutomaticallyReconnect all appear in the binary.
+# There is no DisableAutoConnect, despite it being widely repeated online.
+# Per-host domain, hence -currentHost.
+if [ "$HOSTNAME" = "fenrir" ]; then
+  log_info "Leaving Universal Control enabled (pairs with the iPad)"
+else
+  log_info "Disabling Universal Control (conflicts with Screen Sharing)..."
+  defaults -currentHost write com.apple.universalcontrol Disable -bool true
+  defaults -currentHost write com.apple.universalcontrol DisableMagicEdges -bool true
+  defaults -currentHost write com.apple.universalcontrol AutomaticallyReconnect -bool false
+  killall UniversalControl 2>/dev/null || true
+  log_info "✓ Universal Control disabled"
+fi
+
+# ============================================================================
 # Safari & Privacy Settings
 # ============================================================================
 log_info "Configuring Safari privacy settings..."
