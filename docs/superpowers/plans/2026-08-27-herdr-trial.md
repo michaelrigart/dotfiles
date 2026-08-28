@@ -2033,7 +2033,7 @@ chezmoi apply --parent-dirs \
 herdr integration status | grep -E 'claude|codex'
 ```
 
-Run **unsandboxed** — `~/.claude/hooks` and `~/.claude/settings.json` are write-denied under the sandbox. Expected: both report **installed**.
+Run **unsandboxed** — `~/.claude/hooks` and `~/.claude/settings.json` are write-denied under the sandbox. Expected: both report **current**.
 
 - [ ] **Step 9: Confirm chezmoi is settled**
 
@@ -2076,8 +2076,12 @@ git commit -m "Bring the herdr agent integrations under chezmoi"
 # themselves are global; this reads real ~/.claude and ~/.codex state.
 #
 # Run manually, unsandboxed: zsh .scripts/test-hdev-integrations.sh
+emulate -L zsh
 set -u
+setopt no_bg_nice
 SESSION=hdev-restore
+TMP_BASE=${TMPDIR:-/tmp}
+TMP_BASE=${TMP_BASE%/}
 h() { command herdr --session "$SESSION" "$@" }
 pass=0 fail=0
 ok()  { print -r -- "  PASS: $1"; pass=$((pass+1)) }
@@ -2088,29 +2092,56 @@ bad() { print -r -- "  FAIL: $1"; fail=$((fail+1)) }
 cleanup() {
   h server stop >/dev/null 2>&1 || true
   command herdr session delete "$SESSION" >/dev/null 2>&1 || true
-  [[ -n "${SCRATCH:-}" ]] && rm -rf "$SCRATCH"
+  if [[ -n "${SCRATCH:-}" && "$SCRATCH" == $TMP_BASE/hdev-restore.* ]]; then
+    rm -rf -- "$SCRATCH"
+  fi
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT HUP INT TERM
+
+agent_json() {
+  local out
+  out=$(h agent list 2>/dev/null) || return 1
+  print -r -- "$out" | jq -e '.result.agents | type == "array"' >/dev/null 2>&1 || return 1
+  print -r -- "$out"
+}
+
+agent_refs() {
+  jq -cS '[.result.agents[] | {agent, session: .agent_session}] | sort_by(.agent)'
+}
 
 # Start clean as well: a previous run killed mid-way leaves state behind.
 h server stop >/dev/null 2>&1 || true
 command herdr session delete "$SESSION" >/dev/null 2>&1 || true
 
-command herdr integration status | grep -q '^claude: installed' \
-  && ok "the claude integration is installed" || bad "claude integration missing"
-command herdr integration status | grep -q '^codex: installed' \
-  && ok "the codex integration is installed" || bad "codex integration missing"
+integration_status=$(command herdr integration status) || {
+  bad "integration status failed"
+  print -r -- "=== $pass passed, $fail failed ==="
+  exit 1
+}
+print -r -- "$integration_status" | grep -q '^claude: current ' \
+  && ok "the claude integration is current" || bad "claude integration is not current"
+print -r -- "$integration_status" | grep -q '^codex: current ' \
+  && ok "the codex integration is current" || bad "codex integration is not current"
+(( fail == 0 )) || {
+  print -r -- "=== $pass passed, $fail failed ==="
+  exit 1
+}
 
-SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/hdev-restore.XXXXXX")"
+SCRATCH="$(mktemp -d "$TMP_BASE/hdev-restore.XXXXXX")" || exit 1
 REPO="$SCRATCH/proj"
-mkdir -p "$REPO" && git -C "$REPO" init -q && git -C "$REPO" commit -q --allow-empty -m init
+mkdir -p "$REPO" || exit 1
+git -C "$REPO" init -q || exit 1
 
-HERDR_SESSION="$SESSION" HDEV_NO_ATTACH=1 ~/.config/herdr/layout.sh "$REPO"
-print -r -- "  Attach with:  herdr --session $SESSION"
-print -r -- "  Wait until BOTH agents in the 'agents' tab have started and are at an idle"
-print -r -- "  prompt — layout.sh launches them, so do not start them by hand. They must"
-print -r -- "  each report a session ref before the restart, which the next check enforces."
-print -r -- "  Then detach (alt+w) and press Enter here."
+if ! HERDR_SESSION="$SESSION" HDEV_NO_ATTACH=1 ~/.config/herdr/layout.sh "$REPO"; then
+  bad "layout creation failed"
+  print -r -- "=== $pass passed, $fail failed ==="
+  exit 1
+fi
+
+print -r -- "  Attach with: herdr --session $SESSION"
+print -r -- "  Resolve any first-run trust prompt. In Codex, submit one short prompt so"
+print -r -- "  its SessionStart hook runs. Wait until both agents are idle, detach with"
+print -r -- "  alt+w, then press Enter here."
 read -r
 
 # Identity, not just a count: two agents before and two after proves nothing if they
@@ -2118,32 +2149,63 @@ read -r
 # AgentInfo's field is `agent`, not `kind`, and `agent_session` is NULLABLE. Comparing
 # {kind, agent_session} would have compared {null, null} against {null, null} and
 # passed no matter what happened — so require a non-null ref first.
-BEFORE=$(h agent list | jq -rS '[.result.agents[] | {agent, session: .agent_session}] | sort')
-BEFORE_N=$(h agent list | jq -r '[.result.agents[]] | length')
-NOREF=$(h agent list | jq -r '[.result.agents[] | select(.agent_session == null)] | length')
+before_json=$(agent_json) || {
+  bad "agent list failed before restart"
+  print -r -- "=== $pass passed, $fail failed ==="
+  exit 1
+}
+before_names=$(print -r -- "$before_json" | jq -cS '[.result.agents[].agent] | sort')
+before_refs=$(print -r -- "$before_json" | agent_refs)
+before_n=$(print -r -- "$before_json" | jq -r '.result.agents | length')
+before_noref=$(print -r -- "$before_json" | jq -r '[.result.agents[] | select(.agent_session == null)] | length')
 
-[[ "$NOREF" == "0" && "$BEFORE_N" != "0" ]] \
-  && ok "every agent reports a native session ref ($BEFORE_N agents)" \
-  || { bad "$NOREF of $BEFORE_N agents have no session ref — restore cannot be tested"; \
-       print -r -- "=== $pass passed, $fail failed ==="; exit 1; }
+[[ "$before_names" == '["claude","codex"]' ]] \
+  && ok "exactly Claude and Codex are registered" \
+  || bad "unexpected agents before restart: $before_names"
+[[ "$before_noref" == 0 && "$before_n" == 2 ]] \
+  && ok "both agents report native session refs" \
+  || bad "$before_noref of $before_n agents have no session ref"
+(( fail == 0 )) || {
+  print -r -- "=== $pass passed, $fail failed ==="
+  exit 1
+}
 
-h server stop >/dev/null 2>&1
-sleep 2
+if h server stop >/dev/null 2>&1; then
+  ok "the named server stopped cleanly"
+else
+  bad "the named server did not stop cleanly"
+  print -r -- "=== $pass passed, $fail failed ==="
+  exit 1
+fi
 
 # `workspace list` does NOT start a server — it returns server_not_running. Start one
 # explicitly, the same way layout.sh does.
 (command herdr --session "$SESSION" server >/dev/null 2>&1 &)
-for i in {1..40}; do h workspace list >/dev/null 2>&1 && break; sleep 0.25; done
-sleep 3
+ready=0
+for i in {1..40}; do
+  if h workspace list >/dev/null 2>&1; then ready=1; break; fi
+  sleep 0.25
+done
+(( ready )) && ok "the named server restarted" || {
+  bad "the named server did not become ready"
+  print -r -- "=== $pass passed, $fail failed ==="
+  exit 1
+}
 
-AFTER=$(h agent list | jq -rS '[.result.agents[] | {agent, session: .agent_session}] | sort')
-AFTER_N=$(h agent list | jq -r '[.result.agents[]] | length')
+after_refs=''
+after_n=0
+for i in {1..120}; do
+  if after_json=$(agent_json); then
+    after_refs=$(print -r -- "$after_json" | agent_refs)
+    after_n=$(print -r -- "$after_json" | jq -r '.result.agents | length')
+    [[ "$after_refs" == "$before_refs" ]] && break
+  fi
+  sleep 0.5
+done
 
-[[ "$BEFORE_N" != "0" ]] && ok "agents were running before the restart ($BEFORE_N)" \
-  || bad "no agents were running — the test proves nothing"
-[[ "$AFTER" == "$BEFORE" && "$BEFORE_N" != "0" ]] \
+[[ "$after_refs" == "$before_refs" && "$before_n" == 2 ]] \
   && ok "the same native agent sessions resumed" \
-  || bad "sessions differ after restart (before=$BEFORE_N after=$AFTER_N)"
+  || bad "sessions differ after restart (before=$before_n after=$after_n)"
 
 print -r -- "=== $pass passed, $fail failed ==="
 (( fail == 0 ))
@@ -2271,6 +2333,8 @@ built. Each was found by running the code, not by reading it.
 | 24 | `busy` is treated as "delivery enabled", not transient | Observed live: a headless session returns `busy` persistently. Retrying it five times still ended in `busy`, failing a working setup. Only `disabled` means delivery is off |
 | 25 | Stub gained `MOCK_SERVER_NEVER_READY` and a marker file | Lets the bootstrap be tested as a down → start → ready transition rather than two frozen states |
 | 26 | The five-target activation uses `chezmoi apply --parent-dirs` | Exact-file targeting avoids unrelated 1Password templates, but the new `~/.claude/hooks/` directory did not exist. Without `--parent-dirs`, chezmoi failed before mutation instead of creating it |
+| 27 | The cold-restore gate stores integration output in `integration_status`, not `status` | `status` is a read-only special parameter in zsh; assigning to it aborted the gate before workspace creation |
+| 28 | The cold-restore gate explicitly asks for one Codex prompt before comparing refs | Codex did not report a native session merely by reaching its idle screen; its `SessionStart` hook ran only after the first prompt was submitted. The gate correctly refused to compare a null ref |
 
 Assertions about **absence** (`unlogged`, `count_logged … 0`) always pass when nothing
 ran at all. Every one is paired with a presence assertion, and each gate was confirmed
