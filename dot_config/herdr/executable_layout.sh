@@ -27,6 +27,23 @@ hl_notify() {
   command herdr notification show "$1" --body "$2" >/dev/null 2>&1 || true
 }
 
+# hl_die_notify — die, but visibly. Every failure inside --current must reach the UI:
+# a lock timeout or a classification error is exactly as invisible as a wrong verdict
+# when the action runs detached, and the user is left pressing a key that does nothing.
+hl_die_notify() {
+  hl_notify "Project layout" "$*"
+  die "$*"
+}
+
+# hl_git — git with its routing environment cleared, mirroring _wt_git in
+# zsh/functions. An exported GIT_DIR or GIT_WORK_TREE silently redirects git at
+# another checkout, which would make the worktree guard answer about the wrong repo.
+hl_git() {
+  command env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR \
+    -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_NAMESPACE \
+    git "$@"
+}
+
 # hl_api — run a herdr CLI call, return its JSON on stdout. Non-zero on failure, with
 # the server's message. Every call goes through here so failures are uniform: the old
 # Zellij shape returned 0 from every step while the layout silently failed, and exit
@@ -368,33 +385,39 @@ main() {
     # Target by context, never by a path lookup. A path lookup would find the very
     # workspace the action was invoked from, focus it, exit 0 and apply nothing — a
     # silent no-op, and the most confusing possible outcome.
-    local wrepo verdict
-    wrepo="$(hl_api_json pane list --workspace "$ws" | jq -r '.result.panes[0].cwd')" || exit 1
-    [[ -n "$wrepo" && "$wrepo" != null ]] || die "workspace $ws has no pane cwd to work from"
+    local wrepo root verdict
+    wrepo="$(hl_api_json pane list --workspace "$ws" | jq -r '.result.panes[0].cwd')" \
+      || hl_die_notify "could not read the workspace's panes"
+    [[ -n "$wrepo" && "$wrepo" != null ]] || hl_die_notify "workspace $ws has no pane cwd to work from"
     wrepo="${wrepo:A}"
+
+    # Resolve to the repository ROOT before anything else. A pane's cwd is wherever
+    # the user last cd'd, and `.git` is a file only at the root — so checking the raw
+    # cwd lets any subdirectory of a linked worktree walk straight past the guard.
+    # hdev never had this problem: it resolves with rev-parse before guarding.
+    if root="$(hl_git -C "$wrepo" rev-parse --show-toplevel 2>/dev/null)" && [[ -n "$root" ]]; then
+      wrepo="${root:A}"
+    fi
 
     # The worktree guard belongs to the design, not to one entry point. A workspace
     # created by hand in a wt worktree could otherwise be grown through the plugin,
     # reopening the husk hazard hdev refuses.
-    if [[ -f "$wrepo/.git" ]]; then
-      hl_notify "Project layout" "Refusing: $wrepo is a linked worktree."
-      die "$wrepo is a linked worktree — refusing (see the worktree guard)"
-    fi
+    [[ -f "$wrepo/.git" ]] && hl_die_notify "$wrepo is a linked worktree — refusing (see the worktree guard)"
 
     # Same lock as the path mode: two plugin invocations, or a plugin racing an hdev,
     # would otherwise both see a tab missing and both create it.
-    hl_lock "$wrepo"
+    hl_lock "$wrepo" || hl_die_notify "could not take the lock for $wrepo"
 
-    verdict="$(hl_classify "$ws" "$(hl_label "$wrepo")")" || exit 1
+    verdict="$(hl_classify "$ws" "$(hl_label "$wrepo")")" \
+      || hl_die_notify "could not classify workspace $ws"
     case "$verdict" in
       complete)
         hl_notify "Project layout" "Already complete — nothing to do." ;;
       provisional)
-        hl_repair "$ws" "$wrepo" || exit 1
+        hl_repair "$ws" "$wrepo" || hl_die_notify "repair of $(hl_label "$wrepo") failed"
         hl_notify "Project layout" "Repaired $(hl_label "$wrepo")." ;;
       malformed:*)
-        hl_notify "Project layout" "Refusing: ${verdict#malformed: }"
-        die "workspace $ws is ${verdict#malformed: }" ;;
+        hl_die_notify "workspace $ws is ${verdict#malformed: }" ;;
     esac
     exit 0
   fi

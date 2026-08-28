@@ -1633,7 +1633,13 @@ h pane layout --pane "$(h pane list --workspace "$WS" | jq -r --arg t "$RT" \
 # 7. The plugin: link under a DISTINCT id, invoke it, unlink. Registration is global,
 #    so reusing dev.layout would let this teardown unlink the real one.
 PDIR="$SCRATCH/plugin"; mkdir -p "$PDIR"
-sed "s/^id = .*/id = \"$PLUGIN_ID\"/" ~/.config/herdr/plugin/herdr-plugin.toml > "$PDIR/herdr-plugin.toml"
+# Match the plugin id EXACTLY. `s/^id = .*/` also rewrites the [[actions]] entry's
+# `id = "apply"` — TOML nested tables are not indented — which renames the action
+# too, leaving "$PLUGIN_ID.apply" pointing at nothing.
+sed 's|^id = "dev.layout"$|id = "'"$PLUGIN_ID"'"|' \
+  ~/.config/herdr/plugin/herdr-plugin.toml > "$PDIR/herdr-plugin.toml"
+grep -q '^id = "apply"' "$PDIR/herdr-plugin.toml" \
+  && ok "the action id survived the id rewrite" || bad "the action id was rewritten too"
 command herdr plugin link "$PDIR" >/dev/null \
   && ok "the plugin links" || bad "plugin link failed"
 h tab close "$(h tab list --workspace "$WS" | jq -r '.result.tabs[] | select(.label=="git") | .tab_id')" >/dev/null

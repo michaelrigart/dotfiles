@@ -683,4 +683,21 @@ cur "export HERDR_WORKSPACE_ID=w7; export HL_TRACE_LOCK=1
   mock_topology '$R1' 'Netronix/curato' agents:2 editor:1"
 has "LOCK-ACQUIRED" "K6 --current takes the per-repo lock"
 
+# K7: the guard must hold from a SUBDIRECTORY of a worktree too. A pane's cwd is
+# wherever the user last cd'd, and `.git` is a file only at the repository root — so
+# checking the raw cwd let any subdirectory walk straight past the guard.
+mkdir -p "$WT/src/deep"
+cur "export HERDR_WORKSPACE_ID=w7; mock_topology '$WT/src/deep' 'curato-feature' agents:2 editor:1"
+rc_is 1 "K7 a worktree SUBDIRECTORY is refused too"
+has "linked worktree" "K7 says why"
+unlogged "tab create" "K7 nothing is created"
+
+# K8: failures that are not verdicts must be visible as well. A lock timeout or a
+# classification error is exactly as invisible as a wrong verdict when the action runs
+# detached.
+cur "export HERDR_WORKSPACE_ID=w7; mock_topology '$R1' 'Netronix/curato' \$FULL
+  export MOCK_EMPTY_FOR='tab list'"
+rc_is 1 "K8 a classification failure fails the action"
+logged "notification show" "K8 a non-verdict failure is still announced"
+
 finish
