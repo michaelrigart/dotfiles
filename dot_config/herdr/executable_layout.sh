@@ -54,6 +54,69 @@ hl_ensure_server() {
   die "the herdr server did not become ready after $(( tries / 4 ))s"
 }
 
+# hl_label — the display label. Deterministic from the path so it is stable, but
+# purely cosmetic: identity is the canonical path, checked via pane cwd.
+hl_label() {
+  local repo="$1"
+  case "$repo" in
+    "$HOME/Code/"*) print -r -- "${repo#$HOME/Code/}" ;;
+    "$HOME/"*)      print -r -- "${repo#$HOME/}" ;;
+    *)              print -r -- "$repo" ;;
+  esac
+}
+
+# hl_lock — serialise per canonical repo path. Acquired BEFORE any scan, and the scan
+# repeated underneath it: classifying first and locking second permits a delayed
+# duplicate, where B scans empty, waits while A builds and releases, then acts on its
+# stale observation and creates a second workspace for the same repo.
+#
+# `zsystem flock`, matching _wt_lock in zsh/functions — NOT a mkdir sentinel. The
+# reason is stated there: an fcntl record lock is released by the kernel when the
+# process dies, "the backstop for every path an explicit unlock cannot reach." A mkdir
+# lock has no such backstop, so one SIGKILL would wedge that repository until someone
+# removed the directory by hand.
+#
+# zsystem opens but does not create the lock file, so it must exist first.
+hl_lock() {
+  local key="${1//\//-}" dir="${XDG_STATE_HOME:-$HOME/.local/state}/herdr-layout"
+  mkdir -p "$dir"
+  HL_LOCKFILE="$dir/${key#-}.lock"
+  : >>"$HL_LOCKFILE"
+  zmodload -F zsh/system b:zsystem 2>/dev/null
+
+  [[ -n "${HL_LOCK_DELAY:-}" ]] && sleep "$HL_LOCK_DELAY"
+
+  if ! zsystem flock -t 10 "$HL_LOCKFILE" 2>/dev/null; then
+    die "another layout.sh has held the lock for $1 for over 10s"
+  fi
+  [[ -n "${HL_TRACE_LOCK:-}" ]] && print -ru2 -- "LOCK-ACQUIRED"
+  return 0
+}
+
+# hl_find_workspace — the workspace whose panes live at this path, if any.
+# Identity is the canonical path, not the label: WorkspaceInfo carries no cwd, but
+# PaneInfo carries `cwd`, and labels are mutable and non-unique. A workspace whose
+# label happens to match but whose panes are elsewhere is simply not a match.
+hl_find_workspace() {
+  local repo="$1" panes
+  local -a ids
+  # stderr, not stdout: this function's stdout IS its return value (ws="$(...)"), so a
+  # trace line printed there would be captured into the workspace id and corrupt it.
+  [[ -n "${HL_TRACE_LOCK:-}" ]] && print -ru2 -- "SCAN"
+  [[ -n "${HL_SCAN_DELAY:-}" ]] && sleep "$HL_SCAN_DELAY"
+  panes="$(hl_api pane list)" || return 1
+  ids=( ${(f)"$(print -r -- "$panes" | jq -r --arg d "$repo" \
+        '.result.panes[] | select(.cwd == $d) | .workspace_id' | sort -u)"} )
+  ids=( ${ids:#} )
+  (( ${#ids} == 0 )) && return 0
+  (( ${#ids} > 1 )) && die "panes for $repo span workspaces: ${ids[*]} — refusing to guess"
+  print -r -- "${ids[1]}"
+}
+
+# Replaced in Tasks 6-7 by real classification, build and repair.
+hl_reconcile() { hl_api workspace focus "$1" >/dev/null }
+hl_build()     { hl_api workspace create --cwd "$1" --label "$(hl_label "$1")" --no-focus >/dev/null }
+
 # hl_attach — from a shell, the point of hdev is to end up *inside* Herdr. Build or
 # focus first, then hand the terminal over. Inside Herdr there is nothing to attach to,
 # and HDEV_NO_ATTACH lets tests and scripted runs stop short of a blocking TUI.
@@ -78,7 +141,15 @@ main() {
     hl_ensure_server
   fi
 
-  # Workspace handling arrives in Tasks 5-8.
+  if [[ "$mode" == path ]]; then
+    hl_lock "$repo"
+    local ws; ws="$(hl_find_workspace "$repo")" || exit 1
+    if [[ -n "$ws" ]]; then
+      hl_reconcile "$ws" "$repo"
+    else
+      hl_build "$repo"
+    fi
+  fi
 
   hl_attach
 }

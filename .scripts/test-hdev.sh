@@ -278,4 +278,38 @@ logged "workspace list" "C3 readiness is probed with a real failing call"
 rc_is 1 "C3 an unreachable server fails rather than hanging"
 has "did not become ready" "C3 reports the timeout"
 
+# --- D: identity ------------------------------------------------------------
+print -r -- "-- D: identity"
+
+# A workspace whose panes sit at this repo → found.
+run_layout "export HERDR_ENV=1; mock_topology '$R1' 'Netronix/curato' $FULL" "$R1"
+logged "workspace focus w7" "D1 a path match is focused"
+unlogged "workspace create" "D1 nothing is created"
+
+# Same basename, different org: must NOT match.
+run_layout "export HERDR_ENV=1; mock_topology '$R1' 'Netronix/curato' $FULL" "$R2"
+logged "workspace create" "D2 a different repo with the same basename builds its own"
+unlogged "workspace focus w7" "D2 the other workspace is not focused"
+
+# Label says curato, panes say elsewhere → not a match; build our own.
+run_layout "export HERDR_ENV=1; mock_topology '/somewhere/else' 'Netronix/curato' $FULL" "$R1"
+logged "workspace create" "D3 a label match with a mismatched path is not focused"
+
+# The lock is taken before any scan.
+run_layout "export HERDR_ENV=1; export HL_TRACE_LOCK=1; mock_topology '$R1' 'Netronix/curato' $FULL" "$R1"
+has "LOCK-ACQUIRED" "D4 the lock is acquired"
+has "SCAN" "D4 the scan happens"
+[[ "$OUT" == *"LOCK-ACQUIRED"*"SCAN"* ]] \
+  && _pass "D4 lock precedes scan" || _fail "D4 scan happened before the lock"
+
+# Panes for one repo spanning two workspaces is ambiguous — refuse, never guess.
+run_layout "export HERDR_ENV=1
+  export MOCK_PANE_LIST='{\"result\":{\"panes\":[
+    {\"pane_id\":\"w7:p1\",\"tab_id\":\"w7:t1\",\"workspace_id\":\"w7\",\"cwd\":\"$R1\"},
+    {\"pane_id\":\"w8:p1\",\"tab_id\":\"w8:t1\",\"workspace_id\":\"w8\",\"cwd\":\"$R1\"}]}}'" "$R1"
+rc_is 1 "D5 panes spanning two workspaces fails"
+has "refusing to guess" "D5 says why"
+unlogged "workspace create" "D5 nothing is created"
+unlogged "workspace focus" "D5 nothing is focused"
+
 finish
