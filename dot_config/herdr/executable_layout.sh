@@ -26,18 +26,40 @@ die() { print -ru2 -- "layout.sh: $*"; exit 1 }
 hl_api() {
   local out rc
   out="$(command herdr "$@" 2>&1)"; rc=$?
-  if (( rc != 0 )) || [[ "$out" == *'"error"'* ]]; then
+  if (( rc != 0 )); then
     print -ru2 -- "layout.sh: herdr $* failed: $out"
     return 1
   fi
-  # Validate at the boundary, once. Without this, malformed JSON reaches every jq
-  # consumer downstream, each of which discards its status inside a command
-  # substitution or array assignment — so a corrupt response became an empty result,
-  # which reads as "no workspace found" and would go on to build a duplicate. One
-  # controlled diagnostic here beats a screen of raw jq parse errors and a wrong
-  # decision. Empty output is legitimate (focus, run and rename return nothing).
-  if [[ -n "$out" ]] && ! print -r -- "$out" | jq -e . >/dev/null 2>&1; then
-    print -ru2 -- "layout.sh: herdr $* returned invalid JSON"
+  if [[ -n "$out" ]]; then
+    # Validate at the boundary, once. Without this, malformed JSON reaches every jq
+    # consumer downstream, each of which discards its status inside a command
+    # substitution or array assignment, so a corrupt response became plausible state.
+    if ! print -r -- "$out" | jq -e . >/dev/null 2>&1; then
+      print -ru2 -- "layout.sh: herdr $* returned invalid JSON"
+      return 1
+    fi
+    # Envelope check on the PARSED top level, not a substring match on '"error"'.
+    # A substring test rejects valid data that merely contains the word — a tab the
+    # user labelled "error", an agent status, a repo path — and it misses a genuine
+    # error envelope returned with exit status 0.
+    if print -r -- "$out" | jq -e 'type == "object" and has("error")' >/dev/null 2>&1; then
+      print -ru2 -- "layout.sh: herdr $* failed: $out"
+      return 1
+    fi
+  fi
+  print -r -- "$out"
+}
+
+# hl_api_json — for calls that MUST return a payload: list, layout, create, split.
+# Empty output is legitimate for focus/run/rename/close, but for these it is a failure
+# wearing a success's clothes: `jq` exits 0 on empty input, so an empty response
+# degraded into "no workspace found" (→ build a duplicate) or "provisional" (→ let
+# repair mutate), both with rc=0.
+hl_api_json() {
+  local out
+  out="$(hl_api "$@")" || return 1
+  if [[ -z "$out" ]]; then
+    print -ru2 -- "layout.sh: herdr $* returned an empty response"
     return 1
   fi
   print -r -- "$out"
@@ -118,7 +140,7 @@ hl_find_workspace() {
   # trace line printed there would be captured into the workspace id and corrupt it.
   [[ -n "${HL_TRACE_LOCK:-}" ]] && print -ru2 -- "SCAN"
   [[ -n "${HL_SCAN_DELAY:-}" ]] && sleep "$HL_SCAN_DELAY"
-  panes="$(hl_api pane list)" || return 1
+  panes="$(hl_api_json pane list)" || return 1
   # Captured first: inside `ids=( $(...) )` the pipeline's status is discarded, so a
   # jq failure silently became "no matches" — indistinguishable from a repo that
   # genuinely has no workspace, and the caller would build a duplicate.
@@ -144,8 +166,8 @@ hl_find_workspace() {
 # to destroy, and nothing here knows enough to choose safely.
 hl_classify() {
   local ws="$1" final="$2" tabs panes label count tab_id n want want_dir first_pane dir
-  tabs="$(hl_api tab list --workspace "$ws")" || return 1
-  panes="$(hl_api pane list --workspace "$ws")" || return 1
+  tabs="$(hl_api_json tab list --workspace "$ws")" || return 1
+  panes="$(hl_api_json pane list --workspace "$ws")" || return 1
 
   for label in $MANAGED_TABS; do
     count=$(print -r -- "$tabs" | jq -r --arg l "$label" \
@@ -180,7 +202,7 @@ hl_classify() {
     if [[ -n "$want_dir" ]]; then
       first_pane=$(print -r -- "$panes" | jq -r --arg t "$tab_id" \
                     '[.result.panes[] | select(.tab_id == $t)][0].pane_id') || return 1
-      dir=$(hl_api pane layout --pane "$first_pane" \
+      dir=$(hl_api_json pane layout --pane "$first_pane" \
             | jq -r '[.result.splits[].direction] | unique | join(",")') || return 1
       if [[ "$dir" != "$want_dir" ]]; then
         print -r -- "malformed: tab '$label' is split '$dir', expected '$want_dir'"; return 0
@@ -189,7 +211,7 @@ hl_classify() {
   done
 
   local current
-  current=$(hl_api workspace list | jq -r --arg w "$ws" \
+  current=$(hl_api_json workspace list | jq -r --arg w "$ws" \
               '.result.workspaces[] | select(.workspace_id == $w) | .label') || return 1
 
   # The label matters independently of the tabs. A build killed after the last
@@ -213,7 +235,7 @@ hl_reconcile() {
 }
 
 # Replaced in Task 7 by the real build and repair.
-hl_build()  { hl_api workspace create --cwd "$1" --label "$(hl_label "$1")" --no-focus >/dev/null }
+hl_build()  { hl_api_json workspace create --cwd "$1" --label "$(hl_label "$1")" --no-focus >/dev/null }
 hl_repair() { hl_api workspace focus "$1" >/dev/null }
 
 # hl_attach — from a shell, the point of hdev is to end up *inside* Herdr. Build or

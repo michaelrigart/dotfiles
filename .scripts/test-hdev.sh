@@ -61,6 +61,12 @@ printf '%s\n' "$*" >> "$HLOG"
 [ -z "$MOCK_WS_LIST" ]   && MOCK_WS_LIST='{"result":{"workspaces":[]}}'
 [ -z "$MOCK_PANE_LIST" ] && MOCK_PANE_LIST='{"result":{"panes":[]}}'
 [ -z "$MOCK_TAB_LIST" ]  && MOCK_TAB_LIST='{"result":{"tabs":[]}}'
+# Forcing a genuinely empty response needs its own knob: setting MOCK_*_LIST=""
+# hits the defaults above and yields valid JSON instead, so the empty-response path
+# could not be reached from a fixture at all.
+if [ -n "${MOCK_EMPTY_FOR:-}" ]; then
+  case "$*" in "$MOCK_EMPTY_FOR"*) exit 0 ;; esac
+fi
 case "$*" in
   "status server"|"status")
     printf '%s\n' "${MOCK_STATUS:-server:
@@ -128,7 +134,7 @@ mock_reset() {
   # empty, the marker unwritten, and the failure looking like a broken timeout.
   export MOCK_SERVER_STARTED_FILE="$(mktemp "${TMPROOT%/}/started.XXXXXX")"
   rm -f "$MOCK_SERVER_STARTED_FILE"
-  unset MOCK_SERVER_NEVER_READY
+  unset MOCK_SERVER_NEVER_READY MOCK_EMPTY_FOR
   export MOCK_TAB_SEQ_FILE="$(mktemp "${TMPROOT%/}/tabseq.XXXXXX")"; print -n 0 > "$MOCK_TAB_SEQ_FILE"
   unset MOCK_TAB_CREATE_FAIL_AT MOCK_STATUS
   # The HL_* knobs are exported by individual tests and would otherwise leak into
@@ -421,5 +427,35 @@ unlogged "tab create"       "F0b nothing is created"
 unlogged "workspace rename" "F0b nothing is renamed"
 unlogged "pane split"       "F0b nothing is split"
 unlogged "workspace focus"  "F0b nothing is focused"
+
+# --- F1: empty responses and the error envelope -----------------------------
+print -r -- "-- F1: empty responses and envelope detection"
+
+# jq exits 0 on empty input, so an empty pane list previously read as "no workspace
+# exists" with rc=0 and went on to build a duplicate.
+run_layout "export HERDR_ENV=1; export MOCK_EMPTY_FOR='pane list'" "$R1"
+rc_is 1 "F1a an empty pane response fails the run"
+has "empty response" "F1a says what was wrong"
+unlogged "workspace create" "F1a nothing is created"
+unlogged "workspace focus"  "F1a nothing is focused"
+
+# Same for tabs, which previously classified as provisional and let repair mutate.
+run_layout "export HERDR_ENV=1
+  mock_topology '$R1' 'Netronix/curato' $FULL
+  export MOCK_EMPTY_FOR='tab list'" "$R1"
+rc_is 1 "F1b an empty tab response fails the run"
+unlogged "tab create"       "F1b nothing is created"
+unlogged "workspace rename" "F1b nothing is renamed"
+
+# A tab the user labelled "error" is data, not an API failure. Substring matching on
+# '"error"' rejected the whole response; the envelope check looks at the top level.
+cls "mock_topology '$R1' '$L' $FULL error:1"
+eq "$OUT" "complete" "F1c an unmanaged tab labelled 'error' stays complete"
+
+# The converse: a genuine error envelope returned with exit status 0 must be caught.
+run_layout "export HERDR_ENV=1
+  export MOCK_PANE_LIST='{\"error\":{\"code\":\"internal\",\"message\":\"boom\"}}'" "$R1"
+rc_is 1 "F1d an error envelope with exit 0 is rejected"
+unlogged "workspace create" "F1d nothing is created"
 
 finish

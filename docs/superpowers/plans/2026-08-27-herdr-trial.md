@@ -283,6 +283,12 @@ printf '%s\n' "$*" >> "$HLOG"
 [ -z "$MOCK_WS_LIST" ]   && MOCK_WS_LIST='{"result":{"workspaces":[]}}'
 [ -z "$MOCK_PANE_LIST" ] && MOCK_PANE_LIST='{"result":{"panes":[]}}'
 [ -z "$MOCK_TAB_LIST" ]  && MOCK_TAB_LIST='{"result":{"tabs":[]}}'
+# Forcing a genuinely empty response needs its own knob: setting MOCK_*_LIST=""
+# hits the defaults above and yields valid JSON instead, so the empty-response path
+# could not be reached from a fixture at all.
+if [ -n "${MOCK_EMPTY_FOR:-}" ]; then
+  case "$*" in "$MOCK_EMPTY_FOR"*) exit 0 ;; esac
+fi
 case "$*" in
   "status server"|"status")
     printf '%s\n' "${MOCK_STATUS:-server:
@@ -2011,7 +2017,10 @@ built. Each was found by running the code, not by reading it.
 | 5 | Tests C4, D6, D7, A5, and paired presence assertions on C1/C2 | Each covered a mutation the suite could not previously detect: deleting the server start, swallowing a failure, honouring an fzf selection, and running at all |
 | 6 | `hl_api` validates JSON at the boundary; every jq consumer propagates failure | Malformed responses became actionable state: a jq failure inside `ids=( $(...) )` discards status, so corrupt pane JSON read as "no workspace found" and would have built a duplicate; corrupt tab JSON returned `provisional` with rc=0 and let repair mutate |
 | 7 | Stub JSON defaults are plain assignments, not `${VAR:-{...}}` | A brace inside a `:-` default ends the expansion early in bash, appending a stray `}}`. jq printed a parse error **and still extracted the right value**, so three tests passed against a corrupt fixture |
-| 8 | Stub gained `MOCK_SERVER_NEVER_READY` and a marker file | Lets the bootstrap be tested as a down → start → ready transition rather than two frozen states |
+| 8 | `hl_api_json` for calls that must return a payload | `jq` exits 0 on empty input, so an empty response degraded into "no workspace found" (→ duplicate) or "provisional" (→ repair mutates), both rc=0. Empty stays legal only for focus/run/rename/close |
+| 9 | Error detection reads the parsed envelope, not a `'"error"'` substring | A substring test rejects valid data merely containing the word — a tab labelled `error`, an agent status, a repo path — and misses a genuine error envelope returned with exit 0 |
+| 10 | Stub gained `MOCK_EMPTY_FOR` | Setting `MOCK_*_LIST=""` hits the stub's defaults and yields valid JSON, so the empty-response path was unreachable from a fixture |
+| 11 | Stub gained `MOCK_SERVER_NEVER_READY` and a marker file | Lets the bootstrap be tested as a down → start → ready transition rather than two frozen states |
 
 Assertions about **absence** (`unlogged`, `count_logged … 0`) always pass when nothing
 ran at all. Every one is paired with a presence assertion, and each gate was confirmed
