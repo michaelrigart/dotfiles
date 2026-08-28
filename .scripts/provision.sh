@@ -131,8 +131,20 @@ if op whoami &>/dev/null; then
 else
   open -a "1Password" 2>/dev/null || true
   echo ""
-  echo "  In the 1Password app: sign in, then Settings → Developer →"
-  echo "  ☑ Integrate with 1Password CLI"
+  echo "  In the 1Password app:"
+  echo "    1. Sign in and unlock (you must see your vaults, not just a lock screen)"
+  echo "    2. Settings → Developer → ☑ Integrate with 1Password CLI"
+  echo "    3. Quit the app fully (⌘Q) and reopen it — the CLI link is established"
+  echo "       at launch, so enabling it in a running app often does not take."
+  echo ""
+  echo "  To check from another terminal:  ${HOMEBREW_PREFIX}/bin/op account list"
+  echo "  (Homebrew was just installed, so plain \`op\` is not on PATH in any tab you"
+  echo "   already had open. Use the full path above, or open a new tab.)"
+  echo ""
+  echo "  If that list stays EMPTY the integration is not connected. Add the account"
+  echo "  directly instead — the signed-in app shows your Secret Key under"
+  echo "  your account → Set Up Another Device:"
+  echo "    ${HOMEBREW_PREFIX}/bin/op account add --address my.1password.com --email <you>"
   echo ""
   waited=0
   until op whoami &>/dev/null; do
