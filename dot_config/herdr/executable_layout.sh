@@ -30,6 +30,16 @@ hl_api() {
     print -ru2 -- "layout.sh: herdr $* failed: $out"
     return 1
   fi
+  # Validate at the boundary, once. Without this, malformed JSON reaches every jq
+  # consumer downstream, each of which discards its status inside a command
+  # substitution or array assignment — so a corrupt response became an empty result,
+  # which reads as "no workspace found" and would go on to build a duplicate. One
+  # controlled diagnostic here beats a screen of raw jq parse errors and a wrong
+  # decision. Empty output is legitimate (focus, run and rename return nothing).
+  if [[ -n "$out" ]] && ! print -r -- "$out" | jq -e . >/dev/null 2>&1; then
+    print -ru2 -- "layout.sh: herdr $* returned invalid JSON"
+    return 1
+  fi
   print -r -- "$out"
 }
 
@@ -109,8 +119,14 @@ hl_find_workspace() {
   [[ -n "${HL_TRACE_LOCK:-}" ]] && print -ru2 -- "SCAN"
   [[ -n "${HL_SCAN_DELAY:-}" ]] && sleep "$HL_SCAN_DELAY"
   panes="$(hl_api pane list)" || return 1
-  ids=( ${(f)"$(print -r -- "$panes" | jq -r --arg d "$repo" \
-        '.result.panes[] | select(.cwd == $d) | .workspace_id' | sort -u)"} )
+  # Captured first: inside `ids=( $(...) )` the pipeline's status is discarded, so a
+  # jq failure silently became "no matches" — indistinguishable from a repo that
+  # genuinely has no workspace, and the caller would build a duplicate.
+  local matched
+  matched="$(print -r -- "$panes" | jq -r --arg d "$repo" \
+              '.result.panes[] | select(.cwd == $d) | .workspace_id' | sort -u)" \
+    || { print -ru2 -- "layout.sh: could not read workspace ids from pane list"; return 1 }
+  ids=( ${(f)matched} )
   ids=( ${ids:#} )
   (( ${#ids} == 0 )) && return 0
   (( ${#ids} > 1 )) && die "panes for $repo span workspaces: ${ids[*]} — refusing to guess"
@@ -133,18 +149,18 @@ hl_classify() {
 
   for label in $MANAGED_TABS; do
     count=$(print -r -- "$tabs" | jq -r --arg l "$label" \
-              '[.result.tabs[] | select(.label == $l)] | length')
+              '[.result.tabs[] | select(.label == $l)] | length') || return 1
     (( count > 1 )) && { print -r -- "malformed: $count tabs labelled '$label'"; return 0 }
   done
 
   local missing=0
   for label in $MANAGED_TABS; do
     tab_id=$(print -r -- "$tabs" | jq -r --arg l "$label" \
-              '.result.tabs[] | select(.label == $l) | .tab_id' | head -1)
+              '.result.tabs[] | select(.label == $l) | .tab_id' | head -1) || return 1
     if [[ -z "$tab_id" ]]; then missing=1; continue; fi
 
     n=$(print -r -- "$panes" | jq -r --arg t "$tab_id" \
-          '[.result.panes[] | select(.tab_id == $t)] | length')
+          '[.result.panes[] | select(.tab_id == $t)] | length') || return 1
     want=1
     [[ "$label" == agents || "$label" == runtime ]] && want=2
     # Zero panes is malformed, not "not yet checked". An earlier draft exempted 0 to
@@ -163,7 +179,7 @@ hl_classify() {
     [[ "$label" == runtime ]] && want_dir=down
     if [[ -n "$want_dir" ]]; then
       first_pane=$(print -r -- "$panes" | jq -r --arg t "$tab_id" \
-                    '[.result.panes[] | select(.tab_id == $t)][0].pane_id')
+                    '[.result.panes[] | select(.tab_id == $t)][0].pane_id') || return 1
       dir=$(hl_api pane layout --pane "$first_pane" \
             | jq -r '[.result.splits[].direction] | unique | join(",")') || return 1
       if [[ "$dir" != "$want_dir" ]]; then

@@ -397,4 +397,29 @@ unlogged "tab close"        "E6 no tab is closed"
 unlogged "pane split"       "E6 no pane is split"
 unlogged "workspace rename" "E6 nothing is renamed"
 
+# --- F0: malformed responses are not actionable state -----------------------
+print -r -- "-- F0: invalid JSON at the boundary"
+
+# Invalid pane JSON. Before the boundary check this returned rc=0 with no workspace
+# id — indistinguishable from "no workspace exists" — so main went on to build a
+# duplicate for a repo that already had one.
+run_layout "export HERDR_ENV=1; export MOCK_PANE_LIST='{\"result\":{\"panes\":[' " "$R1"
+rc_is 1 "F0a invalid pane JSON fails the run"
+has "invalid JSON" "F0a gives one controlled diagnostic"
+hasnt "parse error" "F0a does not leak raw jq noise"
+unlogged "workspace create" "F0a nothing is created"
+unlogged "workspace focus"  "F0a nothing is focused"
+
+# Invalid tab JSON reaches the classifier, which previously returned "provisional"
+# with rc=0 and let repair mutate the workspace.
+run_layout "export HERDR_ENV=1
+  mock_topology '$R1' 'Netronix/curato' $FULL
+  export MOCK_TAB_LIST='{\"result\":{\"tabs\":[' " "$R1"
+rc_is 1 "F0b invalid tab JSON fails the run"
+has "invalid JSON" "F0b gives one controlled diagnostic"
+unlogged "tab create"       "F0b nothing is created"
+unlogged "workspace rename" "F0b nothing is renamed"
+unlogged "pane split"       "F0b nothing is split"
+unlogged "workspace focus"  "F0b nothing is focused"
+
 finish

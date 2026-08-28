@@ -2009,7 +2009,9 @@ built. Each was found by running the code, not by reading it.
 | 3 | Explicit `\|\| exit 1` instead of `setopt err_return` | `err_return` does not fire for a command whose status is already tested, so a failed focus or create fell through to `hl_attach` and reported success |
 | 4 | `mock_reset` unsets `HL_*` as well as `MOCK_*` | `HL_READY_TRIES=2` leaked from C3's timeout test into C4, silently shortening an unrelated bootstrap |
 | 5 | Tests C4, D6, D7, A5, and paired presence assertions on C1/C2 | Each covered a mutation the suite could not previously detect: deleting the server start, swallowing a failure, honouring an fzf selection, and running at all |
-| 6 | Stub gained `MOCK_SERVER_NEVER_READY` and a marker file | Lets the bootstrap be tested as a down → start → ready transition rather than two frozen states |
+| 6 | `hl_api` validates JSON at the boundary; every jq consumer propagates failure | Malformed responses became actionable state: a jq failure inside `ids=( $(...) )` discards status, so corrupt pane JSON read as "no workspace found" and would have built a duplicate; corrupt tab JSON returned `provisional` with rc=0 and let repair mutate |
+| 7 | Stub JSON defaults are plain assignments, not `${VAR:-{...}}` | A brace inside a `:-` default ends the expansion early in bash, appending a stray `}}`. jq printed a parse error **and still extracted the right value**, so three tests passed against a corrupt fixture |
+| 8 | Stub gained `MOCK_SERVER_NEVER_READY` and a marker file | Lets the bootstrap be tested as a down → start → ready transition rather than two frozen states |
 
 Assertions about **absence** (`unlogged`, `count_logged … 0`) always pass when nothing
 ran at all. Every one is paired with a presence assertion, and each gate was confirmed
