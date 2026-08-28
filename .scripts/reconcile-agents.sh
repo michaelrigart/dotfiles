@@ -148,8 +148,19 @@ CLAUDE_INST_SCHEMA_VERSION=2
 # claude_marketplaces_json <outvar> -> legacy [{"repo":"owner/name"}]
 claude_marketplaces_json() {
   local __out=$1 __d
+  # ABSENT is not the same as MALFORMED. On a machine where Claude Code has not yet
+  # written its plugin state, this file simply does not exist, and the correct reading
+  # is "no marketplaces installed" -- which is exactly when the reconciler should add
+  # the declared ones. Treating absence as an error made a clean install unable to
+  # provision Claude plugins at all. A file that exists but does not parse still fails
+  # loudly below, which is what the schema guard was actually for.
+  if [ ! -e "$CLAUDE_MKT_FILE" ]; then
+    log_info "claude marketplace state absent (fresh machine) — treating as none installed"
+    printf -v "$__out" '%s' '[]'
+    return 0
+  fi
   if [ ! -r "$CLAUDE_MKT_FILE" ]; then
-    log_warn "claude marketplace list failed: $CLAUDE_MKT_FILE not readable"
+    log_warn "claude marketplace list failed: $CLAUDE_MKT_FILE exists but is not readable"
     status=1; return 1
   fi
   __d=$(jq -c '[ to_entries[]
@@ -166,8 +177,14 @@ claude_marketplaces_json() {
 # enabledPlugins means NOT enabled — that is how a disabled plugin presents.
 claude_plugins_json() {
   local __out=$1 __d __ver __settings=$CLAUDE_SETTINGS_FILE
+  # Same distinction as above: absent means nothing is installed yet.
+  if [ ! -e "$CLAUDE_INST_FILE" ]; then
+    log_info "claude plugin state absent (fresh machine) — treating as none installed"
+    printf -v "$__out" '%s' '[]'
+    return 0
+  fi
   if [ ! -r "$CLAUDE_INST_FILE" ]; then
-    log_warn "claude plugin list failed: $CLAUDE_INST_FILE not readable"
+    log_warn "claude plugin list failed: $CLAUDE_INST_FILE exists but is not readable"
     status=1; return 1
   fi
   # Pin the schema: a bump must fail loudly here rather than silently read as "nothing
