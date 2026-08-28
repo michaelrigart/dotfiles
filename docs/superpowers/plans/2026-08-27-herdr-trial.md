@@ -275,6 +275,14 @@ trap 'rm -rf "$STUBS" "${ROOTTMP:-}"' EXIT
 cat > "$STUBS/herdr" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$HLOG"
+# Defaults are plain assignments, NOT ${VAR:-{...}}: a brace inside a :- default ends
+# the expansion early in bash and the remaining "}}" leaks into stdout, appending two
+# stray braces to otherwise-valid JSON. jq still extracts the right value while
+# printing a parse error, so it corrupts quietly.
+: "${MOCK_WS_LIST:=}"; : "${MOCK_PANE_LIST:=}"; : "${MOCK_TAB_LIST:=}"
+[ -z "$MOCK_WS_LIST" ]   && MOCK_WS_LIST='{"result":{"workspaces":[]}}'
+[ -z "$MOCK_PANE_LIST" ] && MOCK_PANE_LIST='{"result":{"panes":[]}}'
+[ -z "$MOCK_TAB_LIST" ]  && MOCK_TAB_LIST='{"result":{"tabs":[]}}'
 case "$*" in
   "status server"|"status")
     printf '%s\n' "${MOCK_STATUS:-server:
@@ -283,9 +291,9 @@ case "$*" in
     [ "${MOCK_SERVER_UP:-1}" = "0" ] && {
       printf '%s' '{"error":{"code":"server_not_running","message":"no herdr server"}}'
       exit 1; }
-    printf '%s' "${MOCK_WS_LIST:-{\"result\":{\"workspaces\":[]}}}" ;;
-  "pane list"*)    printf '%s' "${MOCK_PANE_LIST:-{\"result\":{\"panes\":[]}}}" ;;
-  "tab list"*)     printf '%s' "${MOCK_TAB_LIST:-{\"result\":{\"tabs\":[]}}}" ;;
+    printf '%s' "$MOCK_WS_LIST" ;;
+  "pane list"*)    printf '%s' "$MOCK_PANE_LIST" ;;
+  "tab list"*)     printf '%s' "$MOCK_TAB_LIST" ;;
   "workspace create"*)
     exit_rc="${MOCK_WS_CREATE_RC:-0}"; [ "$exit_rc" != 0 ] && exit "$exit_rc"
     printf '%s' '{"result":{"workspace":{"workspace_id":"w7"},"tab":{"tab_id":"w7:t4"},"root_pane":{"pane_id":"w7:p3"}}}' ;;
@@ -667,7 +675,14 @@ Create `dot_config/herdr/executable_layout.sh`:
 # The single definition of what a project workspace looks like. Both entry points go
 # through it, so there is no second copy to drift.
 emulate -L zsh
-setopt local_options err_return no_unset pipe_fail
+# no_bg_nice: zsh sets BG_NICE by default, so `cmd &` renices the job. That renice
+# fails outright where setpriority is denied (a sandbox, some CI), taking the
+# backgrounded server with it — and even where it succeeds, quietly deprioritising the
+# Herdr server every agent runs inside is not what anyone wants.
+#
+# NOT err_return: it does not fire for a command whose status is already being tested,
+# which is exactly the shape used below, so failure propagation is explicit instead.
+setopt local_options no_unset pipe_fail no_bg_nice
 
 MANAGED_TABS=(agents editor runtime git)
 BUILDING_SUFFIX=" (building)"
@@ -1979,6 +1994,26 @@ git status --short docs/superpowers/runs/
 Expected: empty. Nothing to commit for this task.
 
 ---
+
+---
+
+## Execution corrections
+
+Recorded as the plan is executed, so the permanent record does not contradict what was
+built. Each was found by running the code, not by reading it.
+
+| # | Correction | Why |
+|---|---|---|
+| 1 | `herdr config check`, not `herdr status client`, validates the config (Task 1) | `status client` reports nothing about config validity — a bogus key gives byte-identical output. It also exits 0 either way, so the string is the signal |
+| 2 | `no_bg_nice` added to `layout.sh` | zsh's default `BG_NICE` renices backgrounded jobs; where `setpriority` is denied that kills the server start outright |
+| 3 | Explicit `\|\| exit 1` instead of `setopt err_return` | `err_return` does not fire for a command whose status is already tested, so a failed focus or create fell through to `hl_attach` and reported success |
+| 4 | `mock_reset` unsets `HL_*` as well as `MOCK_*` | `HL_READY_TRIES=2` leaked from C3's timeout test into C4, silently shortening an unrelated bootstrap |
+| 5 | Tests C4, D6, D7, A5, and paired presence assertions on C1/C2 | Each covered a mutation the suite could not previously detect: deleting the server start, swallowing a failure, honouring an fzf selection, and running at all |
+| 6 | Stub gained `MOCK_SERVER_NEVER_READY` and a marker file | Lets the bootstrap be tested as a down → start → ready transition rather than two frozen states |
+
+Assertions about **absence** (`unlogged`, `count_logged … 0`) always pass when nothing
+ran at all. Every one is paired with a presence assertion, and each gate was confirmed
+by mutation — break the implementation, watch the specific test go red.
 
 ## Self-review
 

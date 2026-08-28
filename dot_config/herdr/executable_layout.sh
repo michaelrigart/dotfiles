@@ -117,9 +117,88 @@ hl_find_workspace() {
   print -r -- "${ids[1]}"
 }
 
-# Replaced in Tasks 6-7 by real classification, build and repair.
-hl_reconcile() { hl_api workspace focus "$1" >/dev/null }
-hl_build()     { hl_api workspace create --cwd "$1" --label "$(hl_label "$1")" --no-focus >/dev/null }
+# hl_classify <workspace_id> <final-label> — complete / provisional / malformed:<why>,
+# over the MANAGED baseline only.
+#
+# Counting all tabs is wrong in both directions: alt+t exists, so a user's fifth tab is
+# ordinary use and must not demote a healthy workspace; and a dead build can carry all
+# four managed names while missing a split, which a name-only check would certify.
+#
+# Malformed never triggers repair. Fixing a duplicated label means choosing which one
+# to destroy, and nothing here knows enough to choose safely.
+hl_classify() {
+  local ws="$1" final="$2" tabs panes label count tab_id n want want_dir first_pane dir
+  tabs="$(hl_api tab list --workspace "$ws")" || return 1
+  panes="$(hl_api pane list --workspace "$ws")" || return 1
+
+  for label in $MANAGED_TABS; do
+    count=$(print -r -- "$tabs" | jq -r --arg l "$label" \
+              '[.result.tabs[] | select(.label == $l)] | length')
+    (( count > 1 )) && { print -r -- "malformed: $count tabs labelled '$label'"; return 0 }
+  done
+
+  local missing=0
+  for label in $MANAGED_TABS; do
+    tab_id=$(print -r -- "$tabs" | jq -r --arg l "$label" \
+              '.result.tabs[] | select(.label == $l) | .tab_id' | head -1)
+    if [[ -z "$tab_id" ]]; then missing=1; continue; fi
+
+    n=$(print -r -- "$panes" | jq -r --arg t "$tab_id" \
+          '[.result.panes[] | select(.tab_id == $t)] | length')
+    want=1
+    [[ "$label" == agents || "$label" == runtime ]] && want=2
+    # Zero panes is malformed, not "not yet checked". An earlier draft exempted 0 to
+    # keep a thin fixture green — precisely the escape hatch that makes a test unable
+    # to go red.
+    if [[ "$n" != "$want" ]]; then
+      print -r -- "malformed: tab '$label' has $n panes, expected $want"; return 0
+    fi
+
+    # Direction, not just count: two panes side by side and two stacked both count 2.
+    # PaneLayoutSnapshot exposes .splits[].direction, so this is checkable here — and
+    # it has to be, because a live gate that only ever inspects a fresh build cannot
+    # see a workspace whose split was changed afterwards.
+    want_dir=""
+    [[ "$label" == agents ]]  && want_dir=right
+    [[ "$label" == runtime ]] && want_dir=down
+    if [[ -n "$want_dir" ]]; then
+      first_pane=$(print -r -- "$panes" | jq -r --arg t "$tab_id" \
+                    '[.result.panes[] | select(.tab_id == $t)][0].pane_id')
+      dir=$(hl_api pane layout --pane "$first_pane" \
+            | jq -r '[.result.splits[].direction] | unique | join(",")') || return 1
+      if [[ "$dir" != "$want_dir" ]]; then
+        print -r -- "malformed: tab '$label' is split '$dir', expected '$want_dir'"; return 0
+      fi
+    fi
+  done
+
+  local current
+  current=$(hl_api workspace list | jq -r --arg w "$ws" \
+              '.result.workspaces[] | select(.workspace_id == $w) | .label') || return 1
+
+  # The label matters independently of the tabs. A build killed after the last
+  # `tab create` but before the rename leaves correct topology under a (building)
+  # label — provisional, repaired by renaming alone.
+  if (( missing )) || [[ "$current" != "$final" ]]; then
+    print -r -- "provisional"
+  else
+    print -r -- "complete"
+  fi
+}
+
+hl_reconcile() {
+  local ws="$1" repo="$2" verdict
+  verdict="$(hl_classify "$ws" "$(hl_label "$repo")")" || return 1
+  case "$verdict" in
+    complete)    hl_api workspace focus "$ws" >/dev/null || return 1 ;;
+    provisional) hl_repair "$ws" "$repo" || return 1 ;;
+    malformed:*) die "workspace $ws is ${verdict#malformed: } — fix it by hand, or close it" ;;
+  esac
+}
+
+# Replaced in Task 7 by the real build and repair.
+hl_build()  { hl_api workspace create --cwd "$1" --label "$(hl_label "$1")" --no-focus >/dev/null }
+hl_repair() { hl_api workspace focus "$1" >/dev/null }
 
 # hl_attach — from a shell, the point of hdev is to end up *inside* Herdr. Build or
 # focus first, then hand the terminal over. Inside Herdr there is nothing to attach to,

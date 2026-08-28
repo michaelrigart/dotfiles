@@ -53,6 +53,14 @@ trap 'rm -rf "$STUBS" "${ROOTTMP:-}"' EXIT
 cat > "$STUBS/herdr" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$HLOG"
+# Defaults are plain assignments, NOT ${VAR:-{...}}: a brace inside a :- default ends
+# the expansion early in bash and the remaining "}}" leaks into stdout, appending two
+# stray braces to otherwise-valid JSON. jq still extracts the right value while
+# printing a parse error, so it corrupts quietly.
+: "${MOCK_WS_LIST:=}"; : "${MOCK_PANE_LIST:=}"; : "${MOCK_TAB_LIST:=}"
+[ -z "$MOCK_WS_LIST" ]   && MOCK_WS_LIST='{"result":{"workspaces":[]}}'
+[ -z "$MOCK_PANE_LIST" ] && MOCK_PANE_LIST='{"result":{"panes":[]}}'
+[ -z "$MOCK_TAB_LIST" ]  && MOCK_TAB_LIST='{"result":{"tabs":[]}}'
 case "$*" in
   "status server"|"status")
     printf '%s\n' "${MOCK_STATUS:-server:
@@ -70,9 +78,9 @@ case "$*" in
       printf '%s' '{"error":{"code":"server_not_running","message":"no herdr server"}}'
       exit 1
     fi
-    printf '%s' "${MOCK_WS_LIST:-{\"result\":{\"workspaces\":[]}}}" ;;
-  "pane list"*)    printf '%s' "${MOCK_PANE_LIST:-{\"result\":{\"panes\":[]}}}" ;;
-  "tab list"*)     printf '%s' "${MOCK_TAB_LIST:-{\"result\":{\"tabs\":[]}}}" ;;
+    printf '%s' "$MOCK_WS_LIST" ;;
+  "pane list"*)    printf '%s' "$MOCK_PANE_LIST" ;;
+  "tab list"*)     printf '%s' "$MOCK_TAB_LIST" ;;
   "workspace focus"*) exit "${MOCK_FOCUS_RC:-0}" ;;
   "workspace create"*)
     exit_rc="${MOCK_WS_CREATE_RC:-0}"; [ "$exit_rc" != 0 ] && exit "$exit_rc"
@@ -347,5 +355,46 @@ rc_is 1 "D6 a failed focus fails the run"
 
 run_layout "export HERDR_ENV=1; export MOCK_WS_CREATE_RC=1; mock_panes '/nowhere'" "$R1"
 rc_is 1 "D7 a failed create fails the run"
+
+# --- E: the managed baseline ------------------------------------------------
+print -r -- "-- E: the managed baseline"
+L="Netronix/curato"
+
+cls() {  # <mock-setup> → OUT is the classification
+  mock_reset; eval "$1"
+  OUT="$(HOME="$ROOTTMP" zsh -c "source '$LAYOUT' --source-only; hl_classify w7 '$L'" 2>&1)"; RC=$?
+}
+
+cls "mock_topology '$R1' '$L' $FULL"
+eq "$OUT" "complete" "E1 the full baseline = complete"
+
+cls "mock_topology '$R1' '$L' $FULL notes:1 scratch:1"
+eq "$OUT" "complete" "E2 extra unmanaged tabs do not demote it"
+
+cls "mock_topology '$R1' '$L' agents:2 editor:1 git:1"
+eq "$OUT" "provisional" "E3 a missing managed tab = provisional"
+
+# The rename window: correct topology, non-final label.
+cls "mock_topology '$R1' '$L (building)' $FULL"
+eq "$OUT" "provisional" "E4 correct topology under a (building) label = provisional"
+
+cls "mock_topology '$R1' '$L' agents:2 agents:2 editor:1 runtime:2 git:1"
+has "malformed" "E5 a duplicated managed label = malformed"
+
+cls "mock_topology '$R1' '$L' agents:1 editor:1 runtime:2 git:1"
+has "malformed" "E5b a managed tab with the wrong pane count = malformed"
+
+# Two panes stacked and two side by side both count 2. Only direction separates them,
+# and a fresh-build live gate would never see a split changed after the fact.
+cls "mock_topology '$R1' '$L' $FULL; mock_split_dir w7:p1 down"
+has "malformed" "E5c an agents tab split the wrong way = malformed"
+
+# Malformed must not mutate anything.
+run_layout "export HERDR_ENV=1; mock_topology '$R1' '$L' agents:2 agents:2 editor:1 runtime:2 git:1" "$R1"
+rc_is 1 "E6 malformed fails"
+unlogged "tab create"       "E6 no tab is created"
+unlogged "tab close"        "E6 no tab is closed"
+unlogged "pane split"       "E6 no pane is split"
+unlogged "workspace rename" "E6 nothing is renamed"
 
 finish
