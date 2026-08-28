@@ -21,6 +21,7 @@ TMP_BASE=${TMP_BASE%/}
 h() { command herdr --session "$SESSION" "$@" }
 
 pass=0 fail=0
+plugin_linked=0
 ok()   { print -r -- "  PASS: $1"; pass=$((pass+1)) }
 bad()  { print -r -- "  FAIL: $1"; fail=$((fail+1)) }
 
@@ -29,9 +30,12 @@ cleanup() {
   # ~/.config/herdr/sessions/<name> and restores them next start. Without an explicit
   # delete, every run inherited the previous run's workspaces and `workspace list`
   # answered about stale ones.
+  # Unlink while this named server is still reachable. Plugin registration is global,
+  # but the CLI mutation still needs a running server; stopping first leaves a stale
+  # registration pointing at the deleted fixture directory.
+  (( plugin_linked )) && h plugin unlink "$PLUGIN_ID" >/dev/null 2>&1 || true
   h server stop >/dev/null 2>&1 || true
   command herdr session delete "$SESSION" >/dev/null 2>&1 || true
-  command herdr plugin unlink "$PLUGIN_ID" >/dev/null 2>&1 || true
   if [[ -n "${SCRATCH:-}" && "$SCRATCH" == $TMP_BASE/hdev-live.* ]]; then
     rm -rf -- "$SCRATCH"
   fi
@@ -131,8 +135,12 @@ sed 's|^id = "dev.layout"$|id = "'"$PLUGIN_ID"'"|' \
   ~/.config/herdr/plugin/herdr-plugin.toml > "$PDIR/herdr-plugin.toml" || exit 1
 grep -q '^id = "apply"' "$PDIR/herdr-plugin.toml" \
   && ok "the action id survived the id rewrite" || bad "the action id was rewritten too"
-command herdr plugin link "$PDIR" >/dev/null \
-  && ok "the plugin links" || bad "plugin link failed"
+# Remove a registration left by an older interrupted gate before linking this run's
+# fixture. Registration is global, but both mutations are routed through the live,
+# isolated server so they cannot fail merely because the default server is stopped.
+h plugin unlink "$PLUGIN_ID" >/dev/null 2>&1 || true
+h plugin link "$PDIR" >/dev/null \
+  && { plugin_linked=1; ok "the plugin links"; } || bad "plugin link failed"
 close_rc=0
 h tab close "$(h tab list --workspace "$WS" | jq -r '.result.tabs[] | select(.label=="git") | .tab_id')" >/dev/null \
   || close_rc=$?
@@ -197,6 +205,18 @@ for i in 1 2 3 4 5; do
 done
 (( enabled )) && ok "notification delivery is enabled (reason: $r)" \
   || bad "notification delivery is off (last reason: ${r:-none}) — failure feedback would be invisible"
+
+# Assert the global side effect is gone before the fixture directory disappears. The
+# EXIT trap is only a backstop for interruption; a green run must prove its teardown.
+if (( plugin_linked )); then
+  unlink_out=$(h plugin unlink "$PLUGIN_ID" 2>/dev/null) || unlink_out=''
+  if print -r -- "$unlink_out" | jq -e --arg id "$PLUGIN_ID" \
+      '.result.plugin_id == $id and .result.removed == true' >/dev/null 2>&1; then
+    plugin_linked=0
+  else
+    bad "the test plugin registration was not removed"
+  fi
+fi
 
 print -r -- "=== $pass passed, $fail failed ==="
 (( fail == 0 ))
