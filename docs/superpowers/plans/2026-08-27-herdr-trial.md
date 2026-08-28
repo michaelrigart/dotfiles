@@ -1645,8 +1645,8 @@ n=$(h tab list --workspace "$WS" | jq -r '[.result.tabs[] | select(.label=="git"
 
 # 7b. The jump must still land after repair. This is the whole reason tab-goto.sh
 #     resolves by label: repair APPENDS (herdr 0.8.2 has no `tab move`), so the
-#     repaired git tab is now last, and any position-based lookup would land on
-#     runtime instead.
+#     repaired git tab is now last — after the unmanaged `notes` tab added earlier —
+#     and a position-based lookup would not land reliably on git at all.
 GITTAB=$(h tab list --workspace "$WS" | jq -r '.result.tabs[] | select(.label=="git") | .tab_id')
 HERDR_ACTIVE_WORKSPACE_ID="$WS" HERDR_SESSION="$SESSION" ~/.config/herdr/tab-goto.sh git
 ACTIVE=$(h workspace get "$WS" | jq -r '.result.workspace.active_tab_id')
@@ -1666,7 +1666,9 @@ ACTIVE=$(h workspace get "$WS" | jq -r '.result.workspace.active_tab_id')
 #    `notification show` was invoked.
 #
 #    NotificationShowReason is ["shown","disabled","rate_limited",
-#    "no_foreground_client","busy"] — the middle two are transient, so retry.
+#    "no_foreground_client","busy"]. Only busy and rate_limited are transient;
+#    no_foreground_client is a stable property of a headless run, not something a
+#    retry can clear.
 enabled=0
 for i in 1 2 3 4 5; do
   r=$(h notification show "gate" --body "live gate probe" | jq -r '.result.reason')
