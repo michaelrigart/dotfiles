@@ -7,7 +7,7 @@
 {{-   fail (printf "unknown machine %q — add it to .chezmoidata/machines.toml" $live) -}}
 {{- end -}}
 {{- /* HostName is checked too: it is what hostname(1) and therefore Borg archive
-     naming resolve to, so ComputerName=fenrir with HostName=studio would silently
+     naming resolve to, so ComputerName=fenrir with HostName=hercules would silently
      back up under the wrong identity. Unset prints "HostName: not set" on exit 0. */ -}}
 {{- if hasPrefix "HostName: not set" $hn -}}
 {{-   fail (printf "HostName is unset on %q — run: sudo scutil --set HostName %s" $live $live) -}}

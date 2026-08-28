@@ -65,8 +65,8 @@ else
     case "$answer" in y|Y) break ;; esac
   done
   log_info "Setting hostname to $HOSTNAME..."
-  # Exact comparison: the old `grep -q` substring match treated "studio" as already
-  # set on a machine named "studio-2".
+  # Exact comparison: the old `grep -q` substring match treated "hercules" as already
+  # set on a machine named "hercules-2".
   [ "$(scutil --get ComputerName)"  = "$HOSTNAME" ] || sudo scutil --set ComputerName  "$HOSTNAME"
   [ "$(scutil --get HostName)"      = "$HOSTNAME" ] || sudo scutil --set HostName      "$HOSTNAME"
   [ "$(scutil --get LocalHostName)" = "$HOSTNAME" ] || sudo scutil --set LocalHostName "$HOSTNAME"
