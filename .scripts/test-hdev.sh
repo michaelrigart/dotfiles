@@ -89,6 +89,7 @@ case "$*" in
   "pane list"*)    printf '%s' "$MOCK_PANE_LIST" ;;
   "tab list"*)     printf '%s' "$MOCK_TAB_LIST" ;;
   "workspace focus"*) exit "${MOCK_FOCUS_RC:-0}" ;;
+  "tab focus"*)       exit "${MOCK_TAB_FOCUS_RC:-0}" ;;
   "workspace create"*)
     exit_rc="${MOCK_WS_CREATE_RC:-0}"; [ "$exit_rc" != 0 ] && exit "$exit_rc"
     printf '%s' "${MOCK_WS_CREATE_JSON:-$DEF_WS_CREATE}" ;;
@@ -129,7 +130,7 @@ mock_reset() {
   export MOCK_PANE_LIST='{"result":{"panes":[]}}'
   export MOCK_TAB_LIST='{"result":{"tabs":[]}}'
   export MOCK_LAYOUT_FILE="$(mktemp "${TMPROOT%/}/layout.XXXXXX")"
-  export MOCK_WS_CREATE_RC=0 MOCK_FOCUS_RC=0
+  export MOCK_WS_CREATE_RC=0 MOCK_FOCUS_RC=0 MOCK_TAB_FOCUS_RC=0
   # Created here rather than in each test: building the path inside an eval'd setup
   # string needs three levels of quoting, and getting it wrong leaves the variable
   # empty, the marker unwritten, and the failure looking like a broken timeout.
@@ -620,5 +621,14 @@ unlogged "tab focus" "J7c no tab is focused"
 # keybinding that does nothing at all.
 goto "mock_tabs agents editor" git
 logged "notification show" "J8 a failed jump is surfaced as a notification"
+
+# J9: the tab exists at list time and is gone by focus time — the real race, since
+# nothing holds a lock between the two calls. Detached execution makes an unhandled
+# failure here indistinguishable from a key that does nothing.
+goto "mock_tabs agents editor runtime git; export MOCK_TAB_FOCUS_RC=1" runtime
+rc_is 1 "J9 a focus that fails after a successful list fails the jump"
+has "could not focus" "J9 the diagnostic names the focus failure"
+logged "tab focus w7:t3" "J9 the focus was genuinely attempted"
+logged "notification show" "J9 the failure is surfaced as a notification"
 
 finish
