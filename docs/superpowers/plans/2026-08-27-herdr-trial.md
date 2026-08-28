@@ -2024,7 +2024,7 @@ Do not let the installer write this file; the two would fight on every `chezmoi 
 - [ ] **Step 8: Apply and verify**
 
 ```bash
-chezmoi apply \
+chezmoi apply --parent-dirs \
   ~/.claude/hooks/herdr-agent-state.sh \
   ~/.claude/settings.json \
   ~/.codex/herdr-agent-state.sh \
@@ -2270,6 +2270,7 @@ built. Each was found by running the code, not by reading it.
 | 23 | The gate resolves fixture paths with `:A`, and focuses before invoking the action | `mktemp` returns `/tmp/…` while `layout.sh` stores `${repo:A}` (`/private/tmp/…`), so `select(.cwd == $d)` never matched; and a plugin action takes its context from the **focused** workspace |
 | 24 | `busy` is treated as "delivery enabled", not transient | Observed live: a headless session returns `busy` persistently. Retrying it five times still ended in `busy`, failing a working setup. Only `disabled` means delivery is off |
 | 25 | Stub gained `MOCK_SERVER_NEVER_READY` and a marker file | Lets the bootstrap be tested as a down → start → ready transition rather than two frozen states |
+| 26 | The five-target activation uses `chezmoi apply --parent-dirs` | Exact-file targeting avoids unrelated 1Password templates, but the new `~/.claude/hooks/` directory did not exist. Without `--parent-dirs`, chezmoi failed before mutation instead of creating it |
 
 Assertions about **absence** (`unlogged`, `count_logged … 0`) always pass when nothing
 ran at all. Every one is paired with a presence assertion, and each gate was confirmed
