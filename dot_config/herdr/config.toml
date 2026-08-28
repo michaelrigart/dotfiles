@@ -18,6 +18,17 @@ onboarding = false
 [theme]
 name = "tokyo-night"
 
+# Pinning `onboarding = false` above skips the first-run prompt that would otherwise
+# ask how notifications should be delivered — and the shipped default is
+# `delivery = "off"`. Left unset, `herdr notification show` returns
+# {"reason":"disabled","shown":false} and does nothing, which silently removes the
+# only feedback channel a detached `[[keys.command]]` or a plugin action has. A failed
+# tab jump then looks exactly like a dead keybinding.
+#
+# "herdr" = in-app toasts: visible wherever the TUI is, and needs no OS permission.
+[ui.toast]
+delivery = "herdr"
+
 [session]
 # The single setting the Claude/Codex integrations exist to serve. It is the shipped
 # default but arrives commented out; pinning it keeps the dependency legible.
@@ -81,11 +92,13 @@ type = "shell"
 command = "~/.config/herdr/tab-goto.sh git"
 description = "tab: git"
 
-# TEMPORARY (Task 8 step 6): dump what herdr actually injects into a keybinding
+# TEMPORARY (Task 8 step 6): dump what herdr actually injects into a keybinding.
+# alt+x, not alt+0: digits need Shift on AZERTY — the very reason this config uses
+# mnemonic letters everywhere else.
 # command. The HERDR_ACTIVE_* names are documented but absent from --default-config,
 # so tab-goto.sh's lookup is verified against reality rather than assumed.
 [[keys.command]]
-key = "alt+0"
+key = "alt+x"
 type = "shell"
 command = "env | grep -i herdr | sort > /tmp/herdr-keyenv.txt"
 description = "debug: dump key context"

@@ -2035,7 +2035,9 @@ built. Each was found by running the code, not by reading it.
 | 13 | Fixture workspace id parameterised (`MOCK_WS_ID`) | The stub answered `w7` for both a pre-existing workspace and a newly created one, so "the other workspace is not focused" became unfalsifiable once build began focusing its own result |
 | 14 | The cleanup trap is armed as soon as a workspace id parses, not after all three ids | A response with a valid `workspace_id` but no `tab_id` exited 1 *having created the workspace* and never closed it — the check meant to prevent orphans was creating one (G7b) |
 | 15 | `hl_id` requires a non-empty JSON **string**, and the trap argument is `${(q)}`-quoted | `jq -er` only rejects null/false: `7` and `{}` pass with exit 0, so an API reshape could hand nonsense to herdr, and that value is interpolated into a trap command (G7c) |
-| 16 | Stub gained `MOCK_SERVER_NEVER_READY` and a marker file | Lets the bootstrap be tested as a down → start → ready transition rather than two frozen states |
+| 16 | `[ui.toast] delivery = "herdr"` pinned alongside `onboarding = false` | The shipped default is `delivery = "off"`, and onboarding is what would otherwise prompt for a choice. Pinning onboarding off — correct, to stop it rewriting a chezmoi-managed file — left `herdr notification show` returning `{"reason":"disabled","shown":false}`, silently removing the only feedback channel a detached `[[keys.command]]` or plugin action has |
+| 17 | Verified live: all four `HERDR_ACTIVE_*` variables **are** injected into `[[keys.command]]` | Documented but absent from `--default-config`; `tab-goto.sh` depended on it. Confirmed by dumping the environment from a bound key: `HERDR_ACTIVE_WORKSPACE_ID/TAB_ID/PANE_ID/PANE_CWD`, plus `HERDR_BIN_PATH` and `HERDR_SOCKET_PATH` |
+| 18 | Stub gained `MOCK_SERVER_NEVER_READY` and a marker file | Lets the bootstrap be tested as a down → start → ready transition rather than two frozen states |
 
 Assertions about **absence** (`unlogged`, `count_logged … 0`) always pass when nothing
 ran at all. Every one is paired with a presence assertion, and each gate was confirmed
