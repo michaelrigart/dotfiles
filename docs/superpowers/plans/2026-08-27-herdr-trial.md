@@ -1774,11 +1774,19 @@ Cold restore is the sole justification for these — Claude and Codex are "sessi
 
 - [ ] **Step 1: Back up the real config first**
 
+This is the only copy of your pre-trial config, so it fails closed: a `cp` that
+silently failed would leave a later step believing a backup exists.
+
 ```bash
-mkdir -p ~/.local/state/herdr-trial-backup
-cp ~/.claude/settings.json ~/.local/state/herdr-trial-backup/settings.json
-cp ~/.codex/config.toml ~/.local/state/herdr-trial-backup/config.toml
-cp ~/.codex/hooks.json ~/.local/state/herdr-trial-backup/hooks.json 2>/dev/null || true
+set -e
+BK=~/.local/state/herdr-trial-backup
+mkdir -p "$BK"
+cp ~/.claude/settings.json "$BK/settings.json"
+cp ~/.codex/config.toml    "$BK/config.toml"
+# hooks.json legitimately may not exist yet; absence is fine, a failed copy is not.
+if [[ -e ~/.codex/hooks.json ]]; then cp ~/.codex/hooks.json "$BK/hooks.json"; fi
+ls -l "$BK"
+set +e
 ```
 
 - [ ] **Step 2: Install against fixtures and diff**
@@ -1812,10 +1820,13 @@ real_fp() {
 }
 real_fp > "$FIX/before.fp"
 
+# `|| exit 1` on each: in a multi-line block a failed install is otherwise followed
+# by successful commands and vanishes, leaving a half-installed fixture that the diff
+# would then declare clean.
 env HOME="$FIX/home" XDG_CONFIG_HOME="$FIX/xdg" \
-    CLAUDE_CONFIG_DIR="$FIX/claude" herdr integration install claude
+    CLAUDE_CONFIG_DIR="$FIX/claude" herdr integration install claude || exit 1
 env HOME="$FIX/home" XDG_CONFIG_HOME="$FIX/xdg" \
-    CODEX_HOME="$FIX/codex" herdr integration install codex
+    CODEX_HOME="$FIX/codex" herdr integration install codex || exit 1
 
 find "$FIX" -type f | sort
 real_fp > "$FIX/after.fp"
@@ -1831,7 +1842,8 @@ fi           # would continue straight past the one check that matters
 fixture approach cannot be made safe. Report it rather than proceeding.
 
 The task **ends after Step 2c**. Step 3 onward requires separate, explicit
-authorization: everything up to that point is reversible by deleting a scratch
+authorization. Steps 1-2c leave two things behind on purpose — the backup copies under
+`~/.local/state/herdr-trial-backup/` — and everything else in a scratch
 directory, and everything after modifies real agent configuration.
 
 Record exactly which files appeared and which keys changed. Report **key names only** — never paste `settings.json`, `hooks.json` or `config.toml`, which carry credentials and machine state.
@@ -1844,16 +1856,22 @@ Reversibility is what makes this task acceptable, so demonstrate it before touch
 real config. Seed an unrelated hook first, so preservation is actually tested:
 
 ```bash
+# Seed an unrelated hook in BOTH agents. Testing preservation for Codex alone says
+# nothing about the Claude uninstall, which edits a different file in a different
+# format and could be destructive on its own.
 jq '.hooks += {mine: {command: "/bin/true"}}' "$FIX/codex/hooks.json" > "$FIX/codex/hooks.json.new" \
-  && mv "$FIX/codex/hooks.json.new" "$FIX/codex/hooks.json"
+  && mv "$FIX/codex/hooks.json.new" "$FIX/codex/hooks.json" || exit 1
+jq '.hooks.SessionStart = ((.hooks.SessionStart // []) + [{hooks: [{type: "command", command: "/bin/true"}]}])' \
+  "$FIX/claude/settings.json" > "$FIX/claude/settings.json.new" \
+  && mv "$FIX/claude/settings.json.new" "$FIX/claude/settings.json" || exit 1
 cp -R "$FIX" "$FIX.before"
 
 # The SAME four redirects as the install. Uninstall resolves its own paths, and an
 # uninstall-specific resolution failure would modify real config just as silently.
 env HOME="$FIX/home" XDG_CONFIG_HOME="$FIX/xdg" \
-    CLAUDE_CONFIG_DIR="$FIX/claude" herdr integration uninstall claude
+    CLAUDE_CONFIG_DIR="$FIX/claude" herdr integration uninstall claude || exit 1
 env HOME="$FIX/home" XDG_CONFIG_HOME="$FIX/xdg" \
-    CODEX_HOME="$FIX/codex" herdr integration uninstall codex
+    CODEX_HOME="$FIX/codex" herdr integration uninstall codex || exit 1
 
 # Fingerprint again: the install being contained says nothing about the uninstall.
 real_fp > "$FIX/after-uninstall.fp"
@@ -1866,7 +1884,14 @@ diff -r "$FIX.before" "$FIX" | sed 's/^/  /'
 # Every one of these aborts on failure. Printing a warning and exiting 0 is how a
 # destructive uninstall would sail past its own safety check.
 jq -e '.hooks.mine' "$FIX/codex/hooks.json" >/dev/null \
-  || { echo "STOP: the uninstall destroyed an unrelated hook"; exit 1; }
+  || { echo "STOP: the codex uninstall destroyed an unrelated hook"; exit 1; }
+jq -e '[.hooks.SessionStart[]?.hooks[]? | select(.command == "/bin/true")] | length > 0' \
+  "$FIX/claude/settings.json" >/dev/null \
+  || { echo "STOP: the claude uninstall destroyed an unrelated hook"; exit 1; }
+jq -e '[.. | strings | select(test("herdr"))] | length == 0' "$FIX/claude/settings.json" >/dev/null \
+  || { echo "STOP: herdr's claude registration survived the uninstall"; exit 1; }
+[[ -e "$FIX/claude/hooks/herdr-agent-state.sh" ]] \
+  && { echo "STOP: herdr's claude hook script survived the uninstall"; exit 1; }
 jq -e '.hooks.herdr' "$FIX/codex/hooks.json" >/dev/null \
   && { echo "STOP: herdr's own entry survived the uninstall"; exit 1; }
 grep -q 'hooks = true' "$FIX/codex/config.toml" \
@@ -1880,19 +1905,26 @@ config it does not own, and rollback would cost you unrelated settings.
 
 - [ ] **Step 2c: Immutable baseline, then authorise**
 
-The Step 1 copies live in a directory chezmoi and Herdr both write to. Take a
-read-only snapshot outside it:
+A second, immutable snapshot in a timestamped subdirectory of the same backup
+directory. Step 1's copies sit at its top level where a later run would overwrite
+them; this one is `chmod a-w`, so a mistake cannot quietly destroy the only record of
+your pre-trial config. Fails closed for the same reason Step 1 does.
 
 ```bash
+set -e
 BK=~/.local/state/herdr-trial-backup/$(date +%Y%m%d-%H%M%S)
-mkdir -p "$BK" && cp ~/.claude/settings.json ~/.codex/config.toml "$BK"/ 2>/dev/null
-cp ~/.codex/hooks.json "$BK"/ 2>/dev/null || true
-chmod -R a-w "$BK" && ls -l "$BK"
+mkdir -p "$BK"
+cp ~/.claude/settings.json "$BK/"
+cp ~/.codex/config.toml    "$BK/"
+if [[ -e ~/.codex/hooks.json ]]; then cp ~/.codex/hooks.json "$BK/"; fi
+chmod -R a-w "$BK"
+ls -l "$BK"
+set +e
 ```
 
-**Stop here and get explicit confirmation before Step 3.** Everything to this point is
-reversible by deleting a scratch directory; everything after modifies real agent
-configuration.
+**Stop here and get explicit confirmation before Step 3.** Steps 1-2c modify nothing
+in `~/.claude` or `~/.codex`; what they leave behind is the backup directory above,
+plus a scratch fixture. Everything after Step 3 modifies real agent configuration.
 
 Do not treat approval of Steps 1-2c as approval of Step 3. They are separate
 decisions, and the evidence from 2c is what the second one should be based on.
