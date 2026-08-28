@@ -1,6 +1,6 @@
 # Herdr trial alongside Zellij
 
-**Status:** Approved
+**Status:** In progress
 
 **Date:** 2026-08-27
 
