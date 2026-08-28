@@ -631,4 +631,56 @@ has "could not focus" "J9 the diagnostic names the focus failure"
 logged "tab focus w7:t3" "J9 the focus was genuinely attempted"
 logged "notification show" "J9 the failure is surfaced as a notification"
 
+# --- K: the plugin's --current mode -----------------------------------------
+print -r -- "-- K: layout.sh --current"
+
+cur() {  # <mock-setup>
+  mock_reset; eval "$1"
+  OUT="$(HOME="$ROOTTMP" HERDR_ENV=1 zsh "$LAYOUT" --current 2>&1)"; RC=$?
+}
+
+# Without a workspace in context this cannot run at all: --current targets by plugin
+# context, never by a path lookup.
+mock_reset
+OUT="$(HOME="$ROOTTMP" HERDR_ENV=1 env -u HERDR_WORKSPACE_ID zsh "$LAYOUT" --current 2>&1)"; RC=$?
+rc_is 1 "K1 without HERDR_WORKSPACE_ID it refuses to run"
+has "HERDR_WORKSPACE_ID" "K1 says what is missing"
+
+# Complete: announce, do not silently no-op, and do not touch anything.
+cur "export HERDR_WORKSPACE_ID=w7; mock_topology '$R1' 'Netronix/curato' \$FULL"
+rc_is 0 "K2 a complete workspace succeeds"
+logged "notification show" "K2 the no-op is announced, not silent"
+unlogged "tab create" "K2 nothing is created"
+unlogged "workspace rename" "K2 nothing is renamed"
+
+# Provisional: repair in place, then say so.
+cur "export HERDR_WORKSPACE_ID=w7; mock_topology '$R1' 'Netronix/curato' agents:2 editor:1"
+rc_is 0 "K3 a provisional workspace is repaired"
+logged "tab create --workspace w7 --label runtime" "K3 the missing tab is created"
+logged "tab create --workspace w7 --label git"     "K3 the other missing tab is created"
+logged "notification show" "K3 the repair is announced"
+unlogged "workspace create" "K3 no second workspace is built"
+
+# Malformed: refuse, announce, mutate nothing.
+cur "export HERDR_WORKSPACE_ID=w7; mock_topology '$R1' 'Netronix/curato' agents:2 agents:2 editor:1 runtime:2 git:1"
+rc_is 1 "K4 a malformed workspace is refused"
+logged "notification show" "K4 the refusal is announced"
+unlogged "tab create" "K4 nothing is created"
+unlogged "tab close"  "K4 nothing is closed"
+unlogged "pane split" "K4 nothing is split"
+
+# The worktree guard is a property of the design, not of one entry point: a workspace
+# opened by hand in a wt worktree must not be grown through the plugin either.
+cur "export HERDR_WORKSPACE_ID=w7; mock_topology '$WT' 'curato-feature' agents:2 editor:1"
+rc_is 1 "K5 a linked worktree is refused in --current too"
+has "linked worktree" "K5 says why"
+logged "notification show" "K5 the refusal is announced"
+unlogged "tab create" "K5 nothing is created"
+
+# It must take the same lock as the path mode: two plugin invocations, or a plugin
+# racing an hdev, would otherwise both see a tab missing and both create it.
+cur "export HERDR_WORKSPACE_ID=w7; export HL_TRACE_LOCK=1
+  mock_topology '$R1' 'Netronix/curato' agents:2 editor:1"
+has "LOCK-ACQUIRED" "K6 --current takes the per-repo lock"
+
 finish

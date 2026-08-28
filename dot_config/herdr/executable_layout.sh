@@ -19,6 +19,14 @@ BUILDING_SUFFIX=" (building)"
 
 die() { print -ru2 -- "layout.sh: $*"; exit 1 }
 
+# hl_notify — the only feedback a plugin action has. Herdr runs plugin commands and
+# custom keybindings detached, so stderr never reaches the TUI: an action whose result
+# is buried in a log file is indistinguishable from a broken keybinding. Requires
+# [ui.toast] delivery to be set — the shipped default is "off".
+hl_notify() {
+  command herdr notification show "$1" --body "$2" >/dev/null 2>&1 || true
+}
+
 # hl_api — run a herdr CLI call, return its JSON on stdout. Non-zero on failure, with
 # the server's message. Every call goes through here so failures are uniform: the old
 # Zellij shape returned 0 from every step while the layout silently failed, and exit
@@ -351,6 +359,44 @@ main() {
 
   if [[ -z "${HERDR_ENV:-}" ]]; then
     hl_ensure_server
+  fi
+
+  if [[ "$mode" == current ]]; then
+    local ws="${HERDR_WORKSPACE_ID:-}"
+    [[ -n "$ws" ]] || die "no HERDR_WORKSPACE_ID — --current only runs as a plugin action"
+
+    # Target by context, never by a path lookup. A path lookup would find the very
+    # workspace the action was invoked from, focus it, exit 0 and apply nothing — a
+    # silent no-op, and the most confusing possible outcome.
+    local wrepo verdict
+    wrepo="$(hl_api_json pane list --workspace "$ws" | jq -r '.result.panes[0].cwd')" || exit 1
+    [[ -n "$wrepo" && "$wrepo" != null ]] || die "workspace $ws has no pane cwd to work from"
+    wrepo="${wrepo:A}"
+
+    # The worktree guard belongs to the design, not to one entry point. A workspace
+    # created by hand in a wt worktree could otherwise be grown through the plugin,
+    # reopening the husk hazard hdev refuses.
+    if [[ -f "$wrepo/.git" ]]; then
+      hl_notify "Project layout" "Refusing: $wrepo is a linked worktree."
+      die "$wrepo is a linked worktree — refusing (see the worktree guard)"
+    fi
+
+    # Same lock as the path mode: two plugin invocations, or a plugin racing an hdev,
+    # would otherwise both see a tab missing and both create it.
+    hl_lock "$wrepo"
+
+    verdict="$(hl_classify "$ws" "$(hl_label "$wrepo")")" || exit 1
+    case "$verdict" in
+      complete)
+        hl_notify "Project layout" "Already complete — nothing to do." ;;
+      provisional)
+        hl_repair "$ws" "$wrepo" || exit 1
+        hl_notify "Project layout" "Repaired $(hl_label "$wrepo")." ;;
+      malformed:*)
+        hl_notify "Project layout" "Refusing: ${verdict#malformed: }"
+        die "workspace $ws is ${verdict#malformed: }" ;;
+    esac
+    exit 0
   fi
 
   if [[ "$mode" == path ]]; then
