@@ -34,6 +34,20 @@ log_info "========== Starting macOS Provision =========="
 echo ""
 
 # ============================================================================
+# 0. sudo, once, up front
+# ============================================================================
+# This must precede Homebrew, not sit in preflight below. NONINTERACTIVE=1 stops the
+# Homebrew installer prompting for confirmation, but it also stops it prompting for a
+# password -- so it needs the sudo credential already cached or it aborts with
+# "Need sudo access on macOS". Acquiring it here also makes the password the first
+# thing asked, and the keepalive holds it for the rest of the run.
+log_info "Requesting sudo (held for the whole run, so nothing prompts later)..."
+sudo -v
+# stdout is closed too, not just stderr: a background loop that keeps stdout open
+# hangs any caller capturing this script's output with $( ).
+while true; do sudo -n true; sleep 60; kill -0 "$$" 2>/dev/null || exit; done >/dev/null 2>&1 &
+
+# ============================================================================
 # 1. Install Xcode Command Line Tools
 # ============================================================================
 if ! xcode-select -p &>/dev/null; then
@@ -149,11 +163,9 @@ while [ -z "$MACHINE_NAME" ]; do
   [ -z "$MACHINE_NAME" ] && log_warn "Unknown machine '${REPLY_NAME}' — add it to .chezmoidata/machines.toml first"
 done
 
-# 5c. sudo once, held for the whole run, so nothing prompts for a password later.
+# 5c. sudo was acquired in step 0, which had to precede Homebrew. Refresh it here in
+# case the Xcode CLT download ran long.
 sudo -v
-# stdout is closed too, not just stderr: a background loop that keeps stdout open
-# hangs any caller capturing this script's output with $( ).
-while true; do sudo -n true; sleep 60; kill -0 "$$" 2>/dev/null || exit; done >/dev/null 2>&1 &
 
 # 5d. One confirmation. Nothing machine-specific has changed yet, so declining here
 # leaves the machine's identity and configuration exactly as they were found.
