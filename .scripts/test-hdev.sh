@@ -61,6 +61,7 @@ printf '%s\n' "$*" >> "$HLOG"
 [ -z "$MOCK_WS_LIST" ]   && MOCK_WS_LIST='{"result":{"workspaces":[]}}'
 [ -z "$MOCK_PANE_LIST" ] && MOCK_PANE_LIST='{"result":{"panes":[]}}'
 [ -z "$MOCK_TAB_LIST" ]  && MOCK_TAB_LIST='{"result":{"tabs":[]}}'
+DEF_WS_CREATE='{"result":{"workspace":{"workspace_id":"w7"},"tab":{"tab_id":"w7:t4"},"root_pane":{"pane_id":"w7:p3"}}}'
 # Forcing a genuinely empty response needs its own knob: setting MOCK_*_LIST=""
 # hits the defaults above and yields valid JSON instead, so the empty-response path
 # could not be reached from a fixture at all.
@@ -90,7 +91,7 @@ case "$*" in
   "workspace focus"*) exit "${MOCK_FOCUS_RC:-0}" ;;
   "workspace create"*)
     exit_rc="${MOCK_WS_CREATE_RC:-0}"; [ "$exit_rc" != 0 ] && exit "$exit_rc"
-    printf '%s' '{"result":{"workspace":{"workspace_id":"w7"},"tab":{"tab_id":"w7:t4"},"root_pane":{"pane_id":"w7:p3"}}}' ;;
+    printf '%s' "${MOCK_WS_CREATE_JSON:-$DEF_WS_CREATE}" ;;
   "tab create"*)
     # The counter lives in a FILE, not a variable: the stub is a separate process per
     # call, so an exported variable could never advance and every tab would come back
@@ -134,7 +135,7 @@ mock_reset() {
   # empty, the marker unwritten, and the failure looking like a broken timeout.
   export MOCK_SERVER_STARTED_FILE="$(mktemp "${TMPROOT%/}/started.XXXXXX")"
   rm -f "$MOCK_SERVER_STARTED_FILE"
-  unset MOCK_SERVER_NEVER_READY MOCK_EMPTY_FOR
+  unset MOCK_SERVER_NEVER_READY MOCK_EMPTY_FOR MOCK_WS_CREATE_JSON MOCK_WS_ID
   export MOCK_TAB_SEQ_FILE="$(mktemp "${TMPROOT%/}/tabseq.XXXXXX")"; print -n 0 > "$MOCK_TAB_SEQ_FILE"
   unset MOCK_TAB_CREATE_FAIL_AT MOCK_STATUS
   # The HL_* knobs are exported by individual tests and would otherwise leak into
@@ -163,22 +164,27 @@ mock_tabs() {       # <label>...  — tabs w7:t1.. with the given labels, no pan
 # Tabs, panes and the workspace label in ONE call. Setting them separately is how the
 # fixtures drifted: a workspace with four tabs and zero panes is not "four good tabs",
 # it is malformed, and separate helpers made a correct classifier look broken.
+# The workspace id is parameterised (MOCK_WS_ID, default w7) so a fixture's
+# pre-existing workspace can be told apart from one the code creates — the stub's
+# `workspace create` also answers w7, which made "the other workspace is not focused"
+# unfalsifiable once build started focusing its own result.
 mock_topology() {
   local cwd="$1" label="$2"; shift 2
+  local w="${MOCK_WS_ID:-w7}"
   local i=1 pn=1 tabs="" panes="" spec name n k
   for spec in "$@"; do
     name="${spec%%:*}"; n="${spec##*:}"
     [[ -n "$tabs" ]] && tabs+=","
-    tabs+="{\"tab_id\":\"w7:t$i\",\"label\":\"$name\"}"
+    tabs+="{\"tab_id\":\"$w:t$i\",\"label\":\"$name\"}"
     k=1
     while (( k <= n )); do
       [[ -n "$panes" ]] && panes+=","
-      panes+="{\"pane_id\":\"w7:p$pn\",\"tab_id\":\"w7:t$i\",\"workspace_id\":\"w7\",\"cwd\":\"$cwd\"}"
+      panes+="{\"pane_id\":\"$w:p$pn\",\"tab_id\":\"$w:t$i\",\"workspace_id\":\"$w\",\"cwd\":\"$cwd\"}"
       # The direction the baseline expects for this label, so a healthy fixture is
       # healthy without every test restating its geometry.
       case "$name" in
-        runtime) print -r -- "w7:p$pn down"  >> "$MOCK_LAYOUT_FILE" ;;
-        *)       print -r -- "w7:p$pn right" >> "$MOCK_LAYOUT_FILE" ;;
+        runtime) print -r -- "$w:p$pn down"  >> "$MOCK_LAYOUT_FILE" ;;
+        *)       print -r -- "$w:p$pn right" >> "$MOCK_LAYOUT_FILE" ;;
       esac
       (( pn++ )); (( k++ ))
     done
@@ -186,7 +192,7 @@ mock_topology() {
   done
   export MOCK_TAB_LIST="{\"result\":{\"tabs\":[$tabs]}}"
   export MOCK_PANE_LIST="{\"result\":{\"panes\":[$panes]}}"
-  export MOCK_WS_LIST="{\"result\":{\"workspaces\":[{\"workspace_id\":\"w7\",\"label\":\"$label\"}]}}"
+  export MOCK_WS_LIST="{\"result\":{\"workspaces\":[{\"workspace_id\":\"$w\",\"label\":\"$label\"}]}}"
 }
 
 # mock_split_dir <pane_id> <right|down> — override one pane's split direction, so a
@@ -328,9 +334,10 @@ logged "workspace focus w7" "D1 a path match is focused"
 unlogged "workspace create" "D1 nothing is created"
 
 # Same basename, different org: must NOT match.
-run_layout "export HERDR_ENV=1; mock_topology '$R1' 'Netronix/curato' $FULL" "$R2"
+run_layout "export HERDR_ENV=1; export MOCK_WS_ID=w5
+  mock_topology '$R1' 'Netronix/curato' $FULL" "$R2"
 logged "workspace create" "D2 a different repo with the same basename builds its own"
-unlogged "workspace focus w7" "D2 the other workspace is not focused"
+unlogged "workspace focus w5" "D2 the other repo's workspace is not focused"
 
 # Label says curato, panes say elsewhere → not a match; build our own.
 run_layout "export HERDR_ENV=1; mock_topology '/somewhere/else' 'Netronix/curato' $FULL" "$R1"
@@ -457,5 +464,67 @@ run_layout "export HERDR_ENV=1
   export MOCK_PANE_LIST='{\"error\":{\"code\":\"internal\",\"message\":\"boom\"}}'" "$R1"
 rc_is 1 "F1d an error envelope with exit 0 is rejected"
 unlogged "workspace create" "F1d nothing is created"
+
+# --- G: build ---------------------------------------------------------------
+print -r -- "-- G: build"
+run_layout "export HERDR_ENV=1; mock_panes '/nowhere'" "$R1"
+rc_is 0 "G1 a clean build succeeds"
+logged "workspace create --cwd $R1 --label Netronix/curato (building) --no-focus" \
+  "G1 created under the provisional label, unfocused, with an explicit cwd"
+
+# Ids come from the responses, never guessed. The stub deliberately returns w7:p3,
+# not w1:p1, so any predicted id fails here.
+logged "pane split --pane w7:p3 --direction right" "G2 the agents pane splits by parsed id"
+logged "pane run w7:p3 claude" "G2 claude runs in the parsed root pane"
+logged "pane run w7:p9 codex"  "G2 codex runs in the split's parsed id"
+
+logged "tab create --workspace w7 --label editor" "G3 tabs are created with --workspace"
+unlogged "--workspace-id"    "G3 the non-existent --workspace-id flag is never used"
+unlogged "--target-pane-id"  "G3 the non-existent --target-pane-id flag is never used"
+
+# The runtime split must target that tab's OWN root pane. tab create does not focus,
+# so an untargeted split could land on the agents tab instead.
+logged "pane split --pane w7:p5 --direction down" "G4 the runtime split targets its own parsed root pane"
+logged "pane run w7:p4 nvim ."   "G4 editor runs in its own tab"
+logged "pane run w7:p6 lazygit"  "G4 git runs in its own tab"
+
+logged "workspace rename w7 Netronix/curato" "G5 renamed to the final label"
+logged "workspace focus w7" "G5 focused once complete"
+
+# Trap: fail on the THIRD tab create, so the workspace is genuinely half-built.
+run_layout "export HERDR_ENV=1; mock_panes '/nowhere'; export MOCK_TAB_CREATE_FAIL_AT=3" "$R1"
+rc_is 1 "G6 a failed build fails loudly"
+logged "workspace close w7" "G6 the trap closes the partial workspace"
+logged "tab create --workspace w7 --label runtime" "G6 it got as far as the third tab"
+unlogged "workspace rename" "G6 a failed build is never renamed to the final label"
+
+# hl_api_json proves a payload parses — not that mandatory ids are present.
+run_layout "export HERDR_ENV=1; mock_panes '/nowhere'
+  export MOCK_WS_CREATE_JSON='{\"result\":{\"workspace\":{},\"tab\":{},\"root_pane\":{}}}'" "$R1"
+rc_is 1 "G7 a create response missing ids fails"
+has "missing" "G7 says what was missing"
+unlogged "pane split" "G7 no follow-up command is issued with a null id"
+unlogged "pane run"   "G7 nothing is run"
+
+# --- H: repair --------------------------------------------------------------
+print -r -- "-- H: repair"
+run_layout "export HERDR_ENV=1; mock_topology '$R1' 'Netronix/curato' agents:2 editor:1" "$R1"
+logged "tab create --workspace w7 --label runtime" "H1 the missing runtime tab is created"
+logged "tab create --workspace w7 --label git"     "H1 the missing git tab is created"
+unlogged "--label agents" "H1 the existing agents tab is not recreated"
+unlogged "--label editor" "H1 the existing editor tab is not recreated"
+unlogged "workspace create" "H1 no duplicate workspace"
+
+# The rename window: everything present, only the label wrong. Rename ALONE.
+run_layout "export HERDR_ENV=1; mock_topology '$R1' 'Netronix/curato (building)' $FULL" "$R1"
+rc_is 0 "H2 the rename window is repaired"
+eq "$(count_logged 'tab create --workspace w7 --label agents')" "0" "H2 no tab is created"
+unlogged "pane split" "H2 nothing is split"
+logged "workspace rename w7 Netronix/curato" "H2 renamed to the final label"
+
+# Extra tabs survive repair untouched.
+run_layout "export HERDR_ENV=1; mock_topology '$R1' 'Netronix/curato' agents:2 editor:1 notes:1" "$R1"
+unlogged "tab close" "H3 the user's own tab is never closed"
+unlogged "--label notes" "H3 the user's own tab is never recreated"
 
 finish

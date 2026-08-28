@@ -93,10 +93,15 @@ hl_ensure_server() {
 # hl_label — the display label. Deterministic from the path so it is stable, but
 # purely cosmetic: identity is the canonical path, checked via pane cwd.
 hl_label() {
-  local repo="$1"
+  # BOTH sides resolved. hdev hands over "${repo:A}", so on macOS a repo under /tmp
+  # arrives as /private/tmp/... while $HOME is still /tmp/... — the prefix never
+  # matches and the label silently degrades to the full absolute path. The same
+  # applies to any ~/Code behind a symlink, which _wt_assert_worktree already warns
+  # about: "git reports real paths, and ~/Code may sit behind a symlink."
+  local repo="${1:A}" home="${HOME:A}"
   case "$repo" in
-    "$HOME/Code/"*) print -r -- "${repo#$HOME/Code/}" ;;
-    "$HOME/"*)      print -r -- "${repo#$HOME/}" ;;
+    "$home/Code/"*) print -r -- "${repo#$home/Code/}" ;;
+    "$home/"*)      print -r -- "${repo#$home/}" ;;
     *)              print -r -- "$repo" ;;
   esac
 }
@@ -234,9 +239,87 @@ hl_reconcile() {
   esac
 }
 
-# Replaced in Task 7 by the real build and repair.
-hl_build()  { hl_api_json workspace create --cwd "$1" --label "$(hl_label "$1")" --no-focus >/dev/null }
-hl_repair() { hl_api workspace focus "$1" >/dev/null }
+# hl_id <json> <jq-path> <what> — pull a mandatory id out of a response.
+# hl_api_json proves a payload exists and parses; it says nothing about whether the
+# fields we need are present. `jq -er` fails on null or missing, so a truncated or
+# reshaped response stops here instead of producing "null" and being passed to the
+# next command as a pane id.
+hl_id() {
+  local v
+  v="$(print -r -- "$1" | jq -er "$2" 2>/dev/null)" \
+    || { print -ru2 -- "layout.sh: response is missing $3"; return 1 }
+  [[ -n "$v" && "$v" != null ]] \
+    || { print -ru2 -- "layout.sh: response is missing $3"; return 1 }
+  print -r -- "$v"
+}
+
+# hl_make_tab — create one managed tab and populate it. Prints its root pane id.
+hl_make_tab() {
+  local ws="$1" label="$2" repo="$3" out pane right
+  out="$(hl_api_json tab create --workspace "$ws" --label "$label" --cwd "$repo" --no-focus)" || return 1
+  pane="$(hl_id "$out" '.result.root_pane.pane_id' "a root pane for tab '$label'")" || return 1
+
+  case "$label" in
+    editor)  hl_api pane run "$pane" "nvim ." >/dev/null || return 1 ;;
+    git)     hl_api pane run "$pane" "lazygit" >/dev/null || return 1 ;;
+    runtime) hl_api_json pane split --pane "$pane" --direction down --cwd "$repo" --no-focus >/dev/null || return 1 ;;
+    agents)
+      out="$(hl_api_json pane split --pane "$pane" --direction right --cwd "$repo" --no-focus)" || return 1
+      right="$(hl_id "$out" '.result.pane.pane_id' "the agents split pane")" || return 1
+      # pane run, not agent start: agent start blocks until the agent is detected
+      # ready (30s default), serialising every build behind two boot sequences, and it
+      # changes exit semantics. A shell pane leaves a live prompt on quit, exactly as
+      # dev.kdl's `claude; exec zsh` did.
+      hl_api pane run "$pane" "claude" >/dev/null || return 1
+      hl_api pane run "$right" "codex" >/dev/null || return 1 ;;
+  esac
+  print -r -- "$pane"
+}
+
+hl_build() {
+  local repo="$1" label out ws t1 p1 right l
+  label="$(hl_label "$repo")"
+  out="$(hl_api_json workspace create --cwd "$repo" --label "$label$BUILDING_SUFFIX" --no-focus)" || return 1
+  ws="$(hl_id "$out" '.result.workspace.workspace_id' "a workspace id")" || return 1
+  t1="$(hl_id "$out" '.result.tab.tab_id'            "a first tab id")"  || return 1
+  p1="$(hl_id "$out" '.result.root_pane.pane_id'     "a root pane id")"  || return 1
+
+  # Close what we created if anything below fails. The trap covers a command erroring;
+  # baseline classification covers what it cannot reach (SIGKILL, a lost server).
+  trap "command herdr workspace close $ws >/dev/null 2>&1" EXIT INT TERM
+
+  hl_api tab rename "$t1" agents >/dev/null || return 1
+  out="$(hl_api_json pane split --pane "$p1" --direction right --cwd "$repo" --no-focus)" || return 1
+  right="$(hl_id "$out" '.result.pane.pane_id' "the agents split pane")" || return 1
+  hl_api pane run "$p1" "claude" >/dev/null || return 1
+  hl_api pane run "$right" "codex" >/dev/null || return 1
+
+  for l in editor runtime git; do
+    hl_make_tab "$ws" "$l" "$repo" >/dev/null || return 1
+  done
+
+  hl_api workspace rename "$ws" "$label" >/dev/null || return 1
+  trap - EXIT INT TERM   # complete; stop closing it on exit
+  hl_api workspace focus "$ws" >/dev/null || return 1
+  hl_api tab focus "$t1" >/dev/null || return 1
+}
+
+# hl_repair — create only the missing managed tabs, then rename. Preferred over
+# close-and-rebuild because the workspace may hold a running agent the user cares
+# about. Unmanaged tabs are not this function's business.
+hl_repair() {
+  local ws="$1" repo="$2" label tabs have want
+  label="$(hl_label "$repo")"
+  tabs="$(hl_api_json tab list --workspace "$ws")" || return 1
+  for want in $MANAGED_TABS; do
+    have=$(print -r -- "$tabs" | jq -r --arg l "$want" \
+            '.result.tabs[] | select(.label == $l) | .tab_id' | head -1) || return 1
+    [[ -n "$have" ]] && continue
+    hl_make_tab "$ws" "$want" "$repo" >/dev/null || return 1
+  done
+  hl_api workspace rename "$ws" "$label" >/dev/null || return 1
+  hl_api workspace focus "$ws" >/dev/null || return 1
+}
 
 # hl_attach — from a shell, the point of hdev is to end up *inside* Herdr. Build or
 # focus first, then hand the terminal over. Inside Herdr there is nothing to attach to,

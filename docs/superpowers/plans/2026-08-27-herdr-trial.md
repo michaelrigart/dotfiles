@@ -369,22 +369,27 @@ mock_tabs() {       # <label>...  — tabs w7:t1.. with the given labels, no pan
 # Tabs, panes and the workspace label in ONE call. Setting them separately is how the
 # fixtures drifted: a workspace with four tabs and zero panes is not "four good tabs",
 # it is malformed, and separate helpers made a correct classifier look broken.
+# The workspace id is parameterised (MOCK_WS_ID, default w7) so a fixture's
+# pre-existing workspace can be told apart from one the code creates — the stub's
+# `workspace create` also answers w7, which made "the other workspace is not focused"
+# unfalsifiable once build started focusing its own result.
 mock_topology() {
   local cwd="$1" label="$2"; shift 2
+  local w="${MOCK_WS_ID:-w7}"
   local i=1 pn=1 tabs="" panes="" spec name n k
   for spec in "$@"; do
     name="${spec%%:*}"; n="${spec##*:}"
     [[ -n "$tabs" ]] && tabs+=","
-    tabs+="{\"tab_id\":\"w7:t$i\",\"label\":\"$name\"}"
+    tabs+="{\"tab_id\":\"$w:t$i\",\"label\":\"$name\"}"
     k=1
     while (( k <= n )); do
       [[ -n "$panes" ]] && panes+=","
-      panes+="{\"pane_id\":\"w7:p$pn\",\"tab_id\":\"w7:t$i\",\"workspace_id\":\"w7\",\"cwd\":\"$cwd\"}"
+      panes+="{\"pane_id\":\"$w:p$pn\",\"tab_id\":\"$w:t$i\",\"workspace_id\":\"$w\",\"cwd\":\"$cwd\"}"
       # The direction the baseline expects for this label, so a healthy fixture is
       # healthy without every test restating its geometry.
       case "$name" in
-        runtime) print -r -- "w7:p$pn down"  >> "$MOCK_LAYOUT_FILE" ;;
-        *)       print -r -- "w7:p$pn right" >> "$MOCK_LAYOUT_FILE" ;;
+        runtime) print -r -- "$w:p$pn down"  >> "$MOCK_LAYOUT_FILE" ;;
+        *)       print -r -- "$w:p$pn right" >> "$MOCK_LAYOUT_FILE" ;;
       esac
       (( pn++ )); (( k++ ))
     done
@@ -392,7 +397,7 @@ mock_topology() {
   done
   export MOCK_TAB_LIST="{\"result\":{\"tabs\":[$tabs]}}"
   export MOCK_PANE_LIST="{\"result\":{\"panes\":[$panes]}}"
-  export MOCK_WS_LIST="{\"result\":{\"workspaces\":[{\"workspace_id\":\"w7\",\"label\":\"$label\"}]}}"
+  export MOCK_WS_LIST="{\"result\":{\"workspaces\":[{\"workspace_id\":\"$w\",\"label\":\"$label\"}]}}"
 }
 
 # mock_split_dir <pane_id> <right|down> — override one pane's split direction, so a
@@ -1074,10 +1079,15 @@ hl_reconcile() {
 # hl_label — the display label. Deterministic from the path so it is stable, but
 # purely cosmetic: identity is the canonical path, checked via pane cwd.
 hl_label() {
-  local repo="$1"
+  # BOTH sides resolved. hdev hands over "${repo:A}", so on macOS a repo under /tmp
+  # arrives as /private/tmp/... while $HOME is still /tmp/... — the prefix never
+  # matches and the label silently degrades to the full absolute path. The same
+  # applies to any ~/Code behind a symlink, which _wt_assert_worktree already warns
+  # about: "git reports real paths, and ~/Code may sit behind a symlink."
+  local repo="${1:A}" home="${HOME:A}"
   case "$repo" in
-    "$HOME/Code/"*) print -r -- "${repo#$HOME/Code/}" ;;
-    "$HOME/"*)      print -r -- "${repo#$HOME/}" ;;
+    "$home/Code/"*) print -r -- "${repo#$home/Code/}" ;;
+    "$home/"*)      print -r -- "${repo#$home/}" ;;
     *)              print -r -- "$repo" ;;
   esac
 }
@@ -2020,7 +2030,10 @@ built. Each was found by running the code, not by reading it.
 | 8 | `hl_api_json` for calls that must return a payload | `jq` exits 0 on empty input, so an empty response degraded into "no workspace found" (→ duplicate) or "provisional" (→ repair mutates), both rc=0. Empty stays legal only for focus/run/rename/close |
 | 9 | Error detection reads the parsed envelope, not a `'"error"'` substring | A substring test rejects valid data merely containing the word — a tab labelled `error`, an agent status, a repo path. It did correctly catch a genuine error envelope; the structural check keeps that (F1d) while dropping the false positives (F1c) |
 | 10 | Stub gained `MOCK_EMPTY_FOR` | Setting `MOCK_*_LIST=""` hits the stub's defaults and yields valid JSON, so the empty-response path was unreachable from a fixture |
-| 11 | Stub gained `MOCK_SERVER_NEVER_READY` and a marker file | Lets the bootstrap be tested as a down → start → ready transition rather than two frozen states |
+| 11 | `hl_label` resolves **both** sides before comparing | `hdev` passes `${repo:A}`, so on macOS a repo under `/tmp` arrives as `/private/tmp/...` while `$HOME` is not resolved — the prefix never matched and the label degraded to the full absolute path. Same failure for any `~/Code` behind a symlink |
+| 12 | `hl_id` validates mandatory ids with `jq -er` | `hl_api_json` proves a payload parses, not that `workspace_id`/`tab_id`/`pane_id` exist. Without it a reshaped response yields `null`, which then gets passed to the next command as a pane id |
+| 13 | Fixture workspace id parameterised (`MOCK_WS_ID`) | The stub answered `w7` for both a pre-existing workspace and a newly created one, so "the other workspace is not focused" became unfalsifiable once build began focusing its own result |
+| 14 | Stub gained `MOCK_SERVER_NEVER_READY` and a marker file | Lets the bootstrap be tested as a down → start → ready transition rather than two frozen states |
 
 Assertions about **absence** (`unlogged`, `count_logged … 0`) always pass when nothing
 ran at all. Every one is paired with a presence assertion, and each gate was confirmed
