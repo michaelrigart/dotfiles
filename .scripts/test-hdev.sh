@@ -583,9 +583,42 @@ rc_is 1 "J5 no active workspace in the environment fails"
 has "no active workspace" "J5 says why"
 unlogged "tab focus" "J5 no tab is focused"
 
-# Malformed and empty tab responses must not become a jump.
+# Empty, malformed and error responses must not become a jump — each asserted
+# separately, since one check passing does not exercise the others.
 goto "export MOCK_EMPTY_FOR='tab list'" agents
-rc_is 1 "J6 an empty tab response fails"
-unlogged "tab focus" "J6 no tab is focused"
+rc_is 1 "J6a an empty tab response fails"
+has "empty response" "J6a says why"
+unlogged "tab focus" "J6a no tab is focused"
+
+goto "export MOCK_TAB_LIST='{\"result\":{\"tabs\":['" agents
+rc_is 1 "J6b invalid JSON fails"
+has "invalid JSON" "J6b says why"
+unlogged "tab focus" "J6b no tab is focused"
+
+goto "export MOCK_TAB_LIST='{\"error\":{\"code\":\"internal\"}}'" agents
+rc_is 1 "J6c an error envelope fails"
+has "error envelope" "J6c says why"
+unlogged "tab focus" "J6c no tab is focused"
+
+# Ids must be non-empty strings. `jq -r` renders a missing/numeric/object id as
+# "null"/"7"/"{}" and would hand that straight to `tab focus`.
+goto "export MOCK_TAB_LIST='{\"result\":{\"tabs\":[{\"label\":\"agents\"}]}}'" agents
+rc_is 1 "J7a a missing tab id fails"
+has "malformed id" "J7a says why"
+unlogged "tab focus" "J7a no tab is focused"
+
+goto "export MOCK_TAB_LIST='{\"result\":{\"tabs\":[{\"tab_id\":7,\"label\":\"agents\"}]}}'" agents
+rc_is 1 "J7b a numeric tab id fails"
+unlogged "tab focus" "J7b no tab is focused"
+
+goto "export MOCK_TAB_LIST='{\"result\":{\"tabs\":[{\"tab_id\":{},\"label\":\"agents\"}]}}'" agents
+rc_is 1 "J7c an object tab id fails"
+unlogged "tab focus" "J7c no tab is focused"
+
+# type = "shell" commands run detached, so stderr never reaches the TUI. A failed jump
+# must therefore be visible as a notification, or it is indistinguishable from a
+# keybinding that does nothing at all.
+goto "mock_tabs agents editor" git
+logged "notification show" "J8 a failed jump is surfaced as a notification"
 
 finish

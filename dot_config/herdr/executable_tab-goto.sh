@@ -9,40 +9,54 @@
 emulate -L zsh
 setopt local_options no_unset pipe_fail
 
+# tg_fail — report and stop. Bound to a key via [[keys.command]] type = "shell", which
+# herdr runs DETACHED: nothing written to stderr reaches the TUI, so a failure would
+# look exactly like a dead keybinding. The notification is the only feedback the user
+# actually sees; stderr is kept for the test suite and for manual invocation.
+tg_fail() {
+  print -ru2 -- "tab-goto: $1"
+  command herdr notification show "Tab jump" --body "$1" >/dev/null 2>&1 || true
+  exit 1
+}
+
 label="${1:-}"
-[[ -n "$label" ]] || { print -ru2 -- "tab-goto: usage: tab-goto.sh <label>"; exit 1 }
+[[ -n "$label" ]] || tg_fail "usage: tab-goto.sh <label>"
 
 # Resolving through the globally-focused workspace is racy: persistence is a shared
 # session view, so another attached client can change focus between the keypress and
-# the query. Herdr documents active-context variables for [[keys.command]]; if none
-# is present, say so rather than guessing at a workspace.
+# the query. Herdr injects active-context variables into custom commands; if none is
+# present, say so rather than guessing at a workspace.
 ws="${HERDR_ACTIVE_WORKSPACE_ID:-${HERDR_WORKSPACE_ID:-}}"
-[[ -n "$ws" ]] || {
-  print -ru2 -- "tab-goto: no active workspace in the environment."
-  print -ru2 -- "    Expected HERDR_ACTIVE_WORKSPACE_ID from the keybinding context."
-  exit 1 }
+[[ -n "$ws" ]] || tg_fail "no active workspace in the environment (expected HERDR_ACTIVE_WORKSPACE_ID)"
 
-tabs="$(command herdr tab list --workspace "$ws" 2>&1)" || {
-  print -ru2 -- "tab-goto: tab list failed: $tabs"; exit 1 }
+tabs="$(command herdr tab list --workspace "$ws" 2>&1)" || tg_fail "tab list failed: $tabs"
 
 # Same boundary discipline as layout.sh: an empty or malformed response must not
-# become a jump. jq exits 0 on empty input, so without this an empty response reads
-# as "no tab labelled X" — a misleading message for what is really an API failure.
-[[ -n "$tabs" ]] || { print -ru2 -- "tab-goto: herdr returned an empty response"; exit 1 }
+# become a jump. jq exits 0 on empty input, so without this an empty response reads as
+# "no tab labelled X" — blaming the label for what is really an API failure.
+[[ -n "$tabs" ]] || tg_fail "herdr returned an empty response"
 print -r -- "$tabs" | jq -e . >/dev/null 2>&1 \
-  || { print -ru2 -- "tab-goto: herdr returned invalid JSON"; exit 1 }
+  || tg_fail "herdr returned invalid JSON"
 print -r -- "$tabs" | jq -e 'type == "object" and has("error")' >/dev/null 2>&1 \
-  && { print -ru2 -- "tab-goto: herdr returned an error: $tabs"; exit 1 }
+  && tg_fail "herdr returned an error envelope"
 
+# Count the tabs carrying this label, then collect only ids that are non-empty JSON
+# strings. Comparing the two catches a tab that matches but whose id is missing,
+# numeric, or an object — `jq -r` would otherwise render those as "null", "7" or "{}"
+# and hand them straight to `tab focus`.
+count="$(print -r -- "$tabs" | jq -r --arg l "$label" \
+          '[.result.tabs[] | select(.label == $l)] | length')" \
+  || tg_fail "could not read the tab list"
 matched="$(print -r -- "$tabs" | jq -r --arg l "$label" \
-            '.result.tabs[] | select(.label == $l) | .tab_id')" \
-  || { print -ru2 -- "tab-goto: could not read tab ids"; exit 1 }
+            '.result.tabs[] | select(.label == $l) | .tab_id
+             | select(type == "string" and length > 0)')" \
+  || tg_fail "could not read tab ids"
 
 ids=( ${(f)matched} )
 ids=( ${ids:#} )
 
-(( ${#ids} == 0 )) && { print -ru2 -- "tab-goto: no tab labelled '$label'"; exit 1 }
-(( ${#ids} > 1 ))  && {
-  print -ru2 -- "tab-goto: ${#ids} tabs labelled '$label' — refusing to guess"; exit 1 }
+(( count == 0 ))          && tg_fail "no tab labelled '$label'"
+(( ${#ids} != count ))    && tg_fail "tab '$label' has a malformed id"
+(( ${#ids} > 1 ))         && tg_fail "${#ids} tabs labelled '$label' — refusing to guess"
 
-command herdr tab focus "${ids[1]}" >/dev/null
+command herdr tab focus "${ids[1]}" >/dev/null || tg_fail "could not focus '$label'"
