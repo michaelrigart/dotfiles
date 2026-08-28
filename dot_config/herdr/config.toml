@@ -91,14 +91,3 @@ key = "alt+g"
 type = "shell"
 command = "~/.config/herdr/tab-goto.sh git"
 description = "tab: git"
-
-# TEMPORARY (Task 8 step 6): dump what herdr actually injects into a keybinding.
-# alt+x, not alt+0: digits need Shift on AZERTY — the very reason this config uses
-# mnemonic letters everywhere else.
-# command. The HERDR_ACTIVE_* names are documented but absent from --default-config,
-# so tab-goto.sh's lookup is verified against reality rather than assumed.
-[[keys.command]]
-key = "alt+x"
-type = "shell"
-command = "env | grep -i herdr | sort > /tmp/herdr-keyenv.txt"
-description = "debug: dump key context"
