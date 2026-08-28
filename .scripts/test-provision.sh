@@ -62,6 +62,10 @@ cp "$T/brew/bin/brew" "$T/bin/brew"
 # tee is stubbed because step 10 pipes into `sudo tee -a /etc/shells`; without it the
 # delegating sudo reaches the real /etc/shells. Anything the script writes outside the
 # temp roots needs a stub here — that is the whole isolation boundary.
+# fdesetup is controllable via $FV so both FileVault branches can be exercised.
+printf '#!/usr/bin/env bash\necho "fdesetup $*" >> "$CALLS"\necho "FileVault is ${FV:-Off}."\n' > "$T/bin/fdesetup"
+printf '#!/usr/bin/env bash\necho "pmset $*" >> "$CALLS"\nexit 0\n' > "$T/bin/pmset"
+printf '#!/usr/bin/env bash\necho "csrutil $*" >> "$CALLS"\nexit 0\n' > "$T/bin/csrutil"
 for t in op chezmoi git xcode-select mise chsh open curl ssh defaults killall osascript tee; do
   printf '#!/usr/bin/env bash\necho "%s $*" >> "$CALLS"\nexit 0\n' "$t" > "$T/bin/$t"
 done
@@ -186,6 +190,7 @@ echo "G. configure.sh identity validation (the real script, not a stub)"
 # the real script. Mismatches exit before configure.sh touches anything.
 cfg(){ printf 'ComputerName=%s\nHostName=%s\nLocalHostName=%s\n' "$1" "$2" "$3" > "$IDDB"
   OUT=$(cd "$T" && env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" USER=tester \
+        FV="${FV:-Off}" \
         CALLS="$CALLS" IDDB="$IDDB" MUTLOG="$MUTLOG" SBX_ROOT="$SBX_ROOT" \
         zsh "$SRC/.scripts/configure.sh" --hostname "$4" 2>&1); RC=$?; }
 cfg fenrir fenrir fenrir fenrir
@@ -217,6 +222,22 @@ hasnt "Disabling Universal Control" "fenrir keeps Universal Control (pairs with 
 has   "Leaving Universal Control enabled" "and says so"
 cfg hercules hercules hercules hercules
 has   "Disabling Universal Control" "hercules disables it (conflicts with Screen Sharing)"
+
+echo "J. FileVault expectation and autorestart are per-machine"
+FV=On  cfg fenrir fenrir fenrir fenrir
+has   "FileVault is enabled"        "fenrir with FileVault on is correct"
+FV=Off cfg fenrir fenrir fenrir fenrir
+has   "FileVault is OFF"            "fenrir without FileVault is flagged (it travels)"
+FV=Off cfg hercules hercules hercules hercules
+has   "FileVault is off (intended"  "hercules without FileVault is correct"
+FV=On  cfg hercules hercules hercules hercules
+has   "FileVault is ON on hercules" "hercules WITH FileVault is flagged"
+has   "fdesetup disable"            "and the remedy is named"
+FV=Off
+: > "$CALLS"; cfg hercules hercules hercules hercules
+called "pmset -a autorestart 1" "hercules enables restart-after-power-loss"
+: > "$CALLS"; cfg fenrir fenrir fenrir fenrir
+not_called "pmset -a autorestart" "fenrir does not (it has a battery and a lid)"
 
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -79,11 +79,32 @@ fi
 log_info "Checking System Integrity Protection status..."
 csrutil status
 
-log_info "Enabling FileVault (if not already enabled)..."
-if fdesetup status | grep -q "FileVault is Off"; then
-  log_warn "FileVault is disabled. Enable it in System Settings > Privacy & Security"
+# FileVault is wanted on the laptop and deliberately NOT wanted on the headless
+# desktop: its pre-boot unlock screen has no networking, so a cold boot leaves the
+# machine unreachable until someone is physically at it. hercules is under a desk with
+# no display, and is powered on remotely (smart plug + autorestart below), which only
+# works if the boot reaches the login window unaided.
+#
+# On Apple Silicon this is a smaller trade than it sounds: the SSD is always encrypted
+# with Secure Enclave keys bound to the machine, so FileVault only governs whether a
+# user password is needed to release the key at boot. Removing the drive still yields
+# nothing. This script only REPORTS a mismatch -- turning FileVault on or off is slow,
+# password-prompting and not something provisioning should do behind your back.
+if [ "$HOSTNAME" = "fenrir" ]; then
+  if fdesetup status | grep -q "FileVault is Off"; then
+    log_warn "FileVault is OFF on ${HOSTNAME}, which travels — enable it in"
+    log_warn "  System Settings → Privacy & Security"
+  else
+    log_info "✓ FileVault is enabled"
+  fi
 else
-  log_info "✓ FileVault is enabled"
+  if fdesetup status | grep -q "FileVault is Off"; then
+    log_info "✓ FileVault is off (intended on a headless machine — pre-boot has no network)"
+  else
+    log_warn "FileVault is ON on ${HOSTNAME}. A cold boot will stop at the pre-boot"
+    log_warn "  unlock screen with no networking, so remote power-on cannot reach it."
+    log_warn "  Disable with: sudo fdesetup disable"
+  fi
 fi
 
 log_info "Enabling Firewall..."
@@ -180,6 +201,18 @@ if [ "$HOSTNAME" = "fenrir" ]; then
 fi
 
 log_info "✓ Trackpad configured"
+
+# ============================================================================
+# Power
+# ============================================================================
+# Only the headless machine: with a smart plug, restoring power boots it, which is the
+# remote power button a machine under a desk otherwise lacks. Pointless on a laptop
+# that has a battery and a lid.
+if [ "$HOSTNAME" != "fenrir" ]; then
+  log_info "Enabling automatic restart after power loss..."
+  sudo pmset -a autorestart 1
+  log_info "✓ autorestart enabled (a smart plug can now power this machine on)"
+fi
 
 # ============================================================================
 # Universal Control
