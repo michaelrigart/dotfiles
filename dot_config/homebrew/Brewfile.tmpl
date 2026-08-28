@@ -25,7 +25,6 @@
 # top-level requirements they aren't.
 
 tap "basecamp/tap"
-tap "borgbackup/tap"
 tap "satococoa/tap"
 tap "skyhook-io/tap"
 
@@ -35,7 +34,13 @@ brew "arping"                          # edge-node network diagnostics
 brew "asitop"
 brew "awscli"
 brew "azure-cli"
-brew "borgbackup/tap/borgbackup-fuse"  # Borg + `borg mount` (needs the macfuse cask)
+brew "borgbackup"                      # Vorta requires it. The borgbackup-fuse variant
+                                       # was dropped 2026-08-28: it exists only for
+                                       # `borg mount`, which needs a macFUSE kernel
+                                       # extension that was never approved on either
+                                       # machine, so mount has never worked. Everything
+                                       # else — backup, restore, check, prune, extract —
+                                       # is unaffected.
 brew "btop"
 brew "chezmoi"
 brew "coreutils"
@@ -105,7 +110,6 @@ cask "grammarly-desktop"
 cask "jordanbaird-ice"
 cask "kap"
 cask "little-snitch"
-cask "macfuse"                         # required to `borg mount` a backup archive
 cask "micro-snitch"
 cask "microsoft-auto-update"
 cask "microsoft-azure-storage-explorer"
