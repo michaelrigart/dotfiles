@@ -1570,10 +1570,13 @@ Mocked tests cannot catch CLI churn — a stub defines its own acceptance and ke
 # `dev.layout` would let teardown unlink the plugin the live setup depends on.
 #
 # Run manually, unsandboxed: zsh .scripts/test-hdev-topology.sh
+emulate -L zsh
 set -u
 setopt no_bg_nice   # see the same note in layout.sh
 SESSION=hdev-test
 PLUGIN_ID=dev.layout.test
+TMP_BASE=${TMPDIR:-/tmp}
+TMP_BASE=${TMP_BASE%/}
 h() { command herdr --session "$SESSION" "$@" }
 
 pass=0 fail=0
@@ -1588,13 +1591,16 @@ cleanup() {
   h server stop >/dev/null 2>&1 || true
   command herdr session delete "$SESSION" >/dev/null 2>&1 || true
   command herdr plugin unlink "$PLUGIN_ID" >/dev/null 2>&1 || true
-  [[ -n "${SCRATCH:-}" ]] && rm -rf "$SCRATCH"
+  if [[ -n "${SCRATCH:-}" && "$SCRATCH" == $TMP_BASE/hdev-live.* ]]; then
+    rm -rf -- "$SCRATCH"
+  fi
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT HUP INT TERM
 
-SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/hdev-live.XXXXXX")"
+SCRATCH="$(mktemp -d "$TMP_BASE/hdev-live.XXXXXX")" || exit 1
 REPO="$SCRATCH/Code/Test/proj"
-mkdir -p "$REPO" && git -C "$REPO" init -q && git -C "$REPO" commit -q --allow-empty -m init
+mkdir -p "$REPO" || exit 1
+git -C "$REPO" init -q || exit 1
 # Resolved: mktemp hands back /tmp/... or /var/folders/..., layout.sh stores
 # "${repo:A}" (/private/...), so an unresolved comparison never matches a pane cwd.
 REPO="${REPO:A}"
@@ -1625,20 +1631,28 @@ n=$(h pane list --workspace "$WS" | jq -r --arg t "$AT" '[.result.panes[] | sele
 [[ "$n" == 2 ]] && ok "agents holds 2 panes" || bad "agents holds $n panes"
 
 # 3. Idempotency: a second run focuses, never duplicates.
-HERDR_SESSION="$SESSION" HDEV_NO_ATTACH=1 ~/.config/herdr/layout.sh "$REPO" >/dev/null
+second_rc=0
+HERDR_SESSION="$SESSION" HDEV_NO_ATTACH=1 ~/.config/herdr/layout.sh "$REPO" >/dev/null \
+  || second_rc=$?
 n=$(h workspace list | jq -r '.result.workspaces | length')
-[[ "$n" == 1 ]] && ok "a second run does not duplicate" || bad "$n workspaces after a second run"
+[[ "$second_rc" == 0 && "$n" == 1 ]] \
+  && ok "a second run does not duplicate" \
+  || bad "second run rc=$second_rc with $n workspaces"
 
 # 4. Extra tabs survive.
 h tab create --workspace "$WS" --label notes >/dev/null
-HERDR_SESSION="$SESSION" HDEV_NO_ATTACH=1 ~/.config/herdr/layout.sh "$REPO" >/dev/null
-h tab list --workspace "$WS" | jq -e '.result.tabs[] | select(.label=="notes")' >/dev/null \
+notes_rc=0
+HERDR_SESSION="$SESSION" HDEV_NO_ATTACH=1 ~/.config/herdr/layout.sh "$REPO" >/dev/null \
+  || notes_rc=$?
+[[ "$notes_rc" == 0 ]] \
+  && h tab list --workspace "$WS" | jq -e '.result.tabs[] | select(.label=="notes")' >/dev/null \
   && ok "an unmanaged tab survives" || bad "the unmanaged tab was removed"
 
 # 5. Concurrency, on the schedule that actually breaks it: B scans, A builds and
 #    releases, THEN B acquires. Launching two at once mostly proves nothing.
 REPO2="$SCRATCH/Code/Test/proj2"
-mkdir -p "$REPO2" && git -C "$REPO2" init -q && git -C "$REPO2" commit -q --allow-empty -m init
+mkdir -p "$REPO2" || exit 1
+git -C "$REPO2" init -q || exit 1
 REPO2="${REPO2:A}"
 # B sleeps BEFORE taking the lock, so it arrives after A has built and released —
 # the stale-observation schedule. Launching two at once would usually serialise
@@ -1646,11 +1660,16 @@ REPO2="${REPO2:A}"
 ( HERDR_SESSION="$SESSION" HDEV_NO_ATTACH=1 HL_LOCK_DELAY=3 ~/.config/herdr/layout.sh "$REPO2" ) &
 B=$!
 sleep 0.2
-HERDR_SESSION="$SESSION" HDEV_NO_ATTACH=1 ~/.config/herdr/layout.sh "$REPO2" >/dev/null 2>&1
-wait $B 2>/dev/null || true
+a_rc=0
+HERDR_SESSION="$SESSION" HDEV_NO_ATTACH=1 ~/.config/herdr/layout.sh "$REPO2" >/dev/null 2>&1 \
+  || a_rc=$?
+b_rc=0
+wait $B 2>/dev/null || b_rc=$?
 n=$(h pane list | jq -r --arg d "$REPO2" \
       '[.result.panes[] | select(.cwd == $d) | .workspace_id] | unique | length')
-[[ "$n" == 1 ]] && ok "the delayed-acquisition race yields one workspace" || bad "$n workspaces for one repo"
+[[ "$a_rc" == 0 && "$b_rc" == 0 && "$n" == 1 ]] \
+  && ok "the delayed-acquisition race yields one workspace" \
+  || bad "race runs rc=$a_rc/$b_rc yielded $n workspaces"
 
 # 6. Split directions, not just pane counts. Two panes side by side and two stacked
 #    are both "2"; only the geometry says which layout was actually built.
@@ -1662,21 +1681,27 @@ h pane layout --pane "$(h pane list --workspace "$WS" | jq -r --arg t "$RT" \
 
 # 7. The plugin: link under a DISTINCT id, invoke it, unlink. Registration is global,
 #    so reusing dev.layout would let this teardown unlink the real one.
-PDIR="$SCRATCH/plugin"; mkdir -p "$PDIR"
+PDIR="$SCRATCH/plugin"
+mkdir -p "$PDIR" || exit 1
 # Match the plugin id EXACTLY. `s/^id = .*/` also rewrites the [[actions]] entry's
 # `id = "apply"` — TOML nested tables are not indented — which renames the action
 # too, leaving "$PLUGIN_ID.apply" pointing at nothing.
 sed 's|^id = "dev.layout"$|id = "'"$PLUGIN_ID"'"|' \
-  ~/.config/herdr/plugin/herdr-plugin.toml > "$PDIR/herdr-plugin.toml"
+  ~/.config/herdr/plugin/herdr-plugin.toml > "$PDIR/herdr-plugin.toml" || exit 1
 grep -q '^id = "apply"' "$PDIR/herdr-plugin.toml" \
   && ok "the action id survived the id rewrite" || bad "the action id was rewritten too"
 command herdr plugin link "$PDIR" >/dev/null \
   && ok "the plugin links" || bad "plugin link failed"
-h tab close "$(h tab list --workspace "$WS" | jq -r '.result.tabs[] | select(.label=="git") | .tab_id')" >/dev/null
+close_rc=0
+h tab close "$(h tab list --workspace "$WS" | jq -r '.result.tabs[] | select(.label=="git") | .tab_id')" >/dev/null \
+  || close_rc=$?
+closed_n=$(h tab list --workspace "$WS" | jq -r '[.result.tabs[] | select(.label=="git")] | length')
 # The action's context is taken from the FOCUSED workspace, so focus it first —
 # otherwise the plugin repairs whichever workspace happens to be focused.
-h workspace focus "$WS" >/dev/null
-h plugin action invoke "$PLUGIN_ID.apply" >/dev/null 2>&1   # session-scoped: the
+focus_rc=0
+h workspace focus "$WS" >/dev/null || focus_rc=$?
+invoke_rc=0
+h plugin action invoke "$PLUGIN_ID.apply" >/dev/null 2>&1 || invoke_rc=$?   # session-scoped: the
 # topology lives in hdev-test, and a bare `herdr plugin action invoke` would run it
 # against the default session instead.
 # `plugin action invoke` returns while the action is still "running" — poll rather
@@ -1686,16 +1711,20 @@ for i in {1..20}; do
   [[ "$n" == 1 ]] && break
   sleep 0.5
 done
-[[ "$n" == 1 ]] && ok "the plugin action repairs a closed managed tab" || bad "git tab count = $n after repair"
+[[ "$close_rc" == 0 && "$closed_n" == 0 && "$focus_rc" == 0 && "$invoke_rc" == 0 && "$n" == 1 ]] \
+  && ok "the plugin action repairs a closed managed tab" \
+  || bad "repair preconditions/actions rc=$close_rc/$focus_rc/$invoke_rc, counts=$closed_n->$n"
 
 # 7b. The jump must still land after repair. This is the whole reason tab-goto.sh
 #     resolves by label: repair APPENDS (herdr 0.8.2 has no `tab move`), so the
 #     repaired git tab is now last — after the unmanaged `notes` tab added earlier —
 #     and a position-based lookup would not land reliably on git at all.
 GITTAB=$(h tab list --workspace "$WS" | jq -r '.result.tabs[] | select(.label=="git") | .tab_id')
-HERDR_ACTIVE_WORKSPACE_ID="$WS" HERDR_SESSION="$SESSION" ~/.config/herdr/tab-goto.sh git
+jump_rc=0
+HERDR_ACTIVE_WORKSPACE_ID="$WS" HERDR_SESSION="$SESSION" ~/.config/herdr/tab-goto.sh git \
+  || jump_rc=$?
 ACTIVE=$(h workspace get "$WS" | jq -r '.result.workspace.active_tab_id')
-[[ "$ACTIVE" == "$GITTAB" ]] \
+[[ "$jump_rc" == 0 && "$ACTIVE" == "$GITTAB" ]] \
   && ok "a label jump lands on the repaired tab ($GITTAB)" \
   || bad "label jump landed on $ACTIVE, expected the repaired $GITTAB"
 
@@ -2335,6 +2364,7 @@ built. Each was found by running the code, not by reading it.
 | 26 | The five-target activation uses `chezmoi apply --parent-dirs` | Exact-file targeting avoids unrelated 1Password templates, but the new `~/.claude/hooks/` directory did not exist. Without `--parent-dirs`, chezmoi failed before mutation instead of creating it |
 | 27 | The cold-restore gate stores integration output in `integration_status`, not `status` | `status` is a read-only special parameter in zsh; assigning to it aborted the gate before workspace creation |
 | 28 | The cold-restore gate explicitly asks for one Codex prompt before comparing refs | Codex did not report a native session merely by reaching its idle screen; its `SessionStart` hook ran only after the first prompt was submitted. The gate correctly refused to compare a null ref |
+| 29 | The live gate needs no fixture commits and includes command success in every state assertion | Both signed fixture commits failed while the gate still reported 15/15. Several later checks could likewise pass on stale state if the action that was supposed to create, reconcile, close, focus, invoke, or jump failed. Git initialization is sufficient, and each verdict now requires both the transition and its resulting state |
 
 Assertions about **absence** (`unlogged`, `count_logged … 0`) always pass when nothing
 ran at all. Every one is paired with a presence assertion, and each gate was confirmed
