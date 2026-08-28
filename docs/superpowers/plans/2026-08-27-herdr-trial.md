@@ -1983,19 +1983,9 @@ And to the `.codex` block (after line 78):
 
 This is the dangerous gap: without it, reprovisioning deploys Codex's hook script *and* sets `features.hooks = true` while never writing the registration connecting them — cold restore silently dead, every visible artifact present and correct.
 
-Create `dot_codex/modify_private_hooks.json`, merge-preserving so other hook registrations survive:
-
-```
-#!/usr/bin/env bash
-# modify_ script: stdin is the current ~/.codex/hooks.json (empty on first run),
-# stdout replaces it. Adds only Herdr's entries and leaves everything else intact.
-set -euo pipefail
-current="$(cat)"
-[ -z "$current" ] && current='{}'
-printf '%s' "$current" | jq \
-  --arg cmd "$HOME/.codex/herdr-agent-state.sh" \
-  '.hooks = ((.hooks // {}) + {herdr: {command: $cmd}})'
-```
+Create `dot_codex/modify_private_hooks.json` as a merge-preserving chezmoi modify
+template. It removes only an existing Herdr `SessionStart` entry, preserves every
+other key and hook, then appends exactly one current Herdr entry.
 
 This reproduces the shape **observed** in Step 2, not a guess:
 
@@ -2034,7 +2024,12 @@ Do not let the installer write this file; the two would fight on every `chezmoi 
 - [ ] **Step 8: Apply and verify**
 
 ```bash
-chezmoi apply ~/.claude ~/.codex
+chezmoi apply \
+  ~/.claude/hooks/herdr-agent-state.sh \
+  ~/.claude/settings.json \
+  ~/.codex/herdr-agent-state.sh \
+  ~/.codex/hooks.json \
+  ~/.codex/config.toml
 herdr integration status | grep -E 'claude|codex'
 ```
 
@@ -2043,7 +2038,12 @@ Run **unsandboxed** — `~/.claude/hooks` and `~/.claude/settings.json` are writ
 - [ ] **Step 9: Confirm chezmoi is settled**
 
 ```bash
-chezmoi diff ~/.claude ~/.codex
+chezmoi diff \
+  ~/.claude/hooks/herdr-agent-state.sh \
+  ~/.claude/settings.json \
+  ~/.codex/herdr-agent-state.sh \
+  ~/.codex/hooks.json \
+  ~/.codex/config.toml
 ```
 
 Expected: empty. A non-empty diff means the installer and a `modify_` script are fighting — fix before committing.

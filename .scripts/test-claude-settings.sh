@@ -3,7 +3,8 @@
 # settings JSON. The modify script is a pure stdin->stdout filter, so this needs no chezmoi
 # run and touches no deployed file. Run: bash .scripts/test-claude-settings.sh
 set -u
-MOD="$(cd "$(dirname "$0")/.." && pwd)/dot_claude/modify_private_settings.json"
+SRC="$(cd "$(dirname "$0")/.." && pwd)"
+MOD="$SRC/dot_claude/modify_private_settings.json"
 pass=0; fail=0; OUT=""
 
 _pass() { echo "  PASS: $1"; pass=$((pass + 1)); }
@@ -389,9 +390,9 @@ echo "X. every wired hook script is actually managed by chezmoi"
 # hook pointed at a file chezmoi never deployed. Derive the hook list from the emitted
 # settings rather than hardcoding it, so a future third hook is covered automatically.
 if command -v chezmoi >/dev/null 2>&1; then
-  managed=$(chezmoi managed 2>/dev/null)
-  hooks=$(printf '%s' "$OUT" | jq -r '[.hooks.PreToolUse[]?.hooks[]?.command] | .[]' \
-            | grep -o '\.claude/[A-Za-z0-9._-]*\.sh' | sort -u)
+  managed=$(chezmoi --source "$SRC" managed 2>/dev/null)
+  hooks=$(printf '%s' "$OUT" | jq -r '[.hooks[]?[]?.hooks[]?.command] | .[]' \
+             | grep -o '\.claude/[A-Za-z0-9._/-]*\.sh' | sort -u)
   # An empty $hooks would make the loop below assert nothing at all — a silent
   # pass in the exact section that exists to catch a silently-inert hook wiring.
   # Fail loudly instead of skipping.
