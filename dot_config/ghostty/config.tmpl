@@ -1,3 +1,4 @@
+{{- $live := output "scutil" "--get" "ComputerName" | trim -}}
 # Theme and Colors - Using Ghostty's built-in theme system
 
 # Font Configuration
@@ -7,6 +8,19 @@ font-style = normal
 font-style-bold = bold
 font-style-italic = italic
 font-style-bold-italic = bold-italic
+
+{{ if eq $live "fenrir" -}}
+# Low-DPI compensation, fenrir only. Its LG 38GN950 is 3840x1600 at 1x — roughly
+# 111 PPI, and macOS offers no HiDPI mode for it — so glyph stems rasterize thinner
+# than the typeface intends. hercules runs a 2x virtual display and does not need
+# this; thickening a Retina buffer just looks bloated.
+#
+# If this reads too heavy, lower font-thicken-strength (0-255, default 255).
+# The next lever after this is `alpha-blending = linear-corrected`, which
+# compensates for light-on-dark text rendering thin — try it separately, not
+# stacked, or you cannot tell which one did what.
+font-thicken = true
+{{ end -}}
 
 
 # Theme and Colors
