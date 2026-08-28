@@ -248,4 +248,34 @@ eq "$(<$LAYOUT_ARG)" "" "B1 layout.sh is never invoked"
 run_hdev "'$R1'"
 eq "$(<$LAYOUT_ARG)" "$R1" "B2 the primary checkout is still allowed"
 
+# --- C: bootstrap -----------------------------------------------------------
+print -r -- "-- C: bootstrap"
+
+# HOME must be the fixture root: hl_label derives the label from $HOME/Code, so
+# without it every expected label in this suite would be wrong.
+run_layout() {  # <mock-setup> <layout.sh args...>
+  mock_reset
+  eval "$1"
+  shift
+  OUT="$(HOME="$ROOTTMP" HDEV_NO_ATTACH=1 zsh "$LAYOUT" "$@" 2>&1)"; RC=$?
+}
+
+# Inside herdr: never starts a server. Each absence assertion is paired with a
+# presence one — "nothing was logged" passes trivially when nothing ran at all, so on
+# its own it could never detect a layout.sh that failed to launch.
+run_layout "export HERDR_ENV=1" "$R1"
+rc_is 0 "C1 inside herdr, layout.sh runs"
+unlogged "server" "C1 inside herdr, no server is started"
+
+# Outside herdr with a server already up: also must not start one.
+run_layout "unset HERDR_ENV; export MOCK_SERVER_UP=1" "$R1"
+rc_is 0 "C2 with a server up, layout.sh runs"
+eq "$(count_logged 'server')" "0" "C2 an existing server is not restarted"
+
+# Outside herdr with no server: probes, fails cleanly rather than hanging.
+run_layout "unset HERDR_ENV; export MOCK_SERVER_UP=0 HL_READY_TRIES=2" "$R1"
+logged "workspace list" "C3 readiness is probed with a real failing call"
+rc_is 1 "C3 an unreachable server fails rather than hanging"
+has "did not become ready" "C3 reports the timeout"
+
 finish
