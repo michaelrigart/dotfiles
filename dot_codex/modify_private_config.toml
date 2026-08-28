@@ -48,6 +48,12 @@
        upstream default flip and Codex gets a JS REPL silently. Pin it off instead. */ -}}
 {{- $config = setValueAtPath "features.memories" true $config -}}
 {{- $config = setValueAtPath "features.prevent_idle_sleep" true $config -}}
+{{- /* Required by the Herdr codex integration: its hook only fires with this set.
+       Pinned HERE rather than left to `herdr integration install`, because that
+       installer and this template would otherwise fight on every apply — and
+       because `herdr integration uninstall` deliberately leaves the flag set, so
+       rollback has to clear it explicitly by deleting this line.                 */ -}}
+{{- $config = setValueAtPath "features.hooks" true $config -}}
 {{- $config = setValueAtPath "features.js_repl" false $config -}}
 
 {{- $config | toToml -}}

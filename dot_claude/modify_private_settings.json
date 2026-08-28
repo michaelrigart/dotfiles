@@ -28,6 +28,7 @@ fi
 printf '%s' "$input" | jq \
   --arg sl "bash $HOME/.claude/statusline.sh" \
   --arg subsl "bash $HOME/.claude/subagent-statusline.sh" \
+  --arg herdr_hook "bash '$HOME/.claude/hooks/herdr-agent-state.sh' session" \
   --arg agent_socket "$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock" \
   --arg tool_path "$HOME/.local/bin:$HOME/.local/share/mise/shims:$HOME/.cargo/bin:/opt/homebrew/bin:/opt/homebrew/sbin:$HOME/.krew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" '
   # capture from the current file (null when absent): tool-written keys are carried
@@ -135,6 +136,25 @@ printf '%s' "$input" | jq \
               {
                 "type": "command",
                 "command": "echo \"export GIT_SSH_COMMAND=$HOME/.local/bin/ssh-sandbox-proxy\" > \"$CLAUDE_ENV_FILE\""
+              }
+            ]
+          },
+          # The Herdr agent-state hook. Owned here rather than left to
+          # `herdr integration install claude`: that installer rewrites settings.json
+          # directly, so the two would fight on every `chezmoi apply`. Shape mirrors
+          # what the installer actually writes (observed, not guessed): a matcher,
+          # a session argument, timeout 10, and an absolute path.
+          #
+          # APPENDED deliberately: the GIT_SSH_COMMAND hook must stay at index 0,
+          # which test-claude-settings.sh pins by position. No apostrophes in these
+          # comments; see the note further down about ending the shell string.
+          {
+            "matcher": "*",
+            "hooks": [
+              {
+                "type": "command",
+                "command": $herdr_hook,
+                "timeout": 10
               }
             ]
           }

@@ -1,0 +1,34 @@
+{{- /* chezmoi:modify-template */ -}}
+{{- /* Own ~/.codex/hooks.json so the Herdr registration survives reprovisioning.
+       Without an owner here the codex hook SCRIPT and features.hooks would both
+       deploy while the registration connecting them never did — cold restore
+       silently dead, every visible artifact present and correct.
+
+       Merge-preserving: any other SessionStart hook is kept, and only Herdr's own
+       entry is added. Shape mirrors what `herdr integration install codex` writes,
+       observed rather than guessed: a `session` argument, timeout 10, and an
+       absolute path to the script.                                              */ -}}
+{{- $cfg := dict -}}
+{{- if .chezmoi.stdin -}}
+{{-   $cfg = fromJson .chezmoi.stdin -}}
+{{- end -}}
+{{- $hooks := dict -}}
+{{- if hasKey $cfg "hooks" -}}{{- $hooks = get $cfg "hooks" -}}{{- end -}}
+{{- $start := list -}}
+{{- if hasKey $hooks "SessionStart" -}}{{- $start = get $hooks "SessionStart" -}}{{- end -}}
+{{- $cmd := printf "bash '%s/.codex/herdr-agent-state.sh' session" .chezmoi.homeDir -}}
+{{- /* Drop any existing herdr entry first, so re-applying cannot duplicate it. */ -}}
+{{- $kept := list -}}
+{{- range $start -}}
+{{-   $isHerdr := false -}}
+{{-   range (get . "hooks" | default list) -}}
+{{-     if contains "herdr-agent-state.sh" (get . "command" | default "") -}}
+{{-       $isHerdr = true -}}
+{{-     end -}}
+{{-   end -}}
+{{-   if not $isHerdr -}}{{- $kept = append $kept . -}}{{- end -}}
+{{- end -}}
+{{- $entry := dict "hooks" (list (dict "type" "command" "command" $cmd "timeout" 10)) -}}
+{{- $hooks = set $hooks "SessionStart" (append $kept $entry) -}}
+{{- $cfg = set $cfg "hooks" $hooks -}}
+{{ $cfg | toPrettyJson }}

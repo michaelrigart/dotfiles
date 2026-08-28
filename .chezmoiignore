@@ -69,6 +69,9 @@ tests/
 !.claude/themes/
 .claude/themes/*
 !.claude/themes/tokyo-night.json
+!.claude/hooks/
+.claude/hooks/*
+!.claude/hooks/herdr-agent-state.sh
 
 .codex/*
 !.codex/AGENTS.md
@@ -76,6 +79,8 @@ tests/
 !.codex/themes/
 .codex/themes/*
 !.codex/themes/tokyo-night.tmTheme
+!.codex/herdr-agent-state.sh
+!.codex/hooks.json
 
 # Alfred: allowlist-only, same reasoning as above. Only the cross-model relay snippet
 # collection belongs in this PUBLIC repo. The rest of the preferences bundle holds
