@@ -1897,8 +1897,13 @@ jq -e '[.. | strings | select(test("herdr"))] | length == 0' "$FIX/claude/settin
 # The contract is registration removal AND script deletion, for both agents.
 [[ -e "$FIX/codex/herdr-agent-state.sh" ]] \
   && { echo "STOP: herdr's codex hook script survived the uninstall"; exit 1; }
-jq -e '.hooks.herdr' "$FIX/codex/hooks.json" >/dev/null \
-  && { echo "STOP: herdr's own entry survived the uninstall"; exit 1; }
+# Recursive string search, NOT `.hooks.herdr`: the registration lives under
+# .hooks.SessionStart[], so a key-based check on a key that never existed passes
+# unconditionally and proves nothing.
+jq -e '[.. | strings | select(test("herdr"))] | length == 0' "$FIX/codex/hooks.json" >/dev/null \
+  || { echo "STOP: herdr's codex registration survived the uninstall"; exit 1; }
+jq -e '[.. | strings | select(test("herdr"))] | length == 0' "$FIX/claude/settings.json" >/dev/null \
+  || { echo "STOP: herdr's claude registration survived the uninstall"; exit 1; }
 grep -q 'hooks = true' "$FIX/codex/config.toml" \
   || echo "note: features.hooks was NOT left set — rollback need not restore it"
 echo "uninstall is contained and non-destructive"
@@ -1908,7 +1913,7 @@ Expected: the unrelated hook survives, Herdr's entry is gone, `features.hooks` r
 set. **If the unrelated hook does not survive, stop** — the uninstall is destructive to
 config it does not own, and rollback would cost you unrelated settings.
 
-- [ ] **Step 2c: Immutable baseline, then authorise**
+- [ ] **Step 2c: Read-only baseline, then authorise**
 
 A second, read-only snapshot in a timestamped subdirectory of the same backup
 directory. Step 1's copies sit at its top level where a later run would overwrite
@@ -1932,7 +1937,11 @@ set +e
 
 **Stop here and get explicit confirmation before Step 3.** Steps 1-2c modify nothing
 in `~/.claude` or `~/.codex`; what they leave behind is the backup directory above,
-plus a scratch fixture. Everything after Step 3 modifies real agent configuration.
+plus a scratch fixture.
+
+Steps 3-7 edit **chezmoi source only** — still nothing in `$HOME`. The real activation
+boundary is **Step 8's `chezmoi apply`**, which is where the hooks reach your live
+agent config, and that needs its own authorization with the rendered diff in hand.
 
 Do not treat approval of Steps 1-2c as approval of Step 3. They are separate
 decisions, and the evidence from 2c is what the second one should be based on.
@@ -1988,7 +1997,16 @@ printf '%s' "$current" | jq \
   '.hooks = ((.hooks // {}) + {herdr: {command: $cmd}})'
 ```
 
-Use the exact key shape observed in Step 2 — this is the expected shape; correct it to what the installer actually wrote if they differ.
+This reproduces the shape **observed** in Step 2, not a guess:
+
+```json
+{"hooks":{"SessionStart":[{"hooks":[{"type":"command",
+  "command":"bash '<abs>/herdr-agent-state.sh' session","timeout":10}]}]}}
+```
+
+Three details are load-bearing: the `session` argument, `timeout: 10`, and an
+**absolute** path — the installer writes a fully-resolved path, so the template must
+render the real `$HOME`, never a relative or fixture path.
 
 - [ ] **Step 6: Pin `features.hooks`**
 
@@ -2002,7 +2020,16 @@ Herdr's uninstall deliberately leaves this flag set, so rollback restores its pr
 
 - [ ] **Step 7: Merge Claude's hook registration**
 
-In `dot_claude/modify_private_settings.json`, which already owns the `hooks` block, add Herdr's entry alongside the existing `SessionStart` hooks — matching the shape observed in Step 2. Do not let the installer write this file; the two would fight on every `chezmoi apply`.
+In `dot_claude/modify_private_settings.json`, which already owns the `hooks` block, add
+Herdr's entry alongside the existing `SessionStart` hooks. The observed shape — note
+Claude's entry carries a `matcher`, Codex's does not:
+
+```json
+{"matcher":"*","hooks":[{"type":"command",
+  "command":"bash '<abs>/herdr-agent-state.sh' session","timeout":10}]}
+```
+
+Do not let the installer write this file; the two would fight on every `chezmoi apply`.
 
 - [ ] **Step 8: Apply and verify**
 
