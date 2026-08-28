@@ -1864,7 +1864,9 @@ jq '.hooks += {mine: {command: "/bin/true"}}' "$FIX/codex/hooks.json" > "$FIX/co
 jq '.hooks.SessionStart = ((.hooks.SessionStart // []) + [{hooks: [{type: "command", command: "/bin/true"}]}])' \
   "$FIX/claude/settings.json" > "$FIX/claude/settings.json.new" \
   && mv "$FIX/claude/settings.json.new" "$FIX/claude/settings.json" || exit 1
-cp -R "$FIX" "$FIX.before"
+# Step 3 copies the hook scripts out of this snapshot, so losing it silently would
+# leave nothing to bring under chezmoi.
+cp -R "$FIX" "$FIX.before" || exit 1
 
 # The SAME four redirects as the install. Uninstall resolves its own paths, and an
 # uninstall-specific resolution failure would modify real config just as silently.
@@ -1892,6 +1894,9 @@ jq -e '[.. | strings | select(test("herdr"))] | length == 0' "$FIX/claude/settin
   || { echo "STOP: herdr's claude registration survived the uninstall"; exit 1; }
 [[ -e "$FIX/claude/hooks/herdr-agent-state.sh" ]] \
   && { echo "STOP: herdr's claude hook script survived the uninstall"; exit 1; }
+# The contract is registration removal AND script deletion, for both agents.
+[[ -e "$FIX/codex/herdr-agent-state.sh" ]] \
+  && { echo "STOP: herdr's codex hook script survived the uninstall"; exit 1; }
 jq -e '.hooks.herdr' "$FIX/codex/hooks.json" >/dev/null \
   && { echo "STOP: herdr's own entry survived the uninstall"; exit 1; }
 grep -q 'hooks = true' "$FIX/codex/config.toml" \
@@ -1905,10 +1910,13 @@ config it does not own, and rollback would cost you unrelated settings.
 
 - [ ] **Step 2c: Immutable baseline, then authorise**
 
-A second, immutable snapshot in a timestamped subdirectory of the same backup
+A second, read-only snapshot in a timestamped subdirectory of the same backup
 directory. Step 1's copies sit at its top level where a later run would overwrite
-them; this one is `chmod a-w`, so a mistake cannot quietly destroy the only record of
-your pre-trial config. Fails closed for the same reason Step 1 does.
+them; `chmod a-w` stops the files being *rewritten* in place.
+
+It does not make them immutable: the parent directory stays writable, so the snapshot
+can still be deleted outright. It guards against a careless overwrite, not against
+`rm -rf`. Fails closed for the same reason Step 1 does.
 
 ```bash
 set -e
