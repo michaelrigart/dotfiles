@@ -2129,8 +2129,7 @@ emulate -L zsh
 set -u
 setopt no_bg_nice
 SESSION=hdev-restore
-TMP_BASE=${TMPDIR:-/tmp}
-TMP_BASE=${TMP_BASE%/}
+FIXTURE_BASE=${XDG_STATE_HOME:-$HOME/.local/state}/herdr-trial
 h() { command herdr --session "$SESSION" "$@" }
 pass=0 fail=0
 ok()  { print -r -- "  PASS: $1"; pass=$((pass+1)) }
@@ -2141,9 +2140,6 @@ bad() { print -r -- "  FAIL: $1"; fail=$((fail+1)) }
 cleanup() {
   h server stop >/dev/null 2>&1 || true
   command herdr session delete "$SESSION" >/dev/null 2>&1 || true
-  if [[ -n "${SCRATCH:-}" && "$SCRATCH" == $TMP_BASE/hdev-restore.* ]]; then
-    rm -rf -- "$SCRATCH"
-  fi
 }
 trap cleanup EXIT HUP INT TERM
 
@@ -2176,8 +2172,10 @@ print -r -- "$integration_status" | grep -q '^codex: current ' \
   exit 1
 }
 
-SCRATCH="$(mktemp -d "$TMP_BASE/hdev-restore.XXXXXX")" || exit 1
-REPO="$SCRATCH/proj"
+# Stable by design. Codex records project trust in config.toml; a new mktemp path on
+# every restore attempt would accumulate one dead trusted-project entry per run. One
+# XDG-state fixture keeps the ten-attempt trial repeatable without polluting config.
+REPO="$FIXTURE_BASE/restore-fixture"
 mkdir -p "$REPO" || exit 1
 git -C "$REPO" init -q || exit 1
 
@@ -2386,6 +2384,7 @@ built. Each was found by running the code, not by reading it.
 | 28 | The cold-restore gate explicitly asks for one Codex prompt before comparing refs | Codex did not report a native session merely by reaching its idle screen; its `SessionStart` hook ran only after the first prompt was submitted. The gate correctly refused to compare a null ref |
 | 29 | The live gate needs no fixture commits and includes command success in every state assertion | Both signed fixture commits failed while the gate still reported 15/15. Several later checks could likewise pass on stale state if the action that was supposed to create, reconcile, close, focus, invoke, or jump failed. Git initialization is sufficient, and each verdict now requires both the transition and its resulting state |
 | 30 | The live gate unlinks its test plugin through the running named server before stopping it | Plugin registration is global, but `plugin unlink` is still a server API call. Stopping `hdev-test` first, then issuing a bare unlink against the stopped default session, returned `server_not_running`; `|| true` swallowed it and left `dev.layout.test` pointing at a deleted fixture. A green gate now validates the `removed: true` response before cleanup |
+| 31 | Cold-restore attempts reuse one repo under `$XDG_STATE_HOME/herdr-trial` | Codex persists project trust by absolute path. A fresh `mktemp` repo on each of the ten required restore attempts would accumulate ten dead trusted-project entries in live config. A stable state fixture makes the gate repeatable and bounds that state to one path |
 
 Assertions about **absence** (`unlogged`, `count_logged … 0`) always pass when nothing
 ran at all. Every one is paired with a presence assertion, and each gate was confirmed

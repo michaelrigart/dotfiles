@@ -11,8 +11,7 @@ set -u
 setopt no_bg_nice
 
 SESSION=hdev-restore
-TMP_BASE=${TMPDIR:-/tmp}
-TMP_BASE=${TMP_BASE%/}
+FIXTURE_BASE=${XDG_STATE_HOME:-$HOME/.local/state}/herdr-trial
 h() { command herdr --session "$SESSION" "$@" }
 
 pass=0
@@ -23,9 +22,6 @@ bad() { print -r -- "  FAIL: $1"; fail=$((fail + 1)) }
 cleanup() {
   h server stop >/dev/null 2>&1 || true
   command herdr session delete "$SESSION" >/dev/null 2>&1 || true
-  if [[ -n "${SCRATCH:-}" && "$SCRATCH" == $TMP_BASE/hdev-restore.* ]]; then
-    rm -rf -- "$SCRATCH"
-  fi
 }
 trap cleanup EXIT HUP INT TERM
 
@@ -58,8 +54,10 @@ print -r -- "$integration_status" | grep -q '^codex: current ' \
   exit 1
 }
 
-SCRATCH="$(mktemp -d "$TMP_BASE/hdev-restore.XXXXXX")" || exit 1
-REPO="$SCRATCH/proj"
+# Stable by design. Codex records project trust in config.toml; a new mktemp path on
+# every restore attempt would accumulate one dead trusted-project entry per run. One
+# XDG-state fixture keeps the ten-attempt trial repeatable without polluting config.
+REPO="$FIXTURE_BASE/restore-fixture"
 mkdir -p "$REPO" || exit 1
 git -C "$REPO" init -q || exit 1
 
