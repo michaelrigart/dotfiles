@@ -1643,20 +1643,42 @@ h plugin action invoke "$PLUGIN_ID.apply" >/dev/null 2>&1   # session-scoped: th
 n=$(h tab list --workspace "$WS" | jq -r '[.result.tabs[] | select(.label=="git")] | length')
 [[ "$n" == 1 ]] && ok "the plugin action repairs a closed managed tab" || bad "git tab count = $n after repair"
 
-# 8. Notifications actually render. The mocked suite can only assert that
-#    `notification show` was INVOKED — it cannot know the server has delivery switched
-#    off, which is exactly how pinning `onboarding = false` silently disabled every
-#    failure message a detached keybinding or plugin action can produce. `busy` is a
-#    legitimate transient (toasts are rate-limited), so retry before failing.
-shown=0
+# 7b. The jump must still land after repair. This is the whole reason tab-goto.sh
+#     resolves by label: repair APPENDS (herdr 0.8.2 has no `tab move`), so the
+#     repaired git tab is now last, and any position-based lookup would land on
+#     runtime instead.
+GITTAB=$(h tab list --workspace "$WS" | jq -r '.result.tabs[] | select(.label=="git") | .tab_id')
+HERDR_ACTIVE_WORKSPACE_ID="$WS" HERDR_SESSION="$SESSION" ~/.config/herdr/tab-goto.sh git
+ACTIVE=$(h workspace get "$WS" | jq -r '.result.workspace.active_tab_id')
+[[ "$ACTIVE" == "$GITTAB" ]] \
+  && ok "a label jump lands on the repaired tab ($GITTAB)" \
+  || bad "label jump landed on $ACTIVE, expected the repaired $GITTAB"
+
+# 8. Notification DELIVERY is not switched off. This deliberately does not claim to
+#    prove rendering: the gate runs a headless named session with no attached client,
+#    where delivery = "herdr" (in-app toasts) legitimately returns
+#    no_foreground_client. Rendering was proven manually in Task 8 and cannot be
+#    re-proven here without attaching a client.
+#
+#    What this DOES catch is `disabled` — the state pinning `onboarding = false`
+#    silently produced, which removes every failure message a detached keybinding or
+#    plugin action can emit. The mocked suite cannot see it: it only knows that
+#    `notification show` was invoked.
+#
+#    NotificationShowReason is ["shown","disabled","rate_limited",
+#    "no_foreground_client","busy"] — the middle two are transient, so retry.
+enabled=0
 for i in 1 2 3 4 5; do
   r=$(h notification show "gate" --body "live gate probe" | jq -r '.result.reason')
-  [[ "$r" == shown ]] && { shown=1; break }
-  [[ "$r" == disabled ]] && break   # not transient; fail fast
-  sleep 1.5
+  case "$r" in
+    shown|no_foreground_client) enabled=1; break ;;   # delivery is on
+    disabled)                   break ;;              # the real defect; fail fast
+    busy|rate_limited)          sleep 1.5 ;;          # transient; retry
+    *)                          break ;;
+  esac
 done
-(( shown )) && ok "notifications render (delivery is not off)" \
-  || bad "notification not shown (last reason: ${r:-none}) — failure feedback is invisible"
+(( enabled )) && ok "notification delivery is enabled (reason: $r)" \
+  || bad "notification delivery is off (last reason: ${r:-none}) — failure feedback would be invisible"
 
 print -r -- "=== $pass passed, $fail failed ==="
 (( fail == 0 ))
