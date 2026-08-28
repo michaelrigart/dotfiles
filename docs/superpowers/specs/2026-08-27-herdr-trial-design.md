@@ -633,6 +633,12 @@ if agent status proves a novelty that does not change behaviour.
 6. `~/.config/herdr/` holds logs, stopped-session state and the plugin registry, so
    it is **archived, not deleted** — moved aside, with removal left as an explicit
    separate decision once nothing is needed from it. Same for `~/.herdr/` if present.
+   The exact `$XDG_STATE_HOME/herdr-trial/restore-fixture` directory is synthetic
+   test state and can be removed after every Herdr session is stopped. Codex records
+   that fixture's absolute path as trusted; the current CLI and official documentation
+   expose no supported command to remove one trust entry, so deleting the fixture may
+   leave an inert path in `config.toml`. Do not hand-edit the deployed dotfile to hide
+   that limitation.
 
 Zellij, `dev`, `wt` and `wt-rm` are untouched throughout, so rollback is deletion
 plus an uninstall, never a restoration.
