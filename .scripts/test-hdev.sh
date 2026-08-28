@@ -547,4 +547,45 @@ run_layout "export HERDR_ENV=1; mock_topology '$R1' 'Netronix/curato' agents:2 e
 unlogged "tab close" "H3 the user's own tab is never closed"
 unlogged "--label notes" "H3 the user's own tab is never recreated"
 
+# --- J: tab jumps resolve by label ------------------------------------------
+print -r -- "-- J: tab-goto"
+
+goto() {  # <mock-setup> <label>
+  mock_reset; eval "$1"
+  OUT="$(HERDR_ACTIVE_WORKSPACE_ID=w7 zsh "$TABGOTO" "$2" 2>&1)"; RC=$?
+}
+
+goto "mock_tabs agents editor runtime git" runtime
+rc_is 0 "J1 a known label resolves"
+logged "tab focus w7:t3" "J1 focuses the tab carrying that label"
+
+# Order-independence: repair appends, and herdr 0.8.2 has no `tab move`, so a repaired
+# workspace can hold its managed tabs in any order. An index would land on the wrong one.
+goto "mock_tabs git agents editor runtime" git
+rc_is 0 "J2 resolves in a reordered workspace"
+logged "tab focus w7:t1" "J2 follows the label, not the position"
+
+goto "mock_tabs agents editor" git
+rc_is 1 "J3 a missing label fails"
+has "no tab labelled" "J3 says why"
+unlogged "tab focus" "J3 no tab is focused"
+
+goto "mock_tabs agents agents" agents
+rc_is 1 "J4 an ambiguous label fails rather than picking one"
+has "refusing to guess" "J4 says why"
+unlogged "tab focus" "J4 no tab is focused"
+
+# No injected context: say so rather than falling back to the globally-focused
+# workspace, which is racy under a shared session view.
+mock_reset; mock_tabs agents editor runtime git
+OUT="$(env -u HERDR_ACTIVE_WORKSPACE_ID -u HERDR_WORKSPACE_ID zsh "$TABGOTO" agents 2>&1)"; RC=$?
+rc_is 1 "J5 no active workspace in the environment fails"
+has "no active workspace" "J5 says why"
+unlogged "tab focus" "J5 no tab is focused"
+
+# Malformed and empty tab responses must not become a jump.
+goto "export MOCK_EMPTY_FOR='tab list'" agents
+rc_is 1 "J6 an empty tab response fails"
+unlogged "tab focus" "J6 no tab is focused"
+
 finish

@@ -53,3 +53,39 @@ command = "exec \"${SHELL:-sh}\""
 description = "scratch shell"
 width = "80%"
 height = "80%"
+
+# Tab jumps. `switch_tab` is range-only ("prefix+1..9") — there is no switch_tab_1,
+# and tab.focus takes a tab_id, not an index. These resolve by LABEL instead, which
+# also survives repair appending a tab out of order (herdr 0.8.2 has no `tab move`).
+[[keys.command]]
+key = "alt+a"
+type = "shell"
+command = "~/.config/herdr/tab-goto.sh agents"
+description = "tab: agents"
+
+[[keys.command]]
+key = "alt+e"
+type = "shell"
+command = "~/.config/herdr/tab-goto.sh editor"
+description = "tab: editor"
+
+[[keys.command]]
+key = "alt+r"
+type = "shell"
+command = "~/.config/herdr/tab-goto.sh runtime"
+description = "tab: runtime"
+
+[[keys.command]]
+key = "alt+g"
+type = "shell"
+command = "~/.config/herdr/tab-goto.sh git"
+description = "tab: git"
+
+# TEMPORARY (Task 8 step 6): dump what herdr actually injects into a keybinding
+# command. The HERDR_ACTIVE_* names are documented but absent from --default-config,
+# so tab-goto.sh's lookup is verified against reality rather than assumed.
+[[keys.command]]
+key = "alt+0"
+type = "shell"
+command = "env | grep -i herdr | sort > /tmp/herdr-keyenv.txt"
+description = "debug: dump key context"
