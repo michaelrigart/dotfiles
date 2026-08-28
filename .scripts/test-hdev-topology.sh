@@ -41,6 +41,10 @@ mkdir -p "$REPO" && git -C "$REPO" init -q && git -C "$REPO" commit -q --allow-e
 REPO="${REPO:A}"
 
 # Start clean as well as finish clean: a run killed mid-way leaves state behind.
+# STOP before DELETE — `session delete` only acts on a stopped session, so deleting
+# first silently fails against a surviving server and the persisted state is then
+# restored on the next start. Same order as cleanup below.
+h server stop >/dev/null 2>&1 || true
 command herdr session delete "$SESSION" >/dev/null 2>&1 || true
 
 print -r -- "=== live topology gate (session: $SESSION) ==="

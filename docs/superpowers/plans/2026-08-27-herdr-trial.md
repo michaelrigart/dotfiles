@@ -1600,6 +1600,10 @@ mkdir -p "$REPO" && git -C "$REPO" init -q && git -C "$REPO" commit -q --allow-e
 REPO="${REPO:A}"
 
 # Start clean as well as finish clean: a run killed mid-way leaves state behind.
+# STOP before DELETE — `session delete` only acts on a stopped session, so deleting
+# first silently fails against a surviving server and the persisted state is then
+# restored on the next start. Same order as cleanup below.
+h server stop >/dev/null 2>&1 || true
 command herdr session delete "$SESSION" >/dev/null 2>&1 || true
 
 print -r -- "=== live topology gate (session: $SESSION) ==="
@@ -1781,13 +1785,50 @@ cp ~/.codex/hooks.json ~/.local/state/herdr-trial-backup/hooks.json 2>/dev/null 
 
 Do **not** install into the real config yet. Use scratch config dirs:
 
+`CLAUDE_CONFIG_DIR` and `CODEX_HOME` appear in the binary's strings, but that is not
+proof the installer honours them. If either is ignored, the installer has **already
+modified your real config** by the time the diff would reveal it. So the redirect is
+not the only line of defence:
+
+- redirect `HOME` and `XDG_CONFIG_HOME` as well, so a path built from either lands in
+  the fixture rather than `$HOME`;
+- run it **sandboxed**, where `~/.claude/hooks` and `~/.claude/settings.json` are
+  write-denied — a redirect that fails becomes a permission error instead of a
+  silent modification;
+- record hashes and modes of the real files before and after, and require exact
+  equality.
+
 ```bash
 export FIX="$(mktemp -d "${TMPDIR}/herdr-fix.XXXXXX")"
-mkdir -p "$FIX/claude" "$FIX/codex"
-CLAUDE_CONFIG_DIR="$FIX/claude" herdr integration install claude
-CODEX_HOME="$FIX/codex" herdr integration install codex
+mkdir -p "$FIX/claude" "$FIX/codex" "$FIX/home" "$FIX/xdg"
+
+# Fingerprint the real config first.
+real_fp() {
+  for f in ~/.claude/settings.json ~/.codex/config.toml ~/.codex/hooks.json \
+           ~/.claude/hooks/herdr-agent-state.sh ~/.codex/herdr-agent-state.sh; do
+    if [[ -e "$f" ]]; then printf '%s %s %s\n' "$f" "$(shasum -a 256 "$f" | cut -d' ' -f1)" \
+      "$(stat -f '%Lp' "$f")"; else printf '%s ABSENT\n' "$f"; fi
+  done
+}
+real_fp > "$FIX/before.fp"
+
+env HOME="$FIX/home" XDG_CONFIG_HOME="$FIX/xdg" \
+    CLAUDE_CONFIG_DIR="$FIX/claude" herdr integration install claude
+env HOME="$FIX/home" XDG_CONFIG_HOME="$FIX/xdg" \
+    CODEX_HOME="$FIX/codex" herdr integration install codex
+
 find "$FIX" -type f | sort
+real_fp > "$FIX/after.fp"
+diff "$FIX/before.fp" "$FIX/after.fp" && echo "REAL CONFIG UNTOUCHED" \
+  || echo "STOP: the installer modified real config despite the redirects"
 ```
+
+**If that diff is non-empty, stop entirely** — the overrides are not honoured, and the
+fixture approach cannot be made safe. Report it rather than proceeding.
+
+The task **ends after Step 2c**. Step 3 onward requires separate, explicit
+authorization: everything up to that point is reversible by deleting a scratch
+directory, and everything after modifies real agent configuration.
 
 Record exactly which files appeared and which keys changed. Report **key names only** — never paste `settings.json`, `hooks.json` or `config.toml`, which carry credentials and machine state.
 
@@ -1831,6 +1872,9 @@ chmod -R a-w "$BK" && ls -l "$BK"
 **Stop here and get explicit confirmation before Step 3.** Everything to this point is
 reversible by deleting a scratch directory; everything after modifies real agent
 configuration.
+
+Do not treat approval of Steps 1-2c as approval of Step 3. They are separate
+decisions, and the evidence from 2c is what the second one should be based on.
 
 - [ ] **Step 3: Bring the hook scripts under chezmoi**
 
@@ -1950,7 +1994,19 @@ h() { command herdr --session "$SESSION" "$@" }
 pass=0 fail=0
 ok()  { print -r -- "  PASS: $1"; pass=$((pass+1)) }
 bad() { print -r -- "  FAIL: $1"; fail=$((fail+1)) }
-trap 'h server stop >/dev/null 2>&1 || true; [[ -n "${SCRATCH:-}" ]] && rm -rf "$SCRATCH"' EXIT INT TERM
+# Stop THEN delete: `session delete` only acts on a stopped session, so deleting
+# first silently fails and the persisted state is restored on the next run — the same
+# stale-session defect the topology gate hit.
+cleanup() {
+  h server stop >/dev/null 2>&1 || true
+  command herdr session delete "$SESSION" >/dev/null 2>&1 || true
+  [[ -n "${SCRATCH:-}" ]] && rm -rf "$SCRATCH"
+}
+trap cleanup EXIT INT TERM
+
+# Start clean as well: a previous run killed mid-way leaves state behind.
+h server stop >/dev/null 2>&1 || true
+command herdr session delete "$SESSION" >/dev/null 2>&1 || true
 
 command herdr integration status | grep -q '^claude: installed' \
   && ok "the claude integration is installed" || bad "claude integration missing"
