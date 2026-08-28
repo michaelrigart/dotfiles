@@ -40,8 +40,8 @@ hl_api() {
     fi
     # Envelope check on the PARSED top level, not a substring match on '"error"'.
     # A substring test rejects valid data that merely contains the word — a tab the
-    # user labelled "error", an agent status, a repo path — and it misses a genuine
-    # error envelope returned with exit status 0.
+    # user labelled "error", an agent status, a repo path. It did catch a genuine
+    # error envelope; this keeps that while dropping the false positives.
     if print -r -- "$out" | jq -e 'type == "object" and has("error")' >/dev/null 2>&1; then
       print -ru2 -- "layout.sh: herdr $* failed: $out"
       return 1
@@ -246,10 +246,13 @@ hl_reconcile() {
 # next command as a pane id.
 hl_id() {
   local v
-  v="$(print -r -- "$1" | jq -er "$2" 2>/dev/null)" \
+  # `jq -er` alone only rejects null/false: it happily returns 7 or {} with exit 0,
+  # so an API reshape could still hand nonsense to herdr — and that value reaches an
+  # interpolated trap command. Require a non-empty JSON string; the id's internal
+  # shape stays opaque, as it should.
+  v="$(print -r -- "$1" | jq -er "($2) | select(type == \"string\" and length > 0)" 2>/dev/null)" \
     || { print -ru2 -- "layout.sh: response is missing $3"; return 1 }
-  [[ -n "$v" && "$v" != null ]] \
-    || { print -ru2 -- "layout.sh: response is missing $3"; return 1 }
+  [[ -n "$v" ]] || { print -ru2 -- "layout.sh: response is missing $3"; return 1 }
   print -r -- "$v"
 }
 
@@ -280,13 +283,18 @@ hl_build() {
   local repo="$1" label out ws t1 p1 right l
   label="$(hl_label "$repo")"
   out="$(hl_api_json workspace create --cwd "$repo" --label "$label$BUILDING_SUFFIX" --no-focus)" || return 1
+  # The workspace id comes first and the trap is armed IMMEDIATELY. Parsing all three
+  # ids before arming leaves a window where the workspace exists but nothing will
+  # clean it up: a response carrying a valid workspace_id but no tab_id exits 1 having
+  # created exactly the orphan the trap exists to remove.
+  #
+  # A missing workspace id is deliberately handled before this — there is nothing to
+  # close without one.
   ws="$(hl_id "$out" '.result.workspace.workspace_id' "a workspace id")" || return 1
-  t1="$(hl_id "$out" '.result.tab.tab_id'            "a first tab id")"  || return 1
-  p1="$(hl_id "$out" '.result.root_pane.pane_id'     "a root pane id")"  || return 1
+  trap "command herdr workspace close ${(q)ws} >/dev/null 2>&1" EXIT INT TERM
 
-  # Close what we created if anything below fails. The trap covers a command erroring;
-  # baseline classification covers what it cannot reach (SIGKILL, a lost server).
-  trap "command herdr workspace close $ws >/dev/null 2>&1" EXIT INT TERM
+  t1="$(hl_id "$out" '.result.tab.tab_id'        "a first tab id")" || return 1
+  p1="$(hl_id "$out" '.result.root_pane.pane_id' "a root pane id")" || return 1
 
   hl_api tab rename "$t1" agents >/dev/null || return 1
   out="$(hl_api_json pane split --pane "$p1" --direction right --cwd "$repo" --no-focus)" || return 1

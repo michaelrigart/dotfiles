@@ -490,12 +490,16 @@ logged "pane run w7:p6 lazygit"  "G4 git runs in its own tab"
 
 logged "workspace rename w7 Netronix/curato" "G5 renamed to the final label"
 logged "workspace focus w7" "G5 focused once complete"
+logged "tab focus w7:t4" "G5 the agents tab is focused, as dev.kdl pinned it"
+[[ "$(<$HLOG)" == *"workspace rename w7"*"workspace focus w7"*"tab focus w7:t4"* ]] \
+  && _pass "G5 rename precedes focus, and the tab focus comes last" \
+  || _fail "G5 rename/focus ordering is wrong"
 
 # Trap: fail on the THIRD tab create, so the workspace is genuinely half-built.
 run_layout "export HERDR_ENV=1; mock_panes '/nowhere'; export MOCK_TAB_CREATE_FAIL_AT=3" "$R1"
 rc_is 1 "G6 a failed build fails loudly"
 logged "workspace close w7" "G6 the trap closes the partial workspace"
-logged "tab create --workspace w7 --label runtime" "G6 it got as far as the third tab"
+logged "tab create --workspace w7 --label git" "G6 it reached the third tab create (git)"
 unlogged "workspace rename" "G6 a failed build is never renamed to the final label"
 
 # hl_api_json proves a payload parses — not that mandatory ids are present.
@@ -505,6 +509,22 @@ rc_is 1 "G7 a create response missing ids fails"
 has "missing" "G7 says what was missing"
 unlogged "pane split" "G7 no follow-up command is issued with a null id"
 unlogged "pane run"   "G7 nothing is run"
+unlogged "workspace close" "G7 with no workspace id there is nothing to close"
+
+# G7b: a VALID workspace id but a missing tab id. The workspace exists, so failing
+# here without closing it leaves exactly the orphan the trap exists to remove — the
+# window that opened when the trap was armed only after all three ids parsed.
+run_layout "export HERDR_ENV=1; mock_panes '/nowhere'
+  export MOCK_WS_CREATE_JSON='{\"result\":{\"workspace\":{\"workspace_id\":\"w7\"},\"tab\":{},\"root_pane\":{}}}'" "$R1"
+rc_is 1 "G7b a missing tab id fails the build"
+logged "workspace close w7" "G7b the created workspace is still closed"
+unlogged "pane split" "G7b nothing is split"
+
+# G7c: ids must be strings. `jq -er` alone returns 7 and {} with exit 0.
+run_layout "export HERDR_ENV=1; mock_panes '/nowhere'
+  export MOCK_WS_CREATE_JSON='{\"result\":{\"workspace\":{\"workspace_id\":7},\"tab\":{\"tab_id\":\"w7:t4\"},\"root_pane\":{\"pane_id\":\"w7:p3\"}}}'" "$R1"
+rc_is 1 "G7c a non-string workspace id is rejected"
+unlogged "tab rename" "G7c nothing proceeds on a numeric id"
 
 # --- H: repair --------------------------------------------------------------
 print -r -- "-- H: repair"

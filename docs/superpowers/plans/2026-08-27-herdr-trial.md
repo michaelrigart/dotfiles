@@ -2033,7 +2033,9 @@ built. Each was found by running the code, not by reading it.
 | 11 | `hl_label` resolves **both** sides before comparing | `hdev` passes `${repo:A}`, so on macOS a repo under `/tmp` arrives as `/private/tmp/...` while `$HOME` is not resolved — the prefix never matched and the label degraded to the full absolute path. Same failure for any `~/Code` behind a symlink |
 | 12 | `hl_id` validates mandatory ids with `jq -er` | `hl_api_json` proves a payload parses, not that `workspace_id`/`tab_id`/`pane_id` exist. Without it a reshaped response yields `null`, which then gets passed to the next command as a pane id |
 | 13 | Fixture workspace id parameterised (`MOCK_WS_ID`) | The stub answered `w7` for both a pre-existing workspace and a newly created one, so "the other workspace is not focused" became unfalsifiable once build began focusing its own result |
-| 14 | Stub gained `MOCK_SERVER_NEVER_READY` and a marker file | Lets the bootstrap be tested as a down → start → ready transition rather than two frozen states |
+| 14 | The cleanup trap is armed as soon as a workspace id parses, not after all three ids | A response with a valid `workspace_id` but no `tab_id` exited 1 *having created the workspace* and never closed it — the check meant to prevent orphans was creating one (G7b) |
+| 15 | `hl_id` requires a non-empty JSON **string**, and the trap argument is `${(q)}`-quoted | `jq -er` only rejects null/false: `7` and `{}` pass with exit 0, so an API reshape could hand nonsense to herdr, and that value is interpolated into a trap command (G7c) |
+| 16 | Stub gained `MOCK_SERVER_NEVER_READY` and a marker file | Lets the bootstrap be tested as a down → start → ready transition rather than two frozen states |
 
 Assertions about **absence** (`unlogged`, `count_logged … 0`) always pass when nothing
 ran at all. Every one is paired with a presence assertion, and each gate was confirmed
