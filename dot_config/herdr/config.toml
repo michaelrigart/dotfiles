@@ -26,6 +26,14 @@ name = "tokyo-night"
 # tab jump then looks exactly like a dead keybinding.
 #
 # "herdr" = in-app toasts: visible wherever the TUI is, and needs no OS permission.
+[ui]
+# Keep the sidebar grouped by workspace rather than a flat agent list.
+agent_panel_sort = "spaces"
+# Alt-q is the Zellij quit mnemonic, but one Herdr session owns many projects. Close
+# only the current workspace and keep Herdr's confirmation rather than killing every
+# repository in the server.
+confirm_close = true
+
 [ui.toast]
 delivery = "herdr"
 
@@ -44,6 +52,8 @@ split_vertical = "alt+n"
 new_tab = "alt+t"
 detach = "alt+w"
 toggle_sidebar = "alt+b"
+close_workspace = "alt+q"
+edit_scrollback = "alt+s"
 
 # Herdr's built-in creator cannot run .worktreeinclude/.worktreehook or install the
 # ownership lock that keeps native removal behind wt-rm. Its default shortcut is

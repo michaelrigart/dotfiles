@@ -876,5 +876,8 @@ rc_is 0 "prefix+shift+g opens the safe hwt prompt"
 has 'type = "popup"' "the safe worktree prompt is session-modal"
 OUT="$(<"$CONFIG")"
 has 'new_worktree = ""' "Herdr's unprepared built-in worktree shortcut is disabled"
+has 'close_workspace = "alt+q"' "Alt-q closes the current project workspace"
+has 'edit_scrollback = "alt+s"' "Alt-s retains the Zellij scrollback mnemonic"
+has 'confirm_close = true' "workspace close keeps Herdr's confirmation guard explicit"
 
 finish
