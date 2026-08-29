@@ -14,7 +14,9 @@ set -uo pipefail
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TPL="$SRC/dot_codex/modify_private_config.toml"
+HOOKS_TPL="$SRC/dot_codex/modify_private_hooks.json"
 [ -f "$TPL" ] || { echo "missing template: $TPL" >&2; exit 1; }
+[ -f "$HOOKS_TPL" ] || { echo "missing template: $HOOKS_TPL" >&2; exit 1; }
 command -v chezmoi >/dev/null 2>&1 || { echo "chezmoi not on PATH" >&2; exit 1; }
 
 pass=0; fail=0; OUT=""
@@ -35,6 +37,11 @@ hasnt() {
   else _pass "$2"; fi
 }
 
+emit_hooks() {
+  OUT=$(printf '%s' "$1" | chezmoi --config /dev/null --config-format toml \
+    --source "$SRC" --destination "$HOME" execute-template --with-stdin --file "$HOOKS_TPL" 2>&1)
+}
+
 echo "A. enforced feature flags win over whatever is on disk"
 # The live file had js_repl removed and memories added by Codex itself; both must be
 # pinned by us, not left to the tool.
@@ -46,6 +53,7 @@ prevent_idle_sleep = false
 has '^\s*js_repl = false'           "js_repl forced off even when the live file says true"
 has '^\s*memories = true'           "memories forced on even when the live file says false"
 has '^\s*prevent_idle_sleep = true' "prevent_idle_sleep forced on"
+has '^\s*hooks = true'              "agent hooks forced on for the Herdr integration"
 
 echo "B. js_repl is pinned, not dropped"
 # Regression guard. An earlier revision unset the key on the grounds that it was
@@ -111,6 +119,62 @@ if printf '%s' "$OUT" | python3 -c 'import sys,tomllib; tomllib.loads(sys.stdin.
 else
   _fail "emitted config parses as TOML" "$(printf '%s' "$OUT" | head -c 200)"
 fi
+
+echo "H. hooks.json renders the observed Herdr registration"
+emit_hooks '{}'
+if printf '%s' "$OUT" | jq -e --arg cmd "bash '$HOME/.codex/herdr-agent-state.sh' session" '
+  (keys == ["hooks"])
+  and (.hooks | keys == ["SessionStart"])
+  and (.hooks.SessionStart | length == 1)
+  and (.hooks.SessionStart[0] | keys == ["hooks"])
+  and (.hooks.SessionStart[0].hooks == [{type: "command", command: $cmd, timeout: 10}])
+' >/dev/null 2>&1; then
+  _pass "fresh hooks.json has the exact installer-observed shape"
+else
+  _fail "fresh hooks.json has the exact installer-observed shape" "$(printf '%s' "$OUT" | head -c 200)"
+fi
+
+echo "I. hooks.json preserves unrelated state and stays idempotent"
+fixture='{"other":42,"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"/bin/true"}]},{"hooks":[{"type":"command","command":"bash '\''/old/.codex/herdr-agent-state.sh'\'' session","timeout":5}]}],"Stop":[{"hooks":[{"type":"command","command":"/bin/false"}]}]}}'
+emit_hooks "$fixture"
+first="$OUT"
+if printf '%s' "$first" | jq -e --arg cmd "bash '$HOME/.codex/herdr-agent-state.sh' session" '
+  .other == 42
+  and (.hooks.Stop[0].hooks[0].command == "/bin/false")
+  and ([.hooks.SessionStart[] | select(any(.hooks[]?; .command == "/bin/true"))] | length == 1)
+  and ([.hooks.SessionStart[] | select(any(.hooks[]?; ((.command // "") | contains("herdr-agent-state.sh"))))] | length == 1)
+  and ([.hooks.SessionStart[]?.hooks[]? | select((.command // "") | contains("herdr-agent-state.sh"))][0]
+       == {type: "command", command: $cmd, timeout: 10})
+' >/dev/null 2>&1; then
+  _pass "unrelated hooks survive and a stale Herdr entry is replaced exactly once"
+else
+  _fail "unrelated hooks survive and a stale Herdr entry is replaced exactly once" "$(printf '%s' "$first" | head -c 200)"
+fi
+
+emit_hooks "$first"
+second="$OUT"
+if jq -en --argjson first "$first" --argjson second "$second" '$first == $second' >/dev/null; then
+  _pass "re-rendering hooks.json is semantically idempotent"
+else
+  _fail "re-rendering hooks.json is semantically idempotent" "second render differs"
+fi
+
+if printf '{broken' | chezmoi --config /dev/null --config-format toml \
+    --source "$SRC" --destination "$HOME" execute-template --with-stdin --file "$HOOKS_TPL" \
+    >/dev/null 2>&1; then
+  _fail "invalid hooks.json is rejected" "template accepted malformed JSON"
+else
+  _pass "invalid hooks.json is rejected"
+fi
+
+echo "J. every Codex integration target is managed by chezmoi"
+managed=$(chezmoi --source "$SRC" managed 2>/dev/null)
+for target in .codex/config.toml .codex/herdr-agent-state.sh .codex/hooks.json; do
+  case "$managed" in
+    *"$target"*) _pass "$target is chezmoi-managed" ;;
+    *) _fail "$target is chezmoi-managed" "not in \`chezmoi managed\`" ;;
+  esac
+done
 
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

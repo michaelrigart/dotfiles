@@ -239,6 +239,64 @@ dev() {
   fi
 }
 
+# hdev — open (or return to) a project in its Herdr workspace. The Herdr-side
+# counterpart to `dev`, running beside it during the trial; `dev` is unchanged.
+#   hdev                   pick from all repos under ~/Code (fzf)
+#   hdev curato            by name: exact basename → case-insensitive substring → fzf
+#   hdev Netronix/curato   path relative to ~/Code
+#   hdev .                 the git repo containing the current directory
+#
+# Resolution only. Everything about Herdr lives in layout.sh, which is also what the
+# `dev.layout.apply` plugin action calls — one topology definition, two entry points.
+hdev() {
+  emulate -L zsh
+  setopt local_options null_glob extended_glob
+
+  local code="$HOME/Code" repo arg="$1"
+  local -a repos=( "$code"/*/.git(N:h) "$code"/*/*/.git(N:h) )
+
+  if [[ "$arg" == "." || ( -n "$arg" && -d "$arg" ) ]]; then
+    repo="$(_wt_git -C "${arg:-$PWD}" rev-parse --show-toplevel 2>/dev/null)" \
+      || { print -ru2 -- "hdev: '${arg:-$PWD}' is not inside a git repo."; return 1 }
+  elif [[ -n "$arg" && -e "$code/$arg/.git" ]]; then
+    repo="$code/$arg"
+  else
+    local -a hits
+    if [[ -z "$arg" ]]; then
+      hits=( $repos )
+    else
+      hits=( ${(M)repos:#*/$arg} )                       # exact basename
+      (( ${#hits} )) || hits=( ${(M)repos:#(#i)*$arg*} ) # case-insensitive substring
+    fi
+    if (( ${#hits} == 1 )); then
+      repo="${hits[1]}"
+    else
+      local -a pool; (( ${#hits} )) && pool=( $hits ) || pool=( $repos )
+      local sel
+      sel="$(print -rl -- ${pool[@]#$code/} | fzf --prompt='hdev > ' ${arg:+--query=$arg})" || return 0
+      [[ -n "$sel" ]] || return 0
+      repo="$code/$sel"
+    fi
+  fi
+
+  repo="${repo:A}"
+  [[ -n "$repo" && -e "$repo/.git" ]] || { print -ru2 -- "hdev: no git repo resolved."; return 1 }
+
+  # A linked checkout must enter through layout.sh's worktree mode. That mode uses
+  # Herdr's native `worktree open`, preserving worktree provenance and grouping under
+  # the primary workspace; treating it as an ordinary path would create an unrelated
+  # workspace that wt-rm could not identify safely.
+  if [[ -f "$repo/.git" ]]; then
+    local main
+    main="$(cd "$repo" && _wt_primary)" || return 1
+    _wt_prepare_for_herdr "$main" "$repo" || return 1
+    "${HDEV_LAYOUT:-$HOME/.config/herdr/layout.sh}" --worktree "$main" "$repo"
+    return $?
+  fi
+
+  "${HDEV_LAYOUT:-$HOME/.config/herdr/layout.sh}" "$repo"
+}
+
 # _wt_git — git with its routing environment cleared. Every Git call in the
 # worktree lifecycle goes through this. An exported GIT_DIR or GIT_WORK_TREE
 # silently redirects git to another checkout: `status` then reports a dirty
@@ -345,6 +403,105 @@ _wt_unlock() {
   zsystem flock -u $_WT_LOCK_FD 2>/dev/null
   unset _WT_LOCK_FD
   return 0
+}
+
+# A native Herdr worktree must not be removable through `herdr worktree remove`:
+# that path knows nothing about .worktreehook teardown or the three cleanliness
+# checks below. Git's own worktree lock is the enforcement boundary. Herdr 0.8.2
+# exposes one `--force`; Git requires force twice to remove a locked worktree, so
+# the native action remains safely blocked while `wt-rm` can recognize the lock it
+# owns and remove only after the full lifecycle succeeds.
+_wt_herdr_lock_reason() {
+  print -r -- "hwt-managed; remove with command wt-rm"
+}
+
+# _wt_git_lock_state <root> <dest> — 0 locked (reason in _WT_GIT_LOCK_REASON),
+# 1 registered but unlocked, 2 state unreadable/not registered.
+#
+# Parse the NUL porcelain form for the same reason _wt_primary does: paths may need
+# quoting in the line format. A new `worktree ` token starts each record, so empty
+# record separators do not need to survive zsh's ${(0)} expansion.
+_wt_git_lock_state() {
+  emulate -L zsh
+  # Never name a local `path` in zsh: it is the tied array behind PATH, and
+  # localising it empties command lookup for every external below.
+  local root="$1" dest="${2:A}" rec wt_path in_target=0 seen=0
+  local -a fields
+  typeset -g _WT_GIT_LOCK_REASON=""
+  # zsh scalars cannot carry NUL bytes: assigning porcelain -z to `raw` makes the
+  # assignment itself fail with 127. Check the command once for a trustworthy status,
+  # then feed a second call directly through ${(0)} so the NUL records are decoded
+  # before they ever become a scalar.
+  if ! _wt_git -C "$root" worktree list --porcelain -z >/dev/null 2>&1; then
+    print -ru2 -- "wt: cannot read Git worktree lock state for $dest — refusing."
+    return 2
+  fi
+  fields=( ${(0)"$(_wt_git -C "$root" worktree list --porcelain -z 2>/dev/null)"} )
+  for rec in $fields; do
+    if [[ "$rec" == 'worktree '* ]]; then
+      wt_path="${rec#worktree }"
+      in_target=0
+      [[ "${wt_path:A}" == "$dest" ]] && { in_target=1; seen=1; }
+    elif (( in_target )) && [[ "$rec" == locked || "$rec" == 'locked '* ]]; then
+      _WT_GIT_LOCK_REASON="${rec#locked}"
+      _WT_GIT_LOCK_REASON="${_WT_GIT_LOCK_REASON# }"
+      return 0
+    fi
+  done
+  if (( seen )); then
+    return 1
+  fi
+  print -ru2 -- "wt: $dest is not a registered worktree of $root."
+  return 2
+}
+
+_wt_ensure_herdr_lock() {
+  emulate -L zsh
+  local root="$1" dest="$2" wanted state
+  wanted="$(_wt_herdr_lock_reason)"
+  _wt_git_lock_state "$root" "$dest"; state=$?
+  case "$state" in
+    0)
+      if [[ "$_WT_GIT_LOCK_REASON" != "$wanted" ]]; then
+        print -ru2 -- "hdev: $dest is locked for another reason: ${_WT_GIT_LOCK_REASON:-<no reason>}"
+        print -ru2 -- "    Herdr will not take ownership of a user-managed Git lock."
+        return 1
+      fi ;;
+    1)
+      _wt_git -C "$root" worktree lock --reason "$wanted" "$dest" || {
+        print -ru2 -- "hdev: could not apply the lifecycle lock to $dest — refusing to open it in Herdr."
+        return 1
+      } ;;
+    *) return 1 ;;
+  esac
+}
+
+# Serialize Herdr adoption against wt-prepare/wt-rm, revalidate the checkout while
+# holding that lifecycle lock, then apply the persistent Git ownership lock. The
+# layout handoff stays outside the fcntl lock because it attaches a long-lived TUI.
+_wt_prepare_for_herdr() {
+  emulate -L zsh
+  local main="$1" dest="$2" branch slug expected common
+  branch="$(_wt_git -C "$dest" symbolic-ref --quiet --short HEAD 2>/dev/null)" || {
+    print -ru2 -- "hdev: $dest is detached — wt-rm requires a branch-owned checkout."
+    return 1
+  }
+  slug="${branch//\//-}"
+  expected="${main:h}/${main:t}-${slug}"
+  if [[ "${dest:A}" != "${expected:A}" ]]; then
+    print -ru2 -- "hdev: $dest is not a wt-managed sibling checkout — refusing."
+    print -ru2 -- "    Expected $expected for branch ${(q-)branch}; only that path is removable by command wt-rm."
+    return 1
+  fi
+  common="$(_wt_git -C "$main" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" \
+    || return 1
+  _wt_lock "$common" "$slug" || return 1
+  {
+    _wt_assert_worktree "$main" "$dest" "$branch" || return 1
+    _wt_ensure_herdr_lock "$main" "$dest" || return 1
+  } always {
+    _wt_unlock
+  }
 }
 
 # --- Interruption and the lock ---------------------------------------------
@@ -625,10 +782,10 @@ wt-prepare() {
 # project hook before touching anything: a misconfigured repository leaves no
 # worktree and no branch behind. Once the worktree exists (fresh or an existing
 # branch with none yet), preparation — manifest copy, then the setup hook — is
-# delegated to the shared, unlocked `_wt_do_prepare` (see wt-prepare). `dev` runs
-# OUTSIDE the lock and only on success, so a long-lived session never holds the
-# lock and a failed setup never attaches you to a half-built worktree.
-wt() {
+# delegated to the shared, unlocked `_wt_do_prepare` (see wt-prepare). The caller's
+# Zellij/Herdr handoff runs OUTSIDE the lock and only on success, so a long-lived
+# session never holds the lock and a failed setup never opens a half-built worktree.
+_wt_create_or_prepare() {
   emulate -L zsh
   local branch="$1" start="${2-}"
   [[ -n "$branch" ]] || { print -ru2 -- "usage: wt <branch> [start-point]"; return 1; }
@@ -672,7 +829,37 @@ wt() {
     _wt_unlock
   }
 
-  dev "$dest"
+  typeset -g _WT_DEST="$dest"
+}
+
+wt() {
+  _wt_create_or_prepare "$@" || return 1
+  dev "$_WT_DEST"
+}
+
+# hwt — create or reopen the same safe sibling worktree as `wt`, then open it as a
+# native Herdr worktree workspace. Herdr supplies grouping/provenance and the agent
+# dashboard; Git creation, .worktreeinclude and .worktreehook stay on the proven
+# lifecycle above.
+hwt() {
+  [[ -n "${1:-}" ]] || { print -ru2 -- "usage: hwt <branch> [start-point]"; return 1; }
+  _wt_create_or_prepare "$@" || return 1
+  hdev "$_WT_DEST"
+}
+
+# hwt-prompt — interactive surface for Herdr's worktree popup. Keep the prompt tiny:
+# all creation, preparation, locking and native Herdr adoption remain in hwt, so the
+# TUI cannot grow a second lifecycle implementation.
+hwt-prompt() {
+  emulate -L zsh
+  local branch
+  print -n -- "Branch: "
+  IFS= read -r branch || branch=""
+  if [[ -z "$branch" ]]; then
+    print -ru2 -- "hwt: cancelled (no branch entered)."
+    return 1
+  fi
+  hwt "$branch"
 }
 
 # _wt_assert_worktree <root> <dest> <branch> — succeed only if <dest> is a worktree
@@ -697,6 +884,195 @@ _wt_assert_worktree() {
     print -ru2 -- "    Branch names differing only by '/' vs '-' share one directory."
     return 1
   fi
+}
+
+# Print workspace ids in one running Herdr session whose native checkout or pane cwd
+# points at <dest>. Return 3 when that server stopped between session discovery and
+# the query; callers then inspect persisted state instead. Every other API/schema
+# failure is unsafe uncertainty and returns 1.
+_wt_herdr_runtime_matches() {
+  emulate -L zsh
+  setopt local_options pipe_fail
+  local is_default="$1" session="$2" dest="${3:A}" workspaces panes rc ids1 ids2
+  local -a hargs ids
+  [[ "$is_default" == true ]] || hargs=(--session "$session")
+
+  workspaces="$(command herdr $hargs workspace list 2>&1)"; rc=$?
+  if (( rc )) || ! print -r -- "$workspaces" | jq -e . >/dev/null 2>&1; then
+    print -ru2 -- "wt-rm: Herdr session '$session' returned an invalid workspace list — refusing."
+    return 1
+  fi
+  if print -r -- "$workspaces" | jq -e \
+      'type == "object" and .error.code? == "server_not_running"' >/dev/null 2>&1; then
+    return 3
+  fi
+  if ! print -r -- "$workspaces" | jq -e \
+      'type == "object" and (.result.workspaces | type == "array") and (has("error") | not)' \
+      >/dev/null 2>&1; then
+    print -ru2 -- "wt-rm: Herdr session '$session' returned an unexpected workspace list — refusing."
+    return 1
+  fi
+
+  panes="$(command herdr $hargs pane list 2>&1)"; rc=$?
+  if (( rc )) || ! print -r -- "$panes" | jq -e . >/dev/null 2>&1; then
+    print -ru2 -- "wt-rm: Herdr session '$session' returned an invalid pane list — refusing."
+    return 1
+  fi
+  if print -r -- "$panes" | jq -e \
+      'type == "object" and .error.code? == "server_not_running"' >/dev/null 2>&1; then
+    return 3
+  fi
+  if ! print -r -- "$panes" | jq -e \
+      'type == "object" and (.result.panes | type == "array") and (has("error") | not)' \
+      >/dev/null 2>&1; then
+    print -ru2 -- "wt-rm: Herdr session '$session' returned an unexpected pane list — refusing."
+    return 1
+  fi
+
+  ids1="$(print -r -- "$workspaces" | jq -r --arg d "$dest" '
+    .result.workspaces[]
+    | select((.worktree.checkout_path? | type == "string") and
+             (.worktree.checkout_path == $d or (.worktree.checkout_path | startswith($d + "/"))))
+    | if (.workspace_id | type == "string" and length > 0)
+      then .workspace_id else error("matching workspace has no string id") end
+  ')" || {
+    print -ru2 -- "wt-rm: could not read Herdr workspace provenance in session '$session' — refusing."
+    return 1
+  }
+  ids2="$(print -r -- "$panes" | jq -r --arg d "$dest" '
+    .result.panes[]
+    | select((.cwd | type == "string") and (.cwd == $d or (.cwd | startswith($d + "/"))))
+    | if (.workspace_id | type == "string" and length > 0)
+      then .workspace_id else error("matching pane has no string workspace id") end
+  ')" || {
+    print -ru2 -- "wt-rm: could not read Herdr pane ownership in session '$session' — refusing."
+    return 1
+  }
+  ids=( ${(f)ids1} ${(f)ids2} )
+  ids=( ${ids:#} )
+  (( ${#ids} )) && print -rl -- ${(u)ids}
+  return 0
+}
+
+# A stopped Herdr session has no live process, but its session.json can restore panes
+# into the checkout later. Do not rewrite Herdr's versioned state behind its back;
+# detect a reference and require the session to be started so the public close API can
+# remove it. Return 0 match, 1 no match/no state, 2 unreadable or unknown schema.
+_wt_stopped_herdr_has_checkout() {
+  emulate -L zsh
+  local session="$1" session_dir="$2" dest="${3:A}" state="$session_dir/session.json" n
+  [[ -e "$state" ]] || return 1
+  if [[ ! -r "$state" ]] || ! jq -e \
+      'type == "object" and .version == 3 and (.workspaces | type == "array")' \
+      "$state" >/dev/null 2>&1; then
+    print -ru2 -- "wt-rm: stopped Herdr session '$session' has unreadable or unknown persisted state — refusing."
+    return 2
+  fi
+  n="$(jq -r --arg d "$dest" '
+    [.workspaces[]
+      | select([.. | objects | (.cwd?, .checkout_path?)
+                | select(type == "string" and (. == $d or startswith($d + "/")))]
+               | length > 0)]
+    | length
+  ' "$state")" || {
+    print -ru2 -- "wt-rm: could not inspect stopped Herdr session '$session' — refusing."
+    return 2
+  }
+  (( n > 0 )) && return 0
+  return 1
+}
+
+# Close every matching workspace across every running Herdr session, and refuse if a
+# stopped session still remembers the checkout. Session discovery is global rather
+# than default-only: a named Herdr session can hold the same cwd just as surely as the
+# default server can.
+_wt_stop_herdr_workspaces() {
+  emulate -L zsh
+  setopt local_options pipe_fail
+  (( $+commands[herdr] )) || return 0
+  (( $+commands[jq] )) || {
+    print -ru2 -- "wt-rm: jq is unavailable, so Herdr workspace state cannot be verified — refusing."
+    return 1
+  }
+  local dest="${1:A}" listing rc count i name is_default running session_dir matches state id remaining close_out
+  local -a ids hargs
+  listing="$(command herdr session list --json 2>&1)"; rc=$?
+  if (( rc )) || ! print -r -- "$listing" | jq -e \
+      'type == "object" and (.sessions | type == "array") and
+       all(.sessions[]; (.name | type == "string" and length > 0) and
+                        (.default | type == "boolean") and
+                        (.running | type == "boolean") and
+                        (.session_dir | type == "string" and length > 0))' \
+      >/dev/null 2>&1; then
+    print -ru2 -- "wt-rm: Herdr returned an invalid session list — refusing."
+    return 1
+  fi
+  count="$(print -r -- "$listing" | jq -r '.sessions | length')" || return 1
+  for (( i = 0; i < count; i++ )); do
+    name="$(print -r -- "$listing" | jq -er --argjson i "$i" '.sessions[$i].name')" || return 1
+    is_default="$(print -r -- "$listing" | jq -er --argjson i "$i" \
+      '.sessions[$i].default | if type == "boolean" then tostring else error("not boolean") end')" \
+      || return 1
+    running="$(print -r -- "$listing" | jq -er --argjson i "$i" \
+      '.sessions[$i].running | if type == "boolean" then tostring else error("not boolean") end')" \
+      || return 1
+    session_dir="$(print -r -- "$listing" | jq -er --argjson i "$i" '.sessions[$i].session_dir')" \
+      || return 1
+
+    if [[ "$running" != true ]]; then
+      _wt_stopped_herdr_has_checkout "$name" "$session_dir" "$dest"; state=$?
+      case "$state" in
+        0)
+          print -ru2 -- "wt-rm: stopped Herdr session '$name' still remembers $dest — refusing."
+          if [[ "$is_default" == true ]]; then
+            print -ru2 -- "    Start it with: herdr    then retry command wt-rm."
+          else
+            print -ru2 -- "    Start it with: herdr session attach ${(q-)name}    then retry command wt-rm."
+          fi
+          return 1 ;;
+        1) continue ;;
+        *) return 1 ;;
+      esac
+    fi
+
+    matches="$(_wt_herdr_runtime_matches "$is_default" "$name" "$dest")"; state=$?
+    if (( state == 3 )); then
+      # `session list` just called this server running. An API-level
+      # server_not_running response may instead mean the process cannot reach the
+      # socket (the exact Zellij sandbox failure this lifecycle already guards).
+      # Persisted state cannot prove that no live process exists, so fail closed.
+      print -ru2 -- "wt-rm: Herdr session '$name' reported running but its API is unreachable — refusing."
+      return 1
+    fi
+    (( state == 0 )) || return 1
+    ids=( ${(f)matches} )
+    ids=( ${ids:#} )
+    [[ "$is_default" == true ]] && hargs=() || hargs=(--session "$name")
+    for id in $ids; do
+      close_out="$(command herdr $hargs workspace close "$id" 2>&1)"; rc=$?
+      if (( rc )) \
+        || { [[ -n "$close_out" ]] && ! print -r -- "$close_out" | jq -e . >/dev/null 2>&1; } \
+        || { [[ -n "$close_out" ]] && print -r -- "$close_out" | jq -e \
+               'type == "object" and has("error")' >/dev/null 2>&1; }; then
+        print -ru2 -- "wt-rm: could not close Herdr workspace '$id' in session '$name' — refusing to remove $dest."
+        return 1
+      fi
+    done
+
+    # A zero exit from close is necessary but not sufficient evidence that no pane
+    # still holds the cwd. Re-read the runtime state before allowing teardown.
+    remaining="$(_wt_herdr_runtime_matches "$is_default" "$name" "$dest")"; state=$?
+    if (( state == 3 )); then
+      print -ru2 -- "wt-rm: Herdr session '$name' became unreachable before workspace closure could be verified — refusing."
+      return 1
+    fi
+    (( state == 0 )) || return 1
+    if [[ -n "$remaining" ]]; then
+      print -ru2 -- "wt-rm: Herdr session '$name' still has workspace(s) at $dest after close — refusing."
+      return 1
+    fi
+  done
+  return 0
 }
 
 # wt-rm — retire a worktree made by `wt`: validate the project hook, run three
@@ -777,7 +1153,32 @@ wt-rm() {
     _wt_hook_check "$main" >/dev/null 2>&1
     (( $? == 1 )) && { _wt_hook_check "$main"; return 1 }
 
-    # Stop the session. An absent session IS successful shutdown — that is the
+    # A Git lock may belong to this Herdr lifecycle or to the user/another tool.
+    # Classify it before stopping anything. Only our exact reason authorizes the
+    # two-force removal Git requires for a locked worktree; every other lock is an
+    # explicit preservation request and must remain untouched.
+    local git_lock_state herdr_owned=0 wanted_lock
+    wanted_lock="$(_wt_herdr_lock_reason)"
+    _wt_git_lock_state "$main" "$dest"; git_lock_state=$?
+    case "$git_lock_state" in
+      0)
+        if [[ "$_WT_GIT_LOCK_REASON" == "$wanted_lock" ]]; then
+          herdr_owned=1
+        else
+          print -ru2 -- "wt-rm: $dest is locked for another reason: ${_WT_GIT_LOCK_REASON:-<no reason>}"
+          print -ru2 -- "    Unlock it yourself only if that owner no longer needs it."
+          return 1
+        fi ;;
+      1) ;;
+      *) return 1 ;;
+    esac
+
+    # Stop every Herdr workspace first. This scans named sessions as well as the
+    # default one and refuses stopped persisted state; otherwise a later restore can
+    # restart panes into a checkout that no longer exists.
+    _wt_stop_herdr_workspaces "$dest" || return 1
+
+    # Stop the Zellij session. An absent session IS successful shutdown — that is the
     # normal state on a retry. Stopping first is an invariant: a live process
     # holding the directory open is what leaves an empty tmp/ husk behind.
     local name; name="$(_wt_session_name "$dest")"
@@ -819,7 +1220,15 @@ wt-rm() {
     # same exact partial state as the other two. Git's own refusal names only the
     # obstruction; on its own it leaves the reader unsure whether teardown ran, so
     # the reclamation state and both recovery routes are spelled out here.
-    if ! _wt_git worktree remove "$dest"; then
+    local -a remove_args
+    remove_args=(worktree remove "$dest")
+    # Keep the ownership lock in force until Git performs the removal. Unlocking
+    # first creates an interrupt window where a checkout meant to be protected is
+    # left exposed. Git's double-force form crosses the lock and removes its admin
+    # record in one operation; it is used only after all three clean checks and only
+    # for the exact lock reason above.
+    (( herdr_owned )) && remove_args=(worktree remove --force --force "$dest")
+    if ! _wt_git $remove_args; then
       print -ru2 -- "wt-rm: removing $dest failed — worktree kept, session stopped. Resources may already be reclaimed."
       print -ru2 -- "    Fix the obstruction and retry: wt-rm $qb    (teardown is idempotent)"
       print -ru2 -- "    Or resume work with: wt-prepare $qb && wt $qb"

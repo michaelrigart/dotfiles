@@ -1,0 +1,140 @@
+# Herdr configuration — managed by chezmoi
+# (source: dot_config/herdr/config.toml → ~/.config/herdr/config.toml)
+#
+# Only deliberate divergences from `herdr --default-config` live here. Anything
+# omitted follows the shipped default, so an upstream default change surfaces as a
+# behaviour change rather than being silently pinned.
+#
+# Keybinding model mirrors the Zellij setup it runs beside:
+#   Ctrl-h/j/k/l  → seamless Neovim splits + Herdr panes (smart-splits.nvim)
+#   Alt + <key>   → tabs, zoom, panes, detach
+# Alt rather than digits because digits need Shift on AZERTY. Ghostty is configured
+# `macos-option-as-alt = left`, so this works from the LEFT Option key only.
+
+# First run otherwise shows onboarding and may write back to this file, which chezmoi
+# owns — the write would surface as drift and be reverted on the next apply.
+onboarding = false
+
+[theme]
+name = "tokyo-night"
+
+# Pinning `onboarding = false` above skips the first-run prompt that would otherwise
+# ask how notifications should be delivered — and the shipped default is
+# `delivery = "off"`. Left unset, `herdr notification show` returns
+# {"reason":"disabled","shown":false} and does nothing, which silently removes the
+# only feedback channel a detached `[[keys.command]]` or a plugin action has. A failed
+# tab jump then looks exactly like a dead keybinding.
+#
+# "herdr" = in-app toasts: visible wherever the TUI is, and needs no OS permission.
+[ui]
+# Keep the sidebar grouped by workspace rather than a flat agent list.
+agent_panel_sort = "spaces"
+# Alt-q is the Zellij quit mnemonic, but one Herdr session owns many projects. Close
+# only the current workspace and keep Herdr's confirmation rather than killing every
+# repository in the server.
+confirm_close = true
+
+[ui.toast]
+delivery = "herdr"
+
+[session]
+# The single setting the Claude/Codex integrations exist to serve. It is the shipped
+# default but arrives commented out; pinning it keeps the dependency legible.
+resume_agents_on_restore = true
+
+[keys]
+# Kept as an escape hatch. Unlike Zellij's stock Ctrl leaders, herdr's prefix does not
+# shadow shell readline or Neovim keys, so nothing needs clearing.
+prefix = "ctrl+b"
+
+zoom = "alt+z"
+split_vertical = "alt+n"
+new_tab = "alt+t"
+detach = "alt+w"
+toggle_sidebar = "alt+b"
+close_workspace = "alt+q"
+edit_scrollback = "alt+s"
+
+# Herdr's built-in creator cannot run .worktreeinclude/.worktreehook or install the
+# ownership lock that keeps native removal behind wt-rm. Its default shortcut is
+# replaced below by a popup calling the safe hwt flow; native open/grouping still
+# belongs to Herdr after Git creation.
+new_worktree = ""
+
+# smart-splits.nvim owns the dispatch. In Neovim it moves between editor splits and
+# calls Herdr at the edge; outside Neovim its bundled Herdr plugin moves pane focus,
+# while preserving shell Ctrl-h/Ctrl-l when no neighbor exists. Linking the plugin is
+# part of the live activation gate.
+[[keys.command]]
+key = "ctrl+h"
+type = "plugin_action"
+command = "smart-splits.nvim.left"
+description = "navigate left (nvim/herdr)"
+
+[[keys.command]]
+key = "ctrl+j"
+type = "plugin_action"
+command = "smart-splits.nvim.down"
+description = "navigate down (nvim/herdr)"
+
+[[keys.command]]
+key = "ctrl+k"
+type = "plugin_action"
+command = "smart-splits.nvim.up"
+description = "navigate up (nvim/herdr)"
+
+[[keys.command]]
+key = "ctrl+l"
+type = "plugin_action"
+command = "smart-splits.nvim.right"
+description = "navigate right (nvim/herdr)"
+
+[[keys.command]]
+key = "prefix+shift+g"
+type = "popup"
+command = "exec \"${SHELL:-zsh}\" -ic hwt-prompt"
+description = "new worktree (safe hwt flow)"
+width = "60%"
+height = 7
+
+# Deliberately no alt+k: herdr 0.8.2 has no clear method. The only implementation
+# would inject control sequences into whatever occupies the pane, which corrupts
+# Neovim's state or sends stray input to a live agent.
+
+# The on-demand `bin/rails console` slot. Session-modal, so it does not disturb the
+# tab layout — better than Zellij's floating layer, where Alt-n added *floating* panes
+# while the layer was visible.
+[[keys.command]]
+key = "alt+p"
+type = "popup"
+command = "exec \"${SHELL:-sh}\""
+description = "scratch shell"
+width = "80%"
+height = "80%"
+
+# Tab jumps. `switch_tab` is range-only ("prefix+1..9") — there is no switch_tab_1,
+# and tab.focus takes a tab_id, not an index. These resolve by LABEL instead, which
+# also survives repair appending a tab out of order (herdr 0.8.2 has no `tab move`).
+[[keys.command]]
+key = "alt+a"
+type = "shell"
+command = "~/.config/herdr/tab-goto.sh agents"
+description = "tab: agents"
+
+[[keys.command]]
+key = "alt+e"
+type = "shell"
+command = "~/.config/herdr/tab-goto.sh editor"
+description = "tab: editor"
+
+[[keys.command]]
+key = "alt+r"
+type = "shell"
+command = "~/.config/herdr/tab-goto.sh runtime"
+description = "tab: runtime"
+
+[[keys.command]]
+key = "alt+g"
+type = "shell"
+command = "~/.config/herdr/tab-goto.sh git"
+description = "tab: git"

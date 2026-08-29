@@ -19,8 +19,8 @@
 #   N  wt                  creation paths, pre-validation consequences, reopening
 #   O  wt-rm               teardown ordering, the three cleanliness checks, retry
 #
-# zellij and wtcp are stubbed on PATH and every invocation is logged, so the tests can
-# assert *ordering* — notably that a dirty worktree never loses its Zellij session —
+# zellij, Herdr and wtcp are stubbed on PATH and every invocation is logged, so the tests
+# can assert *ordering* — notably that a dirty worktree never loses its terminal session —
 # without launching anything. Git is NOT stubbed: real repos are used, because git's own
 # refusals (unmerged branch, dirty tree) are part of what's under test. The one `git` on
 # PATH is the SIGINT delay injector, and it is a pass-through: it decides when a real
@@ -46,6 +46,10 @@ rc_is()  { [[ "$RC" == "$1" ]] && _pass "$2" || _fail "$2 (rc=$RC)" }
 eq()     { [[ "$1" == "$2" ]] && _pass "$3" || _fail "$3 ('$1' != '$2')" }
 logged() { [[ "$(<$ZLOG)" == *"$1"* ]] && _pass "$2" || _fail "$2" }
 unlogged() { [[ "$(<$ZLOG)" == *"$1"* ]] && _fail "$2" || _pass "$2" }
+dlogged() { [[ "$(<$DLOG)" == *"$1"* ]] && _pass "$2" || _fail "$2" }
+dunlogged() { [[ "$(<$DLOG)" == *"$1"* ]] && _fail "$2" || _pass "$2" }
+hlogged() { [[ "$(<$HLOG)" == *"$1"* ]] && _pass "$2" || _fail "$2" }
+hunlogged() { [[ "$(<$HLOG)" == *"$1"* ]] && _fail "$2" || _pass "$2" }
 
 # --- stubs ------------------------------------------------------------------
 # Root every scratch dir at $TMPDIR explicitly: bare `mktemp -d` ignores it on macOS in
@@ -101,7 +105,48 @@ done
 exit $rc
 STUB
 chmod +x "$STUBS/zellij" "$STUBS/wtcp"
+cat > "$STUBS/layout.sh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$DLOG"
+exit "${MOCK_LAYOUT_RC:-0}"
+STUB
+cat > "$STUBS/herdr" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$HLOG"
+session=default
+[ "${1:-}" = --session ] && session="$2"
+closed=0
+[ -n "${MOCK_H_CLOSED_FILE:-}" ] && grep -Fqx -- "$session" "$MOCK_H_CLOSED_FILE" 2>/dev/null && closed=1
+case "$*" in
+  "session list --json")
+    printf '%s' "${MOCK_H_SESSION_LIST:-}"
+    exit "${MOCK_H_SESSION_RC:-0}" ;;
+  *"workspace list")
+    if [ "$closed" -eq 1 ]; then
+      printf '%s' '{"result":{"workspaces":[]}}'
+    else
+      printf '%s' "${MOCK_H_WORKSPACES:-}"
+    fi
+    exit "${MOCK_H_LIST_RC:-0}" ;;
+  *"pane list")
+    if [ "$closed" -eq 1 ]; then
+      printf '%s' '{"result":{"panes":[]}}'
+    else
+      printf '%s' "${MOCK_H_PANES:-}"
+    fi
+    exit "${MOCK_H_LIST_RC:-0}" ;;
+  *"workspace close "*)
+    [ -n "${MOCK_H_CLOSE_TOUCH:-}" ] && : > "$MOCK_H_CLOSE_TOUCH"
+    printf '%s' "${MOCK_H_CLOSE_OUT:-}"
+    rc="${MOCK_H_CLOSE_RC:-0}"
+    [ "$rc" -eq 0 ] && [ -n "${MOCK_H_CLOSED_FILE:-}" ] && printf '%s\n' "$session" >> "$MOCK_H_CLOSED_FILE"
+    exit "$rc" ;;
+  *) exit 0 ;;
+esac
+STUB
+chmod +x "$STUBS/layout.sh" "$STUBS/herdr"
 export PATH="$STUBS:$PATH"
+export HDEV_LAYOUT="$STUBS/layout.sh"
 
 # --- SIGINT delay injector --------------------------------------------------
 # A `git` that delivers one real SIGINT to a named pid immediately before
@@ -142,10 +187,15 @@ setup() {   # fresh $HOME with Code/Org/repo, fresh logs, default mock behaviour
   REPO="$HOME/Code/Org/repo"
   git init -q -b main "$REPO"
   git -C "$REPO" commit -q --allow-empty -m init
-  export ZLOG="$ROOTTMP/zellij.log" WLOG="$ROOTTMP/wtcp.log"
-  : > "$ZLOG"; : > "$WLOG"
+  export ZLOG="$ROOTTMP/zellij.log" WLOG="$ROOTTMP/wtcp.log" DLOG="$ROOTTMP/layout.log" \
+         HLOG="$ROOTTMP/herdr.log" MOCK_H_CLOSED_FILE="$ROOTTMP/herdr-closed"
+  : > "$ZLOG"; : > "$WLOG"; : > "$DLOG"; : > "$HLOG"; : > "$MOCK_H_CLOSED_FILE"
   export MOCK_ZJ_SESSIONS="" MOCK_ZJ_ATTACH_RC=0 MOCK_ZJ_NEWTAB_RC=0 \
-         MOCK_ZJ_SWITCH_RC=0 MOCK_ZJ_DELETE_RC=0 MOCK_WTCP_RC=0 MOCK_ZJ_DELETE_TOUCH=""
+         MOCK_ZJ_SWITCH_RC=0 MOCK_ZJ_DELETE_RC=0 MOCK_WTCP_RC=0 MOCK_ZJ_DELETE_TOUCH="" \
+         MOCK_LAYOUT_RC=0 MOCK_H_SESSION_LIST='{"sessions":[]}' MOCK_H_SESSION_RC=0 \
+         MOCK_H_WORKSPACES='{"result":{"workspaces":[]}}' \
+         MOCK_H_PANES='{"result":{"panes":[]}}' MOCK_H_LIST_RC=0 MOCK_H_CLOSE_RC=0 \
+         MOCK_H_CLOSE_TOUCH="" MOCK_H_CLOSE_OUT=""
   unset ZELLIJ
 }
 # run <dir> <command...> — source the functions fresh and run one command in $dir.
@@ -1634,6 +1684,268 @@ OUT="$(
 )"; RC=$?
 has "usage: wt-rm <branch>" "command wt-rm bypasses the function and reaches the wrapper"
 hasnt "SHADOW-RAN" "command wt-rm does not run the shadowing function"
+
+print -r -- ""
+print -r -- "T. hwt — the proven Git lifecycle opens a native Herdr worktree workspace"
+
+setup
+run "$REPO" hwt feature/herdr
+rc_is 0 "hwt creates and prepares a new worktree"
+HWT="$HOME/Code/Org/repo-feature-herdr"
+[[ -d "$HWT" ]] && _pass "hwt uses the same sibling checkout path as wt" \
+                 || _fail "hwt uses the same sibling checkout path as wt"
+dlogged "--worktree $REPO $HWT" "hwt hands the prepared checkout to Herdr worktree mode"
+unlogged "--session" "hwt does not create a Zellij session"
+run "$REPO" git worktree list --porcelain
+has "locked hwt-managed; remove with command wt-rm" \
+  "a Herdr-managed checkout carries the lifecycle ownership lock"
+OUT="$(git -C "$REPO" worktree remove --force "$HWT" 2>&1)"; RC=$?
+rc_is 128 "Herdr's one-force native removal cannot bypass the lifecycle lock"
+[[ -d "$HWT" ]] && _pass "the blocked native removal leaves the checkout intact" \
+                 || _fail "the blocked native removal leaves the checkout intact"
+
+setup
+print -r -- "env.local" > "$REPO/.worktreeinclude"
+print -r -- "secret" > "$REPO/env.local"
+MOCK_WTCP_RC=1 run "$REPO" hwt broken
+rc_is 1 "hwt propagates preparation failure"
+dunlogged "--worktree" "a half-prepared checkout is not opened in Herdr"
+[[ -d "$HOME/Code/Org/repo-broken" ]] \
+  && _pass "the failed checkout is preserved for wt-prepare recovery" \
+  || _fail "the failed checkout is preserved for wt-prepare recovery"
+
+setup
+run "$REPO" hwt existing
+: > "$DLOG"
+run "$REPO" hwt existing
+rc_is 0 "hwt reopens an existing matching worktree"
+has "reopening" "hwt reports the reopen path"
+dlogged "--worktree $REPO $HOME/Code/Org/repo-existing" \
+  "reopen returns to the same native Herdr workspace"
+
+# The in-Herdr popup feeds this prompt. It must use the same hwt path, not Herdr's
+# built-in create action, so copy/setup/locking cannot be bypassed from the TUI.
+setup
+OUT="$(cd "$REPO" && source "$FUNCS" && print -r -- 'feature/popup' | hwt-prompt 2>&1)"; RC=$?
+rc_is 0 "hwt-prompt creates a worktree from its interactive branch input"
+POPUP="$HOME/Code/Org/repo-feature-popup"
+[[ -d "$POPUP" ]] && _pass "the popup uses the standard sibling checkout path" \
+                      || _fail "the popup uses the standard sibling checkout path"
+dlogged "--worktree $REPO $POPUP" "the popup opens the checkout through native Herdr mode"
+run "$REPO" git worktree list --porcelain
+has "locked hwt-managed; remove with command wt-rm" "the popup-created checkout is lifecycle-locked"
+
+setup
+OUT="$(cd "$REPO" && source "$FUNCS" && print -r -- '' | hwt-prompt 2>&1)"; RC=$?
+rc_is 1 "an empty popup branch cancels without creating anything"
+has "cancelled" "the empty prompt reports cancellation"
+
+# Opening an ordinary wt-created checkout through hdev must add the same lock. Otherwise
+# `hdev <worktree>` would be the unguarded alternate entrance to native Herdr removal.
+setup
+run "$REPO" wt direct
+DIRECT="$HOME/Code/Org/repo-direct"
+run "$REPO" hdev "$DIRECT"
+rc_is 0 "hdev can adopt an existing wt-created checkout"
+run "$REPO" git worktree list --porcelain
+has "locked hwt-managed; remove with command wt-rm" \
+  "direct hdev adoption adds the same lifecycle ownership lock"
+
+# An arbitrary registered checkout cannot be promised the wt-rm lifecycle: wt-rm
+# derives the standard sibling path from the branch name and could never find it.
+setup
+CUSTOM="$ROOTTMP/custom-checkout"
+git -C "$REPO" worktree add -q -b custom "$CUSTOM"
+CUSTOM="${CUSTOM:A}"
+: > "$DLOG"
+run "$REPO" hdev "$CUSTOM"
+rc_is 1 "hdev refuses a linked checkout outside the wt sibling convention"
+has "not a wt-managed sibling" "the refusal explains the teardown mismatch"
+dunlogged "--worktree" "an unremovable checkout is not opened in Herdr"
+OUT="$(git -C "$REPO" worktree list --porcelain)"
+hasnt "locked hwt-managed" "the arbitrary checkout is not stranded behind our lock"
+
+# A user-owned Git lock is not ours to overwrite or later remove with two forces.
+setup
+run "$REPO" wt reserved
+RESERVED="$HOME/Code/Org/repo-reserved"
+git -C "$REPO" worktree lock --reason "user maintenance" "$RESERVED"
+: > "$DLOG"
+run "$REPO" hdev "$RESERVED"
+rc_is 1 "hdev refuses a worktree carrying someone else's Git lock"
+has "locked for another reason" "the refusal explains why the lock is preserved"
+dunlogged "--worktree" "a foreign-locked checkout is never opened in Herdr"
+
+# wt remains a Zellij-only flow and must not acquire the Herdr ownership lock.
+setup
+run "$REPO" wt zellij-only
+run "$REPO" git worktree list --porcelain
+hasnt "locked hwt-managed" "ordinary wt keeps its existing unlocked Git semantics"
+
+# wt-rm is the sole path allowed to cross the ownership lock, and only after its
+# existing cleanliness and teardown gates. A normal remove cannot cross this fixture;
+# success therefore proves wt-rm used Git's locked-worktree form intentionally.
+setup
+run "$REPO" hwt retire
+RETIRE="$HOME/Code/Org/repo-retire"
+run "$REPO" wt-rm retire
+rc_is 0 "wt-rm retires a Herdr-owned locked checkout"
+[[ -d "$RETIRE" ]] && _fail "the Herdr-owned checkout is actually removed" \
+                       || _pass "the Herdr-owned checkout is actually removed"
+
+# The double-force path is authorized only by our exact lock reason. A foreign lock
+# must stop the lifecycle before either terminal manager is disrupted.
+setup
+run "$REPO" wt protected
+PROTECTED="$HOME/Code/Org/repo-protected"
+git -C "$REPO" worktree lock --reason "user maintenance" "$PROTECTED"
+export MOCK_ZJ_SESSIONS="org--repo-protected"
+: > "$ZLOG"; : > "$HLOG"
+run "$REPO" wt-rm protected
+rc_is 1 "wt-rm refuses a checkout locked for another reason"
+has "locked for another reason" "wt-rm explains that it does not own the lock"
+unlogged "delete-session" "a foreign lock is detected before Zellij shutdown"
+hunlogged "workspace close" "a foreign lock is detected before Herdr shutdown"
+[[ -d "$PROTECTED" ]] && _pass "the foreign-locked checkout survives" \
+                          || _fail "the foreign-locked checkout survives"
+
+print -r -- ""
+print -r -- "U. wt-rm — Herdr workspace shutdown and persisted-state safety"
+
+# Every running session is inspected. Native provenance and pane cwd are both valid
+# evidence: the latter catches a plain workspace opened by hand in the checkout.
+setup
+run "$REPO" hwt herdr-close
+HCLOSE="$HOME/Code/Org/repo-herdr-close"
+export MOCK_H_SESSION_LIST="{\"sessions\":[
+  {\"default\":true,\"name\":\"default\",\"running\":true,\"session_dir\":\"$ROOTTMP/default\"},
+  {\"default\":false,\"name\":\"team\",\"running\":true,\"session_dir\":\"$ROOTTMP/team\"}
+]}"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[
+  {\"workspace_id\":\"w7\",\"worktree\":{\"checkout_path\":\"$HCLOSE\",\"is_linked_worktree\":true}}
+]}}"
+export MOCK_H_PANES="{\"result\":{\"panes\":[
+  {\"workspace_id\":\"w7\",\"cwd\":\"$HCLOSE/src\"}
+]}}"
+run "$REPO" wt-rm herdr-close
+rc_is 0 "wt-rm closes matching Herdr workspaces before removing the checkout"
+hlogged "workspace close w7" "the default Herdr workspace is closed"
+hlogged "--session team workspace close w7" "a matching named-session workspace is also closed"
+[[ -d "$HCLOSE" ]] && _fail "the checkout is removed after every Herdr close succeeds" \
+                        || _pass "the checkout is removed after every Herdr close succeeds"
+
+# A close failure is destructive-boundary failure: keep the checkout and skip Zellij,
+# teardown and Git removal rather than pretending Herdr was absent.
+setup
+mkhook "$REPO" '#!/bin/sh
+[ "$1" = teardown ] && touch "$WT_MAIN/herdr-close-teardown-ran"
+exit 0'
+run "$REPO" hwt herdr-fail
+HFAIL="$HOME/Code/Org/repo-herdr-fail"
+export MOCK_H_SESSION_LIST="{\"sessions\":[{\"default\":true,\"name\":\"default\",\"running\":true,\"session_dir\":\"$ROOTTMP/default\"}]}"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[{\"workspace_id\":\"w8\",\"worktree\":{\"checkout_path\":\"$HFAIL\"}}]}}"
+export MOCK_H_PANES='{"result":{"panes":[]}}' MOCK_H_CLOSE_RC=1 \
+       MOCK_ZJ_SESSIONS="org--repo-herdr-fail"
+run "$REPO" wt-rm herdr-fail
+rc_is 1 "a failed Herdr workspace close aborts removal"
+has "could not close Herdr workspace" "the close failure names the unsafe live workspace"
+unlogged "delete-session" "Zellij is not disrupted after a Herdr close failure"
+[[ -f "$REPO/herdr-close-teardown-ran" ]] && _fail "teardown is skipped after a Herdr close failure" \
+                                                  || _pass "teardown is skipped after a Herdr close failure"
+[[ -d "$HFAIL" ]] && _pass "the checkout survives a Herdr close failure" \
+                       || _fail "the checkout survives a Herdr close failure"
+
+# Some Herdr commands historically returned an error envelope with exit 0. Closure
+# must inspect both channels or this looks successful and removal continues.
+setup
+run "$REPO" hwt herdr-envelope
+HENVELOPE="$HOME/Code/Org/repo-herdr-envelope"
+export MOCK_H_SESSION_LIST="{\"sessions\":[{\"default\":true,\"name\":\"default\",\"running\":true,\"session_dir\":\"$ROOTTMP/default\"}]}"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[{\"workspace_id\":\"w8e\",\"worktree\":{\"checkout_path\":\"$HENVELOPE\"}}]}}"
+export MOCK_H_PANES='{"result":{"panes":[]}}' \
+       MOCK_H_CLOSE_OUT='{"error":{"code":"busy","message":"not closed"}}'
+run "$REPO" wt-rm herdr-envelope
+rc_is 1 "an exit-zero error envelope from workspace close aborts removal"
+has "could not close Herdr workspace" "the error envelope is reported as a close failure"
+[[ -d "$HENVELOPE" ]] && _pass "the checkout survives a Herdr close error envelope" \
+                           || _fail "the checkout survives a Herdr close error envelope"
+
+# Closing Herdr can flush files just like closing Zellij. Check 2 must see that dirt.
+setup
+mkhook "$REPO" '#!/bin/sh
+[ "$1" = teardown ] && touch "$WT_MAIN/herdr-flush-teardown-ran"
+exit 0'
+run "$REPO" hwt herdr-flush
+HFLUSH="$HOME/Code/Org/repo-herdr-flush"
+export MOCK_H_SESSION_LIST="{\"sessions\":[{\"default\":true,\"name\":\"default\",\"running\":true,\"session_dir\":\"$ROOTTMP/default\"}]}"
+export MOCK_H_WORKSPACES='{"result":{"workspaces":[]}}'
+export MOCK_H_PANES="{\"result\":{\"panes\":[{\"workspace_id\":\"w9\",\"cwd\":\"$HFLUSH/deep\"}]}}"
+export MOCK_H_CLOSE_TOUCH="$HFLUSH/flushed-by-herdr.txt"
+run "$REPO" wt-rm herdr-flush
+rc_is 1 "dirt flushed by Herdr shutdown is caught at check 2"
+has "stopping the session left changes" "the existing post-shutdown check reports the flush"
+[[ -f "$REPO/herdr-flush-teardown-ran" ]] && _fail "teardown does not run after a Herdr flush" \
+                                                   || _pass "teardown does not run after a Herdr flush"
+
+# A stopped session has no processes to close, but its persisted workspace would be
+# restored later into a deleted cwd. Refuse and tell the user to start that session;
+# never edit Herdr's versioned session.json behind its back.
+setup
+run "$REPO" hwt herdr-stopped
+HSTOP="$HOME/Code/Org/repo-herdr-stopped"
+mkdir -p "$ROOTTMP/stopped"
+print -r -- "{\"version\":3,\"workspaces\":[{\"id\":\"w10\",\"tabs\":[{\"panes\":{\"1\":{\"cwd\":\"$HSTOP\"}}}]}]}" \
+  > "$ROOTTMP/stopped/session.json"
+export MOCK_H_SESSION_LIST="{\"sessions\":[{\"default\":false,\"name\":\"sleeping\",\"running\":false,\"session_dir\":\"$ROOTTMP/stopped\"}]}"
+run "$REPO" wt-rm herdr-stopped
+rc_is 1 "persisted state in a stopped Herdr session blocks removal"
+has "stopped Herdr session 'sleeping'" "the refusal identifies the session to start"
+has "herdr session attach sleeping" "the refusal gives the safe recovery command"
+[[ -d "$HSTOP" ]] && _pass "the checkout survives while stopped Herdr state refers to it" \
+                       || _fail "the checkout survives while stopped Herdr state refers to it"
+
+# This guard must be selective: unrelated stopped state is ordinary and should not
+# force Herdr to be running for every Zellij-only removal.
+setup
+run "$REPO" wt unrelated-state
+UNRELATED="$HOME/Code/Org/repo-unrelated-state"
+mkdir -p "$ROOTTMP/stopped"
+print -r -- '{"version":3,"workspaces":[{"id":"w1","tabs":[{"panes":{"1":{"cwd":"/somewhere/else"}}}]}]}' \
+  > "$ROOTTMP/stopped/session.json"
+export MOCK_H_SESSION_LIST="{\"sessions\":[{\"default\":false,\"name\":\"sleeping\",\"running\":false,\"session_dir\":\"$ROOTTMP/stopped\"}]}"
+run "$REPO" wt-rm unrelated-state
+rc_is 0 "unrelated stopped Herdr state does not block removal"
+[[ -d "$UNRELATED" ]] && _fail "the unrelated Zellij checkout is removed normally" \
+                           || _pass "the unrelated Zellij checkout is removed normally"
+
+# Session discovery is itself a safety boundary. Invalid JSON or a changed persisted
+# schema must fail closed before either terminal manager is touched.
+setup
+run "$REPO" wt bad-herdr-state
+BADSTATE="$HOME/Code/Org/repo-bad-herdr-state"
+export MOCK_ZJ_SESSIONS="org--repo-bad-herdr-state" MOCK_H_SESSION_LIST='not-json'
+run "$REPO" wt-rm bad-herdr-state
+rc_is 1 "invalid Herdr session discovery fails closed"
+has "invalid session list" "the malformed Herdr response is diagnosed"
+unlogged "delete-session" "invalid Herdr discovery is caught before Zellij shutdown"
+[[ -d "$BADSTATE" ]] && _pass "the checkout survives invalid Herdr discovery" \
+                          || _fail "the checkout survives invalid Herdr discovery"
+
+# A session advertised as running but unreachable is not equivalent to a stopped
+# session. Treating server_not_running as absence would recreate the Zellij sandbox
+# bug: live processes become invisible and the checkout is removed underneath them.
+setup
+run "$REPO" wt unreachable-herdr
+UNREACHABLE="$HOME/Code/Org/repo-unreachable-herdr"
+export MOCK_ZJ_SESSIONS="org--repo-unreachable-herdr"
+export MOCK_H_SESSION_LIST="{\"sessions\":[{\"default\":true,\"name\":\"default\",\"running\":true,\"session_dir\":\"$ROOTTMP/default\"}]}"
+export MOCK_H_WORKSPACES='{"error":{"code":"server_not_running","message":"not reachable"}}'
+run "$REPO" wt-rm unreachable-herdr
+rc_is 1 "a running-but-unreachable Herdr session fails closed"
+has "reported running but its API is unreachable" "the Herdr reachability discrepancy is explicit"
+unlogged "delete-session" "unreachable Herdr is caught before Zellij shutdown"
+[[ -d "$UNREACHABLE" ]] && _pass "the checkout survives an unreachable Herdr server" \
+                             || _fail "the checkout survives an unreachable Herdr server"
 
 export HOME="$REAL_HOME"
 print -r -- ""

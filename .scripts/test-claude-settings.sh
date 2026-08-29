@@ -3,7 +3,8 @@
 # settings JSON. The modify script is a pure stdin->stdout filter, so this needs no chezmoi
 # run and touches no deployed file. Run: bash .scripts/test-claude-settings.sh
 set -u
-MOD="$(cd "$(dirname "$0")/.." && pwd)/dot_claude/modify_private_settings.json"
+SRC="$(cd "$(dirname "$0")/.." && pwd)"
+MOD="$SRC/dot_claude/modify_private_settings.json"
 pass=0; fail=0; OUT=""
 
 _pass() { echo "  PASS: $1"; pass=$((pass + 1)); }
@@ -343,9 +344,17 @@ jq_is '.hooks.PreToolUse[0].hooks[0].command' 'bash $HOME/.claude/git-forge-guar
 jq_is '.hooks.PreToolUse[1].matcher' 'Bash' "worktree guard matches the Bash tool"
 jq_is '.hooks.PreToolUse[1].hooks[0].command' 'bash $HOME/.claude/worktree-guard.sh' \
       'entry 1 runs the worktree guard, $HOME left for the shell to expand'
-# The SessionStart hook must survive alongside them — adding PreToolUse replaced the
+# The SessionStart hooks must survive alongside them — adding PreToolUse replaced the
 # whole hooks object once during development.
-jq_is '.hooks.SessionStart | length' 1 "SessionStart hook still present"
+jq_is '.hooks.SessionStart | length' 2 "both SessionStart hooks present"
+# Index 0 is pinned by the GIT_SSH_COMMAND assertion above, so the Herdr entry must
+# APPEND. If a future change prepends instead, that assertion breaks rather than this
+# one, which is why both exist.
+jq_is '.hooks.SessionStart[1].hooks[0].command' \
+      "bash '$HOME/.claude/hooks/herdr-agent-state.sh' session" \
+      'entry 1 is the herdr agent-state hook, with an absolute path and a session arg'
+jq_is '.hooks.SessionStart[1].hooks[0].timeout' 10 'the herdr hook keeps the installer timeout'
+jq_is '.hooks.SessionStart[1].matcher' '*' 'the herdr hook keeps the installer matcher'
 
 echo "O. basecamp is allowlisted read-only"
 # `basecamp auth token` prints the live OAuth token and `basecamp projects delete` trashes a
@@ -381,9 +390,9 @@ echo "X. every wired hook script is actually managed by chezmoi"
 # hook pointed at a file chezmoi never deployed. Derive the hook list from the emitted
 # settings rather than hardcoding it, so a future third hook is covered automatically.
 if command -v chezmoi >/dev/null 2>&1; then
-  managed=$(chezmoi managed 2>/dev/null)
-  hooks=$(printf '%s' "$OUT" | jq -r '[.hooks.PreToolUse[]?.hooks[]?.command] | .[]' \
-            | grep -o '\.claude/[A-Za-z0-9._-]*\.sh' | sort -u)
+  managed=$(chezmoi --source "$SRC" managed 2>/dev/null)
+  hooks=$(printf '%s' "$OUT" | jq -r '[.hooks[]?[]?.hooks[]?.command] | .[]' \
+             | grep -o '\.claude/[A-Za-z0-9._/-]*\.sh' | sort -u)
   # An empty $hooks would make the loop below assert nothing at all — a silent
   # pass in the exact section that exists to catch a silently-inert hook wiring.
   # Fail loudly instead of skipping.

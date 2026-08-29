@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-27-herdr-trial-design.md`
 
-**Status:** Approved
+**Status:** Implemented — https://github.com/michaelrigart/dotfiles/pull/3
 
 ## Global Constraints
 
@@ -145,23 +145,50 @@ chezmoi apply ~/.config/herdr/config.toml
 
 Run **unsandboxed**. Expected: file appears at `~/.config/herdr/config.toml`.
 
-- [ ] **Step 3: Verify the config parses**
+- [ ] **Step 3: Validate the config**
+
+Use `herdr config check`. **Not** `herdr status client` — that reports nothing about
+config validity: a file containing `not_a_real_action = "alt+q"` produces byte-identical
+output to a good one, so checking there is a step that cannot fail.
 
 ```bash
-herdr status client
+herdr config check
 ```
 
-Expected: version `0.8.2`, no config parse error on stderr. A bad key name is reported here.
+Expected: `config: ok`.
+
+Note `config check` **exits 0 either way** — the same exit-status trap as
+`herdr status server`. The string is the signal. Confirm the check can go red before
+trusting it green:
+
+```bash
+printf '[keys]\nnot_a_real_action = "alt+q"\n' > "$TMPDIR/bad.toml"
+HERDR_CONFIG_PATH="$TMPDIR/bad.toml" herdr config check
+```
+
+Expected: `config: issues found` / `unknown config key keys.not_a_real_action`.
 
 - [ ] **Step 4: Falsify the Alt bindings by hand**
-
-Start herdr, then in the TUI press each of: `alt+z`, `alt+n`, `alt+t`, `alt+w`, `alt+b`, `alt+p` — using the **left** Option key.
 
 ```bash
 herdr
 ```
 
-Expected: each performs its action. `alt+w` detaches back to the shell.
+Order matters. Each step must produce a **visible** change, or the check is vacuous —
+`alt+z` in a single-pane tab, for instance, can look identical zoomed and not. Use the
+**left** Option key throughout:
+
+1. `alt+n` — a second pane appears.
+2. `alt+z` twice — that pane visibly zooms, then restores.
+3. `alt+t` — a new tab appears.
+4. `alt+b` twice — the sidebar hides, then returns.
+5. `alt+p` — the popup opens; exit it.
+6. Confirm the Tokyo Night palette matches Ghostty.
+7. `alt+w` — detaches back to the shell. Last, because it ends the session view.
+
+**If any binding does nothing, stop before Task 3.** The fallback is `[keys.indexed]`
+with `ctrl` (`ctrl+1..9`), which loses the AZERTY property that motivated the scheme —
+a decision for the user, not a silent substitution.
 
 **If Alt does not arrive**, stop and report before continuing. The fallback is `[keys.indexed]` with `ctrl` (`ctrl+1..9`), which loses the AZERTY property — that is a decision for the user, not a silent substitution.
 
@@ -212,6 +239,10 @@ Mirrors `.scripts/test-wt-functions.sh`: real git repos, stubbed multiplexer, as
 #
 # Run: zsh .scripts/test-hdev.sh
 set -u
+# zsh sets BG_NICE by default, so backgrounding K10's lock holder tries to renice it
+# and prints "nice(5) failed" wherever setpriority is denied. Same reason layout.sh
+# sets it: environment-dependent noise that obscures real failures.
+setopt no_bg_nice
 
 ROOT="$(cd "${0:h}/.." && pwd)"
 FUNCS="$ROOT/dot_config/zsh/functions"
@@ -239,7 +270,13 @@ count_logged() { grep -Fxc -- "$1" "$HLOG" 2>/dev/null | head -1 }
 TMPROOT="${TMPDIR:-/tmp}"
 mkd() { mktemp -d "${TMPROOT%/}/hdev-test.XXXXXX" }
 STUBS=$(mkd)
-trap 'rm -rf "$STUBS" "${ROOTTMP:-}"' EXIT
+# layout.sh derives its lock path from XDG_STATE_HOME, which zshenv exports to the
+# REAL ~/.local/state — so without this every run littered the user's state directory
+# with lock files named after long-gone fixture temp dirs, and a test that tried to
+# contend the lock silently locked a different file.
+XDGSTATE=$(mkd)
+export XDG_STATE_HOME="$XDGSTATE"
+trap 'rm -rf "$STUBS" "$XDGSTATE" "${ROOTTMP:-}"' EXIT
 
 # --- herdr stub -------------------------------------------------------------
 # Returns JSON from MOCK_* variables so tests control what the server "contains".
@@ -248,6 +285,20 @@ trap 'rm -rf "$STUBS" "${ROOTTMP:-}"' EXIT
 cat > "$STUBS/herdr" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$HLOG"
+# Defaults are plain assignments, NOT ${VAR:-{...}}: a brace inside a :- default ends
+# the expansion early in bash and the remaining "}}" leaks into stdout, appending two
+# stray braces to otherwise-valid JSON. jq still extracts the right value while
+# printing a parse error, so it corrupts quietly.
+: "${MOCK_WS_LIST:=}"; : "${MOCK_PANE_LIST:=}"; : "${MOCK_TAB_LIST:=}"
+[ -z "$MOCK_WS_LIST" ]   && MOCK_WS_LIST='{"result":{"workspaces":[]}}'
+[ -z "$MOCK_PANE_LIST" ] && MOCK_PANE_LIST='{"result":{"panes":[]}}'
+[ -z "$MOCK_TAB_LIST" ]  && MOCK_TAB_LIST='{"result":{"tabs":[]}}'
+# Forcing a genuinely empty response needs its own knob: setting MOCK_*_LIST=""
+# hits the defaults above and yields valid JSON instead, so the empty-response path
+# could not be reached from a fixture at all.
+if [ -n "${MOCK_EMPTY_FOR:-}" ]; then
+  case "$*" in "$MOCK_EMPTY_FOR"*) exit 0 ;; esac
+fi
 case "$*" in
   "status server"|"status")
     printf '%s\n' "${MOCK_STATUS:-server:
@@ -256,9 +307,9 @@ case "$*" in
     [ "${MOCK_SERVER_UP:-1}" = "0" ] && {
       printf '%s' '{"error":{"code":"server_not_running","message":"no herdr server"}}'
       exit 1; }
-    printf '%s' "${MOCK_WS_LIST:-{\"result\":{\"workspaces\":[]}}}" ;;
-  "pane list"*)    printf '%s' "${MOCK_PANE_LIST:-{\"result\":{\"panes\":[]}}}" ;;
-  "tab list"*)     printf '%s' "${MOCK_TAB_LIST:-{\"result\":{\"tabs\":[]}}}" ;;
+    printf '%s' "$MOCK_WS_LIST" ;;
+  "pane list"*)    printf '%s' "$MOCK_PANE_LIST" ;;
+  "tab list"*)     printf '%s' "$MOCK_TAB_LIST" ;;
   "workspace create"*)
     exit_rc="${MOCK_WS_CREATE_RC:-0}"; [ "$exit_rc" != 0 ] && exit "$exit_rc"
     printf '%s' '{"result":{"workspace":{"workspace_id":"w7"},"tab":{"tab_id":"w7:t4"},"root_pane":{"pane_id":"w7:p3"}}}' ;;
@@ -277,9 +328,19 @@ case "$*" in
     # Direction is per-pane, looked up in a map file the fixture writes: "<pane> <dir>"
     # per line. A map beats an env var because the stub is a separate process and the
     # answer differs per tab — agents is split right, runtime down.
-    pid="${*##*--pane }"; pid="${pid%% *}"
-    dir=$(awk -v p="$pid" '$1==p {print $2; exit}' "${MOCK_LAYOUT_FILE:-/dev/null}" 2>/dev/null)
-    printf '{"result":{"splits":[{"direction":"%s"}]}}' "${dir:-right}" ;;
+    # Walk argv for --pane. NOT "${*##*--pane }": on $* bash applies the pattern to
+    # each positional parameter rather than the joined string, so the id never
+    # extracted, every lookup missed, and the direction check silently always passed.
+    pid=""; prev=""
+    for a in "$@"; do [ "$prev" = "--pane" ] && pid="$a"; prev="$a"; done
+    # LAST match wins: mock_topology writes the healthy defaults, then a test appends
+    # mock_split_dir to override one pane. First-match-wins would ignore the override
+    # and quietly turn the wrong-direction test into one that can never detect it.
+    dir=$(awk -v p="$pid" '$1==p {d=$2} END {print d}' "${MOCK_LAYOUT_FILE:-/dev/null}" 2>/dev/null)
+    # Mirrors the real envelope: the snapshot sits under .result.layout, not
+    # .result. Getting this wrong is invisible to a mocked suite — it just validates
+    # whatever shape the stub invents.
+    printf '{"result":{"layout":{"splits":[{"direction":"%s"}]}}}' "${dir:-right}" ;;
   *) exit 0 ;;
 esac
 STUB
@@ -295,6 +356,10 @@ mock_reset() {
   export MOCK_WS_CREATE_RC=0
   export MOCK_TAB_SEQ_FILE="$(mktemp "${TMPROOT%/}/tabseq.XXXXXX")"; print -n 0 > "$MOCK_TAB_SEQ_FILE"
   unset MOCK_TAB_CREATE_FAIL_AT MOCK_STATUS
+  # The HL_* knobs are exported by individual tests and would otherwise leak into
+  # every later one — HL_READY_TRIES=2 from a timeout test silently shortening an
+  # unrelated bootstrap, for instance, which is how C4 first failed.
+  unset HL_READY_TRIES HL_TRACE_LOCK HL_LOCK_DELAY HL_SCAN_DELAY
 }
 
 # Shape helpers. Keep them tiny and literal — a clever fixture builder is one more
@@ -317,22 +382,27 @@ mock_tabs() {       # <label>...  — tabs w7:t1.. with the given labels, no pan
 # Tabs, panes and the workspace label in ONE call. Setting them separately is how the
 # fixtures drifted: a workspace with four tabs and zero panes is not "four good tabs",
 # it is malformed, and separate helpers made a correct classifier look broken.
+# The workspace id is parameterised (MOCK_WS_ID, default w7) so a fixture's
+# pre-existing workspace can be told apart from one the code creates — the stub's
+# `workspace create` also answers w7, which made "the other workspace is not focused"
+# unfalsifiable once build started focusing its own result.
 mock_topology() {
   local cwd="$1" label="$2"; shift 2
+  local w="${MOCK_WS_ID:-w7}"
   local i=1 pn=1 tabs="" panes="" spec name n k
   for spec in "$@"; do
     name="${spec%%:*}"; n="${spec##*:}"
     [[ -n "$tabs" ]] && tabs+=","
-    tabs+="{\"tab_id\":\"w7:t$i\",\"label\":\"$name\"}"
+    tabs+="{\"tab_id\":\"$w:t$i\",\"label\":\"$name\"}"
     k=1
     while (( k <= n )); do
       [[ -n "$panes" ]] && panes+=","
-      panes+="{\"pane_id\":\"w7:p$pn\",\"tab_id\":\"w7:t$i\",\"workspace_id\":\"w7\",\"cwd\":\"$cwd\"}"
+      panes+="{\"pane_id\":\"$w:p$pn\",\"tab_id\":\"$w:t$i\",\"workspace_id\":\"$w\",\"cwd\":\"$cwd\"}"
       # The direction the baseline expects for this label, so a healthy fixture is
       # healthy without every test restating its geometry.
       case "$name" in
-        runtime) print -r -- "w7:p$pn down"  >> "$MOCK_LAYOUT_FILE" ;;
-        *)       print -r -- "w7:p$pn right" >> "$MOCK_LAYOUT_FILE" ;;
+        runtime) print -r -- "$w:p$pn down"  >> "$MOCK_LAYOUT_FILE" ;;
+        *)       print -r -- "$w:p$pn right" >> "$MOCK_LAYOUT_FILE" ;;
       esac
       (( pn++ )); (( k++ ))
     done
@@ -340,7 +410,7 @@ mock_topology() {
   done
   export MOCK_TAB_LIST="{\"result\":{\"tabs\":[$tabs]}}"
   export MOCK_PANE_LIST="{\"result\":{\"panes\":[$panes]}}"
-  export MOCK_WS_LIST="{\"result\":{\"workspaces\":[{\"workspace_id\":\"w7\",\"label\":\"$label\"}]}}"
+  export MOCK_WS_LIST="{\"result\":{\"workspaces\":[{\"workspace_id\":\"$w\",\"label\":\"$label\"}]}}"
 }
 
 # mock_split_dir <pane_id> <right|down> — override one pane's split direction, so a
@@ -441,9 +511,13 @@ eq "$(<$LAYOUT_ARG)" "" "A3 layout.sh is never invoked"
 
 # Ambiguity must reach the picker, never silently pick one. fzf is stubbed to decline
 # (exit 1), so a correct hdev resolves nothing and invokes nothing.
+# Declines by default; MOCK_FZF_SELECT makes it choose, so both the cancel and the
+# select path are covered. Cancellation alone would let an implementation that always
+# bails after fzf pass every assertion.
 cat > "$STUBS/fzf" <<'S'
 #!/usr/bin/env bash
 printf '%s\n' "fzf-invoked" >> "$FZFLOG"
+[ -n "${MOCK_FZF_SELECT:-}" ] && { printf '%s\n' "$MOCK_FZF_SELECT"; exit 0; }
 exit 1
 S
 chmod +x "$STUBS/fzf"
@@ -453,15 +527,21 @@ run_hdev "curato"
 eq "$(<$LAYOUT_ARG)" "" "A4 an ambiguous basename resolves to nothing"
 [[ -s "$FZFLOG" ]] && _pass "A4 the picker is consulted" || _fail "A4 the picker was never invoked"
 
+# The other half: when the picker DOES choose, that choice must be honoured.
+MOCK_FZF_SELECT="ViuMore/curato" run_hdev "curato"
+eq "$(<$LAYOUT_ARG)" "$R2" "A5 a picker selection resolves to the chosen repo"
+
 # --- B: the linked-worktree guard -------------------------------------------
 print -r -- "-- B: linked-worktree guard"
 WT="$CODE/Netronix/curato-feature"
 git -C "$R1" worktree add -q -b feature "$WT" 2>/dev/null
 
+# `has "dev"` would be vacuous here: the failure output during the red phase is
+# "command not found: hdev", which contains "dev". Match the guidance line itself.
 run_hdev "'$WT'"
 rc_is 1 "B1 a linked worktree is refused"
 has "linked worktree" "B1 names the reason"
-has "dev" "B1 points at dev"
+has "Use: dev " "B1 points at dev"
 eq "$(<$LAYOUT_ARG)" "" "B1 layout.sh is never invoked"
 
 run_hdev "'$R1'"
@@ -619,7 +699,14 @@ Create `dot_config/herdr/executable_layout.sh`:
 # The single definition of what a project workspace looks like. Both entry points go
 # through it, so there is no second copy to drift.
 emulate -L zsh
-setopt local_options err_return no_unset pipe_fail
+# no_bg_nice: zsh sets BG_NICE by default, so `cmd &` renices the job. That renice
+# fails outright where setpriority is denied (a sandbox, some CI), taking the
+# backgrounded server with it — and even where it succeeds, quietly deprioritising the
+# Herdr server every agent runs inside is not what anyone wants.
+#
+# NOT err_return: it does not fire for a command whose status is already being tested,
+# which is exactly the shape used below, so failure propagation is explicit instead.
+setopt local_options no_unset pipe_fail no_bg_nice
 
 MANAGED_TABS=(agents editor runtime git)
 BUILDING_SUFFIX=" (building)"
@@ -1005,10 +1092,15 @@ hl_reconcile() {
 # hl_label — the display label. Deterministic from the path so it is stable, but
 # purely cosmetic: identity is the canonical path, checked via pane cwd.
 hl_label() {
-  local repo="$1"
+  # BOTH sides resolved. hdev hands over "${repo:A}", so on macOS a repo under /tmp
+  # arrives as /private/tmp/... while $HOME is still /tmp/... — the prefix never
+  # matches and the label silently degrades to the full absolute path. The same
+  # applies to any ~/Code behind a symlink, which _wt_assert_worktree already warns
+  # about: "git reports real paths, and ~/Code may sit behind a symlink."
+  local repo="${1:A}" home="${HOME:A}"
   case "$repo" in
-    "$HOME/Code/"*) print -r -- "${repo#$HOME/Code/}" ;;
-    "$HOME/"*)      print -r -- "${repo#$HOME/}" ;;
+    "$home/Code/"*) print -r -- "${repo#$home/Code/}" ;;
+    "$home/"*)      print -r -- "${repo#$home/}" ;;
     *)              print -r -- "$repo" ;;
   esac
 }
@@ -1478,25 +1570,51 @@ Mocked tests cannot catch CLI churn — a stub defines its own acceptance and ke
 # `dev.layout` would let teardown unlink the plugin the live setup depends on.
 #
 # Run manually, unsandboxed: zsh .scripts/test-hdev-topology.sh
+emulate -L zsh
 set -u
+setopt no_bg_nice   # see the same note in layout.sh
 SESSION=hdev-test
 PLUGIN_ID=dev.layout.test
+TMP_BASE=${TMPDIR:-/tmp}
+TMP_BASE=${TMP_BASE%/}
 h() { command herdr --session "$SESSION" "$@" }
 
 pass=0 fail=0
+plugin_linked=0
 ok()   { print -r -- "  PASS: $1"; pass=$((pass+1)) }
 bad()  { print -r -- "  FAIL: $1"; fail=$((fail+1)) }
 
 cleanup() {
+  # `server stop` does NOT delete session state — herdr persists workspaces to
+  # ~/.config/herdr/sessions/<name> and restores them next start. Without an explicit
+  # delete, every run inherited the previous run's workspaces and `workspace list`
+  # answered about stale ones.
+  # Unlink while this named server is still reachable. Plugin registration is global,
+  # but the CLI mutation still needs a running server; stopping first leaves a stale
+  # registration pointing at the deleted fixture directory.
+  (( plugin_linked )) && h plugin unlink "$PLUGIN_ID" >/dev/null 2>&1 || true
   h server stop >/dev/null 2>&1 || true
-  command herdr plugin unlink "$PLUGIN_ID" >/dev/null 2>&1 || true
-  [[ -n "${SCRATCH:-}" ]] && rm -rf "$SCRATCH"
+  command herdr session delete "$SESSION" >/dev/null 2>&1 || true
+  if [[ -n "${SCRATCH:-}" && "$SCRATCH" == $TMP_BASE/hdev-live.* ]]; then
+    rm -rf -- "$SCRATCH"
+  fi
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT HUP INT TERM
 
-SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/hdev-live.XXXXXX")"
+SCRATCH="$(mktemp -d "$TMP_BASE/hdev-live.XXXXXX")" || exit 1
 REPO="$SCRATCH/Code/Test/proj"
-mkdir -p "$REPO" && git -C "$REPO" init -q && git -C "$REPO" commit -q --allow-empty -m init
+mkdir -p "$REPO" || exit 1
+git -C "$REPO" init -q || exit 1
+# Resolved: mktemp hands back /tmp/... or /var/folders/..., layout.sh stores
+# "${repo:A}" (/private/...), so an unresolved comparison never matches a pane cwd.
+REPO="${REPO:A}"
+
+# Start clean as well as finish clean: a run killed mid-way leaves state behind.
+# STOP before DELETE — `session delete` only acts on a stopped session, so deleting
+# first silently fails against a surviving server and the persisted state is then
+# restored on the next start. Same order as cleanup below.
+h server stop >/dev/null 2>&1 || true
+command herdr session delete "$SESSION" >/dev/null 2>&1 || true
 
 print -r -- "=== live topology gate (session: $SESSION) ==="
 
@@ -1517,52 +1635,147 @@ n=$(h pane list --workspace "$WS" | jq -r --arg t "$AT" '[.result.panes[] | sele
 [[ "$n" == 2 ]] && ok "agents holds 2 panes" || bad "agents holds $n panes"
 
 # 3. Idempotency: a second run focuses, never duplicates.
-HERDR_SESSION="$SESSION" HDEV_NO_ATTACH=1 ~/.config/herdr/layout.sh "$REPO" >/dev/null
+second_rc=0
+HERDR_SESSION="$SESSION" HDEV_NO_ATTACH=1 ~/.config/herdr/layout.sh "$REPO" >/dev/null \
+  || second_rc=$?
 n=$(h workspace list | jq -r '.result.workspaces | length')
-[[ "$n" == 1 ]] && ok "a second run does not duplicate" || bad "$n workspaces after a second run"
+[[ "$second_rc" == 0 && "$n" == 1 ]] \
+  && ok "a second run does not duplicate" \
+  || bad "second run rc=$second_rc with $n workspaces"
 
 # 4. Extra tabs survive.
 h tab create --workspace "$WS" --label notes >/dev/null
-HERDR_SESSION="$SESSION" HDEV_NO_ATTACH=1 ~/.config/herdr/layout.sh "$REPO" >/dev/null
-h tab list --workspace "$WS" | jq -e '.result.tabs[] | select(.label=="notes")' >/dev/null \
+notes_rc=0
+HERDR_SESSION="$SESSION" HDEV_NO_ATTACH=1 ~/.config/herdr/layout.sh "$REPO" >/dev/null \
+  || notes_rc=$?
+[[ "$notes_rc" == 0 ]] \
+  && h tab list --workspace "$WS" | jq -e '.result.tabs[] | select(.label=="notes")' >/dev/null \
   && ok "an unmanaged tab survives" || bad "the unmanaged tab was removed"
 
 # 5. Concurrency, on the schedule that actually breaks it: B scans, A builds and
 #    releases, THEN B acquires. Launching two at once mostly proves nothing.
 REPO2="$SCRATCH/Code/Test/proj2"
-mkdir -p "$REPO2" && git -C "$REPO2" init -q && git -C "$REPO2" commit -q --allow-empty -m init
+mkdir -p "$REPO2" || exit 1
+git -C "$REPO2" init -q || exit 1
+REPO2="${REPO2:A}"
 # B sleeps BEFORE taking the lock, so it arrives after A has built and released —
 # the stale-observation schedule. Launching two at once would usually serialise
 # harmlessly and prove nothing.
 ( HERDR_SESSION="$SESSION" HDEV_NO_ATTACH=1 HL_LOCK_DELAY=3 ~/.config/herdr/layout.sh "$REPO2" ) &
 B=$!
 sleep 0.2
-HERDR_SESSION="$SESSION" HDEV_NO_ATTACH=1 ~/.config/herdr/layout.sh "$REPO2" >/dev/null 2>&1
-wait $B 2>/dev/null || true
+a_rc=0
+HERDR_SESSION="$SESSION" HDEV_NO_ATTACH=1 ~/.config/herdr/layout.sh "$REPO2" >/dev/null 2>&1 \
+  || a_rc=$?
+b_rc=0
+wait $B 2>/dev/null || b_rc=$?
 n=$(h pane list | jq -r --arg d "$REPO2" \
       '[.result.panes[] | select(.cwd == $d) | .workspace_id] | unique | length')
-[[ "$n" == 1 ]] && ok "the delayed-acquisition race yields one workspace" || bad "$n workspaces for one repo"
+[[ "$a_rc" == 0 && "$b_rc" == 0 && "$n" == 1 ]] \
+  && ok "the delayed-acquisition race yields one workspace" \
+  || bad "race runs rc=$a_rc/$b_rc yielded $n workspaces"
 
 # 6. Split directions, not just pane counts. Two panes side by side and two stacked
 #    are both "2"; only the geometry says which layout was actually built.
 RT=$(h tab list --workspace "$WS" | jq -r '.result.tabs[] | select(.label=="runtime") | .tab_id')
 h pane layout --pane "$(h pane list --workspace "$WS" | jq -r --arg t "$RT" \
     '[.result.panes[] | select(.tab_id==$t)][0].pane_id')" \
-  | jq -e '.result | tostring | test("down|vertical|row")' >/dev/null \
+  | jq -e '[.result.layout.splits[].direction] == ["down"]' >/dev/null \
   && ok "runtime is split down" || bad "runtime is not split down"
 
 # 7. The plugin: link under a DISTINCT id, invoke it, unlink. Registration is global,
 #    so reusing dev.layout would let this teardown unlink the real one.
-PDIR="$SCRATCH/plugin"; mkdir -p "$PDIR"
-sed "s/^id = .*/id = \"$PLUGIN_ID\"/" ~/.config/herdr/plugin/herdr-plugin.toml > "$PDIR/herdr-plugin.toml"
-command herdr plugin link "$PDIR" >/dev/null \
-  && ok "the plugin links" || bad "plugin link failed"
-h tab close "$(h tab list --workspace "$WS" | jq -r '.result.tabs[] | select(.label=="git") | .tab_id')" >/dev/null
-h plugin action invoke "$PLUGIN_ID.apply" >/dev/null 2>&1   # session-scoped: the
+PDIR="$SCRATCH/plugin"
+mkdir -p "$PDIR" || exit 1
+# Match the plugin id EXACTLY. `s/^id = .*/` also rewrites the [[actions]] entry's
+# `id = "apply"` — TOML nested tables are not indented — which renames the action
+# too, leaving "$PLUGIN_ID.apply" pointing at nothing.
+sed 's|^id = "dev.layout"$|id = "'"$PLUGIN_ID"'"|' \
+  ~/.config/herdr/plugin/herdr-plugin.toml > "$PDIR/herdr-plugin.toml" || exit 1
+grep -q '^id = "apply"' "$PDIR/herdr-plugin.toml" \
+  && ok "the action id survived the id rewrite" || bad "the action id was rewritten too"
+# Remove a registration left by an older interrupted gate before linking this run's
+# fixture. Registration is global, but both mutations are routed through the live,
+# isolated server so they cannot fail merely because the default server is stopped.
+h plugin unlink "$PLUGIN_ID" >/dev/null 2>&1 || true
+h plugin link "$PDIR" >/dev/null \
+  && { plugin_linked=1; ok "the plugin links"; } || bad "plugin link failed"
+close_rc=0
+h tab close "$(h tab list --workspace "$WS" | jq -r '.result.tabs[] | select(.label=="git") | .tab_id')" >/dev/null \
+  || close_rc=$?
+closed_n=$(h tab list --workspace "$WS" | jq -r '[.result.tabs[] | select(.label=="git")] | length')
+# The action's context is taken from the FOCUSED workspace, so focus it first —
+# otherwise the plugin repairs whichever workspace happens to be focused.
+focus_rc=0
+h workspace focus "$WS" >/dev/null || focus_rc=$?
+invoke_rc=0
+h plugin action invoke "$PLUGIN_ID.apply" >/dev/null 2>&1 || invoke_rc=$?   # session-scoped: the
 # topology lives in hdev-test, and a bare `herdr plugin action invoke` would run it
 # against the default session instead.
-n=$(h tab list --workspace "$WS" | jq -r '[.result.tabs[] | select(.label=="git")] | length')
-[[ "$n" == 1 ]] && ok "the plugin action repairs a closed managed tab" || bad "git tab count = $n after repair"
+# `plugin action invoke` returns while the action is still "running" — poll rather
+# than assuming it finished.
+for i in {1..20}; do
+  n=$(h tab list --workspace "$WS" | jq -r '[.result.tabs[] | select(.label=="git")] | length')
+  [[ "$n" == 1 ]] && break
+  sleep 0.5
+done
+[[ "$close_rc" == 0 && "$closed_n" == 0 && "$focus_rc" == 0 && "$invoke_rc" == 0 && "$n" == 1 ]] \
+  && ok "the plugin action repairs a closed managed tab" \
+  || bad "repair preconditions/actions rc=$close_rc/$focus_rc/$invoke_rc, counts=$closed_n->$n"
+
+# 7b. The jump must still land after repair. This is the whole reason tab-goto.sh
+#     resolves by label: repair APPENDS (herdr 0.8.2 has no `tab move`), so the
+#     repaired git tab is now last — after the unmanaged `notes` tab added earlier —
+#     and a position-based lookup would not land reliably on git at all.
+GITTAB=$(h tab list --workspace "$WS" | jq -r '.result.tabs[] | select(.label=="git") | .tab_id')
+jump_rc=0
+HERDR_ACTIVE_WORKSPACE_ID="$WS" HERDR_SESSION="$SESSION" ~/.config/herdr/tab-goto.sh git \
+  || jump_rc=$?
+ACTIVE=$(h workspace get "$WS" | jq -r '.result.workspace.active_tab_id')
+[[ "$jump_rc" == 0 && "$ACTIVE" == "$GITTAB" ]] \
+  && ok "a label jump lands on the repaired tab ($GITTAB)" \
+  || bad "label jump landed on $ACTIVE, expected the repaired $GITTAB"
+
+# 8. Notification DELIVERY is not switched off. This deliberately does not claim to
+#    prove rendering: the gate runs a headless named session with no attached client,
+#    where delivery = "herdr" (in-app toasts) legitimately returns
+#    no_foreground_client. Rendering was proven manually in Task 8 and cannot be
+#    re-proven here without attaching a client.
+#
+#    What this DOES catch is `disabled` — the state pinning `onboarding = false`
+#    silently produced, which removes every failure message a detached keybinding or
+#    plugin action can emit. The mocked suite cannot see it: it only knows that
+#    `notification show` was invoked.
+#
+#    NotificationShowReason is ["shown","disabled","rate_limited",
+#    "no_foreground_client","busy"]. Observed live: a headless session returns `busy`
+#    persistently, not transiently — retrying it five times still ended in `busy`, so
+#    treating it as transient failed a working setup. Only `disabled` means delivery
+#    is actually off, and that is the single state this gate exists to catch.
+enabled=0
+for i in 1 2 3 4 5; do
+  r=$(h notification show "gate" --body "live gate probe" | jq -r '.result.reason')
+  case "$r" in
+    shown|no_foreground_client|busy) enabled=1; break ;;  # delivery is on; see below
+    disabled)                   break ;;              # the real defect; fail fast
+    rate_limited)               sleep 1.5 ;;          # transient; retry
+    *)                          break ;;
+  esac
+done
+(( enabled )) && ok "notification delivery is enabled (reason: $r)" \
+  || bad "notification delivery is off (last reason: ${r:-none}) — failure feedback would be invisible"
+
+# Assert the global side effect is gone before the fixture directory disappears. The
+# EXIT trap is only a backstop for interruption; a green run must prove its teardown.
+if (( plugin_linked )); then
+  unlink_out=$(h plugin unlink "$PLUGIN_ID" 2>/dev/null) || unlink_out=''
+  if print -r -- "$unlink_out" | jq -e --arg id "$PLUGIN_ID" \
+      '.result.plugin_id == $id and .result.removed == true' >/dev/null 2>&1; then
+    plugin_linked=0
+  else
+    bad "the test plugin registration was not removed"
+  fi
+fi
 
 print -r -- "=== $pass passed, $fail failed ==="
 (( fail == 0 ))
@@ -1610,24 +1823,77 @@ Cold restore is the sole justification for these — Claude and Codex are "sessi
 
 - [ ] **Step 1: Back up the real config first**
 
+This is the only copy of your pre-trial config, so it fails closed: a `cp` that
+silently failed would leave a later step believing a backup exists.
+
 ```bash
-mkdir -p ~/.local/state/herdr-trial-backup
-cp ~/.claude/settings.json ~/.local/state/herdr-trial-backup/settings.json
-cp ~/.codex/config.toml ~/.local/state/herdr-trial-backup/config.toml
-cp ~/.codex/hooks.json ~/.local/state/herdr-trial-backup/hooks.json 2>/dev/null || true
+set -e
+BK=~/.local/state/herdr-trial-backup
+mkdir -p "$BK"
+cp ~/.claude/settings.json "$BK/settings.json"
+cp ~/.codex/config.toml    "$BK/config.toml"
+# hooks.json legitimately may not exist yet; absence is fine, a failed copy is not.
+if [[ -e ~/.codex/hooks.json ]]; then cp ~/.codex/hooks.json "$BK/hooks.json"; fi
+ls -l "$BK"
+set +e
 ```
 
 - [ ] **Step 2: Install against fixtures and diff**
 
 Do **not** install into the real config yet. Use scratch config dirs:
 
+`CLAUDE_CONFIG_DIR` and `CODEX_HOME` appear in the binary's strings, but that is not
+proof the installer honours them. If either is ignored, the installer has **already
+modified your real config** by the time the diff would reveal it. So the redirect is
+not the only line of defence:
+
+- redirect `HOME` and `XDG_CONFIG_HOME` as well, so a path built from either lands in
+  the fixture rather than `$HOME`;
+- run it **sandboxed**, where `~/.claude/hooks` and `~/.claude/settings.json` are
+  write-denied — a redirect that fails becomes a permission error instead of a
+  silent modification;
+- record hashes and modes of the real files before and after, and require exact
+  equality.
+
 ```bash
 export FIX="$(mktemp -d "${TMPDIR}/herdr-fix.XXXXXX")"
-mkdir -p "$FIX/claude" "$FIX/codex"
-CLAUDE_CONFIG_DIR="$FIX/claude" herdr integration install claude
-CODEX_HOME="$FIX/codex" herdr integration install codex
+mkdir -p "$FIX/claude" "$FIX/codex" "$FIX/home" "$FIX/xdg"
+
+# Fingerprint the real config first.
+real_fp() {
+  for f in ~/.claude/settings.json ~/.codex/config.toml ~/.codex/hooks.json \
+           ~/.claude/hooks/herdr-agent-state.sh ~/.codex/herdr-agent-state.sh; do
+    if [[ -e "$f" ]]; then printf '%s %s %s\n' "$f" "$(shasum -a 256 "$f" | cut -d' ' -f1)" \
+      "$(stat -f '%Lp' "$f")"; else printf '%s ABSENT\n' "$f"; fi
+  done
+}
+real_fp > "$FIX/before.fp"
+
+# `|| exit 1` on each: in a multi-line block a failed install is otherwise followed
+# by successful commands and vanishes, leaving a half-installed fixture that the diff
+# would then declare clean.
+env HOME="$FIX/home" XDG_CONFIG_HOME="$FIX/xdg" \
+    CLAUDE_CONFIG_DIR="$FIX/claude" herdr integration install claude || exit 1
+env HOME="$FIX/home" XDG_CONFIG_HOME="$FIX/xdg" \
+    CODEX_HOME="$FIX/codex" herdr integration install codex || exit 1
+
 find "$FIX" -type f | sort
+real_fp > "$FIX/after.fp"
+if diff "$FIX/before.fp" "$FIX/after.fp"; then
+  echo "REAL CONFIG UNTOUCHED"
+else
+  echo "STOP: the installer modified real config despite the redirects"
+  exit 1     # must ABORT, not merely print: `|| echo ...` exits 0 and the run
+fi           # would continue straight past the one check that matters
 ```
+
+**If that diff is non-empty, stop entirely** — the overrides are not honoured, and the
+fixture approach cannot be made safe. Report it rather than proceeding.
+
+The task **ends after Step 2c**. Step 3 onward requires separate, explicit
+authorization. Steps 1-2c leave two things behind on purpose — the backup copies under
+`~/.local/state/herdr-trial-backup/` — and everything else in a scratch
+directory, and everything after modifies real agent configuration.
 
 Record exactly which files appeared and which keys changed. Report **key names only** — never paste `settings.json`, `hooks.json` or `config.toml`, which carry credentials and machine state.
 
@@ -1639,38 +1905,95 @@ Reversibility is what makes this task acceptable, so demonstrate it before touch
 real config. Seed an unrelated hook first, so preservation is actually tested:
 
 ```bash
+# Seed an unrelated hook in BOTH agents. Testing preservation for Codex alone says
+# nothing about the Claude uninstall, which edits a different file in a different
+# format and could be destructive on its own.
 jq '.hooks += {mine: {command: "/bin/true"}}' "$FIX/codex/hooks.json" > "$FIX/codex/hooks.json.new" \
-  && mv "$FIX/codex/hooks.json.new" "$FIX/codex/hooks.json"
-cp -R "$FIX" "$FIX.before"
+  && mv "$FIX/codex/hooks.json.new" "$FIX/codex/hooks.json" || exit 1
+jq '.hooks.SessionStart = ((.hooks.SessionStart // []) + [{hooks: [{type: "command", command: "/bin/true"}]}])' \
+  "$FIX/claude/settings.json" > "$FIX/claude/settings.json.new" \
+  && mv "$FIX/claude/settings.json.new" "$FIX/claude/settings.json" || exit 1
+# Step 3 copies the hook scripts out of this snapshot, so losing it silently would
+# leave nothing to bring under chezmoi.
+cp -R "$FIX" "$FIX.before" || exit 1
 
-CLAUDE_CONFIG_DIR="$FIX/claude" herdr integration uninstall claude
-CODEX_HOME="$FIX/codex" herdr integration uninstall codex
+# The SAME four redirects as the install. Uninstall resolves its own paths, and an
+# uninstall-specific resolution failure would modify real config just as silently.
+env HOME="$FIX/home" XDG_CONFIG_HOME="$FIX/xdg" \
+    CLAUDE_CONFIG_DIR="$FIX/claude" herdr integration uninstall claude || exit 1
+env HOME="$FIX/home" XDG_CONFIG_HOME="$FIX/xdg" \
+    CODEX_HOME="$FIX/codex" herdr integration uninstall codex || exit 1
+
+# Fingerprint again: the install being contained says nothing about the uninstall.
+real_fp > "$FIX/after-uninstall.fp"
+if ! diff "$FIX/before.fp" "$FIX/after-uninstall.fp"; then
+  echo "STOP: the uninstaller modified real config despite the redirects"; exit 1
+fi
 
 diff -r "$FIX.before" "$FIX" | sed 's/^/  /'
-jq -e '.hooks.mine' "$FIX/codex/hooks.json" >/dev/null && echo "unrelated hook preserved"
-jq -e '.hooks.herdr' "$FIX/codex/hooks.json" >/dev/null && echo "WARNING: herdr entry survived"
-grep -q 'hooks = true' "$FIX/codex/config.toml" && echo "features.hooks left set (expected)"
+
+# Every one of these aborts on failure. Printing a warning and exiting 0 is how a
+# destructive uninstall would sail past its own safety check.
+jq -e '.hooks.mine' "$FIX/codex/hooks.json" >/dev/null \
+  || { echo "STOP: the codex uninstall destroyed an unrelated hook"; exit 1; }
+jq -e '[.hooks.SessionStart[]?.hooks[]? | select(.command == "/bin/true")] | length > 0' \
+  "$FIX/claude/settings.json" >/dev/null \
+  || { echo "STOP: the claude uninstall destroyed an unrelated hook"; exit 1; }
+jq -e '[.. | strings | select(test("herdr"))] | length == 0' "$FIX/claude/settings.json" >/dev/null \
+  || { echo "STOP: herdr's claude registration survived the uninstall"; exit 1; }
+[[ -e "$FIX/claude/hooks/herdr-agent-state.sh" ]] \
+  && { echo "STOP: herdr's claude hook script survived the uninstall"; exit 1; }
+# The contract is registration removal AND script deletion, for both agents.
+[[ -e "$FIX/codex/herdr-agent-state.sh" ]] \
+  && { echo "STOP: herdr's codex hook script survived the uninstall"; exit 1; }
+# Recursive string search, NOT `.hooks.herdr`: the registration lives under
+# .hooks.SessionStart[], so a key-based check on a key that never existed passes
+# unconditionally and proves nothing.
+jq -e '[.. | strings | select(test("herdr"))] | length == 0' "$FIX/codex/hooks.json" >/dev/null \
+  || { echo "STOP: herdr's codex registration survived the uninstall"; exit 1; }
+jq -e '[.. | strings | select(test("herdr"))] | length == 0' "$FIX/claude/settings.json" >/dev/null \
+  || { echo "STOP: herdr's claude registration survived the uninstall"; exit 1; }
+grep -q 'hooks = true' "$FIX/codex/config.toml" \
+  || echo "note: features.hooks was NOT left set — rollback need not restore it"
+echo "uninstall is contained and non-destructive"
 ```
 
 Expected: the unrelated hook survives, Herdr's entry is gone, `features.hooks` remains
 set. **If the unrelated hook does not survive, stop** — the uninstall is destructive to
 config it does not own, and rollback would cost you unrelated settings.
 
-- [ ] **Step 2c: Immutable baseline, then authorise**
+- [ ] **Step 2c: Read-only baseline, then authorise**
 
-The Step 1 copies live in a directory chezmoi and Herdr both write to. Take a
-read-only snapshot outside it:
+A second, read-only snapshot in a timestamped subdirectory of the same backup
+directory. Step 1's copies sit at its top level where a later run would overwrite
+them; `chmod a-w` stops the files being *rewritten* in place.
+
+It does not make them immutable: the parent directory stays writable, so the snapshot
+can still be deleted outright. It guards against a careless overwrite, not against
+`rm -rf`. Fails closed for the same reason Step 1 does.
 
 ```bash
+set -e
 BK=~/.local/state/herdr-trial-backup/$(date +%Y%m%d-%H%M%S)
-mkdir -p "$BK" && cp ~/.claude/settings.json ~/.codex/config.toml "$BK"/ 2>/dev/null
-cp ~/.codex/hooks.json "$BK"/ 2>/dev/null || true
-chmod -R a-w "$BK" && ls -l "$BK"
+mkdir -p "$BK"
+cp ~/.claude/settings.json "$BK/"
+cp ~/.codex/config.toml    "$BK/"
+if [[ -e ~/.codex/hooks.json ]]; then cp ~/.codex/hooks.json "$BK/"; fi
+chmod -R a-w "$BK"
+ls -l "$BK"
+set +e
 ```
 
-**Stop here and get explicit confirmation before Step 3.** Everything to this point is
-reversible by deleting a scratch directory; everything after modifies real agent
-configuration.
+**Stop here and get explicit confirmation before Step 3.** Steps 1-2c modify nothing
+in `~/.claude` or `~/.codex`; what they leave behind is the backup directory above,
+plus a scratch fixture.
+
+Steps 3-7 edit **chezmoi source only** — still nothing in `$HOME`. The real activation
+boundary is **Step 8's `chezmoi apply`**, which is where the hooks reach your live
+agent config, and that needs its own authorization with the rendered diff in hand.
+
+Do not treat approval of Steps 1-2c as approval of Step 3. They are separate
+decisions, and the evidence from 2c is what the second one should be based on.
 
 - [ ] **Step 3: Bring the hook scripts under chezmoi**
 
@@ -1709,21 +2032,20 @@ And to the `.codex` block (after line 78):
 
 This is the dangerous gap: without it, reprovisioning deploys Codex's hook script *and* sets `features.hooks = true` while never writing the registration connecting them — cold restore silently dead, every visible artifact present and correct.
 
-Create `dot_codex/modify_private_hooks.json`, merge-preserving so other hook registrations survive:
+Create `dot_codex/modify_private_hooks.json` as a merge-preserving chezmoi modify
+template. It removes only an existing Herdr `SessionStart` entry, preserves every
+other key and hook, then appends exactly one current Herdr entry.
 
-```
-#!/usr/bin/env bash
-# modify_ script: stdin is the current ~/.codex/hooks.json (empty on first run),
-# stdout replaces it. Adds only Herdr's entries and leaves everything else intact.
-set -euo pipefail
-current="$(cat)"
-[ -z "$current" ] && current='{}'
-printf '%s' "$current" | jq \
-  --arg cmd "$HOME/.codex/herdr-agent-state.sh" \
-  '.hooks = ((.hooks // {}) + {herdr: {command: $cmd}})'
+This reproduces the shape **observed** in Step 2, not a guess:
+
+```json
+{"hooks":{"SessionStart":[{"hooks":[{"type":"command",
+  "command":"bash '<abs>/herdr-agent-state.sh' session","timeout":10}]}]}}
 ```
 
-Use the exact key shape observed in Step 2 — this is the expected shape; correct it to what the installer actually wrote if they differ.
+Three details are load-bearing: the `session` argument, `timeout: 10`, and an
+**absolute** path — the installer writes a fully-resolved path, so the template must
+render the real `$HOME`, never a relative or fixture path.
 
 - [ ] **Step 6: Pin `features.hooks`**
 
@@ -1737,21 +2059,40 @@ Herdr's uninstall deliberately leaves this flag set, so rollback restores its pr
 
 - [ ] **Step 7: Merge Claude's hook registration**
 
-In `dot_claude/modify_private_settings.json`, which already owns the `hooks` block, add Herdr's entry alongside the existing `SessionStart` hooks — matching the shape observed in Step 2. Do not let the installer write this file; the two would fight on every `chezmoi apply`.
+In `dot_claude/modify_private_settings.json`, which already owns the `hooks` block, add
+Herdr's entry alongside the existing `SessionStart` hooks. The observed shape — note
+Claude's entry carries a `matcher`, Codex's does not:
+
+```json
+{"matcher":"*","hooks":[{"type":"command",
+  "command":"bash '<abs>/herdr-agent-state.sh' session","timeout":10}]}
+```
+
+Do not let the installer write this file; the two would fight on every `chezmoi apply`.
 
 - [ ] **Step 8: Apply and verify**
 
 ```bash
-chezmoi apply ~/.claude ~/.codex
+chezmoi apply --parent-dirs \
+  ~/.claude/hooks/herdr-agent-state.sh \
+  ~/.claude/settings.json \
+  ~/.codex/herdr-agent-state.sh \
+  ~/.codex/hooks.json \
+  ~/.codex/config.toml
 herdr integration status | grep -E 'claude|codex'
 ```
 
-Run **unsandboxed** — `~/.claude/hooks` and `~/.claude/settings.json` are write-denied under the sandbox. Expected: both report **installed**.
+Run **unsandboxed** — `~/.claude/hooks` and `~/.claude/settings.json` are write-denied under the sandbox. Expected: both report **current**.
 
 - [ ] **Step 9: Confirm chezmoi is settled**
 
 ```bash
-chezmoi diff ~/.claude ~/.codex
+chezmoi diff \
+  ~/.claude/hooks/herdr-agent-state.sh \
+  ~/.claude/settings.json \
+  ~/.codex/herdr-agent-state.sh \
+  ~/.codex/hooks.json \
+  ~/.codex/config.toml
 ```
 
 Expected: empty. A non-empty diff means the installer and a `modify_` script are fighting — fix before committing.
@@ -1784,29 +2125,70 @@ git commit -m "Bring the herdr agent integrations under chezmoi"
 # themselves are global; this reads real ~/.claude and ~/.codex state.
 #
 # Run manually, unsandboxed: zsh .scripts/test-hdev-integrations.sh
+emulate -L zsh
 set -u
+setopt no_bg_nice
 SESSION=hdev-restore
+FIXTURE_BASE=${XDG_STATE_HOME:-$HOME/.local/state}/herdr-trial
 h() { command herdr --session "$SESSION" "$@" }
 pass=0 fail=0
 ok()  { print -r -- "  PASS: $1"; pass=$((pass+1)) }
 bad() { print -r -- "  FAIL: $1"; fail=$((fail+1)) }
-trap 'h server stop >/dev/null 2>&1 || true; [[ -n "${SCRATCH:-}" ]] && rm -rf "$SCRATCH"' EXIT INT TERM
+# Stop THEN delete: `session delete` only acts on a stopped session, so deleting
+# first silently fails and the persisted state is restored on the next run — the same
+# stale-session defect the topology gate hit.
+cleanup() {
+  h server stop >/dev/null 2>&1 || true
+  command herdr session delete "$SESSION" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT HUP INT TERM
 
-command herdr integration status | grep -q '^claude: installed' \
-  && ok "the claude integration is installed" || bad "claude integration missing"
-command herdr integration status | grep -q '^codex: installed' \
-  && ok "the codex integration is installed" || bad "codex integration missing"
+agent_json() {
+  local out
+  out=$(h agent list 2>/dev/null) || return 1
+  print -r -- "$out" | jq -e '.result.agents | type == "array"' >/dev/null 2>&1 || return 1
+  print -r -- "$out"
+}
 
-SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/hdev-restore.XXXXXX")"
-REPO="$SCRATCH/proj"
-mkdir -p "$REPO" && git -C "$REPO" init -q && git -C "$REPO" commit -q --allow-empty -m init
+agent_refs() {
+  jq -cS '[.result.agents[] | {agent, session: .agent_session}] | sort_by(.agent)'
+}
 
-HERDR_SESSION="$SESSION" HDEV_NO_ATTACH=1 ~/.config/herdr/layout.sh "$REPO"
-print -r -- "  Attach with:  herdr --session $SESSION"
-print -r -- "  Wait until BOTH agents in the 'agents' tab have started and are at an idle"
-print -r -- "  prompt — layout.sh launches them, so do not start them by hand. They must"
-print -r -- "  each report a session ref before the restart, which the next check enforces."
-print -r -- "  Then detach (alt+w) and press Enter here."
+# Start clean as well: a previous run killed mid-way leaves state behind.
+h server stop >/dev/null 2>&1 || true
+command herdr session delete "$SESSION" >/dev/null 2>&1 || true
+
+integration_status=$(command herdr integration status) || {
+  bad "integration status failed"
+  print -r -- "=== $pass passed, $fail failed ==="
+  exit 1
+}
+print -r -- "$integration_status" | grep -q '^claude: current ' \
+  && ok "the claude integration is current" || bad "claude integration is not current"
+print -r -- "$integration_status" | grep -q '^codex: current ' \
+  && ok "the codex integration is current" || bad "codex integration is not current"
+(( fail == 0 )) || {
+  print -r -- "=== $pass passed, $fail failed ==="
+  exit 1
+}
+
+# Stable by design. Codex records project trust in config.toml; a new mktemp path on
+# every restore attempt would accumulate one dead trusted-project entry per run. One
+# XDG-state fixture keeps the ten-attempt trial repeatable without polluting config.
+REPO="$FIXTURE_BASE/restore-fixture"
+mkdir -p "$REPO" || exit 1
+git -C "$REPO" init -q || exit 1
+
+if ! HERDR_SESSION="$SESSION" HDEV_NO_ATTACH=1 ~/.config/herdr/layout.sh "$REPO"; then
+  bad "layout creation failed"
+  print -r -- "=== $pass passed, $fail failed ==="
+  exit 1
+fi
+
+print -r -- "  Attach with: herdr --session $SESSION"
+print -r -- "  Resolve any first-run trust prompt. In Codex, submit one short prompt so"
+print -r -- "  its SessionStart hook runs. Wait until both agents are idle, detach with"
+print -r -- "  alt+w, then press Enter here."
 read -r
 
 # Identity, not just a count: two agents before and two after proves nothing if they
@@ -1814,32 +2196,63 @@ read -r
 # AgentInfo's field is `agent`, not `kind`, and `agent_session` is NULLABLE. Comparing
 # {kind, agent_session} would have compared {null, null} against {null, null} and
 # passed no matter what happened — so require a non-null ref first.
-BEFORE=$(h agent list | jq -rS '[.result.agents[] | {agent, session: .agent_session}] | sort')
-BEFORE_N=$(h agent list | jq -r '[.result.agents[]] | length')
-NOREF=$(h agent list | jq -r '[.result.agents[] | select(.agent_session == null)] | length')
+before_json=$(agent_json) || {
+  bad "agent list failed before restart"
+  print -r -- "=== $pass passed, $fail failed ==="
+  exit 1
+}
+before_names=$(print -r -- "$before_json" | jq -cS '[.result.agents[].agent] | sort')
+before_refs=$(print -r -- "$before_json" | agent_refs)
+before_n=$(print -r -- "$before_json" | jq -r '.result.agents | length')
+before_noref=$(print -r -- "$before_json" | jq -r '[.result.agents[] | select(.agent_session == null)] | length')
 
-[[ "$NOREF" == "0" && "$BEFORE_N" != "0" ]] \
-  && ok "every agent reports a native session ref ($BEFORE_N agents)" \
-  || { bad "$NOREF of $BEFORE_N agents have no session ref — restore cannot be tested"; \
-       print -r -- "=== $pass passed, $fail failed ==="; exit 1; }
+[[ "$before_names" == '["claude","codex"]' ]] \
+  && ok "exactly Claude and Codex are registered" \
+  || bad "unexpected agents before restart: $before_names"
+[[ "$before_noref" == 0 && "$before_n" == 2 ]] \
+  && ok "both agents report native session refs" \
+  || bad "$before_noref of $before_n agents have no session ref"
+(( fail == 0 )) || {
+  print -r -- "=== $pass passed, $fail failed ==="
+  exit 1
+}
 
-h server stop >/dev/null 2>&1
-sleep 2
+if h server stop >/dev/null 2>&1; then
+  ok "the named server stopped cleanly"
+else
+  bad "the named server did not stop cleanly"
+  print -r -- "=== $pass passed, $fail failed ==="
+  exit 1
+fi
 
 # `workspace list` does NOT start a server — it returns server_not_running. Start one
 # explicitly, the same way layout.sh does.
 (command herdr --session "$SESSION" server >/dev/null 2>&1 &)
-for i in {1..40}; do h workspace list >/dev/null 2>&1 && break; sleep 0.25; done
-sleep 3
+ready=0
+for i in {1..40}; do
+  if h workspace list >/dev/null 2>&1; then ready=1; break; fi
+  sleep 0.25
+done
+(( ready )) && ok "the named server restarted" || {
+  bad "the named server did not become ready"
+  print -r -- "=== $pass passed, $fail failed ==="
+  exit 1
+}
 
-AFTER=$(h agent list | jq -rS '[.result.agents[] | {agent, session: .agent_session}] | sort')
-AFTER_N=$(h agent list | jq -r '[.result.agents[]] | length')
+after_refs=''
+after_n=0
+for i in {1..120}; do
+  if after_json=$(agent_json); then
+    after_refs=$(print -r -- "$after_json" | agent_refs)
+    after_n=$(print -r -- "$after_json" | jq -r '.result.agents | length')
+    [[ "$after_refs" == "$before_refs" ]] && break
+  fi
+  sleep 0.5
+done
 
-[[ "$BEFORE_N" != "0" ]] && ok "agents were running before the restart ($BEFORE_N)" \
-  || bad "no agents were running — the test proves nothing"
-[[ "$AFTER" == "$BEFORE" && "$BEFORE_N" != "0" ]] \
+[[ "$after_refs" == "$before_refs" && "$before_n" == 2 ]] \
   && ok "the same native agent sessions resumed" \
-  || bad "sessions differ after restart (before=$BEFORE_N after=$AFTER_N)"
+  || bad "sessions differ after restart (before=$before_n after=$after_n)"
 
 print -r -- "=== $pass passed, $fail failed ==="
 (( fail == 0 ))
@@ -1931,6 +2344,51 @@ git status --short docs/superpowers/runs/
 Expected: empty. Nothing to commit for this task.
 
 ---
+
+---
+
+## Execution corrections
+
+Recorded as the plan is executed, so the permanent record does not contradict what was
+built. Each was found by running the code, not by reading it.
+
+| # | Correction | Why |
+|---|---|---|
+| 1 | `herdr config check`, not `herdr status client`, validates the config (Task 1) | `status client` reports nothing about config validity — a bogus key gives byte-identical output. It also exits 0 either way, so the string is the signal |
+| 2 | `no_bg_nice` added to `layout.sh` | zsh's default `BG_NICE` renices backgrounded jobs; where `setpriority` is denied that kills the server start outright |
+| 3 | Explicit `\|\| exit 1` instead of `setopt err_return` | `err_return` does not fire for a command whose status is already tested, so a failed focus or create fell through to `hl_attach` and reported success |
+| 4 | `mock_reset` unsets `HL_*` as well as `MOCK_*` | `HL_READY_TRIES=2` leaked from C3's timeout test into C4, silently shortening an unrelated bootstrap |
+| 5 | Tests C4, D6, D7, A5, and paired presence assertions on C1/C2 | Each covered a mutation the suite could not previously detect: deleting the server start, swallowing a failure, honouring an fzf selection, and running at all |
+| 6 | `hl_api` validates JSON at the boundary; every jq consumer propagates failure | Malformed responses became actionable state: a jq failure inside `ids=( $(...) )` discards status, so corrupt pane JSON read as "no workspace found" and would have built a duplicate; corrupt tab JSON returned `provisional` with rc=0 and let repair mutate |
+| 7 | Stub JSON defaults are plain assignments, not `${VAR:-{...}}` | A brace inside a `:-` default ends the expansion early in bash, appending a stray `}}`. jq printed a parse error **and still extracted the right value**, so three tests passed against a corrupt fixture |
+| 8 | `hl_api_json` for calls that must return a payload | `jq` exits 0 on empty input, so an empty response degraded into "no workspace found" (→ duplicate) or "provisional" (→ repair mutates), both rc=0. Empty stays legal only for focus/run/rename/close |
+| 9 | Error detection reads the parsed envelope, not a `'"error"'` substring | A substring test rejects valid data merely containing the word — a tab labelled `error`, an agent status, a repo path. It did correctly catch a genuine error envelope; the structural check keeps that (F1d) while dropping the false positives (F1c) |
+| 10 | Stub gained `MOCK_EMPTY_FOR` | Setting `MOCK_*_LIST=""` hits the stub's defaults and yields valid JSON, so the empty-response path was unreachable from a fixture |
+| 11 | `hl_label` resolves **both** sides before comparing | `hdev` passes `${repo:A}`, so on macOS a repo under `/tmp` arrives as `/private/tmp/...` while `$HOME` is not resolved — the prefix never matched and the label degraded to the full absolute path. Same failure for any `~/Code` behind a symlink |
+| 12 | `hl_id` validates mandatory ids with `jq -er` | `hl_api_json` proves a payload parses, not that `workspace_id`/`tab_id`/`pane_id` exist. Without it a reshaped response yields `null`, which then gets passed to the next command as a pane id |
+| 13 | Fixture workspace id parameterised (`MOCK_WS_ID`) | The stub answered `w7` for both a pre-existing workspace and a newly created one, so "the other workspace is not focused" became unfalsifiable once build began focusing its own result |
+| 14 | The cleanup trap is armed as soon as a workspace id parses, not after all three ids | A response with a valid `workspace_id` but no `tab_id` exited 1 *having created the workspace* and never closed it — the check meant to prevent orphans was creating one (G7b) |
+| 15 | `hl_id` requires a non-empty JSON **string**, and the trap argument is `${(q)}`-quoted | `jq -er` only rejects null/false: `7` and `{}` pass with exit 0, so an API reshape could hand nonsense to herdr, and that value is interpolated into a trap command (G7c) |
+| 16 | `[ui.toast] delivery = "herdr"` pinned alongside `onboarding = false` | The shipped default is `delivery = "off"`, and onboarding is what would otherwise prompt for a choice. Pinning onboarding off — correct, to stop it rewriting a chezmoi-managed file — left `herdr notification show` returning `{"reason":"disabled","shown":false}`, silently removing the only feedback channel a detached `[[keys.command]]` or plugin action has |
+| 17 | Verified live: all four `HERDR_ACTIVE_*` variables **are** injected into `[[keys.command]]` | Documented but absent from `--default-config`; `tab-goto.sh` depended on it. Confirmed by dumping the environment from a bound key: `HERDR_ACTIVE_WORKSPACE_ID/TAB_ID/PANE_ID/PANE_CWD`, plus `HERDR_BIN_PATH` and `HERDR_SOCKET_PATH` |
+| 18 | `--current` resolves the pane cwd to the git root and **fails closed** | `.git` is a file only at the root, so a pane in a worktree *subdirectory* walked past the guard; and keeping the raw cwd when `rev-parse` failed meant a non-repo workspace — the plain `~` one — was classified provisional and "repaired" into four tabs with two agents launched in `$HOME` (K7, K9) |
+| 19 | `hl_lock` returns non-zero instead of calling `die` | `die` exits the process, so a caller's `\|\| hl_die_notify` could never run and lock contention stayed stderr-only — invisible under detached execution (K10) |
+| 20 | The suite isolates `XDG_STATE_HOME` | `zshenv` exports it to the real `~/.local/state`, so every run wrote lock files there — 176 stale files had accumulated from long-gone fixture temp dirs, and a contention test silently locked a different file than the code under test |
+| 21 | **`pane layout` returns `.result.layout.splits`, not `.result.splits`** | The stub encoded the wrong envelope and validated it, so 178 mocked tests passed while `hl_classify` errored on every real workspace with an agents tab — failing reconcile and `--current` outright. Exactly the CLI-shape blindness the live gate exists for, and structurally invisible to mocks |
+| 22 | The live gate deletes its session, at start and at teardown | `herdr server stop` does not delete session state — herdr persists workspaces under `~/.config/herdr/sessions/<name>` and restores them. Every run inherited the previous run's workspaces, so `workspace list` answered about stale ones |
+| 23 | The gate resolves fixture paths with `:A`, and focuses before invoking the action | `mktemp` returns `/tmp/…` while `layout.sh` stores `${repo:A}` (`/private/tmp/…`), so `select(.cwd == $d)` never matched; and a plugin action takes its context from the **focused** workspace |
+| 24 | `busy` is treated as "delivery enabled", not transient | Observed live: a headless session returns `busy` persistently. Retrying it five times still ended in `busy`, failing a working setup. Only `disabled` means delivery is off |
+| 25 | Stub gained `MOCK_SERVER_NEVER_READY` and a marker file | Lets the bootstrap be tested as a down → start → ready transition rather than two frozen states |
+| 26 | The five-target activation uses `chezmoi apply --parent-dirs` | Exact-file targeting avoids unrelated 1Password templates, but the new `~/.claude/hooks/` directory did not exist. Without `--parent-dirs`, chezmoi failed before mutation instead of creating it |
+| 27 | The cold-restore gate stores integration output in `integration_status`, not `status` | `status` is a read-only special parameter in zsh; assigning to it aborted the gate before workspace creation |
+| 28 | The cold-restore gate explicitly asks for one Codex prompt before comparing refs | Codex did not report a native session merely by reaching its idle screen; its `SessionStart` hook ran only after the first prompt was submitted. The gate correctly refused to compare a null ref |
+| 29 | The live gate needs no fixture commits and includes command success in every state assertion | Both signed fixture commits failed while the gate still reported 15/15. Several later checks could likewise pass on stale state if the action that was supposed to create, reconcile, close, focus, invoke, or jump failed. Git initialization is sufficient, and each verdict now requires both the transition and its resulting state |
+| 30 | The live gate unlinks its test plugin through the running named server before stopping it | Plugin registration is global, but `plugin unlink` is still a server API call. Stopping `hdev-test` first, then issuing a bare unlink against the stopped default session, returned `server_not_running`; `|| true` swallowed it and left `dev.layout.test` pointing at a deleted fixture. A green gate now validates the `removed: true` response before cleanup |
+| 31 | Cold-restore attempts reuse one repo under `$XDG_STATE_HOME/herdr-trial` | Codex persists project trust by absolute path. A fresh `mktemp` repo on each of the ten required restore attempts would accumulate ten dead trusted-project entries in live config. A stable state fixture makes the gate repeatable and bounds that state to one path |
+
+Assertions about **absence** (`unlogged`, `count_logged … 0`) always pass when nothing
+ran at all. Every one is paired with a presence assertion, and each gate was confirmed
+by mutation — break the implementation, watch the specific test go red.
 
 ## Self-review
 
