@@ -7,7 +7,8 @@ font-style = normal
 font-style-bold = bold
 font-style-italic = italic
 font-style-bold-italic = bold-italic
-
+font-thicken = true
+alpha-blending = linear-corrected
 
 # Theme and Colors
 theme = "tokyo-night"
