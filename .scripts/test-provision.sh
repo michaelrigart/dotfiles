@@ -48,7 +48,12 @@ case "$1" in -v|-n) exit 0 ;; esac
 case "$1" in
   /*) r=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1")
       case "$r" in "$SBX_ROOT"|"$SBX_ROOT"/*) ;;
-        *) echo "SUDO-REFUSED: $1" | tee -a "$MUTLOG" >&2; exit 99 ;; esac ;;
+        # Record and DO NOT execute, but exit 0. The scripts under test run with set -e,
+        # so failing here truncates them at the first system call -- configure.sh died at
+        # `sudo /usr/libexec/.../socketfilterfw` and never reached the later blocks, which
+        # silently made every assertion about them vacuous. Containment is unchanged: the
+        # command still never runs, and MUTLOG makes the refusal assertable.
+        *) echo "SUDO-REFUSED: $1" >> "$MUTLOG"; exit 0 ;; esac ;;
 esac
 exec "$@"
 SU
@@ -57,6 +62,10 @@ cp "$T/brew/bin/brew" "$T/bin/brew"
 # tee is stubbed because step 10 pipes into `sudo tee -a /etc/shells`; without it the
 # delegating sudo reaches the real /etc/shells. Anything the script writes outside the
 # temp roots needs a stub here — that is the whole isolation boundary.
+# fdesetup is controllable via $FV so both FileVault branches can be exercised.
+printf '#!/usr/bin/env bash\necho "fdesetup $*" >> "$CALLS"\necho "FileVault is ${FV:-Off}."\n' > "$T/bin/fdesetup"
+printf '#!/usr/bin/env bash\necho "pmset $*" >> "$CALLS"\nexit 0\n' > "$T/bin/pmset"
+printf '#!/usr/bin/env bash\necho "csrutil $*" >> "$CALLS"\nexit 0\n' > "$T/bin/csrutil"
 for t in op chezmoi git xcode-select mise chsh open curl ssh defaults killall osascript tee; do
   printf '#!/usr/bin/env bash\necho "%s $*" >> "$CALLS"\nexit 0\n' "$t" > "$T/bin/$t"
 done
@@ -105,7 +114,7 @@ run(){ local ans=$1; shift
 
 echo "A. containment"
 REAL_HOME="$HOME"
-reset; run 'studio\ny\n'
+reset; run 'hercules\ny\n'
 # Which brew actually ran. The old assertion grepped the stub log for "/opt/homebrew",
 # which the real brew would never write to -- it could not fail.
 if grep -q "brew\[$T/brew/bin/brew\]" "$CALLS"; then _pass "PROVISION_BREW_BIN is honoured (sandbox brew ran)"
@@ -120,28 +129,28 @@ else _pass "no call targets the real HOME"; fi
 [ -s "$MUTLOG" ] && _fail "no mutator was refused: $(head -1 "$MUTLOG")" || _pass "no mutator attempted to leave the temp root"
 
 echo "B. preflight asks first, then applies"
-reset; run 'studio\ny\n'
-called "scutil --set ComputerName studio"  "ComputerName is set"
-called "scutil --set HostName studio"      "HostName is set (Borg reads this)"
-called "scutil --set LocalHostName studio" "LocalHostName is set"
-grep -q '^ComputerName=studio$' "$IDDB" && _pass "the identity really changed" || _fail "the identity really changed"
+reset; run 'hercules\ny\n'
+called "scutil --set ComputerName hercules"  "ComputerName is set"
+called "scutil --set HostName hercules"      "HostName is set (Borg reads this)"
+called "scutil --set LocalHostName hercules" "LocalHostName is set"
+grep -q '^ComputerName=hercules$' "$IDDB" && _pass "the identity really changed" || _fail "the identity really changed"
 la=$(grep -n "scutil --set ComputerName" "$CALLS" | head -1 | cut -d: -f1)
 lb=$(grep -n "chezmoi init" "$CALLS" | head -1 | cut -d: -f1)
 { [ -n "$la" ] && [ -n "$lb" ] && [ "$la" -lt "$lb" ]; } && _pass "identity is set before chezmoi init" || _fail "identity is set before chezmoi init"
 
 echo "C. consent gates the rename"
-reset; run 'studio\nn\n'
+reset; run 'hercules\nn\n'
 rc_is 1 "declining aborts"
 not_called "scutil --set" "declining renames nothing"
 grep -q '^ComputerName=MacBook Pro$' "$IDDB" && _pass "identity untouched after decline" || _fail "identity untouched after decline"
 
 echo "D. allowlist"
-reset; run 'nosuchmachine\nstudio\ny\n'
+reset; run 'nosuchmachine\nhercules\ny\n'
 has "Unknown machine" "an unlisted name is refused"
 not_called "scutil --set ComputerName nosuchmachine" "the refused name is never applied"
 
 echo "E. unattended boundary"
-reset; run 'studio\ny\n'
+reset; run 'hercules\ny\n'
 called "sudo chsh" "chsh goes through the cached sudo credential"
 # Substring matching cannot tell "chsh -s" from "sudo chsh -s". Count instead: sudo
 # delegates, so a chsh reached through sudo logs both lines. Equal counts mean every
@@ -150,7 +159,7 @@ n_chsh=$(grep -c '^chsh ' "$CALLS" || true); n_sudo_chsh=$(grep -c '^sudo chsh '
 [ "$n_chsh" = "$n_sudo_chsh" ] && _pass "no chsh call bypasses sudo" \
   || _fail "no chsh call bypasses sudo (chsh=$n_chsh via-sudo=$n_sudo_chsh)"
 called "StrictHostKeyChecking=accept-new" "the SSH check cannot block on a host key"
-called "configure.sh --hostname studio" "configure.sh is told the identity, not asked"
+called "configure.sh --hostname hercules" "configure.sh is told the identity, not asked"
 
 echo "F. identity guard in Brewfile.tmpl"
 mkdir -p "$T/tbin"
@@ -162,13 +171,13 @@ render(){ printf '[data]\n  hostname = "%s"\n' "$1" > "$T/c.toml"
 render fenrir fenrir
 rc_is 0 "matching identity renders"
 has 'cask "jiggler"' "fenrir gets the peripheral casks"
-render studio studio
+render hercules hercules
 rc_is 0 "the other machine renders"
-hasnt 'cask "jiggler"' "studio does not get the peripheral casks"
+hasnt 'cask "jiggler"' "hercules does not get the peripheral casks"
 render "MacBook Pro" "MacBook Pro"
 rc_is 1 "an unlisted machine fails the render"
 has "unknown machine" "unlisted machine is named"
-render fenrir studio
+render fenrir hercules
 rc_is 1 "ComputerName/HostName mismatch fails"
 has "identity mismatch" "the mismatch is reported as such"
 render fenrir "HostName: not set"
@@ -181,6 +190,7 @@ echo "G. configure.sh identity validation (the real script, not a stub)"
 # the real script. Mismatches exit before configure.sh touches anything.
 cfg(){ printf 'ComputerName=%s\nHostName=%s\nLocalHostName=%s\n' "$1" "$2" "$3" > "$IDDB"
   OUT=$(cd "$T" && env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" USER=tester \
+        FV="${FV:-Off}" \
         CALLS="$CALLS" IDDB="$IDDB" MUTLOG="$MUTLOG" SBX_ROOT="$SBX_ROOT" \
         zsh "$SRC/.scripts/configure.sh" --hostname "$4" 2>&1); RC=$?; }
 cfg fenrir fenrir fenrir fenrir
@@ -188,17 +198,46 @@ has "identity verified" "matching identity passes validation"
 # `rc_is 1` alone is NOT discriminating here: configure.sh exits 1 for plenty of
 # unrelated reasons once it gets past validation. Deleting the HostName check left
 # every assertion green until these keyed on "identity verified" NOT being reached.
-cfg studio fenrir fenrir fenrir
+cfg hercules fenrir fenrir fenrir
 hasnt "identity verified" "ComputerName mismatch stops before verification"
 has "ComputerName is" "the ComputerName error names the field"
-cfg fenrir studio fenrir fenrir
+cfg fenrir hercules fenrir fenrir
 hasnt "identity verified" "HostName mismatch stops before verification"
 has "HostName is" "the HostName error names the field"
-cfg fenrir fenrir studio fenrir
+cfg fenrir fenrir hercules fenrir
 hasnt "identity verified" "LocalHostName mismatch stops before verification"
 has "LocalHostName is" "the LocalHostName error names the field"
 cfg fenrir fenrir fenrir-3 fenrir
 has "identity verified" "a Bonjour numeric suffix on LocalHostName is accepted"
+
+echo "H. containment during the real configure.sh run"
+: > "$MUTLOG"; cfg fenrir fenrir fenrir fenrir
+grep -q 'SUDO-REFUSED: /usr/libexec/ApplicationFirewall' "$MUTLOG" \
+  && _pass "the firewall call is refused, not executed on the host" \
+  || _fail "the firewall call is refused, not executed on the host"
+
+echo "I. Universal Control is per-machine"
+cfg fenrir fenrir fenrir fenrir
+hasnt "Disabling Universal Control" "fenrir keeps Universal Control (pairs with the iPad)"
+has   "Leaving Universal Control enabled" "and says so"
+cfg hercules hercules hercules hercules
+has   "Disabling Universal Control" "hercules disables it (conflicts with Screen Sharing)"
+
+echo "J. FileVault expectation and autorestart are per-machine"
+FV=On  cfg fenrir fenrir fenrir fenrir
+has   "FileVault is enabled"        "fenrir with FileVault on is correct"
+FV=Off cfg fenrir fenrir fenrir fenrir
+has   "FileVault is OFF"            "fenrir without FileVault is flagged (it travels)"
+FV=Off cfg hercules hercules hercules hercules
+has   "FileVault is off (intended"  "hercules without FileVault is correct"
+FV=On  cfg hercules hercules hercules hercules
+has   "FileVault is ON on hercules" "hercules WITH FileVault is flagged"
+has   "fdesetup disable"            "and the remedy is named"
+FV=Off
+: > "$CALLS"; cfg hercules hercules hercules hercules
+called "pmset -a autorestart 1" "hercules enables restart-after-power-loss"
+: > "$CALLS"; cfg fenrir fenrir fenrir fenrir
+not_called "pmset -a autorestart" "fenrir does not (it has a battery and a lid)"
 
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

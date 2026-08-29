@@ -131,8 +131,20 @@ if op whoami &>/dev/null; then
 else
   open -a "1Password" 2>/dev/null || true
   echo ""
-  echo "  In the 1Password app: sign in, then Settings → Developer →"
-  echo "  ☑ Integrate with 1Password CLI"
+  echo "  In the 1Password app:"
+  echo "    1. Sign in and unlock (you must see your vaults, not just a lock screen)"
+  echo "    2. Settings → Developer → ☑ Integrate with 1Password CLI"
+  echo "    3. Quit the app fully (⌘Q) and reopen it — the CLI link is established"
+  echo "       at launch, so enabling it in a running app often does not take."
+  echo ""
+  echo "  To check from another terminal:  ${HOMEBREW_PREFIX}/bin/op account list"
+  echo "  (Homebrew was just installed, so plain \`op\` is not on PATH in any tab you"
+  echo "   already had open. Use the full path above, or open a new tab.)"
+  echo ""
+  echo "  If that list stays EMPTY the integration is not connected. Add the account"
+  echo "  directly instead — the signed-in app shows your Secret Key under"
+  echo "  your account → Set Up Another Device:"
+  echo "    ${HOMEBREW_PREFIX}/bin/op account add --address my.1password.com --email <you>"
   echo ""
   waited=0
   until op whoami &>/dev/null; do
@@ -253,11 +265,21 @@ if [ -f "${XDG_CONFIG_HOME}/homebrew/Brewfile" ]; then
 
   # A licence-gated cask must not end the run — the remaining steps still matter.
   # `brew bundle` fails for the whole file, so ask `check` which items actually missed.
+  #
+  # The retry is not superstition: `brew bundle` installs every formula before any
+  # cask, and borgbackup-fuse is a formula that requires the macfuse cask. On a clean
+  # machine the first pass always fails on it; by the second pass macfuse exists.
   if ! brew bundle install --file "${HOMEBREW_BUNDLE_FILE}"; then
-    brew bundle check --verbose --file "${HOMEBREW_BUNDLE_FILE}" 2>/dev/null \
-      | sed -n 's/^→ *//p' | while read -r item; do
-          warn "brewfile: ${item}"
-        done
+    log_warn "brew bundle had failures — retrying once (formula-before-cask ordering)"
+    brew bundle install --file "${HOMEBREW_BUNDLE_FILE}" || true
+  fi
+  if ! brew bundle check --file "${HOMEBREW_BUNDLE_FILE}" >/dev/null 2>&1; then
+    # Process substitution, not a pipeline: `cmd | while read` runs the loop in a
+    # subshell, so every warn() inside it appends to a WARNINGS array that is thrown
+    # away when the subshell exits. The end-of-run summary silently lost every item.
+    while read -r item; do
+      [ -n "$item" ] && warn "brewfile: ${item}"
+    done < <(brew bundle check --verbose --file "${HOMEBREW_BUNDLE_FILE}" 2>/dev/null | sed -n 's/^→ *//p')
     warn "brew bundle did not complete — see the items above"
   fi
 else
@@ -269,7 +291,8 @@ fi
 # ============================================================================
 if [ -x "${SRC_DIR}/.scripts/reconcile-agents.sh" ]; then
   log_info "Reconciling AI agent plugins..."
-  "${SRC_DIR}/.scripts/reconcile-agents.sh" || log_warn "Agent plugin reconcile had issues (non-fatal)"
+  "${SRC_DIR}/.scripts/reconcile-agents.sh" \
+    || warn "agent plugins: reconcile incomplete — if Claude Code has never run here, its plugin state does not exist yet; launch it once, then re-run .scripts/reconcile-agents.sh"
 else
   log_warn "reconcile-agents.sh not found, skipping agent plugin setup"
 fi
@@ -302,7 +325,10 @@ else
   log_info "Installing oh-my-zsh to ${XDG_DATA_HOME}/oh-my-zsh..."
   # Set ZSH to XDG location before installation
   export ZSH="${XDG_DATA_HOME}/oh-my-zsh"
-  sh -c "$(curl -fsSL https://raw.githubusercontent.com/robbyrussell/oh-my-zsh/master/tools/install.sh)" "" --unattended
+  # KEEP_ZSHRC=yes is load-bearing: ~/.zshrc is chezmoi-managed (dot_zshrc), and the
+  # installer otherwise replaces it with its own template, backs the real one up to
+  # ~/.zshrc.pre-oh-my-zsh, and step 14 then deletes that backup.
+  KEEP_ZSHRC=yes sh -c "$(curl -fsSL https://raw.githubusercontent.com/robbyrussell/oh-my-zsh/master/tools/install.sh)" "" --unattended
 fi
 
 # ============================================================================

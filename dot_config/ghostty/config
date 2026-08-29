@@ -7,8 +7,21 @@ font-style = normal
 font-style-bold = bold
 font-style-italic = italic
 font-style-bold-italic = bold-italic
-font-thicken = true
+
+# Light-on-dark text rasterizes thinner than dark-on-light, and Tokyo Night is always
+# light-on-dark. This is a gamma correction, not DPI compensation, so unlike
+# font-thicken below it applies to every machine regardless of pixel density.
 alpha-blending = linear-corrected
+
+# Glyph stems rasterize thinner than the typeface intends. Verified as an improvement
+# on both machines — fenrir at 1x on a 111 PPI panel, and hercules at 2x viewed through
+# Screen Sharing, where thickened glyphs survive the downscale better than thin ones.
+# An earlier version scoped this to fenrir on the assumption that thickening a Retina
+# buffer would look bloated; testing showed otherwise.
+#
+# If it ever reads too heavy, lower font-thicken-strength (0-255, default 255).
+font-thicken = true
+
 
 # Theme and Colors
 theme = "tokyo-night"

@@ -192,5 +192,30 @@ else
   _skip "claude not on PATH — live CLI surface unverified"
 fi
 
+# run_fresh <manifest>: no Claude state files at all, as on a machine where Claude
+# Code has never written them. This is the clean-install case that used to abort.
+run_fresh() {
+  printf '%b\n' "$1" > "$CFG/agents/plugins.conf"
+  rm -f "$CLD/plugins/known_marketplaces.json" "$CLD/plugins/installed_plugins.json" "$CLD/settings.json"
+  OUT=$(PATH="$BIN:$PATH" XDG_CONFIG_HOME="$CFG" CLAUDE_CONFIG_DIR="$CLD" /bin/bash "$RECON" 2>&1); RC=$?
+}
+
+echo "J. fresh machine — absent state means nothing installed, not an error"
+reset_mocks
+run_fresh "claude_marketplace owner/repo\nclaude_plugin foo@mkt"
+has   "marketplace add: owner/repo" "a declared marketplace is added on a fresh machine"
+has   "install: foo@mkt"            "a declared plugin is installed on a fresh machine"
+hasnt "not readable"                "absent state is not reported as unreadable"
+rc_is 0                             "a fresh machine reconciles cleanly"
+
+echo "K. present but unreadable still fails loudly"
+reset_mocks
+run_fresh "claude_plugin foo@mkt"
+printf '{}' > "$CLD/plugins/installed_plugins.json"; chmod 000 "$CLD/plugins/installed_plugins.json"
+OUT=$(PATH="$BIN:$PATH" XDG_CONFIG_HOME="$CFG" CLAUDE_CONFIG_DIR="$CLD" /bin/bash "$RECON" 2>&1); RC=$?
+chmod 644 "$CLD/plugins/installed_plugins.json"
+has   "not readable" "an existing but unreadable file is still an error"
+rc_is 1              "unreadable state exits 1"
+
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
