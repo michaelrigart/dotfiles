@@ -6,7 +6,7 @@
 # behaviour change rather than being silently pinned.
 #
 # Keybinding model mirrors the Zellij setup it runs beside:
-#   Ctrl-h/j/k/l  → move between panes
+#   Ctrl-h/j/k/l  → seamless Neovim splits + Herdr panes (smart-splits.nvim)
 #   Alt + <key>   → tabs, zoom, panes, detach
 # Alt rather than digits because digits need Shift on AZERTY. Ghostty is configured
 # `macos-option-as-alt = left`, so this works from the LEFT Option key only.
@@ -51,10 +51,33 @@ toggle_sidebar = "alt+b"
 # belongs to Herdr after Git creation.
 new_worktree = ""
 
-focus_pane_left = "ctrl+h"
-focus_pane_down = "ctrl+j"
-focus_pane_up = "ctrl+k"
-focus_pane_right = "ctrl+l"
+# smart-splits.nvim owns the dispatch. In Neovim it moves between editor splits and
+# calls Herdr at the edge; outside Neovim its bundled Herdr plugin moves pane focus,
+# while preserving shell Ctrl-h/Ctrl-l when no neighbor exists. Linking the plugin is
+# part of the live activation gate.
+[[keys.command]]
+key = "ctrl+h"
+type = "plugin_action"
+command = "smart-splits.nvim.left"
+description = "navigate left (nvim/herdr)"
+
+[[keys.command]]
+key = "ctrl+j"
+type = "plugin_action"
+command = "smart-splits.nvim.down"
+description = "navigate down (nvim/herdr)"
+
+[[keys.command]]
+key = "ctrl+k"
+type = "plugin_action"
+command = "smart-splits.nvim.up"
+description = "navigate up (nvim/herdr)"
+
+[[keys.command]]
+key = "ctrl+l"
+type = "plugin_action"
+command = "smart-splits.nvim.right"
+description = "navigate right (nvim/herdr)"
 
 [[keys.command]]
 key = "prefix+shift+g"

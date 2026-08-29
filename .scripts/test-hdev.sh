@@ -27,6 +27,7 @@ FUNCS="$ROOT/dot_config/zsh/functions"
 LAYOUT="$ROOT/dot_config/herdr/executable_layout.sh"
 TABGOTO="$ROOT/dot_config/herdr/executable_tab-goto.sh"
 CONFIG="$ROOT/dot_config/herdr/config.toml"
+SMART_SPLITS="$ROOT/dot_config/nvim/lua/plugins/smart-splits.lua"
 [[ -r "$FUNCS" ]] || { print -ru2 -- "cannot read $FUNCS"; exit 1 }
 
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
@@ -835,8 +836,33 @@ run_worktree_layout
 rc_is 1 "L5 a failed adoption fails the run"
 logged "workspace close w7" "L5 the partial workspace is closed but the checkout survives"
 
-# --- M: Herdr worktree configuration --------------------------------------
-print -r -- "-- M: worktree configuration"
+# --- M: seamless Neovim/Herdr navigation ----------------------------------
+print -r -- "-- M: smart-splits Herdr navigation"
+
+# Direct focus_pane bindings consume Ctrl-h/j/k/l before Neovim sees them. The
+# smart-splits Herdr plugin is the required dispatcher: it forwards into Neovim when
+# appropriate, then Neovim's Herdr backend crosses the pane edge through the CLI.
+for spec in 'ctrl+h:left' 'ctrl+j:down' 'ctrl+k:up' 'ctrl+l:right'; do
+  key="${spec%%:*}"; action="${spec#*:}"
+  OUT="$(awk -v key="$key" -v cmd="smart-splits.nvim.$action" '
+    BEGIN { RS="\\[\\[keys.command\\]\\]" }
+    index($0, "key = \"" key "\"") && index($0, "command = \"" cmd "\"") { print; found=1 }
+    END { if (!found) exit 1 }
+  ' "$CONFIG" 2>&1)"; RC=$?
+  rc_is 0 "$key is routed through smart-splits.nvim.$action"
+  has 'type = "plugin_action"' "$key uses a Herdr plugin action, not a detached shell"
+done
+OUT="$(<"$CONFIG")"
+hasnt 'focus_pane_left = "ctrl+h"' "no direct Ctrl-h binding bypasses Neovim"
+hasnt 'focus_pane_down = "ctrl+j"' "no direct Ctrl-j binding bypasses Neovim"
+hasnt 'focus_pane_up = "ctrl+k"' "no direct Ctrl-k binding bypasses Neovim"
+hasnt 'focus_pane_right = "ctrl+l"' "no direct Ctrl-l binding bypasses Neovim"
+
+OUT="$(<"$SMART_SPLITS")"
+has 'lazy = false' "smart-splits loads early enough to establish multiplexer integration"
+for key in h j k l; do
+  has "<C-$key>" "Neovim keeps the Ctrl-$key smart-splits mapping"
+done
 
 # The built-in worktree creator cannot run .worktreeinclude/.worktreehook or apply
 # the Git ownership lock. Replace its default shortcut with a popup that calls the
