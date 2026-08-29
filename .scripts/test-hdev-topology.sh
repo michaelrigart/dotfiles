@@ -320,11 +320,28 @@ fi
 # but it means a herdr upgrade that bumps the schema turns into "wt-rm refuses to
 # remove worktrees" — a confusing failure far from its cause. Assert it here so a
 # schema bump surfaces as a test failure instead.
-SVER=$(jq -r '.version' "$HOME/.config/herdr/sessions/$SESSION/session.json" 2>/dev/null \
-       || jq -r '.version' "$HOME/.config/herdr/session.json" 2>/dev/null)
-[[ "$SVER" == 3 ]] \
-  && ok "persisted session schema is version 3, as wt-rm requires" \
-  || bad "persisted session schema is '${SVER:-unreadable}', not 3 — wt-rm will refuse worktree teardown"
+# NO fallback to the default session. An earlier version fell back to
+# ~/.config/herdr/session.json whenever the named file was missing, which meant a
+# relocated or renamed state path still returned 3 from unrelated state and passed —
+# the gate would stay green through exactly the change it exists to catch. A missing
+# named-session file IS the failure.
+# Herdr writes a named session's session.json on STOP, not while it runs — and a
+# stopped session is precisely what wt-rm inspects, since it can still restore panes
+# into a checkout later. So stop first, then assert, and let cleanup delete.
+h server stop >/dev/null 2>&1 || true
+for i in {1..20}; do
+  [[ -r "$HOME/.config/herdr/sessions/$SESSION/session.json" ]] && break
+  sleep 0.25
+done
+SSTATE="$HOME/.config/herdr/sessions/$SESSION/session.json"
+if [[ ! -r "$SSTATE" ]]; then
+  bad "no readable persisted state at $SSTATE — wt-rm inspects this path for stopped sessions"
+else
+  SVER=$(jq -r '.version' "$SSTATE" 2>/dev/null)
+  [[ "$SVER" == 3 ]] \
+    && ok "persisted session schema is version 3, as wt-rm requires" \
+    || bad "persisted session schema is '${SVER:-unreadable}', not 3 — wt-rm will refuse worktree teardown"
+fi
 
 print -r -- "=== $pass passed, $fail failed ==="
 (( fail == 0 ))

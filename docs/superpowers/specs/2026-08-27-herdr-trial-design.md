@@ -49,8 +49,10 @@ sidebar spanning every workspace, and restores sessions with agents resumed.
 
 ## Decision
 
-Run Herdr **beside** Zellij as a reversible trial. `dev`, `wt`, `wt-rm` and
-`~/.config/zellij` keep working unchanged for the duration.
+Run Herdr **beside** Zellij as a reversible trial. Zellij, `dev` and
+`~/.config/zellij` keep working unchanged for the duration. `wt` and `wt-rm` are
+**extended** — they carry the worktree lifecycle described below — so they are the one
+part of the existing setup this trial modifies.
 
 This spec covers the trial. Whether to migrate is a separate decision, made against
 the exit criteria below, and would get its own spec.
@@ -76,7 +78,8 @@ An early draft claimed it touched only new files. Two exceptions are in scope:
 - Automating the Claude/Codex relay. Herdr can (`agent prompt`, `agent wait`), but
   GLOBAL.md defines the relay as manual: "One relay, one turn." That is a workflow
   choice, not a capability gap.
-- Neovim navigation integration. See "Known limitations".
+- ~~Neovim navigation integration~~ — **done during execution**, via smart-splits.nvim's
+  own Herdr plugin. See "Keybindings".
 
 ## The worktree lifecycle
 
@@ -105,8 +108,11 @@ the native creator cannot run the project hooks or apply the lock below.
 
 **2. A Git ownership lock.** On adoption, `wt` applies
 `git worktree lock --reason "<herdr marker>"`. Git then refuses `worktree remove` and
-`remove --force`, so **the only removal path is `wt-rm`**, which crosses it with
-`remove --force --force` *after* its three cleanliness checks. The lock is deliberately
+`remove --force`, so **`wt-rm` is the only supported lifecycle path**, and it crosses
+the lock with `remove --force --force` *after* its three cleanliness checks. The lock is
+a guardrail, not an enforcement boundary: anyone can run `remove --force --force`
+themselves and bypass teardown entirely. What it buys is that doing so is deliberate
+rather than accidental. The lock is deliberately
 never released while Herdr owns the checkout: unlocking before removal would open an
 interrupt window in which a checkout meant to be protected is exposed. If a worktree is
 already locked for a different reason, adoption refuses rather than taking ownership of
@@ -459,7 +465,7 @@ shadowed shell and Neovim keys; Herdr's prefix model has no such problem.
 | `alt+t` | `new_tab` | `NewTab` |
 | `alt+w` | `detach` | `Detach` |
 | `alt+b` | `toggle_sidebar` | *(new)* |
-| `ctrl+h/j/k/l` | `focus_pane_left/down/up/right` | vim-zellij-navigator |
+| `ctrl+h/j/k/l` | `plugin_action` → `smart-splits.nvim.{left,down,up,right}` | vim-zellij-navigator |
 
 Two bindings have no native equivalent:
 
@@ -480,8 +486,9 @@ method, only `send_text` / `send_keys`. Clearing could only inject control seque
 into whatever occupies the pane — corrupting state in Neovim, or sending input to a
 live agent. Not worth it for a convenience binding.
 
-`alt+s` (scroll mode) is also dropped — Herdr has no modal scroll; it uses the mouse
-and `prefix+e` (`edit_scrollback`).
+`alt+s` is **`edit_scrollback`**, not Zellij's modal scroll — Herdr has no scroll mode;
+it opens the scrollback in an editor. The mnemonic is kept because the finger habit is
+"alt+s to look back", even though the mechanism differs.
 
 ### Helper context
 
@@ -507,7 +514,7 @@ only. This is the most likely thing to fail, and it fails visibly. Test it first
 
 ```
 dot_config/herdr/config.toml               → ~/.config/herdr/config.toml
-dot_config/herdr/executable_layout.sh      → topology definition, both modes
+dot_config/herdr/executable_layout.sh      → topology definition, all three modes
 dot_config/herdr/executable_tab-goto.sh    → tab focus by unique label
 dot_config/herdr/plugin/herdr-plugin.toml  → registers dev.layout.apply
 dot_config/zsh/functions                   → += hdev(), hwt(), hwt-prompt();
@@ -675,18 +682,35 @@ becomes unremovable by your own tooling.
 Git's error does name the reason and the escape hatch, so this is recoverable rather
 than fatal — but it is avoidable entirely by doing it in the right order:
 
+The ownership marker is the exact string `hwt-managed; remove with command wt-rm` —
+note it contains no "herdr", so a substring search for that word silently matches
+nothing and reports a clean inventory when worktrees are in fact locked. Match it
+exactly, and parse porcelain records so the *path* is what comes out:
+
 ```bash
-# Inventory: every worktree carrying the Herdr ownership reason.
-for gd in ~/Code/*/*/.git; do r="${gd%/.git}"
-  git -C "$r" worktree list --porcelain | grep -B2 '^locked.*herdr'
-done
+MARKER='hwt-managed; remove with command wt-rm'
+for gd in ~/Code/*/*/.git ~/Code/*/.git; do
+  # Directory => primary checkout. A linked worktree's .git is a FILE, and querying one
+  # lists the same worktrees again, so every hit would repeat once per checkout.
+  [ -d "$gd" ] || continue
+  git -C "${gd%/.git}" worktree list --porcelain -z 2>/dev/null | tr '\0' '\n' | awk -v m="$MARKER" '
+    /^worktree /      { p = substr($0, 10) }
+    $0 == "locked " m { print p }
+  '
+done | sort -u
 ```
 
-- Worktrees you are finished with → retire now, with the **current** `command wt-rm
-  <branch>`, while it can still cross the lock.
-- Worktrees you want to keep → close the Herdr workspace, then
+For each path listed:
+
+- **Finished with it** → retire now with the **current** `command wt-rm <branch>`, while
+  it can still cross the lock.
+- **Keeping it** → close **every** Herdr reference to it first, not just the one
+  workspace you can see: the same checkout may be open in several sessions, and a
+  *stopped* session can restore panes into it later. Either close each matching
+  workspace across every session, or stop all Herdr sessions. Then
   `git worktree unlock <path>`.
-- Re-run the inventory and confirm no Herdr-reason locks remain.
+
+Re-run the inventory afterwards and confirm it prints nothing.
 
 *(Verified 2026-08-29: no locked worktrees exist under `~/Code`, so nothing is stranded
 today. This step is preventive.)*
