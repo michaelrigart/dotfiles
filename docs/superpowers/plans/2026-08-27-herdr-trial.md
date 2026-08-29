@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-27-herdr-trial-design.md`
 
-**Status:** In progress
+**Status:** Implemented — https://github.com/michaelrigart/dotfiles/pull/3
 
 ## Global Constraints
 

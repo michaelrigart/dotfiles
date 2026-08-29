@@ -1,6 +1,6 @@
 # Herdr trial alongside Zellij
 
-**Status:** In progress
+**Status:** Implemented — https://github.com/michaelrigart/dotfiles/pull/3
 
 **Date:** 2026-08-27
 
