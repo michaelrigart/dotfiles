@@ -45,10 +45,24 @@ new_tab = "alt+t"
 detach = "alt+w"
 toggle_sidebar = "alt+b"
 
+# Herdr's built-in creator cannot run .worktreeinclude/.worktreehook or install the
+# ownership lock that keeps native removal behind wt-rm. Its default shortcut is
+# replaced below by a popup calling the safe hwt flow; native open/grouping still
+# belongs to Herdr after Git creation.
+new_worktree = ""
+
 focus_pane_left = "ctrl+h"
 focus_pane_down = "ctrl+j"
 focus_pane_up = "ctrl+k"
 focus_pane_right = "ctrl+l"
+
+[[keys.command]]
+key = "prefix+shift+g"
+type = "popup"
+command = "exec \"${SHELL:-zsh}\" -ic hwt-prompt"
+description = "new worktree (safe hwt flow)"
+width = "60%"
+height = 7
 
 # Deliberately no alt+k: herdr 0.8.2 has no clear method. The only implementation
 # would inject control sequences into whatever occupies the pane, which corrupts

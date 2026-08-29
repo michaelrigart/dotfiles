@@ -26,6 +26,7 @@ ROOT="$(cd "${0:h}/.." && pwd)"
 FUNCS="$ROOT/dot_config/zsh/functions"
 LAYOUT="$ROOT/dot_config/herdr/executable_layout.sh"
 TABGOTO="$ROOT/dot_config/herdr/executable_tab-goto.sh"
+CONFIG="$ROOT/dot_config/herdr/config.toml"
 [[ -r "$FUNCS" ]] || { print -ru2 -- "cannot read $FUNCS"; exit 1 }
 
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
@@ -103,6 +104,8 @@ case "$*" in
   "workspace create"*)
     exit_rc="${MOCK_WS_CREATE_RC:-0}"; [ "$exit_rc" != 0 ] && exit "$exit_rc"
     printf '%s' "${MOCK_WS_CREATE_JSON:-$DEF_WS_CREATE}" ;;
+  "worktree open"*)
+    printf '%s' "$MOCK_WORKTREE_OPEN_JSON" ;;
   "tab create"*)
     # The counter lives in a FILE, not a variable: the stub is a separate process per
     # call, so an exported variable could never advance and every tab would come back
@@ -149,7 +152,8 @@ mock_reset() {
   # empty, the marker unwritten, and the failure looking like a broken timeout.
   export MOCK_SERVER_STARTED_FILE="$(mktemp "${TMPROOT%/}/started.XXXXXX")"
   rm -f "$MOCK_SERVER_STARTED_FILE"
-  unset MOCK_SERVER_NEVER_READY MOCK_EMPTY_FOR MOCK_WS_CREATE_JSON MOCK_WS_ID
+  unset MOCK_SERVER_NEVER_READY MOCK_EMPTY_FOR MOCK_WS_CREATE_JSON MOCK_WS_ID \
+        MOCK_WORKTREE_OPEN_JSON
   export MOCK_TAB_SEQ_FILE="$(mktemp "${TMPROOT%/}/tabseq.XXXXXX")"; print -n 0 > "$MOCK_TAB_SEQ_FILE"
   unset MOCK_TAB_CREATE_FAIL_AT MOCK_STATUS
   # The HL_* knobs are exported by individual tests and would otherwise leak into
@@ -240,11 +244,11 @@ R1=$(mkrepo "$CODE/Netronix/curato")
 R2=$(mkrepo "$CODE/ViuMore/curato")     # same basename, different org
 mkdir -p "$ROOTTMP/notrepo"
 
-# Stub layout.sh: record the path it was handed, do nothing else.
+# Stub layout.sh: record every argument it was handed, do nothing else.
 LSTUB="$STUBS/layout.sh"
 cat > "$LSTUB" <<'S'
 #!/usr/bin/env bash
-printf '%s\n' "$1" > "$LAYOUT_ARG"
+printf '%s\n' "$*" > "$LAYOUT_ARG"
 S
 chmod +x "$LSTUB"
 
@@ -288,16 +292,22 @@ eq "$(<$LAYOUT_ARG)" "" "A4 an ambiguous basename resolves to nothing"
 MOCK_FZF_SELECT="ViuMore/curato" run_hdev "curato"
 eq "$(<$LAYOUT_ARG)" "$R2" "A5 a picker selection resolves to the chosen repo"
 
-# --- B: the linked-worktree guard -------------------------------------------
-print -r -- "-- B: linked-worktree guard"
+# --- B: linked worktrees route through Herdr's native worktree mode ---------
+print -r -- "-- B: linked worktree routing"
 WT="$CODE/Netronix/curato-feature"
 git -C "$R1" worktree add -q -b feature "$WT" 2>/dev/null
+WT="${WT:A}"
 
 run_hdev "'$WT'"
-rc_is 1 "B1 a linked worktree is refused"
-has "linked worktree" "B1 names the reason"
-has "Use: dev " "B1 points at dev"
-eq "$(<$LAYOUT_ARG)" "" "B1 layout.sh is never invoked"
+rc_is 0 "B1 a linked worktree is accepted"
+eq "$(<$LAYOUT_ARG)" "--worktree $R1 ${WT:A}" \
+  "B1 the checkout is opened through the primary repo's Herdr worktree group"
+
+mkdir -p "$WT/src/deep"
+run_hdev "'$WT/src/deep'"
+rc_is 0 "B2 a directory inside a linked worktree is accepted"
+eq "$(<$LAYOUT_ARG)" "--worktree $R1 ${WT:A}" \
+  "B2 subdirectories still resolve to the worktree root"
 
 run_hdev "'$R1'"
 eq "$(<$LAYOUT_ARG)" "$R1" "B2 the primary checkout is still allowed"
@@ -682,13 +692,21 @@ unlogged "tab create" "K4 nothing is created"
 unlogged "tab close"  "K4 nothing is closed"
 unlogged "pane split" "K4 nothing is split"
 
-# The worktree guard is a property of the design, not of one entry point: a workspace
-# opened by hand in a wt worktree must not be grown through the plugin either.
+# A hand-made workspace in a linked checkout still has no native provenance, so the
+# plugin refuses it. Only `worktree open` establishes the ownership that lets wt-rm
+# find and stop the workspace later.
 cur "export HERDR_WORKSPACE_ID=w7; mock_topology '$WT' 'curato-feature' agents:2 editor:1"
-rc_is 1 "K5 a linked worktree is refused in --current too"
-has "linked worktree" "K5 says why"
+rc_is 1 "K5 an unregistered linked-worktree workspace is refused"
+has "native Herdr worktree" "K5 says what is missing"
 logged "notification show" "K5 the refusal is announced"
 unlogged "tab create" "K5 nothing is created"
+
+cur "export HERDR_WORKSPACE_ID=w7; mock_topology '$WT' 'curato-feature' agents:2 editor:1
+  export MOCK_WS_LIST='{\"result\":{\"workspaces\":[{\"workspace_id\":\"w7\",\"label\":\"curato-feature\",\"worktree\":{\"checkout_path\":\"$WT\",\"is_linked_worktree\":true}}]}}'"
+rc_is 0 "K5b a native worktree workspace can be repaired"
+logged "tab create --workspace w7 --label runtime" "K5b the missing runtime tab is created"
+logged "tab create --workspace w7 --label git" "K5b the missing git tab is created"
+logged "notification show" "K5b the repair is announced"
 
 # It must take the same lock as the path mode: two plugin invocations, or a plugin
 # racing an hdev, would otherwise both see a tab missing and both create it.
@@ -696,14 +714,13 @@ cur "export HERDR_WORKSPACE_ID=w7; export HL_TRACE_LOCK=1
   mock_topology '$R1' 'Netronix/curato' agents:2 editor:1"
 has "LOCK-ACQUIRED" "K6 --current takes the per-repo lock"
 
-# K7: the guard must hold from a SUBDIRECTORY of a worktree too. A pane's cwd is
-# wherever the user last cd'd, and `.git` is a file only at the repository root — so
-# checking the raw cwd let any subdirectory walk straight past the guard.
+# K7: provenance is checked against the resolved repository root even when the pane
+# has cd'd into a subdirectory.
 mkdir -p "$WT/src/deep"
-cur "export HERDR_WORKSPACE_ID=w7; mock_topology '$WT/src/deep' 'curato-feature' agents:2 editor:1"
-rc_is 1 "K7 a worktree SUBDIRECTORY is refused too"
-has "linked worktree" "K7 says why"
-unlogged "tab create" "K7 nothing is created"
+cur "export HERDR_WORKSPACE_ID=w7; mock_topology '$WT/src/deep' 'curato-feature' agents:2 editor:1
+  export MOCK_WS_LIST='{\"result\":{\"workspaces\":[{\"workspace_id\":\"w7\",\"label\":\"curato-feature\",\"worktree\":{\"checkout_path\":\"$WT\",\"is_linked_worktree\":true}}]}}'"
+rc_is 0 "K7 a native worktree workspace still repairs from a pane subdirectory"
+logged "tab create --workspace w7 --label runtime" "K7 the root-resolved workspace is repaired"
 
 # K8: failures that are not verdicts must be visible as well. A classification error
 # is exactly as invisible as a wrong verdict when the action runs detached.
@@ -743,5 +760,95 @@ rc_is 1 "K10 a held lock fails the action"
 has "held the lock" "K10 says why"
 logged "notification show" "K10 lock contention is announced"
 unlogged "tab create" "K10 nothing is created"
+
+# --- L: Herdr-native worktree open/reopen -----------------------------------
+print -r -- "-- L: native worktree workspaces"
+
+worktree_fixture() { # <already-open:true|false> <linked:true|false> [reported-path]
+  local already="$1" linked="$2" reported="${3:-$WT}"
+  export MOCK_WORKTREE_OPEN_JSON="{\"result\":{\"type\":\"worktree_opened\",\"already_open\":$already,\"workspace\":{\"workspace_id\":\"w7\",\"label\":\"Netronix/curato-feature\",\"worktree\":{\"checkout_path\":\"$reported\",\"is_linked_worktree\":$linked}},\"tab\":{\"tab_id\":\"w7:t4\",\"label\":\"1\"},\"root_pane\":{\"pane_id\":\"w7:p3\",\"tab_id\":\"w7:t4\",\"workspace_id\":\"w7\",\"cwd\":\"$reported\"},\"worktree\":{\"path\":\"$reported\",\"is_linked_worktree\":$linked,\"branch\":\"feature\"}}}"
+}
+
+blank_worktree_topology() {
+  export MOCK_TAB_LIST='{"result":{"tabs":[{"tab_id":"w7:t4","label":"1"}]}}'
+  export MOCK_PANE_LIST="{\"result\":{\"panes\":[{\"pane_id\":\"w7:p3\",\"tab_id\":\"w7:t4\",\"workspace_id\":\"w7\",\"cwd\":\"$WT\"}]}}"
+  export MOCK_WS_LIST="{\"result\":{\"workspaces\":[{\"workspace_id\":\"w7\",\"label\":\"Netronix/curato-feature\",\"worktree\":{\"checkout_path\":\"$WT\",\"is_linked_worktree\":true}}]}}"
+}
+
+run_worktree_layout() {
+  OUT="$(HOME="$ROOTTMP" HERDR_ENV=1 HDEV_NO_ATTACH=1 zsh "$LAYOUT" \
+    --worktree "$R1" "$WT" 2>&1)"; RC=$?
+}
+
+mock_reset
+worktree_fixture false true
+blank_worktree_topology
+run_worktree_layout
+rc_is 0 "L1 a newly-opened native worktree workspace is adopted"
+logged "worktree open --cwd $R1 --path $WT --label Netronix/curato-feature --no-focus" \
+  "L1 Herdr opens and groups the existing Git checkout"
+logged "tab rename w7:t4 agents" "L1 the native root tab becomes agents"
+logged "pane split --pane w7:p3 --direction right --cwd $WT --no-focus" \
+  "L1 the native root pane is reused for the agents split"
+eq "$(count_logged "tab create --workspace w7 --label editor --cwd $WT --no-focus")" 1 \
+  "L1 editor is created exactly once"
+eq "$(count_logged "tab create --workspace w7 --label runtime --cwd $WT --no-focus")" 1 \
+  "L1 runtime is created exactly once"
+eq "$(count_logged "tab create --workspace w7 --label git --cwd $WT --no-focus")" 1 \
+  "L1 git is created exactly once"
+unlogged "tab create --workspace w7 --label agents" \
+  "L1 no redundant agents tab is appended"
+
+mock_reset
+worktree_fixture true true
+mock_topology "$WT" "Netronix/curato-feature" $FULL
+# Preserve native provenance; mock_topology intentionally supplies only the fields
+# ordinary workspace tests need.
+export MOCK_WS_LIST="{\"result\":{\"workspaces\":[{\"workspace_id\":\"w7\",\"label\":\"Netronix/curato-feature\",\"worktree\":{\"checkout_path\":\"$WT\",\"is_linked_worktree\":true}}]}}"
+run_worktree_layout
+rc_is 0 "L2 reopening a complete worktree workspace succeeds"
+logged "workspace focus w7" "L2 the existing worktree workspace is focused"
+unlogged "tab create" "L2 reopening does not duplicate tabs"
+unlogged "workspace create" "L2 reopening does not create an ordinary workspace"
+
+mock_reset
+worktree_fixture false true "$R1"
+blank_worktree_topology
+run_worktree_layout
+rc_is 1 "L3 a response pointing at a different checkout is refused"
+has "different checkout" "L3 says why"
+unlogged "tab rename" "L3 nothing is mutated on mismatched provenance"
+
+mock_reset
+worktree_fixture false false
+blank_worktree_topology
+run_worktree_layout
+rc_is 1 "L4 non-linked provenance is refused in worktree mode"
+has "not a linked worktree" "L4 says why"
+unlogged "tab rename" "L4 nothing is mutated without linked provenance"
+
+mock_reset
+worktree_fixture false true
+blank_worktree_topology
+export MOCK_TAB_CREATE_FAIL_AT=2
+run_worktree_layout
+rc_is 1 "L5 a failed adoption fails the run"
+logged "workspace close w7" "L5 the partial workspace is closed but the checkout survives"
+
+# --- M: Herdr worktree configuration --------------------------------------
+print -r -- "-- M: worktree configuration"
+
+# The built-in worktree creator cannot run .worktreeinclude/.worktreehook or apply
+# the Git ownership lock. Replace its default shortcut with a popup that calls the
+# safe hwt flow while retaining Herdr's native open/grouping after creation.
+OUT="$(awk '
+  BEGIN { RS="\\[\\[keys.command\\]\\]" }
+  index($0, "key = \"prefix+shift+g\"") && index($0, "hwt-prompt") { print; found=1 }
+  END { if (!found) exit 1 }
+' "$CONFIG" 2>&1)"; RC=$?
+rc_is 0 "prefix+shift+g opens the safe hwt prompt"
+has 'type = "popup"' "the safe worktree prompt is session-modal"
+OUT="$(<"$CONFIG")"
+has 'new_worktree = ""' "Herdr's unprepared built-in worktree shortcut is disabled"
 
 finish

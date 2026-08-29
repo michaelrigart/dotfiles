@@ -4,6 +4,8 @@
 #
 #   layout.sh <repo-path>   build-or-focus, called by hdev from a shell
 #   layout.sh --current     repair in place, called by the dev.layout.apply plugin
+#   layout.sh --worktree <primary> <checkout>
+#                           open/adopt a native Herdr worktree workspace
 #
 # The single definition of what a project workspace looks like. Both entry points go
 # through it, so there is no second copy to drift.
@@ -190,6 +192,25 @@ hl_find_workspace() {
   print -r -- "${ids[1]}"
 }
 
+# hl_is_native_worktree_workspace <workspace-id> <canonical-checkout>
+# A linked checkout is safe to repair only when Herdr itself records matching
+# worktree provenance. A workspace opened by plain `workspace create` has the same
+# pane cwd but is not grouped or discoverable through the worktree lifecycle.
+hl_is_native_worktree_workspace() {
+  local ws="$1" repo="$2" list count checkout linked
+  list="$(hl_api_json workspace list)" || return 1
+  count=$(print -r -- "$list" | jq -r --arg w "$ws" \
+    '[.result.workspaces[] | select(.workspace_id == $w)] | length') || return 1
+  [[ "$count" == 1 ]] || return 1
+  checkout=$(print -r -- "$list" | jq -er --arg w "$ws" \
+    '.result.workspaces[] | select(.workspace_id == $w) | .worktree.checkout_path | select(type == "string" and length > 0)' 2>/dev/null) \
+    || return 1
+  linked=$(print -r -- "$list" | jq -er --arg w "$ws" \
+    '.result.workspaces[] | select(.workspace_id == $w) | .worktree.is_linked_worktree | if type == "boolean" then tostring else error("not boolean") end' 2>/dev/null) \
+    || return 1
+  [[ "$linked" == true && "${checkout:A}" == "$repo" ]]
+}
+
 # hl_classify <workspace_id> <final-label> — complete / provisional / malformed:<why>,
 # over the MANAGED baseline only.
 #
@@ -362,6 +383,92 @@ hl_repair() {
   hl_api workspace focus "$ws" >/dev/null || return 1
 }
 
+# hl_adopt_worktree — turn the one-tab workspace returned by `herdr worktree open`
+# into the managed layout without appending a redundant fifth tab. The ids are the
+# ones returned by the open call; verify the live topology still matches before the
+# first mutation so a stale or reshaped response cannot rename a user's tab.
+hl_adopt_worktree() {
+  local ws="$1" repo="$2" tab="$3" pane="$4" close_on_failure="$5"
+  local tabs panes nt np actual_tab actual_pane actual_cwd out right l
+  tabs="$(hl_api_json tab list --workspace "$ws")" || return 1
+  panes="$(hl_api_json pane list --workspace "$ws")" || return 1
+  nt=$(print -r -- "$tabs" | jq -r '.result.tabs | length') || return 1
+  np=$(print -r -- "$panes" | jq -r '.result.panes | length') || return 1
+  actual_tab=$(print -r -- "$tabs" | jq -r '.result.tabs[0].tab_id') || return 1
+  actual_pane=$(print -r -- "$panes" | jq -r '.result.panes[0].pane_id') || return 1
+  actual_cwd=$(print -r -- "$panes" | jq -r '.result.panes[0].cwd') || return 1
+  if [[ "$nt" != 1 || "$np" != 1 || "$actual_tab" != "$tab" || \
+        "$actual_pane" != "$pane" || "${actual_cwd:A}" != "$repo" ]]; then
+    print -ru2 -- "layout.sh: native worktree workspace $ws is not blank — refusing to adopt it"
+    return 1
+  fi
+
+  [[ "$close_on_failure" == true ]] \
+    && trap "command herdr workspace close ${(q)ws} >/dev/null 2>&1" EXIT INT TERM
+  hl_api tab rename "$tab" agents >/dev/null || return 1
+  out="$(hl_api_json pane split --pane "$pane" --direction right --cwd "$repo" --no-focus)" \
+    || return 1
+  right="$(hl_id "$out" '.result.pane.pane_id' "the agents split pane")" || return 1
+  hl_api pane run "$pane" "claude" >/dev/null || return 1
+  hl_api pane run "$right" "codex" >/dev/null || return 1
+  for l in editor runtime git; do
+    hl_make_tab "$ws" "$l" "$repo" >/dev/null || return 1
+  done
+  hl_api workspace rename "$ws" "$(hl_label "$repo")" >/dev/null || return 1
+  trap - EXIT INT TERM
+  hl_api workspace focus "$ws" >/dev/null || return 1
+  hl_api tab focus "$tab" >/dev/null || return 1
+}
+
+# hl_open_worktree — use Herdr's native open operation so the checkout carries
+# worktree provenance and is grouped under its primary workspace. Git creation,
+# project preparation and teardown remain in the shell lifecycle around this call.
+hl_open_worktree() {
+  local main="$1" repo="$2" out ws tab pane reported linked already verdict managed tabs
+  [[ -f "$repo/.git" ]] || die "$repo is not a linked worktree"
+  local actual_main
+  actual_main="$(hl_git -C "$repo" worktree list --porcelain -z 2>/dev/null \
+    | tr '\0' '\n' | sed -n 's/^worktree //p' | head -1)" || return 1
+  [[ -n "$actual_main" && "${actual_main:A}" == "$main" ]] \
+    || die "$repo does not belong to primary checkout $main"
+
+  hl_lock "$repo" || return 1
+  out="$(hl_api_json worktree open --cwd "$main" --path "$repo" \
+    --label "$(hl_label "$repo")" --no-focus)" || return 1
+  ws="$(hl_id "$out" '.result.workspace.workspace_id' "a worktree workspace id")" || return 1
+  tab="$(hl_id "$out" '.result.tab.tab_id' "a worktree root tab id")" || return 1
+  pane="$(hl_id "$out" '.result.root_pane.pane_id' "a worktree root pane id")" || return 1
+  reported="$(print -r -- "$out" | jq -er \
+    '.result.workspace.worktree.checkout_path | select(type == "string" and length > 0)')" \
+    || die "worktree open returned no checkout path"
+  linked="$(print -r -- "$out" | jq -er \
+    '.result.workspace.worktree.is_linked_worktree | if type == "boolean" then tostring else error("not boolean") end')" \
+    || die "worktree open returned no linked-worktree provenance"
+  already="$(print -r -- "$out" | jq -er \
+    '.result.already_open | if type == "boolean" then tostring else error("not boolean") end')" \
+    || die "worktree open returned no already-open state"
+  [[ "${reported:A}" == "$repo" ]] \
+    || die "worktree open returned a different checkout: $reported"
+  [[ "$linked" == true ]] || die "worktree open says $repo is not a linked worktree"
+
+  verdict="$(hl_classify "$ws" "$(hl_label "$repo")")" || return 1
+  case "$verdict" in
+    complete) hl_api workspace focus "$ws" >/dev/null || return 1 ;;
+    malformed:*) die "workspace $ws is ${verdict#malformed: } — fix it by hand, or close it" ;;
+    provisional)
+      tabs="$(hl_api_json tab list --workspace "$ws")" || return 1
+      managed=$(print -r -- "$tabs" | jq -r \
+        '[.result.tabs[] | select(.label == "agents" or .label == "editor" or .label == "runtime" or .label == "git")] | length') \
+        || return 1
+      if (( managed == 0 )); then
+        hl_adopt_worktree "$ws" "$repo" "$tab" "$pane" "$([[ "$already" == false ]] && print true || print false)" \
+          || return 1
+      else
+        hl_repair "$ws" "$repo" || return 1
+      fi ;;
+  esac
+}
+
 # hl_attach — from a shell, the point of hdev is to end up *inside* Herdr. Build or
 # focus first, then hand the terminal over. Inside Herdr there is nothing to attach to,
 # and HDEV_NO_ATTACH lets tests and scripted runs stop short of a blocking TUI.
@@ -372,9 +479,17 @@ hl_attach() {
 }
 
 main() {
-  local mode repo
+  local mode repo main_repo
   if [[ "${1:-}" == "--current" ]]; then
     mode=current
+  elif [[ "${1:-}" == "--worktree" ]]; then
+    mode=worktree
+    main_repo="${2:?usage: layout.sh --worktree <primary-repo> <checkout>}"
+    repo="${3:?usage: layout.sh --worktree <primary-repo> <checkout>}"
+    [[ -d "$main_repo" ]] || die "no such directory: $main_repo"
+    [[ -d "$repo" ]] || die "no such directory: $repo"
+    main_repo="${main_repo:A}"
+    repo="${repo:A}"
   else
     mode=path
     repo="${1:?usage: layout.sh <repo-path> | --current}"
@@ -413,10 +528,13 @@ main() {
     [[ -n "$root" ]] || hl_die_notify "$wrepo is not inside a git repository — refusing"
     wrepo="${root:A}"
 
-    # The worktree guard belongs to the design, not to one entry point. A workspace
-    # created by hand in a wt worktree could otherwise be grown through the plugin,
-    # reopening the husk hazard hdev refuses.
-    [[ -f "$wrepo/.git" ]] && hl_die_notify "$wrepo is a linked worktree — refusing (see the worktree guard)"
+    # A linked checkout is allowed only when Herdr owns it as a native worktree
+    # workspace. Plain workspace creation carries no provenance, so wt-rm could not
+    # identify it reliably during teardown.
+    if [[ -f "$wrepo/.git" ]] \
+      && ! hl_is_native_worktree_workspace "$ws" "$wrepo"; then
+      hl_die_notify "$wrepo is not a native Herdr worktree workspace — refusing"
+    fi
 
     # Same lock as the path mode: two plugin invocations, or a plugin racing an hdev,
     # would otherwise both see a tab missing and both create it.
@@ -448,6 +566,10 @@ main() {
     else
       hl_build "$repo" || exit 1
     fi
+  fi
+
+  if [[ "$mode" == worktree ]]; then
+    hl_open_worktree "$main_repo" "$repo" || exit 1
   fi
 
   hl_attach
