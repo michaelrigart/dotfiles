@@ -63,9 +63,11 @@ the exit criteria below, and would get its own spec.
 An early draft claimed it touched only new files. Four exceptions are in scope:
 
 - Agent integrations modify `~/.claude` and `~/.codex` (see "Integrations").
-- `wt` and `wt-rm` are extended: `wt` applies the Git ownership lock on adoption, and
-  `wt-rm` gains Herdr-aware teardown across running and stopped sessions (see "The
-  worktree lifecycle").
+- `wt-rm` is extended with Herdr-aware teardown across running and stopped sessions,
+  and `hdev`'s adoption path applies the Git ownership lock (see "The worktree
+  lifecycle"). Plain `wt` is refactored to share creation and preparation with `hwt`
+  via `_wt_create_or_prepare`, but its **behaviour is unchanged**: a `wt` worktree
+  stays Zellij-only and unlocked.
 - Neovim gains a Herdr-aware navigation binding — `dot_config/nvim/lua/plugins/
   smart-splits.lua`, dispatching `ctrl+h/j/k/l` through smart-splits.nvim's Herdr
   plugin (see "Keybindings").
@@ -113,8 +115,9 @@ a stale or reshaped response cannot rename a user's tab.
 `new_worktree` binding is cleared and replaced by a popup calling `hwt-prompt`, because
 the native creator cannot run the project hooks or apply the lock below.
 
-**2. A Git ownership lock.** On adoption, `wt` applies
-`git worktree lock --reason "<herdr marker>"`. Git then refuses `worktree remove` and
+**2. A Git ownership lock.** On adoption — in `hdev`, via `_wt_prepare_for_herdr`, not
+in plain `wt` — `git worktree lock --reason "hwt-managed; remove with command wt-rm"`
+is applied. A worktree created with `wt` and never opened in Herdr is never locked. Git then refuses `worktree remove` and
 `remove --force`, so **`wt-rm` is the only supported lifecycle path**, and it crosses
 the lock with `remove --force --force` *after* its three cleanliness checks. The lock is
 a guardrail, not an enforcement boundary: anyone can run `remove --force --force`
