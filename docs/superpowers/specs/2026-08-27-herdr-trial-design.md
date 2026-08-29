@@ -10,6 +10,21 @@ interrupted-build contradiction, the CLI sequence (which would not have run), th
 plugin's no-op failure mode and the integration contract; then the managed baseline,
 lock ordering, and the unowned `hooks.json`.
 
+**Amended 2026-08-29, during execution.** Two decisions in this document were reversed
+by what the build learned, and the text below now describes what exists rather than
+what was originally approved:
+
+- **Worktrees are supported, not refused.** The original design confined the trial to
+  primary checkouts because `wt-rm` could not see Herdr. Execution ported that preflight
+  instead, and added a Git ownership lock that makes `wt-rm` the only removal path. See
+  "The worktree lifecycle", which replaces the former "worktree guard".
+- **Neovim navigation is no longer regressed.** smart-splits.nvim ships a Herdr plugin;
+  `ctrl+h/j/k/l` are bound to its actions and covered by a live assertion.
+
+Both were previously listed as non-goals or known limitations. Reversing a
+safety-critical invariant without amending the record is precisely what this section
+exists to prevent, and it went unrecorded for a day.
+
 ## Problem
 
 The Zellij `dev` layout is, in practice, an agent harness wearing a dev-layout
@@ -51,36 +66,63 @@ An early draft claimed it touched only new files. Two exceptions are in scope:
 ### Non-goals
 
 - Migrating `dev`, `wt` or `wt-rm` to Herdr.
-- Porting `wt-rm`'s session-shutdown preflight to also stop Herdr workspaces. The
-  trial sidesteps the need by refusing to open workspaces in linked worktrees.
-- Adopting Herdr's built-in worktree support. It overlaps `wt`.
+- ~~Porting `wt-rm`'s session-shutdown preflight~~ — **done during execution.** It is
+  no longer a non-goal; see "The worktree lifecycle".
+- ~~Adopting Herdr's built-in worktree support~~ — **partially adopted.** `herdr
+  worktree open` provides provenance and sidebar grouping; Git creation, project
+  preparation and teardown stay in the `wt` lifecycle. Herdr's own `new_worktree`
+  shortcut is unbound, because it cannot run `.worktreeinclude` / `.worktreehook` or
+  apply the ownership lock.
 - Automating the Claude/Codex relay. Herdr can (`agent prompt`, `agent wait`), but
   GLOBAL.md defines the relay as manual: "One relay, one turn." That is a workflow
   choice, not a capability gap.
 - Neovim navigation integration. See "Known limitations".
 
-## The worktree guard
+## The worktree lifecycle
 
-`wt-rm` maintains a hard invariant at `dot_config/zsh/functions:781-789`: stop the
-session **before** removing the worktree, because "a live process holding the
-directory open is what leaves an empty `tmp/` husk behind." Its shutdown step knows
-exactly one multiplexer:
+*Replaces "The worktree guard". The original design refused linked worktrees outright;
+execution ported the safety property instead.*
 
-```zsh
-if zellij list-sessions -s 2>/dev/null | grep -Fqx -- "$name"; then
-  zellij delete-session --force "$name" ...
-```
+`wt-rm` maintains a hard invariant at `dot_config/zsh/functions`: stop the session
+**before** removing the worktree, because "a live process holding the directory open is
+what leaves an empty `tmp/` husk behind." Originally that step knew exactly one
+multiplexer, so a Herdr workspace on a `wt` worktree was invisible to it and the trial
+simply refused to open one.
 
-A Herdr workspace on a `wt`-managed worktree is invisible to that check. `wt-rm`
-would report clean shutdown, remove the checkout, and leave Herdr panes writing into
-a deleted directory — reproducing the husk the preflight exists to prevent.
+Three mechanisms now make worktrees safe rather than forbidden.
 
-**`hdev` therefore refuses linked worktrees.** A repo whose `--git-common-dir`
-resolves outside its own `.git` is a linked worktree; `hdev` says so and points at
-`dev`. The plugin path inherits the guard, since both go through `layout.sh`.
+**1. Native adoption, not plain creation.** `hwt` creates the checkout through the
+normal `wt` lifecycle (branch, `.worktreeinclude`, `.worktreehook`), then hands off to
+`layout.sh --worktree <primary> <checkout>`, which calls `herdr worktree open` so the
+workspace carries real worktree provenance and groups under its primary in the sidebar.
+`hl_adopt_worktree` converts the resulting one-tab workspace into the managed baseline;
+it re-reads the live topology first and refuses to adopt anything that is not blank, so
+a stale or reshaped response cannot rename a user's tab.
 
-Extending Herdr to worktrees requires porting the preflight first, which belongs to
-a migration decision, not a trial.
+`hdev` on a linked checkout routes to this path rather than refusing. Herdr's own
+`new_worktree` binding is cleared and replaced by a popup calling `hwt-prompt`, because
+the native creator cannot run the project hooks or apply the lock below.
+
+**2. A Git ownership lock.** On adoption, `wt` applies
+`git worktree lock --reason "<herdr marker>"`. Git then refuses `worktree remove` and
+`remove --force`, so **the only removal path is `wt-rm`**, which crosses it with
+`remove --force --force` *after* its three cleanliness checks. The lock is deliberately
+never released while Herdr owns the checkout: unlocking before removal would open an
+interrupt window in which a checkout meant to be protected is exposed. If a worktree is
+already locked for a different reason, adoption refuses rather than taking ownership of
+a user-managed lock.
+
+**3. Herdr-aware teardown.** `wt-rm` enumerates every Herdr session, matching a checkout
+on both `workspace.worktree.checkout_path` and pane `cwd`, and closes matching
+workspaces through the public API before removal. It is fail-closed at every step:
+malformed or unexpected JSON refuses rather than proceeding, `server_not_running` is
+distinguished from a genuine error, and a **stopped** session is inspected via its
+persisted `session.json` — because a stopped session can still restore panes into the
+checkout later. That inspection pins the persisted schema at `version == 3` and refuses
+anything else rather than guessing at an unknown shape.
+
+The net effect is the original invariant, preserved: no process may outlive the checkout
+it is writing into.
 
 ## Model mapping
 
@@ -98,12 +140,15 @@ visibility that motivates the trial.
 ## Architecture
 
 ```
-   hdev curato ───▶ layout.sh <repo>       (build-or-focus, from a shell)
-   dev.layout.apply ─▶ layout.sh --current (repair-in-place, from inside a workspace)
+   hdev curato ─────▶ layout.sh <repo>                       (build-or-focus, from a shell)
+   hdev <worktree> ─┐
+   hwt <branch> ────┴▶ layout.sh --worktree <primary> <co>   (native open + adopt)
+   dev.layout.apply ─▶ layout.sh --current                   (repair-in-place, in a workspace)
 ```
 
-`layout.sh` owns the topology definition. Its two modes differ in *entry condition*,
-not in what a finished workspace looks like.
+`layout.sh` owns the topology definition. Its three modes differ in *entry condition*,
+not in what a finished workspace looks like: all of them end at the same managed
+baseline of `agents` / `editor` / `runtime` / `git`.
 
 ### Bootstrap
 
@@ -465,13 +510,17 @@ dot_config/herdr/config.toml               → ~/.config/herdr/config.toml
 dot_config/herdr/executable_layout.sh      → topology definition, both modes
 dot_config/herdr/executable_tab-goto.sh    → tab focus by unique label
 dot_config/herdr/plugin/herdr-plugin.toml  → registers dev.layout.apply
-dot_config/zsh/functions                   → += hdev()   (dev/wt/wt-rm untouched)
+dot_config/zsh/functions                   → += hdev(), hwt(), hwt-prompt();
+                                             wt/wt-rm EXTENDED for the worktree
+                                             lifecycle (no longer untouched)
+dot_config/nvim/lua/plugins/smart-splits.lua → herdr-aware ctrl+h/j/k/l
 .chezmoiignore                             → re-include both hook scripts + hooks.json
 dot_claude/modify_private_settings.json    → merge Herdr hook registration
 dot_codex/modify_private_config.toml       → pin features.hooks
 dot_codex/modify_private_hooks.json        → merge Herdr entries into hooks.json (new owner)
 dot_claude/…, dot_codex/…                  → the two hook scripts
 .scripts/test-hdev.sh                      → mocked test
+.scripts/test-wt-functions.sh              → EXTENDED: worktree lifecycle + teardown
 .scripts/test-hdev-topology.sh             → live, isolated session
 .scripts/test-hdev-integrations.sh         → live, controlled install/restore/uninstall
 ```
@@ -573,13 +622,13 @@ machine state.
 
 ## Known limitations
 
-**Neovim navigation is regressed.** Binding `ctrl+h/j/k/l` natively means Herdr
-consumes them before Neovim, so inside `nvim` they move between Herdr panes rather
-than splits. smart-splits.nvim cannot see across the boundary without a Herdr-aware
-counterpart to vim-zellij-navigator. Community options exist (`herdr-splits.nvim`,
-`herdr-nvim-nav`, ports of vim-tmux-navigator); none is first-party, and adopting one
-is a Neovim config change deliberately excluded. `<C-w>hjkl` still works inside
-Neovim. A small, separately-approved follow-up.
+**~~Neovim navigation is regressed~~ — resolved during execution.** smart-splits.nvim
+ships its own Herdr plugin, so no third-party port was needed. `ctrl+h/j/k/l` are bound
+as `plugin_action` entries dispatching to `smart-splits.nvim.{left,down,up,right}`:
+inside Neovim they move between editor splits and call Herdr at the edge; outside, they
+move pane focus while preserving shell `Ctrl-h`/`Ctrl-l` where no neighbour exists.
+Linking that plugin is part of the live activation gate, and the topology gate asserts
+focus actually crosses Herdr panes.
 
 **Shared session view.** Per the 0.8.2 CHANGELOG: "The current persistence model is a
 shared session view across attached clients. It is not yet full tmux-style per-client
@@ -615,7 +664,35 @@ if agent status proves a novelty that does not change behaviour.
 
 ## Rollback
 
-1. `herdr integration uninstall claude` and `… codex`. Restore `features.hooks` to
+**0. Retire the Git ownership locks — before reverting anything.** This step is first
+because it is the only one the later steps can strand. Adoption applies
+`git worktree lock`, and there is deliberately no unlock path while Herdr owns a
+checkout: `wt-rm` crosses the lock with `remove --force --force`. Once `wt-rm` is
+reverted to its pre-trial form, plain `worktree remove` and single `--force` both fail
+(exit 128, "cannot remove a locked working tree"), so every worktree Herdr ever opened
+becomes unremovable by your own tooling.
+
+Git's error does name the reason and the escape hatch, so this is recoverable rather
+than fatal — but it is avoidable entirely by doing it in the right order:
+
+```bash
+# Inventory: every worktree carrying the Herdr ownership reason.
+for gd in ~/Code/*/*/.git; do r="${gd%/.git}"
+  git -C "$r" worktree list --porcelain | grep -B2 '^locked.*herdr'
+done
+```
+
+- Worktrees you are finished with → retire now, with the **current** `command wt-rm
+  <branch>`, while it can still cross the lock.
+- Worktrees you want to keep → close the Herdr workspace, then
+  `git worktree unlock <path>`.
+- Re-run the inventory and confirm no Herdr-reason locks remain.
+
+*(Verified 2026-08-29: no locked worktrees exist under `~/Code`, so nothing is stranded
+today. This step is preventive.)*
+
+1. `herdr integration uninstall claude`, then `herdr integration uninstall codex` —
+   the CLI takes exactly one target per invocation. Restore `features.hooks` to
    its prior value in `dot_codex/modify_private_config.toml` — Herdr's uninstall
    deliberately will not. Revert the `modify_private_settings.json` merge, remove
    `dot_codex/modify_private_hooks.json`, and revert the `.chezmoiignore`
@@ -640,5 +717,8 @@ if agent status proves a novelty that does not change behaviour.
    leave an inert path in `config.toml`. Do not hand-edit the deployed dotfile to hide
    that limitation.
 
-Zellij, `dev`, `wt` and `wt-rm` are untouched throughout, so rollback is deletion
-plus an uninstall, never a restoration.
+Zellij and `dev` are untouched throughout. `wt` and `wt-rm` are **not** — they carry
+the worktree lifecycle, so their changes must be reverted in `dot_config/zsh/functions`
+and re-applied, and step 0 must precede that revert. An earlier revision of this
+sentence claimed all four were untouched; that was true only before worktree support
+existed.

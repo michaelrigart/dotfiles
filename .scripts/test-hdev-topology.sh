@@ -124,6 +124,62 @@ h pane layout --pane "$(h pane list --workspace "$WS" | jq -r --arg t "$RT" \
   | jq -e '[.result.layout.splits[].direction] == ["down"]' >/dev/null \
   && ok "runtime is split down" || bad "runtime is not split down"
 
+# 6b. Native worktree flow: the shell lifecycle creates/prepares and Git-locks the
+# checkout; Herdr opens it natively so provenance/grouping are real. This is the path
+# the trial will use day to day (`hwt`), not an ordinary workspace pointed at a
+# linked checkout.
+PRIMARY="$SCRATCH/Code/Test/worktree-proj"
+mkdir -p "$PRIMARY" || exit 1
+git -C "$PRIMARY" init -q -b main || exit 1
+git -C "$PRIMARY" -c user.name=gate -c user.email=gate@example.invalid \
+  -c commit.gpgsign=false commit -q --allow-empty -m init || exit 1
+PRIMARY="${PRIMARY:A}"
+WT="$SCRATCH/Code/Test/worktree-proj-live-wt"
+wt_rc=0
+( cd "$PRIMARY" && source ~/.config/zsh/functions && \
+  HERDR_SESSION="$SESSION" HDEV_NO_ATTACH=1 hwt live-wt ) >/dev/null 2>&1 || wt_rc=$?
+WT="${WT:A}"
+WWS=$(h workspace list | jq -r --arg d "$WT" \
+  '.result.workspaces[] | select(.worktree.checkout_path == $d) | .workspace_id')
+wn=$(h tab list --workspace "$WWS" 2>/dev/null | jq -r \
+  '[.result.tabs[] | select(.label=="agents" or .label=="editor" or .label=="runtime" or .label=="git")] | length')
+lock_reason=$(git -C "$PRIMARY" worktree list --porcelain | sed -n '/worktree .*worktree-proj-live-wt$/,/^$/s/^locked //p')
+[[ "$wt_rc" == 0 && -n "$WWS" && "$wn" == 4 \
+   && "$lock_reason" == "hwt-managed; remove with command wt-rm" ]] \
+  && ok "hwt creates a four-tab native workspace with the lifecycle lock" \
+  || bad "hwt rc=$wt_rc workspace=${WWS:-none} managed-tabs=${wn:-none} lock=${lock_reason:-none}"
+
+# Reopen must return to the same native workspace, not create an ordinary duplicate.
+reopen_rc=0
+( cd "$PRIMARY" && source ~/.config/zsh/functions && \
+  HERDR_SESSION="$SESSION" HDEV_NO_ATTACH=1 hwt live-wt ) >/dev/null 2>&1 || reopen_rc=$?
+wns=$(h workspace list | jq -r --arg d "$WT" \
+  '[.result.workspaces[] | select(.worktree.checkout_path == $d)] | length')
+[[ "$reopen_rc" == 0 && "$wns" == 1 ]] \
+  && ok "hwt reopens the same native workspace" \
+  || bad "hwt reopen rc=$reopen_rc yielded $wns native workspaces"
+
+# Herdr exposes one --force; Git requires two to cross our ownership lock. Exercise
+# the real binary, then restore/focus the workspace in case Herdr closed its UI state
+# before Git reported the refusal.
+native_rm_rc=0
+h worktree remove --workspace "$WWS" --force >/dev/null 2>&1 || native_rm_rc=$?
+[[ "$native_rm_rc" != 0 && -d "$WT" ]] \
+  && ok "Herdr native removal cannot bypass wt-rm teardown" \
+  || bad "native removal rc=$native_rm_rc checkout-exists=$([[ -d "$WT" ]] && print yes || print no)"
+( cd "$PRIMARY" && source ~/.config/zsh/functions && \
+  HERDR_SESSION="$SESSION" HDEV_NO_ATTACH=1 hwt live-wt ) >/dev/null 2>&1 || true
+
+# The approved teardown path closes Herdr state, crosses only its own Git lock after
+# all checks, removes the checkout and deletes the merged branch.
+custom_rm_rc=0
+( cd "$PRIMARY" && command wt-rm live-wt ) >/dev/null 2>&1 || custom_rm_rc=$?
+remaining_wt=$(h workspace list | jq -r --arg d "$WT" \
+  '[.result.workspaces[] | select(.worktree.checkout_path == $d)] | length')
+[[ "$custom_rm_rc" == 0 && ! -d "$WT" && "$remaining_wt" == 0 ]] \
+  && ok "command wt-rm closes Herdr and safely removes the checkout" \
+  || bad "wt-rm rc=$custom_rm_rc checkout-exists=$([[ -d "$WT" ]] && print yes || print no) workspaces=$remaining_wt"
+
 # 7. The plugin: link under a DISTINCT id, invoke it, unlink. Registration is global,
 #    so reusing dev.layout would let this teardown unlink the real one.
 PDIR="$SCRATCH/plugin"
@@ -163,6 +219,31 @@ done
 [[ "$close_rc" == 0 && "$closed_n" == 0 && "$focus_rc" == 0 && "$invoke_rc" == 0 && "$n" == 1 ]] \
   && ok "the plugin action repairs a closed managed tab" \
   || bad "repair preconditions/actions rc=$close_rc/$focus_rc/$invoke_rc, counts=$closed_n->$n"
+
+# 7a. smart-splits' Herdr dispatcher is live, not merely named in config. Move to the
+# left agents pane, invoke right, and wait for the detached plugin action to focus its
+# neighbor. Neovim uses the same plugin's native Herdr backend at split edges.
+if h plugin list | grep -Fq 'smart-splits.nvim'; then
+  APANES=( ${(f)"$(h pane list --workspace "$WS" | jq -r --arg t "$AT" \
+    '.result.panes[] | select(.tab_id==$t) | .pane_id')"} )
+  left="${APANES[1]}"; right="${APANES[2]}"
+  # Focus left deterministically by starting from right and moving left.
+  h pane focus --pane "$right" --direction left >/dev/null 2>&1 || true
+  smart_rc=0
+  h plugin action invoke smart-splits.nvim.right >/dev/null 2>&1 || smart_rc=$?
+  focused=""
+  for i in {1..20}; do
+    focused=$(h pane list --workspace "$WS" | jq -r \
+      '.result.panes[] | select(.focused == true) | .pane_id' | head -1)
+    [[ "$focused" == "$right" ]] && break
+    sleep 0.25
+  done
+  [[ "$smart_rc" == 0 && "$focused" == "$right" ]] \
+    && ok "smart-splits moves focus across Herdr panes" \
+    || bad "smart-splits invoke rc=$smart_rc focused=${focused:-none}, expected $right"
+else
+  bad "smart-splits.nvim is not linked in Herdr"
+fi
 
 # 7b. The jump must still land after repair. This is the whole reason tab-goto.sh
 #     resolves by label: repair APPENDS (herdr 0.8.2 has no `tab move`), so the
@@ -210,13 +291,40 @@ done
 # EXIT trap is only a backstop for interruption; a green run must prove its teardown.
 if (( plugin_linked )); then
   unlink_out=$(h plugin unlink "$PLUGIN_ID" 2>/dev/null) || unlink_out=''
+  removed=0
   if print -r -- "$unlink_out" | jq -e --arg id "$PLUGIN_ID" \
       '.result.plugin_id == $id and .result.removed == true' >/dev/null 2>&1; then
+    # The command response is not enough: an interrupted earlier run left the plugin
+    # in global plugins.json while reporting removed=true. The fixture directory then
+    # disappeared, leaving a live registration pointing at nothing. Verify the
+    # persisted owner before allowing cleanup to delete this run's directory.
+    for i in {1..20}; do
+      if ! jq -e --arg id "$PLUGIN_ID" '.[] | select(.plugin_id == $id)' \
+          ~/.config/herdr/plugins.json >/dev/null 2>&1; then
+        removed=1
+        break
+      fi
+      sleep 0.1
+    done
+  fi
+  if (( removed )); then
     plugin_linked=0
   else
     bad "the test plugin registration was not removed"
   fi
 fi
+
+# Persisted session schema. wt-rm inspects a STOPPED session's session.json to decide
+# whether it still references a checkout, and pins `.version == 3`, refusing anything
+# else rather than guessing at an unknown shape. That is the right fail-closed call,
+# but it means a herdr upgrade that bumps the schema turns into "wt-rm refuses to
+# remove worktrees" — a confusing failure far from its cause. Assert it here so a
+# schema bump surfaces as a test failure instead.
+SVER=$(jq -r '.version' "$HOME/.config/herdr/sessions/$SESSION/session.json" 2>/dev/null \
+       || jq -r '.version' "$HOME/.config/herdr/session.json" 2>/dev/null)
+[[ "$SVER" == 3 ]] \
+  && ok "persisted session schema is version 3, as wt-rm requires" \
+  || bad "persisted session schema is '${SVER:-unreadable}', not 3 — wt-rm will refuse worktree teardown"
 
 print -r -- "=== $pass passed, $fail failed ==="
 (( fail == 0 ))
