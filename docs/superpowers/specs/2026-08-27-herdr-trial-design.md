@@ -16,8 +16,9 @@ what was originally approved:
 
 - **Worktrees are supported, not refused.** The original design confined the trial to
   primary checkouts because `wt-rm` could not see Herdr. Execution ported that preflight
-  instead, and added a Git ownership lock that makes `wt-rm` the only removal path. See
-  "The worktree lifecycle", which replaces the former "worktree guard".
+  instead, and added a Git ownership lock that makes `wt-rm` the only *supported
+  lifecycle* path — a guardrail, not an enforcement boundary. See "The worktree
+  lifecycle", which replaces the former "worktree guard".
 - **Neovim navigation is no longer regressed.** smart-splits.nvim ships a Herdr plugin;
   `ctrl+h/j/k/l` are bound to its actions and covered by a live assertion.
 
@@ -59,11 +60,17 @@ the exit criteria below, and would get its own spec.
 
 ### The trial is not purely additive
 
-An early draft claimed it touched only new files. Two exceptions are in scope:
+An early draft claimed it touched only new files. Four exceptions are in scope:
 
 - Agent integrations modify `~/.claude` and `~/.codex` (see "Integrations").
-- `hdev` must actively refuse a class of directory to avoid weakening `wt-rm`
-  (see "The worktree guard").
+- `wt` and `wt-rm` are extended: `wt` applies the Git ownership lock on adoption, and
+  `wt-rm` gains Herdr-aware teardown across running and stopped sessions (see "The
+  worktree lifecycle").
+- Neovim gains a Herdr-aware navigation binding — `dot_config/nvim/lua/plugins/
+  smart-splits.lua`, dispatching `ctrl+h/j/k/l` through smart-splits.nvim's Herdr
+  plugin (see "Keybindings").
+- `hdev` routes a linked checkout to the worktree path rather than refusing it, which
+  is what makes the `wt-rm` extension load-bearing rather than optional.
 
 ### Non-goals
 
@@ -545,7 +552,11 @@ stubbed multiplexer, following `test-wt-functions.sh`.
 
 - **Resolution.** Every branch of the cascade; a non-repo argument fails without
   calling `herdr` at all.
-- **The worktree guard.** A linked worktree is refused, with zero `herdr` calls.
+- **Worktree routing.** A linked checkout is *accepted* and opened through the primary
+  repo's Herdr worktree group, and a subdirectory of one resolves to the worktree root
+  rather than being treated as its own repo. A native worktree workspace adopts,
+  reopens and repairs; a linked-worktree workspace that is **not** registered as a
+  native worktree is refused, since it carries no provenance for `wt-rm` to find.
 - **Identity.** Path matching focuses the right workspace; two repos sharing a
   basename across orgs resolve to two workspaces; a label match whose pane `cwd`
   disagrees fails rather than focusing; two matches fail rather than guessing.
