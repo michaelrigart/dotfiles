@@ -26,6 +26,11 @@ Both were previously listed as non-goals or known limitations. Reversing a
 safety-critical invariant without amending the record is precisely what this section
 exists to prevent, and it went unrecorded for a day.
 
+**Outcome, 2026-08-30:** migrated. Zellij is removed — see
+[Zellij removal](./2026-08-30-zellij-removal-design.md). The four-week window in
+"Exit criteria" was ended after three days by decision, not by measuring the criteria;
+none of them were formally evaluated. The removal spec records the reasoning.
+
 ## Problem
 
 The Zellij `dev` layout is, in practice, an agent harness wearing a dev-layout
