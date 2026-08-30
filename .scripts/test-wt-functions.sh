@@ -1599,8 +1599,8 @@ setup
 run "$REPO" wt feature/herdr
 rc_is 0 "wt creates and prepares a new worktree"
 NATIVEWT="$HOME/Code/Org/repo-feature-herdr"
-[[ -d "$NATIVEWT" ]] && _pass "wt uses the same sibling checkout path as wt" \
-                 || _fail "wt uses the same sibling checkout path as wt"
+[[ -d "$NATIVEWT" ]] && _pass "wt creates the checkout at the expected sibling path" \
+                     || _fail "wt creates the checkout at the expected sibling path"
 dlogged "--worktree $REPO $NATIVEWT" "wt hands the prepared checkout to Herdr worktree mode"
 run "$REPO" git worktree list --porcelain
 has "locked hwt-managed; remove with command wt-rm" \
@@ -1758,8 +1758,8 @@ hlogged "--session team workspace close w7" "a matching named-session workspace 
 [[ -d "$HCLOSE" ]] && _fail "the checkout is removed after every Herdr close succeeds" \
                         || _pass "the checkout is removed after every Herdr close succeeds"
 
-# A close failure is destructive-boundary failure: keep the checkout and skip Zellij,
-# teardown and Git removal rather than pretending Herdr was absent.
+# A close failure is destructive-boundary failure: keep the checkout and skip teardown
+# and Git removal rather than pretending Herdr was absent.
 setup
 mkhook "$REPO" '#!/bin/sh
 [ "$1" = teardown ] && touch "$WT_MAIN/herdr-close-teardown-ran"
@@ -1798,7 +1798,8 @@ has "could not close Herdr workspace" "the error envelope is reported as a close
 [[ -d "$HENVELOPE" ]] && _pass "the checkout survives a Herdr close error envelope" \
                            || _fail "the checkout survives a Herdr close error envelope"
 
-# Closing Herdr can flush files just like closing Zellij. Check 2 must see that dirt.
+# Closing Herdr can flush files, just as the previous multiplexer's teardown could.
+# Check 2 must see that dirt.
 setup
 mkhook "$REPO" '#!/bin/sh
 [ "$1" = teardown ] && touch "$WT_MAIN/herdr-flush-teardown-ran"
@@ -1833,7 +1834,7 @@ has "herdr session attach sleeping" "the refusal gives the safe recovery command
                        || _fail "the checkout survives while stopped Herdr state refers to it"
 
 # This guard must be selective: unrelated stopped state is ordinary and should not
-# force Herdr to be running for every Zellij-only removal.
+# force Herdr to be running for every removal.
 setup
 run "$REPO" wt unrelated-state
 UNRELATED="$HOME/Code/Org/repo-unrelated-state"
@@ -1843,8 +1844,8 @@ print -r -- '{"version":3,"workspaces":[{"id":"w1","tabs":[{"panes":{"1":{"cwd":
 export MOCK_H_SESSION_LIST="{\"sessions\":[{\"default\":false,\"name\":\"sleeping\",\"running\":false,\"session_dir\":\"$ROOTTMP/stopped\"}]}"
 run "$REPO" wt-rm unrelated-state
 rc_is 0 "unrelated stopped Herdr state does not block removal"
-[[ -d "$UNRELATED" ]] && _fail "the unrelated Zellij checkout is removed normally" \
-                           || _pass "the unrelated Zellij checkout is removed normally"
+[[ -d "$UNRELATED" ]] && _fail "a checkout unrelated to that stopped state is removed normally" \
+                           || _pass "a checkout unrelated to that stopped state is removed normally"
 
 # Session discovery is itself a safety boundary. Invalid JSON or a changed persisted
 # schema must fail closed before anything is disrupted.
@@ -1866,8 +1867,9 @@ run "$REPO" git worktree list --porcelain
 has "$BADSTATE" "the checkout is still a registered worktree after invalid Herdr discovery"
 
 # A session advertised as running but unreachable is not equivalent to a stopped
-# session. Treating server_not_running as absence would recreate the Zellij sandbox
-# bug: live processes become invisible and the checkout is removed underneath them.
+# session. Treating server_not_running as absence would recreate the sandbox bug this
+# lifecycle already guards: live processes become invisible and the checkout is removed
+# underneath them.
 setup
 mkhook "$REPO" '#!/bin/sh
 [ "$1" = teardown ] && touch "$WT_MAIN/unreachable-teardown-ran"

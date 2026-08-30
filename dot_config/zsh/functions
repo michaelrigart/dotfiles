@@ -114,9 +114,9 @@ tsh() {
 #   dev Netronix/curato    path relative to ~/Code
 #   dev .                  the git repo containing the current directory
 #
-# The retired Zellij `dev` also accepted a session name (`dev netronix--curato`).
-# There are no session names any more, so such an argument matches no repo by
-# basename or substring and falls through to the fzf picker.
+# The retired `dev` also accepted a session name (`dev netronix--curato`). There are no
+# session names any more, so such an argument matches no repo by basename or substring
+# and falls through to the fzf picker.
 #
 # Resolution only. Everything about Herdr lives in layout.sh, which is also what the
 # `dev.layout.apply` plugin action calls — one topology definition, two entry points.
