@@ -2,7 +2,7 @@
 # layout.sh — build, focus or repair a project's Herdr workspace.
 # Managed by chezmoi (source: dot_config/herdr/executable_layout.sh).
 #
-#   layout.sh <repo-path>   build-or-focus, called by hdev from a shell
+#   layout.sh <repo-path>   build-or-focus, called by dev from a shell
 #   layout.sh --current     repair in place, called by the dev.layout.apply plugin
 #   layout.sh --worktree <primary> <checkout>
 #                           open/adopt a native Herdr worktree workspace
@@ -105,7 +105,7 @@ hl_server_ready() {
 hl_ensure_server() {
   hl_server_ready && return 0
   # `herdr server` runs in the foreground: background and detach it explicitly. A
-  # second hdev racing this must neither fail nor start a second server, so the start
+  # second dev racing this must neither fail nor start a second server, so the start
   # is fire-and-forget and readiness is what we actually wait on.
   (command herdr server >/dev/null 2>&1 &) || true
   local tries="${HL_READY_TRIES:-40}" i=1
@@ -120,7 +120,7 @@ hl_ensure_server() {
 # hl_label — the display label. Deterministic from the path so it is stable, but
 # purely cosmetic: identity is the canonical path, checked via pane cwd.
 hl_label() {
-  # BOTH sides resolved. hdev hands over "${repo:A}", so on macOS a repo under /tmp
+  # BOTH sides resolved. dev hands over "${repo:A}", so on macOS a repo under /tmp
   # arrives as /private/tmp/... while $HOME is still /tmp/... — the prefix never
   # matches and the label silently degrades to the full absolute path. The same
   # applies to any ~/Code behind a symlink, which _wt_assert_worktree already warns
@@ -469,12 +469,12 @@ hl_open_worktree() {
   esac
 }
 
-# hl_attach — from a shell, the point of hdev is to end up *inside* Herdr. Build or
+# hl_attach — from a shell, the point of dev is to end up *inside* Herdr. Build or
 # focus first, then hand the terminal over. Inside Herdr there is nothing to attach to,
-# and HDEV_NO_ATTACH lets tests and scripted runs stop short of a blocking TUI.
+# and DEV_NO_ATTACH lets tests and scripted runs stop short of a blocking TUI.
 hl_attach() {
   [[ -n "${HERDR_ENV:-}" ]] && return 0
-  [[ -n "${HDEV_NO_ATTACH:-}" ]] && return 0
+  [[ -n "${DEV_NO_ATTACH:-}" ]] && return 0
   exec command herdr
 }
 
@@ -517,7 +517,7 @@ main() {
     # Resolve to the repository ROOT before anything else. A pane's cwd is wherever
     # the user last cd'd, and `.git` is a file only at the root — so checking the raw
     # cwd lets any subdirectory of a linked worktree walk straight past the guard.
-    # hdev never had this problem: it resolves with rev-parse before guarding.
+    # dev never had this problem: it resolves with rev-parse before guarding.
     #
     # Fail CLOSED. Keeping the raw cwd when rev-parse fails meant a workspace sitting
     # in a non-repo directory — the plain ~ workspace being the obvious one — was
@@ -536,7 +536,7 @@ main() {
       hl_die_notify "$wrepo is not a native Herdr worktree workspace — refusing"
     fi
 
-    # Same lock as the path mode: two plugin invocations, or a plugin racing an hdev,
+    # Same lock as the path mode: two plugin invocations, or a plugin racing a dev,
     # would otherwise both see a tab missing and both create it.
     hl_lock "$wrepo" || hl_die_notify "could not take the lock for $wrepo"
 

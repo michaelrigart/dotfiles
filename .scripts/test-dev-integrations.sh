@@ -5,12 +5,12 @@
 # The named session isolates Herdr runtime state; the integration config is the real
 # ~/.claude and ~/.codex state activated in Task 11.
 #
-# Run manually: zsh .scripts/test-hdev-integrations.sh
+# Run manually: zsh .scripts/test-dev-integrations.sh
 emulate -L zsh
 set -u
 setopt no_bg_nice
 
-SESSION=hdev-restore
+SESSION=dev-restore
 FIXTURE_BASE=${XDG_STATE_HOME:-$HOME/.local/state}/herdr-trial
 h() { command herdr --session "$SESSION" "$@" }
 
@@ -61,7 +61,7 @@ REPO="$FIXTURE_BASE/restore-fixture"
 mkdir -p "$REPO" || exit 1
 git -C "$REPO" init -q || exit 1
 
-if ! HERDR_SESSION="$SESSION" HDEV_NO_ATTACH=1 ~/.config/herdr/layout.sh "$REPO"; then
+if ! HERDR_SESSION="$SESSION" DEV_NO_ATTACH=1 ~/.config/herdr/layout.sh "$REPO"; then
   bad "layout creation failed"
   print -r -- "=== $pass passed, $fail failed ==="
   exit 1

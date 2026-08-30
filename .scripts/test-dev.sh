@@ -1,8 +1,8 @@
 #!/usr/bin/env zsh
-# Mocked test for hdev/layout.sh — the Herdr trial's shell surface.
+# Mocked test for dev/layout.sh — the Herdr trial's shell surface.
 #
-#   A  hdev            repo resolution cascade
-#   B  hdev            the linked-worktree guard
+#   A  dev            repo resolution cascade
+#   B  dev            the linked-worktree guard
 #   C  layout.sh       bootstrap: server probe and readiness
 #   D  layout.sh       identity: lock-before-scan, path matching, ambiguity
 #   E  layout.sh       classification: complete / provisional / malformed
@@ -15,7 +15,7 @@
 # stubbed: real repos are used, because git's own answers about worktrees are part of
 # what is under test.
 #
-# Run: zsh .scripts/test-hdev.sh
+# Run: zsh .scripts/test-dev.sh
 set -u
 # zsh sets BG_NICE by default, so backgrounding K10's lock holder tries to renice it
 # and prints "nice(5) failed" wherever setpriority is denied. Same reason layout.sh
@@ -48,7 +48,7 @@ unlogged() { [[ "$(<$HLOG)" == *"$1"* ]] && _fail "$2" || _pass "$2" }
 count_logged() { grep -Fxc -- "$1" "$HLOG" 2>/dev/null | head -1 }
 
 TMPROOT="${TMPDIR:-/tmp}"
-mkd() { mktemp -d "${TMPROOT%/}/hdev-test.XXXXXX" }
+mkd() { mktemp -d "${TMPROOT%/}/dev-test.XXXXXX" }
 STUBS=$(mkd)
 # layout.sh derives its lock path from XDG_STATE_HOME, which zshenv exports to the
 # REAL ~/.local/state — so without this every run littered the user's state directory
@@ -226,7 +226,7 @@ mkrepo() {  # <path> — a real git repo
   print -r -- "${1:A}"
 }
 
-print -r -- "=== hdev test suite ==="
+print -r -- "=== dev test suite ==="
 mock_reset
 
 # --- summary ----------------------------------------------------------------
@@ -239,7 +239,7 @@ finish() {
   (( fail == 0 ))
 }
 # --- A: resolution ----------------------------------------------------------
-print -r -- "-- A: hdev resolution"
+print -r -- "-- A: dev resolution"
 ROOTTMP=$(mkd); CODE="$ROOTTMP/Code"
 R1=$(mkrepo "$CODE/Netronix/curato")
 R2=$(mkrepo "$CODE/ViuMore/curato")     # same basename, different org
@@ -265,32 +265,32 @@ exit 1
 S
 chmod +x "$STUBS/fzf"
 
-run_hdev() {
+run_dev() {
   mock_reset
   export LAYOUT_ARG="$(mktemp "${TMPROOT%/}/larg.XXXXXX")"
   export FZFLOG="$(mktemp "${TMPROOT%/}/fzflog.XXXXXX")"
-  OUT="$(HOME="$ROOTTMP" HDEV_LAYOUT="$LSTUB" zsh -c "
-    source '$FUNCS'; hdev $1" 2>&1)"; RC=$?
+  OUT="$(HOME="$ROOTTMP" DEV_LAYOUT="$LSTUB" zsh -c "
+    source '$FUNCS'; dev $1" 2>&1)"; RC=$?
 }
 
-run_hdev "'$R1'"
+run_dev "'$R1'"
 eq "$(<$LAYOUT_ARG)" "$R1" "A1 explicit path resolves to that repo"
 
-run_hdev "Netronix/curato"
+run_dev "Netronix/curato"
 eq "$(<$LAYOUT_ARG)" "$R1" "A2 path relative to ~/Code resolves"
 
-run_hdev "'$ROOTTMP/notrepo'"
+run_dev "'$ROOTTMP/notrepo'"
 rc_is 1 "A3 a non-repo directory fails"
 has "not inside a git repo" "A3 says why"
 eq "$(<$LAYOUT_ARG)" "" "A3 layout.sh is never invoked"
 
 # Ambiguity must reach the picker, never silently pick one.
-run_hdev "curato"
+run_dev "curato"
 eq "$(<$LAYOUT_ARG)" "" "A4 an ambiguous basename resolves to nothing"
 [[ -s "$FZFLOG" ]] && _pass "A4 the picker is consulted" || _fail "A4 the picker was never invoked"
 
 # The other half: when the picker DOES choose, that choice must be honoured.
-MOCK_FZF_SELECT="ViuMore/curato" run_hdev "curato"
+MOCK_FZF_SELECT="ViuMore/curato" run_dev "curato"
 eq "$(<$LAYOUT_ARG)" "$R2" "A5 a picker selection resolves to the chosen repo"
 
 # --- B: linked worktrees route through Herdr's native worktree mode ---------
@@ -299,18 +299,18 @@ WT="$CODE/Netronix/curato-feature"
 git -C "$R1" worktree add -q -b feature "$WT" 2>/dev/null
 WT="${WT:A}"
 
-run_hdev "'$WT'"
+run_dev "'$WT'"
 rc_is 0 "B1 a linked worktree is accepted"
 eq "$(<$LAYOUT_ARG)" "--worktree $R1 ${WT:A}" \
   "B1 the checkout is opened through the primary repo's Herdr worktree group"
 
 mkdir -p "$WT/src/deep"
-run_hdev "'$WT/src/deep'"
+run_dev "'$WT/src/deep'"
 rc_is 0 "B2 a directory inside a linked worktree is accepted"
 eq "$(<$LAYOUT_ARG)" "--worktree $R1 ${WT:A}" \
   "B2 subdirectories still resolve to the worktree root"
 
-run_hdev "'$R1'"
+run_dev "'$R1'"
 eq "$(<$LAYOUT_ARG)" "$R1" "B2 the primary checkout is still allowed"
 
 # --- C: bootstrap -----------------------------------------------------------
@@ -322,7 +322,7 @@ run_layout() {  # <mock-setup> <layout.sh args...>
   mock_reset
   eval "$1"
   shift
-  OUT="$(HOME="$ROOTTMP" HDEV_NO_ATTACH=1 zsh "$LAYOUT" "$@" 2>&1)"; RC=$?
+  OUT="$(HOME="$ROOTTMP" DEV_NO_ATTACH=1 zsh "$LAYOUT" "$@" 2>&1)"; RC=$?
 }
 
 # Inside herdr: never starts a server. Each absence assertion is paired with a
@@ -710,7 +710,7 @@ logged "tab create --workspace w7 --label git" "K5b the missing git tab is creat
 logged "notification show" "K5b the repair is announced"
 
 # It must take the same lock as the path mode: two plugin invocations, or a plugin
-# racing an hdev, would otherwise both see a tab missing and both create it.
+# racing a dev, would otherwise both see a tab missing and both create it.
 cur "export HERDR_WORKSPACE_ID=w7; export HL_TRACE_LOCK=1
   mock_topology '$R1' 'Netronix/curato' agents:2 editor:1"
 has "LOCK-ACQUIRED" "K6 --current takes the per-repo lock"
@@ -777,7 +777,7 @@ blank_worktree_topology() {
 }
 
 run_worktree_layout() {
-  OUT="$(HOME="$ROOTTMP" HERDR_ENV=1 HDEV_NO_ATTACH=1 zsh "$LAYOUT" \
+  OUT="$(HOME="$ROOTTMP" HERDR_ENV=1 DEV_NO_ATTACH=1 zsh "$LAYOUT" \
     --worktree "$R1" "$WT" 2>&1)"; RC=$?
 }
 
@@ -866,18 +866,18 @@ done
 
 # The built-in worktree creator cannot run .worktreeinclude/.worktreehook or apply
 # the Git ownership lock. Replace its default shortcut with a popup that calls the
-# safe hwt flow while retaining Herdr's native open/grouping after creation.
+# safe wt flow while retaining Herdr's native open/grouping after creation.
 OUT="$(awk '
   BEGIN { RS="\\[\\[keys.command\\]\\]" }
-  index($0, "key = \"prefix+shift+g\"") && index($0, "hwt-prompt") { print; found=1 }
+  index($0, "key = \"prefix+shift+g\"") && index($0, "wt-prompt") { print; found=1 }
   END { if (!found) exit 1 }
 ' "$CONFIG" 2>&1)"; RC=$?
-rc_is 0 "prefix+shift+g opens the safe hwt prompt"
+rc_is 0 "prefix+shift+g opens the safe wt prompt"
 has 'type = "popup"' "the safe worktree prompt is session-modal"
 OUT="$(<"$CONFIG")"
 has 'new_worktree = ""' "Herdr's unprepared built-in worktree shortcut is disabled"
 has 'close_workspace = "alt+q"' "Alt-q closes the current project workspace"
-has 'edit_scrollback = "alt+s"' "Alt-s retains the Zellij scrollback mnemonic"
+has 'edit_scrollback = "alt+s"' "Alt-s keeps the long-standing scrollback mnemonic"
 has 'confirm_close = true' "workspace close keeps Herdr's confirmation guard explicit"
 
 finish

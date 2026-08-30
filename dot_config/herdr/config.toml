@@ -57,7 +57,7 @@ edit_scrollback = "alt+s"
 
 # Herdr's built-in creator cannot run .worktreeinclude/.worktreehook or install the
 # ownership lock that keeps native removal behind wt-rm. Its default shortcut is
-# replaced below by a popup calling the safe hwt flow; native open/grouping still
+# replaced below by a popup calling the safe wt flow; native open/grouping still
 # belongs to Herdr after Git creation.
 new_worktree = ""
 
@@ -92,8 +92,8 @@ description = "navigate right (nvim/herdr)"
 [[keys.command]]
 key = "prefix+shift+g"
 type = "popup"
-command = "exec \"${SHELL:-zsh}\" -ic hwt-prompt"
-description = "new worktree (safe hwt flow)"
+command = "exec \"${SHELL:-zsh}\" -ic wt-prompt"
+description = "new worktree (safe wt flow)"
 width = "60%"
 height = 7
 
