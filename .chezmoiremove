@@ -1,0 +1,7 @@
+# Targets chezmoi removes from $HOME. chezmoi acts on these only while this file
+# exists, so entries stay permanently — a removal entry is a tombstone, not stale
+# configuration. Removing an absent path is a no-op.
+
+# Zellij, retired 2026-08-30. Removes the config, the dev layout and the
+# vim-zellij-navigator WASM that .chezmoiexternal.toml used to fetch beneath it.
+.config/zellij
