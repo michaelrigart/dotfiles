@@ -26,13 +26,6 @@ export HOMEBREW_BUNDLE_FILE="$XDG_CONFIG_HOME/homebrew/Brewfile"
 # locally (full features). Terminfo-poor remotes are handled per-tool: ssh via
 # Ghostty's ssh-env/ssh-terminfo, Teleport via the tsh() wrapper in zsh/functions.
 
-# Zellij: keep IPC sockets under a short dir. macOS's default $TMPDIR
-# (/var/folders/…) is ~79 chars, and a unix-socket path — TMPDIR + contract dir
-# + session name — must stay under 104 bytes. Long session names (e.g. the
-# git-worktree sessions `wt` creates) overflow it and zellij aborts with "IPC
-# socket path is too long". A short dir restores the headroom for all sessions.
-export ZELLIJ_SOCKET_DIR="/tmp/zellij-$UID"
-
 # Set ZSH compdump file
 export ZSH_COMPDUMP="$XDG_CACHE_HOME/zsh/zcompdump-${HOST}-${ZSH_VERSION}"
 
