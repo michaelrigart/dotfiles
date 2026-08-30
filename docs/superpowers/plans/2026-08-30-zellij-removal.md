@@ -19,7 +19,7 @@
 - **Commit at task boundaries**, imperative mood, small and focused.
 - **Lock marker, exact string:** old `hwt-managed; remove with command wt-rm`, new `wt-managed; remove with command wt-rm`. Matched exactly, never by substring.
 - **Test runner:** `zsh .scripts/test-wt-functions.sh` and `zsh .scripts/test-dev.sh`. Both must exit 0. **Run them as separate commands** — `test-a; test-b` reports only the last command's exit status, so a failure in the first passes silently. Assertions pin exact values; a test that cannot go red is not coverage.
-- **Verification commands must be able to pass.** Three in earlier drafts could not: `grep -ri zellij` (walks `.git`), a sweep including `.chezmoiremove` (whose purpose is to name `.config/zellij`), and a marker gate globbing `~/Code/*/*` (sees 37 of 84 repos). Before writing a check, ask what it returns on a correct tree.
+- **Run a check before trusting it.** Five in earlier drafts could not do their job: `grep -ri zellij` (walks `.git`), a sweep including `.chezmoiremove` (whose purpose is to name `.config/zellij`), a marker gate globbing `~/Code/*/*` (sees 37 of 84 repos), that same gate wired to exit 0 on a stale tree and 1 on a clean one, and `hunlogged` assertions against a fixture with no Herdr session, which can never go red. Three consecutive drafts of the gate were each broken differently. Before trusting a check, run it against both a passing and a failing tree.
 - **Sandbox:** run Bash sandboxed by default. `op` genuinely needs `dangerouslyDisableSandbox` (its config path is denied); so does writing `~/.claude/**`.
 - **This work happens in the worktree** `.claude/worktrees/remove-zellij` on branch `worktree-remove-zellij`. A second session owns the main checkout — never `git checkout` there.
 - **`chezmoi apply` must run from the canonical source** `~/.local/share/chezmoi`, which this worktree is not. Task 8 is therefore gated on the branch being merged; do not attempt a real apply from the worktree.
@@ -28,58 +28,127 @@
 
 ### Task 1: Collapse the lifecycle onto `dev` / `wt`
 
-**This task is atomic and cannot be split.** An earlier draft made deletion Task 1 and renaming Task 2, with the suite expected green in between. It cannot be: the harness contains 65 `run "$REPO" wt …` calls and 75 `dev`/`wt` invocations in total, so the moment the Zellij `wt()` is deleted and before `hwt` is renamed into its place, the suite is red. The names are mutually entangled — `hdev` cannot become `dev` until the Zellij `dev` is gone — so deletion and renaming are one green-to-green step.
+**This task is atomic and cannot be split.** An earlier draft made deletion Task 1 and renaming Task 2, with the suite expected green in between. It cannot be: the harness contains 65 `run "$REPO" wt …` calls and 75 `dev`/`wt` invocations in total, so the moment the Zellij `wt()` is deleted and before `hwt` is renamed into its place, the suite is red. The names are mutually entangled — `hdev` cannot become `dev` until the Zellij `dev` is gone — and the assertions name *which multiplexer was invoked*, which is precisely what changes. Deletion, renaming and the test migration are one green-to-green step.
 
 **Files:**
 - Modify: `dot_config/zsh/functions` — delete `_wt_session_name()` (109-136), `dev()` (139-238), `wt()` (835-838), the Zellij shutdown block inside `wt-rm()` (1181-1192); rename `hdev()`→`dev()`, `hwt()`→`wt()`, `hwt-prompt()`→`wt-prompt()`, `HDEV_LAYOUT`→`DEV_LAYOUT`, and the `hdev:` message prefixes in `_wt_ensure_herdr_lock` and `_wt_prepare_for_herdr`
 - Modify: `dot_config/herdr/executable_layout.sh:474,477` — `HDEV_NO_ATTACH`→`DEV_NO_ATTACH`
 - Modify: `dot_config/herdr/config.toml` — the `prefix+shift+g` popup command `hwt-prompt`→`wt-prompt`
 - Rename: `.scripts/test-hdev.sh`→`.scripts/test-dev.sh`, `.scripts/test-hdev-topology.sh`→`.scripts/test-dev-topology.sh`, `.scripts/test-hdev-integrations.sh`→`.scripts/test-dev-integrations.sh`
-- Modify: `.scripts/test-wt-functions.sh` — stubs (63-76, 107), env (149, 190-199), Zellij `dev` cases (428-463), assertions at 1033-1035, 1121-1138, 1290, 1807, 1852, 1918-1919, 1930, 1946
+- Modify: `.scripts/test-wt-functions.sh` — all 26 `logged`/`unlogged` assertions, the stub block (63-76, 107), env (149, 190-199), section A (269-295), the `dev` regression guards (428-463)
+- Modify: `docs/superpowers/specs/2026-08-30-zellij-removal-design.md`, `docs/superpowers/plans/2026-08-30-zellij-removal.md` — status → `In progress`
 
 **Interfaces:**
 - Consumes: nothing from earlier tasks.
 - Produces: `dev()`, `wt()`, `wt-prompt()`; env seams `DEV_LAYOUT`, `DEV_NO_ATTACH`; a `wt-rm` with exactly one multiplexer teardown step (`_wt_stop_herdr_workspaces`).
 
-- [ ] **Step 1: Replace the vacuous failure-order assertions in the test**
+#### The full assertion inventory
 
-Three sites assert `unlogged "delete-session" "Zellij is not disrupted…"`. Zellij was the observable proxy for an ordering guarantee; the guarantee must keep an assertion. At each of lines 1807, 1852, 1930 and 1946, delete the `unlogged "delete-session" …` line and ensure the surrounding block asserts **both**:
+`logged`/`unlogged` read `$ZLOG`, the Zellij invocation log (`.scripts/test-wt-functions.sh:47-48`). **All 26 must be accounted for** — an earlier draft handled 10 and left 16 referencing a log that no longer exists. The complete disposition:
+
+| Lines | Assertion | Disposition |
+|---|---|---|
+| 283, 290 | `_wt_session_name` round-trip through `dev` | **Delete** with section A — the function is deleted |
+| 440-443, 455-456 | the two 2026-08-25 `dev` regression guards | **Delete** — they guard a deleted function |
+| 1698 | "hwt does not create a Zellij session" | **Delete** — no Zellij session concept survives |
+| 348, 678, 687, 1160, 1174, 1208 | `--session …` — "wt handed off to dev" | **Migrate** to `dlogged`/`dunlogged` on `--worktree` |
+| 371, 380, 412, 1311, 1422, 1437, 1452 | `delete-session` — shutdown ordering | **Migrate** to `hlogged`/`hunlogged` on `workspace close`, **with a fixture** |
+| 1807, 1852, 1930, 1946 | `delete-session` — "Zellij is not disrupted" | **Replace** with teardown-not-run + still-registered |
+
+- [ ] **Step 1: Set both design records to `In progress`**
+
+Implementation is starting, so the lifecycle status changes now — not at merge.
+
+```bash
+# docs/superpowers/specs/2026-08-30-zellij-removal-design.md
+# docs/superpowers/plans/2026-08-30-zellij-removal.md
+#   **Status:** Approved   →   **Status:** In progress
+git add docs/superpowers/
+git commit -m "Begin the Zellij removal"
+```
+
+- [ ] **Step 2: Delete the three Zellij-only test sections**
+
+In `.scripts/test-wt-functions.sh`:
+- section A, `_wt_session_name — canonical naming and round-trip lookup` (269-295, from the `print -r -- "A. …"` banner to just before section B), and its line in the contents comment at line 6
+- the two 2026-08-25 `dev` regression guards and the `MOCK_ZJ_SWITCH_RC=1` case (428-463)
+- line 1698, `unlogged "--session" "hwt does not create a Zellij session"`
+
+- [ ] **Step 3: Run the suite — deleting tests must not break it**
+
+Run: `zsh .scripts/test-wt-functions.sh`
+Expected: PASS. This is a checkpoint, not a red phase.
+
+- [ ] **Step 4: Make the zellij stub fail-closed**
+
+**Do not delete the stub yet.** The harness does `export PATH="$STUBS:$PATH"` (line 148) — the real PATH is preserved, and `/opt/homebrew/bin/zellij` is installed until Task 8. Removing the stub while any code path still calls `zellij` would send that call to the **real binary**, which can attach to or create a genuine session. Replace the body instead, so a stray call is a loud failure rather than a real invocation:
+
+```bash
+cat > "$STUBS/zellij" <<'STUB'
+#!/usr/bin/env bash
+# Fail-closed for the duration of the migration. $STUBS is prepended to the REAL
+# PATH and zellij is still installed, so a deleted stub would let a surviving call
+# reach the real binary and attach or create a session. Any invocation is a bug.
+printf 'FAIL: unexpected zellij invocation: %s\n' "$*" >&2
+exit 127
+STUB
+```
+
+Keep `chmod +x "$STUBS/zellij" "$STUBS/wtcp"` at line 107 for now.
+
+- [ ] **Step 5: Run the suite to verify it fails, and that the failures are the expected set**
+
+Run: `zsh .scripts/test-wt-functions.sh`
+Expected: FAIL. Every failure should trace to a `zellij` call from `dev()`, `wt()` or `wt-rm()` — that is the exact set Step 6 migrates. A failure anywhere else means something unrelated broke; stop and investigate rather than migrating past it.
+
+- [ ] **Step 6: Migrate the 17 surviving assertions**
+
+**The six handoff assertions** (348, 678, 687, 1160, 1174, 1208). `wt` now hands off to `dev` → `layout.sh --worktree <primary> <checkout>`, logged to `$DLOG`. Swap the helper and the needle:
+
+```zsh
+dlogged  "--worktree"  "dev is launched after preparation"        # was: logged "--session org--repo-o2"
+dunlogged "--worktree" "dev is not launched after a setup failure" # was: unlogged "--session"
+```
+
+Pin the checkout path where the old assertion pinned a session name, so the test still distinguishes *which* worktree: `dlogged "--worktree $REPO $HOME/Code/Org/repo-o2"`.
+
+**The seven ordering assertions** (371, 380, 412, 1311, 1422, 1437, 1452). These proved that `wt-rm` does or does not stop the multiplexer at a given point. The surviving shutdown step is `_wt_stop_herdr_workspaces`, so they assert on `$HLOG` instead.
+
+**Each needs a Herdr fixture, or it cannot go red.** `setup()` defaults to `MOCK_H_SESSION_LIST='{"sessions":[]}'` — no sessions, so nothing is ever closed and `hunlogged "workspace close"` would pass no matter what the code did. Give each case a running session holding a workspace at the checkout, so a correctly-ordered run *would* close it and the assertion proves the run stopped first:
+
+```zsh
+export MOCK_H_SESSION_LIST="{\"sessions\":[{\"default\":true,\"name\":\"default\",\"running\":true,\"session_dir\":\"$ROOTTMP/default\"}]}"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[{\"workspace_id\":\"w1\",\"worktree\":{\"checkout_path\":\"$DEST\"}}]}}"
+export MOCK_H_PANES='{"result":{"panes":[]}}'
+```
+
+with `$DEST` the checkout that case operates on. Then:
+
+```zsh
+hunlogged "workspace close" "the workspace is NOT closed before the dirty check"   # was 371
+hlogged   "workspace close" "the workspace is closed"                              # was 380
+```
+
+For the two positive assertions (380, 1422) confirm the fixture actually produces a close in the passing case — if the run is green with the assertion inverted, the fixture is wrong.
+
+**The four failure-order assertions** (1807, 1852, 1930, 1946). Delete the `unlogged "delete-session" …` line at each and ensure the block asserts both:
 
 ```zsh
 # Removal is strictly after teardown in wt-rm's sequence, so "teardown never ran"
-# proves Git removal was never reached. Registration is the direct observation
-# that replaces a bare `-d` check: a directory can survive a *failed* removal,
-# but a still-registered worktree proves `git worktree remove` did not succeed.
+# also proves Git removal was never reached. Registration is the direct observation
+# replacing a bare `-d` check: a directory can survive a *failed* removal, but a
+# still-registered worktree proves `git worktree remove` did not succeed.
 [[ -f "$REPO/herdr-close-teardown-ran" ]] && _fail "teardown is skipped after a Herdr close failure" \
                                                   || _pass "teardown is skipped after a Herdr close failure"
 run "$REPO" git worktree list --porcelain
 has "$HFAIL" "the checkout is still a registered worktree after a Herdr close failure"
 ```
 
-Adapt the path variable (`$HFAIL`, `$PROTECTED`, …) and the message to each site. Where a site already has the teardown assertion, keep it and add only the registration one.
+Adapt the path variable and message per site. Where a site already has the teardown assertion, keep it and add only the registration one.
 
-- [ ] **Step 2: Run the test to see the new assertions pass against unchanged code**
+There is deliberately no "git worktree remove was not invoked" assertion: the harness stubs `zellij`, `herdr`, `wtcp` and `layout.sh` but runs **real git**, which is what makes its worktree assertions meaningful, so no git invocation log exists.
 
-Run: `zsh .scripts/test-wt-functions.sh`
-Expected: PASS. The code has not changed yet, so this proves the replacements are correct assertions about current behaviour before anything is deleted — not that they accidentally encode the post-change state.
-
-- [ ] **Step 3: Delete the Zellij `dev` regression tests**
-
-Delete lines 428-463 of `.scripts/test-wt-functions.sh` — the two 2026-08-25 regression guards (`switch-session`/`new-tab` and the `go-to-tab-name` close-tab bug) and the `MOCK_ZJ_SWITCH_RC=1` failure case. They test a function this task deletes.
-
-- [ ] **Step 4: Delete the zellij stub and its mock state**
-
-In `.scripts/test-wt-functions.sh`:
-- delete the `cat > "$STUBS/zellij" <<'STUB' … STUB` block (63-76)
-- change line 107 from `chmod +x "$STUBS/zellij" "$STUBS/wtcp"` to `chmod +x "$STUBS/wtcp"`
-- in `setup()`, drop `ZLOG` from the export at 190 and the `: > "$ZLOG";` at 192
-- drop `MOCK_ZJ_SESSIONS`, `MOCK_ZJ_ATTACH_RC`, `MOCK_ZJ_NEWTAB_RC`, `MOCK_ZJ_SWITCH_RC`, `MOCK_ZJ_DELETE_RC`, `MOCK_ZJ_DELETE_TOUCH` from the export at 194-199
-- delete `unset ZELLIJ` (199)
-- delete any remaining `export MOCK_ZJ_SESSIONS=…` in individual cases (e.g. inside the `herdr-fail` block at ~1845)
-
-Then delete the three `[[ -s "$ZLOG" ]]` assertions at 1033-1035 and 1121-1138 and the `MOCK_ZJ_DELETE_TOUCH` fixture at ~1290. These assert "prepare makes no Zellij calls" — with no Zellij to call, they are unfalsifiable.
-
-- [ ] **Step 5: Rename in the test files**
+- [ ] **Step 7: Rename the test files**
 
 ```bash
 git mv .scripts/test-hdev.sh .scripts/test-dev.sh
@@ -93,18 +162,18 @@ Then in all three plus `.scripts/test-wt-functions.sh`, replace whole words only
 
 Two hazards. `test-dev.sh:880` asserts `edit_scrollback = "alt+s"` under the comment "Alt-s retains the Zellij scrollback mnemonic" — reword the comment, do not touch the assertion. And a blind `hwt`→`wt` also rewrites `$HWT` fixture variables; rename those deliberately rather than ending up with two names for one variable.
 
-- [ ] **Step 6: Run both suites to verify they fail**
-
-Run each as its own command — **never `test-a; test-b`**, which reports the exit status of the last command only and would hide a failure in the first:
+- [ ] **Step 8: Run both suites to confirm they are still red for the right reason**
 
 ```bash
 zsh .scripts/test-wt-functions.sh
 zsh .scripts/test-dev.sh
 ```
 
-Expected: FAIL, both. The tests now call `dev`/`wt`, which still resolve to the Zellij functions that call the now-absent `zellij` stub.
+Separate commands — **never `test-a; test-b`**, which reports only the last command's status and would hide a failure in the first.
 
-- [ ] **Step 7: Delete the Zellij code and rename the Herdr entry points, in one edit**
+Expected: FAIL, both. The tests now expect Herdr evidence and call `dev`/`wt`, which still resolve to the Zellij functions.
+
+- [ ] **Step 9: Delete the Zellij code and rename the Herdr entry points, in one edit**
 
 In `dot_config/zsh/functions`:
 - delete `_wt_session_name()` and its comment block (109-136)
@@ -112,7 +181,7 @@ In `dot_config/zsh/functions`:
 - delete `wt()` (835-838) — the four-line Zellij wrapper, **not** `_wt_create_or_prepare` above it
 - inside `wt-rm()`, delete the Zellij shutdown block (1181-1192), from the `# Stop the Zellij session.` comment through the closing `}` of the `if` — leaving `_wt_stop_herdr_workspaces "$dest" || return 1` as the sole shutdown step
 
-Then fix `wt-rm`'s own header comment (1079-1103): step 3 in the numbered sequence says "Stop the Zellij session"; it becomes "Stop every matching Herdr workspace". Keep the invariant sentence — "a live process holding the directory open is exactly how an empty tmp/ husk is left behind" — it is the reason the ordering exists.
+Then fix `wt-rm`'s header comment (1079-1103): step 3 of the numbered sequence says "Stop the Zellij session"; it becomes "Stop every matching Herdr workspace". Keep the invariant sentence — "a live process holding the directory open is exactly how an empty tmp/ husk is left behind" — it is the reason the ordering exists.
 
 **In the same edit**, rename the survivors:
 - `hdev()`→`dev()`, `hwt()`→`wt()`, `hwt-prompt()`→`wt-prompt()`
@@ -125,27 +194,44 @@ Update the renamed `dev()`'s header comment: it says "The Herdr-side counterpart
 
 Also record the retired input form there: the Zellij `dev` accepted `dev netronix--curato` (a session name); the new `dev` does not, and such an argument now falls through to the `fzf` picker.
 
-- [ ] **Step 8: Rename in the two remaining source files**
+- [ ] **Step 10: Rename in the two remaining source files**
 
 In `dot_config/herdr/executable_layout.sh`, rename `HDEV_NO_ATTACH` at 474 (comment) and 477 (the test).
 
 In `dot_config/herdr/config.toml`, change the `prefix+shift+g` popup command from `hwt-prompt` to `wt-prompt`. **This binding breaks silently if missed** — the popup would open and fail to find the command.
 
-- [ ] **Step 9: Run both suites to verify they pass**
+- [ ] **Step 11: Run both suites to verify they pass**
 
 ```bash
 zsh .scripts/test-wt-functions.sh
 zsh .scripts/test-dev.sh
 ```
 
-Expected: PASS, both. Separate commands, for the reason in Step 6.
+Expected: PASS, both. The fail-closed stub is still installed, so a green run here also proves **nothing calls `zellij` any more** — that is the point of leaving it in until now.
 
-- [ ] **Step 10: Verify no `hdev`/`hwt` identifier survives outside the design records**
+- [ ] **Step 12: Remove the stub and the ZLOG plumbing**
 
-Run: `git grep -nE '\b(hdev|hwt|HDEV_)' -- ':!docs'`
-Expected: no output.
+Only now, with the suite green and proving no caller remains:
+- delete the `cat > "$STUBS/zellij" <<'STUB' … STUB` block
+- change `chmod +x "$STUBS/zellij" "$STUBS/wtcp"` (107) to `chmod +x "$STUBS/wtcp"`
+- delete the `logged()` and `unlogged()` helper definitions (47-48) — with no ZLOG they have no meaning, and leaving them invites reuse against an unset variable
+- in `setup()`, drop `ZLOG` from the export (190) and its `: > "$ZLOG";` (192)
+- drop `MOCK_ZJ_SESSIONS`, `MOCK_ZJ_ATTACH_RC`, `MOCK_ZJ_NEWTAB_RC`, `MOCK_ZJ_SWITCH_RC`, `MOCK_ZJ_DELETE_RC`, `MOCK_ZJ_DELETE_TOUCH` from the export (194-199)
+- delete `unset ZELLIJ` (199)
+- delete any remaining `export MOCK_ZJ_*=…` in individual cases
+- delete the `[[ -s "$ZLOG" ]]` assertions (1033-1035, 1121-1138) and the `MOCK_ZJ_DELETE_TOUCH` fixture (~1290)
 
-- [ ] **Step 11: Commit**
+- [ ] **Step 13: Run both suites, and verify no Zellij or `hdev`/`hwt` identifier survives**
+
+```bash
+zsh .scripts/test-wt-functions.sh
+zsh .scripts/test-dev.sh
+git grep -nE '\b(hdev|hwt|HDEV_|ZLOG|MOCK_ZJ_)' -- ':!docs'
+```
+
+Expected: PASS, PASS, and no output from the grep.
+
+- [ ] **Step 14: Commit**
 
 ```bash
 git add -A
@@ -155,12 +241,14 @@ Delete the Zellij dev, wt and wt-rm shutdown path, and rename the Herdr
 entry points onto the names they held. wt-prepare and wt-rm were already
 unprefixed and already covered both paths.
 
-The failure-order assertions that used Zellij as their observable become
-teardown-not-run plus still-registered, which a bare directory check
-could not prove."
+All 26 Zellij-log assertions are migrated: handoff checks move to the
+layout log, shutdown-ordering checks to the Herdr log with fixtures that
+let them go red, and the four failure-order checks to teardown-not-run
+plus still-registered, which a bare directory check could not prove."
 ```
 
 ---
+
 
 ### Task 2: Change the ownership lock marker to `wt-managed`
 
@@ -175,29 +263,49 @@ could not prove."
 
 - [ ] **Step 1: Run the marker gate — a hard gate, and the first of two runs**
 
+Define it as a function with an explicit `if`, and call it. **Copy this verbatim** — the exit status is the whole point and two earlier drafts got it backwards:
+
 ```zsh
-emulate -L zsh
-setopt local_options null_glob extended_glob
-want="hwt-managed; remove with command wt-rm"
-typeset -A seen; typeset -a hits
-for g in ~/Code/**/.git(N/) ~/Code/**/.git(N.); do
-  common="$(git -C "${g:h}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || continue
-  [[ -n "${seen[$common]:-}" ]] && continue
-  seen[$common]=1
-  cur=""
-  while IFS= read -r -d '' rec; do
-    case "$rec" in
-      "worktree "*)   cur="${rec#worktree }" ;;
-      "locked $want") hits+=( "$cur" ) ;;
-    esac
-  done < <(git -C "${g:h}" worktree list --porcelain -z 2>/dev/null)
-done
-(( ${#hits} )) && print -rl -u2 -- "STALE MARKER:" ${(u)hits}
+# wt_marker_gate <exact lock reason> — 0 clean, 1 stale worktrees found.
+wt_marker_gate() {
+  emulate -L zsh
+  setopt local_options null_glob extended_glob
+  local want="$1" common cur rec g
+  local -A seen
+  local -a hits roots
+  roots=( ~/Code ~/.local/share/chezmoi )
+  for g in ${^roots}/**/.git(N/) ${^roots}/**/.git(N.); do
+    common="$(git -C "${g:h}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || continue
+    [[ -n "${seen[$common]:-}" ]] && continue
+    seen[$common]=1
+    cur=""
+    while IFS= read -r -d '' rec; do
+      case "$rec" in
+        "worktree "*)   cur="${rec#worktree }" ;;
+        "locked $want") hits+=( "$cur" ) ;;
+      esac
+    done < <(git -C "${g:h}" worktree list --porcelain -z 2>/dev/null)
+  done
+  if (( ${#hits} )); then
+    print -ru2 -- "STALE MARKER — retire these with \`command wt-rm\` before proceeding:"
+    print -rl -u2 -- ${(u)hits}
+    return 1
+  fi
+  print -r -- "clean: no worktree carries ${(q-)want}"
+  return 0
+}
+wt_marker_gate "hwt-managed; remove with command wt-rm"
 ```
 
-Expected: no output.
+Expected: `clean: …` and exit 0.
 
-**The glob must recurse — do not simplify it.** An earlier draft used `~/Code/*/*/.git`, on the strength of the documented `~/Code/<Org>/<repo>` convention. The tree actually holds 84 Git entries and that glob sees 37. A safety gate blind to more than half of what it guards is worse than none, because it reports clean with authority. Enumerating by unique **common directory** also stops linked worktrees being counted as separate repositories, and tracking `cur` across records is what makes a hit name the worktree to retire rather than just the repo containing it.
+**Three things here were defects in earlier drafts. Do not reintroduce any of them.**
+
+*The exit status must be an explicit `if`.* A trailing `(( ${#hits} )) && { … }` inverts the gate: on a clean tree the arithmetic is false so the command exits **1**, and on a stale tree the `print` succeeds so it exits **0**. A gate wired backwards aborts on a clean tree and waves through the stale one it exists to catch. Verified against a fixture with a genuinely locked worktree: clean → 0, unlocked worktree → 0, foreign lock reason → 0, exact old marker → 1 and names the worktree path.
+
+*The glob must recurse.* An earlier draft used `~/Code/*/*/.git`, on the strength of the documented `~/Code/<Org>/<repo>` convention. The tree actually holds 84 Git entries and that glob sees 37. A safety gate blind to more than half of what it guards is worse than none, because it reports clean with authority. Enumerating by unique **common directory** also stops linked worktrees being counted as separate repositories, and tracking `cur` across records is what makes a hit name the worktree to retire rather than the repo containing it.
+
+*The roots must include the dotfiles repo.* `~/.local/share/chezmoi` is a Git repository that lives outside `~/Code` and can hold worktrees of its own — this very change is being developed in one. It is clean today, which is exactly why it must be in the scan before the second gate run, not after something appears there.
 
 **Any hit aborts this task.** Retire that worktree with the current `command wt-rm` — which still understands the old marker — and only then proceed. Editing the marker with a stale lock outstanding leaves `wt-rm` treating it as a foreign lock and refusing, so the checkout becomes removable only by hand.
 
@@ -490,26 +598,45 @@ Ends at a merged branch. Nothing is deployed yet — activation is Task 8, and t
 - Consumes: Tasks 1-6 complete and both suites green.
 - Produces: the merge commit on `main`.
 
-- [ ] **Step 1: Mark the design records implemented — before merging, not after**
+The status lifecycle here has a strict order, and an earlier draft of this plan got it circular — it set `Implemented` *with the PR reference* in Step 1 and opened the PR in Step 2, citing a reference that could not yet exist. The policy sequence is: `In progress` when implementation begins (done in Task 1) → open the PR → add its reference **while still `In progress`** → complete review → `Implemented` in the final pre-merge commit → merge.
 
-Set `**Status:** Implemented` with the PR reference on both the spec and this plan, then commit. The design-records policy makes this the **final pre-merge commit**, so it lands with the implementation. An earlier draft of this plan merged first and set the status afterwards, which inverts the policy and leaves `main` briefly carrying an `Approved` spec for shipped code.
-
-```bash
-git add docs/superpowers/specs/2026-08-30-zellij-removal-design.md docs/superpowers/plans/2026-08-30-zellij-removal.md
-git commit -m "Mark the Zellij removal design and plan implemented"
-```
-
-- [ ] **Step 2: Open the PR**
+- [ ] **Step 1: Open the PR**
 
 Check for a template first: `.github/pull_request_template.md`, `.github/PULL_REQUEST_TEMPLATE.md`, `.github/PULL_REQUEST_TEMPLATE/*.md`, the repo root, `docs/`. If none fits, use a short *what / why / how to verify*. No agent attribution anywhere in the title or body.
 
 Use `gh pr create --body-file <file>` — the CLI does not expand a template from a `--body` flag, so render the filled-in text yourself.
 
-- [ ] **Step 3: Get explicit merge approval, then merge**
+- [ ] **Step 2: Add the PR reference, still `In progress`**
+
+Both records keep `**Status:** In progress` and gain the reference, because review has not happened yet:
+
+```bash
+# **Status:** In progress — https://github.com/michaelrigart/dotfiles/pull/N
+git add docs/superpowers/specs/2026-08-30-zellij-removal-design.md docs/superpowers/plans/2026-08-30-zellij-removal.md
+git commit -m "Reference the Zellij removal PR"
+```
+
+- [ ] **Step 3: Complete review and apply any fixes**
+
+Review feedback lands as ordinary commits on the branch. Do not advance the status while anything is outstanding — `In progress` is accurate for exactly this window.
+
+- [ ] **Step 4: Mark both records `Implemented` — the final pre-merge commit**
+
+Only once implementation and review are complete and merging is the next action:
+
+```bash
+# **Status:** Implemented — https://github.com/michaelrigart/dotfiles/pull/N
+git add docs/superpowers/specs/2026-08-30-zellij-removal-design.md docs/superpowers/plans/2026-08-30-zellij-removal.md
+git commit -m "Mark the Zellij removal design and plan implemented"
+```
+
+This lands the status with the implementation rather than chasing it afterwards. Adding the merge SHA later is optional and never warrants a status-only follow-up PR.
+
+- [ ] **Step 5: Get explicit merge approval, then merge**
 
 Merging is the owner's call, not an automated step. Ask, then merge on a yes.
 
-- [ ] **Step 4: Wait for the canonical checkout to contain the merge**
+- [ ] **Step 6: Wait for the canonical checkout to contain the merge**
 
 **This is a real gate, and it is the owner's action.** Merging a PR updates the remote; it does not update `~/.local/share/chezmoi`, which is presently on `feat/cross-review-broker` with unrelated uncommitted work belonging to another session. Task 8 applies from that checkout, so it cannot start until someone has safely brought it to the merged `main` without disturbing that session's work.
 
@@ -535,9 +662,13 @@ Everything here runs from `~/.local/share/chezmoi`, not this worktree.
 
 - [ ] **Step 1: Re-run the marker gate**
 
-Run the recursive scan from the spec's §"Behaviour changes", with `want="hwt-managed; remove with command wt-rm"`.
+Re-define `wt_marker_gate` exactly as in Task 2 Step 1 — same explicit `if`, same recursive glob, same two roots — and call it:
 
-Expected: `clean`. **This is the second required run, and it is not ceremony.** Until this apply, the deployed `~/.config/zsh/functions` still carries the old code, so ordinary use during review — in another session, on another day — can have created a fresh worktree bearing the old marker. Applying over it strands exactly the checkout the gate protects. Any hit aborts: retire it with `command wt-rm` while the deployed code still understands the old marker.
+```zsh
+wt_marker_gate "hwt-managed; remove with command wt-rm"
+```
+
+Expected: `clean: …` and exit 0. **This is the second required run, and it is not ceremony.** Until this apply, the deployed `~/.config/zsh/functions` still carries the old code, so ordinary use during review — in another session, on another day — can have created a fresh worktree bearing the old marker. Applying over it strands exactly the checkout the gate protects. Any hit aborts: retire it with `command wt-rm` while the deployed code still understands the old marker.
 
 - [ ] **Step 2: Re-check Zellij runtime state**
 
@@ -647,7 +778,7 @@ Expected: `0` for all three files; the agents rule still present; the `command w
 
 **Spec coverage.** Every spec section maps to a task: Deleted → 1, 3, 4; Renamed → 1; Behaviour change 1 (lock) → 2; Behaviour change 2 (`dev <session-name>`) → 1, where deleting the Zellij `dev` and inheriting `hdev`'s cascade is what retires it, recorded in the renamed function's header comment; Comment-only → 5; Out of repo → 4 (`.chezmoiremove`, Brewfile), 8 (apply, uninstall), 9 (GLOBAL.md); Activation order → 7, 8, 9; Design records → 6, 7; Testing → the test steps throughout plus 8.
 
-**Defects found and fixed in review.** Deletion and renaming were two tasks with a green suite expected between them; they cannot be, because 65 `run "$REPO" wt …` calls go red the moment `wt()` is deleted — now one atomic task. The marker gate globbed `~/Code/*/*/.git`, which sees 37 of 84 Git entries — now recursive, deduplicated by common directory, reporting the worktree path, and run twice. The final sweep included `.chezmoiremove`, which necessarily names `.config/zellij` — now excluded and asserted positively. GLOBAL.md published before the apply, and the status commit landed after the merge — both reordered.
+**Defects found and fixed across three review rounds.** Deletion and renaming were two tasks with a green suite expected between them; they cannot be, because 65 `run "$REPO" wt …` calls go red the moment `wt()` is deleted — now one atomic task. The test migration covered 10 of 26 `logged`/`unlogged` assertions and left 16 pointing at a deleted log, plus a whole section testing the deleted `_wt_session_name` — the inventory table above now accounts for all 26. Deleting the zellij stub before the source rename would have let surviving calls reach the **real** installed binary, since the harness prepends stubs to the real PATH — it is now fail-closed until the source is green. Seven migrated ordering assertions would have been vacuous against the default empty Herdr fixture — each now gets a session holding a matching workspace so it can go red. The marker gate globbed `~/Code/*/*/.git` (37 of 84 entries), omitted the dotfiles repo, and was wired to exit 0 on a stale tree — now recursive, rooted at both, explicit `if`, fixture-verified, and run twice. The final sweep included `.chezmoiremove`, which necessarily names `.config/zellij` — now excluded and asserted positively. GLOBAL.md published before the apply, the status commit landed after the merge, and `Implemented` cited a PR reference before the PR existed — all three reordered.
 
 **Ordering.** Task 2's gate runs immediately before its own edit and again in Task 8; a design-time observation authorises nothing. Task 3 deletes `ZELLIJ_SOCKET_DIR` and the wrapper preflight together because the preflight reads the variable. Tasks 7-9 are separate because landing, activating and publishing are separate events, and doing them in the wrong order publishes instructions for behaviour that is not yet running.
 

@@ -22,6 +22,15 @@ zero-hit sweep still could not pass, because `.chezmoiremove` necessarily names
 this harness cannot make. Added an explicit activation order, because `op-edit`
 re-applies its targets and would otherwise publish instructions ahead of the behaviour.
 
+**Amended a third time:** 2026-08-30, third review round, still before implementation.
+The marker gate — twice rewritten by then — was **wired backwards**: an explicit `if`
+now sets its exit status, verified against a fixture holding a genuinely locked
+worktree, and the scan roots gained the dotfiles repository, which lives outside
+`~/Code`. The status lifecycle was circular, citing a PR reference before the PR
+existed; `In progress` → reference → review → `Implemented` is now spelled out. That
+three consecutive drafts of a safety gate were each broken in a different way is the
+argument for the plan's rule that a check must be run before it is trusted.
+
 Retires Zellij from the dotfiles. Herdr becomes the only multiplexer, and `hdev` /
 `hwt` reclaim the `dev` / `wt` names the Zellij functions held.
 
@@ -157,24 +166,44 @@ the worktree path across records so a hit names **the worktree to retire**, not 
 the repository containing it:
 
 ```zsh
-emulate -L zsh
-setopt local_options null_glob extended_glob
-want="hwt-managed; remove with command wt-rm"
-typeset -A seen; typeset -a hits
-for g in ~/Code/**/.git(N/) ~/Code/**/.git(N.); do
-  common="$(git -C "${g:h}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || continue
-  [[ -n "${seen[$common]:-}" ]] && continue
-  seen[$common]=1
-  cur=""
-  while IFS= read -r -d '' rec; do
-    case "$rec" in
-      "worktree "*)   cur="${rec#worktree }" ;;
-      "locked $want") hits+=( "$cur" ) ;;
-    esac
-  done < <(git -C "${g:h}" worktree list --porcelain -z 2>/dev/null)
-done
-(( ${#hits} )) && { print -rl -u2 -- "STALE MARKER:" ${(u)hits}; return 1 }
+# wt_marker_gate <exact lock reason> — 0 clean, 1 stale worktrees found.
+wt_marker_gate() {
+  emulate -L zsh
+  setopt local_options null_glob extended_glob
+  local want="$1" common cur rec g
+  local -A seen
+  local -a hits roots
+  roots=( ~/Code ~/.local/share/chezmoi )
+  for g in ${^roots}/**/.git(N/) ${^roots}/**/.git(N.); do
+    common="$(git -C "${g:h}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || continue
+    [[ -n "${seen[$common]:-}" ]] && continue
+    seen[$common]=1
+    cur=""
+    while IFS= read -r -d '' rec; do
+      case "$rec" in
+        "worktree "*)   cur="${rec#worktree }" ;;
+        "locked $want") hits+=( "$cur" ) ;;
+      esac
+    done < <(git -C "${g:h}" worktree list --porcelain -z 2>/dev/null)
+  done
+  if (( ${#hits} )); then
+    print -ru2 -- "STALE MARKER — retire these with \`command wt-rm\` before proceeding:"
+    print -rl -u2 -- ${(u)hits}
+    return 1
+  fi
+  print -r -- "clean: no worktree carries ${(q-)want}"
+  return 0
+}
 ```
+
+**The exit status must come from an explicit `if`.** A trailing
+`(( ${#hits} )) && { …; return 1 }` — as two earlier drafts of this section had —
+returns 1 on a *clean* tree too, because the arithmetic is false and it is the last
+statement; a `&&` without the `return` inverts the gate outright, exiting 0 on a stale
+tree. A gate wired backwards aborts on a clean tree and waves through the one case it
+exists to catch. Verified against a fixture holding a genuinely locked worktree: clean
+→ 0, unlocked worktree → 0, foreign lock reason → 0, exact old marker → 1 naming the
+worktree path.
 
 **The glob must recurse.** An earlier draft used `~/Code/*/*/.git`, on the strength of
 the documented `~/Code/<Org>/<repo>` convention. That convention is not universal:
@@ -182,6 +211,10 @@ the tree actually holds 84 Git entries, of which the depth-two glob sees 37. A s
 gate blind to more than half the repositories it guards is worse than none, because it
 reports "clean" with authority. Enumerate by unique **common directory**, so linked
 worktrees are not mistaken for separate repositories.
+
+**The roots include the dotfiles repository**, which lives outside `~/Code` and holds
+worktrees of its own — this change is being developed in one. It is clean now, which is
+why it belongs in the scan before the second run rather than after.
 
 Any hit aborts. Retire that worktree through the **current** `command wt-rm`, which
 still understands the old marker, and only then proceed.
@@ -293,19 +326,22 @@ the Zellij one.
 
 The order is therefore:
 
-1. Implement and review.
-2. Final pre-merge commit setting `**Status:** Implemented` on this spec and its plan —
-   **before** merging, per the design-records lifecycle, not after.
-3. Explicit merge approval.
-4. Wait until the canonical checkout at `~/.local/share/chezmoi` actually contains the
+1. `**Status:** In progress` on this spec and its plan, set when implementation begins.
+2. Open the PR; add its reference to both records **while still `In progress`**. The
+   reference cannot be cited before the PR exists, and review has not happened yet.
+3. Complete review and any fixes.
+4. Final pre-merge commit setting `**Status:** Implemented` — **before** merging, per
+   the design-records lifecycle, not after.
+5. Explicit merge approval.
+6. Wait until the canonical checkout at `~/.local/share/chezmoi` actually contains the
    merge. Merging a PR does not update a local checkout, and that checkout is presently
    on another branch with unrelated uncommitted work belonging to a different session.
    This step is the owner's, not an automated one.
-5. Re-run the marker gate and the Zellij-session check.
-6. `chezmoi apply --dry-run --verbose`, then the real apply.
-7. Live verification.
-8. `brew uninstall zellij`.
-9. Publish GLOBAL.md through `op-edit` — **last**, once the behaviour it describes is
+7. Re-run the marker gate and the Zellij-session check.
+8. `chezmoi apply --dry-run --verbose`, then the real apply.
+9. Live verification.
+10. `brew uninstall zellij`.
+11. Publish GLOBAL.md through `op-edit` — **last**, once the behaviour it describes is
    the behaviour that is running.
 
 ## Design records
