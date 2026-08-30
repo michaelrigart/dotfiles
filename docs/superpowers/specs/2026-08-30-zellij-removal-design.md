@@ -31,6 +31,15 @@ existed; `In progress` → reference → review → `Implemented` is now spelled
 three consecutive drafts of a safety gate were each broken in a different way is the
 argument for the plan's rule that a check must be run before it is trusted.
 
+**Amended a fourth time:** 2026-08-30, fourth review round, still before implementation.
+Two test blocks depend on Zellij *mock behaviour* rather than its invocation log
+(`MOCK_ZJ_DELETE_RC`, `MOCK_ZJ_DELETE_TOUCH`) and would have failed after the shutdown
+block was deleted; both are redundant against existing Herdr coverage and are deleted.
+The fail-closed stub needed a persistent sentinel — every surviving call site pipes into
+`grep` with stderr discarded, so exit 127 alone detects nothing. And this section's
+"run it far enough" instruction for `test-dev-integrations.sh` is withdrawn in favour of
+the plan's syntax-only check, which is the reproducible one.
+
 Retires Zellij from the dotfiles. Herdr becomes the only multiplexer, and `hdev` /
 `hwt` reclaim the `dev` / `wt` names the Zellij functions held.
 
@@ -397,10 +406,14 @@ the new marker string.
 **`test-dev-integrations.sh` is touched after all.** An earlier draft said it was not,
 reasoning that it covers only the Claude and Codex hook wiring. That reasoning is
 sound but the conclusion was wrong: line 64 passes `HDEV_NO_ATTACH=1` to `layout.sh`,
-so the environment-variable rename lands in it. It gets the rename, a syntax check,
-and a run far enough to prove the renamed no-attach control still suppresses the
-blocking TUI. A full cold-restore rerun is optional if `test-dev-topology.sh` — which
-uses the same control in seven places — already demonstrates it.
+so the environment-variable rename lands in it.
+
+It gets the rename and a **syntax check only** — `zsh -n`. A second draft also called
+for running it "far enough" to exercise the renamed control; that is withdrawn. Partial
+execution of this script starts real agents against the real `~/.claude` and `~/.codex`,
+and a run truncated by hand is not reproducible, so it is neither safe nor evidence.
+`test-dev-topology.sh` uses the same control in seven places against the real binary,
+which is strictly stronger proof and costs nothing extra.
 
 `test-dev-topology.sh` is re-run in full: it exercises `wt` creation, the lock marker
 and label-resolved tab jumps against the real binary, all three of which change here.

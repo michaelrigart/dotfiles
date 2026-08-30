@@ -19,7 +19,7 @@
 - **Commit at task boundaries**, imperative mood, small and focused.
 - **Lock marker, exact string:** old `hwt-managed; remove with command wt-rm`, new `wt-managed; remove with command wt-rm`. Matched exactly, never by substring.
 - **Test runner:** `zsh .scripts/test-wt-functions.sh` and `zsh .scripts/test-dev.sh`. Both must exit 0. **Run them as separate commands** — `test-a; test-b` reports only the last command's exit status, so a failure in the first passes silently. Assertions pin exact values; a test that cannot go red is not coverage.
-- **Run a check before trusting it.** Five in earlier drafts could not do their job: `grep -ri zellij` (walks `.git`), a sweep including `.chezmoiremove` (whose purpose is to name `.config/zellij`), a marker gate globbing `~/Code/*/*` (sees 37 of 84 repos), that same gate wired to exit 0 on a stale tree and 1 on a clean one, and `hunlogged` assertions against a fixture with no Herdr session, which can never go red. Three consecutive drafts of the gate were each broken differently. Before trusting a check, run it against both a passing and a failing tree.
+- **Run a check before trusting it.** Six in earlier drafts could not do their job: `grep -ri zellij` (walks `.git`); a sweep including `.chezmoiremove` (whose purpose is to name `.config/zellij`); a marker gate globbing `~/Code/*/*` (sees 37 of 84 repos); that same gate wired to exit 0 on a stale tree and 1 on a clean one; `hunlogged` assertions against a fixture with no Herdr session, which can never go red; and a fail-closed stub whose exit 127 is swallowed by the `… 2>/dev/null | grep` its callers wrap it in. Three consecutive drafts of the gate were each broken differently. Before trusting a check, run it against both a passing and a failing tree.
 - **Sandbox:** run Bash sandboxed by default. `op` genuinely needs `dangerouslyDisableSandbox` (its config path is denied); so does writing `~/.claude/**`.
 - **This work happens in the worktree** `.claude/worktrees/remove-zellij` on branch `worktree-remove-zellij`. A second session owns the main checkout — never `git checkout` there.
 - **`chezmoi apply` must run from the canonical source** `~/.local/share/chezmoi`, which this worktree is not. Task 8 is therefore gated on the branch being merged; do not attempt a real apply from the worktree.
@@ -55,6 +55,22 @@
 | 371, 380, 412, 1311, 1422, 1437, 1452 | `delete-session` — shutdown ordering | **Migrate** to `hlogged`/`hunlogged` on `workspace close`, **with a fixture** |
 | 1807, 1852, 1930, 1946 | `delete-session` — "Zellij is not disrupted" | **Replace** with teardown-not-run + still-registered |
 
+#### Two blocks depend on Zellij *mock behaviour*, not just the log
+
+Assertion-by-assertion migration misses these, and they are what stops Step 11 going green. Both must be deleted in Step 6, with the rest:
+
+- **~417-425, `MOCK_ZJ_DELETE_RC=1`** — "failing to stop the session aborts removal", asserted via `rc_is 1` and the worktree surviving. Once the Zellij shutdown block is gone, `wt-rm` never attempts a Zellij stop, so it proceeds to removal and both assertions fail.
+- **~1289-1300, `MOCK_ZJ_DELETE_TOUCH`** — "dirt from session shutdown is caught at check 2", where the stub writes a non-ignored file when asked to delete. With no Zellij stop, nothing writes the file, check 2 passes, and `rc_is 1` fails.
+
+**Delete both. The invariants they protect are already covered on the Herdr side**, which is why this is redundancy rather than lost coverage:
+
+| Invariant | Zellij block | Surviving Herdr coverage |
+|---|---|---|
+| A failed shutdown aborts removal | `MOCK_ZJ_DELETE_RC=1` | `MOCK_H_CLOSE_RC=1`, ~1845: "a failed Herdr workspace close aborts removal" |
+| Shutdown can flush dirt; check 2 must catch it | `MOCK_ZJ_DELETE_TOUCH` | `MOCK_H_CLOSE_TOUCH`, ~1873: "Closing Herdr can flush files just like closing Zellij" |
+
+Confirm both Herdr tests are present and passing before deleting the Zellij pair, rather than assuming the table is still accurate.
+
 - [ ] **Step 1: Set both design records to `In progress`**
 
 Implementation is starting, so the lifecycle status changes now — not at merge.
@@ -81,20 +97,36 @@ Expected: PASS. This is a checkpoint, not a red phase.
 
 - [ ] **Step 4: Make the zellij stub fail-closed**
 
-**Do not delete the stub yet.** The harness does `export PATH="$STUBS:$PATH"` (line 148) — the real PATH is preserved, and `/opt/homebrew/bin/zellij` is installed until Task 8. Removing the stub while any code path still calls `zellij` would send that call to the **real binary**, which can attach to or create a genuine session. Replace the body instead, so a stray call is a loud failure rather than a real invocation:
+**Do not delete the stub yet.** The harness does `export PATH="$STUBS:$PATH"` (line 148) — the real PATH is preserved, and `/opt/homebrew/bin/zellij` is installed until Task 8. Removing the stub while any code path still calls `zellij` would send that call to the **real binary**, which can attach to or create a genuine session. Replace the body instead:
 
 ```bash
 cat > "$STUBS/zellij" <<'STUB'
 #!/usr/bin/env bash
 # Fail-closed for the duration of the migration. $STUBS is prepended to the REAL
 # PATH and zellij is still installed, so a deleted stub would let a surviving call
-# reach the real binary and attach or create a session. Any invocation is a bug.
+# reach the real binary and attach or create a session.
+#
+# The sentinel is the actual detector, not the exit status. Every surviving call
+# site looks like `zellij list-sessions -s 2>/dev/null | grep -Fqx -- "$name"`,
+# which discards this stderr AND takes grep's exit status, so a loud failure here
+# is silently swallowed. ZCALLED lives in $STUBS, created once at startup, so
+# setup() does not reset it between cases.
+printf '%s\n' "$*" >> "$ZCALLED"
 printf 'FAIL: unexpected zellij invocation: %s\n' "$*" >&2
 exit 127
 STUB
 ```
 
+Export the sentinel path once, next to the other `$STUBS` setup and **outside `setup()`** so it accumulates across every case:
+
+```zsh
+export ZCALLED="$STUBS/zellij-called.log"
+: > "$ZCALLED"
+```
+
 Keep `chmod +x "$STUBS/zellij" "$STUBS/wtcp"` at line 107 for now.
+
+**Exit 127 alone would not detect anything.** Both surviving call sites — in `wt-rm()` and the Zellij `dev()` — pipe into `grep` with stderr redirected to `/dev/null`, so the pipeline reports grep's status and the message never appears. Only an appended sentinel survives that.
 
 - [ ] **Step 5: Run the suite to verify it fails, and that the failures are the expected set**
 
@@ -207,12 +239,26 @@ zsh .scripts/test-wt-functions.sh
 zsh .scripts/test-dev.sh
 ```
 
-Expected: PASS, both. The fail-closed stub is still installed, so a green run here also proves **nothing calls `zellij` any more** — that is the point of leaving it in until now.
+Expected: PASS, both.
 
-- [ ] **Step 12: Remove the stub and the ZLOG plumbing**
+- [ ] **Step 12: Assert the sentinel is empty — this is what proves no caller remains**
 
-Only now, with the suite green and proving no caller remains:
-- delete the `cat > "$STUBS/zellij" <<'STUB' … STUB` block
+```bash
+[[ -s "$ZCALLED" ]] && { cat "$ZCALLED"; echo "FAIL: something still calls zellij"; }
+```
+
+Expected: no output. **A green suite is not sufficient evidence on its own** — a surviving call inside `… 2>/dev/null | grep -Fqx` passes its exit status through grep, so the suite can be green while `zellij` is still being invoked. The sentinel is the only observation that catches it, and it must be checked before the stub is removed, because removing the stub is what would make such a call reach the real binary.
+
+Add this as a permanent assertion in the harness rather than a one-off command, so a regression cannot reintroduce a call silently:
+
+```zsh
+[[ -s "$ZCALLED" ]] && _fail "nothing invokes zellij" || _pass "nothing invokes zellij"
+```
+
+- [ ] **Step 13: Remove the stub and the ZLOG plumbing**
+
+Only now, with the suite green *and* the sentinel empty:
+- delete the `cat > "$STUBS/zellij" <<'STUB' … STUB` block, the `ZCALLED` export and the sentinel assertion — all three go together, since the assertion is meaningless once the stub cannot be invoked
 - change `chmod +x "$STUBS/zellij" "$STUBS/wtcp"` (107) to `chmod +x "$STUBS/wtcp"`
 - delete the `logged()` and `unlogged()` helper definitions (47-48) — with no ZLOG they have no meaning, and leaving them invites reuse against an unset variable
 - in `setup()`, drop `ZLOG` from the export (190) and its `: > "$ZLOG";` (192)
@@ -221,7 +267,7 @@ Only now, with the suite green and proving no caller remains:
 - delete any remaining `export MOCK_ZJ_*=…` in individual cases
 - delete the `[[ -s "$ZLOG" ]]` assertions (1033-1035, 1121-1138) and the `MOCK_ZJ_DELETE_TOUCH` fixture (~1290)
 
-- [ ] **Step 13: Run both suites, and verify no Zellij or `hdev`/`hwt` identifier survives**
+- [ ] **Step 14: Run both suites, and verify no Zellij or `hdev`/`hwt` identifier survives**
 
 ```bash
 zsh .scripts/test-wt-functions.sh
@@ -231,7 +277,7 @@ git grep -nE '\b(hdev|hwt|HDEV_|ZLOG|MOCK_ZJ_)' -- ':!docs'
 
 Expected: PASS, PASS, and no output from the grep.
 
-- [ ] **Step 14: Commit**
+- [ ] **Step 15: Commit**
 
 ```bash
 git add -A
@@ -778,7 +824,7 @@ Expected: `0` for all three files; the agents rule still present; the `command w
 
 **Spec coverage.** Every spec section maps to a task: Deleted → 1, 3, 4; Renamed → 1; Behaviour change 1 (lock) → 2; Behaviour change 2 (`dev <session-name>`) → 1, where deleting the Zellij `dev` and inheriting `hdev`'s cascade is what retires it, recorded in the renamed function's header comment; Comment-only → 5; Out of repo → 4 (`.chezmoiremove`, Brewfile), 8 (apply, uninstall), 9 (GLOBAL.md); Activation order → 7, 8, 9; Design records → 6, 7; Testing → the test steps throughout plus 8.
 
-**Defects found and fixed across three review rounds.** Deletion and renaming were two tasks with a green suite expected between them; they cannot be, because 65 `run "$REPO" wt …` calls go red the moment `wt()` is deleted — now one atomic task. The test migration covered 10 of 26 `logged`/`unlogged` assertions and left 16 pointing at a deleted log, plus a whole section testing the deleted `_wt_session_name` — the inventory table above now accounts for all 26. Deleting the zellij stub before the source rename would have let surviving calls reach the **real** installed binary, since the harness prepends stubs to the real PATH — it is now fail-closed until the source is green. Seven migrated ordering assertions would have been vacuous against the default empty Herdr fixture — each now gets a session holding a matching workspace so it can go red. The marker gate globbed `~/Code/*/*/.git` (37 of 84 entries), omitted the dotfiles repo, and was wired to exit 0 on a stale tree — now recursive, rooted at both, explicit `if`, fixture-verified, and run twice. The final sweep included `.chezmoiremove`, which necessarily names `.config/zellij` — now excluded and asserted positively. GLOBAL.md published before the apply, the status commit landed after the merge, and `Implemented` cited a PR reference before the PR existed — all three reordered.
+**Defects found and fixed across three review rounds.** Deletion and renaming were two tasks with a green suite expected between them; they cannot be, because 65 `run "$REPO" wt …` calls go red the moment `wt()` is deleted — now one atomic task. The test migration covered 10 of 26 `logged`/`unlogged` assertions and left 16 pointing at a deleted log, plus a whole section testing the deleted `_wt_session_name` — the inventory table above now accounts for all 26. Deleting the zellij stub before the source rename would have let surviving calls reach the **real** installed binary, since the harness prepends stubs to the real PATH — it is now fail-closed until the source is green. Seven migrated ordering assertions would have been vacuous against the default empty Herdr fixture — each now gets a session holding a matching workspace so it can go red. Two further blocks depended on Zellij *mock behaviour* rather than its log — `MOCK_ZJ_DELETE_RC` and `MOCK_ZJ_DELETE_TOUCH` — and would have failed at the green checkpoint; both are redundant against existing Herdr coverage and are deleted. The fail-closed stub's exit 127 detects nothing on its own, because every call site pipes into `grep` with stderr discarded, so it now appends to a sentinel that is asserted empty before the stub goes. The marker gate globbed `~/Code/*/*/.git` (37 of 84 entries), omitted the dotfiles repo, and was wired to exit 0 on a stale tree — now recursive, rooted at both, explicit `if`, fixture-verified, and run twice. The final sweep included `.chezmoiremove`, which necessarily names `.config/zellij` — now excluded and asserted positively. GLOBAL.md published before the apply, the status commit landed after the merge, and `Implemented` cited a PR reference before the PR existed — all three reordered.
 
 **Ordering.** Task 2's gate runs immediately before its own edit and again in Task 8; a design-time observation authorises nothing. Task 3 deletes `ZELLIJ_SOCKET_DIR` and the wrapper preflight together because the preflight reads the variable. Tasks 7-9 are separate because landing, activating and publishing are separate events, and doing them in the wrong order publishes instructions for behaviour that is not yet running.
 
