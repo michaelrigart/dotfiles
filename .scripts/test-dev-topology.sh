@@ -145,7 +145,7 @@ wn=$(h tab list --workspace "$WWS" 2>/dev/null | jq -r \
   '[.result.tabs[] | select(.label=="agents" or .label=="editor" or .label=="runtime" or .label=="git")] | length')
 lock_reason=$(git -C "$PRIMARY" worktree list --porcelain | sed -n '/worktree .*worktree-proj-live-wt$/,/^$/s/^locked //p')
 [[ "$wt_rc" == 0 && -n "$WWS" && "$wn" == 4 \
-   && "$lock_reason" == "hwt-managed; remove with command wt-rm" ]] \
+   && "$lock_reason" == "wt-managed; remove with command wt-rm" ]] \
   && ok "wt creates a four-tab native workspace with the lifecycle lock" \
   || bad "wt rc=$wt_rc workspace=${WWS:-none} managed-tabs=${wn:-none} lock=${lock_reason:-none}"
 

@@ -284,7 +284,7 @@ _wt_unlock() {
 # the native action remains safely blocked while `wt-rm` can recognize the lock it
 # owns and remove only after the full lifecycle succeeds.
 _wt_herdr_lock_reason() {
-  print -r -- "hwt-managed; remove with command wt-rm"
+  print -r -- "wt-managed; remove with command wt-rm"
 }
 
 # _wt_git_lock_state <root> <dest> — 0 locked (reason in _WT_GIT_LOCK_REASON),

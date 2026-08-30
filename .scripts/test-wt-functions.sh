@@ -1603,7 +1603,7 @@ NATIVEWT="$HOME/Code/Org/repo-feature-herdr"
                      || _fail "wt creates the checkout at the expected sibling path"
 dlogged "--worktree $REPO $NATIVEWT" "wt hands the prepared checkout to Herdr worktree mode"
 run "$REPO" git worktree list --porcelain
-has "locked hwt-managed; remove with command wt-rm" \
+has "locked wt-managed; remove with command wt-rm" \
   "a Herdr-managed checkout carries the lifecycle ownership lock"
 OUT="$(git -C "$REPO" worktree remove --force "$NATIVEWT" 2>&1)"; RC=$?
 rc_is 128 "Herdr's one-force native removal cannot bypass the lifecycle lock"
@@ -1639,7 +1639,7 @@ POPUP="$HOME/Code/Org/repo-feature-popup"
                       || _fail "the popup uses the standard sibling checkout path"
 dlogged "--worktree $REPO $POPUP" "the popup opens the checkout through native Herdr mode"
 run "$REPO" git worktree list --porcelain
-has "locked hwt-managed; remove with command wt-rm" "the popup-created checkout is lifecycle-locked"
+has "locked wt-managed; remove with command wt-rm" "the popup-created checkout is lifecycle-locked"
 
 setup
 OUT="$(cd "$REPO" && source "$FUNCS" && print -r -- '' | wt-prompt 2>&1)"; RC=$?
@@ -1654,7 +1654,7 @@ DIRECT="$HOME/Code/Org/repo-direct"
 run "$REPO" dev "$DIRECT"
 rc_is 0 "dev can adopt an existing wt-created checkout"
 run "$REPO" git worktree list --porcelain
-has "locked hwt-managed; remove with command wt-rm" \
+has "locked wt-managed; remove with command wt-rm" \
   "direct dev adoption adds the same lifecycle ownership lock"
 
 # An arbitrary registered checkout cannot be promised the wt-rm lifecycle: wt-rm
@@ -1669,7 +1669,7 @@ rc_is 1 "dev refuses a linked checkout outside the wt sibling convention"
 has "not a wt-managed sibling" "the refusal explains the teardown mismatch"
 dunlogged "--worktree" "an unremovable checkout is not opened in Herdr"
 OUT="$(git -C "$REPO" worktree list --porcelain)"
-hasnt "locked hwt-managed" "the arbitrary checkout is not stranded behind our lock"
+hasnt "locked wt-managed" "the arbitrary checkout is not stranded behind our lock"
 
 # A user-owned Git lock is not ours to overwrite or later remove with two forces.
 setup
@@ -1691,7 +1691,7 @@ dunlogged "--worktree" "a foreign-locked checkout is never opened in Herdr"
 setup
 run "$REPO" wt locked-by-default
 run "$REPO" git worktree list --porcelain
-has "locked hwt-managed; remove with command wt-rm" \
+has "locked wt-managed; remove with command wt-rm" \
   "wt takes lifecycle ownership of every checkout it creates"
 
 # wt-rm is the sole path allowed to cross the ownership lock, and only after its
