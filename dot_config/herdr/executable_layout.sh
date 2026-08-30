@@ -47,9 +47,9 @@ hl_git() {
 }
 
 # hl_api — run a herdr CLI call, return its JSON on stdout. Non-zero on failure, with
-# the server's message. Every call goes through here so failures are uniform: the old
-# Zellij shape returned 0 from every step while the layout silently failed, and exit
-# status was no guard.
+# the server's message. Every call goes through here so failures are uniform: a
+# previous shape returned 0 from every step while the layout silently failed, and
+# exit status was no guard.
 hl_api() {
   local out rc
   out="$(command herdr "$@" 2>&1)"; rc=$?

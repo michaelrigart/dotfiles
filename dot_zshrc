@@ -9,8 +9,10 @@ source "$HOME/.config/zsh/functions"
 
 # Keybindings — must come after oh-my-zsh.sh, which resets the emacs keymap and
 # drops any custom bind set earlier. Ghostty maps Cmd-k → Alt-k (its built-in
-# clear_screen no-ops in the alternate screen / inside Zellij); Zellij handles
-# Alt-k itself, and this makes Cmd-k clear at a bare shell prompt too.
+# clear_screen no-ops in the alternate screen / inside Herdr); Herdr deliberately
+# binds no alt+k, so the chord reaches this binding rather than being consumed.
+# At a bare shell prompt there is no multiplexer in the path at all, so the same
+# two links (Ghostty sends the chord, zsh binds it) apply directly.
 bindkey '\ek' clear-screen
 
 # Added by LM Studio CLI (lms)
