@@ -19,7 +19,8 @@
 - **Commit at task boundaries**, imperative mood, small and focused.
 - **Lock marker, exact string:** old `hwt-managed; remove with command wt-rm`, new `wt-managed; remove with command wt-rm`. Matched exactly, never by substring.
 - **Test runner:** `zsh .scripts/test-wt-functions.sh` and `zsh .scripts/test-dev.sh`. Both must exit 0. **Run them as separate commands** — `test-a; test-b` reports only the last command's exit status, so a failure in the first passes silently. Assertions pin exact values; a test that cannot go red is not coverage.
-- **Run a check before trusting it.** Six in earlier drafts could not do their job: `grep -ri zellij` (walks `.git`); a sweep including `.chezmoiremove` (whose purpose is to name `.config/zellij`); a marker gate globbing `~/Code/*/*` (sees 37 of 84 repos); that same gate wired to exit 0 on a stale tree and 1 on a clean one; `hunlogged` assertions against a fixture with no Herdr session, which can never go red; and a fail-closed stub whose exit 127 is swallowed by the `… 2>/dev/null | grep` its callers wrap it in. Three consecutive drafts of the gate were each broken differently. Before trusting a check, run it against both a passing and a failing tree.
+- **Run a check before trusting it.** Seven in earlier drafts could not do their job: `grep -ri zellij` (walks `.git`); a sweep including `.chezmoiremove` (whose purpose is to name `.config/zellij`); a marker gate globbing `~/Code/*/*` (sees 37 of 84 repos); that same gate wired to exit 0 on a stale tree and 1 on a clean one; `hunlogged` assertions against a fixture with no Herdr session, which can never go red; a fail-closed stub whose exit 127 is swallowed by the `… 2>/dev/null | grep` its callers wrap it in; and `git grep -E '\b…'`, since git's ERE has no `\b` and the pattern matches **nothing** regardless of the tree. Three consecutive drafts of the gate were each broken differently. Before trusting a check, run it against both a passing and a failing tree.
+- **Word-boundary greps must use `-P`, never `-E`.** `git grep -P '\bfoo'` works; `git grep -E '\bfoo'` silently returns zero matches always. Add `':!*.png'` to identifier sweeps — `-P` matches inside binary files.
 - **Sandbox:** run Bash sandboxed by default. `op` genuinely needs `dangerouslyDisableSandbox` (its config path is denied); so does writing `~/.claude/**`.
 - **This work happens in the worktree** `.claude/worktrees/remove-zellij` on branch `worktree-remove-zellij`. A second session owns the main checkout — never `git checkout` there.
 - **`chezmoi apply` must run from the canonical source** `~/.local/share/chezmoi`, which this worktree is not. Task 8 is therefore gated on the branch being merged; do not attempt a real apply from the worktree.
@@ -272,7 +273,7 @@ Only now, with the suite green *and* the sentinel empty:
 ```bash
 zsh .scripts/test-wt-functions.sh
 zsh .scripts/test-dev.sh
-git grep -nE '\b(hdev|hwt|HDEV_|ZLOG|MOCK_ZJ_)' -- ':!docs'
+git grep -nP '\b(hdev|hwt|HDEV_|ZLOG|MOCK_ZJ_)' -- ':!docs' ':!*.png'
 ```
 
 Expected: PASS, PASS, and no output from the grep.
