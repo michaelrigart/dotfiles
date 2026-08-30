@@ -13,6 +13,15 @@ global-instruction statement that the first draft missed; and two verification s
 that were wrong rather than merely thin — `test-dev-integrations.sh` is touched, and
 `grep -ri zellij` can never come back clean.
 
+**Amended again:** 2026-08-30, second review round, still before implementation. Four
+further corrections, three of them to checks that could not have caught what they were
+written to catch: the marker gate's `~/Code/*/*` glob saw 37 of 84 Git entries and had
+to become recursive, and must run a second time immediately before the apply; the
+zero-hit sweep still could not pass, because `.chezmoiremove` necessarily names
+`.config/zellij`; the failure-evidence description claimed an invocation-log observation
+this harness cannot make. Added an explicit activation order, because `op-edit`
+re-applies its targets and would otherwise publish instructions ahead of the behaviour.
+
 Retires Zellij from the dotfiles. Herdr becomes the only multiplexer, and `hdev` /
 `hwt` reclaim the `dev` / `wt` names the Zellij functions held.
 
@@ -141,26 +150,51 @@ its exact string as a foreign lock — an explicit preservation request by anoth
 tooling. A back-compatible arm accepting both strings was considered and rejected as
 dead code from the moment it was written. The alternative is a gate.
 
-**Pre-apply gate, required.** Immediately before the marker change is applied — not at
-design time, which proves nothing about the state at implementation time — scan every
-repo under `~/Code` for the old marker. Match the reason **exactly**, and read
-`git worktree list --porcelain -z` NUL-delimited so a path or reason containing
-whitespace cannot split a record:
+**Gate, required, and run twice.** Scan every repository under `~/Code` for the old
+marker, matching the reason **exactly** and reading `git worktree list --porcelain -z`
+NUL-delimited so a path or reason containing whitespace cannot split a record. Track
+the worktree path across records so a hit names **the worktree to retire**, not merely
+the repository containing it:
 
 ```zsh
-for d in ~/Code/*/*/.git; do
-  r="${d%/.git}"
-  while IFS= read -r -d '' line; do
-    [[ "$line" == "locked hwt-managed; remove with command wt-rm" ]] \
-      && print -r -- "STALE MARKER: $r"
-  done < <(git -C "$r" worktree list --porcelain -z 2>/dev/null)
+emulate -L zsh
+setopt local_options null_glob extended_glob
+want="hwt-managed; remove with command wt-rm"
+typeset -A seen; typeset -a hits
+for g in ~/Code/**/.git(N/) ~/Code/**/.git(N.); do
+  common="$(git -C "${g:h}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || continue
+  [[ -n "${seen[$common]:-}" ]] && continue
+  seen[$common]=1
+  cur=""
+  while IFS= read -r -d '' rec; do
+    case "$rec" in
+      "worktree "*)   cur="${rec#worktree }" ;;
+      "locked $want") hits+=( "$cur" ) ;;
+    esac
+  done < <(git -C "${g:h}" worktree list --porcelain -z 2>/dev/null)
 done
+(( ${#hits} )) && { print -rl -u2 -- "STALE MARKER:" ${(u)hits}; return 1 }
 ```
 
-Any hit aborts the step. Retire that worktree through the **current** `command wt-rm`,
-which still understands the old marker, and only then change it. This scan and a plain
-`git worktree list` sweep both returned nothing on 2026-08-30 — but that is context,
-not authorisation. The gate is what authorises.
+**The glob must recurse.** An earlier draft used `~/Code/*/*/.git`, on the strength of
+the documented `~/Code/<Org>/<repo>` convention. That convention is not universal:
+the tree actually holds 84 Git entries, of which the depth-two glob sees 37. A safety
+gate blind to more than half the repositories it guards is worse than none, because it
+reports "clean" with authority. Enumerate by unique **common directory**, so linked
+worktrees are not mistaken for separate repositories.
+
+Any hit aborts. Retire that worktree through the **current** `command wt-rm`, which
+still understands the old marker, and only then proceed.
+
+Run it **twice**: once immediately before the marker change, and again immediately
+before the canonical `chezmoi apply`. The second run is not ceremony. Between those
+two moments the deployed `~/.config/zsh/functions` still contains the old code, so
+ordinary use — in another session, during PR review — can create a fresh worktree
+carrying the old marker. Applying over it strands exactly the checkout the gate exists
+to protect.
+
+Both runs returned clean on 2026-08-30, but that is context, not authorisation. The
+gate is what authorises.
 
 #### 2. `dev <session-name>` resolution disappears
 
@@ -245,7 +279,34 @@ it before editing the comment to claim it.
 
 Machine state confirmed before planning: no running sessions, and no
 `/tmp/zellij-$UID`, `~/.local/share/zellij` or `~/.cache/zellij`. Nothing is holding
-state that removal could interrupt.
+state that removal could interrupt — **re-confirm immediately before the apply**, since
+that observation is days old by then and nothing maintains it.
+
+### Activation order
+
+Publication, merge and activation are separable, and getting them out of order
+publishes instructions for behaviour that is not yet deployed. `op-edit` re-applies its
+chezmoi targets as part of editing, so updating GLOBAL.md *before* the apply would push
+Herdr-only instructions — including "agents do not create these worktrees because `wt`
+attaches a Herdr client" — to all three rendered files while the deployed `wt` is still
+the Zellij one.
+
+The order is therefore:
+
+1. Implement and review.
+2. Final pre-merge commit setting `**Status:** Implemented` on this spec and its plan —
+   **before** merging, per the design-records lifecycle, not after.
+3. Explicit merge approval.
+4. Wait until the canonical checkout at `~/.local/share/chezmoi` actually contains the
+   merge. Merging a PR does not update a local checkout, and that checkout is presently
+   on another branch with unrelated uncommitted work belonging to a different session.
+   This step is the owner's, not an automated one.
+5. Re-run the marker gate and the Zellij-session check.
+6. `chezmoi apply --dry-run --verbose`, then the real apply.
+7. Live verification.
+8. `brew uninstall zellij`.
+9. Publish GLOBAL.md through `op-edit` — **last**, once the behaviour it describes is
+   the behaviour that is running.
 
 ## Design records
 
@@ -274,10 +335,23 @@ replaced, not deleted.** What they actually prove is that a failure at the Herdr
 boundary halts the sequence before anything destructive — the ordering guarantee is
 the point, and Zellij was merely the observable proxy for it.
 
-Each becomes an assertion that **neither the teardown hook nor `git worktree remove`
-was invoked**, observed on the invocation log. Asserting only that the checkout still
-exists is vacuous: a directory surviving is consistent with teardown having run and
-removal having failed for an unrelated reason. The absence of the calls is the claim.
+Each becomes two assertions. Asserting only that the checkout directory still exists is
+vacuous — a surviving directory is equally consistent with teardown having run and
+removal having failed for an unrelated reason.
+
+1. **Teardown never ran**, observed on the hook's own touch-file. Removal is strictly
+   after teardown in `wt-rm`'s sequence, so this also proves removal was never reached.
+2. **The checkout is still a registered worktree**, observed on `git worktree list
+   --porcelain`. This is the direct, non-vacuous replacement for the bare `-d` check:
+   a directory can survive a *failed* removal, but a surviving registration proves
+   `git worktree remove` did not succeed.
+
+There is deliberately no assertion that `git worktree remove` was not *invoked*. The
+harness stubs `zellij`, `herdr`, `wtcp` and `layout.sh`, but runs **real git** — that
+is what makes its worktree assertions meaningful — so there is no git invocation log to
+observe, and (1) carries the ordering proof instead. An earlier draft of this section
+claimed both absences were read off an invocation log; that observation does not exist
+in this harness.
 
 One test is added, the inverse of one deleted: `wt` acquires the ownership lock, with
 the new marker string.
@@ -300,12 +374,27 @@ isolated fixture** — its named `hdev-test` session and scratch repos — not a
 real project under `~/Code`. The round trip is the last thing that should be proving
 itself on a checkout that matters.
 
-Then `chezmoi apply --dry-run --verbose` and a real apply.
+Then `chezmoi apply --dry-run --verbose` and a real apply. **A full apply renders
+`op`-backed templates** (`private_dot_ssh/`, `dot_config/bundler/config.tmpl`), so it
+needs an unsandboxed shell with `op` signed in and the 1Password desktop app approved.
+Re-run the marker gate and re-check that no Zellij session or socket state has appeared
+immediately before it — both facts were established days earlier and neither is
+self-maintaining.
 
-Final check: `git grep -i zellij -- ':!docs'` (or `rg`). **Not `grep -ri zellij`,**
-which an earlier draft specified — that walks `.git` and matches ref and reflog
-metadata, including this change's own branch name, so it can never come back clean and
-would report a failure that is not one.
+Final check, two commands rather than one:
+
+```bash
+git grep -i zellij -- ':!docs' ':!.chezmoiremove'   # expected: no output
+grep -c '^\.config/zellij$' .chezmoiremove          # expected: 1
+```
+
+The exclusion is not a convenience. `.chezmoiremove`'s entire purpose is to name
+`.config/zellij`, so a zero-hit sweep including it can never pass — the same defect as
+the `grep -ri zellij` an earlier draft specified, which walks `.git` and matches ref and
+reflog metadata including this change's own branch name. Both would report a failure
+that is not one. The tombstone therefore gets a **positive** assertion of its exact
+entry instead: the sweep proves absence everywhere else, and this proves presence where
+it is required.
 
 ## Rollback
 
@@ -321,7 +410,8 @@ Ordered procedure:
 lock leaves Git refusing both `worktree remove` and single `--force`. The amendment
 this change forces: the marker is now `wt-managed; remove with command wt-rm`, so a
 rollback must scan for **that** string, not the `hwt-managed; …` one the trial spec
-names. Use the §"Behaviour changes" scan with the reason swapped. Retire each hit
+names. Use the §"Behaviour changes" scan with `want` swapped — including its recursive
+glob, since the depth-two shorthand misses more than half the tree. Retire each hit
 through the current `command wt-rm` while it still understands the marker.
 
 **2. Revert the source and reinstall Zellij.** `git revert`, then `brew install
@@ -330,7 +420,8 @@ functions, the wrapper preflight, `ZELLIJ_SOCKET_DIR` and the Brewfile entry —
 source only.
 
 **3. `chezmoi apply`.** Without this, `~/.config/zellij` does not come back: revert
-restores the source tree, and only an apply deploys it. The reverted
+restores the source tree, and only an apply deploys it. Needs an unsandboxed shell with
+`op` signed in, since a full apply renders the `op`-backed templates. The reverted
 `.chezmoiexternal.toml` also has to re-download the WASM navigator, which is a network
 fetch Little Snitch will prompt on.
 
