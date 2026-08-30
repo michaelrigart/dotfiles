@@ -1046,12 +1046,12 @@ wt-rm() {
     _wt_clean "$dest"
     case $? in
       0) ;;
-      1) print -ru2 -- "wt-rm: stopping the session left changes in $dest — inspect it, then retry."; return 1 ;;
-      *) print -ru2 -- "wt-rm: cannot determine whether $dest is clean after session shutdown — refusing."; return 1 ;;
+      1) print -ru2 -- "wt-rm: closing Herdr workspaces left changes in $dest — inspect it, then retry."; return 1 ;;
+      *) print -ru2 -- "wt-rm: cannot determine whether $dest is clean after closing Herdr workspaces — refusing."; return 1 ;;
     esac
 
     if ! _wt_hook_run "$main" "$dest" "$branch" "$slug" teardown; then
-      print -ru2 -- "wt-rm: .worktreehook teardown failed — $dest kept, session stopped."
+      print -ru2 -- "wt-rm: .worktreehook teardown failed — $dest kept, Herdr workspaces closed."
       print -ru2 -- "    Fix it and retry: wt-rm $qb    (teardown is idempotent)"
       print -ru2 -- "    Or resume work with: wt-prepare $qb && wt $qb"
       return 1
@@ -1082,7 +1082,7 @@ wt-rm() {
     # for the exact lock reason above.
     (( herdr_owned )) && remove_args=(worktree remove --force --force "$dest")
     if ! _wt_git $remove_args; then
-      print -ru2 -- "wt-rm: removing $dest failed — worktree kept, session stopped. Resources may already be reclaimed."
+      print -ru2 -- "wt-rm: removing $dest failed — worktree kept, Herdr workspaces closed. Resources may already be reclaimed."
       print -ru2 -- "    Fix the obstruction and retry: wt-rm $qb    (teardown is idempotent)"
       print -ru2 -- "    Or resume work with: wt-prepare $qb && wt $qb"
       return 1

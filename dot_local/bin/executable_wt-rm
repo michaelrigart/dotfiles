@@ -16,7 +16,7 @@ emulate -L zsh
 conf="${XDG_CONFIG_HOME:-$HOME/.config}"
 
 # zshenv is not optional: without it a bare zsh has no XDG variables and no
-# wtcp or herdr on PATH — which wt-rm needs to stop the session before it can
+# wtcp or herdr on PATH — which wt-rm needs to close Herdr workspaces before it can
 # safely remove the worktree. Only the XDG base variables are guarded with
 # `test "$X" ||`, so sourcing re-prepends PATH and re-runs `brew --prefix`;
 # both are harmless in a process that exits immediately.

@@ -869,7 +869,7 @@ done
 # safe wt flow while retaining Herdr's native open/grouping after creation.
 OUT="$(awk '
   BEGIN { RS="\\[\\[keys.command\\]\\]" }
-  index($0, "key = \"prefix+shift+g\"") && index($0, "wt-prompt") { print; found=1 }
+  index($0, "key = \"prefix+shift+g\"") && index($0, "-ic wt-prompt") { print; found=1 }
   END { if (!found) exit 1 }
 ' "$CONFIG" 2>&1)"; RC=$?
 rc_is 0 "prefix+shift+g opens the safe wt prompt"

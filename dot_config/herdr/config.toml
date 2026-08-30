@@ -100,9 +100,9 @@ height = 7
 # would inject control sequences into whatever occupies the pane, which corrupts
 # Neovim's state or sends stray input to a live agent.
 
-# The on-demand `bin/rails console` slot. Session-modal, so it does not disturb the
-# tab layout the way a floating pane would, staying layered over everything else
-# while visible.
+# The on-demand `bin/rails console` slot. Session-modal, so unlike the floating
+# panes of the previous setup, it stays layered over everything else while
+# visible without disturbing the tab layout.
 [[keys.command]]
 key = "alt+p"
 type = "popup"

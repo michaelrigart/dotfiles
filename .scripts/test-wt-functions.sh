@@ -1134,7 +1134,7 @@ run "$REPO" wt-rm q1
 rc_is 0 "teardown path removes the worktree"
 [[ -f "$REPO/torn-q1" ]] && _pass "teardown hook ran" || _fail "teardown hook ran"
 
-# Teardown failure preserves the worktree with its session stopped.
+# Teardown failure preserves the worktree with its Herdr workspaces closed.
 setup
 mkhook "$REPO" '#!/bin/sh
 [ "$1" = teardown ] && exit 4
@@ -1269,7 +1269,7 @@ exit 0'
 run "$REPO" wt q11
 run "$REPO" wt-rm q11
 rc_is 1 "a failed removal after a successful teardown fails wt-rm"
-has "worktree kept, session stopped" "the failure reports the exact partial state"
+has "worktree kept, Herdr workspaces closed" "the failure reports the exact partial state"
 has "Resources may already be reclaimed" "it says resources may already be gone"
 has "retry: wt-rm q11" "it offers the fix-and-retry recovery route"
 has "wt-prepare q11 && wt q11" "it offers the resume-work recovery route"
@@ -1707,8 +1707,8 @@ export MOCK_H_WORKSPACES='{"result":{"workspaces":[]}}'
 export MOCK_H_PANES="{\"result\":{\"panes\":[{\"workspace_id\":\"w9\",\"cwd\":\"$HFLUSH/deep\"}]}}"
 export MOCK_H_CLOSE_TOUCH="$HFLUSH/flushed-by-herdr.txt"
 run "$REPO" wt-rm herdr-flush
-rc_is 1 "dirt flushed by Herdr shutdown is caught at check 2"
-has "stopping the session left changes" "the existing post-shutdown check reports the flush"
+rc_is 1 "dirt flushed by Herdr shutdown is caught and removal is refused"
+has "closing Herdr workspaces left changes" "the existing post-shutdown check reports the flush"
 [[ -f "$REPO/herdr-flush-teardown-ran" ]] && _fail "teardown does not run after a Herdr flush" \
                                                    || _pass "teardown does not run after a Herdr flush"
 
