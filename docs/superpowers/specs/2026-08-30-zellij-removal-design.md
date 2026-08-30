@@ -1,6 +1,6 @@
 # Zellij removal
 
-**Status:** Approved
+**Status:** In progress
 
 **Date:** 2026-08-30
 
