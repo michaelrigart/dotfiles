@@ -4,6 +4,15 @@
 
 **Date:** 2026-08-30
 
+**Amended:** 2026-08-30, after peer review, before any implementation. Five corrections:
+the `.chezmoiremove` lifecycle (which as drafted would have shipped no removal
+instruction at all); the old-marker check promoted from a design-time observation to a
+pre-apply gate; a rollback procedure that actually restores deployed files and the
+1Password-backed instructions; a second behaviour change and a fourth stale
+global-instruction statement that the first draft missed; and two verification steps
+that were wrong rather than merely thin — `test-dev-integrations.sh` is touched, and
+`grep -ri zellij` can never come back clean.
+
 Retires Zellij from the dotfiles. Herdr becomes the only multiplexer, and `hdev` /
 `hwt` reclaim the `dev` / `wt` names the Zellij functions held.
 
@@ -110,7 +119,12 @@ would open a shell that fails to find the command.
 already covered both paths; that is what makes `dev` / `wt` the correct names to
 reclaim rather than a matter of taste.
 
-### The lock marker — the only behaviour change
+### Behaviour changes
+
+Two, both intentional. Everything else in this document is deletion, renaming, or
+comment text.
+
+#### 1. Every `wt` worktree is now locked
 
 Plain `wt` never applied the Git ownership lock; `hwt` did, via `hdev` →
 `_wt_prepare_for_herdr`. After the merge there is one creation path, so **every `wt`
@@ -121,24 +135,62 @@ rather than introducing a new constraint.
 The marker string changes from `hwt-managed; remove with command wt-rm` to
 `wt-managed; remove with command wt-rm`.
 
-Changing a lock marker is normally hazardous: `wt-rm` classifies any lock reason that
-is not its exact string as a foreign lock — an explicit preservation request by
-another owner — and refuses. A worktree locked under the old string would become
-unremovable by its own tooling.
+Changing a lock marker is hazardous: `wt-rm` classifies any lock reason that is not
+its exact string as a foreign lock — an explicit preservation request by another owner
+— and refuses. A worktree locked under the old string becomes unremovable by its own
+tooling. A back-compatible arm accepting both strings was considered and rejected as
+dead code from the moment it was written. The alternative is a gate.
 
-**Verified before adopting the clean rename:** `git worktree list` across every repo
-under `~/Code` reports no linked worktrees at all. There is nothing to strand, on the
-only machine this configuration is deployed to. A back-compatible arm accepting both
-strings was considered and rejected as dead code from the moment it was written.
+**Pre-apply gate, required.** Immediately before the marker change is applied — not at
+design time, which proves nothing about the state at implementation time — scan every
+repo under `~/Code` for the old marker. Match the reason **exactly**, and read
+`git worktree list --porcelain -z` NUL-delimited so a path or reason containing
+whitespace cannot split a record:
 
-This is the one part of this change that would need care if it were ever applied to a
-machine with live worktrees. Anyone doing so should check for the old marker first.
+```zsh
+for d in ~/Code/*/*/.git; do
+  r="${d%/.git}"
+  while IFS= read -r -d '' line; do
+    [[ "$line" == "locked hwt-managed; remove with command wt-rm" ]] \
+      && print -r -- "STALE MARKER: $r"
+  done < <(git -C "$r" worktree list --porcelain -z 2>/dev/null)
+done
+```
+
+Any hit aborts the step. Retire that worktree through the **current** `command wt-rm`,
+which still understands the old marker, and only then change it. This scan and a plain
+`git worktree list` sweep both returned nothing on 2026-08-30 — but that is context,
+not authorisation. The gate is what authorises.
+
+#### 2. `dev <session-name>` resolution disappears
+
+The Zellij `dev` accepted a session name as typed — `dev netronix--curato`, "exactly as
+`zellij list-sessions` prints it" — resolving it by generating each repo's name and
+comparing, because `_wt_session_name` is deliberately not invertible. `hdev` dropped
+that branch, since the name it resolves is a Zellij session name and its transformation
+exists only for Zellij's constraints.
+
+Inheriting `hdev`'s cascade therefore retires that input form. This is **intentional**:
+after this change no Zellij session name exists to paste back. `dev Netronix/curato`,
+`dev curato` and `dev .` all still work, and `dev netronix--curato` falls through to
+the case-insensitive substring arm — which will not match — so it lands in the `fzf`
+picker rather than failing silently.
 
 ### Comment-only, no behaviour change
 
 `dot_config/ghostty/config` (×2), `dot_zshrc`, `dot_config/zsh/config`,
 `dot_config/nvim/lua/plugins/smart-splits.lua`, `dot_config/herdr/config.toml`,
 `dot_config/herdr/executable_layout.sh`.
+
+Also `dot_config/homebrew/Brewfile.tmpl`, whose surviving `brew "herdr"` line reads
+"the hdev() function in zsh/functions + ~/.config/herdr. On trial alongside zellij" —
+stale on both counts once `hdev` is renamed and the trial is over.
+
+**`dot_claude/executable_worktree-guard.sh` needs no change, and that was checked
+rather than assumed.** It enforces the "retire with `wt-rm`, never raw `git worktree
+remove`" rule from GLOBAL.md, so it is exactly the kind of file a rename could break
+silently. It references `wt`, `wt-rm` and the sibling convention — all of which keep
+their names — and mentions no multiplexer at all.
 
 One of these describes a behaviour that must be confirmed rather than assumed.
 Ghostty maps `cmd+k` to `text:\x1bk` because its built-in `clear_screen` is a no-op in
@@ -154,18 +206,42 @@ it before editing the comment to claim it.
 
 - **`~/.config/zellij`** is deployed on disk and would survive as an orphan once the
   source is deleted — chezmoi does not remove targets whose source disappeared. A
-  `.chezmoiremove` entry removes the tree, including the WASM plugin beneath it.
-  `.chezmoiremove` is then itself deleted in a follow-up commit on the same branch:
-  a fresh provision never creates `~/.config/zellij`, so leaving the entry in place
-  would be permanently stale instruction.
+  `.chezmoiremove` entry of `.config/zellij` removes the tree, including the nested
+  WASM plugin; verified empirically against a throwaway source/destination pair rather
+  than assumed from the documentation.
+
+  **`.chezmoiremove` stays in the source permanently.** An earlier draft had it added,
+  applied, then deleted in a follow-up commit, on the reasoning that a fresh provision
+  never creates `~/.config/zellij` so the entry would be stale. That is wrong, and in a
+  way that defeats the purpose: chezmoi acts on the entry only while the file exists,
+  so deleting it means the merged branch carries no removal instruction at all — the
+  real apply, and any *already-provisioned* machine that pulls this branch later, would
+  find the source gone and the deployed tree untouched. A removal entry is a
+  declarative tombstone, not stale configuration. It costs nothing: removing an absent
+  path is a no-op.
 - **`brew uninstall zellij`** (0.45.1 installed), after the Brewfile edit.
 - **`~/.config/agents/GLOBAL.md`**, which lives in 1Password
-  (`op://Private/Agent instructions/notes`) and is the source of truth for
-  `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`. Three passages become false on
-  merge: "`wt <branch>` — a sibling checkout … in its own Zellij dev session"; "Raw
-  removal skips the Zellij session shutdown and the project teardown hook"; and
-  "`wt` attaches to a Zellij session". Edited via `op-edit`, which needs an
-  unsandboxed shell and a 1Password approval.
+  (`op://Private/Agent instructions/notes`) and renders to **three** files, all from
+  that one item: `~/.config/agents/GLOBAL.md`, `~/.claude/CLAUDE.md` and
+  `~/.codex/AGENTS.md`. Editing the item and re-applying updates all three. Uses
+  `op-edit`, which needs an unsandboxed shell and a 1Password approval.
+
+  **Four** statements go stale, not three:
+
+  1. "`wt <branch>` — a sibling checkout … in its own Zellij dev session"
+  2. "Raw removal skips the Zellij session shutdown and the project teardown hook"
+  3. "for `wt-rm` that also bypasses the zellij safety preflight, which lives only in
+     that wrapper" — the subtlest, and the one an earlier draft missed. This change
+     **deletes that preflight**, so the sentence describes a guard that no longer
+     exists. The surrounding rule — invoke as `command wt-rm`, because a shell function
+     shadows the `$PATH` wrapper — remains correct and must survive the edit.
+  4. "Agents do not create `wt`-managed sibling worktrees — that stays an interactive
+     command, because `wt` attaches to a Zellij session"
+
+  **The rule in (4) is preserved; only its rationale changes** — `wt` attaches a Herdr
+  client instead. The failure mode to avoid here is deleting the rule along with the
+  word "Zellij", which would silently license agents to create interactive worktrees.
+  The same paragraph's carve-out for native and harness worktrees is unaffected.
 
 Machine state confirmed before planning: no running sessions, and no
 `/tmp/zellij-$UID`, `~/.local/share/zellij` or `~/.cache/zellij`. Nothing is holding
@@ -196,36 +272,81 @@ Several assertions there read `unlogged "delete-session" "Zellij is not disrupte
 after a Herdr close failure"` and similar. **These lose their subject and must be
 replaced, not deleted.** What they actually prove is that a failure at the Herdr
 boundary halts the sequence before anything destructive — the ordering guarantee is
-the point, and Zellij was merely the observable proxy for it. Each becomes an
-assertion that teardown and removal were not reached.
+the point, and Zellij was merely the observable proxy for it.
 
-One test is added, the inverse of one deleted: `wt` acquires the ownership lock.
+Each becomes an assertion that **neither the teardown hook nor `git worktree remove`
+was invoked**, observed on the invocation log. Asserting only that the checkout still
+exists is vacuous: a directory surviving is consistent with teardown having run and
+removal having failed for an unrelated reason. The absence of the calls is the claim.
 
-`.scripts/test-dev.sh` is the rename of `test-hdev.sh`, with `hdev` → `dev`
-throughout.
+One test is added, the inverse of one deleted: `wt` acquires the ownership lock, with
+the new marker string.
 
-Live gates: `test-dev-topology.sh` is re-run, because it exercises `wt` creation, the
-lock marker and label-resolved tab jumps against the real binary — all three of which
-this change touches. `test-dev-integrations.sh` is **not** re-run: it covers the
-Claude and Codex hook wiring, which this change does not touch.
+`.scripts/test-dev.sh` is the rename of `test-hdev.sh`, with `hdev` → `dev` throughout.
 
-Then `chezmoi apply --dry-run --verbose`, a real apply, and a live `dev <repo>` /
-`wt <branch>` / `wt-rm <branch>` round trip. Final check: `grep -ri zellij` over the
-repo returns hits only in the historical design records under `docs/`.
+**`test-dev-integrations.sh` is touched after all.** An earlier draft said it was not,
+reasoning that it covers only the Claude and Codex hook wiring. That reasoning is
+sound but the conclusion was wrong: line 64 passes `HDEV_NO_ATTACH=1` to `layout.sh`,
+so the environment-variable rename lands in it. It gets the rename, a syntax check,
+and a run far enough to prove the renamed no-attach control still suppresses the
+blocking TUI. A full cold-restore rerun is optional if `test-dev-topology.sh` — which
+uses the same control in seven places — already demonstrates it.
+
+`test-dev-topology.sh` is re-run in full: it exercises `wt` creation, the lock marker
+and label-resolved tab jumps against the real binary, all three of which change here.
+
+The live `dev` / `wt` / `wt-rm` round trip runs **inside that script's existing
+isolated fixture** — its named `hdev-test` session and scratch repos — not against a
+real project under `~/Code`. The round trip is the last thing that should be proving
+itself on a checkout that matters.
+
+Then `chezmoi apply --dry-run --verbose` and a real apply.
+
+Final check: `git grep -i zellij -- ':!docs'` (or `rg`). **Not `grep -ri zellij`,**
+which an earlier draft specified — that walks `.git` and matches ref and reflog
+metadata, including this change's own branch name, so it can never come back clean and
+would report a failure that is not one.
 
 ## Rollback
 
-Rolling this change back is `git revert` plus `brew install zellij` — with one
-ordering constraint inherited from the trial design.
+An earlier draft said rollback was "`git revert` plus `brew install zellij`". That is
+insufficient in three ways, each of which leaves a half-reverted machine: reverting
+source does not restore *deployed* files, does not touch 1Password, and — done in the
+wrong order — strands worktrees.
 
-The trial's rollback §0 warns that reverting `wt-rm` to a pre-trial form strands every
-Herdr-locked worktree, because Git then refuses both `worktree remove` and single
-`--force`. That hazard is unchanged and still applies, with one amendment: after this
-change the marker is `wt-managed; …`, so a rollback must retire locks bearing **that**
-string, not the `hwt-managed; …` one the trial spec names.
+Ordered procedure:
 
-There are currently no locked worktrees, so a rollback performed today has nothing to
-retire. That will not stay true once `wt` is used.
+**1. Retire every `wt-managed` worktree first.** Inherited from the trial's rollback
+§0, which warns that reverting `wt-rm` to a form that does not cross the ownership
+lock leaves Git refusing both `worktree remove` and single `--force`. The amendment
+this change forces: the marker is now `wt-managed; remove with command wt-rm`, so a
+rollback must scan for **that** string, not the `hwt-managed; …` one the trial spec
+names. Use the §"Behaviour changes" scan with the reason swapped. Retire each hit
+through the current `command wt-rm` while it still understands the marker.
+
+**2. Revert the source and reinstall Zellij.** `git revert`, then `brew install
+zellij`. This restores `dot_config/zellij/`, `.chezmoiexternal.toml`, both zsh
+functions, the wrapper preflight, `ZELLIJ_SOCKET_DIR` and the Brewfile entry — in the
+source only.
+
+**3. `chezmoi apply`.** Without this, `~/.config/zellij` does not come back: revert
+restores the source tree, and only an apply deploys it. The reverted
+`.chezmoiexternal.toml` also has to re-download the WASM navigator, which is a network
+fetch Little Snitch will prompt on.
+
+**4. Restore GLOBAL.md in 1Password**, under a fresh owner approval — `op-edit`
+cannot be replayed from git, because the item is not in git. All four statements from
+§"Out of repo" revert together, and re-applying propagates to all three rendered
+copies.
+
+**5. Verify source/deployed parity.** The steps above can each half-succeed —
+particularly (3), where an apply that prompts about a modified target can skip it
+silently. Confirm `~/.config/zellij` exists with both the config and the plugin, that
+`zellij` is on `$PATH`, that `dev`/`wt` resolve to the reverted functions, and that
+the three rendered instruction files match the 1Password item.
+
+There are currently no locked worktrees, so a rollback performed today skips step 1
+entirely. That stops being true the first time `wt` is used.
 
 Rollback does not restore the four-week trial. Zellij's configuration would come back
 from git intact, but a reverted setup is a fresh decision to run Zellij, not a
