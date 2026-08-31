@@ -954,9 +954,112 @@ _wt_stop_herdr_workspaces() {
   return 0
 }
 
+# Print "<pid> <command>" for every process of the caller's whose current working
+# directory is <dest> or below it, as of the moment of the call. Return 1 when the
+# answer cannot be trusted — an unreadable listing is not an empty one, and this is the
+# last guard before Git deletes files. Read the bounds below before treating a clean
+# result as proof that the checkout is idle.
+#
+# Closing a Herdr workspace escalates SIGHUP → SIGTERM → SIGKILL across the pane's
+# process group in about half a second, so nothing Herdr started outlives the close.
+# A process that has escaped into its own session — setsid, a double-forked daemon,
+# anything a project starts detached — survives it, keeps its cwd in the checkout, and
+# recreates the directory after `git worktree remove` deletes it. It is in no pane, so
+# no amount of Herdr state can see it. The OS is the only remaining witness.
+#
+# The scan is global and filtered here rather than `lsof +D <dest>`, which is the
+# obvious spelling and the wrong one twice over: it walks the whole checkout, so it
+# costs O(tree) on repositories where node_modules alone is gigabytes, and it needs
+# -w to stay quiet about directories it cannot open — silently skipping exactly the
+# subtree a hidden daemon might be sitting in. A cwd scan reads process state only:
+# O(processes), no tree walk, nothing to skip. `lsof -d cwd` exits 0 for it, so a
+# nonzero status here is failure rather than lsof's usual "matched nothing".
+#
+# What it therefore answers is "no process of the caller's had its cwd in the checkout
+# at the instant of the scan" — not "nothing is using the checkout". Three bounds, all
+# deliberate, none of them closable at a price worth paying:
+#
+#   Other users. Unprivileged lsof reports no other user's processes at all, so a
+#   root-owned daemon in the checkout is invisible. Everything this workflow starts —
+#   editors, agents, dev servers — runs as the caller, `+D` is subject to the identical
+#   limit, and escalating would put a password prompt inside a lifecycle command.
+#
+#   Open descriptors held from elsewhere. A `tail -f` on a checkout file, from a cwd
+#   outside it, is not seen. Dropping `-d cwd` to scan every descriptor was measured at
+#   11.6s against 0.08s on an 11GB checkout, and on an *idle* one it already reports a
+#   sibling worktree's editor holding .git/worktrees/<sibling>/HEAD and Docker's backend
+#   holding .devcontainer files — refusals with nothing wrong. It also buys little: an
+#   fd on a deleted file writes to an unlinked inode and recreates no directory. The
+#   husk comes from a process writing absolute paths under $dest, which in practice —
+#   not by necessity — is a process whose cwd is there. A daemon that kept the path as
+#   a string and chdir'd away writes the husk back and is missed by every form of this
+#   scan, descriptors included.
+#
+#   Time. This is a snapshot, taken as late as the sequence allows — the statement it
+#   supports is about the instant it ran. The lifecycle lock serialises `wt` and
+#   `wt-rm`, not arbitrary processes, so nothing stops one entering the checkout
+#   between the scan and Git's delete. No cheap primitive closes that window on macOS,
+#   and `+D` would not have closed it either.
+_wt_live_processes() {
+  emulate -L zsh
+  # Never name a local `path` here: it is the tied array behind PATH, and localising
+  # it empties command lookup for the whole function — including the lsof check below.
+  local dest="${1:A}" rc i pid cmd cwd
+  local -a lines hits
+  (( $+commands[lsof] )) || {
+    print -ru2 -- "wt-rm: lsof is unavailable, so processes still using $dest cannot be detected — refusing."
+    return 1
+  }
+  # -F0, not -F: NUL-terminated fields. With newline-delimited output a path is not
+  # distinguishable from a record boundary, so a cwd carrying a forged p/c/f/n sequence
+  # parses as two syntactically valid records — the field-cycle check below passes and
+  # the reconstructed paths are fiction, in either direction. A NUL cannot occur in a
+  # pathname, so splitting on it is the only framing that makes the parse unambiguous.
+  #
+  # One invocation, and the status belongs to the listing actually parsed. Splitting it
+  # across two — status from the first, records from the second — would let a scan that
+  # died partway read as a clean checkout, since the records it never reached are
+  # exactly where the occupant would have been. A zsh scalar cannot carry a NUL byte, so
+  # `out=$(...)` is not available here, but the status survives an array assignment fed
+  # straight through ${(0)}, which is what makes the single call possible.
+  lines=( ${(0)"$(command lsof -w -d cwd -F0pcn 2>/dev/null)"} ); rc=$?
+  if (( rc )); then
+    print -ru2 -- "wt-rm: could not read the process list from lsof — refusing."
+    return 1
+  fi
+  # Each record set ends with a newline after its final NUL, which lands at the front
+  # of the next field. Strip exactly one; a field that was only that newline collapses
+  # to empty, drops out of the array, and misaligns the cycle — caught below.
+  lines=( ${lines#$'\n'} )
+  # Real lsof cannot come back empty: the shell running wt-rm has a cwd of its own and
+  # is in every answer. Nothing at all therefore means the scan failed, and reading it
+  # as "no process is using the checkout" would disable this guard without a word.
+  if (( ${#lines} == 0 )) || (( ${#lines} % 4 )); then
+    print -ru2 -- "wt-rm: could not read the process list from lsof — refusing."
+    return 1
+  fi
+  # lsof emits one strict p/c/f/n cycle per process. With framing already unambiguous,
+  # this verifies the parse is still aligned with what the binary actually emitted.
+  for (( i = 1; i <= ${#lines}; i += 4 )); do
+    if [[ "${lines[i]}" != p* || "${lines[i+1]}" != c* || \
+          "${lines[i+2]}" != f* || "${lines[i+3]}" != n* ]]; then
+      print -ru2 -- "wt-rm: could not read the process list from lsof — refusing."
+      return 1
+    fi
+    pid="${lines[i]#p}" cmd="${lines[i+1]#c}" cwd="${lines[i+3]#n}"
+    # Anchored on purpose. Sibling worktrees of one repo differ by a suffix on a
+    # shared path — repo-a and repo-a-extra are neighbours by construction — so a
+    # bare prefix test would let a process in one veto removal of the other forever.
+    [[ "$cwd" == "$dest" || "$cwd" == "$dest"/* ]] && hits+=( "$pid $cmd" )
+  done
+  (( ${#hits} )) && print -rl -- $hits
+  return 0
+}
+
 # wt-rm — retire a worktree made by `wt`: validate the project hook, run three
-# cleanliness checks around the Herdr workspace shutdown and the teardown hook, remove
-# the worktree, then delete the branch.
+# cleanliness checks around the Herdr workspace shutdown and the teardown hook, check
+# that no process of the caller's is sitting in the checkout, remove the worktree, then
+# delete the branch.
 #   wt-rm <branch>
 # Run from another checkout of the same repo, never from inside the one being removed.
 #
@@ -989,6 +1092,14 @@ _wt_stop_herdr_workspaces() {
 #   6. Check 3 (_wt_clean), after teardown, before removal. Ties any non-ignored
 #      teardown output to its cause before Git's more generic removal refusal would
 #      otherwise appear a step later with a less specific message.
+#   7. Check 4 (_wt_live_processes), the last thing before Git deletes files. Every
+#      check above reads Git or Herdr; this one reads the OS, because a process that
+#      escaped its pane's process group is invisible to both. Last rather than first
+#      because stopping project services is what teardown is for — scanning ahead of
+#      it would refuse every repository that shuts its own daemons down properly.
+#      A heuristic, not a guarantee, and bounded in three directions the helper spells
+#      out. It converts the common husk into a refusal; it does not make removal safe
+#      by proof.
 #
 # All three checks fail closed on _wt_clean's unknown state (2), same as every other
 # consumer of that helper.
@@ -1082,6 +1193,21 @@ wt-rm() {
       *) print -ru2 -- "wt-rm: cannot determine whether $dest is clean after teardown — refusing. Resources may already be reclaimed."
          return 1 ;;
     esac
+
+    # Check 4 — the last witness before Git deletes anything, and the only one that
+    # asks the OS rather than Herdr. Deliberately after teardown: stopping project
+    # services is what the teardown verb is for, so scanning before it would refuse
+    # every repository that does the right thing. As late as the sequence allows, which
+    # is the most a snapshot can offer — see _wt_live_processes for what it cannot see.
+    local busy line
+    busy="$(_wt_live_processes "$dest")" || return 1
+    if [[ -n "$busy" ]]; then
+      print -ru2 -- "wt-rm: $dest is still in use by a running process — removal aborted. Resources may already be reclaimed."
+      for line in ${(f)busy}; do print -ru2 -- "    $line"; done
+      print -ru2 -- "    These outlived the Herdr workspace, so they are detached from any pane."
+      print -ru2 -- "    Stop them — from .worktreehook teardown if the project starts them — then retry: wt-rm $qb"
+      return 1
+    fi
 
     # Removal is the third post-shutdown failure mode (spec §9.3), and reports the
     # same exact partial state as the other two. Git's own refusal names only the
