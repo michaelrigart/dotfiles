@@ -116,8 +116,8 @@ Mark which words are the reviewer's. Do not blend its findings into your own pro
 is the one hop no mechanism covers.
 
 Ping when the **artifact** is done, not at every checkpoint. Interrupt early only when
-something genuinely needs Michael's judgement. `xreview notify <msg>` raises a desktop
-notification from the shell, so the ping does not depend on remembering to send one.
+something genuinely needs Michael's judgement. Herdr raises the desktop notification
+itself when an agent finishes or blocks, so there is nothing to send by hand.
 
 ## What is enforced rather than trusted
 

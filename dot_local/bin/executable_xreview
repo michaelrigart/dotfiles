@@ -154,15 +154,6 @@ cmd_receipts() {
   cat "$f"
 }
 
-# The completion ping is a mechanism, not a promise: a shell notification fires
-# whether or not the model remembers to send one.
-cmd_notify() {
-  [ -n "${1:-}" ] || die "usage: xreview notify <message>"
-  osascript -e "display notification $(printf '%s' "$1" | jq -Rs .) with title \"xreview\"" \
-    >/dev/null 2>&1 || true
-  printf '%s\n' "$1"
-}
-
 # A repo listed as trusted in ~/.codex/config.toml has its own .codex/config.toml
 # applied, which can widen the reviewer's sandbox and register MCP servers - a CLI pin
 # stops the first but not the second. Trust is NOT required for AGENTS.md: an unlisted
@@ -263,6 +254,5 @@ case "${1:-}" in
   receipts) shift; cmd_receipts "$@" ;;
   apply)    shift; cmd_apply "$@" ;;
   round)    shift; cmd_round "$@" ;;
-  notify)   shift; cmd_notify "$@" ;;
-  *) die "usage: xreview init [id] | thread | receipts | notify <msg> | apply <nonce>|--done | round [--reset] | dispatch [thread] <body-file> | collect [thread] <nonce> [budget]" ;;
+  *) die "usage: xreview init [id] | thread | receipts | apply <nonce>|--done | round [--reset] | dispatch [thread] <body-file> | collect [thread] <nonce> [budget]" ;;
 esac
