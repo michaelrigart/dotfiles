@@ -1,6 +1,6 @@
 # Zellij removal
 
-**Status:** In progress — https://github.com/michaelrigart/dotfiles/pull/4
+**Status:** Implemented — https://github.com/michaelrigart/dotfiles/pull/4
 
 **Date:** 2026-08-30
 
