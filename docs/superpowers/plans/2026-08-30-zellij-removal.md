@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** In progress
+**Status:** In progress — https://github.com/michaelrigart/dotfiles/pull/4
 
 **Goal:** Retire Zellij from the dotfiles, leaving Herdr as the only multiplexer and `dev` / `wt` / `wt-prepare` / `wt-rm` as the only worktree lifecycle.
 
