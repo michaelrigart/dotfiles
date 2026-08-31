@@ -26,7 +26,9 @@ export XDG_STATE_HOME="$ROOT/state"
 mkdir -p "$ROOT/repo/src" "$ROOT/repo/tests" && cd "$ROOT/repo" || exit 1
 git init -q . && git config user.email t@t && git config user.name t
 printf 'x\n' > src/in-diff.txt; printf 'y\n' > src/untouched.txt
-git add -A && git commit -q -m init
+git config commit.gpgsign false          # see test-xreview.sh for why
+git add -A
+if ! git commit -q -m init; then printf 'fixture setup failed\n' >&2; exit 1; fi
 printf 'changed\n' > src/in-diff.txt      # working-tree change → in scope
 
 KEY="$(printf '%s' "$(git rev-parse --show-toplevel)" | tr '/' '_' | sed 's/^_//')"

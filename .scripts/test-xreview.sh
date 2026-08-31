@@ -16,7 +16,11 @@ trap 'rm -rf "$ROOT"' EXIT
 export XDG_STATE_HOME="$ROOT/state"
 mkdir -p "$ROOT/repo" && cd "$ROOT/repo" || exit 1
 git init -q . && git config user.email t@t && git config user.name t
-git commit -q --allow-empty -m init
+# Global config signs commits; a fixture that inherits it fails wherever the signing
+# key is unavailable, and an unasserted setup failure would let the suite run against
+# a broken fixture and still report green.
+git config commit.gpgsign false
+git commit -q --allow-empty -m init || { printf 'fixture setup failed\n' >&2; exit 1; }
 printf 'body\n' > b.md
 
 # A fake thread makes `codex queue` fail after the round has been counted, which is
@@ -38,6 +42,23 @@ bash "$XREVIEW" round --reset >/dev/null
 capped >/dev/null
 is "XREVIEW_MAX_ROUNDS lowers the cap" "$(capped)" 1
 unset XREVIEW_MAX_ROUNDS
+
+# SQL boundary. The nonce reaches a LIKE pattern, where _ and % are wildcards: a nonce
+# of xr-________-________ would otherwise match turns it was never minted for.
+refused() { bash "$XREVIEW" collect "$1" "$2" 1 2>&1 | grep -c 'refusing'; }
+is "a quote in the thread id is refused"    "$(refused "a'; DROP--" xr-abc)" 1
+is "a quote in the nonce is refused"        "$(refused abc "xr-'; DROP--")" 1
+is "a LIKE _ wildcard nonce is refused"     "$(refused abc "xr-________")"  1
+is "a LIKE % wildcard nonce is refused"     "$(refused abc "xr-%")"         1
+is "a path traversal thread id is refused"  "$(refused "../../etc/passwd" xr-abc)" 1
+is "an underscore in the thread id is fine" "$(refused "msg_03d99e" xr-abc)" 0
+
+# sqlite3 silently creates an empty database for a missing path, which would turn
+# "Codex has not written this yet" into a confusing "no such table".
+missing="$ROOT/no-codex-home"
+out="$(CODEX_HOME="$missing" bash "$XREVIEW" collect 01a05422 xr-abc 1 2>&1)"
+is "a missing history store is reported" "$(printf '%s' "$out" | grep -c 'history store not found')" 1
+is "a missing history store is not created" "$([ -e "$missing/thread_history_1.sqlite" ] && echo yes || echo no)" no
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))

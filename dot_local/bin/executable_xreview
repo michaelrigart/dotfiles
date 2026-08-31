@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # xreview - dispatch a cold review request to a Codex thread and collect the answer.
-# Deliberately small: no ledger, no snapshots, no gates. Two proven mechanics.
+# Dispatch, collect, and a receipt of what was reviewed. Two PreToolUse guards read
+# those receipts (pre-merge gate, apply window); neither is proven enough to be an
+# authorization boundary - see the trust note below and treat findings as evidence.
 set -euo pipefail
 
 CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}"
@@ -8,12 +10,19 @@ HIST="$CODEX_HOME_DIR/thread_history_1.sqlite"
 
 die() { printf 'xreview: %s\n' "$1" >&2; exit 1; }
 
-# mode=ro needs the -wal/-shm sidecars, which exist only while a Codex session is
-# live - which is exactly when we collect. If it fails, no session is writing, so
-# immutable=1 is a safe point-in-time read rather than a torn one.
+# Opened normally, so SQLite does its own locking and change detection against a
+# database Codex is actively writing. Two rejected alternatives: `mode=ro` cannot create
+# the -shm a WAL database needs and so fails whenever the sidecars are absent - which is
+# most of the time, even with sessions live; and `immutable=1`, which SQLite documents
+# as skipping locking and change detection and may return incorrect results if the file
+# changes. Read-only intent is enforced by only ever issuing SELECT here.
 sq() {
-  sqlite3 "file:$HIST?mode=ro" "$@" 2>/dev/null \
-    || sqlite3 "file:$HIST?immutable=1" "$@"
+  # Must already exist: sqlite3 silently CREATES an empty database for a missing path,
+  # which would turn "Codex has not written this yet" into "no such table".
+  [ -r "$HIST" ] || die "Codex history store not found at $HIST"
+  # query_only makes read-only an enforced property of the connection rather than a
+  # promise about which statements this script happens to contain.
+  sqlite3 "$HIST" "PRAGMA query_only=ON; $1"
 }
 
 # Thread resolution: explicit > recorded > live Herdr lookup. A recorded id is
@@ -154,10 +163,12 @@ cmd_notify() {
   printf '%s\n' "$1"
 }
 
-# Trust is required for AGENTS.md to load, so the repos we review are necessarily
-# trusted - and a trusted repo's .codex/config.toml can widen the reviewer's sandbox
-# and register MCP servers, which a CLI pin does not prevent. No repo has one today,
-# so this is a tripwire rather than a wall: refuse the dispatch and let a human look.
+# A repo listed as trusted in ~/.codex/config.toml has its own .codex/config.toml
+# applied, which can widen the reviewer's sandbox and register MCP servers - a CLI pin
+# stops the first but not the second. Trust is NOT required for AGENTS.md: an unlisted
+# repo still loads its instructions and ignores its config, so trust entries are
+# removable. Until the trust entries are narrowed this stays a tripwire rather than a
+# wall: refuse the dispatch and let a human look.
 guard_project_config() {
   local root; root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
   [ -e "$root/.codex" ] && die "refusing to dispatch: $root/.codex exists and can alter the reviewer's sandbox and tools - inspect it first"
@@ -192,6 +203,26 @@ Report the remaining disagreement, or: xreview round --reset"
   printf '%s\n' "$nonce"
 }
 
+# Both values are interpolated into SQL below. Nonces are minted here and thread ids
+# come from Codex, but neither is validated by the time it reaches this point - a
+# caller-supplied value must not be able to close a quote.
+assert_sql_safe() {
+  case "$1" in
+    "") die "empty identifier" ;;
+    *[!A-Za-z0-9._-]*) die "refusing unsafe identifier: $1" ;;
+  esac
+}
+
+# Stricter, for the one value that reaches a LIKE pattern: _ and % are wildcards there,
+# so a nonce of xr-________-________ would match turns it was never minted for and
+# correlate this collection with the wrong review.
+assert_like_safe() {
+  assert_sql_safe "$1"
+  case "$1" in
+    *[_%]*) die "refusing nonce containing a LIKE wildcard: $1" ;;
+  esac
+}
+
 cmd_collect() {
   local thread nonce budget waited=0
   # Nonces are minted here and always start with "xr-"; thread ids never do.
@@ -200,6 +231,7 @@ cmd_collect() {
   else
     thread="$(resolve_thread)" || return 1; nonce="$1"; budget="${2:-900}"
   fi
+  assert_sql_safe "$thread"; assert_like_safe "$nonce"
   while :; do
     local row; row=$(sq "
       SELECT t.status, COALESCE(t.final_agent_item_id,'')
@@ -210,6 +242,7 @@ cmd_collect() {
       ORDER BY t.rollout_ordinal DESC LIMIT 1;") || die "history query failed"
     local status="${row%%|*}" item="${row##*|}"
     if [ "$status" = "completed" ] && [ -n "$item" ]; then
+      assert_sql_safe "$item"
       sq "SELECT item_json FROM thread_items
           WHERE thread_id='$thread' AND item_id='$item';" \
         | jq -r '.text // empty'

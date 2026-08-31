@@ -27,7 +27,8 @@ trap 'rm -rf "$ROOT"' EXIT
 export XDG_STATE_HOME="$ROOT/state"
 mkdir -p "$ROOT/repo" && cd "$ROOT/repo" || exit 1
 git init -q . && git config user.email t@t && git config user.name t
-git commit -q --allow-empty -m init
+git config commit.gpgsign false          # see test-xreview.sh for why
+if ! git commit -q --allow-empty -m init; then printf 'fixture setup failed\n' >&2; exit 1; fi
 
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 KEY="$(printf '%s' "$(git rev-parse --show-toplevel)" | tr '/' '_' | sed 's/^_//')"
