@@ -501,7 +501,7 @@ logged "workspace create --cwd $R1 --label Netronix/curato (building) --no-focus
 # not w1:p1, so any predicted id fails here.
 logged "pane split --pane w7:p3 --direction right" "G2 the agents pane splits by parsed id"
 logged "pane run w7:p3 claude" "G2 claude runs in the parsed root pane"
-logged "pane run w7:p9 codex"  "G2 codex runs in the split's parsed id"
+logged "pane run w7:p9 codex --sandbox read-only --ask-for-approval never"  "G2 codex runs read-only in the split's parsed id"
 
 logged "tab create --workspace w7 --label editor" "G3 tabs are created with --workspace"
 unlogged "--workspace-id"    "G3 the non-existent --workspace-id flag is never used"

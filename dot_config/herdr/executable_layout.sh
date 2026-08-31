@@ -18,6 +18,11 @@ setopt local_options no_unset pipe_fail no_bg_nice
 
 MANAGED_TABS=(agents editor runtime git)
 BUILDING_SUFFIX=" (building)"
+# Codex's documented role here is reviewer, not implementer, so its panes launch
+# unable to write. Without this they inherit workspace-write with $HOME writable.
+# Read-only is not confinement — reads are still unrestricted — but it removes the
+# write half. Launch an implementer session by hand when you actually want one.
+CODEX_CMD="codex --sandbox read-only --ask-for-approval never"
 
 die() { print -ru2 -- "layout.sh: $*"; exit 1 }
 
@@ -328,7 +333,7 @@ hl_make_tab() {
       # changes exit semantics. A shell pane leaves a live prompt on quit, exactly as
       # dev.kdl's `claude; exec zsh` did.
       hl_api pane run "$pane" "claude" >/dev/null || return 1
-      hl_api pane run "$right" "codex" >/dev/null || return 1 ;;
+      hl_api pane run "$right" "$CODEX_CMD" >/dev/null || return 1 ;;
   esac
   print -r -- "$pane"
 }
@@ -354,7 +359,7 @@ hl_build() {
   out="$(hl_api_json pane split --pane "$p1" --direction right --cwd "$repo" --no-focus)" || return 1
   right="$(hl_id "$out" '.result.pane.pane_id' "the agents split pane")" || return 1
   hl_api pane run "$p1" "claude" >/dev/null || return 1
-  hl_api pane run "$right" "codex" >/dev/null || return 1
+  hl_api pane run "$right" "$CODEX_CMD" >/dev/null || return 1
 
   for l in editor runtime git; do
     hl_make_tab "$ws" "$l" "$repo" >/dev/null || return 1
@@ -410,7 +415,7 @@ hl_adopt_worktree() {
     || return 1
   right="$(hl_id "$out" '.result.pane.pane_id' "the agents split pane")" || return 1
   hl_api pane run "$pane" "claude" >/dev/null || return 1
-  hl_api pane run "$right" "codex" >/dev/null || return 1
+  hl_api pane run "$right" "$CODEX_CMD" >/dev/null || return 1
   for l in editor runtime git; do
     hl_make_tab "$ws" "$l" "$repo" >/dev/null || return 1
   done

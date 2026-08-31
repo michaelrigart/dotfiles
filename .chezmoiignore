@@ -72,6 +72,11 @@ tests/
 !.claude/hooks/
 .claude/hooks/*
 !.claude/hooks/herdr-agent-state.sh
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/cross-review/
+.claude/skills/cross-review/*
+!.claude/skills/cross-review/SKILL.md
 
 .codex/*
 !.codex/AGENTS.md
