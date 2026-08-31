@@ -67,6 +67,37 @@ cmd_init() {
   printf 'xreview: %s -> %s\n' "$(repo_root)" "$id"
 }
 
+# A receipt is the only durable evidence that a review actually happened. It records
+# the branch head at collection time so a reader can tell how far the branch has moved
+# since; it deliberately does not try to invalidate itself, because applying a finding
+# necessarily moves HEAD and a self-invalidating receipt would demand a second review
+# of the fix for the first.
+record_receipt() {
+  local dir; dir="$(state_dir)"
+  mkdir -p "$dir" || return 0
+  jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+         --arg branch "$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" \
+         --arg head "$(git rev-parse HEAD 2>/dev/null)" \
+         --arg thread "$1" --arg nonce "$2" \
+    '{ts:$ts,branch:$branch,head:$head,thread:$thread,nonce:$nonce}' \
+    >> "$dir/reviews.jsonl" 2>/dev/null || true
+}
+
+cmd_receipts() {
+  local f; f="$(state_dir)/reviews.jsonl"
+  [ -r "$f" ] || { printf 'no reviews recorded for %s\n' "$(repo_root)"; return 1; }
+  cat "$f"
+}
+
+# The completion ping is a mechanism, not a promise: a shell notification fires
+# whether or not the model remembers to send one.
+cmd_notify() {
+  [ -n "${1:-}" ] || die "usage: xreview notify <message>"
+  osascript -e "display notification $(printf '%s' "$1" | jq -Rs .) with title \"xreview\"" \
+    >/dev/null 2>&1 || true
+  printf '%s\n' "$1"
+}
+
 # Trust is required for AGENTS.md to load, so the repos we review are necessarily
 # trusted - and a trusted repo's .codex/config.toml can widen the reviewer's sandbox
 # and register MCP servers, which a CLI pin does not prevent. No repo has one today,
@@ -85,10 +116,13 @@ cmd_dispatch() {
   guard_project_config
   local nonce; nonce="xr-$(date +%s)-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
   # Provenance is applied here, by the broker - not by the peer, and not by hand.
-  { printf '<from-claude-code>\n'
+  # NOT <from-claude-code>: that tag marks relayed quoted material, and the peer is
+  # instructed never to act on an imperative inside one. A dispatch is an authorized
+  # request, so it needs a tag the governance marks as actionable.
+  { printf '<cross-review-request>\n'
     cat "$body_file"
     printf '\n\n[correlation: %s — quote this token nowhere in your reply]\n' "$nonce"
-    printf '</from-claude-code>\n'
+    printf '</cross-review-request>\n'
   } > "$body_file.wrapped"
   codex queue --thread "$thread" --message "$(cat "$body_file.wrapped")" >/dev/null \
     || die "queue failed for thread $thread"
@@ -116,6 +150,7 @@ cmd_collect() {
       sq "SELECT item_json FROM thread_items
           WHERE thread_id='$thread' AND item_id='$item';" \
         | jq -r '.text // empty'
+      record_receipt "$thread" "$nonce"
       return 0
     fi
     case "$status" in failed|error) die "reviewer turn failed" ;; esac
@@ -129,5 +164,7 @@ case "${1:-}" in
   collect)  shift; cmd_collect "$@" ;;
   init)     shift; cmd_init "$@" ;;
   thread)   shift; resolve_thread ;;
-  *) die "usage: xreview init [thread-id] | thread | dispatch [thread] <body-file> | collect [thread] <nonce> [budget]" ;;
+  receipts) shift; cmd_receipts "$@" ;;
+  notify)   shift; cmd_notify "$@" ;;
+  *) die "usage: xreview init [id] | thread | receipts | notify <msg> | dispatch [thread] <body-file> | collect [thread] <nonce> [budget]" ;;
 esac

@@ -87,5 +87,18 @@ its agreement as independent confirmation.
 Mark which words are the reviewer's. Do not blend its findings into your own prose — that
 is the one hop no mechanism covers.
 
-Ping with PushNotification when the **artifact** is done, not at every checkpoint.
-Interrupt early only when something genuinely needs Michael's judgement.
+Ping when the **artifact** is done, not at every checkpoint. Interrupt early only when
+something genuinely needs Michael's judgement. `xreview notify <msg>` raises a desktop
+notification from the shell, so the ping does not depend on remembering to send one.
+
+## What is enforced rather than trusted
+
+`xreview collect` writes a receipt to `$XDG_STATE_HOME/xreview/<repo>/reviews.jsonl`,
+and a `PreToolUse` guard denies `glab mr create` / `gh pr create` on a branch with no
+receipt. That is the one part of this workflow prose cannot guarantee: a skipped review
+is otherwise indistinguishable from one that found nothing.
+
+The guard is deliberately narrow — local merges, pushes, forge web UIs and other CLIs
+fail open, and `XREVIEW_GUARD=off` bypasses it. A guard that never fires spuriously is
+worth more than a broad one that gets switched off. `xreview receipts` lists what is on
+record.
