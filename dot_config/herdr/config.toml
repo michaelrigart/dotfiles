@@ -26,6 +26,11 @@ name = "tokyo-night"
 # tab jump then looks exactly like a dead keybinding.
 #
 # "herdr" = in-app toasts: visible wherever the TUI is, and needs no OS permission.
+# Not "system"/"terminal", which would raise a real desktop notification. Both signals
+# Herdr has are scoped to background activity — the popup delivery here, and
+# `[ui.sound]` — so a finish in whatever I am currently looking at may be silent and
+# popup-less, and nothing reaches me in another application. Accepted knowingly rather
+# than grant Herdr notification permission: the sidebar still carries the state.
 [ui]
 # Keep the sidebar grouped by workspace rather than a flat agent list.
 agent_panel_sort = "spaces"

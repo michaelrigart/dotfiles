@@ -116,8 +116,11 @@ Mark which words are the reviewer's. Do not blend its findings into your own pro
 is the one hop no mechanism covers.
 
 Ping when the **artifact** is done, not at every checkpoint. Interrupt early only when
-something genuinely needs Michael's judgement. Herdr raises the desktop notification
-itself when an agent finishes or blocks, so there is nothing to send by hand.
+something genuinely needs Michael's judgement. Herdr surfaces agent state itself, so
+there is nothing to send by hand — but both signals it has, the popup and the completion
+sound, are scoped to *background* activity, and neither leaves the machine. An agent
+finishing in whatever he is looking at may raise nothing at all, and none of it reaches
+him in another application. Write the ping to be worth reading late.
 
 ## What is enforced rather than trusted
 
