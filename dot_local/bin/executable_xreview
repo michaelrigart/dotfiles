@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# xreview - dispatch a cold review request to a Codex thread and collect the answer.
+# Deliberately small: no ledger, no snapshots, no gates. Two proven mechanics.
+set -euo pipefail
+
+CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}"
+HIST="$CODEX_HOME_DIR/thread_history_1.sqlite"
+
+die() { printf 'xreview: %s\n' "$1" >&2; exit 1; }
+
+# mode=ro needs the -wal/-shm sidecars, which exist only while a Codex session is
+# live - which is exactly when we collect. If it fails, no session is writing, so
+# immutable=1 is a safe point-in-time read rather than a torn one.
+sq() {
+  sqlite3 "file:$HIST?mode=ro" "$@" 2>/dev/null \
+    || sqlite3 "file:$HIST?immutable=1" "$@"
+}
+
+cmd_dispatch() {
+  local thread="$1" body_file="$2"
+  [ -r "$body_file" ] || die "cannot read $body_file"
+  local nonce; nonce="xr-$(date +%s)-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+  # Provenance is applied here, by the broker - not by the peer, and not by hand.
+  { printf '<from-claude-code>\n'
+    cat "$body_file"
+    printf '\n\n[correlation: %s — quote this token nowhere in your reply]\n' "$nonce"
+    printf '</from-claude-code>\n'
+  } > "$body_file.wrapped"
+  codex queue --thread "$thread" --message "$(cat "$body_file.wrapped")" >/dev/null \
+    || die "queue failed for thread $thread"
+  printf '%s\n' "$nonce"
+}
+
+cmd_collect() {
+  local thread="$1" nonce="$2" budget="${3:-900}" waited=0
+  while :; do
+    local row; row=$(sq "
+      SELECT t.status, COALESCE(t.final_agent_item_id,'')
+      FROM thread_turns t
+      JOIN thread_items i
+        ON i.thread_id = t.thread_id AND i.item_id = t.first_user_item_id
+      WHERE t.thread_id = '$thread' AND i.item_json LIKE '%$nonce%'
+      ORDER BY t.rollout_ordinal DESC LIMIT 1;") || die "history query failed"
+    local status="${row%%|*}" item="${row##*|}"
+    if [ "$status" = "completed" ] && [ -n "$item" ]; then
+      sq "SELECT item_json FROM thread_items
+          WHERE thread_id='$thread' AND item_id='$item';" \
+        | jq -r '.text // empty'
+      return 0
+    fi
+    case "$status" in failed|error) die "reviewer turn failed" ;; esac
+    [ "$waited" -ge "$budget" ] && die "ambiguous: no completed turn for $nonce after ${budget}s (do NOT retry)"
+    sleep 5; waited=$((waited+5))
+  done
+}
+
+case "${1:-}" in
+  dispatch) shift; cmd_dispatch "$@" ;;
+  collect)  shift; cmd_collect "$@" ;;
+  *) die "usage: xreview dispatch <thread> <body-file> | collect <thread> <nonce> [budget-secs]" ;;
+esac
