@@ -9,7 +9,7 @@ GUARD="$(cd "$(dirname "$0")/.." && pwd)/dot_claude/executable_xreview-apply-gua
 pass=0; fail=0
 _pass() { printf '  PASS: %s\n' "$1"; pass=$((pass + 1)); }
 _fail() { printf '  FAIL: %s\n    | got: %s\n' "$1" "$2"; fail=$((fail + 1)); }
-is() { [ "$2" = "$3" ] && _pass "$1" || _fail "$1" "$2"; }
+is() { if [ "$2" = "$3" ]; then _pass "$1"; else _fail "$1" "$2"; fi; }
 
 decide() {
   local out; out="$(cat)"

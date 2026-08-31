@@ -9,7 +9,7 @@ XREVIEW="$(cd "$(dirname "$0")/.." && pwd)/dot_local/bin/executable_xreview"
 pass=0; fail=0
 _pass() { printf '  PASS: %s\n' "$1"; pass=$((pass + 1)); }
 _fail() { printf '  FAIL: %s\n    | got: %s\n' "$1" "$2"; fail=$((fail + 1)); }
-is() { [ "$2" = "$3" ] && _pass "$1" || _fail "$1" "$2"; }
+is() { if [ "$2" = "$3" ]; then _pass "$1"; else _fail "$1" "$2"; fi; }
 
 ROOT="$(mktemp -d "${TMPDIR:-/tmp}/xreview.XXXXXX")"
 trap 'rm -rf "$ROOT"' EXIT
@@ -24,7 +24,7 @@ printf 'body\n' > b.md
 capped() { bash "$XREVIEW" dispatch faketh b.md 2>&1 | grep -c 'exceeds the cap'; }
 
 is "round counter starts at zero" "$(bash "$XREVIEW" round)" 0
-for i in 1 2 3; do capped >/dev/null; done
+capped >/dev/null; capped >/dev/null; capped >/dev/null
 is "three rounds are permitted"   "$(bash "$XREVIEW" round)" 3
 is "the fourth round is refused"  "$(capped)"                1
 is "a refused round still increments, so retrying stays refused" "$(bash "$XREVIEW" round)" 4

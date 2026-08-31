@@ -20,7 +20,7 @@ decide() {
     || printf 'allow'
 }
 decision() { payload "$1" | bash "$GUARD" 2>/dev/null | decide; }
-is() { [ "$2" = "$3" ] && _pass "$1" || _fail "$1" "$2"; }
+is() { if [ "$2" = "$3" ]; then _pass "$1"; else _fail "$1" "$2"; fi; }
 
 ROOT="$(mktemp -d "${TMPDIR:-/tmp}/xrguard.XXXXXX")"
 trap 'rm -rf "$ROOT"' EXIT
