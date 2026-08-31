@@ -3,7 +3,7 @@
 #
 # Enforces the worktree rule from ~/.config/agents/GLOBAL.md that prose alone
 # cannot guarantee: a wt-managed sibling worktree is retired with `wt-rm`, never
-# raw `git worktree remove`. Raw removal skips session shutdown, so live
+# raw `git worktree remove`. Raw removal skips Herdr workspace closure, so live
 # processes rewrite into the deleted path — six husk directories came from that.
 #
 # Scope is deliberately ONE command shape (design §5.1): a literal ABSOLUTE
@@ -160,14 +160,16 @@ deny "Raw \`git worktree remove\` on a wt-managed worktree.
 
 $target is the wt sibling of the repository at $parent/$matched.
 
-Removing it with raw git skips session shutdown and the project teardown hook.
+Removing it with raw git skips Herdr workspace closure and the project teardown hook.
 Live processes then write back into the deleted path, which is what leaves husk
 directories behind. Retire it through the protocol instead:
 
     command wt-rm <branch>
 
 (\`command\` is required — a shell function of the same name can shadow the
-PATH wrapper that carries the safety preflight.)
+PATH wrapper, which sources zshenv and the functions file so the full
+lifecycle is available in a non-interactive shell before it dispatches to
+the function.)
 
 The directory slug is \"$slug\". That is not always the branch name — a slug maps
 '/' to '-', so a branch containing a slash differs. Use the branch you were

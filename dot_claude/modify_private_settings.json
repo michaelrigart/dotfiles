@@ -166,7 +166,7 @@ printf '%s' "$input" | jq \
         # call, so the script fast-paths out in ~6ms; tests in
         # .scripts/test-git-forge-guard.sh. $HOME stays literal, expanded when it runs.
         # Second entry: the worktree guard. Denies raw `git worktree remove` on a wt
-        # sibling worktree, which skips session shutdown and leaves husk directories.
+        # sibling worktree, which skips Herdr workspace closure and leaves husk directories.
         # Order is load-bearing — test-claude-settings.sh pins each guard by index.
         # Tests in .scripts/test-worktree-guard.sh.
         "PreToolUse": [
