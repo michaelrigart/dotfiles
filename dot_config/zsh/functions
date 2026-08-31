@@ -160,7 +160,7 @@ dev() {
   # workspace that wt-rm could not identify safely.
   if [[ -f "$repo/.git" ]]; then
     local main
-    main="$(cd "$repo" && _wt_primary)" || return 1
+    main="$(builtin cd "$repo" && _wt_primary)" || return 1
     _wt_prepare_for_herdr "$main" "$repo" || return 1
     "${DEV_LAYOUT:-$HOME/.config/herdr/layout.sh}" --worktree "$main" "$repo"
     return $?
@@ -168,6 +168,12 @@ dev() {
 
   "${DEV_LAYOUT:-$HOME/.config/herdr/layout.sh}" "$repo"
 }
+
+# Library functions use `builtin cd`, never bare `cd`. aliases is sourced before
+# functions in .zshrc, so a bare `cd` is alias-expanded at parse time into zoxide's
+# `z` — whose implementation only loads from a precmd hook. A `zsh -ic <cmd>` shell
+# (every Herdr popup) never reaches a prompt, so `z` does not exist and the cd fails
+# with the popup closing before the error can be read.
 
 # _wt_git — git with its routing environment cleared. Every Git call in the
 # worktree lifecycle goes through this. An exported GIT_DIR or GIT_WORK_TREE
@@ -477,7 +483,7 @@ _wt_hook_run() {
     2) return 0 ;;   # repository has not opted in
     1) return 1 ;;
   esac
-  ( cd "$wt" \
+  ( builtin cd "$wt" \
     && WT_MAIN="$main" WT_WORKTREE="$wt" WT_BRANCH="$branch" WT_SLUG="$slug" \
        "$main/.worktreehook" "$verb" )
   local hrc=$?
@@ -591,7 +597,7 @@ _wt_do_prepare() {
     fi
     # `--` is mandatory: manifest entries are arbitrary strings, and one named
     # "-h" is otherwise parsed as an option and prints usage instead of copying.
-    if ! ( cd "$dest" && wtcp --from "$main" -- "${_WT_CARRY[@]}" ); then
+    if ! ( builtin cd "$dest" && wtcp --from "$main" -- "${_WT_CARRY[@]}" ); then
       print -ru2 -- "wt: copying .worktreeinclude files into $dest failed."
       print -ru2 -- "    The worktree exists — fix the copy, then: wt-prepare $qb && wt $qb"
       return 1
