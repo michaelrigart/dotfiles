@@ -170,7 +170,11 @@ printf '%s' "$input" | jq \
         # Order is load-bearing — test-claude-settings.sh pins each guard by index.
         # Third entry: the cross-review guard. Denies proposing a branch for merge with
         # no Codex review on record; a skipped review looks identical to a clean one.
-        # Tests in .scripts/test-worktree-guard.sh and .scripts/test-xreview-guard.sh.
+        # Fourth entry: the apply-window guard. Its matcher is a wildcard because it
+        # inspects Edit/Write rather than Bash; it is inert unless xreview apply has
+        # opened a window.
+        # Tests in .scripts/test-worktree-guard.sh, test-xreview-guard.sh and
+        # test-xreview-apply-guard.sh.
         "PreToolUse": [
           {
             "matcher": "Bash",
@@ -188,6 +192,12 @@ printf '%s' "$input" | jq \
             "matcher": "Bash",
             "hooks": [
               { "type": "command", "command": "bash $HOME/.claude/xreview-guard.sh" }
+            ]
+          },
+          {
+            "matcher": "*",
+            "hooks": [
+              { "type": "command", "command": "bash $HOME/.claude/xreview-apply-guard.sh" }
             ]
           }
         ]

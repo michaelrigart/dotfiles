@@ -83,6 +83,30 @@ record_receipt() {
     >> "$dir/reviews.jsonl" 2>/dev/null || true
 }
 
+# An apply window bounds the blast radius of acting on a finding. While it is open,
+# review-driven edits are confined to files already in the branch diff, plus test paths —
+# the RED-test rule requires ADDING a test, so a rule confined strictly to the diff would
+# forbid the very thing it demands. Whether a RED test was actually written first is not
+# mechanisable; this bounds where a mistake can land, not whether one is made.
+cmd_apply() {
+  local dir; dir="$(state_dir)"
+  if [ "${1:-}" = "--done" ]; then
+    rm -f "$dir/applying"; printf 'xreview: apply window closed\n'; return 0
+  fi
+  [ -n "${1:-}" ] || die "usage: xreview apply <nonce> | xreview apply --done"
+  local base; base="$(git merge-base HEAD origin/HEAD 2>/dev/null \
+                      || git merge-base HEAD main 2>/dev/null || printf '')"
+  mkdir -p "$dir"
+  { printf 'nonce=%s\n' "$1"
+    { [ -n "$base" ] && git diff --name-only "$base"..HEAD 2>/dev/null
+      git diff --name-only 2>/dev/null
+      git diff --cached --name-only 2>/dev/null
+    } | sort -u | sed 's/^/file=/'
+  } > "$dir/applying"
+  printf 'xreview: apply window open for %s (%s files in scope)\n' \
+    "$1" "$(grep -c '^file=' "$dir/applying" 2>/dev/null || printf 0)"
+}
+
 cmd_receipts() {
   local f; f="$(state_dir)/reviews.jsonl"
   [ -r "$f" ] || { printf 'no reviews recorded for %s\n' "$(repo_root)"; return 1; }
@@ -165,6 +189,7 @@ case "${1:-}" in
   init)     shift; cmd_init "$@" ;;
   thread)   shift; resolve_thread ;;
   receipts) shift; cmd_receipts "$@" ;;
+  apply)    shift; cmd_apply "$@" ;;
   notify)   shift; cmd_notify "$@" ;;
-  *) die "usage: xreview init [id] | thread | receipts | notify <msg> | dispatch [thread] <body-file> | collect [thread] <nonce> [budget]" ;;
+  *) die "usage: xreview init [id] | thread | receipts | notify <msg> | apply <nonce>|--done | dispatch [thread] <body-file> | collect [thread] <nonce> [budget]" ;;
 esac

@@ -98,7 +98,19 @@ and a `PreToolUse` guard denies `glab mr create` / `gh pr create` on a branch wi
 receipt. That is the one part of this workflow prose cannot guarantee: a skipped review
 is otherwise indistinguishable from one that found nothing.
 
-The guard is deliberately narrow — local merges, pushes, forge web UIs and other CLIs
+Acting on findings runs inside an apply window:
+
+```
+xreview apply <nonce>     # opens it; edits confined to the branch diff + test paths
+xreview apply --done      # closes it
+```
+
+While open, a second guard denies Edit/Write outside the files the review actually saw.
+Test paths stay writable, because the RED-test rule requires adding one. That bounds
+where a mistake can land; whether a RED test was genuinely written first is not
+mechanisable and remains discipline.
+
+The guards are deliberately narrow — local merges, pushes, forge web UIs and other CLIs
 fail open, and `XREVIEW_GUARD=off` bypasses it. A guard that never fires spuriously is
 worth more than a broad one that gets switched off. `xreview receipts` lists what is on
 record.

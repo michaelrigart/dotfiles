@@ -337,7 +337,7 @@ jq_is '.includeCoAuthoredBy'    'false' "deprecated co-authored-by fallback stil
 echo "N. both Bash guards are wired as PreToolUse hooks"
 # Index-pinned, not just length-checked. These assertions are positional, so a
 # reordering would silently retarget them at the wrong guard rather than fail.
-jq_is '.hooks.PreToolUse | length' 3 "exactly three PreToolUse entries"
+jq_is '.hooks.PreToolUse | length' 4 "exactly four PreToolUse entries"
 jq_is '.hooks.PreToolUse[0].matcher' 'Bash' "forge guard matches the Bash tool"
 jq_is '.hooks.PreToolUse[0].hooks[0].command' 'bash $HOME/.claude/git-forge-guard.sh' \
       'entry 0 runs the forge guard, $HOME left for the shell to expand'
@@ -347,6 +347,9 @@ jq_is '.hooks.PreToolUse[1].hooks[0].command' 'bash $HOME/.claude/worktree-guard
 jq_is '.hooks.PreToolUse[2].matcher' 'Bash' "cross-review guard matches the Bash tool"
 jq_is '.hooks.PreToolUse[2].hooks[0].command' 'bash $HOME/.claude/xreview-guard.sh' \
       'entry 2 runs the cross-review guard, $HOME left for the shell to expand'
+jq_is '.hooks.PreToolUse[3].matcher' '*' "apply guard matches every tool, not just Bash"
+jq_is '.hooks.PreToolUse[3].hooks[0].command' 'bash $HOME/.claude/xreview-apply-guard.sh' \
+      'entry 3 runs the apply-window guard, $HOME left for the shell to expand'
 # The SessionStart hooks must survive alongside them — adding PreToolUse replaced the
 # whole hooks object once during development.
 jq_is '.hooks.SessionStart | length' 2 "both SessionStart hooks present"

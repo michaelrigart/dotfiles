@@ -62,6 +62,7 @@ tests/
 !.claude/git-forge-guard.sh
 !.claude/worktree-guard.sh
 !.claude/xreview-guard.sh
+!.claude/xreview-apply-guard.sh
 !.claude/agents/
 .claude/agents/*
 !.claude/agents/sp-mechanical.md
