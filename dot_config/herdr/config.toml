@@ -5,7 +5,7 @@
 # omitted follows the shipped default, so an upstream default change surfaces as a
 # behaviour change rather than being silently pinned.
 #
-# Keybinding model mirrors the Zellij setup it runs beside:
+# Keybinding model:
 #   Ctrl-h/j/k/l  → seamless Neovim splits + Herdr panes (smart-splits.nvim)
 #   Alt + <key>   → tabs, zoom, panes, detach
 # Alt rather than digits because digits need Shift on AZERTY. Ghostty is configured
@@ -29,9 +29,8 @@ name = "tokyo-night"
 [ui]
 # Keep the sidebar grouped by workspace rather than a flat agent list.
 agent_panel_sort = "spaces"
-# Alt-q is the Zellij quit mnemonic, but one Herdr session owns many projects. Close
-# only the current workspace and keep Herdr's confirmation rather than killing every
-# repository in the server.
+# Alt-q closes only the current workspace: one Herdr session owns many projects, so
+# keep Herdr's confirmation rather than killing every repository in the server.
 confirm_close = true
 
 [ui.toast]
@@ -43,8 +42,8 @@ delivery = "herdr"
 resume_agents_on_restore = true
 
 [keys]
-# Kept as an escape hatch. Unlike Zellij's stock Ctrl leaders, herdr's prefix does not
-# shadow shell readline or Neovim keys, so nothing needs clearing.
+# Kept as an escape hatch. Herdr's prefix does not shadow shell readline or Neovim
+# keys, so nothing needs clearing.
 prefix = "ctrl+b"
 
 zoom = "alt+z"
@@ -57,7 +56,7 @@ edit_scrollback = "alt+s"
 
 # Herdr's built-in creator cannot run .worktreeinclude/.worktreehook or install the
 # ownership lock that keeps native removal behind wt-rm. Its default shortcut is
-# replaced below by a popup calling the safe hwt flow; native open/grouping still
+# replaced below by a popup calling the safe wt flow; native open/grouping still
 # belongs to Herdr after Git creation.
 new_worktree = ""
 
@@ -92,8 +91,8 @@ description = "navigate right (nvim/herdr)"
 [[keys.command]]
 key = "prefix+shift+g"
 type = "popup"
-command = "exec \"${SHELL:-zsh}\" -ic hwt-prompt"
-description = "new worktree (safe hwt flow)"
+command = "exec \"${SHELL:-zsh}\" -ic wt-prompt"
+description = "new worktree (safe wt flow)"
 width = "60%"
 height = 7
 
@@ -101,9 +100,9 @@ height = 7
 # would inject control sequences into whatever occupies the pane, which corrupts
 # Neovim's state or sends stray input to a live agent.
 
-# The on-demand `bin/rails console` slot. Session-modal, so it does not disturb the
-# tab layout — better than Zellij's floating layer, where Alt-n added *floating* panes
-# while the layer was visible.
+# The on-demand `bin/rails console` slot. Session-modal, so unlike the floating
+# panes of the previous setup, it stays layered over everything else while
+# visible without disturbing the tab layout.
 [[keys.command]]
 key = "alt+p"
 type = "popup"

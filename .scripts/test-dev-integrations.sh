@@ -1,16 +1,19 @@
 #!/usr/bin/env zsh
-# Cold-restore check for the Herdr trial.
+# Cold-restore check for Herdr.
 #
 # This verifies the integrations deployed by chezmoi. It never installs them.
 # The named session isolates Herdr runtime state; the integration config is the real
-# ~/.claude and ~/.codex state activated in Task 11.
+# ~/.claude and ~/.codex state on this machine, already carrying Herdr's deployed
+# integrations.
 #
-# Run manually: zsh .scripts/test-hdev-integrations.sh
+# Run manually: zsh .scripts/test-dev-integrations.sh
 emulate -L zsh
 set -u
 setopt no_bg_nice
 
-SESSION=hdev-restore
+SESSION=dev-restore
+# Path name is historical (from the Herdr trial); the value is deliberately
+# stable — see the trusted-project rationale below — do not rename it.
 FIXTURE_BASE=${XDG_STATE_HOME:-$HOME/.local/state}/herdr-trial
 h() { command herdr --session "$SESSION" "$@" }
 
@@ -56,12 +59,12 @@ print -r -- "$integration_status" | grep -q '^codex: current ' \
 
 # Stable by design. Codex records project trust in config.toml; a new mktemp path on
 # every restore attempt would accumulate one dead trusted-project entry per run. One
-# XDG-state fixture keeps the ten-attempt trial repeatable without polluting config.
+# XDG-state fixture keeps repeat runs repeatable without polluting config.
 REPO="$FIXTURE_BASE/restore-fixture"
 mkdir -p "$REPO" || exit 1
 git -C "$REPO" init -q || exit 1
 
-if ! HERDR_SESSION="$SESSION" HDEV_NO_ATTACH=1 ~/.config/herdr/layout.sh "$REPO"; then
+if ! HERDR_SESSION="$SESSION" DEV_NO_ATTACH=1 ~/.config/herdr/layout.sh "$REPO"; then
   bad "layout creation failed"
   print -r -- "=== $pass passed, $fail failed ==="
   exit 1

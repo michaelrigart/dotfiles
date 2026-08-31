@@ -106,149 +106,21 @@ tsh() {
   fi
 }
 
-# _wt_session_name <path> — the Zellij session name for a checkout. Single source of
-# truth, shared by `dev`, `wt` and `wt-rm`.
+# dev — open (or return to) a project in its Herdr workspace. Resolve an argument to
+# a repository under ~/Code, then hand that path to layout.sh: a primary checkout
+# opens as an ordinary workspace, a linked one through native worktree mode.
+#   dev                    pick from all repos under ~/Code (fzf)
+#   dev curato             by name: exact basename → case-insensitive substring → fzf
+#   dev Netronix/curato    path relative to ~/Code
+#   dev .                  the git repo containing the current directory
 #
-# Name = the repo's path under ~/Code, lowercased, "/" → "--" (Zellij rejects "/").
-# Always org-qualified, so a name is stable: cloning an unrelated repo that happens to
-# share a basename never renames a session you already use. Repos outside ~/Code are
-# invisible to `dev`'s glob, so they keep basename + a hash of the canonical root.
-#
-# The IPC socket path (ZELLIJ_SOCKET_DIR + contract dir + name) must stay under 104
-# bytes; the short socket dir leaves ~68 for the name. Long branch names can approach
-# that, so fold the tail into a hash rather than let zellij abort.
-#
-# NB: this is deliberately NOT invertible — both the hashed form above and any repo
-# directory containing "--" collide with a naive "--" → "/" reversal. Callers resolving
-# a session name back to a path must generate names and compare, never reverse.
-_wt_session_name() {
-  emulate -L zsh
-  # Both sides resolved: git reports real paths, and ~/Code may sit behind a symlink.
-  local repo="${1:A}" code="${HOME:A}/Code" name h
-  if [[ "$repo" == "$code/"* ]]; then
-    local slug="${repo#$code/}"; name="${(L)${slug//\//--}}"
-  else
-    h="$(shasum -a 256 <<<"$repo")"; name="${repo:t:l}--${h[1,8]}"
-  fi
-  if (( ${#name} > 60 )); then
-    h="$(shasum -a 256 <<<"$repo")"; name="${name[1,50]}--${h[1,8]}"
-  fi
-  print -r -- "$name"
-}
-
-# dev — open (or return to) a project in its Zellij "dev" layout.
-#   dev                   pick from all repos under ~/Code (fzf)
-#   dev curato            by name: exact basename → case-insensitive substring → fzf
-#   dev netronix--curato  by session name, exactly as `zellij list-sessions` prints it
-#   dev Netronix/curato   path relative to ~/Code
-#   dev .                 the git repo containing the current directory
-dev() {
-  emulate -L zsh
-  setopt local_options null_glob extended_glob
-
-  local code="$HOME/Code" repo name arg="$1"
-  local -a repos=( "$code"/*/.git(N:h) "$code"/*/*/.git(N:h) )
-
-  # 1) "." or an existing directory → the git repo that contains it
-  if [[ "$arg" == "." || ( -n "$arg" && -d "$arg" ) ]]; then
-    repo="$(_wt_git -C "${arg:-$PWD}" rev-parse --show-toplevel 2>/dev/null)" \
-      || { print -ru2 -- "dev: '${arg:-$PWD}' is not inside a git repo."; return 1; }
-
-  # 2) exact path relative to ~/Code (e.g. Netronix/curato)
-  elif [[ -n "$arg" && -e "$code/$arg/.git" ]]; then
-    repo="$code/$arg"
-
-  # 3) by name, or the fzf picker
-  else
-    local -a hits
-    if [[ -z "$arg" ]]; then
-      hits=( $repos )
-    else
-      # Session-name form first (netronix--curato), so what `zellij list-sessions`
-      # prints can be pasted straight back. Generate each repo's name and compare:
-      # the transformation isn't invertible, so the old "--" → "/" reversal silently
-      # failed to find hashed names and any repo directory containing "--".
-      local r
-      for r in $repos; do
-        if [[ "$(_wt_session_name "$r")" == "${(L)arg}" ]]; then hits=( "$r" ); break; fi
-      done
-      (( ${#hits} )) || hits=( ${(M)repos:#*/$arg} )      # exact basename
-      (( ${#hits} )) || hits=( ${(M)repos:#(#i)*$arg*} )  # case-insensitive substring
-    fi
-    if (( ${#hits} == 1 )); then
-      repo="${hits[1]}"
-    else
-      local -a pool; (( ${#hits} )) && pool=( $hits ) || pool=( $repos )
-      local sel
-      sel="$(print -rl -- ${pool[@]#$code/} | fzf --prompt='dev > ' ${arg:+--query=$arg})" || return 0
-      [[ -n "$sel" ]] || return 0
-      repo="$code/$sel"
-    fi
-  fi
-
-  repo="${repo:A}"
-  [[ -n "$repo" && -e "$repo/.git" ]] || { print -ru2 -- "dev: no git repo resolved."; return 1; }
-
-  name="$(_wt_session_name "$repo")"
-
-  # --- launch / attach / switch ---
-  local exists=
-  zellij list-sessions -s 2>/dev/null | grep -Fqx -- "$name" && exists=1
-  if [[ -n "$ZELLIJ" ]]; then
-    if [[ -n "$exists" ]]; then
-      zellij action switch-session "$name"
-    else
-      # Create and switch in ONE step, letting the attaching client apply the layout.
-      #
-      # The previous shape — create detached with `attach --create-background`, graft
-      # the layout on with `action new-tab --layout`, then switch — was written for
-      # 0.44.x, where `switch-session` could not take a layout. On 0.45 that shape is
-      # actively destructive. A detached session has no terminal dimensions, so every
-      # pane of the grafted layout fails with "Not enough room for panes" while
-      # `new-tab` still exits 0. The session is left holding tabs that were never laid
-      # out, and the moment a client attaches the server dies:
-      #
-      #   Failed to switch to active tab at position 0 ... active tab 1 does not exist
-      #   Panic occurred: thread: screen ... Program terminates
-      #
-      # which takes the whole terminal with it — precisely the wedge the old
-      # workaround existed to prevent. Exit status is no guard here: every step
-      # returned 0 while the layout silently failed.
-      #
-      # 0.45 added `switch-session --layout`, so the layout is only ever applied by a
-      # client that already has real dimensions. Requires zellij >= 0.45.
-      if ! zellij action switch-session --layout dev --cwd "$repo" "$name"; then
-        print -ru2 -- "dev: failed to create and switch to session '$name'."
-        print -ru2 -- "    From outside Zellij, start it with: dev $repo"
-        return 1
-      fi
-      # No default-tab cleanup here, deliberately. A previous version ran
-      #   go-to-tab-name "Tab #1" && close-tab
-      # to drop a stray default tab left by the old detached-session approach.
-      # `go-to-tab-name` exits 0 even when no tab by that name exists (zellij
-      # 0.45.0), so the `&&` always fired and `close-tab` closed the FOCUSED tab —
-      # `agents`, which dev.kdl pins with focus=true. `switch-session --layout`
-      # creates exactly the layout's tabs, so there is nothing to clean up.
-      # If a stray tab ever does appear, gate the close on `query-tab-names`
-      # actually listing it; exit status cannot be the guard.
-    fi
-  elif [[ -n "$exists" ]]; then
-    zellij attach "$name"
-  else
-    ( cd "$repo" && zellij --session "$name" --new-session-with-layout dev )
-  fi
-}
-
-# hdev — open (or return to) a project in its Herdr workspace. The Herdr-side
-# counterpart to `dev`, running beside it during the trial; `dev` is unchanged.
-#   hdev                   pick from all repos under ~/Code (fzf)
-#   hdev curato            by name: exact basename → case-insensitive substring → fzf
-#   hdev Netronix/curato   path relative to ~/Code
-#   hdev .                 the git repo containing the current directory
+# The retired `dev` also accepted a session name (`dev netronix--curato`). There are no
+# session names any more, so such an argument matches no repo by basename or substring
+# and falls through to the fzf picker.
 #
 # Resolution only. Everything about Herdr lives in layout.sh, which is also what the
 # `dev.layout.apply` plugin action calls — one topology definition, two entry points.
-hdev() {
+dev() {
   emulate -L zsh
   setopt local_options null_glob extended_glob
 
@@ -257,7 +129,7 @@ hdev() {
 
   if [[ "$arg" == "." || ( -n "$arg" && -d "$arg" ) ]]; then
     repo="$(_wt_git -C "${arg:-$PWD}" rev-parse --show-toplevel 2>/dev/null)" \
-      || { print -ru2 -- "hdev: '${arg:-$PWD}' is not inside a git repo."; return 1 }
+      || { print -ru2 -- "dev: '${arg:-$PWD}' is not inside a git repo."; return 1 }
   elif [[ -n "$arg" && -e "$code/$arg/.git" ]]; then
     repo="$code/$arg"
   else
@@ -273,14 +145,14 @@ hdev() {
     else
       local -a pool; (( ${#hits} )) && pool=( $hits ) || pool=( $repos )
       local sel
-      sel="$(print -rl -- ${pool[@]#$code/} | fzf --prompt='hdev > ' ${arg:+--query=$arg})" || return 0
+      sel="$(print -rl -- ${pool[@]#$code/} | fzf --prompt='dev > ' ${arg:+--query=$arg})" || return 0
       [[ -n "$sel" ]] || return 0
       repo="$code/$sel"
     fi
   fi
 
   repo="${repo:A}"
-  [[ -n "$repo" && -e "$repo/.git" ]] || { print -ru2 -- "hdev: no git repo resolved."; return 1 }
+  [[ -n "$repo" && -e "$repo/.git" ]] || { print -ru2 -- "dev: no git repo resolved."; return 1 }
 
   # A linked checkout must enter through layout.sh's worktree mode. That mode uses
   # Herdr's native `worktree open`, preserving worktree provenance and grouping under
@@ -290,11 +162,11 @@ hdev() {
     local main
     main="$(cd "$repo" && _wt_primary)" || return 1
     _wt_prepare_for_herdr "$main" "$repo" || return 1
-    "${HDEV_LAYOUT:-$HOME/.config/herdr/layout.sh}" --worktree "$main" "$repo"
+    "${DEV_LAYOUT:-$HOME/.config/herdr/layout.sh}" --worktree "$main" "$repo"
     return $?
   fi
 
-  "${HDEV_LAYOUT:-$HOME/.config/herdr/layout.sh}" "$repo"
+  "${DEV_LAYOUT:-$HOME/.config/herdr/layout.sh}" "$repo"
 }
 
 # _wt_git — git with its routing environment cleared. Every Git call in the
@@ -412,7 +284,7 @@ _wt_unlock() {
 # the native action remains safely blocked while `wt-rm` can recognize the lock it
 # owns and remove only after the full lifecycle succeeds.
 _wt_herdr_lock_reason() {
-  print -r -- "hwt-managed; remove with command wt-rm"
+  print -r -- "wt-managed; remove with command wt-rm"
 }
 
 # _wt_git_lock_state <root> <dest> — 0 locked (reason in _WT_GIT_LOCK_REASON),
@@ -463,13 +335,13 @@ _wt_ensure_herdr_lock() {
   case "$state" in
     0)
       if [[ "$_WT_GIT_LOCK_REASON" != "$wanted" ]]; then
-        print -ru2 -- "hdev: $dest is locked for another reason: ${_WT_GIT_LOCK_REASON:-<no reason>}"
+        print -ru2 -- "dev: $dest is locked for another reason: ${_WT_GIT_LOCK_REASON:-<no reason>}"
         print -ru2 -- "    Herdr will not take ownership of a user-managed Git lock."
         return 1
       fi ;;
     1)
       _wt_git -C "$root" worktree lock --reason "$wanted" "$dest" || {
-        print -ru2 -- "hdev: could not apply the lifecycle lock to $dest — refusing to open it in Herdr."
+        print -ru2 -- "dev: could not apply the lifecycle lock to $dest — refusing to open it in Herdr."
         return 1
       } ;;
     *) return 1 ;;
@@ -483,13 +355,13 @@ _wt_prepare_for_herdr() {
   emulate -L zsh
   local main="$1" dest="$2" branch slug expected common
   branch="$(_wt_git -C "$dest" symbolic-ref --quiet --short HEAD 2>/dev/null)" || {
-    print -ru2 -- "hdev: $dest is detached — wt-rm requires a branch-owned checkout."
+    print -ru2 -- "dev: $dest is detached — wt-rm requires a branch-owned checkout."
     return 1
   }
   slug="${branch//\//-}"
   expected="${main:h}/${main:t}-${slug}"
   if [[ "${dest:A}" != "${expected:A}" ]]; then
-    print -ru2 -- "hdev: $dest is not a wt-managed sibling checkout — refusing."
+    print -ru2 -- "dev: $dest is not a wt-managed sibling checkout — refusing."
     print -ru2 -- "    Expected $expected for branch ${(q-)branch}; only that path is removable by command wt-rm."
     return 1
   fi
@@ -520,7 +392,7 @@ _wt_prepare_for_herdr() {
 #     is "the right worktree on the right branch". An interrupted check reads as
 #     permission to proceed. This is not theoretical: with the trap installed, a
 #     real SIGINT during wt-rm's first cleanliness check made a DIRTY worktree
-#     read as clean and ran `zellij delete-session --force` on it.
+#     read as clean and let the terminal-shutdown step run on it.
 #
 # Under SIGINT's default disposition the whole command unwinds instead, so no
 # helper's status is ever fabricated. That is the property these commands need.
@@ -740,9 +612,9 @@ _wt_do_prepare() {
 # `wt` cannot do this: on an existing worktree `wt` takes the reopen path, which
 # deliberately skips preparation.
 #
-# It never creates, stops, attaches or switches a Zellij session, so it may run
-# while the target session and application are live. Project hooks must tolerate
-# that or document their own restriction.
+# It never creates, closes or attaches a Herdr workspace, so it may run while the
+# target workspace and application are live. Project hooks must tolerate that or
+# document their own restriction.
 wt-prepare() {
   emulate -L zsh
   local branch="$1"
@@ -763,13 +635,11 @@ wt-prepare() {
   }
 }
 
-# wt — spin up (or reopen) a git worktree for the current repo in its own Zellij
-# "dev" session. Complements `dev`, which only *finds* existing checkouts; `wt`
-# *creates* one first, as a sibling under the same org dir so `dev`'s repo glob and
-# session-slug naming pick it up. The worktree dir and session are named after the
-# branch, with any "/" flattened to "-" so the paths stay valid (curato +
-# "feature/foo" → ~/Code/Netronix/curato-feature-foo, session
-# netronix--curato-feature-foo).
+# wt — spin up (or reopen) a git worktree for the current repo in its own Herdr
+# workspace. Complements `dev`, which only *finds* existing checkouts; `wt` *creates*
+# one first, as a sibling under the same org dir so `dev`'s repo glob picks it up. The
+# worktree dir is named after the branch, with any "/" flattened to "-" so the path
+# stays valid (curato + "feature/foo" → ~/Code/Netronix/curato-feature-foo).
 #   wt test                worktree ../<repo>-test        on branch "test"
 #   wt feature/foo         worktree ../<repo>-feature-foo on branch "feature/foo"
 #   wt hotfix origin/main  branch "hotfix" from an explicit start point
@@ -783,8 +653,8 @@ wt-prepare() {
 # worktree and no branch behind. Once the worktree exists (fresh or an existing
 # branch with none yet), preparation — manifest copy, then the setup hook — is
 # delegated to the shared, unlocked `_wt_do_prepare` (see wt-prepare). The caller's
-# Zellij/Herdr handoff runs OUTSIDE the lock and only on success, so a long-lived
-# session never holds the lock and a failed setup never opens a half-built worktree.
+# Herdr handoff runs OUTSIDE the lock and only on success, so a long-lived workspace
+# never holds the lock and a failed setup never opens a half-built worktree.
 _wt_create_or_prepare() {
   emulate -L zsh
   local branch="$1" start="${2-}"
@@ -832,34 +702,29 @@ _wt_create_or_prepare() {
   typeset -g _WT_DEST="$dest"
 }
 
+# The `wt` command itself: create or reopen through the locked lifecycle above, then
+# open the checkout as a native Herdr worktree workspace. Herdr supplies grouping,
+# provenance and the agent dashboard; Git creation, .worktreeinclude and .worktreehook
+# stay on the proven lifecycle.
 wt() {
+  [[ -n "${1:-}" ]] || { print -ru2 -- "usage: wt <branch> [start-point]"; return 1; }
   _wt_create_or_prepare "$@" || return 1
   dev "$_WT_DEST"
 }
 
-# hwt — create or reopen the same safe sibling worktree as `wt`, then open it as a
-# native Herdr worktree workspace. Herdr supplies grouping/provenance and the agent
-# dashboard; Git creation, .worktreeinclude and .worktreehook stay on the proven
-# lifecycle above.
-hwt() {
-  [[ -n "${1:-}" ]] || { print -ru2 -- "usage: hwt <branch> [start-point]"; return 1; }
-  _wt_create_or_prepare "$@" || return 1
-  hdev "$_WT_DEST"
-}
-
-# hwt-prompt — interactive surface for Herdr's worktree popup. Keep the prompt tiny:
-# all creation, preparation, locking and native Herdr adoption remain in hwt, so the
+# wt-prompt — interactive surface for Herdr's worktree popup. Keep the prompt tiny:
+# all creation, preparation, locking and native Herdr adoption remain in wt, so the
 # TUI cannot grow a second lifecycle implementation.
-hwt-prompt() {
+wt-prompt() {
   emulate -L zsh
   local branch
   print -n -- "Branch: "
   IFS= read -r branch || branch=""
   if [[ -z "$branch" ]]; then
-    print -ru2 -- "hwt: cancelled (no branch entered)."
+    print -ru2 -- "wt: cancelled (no branch entered)."
     return 1
   fi
-  hwt "$branch"
+  wt "$branch"
 }
 
 # _wt_assert_worktree <root> <dest> <branch> — succeed only if <dest> is a worktree
@@ -1039,7 +904,7 @@ _wt_stop_herdr_workspaces() {
     if (( state == 3 )); then
       # `session list` just called this server running. An API-level
       # server_not_running response may instead mean the process cannot reach the
-      # socket (the exact Zellij sandbox failure this lifecycle already guards).
+      # socket (the exact sandbox failure this lifecycle already guards).
       # Persisted state cannot prove that no live process exists, so fail closed.
       print -ru2 -- "wt-rm: Herdr session '$name' reported running but its API is unreachable — refusing."
       return 1
@@ -1076,7 +941,7 @@ _wt_stop_herdr_workspaces() {
 }
 
 # wt-rm — retire a worktree made by `wt`: validate the project hook, run three
-# cleanliness checks around a Zellij session shutdown and the teardown hook, remove
+# cleanliness checks around the Herdr workspace shutdown and the teardown hook, remove
 # the worktree, then delete the branch.
 #   wt-rm <branch>
 # Run from another checkout of the same repo, never from inside the one being removed.
@@ -1091,23 +956,22 @@ _wt_stop_herdr_workspaces() {
 # it happens rather than once up front:
 #
 #   1. Hook validation, before anything is disrupted. A misconfigured repository must
-#      never cost you the session or the worktree just for running `wt-rm`.
+#      never cost you the workspace or the worktree just for running `wt-rm`.
 #   2. Check 1 (_wt_clean), before anything is disrupted. Catches pre-existing
 #      uncommitted work — the case `git worktree remove` would refuse anyway, but by
-#      then the session would already be gone.
-#   3. Stop the Zellij session. An absent session counts as successful shutdown — the
-#      normal state on a retry — but a session that exists and cannot be stopped
-#      aborts unconditionally: a live process holding the directory open is exactly
-#      how an empty tmp/ husk is left behind, so stopping first is an invariant here,
-#      not a courtesy.
-#   4. Check 2 (_wt_clean), after shutdown, before teardown. Session shutdown can
-#      itself flush files to disk — a live app writing on exit is exactly how the
-#      observed Bootsnap husks arose — so this check exists specifically to catch
-#      dirt introduced BY stopping the session, distinct from check 1's pre-existing
-#      dirt.
+#      then the workspace would already be gone.
+#   3. Stop every matching Herdr workspace. No workspace at all counts as successful
+#      shutdown — the normal state on a retry — but a workspace that exists and cannot
+#      be closed aborts unconditionally: a live process holding the directory open is
+#      exactly how an empty tmp/ husk is left behind, so stopping first is an invariant
+#      here, not a courtesy.
+#   4. Check 2 (_wt_clean), after shutdown, before teardown. Shutdown can itself flush
+#      files to disk — a live app writing on exit is exactly how the observed Bootsnap
+#      husks arose — so this check exists specifically to catch dirt introduced BY
+#      closing the workspace, distinct from check 1's pre-existing dirt.
 #   5. Run the .worktreehook teardown verb. Idempotent by contract, which matters
-#      because a failure here preserves the worktree with its session already
-#      stopped — retrying `wt-rm` re-runs teardown from that state.
+#      because a failure here preserves the worktree with its workspace already
+#      closed — retrying `wt-rm` re-runs teardown from that state.
 #   6. Check 3 (_wt_clean), after teardown, before removal. Ties any non-ignored
 #      teardown output to its cause before Git's more generic removal refusal would
 #      otherwise appear a step later with a less specific message.
@@ -1178,27 +1042,16 @@ wt-rm() {
     # restart panes into a checkout that no longer exists.
     _wt_stop_herdr_workspaces "$dest" || return 1
 
-    # Stop the Zellij session. An absent session IS successful shutdown — that is the
-    # normal state on a retry. Stopping first is an invariant: a live process
-    # holding the directory open is what leaves an empty tmp/ husk behind.
-    local name; name="$(_wt_session_name "$dest")"
-    if zellij list-sessions -s 2>/dev/null | grep -Fqx -- "$name"; then
-      zellij delete-session --force "$name" >/dev/null 2>&1 || {
-        print -ru2 -- "wt-rm: could not stop session '$name' — refusing to remove $dest."
-        print -ru2 -- "    Close it by hand (zellij delete-session --force $name), then retry."
-        return 1 }
-    fi
-
     # Check 2 — shutdown can flush files; that is how the Bootsnap husks arose.
     _wt_clean "$dest"
     case $? in
       0) ;;
-      1) print -ru2 -- "wt-rm: stopping the session left changes in $dest — inspect it, then retry."; return 1 ;;
-      *) print -ru2 -- "wt-rm: cannot determine whether $dest is clean after session shutdown — refusing."; return 1 ;;
+      1) print -ru2 -- "wt-rm: closing Herdr workspaces left changes in $dest — inspect it, then retry."; return 1 ;;
+      *) print -ru2 -- "wt-rm: cannot determine whether $dest is clean after closing Herdr workspaces — refusing."; return 1 ;;
     esac
 
     if ! _wt_hook_run "$main" "$dest" "$branch" "$slug" teardown; then
-      print -ru2 -- "wt-rm: .worktreehook teardown failed — $dest kept, session stopped."
+      print -ru2 -- "wt-rm: .worktreehook teardown failed — $dest kept, Herdr workspaces closed."
       print -ru2 -- "    Fix it and retry: wt-rm $qb    (teardown is idempotent)"
       print -ru2 -- "    Or resume work with: wt-prepare $qb && wt $qb"
       return 1
@@ -1229,7 +1082,7 @@ wt-rm() {
     # for the exact lock reason above.
     (( herdr_owned )) && remove_args=(worktree remove --force --force "$dest")
     if ! _wt_git $remove_args; then
-      print -ru2 -- "wt-rm: removing $dest failed — worktree kept, session stopped. Resources may already be reclaimed."
+      print -ru2 -- "wt-rm: removing $dest failed — worktree kept, Herdr workspaces closed. Resources may already be reclaimed."
       print -ru2 -- "    Fix the obstruction and retry: wt-rm $qb    (teardown is idempotent)"
       print -ru2 -- "    Or resume work with: wt-prepare $qb && wt $qb"
       return 1

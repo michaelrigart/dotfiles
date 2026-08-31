@@ -1,7 +1,7 @@
--- Seamless Ctrl-h/j/k/l navigation between Neovim splits and multiplexer panes.
--- Zellij uses vim-zellij-navigator; Herdr uses smart-splits.nvim's bundled Herdr
--- plugin and native backend. Both forward the chord into Neovim, move an editor
--- split when possible, and hand off to the surrounding pane at the edge.
+-- Seamless Ctrl-h/j/k/l navigation between Neovim splits and Herdr panes, via
+-- smart-splits.nvim's bundled Herdr plugin and native backend. It forwards the
+-- chord into Neovim, moves an editor split when possible, and hands off to the
+-- surrounding pane at the edge.
 --
 -- These maps override LazyVim's default <C-hjkl> window navigation. After install,
 -- verify with `:verbose map <C-h>` — it should resolve to smart-splits, not LazyVim.

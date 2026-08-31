@@ -95,7 +95,7 @@ setopt hist_verify
 plugins=(bundler direnv docker fzf gem git mise rails rake ssh sudo)
 
 # Disable terminal flow control (Ctrl-s / Ctrl-q) so a stray Ctrl-s in a shell
-# pane can't XOFF-freeze it. Ctrl-s is no longer a Zellij leader (clear-defaults).
+# pane can't XOFF-freeze it. Herdr's prefix is Ctrl-b and does not claim Ctrl-s.
 [[ -t 0 ]] && stty -ixon
 
 # Raise (never lower) the open-file limit. launchd hands GUI apps — Ghostty included —

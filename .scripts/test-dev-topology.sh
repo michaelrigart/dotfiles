@@ -1,5 +1,5 @@
 #!/usr/bin/env zsh
-# Live gate for hdev/layout.sh against the REAL herdr binary.
+# Live gate for dev/layout.sh against the REAL herdr binary.
 #
 # Mocked tests cannot detect CLI churn: the stub accepts whatever it was written to
 # accept and keeps passing after herdr changes a flag or a JSON shape. Only the real
@@ -10,11 +10,11 @@
 # registration, which is global — hence the distinct plugin id below. Reusing
 # `dev.layout` would let teardown unlink the plugin the live setup depends on.
 #
-# Run manually, unsandboxed: zsh .scripts/test-hdev-topology.sh
+# Run manually, unsandboxed: zsh .scripts/test-dev-topology.sh
 emulate -L zsh
 set -u
 setopt no_bg_nice   # see the same note in layout.sh
-SESSION=hdev-test
+SESSION=dev-test
 PLUGIN_ID=dev.layout.test
 TMP_BASE=${TMPDIR:-/tmp}
 TMP_BASE=${TMP_BASE%/}
@@ -36,13 +36,13 @@ cleanup() {
   (( plugin_linked )) && h plugin unlink "$PLUGIN_ID" >/dev/null 2>&1 || true
   h server stop >/dev/null 2>&1 || true
   command herdr session delete "$SESSION" >/dev/null 2>&1 || true
-  if [[ -n "${SCRATCH:-}" && "$SCRATCH" == $TMP_BASE/hdev-live.* ]]; then
+  if [[ -n "${SCRATCH:-}" && "$SCRATCH" == $TMP_BASE/dev-live.* ]]; then
     rm -rf -- "$SCRATCH"
   fi
 }
 trap cleanup EXIT HUP INT TERM
 
-SCRATCH="$(mktemp -d "$TMP_BASE/hdev-live.XXXXXX")" || exit 1
+SCRATCH="$(mktemp -d "$TMP_BASE/dev-live.XXXXXX")" || exit 1
 REPO="$SCRATCH/Code/Test/proj"
 mkdir -p "$REPO" || exit 1
 git -C "$REPO" init -q || exit 1
@@ -61,7 +61,7 @@ print -r -- "=== live topology gate (session: $SESSION) ==="
 
 # 1. Cold bootstrap: no server running.
 h server stop >/dev/null 2>&1 || true
-HERDR_SESSION="$SESSION" HDEV_NO_ATTACH=1 ~/.config/herdr/layout.sh "$REPO" \
+HERDR_SESSION="$SESSION" DEV_NO_ATTACH=1 ~/.config/herdr/layout.sh "$REPO" \
   && ok "cold bootstrap builds a workspace" || bad "cold bootstrap failed"
 
 # 2. Topology is what we think it is.
@@ -77,7 +77,7 @@ n=$(h pane list --workspace "$WS" | jq -r --arg t "$AT" '[.result.panes[] | sele
 
 # 3. Idempotency: a second run focuses, never duplicates.
 second_rc=0
-HERDR_SESSION="$SESSION" HDEV_NO_ATTACH=1 ~/.config/herdr/layout.sh "$REPO" >/dev/null \
+HERDR_SESSION="$SESSION" DEV_NO_ATTACH=1 ~/.config/herdr/layout.sh "$REPO" >/dev/null \
   || second_rc=$?
 n=$(h workspace list | jq -r '.result.workspaces | length')
 [[ "$second_rc" == 0 && "$n" == 1 ]] \
@@ -87,7 +87,7 @@ n=$(h workspace list | jq -r '.result.workspaces | length')
 # 4. Extra tabs survive.
 h tab create --workspace "$WS" --label notes >/dev/null
 notes_rc=0
-HERDR_SESSION="$SESSION" HDEV_NO_ATTACH=1 ~/.config/herdr/layout.sh "$REPO" >/dev/null \
+HERDR_SESSION="$SESSION" DEV_NO_ATTACH=1 ~/.config/herdr/layout.sh "$REPO" >/dev/null \
   || notes_rc=$?
 [[ "$notes_rc" == 0 ]] \
   && h tab list --workspace "$WS" | jq -e '.result.tabs[] | select(.label=="notes")' >/dev/null \
@@ -102,11 +102,11 @@ REPO2="${REPO2:A}"
 # B sleeps BEFORE taking the lock, so it arrives after A has built and released —
 # the stale-observation schedule. Launching two at once would usually serialise
 # harmlessly and prove nothing.
-( HERDR_SESSION="$SESSION" HDEV_NO_ATTACH=1 HL_LOCK_DELAY=3 ~/.config/herdr/layout.sh "$REPO2" ) &
+( HERDR_SESSION="$SESSION" DEV_NO_ATTACH=1 HL_LOCK_DELAY=3 ~/.config/herdr/layout.sh "$REPO2" ) &
 B=$!
 sleep 0.2
 a_rc=0
-HERDR_SESSION="$SESSION" HDEV_NO_ATTACH=1 ~/.config/herdr/layout.sh "$REPO2" >/dev/null 2>&1 \
+HERDR_SESSION="$SESSION" DEV_NO_ATTACH=1 ~/.config/herdr/layout.sh "$REPO2" >/dev/null 2>&1 \
   || a_rc=$?
 b_rc=0
 wait $B 2>/dev/null || b_rc=$?
@@ -125,9 +125,9 @@ h pane layout --pane "$(h pane list --workspace "$WS" | jq -r --arg t "$RT" \
   && ok "runtime is split down" || bad "runtime is not split down"
 
 # 6b. Native worktree flow: the shell lifecycle creates/prepares and Git-locks the
-# checkout; Herdr opens it natively so provenance/grouping are real. This is the path
-# the trial will use day to day (`hwt`), not an ordinary workspace pointed at a
-# linked checkout.
+# checkout; Herdr opens it natively so provenance/grouping are real. This is the
+# path used day to day (`wt`), not an ordinary workspace pointed at a linked
+# checkout.
 PRIMARY="$SCRATCH/Code/Test/worktree-proj"
 mkdir -p "$PRIMARY" || exit 1
 git -C "$PRIMARY" init -q -b main || exit 1
@@ -137,7 +137,7 @@ PRIMARY="${PRIMARY:A}"
 WT="$SCRATCH/Code/Test/worktree-proj-live-wt"
 wt_rc=0
 ( cd "$PRIMARY" && source ~/.config/zsh/functions && \
-  HERDR_SESSION="$SESSION" HDEV_NO_ATTACH=1 hwt live-wt ) >/dev/null 2>&1 || wt_rc=$?
+  HERDR_SESSION="$SESSION" DEV_NO_ATTACH=1 wt live-wt ) >/dev/null 2>&1 || wt_rc=$?
 WT="${WT:A}"
 WWS=$(h workspace list | jq -r --arg d "$WT" \
   '.result.workspaces[] | select(.worktree.checkout_path == $d) | .workspace_id')
@@ -145,19 +145,19 @@ wn=$(h tab list --workspace "$WWS" 2>/dev/null | jq -r \
   '[.result.tabs[] | select(.label=="agents" or .label=="editor" or .label=="runtime" or .label=="git")] | length')
 lock_reason=$(git -C "$PRIMARY" worktree list --porcelain | sed -n '/worktree .*worktree-proj-live-wt$/,/^$/s/^locked //p')
 [[ "$wt_rc" == 0 && -n "$WWS" && "$wn" == 4 \
-   && "$lock_reason" == "hwt-managed; remove with command wt-rm" ]] \
-  && ok "hwt creates a four-tab native workspace with the lifecycle lock" \
-  || bad "hwt rc=$wt_rc workspace=${WWS:-none} managed-tabs=${wn:-none} lock=${lock_reason:-none}"
+   && "$lock_reason" == "wt-managed; remove with command wt-rm" ]] \
+  && ok "wt creates a four-tab native workspace with the lifecycle lock" \
+  || bad "wt rc=$wt_rc workspace=${WWS:-none} managed-tabs=${wn:-none} lock=${lock_reason:-none}"
 
 # Reopen must return to the same native workspace, not create an ordinary duplicate.
 reopen_rc=0
 ( cd "$PRIMARY" && source ~/.config/zsh/functions && \
-  HERDR_SESSION="$SESSION" HDEV_NO_ATTACH=1 hwt live-wt ) >/dev/null 2>&1 || reopen_rc=$?
+  HERDR_SESSION="$SESSION" DEV_NO_ATTACH=1 wt live-wt ) >/dev/null 2>&1 || reopen_rc=$?
 wns=$(h workspace list | jq -r --arg d "$WT" \
   '[.result.workspaces[] | select(.worktree.checkout_path == $d)] | length')
 [[ "$reopen_rc" == 0 && "$wns" == 1 ]] \
-  && ok "hwt reopens the same native workspace" \
-  || bad "hwt reopen rc=$reopen_rc yielded $wns native workspaces"
+  && ok "wt reopens the same native workspace" \
+  || bad "wt reopen rc=$reopen_rc yielded $wns native workspaces"
 
 # Herdr exposes one --force; Git requires two to cross our ownership lock. Exercise
 # the real binary, then restore/focus the workspace in case Herdr closed its UI state
@@ -168,7 +168,7 @@ h worktree remove --workspace "$WWS" --force >/dev/null 2>&1 || native_rm_rc=$?
   && ok "Herdr native removal cannot bypass wt-rm teardown" \
   || bad "native removal rc=$native_rm_rc checkout-exists=$([[ -d "$WT" ]] && print yes || print no)"
 ( cd "$PRIMARY" && source ~/.config/zsh/functions && \
-  HERDR_SESSION="$SESSION" HDEV_NO_ATTACH=1 hwt live-wt ) >/dev/null 2>&1 || true
+  HERDR_SESSION="$SESSION" DEV_NO_ATTACH=1 wt live-wt ) >/dev/null 2>&1 || true
 
 # The approved teardown path closes Herdr state, crosses only its own Git lock after
 # all checks, removes the checkout and deletes the merged branch.
@@ -207,7 +207,7 @@ focus_rc=0
 h workspace focus "$WS" >/dev/null || focus_rc=$?
 invoke_rc=0
 h plugin action invoke "$PLUGIN_ID.apply" >/dev/null 2>&1 || invoke_rc=$?   # session-scoped: the
-# topology lives in hdev-test, and a bare `herdr plugin action invoke` would run it
+# topology lives in dev-test, and a bare `herdr plugin action invoke` would run it
 # against the default session instead.
 # `plugin action invoke` returns while the action is still "running" — poll rather
 # than assuming it finished.

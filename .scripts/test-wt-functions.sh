@@ -1,14 +1,12 @@
 #!/usr/bin/env zsh
 # Mocked test for the worktree/session helpers and the .worktreehook protocol in
-# dot_config/zsh/functions. Fifteen sections, in dependency order — helpers
+# dot_config/zsh/functions. Thirteen sections, in dependency order — helpers
 # first, then the commands composed from them:
 #
-#   A  _wt_session_name    canonical naming, round-trip lookup through dev
 #   B  wt                  destination validation (husks, slug collisions)
 #   C  wt                  branch base: caller's HEAD, explicit start point, detached
 #   D  wt                  .worktreeinclude copy failures and missing wtcp
 #   E  wt-rm               dirty preflight ordering and refusal cases
-#   F  dev                 partial session creation is reported accurately
 #   G  _wt_git/_wt_primary routing clearance, bare repos, linked worktrees
 #   H  _wt_clean           three-state cleanliness, config- and routing-resistant
 #   I  locking             helper semantics, then command-level acquire/release
@@ -19,12 +17,12 @@
 #   N  wt                  creation paths, pre-validation consequences, reopening
 #   O  wt-rm               teardown ordering, the three cleanliness checks, retry
 #
-# zellij, Herdr and wtcp are stubbed on PATH and every invocation is logged, so the tests
-# can assert *ordering* — notably that a dirty worktree never loses its terminal session —
-# without launching anything. Git is NOT stubbed: real repos are used, because git's own
-# refusals (unmerged branch, dirty tree) are part of what's under test. The one `git` on
-# PATH is the SIGINT delay injector, and it is a pass-through: it decides when a real
-# signal lands, then execs the real git with the identical argv.
+# Herdr, layout.sh and wtcp are stubbed on PATH and every invocation is logged, so the
+# tests can assert *ordering* — notably that a dirty worktree never loses its terminal
+# workspace — without launching anything. Git is NOT stubbed: real repos are used,
+# because git's own refusals (unmerged branch, dirty tree) are part of what's under
+# test. The one `git` on PATH is the SIGINT delay injector, and it is a pass-through:
+# it decides when a real signal lands, then execs the real git with the identical argv.
 #
 # Run: zsh .scripts/test-wt-functions.sh
 set -u
@@ -44,8 +42,6 @@ has()    { [[ "$OUT" == *"$1"* ]] && _pass "$2" || _fail "$2" }
 hasnt()  { [[ "$OUT" == *"$1"* ]] && _fail "$2" || _pass "$2" }
 rc_is()  { [[ "$RC" == "$1" ]] && _pass "$2" || _fail "$2 (rc=$RC)" }
 eq()     { [[ "$1" == "$2" ]] && _pass "$3" || _fail "$3 ('$1' != '$2')" }
-logged() { [[ "$(<$ZLOG)" == *"$1"* ]] && _pass "$2" || _fail "$2" }
-unlogged() { [[ "$(<$ZLOG)" == *"$1"* ]] && _fail "$2" || _pass "$2" }
 dlogged() { [[ "$(<$DLOG)" == *"$1"* ]] && _pass "$2" || _fail "$2" }
 dunlogged() { [[ "$(<$DLOG)" == *"$1"* ]] && _fail "$2" || _pass "$2" }
 hlogged() { [[ "$(<$HLOG)" == *"$1"* ]] && _pass "$2" || _fail "$2" }
@@ -60,20 +56,6 @@ STUBS=$(mkd)
 SIGSTUBS=$(mkd)
 trap 'rm -rf "$STUBS" "$SIGSTUBS" "${ROOTTMP:-}"' EXIT
 
-cat > "$STUBS/zellij" <<'STUB'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >> "$ZLOG"
-case "$*" in
-  "list-sessions -s")            printf '%s' "$MOCK_ZJ_SESSIONS" ;;
-  *"attach --create-background"*) exit "$MOCK_ZJ_ATTACH_RC" ;;
-  *"action new-tab"*)             exit "$MOCK_ZJ_NEWTAB_RC" ;;
-  *"action switch-session"*)      exit "$MOCK_ZJ_SWITCH_RC" ;;
-  "delete-session"*)
-    [ -n "${MOCK_ZJ_DELETE_TOUCH:-}" ] && : > "$MOCK_ZJ_DELETE_TOUCH"
-    exit "$MOCK_ZJ_DELETE_RC" ;;
-  *) exit 0 ;;
-esac
-STUB
 cat > "$STUBS/wtcp" <<'STUB'
 #!/usr/bin/env bash
 # Faithful enough for the properties the protocol depends on: honors --from,
@@ -104,7 +86,7 @@ for p in "${paths[@]}"; do
 done
 exit $rc
 STUB
-chmod +x "$STUBS/zellij" "$STUBS/wtcp"
+chmod +x "$STUBS/wtcp"
 cat > "$STUBS/layout.sh" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$DLOG"
@@ -146,7 +128,7 @@ esac
 STUB
 chmod +x "$STUBS/layout.sh" "$STUBS/herdr"
 export PATH="$STUBS:$PATH"
-export HDEV_LAYOUT="$STUBS/layout.sh"
+export DEV_LAYOUT="$STUBS/layout.sh"
 
 # --- SIGINT delay injector --------------------------------------------------
 # A `git` that delivers one real SIGINT to a named pid immediately before
@@ -187,16 +169,14 @@ setup() {   # fresh $HOME with Code/Org/repo, fresh logs, default mock behaviour
   REPO="$HOME/Code/Org/repo"
   git init -q -b main "$REPO"
   git -C "$REPO" commit -q --allow-empty -m init
-  export ZLOG="$ROOTTMP/zellij.log" WLOG="$ROOTTMP/wtcp.log" DLOG="$ROOTTMP/layout.log" \
+  export WLOG="$ROOTTMP/wtcp.log" DLOG="$ROOTTMP/layout.log" \
          HLOG="$ROOTTMP/herdr.log" MOCK_H_CLOSED_FILE="$ROOTTMP/herdr-closed"
-  : > "$ZLOG"; : > "$WLOG"; : > "$DLOG"; : > "$HLOG"; : > "$MOCK_H_CLOSED_FILE"
-  export MOCK_ZJ_SESSIONS="" MOCK_ZJ_ATTACH_RC=0 MOCK_ZJ_NEWTAB_RC=0 \
-         MOCK_ZJ_SWITCH_RC=0 MOCK_ZJ_DELETE_RC=0 MOCK_WTCP_RC=0 MOCK_ZJ_DELETE_TOUCH="" \
+  : > "$WLOG"; : > "$DLOG"; : > "$HLOG"; : > "$MOCK_H_CLOSED_FILE"
+  export MOCK_WTCP_RC=0 \
          MOCK_LAYOUT_RC=0 MOCK_H_SESSION_LIST='{"sessions":[]}' MOCK_H_SESSION_RC=0 \
          MOCK_H_WORKSPACES='{"result":{"workspaces":[]}}' \
          MOCK_H_PANES='{"result":{"panes":[]}}' MOCK_H_LIST_RC=0 MOCK_H_CLOSE_RC=0 \
          MOCK_H_CLOSE_TOUCH="" MOCK_H_CLOSE_OUT=""
-  unset ZELLIJ
 }
 # run <dir> <command...> — source the functions fresh and run one command in $dir.
 # A subshell per scenario keeps zsh options/state from leaking between tests.
@@ -266,29 +246,6 @@ mkhook() {   # mkhook <repo> <body>  — tracked, executable, committed
   git -C "$1" commit -q -m hook
 }
 
-print -r -- "A. _wt_session_name — canonical naming and round-trip lookup"
-setup
-run "$REPO" _wt_session_name "$REPO"
-eq "$OUT" "org--repo" "short path -> org--repo"
-
-# A name over the 60-char cap keeps a hashed tail; the old lookup reversed '--' to '/'
-# and could never find these again.
-LONGNAME="repo-$(printf 'x%.0s' {1..55})"
-git init -q -b main "$HOME/Code/Org/$LONGNAME"
-git -C "$HOME/Code/Org/$LONGNAME" commit -q --allow-empty -m init
-run "$REPO" _wt_session_name "$HOME/Code/Org/$LONGNAME"
-LONGSESS="$OUT"
-eq "${#LONGSESS}" "60" "over-long path is capped at 60 chars"
-run "$REPO" dev "$LONGSESS"
-logged "--session $LONGSESS" "hashed session name round-trips through dev"
-
-# A repo directory containing '--' also broke the reversal.
-git init -q -b main "$HOME/Code/Org/od--d"
-git -C "$HOME/Code/Org/od--d" commit -q --allow-empty -m init
-: > "$ZLOG"
-run "$REPO" dev "org--od--d"
-logged "--session org--od--d" "repo name containing '--' round-trips through dev"
-
 print -r -- "B. wt — destination validation"
 setup
 mkdir -p "$HOME/Code/Org/repo-husk/tmp/cache"     # leftover husk: no .git at all
@@ -345,7 +302,7 @@ print -r -- "secret" > "$REPO/env.local"
 run "$REPO" wt f
 rc_is 0 "a missing .worktreeinclude entry is only a warning"
 has "not found in" "missing entry is reported"
-logged "--session org--repo-f" "dev still launches after a missing-entry warning"
+dlogged "--worktree $REPO $HOME/Code/Org/repo-f" "dev still launches after a missing-entry warning"
 
 setup
 print -r -- "env.local" > "$REPO/.worktreeinclude"
@@ -365,19 +322,24 @@ print -r -- "E. wt-rm"
 setup
 run "$REPO" wt h
 print -r -- "wip" > "$HOME/Code/Org/repo-h/dirty.txt"
-: > "$ZLOG"
+# A running Herdr session holding a workspace at the checkout. setup()'s default is an
+# EMPTY session list, so without this fixture nothing is ever closed and the negative
+# assertion below would pass no matter what wt-rm did.
+export MOCK_H_SESSION_LIST="{\"sessions\":[{\"default\":true,\"name\":\"default\",\"running\":true,\"session_dir\":\"$ROOTTMP/default\"}]}"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[{\"workspace_id\":\"wh\",\"worktree\":{\"checkout_path\":\"$HOME/Code/Org/repo-h\"}}]}}"
+export MOCK_H_PANES='{"result":{"panes":[]}}'
+: > "$HLOG"
 run "$REPO" wt-rm h
 rc_is 1 "dirty worktree is refused"
-unlogged "delete-session" "session is NOT killed before the dirty check"
+hunlogged "workspace close" "the workspace is NOT closed before the dirty check"
 [[ -d "$HOME/Code/Org/repo-h" ]] && _pass "dirty worktree survives" \
                                  || _fail "dirty worktree survives"
 
 rm "$HOME/Code/Org/repo-h/dirty.txt"
-export MOCK_ZJ_SESSIONS="org--repo-h"
-: > "$ZLOG"
+: > "$HLOG"
 run "$REPO" wt-rm h
 rc_is 0 "clean worktree is removed"
-logged "delete-session" "session is stopped"
+hlogged "workspace close" "the workspace is closed"
 [[ -d "$HOME/Code/Org/repo-h" ]] && _fail "worktree directory is gone" \
                                  || _pass "worktree directory is gone"
 run "$REPO" git branch --list h
@@ -404,63 +366,16 @@ rc_is 1 "unknown worktree is refused"
 setup
 run "$REPO" wt k
 print -r -- "garbage" > "$REPO/.git/worktrees/repo-k/index"
-export MOCK_ZJ_SESSIONS="org--repo-k"
-: > "$ZLOG"
+export MOCK_H_SESSION_LIST="{\"sessions\":[{\"default\":true,\"name\":\"default\",\"running\":true,\"session_dir\":\"$ROOTTMP/default\"}]}"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[{\"workspace_id\":\"wk\",\"worktree\":{\"checkout_path\":\"$HOME/Code/Org/repo-k\"}}]}}"
+export MOCK_H_PANES='{"result":{"panes":[]}}'
+: > "$HLOG"
 run "$REPO" wt-rm k
 rc_is 1 "unreadable git status is refused, not treated as clean"
 has "cannot determine whether" "refusal says the state is unknown"
-unlogged "delete-session" "session is NOT killed when cleanliness is unknown"
+hunlogged "workspace close" "the workspace is NOT closed when cleanliness is unknown"
 [[ -d "$HOME/Code/Org/repo-k" ]] && _pass "worktree survives an unreadable status" \
                                  || _fail "worktree survives an unreadable status"
-
-# Stopping the session is an invariant, not a courtesy: if it fails, removal must not
-# proceed — that is exactly how a live process gets its directory pulled out from under it.
-setup
-run "$REPO" wt l
-export MOCK_ZJ_SESSIONS="org--repo-l" MOCK_ZJ_DELETE_RC=1
-run "$REPO" wt-rm l
-rc_is 1 "failing to stop the session aborts removal"
-has "refusing to remove" "abort explains the session could not be stopped"
-[[ -d "$HOME/Code/Org/repo-l" ]] && _pass "worktree survives a failed session stop" \
-                                 || _fail "worktree survives a failed session stop"
-
-print -r -- "F. dev — a new session is created WITH its layout, never grafted headlessly"
-# Regression guard for the 2026-08-25 crash. The old path created a DETACHED session
-# and grafted the dev layout onto it with `action new-tab --layout`. A detached
-# session has no terminal dimensions, so every pane failed with "Not enough room for
-# panes" while `new-tab` still exited 0. The session was left holding tabs that were
-# never laid out, and the next client to attach panicked the server —
-# "active tab 1 does not exist" — taking the whole terminal with it.
-#
-# Asserted on the zellij INVOCATION LOG, deliberately: every step of the broken path
-# returned 0, so exit status could not have caught this and must not be the guard.
-setup
-export ZELLIJ=1
-run "$REPO" dev "$REPO"
-logged   "action switch-session" "a new session is created through switch-session"
-logged   "--layout dev"          "the layout is applied by the attaching client"
-unlogged "attach --create-background" "no detached session is created first"
-unlogged "action new-tab"        "the layout is never grafted onto a headless session"
-
-# Regression guard for the 2026-08-25 "missing agents tab". A follow-up cleanup ran
-#   zellij action go-to-tab-name "Tab #1" && zellij action close-tab
-# to drop a hypothetical default tab. `go-to-tab-name` exits 0 even when NO tab by
-# that name exists (verified against zellij 0.45.0), so the `&&` always fired and
-# `close-tab` closed whatever was FOCUSED — which dev.kdl pins to `agents`
-# (focus=true). The layout came up as editor/runtime/git, and the transient
-# draw-then-reflow was the "bad render" that preceded it.
-#
-# Asserted on the invocation log, not exit status: every command in the broken
-# sequence returned 0, exactly as the real binary does.
-unlogged "action close-tab"      "no tab is closed on the session-create path"
-unlogged "go-to-tab-name"        "no default-tab cleanup probe runs at all"
-
-setup
-export ZELLIJ=1 MOCK_ZJ_SWITCH_RC=1
-run "$REPO" dev "$REPO"
-rc_is 1 "a failed create-and-switch returns nonzero"
-has "failed to create and switch" "the failure says what could not be done"
-has "From outside Zellij" "the message offers the out-of-Zellij recovery"
 
 print -r -- "G. _wt_git / _wt_primary"
 setup
@@ -672,19 +587,19 @@ PROBE
 # Control, run first and with no signalling hook committed yet: the probe must
 # reach its last line unaided. Without this, "SURVIVED is absent" below would be
 # satisfied just as well by a probe that never ran at all.
-: > "$ZLOG"
+: > "$DLOG"
 OUT="$(cd "$REPO" && zsh "$ROOTTMP/int-probe.zsh" "$FUNCS" z5c 2>&1)"; RC=$?
 has "SURVIVED" "control: an uninterrupted wt lets the probe shell reach its last line"
-logged "--session org--repo-z5c" "control: the uninterrupted wt reaches dev"
+dlogged "--worktree $REPO $HOME/Code/Org/repo-z5c" "control: the uninterrupted wt reaches dev"
 
 mkhook "$REPO" '#!/bin/sh
 [ "$1" = setup ] && kill -INT "$TEST_SIGTARGET"
 exit 0'
-: > "$ZLOG"
+: > "$DLOG"
 OUT="$(cd "$REPO" && zsh "$ROOTTMP/int-probe.zsh" "$FUNCS" z5 2>&1)"; RC=$?
 rc_is 130 "a real SIGINT during wt unwinds the command and the shell running it"
 hasnt "SURVIVED" "the interrupted shell does not carry on past the command"
-unlogged "--session org--repo-z5" "the interrupted wt never reached dev"
+dunlogged "--worktree $REPO $HOME/Code/Org/repo-z5" "the interrupted wt never reached dev"
 eq "$(other_process_can_lock "$CD" z5)" "RELEASED" \
    "the interrupted shell's death releases the lock, so a retry is not blocked"
 
@@ -1026,13 +941,14 @@ has "does not exist" "absent target error is specific"
 setup
 run "$REPO" wt n1
 print -r -- "a.env" > "$REPO/.worktreeinclude"; print -r -- "A" > "$REPO/a.env"
-: > "$ZLOG"
+: > "$HLOG"; : > "$DLOG"
 run "$REPO" wt-prepare n1
 rc_is 0 "prepare succeeds"
 [[ -f "$HOME/Code/Org/repo-n1/a.env" ]] && _pass "missing file is copied" || _fail "missing file is copied"
-# Assert the log is EMPTY. `unlogged "zellij"` would be vacuous: the stub logs its
-# arguments, which never contain the word "zellij".
-[[ -s "$ZLOG" ]] && _fail "prepare makes no Zellij calls" || _pass "prepare makes no Zellij calls"
+# Assert both logs are EMPTY. A needle-based `hunlogged` would be vacuous here: the
+# stubs log their argv, and the question is whether either ran at all.
+[[ -s "$HLOG" || -s "$DLOG" ]] && _fail "prepare makes no multiplexer calls" \
+                               || _pass "prepare makes no multiplexer calls"
 
 print -r -- "LOCAL" > "$HOME/Code/Org/repo-n1/a.env"
 run "$REPO" wt-prepare n1
@@ -1118,25 +1034,26 @@ OUT="$(cd "$REPO" && source "$FUNCS" && export PATH="$CLEANP" && wt-prepare n6 2
 rc_is 1 "missing destination with wtcp absent aborts instead of silently skipping"
 has "wtcp is missing" "abort names the missing tool"
 
-# Spec §11.3 wants "no Zellij calls, *including with an active session*". The
-# n1 fixture above runs with MOCK_ZJ_SESSIONS empty, which is the easy half: a
-# regression that stopped or switched the session would plausibly guard on the
-# session existing first, and would sail past it. This is the half that matters
-# — wt-prepare is documented as safe to run against a live session.
+# Spec §11.3 wants "no multiplexer calls, *including with an active session*". The
+# n1 fixture above runs with no Herdr session at all, which is the easy half: a
+# regression that closed or focused the workspace would plausibly guard on it
+# existing first, and would sail past it. This is the half that matters — wt-prepare
+# is documented as safe to run against a live workspace.
 setup
 run "$REPO" wt n7
 print -r -- "a.env" > "$REPO/.worktreeinclude"; print -r -- "A" > "$REPO/a.env"
 mkhook "$REPO" '#!/bin/sh
 exit 0'
-export MOCK_ZJ_SESSIONS="org--repo-n7"
-: > "$ZLOG"
+export MOCK_H_SESSION_LIST="{\"sessions\":[{\"default\":true,\"name\":\"default\",\"running\":true,\"session_dir\":\"$ROOTTMP/default\"}]}"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[{\"workspace_id\":\"wn7\",\"worktree\":{\"checkout_path\":\"$HOME/Code/Org/repo-n7\"}}]}}"
+export MOCK_H_PANES='{"result":{"panes":[]}}'
+: > "$HLOG"; : > "$DLOG"
 run "$REPO" wt-prepare n7
-rc_is 0 "prepare succeeds against an active session"
-[[ -f "$HOME/Code/Org/repo-n7/a.env" ]] && _pass "prepare still copies with a session live" \
-                                        || _fail "prepare still copies with a session live"
-[[ -s "$ZLOG" ]] && _fail "prepare makes no Zellij calls even with an active session" \
-                 || _pass "prepare makes no Zellij calls even with an active session"
-export MOCK_ZJ_SESSIONS=""
+rc_is 0 "prepare succeeds against an active workspace"
+[[ -f "$HOME/Code/Org/repo-n7/a.env" ]] && _pass "prepare still copies with a workspace live" \
+                                        || _fail "prepare still copies with a workspace live"
+[[ -s "$HLOG" || -s "$DLOG" ]] && _fail "prepare makes no multiplexer calls even with an active workspace" \
+                               || _pass "prepare makes no multiplexer calls even with an active workspace"
 
 print -r -- "N. wt creation paths"
 # Invalid hook must leave NOTHING behind.
@@ -1153,11 +1070,11 @@ setup
 git -C "$REPO" branch o2
 mkhook "$REPO" '#!/bin/sh
 touch "$WT_MAIN/setup-$WT_BRANCH"; exit 0'
-: > "$ZLOG"
+: > "$DLOG"
 run "$REPO" wt o2
 rc_is 0 "creating a worktree for an existing branch succeeds"
 [[ -f "$REPO/setup-o2" ]] && _pass "setup runs on the existing-branch path" || _fail "setup runs on the existing-branch path"
-logged "--session org--repo-o2" "dev is launched after preparation"
+dlogged "--worktree $REPO $HOME/Code/Org/repo-o2" "dev is launched after preparation"
 
 setup
 git -C "$REPO" branch o3
@@ -1168,10 +1085,10 @@ rc_is 1 "start-point with an existing branch is refused"
 setup
 mkhook "$REPO" '#!/bin/sh
 exit 5'
-: > "$ZLOG"
+: > "$DLOG"
 run "$REPO" wt o4
 rc_is 1 "setup failure fails wt"
-unlogged "--session" "dev is not launched after a setup failure"
+dunlogged "--worktree" "dev is not launched after a setup failure"
 [[ -d "$HOME/Code/Org/repo-o4" ]] && _pass "worktree is preserved" || _fail "worktree is preserved"
 
 # Reopening (spec §7.4, §11.3 "Reopening calls dev with no copy and no setup").
@@ -1195,7 +1112,7 @@ rc_is 0 "the worktree is created and prepared once"
 [[ -f "$HOME/Code/Org/repo-o5/a.env" ]] && _pass "creation copied the manifest entry" \
                                         || _fail "creation copied the manifest entry"
 rm "$REPO/setup-ran-o5" "$HOME/Code/Org/repo-o5/a.env"
-: > "$ZLOG"; : > "$WLOG"
+: > "$DLOG"; : > "$WLOG"
 run "$REPO" wt o5                        # reopen
 rc_is 0 "reopening an existing worktree succeeds"
 has "reopening" "the reopen path is announced"
@@ -1205,7 +1122,7 @@ has "reopening" "the reopen path is announced"
                                         || _pass "reopening does not re-copy the manifest"
 [[ -s "$WLOG" ]] && _fail "reopening invokes wtcp not at all" \
                  || _pass "reopening invokes wtcp not at all"
-logged "--session org--repo-o5" "reopening still hands off to dev"
+dlogged "--worktree $REPO $HOME/Code/Org/repo-o5" "reopening still hands off to dev"
 
 print -r -- "O. wt-rm teardown"
 setup
@@ -1213,18 +1130,16 @@ mkhook "$REPO" '#!/bin/sh
 [ "$1" = teardown ] && touch "$WT_MAIN/torn-$WT_SLUG"
 exit 0'
 run "$REPO" wt q1
-export MOCK_ZJ_SESSIONS="org--repo-q1"
 run "$REPO" wt-rm q1
 rc_is 0 "teardown path removes the worktree"
 [[ -f "$REPO/torn-q1" ]] && _pass "teardown hook ran" || _fail "teardown hook ran"
 
-# Teardown failure preserves the worktree with its session stopped.
+# Teardown failure preserves the worktree with its Herdr workspaces closed.
 setup
 mkhook "$REPO" '#!/bin/sh
 [ "$1" = teardown ] && exit 4
 exit 0'
 run "$REPO" wt q2
-export MOCK_ZJ_SESSIONS="org--repo-q2"
 run "$REPO" wt-rm q2
 rc_is 1 "teardown failure fails wt-rm"
 [[ -d "$HOME/Code/Org/repo-q2" ]] && _pass "worktree preserved after teardown failure" || _fail "worktree preserved after teardown failure"
@@ -1234,7 +1149,7 @@ setup
 mkhook "$REPO" '#!/bin/sh
 [ "$1" = teardown ] && exit 130
 exit 0'
-run "$REPO" wt q3; export MOCK_ZJ_SESSIONS="org--repo-q3"
+run "$REPO" wt q3
 run "$REPO" wt-rm q3
 rc_is 1 "hook exit 130 preserves the stopped worktree"
 [[ -d "$HOME/Code/Org/repo-q3" ]] && _pass "worktree preserved on interruption proxy" || _fail "worktree preserved on interruption proxy"
@@ -1244,7 +1159,7 @@ setup
 mkhook "$REPO" '#!/bin/sh
 [ "$1" = teardown ] && echo report > "$WT_WORKTREE/teardown-report.txt"
 exit 0'
-run "$REPO" wt q4; export MOCK_ZJ_SESSIONS="org--repo-q4"
+run "$REPO" wt q4
 run "$REPO" wt-rm q4
 rc_is 1 "non-ignored teardown output aborts removal"
 has "teardown" "the refusal ties the state to teardown"
@@ -1257,7 +1172,7 @@ git -C "$REPO" add .gitignore >/dev/null; git -C "$REPO" commit -q -m ignore
 mkhook "$REPO" '#!/bin/sh
 [ "$1" = teardown ] && echo x > "$WT_WORKTREE/teardown.log"
 exit 0'
-run "$REPO" wt q5; export MOCK_ZJ_SESSIONS="org--repo-q5"
+run "$REPO" wt q5
 run "$REPO" wt-rm q5
 rc_is 0 "git-ignored teardown output still allows removal"
 
@@ -1266,7 +1181,7 @@ setup
 mkhook "$REPO" '#!/bin/sh
 [ "$1" = teardown ] && echo garbage > "$WT_MAIN/.git/worktrees/repo-q6/index"
 exit 0'
-run "$REPO" wt q6; export MOCK_ZJ_SESSIONS="org--repo-q6"
+run "$REPO" wt q6
 run "$REPO" wt-rm q6
 rc_is 1 "unreadable status after teardown fails closed"
 [[ -d "$HOME/Code/Org/repo-q6" ]] && _pass "worktree preserved when state is unknown" || _fail "worktree preserved when state is unknown"
@@ -1279,48 +1194,36 @@ rc_is 1 "unreadable status after teardown fails closed"
 # can only have come from check 3.
 has "cannot determine whether" "the refusal names check 3, not Git's own"
 
-# An absent session counts as successful shutdown, so retry works.
+# No matching workspace at all counts as successful shutdown, so retry works.
 setup
 run "$REPO" wt q7
-export MOCK_ZJ_SESSIONS=""
 run "$REPO" wt-rm q7
-rc_is 0 "absent session counts as successful shutdown"
+rc_is 0 "an absent workspace counts as successful shutdown"
 
-# Check 2: dirt introduced BY session shutdown is caught before teardown runs.
-# The zellij stub writes a non-ignored file when asked to delete the session.
-setup
-mkhook "$REPO" '#!/bin/sh
-[ "$1" = teardown ] && touch "$WT_MAIN/teardown-ran-$WT_SLUG"
-exit 0'
-run "$REPO" wt q8
-export MOCK_ZJ_SESSIONS="org--repo-q8" MOCK_ZJ_DELETE_TOUCH="$HOME/Code/Org/repo-q8/flushed.txt"
-run "$REPO" wt-rm q8
-rc_is 1 "dirt from session shutdown is caught at check 2"
-[[ -f "$REPO/teardown-ran-q8" ]] && _fail "teardown does not run after check 2 fails" \
-                                 || _pass "teardown does not run after check 2 fails"
-unset MOCK_ZJ_DELETE_TOUCH
-
-# Hook validation happens BEFORE the session is stopped.
+# Hook validation happens BEFORE the workspace is closed.
 setup
 run "$REPO" wt q9
 print -r -- '#!/bin/sh' > "$REPO/.worktreehook"; chmod +x "$REPO/.worktreehook"   # untracked
-export MOCK_ZJ_SESSIONS="org--repo-q9"
-: > "$ZLOG"
+export MOCK_H_SESSION_LIST="{\"sessions\":[{\"default\":true,\"name\":\"default\",\"running\":true,\"session_dir\":\"$ROOTTMP/default\"}]}"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[{\"workspace_id\":\"wq9\",\"worktree\":{\"checkout_path\":\"$HOME/Code/Org/repo-q9\"}}]}}"
+export MOCK_H_PANES='{"result":{"panes":[]}}'
+: > "$HLOG"
 run "$REPO" wt-rm q9
 rc_is 1 "invalid hook refuses wt-rm"
-unlogged "delete-session" "the session is not stopped when hook config is invalid"
+hunlogged "workspace close" "the workspace is not closed when hook config is invalid"
 
 # Retry reruns teardown idempotently (spec §11.4). Everything above stops at the
 # failure, so the recovery contract the whole protocol rests on — "retrying
 # wt-rm reruns the idempotent teardown hook from the stopped state" — was
 # untested. The hook counts its own teardown calls, so a retry that skipped the
-# hook (jumping straight to removal because the session was already stopped)
+# hook (jumping straight to removal because the workspace was already closed)
 # would leave the count at 1.
 #
-# The retry runs with MOCK_ZJ_SESSIONS emptied, because that is the real state a
-# retry starts from: the first attempt stopped the session before teardown
-# failed. Leaving the session mocked as still-present would let a "nothing was
-# stopped, so nothing needs tearing down" regression slip through.
+# The workspace is live for the FIRST attempt only. The herdr stub records a
+# successful close, so the retry sees an empty workspace list — the real state a
+# retry starts from, since the first attempt closed the workspace before teardown
+# failed. Starting the retry from a still-open workspace would let a "nothing was
+# closed, so nothing needs tearing down" regression slip through.
 setup
 mkhook "$REPO" '#!/bin/sh
 if [ "$1" = teardown ]; then
@@ -1330,19 +1233,21 @@ fi
 exit 0'
 run "$REPO" wt q10
 : > "$REPO/fail-teardown"
-export MOCK_ZJ_SESSIONS="org--repo-q10"
+export MOCK_H_SESSION_LIST="{\"sessions\":[{\"default\":true,\"name\":\"default\",\"running\":true,\"session_dir\":\"$ROOTTMP/default\"}]}"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[{\"workspace_id\":\"wq10\",\"worktree\":{\"checkout_path\":\"$HOME/Code/Org/repo-q10\"}}]}}"
+export MOCK_H_PANES='{"result":{"panes":[]}}'
+: > "$HLOG"
 run "$REPO" wt-rm q10
+hlogged "workspace close" "the first attempt closed the workspace before teardown failed"
 rc_is 1 "the first wt-rm fails at teardown"
 [[ -d "$HOME/Code/Org/repo-q10" ]] && _pass "the failed attempt leaves the worktree in place" \
                                    || _fail "the failed attempt leaves the worktree in place"
 rm "$REPO/fail-teardown"                 # fix whatever teardown was complaining about
-export MOCK_ZJ_SESSIONS=""               # the first attempt already stopped it
 run "$REPO" wt-rm q10
 rc_is 0 "the retry removes the worktree once teardown is fixed"
 eq "$(grep -c call "$REPO/teardown-calls")" "2" "the retry reran teardown rather than skipping it"
 [[ -d "$HOME/Code/Org/repo-q10" ]] && _fail "the retry actually removes the worktree" \
                                    || _pass "the retry actually removes the worktree"
-export MOCK_ZJ_SESSIONS=""
 
 # A removal that fails after a SUCCESSFUL teardown is spec §9.3's third
 # post-shutdown failure mode, and must report the same exact partial state as
@@ -1362,10 +1267,9 @@ if [ "$1" = teardown ]; then
 fi
 exit 0'
 run "$REPO" wt q11
-export MOCK_ZJ_SESSIONS="org--repo-q11"
 run "$REPO" wt-rm q11
 rc_is 1 "a failed removal after a successful teardown fails wt-rm"
-has "worktree kept, session stopped" "the failure reports the exact partial state"
+has "worktree kept, Herdr workspaces closed" "the failure reports the exact partial state"
 has "Resources may already be reclaimed" "it says resources may already be gone"
 has "retry: wt-rm q11" "it offers the fix-and-retry recovery route"
 has "wt-prepare q11 && wt q11" "it offers the resume-work recovery route"
@@ -1374,7 +1278,6 @@ has "wt-prepare q11 && wt q11" "it offers the resume-work recovery route"
 run "$REPO" git branch --list q11
 eq "$OUT" "  q11" "the branch is not deleted when removal fails"
 chmod 700 "$HOME/Code/Org/repo-q11/blocked" 2>/dev/null
-export MOCK_ZJ_SESSIONS=""
 
 # --- a real SIGINT during wt-rm must destroy nothing -------------------------
 #
@@ -1390,13 +1293,14 @@ export MOCK_ZJ_SESSIONS=""
 # regression corrupted, so it is not evidence.
 #
 # Each scenario interrupts one named git call inside the pre-shutdown region of
-# wt-rm (validation, then cleanliness check 1). Both are ahead of the session
-# shutdown, the teardown hook, the removal and the branch deletion, so all four
+# wt-rm (validation, then cleanliness check 1). Both are ahead of the workspace
+# closure, the teardown hook, the removal and the branch deletion, so all four
 # must be absent afterwards.
 #
 # The fixture is deliberately CLEAN and its session deliberately present: left
-# alone, this exact wt-rm removes the worktree, stops the session, runs teardown
-# and deletes the branch. The control below runs it and checks that it does.
+# alone, this exact wt-rm removes the worktree, closes the workspace, runs
+# teardown and deletes the branch. The control below runs it and checks that
+# it does.
 # Every assertion in the interrupted runs is therefore load-bearing — it can
 # only hold because the interrupt stopped the command.
 #
@@ -1404,14 +1308,19 @@ export MOCK_ZJ_SESSIONS=""
 # signal, so this proves destructive work stops and that process death releases
 # the lock. It says nothing about an interactive shell that survives its own
 # Ctrl-C and keeps the lock descriptor open; see the note in section I.
-sigfixture() {   # sigfixture <slug> — clean worktree, live session, marking hook
+sigfixture() {   # sigfixture <slug> — clean worktree, live workspace, marking hook
   setup
   mkhook "$REPO" '#!/bin/sh
 [ "$1" = teardown ] && : > "$WT_MAIN/torn-$WT_SLUG"
 exit 0'
   run "$REPO" wt "$1"
-  export MOCK_ZJ_SESSIONS="org--repo-$1"
-  : > "$ZLOG"
+  # A running Herdr session holding a workspace at the checkout. setup() defaults to
+  # an EMPTY session list, so without this there is nothing to close and the
+  # "closes no workspace" assertions below could not go red.
+  export MOCK_H_SESSION_LIST="{\"sessions\":[{\"default\":true,\"name\":\"default\",\"running\":true,\"session_dir\":\"$ROOTTMP/default\"}]}"
+  export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[{\"workspace_id\":\"ws-$1\",\"worktree\":{\"checkout_path\":\"$HOME/Code/Org/repo-$1\"}}]}}"
+  export MOCK_H_PANES='{"result":{"panes":[]}}'
+  : > "$HLOG"
 }
 
 # Control: identical fixture, identical child shell, injector disarmed.
@@ -1419,7 +1328,7 @@ sigfixture s0
 sigint_run "" wt-rm s0
 rc_is 0 "control: wt-rm in the child shell completes with the injector disarmed"
 eq "$SIGFIRED" "no" "control: no signal was delivered"
-logged "delete-session" "control: the uninterrupted run does stop the session"
+hlogged "workspace close" "control: the uninterrupted run does close the workspace"
 [[ -f "$REPO/torn-s0" ]] && _pass "control: the uninterrupted run does run teardown" \
                          || _fail "control: the uninterrupted run does run teardown"
 [[ -d "$HOME/Code/Org/repo-s0" ]] && _fail "control: the uninterrupted run does remove the worktree" \
@@ -1434,7 +1343,7 @@ eq "$SIGFIRED" "yes" "the injector fired inside worktree validation"
 rc_is 130 "a SIGINT during validation takes the child shell down"
 [[ -d "$HOME/Code/Org/repo-s1" ]] && _pass "interrupted validation leaves the worktree in place" \
                                   || _fail "interrupted validation leaves the worktree in place"
-unlogged "delete-session" "interrupted validation stops no session"
+hunlogged "workspace close" "interrupted validation closes no workspace"
 [[ -f "$REPO/torn-s1" ]] && _fail "interrupted validation runs no hook" \
                          || _pass "interrupted validation runs no hook"
 run "$REPO" git branch --list --format="%(refname:short)" s1
@@ -1449,14 +1358,13 @@ eq "$SIGFIRED" "yes" "the injector fired inside a cleanliness check"
 rc_is 130 "a SIGINT during cleanliness check 1 takes the child shell down"
 [[ -d "$HOME/Code/Org/repo-s2" ]] && _pass "an interrupted check 1 leaves the worktree in place" \
                                   || _fail "an interrupted check 1 leaves the worktree in place"
-unlogged "delete-session" "an interrupted check 1 stops no session"
+hunlogged "workspace close" "an interrupted check 1 closes no workspace"
 [[ -f "$REPO/torn-s2" ]] && _fail "an interrupted check 1 runs no hook" \
                          || _pass "an interrupted check 1 runs no hook"
 run "$REPO" git branch --list --format="%(refname:short)" s2
 eq "$OUT" "s2" "an interrupted check 1 deletes no branch"
 eq "$(other_process_can_lock "$REPO/.git" s2)" "RELEASED" \
    "the interrupted child's death releases the lock, so a retry is not blocked"
-export MOCK_ZJ_SESSIONS=""
 
 # Hostile-but-valid branch names are quoted in every recovery message.
 setup
@@ -1501,13 +1409,6 @@ REPOCONF="$ROOTTMP/repoconf"
 mkdir -p "$REPOCONF/zsh"
 cp "$(cd "${0:h}/.." && pwd)/dot_config/zsh/zshenv"    "$REPOCONF/zsh/zshenv"
 cp "$(cd "${0:h}/.." && pwd)/dot_config/zsh/functions" "$REPOCONF/zsh/functions"
-# Point ZELLIJ_SOCKET_DIR at a fixture path that is never created, so these
-# dispatch-only cases hit "nothing to check" in the wrapper's zellij-unreachable
-# preflight (section R) rather than the real, genuinely-live sockets this
-# machine's own zellij sessions leave in the real ZELLIJ_SOCKET_DIR — zshenv
-# exports that unconditionally, so an env override alone would be clobbered.
-print -r -- "" >> "$REPOCONF/zsh/zshenv"
-print -r -- "export ZELLIJ_SOCKET_DIR=\"$ROOTTMP/repoconf-zellijsock\"" >> "$REPOCONF/zsh/zshenv"
 
 # A wrapper with no arguments must reach the function and hit its own usage
 # error — proof the dispatch happened, not that the file merely ran.
@@ -1553,104 +1454,6 @@ OUT="$(XDG_CONFIG_HOME="$FAKECONF" zsh "$WRAPDIR/executable_wt-rm" x 2>&1)"; RC=
 has "cannot read" "missing functions file is refused"
 rc_is 1 "missing functions file exits 1"
 
-# --- zellij-unreachable preflight (final-review FIX 1) ----------------------
-# `zellij list-sessions -s` can report "no sessions" for a reason other than
-# there being none: when zellij cannot reach its own sockets — as reproduced
-# under the Claude Code sandbox — it reports the same nothing-here output.
-# wt-rm's own session-shutdown step (dot_config/zsh/functions, out of scope
-# here) reads that as "successful shutdown" and proceeds to remove the
-# worktree while the session is still live. The wrapper's preflight exists to
-# catch exactly that discrepancy — live session sockets on disk, no sessions
-# reported — before wt-rm ever runs.
-print -r -- ""
-print -r -- "R. wt-rm wrapper refuses when zellij reports no sessions but sockets exist"
-
-# A stub `zellij` that reproduces the discrepancy verbatim: it reports no
-# sessions (to stderr, like the real binary — the wrapper's check reads only
-# stdout, same as wt-rm's own check) and exits 0, regardless of what is
-# actually on disk. Switchable via MOCK_ZJ_LIST: unset, it prints the
-# nothing-here message (the discrepancy case below); set, it names that
-# session on stdout instead — the real binary's behaviour when zellij CAN
-# see the session, needed for the genuinely-reachable case below.
-ZBIN="$ROOTTMP/zellijbin"
-mkdir -p "$ZBIN"
-cat > "$ZBIN/zellij" <<'STUB'
-#!/usr/bin/env bash
-case "$*" in
-  "list-sessions -s")
-    if [ -n "${MOCK_ZJ_LIST:-}" ]; then
-      echo "$MOCK_ZJ_LIST"
-    else
-      echo "No active zellij sessions found." >&2
-    fi
-    exit 0 ;;
-  *) exit 0 ;;
-esac
-STUB
-chmod +x "$ZBIN/zellij"
-
-# A private ZELLIJ_SOCKET_DIR fixture, so the check runs against a directory
-# this test controls rather than whatever is genuinely live on the host.
-# zshenv exports ZELLIJ_SOCKET_DIR unconditionally (no `test ... ||` guard —
-# see zshenv:34), so a plain env override would be clobbered the instant the
-# wrapper sources it. This fixture zshenv is the real file with two lines
-# appended AFTER its content: the override, and a PATH prepend that puts the
-# stub `zellij` ahead of the real one Homebrew's shellenv (also run by
-# zshenv) would otherwise put first.
-ZSOCK="$ROOTTMP/zellijsock"
-ZCONF="$ROOTTMP/zellijconf"
-mkdir -p "$ZCONF/zsh"
-cp "$(cd "${0:h}/.." && pwd)/dot_config/zsh/functions" "$ZCONF/zsh/functions"
-{
-  cat "$(cd "${0:h}/.." && pwd)/dot_config/zsh/zshenv"
-  print -r -- ""
-  print -r -- "export ZELLIJ_SOCKET_DIR=\"$ZSOCK\""
-  print -r -- "export PATH=\"$ZBIN:\$PATH\""
-} > "$ZCONF/zsh/zshenv"
-
-# Positive case: a live-looking session socket sits in contract_version_1/,
-# but the stub reports no sessions — the discrepancy itself.
-rm -rf "$ZSOCK"; mkdir -p "$ZSOCK/contract_version_1"
-: > "$ZSOCK/contract_version_1/some-session"
-
-OUT="$(cd "$REPO" && XDG_CONFIG_HOME="$ZCONF" zsh "$WRAPDIR/executable_wt-rm" nonexistent-branch 2>&1)"; RC=$?
-rc_is 1 "wrapper refuses on the zellij-unreachable discrepancy"
-has "wt-rm: zellij is unreachable" "refusal names the problem"
-has "sandbox" "refusal message names the sandbox as the likely cause"
-
-# Genuinely-reachable case: same socket fixture as the positive case above —
-# entries present in contract_version_1/ — but `zellij list-sessions -s` now
-# names a live session on stdout instead of reporting none. This is the
-# missing direction: every case so far holds the stub's "no sessions" output
-# constant and only varies the socket directory, so a preflight degraded to
-# "refuse whenever entries exist" — never actually consulting list-sessions —
-# would still pass all of them. Only this case, where zellij CAN see a
-# session, distinguishes that broken preflight from the real one.
-export MOCK_ZJ_LIST="org--repo-nonexistent-branch"
-OUT="$(cd "$REPO" && XDG_CONFIG_HOME="$ZCONF" zsh "$WRAPDIR/executable_wt-rm" nonexistent-branch 2>&1)"; RC=$?
-hasnt "wt-rm: zellij is unreachable" "a genuinely reachable live session does not trip the preflight"
-has "does not exist" "wrapper proceeds past the preflight when zellij can see the session"
-unset MOCK_ZJ_LIST
-
-# Negative case: same stub, same fixture, but the socket directory is empty —
-# genuinely no sessions, nothing to check. The wrapper must proceed past the
-# preflight to wt-rm's own "does not exist" refusal for the bogus branch, not
-# stop at the zellij-unreachable one — otherwise the check could be refusing
-# unconditionally and the positive case above would still read green.
-rm -rf "$ZSOCK"; mkdir -p "$ZSOCK/contract_version_1"
-
-OUT="$(cd "$REPO" && XDG_CONFIG_HOME="$ZCONF" zsh "$WRAPDIR/executable_wt-rm" nonexistent-branch 2>&1)"; RC=$?
-hasnt "wt-rm: zellij is unreachable" "empty socket dir does not trip the preflight"
-has "does not exist" "wrapper proceeds past the preflight to wt-rm's own checks"
-
-# Same negative case again with the socket directory absent entirely — the
-# other "nothing to check" path (not existing at all, not merely empty).
-rm -rf "$ZSOCK"
-
-OUT="$(cd "$REPO" && XDG_CONFIG_HOME="$ZCONF" zsh "$WRAPDIR/executable_wt-rm" nonexistent-branch 2>&1)"; RC=$?
-hasnt "wt-rm: zellij is unreachable" "absent socket dir does not trip the preflight"
-has "does not exist" "wrapper proceeds past the preflight when there is no socket dir at all"
-
 # --- `command` defeats function shadowing (invocation-surface design §4.6) --
 # Every case above invokes the wrapper by absolute path, which bypasses PATH
 # resolution and shell-function lookup entirely — none of them exercise real
@@ -1658,11 +1461,12 @@ has "does not exist" "wrapper proceeds past the preflight when there is no socke
 # named wt-rm shadows a PATH wrapper of the same name (functions win the
 # lookup), and Claude Code's Bash tool initialises its shell from a snapshot
 # that defines wt-rm/wt-prepare as functions — so a bare `wt-rm` there never
-# reaches the wrapper, and never runs the zellij-unreachable preflight proven
-# above in section R. `command wt-rm` bypasses the function and resolves the
-# PATH executable instead. Both halves run inside a command-substitution
-# subshell so the shadowing function defined here cannot leak into any other
-# case in this file.
+# reaches the wrapper, and so never gets its sourcing of zshenv and the
+# functions file, its recursion guard, or its dispatch to the function with
+# the full lifecycle's guarantees. `command wt-rm` bypasses the function and
+# resolves the PATH executable instead. Both halves run inside a
+# command-substitution subshell so the shadowing function defined here cannot
+# leak into any other case in this file.
 print -r -- ""
 print -r -- "S. \`command\` defeats a same-named shell function shadowing the wrapper"
 
@@ -1686,70 +1490,69 @@ has "usage: wt-rm <branch>" "command wt-rm bypasses the function and reaches the
 hasnt "SHADOW-RAN" "command wt-rm does not run the shadowing function"
 
 print -r -- ""
-print -r -- "T. hwt — the proven Git lifecycle opens a native Herdr worktree workspace"
+print -r -- "T. wt — the proven Git lifecycle opens a native Herdr worktree workspace"
 
 setup
-run "$REPO" hwt feature/herdr
-rc_is 0 "hwt creates and prepares a new worktree"
-HWT="$HOME/Code/Org/repo-feature-herdr"
-[[ -d "$HWT" ]] && _pass "hwt uses the same sibling checkout path as wt" \
-                 || _fail "hwt uses the same sibling checkout path as wt"
-dlogged "--worktree $REPO $HWT" "hwt hands the prepared checkout to Herdr worktree mode"
-unlogged "--session" "hwt does not create a Zellij session"
+run "$REPO" wt feature/herdr
+rc_is 0 "wt creates and prepares a new worktree"
+NATIVEWT="$HOME/Code/Org/repo-feature-herdr"
+[[ -d "$NATIVEWT" ]] && _pass "wt creates the checkout at the expected sibling path" \
+                     || _fail "wt creates the checkout at the expected sibling path"
+dlogged "--worktree $REPO $NATIVEWT" "wt hands the prepared checkout to Herdr worktree mode"
 run "$REPO" git worktree list --porcelain
-has "locked hwt-managed; remove with command wt-rm" \
+has "locked wt-managed; remove with command wt-rm" \
   "a Herdr-managed checkout carries the lifecycle ownership lock"
-OUT="$(git -C "$REPO" worktree remove --force "$HWT" 2>&1)"; RC=$?
+OUT="$(git -C "$REPO" worktree remove --force "$NATIVEWT" 2>&1)"; RC=$?
 rc_is 128 "Herdr's one-force native removal cannot bypass the lifecycle lock"
-[[ -d "$HWT" ]] && _pass "the blocked native removal leaves the checkout intact" \
+[[ -d "$NATIVEWT" ]] && _pass "the blocked native removal leaves the checkout intact" \
                  || _fail "the blocked native removal leaves the checkout intact"
 
 setup
 print -r -- "env.local" > "$REPO/.worktreeinclude"
 print -r -- "secret" > "$REPO/env.local"
-MOCK_WTCP_RC=1 run "$REPO" hwt broken
-rc_is 1 "hwt propagates preparation failure"
+MOCK_WTCP_RC=1 run "$REPO" wt broken
+rc_is 1 "wt propagates preparation failure"
 dunlogged "--worktree" "a half-prepared checkout is not opened in Herdr"
 [[ -d "$HOME/Code/Org/repo-broken" ]] \
   && _pass "the failed checkout is preserved for wt-prepare recovery" \
   || _fail "the failed checkout is preserved for wt-prepare recovery"
 
 setup
-run "$REPO" hwt existing
+run "$REPO" wt existing
 : > "$DLOG"
-run "$REPO" hwt existing
-rc_is 0 "hwt reopens an existing matching worktree"
-has "reopening" "hwt reports the reopen path"
+run "$REPO" wt existing
+rc_is 0 "wt reopens an existing matching worktree"
+has "reopening" "wt reports the reopen path"
 dlogged "--worktree $REPO $HOME/Code/Org/repo-existing" \
   "reopen returns to the same native Herdr workspace"
 
-# The in-Herdr popup feeds this prompt. It must use the same hwt path, not Herdr's
+# The in-Herdr popup feeds this prompt. It must use the same wt path, not Herdr's
 # built-in create action, so copy/setup/locking cannot be bypassed from the TUI.
 setup
-OUT="$(cd "$REPO" && source "$FUNCS" && print -r -- 'feature/popup' | hwt-prompt 2>&1)"; RC=$?
-rc_is 0 "hwt-prompt creates a worktree from its interactive branch input"
+OUT="$(cd "$REPO" && source "$FUNCS" && print -r -- 'feature/popup' | wt-prompt 2>&1)"; RC=$?
+rc_is 0 "wt-prompt creates a worktree from its interactive branch input"
 POPUP="$HOME/Code/Org/repo-feature-popup"
 [[ -d "$POPUP" ]] && _pass "the popup uses the standard sibling checkout path" \
                       || _fail "the popup uses the standard sibling checkout path"
 dlogged "--worktree $REPO $POPUP" "the popup opens the checkout through native Herdr mode"
 run "$REPO" git worktree list --porcelain
-has "locked hwt-managed; remove with command wt-rm" "the popup-created checkout is lifecycle-locked"
+has "locked wt-managed; remove with command wt-rm" "the popup-created checkout is lifecycle-locked"
 
 setup
-OUT="$(cd "$REPO" && source "$FUNCS" && print -r -- '' | hwt-prompt 2>&1)"; RC=$?
+OUT="$(cd "$REPO" && source "$FUNCS" && print -r -- '' | wt-prompt 2>&1)"; RC=$?
 rc_is 1 "an empty popup branch cancels without creating anything"
 has "cancelled" "the empty prompt reports cancellation"
 
-# Opening an ordinary wt-created checkout through hdev must add the same lock. Otherwise
-# `hdev <worktree>` would be the unguarded alternate entrance to native Herdr removal.
+# Opening an ordinary wt-created checkout through dev must add the same lock. Otherwise
+# `dev <worktree>` would be the unguarded alternate entrance to native Herdr removal.
 setup
 run "$REPO" wt direct
 DIRECT="$HOME/Code/Org/repo-direct"
-run "$REPO" hdev "$DIRECT"
-rc_is 0 "hdev can adopt an existing wt-created checkout"
+run "$REPO" dev "$DIRECT"
+rc_is 0 "dev can adopt an existing wt-created checkout"
 run "$REPO" git worktree list --porcelain
-has "locked hwt-managed; remove with command wt-rm" \
-  "direct hdev adoption adds the same lifecycle ownership lock"
+has "locked wt-managed; remove with command wt-rm" \
+  "direct dev adoption adds the same lifecycle ownership lock"
 
 # An arbitrary registered checkout cannot be promised the wt-rm lifecycle: wt-rm
 # derives the standard sibling path from the branch name and could never find it.
@@ -1758,35 +1561,41 @@ CUSTOM="$ROOTTMP/custom-checkout"
 git -C "$REPO" worktree add -q -b custom "$CUSTOM"
 CUSTOM="${CUSTOM:A}"
 : > "$DLOG"
-run "$REPO" hdev "$CUSTOM"
-rc_is 1 "hdev refuses a linked checkout outside the wt sibling convention"
+run "$REPO" dev "$CUSTOM"
+rc_is 1 "dev refuses a linked checkout outside the wt sibling convention"
 has "not a wt-managed sibling" "the refusal explains the teardown mismatch"
 dunlogged "--worktree" "an unremovable checkout is not opened in Herdr"
 OUT="$(git -C "$REPO" worktree list --porcelain)"
-hasnt "locked hwt-managed" "the arbitrary checkout is not stranded behind our lock"
+hasnt "locked wt-managed" "the arbitrary checkout is not stranded behind our lock"
 
 # A user-owned Git lock is not ours to overwrite or later remove with two forces.
 setup
 run "$REPO" wt reserved
 RESERVED="$HOME/Code/Org/repo-reserved"
+# Replace the lifecycle lock wt just took, rather than trying to add a second one:
+# `worktree lock` on an already-locked worktree fails and leaves our own reason.
+git -C "$REPO" worktree unlock "$RESERVED"
 git -C "$REPO" worktree lock --reason "user maintenance" "$RESERVED"
 : > "$DLOG"
-run "$REPO" hdev "$RESERVED"
-rc_is 1 "hdev refuses a worktree carrying someone else's Git lock"
+run "$REPO" dev "$RESERVED"
+rc_is 1 "dev refuses a worktree carrying someone else's Git lock"
 has "locked for another reason" "the refusal explains why the lock is preserved"
 dunlogged "--worktree" "a foreign-locked checkout is never opened in Herdr"
 
-# wt remains a Zellij-only flow and must not acquire the Herdr ownership lock.
+# There is one creation path now, and it always takes ownership: wt-rm is the only
+# supported removal route, so a wt worktree left unlocked could be removed by a raw
+# `git worktree remove` that skips teardown entirely.
 setup
-run "$REPO" wt zellij-only
+run "$REPO" wt locked-by-default
 run "$REPO" git worktree list --porcelain
-hasnt "locked hwt-managed" "ordinary wt keeps its existing unlocked Git semantics"
+has "locked wt-managed; remove with command wt-rm" \
+  "wt takes lifecycle ownership of every checkout it creates"
 
 # wt-rm is the sole path allowed to cross the ownership lock, and only after its
 # existing cleanliness and teardown gates. A normal remove cannot cross this fixture;
 # success therefore proves wt-rm used Git's locked-worktree form intentionally.
 setup
-run "$REPO" hwt retire
+run "$REPO" wt retire
 RETIRE="$HOME/Code/Org/repo-retire"
 run "$REPO" wt-rm retire
 rc_is 0 "wt-rm retires a Herdr-owned locked checkout"
@@ -1796,18 +1605,30 @@ rc_is 0 "wt-rm retires a Herdr-owned locked checkout"
 # The double-force path is authorized only by our exact lock reason. A foreign lock
 # must stop the lifecycle before either terminal manager is disrupted.
 setup
+mkhook "$REPO" '#!/bin/sh
+[ "$1" = teardown ] && touch "$WT_MAIN/protected-teardown-ran"
+exit 0'
 run "$REPO" wt protected
 PROTECTED="$HOME/Code/Org/repo-protected"
+# wt takes the lifecycle ownership lock on every checkout it creates, so a foreign
+# lock has to REPLACE it — `worktree lock` on an already-locked worktree fails and
+# would leave our own reason in place, turning this into the owned-lock case.
+git -C "$REPO" worktree unlock "$PROTECTED"
 git -C "$REPO" worktree lock --reason "user maintenance" "$PROTECTED"
-export MOCK_ZJ_SESSIONS="org--repo-protected"
-: > "$ZLOG"; : > "$HLOG"
+export MOCK_H_SESSION_LIST="{\"sessions\":[{\"default\":true,\"name\":\"default\",\"running\":true,\"session_dir\":\"$ROOTTMP/default\"}]}"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[{\"workspace_id\":\"wp\",\"worktree\":{\"checkout_path\":\"$PROTECTED\"}}]}}"
+export MOCK_H_PANES='{"result":{"panes":[]}}'
+: > "$HLOG"
 run "$REPO" wt-rm protected
 rc_is 1 "wt-rm refuses a checkout locked for another reason"
 has "locked for another reason" "wt-rm explains that it does not own the lock"
-unlogged "delete-session" "a foreign lock is detected before Zellij shutdown"
 hunlogged "workspace close" "a foreign lock is detected before Herdr shutdown"
+[[ -f "$REPO/protected-teardown-ran" ]] && _fail "teardown is skipped for a foreign-locked checkout" \
+                                        || _pass "teardown is skipped for a foreign-locked checkout"
 [[ -d "$PROTECTED" ]] && _pass "the foreign-locked checkout survives" \
                           || _fail "the foreign-locked checkout survives"
+run "$REPO" git worktree list --porcelain
+has "$PROTECTED" "the foreign-locked checkout is still a registered worktree"
 
 print -r -- ""
 print -r -- "U. wt-rm — Herdr workspace shutdown and persisted-state safety"
@@ -1815,7 +1636,7 @@ print -r -- "U. wt-rm — Herdr workspace shutdown and persisted-state safety"
 # Every running session is inspected. Native provenance and pane cwd are both valid
 # evidence: the latter catches a plain workspace opened by hand in the checkout.
 setup
-run "$REPO" hwt herdr-close
+run "$REPO" wt herdr-close
 HCLOSE="$HOME/Code/Org/repo-herdr-close"
 export MOCK_H_SESSION_LIST="{\"sessions\":[
   {\"default\":true,\"name\":\"default\",\"running\":true,\"session_dir\":\"$ROOTTMP/default\"},
@@ -1834,31 +1655,35 @@ hlogged "--session team workspace close w7" "a matching named-session workspace 
 [[ -d "$HCLOSE" ]] && _fail "the checkout is removed after every Herdr close succeeds" \
                         || _pass "the checkout is removed after every Herdr close succeeds"
 
-# A close failure is destructive-boundary failure: keep the checkout and skip Zellij,
-# teardown and Git removal rather than pretending Herdr was absent.
+# A close failure is destructive-boundary failure: keep the checkout and skip teardown
+# and Git removal rather than pretending Herdr was absent.
 setup
 mkhook "$REPO" '#!/bin/sh
 [ "$1" = teardown ] && touch "$WT_MAIN/herdr-close-teardown-ran"
 exit 0'
-run "$REPO" hwt herdr-fail
+run "$REPO" wt herdr-fail
 HFAIL="$HOME/Code/Org/repo-herdr-fail"
 export MOCK_H_SESSION_LIST="{\"sessions\":[{\"default\":true,\"name\":\"default\",\"running\":true,\"session_dir\":\"$ROOTTMP/default\"}]}"
 export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[{\"workspace_id\":\"w8\",\"worktree\":{\"checkout_path\":\"$HFAIL\"}}]}}"
-export MOCK_H_PANES='{"result":{"panes":[]}}' MOCK_H_CLOSE_RC=1 \
-       MOCK_ZJ_SESSIONS="org--repo-herdr-fail"
+export MOCK_H_PANES='{"result":{"panes":[]}}' MOCK_H_CLOSE_RC=1
 run "$REPO" wt-rm herdr-fail
 rc_is 1 "a failed Herdr workspace close aborts removal"
 has "could not close Herdr workspace" "the close failure names the unsafe live workspace"
-unlogged "delete-session" "Zellij is not disrupted after a Herdr close failure"
+# Removal is strictly after teardown in wt-rm's sequence, so "teardown never ran" also
+# proves Git removal was never reached. Registration is the direct observation a bare
+# `-d` check cannot make: a directory can survive a *failed* removal, but a
+# still-registered worktree proves `git worktree remove` did not succeed.
 [[ -f "$REPO/herdr-close-teardown-ran" ]] && _fail "teardown is skipped after a Herdr close failure" \
                                                   || _pass "teardown is skipped after a Herdr close failure"
 [[ -d "$HFAIL" ]] && _pass "the checkout survives a Herdr close failure" \
                        || _fail "the checkout survives a Herdr close failure"
+run "$REPO" git worktree list --porcelain
+has "$HFAIL" "the checkout is still a registered worktree after a Herdr close failure"
 
 # Some Herdr commands historically returned an error envelope with exit 0. Closure
 # must inspect both channels or this looks successful and removal continues.
 setup
-run "$REPO" hwt herdr-envelope
+run "$REPO" wt herdr-envelope
 HENVELOPE="$HOME/Code/Org/repo-herdr-envelope"
 export MOCK_H_SESSION_LIST="{\"sessions\":[{\"default\":true,\"name\":\"default\",\"running\":true,\"session_dir\":\"$ROOTTMP/default\"}]}"
 export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[{\"workspace_id\":\"w8e\",\"worktree\":{\"checkout_path\":\"$HENVELOPE\"}}]}}"
@@ -1870,20 +1695,21 @@ has "could not close Herdr workspace" "the error envelope is reported as a close
 [[ -d "$HENVELOPE" ]] && _pass "the checkout survives a Herdr close error envelope" \
                            || _fail "the checkout survives a Herdr close error envelope"
 
-# Closing Herdr can flush files just like closing Zellij. Check 2 must see that dirt.
+# Closing Herdr can flush files, just as the previous multiplexer's teardown could.
+# Check 2 must see that dirt.
 setup
 mkhook "$REPO" '#!/bin/sh
 [ "$1" = teardown ] && touch "$WT_MAIN/herdr-flush-teardown-ran"
 exit 0'
-run "$REPO" hwt herdr-flush
+run "$REPO" wt herdr-flush
 HFLUSH="$HOME/Code/Org/repo-herdr-flush"
 export MOCK_H_SESSION_LIST="{\"sessions\":[{\"default\":true,\"name\":\"default\",\"running\":true,\"session_dir\":\"$ROOTTMP/default\"}]}"
 export MOCK_H_WORKSPACES='{"result":{"workspaces":[]}}'
 export MOCK_H_PANES="{\"result\":{\"panes\":[{\"workspace_id\":\"w9\",\"cwd\":\"$HFLUSH/deep\"}]}}"
 export MOCK_H_CLOSE_TOUCH="$HFLUSH/flushed-by-herdr.txt"
 run "$REPO" wt-rm herdr-flush
-rc_is 1 "dirt flushed by Herdr shutdown is caught at check 2"
-has "stopping the session left changes" "the existing post-shutdown check reports the flush"
+rc_is 1 "dirt flushed by Herdr shutdown is caught and removal is refused"
+has "closing Herdr workspaces left changes" "the existing post-shutdown check reports the flush"
 [[ -f "$REPO/herdr-flush-teardown-ran" ]] && _fail "teardown does not run after a Herdr flush" \
                                                    || _pass "teardown does not run after a Herdr flush"
 
@@ -1891,7 +1717,7 @@ has "stopping the session left changes" "the existing post-shutdown check report
 # restored later into a deleted cwd. Refuse and tell the user to start that session;
 # never edit Herdr's versioned session.json behind its back.
 setup
-run "$REPO" hwt herdr-stopped
+run "$REPO" wt herdr-stopped
 HSTOP="$HOME/Code/Org/repo-herdr-stopped"
 mkdir -p "$ROOTTMP/stopped"
 print -r -- "{\"version\":3,\"workspaces\":[{\"id\":\"w10\",\"tabs\":[{\"panes\":{\"1\":{\"cwd\":\"$HSTOP\"}}}]}]}" \
@@ -1905,7 +1731,7 @@ has "herdr session attach sleeping" "the refusal gives the safe recovery command
                        || _fail "the checkout survives while stopped Herdr state refers to it"
 
 # This guard must be selective: unrelated stopped state is ordinary and should not
-# force Herdr to be running for every Zellij-only removal.
+# force Herdr to be running for every removal.
 setup
 run "$REPO" wt unrelated-state
 UNRELATED="$HOME/Code/Org/repo-unrelated-state"
@@ -1915,37 +1741,49 @@ print -r -- '{"version":3,"workspaces":[{"id":"w1","tabs":[{"panes":{"1":{"cwd":
 export MOCK_H_SESSION_LIST="{\"sessions\":[{\"default\":false,\"name\":\"sleeping\",\"running\":false,\"session_dir\":\"$ROOTTMP/stopped\"}]}"
 run "$REPO" wt-rm unrelated-state
 rc_is 0 "unrelated stopped Herdr state does not block removal"
-[[ -d "$UNRELATED" ]] && _fail "the unrelated Zellij checkout is removed normally" \
-                           || _pass "the unrelated Zellij checkout is removed normally"
+[[ -d "$UNRELATED" ]] && _fail "a checkout unrelated to that stopped state is removed normally" \
+                           || _pass "a checkout unrelated to that stopped state is removed normally"
 
 # Session discovery is itself a safety boundary. Invalid JSON or a changed persisted
-# schema must fail closed before either terminal manager is touched.
+# schema must fail closed before anything is disrupted.
 setup
+mkhook "$REPO" '#!/bin/sh
+[ "$1" = teardown ] && touch "$WT_MAIN/bad-state-teardown-ran"
+exit 0'
 run "$REPO" wt bad-herdr-state
 BADSTATE="$HOME/Code/Org/repo-bad-herdr-state"
-export MOCK_ZJ_SESSIONS="org--repo-bad-herdr-state" MOCK_H_SESSION_LIST='not-json'
+export MOCK_H_SESSION_LIST='not-json'
 run "$REPO" wt-rm bad-herdr-state
 rc_is 1 "invalid Herdr session discovery fails closed"
 has "invalid session list" "the malformed Herdr response is diagnosed"
-unlogged "delete-session" "invalid Herdr discovery is caught before Zellij shutdown"
+[[ -f "$REPO/bad-state-teardown-ran" ]] && _fail "teardown is skipped when Herdr discovery is invalid" \
+                                        || _pass "teardown is skipped when Herdr discovery is invalid"
 [[ -d "$BADSTATE" ]] && _pass "the checkout survives invalid Herdr discovery" \
                           || _fail "the checkout survives invalid Herdr discovery"
+run "$REPO" git worktree list --porcelain
+has "$BADSTATE" "the checkout is still a registered worktree after invalid Herdr discovery"
 
 # A session advertised as running but unreachable is not equivalent to a stopped
-# session. Treating server_not_running as absence would recreate the Zellij sandbox
-# bug: live processes become invisible and the checkout is removed underneath them.
+# session. Treating server_not_running as absence would recreate the sandbox bug this
+# lifecycle already guards: live processes become invisible and the checkout is removed
+# underneath them.
 setup
+mkhook "$REPO" '#!/bin/sh
+[ "$1" = teardown ] && touch "$WT_MAIN/unreachable-teardown-ran"
+exit 0'
 run "$REPO" wt unreachable-herdr
 UNREACHABLE="$HOME/Code/Org/repo-unreachable-herdr"
-export MOCK_ZJ_SESSIONS="org--repo-unreachable-herdr"
 export MOCK_H_SESSION_LIST="{\"sessions\":[{\"default\":true,\"name\":\"default\",\"running\":true,\"session_dir\":\"$ROOTTMP/default\"}]}"
 export MOCK_H_WORKSPACES='{"error":{"code":"server_not_running","message":"not reachable"}}'
 run "$REPO" wt-rm unreachable-herdr
 rc_is 1 "a running-but-unreachable Herdr session fails closed"
 has "reported running but its API is unreachable" "the Herdr reachability discrepancy is explicit"
-unlogged "delete-session" "unreachable Herdr is caught before Zellij shutdown"
+[[ -f "$REPO/unreachable-teardown-ran" ]] && _fail "teardown is skipped when Herdr is unreachable" \
+                                          || _pass "teardown is skipped when Herdr is unreachable"
 [[ -d "$UNREACHABLE" ]] && _pass "the checkout survives an unreachable Herdr server" \
                              || _fail "the checkout survives an unreachable Herdr server"
+run "$REPO" git worktree list --porcelain
+has "$UNREACHABLE" "the checkout is still a registered worktree after an unreachable Herdr server"
 
 export HOME="$REAL_HOME"
 print -r -- ""
