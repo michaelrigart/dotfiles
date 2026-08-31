@@ -597,7 +597,15 @@ _wt_do_prepare() {
     fi
     # `--` is mandatory: manifest entries are arbitrary strings, and one named
     # "-h" is otherwise parsed as an option and prints usage instead of copying.
-    if ! ( builtin cd "$dest" && wtcp --from "$main" -- "${_WT_CARRY[@]}" ); then
+    # MISE_NO_ENV: wtcp copies into the *current* directory, so this cd is unavoidable, and
+    # `mise activate zsh` registers a chpwd hook. The cd therefore loads the new worktree's
+    # mise.toml — which already declares its required vars — while mise.local.toml, the file
+    # this very line is about to copy, is not there yet: one warning per required var, about
+    # a state the next line fixes. MISE_QUIET does not cover them (mise classes these as
+    # warnings, not chatter). Exported before the cd rather than prefixed onto wtcp, because
+    # the cd is what triggers it. Nothing here needs project env, and a genuinely missing
+    # var still warns on the next real cd into the worktree.
+    if ! ( export MISE_NO_ENV=1; builtin cd "$dest" && wtcp --from "$main" -- "${_WT_CARRY[@]}" ); then
       print -ru2 -- "wt: copying .worktreeinclude files into $dest failed."
       print -ru2 -- "    The worktree exists — fix the copy, then: wt-prepare $qb && wt $qb"
       return 1
