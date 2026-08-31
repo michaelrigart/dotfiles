@@ -1293,13 +1293,14 @@ chmod 700 "$HOME/Code/Org/repo-q11/blocked" 2>/dev/null
 # regression corrupted, so it is not evidence.
 #
 # Each scenario interrupts one named git call inside the pre-shutdown region of
-# wt-rm (validation, then cleanliness check 1). Both are ahead of the session
-# shutdown, the teardown hook, the removal and the branch deletion, so all four
+# wt-rm (validation, then cleanliness check 1). Both are ahead of the workspace
+# closure, the teardown hook, the removal and the branch deletion, so all four
 # must be absent afterwards.
 #
 # The fixture is deliberately CLEAN and its session deliberately present: left
-# alone, this exact wt-rm removes the worktree, stops the session, runs teardown
-# and deletes the branch. The control below runs it and checks that it does.
+# alone, this exact wt-rm removes the worktree, closes the workspace, runs
+# teardown and deletes the branch. The control below runs it and checks that
+# it does.
 # Every assertion in the interrupted runs is therefore load-bearing — it can
 # only hold because the interrupt stopped the command.
 #

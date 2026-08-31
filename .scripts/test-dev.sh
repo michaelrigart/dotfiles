@@ -1,5 +1,5 @@
 #!/usr/bin/env zsh
-# Mocked test for dev/layout.sh — the Herdr trial's shell surface.
+# Mocked test for dev/layout.sh — Herdr's shell surface.
 #
 #   A  dev            repo resolution cascade
 #   B  dev            the linked-worktree guard

@@ -125,9 +125,9 @@ h pane layout --pane "$(h pane list --workspace "$WS" | jq -r --arg t "$RT" \
   && ok "runtime is split down" || bad "runtime is not split down"
 
 # 6b. Native worktree flow: the shell lifecycle creates/prepares and Git-locks the
-# checkout; Herdr opens it natively so provenance/grouping are real. This is the path
-# the trial will use day to day (`wt`), not an ordinary workspace pointed at a
-# linked checkout.
+# checkout; Herdr opens it natively so provenance/grouping are real. This is the
+# path used day to day (`wt`), not an ordinary workspace pointed at a linked
+# checkout.
 PRIMARY="$SCRATCH/Code/Test/worktree-proj"
 mkdir -p "$PRIMARY" || exit 1
 git -C "$PRIMARY" init -q -b main || exit 1

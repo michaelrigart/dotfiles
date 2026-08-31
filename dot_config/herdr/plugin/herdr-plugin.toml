@@ -3,8 +3,8 @@
 # Registered with: herdr plugin link ~/.config/herdr/plugin
 #
 # Registration is GLOBAL across named sessions, not per-session. Rollback therefore
-# needs `herdr plugin unlink dev.layout` even if the trial session is gone, and the
-# live gate links under a DISTINCT id so its teardown cannot unlink this one.
+# needs `herdr plugin unlink dev.layout` even if the session that linked it is gone,
+# and the live gate links under a DISTINCT id so its teardown cannot unlink this one.
 #
 # No [[startup]] hook: herdr already restores workspaces on restart, and a hook that
 # re-applied layouts would fight it.
