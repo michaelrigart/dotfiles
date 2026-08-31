@@ -59,7 +59,8 @@ TMPROOT="${TMPDIR:-/tmp}"
 mkd() { mktemp -d "${TMPROOT%/}/wt-test.XXXXXX" }
 STUBS=$(mkd)
 SIGSTUBS=$(mkd)
-trap 'rm -rf "$STUBS" "$SIGSTUBS" "${ROOTTMP:-}"' EXIT
+FAILSTUBS=$(mkd)
+trap 'rm -rf "$STUBS" "$SIGSTUBS" "$FAILSTUBS" "${ROOTTMP:-}"' EXIT
 
 cat > "$STUBS/wtcp" <<'STUB'
 #!/usr/bin/env bash
@@ -200,6 +201,35 @@ exec $REALGIT "\$@"
 STUB
 chmod +x "$SIGSTUBS/git"
 
+# --- git call-failure injector ----------------------------------------------
+# A second pass-through `git`, in its own directory and prepended to PATH for one test
+# at a time. It logs every call whose argv contains WT_FAIL_MATCH and fails the
+# WT_FAIL_NTH such call, then execs the real git with the identical argv. Like the
+# SIGINT shim it fakes nothing about the code under test; it decides only which
+# invocation of a repeated read is the one that breaks.
+#
+# That distinction is the point: a helper that checks the status of one call and parses
+# the output of another cannot be caught by failing the call it checks. It has to be
+# possible to fail the *second* one, and to count how many there were.
+cat > "$FAILSTUBS/git" <<STUB
+#!/bin/sh
+if [ -n "\${WT_FAIL_MATCH:-}" ]; then
+  case " \$* " in
+    *" \$WT_FAIL_MATCH "*)
+      printf '%s\\n' "\$*" >> "\$WT_FAIL_LOG"
+      n=\$(wc -l < "\$WT_FAIL_LOG")
+      if [ "\$n" -eq "\${WT_FAIL_NTH:-0}" ]; then
+        $REALGIT "\$@"
+        echo "git: injected read failure" >&2
+        exit 128
+      fi
+      ;;
+  esac
+fi
+exec $REALGIT "\$@"
+STUB
+chmod +x "$FAILSTUBS/git"
+
 # --- fixture ----------------------------------------------------------------
 ROOTTMP=""
 setup() {   # fresh $HOME with Code/Org/repo, fresh logs, default mock behaviour
@@ -213,8 +243,8 @@ setup() {   # fresh $HOME with Code/Org/repo, fresh logs, default mock behaviour
   git -C "$REPO" commit -q --allow-empty -m init
   export WLOG="$ROOTTMP/wtcp.log" DLOG="$ROOTTMP/layout.log" \
          HLOG="$ROOTTMP/herdr.log" LLOG="$ROOTTMP/lsof.log" \
-         MOCK_H_CLOSED_FILE="$ROOTTMP/herdr-closed"
-  : > "$WLOG"; : > "$DLOG"; : > "$HLOG"; : > "$LLOG"; : > "$MOCK_H_CLOSED_FILE"
+         FLOG="$ROOTTMP/git-fail.log" MOCK_H_CLOSED_FILE="$ROOTTMP/herdr-closed"
+  : > "$WLOG"; : > "$DLOG"; : > "$HLOG"; : > "$LLOG"; : > "$FLOG"; : > "$MOCK_H_CLOSED_FILE"
   export MOCK_WTCP_RC=0 \
          MOCK_LAYOUT_RC=0 MOCK_H_SESSION_LIST='{"sessions":[]}' MOCK_H_SESSION_RC=0 \
          MOCK_H_WORKSPACES='{"result":{"workspaces":[]}}' \
@@ -1685,6 +1715,39 @@ hunlogged "workspace close" "a foreign lock is detected before Herdr shutdown"
                           || _fail "the foreign-locked checkout survives"
 run "$REPO" git worktree list --porcelain
 has "$PROTECTED" "the foreign-locked checkout is still a registered worktree"
+
+# The lock state is read once, and the status checked belongs to the read that was
+# parsed. Splitting it across two calls — status from the first, records from the
+# second — means a read that failed is parsed as though it succeeded, and an empty
+# result from a broken read is indistinguishable from a worktree that is not
+# registered. Git is real here; only the chosen invocation fails.
+setup
+run "$REPO" wt lockstate-once
+LOCKONCE="$HOME/Code/Org/repo-lockstate-once"
+: > "$FLOG"
+OUT="$(builtin cd "$REPO" && source "$FUNCS" \
+       && PATH="$FAILSTUBS:$PATH" WT_FAIL_LOG="$FLOG" WT_FAIL_NTH=0 \
+          WT_FAIL_MATCH="worktree list --porcelain -z" \
+          _wt_git_lock_state "$REPO" "$LOCKONCE" 2>&1)"; RC=$?
+rc_is 0 "the lifecycle lock on a wt checkout is reported as locked"
+eq "$(grep -c . "$FLOG")" "1" "worktree lock state is read in exactly one invocation"
+
+# A read that breaks must say so, even when it produced a syntactically perfect answer
+# first. The injector runs the real git — so the target's record is present and says
+# "unlocked" — and only then exits nonzero. Trusting the records over the status would
+# report a definite, wrong lock state to a caller that removes worktrees.
+setup
+run "$REPO" wt lockstate-fail
+LOCKFAIL="$HOME/Code/Org/repo-lockstate-fail"
+: > "$FLOG"
+OUT="$(builtin cd "$REPO" && source "$FUNCS" \
+       && PATH="$FAILSTUBS:$PATH" WT_FAIL_LOG="$FLOG" WT_FAIL_NTH=1 \
+          WT_FAIL_MATCH="worktree list --porcelain -z" \
+          _wt_git_lock_state "$REPO" "$LOCKFAIL" 2>&1)"; RC=$?
+rc_is 2 "a read that emits valid records and then fails is not trusted"
+has "cannot read Git worktree lock state" "the broken read is diagnosed as a read failure"
+hasnt "is not a registered worktree" \
+  "a broken read is never reported as an unregistered worktree"
 
 print -r -- ""
 print -r -- "U. wt-rm — Herdr workspace shutdown and persisted-state safety"

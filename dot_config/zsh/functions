@@ -303,18 +303,20 @@ _wt_git_lock_state() {
   emulate -L zsh
   # Never name a local `path` in zsh: it is the tied array behind PATH, and
   # localising it empties command lookup for every external below.
-  local root="$1" dest="${2:A}" rec wt_path in_target=0 seen=0
+  local root="$1" dest="${2:A}" rec wt_path rc in_target=0 seen=0
   local -a fields
   typeset -g _WT_GIT_LOCK_REASON=""
-  # zsh scalars cannot carry NUL bytes: assigning porcelain -z to `raw` makes the
-  # assignment itself fail with 127. Check the command once for a trustworthy status,
-  # then feed a second call directly through ${(0)} so the NUL records are decoded
-  # before they ever become a scalar.
-  if ! _wt_git -C "$root" worktree list --porcelain -z >/dev/null 2>&1; then
+  # zsh scalars cannot carry NUL bytes: assigning porcelain -z to `raw` would make the
+  # assignment itself fail with 127. An array assignment fed straight through ${(0)}
+  # decodes the NUL records and still reports the command's status, so one call yields
+  # both. Reading it in two — status from the first, records from the second — would
+  # parse a failed read as authoritative, and an empty result from a broken read is
+  # indistinguishable here from a worktree that is not registered at all.
+  fields=( ${(0)"$(_wt_git -C "$root" worktree list --porcelain -z 2>/dev/null)"} ); rc=$?
+  if (( rc )); then
     print -ru2 -- "wt: cannot read Git worktree lock state for $dest — refusing."
     return 2
   fi
-  fields=( ${(0)"$(_wt_git -C "$root" worktree list --porcelain -z 2>/dev/null)"} )
   for rec in $fields; do
     if [[ "$rec" == 'worktree '* ]]; then
       wt_path="${rec#worktree }"
