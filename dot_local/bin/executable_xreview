@@ -16,6 +16,57 @@ sq() {
     || sqlite3 "file:$HIST?immutable=1" "$@"
 }
 
+# Thread resolution: explicit > recorded > live Herdr lookup. A recorded id is
+# re-validated against the live pane list every time, because a UUID with history
+# proves a thread existed, not that anything is running to answer on it.
+state_dir() {
+  local root; root="$(repo_root)"
+  printf '%s/xreview/%s' "${XDG_STATE_HOME:-$HOME/.local/state}" \
+    "$(printf '%s' "$root" | tr '/' '_' | sed 's/^_//')"
+}
+
+repo_root() { git rev-parse --show-toplevel 2>/dev/null || pwd; }
+
+live_codex_thread() {
+  command -v herdr >/dev/null 2>&1 || return 1
+  herdr agent list 2>/dev/null | jq -r --arg cwd "$(repo_root)" \
+    '.result.agents[]? | select(.agent == "codex" and .cwd == $cwd)
+     | .agent_session.value // empty' | head -1
+}
+
+resolve_thread() {
+  [ -n "${XREVIEW_THREAD:-}" ] && { printf '%s\n' "$XREVIEW_THREAD"; return 0; }
+  local dir live rec
+  dir="$(state_dir)"
+  live="$(live_codex_thread)"
+  if [ -r "$dir/thread" ]; then
+    rec="$(cat "$dir/thread")"
+    # Recorded id still backed by a live pane, or no pane list to contradict it.
+    if [ -z "$live" ] || [ "$live" = "$rec" ]; then printf '%s\n' "$rec"; return 0; fi
+  fi
+  if [ -z "$live" ]; then
+    # A pane with no thread is the common case, not a missing pane: Codex has no
+    # thread id until its first turn, so a freshly built workspace looks empty here.
+    if command -v herdr >/dev/null 2>&1 &&
+       herdr agent list 2>/dev/null | jq -e --arg cwd "$(repo_root)" \
+         '.result.agents[]? | select(.agent == "codex" and .cwd == $cwd)' >/dev/null; then
+      die "the Codex pane for $(repo_root) has no thread yet - send it one message first"
+    fi
+    die "no Codex pane for $(repo_root); open one, or: xreview init <thread-id>"
+  fi
+  mkdir -p "$dir" && printf '%s\n' "$live" > "$dir/thread"
+  printf '%s\n' "$live"
+}
+
+cmd_init() {
+  local dir id
+  dir="$(state_dir)"
+  id="${1:-$(live_codex_thread)}"
+  [ -n "$id" ] || die "no Codex pane for $(repo_root); pass a thread id explicitly"
+  mkdir -p "$dir" && printf '%s\n' "$id" > "$dir/thread"
+  printf 'xreview: %s -> %s\n' "$(repo_root)" "$id"
+}
+
 # Trust is required for AGENTS.md to load, so the repos we review are necessarily
 # trusted - and a trusted repo's .codex/config.toml can widen the reviewer's sandbox
 # and register MCP servers, which a CLI pin does not prevent. No repo has one today,
@@ -27,7 +78,9 @@ guard_project_config() {
 }
 
 cmd_dispatch() {
-  local thread="$1" body_file="$2"
+  local thread body_file
+  if [ "$#" -ge 2 ]; then thread="$1"; body_file="$2"
+  else thread="$(resolve_thread)" || return 1; body_file="$1"; fi
   [ -r "$body_file" ] || die "cannot read $body_file"
   guard_project_config
   local nonce; nonce="xr-$(date +%s)-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
@@ -43,7 +96,13 @@ cmd_dispatch() {
 }
 
 cmd_collect() {
-  local thread="$1" nonce="$2" budget="${3:-900}" waited=0
+  local thread nonce budget waited=0
+  # Nonces are minted here and always start with "xr-"; thread ids never do.
+  if [ -n "${1##xr-*}" ]; then
+    thread="$1"; nonce="$2"; budget="${3:-900}"
+  else
+    thread="$(resolve_thread)" || return 1; nonce="$1"; budget="${2:-900}"
+  fi
   while :; do
     local row; row=$(sq "
       SELECT t.status, COALESCE(t.final_agent_item_id,'')
@@ -68,5 +127,7 @@ cmd_collect() {
 case "${1:-}" in
   dispatch) shift; cmd_dispatch "$@" ;;
   collect)  shift; cmd_collect "$@" ;;
-  *) die "usage: xreview dispatch <thread> <body-file> | collect <thread> <nonce> [budget-secs]" ;;
+  init)     shift; cmd_init "$@" ;;
+  thread)   shift; resolve_thread ;;
+  *) die "usage: xreview init [thread-id] | thread | dispatch [thread] <body-file> | collect [thread] <nonce> [budget]" ;;
 esac

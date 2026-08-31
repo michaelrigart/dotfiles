@@ -40,16 +40,23 @@ A dispatch carries:
 ## Dispatching
 
 ```
-NONCE=$(xreview dispatch <thread-id> <body-file>)
-xreview collect <thread-id> "$NONCE" [budget-secs]
+NONCE=$(xreview dispatch <body-file>)
+xreview collect "$NONCE" [budget-secs]
 ```
 
 `xreview` wraps outbound packets in `<from-claude-code>` and returns the reviewer's
 answer. It applies provenance itself, because Michael is no longer in the channel to
 apply it by hand.
 
-The thread is the Codex pane paired with this project. A timeout is **ambiguous, never
-retried** — report it and stop.
+The thread resolves automatically: the Codex pane whose cwd is this repository, cached
+under `$XDG_STATE_HOME/xreview/` and re-validated against the live pane every time — a
+recorded id proves a thread existed, not that anything is running to answer on it.
+`xreview thread` shows what would be used; `xreview init <id>` pins one by hand.
+
+**A freshly built pane has no thread until its first turn.** If dispatch reports that,
+send the pane one message and retry — it is not a missing pane.
+
+A timeout is **ambiguous, never retried** — report it and stop.
 
 ## Acting on findings
 
