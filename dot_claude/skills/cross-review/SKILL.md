@@ -68,7 +68,29 @@ on the reviewer's assertion alone.
   findings.
 - **You disagree, or cannot verify it** — Michael decides.
 
-One round. Remaining disagreement goes to Michael; it does not become another exchange.
+## Iterating
+
+Keep going until the review converges or the disagreement is real. Michael is the
+tiebreaker, not the courier — he should hear about a finding because it needs his
+judgement, never because a round ended.
+
+Each round re-dispatches the **updated artifact, cold**. Never send a rebuttal: a
+reviewer arguing with your justification has stopped reviewing the work, and its
+agreement stops being evidence. Carry only a bare list of which findings the round
+addressed — identifiers, no reasons — for exactly the reason the rejected-alternatives
+list carries none.
+
+Escalate to Michael when:
+
+- the reviewer **re-raises a finding you already addressed** — that is disagreement,
+  not a missed fix
+- a finding needs design judgement or a trade-off
+- you cannot verify a claim
+- `xreview` refuses the round (capped at 3; `XREVIEW_MAX_ROUNDS` overrides)
+
+Converged means the reviewer returns no actionable findings — not that it stopped
+objecting, and not that you stopped asking. Run `xreview round --reset` when moving on
+to the next checkpoint.
 
 ## Consultation is not review
 
