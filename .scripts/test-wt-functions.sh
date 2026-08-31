@@ -138,12 +138,15 @@ cat > "$STUBS/lsof" <<'STUB'
 # ask for. A stub that ignored -F would let the caller change the wire format without
 # a single test noticing, which is exactly the drift section V exists to catch.
 #
-# MOCK_LSOF_SPEC is one record per line, "pid<TAB>command<TAB>cwd", and the cwd column
-# is expanded with %b so a fixture can put a newline *inside* a path — the case the
-# harness could not otherwise express, since neither bash nor zsh can hold a NUL byte
-# in a variable. MOCK_LSOF_RAW overrides it for malformed output, and the exit status
-# is separately controllable: real lsof exits 1 both when it matches nothing and when
-# it fails, which is the ambiguity the caller has to resolve.
+# MOCK_LSOF_SPEC is one record per line, "pid<TAB>command<TAB>cwd". The cwd column is
+# emitted verbatim because it is lsof's *rendering* of a path, not the path. Write it as
+# the binary prints it **under LC_ALL=C**, which is what the code under test pins: a
+# backslash as \\, a newline as \n, other control characters in caret notation, and every
+# byte above 0x7f as \xHH — so a path containing é is written caf\xc3\xa9, not café. A
+# fixture that used the raw path would describe a wire format that invocation never
+# produces, and would silently simulate an occupant the helper cannot match. MOCK_LSOF_RAW overrides it for malformed output, and the exit
+# status is separately controllable: real lsof exits 1 both when it matches nothing and
+# when it fails, which is the ambiguity the caller has to resolve.
 printf '%s\n' "$*" >> "$LLOG"
 if [ -n "${MOCK_LSOF_RAW+x}" ]; then
   printf '%b' "$MOCK_LSOF_RAW"
@@ -157,10 +160,10 @@ while IFS=$'\t' read -r pid cmd cwd; do
   [ -n "$pid" ] || continue
   if [ "$fmt" = nul ]; then
     printf 'p%s\0c%s\0\n' "$pid" "$cmd"
-    printf 'fcwd\0n%b\0\n' "$cwd"
+    printf 'fcwd\0n%s\0\n' "$cwd"
   else
     printf 'p%s\nc%s\nfcwd\n' "$pid" "$cmd"
-    printf 'n%b\n' "$cwd"
+    printf 'n%s\n' "$cwd"
   fi
 done <<< "${MOCK_LSOF_SPEC:-}"
 exit "${MOCK_LSOF_RC:-0}"
@@ -318,8 +321,8 @@ sigint_run() {
 }
 sha() { git -C "$1" rev-parse HEAD 2>/dev/null }
 # lsof_spec <pid> <cmd> <cwd> [...] — build MOCK_LSOF_SPEC rows. The cwd column is
-# expanded by the stub with %b, so pass a literal \n in it to place a newline inside a
-# path.
+# lsof's rendering of a path, so pass it as lsof would print it: a real backslash as two
+# characters, a real newline as the two characters \ and n.
 lsof_spec() {
   local -a rows
   while (( $# >= 3 )); do rows+=( "$1"$'\t'"$2"$'\t'"$3" ); shift 3; done
@@ -1919,7 +1922,8 @@ print -r -- "V. wt-rm — a live process inside the checkout blocks removal"
 
 # The husk this guards against: closing a Herdr workspace escalates SIGHUP → SIGTERM →
 # SIGKILL over roughly half a second across the pane's process group, so everything
-# Herdr started dies. A process that has escaped into its own session — setsid, a
+# still in that group dies. The signal follows group membership, not ancestry, so a
+# process that has left for a session of its own — setsid, a
 # double-forked daemon, anything a project starts detached — survives that, keeps its
 # cwd inside the checkout, and writes the directory back into existence after
 # `git worktree remove` has deleted it. Herdr's own state cannot see such a process:
@@ -2042,34 +2046,73 @@ rc_is 0 "the real lsof invocation is read successfully"
 has "$INSIDE" "real lsof reports a real process whose cwd is inside the checkout"
 hasnt "$OUTSIDE" "real lsof does not report a real process in the sibling path"
 
-# A newline inside a path is not a record separator, and the wire format must be one in
-# which those two things cannot be confused. Under newline-delimited fields they are
-# indistinguishable: a cwd carrying a forged p/c/f/n sequence parses as two
-# syntactically valid records, so the field-cycle check passes and the reconstructed
-# paths are fiction. Here the real process sits OUTSIDE the checkout and the forgery
-# names the checkout — removal is wrongly refused, and no amount of cycle checking
-# notices, because the cycle is intact.
+# lsof renders a pathname, it does not report one: a backslash is printed as two
+# characters. Comparing $dest to that rendering verbatim silently matches nothing, and
+# the direction it fails in is a checkout removed while its occupant is still in it.
+# A backslash is the case a real checkout path can plausibly contain.
 setup
-run "$REPO" wt lsof-forged
-FORGED="$HOME/Code/Org/repo-lsof-forged"
-export MOCK_LSOF_SPEC="$(lsof_spec 55 daemon "/outside\\np99\\ncphantom\\nfcwd\\nn$FORGED")"
-run "$REPO" wt-rm lsof-forged
-rc_is 0 "a newline-bearing path outside the checkout forges no process inside it"
-hasnt "phantom" "the forged record never reaches the refusal"
-[[ -d "$FORGED" ]] && _fail "the checkout is removed when only a forgery names it" \
-                        || _pass "the checkout is removed when only a forgery names it"
+BSDIR="$ROOTTMP/back\\slash-checkout"        # one real backslash
+BSRENDER="$ROOTTMP/back\\\\slash-checkout" # two, as lsof prints it
+mkdir -p "$BSDIR"
+export MOCK_LSOF_SPEC="$(lsof_spec 1 launchd / 4242 daemon "$BSRENDER")"
+OUT="$(builtin cd "$REPO" && source "$FUNCS" && _wt_live_processes "$BSDIR" 2>&1)"; RC=$?
+rc_is 0 "a backslash in the checkout path is read successfully"
+has "4242" "a checkout path containing a backslash is matched against lsof's rendering"
 
-# The mirror: a real process genuinely inside the checkout, whose path also carries a
-# forged sequence, must still be reported — once, as itself.
+# The rest of the rendering — \n, \t, caret notation — is not modelled, so a control
+# character in the checkout path cannot be compared at all. Fail closed rather than
+# compare a path against a rendering of it that will never be equal.
 setup
-run "$REPO" wt lsof-forged-in
-FORGEDIN="$HOME/Code/Org/repo-lsof-forged-in"
-export MOCK_LSOF_SPEC="$(lsof_spec 56 realdaemon "$FORGEDIN/x\\np98\\ncphantom\\nfcwd\\nn/")"
-run "$REPO" wt-rm lsof-forged-in
-rc_is 1 "a real process inside the checkout is still caught when its path carries a forgery"
-has "realdaemon" "the real occupant is named"
-[[ -d "$FORGEDIN" ]] && _pass "the checkout survives its real occupant" \
-                          || _fail "the checkout survives its real occupant"
+CTLDIR="$ROOTTMP/ctrl"$'\n'"checkout"
+mkdir -p "$CTLDIR"
+export MOCK_LSOF_SPEC="$(lsof_spec 1 launchd / 4243 daemon "$ROOTTMP/ctrl\\ncheckout")"
+OUT="$(builtin cd "$REPO" && source "$FUNCS" && _wt_live_processes "$CTLDIR" 2>&1)"; RC=$?
+rc_is 1 "a control character in the checkout path fails closed"
+has "control character" "the refusal names why the comparison cannot be made"
+
+# lsof's rendering depends on the caller's locale: under a UTF-8 locale é is printed
+# verbatim, under LC_ALL=C the same directory comes back as caf\xc3\xa9. A comparison
+# that assumed either one would be right only for the environment it was written in, so
+# the locale is pinned and its rendering modelled. The fixture supplies the pinned form.
+setup
+U8DIR="$ROOTTMP/café-checkout"
+mkdir -p "$U8DIR"
+export MOCK_LSOF_SPEC="$(lsof_spec 1 launchd / 4244 daemon "$ROOTTMP/caf\\xc3\\xa9-checkout")"
+OUT="$(builtin cd "$REPO" && source "$FUNCS" && _wt_live_processes "$U8DIR" 2>&1)"; RC=$?
+rc_is 0 "a non-ASCII checkout path is read successfully"
+has "4244" "a non-ASCII checkout path is matched against the pinned rendering"
+
+# End to end, against the real binary, from both locales. The property under test is
+# that the answer does not depend on the caller's environment, so one locale cannot
+# establish it: under LC_ALL=C the binary escapes the UTF-8 bytes and under a UTF-8
+# locale it does not, and an implementation that simply inherited the caller's locale
+# would pass whichever of the two it happened to be written against.
+setup
+REALU8="$ROOTTMP/réal-çheckout"
+mkdir -p "$REALU8/deep"
+( builtin cd "$REALU8/deep" && exec sleep 90 ) &!
+U8PID=$!
+sleep 1
+for caller_locale in C en_US.UTF-8; do
+  OUT="$(builtin cd "$REPO" && source "$FUNCS" \
+         && LC_ALL="$caller_locale" PATH="${REALLSOF:h}:$PATH" \
+            _wt_live_processes "$REALU8" 2>&1)"; RC=$?
+  rc_is 0 "the real scan of a non-ASCII checkout is read successfully (LC_ALL=$caller_locale)"
+  has "$U8PID" "a real process in a non-ASCII checkout is found (LC_ALL=$caller_locale)"
+done
+kill $U8PID 2>/dev/null
+
+# A path that merely contains the two characters \ and n is an ordinary path, and must
+# not be mistaken for a record boundary by any parse.
+setup
+run "$REPO" wt lsof-literal
+LITERAL="$HOME/Code/Org/repo-lsof-literal"
+export MOCK_LSOF_SPEC="$(lsof_spec 55 daemon "/outside\\np99\\ncphantom\\nfcwd\\nn$LITERAL")"
+run "$REPO" wt-rm lsof-literal
+rc_is 0 "a rendered path outside the checkout forges no process inside it"
+hasnt "phantom" "the escaped text never becomes a record"
+[[ -d "$LITERAL" ]] && _fail "the checkout is removed when only a rendering names it" \
+                         || _pass "the checkout is removed when only a rendering names it"
 
 # The status that matters is the one belonging to the listing actually parsed. Reading
 # the listing in a second, unchecked invocation means a scan that failed *after*
@@ -2081,6 +2124,53 @@ ONCE="$HOME/Code/Org/repo-lsof-once"
 run "$REPO" wt-rm lsof-once
 rc_is 0 "the single-invocation fixture removes the worktree normally"
 eq "$(grep -c . "$LLOG")" "1" "the process list is read in exactly one invocation"
+
+# Prefix-shaped is not well-formed. A record whose pathname field is present but empty
+# satisfies "starts with n" and yields an empty cwd, which matches nothing — so a
+# process that IS in the checkout, whose path lsof could not resolve, reads as no
+# process at all. Same for a relative value: every cwd lsof reports is absolute, and
+# anything else means the field is not what it is being read as.
+setup
+run "$REPO" wt lsof-emptyname
+EMPTYNAME="$HOME/Code/Org/repo-lsof-emptyname"
+export MOCK_LSOF_SPEC="$(lsof_spec 1 launchd / 4242 daemon "")"
+run "$REPO" wt-rm lsof-emptyname
+rc_is 1 "a record with an empty pathname field fails closed"
+has "could not read the process list" "the empty pathname is diagnosed as unreadable"
+[[ -d "$EMPTYNAME" ]] && _pass "the checkout survives an empty pathname field" \
+                           || _fail "the checkout survives an empty pathname field"
+
+setup
+run "$REPO" wt lsof-relname
+RELNAME="$HOME/Code/Org/repo-lsof-relname"
+export MOCK_LSOF_SPEC="$(lsof_spec 1 launchd / 4242 daemon "not/absolute")"
+run "$REPO" wt-rm lsof-relname
+rc_is 1 "a record with a relative pathname fails closed"
+[[ -d "$RELNAME" ]] && _pass "the checkout survives a relative pathname field" \
+                         || _fail "the checkout survives a relative pathname field"
+
+# A pid is a number. Anything else in that field means the record is not the record it
+# is being read as, and reading the rest of it would be guessing.
+setup
+run "$REPO" wt lsof-badpid
+BADPID="$HOME/Code/Org/repo-lsof-badpid"
+export MOCK_LSOF_SPEC="$(lsof_spec 1 launchd / not-a-pid daemon /)"
+run "$REPO" wt-rm lsof-badpid
+rc_is 1 "a record with a non-numeric pid fails closed"
+has "could not read the process list" "the non-numeric pid is diagnosed as unreadable"
+[[ -d "$BADPID" ]] && _pass "the checkout survives a non-numeric pid" \
+                        || _fail "the checkout survives a non-numeric pid"
+
+# -d cwd is what makes every descriptor in the answer a cwd. If one is not, the request
+# and the reply have diverged and nothing below can be trusted to mean what it says.
+setup
+run "$REPO" wt lsof-notcwd
+NOTCWD="$HOME/Code/Org/repo-lsof-notcwd"
+export MOCK_LSOF_RAW='p1\000claunchd\000\nfmem\000n/\000\n'
+run "$REPO" wt-rm lsof-notcwd
+rc_is 1 "a descriptor other than cwd fails closed"
+[[ -d "$NOTCWD" ]] && _pass "the checkout survives an unexpected descriptor type" \
+                        || _fail "the checkout survives an unexpected descriptor type"
 
 # lsof exits nonzero both when it matches nothing and when it fails, but this
 # invocation scans every process rather than a path, so nonzero can only be failure.

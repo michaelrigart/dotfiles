@@ -10,6 +10,10 @@ interrupted-build contradiction, the CLI sequence (which would not have run), th
 plugin's no-op failure mode and the integration contract; then the managed baseline,
 lock ordering, and the unowned `hooks.json`.
 
+**Amended 2026-08-31, after merge.** The closing claim of "The worktree lifecycle" was
+stronger than anything the mechanisms below establish, and a fourth mechanism has since
+been added to `wt-rm`. The section now states what is actually guaranteed.
+
 **Amended 2026-08-29, during execution.** Two decisions in this document were reversed
 by what the build learned, and the text below now describes what exists rather than
 what was originally approved:
@@ -106,7 +110,7 @@ what leaves an empty `tmp/` husk behind." Originally that step knew exactly one
 multiplexer, so a Herdr workspace on a `wt` worktree was invisible to it and the trial
 simply refused to open one.
 
-Three mechanisms now make worktrees safe rather than forbidden.
+Four mechanisms now make worktrees workable rather than forbidden.
 
 **1. Native adoption, not plain creation.** `hwt` creates the checkout through the
 normal `wt` lifecycle (branch, `.worktreeinclude`, `.worktreehook`), then hands off to
@@ -142,8 +146,25 @@ persisted `session.json` — because a stopped session can still restore panes i
 checkout later. That inspection pins the persisted schema at `version == 3` and refuses
 anything else rather than guessing at an unknown shape.
 
-The net effect is the original invariant, preserved: no process may outlive the checkout
-it is writing into.
+**4. A live-process check.** Closing a workspace escalates SIGHUP → SIGTERM → SIGKILL
+across the pane's process group in about half a second, so everything still in that
+group dies with it. The signal follows group membership, not ancestry: a process that
+left for a session of its own survives despite having been started from the pane, and it
+is in no pane for mechanism 3 to find. After the teardown verb and before
+`git worktree remove`, `wt-rm` scans the working directories of the caller's processes
+and refuses if one of them is in the checkout. Paths it cannot compare against lsof's
+rendering — those containing a control character — are refused rather than guessed at.
+
+This is weaker than the invariant this section originally claimed — *"no process may
+outlive the checkout it is writing into"* — which none of these mechanisms establish and
+which the code does not claim either. What they do establish is narrower: every process
+still in a Herdr pane's process group is stopped before removal — not every process
+Herdr started, since one that left for a session of its own is no longer in that group —
+and no process of the caller's had its cwd in the checkout at the instant it was last
+looked at. Outside that: another user's
+processes, a daemon that keeps the path as a string and writes to it from elsewhere, and
+anything entering between the check and Git's delete. The husk becomes a refusal in the
+common case. It is not excluded by proof.
 
 ## Model mapping
 

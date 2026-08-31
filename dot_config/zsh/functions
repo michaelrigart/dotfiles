@@ -956,6 +956,35 @@ _wt_stop_herdr_workspaces() {
   return 0
 }
 
+# Render <path> the way lsof prints it under LC_ALL=C. Return 1 for a path containing a
+# control character, whose rendering is not modelled.
+#
+# lsof does not report a pathname, it renders one, and the rendering depends on the
+# caller's locale: under a UTF-8 locale "café" comes back verbatim, under LC_ALL=C the
+# same directory comes back as "caf\xc3\xa9". A comparison against either is correct
+# only in the environment it was written for — and `LC_ALL=C command wt-rm ...` is a
+# thing a person can type. So the scan pins LC_ALL=C, the one locale guaranteed to
+# exist, and this reproduces that locale's rules: a backslash doubles, printable ASCII
+# passes through, every other byte becomes \xHH. Control characters use forms this does
+# not model (\n, \t, caret notation) and are refused by the caller instead.
+_wt_lsof_render() {
+  emulate -L zsh
+  # Byte-wise, because that is how lsof escapes under LC_ALL=C. NO_MULTIBYTE makes zsh's
+  # indexing agree with it; without it a multi-byte character is one index and its bytes
+  # can never be rendered separately.
+  setopt local_options no_multibyte
+  local s="$1" out="" c i n
+  for (( i = 1; i <= ${#s}; i++ )); do
+    c="${s[i]}"; n=$(( #c ))
+    if (( n == 92 )); then out+='\\'
+    elif (( n >= 32 && n <= 126 )); then out+="$c"
+    elif (( n >= 128 )); then out+="$(printf '\\x%02x' $n)"
+    else return 1
+    fi
+  done
+  print -r -- "$out"
+}
+
 # Print "<pid> <command>" for every process of the caller's whose current working
 # directory is <dest> or below it, as of the moment of the call. Return 1 when the
 # answer cannot be trusted — an unreadable listing is not an empty one, and this is the
@@ -963,9 +992,10 @@ _wt_stop_herdr_workspaces() {
 # result as proof that the checkout is idle.
 #
 # Closing a Herdr workspace escalates SIGHUP → SIGTERM → SIGKILL across the pane's
-# process group in about half a second, so nothing Herdr started outlives the close.
-# A process that has escaped into its own session — setsid, a double-forked daemon,
-# anything a project starts detached — survives it, keeps its cwd in the checkout, and
+# process group in about half a second, so everything still in that group dies with it.
+# The signal follows group membership, not ancestry: a process that left for a session
+# of its own — setsid, a double-forked daemon, anything a project starts detached —
+# survives despite having been started from the pane, keeps its cwd in the checkout, and
 # recreates the directory after `git worktree remove` deletes it. It is in no pane, so
 # no amount of Herdr state can see it. The OS is the only remaining witness.
 #
@@ -1006,17 +1036,24 @@ _wt_live_processes() {
   emulate -L zsh
   # Never name a local `path` here: it is the tied array behind PATH, and localising
   # it empties command lookup for the whole function — including the lsof check below.
-  local dest="${1:A}" rc i pid cmd cwd
+  local dest="${1:A}" edest rc i pid cmd cwd
   local -a lines hits
   (( $+commands[lsof] )) || {
     print -ru2 -- "wt-rm: lsof is unavailable, so processes still using $dest cannot be detected — refusing."
     return 1
   }
-  # -F0, not -F: NUL-terminated fields. With newline-delimited output a path is not
-  # distinguishable from a record boundary, so a cwd carrying a forged p/c/f/n sequence
-  # parses as two syntactically valid records — the field-cycle check below passes and
-  # the reconstructed paths are fiction, in either direction. A NUL cannot occur in a
-  # pathname, so splitting on it is the only framing that makes the parse unambiguous.
+  # Compare against lsof's rendering of $dest, not $dest — see _wt_lsof_render. This
+  # concerns $dest alone: a rendered character *inside* the checkout still sits after
+  # the prefix that has to match.
+  edest="$(_wt_lsof_render "$dest")" || {
+    print -ru2 -- "wt-rm: $dest contains a control character, which lsof renders rather than reports — refusing."
+    return 1
+  }
+  # -F0, not -F: NUL-terminated fields. Newline framing is not actually ambiguous today,
+  # because lsof renders a newline inside a pathname as the two characters \ and n — but
+  # that is a property of its output escaping, and resting the parse on it would make
+  # correctness depend on a rendering detail rather than on the framing. A NUL cannot
+  # occur in a pathname at all, so this holds without that assumption.
   #
   # One invocation, and the status belongs to the listing actually parsed. Splitting it
   # across two — status from the first, records from the second — would let a scan that
@@ -1024,7 +1061,7 @@ _wt_live_processes() {
   # exactly where the occupant would have been. A zsh scalar cannot carry a NUL byte, so
   # `out=$(...)` is not available here, but the status survives an array assignment fed
   # straight through ${(0)}, which is what makes the single call possible.
-  lines=( ${(0)"$(command lsof -w -d cwd -F0pcn 2>/dev/null)"} ); rc=$?
+  lines=( ${(0)"$(LC_ALL=C command lsof -w -d cwd -F0pcn 2>/dev/null)"} ); rc=$?
   if (( rc )); then
     print -ru2 -- "wt-rm: could not read the process list from lsof — refusing."
     return 1
@@ -1041,10 +1078,15 @@ _wt_live_processes() {
     return 1
   fi
   # lsof emits one strict p/c/f/n cycle per process. With framing already unambiguous,
-  # this verifies the parse is still aligned with what the binary actually emitted.
+  # this verifies the parse is still aligned with what the binary actually emitted —
+  # by value, not just by prefix letter. A bare "n" is prefix-shaped and semantically
+  # empty, and an empty cwd matches nothing: a process that IS in the checkout, whose
+  # path lsof could not resolve, would read as no process at all. Every cwd lsof reports
+  # is absolute, and -d cwd is what makes every descriptor here a cwd; a reply that
+  # breaks either has diverged from the request and cannot be read as if it had not.
   for (( i = 1; i <= ${#lines}; i += 4 )); do
-    if [[ "${lines[i]}" != p* || "${lines[i+1]}" != c* || \
-          "${lines[i+2]}" != f* || "${lines[i+3]}" != n* ]]; then
+    if [[ "${lines[i]}" != p<-> || "${lines[i+1]}" != c* || \
+          "${lines[i+2]}" != fcwd || "${lines[i+3]}" != n/* ]]; then
       print -ru2 -- "wt-rm: could not read the process list from lsof — refusing."
       return 1
     fi
@@ -1052,7 +1094,7 @@ _wt_live_processes() {
     # Anchored on purpose. Sibling worktrees of one repo differ by a suffix on a
     # shared path — repo-a and repo-a-extra are neighbours by construction — so a
     # bare prefix test would let a process in one veto removal of the other forever.
-    [[ "$cwd" == "$dest" || "$cwd" == "$dest"/* ]] && hits+=( "$pid $cmd" )
+    [[ "$cwd" == "$edest" || "$cwd" == "$edest"/* ]] && hits+=( "$pid $cmd" )
   done
   (( ${#hits} )) && print -rl -- $hits
   return 0
@@ -1206,7 +1248,7 @@ wt-rm() {
     if [[ -n "$busy" ]]; then
       print -ru2 -- "wt-rm: $dest is still in use by a running process — removal aborted. Resources may already be reclaimed."
       for line in ${(f)busy}; do print -ru2 -- "    $line"; done
-      print -ru2 -- "    These outlived the Herdr workspace, so they are detached from any pane."
+      print -ru2 -- "    Herdr's workspaces for this checkout are closed already; these are still in it."
       print -ru2 -- "    Stop them — from .worktreehook teardown if the project starts them — then retry: wt-rm $qb"
       return 1
     fi
