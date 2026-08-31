@@ -16,9 +16,20 @@ sq() {
     || sqlite3 "file:$HIST?immutable=1" "$@"
 }
 
+# Trust is required for AGENTS.md to load, so the repos we review are necessarily
+# trusted - and a trusted repo's .codex/config.toml can widen the reviewer's sandbox
+# and register MCP servers, which a CLI pin does not prevent. No repo has one today,
+# so this is a tripwire rather than a wall: refuse the dispatch and let a human look.
+guard_project_config() {
+  local root; root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+  [ -e "$root/.codex" ] && die "refusing to dispatch: $root/.codex exists and can alter the reviewer's sandbox and tools - inspect it first"
+  return 0
+}
+
 cmd_dispatch() {
   local thread="$1" body_file="$2"
   [ -r "$body_file" ] || die "cannot read $body_file"
+  guard_project_config
   local nonce; nonce="xr-$(date +%s)-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
   # Provenance is applied here, by the broker - not by the peer, and not by hand.
   { printf '<from-claude-code>\n'
