@@ -2186,6 +2186,72 @@ hasnt "halfway-daemon" "records from a failed scan are not reported as findings"
 [[ -d "$LSOFRC" ]] && _pass "the checkout survives a failed process scan" \
                         || _fail "the checkout survives a failed process scan"
 
+# --- squash-merged branches -------------------------------------------------
+#
+# `git branch -d` tests ancestry, not content. A squash-merge rewrites the branch
+# into one new commit on the base, so none of the branch's own commits are
+# ancestors of it and -d refuses — even though every line of the work is already
+# in. GitLab squash-merges by default, so this is the normal end of an MR here,
+# not an edge case. wt-rm asks the stronger question instead: does merging this
+# branch into the base still change anything? If not, the branch is spent.
+
+setup
+run "$REPO" wt sq1
+print -r -- "sq1" > "$HOME/Code/Org/repo-sq1/sq1.txt"
+git -C "$HOME/Code/Org/repo-sq1" add -A
+git -C "$HOME/Code/Org/repo-sq1" commit -q -m "work 1"
+git -C "$HOME/Code/Org/repo-sq1" commit -q --allow-empty -m "work 2"
+git -C "$REPO" merge --squash -q sq1 >/dev/null 2>&1
+git -C "$REPO" commit -q -m "squash: sq1"
+run "$REPO" wt-rm sq1
+rc_is 0 "squash-merged worktree is removed"
+hasnt "not fully merged" "no unmerged warning when the content is all in the base"
+run "$REPO" git branch --list sq1
+eq "$OUT" "" "squash-merged branch is deleted (ancestry says no, content says yes)"
+
+# The naive `git diff <base> <branch>` test passes above and fails here: once any
+# other MR lands, the base tree no longer equals the branch tree. Detection must
+# survive the base moving on, or it silently stops working after the first merge.
+setup
+run "$REPO" wt sq2
+print -r -- "sq2" > "$HOME/Code/Org/repo-sq2/sq2.txt"
+git -C "$HOME/Code/Org/repo-sq2" add -A
+git -C "$HOME/Code/Org/repo-sq2" commit -q -m "work"
+git -C "$REPO" merge --squash -q sq2 >/dev/null 2>&1
+git -C "$REPO" commit -q -m "squash: sq2"
+git -C "$REPO" commit -q --allow-empty -m "a later, unrelated MR"
+run "$REPO" wt-rm sq2
+run "$REPO" git branch --list sq2
+eq "$OUT" "" "squash-merge is still detected after the base branch advances"
+
+# Safety: real unmerged content must still be kept. The existing empty-commit case
+# covers ancestry; this one proves the content test itself does not false-positive.
+setup
+run "$REPO" wt sq3
+print -r -- "unmerged work" > "$HOME/Code/Org/repo-sq3/sq3.txt"
+git -C "$HOME/Code/Org/repo-sq3" add -A
+git -C "$HOME/Code/Org/repo-sq3" commit -q -m "genuinely unmerged"
+run "$REPO" wt-rm sq3
+has "not fully merged" "a branch with real unmerged content is kept"
+run "$REPO" git branch --list sq3
+[[ -n "$OUT" ]] && _pass "the kept branch still exists" \
+                || _fail "the kept branch still exists"
+
+# Partly merged: one commit squashed in, another added after. Content still
+# differs, so this must be kept too — the check is all-or-nothing, not "most of it".
+setup
+run "$REPO" wt sq4
+print -r -- "first" > "$HOME/Code/Org/repo-sq4/a.txt"
+git -C "$HOME/Code/Org/repo-sq4" add -A
+git -C "$HOME/Code/Org/repo-sq4" commit -q -m "first"
+git -C "$REPO" merge --squash -q sq4 >/dev/null 2>&1
+git -C "$REPO" commit -q -m "squash: sq4 (partial)"
+print -r -- "second" > "$HOME/Code/Org/repo-sq4/b.txt"
+git -C "$HOME/Code/Org/repo-sq4" add -A
+git -C "$HOME/Code/Org/repo-sq4" commit -q -m "added after the merge"
+run "$REPO" wt-rm sq4
+has "not fully merged" "a partly-merged branch is kept"
+
 export HOME="$REAL_HOME"
 print -r -- ""
 print -r -- "passed: $pass  failed: $fail"

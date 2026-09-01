@@ -1147,6 +1147,55 @@ _wt_live_processes() {
 #
 # All three checks fail closed on _wt_clean's unknown state (2), same as every other
 # consumer of that helper.
+# _wt_branch_content_merged — true when <branch> would add nothing to <base>.
+#
+# `git branch -d` asks an ancestry question: are this branch's commits reachable
+# from the base? A squash-merge answers no by construction — it replays the whole
+# branch as a single new commit — so -d refuses branches whose every line is
+# already in. GitLab squash-merges by default, so that refusal is the ordinary end
+# of a merge request here, not an edge case.
+#
+# The question that actually matters is whether merging the branch would still
+# change anything. `merge-tree --write-tree` answers it directly: it performs the
+# merge in memory and prints the resulting tree. If that tree is the base's own
+# tree, the branch contributes nothing and deleting the ref loses no work.
+#
+# Comparing the two tip trees instead (`git diff base branch`) looks equivalent and
+# is not: it holds only while the base's tip IS the squash commit. One later merge
+# into the base and the trees differ again, so that test would quietly stop
+# detecting squash-merges after the first unrelated MR landed — working in the
+# scenario it was written against and nowhere else.
+#
+# Both the local base and the remote's default branch count: content reachable from
+# either is content this repository already has. Fails closed — no base, an
+# unmergeable branch, or a git too old for --write-tree all return non-zero, which
+# keeps the branch.
+_wt_branch_content_merged() {
+  emulate -L zsh
+  local main="$1" branch="$2" base merged want mb
+  local -a bases
+  base="$(_wt_git -C "$main" symbolic-ref --quiet --short HEAD 2>/dev/null)" \
+    && bases+=("$base")
+  base="$(_wt_git -C "$main" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)" \
+    && bases+=("$base")
+  (( ${#bases} )) || return 1
+  for base in $bases; do
+    [[ -n "$base" && "$base" != "$branch" ]] || continue
+    # A branch that never changed anything is not a squash-merge, it is a branch
+    # that did no work — and the older contract is that wt-rm does not force-delete
+    # a branch carrying commits the base lacks, however empty they are. Requiring a
+    # real diff against the merge-base keeps that promise: only a branch that
+    # genuinely contributed content, and whose content is now in the base, is spent.
+    mb="$(_wt_git -C "$main" merge-base "$base" "$branch" 2>/dev/null)" || continue
+    _wt_git -C "$main" diff --quiet "$mb" "$branch" 2>/dev/null && continue
+    merged="$(_wt_git -C "$main" merge-tree --write-tree "$base" "$branch" 2>/dev/null)" || continue
+    merged="${merged%%$'\n'*}"
+    want="$(_wt_git -C "$main" rev-parse "$base^{tree}" 2>/dev/null)" || continue
+    [[ -n "$merged" && "$merged" == "$want" ]] && return 0
+  done
+  return 1
+}
+
 wt-rm() {
   emulate -L zsh
   local branch="$1"
@@ -1273,8 +1322,18 @@ wt-rm() {
     fi
     print -r -- "✓ removed worktree $dest"
 
-    _wt_git -C "$main" branch -d "$branch" \
-      || print -ru2 -- "wt-rm: branch $qb kept (not fully merged) — inspect or merge it before deleting it explicitly."
+    # -d first: it is the conservative test and its success message names the SHA.
+    # Its stderr is suppressed because a refusal here is not yet a verdict — a
+    # squash-merged branch fails -d and is still entirely merged. Only if the
+    # content test also declines does the branch genuinely have unmerged work.
+    if ! _wt_git -C "$main" branch -d "$branch" 2>/dev/null; then
+      if _wt_branch_content_merged "$main" "$branch" \
+         && _wt_git -C "$main" branch -D "$branch" >/dev/null 2>&1; then
+        print -r -- "✓ deleted branch $qb (squash-merged — its content is already in the base)"
+      else
+        print -ru2 -- "wt-rm: branch $qb kept (not fully merged) — inspect or merge it before deleting it explicitly."
+      fi
+    fi
 
     [[ -d "$dest" ]] \
       && print -ru2 -- "wt-rm: $dest still exists (files recreated during removal) — remove it manually."
