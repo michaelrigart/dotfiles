@@ -208,11 +208,61 @@ warn_stale_thread() {
   fi
 }
 
+# Codex writes one `turn_context` record per turn into the thread's rollout file, each
+# carrying the model and reasoning effort that turn actually ran with. The LAST one is
+# therefore the setting a dispatch would reach: reading the first would report what the
+# session opened with and miss every /model change made since.
+#
+# This is the only place the tier is observable. `herdr agent list` does not carry it,
+# and neither the history sqlite nor its thread_turns rows record it.
+codex_tier() {
+  local thread="$1" f
+  # The id is interpolated into a glob. Anything outside this charset could match
+  # rollouts for other threads, or escape the sessions tree entirely.
+  case "$thread" in
+    ''|*[!A-Za-z0-9_-]*) return 1 ;;
+  esac
+  f="$(find "$CODEX_HOME_DIR/sessions" -name "rollout-*-$thread.jsonl" 2>/dev/null | sort | tail -1)"
+  [ -n "$f" ] && [ -r "$f" ] || return 1
+  jq -r 'select(.type == "turn_context")
+         | select(.payload.model != null)
+         | "\(.payload.model)/\(.payload.effort)"' "$f" 2>/dev/null | tail -1 | grep . || return 1
+}
+
+cmd_tier() {
+  local thread
+  if [ "$#" -ge 1 ]; then thread="$1"; else thread="$(resolve_thread)" || return 1; fi
+  codex_tier "$thread" || die "cannot read the reviewer tier for $thread"
+}
+
+# A dispatch is one shot: once queued, the turn is spent whatever tier answered it. So
+# the check refuses BEFORE queueing and names both sides, leaving time to change the
+# model in the Codex pane and retry. Reporting it afterwards would be a note about
+# money already gone.
+#
+# Fails open. An unreadable tier is not evidence of a mismatch, and a check that blocks
+# every review whenever Codex changes its on-disk layout is a check that gets removed.
+assert_tier() {
+  local thread="$1" want="$2" have exp_model exp_effort have_model have_effort
+  have="$(codex_tier "$thread")" || return 0
+  exp_model="${want%%/*}"; exp_effort="${want#*/}"
+  [ "$exp_effort" = "$want" ] && exp_effort=""
+  have_model="${have%%/*}"; have_effort="${have#*/}"
+  if { [ -n "$exp_model" ] && [ "$exp_model" != "$have_model" ]; } ||
+     { [ -n "$exp_effort" ] && [ "$exp_effort" != "$have_effort" ]; }; then
+    die "reviewer tier is $have, expected $want.
+Change the model in the Codex pane for this checkout, then retry.
+To dispatch at the current tier anyway, drop --expect."
+  fi
+  return 0
+}
+
 cmd_dispatch() {
-  local thread body_file diff_range=""
+  local thread body_file diff_range="" expect_tier=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --diff) [ "$#" -ge 2 ] || die "--diff needs a range"; diff_range="$2"; shift 2 ;;
+      --diff)   [ "$#" -ge 2 ] || die "--diff needs a range";   diff_range="$2"; shift 2 ;;
+      --expect) [ "$#" -ge 2 ] || die "--expect needs <model>/<effort>"; expect_tier="$2"; shift 2 ;;
       *) break ;;
     esac
   done
@@ -220,6 +270,9 @@ cmd_dispatch() {
   else thread="$(resolve_thread)" || return 1; body_file="$1"; fi
   [ -r "$body_file" ] || die "cannot read $body_file"
   guard_project_config
+  # Before bump_round: a dispatch refused for the wrong tier has not been reviewed, and
+  # charging it a round would push the cap toward a refusal the reviewer never caused.
+  [ -n "$expect_tier" ] && assert_tier "$thread" "$expect_tier"
   local max="${XREVIEW_MAX_ROUNDS:-10}" round
   round="$(bump_round)"
   if [ "$round" -gt "$max" ]; then
@@ -307,8 +360,9 @@ case "${1:-}" in
   collect)  shift; cmd_collect "$@" ;;
   init)     shift; cmd_init "$@" ;;
   thread)   shift; resolve_thread ;;
+  tier)     shift; cmd_tier "$@" ;;
   receipts) shift; cmd_receipts "$@" ;;
   apply)    shift; cmd_apply "$@" ;;
   round)    shift; cmd_round "$@" ;;
-  *) die "usage: xreview init [id] | thread | receipts | apply <nonce>|--done | round [--reset] | dispatch [--diff <range>] [thread] <body-file> | collect [thread] <nonce> [budget]" ;;
+  *) die "usage: xreview init [id] | thread | receipts | apply <nonce>|--done | round [--reset] | dispatch [--diff <range>] [--expect <model>/<effort>] [thread] <body-file> | tier [thread] | collect [thread] <nonce> [budget]" ;;
 esac

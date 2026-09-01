@@ -43,8 +43,32 @@ A dispatch carries:
 ## Dispatching
 
 ```
-NONCE=$(xreview dispatch --diff <base>..<head> <body-file>)
+NONCE=$(xreview dispatch --diff <base>..<head> --expect <model>/<effort> <body-file>)
 xreview collect "$NONCE" [budget-secs]
+```
+
+**Check the tier before spending the turn.** `--expect` reads the model and reasoning
+effort the Codex pane is actually running — from the last `turn_context` in its rollout,
+so a mid-session `/model` change is picked up — and refuses the dispatch if it does not
+match, naming both sides. A dispatch is one shot: once queued the turn is spent at
+whatever tier answered it, so the check has to come first. It fails open, because an
+unreadable tier is not evidence of a mismatch.
+
+`xreview tier` reports the current setting on its own.
+
+Which tier a checkpoint warrants is Michael's call, not this skill's. The starting
+point, pending his confirmation:
+
+| Checkpoint | Tier |
+|---|---|
+| Spec sign-off, and the final whole-branch review | `gpt-5.6-sol/xhigh` |
+| Plan review, and narrow verification rounds | `gpt-5.6-terra/high` |
+
+Measured on 2026-09-01, three long-running review threads read `gpt-5.6-sol/xhigh` on
+every turn — 168 consecutive turns on one of them. The top tier was never stepped down
+for a narrow round, because nothing in the workflow said out loud what it was set to.
+
+```
 ```
 
 `xreview` wraps outbound packets in `<cross-review-request>` and returns the reviewer's

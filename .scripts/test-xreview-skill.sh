@@ -191,5 +191,32 @@ else
   _fail "the skill says --reset drops the thread" "not documented"
 fi
 
+# The tier gate only helps if the skill tells the model to pass --expect; the CLI
+# accepting a flag nobody sends changes nothing.
+if grep -E '^\s*(NONCE=)?\$?\(?xreview dispatch' "$SKILL" | grep -q -- '--expect'; then
+  _pass "the skill's dispatch example passes --expect"
+else
+  _fail "the skill's dispatch example passes --expect" \
+        "$(grep -E 'xreview dispatch' "$SKILL" | head -1)"
+fi
+for sub in '--expect)' 'cmd_tier'; do
+  if strip_comments "$XREVIEW" | grep -q -- "$sub"; then
+    _pass "the CLI implements $sub"
+  else
+    _fail "the CLI implements $sub" "absent from the CLI"
+  fi
+done
+# Every tier the skill names must be one the reviewer could actually be set to; a table
+# citing a retired model teaches a refusal that can never be satisfied.
+# Match any gpt-<ver>-<name>/<effort>, not just the current family: a regex pinned to
+# 5.6 stops matching the moment the table names a different version, and an assertion
+# that skips the value it was written to check reports green for the wrong reason.
+for m in $(grep -oE 'gpt-[0-9]+\.[0-9]+-[a-z]+/[a-z]+' "$SKILL" | sort -u); do
+  case "$m" in
+    gpt-5.6-sol/xhigh|gpt-5.6-terra/high) _pass "the skill's tier $m is a known setting" ;;
+    *) _fail "the skill's tier $m is a known setting" "unrecognised tier in the table" ;;
+  esac
+done
+
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

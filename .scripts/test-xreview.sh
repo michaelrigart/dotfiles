@@ -152,5 +152,52 @@ out=$(bash "$XREVIEW" dispatch other-thread b.md 2>&1)
 is "the warning is scoped to the thread, so rotating clears it" \
    "$(printf '%s' "$out" | grep -c 'no longer cold')" 0
 
+# --- reviewer tier (model/effort) before dispatch -----------------------------
+#
+# Codex records the model and reasoning effort of every turn in its rollout file, one
+# `turn_context` record per turn, so the LAST one is the setting a dispatch would
+# actually reach. A real 168-turn review session read gpt-5.6-sol/xhigh on all 168 —
+# the top tier was never once stepped down for a narrow verification round, and nothing
+# in the workflow said so out loud.
+export CODEX_HOME="$ROOT/codex"
+ROLL="$CODEX_HOME/sessions/2026/09/01"
+mkdir -p "$ROLL"
+tc() { printf '{"type":"turn_context","payload":{"model":"%s","effort":"%s"}}\n' "$1" "$2"; }
+{ tc gpt-5.6-sol xhigh; } > "$ROLL/rollout-2026-09-01T10-00-00-faketh.jsonl"
+
+is "tier reports the thread's model and effort" \
+   "$(bash "$XREVIEW" tier faketh 2>&1)" "gpt-5.6-sol/xhigh"
+
+# A mid-session /model switch writes a further turn_context, so the last record wins.
+# Reading the first would report the setting the session opened with and silently miss
+# every change the user made since.
+{ tc gpt-5.6-sol xhigh; tc gpt-5.6-terra high; } > "$ROLL/rollout-2026-09-01T10-00-00-faketh.jsonl"
+is "tier reflects a mid-session switch, not the opening setting" \
+   "$(bash "$XREVIEW" tier faketh 2>&1)" "gpt-5.6-terra/high"
+
+# The point of the check: refuse before spending the turn, naming both sides, so there
+# is time to change it. A warning after the fact would be a report on money already gone.
+bash "$XREVIEW" round --reset >/dev/null 2>&1
+out=$(bash "$XREVIEW" dispatch --expect gpt-5.6-sol/xhigh faketh b.md 2>&1)
+is "a tier mismatch refuses the dispatch" "$(printf '%s' "$out" | grep -c 'reviewer tier')" 1
+is "the refusal names what is set now"    "$(printf '%s' "$out" | grep -c 'gpt-5.6-terra/high')" 1
+is "the refusal names what was expected"  "$(printf '%s' "$out" | grep -c 'gpt-5.6-sol/xhigh')" 1
+
+# A matching tier must not obstruct: the round is spent, so the dispatch proceeds.
+bash "$XREVIEW" round --reset >/dev/null 2>&1
+out=$(bash "$XREVIEW" dispatch --expect gpt-5.6-terra/high faketh b.md 2>&1)
+is "a matching tier does not block the dispatch" "$(printf '%s' "$out" | grep -c 'reviewer tier')" 0
+
+# Effort alone is the common case — same model, cheaper round.
+bash "$XREVIEW" round --reset >/dev/null 2>&1
+out=$(bash "$XREVIEW" dispatch --expect /xhigh faketh b.md 2>&1)
+is "an effort-only expectation still catches a mismatch" "$(printf '%s' "$out" | grep -c 'reviewer tier')" 1
+
+# Fail open. If the tier cannot be read there is no evidence of a mismatch, and a check
+# that blocks reviews whenever Codex changes its on-disk layout would be turned off.
+bash "$XREVIEW" round --reset >/dev/null 2>&1
+out=$(bash "$XREVIEW" dispatch --expect gpt-5.6-sol/xhigh no-rollout-thread b.md 2>&1)
+is "an unreadable tier does not block the dispatch" "$(printf '%s' "$out" | grep -c 'reviewer tier')" 0
+
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))
