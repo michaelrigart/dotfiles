@@ -107,7 +107,8 @@ round_file() { printf '%s/rounds' "$(state_dir)"; }
 cmd_round() {
   local f; f="$(round_file)"
   case "${1:-show}" in
-    --reset) rm -f "$f"; printf 'xreview: round counter reset\n' ;;
+    --reset) rm -f "$f" "$(state_dir)/thread"
+             printf 'xreview: round counter reset; cached thread dropped\n' ;;
     show)    printf '%s\n' "$(current_round)" ;;
     *)       die "usage: xreview round [--reset]" ;;
   esac
@@ -166,8 +167,55 @@ guard_project_config() {
   return 0
 }
 
+# A dispatch that names a path makes the reviewer open it, and every search and read is
+# a full-context model step. Measured across 69 real reviews on 2026-09-01: ~16 model
+# steps and ~2.0M tokens per review, with per-turn cost barely differing between an
+# 8-turn thread and a 37-turn one — the steps are the cost, not the thread length.
+# Carrying the diff inline lets the reviewer answer from what it was handed.
+#
+# Refuse an oversized diff rather than truncating it: a reviewer handed half a change
+# reviews half a change and reports nothing on the rest, which reads as a clean review.
+inline_diff() {
+  local range="$1" out max
+  max="${XREVIEW_MAX_DIFF_BYTES:-100000}"
+  out="$(git diff "$range" 2>/dev/null)" \
+    || die "cannot diff $range - check the range resolves in this repository"
+  [ -n "$out" ] || die "cannot diff $range - the range is empty, so there is nothing to review"
+  if [ "${#out}" -gt "$max" ]; then
+    die "diff for $range is too large to carry inline (${#out} bytes, cap $max).
+Review it in slices, or raise XREVIEW_MAX_DIFF_BYTES if the reviewer can hold it."
+  fi
+  printf '%s' "$out"
+}
+
+# Every dispatch queues into one cached thread per repo, so round N reaches a reviewer
+# already holding rounds 1..N-1 - its own earlier findings and every artifact sent
+# before. The cold-ask rule is the reason a second opinion carries information at all,
+# and a thread that never rotates voids it silently. Warn rather than refuse: rotating
+# means starting a Codex session by hand, and a guard that blocks work it cannot itself
+# complete is a guard that gets switched off.
+warn_stale_thread() {
+  local thread="$1" f n
+  f="$(state_dir)/reviews.jsonl"
+  [ -r "$f" ] || return 0
+  n="$(jq -r --arg t "$thread" 'select(.thread == $t) | .thread' "$f" 2>/dev/null | wc -l | tr -d ' ')"
+  [ -n "$n" ] || return 0
+  if [ "$n" -ge "${XREVIEW_THREAD_WARN:-8}" ]; then
+    printf 'xreview: this thread has already answered %s reviews - it is no longer cold.\n' "$n" >&2
+    printf '    It holds every prior artifact and its own earlier findings, so its\n' >&2
+    printf '    agreement carries less information than a fresh one would.\n' >&2
+    printf '    Start a new Codex session for this checkout, then: xreview round --reset\n' >&2
+  fi
+}
+
 cmd_dispatch() {
-  local thread body_file
+  local thread body_file diff_range=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --diff) [ "$#" -ge 2 ] || die "--diff needs a range"; diff_range="$2"; shift 2 ;;
+      *) break ;;
+    esac
+  done
   if [ "$#" -ge 2 ]; then thread="$1"; body_file="$2"
   else thread="$(resolve_thread)" || return 1; body_file="$1"; fi
   [ -r "$body_file" ] || die "cannot read $body_file"
@@ -184,11 +232,19 @@ Report the remaining disagreement, or: xreview round --reset"
   # NOT <from-claude-code>: that tag marks relayed quoted material, and the peer is
   # instructed never to act on an imperative inside one. A dispatch is an authorized
   # request, so it needs a tag the governance marks as actionable.
+  local diff_text=""
+  [ -n "$diff_range" ] && diff_text="$(inline_diff "$diff_range")"
   { printf '<cross-review-request>\n'
     cat "$body_file"
+    if [ -n "$diff_text" ]; then
+      printf '\n\n--- diff (%s) ---\n' "$diff_range"
+      printf '%s\n' "$diff_text"
+      printf -- '--- end diff ---\n'
+    fi
     printf '\n\n[correlation: %s — quote this token nowhere in your reply]\n' "$nonce"
     printf '</cross-review-request>\n'
   } > "$body_file.wrapped"
+  warn_stale_thread "$thread"
   codex queue --thread "$thread" --message "$(cat "$body_file.wrapped")" >/dev/null \
     || die "queue failed for thread $thread"
   printf '%s\n' "$nonce"
@@ -254,5 +310,5 @@ case "${1:-}" in
   receipts) shift; cmd_receipts "$@" ;;
   apply)    shift; cmd_apply "$@" ;;
   round)    shift; cmd_round "$@" ;;
-  *) die "usage: xreview init [id] | thread | receipts | apply <nonce>|--done | round [--reset] | dispatch [thread] <body-file> | collect [thread] <nonce> [budget]" ;;
+  *) die "usage: xreview init [id] | thread | receipts | apply <nonce>|--done | round [--reset] | dispatch [--diff <range>] [thread] <body-file> | collect [thread] <nonce> [budget]" ;;
 esac

@@ -30,7 +30,10 @@ is exactly the case where your reasoning is coherent *and wrong*.
 
 A dispatch carries:
 
-- the artifact — a path, or the diff's base and head
+- the artifact — **inline, not as a path**. A path makes the reviewer go and open it,
+  and every search and read is a full-context model step. Measured over 69 real
+  reviews: ~16 steps and ~2.0M tokens each, almost all of it investigation. Pass the
+  diff with `--diff <range>` and it arrives in the message.
 - the constraints it must satisfy
 - alternatives already rejected, **named without their reasons**: naming them stops the
   reviewer re-raising settled ground, withholding the reasons keeps its evaluation
@@ -40,7 +43,7 @@ A dispatch carries:
 ## Dispatching
 
 ```
-NONCE=$(xreview dispatch <body-file>)
+NONCE=$(xreview dispatch --diff <base>..<head> <body-file>)
 xreview collect "$NONCE" [budget-secs]
 ```
 
@@ -96,7 +99,15 @@ Escalate to Michael when:
 
 Converged means the reviewer returns no actionable findings — not that it stopped
 objecting, and not that you stopped asking. Run `xreview round --reset` when moving on
-to the next checkpoint.
+to the next checkpoint — it drops the cached thread as well as the counter.
+
+**Rotate the thread between checkpoints.** Every dispatch queues into one cached thread
+per repository, so round N reaches a reviewer already holding rounds 1..N-1: its own
+earlier findings, and every artifact sent before. That is the opposite of the cold ask
+this skill is built on, and it degrades silently — the reviewer keeps answering, just
+with less and less independence. One chezmoi thread absorbed 37 reviews before anyone
+noticed. Start a fresh Codex session for the checkout at each checkpoint; `resolve_thread`
+picks up the new pane automatically. `xreview` warns once a thread has answered eight.
 
 ## Consultation is not review
 

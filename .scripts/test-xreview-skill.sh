@@ -152,5 +152,44 @@ else
   done
 fi
 
+# The inline-diff flag is the whole point of the cost fix: a skill that still shows a
+# bare `xreview dispatch <body-file>` teaches the expensive call, and the model follows
+# the skill, not the CLI's usage line.
+# Assert on the dispatch line itself, not on the file: --diff is mentioned in the prose
+# too, so a file-wide grep stays green even after the example reverts to the costly form.
+if grep -E '^\s*(NONCE=)?\$?\(?xreview dispatch' "$SKILL" | grep -q -- '--diff'; then
+  _pass "the skill's dispatch example passes the diff inline"
+else
+  _fail "the skill's dispatch example passes the diff inline" \
+        "$(grep -E 'xreview dispatch' "$SKILL" | head -1)"
+fi
+if strip_comments "$XREVIEW" | grep -q -- '--diff)'; then
+  _pass "the CLI actually accepts --diff"
+else
+  _fail "the CLI actually accepts --diff" "no --diff case in the dispatch parser"
+fi
+
+# The staleness threshold is a number in two places. The round cap has already drifted
+# once between skill and code; this one is pinned the same way.
+code_warn="$(strip_comments "$XREVIEW" | grep -oE 'XREVIEW_THREAD_WARN:-[0-9]+' | grep -oE '[0-9]+' | sort -u)"
+if [ "$code_warn" = "8" ] && grep -qi 'answered eight' "$SKILL"; then
+  _pass "the documented staleness threshold matches the code ($code_warn)"
+else
+  _fail "the documented staleness threshold matches the code" "code=$code_warn"
+fi
+
+# --reset dropping the thread is the mechanism behind the rotation advice. If the code
+# stops doing it, the skill's instruction becomes a no-op that still reads as done.
+if strip_comments "$XREVIEW" | grep -q 'rm -f "\$f" "\$(state_dir)/thread"'; then
+  _pass "--reset drops the cached thread in the code"
+else
+  _fail "--reset drops the cached thread in the code" "reset no longer clears the thread"
+fi
+if grep -q 'drops the cached thread' "$SKILL"; then
+  _pass "the skill says --reset drops the thread"
+else
+  _fail "the skill says --reset drops the thread" "not documented"
+fi
+
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

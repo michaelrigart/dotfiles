@@ -70,5 +70,87 @@ out="$(CODEX_HOME="$missing" bash "$XREVIEW" collect 01a05422 xr-abc 1 2>&1)"
 is "a missing history store is reported" "$(printf '%s' "$out" | grep -c 'history store not found')" 1
 is "a missing history store is not created" "$([ -e "$missing/thread_history_1.sqlite" ] && echo yes || echo no)" no
 
+# --- inline diffs (dispatch --diff) ------------------------------------------
+#
+# A dispatch that names a path makes the reviewer go and read it, and every search and
+# open is a full-context model step. Measured 2026-09-01 across 69 real reviews: ~16
+# model steps and ~2.0M tokens per review, with the per-turn cost barely moving between
+# an 8-turn thread and a 37-turn one — so the steps, not the thread length, are where
+# the allowance goes. Carrying the diff in the message lets the reviewer answer from
+# what it was handed.
+# Derive the state dir from git's own idea of the root, not from $ROOT: on macOS
+# mktemp hands back /tmp/... while git resolves the symlink to /private/tmp/..., and
+# a hand-built path would seed fixtures into a directory the script never reads.
+STATE="$XDG_STATE_HOME/xreview/$(git rev-parse --show-toplevel | tr '/' '_' | sed 's|^_||')"
+
+printf 'change\n' > tracked.txt && git add tracked.txt
+git commit -q -m "a change to review"
+bash "$XREVIEW" round --reset >/dev/null 2>&1
+
+rm -f b.md.wrapped
+bash "$XREVIEW" dispatch --diff HEAD~1..HEAD faketh b.md >/dev/null 2>&1
+if grep -q 'tracked.txt' b.md.wrapped 2>/dev/null; then
+  _pass "--diff carries the diff text in the dispatched message"
+else
+  _fail "--diff carries the diff text in the dispatched message" "$(head -c 120 b.md.wrapped 2>/dev/null)"
+fi
+if grep -q 'body' b.md.wrapped 2>/dev/null; then
+  _pass "--diff keeps the caller's body as well as the diff"
+else
+  _fail "--diff keeps the caller's body as well as the diff" "body text missing"
+fi
+
+# An oversized diff is refused, never truncated: a reviewer handed half a change
+# reviews half a change and reports no findings on the rest.
+bash "$XREVIEW" round --reset >/dev/null 2>&1
+out=$(XREVIEW_MAX_DIFF_BYTES=10 bash "$XREVIEW" dispatch --diff HEAD~1..HEAD faketh b.md 2>&1)
+is "an oversized diff is refused rather than truncated" "$(printf '%s' "$out" | grep -c 'too large')" 1
+
+# An unusable range must fail loudly rather than dispatching an empty review.
+bash "$XREVIEW" round --reset >/dev/null 2>&1
+out=$(bash "$XREVIEW" dispatch --diff no-such-ref..HEAD faketh b.md 2>&1)
+is "an unresolvable diff range is refused" "$(printf '%s' "$out" | grep -c 'cannot diff')" 1
+
+# A valid range that resolves to nothing is the more dangerous case than a broken one:
+# git exits 0, so an unguarded dispatch would send an empty review and the reviewer
+# would truthfully report no findings — indistinguishable from a clean review.
+bash "$XREVIEW" round --reset >/dev/null 2>&1
+out=$(bash "$XREVIEW" dispatch --diff HEAD..HEAD faketh b.md 2>&1)
+is "an empty but valid range is refused" "$(printf '%s' "$out" | grep -c 'nothing to review')" 1
+
+# --- thread rotation ---------------------------------------------------------
+#
+# Every dispatch queues into one cached thread per repo, so round N is read by a
+# reviewer holding rounds 1..N-1 — including its own earlier findings and every
+# artifact already sent. The cold-ask rule is what makes the second opinion worth
+# having, and a thread that never rotates quietly voids it. --reset ends a checkpoint,
+# so it drops the thread as well as the counter.
+mkdir -p "$STATE" && printf 'stale-thread-id\n' > "$STATE/thread"
+bash "$XREVIEW" round --reset >/dev/null 2>&1
+if [ -e "$STATE/thread" ]; then
+  _fail "round --reset drops the cached thread, not just the counter" "thread file survived"
+else
+  _pass "round --reset drops the cached thread, not just the counter"
+fi
+
+# Nothing signalled that one chezmoi thread had absorbed 37 reviews. A warning is the
+# right shape rather than a refusal: rotating means starting a Codex session by hand,
+# and a guard that blocks work it cannot itself complete gets switched off.
+bash "$XREVIEW" round --reset >/dev/null 2>&1
+: > "$STATE/reviews.jsonl"
+for _ in $(seq 8); do
+  printf '{"ts":"t","branch":"b","head":"h","thread":"faketh","nonce":"n"}\n' >> "$STATE/reviews.jsonl"
+done
+out=$(bash "$XREVIEW" dispatch faketh b.md 2>&1)
+is "a thread past the review threshold warns that it is no longer cold" \
+   "$(printf '%s' "$out" | grep -c 'no longer cold')" 1
+
+# The warning counts reviews on THIS thread, not every review in the repo — otherwise
+# rotating the thread would not clear it and the warning would be permanent noise.
+bash "$XREVIEW" round --reset >/dev/null 2>&1
+out=$(bash "$XREVIEW" dispatch other-thread b.md 2>&1)
+is "the warning is scoped to the thread, so rotating clears it" \
+   "$(printf '%s' "$out" | grep -c 'no longer cold')" 0
+
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))
