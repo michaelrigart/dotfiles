@@ -211,8 +211,15 @@ done
 # Pin exactly, not by exclusion. Asserting "no docker socket" would still admit an
 # arbitrary socket added later, and "contains docker *" would admit extra excluded
 # commands — each a hole in the boundary this layer exists to draw.
-jq_is '.sandbox.excludedCommands == ["docker *"]' true \
-      "excludedCommands is exactly [\"docker *\"]"
+#
+# Four entries, each because the tool reaches a resource the sandbox blocks: docker its
+# own socket, basecamp the macOS Keychain, herdr and xreview the herdr unix socket. The
+# last three earn it for a second reason — sandboxed they return confident wrong answers
+# rather than failing, so the "escalate only on sandbox evidence" rule has nothing to
+# fire on. Adding a fifth entry should require the same justification, which is why this
+# is pinned rather than open-ended.
+jq_is '.sandbox.excludedCommands == ["docker *", "basecamp *", "herdr *", "xreview *"]' true \
+      "excludedCommands is exactly the four socket/keychain tools"
 jq_is ".sandbox.network.allowUnixSockets == [\"$AGENT_SOCKET\"]" true \
       "allowUnixSockets contains only the stable agent socket"
 
