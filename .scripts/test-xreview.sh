@@ -182,6 +182,11 @@ out=$(bash "$XREVIEW" dispatch --expect gpt-5.6-sol/xhigh faketh b.md 2>&1)
 is "a tier mismatch refuses the dispatch" "$(printf '%s' "$out" | grep -c 'reviewer tier')" 1
 is "the refusal names what is set now"    "$(printf '%s' "$out" | grep -c 'gpt-5.6-terra/high')" 1
 is "the refusal names what was expected"  "$(printf '%s' "$out" | grep -c 'gpt-5.6-sol/xhigh')" 1
+# Name the command. It is `/models`, plural, and it is a picker rather than a command
+# taking the model as an argument — Codex documents an inline form for /goal, /ide,
+# /keymap, /mcp, /pwd, /raw, /sandbox and /usage, and none for this one. "Change the
+# model" would send the reader looking for a `/model <name>` that does not exist.
+is "the refusal names the /models command" "$(printf '%s' "$out" | grep -c '/models')" 1
 
 # A matching tier must not obstruct: the round is spent, so the dispatch proceeds.
 bash "$XREVIEW" round --reset >/dev/null 2>&1

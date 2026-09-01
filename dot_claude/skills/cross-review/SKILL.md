@@ -56,6 +56,13 @@ unreadable tier is not evidence of a mismatch.
 
 `xreview tier` reports the current setting on its own.
 
+Changing it is `/models` in the Codex pane — plural, and a picker rather than a command
+taking the model as an argument. Relay that, not "change the model": there is no
+`/model <name>` form to find. It cannot be driven reliably from outside either, which is
+why this is a refusal for Michael to act on rather than something the dispatch fixes
+itself — blind list navigation would silently select the wrong model and then pass its
+own check.
+
 Which tier a checkpoint warrants is Michael's call, not this skill's. The starting
 point, pending his confirmation:
 

@@ -250,8 +250,12 @@ assert_tier() {
   have_model="${have%%/*}"; have_effort="${have#*/}"
   if { [ -n "$exp_model" ] && [ "$exp_model" != "$have_model" ]; } ||
      { [ -n "$exp_effort" ] && [ "$exp_effort" != "$have_effort" ]; }; then
+    # Name the command: it is `/models`, plural, and a picker rather than a command
+    # taking the model as an argument. Codex documents an inline form for /goal, /ide,
+    # /keymap, /mcp, /pwd, /raw, /sandbox and /usage, and none for this one, so a reader
+    # told to "change the model" goes looking for a `/model <name>` that does not exist.
     die "reviewer tier is $have, expected $want.
-Change the model in the Codex pane for this checkout, then retry.
+Change it with /models in the Codex pane for this checkout, then retry.
 To dispatch at the current tier anyway, drop --expect."
   fi
   return 0
