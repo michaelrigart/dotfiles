@@ -218,5 +218,22 @@ for m in $(grep -oE 'gpt-[0-9]+\.[0-9]+-[a-z]+/[a-z]+' "$SKILL" | sort -u); do
   esac
 done
 
+# The table is the policy. If the skill stops naming a checkpoint, the tier for it
+# becomes a judgement call again — which is the failure mode the table exists to remove.
+for cp in "Spec sign-off" "plan review" "final whole-branch review"; do
+  if grep -qi "$cp" "$SKILL"; then
+    _pass "the tier table still covers: $cp"
+  else
+    _fail "the tier table still covers: $cp" "checkpoint dropped from the skill"
+  fi
+done
+# receipts --tiers is what makes a lazy recommendation visible; the skill has to send
+# the reader to it, since --expect cannot detect one.
+if grep -q -- 'receipts --tiers' "$SKILL" && strip_comments "$XREVIEW" | grep -q -- '--tiers'; then
+  _pass "the skill points at receipts --tiers and the CLI implements it"
+else
+  _fail "the skill points at receipts --tiers and the CLI implements it" "skill/CLI mismatch"
+fi
+
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

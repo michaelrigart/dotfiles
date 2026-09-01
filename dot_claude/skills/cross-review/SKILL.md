@@ -54,7 +54,11 @@ match, naming both sides. A dispatch is one shot: once queued the turn is spent 
 whatever tier answered it, so the check has to come first. It fails open, because an
 unreadable tier is not evidence of a mismatch.
 
-`xreview tier` reports the current setting on its own.
+`xreview tier` reports the current setting on its own, and `xreview receipts --tiers`
+counts what past reviews actually ran at. Check it when a branch has taken several
+rounds: `--expect` verifies the pane against the tier asked for, so it confirms a lazy
+recommendation just as readily as a considered one. A long run of a single tier in that
+summary is the signal that nobody is choosing any more.
 
 Changing it is `/models` in the Codex pane — plural, and a picker rather than a command
 taking the model as an argument. Relay that, not "change the model": there is no
@@ -63,13 +67,27 @@ why this is a refusal for Michael to act on rather than something the dispatch f
 itself — blind list navigation would silently select the wrong model and then pass its
 own check.
 
-Which tier a checkpoint warrants is Michael's call, not this skill's. The starting
-point, pending his confirmation:
+Michael set this table on 2026-09-01. Follow it; do not re-derive a tier per dispatch.
+Judgement per call is what produced the history below — nobody chose the top tier each
+time, they just never chose at all, and the top tier is never *wrong*.
 
 | Checkpoint | Tier |
 |---|---|
-| Spec sign-off, and the final whole-branch review | `gpt-5.6-sol/xhigh` |
-| Plan review, and narrow verification rounds | `gpt-5.6-terra/high` |
+| Spec sign-off, plan review, final whole-branch review | `gpt-5.6-sol/xhigh` |
+| Everything else, narrow verification rounds included | `gpt-5.6-terra/high` |
+
+Plan review sits in the top row deliberately: a plan is an architecture question — will
+this sequence actually work — not a narrow check.
+
+**One deviation is licensed, and only this one.** If a verification round at
+`terra/high` re-raises a finding you have already addressed, re-run that round once at
+`gpt-5.6-sol/xhigh` before escalating to Michael. A disagreement a stronger reviewer
+would have settled should not cost his attention, and this is the case where paying for
+the better model is cheaper than the alternative. If it re-raises the finding at
+`sol/xhigh` too, that is a real disagreement: take it to him.
+
+Everything else follows the table. Do not step up because a change *feels* important —
+that instinct is exactly the 168-turn failure, and it always argues for the top row.
 
 Measured on 2026-09-01, three long-running review threads read `gpt-5.6-sol/xhigh` on
 every turn — 168 consecutive turns on one of them. The top tier was never stepped down

@@ -204,5 +204,55 @@ bash "$XREVIEW" round --reset >/dev/null 2>&1
 out=$(bash "$XREVIEW" dispatch --expect gpt-5.6-sol/xhigh no-rollout-thread b.md 2>&1)
 is "an unreadable tier does not block the dispatch" "$(printf '%s' "$out" | grep -c 'reviewer tier')" 0
 
+# --- the tier is recorded, so a lazy recommendation is visible -----------------
+#
+# --expect only checks the pane against what the caller asked for. Ask for the top tier
+# every time and the check confirms the top tier every time and reports success — it
+# catches a mis-set pane, never a caller that stopped choosing. That is the failure
+# already on record: 168 consecutive turns at sol/xhigh, not chosen so much as never
+# reconsidered. Recording the tier each review actually ran at turns "is anyone still
+# picking?" into something countable rather than something to take on trust.
+mkdir -p "$STATE"
+: > "$STATE/reviews.jsonl"
+{ tc gpt-5.6-terra high; } > "$ROLL/rollout-2026-09-01T10-00-00-faketh.jsonl"
+printf '{"ts":"t","branch":"b","head":"h","thread":"faketh","nonce":"n","tier":"gpt-5.6-sol/xhigh"}\n' \
+  >> "$STATE/reviews.jsonl"
+is "receipts expose the tier a review ran at" \
+   "$(bash "$XREVIEW" receipts 2>/dev/null | jq -r '.tier' | head -1)" "gpt-5.6-sol/xhigh"
+
+# The summary is the part a person reads. A run of one tier is the thing to notice, so
+# it has to be visible without piping receipts through jq by hand.
+for _ in $(seq 4); do
+  printf '{"ts":"t","branch":"b","head":"h","thread":"faketh","nonce":"n","tier":"gpt-5.6-sol/xhigh"}\n' \
+    >> "$STATE/reviews.jsonl"
+done
+out=$(bash "$XREVIEW" receipts --tiers 2>&1)
+is "the tier summary counts each tier"  "$(printf '%s' "$out" | grep -c 'gpt-5.6-sol/xhigh')" 1
+is "the tier summary shows the count"   "$(printf '%s' "$out" | grep -oE '[0-9]+' | head -1)" 5
+
+# A receipt written before this field existed must not break the summary.
+printf '{"ts":"t","branch":"b","head":"h","thread":"faketh","nonce":"n"}\n' >> "$STATE/reviews.jsonl"
+out=$(bash "$XREVIEW" receipts --tiers 2>&1)
+is "a receipt with no tier is counted as unrecorded" \
+   "$(printf '%s' "$out" | grep -ci 'unrecorded')" 1
+
+# Drive a real collect, so the code that WRITES the tier is exercised rather than a
+# hand-seeded line that would pass with the field never populated at all. Every guard
+# above reads receipts the test wrote itself; only this one proves record_receipt fills
+# the field from the thread's actual rollout.
+: > "$STATE/reviews.jsonl"
+{ tc gpt-5.6-terra high; } > "$ROLL/rollout-2026-09-01T10-00-00-collectth.jsonl"
+DB="$CODEX_HOME/thread_history_1.sqlite"
+sqlite3 "$DB" "CREATE TABLE thread_turns (thread_id TEXT, rollout_ordinal INT, status TEXT,
+                 first_user_item_id TEXT, final_agent_item_id TEXT);
+               CREATE TABLE thread_items (thread_id TEXT, item_id TEXT, item_json TEXT);
+               INSERT INTO thread_turns VALUES ('collectth', 1, 'completed', 'u1', 'a1');
+               INSERT INTO thread_items VALUES ('collectth','u1','{\"text\":\"xr-testnonce\"}');
+               INSERT INTO thread_items VALUES ('collectth','a1','{\"text\":\"the review\"}');" 2>/dev/null
+is "collect returns the reviewer's answer" \
+   "$(bash "$XREVIEW" collect collectth xr-testnonce 2>&1)" "the review"
+is "the receipt records the tier the review actually ran at" \
+   "$(bash "$XREVIEW" receipts 2>/dev/null | jq -r '.tier' | tail -1)" "gpt-5.6-terra/high"
+
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))

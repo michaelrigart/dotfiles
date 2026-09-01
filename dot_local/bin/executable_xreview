@@ -81,14 +81,21 @@ cmd_init() {
 # since; it deliberately does not try to invalidate itself, because applying a finding
 # necessarily moves HEAD and a self-invalidating receipt would demand a second review
 # of the fix for the first.
+# The tier is recorded because --expect cannot police the caller. It checks the pane
+# against whatever tier was asked for, so asking for the top tier every time produces a
+# passing check every time - it catches a mis-set pane, never a caller that stopped
+# choosing. That is the failure already on record: 168 consecutive turns at sol/xhigh,
+# never chosen so much as never reconsidered. Storing what each review actually ran at
+# makes "is anyone still picking?" countable instead of a matter of trust.
 record_receipt() {
-  local dir; dir="$(state_dir)"
+  local dir tier; dir="$(state_dir)"
   mkdir -p "$dir" || return 0
+  tier="$(codex_tier "$1" 2>/dev/null)" || tier=""
   jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
          --arg branch "$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" \
          --arg head "$(git rev-parse HEAD 2>/dev/null)" \
-         --arg thread "$1" --arg nonce "$2" \
-    '{ts:$ts,branch:$branch,head:$head,thread:$thread,nonce:$nonce}' \
+         --arg thread "$1" --arg nonce "$2" --arg tier "$tier" \
+    '{ts:$ts,branch:$branch,head:$head,thread:$thread,nonce:$nonce,tier:$tier}' \
     >> "$dir/reviews.jsonl" 2>/dev/null || true
 }
 
@@ -152,6 +159,15 @@ cmd_apply() {
 cmd_receipts() {
   local f; f="$(state_dir)/reviews.jsonl"
   [ -r "$f" ] || { printf 'no reviews recorded for %s\n' "$(repo_root)"; return 1; }
+  # --tiers is the form a person reads. A long run of one tier is the thing worth
+  # noticing, and it is not noticeable in raw JSONL. Receipts written before the field
+  # existed have no tier and are counted as such rather than silently dropped, which
+  # would understate exactly the history this is meant to expose.
+  if [ "${1:-}" = "--tiers" ]; then
+    jq -r '(.tier // "") | if . == "" then "(unrecorded)" else . end' "$f" 2>/dev/null \
+      | sort | uniq -c | sort -rn
+    return 0
+  fi
   cat "$f"
 }
 
