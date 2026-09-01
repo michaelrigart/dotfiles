@@ -92,7 +92,7 @@ Escalate to Michael when:
   not a missed fix
 - a finding needs design judgement or a trade-off
 - you cannot verify a claim
-- `xreview` refuses the round (capped at 3; `XREVIEW_MAX_ROUNDS` overrides)
+- `xreview` refuses the round (capped at 10; `XREVIEW_MAX_ROUNDS` overrides)
 
 Converged means the reviewer returns no actionable findings — not that it stopped
 objecting, and not that you stopped asking. Run `xreview round --reset` when moving on

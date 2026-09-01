@@ -172,7 +172,7 @@ cmd_dispatch() {
   else thread="$(resolve_thread)" || return 1; body_file="$1"; fi
   [ -r "$body_file" ] || die "cannot read $body_file"
   guard_project_config
-  local max="${XREVIEW_MAX_ROUNDS:-3}" round
+  local max="${XREVIEW_MAX_ROUNDS:-10}" round
   round="$(bump_round)"
   if [ "$round" -gt "$max" ]; then
     die "round $round exceeds the cap of $max for this branch.

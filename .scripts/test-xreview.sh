@@ -27,11 +27,21 @@ printf 'body\n' > b.md
 # exactly the boundary under test: the cap must bind before the turn is spent.
 capped() { bash "$XREVIEW" dispatch faketh b.md 2>&1 | grep -c 'exceeds the cap'; }
 
+# `capped` is 0 when the dispatch went through and 1 when it was refused. Assert on
+# THAT, not on the counter: a refused round still increments, so "the counter reached
+# ten" is true at any cap and proves nothing about where the boundary sits.
+# The default boundary is only the default when nothing overrides it. Inheriting
+# XREVIEW_MAX_ROUNDS from whoever ran the suite makes this section assert the shipped
+# number against someone else's, and it fails for a reason that has nothing to do with
+# the code. The override gets its own section further down, where it is set on purpose.
+unset XREVIEW_MAX_ROUNDS
+
 is "round counter starts at zero" "$(bash "$XREVIEW" round)" 0
-capped >/dev/null; capped >/dev/null; capped >/dev/null
-is "three rounds are permitted"   "$(bash "$XREVIEW" round)" 3
-is "the fourth round is refused"  "$(capped)"                1
-is "a refused round still increments, so retrying stays refused" "$(bash "$XREVIEW" round)" 4
+for _ in $(seq 9); do capped >/dev/null; done
+is "nine rounds are permitted"       "$(bash "$XREVIEW" round)" 9
+is "the tenth round is still allowed" "$(capped)"               0
+is "the eleventh round is refused"    "$(capped)"               1
+is "a refused round still increments, so retrying stays refused" "$(bash "$XREVIEW" round)" 11
 
 bash "$XREVIEW" round --reset >/dev/null
 is "reset returns the counter to zero" "$(bash "$XREVIEW" round)" 0
