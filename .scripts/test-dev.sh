@@ -786,8 +786,123 @@ worktree_fixture false true
 blank_worktree_topology
 run_worktree_layout
 rc_is 0 "L1 a newly-opened native worktree workspace is adopted"
-logged "worktree open --cwd $R1 --path $WT --label Netronix/curato-feature --no-focus" \
-  "L1 Herdr opens and groups the existing Git checkout"
+# The label is the slug, the part of the directory name that is NOT the project. A
+# linked checkout is a sibling named "<primary>-<slug>", so its path leads with
+# everything it shares with the primary and only reaches the distinguishing part at the
+# end — where a 40-column rail has already truncated it. Labelling it by the project
+# instead makes every worktree of one project read identically, which is the same
+# failure from the other direction. Only the slug says which checkout this is, and the
+# grouping already marks it as a sub-space, so the label carries no marker of its own.
+logged "worktree open --cwd $R1 --path $WT --label feature --no-focus" \
+  "L1 a linked checkout is labelled by its slug, not its project"
+
+# hl_label directly, because the slug form has three outcomes and only one of them is
+# reachable through a successful open. The other two are the fallbacks the label
+# contract promises: a cosmetic name must never be worth failing a workspace open, so
+# anything it cannot derive confidently has to degrade to the old path-derived form
+# rather than abort or invent a slug.
+hl_label_of() { HOME="$ROOTTMP" zsh -c "source '$LAYOUT' --source-only; hl_label '$1'" 2>&1 }
+
+eq "$(hl_label_of "$WT")" "feature" \
+  "L1b a sibling linked checkout yields the slug"
+
+# Not a sibling: same primary, different parent directory. Basenames alone still look
+# conventional — curato-elsewhere against curato — so a check that compares only those
+# reports "elsewhere" for a checkout that is not part of the sibling layout at all, and
+# would collide with a real Code/Netronix/curato-elsewhere if one existed.
+git -C "$R1" worktree add -q -b elsewhere "$CODE/Elsewhere/curato-elsewhere" 2>/dev/null
+eq "$(hl_label_of "$CODE/Elsewhere/curato-elsewhere")" "Elsewhere/curato-elsewhere" \
+  "L1c a non-sibling linked checkout falls back to the path-derived label"
+
+# A .git file git cannot resolve: the marker says linked, the lookup says nothing. The
+# label must come out of the fallback rather than empty.
+mkdir -p "$CODE/Netronix/curato-broken"
+print -r -- "gitdir: /nowhere/that/exists" > "$CODE/Netronix/curato-broken/.git"
+eq "$(hl_label_of "$CODE/Netronix/curato-broken")" "Netronix/curato-broken" \
+  "L1d an unresolvable .git file falls back to the path-derived label"
+
+# Herdr truncates the far end of a label, so two siblings whose slugs share a prefix
+# longer than the rail render as one string — distinct workspaces, one visible name.
+# The slug is shortened here instead, keeping the tail, because that is where a branch
+# carries its identity: -design against -rollout. Doing it here is the only version that
+# stays derivable from the path; shortening against whatever siblings exist would make a
+# name depend on the order they were created in.
+hl_shorten_of() { HOME="$ROOTTMP" zsh -c "source '$LAYOUT' --source-only; hl_shorten '$1' '${2:-34}'" 2>&1 }
+
+eq "$(hl_shorten_of small-improvements)" "small-improvements" \
+  "L1e a slug inside the budget is left alone"
+eq "$(hl_shorten_of feature-minimize-lod-detection-registration)" \
+  "feature-min…detection-registration" \
+  "L1f an over-budget slug keeps its head and its tail"
+eq "$(hl_shorten_of feature-lod-alert-scoped-coverage)" "feature-lod-alert-scoped-coverage" \
+  "L1g a slug that fits the budget whole is never abbreviated"
+
+# The collision itself: these two differ only after character 41.
+D="feature-lod-alert-scoped-coverage-totals-design"
+R="feature-lod-alert-scoped-coverage-totals-rollout"
+eq "$(hl_shorten_of $D)" "feature-lod…coverage-totals-design" "L1h the design sibling keeps its tail"
+eq "$(hl_shorten_of $R)" "feature-lo…coverage-totals-rollout" "L1i the rollout sibling keeps its tail"
+[[ "$(hl_shorten_of $D)" != "$(hl_shorten_of $R)" ]] \
+  && _pass "L1j two siblings sharing a 41-character prefix stay distinguishable" \
+  || _fail "L1j two siblings sharing a 41-character prefix stay distinguishable"
+
+# End to end: a real linked checkout whose slug is over budget.
+git -C "$R1" worktree add -q -b "$D" "$CODE/Netronix/curato-$D" 2>/dev/null
+eq "$(hl_label_of "$CODE/Netronix/curato-$D")" "feature-lod…coverage-totals-design" \
+  "L1k a long-slugged checkout is labelled with the shortened slug"
+
+# The budget hl_label passes, pinned. This slug is the one that renders differently at
+# 30 than at 32, so the rail width and the slug budget cannot drift apart silently —
+# they are one decision, and a narrower rail that kept the old budget would hand the
+# tail back to Herdr's truncation.
+M="feature-minimize-lod-detection-registration"
+git -C "$R1" worktree add -q -b "$M" "$CODE/Netronix/curato-$M" 2>/dev/null
+eq "$(hl_label_of "$CODE/Netronix/curato-$M")" "feature-min…detection-registration" \
+  "L1l hl_label shortens to the budget the rail is sized for"
+
+# The budget counts characters, and how many characters a string has is a question the
+# caller's locale answers: under LC_ALL=C zsh measures and slices bytes, so the same
+# slug comes back a different length, cut mid-codepoint into invalid UTF-8. A label
+# has to be a function of its argument and nothing else.
+ACC="ééééééééééééééééééééééééééééééééééééééé"
+eq "$(HOME="$ROOTTMP" LC_ALL=C zsh -c "source '$LAYOUT' --source-only; hl_shorten '$ACC' 34")" \
+   "$(HOME="$ROOTTMP" LC_ALL=en_US.UTF-8 zsh -c "source '$LAYOUT' --source-only; hl_shorten '$ACC' 34")" \
+  "L1m the same slug shortens identically whatever locale the caller is in"
+
+# The nudge to a word boundary must never cost a character the tail was going to show.
+# These two differ inside the retained tail, at the character right before a hyphen that
+# sits within SLACK of the tail's start — so a nudge that trims the tail forward past
+# that hyphen throws the difference away and both slugs render as one label. The tail
+# grows to a boundary; it never shrinks to one.
+X="$(printf 'a%.0s' {1..30})x12345-abcdefghij"
+Y="$(printf 'a%.0s' {1..30})y12345-abcdefghij"
+[[ "$(hl_shorten_of $X)" != "$(hl_shorten_of $Y)" ]] \
+  && _pass "L1n a difference inside the retained tail survives the word-boundary nudge" \
+  || _fail "L1n a difference inside the retained tail survives the word-boundary nudge"
+
+# The same, in the head. Head and tail are both retained text: whichever end a pair
+# differs at, the difference has to reach the label. Only the middle is discarded, and
+# that is the one collision this accepts.
+HX="feature-abcdef-xzzzzzzzzzzzzzzzzzshared-final-tail"
+HY="feature-abcdef-yzzzzzzzzzzzzzzzzzshared-final-tail"
+[[ "$(hl_shorten_of $HX)" != "$(hl_shorten_of $HY)" ]] \
+  && _pass "L1o a difference inside the retained head survives too" \
+  || _fail "L1o a difference inside the retained head survives too"
+
+# Growing the tail to a boundary must not grow it past the budget. A budget too small to
+# hold a head, an ellipsis and a tail is still a budget, and the answer has to fit it.
+eq "$(hl_shorten_of a-bbbbbbbbb 5)" "a-…bb" "L1p a boundary is never grown past the budget"
+
+# A budget too small for an ellipsis is still governed by the same contract: keep the
+# tail, because that is the end that identifies. Keeping the head there would make the
+# degenerate case the one place the function contradicts itself.
+eq "$(hl_shorten_of $D 0)" "" "L1r0 a budget of zero yields nothing, not everything"
+eq "$(hl_shorten_of $D 2)" "gn" "L1r a budget below three keeps the tail, not the head"
+[[ "$(hl_shorten_of $D 2)" != "$(hl_shorten_of $R 2)" ]] \
+  && _pass "L1s tail-distinguished slugs stay distinct even at budget two" \
+  || _fail "L1s tail-distinguished slugs stay distinct even at budget two"
+eq "${#$(hl_shorten_of feature-lod-alert-scoped-coverage-totals-design 34)}" "34" \
+  "L1q a shortened slug uses the budget it was given, and no more"
 logged "tab rename w7:t4 agents" "L1 the native root tab becomes agents"
 logged "pane split --pane w7:p3 --direction right --cwd $WT --no-focus" \
   "L1 the native root pane is reused for the agents split"

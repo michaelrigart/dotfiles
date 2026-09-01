@@ -122,6 +122,63 @@ hl_ensure_server() {
   die "the herdr server did not become ready after $(( tries / 4 ))s"
 }
 
+# hl_shorten <text> <budget> — <text> if it fits, otherwise head…tail inside <budget>.
+#
+# Biased toward the tail. A branch carries its identity at the end — -design against
+# -rollout — and Herdr truncates the far end away, so two siblings whose slugs share a
+# long prefix render as one string: distinct workspaces, one visible name. Shortening
+# here is the only version that stays derivable from the path; shortening against
+# whatever siblings happen to exist would make a name depend on the order they were
+# created in.
+#
+# Nothing is nudged inward, at either end. The invariant is worth more than the tidier
+# break: the head and the tail are both RETAINED text, so a pair differing at either end
+# must still differ in the label, and only the discarded middle may collapse. A nudge
+# that trims a retained end to a word boundary silently deletes — two slugs differing at
+# the character just inside that boundary come back as one string, which is the exact
+# failure this function exists to prevent. So the tail may only GROW to a boundary, paid
+# for out of the head, and the head is simply the first characters that remain.
+#
+# The cost is a head that can stop mid-word. That is the right trade: a label that is
+# ugly is still a label, and a label that is wrong is a different worktree.
+#
+hl_shorten() {
+  emulate -L zsh
+  # The budget counts characters, and how many characters a string has is a question the
+  # caller's locale answers: under LC_ALL=C zsh measures and slices bytes, so the same
+  # slug comes back a different length and cut mid-codepoint. Pin it, so the label is a
+  # function of its argument and nothing else. If the locale is missing zsh falls back to
+  # C and this degrades to the byte behaviour rather than failing — cosmetic, as ever.
+  #
+  # Characters, not display columns: a slug of double-width glyphs still overruns a rail
+  # measured in columns. Branch names are ASCII in practice, and a wcwidth table in zsh
+  # is a large amount of machinery for a label.
+  local LC_ALL=en_US.UTF-8
+  local text="$1" budget="$2" slack=8 keep tail_want start lo cand seg t i
+  (( ${#text} <= budget )) && { print -r -- "$text"; return 0 }
+  # No columns, no label. Guarded ahead of the tail slice below, where zsh reads an index
+  # of -0 as 0 and hands back the whole string — the opposite of a budget.
+  (( budget < 1 )) && { print -r -- ""; return 0 }
+  # Below three there is no room for a head, an ellipsis and a tail. Keep the tail: the
+  # contract is that the identifying end survives, and the degenerate case is no place to
+  # start contradicting it. Unreachable from hl_label, which always passes 34.
+  (( budget < 3 )) && { print -r -- "${text[-budget,-1]}"; return 0 }
+  keep=$(( budget - 1 ))                              # one column for the ellipsis
+  tail_want=$(( keep / 2 + keep % 2 ))                # the tail carries the identity
+  (( tail_want > keep - 1 )) && tail_want=$(( keep - 1 ))   # always leave a head
+  start=$(( ${#text} - tail_want + 1 ))
+  lo=$(( start - slack > 1 ? start - slack : 1 ))
+  seg="${text[lo,start-1]}"
+  i=${seg[(I)-]}                                      # last '-' before the tail
+  if (( i > 0 )); then
+    cand=$(( lo + i ))
+    # Grow to it only if the longer tail still leaves a head inside the budget.
+    (( ${#text} - cand + 1 <= keep - 1 )) && start=$cand
+  fi
+  t="${text[start,-1]}"
+  print -r -- "${text[1,keep-${#t}]}…$t"
+}
+
 # hl_label — the display label. Deterministic from the path so it is stable, but
 # purely cosmetic: identity is the canonical path, checked via pane cwd.
 hl_label() {
@@ -130,7 +187,46 @@ hl_label() {
   # matches and the label silently degrades to the full absolute path. The same
   # applies to any ~/Code behind a symlink, which _wt_assert_worktree already warns
   # about: "git reports real paths, and ~/Code may sit behind a symlink."
-  local repo="${1:A}" home="${HOME:A}"
+  local repo="${1:A}" home="${HOME:A}" common main slug
+  # A linked checkout is a sibling named "<primary>-<slug>", so its own path leads with
+  # everything it shares with the primary and only reaches the part that differs at the
+  # end — which is where a 40-column rail has already truncated it. Both halves of the
+  # name are wrong to show on their own: the whole path makes every worktree of one
+  # project read identically, and so does the project alone. The slug is the half that
+  # answers "which checkout is this". Nothing here answers "of what", because Herdr
+  # already marks a grouped checkout as subordinate to its primary — a marker in the
+  # label too would say it a second time, in a rail with no columns to spare.
+  #
+  # Derived from the path, not from HEAD: a label is written once, at open or repair,
+  # so reading the branch would leave it stale the moment a checkout switched branches.
+  # The slug is what `wt` built the directory from and what `wt-rm` matches on.
+  #
+  # Over-long slugs go through hl_shorten, which keeps the tail, so two siblings sharing
+  # a long prefix stay distinct rather than both being truncated to it by Herdr. What
+  # that does not cover is a pair differing only in the discarded middle: known, accepted,
+  # and not worth a hash suffix on every label to defend. The alternative — shortening a
+  # checkout relative to whatever other checkouts happen to exist — would make the name
+  # depend on the order they were created in and stop it being derivable from the path.
+  #
+  # `.git` as a FILE is what distinguishes a linked checkout, the same test hl_reconcile
+  # already makes. If git cannot name the common directory, or the directory does not
+  # carry the primary's name as a prefix, the label degrades to the path-derived form
+  # below rather than guessing: a cosmetic label is never worth an abort, and identity
+  # is the canonical path regardless.
+  if [[ -f "$repo/.git" ]]; then
+    common="$(hl_git -C "$repo" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
+    if [[ -n "$common" ]]; then
+      main="${${common:A}:h}"
+      slug="${${repo:t}#${main:t}-}"
+      # Sibling AND prefixed. The basenames alone are not enough: a checkout of the same
+      # primary parked under another directory still reads as conventional — repo-feature
+      # against repo — so a name-only test would slug it, and collide with the real
+      # sibling of that name if one existed. Two different checkouts must never reduce to
+      # one label.
+      [[ "${repo:h}" == "${main:h}" && -n "$slug" && "$slug" != "${repo:t}" ]] \
+        && { print -r -- "$(hl_shorten "$slug" 34)"; return 0 }
+    fi
+  fi
   case "$repo" in
     "$home/Code/"*) print -r -- "${repo#$home/Code/}" ;;
     "$home/"*)      print -r -- "${repo#$home/}" ;;

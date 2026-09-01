@@ -18,6 +18,22 @@ onboarding = false
 [theme]
 name = "tokyo-night"
 
+# Three greys and one blue, all of them Tokyo Night's own tokens rather than picked by
+# eye. The rail sits a step under Ghostty's #1a1b26 so it reads as a recessed surface;
+# the row you are on lifts by the same distance in the other direction. The accent is
+# the blue Starship ends every prompt line with, so the highlight in the sidebar and
+# the lambda under it are the same colour on purpose.
+[theme.custom]
+sidebar_bg = "#16161e"
+active_row_bg = "#292e42"
+selection_bg = "#283457"
+accent = "#7aa2f7"
+# The status colours, same argument as the accent: these are the exact red and green the
+# prompt already uses for a failed and a successful command, so a blocked agent is the
+# colour I read as "stopped" rather than a near-miss of it.
+red = "#f7768e"
+green = "#9ece6a"
+
 # Pinning `onboarding = false` above skips the first-run prompt that would otherwise
 # ask how notifications should be delivered — and the shipped default is
 # `delivery = "off"`. Left unset, `herdr notification show` returns
@@ -31,15 +47,66 @@ name = "tokyo-night"
 # `[ui.sound]` — so a finish in whatever I am currently looking at may be silent and
 # popup-less, and nothing reaches me in another application. Accepted knowingly rather
 # than grant Herdr notification permission: the sidebar still carries the state.
+#
+# The sidebar borrows the prompt's palette rather than inventing one. Starship ends
+# every line with a λ in #7aa2f7 and names the host in #7dcfff; those are the two
+# colours already in my eye all day, so here they mean "this is the space you are in"
+# and "this is the branch". Nothing else is coloured, which is what keeps them legible.
 [ui]
 # Keep the sidebar grouped by workspace rather than a flat agent list.
 agent_panel_sort = "spaces"
+# Three numbers, because the width auto-scales to the workspace names and only the floor
+# is binding when they are short: my longest label is in the low thirties, so a ceiling
+# alone changes nothing — the rail simply sizes itself to the names and stops. The floor
+# is what makes the rail wider than its contents require.
+#
+# Paired with hl_shorten's budget in layout.sh, which sits below this rather than at it:
+# grouping indents a linked checkout, the state glyph takes its own columns and a
+# scrollbar appears on a long list, so the label token never gets the whole rail. Move
+# them together — narrow the rail alone and Herdr truncates the end of a slug, which is
+# the half that identifies it.
+sidebar_width = 40
+sidebar_min_width = 36
+sidebar_max_width = 44
+# Shape, not just colour. At eight spaces with two agents each, a glyph is scannable
+# in peripheral vision and a coloured dot is not.
+status_indicators = "symbols"
 # Alt-q closes only the current workspace: one Herdr session owns many projects, so
 # keep Herdr's confirmation rather than killing every repository in the server.
 confirm_close = true
 
 [ui.toast]
 delivery = "herdr"
+
+# Two rows per space: which checkout, then which branch. The label already separates
+# the worktrees of one project — it is the slug, and Herdr's own grouping says which
+# project — so this row is not the only thing standing between them. It still earns a row of
+# its own: it is the longest string in the rail and the one worth reading unabbreviated.
+# Status rides along with the name above, where a two-character token costs nothing.
+[ui.sidebar.spaces]
+row_gap = 1
+rows = [
+  ["state_icon", { token = "workspace", bold = true }, { token = "git_status", dim = true }],
+  [{ token = "branch", fg = "#7dcfff" }],
+]
+
+# `workspace` is deliberately absent: agent_panel_sort = "spaces" already groups these
+# under their space, so repeating it spends a third of the width restating the heading
+# directly above. What is missing at a glance is which agent, and what it is on.
+[ui.sidebar.agents]
+row_gap = 1
+rows = [
+  ["state_icon", { token = "agent", bold = true }],
+  [{ token = "terminal_title_stripped", dim = true }],
+]
+
+# Codex titles its pane after the repository, which is the space it is already filed
+# under, so its second row restates the heading and costs a line in every workspace.
+# Claude titles its pane after the conversation — "Herdr worktree cleanup behavior" —
+# which is the one thing here that says what an agent is actually doing, so it keeps
+# both rows. Same token, different value: worth a row from one agent and not the other.
+[ui.sidebar.agents.rows_by_agent]
+codex = [["state_icon", { token = "agent", bold = true }]]
 
 [session]
 # The single setting the Claude/Codex integrations exist to serve. It is the shipped
