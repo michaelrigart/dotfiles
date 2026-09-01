@@ -1,4 +1,5 @@
 ---
+name: sp-mechanical
 description: Mechanical implementation from a well-specified plan — isolated functions, clear acceptance criteria, one or two files. Use for the bulk of plan tasks, which are mechanical when the plan is good.
 model: haiku
 effort: low

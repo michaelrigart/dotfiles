@@ -1,4 +1,5 @@
 ---
+name: sp-standard
 description: Integration and judgment work — multi-file coordination, matching an existing pattern across a codebase, debugging a failure whose cause is not yet known, and scoped code review.
 model: sonnet
 effort: medium

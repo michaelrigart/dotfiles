@@ -423,5 +423,33 @@ else
   echo "  SKIP: chezmoi absent — hook-script management unverified"
 fi
 
+# --- agent definitions must declare a frontmatter name ----------------------
+#
+# An agent .md without a `name:` key does not register. Claude Code treats it as a
+# co-located reference document and skips it silently — no warning, no parse error,
+# the type simply is not in the Agent tool's list, and a dispatch fails with
+# "Agent type 'x' not found". All three sp-* agents shipped that way and every
+# dispatch to them fell back to general-purpose, losing the tier-matched effort
+# these definitions exist to set. Verified 2026-09-01 with a named/unnamed probe
+# pair: only the named probe appeared in a fresh session's agent list.
+#
+# The name must also equal the filename stem. The tool resolves a dispatch by the
+# declared name, so a mismatch registers the agent under a name nothing calls.
+for agent in "$SRC"/dot_claude/agents/*.md; do
+  [ -e "$agent" ] || continue
+  stem=$(basename "$agent" .md)
+  declared=$(awk '/^---$/{n++; next} n==1 && /^name:/{sub(/^name:[[:space:]]*/,""); print; exit}' "$agent")
+  if [ -n "$declared" ]; then
+    _pass "$stem declares a frontmatter name"
+  else
+    _fail "$stem declares a frontmatter name" "no name: key — this agent will not register"
+  fi
+  if [ "$declared" = "$stem" ]; then
+    _pass "$stem's declared name matches its filename"
+  else
+    _fail "$stem's declared name matches its filename" "declared '$declared'"
+  fi
+done
+
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
