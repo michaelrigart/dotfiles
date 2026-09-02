@@ -303,18 +303,20 @@ _wt_git_lock_state() {
   emulate -L zsh
   # Never name a local `path` in zsh: it is the tied array behind PATH, and
   # localising it empties command lookup for every external below.
-  local root="$1" dest="${2:A}" rec wt_path in_target=0 seen=0
+  local root="$1" dest="${2:A}" rec wt_path rc in_target=0 seen=0
   local -a fields
   typeset -g _WT_GIT_LOCK_REASON=""
-  # zsh scalars cannot carry NUL bytes: assigning porcelain -z to `raw` makes the
-  # assignment itself fail with 127. Check the command once for a trustworthy status,
-  # then feed a second call directly through ${(0)} so the NUL records are decoded
-  # before they ever become a scalar.
-  if ! _wt_git -C "$root" worktree list --porcelain -z >/dev/null 2>&1; then
+  # zsh scalars cannot carry NUL bytes: assigning porcelain -z to `raw` would make the
+  # assignment itself fail with 127. An array assignment fed straight through ${(0)}
+  # decodes the NUL records and still reports the command's status, so one call yields
+  # both. Reading it in two — status from the first, records from the second — would
+  # parse a failed read as authoritative, and an empty result from a broken read is
+  # indistinguishable here from a worktree that is not registered at all.
+  fields=( ${(0)"$(_wt_git -C "$root" worktree list --porcelain -z 2>/dev/null)"} ); rc=$?
+  if (( rc )); then
     print -ru2 -- "wt: cannot read Git worktree lock state for $dest — refusing."
     return 2
   fi
-  fields=( ${(0)"$(_wt_git -C "$root" worktree list --porcelain -z 2>/dev/null)"} )
   for rec in $fields; do
     if [[ "$rec" == 'worktree '* ]]; then
       wt_path="${rec#worktree }"
@@ -954,9 +956,154 @@ _wt_stop_herdr_workspaces() {
   return 0
 }
 
+# Render <path> the way lsof prints it under LC_ALL=C. Return 1 for a path containing a
+# control character, whose rendering is not modelled.
+#
+# lsof does not report a pathname, it renders one, and the rendering depends on the
+# caller's locale: under a UTF-8 locale "café" comes back verbatim, under LC_ALL=C the
+# same directory comes back as "caf\xc3\xa9". A comparison against either is correct
+# only in the environment it was written for — and `LC_ALL=C command wt-rm ...` is a
+# thing a person can type. So the scan pins LC_ALL=C, the one locale guaranteed to
+# exist, and this reproduces that locale's rules: a backslash doubles, printable ASCII
+# passes through, every other byte becomes \xHH. Control characters use forms this does
+# not model (\n, \t, caret notation) and are refused by the caller instead.
+_wt_lsof_render() {
+  emulate -L zsh
+  # Byte-wise, because that is how lsof escapes under LC_ALL=C. NO_MULTIBYTE makes zsh's
+  # indexing agree with it; without it a multi-byte character is one index and its bytes
+  # can never be rendered separately.
+  setopt local_options no_multibyte
+  local s="$1" out="" c i n
+  for (( i = 1; i <= ${#s}; i++ )); do
+    c="${s[i]}"; n=$(( #c ))
+    if (( n == 92 )); then out+='\\'
+    elif (( n >= 32 && n <= 126 )); then out+="$c"
+    elif (( n >= 128 )); then out+="$(printf '\\x%02x' $n)"
+    else return 1
+    fi
+  done
+  print -r -- "$out"
+}
+
+# Print "<pid> <command>" for every process of the caller's whose current working
+# directory is <dest> or below it, as of the moment of the call. Return 1 when the
+# answer cannot be trusted — an unreadable listing is not an empty one, and this is the
+# last guard before Git deletes files. Read the bounds below before treating a clean
+# result as proof that the checkout is idle.
+#
+# Closing a Herdr workspace escalates SIGHUP → SIGTERM → SIGKILL across the pane's
+# process group in about half a second, so everything still in that group dies with it.
+# The signal follows group membership, not ancestry: a process that left for a session
+# of its own — setsid, a double-forked daemon, anything a project starts detached —
+# survives despite having been started from the pane, keeps its cwd in the checkout, and
+# recreates the directory after `git worktree remove` deletes it. It is in no pane, so
+# no amount of Herdr state can see it. The OS is the only remaining witness.
+#
+# The scan is global and filtered here rather than `lsof +D <dest>`, which is the
+# obvious spelling and the wrong one twice over: it walks the whole checkout, so it
+# costs O(tree) on repositories where node_modules alone is gigabytes, and it needs
+# -w to stay quiet about directories it cannot open — silently skipping exactly the
+# subtree a hidden daemon might be sitting in. A cwd scan reads process state only:
+# O(processes), no tree walk, nothing to skip. `lsof -d cwd` exits 0 for it, so a
+# nonzero status here is failure rather than lsof's usual "matched nothing".
+#
+# What it therefore answers is "no process of the caller's had its cwd in the checkout
+# at the instant of the scan" — not "nothing is using the checkout". Three bounds, all
+# deliberate, none of them closable at a price worth paying:
+#
+#   Other users. Unprivileged lsof reports no other user's processes at all, so a
+#   root-owned daemon in the checkout is invisible. Everything this workflow starts —
+#   editors, agents, dev servers — runs as the caller, `+D` is subject to the identical
+#   limit, and escalating would put a password prompt inside a lifecycle command.
+#
+#   Open descriptors held from elsewhere. A `tail -f` on a checkout file, from a cwd
+#   outside it, is not seen. Dropping `-d cwd` to scan every descriptor was measured at
+#   11.6s against 0.08s on an 11GB checkout, and on an *idle* one it already reports a
+#   sibling worktree's editor holding .git/worktrees/<sibling>/HEAD and Docker's backend
+#   holding .devcontainer files — refusals with nothing wrong. It also buys little: an
+#   fd on a deleted file writes to an unlinked inode and recreates no directory. The
+#   husk comes from a process writing absolute paths under $dest, which in practice —
+#   not by necessity — is a process whose cwd is there. A daemon that kept the path as
+#   a string and chdir'd away writes the husk back and is missed by every form of this
+#   scan, descriptors included.
+#
+#   Time. This is a snapshot, taken as late as the sequence allows — the statement it
+#   supports is about the instant it ran. The lifecycle lock serialises `wt` and
+#   `wt-rm`, not arbitrary processes, so nothing stops one entering the checkout
+#   between the scan and Git's delete. No cheap primitive closes that window on macOS,
+#   and `+D` would not have closed it either.
+_wt_live_processes() {
+  emulate -L zsh
+  # Never name a local `path` here: it is the tied array behind PATH, and localising
+  # it empties command lookup for the whole function — including the lsof check below.
+  local dest="${1:A}" edest rc i pid cmd cwd
+  local -a lines hits
+  (( $+commands[lsof] )) || {
+    print -ru2 -- "wt-rm: lsof is unavailable, so processes still using $dest cannot be detected — refusing."
+    return 1
+  }
+  # Compare against lsof's rendering of $dest, not $dest — see _wt_lsof_render. This
+  # concerns $dest alone: a rendered character *inside* the checkout still sits after
+  # the prefix that has to match.
+  edest="$(_wt_lsof_render "$dest")" || {
+    print -ru2 -- "wt-rm: $dest contains a control character, which lsof renders rather than reports — refusing."
+    return 1
+  }
+  # -F0, not -F: NUL-terminated fields. Newline framing is not actually ambiguous today,
+  # because lsof renders a newline inside a pathname as the two characters \ and n — but
+  # that is a property of its output escaping, and resting the parse on it would make
+  # correctness depend on a rendering detail rather than on the framing. A NUL cannot
+  # occur in a pathname at all, so this holds without that assumption.
+  #
+  # One invocation, and the status belongs to the listing actually parsed. Splitting it
+  # across two — status from the first, records from the second — would let a scan that
+  # died partway read as a clean checkout, since the records it never reached are
+  # exactly where the occupant would have been. A zsh scalar cannot carry a NUL byte, so
+  # `out=$(...)` is not available here, but the status survives an array assignment fed
+  # straight through ${(0)}, which is what makes the single call possible.
+  lines=( ${(0)"$(LC_ALL=C command lsof -w -d cwd -F0pcn 2>/dev/null)"} ); rc=$?
+  if (( rc )); then
+    print -ru2 -- "wt-rm: could not read the process list from lsof — refusing."
+    return 1
+  fi
+  # Each record set ends with a newline after its final NUL, which lands at the front
+  # of the next field. Strip exactly one; a field that was only that newline collapses
+  # to empty, drops out of the array, and misaligns the cycle — caught below.
+  lines=( ${lines#$'\n'} )
+  # Real lsof cannot come back empty: the shell running wt-rm has a cwd of its own and
+  # is in every answer. Nothing at all therefore means the scan failed, and reading it
+  # as "no process is using the checkout" would disable this guard without a word.
+  if (( ${#lines} == 0 )) || (( ${#lines} % 4 )); then
+    print -ru2 -- "wt-rm: could not read the process list from lsof — refusing."
+    return 1
+  fi
+  # lsof emits one strict p/c/f/n cycle per process. With framing already unambiguous,
+  # this verifies the parse is still aligned with what the binary actually emitted —
+  # by value, not just by prefix letter. A bare "n" is prefix-shaped and semantically
+  # empty, and an empty cwd matches nothing: a process that IS in the checkout, whose
+  # path lsof could not resolve, would read as no process at all. Every cwd lsof reports
+  # is absolute, and -d cwd is what makes every descriptor here a cwd; a reply that
+  # breaks either has diverged from the request and cannot be read as if it had not.
+  for (( i = 1; i <= ${#lines}; i += 4 )); do
+    if [[ "${lines[i]}" != p<-> || "${lines[i+1]}" != c* || \
+          "${lines[i+2]}" != fcwd || "${lines[i+3]}" != n/* ]]; then
+      print -ru2 -- "wt-rm: could not read the process list from lsof — refusing."
+      return 1
+    fi
+    pid="${lines[i]#p}" cmd="${lines[i+1]#c}" cwd="${lines[i+3]#n}"
+    # Anchored on purpose. Sibling worktrees of one repo differ by a suffix on a
+    # shared path — repo-a and repo-a-extra are neighbours by construction — so a
+    # bare prefix test would let a process in one veto removal of the other forever.
+    [[ "$cwd" == "$edest" || "$cwd" == "$edest"/* ]] && hits+=( "$pid $cmd" )
+  done
+  (( ${#hits} )) && print -rl -- $hits
+  return 0
+}
+
 # wt-rm — retire a worktree made by `wt`: validate the project hook, run three
-# cleanliness checks around the Herdr workspace shutdown and the teardown hook, remove
-# the worktree, then delete the branch.
+# cleanliness checks around the Herdr workspace shutdown and the teardown hook, check
+# that no process of the caller's is sitting in the checkout, remove the worktree, then
+# delete the branch.
 #   wt-rm <branch>
 # Run from another checkout of the same repo, never from inside the one being removed.
 #
@@ -989,9 +1136,66 @@ _wt_stop_herdr_workspaces() {
 #   6. Check 3 (_wt_clean), after teardown, before removal. Ties any non-ignored
 #      teardown output to its cause before Git's more generic removal refusal would
 #      otherwise appear a step later with a less specific message.
+#   7. Check 4 (_wt_live_processes), the last thing before Git deletes files. Every
+#      check above reads Git or Herdr; this one reads the OS, because a process that
+#      escaped its pane's process group is invisible to both. Last rather than first
+#      because stopping project services is what teardown is for — scanning ahead of
+#      it would refuse every repository that shuts its own daemons down properly.
+#      A heuristic, not a guarantee, and bounded in three directions the helper spells
+#      out. It converts the common husk into a refusal; it does not make removal safe
+#      by proof.
 #
 # All three checks fail closed on _wt_clean's unknown state (2), same as every other
 # consumer of that helper.
+# _wt_branch_content_merged — true when <branch> would add nothing to <base>.
+#
+# `git branch -d` asks an ancestry question: are this branch's commits reachable
+# from the base? A squash-merge answers no by construction — it replays the whole
+# branch as a single new commit — so -d refuses branches whose every line is
+# already in. GitLab squash-merges by default, so that refusal is the ordinary end
+# of a merge request here, not an edge case.
+#
+# The question that actually matters is whether merging the branch would still
+# change anything. `merge-tree --write-tree` answers it directly: it performs the
+# merge in memory and prints the resulting tree. If that tree is the base's own
+# tree, the branch contributes nothing and deleting the ref loses no work.
+#
+# Comparing the two tip trees instead (`git diff base branch`) looks equivalent and
+# is not: it holds only while the base's tip IS the squash commit. One later merge
+# into the base and the trees differ again, so that test would quietly stop
+# detecting squash-merges after the first unrelated MR landed — working in the
+# scenario it was written against and nowhere else.
+#
+# Both the local base and the remote's default branch count: content reachable from
+# either is content this repository already has. Fails closed — no base, an
+# unmergeable branch, or a git too old for --write-tree all return non-zero, which
+# keeps the branch.
+_wt_branch_content_merged() {
+  emulate -L zsh
+  local main="$1" branch="$2" base merged want mb
+  local -a bases
+  base="$(_wt_git -C "$main" symbolic-ref --quiet --short HEAD 2>/dev/null)" \
+    && bases+=("$base")
+  base="$(_wt_git -C "$main" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)" \
+    && bases+=("$base")
+  (( ${#bases} )) || return 1
+  for base in $bases; do
+    [[ -n "$base" && "$base" != "$branch" ]] || continue
+    # A branch that never changed anything is not a squash-merge, it is a branch
+    # that did no work — and the older contract is that wt-rm does not force-delete
+    # a branch carrying commits the base lacks, however empty they are. Requiring a
+    # real diff against the merge-base keeps that promise: only a branch that
+    # genuinely contributed content, and whose content is now in the base, is spent.
+    mb="$(_wt_git -C "$main" merge-base "$base" "$branch" 2>/dev/null)" || continue
+    _wt_git -C "$main" diff --quiet "$mb" "$branch" 2>/dev/null && continue
+    merged="$(_wt_git -C "$main" merge-tree --write-tree "$base" "$branch" 2>/dev/null)" || continue
+    merged="${merged%%$'\n'*}"
+    want="$(_wt_git -C "$main" rev-parse "$base^{tree}" 2>/dev/null)" || continue
+    [[ -n "$merged" && "$merged" == "$want" ]] && return 0
+  done
+  return 1
+}
+
 wt-rm() {
   emulate -L zsh
   local branch="$1"
@@ -1083,6 +1287,21 @@ wt-rm() {
          return 1 ;;
     esac
 
+    # Check 4 — the last witness before Git deletes anything, and the only one that
+    # asks the OS rather than Herdr. Deliberately after teardown: stopping project
+    # services is what the teardown verb is for, so scanning before it would refuse
+    # every repository that does the right thing. As late as the sequence allows, which
+    # is the most a snapshot can offer — see _wt_live_processes for what it cannot see.
+    local busy line
+    busy="$(_wt_live_processes "$dest")" || return 1
+    if [[ -n "$busy" ]]; then
+      print -ru2 -- "wt-rm: $dest is still in use by a running process — removal aborted. Resources may already be reclaimed."
+      for line in ${(f)busy}; do print -ru2 -- "    $line"; done
+      print -ru2 -- "    Herdr's workspaces for this checkout are closed already; these are still in it."
+      print -ru2 -- "    Stop them — from .worktreehook teardown if the project starts them — then retry: wt-rm $qb"
+      return 1
+    fi
+
     # Removal is the third post-shutdown failure mode (spec §9.3), and reports the
     # same exact partial state as the other two. Git's own refusal names only the
     # obstruction; on its own it leaves the reader unsure whether teardown ran, so
@@ -1103,8 +1322,18 @@ wt-rm() {
     fi
     print -r -- "✓ removed worktree $dest"
 
-    _wt_git -C "$main" branch -d "$branch" \
-      || print -ru2 -- "wt-rm: branch $qb kept (not fully merged) — inspect or merge it before deleting it explicitly."
+    # -d first: it is the conservative test and its success message names the SHA.
+    # Its stderr is suppressed because a refusal here is not yet a verdict — a
+    # squash-merged branch fails -d and is still entirely merged. Only if the
+    # content test also declines does the branch genuinely have unmerged work.
+    if ! _wt_git -C "$main" branch -d "$branch" 2>/dev/null; then
+      if _wt_branch_content_merged "$main" "$branch" \
+         && _wt_git -C "$main" branch -D "$branch" >/dev/null 2>&1; then
+        print -r -- "✓ deleted branch $qb (squash-merged — its content is already in the base)"
+      else
+        print -ru2 -- "wt-rm: branch $qb kept (not fully merged) — inspect or merge it before deleting it explicitly."
+      fi
+    fi
 
     [[ -d "$dest" ]] \
       && print -ru2 -- "wt-rm: $dest still exists (files recreated during removal) — remove it manually."

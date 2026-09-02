@@ -224,7 +224,18 @@ printf '%s' "$input" | jq \
             { "path": "~/.config/op/config",                   "mode": "deny" }
           ]
         },
-        "excludedCommands": ["docker *"],
+        # docker is here because it talks to its own socket. basecamp (macOS Keychain),
+        # herdr and xreview (the herdr unix socket) are the same shape and worse: sandboxed
+        # they do not fail visibly. basecamp auth status returns {"ok": true,
+        # "authenticated": false} and xreview reports "no Codex pane" — confident wrong
+        # answers with no error, so the global rule of escalating only on sandbox evidence
+        # has nothing to fire on. Declaring them here is mechanical, unlike remembering to
+        # pass dangerouslyDisableSandbox on every call.
+        #
+        # Deliberately narrower than allowlisting the herdr socket under network: that
+        # would let ANY sandboxed command drive herdr pane run, which is a sandbox escape.
+        # Excluding the herdr client only lets herdr itself out.
+        "excludedCommands": ["docker *", "basecamp *", "herdr *", "xreview *"],
         "filesystem": {
           "allowRead": [
             "~/.ssh/config",

@@ -211,8 +211,15 @@ done
 # Pin exactly, not by exclusion. Asserting "no docker socket" would still admit an
 # arbitrary socket added later, and "contains docker *" would admit extra excluded
 # commands — each a hole in the boundary this layer exists to draw.
-jq_is '.sandbox.excludedCommands == ["docker *"]' true \
-      "excludedCommands is exactly [\"docker *\"]"
+#
+# Four entries, each because the tool reaches a resource the sandbox blocks: docker its
+# own socket, basecamp the macOS Keychain, herdr and xreview the herdr unix socket. The
+# last three earn it for a second reason — sandboxed they return confident wrong answers
+# rather than failing, so the "escalate only on sandbox evidence" rule has nothing to
+# fire on. Adding a fifth entry should require the same justification, which is why this
+# is pinned rather than open-ended.
+jq_is '.sandbox.excludedCommands == ["docker *", "basecamp *", "herdr *", "xreview *"]' true \
+      "excludedCommands is exactly the four socket/keychain tools"
 jq_is ".sandbox.network.allowUnixSockets == [\"$AGENT_SOCKET\"]" true \
       "allowUnixSockets contains only the stable agent socket"
 
@@ -415,6 +422,34 @@ if command -v chezmoi >/dev/null 2>&1; then
 else
   echo "  SKIP: chezmoi absent — hook-script management unverified"
 fi
+
+# --- agent definitions must declare a frontmatter name ----------------------
+#
+# An agent .md without a `name:` key does not register. Claude Code treats it as a
+# co-located reference document and skips it silently — no warning, no parse error,
+# the type simply is not in the Agent tool's list, and a dispatch fails with
+# "Agent type 'x' not found". All three sp-* agents shipped that way and every
+# dispatch to them fell back to general-purpose, losing the tier-matched effort
+# these definitions exist to set. Verified 2026-09-01 with a named/unnamed probe
+# pair: only the named probe appeared in a fresh session's agent list.
+#
+# The name must also equal the filename stem. The tool resolves a dispatch by the
+# declared name, so a mismatch registers the agent under a name nothing calls.
+for agent in "$SRC"/dot_claude/agents/*.md; do
+  [ -e "$agent" ] || continue
+  stem=$(basename "$agent" .md)
+  declared=$(awk '/^---$/{n++; next} n==1 && /^name:/{sub(/^name:[[:space:]]*/,""); print; exit}' "$agent")
+  if [ -n "$declared" ]; then
+    _pass "$stem declares a frontmatter name"
+  else
+    _fail "$stem declares a frontmatter name" "no name: key — this agent will not register"
+  fi
+  if [ "$declared" = "$stem" ]; then
+    _pass "$stem's declared name matches its filename"
+  else
+    _fail "$stem's declared name matches its filename" "declared '$declared'"
+  fi
+done
 
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

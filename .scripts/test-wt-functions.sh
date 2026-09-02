@@ -1,6 +1,6 @@
 #!/usr/bin/env zsh
 # Mocked test for the worktree/session helpers and the .worktreehook protocol in
-# dot_config/zsh/functions. Thirteen sections, in dependency order — helpers
+# dot_config/zsh/functions. Eighteen sections, in dependency order — helpers
 # first, then the commands composed from them:
 #
 #   B  wt                  destination validation (husks, slug collisions)
@@ -16,6 +16,11 @@
 #   M  wt-prepare          copy/setup recovery path, quoting, wtcp presence
 #   N  wt                  creation paths, pre-validation consequences, reopening
 #   O  wt-rm               teardown ordering, the three cleanliness checks, retry
+#   Q  PATH wrappers       the functions are reachable from a non-interactive shell
+#   S  `command` dispatch  a same-named shell function never shadows the wrapper
+#   T  wt                  a proven Git lifecycle opens a native Herdr workspace
+#   U  wt-rm               Herdr workspace shutdown and persisted-state safety
+#   V  wt-rm               live processes still inside the checkout block removal
 #
 # Herdr, layout.sh and wtcp are stubbed on PATH and every invocation is logged, so the
 # tests can assert *ordering* — notably that a dirty worktree never loses its terminal
@@ -54,7 +59,8 @@ TMPROOT="${TMPDIR:-/tmp}"
 mkd() { mktemp -d "${TMPROOT%/}/wt-test.XXXXXX" }
 STUBS=$(mkd)
 SIGSTUBS=$(mkd)
-trap 'rm -rf "$STUBS" "$SIGSTUBS" "${ROOTTMP:-}"' EXIT
+FAILSTUBS=$(mkd)
+trap 'rm -rf "$STUBS" "$SIGSTUBS" "$FAILSTUBS" "${ROOTTMP:-}"' EXIT
 
 cat > "$STUBS/wtcp" <<'STUB'
 #!/usr/bin/env bash
@@ -126,7 +132,47 @@ case "$*" in
   *) exit 0 ;;
 esac
 STUB
-chmod +x "$STUBS/layout.sh" "$STUBS/herdr"
+cat > "$STUBS/lsof" <<'STUB'
+#!/usr/bin/env bash
+# Faithful about the one thing that matters: it emits the field format its arguments
+# ask for. A stub that ignored -F would let the caller change the wire format without
+# a single test noticing, which is exactly the drift section V exists to catch.
+#
+# MOCK_LSOF_SPEC is one record per line, "pid<TAB>command<TAB>cwd". The cwd column is
+# emitted verbatim because it is lsof's *rendering* of a path, not the path. Write it as
+# the binary prints it **under LC_ALL=C**, which is what the code under test pins: a
+# backslash as \\, a newline as \n, other control characters in caret notation, and every
+# byte above 0x7f as \xHH — so a path containing é is written caf\xc3\xa9, not café. A
+# fixture that used the raw path would describe a wire format that invocation never
+# produces, and would silently simulate an occupant the helper cannot match. MOCK_LSOF_RAW overrides it for malformed output, and the exit
+# status is separately controllable: real lsof exits 1 both when it matches nothing and
+# when it fails, which is the ambiguity the caller has to resolve.
+printf '%s\n' "$*" >> "$LLOG"
+if [ -n "${MOCK_LSOF_RAW+x}" ]; then
+  printf '%b' "$MOCK_LSOF_RAW"
+  exit "${MOCK_LSOF_RC:-0}"
+fi
+case " $* " in
+  *" -F0pcn "*) fmt=nul ;;
+  *)            fmt=nl  ;;
+esac
+while IFS=$'\t' read -r pid cmd cwd; do
+  [ -n "$pid" ] || continue
+  if [ "$fmt" = nul ]; then
+    printf 'p%s\0c%s\0\n' "$pid" "$cmd"
+    printf 'fcwd\0n%s\0\n' "$cwd"
+  else
+    printf 'p%s\nc%s\nfcwd\n' "$pid" "$cmd"
+    printf 'n%s\n' "$cwd"
+  fi
+done <<< "${MOCK_LSOF_SPEC:-}"
+exit "${MOCK_LSOF_RC:-0}"
+STUB
+chmod +x "$STUBS/layout.sh" "$STUBS/herdr" "$STUBS/lsof"
+# Captured before the stub shadows it. Section V uses it for the one test that must
+# exercise the real binary: every other lsof assertion is a fixture, and a fixture
+# cannot show that the invocation and the parse still agree with what lsof emits.
+REALLSOF="$(whence -p lsof)" || { print -ru2 -- "cannot locate lsof"; exit 1 }
 export PATH="$STUBS:$PATH"
 export DEV_LAYOUT="$STUBS/layout.sh"
 
@@ -158,6 +204,35 @@ exec $REALGIT "\$@"
 STUB
 chmod +x "$SIGSTUBS/git"
 
+# --- git call-failure injector ----------------------------------------------
+# A second pass-through `git`, in its own directory and prepended to PATH for one test
+# at a time. It logs every call whose argv contains WT_FAIL_MATCH and fails the
+# WT_FAIL_NTH such call, then execs the real git with the identical argv. Like the
+# SIGINT shim it fakes nothing about the code under test; it decides only which
+# invocation of a repeated read is the one that breaks.
+#
+# That distinction is the point: a helper that checks the status of one call and parses
+# the output of another cannot be caught by failing the call it checks. It has to be
+# possible to fail the *second* one, and to count how many there were.
+cat > "$FAILSTUBS/git" <<STUB
+#!/bin/sh
+if [ -n "\${WT_FAIL_MATCH:-}" ]; then
+  case " \$* " in
+    *" \$WT_FAIL_MATCH "*)
+      printf '%s\\n' "\$*" >> "\$WT_FAIL_LOG"
+      n=\$(wc -l < "\$WT_FAIL_LOG")
+      if [ "\$n" -eq "\${WT_FAIL_NTH:-0}" ]; then
+        $REALGIT "\$@"
+        echo "git: injected read failure" >&2
+        exit 128
+      fi
+      ;;
+  esac
+fi
+exec $REALGIT "\$@"
+STUB
+chmod +x "$FAILSTUBS/git"
+
 # --- fixture ----------------------------------------------------------------
 ROOTTMP=""
 setup() {   # fresh $HOME with Code/Org/repo, fresh logs, default mock behaviour
@@ -170,13 +245,19 @@ setup() {   # fresh $HOME with Code/Org/repo, fresh logs, default mock behaviour
   git init -q -b main "$REPO"
   git -C "$REPO" commit -q --allow-empty -m init
   export WLOG="$ROOTTMP/wtcp.log" DLOG="$ROOTTMP/layout.log" \
-         HLOG="$ROOTTMP/herdr.log" MOCK_H_CLOSED_FILE="$ROOTTMP/herdr-closed"
-  : > "$WLOG"; : > "$DLOG"; : > "$HLOG"; : > "$MOCK_H_CLOSED_FILE"
+         HLOG="$ROOTTMP/herdr.log" LLOG="$ROOTTMP/lsof.log" \
+         FLOG="$ROOTTMP/git-fail.log" MOCK_H_CLOSED_FILE="$ROOTTMP/herdr-closed"
+  : > "$WLOG"; : > "$DLOG"; : > "$HLOG"; : > "$LLOG"; : > "$FLOG"; : > "$MOCK_H_CLOSED_FILE"
   export MOCK_WTCP_RC=0 \
          MOCK_LAYOUT_RC=0 MOCK_H_SESSION_LIST='{"sessions":[]}' MOCK_H_SESSION_RC=0 \
          MOCK_H_WORKSPACES='{"result":{"workspaces":[]}}' \
          MOCK_H_PANES='{"result":{"panes":[]}}' MOCK_H_LIST_RC=0 MOCK_H_CLOSE_RC=0 \
          MOCK_H_CLOSE_TOUCH="" MOCK_H_CLOSE_OUT=""
+  # One well-formed record for an unrelated cwd. Real lsof scanning every process
+  # can never return nothing — this shell's own cwd is always in the answer — so
+  # "no records at all" is reserved for the failure the caller must fail closed on.
+  export MOCK_LSOF_RC=0 MOCK_LSOF_SPEC="$(lsof_spec 1 launchd /)"
+  unset MOCK_LSOF_RAW
 }
 # run <dir> <command...> — source the functions fresh and run one command in $dir.
 # A subshell per scenario keeps zsh options/state from leaking between tests.
@@ -239,6 +320,14 @@ sigint_run() {
   [[ -e "$once" ]] && SIGFIRED=yes || SIGFIRED=no
 }
 sha() { git -C "$1" rev-parse HEAD 2>/dev/null }
+# lsof_spec <pid> <cmd> <cwd> [...] — build MOCK_LSOF_SPEC rows. The cwd column is
+# lsof's rendering of a path, so pass it as lsof would print it: a real backslash as two
+# characters, a real newline as the two characters \ and n.
+lsof_spec() {
+  local -a rows
+  while (( $# >= 3 )); do rows+=( "$1"$'\t'"$2"$'\t'"$3" ); shift 3; done
+  print -rl -- $rows
+}
 mkhook() {   # mkhook <repo> <body>  — tracked, executable, committed
   print -r -- "$2" > "$1/.worktreehook"
   chmod +x "$1/.worktreehook"
@@ -1630,6 +1719,39 @@ hunlogged "workspace close" "a foreign lock is detected before Herdr shutdown"
 run "$REPO" git worktree list --porcelain
 has "$PROTECTED" "the foreign-locked checkout is still a registered worktree"
 
+# The lock state is read once, and the status checked belongs to the read that was
+# parsed. Splitting it across two calls — status from the first, records from the
+# second — means a read that failed is parsed as though it succeeded, and an empty
+# result from a broken read is indistinguishable from a worktree that is not
+# registered. Git is real here; only the chosen invocation fails.
+setup
+run "$REPO" wt lockstate-once
+LOCKONCE="$HOME/Code/Org/repo-lockstate-once"
+: > "$FLOG"
+OUT="$(builtin cd "$REPO" && source "$FUNCS" \
+       && PATH="$FAILSTUBS:$PATH" WT_FAIL_LOG="$FLOG" WT_FAIL_NTH=0 \
+          WT_FAIL_MATCH="worktree list --porcelain -z" \
+          _wt_git_lock_state "$REPO" "$LOCKONCE" 2>&1)"; RC=$?
+rc_is 0 "the lifecycle lock on a wt checkout is reported as locked"
+eq "$(grep -c . "$FLOG")" "1" "worktree lock state is read in exactly one invocation"
+
+# A read that breaks must say so, even when it produced a syntactically perfect answer
+# first. The injector runs the real git — so the target's record is present and says
+# "unlocked" — and only then exits nonzero. Trusting the records over the status would
+# report a definite, wrong lock state to a caller that removes worktrees.
+setup
+run "$REPO" wt lockstate-fail
+LOCKFAIL="$HOME/Code/Org/repo-lockstate-fail"
+: > "$FLOG"
+OUT="$(builtin cd "$REPO" && source "$FUNCS" \
+       && PATH="$FAILSTUBS:$PATH" WT_FAIL_LOG="$FLOG" WT_FAIL_NTH=1 \
+          WT_FAIL_MATCH="worktree list --porcelain -z" \
+          _wt_git_lock_state "$REPO" "$LOCKFAIL" 2>&1)"; RC=$?
+rc_is 2 "a read that emits valid records and then fails is not trusted"
+has "cannot read Git worktree lock state" "the broken read is diagnosed as a read failure"
+hasnt "is not a registered worktree" \
+  "a broken read is never reported as an unregistered worktree"
+
 print -r -- ""
 print -r -- "U. wt-rm — Herdr workspace shutdown and persisted-state safety"
 
@@ -1794,6 +1916,341 @@ OUT="$(grep -nE '(^|[^[:alnum:]_.])cd ' "$FUNCS" | grep -vE 'builtin cd|command 
 [[ -z "$OUT" ]] \
   && _pass "library functions use builtin cd, never alias-expandable bare cd" \
   || _fail "library functions use builtin cd, never alias-expandable bare cd"
+
+print -r -- ""
+print -r -- "V. wt-rm — a live process inside the checkout blocks removal"
+
+# The husk this guards against: closing a Herdr workspace escalates SIGHUP → SIGTERM →
+# SIGKILL over roughly half a second across the pane's process group, so everything
+# still in that group dies. The signal follows group membership, not ancestry, so a
+# process that has left for a session of its own — setsid, a
+# double-forked daemon, anything a project starts detached — survives that, keeps its
+# cwd inside the checkout, and writes the directory back into existence after
+# `git worktree remove` has deleted it. Herdr's own state cannot see such a process:
+# it is no longer in any pane. The OS is the only remaining witness.
+setup
+run "$REPO" wt live-cwd
+LIVE="$HOME/Code/Org/repo-live-cwd"
+export MOCK_LSOF_SPEC="$(lsof_spec 1 launchd / 4242 redis-server "$LIVE")"
+run "$REPO" wt-rm live-cwd
+rc_is 1 "a process whose cwd is the checkout blocks removal"
+has "still in use by a running process" "the refusal names the reason"
+has "4242" "the refusal names the pid so it can be stopped"
+has "redis-server" "the refusal names the command"
+[[ -d "$LIVE" ]] && _pass "the checkout survives a live process" \
+                      || _fail "the checkout survives a live process"
+run "$REPO" git worktree list --porcelain
+has "$LIVE" "the checkout is still a registered worktree after the refusal"
+
+# A daemon almost never sits at the top of the checkout; it sits in log/, tmp/ or a
+# service subdirectory. Matching only the exact path would miss every realistic case.
+setup
+run "$REPO" wt live-deep
+DEEP="$HOME/Code/Org/repo-live-deep"
+export MOCK_LSOF_SPEC="$(lsof_spec 77 sidekiq "$DEEP/log/nested")"
+run "$REPO" wt-rm live-deep
+rc_is 1 "a process whose cwd is below the checkout blocks removal"
+[[ -d "$DEEP" ]] && _pass "the checkout survives a process nested inside it" \
+                      || _fail "the checkout survives a process nested inside it"
+
+# Sibling worktrees of the same repo differ by a suffix on one path — repo-a and
+# repo-a-extra live next to each other by construction. A plain string-prefix test
+# would let a process in one worktree veto removal of the other forever.
+setup
+run "$REPO" wt live-sib
+SIB="$HOME/Code/Org/repo-live-sib"
+export MOCK_LSOF_SPEC="$(lsof_spec 90 nvim "${SIB}-extra" 91 nvim "${SIB}x/deep")"
+run "$REPO" wt-rm live-sib
+rc_is 0 "a process in a sibling path that merely shares a prefix does not block removal"
+[[ -d "$SIB" ]] && _fail "the checkout is removed when only siblings are busy" \
+                     || _pass "the checkout is removed when only siblings are busy"
+
+# Ordering is the whole design of this check. Stopping project services is exactly
+# what .worktreehook teardown is for, so scanning before teardown would refuse every
+# repository that does the right thing. The scan belongs after teardown, where the
+# invariant is "everything that should have stopped has stopped", and before Git
+# deletes any files.
+setup
+mkhook "$REPO" '#!/bin/sh
+[ "$1" = teardown ] && echo teardown-hook >> "$LLOG"
+exit 0'
+run "$REPO" wt live-order
+run "$REPO" wt-rm live-order
+rc_is 0 "the ordering fixture removes the worktree normally"
+eq "$(sed -n 1p "$LLOG")" "teardown-hook" "teardown runs before the process scan"
+[[ "$(sed -n 2p "$LLOG")" == *"-F"* ]] && _pass "the process scan runs after teardown" \
+                                        || _fail "the process scan runs after teardown"
+
+# Fail closed, like every other unverifiable state in this lifecycle: an unreadable
+# answer is not the same as an empty one.
+setup
+run "$REPO" wt no-lsof
+NOLSOF="$HOME/Code/Org/repo-no-lsof"
+# Simulating absence needs a stripped PATH, not a moved stub: lsof is really installed
+# on this machine, so hiding the stub just falls through to the real binary. herdr is
+# absent here too, which is a valid configuration and skips workspace shutdown
+# entirely — the process scan must still be reached.
+NOLSOFP=$(mkd)
+for b in env git mkdir; do ln -s "$(command -v $b)" "$NOLSOFP/$b"; done
+OUT="$(cd "$REPO" && source "$FUNCS" && export PATH="$NOLSOFP" && wt-rm no-lsof 2>&1)"; RC=$?
+rc_is 1 "a missing lsof aborts removal instead of silently skipping the scan"
+has "lsof is unavailable" "the abort names the missing tool"
+[[ -d "$NOLSOF" ]] && _pass "the checkout survives when processes cannot be detected" \
+                        || _fail "the checkout survives when processes cannot be detected"
+
+# Real lsof scanning every process always reports something — the running shell's own
+# cwd is in the answer. Nothing at all therefore means the scan failed, not that the
+# machine is idle, and treating it as "clean" would disable the guard silently.
+setup
+run "$REPO" wt lsof-empty
+EMPTY="$HOME/Code/Org/repo-lsof-empty"
+export MOCK_LSOF_SPEC=""
+run "$REPO" wt-rm lsof-empty
+rc_is 1 "an empty process listing fails closed rather than reading as idle"
+has "could not read the process list" "the empty listing is diagnosed as a failure"
+[[ -d "$EMPTY" ]] && _pass "the checkout survives an empty process listing" \
+                       || _fail "the checkout survives an empty process listing"
+
+# A cwd containing a newline would split into fragments that match no prefix — a
+# false negative, in the one direction this check must never fail. The p/c/f/n cycle
+# is what proves the parse is still aligned with what lsof actually emitted.
+setup
+run "$REPO" wt lsof-torn
+TORN="$HOME/Code/Org/repo-lsof-torn"
+export MOCK_LSOF_RAW='p1\nclaunchd\nn/\n'
+run "$REPO" wt-rm lsof-torn
+rc_is 1 "a broken lsof field cycle fails closed"
+has "could not read the process list" "the malformed listing is diagnosed"
+[[ -d "$TORN" ]] && _pass "the checkout survives a malformed process listing" \
+                      || _fail "the checkout survives a malformed process listing"
+
+# Every assertion above drives a fixture, which can only ever prove the parser agrees
+# with the harness. This one runs the real lsof against real processes, and is the only
+# thing that can catch the invocation and the parse drifting apart from what the binary
+# actually emits — the class of bug a stub is structurally blind to. Both directions are
+# asserted from one scan: the process inside must appear, and the one in the sibling
+# path that merely shares a prefix must not.
+setup
+run "$REPO" wt live-real
+REALWT="$HOME/Code/Org/repo-live-real"
+mkdir -p "$REALWT/deep" "${REALWT}-extra"
+( builtin cd "$REALWT/deep" && exec sleep 60 ) &!
+INSIDE=$!
+( builtin cd "${REALWT}-extra" && exec sleep 60 ) &!
+OUTSIDE=$!
+sleep 1
+OUT="$(builtin cd "$REPO" && source "$FUNCS" && PATH="${REALLSOF:h}:$PATH" \
+       _wt_live_processes "$REALWT" 2>&1)"; RC=$?
+kill $INSIDE $OUTSIDE 2>/dev/null
+rc_is 0 "the real lsof invocation is read successfully"
+has "$INSIDE" "real lsof reports a real process whose cwd is inside the checkout"
+hasnt "$OUTSIDE" "real lsof does not report a real process in the sibling path"
+
+# lsof renders a pathname, it does not report one: a backslash is printed as two
+# characters. Comparing $dest to that rendering verbatim silently matches nothing, and
+# the direction it fails in is a checkout removed while its occupant is still in it.
+# A backslash is the case a real checkout path can plausibly contain.
+setup
+BSDIR="$ROOTTMP/back\\slash-checkout"        # one real backslash
+BSRENDER="$ROOTTMP/back\\\\slash-checkout" # two, as lsof prints it
+mkdir -p "$BSDIR"
+export MOCK_LSOF_SPEC="$(lsof_spec 1 launchd / 4242 daemon "$BSRENDER")"
+OUT="$(builtin cd "$REPO" && source "$FUNCS" && _wt_live_processes "$BSDIR" 2>&1)"; RC=$?
+rc_is 0 "a backslash in the checkout path is read successfully"
+has "4242" "a checkout path containing a backslash is matched against lsof's rendering"
+
+# The rest of the rendering — \n, \t, caret notation — is not modelled, so a control
+# character in the checkout path cannot be compared at all. Fail closed rather than
+# compare a path against a rendering of it that will never be equal.
+setup
+CTLDIR="$ROOTTMP/ctrl"$'\n'"checkout"
+mkdir -p "$CTLDIR"
+export MOCK_LSOF_SPEC="$(lsof_spec 1 launchd / 4243 daemon "$ROOTTMP/ctrl\\ncheckout")"
+OUT="$(builtin cd "$REPO" && source "$FUNCS" && _wt_live_processes "$CTLDIR" 2>&1)"; RC=$?
+rc_is 1 "a control character in the checkout path fails closed"
+has "control character" "the refusal names why the comparison cannot be made"
+
+# lsof's rendering depends on the caller's locale: under a UTF-8 locale é is printed
+# verbatim, under LC_ALL=C the same directory comes back as caf\xc3\xa9. A comparison
+# that assumed either one would be right only for the environment it was written in, so
+# the locale is pinned and its rendering modelled. The fixture supplies the pinned form.
+setup
+U8DIR="$ROOTTMP/café-checkout"
+mkdir -p "$U8DIR"
+export MOCK_LSOF_SPEC="$(lsof_spec 1 launchd / 4244 daemon "$ROOTTMP/caf\\xc3\\xa9-checkout")"
+OUT="$(builtin cd "$REPO" && source "$FUNCS" && _wt_live_processes "$U8DIR" 2>&1)"; RC=$?
+rc_is 0 "a non-ASCII checkout path is read successfully"
+has "4244" "a non-ASCII checkout path is matched against the pinned rendering"
+
+# End to end, against the real binary, from both locales. The property under test is
+# that the answer does not depend on the caller's environment, so one locale cannot
+# establish it: under LC_ALL=C the binary escapes the UTF-8 bytes and under a UTF-8
+# locale it does not, and an implementation that simply inherited the caller's locale
+# would pass whichever of the two it happened to be written against.
+setup
+REALU8="$ROOTTMP/réal-çheckout"
+mkdir -p "$REALU8/deep"
+( builtin cd "$REALU8/deep" && exec sleep 90 ) &!
+U8PID=$!
+sleep 1
+for caller_locale in C en_US.UTF-8; do
+  OUT="$(builtin cd "$REPO" && source "$FUNCS" \
+         && LC_ALL="$caller_locale" PATH="${REALLSOF:h}:$PATH" \
+            _wt_live_processes "$REALU8" 2>&1)"; RC=$?
+  rc_is 0 "the real scan of a non-ASCII checkout is read successfully (LC_ALL=$caller_locale)"
+  has "$U8PID" "a real process in a non-ASCII checkout is found (LC_ALL=$caller_locale)"
+done
+kill $U8PID 2>/dev/null
+
+# A path that merely contains the two characters \ and n is an ordinary path, and must
+# not be mistaken for a record boundary by any parse.
+setup
+run "$REPO" wt lsof-literal
+LITERAL="$HOME/Code/Org/repo-lsof-literal"
+export MOCK_LSOF_SPEC="$(lsof_spec 55 daemon "/outside\\np99\\ncphantom\\nfcwd\\nn$LITERAL")"
+run "$REPO" wt-rm lsof-literal
+rc_is 0 "a rendered path outside the checkout forges no process inside it"
+hasnt "phantom" "the escaped text never becomes a record"
+[[ -d "$LITERAL" ]] && _fail "the checkout is removed when only a rendering names it" \
+                         || _pass "the checkout is removed when only a rendering names it"
+
+# The status that matters is the one belonging to the listing actually parsed. Reading
+# the listing in a second, unchecked invocation means a scan that failed *after*
+# emitting some of its records is indistinguishable from a clean checkout — the records
+# it never got to is exactly where the occupant would have been.
+setup
+run "$REPO" wt lsof-once
+ONCE="$HOME/Code/Org/repo-lsof-once"
+run "$REPO" wt-rm lsof-once
+rc_is 0 "the single-invocation fixture removes the worktree normally"
+eq "$(grep -c . "$LLOG")" "1" "the process list is read in exactly one invocation"
+
+# Prefix-shaped is not well-formed. A record whose pathname field is present but empty
+# satisfies "starts with n" and yields an empty cwd, which matches nothing — so a
+# process that IS in the checkout, whose path lsof could not resolve, reads as no
+# process at all. Same for a relative value: every cwd lsof reports is absolute, and
+# anything else means the field is not what it is being read as.
+setup
+run "$REPO" wt lsof-emptyname
+EMPTYNAME="$HOME/Code/Org/repo-lsof-emptyname"
+export MOCK_LSOF_SPEC="$(lsof_spec 1 launchd / 4242 daemon "")"
+run "$REPO" wt-rm lsof-emptyname
+rc_is 1 "a record with an empty pathname field fails closed"
+has "could not read the process list" "the empty pathname is diagnosed as unreadable"
+[[ -d "$EMPTYNAME" ]] && _pass "the checkout survives an empty pathname field" \
+                           || _fail "the checkout survives an empty pathname field"
+
+setup
+run "$REPO" wt lsof-relname
+RELNAME="$HOME/Code/Org/repo-lsof-relname"
+export MOCK_LSOF_SPEC="$(lsof_spec 1 launchd / 4242 daemon "not/absolute")"
+run "$REPO" wt-rm lsof-relname
+rc_is 1 "a record with a relative pathname fails closed"
+[[ -d "$RELNAME" ]] && _pass "the checkout survives a relative pathname field" \
+                         || _fail "the checkout survives a relative pathname field"
+
+# A pid is a number. Anything else in that field means the record is not the record it
+# is being read as, and reading the rest of it would be guessing.
+setup
+run "$REPO" wt lsof-badpid
+BADPID="$HOME/Code/Org/repo-lsof-badpid"
+export MOCK_LSOF_SPEC="$(lsof_spec 1 launchd / not-a-pid daemon /)"
+run "$REPO" wt-rm lsof-badpid
+rc_is 1 "a record with a non-numeric pid fails closed"
+has "could not read the process list" "the non-numeric pid is diagnosed as unreadable"
+[[ -d "$BADPID" ]] && _pass "the checkout survives a non-numeric pid" \
+                        || _fail "the checkout survives a non-numeric pid"
+
+# -d cwd is what makes every descriptor in the answer a cwd. If one is not, the request
+# and the reply have diverged and nothing below can be trusted to mean what it says.
+setup
+run "$REPO" wt lsof-notcwd
+NOTCWD="$HOME/Code/Org/repo-lsof-notcwd"
+export MOCK_LSOF_RAW='p1\000claunchd\000\nfmem\000n/\000\n'
+run "$REPO" wt-rm lsof-notcwd
+rc_is 1 "a descriptor other than cwd fails closed"
+[[ -d "$NOTCWD" ]] && _pass "the checkout survives an unexpected descriptor type" \
+                        || _fail "the checkout survives an unexpected descriptor type"
+
+# lsof exits nonzero both when it matches nothing and when it fails, but this
+# invocation scans every process rather than a path, so nonzero can only be failure.
+# Records in hand do not redeem it: a listing that stopped early is not a short listing.
+setup
+run "$REPO" wt lsof-rc
+LSOFRC="$HOME/Code/Org/repo-lsof-rc"
+export MOCK_LSOF_SPEC="$(lsof_spec 1 launchd / 4321 halfway-daemon "$LSOFRC")" MOCK_LSOF_RC=1
+run "$REPO" wt-rm lsof-rc
+rc_is 1 "a nonzero lsof exit fails closed even when it produced well-formed records"
+has "could not read the process list" "the failed scan is diagnosed"
+hasnt "halfway-daemon" "records from a failed scan are not reported as findings"
+[[ -d "$LSOFRC" ]] && _pass "the checkout survives a failed process scan" \
+                        || _fail "the checkout survives a failed process scan"
+
+# --- squash-merged branches -------------------------------------------------
+#
+# `git branch -d` tests ancestry, not content. A squash-merge rewrites the branch
+# into one new commit on the base, so none of the branch's own commits are
+# ancestors of it and -d refuses — even though every line of the work is already
+# in. GitLab squash-merges by default, so this is the normal end of an MR here,
+# not an edge case. wt-rm asks the stronger question instead: does merging this
+# branch into the base still change anything? If not, the branch is spent.
+
+setup
+run "$REPO" wt sq1
+print -r -- "sq1" > "$HOME/Code/Org/repo-sq1/sq1.txt"
+git -C "$HOME/Code/Org/repo-sq1" add -A
+git -C "$HOME/Code/Org/repo-sq1" commit -q -m "work 1"
+git -C "$HOME/Code/Org/repo-sq1" commit -q --allow-empty -m "work 2"
+git -C "$REPO" merge --squash -q sq1 >/dev/null 2>&1
+git -C "$REPO" commit -q -m "squash: sq1"
+run "$REPO" wt-rm sq1
+rc_is 0 "squash-merged worktree is removed"
+hasnt "not fully merged" "no unmerged warning when the content is all in the base"
+run "$REPO" git branch --list sq1
+eq "$OUT" "" "squash-merged branch is deleted (ancestry says no, content says yes)"
+
+# The naive `git diff <base> <branch>` test passes above and fails here: once any
+# other MR lands, the base tree no longer equals the branch tree. Detection must
+# survive the base moving on, or it silently stops working after the first merge.
+setup
+run "$REPO" wt sq2
+print -r -- "sq2" > "$HOME/Code/Org/repo-sq2/sq2.txt"
+git -C "$HOME/Code/Org/repo-sq2" add -A
+git -C "$HOME/Code/Org/repo-sq2" commit -q -m "work"
+git -C "$REPO" merge --squash -q sq2 >/dev/null 2>&1
+git -C "$REPO" commit -q -m "squash: sq2"
+git -C "$REPO" commit -q --allow-empty -m "a later, unrelated MR"
+run "$REPO" wt-rm sq2
+run "$REPO" git branch --list sq2
+eq "$OUT" "" "squash-merge is still detected after the base branch advances"
+
+# Safety: real unmerged content must still be kept. The existing empty-commit case
+# covers ancestry; this one proves the content test itself does not false-positive.
+setup
+run "$REPO" wt sq3
+print -r -- "unmerged work" > "$HOME/Code/Org/repo-sq3/sq3.txt"
+git -C "$HOME/Code/Org/repo-sq3" add -A
+git -C "$HOME/Code/Org/repo-sq3" commit -q -m "genuinely unmerged"
+run "$REPO" wt-rm sq3
+has "not fully merged" "a branch with real unmerged content is kept"
+run "$REPO" git branch --list sq3
+[[ -n "$OUT" ]] && _pass "the kept branch still exists" \
+                || _fail "the kept branch still exists"
+
+# Partly merged: one commit squashed in, another added after. Content still
+# differs, so this must be kept too — the check is all-or-nothing, not "most of it".
+setup
+run "$REPO" wt sq4
+print -r -- "first" > "$HOME/Code/Org/repo-sq4/a.txt"
+git -C "$HOME/Code/Org/repo-sq4" add -A
+git -C "$HOME/Code/Org/repo-sq4" commit -q -m "first"
+git -C "$REPO" merge --squash -q sq4 >/dev/null 2>&1
+git -C "$REPO" commit -q -m "squash: sq4 (partial)"
+print -r -- "second" > "$HOME/Code/Org/repo-sq4/b.txt"
+git -C "$HOME/Code/Org/repo-sq4" add -A
+git -C "$HOME/Code/Org/repo-sq4" commit -q -m "added after the merge"
+run "$REPO" wt-rm sq4
+has "not fully merged" "a partly-merged branch is kept"
 
 export HOME="$REAL_HOME"
 print -r -- ""

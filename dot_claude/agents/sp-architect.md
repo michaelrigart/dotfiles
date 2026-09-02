@@ -1,4 +1,5 @@
 ---
+name: sp-architect
 description: Architecture, design, and final whole-branch review — the tasks worth the most capable model. Use for design exploration, cross-cutting refactors, and the last review before a branch merges.
 model: opus
 effort: high

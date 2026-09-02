@@ -30,7 +30,10 @@ is exactly the case where your reasoning is coherent *and wrong*.
 
 A dispatch carries:
 
-- the artifact — a path, or the diff's base and head
+- the artifact — **inline, not as a path**. A path makes the reviewer go and open it,
+  and every search and read is a full-context model step. Measured over 69 real
+  reviews: ~16 steps and ~2.0M tokens each, almost all of it investigation. Pass the
+  diff with `--diff <range>` and it arrives in the message.
 - the constraints it must satisfy
 - alternatives already rejected, **named without their reasons**: naming them stops the
   reviewer re-raising settled ground, withholding the reasons keeps its evaluation
@@ -40,8 +43,57 @@ A dispatch carries:
 ## Dispatching
 
 ```
-NONCE=$(xreview dispatch <body-file>)
+NONCE=$(xreview dispatch --diff <base>..<head> --expect <model>/<effort> <body-file>)
 xreview collect "$NONCE" [budget-secs]
+```
+
+**Check the tier before spending the turn.** `--expect` reads the model and reasoning
+effort the Codex pane is actually running — from the last `turn_context` in its rollout,
+so a mid-session `/model` change is picked up — and refuses the dispatch if it does not
+match, naming both sides. A dispatch is one shot: once queued the turn is spent at
+whatever tier answered it, so the check has to come first. It fails open, because an
+unreadable tier is not evidence of a mismatch.
+
+`xreview tier` reports the current setting on its own, and `xreview receipts --tiers`
+counts what past reviews actually ran at. Check it when a branch has taken several
+rounds: `--expect` verifies the pane against the tier asked for, so it confirms a lazy
+recommendation just as readily as a considered one. A long run of a single tier in that
+summary is the signal that nobody is choosing any more.
+
+Changing it is `/models` in the Codex pane — plural, and a picker rather than a command
+taking the model as an argument. Relay that, not "change the model": there is no
+`/model <name>` form to find. It cannot be driven reliably from outside either, which is
+why this is a refusal for Michael to act on rather than something the dispatch fixes
+itself — blind list navigation would silently select the wrong model and then pass its
+own check.
+
+Michael set this table on 2026-09-01. Follow it; do not re-derive a tier per dispatch.
+Judgement per call is what produced the history below — nobody chose the top tier each
+time, they just never chose at all, and the top tier is never *wrong*.
+
+| Checkpoint | Tier |
+|---|---|
+| Spec sign-off, plan review, final whole-branch review | `gpt-5.6-sol/xhigh` |
+| Everything else, narrow verification rounds included | `gpt-5.6-terra/high` |
+
+Plan review sits in the top row deliberately: a plan is an architecture question — will
+this sequence actually work — not a narrow check.
+
+**One deviation is licensed, and only this one.** If a verification round at
+`terra/high` re-raises a finding you have already addressed, re-run that round once at
+`gpt-5.6-sol/xhigh` before escalating to Michael. A disagreement a stronger reviewer
+would have settled should not cost his attention, and this is the case where paying for
+the better model is cheaper than the alternative. If it re-raises the finding at
+`sol/xhigh` too, that is a real disagreement: take it to him.
+
+Everything else follows the table. Do not step up because a change *feels* important —
+that instinct is exactly the 168-turn failure, and it always argues for the top row.
+
+Measured on 2026-09-01, three long-running review threads read `gpt-5.6-sol/xhigh` on
+every turn — 168 consecutive turns on one of them. The top tier was never stepped down
+for a narrow round, because nothing in the workflow said out loud what it was set to.
+
+```
 ```
 
 `xreview` wraps outbound packets in `<cross-review-request>` and returns the reviewer's
@@ -92,11 +144,19 @@ Escalate to Michael when:
   not a missed fix
 - a finding needs design judgement or a trade-off
 - you cannot verify a claim
-- `xreview` refuses the round (capped at 3; `XREVIEW_MAX_ROUNDS` overrides)
+- `xreview` refuses the round (capped at 10; `XREVIEW_MAX_ROUNDS` overrides)
 
 Converged means the reviewer returns no actionable findings — not that it stopped
 objecting, and not that you stopped asking. Run `xreview round --reset` when moving on
-to the next checkpoint.
+to the next checkpoint — it drops the cached thread as well as the counter.
+
+**Rotate the thread between checkpoints.** Every dispatch queues into one cached thread
+per repository, so round N reaches a reviewer already holding rounds 1..N-1: its own
+earlier findings, and every artifact sent before. That is the opposite of the cold ask
+this skill is built on, and it degrades silently — the reviewer keeps answering, just
+with less and less independence. One chezmoi thread absorbed 37 reviews before anyone
+noticed. Start a fresh Codex session for the checkout at each checkpoint; `resolve_thread`
+picks up the new pane automatically. `xreview` warns once a thread has answered eight.
 
 ## Consultation is not review
 
@@ -116,8 +176,11 @@ Mark which words are the reviewer's. Do not blend its findings into your own pro
 is the one hop no mechanism covers.
 
 Ping when the **artifact** is done, not at every checkpoint. Interrupt early only when
-something genuinely needs Michael's judgement. `xreview notify <msg>` raises a desktop
-notification from the shell, so the ping does not depend on remembering to send one.
+something genuinely needs Michael's judgement. Herdr surfaces agent state itself, so
+there is nothing to send by hand — but both signals it has, the popup and the completion
+sound, are scoped to *background* activity, and neither leaves the machine. An agent
+finishing in whatever he is looking at may raise nothing at all, and none of it reaches
+him in another application. Write the ping to be worth reading late.
 
 ## What is enforced rather than trusted
 
