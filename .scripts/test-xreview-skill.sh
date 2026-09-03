@@ -120,12 +120,18 @@ if [ -z "$gated" ]; then
 else
   while IFS= read -r c; do
     [ -n "$c" ] || continue
-    pat="$(printf '%s' "$c" | tr ' ' '*')"
-    if strip_comments "$GUARD" | grep -qF -- "$pat"; then
+    # The words in order, with whatever the guard puts between them. Pinning one
+    # spelling asserts the implementation rather than the gate: this check used to
+    # require the literal glob `glab*mr*create`, and so went red when that glob was
+    # replaced — correctly — by a command-position regex that gates strictly more
+    # precisely. Whether the gate actually fires is test-xreview-guard.sh's job; this
+    # one only catches the skill naming a verb the guard stopped looking for at all.
+    pat="$(printf '%s' "$c" | sed 's/ /.*/g')"
+    if strip_comments "$GUARD" | grep -qE -- "$pat"; then
       _pass "SKILL.md says '$c' is gated, and the guard matches it"
     else
       _fail "SKILL.md says '$c' is gated, and the guard matches it" \
-            "no '$pat' pattern in the guard — the skill promises a gate the guard no longer applies"
+            "no '$pat' match in the guard — the skill promises a gate the guard no longer applies"
     fi
   done <<< "$gated"
 fi

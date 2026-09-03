@@ -33,14 +33,43 @@ payload=$(cat)
 [ -n "$payload" ] || allow
 command -v jq >/dev/null 2>&1 || allow
 
+# Fast path. This hook fires on EVERY Bash call, so the common case must cost no
+# subprocess at all — a shell-builtin substring test on the raw payload, before any
+# JSON parsing. `create` is the one word both gated verbs must contain, so nothing
+# real can slip past it, and almost nothing else reaches the check below.
+case "$payload" in
+  *create*) ;;
+  *) allow ;;
+esac
+
 cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command // empty' 2>/dev/null) || allow
 [ -n "$cmd" ] || allow
 
-# One shape only: `glab mr create` or `gh pr create`, in that word order.
-case "$cmd" in
-  *glab*mr*create*|*gh*pr*create*) ;;
-  *) allow ;;
-esac
+# The bypass has to be readable from the COMMAND, not just from this process's
+# environment. A model cannot export a variable into a hook that runs beside it; the
+# only place it can write one is the command line, which is also the form the deny
+# message names. Recorded 2026-09-02: `XREVIEW_GUARD=off glab mr create ...`, sent on
+# an explicit instruction to merge without a review, denied anyway because the env
+# assignment applied to `glab` and never reached here. Matched anywhere in the string
+# so the trailing-comment form works too, exactly as WT_GUARD=off does.
+case "$cmd" in *XREVIEW_GUARD=off*) allow ;; esac
+
+# One shape only: `glab mr create` or `gh pr create`, and it must sit in COMMAND
+# POSITION. The first version of this matched `*glab*mr*create*|*gh*pr*create*` against
+# the whole command, which reads "gh" out of "outright", "pr" out of "proposed" and
+# "create" out of "recreate" — so a Basecamp comment describing the branch, an MR body
+# written to the scratchpad, or `rg 'gh pr create' docs/` was denied with a message
+# about cross-review. Nine such denies against five real ones in the recorded
+# transcripts (measured 2026-09-03). Same fix, same regex shape, as rule 2 of
+# git-forge-guard.sh; see the note there.
+#
+# `^` anchors per LINE under grep, which is deliberate: the real-world shape writes the
+# body first and puts the verb on its own line after an assignment. It shares the known
+# limit of every matcher here — a heredoc body whose line BEGINS with the verb still
+# matches, and a command assembled from a variable still does not. This is a guard, not
+# a sandbox.
+verb_re='(^|[;&|(])[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*(sudo[[:space:]]+)?(glab[[:space:]]+mr[[:space:]]+create|gh[[:space:]]+pr[[:space:]]+create)([[:space:]]|$)'
+printf '%s' "$cmd" | grep -Eq "$verb_re" || allow
 
 root=$(git rev-parse --show-toplevel 2>/dev/null) || allow
 [ -n "$root" ] || allow
@@ -63,4 +92,7 @@ for merge. Run the cross-review skill, or dispatch directly:
     xreview dispatch <body-file>   # then: xreview collect <nonce>
 
 Receipts live at $receipts.
-Set XREVIEW_GUARD=off to bypass deliberately."
+
+If this branch genuinely should go up without one, re-run with XREVIEW_GUARD=off in
+the command — an environment assignment on the command line is read, a trailing
+\`# XREVIEW_GUARD=off\` works too."

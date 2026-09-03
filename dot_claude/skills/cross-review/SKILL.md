@@ -205,3 +205,11 @@ The guards are deliberately narrow — local merges, pushes, forge web UIs and o
 fail open, and `XREVIEW_GUARD=off` bypasses it. A guard that never fires spuriously is
 worth more than a broad one that gets switched off. `xreview receipts` lists what is on
 record.
+
+**Skipping the review is Michael's call to make, and it has to still work.** Put the
+bypass in the command — `XREVIEW_GUARD=off glab mr create …` — because that is the only
+place a model can set it; the hook runs beside the command, not inside it. Say in the MR
+description that it went up without a cross-review and why. The pre-merge guard only ever
+looks at `glab mr create` / `gh pr create` in command position, so writing the Basecamp
+card, the comment and the MR body is never gated — if one of those is refused, it is a
+bug in the guard, not a checkpoint you missed.
