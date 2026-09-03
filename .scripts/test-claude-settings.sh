@@ -35,10 +35,14 @@ EXP_DENY='["Read(~/.ssh/**)","Edit(~/.ssh/**)",
 # rule is absolute (a PreToolUse hook returning allow loses to it — measured 2026-08-25).
 # The write half is gated in git-forge-guard.sh rule 3, and test-git-forge-guard.sh pins
 # both sides of that. See the header comment in the guard.
-EXP_ASK='["Read(~/.kube/config)","Edit(~/.kube/config)",
- "Edit(**/Dockerfile*)","Edit(**/docker-compose*.yml)",
- "Edit(**/.github/workflows/**)","Edit(**/.gitlab-ci.yml)",
- "Edit(**/.gitlab/ci/**)","Edit(**/terraform/**)","Edit(**/ansible/**)",
+# Every Edit() rule is DELIBERATELY ABSENT — do not add one back. The infra gates
+# (~/.kube/config, Dockerfile, docker-compose, GitHub/GitLab CI, terraform/, ansible/)
+# prompted on every edit in every repo, this one included, and an ask rule is absolute:
+# it cannot be narrowed from the hook side, because a PreToolUse hook returning allow
+# loses to it. Removed 2026-09-03 in add55fa; the auto-mode classifier judges these now
+# and the deny array still blocks the credential files outright. Section D pins their
+# absence, for the same reason the note above pins `Bash(glab api *)`.
+EXP_ASK='["Read(~/.kube/config)",
  "Bash(glab mr merge*)","Bash(sudo *)",
  "Bash(git push --force*)","Bash(git push -f *)","Bash(git reset --hard*)",
  "Bash(git clean -f*)","Bash(git branch -D*)","Bash(git filter-branch*)",
@@ -94,9 +98,17 @@ echo "C. layer 1 — no Write()/Glob() rules (2.1.210 warns on these)"
 jq_is '[.permissions.deny[], .permissions.ask[] | select(test("^(Write|Glob|NotebookEdit)\\("))] | length' \
       0 "no Write/Glob/NotebookEdit rules"
 
-echo "D. layer 1 — GitLab CI coverage"
-jq_is '.permissions.ask | index("Edit(**/.gitlab-ci.yml)") != null' true "asks on .gitlab-ci.yml"
-jq_is '.permissions.ask | index("Edit(**/.gitlab/ci/**)") != null' true "asks on .gitlab/ci/**"
+echo "D. layer 1 — the infra Edit() gates stay gone"
+# These two used to assert the opposite. They were the loudest of the rules add55fa
+# removed, so they are the ones most likely to be re-added by someone reasoning from
+# "CI config is dangerous" without knowing what the prompt volume was. An ask rule is
+# absolute; the danger these named is gated by the deny array and the auto-mode
+# classifier, not by prompting on every edit.
+for p in '~/.kube/config' '**/Dockerfile*' '**/docker-compose*.yml' \
+         '**/.github/workflows/**' '**/.gitlab-ci.yml' '**/.gitlab/ci/**' \
+         '**/terraform/**' '**/ansible/**'; do
+  jq_is ".permissions.ask | index(\"Edit($p)\") == null" true "no Edit() ask rule for $p"
+done
 
 echo "E. carry-through keys survive"
 emit '{"enabledPlugins":{"x@y":true},"extraKnownMarketplaces":{"m":{}},"model":"opus[1m]","effortLevel":"xhigh","agentPushNotifEnabled":true,"inputNeededNotifEnabled":true,"autoContinueAtUsageLimit":true}'
