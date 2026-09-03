@@ -90,11 +90,12 @@ printf '%s' "$input" | jq \
           "Bash(basecamp auth token*)"
         ],
         "ask": [
-          "Read(~/.kube/config)",        "Edit(~/.kube/config)",
-          "Edit(**/Dockerfile*)",        "Edit(**/docker-compose*.yml)",
-          "Edit(**/.github/workflows/**)",
-          "Edit(**/.gitlab-ci.yml)",     "Edit(**/.gitlab/ci/**)",
-          "Edit(**/terraform/**)",       "Edit(**/ansible/**)",
+          "Read(~/.kube/config)",
+          # NOTE: no Edit() rules here on purpose. The infra gates (~/.kube/config,
+          # Dockerfile, docker-compose, GitHub/GitLab CI, terraform/, ansible/) prompted
+          # on every edit in every repo, mine included, and an ask rule is absolute.
+          # Removed 2026-09-03 — the auto-mode classifier judges these now, and the deny
+          # list above still blocks the credential files outright.
           # NOTE: no "Bash(glab api *)" here on purpose. It gated the mechanism, not
           # the danger — 156 fires in one fortnight, 2 real rejections, every sampled
           # call a read-only GET. An ask rule is absolute (a hook allow loses to it),
