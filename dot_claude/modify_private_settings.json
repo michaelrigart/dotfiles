@@ -49,7 +49,20 @@ printf '%s' "$input" | jq \
       "env": {
         "EDITOR": "nvim",
         "SSH_AUTH_SOCK": $agent_socket,
-        "PATH": $tool_path
+        "PATH": $tool_path,
+        # Go verifies TLS chains through Security.framework, which reaches the
+        # com.apple.trustd.agent Mach service — blocked by the Bash sandbox. Every Go CLI
+        # (glab, gh, tsh, terraform) then dies with
+        # `tls: failed to verify certificate: x509: OSStatus -26276`, which reads like a
+        # rejected certificate but is the verifier being unreachable: the chain is never
+        # evaluated. Pointing SSL_CERT_FILE at the Apple system root bundle switches Go
+        # (and OpenSSL) to file-based verification, so no trustd lookup happens.
+        # Preferred over sandbox.enableWeakerNetworkIsolation, which fixes the same
+        # failure by opening trustd — an exfiltration path — and over excludedCommands,
+        # which would drop glab out of the sandbox altogether. Trade-off: file
+        # verification sees only the system roots, not keychain-added private CAs;
+        # nothing here needs one.
+        "SSL_CERT_FILE": "/etc/ssl/cert.pem"
       },
       # No agent attribution in git history or MR/PR descriptions. `attribution`
       # supersedes the deprecated `includeCoAuthoredBy` and adds `sessionUrl`, which is

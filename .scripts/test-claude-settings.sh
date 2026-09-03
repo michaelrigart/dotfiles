@@ -166,6 +166,21 @@ jq_is '.env.PATH | split(":")[0]' "$HOME/.local/bin" "Claude resolves XDG execut
 jq_is ".env.PATH | split(\":\") | index(\"$HOME/.local/share/mise/shims\") != null" true \
       "Claude PATH includes mise shims"
 jq_is '.env.PATH | contains("/.codex/tmp/")' false "Claude PATH contains no session-local agent path"
+# Go CLIs (glab, gh, tsh, terraform) cannot reach com.apple.trustd.agent from inside the
+# sandbox, so chain verification never runs and every HTTPS call dies with
+# `x509: OSStatus -26276`. SSL_CERT_FILE moves them onto file-based roots instead. Pinned
+# because losing the key silently returns glab to "needs the sandbox off".
+jq_is '.env.SSL_CERT_FILE' /etc/ssl/cert.pem \
+      "Go TLS verification reads a root bundle instead of trustd"
+if [ -s /etc/ssl/cert.pem ]; then
+  _pass "the pinned root bundle exists on this machine"
+else
+  _fail "the pinned root bundle exists on this machine" "/etc/ssl/cert.pem missing or empty"
+fi
+# The weaker-isolation escape hatch fixes the same failure by opening trustd. Staying off
+# is the point of setting SSL_CERT_FILE.
+jq_is '.sandbox | has("enableWeakerNetworkIsolation")' false \
+      "trustd stays closed — no enableWeakerNetworkIsolation"
 jq_is ".sandbox.credentials.files
        | map(.path)
        | sort == ($EXP_CREDENTIALS | sort)" true \
