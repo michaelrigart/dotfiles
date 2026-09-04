@@ -8,7 +8,7 @@ macOS dotfiles managed with chezmoi, featuring XDG compliance, 1Password secret 
 
 **Owner:** Michaël Rigart
 **Platform:** macOS (Apple Silicon primary)
-**Management:** chezmoi 2.40.0+
+**Management:** chezmoi 2.67.0+
 **Secrets:** 1Password CLI integration
 
 ---
@@ -67,8 +67,8 @@ macOS dotfiles managed with chezmoi, featuring XDG compliance, 1Password secret 
 │   ├── provision.sh          # Full bootstrap (rarely re-run)
 │   ├── configure.sh          # macOS settings (safe to re-run)
 │   ├── reconcile-agents.sh   # Claude/Codex marketplaces + plugins (idempotent)
-│   ├── test-reconcile-agents.sh  # mocked test for reconcile-agents.sh
-│   └── test-wt-functions.sh  # mocked test for dev/wt/wt-rm in dot_config/zsh/functions
+│   ├── preflight-ssh-agent.sh
+│   └── test-*.sh             # ~20 suites — see "Testing" below before running any
 ├── dot_config/               # → ~/.config/
 │   ├── bundler/config.tmpl   # ⚠️  Contains 1Password secrets
 │   ├── git/                  # Git config, aliases, templates
@@ -78,7 +78,7 @@ macOS dotfiles managed with chezmoi, featuring XDG compliance, 1Password secret 
 ├── private_dot_ssh/          # ⚠️  SSH key templates from 1Password
 ├── .chezmoi.toml.tmpl       # Chezmoi's own config; MUST stay at the source root
 ├── .chezmoiignore           # Excludes from chezmoi apply
-├── .chezmoiversion          # Minimum version: 2.40.0
+├── .chezmoiversion          # Minimum version: 2.67.0
 ├── .gitignore               # Protects against committing secrets
 ├── README.md                # [IGNORED] Human documentation
 └── CLAUDE.md                # [IGNORED] This file
@@ -89,6 +89,41 @@ macOS dotfiles managed with chezmoi, featuring XDG compliance, 1Password secret 
 - `⚠️` = Contains secrets via 1Password templates
 
 ---
+
+## Testing
+
+`.scripts/test-*.sh` do **not** all run the same way, and getting it wrong produces
+convincing fake failures. Control for interpreter and sandbox mode before calling
+anything a regression — comparing a sandboxed run against an unsandboxed one once
+produced a believable "18-test regression" that was entirely an artefact.
+
+| Suite | Interpreter | Sandbox |
+|---|---|---|
+| `test-wt-functions.sh` | **zsh** — bash reports bogus syntax errors (it stubs zsh builtins) | either |
+| `test-reconcile-agents.sh` | bash | **unsandboxed** — writes a temp XDG config dir; sandboxed it reports ~18 false failures |
+| `test-ssh-credential-inventory.sh` | bash | **unsandboxed** — the `Read(~/.ssh/**)` deny blocks enumeration; it correctly exits 2 (INCONCLUSIVE) rather than green |
+| `test-codex-config.sh` | bash | either — drives the `modify_` **template** via `chezmoi execute-template --with-stdin --file`; without `--with-stdin` every case dies on "map has no entry for key stdin". The empty-input fixture is `''`, not `'{}'` — that file is TOML, not JSON |
+| `test-git-forge-guard.sh` | bash | either — builds git fixtures under `$TMPDIR`, writable when sandboxed |
+| `test-claude-settings.sh`, `test-ssh-sandbox-proxy.sh`, `test-git-signing-config.sh`, `test-alfred-relay.sh`, `test-path-resolution-guard.sh` | bash | either (fully mocked) |
+| `test-live-agent-auth.sh`, `test-live-agent-signing.sh`, `test-live-credential-boundary.sh` | bash | **fresh session after `chezmoi apply`, and SANDBOXED** |
+
+**Never run the live suites with the sandbox disabled.** They measure the sandbox, so
+disabling it inverts the result: `test-live-credential-boundary.sh` then reports every
+private key readable and exits 12. That is the suite working, not a regression.
+
+**Never invoke them with brace expansion.** `bash .scripts/test-live-{a,b}.sh` expands to
+`bash a.sh b.sh` — only `a.sh` runs, `b.sh` becomes an ignored `$1`, and the skipped suite
+prints nothing, so the run looks like a clean pass. Use a loop:
+
+```bash
+for f in .scripts/test-live-*.sh; do bash "$f"; done
+```
+
+(`test-live-agent-auth.sh` is the one that genuinely takes an argument — the repo path.)
+
+**Report totals as passed/total, never "N green".** A handoff once claimed "324 assertions
+green" when it was 321 green / 3 red — 324 was the *total*. The three red were in
+`test-wt-functions.sh`, the one suite needing zsh, which a bash run hides.
 
 ## Common Operations
 
