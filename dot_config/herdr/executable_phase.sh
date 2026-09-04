@@ -153,11 +153,16 @@ derive() { # derive <checkout_path> <repo_root> <mr_table>
     esac
   fi
 
-  # No MR to go on: content already contained in the base is done regardless.
-  if git -C "$path" merge-base --is-ancestor HEAD "$base" 2>/dev/null; then
-    printf 'merged %s\n' "$ICON_MERGE"; return 0
-  fi
-  echo none
+  # Nothing above matched: no local work, and no MR saying anyone else has it. That is still
+  # yours, so it reads as active.
+  #
+  # Emphatically NOT inferred here: "HEAD is contained in the base, therefore merged". A
+  # worktree created minutes ago has no commits of its own, which makes it contained in the
+  # base too — so that test marks every new worktree as merged and invites deleting work that
+  # was never done. It also cannot catch what it was meant to: a squash merge rewrites the
+  # commits, so a squash-merged branch is never an ancestor either. Only a merged MR is
+  # evidence that something landed.
+  printf 'active %s\n' "$ICON_BRANCH"
 }
 
 # Herdr keeps a token until told otherwise, so the three unused ones are cleared on every

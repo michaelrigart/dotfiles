@@ -79,6 +79,10 @@ mkwt review   feature/review   1
 mkwt draft    feature/draft    1
 mkwt merged   feature/merged   1
 mkwt nomr     feature/nomr     1
+# Branched from main and not committed to yet. Zero commits ahead of the base and HEAD is an
+# ancestor of it — arithmetically identical to a fully merged branch, so anything inferring
+# "merged" from containment alone marks every worktree the day it is created.
+q git -C "$REPO" worktree add -b feature/fresh "$T/repo-fresh" main
 echo scratch >> "$T/repo-dirty/f"          # the one uncommitted change in the fixture
 
 # Rewritten only now that every push is done: the script never fetches, it reads the
@@ -113,7 +117,8 @@ cat > "$WSJSON" <<J
  {"workspace_id":"w4","label":"review","worktree":{"checkout_path":"$T/repo-review","is_linked_worktree":true,"repo_root":"$REPO"}},
  {"workspace_id":"w5","label":"draft","worktree":{"checkout_path":"$T/repo-draft","is_linked_worktree":true,"repo_root":"$REPO"}},
  {"workspace_id":"w6","label":"merged","worktree":{"checkout_path":"$T/repo-merged","is_linked_worktree":true,"repo_root":"$REPO"}},
- {"workspace_id":"w7","label":"nomr","worktree":{"checkout_path":"$T/repo-nomr","is_linked_worktree":true,"repo_root":"$REPO"}}
+ {"workspace_id":"w7","label":"nomr","worktree":{"checkout_path":"$T/repo-nomr","is_linked_worktree":true,"repo_root":"$REPO"}},
+ {"workspace_id":"w8","label":"fresh","worktree":{"checkout_path":"$T/repo-fresh","is_linked_worktree":true,"repo_root":"$REPO"}}
 ]}}
 J
 
@@ -161,12 +166,16 @@ case "$(report_for w5)" in *"--token active=$ICON_DRAFT"*) _pass "open draft MR 
 case "$(report_for w6)" in *"--token merged=$ICON_MERGE !12"*) _pass "merged MR -> merged, carries !12";;
   *) _fail "merged MR -> merged, carries !12 (got: $(report_for w6))";; esac
 
-# Clean, pushed, no MR is the "nothing to say" case: every token cleared, none set.
-NOMR="$(report_for w7)"
-case "$NOMR" in *"--token "*) _fail "clean branch with no MR sets no token (got: $NOMR)";;
-  *) _pass "clean branch with no MR sets no token";; esac
-case "$NOMR" in *"--clear-token active"*) _pass "clean branch with no MR clears active";;
-  *) _fail "clean branch with no MR clears active";; esac
+# Pushed with no MR is still yours: nobody is waiting on it and nothing has landed.
+case "$(report_for w7)" in *"--token active=$ICON_BRANCH"*) _pass "pushed branch with no MR -> active";;
+  *) _fail "pushed branch with no MR -> active (got: $(report_for w7))";; esac
+
+# The regression: a worktree created moments ago has no commits, so every containment test
+# against the base is trivially true. Only a merged MR is evidence that work actually landed.
+case "$(report_for w8)" in *"--token merged"*) _fail "a fresh worktree is not reported as merged (got: $(report_for w8))";;
+  *) _pass "a fresh worktree is not reported as merged";; esac
+case "$(report_for w8)" in *"--token active=$ICON_BRANCH"*) _pass "a fresh worktree -> active";;
+  *) _fail "a fresh worktree -> active (got: $(report_for w8))";; esac
 
 # The main checkout is dirty in this fixture (worktrees leave no trace, but real ones do);
 # badging it would mark every repo permanently active.
@@ -183,7 +192,7 @@ check "$BADSRC" "$TOTAL" "all $TOTAL reports use --source herdr-phase"
 # Herdr keeps a token until told otherwise, so the three unused tokens must be cleared on
 # every report or a space that changes phase renders two icons at once.
 missing=0
-for w in w2 w3 w4 w5 w6 w7; do
+for w in w2 w3 w4 w5 w6 w7 w8; do
   line="$(report_for $w)"
   set_count=$(printf '%s\n' "$line" | grep -o -- "--token " | wc -l | tr -d ' ')
   clear_count=$(printf '%s\n' "$line" | grep -o -- "--clear-token " | wc -l | tr -d ' ')
@@ -244,10 +253,12 @@ run refresh
 check "$(grep -c '^glab ' "$CALLS")" "0" "no glab call for a non-GitLab remote"
 case "$(report_for w2)" in *"--token active=$ICON_BRANCH"*) _pass "git-derived phases still reported";;
   *) _fail "git-derived phases still reported (got: $(report_for w2))";; esac
-# feature/review has an open MR upstream, but without GitLab the script cannot know that;
-# it is clean and pushed, so it must fall through to saying nothing rather than guessing.
-case "$(report_for w4)" in *"--token "*) _fail "no MR state means no review badge";;
+# feature/review has an open MR upstream, but without GitLab the script cannot know that.
+case "$(report_for w4)" in *"--token review="*) _fail "no MR state means no review badge";;
   *) _pass "no MR state means no review badge";; esac
+# And with no MR data nothing can be shown as merged, however contained it looks.
+case "$(report_for w6)" in *"--token merged"*) _fail "no MR state means nothing is called merged";;
+  *) _pass "no MR state means nothing is called merged";; esac
 q git -C "$REPO" remote set-url origin git@gitlab.com:test/proj.git
 
 echo
