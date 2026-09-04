@@ -85,9 +85,18 @@ delivery = "herdr"
 # Status rides along with the name above, where a two-character token costs nothing.
 [ui.sidebar.spaces]
 row_gap = 1
+# The phase marker leads row 2 so it survives truncation: at this width a long branch name
+# is cut off, and a marker placed after it would be the part that disappears. Four tokens
+# with exactly one ever set is what buys a colour per phase — an inline style is fixed per
+# token, so a single $phase token could only ever have one colour.
+# Reported by ~/.config/herdr/phase.sh; see the dev.phase plugin for when it runs.
 rows = [
   ["state_icon", { token = "workspace", bold = true }, { token = "git_status", dim = true }],
-  [{ token = "branch", fg = "#7dcfff" }],
+  [{ token = "$active", fg = "#9ece6a", bold = true },
+   { token = "$review", fg = "#e0af68", bold = true },
+   { token = "$merged", fg = "#565f89" },
+   { token = "$parked", fg = "#bb9af7" },
+   { token = "branch",  fg = "#7dcfff" }],
 ]
 
 # `workspace` is deliberately absent: agent_panel_sort = "spaces" already groups these
@@ -209,3 +218,11 @@ key = "alt+g"
 type = "shell"
 command = "~/.config/herdr/tab-goto.sh git"
 description = "tab: git"
+
+# Forced refresh: the plugin's event hooks keep the badges current on their own, but MR state
+# is cached and this bypasses the TTL for when you have just merged something in the browser.
+[[keys.command]]
+key = "prefix+shift+p"
+type = "shell"
+command = "~/.config/herdr/phase.sh refresh --force"
+description = "refresh space phases"

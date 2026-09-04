@@ -266,5 +266,39 @@ case "$(report_for w2)" in *"--token active=$ICON_BRANCH"*) _pass "git-derived p
   *) _fail "git-derived phases survive glab failing (got: $(report_for w2))";; esac
 
 echo
+echo "I. the wiring that makes the badges appear and persist"
+# These are static assertions about config, not behaviour of the script — but nothing else
+# catches them, and each one silently produces no badges rather than an error.
+MANIFEST="$ROOT/dot_config/herdr/plugin-phase/herdr-plugin.toml"
+CONF="$ROOT/dot_config/herdr/config.toml"
+if [ ! -r "$MANIFEST" ] || [ ! -r "$CONF" ]; then
+  _fail "plugin manifest and herdr config are both present"
+else
+  _pass "plugin manifest and herdr config are both present"
+  grep -qE '^id = "dev\.phase"' "$MANIFEST" \
+    && _pass "manifest declares dev.phase" || _fail "manifest declares dev.phase"
+  # Without this hook every badge is gone after a server restart, with nothing to say so.
+  grep -A2 '^\[\[startup\]\]' "$MANIFEST" | grep -q 'phase.sh' \
+    && _pass "a startup hook replays the phases" || _fail "a startup hook replays the phases"
+  for ev in workspace.focused worktree.created worktree.removed; do
+    grep -q "on = \"$ev\"" "$MANIFEST" \
+      && _pass "subscribes to $ev" || _fail "subscribes to $ev"
+  done
+  # Focus fires on every workspace switch. A full refresh there costs ~0.4s of forked git for
+  # a badge the user is about to look at exactly one of.
+  grep -A3 'on = "workspace.focused"' "$MANIFEST" | grep -q 'HERDR_WORKSPACE_ID' \
+    && _pass "the focus hook refreshes only the focused space" \
+    || _fail "the focus hook refreshes only the focused space"
+
+  # A token the sidebar never references is reported into a void.
+  for tok in active review merged parked; do
+    grep -q "token = \"[\$]$tok\"" "$CONF" \
+      && _pass "sidebar renders \$$tok" || _fail "sidebar renders \$$tok"
+  done
+  grep -q 'phase.sh refresh --force' "$CONF" \
+    && _pass "a keybinding forces a refresh" || _fail "a keybinding forces a refresh"
+fi
+
+echo
 echo "RESULT: $pass passed, $((pass + fail)) total, $fail failed"
 [ "$fail" -eq 0 ]
