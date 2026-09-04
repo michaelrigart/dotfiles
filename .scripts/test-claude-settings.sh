@@ -371,7 +371,7 @@ jq_is '.includeCoAuthoredBy'    'false' "deprecated co-authored-by fallback stil
 echo "N. both Bash guards are wired as PreToolUse hooks"
 # Index-pinned, not just length-checked. These assertions are positional, so a
 # reordering would silently retarget them at the wrong guard rather than fail.
-jq_is '.hooks.PreToolUse | length' 4 "exactly four PreToolUse entries"
+jq_is '.hooks.PreToolUse | length' 5 "exactly five PreToolUse entries"
 jq_is '.hooks.PreToolUse[0].matcher' 'Bash' "forge guard matches the Bash tool"
 jq_is '.hooks.PreToolUse[0].hooks[0].command' 'bash $HOME/.claude/git-forge-guard.sh' \
       'entry 0 runs the forge guard, $HOME left for the shell to expand'
@@ -384,6 +384,9 @@ jq_is '.hooks.PreToolUse[2].hooks[0].command' 'bash $HOME/.claude/xreview-guard.
 jq_is '.hooks.PreToolUse[3].matcher' '*' "apply guard matches every tool, not just Bash"
 jq_is '.hooks.PreToolUse[3].hooks[0].command' 'bash $HOME/.claude/xreview-apply-guard.sh' \
       'entry 3 runs the apply-window guard, $HOME left for the shell to expand'
+jq_is '.hooks.PreToolUse[4].matcher' 'Bash' "path-resolution guard matches the Bash tool"
+jq_is '.hooks.PreToolUse[4].hooks[0].command' 'bash $HOME/.claude/path-resolution-guard.sh' \
+      'entry 4 runs the path-resolution guard, $HOME left for the shell to expand'
 # The SessionStart hooks must survive alongside them — adding PreToolUse replaced the
 # whole hooks object once during development.
 jq_is '.hooks.SessionStart | length' 2 "both SessionStart hooks present"
@@ -475,6 +478,16 @@ for agent in "$SRC"/dot_claude/agents/*.md; do
     _pass "$stem's declared name matches its filename"
   else
     _fail "$stem's declared name matches its filename" "declared '$declared'"
+  fi
+  # The prompt-side half of the path-resolution guard. GLOBAL.md carries this rule, but
+  # a subagent reaching for `cd` in a repo other than the session's showed it does not
+  # reliably arrive — and its own definition is the one prompt it certainly reads.
+  # Without this, path-resolution-guard.sh still stops the interruption, but every
+  # subagent pays a denied call to learn the rule it should have started with.
+  if grep -q 'Never open a Bash command with `cd`' "$agent"; then
+    _pass "$stem carries the no-leading-cd rule"
+  else
+    _fail "$stem carries the no-leading-cd rule" "rule missing — every dispatch relearns it via a denied call"
   fi
 done
 

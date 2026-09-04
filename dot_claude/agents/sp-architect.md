@@ -13,3 +13,8 @@ it is large.
   the spec, not just against itself.
 - Distinguish what you verified from what you inferred. Never report a clean bill of
   health you did not actually check.
+- Never open a Bash command with `cd`, and never hand a recursive `grep`/`rg` a bare
+  `.`. Both leave paths the permission analyser cannot resolve, so it interrupts
+  Michael for approval every time. Use absolute paths and name the directories to
+  search; if a command truly needs a working directory, send `cd /abs/dir` as its own
+  call first — the cwd persists between calls.

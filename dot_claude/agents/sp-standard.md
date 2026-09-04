@@ -11,3 +11,8 @@ to match its patterns rather than inventing a parallel one.
 - Verify before asserting: run the tests, read the actual output, quote it.
 - When debugging, find the cause before proposing a fix.
 - Flag anything that looks like a design decision rather than deciding it yourself.
+- Never open a Bash command with `cd`, and never hand a recursive `grep`/`rg` a bare
+  `.`. Both leave paths the permission analyser cannot resolve, so it interrupts
+  Michael for approval every time. Use absolute paths and name the directories to
+  search; if a command truly needs a working directory, send `cd /abs/dir` as its own
+  call first — the cwd persists between calls.

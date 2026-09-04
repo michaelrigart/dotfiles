@@ -187,8 +187,12 @@ printf '%s' "$input" | jq \
         # Fourth entry: the apply-window guard. Its matcher is a wildcard because it
         # inspects Edit/Write rather than Bash; it is inert unless xreview apply has
         # opened a window.
-        # Tests in .scripts/test-worktree-guard.sh, test-xreview-guard.sh and
-        # test-xreview-apply-guard.sh.
+        # Fifth entry: the path-resolution guard. Denies the two command shapes that
+        # always cost an interactive prompt — a compound command starting with cd, and
+        # a recursive grep/rg over dot — because a Read() deny rule cannot be evaluated
+        # against them and no hook can lift a deny. Bounces the fix back to the model.
+        # Tests in .scripts/test-worktree-guard.sh, test-xreview-guard.sh,
+        # test-xreview-apply-guard.sh and test-path-resolution-guard.sh.
         "PreToolUse": [
           {
             "matcher": "Bash",
@@ -212,6 +216,12 @@ printf '%s' "$input" | jq \
             "matcher": "*",
             "hooks": [
               { "type": "command", "command": "bash $HOME/.claude/xreview-apply-guard.sh" }
+            ]
+          },
+          {
+            "matcher": "Bash",
+            "hooks": [
+              { "type": "command", "command": "bash $HOME/.claude/path-resolution-guard.sh" }
             ]
           }
         ]
