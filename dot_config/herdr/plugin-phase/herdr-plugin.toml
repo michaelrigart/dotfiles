@@ -1,0 +1,51 @@
+# dev.phase — keep the merge-phase badges on spaces current.
+# Managed by chezmoi (source: dot_config/herdr/plugin-phase/herdr-plugin.toml).
+# Registered with: herdr plugin link ~/.config/herdr/plugin-phase
+#
+# Deliberately a second plugin rather than actions bolted onto dev.layout: registration is
+# GLOBAL across named sessions and rollback is per-id, so `herdr plugin unlink dev.phase`
+# must be able to remove the badges without touching the layout plugin.
+#
+# The [[startup]] hook is the whole reason the badges persist. Reported tokens are display-only
+# and do NOT survive a server restart, so without a replay every space comes back blank. This
+# does not fight session restoration the way a layout hook would — it only reports metadata
+# onto workspaces Herdr has already restored.
+id = "dev.phase"
+name = "Space phases"
+version = "0.1.0"
+min_herdr_version = "0.8.0"
+description = "Badge worktree spaces with active / in review / merged"
+platforms = ["macos"]
+
+[[startup]]
+command = ["/bin/zsh", "-c", "exec \"$HOME/.config/herdr/phase.sh\" refresh"]
+
+# Focusing a space is the moment its badge is about to be read. This fires on every workspace
+# switch, and a full refresh costs ~0.4s of forked git for fifteen spaces when the user is
+# about to look at one — so scope it to the focused space, falling back to a full refresh if
+# the event ever arrives without an id.
+[[events]]
+on = "workspace.focused"
+command = ["/bin/zsh", "-c", "P=\"$HOME/.config/herdr/phase.sh\"; if [ -n \"${HERDR_WORKSPACE_ID:-}\" ]; then exec \"$P\" refresh --workspace \"$HERDR_WORKSPACE_ID\"; else exec \"$P\" refresh; fi"]
+
+# A new worktree has no badge until something reports one; a removed one leaves a stale
+# grouping behind. Both are cheap to handle by just re-reporting everything.
+[[events]]
+on = "worktree.created"
+command = ["/bin/zsh", "-c", "exec \"$HOME/.config/herdr/phase.sh\" refresh"]
+
+[[events]]
+on = "worktree.removed"
+command = ["/bin/zsh", "-c", "exec \"$HOME/.config/herdr/phase.sh\" refresh"]
+
+[[actions]]
+id = "pin-parked"
+title = "Phase: pin as parked"
+contexts = ["workspace"]
+command = ["/bin/zsh", "-c", "\"$HOME/.config/herdr/phase.sh\" pin parked && exec \"$HOME/.config/herdr/phase.sh\" refresh"]
+
+[[actions]]
+id = "unpin"
+title = "Phase: drop pin"
+contexts = ["workspace"]
+command = ["/bin/zsh", "-c", "\"$HOME/.config/herdr/phase.sh\" unpin && exec \"$HOME/.config/herdr/phase.sh\" refresh"]
