@@ -104,6 +104,7 @@ produced a believable "18-test regression" that was entirely an artefact.
 | `test-ssh-credential-inventory.sh` | bash | **unsandboxed** — the `Read(~/.ssh/**)` deny blocks enumeration; it correctly exits 2 (INCONCLUSIVE) rather than green |
 | `test-codex-config.sh` | bash | either — drives the `modify_` **template** via `chezmoi execute-template --with-stdin --file`; without `--with-stdin` every case dies on "map has no entry for key stdin". The empty-input fixture is `''`, not `'{}'` — that file is TOML, not JSON |
 | `test-git-forge-guard.sh` | bash | either — builds git fixtures under `$TMPDIR`, writable when sandboxed |
+| `test-herdr-phase.sh` | bash | either — builds git fixtures under `$TMPDIR`; `herdr` and `glab` are stubbed on `PATH`, so it never touches the socket or the network. The script it tests is **not** runnable sandboxed: `phase.sh` wraps `herdr`, whose socket the sandbox denies, and it fails silently rather than loudly |
 | `test-claude-settings.sh`, `test-ssh-sandbox-proxy.sh`, `test-git-signing-config.sh`, `test-alfred-relay.sh`, `test-path-resolution-guard.sh` | bash | either (fully mocked) |
 | `test-live-agent-auth.sh`, `test-live-agent-signing.sh`, `test-live-credential-boundary.sh` | bash | **fresh session after `chezmoi apply`, and SANDBOXED** |
 
