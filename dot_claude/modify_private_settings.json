@@ -32,8 +32,9 @@ printf '%s' "$input" | jq \
   --arg agent_socket "$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock" \
   --arg tool_path "$HOME/.local/bin:$HOME/.local/share/mise/shims:$HOME/.cargo/bin:/opt/homebrew/bin:/opt/homebrew/sbin:$HOME/.krew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" '
   # capture from the current file (null when absent): tool-written keys are carried
-  # through as-is; model/effortLevel/defaultMode are seeded as defaults only (applied at
-  # the end) — all three are mutable at runtime via /model, /effort and /permissions.
+  # through as-is; model/effortLevel/defaultMode/outputStyle are seeded as defaults only
+  # (applied at the end) — all four are mutable at runtime via /model, /effort,
+  # /permissions and /output-style.
   .agentPushNotifEnabled as $pushnotif
   | .inputNeededNotifEnabled as $inputnotif
   | .autoContinueAtUsageLimit as $autocontinue
@@ -43,6 +44,7 @@ printf '%s' "$input" | jq \
   | .model as $curmodel
   | .effortLevel as $cureffort
   | .permissions.defaultMode as $curmode
+  | .outputStyle as $curstyle
   | {
       "theme": "custom:tokyo-night",
       "cleanupPeriodDays": 14,
@@ -355,9 +357,12 @@ printf '%s' "$input" | jq \
   # silently fails to resume at the usage limit. Same class as the notification
   # toggles above (b2c04a6); this one cost a real diagnosis before it was spotted.
   | (if $autocontinue != null then .autoContinueAtUsageLimit = $autocontinue else . end)
-  # default-only: keep the current value if set (runtime /model, /effort, /permissions
-  # persist), otherwise seed the default; deleting the key and re-applying restores it.
+  # default-only: keep the current value if set (runtime /model, /effort, /permissions,
+  # /output-style persist), otherwise seed the default; deleting the key and re-applying
+  # restores it. outputStyle names a built-in style (Proactive, Concise, Explanatory,
+  # Learning) or a file in ~/.claude/output-styles.
   | .model = ($curmodel // "opus[1m]")
   | .effortLevel = ($cureffort // "xhigh")
   | .permissions.defaultMode = ($curmode // "auto")
+  | .outputStyle = ($curstyle // "Concise")
 '
