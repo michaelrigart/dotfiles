@@ -3,6 +3,7 @@
 
 # Documentation
 README.md
+AGENTS.md
 CLAUDE.md
 
 # Design records — versioned with the code, never deployed. Without this,
@@ -69,6 +70,7 @@ tests/
 !.claude/agents/sp-mechanical.md
 !.claude/agents/sp-standard.md
 !.claude/agents/sp-architect.md
+!.claude/agents/sp-reviewer.md
 !.claude/themes/
 .claude/themes/*
 !.claude/themes/tokyo-night.json
