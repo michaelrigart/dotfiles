@@ -15,7 +15,7 @@
 # stubbed: real repos are used, because git's own answers about worktrees are part of
 # what is under test.
 #
-# Run: zsh .scripts/test-dev.sh
+# Run: ./tests/dev.test.sh
 set -u
 # zsh sets BG_NICE by default, so backgrounding K10's lock holder tries to renice it
 # and prints "nice(5) failed" wherever setpriority is denied. Same reason layout.sh

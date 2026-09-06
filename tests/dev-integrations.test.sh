@@ -6,7 +6,8 @@
 # ~/.claude and ~/.codex state on this machine, already carrying Herdr's deployed
 # integrations.
 #
-# Run manually: zsh .scripts/test-dev-integrations.sh
+# Run manually: ./tests/dev-integrations.test.sh
+# test-requires: herdr  # reads the real deployed ~/.claude and ~/.codex herdr integrations
 emulate -L zsh
 set -u
 setopt no_bg_nice

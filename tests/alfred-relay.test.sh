@@ -17,7 +17,7 @@
 # hand-written `</from-codex>` is equally valid JSON and behaves identically. The assertions
 # below accept either form rather than pinning one writer's habit.
 #
-# Run: bash .scripts/test-alfred-relay.sh
+# Run: ./tests/alfred-relay.test.sh
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 COLL="$ROOT/Library/Application Support/Alfred/Alfred.alfredpreferences/snippets/Relay"

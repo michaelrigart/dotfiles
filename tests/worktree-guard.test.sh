@@ -6,7 +6,7 @@
 # every Bash call, so a false deny blocks real work — most cases pin the ALLOW
 # side, and the deny set is deliberately one command shape.
 #
-# Run: bash .scripts/test-worktree-guard.sh   (bash, sandboxed is fine)
+# Run: ./tests/worktree-guard.test.sh   (sandboxed is fine)
 
 set -uo pipefail
 

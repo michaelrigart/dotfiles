@@ -17,6 +17,9 @@ SKILL="$ROOT/dot_claude/skills/cross-review/SKILL.md"
 # that enforce the parts prose cannot. XREVIEW_GUARD lives in the guards, so scoping the
 # search to the CLI reports drift that is not there.
 IMPL=("$XREVIEW" "$ROOT/dot_claude/executable_xreview-guard.sh" "$ROOT/dot_claude/executable_xreview-apply-guard.sh")
+for _f in "$SKILL" "${IMPL[@]}"; do
+  [ -f "$_f" ] || { echo "missing file under test: $_f" >&2; exit 2; }
+done
 pass=0; fail=0
 _pass() { printf '  PASS: %s\n' "$1"; pass=$((pass + 1)); }
 _fail() { printf '  FAIL: %s\n    | %s\n' "$1" "$2"; fail=$((fail + 1)); }
@@ -124,7 +127,7 @@ else
     # spelling asserts the implementation rather than the gate: this check used to
     # require the literal glob `glab*mr*create`, and so went red when that glob was
     # replaced — correctly — by a command-position regex that gates strictly more
-    # precisely. Whether the gate actually fires is test-xreview-guard.sh's job; this
+    # precisely. Whether the gate actually fires is xreview-guard.test.sh's job; this
     # one only catches the skill naming a verb the guard stopped looking for at all.
     pat="$(printf '%s' "$c" | sed 's/ /.*/g')"
     if strip_comments "$GUARD" | grep -qE -- "$pat"; then

@@ -23,7 +23,7 @@
 #
 # Bypass for a one-off: put WT_GUARD=off anywhere in the command.
 #
-# Bash 3.2 compatible (macOS system bash). Tests: .scripts/test-worktree-guard.sh
+# Bash 3.2 compatible (macOS system bash). Tests: tests/worktree-guard.test.sh
 
 set -uo pipefail
 set -f   # no pathname expansion — command text is never a glob

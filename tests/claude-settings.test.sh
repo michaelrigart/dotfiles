@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Feeds fixtures through dot_claude/modify_private_settings.json and asserts the emitted
 # settings JSON. The modify script is a pure stdin->stdout filter, so this needs no chezmoi
-# run and touches no deployed file. Run: bash .scripts/test-claude-settings.sh
+# run and touches no deployed file. Run: ./tests/claude-settings.test.sh
 set -u
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
 MOD="$SRC/dot_claude/modify_private_settings.json"
+[ -f "$MOD" ] || { echo "missing script under test: $MOD" >&2; exit 2; }
 pass=0; fail=0; OUT=""
 
 _pass() { echo "  PASS: $1"; pass=$((pass + 1)); }
@@ -33,7 +34,7 @@ EXP_DENY='["Read(~/.ssh/**)","Edit(~/.ssh/**)",
 # not the danger: 156 fires in an 11-day window against 2 real rejections, every sampled
 # call a read-only GET piped into jq. It could not be narrowed here either, because an ask
 # rule is absolute (a PreToolUse hook returning allow loses to it — measured 2026-08-25).
-# The write half is gated in git-forge-guard.sh rule 3, and test-git-forge-guard.sh pins
+# The write half is gated in git-forge-guard.sh rule 3, and git-forge-guard.test.sh pins
 # both sides of that. See the header comment in the guard.
 # Every Edit() rule is DELIBERATELY ABSENT — do not add one back. The infra gates
 # (~/.kube/config, Dockerfile, docker-compose, GitHub/GitLab CI, terraform/, ansible/)
@@ -201,7 +202,7 @@ jq_is '[.sandbox.filesystem.allowRead[]
 # Obsidian vault) runs INSIDE the sandbox instead of escaping it — 24% of Bash calls were
 # escaping, and every escape hit the ask-gate. Widening writes is not a credential decision:
 # credentials.files and the Read/Edit denials outrank allowWrite, which section F above and
-# test-live-credential-boundary.sh both pin. What must never appear here is an SSH, AWS, or
+# live-credential-boundary.test.sh both pin. What must never appear here is an SSH, AWS, or
 # op path — that would be a write exception over a denied credential.
 jq_is '.sandbox.filesystem.allowWrite | length > 0' true "allowWrite is present so routine work stays sandboxed"
 jq_is '[.sandbox.filesystem.allowWrite[]
@@ -302,14 +303,14 @@ echo "K. git SSH proxying rides CLAUDE_ENV_FILE, not the env block"
 # writing the export there is what actually wins.
 #
 # The ~/.local/bin PATH assertion below checks the DECLARED value only; runtime resolution
-# is covered by test-live-agent-auth.sh, which must run inside a Claude session.
+# is covered by live-agent-auth.test.sh, which must run inside a Claude session.
 #
 # It previously claimed the zsh profile (brew shellenv) moves Homebrew ahead of ~/.local/bin,
 # so the PATH-dependent git shim "never engaged". That was wrong. Measured in-session on
 # 2026-07-31, sandboxed and unsandboxed alike, the effective PATH matches this declared
 # env.PATH entry-for-entry and ~/.local/bin leads it — `command -v git` returned the shim,
 # not Homebrew git. The profile does not reorder it. The shim was reachable and WAS entered,
-# which is what broke three assertions in test-wt-functions.sh.
+# which is what broke three assertions in wt-functions.test.sh.
 emit '{}'
 jq_is '.env | has("GIT_SSH_COMMAND")' false \
       "GIT_SSH_COMMAND absent from env — the runtime overrides it there"

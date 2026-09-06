@@ -8,7 +8,7 @@
 # marketplaces, project trust), so anything the template does NOT enforce must survive
 # untouched, and anything it DOES enforce must win over whatever is on disk.
 #
-# Run: bash .scripts/test-codex-config.sh   (bash, sandboxed is fine)
+# Run: ./tests/codex-config.test.sh   (sandboxed is fine)
 
 set -uo pipefail
 

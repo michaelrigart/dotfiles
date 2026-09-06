@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Run inside a fresh Claude sandbox with a repository path argument. Exercises the
 # configured SSH remote without printing its URL or refs.
+# test-requires: sandboxed, fresh-session  # measures the sandbox; also takes the repo path as $1
 set -u
 repo=${1:?repository path required}
 

@@ -10,7 +10,8 @@
 # registration, which is global — hence the distinct plugin id below. Reusing
 # `dev.layout` would let teardown unlink the plugin the live setup depends on.
 #
-# Run manually, unsandboxed: zsh .scripts/test-dev-topology.sh
+# Run manually, unsandboxed: ./tests/dev-topology.test.sh
+# test-requires: unsandboxed, herdr  # drives the real herdr binary, whose socket the sandbox denies
 emulate -L zsh
 set -u
 setopt no_bg_nice   # see the same note in layout.sh

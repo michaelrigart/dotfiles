@@ -13,6 +13,7 @@
 # ones. A guard that stops unrelated work is worse than no guard.
 set -uo pipefail
 GUARD="$(cd "$(dirname "$0")/.." && pwd)/dot_claude/executable_xreview-guard.sh"
+[ -f "$GUARD" ] || { echo "missing guard under test: $GUARD" >&2; exit 2; }
 pass=0; fail=0
 _pass() { printf '  PASS: %s\n' "$1"; pass=$((pass + 1)); }
 _fail() { printf '  FAIL: %s\n    | got: %s\n' "$1" "$2"; fail=$((fail + 1)); }
@@ -40,7 +41,7 @@ trap 'rm -rf "$ROOT"' EXIT
 export XDG_STATE_HOME="$ROOT/state"
 mkdir -p "$ROOT/repo" && cd "$ROOT/repo" || exit 1
 git init -q . && git config user.email t@t && git config user.name t
-git config commit.gpgsign false          # see test-xreview.sh for why
+git config commit.gpgsign false          # see xreview.test.sh for why
 if ! git commit -q --allow-empty -m init; then printf 'fixture setup failed\n' >&2; exit 1; fi
 
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"

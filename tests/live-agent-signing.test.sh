@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Run inside a fresh Claude sandbox. Proves Git signs through the agent and verifies the
 # signature with the deployed XDG allowed-signers file.
+# test-requires: sandboxed, fresh-session  # measures the sandbox
 set -u
 test_root=$(mktemp -d "${TMPDIR%/}/claude-agent-signing.XXXXXX") || exit 1
 trap 'rm -rf "$test_root"' EXIT

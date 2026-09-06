@@ -22,7 +22,7 @@
 # capture what would be reported, the other to make MR state deterministic and to count calls,
 # which is how the per-repo caching is proved.
 #
-# Run: bash .scripts/test-herdr-phase.sh
+# Run: ./tests/herdr-phase.test.sh
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PHASE="$ROOT/dot_config/herdr/executable_phase.sh"

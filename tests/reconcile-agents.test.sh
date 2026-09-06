@@ -2,9 +2,11 @@
 # Mocked test for reconcile-agents.sh: stubs claude/codex on PATH with crafted JSON and
 # asserts the review-fix behaviour — exact field matching, explicit JSON-schema validation
 # (empty stdout / {} / [{}] rejected), disabled/failed-install handling, and Codex source
-# normalization + reconciliation. Run: bash .scripts/test-reconcile-agents.sh
+# normalization + reconciliation. Run: ./tests/reconcile-agents.test.sh
+# test-requires: unsandboxed  # writes a temp XDG config dir; sandboxed it reports ~18 false failures
 set -u
-RECON="$(cd "$(dirname "$0")" && pwd)/reconcile-agents.sh"
+RECON="$(cd "$(dirname "$0")/.." && pwd)/.scripts/reconcile-agents.sh"
+[ -f "$RECON" ] || { echo "missing script under test: $RECON" >&2; exit 2; }
 BIN=$(mktemp -d); CFG=$(mktemp -d); CLD=$(mktemp -d)
 mkdir -p "$CFG/agents" "$CLD/plugins"
 trap 'rm -rf "$BIN" "$CFG" "$CLD"' EXIT   # clean temp dirs even on interrupt

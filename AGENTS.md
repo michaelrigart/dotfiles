@@ -25,9 +25,11 @@ Canonical agent context; `CLAUDE.md` imports this file.
   `~/.codex/AGENTS.md`) render from the 1Password item *Agent instructions*. Edit the
   note, then `chezmoi apply`.
 - `.scripts/` are ad-hoc helpers (`provision.sh`, `configure.sh`,
-  `reconcile-agents.sh`, `preflight-ssh-agent.sh`, `test-*.sh`), deliberately not
-  `run_once_` scripts: they change system settings and need interaction. Mode `755` —
-  git stores only the exec bit, so a clone yields 755, never 700.
+  `reconcile-agents.sh`, `preflight-ssh-agent.sh`), deliberately not `run_once_`
+  scripts: they change system settings and need interaction. Mode `755` — git stores
+  only the exec bit, so a clone yields 755, never 700.
+- `tests/` holds every test suite, one `<subject>.test.sh` per script under test. Same
+  mode `755`, and the shebang is load-bearing — see Testing.
 - Permissions: `~/.ssh` 700, private keys 600, public keys 644, sensitive configs 600.
 - Brewfile: only tools actually in use. Add packages via
   `chezmoi edit ~/.config/homebrew/Brewfile`, then `chezmoi apply` and
@@ -38,7 +40,8 @@ Canonical agent context; `CLAUDE.md` imports this file.
 ```
 .chezmoi.toml.tmpl        # chezmoi's own config; must stay at the source root
 .chezmoiignore            # what never reaches $HOME (see Rules)
-.scripts/                 # provisioning + test suites (ignored)
+.scripts/                 # provisioning helpers (ignored)
+tests/                    # test suites, `./tests/run.sh` runs them (ignored)
 dot_config/               # → ~/.config (git, homebrew/Brewfile, mise, zsh, agents, …)
 dot_claude/  dot_codex/   # agent harness config: settings/config templates, hooks, guards, agents, skills
 private_dot_ssh/          # SSH key templates (1Password)
@@ -48,35 +51,62 @@ docs/superpowers/         # design records (tracked, ignored by chezmoi)
 
 ## Testing
 
-`.scripts/test-*.sh` do **not** all run the same way, and getting it wrong produces
-convincing fake failures. Control for interpreter and sandbox mode before calling
-anything a regression — comparing a sandboxed run against an unsandboxed one once
-produced a believable "18-test regression" that was entirely an artefact.
-
-| Suite | Interpreter | Sandbox |
-|---|---|---|
-| `test-wt-functions.sh` | **zsh** — bash reports bogus syntax errors (it stubs zsh builtins) | either |
-| `test-reconcile-agents.sh` | bash | **unsandboxed** — writes a temp XDG config dir; sandboxed it reports ~18 false failures |
-| `test-ssh-credential-inventory.sh` | bash | **unsandboxed** — the `Read(~/.ssh/**)` deny blocks enumeration; it correctly exits 2 (INCONCLUSIVE) rather than green |
-| `test-codex-config.sh` | bash | either — drives the `modify_` **template** via `chezmoi execute-template --with-stdin --file`; without `--with-stdin` every case dies on "map has no entry for key stdin". The empty-input fixture is `''`, not `'{}'` — that file is TOML, not JSON |
-| `test-git-forge-guard.sh` | bash | either — builds git fixtures under `$TMPDIR`, writable when sandboxed |
-| `test-herdr-phase.sh` | bash | either — git fixtures under `$TMPDIR`; `herdr` and `glab` are stubbed on `PATH`. The script it tests is **not** runnable sandboxed: `phase.sh` wraps `herdr`, whose socket the sandbox denies, and it fails silently |
-| `test-claude-settings.sh`, `test-ssh-sandbox-proxy.sh`, `test-git-signing-config.sh`, `test-alfred-relay.sh`, `test-path-resolution-guard.sh` | bash | either (fully mocked) |
-| `test-live-agent-auth.sh`, `test-live-agent-signing.sh`, `test-live-credential-boundary.sh` | bash | **fresh session after `chezmoi apply`, and SANDBOXED** |
-
-**Never run the live suites with the sandbox disabled.** They measure the sandbox, so
-disabling it inverts the result: `test-live-credential-boundary.sh` then reports every
-private key readable and exits 12. That is the suite working, not a regression.
-
-**Never invoke them with brace expansion.** `bash .scripts/test-live-{a,b}.sh` expands to
-`bash a.sh b.sh` — only `a.sh` runs, `b.sh` becomes an ignored `$1`, and the skipped suite
-prints nothing, so the run looks like a clean pass. Use a loop:
+Suites live in `tests/`, one `<subject>.test.sh` per script under test.
 
 ```bash
-for f in .scripts/test-live-*.sh; do bash "$f"; done
+./tests/run.sh                 # every suite with no special requirement
+./tests/run.sh --all           # those too — read each `needs:` tag before believing it
+./tests/run.sh forge worktree  # only suites whose name contains one of these
 ```
 
-(`test-live-agent-auth.sh` is the one that genuinely takes an argument — the repo path.)
+**Execute suites, never prefix an interpreter.** Every suite carries a correct shebang
+(most bash; `wt-functions`, `dev`, `dev-topology` and `dev-integrations` are zsh). Running
+a zsh suite under `bash` reports bogus syntax errors that read exactly like a regression,
+because it stubs zsh builtins. `./tests/x.test.sh` is always right; `bash tests/x.test.sh`
+is the footgun. `run.sh` executes them for this reason.
+
+Suites needing conditions `run.sh` cannot create carry a `# test-requires:` line and are
+skipped by default:
+
+| Suite | Needs | Why |
+|---|---|---|
+| `reconcile-agents` | unsandboxed | writes a temp XDG config dir; sandboxed it reports ~18 false failures |
+| `ssh-credential-inventory` | unsandboxed | the `Read(~/.ssh/**)` deny blocks enumeration; it then exits 2 (INCONCLUSIVE) rather than green |
+| `dev-topology` | unsandboxed + live `herdr` | drives the real binary, whose socket the sandbox denies |
+| `dev-integrations` | live `herdr` | reads the real deployed `~/.claude` / `~/.codex` integrations |
+| `live-agent-auth`, `live-agent-signing`, `live-credential-boundary` | **fresh session after `chezmoi apply`, and SANDBOXED** | they measure the sandbox |
+
+**Never run the live suites with the sandbox disabled.** They measure the sandbox, so
+disabling it inverts the result: `live-credential-boundary.test.sh` then reports every
+private key readable and exits 12. That is the suite working, not a regression.
+
+**Control for sandbox mode before calling anything a regression.** Comparing a sandboxed
+run against an unsandboxed one once produced a believable "18-test regression" that was
+entirely an artefact.
+
+**Never invoke suites with brace expansion.** `bash tests/live-{a,b}.test.sh` expands to
+`bash a b` — only the first runs, the second becomes an ignored `$1`, and the skipped
+suite prints nothing, so the run looks like a clean pass. Use `run.sh`, or a loop over a
+glob. (`live-agent-auth.test.sh` is the one that genuinely takes an argument — the repo
+path; `git-forge-guard.test.sh` optionally takes a guard path, defaulting to the source
+copy so it tests what will be deployed rather than what currently is.)
+
+**Report totals as passed/total, never "N green".** A handoff once claimed "324 assertions
+green" when it was 321 green / 3 red — 324 was the *total*. `run.sh` prints `passed/total`
+per suite, judges each on its **exit status**, and cross-checks that against the counted
+assertions: a suite that dies partway prints only the assertions it reached and would
+otherwise look clean, so it is reported `INCONSISTENT` instead of folded into a total.
+
+Two suite-specific gotchas worth keeping: `codex-config` drives the `modify_` **template**
+via `chezmoi execute-template --with-stdin --file` — without `--with-stdin` every case dies
+on "map has no entry for key stdin", and its empty-input fixture is `''`, not `'{}'`,
+because that file is TOML. `herdr-phase` stubs `herdr` and `glab` on `PATH`; the script it
+tests is not runnable sandboxed, since `phase.sh` wraps `herdr` and fails silently when the
+socket is denied.
+
+A suite whose subject has moved must fail loudly, not silently pass: each one checks its
+target exists and exits 2 if not. Keep that when adding suites — a guard test whose guard
+is missing otherwise reports every "must allow" case as a pass.
 
 **Report totals as passed/total, never "N green".** A handoff once claimed "324 assertions
 green" when it was 321 green / 3 red — 324 was the *total*. The three red were in

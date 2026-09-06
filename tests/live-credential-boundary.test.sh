@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Run inside a fresh Claude sandbox. Reads at most one byte to /dev/null and reports only
 # status; never emits file contents.
+# test-requires: sandboxed, fresh-session  # measures the sandbox; unsandboxed it inverts and exits 12
 set -u
 fail=0
 

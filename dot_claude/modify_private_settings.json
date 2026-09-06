@@ -162,7 +162,7 @@ printf '%s' "$input" | jq \
           # a session argument, timeout 10, and an absolute path.
           #
           # APPENDED deliberately: the GIT_SSH_COMMAND hook must stay at index 0,
-          # which test-claude-settings.sh pins by position. No apostrophes in these
+          # which claude-settings.test.sh pins by position. No apostrophes in these
           # comments; see the note further down about ending the shell string.
           {
             "matcher": "*",
@@ -180,10 +180,10 @@ printf '%s' "$input" | jq \
         # the repo MR/PR template. Denies (never asks) with a reason the model acts on,
         # so a violation costs a retry and never reaches Michael. Fires on every Bash
         # call, so the script fast-paths out in ~6ms; tests in
-        # .scripts/test-git-forge-guard.sh. $HOME stays literal, expanded when it runs.
+        # tests/git-forge-guard.test.sh. $HOME stays literal, expanded when it runs.
         # Second entry: the worktree guard. Denies raw `git worktree remove` on a wt
         # sibling worktree, which skips Herdr workspace closure and leaves husk directories.
-        # Order is load-bearing — test-claude-settings.sh pins each guard by index.
+        # Order is load-bearing — claude-settings.test.sh pins each guard by index.
         # Third entry: the cross-review guard. Denies proposing a branch for merge with
         # no Codex review on record; a skipped review looks identical to a clean one.
         # Fourth entry: the apply-window guard. Its matcher is a wildcard because it
@@ -193,8 +193,8 @@ printf '%s' "$input" | jq \
         # always cost an interactive prompt — a compound command starting with cd, and
         # a recursive grep/rg over dot — because a Read() deny rule cannot be evaluated
         # against them and no hook can lift a deny. Bounces the fix back to the model.
-        # Tests in .scripts/test-worktree-guard.sh, test-xreview-guard.sh,
-        # test-xreview-apply-guard.sh and test-path-resolution-guard.sh.
+        # Tests in tests/worktree-guard.test.sh, xreview-guard.test.sh,
+        # xreview-apply-guard.test.sh and path-resolution-guard.test.sh.
         "PreToolUse": [
           {
             "matcher": "Bash",

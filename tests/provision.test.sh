@@ -2,7 +2,7 @@
 # Mocked test for provision.sh preflight and the machine allowlist.
 # Isolation is not optional: provision.sh deletes files under $HOME and rewrites macOS
 # defaults, so every run gets a temporary HOME and every temporary XDG root, plus the
-# two override points. Run: bash .scripts/test-provision.sh
+# two override points. Run: ./tests/provision.test.sh
 set -u
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
 pass=0; fail=0; OUT=""; RC=0

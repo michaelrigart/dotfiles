@@ -19,7 +19,7 @@ log_error() { echo "${RED}[ERROR]${NC} $1"; }
 typeset -a WARNINGS=()
 warn() { WARNINGS+=("$1"); log_warn "$1"; }
 
-# Overridden only by .scripts/test-provision.sh; nothing else sets these.
+# Overridden only by tests/provision.test.sh; nothing else sets these.
 BREW_BIN="${PROVISION_BREW_BIN:-/opt/homebrew/bin/brew}"
 
 # Set temporary XDG variables for bootstrap (will be properly set by chezmoi later)
@@ -408,5 +408,5 @@ log_info "          nothing — it never sees the keystrokes."
 log_info "       b. Run .scripts/configure.sh, which enables snippet auto-expansion and"
 log_info "          restarts Alfred so it indexes the collection (a NEW collection is only"
 log_info "          discovered at launch, so a bare 'chezmoi apply' is not enough)."
-log_info "       Verify with: bash .scripts/test-alfred-relay.sh"
+log_info "       Verify with: ./tests/alfred-relay.test.sh"
 echo ""

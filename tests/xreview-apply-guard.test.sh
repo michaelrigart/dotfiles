@@ -6,6 +6,7 @@
 # everywhere. That case is asserted first and deliberately.
 set -uo pipefail
 GUARD="$(cd "$(dirname "$0")/.." && pwd)/dot_claude/executable_xreview-apply-guard.sh"
+[ -f "$GUARD" ] || { echo "missing guard under test: $GUARD" >&2; exit 2; }
 pass=0; fail=0
 _pass() { printf '  PASS: %s\n' "$1"; pass=$((pass + 1)); }
 _fail() { printf '  FAIL: %s\n    | got: %s\n' "$1" "$2"; fail=$((fail + 1)); }
@@ -26,7 +27,7 @@ export XDG_STATE_HOME="$ROOT/state"
 mkdir -p "$ROOT/repo/src" "$ROOT/repo/tests" && cd "$ROOT/repo" || exit 1
 git init -q . && git config user.email t@t && git config user.name t
 printf 'x\n' > src/in-diff.txt; printf 'y\n' > src/untouched.txt
-git config commit.gpgsign false          # see test-xreview.sh for why
+git config commit.gpgsign false          # see xreview.test.sh for why
 git add -A
 if ! git commit -q -m init; then printf 'fixture setup failed\n' >&2; exit 1; fi
 printf 'changed\n' > src/in-diff.txt      # working-tree change → in scope

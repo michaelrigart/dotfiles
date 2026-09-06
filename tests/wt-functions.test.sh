@@ -29,7 +29,7 @@
 # test. The one `git` on PATH is the SIGINT delay injector, and it is a pass-through:
 # it decides when a real signal lands, then execs the real git with the identical argv.
 #
-# Run: zsh .scripts/test-wt-functions.sh
+# Run: ./tests/wt-functions.test.sh
 set -u
 
 FUNCS="$(cd "${0:h}/.." && pwd)/dot_config/zsh/functions"
@@ -799,7 +799,7 @@ exit 0'
 # `</dev/null` is mandatory, not tidiness: this hook blocks in `read` until its
 # stdin yields a line or EOF, and `wt` deliberately hands the hook the caller's
 # stdin. Run the suite with stdin on a tty or an open pipe — which is what an
-# unattended runner or `foo | zsh test-wt-functions.sh` gives it — and this call
+# unattended runner or `foo | zsh wt-functions.test.sh` gives it — and this call
 # hangs forever. The stdin-inheritance assertion is unaffected: it is proven by
 # the explicit `print -r -- "fed" | _wt_hook_run` below, whose hook.out record
 # overwrites this one.

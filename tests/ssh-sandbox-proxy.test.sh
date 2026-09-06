@@ -73,12 +73,12 @@ else
 fi
 
 # The git PATH shim was replaced by GIT_SSH_COMMAND, exported from a SessionStart hook via
-# CLAUDE_ENV_FILE (asserted in test-claude-settings.sh). Assert the shim's ABSENCE rather
+# CLAUDE_ENV_FILE (asserted in claude-settings.test.sh). Assert the shim's ABSENCE rather
 # than its shape: ~/.local/bin leads PATH in-session, so a reintroduced shim silently takes
 # precedence over the env-based mechanism and this suite would still pass.
 #
 # A shim is not merely redundant, it is actively harmful. It is a `#!/usr/bin/env bash`
-# script, so it needs `bash` on PATH; test-wt-functions.sh builds a deliberately stripped
+# script, so it needs `bash` on PATH; wt-functions.test.sh builds a deliberately stripped
 # PATH (env, git, awk, mkdir) to simulate a missing wtcp, and there `git` dies with
 # "env: bash: No such file or directory" (rc=127) before the lifecycle reaches the wtcp
 # check. That cost three assertions in that suite while this one stayed green.

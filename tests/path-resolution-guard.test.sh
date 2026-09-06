@@ -11,7 +11,7 @@
 # appearing anywhere but the first token (heredoc body, subshell, `bash -c`, a
 # script being written) is none of the guard's business.
 #
-# Run: bash .scripts/test-path-resolution-guard.sh   (bash, sandboxed is fine)
+# Run: ./tests/path-resolution-guard.test.sh   (sandboxed is fine)
 
 set -uo pipefail
 

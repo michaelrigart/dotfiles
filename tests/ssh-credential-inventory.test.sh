@@ -9,9 +9,11 @@
 # failing: a guard that cannot enumerate must never report green, and must not emit a
 # wall of false "stale entry" failures that invite it being deleted as noise.
 #
-# Run from a terminal:  bash .scripts/test-ssh-credential-inventory.sh
+# Run from a terminal:  ./tests/ssh-credential-inventory.test.sh
+# test-requires: unsandboxed  # the Read(~/.ssh/**) deny blocks enumeration; it exits 2 (INCONCLUSIVE), not green
 set -u
 MOD="$(cd "$(dirname "$0")/.." && pwd)/dot_claude/modify_private_settings.json"
+[ -f "$MOD" ] || { echo "missing script under test: $MOD" >&2; exit 2; }
 pass=0; fail=0
 
 is_exempt() {
@@ -34,7 +36,7 @@ if [ -n "$probe" ] || [ ! -r "$HOME/.ssh" ]; then
   echo
   echo "This guard detects a NEW key appearing without a credentials.files entry, so it"
   echo "must run where it can list the directory:"
-  echo "    bash .scripts/test-ssh-credential-inventory.sh    # from a normal terminal"
+  echo "    ./tests/ssh-credential-inventory.test.sh    # from a normal terminal"
   exit 2
 fi
 
