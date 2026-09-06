@@ -24,6 +24,18 @@ BUILDING_SUFFIX=" (building)"
 # write half. Launch an implementer session by hand when you actually want one.
 CODEX_CMD="codex --sandbox read-only --ask-for-approval never"
 
+# HL_HERDR — every herdr call, with the session threaded in. herdr 0.8.2 has NO
+# HERDR_SESSION environment variable: only `--session <name>` selects a session, so a
+# bare `command herdr` always talks to the DEFAULT one. That made the live gate's
+# isolation a fiction — it set HERDR_SESSION=dev-test, layout.sh built into the live
+# default session anyway, and the gate then asserted against an empty dev-test and
+# failed every case after the bootstrap. The leaked fixture workspaces are still
+# visible in `herdr workspace list`. Nothing here may call `command herdr` directly.
+typeset -ga HL_HERDR=(command herdr)
+[[ -n "${HERDR_SESSION:-}" ]] && HL_HERDR+=(--session "$HERDR_SESSION")
+# Pre-quoted for the `trap` strings below, which are eval'd as text rather than run.
+HL_HERDR_Q="${(j: :)${(@q)HL_HERDR}}"
+
 die() { print -ru2 -- "layout.sh: $*"; exit 1 }
 
 # hl_notify — the only feedback a plugin action has. Herdr runs plugin commands and
@@ -31,7 +43,7 @@ die() { print -ru2 -- "layout.sh: $*"; exit 1 }
 # is buried in a log file is indistinguishable from a broken keybinding. Requires
 # [ui.toast] delivery to be set — the shipped default is "off".
 hl_notify() {
-  command herdr notification show "$1" --body "$2" >/dev/null 2>&1 || true
+  "${HL_HERDR[@]}" notification show "$1" --body "$2" >/dev/null 2>&1 || true
 }
 
 # hl_die_notify — die, but visibly. Every failure inside --current must reach the UI:
@@ -57,7 +69,7 @@ hl_git() {
 # exit status was no guard.
 hl_api() {
   local out rc
-  out="$(command herdr "$@" 2>&1)"; rc=$?
+  out="$("${HL_HERDR[@]}" "$@" 2>&1)"; rc=$?
   if (( rc != 0 )); then
     print -ru2 -- "layout.sh: herdr $* failed: $out"
     return 1
@@ -102,7 +114,7 @@ hl_api_json() {
 # no CLI `ping`. The probe is therefore a real call that fails when the server is down.
 hl_server_ready() {
   local out
-  out="$(command herdr workspace list 2>&1)" || return 1
+  out="$("${HL_HERDR[@]}" workspace list 2>&1)" || return 1
   [[ "$out" == *server_not_running* ]] && return 1
   return 0
 }
@@ -112,7 +124,7 @@ hl_ensure_server() {
   # `herdr server` runs in the foreground: background and detach it explicitly. A
   # second dev racing this must neither fail nor start a second server, so the start
   # is fire-and-forget and readiness is what we actually wait on.
-  (command herdr server >/dev/null 2>&1 &) || true
+  ("${HL_HERDR[@]}" server >/dev/null 2>&1 &) || true
   local tries="${HL_READY_TRIES:-40}" i=1
   while (( i <= tries )); do
     hl_server_ready && return 0
@@ -446,7 +458,7 @@ hl_build() {
   # A missing workspace id is deliberately handled before this — there is nothing to
   # close without one.
   ws="$(hl_id "$out" '.result.workspace.workspace_id' "a workspace id")" || return 1
-  trap "command herdr workspace close ${(q)ws} >/dev/null 2>&1" EXIT INT TERM
+  trap "$HL_HERDR_Q workspace close ${(q)ws} >/dev/null 2>&1" EXIT INT TERM
 
   t1="$(hl_id "$out" '.result.tab.tab_id'        "a first tab id")" || return 1
   p1="$(hl_id "$out" '.result.root_pane.pane_id' "a root pane id")" || return 1
@@ -505,7 +517,7 @@ hl_adopt_worktree() {
   fi
 
   [[ "$close_on_failure" == true ]] \
-    && trap "command herdr workspace close ${(q)ws} >/dev/null 2>&1" EXIT INT TERM
+    && trap "$HL_HERDR_Q workspace close ${(q)ws} >/dev/null 2>&1" EXIT INT TERM
   hl_api tab rename "$tab" agents >/dev/null || return 1
   out="$(hl_api_json pane split --pane "$pane" --direction right --cwd "$repo" --no-focus)" \
     || return 1
@@ -576,7 +588,7 @@ hl_open_worktree() {
 hl_attach() {
   [[ -n "${HERDR_ENV:-}" ]] && return 0
   [[ -n "${DEV_NO_ATTACH:-}" ]] && return 0
-  exec command herdr
+  exec "${HL_HERDR[@]}"
 }
 
 main() {
@@ -598,7 +610,13 @@ main() {
     repo="${repo:A}"
   fi
 
-  if [[ -z "${HERDR_ENV:-}" ]]; then
+  # HERDR_ENV means "already inside a Herdr pane", so normally there is a server and
+  # nothing to start. That inference breaks the moment an explicit HERDR_SESSION names
+  # a DIFFERENT session: the pane we are in belongs to another one, and its server says
+  # nothing about the target's. The live gate runs exactly that way, and before this
+  # check it inherited HERDR_ENV from the surrounding pane, skipped the start, and —
+  # with the old unsessioned calls — built its fixtures into the live default session.
+  if [[ -z "${HERDR_ENV:-}" || -n "${HERDR_SESSION:-}" ]]; then
     hl_ensure_server
   fi
 

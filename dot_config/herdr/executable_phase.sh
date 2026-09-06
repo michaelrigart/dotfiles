@@ -17,6 +17,12 @@ set -u
 SOURCE_ID="herdr-phase"
 CACHE_DIR="${HERDR_PHASE_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/herdr-phase}"
 STATE_DIR="${HERDR_PHASE_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/herdr-phase}"
+
+# herdr 0.8.2 selects a session only via `--session`, never an environment variable.
+# phase.sh runs as a plugin action and from the prompt, both of which may be inside a
+# named session, so thread it rather than defaulting to the live one.
+HERDR_ARGS=""
+[ -n "${HERDR_SESSION:-}" ] && HERDR_ARGS="--session $HERDR_SESSION"
 TTL="${HERDR_PHASE_TTL:-120}"
 
 # Appended rather than prepended: a plugin hook runs with a minimal PATH and needs these, but
@@ -176,14 +182,14 @@ report() { # report <workspace_id> <phase> <value>
     if [ "$t" = "$phase" ]; then args+=(--token "$t=$value")
     else args+=(--clear-token "$t"); fi
   done
-  herdr "${args[@]}" >/dev/null 2>&1 || true
+  herdr $HERDR_ARGS "${args[@]}" >/dev/null 2>&1 || true
 }
 
 # ------------------------------------------------------------------ spaces
 # Only linked worktrees are badged. A repo's main checkout is nearly always dirty with local
 # scratch, and badging it would mark every project permanently active.
 spaces() {
-  herdr workspace list 2>/dev/null | "$PY" -c '
+  herdr $HERDR_ARGS workspace list 2>/dev/null | "$PY" -c '
 import json, sys
 try:
     d = json.load(sys.stdin)

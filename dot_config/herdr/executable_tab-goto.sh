@@ -9,13 +9,19 @@
 emulate -L zsh
 setopt local_options no_unset pipe_fail
 
+# Same session threading as layout.sh: herdr 0.8.2 selects a session only via
+# `--session`, never an environment variable, so a bare `command herdr` here would
+# focus a tab in the DEFAULT session while the caller meant a named one.
+typeset -ga HL_HERDR=(command herdr)
+[[ -n "${HERDR_SESSION:-}" ]] && HL_HERDR+=(--session "$HERDR_SESSION")
+
 # tg_fail — report and stop. Bound to a key via [[keys.command]] type = "shell", which
 # herdr runs DETACHED: nothing written to stderr reaches the TUI, so a failure would
 # look exactly like a dead keybinding. The notification is the only feedback the user
 # actually sees; stderr is kept for the test suite and for manual invocation.
 tg_fail() {
   print -ru2 -- "tab-goto: $1"
-  command herdr notification show "Tab jump" --body "$1" >/dev/null 2>&1 || true
+  "${HL_HERDR[@]}" notification show "Tab jump" --body "$1" >/dev/null 2>&1 || true
   exit 1
 }
 
@@ -29,7 +35,7 @@ label="${1:-}"
 ws="${HERDR_ACTIVE_WORKSPACE_ID:-${HERDR_WORKSPACE_ID:-}}"
 [[ -n "$ws" ]] || tg_fail "no active workspace in the environment (expected HERDR_ACTIVE_WORKSPACE_ID)"
 
-tabs="$(command herdr tab list --workspace "$ws" 2>&1)" || tg_fail "tab list failed: $tabs"
+tabs="$("${HL_HERDR[@]}" tab list --workspace "$ws" 2>&1)" || tg_fail "tab list failed: $tabs"
 
 # Same boundary discipline as layout.sh: an empty or malformed response must not
 # become a jump. jq exits 0 on empty input, so without this an empty response reads as
@@ -59,4 +65,4 @@ ids=( ${ids:#} )
 (( ${#ids} != count ))    && tg_fail "tab '$label' has a malformed id"
 (( ${#ids} > 1 ))         && tg_fail "${#ids} tabs labelled '$label' — refusing to guess"
 
-command herdr tab focus "${ids[1]}" >/dev/null || tg_fail "could not focus '$label'"
+"${HL_HERDR[@]}" tab focus "${ids[1]}" >/dev/null || tg_fail "could not focus '$label'"

@@ -7,10 +7,19 @@
 # integrations.
 #
 # Run manually: ./tests/dev-integrations.test.sh
-# test-requires: herdr  # reads the real deployed ~/.claude and ~/.codex herdr integrations
+# test-requires: herdr, interactive  # needs an operator to attach the session and press Enter
 emulate -L zsh
 set -u
 setopt no_bg_nice
+
+# Refuse before doing any setup. This suite stops midway to have an operator attach the
+# session and start both agents by hand; with no TTY the later `read` returns at once
+# and every assertion after it fails for the single reason that nobody was there —
+# noise that reads as a broken integration.
+if [[ ! -t 0 ]]; then
+  print -ru2 -- "dev-integrations is INTERACTIVE: run it from a terminal, not a pipe or an agent session."
+  exit 2
+fi
 
 SESSION=dev-restore
 # Path name is historical (from the Herdr trial); the value is deliberately

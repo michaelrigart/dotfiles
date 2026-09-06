@@ -73,7 +73,7 @@ skipped by default:
 | `reconcile-agents` | unsandboxed | writes a temp XDG config dir; sandboxed it reports ~18 false failures |
 | `ssh-credential-inventory` | unsandboxed | the `Read(~/.ssh/**)` deny blocks enumeration; it then exits 2 (INCONCLUSIVE) rather than green |
 | `dev-topology` | unsandboxed + live `herdr` | drives the real binary, whose socket the sandbox denies |
-| `dev-integrations` | live `herdr` | reads the real deployed `~/.claude` / `~/.codex` integrations |
+| `dev-integrations` | live `herdr` + **interactive** | stops midway for an operator to attach the session and start both agents; it exits 2 with no TTY rather than half-running |
 | `live-agent-auth`, `live-agent-signing`, `live-credential-boundary` | **fresh session after `chezmoi apply`, and SANDBOXED** | they measure the sandbox |
 
 **Never run the live suites with the sandbox disabled.** They measure the sandbox, so
@@ -107,6 +107,20 @@ socket is denied.
 A suite whose subject has moved must fail loudly, not silently pass: each one checks its
 target exists and exits 2 if not. Keep that when adding suites — a guard test whose guard
 is missing otherwise reports every "must allow" case as a pass.
+
+Two output idioms exist and `run.sh` counts both: prose (`  ok  …` / `  PASS: …`) and the
+`KEY=VALUE` status the `live-*` suites emit so they never print key material. A kv suite
+encodes failures in its values and exits with the count, so it is judged on exit status
+alone — the prose cross-check does not apply to it.
+
+**`HERDR_SESSION` is a layout.sh convention, not a herdr one.** herdr 0.8.2 selects a
+session only via `--session`; there is no environment variable. `layout.sh`, `tab-goto.sh`
+and `phase.sh` each thread it in themselves, and nothing in them may call `command herdr`
+bare — a bare call silently targets the *default* session. That is what made
+`dev-topology`'s isolation a fiction: it built its fixtures into the live session and then
+asserted against an empty `dev-test`. `layout.sh` also starts a server whenever
+`HERDR_SESSION` is set, even inside a Herdr pane, because the pane you are in belongs to a
+different session than the one you named.
 
 **Report totals as passed/total, never "N green".** A handoff once claimed "324 assertions
 green" when it was 321 green / 3 red — 324 was the *total*. The three red were in
