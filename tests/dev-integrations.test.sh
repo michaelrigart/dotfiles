@@ -86,7 +86,16 @@ print -r -- "  its SessionStart hook runs. Wait until both agents are idle, deta
 print -r -- "  alt+w, then press Enter here."
 read -r
 
-before_json=$(agent_json) || {
+# Poll rather than sample once. A SessionStart that lands a second after Enter is a
+# timing accident, not a regression, and a single read turned it into a red suite —
+# which is indistinguishable from the integration genuinely being dead.
+for i in {1..30}; do
+  before_json=$(agent_json) || break
+  [[ "$(print -r -- "$before_json" | jq -r '[.result.agents[] | select(.agent_session == null)] | length')" == 0 \
+     && "$(print -r -- "$before_json" | jq -r '.result.agents | length')" == 2 ]] && break
+  sleep 1
+done
+[[ -n "${before_json:-}" ]] || {
   bad "agent list failed before restart"
   print -r -- "=== $pass passed, $fail failed ==="
   exit 1
@@ -106,7 +115,7 @@ before_missing=$(print -r -- "$before_json" \
   | jq -r '[.result.agents[] | select(.agent_session == null) | .agent] | join(", ")')
 [[ "$before_noref" == 0 && "$before_n" == 2 ]] \
   && ok "both agents report native session refs" \
-  || bad "no session ref for: ${before_missing:-<none>} ($before_noref of $before_n) — a missing codex ref usually means its SessionStart hook never ran; submit one prompt in the Codex pane before pressing Enter"
+  || bad "no session ref for: ${before_missing:-<none>} ($before_noref of $before_n) — a missing codex ref means Codex never reached SessionStart. Check for a rollout under ~/.codex/sessions dated today; if there is none, the pane never started a session — submit a prompt in it and let the reply finish before pressing Enter"
 (( fail == 0 )) || {
   print -r -- "=== $pass passed, $fail failed ==="
   exit 1
