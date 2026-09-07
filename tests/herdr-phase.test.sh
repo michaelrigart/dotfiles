@@ -52,6 +52,12 @@ ICON_FLAG=$(printf '\xee\xb0\xbf')     # U+EC3F cod-flag
 # ---------------------------------------------------------------- git fixture
 # One bare origin, one main checkout, and a linked worktree per phase we want to exercise.
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+# Isolate from global config, the way wt-functions does. The fixture inherited
+# commit.gpgsign=true and signed through the 1Password agent, so whenever that agent's
+# authorization lapsed every fixture commit failed, `git worktree add` had no base to
+# branch from, and the suite reported 18 phase-derivation failures with empty output —
+# a dead signing key wearing the costume of a broken phase script.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
 q() { "$@" >/dev/null 2>&1; }
 
 ORIGIN="$T/origin.git"
@@ -88,6 +94,15 @@ echo scratch >> "$T/repo-dirty/f"          # the one uncommitted change in the f
 # Rewritten only now that every push is done: the script never fetches, it reads the
 # remote-tracking refs that already exist, so a URL it cannot reach is realistic and safe.
 q git -C "$REPO" remote set-url origin git@gitlab.com:test/proj.git
+
+# Assert the fixture before asserting anything about the script. Every git call above is
+# silenced by q(), so a setup that failed reached the phase assertions as "no output" and
+# read as the script itself being broken.
+for _d in dirty unpushed review draft merged nomr fresh; do
+  [ -d "$T/repo-$_d" ] || { echo "FIXTURE BROKEN: $T/repo-$_d was not created" >&2; exit 2; }
+done
+git -C "$REPO" rev-parse --verify -q HEAD >/dev/null \
+  || { echo "FIXTURE BROKEN: the base commit does not exist" >&2; exit 2; }
 
 # ------------------------------------------------------------------ stubs
 BIN="$T/bin"; mkdir -p "$BIN"
