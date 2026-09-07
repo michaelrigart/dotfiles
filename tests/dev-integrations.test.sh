@@ -99,9 +99,14 @@ before_noref=$(print -r -- "$before_json" | jq -r '[.result.agents[] | select(.a
 [[ "$before_names" == '["claude","codex"]' ]] \
   && ok "exactly Claude and Codex are registered" \
   || bad "unexpected agents before restart: $before_names"
+# Naming the agent is the whole diagnostic value here. "1 of 2 agents have no session
+# ref" cannot distinguish a real integration regression from the operator skipping the
+# Codex prompt above — and those have opposite responses.
+before_missing=$(print -r -- "$before_json" \
+  | jq -r '[.result.agents[] | select(.agent_session == null) | .agent] | join(", ")')
 [[ "$before_noref" == 0 && "$before_n" == 2 ]] \
   && ok "both agents report native session refs" \
-  || bad "$before_noref of $before_n agents have no session ref"
+  || bad "no session ref for: ${before_missing:-<none>} ($before_noref of $before_n) — a missing codex ref usually means its SessionStart hook never ran; submit one prompt in the Codex pane before pressing Enter"
 (( fail == 0 )) || {
   print -r -- "=== $pass passed, $fail failed ==="
   exit 1
@@ -140,7 +145,9 @@ done
 
 [[ "$after_refs" == "$before_refs" && "$before_n" == 2 ]] \
   && ok "the same native agent sessions resumed" \
-  || bad "sessions differ after restart (before=$before_n after=$after_n)"
+  || bad "sessions differ after restart (before=$before_n after=$after_n)
+    | before: $before_refs
+    | after:  $after_refs"
 
 print -r -- "=== $pass passed, $fail failed ==="
 (( fail == 0 ))
