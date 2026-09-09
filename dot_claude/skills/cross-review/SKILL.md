@@ -105,19 +105,38 @@ Keep going until the review converges or the disagreement is real. Michael is th
 tiebreaker, not the courier — he should hear about a finding because it needs his
 judgement, never because a round ended.
 
-Each round re-dispatches the **updated artifact, cold**. Never send a rebuttal: a
-reviewer arguing with your justification has stopped reviewing the work, and its
-agreement stops being evidence. Carry only a bare list of which findings the round
-addressed — identifiers, no reasons — for exactly the reason the rejected-alternatives
-list carries none.
+**Rounds within a checkpoint stay on the same thread.** Round 4 of a spec sign-off is
+normal operation, not degradation — iterating on one thread is how a review converges,
+and the round cap is the only limit on it. Never stop, rotate or escalate because a
+thread has answered a few rounds.
 
-Escalate to Michael when:
+**The only staleness signal is `xreview`'s own warning**, which it prints to stderr
+before queueing, once a thread has answered eight reviews (`XREVIEW_THREAD_WARN`). If it
+has not printed, the thread is not stale. Do not infer staleness from the round number,
+from how long the exchange feels, or from the reviewer agreeing with you.
+
+Two counters exist and mistaking one for the other is what produces a wrong rotation:
+`xreview round` counts rounds on the current **branch** (cap 10), while the staleness
+check counts reviews recorded against the **thread** (warn at 8).
+
+Each round re-dispatches the **updated artifact, cold**. Cold describes what you *send* —
+the artifact and the constraints, never your reasoning, your transcript or a rebuttal. It
+is not a claim about the thread; per-round thread freshness is not a rule, and the
+checkpoint-level rotation below is a different one. A reviewer arguing with your
+justification has stopped reviewing the work, and its agreement stops being evidence.
+Carry only a bare list of which findings the round addressed — identifiers, no reasons —
+for exactly the reason the rejected-alternatives list carries none.
+
+Escalate to Michael when, and only when:
 
 - the reviewer **re-raises a finding you already addressed** — that is disagreement,
   not a missed fix
 - a finding needs design judgement or a trade-off
 - you cannot verify a claim
 - `xreview` refuses the round (capped at 10; `XREVIEW_MAX_ROUNDS` overrides)
+
+That list is exhaustive. A round count is not on it, and neither is a thread that has
+answered several rounds of the checkpoint it is working through.
 
 Converged means the reviewer returns no actionable findings — not that it stopped
 objecting, and not that you stopped asking. Run `xreview round --reset` when moving on
@@ -130,6 +149,13 @@ this skill is built on, and it degrades silently — the reviewer keeps answerin
 with less and less independence. One chezmoi thread absorbed 37 reviews before anyone
 noticed. Start a fresh Codex session for the checkout at each checkpoint; `resolve_thread`
 picks up the new pane automatically. `xreview` warns once a thread has answered eight.
+
+Note what this rotation is keyed to: **checkpoints, not rounds.** Moving from plan review
+to the pre-merge review is a rotation; going from round 3 to round 4 of the same plan
+review is not. `round --reset` drops the cached thread, but `resolve_thread` then
+re-resolves to the live Codex pane — so if it is the same pane it is the same thread, and
+only a new Codex session actually rotates. That makes rotation Michael's action, which is
+another reason not to ask for one that the workflow does not call for.
 
 ## Consultation is not review
 

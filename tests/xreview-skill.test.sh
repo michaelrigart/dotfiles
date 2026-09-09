@@ -258,5 +258,41 @@ else
   _fail "the skill says collecting again is safe" "the model will stop waiting too early"
 fi
 
+# Rotation is keyed to checkpoints, not rounds. Observed 2026-09-09: a review stopped at
+# round 4 of one checkpoint and escalated, on the reasoning that the thread had "answered
+# three rounds" and was no longer cold — conflating the branch round counter with the
+# thread staleness count, and reading "cold" (what you send) as "fresh thread per round".
+# All three confusions are cheap to assert against and expensive to hit.
+if grep -qi 'stay on the same thread' "$SKILL"; then
+  _pass "the skill says rounds within a checkpoint keep one thread"
+else
+  _fail "the skill says rounds within a checkpoint keep one thread" \
+        "nothing stops a round count being read as staleness"
+fi
+if grep -qi 'only staleness signal' "$SKILL"; then
+  _pass "the skill names xreview's warning as the only staleness signal"
+else
+  _fail "the skill names xreview's warning as the only staleness signal" "staleness is inferrable again"
+fi
+# The threshold number itself is already pinned against the code further up; what matters
+# here is that the skill names XREVIEW_THREAD_WARN as the knob, so a reader who wants a
+# different threshold changes it rather than eyeballing round counts instead.
+if grep -q 'XREVIEW_THREAD_WARN' "$SKILL"; then
+  _pass "the skill names the staleness knob"
+else
+  _fail "the skill names the staleness knob" "staleness looks like a judgement call"
+fi
+# "Cold" is about what you send, not about the thread. The escalation list is exhaustive.
+if grep -qi 'Cold describes what you' "$SKILL"; then
+  _pass "the skill disambiguates 'cold'"
+else
+  _fail "the skill disambiguates 'cold'" "the two senses can be swapped again"
+fi
+if grep -qi 'list is exhaustive' "$SKILL"; then
+  _pass "the skill closes the escalation list"
+else
+  _fail "the skill closes the escalation list" "a new escalation reason can be invented"
+fi
+
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
