@@ -43,58 +43,30 @@ A dispatch carries:
 ## Dispatching
 
 ```
-NONCE=$(xreview dispatch --diff <base>..<head> --expect <model>/<effort> <body-file>)
+NONCE=$(xreview dispatch --diff <base>..<head> <body-file>)
 xreview collect "$NONCE" [budget-secs]
 ```
 
-**Check the tier before spending the turn.** `--expect` reads the model and reasoning
-effort the Codex pane is actually running — from the last `turn_context` in its rollout,
-so a mid-session `/model` change is picked up — and refuses the dispatch if it does not
-match, naming both sides. A dispatch is one shot: once queued the turn is spent at
-whatever tier answered it, so the check has to come first. It fails open, because an
-unreadable tier is not evidence of a mismatch.
+**Never gate a dispatch on which model or effort the pane is running.** Whatever the
+Codex pane is set to is Michael's choice, and it is not yours to verify, question, or
+report as a problem. There is no `--expect`: the flag that once refused a dispatch on a
+model-name mismatch is gone, because every new model release turned it into a blanket
+refusal of every review. `xreview tier` reports the current setting and
+`xreview receipts --tiers` counts what past reviews ran at — both are there to look at if
+you are curious, never to block on. Do not relay a tier mismatch to Michael as a finding.
 
-`xreview tier` reports the current setting on its own, and `xreview receipts --tiers`
-counts what past reviews actually ran at. Check it when a branch has taken several
-rounds: `--expect` verifies the pane against the tier asked for, so it confirms a lazy
-recommendation just as readily as a considered one. A long run of a single tier in that
-summary is the signal that nobody is choosing any more.
+**Collect in the background, and wait properly.** Reviews routinely take longer than a
+foreground tool call is allowed to run, so run `xreview collect` as a background command
+rather than capping it at whatever the shell tool permits. The default budget is 45
+minutes; pass a larger one for a big diff.
 
-Changing it is `/models` in the Codex pane — plural, and a picker rather than a command
-taking the model as an argument. Relay that, not "change the model": there is no
-`/model <name>` form to find. It cannot be driven reliably from outside either, which is
-why this is a refusal for Michael to act on rather than something the dispatch fixes
-itself — blind list navigation would silently select the wrong model and then pass its
-own check.
+A budget running out is not automatically a timeout:
 
-Michael set this table on 2026-09-01. Follow it; do not re-derive a tier per dispatch.
-Judgement per call is what produced the history below — nobody chose the top tier each
-time, they just never chose at all, and the top tier is never *wrong*.
-
-| Checkpoint | Tier |
-|---|---|
-| Spec sign-off, plan review, final whole-branch review | `gpt-5.6-sol/xhigh` |
-| Everything else, narrow verification rounds included | `gpt-5.6-terra/high` |
-
-Plan review sits in the top row deliberately: a plan is an architecture question — will
-this sequence actually work — not a narrow check.
-
-**One deviation is licensed, and only this one.** If a verification round at
-`terra/high` re-raises a finding you have already addressed, re-run that round once at
-`gpt-5.6-sol/xhigh` before escalating to Michael. A disagreement a stronger reviewer
-would have settled should not cost his attention, and this is the case where paying for
-the better model is cheaper than the alternative. If it re-raises the finding at
-`sol/xhigh` too, that is a real disagreement: take it to him.
-
-Everything else follows the table. Do not step up because a change *feels* important —
-that instinct is exactly the 168-turn failure, and it always argues for the top row.
-
-Measured on 2026-09-01, three long-running review threads read `gpt-5.6-sol/xhigh` on
-every turn — 168 consecutive turns on one of them. The top tier was never stepped down
-for a narrow round, because nothing in the workflow said out loud what it was set to.
-
-```
-```
+- **Exit 3 — the turn is on record and still running.** Not ambiguous, not a failure. The
+  reviewer is simply still working. Run `xreview collect "$NONCE" <secs>` again; it
+  resumes the wait and does not re-dispatch or cost another turn. Keep waiting.
+- **Exit 1, "no turn on record"** — genuinely ambiguous: the queue may never have landed.
+  Report it and stop. Never re-dispatch.
 
 `xreview` wraps outbound packets in `<cross-review-request>` and returns the reviewer's
 answer. It applies provenance itself, because Michael is no longer in the channel to
@@ -114,7 +86,8 @@ recorded id proves a thread existed, not that anything is running to answer on i
 **A freshly built pane has no thread until its first turn.** If dispatch reports that,
 send the pane one message and retry — it is not a missing pane.
 
-A timeout is **ambiguous, never retried** — report it and stop.
+Only the "no turn on record" collect is a timeout, and that one is **ambiguous, never
+retried** — report it and stop. A still-running turn is not a timeout; wait it out.
 
 ## Acting on findings
 

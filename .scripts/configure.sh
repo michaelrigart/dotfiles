@@ -387,6 +387,25 @@ else
 fi
 
 # ============================================================================
+# LaunchAgents
+# ============================================================================
+log_info "Loading LaunchAgents..."
+
+# chezmoi writes the plists; launchd has to be told about them. bootout-then-bootstrap
+# rather than a bare bootstrap, so re-running this picks up an edited plist instead of
+# failing with "service already loaded".
+for plist in "${HOME}/Library/LaunchAgents"/be.netronix.*.plist; do
+  [ -f "$plist" ] || continue
+  label="$(basename "$plist" .plist)"
+  launchctl bootout "gui/$(id -u)/${label}" &> /dev/null || true
+  if launchctl bootstrap "gui/$(id -u)" "$plist" &> /dev/null; then
+    log_info "  loaded ${label}"
+  else
+    log_warn "  could not load ${label} — run: launchctl bootstrap gui/\$(id -u) $plist"
+  fi
+done
+
+# ============================================================================
 # Apply Changes
 # ============================================================================
 log_info "Applying changes..."

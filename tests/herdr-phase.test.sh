@@ -85,6 +85,10 @@ mkwt review   feature/review   1
 mkwt draft    feature/draft    1
 mkwt merged   feature/merged   1
 mkwt nomr     feature/nomr     1
+# Its branch name is a strict prefix of feature/review, which HAS an open MR. The table
+# lookup anchors on the field-separating tab; drop that anchor and this worktree silently
+# inherits !10 from a branch it has nothing to do with.
+mkwt prefix   feature/rev      1
 # Branched from main and not committed to yet. Zero commits ahead of the base and HEAD is an
 # ancestor of it — arithmetically identical to a fully merged branch, so anything inferring
 # "merged" from containment alone marks every worktree the day it is created.
@@ -98,7 +102,7 @@ q git -C "$REPO" remote set-url origin git@gitlab.com:test/proj.git
 # Assert the fixture before asserting anything about the script. Every git call above is
 # silenced by q(), so a setup that failed reached the phase assertions as "no output" and
 # read as the script itself being broken.
-for _d in dirty unpushed review draft merged nomr fresh; do
+for _d in dirty unpushed review draft merged nomr prefix fresh; do
   [ -d "$T/repo-$_d" ] || { echo "FIXTURE BROKEN: $T/repo-$_d was not created" >&2; exit 2; }
 done
 git -C "$REPO" rev-parse --verify -q HEAD >/dev/null \
@@ -133,7 +137,8 @@ cat > "$WSJSON" <<J
  {"workspace_id":"w5","label":"draft","worktree":{"checkout_path":"$T/repo-draft","is_linked_worktree":true,"repo_root":"$REPO"}},
  {"workspace_id":"w6","label":"merged","worktree":{"checkout_path":"$T/repo-merged","is_linked_worktree":true,"repo_root":"$REPO"}},
  {"workspace_id":"w7","label":"nomr","worktree":{"checkout_path":"$T/repo-nomr","is_linked_worktree":true,"repo_root":"$REPO"}},
- {"workspace_id":"w8","label":"fresh","worktree":{"checkout_path":"$T/repo-fresh","is_linked_worktree":true,"repo_root":"$REPO"}}
+ {"workspace_id":"w8","label":"fresh","worktree":{"checkout_path":"$T/repo-fresh","is_linked_worktree":true,"repo_root":"$REPO"}},
+ {"workspace_id":"w9","label":"prefix","worktree":{"checkout_path":"$T/repo-prefix","is_linked_worktree":true,"repo_root":"$REPO"}}
 ]}}
 J
 
@@ -178,6 +183,12 @@ case "$(report_for w4)" in *"--token review=$ICON_MR !10"*) _pass "open ready MR
   *) _fail "open ready MR -> review, carries !10 (got: $(report_for w4))";; esac
 case "$(report_for w5)" in *"--token active=$ICON_DRAFT"*) _pass "open draft MR -> active, draft icon";;
   *) _fail "open draft MR -> active, draft icon (got: $(report_for w5))";; esac
+# The branch is matched on the whole field, not as a substring. feature/rev must not pick up
+# the MR belonging to feature/review — a wrong badge is worse than none, because it says a
+# branch is waiting on a review that does not exist. Nothing in the script's output shows
+# which row was matched, so only an assertion like this one can catch it.
+case "$(report_for w9)" in *"--token active=$ICON_BRANCH"*) _pass "a branch that is a prefix of another does not inherit its MR";;
+  *) _fail "a branch that is a prefix of another does not inherit its MR (got: $(report_for w9))";; esac
 case "$(report_for w6)" in *"--token merged=$ICON_MERGE !12"*) _pass "merged MR -> merged, carries !12";;
   *) _fail "merged MR -> merged, carries !12 (got: $(report_for w6))";; esac
 
@@ -323,6 +334,40 @@ else
   done
   grep -q 'phase.sh refresh --force' "$CONF" \
     && _pass "a keybinding forces a refresh" || _fail "a keybinding forces a refresh"
+fi
+
+# The timer is what actually keeps an MR badge true. The plugin's event hooks cannot: the
+# state that changes lives on GitLab, so opening an MR from the worktree you are sitting in,
+# or someone merging one while you are away, fires no Herdr event and the badge stays stale
+# until you happen to switch spaces. Observed 2026-09-09 — two worktrees with open MRs sat
+# unbadged for two days while `refresh` returned the correct `review` phase for both.
+PLIST="$ROOT/Library/LaunchAgents/be.netronix.herdr-phase-refresh.plist.tmpl"
+if [ ! -r "$PLIST" ]; then
+  _fail "a LaunchAgent refreshes the badges on a timer (plist missing)"
+else
+  _pass "a LaunchAgent refreshes the badges on a timer"
+  grep -q '<string>be.netronix.herdr-phase-refresh</string>' "$PLIST" \
+    && _pass "the plist Label matches its filename" || _fail "the plist Label matches its filename"
+  # Invoking anything but `refresh` would load the agent and badge nothing.
+  grep -q '<string>refresh</string>' "$PLIST" \
+    && _pass "the agent runs phase.sh refresh" || _fail "the agent runs phase.sh refresh"
+  # An interval longer than the MR-table TTL means every run re-reads GitLab; a much longer
+  # one would make the badge stale for exactly as long as nobody switches spaces, which is
+  # the failure this exists to fix.
+  ival="$(grep -A1 '<key>StartInterval</key>' "$PLIST" | grep -oE '[0-9]+' | head -1)"
+  if [ -n "$ival" ] && [ "$ival" -ge 60 ] && [ "$ival" -le 600 ]; then
+    _pass "the refresh interval is between 1 and 10 minutes ($ival s)"
+  else
+    _fail "the refresh interval is between 1 and 10 minutes (got '${ival:-none}')"
+  fi
+  # chezmoi renders the home path; a hard-coded /Users/<someone> deploys a broken agent on
+  # any other machine and fails silently, because launchd logs nothing here by design.
+  grep -q '{{ .chezmoi.homeDir }}/.config/herdr/phase.sh' "$PLIST" \
+    && _pass "the program path is templated, not hard-coded" \
+    || _fail "the program path is templated, not hard-coded"
+  # configure.sh is the only thing that tells launchd the plist exists.
+  grep -q 'launchctl bootstrap' "$ROOT/.scripts/configure.sh" \
+    && _pass "configure.sh loads the LaunchAgents" || _fail "configure.sh loads the LaunchAgents"
 fi
 
 echo
