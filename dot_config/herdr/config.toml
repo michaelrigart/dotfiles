@@ -219,8 +219,9 @@ type = "shell"
 command = "~/.config/herdr/tab-goto.sh git"
 description = "tab: git"
 
-# Forced refresh: the plugin's event hooks keep the badges current on their own, but MR state
-# is cached and this bypasses the TTL for when you have just merged something in the browser.
+# Forced refresh. A LaunchAgent repaints the badges every 3 minutes and the plugin's event
+# hooks cover restarts and worktree changes, but MR state is cached with a TTL — this bypasses
+# it for when you have just merged something in the browser and want the badge now.
 [[keys.command]]
 key = "prefix+shift+p"
 type = "shell"

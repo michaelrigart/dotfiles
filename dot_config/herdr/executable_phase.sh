@@ -5,9 +5,26 @@
 # Managed by chezmoi (source: dot_config/herdr/executable_phase.sh).
 #
 # Reported tokens are display-only and do NOT survive a Herdr server restart, so this script
-# is the only thing keeping the badges alive: the dev.phase plugin replays a full refresh on
-# startup and on worktree/focus events. It must therefore be cheap and safely re-runnable, and
-# it must never read back state it previously reported.
+# is the only thing keeping the badges alive. It must therefore be cheap and safely
+# re-runnable, and it must never read back state it previously reported.
+#
+# Three things drive it, and the periodic one is not redundant:
+#   - the dev.phase plugin's [[startup]] hook, which repaints every badge after a restart;
+#   - its [[events]] hooks on workspace.focused / worktree.created / worktree.removed;
+#   - a LaunchAgent (be.netronix.herdr-phase-refresh) running `refresh` every 3 minutes.
+#
+# The event hooks alone cannot keep an MR badge true, because the state that changes is not
+# local: opening an MR from the worktree you are sitting in, or someone merging one while you
+# are away, produces no Herdr event at all, so the badge stays whatever it last was until you
+# happen to switch spaces. Observed 2026-09-09: two worktrees with open MRs (!49 and !34) sat
+# unbadged while the derivation below returned the correct `review` phase for both. Separately,
+# herdr 0.9.0's workspace.focused hook did not fire for UI-driven workspace switches at all —
+# the plugin command log held only the startup entry across two days and ~10 focus events,
+# while a CLI `herdr workspace focus` fired it every time. The timer covers both without
+# depending on which of them is true today.
+#
+# When Herdr is not running, `spaces` comes back empty and refresh returns before any git or
+# glab work — so the timer costs nothing on a machine with no session up.
 #
 # It also never fetches. `origin/<branch>` is read as-is, which is what a push from the
 # worktree itself updates; the MR state comes from GitLab and is where freshness actually
@@ -144,6 +161,9 @@ derive() { # derive <checkout_path> <repo_root> <mr_table>
   fi
   if [ "${ahead:-0}" -gt 0 ]; then printf 'active %s\n' "$ICON_BRANCH"; return 0; fi
 
+  # The trailing tab is the field anchor, and it does survive the command substitution:
+  # `$(...)` strips trailing NEWLINES, not other whitespace. Without it the match would be
+  # an unanchored substring and `feature/rev` would pick up the row for `feature/review`.
   row="$(printf '%s\n' "$table" | grep -F "$(printf '%s\t' "$branch")" | head -1)"
   if [ -n "$row" ]; then
     state="$(printf '%s' "$row" | cut -f2)"

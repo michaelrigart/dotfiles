@@ -24,6 +24,12 @@ command = ["/bin/zsh", "-c", "exec \"$HOME/.config/herdr/phase.sh\" refresh"]
 # switch, and a full refresh costs ~0.4s of forked git for fifteen spaces when the user is
 # about to look at one — so scope it to the focused space, falling back to a full refresh if
 # the event ever arrives without an id.
+#
+# Not load-bearing on its own, for two reasons. It cannot see an MR opened or merged while you
+# sit in the same space — that state lives on GitLab and fires no Herdr event — and on herdr
+# 0.9.0 it was observed not firing for UI-driven workspace switches at all (only for a CLI
+# `herdr workspace focus`). The be.netronix.herdr-phase-refresh LaunchAgent is what actually
+# keeps the badges true; this stays because when it does fire it is faster than the timer.
 [[events]]
 on = "workspace.focused"
 command = ["/bin/zsh", "-c", "P=\"$HOME/.config/herdr/phase.sh\"; if [ -n \"${HERDR_WORKSPACE_ID:-}\" ]; then exec \"$P\" refresh --workspace \"$HERDR_WORKSPACE_ID\"; else exec \"$P\" refresh; fi"]
