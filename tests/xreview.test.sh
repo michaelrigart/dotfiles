@@ -153,13 +153,14 @@ out=$(bash "$XREVIEW" dispatch other-thread b.md 2>&1)
 is "the warning is scoped to the thread, so rotating clears it" \
    "$(printf '%s' "$out" | grep -c 'no longer cold')" 0
 
-# --- reviewer tier (model/effort) before dispatch -----------------------------
+# --- reviewer tier is reported, never enforced --------------------------------
 #
 # Codex records the model and reasoning effort of every turn in its rollout file, one
 # `turn_context` record per turn, so the LAST one is the setting a dispatch would
-# actually reach. A real 168-turn review session read gpt-5.6-sol/xhigh on all 168 —
-# the top tier was never once stepped down for a narrow verification round, and nothing
-# in the workflow said so out loud.
+# actually reach. That is worth reporting and worth recording in a receipt; it is not
+# worth blocking on, which is what the removed --expect gate did — it refused every
+# dispatch whose model name was not in a hard-coded table, so each new model release
+# broke every review until someone edited the table.
 export CODEX_HOME="$ROOT/codex"
 ROLL="$CODEX_HOME/sessions/2026/09/01"
 mkdir -p "$ROLL"
@@ -176,43 +177,46 @@ is "tier reports the thread's model and effort" \
 is "tier reflects a mid-session switch, not the opening setting" \
    "$(bash "$XREVIEW" tier faketh 2>&1)" "gpt-5.6-terra/high"
 
-# The point of the check: refuse before spending the turn, naming both sides, so there
-# is time to change it. A warning after the fact would be a report on money already gone.
-bash "$XREVIEW" round --reset >/dev/null 2>&1
-out=$(bash "$XREVIEW" dispatch --expect gpt-5.6-sol/xhigh faketh b.md 2>&1)
-is "a tier mismatch refuses the dispatch" "$(printf '%s' "$out" | grep -c 'reviewer tier')" 1
-is "the refusal names what is set now"    "$(printf '%s' "$out" | grep -c 'gpt-5.6-terra/high')" 1
-is "the refusal names what was expected"  "$(printf '%s' "$out" | grep -c 'gpt-5.6-sol/xhigh')" 1
-# Name the command. It is `/models`, plural, and it is a picker rather than a command
-# taking the model as an argument — Codex documents an inline form for /goal, /ide,
-# /keymap, /mcp, /pwd, /raw, /sandbox and /usage, and none for this one. "Change the
-# model" would send the reader looking for a `/model <name>` that does not exist.
-is "the refusal names the /models command" "$(printf '%s' "$out" | grep -c '/models')" 1
+# A dispatch must go out whatever the pane is set to. Everywhere else in this suite
+# `codex queue` is left to fail on the fake thread; here it has to succeed, because the
+# assertion is that a nonce comes back — i.e. that the turn was actually queued and not
+# refused on the way in.
+STUB="$ROOT/stub"; mkdir -p "$STUB"
+printf '#!/bin/sh\nexit 0\n' > "$STUB/codex"; chmod +x "$STUB/codex"
+OLD_PATH="$PATH"; PATH="$STUB:$PATH"
 
-# A matching tier must not obstruct: the round is spent, so the dispatch proceeds.
 bash "$XREVIEW" round --reset >/dev/null 2>&1
-out=$(bash "$XREVIEW" dispatch --expect gpt-5.6-terra/high faketh b.md 2>&1)
-is "a matching tier does not block the dispatch" "$(printf '%s' "$out" | grep -c 'reviewer tier')" 0
+out=$(bash "$XREVIEW" dispatch faketh b.md 2>&1)
+is "a dispatch is never refused over the tier" "$(printf '%s' "$out" | grep -ci 'reviewer tier')" 0
+is "a dispatch at any tier returns a nonce"    "$(printf '%s' "$out" | grep -c '^xr-')" 1
 
-# Effort alone is the common case — same model, cheaper round.
+# The rollout above reads gpt-5.6-terra/high. An unfamiliar model must be just as
+# acceptable, because the failure being fixed is a gate that treated "a model I have not
+# heard of" as an error and so broke every review on the day a new one shipped.
 bash "$XREVIEW" round --reset >/dev/null 2>&1
-out=$(bash "$XREVIEW" dispatch --expect /xhigh faketh b.md 2>&1)
-is "an effort-only expectation still catches a mismatch" "$(printf '%s' "$out" | grep -c 'reviewer tier')" 1
+{ tc astra-9 medium; } > "$ROLL/rollout-2026-09-01T10-00-00-faketh.jsonl"
+out=$(bash "$XREVIEW" dispatch faketh b.md 2>&1)
+is "a model the table never knew about still dispatches" "$(printf '%s' "$out" | grep -c '^xr-')" 1
+is "and it is reported, not judged" "$(bash "$XREVIEW" tier faketh 2>&1)" "astra-9/medium"
 
-# Fail open. If the tier cannot be read there is no evidence of a mismatch, and a check
-# that blocks reviews whenever Codex changes its on-disk layout would be turned off.
+# --expect is gone from the CLI entirely, not merely ignored: a flag that silently does
+# nothing is worse than one that does not exist, because callers keep passing it and
+# believing it checked something. With no handler it lands as a thread id, so the
+# dispatch fails outright rather than quietly queueing to the wrong place.
 bash "$XREVIEW" round --reset >/dev/null 2>&1
-out=$(bash "$XREVIEW" dispatch --expect gpt-5.6-sol/xhigh no-rollout-thread b.md 2>&1)
-is "an unreadable tier does not block the dispatch" "$(printf '%s' "$out" | grep -c 'reviewer tier')" 0
+out=$(bash "$XREVIEW" dispatch --expect astra-9/medium faketh b.md 2>&1); rc=$?
+is "--expect is rejected, not absorbed" "$rc" 1
+is "and no review is queued for it"     "$(printf '%s' "$out" | grep -c '^xr-')" 0
+is "no --expect handling survives in the source" \
+   "$(grep -c -- '--expect' "$XREVIEW")" 0
 
-# --- the tier is recorded, so a lazy recommendation is visible -----------------
+PATH="$OLD_PATH"
+
+# --- the tier is still recorded, because reporting is not enforcing ------------
 #
-# --expect only checks the pane against what the caller asked for. Ask for the top tier
-# every time and the check confirms the top tier every time and reports success — it
-# catches a mis-set pane, never a caller that stopped choosing. That is the failure
-# already on record: 168 consecutive turns at sol/xhigh, not chosen so much as never
-# reconsidered. Recording the tier each review actually ran at turns "is anyone still
-# picking?" into something countable rather than something to take on trust.
+# Dropping the gate must not drop the record. Which tier reviews actually ran at stays
+# countable — it is the only way to answer "is anyone still picking?" — but nothing acts
+# on it, and no dispatch is refused because of it.
 mkdir -p "$STATE"
 : > "$STATE/reviews.jsonl"
 { tc gpt-5.6-terra high; } > "$ROLL/rollout-2026-09-01T10-00-00-faketh.jsonl"
@@ -254,6 +258,31 @@ is "collect returns the reviewer's answer" \
    "$(bash "$XREVIEW" collect collectth xr-testnonce 2>&1)" "the review"
 is "the receipt records the tier the review actually ran at" \
    "$(bash "$XREVIEW" receipts 2>/dev/null | jq -r '.tier' | tail -1)" "gpt-5.6-terra/high"
+
+# --- running out of budget is two different outcomes --------------------------
+#
+# Collapsing them into one "ambiguous, do NOT retry" is what made long reviews look like
+# failures: a turn that is on record and still running has demonstrably not been lost, so
+# waiting longer is correct. Only a nonce with no turn against it is ambiguous — the queue
+# may never have landed — and that is the one a caller must not turn into a re-dispatch.
+sqlite3 "$DB" "INSERT INTO thread_turns VALUES ('collectth', 2, 'in_progress', 'u2', NULL);
+               INSERT INTO thread_items VALUES ('collectth','u2','{\"text\":\"xr-slownonce\"}');" 2>/dev/null
+
+out=$(bash "$XREVIEW" collect collectth xr-slownonce 0 2>&1); rc=$?
+is "a still-running turn exits 3, not 1"        "$rc" 3
+is "and says it is still running"               "$(printf '%s' "$out" | grep -ci 'still running')" 1
+is "and does not call it ambiguous"             "$(printf '%s' "$out" | grep -ci 'ambiguous')" 0
+is "and tells the caller how to keep waiting"   "$(printf '%s' "$out" | grep -c 'xreview collect xr-slownonce')" 1
+
+out=$(bash "$XREVIEW" collect collectth xr-nosuchnonce 0 2>&1); rc=$?
+is "a nonce with no turn on record exits 1"     "$rc" 1
+is "and is the one called ambiguous"            "$(printf '%s' "$out" | grep -ci 'ambiguous')" 1
+is "and is the one told not to retry"           "$(printf '%s' "$out" | grep -ci 'do NOT retry')" 1
+
+# The default budget is the patience limit, not a verdict. 900s was short enough that
+# reviews still working were being abandoned and escalated as timeouts.
+is "the default collect budget is at least 30 minutes" \
+   "$(grep -E '^COLLECT_BUDGET_DEFAULT=' "$XREVIEW" | cut -d= -f2 | awk '{print ($1 >= 1800)}')" 1
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))

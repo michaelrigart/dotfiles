@@ -200,48 +200,62 @@ else
   _fail "the skill says --reset drops the thread" "not documented"
 fi
 
-# The tier gate only helps if the skill tells the model to pass --expect; the CLI
-# accepting a flag nobody sends changes nothing.
+# No tier gate, on either side. The removed --expect refused a dispatch whenever the
+# pane's model name was not in a hard-coded table, so every new model release blocked
+# every review. The skill must not reintroduce it by example, and the CLI must not carry
+# a flag that quietly does nothing.
 if grep -E '^\s*(NONCE=)?\$?\(?xreview dispatch' "$SKILL" | grep -q -- '--expect'; then
-  _pass "the skill's dispatch example passes --expect"
-else
-  _fail "the skill's dispatch example passes --expect" \
+  _fail "the skill's dispatch example is free of --expect" \
         "$(grep -E 'xreview dispatch' "$SKILL" | head -1)"
-fi
-for sub in '--expect)' 'cmd_tier'; do
-  if strip_comments "$XREVIEW" | grep -q -- "$sub"; then
-    _pass "the CLI implements $sub"
-  else
-    _fail "the CLI implements $sub" "absent from the CLI"
-  fi
-done
-# Every tier the skill names must be one the reviewer could actually be set to; a table
-# citing a retired model teaches a refusal that can never be satisfied.
-# Match any gpt-<ver>-<name>/<effort>, not just the current family: a regex pinned to
-# 5.6 stops matching the moment the table names a different version, and an assertion
-# that skips the value it was written to check reports green for the wrong reason.
-for m in $(grep -oE 'gpt-[0-9]+\.[0-9]+-[a-z]+/[a-z]+' "$SKILL" | sort -u); do
-  case "$m" in
-    gpt-5.6-sol/xhigh|gpt-5.6-terra/high) _pass "the skill's tier $m is a known setting" ;;
-    *) _fail "the skill's tier $m is a known setting" "unrecognised tier in the table" ;;
-  esac
-done
-
-# The table is the policy. If the skill stops naming a checkpoint, the tier for it
-# becomes a judgement call again — which is the failure mode the table exists to remove.
-for cp in "Spec sign-off" "plan review" "final whole-branch review"; do
-  if grep -qi "$cp" "$SKILL"; then
-    _pass "the tier table still covers: $cp"
-  else
-    _fail "the tier table still covers: $cp" "checkpoint dropped from the skill"
-  fi
-done
-# receipts --tiers is what makes a lazy recommendation visible; the skill has to send
-# the reader to it, since --expect cannot detect one.
-if grep -q -- 'receipts --tiers' "$SKILL" && strip_comments "$XREVIEW" | grep -q -- '--tiers'; then
-  _pass "the skill points at receipts --tiers and the CLI implements it"
 else
-  _fail "the skill points at receipts --tiers and the CLI implements it" "skill/CLI mismatch"
+  _pass "the skill's dispatch example is free of --expect"
+fi
+if grep -q -- '--expect' "$XREVIEW"; then
+  _fail "the CLI has no --expect flag" "still present in the CLI"
+else
+  _pass "the CLI has no --expect flag"
+fi
+# A skill naming a specific model teaches exactly the gate that was removed — the reader
+# compares the pane against the name and reports a mismatch by hand. Nothing in the CLI
+# can stop that, so it is asserted here instead.
+if grep -oE 'gpt-[0-9]+\.[0-9]+-[a-z]+/[a-z]+' "$SKILL" | grep -q .; then
+  _fail "the skill names no specific reviewer tier" \
+        "$(grep -oE 'gpt-[0-9]+\.[0-9]+-[a-z]+/[a-z]+' "$SKILL" | sort -u | tr '\n' ' ')"
+else
+  _pass "the skill names no specific reviewer tier"
+fi
+if grep -qi 'never gate a dispatch on which model' "$SKILL"; then
+  _pass "the skill says the tier is not a gate"
+else
+  _fail "the skill says the tier is not a gate" "the prohibition is gone"
+fi
+
+# Reporting survives the gate's removal: tier and receipts --tiers stay, because knowing
+# what reviews ran at is still worth having — it just must not block anything.
+for sub in 'cmd_tier' '--tiers'; do
+  if strip_comments "$XREVIEW" | grep -q -- "$sub"; then
+    _pass "the CLI still implements $sub"
+  else
+    _fail "the CLI still implements $sub" "absent from the CLI"
+  fi
+done
+if grep -q -- 'receipts --tiers' "$SKILL"; then
+  _pass "the skill still points at receipts --tiers"
+else
+  _fail "the skill still points at receipts --tiers" "skill/CLI mismatch"
+fi
+
+# A collect that runs out of budget while the turn is still on record is not a timeout.
+# Telling the model otherwise is what turned long reviews into escalations.
+if grep -q 'Exit 3' "$SKILL" && strip_comments "$XREVIEW" | grep -q 'exit 3'; then
+  _pass "the skill and the CLI agree that a still-running turn exits 3"
+else
+  _fail "the skill and the CLI agree that a still-running turn exits 3" "skill/CLI mismatch"
+fi
+if grep -qi 'resumes the wait' "$SKILL"; then
+  _pass "the skill says collecting again is safe"
+else
+  _fail "the skill says collecting again is safe" "the model will stop waiting too early"
 fi
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
