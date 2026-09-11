@@ -212,6 +212,91 @@ is "no --expect handling survives in the source" \
 
 PATH="$OLD_PATH"
 
+# --- thread resolution ---------------------------------------------------------
+# A cached thread id proves a thread EXISTED, not that anything is alive to answer on
+# it. Codex has no session id until its first turn, so a pane that has just been built
+# reports none — and the fallback for "no live id" then handed back a thread cached
+# weeks earlier. `codex queue` accepts it, because the id is well formed, and the packet
+# lands in a dead session: nothing appears in the pane, and `collect` waits out its full
+# budget against a thread the dispatch never used. Observed 2026-09-11, when a review
+# went to a thread cached on 31 August while the live pane sat empty.
+TRES="$ROOT/tres"; mkdir -p "$TRES"
+AGENTS="$ROOT/agents.json"; export AGENTS
+cat > "$TRES/herdr" <<'H'
+#!/bin/sh
+if [ "$1" = "agent" ] && [ "$2" = "list" ]; then cat "$AGENTS"; fi
+exit 0
+H
+chmod +x "$TRES/herdr"
+OLD_PATH="$PATH"; PATH="$TRES:$PATH"
+CWD="$(git rev-parse --show-toplevel)"
+STATE="$XDG_STATE_HOME/xreview/$(printf '%s' "$CWD" | tr '/' '_' | sed 's/^_//')"
+mkdir -p "$STATE"
+
+agents() { # agents <session-json>
+  printf '{"result":{"agents":[{"agent":"codex","cwd":"%s","agent_session":%s}]}}\n' \
+    "$CWD" "$1" > "$AGENTS"
+}
+
+# A live pane with a thread resolves to that thread, and supersedes a stale record.
+printf 'stale-thread-id\n' > "$STATE/thread"
+agents '{"value":"live-thread-id"}'
+is "a live pane supersedes the cached thread" "$(bash "$XREVIEW" thread)" "live-thread-id"
+is "and the cache is rewritten to it"         "$(cat "$STATE/thread")"    "live-thread-id"
+
+# The regression: pane present, no session yet, stale record on disk.
+printf 'stale-thread-id\n' > "$STATE/thread"
+agents 'null'
+out=$(bash "$XREVIEW" thread 2>&1); rc=$?
+is "a pane with no thread yet is refused, not served from cache" "$rc" 1
+is "and the stale id is never printed" "$(printf '%s' "$out" | grep -c 'stale-thread-id')" 0
+is "the refusal says what to do about it" \
+   "$(printf '%s' "$out" | grep -c 'no thread yet')" 1
+
+# A dispatch must refuse for the same reason rather than queueing into the dead thread.
+# `codex` is stubbed to SUCCEED here on purpose: everywhere else in this suite `codex
+# queue` fails on the fake thread, so a non-zero dispatch would prove nothing about where
+# the refusal came from. With the queue working, only thread resolution can refuse.
+printf '#!/bin/sh\nexit 0\n' > "$TRES/codex"; chmod +x "$TRES/codex"
+bash "$XREVIEW" round --reset >/dev/null 2>&1
+printf 'stale-thread-id\n' > "$STATE/thread"
+out=$(bash "$XREVIEW" dispatch b.md 2>&1); rc=$?
+is "a dispatch onto a threadless pane is refused" "$rc" 1
+is "and mints no nonce" "$(printf '%s' "$out" | grep -c '^xr-')" 0
+is "and it is refused for the thread, not the queue" \
+   "$(printf '%s' "$out" | grep -c 'no thread yet')" 1
+
+# An explicit override still wins: it is the documented escape hatch, and the pane state
+# is not allowed to veto it.
+printf 'stale-thread-id\n' > "$STATE/thread"
+is "XREVIEW_THREAD overrides pane state" \
+   "$(XREVIEW_THREAD=pinned-id bash "$XREVIEW" thread)" "pinned-id"
+
+# Deliberately unchanged: with no pane list at all there is nothing to contradict the
+# record, and `xreview init <id>` exists to pin a thread herdr cannot see. Only a pane
+# that is present AND threadless is proof the record is dead.
+printf 'stale-thread-id\n' > "$STATE/thread"
+printf '{"result":{"agents":[]}}\n' > "$AGENTS"
+is "a pane list with no Codex pane still uses the cached thread" \
+   "$(bash "$XREVIEW" thread)" "stale-thread-id"
+
+# herdr present but failing - server down, socket denied, mid-restart. Under `set -e` the
+# non-zero pipeline killed xreview outright: rc=1, no message, and a caller that cannot
+# tell a dead tool from a dead thread. Driven by a stub rather than by whatever the
+# ambient herdr happens to do, so the assertion means the same thing on every machine.
+cat > "$TRES/herdr" <<'H'
+#!/bin/sh
+exit 1
+H
+chmod +x "$TRES/herdr"
+printf 'stale-thread-id\n' > "$STATE/thread"
+out=$(bash "$XREVIEW" thread 2>&1); rc=$?
+is "a failing herdr does not abort xreview"        "$rc" 0
+is "it falls back to the cached thread instead"    "$out" "stale-thread-id"
+
+rm -f "$STATE/thread"
+PATH="$OLD_PATH"
+
 # --- the tier is still recorded, because reporting is not enforcing ------------
 #
 # Dropping the gate must not drop the record. Which tier reviews actually ran at stays
@@ -283,6 +368,61 @@ is "and is the one told not to retry"           "$(printf '%s' "$out" | grep -ci
 # reviews still working were being abandoned and escalated as timeouts.
 is "the default collect budget is at least 30 minutes" \
    "$(grep -E '^COLLECT_BUDGET_DEFAULT=' "$XREVIEW" | cut -d= -f2 | awk '{print ($1 >= 1800)}')" 1
+
+# --- the threadless-pane refusal must not overreach -----------------------------
+#
+# Refusing a dispatch onto a pane that cannot answer is right. Applying that refusal
+# anywhere else is the mirror of the bug it fixes, and worse: a review that IS running
+# gets abandoned instead of merely misrouted.
+PATH="$TRES:$PATH"
+cat > "$TRES/herdr" <<'H'
+#!/bin/sh
+if [ "$1" = "agent" ] && [ "$2" = "list" ]; then cat "$AGENTS"; fi
+exit 0
+H
+chmod +x "$TRES/herdr"
+agents 'null'   # pane present, no thread yet - the refusing condition
+
+# collect must reach the thread it was dispatched to. Pane readiness says nothing about
+# whether a turn is on record: the turn is already queued, and exit 1 means "ambiguous,
+# do NOT retry", so vetoing here throws away a review that is still running.
+printf 'collectth\n' > "$STATE/thread"
+out=$(bash "$XREVIEW" collect xr-slownonce 0 2>&1); rc=$?
+is "collect is not vetoed by a threadless pane" "$rc" 3
+is "and still reports the turn as running"      "$(printf '%s' "$out" | grep -ci 'still running')" 1
+
+out=$(bash "$XREVIEW" collect xr-testnonce 0 2>&1)
+is "a finished review is still collectable"     "$out" "the review"
+
+# An explicit `xreview init <id>` is a deliberate pin, not a thread that happened to be
+# cached, and it is the documented way to point at a thread herdr cannot see. A pane that
+# has not spoken yet must not veto it.
+bash "$XREVIEW" init pinned-th >/dev/null
+is "an explicit pin survives a threadless pane" "$(bash "$XREVIEW" thread)" "pinned-th"
+is "and an auto-cached id still does not"       "$(rm -f "$STATE/pin"; printf 'cached-th\n' > "$STATE/thread"; bash "$XREVIEW" thread 2>&1 | grep -c 'no thread yet')" 1
+
+# Presence and thread id must come from ONE herdr snapshot. Taken separately, a lookup
+# that fails transiently while the next one succeeds reads as "pane present, no thread"
+# and refuses a pane that is in fact ready - as does a pane finishing its first turn
+# between the two calls.
+cat > "$TRES/herdr" <<'H'
+#!/bin/sh
+[ "$1" = "agent" ] && [ "$2" = "list" ] || exit 0
+n=$(cat "$AGENTS.n" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$AGENTS.n"
+[ "$n" = "1" ] && exit 1      # first snapshot fails
+cat "$AGENTS"                  # every later one is healthy, with a session
+exit 0
+H
+chmod +x "$TRES/herdr"
+agents '{"value":"live-thread-id"}'
+rm -f "$AGENTS.n" "$STATE/pin"; printf 'cached-th\n' > "$STATE/thread"
+out=$(bash "$XREVIEW" thread 2>&1); rc=$?
+is "two snapshots cannot contradict each other into a refusal" \
+   "$(printf '%s' "$out" | grep -c 'no thread yet')" 0
+is "and resolution still succeeds"  "$rc" 0
+
+rm -f "$STATE/pin" "$STATE/thread" "$AGENTS.n"
+PATH="$OLD_PATH"
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))

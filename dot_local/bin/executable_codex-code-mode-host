@@ -1,0 +1,37 @@
+#!/bin/sh
+# Put Codex's code-mode host on PATH, which its own packaging does not.
+#
+# Managed by chezmoi (source: dot_local/bin/executable_codex-code-mode-host).
+#
+# The Homebrew cask declares only `bin/codex` as a Binary artifact, so `codex` is linked
+# into the prefix and `codex-code-mode-host` — which ships in the same tarball, right
+# beside it — is not. Codex then starts with `features.code_mode_host` enabled (it is on
+# by default; `codex doctor --all` lists it) and no host to run, so its tool runtime never
+# comes up. Nothing says so until something asks it to execute: the session reads, answers
+# and reasons normally, and only reports "the tool runtime failed to start" when it tries
+# to run a command. A cross-review on 2026-09-11 reviewed a diff by eye for two rounds
+# before mentioning it could not run the test suite.
+#
+# A wrapper rather than a symlink into the Caskroom, because that path is versioned:
+# /opt/homebrew/Caskroom/codex/<version>/bin/. A pinned symlink works until the next
+# `brew upgrade` removes the directory under it, and then dangles exactly as silently as
+# the missing link it replaced. Resolving at run time survives upgrades untouched.
+set -eu
+
+codex_bin="$(command -v codex 2>/dev/null)" || {
+  echo "codex-code-mode-host: no codex on PATH to resolve the host from" >&2
+  exit 127
+}
+
+# readlink -f follows the whole chain; macOS has had it since Monterey. Fall back to the
+# path itself for a non-symlink install, where the host is already a sibling.
+real="$(readlink -f "$codex_bin" 2>/dev/null || printf '%s' "$codex_bin")"
+host="$(dirname "$real")/codex-code-mode-host"
+
+[ -x "$host" ] || {
+  echo "codex-code-mode-host: not found beside $real" >&2
+  echo "  the cask ships it there; reinstall with: brew reinstall --cask codex" >&2
+  exit 127
+}
+
+exec "$host" "$@"
