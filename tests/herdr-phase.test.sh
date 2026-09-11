@@ -414,7 +414,35 @@ case "$(report_for w2)" in *"--token active=$ICON_BRANCH"*) _pass "git-derived p
   *) _fail "git-derived phases survive glab failing (got: $(report_for w2))";; esac
 unset TTL
 
+# Only the merged half failing is its own case: the open rows are good, so the run uses them,
+# but the table must NOT be cached — caching it would persist "nothing ever merged" for a whole
+# TTL. Proven by the refetch: a cached table would have suppressed the second run's glab calls.
+cat > "$BIN/glab" <<'G'
+#!/usr/bin/env bash
+echo "glab $*" >> "$CALLS"
+case " $* " in *" --merged "*) echo "error: could not reach gitlab.com" >&2; exit 1 ;; esac
+case " $* " in *" --repo test/proj "*) ;; *) echo '[]'; exit 0 ;; esac
+cat "$MROPEN"
+G
+chmod 755 "$BIN/glab"
+rm -rf "$T/cache"
+run refresh
+check "$RC" "0" "refresh survives only the merged lookup failing"
+case "$(report_for w4)" in *"--token review=$ICON_MR !10"*) _pass "open MRs still badge when the merged lookup fails";;
+  *) _fail "open MRs still badge when the merged lookup fails (got: $(report_for w4))";; esac
+case "$(report_for w6)" in *"--token merged"*) _fail "a half-answered lookup does not invent merged state";;
+  *) _pass "a half-answered lookup does not invent merged state";; esac
+run refresh
+check "$(grep -c '^glab ' "$CALLS")" "4" "a half-answered lookup is not cached, so the next run retries"
+
 # With nothing cached there is nothing to fall back to, and git-only is the honest answer.
+cat > "$BIN/glab" <<'G'
+#!/usr/bin/env bash
+echo "glab $*" >> "$CALLS"
+echo "error: could not reach gitlab.com" >&2
+exit 1
+G
+chmod 755 "$BIN/glab"
 rm -rf "$T/cache"
 run refresh
 check "$RC" "0" "refresh survives glab failing with a cold cache"
