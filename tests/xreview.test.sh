@@ -369,5 +369,60 @@ is "and is the one told not to retry"           "$(printf '%s' "$out" | grep -ci
 is "the default collect budget is at least 30 minutes" \
    "$(grep -E '^COLLECT_BUDGET_DEFAULT=' "$XREVIEW" | cut -d= -f2 | awk '{print ($1 >= 1800)}')" 1
 
+# --- the threadless-pane refusal must not overreach -----------------------------
+#
+# Refusing a dispatch onto a pane that cannot answer is right. Applying that refusal
+# anywhere else is the mirror of the bug it fixes, and worse: a review that IS running
+# gets abandoned instead of merely misrouted.
+PATH="$TRES:$PATH"
+cat > "$TRES/herdr" <<'H'
+#!/bin/sh
+if [ "$1" = "agent" ] && [ "$2" = "list" ]; then cat "$AGENTS"; fi
+exit 0
+H
+chmod +x "$TRES/herdr"
+agents 'null'   # pane present, no thread yet - the refusing condition
+
+# collect must reach the thread it was dispatched to. Pane readiness says nothing about
+# whether a turn is on record: the turn is already queued, and exit 1 means "ambiguous,
+# do NOT retry", so vetoing here throws away a review that is still running.
+printf 'collectth\n' > "$STATE/thread"
+out=$(bash "$XREVIEW" collect xr-slownonce 0 2>&1); rc=$?
+is "collect is not vetoed by a threadless pane" "$rc" 3
+is "and still reports the turn as running"      "$(printf '%s' "$out" | grep -ci 'still running')" 1
+
+out=$(bash "$XREVIEW" collect xr-testnonce 0 2>&1)
+is "a finished review is still collectable"     "$out" "the review"
+
+# An explicit `xreview init <id>` is a deliberate pin, not a thread that happened to be
+# cached, and it is the documented way to point at a thread herdr cannot see. A pane that
+# has not spoken yet must not veto it.
+bash "$XREVIEW" init pinned-th >/dev/null
+is "an explicit pin survives a threadless pane" "$(bash "$XREVIEW" thread)" "pinned-th"
+is "and an auto-cached id still does not"       "$(rm -f "$STATE/pin"; printf 'cached-th\n' > "$STATE/thread"; bash "$XREVIEW" thread 2>&1 | grep -c 'no thread yet')" 1
+
+# Presence and thread id must come from ONE herdr snapshot. Taken separately, a lookup
+# that fails transiently while the next one succeeds reads as "pane present, no thread"
+# and refuses a pane that is in fact ready - as does a pane finishing its first turn
+# between the two calls.
+cat > "$TRES/herdr" <<'H'
+#!/bin/sh
+[ "$1" = "agent" ] && [ "$2" = "list" ] || exit 0
+n=$(cat "$AGENTS.n" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$AGENTS.n"
+[ "$n" = "1" ] && exit 1      # first snapshot fails
+cat "$AGENTS"                  # every later one is healthy, with a session
+exit 0
+H
+chmod +x "$TRES/herdr"
+agents '{"value":"live-thread-id"}'
+rm -f "$AGENTS.n" "$STATE/pin"; printf 'cached-th\n' > "$STATE/thread"
+out=$(bash "$XREVIEW" thread 2>&1); rc=$?
+is "two snapshots cannot contradict each other into a refusal" \
+   "$(printf '%s' "$out" | grep -c 'no thread yet')" 0
+is "and resolution still succeeds"  "$rc" 0
+
+rm -f "$STATE/pin" "$STATE/thread" "$AGENTS.n"
+PATH="$OLD_PATH"
+
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))
