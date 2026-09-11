@@ -43,10 +43,15 @@
     <key>StandardErrorPath</key>
     <string>/dev/null</string>
 
-    <key>ProcessType</key>
-    <string>Background</string>
-
-    <key>LowPriorityIO</key>
-    <true/>
+    <!-- Deliberately NO ProcessType=Background and NO LowPriorityIO. Both were here, and
+         together they were the reason the badges went missing. A refresh forks ~100 short-lived
+         processes (git per worktree, python3, glab, herdr per workspace); background scheduling
+         puts every one of them in the lowest band and LowPriorityIO throttles them further.
+         Measured 2026-09-11, same script and arguments: 13 s at normal priority, still
+         unfinished after 4 minutes under `taskpolicy -b`, and a real `launchctl kickstart` of
+         this agent took ~6 minutes. launchd never overlaps a StartInterval job, so at 180 s the
+         timer could not finish one cycle — it reported runs=739, last exit code=0, while the MR
+         caches sat 5 and 53 minutes stale and worktrees with open MRs showed no badge. Nothing
+         is gained by throttling a 13-second job that runs once every three minutes. -->
 </dict>
 </plist>
