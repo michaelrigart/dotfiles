@@ -43,24 +43,44 @@ live_codex_thread() {
      | .agent_session.value // empty' | head -1
 }
 
+# Whether a Codex pane exists for this repo at all, regardless of whether it has had a
+# turn yet. Distinct from live_codex_thread: a pane with no thread answers "" there and
+# "yes" here, and those two cases must not be treated alike.
+codex_pane_present() {
+  command -v herdr >/dev/null 2>&1 || return 1
+  herdr agent list 2>/dev/null | jq -e --arg cwd "$(repo_root)" \
+    '.result.agents[]? | select(.agent == "codex" and .cwd == $cwd)' >/dev/null 2>&1
+}
+
 resolve_thread() {
   [ -n "${XREVIEW_THREAD:-}" ] && { printf '%s\n' "$XREVIEW_THREAD"; return 0; }
   local dir live rec
   dir="$(state_dir)"
-  live="$(live_codex_thread)"
+  # `|| true` is load-bearing under `set -e`. herdr failing - server down, socket denied,
+  # mid-restart - made the whole pipeline non-zero and killed xreview with rc=1 and not one
+  # word of output. An unavailable pane list is a fallback condition, never a fatal one.
+  live="$(live_codex_thread || true)"
+
+  # A pane that exists but has no thread YET is not the same as no pane list, and the two
+  # were collapsed. Codex has no session id until its first turn, so a freshly built pane
+  # reports none - and "nothing to contradict the record" then handed back a thread cached
+  # weeks earlier. `codex queue` takes it, because the id is well formed, and the packet
+  # lands in a dead session: nothing appears in the pane the reviewer is watching, and
+  # `collect` spends its whole budget on a thread the dispatch never used. Observed
+  # 2026-09-11, dispatching into a thread cached on 31 August. Refuse instead: the pane is
+  # right there, and one message to it makes the dispatch work.
+  if [ -z "$live" ] && codex_pane_present; then
+    die "the Codex pane for $(repo_root) has no thread yet - send it one message first"
+  fi
+
   if [ -r "$dir/thread" ]; then
     rec="$(cat "$dir/thread")"
-    # Recorded id still backed by a live pane, or no pane list to contradict it.
+    # Recorded id still backed by a live pane, or no pane list to contradict it. Kept
+    # deliberately: with herdr unreachable there is no evidence either way, and
+    # `xreview init <id>` exists to pin a thread herdr cannot see.
     if [ -z "$live" ] || [ "$live" = "$rec" ]; then printf '%s\n' "$rec"; return 0; fi
   fi
   if [ -z "$live" ]; then
-    # A pane with no thread is the common case, not a missing pane: Codex has no
-    # thread id until its first turn, so a freshly built workspace looks empty here.
-    if command -v herdr >/dev/null 2>&1 &&
-       herdr agent list 2>/dev/null | jq -e --arg cwd "$(repo_root)" \
-         '.result.agents[]? | select(.agent == "codex" and .cwd == $cwd)' >/dev/null; then
-      die "the Codex pane for $(repo_root) has no thread yet - send it one message first"
-    fi
     die "no Codex pane for $(repo_root); open one, or: xreview init <thread-id>"
   fi
   mkdir -p "$dir" && printf '%s\n' "$live" > "$dir/thread"
