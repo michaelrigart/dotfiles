@@ -16,7 +16,7 @@ emulate -L zsh
 # Herdr server every agent runs inside is not what anyone wants.
 setopt local_options no_unset pipe_fail no_bg_nice
 
-MANAGED_TABS=(agents editor runtime git)
+MANAGED_TABS=(agents editor runtime)
 BUILDING_SUFFIX=" (building)"
 # Codex's documented role here is reviewer, not implementer, so its panes launch
 # unable to write. Without this they inherit workspace-write with $HOME writable.
@@ -431,7 +431,6 @@ hl_make_tab() {
 
   case "$label" in
     editor)  hl_api pane run "$pane" "nvim ." >/dev/null || return 1 ;;
-    git)     hl_api pane run "$pane" "lazygit" >/dev/null || return 1 ;;
     runtime) hl_api_json pane split --pane "$pane" --direction down --cwd "$repo" --no-focus >/dev/null || return 1 ;;
     agents)
       out="$(hl_api_json pane split --pane "$pane" --direction right --cwd "$repo" --no-focus)" || return 1
@@ -469,7 +468,7 @@ hl_build() {
   hl_api pane run "$p1" "claude" >/dev/null || return 1
   hl_api pane run "$right" "$CODEX_CMD" >/dev/null || return 1
 
-  for l in editor runtime git; do
+  for l in editor runtime; do
     hl_make_tab "$ws" "$l" "$repo" >/dev/null || return 1
   done
 
@@ -524,7 +523,7 @@ hl_adopt_worktree() {
   right="$(hl_id "$out" '.result.pane.pane_id' "the agents split pane")" || return 1
   hl_api pane run "$pane" "claude" >/dev/null || return 1
   hl_api pane run "$right" "$CODEX_CMD" >/dev/null || return 1
-  for l in editor runtime git; do
+  for l in editor runtime; do
     hl_make_tab "$ws" "$l" "$repo" >/dev/null || return 1
   done
   hl_api workspace rename "$ws" "$(hl_label "$repo")" >/dev/null || return 1
@@ -571,7 +570,7 @@ hl_open_worktree() {
     provisional)
       tabs="$(hl_api_json tab list --workspace "$ws")" || return 1
       managed=$(print -r -- "$tabs" | jq -r \
-        '[.result.tabs[] | select(.label == "agents" or .label == "editor" or .label == "runtime" or .label == "git")] | length') \
+        '[.result.tabs[] | select(.label == "agents" or .label == "editor" or .label == "runtime")] | length') \
         || return 1
       if (( managed == 0 )); then
         hl_adopt_worktree "$ws" "$repo" "$tab" "$pane" "$([[ "$already" == false ]] && print true || print false)" \
@@ -640,8 +639,9 @@ main() {
     #
     # Fail CLOSED. Keeping the raw cwd when rev-parse fails meant a workspace sitting
     # in a non-repo directory — the plain ~ workspace being the obvious one — was
-    # classified provisional and "repaired" into four tabs with two agents launched in
-    # $HOME. Refusing costs nothing; the action is only meaningful in a repo.
+    # classified provisional and "repaired" into a full managed workspace, with
+    # agents launched in $HOME. Refusing costs nothing; the action is only
+    # meaningful in a repo.
     root="$(hl_git -C "$wrepo" rev-parse --show-toplevel 2>/dev/null)" \
       || hl_die_notify "$wrepo is not inside a git repository — refusing"
     [[ -n "$root" ]] || hl_die_notify "$wrepo is not inside a git repository — refusing"

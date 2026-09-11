@@ -192,6 +192,19 @@ description = "scratch shell"
 width = "80%"
 height = "80%"
 
+# lazygit on demand rather than a permanent tab. A fourth managed tab sitting on
+# lazygit all day earned its slot only if git work were constant, and it is not:
+# `runtime` already holds two repo-rooted shells and alt+p a full-size scratch one.
+# A popup keeps the one-key reach without the tab, and without repair recreating a
+# tab that gets closed for being in the way.
+[[keys.command]]
+key = "alt+g"
+type = "popup"
+command = "exec lazygit"
+description = "lazygit"
+width = "90%"
+height = "90%"
+
 # Tab jumps. `switch_tab` is range-only ("prefix+1..9") — there is no switch_tab_1,
 # and tab.focus takes a tab_id, not an index. These resolve by LABEL instead, which
 # also survives repair appending a tab out of order (herdr 0.8.2 has no `tab move`).
@@ -212,12 +225,6 @@ key = "alt+r"
 type = "shell"
 command = "~/.config/herdr/tab-goto.sh runtime"
 description = "tab: runtime"
-
-[[keys.command]]
-key = "alt+g"
-type = "shell"
-command = "~/.config/herdr/tab-goto.sh git"
-description = "tab: git"
 
 # Forced refresh. A LaunchAgent repaints the badges every 3 minutes and the plugin's event
 # hooks cover restarts and worktree changes, but MR state is cached with a TTL — this bypasses

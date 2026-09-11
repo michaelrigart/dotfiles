@@ -181,7 +181,7 @@ mock_tabs() {       # <label>...  — tabs w7:t1.. with the given labels, no pan
 
 # mock_topology <cwd> <label> <tab:panecount>...
 # Tabs, panes and the workspace label in ONE call. Setting them separately is how the
-# fixtures drifted: a workspace with four tabs and zero panes is not "four good tabs",
+# fixtures drifted: a workspace with every managed tab and zero panes is not healthy,
 # it is malformed, and separate helpers made a correct classifier look broken.
 # The workspace id is parameterised (MOCK_WS_ID, default w7) so a fixture's
 # pre-existing workspace can be told apart from one the code creates — the stub's
@@ -219,7 +219,7 @@ mock_topology() {
 mock_split_dir() { print -r -- "$1 $2" >> "$MOCK_LAYOUT_FILE" }
 
 # The complete, healthy baseline — the shape every "good workspace" test starts from.
-FULL=(agents:2 editor:1 runtime:2 git:1)
+FULL=(agents:2 editor:1 runtime:2)
 
 mkrepo() {  # <path> — a real git repo
   mkdir -p "$1" && git -C "$1" init -q && git -C "$1" commit -q --allow-empty -m init
@@ -409,17 +409,17 @@ eq "$OUT" "complete" "E1 the full baseline = complete"
 cls "mock_topology '$R1' '$L' $FULL notes:1 scratch:1"
 eq "$OUT" "complete" "E2 extra unmanaged tabs do not demote it"
 
-cls "mock_topology '$R1' '$L' agents:2 editor:1 git:1"
+cls "mock_topology '$R1' '$L' agents:2 editor:1"
 eq "$OUT" "provisional" "E3 a missing managed tab = provisional"
 
 # The rename window: correct topology, non-final label.
 cls "mock_topology '$R1' '$L (building)' $FULL"
 eq "$OUT" "provisional" "E4 correct topology under a (building) label = provisional"
 
-cls "mock_topology '$R1' '$L' agents:2 agents:2 editor:1 runtime:2 git:1"
+cls "mock_topology '$R1' '$L' agents:2 agents:2 editor:1 runtime:2"
 has "malformed" "E5 a duplicated managed label = malformed"
 
-cls "mock_topology '$R1' '$L' agents:1 editor:1 runtime:2 git:1"
+cls "mock_topology '$R1' '$L' agents:1 editor:1 runtime:2"
 has "malformed" "E5b a managed tab with the wrong pane count = malformed"
 
 # Two panes stacked and two side by side both count 2. Only direction separates them,
@@ -428,7 +428,7 @@ cls "mock_topology '$R1' '$L' $FULL; mock_split_dir w7:p1 down"
 has "malformed" "E5c an agents tab split the wrong way = malformed"
 
 # Malformed must not mutate anything.
-run_layout "export HERDR_ENV=1; mock_topology '$R1' '$L' agents:2 agents:2 editor:1 runtime:2 git:1" "$R1"
+run_layout "export HERDR_ENV=1; mock_topology '$R1' '$L' agents:2 agents:2 editor:1 runtime:2" "$R1"
 rc_is 1 "E6 malformed fails"
 unlogged "tab create"       "E6 no tab is created"
 unlogged "tab close"        "E6 no tab is closed"
@@ -511,7 +511,11 @@ unlogged "--target-pane-id"  "G3 the non-existent --target-pane-id flag is never
 # so an untargeted split could land on the agents tab instead.
 logged "pane split --pane w7:p5 --direction down" "G4 the runtime split targets its own parsed root pane"
 logged "pane run w7:p4 nvim ."   "G4 editor runs in its own tab"
-logged "pane run w7:p6 lazygit"  "G4 git runs in its own tab"
+
+# The git tab is gone: lazygit is an alt+g popup now, not a managed tab that repair
+# would keep reinstating.
+unlogged "--label git" "G4 no git tab is created"
+unlogged "lazygit"     "G4 lazygit is never launched into a pane"
 
 logged "workspace rename w7 Netronix/curato" "G5 renamed to the final label"
 logged "workspace focus w7" "G5 focused once complete"
@@ -520,11 +524,11 @@ logged "tab focus w7:t4" "G5 the agents tab is focused, as dev.kdl pinned it"
   && _pass "G5 rename precedes focus, and the tab focus comes last" \
   || _fail "G5 rename/focus ordering is wrong"
 
-# Trap: fail on the THIRD tab create, so the workspace is genuinely half-built.
-run_layout "export HERDR_ENV=1; mock_panes '/nowhere'; export MOCK_TAB_CREATE_FAIL_AT=3" "$R1"
+# Trap: fail on the SECOND tab create, so the workspace is genuinely half-built.
+run_layout "export HERDR_ENV=1; mock_panes '/nowhere'; export MOCK_TAB_CREATE_FAIL_AT=2" "$R1"
 rc_is 1 "G6 a failed build fails loudly"
 logged "workspace close w7" "G6 the trap closes the partial workspace"
-logged "tab create --workspace w7 --label git" "G6 it reached the third tab create (git)"
+logged "tab create --workspace w7 --label runtime" "G6 it reached the second tab create (runtime)"
 unlogged "workspace rename" "G6 a failed build is never renamed to the final label"
 
 # hl_api_json proves a payload parses — not that mandatory ids are present.
@@ -555,7 +559,6 @@ unlogged "tab rename" "G7c nothing proceeds on a numeric id"
 print -r -- "-- H: repair"
 run_layout "export HERDR_ENV=1; mock_topology '$R1' 'Netronix/curato' agents:2 editor:1" "$R1"
 logged "tab create --workspace w7 --label runtime" "H1 the missing runtime tab is created"
-logged "tab create --workspace w7 --label git"     "H1 the missing git tab is created"
 unlogged "--label agents" "H1 the existing agents tab is not recreated"
 unlogged "--label editor" "H1 the existing editor tab is not recreated"
 unlogged "workspace create" "H1 no duplicate workspace"
@@ -580,17 +583,17 @@ goto() {  # <mock-setup> <label>
   OUT="$(HERDR_ACTIVE_WORKSPACE_ID=w7 zsh "$TABGOTO" "$2" 2>&1)"; RC=$?
 }
 
-goto "mock_tabs agents editor runtime git" runtime
+goto "mock_tabs agents editor runtime" runtime
 rc_is 0 "J1 a known label resolves"
 logged "tab focus w7:t3" "J1 focuses the tab carrying that label"
 
 # Order-independence: repair appends, and herdr 0.8.2 has no `tab move`, so a repaired
 # workspace can hold its managed tabs in any order. An index would land on the wrong one.
-goto "mock_tabs git agents editor runtime" git
+goto "mock_tabs runtime agents editor" runtime
 rc_is 0 "J2 resolves in a reordered workspace"
 logged "tab focus w7:t1" "J2 follows the label, not the position"
 
-goto "mock_tabs agents editor" git
+goto "mock_tabs agents editor" runtime
 rc_is 1 "J3 a missing label fails"
 has "no tab labelled" "J3 says why"
 unlogged "tab focus" "J3 no tab is focused"
@@ -602,7 +605,7 @@ unlogged "tab focus" "J4 no tab is focused"
 
 # No injected context: say so rather than falling back to the globally-focused
 # workspace, which is racy under a shared session view.
-mock_reset; mock_tabs agents editor runtime git
+mock_reset; mock_tabs agents editor runtime
 OUT="$(env -u HERDR_ACTIVE_WORKSPACE_ID -u HERDR_WORKSPACE_ID zsh "$TABGOTO" agents 2>&1)"; RC=$?
 rc_is 1 "J5 no active workspace in the environment fails"
 has "no active workspace" "J5 says why"
@@ -643,13 +646,13 @@ unlogged "tab focus" "J7c no tab is focused"
 # type = "shell" commands run detached, so stderr never reaches the TUI. A failed jump
 # must therefore be visible as a notification, or it is indistinguishable from a
 # keybinding that does nothing at all.
-goto "mock_tabs agents editor" git
+goto "mock_tabs agents editor" runtime
 logged "notification show" "J8 a failed jump is surfaced as a notification"
 
 # J9: the tab exists at list time and is gone by focus time — the real race, since
 # nothing holds a lock between the two calls. Detached execution makes an unhandled
 # failure here indistinguishable from a key that does nothing.
-goto "mock_tabs agents editor runtime git; export MOCK_TAB_FOCUS_RC=1" runtime
+goto "mock_tabs agents editor runtime; export MOCK_TAB_FOCUS_RC=1" runtime
 rc_is 1 "J9 a focus that fails after a successful list fails the jump"
 has "could not focus" "J9 the diagnostic names the focus failure"
 logged "tab focus w7:t3" "J9 the focus was genuinely attempted"
@@ -681,12 +684,11 @@ unlogged "workspace rename" "K2 nothing is renamed"
 cur "export HERDR_WORKSPACE_ID=w7; mock_topology '$R1' 'Netronix/curato' agents:2 editor:1"
 rc_is 0 "K3 a provisional workspace is repaired"
 logged "tab create --workspace w7 --label runtime" "K3 the missing tab is created"
-logged "tab create --workspace w7 --label git"     "K3 the other missing tab is created"
 logged "notification show" "K3 the repair is announced"
 unlogged "workspace create" "K3 no second workspace is built"
 
 # Malformed: refuse, announce, mutate nothing.
-cur "export HERDR_WORKSPACE_ID=w7; mock_topology '$R1' 'Netronix/curato' agents:2 agents:2 editor:1 runtime:2 git:1"
+cur "export HERDR_WORKSPACE_ID=w7; mock_topology '$R1' 'Netronix/curato' agents:2 agents:2 editor:1 runtime:2"
 rc_is 1 "K4 a malformed workspace is refused"
 logged "notification show" "K4 the refusal is announced"
 unlogged "tab create" "K4 nothing is created"
@@ -706,7 +708,6 @@ cur "export HERDR_WORKSPACE_ID=w7; mock_topology '$WT' 'curato-feature' agents:2
   export MOCK_WS_LIST='{\"result\":{\"workspaces\":[{\"workspace_id\":\"w7\",\"label\":\"curato-feature\",\"worktree\":{\"checkout_path\":\"$WT\",\"is_linked_worktree\":true}}]}}'"
 rc_is 0 "K5b a native worktree workspace can be repaired"
 logged "tab create --workspace w7 --label runtime" "K5b the missing runtime tab is created"
-logged "tab create --workspace w7 --label git" "K5b the missing git tab is created"
 logged "notification show" "K5b the repair is announced"
 
 # It must take the same lock as the path mode: two plugin invocations, or a plugin
@@ -731,7 +732,7 @@ rc_is 1 "K8 a classification failure fails the action"
 logged "notification show" "K8 a non-verdict failure is still announced"
 
 # K9: a workspace whose panes are NOT in a git repo. Failing open here meant the plain
-# ~ workspace got classified provisional and "repaired" into four tabs, launching two
+# ~ workspace got classified provisional and "repaired" into a full layout, launching two
 # agents in $HOME.
 cur "export HERDR_WORKSPACE_ID=w7; mock_topology '$ROOTTMP/notrepo' 'notrepo' agents:2 editor:1"
 rc_is 1 "K9 a non-repo workspace is refused"
@@ -910,8 +911,6 @@ eq "$(count_logged "tab create --workspace w7 --label editor --cwd $WT --no-focu
   "L1 editor is created exactly once"
 eq "$(count_logged "tab create --workspace w7 --label runtime --cwd $WT --no-focus")" 1 \
   "L1 runtime is created exactly once"
-eq "$(count_logged "tab create --workspace w7 --label git --cwd $WT --no-focus")" 1 \
-  "L1 git is created exactly once"
 unlogged "tab create --workspace w7 --label agents" \
   "L1 no redundant agents tab is appended"
 
@@ -989,7 +988,19 @@ OUT="$(awk '
 ' "$CONFIG" 2>&1)"; RC=$?
 rc_is 0 "prefix+shift+g opens the safe wt prompt"
 has 'type = "popup"' "the safe worktree prompt is session-modal"
+# lazygit reaches for a popup, not a managed tab. The tab-goto binding must be gone
+# with it: tab-goto.sh refuses a label it cannot find, so a stale alt+g would fire a
+# notification every time instead of doing nothing visible.
+OUT="$(awk '
+  BEGIN { RS="\\[\\[keys.command\\]\\]" }
+  index($0, "key = \"alt+g\"") && index($0, "lazygit") { print; found=1 }
+  END { if (!found) exit 1 }
+' "$CONFIG" 2>&1)"; RC=$?
+rc_is 0 "alt+g opens lazygit"
+has 'type = "popup"' "lazygit is a session-modal popup, not a managed tab"
 OUT="$(<"$CONFIG")"
+hasnt 'tab-goto.sh git' "no jump binding survives for the removed git tab"
+hasnt 'description = "tab: git"' "the git tab jump is gone from the keymap"
 has 'new_worktree = ""' "Herdr's unprepared built-in worktree shortcut is disabled"
 has 'close_workspace = "alt+q"' "Alt-q closes the current project workspace"
 has 'edit_scrollback = "alt+s"' "Alt-s keeps the long-standing scrollback mnemonic"
