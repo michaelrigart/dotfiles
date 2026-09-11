@@ -263,5 +263,30 @@ out="$(srun --pidfile tmp/pids/server.pid teardown)"
 is "an absent pidfile is not an error" "$?" "0"
 
 echo
+echo "N. teardown is idempotent"
+twice="$(spawn command sleep 300)"
+echo "$twice" > "$WT/tmp/pids/server.pid"
+mk_live <<EOF
+$twice sleep $WT
+EOF
+out="$(srun --pidfile tmp/pids/server.pid --sweep sleep teardown)"
+is "first run exits clean" "$?" "0"
+sleep 1
+mk_live <<EOF
+$$ zsh $T/elsewhere
+EOF
+out="$(srun --pidfile tmp/pids/server.pid --sweep sleep teardown)"
+is "second run exits clean" "$?" "0"
+out="$(srun --pidfile tmp/pids/server.pid --sweep sleep teardown)"
+is "third run exits clean" "$?" "0"
+
+echo
+echo "O. a declaration that matches nothing is not an error"
+out="$(srun --sweep nothing-runs-by-this-name teardown)"
+is "an unmatched sweep exits clean" "$?" "0"
+out="$(srun teardown)"
+is "no declarations at all exits clean" "$?" "0"
+
+echo
 echo "RESULT: $pass passed, $((pass + fail)) total, $fail failed"
 [ "$fail" -eq 0 ]
