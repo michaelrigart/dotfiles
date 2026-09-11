@@ -157,6 +157,57 @@ sleep 1
 is "the swept process is gone" "$(kill -0 "$victim" 2>/dev/null; echo $?)" "1"
 has "and it is reported" "$out" "sleep"
 
+# Exact equality, never substring: --sweep sleep must not select `sleepy`. A substring
+# match would quietly widen every declaration a project makes.
+near="$(spawn command sleep 300)"
+mk_live <<EOF
+$near sleepy $WT
+EOF
+out="$(srun --sweep sleep teardown)"
+# It refuses BECAUSE it did not sweep it: an occupant no declaration covers is left
+# alone and reported, which is what surfaces as wt-rm's check-4 refusal one step later.
+is "an uncovered occupant makes teardown refuse" "$?" "1"
+sleep 0.5
+is "and that process is untouched" "$(kill -0 "$near" 2>/dev/null; echo $?)" "0"
+kill -9 "$near" 2>/dev/null
+
+echo
+echo "H. a process ignoring TERM is escalated to KILL"
+cat > "$T/deaf.sh" <<'DEAF'
+#!/bin/sh
+trap '' TERM
+# Written only once the trap is installed: waiting on this is what makes the fixture
+# genuinely TERM-proof before the subject runs. A plain sleep here is a race, and losing
+# it means the process dies on TERM and escalation is never exercised at all.
+: > "$1"
+while :; do sleep 1; done
+DEAF
+chmod +x "$T/deaf.sh"
+rm -f "$T/deaf.ready"
+deaf="$(spawn "$T/deaf.sh" "$T/deaf.ready")"
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -e "$T/deaf.ready" ] && break; sleep 0.2; done
+is "the deaf fixture installed its TERM trap" "$([ -e "$T/deaf.ready" ] && echo yes || echo no)" "yes"
+mk_live <<EOF
+$deaf deaf.sh $WT
+EOF
+out="$(PATH="$T/bin:/usr/bin:/bin" WT_WORKTREE="$WT" \
+  WT_TEARDOWN_TERM_WAIT=1 WT_TEARDOWN_KILL_WAIT=3 \
+  zsh "$SUBJECT" --sweep deaf.sh teardown 2>&1)"
+is "escalation exits clean" "$?" "0"
+sleep 1
+is "the deaf process was killed" "$(kill -0 "$deaf" 2>/dev/null; echo $?)" "1"
+
+echo
+echo "I. a survivor is an error, not a shrug"
+ghost="$(spawn command sleep 300)"
+mk_raw 'p%s\0cimmortal\0fcwd\0n%s\0' "$ghost" "$WT"
+out="$(PATH="$T/bin:/usr/bin:/bin" WT_WORKTREE="$WT" \
+  WT_TEARDOWN_TERM_WAIT=1 WT_TEARDOWN_KILL_WAIT=1 \
+  zsh "$SUBJECT" --sweep immortal teardown 2>&1)"
+is "a surviving target exits nonzero" "$?" "1"
+has "and names what is still there" "$out" "still"
+kill -9 "$ghost" 2>/dev/null
+
 echo
 echo "RESULT: $pass passed, $((pass + fail)) total, $fail failed"
 [ "$fail" -eq 0 ]

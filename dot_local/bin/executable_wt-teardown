@@ -12,6 +12,10 @@ emulate -L zsh
 
 typeset PROG=wt-teardown
 typeset -a PIDFILES SWEEPS
+# Seconds to wait after TERM, then after KILL. Overridable so the test suite does not
+# spend fifteen seconds per case; there is no reason to change them in use.
+typeset -i TERM_WAIT=${WT_TEARDOWN_TERM_WAIT:-10}
+typeset -i KILL_WAIT=${WT_TEARDOWN_KILL_WAIT:-5}
 
 die() { print -ru2 -- "$PROG: $*"; exit 1 }
 usage() {
@@ -143,6 +147,37 @@ _scan() {
   return 0
 }
 
+# _stop <pid>... — TERM, poll, KILL, poll. Return 1 if anything is still alive.
+#
+# Polling uses kill -0 because it is cheap; the authority on whether the checkout is
+# clear is the re-scan afterwards, not this. A process that ignores TERM is the ordinary
+# case here — a supervisor trapping it to shut children down first — so escalation is
+# the rule, not an edge.
+_stop() {
+  emulate -L zsh
+  local -a pids left
+  pids=( "$@" )
+  (( ${#pids} )) || return 0
+  local p
+  local -i i
+  for p in $pids; do kill -TERM "$p" 2>/dev/null; done
+  left=( $pids )
+  for (( i = 0; i < TERM_WAIT * 10; i++ )); do
+    pids=( $left ); left=()
+    for p in $pids; do kill -0 "$p" 2>/dev/null && left+=( "$p" ); done
+    (( ${#left} )) || return 0
+    command sleep 0.1
+  done
+  for p in $left; do kill -KILL "$p" 2>/dev/null; done
+  for (( i = 0; i < KILL_WAIT * 10; i++ )); do
+    pids=( $left ); left=()
+    for p in $pids; do kill -0 "$p" 2>/dev/null && left+=( "$p" ); done
+    (( ${#left} )) || return 0
+    command sleep 0.1
+  done
+  return 1
+}
+
 typeset scan_out
 scan_out="$(_scan "$WT")" || exit 1
 
@@ -167,6 +202,25 @@ for pid cmd in ${(kv)OCCUPANT}; do
   done
 done
 
-for pid in $TARGETS; do kill -TERM "$pid" 2>/dev/null; done
+_stop $TARGETS
+
+# The re-scan is the authority, not the signals. A pid that exited leaves no cwd record;
+# anything still listed is still holding the checkout open, and reporting success here
+# would hand wt-rm a directory that reappears after Git deletes it.
+typeset rescan_out
+rescan_out="$(_scan "$WT")" || exit 1
+typeset -a survivors
+for line in ${(f)rescan_out}; do
+  [[ -n "$line" ]] || continue
+  pid="${line%% *}"
+  (( ${+MINE[$pid]} )) && continue
+  survivors+=( "$line" )
+done
+
+if (( ${#survivors} )); then
+  print -ru2 -- "$PROG: processes are still in $WT after teardown:"
+  for line in $survivors; do print -ru2 -- "    $line"; done
+  exit 1
+fi
 
 exit 0
