@@ -23,6 +23,14 @@
 # while a CLI `herdr workspace focus` fired it every time. The timer covers both without
 # depending on which of them is true today.
 #
+# That timer then spent a month not working, and the two ways it failed are why the code below
+# looks the way it does. Measured 2026-09-11: (1) the LaunchAgent carried ProcessType=Background
+# and LowPriorityIO, which stretched a 13-second run to roughly six minutes — longer than its own
+# 180 s interval, so launchd skipped cycle after cycle while reporting runs=739 and exit code 0;
+# (2) `derive` consulted GitLab last, so a single untracked file was enough to repaint a space in
+# review as active. An open MR now outranks every local signal, and the plist asks for no
+# throttling.
+#
 # When Herdr is not running, `spaces` comes back empty and refresh returns before any git or
 # glab work — so the timer costs nothing on a machine with no session up.
 #
@@ -95,15 +103,44 @@ mr_table() { # mr_table <repo_root> <force>
     if [ "$age" -lt "$TTL" ]; then cat "$cache"; return 0; fi
   fi
 
-  local json table
-  json="$(glab mr list --repo "$slug" --all --output json --per-page 100 2>/dev/null)" || return 1
-  [ -n "$json" ] || return 1
-  table="$(printf '%s' "$json" | "$PY" -c '
+  # Two queries, not one. `glab mr list` caps --per-page at 100 and this never paginates, so a
+  # single --all query silently drops the oldest rows once a repo passes 100 merge requests.
+  # netronix/curato is at !123: its cached table held 99 rows ending at !120, and the three
+  # worktrees whose MRs were !121-!123 sat unbadged. Asking for the OPEN list on its own puts
+  # the only rows a review badge depends on nowhere near the cap, and merged state — which is
+  # about work that already landed — is fine with the hundred most recent.
+  local open_json merged_json table
+  open_json="$(glab mr list --repo "$slug" --output json --per-page 100 2>/dev/null)" || open_json=""
+  if [ -z "$open_json" ]; then
+    # A failed lookup is not evidence that the MRs went away. Returning nothing here makes every
+    # worktree in the repo fall through to `active`, so one blocked request wipes every review
+    # badge at once. A stale table is strictly better than a table asserted to be empty.
+    if [ -f "$cache" ]; then cat "$cache"; return 0; fi
+    return 1
+  fi
+  # Merged state is best-effort: if only this half fails the run still has the open rows, which
+  # are what a review badge needs. The table just does not get cached, so the miss lasts one
+  # cycle instead of a TTL — a landed branch reading `active` for three minutes is nothing next
+  # to caching a table that claims nothing ever merged.
+  local cacheable=1
+  merged_json="$(glab mr list --repo "$slug" --merged --output json --per-page 100 2>/dev/null)" || merged_json=""
+  [ -n "$merged_json" ] || { merged_json="[]"; cacheable=0; }
+
+  table="$(printf '%s\n%s\n' "$open_json" "$merged_json" | "$PY" -c '
 import json, sys
-try:
-    rows = json.load(sys.stdin)
-except Exception:
-    sys.exit(1)
+# Two concatenated JSON documents rather than one, so read them off the stream in turn.
+dec, data, i, rows = json.JSONDecoder(), sys.stdin.read(), 0, []
+while i < len(data):
+    while i < len(data) and data[i].isspace():
+        i += 1
+    if i >= len(data):
+        break
+    try:
+        obj, i = dec.raw_decode(data, i)
+    except Exception:
+        sys.exit(1)
+    if isinstance(obj, list):
+        rows.extend(obj)
 seen = {}
 for m in rows:
     b = m.get("source_branch")
@@ -116,10 +153,12 @@ for m in rows:
 for b, m in seen.items():
     print("\t".join([b, m.get("state") or "", str(m.get("iid") or ""),
                      "1" if m.get("draft") else "0"]))
-' 2>/dev/null)" || return 1
+' 2>/dev/null)" || { [ -f "$cache" ] && { cat "$cache"; return 0; }; return 1; }
 
-  mkdir -p "$CACHE_DIR"
-  printf '%s\n' "$table" > "$cache"
+  if [ "$cacheable" = "1" ]; then
+    mkdir -p "$CACHE_DIR"
+    printf '%s\n' "$table" > "$cache"
+  fi
   printf '%s\n' "$table"
 }
 
@@ -144,6 +183,32 @@ derive() { # derive <checkout_path> <repo_root> <mr_table>
 
   branch="$(git -C "$path" rev-parse --abbrev-ref HEAD 2>/dev/null)" || { echo none; return 0; }
 
+  state=""; iid=""; draft=""
+  # Whole-field equality, not a substring search. A trailing tab anchors the END of the field
+  # and nothing anchors its start, so `grep -F "mr-suffix<TAB>"` also matches inside the row for
+  # `owner/mr-suffix` — and the branch inherits an MR it has nothing to do with. It collides in
+  # both directions: without the tab, `feature/rev` picks up `feature/review`. Comparing the
+  # whole first field is the only thing that rejects both. The branch travels in the environment
+  # rather than through `awk -v`, which processes escape sequences in the value.
+  row="$(printf '%s\n' "$table" | B="$branch" awk -F'\t' 'BEGIN{b=ENVIRON["B"]} $1==b {print; exit}')"
+  if [ -n "$row" ]; then
+    state="$(printf '%s' "$row" | cut -f2)"
+    iid="$(printf '%s' "$row" | cut -f3)"
+    draft="$(printf '%s' "$row" | cut -f4)"
+  fi
+
+  # An open MR outranks everything git can see locally, and this is the whole point of the
+  # ordering. It is the one fact that says somebody else is waiting on this branch, and it does
+  # not stop being true because you opened a file in the worktree or committed a review fix you
+  # have not pushed yet — which is precisely what the two tests below would otherwise conclude.
+  # Measured 2026-09-11: curato-issue-98 reported `active` with !120 open because of a single
+  # untracked probe file, and curato-issue-91 because of two unpushed commits.
+  if [ "$state" = "opened" ]; then
+    if [ "$draft" = "1" ]; then printf 'active %s\n' "$ICON_DRAFT"
+    else printf 'review %s !%s\n' "$ICON_MR" "$iid"; fi
+    return 0
+  fi
+
   if [ -n "$(git -C "$path" status --porcelain 2>/dev/null)" ]; then
     printf 'active %s\n' "$ICON_BRANCH"; return 0
   fi
@@ -161,22 +226,10 @@ derive() { # derive <checkout_path> <repo_root> <mr_table>
   fi
   if [ "${ahead:-0}" -gt 0 ]; then printf 'active %s\n' "$ICON_BRANCH"; return 0; fi
 
-  # The trailing tab is the field anchor, and it does survive the command substitution:
-  # `$(...)` strips trailing NEWLINES, not other whitespace. Without it the match would be
-  # an unanchored substring and `feature/rev` would pick up the row for `feature/review`.
-  row="$(printf '%s\n' "$table" | grep -F "$(printf '%s\t' "$branch")" | head -1)"
-  if [ -n "$row" ]; then
-    state="$(printf '%s' "$row" | cut -f2)"
-    iid="$(printf '%s' "$row" | cut -f3)"
-    draft="$(printf '%s' "$row" | cut -f4)"
-    case "$state" in
-      opened)
-        if [ "$draft" = "1" ]; then printf 'active %s\n' "$ICON_DRAFT"
-        else printf 'review %s !%s\n' "$ICON_MR" "$iid"; fi
-        return 0 ;;
-      merged)
-        printf 'merged %s !%s\n' "$ICON_MERGE" "$iid"; return 0 ;;
-    esac
+  # Merged stays BELOW the local tests, unlike opened. Once a branch has landed there is nobody
+  # waiting on it, so new work in that worktree is new work — badging it merged would hide it.
+  if [ "$state" = "merged" ]; then
+    printf 'merged %s !%s\n' "$ICON_MERGE" "$iid"; return 0
   fi
 
   # Nothing above matched: no local work, and no MR saying anyone else has it. That is still
@@ -208,6 +261,11 @@ report() { # report <workspace_id> <phase> <value>
 # ------------------------------------------------------------------ spaces
 # Only linked worktrees are badged. A repo's main checkout is nearly always dirty with local
 # scratch, and badging it would mark every project permanently active.
+#
+# Sorted by repo_root because Herdr does not return the list grouped — the live session returns
+# VM.Portal, VM.Portal, curato, VM.Portal, curato, curato — and cmd_refresh holds exactly one MR
+# table at a time, so every switch back to a repo it already looked up refetched it. The sort is
+# stable, so workspaces keep their Herdr order within a repo.
 spaces() {
   herdr $HERDR_ARGS workspace list 2>/dev/null | "$PY" -c '
 import json, sys
@@ -222,7 +280,7 @@ for w in d.get("result", {}).get("workspaces", []):
     path, root = wt.get("checkout_path"), wt.get("repo_root")
     if path and root:
         print("\t".join([w["workspace_id"], path, root]))
-' 2>/dev/null
+' 2>/dev/null | LC_ALL=C sort -t"$(printf '\t')" -k3,3 -s
 }
 
 # resolve a workspace id to its checkout path
@@ -247,7 +305,7 @@ cmd_refresh() {
     [ -n "$ws" ] || continue
     [ -z "$only" ] || [ "$ws" = "$only" ] || continue
     [ -d "$path" ] || continue
-    # The list arrives grouped by repo, so one lookup per repo falls out of iterating it.
+    # `spaces` sorts by repo, so one lookup per repo falls out of iterating it.
     if [ "$root" != "$last_root" ]; then
       table="$(mr_table "$root" "$force" || true)"
       last_root="$root"
