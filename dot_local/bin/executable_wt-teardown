@@ -48,4 +48,125 @@ esac
 [[ -d "$WT_WORKTREE" ]]    || die "WT_WORKTREE is not a directory: $WT_WORKTREE"
 typeset WT="${WT_WORKTREE:A}"
 
+# _render <path> — the pathname as lsof itself renders it under LC_ALL=C.
+#
+# Comparing against the raw path would be wrong for any path lsof escapes. This concerns
+# $WT alone: a rendered character INSIDE the checkout still sits after the prefix that
+# has to match.
+_render() {
+  emulate -L zsh
+  # Byte-wise, because that is how lsof escapes under LC_ALL=C. NO_MULTIBYTE makes zsh's
+  # indexing agree with it.
+  setopt local_options no_multibyte
+  local s="$1" out="" c i n
+  for (( i = 1; i <= ${#s}; i++ )); do
+    c="${s[i]}"; n=$(( #c ))
+    if (( n == 92 )); then out+='\\'
+    elif (( n >= 32 && n <= 126 )); then out+="$c"
+    elif (( n >= 128 )); then out+="$(printf '\\x%02x' $n)"
+    else return 1
+    fi
+  done
+  print -r -- "$out"
+}
+
+# _ancestors — this pid and every ancestor, one per line.
+#
+# Unconditional, not merely covered by the allowlist: wt-rm runs the hook with cwd inside
+# the worktree, so this process AND the subshell that cd'd there appear in every scan.
+# A repository declaring `--sweep zsh` must not kill the shell interpreting its own hook.
+#
+# $$ and $PPID come from zsh and always hold. The ps walk extends the chain beyond them
+# and is allowed to fail — under a sandbox that denies ps, two levels still cover the
+# wt-rm case exactly.
+_ancestors() {
+  emulate -L zsh
+  local -a chain
+  local p pp
+  chain=( $$ $PPID )
+  p=$PPID
+  while [[ "$p" == <2-> ]]; do
+    pp="$(command ps -o ppid= -p "$p" 2>/dev/null)" || break
+    pp="${pp//[[:space:]]/}"
+    [[ "$pp" == <2-> ]] || break
+    chain+=( "$pp" )
+    p="$pp"
+  done
+  print -rl -- $chain
+}
+
+# _scan <abs-dir> — print "<pid> <command>" for every process whose cwd is at or below
+# <abs-dir>. Return 1 when the answer cannot be trusted.
+#
+# The parse discipline is deliberate and mirrors _wt_live_processes:
+#   -F0 gives NUL-terminated fields, so framing does not rest on lsof's escaping of a
+#   newline inside a pathname. A single invocation keeps the status attached to the
+#   listing actually parsed — split across two, a scan that died partway would read as an
+#   idle checkout, since the records it never reached are exactly where the occupant is.
+_scan() {
+  emulate -L zsh
+  local dir="$1" edir rc i pid cmd cwd
+  local -a lines hits
+  (( $+commands[lsof] )) || {
+    print -ru2 -- "$PROG: lsof is unavailable, so processes using $dir cannot be detected — refusing."
+    return 1
+  }
+  edir="$(_render "$dir")" || {
+    print -ru2 -- "$PROG: $dir contains a control character, which lsof renders rather than reports — refusing."
+    return 1
+  }
+  lines=( ${(0)"$(LC_ALL=C command lsof -w -d cwd -F0pcn 2>/dev/null)"} ); rc=$?
+  if (( rc )); then
+    print -ru2 -- "$PROG: could not read the process list from lsof — refusing."
+    return 1
+  fi
+  # Each record set ends with a newline after its final NUL, which lands at the front of
+  # the next field. Strip exactly one.
+  lines=( ${lines#$'\n'} )
+  # Real lsof cannot come back empty: this shell has a cwd of its own and is in every
+  # answer. Nothing at all therefore means the scan failed.
+  if (( ${#lines} == 0 )) || (( ${#lines} % 4 )); then
+    print -ru2 -- "$PROG: could not read the process list from lsof — refusing."
+    return 1
+  fi
+  for (( i = 1; i <= ${#lines}; i += 4 )); do
+    if [[ "${lines[i]}" != p<-> || "${lines[i+1]}" != c* || \
+          "${lines[i+2]}" != fcwd || "${lines[i+3]}" != n/* ]]; then
+      print -ru2 -- "$PROG: could not read the process list from lsof — refusing."
+      return 1
+    fi
+    pid="${lines[i]#p}" cmd="${lines[i+1]#c}" cwd="${lines[i+3]#n}"
+    # Anchored on purpose: repo-a and repo-a-extra are neighbours by construction.
+    [[ "$cwd" == "$edir" || "$cwd" == "$edir"/* ]] && hits+=( "$pid $cmd" )
+  done
+  (( ${#hits} )) && print -rl -- $hits
+  return 0
+}
+
+typeset scan_out
+scan_out="$(_scan "$WT")" || exit 1
+
+typeset -A OCCUPANT          # pid -> command, for every process inside the worktree
+typeset line
+for line in ${(f)scan_out}; do
+  [[ -n "$line" ]] && OCCUPANT[${line%% *}]="${line#* }"
+done
+
+typeset -A MINE              # pids of this process and its ancestors
+for line in ${(f)"$(_ancestors)"}; do
+  [[ -n "$line" ]] && MINE[$line]=1
+done
+
+typeset -a TARGETS
+typeset pid cmd want
+for pid cmd in ${(kv)OCCUPANT}; do
+  (( ${+MINE[$pid]} )) && continue
+  for want in $SWEEPS; do
+    # Exact equality, never substring: `ruby` must not select `rubyfmt`.
+    [[ "$cmd" == "$want" ]] && { TARGETS+=( "$pid" ); print -r -- "$PROG: stopping $pid $cmd"; break }
+  done
+done
+
+for pid in $TARGETS; do kill -TERM "$pid" 2>/dev/null; done
+
 exit 0

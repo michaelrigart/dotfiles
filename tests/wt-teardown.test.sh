@@ -68,5 +68,95 @@ out="$(WT_WORKTREE="$T/does-not-exist" zsh "$SUBJECT" teardown 2>&1)"
 is "a nonexistent WT_WORKTREE is an error" "$?" "1"
 
 echo
+echo "D. the lsof scan refuses rather than reads empty"
+cat > "$T/bin/lsof" <<'STUB'
+#!/bin/sh
+d="$(dirname "$0")"
+if [ "$(cat "$d/mode" 2>/dev/null)" = raw ]; then
+  cat "$d/raw"
+  exit 0
+fi
+# A real `lsof -d cwd` is never empty — the caller has a cwd and so does launchd — and
+# the subject refuses an empty listing rather than reading it as an idle checkout. A stub
+# that emptied out once its fixture pids died would trip that refusal on every re-scan,
+# so it carries the same baseline record a real listing always has.
+printf 'p1\0claunchd\0fcwd\0n/\0'
+while read -r pid cmd cwd; do
+  [ -n "$pid" ] || continue
+  kill -0 "$pid" 2>/dev/null || continue
+  printf 'p%s\0c%s\0fcwd\0n%s\0' "$pid" "$cmd" "$cwd"
+done < "$d/live"
+STUB
+cat > "$T/bin/ps" <<STUB
+#!/bin/sh
+for a in "\$@"; do last="\$a"; done
+if [ "\$last" = "$$" ]; then echo 1; else echo $$; fi
+STUB
+chmod +x "$T/bin/lsof" "$T/bin/ps"
+: > "$T/bin/live"; : > "$T/bin/raw"; echo live > "$T/bin/mode"
+mk_raw()  { printf "$@" > "$T/bin/raw"; echo raw > "$T/bin/mode"; }
+mk_live() { cat > "$T/bin/live"; echo live > "$T/bin/mode"; }
+srun() { PATH="$T/bin:/usr/bin:/bin" WT_WORKTREE="$WT" zsh "$SUBJECT" "$@" 2>&1; }
+
+mk_raw ''
+out="$(srun --sweep ruby teardown)"; is "empty lsof output is refused" "$?" "1"
+has "and says the list was unreadable" "$out" "lsof"
+mk_raw 'p1\0cruby\0fcwd\0'
+out="$(srun --sweep ruby teardown)"; is "a truncated record is refused" "$?" "1"
+mk_raw 'p1\0cruby\0fcwd\0n\0'
+out="$(srun --sweep ruby teardown)"; is "a bare n field is refused" "$?" "1"
+mk_raw 'p1\0cruby\0ftxt\0n/x\0'
+out="$(srun --sweep ruby teardown)"; is "a non-cwd descriptor is refused" "$?" "1"
+
+echo
+echo "E. matching is anchored at a directory boundary"
+# A disposable process, NOT $$: the harness is an ancestor and would be skipped by the
+# self-exclusion rule, so the anchoring this section exists to test would never run.
+sibling="$(spawn command sleep 300)"
+mk_live <<EOF
+$sibling ruby $T/repo-feature-two
+EOF
+out="$(srun --sweep ruby teardown)"; is "a sibling suffix does not match" "$?" "0"
+is "and nothing is reported stopped" "$(printf '%s' "$out" | grep -c stopping)" "0"
+sleep 0.5
+is "the sibling's process is untouched" "$(kill -0 "$sibling" 2>/dev/null; echo $?)" "0"
+kill -9 "$sibling" 2>/dev/null
+
+echo
+echo "F. the sweep never kills its own chain"
+# A DISPOSABLE ancestor, not $$. Using the harness itself cannot fail cleanly: the
+# subject escalates to SIGKILL, which no trap survives, so a regression would take the
+# runner down mid-suite instead of reporting. This stand-in registers itself in the
+# listing and then runs the subject, so it is the subject's real parent — exactly the
+# shape wt-rm produces, where the subshell that cd'd into the worktree is $PPID.
+cat > "$T/parent.zsh" <<'PZ'
+#!/usr/bin/env zsh
+print -r -- "$$ zsh $WT_WORKTREE" > "$LIVE"
+"$@"
+rc=$?
+print -r -- "PARENT_ALIVE"
+exit $rc
+PZ
+chmod +x "$T/parent.zsh"
+echo live > "$T/bin/mode"
+out="$(PATH="$T/bin:/usr/bin:/bin" LIVE="$T/bin/live" WT_WORKTREE="$WT" \
+  zsh "$T/parent.zsh" zsh "$SUBJECT" --sweep zsh teardown 2>&1)"
+is "a --sweep zsh does not kill the subject's own parent" "$?" "0"
+has "and the parent lived to say so" "$out" "PARENT_ALIVE"
+is "the harness was never signalled" "$HARNESS_TERMED" "0"
+
+echo
+echo "G. TERM is sent to a swept process"
+victim="$(spawn command sleep 300)"
+mk_live <<EOF
+$victim sleep $WT
+EOF
+out="$(srun --sweep sleep teardown)"
+is "the sweep exits clean" "$?" "0"
+sleep 1
+is "the swept process is gone" "$(kill -0 "$victim" 2>/dev/null; echo $?)" "1"
+has "and it is reported" "$out" "sleep"
+
+echo
 echo "RESULT: $pass passed, $((pass + fail)) total, $fail failed"
 [ "$fail" -eq 0 ]
