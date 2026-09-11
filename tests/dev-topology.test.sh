@@ -67,7 +67,7 @@ HERDR_SESSION="$SESSION" DEV_NO_ATTACH=1 ~/.config/herdr/layout.sh "$REPO" \
 
 # 2. Topology is what we think it is.
 WS=$(h workspace list | jq -r '.result.workspaces[0].workspace_id')
-for l in agents editor runtime git; do
+for l in agents editor runtime; do
   n=$(h tab list --workspace "$WS" | jq -r --arg l "$l" \
         '[.result.tabs[] | select(.label == $l)] | length')
   [[ "$n" == 1 ]] && ok "exactly one '$l' tab" || bad "'$l' tab count = $n"
@@ -143,11 +143,11 @@ WT="${WT:A}"
 WWS=$(h workspace list | jq -r --arg d "$WT" \
   '.result.workspaces[] | select(.worktree.checkout_path == $d) | .workspace_id')
 wn=$(h tab list --workspace "$WWS" 2>/dev/null | jq -r \
-  '[.result.tabs[] | select(.label=="agents" or .label=="editor" or .label=="runtime" or .label=="git")] | length')
+  '[.result.tabs[] | select(.label=="agents" or .label=="editor" or .label=="runtime")] | length')
 lock_reason=$(git -C "$PRIMARY" worktree list --porcelain | sed -n '/worktree .*worktree-proj-live-wt$/,/^$/s/^locked //p')
-[[ "$wt_rc" == 0 && -n "$WWS" && "$wn" == 4 \
+[[ "$wt_rc" == 0 && -n "$WWS" && "$wn" == 3 \
    && "$lock_reason" == "wt-managed; remove with command wt-rm" ]] \
-  && ok "wt creates a four-tab native workspace with the lifecycle lock" \
+  && ok "wt creates a three-tab native workspace with the lifecycle lock" \
   || bad "wt rc=$wt_rc workspace=${WWS:-none} managed-tabs=${wn:-none} lock=${lock_reason:-none}"
 
 # Reopen must return to the same native workspace, not create an ordinary duplicate.
@@ -199,9 +199,9 @@ h plugin unlink "$PLUGIN_ID" >/dev/null 2>&1 || true
 h plugin link "$PDIR" >/dev/null \
   && { plugin_linked=1; ok "the plugin links"; } || bad "plugin link failed"
 close_rc=0
-h tab close "$(h tab list --workspace "$WS" | jq -r '.result.tabs[] | select(.label=="git") | .tab_id')" >/dev/null \
+h tab close "$(h tab list --workspace "$WS" | jq -r '.result.tabs[] | select(.label=="runtime") | .tab_id')" >/dev/null \
   || close_rc=$?
-closed_n=$(h tab list --workspace "$WS" | jq -r '[.result.tabs[] | select(.label=="git")] | length')
+closed_n=$(h tab list --workspace "$WS" | jq -r '[.result.tabs[] | select(.label=="runtime")] | length')
 # The action's context is taken from the FOCUSED workspace, so focus it first —
 # otherwise the plugin repairs whichever workspace happens to be focused.
 focus_rc=0
@@ -213,7 +213,7 @@ h plugin action invoke "$PLUGIN_ID.apply" >/dev/null 2>&1 || invoke_rc=$?   # se
 # `plugin action invoke` returns while the action is still "running" — poll rather
 # than assuming it finished.
 for i in {1..20}; do
-  n=$(h tab list --workspace "$WS" | jq -r '[.result.tabs[] | select(.label=="git")] | length')
+  n=$(h tab list --workspace "$WS" | jq -r '[.result.tabs[] | select(.label=="runtime")] | length')
   [[ "$n" == 1 ]] && break
   sleep 0.5
 done
@@ -248,16 +248,16 @@ fi
 
 # 7b. The jump must still land after repair. This is the whole reason tab-goto.sh
 #     resolves by label: repair APPENDS (herdr 0.8.2 has no `tab move`), so the
-#     repaired git tab is now last — after the unmanaged `notes` tab added earlier —
-#     and a position-based lookup would not land reliably on git at all.
-GITTAB=$(h tab list --workspace "$WS" | jq -r '.result.tabs[] | select(.label=="git") | .tab_id')
+#     repaired runtime tab is now last — after the unmanaged `notes` tab added
+#     earlier — and a position-based lookup would not land reliably on it at all.
+RTAB=$(h tab list --workspace "$WS" | jq -r '.result.tabs[] | select(.label=="runtime") | .tab_id')
 jump_rc=0
-HERDR_ACTIVE_WORKSPACE_ID="$WS" HERDR_SESSION="$SESSION" ~/.config/herdr/tab-goto.sh git \
+HERDR_ACTIVE_WORKSPACE_ID="$WS" HERDR_SESSION="$SESSION" ~/.config/herdr/tab-goto.sh runtime \
   || jump_rc=$?
 ACTIVE=$(h workspace get "$WS" | jq -r '.result.workspace.active_tab_id')
-[[ "$jump_rc" == 0 && "$ACTIVE" == "$GITTAB" ]] \
-  && ok "a label jump lands on the repaired tab ($GITTAB)" \
-  || bad "label jump landed on $ACTIVE, expected the repaired $GITTAB"
+[[ "$jump_rc" == 0 && "$ACTIVE" == "$RTAB" ]] \
+  && ok "a label jump lands on the repaired tab ($RTAB)" \
+  || bad "label jump landed on $ACTIVE, expected the repaired $RTAB"
 
 # 8. Notification DELIVERY is not switched off. This deliberately does not claim to
 #    prove rendering: the gate runs a headless named session with no attached client,
