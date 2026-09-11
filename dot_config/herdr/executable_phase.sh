@@ -184,10 +184,13 @@ derive() { # derive <checkout_path> <repo_root> <mr_table>
   branch="$(git -C "$path" rev-parse --abbrev-ref HEAD 2>/dev/null)" || { echo none; return 0; }
 
   state=""; iid=""; draft=""
-  # The trailing tab is the field anchor, and it does survive the command substitution:
-  # `$(...)` strips trailing NEWLINES, not other whitespace. Without it the match would be
-  # an unanchored substring and `feature/rev` would pick up the row for `feature/review`.
-  row="$(printf '%s\n' "$table" | grep -F "$(printf '%s\t' "$branch")" | head -1)"
+  # Whole-field equality, not a substring search. A trailing tab anchors the END of the field
+  # and nothing anchors its start, so `grep -F "mr-suffix<TAB>"` also matches inside the row for
+  # `owner/mr-suffix` — and the branch inherits an MR it has nothing to do with. It collides in
+  # both directions: without the tab, `feature/rev` picks up `feature/review`. Comparing the
+  # whole first field is the only thing that rejects both. The branch travels in the environment
+  # rather than through `awk -v`, which processes escape sequences in the value.
+  row="$(printf '%s\n' "$table" | B="$branch" awk -F'\t' 'BEGIN{b=ENVIRON["B"]} $1==b {print; exit}')"
   if [ -n "$row" ]; then
     state="$(printf '%s' "$row" | cut -f2)"
     iid="$(printf '%s' "$row" | cut -f3)"

@@ -106,6 +106,13 @@ q git -C "$T/repo-aheadreview" commit -m ahead
 # lookup anchors on the field-separating tab; drop that anchor and this worktree silently
 # inherits !10 from a branch it has nothing to do with.
 mkwt prefix   feature/rev      1
+# And the collision the other way round. The trailing tab anchors the END of the field but
+# nothing anchors the start, so a search for "mr-suffix<TAB>" matches inside the row for
+# owner/mr-suffix. This branch has no MR of its own and owner/mr-suffix has !16 open.
+# Dirty, because that is the shape the bug is worst in: the MR test now runs first, so a
+# worktree you are actively editing reports somebody else's review instead of active.
+mkwt suffix   mr-suffix        1
+echo scratch >> "$T/repo-suffix/f"
 # Branched from main and not committed to yet. Zero commits ahead of the base and HEAD is an
 # ancestor of it — arithmetically identical to a fully merged branch, so anything inferring
 # "merged" from containment alone marks every worktree the day it is created.
@@ -140,7 +147,7 @@ q git -C "$REPO2" remote set-url origin git@gitlab.com:test/proj2.git
 # Assert the fixture before asserting anything about the script. Every git call above is
 # silenced by q(), so a setup that failed reached the phase assertions as "no output" and
 # read as the script itself being broken.
-for _d in dirty unpushed review draft merged nomr prefix fresh dirtyreview aheadreview mergeddirty; do
+for _d in dirty unpushed review draft merged nomr prefix fresh dirtyreview aheadreview mergeddirty suffix; do
   [ -d "$T/repo-$_d" ] || { echo "FIXTURE BROKEN: $T/repo-$_d was not created" >&2; exit 2; }
 done
 for _d in one two; do
@@ -195,7 +202,8 @@ cat > "$WSJSON" <<J
  {"workspace_id":"w9","label":"prefix","worktree":{"checkout_path":"$T/repo-prefix","is_linked_worktree":true,"repo_root":"$REPO"}},
  {"workspace_id":"w10","label":"dirtyreview","worktree":{"checkout_path":"$T/repo-dirtyreview","is_linked_worktree":true,"repo_root":"$REPO"}},
  {"workspace_id":"w11","label":"aheadreview","worktree":{"checkout_path":"$T/repo-aheadreview","is_linked_worktree":true,"repo_root":"$REPO"}},
- {"workspace_id":"w12","label":"mergeddirty","worktree":{"checkout_path":"$T/repo-mergeddirty","is_linked_worktree":true,"repo_root":"$REPO"}}
+ {"workspace_id":"w12","label":"mergeddirty","worktree":{"checkout_path":"$T/repo-mergeddirty","is_linked_worktree":true,"repo_root":"$REPO"}},
+ {"workspace_id":"w13","label":"suffix","worktree":{"checkout_path":"$T/repo-suffix","is_linked_worktree":true,"repo_root":"$REPO"}}
 ]}}
 J
 
@@ -204,7 +212,8 @@ cat > "$MROPEN" <<'J'
 [{"iid":10,"source_branch":"feature/review","state":"opened","draft":false},
  {"iid":11,"source_branch":"feature/draft","state":"opened","draft":true},
  {"iid":13,"source_branch":"feature/dirty-review","state":"opened","draft":false},
- {"iid":14,"source_branch":"feature/ahead-review","state":"opened","draft":false}]
+ {"iid":14,"source_branch":"feature/ahead-review","state":"opened","draft":false},
+ {"iid":16,"source_branch":"owner/mr-suffix","state":"opened","draft":false}]
 J
 MRMERGED="$T/mr-merged.json"
 cat > "$MRMERGED" <<'J'
@@ -252,6 +261,11 @@ case "$(report_for w5)" in *"--token active=$ICON_DRAFT"*) _pass "open draft MR 
 # which row was matched, so only an assertion like this one can catch it.
 case "$(report_for w9)" in *"--token active=$ICON_BRANCH"*) _pass "a branch that is a prefix of another does not inherit its MR";;
   *) _fail "a branch that is a prefix of another does not inherit its MR (got: $(report_for w9))";; esac
+# The same collision from the other end, and the one the tab anchor cannot catch: the tab
+# terminates the field but nothing marks its start, so mr-suffix matches inside the row for
+# owner/mr-suffix. Only whole-field equality rejects both.
+case "$(report_for w13)" in *"--token active=$ICON_BRANCH"*) _pass "a branch that is a suffix of another does not inherit its MR";;
+  *) _fail "a branch that is a suffix of another does not inherit its MR (got: $(report_for w13))";; esac
 case "$(report_for w6)" in *"--token merged=$ICON_MERGE !12"*) _pass "merged MR -> merged, carries !12";;
   *) _fail "merged MR -> merged, carries !12 (got: $(report_for w6))";; esac
 
@@ -298,7 +312,7 @@ check "$BADSRC" "$TOTAL" "all $TOTAL reports use --source herdr-phase"
 # Herdr keeps a token until told otherwise, so the three unused tokens must be cleared on
 # every report or a space that changes phase renders two icons at once.
 missing=0
-for w in w2 w3 w4 w5 w6 w7 w8 w10 w11 w12 wA wB; do
+for w in w2 w3 w4 w5 w6 w7 w8 w10 w11 w12 w13 wA wB; do
   line="$(report_for $w)"
   set_count=$(printf '%s\n' "$line" | grep -o -- "--token " | wc -l | tr -d ' ')
   clear_count=$(printf '%s\n' "$line" | grep -o -- "--clear-token " | wc -l | tr -d ' ')
