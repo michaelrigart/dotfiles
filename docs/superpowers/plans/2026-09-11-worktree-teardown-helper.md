@@ -10,6 +10,14 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-11-worktree-teardown-helper-design.md`
 
+
+> **The appendix is normative.** Both files in Appendix A were built and run during plan
+> review: the suite reports `53 passed, 53 total, 0 failed`, and an 11-mutant battery
+> against the subject is caught in full. Where a task's inline snippet and the appendix
+> disagree, the appendix wins — the tasks define the increments and the order, the
+> appendix defines the finished content. Four defects found only by running it are
+> recorded in Appendix B; do not re-introduce them.
+
 ## Global Constraints
 
 - Source file is `dot_local/bin/executable_wt-teardown`; chezmoi deploys it to `~/.local/bin/wt-teardown`. Never hand-edit the deployed copy.
@@ -1007,3 +1015,573 @@ before. `ps` and `kill` are both denied under the sandbox — which is why the s
 
 **`chezmoi apply` renders `op`-backed templates**, so it needs 1Password signed in and
 the desktop app approved. Task 6 step 1 is the only step that applies.
+
+
+---
+
+## Appendix A: verified reference implementation
+
+Both files below were executed during plan review. Reproduce them exactly.
+
+### A.1 `dot_local/bin/executable_wt-teardown`
+
+```zsh
+#!/usr/bin/env zsh
+emulate -L zsh
+
+typeset PROG=wt-teardown
+typeset -a PIDFILES SWEEPS
+typeset -i TERM_WAIT=${WT_TEARDOWN_TERM_WAIT:-10}
+typeset -i KILL_WAIT=${WT_TEARDOWN_KILL_WAIT:-5}
+
+die() { print -ru2 -- "$PROG: $*"; exit 1 }
+usage() {
+  print -ru2 -- "usage: $PROG [--pidfile REL]... [--sweep COMMAND]... setup|teardown"
+  exit 64
+}
+
+while (( $# )); do
+  case "$1" in
+    --pidfile) (( $# >= 2 )) || usage; PIDFILES+=( "$2" ); shift 2 ;;
+    --sweep)   (( $# >= 2 )) || usage; SWEEPS+=( "$2" );   shift 2 ;;
+    --)        shift; break ;;
+    -*)        usage ;;
+    *)         break ;;
+  esac
+done
+
+(( $# == 1 )) || usage
+typeset VERB="$1"
+
+case "$VERB" in
+  setup)    exit 0 ;;
+  teardown) ;;
+  *)        usage ;;
+esac
+
+[[ -n "${WT_WORKTREE:-}" ]] || die "WT_WORKTREE is not set — this runs from a .worktreehook."
+[[ "$WT_WORKTREE" == /* ]] || die "WT_WORKTREE is not absolute: $WT_WORKTREE"
+[[ -d "$WT_WORKTREE" ]]    || die "WT_WORKTREE is not a directory: $WT_WORKTREE"
+typeset WT="${WT_WORKTREE:A}"
+
+_render() {
+  emulate -L zsh
+  setopt local_options no_multibyte
+  local s="$1" out="" c i n
+  for (( i = 1; i <= ${#s}; i++ )); do
+    c="${s[i]}"; n=$(( #c ))
+    if (( n == 92 )); then out+='\\'
+    elif (( n >= 32 && n <= 126 )); then out+="$c"
+    elif (( n >= 128 )); then out+="$(printf '\\x%02x' $n)"
+    else return 1
+    fi
+  done
+  print -r -- "$out"
+}
+
+_ancestors() {
+  emulate -L zsh
+  local -a chain
+  local p pp
+  chain=( $$ $PPID )
+  p=$PPID
+  while [[ "$p" == <2-> ]]; do
+    pp="$(command ps -o ppid= -p "$p" 2>/dev/null)" || break
+    pp="${pp//[[:space:]]/}"
+    [[ "$pp" == <2-> ]] || break
+    chain+=( "$pp" )
+    p="$pp"
+  done
+  print -rl -- $chain
+}
+
+_scan() {
+  emulate -L zsh
+  local dir="$1" edir rc i pid cmd cwd
+  local -a lines hits
+  (( $+commands[lsof] )) || {
+    print -ru2 -- "$PROG: lsof is unavailable, so processes using $dir cannot be detected — refusing."
+    return 1
+  }
+  edir="$(_render "$dir")" || {
+    print -ru2 -- "$PROG: $dir contains a control character, which lsof renders rather than reports — refusing."
+    return 1
+  }
+  lines=( ${(0)"$(LC_ALL=C command lsof -w -d cwd -F0pcn 2>/dev/null)"} ); rc=$?
+  if (( rc )); then
+    print -ru2 -- "$PROG: could not read the process list from lsof — refusing."
+    return 1
+  fi
+  lines=( ${lines#$'\n'} )
+  if (( ${#lines} == 0 )) || (( ${#lines} % 4 )); then
+    print -ru2 -- "$PROG: could not read the process list from lsof — refusing."
+    return 1
+  fi
+  for (( i = 1; i <= ${#lines}; i += 4 )); do
+    if [[ "${lines[i]}" != p<-> || "${lines[i+1]}" != c* || \
+          "${lines[i+2]}" != fcwd || "${lines[i+3]}" != n/* ]]; then
+      print -ru2 -- "$PROG: could not read the process list from lsof — refusing."
+      return 1
+    fi
+    pid="${lines[i]#p}" cmd="${lines[i+1]#c}" cwd="${lines[i+3]#n}"
+    [[ "$cwd" == "$edir" || "$cwd" == "$edir"/* ]] && hits+=( "$pid $cmd" )
+  done
+  (( ${#hits} )) && print -rl -- $hits
+  return 0
+}
+
+_stop() {
+  emulate -L zsh
+  local -a pids left
+  pids=( "$@" )
+  (( ${#pids} )) || return 0
+  local p
+  local -i i
+  for p in $pids; do kill -TERM "$p" 2>/dev/null; done
+  left=( $pids )
+  for (( i = 0; i < TERM_WAIT * 10; i++ )); do
+    pids=( $left ); left=()
+    for p in $pids; do kill -0 "$p" 2>/dev/null && left+=( "$p" ); done
+    (( ${#left} )) || return 0
+    command sleep 0.1
+  done
+  for p in $left; do kill -KILL "$p" 2>/dev/null; done
+  for (( i = 0; i < KILL_WAIT * 10; i++ )); do
+    pids=( $left ); left=()
+    for p in $pids; do kill -0 "$p" 2>/dev/null && left+=( "$p" ); done
+    (( ${#left} )) || return 0
+    command sleep 0.1
+  done
+  return 1
+}
+
+_pidfile_pid() {
+  emulate -L zsh
+  local rel="$1" wt="$2" abs real pid
+  [[ "$rel" != /* ]] || {
+    print -ru2 -- "$PROG: --pidfile must be repo-root-relative: $rel"; return 1 }
+  [[ "$rel" != ../* && "$rel" != */../* && "$rel" != */.. ]] || {
+    print -ru2 -- "$PROG: --pidfile escapes the worktree: $rel"; return 1 }
+  abs="$wt/$rel"
+  [[ -e "$abs" || -L "$abs" ]] || return 2
+  real="${abs:A}"
+  [[ "$real" == "$wt"/* ]] || {
+    print -ru2 -- "$PROG: --pidfile resolves outside the worktree: $rel -> $real"; return 1 }
+  [[ ! -L "$abs" && -f "$abs" ]] || {
+    print -ru2 -- "$PROG: --pidfile is not a regular file: $rel"; return 1 }
+  pid="$(<"$abs")"
+  pid="${pid//[[:space:]]/}"
+  [[ "$pid" == <2-> ]] || {
+    print -ru2 -- "$PROG: --pidfile $rel does not contain a usable pid"; return 1 }
+  print -r -- "$pid"
+  return 0
+}
+
+typeset scan_out
+scan_out="$(_scan "$WT")" || exit 1
+
+typeset -A OCCUPANT
+typeset line
+for line in ${(f)scan_out}; do
+  [[ -n "$line" ]] && OCCUPANT[${line%% *}]="${line#* }"
+done
+
+typeset -A MINE
+for line in ${(f)"$(_ancestors)"}; do
+  [[ -n "$line" ]] && MINE[$line]=1
+done
+
+typeset -a TARGETS CLEAR_FILES
+typeset rel pfpid rc
+for rel in $PIDFILES; do
+  pfpid="$(_pidfile_pid "$rel" "$WT")"; rc=$?
+  (( rc == 2 )) && continue
+  (( rc == 1 )) && exit 1
+  CLEAR_FILES+=( "$WT/$rel" )
+  if (( ${+MINE[$pfpid]} )); then
+    print -r -- "$PROG: $rel names this process — not signalling it"
+    continue
+  fi
+  if (( ${+OCCUPANT[$pfpid]} )); then
+    TARGETS+=( "$pfpid" )
+    print -r -- "$PROG: stopping $pfpid ${OCCUPANT[$pfpid]} (from $rel)"
+  else
+    print -r -- "$PROG: $rel is stale — pid $pfpid is not in this worktree"
+  fi
+done
+
+typeset pid cmd want
+for pid cmd in ${(kv)OCCUPANT}; do
+  (( ${+MINE[$pid]} )) && continue
+  for want in $SWEEPS; do
+    [[ "$cmd" == "$want" ]] && { TARGETS+=( "$pid" ); print -r -- "$PROG: stopping $pid $cmd"; break }
+  done
+done
+
+_stop $TARGETS
+
+typeset f
+for f in $CLEAR_FILES; do
+  [[ -e "$f" ]] && rm -f -- "$f"
+done
+
+typeset rescan_out
+rescan_out="$(_scan "$WT")" || exit 1
+typeset -a survivors
+for line in ${(f)rescan_out}; do
+  [[ -n "$line" ]] || continue
+  pid="${line%% *}"
+  (( ${+MINE[$pid]} )) && continue
+  survivors+=( "$line" )
+done
+
+if (( ${#survivors} )); then
+  print -ru2 -- "$PROG: processes are still in $WT after teardown:"
+  for line in $survivors; do print -ru2 -- "    $line"; done
+  exit 1
+fi
+
+exit 0
+```
+
+### A.2 `tests/wt-teardown.test.sh`
+
+```bash
+#!/usr/bin/env bash
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+SUBJECT="$ROOT/dot_local/bin/executable_wt-teardown"
+
+pass=0; fail=0
+_pass() { echo "  ok  $1"; pass=$((pass + 1)); }
+_fail() { echo "  FAIL: $1"; fail=$((fail + 1)); }
+is() { if [ "$2" = "$3" ]; then _pass "$1"; else _fail "$1 (got '$2', want '$3')"; fi; }
+has() {
+  if printf '%s' "$2" | grep -q -- "$3"; then _pass "$1"
+  else _fail "$1 (output did not contain '$3': $2)"; fi
+}
+
+if [ ! -r "$SUBJECT" ]; then
+  echo "FATAL: $SUBJECT not found — every assertion below would pass vacuously." >&2
+  echo "RESULT: 0 passed, 1 total, 1 failed"
+  exit 2
+fi
+
+# A regression in self-exclusion sends TERM to this very process. Trapping it turns
+# "the runner dies mid-suite" into an ordinary assertion, so the failure is legible
+# instead of arriving as a truncated run.
+HARNESS_TERMED=0
+trap 'HARNESS_TERMED=1' TERM
+
+T="$(mktemp -d "${TMPDIR:-/tmp}/wt-teardown-test.XXXXXX")"
+# Fully resolved: the subject does ${WT_WORKTREE:A} and lsof reports real paths, so a
+# fixture holding the /var symlink would never match and every behavioural case would
+# pass vacuously.
+T="$(cd "$T" && pwd -P)"
+trap 'rm -rf "$T"' EXIT
+WT="$T/repo-feature"
+mkdir -p "$WT/tmp/pids" "$T/bin"
+
+run() { WT_WORKTREE="$WT" zsh "$SUBJECT" "$@" 2>&1; }
+
+# spawn <cmd...> — start a process DETACHED and print its pid.
+#
+# Not `cmd & pid=$!`: a killed child of this shell stays a zombie until bash reaps it,
+# and a zombie still answers kill -0. The stub would then report a process the subject
+# had already stopped, and every behavioural case would fail on a phantom survivor.
+# Real lsof never reports a zombie — it has no cwd. Reparenting to launchd, which reaps
+# immediately, is what makes the stub agree with the thing it stands in for.
+spawn() { ( "$@" >/dev/null 2>&1 & echo $! ); }
+
+echo "A. verbs"
+out="$(run setup)"; is "setup is an accepted no-op" "$?" "0"
+is "setup prints nothing" "$out" ""
+out="$(run bogus)"; is "an unknown verb exits 64" "$?" "64"
+has "and names the usage" "$out" "setup|teardown"
+out="$(run)"; is "no verb exits 64" "$?" "64"
+
+echo
+echo "B. flags"
+out="$(run --pidfile 2>&1)"; is "--pidfile without a value exits 64" "$?" "64"
+out="$(run --sweep 2>&1)"; is "--sweep without a value exits 64" "$?" "64"
+out="$(run --nonsense teardown 2>&1)"; is "an unknown flag exits 64" "$?" "64"
+
+echo
+echo "C. environment"
+out="$(WT_WORKTREE= zsh "$SUBJECT" teardown 2>&1)"
+is "an unset WT_WORKTREE is an error" "$?" "1"
+has "and says so" "$out" "WT_WORKTREE"
+out="$(WT_WORKTREE=relative/path zsh "$SUBJECT" teardown 2>&1)"
+is "a relative WT_WORKTREE is an error" "$?" "1"
+out="$(WT_WORKTREE="$T/does-not-exist" zsh "$SUBJECT" teardown 2>&1)"
+is "a nonexistent WT_WORKTREE is an error" "$?" "1"
+
+echo
+echo "D. the lsof scan refuses rather than reads empty"
+cat > "$T/bin/lsof" <<'STUB'
+#!/bin/sh
+d="$(dirname "$0")"
+if [ "$(cat "$d/mode" 2>/dev/null)" = raw ]; then
+  cat "$d/raw"
+  exit 0
+fi
+# A real `lsof -d cwd` is never empty — the caller has a cwd and so does launchd — and
+# the subject refuses an empty listing rather than reading it as an idle checkout. A stub
+# that emptied out once its fixture pids died would trip that refusal on every re-scan,
+# so it carries the same baseline record a real listing always has.
+printf 'p1\0claunchd\0fcwd\0n/\0'
+while read -r pid cmd cwd; do
+  [ -n "$pid" ] || continue
+  kill -0 "$pid" 2>/dev/null || continue
+  printf 'p%s\0c%s\0fcwd\0n%s\0' "$pid" "$cmd" "$cwd"
+done < "$d/live"
+STUB
+cat > "$T/bin/ps" <<STUB
+#!/bin/sh
+for a in "\$@"; do last="\$a"; done
+if [ "\$last" = "$$" ]; then echo 1; else echo $$; fi
+STUB
+chmod +x "$T/bin/lsof" "$T/bin/ps"
+: > "$T/bin/live"; : > "$T/bin/raw"; echo live > "$T/bin/mode"
+mk_raw()  { printf "$@" > "$T/bin/raw"; echo raw > "$T/bin/mode"; }
+mk_live() { cat > "$T/bin/live"; echo live > "$T/bin/mode"; }
+srun() { PATH="$T/bin:/usr/bin:/bin" WT_WORKTREE="$WT" zsh "$SUBJECT" "$@" 2>&1; }
+
+mk_raw ''
+out="$(srun --sweep ruby teardown)"; is "empty lsof output is refused" "$?" "1"
+has "and says the list was unreadable" "$out" "lsof"
+mk_raw 'p1\0cruby\0fcwd\0'
+out="$(srun --sweep ruby teardown)"; is "a truncated record is refused" "$?" "1"
+mk_raw 'p1\0cruby\0fcwd\0n\0'
+out="$(srun --sweep ruby teardown)"; is "a bare n field is refused" "$?" "1"
+mk_raw 'p1\0cruby\0ftxt\0n/x\0'
+out="$(srun --sweep ruby teardown)"; is "a non-cwd descriptor is refused" "$?" "1"
+
+echo
+echo "E. matching is anchored at a directory boundary"
+# A disposable process, NOT $$: the harness is an ancestor and would be skipped by the
+# self-exclusion rule, so the anchoring this section exists to test would never run.
+sibling="$(spawn command sleep 300)"
+mk_live <<EOF
+$sibling ruby $T/repo-feature-two
+EOF
+out="$(srun --sweep ruby teardown)"; is "a sibling suffix does not match" "$?" "0"
+is "and nothing is reported stopped" "$(printf '%s' "$out" | grep -c stopping)" "0"
+sleep 0.5
+is "the sibling's process is untouched" "$(kill -0 "$sibling" 2>/dev/null; echo $?)" "0"
+kill -9 "$sibling" 2>/dev/null
+
+echo
+echo "F. the sweep never kills its own chain"
+# A DISPOSABLE ancestor, not $$. Using the harness itself cannot fail cleanly: the
+# subject escalates to SIGKILL, which no trap survives, so a regression would take the
+# runner down mid-suite instead of reporting. This stand-in registers itself in the
+# listing and then runs the subject, so it is the subject's real parent — exactly the
+# shape wt-rm produces, where the subshell that cd'd into the worktree is $PPID.
+cat > "$T/parent.zsh" <<'PZ'
+#!/usr/bin/env zsh
+print -r -- "$$ zsh $WT_WORKTREE" > "$LIVE"
+"$@"
+rc=$?
+print -r -- "PARENT_ALIVE"
+exit $rc
+PZ
+chmod +x "$T/parent.zsh"
+echo live > "$T/bin/mode"
+out="$(PATH="$T/bin:/usr/bin:/bin" LIVE="$T/bin/live" WT_WORKTREE="$WT" \
+  zsh "$T/parent.zsh" zsh "$SUBJECT" --sweep zsh teardown 2>&1)"
+is "a --sweep zsh does not kill the subject's own parent" "$?" "0"
+has "and the parent lived to say so" "$out" "PARENT_ALIVE"
+is "the harness was never signalled" "$HARNESS_TERMED" "0"
+
+echo
+echo "G. TERM is sent to a swept process"
+victim="$(spawn command sleep 300)"
+mk_live <<EOF
+$victim sleep $WT
+EOF
+out="$(srun --sweep sleep teardown)"
+is "the sweep exits clean" "$?" "0"
+sleep 1
+is "the swept process is gone" "$(kill -0 "$victim" 2>/dev/null; echo $?)" "1"
+has "and it is reported" "$out" "sleep"
+
+# Exact equality, never substring: --sweep sleep must not select `sleepy`. A substring
+# match would quietly widen every declaration a project makes.
+near="$(spawn command sleep 300)"
+mk_live <<EOF
+$near sleepy $WT
+EOF
+out="$(srun --sweep sleep teardown)"
+# It refuses BECAUSE it did not sweep it: an occupant no declaration covers is left
+# alone and reported, which is what surfaces as wt-rm's check-4 refusal one step later.
+is "an uncovered occupant makes teardown refuse" "$?" "1"
+sleep 0.5
+is "and that process is untouched" "$(kill -0 "$near" 2>/dev/null; echo $?)" "0"
+kill -9 "$near" 2>/dev/null
+
+echo
+echo "H. a process ignoring TERM is escalated to KILL"
+cat > "$T/deaf.sh" <<'DEAF'
+#!/bin/sh
+trap '' TERM
+# Written only once the trap is installed: waiting on this is what makes the fixture
+# genuinely TERM-proof before the subject runs. A plain sleep here is a race, and losing
+# it means the process dies on TERM and escalation is never exercised at all.
+: > "$1"
+while :; do sleep 1; done
+DEAF
+chmod +x "$T/deaf.sh"
+rm -f "$T/deaf.ready"
+deaf="$(spawn "$T/deaf.sh" "$T/deaf.ready")"
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -e "$T/deaf.ready" ] && break; sleep 0.2; done
+is "the deaf fixture installed its TERM trap" "$([ -e "$T/deaf.ready" ] && echo yes || echo no)" "yes"
+mk_live <<EOF
+$deaf deaf.sh $WT
+EOF
+out="$(PATH="$T/bin:/usr/bin:/bin" WT_WORKTREE="$WT" \
+  WT_TEARDOWN_TERM_WAIT=1 WT_TEARDOWN_KILL_WAIT=3 \
+  zsh "$SUBJECT" --sweep deaf.sh teardown 2>&1)"
+is "escalation exits clean" "$?" "0"
+sleep 1
+is "the deaf process was killed" "$(kill -0 "$deaf" 2>/dev/null; echo $?)" "1"
+
+echo
+echo "I. a survivor is an error, not a shrug"
+ghost="$(spawn command sleep 300)"
+mk_raw 'p%s\0cimmortal\0fcwd\0n%s\0' "$ghost" "$WT"
+out="$(PATH="$T/bin:/usr/bin:/bin" WT_WORKTREE="$WT" \
+  WT_TEARDOWN_TERM_WAIT=1 WT_TEARDOWN_KILL_WAIT=1 \
+  zsh "$SUBJECT" --sweep immortal teardown 2>&1)"
+is "a surviving target exits nonzero" "$?" "1"
+has "and names what is still there" "$out" "still"
+kill -9 "$ghost" 2>/dev/null
+
+echo
+echo "J. a pidfile is not a licence to signal"
+bystander="$(spawn command sleep 300)"
+echo "$bystander" > "$WT/tmp/pids/server.pid"
+mk_live <<EOF
+$$ zsh $T/elsewhere
+EOF
+out="$(srun --pidfile tmp/pids/server.pid teardown)"
+is "a stale pidfile exits clean" "$?" "0"
+sleep 1
+is "the unrelated process was NOT signalled" "$(kill -0 "$bystander" 2>/dev/null; echo $?)" "0"
+is "and the stale pidfile was cleared" "$([ -e "$WT/tmp/pids/server.pid" ] && echo present || echo gone)" "gone"
+kill -9 "$bystander" 2>/dev/null
+
+echo
+echo "K. a verified pidfile is stopped and its file removed"
+owned="$(spawn command sleep 300)"
+echo "$owned" > "$WT/tmp/pids/server.pid"
+mk_live <<EOF
+$owned sleep $WT
+EOF
+out="$(srun --pidfile tmp/pids/server.pid teardown)"
+is "a verified pidfile exits clean" "$?" "0"
+sleep 1
+is "its process is gone" "$(kill -0 "$owned" 2>/dev/null; echo $?)" "1"
+is "and the pidfile is removed" "$([ -e "$WT/tmp/pids/server.pid" ] && echo present || echo gone)" "gone"
+
+echo
+echo "L. pidfile paths are contained"
+mkdir -p "$T/outside"
+echo 99999 > "$T/outside/server.pid"
+mk_live <<EOF
+$$ zsh $T/elsewhere
+EOF
+out="$(srun --pidfile ../outside/server.pid teardown)"
+is "a relative escape is refused" "$?" "1"
+out="$(srun --pidfile /etc/passwd teardown)"
+is "an absolute path is refused" "$?" "1"
+rm -rf "$WT/tmp/pids/link"; ln -s "$T/outside" "$WT/tmp/pids/link"
+out="$(srun --pidfile tmp/pids/link/server.pid teardown)"
+is "a symlinked escape is refused" "$?" "1"
+rm -f "$WT/tmp/pids/link"
+
+echo
+echo "M. pidfile contents are validated"
+for bad in "" "not-a-number" "0" "1" "-5"; do
+  printf '%s' "$bad" > "$WT/tmp/pids/server.pid"
+  out="$(srun --pidfile tmp/pids/server.pid teardown)"
+  is "a pidfile containing '$bad' is refused" "$?" "1"
+done
+rm -f "$WT/tmp/pids/server.pid"
+out="$(srun --pidfile tmp/pids/server.pid teardown)"
+is "an absent pidfile is not an error" "$?" "0"
+
+echo
+echo "N. teardown is idempotent"
+twice="$(spawn command sleep 300)"
+echo "$twice" > "$WT/tmp/pids/server.pid"
+mk_live <<EOF
+$twice sleep $WT
+EOF
+out="$(srun --pidfile tmp/pids/server.pid --sweep sleep teardown)"
+is "first run exits clean" "$?" "0"
+sleep 1
+mk_live <<EOF
+$$ zsh $T/elsewhere
+EOF
+out="$(srun --pidfile tmp/pids/server.pid --sweep sleep teardown)"
+is "second run exits clean" "$?" "0"
+out="$(srun --pidfile tmp/pids/server.pid --sweep sleep teardown)"
+is "third run exits clean" "$?" "0"
+
+echo
+echo "O. a declaration that matches nothing is not an error"
+out="$(srun --sweep nothing-runs-by-this-name teardown)"
+is "an unmatched sweep exits clean" "$?" "0"
+out="$(srun teardown)"
+is "no declarations at all exits clean" "$?" "0"
+
+echo
+echo "RESULT: $pass passed, $((pass + fail)) total, $fail failed"
+[ "$fail" -eq 0 ]
+```
+
+---
+
+## Appendix B: defects found by running the plan, not reading it
+
+Each of these made the suite pass while testing nothing, or fail for a reason that was
+an artefact. They are recorded because every one of them is re-introducible by an
+executor who "simplifies" the harness.
+
+1. **The temp dir must be resolved with `pwd -P`.** The subject does `${WT_WORKTREE:A}`
+   and real `lsof` reports resolved paths, but `mktemp -d` under `$TMPDIR` hands back the
+   `/var` symlink. A fixture holding the unresolved path never matches, and every
+   behavioural case passes vacuously.
+
+2. **`mk_raw` must `printf` straight to the file.** Bash command substitution strips NUL
+   bytes, so `mk_raw "$(printf 'p1\0c...')"` fed the parser a single field — every
+   refusal in section D passed for the wrong reason.
+
+3. **Test victims must be spawned detached** (`spawn`, via a subshell that exits). A
+   killed child of the runner stays a zombie until bash reaps it, and a zombie still
+   answers `kill -0`, so the stub reported a phantom survivor after every successful stop.
+
+4. **The `lsof` stub must always emit a baseline record.** A real `lsof -d cwd` is never
+   empty, and the subject refuses an empty listing by design. A stub that emptied out once
+   its fixture pids died tripped that refusal on every re-scan.
+
+5. **The deaf fixture must signal readiness after installing its trap.** Spawning it and
+   running the subject immediately is a race: TERM arrives before `trap '' TERM` executes,
+   the process dies on TERM, and KILL escalation is never exercised at all. Removing the
+   KILL loop then passed the suite.
+
+6. **Sections E and F must use disposable processes, not `$$`.** In E the harness is an
+   ancestor, so the sweep skipped it for the wrong reason and the anchoring was never
+   under test. In F the subject escalates to SIGKILL, which no trap survives, so a
+   regression killed the runner instead of reporting a failure.
+
+### Why `_ancestors` walks with `ps` rather than stopping at `$PPID`
+
+Curato's hook uses `exec`, giving a two-deep chain (`wt-teardown`, the subshell that cd'd
+into the worktree) that `$$` and `$PPID` already cover. A hook that omits `exec` — the
+easy mistake, and the shape most projects will write — puts three processes in the
+worktree, and only the walk reaches the third. Losing it means killing the shell running
+the hook, mid-teardown. There is deliberately no dedicated test case: `ps` is denied
+outright under the sandbox (exit 127), and a stub faithful enough to model real parentage
+costs more than the twelve lines it would protect. Do not strip the walk as dead code.
