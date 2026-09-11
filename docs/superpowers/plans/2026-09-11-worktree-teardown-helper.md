@@ -152,7 +152,9 @@ git commit -m "Add the wt-teardown CLI surface"
 
 Append to `tests/wt-teardown.test.sh`, before the `RESULT:` line:
 
-Take sections **D** through **G** of **Appendix A.2** verbatim. Concretely, this task contributes the `lsof`/`ps` stubs, `mk_raw`, `mk_live`, `srun`, and sections D, E, F and G, inserted before the closing `RESULT:` line.
+Take sections **D** through **G** of **Appendix A.2** verbatim, with one documented exception. This task contributes the `lsof`/`ps` stubs, `mk_raw`, `mk_live`, `srun`, and sections D, E, F and G, inserted before the closing `RESULT:` line.
+
+**Exception (ruling R1):** stop section G after its `has "and it is reported" "$out" "sleep"` assertion. The `near`/`sleepy` block that follows it in the appendix asserts `exit 1` for an occupant no declaration covers, and that refusal comes from the survivor re-scan added in Task 3 — it is unsatisfiable here. Task 3 adds it.
 
 Do not retype it from memory or paraphrase it: the appendix is the version that was executed during plan review, and Appendix B lists six defects that a reasonable-looking rewrite reintroduces.
 
@@ -297,7 +299,7 @@ exit 0
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `./tests/wt-teardown.test.sh`
-Expected: all of A–G pass, exit 0.
+Expected: `RESULT: 26 passed, 26 total, 0 failed`, exit 0.
 
 - [ ] **Step 5: Commit**
 
@@ -325,7 +327,7 @@ git commit -m "Scan for worktree occupants and sweep declared commands"
 
 Append before the `RESULT:` line:
 
-Take sections **H** and **I** of **Appendix A.2** verbatim. Concretely, this task contributes the deaf fixture with its readiness marker, and sections H and I, inserted before the closing `RESULT:` line.
+Take the tail of section **G**, then sections **H** and **I**, of **Appendix A.2** verbatim. This task contributes: (a) the `near`/`sleepy` block that closes section G — deferred here by ruling R1 because it asserts the survivor-re-scan refusal this task introduces; (b) the deaf fixture with its readiness marker; and (c) sections H and I. All inserted before the closing `RESULT:` line.
 
 Do not retype it from memory or paraphrase it: the appendix is the version that was executed during plan review, and Appendix B lists six defects that a reasonable-looking rewrite reintroduces.
 
@@ -410,7 +412,7 @@ exit 0
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `./tests/wt-teardown.test.sh`
-Expected: A–I pass, exit 0.
+Expected: `RESULT: 33 passed, 33 total, 0 failed`, exit 0.
 
 - [ ] **Step 5: Commit**
 
@@ -527,7 +529,7 @@ done
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `./tests/wt-teardown.test.sh`
-Expected: A–M pass, exit 0.
+Expected: `RESULT: 48 passed, 48 total, 0 failed`, exit 0.
 
 - [ ] **Step 5: Commit**
 
