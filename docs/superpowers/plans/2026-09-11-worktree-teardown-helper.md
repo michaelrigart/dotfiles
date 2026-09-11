@@ -49,73 +49,9 @@
 
 Create `tests/wt-teardown.test.sh`:
 
-```bash
-#!/usr/bin/env bash
-# Tests wt-teardown, the helper a project's .worktreehook calls at teardown.
-#
-# The helper exists because wt-rm's check 4 can only refuse: it names the process
-# holding the checkout and stops. Nothing existed for a hook to call, so no repository
-# had a .worktreehook at all and the refusal was the end of the sequence.
-#
-# What matters here is the refusals, not the kills. A helper that reads a failed lsof
-# scan as "nothing is running", or signals a pid it has not proved belongs to this
-# worktree, is worse than no helper — it turns a refusal into a wrong kill.
-#
-# Run: ./tests/wt-teardown.test.sh
-set -u
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SUBJECT="$ROOT/dot_local/bin/executable_wt-teardown"
+Take the file header through section **C. environment** of **Appendix A.2** verbatim. Concretely, this task contributes the shebang, `set -u`, ROOT/SUBJECT, the pass/fail helpers, the missing-subject guard, the HARNESS_TERMED trap, the `T=`/`pwd -P` resolution, `WT=`, `run()`, `spawn()`, and sections A, B and C, plus the closing `RESULT:` line and `[ "$fail" -eq 0 ]`.
 
-pass=0; fail=0
-_pass() { echo "  ok  $1"; pass=$((pass + 1)); }
-_fail() { echo "  FAIL: $1"; fail=$((fail + 1)); }
-is() { if [ "$2" = "$3" ]; then _pass "$1"; else _fail "$1 (got '$2', want '$3')"; fi; }
-has() {
-  if printf '%s' "$2" | grep -q -- "$3"; then _pass "$1"
-  else _fail "$1 (output did not contain '$3': $2)"; fi
-}
-
-if [ ! -r "$SUBJECT" ]; then
-  echo "FATAL: $SUBJECT not found — every assertion below would pass vacuously." >&2
-  echo "RESULT: 0 passed, 1 total, 1 failed"
-  exit 2
-fi
-
-T="$(mktemp -d "${TMPDIR:-/tmp}/wt-teardown-test.XXXXXX")"
-trap 'rm -rf "$T"' EXIT
-WT="$T/repo-feature"
-mkdir -p "$WT/tmp/pids" "$T/bin"
-
-# run <args...> — invoke the subject with WT_WORKTREE set, capturing stdout+stderr.
-run() { WT_WORKTREE="$WT" zsh "$SUBJECT" "$@" 2>&1; }
-
-echo "A. verbs"
-out="$(run setup)"; is "setup is an accepted no-op" "$?" "0"
-is "setup prints nothing" "$out" ""
-out="$(run bogus)"; is "an unknown verb exits 64" "$?" "64"
-has "and names the usage" "$out" "setup|teardown"
-out="$(run)"; is "no verb exits 64" "$?" "64"
-
-echo
-echo "B. flags"
-out="$(run --pidfile 2>&1)"; is "--pidfile without a value exits 64" "$?" "64"
-out="$(run --sweep 2>&1)"; is "--sweep without a value exits 64" "$?" "64"
-out="$(run --nonsense teardown 2>&1)"; is "an unknown flag exits 64" "$?" "64"
-
-echo
-echo "C. environment"
-out="$(WT_WORKTREE= zsh "$SUBJECT" teardown 2>&1)"
-is "an unset WT_WORKTREE is an error" "$?" "1"
-has "and says so" "$out" "WT_WORKTREE"
-out="$(WT_WORKTREE=relative/path zsh "$SUBJECT" teardown 2>&1)"
-is "a relative WT_WORKTREE is an error" "$?" "1"
-out="$(WT_WORKTREE="$T/does-not-exist" zsh "$SUBJECT" teardown 2>&1)"
-is "a nonexistent WT_WORKTREE is an error" "$?" "1"
-
-echo
-echo "RESULT: $pass passed, $((pass + fail)) total, $fail failed"
-[ "$fail" -eq 0 ]
-```
+Do not retype it from memory or paraphrase it: the appendix is the version that was executed during plan review, and Appendix B lists six defects that a reasonable-looking rewrite reintroduces.
 
 Then `chmod 755 tests/wt-teardown.test.sh`.
 
@@ -216,107 +152,9 @@ git commit -m "Add the wt-teardown CLI surface"
 
 Append to `tests/wt-teardown.test.sh`, before the `RESULT:` line:
 
-```bash
-echo
-echo "D. the lsof scan refuses rather than reads empty"
-# The whole point. An unreadable listing is not an idle checkout, and reading it as one
-# would silently disable the guard — which is how husks got left behind in the first place.
-# The stub has two modes, and the distinction matters for more than tidiness.
-#
-#   raw  — emit bytes verbatim, for the malformed listings the parser must refuse.
-#   live — emit a record per `pid cmd cwd` line, but ONLY for pids that are still
-#          alive. A fixed fixture would keep reporting a process the helper has
-#          already stopped, so the final re-scan (Task 3) would see a phantom
-#          survivor and every behavioural case would fail for a reason that is
-#          entirely an artefact of the stub.
-cat > "$T/bin/lsof" <<'STUB'
-#!/bin/sh
-d="$(dirname "$0")"
-if [ "$(cat "$d/mode" 2>/dev/null)" = raw ]; then
-  cat "$d/raw"
-  exit 0
-fi
-while read -r pid cmd cwd; do
-  [ -n "$pid" ] || continue
-  kill -0 "$pid" 2>/dev/null || continue
-  printf 'p%s\0c%s\0fcwd\0n%s\0' "$pid" "$cmd" "$cwd"
-done < "$d/live"
-STUB
-# The subject derives $$ and $PPID by itself, but this suite's own pid is the
-# GRANDparent of the subject — bash runs `zsh "$SUBJECT"` inside a command-substitution
-# subshell, and that subshell is $PPID. Only the ps walk reaches the suite itself, so
-# stubbing ps to fail would leave section F asserting nothing and, worse, would let the
-# sweep TERM the harness mid-run.
-cat > "$T/bin/ps" <<STUB
-#!/bin/sh
-# Only the \`-o ppid= -p PID\` form is used. Map every pid to this suite, and the suite
-# to 1, so the ancestor walk terminates exactly at the harness.
-for a in "\$@"; do last="\$a"; done
-if [ "\$last" = "$$" ]; then echo 1; else echo $$; fi
-STUB
-chmod +x "$T/bin/lsof" "$T/bin/ps"
-: > "$T/bin/live"; : > "$T/bin/raw"; echo live > "$T/bin/mode"
+Take sections **D** through **G** of **Appendix A.2** verbatim. Concretely, this task contributes the `lsof`/`ps` stubs, `mk_raw`, `mk_live`, `srun`, and sections D, E, F and G, inserted before the closing `RESULT:` line.
 
-# mk_raw <bytes>          — malformed-listing mode
-# mk_live <<'EOF' ... EOF — "pid cmd cwd" lines, liveness-filtered at call time
-mk_raw()  { printf '%s' "$1" > "$T/bin/raw"; echo raw > "$T/bin/mode"; }
-mk_live() { cat > "$T/bin/live"; echo live > "$T/bin/mode"; }
-
-srun() { PATH="$T/bin:/usr/bin:/bin" WT_WORKTREE="$WT" zsh "$SUBJECT" "$@" 2>&1; }
-
-# lsof cannot come back empty — this shell has a cwd of its own and is in every answer.
-mk_raw ''
-out="$(srun --sweep ruby teardown)"; is "empty lsof output is refused" "$?" "1"
-has "and says the list was unreadable" "$out" "lsof"
-
-# A record count not divisible by four means the parse is misaligned with what the
-# binary emitted; the occupant would be exactly in the records never reached.
-mk_raw "$(printf 'p1\0cruby\0fcwd\0')"
-out="$(srun --sweep ruby teardown)"; is "a truncated record is refused" "$?" "1"
-
-# Prefix-shaped but wrong by value: a bare `n` is semantically empty and an empty cwd
-# matches nothing, so a process IN the checkout would read as no process at all.
-mk_raw "$(printf 'p1\0cruby\0fcwd\0n\0')"
-out="$(srun --sweep ruby teardown)"; is "a bare n field is refused" "$?" "1"
-mk_raw "$(printf 'p1\0cruby\0ftxt\0n/x\0')"
-out="$(srun --sweep ruby teardown)"; is "a non-cwd descriptor is refused" "$?" "1"
-
-echo
-echo "E. matching is anchored at a directory boundary"
-# Sibling worktrees of one repo differ by a suffix on a shared path by construction, so
-# a bare prefix test would let a process in one veto removal of the other forever. The
-# pid is this harness, which is alive — a dead pid would make the case vacuous.
-mk_live <<EOF
-$$ ruby $T/repo-feature-two
-EOF
-out="$(srun --sweep ruby teardown)"; is "a sibling suffix does not match" "$?" "0"
-is "and nothing is reported stopped" "$(printf '%s' "$out" | grep -c stopping)" "0"
-is "the harness is still alive" "$(kill -0 $$ 2>/dev/null; echo $?)" "0"
-
-echo
-echo "F. the sweep never kills its own chain"
-# wt-rm runs the hook with cwd INSIDE the worktree, so this process and the subshell
-# that cd'd there are both in every scan result. The allowlist must not be what saves
-# them: this declares the very command name the harness runs under.
-mk_live <<EOF
-$$ zsh $WT
-EOF
-out="$(srun --sweep zsh teardown)"
-is "a --sweep zsh does not kill the test harness" "$?" "0"
-is "the harness is still alive" "$(kill -0 $$ 2>/dev/null; echo $?)" "0"
-
-echo
-echo "G. TERM is sent to a swept process"
-command sleep 300 & victim=$!
-mk_live <<EOF
-$victim sleep $WT
-EOF
-out="$(srun --sweep sleep teardown)"
-is "the sweep exits clean" "$?" "0"
-sleep 1
-is "the swept process is gone" "$(kill -0 "$victim" 2>/dev/null; echo $?)" "1"
-has "and it is reported" "$out" "sleep"
-```
+Do not retype it from memory or paraphrase it: the appendix is the version that was executed during plan review, and Appendix B lists six defects that a reasonable-looking rewrite reintroduces.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -487,43 +325,9 @@ git commit -m "Scan for worktree occupants and sweep declared commands"
 
 Append before the `RESULT:` line:
 
-```bash
-echo
-echo "H. a process ignoring TERM is escalated to KILL"
-# TERM alone is not a stop. A supervisor that traps it and a process wedged in an
-# uninterruptible state both end as husks if the helper reports success on TERM sent.
-cat > "$T/deaf.sh" <<'DEAF'
-#!/bin/sh
-trap '' TERM
-while :; do sleep 1; done
-DEAF
-chmod +x "$T/deaf.sh"
-"$T/deaf.sh" & deaf=$!
-mk_live <<EOF
-$deaf deaf.sh $WT
-EOF
-out="$(PATH="$T/bin:/usr/bin:/bin" WT_WORKTREE="$WT" \
-  WT_TEARDOWN_TERM_WAIT=1 WT_TEARDOWN_KILL_WAIT=3 \
-  zsh "$SUBJECT" --sweep deaf.sh teardown 2>&1)"
-is "escalation exits clean" "$?" "0"
-sleep 1
-is "the deaf process was killed" "$(kill -0 "$deaf" 2>/dev/null; echo $?)" "1"
+Take sections **H** and **I** of **Appendix A.2** verbatim. Concretely, this task contributes the deaf fixture with its readiness marker, and sections H and I, inserted before the closing `RESULT:` line.
 
-echo
-echo "I. a survivor is an error, not a shrug"
-# A second refusal is a better outcome than a husk, so wt-rm must keep the worktree.
-command sleep 300 & ghost=$!
-# raw mode, so the listing keeps reporting the process no matter what is signalled —
-# the shape of a process the helper cannot actually stop. The pid is real and alive so
-# the signals have somewhere to land.
-mk_raw "$(printf 'p%s\0cimmortal\0fcwd\0n%s\0' "$ghost" "$WT")"
-out="$(PATH="$T/bin:/usr/bin:/bin" WT_WORKTREE="$WT" \
-  WT_TEARDOWN_TERM_WAIT=1 WT_TEARDOWN_KILL_WAIT=1 \
-  zsh "$SUBJECT" --sweep immortal teardown 2>&1)"
-is "a surviving target exits nonzero" "$?" "1"
-has "and names what is still there" "$out" "still"
-kill -9 "$ghost" 2>/dev/null
-```
+Do not retype it from memory or paraphrase it: the appendix is the version that was executed during plan review, and Appendix B lists six defects that a reasonable-looking rewrite reintroduces.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -634,67 +438,9 @@ git commit -m "Escalate TERM to KILL and verify the worktree is clear"
 
 Append before the `RESULT:` line:
 
-```bash
-echo
-echo "J. a pidfile is not a licence to signal"
-# A pidfile outlives its process and macOS recycles pids, so an unverified pidfile is an
-# instruction to signal an arbitrary process. This is the single most important refusal
-# in the script.
-command sleep 300 & bystander=$!
-echo "$bystander" > "$WT/tmp/pids/server.pid"
-# The bystander is NOT in the worktree — the scan reports only the harness, elsewhere.
-mk_live <<EOF
-$$ zsh $T/elsewhere
-EOF
-out="$(srun --pidfile tmp/pids/server.pid teardown)"
-is "a stale pidfile exits clean" "$?" "0"
-sleep 1
-is "the unrelated process was NOT signalled" "$(kill -0 "$bystander" 2>/dev/null; echo $?)" "0"
-is "and the stale pidfile was cleared" "$([ -e "$WT/tmp/pids/server.pid" ] && echo present || echo gone)" "gone"
-kill -9 "$bystander" 2>/dev/null
+Take sections **J** through **M** of **Appendix A.2** verbatim. Concretely, this task contributes sections J, K, L and M, inserted before the closing `RESULT:` line.
 
-echo
-echo "K. a verified pidfile is stopped and its file removed"
-command sleep 300 & owned=$!
-echo "$owned" > "$WT/tmp/pids/server.pid"
-mk_live <<EOF
-$owned sleep $WT
-EOF
-out="$(srun --pidfile tmp/pids/server.pid teardown)"
-is "a verified pidfile exits clean" "$?" "0"
-sleep 1
-is "its process is gone" "$(kill -0 "$owned" 2>/dev/null; echo $?)" "1"
-is "and the pidfile is removed" "$([ -e "$WT/tmp/pids/server.pid" ] && echo present || echo gone)" "gone"
-
-echo
-echo "L. pidfile paths are contained"
-# The worktree's tree comes from the feature branch, so a branch committing `tmp` as a
-# symlink redirects this read outside the checkout. A path with no '..' still escapes.
-mkdir -p "$T/outside"
-echo 99999 > "$T/outside/server.pid"
-mk_live <<EOF
-$$ zsh $T/elsewhere
-EOF
-out="$(srun --pidfile ../outside/server.pid teardown)"
-is "a relative escape is refused" "$?" "1"
-out="$(srun --pidfile /etc/passwd teardown)"
-is "an absolute path is refused" "$?" "1"
-rm -rf "$WT/tmp/pids/link"; ln -s "$T/outside" "$WT/tmp/pids/link"
-out="$(srun --pidfile tmp/pids/link/server.pid teardown)"
-is "a symlinked escape is refused" "$?" "1"
-rm -f "$WT/tmp/pids/link"
-
-echo
-echo "M. pidfile contents are validated"
-for bad in "" "not-a-number" "0" "1" "-5"; do
-  printf '%s' "$bad" > "$WT/tmp/pids/server.pid"
-  out="$(srun --pidfile tmp/pids/server.pid teardown)"
-  is "a pidfile containing '$bad' is refused" "$?" "1"
-done
-rm -f "$WT/tmp/pids/server.pid"
-out="$(srun --pidfile tmp/pids/server.pid teardown)"
-is "an absent pidfile is not an error" "$?" "0"
-```
+Do not retype it from memory or paraphrase it: the appendix is the version that was executed during plan review, and Appendix B lists six defects that a reasonable-looking rewrite reintroduces.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -807,35 +553,9 @@ git commit -m "Stop declared pidfiles only after proving ownership"
 
 Append before the `RESULT:` line:
 
-```bash
-echo
-echo "N. teardown is idempotent"
-# wt-rm preserves the worktree on a teardown failure and reruns teardown on retry, so a
-# second run from the post-run state must be a clean no-op — not an error about a pidfile
-# that is already gone or a process already stopped.
-command sleep 300 & twice=$!
-echo "$twice" > "$WT/tmp/pids/server.pid"
-mk_live <<EOF
-$twice sleep $WT
-EOF
-out="$(srun --pidfile tmp/pids/server.pid --sweep sleep teardown)"
-is "first run exits clean" "$?" "0"
-sleep 1
-mk_live <<EOF
-$$ zsh $T/elsewhere
-EOF
-out="$(srun --pidfile tmp/pids/server.pid --sweep sleep teardown)"
-is "second run exits clean" "$?" "0"
-out="$(srun --pidfile tmp/pids/server.pid --sweep sleep teardown)"
-is "third run exits clean" "$?" "0"
+Take sections **N** and **O** of **Appendix A.2** verbatim. Concretely, this task contributes sections N and O, inserted before the closing `RESULT:` line.
 
-echo
-echo "O. a declaration that matches nothing is not an error"
-out="$(srun --sweep nothing-runs-by-this-name teardown)"
-is "an unmatched sweep exits clean" "$?" "0"
-out="$(srun teardown)"
-is "no declarations at all exits clean" "$?" "0"
-```
+Do not retype it from memory or paraphrase it: the appendix is the version that was executed during plan review, and Appendix B lists six defects that a reasonable-looking rewrite reintroduces.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -853,7 +573,7 @@ Only if step 2 surfaced a failure. Otherwise no change to the subject.
 ./tests/run.sh
 ```
 
-Expected: `wt-teardown` reports `passed/total` with 0 failed; `run.sh` reports no `INCONSISTENT` suite and no new failures. Report totals as passed/total, never "N green".
+Expected: `wt-teardown` reports exactly `RESULT: 53 passed, 53 total, 0 failed`; `run.sh` reports no `INCONSISTENT` suite and no new failures. Report totals as passed/total, never "N green".
 
 - [ ] **Step 5: Commit**
 
