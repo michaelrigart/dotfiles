@@ -1,0 +1,51 @@
+#!/usr/bin/env zsh
+# wt-teardown — stop processes rooted in the worktree being retired.
+#
+# Called from a project's .worktreehook at the `teardown` verb. The hook declares WHAT
+# to stop; this script owns the mechanics and, more importantly, the refusals. It knows
+# nothing about Rails, Postgres or Ruby, so a second project declares different flags
+# rather than teaching this script a second stack's conventions.
+#
+# See docs/superpowers/specs/2026-09-11-worktree-teardown-helper-design.md
+
+emulate -L zsh
+
+typeset PROG=wt-teardown
+typeset -a PIDFILES SWEEPS
+
+die() { print -ru2 -- "$PROG: $*"; exit 1 }
+usage() {
+  print -ru2 -- "usage: $PROG [--pidfile REL]... [--sweep COMMAND]... setup|teardown"
+  exit 64
+}
+
+while (( $# )); do
+  case "$1" in
+    --pidfile) (( $# >= 2 )) || usage; PIDFILES+=( "$2" ); shift 2 ;;
+    --sweep)   (( $# >= 2 )) || usage; SWEEPS+=( "$2" );   shift 2 ;;
+    --)        shift; break ;;
+    -*)        usage ;;
+    *)         break ;;
+  esac
+done
+
+(( $# == 1 )) || usage
+typeset VERB="$1"
+
+case "$VERB" in
+  setup)    exit 0 ;;
+  teardown) ;;
+  *)        usage ;;
+esac
+
+# Everything below is the teardown verb.
+#
+# Validated here rather than trusted: the protocol supplies these, but a hook run by
+# hand supplies nothing, and a helper that resolved paths from a half-set environment
+# would sweep the wrong directory.
+[[ -n "${WT_WORKTREE:-}" ]] || die "WT_WORKTREE is not set — this runs from a .worktreehook."
+[[ "$WT_WORKTREE" == /* ]] || die "WT_WORKTREE is not absolute: $WT_WORKTREE"
+[[ -d "$WT_WORKTREE" ]]    || die "WT_WORKTREE is not a directory: $WT_WORKTREE"
+typeset WT="${WT_WORKTREE:A}"
+
+exit 0
