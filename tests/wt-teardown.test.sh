@@ -288,5 +288,19 @@ out="$(srun teardown)"
 is "no declarations at all exits clean" "$?" "0"
 
 echo
+echo "P. the scan does not report its own helpers"
+# Regression. _scan's lsof runs in a command substitution, which forks a subshell that inherits
+# cwd and then execs lsof. wt-rm invokes the hook with cwd INSIDE the worktree, so before the fix
+# that subshell and lsof were occupants of the very directory being retired, and the
+# post-teardown re-scan reported them as survivors — every time, on a real system, while every
+# stubbed case passed. A stub reports only its fixture, never the process that ran it, so this
+# case deliberately uses the real lsof against an empty directory nothing else is in.
+SELFDIR="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/wt-teardown-self.XXXXXX")" && pwd -P)"
+out="$(cd "$SELFDIR" && WT_WORKTREE="$SELFDIR" zsh "$SUBJECT" teardown 2>&1)"
+is "a scan from inside the target does not flag itself" "$?" "0"
+is "and reports no survivors" "$(printf '%s' "$out" | grep -c 'still in')" "0"
+rm -rf "$SELFDIR"
+
+echo
 echo "RESULT: $pass passed, $((pass + fail)) total, $fail failed"
 [ "$fail" -eq 0 ]

@@ -52,6 +52,13 @@ esac
 [[ -d "$WT_WORKTREE" ]]    || die "WT_WORKTREE is not a directory: $WT_WORKTREE"
 typeset WT="${WT_WORKTREE:A}"
 
+# Stand outside the worktree for the rest of the run. Every path this script uses is absolute,
+# so the cwd buys nothing — and keeping it makes the script an occupant of the very directory it
+# is about to scan. wt-rm invokes the hook with cwd inside the worktree, so without this the
+# subshell that `$(_scan ...)` forks shows up in lsof as a process holding the checkout open, and
+# the post-teardown re-scan vetoes its own success.
+builtin cd -q / || die "cannot leave $WT to scan it"
+
 # _render <path> — the pathname as lsof itself renders it under LC_ALL=C.
 #
 # Comparing against the raw path would be wrong for any path lsof escapes. This concerns

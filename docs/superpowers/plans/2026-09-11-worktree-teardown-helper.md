@@ -672,20 +672,32 @@ machine paths beyond the `PATH` lookup.
 
 ---
 
-### Task 7: Pre-merge — status, cross-review, both MRs
+### Task 7: Pre-merge — self-review, local merge, apply
 
 **Files:**
 - Modify: `docs/superpowers/specs/2026-09-11-worktree-teardown-helper-design.md`
 - Modify: `docs/superpowers/plans/2026-09-11-worktree-teardown-helper.md`
 
 **Interfaces:**
-- Consumes: Tasks 1–6 complete, suites green.
-- Produces: both MRs open, the canonical document merged first.
+- Consumes: Tasks 1-6 complete, suites green.
+- Produces: both repos merged locally on their default branches, the helper deployed.
 
-- [ ] **Step 1: Cross-review before merging**
+**Scope change (ruling R2, from the operator):** no cross-review, no push, no merge requests.
+Credits are short, so Codex is not dispatched at this checkpoint. Self-review replaces it, and
+integration is a LOCAL merge in both repos followed by `chezmoi apply`. Nothing is published.
 
-Invoke the `cross-review` skill at the pre-merge checkpoint with the branch diff and the
-spec. Reconcile findings; bring back a disagreement, not a round count.
+- [ ] **Step 1: Self-review the whole branch**
+
+Read the full branch diff against its merge-base and check it yourself — no subagent, no peer:
+
+```bash
+git -C /Users/michael/.local/share/chezmoi diff "$(git -C /Users/michael/.local/share/chezmoi merge-base main HEAD)"..HEAD
+```
+
+Check specifically: no secret or machine-local credential in either repo's diff; no agent
+attribution in any commit message; the curato hook contains no absolute machine paths beyond
+the `PATH` lookup; and the deferred-minor list in the ledger is triaged — each one either fixed
+or consciously carried.
 
 - [ ] **Step 2: Run every suite one last time**
 
@@ -693,32 +705,45 @@ spec. Reconcile findings; bring back a disagreement, not a round count.
 ./tests/run.sh
 ```
 
-Expected: no `INCONSISTENT` suite, no failures. Report `passed/total`.
+Expected: no `INCONSISTENT` suite, no failures. Report `passed/total` per suite, never "N green",
+and confirm the listing actually reaches `wt-teardown` — a truncated run reads as a pass.
 
 - [ ] **Step 3: Mark the records**
 
-In the spec, change `**Status:** Approved` to `**Status:** Implemented` and cite the MR.
-Add a `**Status:** Implemented` line to this plan so it is not re-executed.
+In the spec, change `**Status:** Approved` to `**Status:** Implemented`, citing the local merge
+commit rather than an MR. Add a `**Status:** Implemented` line to this plan so it is not
+re-executed.
 
-- [ ] **Step 4: Commit and open both MRs**
+- [ ] **Step 4: Commit the record update**
 
 ```bash
 git add docs/superpowers/
 git commit -m "Mark the worktree teardown helper implemented"
-git push -u origin feat/worktree-teardown-helper
 ```
 
-Then open the curato MR from `chore/worktree-teardown-hook`, describing the dependency by
-repo and path plus a GitLab link to the canonical spec — never a bare path, which looks
-local to curato and does not resolve there. Follow whatever template
-`.gitlab/merge_request_templates/` holds in each repo; `glab mr create --description "$(cat <file>)"`,
-since glab does not expand a template from a flag.
+- [ ] **Step 5: Merge locally, dotfiles first**
 
-- [ ] **Step 5: Merge in order**
+Dotfiles before curato: curato's hook is inert without `wt-teardown` on `PATH`, and the
+`command -v` guard makes that inertness silent.
 
-Dotfiles first, curato second. Curato's hook is inert without `wt-teardown` on `PATH`,
-and the `command -v` guard makes that inertness silent — the reverse order lands a hook
-that does nothing and says nothing.
+```bash
+git -C /Users/michael/.local/share/chezmoi checkout main
+git -C /Users/michael/.local/share/chezmoi merge --no-ff feat/worktree-teardown-helper
+git -C /Users/michael/Code/Netronix/curato checkout main
+git -C /Users/michael/Code/Netronix/curato merge --no-ff chore/worktree-teardown-hook
+```
+
+Do NOT push either repo. Leave both merges local for the operator to push when they choose.
+
+- [ ] **Step 6: Deploy**
+
+```bash
+chezmoi apply
+zsh -c 'command -v wt-teardown && wt-teardown setup; echo "rc=$?"'
+```
+
+Expected: a path under `~/.local/bin`, and `rc=0`. `chezmoi apply` renders `op`-backed
+templates, so 1Password must be signed in and the desktop app approved.
 
 ---
 
@@ -785,6 +810,13 @@ esac
 [[ "$WT_WORKTREE" == /* ]] || die "WT_WORKTREE is not absolute: $WT_WORKTREE"
 [[ -d "$WT_WORKTREE" ]]    || die "WT_WORKTREE is not a directory: $WT_WORKTREE"
 typeset WT="${WT_WORKTREE:A}"
+
+# Stand outside the worktree for the rest of the run. Every path this script uses is absolute,
+# so the cwd buys nothing — and keeping it makes the script an occupant of the very directory it
+# is about to scan. wt-rm invokes the hook with cwd inside the worktree, so without this the
+# subshell that `$(_scan ...)` forks shows up in lsof as a process holding the checkout open, and
+# the post-teardown re-scan vetoes its own success.
+builtin cd -q / || die "cannot leave $WT to scan it"
 
 _render() {
   emulate -L zsh
@@ -1259,6 +1291,20 @@ out="$(srun teardown)"
 is "no declarations at all exits clean" "$?" "0"
 
 echo
+echo "P. the scan does not report its own helpers"
+# Regression. _scan's lsof runs in a command substitution, which forks a subshell that inherits
+# cwd and then execs lsof. wt-rm invokes the hook with cwd INSIDE the worktree, so before the fix
+# that subshell and lsof were occupants of the very directory being retired, and the
+# post-teardown re-scan reported them as survivors — every time, on a real system, while every
+# stubbed case passed. A stub reports only its fixture, never the process that ran it, so this
+# case deliberately uses the real lsof against an empty directory nothing else is in.
+SELFDIR="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/wt-teardown-self.XXXXXX")" && pwd -P)"
+out="$(cd "$SELFDIR" && WT_WORKTREE="$SELFDIR" zsh "$SUBJECT" teardown 2>&1)"
+is "a scan from inside the target does not flag itself" "$?" "0"
+is "and reports no survivors" "$(printf '%s' "$out" | grep -c 'still in')" "0"
+rm -rf "$SELFDIR"
+
+echo
 echo "RESULT: $pass passed, $((pass + fail)) total, $fail failed"
 [ "$fail" -eq 0 ]
 ```
@@ -1297,6 +1343,27 @@ executor who "simplifies" the harness.
    ancestor, so the sweep skipped it for the wrong reason and the anchoring was never
    under test. In F the subject escalates to SIGKILL, which no trap survives, so a
    regression killed the runner instead of reporting a failure.
+
+7. **The whole run must `cd` out of the worktree once at the top, not just the `lsof`
+   call inside `_scan`.** The worktree hook protocol invokes the hook with cwd *inside*
+   the worktree being retired. A first attempt (R5) cd'd only inside `_scan`'s own
+   nested `$(builtin cd -q / && lsof ...)`, on the theory that the substitution forking
+   *that* subshell was the occupant. It was not: `scan_out="$(_scan "$WT")"` is *itself*
+   a command substitution, forking a zsh subshell that runs at the caller's cwd — inside
+   the worktree — for as long as `_scan` takes to return. R5's inner `cd` moved `lsof`
+   itself out of the directory, so the survivor list shrank from `zsh` + `lsof` down to
+   just `zsh`, but that outer `_scan` subshell was still standing in the worktree when
+   the re-scan's `lsof` ran, was never an ancestor of the running process, so `MINE`
+   never covered it, and the post-teardown re-scan still reported it as a survivor,
+   still exiting 1 unconditionally. R6 fixes the actual level: `cd /` once, immediately
+   after `WT` is resolved, for the rest of the run — every path the script touches is
+   already absolute, so the cwd was never doing anything useful, and now neither `_scan`
+   nor any subshell it forks is ever standing inside the directory being scanned. No
+   suite section caught either version of this because the suite stubs `lsof`: a stub
+   reports only its fixture, never the process that invoked it, so every stubbed case
+   passed while the real binary failed deterministically end to end. Section P exists
+   precisely because this class of bug is structurally invisible to a stub and needs the
+   real `lsof` against an empty directory nothing else occupies.
 
 ### Why `_ancestors` walks with `ps` rather than stopping at `$PPID`
 
