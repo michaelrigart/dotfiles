@@ -178,6 +178,39 @@ _stop() {
   return 1
 }
 
+# _pidfile_pid <rel> <worktree> — the pid a declared pidfile names.
+#   0 + pid on stdout   the file names a plausible pid
+#   2                   no such file — nothing to stop, the ordinary retry case
+#   1                   refusal, message on stderr
+#
+# Containment is checked lexically AND through the filesystem, the same asymmetric rule
+# _wt_manifest applies: the worktree's tree comes from the feature branch, so a branch
+# committing `tmp` as a symlink redirects this read outside the checkout, and a path with
+# no ".." in it still escapes that way.
+_pidfile_pid() {
+  emulate -L zsh
+  local rel="$1" wt="$2" abs real pid
+  [[ "$rel" != /* ]] || {
+    print -ru2 -- "$PROG: --pidfile must be repo-root-relative: $rel"; return 1 }
+  [[ "$rel" != ../* && "$rel" != */../* && "$rel" != */.. ]] || {
+    print -ru2 -- "$PROG: --pidfile escapes the worktree: $rel"; return 1 }
+  abs="$wt/$rel"
+  [[ -e "$abs" || -L "$abs" ]] || return 2
+  real="${abs:A}"
+  [[ "$real" == "$wt"/* ]] || {
+    print -ru2 -- "$PROG: --pidfile resolves outside the worktree: $rel -> $real"; return 1 }
+  [[ ! -L "$abs" && -f "$abs" ]] || {
+    print -ru2 -- "$PROG: --pidfile is not a regular file: $rel"; return 1 }
+  pid="$(<"$abs")"
+  pid="${pid//[[:space:]]/}"
+  # <2-> is a numeric range: an integer of at least 2. Excludes the empty string, a
+  # non-number, 0 (the whole process group) and 1 (init).
+  [[ "$pid" == <2-> ]] || {
+    print -ru2 -- "$PROG: --pidfile $rel does not contain a usable pid"; return 1 }
+  print -r -- "$pid"
+  return 0
+}
+
 typeset scan_out
 scan_out="$(_scan "$WT")" || exit 1
 
@@ -192,7 +225,27 @@ for line in ${(f)"$(_ancestors)"}; do
   [[ -n "$line" ]] && MINE[$line]=1
 done
 
-typeset -a TARGETS
+typeset -a TARGETS CLEAR_FILES       # pidfiles to remove once their process is gone
+typeset rel pfpid rc
+for rel in $PIDFILES; do
+  pfpid="$(_pidfile_pid "$rel" "$WT")"; rc=$?
+  (( rc == 2 )) && continue
+  (( rc == 1 )) && exit 1
+  CLEAR_FILES+=( "$WT/$rel" )
+  if (( ${+MINE[$pfpid]} )); then
+    print -r -- "$PROG: $rel names this process — not signalling it"
+    continue
+  fi
+  # The check this step exists for. No ownership proof, no signal: the pid may have been
+  # recycled since the file was written, and the new owner is a stranger.
+  if (( ${+OCCUPANT[$pfpid]} )); then
+    TARGETS+=( "$pfpid" )
+    print -r -- "$PROG: stopping $pfpid ${OCCUPANT[$pfpid]} (from $rel)"
+  else
+    print -r -- "$PROG: $rel is stale — pid $pfpid is not in this worktree"
+  fi
+done
+
 typeset pid cmd want
 for pid cmd in ${(kv)OCCUPANT}; do
   (( ${+MINE[$pid]} )) && continue
@@ -203,6 +256,13 @@ for pid cmd in ${(kv)OCCUPANT}; do
 done
 
 _stop $TARGETS
+
+# Removed only now: a pidfile whose process could not be stopped keeps its evidence in
+# place for the retry.
+typeset f
+for f in $CLEAR_FILES; do
+  [[ -e "$f" ]] && rm -f -- "$f"
+done
 
 # The re-scan is the authority, not the signals. A pid that exited leaves no cwd record;
 # anything still listed is still holding the checkout open, and reporting success here

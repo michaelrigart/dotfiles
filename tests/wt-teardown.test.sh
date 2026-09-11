@@ -209,5 +209,59 @@ has "and names what is still there" "$out" "still"
 kill -9 "$ghost" 2>/dev/null
 
 echo
+echo "J. a pidfile is not a licence to signal"
+bystander="$(spawn command sleep 300)"
+echo "$bystander" > "$WT/tmp/pids/server.pid"
+mk_live <<EOF
+$$ zsh $T/elsewhere
+EOF
+out="$(srun --pidfile tmp/pids/server.pid teardown)"
+is "a stale pidfile exits clean" "$?" "0"
+sleep 1
+is "the unrelated process was NOT signalled" "$(kill -0 "$bystander" 2>/dev/null; echo $?)" "0"
+is "and the stale pidfile was cleared" "$([ -e "$WT/tmp/pids/server.pid" ] && echo present || echo gone)" "gone"
+kill -9 "$bystander" 2>/dev/null
+
+echo
+echo "K. a verified pidfile is stopped and its file removed"
+owned="$(spawn command sleep 300)"
+echo "$owned" > "$WT/tmp/pids/server.pid"
+mk_live <<EOF
+$owned sleep $WT
+EOF
+out="$(srun --pidfile tmp/pids/server.pid teardown)"
+is "a verified pidfile exits clean" "$?" "0"
+sleep 1
+is "its process is gone" "$(kill -0 "$owned" 2>/dev/null; echo $?)" "1"
+is "and the pidfile is removed" "$([ -e "$WT/tmp/pids/server.pid" ] && echo present || echo gone)" "gone"
+
+echo
+echo "L. pidfile paths are contained"
+mkdir -p "$T/outside"
+echo 99999 > "$T/outside/server.pid"
+mk_live <<EOF
+$$ zsh $T/elsewhere
+EOF
+out="$(srun --pidfile ../outside/server.pid teardown)"
+is "a relative escape is refused" "$?" "1"
+out="$(srun --pidfile /etc/passwd teardown)"
+is "an absolute path is refused" "$?" "1"
+rm -rf "$WT/tmp/pids/link"; ln -s "$T/outside" "$WT/tmp/pids/link"
+out="$(srun --pidfile tmp/pids/link/server.pid teardown)"
+is "a symlinked escape is refused" "$?" "1"
+rm -f "$WT/tmp/pids/link"
+
+echo
+echo "M. pidfile contents are validated"
+for bad in "" "not-a-number" "0" "1" "-5"; do
+  printf '%s' "$bad" > "$WT/tmp/pids/server.pid"
+  out="$(srun --pidfile tmp/pids/server.pid teardown)"
+  is "a pidfile containing '$bad' is refused" "$?" "1"
+done
+rm -f "$WT/tmp/pids/server.pid"
+out="$(srun --pidfile tmp/pids/server.pid teardown)"
+is "an absent pidfile is not an error" "$?" "0"
+
+echo
 echo "RESULT: $pass passed, $((pass + fail)) total, $fail failed"
 [ "$fail" -eq 0 ]
