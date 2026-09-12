@@ -67,11 +67,29 @@ HERDR_SESSION="$SESSION" DEV_NO_ATTACH=1 ~/.config/herdr/layout.sh "$REPO" \
 
 # 2. Topology is what we think it is.
 WS=$(h workspace list | jq -r '.result.workspaces[0].workspace_id')
-for l in agents editor runtime; do
+for l in agents runtime; do
   n=$(h tab list --workspace "$WS" | jq -r --arg l "$l" \
         '[.result.tabs[] | select(.label == $l)] | length')
   [[ "$n" == 1 ]] && ok "exactly one '$l' tab" || bad "'$l' tab count = $n"
 done
+# The editor tab is lazy: nothing builds it, alt+e does. Asserting its ABSENCE here is
+# the only thing standing between "layout.sh stopped building it" and "layout.sh still
+# builds it and the mocked suite is wrong about the real binary".
+n=$(h tab list --workspace "$WS" | jq -r '[.result.tabs[] | select(.label == "editor")] | length')
+[[ "$n" == 0 ]] && ok "no editor tab is built" || bad "editor tab count = $n, expected 0"
+
+# ...and then the keybinding's script actually creates one against the real server.
+et=$(HERDR_SESSION="$SESSION" HERDR_ACTIVE_WORKSPACE_ID="$WS" \
+       ~/.config/herdr/layout.sh --make-tab editor 2>&1)
+n=$(h tab list --workspace "$WS" | jq -r '[.result.tabs[] | select(.label == "editor")] | length')
+[[ "$n" == 1 ]] && ok "--make-tab creates the editor tab" || bad "after --make-tab, editor count = $n ($et)"
+# Idempotent: a second press must focus the same tab, not append another.
+et2=$(HERDR_SESSION="$SESSION" HERDR_ACTIVE_WORKSPACE_ID="$WS" \
+        ~/.config/herdr/layout.sh --make-tab editor 2>&1)
+n=$(h tab list --workspace "$WS" | jq -r '[.result.tabs[] | select(.label == "editor")] | length')
+[[ "$n" == 1 && "$et2" == "$et" ]] \
+  && ok "--make-tab is idempotent and returns the same tab id" \
+  || bad "second --make-tab: count=$n first=$et second=$et2"
 AT=$(h tab list --workspace "$WS" | jq -r '.result.tabs[] | select(.label=="agents") | .tab_id')
 n=$(h pane list --workspace "$WS" | jq -r --arg t "$AT" '[.result.panes[] | select(.tab_id==$t)] | length')
 [[ "$n" == 2 ]] && ok "agents holds 2 panes" || bad "agents holds $n panes"
@@ -143,11 +161,11 @@ WT="${WT:A}"
 WWS=$(h workspace list | jq -r --arg d "$WT" \
   '.result.workspaces[] | select(.worktree.checkout_path == $d) | .workspace_id')
 wn=$(h tab list --workspace "$WWS" 2>/dev/null | jq -r \
-  '[.result.tabs[] | select(.label=="agents" or .label=="editor" or .label=="runtime")] | length')
+  '[.result.tabs[] | select(.label=="agents" or .label=="runtime")] | length')
 lock_reason=$(git -C "$PRIMARY" worktree list --porcelain | sed -n '/worktree .*worktree-proj-live-wt$/,/^$/s/^locked //p')
-[[ "$wt_rc" == 0 && -n "$WWS" && "$wn" == 3 \
+[[ "$wt_rc" == 0 && -n "$WWS" && "$wn" == 2 \
    && "$lock_reason" == "wt-managed; remove with command wt-rm" ]] \
-  && ok "wt creates a three-tab native workspace with the lifecycle lock" \
+  && ok "wt creates a two-tab native workspace with the lifecycle lock" \
   || bad "wt rc=$wt_rc workspace=${WWS:-none} managed-tabs=${wn:-none} lock=${lock_reason:-none}"
 
 # Reopen must return to the same native workspace, not create an ordinary duplicate.

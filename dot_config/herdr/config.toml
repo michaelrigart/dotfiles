@@ -207,17 +207,23 @@ height = "90%"
 
 # Tab jumps. `switch_tab` is range-only ("prefix+1..9") — there is no switch_tab_1,
 # and tab.focus takes a tab_id, not an index. These resolve by LABEL instead, which
-# also survives repair appending a tab out of order (herdr 0.8.2 has no `tab move`).
+# also survives a tab being appended out of order (herdr still has no `tab move` as of
+# 0.9.0, and `tab create` takes no position).
 [[keys.command]]
 key = "alt+a"
 type = "shell"
 command = "~/.config/herdr/tab-goto.sh agents"
 description = "tab: agents"
 
+# --create, because the editor tab is lazy: a space is built without it, so alt+e is
+# the only thing that ever brings it into existence. Without the flag this would fire a
+# "no tab labelled editor" notification in every space nvim had not been opened in yet.
+# The eager jumps above and below deliberately do NOT create — a missing agents or
+# runtime tab is a fault for repair to fix, not something to paper over.
 [[keys.command]]
 key = "alt+e"
 type = "shell"
-command = "~/.config/herdr/tab-goto.sh editor"
+command = "~/.config/herdr/tab-goto.sh --create editor"
 description = "tab: editor"
 
 [[keys.command]]

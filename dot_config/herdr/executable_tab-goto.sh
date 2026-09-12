@@ -1,11 +1,16 @@
 #!/usr/bin/env zsh
-# tab-goto.sh <label> — focus a managed tab in the active workspace.
+# tab-goto.sh [--create] <label> — focus a managed tab in the active workspace.
 # Managed by chezmoi (source: dot_config/herdr/executable_tab-goto.sh).
 #
-# By LABEL, never by index. herdr 0.8.2 has no `tab move`, so repair can only append
-# and a repaired workspace's managed tabs can end up in any order; the user's own
-# alt+t tab also shifts every position after it. An index would silently land on the
-# wrong tab, which is worse than not moving at all.
+# By LABEL, never by index. herdr has no `tab move` — still true as of 0.9.0, and
+# `tab create` takes no position either — so repair can only append and a repaired
+# workspace's managed tabs can end up in any order; the user's own alt+t tab also
+# shifts every position after it. An index would silently land on the wrong tab, which
+# is worse than not moving at all.
+#
+# --create makes the tab if the label is absent, by asking layout.sh — which owns what
+# a tab contains. It is for LAZY tabs only (today: editor). A missing eager tab is
+# repair's job, and a jump that quietly built one would hide the real fault.
 emulate -L zsh
 setopt local_options no_unset pipe_fail
 
@@ -25,8 +30,10 @@ tg_fail() {
   exit 1
 }
 
+create=0
+if [[ "${1:-}" == "--create" ]]; then create=1; shift; fi
 label="${1:-}"
-[[ -n "$label" ]] || tg_fail "usage: tab-goto.sh <label>"
+[[ -n "$label" ]] || tg_fail "usage: tab-goto.sh [--create] <label>"
 
 # Resolving through the globally-focused workspace is racy: persistence is a shared
 # session view, so another attached client can change focus between the keypress and
@@ -60,6 +67,23 @@ matched="$(print -r -- "$tabs" | jq -r --arg l "$label" \
 
 ids=( ${(f)matched} )
 ids=( ${ids:#} )
+
+# The lazy path. layout.sh hands back the id of the tab it created, and that id is
+# focused directly — re-listing here would reopen exactly the window between create and
+# focus that the returned id closes, under a shared session view another client can
+# change. The create is idempotent under layout.sh's lock, so two fast presses cannot
+# produce two tabs.
+if (( count == 0 && create )); then
+  new="$("${DEV_LAYOUT:-$HOME/.config/herdr/layout.sh}" --make-tab "$label" 2>&1)" \
+    || tg_fail "could not create '$label': $new"
+  # layout.sh prints one id and nothing else on success. Anything with whitespace or
+  # several lines means it also printed a diagnostic, and handing that to `tab focus`
+  # would turn a reported failure into an unreported one.
+  [[ -n "$new" && "$new" != *[[:space:]]* ]] \
+    || tg_fail "creating '$label' returned no usable tab id: $new"
+  "${HL_HERDR[@]}" tab focus "$new" >/dev/null || tg_fail "could not focus the new '$label'"
+  exit 0
+fi
 
 (( count == 0 ))          && tg_fail "no tab labelled '$label'"
 (( ${#ids} != count ))    && tg_fail "tab '$label' has a malformed id"

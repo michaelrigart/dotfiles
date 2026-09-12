@@ -6,6 +6,9 @@
 #   layout.sh --current     repair in place, called by the dev.layout.apply plugin
 #   layout.sh --worktree <primary> <checkout>
 #                           open/adopt a native Herdr worktree workspace
+#   layout.sh --make-tab <label>
+#                           create one managed tab on demand and print its id, called
+#                           by tab-goto.sh --create for the lazy editor tab
 #
 # The single definition of what a project workspace looks like. Both entry points go
 # through it, so there is no second copy to drift.
@@ -16,7 +19,20 @@ emulate -L zsh
 # Herdr server every agent runs inside is not what anyone wants.
 setopt local_options no_unset pipe_fail no_bg_nice
 
+# MANAGED_TABS — every label layout.sh owns. Ownership is about validation, not about
+# who creates it: a tab carrying one of these labels must have this shape, whenever it
+# came into existence.
+#
+# EAGER_TABS — the subset built with the space and enforced by repair. `editor` is
+# deliberately outside it: nvim is expensive to start, most spaces are opened to run a
+# command or read an agent's output, and a tab nobody asked for is one more thing to
+# tab past. alt+e creates it on demand through --make-tab.
+#
+# Dropping it from the baseline must not drop it from validation. A second `editor`
+# tab, or one holding a split, is still malformed — hl_classify iterates MANAGED_TABS
+# for shape and EAGER_TABS for presence, and those are two different questions.
 MANAGED_TABS=(agents editor runtime)
+EAGER_TABS=(agents runtime)
 BUILDING_SUFFIX=" (building)"
 # Codex's documented role here is reviewer, not implementer, so its panes launch
 # unable to write. Without this they inherit workspace-write with $HOME writable.
@@ -348,7 +364,13 @@ hl_classify() {
   for label in $MANAGED_TABS; do
     tab_id=$(print -r -- "$tabs" | jq -r --arg l "$label" \
               '.result.tabs[] | select(.label == $l) | .tab_id' | head -1) || return 1
-    if [[ -z "$tab_id" ]]; then missing=1; continue; fi
+    # Absence only demotes the space for an EAGER label. A missing editor tab is the
+    # normal state of a space nobody has pressed alt+e in, and calling that
+    # provisional is what would make repair build it back every time.
+    if [[ -z "$tab_id" ]]; then
+      (( ${EAGER_TABS[(Ie)$label]} )) && missing=1
+      continue
+    fi
 
     n=$(print -r -- "$panes" | jq -r --arg t "$tab_id" \
           '[.result.panes[] | select(.tab_id == $t)] | length') || return 1
@@ -423,11 +445,16 @@ hl_id() {
   print -r -- "$v"
 }
 
-# hl_make_tab — create one managed tab and populate it. Prints its root pane id.
+# hl_make_tab — create one managed tab and populate it. Prints its TAB id, which is
+# what --make-tab hands back to tab-goto.sh to focus. Returning the id from the create
+# response rather than having the caller re-list is the point: a second list between
+# the create and the focus is a window another attached client can change the tab set
+# in, and the id is already in hand.
 hl_make_tab() {
-  local ws="$1" label="$2" repo="$3" out pane right
+  local ws="$1" label="$2" repo="$3" out pane tab right
   out="$(hl_api_json tab create --workspace "$ws" --label "$label" --cwd "$repo" --no-focus)" || return 1
   pane="$(hl_id "$out" '.result.root_pane.pane_id' "a root pane for tab '$label'")" || return 1
+  tab="$(hl_id "$out" '.result.tab.tab_id' "a tab id for tab '$label'")" || return 1
 
   case "$label" in
     editor)  hl_api pane run "$pane" "nvim ." >/dev/null || return 1 ;;
@@ -442,7 +469,30 @@ hl_make_tab() {
       hl_api pane run "$pane" "claude" >/dev/null || return 1
       hl_api pane run "$right" "$CODEX_CMD" >/dev/null || return 1 ;;
   esac
-  print -r -- "$pane"
+  print -r -- "$tab"
+}
+
+# hl_ensure_tab <ws> <repo> <label> — print the tab id for <label>, creating the tab
+# first if it is absent. The caller holds the lock, so the list here is the
+# authoritative re-check: tab-goto.sh looks before it calls, and without a second look
+# under the lock two fast alt+e presses both see nothing and build two editor tabs.
+hl_ensure_tab() {
+  local ws="$1" repo="$2" label="$3" tabs count id
+  tabs="$(hl_api_json tab list --workspace "$ws")" || return 1
+  count=$(print -r -- "$tabs" | jq -r --arg l "$label" \
+            '[.result.tabs[] | select(.label == $l)] | length') || return 1
+  # Same refusal as tab-goto.sh: choosing which duplicate to adopt means choosing
+  # which one the user loses, and nothing here knows enough to choose.
+  (( count > 1 )) && { print -ru2 -- "layout.sh: $count tabs labelled '$label' — refusing to guess"; return 1 }
+  if (( count == 1 )); then
+    id="$(print -r -- "$tabs" | jq -r --arg l "$label" \
+           '.result.tabs[] | select(.label == $l) | .tab_id
+            | select(type == "string" and length > 0)')" || return 1
+    [[ -n "$id" ]] || { print -ru2 -- "layout.sh: tab '$label' has a malformed id"; return 1 }
+    print -r -- "$id"
+    return 0
+  fi
+  hl_make_tab "$ws" "$label" "$repo"
 }
 
 hl_build() {
@@ -468,7 +518,10 @@ hl_build() {
   hl_api pane run "$p1" "claude" >/dev/null || return 1
   hl_api pane run "$right" "$CODEX_CMD" >/dev/null || return 1
 
-  for l in editor runtime; do
+  # EAGER_TABS, not a literal list: the two must never drift, and `agents` is skipped
+  # because it is this workspace's root tab, already renamed and populated above.
+  for l in $EAGER_TABS; do
+    [[ "$l" == agents ]] && continue
     hl_make_tab "$ws" "$l" "$repo" >/dev/null || return 1
   done
 
@@ -485,7 +538,9 @@ hl_repair() {
   local ws="$1" repo="$2" label tabs have want
   label="$(hl_label "$repo")"
   tabs="$(hl_api_json tab list --workspace "$ws")" || return 1
-  for want in $MANAGED_TABS; do
+  # EAGER_TABS only. Repair exists to restore what a space is supposed to have; the
+  # editor tab is not that, and recreating a tab the user closed is not a repair.
+  for want in $EAGER_TABS; do
     have=$(print -r -- "$tabs" | jq -r --arg l "$want" \
             '.result.tabs[] | select(.label == $l) | .tab_id' | head -1) || return 1
     [[ -n "$have" ]] && continue
@@ -523,7 +578,10 @@ hl_adopt_worktree() {
   right="$(hl_id "$out" '.result.pane.pane_id' "the agents split pane")" || return 1
   hl_api pane run "$pane" "claude" >/dev/null || return 1
   hl_api pane run "$right" "$CODEX_CMD" >/dev/null || return 1
-  for l in editor runtime; do
+  # EAGER_TABS, not a literal list: the two must never drift, and `agents` is skipped
+  # because it is this workspace's root tab, already renamed and populated above.
+  for l in $EAGER_TABS; do
+    [[ "$l" == agents ]] && continue
     hl_make_tab "$ws" "$l" "$repo" >/dev/null || return 1
   done
   hl_api workspace rename "$ws" "$(hl_label "$repo")" >/dev/null || return 1
@@ -569,8 +627,14 @@ hl_open_worktree() {
     malformed:*) die "workspace $ws is ${verdict#malformed: } — fix it by hand, or close it" ;;
     provisional)
       tabs="$(hl_api_json tab list --workspace "$ws")" || return 1
-      managed=$(print -r -- "$tabs" | jq -r \
-        '[.result.tabs[] | select(.label == "agents" or .label == "editor" or .label == "runtime")] | length') \
+      # MANAGED_TABS, passed in — not a hand-written list of the same three labels.
+      # The question here is "is this workspace still blank", and an editor tab makes
+      # it non-blank exactly as an agents tab does, so it must read the full owned set
+      # rather than the eager one. A literal copy silently stops matching the moment a
+      # label is added on either list.
+      managed=$(print -r -- "$tabs" | jq -r --args \
+        '[.result.tabs[] | select(.label as $l | ($ARGS.positional | index($l)))] | length' \
+        "${MANAGED_TABS[@]}") \
         || return 1
       if (( managed == 0 )); then
         hl_adopt_worktree "$ws" "$repo" "$tab" "$pane" "$([[ "$already" == false ]] && print true || print false)" \
@@ -579,6 +643,50 @@ hl_open_worktree() {
         hl_repair "$ws" "$repo" || return 1
       fi ;;
   esac
+}
+
+# hl_context_repo <ws> — resolve the guarded repository root for a workspace we were
+# handed by Herdr, into HL_CONTEXT_REPO. Dies (visibly) if the workspace is not a place
+# this script may touch.
+#
+# Sets a global rather than printing, because every failure here goes through
+# hl_die_notify and `repo="$(hl_context_repo …)"` would run that inside a command
+# substitution — killing the subshell, not the script, and leaving the caller to carry
+# on with an empty repo path.
+hl_context_repo() {
+  local ws="$1" wrepo root
+  # Target by context, never by a path lookup. A path lookup would find the very
+  # workspace the action was invoked from, focus it, exit 0 and apply nothing — a
+  # silent no-op, and the most confusing possible outcome.
+  wrepo="$(hl_api_json pane list --workspace "$ws" | jq -r '.result.panes[0].cwd')" \
+    || hl_die_notify "could not read the workspace's panes"
+  [[ -n "$wrepo" && "$wrepo" != null ]] || hl_die_notify "workspace $ws has no pane cwd to work from"
+  wrepo="${wrepo:A}"
+
+  # Resolve to the repository ROOT before anything else. A pane's cwd is wherever
+  # the user last cd'd, and `.git` is a file only at the root — so checking the raw
+  # cwd lets any subdirectory of a linked worktree walk straight past the guard.
+  # dev never had this problem: it resolves with rev-parse before guarding.
+  #
+  # Fail CLOSED. Keeping the raw cwd when rev-parse fails meant a workspace sitting
+  # in a non-repo directory — the plain ~ workspace being the obvious one — was
+  # classified provisional and "repaired" into a full managed workspace, with
+  # agents launched in $HOME. Refusing costs nothing; the action is only
+  # meaningful in a repo.
+  root="$(hl_git -C "$wrepo" rev-parse --show-toplevel 2>/dev/null)" \
+    || hl_die_notify "$wrepo is not inside a git repository — refusing"
+  [[ -n "$root" ]] || hl_die_notify "$wrepo is not inside a git repository — refusing"
+  wrepo="${root:A}"
+
+  # A linked checkout is allowed only when Herdr owns it as a native worktree
+  # workspace. Plain workspace creation carries no provenance, so wt-rm could not
+  # identify it reliably during teardown.
+  if [[ -f "$wrepo/.git" ]] \
+    && ! hl_is_native_worktree_workspace "$ws" "$wrepo"; then
+    hl_die_notify "$wrepo is not a native Herdr worktree workspace — refusing"
+  fi
+
+  typeset -g HL_CONTEXT_REPO="$wrepo"
 }
 
 # hl_attach — from a shell, the point of dev is to end up *inside* Herdr. Build or
@@ -591,9 +699,13 @@ hl_attach() {
 }
 
 main() {
-  local mode repo main_repo
+  local mode repo main_repo make_label
   if [[ "${1:-}" == "--current" ]]; then
     mode=current
+  elif [[ "${1:-}" == "--make-tab" ]]; then
+    mode=make-tab
+    make_label="${2:-}"
+    [[ -n "$make_label" ]] || die "usage: layout.sh --make-tab <label>"
   elif [[ "${1:-}" == "--worktree" ]]; then
     mode=worktree
     main_repo="${2:?usage: layout.sh --worktree <primary-repo> <checkout>}"
@@ -615,45 +727,42 @@ main() {
   # nothing about the target's. The live gate runs exactly that way, and before this
   # check it inherited HERDR_ENV from the surrounding pane, skipped the start, and —
   # with the old unsessioned calls — built its fixtures into the live default session.
-  if [[ -z "${HERDR_ENV:-}" || -n "${HERDR_SESSION:-}" ]]; then
+  #
+  # make-tab is exempt: it exists only to serve a keybinding, so there is by
+  # construction a server and a workspace already. Probing — and, on a slow answer,
+  # starting a second server — on every alt+e is latency spent to learn something we
+  # were told by being invoked at all.
+  if [[ "$mode" != make-tab ]] \
+    && { [[ -z "${HERDR_ENV:-}" ]] || [[ -n "${HERDR_SESSION:-}" ]] }; then
     hl_ensure_server
+  fi
+
+  if [[ "$mode" == make-tab ]]; then
+    # Same resolution order as tab-goto.sh, because this runs from the same detached
+    # keybinding: Herdr injects the active context, and --current's plugin-only
+    # variable is not set for a [[keys.command]].
+    local ws="${HERDR_ACTIVE_WORKSPACE_ID:-${HERDR_WORKSPACE_ID:-}}"
+    [[ -n "$ws" ]] \
+      || hl_die_notify "no active workspace in the environment (expected HERDR_ACTIVE_WORKSPACE_ID)"
+    # Checked before anything is resolved, so a typo in config.toml cannot start
+    # populating tabs this script has no shape for. Cheapest guard first, too.
+    (( ${MANAGED_TABS[(Ie)$make_label]} )) \
+      || hl_die_notify "'$make_label' is not a managed tab"
+
+    hl_context_repo "$ws"
+    hl_lock "$HL_CONTEXT_REPO" || hl_die_notify "could not take the lock for $HL_CONTEXT_REPO"
+    hl_ensure_tab "$ws" "$HL_CONTEXT_REPO" "$make_label" \
+      || hl_die_notify "could not create the '$make_label' tab"
+    exit 0
   fi
 
   if [[ "$mode" == current ]]; then
     local ws="${HERDR_WORKSPACE_ID:-}"
     [[ -n "$ws" ]] || die "no HERDR_WORKSPACE_ID — --current only runs as a plugin action"
 
-    # Target by context, never by a path lookup. A path lookup would find the very
-    # workspace the action was invoked from, focus it, exit 0 and apply nothing — a
-    # silent no-op, and the most confusing possible outcome.
-    local wrepo root verdict
-    wrepo="$(hl_api_json pane list --workspace "$ws" | jq -r '.result.panes[0].cwd')" \
-      || hl_die_notify "could not read the workspace's panes"
-    [[ -n "$wrepo" && "$wrepo" != null ]] || hl_die_notify "workspace $ws has no pane cwd to work from"
-    wrepo="${wrepo:A}"
-
-    # Resolve to the repository ROOT before anything else. A pane's cwd is wherever
-    # the user last cd'd, and `.git` is a file only at the root — so checking the raw
-    # cwd lets any subdirectory of a linked worktree walk straight past the guard.
-    # dev never had this problem: it resolves with rev-parse before guarding.
-    #
-    # Fail CLOSED. Keeping the raw cwd when rev-parse fails meant a workspace sitting
-    # in a non-repo directory — the plain ~ workspace being the obvious one — was
-    # classified provisional and "repaired" into a full managed workspace, with
-    # agents launched in $HOME. Refusing costs nothing; the action is only
-    # meaningful in a repo.
-    root="$(hl_git -C "$wrepo" rev-parse --show-toplevel 2>/dev/null)" \
-      || hl_die_notify "$wrepo is not inside a git repository — refusing"
-    [[ -n "$root" ]] || hl_die_notify "$wrepo is not inside a git repository — refusing"
-    wrepo="${root:A}"
-
-    # A linked checkout is allowed only when Herdr owns it as a native worktree
-    # workspace. Plain workspace creation carries no provenance, so wt-rm could not
-    # identify it reliably during teardown.
-    if [[ -f "$wrepo/.git" ]] \
-      && ! hl_is_native_worktree_workspace "$ws" "$wrepo"; then
-      hl_die_notify "$wrepo is not a native Herdr worktree workspace — refusing"
-    fi
+    local wrepo verdict
+    hl_context_repo "$ws"
+    wrepo="$HL_CONTEXT_REPO"
 
     # Same lock as the path mode: two plugin invocations, or a plugin racing a dev,
     # would otherwise both see a tab missing and both create it.
