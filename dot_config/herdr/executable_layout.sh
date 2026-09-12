@@ -295,6 +295,11 @@ hl_lock() {
   # `|| hl_die_notify` could never run and lock contention stayed stderr-only —
   # invisible under detached execution.
   local t="${HL_LOCK_TIMEOUT:-10}"
+  # Emitted BEFORE the blocking call, unlike LOCK-ACQUIRED after it. A test that wants
+  # to act while another process is stuck here has to observe that it is stuck; timing
+  # it with a sleep is an assumption, and an assumption that holds on the machine it
+  # was written on is how an ordering test quietly stops testing ordering.
+  [[ -n "${HL_TRACE_LOCK:-}" ]] && print -ru2 -- "LOCK-WAIT"
   if ! zsystem flock -t "$t" "$HL_LOCKFILE" 2>/dev/null; then
     print -ru2 -- "layout.sh: another layout.sh has held the lock for $1 for over ${t}s"
     return 1

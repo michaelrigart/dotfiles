@@ -1292,21 +1292,33 @@ mock_topology "$R1" "Netronix/curato" $FULL
 N13_LOCKDIR="$XDG_STATE_HOME/herdr-layout"; mkdir -p "$N13_LOCKDIR"
 N13_KEY="${R1//\//-}"; N13_KEY="${N13_KEY#-}"
 N13_LOCK="$N13_LOCKDIR/$N13_KEY.lock"; : >> "$N13_LOCK"
-zsh -c "zmodload -F zsh/system b:zsystem; zsystem flock '$N13_LOCK'; sleep 6" &
+zsh -c "zmodload -F zsh/system b:zsystem; zsystem flock '$N13_LOCK'; sleep 30" &
 N13_HOLDER=$!
 sleep 0.7
 N13_OUTF="$(mktemp "${TMPROOT%/}/n13.XXXXXX")"
-( HOME="$ROOTTMP" HERDR_ACTIVE_WORKSPACE_ID=w7 zsh "$LAYOUT" --make-tab editor \
-    >"$N13_OUTF" 2>&1 ) &
+N13_TRACE="$(mktemp "${TMPROOT%/}/n13trace.XXXXXX")"
+# A generous lock timeout: the handshake below may spend seconds waiting, and a
+# contender that gave up while we watched for it would look like a passing test.
+( HOME="$ROOTTMP" HERDR_ACTIVE_WORKSPACE_ID=w7 HL_TRACE_LOCK=1 HL_LOCK_TIMEOUT=60 \
+    zsh "$LAYOUT" --make-tab editor >"$N13_OUTF" 2>"$N13_TRACE" ) &
 N13_C=$!
-# Long enough that the contender is past hl_context_repo and blocked in hl_lock.
-sleep 1.5
+# The handshake. Wait until the contender SAYS it is at the lock, rather than assuming
+# it got there within some sleep — on a slower machine the fixture would otherwise
+# insert the tab and release before the contender looked at anything, and an
+# ensure-before-lock mutant would then find w7:t9, create nothing, and pass.
+n13_i=0
+while (( n13_i < 150 )); do
+  [[ "$(<$N13_TRACE)" == *LOCK-WAIT* ]] && break
+  sleep 0.1; (( n13_i++ ))
+done
+[[ "$(<$N13_TRACE)" == *LOCK-WAIT* ]] \
+  && _pass "N13 the contender reached the lock and blocked there" \
+  || _fail "N13 the contender never reached the lock — the rest proves nothing"
 # What the lock holder "did" while it held the lock.
 print -n '{"tab_id":"w7:t9","label":"editor"},' >> "$MOCK_TAB_STATE_FILE"
 kill $N13_HOLDER 2>/dev/null; wait $N13_HOLDER 2>/dev/null
 n13_rc=0; wait $N13_C 2>/dev/null || n13_rc=$?
 N13_OUT="$(<"$N13_OUTF")"
-rc_is() { [[ "$RC" == "$1" ]] && _pass "$2" || _fail "$2 (rc=$RC)" }
 RC=$n13_rc; rc_is 0 "N13 the contender succeeds once the lock is released"
 eq "$(count_logged "tab create --workspace w7 --label editor --cwd $R1 --no-focus")" "0" \
   "N13 a contender blocked on the lock never creates a tab it could not have seen"
