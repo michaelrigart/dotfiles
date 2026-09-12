@@ -112,6 +112,12 @@ _render() {
 # happen is a chain truncated BELOW a visible ancestor — exactly what the old `ps` walk did
 # whenever ps was unavailable. Fails closed only where nothing at all is known: _scan was never
 # run, or it ran against a listing empty enough to leave the parent map empty.
+#
+# The 64-hop cap is a fail-closed guard, not a silent truncation: exhausting it means the walk
+# reached neither an unknown parent nor pid 0, so the chain is INCOMPLETE and an ancestor beyond
+# hop 64 is still unaccounted for and still eligible to be signalled. That is exactly the failure
+# mode this function exists to rule out, so running out of hops returns 1 the same as an empty
+# map, rather than reporting a partial chain as though it were the whole one.
 _ancestors() {
   emulate -L zsh
   local p
@@ -120,12 +126,17 @@ _ancestors() {
   p=$$
   chain=( $p )
   local -i hops=0
+  local -i complete=0
   while (( ++hops <= 64 )); do
-    (( ${+_WT_PARENT[$p]} )) || break
+    (( ${+_WT_PARENT[$p]} )) || { complete=1; break }   # unknown parent: top of what we can see
     p="${_WT_PARENT[$p]}"
-    (( p == 0 )) && break
+    (( p == 0 )) && { complete=1; break }               # reached the top of the tree
     chain+=( "$p" )
   done
+  # Budget exhausted rather than chain ended: the ancestry is incomplete, and an ancestor we
+  # never reached is still eligible to be signalled. Refuse instead of sweeping on a partial
+  # chain — the same rule as an empty map, for the same reason.
+  (( complete )) || return 1
   print -rl -- $chain
   return 0
 }

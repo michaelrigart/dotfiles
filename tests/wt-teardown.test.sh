@@ -405,10 +405,29 @@ is "and is reported exactly once" "$(printf '%s' "$out" | grep -c stopping)" "1"
 
 echo
 echo "S. ownership is re-proved before escalation, and ancestry is complete"
-# X1: a process that leaves the worktree between TERM and KILL is no longer the process we
+# X1a: a process gone by the PRE-TERM check must never be signalled at all. Present for the
+# initial scan (call 1), gone from the pre-TERM re-check (call 2) onward. An ordinary spawned
+# sleep is enough — it need not survive anything, since nothing should ever be sent to it.
+depart_before_term="$(spawn command sleep 300)"
+mk_live <<EOF
+$depart_before_term sleep $WT
+EOF
+echo 1 > "$T/bin/drop_after"
+out="$(PATH="$T/bin:/usr/bin:/bin" WT_WORKTREE="$WT" \
+  WT_TEARDOWN_TERM_WAIT=1 WT_TEARDOWN_KILL_WAIT=1 \
+  zsh "$SUBJECT" --sweep sleep teardown 2>&1)"
+sleep 0.5
+is "the pre-TERM departure was NOT signalled" \
+  "$(kill -0 "$depart_before_term" 2>/dev/null; echo $?)" "0"
+has "and the transcript says why" "$out" "is no longer in"
+kill -9 "$depart_before_term" 2>/dev/null
+rm -f "$T/bin/drop_after"
+
+# X1b: a process that leaves the worktree between TERM and KILL is no longer the process we
 # identified. It must not be killed on the old evidence. The victim ignores TERM, so it survives
-# to the escalation; the staged successor fixture drops it from the listing, which is how it
-# "leaves". Without the re-check, KILL lands on it and it dies.
+# to the escalation; present for the initial scan (call 1) AND the pre-TERM check (call 2), gone
+# from the pre-KILL check (call 3) onward — only the pre-KILL safeguard can save it. Without that
+# re-check, KILL lands on it and it dies.
 rm -f "$T/escapee.ready"
 escapee="$(spawn "$T/deaf.sh" "$T/escapee.ready")"
 for _ in 1 2 3 4 5 6 7 8 9 10; do [ -e "$T/escapee.ready" ] && break; sleep 0.2; done
@@ -417,7 +436,7 @@ is "the escapee fixture installed its TERM trap" \
 mk_live <<EOF
 $escapee deaf.sh $WT
 EOF
-: > "$T/bin/live.next"     # from the next scan onward it is no longer in the worktree
+echo 2 > "$T/bin/drop_after"
 out="$(PATH="$T/bin:/usr/bin:/bin" WT_WORKTREE="$WT" \
   WT_TEARDOWN_TERM_WAIT=1 WT_TEARDOWN_KILL_WAIT=1 \
   zsh "$SUBJECT" --sweep deaf.sh teardown 2>&1)"
@@ -427,7 +446,7 @@ is "the escapee was NOT killed on stale evidence" \
   "$(kill -0 "$escapee" 2>/dev/null; echo $?)" "0"
 has "and the transcript says why" "$out" "is no longer in"
 kill -9 "$escapee" 2>/dev/null
-rm -f "$T/bin/live.next"
+rm -f "$T/bin/drop_after" "$T/escapee.ready"
 
 # X2: ancestry must fail closed rather than return a truncated chain.
 cat > "$T/bin/lsof.broken" <<'STUB'

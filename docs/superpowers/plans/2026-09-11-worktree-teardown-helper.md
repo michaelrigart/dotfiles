@@ -23,7 +23,13 @@
 > `68 passed, 68 total, 0 failed`. A fourth fix wave (Appendix B, item 11) took occupancy
 > and ancestry off one `lsof` listing instead of two, making true a premise `_ancestors`'s
 > own comment had asserted as fact while it was false; the appendix above reflects that
-> shipped content, and the suite reports `69 passed, 69 total, 0 failed`. Where a task's
+> shipped content, and the suite reports `69 passed, 69 total, 0 failed`. A fifth fix wave
+> (Appendix B, item 12) made the ancestry walk's hop budget fail closed instead of
+> reporting a truncated chain as success, and replaced section S's single case — which had
+> been silently reduced by an earlier fix to testing only the pre-TERM re-check, leaving
+> the pre-KILL safeguard uncovered — with two cases that each isolate one re-check; the
+> appendix above reflects that shipped content, and the suite reports
+> `71 passed, 71 total, 0 failed`. Where a task's
 > inline snippet and the appendix disagree, the appendix wins — the tasks define the
 > increments and the order, the appendix defines the finished content. Defects found only
 > by running it, across every wave, are recorded in Appendix B; do not re-introduce them.
@@ -897,6 +903,12 @@ _render() {
 # happen is a chain truncated BELOW a visible ancestor — exactly what the old `ps` walk did
 # whenever ps was unavailable. Fails closed only where nothing at all is known: _scan was never
 # run, or it ran against a listing empty enough to leave the parent map empty.
+#
+# The 64-hop cap is a fail-closed guard, not a silent truncation: exhausting it means the walk
+# reached neither an unknown parent nor pid 0, so the chain is INCOMPLETE and an ancestor beyond
+# hop 64 is still unaccounted for and still eligible to be signalled. That is exactly the failure
+# mode this function exists to rule out, so running out of hops returns 1 the same as an empty
+# map, rather than reporting a partial chain as though it were the whole one.
 _ancestors() {
   emulate -L zsh
   local p
@@ -905,12 +917,17 @@ _ancestors() {
   p=$$
   chain=( $p )
   local -i hops=0
+  local -i complete=0
   while (( ++hops <= 64 )); do
-    (( ${+_WT_PARENT[$p]} )) || break
+    (( ${+_WT_PARENT[$p]} )) || { complete=1; break }   # unknown parent: top of what we can see
     p="${_WT_PARENT[$p]}"
-    (( p == 0 )) && break
+    (( p == 0 )) && { complete=1; break }               # reached the top of the tree
     chain+=( "$p" )
   done
+  # Budget exhausted rather than chain ended: the ancestry is incomplete, and an ancestor we
+  # never reached is still eligible to be signalled. Refuse instead of sweeping on a partial
+  # chain — the same rule as an empty map, for the same reason.
+  (( complete )) || return 1
   print -rl -- $chain
   return 0
 }
@@ -1587,10 +1604,29 @@ is "and is reported exactly once" "$(printf '%s' "$out" | grep -c stopping)" "1"
 
 echo
 echo "S. ownership is re-proved before escalation, and ancestry is complete"
-# X1: a process that leaves the worktree between TERM and KILL is no longer the process we
+# X1a: a process gone by the PRE-TERM check must never be signalled at all. Present for the
+# initial scan (call 1), gone from the pre-TERM re-check (call 2) onward. An ordinary spawned
+# sleep is enough — it need not survive anything, since nothing should ever be sent to it.
+depart_before_term="$(spawn command sleep 300)"
+mk_live <<EOF
+$depart_before_term sleep $WT
+EOF
+echo 1 > "$T/bin/drop_after"
+out="$(PATH="$T/bin:/usr/bin:/bin" WT_WORKTREE="$WT" \
+  WT_TEARDOWN_TERM_WAIT=1 WT_TEARDOWN_KILL_WAIT=1 \
+  zsh "$SUBJECT" --sweep sleep teardown 2>&1)"
+sleep 0.5
+is "the pre-TERM departure was NOT signalled" \
+  "$(kill -0 "$depart_before_term" 2>/dev/null; echo $?)" "0"
+has "and the transcript says why" "$out" "is no longer in"
+kill -9 "$depart_before_term" 2>/dev/null
+rm -f "$T/bin/drop_after"
+
+# X1b: a process that leaves the worktree between TERM and KILL is no longer the process we
 # identified. It must not be killed on the old evidence. The victim ignores TERM, so it survives
-# to the escalation; the staged successor fixture drops it from the listing, which is how it
-# "leaves". Without the re-check, KILL lands on it and it dies.
+# to the escalation; present for the initial scan (call 1) AND the pre-TERM check (call 2), gone
+# from the pre-KILL check (call 3) onward — only the pre-KILL safeguard can save it. Without that
+# re-check, KILL lands on it and it dies.
 rm -f "$T/escapee.ready"
 escapee="$(spawn "$T/deaf.sh" "$T/escapee.ready")"
 for _ in 1 2 3 4 5 6 7 8 9 10; do [ -e "$T/escapee.ready" ] && break; sleep 0.2; done
@@ -1599,7 +1635,7 @@ is "the escapee fixture installed its TERM trap" \
 mk_live <<EOF
 $escapee deaf.sh $WT
 EOF
-: > "$T/bin/live.next"     # from the next scan onward it is no longer in the worktree
+echo 2 > "$T/bin/drop_after"
 out="$(PATH="$T/bin:/usr/bin:/bin" WT_WORKTREE="$WT" \
   WT_TEARDOWN_TERM_WAIT=1 WT_TEARDOWN_KILL_WAIT=1 \
   zsh "$SUBJECT" --sweep deaf.sh teardown 2>&1)"
@@ -1609,7 +1645,7 @@ is "the escapee was NOT killed on stale evidence" \
   "$(kill -0 "$escapee" 2>/dev/null; echo $?)" "0"
 has "and the transcript says why" "$out" "is no longer in"
 kill -9 "$escapee" 2>/dev/null
-rm -f "$T/bin/live.next"
+rm -f "$T/bin/drop_after" "$T/escapee.ready"
 
 # X2: ancestry must fail closed rather than return a truncated chain.
 cat > "$T/bin/lsof.broken" <<'STUB'
@@ -1948,6 +1984,43 @@ executor who "simplifies" the harness.
     sweep loop's self-exclusion still fails section F (`--sweep zsh` sends the parent a real
     TERM), and reverting the anchored cwd match still fails section E (the sibling gets swept).
     Suite: `69 passed, 69 total, 0 failed`.
+
+12. **Fix wave 5 — the hop budget must fail closed, and the pre-KILL safeguard had no test
+    exercising it.** An independent review of the 69/69-green helper found two more defects,
+    both confirmed by running the plan:
+
+    - **`_ancestors`'s 64-hop walk exhausted its budget and reported success anyway.** The
+      loop was followed unconditionally by `print -rl -- $chain; return 0`, so an unknown
+      parent or pid 0 (the top of the reachable tree — fine) and running out of hops (the
+      chain is INCOMPLETE, and an ancestor beyond hop 64 stays eligible for TERM and KILL)
+      reached the exact same `return 0`. Fixed by tracking whether the walk actually
+      terminated at a known boundary (`local -i complete=0`, set at the unknown-parent break
+      and the pid-0 break) and refusing (`return 1`) when the loop instead ran out the clock —
+      the same fail-closed rule the empty-map case already applied, extended to the other way
+      a chain can be incomplete. The function's comment was extended to say so.
+    - **Section S no longer exercised the pre-KILL re-proof, and nothing exercised the
+      pre-TERM one.** Section S's one case used the one-shot `live.next` fixture, which
+      removed the escapee immediately after the *initial* scan — so the pre-TERM check (not
+      the pre-KILL check the section's own comment claimed to be testing) is what dropped it,
+      and no signal was ever sent. Deleting the pre-KILL safeguard would have left the suite
+      green. Fixed by replacing that one case with two, built on the `drop_after` scan
+      counter (already used by section T) rather than `live.next`: **S-a** (`drop_after=1`)
+      spawns an ordinary `sleep`, present for the initial scan and gone from the pre-TERM
+      check onward, asserting it is never signalled at all; **S-b** (`drop_after=2`) reuses
+      the section H `deaf.sh` fixture (it must ignore TERM to reach the KILL escalation at
+      all), present through the pre-TERM check and gone from the pre-KILL check onward,
+      asserting only the pre-KILL safeguard keeps it alive. Both assert the transcript names
+      the departure and clean up their `drop_after` marker afterwards.
+
+    Bite checks on scratch copies, never the shipped files: removing the pre-KILL
+    `_still_here` call fails S-b's `the escapee was NOT killed on stale evidence` assertion
+    (the deaf victim is actually killed); removing the pre-TERM `_still_here` call fails S-a's
+    `the pre-TERM departure was NOT signalled` assertion (the victim is actually signalled).
+    Reverting the hop-budget fix trips no assertion, old or new: a 65-deep ancestor chain is
+    not constructible in this harness (it would need genuinely spawning that many nested
+    processes), so no case isolates it, and none was invented to force the point — accepted
+    as a gap rather than chased with an unrealistic fixture. Suite: `71 passed, 71 total, 0
+    failed`.
 
 ### Why `_ancestors` walks with `ps` rather than stopping at `$PPID` — superseded, see item 9
 
