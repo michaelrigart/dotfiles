@@ -1,7 +1,23 @@
 # Worktree teardown helper
 
-**Status:** Approved
+**Status:** Implemented
 **Date:** 2026-09-11
+
+Integrated by local merge in both repositories rather than through merge requests, at the
+operator's instruction. Cross-review ran to convergence over four rounds; the findings and
+their resolutions are recorded in the implementation plan's Appendix B.
+
+**What shipped differs from §5.3 in one respect, recorded here rather than by rewriting a dated
+document.** The design has the sweep read `lsof -w -d cwd -F0pcn` and obtain process ancestry
+separately. Both proved unsafe in review. Ancestry via `ps` returns a TRUNCATED chain while
+reporting success wherever `ps` is unavailable — which includes the sandbox agents run `wt-rm`
+in — leaving a grandparent eligible to be signalled whenever a hook omits `exec`. Taking
+ancestry from a second `lsof` call fixed that but introduced a subtler hole: two invocations are
+two snapshots, so a process present in one and absent from the other could still leave a visible
+ancestor unprotected. The shipped helper therefore issues ONE `lsof -w -d cwd -F0pcnR` and
+derives both occupancy and the parent map from it, which makes "an ancestor lsof cannot report
+can never be a sweep target" true by construction rather than by argument. Splitting those calls
+again reopens the hole; the code says so at the point where it would be split.
 
 Consumes the `teardown` verb defined by
 [2026-07-30 Worktree hook protocol](./2026-07-30-worktree-hook-protocol-design.md) and

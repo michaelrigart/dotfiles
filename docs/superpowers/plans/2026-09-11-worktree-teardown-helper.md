@@ -1,5 +1,7 @@
 # Worktree teardown helper Implementation Plan
 
+**Status:** Implemented — do not re-execute. Kept as the design record for this change.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Give `.worktreehook teardown` something to call, so `wt-rm` stops project processes instead of refusing because one is still running.
