@@ -70,6 +70,14 @@ hl_die_notify() {
   die "$*"
 }
 
+# HL_DIE — how a context-mode failure reports itself, so the guards can be shared by
+# modes with different callers. --current is a plugin action: nothing is listening, so
+# it must raise the toast itself. --make-tab is always run by tab-goto.sh, which
+# captures this script's stderr and notifies with the full text — so notifying here too
+# would show two toasts per failed alt+e, the second saying strictly more than the
+# first. Set per mode in main().
+HL_DIE=hl_die_notify
+
 # hl_git — git with its routing environment cleared, mirroring _wt_git in
 # zsh/functions. An exported GIT_DIR or GIT_WORK_TREE silently redirects git at
 # another checkout, which would make the worktree guard answer about the wrong repo.
@@ -659,8 +667,8 @@ hl_context_repo() {
   # workspace the action was invoked from, focus it, exit 0 and apply nothing — a
   # silent no-op, and the most confusing possible outcome.
   wrepo="$(hl_api_json pane list --workspace "$ws" | jq -r '.result.panes[0].cwd')" \
-    || hl_die_notify "could not read the workspace's panes"
-  [[ -n "$wrepo" && "$wrepo" != null ]] || hl_die_notify "workspace $ws has no pane cwd to work from"
+    || "$HL_DIE" "could not read the workspace's panes"
+  [[ -n "$wrepo" && "$wrepo" != null ]] || "$HL_DIE" "workspace $ws has no pane cwd to work from"
   wrepo="${wrepo:A}"
 
   # Resolve to the repository ROOT before anything else. A pane's cwd is wherever
@@ -674,8 +682,8 @@ hl_context_repo() {
   # agents launched in $HOME. Refusing costs nothing; the action is only
   # meaningful in a repo.
   root="$(hl_git -C "$wrepo" rev-parse --show-toplevel 2>/dev/null)" \
-    || hl_die_notify "$wrepo is not inside a git repository — refusing"
-  [[ -n "$root" ]] || hl_die_notify "$wrepo is not inside a git repository — refusing"
+    || "$HL_DIE" "$wrepo is not inside a git repository — refusing"
+  [[ -n "$root" ]] || "$HL_DIE" "$wrepo is not inside a git repository — refusing"
   wrepo="${root:A}"
 
   # A linked checkout is allowed only when Herdr owns it as a native worktree
@@ -683,7 +691,7 @@ hl_context_repo() {
   # identify it reliably during teardown.
   if [[ -f "$wrepo/.git" ]] \
     && ! hl_is_native_worktree_workspace "$ws" "$wrepo"; then
-    hl_die_notify "$wrepo is not a native Herdr worktree workspace — refusing"
+    "$HL_DIE" "$wrepo is not a native Herdr worktree workspace — refusing"
   fi
 
   typeset -g HL_CONTEXT_REPO="$wrepo"
@@ -741,18 +749,21 @@ main() {
     # Same resolution order as tab-goto.sh, because this runs from the same detached
     # keybinding: Herdr injects the active context, and --current's plugin-only
     # variable is not set for a [[keys.command]].
+    # tab-goto.sh captures this script's stderr and raises the toast, so every failure
+    # below reports through plain `die`. See HL_DIE.
+    HL_DIE=die
     local ws="${HERDR_ACTIVE_WORKSPACE_ID:-${HERDR_WORKSPACE_ID:-}}"
     [[ -n "$ws" ]] \
-      || hl_die_notify "no active workspace in the environment (expected HERDR_ACTIVE_WORKSPACE_ID)"
+      || die "no active workspace in the environment (expected HERDR_ACTIVE_WORKSPACE_ID)"
     # Checked before anything is resolved, so a typo in config.toml cannot start
     # populating tabs this script has no shape for. Cheapest guard first, too.
     (( ${MANAGED_TABS[(Ie)$make_label]} )) \
-      || hl_die_notify "'$make_label' is not a managed tab"
+      || die "'$make_label' is not a managed tab"
 
     hl_context_repo "$ws"
-    hl_lock "$HL_CONTEXT_REPO" || hl_die_notify "could not take the lock for $HL_CONTEXT_REPO"
+    hl_lock "$HL_CONTEXT_REPO" || die "could not take the lock for $HL_CONTEXT_REPO"
     hl_ensure_tab "$ws" "$HL_CONTEXT_REPO" "$make_label" \
-      || hl_die_notify "could not create the '$make_label' tab"
+      || die "could not create the '$make_label' tab"
     exit 0
   fi
 

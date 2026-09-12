@@ -117,6 +117,12 @@ case "$*" in
     if [ -n "${MOCK_TAB_CREATE_FAIL_AT:-}" ] && [ "$n" = "$MOCK_TAB_CREATE_FAIL_AT" ]; then
       printf '%s' '{"error":{"code":"internal","message":"boom"}}' >&2; exit 1
     fi
+    # The tab id is what --make-tab hands back to be focused, so a response without
+    # one has to be reachable from a fixture.
+    if [ -n "${MOCK_TAB_CREATE_NO_TAB_ID:-}" ]; then
+      printf '%s' "{\"result\":{\"tab\":{},\"root_pane\":{\"pane_id\":\"w7:p$((n+3))\"}}}"
+      exit 0
+    fi
     printf '%s' "{\"result\":{\"tab\":{\"tab_id\":\"w7:t$((n+4))\"},\"root_pane\":{\"pane_id\":\"w7:p$((n+3))\"}}}" ;;
   "pane split"*)   printf '%s' '{"result":{"pane":{"pane_id":"w7:p9"}}}' ;;
   "pane layout"*)
@@ -157,7 +163,7 @@ mock_reset() {
   unset MOCK_SERVER_NEVER_READY MOCK_EMPTY_FOR MOCK_WS_CREATE_JSON MOCK_WS_ID \
         MOCK_WORKTREE_OPEN_JSON
   export MOCK_TAB_SEQ_FILE="$(mktemp "${TMPROOT%/}/tabseq.XXXXXX")"; print -n 0 > "$MOCK_TAB_SEQ_FILE"
-  unset MOCK_TAB_CREATE_FAIL_AT MOCK_STATUS
+  unset MOCK_TAB_CREATE_FAIL_AT MOCK_STATUS MOCK_TAB_CREATE_NO_TAB_ID
   # The HL_* knobs are exported by individual tests and would otherwise leak into
   # every later one — HL_READY_TRIES=2 from a timeout test silently shortening an
   # unrelated bootstrap, for instance, which is how C4 first failed.
@@ -1179,5 +1185,28 @@ logged "tab create --workspace w7 --label editor --cwd $WT --no-focus" \
 mk "mock_topology '$R1' 'Netronix/curato' $FULL" --make-tab
 rc_is 1 "N8 --make-tab with no label fails"
 has "usage" "N8 says how to call it"
+
+# N9: --make-tab is always invoked by something that reports for it — tab-goto captures
+# its stderr and raises the notification. Notifying here too means every failed alt+e
+# shows two toasts, the second one saying strictly more than the first. --current has
+# no such caller, which is why it keeps hl_die_notify.
+mk "mock_topology '$ROOTTMP/notrepo' 'notrepo' $FULL" --make-tab editor
+rc_is 1 "N9 a refused --make-tab still fails"
+has "not inside a git repository" "N9 the reason is on stderr for the caller to relay"
+unlogged "notification show" "N9 --make-tab does not raise its own toast"
+
+# N10: the tab id is now load-bearing — it is what the caller focuses — so a create
+# response without one must fail rather than hand "null" to `tab focus`.
+mk "mock_topology '$R1' 'Netronix/curato' $FULL; export MOCK_TAB_CREATE_NO_TAB_ID=1" \
+  --make-tab editor
+rc_is 1 "N10 a tab create response with no tab id fails"
+has "missing" "N10 says what was missing"
+unlogged "tab focus" "N10 nothing is focused on a null id"
+
+# The same response is fatal to a build, which has relied on that field since the id
+# started being returned.
+run_layout "export HERDR_ENV=1; mock_panes '/nowhere'; export MOCK_TAB_CREATE_NO_TAB_ID=1" "$R1"
+rc_is 1 "N10b a build stops on a tab create response with no tab id"
+logged "workspace close w7" "N10b the trap closes the partial workspace"
 
 finish
