@@ -137,6 +137,12 @@ case "$*" in
       printf '%s' "{\"result\":{\"tab\":{},\"root_pane\":{\"pane_id\":\"w7:p$((n+3))\"}}}"
       exit 0
     fi
+    # The other half of the same window: a usable tab id, no usable pane id. The tab
+    # exists on the server either way, so both shapes have to be reachable.
+    if [ -n "${MOCK_TAB_CREATE_NO_PANE_ID:-}" ]; then
+      printf '%s' "{\"result\":{\"tab\":{\"tab_id\":\"w7:t$((n+4))\"},\"root_pane\":{}}}"
+      exit 0
+    fi
     if [ -n "${MOCK_TAB_STATE_FILE:-}" ]; then
       lbl=""; prev=""
       for a in "$@"; do [ "$prev" = "--label" ] && lbl="$a"; prev="$a"; done
@@ -183,7 +189,8 @@ mock_reset() {
         MOCK_WORKTREE_OPEN_JSON
   export MOCK_TAB_SEQ_FILE="$(mktemp "${TMPROOT%/}/tabseq.XXXXXX")"; print -n 0 > "$MOCK_TAB_SEQ_FILE"
   unset MOCK_TAB_CREATE_FAIL_AT MOCK_STATUS MOCK_TAB_CREATE_NO_TAB_ID \
-        MOCK_PANE_RUN_RC MOCK_TAB_FOCUS_JSON MOCK_TAB_STATE_FILE
+        MOCK_PANE_RUN_RC MOCK_TAB_FOCUS_JSON MOCK_TAB_STATE_FILE \
+        MOCK_TAB_CREATE_NO_PANE_ID
   # The HL_* knobs are exported by individual tests and would otherwise leak into
   # every later one — HL_READY_TRIES=2 from a timeout test silently shortening an
   # unrelated bootstrap, for instance, which is how C4 first failed.
@@ -1239,6 +1246,17 @@ rc_is 1 "N11 a tab whose command fails to launch fails the call"
 logged "tab create --workspace w7 --label editor" "N11 the tab was genuinely created first"
 logged "tab close w7:t5" "N11 the half-built tab is closed rather than left behind"
 
+# N11b: the same window, entered through a validation failure instead of a command
+# failure. `tab create` answered, so the tab EXISTS on the server; whether the response
+# also carried a usable pane id changes nothing about that. Parsing the pane id before
+# the tab id meant this path returned without an id to clean up with.
+mk "mock_topology '$R1' 'Netronix/curato' $FULL; export MOCK_TAB_CREATE_NO_PANE_ID=1" \
+  --make-tab editor
+rc_is 1 "N11b a create response with no root pane id fails"
+has "missing" "N11b says what was missing"
+logged "tab close w7:t5" "N11b the tab that was created is still closed"
+unlogged "pane run" "N11b nothing is run in a pane that could not be identified"
+
 # N12: the real race, on the schedule that breaks it — B waits BEFORE taking the lock,
 # so it arrives with a stale observation after A has created and released. Both
 # processes see one shared tab list, so a re-check that moved above the lock would let
@@ -1259,6 +1277,40 @@ eq "$(count_logged "tab create --workspace w7 --label editor --cwd $R1 --no-focu
 [[ "$a_rc" == 0 && "$b_rc" == 0 ]] \
   && _pass "N12 both racers succeed" || _fail "N12 racer rc=$a_rc/$b_rc"
 eq "$B_OUT" "$A_OUT" "N12 both racers return the same tab id"
+unset MOCK_TAB_STATE_FILE
+
+# N13: N12 asserts the OUTCOME of two overlapping presses, but it cannot prove the
+# ordering that produces it — whether the mutant loses depends on which process wins a
+# 0.2s head start, so it is evidence, not a guard. This one is deterministic. A real
+# flock held by another process is a hard barrier: the contender cannot pass hl_lock,
+# and the editor tab appears WHILE it is stuck there. If the re-check sits above the
+# lock, the contender reads the tab list before blocking — at which point the tab does
+# not exist — and creates a second one. Verified against that mutant.
+mock_reset
+export MOCK_TAB_STATE_FILE="$(mktemp "${TMPROOT%/}/tabstate2.XXXXXX")"; : > "$MOCK_TAB_STATE_FILE"
+mock_topology "$R1" "Netronix/curato" $FULL
+N13_LOCKDIR="$XDG_STATE_HOME/herdr-layout"; mkdir -p "$N13_LOCKDIR"
+N13_KEY="${R1//\//-}"; N13_KEY="${N13_KEY#-}"
+N13_LOCK="$N13_LOCKDIR/$N13_KEY.lock"; : >> "$N13_LOCK"
+zsh -c "zmodload -F zsh/system b:zsystem; zsystem flock '$N13_LOCK'; sleep 6" &
+N13_HOLDER=$!
+sleep 0.7
+N13_OUTF="$(mktemp "${TMPROOT%/}/n13.XXXXXX")"
+( HOME="$ROOTTMP" HERDR_ACTIVE_WORKSPACE_ID=w7 zsh "$LAYOUT" --make-tab editor \
+    >"$N13_OUTF" 2>&1 ) &
+N13_C=$!
+# Long enough that the contender is past hl_context_repo and blocked in hl_lock.
+sleep 1.5
+# What the lock holder "did" while it held the lock.
+print -n '{"tab_id":"w7:t9","label":"editor"},' >> "$MOCK_TAB_STATE_FILE"
+kill $N13_HOLDER 2>/dev/null; wait $N13_HOLDER 2>/dev/null
+n13_rc=0; wait $N13_C 2>/dev/null || n13_rc=$?
+N13_OUT="$(<"$N13_OUTF")"
+rc_is() { [[ "$RC" == "$1" ]] && _pass "$2" || _fail "$2 (rc=$RC)" }
+RC=$n13_rc; rc_is 0 "N13 the contender succeeds once the lock is released"
+eq "$(count_logged "tab create --workspace w7 --label editor --cwd $R1 --no-focus")" "0" \
+  "N13 a contender blocked on the lock never creates a tab it could not have seen"
+eq "$N13_OUT" "w7:t9" "N13 it adopts the tab that appeared while it waited"
 unset MOCK_TAB_STATE_FILE
 
 # N10: the tab id is now load-bearing — it is what the caller focuses — so a create

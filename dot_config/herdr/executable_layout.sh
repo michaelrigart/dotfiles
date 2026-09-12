@@ -461,16 +461,21 @@ hl_id() {
 hl_make_tab() {
   local ws="$1" label="$2" repo="$3" out pane tab
   out="$(hl_api_json tab create --workspace "$ws" --label "$label" --cwd "$repo" --no-focus)" || return 1
-  pane="$(hl_id "$out" '.result.root_pane.pane_id' "a root pane for tab '$label'")" || return 1
+  # The TAB id first, and on its own line: once `tab create` has answered, the tab
+  # exists on the server, and from here every failure has to be able to remove it.
+  # Parsing the pane id first left the response-shape failures — a create that answered
+  # without a usable root pane — returning with no id to clean up with.
   tab="$(hl_id "$out" '.result.tab.tab_id' "a tab id for tab '$label'")" || return 1
 
-  # Populate in a subshell so one `return 1` covers every label, and the half-built tab
-  # is closed on the way out. Without this, a `tab create` that succeeds and a
-  # `pane run` that fails leaves a tab with the right label and the right pane
-  # count — which classifies COMPLETE, so repair never touches it and every later
-  # alt+e focuses an empty shell labelled "editor". hl_build has a workspace-level
-  # trap that hides this; --make-tab has no trap and must not need one.
-  if ! hl_populate_tab "$label" "$pane" "$repo"; then
+  # Everything after the tab exists runs through one exit point. Without it, a `tab
+  # create` that succeeds and a `pane run` that fails leaves a tab with the right label
+  # and the right pane count — which classifies COMPLETE, so repair never touches it
+  # and every later alt+e focuses an empty shell labelled "editor". hl_build has a
+  # workspace-level trap that hides this; --make-tab has no trap and must not need one.
+  if ! {
+    pane="$(hl_id "$out" '.result.root_pane.pane_id' "a root pane for tab '$label'")" \
+      && hl_populate_tab "$label" "$pane" "$repo"
+  }; then
     hl_api tab close "$tab" >/dev/null 2>&1 || true
     return 1
   fi
