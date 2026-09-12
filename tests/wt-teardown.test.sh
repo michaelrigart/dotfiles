@@ -83,6 +83,14 @@ if [ "$(cat "$d/mode" 2>/dev/null)" = raw ]; then
   cat "$d/raw"
   exit 0
 fi
+# Count fixture calls so a test can say "present for the first N scans, gone afterwards".
+# The subject scans four times per run: build OCCUPANT, re-check before TERM, re-check before
+# KILL, then the final survivor scan.
+n=$(cat "$d/calls" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$d/calls"
+if [ -f "$d/drop_after" ] && [ "$n" -gt "$(cat "$d/drop_after")" ]; then
+  printf 'p1\0claunchd\0fcwd\0n/\0'
+  exit 0
+fi
 # A real `lsof -d cwd` is never empty — the caller has a cwd and so does launchd — and
 # the subject refuses an empty listing rather than reading it as an idle checkout. A stub
 # that emptied out once its fixture pids died would trip that refusal on every re-scan,
@@ -102,8 +110,8 @@ fi
 STUB
 chmod +x "$T/bin/lsof"
 : > "$T/bin/live"; : > "$T/bin/raw"; echo live > "$T/bin/mode"
-mk_raw()  { printf "$@" > "$T/bin/raw"; echo raw > "$T/bin/mode"; }
-mk_live() { cat > "$T/bin/live"; echo live > "$T/bin/mode"; }
+mk_raw()  { printf "$@" > "$T/bin/raw"; echo raw > "$T/bin/mode"; : > "$T/bin/calls"; rm -f "$T/bin/drop_after"; }
+mk_live() { cat > "$T/bin/live"; echo live > "$T/bin/mode"; : > "$T/bin/calls"; rm -f "$T/bin/drop_after"; }
 srun() { PATH="$T/bin:/usr/bin:/bin" WT_WORKTREE="$WT" zsh "$SUBJECT" "$@" 2>&1; }
 
 mk_raw ''
@@ -385,7 +393,7 @@ is "teardown exits clean once the escapee is gone from the worktree" "$?" "0"
 sleep 1
 is "the escapee was NOT killed on stale evidence" \
   "$(kill -0 "$escapee" 2>/dev/null; echo $?)" "0"
-has "and the transcript says why" "$out" "before escalation"
+has "and the transcript says why" "$out" "is no longer in"
 kill -9 "$escapee" 2>/dev/null
 rm -f "$T/bin/live.next"
 
@@ -399,6 +407,61 @@ mkdir -p "$T/brokenbin"
 cp "$T/bin/lsof.broken" "$T/brokenbin/lsof"
 out="$(PATH="$T/brokenbin:/usr/bin:/bin" WT_WORKTREE="$WT" zsh "$SUBJECT" --sweep ruby teardown 2>&1)"
 is "an unreadable process list refuses rather than sweeping" "$?" "1"
+
+echo
+echo "T. indeterminate is not the same as gone"
+# Y3. kill -0 fails both for a process that does not exist and for one owned by another user.
+# Only the first is proof of death. Find a real live process we cannot signal — on macOS there
+# are always root-owned ones — rather than hardcoding a pid.
+unreadable=""
+for cand in $(LC_ALL=C lsof -w -d cwd -F0p 2>/dev/null | tr '\0' '\n' \
+              | grep '^p[0-9]' | sed 's/^p//' | sort -u | head -60); do
+  LC_ALL=C kill -0 "$cand" 2>/dev/null && continue
+  case "$(LC_ALL=C kill -0 "$cand" 2>&1)" in
+    # Wording differs by shell: bash's builtin says "Operation not permitted", zsh's says
+    # "operation not permitted". This suite's shebang is bash, but match both rather than
+    # hardcode one shell's phrasing.
+    *"Operation not permitted"*|*"operation not permitted"*) unreadable="$cand"; break ;;
+  esac
+done
+is "found a live process we may not signal" "$([ -n "$unreadable" ] && echo yes || echo no)" "yes"
+echo "$unreadable" > "$WT/tmp/pids/server.pid"
+mk_live <<EOF
+$$ zsh $T/elsewhere
+EOF
+out="$(srun --pidfile tmp/pids/server.pid teardown)"
+is "a pidfile naming an unreadable live process is kept" \
+  "$([ -e "$WT/tmp/pids/server.pid" ] && echo present || echo gone)" "present"
+rm -f "$WT/tmp/pids/server.pid"
+
+# Y4. With both budgets at 0, _stop sends TERM, then KILL, and returns 1 without ever confirming
+# either — the "signalled but unconfirmed" state. drop_after=3 keeps the target visible for the
+# three scans _stop depends on and removes it for the fourth, so the final scan is clear. The
+# helper must still refuse: the scan that failed is the one that would have told us what we
+# signalled.
+#
+# Not a plain `sleep`: an ordinary process genuinely dies on the real TERM sent right after the
+# first scan, so the stub's own kill -0 filter would drop it from the pre-KILL scan on its own —
+# the same reason section Q uses mk_raw rather than mk_live for its "stubborn" case. deaf.sh
+# ignores TERM, so it is still genuinely alive (and correctly kept) at the pre-KILL check; the
+# KILL that follows is real and does end it, but WT_TEARDOWN_KILL_WAIT=0 never polls to notice,
+# so _stop still returns 1. drop_after then makes the final scan clear deterministically, rather
+# than racing the real SIGKILL's delivery.
+rm -f "$T/unconfirmed.ready"
+unconfirmed="$(spawn "$T/deaf.sh" "$T/unconfirmed.ready")"
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -e "$T/unconfirmed.ready" ] && break; sleep 0.2; done
+is "the unconfirmed fixture installed its TERM trap" \
+  "$([ -e "$T/unconfirmed.ready" ] && echo yes || echo no)" "yes"
+mk_live <<EOF
+$unconfirmed deaf.sh $WT
+EOF
+echo 3 > "$T/bin/drop_after"
+out="$(PATH="$T/bin:/usr/bin:/bin" WT_WORKTREE="$WT" \
+  WT_TEARDOWN_TERM_WAIT=0 WT_TEARDOWN_KILL_WAIT=0 \
+  zsh "$SUBJECT" --sweep deaf.sh teardown 2>&1)"
+is "an unconfirmed stop exits nonzero even with a clear final scan" "$?" "1"
+kill -9 "$unconfirmed" 2>/dev/null
+rm -f "$T/bin/drop_after" "$T/unconfirmed.ready"
 
 echo
 echo "RESULT: $pass passed, $((pass + fail)) total, $fail failed"

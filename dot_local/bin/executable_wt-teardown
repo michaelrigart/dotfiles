@@ -186,6 +186,30 @@ _scan() {
   return 0
 }
 
+# _still_here <pid>... — filter a pid list down to those lsof still reports inside $WT.
+# Returns 1 if the scan itself failed, so callers fail closed rather than signalling blind.
+_still_here() {
+  emulate -L zsh
+  local -a keep
+  local out line p
+  out="$(_scan "$WT")" || return 1
+  typeset -A here
+  for line in ${(f)out}; do
+    [[ -n "$line" ]] && here[${line%% *}]=1
+  done
+  for p in "$@"; do
+    if (( ${+here[$p]} )); then
+      keep+=( "$p" )
+    else
+      # stderr, not stdout: this function's stdout is captured by callers as the
+      # filtered pid list, and a message sharing that stream would be word-split
+      # straight into it.
+      print -ru2 -- "$PROG: $p is no longer in $WT — not signalling it"
+    fi
+  done
+  print -rl -- $keep
+}
+
 # _stop <pid>... — TERM, poll, KILL, poll. Return 1 if anything is still alive.
 #
 # Polling uses kill -0 because it is cheap; the authority on whether the checkout is
@@ -199,6 +223,12 @@ _stop() {
   (( ${#pids} )) || return 0
   local p
   local -i i
+  # Ownership was proved by the scan that built OCCUPANT, but ancestry discovery and the
+  # whole pidfile loop run between that snapshot and here — including another lsof call —
+  # so the evidence can be stale by the time the first signal goes out. Re-prove it now,
+  # the same way the pre-KILL escalation below does.
+  pids=( $(_still_here $pids) ) || return 1
+  (( ${#pids} )) || return 0
   for p in $pids; do kill -TERM "$p" 2>/dev/null; done
   left=( $pids )
   for (( i = 0; i < TERM_WAIT * 10; i++ )); do
@@ -212,22 +242,7 @@ _stop() {
   # the process we identified — so re-prove occupancy before the escalation, and drop whatever
   # can no longer be shown to be here. A fresh scan narrows the window to sub-second; nothing a
   # shell can do makes pid identity atomic.
-  local -a still
-  local rescan
-  rescan="$(_scan "$WT")" || return 1
-  typeset -A here
-  for rescan in ${(f)rescan}; do
-    [[ -n "$rescan" ]] && here[${rescan%% *}]=1
-  done
-  still=()
-  for p in $left; do
-    if (( ${+here[$p]} )); then
-      still+=( "$p" )
-    else
-      print -r -- "$PROG: $p left $WT before escalation — not killing it"
-    fi
-  done
-  left=( $still )
+  left=( $(_still_here $left) ) || return 1
   (( ${#left} )) || return 0
   for p in $left; do kill -KILL "$p" 2>/dev/null; done
   for (( i = 0; i < KILL_WAIT * 10; i++ )); do
@@ -322,13 +337,20 @@ for pid cmd in ${(kv)OCCUPANT}; do
   done
 done
 
-if _stop $TARGETS; then
-  typeset f fpid
+typeset -i stop_rc=0
+_stop $TARGETS || stop_rc=1
+if (( stop_rc == 0 )); then
+  typeset f fpid kerr
   for f in ${(k)CLEAR_PIDS}; do
     fpid="${CLEAR_PIDS[$f]}"
-    # Confirmed gone, not merely "we tried": a file naming a process that is still alive is the
-    # only handle anything has on that process, and the retry needs it.
-    kill -0 "$fpid" 2>/dev/null && continue
+    # Confirmed gone, not merely "we tried", and not merely "we could not look". kill -0 fails
+    # both for a process that does not exist and for one owned by another user, and deleting the
+    # file on the second reading throws away the only handle anything has on a live process.
+    kerr="$(LC_ALL=C kill -0 "$fpid" 2>&1)" && continue          # alive: keep the file
+    [[ "$kerr" == *"no such process"* || "$kerr" == *"No such process"* ]] || {
+      print -ru2 -- "$PROG: cannot confirm pid $fpid is gone ($kerr) — keeping $f"
+      continue
+    }
     [[ -e "$f" ]] || continue
     rm -f -- "$f" || die "could not remove $f"
   done
@@ -352,5 +374,13 @@ if (( ${#survivors} )); then
   for line in $survivors; do print -ru2 -- "    $line"; done
   exit 1
 fi
+
+# A failed stop is a failed teardown even when the final scan comes back clear: the scan that
+# failed is the one that would have told us what we were signalling. wt-rm keeps the worktree
+# and the retry re-runs from a known state.
+(( stop_rc )) && {
+  print -ru2 -- "$PROG: could not confirm every target was stopped — refusing."
+  exit 1
+}
 
 exit 0

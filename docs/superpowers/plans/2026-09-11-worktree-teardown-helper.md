@@ -14,9 +14,13 @@
 > **The appendix is normative.** Both files in Appendix A were built and run during plan
 > review: the suite reported `53 passed, 53 total, 0 failed`, and an 11-mutant battery
 > against the subject was caught in full. A later fix wave (Appendix B, item 9) replaced
-> `_ancestors`, reworked pidfile-clearing, and re-proved ownership before escalation; the
+> `_ancestors`, reworked pidfile-clearing, and re-proved ownership before escalation,
+> bringing the suite to `64 passed, 64 total, 0 failed`. A third fix wave (Appendix B,
+> item 10) re-proved ownership before TERM as well as before KILL, distinguished a
+> confirmed-gone pidfile target from one `kill -0` merely couldn't reach, and made a
+> `_stop` that could not confirm its outcome refuse rather than report success; the
 > appendix above now reflects that shipped content, and the suite reports
-> `64 passed, 64 total, 0 failed`. Where a task's inline snippet and the appendix
+> `68 passed, 68 total, 0 failed`. Where a task's inline snippet and the appendix
 > disagree, the appendix wins — the tasks define the increments and the order, the
 > appendix defines the finished content. Defects found only by running it, across every
 > wave, are recorded in Appendix B; do not re-introduce them.
@@ -964,6 +968,30 @@ _scan() {
   return 0
 }
 
+# _still_here <pid>... — filter a pid list down to those lsof still reports inside $WT.
+# Returns 1 if the scan itself failed, so callers fail closed rather than signalling blind.
+_still_here() {
+  emulate -L zsh
+  local -a keep
+  local out line p
+  out="$(_scan "$WT")" || return 1
+  typeset -A here
+  for line in ${(f)out}; do
+    [[ -n "$line" ]] && here[${line%% *}]=1
+  done
+  for p in "$@"; do
+    if (( ${+here[$p]} )); then
+      keep+=( "$p" )
+    else
+      # stderr, not stdout: this function's stdout is captured by callers as the
+      # filtered pid list, and a message sharing that stream would be word-split
+      # straight into it.
+      print -ru2 -- "$PROG: $p is no longer in $WT — not signalling it"
+    fi
+  done
+  print -rl -- $keep
+}
+
 # _stop <pid>... — TERM, poll, KILL, poll. Return 1 if anything is still alive.
 #
 # Polling uses kill -0 because it is cheap; the authority on whether the checkout is
@@ -977,6 +1005,12 @@ _stop() {
   (( ${#pids} )) || return 0
   local p
   local -i i
+  # Ownership was proved by the scan that built OCCUPANT, but ancestry discovery and the
+  # whole pidfile loop run between that snapshot and here — including another lsof call —
+  # so the evidence can be stale by the time the first signal goes out. Re-prove it now,
+  # the same way the pre-KILL escalation below does.
+  pids=( $(_still_here $pids) ) || return 1
+  (( ${#pids} )) || return 0
   for p in $pids; do kill -TERM "$p" 2>/dev/null; done
   left=( $pids )
   for (( i = 0; i < TERM_WAIT * 10; i++ )); do
@@ -990,22 +1024,7 @@ _stop() {
   # the process we identified — so re-prove occupancy before the escalation, and drop whatever
   # can no longer be shown to be here. A fresh scan narrows the window to sub-second; nothing a
   # shell can do makes pid identity atomic.
-  local -a still
-  local rescan
-  rescan="$(_scan "$WT")" || return 1
-  typeset -A here
-  for rescan in ${(f)rescan}; do
-    [[ -n "$rescan" ]] && here[${rescan%% *}]=1
-  done
-  still=()
-  for p in $left; do
-    if (( ${+here[$p]} )); then
-      still+=( "$p" )
-    else
-      print -r -- "$PROG: $p left $WT before escalation — not killing it"
-    fi
-  done
-  left=( $still )
+  left=( $(_still_here $left) ) || return 1
   (( ${#left} )) || return 0
   for p in $left; do kill -KILL "$p" 2>/dev/null; done
   for (( i = 0; i < KILL_WAIT * 10; i++ )); do
@@ -1100,13 +1119,20 @@ for pid cmd in ${(kv)OCCUPANT}; do
   done
 done
 
-if _stop $TARGETS; then
-  typeset f fpid
+typeset -i stop_rc=0
+_stop $TARGETS || stop_rc=1
+if (( stop_rc == 0 )); then
+  typeset f fpid kerr
   for f in ${(k)CLEAR_PIDS}; do
     fpid="${CLEAR_PIDS[$f]}"
-    # Confirmed gone, not merely "we tried": a file naming a process that is still alive is the
-    # only handle anything has on that process, and the retry needs it.
-    kill -0 "$fpid" 2>/dev/null && continue
+    # Confirmed gone, not merely "we tried", and not merely "we could not look". kill -0 fails
+    # both for a process that does not exist and for one owned by another user, and deleting the
+    # file on the second reading throws away the only handle anything has on a live process.
+    kerr="$(LC_ALL=C kill -0 "$fpid" 2>&1)" && continue          # alive: keep the file
+    [[ "$kerr" == *"no such process"* || "$kerr" == *"No such process"* ]] || {
+      print -ru2 -- "$PROG: cannot confirm pid $fpid is gone ($kerr) — keeping $f"
+      continue
+    }
     [[ -e "$f" ]] || continue
     rm -f -- "$f" || die "could not remove $f"
   done
@@ -1130,6 +1156,14 @@ if (( ${#survivors} )); then
   for line in $survivors; do print -ru2 -- "    $line"; done
   exit 1
 fi
+
+# A failed stop is a failed teardown even when the final scan comes back clear: the scan that
+# failed is the one that would have told us what we were signalling. wt-rm keeps the worktree
+# and the retry re-runs from a known state.
+(( stop_rc )) && {
+  print -ru2 -- "$PROG: could not confirm every target was stopped — refusing."
+  exit 1
+}
 
 exit 0
 ```
@@ -1222,6 +1256,14 @@ if [ "$(cat "$d/mode" 2>/dev/null)" = raw ]; then
   cat "$d/raw"
   exit 0
 fi
+# Count fixture calls so a test can say "present for the first N scans, gone afterwards".
+# The subject scans four times per run: build OCCUPANT, re-check before TERM, re-check before
+# KILL, then the final survivor scan.
+n=$(cat "$d/calls" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$d/calls"
+if [ -f "$d/drop_after" ] && [ "$n" -gt "$(cat "$d/drop_after")" ]; then
+  printf 'p1\0claunchd\0fcwd\0n/\0'
+  exit 0
+fi
 # A real `lsof -d cwd` is never empty — the caller has a cwd and so does launchd — and
 # the subject refuses an empty listing rather than reading it as an idle checkout. A stub
 # that emptied out once its fixture pids died would trip that refusal on every re-scan,
@@ -1241,8 +1283,8 @@ fi
 STUB
 chmod +x "$T/bin/lsof"
 : > "$T/bin/live"; : > "$T/bin/raw"; echo live > "$T/bin/mode"
-mk_raw()  { printf "$@" > "$T/bin/raw"; echo raw > "$T/bin/mode"; }
-mk_live() { cat > "$T/bin/live"; echo live > "$T/bin/mode"; }
+mk_raw()  { printf "$@" > "$T/bin/raw"; echo raw > "$T/bin/mode"; : > "$T/bin/calls"; rm -f "$T/bin/drop_after"; }
+mk_live() { cat > "$T/bin/live"; echo live > "$T/bin/mode"; : > "$T/bin/calls"; rm -f "$T/bin/drop_after"; }
 srun() { PATH="$T/bin:/usr/bin:/bin" WT_WORKTREE="$WT" zsh "$SUBJECT" "$@" 2>&1; }
 
 mk_raw ''
@@ -1524,7 +1566,7 @@ is "teardown exits clean once the escapee is gone from the worktree" "$?" "0"
 sleep 1
 is "the escapee was NOT killed on stale evidence" \
   "$(kill -0 "$escapee" 2>/dev/null; echo $?)" "0"
-has "and the transcript says why" "$out" "before escalation"
+has "and the transcript says why" "$out" "is no longer in"
 kill -9 "$escapee" 2>/dev/null
 rm -f "$T/bin/live.next"
 
@@ -1538,6 +1580,61 @@ mkdir -p "$T/brokenbin"
 cp "$T/bin/lsof.broken" "$T/brokenbin/lsof"
 out="$(PATH="$T/brokenbin:/usr/bin:/bin" WT_WORKTREE="$WT" zsh "$SUBJECT" --sweep ruby teardown 2>&1)"
 is "an unreadable process list refuses rather than sweeping" "$?" "1"
+
+echo
+echo "T. indeterminate is not the same as gone"
+# Y3. kill -0 fails both for a process that does not exist and for one owned by another user.
+# Only the first is proof of death. Find a real live process we cannot signal — on macOS there
+# are always root-owned ones — rather than hardcoding a pid.
+unreadable=""
+for cand in $(LC_ALL=C lsof -w -d cwd -F0p 2>/dev/null | tr '\0' '\n' \
+              | grep '^p[0-9]' | sed 's/^p//' | sort -u | head -60); do
+  LC_ALL=C kill -0 "$cand" 2>/dev/null && continue
+  case "$(LC_ALL=C kill -0 "$cand" 2>&1)" in
+    # Wording differs by shell: bash's builtin says "Operation not permitted", zsh's says
+    # "operation not permitted". This suite's shebang is bash, but match both rather than
+    # hardcode one shell's phrasing.
+    *"Operation not permitted"*|*"operation not permitted"*) unreadable="$cand"; break ;;
+  esac
+done
+is "found a live process we may not signal" "$([ -n "$unreadable" ] && echo yes || echo no)" "yes"
+echo "$unreadable" > "$WT/tmp/pids/server.pid"
+mk_live <<EOF
+$$ zsh $T/elsewhere
+EOF
+out="$(srun --pidfile tmp/pids/server.pid teardown)"
+is "a pidfile naming an unreadable live process is kept" \
+  "$([ -e "$WT/tmp/pids/server.pid" ] && echo present || echo gone)" "present"
+rm -f "$WT/tmp/pids/server.pid"
+
+# Y4. With both budgets at 0, _stop sends TERM, then KILL, and returns 1 without ever confirming
+# either — the "signalled but unconfirmed" state. drop_after=3 keeps the target visible for the
+# three scans _stop depends on and removes it for the fourth, so the final scan is clear. The
+# helper must still refuse: the scan that failed is the one that would have told us what we
+# signalled.
+#
+# Not a plain `sleep`: an ordinary process genuinely dies on the real TERM sent right after the
+# first scan, so the stub's own kill -0 filter would drop it from the pre-KILL scan on its own —
+# the same reason section Q uses mk_raw rather than mk_live for its "stubborn" case. deaf.sh
+# ignores TERM, so it is still genuinely alive (and correctly kept) at the pre-KILL check; the
+# KILL that follows is real and does end it, but WT_TEARDOWN_KILL_WAIT=0 never polls to notice,
+# so _stop still returns 1. drop_after then makes the final scan clear deterministically, rather
+# than racing the real SIGKILL's delivery.
+rm -f "$T/unconfirmed.ready"
+unconfirmed="$(spawn "$T/deaf.sh" "$T/unconfirmed.ready")"
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -e "$T/unconfirmed.ready" ] && break; sleep 0.2; done
+is "the unconfirmed fixture installed its TERM trap" \
+  "$([ -e "$T/unconfirmed.ready" ] && echo yes || echo no)" "yes"
+mk_live <<EOF
+$unconfirmed deaf.sh $WT
+EOF
+echo 3 > "$T/bin/drop_after"
+out="$(PATH="$T/bin:/usr/bin:/bin" WT_WORKTREE="$WT" \
+  WT_TEARDOWN_TERM_WAIT=0 WT_TEARDOWN_KILL_WAIT=0 \
+  zsh "$SUBJECT" --sweep deaf.sh teardown 2>&1)"
+is "an unconfirmed stop exits nonzero even with a clear final scan" "$?" "1"
+kill -9 "$unconfirmed" 2>/dev/null
+rm -f "$T/bin/drop_after" "$T/unconfirmed.ready"
 
 echo
 echo "RESULT: $pass passed, $((pass + fail)) total, $fail failed"
@@ -1691,6 +1788,75 @@ executor who "simplifies" the harness.
    `mk_raw` (already established in section I) to report its stubborn process
    unconditionally present, independent of whether it actually died, so the deterministic
    zero-wait failure path is still reachable.
+
+10. **Fix wave 3 — re-proving ownership before TERM as well as before KILL, distinguishing
+    "confirmed gone" from "kill -0 could not tell," and refusing when a stop could not be
+    confirmed.** An independent review of the 64/64-green helper found three more defects,
+    all confirmed by running the plan:
+
+    - **`_stop` re-validated occupancy before KILL but sent the initial TERM straight from
+      the snapshot the main body took.** Ancestry discovery and the whole pidfile loop —
+      including another `lsof` call — run between that snapshot and the TERM loop, so the
+      evidence backing the first signal could already be stale. Fixed by factoring the
+      re-validation into `_still_here <pid>...` (filters a pid list down to what `_scan`
+      still reports inside `$WT`, returning 1 if the scan itself fails) and calling it
+      immediately before both the TERM loop and the KILL loop.
+    - **The `CLEAR_PIDS` removal loop treated any `kill -0` failure as "gone."** `kill -0`
+      also fails with `EPERM` for a live process owned by someone else, which is not
+      "gone" — deleting the pidfile on that reading throws away the only handle anything
+      has on that process. Fixed by inspecting the error text under `LC_ALL=C` and keeping
+      the file unless it says the process does not exist.
+    - **A failed `_stop` was discarded at the call site.** `if _stop $TARGETS; then ...`
+      only gated the pidfile-clearing block; a failed pre-KILL scan that happened to be
+      followed by the target exiting on its own still let the script reach `exit 0`. Fixed
+      by capturing `_stop`'s exit status in `stop_rc`, gating the `CLEAR_PIDS` loop on it,
+      and refusing (`exit 1`) after the final survivor scan when it is nonzero — even when
+      that final scan is clear.
+
+    One further defect surfaced only by executing the fix, not by reading it: **the
+    reviewer's own suggested `_still_here` printed its "not signalling it" message on
+    stdout**, but every call site captures the whole function via
+    `pids=( $(_still_here $pids) )` to get the filtered pid list back — so that message's
+    words, including a real pid it happened to contain, were word-split straight into the
+    array. Instrumented and confirmed directly: section S's `deaf.sh` escapee, which the
+    section exists to prove survives, was actually killed by a garbage token that happened
+    to equal its own pid. Fixed by routing that one message through `print -ru2` (stderr),
+    invisible to the `$(...)` capture but still visible in transcripts, which capture
+    `2>&1`. No other line changed, and section S is green again.
+
+    Section T was added to cover Y3 and Y4, and both of its cases needed rework, found only
+    by running the mandated bite-check reversions rather than by inspection:
+
+    - **T's first case originally named pid 1** as a live, unsignallable stand-in for "kill
+      -0 fails but the process is not gone." Reverting the fix did not fail it: `1` is
+      rejected by `_pidfile_pid`'s own pre-existing `<2->` validation (deliberately
+      excluding init) before `CLEAR_PIDS` ever runs, so the file was "kept" only because the
+      whole run refused for an unrelated reason. Fixed by discovering a live, unsignallable
+      pid dynamically (scan real `lsof -w -d cwd -F0p` output for the first pid whose
+      `kill -0` fails with a permission error) instead of hardcoding one — and the pattern
+      matching that error had to cover both shells' wording (`Operation not permitted` from
+      the suite's own bash shebang, `operation not permitted` from zsh), confirmed by
+      running the exact loop under each.
+    - **T's second case originally swept an ordinary `sleep`.** With both wait budgets at
+      0, the real TERM sent right after the pre-TERM `_still_here` check kills a plain
+      `sleep` for real before the pre-KILL check runs, so the stub's own `kill -0` filter
+      (independent of any fixture bookkeeping) excludes it there — the same reason section
+      Q uses `mk_raw` rather than `mk_live` for its "stubborn" case. `_stop` then returns 0
+      (correctly: it never touched a process that had already left), not 1, so the case
+      could not reach the state it claims regardless of Y4. Fixed by reusing the section H
+      `deaf.sh` fixture, which survives the real TERM, so it is still genuinely alive (and
+      correctly kept) at the pre-KILL check; the real KILL that follows does end it, but
+      `WT_TEARDOWN_KILL_WAIT=0` never polls to notice, so `_stop` still returns 1. A
+      `drop_after` call counter was added to the `lsof` stub (fixture-only; the `-F0pR`
+      ancestry passthrough is not counted) so the final survivor scan is deterministically
+      clear on the fourth call, rather than racing the real `SIGKILL`'s delivery.
+
+    Bite checks on scratch copies, never the shipped files: reverting the Y3 fix fails
+    exactly T's "kept" assertion; reverting the Y4 fix fails exactly T's "exits nonzero"
+    assertion; reverting the Y2 pre-TERM re-validation trips no assertion, old or new —
+    section S's fixture is already resolved by the pre-existing pre-KILL check, and no
+    case in the suite isolates the narrower TERM-side window. That gap is accepted rather
+    than chased with a more elaborate fixture.
 
 ### Why `_ancestors` walks with `ps` rather than stopping at `$PPID` — superseded, see item 9
 
