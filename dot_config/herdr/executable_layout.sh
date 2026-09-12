@@ -459,11 +459,28 @@ hl_id() {
 # the create and the focus is a window another attached client can change the tab set
 # in, and the id is already in hand.
 hl_make_tab() {
-  local ws="$1" label="$2" repo="$3" out pane tab right
+  local ws="$1" label="$2" repo="$3" out pane tab
   out="$(hl_api_json tab create --workspace "$ws" --label "$label" --cwd "$repo" --no-focus)" || return 1
   pane="$(hl_id "$out" '.result.root_pane.pane_id' "a root pane for tab '$label'")" || return 1
   tab="$(hl_id "$out" '.result.tab.tab_id' "a tab id for tab '$label'")" || return 1
 
+  # Populate in a subshell so one `return 1` covers every label, and the half-built tab
+  # is closed on the way out. Without this, a `tab create` that succeeds and a
+  # `pane run` that fails leaves a tab with the right label and the right pane
+  # count — which classifies COMPLETE, so repair never touches it and every later
+  # alt+e focuses an empty shell labelled "editor". hl_build has a workspace-level
+  # trap that hides this; --make-tab has no trap and must not need one.
+  if ! hl_populate_tab "$label" "$pane" "$repo"; then
+    hl_api tab close "$tab" >/dev/null 2>&1 || true
+    return 1
+  fi
+  print -r -- "$tab"
+}
+
+# hl_populate_tab <label> <root-pane> <repo> — run what belongs in a freshly created
+# tab. Split out of hl_make_tab purely so failure has one exit point to clean up after.
+hl_populate_tab() {
+  local label="$1" pane="$2" repo="$3" out right
   case "$label" in
     editor)  hl_api pane run "$pane" "nvim ." >/dev/null || return 1 ;;
     runtime) hl_api_json pane split --pane "$pane" --direction down --cwd "$repo" --no-focus >/dev/null || return 1 ;;
@@ -477,7 +494,6 @@ hl_make_tab() {
       hl_api pane run "$pane" "claude" >/dev/null || return 1
       hl_api pane run "$right" "$CODEX_CMD" >/dev/null || return 1 ;;
   esac
-  print -r -- "$tab"
 }
 
 # hl_ensure_tab <ws> <repo> <label> — print the tab id for <label>, creating the tab

@@ -100,9 +100,23 @@ case "$*" in
     fi
     printf '%s' "$MOCK_WS_LIST" ;;
   "pane list"*)    printf '%s' "$MOCK_PANE_LIST" ;;
-  "tab list"*)     printf '%s' "$MOCK_TAB_LIST" ;;
+  "tab list"*)
+    # Stateful when MOCK_TAB_STATE_FILE is set: `tab create` appends there and this
+    # merges it in, so one process can observe what another just created. A static list
+    # makes every concurrency fixture unfalsifiable — both racers see absence forever.
+    if [ -n "${MOCK_TAB_STATE_FILE:-}" ] && [ -s "$MOCK_TAB_STATE_FILE" ]; then
+      extra=$(tr -d '\n' < "$MOCK_TAB_STATE_FILE" | sed 's/,$//')
+      printf '%s' "$MOCK_TAB_LIST" | sed "s/\"tabs\":\[/\"tabs\":[$extra,/; s/,\]}}\$/]}}/"
+    else
+      printf '%s' "$MOCK_TAB_LIST"
+    fi ;;
   "workspace focus"*) exit "${MOCK_FOCUS_RC:-0}" ;;
-  "tab focus"*)       exit "${MOCK_TAB_FOCUS_RC:-0}" ;;
+  "tab focus"*)
+    # Exit status AND payload: this CLI returns an error envelope with status 0 (see
+    # F1d), so a focus that only checks $? cannot be told from one that works.
+    [ -n "${MOCK_TAB_FOCUS_JSON:-}" ] && printf '%s' "$MOCK_TAB_FOCUS_JSON"
+    exit "${MOCK_TAB_FOCUS_RC:-0}" ;;
+  "pane run"*)        exit "${MOCK_PANE_RUN_RC:-0}" ;;
   "workspace create"*)
     exit_rc="${MOCK_WS_CREATE_RC:-0}"; [ "$exit_rc" != 0 ] && exit "$exit_rc"
     printf '%s' "${MOCK_WS_CREATE_JSON:-$DEF_WS_CREATE}" ;;
@@ -122,6 +136,11 @@ case "$*" in
     if [ -n "${MOCK_TAB_CREATE_NO_TAB_ID:-}" ]; then
       printf '%s' "{\"result\":{\"tab\":{},\"root_pane\":{\"pane_id\":\"w7:p$((n+3))\"}}}"
       exit 0
+    fi
+    if [ -n "${MOCK_TAB_STATE_FILE:-}" ]; then
+      lbl=""; prev=""
+      for a in "$@"; do [ "$prev" = "--label" ] && lbl="$a"; prev="$a"; done
+      printf '{"tab_id":"w7:t%s","label":"%s"},' "$((n+4))" "$lbl" >> "$MOCK_TAB_STATE_FILE"
     fi
     printf '%s' "{\"result\":{\"tab\":{\"tab_id\":\"w7:t$((n+4))\"},\"root_pane\":{\"pane_id\":\"w7:p$((n+3))\"}}}" ;;
   "pane split"*)   printf '%s' '{"result":{"pane":{"pane_id":"w7:p9"}}}' ;;
@@ -163,7 +182,8 @@ mock_reset() {
   unset MOCK_SERVER_NEVER_READY MOCK_EMPTY_FOR MOCK_WS_CREATE_JSON MOCK_WS_ID \
         MOCK_WORKTREE_OPEN_JSON
   export MOCK_TAB_SEQ_FILE="$(mktemp "${TMPROOT%/}/tabseq.XXXXXX")"; print -n 0 > "$MOCK_TAB_SEQ_FILE"
-  unset MOCK_TAB_CREATE_FAIL_AT MOCK_STATUS MOCK_TAB_CREATE_NO_TAB_ID
+  unset MOCK_TAB_CREATE_FAIL_AT MOCK_STATUS MOCK_TAB_CREATE_NO_TAB_ID \
+        MOCK_PANE_RUN_RC MOCK_TAB_FOCUS_JSON MOCK_TAB_STATE_FILE
   # The HL_* knobs are exported by individual tests and would otherwise leak into
   # every later one — HL_READY_TRIES=2 from a timeout test silently shortening an
   # unrelated bootstrap, for instance, which is how C4 first failed.
@@ -753,6 +773,21 @@ gotoc "mock_topology '$R1' 'Netronix/curato' $FULL" --create
 rc_is 1 "J13 --create with no label fails"
 has "usage" "J13 says how to call it"
 
+# J15/J16: `tab focus` answers with an error envelope at exit status 0 — the same
+# shape layout.sh's F1d pins. Checking only $? turns a failed jump into a silent
+# success, which under detached execution is a key that does nothing and says nothing.
+gotoc "mock_topology '$R1' 'Netronix/curato' $FULL
+  export MOCK_TAB_FOCUS_JSON='{\"error\":{\"code\":\"internal\",\"message\":\"focus failed\"}}'" \
+  --create editor
+rc_is 1 "J15 a created tab whose focus returns an error envelope fails"
+logged "notification show" "J15 the failure is surfaced as a notification"
+
+gotoc "mock_tabs agents editor runtime
+  export MOCK_TAB_FOCUS_JSON='{\"error\":{\"code\":\"internal\",\"message\":\"focus failed\"}}'" \
+  editor
+rc_is 1 "J16 an ordinary jump whose focus returns an error envelope fails too"
+logged "notification show" "J16 the failure is surfaced as a notification"
+
 # Without the flag the behaviour is unchanged: a missing eager tab is repair's job,
 # and a jump that silently built one would hide the real fault.
 gotoc "mock_topology '$R1' 'Netronix/curato' agents:2" runtime
@@ -1194,6 +1229,37 @@ mk "mock_topology '$ROOTTMP/notrepo' 'notrepo' $FULL" --make-tab editor
 rc_is 1 "N9 a refused --make-tab still fails"
 has "not inside a git repository" "N9 the reason is on stderr for the caller to relay"
 unlogged "notification show" "N9 --make-tab does not raise its own toast"
+
+# N11: `tab create` succeeding and `pane run` failing leaves a tab with the right
+# label and the right pane count — so it classifies complete, repair leaves it alone,
+# and every later alt+e focuses an empty shell labelled "editor" forever. During a build
+# the workspace trap covers this; --make-tab has no trap, so it must clean up itself.
+mk "mock_topology '$R1' 'Netronix/curato' $FULL; export MOCK_PANE_RUN_RC=1" --make-tab editor
+rc_is 1 "N11 a tab whose command fails to launch fails the call"
+logged "tab create --workspace w7 --label editor" "N11 the tab was genuinely created first"
+logged "tab close w7:t5" "N11 the half-built tab is closed rather than left behind"
+
+# N12: the real race, on the schedule that breaks it — B waits BEFORE taking the lock,
+# so it arrives with a stale observation after A has created and released. Both
+# processes see one shared tab list, so a re-check that moved above the lock would let
+# both create. N5's marker alone cannot catch that.
+mock_reset
+export MOCK_TAB_STATE_FILE="$(mktemp "${TMPROOT%/}/tabstate.XXXXXX")"; : > "$MOCK_TAB_STATE_FILE"
+mock_topology "$R1" "Netronix/curato" $FULL
+( HOME="$ROOTTMP" HERDR_ACTIVE_WORKSPACE_ID=w7 HL_LOCK_DELAY=2 \
+    zsh "$LAYOUT" --make-tab editor >"${TMPROOT%/}/mkB.out" 2>&1 ) &
+RACE_B=$!
+sleep 0.2
+A_OUT="$(HOME="$ROOTTMP" HERDR_ACTIVE_WORKSPACE_ID=w7 zsh "$LAYOUT" --make-tab editor 2>&1)"
+a_rc=$?
+b_rc=0; wait $RACE_B 2>/dev/null || b_rc=$?
+B_OUT="$(<"${TMPROOT%/}/mkB.out")"
+eq "$(count_logged "tab create --workspace w7 --label editor --cwd $R1 --no-focus")" "1" \
+  "N12 two overlapping presses create exactly one editor tab"
+[[ "$a_rc" == 0 && "$b_rc" == 0 ]] \
+  && _pass "N12 both racers succeed" || _fail "N12 racer rc=$a_rc/$b_rc"
+eq "$B_OUT" "$A_OUT" "N12 both racers return the same tab id"
+unset MOCK_TAB_STATE_FILE
 
 # N10: the tab id is now load-bearing — it is what the caller focuses — so a create
 # response without one must fail rather than hand "null" to `tab focus`.

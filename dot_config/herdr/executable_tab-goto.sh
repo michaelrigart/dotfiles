@@ -30,6 +30,22 @@ tg_fail() {
   exit 1
 }
 
+# tg_focus <tab-id> <what> — focus, and believe it only if the response agrees. This
+# CLI answers some failures with an error envelope at exit status 0, so `|| tg_fail`
+# alone reports success for a jump that did not happen — under detached execution, a
+# key that does nothing and says nothing. Same boundary discipline as layout.sh's
+# hl_api, which is where that behaviour is documented.
+tg_focus() {
+  local out
+  out="$("${HL_HERDR[@]}" tab focus "$1" 2>&1)" || tg_fail "could not focus $2: $out"
+  [[ -z "$out" ]] && return 0
+  print -r -- "$out" | jq -e . >/dev/null 2>&1 \
+    || tg_fail "focusing $2 returned invalid JSON"
+  print -r -- "$out" | jq -e 'type == "object" and has("error")' >/dev/null 2>&1 \
+    && tg_fail "could not focus $2: $out"
+  return 0
+}
+
 create=0
 if [[ "${1:-}" == "--create" ]]; then create=1; shift; fi
 label="${1:-}"
@@ -81,7 +97,7 @@ if (( count == 0 && create )); then
   # would turn a reported failure into an unreported one.
   [[ -n "$new" && "$new" != *[[:space:]]* ]] \
     || tg_fail "creating '$label' returned no usable tab id: $new"
-  "${HL_HERDR[@]}" tab focus "$new" >/dev/null || tg_fail "could not focus the new '$label'"
+  tg_focus "$new" "the new '$label'"
   exit 0
 fi
 
@@ -89,4 +105,4 @@ fi
 (( ${#ids} != count ))    && tg_fail "tab '$label' has a malformed id"
 (( ${#ids} > 1 ))         && tg_fail "${#ids} tabs labelled '$label' — refusing to guess"
 
-"${HL_HERDR[@]}" tab focus "${ids[1]}" >/dev/null || tg_fail "could not focus '$label'"
+tg_focus "${ids[1]}" "'$label'"
