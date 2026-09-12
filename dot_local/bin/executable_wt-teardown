@@ -83,27 +83,59 @@ _render() {
 
 # _ancestors — this pid and every ancestor, one per line.
 #
-# Unconditional, not merely covered by the allowlist: wt-rm runs the hook with cwd inside
-# the worktree, so this process AND the subshell that cd'd there appear in every scan.
-# A repository declaring `--sweep zsh` must not kill the shell interpreting its own hook.
+# Unconditional, not merely covered by the allowlist: wt-rm runs the hook with cwd inside the
+# worktree, so this process and the chain that started it appear in every scan. A repository
+# declaring `--sweep zsh` must not kill the shell interpreting its own hook.
 #
-# $$ and $PPID come from zsh and always hold. The ps walk extends the chain beyond them
-# and is allowed to fail — under a sandbox that denies ps, two levels still cover the
-# wt-rm case exactly.
+# Ancestry comes from lsof's own R field rather than from `ps`. ps is unavailable under the
+# sandbox agents run wt-rm in, and a walk that stops early there returns a TRUNCATED chain while
+# reporting success — which leaves a grandparent eligible to be signalled whenever a hook omits
+# `exec`.
+#
+# The walk climbs while parents are known, and treats an unknown parent as the top of the
+# reachable tree, not an error (RULING R9): MINE only needs to cover every ancestor that could
+# also be a sweep target, sweep targets come from OCCUPANT, and OCCUPANT and this function's
+# parent map are built from the very same lsof listing — so an ancestor lsof cannot report can
+# never be a target either, and stopping the climb there loses nothing. On macOS the first
+# unreadable link is the root-owned `login` every session descends from; above it lie only root
+# processes whose cwd is never inside a user worktree. What must never happen is a chain
+# truncated BELOW a visible ancestor — exactly what the old `ps` walk did whenever ps was
+# unavailable. Fails closed only where nothing at all is known: an unreadable lsof call, or an
+# empty parent map.
 _ancestors() {
   emulate -L zsh
+  local -a lines
+  local -A parent
+  local rc i pid ppid p
   local -a chain
-  local p pp
-  chain=( $$ $PPID )
-  p=$PPID
-  while [[ "$p" == <2-> ]]; do
-    pp="$(command ps -o ppid= -p "$p" 2>/dev/null)" || break
-    pp="${pp//[[:space:]]/}"
-    [[ "$pp" == <2-> ]] || break
-    chain+=( "$pp" )
-    p="$pp"
+  lines=( ${(0)"$(LC_ALL=C command lsof -w -d cwd -F0pR 2>/dev/null)"} ); rc=$?
+  (( rc )) && return 1
+  lines=( ${lines#$'\n'} )
+  local cur=""
+  for (( i = 1; i <= ${#lines}; i++ )); do
+    case "${lines[i]}" in
+      p<1->) cur="${lines[i]#p}" ;;
+      R<0->) [[ -n "$cur" ]] && parent[$cur]="${lines[i]#R}" ;;
+    esac
+  done
+  (( ${#parent} )) || return 1
+  # Climb while the parents are known. An unknown parent is the top of the tree we can SEE, not
+  # an error: the parent map and OCCUPANT are built from the same lsof listing, so an ancestor
+  # lsof cannot report can never be a sweep target either. On macOS the climb stops at the
+  # root-owned `login` every session descends from — above it are only root processes whose cwd
+  # is never inside a user worktree. What must not happen is a chain cut below a VISIBLE
+  # ancestor, which is precisely what the old `ps` walk did whenever ps was unavailable.
+  p=$$
+  chain=( $p )
+  local -i hops=0
+  while (( ++hops <= 64 )); do
+    (( ${+parent[$p]} )) || break
+    p="${parent[$p]}"
+    (( p == 0 )) && break
+    chain+=( "$p" )
   done
   print -rl -- $chain
+  return 0
 }
 
 # _scan <abs-dir> — print "<pid> <command>" for every process whose cwd is at or below
@@ -175,6 +207,28 @@ _stop() {
     (( ${#left} )) || return 0
     command sleep 0.1
   done
+  # Ownership is proved at scan time, and KILL lands up to TERM_WAIT seconds later. A process
+  # that trapped TERM and left the worktree, or a pid recycled inside that window, is no longer
+  # the process we identified — so re-prove occupancy before the escalation, and drop whatever
+  # can no longer be shown to be here. A fresh scan narrows the window to sub-second; nothing a
+  # shell can do makes pid identity atomic.
+  local -a still
+  local rescan
+  rescan="$(_scan "$WT")" || return 1
+  typeset -A here
+  for rescan in ${(f)rescan}; do
+    [[ -n "$rescan" ]] && here[${rescan%% *}]=1
+  done
+  still=()
+  for p in $left; do
+    if (( ${+here[$p]} )); then
+      still+=( "$p" )
+    else
+      print -r -- "$PROG: $p left $WT before escalation — not killing it"
+    fi
+  done
+  left=( $still )
+  (( ${#left} )) || return 0
   for p in $left; do kill -KILL "$p" 2>/dev/null; done
   for (( i = 0; i < KILL_WAIT * 10; i++ )); do
     pids=( $left ); left=()
@@ -228,17 +282,20 @@ for line in ${(f)scan_out}; do
 done
 
 typeset -A MINE              # pids of this process and its ancestors
-for line in ${(f)"$(_ancestors)"}; do
+typeset anc
+anc="$(_ancestors)" || die "cannot establish this process's ancestry — refusing to signal anything."
+for line in ${(f)anc}; do
   [[ -n "$line" ]] && MINE[$line]=1
 done
 
-typeset -a TARGETS CLEAR_FILES       # pidfiles to remove once their process is gone
+typeset -a TARGETS
+typeset -A CLEAR_PIDS        # pidfile path -> the pid it named
 typeset rel pfpid rc
 for rel in $PIDFILES; do
   pfpid="$(_pidfile_pid "$rel" "$WT")"; rc=$?
   (( rc == 2 )) && continue
   (( rc == 1 )) && exit 1
-  CLEAR_FILES+=( "$WT/$rel" )
+  CLEAR_PIDS[$WT/$rel]="$pfpid"
   if (( ${+MINE[$pfpid]} )); then
     print -r -- "$PROG: $rel names this process — not signalling it"
     continue
@@ -266,11 +323,14 @@ for pid cmd in ${(kv)OCCUPANT}; do
 done
 
 if _stop $TARGETS; then
-  # Removed only on a successful stop: a pidfile whose process could not be stopped keeps its
-  # evidence in place for the retry, which is the only route left to target that process again.
-  typeset f
-  for f in $CLEAR_FILES; do
-    [[ -e "$f" ]] && rm -f -- "$f"
+  typeset f fpid
+  for f in ${(k)CLEAR_PIDS}; do
+    fpid="${CLEAR_PIDS[$f]}"
+    # Confirmed gone, not merely "we tried": a file naming a process that is still alive is the
+    # only handle anything has on that process, and the retry needs it.
+    kill -0 "$fpid" 2>/dev/null && continue
+    [[ -e "$f" ]] || continue
+    rm -f -- "$f" || die "could not remove $f"
   done
 fi
 

@@ -12,11 +12,14 @@
 
 
 > **The appendix is normative.** Both files in Appendix A were built and run during plan
-> review: the suite reports `53 passed, 53 total, 0 failed`, and an 11-mutant battery
-> against the subject is caught in full. Where a task's inline snippet and the appendix
+> review: the suite reported `53 passed, 53 total, 0 failed`, and an 11-mutant battery
+> against the subject was caught in full. A later fix wave (Appendix B, item 9) replaced
+> `_ancestors`, reworked pidfile-clearing, and re-proved ownership before escalation; the
+> appendix above now reflects that shipped content, and the suite reports
+> `64 passed, 64 total, 0 failed`. Where a task's inline snippet and the appendix
 > disagree, the appendix wins — the tasks define the increments and the order, the
-> appendix defines the finished content. Four defects found only by running it are
-> recorded in Appendix B; do not re-introduce them.
+> appendix defines the finished content. Defects found only by running it, across every
+> wave, are recorded in Appendix B; do not re-introduce them.
 
 ## Global Constraints
 
@@ -774,10 +777,21 @@ Both files below were executed during plan review. Reproduce them exactly.
 
 ```zsh
 #!/usr/bin/env zsh
+# wt-teardown — stop processes rooted in the worktree being retired.
+#
+# Called from a project's .worktreehook at the `teardown` verb. The hook declares WHAT
+# to stop; this script owns the mechanics and, more importantly, the refusals. It knows
+# nothing about Rails, Postgres or Ruby, so a second project declares different flags
+# rather than teaching this script a second stack's conventions.
+#
+# See docs/superpowers/specs/2026-09-11-worktree-teardown-helper-design.md
+
 emulate -L zsh
 
 typeset PROG=wt-teardown
 typeset -a PIDFILES SWEEPS
+# Seconds to wait after TERM, then after KILL. Overridable so the test suite does not
+# spend fifteen seconds per case; there is no reason to change them in use.
 typeset -i TERM_WAIT=${WT_TEARDOWN_TERM_WAIT:-10}
 typeset -i KILL_WAIT=${WT_TEARDOWN_KILL_WAIT:-5}
 
@@ -806,6 +820,11 @@ case "$VERB" in
   *)        usage ;;
 esac
 
+# Everything below is the teardown verb.
+#
+# Validated here rather than trusted: the protocol supplies these, but a hook run by
+# hand supplies nothing, and a helper that resolved paths from a half-set environment
+# would sweep the wrong directory.
 [[ -n "${WT_WORKTREE:-}" ]] || die "WT_WORKTREE is not set — this runs from a .worktreehook."
 [[ "$WT_WORKTREE" == /* ]] || die "WT_WORKTREE is not absolute: $WT_WORKTREE"
 [[ -d "$WT_WORKTREE" ]]    || die "WT_WORKTREE is not a directory: $WT_WORKTREE"
@@ -818,8 +837,15 @@ typeset WT="${WT_WORKTREE:A}"
 # the post-teardown re-scan vetoes its own success.
 builtin cd -q / || die "cannot leave $WT to scan it"
 
+# _render <path> — the pathname as lsof itself renders it under LC_ALL=C.
+#
+# Comparing against the raw path would be wrong for any path lsof escapes. This concerns
+# $WT alone: a rendered character INSIDE the checkout still sits after the prefix that
+# has to match.
 _render() {
   emulate -L zsh
+  # Byte-wise, because that is how lsof escapes under LC_ALL=C. NO_MULTIBYTE makes zsh's
+  # indexing agree with it.
   setopt local_options no_multibyte
   local s="$1" out="" c i n
   for (( i = 1; i <= ${#s}; i++ )); do
@@ -833,22 +859,71 @@ _render() {
   print -r -- "$out"
 }
 
+# _ancestors — this pid and every ancestor, one per line.
+#
+# Unconditional, not merely covered by the allowlist: wt-rm runs the hook with cwd inside the
+# worktree, so this process and the chain that started it appear in every scan. A repository
+# declaring `--sweep zsh` must not kill the shell interpreting its own hook.
+#
+# Ancestry comes from lsof's own R field rather than from `ps`. ps is unavailable under the
+# sandbox agents run wt-rm in, and a walk that stops early there returns a TRUNCATED chain while
+# reporting success — which leaves a grandparent eligible to be signalled whenever a hook omits
+# `exec`.
+#
+# The walk climbs while parents are known, and treats an unknown parent as the top of the
+# reachable tree, not an error (RULING R9): MINE only needs to cover every ancestor that could
+# also be a sweep target, sweep targets come from OCCUPANT, and OCCUPANT and this function's
+# parent map are built from the very same lsof listing — so an ancestor lsof cannot report can
+# never be a target either, and stopping the climb there loses nothing. On macOS the first
+# unreadable link is the root-owned `login` every session descends from; above it lie only root
+# processes whose cwd is never inside a user worktree. What must never happen is a chain
+# truncated BELOW a visible ancestor — exactly what the old `ps` walk did whenever ps was
+# unavailable. Fails closed only where nothing at all is known: an unreadable lsof call, or an
+# empty parent map.
 _ancestors() {
   emulate -L zsh
+  local -a lines
+  local -A parent
+  local rc i pid ppid p
   local -a chain
-  local p pp
-  chain=( $$ $PPID )
-  p=$PPID
-  while [[ "$p" == <2-> ]]; do
-    pp="$(command ps -o ppid= -p "$p" 2>/dev/null)" || break
-    pp="${pp//[[:space:]]/}"
-    [[ "$pp" == <2-> ]] || break
-    chain+=( "$pp" )
-    p="$pp"
+  lines=( ${(0)"$(LC_ALL=C command lsof -w -d cwd -F0pR 2>/dev/null)"} ); rc=$?
+  (( rc )) && return 1
+  lines=( ${lines#$'\n'} )
+  local cur=""
+  for (( i = 1; i <= ${#lines}; i++ )); do
+    case "${lines[i]}" in
+      p<1->) cur="${lines[i]#p}" ;;
+      R<0->) [[ -n "$cur" ]] && parent[$cur]="${lines[i]#R}" ;;
+    esac
+  done
+  (( ${#parent} )) || return 1
+  # Climb while the parents are known. An unknown parent is the top of the tree we can SEE, not
+  # an error: the parent map and OCCUPANT are built from the same lsof listing, so an ancestor
+  # lsof cannot report can never be a sweep target either. On macOS the climb stops at the
+  # root-owned `login` every session descends from — above it are only root processes whose cwd
+  # is never inside a user worktree. What must not happen is a chain cut below a VISIBLE
+  # ancestor, which is precisely what the old `ps` walk did whenever ps was unavailable.
+  p=$$
+  chain=( $p )
+  local -i hops=0
+  while (( ++hops <= 64 )); do
+    (( ${+parent[$p]} )) || break
+    p="${parent[$p]}"
+    (( p == 0 )) && break
+    chain+=( "$p" )
   done
   print -rl -- $chain
+  return 0
 }
 
+# _scan <abs-dir> — print "<pid> <command>" for every process whose cwd is at or below
+# <abs-dir>. Return 1 when the answer cannot be trusted.
+#
+# The parse discipline is deliberate and mirrors _wt_live_processes:
+#   -F0 gives NUL-terminated fields, so framing does not rest on lsof's escaping of a
+#   newline inside a pathname. A single invocation keeps the status attached to the
+#   listing actually parsed — split across two, a scan that died partway would read as an
+#   idle checkout, since the records it never reached are exactly where the occupant is.
 _scan() {
   emulate -L zsh
   local dir="$1" edir rc i pid cmd cwd
@@ -866,7 +941,11 @@ _scan() {
     print -ru2 -- "$PROG: could not read the process list from lsof — refusing."
     return 1
   fi
+  # Each record set ends with a newline after its final NUL, which lands at the front of
+  # the next field. Strip exactly one.
   lines=( ${lines#$'\n'} )
+  # Real lsof cannot come back empty: this shell has a cwd of its own and is in every
+  # answer. Nothing at all therefore means the scan failed.
   if (( ${#lines} == 0 )) || (( ${#lines} % 4 )); then
     print -ru2 -- "$PROG: could not read the process list from lsof — refusing."
     return 1
@@ -878,12 +957,19 @@ _scan() {
       return 1
     fi
     pid="${lines[i]#p}" cmd="${lines[i+1]#c}" cwd="${lines[i+3]#n}"
+    # Anchored on purpose: repo-a and repo-a-extra are neighbours by construction.
     [[ "$cwd" == "$edir" || "$cwd" == "$edir"/* ]] && hits+=( "$pid $cmd" )
   done
   (( ${#hits} )) && print -rl -- $hits
   return 0
 }
 
+# _stop <pid>... — TERM, poll, KILL, poll. Return 1 if anything is still alive.
+#
+# Polling uses kill -0 because it is cheap; the authority on whether the checkout is
+# clear is the re-scan afterwards, not this. A process that ignores TERM is the ordinary
+# case here — a supervisor trapping it to shut children down first — so escalation is
+# the rule, not an edge.
 _stop() {
   emulate -L zsh
   local -a pids left
@@ -899,6 +985,28 @@ _stop() {
     (( ${#left} )) || return 0
     command sleep 0.1
   done
+  # Ownership is proved at scan time, and KILL lands up to TERM_WAIT seconds later. A process
+  # that trapped TERM and left the worktree, or a pid recycled inside that window, is no longer
+  # the process we identified — so re-prove occupancy before the escalation, and drop whatever
+  # can no longer be shown to be here. A fresh scan narrows the window to sub-second; nothing a
+  # shell can do makes pid identity atomic.
+  local -a still
+  local rescan
+  rescan="$(_scan "$WT")" || return 1
+  typeset -A here
+  for rescan in ${(f)rescan}; do
+    [[ -n "$rescan" ]] && here[${rescan%% *}]=1
+  done
+  still=()
+  for p in $left; do
+    if (( ${+here[$p]} )); then
+      still+=( "$p" )
+    else
+      print -r -- "$PROG: $p left $WT before escalation — not killing it"
+    fi
+  done
+  left=( $still )
+  (( ${#left} )) || return 0
   for p in $left; do kill -KILL "$p" 2>/dev/null; done
   for (( i = 0; i < KILL_WAIT * 10; i++ )); do
     pids=( $left ); left=()
@@ -909,6 +1017,15 @@ _stop() {
   return 1
 }
 
+# _pidfile_pid <rel> <worktree> — the pid a declared pidfile names.
+#   0 + pid on stdout   the file names a plausible pid
+#   2                   no such file — nothing to stop, the ordinary retry case
+#   1                   refusal, message on stderr
+#
+# Containment is checked lexically AND through the filesystem, the same asymmetric rule
+# _wt_manifest applies: the worktree's tree comes from the feature branch, so a branch
+# committing `tmp` as a symlink redirects this read outside the checkout, and a path with
+# no ".." in it still escapes that way.
 _pidfile_pid() {
   emulate -L zsh
   local rel="$1" wt="$2" abs real pid
@@ -925,6 +1042,8 @@ _pidfile_pid() {
     print -ru2 -- "$PROG: --pidfile is not a regular file: $rel"; return 1 }
   pid="$(<"$abs")"
   pid="${pid//[[:space:]]/}"
+  # <2-> is a numeric range: an integer of at least 2. Excludes the empty string, a
+  # non-number, 0 (the whole process group) and 1 (init).
   [[ "$pid" == <2-> ]] || {
     print -ru2 -- "$PROG: --pidfile $rel does not contain a usable pid"; return 1 }
   print -r -- "$pid"
@@ -934,28 +1053,33 @@ _pidfile_pid() {
 typeset scan_out
 scan_out="$(_scan "$WT")" || exit 1
 
-typeset -A OCCUPANT
+typeset -A OCCUPANT          # pid -> command, for every process inside the worktree
 typeset line
 for line in ${(f)scan_out}; do
   [[ -n "$line" ]] && OCCUPANT[${line%% *}]="${line#* }"
 done
 
-typeset -A MINE
-for line in ${(f)"$(_ancestors)"}; do
+typeset -A MINE              # pids of this process and its ancestors
+typeset anc
+anc="$(_ancestors)" || die "cannot establish this process's ancestry — refusing to signal anything."
+for line in ${(f)anc}; do
   [[ -n "$line" ]] && MINE[$line]=1
 done
 
-typeset -a TARGETS CLEAR_FILES
+typeset -a TARGETS
+typeset -A CLEAR_PIDS        # pidfile path -> the pid it named
 typeset rel pfpid rc
 for rel in $PIDFILES; do
   pfpid="$(_pidfile_pid "$rel" "$WT")"; rc=$?
   (( rc == 2 )) && continue
   (( rc == 1 )) && exit 1
-  CLEAR_FILES+=( "$WT/$rel" )
+  CLEAR_PIDS[$WT/$rel]="$pfpid"
   if (( ${+MINE[$pfpid]} )); then
     print -r -- "$PROG: $rel names this process — not signalling it"
     continue
   fi
+  # The check this step exists for. No ownership proof, no signal: the pid may have been
+  # recycled since the file was written, and the new owner is a stranger.
   if (( ${+OCCUPANT[$pfpid]} )); then
     TARGETS+=( "$pfpid" )
     print -r -- "$PROG: stopping $pfpid ${OCCUPANT[$pfpid]} (from $rel)"
@@ -971,19 +1095,26 @@ for pid cmd in ${(kv)OCCUPANT}; do
   # print a second "stopping" line for one process.
   (( ${TARGETS[(Ie)$pid]} )) && continue
   for want in $SWEEPS; do
+    # Exact equality, never substring: `ruby` must not select `rubyfmt`.
     [[ "$cmd" == "$want" ]] && { TARGETS+=( "$pid" ); print -r -- "$PROG: stopping $pid $cmd"; break }
   done
 done
 
 if _stop $TARGETS; then
-  # Removed only on a successful stop: a pidfile whose process could not be stopped keeps its
-  # evidence in place for the retry, which is the only route left to target that process again.
-  typeset f
-  for f in $CLEAR_FILES; do
-    [[ -e "$f" ]] && rm -f -- "$f"
+  typeset f fpid
+  for f in ${(k)CLEAR_PIDS}; do
+    fpid="${CLEAR_PIDS[$f]}"
+    # Confirmed gone, not merely "we tried": a file naming a process that is still alive is the
+    # only handle anything has on that process, and the retry needs it.
+    kill -0 "$fpid" 2>/dev/null && continue
+    [[ -e "$f" ]] || continue
+    rm -f -- "$f" || die "could not remove $f"
   done
 fi
 
+# The re-scan is the authority, not the signals. A pid that exited leaves no cwd record;
+# anything still listed is still holding the checkout open, and reporting success here
+# would hand wt-rm a directory that reappears after Git deletes it.
 typeset rescan_out
 rescan_out="$(_scan "$WT")" || exit 1
 typeset -a survivors
@@ -1080,6 +1211,13 @@ echo "D. the lsof scan refuses rather than reads empty"
 cat > "$T/bin/lsof" <<'STUB'
 #!/bin/sh
 d="$(dirname "$0")"
+# The ancestry call (-F0pR) is about this machine's real process tree, not about the
+# worktree-occupancy fixtures below — so hand it off to the real lsof rather than fake it.
+for a in "$@"; do
+  if [ "$a" = "-F0pR" ]; then
+    exec /usr/sbin/lsof "$@"
+  fi
+done
 if [ "$(cat "$d/mode" 2>/dev/null)" = raw ]; then
   cat "$d/raw"
   exit 0
@@ -1094,13 +1232,14 @@ while read -r pid cmd cwd; do
   kill -0 "$pid" 2>/dev/null || continue
   printf 'p%s\0c%s\0fcwd\0n%s\0' "$pid" "$cmd" "$cwd"
 done < "$d/live"
+# A one-shot transition: if a successor fixture is staged, it takes effect from the NEXT call.
+# This is how a test can say "the process left the worktree between the scan and the escalation",
+# which is the only difference X1's re-check can detect.
+if [ -f "$d/live.next" ]; then
+  mv "$d/live.next" "$d/live"
+fi
 STUB
-cat > "$T/bin/ps" <<STUB
-#!/bin/sh
-for a in "\$@"; do last="\$a"; done
-if [ "\$last" = "$$" ]; then echo 1; else echo $$; fi
-STUB
-chmod +x "$T/bin/lsof" "$T/bin/ps"
+chmod +x "$T/bin/lsof"
 : > "$T/bin/live"; : > "$T/bin/raw"; echo live > "$T/bin/mode"
 mk_raw()  { printf "$@" > "$T/bin/raw"; echo raw > "$T/bin/mode"; }
 mk_live() { cat > "$T/bin/live"; echo live > "$T/bin/mode"; }
@@ -1227,8 +1366,13 @@ out="$(srun --pidfile tmp/pids/server.pid teardown)"
 is "a stale pidfile exits clean" "$?" "0"
 sleep 1
 is "the unrelated process was NOT signalled" "$(kill -0 "$bystander" 2>/dev/null; echo $?)" "0"
-is "and the stale pidfile was cleared" "$([ -e "$WT/tmp/pids/server.pid" ] && echo present || echo gone)" "gone"
+# The pidfile names a process that is still alive, just not inside this worktree — X3 clears a
+# pidfile only once its named pid is confirmed gone, so a live bystander's file must survive:
+# it is the only handle anything has on that process, and nothing here can tell "pid recycled"
+# from "supervisor chdir'd away".
+is "and the stale pidfile was preserved" "$([ -e "$WT/tmp/pids/server.pid" ] && echo present || echo gone)" "present"
 kill -9 "$bystander" 2>/dev/null
+rm -f "$WT/tmp/pids/server.pid"
 
 echo
 echo "K. a verified pidfile is stopped and its file removed"
@@ -1316,11 +1460,17 @@ echo "Q. a failed stop keeps its evidence"
 # stop that did not work strands the process permanently for any project that declares a
 # pidfile and no sweep. Both wait budgets are set to 0, which makes _stop return 1 without
 # waiting: the deterministic way to exercise the failed-stop branch.
+#
+# mk_raw, not mk_live: X1's ownership re-proof re-scans before escalating, and mk_live reports
+# a pid only while it answers kill -0. An ordinary `sleep` genuinely dies on the plain kill
+# -TERM sent first, so with mk_live the re-scan would correctly find it already gone and let
+# _stop return 0 early — a real improvement from X1, but it defeats the zero-wait failure
+# trick this section relies on. mk_raw reports the fixture regardless of real liveness, the
+# same technique section I uses for its "immortal" survivor, so the re-scan still finds it an
+# occupant and escalation proceeds to the deterministic KILL_WAIT=0 return-1 path.
 stubborn="$(spawn command sleep 400)"
 echo "$stubborn" > "$WT/tmp/pids/server.pid"
-mk_live <<EOF
-$stubborn sleep $WT
-EOF
+mk_raw 'p%s\0csleep\0fcwd\0n%s\0' "$stubborn" "$WT"
 out="$(PATH="$T/bin:/usr/bin:/bin" WT_WORKTREE="$WT" \
   WT_TEARDOWN_TERM_WAIT=0 WT_TEARDOWN_KILL_WAIT=0 \
   zsh "$SUBJECT" --pidfile tmp/pids/server.pid teardown 2>&1)"
@@ -1351,6 +1501,43 @@ EOF
 out="$(srun --pidfile tmp/pids/server.pid --sweep sleep teardown)"
 is "a doubly-declared process exits clean" "$?" "0"
 is "and is reported exactly once" "$(printf '%s' "$out" | grep -c stopping)" "1"
+
+echo
+echo "S. ownership is re-proved before escalation, and ancestry is complete"
+# X1: a process that leaves the worktree between TERM and KILL is no longer the process we
+# identified. It must not be killed on the old evidence. The victim ignores TERM, so it survives
+# to the escalation; the staged successor fixture drops it from the listing, which is how it
+# "leaves". Without the re-check, KILL lands on it and it dies.
+rm -f "$T/escapee.ready"
+escapee="$(spawn "$T/deaf.sh" "$T/escapee.ready")"
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -e "$T/escapee.ready" ] && break; sleep 0.2; done
+is "the escapee fixture installed its TERM trap" \
+  "$([ -e "$T/escapee.ready" ] && echo yes || echo no)" "yes"
+mk_live <<EOF
+$escapee deaf.sh $WT
+EOF
+: > "$T/bin/live.next"     # from the next scan onward it is no longer in the worktree
+out="$(PATH="$T/bin:/usr/bin:/bin" WT_WORKTREE="$WT" \
+  WT_TEARDOWN_TERM_WAIT=1 WT_TEARDOWN_KILL_WAIT=1 \
+  zsh "$SUBJECT" --sweep deaf.sh teardown 2>&1)"
+is "teardown exits clean once the escapee is gone from the worktree" "$?" "0"
+sleep 1
+is "the escapee was NOT killed on stale evidence" \
+  "$(kill -0 "$escapee" 2>/dev/null; echo $?)" "0"
+has "and the transcript says why" "$out" "before escalation"
+kill -9 "$escapee" 2>/dev/null
+rm -f "$T/bin/live.next"
+
+# X2: ancestry must fail closed rather than return a truncated chain.
+cat > "$T/bin/lsof.broken" <<'STUB'
+#!/bin/sh
+exit 1
+STUB
+chmod +x "$T/bin/lsof.broken"
+mkdir -p "$T/brokenbin"
+cp "$T/bin/lsof.broken" "$T/brokenbin/lsof"
+out="$(PATH="$T/brokenbin:/usr/bin:/bin" WT_WORKTREE="$WT" zsh "$SUBJECT" --sweep ruby teardown 2>&1)"
+is "an unreadable process list refuses rather than sweeping" "$?" "1"
 
 echo
 echo "RESULT: $pass passed, $((pass + fail)) total, $fail failed"
@@ -1426,7 +1613,92 @@ executor who "simplifies" the harness.
    a declared pidfile and a sweep was appended to `TARGETS` twice and reported stopped
    twice in the transcript that spec §5.5 makes the deliverable.
 
-### Why `_ancestors` walks with `ps` rather than stopping at `$PPID`
+9. **Fix wave 2 — re-proving ownership before KILL, and taking ancestry from `lsof` instead
+   of `ps`.** An independent review of the shipped (55/55-green) helper found four real
+   defects, all confirmed by running the plan rather than reading it:
+
+   - **`_stop` never re-checked ownership before escalating.** It sent TERM to the batch
+     from the scan's snapshot, waited, then sent KILL to whatever still answered
+     `kill -0` — with no re-proof that a still-alive pid was still the process, still
+     inside the worktree, that was identified at scan time. A supervisor that traps TERM
+     and `chdir`s out, or a pid recycled during the wait, got KILLed on stale evidence.
+     Fixed by re-scanning with `_scan "$WT"` immediately before the KILL loop and
+     dropping from `left` anything no longer shown to be an occupant.
+   - **`_ancestors` walked with `ps`, which is denied under the sandbox agents run
+     `wt-rm` in (exit 127).** A walk that stops early on `ps` failure returns a
+     TRUNCATED chain while reporting success, leaving a grandparent eligible to be
+     signalled whenever a `.worktreehook` omits `exec` — exactly the gap the subsection
+     below (now superseded) accepted as an untested risk. Fixed by taking ancestry from
+     `lsof`'s own `R` (parent pid) field instead, via a dedicated `-F0pR` call.
+   - **Pidfile clearing was gated on the whole `_stop $TARGETS` batch succeeding, not on
+     the named pid actually being gone.** `CLEAR_FILES` queued every syntactically valid
+     pidfile for removal before checking whether its process, specifically, had stopped.
+     A live process outside the worktree, or a protected ancestor, had its pidfile
+     deleted anyway as a side effect of unrelated targets succeeding. Fixed by tracking
+     each pidfile's pid (`CLEAR_PIDS`) and clearing a file only when `kill -0` on its pid
+     fails at the end. This flips section J's expectation: a stale pidfile naming a
+     live bystander is now asserted **preserved**, not cleared — it is the only handle
+     anything has on that process, and nothing can tell "pid recycled" from "supervisor
+     chdir'd away."
+   - **A failed removal was silent.** `rm -f -- "$f"` had no failure path; now
+     `|| die "could not remove $f"` propagates it.
+
+   Two further defects surfaced only by executing the fix, not by reading it:
+
+   - **The exact `_ancestors` parser given in the first draft assumed `lsof -F0pR`
+     emits exactly two fields per process (`p<pid>`, `R<ppid>`).** On this machine, and
+     presumably any Mac, `-d cwd` also emits an unrequested `fcwd` descriptor-identity
+     line per process, so the fixed-width `(( ${#lines} % 2 ))` shape check failed on
+     every real invocation — 22 of 61 cases failed, all downstream of `_ancestors`
+     refusing on good data. Fixed by scanning fields tolerantly (a `case` over each
+     token, keyed on its own `p`/`R` prefix) instead of assuming a fixed record shape,
+     so an extra or reordered field cannot break the parser again.
+   - **Even the tolerant parser could not complete a walk to pid 0/1.** An unprivileged
+     `lsof` never reports pid 1 at all (the lowest pid it can see belongs to whatever it
+     is allowed to read), and on macOS every terminal session's ancestry passes through
+     a root-owned `login` process that `lsof`, running as the user, can never enumerate
+     — confirmed independently (`kill -0` on it returns `EPERM`, not `ESRCH`; a raw
+     `sysctl kern.proc.pid` call returns a valid, live `kinfo_proc` naming it `login`).
+     "Fail unless the chain reaches pid 0/1" was therefore impossible by construction,
+     not merely strict. **RULING R9** replaces that criterion: the walk climbs while
+     parents are known and treats an unknown parent as the top of the *reachable* tree,
+     not an error, because `MINE` only needs to cover pids that could also be sweep
+     targets, sweep targets come from `OCCUPANT`, and `OCCUPANT` and the ancestry parent
+     map are built from the same `lsof` listing — an ancestor `lsof` cannot report can
+     never be a sweep target either, so stopping the climb there loses nothing. What
+     must never happen, and still does not, is a chain cut short *below* a pid `lsof`
+     can actually see — the failure mode the old `ps` walk had whenever `ps` was
+     unavailable. Fails closed only where nothing at all is known: a nonzero `lsof` exit,
+     or an empty parent map.
+
+   Section S was added to cover the `_stop` re-proof and the `_ancestors` refusal. Its
+   first case needed two more fixes to actually exercise anything, both found by running
+   it: a fixture with `--sweep nothing-matches` can never enter `TARGETS` regardless of
+   `_stop`'s behavior, so the case was vacuous as first written — reverting the re-proof
+   code left the suite at 61/61 either way. The fix reuses the section H "deaf" fixture
+   (survives TERM) plus a one-shot fixture transition in the `lsof` stub (`live.next`,
+   swapped in on the call *after* the one that reports it): the escapee is present for
+   the scan that builds `OCCUPANT`/`TARGETS`, then reported gone from the next scan
+   onward, modeling "left the worktree between TERM and the KILL re-check" without the
+   test needing to actually move a live process. With that fixture, reverting the
+   re-proof correctly fails two assertions (the escapee dies, and the transcript loses
+   its explanation); reverting the pidfile-clearing fix correctly fails section J's
+   "preserved" assertion. Section Q's fixture needed a matching adjustment for an
+   unrelated reason: the re-proof now legitimately detects that an ordinary `sleep`
+   (no TERM trap) has already died from the plain `kill -TERM` sent first, and returns
+   success early — correct behavior, but it defeated Q's old trick of forcing `KILL_WAIT`
+   to 0 so `_stop` always returned failure regardless of outcome. Q's fixture now uses
+   `mk_raw` (already established in section I) to report its stubborn process
+   unconditionally present, independent of whether it actually died, so the deterministic
+   zero-wait failure path is still reachable.
+
+### Why `_ancestors` walks with `ps` rather than stopping at `$PPID` — superseded, see item 9
+
+This subsection described the original design and is kept for history; it no longer
+matches the shipped code. `_ancestors` no longer uses `ps` at all — fix wave 2 (item 9
+above) replaced the walk with one driven by `lsof`'s own `R` field, specifically because
+`ps` is denied under the sandbox this paragraph accepted as an untested risk. The
+original reasoning:
 
 Curato's hook uses `exec`, giving a two-deep chain (`wt-teardown`, the subshell that cd'd
 into the worktree) that `$$` and `$PPID` already cover. A hook that omits `exec` — the

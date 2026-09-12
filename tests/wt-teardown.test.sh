@@ -72,6 +72,13 @@ echo "D. the lsof scan refuses rather than reads empty"
 cat > "$T/bin/lsof" <<'STUB'
 #!/bin/sh
 d="$(dirname "$0")"
+# The ancestry call (-F0pR) is about this machine's real process tree, not about the
+# worktree-occupancy fixtures below — so hand it off to the real lsof rather than fake it.
+for a in "$@"; do
+  if [ "$a" = "-F0pR" ]; then
+    exec /usr/sbin/lsof "$@"
+  fi
+done
 if [ "$(cat "$d/mode" 2>/dev/null)" = raw ]; then
   cat "$d/raw"
   exit 0
@@ -86,13 +93,14 @@ while read -r pid cmd cwd; do
   kill -0 "$pid" 2>/dev/null || continue
   printf 'p%s\0c%s\0fcwd\0n%s\0' "$pid" "$cmd" "$cwd"
 done < "$d/live"
+# A one-shot transition: if a successor fixture is staged, it takes effect from the NEXT call.
+# This is how a test can say "the process left the worktree between the scan and the escalation",
+# which is the only difference X1's re-check can detect.
+if [ -f "$d/live.next" ]; then
+  mv "$d/live.next" "$d/live"
+fi
 STUB
-cat > "$T/bin/ps" <<STUB
-#!/bin/sh
-for a in "\$@"; do last="\$a"; done
-if [ "\$last" = "$$" ]; then echo 1; else echo $$; fi
-STUB
-chmod +x "$T/bin/lsof" "$T/bin/ps"
+chmod +x "$T/bin/lsof"
 : > "$T/bin/live"; : > "$T/bin/raw"; echo live > "$T/bin/mode"
 mk_raw()  { printf "$@" > "$T/bin/raw"; echo raw > "$T/bin/mode"; }
 mk_live() { cat > "$T/bin/live"; echo live > "$T/bin/mode"; }
@@ -219,8 +227,13 @@ out="$(srun --pidfile tmp/pids/server.pid teardown)"
 is "a stale pidfile exits clean" "$?" "0"
 sleep 1
 is "the unrelated process was NOT signalled" "$(kill -0 "$bystander" 2>/dev/null; echo $?)" "0"
-is "and the stale pidfile was cleared" "$([ -e "$WT/tmp/pids/server.pid" ] && echo present || echo gone)" "gone"
+# The pidfile names a process that is still alive, just not inside this worktree — X3 clears a
+# pidfile only once its named pid is confirmed gone, so a live bystander's file must survive:
+# it is the only handle anything has on that process, and nothing here can tell "pid recycled"
+# from "supervisor chdir'd away".
+is "and the stale pidfile was preserved" "$([ -e "$WT/tmp/pids/server.pid" ] && echo present || echo gone)" "present"
 kill -9 "$bystander" 2>/dev/null
+rm -f "$WT/tmp/pids/server.pid"
 
 echo
 echo "K. a verified pidfile is stopped and its file removed"
@@ -308,11 +321,17 @@ echo "Q. a failed stop keeps its evidence"
 # stop that did not work strands the process permanently for any project that declares a
 # pidfile and no sweep. Both wait budgets are set to 0, which makes _stop return 1 without
 # waiting: the deterministic way to exercise the failed-stop branch.
+#
+# mk_raw, not mk_live: X1's ownership re-proof re-scans before escalating, and mk_live reports
+# a pid only while it answers kill -0. An ordinary `sleep` genuinely dies on the plain kill
+# -TERM sent first, so with mk_live the re-scan would correctly find it already gone and let
+# _stop return 0 early — a real improvement from X1, but it defeats the zero-wait failure
+# trick this section relies on. mk_raw reports the fixture regardless of real liveness, the
+# same technique section I uses for its "immortal" survivor, so the re-scan still finds it an
+# occupant and escalation proceeds to the deterministic KILL_WAIT=0 return-1 path.
 stubborn="$(spawn command sleep 400)"
 echo "$stubborn" > "$WT/tmp/pids/server.pid"
-mk_live <<EOF
-$stubborn sleep $WT
-EOF
+mk_raw 'p%s\0csleep\0fcwd\0n%s\0' "$stubborn" "$WT"
 out="$(PATH="$T/bin:/usr/bin:/bin" WT_WORKTREE="$WT" \
   WT_TEARDOWN_TERM_WAIT=0 WT_TEARDOWN_KILL_WAIT=0 \
   zsh "$SUBJECT" --pidfile tmp/pids/server.pid teardown 2>&1)"
@@ -343,6 +362,43 @@ EOF
 out="$(srun --pidfile tmp/pids/server.pid --sweep sleep teardown)"
 is "a doubly-declared process exits clean" "$?" "0"
 is "and is reported exactly once" "$(printf '%s' "$out" | grep -c stopping)" "1"
+
+echo
+echo "S. ownership is re-proved before escalation, and ancestry is complete"
+# X1: a process that leaves the worktree between TERM and KILL is no longer the process we
+# identified. It must not be killed on the old evidence. The victim ignores TERM, so it survives
+# to the escalation; the staged successor fixture drops it from the listing, which is how it
+# "leaves". Without the re-check, KILL lands on it and it dies.
+rm -f "$T/escapee.ready"
+escapee="$(spawn "$T/deaf.sh" "$T/escapee.ready")"
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -e "$T/escapee.ready" ] && break; sleep 0.2; done
+is "the escapee fixture installed its TERM trap" \
+  "$([ -e "$T/escapee.ready" ] && echo yes || echo no)" "yes"
+mk_live <<EOF
+$escapee deaf.sh $WT
+EOF
+: > "$T/bin/live.next"     # from the next scan onward it is no longer in the worktree
+out="$(PATH="$T/bin:/usr/bin:/bin" WT_WORKTREE="$WT" \
+  WT_TEARDOWN_TERM_WAIT=1 WT_TEARDOWN_KILL_WAIT=1 \
+  zsh "$SUBJECT" --sweep deaf.sh teardown 2>&1)"
+is "teardown exits clean once the escapee is gone from the worktree" "$?" "0"
+sleep 1
+is "the escapee was NOT killed on stale evidence" \
+  "$(kill -0 "$escapee" 2>/dev/null; echo $?)" "0"
+has "and the transcript says why" "$out" "before escalation"
+kill -9 "$escapee" 2>/dev/null
+rm -f "$T/bin/live.next"
+
+# X2: ancestry must fail closed rather than return a truncated chain.
+cat > "$T/bin/lsof.broken" <<'STUB'
+#!/bin/sh
+exit 1
+STUB
+chmod +x "$T/bin/lsof.broken"
+mkdir -p "$T/brokenbin"
+cp "$T/bin/lsof.broken" "$T/brokenbin/lsof"
+out="$(PATH="$T/brokenbin:/usr/bin:/bin" WT_WORKTREE="$WT" zsh "$SUBJECT" --sweep ruby teardown 2>&1)"
+is "an unreadable process list refuses rather than sweeping" "$?" "1"
 
 echo
 echo "RESULT: $pass passed, $((pass + fail)) total, $fail failed"
