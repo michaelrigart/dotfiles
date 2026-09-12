@@ -872,7 +872,7 @@ _scan() {
     return 1
   fi
   for (( i = 1; i <= ${#lines}; i += 4 )); do
-    if [[ "${lines[i]}" != p<-> || "${lines[i+1]}" != c* || \
+    if [[ "${lines[i]}" != p<1-> || "${lines[i+1]}" != c* || \
           "${lines[i+2]}" != fcwd || "${lines[i+3]}" != n/* ]]; then
       print -ru2 -- "$PROG: could not read the process list from lsof — refusing."
       return 1
@@ -967,17 +967,22 @@ done
 typeset pid cmd want
 for pid cmd in ${(kv)OCCUPANT}; do
   (( ${+MINE[$pid]} )) && continue
+  # Already taken by a declared pidfile: appending it again would stop nothing extra and would
+  # print a second "stopping" line for one process.
+  (( ${TARGETS[(Ie)$pid]} )) && continue
   for want in $SWEEPS; do
     [[ "$cmd" == "$want" ]] && { TARGETS+=( "$pid" ); print -r -- "$PROG: stopping $pid $cmd"; break }
   done
 done
 
-_stop $TARGETS
-
-typeset f
-for f in $CLEAR_FILES; do
-  [[ -e "$f" ]] && rm -f -- "$f"
-done
+if _stop $TARGETS; then
+  # Removed only on a successful stop: a pidfile whose process could not be stopped keeps its
+  # evidence in place for the retry, which is the only route left to target that process again.
+  typeset f
+  for f in $CLEAR_FILES; do
+    [[ -e "$f" ]] && rm -f -- "$f"
+  done
+fi
 
 typeset rescan_out
 rescan_out="$(_scan "$WT")" || exit 1
@@ -1305,6 +1310,49 @@ is "and reports no survivors" "$(printf '%s' "$out" | grep -c 'still in')" "0"
 rm -rf "$SELFDIR"
 
 echo
+echo "Q. a failed stop keeps its evidence"
+# Spec 5.2. The retry wt-rm recommends is the only route left to target a declared supervisor
+# again, and it finds that supervisor through the pidfile — so deleting the pidfile after a
+# stop that did not work strands the process permanently for any project that declares a
+# pidfile and no sweep. Both wait budgets are set to 0, which makes _stop return 1 without
+# waiting: the deterministic way to exercise the failed-stop branch.
+stubborn="$(spawn command sleep 400)"
+echo "$stubborn" > "$WT/tmp/pids/server.pid"
+mk_live <<EOF
+$stubborn sleep $WT
+EOF
+out="$(PATH="$T/bin:/usr/bin:/bin" WT_WORKTREE="$WT" \
+  WT_TEARDOWN_TERM_WAIT=0 WT_TEARDOWN_KILL_WAIT=0 \
+  zsh "$SUBJECT" --pidfile tmp/pids/server.pid teardown 2>&1)"
+is "the pidfile survives a stop that reported failure" \
+  "$([ -e "$WT/tmp/pids/server.pid" ] && echo present || echo gone)" "present"
+kill -9 "$stubborn" 2>/dev/null
+rm -f "$WT/tmp/pids/server.pid"
+
+# And the ordinary case still clears it, so the gate did not simply disable removal.
+cleanly="$(spawn command sleep 400)"
+echo "$cleanly" > "$WT/tmp/pids/server.pid"
+mk_live <<EOF
+$cleanly sleep $WT
+EOF
+out="$(srun --pidfile tmp/pids/server.pid teardown)"
+is "a successful stop still clears it" \
+  "$([ -e "$WT/tmp/pids/server.pid" ] && echo present || echo gone)" "gone"
+
+echo
+echo "R. one process is reported stopped once"
+# curato declares both --pidfile and --sweep ruby, and its rails server satisfies both. The
+# transcript is the deliverable (spec 5.5), so one process must produce one line.
+both="$(spawn command sleep 400)"
+echo "$both" > "$WT/tmp/pids/server.pid"
+mk_live <<EOF
+$both sleep $WT
+EOF
+out="$(srun --pidfile tmp/pids/server.pid --sweep sleep teardown)"
+is "a doubly-declared process exits clean" "$?" "0"
+is "and is reported exactly once" "$(printf '%s' "$out" | grep -c stopping)" "1"
+
+echo
 echo "RESULT: $pass passed, $((pass + fail)) total, $fail failed"
 [ "$fail" -eq 0 ]
 ```
@@ -1364,6 +1412,19 @@ executor who "simplifies" the harness.
    passed while the real binary failed deterministically end to end. Section P exists
    precisely because this class of bug is structurally invisible to a stub and needs the
    real `lsof` against an empty directory nothing else occupies.
+
+8. **The pidfile removal must be gated on `_stop` succeeding, and that gate must have a
+   test.** Spec §5.2 states it, the code's own comment above the removal block stated it,
+   and neither was true: `_stop $TARGETS` discarded its return value and the removal ran
+   unconditionally. A failed stop still deleted the pidfile, so the retry `wt-rm`
+   recommends found no pidfile, `_pidfile_pid` returned 2, and a project declaring only
+   `--pidfile` (no `--sweep`) lost the one route left to target that supervisor again —
+   a permanent refusal loop. This shipped at 55/55 green because no case in the suite ever
+   drove `_stop` to failure; sections Q and R (added in the fix wave, both appendices
+   above) close that gap — Q with both wait budgets forced to 0 so `_stop` returns 1
+   without waiting, R for the related but distinct defect that a process satisfying both
+   a declared pidfile and a sweep was appended to `TARGETS` twice and reported stopped
+   twice in the transcript that spec §5.5 makes the deliverable.
 
 ### Why `_ancestors` walks with `ps` rather than stopping at `$PPID`
 

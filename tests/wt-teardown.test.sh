@@ -302,5 +302,48 @@ is "and reports no survivors" "$(printf '%s' "$out" | grep -c 'still in')" "0"
 rm -rf "$SELFDIR"
 
 echo
+echo "Q. a failed stop keeps its evidence"
+# Spec 5.2. The retry wt-rm recommends is the only route left to target a declared supervisor
+# again, and it finds that supervisor through the pidfile — so deleting the pidfile after a
+# stop that did not work strands the process permanently for any project that declares a
+# pidfile and no sweep. Both wait budgets are set to 0, which makes _stop return 1 without
+# waiting: the deterministic way to exercise the failed-stop branch.
+stubborn="$(spawn command sleep 400)"
+echo "$stubborn" > "$WT/tmp/pids/server.pid"
+mk_live <<EOF
+$stubborn sleep $WT
+EOF
+out="$(PATH="$T/bin:/usr/bin:/bin" WT_WORKTREE="$WT" \
+  WT_TEARDOWN_TERM_WAIT=0 WT_TEARDOWN_KILL_WAIT=0 \
+  zsh "$SUBJECT" --pidfile tmp/pids/server.pid teardown 2>&1)"
+is "the pidfile survives a stop that reported failure" \
+  "$([ -e "$WT/tmp/pids/server.pid" ] && echo present || echo gone)" "present"
+kill -9 "$stubborn" 2>/dev/null
+rm -f "$WT/tmp/pids/server.pid"
+
+# And the ordinary case still clears it, so the gate did not simply disable removal.
+cleanly="$(spawn command sleep 400)"
+echo "$cleanly" > "$WT/tmp/pids/server.pid"
+mk_live <<EOF
+$cleanly sleep $WT
+EOF
+out="$(srun --pidfile tmp/pids/server.pid teardown)"
+is "a successful stop still clears it" \
+  "$([ -e "$WT/tmp/pids/server.pid" ] && echo present || echo gone)" "gone"
+
+echo
+echo "R. one process is reported stopped once"
+# curato declares both --pidfile and --sweep ruby, and its rails server satisfies both. The
+# transcript is the deliverable (spec 5.5), so one process must produce one line.
+both="$(spawn command sleep 400)"
+echo "$both" > "$WT/tmp/pids/server.pid"
+mk_live <<EOF
+$both sleep $WT
+EOF
+out="$(srun --pidfile tmp/pids/server.pid --sweep sleep teardown)"
+is "a doubly-declared process exits clean" "$?" "0"
+is "and is reported exactly once" "$(printf '%s' "$out" | grep -c stopping)" "1"
+
+echo
 echo "RESULT: $pass passed, $((pass + fail)) total, $fail failed"
 [ "$fail" -eq 0 ]

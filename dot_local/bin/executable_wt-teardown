@@ -141,7 +141,7 @@ _scan() {
     return 1
   fi
   for (( i = 1; i <= ${#lines}; i += 4 )); do
-    if [[ "${lines[i]}" != p<-> || "${lines[i+1]}" != c* || \
+    if [[ "${lines[i]}" != p<1-> || "${lines[i+1]}" != c* || \
           "${lines[i+2]}" != fcwd || "${lines[i+3]}" != n/* ]]; then
       print -ru2 -- "$PROG: could not read the process list from lsof — refusing."
       return 1
@@ -256,20 +256,23 @@ done
 typeset pid cmd want
 for pid cmd in ${(kv)OCCUPANT}; do
   (( ${+MINE[$pid]} )) && continue
+  # Already taken by a declared pidfile: appending it again would stop nothing extra and would
+  # print a second "stopping" line for one process.
+  (( ${TARGETS[(Ie)$pid]} )) && continue
   for want in $SWEEPS; do
     # Exact equality, never substring: `ruby` must not select `rubyfmt`.
     [[ "$cmd" == "$want" ]] && { TARGETS+=( "$pid" ); print -r -- "$PROG: stopping $pid $cmd"; break }
   done
 done
 
-_stop $TARGETS
-
-# Removed only now: a pidfile whose process could not be stopped keeps its evidence in
-# place for the retry.
-typeset f
-for f in $CLEAR_FILES; do
-  [[ -e "$f" ]] && rm -f -- "$f"
-done
+if _stop $TARGETS; then
+  # Removed only on a successful stop: a pidfile whose process could not be stopped keeps its
+  # evidence in place for the retry, which is the only route left to target that process again.
+  typeset f
+  for f in $CLEAR_FILES; do
+    [[ -e "$f" ]] && rm -f -- "$f"
+  done
+fi
 
 # The re-scan is the authority, not the signals. A pid that exited leaves no cwd record;
 # anything still listed is still holding the checkout open, and reporting success here
