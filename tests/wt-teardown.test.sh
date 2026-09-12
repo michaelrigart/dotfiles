@@ -69,42 +69,67 @@ is "a nonexistent WT_WORKTREE is an error" "$?" "1"
 
 echo
 echo "D. the lsof scan refuses rather than reads empty"
+# The stub serves two masters: controlled occupancy from the fixtures below, AND truthful
+# ancestry for the subject's own real process chain, so sections asserting "the parent is
+# not killed" (section F) still mean something. It runs real lsof for every live-mode call,
+# drops any record whose pid the fixture also names — a pid must never be reported twice
+# with two different cwds — and appends the fixture's own records after it, each synthesised
+# to the subject's new 5-field shape with a ppid of 1: fixture processes are detached, so
+# their ancestry is irrelevant to what these sections test. Raw mode is untouched — it hands
+# back exactly the bytes staged in $T/bin/raw, which is how section D drives malformed and
+# empty listings regardless of what real lsof would say.
 cat > "$T/bin/lsof" <<'STUB'
-#!/bin/sh
-d="$(dirname "$0")"
-# The ancestry call (-F0pR) is about this machine's real process tree, not about the
-# worktree-occupancy fixtures below — so hand it off to the real lsof rather than fake it.
-for a in "$@"; do
-  if [ "$a" = "-F0pR" ]; then
-    exec /usr/sbin/lsof "$@"
-  fi
-done
-if [ "$(cat "$d/mode" 2>/dev/null)" = raw ]; then
+#!/usr/bin/env zsh
+emulate -L zsh
+local d="${0:h}"
+if [[ "$(cat "$d/mode" 2>/dev/null)" == raw ]]; then
   cat "$d/raw"
   exit 0
 fi
 # Count fixture calls so a test can say "present for the first N scans, gone afterwards".
 # The subject scans four times per run: build OCCUPANT, re-check before TERM, re-check before
 # KILL, then the final survivor scan.
-n=$(cat "$d/calls" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$d/calls"
-if [ -f "$d/drop_after" ] && [ "$n" -gt "$(cat "$d/drop_after")" ]; then
-  printf 'p1\0claunchd\0fcwd\0n/\0'
-  exit 0
+local -i n
+n=$(cat "$d/calls" 2>/dev/null || echo 0); n=$(( n + 1 )); echo "$n" > "$d/calls"
+
+# Suppress the real record for any pid the fixture also names, so it is reported once, from
+# the fixture, with the fixture's cwd — never twice with two different cwds.
+local -A drop
+local fpid frest
+if [[ -f "$d/live" ]]; then
+  while read -r fpid frest; do
+    [[ -n "$fpid" ]] && drop[$fpid]=1
+  done < "$d/live"
 fi
-# A real `lsof -d cwd` is never empty — the caller has a cwd and so does launchd — and
-# the subject refuses an empty listing rather than reading it as an idle checkout. A stub
-# that emptied out once its fixture pids died would trip that refusal on every re-scan,
-# so it carries the same baseline record a real listing always has.
-printf 'p1\0claunchd\0fcwd\0n/\0'
-while read -r pid cmd cwd; do
-  [ -n "$pid" ] || continue
-  kill -0 "$pid" 2>/dev/null || continue
-  printf 'p%s\0c%s\0fcwd\0n%s\0' "$pid" "$cmd" "$cwd"
-done < "$d/live"
+
+# Real lsof is never empty — this shell has a cwd and so does launchd — so it alone already
+# satisfies the subject's refusal-on-empty check; no synthesised baseline record is needed.
+local -a lines
+lines=( ${(0)"$(LC_ALL=C command /usr/sbin/lsof -w -d cwd -F0pcnR 2>/dev/null)"} )
+lines=( ${lines#$'\n'} )
+local -i i
+local rpid
+for (( i = 1; i <= ${#lines}; i += 5 )); do
+  rpid="${lines[i]#p}"
+  (( ${+drop[$rpid]} )) && continue
+  printf 'p%s\0R%s\0c%s\0fcwd\0n%s\0' \
+    "$rpid" "${lines[i+1]#R}" "${lines[i+2]#c}" "${lines[i+4]#n}"
+done
+
+if [[ -f "$d/drop_after" ]] && (( n > $(cat "$d/drop_after") )); then
+  : # the fixture's pids have "exited" as of this call — report none of them
+else
+  local pid cmd cwd
+  while read -r pid cmd cwd; do
+    [[ -n "$pid" ]] || continue
+    kill -0 "$pid" 2>/dev/null || continue
+    printf 'p%s\0R1\0c%s\0fcwd\0n%s\0' "$pid" "$cmd" "$cwd"
+  done < "$d/live"
+fi
 # A one-shot transition: if a successor fixture is staged, it takes effect from the NEXT call.
 # This is how a test can say "the process left the worktree between the scan and the escalation",
 # which is the only difference X1's re-check can detect.
-if [ -f "$d/live.next" ]; then
+if [[ -f "$d/live.next" ]]; then
   mv "$d/live.next" "$d/live"
 fi
 STUB
@@ -119,10 +144,17 @@ out="$(srun --sweep ruby teardown)"; is "empty lsof output is refused" "$?" "1"
 has "and says the list was unreadable" "$out" "lsof"
 mk_raw 'p1\0cruby\0fcwd\0'
 out="$(srun --sweep ruby teardown)"; is "a truncated record is refused" "$?" "1"
-mk_raw 'p1\0cruby\0fcwd\0n\0'
+mk_raw 'p1\0R1\0cruby\0fcwd\0n\0'
 out="$(srun --sweep ruby teardown)"; is "a bare n field is refused" "$?" "1"
-mk_raw 'p1\0cruby\0ftxt\0n/x\0'
+mk_raw 'p1\0R1\0cruby\0ftxt\0n/x\0'
 out="$(srun --sweep ruby teardown)"; is "a non-cwd descriptor is refused" "$?" "1"
+# The exact shape the review used to defeat the old split-call design: a complete-looking
+# record that simply omits R. Under the two-call design this could slip through _scan's own
+# check (it validated only p/c/f/n) and still leave _ancestors's separate call to reconcile;
+# now the two are the same call and the same record shape, so a record missing R fails the
+# cycle-length check before anything is inspected field-by-field.
+mk_raw 'p1\0cruby\0fcwd\0n/\0'
+out="$(srun --sweep ruby teardown)"; is "a record with p but no R is refused" "$?" "1"
 
 echo
 echo "E. matching is anchored at a directory boundary"
@@ -216,7 +248,7 @@ is "the deaf process was killed" "$(kill -0 "$deaf" 2>/dev/null; echo $?)" "1"
 echo
 echo "I. a survivor is an error, not a shrug"
 ghost="$(spawn command sleep 300)"
-mk_raw 'p%s\0cimmortal\0fcwd\0n%s\0' "$ghost" "$WT"
+mk_raw 'p%s\0R1\0cimmortal\0fcwd\0n%s\0' "$ghost" "$WT"
 out="$(PATH="$T/bin:/usr/bin:/bin" WT_WORKTREE="$WT" \
   WT_TEARDOWN_TERM_WAIT=1 WT_TEARDOWN_KILL_WAIT=1 \
   zsh "$SUBJECT" --sweep immortal teardown 2>&1)"
@@ -339,7 +371,7 @@ echo "Q. a failed stop keeps its evidence"
 # occupant and escalation proceeds to the deterministic KILL_WAIT=0 return-1 path.
 stubborn="$(spawn command sleep 400)"
 echo "$stubborn" > "$WT/tmp/pids/server.pid"
-mk_raw 'p%s\0csleep\0fcwd\0n%s\0' "$stubborn" "$WT"
+mk_raw 'p%s\0R1\0csleep\0fcwd\0n%s\0' "$stubborn" "$WT"
 out="$(PATH="$T/bin:/usr/bin:/bin" WT_WORKTREE="$WT" \
   WT_TEARDOWN_TERM_WAIT=0 WT_TEARDOWN_KILL_WAIT=0 \
   zsh "$SUBJECT" --pidfile tmp/pids/server.pid teardown 2>&1)"

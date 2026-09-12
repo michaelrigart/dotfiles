@@ -19,11 +19,14 @@
 > item 10) re-proved ownership before TERM as well as before KILL, distinguished a
 > confirmed-gone pidfile target from one `kill -0` merely couldn't reach, and made a
 > `_stop` that could not confirm its outcome refuse rather than report success; the
-> appendix above now reflects that shipped content, and the suite reports
-> `68 passed, 68 total, 0 failed`. Where a task's inline snippet and the appendix
-> disagree, the appendix wins — the tasks define the increments and the order, the
-> appendix defines the finished content. Defects found only by running it, across every
-> wave, are recorded in Appendix B; do not re-introduce them.
+> appendix above now reflects that shipped content, and the suite reported
+> `68 passed, 68 total, 0 failed`. A fourth fix wave (Appendix B, item 11) took occupancy
+> and ancestry off one `lsof` listing instead of two, making true a premise `_ancestors`'s
+> own comment had asserted as fact while it was false; the appendix above reflects that
+> shipped content, and the suite reports `69 passed, 69 total, 0 failed`. Where a task's
+> inline snippet and the appendix disagree, the appendix wins — the tasks define the
+> increments and the order, the appendix defines the finished content. Defects found only
+> by running it, across every wave, are recorded in Appendix B; do not re-introduce them.
 
 ## Global Constraints
 
@@ -794,6 +797,9 @@ emulate -L zsh
 
 typeset PROG=wt-teardown
 typeset -a PIDFILES SWEEPS
+# pid -> ppid, populated by the most recent _scan call. _ancestors reads it rather than
+# calling lsof itself — see _scan and _ancestors below for why one listing must feed both.
+typeset -gA _WT_PARENT
 # Seconds to wait after TERM, then after KILL. Overridable so the test suite does not
 # spend fifteen seconds per case; there is no reason to change them in use.
 typeset -i TERM_WAIT=${WT_TEARDOWN_TERM_WAIT:-10}
@@ -863,56 +869,45 @@ _render() {
   print -r -- "$out"
 }
 
-# _ancestors — this pid and every ancestor, one per line.
+# _ancestors — this pid and every ancestor, one per line. Must be called only after a
+# _scan, which is what populates _WT_PARENT; called any other time it fails closed on an
+# empty map.
 #
 # Unconditional, not merely covered by the allowlist: wt-rm runs the hook with cwd inside the
 # worktree, so this process and the chain that started it appear in every scan. A repository
 # declaring `--sweep zsh` must not kill the shell interpreting its own hook.
 #
-# Ancestry comes from lsof's own R field rather than from `ps`. ps is unavailable under the
-# sandbox agents run wt-rm in, and a walk that stops early there returns a TRUNCATED chain while
-# reporting success — which leaves a grandparent eligible to be signalled whenever a hook omits
-# `exec`.
+# Ancestry comes from _WT_PARENT, the parent map _scan built from lsof's own R field, rather
+# than from `ps`. ps is unavailable under the sandbox agents run wt-rm in, and a walk that
+# stops early there returns a TRUNCATED chain while reporting success — which leaves a
+# grandparent eligible to be signalled whenever a hook omits `exec`.
 #
 # The walk climbs while parents are known, and treats an unknown parent as the top of the
 # reachable tree, not an error (RULING R9): MINE only needs to cover every ancestor that could
-# also be a sweep target, sweep targets come from OCCUPANT, and OCCUPANT and this function's
-# parent map are built from the very same lsof listing — so an ancestor lsof cannot report can
-# never be a target either, and stopping the climb there loses nothing. On macOS the first
-# unreadable link is the root-owned `login` every session descends from; above it lie only root
-# processes whose cwd is never inside a user worktree. What must never happen is a chain
-# truncated BELOW a visible ancestor — exactly what the old `ps` walk did whenever ps was
-# unavailable. Fails closed only where nothing at all is known: an unreadable lsof call, or an
-# empty parent map.
+# also be a sweep target, sweep targets come from OCCUPANT, and OCCUPANT and _WT_PARENT are
+# built from the very same lsof listing — one call, in _scan, feeding both — so an ancestor
+# lsof cannot report can never be a target either, and stopping the climb there loses nothing.
+# This is what makes the argument hold: it was FALSE when _scan and this function issued
+# separate lsof calls, because a process present in one snapshot and gone from the other left a
+# visible ancestor unprotected. Splitting the calls again — even to add a field, even for a
+# single caller — reopens exactly that hole; keep them one call.
+#
+# On macOS the first unreadable link is the root-owned `login` every session descends from;
+# above it lie only root processes whose cwd is never inside a user worktree. What must never
+# happen is a chain truncated BELOW a visible ancestor — exactly what the old `ps` walk did
+# whenever ps was unavailable. Fails closed only where nothing at all is known: _scan was never
+# run, or it ran against a listing empty enough to leave the parent map empty.
 _ancestors() {
   emulate -L zsh
-  local -a lines
-  local -A parent
-  local rc i pid ppid p
+  local p
   local -a chain
-  lines=( ${(0)"$(LC_ALL=C command lsof -w -d cwd -F0pR 2>/dev/null)"} ); rc=$?
-  (( rc )) && return 1
-  lines=( ${lines#$'\n'} )
-  local cur=""
-  for (( i = 1; i <= ${#lines}; i++ )); do
-    case "${lines[i]}" in
-      p<1->) cur="${lines[i]#p}" ;;
-      R<0->) [[ -n "$cur" ]] && parent[$cur]="${lines[i]#R}" ;;
-    esac
-  done
-  (( ${#parent} )) || return 1
-  # Climb while the parents are known. An unknown parent is the top of the tree we can SEE, not
-  # an error: the parent map and OCCUPANT are built from the same lsof listing, so an ancestor
-  # lsof cannot report can never be a sweep target either. On macOS the climb stops at the
-  # root-owned `login` every session descends from — above it are only root processes whose cwd
-  # is never inside a user worktree. What must not happen is a chain cut below a VISIBLE
-  # ancestor, which is precisely what the old `ps` walk did whenever ps was unavailable.
+  (( ${#_WT_PARENT} )) || return 1
   p=$$
   chain=( $p )
   local -i hops=0
   while (( ++hops <= 64 )); do
-    (( ${+parent[$p]} )) || break
-    p="${parent[$p]}"
+    (( ${+_WT_PARENT[$p]} )) || break
+    p="${_WT_PARENT[$p]}"
     (( p == 0 )) && break
     chain+=( "$p" )
   done
@@ -921,7 +916,9 @@ _ancestors() {
 }
 
 # _scan <abs-dir> — print "<pid> <command>" for every process whose cwd is at or below
-# <abs-dir>. Return 1 when the answer cannot be trusted.
+# <abs-dir>. Return 1 when the answer cannot be trusted. Also (re)populates _WT_PARENT,
+# the pid -> ppid map _ancestors reads, from the same listing — see _ancestors for why
+# one call has to feed both.
 #
 # The parse discipline is deliberate and mirrors _wt_live_processes:
 #   -F0 gives NUL-terminated fields, so framing does not rest on lsof's escaping of a
@@ -930,7 +927,7 @@ _ancestors() {
 #   idle checkout, since the records it never reached are exactly where the occupant is.
 _scan() {
   emulate -L zsh
-  local dir="$1" edir rc i pid cmd cwd
+  local dir="$1" edir rc i pid ppid cmd cwd
   local -a lines hits
   (( $+commands[lsof] )) || {
     print -ru2 -- "$PROG: lsof is unavailable, so processes using $dir cannot be detected — refusing."
@@ -940,7 +937,8 @@ _scan() {
     print -ru2 -- "$PROG: $dir contains a control character, which lsof renders rather than reports — refusing."
     return 1
   }
-  lines=( ${(0)"$(LC_ALL=C command lsof -w -d cwd -F0pcn 2>/dev/null)"} ); rc=$?
+  _WT_PARENT=()
+  lines=( ${(0)"$(LC_ALL=C command lsof -w -d cwd -F0pcnR 2>/dev/null)"} ); rc=$?
   if (( rc )); then
     print -ru2 -- "$PROG: could not read the process list from lsof — refusing."
     return 1
@@ -950,17 +948,18 @@ _scan() {
   lines=( ${lines#$'\n'} )
   # Real lsof cannot come back empty: this shell has a cwd of its own and is in every
   # answer. Nothing at all therefore means the scan failed.
-  if (( ${#lines} == 0 )) || (( ${#lines} % 4 )); then
+  if (( ${#lines} == 0 )) || (( ${#lines} % 5 )); then
     print -ru2 -- "$PROG: could not read the process list from lsof — refusing."
     return 1
   fi
-  for (( i = 1; i <= ${#lines}; i += 4 )); do
-    if [[ "${lines[i]}" != p<1-> || "${lines[i+1]}" != c* || \
-          "${lines[i+2]}" != fcwd || "${lines[i+3]}" != n/* ]]; then
+  for (( i = 1; i <= ${#lines}; i += 5 )); do
+    if [[ "${lines[i]}" != p<1-> || "${lines[i+1]}" != R<0-> || "${lines[i+2]}" != c* || \
+          "${lines[i+3]}" != fcwd || "${lines[i+4]}" != n/* ]]; then
       print -ru2 -- "$PROG: could not read the process list from lsof — refusing."
       return 1
     fi
-    pid="${lines[i]#p}" cmd="${lines[i+1]#c}" cwd="${lines[i+3]#n}"
+    pid="${lines[i]#p}" ppid="${lines[i+1]#R}" cmd="${lines[i+2]#c}" cwd="${lines[i+4]#n}"
+    _WT_PARENT[$pid]="$ppid"
     # Anchored on purpose: repo-a and repo-a-extra are neighbours by construction.
     [[ "$cwd" == "$edir" || "$cwd" == "$edir"/* ]] && hits+=( "$pid $cmd" )
   done
@@ -1070,7 +1069,17 @@ _pidfile_pid() {
 }
 
 typeset scan_out
-scan_out="$(_scan "$WT")" || exit 1
+typeset _wt_scan_tmp
+typeset -i _wt_scan_rc
+_wt_scan_tmp="$(mktemp "${TMPDIR:-/tmp}/wt-teardown-scan.XXXXXX")" || die "cannot create a scratch file to run the initial scan"
+# Run directly, not via $(...): command substitution forks a subshell, and _WT_PARENT — the
+# parent map _ancestors reads below — is a global _scan mutates, which a fork would confine
+# to the child and lose. Redirecting to a real file instead keeps this call in the running
+# shell, so the map _scan just built is still there when _ancestors reads it.
+_scan "$WT" > "$_wt_scan_tmp"; _wt_scan_rc=$?
+scan_out="$(<$_wt_scan_tmp)"
+rm -f "$_wt_scan_tmp"
+(( _wt_scan_rc )) && exit 1
 
 typeset -A OCCUPANT          # pid -> command, for every process inside the worktree
 typeset line
@@ -1242,42 +1251,67 @@ is "a nonexistent WT_WORKTREE is an error" "$?" "1"
 
 echo
 echo "D. the lsof scan refuses rather than reads empty"
+# The stub serves two masters: controlled occupancy from the fixtures below, AND truthful
+# ancestry for the subject's own real process chain, so sections asserting "the parent is
+# not killed" (section F) still mean something. It runs real lsof for every live-mode call,
+# drops any record whose pid the fixture also names — a pid must never be reported twice
+# with two different cwds — and appends the fixture's own records after it, each synthesised
+# to the subject's new 5-field shape with a ppid of 1: fixture processes are detached, so
+# their ancestry is irrelevant to what these sections test. Raw mode is untouched — it hands
+# back exactly the bytes staged in $T/bin/raw, which is how section D drives malformed and
+# empty listings regardless of what real lsof would say.
 cat > "$T/bin/lsof" <<'STUB'
-#!/bin/sh
-d="$(dirname "$0")"
-# The ancestry call (-F0pR) is about this machine's real process tree, not about the
-# worktree-occupancy fixtures below — so hand it off to the real lsof rather than fake it.
-for a in "$@"; do
-  if [ "$a" = "-F0pR" ]; then
-    exec /usr/sbin/lsof "$@"
-  fi
-done
-if [ "$(cat "$d/mode" 2>/dev/null)" = raw ]; then
+#!/usr/bin/env zsh
+emulate -L zsh
+local d="${0:h}"
+if [[ "$(cat "$d/mode" 2>/dev/null)" == raw ]]; then
   cat "$d/raw"
   exit 0
 fi
 # Count fixture calls so a test can say "present for the first N scans, gone afterwards".
 # The subject scans four times per run: build OCCUPANT, re-check before TERM, re-check before
 # KILL, then the final survivor scan.
-n=$(cat "$d/calls" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$d/calls"
-if [ -f "$d/drop_after" ] && [ "$n" -gt "$(cat "$d/drop_after")" ]; then
-  printf 'p1\0claunchd\0fcwd\0n/\0'
-  exit 0
+local -i n
+n=$(cat "$d/calls" 2>/dev/null || echo 0); n=$(( n + 1 )); echo "$n" > "$d/calls"
+
+# Suppress the real record for any pid the fixture also names, so it is reported once, from
+# the fixture, with the fixture's cwd — never twice with two different cwds.
+local -A drop
+local fpid frest
+if [[ -f "$d/live" ]]; then
+  while read -r fpid frest; do
+    [[ -n "$fpid" ]] && drop[$fpid]=1
+  done < "$d/live"
 fi
-# A real `lsof -d cwd` is never empty — the caller has a cwd and so does launchd — and
-# the subject refuses an empty listing rather than reading it as an idle checkout. A stub
-# that emptied out once its fixture pids died would trip that refusal on every re-scan,
-# so it carries the same baseline record a real listing always has.
-printf 'p1\0claunchd\0fcwd\0n/\0'
-while read -r pid cmd cwd; do
-  [ -n "$pid" ] || continue
-  kill -0 "$pid" 2>/dev/null || continue
-  printf 'p%s\0c%s\0fcwd\0n%s\0' "$pid" "$cmd" "$cwd"
-done < "$d/live"
+
+# Real lsof is never empty — this shell has a cwd and so does launchd — so it alone already
+# satisfies the subject's refusal-on-empty check; no synthesised baseline record is needed.
+local -a lines
+lines=( ${(0)"$(LC_ALL=C command /usr/sbin/lsof -w -d cwd -F0pcnR 2>/dev/null)"} )
+lines=( ${lines#$'\n'} )
+local -i i
+local rpid
+for (( i = 1; i <= ${#lines}; i += 5 )); do
+  rpid="${lines[i]#p}"
+  (( ${+drop[$rpid]} )) && continue
+  printf 'p%s\0R%s\0c%s\0fcwd\0n%s\0' \
+    "$rpid" "${lines[i+1]#R}" "${lines[i+2]#c}" "${lines[i+4]#n}"
+done
+
+if [[ -f "$d/drop_after" ]] && (( n > $(cat "$d/drop_after") )); then
+  : # the fixture's pids have "exited" as of this call — report none of them
+else
+  local pid cmd cwd
+  while read -r pid cmd cwd; do
+    [[ -n "$pid" ]] || continue
+    kill -0 "$pid" 2>/dev/null || continue
+    printf 'p%s\0R1\0c%s\0fcwd\0n%s\0' "$pid" "$cmd" "$cwd"
+  done < "$d/live"
+fi
 # A one-shot transition: if a successor fixture is staged, it takes effect from the NEXT call.
 # This is how a test can say "the process left the worktree between the scan and the escalation",
 # which is the only difference X1's re-check can detect.
-if [ -f "$d/live.next" ]; then
+if [[ -f "$d/live.next" ]]; then
   mv "$d/live.next" "$d/live"
 fi
 STUB
@@ -1292,10 +1326,17 @@ out="$(srun --sweep ruby teardown)"; is "empty lsof output is refused" "$?" "1"
 has "and says the list was unreadable" "$out" "lsof"
 mk_raw 'p1\0cruby\0fcwd\0'
 out="$(srun --sweep ruby teardown)"; is "a truncated record is refused" "$?" "1"
-mk_raw 'p1\0cruby\0fcwd\0n\0'
+mk_raw 'p1\0R1\0cruby\0fcwd\0n\0'
 out="$(srun --sweep ruby teardown)"; is "a bare n field is refused" "$?" "1"
-mk_raw 'p1\0cruby\0ftxt\0n/x\0'
+mk_raw 'p1\0R1\0cruby\0ftxt\0n/x\0'
 out="$(srun --sweep ruby teardown)"; is "a non-cwd descriptor is refused" "$?" "1"
+# The exact shape the review used to defeat the old split-call design: a complete-looking
+# record that simply omits R. Under the two-call design this could slip through _scan's own
+# check (it validated only p/c/f/n) and still leave _ancestors's separate call to reconcile;
+# now the two are the same call and the same record shape, so a record missing R fails the
+# cycle-length check before anything is inspected field-by-field.
+mk_raw 'p1\0cruby\0fcwd\0n/\0'
+out="$(srun --sweep ruby teardown)"; is "a record with p but no R is refused" "$?" "1"
 
 echo
 echo "E. matching is anchored at a directory boundary"
@@ -1389,7 +1430,7 @@ is "the deaf process was killed" "$(kill -0 "$deaf" 2>/dev/null; echo $?)" "1"
 echo
 echo "I. a survivor is an error, not a shrug"
 ghost="$(spawn command sleep 300)"
-mk_raw 'p%s\0cimmortal\0fcwd\0n%s\0' "$ghost" "$WT"
+mk_raw 'p%s\0R1\0cimmortal\0fcwd\0n%s\0' "$ghost" "$WT"
 out="$(PATH="$T/bin:/usr/bin:/bin" WT_WORKTREE="$WT" \
   WT_TEARDOWN_TERM_WAIT=1 WT_TEARDOWN_KILL_WAIT=1 \
   zsh "$SUBJECT" --sweep immortal teardown 2>&1)"
@@ -1512,7 +1553,7 @@ echo "Q. a failed stop keeps its evidence"
 # occupant and escalation proceeds to the deterministic KILL_WAIT=0 return-1 path.
 stubborn="$(spawn command sleep 400)"
 echo "$stubborn" > "$WT/tmp/pids/server.pid"
-mk_raw 'p%s\0csleep\0fcwd\0n%s\0' "$stubborn" "$WT"
+mk_raw 'p%s\0R1\0csleep\0fcwd\0n%s\0' "$stubborn" "$WT"
 out="$(PATH="$T/bin:/usr/bin:/bin" WT_WORKTREE="$WT" \
   WT_TEARDOWN_TERM_WAIT=0 WT_TEARDOWN_KILL_WAIT=0 \
   zsh "$SUBJECT" --pidfile tmp/pids/server.pid teardown 2>&1)"
@@ -1857,6 +1898,56 @@ executor who "simplifies" the harness.
     section S's fixture is already resolved by the pre-existing pre-KILL check, and no
     case in the suite isolates the narrower TERM-side window. That gap is accepted rather
     than chased with a more elaborate fixture.
+
+11. **Fix wave 4 — a false premise in `_ancestors`'s own comment, from taking occupancy and
+    ancestry off two separate `lsof` listings.** Fix wave 2 (item 9) gave `_ancestors` its
+    own `lsof -F0pR` call, independent of `_scan`'s `lsof -F0pcn` call, and justified the
+    walk's early-stop-on-unknown-parent behaviour with an argument that only holds if
+    "OCCUPANT and this function's parent map are built from the very same lsof listing." That
+    sentence was asserted as fact in the comment while being false in the code: two
+    invocations are two snapshots, and a process present in one and gone from the other could
+    leave a visible ancestor unprotected. No test caught it because nothing on this machine
+    ever actually raced the two calls into disagreement — the hole was real but latent.
+
+    Fixed by making the premise true by construction: `_scan` now issues one
+    `lsof -w -d cwd -F0pcnR` call (verified against real output — the field order is
+    `p<pid>`, `R<ppid>`, `c<command>`, `fcwd`, `n<path>`, five fields per record, confirmed
+    with `od -c` before coding to it) and populates, alongside the hit lines it already
+    printed, a `typeset -gA _WT_PARENT` pid-to-ppid map cleared at the start of every call.
+    `_ancestors` no longer calls `lsof` at all; it only reads `_WT_PARENT`, and is only ever
+    meaningful when called right after a `_scan`. The record-shape validation's cycle length
+    moved from 4 to 5 and gained the `R<0->` field check.
+
+    One subtlety `_WT_PARENT` alone did not solve: every existing call to `_scan` is through
+    `$(_scan ...)` command substitution, which forks a subshell — and a subshell's mutation
+    of a global array is invisible to the parent shell once it exits (confirmed directly: a
+    function that sets a `typeset -gA` entry and is invoked as `x="$(f)"` leaves the array
+    empty in the caller). `_ancestors` only needs `_WT_PARENT` to be live for the one call
+    immediately following the *first* `_scan` (the one that builds `OCCUPANT`); no later
+    `_scan` call (inside `_still_here`'s re-proofs, or the final rescan) is ever followed by
+    `_ancestors` again, so their being forked is harmless. Fixed by having only that first
+    call redirect to a real scratch file (`_scan "$WT" > "$tmp"; rc=$?`) instead of going
+    through command substitution — a plain redirection of a function's output runs in the
+    current shell, not a fork, confirmed the same way — then reading the file back into
+    `scan_out`. `_still_here` and the closing rescan are untouched.
+
+    The test stub changed shape to match: it now serves controlled fixture occupancy and
+    truthful ancestry from the same call. In live mode it runs real `lsof -w -d cwd -F0pcnR`,
+    drops any record whose pid the fixture also names (so no pid is reported twice with two
+    different cwds), and appends the fixture's own records — synthesised to the new 5-field
+    shape with `R1`, since fixture processes are detached and their ancestry is irrelevant to
+    what those sections test. The now-redundant `-F0pR` passthrough branch and the synthetic
+    `p1 launchd /` baseline record were both removed; real `lsof` is never empty, so nothing
+    stands in for it. Section D gained a case proving the new property directly — a
+    5-field-shaped listing missing `R` (`p1\0cruby\0fcwd\0n/\0`) must refuse — and its two
+    cases that depend on reaching the per-record positional check (the bare-`n` and
+    non-`fcwd`-descriptor cases) needed an `R1` field added, or the new cycle-length-5 check
+    would refuse them before ever reaching the check they exist to exercise. Sections I and Q's
+    `mk_raw` single-record fixtures needed the same `R1` addition. Bite checks on scratch
+    copies confirmed the stub change did not weaken what sections E and F test: reverting the
+    sweep loop's self-exclusion still fails section F (`--sweep zsh` sends the parent a real
+    TERM), and reverting the anchored cwd match still fails section E (the sibling gets swept).
+    Suite: `69 passed, 69 total, 0 failed`.
 
 ### Why `_ancestors` walks with `ps` rather than stopping at `$PPID` — superseded, see item 9
 
