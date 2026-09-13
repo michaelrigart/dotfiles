@@ -9,6 +9,7 @@
 #   F  layout.sh       build: construction sequence, explicit IDs, trap
 #   G  layout.sh       repair: missing tabs, the rename window
 #   H  tab-goto.sh     label resolution
+#   N  layout.sh       --make-tab: the lazy editor tab
 #
 # herdr is stubbed on PATH and every invocation is logged, so tests can assert on
 # ordering and — for malformed workspaces — on the ABSENCE of mutation. Git is NOT
@@ -99,9 +100,23 @@ case "$*" in
     fi
     printf '%s' "$MOCK_WS_LIST" ;;
   "pane list"*)    printf '%s' "$MOCK_PANE_LIST" ;;
-  "tab list"*)     printf '%s' "$MOCK_TAB_LIST" ;;
+  "tab list"*)
+    # Stateful when MOCK_TAB_STATE_FILE is set: `tab create` appends there and this
+    # merges it in, so one process can observe what another just created. A static list
+    # makes every concurrency fixture unfalsifiable — both racers see absence forever.
+    if [ -n "${MOCK_TAB_STATE_FILE:-}" ] && [ -s "$MOCK_TAB_STATE_FILE" ]; then
+      extra=$(tr -d '\n' < "$MOCK_TAB_STATE_FILE" | sed 's/,$//')
+      printf '%s' "$MOCK_TAB_LIST" | sed "s/\"tabs\":\[/\"tabs\":[$extra,/; s/,\]}}\$/]}}/"
+    else
+      printf '%s' "$MOCK_TAB_LIST"
+    fi ;;
   "workspace focus"*) exit "${MOCK_FOCUS_RC:-0}" ;;
-  "tab focus"*)       exit "${MOCK_TAB_FOCUS_RC:-0}" ;;
+  "tab focus"*)
+    # Exit status AND payload: this CLI returns an error envelope with status 0 (see
+    # F1d), so a focus that only checks $? cannot be told from one that works.
+    [ -n "${MOCK_TAB_FOCUS_JSON:-}" ] && printf '%s' "$MOCK_TAB_FOCUS_JSON"
+    exit "${MOCK_TAB_FOCUS_RC:-0}" ;;
+  "pane run"*)        exit "${MOCK_PANE_RUN_RC:-0}" ;;
   "workspace create"*)
     exit_rc="${MOCK_WS_CREATE_RC:-0}"; [ "$exit_rc" != 0 ] && exit "$exit_rc"
     printf '%s' "${MOCK_WS_CREATE_JSON:-$DEF_WS_CREATE}" ;;
@@ -115,6 +130,23 @@ case "$*" in
     printf '%s' "$n" > "$MOCK_TAB_SEQ_FILE"
     if [ -n "${MOCK_TAB_CREATE_FAIL_AT:-}" ] && [ "$n" = "$MOCK_TAB_CREATE_FAIL_AT" ]; then
       printf '%s' '{"error":{"code":"internal","message":"boom"}}' >&2; exit 1
+    fi
+    # The tab id is what --make-tab hands back to be focused, so a response without
+    # one has to be reachable from a fixture.
+    if [ -n "${MOCK_TAB_CREATE_NO_TAB_ID:-}" ]; then
+      printf '%s' "{\"result\":{\"tab\":{},\"root_pane\":{\"pane_id\":\"w7:p$((n+3))\"}}}"
+      exit 0
+    fi
+    # The other half of the same window: a usable tab id, no usable pane id. The tab
+    # exists on the server either way, so both shapes have to be reachable.
+    if [ -n "${MOCK_TAB_CREATE_NO_PANE_ID:-}" ]; then
+      printf '%s' "{\"result\":{\"tab\":{\"tab_id\":\"w7:t$((n+4))\"},\"root_pane\":{}}}"
+      exit 0
+    fi
+    if [ -n "${MOCK_TAB_STATE_FILE:-}" ]; then
+      lbl=""; prev=""
+      for a in "$@"; do [ "$prev" = "--label" ] && lbl="$a"; prev="$a"; done
+      printf '{"tab_id":"w7:t%s","label":"%s"},' "$((n+4))" "$lbl" >> "$MOCK_TAB_STATE_FILE"
     fi
     printf '%s' "{\"result\":{\"tab\":{\"tab_id\":\"w7:t$((n+4))\"},\"root_pane\":{\"pane_id\":\"w7:p$((n+3))\"}}}" ;;
   "pane split"*)   printf '%s' '{"result":{"pane":{"pane_id":"w7:p9"}}}' ;;
@@ -156,7 +188,9 @@ mock_reset() {
   unset MOCK_SERVER_NEVER_READY MOCK_EMPTY_FOR MOCK_WS_CREATE_JSON MOCK_WS_ID \
         MOCK_WORKTREE_OPEN_JSON
   export MOCK_TAB_SEQ_FILE="$(mktemp "${TMPROOT%/}/tabseq.XXXXXX")"; print -n 0 > "$MOCK_TAB_SEQ_FILE"
-  unset MOCK_TAB_CREATE_FAIL_AT MOCK_STATUS
+  unset MOCK_TAB_CREATE_FAIL_AT MOCK_STATUS MOCK_TAB_CREATE_NO_TAB_ID \
+        MOCK_PANE_RUN_RC MOCK_TAB_FOCUS_JSON MOCK_TAB_STATE_FILE \
+        MOCK_TAB_CREATE_NO_PANE_ID
   # The HL_* knobs are exported by individual tests and would otherwise leak into
   # every later one — HL_READY_TRIES=2 from a timeout test silently shortening an
   # unrelated bootstrap, for instance, which is how C4 first failed.
@@ -194,11 +228,15 @@ mock_topology() {
   for spec in "$@"; do
     name="${spec%%:*}"; n="${spec##*:}"
     [[ -n "$tabs" ]] && tabs+=","
-    tabs+="{\"tab_id\":\"$w:t$i\",\"label\":\"$name\"}"
+    # ${w}, braced: zsh reads a bare "$w:t" as the :t (tail) history modifier, so this
+    # quietly emitted "w72" where the server returns "w7:t2". Pane ids escaped it only
+    # because :p is not a modifier. Nothing asserted on a tab id from here until
+    # --make-tab started printing one back, which is how it survived this long.
+    tabs+="{\"tab_id\":\"${w}:t$i\",\"label\":\"$name\"}"
     k=1
     while (( k <= n )); do
       [[ -n "$panes" ]] && panes+=","
-      panes+="{\"pane_id\":\"$w:p$pn\",\"tab_id\":\"$w:t$i\",\"workspace_id\":\"$w\",\"cwd\":\"$cwd\"}"
+      panes+="{\"pane_id\":\"${w}:p$pn\",\"tab_id\":\"${w}:t$i\",\"workspace_id\":\"$w\",\"cwd\":\"$cwd\"}"
       # The direction the baseline expects for this label, so a healthy fixture is
       # healthy without every test restating its geometry.
       case "$name" in
@@ -219,7 +257,11 @@ mock_topology() {
 mock_split_dir() { print -r -- "$1 $2" >> "$MOCK_LAYOUT_FILE" }
 
 # The complete, healthy baseline — the shape every "good workspace" test starts from.
-FULL=(agents:2 editor:1 runtime:2)
+# The editor tab is LAZY: alt+e creates it on demand, so a healthy space carries only
+# the eager tabs. FULL_EDITOR is the same space after alt+e has been pressed once —
+# also healthy, which is the whole point of the split.
+FULL=(agents:2 runtime:2)
+FULL_EDITOR=(agents:2 editor:1 runtime:2)
 
 mkrepo() {  # <path> — a real git repo
   mkdir -p "$1" && git -C "$1" init -q && git -C "$1" commit -q --allow-empty -m init
@@ -404,13 +446,18 @@ cls() {  # <mock-setup> → OUT is the classification
 }
 
 cls "mock_topology '$R1' '$L' $FULL"
-eq "$OUT" "complete" "E1 the full baseline = complete"
+eq "$OUT" "complete" "E1 the eager baseline = complete"
+
+# The lazy tab is not part of the baseline. Treating it as one is what made repair
+# reinstate an editor tab the user had deliberately closed.
+cls "mock_topology '$R1' '$L' $FULL_EDITOR"
+eq "$OUT" "complete" "E1b a space that already has its editor tab is still complete"
 
 cls "mock_topology '$R1' '$L' $FULL notes:1 scratch:1"
 eq "$OUT" "complete" "E2 extra unmanaged tabs do not demote it"
 
 cls "mock_topology '$R1' '$L' agents:2 editor:1"
-eq "$OUT" "provisional" "E3 a missing managed tab = provisional"
+eq "$OUT" "provisional" "E3 a missing EAGER tab = provisional"
 
 # The rename window: correct topology, non-final label.
 cls "mock_topology '$R1' '$L (building)' $FULL"
@@ -426,6 +473,15 @@ has "malformed" "E5b a managed tab with the wrong pane count = malformed"
 # and a fresh-build live gate would never see a split changed after the fact.
 cls "mock_topology '$R1' '$L' $FULL; mock_split_dir w7:p1 down"
 has "malformed" "E5c an agents tab split the wrong way = malformed"
+
+# Lazy means "not required", NOT "unowned". Once an editor tab exists it is still a
+# managed label, so duplicates and wrong geometry must stay malformed — otherwise
+# dropping it from the baseline would quietly stop validating it at all.
+cls "mock_topology '$R1' '$L' agents:2 editor:1 editor:1 runtime:2"
+has "malformed" "E5d a duplicated editor label is still malformed"
+
+cls "mock_topology '$R1' '$L' agents:2 editor:2 runtime:2"
+has "malformed" "E5e an editor tab with the wrong pane count is still malformed"
 
 # Malformed must not mutate anything.
 run_layout "export HERDR_ENV=1; mock_topology '$R1' '$L' agents:2 agents:2 editor:1 runtime:2" "$R1"
@@ -503,14 +559,19 @@ logged "pane split --pane w7:p3 --direction right" "G2 the agents pane splits by
 logged "pane run w7:p3 claude" "G2 claude runs in the parsed root pane"
 logged "pane run w7:p9 codex --sandbox read-only --ask-for-approval never"  "G2 codex runs read-only in the split's parsed id"
 
-logged "tab create --workspace w7 --label editor" "G3 tabs are created with --workspace"
+logged "tab create --workspace w7 --label runtime" "G3 tabs are created with --workspace"
 unlogged "--workspace-id"    "G3 the non-existent --workspace-id flag is never used"
 unlogged "--target-pane-id"  "G3 the non-existent --target-pane-id flag is never used"
 
 # The runtime split must target that tab's OWN root pane. tab create does not focus,
-# so an untargeted split could land on the agents tab instead.
-logged "pane split --pane w7:p5 --direction down" "G4 the runtime split targets its own parsed root pane"
-logged "pane run w7:p4 nvim ."   "G4 editor runs in its own tab"
+# so an untargeted split could land on the agents tab instead. runtime is now the
+# first tab the build creates, so it takes the first sequenced root pane.
+logged "pane split --pane w7:p4 --direction down" "G4 the runtime split targets its own parsed root pane"
+
+# The editor tab is lazy. Building it here is what the whole change removes: a space
+# opens without nvim, and alt+e creates the tab the first time it is wanted.
+unlogged "--label editor" "G4 no editor tab is created at build time"
+unlogged "nvim"           "G4 nvim is never launched at build time"
 
 # The git tab is gone: lazygit is an alt+g popup now, not a managed tab that repair
 # would keep reinstating.
@@ -524,11 +585,12 @@ logged "tab focus w7:t4" "G5 the agents tab is focused, as dev.kdl pinned it"
   && _pass "G5 rename precedes focus, and the tab focus comes last" \
   || _fail "G5 rename/focus ordering is wrong"
 
-# Trap: fail on the SECOND tab create, so the workspace is genuinely half-built.
-run_layout "export HERDR_ENV=1; mock_panes '/nowhere'; export MOCK_TAB_CREATE_FAIL_AT=2" "$R1"
+# Trap: fail on the runtime tab create, so the workspace is genuinely half-built —
+# the agents tab and its two panes exist, nothing else does.
+run_layout "export HERDR_ENV=1; mock_panes '/nowhere'; export MOCK_TAB_CREATE_FAIL_AT=1" "$R1"
 rc_is 1 "G6 a failed build fails loudly"
 logged "workspace close w7" "G6 the trap closes the partial workspace"
-logged "tab create --workspace w7 --label runtime" "G6 it reached the second tab create (runtime)"
+logged "tab create --workspace w7 --label runtime" "G6 it reached the runtime tab create"
 unlogged "workspace rename" "G6 a failed build is never renamed to the final label"
 
 # hl_api_json proves a payload parses — not that mandatory ids are present.
@@ -574,6 +636,20 @@ logged "workspace rename w7 Netronix/curato" "H2 renamed to the final label"
 run_layout "export HERDR_ENV=1; mock_topology '$R1' 'Netronix/curato' agents:2 editor:1 notes:1" "$R1"
 unlogged "tab close" "H3 the user's own tab is never closed"
 unlogged "--label notes" "H3 the user's own tab is never recreated"
+
+# H4 is the point of the change. Closing the editor tab is a decision, not damage:
+# repair must leave the space alone rather than reinstating nvim on the next dev.
+run_layout "export HERDR_ENV=1; mock_topology '$R1' 'Netronix/curato' $FULL" "$R1"
+rc_is 0 "H4 a space with no editor tab succeeds"
+unlogged "tab create" "H4 a missing editor tab is not repaired — it is lazy"
+unlogged "nvim"       "H4 nvim is not relaunched behind the user's back"
+logged "workspace focus w7" "H4 the space is simply focused"
+
+# The eager tabs are still enforced alongside it, so laziness cannot leak sideways
+# into "repair does nothing".
+run_layout "export HERDR_ENV=1; mock_topology '$R1' 'Netronix/curato' agents:2" "$R1"
+logged "tab create --workspace w7 --label runtime" "H5 a missing runtime tab is still repaired"
+unlogged "--label editor" "H5 repair does not take the chance to add an editor tab"
 
 # --- J: tab jumps resolve by label ------------------------------------------
 print -r -- "-- J: tab-goto"
@@ -657,6 +733,73 @@ rc_is 1 "J9 a focus that fails after a successful list fails the jump"
 has "could not focus" "J9 the diagnostic names the focus failure"
 logged "tab focus w7:t3" "J9 the focus was genuinely attempted"
 logged "notification show" "J9 the failure is surfaced as a notification"
+
+# --create: the lazy tab's jump has to be able to make what it jumps to. It does NOT
+# re-list afterwards — layout.sh hands back the id it just created, so there is no
+# window between the create and the focus for another client to change the tab set.
+# tab-goto EXECUTES layout.sh, the way dev does. The chezmoi source file carries no
+# exec bit — the `executable_` prefix adds it at apply time — so DEV_LAYOUT points at a
+# shim that runs the real script rather than at the unexecutable source. Pointing it
+# straight at $LAYOUT fails with "permission denied" and says nothing about the code.
+LAYOUT_EXEC="$STUBS/layout-exec.sh"
+cat > "$LAYOUT_EXEC" <<EXEC
+#!/bin/sh
+exec zsh "$LAYOUT" "\$@"
+EXEC
+chmod +x "$LAYOUT_EXEC"
+
+gotoc() {  # <mock-setup> <tab-goto args...>
+  mock_reset; eval "$1"; shift
+  OUT="$(HOME="$ROOTTMP" HERDR_ACTIVE_WORKSPACE_ID=w7 DEV_LAYOUT="$LAYOUT_EXEC" \
+    zsh "$TABGOTO" "$@" 2>&1)"; RC=$?
+}
+
+gotoc "mock_topology '$R1' 'Netronix/curato' $FULL" --create editor
+rc_is 0 "J10 --create succeeds when the label is absent"
+logged "tab create --workspace w7 --label editor" "J10 the missing editor tab is created"
+logged "pane run w7:p4 nvim ." "J10 nvim is launched in the new tab's own pane"
+logged "tab focus w7:t5" "J10 the newly created tab is focused by its returned id"
+
+gotoc "mock_topology '$R1' 'Netronix/curato' $FULL_EDITOR" --create editor
+rc_is 0 "J11 --create succeeds when the label is present"
+unlogged "tab create" "J11 an existing editor tab is never duplicated"
+unlogged "nvim"       "J11 a second nvim is never launched over a live session"
+logged "tab focus w7:t2" "J11 the existing tab is focused"
+
+# Only the lazy label may be conjured. Without this, a typo in config.toml would
+# silently start populating tabs layout.sh does not manage.
+gotoc "mock_topology '$R1' 'Netronix/curato' $FULL" --create notes
+rc_is 1 "J12 --create refuses a label layout.sh does not manage"
+# The reason matters: without it this passes on "no tab labelled --create", which is
+# what it did before --create existed at all.
+has "not a managed tab" "J12 the refusal comes from layout.sh, not from a misparse"
+unlogged "tab create" "J12 no unmanaged tab is created"
+logged "notification show" "J12 the refusal is surfaced as a notification"
+
+gotoc "mock_topology '$R1' 'Netronix/curato' $FULL" --create
+rc_is 1 "J13 --create with no label fails"
+has "usage" "J13 says how to call it"
+
+# J15/J16: `tab focus` answers with an error envelope at exit status 0 — the same
+# shape layout.sh's F1d pins. Checking only $? turns a failed jump into a silent
+# success, which under detached execution is a key that does nothing and says nothing.
+gotoc "mock_topology '$R1' 'Netronix/curato' $FULL
+  export MOCK_TAB_FOCUS_JSON='{\"error\":{\"code\":\"internal\",\"message\":\"focus failed\"}}'" \
+  --create editor
+rc_is 1 "J15 a created tab whose focus returns an error envelope fails"
+logged "notification show" "J15 the failure is surfaced as a notification"
+
+gotoc "mock_tabs agents editor runtime
+  export MOCK_TAB_FOCUS_JSON='{\"error\":{\"code\":\"internal\",\"message\":\"focus failed\"}}'" \
+  editor
+rc_is 1 "J16 an ordinary jump whose focus returns an error envelope fails too"
+logged "notification show" "J16 the failure is surfaced as a notification"
+
+# Without the flag the behaviour is unchanged: a missing eager tab is repair's job,
+# and a jump that silently built one would hide the real fault.
+gotoc "mock_topology '$R1' 'Netronix/curato' agents:2" runtime
+rc_is 1 "J14 a bare jump still refuses to create the tab it cannot find"
+unlogged "tab create" "J14 nothing is created without --create"
 
 # --- K: the plugin's --current mode -----------------------------------------
 print -r -- "-- K: layout.sh --current"
@@ -907,10 +1050,11 @@ eq "${#$(hl_shorten_of feature-lod-alert-scoped-coverage-totals-design 34)}" "34
 logged "tab rename w7:t4 agents" "L1 the native root tab becomes agents"
 logged "pane split --pane w7:p3 --direction right --cwd $WT --no-focus" \
   "L1 the native root pane is reused for the agents split"
-eq "$(count_logged "tab create --workspace w7 --label editor --cwd $WT --no-focus")" 1 \
-  "L1 editor is created exactly once"
 eq "$(count_logged "tab create --workspace w7 --label runtime --cwd $WT --no-focus")" 1 \
   "L1 runtime is created exactly once"
+# Adoption builds the same eager baseline as an ordinary space — a worktree is not a
+# reason to open nvim any more than a primary checkout is.
+unlogged "--label editor" "L1 adoption creates no editor tab either"
 unlogged "tab create --workspace w7 --label agents" \
   "L1 no redundant agents tab is appended"
 
@@ -945,7 +1089,9 @@ unlogged "tab rename" "L4 nothing is mutated without linked provenance"
 mock_reset
 worktree_fixture false true
 blank_worktree_topology
-export MOCK_TAB_CREATE_FAIL_AT=2
+# The runtime tab is the only one adoption creates, so it is the only one that can
+# fail partway.
+export MOCK_TAB_CREATE_FAIL_AT=1
 run_worktree_layout
 rc_is 1 "L5 a failed adoption fails the run"
 logged "workspace close w7" "L5 the partial workspace is closed but the checkout survives"
@@ -1005,5 +1151,192 @@ has 'new_worktree = ""' "Herdr's unprepared built-in worktree shortcut is disabl
 has 'close_workspace = "alt+q"' "Alt-q closes the current project workspace"
 has 'edit_scrollback = "alt+s"' "Alt-s keeps the long-standing scrollback mnemonic"
 has 'confirm_close = true' "workspace close keeps Herdr's confirmation guard explicit"
+
+# alt+e is the only way the editor tab ever comes into existence now, so the binding
+# must carry --create. A stale bare jump would fire a notification on every press in a
+# space that has not had nvim opened yet — which is every new space.
+OUT="$(awk '
+  BEGIN { RS="\\[\\[keys.command\\]\\]" }
+  index($0, "key = \"alt+e\"") && index($0, "tab-goto.sh --create editor") { print; found=1 }
+  END { if (!found) exit 1 }
+' "$CONFIG" 2>&1)"; RC=$?
+rc_is 0 "alt+e creates the editor tab on demand"
+has 'type = "shell"' "the editor jump stays a detached shell command"
+OUT="$(<"$CONFIG")"
+hasnt 'tab-goto.sh --create agents'  "the eager agents jump does not create"
+hasnt 'tab-goto.sh --create runtime' "the eager runtime jump does not create"
+
+# --- N: layout.sh --make-tab ------------------------------------------------
+print -r -- "-- N: layout.sh --make-tab"
+
+mk() {  # <mock-setup> <layout.sh args...>
+  mock_reset; eval "$1"; shift
+  OUT="$(HOME="$ROOTTMP" HERDR_ACTIVE_WORKSPACE_ID=w7 zsh "$LAYOUT" "$@" 2>&1)"; RC=$?
+}
+
+mk "mock_topology '$R1' 'Netronix/curato' $FULL" --make-tab editor
+rc_is 0 "N1 a missing managed tab is created"
+logged "tab create --workspace w7 --label editor --cwd $R1 --no-focus" \
+  "N1 created unfocused, in the resolved repo root"
+logged "pane run w7:p4 nvim ." "N1 nvim runs in the new tab's parsed root pane"
+eq "$OUT" "w7:t5" "N1 the new tab id is printed for the caller to focus"
+unlogged "tab focus" "N1 focusing is the caller's job, not this mode's"
+unlogged "workspace rename" "N1 a lazy tab does not touch the space's label"
+
+# Idempotent under the lock. tab-goto checks, then calls here — two fast alt+e presses
+# would otherwise both see the tab missing and the space would end up malformed.
+mk "mock_topology '$R1' 'Netronix/curato' $FULL_EDITOR" --make-tab editor
+rc_is 0 "N2 an existing tab is not an error"
+unlogged "tab create" "N2 the existing tab is not duplicated"
+unlogged "nvim"       "N2 no second nvim is launched"
+eq "$OUT" "w7:t2" "N2 the existing tab's id is printed"
+
+mk "mock_topology '$R1' 'Netronix/curato' $FULL" --make-tab notes
+rc_is 1 "N3 an unmanaged label is refused"
+has "not a managed tab" "N3 says why"
+unlogged "tab create" "N3 nothing is created"
+
+mk "mock_topology '$ROOTTMP/notrepo' 'notrepo' $FULL" --make-tab editor
+rc_is 1 "N4 a non-repo workspace is refused"
+has "not inside a git repository" "N4 says why"
+unlogged "tab create" "N4 nothing is created"
+
+mk "export HL_TRACE_LOCK=1; mock_topology '$R1' 'Netronix/curato' $FULL" --make-tab editor
+has "LOCK-ACQUIRED" "N5 --make-tab takes the same per-repo lock"
+
+mock_reset; mock_topology "$R1" "Netronix/curato" $FULL
+OUT="$(HOME="$ROOTTMP" env -u HERDR_ACTIVE_WORKSPACE_ID -u HERDR_WORKSPACE_ID \
+  zsh "$LAYOUT" --make-tab editor 2>&1)"; RC=$?
+rc_is 1 "N6 without a workspace in context it refuses to run"
+has "no active workspace" "N6 says what is missing"
+
+# Same provenance guard as --current: a hand-made workspace in a linked checkout has
+# no native ownership, so wt-rm could not find it during teardown.
+mk "mock_topology '$WT' 'curato-feature' $FULL" --make-tab editor
+rc_is 1 "N7 an unregistered linked-worktree workspace is refused"
+has "native Herdr worktree" "N7 says what is missing"
+unlogged "tab create" "N7 nothing is created"
+
+mk "mock_topology '$WT' 'curato-feature' $FULL
+  export MOCK_WS_LIST='{\"result\":{\"workspaces\":[{\"workspace_id\":\"w7\",\"label\":\"curato-feature\",\"worktree\":{\"checkout_path\":\"$WT\",\"is_linked_worktree\":true}}]}}'" \
+  --make-tab editor
+rc_is 0 "N7b a native worktree workspace gets its editor tab"
+logged "tab create --workspace w7 --label editor --cwd $WT --no-focus" \
+  "N7b created in the worktree checkout, not the primary"
+
+mk "mock_topology '$R1' 'Netronix/curato' $FULL" --make-tab
+rc_is 1 "N8 --make-tab with no label fails"
+has "usage" "N8 says how to call it"
+
+# N9: --make-tab is always invoked by something that reports for it — tab-goto captures
+# its stderr and raises the notification. Notifying here too means every failed alt+e
+# shows two toasts, the second one saying strictly more than the first. --current has
+# no such caller, which is why it keeps hl_die_notify.
+mk "mock_topology '$ROOTTMP/notrepo' 'notrepo' $FULL" --make-tab editor
+rc_is 1 "N9 a refused --make-tab still fails"
+has "not inside a git repository" "N9 the reason is on stderr for the caller to relay"
+unlogged "notification show" "N9 --make-tab does not raise its own toast"
+
+# N11: `tab create` succeeding and `pane run` failing leaves a tab with the right
+# label and the right pane count — so it classifies complete, repair leaves it alone,
+# and every later alt+e focuses an empty shell labelled "editor" forever. During a build
+# the workspace trap covers this; --make-tab has no trap, so it must clean up itself.
+mk "mock_topology '$R1' 'Netronix/curato' $FULL; export MOCK_PANE_RUN_RC=1" --make-tab editor
+rc_is 1 "N11 a tab whose command fails to launch fails the call"
+logged "tab create --workspace w7 --label editor" "N11 the tab was genuinely created first"
+logged "tab close w7:t5" "N11 the half-built tab is closed rather than left behind"
+
+# N11b: the same window, entered through a validation failure instead of a command
+# failure. `tab create` answered, so the tab EXISTS on the server; whether the response
+# also carried a usable pane id changes nothing about that. Parsing the pane id before
+# the tab id meant this path returned without an id to clean up with.
+mk "mock_topology '$R1' 'Netronix/curato' $FULL; export MOCK_TAB_CREATE_NO_PANE_ID=1" \
+  --make-tab editor
+rc_is 1 "N11b a create response with no root pane id fails"
+has "missing" "N11b says what was missing"
+logged "tab close w7:t5" "N11b the tab that was created is still closed"
+unlogged "pane run" "N11b nothing is run in a pane that could not be identified"
+
+# N12: the real race, on the schedule that breaks it — B waits BEFORE taking the lock,
+# so it arrives with a stale observation after A has created and released. Both
+# processes see one shared tab list, so a re-check that moved above the lock would let
+# both create. N5's marker alone cannot catch that.
+mock_reset
+export MOCK_TAB_STATE_FILE="$(mktemp "${TMPROOT%/}/tabstate.XXXXXX")"; : > "$MOCK_TAB_STATE_FILE"
+mock_topology "$R1" "Netronix/curato" $FULL
+( HOME="$ROOTTMP" HERDR_ACTIVE_WORKSPACE_ID=w7 HL_LOCK_DELAY=2 \
+    zsh "$LAYOUT" --make-tab editor >"${TMPROOT%/}/mkB.out" 2>&1 ) &
+RACE_B=$!
+sleep 0.2
+A_OUT="$(HOME="$ROOTTMP" HERDR_ACTIVE_WORKSPACE_ID=w7 zsh "$LAYOUT" --make-tab editor 2>&1)"
+a_rc=$?
+b_rc=0; wait $RACE_B 2>/dev/null || b_rc=$?
+B_OUT="$(<"${TMPROOT%/}/mkB.out")"
+eq "$(count_logged "tab create --workspace w7 --label editor --cwd $R1 --no-focus")" "1" \
+  "N12 two overlapping presses create exactly one editor tab"
+[[ "$a_rc" == 0 && "$b_rc" == 0 ]] \
+  && _pass "N12 both racers succeed" || _fail "N12 racer rc=$a_rc/$b_rc"
+eq "$B_OUT" "$A_OUT" "N12 both racers return the same tab id"
+unset MOCK_TAB_STATE_FILE
+
+# N13: N12 asserts the OUTCOME of two overlapping presses, but it cannot prove the
+# ordering that produces it — whether the mutant loses depends on which process wins a
+# 0.2s head start, so it is evidence, not a guard. This one is deterministic. A real
+# flock held by another process is a hard barrier: the contender cannot pass hl_lock,
+# and the editor tab appears WHILE it is stuck there. If the re-check sits above the
+# lock, the contender reads the tab list before blocking — at which point the tab does
+# not exist — and creates a second one. Verified against that mutant.
+mock_reset
+export MOCK_TAB_STATE_FILE="$(mktemp "${TMPROOT%/}/tabstate2.XXXXXX")"; : > "$MOCK_TAB_STATE_FILE"
+mock_topology "$R1" "Netronix/curato" $FULL
+N13_LOCKDIR="$XDG_STATE_HOME/herdr-layout"; mkdir -p "$N13_LOCKDIR"
+N13_KEY="${R1//\//-}"; N13_KEY="${N13_KEY#-}"
+N13_LOCK="$N13_LOCKDIR/$N13_KEY.lock"; : >> "$N13_LOCK"
+zsh -c "zmodload -F zsh/system b:zsystem; zsystem flock '$N13_LOCK'; sleep 30" &
+N13_HOLDER=$!
+sleep 0.7
+N13_OUTF="$(mktemp "${TMPROOT%/}/n13.XXXXXX")"
+N13_TRACE="$(mktemp "${TMPROOT%/}/n13trace.XXXXXX")"
+# A generous lock timeout: the handshake below may spend seconds waiting, and a
+# contender that gave up while we watched for it would look like a passing test.
+( HOME="$ROOTTMP" HERDR_ACTIVE_WORKSPACE_ID=w7 HL_TRACE_LOCK=1 HL_LOCK_TIMEOUT=60 \
+    zsh "$LAYOUT" --make-tab editor >"$N13_OUTF" 2>"$N13_TRACE" ) &
+N13_C=$!
+# The handshake. Wait until the contender SAYS it is at the lock, rather than assuming
+# it got there within some sleep — on a slower machine the fixture would otherwise
+# insert the tab and release before the contender looked at anything, and an
+# ensure-before-lock mutant would then find w7:t9, create nothing, and pass.
+n13_i=0
+while (( n13_i < 150 )); do
+  [[ "$(<$N13_TRACE)" == *LOCK-WAIT* ]] && break
+  sleep 0.1; (( n13_i++ ))
+done
+[[ "$(<$N13_TRACE)" == *LOCK-WAIT* ]] \
+  && _pass "N13 the contender reached the lock and blocked there" \
+  || _fail "N13 the contender never reached the lock — the rest proves nothing"
+# What the lock holder "did" while it held the lock.
+print -n '{"tab_id":"w7:t9","label":"editor"},' >> "$MOCK_TAB_STATE_FILE"
+kill $N13_HOLDER 2>/dev/null; wait $N13_HOLDER 2>/dev/null
+n13_rc=0; wait $N13_C 2>/dev/null || n13_rc=$?
+N13_OUT="$(<"$N13_OUTF")"
+RC=$n13_rc; rc_is 0 "N13 the contender succeeds once the lock is released"
+eq "$(count_logged "tab create --workspace w7 --label editor --cwd $R1 --no-focus")" "0" \
+  "N13 a contender blocked on the lock never creates a tab it could not have seen"
+eq "$N13_OUT" "w7:t9" "N13 it adopts the tab that appeared while it waited"
+unset MOCK_TAB_STATE_FILE
+
+# N10: the tab id is now load-bearing — it is what the caller focuses — so a create
+# response without one must fail rather than hand "null" to `tab focus`.
+mk "mock_topology '$R1' 'Netronix/curato' $FULL; export MOCK_TAB_CREATE_NO_TAB_ID=1" \
+  --make-tab editor
+rc_is 1 "N10 a tab create response with no tab id fails"
+has "missing" "N10 says what was missing"
+unlogged "tab focus" "N10 nothing is focused on a null id"
+
+# The same response is fatal to a build, which has relied on that field since the id
+# started being returned.
+run_layout "export HERDR_ENV=1; mock_panes '/nowhere'; export MOCK_TAB_CREATE_NO_TAB_ID=1" "$R1"
+rc_is 1 "N10b a build stops on a tab create response with no tab id"
+logged "workspace close w7" "N10b the trap closes the partial workspace"
 
 finish
