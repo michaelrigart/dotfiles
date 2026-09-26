@@ -29,6 +29,7 @@
   - One `tests/<subject>.test.sh` per script, mode 755 (`git add --chmod=+x`), with a correct shebang.
   - A missing subject exits 2.
   - Run through `./tests/run.sh <filter>`, never `bash tests/x.test.sh` for zsh suites. Report totals as passed/total.
+- `tests/run.sh` filters are substrings, and a filtered run executes `test-requires` suites instead of skipping them. `./tests/run.sh dev` also runs `dev-topology` and the interactive `dev-integrations`, and `codex-daemon` matches `live-codex-daemon`. To run one suite whose name another suite contains, execute it directly (`./tests/dev.test.sh`).
 - The Claude sandbox denies binding unix sockets (F20). Sandboxed tests reach `xreview-rpc` through `XREVIEW_RPC_STDIO`, never a socket.
 - `xreview` is in `sandbox.excludedCommands` only when it is the whole command. Never chain it after another command in one Bash call.
 - Writes under `~/.codex`, and `launchctl`, `ps`, `herdr` and the daemon socket, need the unsandboxed retry. `chezmoi apply` is targeted (named paths), never a full apply without `op`.
@@ -82,7 +83,7 @@
 - Produces:
   - `codex-daemon real-bin`: prints an absolute path; exit 1 if there is none.
   - `codex-daemon ensure`: exit 0 when the daemon answers, 1 otherwise, with the fix on stderr.
-  - `codex-daemon check`: exit 0 when the daemon answers and is clean; exit 1 with the fix (`codex-daemon restart`) on stderr.
+  - `codex-daemon check`: exit 0 only when the daemon answers AND every live daemon process was inspected and carries no `HERDR_*`. An unreadable environment or a missing server pid file fails closed. Exit 1 with the reason and the fix (`codex-daemon restart`) on stderr.
   - `codex-daemon restart`: exit 0 when the daemon ends up clean.
   - Test knobs: `CODEX_HOME`, `CODEX_DAEMON_LABEL`, `CODEX_DAEMON_WAIT` (seconds, default 10), `XDG_BIN_HOME`.
 
@@ -121,8 +122,8 @@ _fail() { printf '  FAIL: %s\n    | got: %s\n' "$1" "$2"; fail=$((fail + 1)); }
 is() { if [ "$2" = "$3" ]; then _pass "$1"; else _fail "$1" "$2"; fi; }
 
 T="$(mktemp -d "${TMPDIR:-/tmp}/codex-daemon.XXXXXX")"
-trap 'kill $A_PID $B_PID 2>/dev/null; rm -rf "$T"' EXIT
-A_PID=""; B_PID=""
+trap 'kill $A_PID $B_PID $C_PID 2>/dev/null; rm -rf "$T"' EXIT
+A_PID=""; B_PID=""; C_PID=""
 mkdir -p "$T/localbin" "$T/brew" "$T/cask/bin" "$T/stub" "$T/codexhome/app-server-daemon"
 export CALLS="$T/calls" STATE="$T/state" CODEX_HOME="$T/codexhome" CODEX_DAEMON_WAIT=2
 
@@ -142,11 +143,14 @@ cat > "$T/stub/launchctl" <<'L'
 #!/bin/sh
 echo "launchctl $*" >> "$CALLS"
 [ "${KICK_STARTS:-1}" = 1 ] && echo running > "$STATE"
+# A restarted daemon writes a fresh pid file.
+[ -n "${NEW_SERVER_PID:-}" ] && printf '{"pid":%s}' "$NEW_SERVER_PID" > "$CODEX_HOME/app-server-daemon/daemon.pid"
 exit 0
 L
 cat > "$T/stub/ps" <<'P'
 #!/bin/sh
 # `ps eww -o command= -p PID` shows the environment; `ps -o command= -p PID` does not.
+[ -n "${PS_FAIL:-}" ] && exit 1
 pid=""; for a in "$@"; do pid="$a"; done
 cmd="/x/codex app-server --listen unix://"
 [ "$pid" = "${FOREIGN_PID:-none}" ] && cmd="/usr/bin/some-other-program"
@@ -187,26 +191,43 @@ is "and names the deliberate escape" "$(printf '%s' "$out" | grep -c -- '--no-da
 is "and how to load the agent" "$(printf '%s' "$out" | grep -c 'launchctl bootstrap')" 1
 
 echo "C. check"
+# Live processes stand in for the daemon: check only trusts a pid it can see running.
+sleep 60 & A_PID=$!
+sleep 60 & B_PID=$!
 echo running > "$STATE"
-printf '{"pid":111,"processStartTime":"x"}' > "$CODEX_HOME/app-server-daemon/daemon.pid"
-printf '{"pid":222,"processStartTime":"x"}' > "$CODEX_HOME/app-server-daemon/daemon-updater.pid"
+printf '{"pid":%s,"processStartTime":"x"}' "$A_PID" > "$CODEX_HOME/app-server-daemon/daemon.pid"
+printf '{"pid":%s,"processStartTime":"x"}' "$B_PID" > "$CODEX_HOME/app-server-daemon/daemon-updater.pid"
 run check; is "a clean running daemon passes" "$?" 0
-out="$(DIRTY_PIDS=222 run check 2>&1)"; rc=$?
+out="$(DIRTY_PIDS=$B_PID run check 2>&1)"; rc=$?
 is "a daemon process carrying HERDR_* fails" "$rc" 1
 is "the fix is named" "$(printf '%s' "$out" | grep -c 'codex-daemon restart')" 1
 is "and its cost" "$(printf '%s' "$out" | grep -c 'disconnects every open Codex TUI')" 1
+# An environment that cannot be read is not known to be clean, and `ps` is exactly what a
+# sandbox denies. Inspection failure must fail the check, never pass it.
+out="$(PS_FAIL=1 run check 2>&1)"; rc=$?
+is "an environment that cannot be read fails" "$rc" 1
+is "and says it could not inspect" "$(printf '%s' "$out" | grep -c 'cannot inspect')" 1
+mv "$CODEX_HOME/app-server-daemon/daemon.pid" "$T/daemon.pid.bak"
+out="$(run check 2>&1)"; rc=$?
+is "a missing server pid file fails" "$rc" 1
+is "and names the file" "$(printf '%s' "$out" | grep -c 'daemon.pid')" 1
+mv "$T/daemon.pid.bak" "$CODEX_HOME/app-server-daemon/daemon.pid"
+kill "$B_PID" 2>/dev/null; sleep 0.5
+run check; is "a supervisor pid whose process is gone is skipped, not a failure" "$?" 0
 echo notRunning > "$STATE"
 out="$(run check 2>&1)"; rc=$?
 is "a daemon that does not answer fails" "$rc" 1
 is "and says so" "$(printf '%s' "$out" | grep -c 'not answering')" 1
 
 echo "D. restart"
+kill "$A_PID" 2>/dev/null
 sleep 60 & A_PID=$!
 sleep 60 & B_PID=$!
+sleep 60 & C_PID=$!   # the server the restarted daemon reports
 printf '{"pid":%s}' "$A_PID" > "$CODEX_HOME/app-server-daemon/daemon.pid"
 printf '{"pid":%s}' "$B_PID" > "$CODEX_HOME/app-server-daemon/daemon-updater.pid"
 echo running > "$STATE"; : > "$CALLS"
-FOREIGN_PID="$B_PID" run restart; rc=$?
+FOREIGN_PID="$B_PID" NEW_SERVER_PID="$C_PID" run restart; rc=$?
 is "restart ends with a clean running daemon" "$rc" 0
 is "it stops the daemon first" "$(grep -c 'codex stop' "$CALLS")" 1
 sleep 0.5   # let bash reap the signalled child, or kill -0 still sees a zombie
@@ -243,6 +264,7 @@ chmod 755 tests/codex-daemon.test.sh
 ./tests/run.sh codex-daemon
 ```
 Expected: the suite exits 2 with `missing file under test: …/executable_codex-daemon`.
+(Here `./tests/run.sh codex-daemon` is still exact; once Task 8 adds `live-codex-daemon` the filter matches that too, so later steps execute `./tests/codex-daemon.test.sh` directly.)
 
 - [ ] **Step 3: Write `dot_local/bin/executable_codex-daemon`**
 
@@ -298,10 +320,14 @@ pid_of() { # pid_of <pid-file>: the JSON "pid" field
   sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "$1" | head -1
 }
 
-# `ps eww` appends the process environment to the command line; one word per variable is
-# enough to tell whether any HERDR_ name is present.
-carries_herdr_env() { # carries_herdr_env <pid>
-  ps eww -o command= -p "$1" 2>/dev/null | tr ' ' '\n' | grep -q '^HERDR_'
+# inspect <pid>: print the process's command line with its environment (`ps eww` appends
+# it). Exit 2 if the process is gone, 1 if it is alive but cannot be read. A read failure
+# must never pass as clean: `ps` is exactly what a sandbox denies.
+inspect() {
+  kill -0 "$1" 2>/dev/null || return 2
+  words="$(ps eww -o command= -p "$1" 2>/dev/null)" || return 1
+  [ -n "$words" ] || return 1
+  printf '%s\n' "$words"
 }
 
 cmd_ensure() {
@@ -322,11 +348,21 @@ cmd_ensure() {
 
 cmd_check() {
   answering || die "the Codex daemon is not answering - run: codex-daemon ensure"
+  server="$(pid_of "$PIDS/daemon.pid" || true)"
+  [ -n "$server" ] || die "cannot find the daemon's pid in $PIDS/daemon.pid; its environment cannot be verified"
   dirty=""
   for f in "$PIDS/daemon.pid" "$PIDS/daemon-updater.pid"; do
-    pid="$(pid_of "$f")" || continue
+    pid="$(pid_of "$f" || true)"
     [ -n "$pid" ] || continue
-    if carries_herdr_env "$pid"; then dirty="$dirty $pid"; fi
+    rc=0
+    words="$(inspect "$pid")" || rc=$?
+    if [ "$rc" = 2 ]; then
+      # A supervisor that has exited carries nothing; the server itself must be there.
+      [ "$pid" != "$server" ] || die "the daemon answers but its pid $pid (from $f) is gone; its environment cannot be verified"
+      continue
+    fi
+    [ "$rc" = 0 ] || die "cannot inspect the daemon process $pid (is ps denied here?); its environment cannot be verified"
+    if printf '%s\n' "$words" | tr ' ' '\n' | grep -q '^HERDR_'; then dirty="$dirty $pid"; fi
   done
   [ -z "$dirty" ] && return 0
   die "the Codex daemon (pid$dirty) carries a herdr pane's environment, so herdr's own hook
@@ -423,7 +459,7 @@ esac
 ```bash
 ./tests/run.sh codex-daemon
 ```
-Expected: `ok    codex-daemon  N/N`, where N is the assertion count, with 0 failed.
+Expected: `ok    codex-daemon  N/N`, where N is the assertion count, with 0 failed. (From Task 8 on, run this suite as `./tests/codex-daemon.test.sh`: the filter would also match `live-codex-daemon`.)
 
 - [ ] **Step 6: Commit**
 
@@ -699,9 +735,9 @@ host="$(dirname "$real")/codex-code-mode-host"
 - [ ] **Step 8: Run both suites to verify they pass**
 
 ```bash
-./tests/run.sh codex-launcher codex-code-mode-host codex-daemon
+./tests/run.sh codex-launcher codex-code-mode-host && ./tests/codex-daemon.test.sh
 ```
-Expected: all three `ok`, 0 failed.
+Expected: both run.sh suites `ok`, and `codex-daemon` ends `RESULT: N passed, N total, 0 failed`.
 
 - [ ] **Step 9: Commit**
 
@@ -724,7 +760,7 @@ git -C ~/.local/share/chezmoi commit -m "Launch interactive Codex on the daemon,
 - Produces: `~/.codex/herdr-codex-pane-map.py`.
   - As a hook it reads `SessionStart` JSON on stdin; `--reconcile` runs a pass with no input.
   - It always exits 0.
-  - Test knobs: `HERDR_BIN` (used exclusively when set), `PANE_MAP_RETRY_SECS` (default 5).
+  - Test knobs: `HERDR_BIN` (used exclusively when set), `PANE_MAP_RETRY_SECS` (default 5), `PANE_MAP_DEADLINE_SECS` (default 8; the whole run, including every herdr call, stays inside it, under the 10 s hook timeout).
   - For every herdr pane with `agent == "codex"` whose title (`terminal_title_stripped`, else `terminal_title`) starts with a UUID different from its `agent_session.value`, it calls `herdr pane report-agent-session <pane> --source herdr:codex --agent codex --agent-session-id <uuid> --seq <ns>`, plus `--session-start-source <src>` for the starting session's pane.
 
 - [ ] **Step 1: Write the failing test** — `tests/herdr-codex-pane-map.test.sh`
@@ -801,6 +837,26 @@ fixture "$(pane w1:p2 codex "$U1 | t | d" "")"
 printf '{"session_id":"%s"}' "$U2" | hook
 is "one report despite several retry passes" "$(reports)" 1
 
+echo "F. the whole run stays inside its deadline"
+# Four reports that each stall for 2 s would take 8 s; the hook timeout is 10 s and the
+# pass must never be what Codex kills.
+cat > "$T/slowherdr" <<'H'
+#!/bin/sh
+case "$1 $2" in
+  "pane list") cat "$PANES" ;;
+  "pane report-agent-session") sleep 2 ;;
+esac
+exit 0
+H
+chmod +x "$T/slowherdr"
+U4=44444444-4444-4444-8444-444444444444
+fixture "$(pane w1:p2 codex "$U1 | t" "")","$(pane w2:p2 codex "$U2 | t" "")","$(pane w3:p2 codex "$U3 | t" "")","$(pane w6:p2 codex "$U4 | t" "")"
+start=$(date +%s)
+HERDR_BIN="$T/slowherdr" PANE_MAP_DEADLINE_SECS=3 hook --reconcile; rc=$?
+took=$(( $(date +%s) - start ))
+is "stalled reports still end within the deadline" "$([ "$took" -le 4 ] && echo yes || echo "no ($took s)")" yes
+is "and exit 0" "$rc" 0
+
 echo "E. it never fails a session"
 fixture ""
 HERDR_FAIL=1 hook --reconcile; is "herdr failing exits 0" "$?" 0
@@ -836,7 +892,9 @@ thread id first in its terminal title (tui.terminal_title), so the title is the 
 a pane and its thread. Each pass repairs every Codex pane, so one wrong report from anywhere
 is fixed by the next session start. An id that is not on a title is never reported.
 
-`--reconcile` runs one pass without hook input. Never exits non-zero; never blocks a session.
+`--reconcile` runs one pass without hook input. The whole run - listing, every report and
+the retries - shares one deadline (PANE_MAP_DEADLINE_SECS, 8 s), inside the 10 s hook timeout.
+Never exits non-zero; never blocks a session.
 """
 import json
 import os
@@ -847,6 +905,22 @@ import sys
 import time
 
 UUID = re.compile(r"^\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?![0-9a-f-])")
+DEADLINE = time.monotonic() + float(os.environ.get("PANE_MAP_DEADLINE_SECS", "8"))
+
+
+def left():
+    return DEADLINE - time.monotonic()
+
+
+def run(cmd):
+    """Run a herdr command bounded by what is left of the deadline; None when out of time."""
+    budget = min(3.0, left())
+    if budget <= 0:
+        return None
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=budget)
+    except Exception:
+        return None
 
 
 def herdr_bin():
@@ -860,9 +934,9 @@ def herdr_bin():
 
 
 def panes(herdr):
+    out = run([herdr, "pane", "list"])
     try:
-        out = subprocess.run([herdr, "pane", "list"], capture_output=True, text=True, timeout=3)
-        return json.loads(out.stdout)["result"]["panes"]
+        return json.loads(out.stdout)["result"]["panes"] if out else []
     except Exception:
         return []
 
@@ -878,16 +952,15 @@ def report(herdr, pane_id, uuid, start_source):
            "--agent", "codex", "--agent-session-id", uuid, "--seq", str(time.time_ns())]
     if start_source:
         cmd += ["--session-start-source", start_source]
-    try:
-        subprocess.run(cmd, capture_output=True, timeout=3)
-    except Exception:
-        pass
+    run(cmd)
 
 
 def reconcile(herdr, done, session_id=None, start_source=None):
     """One pass. Returns the set of ids currently on Codex pane titles."""
     seen = set()
     for p in panes(herdr):
+        if left() <= 0:
+            break
         if p.get("agent") != "codex":
             continue
         uuid = title_uuid(p)
@@ -918,10 +991,10 @@ def main():
         hook = {}
     sid = hook.get("session_id") if isinstance(hook.get("session_id"), str) else None
     src = hook.get("source") if isinstance(hook.get("source"), str) else None
-    deadline = time.monotonic() + float(os.environ.get("PANE_MAP_RETRY_SECS", "5"))
+    retry_until = time.monotonic() + float(os.environ.get("PANE_MAP_RETRY_SECS", "5"))
     while True:
         seen = reconcile(herdr, done, sid, src)
-        if not sid or sid in seen or time.monotonic() >= deadline:
+        if not sid or sid in seen or time.monotonic() >= retry_until or left() <= 0.5:
             return
         time.sleep(0.5)
 
@@ -1092,8 +1165,13 @@ git -C ~/.local/share/chezmoi commit -m "Put the thread id in every Codex title 
 - Produces:
   - `xreview-rpc health`: exit 0, or 5.
   - `xreview-rpc thread-status --thread ID`: prints `{"loaded":bool,"status":str,"running":bool}`, exit 0.
-  - `xreview-rpc turn-start --thread ID --input FILE --schema FILE`: prints the turn id, exit 0; 1 on refusal; 5 if unreachable.
-  - `xreview-rpc turn-wait --thread ID --turn ID --budget SECS [--schema FILE]`:
+  - `xreview-rpc turn-start --thread ID --input FILE --schema FILE [--known FILE]`:
+    - prints the turn id, exit 0;
+    - exit 1: the daemon refused;
+    - exit 5: unreachable, nothing sent;
+    - exit 6: `turn/start` was sent but not answered, so the turn may be running.
+    - `--known` first writes the thread's existing turn ids (a JSON list) to FILE, so an unanswered start can still be found later.
+  - `xreview-rpc turn-wait --thread ID (--turn ID | --new-since FILE) --budget SECS [--schema FILE]`. `--new-since` resolves the oldest turn whose id is not in FILE's list. Every connection and call is bounded by the remaining budget. Exit codes:
     - exit 0: prints the answer, pretty JSON when a schema is given;
     - exit 1: failed, interrupted or unknown turn;
     - exit 3: still running at the budget;
@@ -1162,7 +1240,8 @@ cat > "$T/fake.py" <<'PY'
 # A fake Codex daemon on stdio. FAKE_SCENARIO holds {"runs": [run, ...]}; each process
 # start takes the next run (FAKE_COUNTER), so a dropped connection and the reconnect can
 # behave differently. A run maps a method to its response and to notifications sent after
-# that response; "exit_after" drops the connection after that many messages sent.
+# that response; "exit_after" drops the connection after that many messages sent,
+# "drop_on" vanishes on receiving a method, and "silent" never answers a method.
 import json, os, sys
 scen = json.load(open(os.environ["FAKE_SCENARIO"]))
 runs = scen.get("runs") or [scen]
@@ -1185,7 +1264,9 @@ def out(m):
 for line in sys.stdin:
     m = json.loads(line); log.write(json.dumps(m) + "\n"); log.flush()
     meth = m.get("method")
-    if "id" in m and meth:
+    if meth in run.get("drop_on", []):        # accept the request, then vanish unanswered
+        sys.exit(0)
+    if "id" in m and meth and meth not in run.get("silent", []):
         resp = run.get("responses", {}).get(meth, {"result": {}})
         out(dict(resp, id=m["id"]))
         for note in run.get("after", {}).get(meth, []):
@@ -1251,6 +1332,12 @@ is "the findings schema is the outputSchema" "$(printf '%s' "$p" | jq -c .output
 scenario '{"responses":{"turn/start":{"error":{"code":-1,"message":"busy"}}}}'
 rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" 2>/dev/null
 is "a refused turn/start exits 1" "$?" 1
+# Sent but never answered is not "not started": the turn may be running. It gets its own
+# exit code, and --known has already recorded what was on the thread before it.
+scenario '{"responses":{"thread/turns/list":{"result":{"data":[{"id":"t-old","status":"completed","items":[]}]}}},"drop_on":["turn/start"]}'
+rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" --known "$T/known" 2>/dev/null
+is "an unanswered turn/start exits 6" "$?" 6
+is "the thread's earlier turns were recorded first" "$(jq -c . "$T/known")" '["t-old"]' 
 
 echo "E. turn-wait on a turn that already finished"
 scenario "$(jq -nc --argjson l "$(listing "$(turn completed "$ANSWER")")" '{responses:{"thread/turns/list":$l}}')"
@@ -1258,6 +1345,15 @@ out="$(rpc turn-wait --thread th --turn turn-1 --budget 5 --schema "$SCHEMA")"; 
 is "it exits 0"                         "$rc" 0
 is "it prints the schema-valid answer"  "$(printf '%s' "$out" | jq -r .verdict)" changes
 is "it subscribed before looking"       "$(jq -r 'select(.method) | .method' "$FAKE_LOG" | grep -E 'thread/(resume|turns/list)' | head -1)" thread/resume
+
+new_turn="$(turn completed "$ANSWER" | jq -c '.id = "turn-2"')"
+old_turn='{"id":"t-old","status":"completed","items":[]}'
+scenario "$(jq -nc --argjson n "$new_turn" --argjson o "$old_turn" '{responses:{"thread/turns/list":{result:{data:[$n,$o]}}}}')"
+out="$(rpc turn-wait --thread th --new-since "$T/known" --budget 5 --schema "$SCHEMA")"; rc=$?
+is "E2 --new-since finds the turn that was not there before" "$rc/$(printf '%s' "$out" | jq -r .verdict)" "0/changes"
+scenario "$(jq -nc --argjson o "$old_turn" '{responses:{"thread/turns/list":{result:{data:[$o]}}}}')"
+rpc turn-wait --thread th --new-since "$T/known" --budget 2 --schema "$SCHEMA" >/dev/null 2>&1
+is "E3 and exits 1 when nothing new is on the thread" "$?" 1
 
 echo "F. turn-wait on a running turn"
 done_note="$(jq -nc --argjson t "$(turn completed "$ANSWER")" '{method:"turn/completed",params:{threadId:"th",turn:$t}}')"
@@ -1305,6 +1401,14 @@ out="$(rpc turn-wait --thread th --turn turn-1 --budget 10 --schema "$SCHEMA")";
 is "it reconnects and exits 0" "$rc" 0
 is "on the second connection" "$(cat "$FAKE_COUNTER")" 2
 
+echo "L. the budget bounds connection setup too"
+scenario '{"silent":["initialize"]}'
+start=$(date +%s)
+rpc turn-wait --thread th --turn turn-1 --budget 1 --schema "$SCHEMA" >/dev/null 2>&1; rc=$?
+took=$(( $(date +%s) - start ))
+is "a daemon that never answers initialize ends at the budget" "$([ "$took" -le 3 ] && echo yes || echo "no ($took s)")" yes
+is "as unreachable (5)" "$rc" 5
+
 echo "K. thread-archive"
 scenario '{}'
 rpc thread-archive --thread th; is "it exits 0" "$?" 0
@@ -1339,12 +1443,13 @@ tests' fake daemon cannot listen on one.
 
   health
   thread-status  --thread ID                               {"loaded", "status", "running"}
-  turn-start     --thread ID --input FILE --schema FILE    prints the turn id
-  turn-wait      --thread ID --turn ID --budget SECS [--schema FILE]
+  turn-start     --thread ID --input FILE --schema FILE [--known FILE]   prints the turn id
+  turn-wait      --thread ID (--turn ID | --new-since FILE) --budget SECS [--schema FILE]
   thread-archive --thread ID
 
 Exit codes: 0 ok, 1 failed or unknown, 2 usage, 3 still running at the budget,
-4 answer does not match the schema (raw text on stdout), 5 daemon unreachable.
+4 answer does not match the schema (raw text on stdout), 5 daemon unreachable,
+6 turn/start sent but not answered - the turn may be running, so never re-dispatch.
 """
 import argparse
 import base64
@@ -1422,10 +1527,10 @@ def ws_parse(buf):
 
 
 class WsTransport:
-    def __init__(self, path):
+    def __init__(self, path, timeout=10):
         try:
             self.s = socket.socket(socket.AF_UNIX)
-            self.s.settimeout(10)
+            self.s.settimeout(min(10.0, max(0.1, timeout)))
             self.s.connect(path)
             key = base64.b64encode(os.urandom(16)).decode()
             self.s.sendall(("GET /rpc HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\n"
@@ -1524,9 +1629,12 @@ class StdioTransport:
 
 
 class Client:
-    def __init__(self):
+    """One connection. Every call is bounded by min(its own timeout, the client deadline)."""
+
+    def __init__(self, deadline=None):
+        self.deadline = deadline if deadline is not None else time.monotonic() + 60
         stdio = os.environ.get("XREVIEW_RPC_STDIO")
-        self.t = StdioTransport(stdio) if stdio else WsTransport(sock_path())
+        self.t = StdioTransport(stdio) if stdio else WsTransport(sock_path(), self.deadline - time.monotonic())
         self.next_id = 0
         self.notes = []
         r = self.call("initialize", {"clientInfo": {"name": "xreview", "version": "1"}})
@@ -1538,11 +1646,11 @@ class Client:
         self.next_id += 1
         rid = self.next_id
         self.t.send({"id": rid, "method": method, "params": params})
-        deadline = time.monotonic() + timeout
+        deadline = min(time.monotonic() + timeout, self.deadline)
         while True:
             left = deadline - time.monotonic()
             if left <= 0:
-                raise Closed(f"no response to {method}")
+                raise Closed(f"no response to {method} within the budget")
             m = self.t.recv(left)
             if m is None:
                 continue
@@ -1650,11 +1758,23 @@ def cmd_turn_start(c, a):
         text = fh.read()
     with open(a.schema, encoding="utf-8") as fh:
         schema = json.load(fh)
-    r = c.call("turn/start", {"threadId": a.thread,
-                              "input": [{"type": "text", "text": text}],
-                              "outputSchema": schema,
-                              "sandboxPolicy": {"type": "readOnly"},
-                              "approvalPolicy": "never"})
+    if a.known:
+        # What is on the thread before this start, so an unanswered start can be found later
+        # as the turn that was not there before.
+        tl = c.call("thread/turns/list", {"threadId": a.thread, "limit": 50,
+                                          "sortDirection": "desc", "itemsView": "notLoaded"})
+        data = [] if "error" in tl else ((tl.get("result") or {}).get("data") or [])
+        with open(a.known, "w", encoding="utf-8") as fh:
+            json.dump([t.get("id") for t in data], fh)
+    try:
+        r = c.call("turn/start", {"threadId": a.thread,
+                                  "input": [{"type": "text", "text": text}],
+                                  "outputSchema": schema,
+                                  "sandboxPolicy": {"type": "readOnly"},
+                                  "approvalPolicy": "never"})
+    except (Unreachable, Closed) as e:
+        err(f"turn/start was sent but not answered ({e}); the turn may be running")
+        return 6
     if "error" in r:
         err("turn/start refused: " + json.dumps(r["error"]))
         return 1
@@ -1670,15 +1790,17 @@ def cmd_thread_archive(c, a):
     return 0
 
 
-def turn_state(c, thread, turn):
+def turn_state(c, thread, turn, known=None):
+    """The turn by id, or with known given, the oldest turn whose id is not in it."""
     r = c.call("thread/turns/list", {"threadId": thread, "limit": 50,
                                      "sortDirection": "desc", "itemsView": "summary"})
     if "error" in r:
         return None
-    for t in (r.get("result") or {}).get("data") or []:
-        if t.get("id") == turn:
-            return t
-    return None
+    data = (r.get("result") or {}).get("data") or []
+    if turn:
+        return next((t for t in data if t.get("id") == turn), None)
+    new = [t for t in data if t.get("id") not in (known or [])]
+    return new[-1] if new else None   # newest first, so the last new one is the oldest
 
 
 def cmd_turn_wait(a):
@@ -1686,22 +1808,27 @@ def cmd_turn_wait(a):
     if a.schema:
         with open(a.schema, encoding="utf-8") as fh:
             schema = json.load(fh)
+    known = None
+    if a.new_since:
+        with open(a.new_since, encoding="utf-8") as fh:
+            known = json.load(fh)
     deadline = time.monotonic() + a.budget
     last = "never connected"
     while True:
         try:
-            c = Client()
+            c = Client(deadline)
             c.call("thread/resume", {"threadId": a.thread})   # subscribe before looking
-            t = turn_state(c, a.thread, a.turn)
+            t = turn_state(c, a.thread, a.turn, known)
             if t is None:
-                err(f"no turn {a.turn} on thread {a.thread}")
+                err(f"no turn {a.turn or 'started since the dispatch'} on thread {a.thread}")
                 return 1
+            turn_id = t.get("id")
             while t.get("status") not in TERMINAL:
                 n = c.wait_note(lambda m: m.get("method") == "turn/completed"
-                                and ((m.get("params") or {}).get("turn") or {}).get("id") == a.turn,
+                                and ((m.get("params") or {}).get("turn") or {}).get("id") == turn_id,
                                 deadline)
                 if n is None:
-                    err(f"turn {a.turn} is still running")
+                    err(f"turn {turn_id} is still running")
                     return 3
                 t = n["params"]["turn"]
             return finish(t, schema)
@@ -1710,7 +1837,7 @@ def cmd_turn_wait(a):
             if time.monotonic() >= deadline:
                 err(f"Codex daemon unreachable: {last}")
                 return 5
-            time.sleep(1)
+            time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
 
 
 def main(argv=None):
@@ -1723,9 +1850,12 @@ def main(argv=None):
     p.add_argument("--thread", required=True)
     p.add_argument("--input", required=True)
     p.add_argument("--schema", required=True)
+    p.add_argument("--known")
     p = sub.add_parser("turn-wait")
     p.add_argument("--thread", required=True)
-    p.add_argument("--turn", required=True)
+    which = p.add_mutually_exclusive_group(required=True)
+    which.add_argument("--turn")
+    which.add_argument("--new-since")
     p.add_argument("--budget", type=float, required=True)
     p.add_argument("--schema")
     a = ap.parse_args(argv)
@@ -1831,11 +1961,11 @@ CODEX_CMD="$(grep -v '^[[:space:]]*#' "${0:A:h}/codex-pane-command" 2>/dev/null 
 [[ -n "$CODEX_CMD" ]] || { print -ru2 -- "layout.sh: missing ${0:A:h}/codex-pane-command"; exit 1 }
 ```
 
-Run the layout suite, which asserts the exact pane command (`G2 codex runs read-only`):
+Run the layout suite, which asserts the exact pane command (`G2 codex runs read-only`). Execute it directly, because the `dev` filter would also run `dev-topology` and the interactive `dev-integrations`:
 ```bash
-./tests/run.sh dev
+./tests/dev.test.sh
 ```
-Expected: `dev` `ok` (`dev-topology` and `dev-integrations` are listed as skipped).
+Expected: its summary line shows 0 failed.
 
 - [ ] **Step 3: Write the failing xreview test** — replace `tests/xreview.test.sh` entirely:
 
@@ -1923,14 +2053,20 @@ cat > "$STUB/xreview-rpc" <<'R'
 #!/bin/sh
 echo "xreview-rpc $*" >> "$CALLS"
 cmd="$1"; shift
-th=""; input=""
+th=""; input=""; known=""
 while [ "$#" -gt 0 ]; do
-  case "$1" in --thread) th="$2"; shift ;; --input) input="$2"; shift ;; esac; shift
+  case "$1" in --thread) th="$2"; shift ;; --input) input="$2"; shift ;; --known) known="$2"; shift ;; esac; shift
 done
 case "$cmd" in
-  thread-status) if [ -n "${RPC_NOT_LOADED:-}" ]; then echo '{"loaded":false,"status":"notLoaded","running":false}'
-                 else echo '{"loaded":true,"status":"idle","running":false}'; fi ;;
-  turn-start) cp "$input" "$P/packet"; [ -n "${RPC_START_FAIL:-}" ] && exit 1; echo "turn-$th" ;;
+  thread-status)
+    n=$(cat "$P/status_calls" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$P/status_calls"
+    if [ -n "${RPC_NOT_LOADED:-}" ] || { [ -n "${RPC_NOT_LOADED_ONCE:-}" ] && [ "$n" = 1 ]; }; then
+      echo '{"loaded":false,"status":"notLoaded","running":false}'
+    else echo '{"loaded":true,"status":"idle","running":false}'; fi ;;
+  turn-start) cp "$input" "$P/packet"; [ -n "$known" ] && echo '[]' > "$known"
+              [ -n "${RPC_START_FAIL:-}" ] && exit 1
+              [ -n "${RPC_START_UNCERTAIN:-}" ] && exit 6
+              echo "turn-$th" ;;
   turn-wait) printf '%s\n' "${RPC_WAIT_OUT:-}"; exit "${RPC_WAIT_RC:-0}" ;;
 esac
 exit 0
@@ -1939,11 +2075,11 @@ chmod +x "$STUB"/*
 export PATH="$STUB:$PATH"
 
 fresh() { # a pane showing U0, idle; clean log and state
-  unset ENSURE_RC CHECK_RC RPC_NOT_LOADED RPC_START_FAIL NO_TITLE STUCK_TUI EXTRA_PANES PANE_CWD \
-        XREVIEW_PANE XREVIEW_THREAD RPC_WAIT_OUT RPC_WAIT_RC
+  unset ENSURE_RC CHECK_RC RPC_NOT_LOADED RPC_NOT_LOADED_ONCE RPC_START_FAIL RPC_START_UNCERTAIN \
+        NO_TITLE STUCK_TUI EXTRA_PANES PANE_CWD XREVIEW_PANE XREVIEW_THREAD RPC_WAIT_OUT RPC_WAIT_RC
   export NEW_UUID="$U1"
   printf codex > "$P/agent"; printf '%s | t | d' "$U0" > "$P/title"; echo idle > "$P/status"
-  echo 0 > "$P/ctrlc"; rm -f "$P/packet"
+  echo 0 > "$P/ctrlc"; rm -f "$P/packet" "$P/status_calls"
   bash "$XREVIEW" round --reset >/dev/null 2>&1
   rm -rf "$STATE/superseded" "$STATE/pin" "$STATE/turns"
   : > "$CALLS"
@@ -2060,6 +2196,21 @@ is "D7 and no turn starts" "$(called 'xreview-rpc turn-start')" 0
 fresh; out="$(RPC_START_FAIL=1 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
 is "D8 a refused turn fails the dispatch" "$rc" 1
 is "D8 and records no nonce" "$(ls "$STATE/turns" 2>/dev/null | grep -c .)" 0
+fresh
+bash "$XREVIEW" dispatch b.md >/dev/null 2>&1        # the pane now shows U1, recorded
+: > "$CALLS"; rm -f "$P/status_calls"
+RPC_NOT_LOADED_ONCE=1 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+is "D9 a matching title on a thread the daemon lost is resumed, not trusted" \
+   "$(called "herdr pane run w1:p2 codex --sandbox read-only --ask-for-approval never resume $U1")" 1
+is "D9 and the turn starts after that" "$(called "xreview-rpc turn-start --thread $U1")" 1
+fresh
+nonce="$(RPC_START_UNCERTAIN=1 bash "$XREVIEW" dispatch b.md 2>"$ROOT/err")"; rc=$?
+is "D10 an unanswered turn/start still hands back a nonce" "$rc/$(printf '%s' "$nonce" | grep -c '^xr-')" "0/1"
+is "D10 with a do-not-re-dispatch warning" "$(grep -c 'do NOT re-dispatch' "$ROOT/err")" 1
+is "D10 the record marks the turn unknown" "$(cat "$STATE/turns/$nonce")" "$U1 ?"
+bash "$XREVIEW" collect "$nonce" >/dev/null 2>&1
+is "D10 collect looks for what is new on the thread" \
+   "$(called "turn-wait --thread $U1 --new-since $STATE/turns/$nonce.known")" 1
 
 echo "E. checkpoints and pins"
 fresh
@@ -2235,12 +2386,18 @@ pane_command() {
   printf '%s\n' "$c"
 }
 
+loaded() { # loaded <thread>: the daemon has the thread in memory
+  xreview-rpc thread-status --thread "$1" 2>/dev/null | jq -e '.loaded' >/dev/null 2>&1
+}
+
 # pane_prepare <pane> [thread] - make the pane show <thread>, or a fresh session when none is
 # given, and print the thread id it shows. No turn exists yet, so a refusal here loses nothing.
+# A matching title alone is not trusted: after a daemon restart a disconnected TUI keeps its
+# title while the new daemon has not loaded the thread, so the pane is resumed onto it.
 pane_prepare() {
   local pane="$1" want="${2:-}" before cmd now ok waited=0 wait="${XREVIEW_PANE_WAIT:-20}"
   before="$(pane_title_uuid "$pane")"
-  if [ -n "$want" ] && [ "$before" = "$want" ]; then printf '%s\n' "$want"; return 0; fi
+  if [ -n "$want" ] && [ "$before" = "$want" ] && loaded "$want"; then printf '%s\n' "$want"; return 0; fi
   cmd="$(pane_command)"
   herdr pane send-keys "$pane" ctrl+c >/dev/null 2>&1 || true
   sleep 0.5
@@ -2261,7 +2418,7 @@ pane_prepare() {
         [ "$now" = "$before" ] || ok=1
       fi
     fi
-    if [ "$ok" = 1 ] && xreview-rpc thread-status --thread "$now" 2>/dev/null | jq -e '.loaded' >/dev/null 2>&1; then
+    if [ "$ok" = 1 ] && loaded "$now"; then
       printf '%s\n' "$now"; return 0
     fi
     [ "$waited" -lt "$wait" ] || die "the Codex pane $pane did not show ${want:-a new thread} within ${wait}s; no review was started"
@@ -2450,7 +2607,7 @@ cmd_tier() {
 }
 
 cmd_dispatch() {
-  local body_file diff_range="" diff_text="" dir pane status want thread nonce packet turn
+  local body_file diff_range="" diff_text="" dir pane status want thread nonce packet turn=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --diff) [ "$#" -ge 2 ] || die "--diff needs a range"; diff_range="$2"; shift 2 ;;
@@ -2505,11 +2662,22 @@ Report the remaining disagreement, or: xreview round --reset"
     fi
     printf '</cross-review-request>\n'
   } > "$packet"
-  turn="$(xreview-rpc turn-start --thread "$thread" --input "$packet" --schema "$SCHEMA")" \
-    || { rm -f "$packet"; die "the review turn could not be started on $thread"; }
+  mkdir -p "$dir/turns"
+  local rc=0
+  turn="$(xreview-rpc turn-start --thread "$thread" --input "$packet" --schema "$SCHEMA" \
+            --known "$dir/turns/$nonce.known")" || rc=$?
   rm -f "$packet"
-  assert_id "$turn"
-  mkdir -p "$dir/turns" && printf '%s %s\n' "$thread" "$turn" > "$dir/turns/$nonce"
+  case "$rc" in
+    0) assert_id "$turn"
+       printf '%s %s\n' "$thread" "$turn" > "$dir/turns/$nonce"
+       rm -f "$dir/turns/$nonce.known" ;;
+    6) # Sent but not answered: the turn may be running. Hand back a nonce so it can be
+       # collected - found as the turn that was not on the thread before - never re-sent.
+       printf '%s ?\n' "$thread" > "$dir/turns/$nonce"
+       printf 'xreview: turn/start was sent but not answered - the review may be running. Collect %s; do NOT re-dispatch.\n' "$nonce" >&2 ;;
+    *) rm -f "$dir/turns/$nonce.known"
+       die "the review turn could not be started on $thread" ;;
+  esac
   archive_superseded "$thread"
   printf '%s\n' "$nonce"
 }
@@ -2529,9 +2697,15 @@ cmd_collect() {
   rec="$(state_dir)/turns/$nonce"
   [ -r "$rec" ] || die "ambiguous: no turn on record for $nonce (do NOT retry the dispatch)"
   read -r thread turn < "$rec"
-  assert_id "$thread"; assert_id "$turn"
+  assert_id "$thread"
+  local which
+  if [ "$turn" = "?" ]; then
+    which=(--new-since "$(state_dir)/turns/$nonce.known")
+  else
+    assert_id "$turn"; which=(--turn "$turn")
+  fi
   set +e
-  out="$(xreview-rpc turn-wait --thread "$thread" --turn "$turn" --budget "$budget" --schema "$SCHEMA")"
+  out="$(xreview-rpc turn-wait --thread "$thread" "${which[@]}" --budget "$budget" --schema "$SCHEMA")"
   rc=$?
   set -e
   case "$rc" in
@@ -2564,9 +2738,9 @@ esac
 - [ ] **Step 6: Run the tests to verify they pass**
 
 ```bash
-./tests/run.sh xreview dev
+./tests/run.sh xreview && ./tests/dev.test.sh
 ```
-Expected: `xreview`, `xreview-rpc`, `xreview-guard`, `xreview-apply-guard` and `dev` all `ok`. `xreview-skill` is expected to FAIL until Task 7 (the skill still names `XREVIEW_THREAD_WARN`); record that failure, don't fix it here.
+Expected: `xreview`, `xreview-rpc`, `xreview-guard` and `xreview-apply-guard` all `ok`, and `dev.test.sh` 0 failed. `xreview-skill` is expected to FAIL until Task 7 (the skill still names `XREVIEW_THREAD_WARN`); record that failure, don't fix it here.
 
 - [ ] **Step 7: Commit**
 
@@ -2798,9 +2972,9 @@ printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 
 ```bash
 chmod 755 tests/live-codex-daemon.test.sh
-./tests/run.sh codex
+./tests/run.sh
 ```
-Expected: `live-codex-daemon` is listed as `skip … needs: unsandboxed, herdr, codex-daemon`, and every other codex suite is `ok`. The live run itself happens in Task 9.
+The run has no filter on purpose: a filtered run executes tagged suites instead of skipping them. Expected: `live-codex-daemon` is listed as `skip … needs: unsandboxed, herdr, codex-daemon`, and every other suite is `ok`. The live run itself happens in Task 9.
 
 - [ ] **Step 2: Update `AGENTS.md`**
 
