@@ -33,7 +33,8 @@ clean environment, because the daemon is what the live review view builds on.
    pane, including sessions the operator starts by hand. It never shows another pane's id,
    and a wrong id that does appear is repaired automatically.
 4. **Everything on the daemon.** Every interactive Codex start attaches to the daemon, or
-   refuses. The only exception is an explicit `--no-daemon`.
+   refuses. The only exception is an explicit `--no-daemon`, which the operator accepted as
+   the deliberate escape on 2026-09-26.
 5. **Structured findings.** `xreview collect` returns schema-valid JSON, or exits non-zero.
    Nothing polls the history database.
 6. **Cold per checkpoint.** The first dispatch of each checkpoint lands in a fresh thread
@@ -85,6 +86,7 @@ launchd ──starts──▶ Codex daemon (clean env)
 |------|------|----------------|
 | Daemon LaunchAgent | new, `Library/LaunchAgents/` | Start the daemon at login with a clean environment |
 | `codex` launcher | new, `~/.local/bin/codex` | Make every interactive start attach to the daemon, or refuse |
+| `codex-code-mode-host` shim | changed, `~/.local/bin/` | Resolve the real Codex binary the same way the launcher does |
 | `codex-daemon` | new, `~/.local/bin/` | `ensure` (start through launchd and wait) and `check` (reachable, clean environment) |
 | `config.toml` template | changed | Keep `daemon_auto_start = false`; pin `tui.terminal_title` |
 | `herdr-codex-pane-map.sh` | new, `~/.codex/` | Reconcile herdr's session id for every Codex pane from its title |
@@ -118,14 +120,21 @@ through `config.toml`.
   `HERDR_*` variable. Otherwise, print which condition failed and the fix.
 
 **The `codex` launcher** is a script at `~/.local/bin/codex`. `~/.local/bin` comes first on
-`PATH`, so the launcher shadows the Homebrew binary; it execs that binary by absolute path,
-skipping itself.
+`PATH`, so the launcher shadows the Homebrew binary.
+
+**Resolving the real binary.** The launcher and the existing `codex-code-mode-host` shim both
+need the real Codex binary, and both resolve it the same way: the first `codex` on `PATH`
+outside `~/.local/bin`, followed through symlinks. The shim currently uses `command -v codex`.
+Once the launcher exists that returns the launcher itself, so the shim would find itself as the
+"sibling" host and exec itself in a loop, and Codex's tool runtime would never start. The shim
+changes with the launcher, in the same commit.
 
 | Invocation | Launcher behaviour |
 |------------|--------------------|
 | Interactive start: no subcommand, `resume`, `fork` | `codex-daemon ensure`, then exec. If the daemon cannot be started, refuse and name `--no-daemon` as the deliberate escape. |
 | Interactive start with `-c`, `--config`, `--enable` or `--disable` | Refuse, because these would silently run the session embedded (F10). `--no-daemon` makes the choice explicit and passes through. |
-| Any explicit `--no-daemon` or `--remote` | Pass through untouched. |
+| Interactive start with an explicit `--no-daemon` | Pass through untouched: the operator-approved escape. |
+| Interactive start with `--remote` | Refuse. A remote server runs its own hooks, so herdr could never learn the session's thread id (goal 3). |
 | Every other subcommand (`exec`, `app-server`, `features`, `update`, …) | Pass through untouched. |
 
 If `codex-daemon check` fails on an interactive start, the launcher warns but still starts. It
@@ -284,6 +293,7 @@ existing fields, so they are unaffected.
 | Daemon down during collect | Reconnect within the budget, then exit 1. |
 | Daemon carries a pane's environment | Dispatch refuses, naming the fix and that it disconnects every open Codex TUI. The launcher warns. The pane-map hook repairs herdr's view on every session start. |
 | Interactive `codex` with `-c` and friends | The launcher refuses unless `--no-daemon` is explicit. |
+| Interactive `codex --remote` | The launcher refuses. |
 | No Codex pane, or several | Refuse, list the candidates, and suggest applying the project layout or setting `XREVIEW_PANE`. |
 | Pane mid-turn | Refuse before touching anything. |
 | Pane cannot be prepared (no title id, thread not loaded, timeout) | Refuse. No turn exists. |
@@ -314,7 +324,10 @@ Every suite checks that its subject exists and exits 2 if not.
   - interactive starts call `ensure` and exec the real binary;
   - a failing `ensure` refuses;
   - `-c` on an interactive start refuses;
-  - `--no-daemon`, `--remote` and other subcommands pass through untouched;
+  - `--remote` on an interactive start refuses;
+  - `--no-daemon` and every non-interactive subcommand pass through untouched;
+  - installed together with the `codex-code-mode-host` shim ahead of a stub Homebrew
+    directory, the shim execs the stub's host and never itself;
   - the launcher never execs itself.
 - **`herdr-codex-pane-map.test.sh`**: hook-input fixtures with a stubbed `herdr`.
   - Every Codex pane whose title UUID differs from its session is reported.
@@ -380,6 +393,8 @@ Every suite checks that its subject exists and exits 2 if not.
   keeps corrupting herdr's view of other panes.
 - **Transport-only change**, keeping the pane's current thread. Rejected: rotation stays
   manual and reviews accumulate in one thread.
+- **Passing `--remote` through the launcher.** Rejected in review: herdr cannot map a session
+  whose hooks run on another server.
 - **A Rust client.** Rejected for now: the repository has no build step, and the client is
   small glue. Revisit it if the client gains a second consumer.
 
@@ -392,6 +407,8 @@ Every suite checks that its subject exists and exits 2 if not.
 - A daemon that carries a pane's environment blocks reviews until it is restarted, which
   disconnects every open Codex TUI.
 - Pane titles lead with a UUID.
+- `~/.local/bin/codex` shadows the Homebrew binary. Anything that needs the real binary must
+  resolve it past `~/.local/bin`, as the code-mode host shim now does.
 - Each checkpoint's first dispatch replaces whatever session the Codex pane had open.
 - The Codex app-server protocol is marked experimental. `live-codex-daemon` is the tripwire,
   and a Codex update that breaks it blocks reviews until `xreview-rpc` is adjusted.
