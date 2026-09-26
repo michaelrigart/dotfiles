@@ -1,0 +1,68 @@
+#!/bin/sh
+# codex - start interactive Codex sessions on the shared daemon, or refuse.
+#
+# Managed by chezmoi (source: dot_local/bin/executable_codex).
+# Design: docs/superpowers/specs/2026-09-26-xreview-codex-daemon-design.md, section 5.
+#
+# ~/.local/bin is first on PATH, so this shadows the Homebrew binary. Every interactive start
+# must attach to the daemon: with features.daemon_auto_start off, a TUI that finds no daemon
+# runs its own server instead, off the daemon and out of xreview's reach. So the daemon is
+# started through launchd first, and a start that would silently leave it is refused.
+# `--no-daemon` is the one deliberate escape (operator decision, 2026-09-26).
+#
+# Anything that needs the real binary resolves it with `codex-daemon real-bin`, never
+# `command -v codex`, which answers with this script.
+set -eu
+
+real="$(codex-daemon real-bin)" || {
+  echo "codex: no real codex on PATH outside ${XDG_BIN_HOME:-$HOME/.local/bin}" >&2
+  exit 127
+}
+
+# Subcommands that are not interactive sessions (codex --help, 0.157.1).
+PASSTHROUGH=" exec e review login logout mcp plugin app-server remote-control app completion update doctor sandbox debug apply a queue archive delete migrate-rollouts unarchive cloud exec-server features help agents "
+
+sub=""
+overrides=0
+nodaemon=0
+remote=0
+skip=0
+for a in "$@"; do
+  if [ "$skip" = 1 ]; then skip=0; continue; fi
+  case "$a" in
+    --no-daemon) nodaemon=1 ;;
+    --remote) remote=1; skip=1 ;;
+    --remote=*) remote=1 ;;
+    -c|--config|--enable|--disable) overrides=1; skip=1 ;;
+    -c?*|--config=*|--enable=*|--disable=*) overrides=1 ;;
+    -h|--help|-V|--version) [ -n "$sub" ] || sub="$a" ;;
+    -m|--model|-p|--profile|-s|--sandbox|-a|--ask-for-approval|-C|--cd|-i|--image|--add-dir|--remote-auth-token-env|--local-provider) skip=1 ;;
+    -*) ;;
+    *) [ -n "$sub" ] || sub="$a" ;;
+  esac
+done
+
+case "$PASSTHROUGH" in *" $sub "*) exec "$real" "$@" ;; esac
+case "$sub" in -h|--help|-V|--version) exec "$real" "$@" ;; esac
+if [ "$nodaemon" = 1 ]; then exec "$real" "$@"; fi
+
+if [ "$remote" = 1 ]; then
+  cat >&2 <<'MSG'
+codex: refusing --remote for an interactive session. A remote server runs its own hooks, so
+herdr could never learn this session's thread id. Start it on this machine's daemon instead.
+MSG
+  exit 2
+fi
+if [ "$overrides" = 1 ]; then
+  cat >&2 <<'MSG'
+codex: refusing -c/--config/--enable/--disable for an interactive session. Any override makes
+the session run its own server instead of the shared daemon. Put the setting in
+~/.codex/config.toml (chezmoi: dot_codex/modify_private_config.toml), or opt out explicitly:
+  codex --no-daemon ...
+MSG
+  exit 2
+fi
+
+codex-daemon ensure || exit 1
+codex-daemon check || printf 'codex: starting anyway; xreview refuses to dispatch until the daemon is restarted\n' >&2
+exec "$real" "$@"
