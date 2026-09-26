@@ -54,6 +54,17 @@
        because `herdr integration uninstall` deliberately leaves the flag set, so
        rollback has to clear it explicitly by deleting this line.                 */ -}}
 {{- $config = setValueAtPath "features.hooks" true $config -}}
+{{- /* Keep the shared app-server daemon (0.157+) off. Every TUI attaches to one
+       daemon, hooks run inside it, and it keeps the environment of whichever pane
+       happened to spawn it — so the Herdr hook reported every new thread against
+       that one pane's HERDR_PANE_ID and left every other Codex pane without a
+       session id, which xreview then resolved to the wrong thread. Embedded, each
+       TUI runs its hooks with its own pane's environment. Costs `codex agents` and
+       remote control, both daemon-only; `codex queue` keeps its no-daemon path,
+       the one xreview dispatched through before 0.157. A
+       daemon that is already running keeps serving until `codex app-server daemon
+       stop` and a relaunch of the Codex panes.                                 */ -}}
+{{- $config = setValueAtPath "features.daemon_auto_start" false $config -}}
 {{- $config = setValueAtPath "features.js_repl" false $config -}}
 
 {{- $config | toToml -}}

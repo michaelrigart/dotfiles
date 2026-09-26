@@ -55,6 +55,16 @@ has '^\s*memories = true'           "memories forced on even when the live file 
 has '^\s*prevent_idle_sleep = true' "prevent_idle_sleep forced on"
 has '^\s*hooks = true'              "agent hooks forced on for the Herdr integration"
 
+echo "A2. the shared app-server daemon stays off"
+# Hooks run inside the daemon, which keeps the environment of whichever pane spawned
+# it, so every Herdr session report lands on that one pane. See the template comment.
+emit '[features]
+daemon_auto_start = true
+'
+has '^\s*daemon_auto_start = false' "daemon_auto_start forced off even when the live file says true"
+emit ''
+has '^\s*daemon_auto_start = false' "daemon_auto_start emitted even when absent from the input"
+
 echo "B. js_repl is pinned, not dropped"
 # Regression guard. An earlier revision unset the key on the grounds that it was
 # obsolete; codex 0.149.1 still ships it, so unsetting it silently removed the guard
