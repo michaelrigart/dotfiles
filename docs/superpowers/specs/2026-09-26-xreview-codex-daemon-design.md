@@ -1,6 +1,6 @@
 # xreview on the Codex app-server daemon
 
-**Status:** Approved
+**Status:** In progress
 **Date:** 2026-09-26
 
 ## 1. Problem
