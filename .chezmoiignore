@@ -91,6 +91,7 @@ tests/
 !.codex/themes/tokyo-night.tmTheme
 !.codex/herdr-agent-state.sh
 !.codex/hooks.json
+!.codex/herdr-codex-pane-map.py
 
 # Neovim plugin lockfile. lazy.nvim rewrites it on every plugin update, so managing it
 # here means routine maintenance leaves the source and the target out of sync until

@@ -65,6 +65,12 @@ has '^\s*daemon_auto_start = false' "daemon_auto_start forced off even when the 
 emit ''
 has '^\s*daemon_auto_start = false' "daemon_auto_start emitted even when absent from the input"
 
+echo "A3. every TUI puts its thread id first in its title"
+# The pane-map hook and xreview join a pane to its thread through the title. Codex
+# truncates long titles, so thread-id must be FIRST or it is the part that gets cut.
+emit 'tui.terminal_title = ["current-dir"]'
+has '^\s*terminal_title = \["thread-id", "thread-title", "current-dir"\]' "terminal_title pinned with thread-id first"
+
 echo "B. js_repl is pinned, not dropped"
 # Regression guard. An earlier revision unset the key on the grounds that it was
 # obsolete; codex 0.149.1 still ships it, so unsetting it silently removed the guard
@@ -131,34 +137,34 @@ else
 fi
 
 echo "H. hooks.json renders the observed Herdr registration"
+MAPCMD="python3 '$HOME/.codex/herdr-codex-pane-map.py'"
 emit_hooks '{}'
-if printf '%s' "$OUT" | jq -e --arg cmd "bash '$HOME/.codex/herdr-agent-state.sh' session" '
+if printf '%s' "$OUT" | jq -e --arg cmd "bash '$HOME/.codex/herdr-agent-state.sh' session" --arg map "$MAPCMD" '
   (keys == ["hooks"])
   and (.hooks | keys == ["SessionStart"])
-  and (.hooks.SessionStart | length == 1)
-  and (.hooks.SessionStart[0] | keys == ["hooks"])
+  and (.hooks.SessionStart | length == 2)
   and (.hooks.SessionStart[0].hooks == [{type: "command", command: $cmd, timeout: 10}])
+  and (.hooks.SessionStart[1].hooks == [{type: "command", command: $map, timeout: 10}])
 ' >/dev/null 2>&1; then
-  _pass "fresh hooks.json has the exact installer-observed shape"
+  _pass "fresh hooks.json has herdr's entry, then the pane-map entry"
 else
-  _fail "fresh hooks.json has the exact installer-observed shape" "$(printf '%s' "$OUT" | head -c 200)"
+  _fail "fresh hooks.json has herdr's entry, then the pane-map entry" "$(printf '%s' "$OUT" | head -c 300)"
 fi
 
 echo "I. hooks.json preserves unrelated state and stays idempotent"
-fixture='{"other":42,"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"/bin/true"}]},{"hooks":[{"type":"command","command":"bash '\''/old/.codex/herdr-agent-state.sh'\'' session","timeout":5}]}],"Stop":[{"hooks":[{"type":"command","command":"/bin/false"}]}]}}'
+fixture='{"other":42,"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"/bin/true"}]},{"hooks":[{"type":"command","command":"bash '\''/old/.codex/herdr-agent-state.sh'\'' session","timeout":5}]},{"hooks":[{"type":"command","command":"python3 '\''/old/.codex/herdr-codex-pane-map.py'\''"}]}],"Stop":[{"hooks":[{"type":"command","command":"/bin/false"}]}]}}'
 emit_hooks "$fixture"
 first="$OUT"
-if printf '%s' "$first" | jq -e --arg cmd "bash '$HOME/.codex/herdr-agent-state.sh' session" '
+if printf '%s' "$first" | jq -e --arg cmd "bash '$HOME/.codex/herdr-agent-state.sh' session" --arg map "$MAPCMD" '
   .other == 42
   and (.hooks.Stop[0].hooks[0].command == "/bin/false")
   and ([.hooks.SessionStart[] | select(any(.hooks[]?; .command == "/bin/true"))] | length == 1)
-  and ([.hooks.SessionStart[] | select(any(.hooks[]?; ((.command // "") | contains("herdr-agent-state.sh"))))] | length == 1)
-  and ([.hooks.SessionStart[]?.hooks[]? | select((.command // "") | contains("herdr-agent-state.sh"))][0]
-       == {type: "command", command: $cmd, timeout: 10})
+  and ([.hooks.SessionStart[]?.hooks[]? | select((.command // "") | contains("herdr-agent-state.sh"))] == [{type: "command", command: $cmd, timeout: 10}])
+  and ([.hooks.SessionStart[]?.hooks[]? | select((.command // "") | contains("herdr-codex-pane-map.py"))] == [{type: "command", command: $map, timeout: 10}])
 ' >/dev/null 2>&1; then
-  _pass "unrelated hooks survive and a stale Herdr entry is replaced exactly once"
+  _pass "unrelated hooks survive and each stale entry is replaced exactly once"
 else
-  _fail "unrelated hooks survive and a stale Herdr entry is replaced exactly once" "$(printf '%s' "$first" | head -c 200)"
+  _fail "unrelated hooks survive and each stale entry is replaced exactly once" "$(printf '%s' "$first" | head -c 300)"
 fi
 
 emit_hooks "$first"
@@ -179,7 +185,7 @@ fi
 
 echo "J. every Codex integration target is managed by chezmoi"
 managed=$(chezmoi --source "$SRC" managed 2>/dev/null)
-for target in .codex/config.toml .codex/herdr-agent-state.sh .codex/hooks.json; do
+for target in .codex/config.toml .codex/herdr-agent-state.sh .codex/hooks.json .codex/herdr-codex-pane-map.py; do
   case "$managed" in
     *"$target"*) _pass "$target is chezmoi-managed" ;;
     *) _fail "$target is chezmoi-managed" "not in \`chezmoi managed\`" ;;
