@@ -1171,7 +1171,7 @@ git -C ~/.local/share/chezmoi commit -m "Put the thread id in every Codex title 
     - exit 5: unreachable, nothing sent;
     - exit 6: `turn/start` was sent but not answered, so the turn may be running.
     - `--known` first writes the thread's existing turn ids (a JSON list) to FILE, so an unanswered start can still be found later.
-  - `xreview-rpc turn-wait --thread ID (--turn ID | --new-since FILE) --budget SECS [--schema FILE]`. `--new-since` resolves the oldest turn whose id is not in FILE's list. Every connection and call is bounded by the remaining budget. Exit codes:
+  - `xreview-rpc turn-wait --thread ID (--turn ID | --new-since FILE [--resolved OUT]) --budget SECS [--schema FILE]`. `--new-since` resolves the oldest turn whose id is not in FILE's list. `--resolved` writes that id to OUT as soon as it is found. Every connection and call is bounded by the remaining budget. Exit codes:
     - exit 0: prints the answer, pretty JSON when a schema is given;
     - exit 1: failed, interrupted or unknown turn;
     - exit 3: still running at the budget;
@@ -1337,7 +1337,12 @@ is "a refused turn/start exits 1" "$?" 1
 scenario '{"responses":{"thread/turns/list":{"result":{"data":[{"id":"t-old","status":"completed","items":[]}]}}},"drop_on":["turn/start"]}'
 rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" --known "$T/known" 2>/dev/null
 is "an unanswered turn/start exits 6" "$?" 6
-is "the thread's earlier turns were recorded first" "$(jq -c . "$T/known")" '["t-old"]' 
+is "the thread's earlier turns were recorded first" "$(jq -c . "$T/known")" '["t-old"]'
+# Without that baseline an unanswered start could later pass an old answer off as new.
+scenario '{"responses":{"thread/turns/list":{"error":{"code":-1,"message":"nope"}}},"drop_on":["turn/start"]}'
+rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" --known "$T/known2" 2>/dev/null
+is "a baseline that cannot be read refuses (1)" "$?" 1
+is "before anything is sent" "$(jq -r 'select(.method=="turn/start") | .method' "$FAKE_LOG" | grep -c .)" 0
 
 echo "E. turn-wait on a turn that already finished"
 scenario "$(jq -nc --argjson l "$(listing "$(turn completed "$ANSWER")")" '{responses:{"thread/turns/list":$l}}')"
@@ -1349,8 +1354,9 @@ is "it subscribed before looking"       "$(jq -r 'select(.method) | .method' "$F
 new_turn="$(turn completed "$ANSWER" | jq -c '.id = "turn-2"')"
 old_turn='{"id":"t-old","status":"completed","items":[]}'
 scenario "$(jq -nc --argjson n "$new_turn" --argjson o "$old_turn" '{responses:{"thread/turns/list":{result:{data:[$n,$o]}}}}')"
-out="$(rpc turn-wait --thread th --new-since "$T/known" --budget 5 --schema "$SCHEMA")"; rc=$?
+out="$(rpc turn-wait --thread th --new-since "$T/known" --resolved "$T/resolved" --budget 5 --schema "$SCHEMA")"; rc=$?
 is "E2 --new-since finds the turn that was not there before" "$rc/$(printf '%s' "$out" | jq -r .verdict)" "0/changes"
+is "E2 and hands its id back through --resolved" "$(cat "$T/resolved" 2>/dev/null)" turn-2
 scenario "$(jq -nc --argjson o "$old_turn" '{responses:{"thread/turns/list":{result:{data:[$o]}}}}')"
 rpc turn-wait --thread th --new-since "$T/known" --budget 2 --schema "$SCHEMA" >/dev/null 2>&1
 is "E3 and exits 1 when nothing new is on the thread" "$?" 1
@@ -1408,6 +1414,41 @@ rpc turn-wait --thread th --turn turn-1 --budget 1 --schema "$SCHEMA" >/dev/null
 took=$(( $(date +%s) - start ))
 is "a daemon that never answers initialize ends at the budget" "$([ "$took" -le 3 ] && echo yes || echo "no ($took s)")" yes
 is "as unreachable (5)" "$rc" 5
+
+echo "M. the WebSocket transport, over a socketpair"
+out="$(python3 - "$RPC" <<'PY'
+import importlib.machinery, importlib.util, json, socket, sys, threading, time
+loader = importlib.machinery.SourceFileLoader("xreview_rpc", sys.argv[1])
+spec = importlib.util.spec_from_loader("xreview_rpc", loader)
+m = importlib.util.module_from_spec(spec); loader.exec_module(m)
+# A handshake that dribbles one byte every 0.4 s never completes; the budget is 1 s.
+a, b = socket.socketpair(socket.AF_UNIX)
+def dribble():
+    try:
+        b.recv(4096)
+        for _ in range(10):
+            b.sendall(b"H"); time.sleep(0.4)
+    except OSError:
+        pass
+threading.Thread(target=dribble, daemon=True).start()
+t0 = time.monotonic()
+try:
+    m.WsTransport("socketpair", timeout=1, sock=a); res = "connected"
+except m.Unreachable:
+    res = "unreachable"
+took = time.monotonic() - t0
+# A real round trip: the 101 upgrade, then one unmasked server frame carrying JSON.
+c, d = socket.socketpair(socket.AF_UNIX)
+def serve():
+    d.recv(4096)
+    body = b'{"id":1}'
+    d.sendall(b"HTTP/1.1 101 Switching Protocols\r\n\r\n" + bytes([0x81, len(body)]) + body)
+threading.Thread(target=serve, daemon=True).start()
+t = m.WsTransport("socketpair", timeout=5, sock=c)
+print(res, "fast" if took < 1.6 else f"slow({took:.1f}s)", json.dumps(t.recv(2)))
+PY
+)"
+is "a dribbling handshake ends at the budget, and a real frame round-trips" "$out" 'unreachable fast {"id": 1}'
 
 echo "K. thread-archive"
 scenario '{}'
@@ -1527,17 +1568,35 @@ def ws_parse(buf):
 
 
 class WsTransport:
-    def __init__(self, path, timeout=10):
+    """`sock` is a pre-connected socket; the tests pass one end of a socketpair, because the
+    sandbox denies binding a unix socket path."""
+
+    def __init__(self, path, timeout=10, sock=None):
+        # One absolute deadline for connect and every handshake read: a daemon dribbling
+        # fragments must not stretch the setup past the caller's budget.
+        deadline = time.monotonic() + min(10.0, max(0.1, timeout))
+
+        def remaining():
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise Unreachable("the WebSocket handshake did not finish within the budget")
+            return left
+
         try:
-            self.s = socket.socket(socket.AF_UNIX)
-            self.s.settimeout(min(10.0, max(0.1, timeout)))
-            self.s.connect(path)
+            if sock is None:
+                self.s = socket.socket(socket.AF_UNIX)
+                self.s.settimeout(remaining())
+                self.s.connect(path)
+            else:
+                self.s = sock
             key = base64.b64encode(os.urandom(16)).decode()
+            self.s.settimeout(remaining())
             self.s.sendall(("GET /rpc HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\n"
                             "Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n"
                             f"Sec-WebSocket-Key: {key}\r\n\r\n").encode())
             buf = b""
             while b"\r\n\r\n" not in buf:
+                self.s.settimeout(remaining())
                 chunk = self.s.recv(4096)
                 if not chunk:
                     raise Unreachable("connection closed during the WebSocket handshake")
@@ -1763,7 +1822,11 @@ def cmd_turn_start(c, a):
         # as the turn that was not there before.
         tl = c.call("thread/turns/list", {"threadId": a.thread, "limit": 50,
                                           "sortDirection": "desc", "itemsView": "notLoaded"})
-        data = [] if "error" in tl else ((tl.get("result") or {}).get("data") or [])
+        if "error" in tl:
+            # Without a baseline an unanswered start could later "find" an old turn as new.
+            err("cannot list the thread's turns before starting: " + json.dumps(tl["error"]))
+            return 1
+        data = (tl.get("result") or {}).get("data") or []
         with open(a.known, "w", encoding="utf-8") as fh:
             json.dump([t.get("id") for t in data], fh)
     try:
@@ -1823,6 +1886,9 @@ def cmd_turn_wait(a):
                 err(f"no turn {a.turn or 'started since the dispatch'} on thread {a.thread}")
                 return 1
             turn_id = t.get("id")
+            if a.resolved and not a.turn:
+                with open(a.resolved, "w", encoding="utf-8") as fh:
+                    fh.write(turn_id + "\n")
             while t.get("status") not in TERMINAL:
                 n = c.wait_note(lambda m: m.get("method") == "turn/completed"
                                 and ((m.get("params") or {}).get("turn") or {}).get("id") == turn_id,
@@ -1856,6 +1922,7 @@ def main(argv=None):
     which = p.add_mutually_exclusive_group(required=True)
     which.add_argument("--turn")
     which.add_argument("--new-since")
+    p.add_argument("--resolved")
     p.add_argument("--budget", type=float, required=True)
     p.add_argument("--schema")
     a = ap.parse_args(argv)
@@ -2053,9 +2120,10 @@ cat > "$STUB/xreview-rpc" <<'R'
 #!/bin/sh
 echo "xreview-rpc $*" >> "$CALLS"
 cmd="$1"; shift
-th=""; input=""; known=""
+th=""; input=""; known=""; resolved=""
 while [ "$#" -gt 0 ]; do
-  case "$1" in --thread) th="$2"; shift ;; --input) input="$2"; shift ;; --known) known="$2"; shift ;; esac; shift
+  case "$1" in --thread) th="$2"; shift ;; --input) input="$2"; shift ;; --known) known="$2"; shift ;;
+               --resolved) resolved="$2"; shift ;; esac; shift
 done
 case "$cmd" in
   thread-status)
@@ -2067,7 +2135,8 @@ case "$cmd" in
               [ -n "${RPC_START_FAIL:-}" ] && exit 1
               [ -n "${RPC_START_UNCERTAIN:-}" ] && exit 6
               echo "turn-$th" ;;
-  turn-wait) printf '%s\n' "${RPC_WAIT_OUT:-}"; exit "${RPC_WAIT_RC:-0}" ;;
+  turn-wait) [ -n "$resolved" ] && echo turn-recovered > "$resolved"
+             printf '%s\n' "${RPC_WAIT_OUT:-}"; exit "${RPC_WAIT_RC:-0}" ;;
 esac
 exit 0
 R
@@ -2208,9 +2277,13 @@ nonce="$(RPC_START_UNCERTAIN=1 bash "$XREVIEW" dispatch b.md 2>"$ROOT/err")"; rc
 is "D10 an unanswered turn/start still hands back a nonce" "$rc/$(printf '%s' "$nonce" | grep -c '^xr-')" "0/1"
 is "D10 with a do-not-re-dispatch warning" "$(grep -c 'do NOT re-dispatch' "$ROOT/err")" 1
 is "D10 the record marks the turn unknown" "$(cat "$STATE/turns/$nonce")" "$U1 ?"
-bash "$XREVIEW" collect "$nonce" >/dev/null 2>&1
+RPC_WAIT_OUT='{"verdict":"approve","findings":[]}' bash "$XREVIEW" collect "$nonce" >/dev/null 2>&1
 is "D10 collect looks for what is new on the thread" \
-   "$(called "turn-wait --thread $U1 --new-since $STATE/turns/$nonce.known")" 1
+   "$(called "turn-wait --thread $U1 --new-since $STATE/turns/$nonce.known --resolved")" 1
+is "D10 the recovered turn replaces the unknown in the record" "$(cat "$STATE/turns/$nonce")" "$U1 turn-recovered"
+is "D10 and the receipt names it" "$(tail -1 "$STATE/reviews.jsonl" | jq -r .turn)" turn-recovered
+: > "$CALLS"; bash "$XREVIEW" collect "$nonce" >/dev/null 2>&1
+is "D10 a later collect waits on that turn by id" "$(called "turn-wait --thread $U1 --turn turn-recovered")" 1
 
 echo "E. checkpoints and pins"
 fresh
@@ -2698,9 +2771,9 @@ cmd_collect() {
   [ -r "$rec" ] || die "ambiguous: no turn on record for $nonce (do NOT retry the dispatch)"
   read -r thread turn < "$rec"
   assert_id "$thread"
-  local which
+  local which resolved="$(state_dir)/turns/$nonce.resolved"
   if [ "$turn" = "?" ]; then
-    which=(--new-since "$(state_dir)/turns/$nonce.known")
+    which=(--new-since "$(state_dir)/turns/$nonce.known" --resolved "$resolved")
   else
     assert_id "$turn"; which=(--turn "$turn")
   fi
@@ -2708,6 +2781,13 @@ cmd_collect() {
   out="$(xreview-rpc turn-wait --thread "$thread" "${which[@]}" --budget "$budget" --schema "$SCHEMA")"
   rc=$?
   set -e
+  # A recovered turn is recorded the moment it is found, so every later collect and the
+  # receipt name it, instead of rediscovering "whatever is new" each time.
+  if [ "$turn" = "?" ] && [ -s "$resolved" ]; then
+    turn="$(head -1 "$resolved")"; assert_id "$turn"
+    printf '%s %s\n' "$thread" "$turn" > "$rec"
+    rm -f "$resolved" "$(state_dir)/turns/$nonce.known"
+  fi
   case "$rc" in
     0) printf '%s\n' "$out"
        record_receipt "$thread" "$nonce" "$turn" "$out" ;;
@@ -2738,9 +2818,9 @@ esac
 - [ ] **Step 6: Run the tests to verify they pass**
 
 ```bash
-./tests/run.sh xreview && ./tests/dev.test.sh
+./tests/run.sh xreview; ./tests/dev.test.sh
 ```
-Expected: `xreview`, `xreview-rpc`, `xreview-guard` and `xreview-apply-guard` all `ok`, and `dev.test.sh` 0 failed. `xreview-skill` is expected to FAIL until Task 7 (the skill still names `XREVIEW_THREAD_WARN`); record that failure, don't fix it here.
+Two separate commands: `run.sh` exits non-zero here because `xreview-skill` is expected to fail until Task 7, and `&&` would skip the layout suite. Expected: `xreview`, `xreview-rpc`, `xreview-guard` and `xreview-apply-guard` all `ok`, `xreview-skill` FAIL (recorded, fixed in Task 7), and `dev.test.sh` 0 failed. The skill still names `XREVIEW_THREAD_WARN`; don't fix that in this task.
 
 - [ ] **Step 7: Commit**
 
