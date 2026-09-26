@@ -68,6 +68,13 @@ these, and the live suite (§9) re-checks them.
 | F11 | `tui.terminal_title` accepts the item `thread-id`. The TUI puts the full id in its title at launch, before any turn. Codex truncates long titles, so `thread-id` must come first. |
 | F12 | `herdr pane list` exposes each pane's `terminal_title`, `agent`, `agent_status` and `cwd`. `herdr pane report-agent-session <pane> --source --agent --agent-session-id` sets a pane's session from outside the pane. |
 | F13 | Herdr's managed Codex hook exits immediately when `HERDR_ENV`, `HERDR_SOCKET_PATH` or `HERDR_PANE_ID` is unset. |
+| F14 | A fresh TUI attached to the daemon registers its thread at launch. The thread is loaded and `idle` before any turn. The default terminal title does not show the id. |
+| F15 | A second client can `turn/start` on that pre-first-turn thread without `thread/resume`, with `sandboxPolicy {type:"readOnly"}` and `approvalPolicy:"never"` set on the turn. The attached TUI renders it from the first token. |
+| F16 | `thread/read` reports status `active` while a turn runs and `idle` after. `thread/turns/list` (summary view) gives each turn's status (`inProgress`, `completed`, `failed`, `interrupted`) and its `agentMessage` item with `phase: "final_answer"`. |
+| F17 | A fresh connection can `thread/resume` a thread and receive `turn/completed` for a turn another connection started. For a turn that already finished, `thread/turns/list` returns it `completed`. |
+| F18 | `SessionStart` fires at a thread's first turn, not at TUI launch. |
+| F19 | `codex app-server daemon bootstrap` installs no launchd job. The daemon's supervisor (`daemon pid-update-loop`) and server are each their own process-group leader. `daemon.pid` and `daemon-updater.pid` under `$CODEX_HOME/app-server-daemon/` hold JSON with a `pid` field. |
+| F20 | Inside the Claude sandbox, binding a unix socket is denied, so a socket-based fake daemon cannot run in the default test run. |
 
 
 ## 4. Architecture
@@ -76,7 +83,7 @@ these, and the live suite (§9) re-checks them.
 launchd ──starts──▶ Codex daemon (clean env)
                         ▲         │ SessionStart hooks
       TUIs attach ──────┤         ├──▶ herdr-agent-state.sh    (herdr-managed; exits: F13)
-  (via codex launcher)  │         └──▶ herdr-codex-pane-map.sh (new: reconcile titles → herdr)
+  (via codex launcher)  │         └──▶ herdr-codex-pane-map.py (new: reconcile titles → herdr)
                         │
  xreview ─▶ xreview-rpc ┘  turn/start + outputSchema on the pane's thread, wait turn/completed
     └──▶ herdr: prepare the repo's Codex pane on the review thread BEFORE the turn starts
@@ -89,7 +96,7 @@ launchd ──starts──▶ Codex daemon (clean env)
 | `codex-code-mode-host` shim | changed, `~/.local/bin/` | Resolve the real Codex binary the same way the launcher does |
 | `codex-daemon` | new, `~/.local/bin/` | `ensure` (start through launchd and wait) and `check` (reachable, clean environment) |
 | `config.toml` template | changed | Keep `daemon_auto_start = false`; pin `tui.terminal_title` |
-| `herdr-codex-pane-map.sh` | new, `~/.codex/` | Reconcile herdr's session id for every Codex pane from its title |
+| `herdr-codex-pane-map.py` | new, `~/.codex/` | Reconcile herdr's session id for every Codex pane from its title |
 | `hooks.json` template | changed | Register the pane-map hook beside herdr's entry |
 | `xreview-rpc` | new, `~/.local/bin/`, Python stdlib | Talk to the daemon: thread status, start a turn, wait for a turn, archive |
 | `xreview` | changed | Pane-first dispatch, checkpoint threads, structured collect |
@@ -101,10 +108,13 @@ tree is an allowlist.
 
 ## 5. Daemon lifecycle
 
-**LaunchAgent.** A chezmoi-managed LaunchAgent starts the daemon at login. The environment
-it hands to the daemon contains no `HERDR_*` variable and no pane's working directory. The plan
-decides between `codex app-server daemon bootstrap`, if it installs exactly this, and our own
-plist. Verification either way is `ps eww` on the daemon's process tree: no `HERDR_` variables.
+**LaunchAgent.** A chezmoi-managed LaunchAgent (`be.netronix.codex-app-server`) runs
+`codex app-server daemon start` at login, because `bootstrap` installs no launchd job (F19).
+The environment it hands to the daemon contains no `HERDR_*` variable and no pane's working
+directory. Its `PATH` covers the mise shims, `~/.local/bin` and Homebrew, so commands the
+reviewer runs still find the project toolchains that an interactive shell would activate.
+`AbandonProcessGroup` keeps launchd from reaping the daemon when `start` returns.
+Verification is `codex-daemon check`: no daemon process carries a `HERDR_` variable.
 
 **No fallback.** `features.daemon_auto_start = false` stays pinned, so no TUI ever spawns a
 daemon that carries its pane's environment. A TUI attaches to a running daemon (F9). Nothing
@@ -118,6 +128,10 @@ through `config.toml`.
   it is up, and non-zero when it is not.
 - `check`: exit 0 only when the daemon is reachable and its process environment carries no
   `HERDR_*` variable. Otherwise, print which condition failed and the fix.
+- `restart`: the fix for a contaminated daemon. Stop the daemon, stop a surviving supervisor
+  only if it is still a Codex daemon process, start through launchd, then `check`. This
+  disconnects every open Codex TUI.
+- `real-bin`: print the real Codex binary (see below).
 
 **The `codex` launcher** is a script at `~/.local/bin/codex`. `~/.local/bin` comes first on
 `PATH`, so the launcher shadows the Homebrew binary.
@@ -149,7 +163,7 @@ Herdr's managed hook exits inside the clean daemon (F13). It is not edited.
 daemon therefore shows its thread UUID at the start of its title, from launch onwards. Pane
 titles in herdr now start with the UUID; that is the accepted cost.
 
-**Pane-map hook.** `herdr-codex-pane-map.sh` is registered as a second `SessionStart` entry in
+**Pane-map hook.** `herdr-codex-pane-map.py` is registered as a second `SessionStart` entry in
 `hooks.json`, beside herdr's. It runs inside the daemon and **reconciles all Codex panes**,
 not only the one whose session is starting:
 
@@ -164,7 +178,7 @@ not only the one whose session is starting:
 
 Because every `SessionStart` reconciles everything, one contaminated report, for example from
 herdr's managed hook in a daemon that carries a pane's environment, is repaired by the next
-session start anywhere. `herdr-codex-pane-map.sh --reconcile` runs the same pass on demand,
+session start anywhere. `herdr-codex-pane-map.py --reconcile` runs the same pass on demand,
 without hook input; the rollout (§10) uses it.
 
 The hook always exits 0, stays well inside the 10 s hook timeout, and never blocks a session.
@@ -217,8 +231,8 @@ Nothing is sent to the reviewer until the pane is watching the thread.
 
 1. **Preconditions, before anything is touched:**
    - `codex-daemon ensure` and then `codex-daemon check` pass. If the daemon carries a pane's
-     environment, refuse. The message names the fix (restart the daemon through launchd) and
-     its cost: every open Codex TUI disconnects and must be relaunched.
+     environment, refuse. The message names the fix (`codex-daemon restart`) and its cost:
+     every open Codex TUI disconnects and must be relaunched.
    - The repository's Codex pane exists: exactly one herdr pane with `agent == "codex"` and
      `cwd` equal to the repository root. `XREVIEW_PANE` overrides the choice.
    - That pane's `agent_status` is not `working`.
@@ -357,22 +371,26 @@ Every suite checks that its subject exists and exits 2 if not.
 3. Start the daemon through launchd. `codex-daemon check` passes.
 4. Relaunch every Codex pane through the launcher. Each attaches (F9) and shows its id in its
    title.
-5. Run `herdr-codex-pane-map.sh --reconcile`. `herdr pane list` then shows every Codex pane
+5. Run `herdr-codex-pane-map.py --reconcile`. `herdr pane list` then shows every Codex pane
    with its own id.
 6. Run one real dispatch in this repository. Confirm it renders live from the first token and
    that collect returns JSON.
 
-## 11. Open questions for the plan
+## 11. Open questions
 
-- **Pane-first depends on this, so the plan probes it first:** can another client start a turn
-  on a thread that a TUI created but has not yet run a turn on? If not, the fallback is a
-  bootstrap turn: xreview spends one minimal turn to make a new thread resumable, attaches the
-  pane, and only then submits the review.
-- Whether `codex app-server daemon bootstrap` installs a clean-environment launchd job, or an
-  own plist is needed. Also whether launchd should keep the daemon's supervisor or the server
-  itself alive.
-- What happens when a thread is archived while a TUI is still attached to it. Archive only
-  after the pane has moved off it, which §7.3 already requires.
+Resolved by probe on 2026-09-27, before planning:
+
+- Pane-first works: another client can start a turn on a TUI-created thread before its first
+  turn, and the pane renders it from the first token (F14, F15). The bootstrap-turn fallback
+  is not needed.
+- `bootstrap` installs no launchd job, so the LaunchAgent is our own (F19).
+
+Still open, neither a gate:
+
+- Whether `SessionStart` fires when a TUI resumes a thread the daemon already has loaded. The
+  reconcile-on-every-`SessionStart` design and xreview's own report cover both answers.
+- What happens when a thread is archived while a TUI is still attached to it. §7.3 archives
+  only after the pane has moved off it, so the case does not arise.
 
 ## 12. Alternatives considered
 
