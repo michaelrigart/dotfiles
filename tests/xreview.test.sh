@@ -19,8 +19,9 @@ is() { if [ "$2" = "$3" ]; then _pass "$1"; else _fail "$1" "$2"; fi; }
 
 ROOT="$(mktemp -d "${TMPDIR:-/tmp}/xreview.XXXXXX")"
 trap 'rm -rf "$ROOT"' EXIT
-export XDG_STATE_HOME="$ROOT/state" XDG_CONFIG_HOME="$ROOT/config" CODEX_HOME="$ROOT/codex"
-mkdir -p "$XDG_CONFIG_HOME/xreview" "$XDG_CONFIG_HOME/herdr"
+export XDG_STATE_HOME="$ROOT/state" XDG_CONFIG_HOME="$ROOT/config" CODEX_HOME="$ROOT/codex" \
+       TMPDIR="$ROOT/tmp"
+mkdir -p "$XDG_CONFIG_HOME/xreview" "$XDG_CONFIG_HOME/herdr" "$TMPDIR"
 cp "$SRC/dot_config/xreview/findings.schema.json" "$SRC/dot_config/xreview/reviewer.md" "$XDG_CONFIG_HOME/xreview/"
 cp "$SRC/dot_config/herdr/codex-pane-command" "$XDG_CONFIG_HOME/herdr/"
 export XREVIEW_POLL_SECS=0.05 XREVIEW_PANE_WAIT=0.15
@@ -119,6 +120,7 @@ case "$cmd" in
   turn-start) cp "$input" "$P/packet"; [ -n "$known" ] && echo '[]' > "$known"
               [ -n "${RPC_START_FAIL:-}" ] && exit 1
               [ -n "${RPC_START_UNCERTAIN:-}" ] && exit 6
+              if [ -n "${RPC_START_BAD_ID:-}" ]; then echo "turn id/with spaces"; exit 0; fi
               echo "turn-$th" ;;
   turn-wait) [ -n "$resolved" ] && echo turn-recovered > "$resolved"
              printf '%s\n' "${RPC_WAIT_OUT:-}"; exit "${RPC_WAIT_RC:-0}" ;;
@@ -130,13 +132,14 @@ export PATH="$STUB:$PATH"
 
 fresh() { # a pane showing U0, idle; clean log and state
   unset ENSURE_RC CHECK_RC RPC_NOT_LOADED RPC_NOT_LOADED_ONCE RPC_NOT_LOADED_ONCE_AT RPC_START_FAIL \
-        RPC_START_UNCERTAIN NO_TITLE STUCK_TUI EXTRA_PANES PANE_CWD XREVIEW_PANE XREVIEW_THREAD \
-        RPC_WAIT_OUT RPC_WAIT_RC RPC_THREAD_RUNNING RPC_HEALTH_FAIL AGENT_LAG
+        RPC_START_UNCERTAIN RPC_START_BAD_ID NO_TITLE STUCK_TUI EXTRA_PANES PANE_CWD XREVIEW_PANE \
+        XREVIEW_THREAD RPC_WAIT_OUT RPC_WAIT_RC RPC_THREAD_RUNNING RPC_HEALTH_FAIL AGENT_LAG
   export NEW_UUID="$U1"
   printf codex > "$P/agent"; printf '%s | t | d' "$(trunc "$U0")" > "$P/title"; echo idle > "$P/status"
   echo 0 > "$P/ctrlc"; rm -f "$P/packet" "$P/status_calls" "$P/get_calls" "$P/lag_active"
   bash "$XREVIEW" round --reset >/dev/null 2>&1
   rm -rf "$STATE/superseded" "$STATE/pin" "$STATE/turns"
+  rm -f "$STATE/pane"   # F31: the fast-path record must never leak from a previous test
   : > "$CALLS"
 }
 called() { grep -c -- "$1" "$CALLS" 2>/dev/null || true; }
@@ -151,15 +154,28 @@ capped() { bash "$XREVIEW" dispatch b.md 2>&1 | grep -c 'exceeds the cap'; }
 is "round counter starts at zero" "$(bash "$XREVIEW" round)" 0
 for _ in $(seq 9); do capped >/dev/null; done
 is "nine rounds are permitted"        "$(bash "$XREVIEW" round)" 9
-is "the tenth round is still allowed" "$(capped)" 0
+out="$(bash "$XREVIEW" dispatch b.md 2>&1)"
+is "the tenth round is still allowed"    "$(printf '%s' "$out" | grep -c 'exceeds the cap')" 0
+is "and the tenth round produces a nonce" "$(printf '%s' "$out" | grep -c '^xr-')" 1
 starts="$(called 'xreview-rpc turn-start')"
 is "the eleventh round is refused"    "$(capped)" 1
 is "and starts no turn"               "$(called 'xreview-rpc turn-start')" "$starts"
 is "a refused round still increments, so retrying stays refused" "$(bash "$XREVIEW" round)" 11
 bash "$XREVIEW" round --reset >/dev/null
 is "reset returns the counter to zero" "$(bash "$XREVIEW" round)" 0
-XREVIEW_MAX_ROUNDS=1 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+# round --reset drops the checkpoint thread too, so this dispatch takes the slow,
+# fresh-session path - give it a thread id the pane's title has never shown before
+# (U1, reused throughout this section, would otherwise look unchanged, not new).
+export NEW_UUID="$U2"
+out="$(XREVIEW_MAX_ROUNDS=1 bash "$XREVIEW" dispatch b.md 2>&1)"
+is "dispatch is permitted again after reset" "$(printf '%s' "$out" | grep -c '^xr-')" 1
 is "XREVIEW_MAX_ROUNDS lowers the cap" "$(XREVIEW_MAX_ROUNDS=1 bash "$XREVIEW" dispatch b.md 2>&1 | grep -c 'exceeds the cap')" 1
+export NEW_UUID="$U1"
+fresh
+bash "$XREVIEW" round --reset >/dev/null
+before_round="$(bash "$XREVIEW" round)"
+STUCK_TUI=1 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+is "A2 a pane-preparation failure leaves the round count unchanged" "$(bash "$XREVIEW" round)" "$before_round"
 
 echo "B. inline diffs"
 # A dispatch that names a path makes the reviewer go and read it; carrying the diff inline
@@ -225,6 +241,17 @@ is "C10 untouched" "$(untouched)" yes
 fresh; out="$(RPC_THREAD_RUNNING=1 bash "$XREVIEW" dispatch b.md 2>&1)"
 is "C11 a running thread behind an idle pane refuses" "$(printf '%s' "$out" | grep -c 'mid-turn')" 1
 is "C11 untouched" "$(untouched)" yes
+fresh
+U5=55555555-5555-4555-8555-555555555555   # never on the resolver stub's known-id list
+printf '%s | t | d' "$(trunc "$U5")" > "$P/title"
+out="$(RPC_THREAD_RUNNING=1 bash "$XREVIEW" dispatch b.md 2>&1)"
+is "C12 the running-thread gate does not block when the title prefix cannot be resolved" \
+   "$(printf '%s' "$out" | grep -c '^xr-')" 1
+fresh
+out="$(XREVIEW_PANE='.*' bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+is "C14 XREVIEW_PANE='.*' is refused, not matched as a regex" "$rc" 1
+is "C14 and names the pane, not a pattern match" "$(printf '%s' "$out" | grep -c 'is not a Codex pane')" 1
+is "C14 untouched" "$(untouched)" yes
 fresh; mkdir .codex; out="$(bash "$XREVIEW" dispatch b.md 2>&1)"; rmdir .codex
 is "C7 a project .codex refuses" "$(printf '%s' "$out" | grep -c 'refusing to dispatch')" 1
 is "C7 untouched" "$(untouched)" yes
@@ -297,6 +324,15 @@ is "D11 a daemon restart is detected even though the title still matches and the
    "$(called "herdr pane run w1:p2 codex --sandbox read-only --ask-for-approval never resume $U1")" 1
 is "D11 and the turn starts only after the pane is re-pointed" \
    "$([ "$(first 'herdr pane run')" -lt "$(first 'xreview-rpc turn-start')" ] && echo yes || echo no)" yes
+
+fresh
+mkdir -p "$CODEX_HOME/app-server-daemon"; printf '{"pid":111}\n' > "$CODEX_HOME/app-server-daemon/daemon.pid"
+bash "$XREVIEW" dispatch b.md >/dev/null 2>&1   # records the generation for pid 111
+printf '{"pid":222}\n' > "$CODEX_HOME/app-server-daemon/daemon.pid"   # content CHANGES, not just appears
+: > "$CALLS"
+bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+is "D11b a daemon.pid whose content changes (not just appears) is also a detected restart" \
+   "$(called "herdr pane run w1:p2 codex --sandbox read-only --ask-for-approval never resume $U1")" 1
 rm -rf "$CODEX_HOME/app-server-daemon"   # restore the "no daemon.pid yet" baseline for later tests
 
 fresh
@@ -331,6 +367,14 @@ is "D15 a title prefix that resolves to no loaded thread refuses after the wait"
    "$(printf '%s' "$out" | grep -c 'did not show')" 1
 is "D15 and no turn starts" "$(called 'xreview-rpc turn-start')" 0
 
+fresh
+nonce="$(RPC_START_BAD_ID=1 bash "$XREVIEW" dispatch b.md 2>"$ROOT/err")"; rc=$?
+is "D16 turn-start returning 0 with a malformed id still hands back a nonce" \
+   "$rc/$(printf '%s' "$nonce" | grep -c '^xr-')" "0/1"
+is "D16 with a do-not-re-dispatch warning, exactly like exit 6" \
+   "$(grep -c 'do NOT re-dispatch' "$ROOT/err")" 1
+is "D16 the record marks the turn unknown" "$(cat "$STATE/turns/$nonce")" "$U1 ?"
+
 echo "E. checkpoints and pins"
 fresh
 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
@@ -358,6 +402,16 @@ bash "$XREVIEW" init >/dev/null
 is "E5 init without an id pins the pane's thread" "$(cat "$STATE/pin")" "$U0"
 out="$(bash "$XREVIEW" init '../../x' 2>&1)"; rc=$?
 is "E6 an unsafe id is refused" "$(printf '%s' "$out" | grep -c 'refusing unsafe identifier')" 1
+fresh
+U6=66666666-6666-4666-8666-666666666666   # never on the resolver stub's known-id list
+printf '%s | t | d' "$(trunc "$U6")" > "$P/title"
+out="$(bash "$XREVIEW" init 2>&1)"; rc=$?
+is "E8 init refuses when the title prefix does not resolve" "$rc" 1
+is "E8 and says so" "$(printf '%s' "$out" | grep -c 'could not be resolved')" 1
+fresh; : > "$P/agent"   # no Codex pane at all
+out="$(bash "$XREVIEW" init 2>&1)"; rc=$?
+is "E9 init with no Codex pane refuses" "$rc" 1
+is "E9 and prints exactly one error line" "$(printf '%s' "$out" | grep -c .)" 1
 
 echo "E7. the legacy queue-era 'thread' file is inert"
 # The old xreview cached herdr's session id at $state_dir/thread. Reading it as a checkpoint
@@ -380,6 +434,9 @@ echo "F. collect"
 ANSWER='{"verdict":"changes","findings":[{"severity":"P1","file":"a","line":1,"summary":"s","failure_scenario":"f"}]}'
 fresh
 nonce="$(bash "$XREVIEW" dispatch b.md 2>/dev/null)"
+ROLL1="$CODEX_HOME/sessions/2026/09/01"; mkdir -p "$ROLL1"
+printf '{"type":"turn_context","payload":{"model":"gpt-5.6-sol","effort":"xhigh"}}\n' \
+  > "$ROLL1/rollout-2026-09-01T09-00-00-$U1.jsonl"
 out="$(RPC_WAIT_OUT="$ANSWER" bash "$XREVIEW" collect "$nonce" 2>&1)"; rc=$?
 is "F1 a finished review exits 0" "$rc" 0
 is "F1 and prints the findings" "$(printf '%s' "$out" | jq -r .verdict)" changes
@@ -387,6 +444,8 @@ is "F1 waiting with the findings schema" "$(called "turn-wait --thread $U1 --tur
 r="$(tail -1 "$STATE/reviews.jsonl")"
 is "F1 the receipt keeps the old fields" "$(printf '%s' "$r" | jq -r '[.thread,.nonce,(.ts|length>0),(.head|length>0),has("tier")] | map(tostring) | join(" ")')" "$U1 $nonce true true true"
 is "F1 and adds turn, verdict and finding count" "$(printf '%s' "$r" | jq -r '[.turn,.verdict,.findings] | map(tostring) | join(" ")')" "turn-$U1 changes 1"
+is "F1 the tier is a real value read from the thread's own rollout file" \
+   "$(printf '%s' "$r" | jq -r .tier)" "gpt-5.6-sol/xhigh"
 out="$(RPC_WAIT_RC=3 bash "$XREVIEW" collect "$nonce" 60 2>&1)"; rc=$?
 is "F2 a running turn exits 3" "$rc" 3
 is "F2 says so and how to keep waiting" "$(printf '%s' "$out" | grep -c "xreview collect $nonce")" 1
@@ -403,6 +462,49 @@ out="$(bash "$XREVIEW" collect "$U1" "$nonce" 2>&1)"; rc=$?
 is "F7 the old thread-first form is refused with the usage" "$rc/$(printf '%s' "$out" | grep -c 'usage: xreview collect <nonce>')" "1/1"
 is "F8 the default budget is at least 30 minutes" \
    "$(grep -E '^COLLECT_BUDGET_DEFAULT=' "$XREVIEW" | cut -d= -f2 | awk '{print ($1 >= 1800)}')" 1
+for bad in "3.5" "abc" "-1" "10s"; do
+  out="$(bash "$XREVIEW" collect "$nonce" "$bad" 2>&1)"; rc=$?
+  is "F9 a budget of '$bad' dies with the usage line" "$rc/$(printf '%s' "$out" | grep -c 'usage: xreview collect')" "1/1"
+  is "F9 '$bad' is never reported as a failed review" "$(printf '%s' "$out" | grep -c 'reviewer turn failed')" 0
+done
+
+echo "F10. the packet temp file never lingers, on any exit path"
+# Exercises the trap across a success (F1 above already ran one), a refused turn/start,
+# and an unanswered one (exit 6) - every dispatch above, cumulatively.
+fresh; RPC_START_FAIL=1 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+fresh; RPC_START_UNCERTAIN=1 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+is "no xreview-packet temp file is left in \$TMPDIR" \
+   "$(find "$TMPDIR" -maxdepth 1 -name 'xreview-packet.*' 2>/dev/null | grep -c .)" 0
+
+echo "F11. record_receipt warns on stderr but still exits 0 when it cannot write"
+fresh
+nonce="$(bash "$XREVIEW" dispatch b.md 2>/dev/null)"
+rm -f "$STATE/reviews.jsonl"; mkdir -p "$STATE/reviews.jsonl"   # the append target cannot be written
+out="$(RPC_WAIT_OUT="$ANSWER" bash "$XREVIEW" collect "$nonce" 2>&1)"; rc=$?
+is "F11 it still exits 0" "$rc" 0
+is "F11 but warns that the receipt could not be written" \
+   "$(printf '%s' "$out" | grep -c 'could not write the receipt')" 1
+rmdir "$STATE/reviews.jsonl"
+
+echo "F12. an unsafe nonce passed to collect is refused"
+out="$(bash "$XREVIEW" collect 'xr-a/b' 2>&1)"; rc=$?
+is "F12 it is refused" "$rc" 1
+is "F12 and says so" "$(printf '%s' "$out" | grep -c 'refusing unsafe identifier')" 1
+
+echo "F13. missing reviewer instructions or the pane command refuse, pane untouched"
+fresh
+mv "$XDG_CONFIG_HOME/xreview/reviewer.md" "$ROOT/reviewer.md.bak"
+out="$(bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+is "F13 a missing reviewer.md refuses" "$(printf '%s' "$out" | grep -c 'missing reviewer instructions')" 1
+is "F13 untouched" "$(untouched)" yes
+mv "$ROOT/reviewer.md.bak" "$XDG_CONFIG_HOME/xreview/reviewer.md"
+fresh
+mv "$XDG_CONFIG_HOME/herdr/codex-pane-command" "$ROOT/codex-pane-command.bak"
+out="$(bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+is "F13 a missing codex-pane-command refuses" "$rc" 1
+is "F13 and names the file" "$(printf '%s' "$out" | grep -c 'codex-pane-command')" 1
+is "F13 untouched" "$(untouched)" yes
+mv "$ROOT/codex-pane-command.bak" "$XDG_CONFIG_HOME/herdr/codex-pane-command"
 
 echo "G. the reviewer tier is reported, never enforced"
 ROLL="$CODEX_HOME/sessions/2026/09/01"; mkdir -p "$ROLL"

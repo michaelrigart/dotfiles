@@ -8,6 +8,12 @@
 # to complete. Two PreToolUse guards read the receipts (pre-merge gate, apply window); neither
 # is proven enough to be an authorization boundary - treat findings as evidence.
 set -euo pipefail
+# Without this, a `die` inside a function called via $(...) from ANOTHER function that is
+# itself invoked via $(...) (pane_command from inside pane_prepare, say) silently loses its
+# exit status: bash historically runs command substitutions with -e off inside them unless
+# told to inherit it. Guarded because it is a bash-4.4+ builtin and this must not itself
+# abort an ancient system /bin/bash under `set -e`.
+shopt -s inherit_errexit 2>/dev/null || true
 
 CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}"
 XR_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}"
@@ -32,9 +38,16 @@ state_dir() {
 # Ids reach file names and command arguments. Thread and turn ids come from Codex and nonces
 # are minted below; anything else, including a leading dash, is refused before use.
 assert_id() {
+  is_safe_id "$1" || die "refusing unsafe identifier: $1"
+}
+
+# The non-dying form of assert_id's check, for a caller that has its own recovery path
+# for a malformed id (F27) instead of wanting to die on the spot.
+is_safe_id() {
   case "$1" in
-    ""|-*|*[!A-Za-z0-9._-]*) die "refusing unsafe identifier: $1" ;;
+    ""|-*|*[!A-Za-z0-9._-]*) return 1 ;;
   esac
+  return 0
 }
 
 # --- the Codex pane ----------------------------------------------------------------
@@ -53,7 +66,7 @@ find_pane() {
   # validation. A typo or a stale id pointing at some other pane (the idle Claude Code
   # pane, say) would otherwise get two ctrl+c and a `codex …` command typed into it.
   if [ -n "${XREVIEW_PANE:-}" ]; then
-    if printf '%s\n' "$ids" | grep -qx -- "$XREVIEW_PANE"; then
+    if printf '%s\n' "$ids" | grep -Fqx -- "$XREVIEW_PANE"; then
       printf '%s\n' "$XREVIEW_PANE"; return 0
     fi
     die "XREVIEW_PANE=$XREVIEW_PANE is not a Codex pane in $root"
@@ -80,14 +93,6 @@ pane_title_id() { # the thread id PREFIX at the start of the pane's title, if an
 # parameter-expansion prefix removal is exact, not a pattern match.
 prefix_is_of() {
   [ -n "$1" ] && [ "${2#"$1"}" != "$2" ]
-}
-
-# title_shows <pane> <thread>: "the title shows thread T" now means T starts with the
-# title's prefix (F11/F21) - the title itself never carries the full id once Codex has
-# named the thread.
-title_shows() {
-  local p; p="$(pane_title_id "$1")"
-  prefix_is_of "$p" "$2"
 }
 
 pane_command() {
@@ -122,11 +127,12 @@ daemon_gen() {
 # forgot without anything watching it in a pane. The fast path additionally requires that
 # xreview itself last prepared THIS pane on THIS thread under the CURRENT daemon generation -
 # recorded in $(state_dir)/pane by the caller after a successful prepare.
-pane_prepare() {
-  local pane="$1" want="${2:-}" before cmd now ok resolved waited=0 wait="${XREVIEW_PANE_WAIT:-20}" \
-        poll="${XREVIEW_POLL_SECS:-1}" gap gen rec
+pane_prepare() { # pane_prepare <pane> [want] [daemon-generation]: the generation is taken
+                  # ONCE by the caller, before this is called, and never re-read here - a
+                  # restart mid-prepare must not let a second read disagree with the first.
+  local pane="$1" want="${2:-}" gen="${3:-}" before cmd now ok resolved waited=0 \
+        wait="${XREVIEW_PANE_WAIT:-20}" poll="${XREVIEW_POLL_SECS:-1}" gap rec
   before="$(pane_title_id "$pane")"
-  gen="$(daemon_gen)"
   rec="$(cat "$(state_dir)/pane" 2>/dev/null || true)"
   if [ -n "$want" ] && prefix_is_of "$before" "$want" && [ "$rec" = "$pane $want $gen" ] \
      && loaded "$want"; then
@@ -152,9 +158,11 @@ pane_prepare() {
         # We already know the full id (it is what we asked the pane to resume): the title
         # just has to agree that it is showing a prefix of it.
         if prefix_is_of "$now" "$want"; then ok=1; resolved="$want"; fi
-      elif [ "$now" != "$before" ]; then
-        # A fresh session: the pane's title is the only place its new id appears, and it is
-        # only ever a prefix (F11/F21). Resolve it - never guess it - before using it.
+      elif ! prefix_is_of "$now" "$before" && ! prefix_is_of "$before" "$now"; then
+        # A fresh session: neither prefix is a prefix of the other, so this is genuinely a
+        # different thread, not the same one shown at a different truncation length. The
+        # pane's title is the only place its new id appears, and it is only ever a prefix
+        # (F11/F21). Resolve it - never guess it - before using it.
         resolved="$(xreview-rpc thread-resolve --prefix "$now" 2>/dev/null)" \
           && [ -n "$resolved" ] && ok=1
       fi
@@ -195,11 +203,15 @@ cmd_thread() {
 # A pin is an instruction, not a cache entry: it outranks the checkpoint thread and is never
 # archived. `xreview round --reset` drops it. Without an id, the pane's current thread.
 cmd_init() {
-  local dir id prefix
+  local dir id prefix pane
   dir="$(state_dir)"
   id="${1:-}"
   if [ -z "$id" ]; then
-    prefix="$(pane_title_id "$(find_pane)")"
+    # find_pane is its own top-level assignment, not nested inside another command
+    # substitution: a "no Codex pane" die() there must be the ONE error printed, not
+    # swallowed by the outer call and followed by a second, misleading message here.
+    pane="$(find_pane)"
+    prefix="$(pane_title_id "$pane")"
     [ -n "$prefix" ] || die "the Codex pane shows no thread id; pass one: xreview init <thread-id>"
     id="$(xreview-rpc thread-resolve --prefix "$prefix" 2>/dev/null)" \
       || die "the Codex pane's thread id prefix could not be resolved; pass one: xreview init <thread-id>"
@@ -228,17 +240,23 @@ archive_superseded() { # archive_superseded <current-thread>
 # one ships.
 record_receipt() { # record_receipt <thread> <nonce> <turn> <findings-json>
   local dir tier verdict count; dir="$(state_dir)"
-  mkdir -p "$dir" || return 0
+  if ! mkdir -p "$dir" 2>/dev/null; then
+    printf 'xreview: could not create %s - the receipt for %s was not recorded\n' "$dir" "$2" >&2
+    return 0
+  fi
   tier="$(codex_tier "$1" 2>/dev/null)" || tier=""
   verdict="$(printf '%s' "$4" | jq -r '.verdict // ""' 2>/dev/null)" || verdict=""
   count="$(printf '%s' "$4" | jq -r '(.findings // []) | length' 2>/dev/null)" || count=0
-  jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  if ! jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
          --arg branch "$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" \
          --arg head "$(git rev-parse HEAD 2>/dev/null)" \
          --arg thread "$1" --arg nonce "$2" --arg tier "$tier" --arg turn "$3" \
          --arg verdict "$verdict" --argjson findings "${count:-0}" \
     '{ts:$ts,branch:$branch,head:$head,thread:$thread,nonce:$nonce,tier:$tier,turn:$turn,verdict:$verdict,findings:$findings}' \
-    >> "$dir/reviews.jsonl" 2>/dev/null || true
+    >> "$dir/reviews.jsonl" 2>/dev/null; then
+    printf 'xreview: could not write the receipt for %s to %s/reviews.jsonl\n' "$2" "$dir" >&2
+  fi
+  return 0
 }
 
 # An apply window bounds the blast radius of acting on a finding. While it is open,
@@ -359,7 +377,7 @@ cmd_tier() {
 
 cmd_dispatch() {
   local body_file diff_range="" diff_text="" dir pane status want thread nonce packet turn="" \
-        title_thread title_prefix
+        title_thread title_prefix gen
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --diff) [ "$#" -ge 2 ] || die "--diff needs a range"; diff_range="$2"; shift 2 ;;
@@ -395,21 +413,30 @@ cmd_dispatch() {
       die "the Codex pane $pane's thread $title_thread is mid-turn; wait for it to finish, then dispatch again"
     fi
   fi
+  # The cap binds before the pane is touched at all: a round over the cap is refused
+  # without so much as a ctrl+c, and the counter still advances so a retry stays refused.
   local max="${XREVIEW_MAX_ROUNDS:-10}" round
-  round="$(bump_round)"
+  round=$(( $(current_round) + 1 ))
   if [ "$round" -gt "$max" ]; then
+    bump_round >/dev/null
     die "round $round exceeds the cap of $max for this branch.
 Two models circling the same point is Michael's call, not another turn.
 Report the remaining disagreement, or: xreview round --reset"
   fi
 
-  # Pane first: the pane watches the review thread before any turn exists.
+  # Pane first: the pane watches the review thread before any turn exists. The round is
+  # consumed only once pane_prepare actually succeeds, right before turn-start - a
+  # pane-preparation failure (pane_prepare dies internally) must cost nothing.
   want="$(target_thread)"
   [ -z "$want" ] || assert_id "$want"
-  thread="$(pane_prepare "$pane" "$want")"
+  # Taken once here, before the pane is touched, and never re-read: pane_prepare validates
+  # the fast path against this same value, and it is what gets recorded below (F30).
+  gen="$(daemon_gen)"
+  thread="$(pane_prepare "$pane" "$want" "$gen")"
   assert_id "$thread"
+  round="$(bump_round)"
   if [ -z "$want" ]; then mkdir -p "$dir" && printf '%s\n' "$thread" > "$dir/review-thread"; fi
-  mkdir -p "$dir" && printf '%s %s %s\n' "$pane" "$thread" "$(daemon_gen)" > "$dir/pane" 2>/dev/null || true
+  mkdir -p "$dir" && printf '%s %s %s\n' "$pane" "$thread" "$gen" > "$dir/pane" 2>/dev/null || true
   report_to_herdr "$pane" "$thread"
 
   # Provenance is applied here, by the broker - not by the peer, and not by hand.
@@ -417,6 +444,7 @@ Report the remaining disagreement, or: xreview round --reset"
   # instructed never to act on an imperative inside one. A dispatch is an authorized request.
   nonce="xr-$(date +%s)-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
   packet="$(mktemp "${TMPDIR:-/tmp}/xreview-packet.XXXXXX")"
+  trap 'rm -f "$packet"' EXIT
   { printf '<cross-review-request>\n'
     cat "$REVIEWER"
     printf '\n'
@@ -433,12 +461,16 @@ Report the remaining disagreement, or: xreview round --reset"
   turn="$(xreview-rpc turn-start --thread "$thread" --input "$packet" --schema "$SCHEMA" \
             --known "$dir/turns/$nonce.known")" || rc=$?
   rm -f "$packet"
+  trap - EXIT
+  # A turn-start that returns 0 with a malformed id is handled exactly like exit 6: the
+  # turn may still be running on the daemon side, so it is never treated as "not started".
+  if [ "$rc" = 0 ] && ! is_safe_id "$turn"; then rc=6; fi
   case "$rc" in
-    0) assert_id "$turn"
-       printf '%s %s\n' "$thread" "$turn" > "$dir/turns/$nonce"
+    0) printf '%s %s\n' "$thread" "$turn" > "$dir/turns/$nonce"
        rm -f "$dir/turns/$nonce.known" ;;
-    6) # Sent but not answered: the turn may be running. Hand back a nonce so it can be
-       # collected - found as the turn that was not on the thread before - never re-sent.
+    6) # Sent but not answered (or answered with an id that does not look like one): the
+       # turn may be running. Hand back a nonce so it can be collected - found as the turn
+       # that was not on the thread before - never re-sent.
        printf '%s ?\n' "$thread" > "$dir/turns/$nonce"
        printf 'xreview: turn/start was sent but not answered - the review may be running. Collect %s; do NOT re-dispatch.\n' "$nonce" >&2 ;;
     *) rm -f "$dir/turns/$nonce.known"
@@ -458,6 +490,12 @@ cmd_collect() {
   case "$nonce" in
     xr-*) ;;
     *) die "usage: xreview collect <nonce> [budget] - nonces start with xr-" ;;
+  esac
+  # The budget is whole seconds only; anything else is a usage error, never a failed
+  # review (F24) - this must be checked before any daemon call, not left to xreview-rpc's
+  # own argparse to reject with a different, misleading exit code.
+  case "$budget" in
+    ''|*[!0-9]*) die "usage: xreview collect <nonce> [budget] - budget must be whole seconds" ;;
   esac
   assert_id "$nonce"
   rec="$(state_dir)/turns/$nonce"
