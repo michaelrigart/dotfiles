@@ -89,7 +89,10 @@ done
 case "$cmd" in
   thread-status)
     n=$(cat "$P/status_calls" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$P/status_calls"
-    if [ -n "${RPC_NOT_LOADED:-}" ] || { [ -n "${RPC_NOT_LOADED_ONCE:-}" ] && [ "$n" = 1 ]; }; then
+    if [ -n "${RPC_THREAD_RUNNING:-}" ]; then
+      echo '{"loaded":true,"status":"active","running":true}'
+    elif [ -n "${RPC_NOT_LOADED:-}" ] \
+         || { [ -n "${RPC_NOT_LOADED_ONCE:-}" ] && [ "$n" = "${RPC_NOT_LOADED_ONCE_AT:-1}" ]; }; then
       echo '{"loaded":false,"status":"notLoaded","running":false}'
     else echo '{"loaded":true,"status":"idle","running":false}'; fi ;;
   turn-start) cp "$input" "$P/packet"; [ -n "$known" ] && echo '[]' > "$known"
@@ -105,8 +108,9 @@ chmod +x "$STUB"/*
 export PATH="$STUB:$PATH"
 
 fresh() { # a pane showing U0, idle; clean log and state
-  unset ENSURE_RC CHECK_RC RPC_NOT_LOADED RPC_NOT_LOADED_ONCE RPC_START_FAIL RPC_START_UNCERTAIN \
-        NO_TITLE STUCK_TUI EXTRA_PANES PANE_CWD XREVIEW_PANE XREVIEW_THREAD RPC_WAIT_OUT RPC_WAIT_RC
+  unset ENSURE_RC CHECK_RC RPC_NOT_LOADED RPC_NOT_LOADED_ONCE RPC_NOT_LOADED_ONCE_AT RPC_START_FAIL \
+        RPC_START_UNCERTAIN NO_TITLE STUCK_TUI EXTRA_PANES PANE_CWD XREVIEW_PANE XREVIEW_THREAD \
+        RPC_WAIT_OUT RPC_WAIT_RC RPC_THREAD_RUNNING
   export NEW_UUID="$U1"
   printf codex > "$P/agent"; printf '%s | t | d' "$U0" > "$P/title"; echo idle > "$P/status"
   echo 0 > "$P/ctrlc"; rm -f "$P/packet" "$P/status_calls"
@@ -189,6 +193,12 @@ is "C9 untouched" "$(untouched)" yes
 fresh; echo working > "$P/status"; out="$(bash "$XREVIEW" dispatch b.md 2>&1)"
 is "C6 a pane mid-turn refuses" "$(printf '%s' "$out" | grep -c 'mid-turn')" 1
 is "C6 untouched" "$(untouched)" yes
+fresh; echo blocked > "$P/status"; out="$(bash "$XREVIEW" dispatch b.md 2>&1)"
+is "C10 a blocked pane refuses" "$(printf '%s' "$out" | grep -c 'mid-turn')" 1
+is "C10 untouched" "$(untouched)" yes
+fresh; out="$(RPC_THREAD_RUNNING=1 bash "$XREVIEW" dispatch b.md 2>&1)"
+is "C11 a running thread behind an idle pane refuses" "$(printf '%s' "$out" | grep -c 'mid-turn')" 1
+is "C11 untouched" "$(untouched)" yes
 fresh; mkdir .codex; out="$(bash "$XREVIEW" dispatch b.md 2>&1)"; rmdir .codex
 is "C7 a project .codex refuses" "$(printf '%s' "$out" | grep -c 'refusing to dispatch')" 1
 is "C7 untouched" "$(untouched)" yes
@@ -235,7 +245,7 @@ is "D8 and records no nonce" "$(ls "$STATE/turns" 2>/dev/null | grep -c .)" 0
 fresh
 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1        # the pane now shows U1, recorded
 : > "$CALLS"; rm -f "$P/status_calls"
-RPC_NOT_LOADED_ONCE=1 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+RPC_NOT_LOADED_ONCE=1 RPC_NOT_LOADED_ONCE_AT=2 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
 is "D9 a matching title on a thread the daemon lost is resumed, not trusted" \
    "$(called "herdr pane run w1:p2 codex --sandbox read-only --ask-for-approval never resume $U1")" 1
 is "D9 and the turn starts after that" "$(called "xreview-rpc turn-start --thread $U1")" 1

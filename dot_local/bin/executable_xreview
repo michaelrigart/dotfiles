@@ -83,6 +83,10 @@ loaded() { # loaded <thread>: the daemon has the thread in memory
   xreview-rpc thread-status --thread "$1" 2>/dev/null | jq -e '.loaded' >/dev/null 2>&1
 }
 
+thread_running() { # thread_running <thread>: xreview-rpc thread-status reports a live turn
+  xreview-rpc thread-status --thread "$1" 2>/dev/null | jq -e '.running == true' >/dev/null 2>&1
+}
+
 # daemon_gen — a cheap fingerprint of the running daemon, so a restart is detectable
 # without parsing the pid file's contents. The whole file changes when the daemon
 # restarts; a checksum of it is enough, and empty when there is no daemon yet.
@@ -322,7 +326,7 @@ cmd_tier() {
 }
 
 cmd_dispatch() {
-  local body_file diff_range="" diff_text="" dir pane status want thread nonce packet turn=""
+  local body_file diff_range="" diff_text="" dir pane status want thread nonce packet turn="" title_thread
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --diff) [ "$#" -ge 2 ] || die "--diff needs a range"; diff_range="$2"; shift 2 ;;
@@ -344,7 +348,15 @@ cmd_dispatch() {
   codex-daemon check || die "refusing to dispatch while the daemon carries a pane's environment (see above)"
   pane="$(find_pane)"
   status="$(pane_field "$pane" '.agent_status')"
-  [ "$status" != "working" ] || die "the Codex pane $pane is mid-turn; wait for it to finish, then dispatch again"
+  case "$status" in
+    working|blocked) die "the Codex pane $pane is mid-turn; wait for it to finish, then dispatch again" ;;
+  esac
+  # A herdr-idle pane can still be mid-turn on the daemon side: a disconnected TUI keeps its
+  # title's thread id, and the pane's own agent_status says nothing about it.
+  title_thread="$(pane_title_uuid "$pane")"
+  if [ -n "$title_thread" ] && thread_running "$title_thread"; then
+    die "the Codex pane $pane's thread $title_thread is mid-turn; wait for it to finish, then dispatch again"
+  fi
   local max="${XREVIEW_MAX_ROUNDS:-10}" round
   round="$(bump_round)"
   if [ "$round" -gt "$max" ]; then
