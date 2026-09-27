@@ -19,6 +19,7 @@ is() { if [ "$2" = "$3" ]; then _pass "$1"; else _fail "$1" "$2"; fi; }
 rpc() { python3 "$RPCF" "$@"; }
 
 command -v herdr >/dev/null || { echo "INCONCLUSIVE: herdr not on PATH" >&2; exit 2; }
+command -v jq >/dev/null || { echo "INCONCLUSIVE: jq not on PATH" >&2; exit 2; }
 codex-daemon check || { echo "INCONCLUSIVE: the Codex daemon is not running clean" >&2; exit 2; }
 ws="${HERDR_WORKSPACE_ID:-}"
 [ -n "$ws" ] || { echo "INCONCLUSIVE: run from inside a herdr pane" >&2; exit 2; }
@@ -39,6 +40,11 @@ trap cleanup EXIT
 out="$(herdr tab create --workspace "$ws" --cwd "$SRC" --label live-codex --no-focus)"
 tab="$(printf '%s' "$out" | jq -r '.result.tab.tab_id')"
 pane="$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id')"
+if [ -z "$tab" ] || [ "$tab" = "null" ] || [ -z "$pane" ] || [ "$pane" = "null" ]; then
+  echo "INCONCLUSIVE: herdr tab create returned no usable tab/pane id" >&2
+  printf '%s\n' "$out" >&2
+  exit 2
+fi
 herdr pane run "$pane" "$(grep -v '^[[:space:]]*#' "$PCMD" | grep . | head -1)" >/dev/null
 
 echo "F11/F14: the title carries the thread id at launch, and the daemon has it loaded"
@@ -56,7 +62,7 @@ printf 'Live canary. Reply with verdict "approve" and no findings.\n' > "$T/in"
 turn="$(rpc turn-start --thread "$thread" --input "$T/in" --schema "$SCHEMA")"
 seen=0
 for _ in $(seq 10); do
-  herdr pane read "$pane" 2>/dev/null | grep -q 'Live canary' && { seen=1; break; }; sleep 1
+  grep -q 'Live canary' <<<"$(herdr pane read "$pane" 2>/dev/null)" && { seen=1; break; }; sleep 1
 done
 is "the pane shows the turn another client started" "$seen" 1
 
