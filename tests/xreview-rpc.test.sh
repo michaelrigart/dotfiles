@@ -232,6 +232,14 @@ scenario "$(jq -nc --argjson l "$(listing "$(turn inProgress "")")" '{responses:
 rpc turn-wait --thread th --turn turn-1 --budget 1 --schema "$SCHEMA" >/dev/null 2>&1
 is "it exits 3" "$?" 3
 
+echo "G2. a drop after the turn is seen running exits 3, not 5 (never re-dispatch either way)"
+scenario "$(jq -nc --argjson l "$(listing "$(turn inProgress "")")" '{runs:[{responses:{"thread/turns/list":$l},exit_after:3}]}')"
+out="$(rpc turn-wait --thread th --turn turn-1 --budget 2 --schema "$SCHEMA" 2>&1)"; rc=$?
+is "it exits 3, not 5" "$rc" 3
+is "and says the turn is still running, not unreachable" "$(printf '%s' "$out" | grep -c 'still running')" 1
+is "it had reconnected more than once before giving up" \
+   "$([ "$(cat "$FAKE_COUNTER" 2>/dev/null || echo 0)" -gt 1 ] && echo yes || echo no)" yes
+
 echo "H. a turn that did not complete"
 scenario "$(jq -nc --argjson l "$(listing "$(turn failed "")")" '{responses:{"thread/turns/list":$l}}')"
 out="$(rpc turn-wait --thread th --turn turn-1 --budget 5 --schema "$SCHEMA" 2>&1)"; rc=$?
