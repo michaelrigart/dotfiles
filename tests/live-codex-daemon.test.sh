@@ -60,6 +60,12 @@ is "the daemon has the new thread loaded" "$(rpc thread-status --thread "$thread
 echo "F15: a turn from another client renders in the pane"
 printf 'Live canary. Reply with verdict "approve" and no findings.\n' > "$T/in"
 turn="$(rpc turn-start --thread "$thread" --input "$T/in" --schema "$SCHEMA")"
+# turn-wait starts right after turn-start, in the background, so it subscribes and
+# waits on the turn/completed NOTIFICATION (F5) rather than only finding an
+# already-finished turn later via thread/turns/list.
+rpc turn-wait --thread "$thread" --turn "$turn" --budget 180 --schema "$SCHEMA" \
+  > "$T/wait.out" 2> "$T/wait.err" &
+wait_pid=$!
 seen=0
 for _ in $(seq 10); do
   grep -q 'Live canary' <<<"$(herdr pane read "$pane" 2>/dev/null)" && { seen=1; break; }; sleep 1
@@ -67,9 +73,16 @@ done
 is "the pane shows the turn another client started" "$seen" 1
 
 echo "F16/F17: waiting from a fresh connection returns schema-valid JSON"
-res="$(rpc turn-wait --thread "$thread" --turn "$turn" --budget 180 --schema "$SCHEMA")"; rc=$?
+wait "$wait_pid"; rc=$?
+res="$(cat "$T/wait.out")"
 is "turn-wait completes" "$rc" 0
-is "with the schema's verdict" "$(printf '%s' "$res" | jq -r .verdict 2>/dev/null)" approve
+# rc 0 already proves schema validity; a model answering "changes" is not protocol
+# drift, so either verdict the schema allows is accepted here.
+verdict="$(printf '%s' "$res" | jq -r .verdict 2>/dev/null)"
+case "$verdict" in
+  approve|changes) _pass "with a schema-valid verdict ($verdict)" ;;
+  *) _fail "with a schema-valid verdict" "$verdict" ;;
+esac
 
 echo "the pane-map hook tells herdr the pane's thread after its first turn"
 s=""

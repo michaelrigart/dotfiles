@@ -40,6 +40,7 @@ if cf:
 run = runs[min(n, len(runs) - 1)]
 log = open(os.environ["FAKE_LOG"], "a")
 sent = 0
+calls = {}   # per-method call count, for a "responses" entry given as a list
 def out(m):
     global sent
     sys.stdout.write(json.dumps(m) + "\n"); sys.stdout.flush(); sent += 1
@@ -52,6 +53,9 @@ for line in sys.stdin:
         sys.exit(0)
     if "id" in m and meth and meth not in run.get("silent", []):
         resp = run.get("responses", {}).get(meth, {"result": {}})
+        if isinstance(resp, list):   # a different answer on each successive call
+            i = calls.get(meth, 0); calls[meth] = i + 1
+            resp = resp[min(i, len(resp) - 1)]
         out(dict(resp, id=m["id"]))
         for note in run.get("after", {}).get(meth, []):
             out(note)
@@ -167,6 +171,19 @@ scenario "$(jq -nc --argjson l "$(listing "$(turn inProgress "")")" --argjson ds
 out="$(rpc turn-wait --thread th --turn turn-1 --budget 5 --schema "$SCHEMA")"; rc=$?
 is "F2 it exits 0 despite hundreds of other notifications first" "$rc" 0
 is "F2 with the answer" "$(printf '%s' "$out" | jq -r '.findings[0].severity')" P1
+
+echo "F3. a turn/completed notification with a partial items view triggers a re-read"
+# A resumed subscriber is not guaranteed the final text in the notification itself
+# (F5/F17): an empty items view must not be taken as "no answer" — re-read the turn.
+partial_done="$(jq -nc '{method:"turn/completed",params:{threadId:"th",turn:{id:"turn-1",status:"completed",items:[]}}}')"
+scenario "$(jq -nc --argjson l1 "$(listing "$(turn inProgress "")")" --argjson l2 "$(listing "$(turn completed "$ANSWER")")" \
+  --argjson n "$partial_done" \
+  '{responses:{"thread/turns/list":[$l1,$l2]},after:{"thread/turns/list":[$n]}}')"
+out="$(rpc turn-wait --thread th --turn turn-1 --budget 5 --schema "$SCHEMA")"; rc=$?
+is "F3 it exits 0 despite the notification's empty items" "$rc" 0
+is "F3 with the re-read answer" "$(printf '%s' "$out" | jq -r '.findings[0].severity')" P1
+is "F3 the turn was re-read on the thread, not trusted from the notification" \
+   "$(jq -r 'select(.method=="thread/turns/list") | .method' "$FAKE_LOG" | grep -c .)" 2
 
 echo "G. still running at the budget"
 scenario "$(jq -nc --argjson l "$(listing "$(turn inProgress "")")" '{responses:{"thread/turns/list":$l}}')"

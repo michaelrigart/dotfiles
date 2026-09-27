@@ -428,6 +428,11 @@ def cmd_turn_wait(a):
                     err(f"turn {turn_id} is still running")
                     return 3
                 t = n["params"]["turn"]
+                if t.get("status") == "completed" and final_text(t) is None:
+                    # A Turn can arrive with a partial items view, and a resumed subscriber
+                    # is not guaranteed the final text in the notification (F5/F17). Re-read
+                    # the turn directly rather than take an empty items view as "no answer".
+                    t = turn_state(c, a.thread, turn_id, None) or t
             return finish(t, schema)
         except (Unreachable, Closed) as e:
             last = str(e)
