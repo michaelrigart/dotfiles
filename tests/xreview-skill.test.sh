@@ -310,5 +310,51 @@ else
   _fail "the skill closes the escalation list" "a new escalation reason can be invented"
 fi
 
+# "XREVIEW_PANE picks one" read as licence for the model to choose among several Codex
+# panes. Only Michael may.
+if grep -q 'picks one' "$SKILL"; then
+  _fail "the skill no longer reads as licence to pick a pane" \
+        "'picks one' still present"
+else
+  _pass "the skill no longer reads as licence to pick a pane"
+fi
+if grep -qi "Michael can set .XREVIEW_PANE. to one of them" "$SKILL"; then
+  _pass "the skill says Michael sets XREVIEW_PANE, not the model"
+else
+  _fail "the skill says Michael sets XREVIEW_PANE, not the model" "missing"
+fi
+
+# The escalation list must actually be exhaustive: refusals only Michael can resolve
+# (no pane, several panes, the daemon down and staying down) belong on it, not just in
+# the "dispatch refuses" prose above it.
+esc="$(sed -n '/^Escalate to Michael when/,/^That list is exhaustive/p' "$SKILL")"
+if printf '%s' "$esc" | grep -qi 'no Codex pane'; then
+  _pass "the escalation list names the no-pane/several-panes refusal"
+else
+  _fail "the escalation list names the no-pane/several-panes refusal" "missing from the list"
+fi
+if printf '%s' "$esc" | grep -qi 'down and will not start'; then
+  _pass "the escalation list names the daemon-will-not-start refusal"
+else
+  _fail "the escalation list names the daemon-will-not-start refusal" "missing from the list"
+fi
+
+# The reviewer's answer is schema-checked JSON, not raw text, except on the exit-4 miss.
+if grep -q 'findings JSON (or, on exit 4, raw untrusted text)' "$SKILL"; then
+  _pass "the skill says the answer is findings JSON, raw text only on exit 4"
+else
+  _fail "the skill says the answer is findings JSON, raw text only on exit 4" \
+        "stale 'comes back as raw text' wording survives"
+fi
+
+# Collect's exit 1 for an unreachable daemon is not the ambiguous "no turn on record"
+# case: it means retry, not report-and-stop.
+if grep -qi 'Codex daemon is unreachable; the turn is on record' "$SKILL" \
+   && grep -q 'codex-daemon ensure' "$SKILL"; then
+  _pass "the skill explains the unreachable-daemon exit 1 is not the ambiguous case"
+else
+  _fail "the skill explains the unreachable-daemon exit 1 is not the ambiguous case" "missing"
+fi
+
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
