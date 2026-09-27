@@ -76,7 +76,11 @@ for var in $vars; do
   # `${VAR` — an expansion, not a mention. The guard's own error text says
   # "Set XREVIEW_GUARD=off to bypass deliberately", so a substring search is satisfied by
   # the message describing the feature after the code implementing it has gone.
-  if code_of | grep -qE -- "\\\$\\{$var[:}]"; then
+  # Not -q: it would exit the moment it finds the match and close the pipe, and with
+  # pipefail set, the multi-file code_of() upstream can then die of SIGPIPE before it
+  # finishes writing — that 141 outranks grep's own 0 and the whole `if` reads as failed
+  # even though the match was real. Reading to EOF costs nothing here and can't race.
+  if code_of | grep -E -- "\\\$\\{$var[:}]" >/dev/null; then
     _pass "SKILL.md names \$$var, and the implementation reads it"
   else
     _fail "SKILL.md names \$$var, and the implementation reads it" \
