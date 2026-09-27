@@ -23,17 +23,22 @@
 {{- /* Pinned to the system interpreter (F3): this hook runs inside the Codex daemon,
        where PATH must not be able to shadow python3. */ -}}
 {{- $mapCmd := printf "/usr/bin/python3 '%s/.codex/herdr-codex-pane-map.py'" .chezmoi.homeDir -}}
-{{- /* Drop any existing entry of ours first, so re-applying cannot duplicate either. */ -}}
+{{- /* Drop any existing command of ours first, so re-applying cannot duplicate either.
+       Only OUR commands are removed from each entry's own hooks list - a grouped entry
+       that also carries someone else's hook keeps that hook, and the entry is dropped
+       entirely only once removing ours leaves it empty. */ -}}
 {{- $kept := list -}}
 {{- range $start -}}
-{{-   $ours := false -}}
+{{-   $remaining := list -}}
 {{-   range (get . "hooks" | default list) -}}
 {{-     $c := get . "command" | default "" -}}
-{{-     if or (contains "herdr-agent-state.sh" $c) (contains "herdr-codex-pane-map.py" $c) -}}
-{{-       $ours = true -}}
+{{-     if not (or (contains "herdr-agent-state.sh" $c) (contains "herdr-codex-pane-map.py" $c)) -}}
+{{-       $remaining = append $remaining . -}}
 {{-     end -}}
 {{-   end -}}
-{{-   if not $ours -}}{{- $kept = append $kept . -}}{{- end -}}
+{{-   if gt (len $remaining) 0 -}}
+{{-     $kept = append $kept (set . "hooks" $remaining) -}}
+{{-   end -}}
 {{- end -}}
 {{- $entry := dict "hooks" (list (dict "type" "command" "command" $cmd "timeout" 10)) -}}
 {{- $mapEntry := dict "hooks" (list (dict "type" "command" "command" $mapCmd "timeout" 10)) -}}

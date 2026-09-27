@@ -143,6 +143,8 @@ if printf '%s' "$OUT" | jq -e --arg cmd "bash '$HOME/.codex/herdr-agent-state.sh
   (keys == ["hooks"])
   and (.hooks | keys == ["SessionStart"])
   and (.hooks.SessionStart | length == 2)
+  and (.hooks.SessionStart[0] | keys == ["hooks"])
+  and (.hooks.SessionStart[1] | keys == ["hooks"])
   and (.hooks.SessionStart[0].hooks == [{type: "command", command: $cmd, timeout: 10}])
   and (.hooks.SessionStart[1].hooks == [{type: "command", command: $map, timeout: 10}])
 ' >/dev/null 2>&1; then
@@ -152,7 +154,7 @@ else
 fi
 
 echo "I. hooks.json preserves unrelated state and stays idempotent"
-fixture='{"other":42,"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"/bin/true"}]},{"hooks":[{"type":"command","command":"bash '\''/old/.codex/herdr-agent-state.sh'\'' session","timeout":5}]},{"hooks":[{"type":"command","command":"python3 '\''/old/.codex/herdr-codex-pane-map.py'\''"}]}],"Stop":[{"hooks":[{"type":"command","command":"/bin/false"}]}]}}'
+fixture='{"other":42,"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"/bin/true"}]},{"hooks":[{"type":"command","command":"bash '\''/old/.codex/herdr-agent-state.sh'\'' session","timeout":5}]},{"hooks":[{"type":"command","command":"python3 '\''/old/.codex/herdr-codex-pane-map.py'\''"}]},{"hooks":[{"type":"command","command":"/bin/keep-me"},{"type":"command","command":"bash '\''/old/.codex/herdr-agent-state.sh'\'' session","timeout":5}]}],"Stop":[{"hooks":[{"type":"command","command":"/bin/false"}]}]}}'
 emit_hooks "$fixture"
 first="$OUT"
 if printf '%s' "$first" | jq -e --arg cmd "bash '$HOME/.codex/herdr-agent-state.sh' session" --arg map "$MAPCMD" '
@@ -161,10 +163,14 @@ if printf '%s' "$first" | jq -e --arg cmd "bash '$HOME/.codex/herdr-agent-state.
   and ([.hooks.SessionStart[] | select(any(.hooks[]?; .command == "/bin/true"))] | length == 1)
   and ([.hooks.SessionStart[]?.hooks[]? | select((.command // "") | contains("herdr-agent-state.sh"))] == [{type: "command", command: $cmd, timeout: 10}])
   and ([.hooks.SessionStart[]?.hooks[]? | select((.command // "") | contains("herdr-codex-pane-map.py"))] == [{type: "command", command: $map, timeout: 10}])
+  and ( ([.hooks.SessionStart[] | any(.hooks[]?; (.command // "") | contains("herdr-agent-state.sh"))] | index(true))
+        < ([.hooks.SessionStart[] | any(.hooks[]?; (.command // "") | contains("herdr-codex-pane-map.py"))] | index(true)) )
+  and ([.hooks.SessionStart[] | select(any(.hooks[]?; .command == "/bin/keep-me")) | .hooks]
+       == [[{type: "command", command: "/bin/keep-me"}]])
 ' >/dev/null 2>&1; then
-  _pass "unrelated hooks survive and each stale entry is replaced exactly once"
+  _pass "unrelated hooks survive, each stale entry is replaced exactly once, herdr before the pane-map"
 else
-  _fail "unrelated hooks survive and each stale entry is replaced exactly once" "$(printf '%s' "$first" | head -c 300)"
+  _fail "unrelated hooks survive, each stale entry is replaced exactly once, herdr before the pane-map" "$(printf '%s' "$first" | head -c 300)"
 fi
 
 emit_hooks "$first"
