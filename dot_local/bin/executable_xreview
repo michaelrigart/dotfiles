@@ -134,7 +134,9 @@ pane_prepare() {
         [ "$now" = "$before" ] || ok=1
       fi
     fi
-    if [ "$ok" = 1 ] && loaded "$now"; then
+    # A matching title alone can still be stale: the terminal's title escape can land
+    # before herdr's own .agent field catches up to the new session. Require both.
+    if [ "$ok" = 1 ] && [ "$(pane_field "$pane" '.agent')" = "codex" ] && loaded "$now"; then
       printf '%s\n' "$now"; return 0
     fi
     [ "$waited" -lt "$wait" ] || die "the Codex pane $pane did not show ${want:-a new thread} within ${wait}s; no review was started"

@@ -47,6 +47,15 @@ echo "herdr $*" >> "$CALLS"
 pane_json() {
   a="$(cat "$P/agent" 2>/dev/null)"; t="$(cat "$P/title" 2>/dev/null)"
   s="$(cat "$P/status" 2>/dev/null || echo idle)"
+  # AGENT_LAG simulates the pane's title updating before herdr's own .agent field
+  # catches up: after a `pane run`, the title already shows the new session for the
+  # first N post-run queries, while .agent has not flipped back to "codex" yet. Only
+  # active once a run has actually happened, so preconditions before the restart never
+  # see it.
+  if [ -n "${AGENT_LAG:-}" ] && [ -e "$P/lag_active" ]; then
+    n=$(cat "$P/get_calls" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$P/get_calls"
+    [ "$n" -le "$AGENT_LAG" ] && a=""
+  fi
   af=""; [ -n "$a" ] && af="\"agent\":\"$a\","
   printf '{%s"agent_status":"%s","cwd":"%s","pane_id":"w1:p2","terminal_title":"%s","terminal_title_stripped":"%s"}' \
     "$af" "$s" "${PANE_CWD:-$CWD}" "$t" "$t"
@@ -58,7 +67,7 @@ case "$1 $2" in
     n=$(cat "$P/ctrlc" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$P/ctrlc"
     if [ "$n" -ge 2 ] && [ -z "${STUCK_TUI:-}" ]; then : > "$P/agent"; fi ;;
   "pane run")
-    echo 0 > "$P/ctrlc"
+    echo 0 > "$P/ctrlc"; rm -f "$P/get_calls"; : > "$P/lag_active"
     [ -n "${NO_TITLE:-}" ] && exit 0
     printf codex > "$P/agent"
     case "$4" in
@@ -111,10 +120,10 @@ export PATH="$STUB:$PATH"
 fresh() { # a pane showing U0, idle; clean log and state
   unset ENSURE_RC CHECK_RC RPC_NOT_LOADED RPC_NOT_LOADED_ONCE RPC_NOT_LOADED_ONCE_AT RPC_START_FAIL \
         RPC_START_UNCERTAIN NO_TITLE STUCK_TUI EXTRA_PANES PANE_CWD XREVIEW_PANE XREVIEW_THREAD \
-        RPC_WAIT_OUT RPC_WAIT_RC RPC_THREAD_RUNNING RPC_HEALTH_FAIL
+        RPC_WAIT_OUT RPC_WAIT_RC RPC_THREAD_RUNNING RPC_HEALTH_FAIL AGENT_LAG
   export NEW_UUID="$U1"
   printf codex > "$P/agent"; printf '%s | t | d' "$U0" > "$P/title"; echo idle > "$P/status"
-  echo 0 > "$P/ctrlc"; rm -f "$P/packet" "$P/status_calls"
+  echo 0 > "$P/ctrlc"; rm -f "$P/packet" "$P/status_calls" "$P/get_calls" "$P/lag_active"
   bash "$XREVIEW" round --reset >/dev/null 2>&1
   rm -rf "$STATE/superseded" "$STATE/pin" "$STATE/turns"
   : > "$CALLS"
@@ -288,6 +297,20 @@ is "D12 a pin whose title already matches is still resumed once, with nothing re
 : > "$CALLS"
 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
 is "D12 the dispatch after that takes the fast path" "$(called 'herdr pane send-keys')" 0
+
+fresh; export AGENT_LAG=2
+start=$(date +%s)
+nonce="$(bash "$XREVIEW" dispatch b.md 2>/dev/null)"
+took=$(( $(date +%s) - start ))
+is "D13 a title that updates before .agent says codex is not trusted early" \
+   "$(printf '%s' "$nonce" | grep -c '^xr-')" 1
+is "D13 dispatch waited for .agent to actually say codex" \
+   "$([ "$took" -ge 2 ] && echo yes || echo "no ($took s)")" yes
+fresh; export AGENT_LAG=10
+out="$(bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+is "D14 .agent never saying codex times out" "$rc" 1
+is "D14 and says so" "$(printf '%s' "$out" | grep -c 'did not show')" 1
+unset AGENT_LAG
 
 echo "E. checkpoints and pins"
 fresh
