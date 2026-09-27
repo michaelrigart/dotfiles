@@ -1,0 +1,8 @@
+# The command every Codex pane runs. Read by layout.sh, which builds the pane, and by xreview,
+# which restarts it on a review thread. Only the first non-comment line counts.
+#
+# Codex's documented role here is reviewer, not implementer, so its panes launch unable to
+# write. Without this they inherit workspace-write with $HOME writable. Read-only is not
+# confinement - reads are still unrestricted - but it removes the write half. Launch an
+# implementer session by hand when you actually want one.
+codex --sandbox read-only --ask-for-approval never

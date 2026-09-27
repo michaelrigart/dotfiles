@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
-# Tests for dot_local/bin/executable_xreview — the review round cap.
+# Tests for dot_local/bin/executable_xreview on the Codex daemon (spec section 7).
 #
-# Rounds iterate until the models converge or genuinely disagree, so the cap is the only
-# thing standing between "iterate" and "loop until the usage limit does it for you". It
-# is asserted as an exact refusal at an exact round, not as "eventually stops".
+# Every collaborator is stubbed on PATH:
+#   herdr         one Codex pane, w1:p2, whose title and agent live in files under $P
+#   codex-daemon  ensure/check exit codes
+#   xreview-rpc   thread status, turn start and wait, archive
+# Each stub logs its calls to $CALLS, so ordering is asserted from the log. Nothing may
+# reach the pane or the reviewer before the preconditions pass, and no turn may start
+# before the pane shows the thread.
 set -uo pipefail
-XREVIEW="$(cd "$(dirname "$0")/.." && pwd)/dot_local/bin/executable_xreview"
+SRC="$(cd "$(dirname "$0")/.." && pwd)"
+XREVIEW="$SRC/dot_local/bin/executable_xreview"
 [ -f "$XREVIEW" ] || { echo "missing CLI under test: $XREVIEW" >&2; exit 2; }
 pass=0; fail=0
 _pass() { printf '  PASS: %s\n' "$1"; pass=$((pass + 1)); }
@@ -14,415 +19,319 @@ is() { if [ "$2" = "$3" ]; then _pass "$1"; else _fail "$1" "$2"; fi; }
 
 ROOT="$(mktemp -d "${TMPDIR:-/tmp}/xreview.XXXXXX")"
 trap 'rm -rf "$ROOT"' EXIT
-export XDG_STATE_HOME="$ROOT/state"
+export XDG_STATE_HOME="$ROOT/state" XDG_CONFIG_HOME="$ROOT/config" CODEX_HOME="$ROOT/codex"
+mkdir -p "$XDG_CONFIG_HOME/xreview" "$XDG_CONFIG_HOME/herdr"
+cp "$SRC/dot_config/xreview/findings.schema.json" "$SRC/dot_config/xreview/reviewer.md" "$XDG_CONFIG_HOME/xreview/"
+cp "$SRC/dot_config/herdr/codex-pane-command" "$XDG_CONFIG_HOME/herdr/"
+export XREVIEW_PANE_WAIT=3
+unset XREVIEW_MAX_ROUNDS XREVIEW_PANE XREVIEW_THREAD
+
 mkdir -p "$ROOT/repo" && cd "$ROOT/repo" || exit 1
 git init -q . && git config user.email t@t && git config user.name t
-# Global config signs commits; a fixture that inherits it fails wherever the signing
-# key is unavailable, and an unasserted setup failure would let the suite run against
-# a broken fixture and still report green.
 git config commit.gpgsign false
 git commit -q --allow-empty -m init || { printf 'fixture setup failed\n' >&2; exit 1; }
 printf 'body\n' > b.md
-
-# A fake thread makes `codex queue` fail after the round has been counted, which is
-# exactly the boundary under test: the cap must bind before the turn is spent.
-capped() { bash "$XREVIEW" dispatch faketh b.md 2>&1 | grep -c 'exceeds the cap'; }
-
-# `capped` is 0 when the dispatch went through and 1 when it was refused. Assert on
-# THAT, not on the counter: a refused round still increments, so "the counter reached
-# ten" is true at any cap and proves nothing about where the boundary sits.
-# The default boundary is only the default when nothing overrides it. Inheriting
-# XREVIEW_MAX_ROUNDS from whoever ran the suite makes this section assert the shipped
-# number against someone else's, and it fails for a reason that has nothing to do with
-# the code. The override gets its own section further down, where it is set on purpose.
-unset XREVIEW_MAX_ROUNDS
-
-is "round counter starts at zero" "$(bash "$XREVIEW" round)" 0
-for _ in $(seq 9); do capped >/dev/null; done
-is "nine rounds are permitted"       "$(bash "$XREVIEW" round)" 9
-is "the tenth round is still allowed" "$(capped)"               0
-is "the eleventh round is refused"    "$(capped)"               1
-is "a refused round still increments, so retrying stays refused" "$(bash "$XREVIEW" round)" 11
-
-bash "$XREVIEW" round --reset >/dev/null
-is "reset returns the counter to zero" "$(bash "$XREVIEW" round)" 0
-is "dispatch is permitted again after reset" "$(capped)" 0
-
-XREVIEW_MAX_ROUNDS=1; export XREVIEW_MAX_ROUNDS
-bash "$XREVIEW" round --reset >/dev/null
-capped >/dev/null
-is "XREVIEW_MAX_ROUNDS lowers the cap" "$(capped)" 1
-unset XREVIEW_MAX_ROUNDS
-
-# SQL boundary. The nonce reaches a LIKE pattern, where _ and % are wildcards: a nonce
-# of xr-________-________ would otherwise match turns it was never minted for.
-refused() { bash "$XREVIEW" collect "$1" "$2" 1 2>&1 | grep -c 'refusing'; }
-is "a quote in the thread id is refused"    "$(refused "a'; DROP--" xr-abc)" 1
-is "a quote in the nonce is refused"        "$(refused abc "xr-'; DROP--")" 1
-is "a LIKE _ wildcard nonce is refused"     "$(refused abc "xr-________")"  1
-is "a LIKE % wildcard nonce is refused"     "$(refused abc "xr-%")"         1
-is "a path traversal thread id is refused"  "$(refused "../../etc/passwd" xr-abc)" 1
-is "an underscore in the thread id is fine" "$(refused "msg_03d99e" xr-abc)" 0
-
-# sqlite3 silently creates an empty database for a missing path, which would turn
-# "Codex has not written this yet" into a confusing "no such table".
-missing="$ROOT/no-codex-home"
-out="$(CODEX_HOME="$missing" bash "$XREVIEW" collect 01a05422 xr-abc 1 2>&1)"
-is "a missing history store is reported" "$(printf '%s' "$out" | grep -c 'history store not found')" 1
-is "a missing history store is not created" "$([ -e "$missing/thread_history_1.sqlite" ] && echo yes || echo no)" no
-
-# --- inline diffs (dispatch --diff) ------------------------------------------
-#
-# A dispatch that names a path makes the reviewer go and read it, and every search and
-# open is a full-context model step. Measured 2026-09-01 across 69 real reviews: ~16
-# model steps and ~2.0M tokens per review, with the per-turn cost barely moving between
-# an 8-turn thread and a 37-turn one — so the steps, not the thread length, are where
-# the allowance goes. Carrying the diff in the message lets the reviewer answer from
-# what it was handed.
-# Derive the state dir from git's own idea of the root, not from $ROOT: on macOS
-# mktemp hands back /tmp/... while git resolves the symlink to /private/tmp/..., and
-# a hand-built path would seed fixtures into a directory the script never reads.
-STATE="$XDG_STATE_HOME/xreview/$(git rev-parse --show-toplevel | tr '/' '_' | sed 's|^_||')"
-
-printf 'change\n' > tracked.txt && git add tracked.txt
-git commit -q -m "a change to review"
-bash "$XREVIEW" round --reset >/dev/null 2>&1
-
-rm -f b.md.wrapped
-bash "$XREVIEW" dispatch --diff HEAD~1..HEAD faketh b.md >/dev/null 2>&1
-if grep -q 'tracked.txt' b.md.wrapped 2>/dev/null; then
-  _pass "--diff carries the diff text in the dispatched message"
-else
-  _fail "--diff carries the diff text in the dispatched message" "$(head -c 120 b.md.wrapped 2>/dev/null)"
-fi
-if grep -q 'body' b.md.wrapped 2>/dev/null; then
-  _pass "--diff keeps the caller's body as well as the diff"
-else
-  _fail "--diff keeps the caller's body as well as the diff" "body text missing"
-fi
-
-# An oversized diff is refused, never truncated: a reviewer handed half a change
-# reviews half a change and reports no findings on the rest.
-bash "$XREVIEW" round --reset >/dev/null 2>&1
-out=$(XREVIEW_MAX_DIFF_BYTES=10 bash "$XREVIEW" dispatch --diff HEAD~1..HEAD faketh b.md 2>&1)
-is "an oversized diff is refused rather than truncated" "$(printf '%s' "$out" | grep -c 'too large')" 1
-
-# An unusable range must fail loudly rather than dispatching an empty review.
-bash "$XREVIEW" round --reset >/dev/null 2>&1
-out=$(bash "$XREVIEW" dispatch --diff no-such-ref..HEAD faketh b.md 2>&1)
-is "an unresolvable diff range is refused" "$(printf '%s' "$out" | grep -c 'cannot diff')" 1
-
-# A valid range that resolves to nothing is the more dangerous case than a broken one:
-# git exits 0, so an unguarded dispatch would send an empty review and the reviewer
-# would truthfully report no findings — indistinguishable from a clean review.
-bash "$XREVIEW" round --reset >/dev/null 2>&1
-out=$(bash "$XREVIEW" dispatch --diff HEAD..HEAD faketh b.md 2>&1)
-is "an empty but valid range is refused" "$(printf '%s' "$out" | grep -c 'nothing to review')" 1
-
-# --- thread rotation ---------------------------------------------------------
-#
-# Every dispatch queues into one cached thread per repo, so round N is read by a
-# reviewer holding rounds 1..N-1 — including its own earlier findings and every
-# artifact already sent. The cold-ask rule is what makes the second opinion worth
-# having, and a thread that never rotates quietly voids it. --reset ends a checkpoint,
-# so it drops the thread as well as the counter.
-mkdir -p "$STATE" && printf 'stale-thread-id\n' > "$STATE/thread"
-bash "$XREVIEW" round --reset >/dev/null 2>&1
-if [ -e "$STATE/thread" ]; then
-  _fail "round --reset drops the cached thread, not just the counter" "thread file survived"
-else
-  _pass "round --reset drops the cached thread, not just the counter"
-fi
-
-# Nothing signalled that one chezmoi thread had absorbed 37 reviews. A warning is the
-# right shape rather than a refusal: rotating means starting a Codex session by hand,
-# and a guard that blocks work it cannot itself complete gets switched off.
-bash "$XREVIEW" round --reset >/dev/null 2>&1
-: > "$STATE/reviews.jsonl"
-for _ in $(seq 8); do
-  printf '{"ts":"t","branch":"b","head":"h","thread":"faketh","nonce":"n"}\n' >> "$STATE/reviews.jsonl"
-done
-out=$(bash "$XREVIEW" dispatch faketh b.md 2>&1)
-is "a thread past the review threshold warns that it is no longer cold" \
-   "$(printf '%s' "$out" | grep -c 'no longer cold')" 1
-
-# The warning counts reviews on THIS thread, not every review in the repo — otherwise
-# rotating the thread would not clear it and the warning would be permanent noise.
-bash "$XREVIEW" round --reset >/dev/null 2>&1
-out=$(bash "$XREVIEW" dispatch other-thread b.md 2>&1)
-is "the warning is scoped to the thread, so rotating clears it" \
-   "$(printf '%s' "$out" | grep -c 'no longer cold')" 0
-
-# --- reviewer tier is reported, never enforced --------------------------------
-#
-# Codex records the model and reasoning effort of every turn in its rollout file, one
-# `turn_context` record per turn, so the LAST one is the setting a dispatch would
-# actually reach. That is worth reporting and worth recording in a receipt; it is not
-# worth blocking on, which is what the removed --expect gate did — it refused every
-# dispatch whose model name was not in a hard-coded table, so each new model release
-# broke every review until someone edited the table.
-export CODEX_HOME="$ROOT/codex"
-ROLL="$CODEX_HOME/sessions/2026/09/01"
-mkdir -p "$ROLL"
-tc() { printf '{"type":"turn_context","payload":{"model":"%s","effort":"%s"}}\n' "$1" "$2"; }
-{ tc gpt-5.6-sol xhigh; } > "$ROLL/rollout-2026-09-01T10-00-00-faketh.jsonl"
-
-is "tier reports the thread's model and effort" \
-   "$(bash "$XREVIEW" tier faketh 2>&1)" "gpt-5.6-sol/xhigh"
-
-# A mid-session /model switch writes a further turn_context, so the last record wins.
-# Reading the first would report the setting the session opened with and silently miss
-# every change the user made since.
-{ tc gpt-5.6-sol xhigh; tc gpt-5.6-terra high; } > "$ROLL/rollout-2026-09-01T10-00-00-faketh.jsonl"
-is "tier reflects a mid-session switch, not the opening setting" \
-   "$(bash "$XREVIEW" tier faketh 2>&1)" "gpt-5.6-terra/high"
-
-# A dispatch must go out whatever the pane is set to. Everywhere else in this suite
-# `codex queue` is left to fail on the fake thread; here it has to succeed, because the
-# assertion is that a nonce comes back — i.e. that the turn was actually queued and not
-# refused on the way in.
-STUB="$ROOT/stub"; mkdir -p "$STUB"
-printf '#!/bin/sh\nexit 0\n' > "$STUB/codex"; chmod +x "$STUB/codex"
-OLD_PATH="$PATH"; PATH="$STUB:$PATH"
-
-bash "$XREVIEW" round --reset >/dev/null 2>&1
-out=$(bash "$XREVIEW" dispatch faketh b.md 2>&1)
-is "a dispatch is never refused over the tier" "$(printf '%s' "$out" | grep -ci 'reviewer tier')" 0
-is "a dispatch at any tier returns a nonce"    "$(printf '%s' "$out" | grep -c '^xr-')" 1
-
-# The rollout above reads gpt-5.6-terra/high. An unfamiliar model must be just as
-# acceptable, because the failure being fixed is a gate that treated "a model I have not
-# heard of" as an error and so broke every review on the day a new one shipped.
-bash "$XREVIEW" round --reset >/dev/null 2>&1
-{ tc astra-9 medium; } > "$ROLL/rollout-2026-09-01T10-00-00-faketh.jsonl"
-out=$(bash "$XREVIEW" dispatch faketh b.md 2>&1)
-is "a model the table never knew about still dispatches" "$(printf '%s' "$out" | grep -c '^xr-')" 1
-is "and it is reported, not judged" "$(bash "$XREVIEW" tier faketh 2>&1)" "astra-9/medium"
-
-# --expect is gone from the CLI entirely, not merely ignored: a flag that silently does
-# nothing is worse than one that does not exist, because callers keep passing it and
-# believing it checked something. With no handler it lands as a thread id, so the
-# dispatch fails outright rather than quietly queueing to the wrong place.
-bash "$XREVIEW" round --reset >/dev/null 2>&1
-out=$(bash "$XREVIEW" dispatch --expect astra-9/medium faketh b.md 2>&1); rc=$?
-is "--expect is rejected, not absorbed" "$rc" 1
-is "and no review is queued for it"     "$(printf '%s' "$out" | grep -c '^xr-')" 0
-is "no --expect handling survives in the source" \
-   "$(grep -c -- '--expect' "$XREVIEW")" 0
-
-PATH="$OLD_PATH"
-
-# --- thread resolution ---------------------------------------------------------
-# A cached thread id proves a thread EXISTED, not that anything is alive to answer on
-# it. Codex has no session id until its first turn, so a pane that has just been built
-# reports none — and the fallback for "no live id" then handed back a thread cached
-# weeks earlier. `codex queue` accepts it, because the id is well formed, and the packet
-# lands in a dead session: nothing appears in the pane, and `collect` waits out its full
-# budget against a thread the dispatch never used. Observed 2026-09-11, when a review
-# went to a thread cached on 31 August while the live pane sat empty.
-TRES="$ROOT/tres"; mkdir -p "$TRES"
-AGENTS="$ROOT/agents.json"; export AGENTS
-cat > "$TRES/herdr" <<'H'
-#!/bin/sh
-if [ "$1" = "agent" ] && [ "$2" = "list" ]; then cat "$AGENTS"; fi
-exit 0
-H
-chmod +x "$TRES/herdr"
-OLD_PATH="$PATH"; PATH="$TRES:$PATH"
 CWD="$(git rev-parse --show-toplevel)"
 STATE="$XDG_STATE_HOME/xreview/$(printf '%s' "$CWD" | tr '/' '_' | sed 's/^_//')"
-mkdir -p "$STATE"
 
-agents() { # agents <session-json>
-  printf '{"result":{"agents":[{"agent":"codex","cwd":"%s","agent_session":%s}]}}\n' \
-    "$CWD" "$1" > "$AGENTS"
+# --- stubs ------------------------------------------------------------------------
+STUB="$ROOT/stub"; P="$ROOT/pane"; mkdir -p "$STUB" "$P"
+export CALLS="$ROOT/calls" P CWD
+U0=aaaaaaaa-0000-4000-8000-000000000000   # the thread the pane shows at the start
+U1=bbbbbbbb-1111-4111-8111-111111111111   # the thread a fresh session in the pane creates
+U2=cccccccc-2222-4222-8222-222222222222
+export NEW_UUID="$U1"
+cat > "$STUB/herdr" <<'H'
+#!/bin/sh
+echo "herdr $*" >> "$CALLS"
+pane_json() {
+  a="$(cat "$P/agent" 2>/dev/null)"; t="$(cat "$P/title" 2>/dev/null)"
+  s="$(cat "$P/status" 2>/dev/null || echo idle)"
+  af=""; [ -n "$a" ] && af="\"agent\":\"$a\","
+  printf '{%s"agent_status":"%s","cwd":"%s","pane_id":"w1:p2","terminal_title":"%s","terminal_title_stripped":"%s"}' \
+    "$af" "$s" "${PANE_CWD:-$CWD}" "$t" "$t"
+}
+case "$1 $2" in
+  "pane list") printf '{"result":{"panes":[%s%s]}}\n' "$(pane_json)" "${EXTRA_PANES:-}" ;;
+  "pane get") printf '{"result":{"pane":%s}}\n' "$(pane_json)" ;;
+  "pane send-keys")
+    n=$(cat "$P/ctrlc" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$P/ctrlc"
+    if [ "$n" -ge 2 ] && [ -z "${STUCK_TUI:-}" ]; then : > "$P/agent"; fi ;;
+  "pane run")
+    echo 0 > "$P/ctrlc"
+    [ -n "${NO_TITLE:-}" ] && exit 0
+    printf codex > "$P/agent"
+    case "$4" in
+      *" resume "*) printf '%s | t | d' "${4##* resume }" > "$P/title" ;;
+      *) printf '%s | t | d' "$NEW_UUID" > "$P/title" ;;
+    esac ;;
+esac
+exit 0
+H
+cat > "$STUB/codex-daemon" <<'D'
+#!/bin/sh
+echo "codex-daemon $*" >> "$CALLS"
+case "$1" in
+  ensure) exit "${ENSURE_RC:-0}" ;;
+  check) [ "${CHECK_RC:-0}" = 0 ] || echo "codex-daemon: carries a herdr pane's environment" >&2
+         exit "${CHECK_RC:-0}" ;;
+esac
+D
+cat > "$STUB/xreview-rpc" <<'R'
+#!/bin/sh
+echo "xreview-rpc $*" >> "$CALLS"
+cmd="$1"; shift
+th=""; input=""; known=""; resolved=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in --thread) th="$2"; shift ;; --input) input="$2"; shift ;; --known) known="$2"; shift ;;
+               --resolved) resolved="$2"; shift ;; esac; shift
+done
+case "$cmd" in
+  thread-status)
+    n=$(cat "$P/status_calls" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$P/status_calls"
+    if [ -n "${RPC_NOT_LOADED:-}" ] || { [ -n "${RPC_NOT_LOADED_ONCE:-}" ] && [ "$n" = 1 ]; }; then
+      echo '{"loaded":false,"status":"notLoaded","running":false}'
+    else echo '{"loaded":true,"status":"idle","running":false}'; fi ;;
+  turn-start) cp "$input" "$P/packet"; [ -n "$known" ] && echo '[]' > "$known"
+              [ -n "${RPC_START_FAIL:-}" ] && exit 1
+              [ -n "${RPC_START_UNCERTAIN:-}" ] && exit 6
+              echo "turn-$th" ;;
+  turn-wait) [ -n "$resolved" ] && echo turn-recovered > "$resolved"
+             printf '%s\n' "${RPC_WAIT_OUT:-}"; exit "${RPC_WAIT_RC:-0}" ;;
+esac
+exit 0
+R
+chmod +x "$STUB"/*
+export PATH="$STUB:$PATH"
+
+fresh() { # a pane showing U0, idle; clean log and state
+  unset ENSURE_RC CHECK_RC RPC_NOT_LOADED RPC_NOT_LOADED_ONCE RPC_START_FAIL RPC_START_UNCERTAIN \
+        NO_TITLE STUCK_TUI EXTRA_PANES PANE_CWD XREVIEW_PANE XREVIEW_THREAD RPC_WAIT_OUT RPC_WAIT_RC
+  export NEW_UUID="$U1"
+  printf codex > "$P/agent"; printf '%s | t | d' "$U0" > "$P/title"; echo idle > "$P/status"
+  echo 0 > "$P/ctrlc"; rm -f "$P/packet" "$P/status_calls"
+  bash "$XREVIEW" round --reset >/dev/null 2>&1
+  rm -rf "$STATE/superseded" "$STATE/pin" "$STATE/turns"
+  : > "$CALLS"
+}
+called() { grep -c -- "$1" "$CALLS" 2>/dev/null || true; }
+first() { grep -n -- "$1" "$CALLS" | head -1 | cut -d: -f1; }
+untouched() { # nothing reached the pane or the reviewer
+  [ "$(called 'herdr pane send-keys')$(called 'herdr pane run')$(called 'xreview-rpc turn-start')" = 000 ] && echo yes || echo no
 }
 
-# A live pane with a thread resolves to that thread, and supersedes a stale record.
-printf 'stale-thread-id\n' > "$STATE/thread"
-agents '{"value":"live-thread-id"}'
-is "a live pane supersedes the cached thread" "$(bash "$XREVIEW" thread)" "live-thread-id"
-is "and the cache is rewritten to it"         "$(cat "$STATE/thread")"    "live-thread-id"
+echo "A. the round cap binds before a turn is spent"
+fresh
+capped() { bash "$XREVIEW" dispatch b.md 2>&1 | grep -c 'exceeds the cap'; }
+is "round counter starts at zero" "$(bash "$XREVIEW" round)" 0
+for _ in $(seq 9); do capped >/dev/null; done
+is "nine rounds are permitted"        "$(bash "$XREVIEW" round)" 9
+is "the tenth round is still allowed" "$(capped)" 0
+starts="$(called 'xreview-rpc turn-start')"
+is "the eleventh round is refused"    "$(capped)" 1
+is "and starts no turn"               "$(called 'xreview-rpc turn-start')" "$starts"
+is "a refused round still increments, so retrying stays refused" "$(bash "$XREVIEW" round)" 11
+bash "$XREVIEW" round --reset >/dev/null
+is "reset returns the counter to zero" "$(bash "$XREVIEW" round)" 0
+XREVIEW_MAX_ROUNDS=1 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+is "XREVIEW_MAX_ROUNDS lowers the cap" "$(XREVIEW_MAX_ROUNDS=1 bash "$XREVIEW" dispatch b.md 2>&1 | grep -c 'exceeds the cap')" 1
 
-# The regression: pane present, no session yet, stale record on disk.
-printf 'stale-thread-id\n' > "$STATE/thread"
-agents 'null'
-out=$(bash "$XREVIEW" thread 2>&1); rc=$?
-is "a pane with no thread yet is refused, not served from cache" "$rc" 1
-is "and the stale id is never printed" "$(printf '%s' "$out" | grep -c 'stale-thread-id')" 0
-is "the refusal says what to do about it" \
-   "$(printf '%s' "$out" | grep -c 'no thread yet')" 1
-
-# A dispatch must refuse for the same reason rather than queueing into the dead thread.
-# `codex` is stubbed to SUCCEED here on purpose: everywhere else in this suite `codex
-# queue` fails on the fake thread, so a non-zero dispatch would prove nothing about where
-# the refusal came from. With the queue working, only thread resolution can refuse.
-printf '#!/bin/sh\nexit 0\n' > "$TRES/codex"; chmod +x "$TRES/codex"
-bash "$XREVIEW" round --reset >/dev/null 2>&1
-printf 'stale-thread-id\n' > "$STATE/thread"
-out=$(bash "$XREVIEW" dispatch b.md 2>&1); rc=$?
-is "a dispatch onto a threadless pane is refused" "$rc" 1
+echo "B. inline diffs"
+# A dispatch that names a path makes the reviewer go and read it; carrying the diff inline
+# lets it answer from what it was handed (measured 2026-09-01: ~16 steps per review).
+printf 'change\n' > tracked.txt && git add tracked.txt && git commit -q -m "a change to review"
+fresh
+bash "$XREVIEW" dispatch --diff HEAD~1..HEAD b.md >/dev/null 2>&1
+is "the diff travels in the packet"          "$(grep -q 'tracked.txt' "$P/packet" && echo yes || echo no)" yes
+is "with the caller's body"                  "$(grep -c '^body$' "$P/packet")" 1
+is "and the reviewer instructions"           "$(grep -c 'independent reviewer' "$P/packet")" 1
+is "wrapped as an authorized request"        "$(head -1 "$P/packet")" "<cross-review-request>"
+is "with no correlation line any more"       "$(grep -c 'correlation' "$P/packet")" 0
+fresh
+out="$(XREVIEW_MAX_DIFF_BYTES=10 bash "$XREVIEW" dispatch --diff HEAD~1..HEAD b.md 2>&1)"
+is "an oversized diff is refused, never truncated" "$(printf '%s' "$out" | grep -c 'too large')" 1
+is "before anything is touched" "$(untouched)" yes
+fresh
+out="$(bash "$XREVIEW" dispatch --diff no-such-ref..HEAD b.md 2>&1)"
+is "an unresolvable range is refused" "$(printf '%s' "$out" | grep -c 'cannot diff')" 1
+fresh
+out="$(bash "$XREVIEW" dispatch --diff HEAD..HEAD b.md 2>&1)"
+is "an empty range is refused" "$(printf '%s' "$out" | grep -c 'nothing to review')" 1
+out="$(bash "$XREVIEW" dispatch --expect x b.md 2>&1)"; rc=$?
+is "--expect is rejected, not absorbed" "$rc" 1
 is "and mints no nonce" "$(printf '%s' "$out" | grep -c '^xr-')" 0
-is "and it is refused for the thread, not the queue" \
-   "$(printf '%s' "$out" | grep -c 'no thread yet')" 1
 
-# An explicit override still wins: it is the documented escape hatch, and the pane state
-# is not allowed to veto it.
-printf 'stale-thread-id\n' > "$STATE/thread"
-is "XREVIEW_THREAD overrides pane state" \
-   "$(XREVIEW_THREAD=pinned-id bash "$XREVIEW" thread)" "pinned-id"
+echo "C. preconditions refuse before anything is touched"
+fresh; out="$(ENSURE_RC=1 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+is "C1 a daemon that will not start refuses" "$rc" 1
+is "C1 untouched" "$(untouched)" yes
+fresh; out="$(CHECK_RC=1 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+is "C2 a contaminated daemon refuses" "$rc" 1
+is "C2 and says why" "$(printf '%s' "$out" | grep -c 'refusing to dispatch while the daemon')" 1
+is "C2 untouched" "$(untouched)" yes
+fresh; : > "$P/agent"; out="$(bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+is "C3 no Codex pane refuses" "$(printf '%s' "$out" | grep -c 'no Codex pane')" 1
+is "C3 untouched" "$(untouched)" yes
+fresh
+export EXTRA_PANES=",{\"agent\":\"codex\",\"agent_status\":\"idle\",\"cwd\":\"$CWD\",\"pane_id\":\"w9:p2\",\"terminal_title\":\"x\"}"
+out="$(bash "$XREVIEW" dispatch b.md 2>&1)"
+is "C4 several Codex panes refuse" "$(printf '%s' "$out" | grep -c 'several Codex panes')" 1
+is "C4 naming both" "$(printf '%s' "$out" | grep -c 'w1:p2 w9:p2')" 1
+is "C4 untouched" "$(untouched)" yes
+out="$(XREVIEW_PANE=w1:p2 bash "$XREVIEW" dispatch b.md 2>&1)"
+is "C5 XREVIEW_PANE picks one" "$(printf '%s' "$out" | grep -c '^xr-')" 1
+fresh; echo working > "$P/status"; out="$(bash "$XREVIEW" dispatch b.md 2>&1)"
+is "C6 a pane mid-turn refuses" "$(printf '%s' "$out" | grep -c 'mid-turn')" 1
+is "C6 untouched" "$(untouched)" yes
+fresh; mkdir .codex; out="$(bash "$XREVIEW" dispatch b.md 2>&1)"; rmdir .codex
+is "C7 a project .codex refuses" "$(printf '%s' "$out" | grep -c 'refusing to dispatch')" 1
+is "C7 untouched" "$(untouched)" yes
+fresh; out="$(XREVIEW_SCHEMA="$ROOT/none.json" bash "$XREVIEW" dispatch b.md 2>&1)"
+is "C8 a missing schema refuses" "$(printf '%s' "$out" | grep -c 'missing findings schema')" 1
 
-# Deliberately unchanged: with no pane list at all there is nothing to contradict the
-# record, and `xreview init <id>` exists to pin a thread herdr cannot see. Only a pane
-# that is present AND threadless is proof the record is dead.
-printf 'stale-thread-id\n' > "$STATE/thread"
-printf '{"result":{"agents":[]}}\n' > "$AGENTS"
-is "a pane list with no Codex pane still uses the cached thread" \
-   "$(bash "$XREVIEW" thread)" "stale-thread-id"
+echo "D. the pane comes first"
+fresh
+nonce="$(bash "$XREVIEW" dispatch b.md 2>/dev/null)"
+is "D1 a nonce is printed" "$(printf '%s' "$nonce" | grep -c '^xr-')" 1
+is "D1 the pane's session is ended" "$(called 'herdr pane send-keys w1:p2 ctrl+c')" 2
+is "D1 a fresh session runs the pane command" \
+   "$(called 'herdr pane run w1:p2 codex --sandbox read-only --ask-for-approval never')" 1
+is "D1 the new thread is confirmed loaded" "$(called "xreview-rpc thread-status --thread $U1")" 1
+is "D1 herdr is told the pane's thread" \
+   "$(called "herdr pane report-agent-session w1:p2 --source herdr:codex --agent codex --agent-session-id $U1")" 1
+is "D1 the turn goes to the thread the pane shows" "$(called "xreview-rpc turn-start --thread $U1")" 1
+is "D1 and only after the pane shows it" \
+   "$([ "$(first 'herdr pane run')" -lt "$(first 'xreview-rpc turn-start')" ] && echo yes || echo no)" yes
+is "D1 the checkpoint thread is recorded" "$(cat "$STATE/thread")" "$U1"
+is "D1 the nonce maps to thread and turn" "$(cat "$STATE/turns/$nonce")" "$U1 turn-$U1"
+: > "$CALLS"
+bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+is "D2 the next round finds the pane already on the thread" "$(called 'herdr pane send-keys')" 0
+is "D2 and goes to the same thread" "$(called "xreview-rpc turn-start --thread $U1")" 1
+printf '%s | t | d' "$U0" > "$P/title"; : > "$CALLS"
+bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+is "D3 a pane that moved off the thread is resumed onto it" "$(called "herdr pane run w1:p2 codex --sandbox read-only --ask-for-approval never resume $U1")" 1
+fresh; out="$(NO_TITLE=1 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+is "D4 a pane that never shows a thread refuses" "$rc" 1
+is "D4 and no turn starts" "$(called 'xreview-rpc turn-start')" 0
+fresh; printf 'Greet user | chezmoi' > "$P/title"
+nonce="$(bash "$XREVIEW" dispatch b.md 2>/dev/null)"
+is "D5 a pane whose title has no id is restarted and adopted" "$(cat "$STATE/thread" 2>/dev/null)" "$U1"
+fresh; out="$(STUCK_TUI=1 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+is "D6 a session that will not exit refuses" "$(printf '%s' "$out" | grep -c 'did not exit')" 1
+is "D6 and never starts a new one" "$(called 'herdr pane run')" 0
+fresh; out="$(RPC_NOT_LOADED=1 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+is "D7 a thread the daemon has not loaded refuses" "$rc" 1
+is "D7 and no turn starts" "$(called 'xreview-rpc turn-start')" 0
+fresh; out="$(RPC_START_FAIL=1 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+is "D8 a refused turn fails the dispatch" "$rc" 1
+is "D8 and records no nonce" "$(ls "$STATE/turns" 2>/dev/null | grep -c .)" 0
+fresh
+bash "$XREVIEW" dispatch b.md >/dev/null 2>&1        # the pane now shows U1, recorded
+: > "$CALLS"; rm -f "$P/status_calls"
+RPC_NOT_LOADED_ONCE=1 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+is "D9 a matching title on a thread the daemon lost is resumed, not trusted" \
+   "$(called "herdr pane run w1:p2 codex --sandbox read-only --ask-for-approval never resume $U1")" 1
+is "D9 and the turn starts after that" "$(called "xreview-rpc turn-start --thread $U1")" 1
+fresh
+nonce="$(RPC_START_UNCERTAIN=1 bash "$XREVIEW" dispatch b.md 2>"$ROOT/err")"; rc=$?
+is "D10 an unanswered turn/start still hands back a nonce" "$rc/$(printf '%s' "$nonce" | grep -c '^xr-')" "0/1"
+is "D10 with a do-not-re-dispatch warning" "$(grep -c 'do NOT re-dispatch' "$ROOT/err")" 1
+is "D10 the record marks the turn unknown" "$(cat "$STATE/turns/$nonce")" "$U1 ?"
+RPC_WAIT_OUT='{"verdict":"approve","findings":[]}' bash "$XREVIEW" collect "$nonce" >/dev/null 2>&1
+is "D10 collect looks for what is new on the thread" \
+   "$(called "turn-wait --thread $U1 --new-since $STATE/turns/$nonce.known --resolved")" 1
+is "D10 the recovered turn replaces the unknown in the record" "$(cat "$STATE/turns/$nonce")" "$U1 turn-recovered"
+is "D10 and the receipt names it" "$(tail -1 "$STATE/reviews.jsonl" | jq -r .turn)" turn-recovered
+: > "$CALLS"; bash "$XREVIEW" collect "$nonce" >/dev/null 2>&1
+is "D10 a later collect waits on that turn by id" "$(called "turn-wait --thread $U1 --turn turn-recovered")" 1
 
-# herdr present but failing - server down, socket denied, mid-restart. Under `set -e` the
-# non-zero pipeline killed xreview outright: rc=1, no message, and a caller that cannot
-# tell a dead tool from a dead thread. Driven by a stub rather than by whatever the
-# ambient herdr happens to do, so the assertion means the same thing on every machine.
-cat > "$TRES/herdr" <<'H'
-#!/bin/sh
-exit 1
-H
-chmod +x "$TRES/herdr"
-printf 'stale-thread-id\n' > "$STATE/thread"
-out=$(bash "$XREVIEW" thread 2>&1); rc=$?
-is "a failing herdr does not abort xreview"        "$rc" 0
-is "it falls back to the cached thread instead"    "$out" "stale-thread-id"
+echo "E. checkpoints and pins"
+fresh
+bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+bash "$XREVIEW" round --reset >/dev/null 2>&1
+is "E1 reset drops the checkpoint thread" "$([ -e "$STATE/thread" ] && echo kept || echo dropped)" dropped
+export NEW_UUID="$U2"; : > "$CALLS"
+bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+is "E1 the next checkpoint starts a fresh thread" "$(cat "$STATE/thread")" "$U2"
+is "E1 the old thread is archived" "$(called "xreview-rpc thread-archive --thread $U1")" 1
+is "E1 after the new turn started" \
+   "$([ "$(first 'xreview-rpc turn-start')" -lt "$(first 'xreview-rpc thread-archive')" ] && echo yes || echo no)" yes
+fresh
+bash "$XREVIEW" init "$U0" >/dev/null
+nonce="$(bash "$XREVIEW" dispatch b.md 2>/dev/null)"
+is "E2 a pin is used as the review thread" "$(called "xreview-rpc turn-start --thread $U0")" 1
+is "E2 and is not recorded as a checkpoint thread" "$([ -e "$STATE/thread" ] && echo yes || echo no)" no
+bash "$XREVIEW" round --reset >/dev/null 2>&1; : > "$CALLS"
+bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+is "E2 a pinned thread is never archived" "$(called "thread-archive --thread $U0")" 0
+fresh
+is "E3 XREVIEW_THREAD overrides" "$(XREVIEW_THREAD=$U2 bash "$XREVIEW" thread)" "$U2"
+out="$(bash "$XREVIEW" thread 2>&1)"; rc=$?
+is "E4 no thread yet says the next dispatch starts one" "$(printf '%s' "$out" | grep -c 'next dispatch starts one')" 1
+bash "$XREVIEW" init >/dev/null
+is "E5 init without an id pins the pane's thread" "$(cat "$STATE/pin")" "$U0"
+out="$(bash "$XREVIEW" init '../../x' 2>&1)"; rc=$?
+is "E6 an unsafe id is refused" "$(printf '%s' "$out" | grep -c 'refusing unsafe identifier')" 1
 
-rm -f "$STATE/thread"
-PATH="$OLD_PATH"
-
-# --- the tier is still recorded, because reporting is not enforcing ------------
-#
-# Dropping the gate must not drop the record. Which tier reviews actually ran at stays
-# countable — it is the only way to answer "is anyone still picking?" — but nothing acts
-# on it, and no dispatch is refused because of it.
-mkdir -p "$STATE"
-: > "$STATE/reviews.jsonl"
-{ tc gpt-5.6-terra high; } > "$ROLL/rollout-2026-09-01T10-00-00-faketh.jsonl"
-printf '{"ts":"t","branch":"b","head":"h","thread":"faketh","nonce":"n","tier":"gpt-5.6-sol/xhigh"}\n' \
-  >> "$STATE/reviews.jsonl"
-is "receipts expose the tier a review ran at" \
-   "$(bash "$XREVIEW" receipts 2>/dev/null | jq -r '.tier' | head -1)" "gpt-5.6-sol/xhigh"
-
-# The summary is the part a person reads. A run of one tier is the thing to notice, so
-# it has to be visible without piping receipts through jq by hand.
-for _ in $(seq 4); do
-  printf '{"ts":"t","branch":"b","head":"h","thread":"faketh","nonce":"n","tier":"gpt-5.6-sol/xhigh"}\n' \
-    >> "$STATE/reviews.jsonl"
-done
-out=$(bash "$XREVIEW" receipts --tiers 2>&1)
-is "the tier summary counts each tier"  "$(printf '%s' "$out" | grep -c 'gpt-5.6-sol/xhigh')" 1
-is "the tier summary shows the count"   "$(printf '%s' "$out" | grep -oE '[0-9]+' | head -1)" 5
-
-# A receipt written before this field existed must not break the summary.
-printf '{"ts":"t","branch":"b","head":"h","thread":"faketh","nonce":"n"}\n' >> "$STATE/reviews.jsonl"
-out=$(bash "$XREVIEW" receipts --tiers 2>&1)
-is "a receipt with no tier is counted as unrecorded" \
-   "$(printf '%s' "$out" | grep -ci 'unrecorded')" 1
-
-# Drive a real collect, so the code that WRITES the tier is exercised rather than a
-# hand-seeded line that would pass with the field never populated at all. Every guard
-# above reads receipts the test wrote itself; only this one proves record_receipt fills
-# the field from the thread's actual rollout.
-: > "$STATE/reviews.jsonl"
-{ tc gpt-5.6-terra high; } > "$ROLL/rollout-2026-09-01T10-00-00-collectth.jsonl"
-DB="$CODEX_HOME/thread_history_1.sqlite"
-sqlite3 "$DB" "CREATE TABLE thread_turns (thread_id TEXT, rollout_ordinal INT, status TEXT,
-                 first_user_item_id TEXT, final_agent_item_id TEXT);
-               CREATE TABLE thread_items (thread_id TEXT, item_id TEXT, item_json TEXT);
-               INSERT INTO thread_turns VALUES ('collectth', 1, 'completed', 'u1', 'a1');
-               INSERT INTO thread_items VALUES ('collectth','u1','{\"text\":\"xr-testnonce\"}');
-               INSERT INTO thread_items VALUES ('collectth','a1','{\"text\":\"the review\"}');" 2>/dev/null
-is "collect returns the reviewer's answer" \
-   "$(bash "$XREVIEW" collect collectth xr-testnonce 2>&1)" "the review"
-is "the receipt records the tier the review actually ran at" \
-   "$(bash "$XREVIEW" receipts 2>/dev/null | jq -r '.tier' | tail -1)" "gpt-5.6-terra/high"
-
-# --- running out of budget is two different outcomes --------------------------
-#
-# Collapsing them into one "ambiguous, do NOT retry" is what made long reviews look like
-# failures: a turn that is on record and still running has demonstrably not been lost, so
-# waiting longer is correct. Only a nonce with no turn against it is ambiguous — the queue
-# may never have landed — and that is the one a caller must not turn into a re-dispatch.
-sqlite3 "$DB" "INSERT INTO thread_turns VALUES ('collectth', 2, 'in_progress', 'u2', NULL);
-               INSERT INTO thread_items VALUES ('collectth','u2','{\"text\":\"xr-slownonce\"}');" 2>/dev/null
-
-out=$(bash "$XREVIEW" collect collectth xr-slownonce 0 2>&1); rc=$?
-is "a still-running turn exits 3, not 1"        "$rc" 3
-is "and says it is still running"               "$(printf '%s' "$out" | grep -ci 'still running')" 1
-is "and does not call it ambiguous"             "$(printf '%s' "$out" | grep -ci 'ambiguous')" 0
-is "and tells the caller how to keep waiting"   "$(printf '%s' "$out" | grep -c 'xreview collect xr-slownonce')" 1
-
-out=$(bash "$XREVIEW" collect collectth xr-nosuchnonce 0 2>&1); rc=$?
-is "a nonce with no turn on record exits 1"     "$rc" 1
-is "and is the one called ambiguous"            "$(printf '%s' "$out" | grep -ci 'ambiguous')" 1
-is "and is the one told not to retry"           "$(printf '%s' "$out" | grep -ci 'do NOT retry')" 1
-
-# The default budget is the patience limit, not a verdict. 900s was short enough that
-# reviews still working were being abandoned and escalated as timeouts.
-is "the default collect budget is at least 30 minutes" \
+echo "F. collect"
+ANSWER='{"verdict":"changes","findings":[{"severity":"P1","file":"a","line":1,"summary":"s","failure_scenario":"f"}]}'
+fresh
+nonce="$(bash "$XREVIEW" dispatch b.md 2>/dev/null)"
+out="$(RPC_WAIT_OUT="$ANSWER" bash "$XREVIEW" collect "$nonce" 2>&1)"; rc=$?
+is "F1 a finished review exits 0" "$rc" 0
+is "F1 and prints the findings" "$(printf '%s' "$out" | jq -r .verdict)" changes
+is "F1 waiting with the findings schema" "$(called "turn-wait --thread $U1 --turn turn-$U1 --budget 2700 --schema $XDG_CONFIG_HOME/xreview/findings.schema.json")" 1
+r="$(tail -1 "$STATE/reviews.jsonl")"
+is "F1 the receipt keeps the old fields" "$(printf '%s' "$r" | jq -r '[.thread,.nonce,(.ts|length>0),(.head|length>0),has("tier")] | map(tostring) | join(" ")')" "$U1 $nonce true true true"
+is "F1 and adds turn, verdict and finding count" "$(printf '%s' "$r" | jq -r '[.turn,.verdict,.findings] | map(tostring) | join(" ")')" "turn-$U1 changes 1"
+out="$(RPC_WAIT_RC=3 bash "$XREVIEW" collect "$nonce" 60 2>&1)"; rc=$?
+is "F2 a running turn exits 3" "$rc" 3
+is "F2 says so and how to keep waiting" "$(printf '%s' "$out" | grep -c "xreview collect $nonce")" 1
+out="$(RPC_WAIT_RC=4 RPC_WAIT_OUT='prose' bash "$XREVIEW" collect "$nonce" 2>&1)"; rc=$?
+is "F3 a schema miss exits 4" "$rc" 4
+is "F3 and labels the text untrusted" "$(printf '%s' "$out" | grep -c UNTRUSTED)" 1
+out="$(RPC_WAIT_RC=1 bash "$XREVIEW" collect "$nonce" 2>&1)"; rc=$?
+is "F4 a failed turn exits 1" "$rc" 1
+out="$(RPC_WAIT_RC=5 bash "$XREVIEW" collect "$nonce" 2>&1)"; rc=$?
+is "F5 an unreachable daemon exits 1 and says so" "$rc/$(printf '%s' "$out" | grep -c unreachable)" "1/1"
+out="$(bash "$XREVIEW" collect xr-1-nosuchnonce 2>&1)"; rc=$?
+is "F6 an unknown nonce is ambiguous and exits 1" "$rc/$(printf '%s' "$out" | grep -c 'do NOT retry')" "1/1"
+out="$(bash "$XREVIEW" collect "$U1" "$nonce" 2>&1)"; rc=$?
+is "F7 the old thread-first form is refused with the usage" "$rc/$(printf '%s' "$out" | grep -c 'usage: xreview collect <nonce>')" "1/1"
+is "F8 the default budget is at least 30 minutes" \
    "$(grep -E '^COLLECT_BUDGET_DEFAULT=' "$XREVIEW" | cut -d= -f2 | awk '{print ($1 >= 1800)}')" 1
 
-# --- the threadless-pane refusal must not overreach -----------------------------
-#
-# Refusing a dispatch onto a pane that cannot answer is right. Applying that refusal
-# anywhere else is the mirror of the bug it fixes, and worse: a review that IS running
-# gets abandoned instead of merely misrouted.
-PATH="$TRES:$PATH"
-cat > "$TRES/herdr" <<'H'
-#!/bin/sh
-if [ "$1" = "agent" ] && [ "$2" = "list" ]; then cat "$AGENTS"; fi
-exit 0
-H
-chmod +x "$TRES/herdr"
-agents 'null'   # pane present, no thread yet - the refusing condition
+echo "G. the reviewer tier is reported, never enforced"
+ROLL="$CODEX_HOME/sessions/2026/09/01"; mkdir -p "$ROLL"
+tc() { printf '{"type":"turn_context","payload":{"model":"%s","effort":"%s"}}\n' "$1" "$2"; }
+{ tc gpt-5.6-sol xhigh; tc gpt-5.6-terra high; } > "$ROLL/rollout-2026-09-01T10-00-00-faketh.jsonl"
+is "tier reflects the last turn's setting" "$(bash "$XREVIEW" tier faketh 2>&1)" "gpt-5.6-terra/high"
+: > "$STATE/reviews.jsonl"
+for _ in 1 2; do printf '{"thread":"t","nonce":"n","tier":"gpt-5.6-sol/xhigh"}\n' >> "$STATE/reviews.jsonl"; done
+printf '{"thread":"t","nonce":"n"}\n' >> "$STATE/reviews.jsonl"
+out="$(bash "$XREVIEW" receipts --tiers 2>&1)"
+is "the tier summary counts each tier" "$(printf '%s' "$out" | grep -c 'gpt-5.6-sol/xhigh')" 1
+is "and receipts without a tier as unrecorded" "$(printf '%s' "$out" | grep -ci unrecorded)" 1
+is "no --expect handling survives" "$(grep -c -- '--expect' "$XREVIEW")" 0
 
-# collect must reach the thread it was dispatched to. Pane readiness says nothing about
-# whether a turn is on record: the turn is already queued, and exit 1 means "ambiguous,
-# do NOT retry", so vetoing here throws away a review that is still running.
-printf 'collectth\n' > "$STATE/thread"
-out=$(bash "$XREVIEW" collect xr-slownonce 0 2>&1); rc=$?
-is "collect is not vetoed by a threadless pane" "$rc" 3
-is "and still reports the turn as running"      "$(printf '%s' "$out" | grep -ci 'still running')" 1
+echo "H. the queue-era machinery is gone"
+code="$(grep -v '^[[:space:]]*#' "$XREVIEW")"
+for gone in 'codex queue' 'thread_history' 'XREVIEW_THREAD_WARN' 'herdr agent list' 'sqlite3'; do
+  is "no '$gone' in the code" "$(printf '%s' "$code" | grep -c -- "$gone")" 0
+done
 
-out=$(bash "$XREVIEW" collect xr-testnonce 0 2>&1)
-is "a finished review is still collectable"     "$out" "the review"
-
-# An explicit `xreview init <id>` is a deliberate pin, not a thread that happened to be
-# cached, and it is the documented way to point at a thread herdr cannot see. A pane that
-# has not spoken yet must not veto it.
-bash "$XREVIEW" init pinned-th >/dev/null
-is "an explicit pin survives a threadless pane" "$(bash "$XREVIEW" thread)" "pinned-th"
-is "and an auto-cached id still does not"       "$(rm -f "$STATE/pin"; printf 'cached-th\n' > "$STATE/thread"; bash "$XREVIEW" thread 2>&1 | grep -c 'no thread yet')" 1
-
-# Presence and thread id must come from ONE herdr snapshot. Taken separately, a lookup
-# that fails transiently while the next one succeeds reads as "pane present, no thread"
-# and refuses a pane that is in fact ready - as does a pane finishing its first turn
-# between the two calls.
-cat > "$TRES/herdr" <<'H'
-#!/bin/sh
-[ "$1" = "agent" ] && [ "$2" = "list" ] || exit 0
-n=$(cat "$AGENTS.n" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$AGENTS.n"
-[ "$n" = "1" ] && exit 1      # first snapshot fails
-cat "$AGENTS"                  # every later one is healthy, with a session
-exit 0
-H
-chmod +x "$TRES/herdr"
-agents '{"value":"live-thread-id"}'
-rm -f "$AGENTS.n" "$STATE/pin"; printf 'cached-th\n' > "$STATE/thread"
-out=$(bash "$XREVIEW" thread 2>&1); rc=$?
-is "two snapshots cannot contradict each other into a refusal" \
-   "$(printf '%s' "$out" | grep -c 'no thread yet')" 0
-is "and resolution still succeeds"  "$rc" 0
-
-rm -f "$STATE/pin" "$STATE/thread" "$AGENTS.n"
-PATH="$OLD_PATH"
+echo "I. a repository path with a space"
+mkdir -p "$ROOT/sp ace" && cd "$ROOT/sp ace" || exit 1
+git init -q . && git config user.email t@t && git config user.name t && git config commit.gpgsign false
+git commit -q --allow-empty -m init; printf 'body\n' > b.md
+SPCWD="$(git rev-parse --show-toplevel)"
+fresh; export PANE_CWD="$SPCWD"
+nonce="$(bash "$XREVIEW" dispatch b.md 2>/dev/null)"
+is "the pane is found and the dispatch succeeds" "$(printf '%s' "$nonce" | grep -c '^xr-')" 1
+SPSTATE="$XDG_STATE_HOME/xreview/$(printf '%s' "$SPCWD" | tr '/' '_' | sed 's/^_//')"
+is "its state lands in its own directory" "$(cat "$SPSTATE/thread" 2>/dev/null)" "$U1"
+cd "$ROOT/repo" || exit 1
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))
