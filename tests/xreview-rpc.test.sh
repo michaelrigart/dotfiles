@@ -149,6 +149,15 @@ scenario "$(jq -nc --argjson o "$old_turn" '{responses:{"thread/turns/list":{res
 rpc turn-wait --thread th --new-since "$T/known" --budget 2 --schema "$SCHEMA" >/dev/null 2>&1
 is "E3 and exits 1 when nothing new is on the thread" "$?" 1
 
+echo "E4. a transient thread/turns/list error is retried, not reported as no turn"
+new_turn3="$(turn completed "$ANSWER" | jq -c '.id = "turn-3"')"
+printf '["nothing"]' > "$T/known2"
+scenario "$(jq -nc --argjson n "$new_turn3" \
+  '{responses:{"thread/turns/list":[{error:{code:-1,message:"transient"}},{result:{data:[$n]}}]}}')"
+out="$(rpc turn-wait --thread th --new-since "$T/known2" --budget 5 --schema "$SCHEMA")"; rc=$?
+is "E4 it exits 0 despite the transient list error" "$rc" 0
+is "E4 with the answer found once the retry succeeds" "$(printf '%s' "$out" | jq -r .verdict)" changes
+
 echo "F. turn-wait on a running turn"
 done_note="$(jq -nc --argjson t "$(turn completed "$ANSWER")" '{method:"turn/completed",params:{threadId:"th",turn:$t}}')"
 approval='{"id":77,"method":"item/commandExecution/requestApproval","params":{}}'

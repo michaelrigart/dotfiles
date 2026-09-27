@@ -384,17 +384,37 @@ def cmd_thread_archive(c, a):
     return 0
 
 
-def turn_state(c, thread, turn, known=None):
-    """The turn by id, or with known given, the oldest turn whose id is not in it."""
-    r = c.call("thread/turns/list", {"threadId": thread, "limit": 50,
-                                     "sortDirection": "desc", "itemsView": "summary"})
-    if "error" in r:
-        return None
-    data = (r.get("result") or {}).get("data") or []
-    if turn:
-        return next((t for t in data if t.get("id") == turn), None)
-    new = [t for t in data if t.get("id") not in (known or [])]
-    return new[-1] if new else None   # newest first, so the last new one is the oldest
+def turn_state(c, thread, turn, known=None, deadline=None):
+    """The turn by id, or with known given, the oldest turn whose id is not in it.
+
+    A thread/turns/list error is retried within the budget rather than reported as "no
+    turn". With no fixed turn (the --new-since case), "nothing new yet" is retried the
+    same way, re-listing about once a second until something appears or the budget ends
+    - the turn may not have landed on the thread yet when turn/start was sent but never
+    answered. A fixed turn id that is simply absent (no error, no such id) is not
+    retried: by the time collect asks for it, turn-start already returned it.
+    """
+    attempt = 0
+    while True:
+        # Not just "deadline not yet reached": call()'s own deadline is the same clock,
+        # so attempting one more call with only a sliver of budget left races it - the
+        # call can time out and raise Closed instead of this returning None cleanly. The
+        # very first attempt always runs regardless, even on a near-zero budget.
+        if attempt > 0 and deadline is not None and time.monotonic() >= deadline - 0.3:
+            return None
+        attempt += 1
+        r = c.call("thread/turns/list", {"threadId": thread, "limit": 50,
+                                         "sortDirection": "desc", "itemsView": "summary"})
+        if "error" not in r:
+            data = (r.get("result") or {}).get("data") or []
+            if turn:
+                return next((t for t in data if t.get("id") == turn), None)
+            new = [t for t in data if t.get("id") not in (known or [])]
+            if new:
+                return new[-1]   # newest first, so the last new one is the oldest
+        if deadline is None:
+            return None
+        time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
 
 
 def cmd_turn_wait(a):
@@ -412,7 +432,7 @@ def cmd_turn_wait(a):
         try:
             c = Client(deadline)
             c.call("thread/resume", {"threadId": a.thread})   # subscribe before looking
-            t = turn_state(c, a.thread, a.turn, known)
+            t = turn_state(c, a.thread, a.turn, known, deadline)
             if t is None:
                 err(f"no turn {a.turn or 'started since the dispatch'} on thread {a.thread}")
                 return 1
