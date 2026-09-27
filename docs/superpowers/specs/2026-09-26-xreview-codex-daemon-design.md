@@ -22,6 +22,10 @@ Commit `c9d2d00` pinned `features.daemon_auto_start = false` as a stopgap, so no
 spawn the daemon. This design keeps that pin, and brings the daemon back under launchd with a
 clean environment, because the daemon is what the live review view builds on.
 
+The rollout (task 10, 2026-09-27) found the original probe of F11 wrong: Codex truncates the
+title's `thread-id` item once the thread is named, so the join key described in §6 is a
+prefix, resolved through the daemon (F21), never a full id read straight off the title.
+
 ## 2. Goals
 
 1. **Live.** Every review turn is visible live in the repository's Codex pane, from its
@@ -65,7 +69,7 @@ these, and the live suite (§9) re-checks them.
 | F8 | `thread/loaded/list` and `thread/read` expose every loaded thread and its `cwd`. |
 | F9 | With `daemon_auto_start = false`, a TUI still attaches to a daemon that is already running. |
 | F10 | Any `-c` override makes a TUI run an embedded app-server instead of attaching to the daemon. |
-| F11 | `tui.terminal_title` accepts the item `thread-id`. The TUI puts the full id in its title at launch, before any turn. Codex truncates long titles, so `thread-id` must come first. |
+| F11 | `tui.terminal_title` accepts the item `thread-id`, which must come first. Codex truncates it to 29 characters plus `...` once the thread is named (after its first turn): the observed title is `<29-char prefix>... | <thread-title> | <cwd>`. A full id appears only as `thread-title`'s fallback, before the thread is named. |
 | F12 | `herdr pane list` exposes each pane's `terminal_title`, `agent`, `agent_status` and `cwd`. `herdr pane report-agent-session <pane> --source --agent --agent-session-id` sets a pane's session from outside the pane. |
 | F13 | Herdr's managed Codex hook exits immediately when `HERDR_ENV`, `HERDR_SOCKET_PATH` or `HERDR_PANE_ID` is unset. |
 | F14 | A fresh TUI attached to the daemon registers its thread at launch. The thread is loaded and `idle` before any turn. The default terminal title does not show the id. |
@@ -75,6 +79,7 @@ these, and the live suite (§9) re-checks them.
 | F18 | `SessionStart` fires at a thread's first turn, not at TUI launch. |
 | F19 | `codex app-server daemon bootstrap` installs no launchd job. The daemon's supervisor (`daemon pid-update-loop`) and server are each their own process-group leader. `daemon.pid` and `daemon-updater.pid` under `$CODEX_HOME/app-server-daemon/` hold JSON with a `pid` field. |
 | F20 | Inside the Claude sandbox, binding a unix socket is denied, so a socket-based fake daemon cannot run in the default test run. |
+| F21 | `thread/loaded/list` resolves a title's id prefix to a full id: it lists every loaded thread, and the one whose id starts with the prefix is the match. Zero or several matches is an error, never a guess. |
 
 
 ## 4. Architecture
@@ -160,21 +165,29 @@ Herdr's managed hook exits inside the clean daemon (F13). It is not edited.
 
 **Join key.** The `config.toml` template pins
 `tui.terminal_title = ["thread-id", "thread-title", "current-dir"]` (F11). Every TUI on the
-daemon therefore shows its thread UUID at the start of its title, from launch onwards. Pane
-titles in herdr now start with the UUID; that is the accepted cost.
+daemon therefore shows its thread id at the start of its title, from launch onwards - but only
+as a 29-36 character PREFIX once the thread is named (F11/F21): Codex truncates the
+`thread-id` item to 29 characters plus `...`. Pane titles in herdr now start with that prefix;
+that is the accepted cost. The prefix is resolved to a full thread id through
+`xreview-rpc thread-resolve --prefix`, which asks the daemon's `thread/loaded/list` for the one
+loaded thread that starts with it (F21). A prefix is never treated as a full id, and never
+guessed.
 
 **Pane-map hook.** `herdr-codex-pane-map.py` is registered as a second `SessionStart` entry in
 `hooks.json`, beside herdr's. It runs inside the daemon and **reconciles all Codex panes**,
 not only the one whose session is starting:
 
 1. List herdr panes on the default socket.
-2. For every pane with `agent == "codex"` whose title begins with a UUID, compare that UUID
-   with the pane's `agent_session`. On a mismatch or no session, run
-   `herdr pane report-agent-session <pane> --source herdr:codex --agent codex --agent-session-id <uuid> --seq <ns>`.
-3. If the hook input's `session_id` is not yet in any title, retry for about 5 s while the
-   title catches up, then stop.
-4. Never report an id that is not in a title. That rules out guessing for sub-agent threads,
-   and for anything not visibly on screen.
+2. For every pane with `agent == "codex"` whose title begins with an id prefix, compare it with
+   the pane's `agent_session`. If the session already starts with that prefix, nothing to do.
+   Otherwise resolve the prefix to a full id - the hook's own `session_id`, for free, when the
+   prefix is one of its prefixes; through `xreview-rpc thread-resolve --prefix` otherwise - and
+   run `herdr pane report-agent-session <pane> --source herdr:codex --agent codex --agent-session-id <full-id> --seq <ns>`.
+3. If the hook input's `session_id`'s prefix is not yet on any title, retry for about 5 s while
+   the title catches up, then stop.
+4. Never report a prefix as if it were a full id, and never report an id that did not resolve
+   from a title. That rules out guessing for sub-agent threads, and for anything not visibly on
+   screen; a resolver that is missing, fails or times out also reports nothing for that pane.
 
 Because every `SessionStart` reconciles everything, one contaminated report, for example from
 herdr's managed hook in a daemon that carries a pane's environment, is repaired by the next
@@ -193,6 +206,9 @@ completes the handshake (F2), declines any server-initiated approval request, an
 
 - `thread-status --thread <id>`: whether the thread is loaded, and whether a turn is running
   on it.
+- `thread-resolve --prefix <p>` (F21): the one loaded thread id starting with `<p>`. Refuses a
+  prefix shorter than 13 characters or containing anything but `[0-9a-f-]`. Zero or several
+  matches is an error; never a guess.
 - `turn-start --thread <id> --input <file> --schema <file>`: starts a turn with the findings
   schema, a read-only sandbox policy and approval `never` set on the turn itself. Prints the
   turn id.
@@ -237,17 +253,20 @@ Nothing is sent to the reviewer until the pane is watching the thread.
      `cwd` equal to the repository root. `XREVIEW_PANE` overrides the choice.
    - That pane's `agent_status` is not `working`.
    - The existing guards pass: no project `.codex/`, and the round cap.
-2. **Pane first.** Make the pane show the review thread:
-   - If the recorded thread's id is already at the start of the pane's title, nothing to do.
+2. **Pane first.** Make the pane show the review thread. The join key is the title's id
+   prefix (F11/F21), resolved to a full id by the daemon - never read whole and never guessed:
+   - If the recorded thread's id already starts with the pane's title prefix, nothing to do.
    - If a thread is recorded (or pinned) but the pane shows something else, quit its TUI
      (`ctrl+c` twice), wait for the shell, and run the Codex pane command with `resume <id>`.
      The pane command's flags come from the single definition that `layout.sh` uses.
    - If no thread is recorded, quit the TUI and run the Codex pane command without `resume`.
-     Record the UUID that appears at the start of the title as the checkpoint thread.
+     Once the title shows a new prefix, resolve it with `xreview-rpc thread-resolve --prefix`
+     and record the resolved full id as the checkpoint thread.
 
-   In every case, wait (bounded, about 20 s) until the title shows the expected id and the
-   daemon reports the thread as loaded, then report the id to herdr. If that does not happen,
-   refuse. No turn has been started, so nothing is lost or unseen.
+   In every case, wait (bounded, about 20 s) until the title's prefix agrees - directly, or by
+   resolving a fresh one - and the daemon reports the resolved thread as loaded, then report
+   the full id to herdr. If the title never shows the expected prefix, or a fresh prefix never
+   resolves, refuse. No turn has been started, so nothing is lost or unseen.
 3. **Turn.** Build the packet as `<cross-review-request>` containing the reviewer instructions,
    the body, and the diff inline. The correlation line is dropped, because the turn id
    replaces it. Run `turn-start` with the findings schema (§7.5).
