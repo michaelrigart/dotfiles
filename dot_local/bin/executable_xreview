@@ -140,14 +140,16 @@ pane_prepare() { # pane_prepare <pane> [want] [daemon-generation]: the generatio
     printf '%s\n' "$want"; return 0
   fi
   cmd="$(pane_command)"
-  gap="$(awk -v p="$poll" 'BEGIN{printf "%g", p/2}')"
+  # LC_ALL=C: awk's numeric printf/parsing follows LC_NUMERIC, and a locale like nl_BE
+  # writes "0,5" - a decimal comma sleep(1) chokes on under set -e (I-2).
+  gap="$(LC_ALL=C awk -v p="$poll" 'BEGIN{printf "%g", p/2}')"
   herdr pane send-keys "$pane" ctrl+c >/dev/null 2>&1 || true
   sleep "$gap"
   herdr pane send-keys "$pane" ctrl+c >/dev/null 2>&1 || true
   while [ "$(pane_field "$pane" '.agent')" = "codex" ]; do
-    awk -v w="$waited" -v m="$wait" 'BEGIN{exit !(w<m)}' \
+    LC_ALL=C awk -v w="$waited" -v m="$wait" 'BEGIN{exit !(w<m)}' \
       || die "the Codex pane $pane did not exit its session within ${wait}s; no review was started"
-    sleep "$poll"; waited="$(awk -v w="$waited" -v p="$poll" 'BEGIN{printf "%g", w+p}')"
+    sleep "$poll"; waited="$(LC_ALL=C awk -v w="$waited" -v p="$poll" 'BEGIN{printf "%g", w+p}')"
   done
   [ -z "$want" ] || cmd="$cmd resume $want"
   herdr pane run "$pane" "$cmd" >/dev/null 2>&1 || die "could not start Codex in pane $pane; no review was started"
@@ -173,9 +175,9 @@ pane_prepare() { # pane_prepare <pane> [want] [daemon-generation]: the generatio
     if [ "$ok" = 1 ] && [ "$(pane_field "$pane" '.agent')" = "codex" ] && loaded "$resolved"; then
       printf '%s\n' "$resolved"; return 0
     fi
-    awk -v w="$waited" -v m="$wait" 'BEGIN{exit !(w<m)}' \
+    LC_ALL=C awk -v w="$waited" -v m="$wait" 'BEGIN{exit !(w<m)}' \
       || die "the Codex pane $pane did not show ${want:-a new thread} within ${wait}s; no review was started"
-    sleep "$poll"; waited="$(awk -v w="$waited" -v p="$poll" 'BEGIN{printf "%g", w+p}')"
+    sleep "$poll"; waited="$(LC_ALL=C awk -v w="$waited" -v p="$poll" 'BEGIN{printf "%g", w+p}')"
   done
 }
 
@@ -249,8 +251,8 @@ record_receipt() { # record_receipt <thread> <nonce> <turn> <findings-json>
   verdict="$(printf '%s' "$4" | jq -r '.verdict // ""' 2>/dev/null)" || verdict=""
   count="$(printf '%s' "$4" | jq -r '(.findings // []) | length' 2>/dev/null)" || count=0
   if ! jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-         --arg branch "$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" \
-         --arg head "$(git rev-parse HEAD 2>/dev/null)" \
+         --arg branch "$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)" \
+         --arg head "$(git rev-parse HEAD 2>/dev/null || true)" \
          --arg thread "$1" --arg nonce "$2" --arg tier "$tier" --arg turn "$3" \
          --arg verdict "$verdict" --argjson findings "${count:-0}" \
     '{ts:$ts,branch:$branch,head:$head,thread:$thread,nonce:$nonce,tier:$tier,turn:$turn,verdict:$verdict,findings:$findings}' \
@@ -286,14 +288,14 @@ cmd_round() {
 }
 
 current_round() {
-  local f b n; f="$(round_file)"; b="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
+  local f b n; f="$(round_file)"; b="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
   [ -r "$f" ] || { printf 0; return; }
   n="$(sed -n "s/^$b=//p" "$f" 2>/dev/null | head -1)"
   printf '%s' "${n:-0}"
 }
 
 bump_round() {
-  local f b n; f="$(round_file)"; b="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
+  local f b n; f="$(round_file)"; b="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
   n=$(( $(current_round) + 1 ))
   mkdir -p "$(dirname "$f")" || return 0
   { [ -r "$f" ] && grep -v "^$b=" "$f" 2>/dev/null; printf '%s=%s\n' "$b" "$n"; } \

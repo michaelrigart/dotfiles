@@ -537,5 +537,34 @@ SPSTATE="$XDG_STATE_HOME/xreview/$(printf '%s' "$SPCWD" | tr '/' '_' | sed 's/^_
 is "its state lands in its own directory" "$(cat "$SPSTATE/review-thread" 2>/dev/null)" "$U1"
 cd "$ROOT/repo" || exit 1
 
+echo "K. a comma-decimal locale does not break the ctrl+c gap or the poll wait (I-2)"
+fresh
+out="$(LC_ALL=nl_BE.UTF-8 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+is "K1 a dispatch under nl_BE.UTF-8 still succeeds" "$(printf '%s' "$out" | grep -c '^xr-')" 1
+is "K1 and exactly two ctrl+c were sent, not aborted after the first" \
+   "$(called 'herdr pane send-keys')" 2
+
+echo "J. an unborn HEAD and no git repo at all (I-1)"
+# `git rev-parse --abbrev-ref HEAD` exits 128 on an unborn HEAD; inherit_errexit must not
+# let that kill round accounting or dispatch, and it must not surface as an empty line.
+UNBORN="$(mktemp -d "${TMPDIR:-/tmp}/xreview-unborn.XXXXXX")"
+mkdir -p "$UNBORN/repo" && cd "$UNBORN/repo" || exit 1
+git init -q . && git config user.email t@t && git config user.name t && git config commit.gpgsign false
+printf 'body\n' > b.md
+UBCWD="$(git rev-parse --show-toplevel)"
+fresh; export PANE_CWD="$UBCWD"
+out="$(bash "$XREVIEW" round 2>&1)"; rc=$?
+is "J1 'xreview round' on an unborn HEAD does not crash" "$rc" 0
+is "J1 and prints a real number, not an empty line" "$(printf '%s' "$out" | grep -cE '^[0-9]+$')" 1
+nonce="$(bash "$XREVIEW" dispatch b.md 2>/dev/null)"
+is "J2 a dispatch on an unborn HEAD still succeeds" "$(printf '%s' "$nonce" | grep -c '^xr-')" 1
+cd "$UNBORN" || exit 1
+out="$(GIT_CEILING_DIRECTORIES="$UNBORN" bash "$XREVIEW" round 2>&1)"; rc=$?
+is "J3 'xreview round' outside any git repo does not crash" "$rc" 0
+is "J3 and prints a real number, not an empty line" "$(printf '%s' "$out" | grep -cE '^[0-9]+$')" 1
+cd "$ROOT/repo" || exit 1
+unset PANE_CWD
+rm -rf "$UNBORN"
+
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))
