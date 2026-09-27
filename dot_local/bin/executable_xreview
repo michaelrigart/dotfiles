@@ -124,7 +124,7 @@ daemon_gen() {
 # recorded in $(state_dir)/pane by the caller after a successful prepare.
 pane_prepare() {
   local pane="$1" want="${2:-}" before cmd now ok resolved waited=0 wait="${XREVIEW_PANE_WAIT:-20}" \
-        gen rec
+        poll="${XREVIEW_POLL_SECS:-1}" gap gen rec
   before="$(pane_title_id "$pane")"
   gen="$(daemon_gen)"
   rec="$(cat "$(state_dir)/pane" 2>/dev/null || true)"
@@ -133,12 +133,14 @@ pane_prepare() {
     printf '%s\n' "$want"; return 0
   fi
   cmd="$(pane_command)"
+  gap="$(awk -v p="$poll" 'BEGIN{printf "%g", p/2}')"
   herdr pane send-keys "$pane" ctrl+c >/dev/null 2>&1 || true
-  sleep 0.5
+  sleep "$gap"
   herdr pane send-keys "$pane" ctrl+c >/dev/null 2>&1 || true
   while [ "$(pane_field "$pane" '.agent')" = "codex" ]; do
-    [ "$waited" -lt "$wait" ] || die "the Codex pane $pane did not exit its session within ${wait}s; no review was started"
-    sleep 1; waited=$((waited + 1))
+    awk -v w="$waited" -v m="$wait" 'BEGIN{exit !(w<m)}' \
+      || die "the Codex pane $pane did not exit its session within ${wait}s; no review was started"
+    sleep "$poll"; waited="$(awk -v w="$waited" -v p="$poll" 'BEGIN{printf "%g", w+p}')"
   done
   [ -z "$want" ] || cmd="$cmd resume $want"
   herdr pane run "$pane" "$cmd" >/dev/null 2>&1 || die "could not start Codex in pane $pane; no review was started"
@@ -162,8 +164,9 @@ pane_prepare() {
     if [ "$ok" = 1 ] && [ "$(pane_field "$pane" '.agent')" = "codex" ] && loaded "$resolved"; then
       printf '%s\n' "$resolved"; return 0
     fi
-    [ "$waited" -lt "$wait" ] || die "the Codex pane $pane did not show ${want:-a new thread} within ${wait}s; no review was started"
-    sleep 1; waited=$((waited + 1))
+    awk -v w="$waited" -v m="$wait" 'BEGIN{exit !(w<m)}' \
+      || die "the Codex pane $pane did not show ${want:-a new thread} within ${wait}s; no review was started"
+    sleep "$poll"; waited="$(awk -v w="$waited" -v p="$poll" 'BEGIN{printf "%g", w+p}')"
   done
 }
 

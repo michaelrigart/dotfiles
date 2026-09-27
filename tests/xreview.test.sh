@@ -23,7 +23,7 @@ export XDG_STATE_HOME="$ROOT/state" XDG_CONFIG_HOME="$ROOT/config" CODEX_HOME="$
 mkdir -p "$XDG_CONFIG_HOME/xreview" "$XDG_CONFIG_HOME/herdr"
 cp "$SRC/dot_config/xreview/findings.schema.json" "$SRC/dot_config/xreview/reviewer.md" "$XDG_CONFIG_HOME/xreview/"
 cp "$SRC/dot_config/herdr/codex-pane-command" "$XDG_CONFIG_HOME/herdr/"
-export XREVIEW_PANE_WAIT=3
+export XREVIEW_POLL_SECS=0.05 XREVIEW_PANE_WAIT=0.15
 unset XREVIEW_MAX_ROUNDS XREVIEW_PANE XREVIEW_THREAD
 
 mkdir -p "$ROOT/repo" && cd "$ROOT/repo" || exit 1
@@ -310,13 +310,15 @@ bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
 is "D12 the dispatch after that takes the fast path" "$(called 'herdr pane send-keys')" 0
 
 fresh; export AGENT_LAG=2
-start=$(date +%s)
+start="$EPOCHREALTIME"
 nonce="$(bash "$XREVIEW" dispatch b.md 2>/dev/null)"
-took=$(( $(date +%s) - start ))
+took="$(awk -v s="$start" -v e="$EPOCHREALTIME" 'BEGIN{printf "%.3f", e-s}')"
 is "D13 a title that updates before .agent says codex is not trusted early" \
    "$(printf '%s' "$nonce" | grep -c '^xr-')" 1
+# At least one poll interval must have elapsed for .agent to catch up (sub-second: the
+# suite scales XREVIEW_POLL_SECS down, so whole-second resolution would always read 0).
 is "D13 dispatch waited for .agent to actually say codex" \
-   "$([ "$took" -ge 2 ] && echo yes || echo "no ($took s)")" yes
+   "$(awk -v t="$took" -v p="$XREVIEW_POLL_SECS" 'BEGIN{print (t >= p) ? "yes" : "no ("t"s)"}')" yes
 fresh; export AGENT_LAG=10
 out="$(bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
 is "D14 .agent never saying codex times out" "$rc" 1
