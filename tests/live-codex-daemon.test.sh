@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Live canary for xreview's Codex daemon path: the real daemon, a scratch herdr tab and one
-# small real turn. Re-checks facts F11 and F14-F17 and the pane-map hook after a Codex update,
-# when the experimental app-server protocol may have moved (spec section 9). Needs everything
-# deployed (`chezmoi apply`) and a clean daemon (`codex-daemon check`).
+# small real turn. Re-checks facts F11, F21 and F14-F17 and the pane-map hook after a Codex
+# update, when the experimental app-server protocol may have moved (spec section 9). The title
+# only ever carries a thread-id PREFIX (F11/F21); this asserts both that the title carries one
+# and that it resolves to exactly one loaded thread. Needs everything deployed
+# (`chezmoi apply`) and a clean daemon (`codex-daemon check`).
 # test-requires: unsandboxed, herdr, codex-daemon  # drives the real daemon and a scratch herdr tab
 set -uo pipefail
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
@@ -47,15 +49,17 @@ if [ -z "$tab" ] || [ "$tab" = "null" ] || [ -z "$pane" ] || [ "$pane" = "null" 
 fi
 herdr pane run "$pane" "$(grep -v '^[[:space:]]*#' "$PCMD" | grep . | head -1)" >/dev/null
 
-echo "F11/F14: the title carries the thread id at launch, and the daemon has it loaded"
-t=""
+echo "F11/F21/F14: the title carries a thread-id prefix at launch, and it resolves to one loaded thread"
+t=""; prefix=""
 for _ in $(seq 20); do
   t="$(herdr pane get "$pane" | jq -r '.result.pane.terminal_title_stripped // .result.pane.terminal_title // ""')"
-  thread="$(printf '%s' "$t" | grep -oE '^[[:space:]]*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | tr -d ' ' || true)"
-  [ -n "$thread" ] && break; sleep 1
+  prefix="$(printf '%s' "$t" | grep -oE '^[[:space:]]*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{5,12}' | tr -d ' ' || true)"
+  [ -n "$prefix" ] && break; sleep 1
 done
-if [ -n "$thread" ]; then _pass "the pane title starts with the thread id"; else _fail "the pane title starts with the thread id" "$t"; fi
-is "the daemon has the new thread loaded" "$(rpc thread-status --thread "$thread" | jq -r .loaded)" true
+if [ -n "$prefix" ]; then _pass "the pane title carries a thread-id prefix"; else _fail "the pane title carries a thread-id prefix" "$t"; fi
+thread="$(rpc thread-resolve --prefix "$prefix")"; rc=$?
+is "it resolves to one loaded thread" "$rc" 0
+is "the daemon has the resolved thread loaded" "$(rpc thread-status --thread "$thread" | jq -r .loaded)" true
 
 echo "F15: a turn from another client renders in the pane"
 printf 'Live canary. Reply with verdict "approve" and no findings.\n' > "$T/in"
