@@ -51,6 +51,12 @@ pane() { # pane <id> <agent> <title> <session-or-empty>
   printf '{"pane_id":"%s","agent":"%s","terminal_title":"◐ %s","terminal_title_stripped":"%s","agent_session":%s}' \
     "$1" "$2" "$3" "$3" "$s"
 }
+pane_raw() { # pane_raw <id> <agent> <title> <session-or-empty>: no terminal_title_stripped -
+             # the fallback path (F12) must strip the leading spinner glyphs and whitespace itself.
+  local s='null'; [ -n "$4" ] && s="{\"value\":\"$4\"}"
+  printf '{"pane_id":"%s","agent":"%s","terminal_title":"  \xe2\x97\x90\xe2\x97\x91 %s","agent_session":%s}' \
+    "$1" "$2" "$3" "$s"
+}
 fixture() { printf '{"result":{"panes":[%s]}}' "$1" > "$PANES"; : > "$CALLS"; : > "$RPC_CALLS"; }
 hook() { python3 "$HOOK" "$@"; }
 reports() { grep -c . "$CALLS" 2>/dev/null || true; }
@@ -80,11 +86,11 @@ is "hook mode reports the full session_id without calling the resolver" "$(rpc_c
 
 echo "C. a session whose id is on no title yet"
 fixture "$(pane w1:p2 codex "$(trunc "$U1") | t | d" "$U1")"
-start=$(date +%s)
+start="$EPOCHREALTIME"
 printf '{"session_id":"%s","source":"startup"}' "$U2" | hook; rc=$?
-took=$(( $(date +%s) - start ))
+took="$(awk -v s="$start" -v e="$EPOCHREALTIME" 'BEGIN{printf "%.3f", e-s}')"
 is "it gives up and exits 0"              "$rc" 0
-is "within its retry budget"              "$([ "$took" -le 3 ] && echo yes || echo "no ($took s)")" yes
+is "within its retry budget"              "$(awk -v t="$took" 'BEGIN{print (t<=3) ? "yes" : "no ("t"s)"}')" yes
 is "and reports nothing it cannot see"    "$(reports)" 0
 
 echo "D. repeated passes never report the same thing twice"
@@ -127,10 +133,10 @@ H
 chmod +x "$T/slowherdr"
 export U4=44444444-4444-4444-8444-444444444444
 fixture "$(pane w1:p2 codex "$(trunc "$U1") | t" "")","$(pane w2:p2 codex "$(trunc "$U2") | t" "")","$(pane w3:p2 codex "$(trunc "$U3") | t" "")","$(pane w6:p2 codex "$(trunc "$U4") | t" "")"
-start=$(date +%s)
+start="$EPOCHREALTIME"
 HERDR_BIN="$T/slowherdr" PANE_MAP_DEADLINE_SECS=3 hook --reconcile; rc=$?
-took=$(( $(date +%s) - start ))
-is "stalled reports still end within the deadline" "$([ "$took" -le 4 ] && echo yes || echo "no ($took s)")" yes
+took="$(awk -v s="$start" -v e="$EPOCHREALTIME" 'BEGIN{printf "%.3f", e-s}')"
+is "stalled reports still end within the deadline" "$(awk -v t="$took" 'BEGIN{print (t<=4) ? "yes" : "no ("t"s)"}')" yes
 is "and exit 0" "$rc" 0
 
 echo "E. it never fails a session"
@@ -139,6 +145,68 @@ HERDR_FAIL=1 hook --reconcile; is "herdr failing exits 0" "$?" 0
 printf 'not json' > "$PANES"; hook --reconcile; is "garbage from herdr exits 0" "$?" 0
 printf '{{{' | hook; is "garbage on stdin exits 0" "$?" 0
 HERDR_BIN="$T/nonexistent" hook --reconcile; is "no herdr at all exits 0" "$?" 0
+
+echo "G. malformed env budgets fall back to their defaults, never raise"
+fixture "$(pane w1:p2 codex "$(trunc "$U1") | t | d" "")"
+out="$(PANE_MAP_DEADLINE_SECS=notanumber hook --reconcile 2>&1)"; rc=$?
+is "a malformed deadline exits 0"          "$rc" 0
+is "and still repairs the pane"            "$(reports)" 1
+out="$(printf '{"session_id":"%s"}' "$U2" | PANE_MAP_RETRY_SECS='' hook 2>&1)"; rc=$?
+is "an empty retry budget exits 0"         "$rc" 0
+
+echo "H. the raw-title fallback strips leading spinner glyphs and whitespace"
+fixture "$(pane_raw w1:p2 codex "$(trunc "$U1") | t | d" "")"
+hook --reconcile; rc=$?
+is "it exits 0"                                 "$rc" 0
+is "the id under the spinner glyphs is still resolved" \
+   "$(grep -c "^w1:p2 --source herdr:codex --agent codex --agent-session-id $U1 --seq [0-9]*$" "$CALLS")" 1
+
+echo "I. malformed pane entries do not stop the rest of the pass"
+badstr='"just a string, not a pane object"'
+badagent='{"pane_id":"w9:p2","agent":"codex","terminal_title_stripped":"'"$(trunc "$U2")"' | t","agent_session":"not-an-object"}'
+good="$(pane w11:p2 codex "$(trunc "$U3") | t" "")"
+fixture "$badstr,$badagent,$good"
+hook --reconcile; rc=$?
+is "it exits 0 despite the malformed entries"      "$rc" 0
+is "the good pane after them is still repaired"    "$(grep -c '^w11:p2' "$CALLS")" 1
+
+echo "I2. with two panes in hook mode, --session-start-source goes only to the starting pane"
+fixture "$(pane w1:p2 codex "$(trunc "$U1") | t | d" "")","$(pane w2:p2 codex "$(trunc "$U3") | t | d" "")"
+printf '{"session_id":"%s","source":"startup"}' "$U1" | hook; rc=$?
+is "it exits 0"                                                  "$rc" 0
+is "the starting session's pane carries the start source"        \
+   "$(grep -c "^w1:p2 .*--session-start-source startup$" "$CALLS")" 1
+is "the other, resolved pane is reported too"                     "$(grep -c '^w2:p2' "$CALLS")" 1
+is "only the starting pane's report carries a start source"       "$(grep -c 'session-start-source' "$CALLS")" 1
+
+echo "J. the hook's own pane is handled first each pass"
+# Both panes disagree; a deadline that only allows one report must spend it on the pane
+# that matches the hook's own session_id, not on the other one, whichever herdr lists first.
+cat > "$T/slowreport" <<'H'
+#!/bin/sh
+case "$1 $2" in
+  "pane list") cat "$PANES" ;;
+  # The write happens AFTER the stall, so a report killed by the client's own timeout
+  # (the deadline running out) never lands in $CALLS at all.
+  "pane report-agent-session") shift 2; sleep 2; echo "$*" >> "$CALLS" ;;
+esac
+exit 0
+H
+chmod +x "$T/slowreport"
+fixture "$(pane w1:p2 codex "$(trunc "$U1") | t" "")","$(pane w2:p2 codex "$(trunc "$U2") | t" "")"
+printf '{"session_id":"%s","source":"startup"}' "$U2" \
+  | HERDR_BIN="$T/slowreport" PANE_MAP_DEADLINE_SECS=3 PANE_MAP_RETRY_SECS=0 hook; rc=$?
+is "it exits 0"                                            "$rc" 0
+is "the session's own pane is reported"                    "$(grep -c '^w2:p2' "$CALLS")" 1
+is "the deadline leaves no room for the other pane"        "$(grep -c '^w1:p2' "$CALLS")" 0
+
+echo "K. a resolver that keeps failing is called at most once per prefix per run"
+U6=66666666-6666-4666-8666-666666666666   # never on the stub's known-id list
+fixture "$(pane w12:p2 codex "$(trunc "$U6") | t" "")"
+printf '{"session_id":"%s"}' "$U1" | PANE_MAP_RETRY_SECS=1 hook; rc=$?
+is "it exits 0"                                          "$rc" 0
+is "the resolver is asked about the failing prefix only once, despite several retry passes" \
+   "$(rpc_calls)" 1
 
 echo
 echo "RESULT: $pass passed, $((pass + fail)) total, $fail failed"

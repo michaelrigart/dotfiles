@@ -29,7 +29,21 @@ import sys
 import time
 
 TITLE_ID_RE = re.compile(r"^\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{5,12})(?![0-9a-f-])")
-DEADLINE = time.monotonic() + float(os.environ.get("PANE_MAP_DEADLINE_SECS", "8"))
+# A raw (unstripped) title leads with a run of whitespace and/or non-ASCII spinner glyphs
+# before the thread-id item; terminal_title_stripped already has that removed.
+RAW_LEAD_RE = re.compile(r"^[\s\x80-\U0010FFFF]+")
+
+
+def env_float(name, default):
+    """An env var parsed as a float, falling back to `default` (never raising) on anything
+    malformed - a bad PANE_MAP_DEADLINE_SECS or PANE_MAP_RETRY_SECS must not crash the hook."""
+    try:
+        return float(os.environ.get(name, default))
+    except Exception:
+        return float(default)
+
+
+DEADLINE = time.monotonic() + env_float("PANE_MAP_DEADLINE_SECS", "8")
 
 
 def left():
@@ -90,7 +104,11 @@ def panes(herdr):
 
 
 def title_prefix(pane):
-    title = pane.get("terminal_title_stripped") or pane.get("terminal_title") or ""
+    stripped = pane.get("terminal_title_stripped")
+    if stripped:
+        title = stripped
+    else:
+        title = RAW_LEAD_RE.sub("", pane.get("terminal_title") or "", count=1)
     m = TITLE_ID_RE.match(title)
     return m.group(1) if m else None
 
@@ -103,40 +121,73 @@ def report(herdr, pane_id, uuid, seq, start_source):
     run(cmd)
 
 
-def reconcile(herdr, done, session_id=None, start_source=None):
-    """One pass. Returns the set of title PREFIXES currently on Codex pane titles."""
+def reconcile(herdr, done, session_id=None, start_source=None, failed=None):
+    """One pass. Returns the set of title PREFIXES currently on Codex pane titles.
+
+    A malformed pane entry (not a dict, a string agent_session, ...) is skipped without
+    stopping the rest of the pass. `failed` is a per-run set of prefixes the resolver has
+    already failed on; they are never retried within the same run (--reconcile call, or
+    hook invocation across its retry passes)."""
+    if failed is None:
+        failed = set()
     seen = set()
     listed = panes(herdr)
+
+    def own_pane_first(p):
+        # The pane matching the hook's own session_id is handled first each pass, so a
+        # deadline cutoff never leaves the just-started session unfixed for the sake of
+        # unrelated panes.
+        if not session_id or not isinstance(p, dict):
+            return 1
+        try:
+            pfx = title_prefix(p)
+        except Exception:
+            return 1
+        return 0 if pfx and session_id.startswith(pfx) else 1
+
+    if session_id:
+        listed = sorted(listed, key=own_pane_first)
+
     # One fingerprint for every report this pass makes: they all describe the state
     # observed in this one `pane list`, not one each's own call time.
     seq = time.time_ns()
     for p in listed:
         if left() <= 0:
             break
-        if p.get("agent") != "codex":
+        try:
+            if not isinstance(p, dict):
+                continue
+            if p.get("agent") != "codex":
+                continue
+            prefix = title_prefix(p)
+            if not prefix:
+                continue
+            seen.add(prefix)
+            pane_id = p.get("pane_id")
+            if not pane_id:
+                continue
+            agent_session = p.get("agent_session")
+            current = agent_session.get("value") if isinstance(agent_session, dict) else None
+            if current and current.startswith(prefix):
+                continue   # already correct - a prefix match is enough, never re-resolved
+            if session_id and session_id.startswith(prefix):
+                # The hook's own session: its full id is already known, no daemon needed.
+                full, src = session_id, start_source
+            elif prefix in failed:
+                full, src = None, None   # already tried and failed this run - never retried
+            else:
+                full, src = resolve_thread_id(prefix), None
+                if not full:
+                    failed.add(prefix)
+            if not full:
+                continue
+            key = (pane_id, full)
+            if key in done:
+                continue
+            done.add(key)
+            report(herdr, pane_id, full, seq, src)
+        except Exception:
             continue
-        prefix = title_prefix(p)
-        if not prefix:
-            continue
-        seen.add(prefix)
-        pane_id = p.get("pane_id")
-        if not pane_id:
-            continue
-        current = (p.get("agent_session") or {}).get("value")
-        if current and current.startswith(prefix):
-            continue   # already correct - a prefix match is enough, never re-resolved
-        if session_id and session_id.startswith(prefix):
-            # The hook's own session: its full id is already known, no daemon needed.
-            full, src = session_id, start_source
-        else:
-            full, src = resolve_thread_id(prefix), None
-        if not full:
-            continue
-        key = (pane_id, full)
-        if key in done:
-            continue
-        done.add(key)
-        report(herdr, pane_id, full, seq, src)
     return seen
 
 
@@ -145,8 +196,9 @@ def main():
     if not herdr:
         return
     done = set()
+    failed = set()
     if "--reconcile" in sys.argv[1:]:
-        reconcile(herdr, done)
+        reconcile(herdr, done, failed=failed)
         return
     try:
         hook = json.loads(sys.stdin.read() or "{}")
@@ -156,9 +208,9 @@ def main():
         hook = {}
     sid = hook.get("session_id") if isinstance(hook.get("session_id"), str) else None
     src = hook.get("source") if isinstance(hook.get("source"), str) else None
-    retry_until = time.monotonic() + float(os.environ.get("PANE_MAP_RETRY_SECS", "5"))
+    retry_until = time.monotonic() + env_float("PANE_MAP_RETRY_SECS", "5")
     while True:
-        seen = reconcile(herdr, done, sid, src)
+        seen = reconcile(herdr, done, sid, src, failed)
         # "on some title" means some title's prefix is a prefix of sid - titles never carry
         # the full id once Codex has named the thread (F11/F21).
         if not sid or any(sid.startswith(p) for p in seen) or time.monotonic() >= retry_until \
