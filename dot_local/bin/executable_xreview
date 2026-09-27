@@ -151,7 +151,7 @@ target_thread() {
   local dir; dir="$(state_dir)"
   if [ -n "${XREVIEW_THREAD:-}" ]; then printf '%s\n' "$XREVIEW_THREAD"; return 0; fi
   if [ -r "$dir/pin" ]; then cat "$dir/pin"; return 0; fi
-  if [ -r "$dir/thread" ]; then cat "$dir/thread"; fi
+  if [ -r "$dir/review-thread" ]; then cat "$dir/review-thread"; fi
 }
 
 cmd_thread() {
@@ -219,8 +219,11 @@ cmd_round() {
   case "${1:-show}" in
     --reset) # The checkpoint's thread is superseded, not forgotten: the next dispatch
              # archives it once the pane has moved to a fresh one. A pin is never archived.
-             if [ -r "$(state_dir)/thread" ]; then cp "$(state_dir)/thread" "$(state_dir)/superseded" 2>/dev/null || true; fi
-             rm -f "$f" "$(state_dir)/thread" "$(state_dir)/pin"
+             # The legacy `thread` file (the old queue-era herdr session cache) is dropped
+             # WITHOUT being archived: it was never a checkpoint thread, so treating it as
+             # one would archive the operator's old pane sessions.
+             if [ -r "$(state_dir)/review-thread" ]; then cp "$(state_dir)/review-thread" "$(state_dir)/superseded" 2>/dev/null || true; fi
+             rm -f "$f" "$(state_dir)/review-thread" "$(state_dir)/pin" "$(state_dir)/thread"
              printf 'xreview: round counter reset; cached thread and pin dropped\n' ;;
     show)    printf '%s\n' "$(current_round)" ;;
     *)       die "usage: xreview round [--reset]" ;;
@@ -355,7 +358,7 @@ Report the remaining disagreement, or: xreview round --reset"
   [ -z "$want" ] || assert_id "$want"
   thread="$(pane_prepare "$pane" "$want")"
   assert_id "$thread"
-  if [ -z "$want" ]; then mkdir -p "$dir" && printf '%s\n' "$thread" > "$dir/thread"; fi
+  if [ -z "$want" ]; then mkdir -p "$dir" && printf '%s\n' "$thread" > "$dir/review-thread"; fi
   mkdir -p "$dir" && printf '%s %s %s\n' "$pane" "$thread" "$(daemon_gen)" > "$dir/pane" 2>/dev/null || true
   report_to_herdr "$pane" "$thread"
 

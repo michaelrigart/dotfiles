@@ -192,7 +192,7 @@ fi
 
 # --reset dropping the thread is the mechanism behind the rotation advice. If the code
 # stops doing it, the skill's instruction becomes a no-op that still reads as done.
-if strip_comments "$XREVIEW" | grep -q 'rm -f "\$f" "\$(state_dir)/thread"'; then
+if strip_comments "$XREVIEW" | grep -q 'rm -f "\$f" "\$(state_dir)/review-thread"'; then
   _pass "--reset drops the cached thread in the code"
 else
   _fail "--reset drops the cached thread in the code" "reset no longer clears the thread"

@@ -208,7 +208,7 @@ is "D1 herdr is told the pane's thread" \
 is "D1 the turn goes to the thread the pane shows" "$(called "xreview-rpc turn-start --thread $U1")" 1
 is "D1 and only after the pane shows it" \
    "$([ "$(first 'herdr pane run')" -lt "$(first 'xreview-rpc turn-start')" ] && echo yes || echo no)" yes
-is "D1 the checkpoint thread is recorded" "$(cat "$STATE/thread")" "$U1"
+is "D1 the checkpoint thread is recorded" "$(cat "$STATE/review-thread")" "$U1"
 is "D1 the nonce maps to thread and turn" "$(cat "$STATE/turns/$nonce")" "$U1 turn-$U1"
 : > "$CALLS"
 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
@@ -222,7 +222,7 @@ is "D4 a pane that never shows a thread refuses" "$rc" 1
 is "D4 and no turn starts" "$(called 'xreview-rpc turn-start')" 0
 fresh; printf 'Greet user | chezmoi' > "$P/title"
 nonce="$(bash "$XREVIEW" dispatch b.md 2>/dev/null)"
-is "D5 a pane whose title has no id is restarted and adopted" "$(cat "$STATE/thread" 2>/dev/null)" "$U1"
+is "D5 a pane whose title has no id is restarted and adopted" "$(cat "$STATE/review-thread" 2>/dev/null)" "$U1"
 fresh; out="$(STUCK_TUI=1 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
 is "D6 a session that will not exit refuses" "$(printf '%s' "$out" | grep -c 'did not exit')" 1
 is "D6 and never starts a new one" "$(called 'herdr pane run')" 0
@@ -277,10 +277,10 @@ echo "E. checkpoints and pins"
 fresh
 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
 bash "$XREVIEW" round --reset >/dev/null 2>&1
-is "E1 reset drops the checkpoint thread" "$([ -e "$STATE/thread" ] && echo kept || echo dropped)" dropped
+is "E1 reset drops the checkpoint thread" "$([ -e "$STATE/review-thread" ] && echo kept || echo dropped)" dropped
 export NEW_UUID="$U2"; : > "$CALLS"
 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
-is "E1 the next checkpoint starts a fresh thread" "$(cat "$STATE/thread")" "$U2"
+is "E1 the next checkpoint starts a fresh thread" "$(cat "$STATE/review-thread")" "$U2"
 is "E1 the old thread is archived" "$(called "xreview-rpc thread-archive --thread $U1")" 1
 is "E1 after the new turn started" \
    "$([ "$(first 'xreview-rpc turn-start')" -lt "$(first 'xreview-rpc thread-archive')" ] && echo yes || echo no)" yes
@@ -288,7 +288,7 @@ fresh
 bash "$XREVIEW" init "$U0" >/dev/null
 nonce="$(bash "$XREVIEW" dispatch b.md 2>/dev/null)"
 is "E2 a pin is used as the review thread" "$(called "xreview-rpc turn-start --thread $U0")" 1
-is "E2 and is not recorded as a checkpoint thread" "$([ -e "$STATE/thread" ] && echo yes || echo no)" no
+is "E2 and is not recorded as a checkpoint thread" "$([ -e "$STATE/review-thread" ] && echo yes || echo no)" no
 bash "$XREVIEW" round --reset >/dev/null 2>&1; : > "$CALLS"
 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
 is "E2 a pinned thread is never archived" "$(called "thread-archive --thread $U0")" 0
@@ -300,6 +300,23 @@ bash "$XREVIEW" init >/dev/null
 is "E5 init without an id pins the pane's thread" "$(cat "$STATE/pin")" "$U0"
 out="$(bash "$XREVIEW" init '../../x' 2>&1)"; rc=$?
 is "E6 an unsafe id is refused" "$(printf '%s' "$out" | grep -c 'refusing unsafe identifier')" 1
+
+echo "E7. the legacy queue-era 'thread' file is inert"
+# The old xreview cached herdr's session id at $state_dir/thread. Reading it as a checkpoint
+# thread would resume a non-cold session; --reset must drop it without archiving it, because
+# it was never a checkpoint thread.
+fresh
+mkdir -p "$STATE" && printf '%s\n' "$U0" > "$STATE/thread"
+nonce="$(bash "$XREVIEW" dispatch b.md 2>/dev/null)"
+is "E7 dispatch never resumes onto the legacy thread" "$(called "resume $U0")" 0
+is "E7 a fresh pane session starts instead" \
+   "$(called 'herdr pane run w1:p2 codex --sandbox read-only --ask-for-approval never')" 1
+is "E7 the checkpoint gets its own fresh thread" "$(cat "$STATE/review-thread")" "$U1"
+fresh
+mkdir -p "$STATE" && printf '%s\n' "$U0" > "$STATE/thread"
+bash "$XREVIEW" round --reset >/dev/null 2>&1
+is "E7 reset drops the legacy file" "$([ -e "$STATE/thread" ] && echo kept || echo dropped)" dropped
+is "E7 reset never archives the legacy file" "$([ -e "$STATE/superseded" ] && echo yes || echo no)" no
 
 echo "F. collect"
 ANSWER='{"verdict":"changes","findings":[{"severity":"P1","file":"a","line":1,"summary":"s","failure_scenario":"f"}]}'
@@ -357,7 +374,7 @@ fresh; export PANE_CWD="$SPCWD"
 nonce="$(bash "$XREVIEW" dispatch b.md 2>/dev/null)"
 is "the pane is found and the dispatch succeeds" "$(printf '%s' "$nonce" | grep -c '^xr-')" 1
 SPSTATE="$XDG_STATE_HOME/xreview/$(printf '%s' "$SPCWD" | tr '/' '_' | sed 's/^_//')"
-is "its state lands in its own directory" "$(cat "$SPSTATE/thread" 2>/dev/null)" "$U1"
+is "its state lands in its own directory" "$(cat "$SPSTATE/review-thread" 2>/dev/null)" "$U1"
 cd "$ROOT/repo" || exit 1
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
