@@ -69,6 +69,8 @@ A budget running out is not automatically a timeout:
   Report it and stop. Never re-dispatch.
 - **Exit 1, "Codex daemon is unreachable; the turn is on record"** — not the ambiguous
   case above: run `codex-daemon ensure`, then `xreview collect "$NONCE"` again.
+- **Exit 1, "the reviewer turn failed"** — the turn itself did not complete. Report it and
+  stop. Never re-dispatch.
 
 `xreview` wraps outbound packets in `<cross-review-request>` and returns the reviewer's
 answer. It applies provenance itself, because Michael is no longer in the channel to
@@ -159,9 +161,9 @@ Converged means the reviewer returns no actionable findings — not that it stop
 objecting, and not that you stopped asking.
 
 **Rotation happens between checkpoints, by itself.** Run `xreview round --reset` when moving
-on to the next checkpoint. It drops the cached thread as well as the counter; the next
-dispatch then restarts the Codex pane on a fresh thread and archives the old one. Nobody
-starts a Codex session by hand for this.
+on to the next checkpoint. It drops the cached thread and the counter, and any pin set with
+`xreview init`; the next dispatch then restarts the Codex pane on a fresh thread and
+archives the old one. Nobody starts a Codex session by hand for this.
 
 Rotation is keyed to **checkpoints, not rounds**. Moving from plan review to the pre-merge
 review rotates; going from round 3 to round 4 of the same plan review does not.

@@ -69,6 +69,13 @@ done
 # read and fail, while under-stripping lets a comment stand in for an implementation.
 strip_comments() { grep -hv '^[[:space:]]*#' "$@" | sed 's/[[:space:]]#.*$//'; }
 code_of() { strip_comments "${IMPL[@]}"; }
+# Captured once: every later check against $XREVIEW's stripped code greps this variable,
+# never `strip_comments "$XREVIEW" | grep -q ...` directly. A `-q` that matches early
+# closes its end of a live pipe, and the producer (strip_comments' own internal
+# grep-hv|sed pipe) can then die of SIGPIPE before it finishes - with pipefail set, that
+# 141 can outrank grep's 0 and read as a failed check even though the match was real
+# (same hazard code_of()'s own comment above describes for the multi-file case).
+xreview_code="$(strip_comments "$XREVIEW")"
 vars="$(grep -oiE 'XREVIEW_[A-Za-z0-9_]+' "$SKILL" | sort -u)"
 [ -n "$vars" ] || _fail "SKILL.md still names the environment knobs" \
   "found none — either the skill stopped documenting them, or this extractor broke"
@@ -176,7 +183,7 @@ else
   _fail "the skill's dispatch example passes the diff inline" \
         "$(grep -E 'xreview dispatch' "$SKILL" | head -1)"
 fi
-if strip_comments "$XREVIEW" | grep -q -- '--diff)'; then
+if printf '%s' "$xreview_code" | grep -q -- '--diff)'; then
   _pass "the CLI actually accepts --diff"
 else
   _fail "the CLI actually accepts --diff" "no --diff case in the dispatch parser"
@@ -184,7 +191,7 @@ fi
 
 # A schema miss is its own exit code. The skill must say what to do with it, or the model
 # treats raw reviewer prose as findings.
-if grep -q 'Exit 4' "$SKILL" && strip_comments "$XREVIEW" | grep -q 'exit 4'; then
+if grep -q 'Exit 4' "$SKILL" && printf '%s' "$xreview_code" | grep -q 'exit 4'; then
   _pass "the skill and the CLI agree that a schema miss exits 4"
 else
   _fail "the skill and the CLI agree that a schema miss exits 4" "skill/CLI mismatch"
@@ -192,7 +199,7 @@ fi
 
 # --reset dropping the thread is the mechanism behind the rotation advice. If the code
 # stops doing it, the skill's instruction becomes a no-op that still reads as done.
-if strip_comments "$XREVIEW" | grep -q 'rm -f "\$f" "\$(state_dir)/review-thread"'; then
+if printf '%s' "$xreview_code" | grep -q 'rm -f "\$f" "\$(state_dir)/review-thread"'; then
   _pass "--reset drops the cached thread in the code"
 else
   _fail "--reset drops the cached thread in the code" "reset no longer clears the thread"
@@ -236,7 +243,7 @@ fi
 # Reporting survives the gate's removal: tier and receipts --tiers stay, because knowing
 # what reviews ran at is still worth having — it just must not block anything.
 for sub in 'cmd_tier' '--tiers'; do
-  if strip_comments "$XREVIEW" | grep -q -- "$sub"; then
+  if printf '%s' "$xreview_code" | grep -q -- "$sub"; then
     _pass "the CLI still implements $sub"
   else
     _fail "the CLI still implements $sub" "absent from the CLI"
@@ -250,7 +257,7 @@ fi
 
 # A collect that runs out of budget while the turn is still on record is not a timeout.
 # Telling the model otherwise is what turned long reviews into escalations.
-if grep -q 'Exit 3' "$SKILL" && strip_comments "$XREVIEW" | grep -q 'exit 3'; then
+if grep -q 'Exit 3' "$SKILL" && printf '%s' "$xreview_code" | grep -q 'exit 3'; then
   _pass "the skill and the CLI agree that a still-running turn exits 3"
 else
   _fail "the skill and the CLI agree that a still-running turn exits 3" "skill/CLI mismatch"
