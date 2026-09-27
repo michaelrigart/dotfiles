@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** Approved
+**Status:** In progress
 
 **Goal:** Run every Codex session on a daemon started cleanly by launchd, keep herdr's pane→thread ids correct from the pane titles, and move xreview onto the daemon with pane-first dispatch and schema-checked findings.
 
@@ -3082,7 +3082,7 @@ git -C ~/.local/share/chezmoi commit -m "Add a live canary for the Codex daemon 
 
 ### Task 9: Rollout and live verification (operator-confirmed)
 
-This task changes the live machine. **Ask Michael before Step 3**: stopping the contaminated daemon disconnects every open Codex TUI.
+This task changes the live machine. **Ask Michael before Step 4**: stopping the contaminated daemon disconnects every open Codex TUI.
 
 **Files:** none; everything was committed in Tasks 1–8.
 
@@ -3093,14 +3093,22 @@ This task changes the live machine. **Ask Michael before Step 3**: stopping the 
 ```
 Expected: every suite `ok`; the `test-requires` suites are listed as skipped. Report the totals as passed/total.
 
-- [ ] **Step 2: Deploy the changed files (targeted apply, unsandboxed)**
+- [ ] **Step 2: Confirm no queue-era `xreview collect` is pending anywhere, before deploying**
+
+```bash
+for d in ~/.local/state/xreview/*/; do [ -d "$d/turns" ] && ls "$d/turns" | grep -v '\.known$\|\.resolved$' | sed "s#^#$d turns/#"; done
+```
+Expected: no output. A pending nonce from the old queue-era CLI would collect against a client
+that no longer exists once Task 9 deploys; reconcile any listed nonce by hand (collect or
+discard it under the old `xreview` first) before proceeding.
+
+- [ ] **Step 3: Deploy the changed files (targeted apply, unsandboxed)**
 
 ```bash
 chezmoi apply ~/.local/bin/codex ~/.local/bin/codex-daemon ~/.local/bin/codex-code-mode-host \
   ~/.local/bin/xreview ~/.local/bin/xreview-rpc ~/.config/xreview ~/.config/herdr/codex-pane-command \
   ~/.config/herdr/layout.sh ~/.codex/config.toml ~/.codex/hooks.json ~/.codex/herdr-codex-pane-map.py \
   ~/.claude/skills/cross-review/SKILL.md ~/Library/LaunchAgents/be.netronix.codex-app-server.plist
-launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/be.netronix.codex-app-server.plist
 command -v codex; codex-daemon real-bin; codex-daemon check; echo "check rc=$?"
 ```
 Expected:
@@ -3108,9 +3116,14 @@ Expected:
 - `real-bin` prints the Caskroom binary.
 - `check` fails, naming `codex-daemon restart`: the running daemon still carries VM.Portal's pane environment.
 
-- [ ] **Step 3: With Michael's explicit go-ahead, restart the daemon clean**
+The LaunchAgent is not loaded yet — `launchctl bootstrap` moves to Step 4, after the
+go-ahead, so nothing with `RunAtLoad` can hit the still-contaminated daemon before it is
+restarted clean.
+
+- [ ] **Step 4: With Michael's explicit go-ahead, load the agent and restart the daemon clean**
 
 ```bash
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/be.netronix.codex-app-server.plist
 codex-daemon restart; echo "restart rc=$?"
 for f in ~/.codex/app-server-daemon/daemon.pid ~/.codex/app-server-daemon/daemon-updater.pid; do
   pid="$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$f")"; ps eww -o command= -p "$pid" | tr ' ' '\n' | grep -c '^HERDR_'
@@ -3122,7 +3135,14 @@ ps -axo pid,lstart,command | grep 'codex app-server' | grep -v grep
 ```
 Every process listed must have started after the restart.
 
-- [ ] **Step 4: Relaunch the Codex panes and reconcile**
+Also confirm `features.daemon_auto_start` is actually honored, not just configured: after
+`codex-daemon restart`'s internal `daemon stop`, and before its `ensure` brings the daemon
+back, run `codex app-server daemon version` from a herdr pane and confirm it reports
+`notRunning` rather than silently starting a new daemon. (In practice `restart` will have
+already re-started it by the time you can check by hand; re-run `codex app-server daemon
+stop` once more and check immediately if you want to observe this directly.)
+
+- [ ] **Step 5: Relaunch the Codex panes and reconcile**
 
 Ask Michael to relaunch each Codex pane (or do it on his go-ahead): in each, `herdr pane run <pane> "$(grep -v '^#' ~/.config/herdr/codex-pane-command | grep . | head -1)"`. Then:
 ```bash
@@ -3131,19 +3151,45 @@ herdr pane list | jq -r '.result.panes[] | select(.agent=="codex") | "\(.pane_id
 ```
 Expected: every Codex pane's title starts with a UUID, and that same UUID is its session value.
 
-- [ ] **Step 5: Run the live canary, from inside a herdr pane, unsandboxed**
+- [ ] **Step 6: Legacy state, before the first dispatch**
+
+The old queue-era xreview cached herdr's session id at `~/.local/state/xreview/<repo>/thread`.
+F1 makes that file inert: it is never read, and `xreview round --reset` drops it without
+archiving it. No action is needed for it.
+
+Pins (`~/.local/state/xreview/<repo>/pin`) are different: they are an explicit instruction and
+are never touched by this rollout. Two exist today, for `chezmoi` and `tagteam` — name them to
+Michael so he can decide, per repo, whether to keep pinning that thread or run `xreview round
+--reset` to let the next dispatch start fresh. (A live check while executing this plan also
+found pins on two VM.Portal branches; list whatever `~/.local/state/xreview/*/pin` shows at
+execution time rather than trusting this count, since it changes as Michael works.)
+
+- [ ] **Step 7: Run the live canary, from inside a herdr pane, unsandboxed**
 
 ```bash
 ./tests/run.sh live-codex-daemon
 ```
 Expected: `ok`. On any FAIL, stop and report it with the output. The protocol facts no longer hold, and the design needs revisiting, not patching.
 
-- [ ] **Step 6: Real dispatch**
+- [ ] **Step 8: Real dispatch**
 
 The pre-merge cross-review of this branch is the real-world check:
 1. `xreview round --reset` (moving from the spec checkpoint).
 2. Dispatch the branch diff through the new `xreview`.
 3. Confirm the chezmoi Codex pane restarts on a fresh thread and renders the review from its first token, and that `xreview collect` prints schema-valid JSON.
+4. While the pane restarts, record the exact `agent_status` values herdr reports as xreview
+   sends its two ctrl+c (F2 refuses dispatch on `working` or `blocked`, so seeing `blocked`
+   occur in the wild, not just in the test stubs, is worth confirming). Confirm herdr drops
+   `agent` within 20s of the second ctrl+c, matching `pane_prepare`'s wait.
+
+- [ ] **Step 9: Fast path and resume, on the real daemon**
+
+1. Run a second round on the same checkpoint (another `xreview dispatch`) and confirm it takes
+   the fast path: no `herdr pane send-keys` ctrl+c, no pane restart — the pane was already on
+   the review thread.
+2. Exercise the resume path once: move the Codex pane to another session by hand (`herdr pane
+   run <pane> "$cmd"` with no `resume`), then dispatch again, and confirm the pane is resumed
+   back onto the checkpoint's thread rather than adopting the new one.
 
 ---
 
