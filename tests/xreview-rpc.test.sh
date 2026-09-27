@@ -7,6 +7,7 @@
 #
 # Run: ./tests/run.sh xreview-rpc   (sandboxed is fine)
 set -uo pipefail
+export PYTHONDONTWRITEBYTECODE=1
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
 RPC="$SRC/dot_local/bin/executable_xreview-rpc"
 SCHEMA="$SRC/dot_config/xreview/findings.schema.json"
@@ -153,6 +154,19 @@ out="$(rpc turn-wait --thread th --turn turn-1 --budget 5 --schema "$SCHEMA")"; 
 is "it waits for turn/completed and exits 0" "$rc" 0
 is "with the answer" "$(printf '%s' "$out" | jq -r '.findings[0].severity')" P1
 is "a server approval request is declined" "$(jq -c 'select(.id == 77) | .result.decision' "$FAKE_LOG")" '"decline"'
+
+echo "F2. a flood of other notifications before turn/completed is still handled"
+# _other keeps only turn/completed notifications and drops the rest, so wait_note's rescan
+# stays cheap over a long review turn that streams many delta notes. This asserts
+# correctness is preserved when hundreds of unrelated notifications precede the one that
+# matters; it is not a timing benchmark (the O(N^2) case at daemon scale was 20,000 deltas
+# taking 6.7s under the old code).
+deltas="$(jq -nc '[range(300) | {method:"item/agentMessage/delta",params:{}}]')"
+scenario "$(jq -nc --argjson l "$(listing "$(turn inProgress "")")" --argjson ds "$deltas" --argjson n "$done_note" \
+  '{responses:{"thread/turns/list":$l},after:{"thread/turns/list":($ds + [$n])}}')"
+out="$(rpc turn-wait --thread th --turn turn-1 --budget 5 --schema "$SCHEMA")"; rc=$?
+is "F2 it exits 0 despite hundreds of other notifications first" "$rc" 0
+is "F2 with the answer" "$(printf '%s' "$out" | jq -r '.findings[0].severity')" P1
 
 echo "G. still running at the budget"
 scenario "$(jq -nc --argjson l "$(listing "$(turn inProgress "")")" '{responses:{"thread/turns/list":$l}}')"

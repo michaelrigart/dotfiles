@@ -249,7 +249,9 @@ class Client:
             # A server request, such as an approval. approvalPolicy is never, so none should
             # arrive; if one does, decline rather than leave the turn hanging.
             self.t.send({"id": m["id"], "result": {"decision": "decline"}})
-        elif "method" in m:
+        elif m.get("method") == "turn/completed":
+            # The only kind any caller waits for. A review turn streams many delta
+            # notifications; keeping those too would make wait_note's rescan O(N^2).
             self.notes.append(m)
 
     def wait_note(self, pred, deadline):
