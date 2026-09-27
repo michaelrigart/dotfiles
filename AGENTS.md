@@ -114,7 +114,8 @@ target exists and exits 2 if not. Keep that when adding suites — a guard test 
 is missing otherwise reports every "must allow" case as a pass.
 
 Two output idioms exist and `run.sh` counts both: prose (`  ok  …` / `  PASS: …`) and the
-`KEY=VALUE` status those three suites emit so they never print key material. A kv suite
+`KEY=VALUE` status the `live-agent-auth`, `live-agent-signing` and
+`live-credential-boundary` suites emit so they never print key material. A kv suite
 encodes failures in its values and exits with the count, so it is judged on exit status
 alone — the prose cross-check does not apply to it.
 
