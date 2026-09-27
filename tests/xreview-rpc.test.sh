@@ -51,6 +51,9 @@ for line in sys.stdin:
     meth = m.get("method")
     if meth in run.get("drop_on", []):        # accept the request, then vanish unanswered
         sys.exit(0)
+    if meth in run.get("garbage_on", []):     # a corrupt frame instead of a real response
+        sys.stdout.write("not-json-at-all\n"); sys.stdout.flush()
+        sys.exit(0)
     if "id" in m and meth and meth not in run.get("silent", []):
         resp = run.get("responses", {}).get(meth, {"result": {}})
         if isinstance(resp, list):   # a different answer on each successive call
@@ -90,6 +93,22 @@ print("ok" if ok else "bad")
 PY
 )"
 is "frames round-trip at every length encoding, and partial frames wait" "$out" ok
+
+echo "A2. Client._other keeps notes empty for anything but turn/completed"
+out="$(python3 - "$RPC" <<'PY'
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("xreview_rpc", sys.argv[1])
+spec = importlib.util.spec_from_loader("xreview_rpc", loader)
+m = importlib.util.module_from_spec(spec); loader.exec_module(m)
+c = m.Client.__new__(m.Client)   # skip __init__: no real transport needed for this
+c.notes = []
+c._other({"method": "item/agentMessage/delta", "params": {}})
+c._other({"method": "turn/started", "params": {}})
+c._other({"method": "session/updated", "params": {}})
+print("ok" if c.notes == [] else "bad " + repr(c.notes))
+PY
+)"
+is "non-turn/completed notifications are never queued" "$out" ok
 
 echo "B. health"
 scenario '{}'
@@ -194,6 +213,20 @@ is "F3 with the re-read answer" "$(printf '%s' "$out" | jq -r '.findings[0].seve
 is "F3 the turn was re-read on the thread, not trusted from the notification" \
    "$(jq -r 'select(.method=="thread/turns/list") | .method' "$FAKE_LOG" | grep -c .)" 2
 
+echo "F4. a stale re-read (still inProgress) never overwrites the notification's completed turn"
+partial_done2="$(jq -nc '{method:"turn/completed",params:{threadId:"th",turn:{id:"turn-1",status:"completed",items:[]}}}')"
+scenario "$(jq -nc --argjson l1 "$(listing "$(turn inProgress "")")" \
+  --argjson l2 "$(listing "$(turn inProgress "")")" \
+  --argjson l3 "$(listing "$(turn completed "$ANSWER")")" \
+  --argjson n "$partial_done2" \
+  '{responses:{"thread/turns/list":[$l1,$l2,$l3]},after:{"thread/turns/list":[$n]}}')"
+out="$(rpc turn-wait --thread th --turn turn-1 --budget 5 --schema "$SCHEMA")"; rc=$?
+is "F4 it exits 0 despite the stale re-read" "$rc" 0
+is "F4 with the eventually-fresh answer, not the notification's empty one" \
+   "$(printf '%s' "$out" | jq -r '.findings[0].severity')" P1
+is "F4 the re-read was retried until it was terminal" \
+   "$(jq -r 'select(.method=="thread/turns/list") | .method' "$FAKE_LOG" | grep -c .)" 3
+
 echo "G. still running at the budget"
 scenario "$(jq -nc --argjson l "$(listing "$(turn inProgress "")")" '{responses:{"thread/turns/list":$l}}')"
 rpc turn-wait --thread th --turn turn-1 --budget 1 --schema "$SCHEMA" >/dev/null 2>&1
@@ -212,6 +245,12 @@ scenario '{"responses":{"thread/turns/list":{"result":{"data":[]}}}}'
 out="$(rpc turn-wait --thread th --turn turn-1 --budget 5 --schema "$SCHEMA" 2>&1)"; rc=$?
 is "H3 an unknown turn exits 1" "$rc" 1
 is "H3 and says there is no such turn" "$(printf '%s' "$out" | grep -c 'no turn')" 1
+scenario '{"responses":{"thread/turns/list":{"error":{"code":-1,"message":"nope"}}}}'
+out="$(rpc turn-wait --thread th --turn turn-1 --budget 2 --schema "$SCHEMA" 2>&1)"; rc=$?
+is "H4 a known turn id with persistent list errors still exits 1" "$rc" 1
+is "H4 but says the turns could not be read, not 'no turn'" \
+   "$(printf '%s' "$out" | grep -c 'could not be read')" 1
+is "H4 and never claims there is no such turn" "$(printf '%s' "$out" | grep -c 'no turn')" 0
 
 echo "I. answers that do not match the schema"
 for bad in 'not json at all' '{"verdict":"maybe","findings":[]}' \
@@ -229,6 +268,14 @@ scenario "$(jq -nc --argjson l "$(listing "$(turn completed "$ANSWER")")" \
 out="$(rpc turn-wait --thread th --turn turn-1 --budget 10 --schema "$SCHEMA")"; rc=$?
 is "it reconnects and exits 0" "$rc" 0
 is "on the second connection" "$(cat "$FAKE_COUNTER")" 2
+
+echo "J2. an invalid JSON frame from the daemon is a dropped connection, not a traceback"
+scenario "$(jq -nc --argjson l "$(listing "$(turn completed "$ANSWER")")" \
+  '{runs:[{garbage_on:["thread/resume"]},{responses:{"thread/turns/list":$l}}]}')"
+out="$(rpc turn-wait --thread th --turn turn-1 --budget 10 --schema "$SCHEMA" 2>"$T/err")"; rc=$?
+is "it reconnects and exits 0, not a traceback" "$rc" 0
+is "on the second connection" "$(cat "$FAKE_COUNTER")" 2
+is "and nothing crashed with a Python traceback" "$(grep -c Traceback "$T/err")" 0
 
 echo "L. the budget bounds connection setup too"
 scenario '{"silent":["initialize"]}'
@@ -293,6 +340,23 @@ is "N4 a prefix shorter than 13 chars is refused (2)" "$rc" 2
 out="$(rpc thread-resolve --prefix '01a0e328-c41e-ZZZZ-a526-0' 2>&1)"; rc=$?
 is "N5 a prefix with non-hex characters is refused (2)" "$rc" 2
 is "N5 no daemon call was needed to refuse either one" "$(jq -r 'select(.method=="thread/loaded/list") | .method' "$FAKE_LOG" | grep -c .)" 0
+
+echo "N6. thread-resolve accepts plain-string data items, not just {id: ...}"
+loadedlist_strings() { jq -nc --argjson ids "$1" '{result:{data:$ids}}'; }
+scenario "$(jq -nc --argjson l "$(loadedlist_strings '["01a0e328-c41e-7de0-a526-042e024f74b9","bbbbbbbb-1111-4111-8111-111111111111"]')" '{responses:{"thread/loaded/list":$l}}')"
+is "N6 a unique match among plain-string ids" \
+   "$(rpc thread-resolve --prefix 01a0e328-c41e-7de0-a526-042e0)" "01a0e328-c41e-7de0-a526-042e024f74b9"
+
+echo "N7. thread-resolve follows nextCursor across pages"
+page1="$(jq -nc '{result:{data:[{id:"01a0e328-c41e-7de0-a526-042e024f74b9"}],nextCursor:"c2"}}')"
+page2="$(jq -nc '{result:{data:[{id:"cccccccc-3333-4333-8333-333333333333"}]}}')"
+scenario "$(jq -nc --argjson p1 "$page1" --argjson p2 "$page2" '{responses:{"thread/loaded/list":[$p1,$p2]}}')"
+is "N7 a match only on the second page is still found" \
+   "$(rpc thread-resolve --prefix cccccccc-3333-4333-8333-3333)" "cccccccc-3333-4333-8333-333333333333"
+is "N7 exactly two pages were fetched" \
+   "$(jq -r 'select(.method=="thread/loaded/list") | .method' "$FAKE_LOG" | grep -c .)" 2
+is "N7 the second call carried the first page's cursor" \
+   "$(jq -c 'select(.method=="thread/loaded/list") | .params.cursor' "$FAKE_LOG" | sed -n '2p')" '"c2"'
 
 echo "K. thread-archive"
 scenario '{}'

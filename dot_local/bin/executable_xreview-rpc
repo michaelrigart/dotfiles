@@ -103,6 +103,9 @@ class WsTransport:
     sandbox denies binding a unix socket path."""
 
     def __init__(self, path, timeout=10, sock=None):
+        # The caller's own deadline (the client's, in absolute time), kept for every send
+        # for the life of this transport - not just the handshake below.
+        self.deadline = time.monotonic() + timeout
         # One absolute deadline for connect and every handshake read: a daemon dribbling
         # fragments must not stretch the setup past the caller's budget.
         deadline = time.monotonic() + min(10.0, max(0.1, timeout))
@@ -140,8 +143,14 @@ class WsTransport:
             raise Unreachable("no WebSocket upgrade: " + status.decode(errors="replace"))
         self.frag = b""
 
+    def _send_timeout(self):
+        """What is left of the client deadline, or 10s, whichever is smaller - set fresh
+        before every sendall, not left over from whatever a previous recv() set it to."""
+        return min(10.0, max(0.01, self.deadline - time.monotonic()))
+
     def send(self, obj):
         try:
+            self.s.settimeout(self._send_timeout())
             self.s.sendall(ws_frame(json.dumps(obj).encode()))
         except OSError as e:
             raise Closed(str(e))
@@ -177,10 +186,14 @@ class WsTransport:
             self.frag += data
             if fin:
                 msg, self.frag = self.frag, b""
-                return json.loads(msg)
+                try:
+                    return json.loads(msg)
+                except ValueError:
+                    raise Closed("invalid JSON from the daemon")
 
     def send_raw(self, frame):
         try:
+            self.s.settimeout(self._send_timeout())
             self.s.sendall(frame)
         except OSError as e:
             raise Closed(str(e))
@@ -215,7 +228,10 @@ class StdioTransport:
                 raise Closed("fake daemon exited")
             self.buf += chunk
         line, self.buf = self.buf.split(b"\n", 1)
-        return json.loads(line)
+        try:
+            return json.loads(line)
+        except ValueError:
+            raise Closed("invalid JSON from the daemon")
 
 
 class Client:
@@ -380,17 +396,24 @@ def cmd_turn_start(c, a):
 
 def cmd_thread_resolve(c, a):
     """The one loaded thread whose id starts with a.prefix. The title carries only a prefix
-    (Codex truncates it, F11/F21); a prefix is resolved here and never guessed."""
-    r = c.call("thread/loaded/list", {})
-    if "error" in r:
-        err("thread/loaded/list refused: " + json.dumps(r["error"]))
-        return 1
-    data = (r.get("result") or {}).get("data") or []
+    (Codex truncates it, F11/F21); a prefix is resolved here and never guessed. Follows
+    nextCursor across as many pages as thread/loaded/list hands back."""
     ids = []
-    for t in data:
-        tid = t.get("id") if isinstance(t, dict) else t
-        if isinstance(tid, str):
-            ids.append(tid)
+    cursor = None
+    while True:
+        params = {"cursor": cursor} if cursor else {}
+        r = c.call("thread/loaded/list", params)
+        if "error" in r:
+            err("thread/loaded/list refused: " + json.dumps(r["error"]))
+            return 1
+        result = r.get("result") or {}
+        for t in result.get("data") or []:
+            tid = t.get("id") if isinstance(t, dict) else t
+            if isinstance(tid, str):
+                ids.append(tid)
+        cursor = result.get("nextCursor")
+        if not cursor:
+            break
     matches = sorted({i for i in ids if i.startswith(a.prefix)})
     if len(matches) == 1:
         print(matches[0])
@@ -410,6 +433,12 @@ def cmd_thread_archive(c, a):
     return 0
 
 
+class ListUnreadable(Exception):
+    """thread/turns/list errored on every attempt within the budget - distinct from a
+    clean listing that simply never showed the turn, so the caller can say what actually
+    happened instead of the misleading "no turn"."""
+
+
 def turn_state(c, thread, turn, known=None, deadline=None):
     """The turn by id, or with known given, the oldest turn whose id is not in it.
 
@@ -419,27 +448,37 @@ def turn_state(c, thread, turn, known=None, deadline=None):
     - the turn may not have landed on the thread yet when turn/start was sent but never
     answered. A fixed turn id that is simply absent (no error, no such id) is not
     retried: by the time collect asks for it, turn-start already returned it.
+
+    Raises ListUnreadable if every attempt within the budget errored - the listing was
+    never actually read, which a bare `return None` cannot tell apart from "read fine,
+    turn genuinely not there".
     """
     attempt = 0
+    last_error = None
     while True:
         # Not just "deadline not yet reached": call()'s own deadline is the same clock,
         # so attempting one more call with only a sliver of budget left races it - the
         # call can time out and raise Closed instead of this returning None cleanly. The
         # very first attempt always runs regardless, even on a near-zero budget.
         if attempt > 0 and deadline is not None and time.monotonic() >= deadline - 0.3:
+            if last_error is not None:
+                raise ListUnreadable(json.dumps(last_error))
             return None
         attempt += 1
         r = c.call("thread/turns/list", {"threadId": thread, "limit": 50,
                                          "sortDirection": "desc", "itemsView": "summary"})
         if "error" not in r:
+            last_error = None
             data = (r.get("result") or {}).get("data") or []
             if turn:
                 return next((t for t in data if t.get("id") == turn), None)
             new = [t for t in data if t.get("id") not in (known or [])]
             if new:
                 return new[-1]   # newest first, so the last new one is the oldest
+        else:
+            last_error = r["error"]
         if deadline is None:
-            return None
+            return None   # a single-shot re-read (F5); the caller does its own retrying
         time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
 
 
@@ -454,11 +493,20 @@ def cmd_turn_wait(a):
             known = json.load(fh)
     deadline = time.monotonic() + a.budget
     last = "never connected"
+    # Once we have connected and seen the turn running (inProgress, not terminal), a later
+    # drop that outlasts the budget means the turn is still running, not that the daemon was
+    # never reached - exit 3, not 5. Exit 5 is reserved for never having connected in time.
+    seen_running = False
+    turn_id = None
     while True:
         try:
             c = Client(deadline)
             c.call("thread/resume", {"threadId": a.thread})   # subscribe before looking
-            t = turn_state(c, a.thread, a.turn, known, deadline)
+            try:
+                t = turn_state(c, a.thread, a.turn, known, deadline)
+            except ListUnreadable as e:
+                err(f"the thread's turns could not be read: {e}")
+                return 1
             if t is None:
                 err(f"no turn {a.turn or 'started since the dispatch'} on thread {a.thread}")
                 return 1
@@ -467,6 +515,7 @@ def cmd_turn_wait(a):
                 with open(a.resolved, "w", encoding="utf-8") as fh:
                     fh.write(turn_id + "\n")
             while t.get("status") not in TERMINAL:
+                seen_running = True
                 n = c.wait_note(lambda m: m.get("method") == "turn/completed"
                                 and ((m.get("params") or {}).get("turn") or {}).get("id") == turn_id,
                                 deadline)
@@ -477,12 +526,27 @@ def cmd_turn_wait(a):
                 if t.get("status") == "completed" and final_text(t) is None:
                     # A Turn can arrive with a partial items view, and a resumed subscriber
                     # is not guaranteed the final text in the notification (F5/F17). Re-read
-                    # the turn directly rather than take an empty items view as "no answer".
-                    t = turn_state(c, a.thread, turn_id, None) or t
+                    # the turn directly rather than take an empty items view as "no answer" -
+                    # but a re-read can itself be a stale listing that has not caught up to
+                    # the notification yet (still inProgress). Only a TERMINAL re-read may
+                    # replace t; otherwise keep the notification's own completed turn, so it
+                    # is never lost to a listing that lags behind it. Retry within the
+                    # budget for a re-read that catches up.
+                    while True:
+                        reread = turn_state(c, a.thread, turn_id, None)
+                        if reread is not None and reread.get("status") in TERMINAL:
+                            t = reread
+                            break
+                        if time.monotonic() >= deadline:
+                            break
+                        time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
             return finish(t, schema)
         except (Unreachable, Closed) as e:
             last = str(e)
             if time.monotonic() >= deadline:
+                if seen_running:
+                    err(f"turn {turn_id} is still running")
+                    return 3
                 err(f"Codex daemon unreachable: {last}")
                 return 5
             time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
