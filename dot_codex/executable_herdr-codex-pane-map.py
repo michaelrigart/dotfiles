@@ -8,9 +8,10 @@ Design: docs/superpowers/specs/2026-09-26-xreview-codex-daemon-design.md, sectio
 
 Runs inside the Codex daemon as a SessionStart hook (hook JSON on stdin), beside herdr's own
 hook, which exits there because the daemon carries no pane environment. Every TUI puts its
-thread id first in its terminal title (tui.terminal_title), but Codex truncates that item to
-29 characters plus "..." once the thread is named (F11/F21), so the title carries only a
-PREFIX. The hook's own `session_id` is a full id, so a pane whose title prefix matches it is
+thread id first in its terminal title (tui.terminal_title), but Codex ALWAYS truncates that
+item to 29 characters plus "..." (F11/F21), so the title carries only a PREFIX; a full id
+appears only as `thread-title`'s fallback, for a thread that is not yet named. The hook's
+own `session_id` is a full id, so a pane whose title prefix matches it is
 resolved for free; every other pane's prefix is resolved to a full id through `xreview-rpc
 thread-resolve`. A prefix is never reported as if it were a full id. Each pass repairs every
 Codex pane, so one wrong report from anywhere is fixed by the next session start. An id that
@@ -211,8 +212,8 @@ def main():
     retry_until = time.monotonic() + env_float("PANE_MAP_RETRY_SECS", "5")
     while True:
         seen = reconcile(herdr, done, sid, src, failed)
-        # "on some title" means some title's prefix is a prefix of sid - titles never carry
-        # the full id once Codex has named the thread (F11/F21).
+        # "on some title" means some title's prefix is a prefix of sid - the thread-id title
+        # item never carries the full id, only ever a truncated prefix (F11/F21).
         if not sid or any(sid.startswith(p) for p in seen) or time.monotonic() >= retry_until \
            or left() <= 0.5:
             return

@@ -22,9 +22,10 @@ Commit `c9d2d00` pinned `features.daemon_auto_start = false` as a stopgap, so no
 spawn the daemon. This design keeps that pin, and brings the daemon back under launchd with a
 clean environment, because the daemon is what the live review view builds on.
 
-The rollout (task 10, 2026-09-27) found the original probe of F11 wrong: Codex truncates the
-title's `thread-id` item once the thread is named, so the join key described in §6 is a
-prefix, resolved through the daemon (F21), never a full id read straight off the title.
+The rollout (task 10, 2026-09-27) found the original probe of F11 wrong: Codex ALWAYS
+truncates the title's `thread-id` item; a full id appears only as `thread-title`'s fallback,
+for a thread that is not yet named. So the join key described in §6 is a title id prefix,
+resolved through the daemon (F21), never a full id read straight off the title.
 
 ## 2. Goals
 
@@ -69,7 +70,7 @@ these, and the live suite (§9) re-checks them.
 | F8 | `thread/loaded/list` and `thread/read` expose every loaded thread and its `cwd`. |
 | F9 | With `daemon_auto_start = false`, a TUI still attaches to a daemon that is already running. |
 | F10 | Any `-c` override makes a TUI run an embedded app-server instead of attaching to the daemon. |
-| F11 | `tui.terminal_title` accepts the item `thread-id`, which must come first. Codex truncates it to 29 characters plus `...` once the thread is named (after its first turn): the observed title is `<29-char prefix>... | <thread-title> | <cwd>`. A full id appears only as `thread-title`'s fallback, before the thread is named. |
+| F11 | `tui.terminal_title` accepts the item `thread-id`, which must come first. Codex ALWAYS truncates it to 29 characters plus `...`: the observed title is `<29-char prefix>... | <thread-title> | <cwd>`. A full id appears only as `thread-title`'s fallback, for a thread that is not yet named. |
 | F12 | `herdr pane list` exposes each pane's `terminal_title`, `agent`, `agent_status` and `cwd`. `herdr pane report-agent-session <pane> --source --agent --agent-session-id` sets a pane's session from outside the pane. |
 | F13 | Herdr's managed Codex hook exits immediately when `HERDR_ENV`, `HERDR_SOCKET_PATH` or `HERDR_PANE_ID` is unset. |
 | F14 | A fresh TUI attached to the daemon registers its thread at launch. The thread is loaded and `idle` before any turn. The default terminal title does not show the id. |
@@ -166,8 +167,8 @@ Herdr's managed hook exits inside the clean daemon (F13). It is not edited.
 **Join key.** The `config.toml` template pins
 `tui.terminal_title = ["thread-id", "thread-title", "current-dir"]` (F11). Every TUI on the
 daemon therefore shows its thread id at the start of its title, from launch onwards - but only
-as a 29-36 character PREFIX once the thread is named (F11/F21): Codex truncates the
-`thread-id` item to 29 characters plus `...`. Pane titles in herdr now start with that prefix;
+ever as a 29-36 character PREFIX (F11/F21): Codex ALWAYS truncates the `thread-id` item to 29
+characters plus `...`. Pane titles in herdr now start with that prefix;
 that is the accepted cost. The prefix is resolved to a full thread id through
 `xreview-rpc thread-resolve --prefix`, which asks the daemon's `thread/loaded/list` for the one
 loaded thread that starts with it (F21). A prefix is never treated as a full id, and never
@@ -363,9 +364,9 @@ Every suite checks that its subject exists and exits 2 if not.
     directory, the shim execs the stub's host and never itself;
   - the launcher never execs itself.
 - **`herdr-codex-pane-map.test.sh`**: hook-input fixtures with a stubbed `herdr`.
-  - Every Codex pane whose title UUID differs from its session is reported.
+  - Every Codex pane whose title id prefix differs from its session is reported.
   - A matching pane is not reported.
-  - Titles without a UUID, and non-Codex panes, are ignored.
+  - Titles without a title id prefix, and non-Codex panes, are ignored.
   - `--reconcile` works without hook input.
   - The hook never exits non-zero.
 - **`codex-config.test.sh`**: `tui.terminal_title` is pinned with `thread-id` first, and
@@ -443,7 +444,7 @@ Still open, neither a gate:
   `config.toml`.
 - A daemon that carries a pane's environment blocks reviews until it is restarted, which
   disconnects every open Codex TUI.
-- Pane titles lead with a UUID.
+- Pane titles lead with a title id prefix.
 - `~/.local/bin/codex` shadows the Homebrew binary. Anything that needs the real binary must
   resolve it past `~/.local/bin`, as the code-mode host shim now does.
 - Each checkpoint's first dispatch replaces whatever session the Codex pane had open.

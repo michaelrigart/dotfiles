@@ -20,9 +20,10 @@ XR_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}"
 SCHEMA="${XREVIEW_SCHEMA:-$XR_CONFIG/xreview/findings.schema.json}"
 REVIEWER="${XREVIEW_REVIEWER:-$XR_CONFIG/xreview/reviewer.md}"
 PANE_CMD_FILE="$XR_CONFIG/herdr/codex-pane-command"
-# Codex truncates the title's thread-id item to 29 characters plus "..." once the thread is
-# named (F11/F21), so this only ever carries a PREFIX (29-36 chars), never a guaranteed full
-# id. A prefix is resolved to a full id through `xreview-rpc thread-resolve`, never guessed.
+# Codex ALWAYS truncates the title's thread-id item to 29 characters plus "..." (F11/F21),
+# so this only ever carries a PREFIX (29-36 chars), never a guaranteed full id. A full id
+# appears only as thread-title's fallback, for a thread that is not yet named. A prefix is
+# resolved to a full id through `xreview-rpc thread-resolve`, never guessed.
 ID_RE='^[[:space:]]*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{5,12})'
 
 die() { printf 'xreview: %s\n' "$1" >&2; exit 1; }
