@@ -41,7 +41,7 @@ real_bin() (
 )
 
 answering() {
-  "$REAL" app-server daemon version 2>/dev/null | grep -q '"status":"running"'
+  "$REAL" app-server daemon version 2>/dev/null | grep -Eq '"status"[[:space:]]*:[[:space:]]*"running"'
 }
 
 pid_of() { # pid_of <pid-file>: the JSON "pid" field
@@ -91,6 +91,16 @@ cmd_check() {
       continue
     fi
     [ "$rc" = 0 ] || die "cannot inspect the daemon process $pid (is ps denied here?); its environment cannot be verified"
+    case "$words" in
+      *codex*app-server*) ;;
+      # A pid file outlives its process; a recycled pid belongs to something else
+      # entirely, and that something else's environment says nothing about the
+      # daemon's. Gone for the supervisor, same as rc=2 above; a hard failure for the
+      # server, since then its own environment truly cannot be verified.
+      *) [ "$pid" != "$server" ] \
+           || die "the daemon answers but its pid $pid (from $f) is not a Codex process; its environment cannot be verified"
+         continue ;;
+    esac
     if printf '%s\n' "$words" | tr ' ' '\n' | grep -q '^HERDR_'; then dirty="$dirty $pid"; fi
   done
   [ -z "$dirty" ] && return 0

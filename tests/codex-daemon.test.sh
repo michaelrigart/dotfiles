@@ -31,7 +31,10 @@ printf '#!/bin/sh\necho LAUNCHER\n' > "$T/localbin/codex"
 cat > "$T/cask/bin/codex" <<'C'
 #!/bin/sh
 case "$*" in
-  "app-server daemon version") printf '{"status":"%s"}\n' "$(cat "$STATE" 2>/dev/null || echo notRunning)" ;;
+  "app-server daemon version")
+    st="$(cat "$STATE" 2>/dev/null || echo notRunning)"
+    if [ -n "${PRETTY:-}" ]; then printf '{\n  "status": "%s"\n}\n' "$st"
+    else printf '{"status":"%s"}\n' "$st"; fi ;;
   "app-server daemon stop") echo "codex stop" >> "$CALLS"; echo notRunning > "$STATE" ;;
   *) echo "REAL $*" ;;
 esac
@@ -87,6 +90,9 @@ out="$(KICK_STARTS=0 run ensure 2>&1)"; rc=$?
 is "a daemon that will not start is an error" "$rc" 1
 is "and names the deliberate escape" "$(printf '%s' "$out" | grep -c -- '--no-daemon')" 1
 is "and how to load the agent" "$(printf '%s' "$out" | grep -c 'launchctl bootstrap')" 1
+echo running > "$STATE"; : > "$CALLS"
+PRETTY=1 run ensure; is "pretty-printed JSON with whitespace around the colon still answers" "$?" 0
+is "and launchd is not touched for it either" "$(grep -c launchctl "$CALLS")" 0
 
 echo "C. check"
 # Live processes stand in for the daemon: check only trusts a pid it can see running.
@@ -100,6 +106,15 @@ out="$(DIRTY_PIDS=$B_PID run check 2>&1)"; rc=$?
 is "a daemon process carrying HERDR_* fails" "$rc" 1
 is "the fix is named" "$(printf '%s' "$out" | grep -c 'codex-daemon restart')" 1
 is "and its cost" "$(printf '%s' "$out" | grep -c 'disconnects every open Codex TUI')" 1
+# A recycled pid is not scanned for HERDR_ at all unless it is actually still a Codex
+# process (same guard as restart): a pid file outliving its process can be recycled by
+# something else entirely, and that something else's environment says nothing about the
+# daemon's.
+out="$(DIRTY_PIDS=$B_PID FOREIGN_PID=$B_PID run check 2>&1)"; rc=$?
+is "a recycled updater pid now held by a non-Codex process carrying HERDR_ does not fail" "$rc" 0
+out="$(DIRTY_PIDS=$A_PID FOREIGN_PID=$A_PID run check 2>&1)"; rc=$?
+is "but a recycled SERVER pid held by a non-Codex process is a hard failure" "$rc" 1
+is "and says it is not a Codex process" "$(printf '%s' "$out" | grep -c 'not a Codex process')" 1
 # An environment that cannot be read is not known to be clean, and `ps` is exactly what a
 # sandbox denies. Inspection failure must fail the check, never pass it.
 out="$(PS_FAIL=1 run check 2>&1)"; rc=$?
