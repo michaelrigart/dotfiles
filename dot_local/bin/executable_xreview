@@ -40,13 +40,21 @@ assert_id() {
 
 find_pane() {
   local root snap ids n
-  if [ -n "${XREVIEW_PANE:-}" ]; then printf '%s\n' "$XREVIEW_PANE"; return 0; fi
   root="$(repo_root)"
   snap="$(herdr pane list 2>/dev/null || true)"
   [ -n "$snap" ] || die "cannot list herdr panes - is herdr running?"
   ids="$(printf '%s' "$snap" | jq -r --arg cwd "$root" \
     '.result.panes[]? | select(.agent == "codex" and .cwd == $cwd) | .pane_id' 2>/dev/null)" \
     || die "cannot read herdr's pane list"
+  # XREVIEW_PANE picks AMONG the valid Codex panes for this root; it does not replace
+  # validation. A typo or a stale id pointing at some other pane (the idle Claude Code
+  # pane, say) would otherwise get two ctrl+c and a `codex …` command typed into it.
+  if [ -n "${XREVIEW_PANE:-}" ]; then
+    if printf '%s\n' "$ids" | grep -qx -- "$XREVIEW_PANE"; then
+      printf '%s\n' "$XREVIEW_PANE"; return 0
+    fi
+    die "XREVIEW_PANE=$XREVIEW_PANE is not a Codex pane in $root"
+  fi
   n="$(printf '%s' "$ids" | grep -c . || true)"
   case "$n" in
     1) printf '%s\n' "$ids" ;;
@@ -75,14 +83,33 @@ loaded() { # loaded <thread>: the daemon has the thread in memory
   xreview-rpc thread-status --thread "$1" 2>/dev/null | jq -e '.loaded' >/dev/null 2>&1
 }
 
+# daemon_gen — a cheap fingerprint of the running daemon, so a restart is detectable
+# without parsing the pid file's contents. The whole file changes when the daemon
+# restarts; a checksum of it is enough, and empty when there is no daemon yet.
+daemon_gen() {
+  local f="$CODEX_HOME_DIR/app-server-daemon/daemon.pid"
+  [ -r "$f" ] || { printf ''; return 0; }
+  cksum < "$f" 2>/dev/null | awk '{print $1}'
+}
+
 # pane_prepare <pane> [thread] - make the pane show <thread>, or a fresh session when none is
 # given, and print the thread id it shows. No turn exists yet, so a refusal here loses nothing.
 # A matching title alone is not trusted: after a daemon restart a disconnected TUI keeps its
-# title while the new daemon has not loaded the thread, so the pane is resumed onto it.
+# title while the new daemon has not loaded the thread, so the pane is resumed onto it. Nor is
+# "the daemon has it loaded" alone: `collect`'s thread/resume can reload a thread the daemon
+# forgot without anything watching it in a pane. The fast path additionally requires that
+# xreview itself last prepared THIS pane on THIS thread under the CURRENT daemon generation -
+# recorded in $(state_dir)/pane by the caller after a successful prepare.
 pane_prepare() {
-  local pane="$1" want="${2:-}" before cmd now ok waited=0 wait="${XREVIEW_PANE_WAIT:-20}"
+  local pane="$1" want="${2:-}" before cmd now ok waited=0 wait="${XREVIEW_PANE_WAIT:-20}" \
+        gen rec
   before="$(pane_title_uuid "$pane")"
-  if [ -n "$want" ] && [ "$before" = "$want" ] && loaded "$want"; then printf '%s\n' "$want"; return 0; fi
+  gen="$(daemon_gen)"
+  rec="$(cat "$(state_dir)/pane" 2>/dev/null || true)"
+  if [ -n "$want" ] && [ "$before" = "$want" ] && [ "$rec" = "$pane $want $gen" ] \
+     && loaded "$want"; then
+    printf '%s\n' "$want"; return 0
+  fi
   cmd="$(pane_command)"
   herdr pane send-keys "$pane" ctrl+c >/dev/null 2>&1 || true
   sleep 0.5
@@ -329,6 +356,7 @@ Report the remaining disagreement, or: xreview round --reset"
   thread="$(pane_prepare "$pane" "$want")"
   assert_id "$thread"
   if [ -z "$want" ]; then mkdir -p "$dir" && printf '%s\n' "$thread" > "$dir/thread"; fi
+  mkdir -p "$dir" && printf '%s %s %s\n' "$pane" "$thread" "$(daemon_gen)" > "$dir/pane" 2>/dev/null || true
   report_to_herdr "$pane" "$thread"
 
   # Provenance is applied here, by the broker - not by the peer, and not by hand.

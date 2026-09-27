@@ -180,6 +180,12 @@ is "C4 naming both" "$(printf '%s' "$out" | grep -c 'w1:p2 w9:p2')" 1
 is "C4 untouched" "$(untouched)" yes
 out="$(XREVIEW_PANE=w1:p2 bash "$XREVIEW" dispatch b.md 2>&1)"
 is "C5 XREVIEW_PANE picks one" "$(printf '%s' "$out" | grep -c '^xr-')" 1
+fresh
+export EXTRA_PANES=",{\"agent\":\"claude\",\"agent_status\":\"idle\",\"cwd\":\"$CWD\",\"pane_id\":\"w1:p1\",\"terminal_title\":\"x\"}"
+out="$(XREVIEW_PANE=w1:p1 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+is "C9 XREVIEW_PANE naming a non-Codex pane refuses" "$rc" 1
+is "C9 and names the pane" "$(printf '%s' "$out" | grep -c 'XREVIEW_PANE=w1:p1 is not a Codex pane')" 1
+is "C9 untouched" "$(untouched)" yes
 fresh; echo working > "$P/status"; out="$(bash "$XREVIEW" dispatch b.md 2>&1)"
 is "C6 a pane mid-turn refuses" "$(printf '%s' "$out" | grep -c 'mid-turn')" 1
 is "C6 untouched" "$(untouched)" yes
@@ -245,6 +251,27 @@ is "D10 the recovered turn replaces the unknown in the record" "$(cat "$STATE/tu
 is "D10 and the receipt names it" "$(tail -1 "$STATE/reviews.jsonl" | jq -r .turn)" turn-recovered
 : > "$CALLS"; bash "$XREVIEW" collect "$nonce" >/dev/null 2>&1
 is "D10 a later collect waits on that turn by id" "$(called "turn-wait --thread $U1 --turn turn-recovered")" 1
+
+fresh
+bash "$XREVIEW" dispatch b.md >/dev/null 2>&1   # the pane is now on U1, and it is recorded
+mkdir -p "$CODEX_HOME/app-server-daemon"; printf '{"pid":999}\n' > "$CODEX_HOME/app-server-daemon/daemon.pid"
+: > "$CALLS"
+bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+is "D11 a daemon restart is detected even though the title still matches and the thread is loaded" \
+   "$(called "herdr pane run w1:p2 codex --sandbox read-only --ask-for-approval never resume $U1")" 1
+is "D11 and the turn starts only after the pane is re-pointed" \
+   "$([ "$(first 'herdr pane run')" -lt "$(first 'xreview-rpc turn-start')" ] && echo yes || echo no)" yes
+rm -rf "$CODEX_HOME/app-server-daemon"   # restore the "no daemon.pid yet" baseline for later tests
+
+fresh
+bash "$XREVIEW" init "$U0" >/dev/null    # the pin the pane's title already shows, nothing recorded
+: > "$CALLS"
+bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+is "D12 a pin whose title already matches is still resumed once, with nothing recorded yet" \
+   "$(called "herdr pane run w1:p2 codex --sandbox read-only --ask-for-approval never resume $U0")" 1
+: > "$CALLS"
+bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+is "D12 the dispatch after that takes the fast path" "$(called 'herdr pane send-keys')" 0
 
 echo "E. checkpoints and pins"
 fresh
