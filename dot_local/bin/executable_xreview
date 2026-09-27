@@ -290,7 +290,7 @@ cmd_round() {
 current_round() {
   local f b n; f="$(round_file)"; b="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
   [ -r "$f" ] || { printf 0; return; }
-  n="$(sed -n "s/^$b=//p" "$f" 2>/dev/null | head -1)"
+  n="$(awk -F= -v b="$b" '$1 == b { print $2; exit }' "$f" 2>/dev/null)"
   printf '%s' "${n:-0}"
 }
 
@@ -298,7 +298,7 @@ bump_round() {
   local f b n; f="$(round_file)"; b="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
   n=$(( $(current_round) + 1 ))
   mkdir -p "$(dirname "$f")" || return 0
-  { [ -r "$f" ] && grep -v "^$b=" "$f" 2>/dev/null; printf '%s=%s\n' "$b" "$n"; } \
+  { [ -r "$f" ] && awk -F= -v b="$b" '$1 != b' "$f" 2>/dev/null; printf '%s=%s\n' "$b" "$n"; } \
     > "$f.tmp" 2>/dev/null && mv "$f.tmp" "$f"
   printf '%s' "$n"
 }

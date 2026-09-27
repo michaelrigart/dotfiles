@@ -584,5 +584,36 @@ cd "$ROOT/repo" || exit 1
 unset PANE_CWD
 rm -rf "$UNBORN"
 
+echo "L. round counting is exact-match, not sed/grep regex, so a branch with '/' or metacharacters works"
+fresh
+ORIG_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+git checkout -q -b feat/x
+is "L1 round counter starts at zero on a slash branch" "$(bash "$XREVIEW" round)" 0
+bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+is "L2 a dispatch on a slash branch bumps its own counter" "$(bash "$XREVIEW" round)" 1
+git checkout -q -b feat/xy
+is "L3 a sibling branch whose name extends the first starts at its own zero" "$(bash "$XREVIEW" round)" 0
+bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+is "L4 and bumps independently" "$(bash "$XREVIEW" round)" 1
+git checkout -q feat/x
+is "L5 feat/x is unaffected by feat/xy's dispatch" "$(bash "$XREVIEW" round)" 1
+XREVIEW_MAX_ROUNDS=1 bash "$XREVIEW" round --reset >/dev/null
+export NEW_UUID="$U2"   # round --reset drops the cached thread, so this dispatch takes the
+                         # slow, fresh-session path - give it a thread id the pane's title
+                         # (still showing U1 from L2/L4) has never shown before
+out="$(XREVIEW_MAX_ROUNDS=1 bash "$XREVIEW" dispatch b.md 2>&1)"
+is "L6 XREVIEW_MAX_ROUNDS=1 the first dispatch on a slash branch is allowed" \
+   "$(printf '%s' "$out" | grep -c '^xr-')" 1
+out="$(XREVIEW_MAX_ROUNDS=1 bash "$XREVIEW" dispatch b.md 2>&1)"
+is "L7 and the second is refused at the cap" "$(printf '%s' "$out" | grep -c 'exceeds the cap')" 1
+git checkout -q -b 'a.b+c'
+is "L8 a branch with regex metacharacters ('.', '+') starts at zero" "$(bash "$XREVIEW" round)" 0
+bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+is "L9 and bumps to one without disturbing other branches' rows" "$(bash "$XREVIEW" round)" 1
+git checkout -q feat/x
+is "L10 feat/x's row is untouched by the a.b+c branch's dispatch" "$(bash "$XREVIEW" round)" 2
+git checkout -q "$ORIG_BRANCH"
+git branch -q -D feat/x feat/xy 'a.b+c'
+
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))
