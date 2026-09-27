@@ -67,9 +67,9 @@ def title_uuid(pane):
     return m.group(1) if m else None
 
 
-def report(herdr, pane_id, uuid, start_source):
+def report(herdr, pane_id, uuid, seq, start_source):
     cmd = [herdr, "pane", "report-agent-session", pane_id, "--source", "herdr:codex",
-           "--agent", "codex", "--agent-session-id", uuid, "--seq", str(time.time_ns())]
+           "--agent", "codex", "--agent-session-id", uuid, "--seq", str(seq)]
     if start_source:
         cmd += ["--session-start-source", start_source]
     run(cmd)
@@ -78,7 +78,11 @@ def report(herdr, pane_id, uuid, start_source):
 def reconcile(herdr, done, session_id=None, start_source=None):
     """One pass. Returns the set of ids currently on Codex pane titles."""
     seen = set()
-    for p in panes(herdr):
+    listed = panes(herdr)
+    # One fingerprint for every report this pass makes: they all describe the state
+    # observed in this one `pane list`, not one each's own call time.
+    seq = time.time_ns()
+    for p in listed:
         if left() <= 0:
             break
         if p.get("agent") != "codex":
@@ -91,7 +95,7 @@ def reconcile(herdr, done, session_id=None, start_source=None):
         key = (p.get("pane_id"), uuid)
         if uuid != current and key not in done and p.get("pane_id"):
             done.add(key)
-            report(herdr, p["pane_id"], uuid, start_source if uuid == session_id else None)
+            report(herdr, p["pane_id"], uuid, seq, start_source if uuid == session_id else None)
     return seen
 
 

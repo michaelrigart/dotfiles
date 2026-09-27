@@ -47,6 +47,8 @@ is "a pane showing another pane's id is corrected"  "$(grep -c "^w5:p2 .*--agent
 is "a matching pane is left alone"                  "$(grep -c '^w2:p2' "$CALLS")" 0
 is "a title without a UUID is never guessed from"   "$(grep -c '^w3:p2' "$CALLS")" 0
 is "a non-Codex pane is ignored"                    "$(grep -c '^w4:p1' "$CALLS")" 0
+seqs="$(grep -oE -- '--seq [0-9]+' "$CALLS" | awk '{print $2}' | sort -u | wc -l | tr -d ' ')"
+is "both reports from the same listing share one --seq" "$seqs" 1
 
 echo "B. as a SessionStart hook"
 fixture "$(pane w1:p2 codex "$U1 | t | d" "")"
