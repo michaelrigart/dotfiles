@@ -77,10 +77,12 @@ case "$1 $2" in
     # Truncate to a realistic title (F11/F21: 29 chars plus "..." once the thread is named).
     # This is its own process (#!/bin/sh), so it cannot call the parent script's trunc().
     case "$4" in
-      *" resume "*) full="${4##* resume }" ;;
-      *) full="$NEW_UUID" ;;
+      *" resume "*) full="${4##* resume }"; len=29 ;;
+      # M4: a relaunch can show the SAME thread at a different truncation length than
+      # whatever the pane's title showed before - RELAUNCH_PREFIX_LEN simulates that.
+      *) full="$NEW_UUID"; len="${RELAUNCH_PREFIX_LEN:-29}" ;;
     esac
-    printf '%s... | t | d' "$(printf '%s' "$full" | cut -c1-29)" > "$P/title" ;;
+    printf '%s... | t | d' "$(printf '%s' "$full" | cut -c1-"$len")" > "$P/title" ;;
 esac
 exit 0
 H
@@ -374,6 +376,16 @@ is "D16 turn-start returning 0 with a malformed id still hands back a nonce" \
 is "D16 with a do-not-re-dispatch warning, exactly like exit 6" \
    "$(grep -c 'do NOT re-dispatch' "$ROOT/err")" 1
 is "D16 the record marks the turn unknown" "$(cat "$STATE/turns/$nonce")" "$U1 ?"
+
+echo "D17. a relaunch showing the SAME thread at a different truncation length is not new (M4/F42)"
+fresh
+bash "$XREVIEW" dispatch b.md >/dev/null 2>&1   # the pane now shows U1's standard 29-char prefix
+bash "$XREVIEW" round --reset >/dev/null 2>&1   # want="" for the next dispatch; the title is untouched
+: > "$CALLS"
+out="$(RELAUNCH_PREFIX_LEN=36 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+is "D17 it refuses, never mistaking the shorter prefix for a new thread" "$rc" 1
+is "D17 and says so" "$(printf '%s' "$out" | grep -c 'did not show a new thread')" 1
+is "D17 and never dispatches into the old (or any) thread" "$(called 'xreview-rpc turn-start')" 0
 
 echo "E. checkpoints and pins"
 fresh
