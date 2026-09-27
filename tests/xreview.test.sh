@@ -468,9 +468,15 @@ for bad in "3.5" "abc" "-1" "10s"; do
   is "F9 '$bad' is never reported as a failed review" "$(printf '%s' "$out" | grep -c 'reviewer turn failed')" 0
 done
 
-echo "F10. the packet temp file never lingers, on any exit path"
-# Exercises the trap across a success (F1 above already ran one), a refused turn/start,
-# and an unanswered one (exit 6) - every dispatch above, cumulatively.
+echo "F10. the packet temp file never lingers, on the paths the explicit rm covers"
+# This proves the explicit `rm -f "$packet"` right after turn-start (success here, a
+# refused turn/start, and an unanswered one, exit 6 - every dispatch above too,
+# cumulatively): all three already reach that line before returning, so it alone
+# accounts for the result below. It does NOT exercise the trap - none of these paths
+# dies between `mktemp` and that rm, which is the only case the trap is for - so this
+# is not evidence the trap itself works. The trap is kept anyway as defence for an
+# earlier death (an unexpected failure before turn-start, a signal) that no fixture
+# here reaches.
 fresh; RPC_START_FAIL=1 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
 fresh; RPC_START_UNCERTAIN=1 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
 is "no xreview-packet temp file is left in \$TMPDIR" \

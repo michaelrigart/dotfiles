@@ -139,7 +139,7 @@ pane_prepare() { # pane_prepare <pane> [want] [daemon-generation]: the generatio
      && loaded "$want"; then
     printf '%s\n' "$want"; return 0
   fi
-  cmd="$(pane_command)"
+  cmd="$(pane_command)" || exit 1
   # LC_ALL=C: awk's numeric printf/parsing follows LC_NUMERIC, and a locale like nl_BE
   # writes "0,5" - a decimal comma sleep(1) chokes on under set -e (I-2).
   gap="$(LC_ALL=C awk -v p="$poll" 'BEGIN{printf "%g", p/2}')"
@@ -397,6 +397,10 @@ cmd_dispatch() {
   guard_project_config
   [ -r "$SCHEMA" ] || die "missing findings schema $SCHEMA"
   [ -r "$REVIEWER" ] || die "missing reviewer instructions $REVIEWER"
+  # A portable precondition, not reliant on inherit_errexit (bash 4.4+) to catch a
+  # missing/empty codex-pane-command before the pane is touched (M2): called here as a
+  # bare statement, not nested inside another $(...), its own die() works on any bash.
+  pane_command >/dev/null
   [ -z "$diff_range" ] || diff_text="$(inline_diff "$diff_range")"
   codex-daemon ensure || die "the Codex daemon is not running; no review was started"
   codex-daemon check || die "refusing to dispatch while the daemon carries a pane's environment (see above)"
