@@ -25,40 +25,61 @@ esac
 exit 0
 H
 chmod +x "$T/herdr"
-U1=11111111-1111-4111-8111-111111111111
-U2=22222222-2222-4222-8222-222222222222
-U3=33333333-3333-4333-8333-333333333333
+export U1=11111111-1111-4111-8111-111111111111
+export U2=22222222-2222-4222-8222-222222222222
+export U3=33333333-3333-4333-8333-333333333333
+export RPC_CALLS="$T/rpc-calls"
+# Codex truncates tui.terminal_title's thread-id item to 29 chars plus "..." once the thread
+# is named (F11/F21), so a realistic fixture title never carries the full id.
+trunc() { printf '%s...' "$(printf '%s' "$1" | cut -c1-29)"; }
+cat > "$T/xreview-rpc" <<'R'
+#!/bin/sh
+echo "$*" >> "$RPC_CALLS"
+[ "$1" = "thread-resolve" ] || exit 2
+shift
+prefix=""
+while [ "$#" -gt 0 ]; do case "$1" in --prefix) prefix="$2"; shift ;; esac; shift; done
+for u in "$U1" "$U2" "$U3" "$U4"; do
+  case "$u" in "$prefix"*) echo "$u"; exit 0 ;; esac
+done
+exit 1
+R
+chmod +x "$T/xreview-rpc"
+export XREVIEW_RPC_BIN="$T/xreview-rpc"
 pane() { # pane <id> <agent> <title> <session-or-empty>
   local s='null'; [ -n "$4" ] && s="{\"value\":\"$4\"}"
   printf '{"pane_id":"%s","agent":"%s","terminal_title":"◐ %s","terminal_title_stripped":"%s","agent_session":%s}' \
     "$1" "$2" "$3" "$3" "$s"
 }
-fixture() { printf '{"result":{"panes":[%s]}}' "$1" > "$PANES"; : > "$CALLS"; }
+fixture() { printf '{"result":{"panes":[%s]}}' "$1" > "$PANES"; : > "$CALLS"; : > "$RPC_CALLS"; }
 hook() { python3 "$HOOK" "$@"; }
 reports() { grep -c . "$CALLS" 2>/dev/null || true; }
+rpc_calls() { grep -c . "$RPC_CALLS" 2>/dev/null || true; }
 
 echo "A. --reconcile repairs every Codex pane whose title disagrees"
-fixture "$(pane w1:p2 codex "$U1 | t | d" "")","$(pane w2:p2 codex "$U2 | t | d" "$U2")","$(pane w3:p2 codex "Greet user | chezmoi" "$U3")","$(pane w4:p1 claude "$U3 | x" "")","$(pane w5:p2 codex "$U3 | t | d" "$U1")"
+fixture "$(pane w1:p2 codex "$(trunc "$U1") | t | d" "")","$(pane w2:p2 codex "$(trunc "$U2") | t | d" "$U2")","$(pane w3:p2 codex "Greet user | chezmoi" "$U3")","$(pane w4:p1 claude "$(trunc "$U3") | x" "")","$(pane w5:p2 codex "$(trunc "$U3") | t | d" "$U1")"
 hook --reconcile; rc=$?
 is "it exits 0"                                     "$rc" 0
 is "two panes disagreed, two reports"               "$(reports)" 2
-is "a pane with no session gets its title's id"     "$(grep -c "^w1:p2 --source herdr:codex --agent codex --agent-session-id $U1 --seq [0-9]*$" "$CALLS")" 1
-is "a pane showing another pane's id is corrected"  "$(grep -c "^w5:p2 .*--agent-session-id $U3 " "$CALLS")" 1
-is "a matching pane is left alone"                  "$(grep -c '^w2:p2' "$CALLS")" 0
-is "a title without a UUID is never guessed from"   "$(grep -c '^w3:p2' "$CALLS")" 0
-is "a non-Codex pane is ignored"                    "$(grep -c '^w4:p1' "$CALLS")" 0
+is "a pane with no session gets its title's id, resolved"     "$(grep -c "^w1:p2 --source herdr:codex --agent codex --agent-session-id $U1 --seq [0-9]*$" "$CALLS")" 1
+is "a pane showing another pane's id is corrected, resolved"  "$(grep -c "^w5:p2 .*--agent-session-id $U3 " "$CALLS")" 1
+is "a matching pane is left alone, no resolve needed"          "$(grep -c '^w2:p2' "$CALLS")" 0
+is "a title without an id prefix is never guessed from"        "$(grep -c '^w3:p2' "$CALLS")" 0
+is "a non-Codex pane is ignored"                                "$(grep -c '^w4:p1' "$CALLS")" 0
 seqs="$(grep -oE -- '--seq [0-9]+' "$CALLS" | awk '{print $2}' | sort -u | wc -l | tr -d ' ')"
 is "both reports from the same listing share one --seq" "$seqs" 1
+is "--reconcile resolves both prefixes through the stub" "$(rpc_calls)" 2
 
 echo "B. as a SessionStart hook"
-fixture "$(pane w1:p2 codex "$U1 | t | d" "")"
+fixture "$(pane w1:p2 codex "$(trunc "$U1") | t | d" "")"
 printf '{"hook_event_name":"SessionStart","session_id":"%s","source":"startup"}' "$U1" | hook; rc=$?
 is "it exits 0" "$rc" 0
 is "the starting session's pane carries its start source" \
    "$(grep -c "^w1:p2 .*--agent-session-id $U1 .*--session-start-source startup$" "$CALLS")" 1
+is "hook mode reports the full session_id without calling the resolver" "$(rpc_calls)" 0
 
 echo "C. a session whose id is on no title yet"
-fixture "$(pane w1:p2 codex "$U1 | t | d" "$U1")"
+fixture "$(pane w1:p2 codex "$(trunc "$U1") | t | d" "$U1")"
 start=$(date +%s)
 printf '{"session_id":"%s","source":"startup"}' "$U2" | hook; rc=$?
 took=$(( $(date +%s) - start ))
@@ -67,9 +88,30 @@ is "within its retry budget"              "$([ "$took" -le 3 ] && echo yes || ec
 is "and reports nothing it cannot see"    "$(reports)" 0
 
 echo "D. repeated passes never report the same thing twice"
-fixture "$(pane w1:p2 codex "$U1 | t | d" "")"
+fixture "$(pane w1:p2 codex "$(trunc "$U1") | t | d" "")"
 printf '{"session_id":"%s"}' "$U2" | hook
 is "one report despite several retry passes" "$(reports)" 1
+
+echo "D2. a pane whose session already starts with the title prefix is left alone"
+fixture "$(pane w1:p2 codex "$(trunc "$U1") | t | d" "$U1")"
+hook --reconcile; rc=$?
+is "it exits 0" "$rc" 0
+is "no report" "$(reports)" 0
+is "and the resolver is never called" "$(rpc_calls)" 0
+
+echo "D3. a resolver that cannot resolve a prefix reports nothing, never a prefix"
+U5=55555555-5555-4555-8555-555555555555   # never on the stub's known-id list
+fixture "$(pane w7:p2 codex "$(trunc "$U5") | t | d" "")"
+hook --reconcile; rc=$?
+is "it exits 0" "$rc" 0
+is "and reports nothing for the unresolved pane" "$(reports)" 0
+is "the resolver was tried" "$(rpc_calls)" 1
+
+echo "D4. a missing xreview-rpc binary reports nothing rather than guessing"
+fixture "$(pane w8:p2 codex "$(trunc "$U1") | t | d" "")"
+XREVIEW_RPC_BIN="$T/nonexistent-rpc" hook --reconcile; rc=$?
+is "it exits 0" "$rc" 0
+is "and reports nothing when the resolver cannot run" "$(reports)" 0
 
 echo "F. the whole run stays inside its deadline"
 # Four reports that each stall for 2 s would take 8 s; the hook timeout is 10 s and the
@@ -83,8 +125,8 @@ esac
 exit 0
 H
 chmod +x "$T/slowherdr"
-U4=44444444-4444-4444-8444-444444444444
-fixture "$(pane w1:p2 codex "$U1 | t" "")","$(pane w2:p2 codex "$U2 | t" "")","$(pane w3:p2 codex "$U3 | t" "")","$(pane w6:p2 codex "$U4 | t" "")"
+export U4=44444444-4444-4444-8444-444444444444
+fixture "$(pane w1:p2 codex "$(trunc "$U1") | t" "")","$(pane w2:p2 codex "$(trunc "$U2") | t" "")","$(pane w3:p2 codex "$(trunc "$U3") | t" "")","$(pane w6:p2 codex "$(trunc "$U4") | t" "")"
 start=$(date +%s)
 HERDR_BIN="$T/slowherdr" PANE_MAP_DEADLINE_SECS=3 hook --reconcile; rc=$?
 took=$(( $(date +%s) - start ))

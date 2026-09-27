@@ -1,20 +1,24 @@
 #!/usr/bin/python3
 # Pinned to the system interpreter, not `env python3`: this runs inside the Codex
 # daemon, and PATH there must not be able to shadow it.
-"""Reconcile herdr's session id for every Codex pane from the thread id in its title.
+"""Reconcile herdr's session id for every Codex pane from the thread id prefix in its title.
 
 Managed by chezmoi (source: dot_codex/executable_herdr-codex-pane-map.py).
 Design: docs/superpowers/specs/2026-09-26-xreview-codex-daemon-design.md, section 6.
 
 Runs inside the Codex daemon as a SessionStart hook (hook JSON on stdin), beside herdr's own
 hook, which exits there because the daemon carries no pane environment. Every TUI puts its
-thread id first in its terminal title (tui.terminal_title), so the title is the join between
-a pane and its thread. Each pass repairs every Codex pane, so one wrong report from anywhere
-is fixed by the next session start. An id that is not on a title is never reported.
+thread id first in its terminal title (tui.terminal_title), but Codex truncates that item to
+29 characters plus "..." once the thread is named (F11/F21), so the title carries only a
+PREFIX. The hook's own `session_id` is a full id, so a pane whose title prefix matches it is
+resolved for free; every other pane's prefix is resolved to a full id through `xreview-rpc
+thread-resolve`. A prefix is never reported as if it were a full id. Each pass repairs every
+Codex pane, so one wrong report from anywhere is fixed by the next session start. An id that
+is not on a title is never reported.
 
-`--reconcile` runs one pass without hook input. The whole run - listing, every report and
-the retries - shares one deadline (PANE_MAP_DEADLINE_SECS, 8 s), inside the 10 s hook timeout.
-Never exits non-zero; never blocks a session.
+`--reconcile` runs one pass without hook input. The whole run - listing, every report, every
+resolve and the retries - shares one deadline (PANE_MAP_DEADLINE_SECS, 8 s), inside the 10 s
+hook timeout. Never exits non-zero; never blocks a session.
 """
 import json
 import os
@@ -24,7 +28,7 @@ import subprocess
 import sys
 import time
 
-UUID = re.compile(r"^\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?![0-9a-f-])")
+TITLE_ID_RE = re.compile(r"^\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{5,12})(?![0-9a-f-])")
 DEADLINE = time.monotonic() + float(os.environ.get("PANE_MAP_DEADLINE_SECS", "8"))
 
 
@@ -53,6 +57,30 @@ def herdr_bin():
     return None
 
 
+def rpc_bin():
+    env = os.environ.get("XREVIEW_RPC_BIN")
+    if env:
+        return env if os.access(env, os.X_OK) else None
+    for c in (os.path.expanduser("~/.local/bin/xreview-rpc"), shutil.which("xreview-rpc")):
+        if c and os.access(c, os.X_OK):
+            return c
+    return None
+
+
+def resolve_thread_id(prefix):
+    """A title prefix resolved to a full thread id through xreview-rpc, bound by the shared
+    deadline (run()). Missing, failing or timed-out resolution reports nothing for that pane -
+    a prefix is never reported as if it were a full id."""
+    b = rpc_bin()
+    if not b:
+        return None
+    out = run([b, "thread-resolve", "--prefix", prefix])
+    if out is None or out.returncode != 0:
+        return None
+    line = (out.stdout or "").strip()
+    return line or None
+
+
 def panes(herdr):
     out = run([herdr, "pane", "list"])
     try:
@@ -61,9 +89,9 @@ def panes(herdr):
         return []
 
 
-def title_uuid(pane):
+def title_prefix(pane):
     title = pane.get("terminal_title_stripped") or pane.get("terminal_title") or ""
-    m = UUID.match(title)
+    m = TITLE_ID_RE.match(title)
     return m.group(1) if m else None
 
 
@@ -76,7 +104,7 @@ def report(herdr, pane_id, uuid, seq, start_source):
 
 
 def reconcile(herdr, done, session_id=None, start_source=None):
-    """One pass. Returns the set of ids currently on Codex pane titles."""
+    """One pass. Returns the set of title PREFIXES currently on Codex pane titles."""
     seen = set()
     listed = panes(herdr)
     # One fingerprint for every report this pass makes: they all describe the state
@@ -87,15 +115,28 @@ def reconcile(herdr, done, session_id=None, start_source=None):
             break
         if p.get("agent") != "codex":
             continue
-        uuid = title_uuid(p)
-        if not uuid:
+        prefix = title_prefix(p)
+        if not prefix:
             continue
-        seen.add(uuid)
+        seen.add(prefix)
+        pane_id = p.get("pane_id")
+        if not pane_id:
+            continue
         current = (p.get("agent_session") or {}).get("value")
-        key = (p.get("pane_id"), uuid)
-        if uuid != current and key not in done and p.get("pane_id"):
-            done.add(key)
-            report(herdr, p["pane_id"], uuid, seq, start_source if uuid == session_id else None)
+        if current and current.startswith(prefix):
+            continue   # already correct - a prefix match is enough, never re-resolved
+        if session_id and session_id.startswith(prefix):
+            # The hook's own session: its full id is already known, no daemon needed.
+            full, src = session_id, start_source
+        else:
+            full, src = resolve_thread_id(prefix), None
+        if not full:
+            continue
+        key = (pane_id, full)
+        if key in done:
+            continue
+        done.add(key)
+        report(herdr, pane_id, full, seq, src)
     return seen
 
 
@@ -118,7 +159,10 @@ def main():
     retry_until = time.monotonic() + float(os.environ.get("PANE_MAP_RETRY_SECS", "5"))
     while True:
         seen = reconcile(herdr, done, sid, src)
-        if not sid or sid in seen or time.monotonic() >= retry_until or left() <= 0.5:
+        # "on some title" means some title's prefix is a prefix of sid - titles never carry
+        # the full id once Codex has named the thread (F11/F21).
+        if not sid or any(sid.startswith(p) for p in seen) or time.monotonic() >= retry_until \
+           or left() <= 0.5:
             return
         time.sleep(0.5)
 
