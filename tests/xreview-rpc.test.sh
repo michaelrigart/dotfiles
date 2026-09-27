@@ -227,6 +227,14 @@ is "F4 with the eventually-fresh answer, not the notification's empty one" \
 is "F4 the re-read was retried until it was terminal" \
    "$(jq -r 'select(.method=="thread/turns/list") | .method' "$FAKE_LOG" | grep -c .)" 3
 
+echo "F5. the budget can end mid re-read too - still exit 3 (still running), never exit 1 (M5)"
+partial_done3="$(jq -nc '{method:"turn/completed",params:{threadId:"th",turn:{id:"turn-1",status:"completed",items:[]}}}')"
+scenario "$(jq -nc --argjson l "$(listing "$(turn inProgress "")")" --argjson n "$partial_done3" \
+  '{responses:{"thread/turns/list":$l},after:{"thread/turns/list":[$n]}}')"
+out="$(rpc turn-wait --thread th --turn turn-1 --budget 2 --schema "$SCHEMA" 2>&1)"; rc=$?
+is "F5 it exits 3, not 1, when the re-read never catches up before the budget ends" "$rc" 3
+is "F5 and says the turn is still running" "$(printf '%s' "$out" | grep -c 'still running')" 1
+
 echo "G. still running at the budget"
 scenario "$(jq -nc --argjson l "$(listing "$(turn inProgress "")")" '{responses:{"thread/turns/list":$l}}')"
 rpc turn-wait --thread th --turn turn-1 --budget 1 --schema "$SCHEMA" >/dev/null 2>&1

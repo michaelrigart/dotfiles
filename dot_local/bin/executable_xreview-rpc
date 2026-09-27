@@ -532,12 +532,22 @@ def cmd_turn_wait(a):
                     # replace t; otherwise keep the notification's own completed turn, so it
                     # is never lost to a listing that lags behind it. Retry within the
                     # budget for a re-read that catches up.
+                    #
+                    # The deadline is checked BEFORE each call, not after: once it has
+                    # passed, turn_state()'s own c.call() raises Closed immediately (its
+                    # deadline is this same one), so a check placed after the call can never
+                    # run - the budget always expires inside the call, not between calls.
+                    # If it ends here with the listing still stale, that is "still running,
+                    # collect again" (exit 3), same as the outer wait_note timeout above -
+                    # never fall through to finish() and report "no answer" for what may
+                    # simply not have been read yet.
                     while True:
+                        if time.monotonic() >= deadline:
+                            err(f"turn {turn_id} is still running")
+                            return 3
                         reread = turn_state(c, a.thread, turn_id, None)
                         if reread is not None and reread.get("status") in TERMINAL:
                             t = reread
-                            break
-                        if time.monotonic() >= deadline:
                             break
                         time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
             return finish(t, schema)
