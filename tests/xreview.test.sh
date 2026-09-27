@@ -37,10 +37,13 @@ STATE="$XDG_STATE_HOME/xreview/$(printf '%s' "$CWD" | tr '/' '_' | sed 's/^_//')
 # --- stubs ------------------------------------------------------------------------
 STUB="$ROOT/stub"; P="$ROOT/pane"; mkdir -p "$STUB" "$P"
 export CALLS="$ROOT/calls" P CWD
-U0=aaaaaaaa-0000-4000-8000-000000000000   # the thread the pane shows at the start
-U1=bbbbbbbb-1111-4111-8111-111111111111   # the thread a fresh session in the pane creates
-U2=cccccccc-2222-4222-8222-222222222222
+export U0=aaaaaaaa-0000-4000-8000-000000000000   # the thread the pane shows at the start
+export U1=bbbbbbbb-1111-4111-8111-111111111111   # the thread a fresh session in the pane creates
+export U2=cccccccc-2222-4222-8222-222222222222
 export NEW_UUID="$U1"
+# Codex truncates the title's thread-id item to 29 chars plus "..." once the thread is named
+# (F11/F21); a realistic stub title never carries more than that.
+trunc() { printf '%s...' "$(printf '%s' "$1" | cut -c1-29)"; }
 cat > "$STUB/herdr" <<'H'
 #!/bin/sh
 echo "herdr $*" >> "$CALLS"
@@ -70,10 +73,13 @@ case "$1 $2" in
     echo 0 > "$P/ctrlc"; rm -f "$P/get_calls"; : > "$P/lag_active"
     [ -n "${NO_TITLE:-}" ] && exit 0
     printf codex > "$P/agent"
+    # Truncate to a realistic title (F11/F21: 29 chars plus "..." once the thread is named).
+    # This is its own process (#!/bin/sh), so it cannot call the parent script's trunc().
     case "$4" in
-      *" resume "*) printf '%s | t | d' "${4##* resume }" > "$P/title" ;;
-      *) printf '%s | t | d' "$NEW_UUID" > "$P/title" ;;
-    esac ;;
+      *" resume "*) full="${4##* resume }" ;;
+      *) full="$NEW_UUID" ;;
+    esac
+    printf '%s... | t | d' "$(printf '%s' "$full" | cut -c1-29)" > "$P/title" ;;
 esac
 exit 0
 H
@@ -90,13 +96,18 @@ cat > "$STUB/xreview-rpc" <<'R'
 #!/bin/sh
 echo "xreview-rpc $*" >> "$CALLS"
 cmd="$1"; shift
-th=""; input=""; known=""; resolved=""
+th=""; input=""; known=""; resolved=""; prefix=""
 while [ "$#" -gt 0 ]; do
   case "$1" in --thread) th="$2"; shift ;; --input) input="$2"; shift ;; --known) known="$2"; shift ;;
-               --resolved) resolved="$2"; shift ;; esac; shift
+               --resolved) resolved="$2"; shift ;; --prefix) prefix="$2"; shift ;; esac; shift
 done
 case "$cmd" in
   health) [ -z "${RPC_HEALTH_FAIL:-}" ] || exit 5; exit 0 ;;
+  thread-resolve)
+    for u in "$U0" "$U1" "$U2"; do
+      case "$u" in "$prefix"*) echo "$u"; exit 0 ;; esac
+    done
+    exit 1 ;;
   thread-status)
     n=$(cat "$P/status_calls" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$P/status_calls"
     if [ -n "${RPC_THREAD_RUNNING:-}" ]; then
@@ -122,7 +133,7 @@ fresh() { # a pane showing U0, idle; clean log and state
         RPC_START_UNCERTAIN NO_TITLE STUCK_TUI EXTRA_PANES PANE_CWD XREVIEW_PANE XREVIEW_THREAD \
         RPC_WAIT_OUT RPC_WAIT_RC RPC_THREAD_RUNNING RPC_HEALTH_FAIL AGENT_LAG
   export NEW_UUID="$U1"
-  printf codex > "$P/agent"; printf '%s | t | d' "$U0" > "$P/title"; echo idle > "$P/status"
+  printf codex > "$P/agent"; printf '%s | t | d' "$(trunc "$U0")" > "$P/title"; echo idle > "$P/status"
   echo 0 > "$P/ctrlc"; rm -f "$P/packet" "$P/status_calls" "$P/get_calls" "$P/lag_active"
   bash "$XREVIEW" round --reset >/dev/null 2>&1
   rm -rf "$STATE/superseded" "$STATE/pin" "$STATE/turns"
@@ -239,7 +250,7 @@ is "D1 the nonce maps to thread and turn" "$(cat "$STATE/turns/$nonce")" "$U1 tu
 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
 is "D2 the next round finds the pane already on the thread" "$(called 'herdr pane send-keys')" 0
 is "D2 and goes to the same thread" "$(called "xreview-rpc turn-start --thread $U1")" 1
-printf '%s | t | d' "$U0" > "$P/title"; : > "$CALLS"
+printf '%s | t | d' "$(trunc "$U0")" > "$P/title"; : > "$CALLS"
 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
 is "D3 a pane that moved off the thread is resumed onto it" "$(called "herdr pane run w1:p2 codex --sandbox read-only --ask-for-approval never resume $U1")" 1
 fresh; out="$(NO_TITLE=1 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
@@ -311,6 +322,12 @@ out="$(bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
 is "D14 .agent never saying codex times out" "$rc" 1
 is "D14 and says so" "$(printf '%s' "$out" | grep -c 'did not show')" 1
 unset AGENT_LAG
+
+fresh; export NEW_UUID=dddddddd-4444-4444-8444-444444444444   # unknown to the resolver stub
+out="$(bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+is "D15 a title prefix that resolves to no loaded thread refuses after the wait" \
+   "$(printf '%s' "$out" | grep -c 'did not show')" 1
+is "D15 and no turn starts" "$(called 'xreview-rpc turn-start')" 0
 
 echo "E. checkpoints and pins"
 fresh

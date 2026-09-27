@@ -14,7 +14,10 @@ XR_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}"
 SCHEMA="${XREVIEW_SCHEMA:-$XR_CONFIG/xreview/findings.schema.json}"
 REVIEWER="${XREVIEW_REVIEWER:-$XR_CONFIG/xreview/reviewer.md}"
 PANE_CMD_FILE="$XR_CONFIG/herdr/codex-pane-command"
-UUID_RE='^[[:space:]]*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'
+# Codex truncates the title's thread-id item to 29 characters plus "..." once the thread is
+# named (F11/F21), so this only ever carries a PREFIX (29-36 chars), never a guaranteed full
+# id. A prefix is resolved to a full id through `xreview-rpc thread-resolve`, never guessed.
+ID_RE='^[[:space:]]*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{5,12})'
 
 die() { printf 'xreview: %s\n' "$1" >&2; exit 1; }
 
@@ -67,9 +70,24 @@ pane_field() { # pane_field <pane> <jq-path>
   herdr pane get "$1" 2>/dev/null | jq -r ".result.pane | $2 // empty" 2>/dev/null || true
 }
 
-pane_title_uuid() { # the thread id at the start of the pane's title, if any
+pane_title_id() { # the thread id PREFIX at the start of the pane's title, if any (29-36 chars)
   local t; t="$(pane_field "$1" '(.terminal_title_stripped // .terminal_title)')"
-  if [[ "$t" =~ $UUID_RE ]]; then printf '%s\n' "${BASH_REMATCH[1]}"; fi
+  if [[ "$t" =~ $ID_RE ]]; then printf '%s\n' "${BASH_REMATCH[1]}"; fi
+}
+
+# prefix_is_of <prefix> <full-id>: does <full-id> start with <prefix>? Empty prefix never
+# matches. Both sides are hex-and-dash only (never a shell glob character), so plain
+# parameter-expansion prefix removal is exact, not a pattern match.
+prefix_is_of() {
+  [ -n "$1" ] && [ "${2#"$1"}" != "$2" ]
+}
+
+# title_shows <pane> <thread>: "the title shows thread T" now means T starts with the
+# title's prefix (F11/F21) - the title itself never carries the full id once Codex has
+# named the thread.
+title_shows() {
+  local p; p="$(pane_title_id "$1")"
+  prefix_is_of "$p" "$2"
 }
 
 pane_command() {
@@ -105,12 +123,12 @@ daemon_gen() {
 # xreview itself last prepared THIS pane on THIS thread under the CURRENT daemon generation -
 # recorded in $(state_dir)/pane by the caller after a successful prepare.
 pane_prepare() {
-  local pane="$1" want="${2:-}" before cmd now ok waited=0 wait="${XREVIEW_PANE_WAIT:-20}" \
+  local pane="$1" want="${2:-}" before cmd now ok resolved waited=0 wait="${XREVIEW_PANE_WAIT:-20}" \
         gen rec
-  before="$(pane_title_uuid "$pane")"
+  before="$(pane_title_id "$pane")"
   gen="$(daemon_gen)"
   rec="$(cat "$(state_dir)/pane" 2>/dev/null || true)"
-  if [ -n "$want" ] && [ "$before" = "$want" ] && [ "$rec" = "$pane $want $gen" ] \
+  if [ -n "$want" ] && prefix_is_of "$before" "$want" && [ "$rec" = "$pane $want $gen" ] \
      && loaded "$want"; then
     printf '%s\n' "$want"; return 0
   fi
@@ -125,19 +143,24 @@ pane_prepare() {
   [ -z "$want" ] || cmd="$cmd resume $want"
   herdr pane run "$pane" "$cmd" >/dev/null 2>&1 || die "could not start Codex in pane $pane; no review was started"
   while :; do
-    now="$(pane_title_uuid "$pane")"
-    ok=0
+    now="$(pane_title_id "$pane")"
+    ok=0; resolved=""
     if [ -n "$now" ]; then
       if [ -n "$want" ]; then
-        [ "$now" != "$want" ] || ok=1
-      else
-        [ "$now" = "$before" ] || ok=1
+        # We already know the full id (it is what we asked the pane to resume): the title
+        # just has to agree that it is showing a prefix of it.
+        if prefix_is_of "$now" "$want"; then ok=1; resolved="$want"; fi
+      elif [ "$now" != "$before" ]; then
+        # A fresh session: the pane's title is the only place its new id appears, and it is
+        # only ever a prefix (F11/F21). Resolve it - never guess it - before using it.
+        resolved="$(xreview-rpc thread-resolve --prefix "$now" 2>/dev/null)" \
+          && [ -n "$resolved" ] && ok=1
       fi
     fi
     # A matching title alone can still be stale: the terminal's title escape can land
     # before herdr's own .agent field catches up to the new session. Require both.
-    if [ "$ok" = 1 ] && [ "$(pane_field "$pane" '.agent')" = "codex" ] && loaded "$now"; then
-      printf '%s\n' "$now"; return 0
+    if [ "$ok" = 1 ] && [ "$(pane_field "$pane" '.agent')" = "codex" ] && loaded "$resolved"; then
+      printf '%s\n' "$resolved"; return 0
     fi
     [ "$waited" -lt "$wait" ] || die "the Codex pane $pane did not show ${want:-a new thread} within ${wait}s; no review was started"
     sleep 1; waited=$((waited + 1))
@@ -169,11 +192,15 @@ cmd_thread() {
 # A pin is an instruction, not a cache entry: it outranks the checkpoint thread and is never
 # archived. `xreview round --reset` drops it. Without an id, the pane's current thread.
 cmd_init() {
-  local dir id
+  local dir id prefix
   dir="$(state_dir)"
   id="${1:-}"
-  [ -n "$id" ] || id="$(pane_title_uuid "$(find_pane)")"
-  [ -n "$id" ] || die "the Codex pane shows no thread id; pass one: xreview init <thread-id>"
+  if [ -z "$id" ]; then
+    prefix="$(pane_title_id "$(find_pane)")"
+    [ -n "$prefix" ] || die "the Codex pane shows no thread id; pass one: xreview init <thread-id>"
+    id="$(xreview-rpc thread-resolve --prefix "$prefix" 2>/dev/null)" \
+      || die "the Codex pane's thread id prefix could not be resolved; pass one: xreview init <thread-id>"
+  fi
   assert_id "$id"
   mkdir -p "$dir" && printf '%s\n' "$id" > "$dir/pin"
   printf 'xreview: %s -> %s\n' "$(repo_root)" "$id"
@@ -328,7 +355,8 @@ cmd_tier() {
 }
 
 cmd_dispatch() {
-  local body_file diff_range="" diff_text="" dir pane status want thread nonce packet turn="" title_thread
+  local body_file diff_range="" diff_text="" dir pane status want thread nonce packet turn="" \
+        title_thread title_prefix
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --diff) [ "$#" -ge 2 ] || die "--diff needs a range"; diff_range="$2"; shift 2 ;;
@@ -355,10 +383,14 @@ cmd_dispatch() {
     working|blocked) die "the Codex pane $pane is mid-turn; wait for it to finish, then dispatch again" ;;
   esac
   # A herdr-idle pane can still be mid-turn on the daemon side: a disconnected TUI keeps its
-  # title's thread id, and the pane's own agent_status says nothing about it.
-  title_thread="$(pane_title_uuid "$pane")"
-  if [ -n "$title_thread" ] && thread_running "$title_thread"; then
-    die "the Codex pane $pane's thread $title_thread is mid-turn; wait for it to finish, then dispatch again"
+  # title's thread id prefix, and the pane's own agent_status says nothing about it. The
+  # title only ever carries a prefix (F11/F21); if it cannot be resolved, do not block on it.
+  title_prefix="$(pane_title_id "$pane")"
+  if [ -n "$title_prefix" ]; then
+    title_thread="$(xreview-rpc thread-resolve --prefix "$title_prefix" 2>/dev/null)" || title_thread=""
+    if [ -n "$title_thread" ] && thread_running "$title_thread"; then
+      die "the Codex pane $pane's thread $title_thread is mid-turn; wait for it to finish, then dispatch again"
+    fi
   fi
   local max="${XREVIEW_MAX_ROUNDS:-10}" round
   round="$(bump_round)"
