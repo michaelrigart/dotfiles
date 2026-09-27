@@ -273,6 +273,27 @@ PY
 )"
 is "a dribbling handshake ends at the budget, and a real frame round-trips" "$out" 'unreachable fast {"id": 1}'
 
+echo "N. thread-resolve"
+loadedlist() { jq -nc --argjson ids "$1" '{result:{data:($ids | map({id:.}))}}'; }
+scenario "$(jq -nc --argjson l "$(loadedlist '["01a0e328-c41e-7de0-a526-042e024f74b9","bbbbbbbb-1111-4111-8111-111111111111"]')" '{responses:{"thread/loaded/list":$l}}')"
+is "N1 a unique match prints the full id" \
+   "$(rpc thread-resolve --prefix 01a0e328-c41e-7de0-a526-042e0)" "01a0e328-c41e-7de0-a526-042e024f74b9"
+rpc thread-resolve --prefix 01a0e328-c41e-7de0-a526-042e0 >/dev/null 2>&1
+is "N1 exits 0" "$?" 0
+out="$(rpc thread-resolve --prefix ffffffff-ffff-4fff-8fff 2>&1)"; rc=$?
+is "N2 no match exits 1" "$rc" 1
+is "N2 and says so" "$(printf '%s' "$out" | grep -c 'no loaded thread')" 1
+scenario "$(jq -nc --argjson l "$(loadedlist '["01a0e328-c41e-7de0-a526-042e024f74b9","01a0e328-c41e-7de0-a526-999999999999"]')" '{responses:{"thread/loaded/list":$l}}')"
+out="$(rpc thread-resolve --prefix 01a0e328-c41e-7de0-a526 2>&1)"; rc=$?
+is "N3 two matches exits 1" "$rc" 1
+is "N3 and lists both" "$(printf '%s' "$out" | grep -c '2 loaded threads')" 1
+scenario '{}'
+out="$(rpc thread-resolve --prefix short 2>&1)"; rc=$?
+is "N4 a prefix shorter than 13 chars is refused (2)" "$rc" 2
+out="$(rpc thread-resolve --prefix '01a0e328-c41e-ZZZZ-a526-0' 2>&1)"; rc=$?
+is "N5 a prefix with non-hex characters is refused (2)" "$rc" 2
+is "N5 no daemon call was needed to refuse either one" "$(jq -r 'select(.method=="thread/loaded/list") | .method' "$FAKE_LOG" | grep -c .)" 0
+
 echo "K. thread-archive"
 scenario '{}'
 rpc thread-archive --thread th; is "it exits 0" "$?" 0

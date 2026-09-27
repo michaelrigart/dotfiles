@@ -12,10 +12,11 @@ newline-delimited JSON on stdio: the Claude sandbox denies binding a unix socket
 tests' fake daemon cannot listen on one.
 
   health
-  thread-status  --thread ID                               {"loaded", "status", "running"}
-  turn-start     --thread ID --input FILE --schema FILE [--known FILE]   prints the turn id
-  turn-wait      --thread ID (--turn ID | --new-since FILE) --budget SECS [--schema FILE]
-  thread-archive --thread ID
+  thread-status   --thread ID                               {"loaded", "status", "running"}
+  thread-resolve  --prefix PREFIX                            prints the one loaded thread id starting with PREFIX
+  turn-start      --thread ID --input FILE --schema FILE [--known FILE]   prints the turn id
+  turn-wait       --thread ID (--turn ID | --new-since FILE) --budget SECS [--schema FILE]
+  thread-archive  --thread ID
 
 Exit codes: 0 ok, 1 failed or unknown, 2 usage, 3 still running at the budget,
 4 answer does not match the schema (raw text on stdout), 5 daemon unreachable,
@@ -25,6 +26,7 @@ import argparse
 import base64
 import json
 import os
+import re
 import select
 import socket
 import struct
@@ -376,6 +378,30 @@ def cmd_turn_start(c, a):
     return 0
 
 
+def cmd_thread_resolve(c, a):
+    """The one loaded thread whose id starts with a.prefix. The title carries only a prefix
+    (Codex truncates it, F11/F21); a prefix is resolved here and never guessed."""
+    r = c.call("thread/loaded/list", {})
+    if "error" in r:
+        err("thread/loaded/list refused: " + json.dumps(r["error"]))
+        return 1
+    data = (r.get("result") or {}).get("data") or []
+    ids = []
+    for t in data:
+        tid = t.get("id") if isinstance(t, dict) else t
+        if isinstance(tid, str):
+            ids.append(tid)
+    matches = sorted({i for i in ids if i.startswith(a.prefix)})
+    if len(matches) == 1:
+        print(matches[0])
+        return 0
+    if not matches:
+        err(f"no loaded thread starts with {a.prefix}")
+    else:
+        err(f"{len(matches)} loaded threads start with {a.prefix}: {' '.join(matches)}")
+    return 1
+
+
 def cmd_thread_archive(c, a):
     r = c.call("thread/archive", {"threadId": a.thread})
     if "error" in r:
@@ -468,6 +494,7 @@ def main(argv=None):
     sub.add_parser("health")
     for name in ("thread-status", "thread-archive"):
         sub.add_parser(name).add_argument("--thread", required=True)
+    sub.add_parser("thread-resolve").add_argument("--prefix", required=True)
     p = sub.add_parser("turn-start")
     p.add_argument("--thread", required=True)
     p.add_argument("--input", required=True)
@@ -484,6 +511,10 @@ def main(argv=None):
     a = ap.parse_args(argv)
     if a.cmd == "turn-wait":
         return cmd_turn_wait(a)
+    if a.cmd == "thread-resolve":
+        if len(a.prefix) < 13 or re.search(r"[^0-9a-f-]", a.prefix):
+            err(f"invalid prefix: {a.prefix}")
+            return 2
     try:
         c = Client()
     except (Unreachable, Closed) as e:
@@ -494,6 +525,8 @@ def main(argv=None):
             return 0
         if a.cmd == "thread-status":
             return cmd_thread_status(c, a)
+        if a.cmd == "thread-resolve":
+            return cmd_thread_resolve(c, a)
         if a.cmd == "turn-start":
             return cmd_turn_start(c, a)
         return cmd_thread_archive(c, a)
