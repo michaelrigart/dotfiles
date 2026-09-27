@@ -4,10 +4,10 @@
        deploy while the registration connecting them never did — cold restore
        silently dead, every visible artifact present and correct.
 
-       Merge-preserving: any other SessionStart hook is kept, and only Herdr's own
-       entry is added. Shape mirrors what `herdr integration install codex` writes,
-       observed rather than guessed: a `session` argument, timeout 10, and an
-       absolute path to the script.                                              */ -}}
+       Merge-preserving: any other SessionStart hook is kept, and only two entries are
+       added — Herdr's own, then the pane-map hook right after it. Herdr's shape mirrors
+       what `herdr integration install codex` writes, observed rather than guessed: a
+       `session` argument, timeout 10, and an absolute path to the script.        */ -}}
 {{- $cfg := dict -}}
 {{- if .chezmoi.stdin -}}
 {{-   $cfg = fromJson .chezmoi.stdin -}}

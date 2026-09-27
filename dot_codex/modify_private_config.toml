@@ -59,16 +59,17 @@
        because `herdr integration uninstall` deliberately leaves the flag set, so
        rollback has to clear it explicitly by deleting this line.                 */ -}}
 {{- $config = setValueAtPath "features.hooks" true $config -}}
-{{- /* Keep the shared app-server daemon (0.157+) off. Every TUI attaches to one
-       daemon, hooks run inside it, and it keeps the environment of whichever pane
-       happened to spawn it — so the Herdr hook reported every new thread against
-       that one pane's HERDR_PANE_ID and left every other Codex pane without a
-       session id, which xreview then resolved to the wrong thread. Embedded, each
-       TUI runs its hooks with its own pane's environment. Costs `codex agents` and
-       remote control, both daemon-only; `codex queue` keeps its no-daemon path,
-       the one xreview dispatched through before 0.157. A
-       daemon that is already running keeps serving until `codex app-server daemon
-       stop` and a relaunch of the Codex panes.                                 */ -}}
+{{- /* daemon_auto_start stays off: a daemon (0.157+) spawned by whichever TUI happened
+       to start it first keeps that pane's environment, and the Herdr hook running
+       inside it then reports every new thread against that one pane's HERDR_PANE_ID,
+       leaving every other Codex pane without a session id. launchd starts the shared
+       daemon instead, with no HERDR_* in its environment (`codex-daemon`, spec
+       section 5), and every interactive `codex` attaches to it through the
+       `~/.local/bin/codex` launcher rather than spawning its own. xreview no longer
+       has a no-daemon path (`codex queue`, its pre-0.157 route): it dispatches through
+       the shared daemon via `xreview-rpc` (spec section 7.1). A daemon that is already
+       running keeps serving until `codex app-server daemon stop`, or
+       `codex-daemon restart`.                                                  */ -}}
 {{- $config = setValueAtPath "features.daemon_auto_start" false $config -}}
 {{- $config = setValueAtPath "features.js_repl" false $config -}}
 
