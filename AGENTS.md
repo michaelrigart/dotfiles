@@ -128,10 +128,6 @@ asserted against an empty `dev-test`. `layout.sh` also starts a server whenever
 `HERDR_SESSION` is set, even inside a Herdr pane, because the pane you are in belongs to a
 different session than the one you named.
 
-**Report totals as passed/total, never "N green".** A handoff once claimed "324 assertions
-green" when it was 321 green / 3 red — 324 was the *total*. The three red were in
-`test-wt-functions.sh`, the one suite needing zsh, which a bash run hides.
-
 ## Troubleshooting
 
 - "1Password CLI couldn't connect": the app must be running with Settings → Developer →

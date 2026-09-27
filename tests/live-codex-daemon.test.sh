@@ -27,13 +27,23 @@ ws="${HERDR_WORKSPACE_ID:-}"
 [ -n "$ws" ] || { echo "INCONCLUSIVE: run from inside a herdr pane" >&2; exit 2; }
 
 T="$(mktemp -d "${TMPDIR:-/tmp}/live-codex.XXXXXX")"
-tab=""; pane=""; thread=""
+tab=""; pane=""; thread=""; prefix=""; wait_pid=""
 cleanup() {
+  # A turn-wait backgrounded for F16/F17 must never outlive an early exit above it.
+  if [ -n "$wait_pid" ] && kill -0 "$wait_pid" 2>/dev/null; then
+    kill "$wait_pid" 2>/dev/null
+  fi
   if [ -n "$pane" ]; then
     herdr pane send-keys "$pane" ctrl+c >/dev/null 2>&1; sleep 0.5
     herdr pane send-keys "$pane" ctrl+c >/dev/null 2>&1; sleep 1
   fi
   [ -n "$tab" ] && herdr tab close "$tab" >/dev/null 2>&1
+  # thread is only set once F11/F21/F14 resolves it; an earlier exit leaves it empty even
+  # though a title prefix was already seen. Resolve it here too, so the scratch thread this
+  # run actually started still gets archived instead of leaking.
+  if [ -z "$thread" ] && [ -n "$prefix" ]; then
+    thread="$(rpc thread-resolve --prefix "$prefix" 2>/dev/null)" || thread=""
+  fi
   [ -n "$thread" ] && rpc thread-archive --thread "$thread" >/dev/null 2>&1
   rm -rf "$T"
 }
