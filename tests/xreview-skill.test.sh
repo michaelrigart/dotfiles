@@ -182,13 +182,12 @@ else
   _fail "the CLI actually accepts --diff" "no --diff case in the dispatch parser"
 fi
 
-# The staleness threshold is a number in two places. The round cap has already drifted
-# once between skill and code; this one is pinned the same way.
-code_warn="$(strip_comments "$XREVIEW" | grep -oE 'XREVIEW_THREAD_WARN:-[0-9]+' | grep -oE '[0-9]+' | sort -u)"
-if [ "$code_warn" = "8" ] && grep -qi 'answered eight' "$SKILL"; then
-  _pass "the documented staleness threshold matches the code ($code_warn)"
+# A schema miss is its own exit code. The skill must say what to do with it, or the model
+# treats raw reviewer prose as findings.
+if grep -q 'Exit 4' "$SKILL" && strip_comments "$XREVIEW" | grep -q 'exit 4'; then
+  _pass "the skill and the CLI agree that a schema miss exits 4"
 else
-  _fail "the documented staleness threshold matches the code" "code=$code_warn"
+  _fail "the skill and the CLI agree that a schema miss exits 4" "skill/CLI mismatch"
 fi
 
 # --reset dropping the thread is the mechanism behind the rotation advice. If the code
@@ -273,18 +272,31 @@ else
   _fail "the skill says rounds within a checkpoint keep one thread" \
         "nothing stops a round count being read as staleness"
 fi
-if grep -qi 'only staleness signal' "$SKILL"; then
-  _pass "the skill names xreview's warning as the only staleness signal"
+# Rotation is now mechanical: each checkpoint starts on a fresh thread by itself. The old
+# staleness warning and "start a fresh Codex session by hand" advice must not survive in the
+# skill, or the model rotates threads that the workflow already rotates.
+if grep -qi 'Staleness is mechanical' "$SKILL"; then
+  _pass "the skill says staleness is mechanical"
 else
-  _fail "the skill names xreview's warning as the only staleness signal" "staleness is inferrable again"
+  _fail "the skill says staleness is mechanical" "staleness looks like a judgement call again"
 fi
-# The threshold number itself is already pinned against the code further up; what matters
-# here is that the skill names XREVIEW_THREAD_WARN as the knob, so a reader who wants a
-# different threshold changes it rather than eyeballing round counts instead.
-if grep -q 'XREVIEW_THREAD_WARN' "$SKILL"; then
-  _pass "the skill names the staleness knob"
+for stale in 'XREVIEW_THREAD_WARN' 'answered eight' 'send the pane one message' 'Start a fresh Codex session' 'codex queue'; do
+  if grep -qi -- "$stale" "$SKILL"; then
+    _fail "the skill no longer says '$stale'" "still present"
+  else
+    _pass "the skill no longer says '$stale'"
+  fi
+done
+if grep -qi 'The pane comes first' "$SKILL"; then
+  _pass "the skill explains pane-first dispatch"
 else
-  _fail "the skill names the staleness knob" "staleness looks like a judgement call"
+  _fail "the skill explains pane-first dispatch" "missing"
+fi
+# Restarting a contaminated daemon disconnects every Codex TUI. That is Michael's call.
+if grep -q 'codex-daemon restart' "$SKILL" && grep -qi "Michael's call" "$SKILL"; then
+  _pass "the skill leaves the daemon restart to Michael"
+else
+  _fail "the skill leaves the daemon restart to Michael" "missing"
 fi
 # "Cold" is about what you send, not about the thread. The escalation list is exhaustive.
 if grep -qi 'Cold describes what you' "$SKILL"; then
