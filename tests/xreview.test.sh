@@ -87,6 +87,7 @@ while [ "$#" -gt 0 ]; do
                --resolved) resolved="$2"; shift ;; esac; shift
 done
 case "$cmd" in
+  health) [ -z "${RPC_HEALTH_FAIL:-}" ] || exit 5; exit 0 ;;
   thread-status)
     n=$(cat "$P/status_calls" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$P/status_calls"
     if [ -n "${RPC_THREAD_RUNNING:-}" ]; then
@@ -110,7 +111,7 @@ export PATH="$STUB:$PATH"
 fresh() { # a pane showing U0, idle; clean log and state
   unset ENSURE_RC CHECK_RC RPC_NOT_LOADED RPC_NOT_LOADED_ONCE RPC_NOT_LOADED_ONCE_AT RPC_START_FAIL \
         RPC_START_UNCERTAIN NO_TITLE STUCK_TUI EXTRA_PANES PANE_CWD XREVIEW_PANE XREVIEW_THREAD \
-        RPC_WAIT_OUT RPC_WAIT_RC RPC_THREAD_RUNNING
+        RPC_WAIT_OUT RPC_WAIT_RC RPC_THREAD_RUNNING RPC_HEALTH_FAIL
   export NEW_UUID="$U1"
   printf codex > "$P/agent"; printf '%s | t | d' "$U0" > "$P/title"; echo idle > "$P/status"
   echo 0 > "$P/ctrlc"; rm -f "$P/packet" "$P/status_calls"
@@ -173,6 +174,11 @@ fresh; out="$(CHECK_RC=1 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
 is "C2 a contaminated daemon refuses" "$rc" 1
 is "C2 and says why" "$(printf '%s' "$out" | grep -c 'refusing to dispatch while the daemon')" 1
 is "C2 untouched" "$(untouched)" yes
+fresh; out="$(RPC_HEALTH_FAIL=1 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+is "C13 an unreachable daemon via xreview-rpc refuses" "$rc" 1
+is "C13 and says so" "$(printf '%s' "$out" | grep -c 'cannot reach the Codex daemon through xreview-rpc')" 1
+is "C13 untouched" "$(untouched)" yes
+is "C13 no round consumed" "$(bash "$XREVIEW" round)" 0
 fresh; : > "$P/agent"; out="$(bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
 is "C3 no Codex pane refuses" "$(printf '%s' "$out" | grep -c 'no Codex pane')" 1
 is "C3 untouched" "$(untouched)" yes

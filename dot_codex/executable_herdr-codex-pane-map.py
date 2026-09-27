@@ -1,4 +1,6 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
+# Pinned to the system interpreter, not `env python3`: this runs inside the Codex
+# daemon, and PATH there must not be able to shadow it.
 """Reconcile herdr's session id for every Codex pane from the thread id in its title.
 
 Managed by chezmoi (source: dot_codex/executable_herdr-codex-pane-map.py).

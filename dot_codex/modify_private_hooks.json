@@ -20,7 +20,9 @@
 {{- /* The pane-map hook reconciles herdr's session ids from the pane titles. Herdr's own
        hook exits inside the daemon (no pane environment there), so this is the one that
        reports. Spec: docs/superpowers/specs/2026-09-26-xreview-codex-daemon-design.md §6. */ -}}
-{{- $mapCmd := printf "python3 '%s/.codex/herdr-codex-pane-map.py'" .chezmoi.homeDir -}}
+{{- /* Pinned to the system interpreter (F3): this hook runs inside the Codex daemon,
+       where PATH must not be able to shadow python3. */ -}}
+{{- $mapCmd := printf "/usr/bin/python3 '%s/.codex/herdr-codex-pane-map.py'" .chezmoi.homeDir -}}
 {{- /* Drop any existing entry of ours first, so re-applying cannot duplicate either. */ -}}
 {{- $kept := list -}}
 {{- range $start -}}

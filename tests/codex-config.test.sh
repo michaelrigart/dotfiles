@@ -137,7 +137,7 @@ else
 fi
 
 echo "H. hooks.json renders the observed Herdr registration"
-MAPCMD="python3 '$HOME/.codex/herdr-codex-pane-map.py'"
+MAPCMD="/usr/bin/python3 '$HOME/.codex/herdr-codex-pane-map.py'"
 emit_hooks '{}'
 if printf '%s' "$OUT" | jq -e --arg cmd "bash '$HOME/.codex/herdr-agent-state.sh' session" --arg map "$MAPCMD" '
   (keys == ["hooks"])

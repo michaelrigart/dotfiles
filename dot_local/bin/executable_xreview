@@ -144,7 +144,7 @@ pane_prepare() {
 
 report_to_herdr() { # report_to_herdr <pane> <thread>
   herdr pane report-agent-session "$1" --source herdr:codex --agent codex \
-    --agent-session-id "$2" --seq "$(python3 -c 'import time; print(time.time_ns())')" \
+    --agent-session-id "$2" --seq "$(/usr/bin/python3 -c 'import time; print(time.time_ns())')" \
     >/dev/null 2>&1 || true
 }
 
@@ -346,6 +346,7 @@ cmd_dispatch() {
   [ -z "$diff_range" ] || diff_text="$(inline_diff "$diff_range")"
   codex-daemon ensure || die "the Codex daemon is not running; no review was started"
   codex-daemon check || die "refusing to dispatch while the daemon carries a pane's environment (see above)"
+  xreview-rpc health || die "cannot reach the Codex daemon through xreview-rpc (see above); no review was started"
   pane="$(find_pane)"
   status="$(pane_field "$pane" '.agent_status')"
   case "$status" in
