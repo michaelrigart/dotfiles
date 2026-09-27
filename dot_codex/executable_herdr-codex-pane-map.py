@@ -168,6 +168,8 @@ def reconcile(herdr, done, session_id=None, start_source=None, failed=None):
             if not pane_id:
                 continue
             agent_session = p.get("agent_session")
+            if agent_session is not None and not isinstance(agent_session, dict):
+                continue   # malformed (F13/item 13): skip the whole pane, not "no session"
             current = agent_session.get("value") if isinstance(agent_session, dict) else None
             if current and current.startswith(prefix):
                 continue   # already correct - a prefix match is enough, never re-resolved

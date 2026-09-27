@@ -169,6 +169,8 @@ fixture "$badstr,$badagent,$good"
 hook --reconcile; rc=$?
 is "it exits 0 despite the malformed entries"      "$rc" 0
 is "the good pane after them is still repaired"    "$(grep -c '^w11:p2' "$CALLS")" 1
+is "M3 the pane with a string agent_session is skipped, never reported" \
+   "$(grep -c '^w9:p2' "$CALLS")" 0
 
 echo "I2. with two panes in hook mode, --session-start-source goes only to the starting pane"
 fixture "$(pane w1:p2 codex "$(trunc "$U1") | t | d" "")","$(pane w2:p2 codex "$(trunc "$U3") | t | d" "")"
