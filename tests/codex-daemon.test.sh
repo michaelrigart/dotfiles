@@ -147,12 +147,33 @@ sleep 0.5   # let bash reap the signalled child, or kill -0 still sees a zombie
 is "a surviving Codex daemon process is signalled" "$(kill -0 "$A_PID" 2>/dev/null && echo alive || echo gone)" gone
 is "a recycled pid belonging to something else is not" "$(kill -0 "$B_PID" 2>/dev/null && echo alive || echo gone)" alive
 is "and the daemon is started again through launchd" "$(grep -c 'launchctl kickstart' "$CALLS")" 1
+is "stop happens before the kickstart, not after" \
+   "$([ "$(grep -n 'codex stop' "$CALLS" | head -1 | cut -d: -f1)" \
+       -lt "$(grep -n 'launchctl kickstart' "$CALLS" | head -1 | cut -d: -f1)" ] && echo yes || echo no)" yes
+
+sleep 60 & A_PID=$!
+sleep 60 & B_PID=$!
+printf '{"pid":%s}' "$A_PID" > "$CODEX_HOME/app-server-daemon/daemon.pid"
+printf '{"pid":%s}' "$B_PID" > "$CODEX_HOME/app-server-daemon/daemon-updater.pid"
+echo notRunning > "$STATE"; : > "$CALLS"
+out="$(KICK_STARTS=0 FOREIGN_PID="$B_PID" run restart 2>&1)"; rc=$?
+is "restart fails when ensure cannot bring the daemon back" "$rc" 1
+is "and says so" "$(printf '%s' "$out" | grep -c 'did not start within')" 1
+kill "$A_PID" "$B_PID" 2>/dev/null; sleep 0.5
 
 echo "E. the LaunchAgent"
 rendered="$T/agent.plist"
 chezmoi execute-template --file "$PLIST" > "$rendered" 2>"$T/tpl.err" \
   || { _fail "the plist template renders" "$(head -c 200 "$T/tpl.err")"; }
 if plutil -lint "$rendered" >/dev/null 2>&1; then _pass "the rendered plist is valid"; else _fail "the rendered plist is valid" "$(plutil -lint "$rendered" 2>&1)"; fi
+rendered_intel="$T/agent-intel.plist"
+if chezmoi execute-template --override-data '{"is_arm":false}' --file "$PLIST" \
+     > "$rendered_intel" 2>"$T/tpl-intel.err"; then
+  _pass "the plist template also renders for is_arm=false"
+else
+  _fail "the plist template also renders for is_arm=false" "$(head -c 200 "$T/tpl-intel.err")"
+fi
+if plutil -lint "$rendered_intel" >/dev/null 2>&1; then _pass "the intel-rendered plist is valid"; else _fail "the intel-rendered plist is valid" "$(plutil -lint "$rendered_intel" 2>&1)"; fi
 x() { plutil -extract "$1" raw -o - "$rendered" 2>/dev/null; }
 is "the label is the one codex-daemon kickstarts" "$(x Label)" "be.netronix.codex-app-server"
 is "it runs codex app-server daemon start" "$(x ProgramArguments.1) $(x ProgramArguments.2) $(x ProgramArguments.3)" "app-server daemon start"

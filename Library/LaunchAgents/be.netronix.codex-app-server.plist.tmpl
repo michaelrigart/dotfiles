@@ -14,10 +14,15 @@
   `daemon start` returns once the daemon's own supervisor is up, so there is no KeepAlive;
   AbandonProcessGroup keeps launchd from reaping what it started. PATH mirrors what an
   interactive shell would activate, so commands the reviewer runs find the same toolchains.
+  ~/.local/bin comes before Homebrew so the hook and the daemon itself resolve `codex-daemon`
+  and `xreview-rpc` to the launcher's own directory. A bare `codex` invoked from inside the
+  daemon (the reviewer's tools, say) resolves to the ~/.local/bin launcher too, not the real
+  binary - harmless here, because the daemon this launcher would ensure is the one already
+  running it.
 
-  StandardOutPath/StandardErrorPath go to ~/.local/state/codex-daemon.log, not /dev/null:
+  StandardOutPath/StandardErrorPath go to ~/Library/Logs/codex-daemon.log, not /dev/null:
   a daemon that fails to start (or that a bad PATH entry breaks) otherwise leaves nothing
-  to diagnose it with.
+  to diagnose it with. ~/Library/Logs always exists on macOS, unlike ~/.local/state.
 -->
 <plist version="1.0">
 <dict>
@@ -48,8 +53,8 @@
     <true/>
 
     <key>StandardOutPath</key>
-    <string>{{ .chezmoi.homeDir }}/.local/state/codex-daemon.log</string>
+    <string>{{ .chezmoi.homeDir }}/Library/Logs/codex-daemon.log</string>
     <key>StandardErrorPath</key>
-    <string>{{ .chezmoi.homeDir }}/.local/state/codex-daemon.log</string>
+    <string>{{ .chezmoi.homeDir }}/Library/Logs/codex-daemon.log</string>
 </dict>
 </plist>
