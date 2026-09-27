@@ -14,6 +14,10 @@
   `daemon start` returns once the daemon's own supervisor is up, so there is no KeepAlive;
   AbandonProcessGroup keeps launchd from reaping what it started. PATH mirrors what an
   interactive shell would activate, so commands the reviewer runs find the same toolchains.
+
+  StandardOutPath/StandardErrorPath go to ~/.local/state/codex-daemon.log, not /dev/null:
+  a daemon that fails to start (or that a bad PATH entry breaks) otherwise leaves nothing
+  to diagnose it with.
 -->
 <plist version="1.0">
 <dict>
@@ -44,8 +48,8 @@
     <true/>
 
     <key>StandardOutPath</key>
-    <string>/dev/null</string>
+    <string>{{ .chezmoi.homeDir }}/.local/state/codex-daemon.log</string>
     <key>StandardErrorPath</key>
-    <string>/dev/null</string>
+    <string>{{ .chezmoi.homeDir }}/.local/state/codex-daemon.log</string>
 </dict>
 </plist>
