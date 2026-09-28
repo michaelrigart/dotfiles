@@ -3096,11 +3096,13 @@ Expected: every suite `ok`; the `test-requires` suites are listed as skipped. Re
 - [ ] **Step 2: Confirm no queue-era `xreview collect` is pending anywhere, before deploying**
 
 ```bash
-for d in ~/.local/state/xreview/*/; do [ -d "$d/turns" ] && ls "$d/turns" | grep -v '\.known$\|\.resolved$' | sed "s#^#$d turns/#"; done
+pgrep -fl 'xreview collect'
 ```
-Expected: no output. A pending nonce from the old queue-era CLI would collect against a client
-that no longer exists once Task 9 deploys; reconcile any listed nonce by hand (collect or
-discard it under the old `xreview` first) before proceeding.
+Expected: no output, and Michael confirms no other session still means to collect a
+dispatched nonce. A pending nonce from the old queue-era CLI would collect against a client
+that no longer exists once Task 9 deploys; reconcile it by hand (collect or discard it under
+the old `xreview` first) before proceeding. (Corrected after execution: the check first
+written here listed the new CLI's `turns/` directory, which the queue-era CLI never wrote.)
 
 - [ ] **Step 3: Deploy the changed files (targeted apply, unsandboxed)**
 
