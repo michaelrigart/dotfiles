@@ -294,10 +294,23 @@ for stale in 'XREVIEW_THREAD_WARN' 'answered eight' 'send the pane one message' 
     _pass "the skill no longer says '$stale'"
   fi
 done
-if grep -qi 'The pane comes first' "$SKILL"; then
-  _pass "the skill explains pane-first dispatch"
+if grep -qi 'The turn starts first' "$SKILL"; then
+  _pass "the skill explains turn-first dispatch"
 else
-  _fail "the skill explains pane-first dispatch" "missing"
+  _fail "the skill explains turn-first dispatch" "missing"
+fi
+if grep -q 'The pane comes first' "$SKILL"; then
+  _fail "the skill no longer says the pane comes first" "stale pane-first wording survives"
+else
+  _pass "the skill no longer says the pane comes first"
+fi
+# A pane that cannot be pointed at the thread is a warning, not a refusal (item 16): the
+# review still runs and collect still works. If this drifts back to a refusal, the model
+# would stop a review that the daemon is still happily running.
+if grep -qi 'only warns' "$SKILL" && grep -qi 'review still runs' "$SKILL"; then
+  _pass "the skill says a pane that cannot be pointed at the thread only warns"
+else
+  _fail "the skill says a pane that cannot be pointed at the thread only warns" "missing"
 fi
 # Restarting a contaminated daemon disconnects every Codex TUI. That is Michael's call.
 if grep -q 'codex-daemon restart' "$SKILL" && grep -qi "Michael's call" "$SKILL"; then

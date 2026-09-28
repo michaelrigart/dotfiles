@@ -27,7 +27,7 @@ ws="${HERDR_WORKSPACE_ID:-}"
 [ -n "$ws" ] || { echo "INCONCLUSIVE: run from inside a herdr pane" >&2; exit 2; }
 
 T="$(mktemp -d "${TMPDIR:-/tmp}/live-codex.XXXXXX")"
-tab=""; pane=""; thread=""; prefix=""; wait_pid=""
+tab=""; pane=""; thread=""; prefix=""; wait_pid=""; f22_thread=""
 cleanup() {
   # A turn-wait backgrounded for F16/F17 must never outlive an early exit above it.
   if [ -n "$wait_pid" ] && kill -0 "$wait_pid" 2>/dev/null; then
@@ -45,6 +45,7 @@ cleanup() {
     thread="$(rpc thread-resolve --prefix "$prefix" 2>/dev/null)" || thread=""
   fi
   [ -n "$thread" ] && rpc thread-archive --thread "$thread" >/dev/null 2>&1
+  [ -n "$f22_thread" ] && rpc thread-archive --thread "$f22_thread" >/dev/null 2>&1
   rm -rf "$T"
 }
 trap cleanup EXIT
@@ -105,6 +106,47 @@ for _ in $(seq 15); do
   [ "$s" = "$thread" ] && break; sleep 1
 done
 is "herdr knows the scratch pane's thread" "$s" "$thread"
+
+echo "F22: codex resume on a thread with a turn already running replays it, then streams live"
+# The exact scenario xreview dispatch now relies on (spec 7.3 step 4): create a thread and
+# start a turn on it BEFORE any TUI is attached, then resume a pane onto it while the turn
+# is still running. The probe (2026-09-28) found the TUI renders the whole turn from its
+# start, prompt included, then streams the rest live.
+f22_thread="$(rpc thread-start --cwd "$SRC")"; rc=$?
+is "F22 thread-start creates a thread" "$rc/$([ -n "$f22_thread" ] && echo yes || echo no)" "0/yes"
+printf 'Live canary F22. Reply with verdict "approve" and no findings.\n' > "$T/in22"
+f22_turn="$(rpc turn-start --thread "$f22_thread" --input "$T/in22" --schema "$SCHEMA")"
+# turn-wait starts before the pane is even resumed, in the background, so it subscribes and
+# catches turn/completed (F5) regardless of how long the resume itself takes.
+rpc turn-wait --thread "$f22_thread" --turn "$f22_turn" --budget 180 --schema "$SCHEMA" \
+  > "$T/wait22.out" 2> "$T/wait22.err" &
+wait_pid=$!
+pane_cmd="$(grep -v '^[[:space:]]*#' "$PCMD" | grep . | head -1)"
+herdr pane run "$pane" "$pane_cmd resume $f22_thread" >/dev/null
+seen22=0
+for _ in $(seq 15); do
+  out22="$(herdr pane read "$pane" --source visible 2>/dev/null)"
+  if printf '%s' "$out22" | grep -q 'Live canary F22' || printf '%s' "$out22" | grep -qi 'Working'; then
+    seen22=1; break
+  fi
+  sleep 1
+done
+is "F22 the resumed pane shows the turn while it runs (prompt or Working)" "$seen22" 1
+wait "$wait_pid"; rc=$?
+res22="$(cat "$T/wait22.out")"
+is "F22 turn-wait completes" "$rc" 0
+verdict22="$(printf '%s' "$res22" | jq -r .verdict 2>/dev/null)"
+case "$verdict22" in
+  approve|changes) _pass "F22 with a schema-valid verdict ($verdict22)" ;;
+  *) _fail "F22 with a schema-valid verdict" "$verdict22" ;;
+esac
+seen22final=0
+for _ in $(seq 15); do
+  out22f="$(herdr pane read "$pane" --source visible 2>/dev/null)"
+  printf '%s' "$out22f" | grep -qi "$verdict22" && { seen22final=1; break; }
+  sleep 1
+done
+is "F22 the pane shows the final answer once the turn completes" "$seen22final" 1
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
