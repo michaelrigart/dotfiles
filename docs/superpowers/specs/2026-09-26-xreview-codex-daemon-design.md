@@ -2,6 +2,9 @@
 
 **Status:** In progress
 **Date:** 2026-09-26
+**Amended:** 2026-09-28 - dispatch is turn first: xreview creates the thread over the daemon,
+starts the turn, then resumes the pane onto the thread, which replays the turn from its start
+(F22, §7.3). This supersedes the original pane-first ordering (§12).
 
 ## 1. Problem
 
@@ -29,10 +32,11 @@ resolved through the daemon (F21), never a full id read straight off the title.
 
 ## 2. Goals
 
-1. **Live.** Every review turn is visible live in the repository's Codex pane, from its
-   first token. No review turn is started unless the pane is already watching its thread.
+1. **Live.** Every review turn is visible live in the repository's Codex pane. Right after
+   the turn starts, the pane is resumed onto its thread and replays it from its first item
+   (F22). A pane that fails to attach costs the live view, never the review.
 2. **Correct routing.** A review never reaches another repository's thread. The review thread
-   is one xreview had the repository's own pane create, or one the operator pinned
+   is one xreview created for the repository over the daemon, or one the operator pinned
    explicitly.
 3. **Herdr knows every thread.** `herdr pane list` shows the correct thread id for every Codex
    pane, including sessions the operator starts by hand. It never shows another pane's id,
@@ -81,6 +85,7 @@ these, and the live suite (§9) re-checks them.
 | F19 | `codex app-server daemon bootstrap` installs no launchd job. The daemon's supervisor (`daemon pid-update-loop`) and server are each their own process-group leader. `daemon.pid` and `daemon-updater.pid` under `$CODEX_HOME/app-server-daemon/` hold JSON with a `pid` field. |
 | F20 | Inside the Claude sandbox, binding a unix socket is denied, so a socket-based fake daemon cannot run in the default test run. |
 | F21 | `thread/loaded/list` resolves a title's id prefix to a full id: it lists every loaded thread, and the one whose id starts with the prefix is the match. Zero or several matches is an error, never a guess. |
+| F22 | (Probed 2026-09-28.) A thread created with `thread/start` and given a turn at once can be opened with `codex resume <id>` while that first turn is still running. The TUI renders the whole turn from its start, prompt included, streams the rest live, and shows the final answer. |
 
 
 ## 4. Architecture
@@ -91,8 +96,8 @@ launchd ──starts──▶ Codex daemon (clean env)
       TUIs attach ──────┤         ├──▶ herdr-agent-state.sh    (herdr-managed; exits: F13)
   (via codex launcher)  │         └──▶ herdr-codex-pane-map.py (new: reconcile titles → herdr)
                         │
- xreview ─▶ xreview-rpc ┘  turn/start + outputSchema on the pane's thread, wait turn/completed
-    └──▶ herdr: prepare the repo's Codex pane on the review thread BEFORE the turn starts
+ xreview ─▶ xreview-rpc ┘  thread/start, turn/start + outputSchema, wait turn/completed
+    └──▶ herdr: then resume the repo's Codex pane on that thread; it replays the turn (F22)
 ```
 
 | Unit | Kind | Responsibility |
@@ -104,8 +109,8 @@ launchd ──starts──▶ Codex daemon (clean env)
 | `config.toml` template | changed | Keep `daemon_auto_start = false`; pin `tui.terminal_title` |
 | `herdr-codex-pane-map.py` | new, `~/.codex/` | Reconcile herdr's session id for every Codex pane from its title |
 | `hooks.json` template | changed | Register the pane-map hook beside herdr's entry |
-| `xreview-rpc` | new, `~/.local/bin/`, Python stdlib | Talk to the daemon: thread status, start a turn, wait for a turn, archive |
-| `xreview` | changed | Pane-first dispatch, checkpoint threads, structured collect |
+| `xreview-rpc` | new, `~/.local/bin/`, Python stdlib | Talk to the daemon: start a thread, thread status, start a turn, wait for a turn, archive |
+| `xreview` | changed | Turn-first dispatch with the pane following, checkpoint threads, structured collect |
 | Reviewer instructions | new, `~/.config/xreview/reviewer.md` | Reviewer role, carried inside every review packet |
 | `cross-review/SKILL.md` | changed | Structured findings, automatic rotation, new refusals and exit codes |
 
@@ -215,6 +220,7 @@ It resolves `herdr` by absolute path, because the daemon's `PATH` is launchd's.
 A Python 3 client using only the standard library. It connects to the daemon socket (F1),
 completes the handshake (F2), declines any server-initiated approval request, and exposes:
 
+- `thread-start --cwd <dir>`: creates a thread on the daemon and prints its id (F22).
 - `thread-status --thread <id>`: whether the thread is loaded, and whether a turn is running
   on it.
 - `thread-resolve --prefix <p>` (F21): the one loaded thread id starting with `<p>`. Refuses a
@@ -236,11 +242,10 @@ completes the handshake (F2), declines any server-initiated approval request, an
 
 - Precedence for the review thread: `XREVIEW_THREAD` > `xreview init <id>` pin > the
   checkpoint thread in `$state_dir/thread` > a new thread.
-- **A new thread is created by the pane, not by xreview.** xreview launches a fresh Codex in
-  the pane. The TUI creates the thread on the daemon and shows its id in its title (F11), and
-  xreview records that id as the checkpoint thread. The session starts with the pane
-  command's read-only flags, and every review turn sets read-only and approval `never` again
-  on the turn (§7.1).
+- **A new thread is created by xreview**, with `xreview-rpc thread-start --cwd <repo root>`,
+  and recorded as the checkpoint thread. Its id is known from the start, so nothing is read
+  back from a title. Every review turn sets read-only and approval `never` on the turn itself
+  (§7.1), and the pane resumes the thread with the pane command's read-only flags.
 - Every round within a checkpoint goes to the same thread. `xreview round --reset` (moving to
   the next checkpoint) drops the recorded thread, so the next dispatch starts a cold one.
 - The superseded review thread is archived once the pane has moved off it. Archived threads
@@ -254,7 +259,7 @@ completes the handshake (F2), declines any server-initiated approval request, an
 ### 7.3 Dispatch
 
 `xreview dispatch [--diff <range>] <body-file>`. The output is unchanged: the nonce on stdout.
-Nothing is sent to the reviewer until the pane is watching the thread.
+The turn starts first; the pane follows it (F22).
 
 1. **Preconditions, before anything is touched:**
    - `codex-daemon ensure` and then `codex-daemon check` pass. If the daemon carries a pane's
@@ -262,27 +267,25 @@ Nothing is sent to the reviewer until the pane is watching the thread.
      every open Codex TUI disconnects and must be relaunched.
    - The repository's Codex pane exists: exactly one herdr pane with `agent == "codex"` and
      `cwd` equal to the repository root. `XREVIEW_PANE` overrides the choice.
-   - That pane's `agent_status` is not `working`.
+   - That pane is not mid-turn: its `agent_status` is not `working` or `blocked`, and the
+     thread its title shows is not running.
    - The existing guards pass: no project `.codex/`, and the round cap.
-2. **Pane first.** Make the pane show the review thread. The join key is the title's id
-   prefix (F11/F21), resolved to a full id by the daemon - never read whole and never guessed:
-   - If the recorded thread's id already starts with the pane's title prefix, nothing to do.
-   - If a thread is recorded (or pinned) but the pane shows something else, quit its TUI
-     (`ctrl+c` twice), wait for the shell, and run the Codex pane command with `resume <id>`.
-     The pane command's flags come from the single definition that `layout.sh` uses.
-   - If no thread is recorded, quit the TUI and run the Codex pane command without `resume`.
-     Once the title shows a new prefix, resolve it with `xreview-rpc thread-resolve --prefix`
-     and record the resolved full id as the checkpoint thread.
-
-   In every case, wait (bounded, about 20 s) until the title's prefix agrees - directly, or by
-   resolving a fresh one - and the daemon reports the resolved thread as loaded, then report
-   the full id to herdr. If the title never shows the expected prefix, or a fresh prefix never
-   resolves, refuse. No turn has been started, so nothing is lost or unseen.
+2. **Thread.** Use the pinned or recorded checkpoint thread. With none, create one with
+   `xreview-rpc thread-start` and record it.
 3. **Turn.** Build the packet as `<cross-review-request>` containing the reviewer instructions,
-   the body, and the diff inline. The correlation line is dropped, because the turn id
-   replaces it. Run `turn-start` with the findings schema (§7.5).
-4. **Record** `$state_dir/turns/<nonce>` as `<thread> <turn>`. Archive the superseded review
-   thread, if there is one.
+   the body, and the diff inline. Run `turn-start` with the findings schema (§7.5), and record
+   `$state_dir/turns/<nonce>` as `<thread> <turn>`. From here on dispatch always succeeds and
+   prints the nonce: the review runs whatever happens to the pane.
+4. **Pane, best effort.** If the pane's title prefix is a prefix of the thread's id (F11) and
+   xreview put the pane on this thread under the current daemon generation, leave it alone.
+   Otherwise quit its TUI (`ctrl+c` twice), wait (bounded) for the shell, and run the Codex
+   pane command with `resume <thread>`; the TUI replays the running turn (F22). Wait
+   (bounded, about 20 s) for the title to show the thread's prefix, then record the pane and
+   report the thread to herdr. If any of this fails - the pane closes, the session will not
+   exit, the title never shows the thread - warn on stderr that the review is running but not
+   shown, and still exit 0.
+5. **Archive** the superseded review thread, if there is one, but only once the pane shows the
+   new thread; otherwise leave it.
 
 ### 7.4 Collect
 
@@ -340,7 +343,7 @@ existing fields, so they are unaffected.
 | Interactive `codex --remote` | The launcher refuses. |
 | No Codex pane, or several | Refuse, list the candidates, and suggest applying the project layout or setting `XREVIEW_PANE`. |
 | Pane mid-turn | Refuse before touching anything. |
-| Pane cannot be prepared (no title id, thread not loaded, timeout) | Refuse. No turn exists. |
+| Pane cannot be pointed at the thread (closed, session will not exit, title never shows it) | Warn; the review still runs and `collect` works. The superseded thread is not archived. |
 | Turn failed or interrupted | `collect` exits 1 with the reason. |
 | Output not schema-valid | `collect` exits 4. Raw text is printed and labelled untrusted. |
 | Pane-map hook: herdr unreachable, or no title match | Report nothing and exit 0. |
@@ -358,8 +361,10 @@ Every suite checks that its subject exists and exits 2 if not.
   - Asserts:
     - a contaminated daemon, a missing or ambiguous pane and a busy pane each refuse before
       any pane keystroke or `turn/start`;
-    - no `turn/start` until the stub pane's title shows the thread id, and none at all when
-      preparation times out;
+    - a new checkpoint thread comes from `thread-start`, and the turn starts before the pane
+      is touched;
+    - a pane that cannot be pointed at the thread only warns: the nonce is printed and the
+      turn recorded;
     - no re-point when the title already shows the id;
     - exit codes 0, 1, 3 and 4;
     - receipt fields, old and new;
@@ -383,10 +388,12 @@ Every suite checks that its subject exists and exits 2 if not.
   `daemon_auto_start` stays false. `hooks.json` holds both hook entries, the edit is
   idempotent, and unrelated hooks survive.
 - **`live-codex-daemon.test.sh`** (`# test-requires: unsandboxed, live daemon, live herdr`):
-  automates the 2026-09-26 probe in the pane-first order. In a scratch pane:
+  automates the probes. In a scratch pane:
   - start a fresh Codex and read the thread id from the title;
   - start a turn with the schema through `xreview-rpc`;
   - assert the pane renders it from the first token and the result is structured;
+  - F22: create a thread with `thread-start`, start a turn, then `codex resume` it in the
+    pane; assert the pane shows the turn while it runs and its final answer;
   - assert the pane-map hook reported the scratch pane;
   - clean up: archive the thread and close the tab.
 
@@ -435,8 +442,12 @@ Still open, neither a gate:
 - **A herdr event subscriber** (`events.subscribe`, `pane_updated`) watching titles.
   Rejected: it needs another long-running supervised process. The `SessionStart` hook already
   runs often enough to reconcile.
-- **Starting the turn before attaching the pane.** Rejected in review: a fast turn, or a pane
-  that fails to attach, leaves the review unwatched.
+- **Pane first** (the 2026-09-26 design): the pane created each fresh thread, and xreview
+  started the turn only after polling the title proved the pane was watching. Superseded on
+  2026-09-28. The title polling produced a run of races (stale titles, missed resets, failed
+  reads), and F22 shows turn first loses nothing: the resumed pane replays the turn from its
+  start. The one cost is a pane that fails to attach, which now leaves a review running
+  unwatched rather than refused.
 - **Only warning about a daemon that carries a pane's environment.** Rejected in review: it
   keeps corrupting herdr's view of other panes.
 - **Transport-only change**, keeping the pane's current thread. Rejected: rotation stays
