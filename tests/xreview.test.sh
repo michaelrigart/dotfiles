@@ -71,11 +71,11 @@ pane_json() {
     n=$(cat "$P/exit_delay_calls" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$P/exit_delay_calls"
     if [ "$n" -le "$AGENT_EXIT_DELAY" ]; then a=codex; else rm -f "$P/exit_delay_active"; fi
   fi
-  # A relaunch's typed command resets the title to "xreview" first (item 4/P1 slice 2);
-  # this simulates the terminal actually catching up to that reset before the real
-  # session's title lands, for RESET_LAG queries after the run. STUCK_TITLE simulates the
-  # reviewer's exact scenario instead: the disconnected TUI never relaunches at all, so the
-  # title never resets and keeps showing whatever it already showed.
+  # Step (c)'s launch command sets the real title; RESET_LAG (read-count, default 1)
+  # simulates the terminal taking a few more reads to catch up before it shows, so the
+  # steady-cadence wait loop genuinely iterates. RESET_LAG=0 means it shows on the very
+  # first read - the reviewer's own scenario (item 21/P2): nothing to catch, because
+  # nothing was watching the pane before step (c) even ran.
   if [ -e "$P/reset_pending" ]; then
     n=$(cat "$P/reset_calls" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$P/reset_calls"
     if [ "$n" -gt "${RESET_LAG:-1}" ]; then
@@ -84,27 +84,6 @@ pane_json() {
     else
       t=xreview
     fi
-  fi
-  # M5: a WALL-CLOCK-keyed transient, not a read-count one - RESET_TIMED simulates the
-  # title staying stale (still `want`) for RESET_STALE_SECS after the run, then showing
-  # "xreview" for only RESET_WINDOW_SECS (shorter than one normal poll), then the real
-  # title. A poller slower than that window can sample straight through it and never see
-  # the reset at all - unlike the read-count mode above, which the very first read always
-  # catches regardless of poll rate.
-  if [ -e "$P/reset_timed_pending" ]; then
-    since="$(cat "$P/reset_since" 2>/dev/null || echo 0)"
-    LC_ALL=C awk -v s="$since" -v e="$(/bin/date +%s.%N)" \
-      -v stale="${RESET_STALE_SECS:-0.2}" -v win="${RESET_WINDOW_SECS:-0.15}" \
-      'BEGIN{el=e-s; if (el>=stale+win) print "past"; else if (el>=stale) print "window"; else print "stale"}' \
-      > "$P/reset_timed_phase"
-    phase="$(cat "$P/reset_timed_phase" 2>/dev/null)"
-    case "$phase" in
-      past) t="$(cat "$P/newtitle" 2>/dev/null)"; printf '%s' "$t" > "$P/title"
-            rm -f "$P/reset_timed_pending" ;;
-      window) t=xreview ;;
-      # stale: leave $t as whatever $P/title already holds (the old, still-`want` title) -
-      # `pane run` never touched it for this mode.
-    esac
   fi
   af=""; [ -n "$a" ] && af="\"agent\":\"$a\","
   printf '{%s"agent_status":"%s","cwd":"%s","pane_id":"w1:p2","terminal_title":"%s","terminal_title_stripped":"%s"}' \
@@ -130,45 +109,56 @@ case "$1 $2" in
   "pane run")
     echo 0 > "$P/ctrlc"
     rm -f "$P/get_calls" "$P/reset_calls" "$P/reset_pending" "$P/reset_fail_once" \
-          "$P/reset_since" "$P/reset_timed_pending" "$P/reset_timed_phase" \
           "$P/exit_delay_active" "$P/exit_delay_calls" "$P/agent_fail_once"
-    : > "$P/lag_active"
-    [ -n "${NO_TITLE:-}" ] && exit 0
-    printf codex > "$P/agent"
-    # Truncate to a realistic title (F11/F21: 29 chars plus "..." once the thread is named).
-    # This is its own process (#!/bin/sh), so it cannot call the parent script's trunc().
+    # The resume path now sends the reset ALONE, as its own `pane run` (step a), and only
+    # afterwards the actual launch command (step c) - no more single combined command
+    # (item 21/P2). React to which shape this call actually has, not to "a pane run
+    # happened": the exact reset-alone string is step (a); anything else (a bare resume
+    # command, or the fresh-session path's own combined "reset; launch" line, which never
+    # carries "resume") is the launch itself.
     case "$4" in
-      *" resume "*) full="${4##* resume }"; len=29 ;;
-      # M4: a relaunch can show the SAME thread at a different truncation length than
-      # whatever the pane's title showed before - RELAUNCH_PREFIX_LEN simulates that.
-      *) full="$NEW_UUID"; len="${RELAUNCH_PREFIX_LEN:-29}" ;;
-    esac
-    # M4: react to the literal reset prefix actually being in the typed command, not to
-    # "a pane run happened" - so this stub asserts the real thing (the command really does
-    # reset the title) rather than assuming it.
-    case "$4" in
-      *"printf '\033]2;xreview\007';"*)
-        # I-1: one `pane get` right after the run fails outright (not merely empty),
-        # simulating a transient herdr hiccup during the fast poll. It applies whether or
-        # not the title itself actually resets, so it also covers the exact repro combined
-        # with STUCK_TITLE: a failed read must never be read as "observed a title that is
-        # not want".
+      "printf '\033]2;xreview\007'")
+        # Step (a): the reset alone. Clears the old session; the title then STAYS at
+        # "xreview" (nothing else runs in the pane until step (c)), unless STUCK_TITLE
+        # simulates the disconnected TUI never relaunching at all.
+        : > "$P/agent"
+        # I-1: one `pane get` right after the reset fails outright (not merely empty),
+        # simulating a transient herdr hiccup during the reset wait - applies whichever
+        # call carries it, so it also covers the exact repro combined with STUCK_TITLE: a
+        # failed read must never be read as "observed a title that is not want".
         [ -n "${RESET_FAIL_ONCE:-}" ] && : > "$P/reset_fail_once"
         if [ -n "${STUCK_TITLE:-}" ]; then
           : # the disconnected TUI never actually attaches: the title stays exactly as it
             # was, still showing `want` - pane_prepare must never accept that without first
             # observing a non-want title.
         else
+          printf xreview > "$P/title"
+        fi ;;
+      *)
+        # Step (c) (or the fresh-session's single combined call).
+        [ -n "${NO_TITLE:-}" ] && exit 0
+        printf codex > "$P/agent"
+        : > "$P/lag_active"
+        # Truncate to a realistic title (F11/F21: 29 chars plus "..." once the thread is
+        # named). This is its own process (#!/bin/sh), so it cannot call the parent
+        # script's trunc().
+        case "$4" in
+          *" resume "*) full="${4##* resume }"; len=29 ;;
+          # M4: a relaunch can show the SAME thread at a different truncation length than
+          # whatever the pane's title showed before - RELAUNCH_PREFIX_LEN simulates that.
+          *) full="$NEW_UUID"; len="${RELAUNCH_PREFIX_LEN:-29}" ;;
+        esac
+        [ -n "${RESET_FAIL_ONCE:-}" ] && : > "$P/reset_fail_once"
+        if [ -n "${STUCK_TITLE:-}" ]; then
+          : # never shows the new title either, whichever call is meant to carry it
+        else
           printf '%s... | t | d' "$(printf '%s' "$full" | cut -c1-"$len")" > "$P/newtitle"
-          if [ -n "${RESET_TIMED:-}" ]; then
-            /bin/date +%s.%N > "$P/reset_since"; : > "$P/reset_timed_pending"
-            # $P/title is left untouched here - still the stale `want` title, exactly the
-            # scenario M5 simulates (the reset has not become visible yet).
+          if [ "${RESET_LAG:-1}" = 0 ]; then
+            cat "$P/newtitle" > "$P/title"
           else
             printf xreview > "$P/title"; : > "$P/reset_pending"
           fi
         fi ;;
-      *) printf '%s... | t | d' "$(printf '%s' "$full" | cut -c1-"$len")" > "$P/title" ;;
     esac ;;
 esac
 exit 0
@@ -222,15 +212,14 @@ export PATH="$STUB:$PATH"
 fresh() { # a pane showing U0, idle; clean log and state
   unset ENSURE_RC CHECK_RC RPC_NOT_LOADED RPC_NOT_LOADED_ONCE RPC_NOT_LOADED_ONCE_AT RPC_START_FAIL \
         RPC_START_UNCERTAIN RPC_START_BAD_ID NO_TITLE STUCK_TUI STUCK_TITLE RESET_LAG \
-        RESET_FAIL_ONCE RESET_TIMED RESET_STALE_SECS RESET_WINDOW_SECS AGENT_EXIT_DELAY \
+        RESET_FAIL_ONCE AGENT_EXIT_DELAY \
         AGENT_READ_FAIL_ONCE EXTRA_PANES PANE_CWD XREVIEW_PANE XREVIEW_THREAD RPC_WAIT_OUT \
         RPC_WAIT_RC RPC_THREAD_RUNNING RPC_HEALTH_FAIL AGENT_LAG
   export NEW_UUID="$U1"
   printf codex > "$P/agent"; printf '%s | t | d' "$(trunc "$U0")" > "$P/title"; echo idle > "$P/status"
   echo 0 > "$P/ctrlc"
   rm -f "$P/packet" "$P/status_calls" "$P/get_calls" "$P/lag_active" "$P/reset_calls" \
-        "$P/reset_pending" "$P/newtitle" "$P/reset_fail_once" "$P/reset_since" \
-        "$P/reset_timed_pending" "$P/reset_timed_phase" "$P/exit_delay_active" \
+        "$P/reset_pending" "$P/newtitle" "$P/reset_fail_once" "$P/exit_delay_active" \
         "$P/exit_delay_calls" "$P/agent_fail_once"
   bash "$XREVIEW" round --reset >/dev/null 2>&1
   rm -rf "$STATE/superseded" "$STATE/pin" "$STATE/turns"
@@ -375,8 +364,14 @@ is "D2 and goes to the same thread" "$(called "xreview-rpc turn-start --thread $
 printf '%s | t | d' "$(trunc "$U0")" > "$P/title"; : > "$CALLS"
 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
 is "D3 a pane that moved off the thread is resumed onto it" "$(called "herdr pane run w1:p2 .*codex --sandbox read-only --ask-for-approval never resume $U1")" 1
-is "D3b the typed command resets the title first, in the same line" \
-   "$(grep -Fc "herdr pane run w1:p2 printf '\033]2;xreview\007'; codex " "$CALLS")" 1
+is "D3b the reset is sent alone, as its own pane run" \
+   "$(grep -Fxc "herdr pane run w1:p2 printf '\033]2;xreview\007'" "$CALLS")" 1
+is "D3b' the resume relaunch carries no reset prefix of its own" \
+   "$(grep -Fc "herdr pane run w1:p2 printf '\033]2;xreview\007'; codex " "$CALLS")" 0
+reset_line="$(grep -Fn "herdr pane run w1:p2 printf '\033]2;xreview\007'" "$CALLS" | head -1 | cut -d: -f1)"
+resume_line="$(grep -Fn "resume $U1" "$CALLS" | head -1 | cut -d: -f1)"
+is "D3b'' the reset happens before the resume relaunch" \
+   "$([ -n "$reset_line" ] && [ -n "$resume_line" ] && [ "$reset_line" -lt "$resume_line" ] && echo yes || echo no)" yes
 
 echo "D3c. the P1 (slice 2): a disconnected TUI's retained title never passes as the resumed session"
 fresh
@@ -400,25 +395,25 @@ is "D3d it refuses after the wait, a failed read never counted as a real observa
 is "D3d and no turn ever starts on the unwatched pane" "$(called 'xreview-rpc turn-start')" 0
 rm -rf "$CODEX_HOME/app-server-daemon"   # restore the "no daemon.pid yet" baseline for later tests
 
-echo "D3e. M5: a wall-clock-keyed transient shorter than the normal poll must not be missed"
-# RESET_TIMED (not read-count RESET_LAG): the title stays stale (`want`) for
-# RESET_STALE_SECS after the run, then shows "xreview" for only RESET_WINDOW_SECS - here
-# 0.15s, shorter than the 0.5s normal poll - then the real title. The very first read
-# (at t=0) sees the STALE want title, not the reset, so unlike RESET_LAG this cannot be
-# caught by "read once, regardless of poll rate" - only a poll fine enough to land a
-# sample inside the 0.15s window can ever observe it.
+echo "D3e. item 21/P2: the replacement TUI restoring want on the very first post-launch read is not refused"
+# The old combined reset+relaunch command left a real, if short, window during which a
+# fast-attaching replacement TUI could restore `want` before pane_prepare's poll ever
+# observed the intermediate reset - so dispatch refused a pane that was actually ready
+# (item 21/P2, the reviewer's own repro). The two-step relaunch removes the window
+# entirely: the reset is confirmed BEFORE the replacement session is even launched, so
+# nothing can restore `want` early. RESET_LAG=0 simulates the tightest case, want showing
+# on the very first read after the relaunch - deterministic, not timing-dependent (this
+# replaces the flaky wall-clock M5/D3e case, which no longer has anything to reproduce:
+# nothing runs in the pane between the two steps for a transient to hide in).
 fresh
 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1   # establishes want=U1
 mkdir -p "$CODEX_HOME/app-server-daemon"; printf '{"pid":999}\n' > "$CODEX_HOME/app-server-daemon/daemon.pid"
 : > "$CALLS"
-start="$(/bin/date +%s.%N)"
-out="$(XREVIEW_POLL_SECS=0.5 XREVIEW_PANE_WAIT=5 RESET_TIMED=1 RESET_STALE_SECS=0.2 RESET_WINDOW_SECS=0.15 \
-        bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
-took="$(LC_ALL=C awk -v s="$start" -v e="$(/bin/date +%s.%N)" 'BEGIN{printf "%.3f", e-s}')"
-is "D3e it still succeeds, catching a transient shorter than the normal poll" \
+out="$(RESET_LAG=0 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+is "D3e it still succeeds, want showing immediately after the relaunch" \
    "$(printf '%s' "$out" | grep -c '^xr-')" 1
-is "D3e and it stays quick, not several multiples of the 0.5s poll" \
-   "$(LC_ALL=C awk -v t="$took" 'BEGIN{print (t<3) ? "yes" : "no ("t"s)"}')" yes
+is "D3e and the reset was still issued as its own pane run, before the relaunch" \
+   "$(grep -Fxc "herdr pane run w1:p2 printf '\033]2;xreview\007'" "$CALLS")" 1
 rm -rf "$CODEX_HOME/app-server-daemon"
 
 echo "D3f. pre-existing: a failed .agent read during the exit wait keeps waiting, not skips it"

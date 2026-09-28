@@ -173,9 +173,8 @@ daemon_gen() {
 pane_prepare() { # pane_prepare <pane> [want] [daemon-generation]: the generation is taken
                   # ONCE by the caller, before this is called, and never re-read here - a
                   # restart mid-prepare must not let a second read disagree with the first.
-  local pane="$1" want="${2:-}" gen="${3:-}" before cmd now ok resolved raw raw_ok \
-        wait="${XREVIEW_PANE_WAIT:-20}" poll="${XREVIEW_POLL_SECS:-1}" gap rec start \
-        seen_reset=0 poll_fast step
+  local pane="$1" want="${2:-}" gen="${3:-}" before cmd now ok resolved raw \
+        wait="${XREVIEW_PANE_WAIT:-20}" poll="${XREVIEW_POLL_SECS:-1}" gap rec start
   before="$(pane_title_id "$pane")"
   rec="$(cat "$(state_dir)/pane" 2>/dev/null || true)"
   if [ -n "$want" ] && prefix_is_of "$before" "$want" && [ "$rec" = "$pane $want $gen" ] \
@@ -205,33 +204,46 @@ pane_prepare() { # pane_prepare <pane> [want] [daemon-generation]: the generatio
       || die "the Codex pane $pane did not exit its session within ${wait}s; no review was started"
     sleep "$poll"
   done
-  [ -z "$want" ] || cmd="$cmd resume $want"
-  # Reset the pane's title before relaunching, typed as one line with the launch command: a
-  # disconnected TUI's title otherwise still shows the old thread, which on the resume path
-  # is `want` itself - without a reset, "the title already shows want" is indistinguishable
-  # from "the replacement TUI has attached", and turn/start would run on a pane nothing is
-  # watching yet (P1, slice 2). Harmless on the fresh-session path too.
-  cmd="printf '\033]2;xreview\007'; $cmd"
-  herdr pane run "$pane" "$cmd" >/dev/null 2>&1 || die "could not start Codex in pane $pane; no review was started"
   if [ -n "$want" ]; then
-    # A short transient title (the reset, or the TUI's own startup title before it resumes)
-    # must not be missed between polls, so this phase polls faster than the steady-state
-    # wait - floored so a tiny XREVIEW_POLL_SECS never busy-loops.
-    poll_fast="$(LC_ALL=C awk -v p="$poll" 'BEGIN{v=p/10; if (v<0.05) v=0.05; printf "%g", v}')"
+    # Reset the title FIRST, alone - before the replacement session is even launched, so
+    # there is nothing yet that could restore `want` between polls. The old design typed the
+    # reset and the relaunch as one line, leaving a real (if short) window during which a
+    # fast-attaching replacement TUI could restore `want` before ever being observed as
+    # having reset - refusing a pane that was actually ready (item 21/P2). Wait for a
+    # genuinely successful, non-empty read that does NOT show `want`: that state lasts,
+    # because the shell just sits idle at the reset prompt until the next step below actually
+    # relaunches it, so a normal-cadence poll cannot miss it the way a transient could. Only a
+    # real read counts as an observation (I-1): a transient herdr failure must never be read
+    # as "not want" and let a stale `want` title pass on the strength of it.
+    herdr pane run "$pane" "printf '\033]2;xreview\007'" >/dev/null 2>&1 \
+      || die "could not start Codex in pane $pane; no review was started"
+    while :; do
+      if raw="$(pane_raw_title "$pane")" && ! prefix_is_of "$(title_id_from "$raw")" "$want"; then
+        break
+      fi
+      LC_ALL=C awk -v s="$start" -v e="$(epoch_now)" -v m="$wait" 'BEGIN{exit !(e-s<m)}' \
+        || die "the Codex pane $pane did not show a reset title within ${wait}s; no review was started"
+      sleep "$poll"
+    done
+    # Only now relaunch onto the target thread - nothing was watching this pane before this
+    # point, so there is no race left to lose: whatever title appears next is either genuinely
+    # the replacement TUI, or nothing, and both are handled by the wait below exactly as a
+    # fresh session is.
+    herdr pane run "$pane" "$cmd resume $want" >/dev/null 2>&1 \
+      || die "could not start Codex in pane $pane; no review was started"
+  else
+    # Harmless on the fresh-session path too, and simpler kept as one step: nothing has shown
+    # `want` there in the first place, so there is no stale title to be mistaken for the
+    # replacement TUI, and its different-prefix check below already rejects a retained title.
+    herdr pane run "$pane" "printf '\033]2;xreview\007'; $cmd" >/dev/null 2>&1 \
+      || die "could not start Codex in pane $pane; no review was started"
   fi
   while :; do
-    now=""; raw_ok=0
-    if raw="$(pane_raw_title "$pane")"; then raw_ok=1; now="$(title_id_from "$raw")"; fi
+    now=""
+    if raw="$(pane_raw_title "$pane")"; then now="$(title_id_from "$raw")"; fi
     ok=0; resolved=""
     if [ -n "$want" ]; then
-      if [ "$seen_reset" = 0 ]; then
-        # The replacement TUI has not shown `want` yet - require seeing that before ever
-        # accepting `want` again, so the still-attached old title can never pass as new.
-        # Only a genuinely successful, non-empty read counts as having observed anything at
-        # all (I-1): a transient herdr failure must never be read as "not want" and let a
-        # stale `want` title through on the strength of it.
-        if [ "$raw_ok" = 1 ] && ! prefix_is_of "$now" "$want"; then seen_reset=1; fi
-      elif [ -n "$now" ] && prefix_is_of "$now" "$want"; then
+      if [ -n "$now" ] && prefix_is_of "$now" "$want"; then
         # We already know the full id (it is what we asked the pane to resume): the title
         # just has to agree that it is showing a prefix of it.
         ok=1; resolved="$want"
@@ -251,9 +263,7 @@ pane_prepare() { # pane_prepare <pane> [want] [daemon-generation]: the generatio
     fi
     LC_ALL=C awk -v s="$start" -v e="$(epoch_now)" -v m="$wait" 'BEGIN{exit !(e-s<m)}' \
       || die "the Codex pane $pane did not show ${want:-a new thread} within ${wait}s; no review was started"
-    step="$poll"
-    [ -n "$want" ] && [ "$seen_reset" = 0 ] && step="$poll_fast"
-    sleep "$step"
+    sleep "$poll"
   done
 }
 
