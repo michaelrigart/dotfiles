@@ -642,7 +642,10 @@ is "D18a (control) a failed tolerant read is not followed by a retry sleep" \
    "$(awk '/herdr pane get FAILED/{f=1; next} f{print; exit}' "$CALLS")" "herdr pane get w1:p2"
 
 fresh
-out="$(BEFORE_ENVELOPE_AT=3 RACE_TITLE_LAG=1 RESET_LAG=2 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+out="$(BEFORE_ENVELOPE_AT=3 RACE_TITLE_LAG=1 RESET_LAG=2 sleep_logged bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+is "D18d the envelope landed on the 'before' read, which was retried after a poll sleep" \
+   "$(awk '/herdr pane get FAILED/{f=1; next} f{print; if (++n==2) exit}' "$CALLS" | paste -sd'|' -)" \
+   "sleep|herdr pane get w1:p2"
 is "D18d an exit-0 error envelope on the 'before' read is a failed read: U0 is never dispatched into" \
    "$(called "xreview-rpc turn-start --thread $U0")" 0
 is "D18d the new thread U1 is" "$(called "xreview-rpc turn-start --thread $U1")" 1
