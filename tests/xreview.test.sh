@@ -612,8 +612,56 @@ bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
 is "L9 and bumps to one without disturbing other branches' rows" "$(bash "$XREVIEW" round)" 1
 git checkout -q feat/x
 is "L10 feat/x's row is untouched by the a.b+c branch's dispatch" "$(bash "$XREVIEW" round)" 2
+
+echo "M. a branch name containing '=' is split on the LAST '=', not the first (I-1)"
+git checkout -q -b 'x=y'
+is "M1 round counter starts at zero on a branch containing '='" "$(bash "$XREVIEW" round)" 0
+bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+is "M2 a dispatch on it bumps to one" "$(bash "$XREVIEW" round)" 1
+bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+is "M3 and a second dispatch bumps to two" "$(bash "$XREVIEW" round)" 2
+out="$(XREVIEW_MAX_ROUNDS=2 bash "$XREVIEW" dispatch b.md 2>&1)"
+is "M4 XREVIEW_MAX_ROUNDS=2 refuses the third dispatch at the cap" \
+   "$(printf '%s' "$out" | grep -c 'exceeds the cap')" 1
+git checkout -q -b x
+is "M5 a coexisting branch 'x' (a prefix of 'x=y') has its own independent count" "$(bash "$XREVIEW" round)" 0
+bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+is "M6 and a dispatch on 'x' bumps only its own row" "$(bash "$XREVIEW" round)" 1
+git checkout -q 'x=y'
+is "M7 'x=y' is unaffected by 'x's dispatch" "$(bash "$XREVIEW" round)" 3
+
+echo "N. the rewrite half of bump_round keeps rows it must not match, even under the old buggy regex (M2)"
+git checkout -q 'a.b+c'
+mkdir -p "$STATE"
+printf 'aXb+c=5\n' > "$STATE/rounds"   # 'aXb+c' is NOT 'a.b+c' - but the old grep -v "^a.b+c="
+                                       # treated '.' as a wildcard and '+' as literal, so it
+                                       # matched and wrongly dropped this row
+bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+is "N1 an unrelated row survives a dispatch on 'a.b+c'" "$(grep -c '^aXb+c=5$' "$STATE/rounds")" 1
+
+echo "O. current_round's read tolerates awk itself failing (e.g. the file vanishing between the -r check and the read) (M3)"
+# A directory in place of the file doesn't reproduce this: this platform's awk reads a
+# directory as empty input and exits 0. Simulate the real failure mode instead - awk itself
+# returning nonzero - with a PATH-shadowing awk that fails only current_round's own program
+# (matched on '== b', which bump_round's rewrite program never contains) and otherwise execs
+# the real awk, so every other awk call in the script (checksums, poll timing) is untouched.
+REALAWK="$(command -v awk)"
+STUB2="$ROOT/stub-awk-fail"; mkdir -p "$STUB2"
+cat > "$STUB2/awk" <<'AWKEOF'
+#!/bin/sh
+for a in "$@"; do
+  case "$a" in *'== b'*) exit 7 ;; esac
+done
+exec REALAWK_PLACEHOLDER "$@"
+AWKEOF
+sed -i '' "s#REALAWK_PLACEHOLDER#$REALAWK#" "$STUB2/awk"
+chmod +x "$STUB2/awk"
+out="$(PATH="$STUB2:$PATH" bash "$XREVIEW" round 2>&1)"; rc=$?
+is "O1 'xreview round' does not crash when its awk read fails" "$rc" 0
+is "O1 and still prints a number, not an empty line" "$(printf '%s' "$out" | grep -cE '^[0-9]+$')" 1
+
 git checkout -q "$ORIG_BRANCH"
-git branch -q -D feat/x feat/xy 'a.b+c'
+git branch -q -D feat/x feat/xy 'a.b+c' 'x=y' x
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))
