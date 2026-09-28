@@ -98,14 +98,17 @@ pane_raw_title() { # pane_raw_title <pane>: prints the raw title text on a genui
   # produced no output) - never an observation of anything, and conflating it with "a title
   # that does not show want" is the P1 again (I-1): a transient read failure during the
   # reset wait must never let a stale `want` title pass as if the replacement TUI had been
-  # seen not showing it. Exit 2: the read SUCCEEDED but the title itself reads back empty -
-  # a real observation (Task 15/M3), distinct from exit 1. Most callers only test this
+  # seen not showing it. herdr can also exit 0 with an `{"error":…}` envelope or output
+  # that is not a pane at all; that too is a failed read (exit 1), never an empty title.
+  # Exit 2: the read SUCCEEDED and returned a pane, but its title reads back empty - a real
+  # observation (Task 15/M3), distinct from exit 1. Most callers only test this
   # function's zero/nonzero exit and so keep treating 1 and 2 alike (still correct - see
   # I-1 above, both the reset wait and the main wait loop below); a caller that needs the
   # distinction (pane_prepare's `before` read) must check $? itself.
   local pane="$1" out rc=0 title
   out="$(herdr pane get "$pane" 2>/dev/null)" || rc=$?
   [ "$rc" -eq 0 ] && [ -n "$out" ] || return 1
+  printf '%s' "$out" | jq -e '.result.pane | type == "object"' >/dev/null 2>&1 || return 1
   title="$(printf '%s' "$out" | jq -r '.result.pane | (.terminal_title_stripped // .terminal_title) // empty' 2>/dev/null)"
   [ -n "$title" ] || return 2
   printf '%s\n' "$title"
@@ -114,10 +117,12 @@ pane_raw_title() { # pane_raw_title <pane>: prints the raw title text on a genui
 pane_agent() { # pane_agent <pane>: the raw .agent field on a genuinely successful read;
   # nothing, with a nonzero exit, on any read failure. A failed read must never be read as
   # "the field is empty" (i.e. not codex) - see the agent-exit wait in pane_prepare, which
-  # would otherwise end early on a transient herdr hiccup.
+  # would otherwise end early on a transient herdr hiccup. An exit-0 `{"error":…}` envelope,
+  # or output that is not a pane, is a failed read too.
   local pane="$1" out rc=0
   out="$(herdr pane get "$pane" 2>/dev/null)" || rc=$?
   [ "$rc" -eq 0 ] && [ -n "$out" ] || return 1
+  printf '%s' "$out" | jq -e '.result.pane | type == "object"' >/dev/null 2>&1 || return 1
   printf '%s' "$out" | jq -r '.result.pane.agent // empty' 2>/dev/null
 }
 
@@ -178,10 +183,10 @@ pane_prepare() { # pane_prepare <pane> [want] [daemon-generation]: the generatio
                   # restart mid-prepare must not let a second read disagree with the first.
   local pane="$1" want="${2:-}" gen="${3:-}" before cmd now ok resolved raw \
         wait="${XREVIEW_PANE_WAIT:-20}" poll="${XREVIEW_POLL_SECS:-1}" gap rec start bstart brc
-  # `wait` bounds EACH wait below on its own clock (this one, the agent-exit wait, the reset
-  # wait and the final wait all start their own `start`/`bstart`) - it is a per-wait budget,
-  # never a total shared across them. A caller wanting to cap pane_prepare's overall latency
-  # must account for up to four of these back to back, not treat XREVIEW_PANE_WAIT as that cap.
+  # `wait` is two budgets, not one total: the `before` read below has its own clock
+  # (`bstart`), and everything after the first ctrl+c - the agent-exit wait, the reset wait
+  # and the final wait - shares a second one (`start`). pane_prepare can therefore take up to
+  # about twice XREVIEW_PANE_WAIT before it refuses.
   #
   # `before` must come from a genuinely successful read (pane_raw_title), never
   # pane_title_id's own `|| true` reading of a failed read as "no id" (""). An empty `before`

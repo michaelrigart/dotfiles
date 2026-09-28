@@ -114,6 +114,13 @@ case "$1 $2" in
       if [ "$gn" = "$BEFORE_FAIL_AT" ]; then printf 'herdr pane get FAILED\n' >> "$CALLS"; exit 1; fi
     fi
     if [ -n "${BEFORE_FAIL_ALWAYS:-}" ]; then printf 'herdr pane get FAILED\n' >> "$CALLS"; exit 1; fi
+    # BEFORE_ENVELOPE_AT=<n>: the n-th read exits 0 but answers herdr's error envelope.
+    if [ -n "${BEFORE_ENVELOPE_AT:-}" ]; then
+      gn=$(cat "$P/get_seq" 2>/dev/null || echo 0); gn=$((gn + 1)); echo "$gn" > "$P/get_seq"
+      if [ "$gn" = "$BEFORE_ENVELOPE_AT" ]; then
+        printf 'herdr pane get FAILED\n' >> "$CALLS"; echo '{"error":{"code":1,"message":"x"}}'; exit 0
+      fi
+    fi
     # I-1: consume the fail-once marker on the very first read after the run, simulating a
     # transient herdr failure - exit nonzero with no output, never a title of any kind.
     if [ -e "$P/reset_fail_once" ]; then rm -f "$P/reset_fail_once"; exit 1; fi
@@ -236,15 +243,20 @@ case "$cmd" in
 esac
 exit 0
 R
-# Task 15: SLEEP_LOG=1 records each poll sleep in the call log, so a test can prove a retry
-# actually waited before re-reading instead of inferring it from wall-clock timing.
-cat > "$STUB/sleep" <<'SL'
-#!/bin/sh
-[ -n "${SLEEP_LOG:-}" ] && printf 'sleep\n' >> "$CALLS"
-exec /bin/sleep "$@"
-SL
 chmod +x "$STUB"/*
 export PATH="$STUB:$PATH"
+# Task 15: a `sleep` that records each poll sleep in the call log, so a test can prove a
+# retry actually waited before re-reading instead of inferring it from wall-clock timing.
+# Its own directory, put on PATH only by the runs that need it (sleep_logged), so no other
+# test pays the wrapper's per-sleep cost.
+SLEEPSTUB="$ROOT/sleepstub"; mkdir -p "$SLEEPSTUB"
+cat > "$SLEEPSTUB/sleep" <<'SL'
+#!/bin/sh
+printf 'sleep\n' >> "$CALLS"
+exec /bin/sleep "$@"
+SL
+chmod +x "$SLEEPSTUB/sleep"
+sleep_logged() { PATH="$SLEEPSTUB:$PATH" "$@"; }
 
 fresh() { # a pane showing U0, idle; clean log and state
   unset ENSURE_RC CHECK_RC RPC_NOT_LOADED RPC_NOT_LOADED_ONCE RPC_NOT_LOADED_ONCE_AT RPC_START_FAIL \
@@ -252,7 +264,7 @@ fresh() { # a pane showing U0, idle; clean log and state
         RESET_FAIL_ONCE AGENT_EXIT_DELAY \
         AGENT_READ_FAIL_ONCE EXTRA_PANES PANE_CWD XREVIEW_PANE XREVIEW_THREAD RPC_WAIT_OUT \
         RPC_WAIT_RC RPC_THREAD_RUNNING RPC_HEALTH_FAIL AGENT_LAG BEFORE_FAIL_ALWAYS RACE_TITLE_LAG \
-        BEFORE_FAIL_AT SLEEP_LOG
+        BEFORE_FAIL_AT BEFORE_ENVELOPE_AT
   export NEW_UUID="$U1"
   printf codex > "$P/agent"; printf '%s | t | d' "$(trunc "$U0")" > "$P/title"; echo idle > "$P/status"
   echo 0 > "$P/ctrlc"
@@ -620,14 +632,20 @@ is "D18a exactly one retried read between the failure and the first key sent" \
 # the marker must read `sleep`, then the retried read. A reordering that moves the failure
 # onto a tolerant read goes red here instead of silently passing (BEFORE_FAIL_AT=2 shows it).
 fresh
-SLEEP_LOG=1 BEFORE_FAIL_AT=3 RACE_TITLE_LAG=1 RESET_LAG=2 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+BEFORE_FAIL_AT=3 RACE_TITLE_LAG=1 RESET_LAG=2 sleep_logged bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
 is "D18a the failed read is retried only after a poll sleep" \
    "$(awk '/herdr pane get FAILED/{f=1; next} f{print; if (++n==2) exit}' "$CALLS" | paste -sd'|' -)" \
    "sleep|herdr pane get w1:p2"
 fresh
-SLEEP_LOG=1 BEFORE_FAIL_AT=2 RACE_TITLE_LAG=1 RESET_LAG=2 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+BEFORE_FAIL_AT=2 RACE_TITLE_LAG=1 RESET_LAG=2 sleep_logged bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
 is "D18a (control) a failed tolerant read is not followed by a retry sleep" \
    "$(awk '/herdr pane get FAILED/{f=1; next} f{print; exit}' "$CALLS")" "herdr pane get w1:p2"
+
+fresh
+out="$(BEFORE_ENVELOPE_AT=3 RACE_TITLE_LAG=1 RESET_LAG=2 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+is "D18d an exit-0 error envelope on the 'before' read is a failed read: U0 is never dispatched into" \
+   "$(called "xreview-rpc turn-start --thread $U0")" 0
+is "D18d the new thread U1 is" "$(called "xreview-rpc turn-start --thread $U1")" 1
 
 fresh; export BEFORE_FAIL_ALWAYS=1
 # A tight local wait (I-1): every read fails, so this must genuinely exhaust the deadline.
@@ -829,13 +847,14 @@ echo "K2. N1: \$EPOCHREALTIME's locale radix never truncates a sub-second wait t
 # Under nl_BE, $EPOCHREALTIME itself reads "S,ssssss" - LC_ALL=C awk then parses only the
 # whole-second part, so a 0.15s bound could run for up to a whole extra second before the
 # truncated math finally shows the deadline passed. epoch_now() must normalise this.
+# The radix is checked on epoch_now() itself: timing a whole dispatch against a sub-second
+# bound goes red on a loaded machine without any regression.
 fresh
-start="$(/bin/date +%s.%N)"
 out="$(LC_ALL=nl_BE.UTF-8 NO_TITLE=1 XREVIEW_PANE_WAIT=0.15 XREVIEW_POLL_SECS=0.05 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
-took="$(LC_ALL=C awk -v s="$start" -v e="$(/bin/date +%s.%N)" 'BEGIN{printf "%.3f", e-s}')"
 is "K2 it refuses (never shows a thread)" "$rc" 1
-is "K2 and the 0.15s bound actually held, not stretched by whole-second truncation" \
-   "$(LC_ALL=C awk -v t="$took" 'BEGIN{print (t<0.6) ? "yes" : "no ("t"s)"}')" yes
+out="$(LC_ALL=nl_BE.UTF-8 bash -c "$(sed -n '/^epoch_now() {/,/^}/p' "$XREVIEW")"$'\nepoch_now')"
+is "K2 epoch_now under nl_BE prints a '.' radix with the fraction intact" \
+   "$(printf '%s' "$out" | grep -cE '^[0-9]{10,}\.[0-9]+$')" 1
 
 # N1: exec-ing a fresh bash for the whole dispatch cannot simulate "EPOCHREALTIME absent"
 # in-process - a new bash 5+ instance always recomputes its own. Unit-test the helper
