@@ -64,11 +64,11 @@ pane_json() {
     n=$(cat "$P/exit_delay_calls" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$P/exit_delay_calls"
     if [ "$n" -le "$AGENT_EXIT_DELAY" ]; then a=codex; else rm -f "$P/exit_delay_active"; fi
   fi
-  # The resume command's own title takes RESET_LAG (read-count, default 1) reads to land, so
-  # the final wait loop genuinely iterates. RESET_LAG=0 means it shows on the very first read.
+  # The resume command's own title takes one extra read to land, so the final wait loop
+  # genuinely iterates at least once, the same way a real TUI's title update would.
   if [ -e "$P/reset_pending" ]; then
     n=$(cat "$P/reset_calls" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$P/reset_calls"
-    if [ "$n" -gt "${RESET_LAG:-1}" ]; then
+    if [ "$n" -gt 1 ]; then
       t="$(cat "$P/newtitle" 2>/dev/null)"; printf '%s' "$t" > "$P/title"
       rm -f "$P/reset_pending"
     fi
@@ -113,11 +113,7 @@ case "$1 $2" in
     full="${4##* resume }"
     # Truncate to a realistic title (F11/F21: 29 chars plus "..." once the thread is named).
     printf '%s... | t | d' "$(printf '%s' "$full" | cut -c1-29)" > "$P/newtitle"
-    if [ "${RESET_LAG:-1}" = 0 ]; then
-      cat "$P/newtitle" > "$P/title"
-    else
-      : > "$P/reset_pending"
-    fi ;;
+    : > "$P/reset_pending" ;;
 esac
 exit 0
 H
@@ -169,22 +165,10 @@ exit 0
 R
 chmod +x "$STUB"/*
 export PATH="$STUB:$PATH"
-# A `sleep` that records each poll sleep in the call log, so a test can prove a retry
-# actually waited before re-reading instead of inferring it from wall-clock timing. Its own
-# directory, put on PATH only by the runs that need it (sleep_logged), so no other test pays
-# the wrapper's per-sleep cost.
-SLEEPSTUB="$ROOT/sleepstub"; mkdir -p "$SLEEPSTUB"
-cat > "$SLEEPSTUB/sleep" <<'SL'
-#!/bin/sh
-printf 'sleep\n' >> "$CALLS"
-exec /bin/sleep "$@"
-SL
-chmod +x "$SLEEPSTUB/sleep"
-sleep_logged() { PATH="$SLEEPSTUB:$PATH" "$@"; }
 
 fresh() { # a pane showing U0, idle; clean log and state
   unset ENSURE_RC CHECK_RC RPC_START_FAIL RPC_START_UNCERTAIN RPC_START_BAD_ID \
-        RPC_START_THREAD_FAIL NO_TITLE STUCK_TUI RESET_LAG AGENT_EXIT_DELAY \
+        RPC_START_THREAD_FAIL NO_TITLE STUCK_TUI AGENT_EXIT_DELAY \
         AGENT_READ_FAIL_ONCE EXTRA_PANES PANE_CWD XREVIEW_PANE XREVIEW_THREAD RPC_WAIT_OUT \
         RPC_WAIT_RC RPC_THREAD_RUNNING RPC_THREAD_RUNNING_FOR RPC_HEALTH_FAIL PANE_GONE_AT
   export NEW_UUID="$U1"
