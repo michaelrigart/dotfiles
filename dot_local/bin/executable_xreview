@@ -2,11 +2,12 @@
 # xreview - dispatch a cold review to the repository's Codex pane and collect the answer.
 #
 # Design: docs/superpowers/specs/2026-09-26-xreview-codex-daemon-design.md, section 7.
-# Reviews run on Codex's shared app-server daemon. Dispatch prepares the repository's Codex
-# pane on the review thread BEFORE any turn exists, so the review is watched from its first
-# token. xreview-rpc then starts the turn with the findings schema, and collect waits for it
-# to complete. Two PreToolUse guards read the receipts (pre-merge gate, apply window); neither
-# is proven enough to be an authorization boundary - treat findings as evidence.
+# Reviews run on Codex's shared app-server daemon. Dispatch starts the review turn on the
+# checkpoint thread FIRST, then best-effort resumes the repository's Codex pane onto that
+# thread; the TUI replays the turn from its start and streams the rest live (F22). A pane
+# that fails to attach only warns - the review still runs and collect still works. Two
+# PreToolUse guards read the receipts (pre-merge gate, apply window); neither is proven
+# enough to be an authorization boundary - treat findings as evidence.
 set -euo pipefail
 # Without this, a `die` inside a function called via $(...) from ANOTHER function that is
 # itself invoked via $(...) (pane_command from inside pane_prepare, say) silently loses its
@@ -53,7 +54,7 @@ is_safe_id() {
 
 # --- the Codex pane ----------------------------------------------------------------
 # The repository's one herdr pane running Codex in the repository root. It is the reviewer's
-# screen: dispatch points it at the review thread before any turn starts.
+# screen: dispatch resumes it onto the review thread, best effort, after the turn starts.
 
 find_pane() {
   local root snap ids n
@@ -95,16 +96,13 @@ pane_title_id() { # the thread id PREFIX at the start of the pane's title, if an
 
 pane_raw_title() { # pane_raw_title <pane>: prints the raw title text on a genuinely
   # successful, non-empty read (exit 0). Exit 1: the READ ITSELF failed (herdr errored or
-  # produced no output) - never an observation of anything, and conflating it with "a title
-  # that does not show want" is the P1 again (I-1): a transient read failure during the
-  # reset wait must never let a stale `want` title pass as if the replacement TUI had been
-  # seen not showing it. herdr can also exit 0 with an `{"error":…}` envelope or output
-  # that is not a pane at all; that too is a failed read (exit 1), never an empty title.
-  # Exit 2: the read SUCCEEDED and returned a pane, but its title reads back empty - a real
-  # observation (Task 15/M3), distinct from exit 1. Most callers only test this
-  # function's zero/nonzero exit and so keep treating 1 and 2 alike (still correct - see
-  # I-1 above, both the reset wait and the main wait loop below); a caller that needs the
-  # distinction (pane_prepare's `before` read) must check $? itself.
+  # produced no output) - never an observation of anything (I-1): pane_prepare's wait loop
+  # must not read a transient herdr hiccup as "the title does not show the thread yet" and
+  # let it count against the wait. herdr can also exit 0 with an `{"error":…}` envelope or
+  # output that is not a pane at all; that too is a failed read (exit 1), never an empty
+  # title. Exit 2: the read SUCCEEDED and returned a pane, but its title reads back empty -
+  # a real observation, distinct from exit 1. pane_prepare treats 1 and 2 alike (both mean
+  # "no thread id yet"; only exit 1 additionally checks pane_gone).
   local pane="$1" out rc=0 title
   out="$(herdr pane get "$pane" 2>/dev/null)" || rc=$?
   [ "$rc" -eq 0 ] && [ -n "$out" ] || return 1
@@ -126,15 +124,21 @@ pane_agent() { # pane_agent <pane>: the raw .agent field on a genuinely successf
   printf '%s' "$out" | jq -r '.result.pane.agent // empty' 2>/dev/null
 }
 
-die_if_pane_gone() { # die_if_pane_gone <pane>: called after a failed read. herdr answers a
-  # closed pane with exit 1 and a `pane_not_found` envelope on stderr; stop at once rather
-  # than wait out the budget on a pane that no longer exists and then blame its session.
+pane_gone() { # pane_gone <pane>: true (exit 0) when herdr reports the pane closed, called
+  # after a failed read. herdr answers a closed pane with exit 1 and a `pane_not_found`
+  # envelope on stderr - distinct from any other read failure, which just keeps waiting.
   local err
   err="$(herdr pane get "$1" 2>&1 >/dev/null)" || true
   case "$err" in
-    *'"pane_not_found"'*) die "the Codex pane $1 closed; no review was started" ;;
+    *'"pane_not_found"'*) return 0 ;;
   esac
-  return 0
+  return 1
+}
+
+warn_pane_unwatched() { # warn_pane_unwatched <pane>: pane_prepare's one failure signal. By
+  # the time this runs the turn has already started (spec 7.3 step 4), so a pane failure
+  # costs only the live view, never the review - never die here.
+  printf 'xreview: the review is running but not shown in pane %s\n' "$1" >&2
 }
 
 epoch_now() { # a wall-clock reading as plain seconds with a '.' radix, never the locale's
@@ -164,10 +168,6 @@ pane_command() {
   printf '%s\n' "$c"
 }
 
-loaded() { # loaded <thread>: the daemon has the thread in memory
-  xreview-rpc thread-status --thread "$1" 2>/dev/null | jq -e '.loaded' >/dev/null 2>&1
-}
-
 thread_running() { # thread_running <thread>: xreview-rpc thread-status reports a live turn
   xreview-rpc thread-status --thread "$1" 2>/dev/null | jq -e '.running == true' >/dev/null 2>&1
 }
@@ -181,132 +181,70 @@ daemon_gen() {
   cksum < "$f" 2>/dev/null | awk '{print $1}'
 }
 
-# pane_prepare <pane> [thread] - make the pane show <thread>, or a fresh session when none is
-# given, and print the thread id it shows. No turn exists yet, so a refusal here loses nothing.
-# A matching title alone is not trusted: after a daemon restart a disconnected TUI keeps its
-# title while the new daemon has not loaded the thread, so the pane is resumed onto it. Nor is
-# "the daemon has it loaded" alone: `collect`'s thread/resume can reload a thread the daemon
-# forgot without anything watching it in a pane. The fast path additionally requires that
-# xreview itself last prepared THIS pane on THIS thread under the CURRENT daemon generation -
-# recorded in $(state_dir)/pane by the caller after a successful prepare.
-pane_prepare() { # pane_prepare <pane> [want] [daemon-generation]: the generation is taken
-                  # ONCE by the caller, before this is called, and never re-read here - a
-                  # restart mid-prepare must not let a second read disagree with the first.
-  local pane="$1" want="${2:-}" gen="${3:-}" before cmd now ok resolved raw \
-        wait="${XREVIEW_PANE_WAIT:-20}" poll="${XREVIEW_POLL_SECS:-1}" gap rec start bstart brc
-  # `wait` is two budgets, not one total: the `before` read below has its own clock
-  # (`bstart`), and everything after the first ctrl+c - the agent-exit wait, the reset wait
-  # and the final wait - shares a second one (`start`). pane_prepare can therefore take up to
-  # about twice XREVIEW_PANE_WAIT before it refuses.
-  #
-  # `before` must come from a genuinely successful read (pane_raw_title), never
-  # pane_title_id's own `|| true` reading of a failed read as "no id" (""). An empty `before`
-  # is indistinguishable from "the pane just failed to answer", and the fresh-session check
-  # below accepts ANY new-looking prefix once before="" - including the OLD thread still on
-  # screen, adopted as fresh (Task 15). Retry within XREVIEW_PANE_WAIT; if it never succeeds,
-  # die before a single key is sent - nothing has touched the pane yet at this point. A read
-  # that genuinely SUCCEEDS but comes back empty (pane_raw_title's exit 2) is a real
-  # observation, not a failure - Greet-user (D5) is exactly this, and it must resolve
-  # before="" immediately rather than retrying out the whole budget for nothing.
-  bstart="$(epoch_now)"
-  while :; do
-    raw=""; brc=0
-    raw="$(pane_raw_title "$pane")" || brc=$?
-    if [ "$brc" -eq 0 ]; then before="$(title_id_from "$raw")"; break; fi
-    if [ "$brc" -eq 2 ]; then before=""; break; fi
-    die_if_pane_gone "$pane"
-    LC_ALL=C awk -v s="$bstart" -v e="$(epoch_now)" -v m="$wait" 'BEGIN{exit !(e-s<m)}' \
-      || die "could not read the Codex pane's title; no review was started"
-    sleep "$poll"
-  done
+# pane_prepare <pane> <thread> <gen> - best effort: point <pane> at <thread>, the review
+# thread a turn is already running on. F22: a TUI resuming a thread mid-turn replays it from
+# its start, then streams the rest live, so this never has to race the turn - it only has to
+# get the pane onto the thread at all. It never dies: the turn has already started by the
+# time this runs (spec 7.3 step 4), so a pane failure here costs only the live view, never
+# the review. Every failure exit goes through warn_pane_unwatched and returns 1; the caller
+# decides what that costs (only whether the superseded thread gets archived).
+#
+# `gen` is a daemon-generation fingerprint (daemon_gen), taken ONCE by the caller before this
+# is called and never re-read here: a restart mid-prepare must not let a second read disagree
+# with the first. The fast path requires that xreview itself last prepared THIS pane on THIS
+# thread under the CURRENT daemon generation (recorded in $(state_dir)/pane by a prior
+# successful prepare) as well as a matching title - a title match alone is not trusted, since
+# after a daemon restart a disconnected TUI keeps its old title while the new daemon has not
+# loaded the thread.
+pane_prepare() {
+  local pane="$1" thread="$2" gen="$3" cmd rec title now raw brc agent \
+        wait="${XREVIEW_PANE_WAIT:-20}" poll="${XREVIEW_POLL_SECS:-1}" gap start
   rec="$(cat "$(state_dir)/pane" 2>/dev/null || true)"
-  if [ -n "$want" ] && prefix_is_of "$before" "$want" && [ "$rec" = "$pane $want $gen" ] \
-     && loaded "$want"; then
-    printf '%s\n' "$want"; return 0
+  title="$(pane_title_id "$pane" 2>/dev/null || true)"
+  if prefix_is_of "$title" "$thread" && [ "$rec" = "$pane $thread $gen" ]; then
+    return 0
   fi
-  cmd="$(pane_command)" || exit 1
+  cmd="$(pane_command)" || { warn_pane_unwatched "$pane"; return 1; }
   # LC_ALL=C: awk's numeric printf/parsing follows LC_NUMERIC, and a locale like nl_BE
   # writes "0,5" - a decimal comma sleep(1) chokes on under set -e (I-2).
   gap="$(LC_ALL=C awk -v p="$poll" 'BEGIN{printf "%g", p/2}')"
-  # Elapsed wall-clock against a fixed start, not a sum of the sleeps themselves (M3): a
-  # `waited` summing only sleep durations drifts arbitrarily far behind the real clock once
-  # each iteration's own herdr/jq calls take real time too, so a bound meant to be seconds
-  # could let the wait run far longer.
   start="$(epoch_now)"
   herdr pane send-keys "$pane" ctrl+c >/dev/null 2>&1 || true
   sleep "$gap"
   herdr pane send-keys "$pane" ctrl+c >/dev/null 2>&1 || true
-  local agent
   while :; do
     # A failed read is treated as "still codex" (keep waiting), never as "the field read
-    # empty" (i.e. already exited) - a transient herdr hiccup here must not end this wait
-    # early and resume the pane before its old session has actually gone.
-    agent="$(pane_agent "$pane")" || { die_if_pane_gone "$pane"; agent="codex"; }
+    # empty" (i.e. already exited) - a transient herdr hiccup must not end this wait early
+    # and resume the pane before its old session has actually gone. Only a genuine
+    # pane_not_found ends it early.
+    agent="$(pane_agent "$pane")" || {
+      pane_gone "$pane" && { warn_pane_unwatched "$pane"; return 1; }
+      agent="codex"
+    }
     [ "$agent" = "codex" ] || break
     LC_ALL=C awk -v s="$start" -v e="$(epoch_now)" -v m="$wait" 'BEGIN{exit !(e-s<m)}' \
-      || die "the Codex pane $pane did not exit its session within ${wait}s; no review was started"
+      || { warn_pane_unwatched "$pane"; return 1; }
     sleep "$poll"
   done
-  if [ -n "$want" ]; then
-    # Reset the title FIRST, alone - before the replacement session is even launched, so
-    # there is nothing yet that could restore `want` between polls. The old design typed the
-    # reset and the relaunch as one line, leaving a real (if short) window during which a
-    # fast-attaching replacement TUI could restore `want` before ever being observed as
-    # having reset - refusing a pane that was actually ready (item 21/P2). Wait for a
-    # genuinely successful, non-empty read that does NOT show `want`: that state lasts,
-    # because the shell just sits idle at the reset prompt until the next step below actually
-    # relaunches it, so a normal-cadence poll cannot miss it the way a transient could. Only a
-    # real read counts as an observation (I-1): a transient herdr failure must never be read
-    # as "not want" and let a stale `want` title pass on the strength of it.
-    herdr pane run "$pane" "printf '\033]2;xreview\007'" >/dev/null 2>&1 \
-      || die "could not start Codex in pane $pane; no review was started"
-    while :; do
-      if raw="$(pane_raw_title "$pane")"; then
-        prefix_is_of "$(title_id_from "$raw")" "$want" || break
-      else
-        die_if_pane_gone "$pane"
-      fi
-      LC_ALL=C awk -v s="$start" -v e="$(epoch_now)" -v m="$wait" 'BEGIN{exit !(e-s<m)}' \
-        || die "the Codex pane $pane did not show a reset title within ${wait}s; no review was started"
-      sleep "$poll"
-    done
-    # Only now relaunch onto the target thread - nothing was watching this pane before this
-    # point, so there is no race left to lose: whatever title appears next is either genuinely
-    # the replacement TUI, or nothing, and both are handled by the wait below exactly as a
-    # fresh session is.
-    herdr pane run "$pane" "$cmd resume $want" >/dev/null 2>&1 \
-      || die "could not start Codex in pane $pane; no review was started"
-  else
-    # No reset here: there is no `want` a retained title could be mistaken for, since the
-    # different-prefix check below already rejects it on its own.
-    herdr pane run "$pane" "$cmd" >/dev/null 2>&1 \
-      || die "could not start Codex in pane $pane; no review was started"
-  fi
+  herdr pane run "$pane" "$cmd resume $thread" >/dev/null 2>&1 \
+    || { warn_pane_unwatched "$pane"; return 1; }
   while :; do
-    now=""
-    if raw="$(pane_raw_title "$pane")"; then now="$(title_id_from "$raw")"; else die_if_pane_gone "$pane"; fi
-    ok=0; resolved=""
-    if [ -n "$want" ]; then
-      if [ -n "$now" ] && prefix_is_of "$now" "$want"; then
-        # We already know the full id (it is what we asked the pane to resume): the title
-        # just has to agree that it is showing a prefix of it.
-        ok=1; resolved="$want"
-      fi
-    elif [ -n "$now" ] && ! prefix_is_of "$now" "$before" && ! prefix_is_of "$before" "$now"; then
-      # A fresh session: neither prefix is a prefix of the other, so this is genuinely a
-      # different thread, not the same one shown at a different truncation length. The
-      # pane's title is the only place its new id appears, and it is only ever a prefix
-      # (F11/F21). Resolve it - never guess it - before using it.
-      resolved="$(xreview-rpc thread-resolve --prefix "$now" 2>/dev/null)" \
-        && [ -n "$resolved" ] && ok=1
+    raw=""; brc=0; now=""
+    raw="$(pane_raw_title "$pane")" || brc=$?
+    if [ "$brc" -eq 0 ] || [ "$brc" -eq 2 ]; then
+      now="$(title_id_from "$raw")"
+    else
+      # A failed read is never an observation (I-1): only a genuine pane_not_found ends the
+      # wait early; any other read failure just keeps waiting for the deadline.
+      pane_gone "$pane" && { warn_pane_unwatched "$pane"; return 1; }
     fi
-    # A matching title alone can still be stale: the terminal's title escape can land
-    # before herdr's own .agent field catches up to the new session. Require both.
-    if [ "$ok" = 1 ] && [ "$(pane_field "$pane" '.agent')" = "codex" ] && loaded "$resolved"; then
-      printf '%s\n' "$resolved"; return 0
+    if [ -n "$now" ] && prefix_is_of "$now" "$thread"; then
+      printf '%s %s %s\n' "$pane" "$thread" "$gen" > "$(state_dir)/pane" 2>/dev/null
+      report_to_herdr "$pane" "$thread"
+      return 0
     fi
     LC_ALL=C awk -v s="$start" -v e="$(epoch_now)" -v m="$wait" 'BEGIN{exit !(e-s<m)}' \
-      || die "the Codex pane $pane did not show ${want:-a new thread} within ${wait}s; no review was started"
+      || { warn_pane_unwatched "$pane"; return 1; }
     sleep "$poll"
   done
 }
@@ -511,7 +449,7 @@ cmd_tier() {
 }
 
 cmd_dispatch() {
-  local body_file diff_range="" diff_text="" dir pane status want thread nonce packet turn="" \
+  local body_file diff_range="" diff_text="" dir pane status thread nonce packet turn="" \
         title_thread title_prefix gen
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -563,21 +501,21 @@ Two models circling the same point is Michael's call, not another turn.
 Report the remaining disagreement, or: xreview round --reset"
   fi
 
-  # Pane first: the pane watches the review thread before any turn exists. The round is
-  # consumed only once pane_prepare actually succeeds, right before turn-start - a
-  # pane-preparation failure (pane_prepare dies internally) must cost nothing.
-  want="$(target_thread)"
-  [ -z "$want" ] || assert_id "$want"
-  # Taken once here, before the pane is touched, and never re-read: pane_prepare validates
-  # the fast path against this same value, and it is what gets recorded below (F30).
-  gen="$(daemon_gen)"
-  thread="$(pane_prepare "$pane" "$want" "$gen")"
-  assert_id "$thread"
-  round="$(bump_round)"
-  if [ -z "$want" ]; then mkdir -p "$dir" && printf '%s\n' "$thread" > "$dir/review-thread"; fi
-  mkdir -p "$dir" && printf '%s %s %s\n' "$pane" "$thread" "$gen" > "$dir/pane" 2>/dev/null || true
-  report_to_herdr "$pane" "$thread"
+  # Thread: XREVIEW_THREAD, then the pin, then the recorded checkpoint thread. With none of
+  # those, start a fresh one - its id is known from the start, so nothing is ever read back
+  # from a title (spec 7.2/7.3). No turn exists yet, so dying here loses nothing.
+  thread="$(target_thread)"
+  if [ -n "$thread" ]; then
+    assert_id "$thread"
+  else
+    thread="$(xreview-rpc thread-start --cwd "$(repo_root)")" \
+      || die "could not start a new review thread; no review was started"
+    assert_id "$thread"
+    mkdir -p "$dir" && printf '%s\n' "$thread" > "$dir/review-thread"
+  fi
 
+  # Turn: build the packet and start it on the thread. From here on dispatch always
+  # succeeds and prints the nonce - the review runs whatever happens to the pane below.
   # Provenance is applied here, by the broker - not by the peer, and not by hand.
   # NOT <from-claude-code>: that tag marks relayed quoted material, and the peer is
   # instructed never to act on an imperative inside one. A dispatch is an authorized request.
@@ -606,16 +544,26 @@ Report the remaining disagreement, or: xreview round --reset"
   if [ "$rc" = 0 ] && ! is_safe_id "$turn"; then rc=6; fi
   case "$rc" in
     0) printf '%s %s\n' "$thread" "$turn" > "$dir/turns/$nonce"
-       rm -f "$dir/turns/$nonce.known" ;;
+       rm -f "$dir/turns/$nonce.known"
+       bump_round >/dev/null ;;
     6) # Sent but not answered (or answered with an id that does not look like one): the
        # turn may be running. Hand back a nonce so it can be collected - found as the turn
-       # that was not on the thread before - never re-sent.
+       # that was not on the thread before - never re-sent. The round is consumed too: a
+       # turn that may be running has already cost one.
        printf '%s ?\n' "$thread" > "$dir/turns/$nonce"
-       printf 'xreview: turn/start was sent but not answered - the review may be running. Collect %s; do NOT re-dispatch.\n' "$nonce" >&2 ;;
+       printf 'xreview: turn/start was sent but not answered - the review may be running. Collect %s; do NOT re-dispatch.\n' "$nonce" >&2
+       bump_round >/dev/null ;;
     *) rm -f "$dir/turns/$nonce.known"
        die "the review turn could not be started on $thread" ;;
   esac
-  archive_superseded "$thread"
+
+  # Pane, best effort. Archive the superseded thread only once the pane has actually moved
+  # off it - never on a failed pane_prepare, which would leave a review with no watched pane
+  # AND no way to resume the old one either.
+  gen="$(daemon_gen)"
+  if pane_prepare "$pane" "$thread" "$gen"; then
+    archive_superseded "$thread"
+  fi
   printf '%s\n' "$nonce"
 }
 
