@@ -100,12 +100,35 @@ pane_raw_title() { # pane_raw_title <pane>: the raw title text on a genuinely su
   # anything - conflating either with "a title that does not show want" is the P1 again
   # (I-1): a transient read failure during the fast poll must never let a stale `want`
   # title pass as if the replacement TUI had been seen not showing it.
-  local pane="$1" out rc title
-  out="$(herdr pane get "$pane" 2>/dev/null)"; rc=$?
+  local pane="$1" out rc=0 title
+  out="$(herdr pane get "$pane" 2>/dev/null)" || rc=$?
   [ "$rc" -eq 0 ] && [ -n "$out" ] || return 1
   title="$(printf '%s' "$out" | jq -r '.result.pane | (.terminal_title_stripped // .terminal_title) // empty' 2>/dev/null)"
   [ -n "$title" ] || return 1
   printf '%s\n' "$title"
+}
+
+pane_agent() { # pane_agent <pane>: the raw .agent field on a genuinely successful read;
+  # nothing, with a nonzero exit, on any read failure. A failed read must never be read as
+  # "the field is empty" (i.e. not codex) - see the agent-exit wait in pane_prepare, which
+  # would otherwise end early on a transient herdr hiccup.
+  local pane="$1" out rc=0
+  out="$(herdr pane get "$pane" 2>/dev/null)" || rc=$?
+  [ "$rc" -eq 0 ] && [ -n "$out" ] || return 1
+  printf '%s' "$out" | jq -r '.result.pane.agent // empty' 2>/dev/null
+}
+
+epoch_now() { # a wall-clock reading as plain seconds with a '.' radix, never the locale's
+  # own decimal separator (N1: under e.g. nl_BE, $EPOCHREALTIME itself is "S,ssssss", which
+  # `LC_ALL=C awk` then truncates at the comma to whole seconds) and never unset (bash < 5
+  # lacks EPOCHREALTIME; under `set -u` with it exported empty, every deadline check would
+  # read as "0 < wait", forever, and the wait would never bound anything).
+  local t="${EPOCHREALTIME:-}"
+  if [ -n "$t" ]; then
+    printf '%s\n' "${t/[!0-9]/.}"
+  else
+    date +%s
+  fi
 }
 
 # prefix_is_of <prefix> <full-id>: does <full-id> start with <prefix>? Empty prefix never
@@ -167,12 +190,18 @@ pane_prepare() { # pane_prepare <pane> [want] [daemon-generation]: the generatio
   # the fast poll `waited` summing only sleep durations drifts arbitrarily far behind the
   # real clock once each iteration's own herdr/jq calls take real time too, so a bound meant
   # to be seconds could let the wait run far longer.
-  start="$EPOCHREALTIME"
+  start="$(epoch_now)"
   herdr pane send-keys "$pane" ctrl+c >/dev/null 2>&1 || true
   sleep "$gap"
   herdr pane send-keys "$pane" ctrl+c >/dev/null 2>&1 || true
-  while [ "$(pane_field "$pane" '.agent')" = "codex" ]; do
-    LC_ALL=C awk -v s="$start" -v e="$EPOCHREALTIME" -v m="$wait" 'BEGIN{exit !(e-s<m)}' \
+  local agent
+  while :; do
+    # A failed read is treated as "still codex" (keep waiting), never as "the field read
+    # empty" (i.e. already exited) - a transient herdr hiccup here must not end this wait
+    # early and resume the pane before its old session has actually gone.
+    agent="$(pane_agent "$pane")" || agent="codex"
+    [ "$agent" = "codex" ] || break
+    LC_ALL=C awk -v s="$start" -v e="$(epoch_now)" -v m="$wait" 'BEGIN{exit !(e-s<m)}' \
       || die "the Codex pane $pane did not exit its session within ${wait}s; no review was started"
     sleep "$poll"
   done
@@ -220,7 +249,7 @@ pane_prepare() { # pane_prepare <pane> [want] [daemon-generation]: the generatio
     if [ "$ok" = 1 ] && [ "$(pane_field "$pane" '.agent')" = "codex" ] && loaded "$resolved"; then
       printf '%s\n' "$resolved"; return 0
     fi
-    LC_ALL=C awk -v s="$start" -v e="$EPOCHREALTIME" -v m="$wait" 'BEGIN{exit !(e-s<m)}' \
+    LC_ALL=C awk -v s="$start" -v e="$(epoch_now)" -v m="$wait" 'BEGIN{exit !(e-s<m)}' \
       || die "the Codex pane $pane did not show ${want:-a new thread} within ${wait}s; no review was started"
     step="$poll"
     [ -n "$want" ] && [ "$seen_reset" = 0 ] && step="$poll_fast"

@@ -64,6 +64,13 @@ pane_json() {
     n=$(cat "$P/get_calls" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$P/get_calls"
     [ "$n" -le "$AGENT_LAG" ] && a=""
   fi
+  # AGENT_EXIT_DELAY simulates the pane's OWN exit taking a few more polls to actually show
+  # up in .agent, after send-keys has already flipped the real state - so the agent-exit
+  # wait genuinely iterates a few times, the same way a real TUI would.
+  if [ -n "${AGENT_EXIT_DELAY:-}" ] && [ -e "$P/exit_delay_active" ]; then
+    n=$(cat "$P/exit_delay_calls" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$P/exit_delay_calls"
+    if [ "$n" -le "$AGENT_EXIT_DELAY" ]; then a=codex; else rm -f "$P/exit_delay_active"; fi
+  fi
   # A relaunch's typed command resets the title to "xreview" first (item 4/P1 slice 2);
   # this simulates the terminal actually catching up to that reset before the real
   # session's title lands, for RESET_LAG queries after the run. STUCK_TITLE simulates the
@@ -78,6 +85,27 @@ pane_json() {
       t=xreview
     fi
   fi
+  # M5: a WALL-CLOCK-keyed transient, not a read-count one - RESET_TIMED simulates the
+  # title staying stale (still `want`) for RESET_STALE_SECS after the run, then showing
+  # "xreview" for only RESET_WINDOW_SECS (shorter than one normal poll), then the real
+  # title. A poller slower than that window can sample straight through it and never see
+  # the reset at all - unlike the read-count mode above, which the very first read always
+  # catches regardless of poll rate.
+  if [ -e "$P/reset_timed_pending" ]; then
+    since="$(cat "$P/reset_since" 2>/dev/null || echo 0)"
+    LC_ALL=C awk -v s="$since" -v e="$(/bin/date +%s.%N)" \
+      -v stale="${RESET_STALE_SECS:-0.2}" -v win="${RESET_WINDOW_SECS:-0.15}" \
+      'BEGIN{el=e-s; if (el>=stale+win) print "past"; else if (el>=stale) print "window"; else print "stale"}' \
+      > "$P/reset_timed_phase"
+    phase="$(cat "$P/reset_timed_phase" 2>/dev/null)"
+    case "$phase" in
+      past) t="$(cat "$P/newtitle" 2>/dev/null)"; printf '%s' "$t" > "$P/title"
+            rm -f "$P/reset_timed_pending" ;;
+      window) t=xreview ;;
+      # stale: leave $t as whatever $P/title already holds (the old, still-`want` title) -
+      # `pane run` never touched it for this mode.
+    esac
+  fi
   af=""; [ -n "$a" ] && af="\"agent\":\"$a\","
   printf '{%s"agent_status":"%s","cwd":"%s","pane_id":"w1:p2","terminal_title":"%s","terminal_title_stripped":"%s"}' \
     "$af" "$s" "${PANE_CWD:-$CWD}" "$t" "$t"
@@ -88,13 +116,22 @@ case "$1 $2" in
     # I-1: consume the fail-once marker on the very first read after the run, simulating a
     # transient herdr failure - exit nonzero with no output, never a title of any kind.
     if [ -e "$P/reset_fail_once" ]; then rm -f "$P/reset_fail_once"; exit 1; fi
+    # Pre-existing: same idea, but for the agent-exit wait BEFORE the run - one failed read
+    # there must keep waiting, not be read as "the field is empty" (already exited).
+    if [ -e "$P/agent_fail_once" ]; then rm -f "$P/agent_fail_once"; exit 1; fi
     printf '{"result":{"pane":%s}}\n' "$(pane_json)" ;;
   "pane send-keys")
     n=$(cat "$P/ctrlc" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$P/ctrlc"
-    if [ "$n" -ge 2 ] && [ -z "${STUCK_TUI:-}" ]; then : > "$P/agent"; fi ;;
+    if [ "$n" -ge 2 ] && [ -z "${STUCK_TUI:-}" ]; then
+      : > "$P/agent"
+      : > "$P/exit_delay_active"; rm -f "$P/exit_delay_calls"
+      [ -n "${AGENT_READ_FAIL_ONCE:-}" ] && : > "$P/agent_fail_once"
+    fi ;;
   "pane run")
     echo 0 > "$P/ctrlc"
-    rm -f "$P/get_calls" "$P/reset_calls" "$P/reset_pending" "$P/reset_fail_once"
+    rm -f "$P/get_calls" "$P/reset_calls" "$P/reset_pending" "$P/reset_fail_once" \
+          "$P/reset_since" "$P/reset_timed_pending" "$P/reset_timed_phase" \
+          "$P/exit_delay_active" "$P/exit_delay_calls" "$P/agent_fail_once"
     : > "$P/lag_active"
     [ -n "${NO_TITLE:-}" ] && exit 0
     printf codex > "$P/agent"
@@ -123,7 +160,13 @@ case "$1 $2" in
             # observing a non-want title.
         else
           printf '%s... | t | d' "$(printf '%s' "$full" | cut -c1-"$len")" > "$P/newtitle"
-          printf xreview > "$P/title"; : > "$P/reset_pending"
+          if [ -n "${RESET_TIMED:-}" ]; then
+            /bin/date +%s.%N > "$P/reset_since"; : > "$P/reset_timed_pending"
+            # $P/title is left untouched here - still the stale `want` title, exactly the
+            # scenario M5 simulates (the reset has not become visible yet).
+          else
+            printf xreview > "$P/title"; : > "$P/reset_pending"
+          fi
         fi ;;
       *) printf '%s... | t | d' "$(printf '%s' "$full" | cut -c1-"$len")" > "$P/title" ;;
     esac ;;
@@ -179,13 +222,16 @@ export PATH="$STUB:$PATH"
 fresh() { # a pane showing U0, idle; clean log and state
   unset ENSURE_RC CHECK_RC RPC_NOT_LOADED RPC_NOT_LOADED_ONCE RPC_NOT_LOADED_ONCE_AT RPC_START_FAIL \
         RPC_START_UNCERTAIN RPC_START_BAD_ID NO_TITLE STUCK_TUI STUCK_TITLE RESET_LAG \
-        RESET_FAIL_ONCE EXTRA_PANES PANE_CWD XREVIEW_PANE XREVIEW_THREAD RPC_WAIT_OUT \
+        RESET_FAIL_ONCE RESET_TIMED RESET_STALE_SECS RESET_WINDOW_SECS AGENT_EXIT_DELAY \
+        AGENT_READ_FAIL_ONCE EXTRA_PANES PANE_CWD XREVIEW_PANE XREVIEW_THREAD RPC_WAIT_OUT \
         RPC_WAIT_RC RPC_THREAD_RUNNING RPC_HEALTH_FAIL AGENT_LAG
   export NEW_UUID="$U1"
   printf codex > "$P/agent"; printf '%s | t | d' "$(trunc "$U0")" > "$P/title"; echo idle > "$P/status"
   echo 0 > "$P/ctrlc"
   rm -f "$P/packet" "$P/status_calls" "$P/get_calls" "$P/lag_active" "$P/reset_calls" \
-        "$P/reset_pending" "$P/newtitle" "$P/reset_fail_once"
+        "$P/reset_pending" "$P/newtitle" "$P/reset_fail_once" "$P/reset_since" \
+        "$P/reset_timed_pending" "$P/reset_timed_phase" "$P/exit_delay_active" \
+        "$P/exit_delay_calls" "$P/agent_fail_once"
   bash "$XREVIEW" round --reset >/dev/null 2>&1
   rm -rf "$STATE/superseded" "$STATE/pin" "$STATE/turns"
   rm -f "$STATE/pane"   # F31: the fast-path record must never leak from a previous test
@@ -354,24 +400,43 @@ is "D3d it refuses after the wait, a failed read never counted as a real observa
 is "D3d and no turn ever starts on the unwatched pane" "$(called 'xreview-rpc turn-start')" 0
 rm -rf "$CODEX_HOME/app-server-daemon"   # restore the "no daemon.pid yet" baseline for later tests
 
-echo "D3e. M5: a real (non-degenerate) poll interval, with a transient lasting several polls"
-# The suite otherwise runs at XREVIEW_POLL_SECS=0.05, floored to the same value as poll_fast
-# (0.05/10 < 0.05), so the fast and normal polls are indistinguishable there. Here poll=0.5s
-# makes poll_fast (0.05s) genuinely smaller, and RESET_LAG=2 keeps the reset title showing
-# for a couple of reads before the real one lands - still resolves quickly, not at 0.5s
-# multiples throughout.
+echo "D3e. M5: a wall-clock-keyed transient shorter than the normal poll must not be missed"
+# RESET_TIMED (not read-count RESET_LAG): the title stays stale (`want`) for
+# RESET_STALE_SECS after the run, then shows "xreview" for only RESET_WINDOW_SECS - here
+# 0.15s, shorter than the 0.5s normal poll - then the real title. The very first read
+# (at t=0) sees the STALE want title, not the reset, so unlike RESET_LAG this cannot be
+# caught by "read once, regardless of poll rate" - only a poll fine enough to land a
+# sample inside the 0.15s window can ever observe it.
 fresh
 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1   # establishes want=U1
 mkdir -p "$CODEX_HOME/app-server-daemon"; printf '{"pid":999}\n' > "$CODEX_HOME/app-server-daemon/daemon.pid"
 : > "$CALLS"
-start="$EPOCHREALTIME"
-out="$(XREVIEW_POLL_SECS=0.5 XREVIEW_PANE_WAIT=5 RESET_LAG=2 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
-took="$(LC_ALL=C awk -v s="$start" -v e="$EPOCHREALTIME" 'BEGIN{printf "%.3f", e-s}')"
-is "D3e it still succeeds under a real poll interval with a multi-poll transient" \
+start="$(/bin/date +%s.%N)"
+out="$(XREVIEW_POLL_SECS=0.5 XREVIEW_PANE_WAIT=5 RESET_TIMED=1 RESET_STALE_SECS=0.2 RESET_WINDOW_SECS=0.15 \
+        bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+took="$(LC_ALL=C awk -v s="$start" -v e="$(/bin/date +%s.%N)" 'BEGIN{printf "%.3f", e-s}')"
+is "D3e it still succeeds, catching a transient shorter than the normal poll" \
    "$(printf '%s' "$out" | grep -c '^xr-')" 1
 is "D3e and it stays quick, not several multiples of the 0.5s poll" \
    "$(LC_ALL=C awk -v t="$took" 'BEGIN{print (t<3) ? "yes" : "no ("t"s)"}')" yes
 rm -rf "$CODEX_HOME/app-server-daemon"
+
+echo "D3f. pre-existing: a failed .agent read during the exit wait keeps waiting, not skips it"
+# AGENT_EXIT_DELAY makes .agent genuinely keep reading "codex" for a few more polls after
+# send-keys, as a slow-exiting TUI would; AGENT_READ_FAIL_ONCE fails the very first read of
+# that phase outright. A read failure treated as "the field is empty" would end the wait on
+# that first (failed) read - long before the delay actually elapses.
+fresh
+printf '%s | t | d' "$(trunc "$U0")" > "$P/title"; : > "$CALLS"   # forces the resume path
+out="$(AGENT_EXIT_DELAY=3 AGENT_READ_FAIL_ONCE=1 XREVIEW_POLL_SECS=0.05 XREVIEW_PANE_WAIT=5 \
+        bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+is "D3f it still succeeds" "$(printf '%s' "$out" | grep -c '^xr-')" 1
+# Between the second ctrl+c and `pane run`, the exit-wait loop makes one ".agent" read per
+# iteration: the first (failed) one, then 3 more covering the delay, then the one that
+# finally reads empty and breaks the loop - 5 in total. A failed read misread as "already
+# exited" would instead call `pane run` after just that first (failed) read - 1, not 5.
+is "D3f the exit wait actually iterated through the delay, not stopped on the failed read" \
+   "$(awk '/pane send-keys/{n++} n>=2{print} /pane run/{exit}' "$CALLS" | grep -c 'pane get')" 5
 
 fresh; out="$(NO_TITLE=1 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
 is "D4 a pane that never shows a thread refuses" "$rc" 1
@@ -652,6 +717,30 @@ out="$(LC_ALL=nl_BE.UTF-8 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
 is "K1 a dispatch under nl_BE.UTF-8 still succeeds" "$(printf '%s' "$out" | grep -c '^xr-')" 1
 is "K1 and exactly two ctrl+c were sent, not aborted after the first" \
    "$(called 'herdr pane send-keys')" 2
+
+echo "K2. N1: \$EPOCHREALTIME's locale radix never truncates a sub-second wait to whole seconds"
+# Under nl_BE, $EPOCHREALTIME itself reads "S,ssssss" - LC_ALL=C awk then parses only the
+# whole-second part, so a 0.15s bound could run for up to a whole extra second before the
+# truncated math finally shows the deadline passed. epoch_now() must normalise this.
+fresh
+start="$(/bin/date +%s.%N)"
+out="$(LC_ALL=nl_BE.UTF-8 NO_TITLE=1 XREVIEW_PANE_WAIT=0.15 XREVIEW_POLL_SECS=0.05 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+took="$(LC_ALL=C awk -v s="$start" -v e="$(/bin/date +%s.%N)" 'BEGIN{printf "%.3f", e-s}')"
+is "K2 it refuses (never shows a thread)" "$rc" 1
+is "K2 and the 0.15s bound actually held, not stretched by whole-second truncation" \
+   "$(LC_ALL=C awk -v t="$took" 'BEGIN{print (t<0.6) ? "yes" : "no ("t"s)"}')" yes
+
+# N1: exec-ing a fresh bash for the whole dispatch cannot simulate "EPOCHREALTIME absent"
+# in-process - a new bash 5+ instance always recomputes its own. Unit-test the helper
+# itself instead, extracted verbatim from the source file, in a subshell where it is
+# actually unset (bash allows unsetting a dynamic variable within the same process).
+echo "K3. N1: epoch_now() falls back to whole-second date when \$EPOCHREALTIME is unset"
+epoch_now_src="$(sed -n '/^epoch_now() {/,/^}/p' "$XREVIEW")"
+out="$(bash -c "$epoch_now_src"$'\nunset EPOCHREALTIME\nepoch_now')"
+is "K3 it still prints something, never empty/unbound" \
+   "$([ -n "$out" ] && echo yes || echo no)" yes
+is "K3 and it looks like a plausible whole-second unix time, not truncated garbage" \
+   "$(printf '%s' "$out" | grep -cE '^[0-9]{10,}$')" 1
 
 echo "J. an unborn HEAD and no git repo at all (I-1)"
 # `git rev-parse --abbrev-ref HEAD` exits 128 on an unborn HEAD; inherit_errexit must not
