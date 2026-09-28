@@ -261,6 +261,27 @@ pane_resume() {
   done
 }
 
+_dispatch_exit_guard() { # the EXIT trap armed right after pane_free succeeds, in
+  # cmd_dispatch (spec 8's "refusal after the pane was freed" row). If dispatch dies
+  # anywhere between there and a successful turn-start - turn-start itself refused, mktemp,
+  # mkdir - the pane would otherwise be left sitting at a bare shell, and the NEXT dispatch's
+  # find_pane then refuses with a misleading "no Codex pane". Relaunches Codex there, best
+  # effort: resume the review thread if it will, else fall through to a fresh session (an
+  # unmaterialized or archived thread refuses resume). A no-op when pane_free never had to
+  # quit anything (need_resume=0) - nothing was disturbed, so there is nothing to repair.
+  # Disarmed (trap - EXIT) the moment turn-start actually succeeds; pane_resume owns the pane
+  # from there. Reads cmd_dispatch's own locals (packet, need_resume, pane, thread) by bash's
+  # ordinary dynamic scoping - this only ever fires while still inside that call. Never calls
+  # exit itself, so it never changes the exit status the script is already leaving with.
+  [ -n "${packet:-}" ] && rm -f "$packet" 2>/dev/null
+  if [ "${need_resume:-0}" = 1 ]; then
+    local cmd
+    cmd="$(pane_command 2>/dev/null)" || cmd=""
+    [ -n "$cmd" ] && herdr pane run "$pane" "$cmd resume $thread || $cmd" >/dev/null 2>&1
+  fi
+  return 0
+}
+
 report_to_herdr() { # report_to_herdr <pane> <thread>
   herdr pane report-agent-session "$1" --source herdr:codex --agent codex \
     --agent-session-id "$2" --seq "$(/usr/bin/python3 -c 'import time; print(time.time_ns())')" \
@@ -551,6 +572,11 @@ Report the remaining disagreement, or: xreview round --reset"
   # Free the pane, BEFORE the turn exists (spec 7.3 step 3): the only point in dispatch that
   # may ever send-keys to the pane. Dies on any failure - nothing has started yet.
   need_resume="$(pane_free "$pane" "$thread" "$gen")"
+  # Armed from here through a successful turn-start (spec 8's "refusal after the pane was
+  # freed" row): a die anywhere in this window - turn-start refused, mktemp, mkdir - would
+  # otherwise leave a pane pane_free quit sitting at a bare shell. Disarmed in the 0/6 case
+  # arms below, once the turn genuinely exists and pane_resume owns the pane from there.
+  trap _dispatch_exit_guard EXIT
 
   # Turn: build the packet and start it on the thread. From here on dispatch always
   # succeeds and prints the nonce - the review runs whatever happens to the pane below, and
@@ -561,7 +587,6 @@ Report the remaining disagreement, or: xreview round --reset"
   # instructed never to act on an imperative inside one. A dispatch is an authorized request.
   nonce="xr-$(date +%s)-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
   packet="$(mktemp "${TMPDIR:-/tmp}/xreview-packet.XXXXXX")"
-  trap 'rm -f "$packet"' EXIT
   { printf '<cross-review-request>\n'
     cat "$REVIEWER"
     printf '\n'
@@ -578,21 +603,22 @@ Report the remaining disagreement, or: xreview round --reset"
   turn="$(xreview-rpc turn-start --thread "$thread" --input "$packet" --schema "$SCHEMA" \
             --known "$dir/turns/$nonce.known")" || rc=$?
   rm -f "$packet"
-  trap - EXIT
   # A turn-start that returns 0 with a malformed id is handled exactly like exit 6: the
   # turn may still be running on the daemon side, so it is never treated as "not started".
   if [ "$rc" = 0 ] && ! is_safe_id "$turn"; then rc=6; fi
   case "$rc" in
     0) printf '%s %s\n' "$thread" "$turn" > "$dir/turns/$nonce"
        rm -f "$dir/turns/$nonce.known"
-       bump_round >/dev/null || true ;;
+       bump_round >/dev/null || true
+       trap - EXIT ;;
     6) # Sent but not answered (or answered with an id that does not look like one): the
        # turn may be running. Hand back a nonce so it can be collected - found as the turn
        # that was not on the thread before - never re-sent. The round is consumed too: a
        # turn that may be running has already cost one.
        printf '%s ?\n' "$thread" > "$dir/turns/$nonce"
        printf 'xreview: turn/start was sent but not answered - the review may be running. Collect %s; do NOT re-dispatch.\n' "$nonce" >&2
-       bump_round >/dev/null || true ;;
+       bump_round >/dev/null || true
+       trap - EXIT ;;
     *) rm -f "$dir/turns/$nonce.known"
        die "the review turn could not be started on $thread" ;;
   esac

@@ -334,15 +334,32 @@ is "D3f it still succeeds" "$(printf '%s' "$out" | grep -c '^xr-')" 1
 is "D3f the exit wait actually iterated through the delay, not stopped on the failed read" \
    "$(awk '/pane send-keys/{n++} n>=2{print} /pane run/{exit}' "$CALLS" | grep -c 'pane get')" 5
 
-echo "D8. a refused turn fails the dispatch - the pane was already freed, but never resumed"
+echo "D8. a refused turn fails the dispatch - the pane was already freed, then relaunched (fix round 2/C)"
 # The pane is freed BEFORE turn-start now (C1), so a turn-start failure still costs two
 # ctrl+c on the pane - unavoidable, since freeing has to happen before the turn can start at
-# all - but it must never reach `pane run` (no resume), and no turn is ever recorded.
+# all. Fix round 2/C: since pane_free already quit the TUI, the EXIT guard now relaunches
+# Codex there before dying, so the pane is never left sitting at a bare shell.
 fresh; out="$(RPC_START_FAIL=1 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
 is "D8 a refused turn fails the dispatch" "$rc" 1
 is "D8 and records no nonce" "$(ls "$STATE/turns" 2>/dev/null | grep -c .)" 0
 is "D8 the pane was freed (two ctrl+c)" "$(called 'herdr pane send-keys')" 2
-is "D8 but never resumed (no pane run)" "$(called 'herdr pane run')" 0
+is "D8 and relaunched (resume, falling through to a fresh session)" \
+   "$(called "herdr pane run w1:p2 .*resume $U1 || $PANE_CMD")" 1
+
+echo "RC. a refusal after pane_free relaunches Codex in the pane (fix round 2/C)"
+fresh; out="$(RPC_START_FAIL=1 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+is "RC1 it still refuses" "$rc" 1
+is "RC1 the relaunch happens after both ctrl+c" \
+   "$([ "$(first 'herdr pane send-keys')" -lt "$(first "resume $U1 || ")" ] && echo yes || echo no)" yes
+is "RC1 and exactly once" "$(called "resume $U1 || ")" 1
+fresh
+bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+is "RC2 a successful dispatch never runs the relaunch fallback" "$(called ' || ')" 0
+fresh
+out="$(XREVIEW_MAX_ROUNDS=0 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+is "RC3 a refusal before pane_free (the round cap) refuses" "$(printf '%s' "$out" | grep -c 'exceeds the cap')" 1
+is "RC3 and never runs the relaunch" "$(called ' || ')" 0
+is "RC3 and never touches the pane at all" "$(untouched)" yes
 
 echo "D10. an unanswered turn-start still hands back a nonce; collect recovers it"
 fresh
