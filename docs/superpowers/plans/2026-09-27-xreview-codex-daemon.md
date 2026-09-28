@@ -2,7 +2,10 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** In progress
+**Status:** Implemented — merged locally to `main` from `feat/xreview-codex-daemon` (no MR). Do not
+re-execute. Fixes found during rollout and review ran as Tasks 10-16 from their own briefs, and
+Task 16 replaced the pane-first dispatch with turn-first; the amended spec records the final
+design.
 
 **Goal:** Run every Codex session on a daemon started cleanly by launchd, keep herdr's pane→thread ids correct from the pane titles, and move xreview onto the daemon with pane-first dispatch and schema-checked findings.
 

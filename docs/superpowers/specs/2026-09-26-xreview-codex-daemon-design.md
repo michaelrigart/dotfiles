@@ -1,6 +1,6 @@
 # xreview on the Codex app-server daemon
 
-**Status:** In progress
+**Status:** Implemented — merged locally to `main` from `feat/xreview-codex-daemon` (no MR)
 **Date:** 2026-09-26
 **Amended:** 2026-09-28 - dispatch is turn first: xreview creates the thread over the daemon,
 starts the turn, then resumes the pane onto the thread, which replays the turn from its start
