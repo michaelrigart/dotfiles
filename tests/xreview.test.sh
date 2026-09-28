@@ -5,10 +5,11 @@
 #   herdr         one Codex pane, w1:p2, whose title and agent live in files under $P
 #   codex-daemon  ensure/check exit codes
 #   xreview-rpc   thread-start, thread status/resolve, turn start and wait, archive
-# Each stub logs its calls to $CALLS, so ordering is asserted from the log. Dispatch starts
-# the review turn on the checkpoint thread FIRST; the pane is then a best-effort resume onto
-# it (F22: a TUI resuming a thread mid-turn replays it from the start). No precondition may
-# be skipped, and turn-start must always precede the first pane keystroke.
+# Each stub logs its calls to $CALLS, so ordering is asserted from the log. Dispatch FREES
+# the pane (quits its TUI, if it is not already on the checkpoint thread) BEFORE any turn
+# exists, THEN starts the review turn, and only THEN best-effort resumes the pane onto it
+# (F22: a TUI resuming a thread mid-turn replays it from the start). No precondition may be
+# skipped, and no keystroke (send-keys) may ever reach the pane once the turn exists (C1).
 set -uo pipefail
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
 XREVIEW="$SRC/dot_local/bin/executable_xreview"
@@ -104,9 +105,9 @@ case "$1 $2" in
     echo 0 > "$P/ctrlc"
     rm -f "$P/reset_calls" "$P/reset_pending" "$P/exit_delay_active" "$P/exit_delay_calls" \
           "$P/agent_fail_once"
-    # pane_prepare only ever issues one shape of launch command: "$cmd resume $thread" - the
-    # thread is always known before the pane is touched (item 16). NO_TITLE simulates a pane
-    # that never shows any title at all, however long dispatch waits.
+    # pane_resume only ever issues one shape of launch command: "$cmd resume $thread" - the
+    # thread is always known before the pane is touched. NO_TITLE simulates a pane that never
+    # shows any title at all, however long dispatch waits.
     [ -n "${NO_TITLE:-}" ] && exit 0
     printf codex > "$P/agent"
     full="${4##* resume }"
@@ -149,7 +150,11 @@ case "$cmd" in
     done
     exit 1 ;;
   thread-status)
-    if [ -n "${RPC_THREAD_RUNNING:-}" ]; then
+    # RPC_THREAD_RUNNING: every thread queried is running. RPC_THREAD_RUNNING_FOR=<id>:
+    # only that one thread is (Minor 4's own check runs on the CHOSEN thread, separately
+    # from the precondition gate's check on whatever the pane's title resolves to, so a
+    # test targeting one must not also trip the other).
+    if [ -n "${RPC_THREAD_RUNNING:-}" ] || { [ -n "${RPC_THREAD_RUNNING_FOR:-}" ] && [ "$th" = "$RPC_THREAD_RUNNING_FOR" ]; }; then
       echo '{"loaded":true,"status":"active","running":true}'
     else echo '{"loaded":true,"status":"idle","running":false}'; fi ;;
   turn-start) cp "$input" "$P/packet"; [ -n "$known" ] && echo '[]' > "$known"
@@ -181,7 +186,7 @@ fresh() { # a pane showing U0, idle; clean log and state
   unset ENSURE_RC CHECK_RC RPC_START_FAIL RPC_START_UNCERTAIN RPC_START_BAD_ID \
         RPC_START_THREAD_FAIL NO_TITLE STUCK_TUI RESET_LAG AGENT_EXIT_DELAY \
         AGENT_READ_FAIL_ONCE EXTRA_PANES PANE_CWD XREVIEW_PANE XREVIEW_THREAD RPC_WAIT_OUT \
-        RPC_WAIT_RC RPC_THREAD_RUNNING RPC_HEALTH_FAIL PANE_GONE_AT
+        RPC_WAIT_RC RPC_THREAD_RUNNING RPC_THREAD_RUNNING_FOR RPC_HEALTH_FAIL PANE_GONE_AT
   export NEW_UUID="$U1"
   printf codex > "$P/agent"; printf '%s | t | d' "$(trunc "$U0")" > "$P/title"; echo idle > "$P/status"
   echo 0 > "$P/ctrlc"
@@ -196,6 +201,10 @@ called() { grep -c -- "$1" "$CALLS" 2>/dev/null || true; }
 first() { grep -n -- "$1" "$CALLS" | head -1 | cut -d: -f1; }
 untouched() { # nothing reached the pane or the reviewer
   [ "$(called 'herdr pane send-keys')$(called 'herdr pane run')$(called 'xreview-rpc turn-start')" = 000 ] && echo yes || echo no
+}
+none_after() { # none_after <marker> <target>: <target> never appears in $CALLS on or after
+  # the first line matching <marker> (C1: nothing may send-keys once the turn exists).
+  awk -v m="$1" -v t="$2" '$0 ~ m {f=1} f && $0 ~ t {c++} END{print c+0}' "$CALLS"
 }
 
 echo "A. the round cap binds before a turn is spent"
@@ -288,7 +297,7 @@ is "C11 untouched" "$(untouched)" yes
 fresh
 U5=55555555-5555-4555-8555-555555555555   # never on the resolver stub's known-id list
 printf '%s | t | d' "$(trunc "$U5")" > "$P/title"
-out="$(RPC_THREAD_RUNNING=1 bash "$XREVIEW" dispatch b.md 2>&1)"
+out="$(bash "$XREVIEW" dispatch b.md 2>&1)"
 is "C12 the running-thread gate does not block when the title prefix cannot be resolved" \
    "$(printf '%s' "$out" | grep -c '^xr-')" 1
 fresh
@@ -302,7 +311,7 @@ is "C7 untouched" "$(untouched)" yes
 fresh; out="$(XREVIEW_SCHEMA="$ROOT/none.json" bash "$XREVIEW" dispatch b.md 2>&1)"
 is "C8 a missing schema refuses" "$(printf '%s' "$out" | grep -c 'missing findings schema')" 1
 
-echo "D. the checkpoint thread starts the turn; the pane is best-effort resumed onto it"
+echo "D. the pane is freed before the turn, then best-effort resumed onto it (spec 7.3)"
 fresh
 nonce="$(bash "$XREVIEW" dispatch b.md 2>/dev/null)"
 is "D1 a nonce is printed" "$(printf '%s' "$nonce" | grep -c '^xr-')" 1
@@ -313,6 +322,8 @@ is "D1 herdr is told the pane's thread" \
    "$(called "herdr pane report-agent-session w1:p2 --source herdr:codex --agent codex --agent-session-id $U1")" 1
 is "D1 the checkpoint thread is recorded" "$(cat "$STATE/review-thread")" "$U1"
 is "D1 the nonce maps to thread and turn" "$(cat "$STATE/turns/$nonce")" "$U1 turn-$U1"
+# C1: nothing may ever send-keys to the pane once the turn exists.
+is "D1 no send-keys appears after turn-start" "$(none_after 'xreview-rpc turn-start' 'herdr pane send-keys')" 0
 
 echo "D3. a pane that moved off the checkpoint thread is resumed back onto it"
 printf '%s | t | d' "$(trunc "$U0")" > "$P/title"; : > "$CALLS"
@@ -336,11 +347,15 @@ is "D3f it still succeeds" "$(printf '%s' "$out" | grep -c '^xr-')" 1
 is "D3f the exit wait actually iterated through the delay, not stopped on the failed read" \
    "$(awk '/pane send-keys/{n++} n>=2{print} /pane run/{exit}' "$CALLS" | grep -c 'pane get')" 5
 
-echo "D8. a refused turn fails the dispatch, before any pane keystroke"
+echo "D8. a refused turn fails the dispatch - the pane was already freed, but never resumed"
+# The pane is freed BEFORE turn-start now (C1), so a turn-start failure still costs two
+# ctrl+c on the pane - unavoidable, since freeing has to happen before the turn can start at
+# all - but it must never reach `pane run` (no resume), and no turn is ever recorded.
 fresh; out="$(RPC_START_FAIL=1 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
 is "D8 a refused turn fails the dispatch" "$rc" 1
 is "D8 and records no nonce" "$(ls "$STATE/turns" 2>/dev/null | grep -c .)" 0
-is "D8 no key was ever sent to the pane" "$(called 'herdr pane send-keys')" 0
+is "D8 the pane was freed (two ctrl+c)" "$(called 'herdr pane send-keys')" 2
+is "D8 but never resumed (no pane run)" "$(called 'herdr pane run')" 0
 
 echo "D10. an unanswered turn-start still hands back a nonce; collect recovers it"
 fresh
@@ -403,14 +418,16 @@ is "T1 thread-start is called with the repo root" "$(called "xreview-rpc thread-
 is "T1 the new thread is recorded as the checkpoint thread" "$(cat "$STATE/review-thread")" "$U1"
 is "T1 the turn starts on it" "$(called "xreview-rpc turn-start --thread $U1")" 1
 
-echo "T2. turn-start happens before the first key is ever sent to the pane"
+echo "T2. no keystroke ever reaches the pane once the turn exists (C1)"
 fresh
 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
-is "T2 turn-start appears before the first send-keys in the call log" \
-   "$([ "$(first 'xreview-rpc turn-start')" -lt "$(first 'herdr pane send-keys')" ] && echo yes || echo no)" yes
-# Confirmed with a scratch mutant (dispatch's own thread/turn/pane ordering swapped so the
-# pane is prepared before turn-start runs): this assertion goes red under that mutant, and
-# only this one - see task-16-report.md.
+is "T2 the pane is freed (send-keys) before turn-start, not after" \
+   "$([ "$(first 'herdr pane send-keys')" -lt "$(first 'xreview-rpc turn-start')" ] && echo yes || echo no)" yes
+is "T2 and no send-keys ever appears after turn-start" \
+   "$(none_after 'xreview-rpc turn-start' 'herdr pane send-keys')" 0
+# Confirmed with a scratch mutant (the ctrl+c moved to AFTER turn-start, mirroring the old
+# pane-first-then-ctrl+c bug this fix round closes): both assertions above go red under that
+# mutant, and D1's own send-keys-after-turn-start assertion does too - see task-16-report.md.
 
 echo "T3. a pane that never shows the thread still succeeds: the review just is not shown"
 fresh
@@ -423,25 +440,40 @@ is "T3 and it warns the review is not shown" \
    "$(printf '%s' "$out" | grep -c 'running but not shown in pane w1:p2')" 1
 is "T3 the round was still consumed" "$(bash "$XREVIEW" round)" 1
 
-echo "T3b. a session that will not exit also just warns, not refuses"
+echo "T3b. a session that will not exit now REFUSES, before any turn exists (C1)"
+# The old behaviour (warn, still exit 0) belonged to the OLD pane-first-then-turn design,
+# where freeing the pane happened with no turn yet to protect. Now pane_free runs before
+# turn-start, so it can safely die: nothing has started.
 fresh
 out="$(STUCK_TUI=1 XREVIEW_PANE_WAIT=0.15 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
-is "T3b dispatch still exits 0" "$rc" 0
-is "T3b and warns" "$(printf '%s' "$out" | grep -c 'running but not shown in pane w1:p2')" 1
-is "T3b and never starts a new pane session" "$(called 'herdr pane run')" 0
+is "T3b it refuses" "$rc" 1
+is "T3b and says the session would not exit" "$(printf '%s' "$out" | grep -c 'did not exit its session')" 1
+is "T3b no turn was ever started" "$(called 'xreview-rpc turn-start')" 0
+is "T3b and no nonce is printed" "$(printf '%s' "$out" | grep -c '^xr-')" 0
 
-echo "T4. a pane that closes (pane_not_found) after the turn starts gives the same result, quickly"
+echo "T4a. a pane that closes (pane_not_found) WHILE BEING FREED refuses; no turn ever starts"
+fresh
+out="$(PANE_GONE_AT=1 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+is "T4a it refuses" "$rc" 1
+is "T4a and says the pane closed while being freed" \
+   "$(printf '%s' "$out" | grep -c 'closed while being freed')" 1
+is "T4a no turn was ever started" "$(called 'xreview-rpc turn-start')" 0
+is "T4a and no nonce is printed" "$(printf '%s' "$out" | grep -c '^xr-')" 0
+
+echo "T4b. a pane that closes (pane_not_found) AFTER the turn starts still warns, quickly, exit 0"
+# The turn already exists by the time this fires (pane_free itself succeeded), so this is
+# exactly the spec's step-5 failure mode, unchanged from before this fix round.
 fresh
 start="$EPOCHREALTIME"
-out="$(PANE_GONE_AT=1 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+out="$(PANE_GONE_AT=5 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
 took="$(awk -v s="$start" -v e="$EPOCHREALTIME" 'BEGIN{printf "%.3f", e-s}')"
 nonce="$(printf '%s' "$out" | grep '^xr-')"
-is "T4 dispatch still exits 0" "$rc" 0
-is "T4 and prints the nonce" "$(printf '%s' "$nonce" | grep -c '^xr-')" 1
-is "T4 the turn is recorded" "$(cat "$STATE/turns/$nonce" 2>/dev/null)" "$U1 turn-$U1"
-is "T4 and it warns the review is not shown" \
+is "T4b dispatch still exits 0" "$rc" 0
+is "T4b and prints the nonce" "$(printf '%s' "$nonce" | grep -c '^xr-')" 1
+is "T4b the turn is recorded" "$(cat "$STATE/turns/$nonce" 2>/dev/null)" "$U1 turn-$U1"
+is "T4b and it warns the review is not shown" \
    "$(printf '%s' "$out" | grep -c 'running but not shown in pane w1:p2')" 1
-is "T4 it returns quickly, not waiting out XREVIEW_PANE_WAIT" \
+is "T4b it returns quickly, not waiting out XREVIEW_PANE_WAIT" \
    "$(awk -v t="$took" -v w="${XREVIEW_PANE_WAIT:-20}" 'BEGIN{print (t < w) ? "yes" : "no ("t"s)"}')" yes
 
 echo "T5. thread-start failing refuses before any turn or pane keystroke"
@@ -459,7 +491,7 @@ bash "$XREVIEW" dispatch b.md >/dev/null 2>&1        # establishes checkpoint th
 bash "$XREVIEW" round --reset >/dev/null 2>&1         # supersedes U1; drops the cached thread
 export NEW_UUID="$U2"
 : > "$CALLS"
-bash "$XREVIEW" dispatch b.md >/dev/null 2>&1         # a normal dispatch: pane_prepare succeeds
+bash "$XREVIEW" dispatch b.md >/dev/null 2>&1         # a normal dispatch: the pane step succeeds
 is "T6 the superseded thread is archived once the pane step succeeds" \
    "$(called "xreview-rpc thread-archive --thread $U1")" 1
 export NEW_UUID="$U1"
@@ -472,6 +504,15 @@ export NEW_UUID="$U2"
 NO_TITLE=1 XREVIEW_PANE_WAIT=0.15 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1   # the pane step fails
 is "T6 and NOT archived when the pane step fails" "$(called "xreview-rpc thread-archive --thread $U1")" 0
 export NEW_UUID="$U1"
+
+echo "M4. the checkpoint thread itself already running a turn refuses, pane untouched"
+fresh
+bash "$XREVIEW" init "$U2" >/dev/null   # pin a thread distinct from the pane's own title (U0)
+out="$(RPC_THREAD_RUNNING_FOR=$U2 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+is "M4 it refuses" "$rc" 1
+is "M4 and says to collect it first" "$(printf '%s' "$out" | grep -c 'collect it first')" 1
+is "M4 no turn was started" "$(called 'xreview-rpc turn-start')" 0
+is "M4 and the pane was never touched" "$(untouched)" yes
 
 echo "T7. the fast path sends no keys and starts no new pane session"
 fresh
