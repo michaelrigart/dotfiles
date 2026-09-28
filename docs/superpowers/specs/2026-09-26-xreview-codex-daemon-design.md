@@ -181,9 +181,19 @@ not only the one whose session is starting:
 1. List herdr panes on the default socket.
 2. For every pane with `agent == "codex"` whose title begins with an id prefix, compare it with
    the pane's `agent_session`. If the session already starts with that prefix, nothing to do.
-   Otherwise resolve the prefix to a full id - the hook's own `session_id`, for free, when the
-   prefix is one of its prefixes; through `xreview-rpc thread-resolve --prefix` otherwise - and
-   run `herdr pane report-agent-session <pane> --source herdr:codex --agent codex --agent-session-id <full-id> --seq <ns>`.
+   Otherwise resolve the prefix to a full id, and run
+   `herdr pane report-agent-session <pane> --source herdr:codex --agent codex --agent-session-id <full-id> --seq <ns>`.
+   Every pane resolves through `xreview-rpc thread-resolve --prefix`, except the one pane (if
+   exactly one) whose title prefix is a prefix of the hook's own `session_id`: that id is
+   already known for free, but one matching pane does not prove the prefix names only THIS
+   thread - two threads can share a 29-character prefix (item 21/F13). A UUIDv7 prefix that
+   long (48-bit millisecond timestamp plus 46 random bits) is treated as *effectively* unique,
+   never as *provably* unique, so the shortcut still confirms through
+   `xreview-rpc thread-resolve --prefix` before trusting itself: if the resolver returns exactly
+   `session_id`, report it; if it returns a different id, or refuses as ambiguous or not found,
+   report nothing for that pane. Only when the resolver cannot be reached at all - missing
+   binary, unreachable daemon, timeout - does the shortcut fall back to trusting the match
+   directly, since there is then no daemon answer to prefer over it.
 3. If the hook input's `session_id`'s prefix is not yet on any title, retry for about 5 s while
    the title catches up, then stop.
 4. Never report a prefix as if it were a full id, and never report an id that did not resolve

@@ -82,7 +82,7 @@ printf '{"hook_event_name":"SessionStart","session_id":"%s","source":"startup"}'
 is "it exits 0" "$rc" 0
 is "the starting session's pane carries its start source" \
    "$(grep -c "^w1:p2 .*--agent-session-id $U1 .*--session-start-source startup$" "$CALLS")" 1
-is "hook mode reports the full session_id without calling the resolver" "$(rpc_calls)" 0
+is "hook mode confirms the shortcut through the resolver before trusting it" "$(rpc_calls)" 1
 
 echo "C. a session whose id is on no title yet"
 fixture "$(pane w1:p2 codex "$(trunc "$U1") | t | d" "$U1")"
@@ -226,6 +226,60 @@ printf '{"session_id":"%s","source":"startup"}' "$U1" \
 is "it exits 0"                                                 "$rc" 0
 is "neither ambiguous pane is reported"                          "$(reports)" 0
 is "the resolver is asked once, for the shared prefix, and refuses" "$(rpc_calls)" 1
+
+echo "M. the own-session shortcut confirms through the daemon before trusting itself (item 21/F13)"
+# One matching pane does not prove the prefix names only THIS thread - two threads can share
+# a 29-char prefix. The shortcut must confirm through xreview-rpc thread-resolve first, and
+# only fall back to trusting itself when the resolver cannot be reached at all.
+cat > "$T/confirmrpc" <<'R'
+#!/bin/sh
+echo "$*" >> "$RPC_CALLS"
+[ "$1" = "thread-resolve" ] || exit 2
+case "${CONFIRM_MODE:-}" in
+  same)    echo "$U1" ;;
+  other)   echo "$U2" ;;
+  refuse)  exit 1 ;;
+  unreach) exit 5 ;;
+  *)       exit 2 ;;
+esac
+R
+chmod +x "$T/confirmrpc"
+
+fixture "$(pane w1:p2 codex "$(trunc "$U1") | t | d" "")"
+printf '{"session_id":"%s","source":"startup"}' "$U1" \
+  | CONFIRM_MODE=same XREVIEW_RPC_BIN="$T/confirmrpc" PANE_MAP_RETRY_SECS=0 hook; rc=$?
+is "M1 it exits 0"                                      "$rc" 0
+is "M1 the resolver confirms the shortcut once"          "$(rpc_calls)" 1
+is "M1 a confirmed session_id is reported"               \
+   "$(grep -c "^w1:p2 .*--agent-session-id $U1 .*--session-start-source startup$" "$CALLS")" 1
+
+fixture "$(pane w1:p2 codex "$(trunc "$U1") | t | d" "")"
+printf '{"session_id":"%s","source":"startup"}' "$U1" \
+  | CONFIRM_MODE=other XREVIEW_RPC_BIN="$T/confirmrpc" PANE_MAP_RETRY_SECS=0 hook; rc=$?
+is "M2 it exits 0"                                      "$rc" 0
+is "M2 a resolver naming a different thread reports nothing" "$(reports)" 0
+
+fixture "$(pane w1:p2 codex "$(trunc "$U1") | t | d" "")"
+printf '{"session_id":"%s","source":"startup"}' "$U1" \
+  | CONFIRM_MODE=refuse XREVIEW_RPC_BIN="$T/confirmrpc" PANE_MAP_RETRY_SECS=0 hook; rc=$?
+is "M3 it exits 0"                                      "$rc" 0
+is "M3 a resolver refusing as ambiguous reports nothing" "$(reports)" 0
+
+# The fallback must not depend on timing: exit 5 (xreview-rpc's own "daemon unreachable") and
+# a missing binary are both deterministic, no deadline or sleep involved.
+fixture "$(pane w1:p2 codex "$(trunc "$U1") | t | d" "")"
+printf '{"session_id":"%s","source":"startup"}' "$U1" \
+  | CONFIRM_MODE=unreach XREVIEW_RPC_BIN="$T/confirmrpc" PANE_MAP_RETRY_SECS=0 hook; rc=$?
+is "M4 it exits 0"                                      "$rc" 0
+is "M4 an unreachable daemon (exit 5) falls back to the shortcut" "$(reports)" 1
+is "M4 and reports the shortcut's own session id"       \
+   "$(grep -c "^w1:p2 .*--agent-session-id $U1 .*--session-start-source startup$" "$CALLS")" 1
+
+fixture "$(pane w1:p2 codex "$(trunc "$U1") | t | d" "")"
+printf '{"session_id":"%s","source":"startup"}' "$U1" \
+  | XREVIEW_RPC_BIN="$T/nonexistent-rpc" PANE_MAP_RETRY_SECS=0 hook; rc=$?
+is "M5 it exits 0"                                      "$rc" 0
+is "M5 a missing resolver binary also falls back to the shortcut" "$(reports)" 1
 
 echo
 echo "RESULT: $pass passed, $((pass + fail)) total, $fail failed"

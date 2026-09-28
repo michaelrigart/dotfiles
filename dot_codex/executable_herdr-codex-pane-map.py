@@ -10,12 +10,17 @@ Runs inside the Codex daemon as a SessionStart hook (hook JSON on stdin), beside
 hook, which exits there because the daemon carries no pane environment. Every TUI puts its
 thread id first in its terminal title (tui.terminal_title), but Codex ALWAYS truncates that
 item to 29 characters plus "..." (F11/F21), so the title carries only a PREFIX; a full id
-appears only as `thread-title`'s fallback, for a thread that is not yet named. The hook's
-own `session_id` is a full id, so a pane whose title prefix matches it is
-resolved for free; every other pane's prefix is resolved to a full id through `xreview-rpc
-thread-resolve`. A prefix is never reported as if it were a full id. Each pass repairs every
-Codex pane, so one wrong report from anywhere is fixed by the next session start. An id that
-is not on a title is never reported.
+appears only as `thread-title`'s fallback, for a thread that is not yet named. The hook's own
+`session_id` is a full id, but one matching pane does not prove the prefix names only THIS
+thread - two threads can share a 29-character prefix (item 21/F13). A UUIDv7 prefix that long
+(48-bit millisecond timestamp plus 46 random bits) is treated as *effectively* unique, never
+as *provably* unique, so the shortcut still confirms itself through `xreview-rpc
+thread-resolve --prefix` first: a confirming answer is reported, a disagreeing or refusing one
+reports nothing for that pane, and only an unreachable resolver (missing binary, unreachable
+daemon, timeout) falls back to trusting the shortcut outright. Every other pane's prefix is
+unconditionally resolved to a full id through `xreview-rpc thread-resolve`. A prefix is never
+reported as if it were a full id. Each pass repairs every Codex pane, so one wrong report from
+anywhere is fixed by the next session start. An id that is not on a title is never reported.
 
 `--reconcile` runs one pass without hook input. The whole run - listing, every report, every
 resolve and the retries - shares one deadline (PANE_MAP_DEADLINE_SECS, 8 s), inside the 10 s
@@ -82,14 +87,24 @@ def rpc_bin():
     return None
 
 
+def resolve_thread_id_raw(prefix):
+    """The raw `xreview-rpc thread-resolve --prefix` result, bound by the shared deadline
+    (run()): None when the resolver could not even be invoked (missing binary, a timeout, or
+    the shared deadline already gone), a CompletedProcess otherwise - regardless of its exit
+    code. resolve_thread_id() below collapses "unreachable" and "ran but refused" into one
+    None; the own-session shortcut (item 21/F13) needs to tell those apart, since only
+    "unreachable" falls back to trusting the shortcut outright."""
+    b = rpc_bin()
+    if not b:
+        return None
+    return run([b, "thread-resolve", "--prefix", prefix])
+
+
 def resolve_thread_id(prefix):
     """A title prefix resolved to a full thread id through xreview-rpc, bound by the shared
     deadline (run()). Missing, failing or timed-out resolution reports nothing for that pane -
     a prefix is never reported as if it were a full id."""
-    b = rpc_bin()
-    if not b:
-        return None
-    out = run([b, "thread-resolve", "--prefix", prefix])
+    out = resolve_thread_id_raw(prefix)
     if out is None or out.returncode != 0:
         return None
     line = (out.stdout or "").strip()
@@ -191,9 +206,24 @@ def reconcile(herdr, done, session_id=None, start_source=None, failed=None):
             if current and current.startswith(prefix):
                 continue   # already correct - a prefix match is enough, never re-resolved
             if session_id and session_id.startswith(prefix) and own_session_matches == 1:
-                # The hook's own session: its full id is already known, no daemon needed.
-                # Only safe when exactly one pane's prefix matches it - see own_session_matches.
-                full, src = session_id, start_source
+                # The hook's own session: exactly one pane's prefix matches it (see
+                # own_session_matches) - but a match alone does not prove the prefix names
+                # only THIS thread (item 21/F13). Confirm through the daemon before trusting
+                # it; only when the daemon cannot be reached at all does this fall back to
+                # the shortcut outright.
+                out = resolve_thread_id_raw(prefix)
+                if out is not None and out.returncode == 0 and (out.stdout or "").strip() == session_id:
+                    full, src = session_id, start_source   # confirmed
+                elif out is None or out.returncode == 5:
+                    # Unreachable: missing binary, a timeout, the shared deadline already
+                    # gone, or xreview-rpc's own "daemon unreachable" (exit 5) - no daemon
+                    # answer to prefer over the shortcut, so fall back to trusting it.
+                    full, src = session_id, start_source
+                else:
+                    # The resolver ran and either named a DIFFERENT thread or refused as
+                    # ambiguous or not found (exit 1) - never trust the shortcut over an
+                    # answer that disagrees with it.
+                    full, src = None, None
             elif prefix in failed:
                 full, src = None, None   # already tried and failed this run - never retried
             else:
