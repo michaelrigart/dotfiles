@@ -304,14 +304,21 @@ cmd_init() {
   printf 'xreview: %s -> %s\n' "$(repo_root)" "$id"
 }
 
-# Archive the thread a `round --reset` superseded, once the pane has moved off it.
+# Archive every thread `round --reset` has superseded, once the pane has moved off them.
+# $(state_dir)/superseded holds a LIST, one id per line, oldest first: `round --reset`
+# APPENDS to it rather than overwriting, so a thread that a failed pane step left un-archived
+# stays queued across however many later resets happen before a pane step finally succeeds -
+# nothing is ever silently dropped.
 archive_superseded() { # archive_superseded <current-thread>
   local f old; f="$(state_dir)/superseded"
   [ -r "$f" ] || return 0
-  old="$(cat "$f")"; rm -f "$f"
-  if [ -n "$old" ] && [ "$old" != "$1" ]; then
-    xreview-rpc thread-archive --thread "$old" >/dev/null 2>&1 || true
-  fi
+  while IFS= read -r old || [ -n "$old" ]; do
+    if [ -n "$old" ] && [ "$old" != "$1" ]; then
+      xreview-rpc thread-archive --thread "$old" >/dev/null 2>&1 || true
+    fi
+  done < "$f"
+  rm -f "$f"
+  return 0
 }
 
 # A receipt is the only durable evidence that a review actually happened. It records the
@@ -354,12 +361,17 @@ round_file() { printf '%s/rounds' "$(state_dir)"; }
 cmd_round() {
   local f; f="$(round_file)"
   case "${1:-show}" in
-    --reset) # The checkpoint's thread is superseded, not forgotten: the next dispatch
-             # archives it once the pane has moved to a fresh one. A pin is never archived.
-             # The legacy `thread` file (the old queue-era herdr session cache) is dropped
-             # WITHOUT being archived: it was never a checkpoint thread, so treating it as
-             # one would archive the operator's old pane sessions.
-             if [ -r "$(state_dir)/review-thread" ]; then cp "$(state_dir)/review-thread" "$(state_dir)/superseded" 2>/dev/null || true; fi
+    --reset) # The checkpoint's thread is superseded, not forgotten: APPENDED to the list of
+             # threads a later successful pane step will archive (Minor 3) - a reset that
+             # lands while a pane step keeps failing must not lose track of an earlier
+             # superseded thread. A pin is never archived. The legacy `thread` file (the old
+             # queue-era herdr session cache) is dropped WITHOUT being archived: it was never
+             # a checkpoint thread, so treating it as one would archive the operator's own
+             # pane sessions.
+             if [ -r "$(state_dir)/review-thread" ]; then
+               mkdir -p "$(state_dir)" 2>/dev/null
+               cat "$(state_dir)/review-thread" >> "$(state_dir)/superseded" 2>/dev/null || true
+             fi
              rm -f "$f" "$(state_dir)/review-thread" "$(state_dir)/pin" "$(state_dir)/thread"
              printf 'xreview: round counter reset; cached thread and pin dropped\n' ;;
     show)    printf '%s\n' "$(current_round)" ;;

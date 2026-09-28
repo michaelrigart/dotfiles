@@ -505,6 +505,31 @@ NO_TITLE=1 XREVIEW_PANE_WAIT=0.15 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1 
 is "T6 and NOT archived when the pane step fails" "$(called "xreview-rpc thread-archive --thread $U1")" 0
 export NEW_UUID="$U1"
 
+echo "M3. superseded threads accumulate across resets with a failed pane step in between"
+fresh
+bash "$XREVIEW" dispatch b.md >/dev/null 2>&1          # checkpoint thread U1
+bash "$XREVIEW" round --reset >/dev/null 2>&1           # superseded: [U1]
+export NEW_UUID="$U2"
+NO_TITLE=1 XREVIEW_PANE_WAIT=0.15 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1   # checkpoint U2; pane step FAILS
+is "M3 a failed pane step leaves the first superseded thread listed, un-archived" \
+   "$(cat "$STATE/superseded" 2>/dev/null)" "$U1"
+bash "$XREVIEW" round --reset >/dev/null 2>&1           # a SECOND reset: superseded: [U1, U2]
+is "M3 a second reset APPENDS to the list, not overwrites it" \
+   "$(cat "$STATE/superseded" 2>/dev/null | tr '\n' ' ')" "$U1 $U2 "
+# The failed pane step (NO_TITLE) left the pane genuinely derelict - `pane run` never
+# actually started Codex there, so its agent is not "codex" any more, exactly as a real
+# abandoned shell would read. Simulate the operator noticing and restarting it by hand,
+# same as they would need to in reality before another dispatch can find the pane at all.
+printf codex > "$P/agent"
+export NEW_UUID="$U0"   # distinct from both U1 and U2; the pane's title still shows U1's form
+: > "$CALLS"
+bash "$XREVIEW" dispatch b.md >/dev/null 2>&1           # a normal dispatch: the pane step succeeds
+is "M3 a later successful dispatch archives the first superseded thread" \
+   "$(called "xreview-rpc thread-archive --thread $U1")" 1
+is "M3 and the second one too" "$(called "xreview-rpc thread-archive --thread $U2")" 1
+is "M3 and clears the superseded list" "$([ -e "$STATE/superseded" ] && echo yes || echo no)" no
+export NEW_UUID="$U1"
+
 echo "M4. the checkpoint thread itself already running a turn refuses, pane untouched"
 fresh
 bash "$XREVIEW" init "$U2" >/dev/null   # pin a thread distinct from the pane's own title (U0)
