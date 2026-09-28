@@ -93,6 +93,6 @@ MSG
   exit 2
 fi
 
-codex-daemon ensure || exit 1
-codex-daemon check || printf 'codex: starting anyway; xreview refuses to dispatch until the daemon is restarted\n' >&2
+"$HELPER" ensure || exit 1
+"$HELPER" check || printf 'codex: starting anyway; xreview refuses to dispatch until the daemon is restarted\n' >&2
 exec "$real" "$@"

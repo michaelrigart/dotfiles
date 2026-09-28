@@ -149,6 +149,18 @@ is "a bare word after -i is swallowed as an image value, not misread as a flag" 
 is "and it still ensures the daemon (an unrecognised bare start is still interactive)" \
    "$(ensured)" 1
 
+echo "M. the daemon helper is invoked as \$HELPER, never a bare name, so PATH need not carry it"
+# Invoked by absolute path with a PATH that excludes the launcher's own directory: real-bin
+# resolution already uses "$HELPER", but ensure/check must too, or a bare `codex-daemon`
+# hits the real (Homebrew) binary instead and fails "command not found".
+: > "$CALLS"
+out="$(PATH="/usr/bin:/bin" XDG_BIN_HOME="$T/localbin" sh "$T/localbin/codex" 2>"$T/err")"; rc=$?
+is "it exits 0"                                            "$rc" 0
+is "and execs the real binary"                              "$out" "REAL "
+is "ensure reached the helper beside the launcher"           "$(grep -c 'codex-daemon ensure' "$CALLS")" 1
+is "check reached the helper beside the launcher"            "$(grep -c 'codex-daemon check' "$CALLS")" 1
+is "no 'command not found' from a bare codex-daemon lookup"  "$(grep -ci 'not found' "$T/err")" 0
+
 echo
 echo "RESULT: $pass passed, $((pass + fail)) total, $fail failed"
 [ "$fail" -eq 0 ]
