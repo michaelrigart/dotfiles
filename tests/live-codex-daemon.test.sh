@@ -108,14 +108,47 @@ done
 is "herdr knows the scratch pane's thread" "$s" "$thread"
 
 echo "F22: codex resume on a thread with a turn already running replays it, then streams live"
-# The exact scenario xreview dispatch now relies on (spec 7.3 step 4): create a thread and
-# start a turn on it BEFORE any TUI is attached, then resume a pane onto it while the turn
-# is still running. The probe (2026-09-28) found the TUI renders the whole turn from its
+# The exact scenario xreview dispatch now relies on (spec 7.3 steps 3-5): quit the pane's
+# current TUI first, exactly as pane_free does, THEN create a thread and start a real (if
+# small) review turn on it BEFORE any TUI is attached, then resume the pane onto it while the
+# turn is still running. The probe (2026-09-28) found the TUI renders the whole turn from its
 # start, prompt included, then streams the rest live.
+herdr pane send-keys "$pane" ctrl+c >/dev/null 2>&1; sleep 0.5
+herdr pane send-keys "$pane" ctrl+c >/dev/null 2>&1
+freed=0
+for _ in $(seq 15); do
+  a="$(herdr pane get "$pane" 2>/dev/null | jq -r '.result.pane.agent // empty')"
+  [ "$a" != codex ] && { freed=1; break; }
+  sleep 1
+done
+is "F22 the pane's TUI is freed before the turn exists" "$freed" 1
+
 f22_thread="$(rpc thread-start --cwd "$SRC")"; rc=$?
 is "F22 thread-start creates a thread" "$rc/$([ -n "$f22_thread" ] && echo yes || echo no)" "0/yes"
-printf 'Live canary F22. Reply with verdict "approve" and no findings.\n' > "$T/in22"
-f22_turn="$(rpc turn-start --thread "$f22_thread" --input "$T/in22" --schema "$SCHEMA")"
+
+# Two unique tokens: token1 is in the PROMPT only, so seeing it proves the pane replayed the
+# turn from its start (F22 itself). token2 is asked for only in the ANSWER, so seeing it is
+# proof the final answer landed - distinct from the prompt replay, which never contains it. A
+# short but real review (not "just say approve") makes the turn take long enough to be caught
+# genuinely running, not just read after the fact.
+token1="f22-token-$$-$RANDOM"
+token2="f22-marker-$$-$RANDOM"
+cat > "$T/scratch22.py" <<PY
+def add(a, b):
+    return a - b  # intentional bug for a live canary review
+PY
+{
+  printf 'Live canary F22 (%s). Review the Python function below for a correctness bug and\n' "$token1"
+  printf 'answer in the findings schema. Include exactly one finding, severity P2, whose\n'
+  printf '"summary" field contains this exact text verbatim: %s\n\n' "$token2"
+  cat "$T/scratch22.py"
+} > "$T/in22"
+is "F22 the prompt carries no literal schema field (so prompt and answer stay distinguishable)" \
+   "$(grep -cF '"verdict":' "$T/in22")" 0
+
+# --known, exactly as xreview dispatch itself calls turn-start: exercises thread/turns/list on
+# a zero-turn thread from a fresh connection.
+f22_turn="$(rpc turn-start --thread "$f22_thread" --input "$T/in22" --schema "$SCHEMA" --known "$T/known22")"
 # turn-wait starts before the pane is even resumed, in the background, so it subscribes and
 # catches turn/completed (F5) regardless of how long the resume itself takes.
 rpc turn-wait --thread "$f22_thread" --turn "$f22_turn" --budget 180 --schema "$SCHEMA" \
@@ -124,14 +157,19 @@ wait_pid=$!
 pane_cmd="$(grep -v '^[[:space:]]*#' "$PCMD" | grep . | head -1)"
 herdr pane run "$pane" "$pane_cmd resume $f22_thread" >/dev/null
 seen22=0
-for _ in $(seq 15); do
+for _ in $(seq 20); do
   out22="$(herdr pane read "$pane" --source visible 2>/dev/null)"
-  if printf '%s' "$out22" | grep -q 'Live canary F22' || printf '%s' "$out22" | grep -qi 'Working'; then
+  if printf '%s' "$out22" | grep -qF "$token1"; then
     seen22=1; break
   fi
   sleep 1
 done
-is "F22 the resumed pane shows the turn while it runs (prompt or Working)" "$seen22" 1
+is "F22 the resumed pane shows the prompt's own token" "$seen22" 1
+# Mid-turn: right after the pane first shows the token, the daemon must still report the
+# turn running - proof this was caught genuinely mid-flight, not read after it finished.
+is "F22 the turn is still running right after the pane first shows it" \
+   "$(rpc thread-status --thread "$f22_thread" 2>/dev/null | jq -r .running)" true
+
 wait "$wait_pid"; rc=$?
 res22="$(cat "$T/wait22.out")"
 is "F22 turn-wait completes" "$rc" 0
@@ -140,13 +178,22 @@ case "$verdict22" in
   approve|changes) _pass "F22 with a schema-valid verdict ($verdict22)" ;;
   *) _fail "F22 with a schema-valid verdict" "$verdict22" ;;
 esac
+summary22="$(printf '%s' "$res22" | jq -r '.findings[0].summary // empty' 2>/dev/null)"
+is "F22 the reviewer's answer carries the token it was asked to include" \
+   "$(printf '%s' "$summary22" | grep -cF "$token2")" 1
+
+# The final-answer check: token2 appears ONLY once the answer has actually landed - never
+# during the prompt replay, since it was never in the prompt. Guard against an empty
+# pattern before grepping for it: an empty grep pattern matches every line.
 seen22final=0
-for _ in $(seq 15); do
-  out22f="$(herdr pane read "$pane" --source visible 2>/dev/null)"
-  printf '%s' "$out22f" | grep -qi "$verdict22" && { seen22final=1; break; }
-  sleep 1
-done
-is "F22 the pane shows the final answer once the turn completes" "$seen22final" 1
+if [ -n "$token2" ]; then
+  for _ in $(seq 20); do
+    out22f="$(herdr pane read "$pane" --source visible 2>/dev/null)"
+    printf '%s' "$out22f" | grep -qF "$token2" && { seen22final=1; break; }
+    sleep 1
+  done
+fi
+is "F22 the pane shows the final answer's own token once the turn completes" "$seen22final" 1
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
