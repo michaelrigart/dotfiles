@@ -102,6 +102,9 @@ case "$1 $2" in
       [ -n "${AGENT_READ_FAIL_ONCE:-}" ] && : > "$P/agent_fail_once"
     fi ;;
   "pane run")
+    # PANE_RUN_FAIL simulates herdr itself failing the launch command (Minor 6) - it must
+    # never reach the pane's title/agent state at all.
+    [ -n "${PANE_RUN_FAIL:-}" ] && exit 1
     echo 0 > "$P/ctrlc"
     rm -f "$P/reset_calls" "$P/reset_pending" "$P/exit_delay_active" "$P/exit_delay_calls" \
           "$P/agent_fail_once"
@@ -168,7 +171,7 @@ export PATH="$STUB:$PATH"
 
 fresh() { # a pane showing U0, idle; clean log and state
   unset ENSURE_RC CHECK_RC RPC_START_FAIL RPC_START_UNCERTAIN RPC_START_BAD_ID \
-        RPC_START_THREAD_FAIL NO_TITLE STUCK_TUI AGENT_EXIT_DELAY \
+        RPC_START_THREAD_FAIL NO_TITLE STUCK_TUI AGENT_EXIT_DELAY PANE_RUN_FAIL \
         AGENT_READ_FAIL_ONCE EXTRA_PANES PANE_CWD XREVIEW_PANE XREVIEW_THREAD RPC_WAIT_OUT \
         RPC_WAIT_RC RPC_THREAD_RUNNING RPC_THREAD_RUNNING_FOR RPC_HEALTH_FAIL PANE_GONE_AT
   export NEW_UUID="$U1"
@@ -522,6 +525,32 @@ is "M4 it refuses" "$rc" 1
 is "M4 and says to collect it first" "$(printf '%s' "$out" | grep -c 'collect it first')" 1
 is "M4 no turn was started" "$(called 'xreview-rpc turn-start')" 0
 is "M4 and the pane was never touched" "$(untouched)" yes
+
+echo "M6a. a refused turn-start leaves the round unconsumed"
+fresh
+before_round="$(bash "$XREVIEW" round)"
+RPC_START_FAIL=1 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+is "M6a the round counter is unchanged" "$(bash "$XREVIEW" round)" "$before_round"
+
+echo "M6b. a failing 'herdr pane run' after the turn starts warns and exits 0"
+fresh
+out="$(PANE_RUN_FAIL=1 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+nonce="$(printf '%s' "$out" | grep '^xr-')"
+is "M6b dispatch still exits 0" "$rc" 0
+is "M6b and prints the nonce" "$(printf '%s' "$nonce" | grep -c '^xr-')" 1
+is "M6b and warns the review is not shown" \
+   "$(printf '%s' "$out" | grep -c 'running but not shown in pane w1:p2')" 1
+
+echo "M6c. a pin and XREVIEW_THREAD each skip thread-start"
+fresh
+bash "$XREVIEW" init "$U0" >/dev/null
+: > "$CALLS"
+bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+is "M6c a pin skips thread-start" "$(called 'xreview-rpc thread-start')" 0
+fresh
+: > "$CALLS"
+XREVIEW_THREAD="$U2" bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+is "M6c XREVIEW_THREAD skips thread-start" "$(called 'xreview-rpc thread-start')" 0
 
 echo "T7. the fast path sends no keys and starts no new pane session"
 fresh

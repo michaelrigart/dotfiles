@@ -179,6 +179,14 @@ is "and never touches the daemon"                    "$(ensured)" 0
 is "'-mV' (an attached model value, not a cluster) still starts interactively" \
    "$(run -mV)" "REAL -mV"
 is "because -m leads it, so it ensures the daemon like any other start" "$(ensured)" 1
+# fix round 1/Minor 6: -C and -i are the OTHER value-taking short flags the exclusion covers.
+# Both values below contain "h" ("home"), which must never be read as a help/version cluster.
+is "'-C/home/x' (an attached cd path, not a cluster) still starts interactively" \
+   "$(run -C/home/x)" "REAL -C/home/x"
+is "because -C leads it, so it ensures the daemon like any other start" "$(ensured)" 1
+is "'-i/home/x.png' (an attached image path, not a cluster) still starts interactively" \
+   "$(run -i/home/x.png)" "REAL -i/home/x.png"
+is "because -i leads it, so it ensures the daemon like any other start" "$(ensured)" 1
 
 echo
 echo "RESULT: $pass passed, $((pass + fail)) total, $fail failed"
