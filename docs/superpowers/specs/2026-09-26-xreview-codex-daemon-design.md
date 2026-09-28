@@ -190,18 +190,15 @@ not only the one whose session is starting:
    long (48-bit millisecond timestamp plus 46 random bits) is treated as *effectively* unique,
    never as *provably* unique, so the shortcut still confirms through
    `xreview-rpc thread-resolve --prefix` before trusting itself: if the resolver returns exactly
-   `session_id`, report it; if it returns a different id, or refuses as ambiguous or not found,
-   report nothing for that pane. Only when the resolver cannot be reached at all - missing
-   binary, unreachable daemon, timeout - does the shortcut fall back to trusting the match
-   directly, since there is then no daemon answer to prefer over it.
+   `session_id`, report it; any other answer - a different id, a refusal as ambiguous or not
+   found, or none at all because the resolver is missing, the daemon unreachable or the call
+   timed out - reports nothing for that pane. The next `SessionStart` or `--reconcile` retries.
 3. If the hook input's `session_id`'s prefix is not yet on any title, retry for about 5 s while
    the title catches up, then stop.
 4. Never report a prefix as if it were a full id, and never report an id that did not resolve
    from a title. That rules out guessing for sub-agent threads, and for anything not visibly on
-   screen; for any pane resolved through the general path (i.e. not the own-session shortcut in
-   step 2), a resolver that is missing, fails or times out also reports nothing for that pane.
-   The own-session shortcut is the one exception, per step 2: there, an unreachable resolver
-   falls back to trusting the shortcut instead.
+   screen; a resolver that is missing, fails or times out reports nothing for that pane, the
+   own-session shortcut included.
 
 Because every `SessionStart` reconciles everything, one contaminated report, for example from
 herdr's managed hook in a daemon that carries a pane's environment, is repaired by the next

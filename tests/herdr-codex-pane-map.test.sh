@@ -229,8 +229,8 @@ is "the resolver is asked once, for the shared prefix, and refuses" "$(rpc_calls
 
 echo "M. the own-session shortcut confirms through the daemon before trusting itself (item 21/F13)"
 # One matching pane does not prove the prefix names only THIS thread - two threads can share
-# a 29-char prefix. The shortcut must confirm through xreview-rpc thread-resolve first, and
-# only fall back to trusting itself when the resolver cannot be reached at all.
+# a 29-char prefix. The shortcut must confirm through xreview-rpc thread-resolve, and a
+# resolver that cannot be reached at all confirms nothing.
 cat > "$T/confirmrpc" <<'R'
 #!/bin/sh
 echo "$*" >> "$RPC_CALLS"
@@ -265,21 +265,19 @@ printf '{"session_id":"%s","source":"startup"}' "$U1" \
 is "M3 it exits 0"                                      "$rc" 0
 is "M3 a resolver refusing as ambiguous reports nothing" "$(reports)" 0
 
-# The fallback must not depend on timing: exit 5 (xreview-rpc's own "daemon unreachable") and
-# a missing binary are both deterministic, no deadline or sleep involved.
+# Exit 5 (xreview-rpc's own "daemon unreachable") and a missing binary are both
+# deterministic, no deadline or sleep involved.
 fixture "$(pane w1:p2 codex "$(trunc "$U1") | t | d" "")"
 printf '{"session_id":"%s","source":"startup"}' "$U1" \
   | CONFIRM_MODE=unreach XREVIEW_RPC_BIN="$T/confirmrpc" PANE_MAP_RETRY_SECS=0 hook; rc=$?
 is "M4 it exits 0"                                      "$rc" 0
-is "M4 an unreachable daemon (exit 5) falls back to the shortcut" "$(reports)" 1
-is "M4 and reports the shortcut's own session id"       \
-   "$(grep -c "^w1:p2 .*--agent-session-id $U1 .*--session-start-source startup$" "$CALLS")" 1
+is "M4 an unreachable daemon (exit 5) reports nothing"  "$(reports)" 0
 
 fixture "$(pane w1:p2 codex "$(trunc "$U1") | t | d" "")"
 printf '{"session_id":"%s","source":"startup"}' "$U1" \
   | XREVIEW_RPC_BIN="$T/nonexistent-rpc" PANE_MAP_RETRY_SECS=0 hook; rc=$?
 is "M5 it exits 0"                                      "$rc" 0
-is "M5 a missing resolver binary also falls back to the shortcut" "$(reports)" 1
+is "M5 a missing resolver binary also reports nothing" "$(reports)" 0
 
 echo
 echo "RESULT: $pass passed, $((pass + fail)) total, $fail failed"

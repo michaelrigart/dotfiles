@@ -87,24 +87,14 @@ def rpc_bin():
     return None
 
 
-def resolve_thread_id_raw(prefix):
-    """The raw `xreview-rpc thread-resolve --prefix` result, bound by the shared deadline
-    (run()): None when the resolver could not even be invoked (missing binary, a timeout, or
-    the shared deadline already gone), a CompletedProcess otherwise - regardless of its exit
-    code. resolve_thread_id() below collapses "unreachable" and "ran but refused" into one
-    None; the own-session shortcut (item 21/F13) needs to tell those apart, since only
-    "unreachable" falls back to trusting the shortcut outright."""
-    b = rpc_bin()
-    if not b:
-        return None
-    return run([b, "thread-resolve", "--prefix", prefix])
-
-
 def resolve_thread_id(prefix):
     """A title prefix resolved to a full thread id through xreview-rpc, bound by the shared
     deadline (run()). Missing, failing or timed-out resolution reports nothing for that pane -
     a prefix is never reported as if it were a full id."""
-    out = resolve_thread_id_raw(prefix)
+    b = rpc_bin()
+    if not b:
+        return None
+    out = run([b, "thread-resolve", "--prefix", prefix])
     if out is None or out.returncode != 0:
         return None
     line = (out.stdout or "").strip()
@@ -208,21 +198,12 @@ def reconcile(herdr, done, session_id=None, start_source=None, failed=None):
             if session_id and session_id.startswith(prefix) and own_session_matches == 1:
                 # The hook's own session: exactly one pane's prefix matches it (see
                 # own_session_matches) - but a match alone does not prove the prefix names
-                # only THIS thread (item 21/F13). Confirm through the daemon before trusting
-                # it; only when the daemon cannot be reached at all does this fall back to
-                # the shortcut outright.
-                out = resolve_thread_id_raw(prefix)
-                if out is not None and out.returncode == 0 and (out.stdout or "").strip() == session_id:
-                    full, src = session_id, start_source   # confirmed
-                elif out is None or out.returncode == 5:
-                    # Unreachable: missing binary, a timeout, the shared deadline already
-                    # gone, or xreview-rpc's own "daemon unreachable" (exit 5) - no daemon
-                    # answer to prefer over the shortcut, so fall back to trusting it.
+                # only THIS thread (item 21/F13). Only the daemon resolving the prefix to
+                # this very session confirms it; any other answer, or none at all (missing
+                # binary, timeout, daemon unreachable), leaves the pane unreported.
+                if resolve_thread_id(prefix) == session_id:
                     full, src = session_id, start_source
                 else:
-                    # The resolver ran and either named a DIFFERENT thread or refused as
-                    # ambiguous or not found (exit 1) - never trust the shortcut over an
-                    # answer that disagrees with it.
                     full, src = None, None
             elif prefix in failed:
                 full, src = None, None   # already tried and failed this run - never retried
