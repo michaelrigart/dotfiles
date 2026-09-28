@@ -104,7 +104,11 @@ Dispatch refuses, before starting a turn or touching the pane, when:
 - the daemon carries a herdr pane's environment. The fix is `codex-daemon restart`, which
   disconnects every open Codex TUI, so it is Michael's call: report it, never run it;
 - there is no Codex pane for the repository, or several (Michael can set `XREVIEW_PANE` to one of them);
-- the Codex pane is mid-turn. Wait for it, then dispatch again.
+- the Codex pane is mid-turn. Wait for it, then dispatch again;
+- **the pane will not free** - it closes, or its session will not exit, while dispatch is
+  quitting its TUI to make way for the turn. No turn exists yet at that point, so refusing
+  costs nothing; this is different from the pane failing to resume AFTER the turn starts,
+  which only warns (above).
 
 Only the "no turn on record" collect is a timeout, and that one is **ambiguous, never
 retried** — report it and stop. A still-running turn is not a timeout; wait it out.
@@ -158,6 +162,7 @@ Escalate to Michael when, and only when:
   every Codex TUI.
 - `xreview` refuses because there is no Codex pane for the repository, or several.
 - `xreview` refuses because the Codex daemon is down and will not start.
+- `xreview` refuses because the pane would not free (it closed, or its session would not exit).
 
 That list is exhaustive. A round count is not on it, and neither is a thread that has
 answered several rounds of the checkpoint it is working through.
@@ -167,8 +172,10 @@ objecting, and not that you stopped asking.
 
 **Rotation happens between checkpoints, by itself.** Run `xreview round --reset` when moving
 on to the next checkpoint. It drops the cached thread and the counter, and any pin set with
-`xreview init`; the next dispatch then restarts the Codex pane on a fresh thread and
-archives the old one. Nobody starts a Codex session by hand for this.
+`xreview init`; the next dispatch then starts a fresh thread and points the Codex pane at it.
+The old thread is archived once the pane actually shows the new one - not before, and not at
+all if the pane never gets there, so a thread that could not be confirmed watched stays
+listed for the next dispatch that succeeds. Nobody starts a Codex session by hand for this.
 
 Rotation is keyed to **checkpoints, not rounds**. Moving from plan review to the pre-merge
 review rotates; going from round 3 to round 4 of the same plan review does not.

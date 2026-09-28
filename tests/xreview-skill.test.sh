@@ -358,6 +358,30 @@ if printf '%s' "$esc" | grep -qi 'down and will not start'; then
 else
   _fail "the escalation list names the daemon-will-not-start refusal" "missing from the list"
 fi
+# item 16 fix round 1/C1: the pane is freed BEFORE the turn exists, and that free can now
+# itself refuse (the pane closes, or will not exit) - distinct from a pane that merely fails
+# to RESUME after the turn has started, which only warns. Both lists must say so, or the
+# model either does not know to escalate a real refusal, or thinks the post-turn warning is
+# one too and escalates every noisy pane.
+if printf '%s' "$esc" | grep -qi 'would not free'; then
+  _pass "the escalation list names the pane-will-not-free refusal"
+else
+  _fail "the escalation list names the pane-will-not-free refusal" "missing from the list"
+fi
+if grep -qi 'the pane will not free' "$SKILL"; then
+  _pass "the skill's refusal list names the pane-will-not-free case"
+else
+  _fail "the skill's refusal list names the pane-will-not-free case" "missing"
+fi
+
+# Minor 7: archiving the superseded thread is conditional on the pane actually showing the
+# new one, not on the reset itself - stale "restarts ... and archives" prose would teach an
+# unconditional archive that does not match a pane step that failed to confirm anything.
+if grep -qi 'archived once the pane actually shows' "$SKILL"; then
+  _pass "the skill says the old thread is archived once the pane shows the new one"
+else
+  _fail "the skill says the old thread is archived once the pane shows the new one" "missing"
+fi
 
 # The reviewer's answer is schema-checked JSON, not raw text, except on the exit-4 miss.
 if grep -q 'findings JSON (or, on exit 4, raw untrusted text)' "$SKILL"; then
