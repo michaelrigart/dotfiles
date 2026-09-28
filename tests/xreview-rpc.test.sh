@@ -179,6 +179,25 @@ is "E1b with the schema-valid answer" "$(printf '%s' "$out" | jq -r .verdict)" c
 is "E1b the second call carried the cursor" \
    "$(jq -r 'select(.method=="thread/turns/list") | .params.cursor // "none"' "$FAKE_LOG" | sed -n 2p)" c2
 
+echo "M6a. a fixed turn absent from every page stops once nextCursor is gone (not retried)"
+others2="$(jq -nc '[range(3) | {id: ("other-" + (. | tostring)), status:"completed", items:[]}]')"
+lastpage="$(jq -nc --argjson o "$others2" '{result:{data:$o}}')"   # no nextCursor: the last page
+scenario "$(jq -nc --argjson p1 "$page1" --argjson p2 "$lastpage" '{responses:{"thread/turns/list":[$p1,$p2]}}')"
+rpc turn-wait --thread th --turn turn-absent --budget 5 --schema "$SCHEMA" >/dev/null 2>"$T/err"; rc=$?
+is "M6a it exits 1, never finding the turn" "$rc" 1
+is "M6a and says no turn, not an unreadable-listing error" "$(grep -c 'no turn' "$T/err")" 1
+is "M6a exactly two pages were fetched, then it stopped" \
+   "$(jq -r 'select(.method=="thread/turns/list") | .method' "$FAKE_LOG" | grep -c .)" 2
+
+echo "M6b. a cursor that never ends is reported as unreadable at the budget, never a false 'no turn'"
+forever="$(jq -nc '{result:{data:[{id:"other",status:"completed",items:[]}], nextCursor:"forever"}}')"
+scenario "$(jq -nc --argjson f "$forever" '{responses:{"thread/turns/list":[$f]}}')"
+rpc turn-wait --thread th --turn turn-absent --budget 0.6 --schema "$SCHEMA" >/dev/null 2>"$T/err"; rc=$?
+is "M6b it exits 1" "$rc" 1
+is "M6b and reports the listing as unreadable, never a false 'no turn'" \
+   "$(grep -c 'could not be read' "$T/err")" 1
+is "M6b and never claims no turn exists" "$(grep -c 'no turn' "$T/err")" 0
+
 echo "E4. a transient thread/turns/list error is retried, not reported as no turn"
 new_turn3="$(turn completed "$ANSWER" | jq -c '.id = "turn-3"')"
 printf '["nothing"]' > "$T/known2"

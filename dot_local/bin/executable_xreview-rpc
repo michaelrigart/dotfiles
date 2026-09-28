@@ -455,7 +455,9 @@ def turn_state(c, thread, turn, known=None, deadline=None):
 
     A fixed turn id may be older than the newest page (limit 50): follows nextCursor
     page by page, within the budget, until it is found or there are no more pages. The
-    --new-since path is unchanged - a new turn is on the first page by definition.
+    --new-since path is unchanged - a new turn is on the first page by definition. If the
+    budget runs out mid-paging with a cursor still pending, that is reported as
+    ListUnreadable, never as "no turn" (M2) - unread pages might have held it.
     """
     attempt = 0
     last_error = None
@@ -472,6 +474,7 @@ def turn_state(c, thread, turn, known=None, deadline=None):
         if turn:
             cursor = None
             page_error = None
+            incomplete = False
             while True:
                 params = {"threadId": thread, "limit": 50, "sortDirection": "desc",
                           "itemsView": "summary"}
@@ -490,8 +493,18 @@ def turn_state(c, thread, turn, known=None, deadline=None):
                 if not cursor:
                     break   # no more pages this attempt - fall through, not retried
                 if deadline is not None and time.monotonic() >= deadline - 0.3:
+                    # M2: the budget ran out with a cursor still pending - pages that were
+                    # never read might have held the turn. That is NOT "read every page,
+                    # found nothing" (return None -> the misleading "no turn"); it is the
+                    # listing never having been read to completion, exactly what
+                    # ListUnreadable exists to distinguish.
+                    incomplete = True
                     break
             last_error = page_error
+            if incomplete and last_error is None:
+                raise ListUnreadable(
+                    "budget exhausted while paging thread/turns/list for turn %r "
+                    "(a cursor was still pending)" % turn)
             if last_error is None:
                 return None   # exhausted every page, no error - a fixed turn is not retried
         else:
