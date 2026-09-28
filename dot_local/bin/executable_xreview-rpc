@@ -452,6 +452,10 @@ def turn_state(c, thread, turn, known=None, deadline=None):
     Raises ListUnreadable if every attempt within the budget errored - the listing was
     never actually read, which a bare `return None` cannot tell apart from "read fine,
     turn genuinely not there".
+
+    A fixed turn id may be older than the newest page (limit 50): follows nextCursor
+    page by page, within the budget, until it is found or there are no more pages. The
+    --new-since path is unchanged - a new turn is on the first page by definition.
     """
     attempt = 0
     last_error = None
@@ -465,18 +469,42 @@ def turn_state(c, thread, turn, known=None, deadline=None):
                 raise ListUnreadable(json.dumps(last_error))
             return None
         attempt += 1
-        r = c.call("thread/turns/list", {"threadId": thread, "limit": 50,
-                                         "sortDirection": "desc", "itemsView": "summary"})
-        if "error" not in r:
-            last_error = None
-            data = (r.get("result") or {}).get("data") or []
-            if turn:
-                return next((t for t in data if t.get("id") == turn), None)
-            new = [t for t in data if t.get("id") not in (known or [])]
-            if new:
-                return new[-1]   # newest first, so the last new one is the oldest
+        if turn:
+            cursor = None
+            page_error = None
+            while True:
+                params = {"threadId": thread, "limit": 50, "sortDirection": "desc",
+                          "itemsView": "summary"}
+                if cursor:
+                    params["cursor"] = cursor
+                r = c.call("thread/turns/list", params)
+                if "error" in r:
+                    page_error = r["error"]
+                    break
+                page_error = None
+                result = r.get("result") or {}
+                found = next((t for t in (result.get("data") or []) if t.get("id") == turn), None)
+                if found:
+                    return found
+                cursor = result.get("nextCursor")
+                if not cursor:
+                    break   # no more pages this attempt - fall through, not retried
+                if deadline is not None and time.monotonic() >= deadline - 0.3:
+                    break
+            last_error = page_error
+            if last_error is None:
+                return None   # exhausted every page, no error - a fixed turn is not retried
         else:
-            last_error = r["error"]
+            r = c.call("thread/turns/list", {"threadId": thread, "limit": 50,
+                                             "sortDirection": "desc", "itemsView": "summary"})
+            if "error" not in r:
+                last_error = None
+                data = (r.get("result") or {}).get("data") or []
+                new = [t for t in data if t.get("id") not in (known or [])]
+                if new:
+                    return new[-1]   # newest first, so the last new one is the oldest
+            else:
+                last_error = r["error"]
         if deadline is None:
             return None   # a single-shot re-read (F5); the caller does its own retrying
         time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))

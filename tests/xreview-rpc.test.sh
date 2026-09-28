@@ -168,6 +168,17 @@ scenario "$(jq -nc --argjson o "$old_turn" '{responses:{"thread/turns/list":{res
 rpc turn-wait --thread th --new-since "$T/known" --budget 2 --schema "$SCHEMA" >/dev/null 2>&1
 is "E3 and exits 1 when nothing new is on the thread" "$?" 1
 
+echo "E1b. turn-wait follows nextCursor when the fixed turn is older than the newest page"
+others="$(jq -nc '[range(50) | {id: ("other-" + (. | tostring)), status:"completed", items:[]}]')"
+page1="$(jq -nc --argjson o "$others" '{result:{data:$o, nextCursor:"c2"}}')"
+page2="$(jq -nc --argjson t "$(turn completed "$ANSWER")" '{result:{data:[$t]}}')"
+scenario "$(jq -nc --argjson p1 "$page1" --argjson p2 "$page2" '{responses:{"thread/turns/list":[$p1,$p2]}}')"
+out="$(rpc turn-wait --thread th --turn turn-1 --budget 5 --schema "$SCHEMA")"; rc=$?
+is "E1b it exits 0 once the turn is found on the second page" "$rc" 0
+is "E1b with the schema-valid answer" "$(printf '%s' "$out" | jq -r .verdict)" changes
+is "E1b the second call carried the cursor" \
+   "$(jq -r 'select(.method=="thread/turns/list") | .params.cursor // "none"' "$FAKE_LOG" | sed -n 2p)" c2
+
 echo "E4. a transient thread/turns/list error is retried, not reported as no turn"
 new_turn3="$(turn completed "$ANSWER" | jq -c '.id = "turn-3"')"
 printf '["nothing"]' > "$T/known2"
