@@ -118,6 +118,16 @@ XREVIEW_RPC_STDIO=false rpc health 2>/dev/null; is "a daemon that goes away is u
 env -u XREVIEW_RPC_STDIO XREVIEW_RPC_SOCK="$T/no.sock" python3 "$RPC" health 2>/dev/null
 is "a missing socket is unreachable (5)" "$?" 5
 
+echo "B2. thread-start"
+scenario '{"responses":{"thread/start":{"result":{"thread":{"id":"th-new-1"}}}}}'
+is "it prints the new thread's id" "$(rpc thread-start --cwd /tmp/repo)" th-new-1
+is "the cwd is passed through" "$(params thread/start | jq -r .cwd)" /tmp/repo
+scenario '{"responses":{"thread/start":{"error":{"code":-1,"message":"nope"}}}}'
+rpc thread-start --cwd /tmp/repo 2>/dev/null
+is "a refused thread/start exits 1" "$?" 1
+XREVIEW_RPC_STDIO=false rpc thread-start --cwd /tmp/repo 2>/dev/null
+is "an unreachable daemon exits 5" "$?" 5
+
 echo "C. thread-status"
 scenario '{"responses":{"thread/read":{"result":{"thread":{"status":{"type":"active","activeFlags":[]}}}}}}'
 is "an active thread is loaded and running" "$(rpc thread-status --thread th | jq -c '[.loaded,.running]')" '[true,true]'

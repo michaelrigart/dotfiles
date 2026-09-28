@@ -12,6 +12,7 @@ newline-delimited JSON on stdio: the Claude sandbox denies binding a unix socket
 tests' fake daemon cannot listen on one.
 
   health
+  thread-start    --cwd DIR                                  prints the new thread's id
   thread-status   --thread ID                               {"loaded", "status", "running"}
   thread-resolve  --prefix PREFIX                            prints the one loaded thread id starting with PREFIX
   turn-start      --thread ID --input FILE --schema FILE [--known FILE]   prints the turn id
@@ -349,6 +350,15 @@ def finish(turn, schema):
 
 # --- commands ----------------------------------------------------------------------------
 
+def cmd_thread_start(c, a):
+    r = c.call("thread/start", {"cwd": a.cwd})
+    if "error" in r:
+        err("thread/start refused: " + json.dumps(r["error"]))
+        return 1
+    print(r["result"]["thread"]["id"])
+    return 0
+
+
 def cmd_thread_status(c, a):
     r = c.call("thread/read", {"threadId": a.thread})
     if "error" in r:
@@ -619,6 +629,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="xreview-rpc")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("health")
+    sub.add_parser("thread-start").add_argument("--cwd", required=True)
     for name in ("thread-status", "thread-archive"):
         sub.add_parser(name).add_argument("--thread", required=True)
     sub.add_parser("thread-resolve").add_argument("--prefix", required=True)
@@ -650,6 +661,8 @@ def main(argv=None):
     try:
         if a.cmd == "health":
             return 0
+        if a.cmd == "thread-start":
+            return cmd_thread_start(c, a)
         if a.cmd == "thread-status":
             return cmd_thread_status(c, a)
         if a.cmd == "thread-resolve":
