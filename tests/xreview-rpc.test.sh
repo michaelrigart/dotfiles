@@ -161,6 +161,19 @@ rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" --known "$T/known2
 is "a baseline that cannot be read refuses (1)" "$?" 1
 is "before anything is sent" "$(jq -r 'select(.method=="turn/start") | .method' "$FAKE_LOG" | grep -c .)" 0
 
+echo "D2. a fresh thread's 'not materialized' baseline is empty, not an error"
+scenario '{"responses":{"thread/turns/list":{"error":{"code":-32600,"message":"thread 01a0e894-... is not materialized yet; thread/turns/list is unavailable before first user message"}},"turn/start":{"result":{"turn":{"id":"turn-fresh","status":"inProgress"}}}}}'
+out="$(rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" --known "$T/known3")"; rc=$?
+is "D2 it still starts the turn" "$rc/$out" "0/turn-fresh"
+is "D2 the known file is an empty list" "$(cat "$T/known3")" '[]'
+is "D2 turn/start was actually called" "$(jq -r 'select(.method=="turn/start") | .method' "$FAKE_LOG" | grep -c .)" 1
+
+echo "D3. any other thread/turns/list error still refuses, unchanged"
+scenario '{"responses":{"thread/turns/list":{"error":{"code":-1,"message":"some other failure"}}},"drop_on":["turn/start"]}'
+rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" --known "$T/known4" 2>/dev/null
+is "D3 it refuses (1)" "$?" 1
+is "D3 and never calls turn/start" "$(jq -r 'select(.method=="turn/start") | .method' "$FAKE_LOG" | grep -c .)" 0
+
 echo "E. turn-wait on a turn that already finished"
 scenario "$(jq -nc --argjson l "$(listing "$(turn completed "$ANSWER")")" '{responses:{"thread/turns/list":$l}}')"
 out="$(rpc turn-wait --thread th --turn turn-1 --budget 5 --schema "$SCHEMA")"; rc=$?

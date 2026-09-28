@@ -382,10 +382,18 @@ def cmd_turn_start(c, a):
         tl = c.call("thread/turns/list", {"threadId": a.thread, "limit": 50,
                                           "sortDirection": "desc", "itemsView": "notLoaded"})
         if "error" in tl:
-            # Without a baseline an unanswered start could later "find" an old turn as new.
-            err("cannot list the thread's turns before starting: " + json.dumps(tl["error"]))
-            return 1
-        data = (tl.get("result") or {}).get("data") or []
+            # A thread with no user message yet (just created by thread-start, never given a
+            # turn) refuses thread/turns/list as "not materialized" - that is an empty
+            # baseline, not an error: every first dispatch of a checkpoint hits this. Any
+            # OTHER error still refuses exactly as before; without a baseline an unanswered
+            # start could later "find" an old turn as new.
+            if "not materialized" in (tl["error"].get("message") or ""):
+                data = []
+            else:
+                err("cannot list the thread's turns before starting: " + json.dumps(tl["error"]))
+                return 1
+        else:
+            data = (tl.get("result") or {}).get("data") or []
         with open(a.known, "w", encoding="utf-8") as fh:
             json.dump([t.get("id") for t in data], fh)
     try:
