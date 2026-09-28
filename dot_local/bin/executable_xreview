@@ -93,18 +93,21 @@ pane_title_id() { # the thread id PREFIX at the start of the pane's title, if an
   title_id_from "$(pane_field "$1" '(.terminal_title_stripped // .terminal_title)')"
 }
 
-pane_raw_title() { # pane_raw_title <pane>: the raw title text on a genuinely successful,
-  # non-empty read; nothing, with a nonzero exit, on any read failure or an empty title. A
-  # read failure and "the title is genuinely empty" are otherwise indistinguishable from
-  # each other through pane_field's own `|| true`, and neither is an OBSERVATION of
-  # anything - conflating either with "a title that does not show want" is the P1 again
-  # (I-1): a transient read failure during the reset wait must never let a stale `want`
-  # title pass as if the replacement TUI had been seen not showing it.
+pane_raw_title() { # pane_raw_title <pane>: prints the raw title text on a genuinely
+  # successful, non-empty read (exit 0). Exit 1: the READ ITSELF failed (herdr errored or
+  # produced no output) - never an observation of anything, and conflating it with "a title
+  # that does not show want" is the P1 again (I-1): a transient read failure during the
+  # reset wait must never let a stale `want` title pass as if the replacement TUI had been
+  # seen not showing it. Exit 2: the read SUCCEEDED but the title itself reads back empty -
+  # a real observation (Task 15/M3), distinct from exit 1. Most callers only test this
+  # function's zero/nonzero exit and so keep treating 1 and 2 alike (still correct - see
+  # I-1 above, both the reset wait and the main wait loop below); a caller that needs the
+  # distinction (pane_prepare's `before` read) must check $? itself.
   local pane="$1" out rc=0 title
   out="$(herdr pane get "$pane" 2>/dev/null)" || rc=$?
   [ "$rc" -eq 0 ] && [ -n "$out" ] || return 1
   title="$(printf '%s' "$out" | jq -r '.result.pane | (.terminal_title_stripped // .terminal_title) // empty' 2>/dev/null)"
-  [ -n "$title" ] || return 1
+  [ -n "$title" ] || return 2
   printf '%s\n' "$title"
 }
 
@@ -174,16 +177,27 @@ pane_prepare() { # pane_prepare <pane> [want] [daemon-generation]: the generatio
                   # ONCE by the caller, before this is called, and never re-read here - a
                   # restart mid-prepare must not let a second read disagree with the first.
   local pane="$1" want="${2:-}" gen="${3:-}" before cmd now ok resolved raw \
-        wait="${XREVIEW_PANE_WAIT:-20}" poll="${XREVIEW_POLL_SECS:-1}" gap rec start bstart
-  # `before` must come from a genuinely successful, non-empty read (pane_raw_title), never
+        wait="${XREVIEW_PANE_WAIT:-20}" poll="${XREVIEW_POLL_SECS:-1}" gap rec start bstart brc
+  # `wait` bounds EACH wait below on its own clock (this one, the agent-exit wait, the reset
+  # wait and the final wait all start their own `start`/`bstart`) - it is a per-wait budget,
+  # never a total shared across them. A caller wanting to cap pane_prepare's overall latency
+  # must account for up to four of these back to back, not treat XREVIEW_PANE_WAIT as that cap.
+  #
+  # `before` must come from a genuinely successful read (pane_raw_title), never
   # pane_title_id's own `|| true` reading of a failed read as "no id" (""). An empty `before`
   # is indistinguishable from "the pane just failed to answer", and the fresh-session check
   # below accepts ANY new-looking prefix once before="" - including the OLD thread still on
   # screen, adopted as fresh (Task 15). Retry within XREVIEW_PANE_WAIT; if it never succeeds,
-  # die before a single key is sent - nothing has touched the pane yet at this point.
+  # die before a single key is sent - nothing has touched the pane yet at this point. A read
+  # that genuinely SUCCEEDS but comes back empty (pane_raw_title's exit 2) is a real
+  # observation, not a failure - Greet-user (D5) is exactly this, and it must resolve
+  # before="" immediately rather than retrying out the whole budget for nothing.
   bstart="$(epoch_now)"
   while :; do
-    if raw="$(pane_raw_title "$pane")"; then before="$(title_id_from "$raw")"; break; fi
+    raw=""; brc=0
+    raw="$(pane_raw_title "$pane")" || brc=$?
+    if [ "$brc" -eq 0 ]; then before="$(title_id_from "$raw")"; break; fi
+    if [ "$brc" -eq 2 ]; then before=""; break; fi
     LC_ALL=C awk -v s="$bstart" -v e="$(epoch_now)" -v m="$wait" 'BEGIN{exit !(e-s<m)}' \
       || die "could not read the Codex pane's title; no review was started"
     sleep "$poll"

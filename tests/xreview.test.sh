@@ -101,12 +101,19 @@ case "$1 $2" in
     # used to target pane_prepare's own `before` read specifically (it is not literally
     # dispatch's first `pane get`: the pre-pane_prepare agent_status and running-thread
     # gates each make one of their own first). BEFORE_FAIL_ALWAYS fails every `pane get`,
-    # forever, simulating a herdr that never answers.
+    # forever, simulating a herdr that never answers. Fix round 1/I1: a marker line
+    # ("herdr pane get FAILED", distinct from the ordinary "herdr pane get w1:p2" the
+    # unconditional logging above already wrote) is appended for each of these DELIBERATE
+    # failures, so a test can locate exactly which read failed in $CALLS without hardcoding
+    # its position - and so the check stays meaningful even if the read positions drift.
+    # The pre-existing reset_fail_once/agent_fail_once failures below do NOT get a marker:
+    # several existing assertions (e.g. D3f) count exact "pane get" occurrences across a
+    # window and would be thrown off by an extra matching line there.
     if [ -n "${BEFORE_FAIL_AT:-}" ]; then
       gn=$(cat "$P/get_seq" 2>/dev/null || echo 0); gn=$((gn + 1)); echo "$gn" > "$P/get_seq"
-      [ "$gn" = "$BEFORE_FAIL_AT" ] && exit 1
+      if [ "$gn" = "$BEFORE_FAIL_AT" ]; then printf 'herdr pane get FAILED\n' >> "$CALLS"; exit 1; fi
     fi
-    [ -n "${BEFORE_FAIL_ALWAYS:-}" ] && exit 1
+    if [ -n "${BEFORE_FAIL_ALWAYS:-}" ]; then printf 'herdr pane get FAILED\n' >> "$CALLS"; exit 1; fi
     # I-1: consume the fail-once marker on the very first read after the run, simulating a
     # transient herdr failure - exit nonzero with no output, never a title of any kind.
     if [ -e "$P/reset_fail_once" ]; then rm -f "$P/reset_fail_once"; exit 1; fi
@@ -573,21 +580,53 @@ is "D17 and says so" "$(printf '%s' "$out" | grep -c 'did not show a new thread'
 is "D17 and never dispatches into the old (or any) thread" "$(called 'xreview-rpc turn-start')" 0
 
 echo "D18. Task 15: a failed 'before' read must not swallow into adopting the OLD thread"
-# The first `pane get` of the dispatch - the `before` read, before anything else has
-# touched the pane - fails once; every read after that succeeds. The fresh path resets
-# nothing of its own (M4), so the pane goes on showing U0's OLD title for a couple more
-# reads even once the new codex process is up and .agent already says so (RACE_TITLE_LAG).
-# pane_title_id's `|| true` would read that failed read as "no id" (before=""), and the
-# fresh-session check then accepts ANY later prefix - including U0, still on screen - as
-# if it were the new thread.
+# Fix round 1/M2: this fails the THIRD `pane get` of the dispatch, not the first - it is
+# pane_prepare's own `before` read specifically. The two `pane get`s ahead of it (the
+# agent_status precondition and the running-thread gate's own title read) each tolerate a
+# failed read by design (they fall back to "" and carry on, no retry, no die - see their own
+# comments at the call sites), so failing either of THEM proves nothing about this bug.
+# Every read after the third succeeds. The fresh path resets nothing of its own (M4), so
+# the pane goes on showing U0's OLD title for a couple more reads even once the new codex
+# process is up and .agent already says so (RACE_TITLE_LAG). pane_title_id's `|| true`
+# would read that failed read as "no id" (before=""), and the fresh-session check then
+# accepts ANY later prefix - including U0, still on screen - as if it were the new thread.
 fresh
+start="$EPOCHREALTIME"
 out="$(BEFORE_FAIL_AT=3 RACE_TITLE_LAG=1 RESET_LAG=2 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+took="$(awk -v s="$start" -v e="$EPOCHREALTIME" 'BEGIN{printf "%.3f", e-s}')"
 is "D18a dispatch still succeeds once the genuinely new thread shows" \
    "$(printf '%s' "$out" | grep -c '^xr-')" 1
 is "D18a the old thread U0 is never dispatched into, despite reading back mid-race" \
    "$(called "xreview-rpc turn-start --thread $U0")" 0
 is "D18a it is the new thread U1 that is dispatched into" \
    "$(called "xreview-rpc turn-start --thread $U1")" 1
+# Fix round 1/I1: position-independent, so it does not quietly stop catching the mutant if
+# the read order drifts. It looks for the FAILED marker itself (wherever it lands) rather
+# than hardcoding "the 3rd call": exactly one real `pane get` must appear between the
+# marker and the first `pane send-keys` - the fix's own single retry. The old, unfixed code
+# reads 0 there (it never retries at all); a future reordering that inserts another read
+# into that same window reads 2+ - both wrong, and both meant to go red, not silently pass.
+between="$(awk '/herdr pane get FAILED/{f=1; next} f && /herdr pane send-keys/{exit} f{print}' "$CALLS")"
+is "D18a exactly one retried read between the failure and the first key sent" \
+   "$(printf '%s\n' "$between" | grep -c '^herdr pane get w1:p2$')" 1
+# Fix round 1/I1 (continued): the read-count check above cannot by itself tell a genuine
+# retry of the RIGHT read apart from an irrelevant failure of one of the two TOLERANT reads
+# ahead of it (agent_status, the running-thread gate's own title read) - both shapes show
+# exactly one intervening "pane get" line, because dispatch only ever reads the pane once
+# more before sending keys either way, whether or not anything actually needed retrying.
+# What differs is TIME: a genuine retry sleeps a full XREVIEW_POLL_SECS first (I-1's
+# poll-driven wait); an irrelevant failure elsewhere does not, since the read it precedes
+# was always going to happen right after it regardless. BEFORE_FAIL_AT=2 fails the
+# running-thread gate's own read instead (a stand-in for "the reads got reordered and this
+# marker no longer lands on `before`") under otherwise identical timing parameters - proving
+# the count-1 case above is measurably the SLOW shape, not just coincidentally the same
+# count as a fast, unrelated failure would also produce.
+fresh
+start2="$EPOCHREALTIME"
+BEFORE_FAIL_AT=2 RACE_TITLE_LAG=1 RESET_LAG=2 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+took2="$(awk -v s="$start2" -v e="$EPOCHREALTIME" 'BEGIN{printf "%.3f", e-s}')"
+is "D18a the genuine retry took measurably longer than an irrelevant failure elsewhere - proof the retry actually slept, not just that a read happened to follow" \
+   "$(awk -v a="$took" -v b="$took2" -v p="$XREVIEW_POLL_SECS" 'BEGIN{print (a >= b + p*0.5) ? "yes" : "no ("a"s vs "b"s)"}')" yes
 
 fresh; export BEFORE_FAIL_ALWAYS=1
 # A tight local wait (I-1): every read fails, so this must genuinely exhaust the deadline.
@@ -596,6 +635,19 @@ is "D18b a pane whose title can never be read refuses" "$rc" 1
 is "D18b and says so" "$(printf '%s' "$out" | grep -c 'could not read')" 1
 is "D18b untouched - no keys were ever sent" "$(untouched)" yes
 unset BEFORE_FAIL_ALWAYS
+
+echo "D18c. Fix round 1/M3: a title that reads back genuinely empty is an observation, not a failure"
+# pane_raw_title's exit 2 (read succeeded, title empty) must resolve before="" on the spot,
+# not retry out the whole XREVIEW_PANE_WAIT budget as if the read itself had failed - that
+# would turn the ordinary Greet-user case (D5) into a multi-second stall on every dispatch.
+fresh; printf '' > "$P/title"
+start="$EPOCHREALTIME"
+nonce="$(bash "$XREVIEW" dispatch b.md 2>/dev/null)"
+took="$(awk -v s="$start" -v e="$EPOCHREALTIME" 'BEGIN{printf "%.3f", e-s}')"
+is "D18c dispatch still succeeds" "$(printf '%s' "$nonce" | grep -c '^xr-')" 1
+is "D18c the fresh session is adopted" "$(cat "$STATE/review-thread" 2>/dev/null)" "$U1"
+is "D18c and it does not wait out the pane-wait budget for the empty title" \
+   "$(awk -v t="$took" -v w="$XREVIEW_PANE_WAIT" 'BEGIN{print (t < w) ? "yes" : "no ("t"s)"}')" yes
 
 echo "E. checkpoints and pins"
 fresh
