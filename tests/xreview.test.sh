@@ -350,23 +350,28 @@ fresh; out="$(RPC_START_FAIL=1 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
 is "D8 a refused turn fails the dispatch" "$rc" 1
 is "D8 and records no nonce" "$(ls "$STATE/turns" 2>/dev/null | grep -c .)" 0
 is "D8 the pane was freed (two ctrl+c)" "$(called 'herdr pane send-keys')" 2
-is "D8 and relaunched (resume, falling through to a fresh session)" \
-   "$(called "herdr pane run w1:p2 .*resume $U1 || $PANE_CMD")" 1
+is "D8 and relaunched as a fresh session" "$(called "^herdr pane run w1:p2 $PANE_CMD\$")" 1
 
 echo "RC. a refusal after pane_free relaunches Codex in the pane (fix round 2/C)"
 fresh; out="$(RPC_START_FAIL=1 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
 is "RC1 it still refuses" "$rc" 1
+relaunch="^herdr pane run w1:p2 $PANE_CMD\$"
 is "RC1 the relaunch happens after both ctrl+c" \
-   "$([ "$(first 'herdr pane send-keys')" -lt "$(first "resume $U1 || ")" ] && echo yes || echo no)" yes
-is "RC1 and exactly once" "$(called "resume $U1 || ")" 1
+   "$([ "$(first 'herdr pane send-keys')" -lt "$(first "$relaunch")" ] && echo yes || echo no)" yes
+is "RC1 and exactly once" "$(called "$relaunch")" 1
 fresh
 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
-is "RC2 a successful dispatch never runs the relaunch fallback" "$(called ' || ')" 0
+is "RC2 a successful dispatch never runs the relaunch" "$(called "$relaunch")" 0
 fresh
 out="$(XREVIEW_MAX_ROUNDS=0 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
 is "RC3 a refusal before pane_free (the round cap) refuses" "$(printf '%s' "$out" | grep -c 'exceeds the cap')" 1
-is "RC3 and never runs the relaunch" "$(called ' || ')" 0
+is "RC3 and never runs the relaunch" "$(called "$relaunch")" 0
 is "RC3 and never touches the pane at all" "$(untouched)" yes
+# An errexit exit (not die): mktemp fails after pane_free. The guard must still know the pane.
+fresh; out="$(TMPDIR="$ROOT/no-such-dir" bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+is "RC4 a failed mktemp after pane_free refuses" "$rc" 1
+is "RC4 and no turn was started" "$(called 'xreview-rpc turn-start')" 0
+is "RC4 and the pane is still relaunched" "$(called "$relaunch")" 1
 
 echo "D10. an unanswered turn-start still hands back a nonce; collect recovers it"
 fresh

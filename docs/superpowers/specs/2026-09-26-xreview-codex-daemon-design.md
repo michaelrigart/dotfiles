@@ -352,7 +352,7 @@ existing fields, so they are unaffected.
 | Pane closes or its session will not exit while being freed | Refuse. No turn exists yet. |
 | Resumed pane never shows the thread | Warn; the review still runs and `collect` works. Superseded threads are kept for later archiving. |
 | Checkpoint thread still running a turn | Refuse; collect the running turn first. |
-| Refusal after the pane was freed (turn-start refused, a local failure) | Relaunch Codex in the pane (resume the review thread, else a fresh session), then refuse. |
+| Refusal after the pane was freed (turn-start refused, a local failure) | Start a fresh Codex session in the pane, then refuse; the next dispatch resumes it onto the review thread. |
 | Turn failed or interrupted | `collect` exits 1 with the reason. |
 | Output not schema-valid | `collect` exits 4. Raw text is printed and labelled untrusted. |
 | Pane-map hook: herdr unreachable, or no title match | Report nothing and exit 0. |

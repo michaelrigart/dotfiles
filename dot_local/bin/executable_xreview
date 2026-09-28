@@ -269,24 +269,15 @@ pane_resume() {
   done
 }
 
-_dispatch_exit_guard() { # the EXIT trap armed right after pane_free succeeds, in
-  # cmd_dispatch (spec 8's "refusal after the pane was freed" row). If dispatch dies
-  # anywhere between there and a successful turn-start - turn-start itself refused, mktemp,
-  # mkdir - the pane would otherwise be left sitting at a bare shell, and the NEXT dispatch's
-  # find_pane then refuses with a misleading "no Codex pane". Relaunches Codex there, best
-  # effort: resume the review thread if it will, else fall through to a fresh session (an
-  # unmaterialized or archived thread refuses resume). A no-op when pane_free never had to
-  # quit anything (need_resume=0) - nothing was disturbed, so there is nothing to repair.
-  # Disarmed (trap - EXIT) the moment turn-start actually succeeds; pane_resume owns the pane
-  # from there. Reads cmd_dispatch's own locals (packet, need_resume, pane, thread) by bash's
-  # ordinary dynamic scoping - this only ever fires while still inside that call. Never calls
-  # exit itself, so it never changes the exit status the script is already leaving with.
-  [ -n "${packet:-}" ] && rm -f "$packet" 2>/dev/null
-  if [ "${need_resume:-0}" = 1 ]; then
-    local cmd
-    cmd="$(pane_command 2>/dev/null)" || cmd=""
-    [ -n "$cmd" ] && herdr pane run "$pane" "$cmd resume $thread || $cmd" >/dev/null 2>&1
-  fi
+_dispatch_exit_guard() { # _dispatch_exit_guard <pane>: the EXIT trap armed while pane_free
+  # has quit the pane's TUI and no turn exists yet (spec 8). A refusal in that window -
+  # turn-start refused, a failed mktemp or mkdir - would leave the pane at a bare shell, and
+  # the next dispatch would find no Codex pane. Start a fresh Codex there, best effort; the
+  # next dispatch resumes it onto the review thread. The pane comes in through the trap
+  # string, not cmd_dispatch's locals: on an errexit exit bash 5 has already unwound those.
+  local cmd
+  cmd="$(pane_command 2>/dev/null)" || return 0
+  herdr pane run "$1" "$cmd" >/dev/null 2>&1 || true
   return 0
 }
 
@@ -580,11 +571,11 @@ Report the remaining disagreement, or: xreview round --reset"
   # Free the pane, BEFORE the turn exists (spec 7.3 step 3): the only point in dispatch that
   # may ever send-keys to the pane. Dies on any failure - nothing has started yet.
   need_resume="$(pane_free "$pane" "$thread" "$gen")"
-  # Armed from here through a successful turn-start (spec 8's "refusal after the pane was
-  # freed" row): a die anywhere in this window - turn-start refused, mktemp, mkdir - would
-  # otherwise leave a pane pane_free quit sitting at a bare shell. Disarmed in the 0/6 case
-  # arms below, once the turn genuinely exists and pane_resume owns the pane from there.
-  trap _dispatch_exit_guard EXIT
+  # Armed only when pane_free quit the TUI, through a successful turn-start; disarmed in the
+  # 0/6 arms below, once the turn exists and pane_resume owns the pane.
+  if [ "$need_resume" = 1 ]; then
+    trap "_dispatch_exit_guard $(printf '%q' "$pane")" EXIT
+  fi
 
   # Turn: build the packet and start it on the thread. From here on dispatch always
   # succeeds and prints the nonce - the review runs whatever happens to the pane below, and
