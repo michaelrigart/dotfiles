@@ -271,21 +271,24 @@ The turn starts first; the pane follows it (F22).
      thread its title shows is not running.
    - The existing guards pass: no project `.codex/`, and the round cap.
 2. **Thread.** Use the pinned or recorded checkpoint thread. With none, create one with
-   `xreview-rpc thread-start` and record it.
-3. **Turn.** Build the packet as `<cross-review-request>` containing the reviewer instructions,
+   `xreview-rpc thread-start` and record it. Refuse if that thread is running a turn.
+3. **Free the pane, before the turn.** If the pane's title prefix is a prefix of the thread's
+   id (F11) and xreview put the pane on this thread under the current daemon generation, the
+   pane stays as it is. Otherwise quit its TUI now (`ctrl+c` twice) and wait (bounded) for the
+   shell. No keystroke ever reaches a TUI after the turn exists: a `ctrl+c` then would
+   interrupt the review itself. If the pane closes or its session will not exit, refuse; no
+   turn exists yet.
+4. **Turn.** Build the packet as `<cross-review-request>` containing the reviewer instructions,
    the body, and the diff inline. Run `turn-start` with the findings schema (§7.5), and record
    `$state_dir/turns/<nonce>` as `<thread> <turn>`. From here on dispatch always succeeds and
    prints the nonce: the review runs whatever happens to the pane.
-4. **Pane, best effort.** If the pane's title prefix is a prefix of the thread's id (F11) and
-   xreview put the pane on this thread under the current daemon generation, leave it alone.
-   Otherwise quit its TUI (`ctrl+c` twice), wait (bounded) for the shell, and run the Codex
-   pane command with `resume <thread>`; the TUI replays the running turn (F22). Wait
+5. **Resume the pane, best effort.** If step 3 quit the TUI, run the Codex pane command with
+   `resume <thread>` in the pane's shell; the TUI replays the running turn (F22). Wait
    (bounded, about 20 s) for the title to show the thread's prefix, then record the pane and
-   report the thread to herdr. If any of this fails - the pane closes, the session will not
-   exit, the title never shows the thread - warn on stderr that the review is running but not
-   shown, and still exit 0.
-5. **Archive** the superseded review thread, if there is one, but only once the pane shows the
-   new thread; otherwise leave it.
+   report the thread to herdr. If that fails, warn on stderr that the review is running but
+   not shown, and still exit 0.
+6. **Archive** the superseded review threads, if any, but only once the pane shows the new
+   thread; otherwise keep them for the next successful dispatch.
 
 ### 7.4 Collect
 
@@ -343,7 +346,9 @@ existing fields, so they are unaffected.
 | Interactive `codex --remote` | The launcher refuses. |
 | No Codex pane, or several | Refuse, list the candidates, and suggest applying the project layout or setting `XREVIEW_PANE`. |
 | Pane mid-turn | Refuse before touching anything. |
-| Pane cannot be pointed at the thread (closed, session will not exit, title never shows it) | Warn; the review still runs and `collect` works. The superseded thread is not archived. |
+| Pane closes or its session will not exit while being freed | Refuse. No turn exists yet. |
+| Resumed pane never shows the thread | Warn; the review still runs and `collect` works. Superseded threads are kept for later archiving. |
+| Checkpoint thread still running a turn | Refuse; collect the running turn first. |
 | Turn failed or interrupted | `collect` exits 1 with the reason. |
 | Output not schema-valid | `collect` exits 4. Raw text is printed and labelled untrusted. |
 | Pane-map hook: herdr unreachable, or no title match | Report nothing and exit 0. |
