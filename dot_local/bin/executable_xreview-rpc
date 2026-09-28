@@ -376,6 +376,15 @@ def cmd_turn_start(c, a):
         text = fh.read()
     with open(a.schema, encoding="utf-8") as fh:
         schema = json.load(fh)
+    # After a daemon restart a recorded checkpoint thread is no longer loaded, and nothing
+    # else loads it first: the pane only resumes it once the turn exists (spec 7.3).
+    st = c.call("thread/read", {"threadId": a.thread})
+    kind = (((st.get("result") or {}).get("thread") or {}).get("status") or {}).get("type")
+    if kind == "notLoaded":
+        r = c.call("thread/resume", {"threadId": a.thread})
+        if "error" in r:
+            err("cannot load the thread before starting: " + json.dumps(r["error"]))
+            return 1
     if a.known:
         # What is on the thread before this start, so an unanswered start can be found later
         # as the turn that was not there before.

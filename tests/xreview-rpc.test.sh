@@ -168,6 +168,21 @@ is "D2 it still starts the turn" "$rc/$out" "0/turn-fresh"
 is "D2 the known file is an empty list" "$(cat "$T/known3")" '[]'
 is "D2 turn/start was actually called" "$(jq -r 'select(.method=="turn/start") | .method' "$FAKE_LOG" | grep -c .)" 1
 
+echo "TL. an unloaded checkpoint thread is loaded before its turn starts"
+scenario '{"responses":{"thread/read":{"result":{"thread":{"status":{"type":"notLoaded"}}}},"turn/start":{"result":{"turn":{"id":"turn-e1","status":"inProgress"}}}}}'
+out="$(rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA")"; rc=$?
+is "TL1 it starts the turn" "$rc/$out" "0/turn-e1"
+is "TL1 thread/resume comes before turn/start" \
+   "$(jq -r 'select(.method) | .method' "$FAKE_LOG" | grep -E '^(thread/resume|turn/start)$' | paste -sd, -)" "thread/resume,turn/start"
+is "TL1 on that thread" "$(params thread/resume | jq -r .threadId)" th
+scenario '{"responses":{"thread/read":{"result":{"thread":{"status":{"type":"idle"}}}},"turn/start":{"result":{"turn":{"id":"turn-e2","status":"inProgress"}}}}}'
+rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" >/dev/null
+is "TL2 a loaded thread is not resumed" "$(jq -r 'select(.method=="thread/resume") | .method' "$FAKE_LOG" | grep -c .)" 0
+scenario '{"responses":{"thread/read":{"result":{"thread":{"status":{"type":"notLoaded"}}}},"thread/resume":{"error":{"code":-1,"message":"gone"}}}}'
+rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" 2>/dev/null
+is "TL3 a thread that will not load refuses (1)" "$?" 1
+is "TL3 and never calls turn/start" "$(jq -r 'select(.method=="turn/start") | .method' "$FAKE_LOG" | grep -c .)" 0
+
 echo "D3. any other thread/turns/list error still refuses, unchanged"
 scenario '{"responses":{"thread/turns/list":{"error":{"code":-1,"message":"some other failure"}}},"drop_on":["turn/start"]}'
 rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" --known "$T/known4" 2>/dev/null

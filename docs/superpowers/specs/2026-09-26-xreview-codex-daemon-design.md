@@ -230,7 +230,9 @@ completes the handshake (F2), declines any server-initiated approval request, an
   with the findings schema, a read-only sandbox policy and approval `never` set on the turn
   itself. Prints the turn id. `--known` first records the thread's existing turn ids. A
   thread with no user message yet refuses `thread/turns/list` as "not materialized"; that is
-  an empty baseline, not an error.
+  an empty baseline, not an error. A thread the daemon reports `notLoaded` (a recorded
+  checkpoint thread after a daemon restart) is loaded with `thread/resume` first, because the
+  pane only resumes it once the turn exists.
 - `turn-wait --thread <id> --turn <id> --budget <secs>`: subscribes first, then reads the
   turn's status, so a turn that finished before the wait began is still caught. It then waits
   for `turn/completed` and prints the final agent message.
