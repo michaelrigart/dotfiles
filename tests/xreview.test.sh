@@ -157,6 +157,10 @@ case "$cmd" in
       echo '{"loaded":true,"status":"active","running":true}'
     else echo '{"loaded":true,"status":"idle","running":false}'; fi ;;
   turn-start) cp "$input" "$P/packet"; [ -n "$known" ] && echo '[]' > "$known"
+              # RELIVE_DURING_TURN simulates a live Codex TUI reappearing in the pane while
+              # the turn itself was starting (fix round 2/D) - pane_free already confirmed
+              # the agent was not codex before this ran; this is what a race would look like.
+              [ -n "${RELIVE_DURING_TURN:-}" ] && printf codex > "$P/agent"
               [ -n "${RPC_START_FAIL:-}" ] && exit 1
               [ -n "${RPC_START_UNCERTAIN:-}" ] && exit 6
               if [ -n "${RPC_START_BAD_ID:-}" ]; then echo "turn id/with spaces"; exit 0; fi
@@ -173,7 +177,8 @@ fresh() { # a pane showing U0, idle; clean log and state
   unset ENSURE_RC CHECK_RC RPC_START_FAIL RPC_START_UNCERTAIN RPC_START_BAD_ID \
         RPC_START_THREAD_FAIL NO_TITLE STUCK_TUI AGENT_EXIT_DELAY PANE_RUN_FAIL \
         AGENT_READ_FAIL_ONCE EXTRA_PANES PANE_CWD XREVIEW_PANE XREVIEW_THREAD RPC_WAIT_OUT \
-        RPC_WAIT_RC RPC_THREAD_RUNNING RPC_THREAD_RUNNING_FOR RPC_HEALTH_FAIL PANE_GONE_AT
+        RPC_WAIT_RC RPC_THREAD_RUNNING RPC_THREAD_RUNNING_FOR RPC_HEALTH_FAIL PANE_GONE_AT \
+        RELIVE_DURING_TURN
   export NEW_UUID="$U1"
   printf codex > "$P/agent"; printf '%s | t | d' "$(trunc "$U0")" > "$P/title"; echo idle > "$P/status"
   echo 0 > "$P/ctrlc"
@@ -329,10 +334,12 @@ out="$(AGENT_EXIT_DELAY=3 AGENT_READ_FAIL_ONCE=1 XREVIEW_POLL_SECS=0.05 XREVIEW_
 is "D3f it still succeeds" "$(printf '%s' "$out" | grep -c '^xr-')" 1
 # Between the second ctrl+c and `pane run`, the exit-wait loop makes one ".agent" read per
 # iteration: the first (failed) one, then 3 more covering the delay, then the one that
-# finally reads empty and breaks the loop - 5 in total. A failed read misread as "already
-# exited" would instead call `pane run` after just that first (failed) read - 1, not 5.
+# finally reads empty and breaks the loop - 5 - plus pane_resume's own fix round 2/D check
+# (agent not codex, right before it calls `pane run`) - 6 in total. A failed read misread as
+# "already exited" would instead call `pane run` after just that first (failed) read - 2 (1
+# plus pane_resume's own check), not 6.
 is "D3f the exit wait actually iterated through the delay, not stopped on the failed read" \
-   "$(awk '/pane send-keys/{n++} n>=2{print} /pane run/{exit}' "$CALLS" | grep -c 'pane get')" 5
+   "$(awk '/pane send-keys/{n++} n>=2{print} /pane run/{exit}' "$CALLS" | grep -c 'pane get')" 6
 
 echo "D8. a refused turn fails the dispatch - the pane was already freed, then relaunched (fix round 2/C)"
 # The pane is freed BEFORE turn-start now (C1), so a turn-start failure still costs two
@@ -443,6 +450,17 @@ is "T3 the turn is recorded" "$(cat "$STATE/turns/$nonce" 2>/dev/null)" "$U1 tur
 is "T3 and it warns the review is not shown" \
    "$(printf '%s' "$out" | grep -c 'running but not shown in pane w1:p2')" 1
 is "T3 the round was still consumed" "$(bash "$XREVIEW" round)" 1
+
+echo "D. pane_resume must not type into a live TUI (fix round 2/D)"
+fresh
+out="$(RELIVE_DURING_TURN=1 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+nonce="$(printf '%s' "$out" | grep '^xr-')"
+is "D dispatch still exits 0" "$rc" 0
+is "D and prints the nonce" "$(printf '%s' "$nonce" | grep -c '^xr-')" 1
+is "D the turn is recorded" "$(cat "$STATE/turns/$nonce" 2>/dev/null)" "$U1 turn-$U1"
+is "D it warns instead of typing into the live TUI" \
+   "$(printf '%s' "$out" | grep -c 'running but not shown in pane w1:p2')" 1
+is "D no pane run ever happens - nothing is typed into it" "$(called 'herdr pane run')" 0
 
 echo "T3b. a session that will not exit now REFUSES, before any turn exists (C1)"
 # The old behaviour (warn, still exit 0) belonged to the OLD pane-first-then-turn design,

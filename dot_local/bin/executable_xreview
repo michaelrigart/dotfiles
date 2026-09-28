@@ -234,8 +234,16 @@ pane_free() {
 # dies: a failure costs only the live view. Every failure warns and returns 1; the caller
 # decides what that costs (only whether the superseded threads get archived).
 pane_resume() {
-  local pane="$1" thread="$2" gen="$3" cmd raw brc now \
+  local pane="$1" thread="$2" gen="$3" cmd raw brc now agent \
         wait="${XREVIEW_PANE_WAIT:-20}" poll="${XREVIEW_POLL_SECS:-1}" start
+  # Fix round 2/D: pane_free's own exit-wait already confirmed the agent was not codex
+  # before this was ever called, but time passes between that and here (the turn itself).
+  # If something - the operator, or the fix round 2/C relaunch racing this one - put a live
+  # TUI back in the pane meanwhile, typing "resume ..." into it would be garbage input to a
+  # running session, not a review command. A failed read is treated the same as "still
+  # codex": never type into a pane whose state could not be confirmed clear.
+  agent="$(pane_agent "$pane")" || { warn_pane_unwatched "$pane"; return 1; }
+  [ "$agent" != codex ] || { warn_pane_unwatched "$pane"; return 1; }
   cmd="$(pane_command)" || { warn_pane_unwatched "$pane"; return 1; }
   start="$(epoch_now)"
   herdr pane run "$pane" "$cmd resume $thread" >/dev/null 2>&1 \
