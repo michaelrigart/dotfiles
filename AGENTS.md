@@ -34,6 +34,9 @@ Canonical agent context; `CLAUDE.md` imports this file.
 - Brewfile: only tools actually in use. Add packages via
   `chezmoi edit ~/.config/homebrew/Brewfile`, then `chezmoi apply` and
   `brew bundle install --file ~/.config/homebrew/Brewfile`.
+- `~/.local/bin/codex` is a launcher that shadows Homebrew's `codex`: interactive starts
+  attach to the launchd-started daemon or refuse (`--no-daemon` is the escape). Anything
+  needing the real binary uses `codex-daemon real-bin`, never `command -v codex`.
 
 ## Layout
 
@@ -74,11 +77,13 @@ skipped by default:
 | `ssh-credential-inventory` | unsandboxed | the `Read(~/.ssh/**)` deny blocks enumeration; it then exits 2 (INCONCLUSIVE) rather than green |
 | `dev-topology` | unsandboxed + live `herdr` | drives the real binary, whose socket the sandbox denies |
 | `dev-integrations` | live `herdr` + **interactive** | stops midway for an operator to attach the session and start both agents; it exits 2 with no TTY rather than half-running |
+| `live-codex-daemon` | unsandboxed + live `herdr` + clean daemon | drives the real Codex daemon and a scratch tab; the canary for Codex protocol changes. Run from inside a herdr pane after `chezmoi apply` |
 | `live-agent-auth`, `live-agent-signing`, `live-credential-boundary` | **fresh session after `chezmoi apply`, and SANDBOXED** | they measure the sandbox |
 
-**Never run the live suites with the sandbox disabled.** They measure the sandbox, so
-disabling it inverts the result: `live-credential-boundary.test.sh` then reports every
-private key readable and exits 12. That is the suite working, not a regression.
+**Never run `live-agent-auth`, `live-agent-signing` or `live-credential-boundary` with
+the sandbox disabled.** They measure the sandbox, so disabling it inverts the result:
+`live-credential-boundary.test.sh` then reports every private key readable and exits
+12. That is the suite working, not a regression.
 
 **Control for sandbox mode before calling anything a regression.** Comparing a sandboxed
 run against an unsandboxed one once produced a believable "18-test regression" that was
@@ -109,7 +114,8 @@ target exists and exits 2 if not. Keep that when adding suites — a guard test 
 is missing otherwise reports every "must allow" case as a pass.
 
 Two output idioms exist and `run.sh` counts both: prose (`  ok  …` / `  PASS: …`) and the
-`KEY=VALUE` status the `live-*` suites emit so they never print key material. A kv suite
+`KEY=VALUE` status the `live-agent-auth`, `live-agent-signing` and
+`live-credential-boundary` suites emit so they never print key material. A kv suite
 encodes failures in its values and exits with the count, so it is judged on exit status
 alone — the prose cross-check does not apply to it.
 
@@ -121,10 +127,6 @@ bare — a bare call silently targets the *default* session. That is what made
 asserted against an empty `dev-test`. `layout.sh` also starts a server whenever
 `HERDR_SESSION` is set, even inside a Herdr pane, because the pane you are in belongs to a
 different session than the one you named.
-
-**Report totals as passed/total, never "N green".** A handoff once claimed "324 assertions
-green" when it was 321 green / 3 red — 324 was the *total*. The three red were in
-`test-wt-functions.sh`, the one suite needing zsh, which a bash run hides.
 
 ## Troubleshooting
 

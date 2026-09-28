@@ -1,0 +1,137 @@
+#!/bin/sh
+# codex-daemon - keep Codex's shared app-server daemon under launchd, with a clean environment.
+#
+# Managed by chezmoi (source: dot_local/bin/executable_codex-daemon).
+# Design: docs/superpowers/specs/2026-09-26-xreview-codex-daemon-design.md, section 5.
+#
+# Codex 0.157 runs every TUI against one shared daemon and runs hooks inside it. Spawned by
+# a TUI, the daemon keeps that pane's HERDR_* environment, and herdr's hook then reports
+# every thread against that one pane. So launchd starts it (be.netronix.codex-app-server)
+# and features.daemon_auto_start stays false.
+#
+#   codex-daemon real-bin   the real Codex binary: the first `codex` on PATH outside
+#                           $XDG_BIN_HOME (~/.local/bin), symlinks followed
+#   codex-daemon ensure     start the daemon through launchd unless it already answers
+#   codex-daemon check      exit 0 only if it answers AND carries no HERDR_* variable
+#   codex-daemon restart    fix a contaminated daemon; disconnects every open Codex TUI
+set -eu
+
+CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}"
+LABEL="${CODEX_DAEMON_LABEL:-be.netronix.codex-app-server}"
+PIDS="$CODEX_HOME_DIR/app-server-daemon"
+
+die() { printf 'codex-daemon: %s\n' "$1" >&2; exit 1; }
+
+# A subshell body, so the IFS and noglob changes cannot leak into the caller.
+real_bin() (
+  skip="${XDG_BIN_HOME:-$HOME/.local/bin}"
+  skip="$(cd "$skip" 2>/dev/null && pwd -P || printf '%s' "$skip")"
+  IFS=:
+  set -f
+  for dir in $PATH; do
+    [ -n "$dir" ] || continue
+    canon="$(cd "$dir" 2>/dev/null && pwd -P || printf '%s' "$dir")"
+    [ "$canon" = "$skip" ] && continue
+    if [ -f "$dir/codex" ] && [ -x "$dir/codex" ]; then
+      readlink -f "$dir/codex" 2>/dev/null || printf '%s\n' "$dir/codex"
+      exit 0
+    fi
+  done
+  exit 1
+)
+
+answering() {
+  "$REAL" app-server daemon version 2>/dev/null | grep -Eq '"status"[[:space:]]*:[[:space:]]*"running"'
+}
+
+pid_of() { # pid_of <pid-file>: the JSON "pid" field
+  [ -r "$1" ] || return 1
+  sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "$1" | head -1
+}
+
+# inspect <pid>: print the process's command line with its environment (`ps eww` appends
+# it). Exit 2 if the process is gone, 1 if it is alive but cannot be read. A read failure
+# must never pass as clean: `ps` is exactly what a sandbox denies.
+inspect() {
+  kill -0 "$1" 2>/dev/null || return 2
+  words="$(ps eww -o command= -p "$1" 2>/dev/null)" || return 1
+  [ -n "$words" ] || return 1
+  printf '%s\n' "$words"
+}
+
+cmd_ensure() {
+  answering && return 0
+  launchctl kickstart "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || true
+  wait="${CODEX_DAEMON_WAIT:-10}"
+  i=0
+  while [ "$i" -lt "$wait" ]; do
+    sleep 1
+    i=$((i + 1))
+    answering && return 0
+  done
+  die "the Codex daemon is not running and did not start within ${wait}s.
+  Is the agent loaded?  launchctl print gui/$(id -u)/$LABEL
+  Load it:              launchctl bootstrap gui/$(id -u) $HOME/Library/LaunchAgents/$LABEL.plist
+  Or deliberately without the daemon:  codex --no-daemon"
+}
+
+cmd_check() {
+  answering || die "the Codex daemon is not answering - run: codex-daemon ensure"
+  server="$(pid_of "$PIDS/daemon.pid" || true)"
+  [ -n "$server" ] || die "cannot find the daemon's pid in $PIDS/daemon.pid; its environment cannot be verified"
+  dirty=""
+  for f in "$PIDS/daemon.pid" "$PIDS/daemon-updater.pid"; do
+    pid="$(pid_of "$f" || true)"
+    [ -n "$pid" ] || continue
+    rc=0
+    words="$(inspect "$pid")" || rc=$?
+    if [ "$rc" = 2 ]; then
+      # A supervisor that has exited carries nothing; the server itself must be there.
+      [ "$pid" != "$server" ] || die "the daemon answers but its pid $pid (from $f) is gone; its environment cannot be verified"
+      continue
+    fi
+    [ "$rc" = 0 ] || die "cannot inspect the daemon process $pid (is ps denied here?); its environment cannot be verified"
+    case "$words" in
+      *codex*app-server*) ;;
+      # A pid file outlives its process; a recycled pid belongs to something else
+      # entirely, and that something else's environment says nothing about the
+      # daemon's. Gone for the supervisor, same as rc=2 above; a hard failure for the
+      # server, since then its own environment truly cannot be verified.
+      *) [ "$pid" != "$server" ] \
+           || die "the daemon answers but its pid $pid (from $f) is not a Codex process; its environment cannot be verified"
+         continue ;;
+    esac
+    if printf '%s\n' "$words" | tr ' ' '\n' | grep -q '^HERDR_'; then dirty="$dirty $pid"; fi
+  done
+  [ -z "$dirty" ] && return 0
+  die "the Codex daemon (pid$dirty) carries a herdr pane's environment, so herdr's own hook
+  reports every new thread against that one pane.
+  Fix: codex-daemon restart
+  This disconnects every open Codex TUI; relaunch them afterwards."
+}
+
+cmd_restart() {
+  "$REAL" app-server daemon stop >/dev/null 2>&1 || true
+  # A supervisor that survives `stop` would restart the server with its old environment.
+  # Only a pid that is still a Codex daemon process is signalled: pid files outlive their
+  # processes, and a recycled pid belongs to someone else.
+  for f in "$PIDS/daemon.pid" "$PIDS/daemon-updater.pid"; do
+    pid="$(pid_of "$f")" || continue
+    [ -n "$pid" ] || continue
+    case "$(ps -o command= -p "$pid" 2>/dev/null)" in
+      *codex*app-server*) kill "$pid" 2>/dev/null || true ;;
+    esac
+  done
+  sleep 1
+  cmd_ensure
+  cmd_check
+}
+
+case "${1:-}" in
+  real-bin)
+    real_bin || die "no codex on PATH outside ${XDG_BIN_HOME:-$HOME/.local/bin}" ;;
+  ensure|check|restart)
+    REAL="$(real_bin)" || die "no codex on PATH outside ${XDG_BIN_HOME:-$HOME/.local/bin}"
+    "cmd_$1" ;;
+  *) die "usage: codex-daemon real-bin | ensure | check | restart" ;;
+esac

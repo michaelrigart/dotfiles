@@ -69,6 +69,13 @@ done
 # read and fail, while under-stripping lets a comment stand in for an implementation.
 strip_comments() { grep -hv '^[[:space:]]*#' "$@" | sed 's/[[:space:]]#.*$//'; }
 code_of() { strip_comments "${IMPL[@]}"; }
+# Captured once: every later check against $XREVIEW's stripped code greps this variable,
+# never `strip_comments "$XREVIEW" | grep -q ...` directly. A `-q` that matches early
+# closes its end of a live pipe, and the producer (strip_comments' own internal
+# grep-hv|sed pipe) can then die of SIGPIPE before it finishes - with pipefail set, that
+# 141 can outrank grep's 0 and read as a failed check even though the match was real
+# (same hazard code_of()'s own comment above describes for the multi-file case).
+xreview_code="$(strip_comments "$XREVIEW")"
 vars="$(grep -oiE 'XREVIEW_[A-Za-z0-9_]+' "$SKILL" | sort -u)"
 [ -n "$vars" ] || _fail "SKILL.md still names the environment knobs" \
   "found none — either the skill stopped documenting them, or this extractor broke"
@@ -76,7 +83,11 @@ for var in $vars; do
   # `${VAR` — an expansion, not a mention. The guard's own error text says
   # "Set XREVIEW_GUARD=off to bypass deliberately", so a substring search is satisfied by
   # the message describing the feature after the code implementing it has gone.
-  if code_of | grep -qE -- "\\\$\\{$var[:}]"; then
+  # Not -q: it would exit the moment it finds the match and close the pipe, and with
+  # pipefail set, the multi-file code_of() upstream can then die of SIGPIPE before it
+  # finishes writing — that 141 outranks grep's own 0 and the whole `if` reads as failed
+  # even though the match was real. Reading to EOF costs nothing here and can't race.
+  if code_of | grep -E -- "\\\$\\{$var[:}]" >/dev/null; then
     _pass "SKILL.md names \$$var, and the implementation reads it"
   else
     _fail "SKILL.md names \$$var, and the implementation reads it" \
@@ -172,24 +183,23 @@ else
   _fail "the skill's dispatch example passes the diff inline" \
         "$(grep -E 'xreview dispatch' "$SKILL" | head -1)"
 fi
-if strip_comments "$XREVIEW" | grep -q -- '--diff)'; then
+if printf '%s' "$xreview_code" | grep -q -- '--diff)'; then
   _pass "the CLI actually accepts --diff"
 else
   _fail "the CLI actually accepts --diff" "no --diff case in the dispatch parser"
 fi
 
-# The staleness threshold is a number in two places. The round cap has already drifted
-# once between skill and code; this one is pinned the same way.
-code_warn="$(strip_comments "$XREVIEW" | grep -oE 'XREVIEW_THREAD_WARN:-[0-9]+' | grep -oE '[0-9]+' | sort -u)"
-if [ "$code_warn" = "8" ] && grep -qi 'answered eight' "$SKILL"; then
-  _pass "the documented staleness threshold matches the code ($code_warn)"
+# A schema miss is its own exit code. The skill must say what to do with it, or the model
+# treats raw reviewer prose as findings.
+if grep -q 'Exit 4' "$SKILL" && printf '%s' "$xreview_code" | grep -q 'exit 4'; then
+  _pass "the skill and the CLI agree that a schema miss exits 4"
 else
-  _fail "the documented staleness threshold matches the code" "code=$code_warn"
+  _fail "the skill and the CLI agree that a schema miss exits 4" "skill/CLI mismatch"
 fi
 
 # --reset dropping the thread is the mechanism behind the rotation advice. If the code
 # stops doing it, the skill's instruction becomes a no-op that still reads as done.
-if strip_comments "$XREVIEW" | grep -q 'rm -f "\$f" "\$(state_dir)/thread"'; then
+if printf '%s' "$xreview_code" | grep -q 'rm -f "\$f" "\$(state_dir)/review-thread"'; then
   _pass "--reset drops the cached thread in the code"
 else
   _fail "--reset drops the cached thread in the code" "reset no longer clears the thread"
@@ -233,7 +243,7 @@ fi
 # Reporting survives the gate's removal: tier and receipts --tiers stay, because knowing
 # what reviews ran at is still worth having — it just must not block anything.
 for sub in 'cmd_tier' '--tiers'; do
-  if strip_comments "$XREVIEW" | grep -q -- "$sub"; then
+  if printf '%s' "$xreview_code" | grep -q -- "$sub"; then
     _pass "the CLI still implements $sub"
   else
     _fail "the CLI still implements $sub" "absent from the CLI"
@@ -247,7 +257,7 @@ fi
 
 # A collect that runs out of budget while the turn is still on record is not a timeout.
 # Telling the model otherwise is what turned long reviews into escalations.
-if grep -q 'Exit 3' "$SKILL" && strip_comments "$XREVIEW" | grep -q 'exit 3'; then
+if grep -q 'Exit 3' "$SKILL" && printf '%s' "$xreview_code" | grep -q 'exit 3'; then
   _pass "the skill and the CLI agree that a still-running turn exits 3"
 else
   _fail "the skill and the CLI agree that a still-running turn exits 3" "skill/CLI mismatch"
@@ -269,18 +279,52 @@ else
   _fail "the skill says rounds within a checkpoint keep one thread" \
         "nothing stops a round count being read as staleness"
 fi
-if grep -qi 'only staleness signal' "$SKILL"; then
-  _pass "the skill names xreview's warning as the only staleness signal"
+# Rotation is now mechanical: each checkpoint starts on a fresh thread by itself. The old
+# staleness warning and "start a fresh Codex session by hand" advice must not survive in the
+# skill, or the model rotates threads that the workflow already rotates.
+if grep -qi 'Staleness is mechanical' "$SKILL"; then
+  _pass "the skill says staleness is mechanical"
 else
-  _fail "the skill names xreview's warning as the only staleness signal" "staleness is inferrable again"
+  _fail "the skill says staleness is mechanical" "staleness looks like a judgement call again"
 fi
-# The threshold number itself is already pinned against the code further up; what matters
-# here is that the skill names XREVIEW_THREAD_WARN as the knob, so a reader who wants a
-# different threshold changes it rather than eyeballing round counts instead.
-if grep -q 'XREVIEW_THREAD_WARN' "$SKILL"; then
-  _pass "the skill names the staleness knob"
+for stale in 'XREVIEW_THREAD_WARN' 'answered eight' 'send the pane one message' 'Start a fresh Codex session' 'codex queue'; do
+  if grep -qi -- "$stale" "$SKILL"; then
+    _fail "the skill no longer says '$stale'" "still present"
+  else
+    _pass "the skill no longer says '$stale'"
+  fi
+done
+# fix round 2/E: the ordering is quit-then-turn-then-resume, not "turn starts first" (which
+# omitted the pane-quit step entirely and drifted from spec 7.3 as amended in d9d31a4).
+if grep -qi "the pane's old session is quit first" "$SKILL"; then
+  _pass "the skill explains the quit-then-turn-then-resume ordering"
 else
-  _fail "the skill names the staleness knob" "staleness looks like a judgement call"
+  _fail "the skill explains the quit-then-turn-then-resume ordering" "missing"
+fi
+if grep -q 'The turn starts first' "$SKILL"; then
+  _fail "the skill no longer says the turn starts first" \
+        "stale wording survives - it omits the pane being quit before the turn"
+else
+  _pass "the skill no longer says the turn starts first"
+fi
+if grep -q 'The pane comes first' "$SKILL"; then
+  _fail "the skill no longer says the pane comes first" "stale pane-first wording survives"
+else
+  _pass "the skill no longer says the pane comes first"
+fi
+# A pane that cannot be pointed at the thread is a warning, not a refusal (item 16): the
+# review still runs and collect still works. If this drifts back to a refusal, the model
+# would stop a review that the daemon is still happily running.
+if grep -qi 'only warns' "$SKILL" && grep -qi 'review still runs' "$SKILL"; then
+  _pass "the skill says a pane that cannot be pointed at the thread only warns"
+else
+  _fail "the skill says a pane that cannot be pointed at the thread only warns" "missing"
+fi
+# Restarting a contaminated daemon disconnects every Codex TUI. That is Michael's call.
+if grep -q 'codex-daemon restart' "$SKILL" && grep -qi "Michael's call" "$SKILL"; then
+  _pass "the skill leaves the daemon restart to Michael"
+else
+  _fail "the skill leaves the daemon restart to Michael" "missing"
 fi
 # "Cold" is about what you send, not about the thread. The escalation list is exhaustive.
 if grep -qi 'Cold describes what you' "$SKILL"; then
@@ -292,6 +336,76 @@ if grep -qi 'list is exhaustive' "$SKILL"; then
   _pass "the skill closes the escalation list"
 else
   _fail "the skill closes the escalation list" "a new escalation reason can be invented"
+fi
+
+# "XREVIEW_PANE picks one" read as licence for the model to choose among several Codex
+# panes. Only Michael may.
+if grep -q 'picks one' "$SKILL"; then
+  _fail "the skill no longer reads as licence to pick a pane" \
+        "'picks one' still present"
+else
+  _pass "the skill no longer reads as licence to pick a pane"
+fi
+if grep -qi "Michael can set .XREVIEW_PANE. to one of them" "$SKILL"; then
+  _pass "the skill says Michael sets XREVIEW_PANE, not the model"
+else
+  _fail "the skill says Michael sets XREVIEW_PANE, not the model" "missing"
+fi
+
+# The escalation list must actually be exhaustive: refusals only Michael can resolve
+# (no pane, several panes, the daemon down and staying down) belong on it, not just in
+# the "dispatch refuses" prose above it.
+esc="$(sed -n '/^Escalate to Michael when/,/^That list is exhaustive/p' "$SKILL")"
+if printf '%s' "$esc" | grep -qi 'no Codex pane'; then
+  _pass "the escalation list names the no-pane/several-panes refusal"
+else
+  _fail "the escalation list names the no-pane/several-panes refusal" "missing from the list"
+fi
+if printf '%s' "$esc" | grep -qi 'down and will not start'; then
+  _pass "the escalation list names the daemon-will-not-start refusal"
+else
+  _fail "the escalation list names the daemon-will-not-start refusal" "missing from the list"
+fi
+# item 16 fix round 1/C1: the pane is freed BEFORE the turn exists, and that free can now
+# itself refuse (the pane closes, or will not exit) - distinct from a pane that merely fails
+# to RESUME after the turn has started, which only warns. Both lists must say so, or the
+# model either does not know to escalate a real refusal, or thinks the post-turn warning is
+# one too and escalates every noisy pane.
+if printf '%s' "$esc" | grep -qi 'would not free'; then
+  _pass "the escalation list names the pane-will-not-free refusal"
+else
+  _fail "the escalation list names the pane-will-not-free refusal" "missing from the list"
+fi
+if grep -qi 'the pane will not free' "$SKILL"; then
+  _pass "the skill's refusal list names the pane-will-not-free case"
+else
+  _fail "the skill's refusal list names the pane-will-not-free case" "missing"
+fi
+
+# Minor 7: archiving the superseded thread is conditional on the pane actually showing the
+# new one, not on the reset itself - stale "restarts ... and archives" prose would teach an
+# unconditional archive that does not match a pane step that failed to confirm anything.
+if grep -qi 'archived once the pane actually shows' "$SKILL"; then
+  _pass "the skill says the old thread is archived once the pane shows the new one"
+else
+  _fail "the skill says the old thread is archived once the pane shows the new one" "missing"
+fi
+
+# The reviewer's answer is schema-checked JSON, not raw text, except on the exit-4 miss.
+if grep -q 'findings JSON (or, on exit 4, raw untrusted text)' "$SKILL"; then
+  _pass "the skill says the answer is findings JSON, raw text only on exit 4"
+else
+  _fail "the skill says the answer is findings JSON, raw text only on exit 4" \
+        "stale 'comes back as raw text' wording survives"
+fi
+
+# Collect's exit 1 for an unreachable daemon is not the ambiguous "no turn on record"
+# case: it means retry, not report-and-stop.
+if grep -qi 'Codex daemon is unreachable; the turn is on record' "$SKILL" \
+   && grep -q 'codex-daemon ensure' "$SKILL"; then
+  _pass "the skill explains the unreachable-daemon exit 1 is not the ambiguous case"
+else
+  _fail "the skill explains the unreachable-daemon exit 1 is not the ambiguous case" "missing"
 fi
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"

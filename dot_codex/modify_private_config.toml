@@ -40,6 +40,11 @@
 {{- $config = setValueAtPath "tui.notification_condition" "unfocused" $config -}}
 {{- $config = setValueAtPath "tui.keymap.global.open_transcript" "ctrl-t" $config -}}
 {{- $config = setValueAtPath "tui.keymap.chat.interrupt_turn" "f12" $config -}}
+{{- /* Every TUI puts its thread id FIRST in its terminal title: the title is the join
+       between a herdr pane and its Codex thread, for the pane-map hook and for xreview.
+       Codex truncates long titles, so anything after the id may be cut but the id is not.
+       Set here, never with -c: any -c override makes a TUI leave the shared daemon. */ -}}
+{{- $config = setValueAtPath "tui.terminal_title" (list "thread-id" "thread-title" "current-dir") $config -}}
 
 {{- /* Enforce feature flags. js_repl is NOT obsolete — 0.149.1 still ships it as a
        live flag (alongside code_mode_only / js_repl_tools_only) plus js_repl_node_path
@@ -54,16 +59,17 @@
        because `herdr integration uninstall` deliberately leaves the flag set, so
        rollback has to clear it explicitly by deleting this line.                 */ -}}
 {{- $config = setValueAtPath "features.hooks" true $config -}}
-{{- /* Keep the shared app-server daemon (0.157+) off. Every TUI attaches to one
-       daemon, hooks run inside it, and it keeps the environment of whichever pane
-       happened to spawn it — so the Herdr hook reported every new thread against
-       that one pane's HERDR_PANE_ID and left every other Codex pane without a
-       session id, which xreview then resolved to the wrong thread. Embedded, each
-       TUI runs its hooks with its own pane's environment. Costs `codex agents` and
-       remote control, both daemon-only; `codex queue` keeps its no-daemon path,
-       the one xreview dispatched through before 0.157. A
-       daemon that is already running keeps serving until `codex app-server daemon
-       stop` and a relaunch of the Codex panes.                                 */ -}}
+{{- /* daemon_auto_start stays off: a daemon (0.157+) spawned by whichever TUI happened
+       to start it first keeps that pane's environment, and the Herdr hook running
+       inside it then reports every new thread against that one pane's HERDR_PANE_ID,
+       leaving every other Codex pane without a session id. launchd starts the shared
+       daemon instead, with no HERDR_* in its environment (`codex-daemon`, spec
+       section 5), and every interactive `codex` attaches to it through the
+       `~/.local/bin/codex` launcher rather than spawning its own. xreview no longer
+       has a no-daemon path (`codex queue`, its pre-0.157 route): it dispatches through
+       the shared daemon via `xreview-rpc` (spec section 7.1). A daemon that is already
+       running keeps serving until `codex app-server daemon stop`, or
+       `codex-daemon restart`.                                                  */ -}}
 {{- $config = setValueAtPath "features.daemon_auto_start" false $config -}}
 {{- $config = setValueAtPath "features.js_repl" false $config -}}
 

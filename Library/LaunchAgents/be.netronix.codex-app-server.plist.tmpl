@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Start Codex's shared app-server daemon at login, with a clean environment.
+
+  Managed by chezmoi (source: Library/LaunchAgents/be.netronix.codex-app-server.plist.tmpl).
+  Loaded by .scripts/configure.sh; load by hand with:
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/be.netronix.codex-app-server.plist
+
+  Why launchd and not the first TUI: a daemon spawned by a TUI keeps that pane's HERDR_*
+  environment, and herdr's hook, which runs inside the daemon, then reports every Codex thread
+  against that one pane. features.daemon_auto_start is pinned false so no TUI spawns one;
+  `codex-daemon ensure` kickstarts this agent when an interactive start finds none running.
+
+  `daemon start` returns once the daemon's own supervisor is up, so there is no KeepAlive;
+  AbandonProcessGroup keeps launchd from reaping what it started. PATH mirrors what an
+  interactive shell would activate, so commands the reviewer runs find the same toolchains.
+  ~/.local/bin comes before Homebrew so the hook and the daemon itself resolve `codex-daemon`
+  and `xreview-rpc` to the launcher's own directory. A bare `codex` invoked from inside the
+  daemon (the reviewer's tools, say) resolves to the ~/.local/bin launcher too, not the real
+  binary - harmless here, because the daemon this launcher would ensure is the one already
+  running it.
+
+  StandardOutPath/StandardErrorPath go to ~/Library/Logs/codex-daemon.log, not /dev/null:
+  a daemon that fails to start (or that a bad PATH entry breaks) otherwise leaves nothing
+  to diagnose it with. ~/Library/Logs always exists on macOS, unlike ~/.local/state.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>be.netronix.codex-app-server</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>{{ if .is_arm }}/opt/homebrew{{ else }}/usr/local{{ end }}/bin/codex</string>
+        <string>app-server</string>
+        <string>daemon</string>
+        <string>start</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>{{ .chezmoi.homeDir }}/.local/share/mise/shims:{{ .chezmoi.homeDir }}/.local/bin:{{ if .is_arm }}/opt/homebrew/bin:/opt/homebrew/sbin:{{ end }}/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <key>WorkingDirectory</key>
+    <string>{{ .chezmoi.homeDir }}</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>AbandonProcessGroup</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>{{ .chezmoi.homeDir }}/Library/Logs/codex-daemon.log</string>
+    <key>StandardErrorPath</key>
+    <string>{{ .chezmoi.homeDir }}/Library/Logs/codex-daemon.log</string>
+</dict>
+</plist>

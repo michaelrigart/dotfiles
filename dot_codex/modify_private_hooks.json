@@ -4,10 +4,10 @@
        deploy while the registration connecting them never did — cold restore
        silently dead, every visible artifact present and correct.
 
-       Merge-preserving: any other SessionStart hook is kept, and only Herdr's own
-       entry is added. Shape mirrors what `herdr integration install codex` writes,
-       observed rather than guessed: a `session` argument, timeout 10, and an
-       absolute path to the script.                                              */ -}}
+       Merge-preserving: any other SessionStart hook is kept, and only two entries are
+       added — Herdr's own, then the pane-map hook right after it. Herdr's shape mirrors
+       what `herdr integration install codex` writes, observed rather than guessed: a
+       `session` argument, timeout 10, and an absolute path to the script.        */ -}}
 {{- $cfg := dict -}}
 {{- if .chezmoi.stdin -}}
 {{-   $cfg = fromJson .chezmoi.stdin -}}
@@ -17,18 +17,31 @@
 {{- $start := list -}}
 {{- if hasKey $hooks "SessionStart" -}}{{- $start = get $hooks "SessionStart" -}}{{- end -}}
 {{- $cmd := printf "bash '%s/.codex/herdr-agent-state.sh' session" .chezmoi.homeDir -}}
-{{- /* Drop any existing herdr entry first, so re-applying cannot duplicate it. */ -}}
+{{- /* The pane-map hook reconciles herdr's session ids from the pane titles. Herdr's own
+       hook exits inside the daemon (no pane environment there), so this is the one that
+       reports. Spec: docs/superpowers/specs/2026-09-26-xreview-codex-daemon-design.md §6. */ -}}
+{{- /* Pinned to the system interpreter (F3): this hook runs inside the Codex daemon,
+       where PATH must not be able to shadow python3. */ -}}
+{{- $mapCmd := printf "/usr/bin/python3 '%s/.codex/herdr-codex-pane-map.py'" .chezmoi.homeDir -}}
+{{- /* Drop any existing command of ours first, so re-applying cannot duplicate either.
+       Only OUR commands are removed from each entry's own hooks list - a grouped entry
+       that also carries someone else's hook keeps that hook, and the entry is dropped
+       entirely only once removing ours leaves it empty. */ -}}
 {{- $kept := list -}}
 {{- range $start -}}
-{{-   $isHerdr := false -}}
+{{-   $remaining := list -}}
 {{-   range (get . "hooks" | default list) -}}
-{{-     if contains "herdr-agent-state.sh" (get . "command" | default "") -}}
-{{-       $isHerdr = true -}}
+{{-     $c := get . "command" | default "" -}}
+{{-     if not (or (contains "herdr-agent-state.sh" $c) (contains "herdr-codex-pane-map.py" $c)) -}}
+{{-       $remaining = append $remaining . -}}
 {{-     end -}}
 {{-   end -}}
-{{-   if not $isHerdr -}}{{- $kept = append $kept . -}}{{- end -}}
+{{-   if gt (len $remaining) 0 -}}
+{{-     $kept = append $kept (set . "hooks" $remaining) -}}
+{{-   end -}}
 {{- end -}}
 {{- $entry := dict "hooks" (list (dict "type" "command" "command" $cmd "timeout" 10)) -}}
-{{- $hooks = set $hooks "SessionStart" (append $kept $entry) -}}
+{{- $mapEntry := dict "hooks" (list (dict "type" "command" "command" $mapCmd "timeout" 10)) -}}
+{{- $hooks = set $hooks "SessionStart" (append (append $kept $entry) $mapEntry) -}}
 {{- $cfg = set $cfg "hooks" $hooks -}}
 {{ $cfg | toPrettyJson }}

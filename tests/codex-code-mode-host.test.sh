@@ -33,6 +33,10 @@ trap 'rm -rf "$T"' EXIT
 # A fake cask: a versioned directory holding both binaries, and a bin/ that links only
 # codex — exactly the shape the real cask installs.
 mkdir -p "$T/cask/1.0.0/bin" "$T/bin"
+# The shim now resolves the real binary through codex-daemon, which skips ~/.local/bin.
+mkdir -p "$T/localbin"
+cp "$ROOT/dot_local/bin/executable_codex-daemon" "$T/localbin/codex-daemon"
+chmod +x "$T/localbin/codex-daemon"
 printf '#!/bin/sh\nexit 0\n' > "$T/cask/1.0.0/bin/codex"
 printf '#!/bin/sh\necho HOST-1.0.0 "$@"\n' > "$T/cask/1.0.0/bin/codex-code-mode-host"
 chmod +x "$T/cask/1.0.0/bin/codex" "$T/cask/1.0.0/bin/codex-code-mode-host"
@@ -41,7 +45,7 @@ ln -s "$T/cask/1.0.0/bin/codex" "$T/bin/codex"
 [ -x "$T/bin/codex" ] || { echo "FIXTURE BROKEN: codex link not created" >&2; exit 2; }
 [ -e "$T/bin/codex-code-mode-host" ] && { echo "FIXTURE BROKEN: the cask must NOT link the host" >&2; exit 2; }
 
-run() { PATH="$T/bin:/usr/bin:/bin" sh "$SHIM" "$@" 2>&1; }
+run() { PATH="$T/localbin:$T/bin:/usr/bin:/bin" XDG_BIN_HOME="$T/localbin" sh "$SHIM" "$@" 2>&1; }
 
 echo "A. it finds the host the cask did not link"
 is "the host is reached through the codex symlink" "$(run)" "HOST-1.0.0"
@@ -68,9 +72,26 @@ out="$(run)"; rc=$?
 is "a missing host is an error"        "$rc" "127"
 is "and it names where it looked"      "$(printf '%s' "$out" | grep -c 'not found beside')" "1"
 
-out="$(PATH="/usr/bin:/bin" sh "$SHIM" 2>&1)"; rc=$?
+out="$(PATH="$T/localbin:/usr/bin:/bin" XDG_BIN_HOME="$T/localbin" sh "$SHIM" 2>&1)"; rc=$?
 is "no codex on PATH is an error"      "$rc" "127"
-is "and it says why"                   "$(printf '%s' "$out" | grep -c 'no codex on PATH')" "1"
+is "and it says why"                   "$(printf '%s' "$out" | grep -c 'no real codex on PATH')" "1"
+
+echo
+echo "D. installed beside the launcher, it never resolves to itself"
+# ~/.local/bin/codex is now a script. `command -v codex` would answer with it, the sibling
+# host would be the shim itself, and the shim would exec itself forever. Bounded, so a
+# regression fails the suite instead of hanging it.
+printf '#!/bin/sh\necho HOST-3.0.0 "$@"\n' > "$T/cask/2.0.0/bin/codex-code-mode-host"
+chmod +x "$T/cask/2.0.0/bin/codex-code-mode-host"
+cp "$ROOT/dot_local/bin/executable_codex" "$T/localbin/codex"
+cp "$SHIM" "$T/localbin/codex-code-mode-host"
+chmod +x "$T/localbin/codex" "$T/localbin/codex-code-mode-host"
+( PATH="$T/localbin:$T/bin:/usr/bin:/bin" XDG_BIN_HOME="$T/localbin" \
+    sh "$T/localbin/codex-code-mode-host" --x > "$T/d.out" 2>&1 ) &
+dpid=$!
+( sleep 5; kill "$dpid" 2>/dev/null ) & wpid=$!
+wait "$dpid" 2>/dev/null; kill "$wpid" 2>/dev/null
+is "the installed shim reaches the cask's host" "$(cat "$T/d.out")" "HOST-3.0.0 --x"
 
 echo
 echo "RESULT: $pass passed, $((pass + fail)) total, $fail failed"

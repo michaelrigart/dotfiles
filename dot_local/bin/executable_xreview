@@ -1,168 +1,398 @@
 #!/usr/bin/env bash
-# xreview - dispatch a cold review request to a Codex thread and collect the answer.
-# Dispatch, collect, and a receipt of what was reviewed. Two PreToolUse guards read
-# those receipts (pre-merge gate, apply window); neither is proven enough to be an
-# authorization boundary - see the trust note below and treat findings as evidence.
+# xreview - dispatch a cold review to the repository's Codex pane and collect the answer.
+#
+# Design: docs/superpowers/specs/2026-09-26-xreview-codex-daemon-design.md, section 7.
+# Reviews run on Codex's shared app-server daemon. Dispatch FIRST frees the repository's
+# Codex pane - quits its TUI if it is not already on the checkpoint thread, and refuses if it
+# will not free - THEN starts the review turn, and only THEN best-effort resumes the pane
+# onto that thread; the TUI replays the turn from its start and streams the rest live (F22).
+# No keystroke (send-keys) ever reaches the pane once the turn exists: it would interrupt the
+# review itself. A pane that fails to resume only warns - the review still runs and collect
+# still works. Two PreToolUse guards read the receipts (pre-merge gate, apply window);
+# neither is proven enough to be an authorization boundary - treat findings as evidence.
 set -euo pipefail
+# Without this, a `die` inside a function called via $(...) from ANOTHER function that is
+# itself invoked via $(...) (pane_command from inside pane_prepare, say) silently loses its
+# exit status: bash historically runs command substitutions with -e off inside them unless
+# told to inherit it. Guarded because it is a bash-4.4+ builtin and this must not itself
+# abort an ancient system /bin/bash under `set -e`.
+shopt -s inherit_errexit 2>/dev/null || true
 
 CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}"
-HIST="$CODEX_HOME_DIR/thread_history_1.sqlite"
+XR_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}"
+SCHEMA="${XREVIEW_SCHEMA:-$XR_CONFIG/xreview/findings.schema.json}"
+REVIEWER="${XREVIEW_REVIEWER:-$XR_CONFIG/xreview/reviewer.md}"
+PANE_CMD_FILE="$XR_CONFIG/herdr/codex-pane-command"
+# Codex ALWAYS truncates the title's thread-id item to 29 characters plus "..." (F11/F21),
+# so this only ever carries a PREFIX (29-36 chars), never a guaranteed full id. A full id
+# appears only as thread-title's fallback, for a thread that is not yet named. A prefix is
+# resolved to a full id through `xreview-rpc thread-resolve`, never guessed.
+ID_RE='^[[:space:]]*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{5,12})'
 
 die() { printf 'xreview: %s\n' "$1" >&2; exit 1; }
 
-# Opened normally, so SQLite does its own locking and change detection against a
-# database Codex is actively writing. Two rejected alternatives: `mode=ro` cannot create
-# the -shm a WAL database needs and so fails whenever the sidecars are absent - which is
-# most of the time, even with sessions live; and `immutable=1`, which SQLite documents
-# as skipping locking and change detection and may return incorrect results if the file
-# changes. Read-only intent is enforced by only ever issuing SELECT here.
-sq() {
-  # Must already exist: sqlite3 silently CREATES an empty database for a missing path,
-  # which would turn "Codex has not written this yet" into "no such table".
-  [ -r "$HIST" ] || die "Codex history store not found at $HIST"
-  # query_only makes read-only an enforced property of the connection rather than a
-  # promise about which statements this script happens to contain.
-  sqlite3 "$HIST" "PRAGMA query_only=ON; $1"
-}
+repo_root() { git rev-parse --show-toplevel 2>/dev/null || pwd; }
 
-# Thread resolution, in order: XREVIEW_THREAD > an explicit `xreview init` pin > a live
-# Herdr lookup > the auto-cached id. The first two are instructions and are obeyed as
-# given; the last is discardable evidence, re-validated against the live pane list every
-# time, because a UUID with history proves a thread existed - not that anything is running
-# to answer on it.
 state_dir() {
   local root; root="$(repo_root)"
   printf '%s/xreview/%s' "${XDG_STATE_HOME:-$HOME/.local/state}" \
     "$(printf '%s' "$root" | tr '/' '_' | sed 's/^_//')"
 }
 
-repo_root() { git rev-parse --show-toplevel 2>/dev/null || pwd; }
-
-codex_agents() {
-  command -v herdr >/dev/null 2>&1 || return 1
-  herdr agent list 2>/dev/null
+# Ids reach file names and command arguments. Thread and turn ids come from Codex and nonces
+# are minted below; anything else, including a leading dash, is refused before use.
+assert_id() {
+  is_safe_id "$1" || die "refusing unsafe identifier: $1"
 }
 
-live_codex_thread() {
-  codex_agents | jq -r --arg cwd "$(repo_root)" \
-    '.result.agents[]? | select(.agent == "codex" and .cwd == $cwd)
-     | .agent_session.value // empty' | head -1
+# The non-dying form of assert_id's check, for a caller that has its own recovery path
+# for a malformed id (F27) instead of wanting to die on the spot.
+is_safe_id() {
+  case "$1" in
+    ""|-*|*[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+  return 0
 }
 
-# resolve_thread [strict]
-#
-# `strict` adds one refusal and is passed by dispatch alone. Everything else - collect
-# above all - must resolve leniently: pane readiness says nothing about whether a turn is
-# already on record, and collect's exit 1 means "ambiguous, do NOT retry", so refusing
-# there throws away a review that is still running rather than merely misrouting one.
-resolve_thread() {
-  local strict="${1:-}"
-  [ -n "${XREVIEW_THREAD:-}" ] && { printf '%s\n' "$XREVIEW_THREAD"; return 0; }
-  local dir snap live present=0 rec
-  dir="$(state_dir)"
+# --- the Codex pane ----------------------------------------------------------------
+# The repository's one herdr pane running Codex in the repository root. It is the reviewer's
+# screen: dispatch frees it before the turn starts, then best-effort resumes it onto the
+# review thread once the turn is running.
 
-  # An explicit `xreview init <id>` is a deliberate pin and outranks pane state, exactly
-  # as XREVIEW_THREAD does. It is the documented way to name a thread herdr cannot see -
-  # a remote pane, a session it does not enumerate - so a local pane that has not spoken
-  # yet has no business vetoing it. Kept in its own file precisely so the two are
-  # distinguishable; while a pin shared $dir/thread with the auto-cache, nothing could
-  # tell "the user chose this" from "we happened to see this once".
+find_pane() {
+  local root snap ids n
+  root="$(repo_root)"
+  snap="$(herdr pane list 2>/dev/null || true)"
+  [ -n "$snap" ] || die "cannot list herdr panes - is herdr running?"
+  ids="$(printf '%s' "$snap" | jq -r --arg cwd "$root" \
+    '.result.panes[]? | select(.agent == "codex" and .cwd == $cwd) | .pane_id' 2>/dev/null)" \
+    || die "cannot read herdr's pane list"
+  # XREVIEW_PANE picks AMONG the valid Codex panes for this root; it does not replace
+  # validation. A typo or a stale id pointing at some other pane (the idle Claude Code
+  # pane, say) would otherwise get two ctrl+c and a `codex …` command typed into it.
+  if [ -n "${XREVIEW_PANE:-}" ]; then
+    if printf '%s\n' "$ids" | grep -Fqx -- "$XREVIEW_PANE"; then
+      printf '%s\n' "$XREVIEW_PANE"; return 0
+    fi
+    die "XREVIEW_PANE=$XREVIEW_PANE is not a Codex pane in $root"
+  fi
+  n="$(printf '%s' "$ids" | grep -c . || true)"
+  case "$n" in
+    1) printf '%s\n' "$ids" ;;
+    0) die "no Codex pane for $root. Apply the project layout, or set XREVIEW_PANE" ;;
+    *) die "several Codex panes for $root: $(printf '%s' "$ids" | tr '\n' ' ' | sed 's/ $//') - set XREVIEW_PANE to one of them" ;;
+  esac
+}
+
+pane_field() { # pane_field <pane> <jq-path>
+  herdr pane get "$1" 2>/dev/null | jq -r ".result.pane | $2 // empty" 2>/dev/null || true
+}
+
+title_id_from() { # title_id_from <raw-title>: the thread id PREFIX at its start, if any
+  local t="$1"
+  if [[ "$t" =~ $ID_RE ]]; then printf '%s\n' "${BASH_REMATCH[1]}"; fi
+}
+
+pane_title_id() { # the thread id PREFIX at the start of the pane's title, if any (29-36 chars)
+  title_id_from "$(pane_field "$1" '(.terminal_title_stripped // .terminal_title)')"
+}
+
+pane_raw_title() { # pane_raw_title <pane>: prints the raw title text on a genuinely
+  # successful, non-empty read (exit 0). Exit 1: the READ ITSELF failed (herdr errored or
+  # produced no output) - never an observation of anything (I-1): pane_prepare's wait loop
+  # must not read a transient herdr hiccup as "the title does not show the thread yet" and
+  # let it count against the wait. herdr can also exit 0 with an `{"error":…}` envelope or
+  # output that is not a pane at all; that too is a failed read (exit 1), never an empty
+  # title. Exit 2: the read SUCCEEDED and returned a pane, but its title reads back empty -
+  # a real observation, distinct from exit 1. pane_prepare treats 1 and 2 alike (both mean
+  # "no thread id yet"; only exit 1 additionally checks pane_gone).
+  local pane="$1" out rc=0 title
+  out="$(herdr pane get "$pane" 2>/dev/null)" || rc=$?
+  [ "$rc" -eq 0 ] && [ -n "$out" ] || return 1
+  printf '%s' "$out" | jq -e '.result.pane | type == "object"' >/dev/null 2>&1 || return 1
+  title="$(printf '%s' "$out" | jq -r '.result.pane | (.terminal_title_stripped // .terminal_title) // empty' 2>/dev/null)"
+  [ -n "$title" ] || return 2
+  printf '%s\n' "$title"
+}
+
+pane_agent() { # pane_agent <pane>: the raw .agent field on a genuinely successful read;
+  # nothing, with a nonzero exit, on any read failure. A failed read must never be read as
+  # "the field is empty" (i.e. not codex) - see the agent-exit wait in pane_prepare, which
+  # would otherwise end early on a transient herdr hiccup. An exit-0 `{"error":…}` envelope,
+  # or output that is not a pane, is a failed read too.
+  local pane="$1" out rc=0
+  out="$(herdr pane get "$pane" 2>/dev/null)" || rc=$?
+  [ "$rc" -eq 0 ] && [ -n "$out" ] || return 1
+  printf '%s' "$out" | jq -e '.result.pane | type == "object"' >/dev/null 2>&1 || return 1
+  printf '%s' "$out" | jq -r '.result.pane.agent // empty' 2>/dev/null
+}
+
+pane_gone() { # pane_gone <pane>: true (exit 0) when herdr reports the pane closed, called
+  # after a failed read. herdr answers a closed pane with exit 1 and a `pane_not_found`
+  # envelope on stderr - distinct from any other read failure, which just keeps waiting.
+  local err
+  err="$(herdr pane get "$1" 2>&1 >/dev/null)" || true
+  case "$err" in
+    *'"pane_not_found"'*) return 0 ;;
+  esac
+  return 1
+}
+
+warn_pane_unwatched() { # warn_pane_unwatched <pane>: pane_resume's one failure signal. By
+  # the time this runs the turn has already started (spec 7.3 step 5), so a pane failure
+  # costs only the live view, never the review - never die here.
+  printf 'xreview: the review is running but not shown in pane %s\n' "$1" >&2
+}
+
+epoch_now() { # a wall-clock reading as plain seconds with a '.' radix, never the locale's
+  # own decimal separator (N1: under e.g. nl_BE, $EPOCHREALTIME itself is "S,ssssss", which
+  # `LC_ALL=C awk` then truncates at the comma to whole seconds) and never unset (bash < 5
+  # lacks EPOCHREALTIME; under `set -u` with it exported empty, every deadline check would
+  # read as "0 < wait", forever, and the wait would never bound anything).
+  local t="${EPOCHREALTIME:-}"
+  if [ -n "$t" ]; then
+    printf '%s\n' "${t/[!0-9]/.}"
+  else
+    date +%s
+  fi
+}
+
+# prefix_is_of <prefix> <full-id>: does <full-id> start with <prefix>? Empty prefix never
+# matches. Both sides are hex-and-dash only (never a shell glob character), so plain
+# parameter-expansion prefix removal is exact, not a pattern match.
+prefix_is_of() {
+  [ -n "$1" ] && [ "${2#"$1"}" != "$2" ]
+}
+
+pane_command() {
+  local c
+  c="$(grep -v '^[[:space:]]*#' "$PANE_CMD_FILE" 2>/dev/null | grep . | head -1 || true)"
+  [ -n "$c" ] || die "missing $PANE_CMD_FILE - the Codex pane command is defined there"
+  printf '%s\n' "$c"
+}
+
+thread_running() { # thread_running <thread>: xreview-rpc thread-status reports a live turn
+  xreview-rpc thread-status --thread "$1" 2>/dev/null | jq -e '.running == true' >/dev/null 2>&1
+}
+
+# daemon_gen — a cheap fingerprint of the running daemon, so a restart is detectable
+# without parsing the pid file's contents. The whole file changes when the daemon
+# restarts; a checksum of it is enough, and empty when there is no daemon yet.
+daemon_gen() {
+  local f="$CODEX_HOME_DIR/app-server-daemon/daemon.pid"
+  [ -r "$f" ] || { printf ''; return 0; }
+  cksum < "$f" 2>/dev/null | awk '{print $1}'
+}
+
+# pane_free <pane> <thread> <gen> - spec 7.3 step 3, BEFORE any turn exists. Prints 0 at once
+# if the pane already shows <thread> under the CURRENT daemon generation (fast path: title
+# prefix matches AND $(state_dir)/pane reads "<pane> <thread> <gen>" - a title match alone is
+# not trusted, since after a daemon restart a disconnected TUI keeps its old title while the
+# new daemon has not loaded the thread). Otherwise quits the pane's TUI (two ctrl+c), waits
+# bounded for its session to exit, then prints 1: the caller must pane_resume it once the
+# turn exists. DIES on any failure - the pane closes, or will not exit - since no turn exists
+# yet, so refusing costs nothing. The ONLY function that may ever send-keys to the pane:
+# after pane_resume runs, a turn is in progress, and a ctrl+c would interrupt it (C1). `gen`
+# is a daemon-generation fingerprint (daemon_gen), taken ONCE in the precondition block,
+# before the thread is even chosen, and never re-read here.
+pane_free() {
+  local pane="$1" thread="$2" gen="$3" rec title agent \
+        wait="${XREVIEW_PANE_WAIT:-20}" poll="${XREVIEW_POLL_SECS:-1}" gap start
+  rec="$(cat "$(state_dir)/pane" 2>/dev/null || true)"
+  title="$(pane_title_id "$pane" 2>/dev/null || true)"
+  if prefix_is_of "$title" "$thread" && [ "$rec" = "$pane $thread $gen" ]; then
+    printf '0\n'; return 0
+  fi
+  # LC_ALL=C: awk's numeric printf/parsing follows LC_NUMERIC, and a locale like nl_BE
+  # writes "0,5" - a decimal comma sleep(1) chokes on under set -e (I-2).
+  gap="$(LC_ALL=C awk -v p="$poll" 'BEGIN{printf "%g", p/2}')"
+  start="$(epoch_now)"
+  herdr pane send-keys "$pane" ctrl+c >/dev/null 2>&1 || true
+  sleep "$gap"
+  herdr pane send-keys "$pane" ctrl+c >/dev/null 2>&1 || true
+  while :; do
+    # A failed read is treated as "still codex" (keep waiting), never as "the field read
+    # empty" (i.e. already exited) - a transient herdr hiccup must not end this wait early
+    # and let the caller resume the pane before its old session has actually gone. A read
+    # counting as a miss here is fine: it only costs an unneeded relaunch, not a wrong one.
+    agent="$(pane_agent "$pane")" || {
+      pane_gone "$pane" && die "the Codex pane $pane closed while being freed; no review was started"
+      agent="codex"
+    }
+    [ "$agent" = "codex" ] || break
+    LC_ALL=C awk -v s="$start" -v e="$(epoch_now)" -v m="$wait" 'BEGIN{exit !(e-s<m)}' \
+      || die "the Codex pane $pane did not exit its session within ${wait}s; no review was started"
+    sleep "$poll"
+  done
+  printf '1\n'
+}
+
+# pane_resume <pane> <thread> <gen> - spec 7.3 step 5, best effort, called ONLY when
+# pane_free (step 3) quit the pane's TUI. A turn already exists, so this never sends a
+# keystroke - the one thing it does is run the Codex pane command with `resume <thread>`
+# into the now-idle shell (F22: the TUI replays the running turn, then streams live). Never
+# dies: a failure costs only the live view. Every failure warns and returns 1; the caller
+# decides what that costs (only whether the superseded threads get archived).
+pane_resume() {
+  local pane="$1" thread="$2" gen="$3" cmd raw brc now agent \
+        wait="${XREVIEW_PANE_WAIT:-20}" poll="${XREVIEW_POLL_SECS:-1}" start
+  # Fix round 2/D: pane_free's own exit-wait already confirmed the agent was not codex
+  # before this was ever called, but time passes between that and here (the turn itself).
+  # If something - the operator, or the fix round 2/C relaunch racing this one - put a live
+  # TUI back in the pane meanwhile, typing "resume ..." into it would be garbage input to a
+  # running session, not a review command. A failed read is treated the same as "still
+  # codex": never type into a pane whose state could not be confirmed clear.
+  agent="$(pane_agent "$pane")" || { warn_pane_unwatched "$pane"; return 1; }
+  [ "$agent" != codex ] || { warn_pane_unwatched "$pane"; return 1; }
+  cmd="$(pane_command)" || { warn_pane_unwatched "$pane"; return 1; }
+  start="$(epoch_now)"
+  herdr pane run "$pane" "$cmd resume $thread" >/dev/null 2>&1 \
+    || { warn_pane_unwatched "$pane"; return 1; }
+  while :; do
+    raw=""; brc=0; now=""
+    raw="$(pane_raw_title "$pane")" || brc=$?
+    if [ "$brc" -eq 0 ] || [ "$brc" -eq 2 ]; then
+      now="$(title_id_from "$raw")"
+    else
+      # A failed read is never an observation (I-1): only a genuine pane_not_found ends the
+      # wait early; any other read failure just keeps waiting for the deadline.
+      pane_gone "$pane" && { warn_pane_unwatched "$pane"; return 1; }
+    fi
+    if [ -n "$now" ] && prefix_is_of "$now" "$thread"; then
+      printf '%s %s %s\n' "$pane" "$thread" "$gen" > "$(state_dir)/pane" 2>/dev/null
+      report_to_herdr "$pane" "$thread"
+      return 0
+    fi
+    LC_ALL=C awk -v s="$start" -v e="$(epoch_now)" -v m="$wait" 'BEGIN{exit !(e-s<m)}' \
+      || { warn_pane_unwatched "$pane"; return 1; }
+    sleep "$poll"
+  done
+}
+
+_dispatch_exit_guard() { # _dispatch_exit_guard <pane>: the EXIT trap armed while pane_free
+  # has quit the pane's TUI and no turn exists yet (spec 8). A refusal in that window -
+  # turn-start refused, a failed mktemp or mkdir - would leave the pane at a bare shell, and
+  # the next dispatch would find no Codex pane. Start a fresh Codex there, best effort; the
+  # next dispatch resumes it onto the review thread. The pane comes in through the trap
+  # string, not cmd_dispatch's locals: on an errexit exit bash 5 has already unwound those.
+  local cmd
+  cmd="$(pane_command 2>/dev/null)" || return 0
+  herdr pane run "$1" "$cmd" >/dev/null 2>&1 || true
+  return 0
+}
+
+report_to_herdr() { # report_to_herdr <pane> <thread>
+  herdr pane report-agent-session "$1" --source herdr:codex --agent codex \
+    --agent-session-id "$2" --seq "$(/usr/bin/python3 -c 'import time; print(time.time_ns())')" \
+    >/dev/null 2>&1 || true
+}
+
+# --- threads and checkpoints --------------------------------------------------------
+# The review thread, in precedence order: XREVIEW_THREAD > an `xreview init` pin > this
+# checkpoint's thread. Empty means the next dispatch starts one, in the pane.
+target_thread() {
+  local dir; dir="$(state_dir)"
+  if [ -n "${XREVIEW_THREAD:-}" ]; then printf '%s\n' "$XREVIEW_THREAD"; return 0; fi
   if [ -r "$dir/pin" ]; then cat "$dir/pin"; return 0; fi
-
-  # ONE snapshot, and presence and thread id both derived from it. Asking herdr twice let
-  # the answers disagree: a first lookup that failed transiently while the second
-  # succeeded read as "pane present, no thread" and refused a pane that was ready - as did
-  # a pane finishing its first turn between the two calls.
-  #
-  # `|| true` is load-bearing under `set -e`. herdr failing - server down, socket denied,
-  # mid-restart - made the whole pipeline non-zero and killed xreview with rc=1 and not one
-  # word of output. An unavailable pane list is a fallback condition, never a fatal one.
-  snap="$(codex_agents || true)"
-  live=""
-  if [ -n "$snap" ]; then
-    live="$(printf '%s' "$snap" | jq -r --arg cwd "$(repo_root)" \
-      '.result.agents[]? | select(.agent == "codex" and .cwd == $cwd)
-       | .agent_session.value // empty' 2>/dev/null | head -1)"
-    printf '%s' "$snap" | jq -e --arg cwd "$(repo_root)" \
-      '.result.agents[]? | select(.agent == "codex" and .cwd == $cwd)' >/dev/null 2>&1 \
-      && present=1
-  fi
-
-  # A pane that exists but has no thread YET is not the same as no pane list, and the two
-  # were collapsed. Codex has no session id until its first turn, so a freshly built pane
-  # reports none - and "nothing to contradict the record" then handed back a thread cached
-  # weeks earlier. `codex queue` takes it, because the id is well formed, and the packet
-  # lands in a dead session: nothing appears in the pane the reviewer is watching, and
-  # `collect` spends its whole budget on a thread the dispatch never used. Observed
-  # 2026-09-11, dispatching into a thread cached on 31 August. Refuse instead: the pane is
-  # right there, and one message to it makes the dispatch work.
-  if [ "$strict" = "strict" ] && [ -z "$live" ] && [ "$present" = "1" ]; then
-    die "the Codex pane for $(repo_root) has no thread yet - send it one message first"
-  fi
-
-  if [ -r "$dir/thread" ]; then
-    rec="$(cat "$dir/thread")"
-    # Recorded id still backed by a live pane, or no pane list to contradict it. Kept
-    # deliberately: with herdr unreachable there is no evidence either way.
-    if [ -z "$live" ] || [ "$live" = "$rec" ]; then printf '%s\n' "$rec"; return 0; fi
-  fi
-  if [ -z "$live" ]; then
-    die "no Codex pane for $(repo_root); open one, or: xreview init <thread-id>"
-  fi
-  mkdir -p "$dir" && printf '%s\n' "$live" > "$dir/thread"
-  printf '%s\n' "$live"
+  if [ -r "$dir/review-thread" ]; then cat "$dir/review-thread"; fi
 }
 
+cmd_thread() {
+  local t; t="$(target_thread)"
+  [ -n "$t" ] || { printf 'xreview: no review thread for this checkpoint yet - the next dispatch starts one\n' >&2; return 1; }
+  printf '%s\n' "$t"
+}
+
+# A pin is an instruction, not a cache entry: it outranks the checkpoint thread and is never
+# archived. `xreview round --reset` drops it. Without an id, the pane's current thread.
 cmd_init() {
-  local dir id
+  local dir id prefix pane
   dir="$(state_dir)"
-  id="${1:-$(live_codex_thread || true)}"
-  [ -n "$id" ] || die "no Codex pane for $(repo_root); pass a thread id explicitly"
-  # A pin, not a cache entry. Written to its own file so resolve_thread can tell a thread
-  # the user chose from one that happened to be seen once - the auto-cache is discardable
-  # evidence, a pin is an instruction. `xreview round --reset` drops both.
-  mkdir -p "$dir" && printf '%s\n' "$id" > "$dir/pin" && printf '%s\n' "$id" > "$dir/thread"
+  id="${1:-}"
+  if [ -z "$id" ]; then
+    # find_pane is its own top-level assignment, not nested inside another command
+    # substitution: a "no Codex pane" die() there must be the ONE error printed, not
+    # swallowed by the outer call and followed by a second, misleading message here.
+    pane="$(find_pane)"
+    prefix="$(pane_title_id "$pane")"
+    [ -n "$prefix" ] || die "the Codex pane shows no thread id; pass one: xreview init <thread-id>"
+    id="$(xreview-rpc thread-resolve --prefix "$prefix" 2>/dev/null)" \
+      || die "the Codex pane's thread id prefix could not be resolved; pass one: xreview init <thread-id>"
+  fi
+  assert_id "$id"
+  mkdir -p "$dir" && printf '%s\n' "$id" > "$dir/pin"
   printf 'xreview: %s -> %s\n' "$(repo_root)" "$id"
 }
 
-# A receipt is the only durable evidence that a review actually happened. It records
-# the branch head at collection time so a reader can tell how far the branch has moved
-# since; it deliberately does not try to invalidate itself, because applying a finding
-# necessarily moves HEAD and a self-invalidating receipt would demand a second review
-# of the fix for the first.
-# The tier is recorded, never enforced. Which model and effort the Codex pane runs at is
-# Michael's setting, and new models arrive faster than any table here can be rewritten -
-# a check pinned to model names refuses every dispatch the day a new one ships, which is
-# exactly the failure that removed it. Recording what each review actually ran at still
-# makes "is anyone still picking?" countable, without a gate that fires on a name.
-record_receipt() {
-  local dir tier; dir="$(state_dir)"
-  mkdir -p "$dir" || return 0
+# Archive every thread `round --reset` has superseded, once the pane has moved off them.
+# $(state_dir)/superseded holds a LIST, one id per line, oldest first: `round --reset`
+# APPENDS to it rather than overwriting, so a thread that a failed pane step left un-archived
+# stays queued across however many later resets happen before a pane step finally succeeds -
+# nothing is ever silently dropped.
+archive_superseded() { # archive_superseded <current-thread>
+  local f old; f="$(state_dir)/superseded"
+  [ -r "$f" ] || return 0
+  while IFS= read -r old || [ -n "$old" ]; do
+    if [ -n "$old" ] && [ "$old" != "$1" ]; then
+      xreview-rpc thread-archive --thread "$old" >/dev/null 2>&1 || true
+    fi
+  done < "$f"
+  rm -f "$f"
+  return 0
+}
+
+# A receipt is the only durable evidence that a review actually happened. It records the
+# branch head at collection time so a reader can tell how far the branch has moved since;
+# it deliberately does not try to invalidate itself, because applying a finding necessarily
+# moves HEAD and a self-invalidating receipt would demand a second review of the fix.
+# The tier is recorded, never enforced: which model and effort the reviewer runs at is
+# Michael's setting, and a gate pinned to model names refuses every dispatch the day a new
+# one ships.
+record_receipt() { # record_receipt <thread> <nonce> <turn> <findings-json>
+  local dir tier verdict count; dir="$(state_dir)"
+  if ! mkdir -p "$dir" 2>/dev/null; then
+    printf 'xreview: could not create %s - the receipt for %s was not recorded\n' "$dir" "$2" >&2
+    return 0
+  fi
   tier="$(codex_tier "$1" 2>/dev/null)" || tier=""
-  jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-         --arg branch "$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" \
-         --arg head "$(git rev-parse HEAD 2>/dev/null)" \
-         --arg thread "$1" --arg nonce "$2" --arg tier "$tier" \
-    '{ts:$ts,branch:$branch,head:$head,thread:$thread,nonce:$nonce,tier:$tier}' \
-    >> "$dir/reviews.jsonl" 2>/dev/null || true
+  verdict="$(printf '%s' "$4" | jq -r '.verdict // ""' 2>/dev/null)" || verdict=""
+  count="$(printf '%s' "$4" | jq -r '(.findings // []) | length' 2>/dev/null)" || count=0
+  if ! jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+         --arg branch "$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)" \
+         --arg head "$(git rev-parse HEAD 2>/dev/null || true)" \
+         --arg thread "$1" --arg nonce "$2" --arg tier "$tier" --arg turn "$3" \
+         --arg verdict "$verdict" --argjson findings "${count:-0}" \
+    '{ts:$ts,branch:$branch,head:$head,thread:$thread,nonce:$nonce,tier:$tier,turn:$turn,verdict:$verdict,findings:$findings}' \
+    >> "$dir/reviews.jsonl" 2>/dev/null; then
+    printf 'xreview: could not write the receipt for %s to %s/reviews.jsonl\n' "$2" "$dir" >&2
+  fi
+  return 0
 }
 
 # An apply window bounds the blast radius of acting on a finding. While it is open,
 # review-driven edits are confined to files already in the branch diff, plus test paths —
 # the RED-test rule requires ADDING a test, so a rule confined strictly to the diff would
-# forbid the very thing it demands. Whether a RED test was actually written first is not
-# mechanisable; this bounds where a mistake can land, not whether one is made.
+# forbid the very thing it demands.
 # Review rounds iterate until the models converge or genuinely disagree, so the stop
-# condition cannot be "one round" — but it cannot be unbounded either: two models can
-# accommodate each other indefinitely, and every round is a real turn against a real
-# usage limit. The cap is mechanical because a limit that depends on noticing you have
-# hit it is not a limit.
+# condition cannot be "one round" — but it cannot be unbounded either. The cap is mechanical
+# because a limit that depends on noticing you have hit it is not a limit.
 round_file() { printf '%s/rounds' "$(state_dir)"; }
 
 cmd_round() {
   local f; f="$(round_file)"
   case "${1:-show}" in
-    --reset) rm -f "$f" "$(state_dir)/thread" "$(state_dir)/pin"
+    --reset) # The checkpoint's thread is superseded, not forgotten: APPENDED to the list of
+             # threads a later successful pane step will archive (Minor 3) - a reset that
+             # lands while a pane step keeps failing must not lose track of an earlier
+             # superseded thread. A pin is never archived. The legacy `thread` file (the old
+             # queue-era herdr session cache) is dropped WITHOUT being archived: it was never
+             # a checkpoint thread, so treating it as one would archive the operator's own
+             # pane sessions.
+             if [ -r "$(state_dir)/review-thread" ]; then
+               mkdir -p "$(state_dir)" 2>/dev/null
+               cat "$(state_dir)/review-thread" >> "$(state_dir)/superseded" 2>/dev/null || true
+             fi
+             rm -f "$f" "$(state_dir)/review-thread" "$(state_dir)/pin" "$(state_dir)/thread"
              printf 'xreview: round counter reset; cached thread and pin dropped\n' ;;
     show)    printf '%s\n' "$(current_round)" ;;
     *)       die "usage: xreview round [--reset]" ;;
@@ -170,17 +400,17 @@ cmd_round() {
 }
 
 current_round() {
-  local f b n; f="$(round_file)"; b="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
+  local f b n; f="$(round_file)"; b="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
   [ -r "$f" ] || { printf 0; return; }
-  n="$(sed -n "s/^$b=//p" "$f" 2>/dev/null | head -1)"
+  n="$(awk -v b="$b" '{ i = match($0, /=[^=]*$/) } i && substr($0, 1, i-1) == b { print substr($0, i+1); exit }' "$f" 2>/dev/null || true)"
   printf '%s' "${n:-0}"
 }
 
 bump_round() {
-  local f b n; f="$(round_file)"; b="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
+  local f b n; f="$(round_file)"; b="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
   n=$(( $(current_round) + 1 ))
   mkdir -p "$(dirname "$f")" || return 0
-  { [ -r "$f" ] && grep -v "^$b=" "$f" 2>/dev/null; printf '%s=%s\n' "$b" "$n"; } \
+  { [ -r "$f" ] && awk -v b="$b" '{ i = match($0, /=[^=]*$/) } !i || substr($0, 1, i-1) != b' "$f" 2>/dev/null; printf '%s=%s\n' "$b" "$n"; } \
     > "$f.tmp" 2>/dev/null && mv "$f.tmp" "$f"
   printf '%s' "$n"
 }
@@ -191,6 +421,8 @@ cmd_apply() {
     rm -f "$dir/applying"; printf 'xreview: apply window closed\n'; return 0
   fi
   [ -n "${1:-}" ] || die "usage: xreview apply <nonce> | xreview apply --done"
+  git rev-parse --show-toplevel >/dev/null 2>&1 \
+    || die "not inside a git repository; an apply window is scoped to a branch's diff"
   local base; base="$(git merge-base HEAD origin/HEAD 2>/dev/null \
                       || git merge-base HEAD main 2>/dev/null || printf '')"
   mkdir -p "$dir"
@@ -207,10 +439,6 @@ cmd_apply() {
 cmd_receipts() {
   local f; f="$(state_dir)/reviews.jsonl"
   [ -r "$f" ] || { printf 'no reviews recorded for %s\n' "$(repo_root)"; return 1; }
-  # --tiers is the form a person reads. A long run of one tier is the thing worth
-  # noticing, and it is not noticeable in raw JSONL. Receipts written before the field
-  # existed have no tier and are counted as such rather than silently dropped, which
-  # would understate exactly the history this is meant to expose.
   if [ "${1:-}" = "--tiers" ]; then
     jq -r '(.tier // "") | if . == "" then "(unrecorded)" else . end' "$f" 2>/dev/null \
       | sort | uniq -c | sort -rn
@@ -219,26 +447,19 @@ cmd_receipts() {
   cat "$f"
 }
 
-# A repo listed as trusted in ~/.codex/config.toml has its own .codex/config.toml
-# applied, which can widen the reviewer's sandbox and register MCP servers - a CLI pin
-# stops the first but not the second. Trust is NOT required for AGENTS.md: an unlisted
-# repo still loads its instructions and ignores its config, so trust entries are
-# removable. Until the trust entries are narrowed this stays a tripwire rather than a
-# wall: refuse the dispatch and let a human look.
+# A repo listed as trusted in ~/.codex/config.toml has its own .codex/config.toml applied,
+# which can widen the reviewer's sandbox and register MCP servers. Until the trust entries
+# are narrowed this stays a tripwire rather than a wall: refuse and let a human look.
 guard_project_config() {
-  local root; root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+  local root; root="$(repo_root)"
   [ -e "$root/.codex" ] && die "refusing to dispatch: $root/.codex exists and can alter the reviewer's sandbox and tools - inspect it first"
   return 0
 }
 
-# A dispatch that names a path makes the reviewer open it, and every search and read is
-# a full-context model step. Measured across 69 real reviews on 2026-09-01: ~16 model
-# steps and ~2.0M tokens per review, with per-turn cost barely differing between an
-# 8-turn thread and a 37-turn one — the steps are the cost, not the thread length.
-# Carrying the diff inline lets the reviewer answer from what it was handed.
-#
-# Refuse an oversized diff rather than truncating it: a reviewer handed half a change
-# reviews half a change and reports nothing on the rest, which reads as a clean review.
+# A dispatch that names a path makes the reviewer open it, and every search and read is a
+# full-context model step (measured 2026-09-01: ~16 steps and ~2.0M tokens per review).
+# Refuse an oversized diff rather than truncating it: a reviewer handed half a change reviews
+# half a change and reports nothing on the rest, which reads as a clean review.
 inline_diff() {
   local range="$1" out max
   max="${XREVIEW_MAX_DIFF_BYTES:-100000}"
@@ -252,182 +473,231 @@ Review it in slices, or raise XREVIEW_MAX_DIFF_BYTES if the reviewer can hold it
   printf '%s' "$out"
 }
 
-# Every dispatch queues into one cached thread per repo, so round N reaches a reviewer
-# already holding rounds 1..N-1 - its own earlier findings and every artifact sent
-# before. The cold-ask rule is the reason a second opinion carries information at all,
-# and a thread that never rotates voids it silently. Warn rather than refuse: rotating
-# means starting a Codex session by hand, and a guard that blocks work it cannot itself
-# complete is a guard that gets switched off.
-warn_stale_thread() {
-  local thread="$1" f n
-  f="$(state_dir)/reviews.jsonl"
-  [ -r "$f" ] || return 0
-  n="$(jq -r --arg t "$thread" 'select(.thread == $t) | .thread' "$f" 2>/dev/null | wc -l | tr -d ' ')"
-  [ -n "$n" ] || return 0
-  if [ "$n" -ge "${XREVIEW_THREAD_WARN:-8}" ]; then
-    printf 'xreview: this thread has already answered %s reviews - it is no longer cold.\n' "$n" >&2
-    printf '    It holds every prior artifact and its own earlier findings, so its\n' >&2
-    printf '    agreement carries less information than a fresh one would.\n' >&2
-    printf '    Start a new Codex session for this checkout, then: xreview round --reset\n' >&2
-  fi
-}
-
 # Codex writes one `turn_context` record per turn into the thread's rollout file, each
-# carrying the model and reasoning effort that turn actually ran with. The LAST one is
-# therefore the setting a dispatch would reach: reading the first would report what the
-# session opened with and miss every /model change made since.
-#
-# This is the only place the tier is observable. `herdr agent list` does not carry it,
-# and neither the history sqlite nor its thread_turns rows record it.
+# carrying the model and effort that turn ran with; the LAST one is the current setting.
 codex_tier() {
   local thread="$1" f
-  # The id is interpolated into a glob. Anything outside this charset could match
-  # rollouts for other threads, or escape the sessions tree entirely.
-  case "$thread" in
-    ''|*[!A-Za-z0-9_-]*) return 1 ;;
-  esac
+  case "$thread" in ''|*[!A-Za-z0-9_-]*) return 1 ;; esac
   f="$(find "$CODEX_HOME_DIR/sessions" -name "rollout-*-$thread.jsonl" 2>/dev/null | sort | tail -1)"
   [ -n "$f" ] && [ -r "$f" ] || return 1
-  jq -r 'select(.type == "turn_context")
-         | select(.payload.model != null)
+  jq -r 'select(.type == "turn_context") | select(.payload.model != null)
          | "\(.payload.model)/\(.payload.effort)"' "$f" 2>/dev/null | tail -1 | grep . || return 1
 }
 
 cmd_tier() {
   local thread
-  if [ "$#" -ge 1 ]; then thread="$1"; else thread="$(resolve_thread)" || return 1; fi
+  if [ "$#" -ge 1 ]; then thread="$1"; else
+    thread="$(target_thread)"; [ -n "$thread" ] || die "no review thread yet"
+  fi
   codex_tier "$thread" || die "cannot read the reviewer tier for $thread"
 }
 
-# No tier gate. A dispatch goes out at whatever the pane is set to, and the tier lands in
-# the receipt afterwards. The gate this replaces refused the dispatch whenever the pane's
-# model did not match a hard-coded name, so every new model release blocked every review
-# until the table was edited - a check that is wrong more often than the thing it checks.
-# `xreview tier` still reports the setting for anyone who wants to look before dispatching.
 cmd_dispatch() {
-  local thread body_file diff_range=""
+  local body_file diff_range="" diff_text="" dir pane status thread nonce packet turn="" \
+        title_thread title_prefix gen need_resume
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --diff)   [ "$#" -ge 2 ] || die "--diff needs a range";   diff_range="$2"; shift 2 ;;
+      --diff) [ "$#" -ge 2 ] || die "--diff needs a range"; diff_range="$2"; shift 2 ;;
+      -*) die "unknown option: $1" ;;
       *) break ;;
     esac
   done
-  if [ "$#" -ge 2 ]; then thread="$1"; body_file="$2"
-  else thread="$(resolve_thread strict)" || return 1; body_file="$1"; fi
+  [ "$#" -eq 1 ] || die "usage: xreview dispatch [--diff <range>] <body-file>"
+  body_file="$1"
   [ -r "$body_file" ] || die "cannot read $body_file"
+  dir="$(state_dir)"
+
+  # Preconditions, before the pane is touched or anything is sent.
   guard_project_config
+  [ -r "$SCHEMA" ] || die "missing findings schema $SCHEMA"
+  [ -r "$REVIEWER" ] || die "missing reviewer instructions $REVIEWER"
+  # A portable precondition, not reliant on inherit_errexit (bash 4.4+) to catch a
+  # missing/empty codex-pane-command before the pane is touched (M2): called here as a
+  # bare statement, not nested inside another $(...), its own die() works on any bash.
+  pane_command >/dev/null
+  [ -z "$diff_range" ] || diff_text="$(inline_diff "$diff_range")"
+  codex-daemon ensure || die "the Codex daemon is not running; no review was started"
+  codex-daemon check || die "refusing to dispatch while the daemon carries a pane's environment (see above)"
+  xreview-rpc health || die "cannot reach the Codex daemon through xreview-rpc (see above); no review was started"
+  pane="$(find_pane)"
+  status="$(pane_field "$pane" '.agent_status')"
+  case "$status" in
+    working|blocked) die "the Codex pane $pane is mid-turn; wait for it to finish, then dispatch again" ;;
+  esac
+  # A herdr-idle pane can still be mid-turn on the daemon side: a disconnected TUI keeps its
+  # title's thread id prefix, and the pane's own agent_status says nothing about it. The
+  # title only ever carries a prefix (F11/F21); if it cannot be resolved, do not block on it.
+  title_prefix="$(pane_title_id "$pane")"
+  if [ -n "$title_prefix" ]; then
+    title_thread="$(xreview-rpc thread-resolve --prefix "$title_prefix" 2>/dev/null)" || title_thread=""
+    if [ -n "$title_thread" ] && thread_running "$title_thread"; then
+      die "the Codex pane $pane's thread $title_thread is mid-turn; wait for it to finish, then dispatch again"
+    fi
+  fi
+  # The cap binds before the pane is touched at all: a round over the cap is refused
+  # without so much as a ctrl+c, and the counter still advances so a retry stays refused.
   local max="${XREVIEW_MAX_ROUNDS:-10}" round
-  round="$(bump_round)"
+  round=$(( $(current_round) + 1 ))
   if [ "$round" -gt "$max" ]; then
+    bump_round >/dev/null
     die "round $round exceeds the cap of $max for this branch.
 Two models circling the same point is Michael's call, not another turn.
 Report the remaining disagreement, or: xreview round --reset"
   fi
-  local nonce; nonce="xr-$(date +%s)-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+  # Taken here, before the thread is even chosen and well before any turn exists: pane_free
+  # and pane_resume both validate the fast path against this SAME value, never a second read
+  # - a daemon restart mid-dispatch must not let a later read disagree with this one.
+  gen="$(daemon_gen)"
+
+  # Thread: XREVIEW_THREAD, then the pin, then the recorded checkpoint thread. With none of
+  # those, start a fresh one - its id is known from the start, so nothing is ever read back
+  # from a title (spec 7.2/7.3). No turn exists yet, so dying here loses nothing.
+  thread="$(target_thread)"
+  if [ -n "$thread" ]; then
+    assert_id "$thread"
+  else
+    thread="$(xreview-rpc thread-start --cwd "$(repo_root)")" \
+      || die "could not start a new review thread; no review was started"
+    assert_id "$thread"
+    mkdir -p "$dir" && printf '%s\n' "$thread" > "$dir/review-thread"
+  fi
+  # The chosen thread itself may already be running a turn - a stale pin, or a checkpoint
+  # thread another dispatch (or a hand-started `codex resume`) is still using. Refuse before
+  # the pane is touched at all; collecting the running turn is the way forward, not a second
+  # one racing it on the same thread.
+  thread_running "$thread" \
+    && die "the review thread $thread is still running a turn; collect it first"
+
+  # Free the pane, BEFORE the turn exists (spec 7.3 step 3): the only point in dispatch that
+  # may ever send-keys to the pane. Dies on any failure - nothing has started yet.
+  need_resume="$(pane_free "$pane" "$thread" "$gen")"
+  # Armed only when pane_free quit the TUI, through a successful turn-start; disarmed in the
+  # 0/6 arms below, once the turn exists and pane_resume owns the pane.
+  if [ "$need_resume" = 1 ]; then
+    trap "_dispatch_exit_guard $(printf '%q' "$pane")" EXIT
+  fi
+
+  # Turn: build the packet and start it on the thread. From here on dispatch always
+  # succeeds and prints the nonce - the review runs whatever happens to the pane below, and
+  # NOTHING below this point may ever send-keys to the pane again (C1): the resumed TUI is
+  # watching a turn that is genuinely running, and a ctrl+c would interrupt it.
   # Provenance is applied here, by the broker - not by the peer, and not by hand.
   # NOT <from-claude-code>: that tag marks relayed quoted material, and the peer is
-  # instructed never to act on an imperative inside one. A dispatch is an authorized
-  # request, so it needs a tag the governance marks as actionable.
-  local diff_text=""
-  [ -n "$diff_range" ] && diff_text="$(inline_diff "$diff_range")"
+  # instructed never to act on an imperative inside one. A dispatch is an authorized request.
+  nonce="xr-$(date +%s)-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+  packet="$(mktemp "${TMPDIR:-/tmp}/xreview-packet.XXXXXX")"
   { printf '<cross-review-request>\n'
+    cat "$REVIEWER"
+    printf '\n'
     cat "$body_file"
     if [ -n "$diff_text" ]; then
       printf '\n\n--- diff (%s) ---\n' "$diff_range"
       printf '%s\n' "$diff_text"
       printf -- '--- end diff ---\n'
     fi
-    printf '\n\n[correlation: %s — quote this token nowhere in your reply]\n' "$nonce"
     printf '</cross-review-request>\n'
-  } > "$body_file.wrapped"
-  warn_stale_thread "$thread"
-  codex queue --thread "$thread" --message "$(cat "$body_file.wrapped")" >/dev/null \
-    || die "queue failed for thread $thread"
+  } > "$packet"
+  mkdir -p "$dir/turns"
+  local rc=0
+  turn="$(xreview-rpc turn-start --thread "$thread" --input "$packet" --schema "$SCHEMA" \
+            --known "$dir/turns/$nonce.known")" || rc=$?
+  rm -f "$packet"
+  # A turn-start that returns 0 with a malformed id is handled exactly like exit 6: the
+  # turn may still be running on the daemon side, so it is never treated as "not started".
+  if [ "$rc" = 0 ] && ! is_safe_id "$turn"; then rc=6; fi
+  case "$rc" in
+    0) printf '%s %s\n' "$thread" "$turn" > "$dir/turns/$nonce"
+       rm -f "$dir/turns/$nonce.known"
+       bump_round >/dev/null || true
+       trap - EXIT ;;
+    6) # Sent but not answered (or answered with an id that does not look like one): the
+       # turn may be running. Hand back a nonce so it can be collected - found as the turn
+       # that was not on the thread before - never re-sent. The round is consumed too: a
+       # turn that may be running has already cost one.
+       printf '%s ?\n' "$thread" > "$dir/turns/$nonce"
+       printf 'xreview: turn/start was sent but not answered - the review may be running. Collect %s; do NOT re-dispatch.\n' "$nonce" >&2
+       bump_round >/dev/null || true
+       trap - EXIT ;;
+    *) rm -f "$dir/turns/$nonce.known"
+       die "the review turn could not be started on $thread" ;;
+  esac
+
+  # Resume the pane, best effort, ONLY if step 3 actually quit its TUI - otherwise it is
+  # already showing the thread and there is nothing to resume. Archive the superseded
+  # threads once the pane genuinely shows the new one, whether that took a resume or the
+  # fast path already had it; never otherwise, so a pane step that could not confirm the
+  # pane is watching keeps them queued for the next successful dispatch.
+  if [ "$need_resume" = 1 ]; then
+    if pane_resume "$pane" "$thread" "$gen"; then
+      archive_superseded "$thread"
+    fi
+  else
+    archive_superseded "$thread"
+  fi
   printf '%s\n' "$nonce"
 }
 
-# Both values are interpolated into SQL below. Nonces are minted here and thread ids
-# come from Codex, but neither is validated by the time it reaches this point - a
-# caller-supplied value must not be able to close a quote.
-assert_sql_safe() {
-  case "$1" in
-    "") die "empty identifier" ;;
-    *[!A-Za-z0-9._-]*) die "refusing unsafe identifier: $1" ;;
-  esac
-}
-
-# Stricter, for the one value that reaches a LIKE pattern: _ and % are wildcards there,
-# so a nonce of xr-________-________ would match turns it was never minted for and
-# correlate this collection with the wrong review.
-assert_like_safe() {
-  assert_sql_safe "$1"
-  case "$1" in
-    *[_%]*) die "refusing nonce containing a LIKE wildcard: $1" ;;
-  esac
-}
-
-# The budget is a patience limit, not a verdict. A long review is normal - the reviewer
-# reads a diff, searches the repo and thinks - and the old 900s default was short enough
-# that finishing reviews were being abandoned as "ambiguous" and escalated.
-#
-# Two outcomes are possible when the budget runs out and they are not the same thing:
-# a turn that is on record and still running has demonstrably not been lost, so waiting
-# longer (another collect) is correct and safe. Only a nonce with NO turn against it is
-# ambiguous - the queue may never have landed - and that is the one that must not be
-# retried as a dispatch. The old code collapsed both into "do NOT retry".
+# The budget is a patience limit, not a verdict. A turn still running when it runs out has
+# demonstrably not been lost, so collecting again is correct and safe (exit 3). Only a nonce
+# with no turn on record is ambiguous, and that one must not be re-dispatched.
 COLLECT_BUDGET_DEFAULT=2700
 
 cmd_collect() {
-  local thread nonce budget waited=0
-  # Nonces are minted here and always start with "xr-"; thread ids never do.
-  if [ -n "${1##xr-*}" ]; then
-    thread="$1"; nonce="$2"; budget="${3:-$COLLECT_BUDGET_DEFAULT}"
+  local nonce="${1:-}" budget="${2:-$COLLECT_BUDGET_DEFAULT}" rec thread turn out rc
+  case "$nonce" in
+    xr-*) ;;
+    *) die "usage: xreview collect <nonce> [budget] - nonces start with xr-" ;;
+  esac
+  # The budget is whole seconds only; anything else is a usage error, never a failed
+  # review (F24) - this must be checked before any daemon call, not left to xreview-rpc's
+  # own argparse to reject with a different, misleading exit code.
+  case "$budget" in
+    ''|*[!0-9]*) die "usage: xreview collect <nonce> [budget] - budget must be whole seconds" ;;
+  esac
+  assert_id "$nonce"
+  rec="$(state_dir)/turns/$nonce"
+  [ -r "$rec" ] || die "ambiguous: no turn on record for $nonce (do NOT retry the dispatch)"
+  read -r thread turn < "$rec"
+  assert_id "$thread"
+  local which resolved="$(state_dir)/turns/$nonce.resolved"
+  if [ "$turn" = "?" ]; then
+    which=(--new-since "$(state_dir)/turns/$nonce.known" --resolved "$resolved")
   else
-    thread="$(resolve_thread)" || return 1; nonce="$1"; budget="${2:-$COLLECT_BUDGET_DEFAULT}"
+    assert_id "$turn"; which=(--turn "$turn")
   fi
-  assert_sql_safe "$thread"; assert_like_safe "$nonce"
-  while :; do
-    local row; row=$(sq "
-      SELECT t.status, COALESCE(t.final_agent_item_id,'')
-      FROM thread_turns t
-      JOIN thread_items i
-        ON i.thread_id = t.thread_id AND i.item_id = t.first_user_item_id
-      WHERE t.thread_id = '$thread' AND i.item_json LIKE '%$nonce%'
-      ORDER BY t.rollout_ordinal DESC LIMIT 1;") || die "history query failed"
-    local status="${row%%|*}" item="${row##*|}"
-    if [ "$status" = "completed" ] && [ -n "$item" ]; then
-      assert_sql_safe "$item"
-      sq "SELECT item_json FROM thread_items
-          WHERE thread_id='$thread' AND item_id='$item';" \
-        | jq -r '.text // empty'
-      record_receipt "$thread" "$nonce"
-      return 0
-    fi
-    case "$status" in failed|error) die "reviewer turn failed" ;; esac
-    if [ "$waited" -ge "$budget" ]; then
-      if [ -n "$status" ]; then
-        # Exit 3, distinct from die's 1: the turn exists and is still running. Collecting
-        # again resumes the wait; it does not re-dispatch and costs the reviewer nothing.
-        printf 'xreview: still running (%s) after %ss - turn on record for %s.\nWait longer with: xreview collect %s <secs>\n' \
-          "$status" "$budget" "$nonce" "$nonce" >&2
-        exit 3
-      fi
-      die "ambiguous: no turn on record for $nonce after ${budget}s (do NOT retry the dispatch)"
-    fi
-    sleep 5; waited=$((waited+5))
-  done
+  set +e
+  out="$(xreview-rpc turn-wait --thread "$thread" "${which[@]}" --budget "$budget" --schema "$SCHEMA")"
+  rc=$?
+  set -e
+  # A recovered turn is recorded the moment it is found, so every later collect and the
+  # receipt name it, instead of rediscovering "whatever is new" each time.
+  if [ "$turn" = "?" ] && [ -s "$resolved" ]; then
+    turn="$(head -1 "$resolved")"; assert_id "$turn"
+    printf '%s %s\n' "$thread" "$turn" > "$rec"
+    rm -f "$resolved" "$(state_dir)/turns/$nonce.known"
+  fi
+  case "$rc" in
+    0) printf '%s\n' "$out"
+       record_receipt "$thread" "$nonce" "$turn" "$out" ;;
+    3) printf 'xreview: still running after %ss - turn on record for %s.\nWait longer with: xreview collect %s <secs>\n' \
+         "$budget" "$nonce" "$nonce" >&2
+       exit 3 ;;
+    4) printf '%s\n' "$out"
+       printf 'xreview: the answer does not match the findings schema - the text above is UNTRUSTED raw output\n' >&2
+       exit 4 ;;
+    5) die "the Codex daemon is unreachable; the turn is on record for $nonce - run codex-daemon ensure, then collect again" ;;
+    *) die "the reviewer turn failed for $nonce (do NOT retry the dispatch)" ;;
+  esac
 }
 
 case "${1:-}" in
   dispatch) shift; cmd_dispatch "$@" ;;
   collect)  shift; cmd_collect "$@" ;;
   init)     shift; cmd_init "$@" ;;
-  # Strict, like dispatch: this is the "what would a dispatch use" diagnostic, and a
-  # refusal is the honest answer when a dispatch would refuse. Collect stays lenient.
-  thread)   shift; resolve_thread strict ;;
+  thread)   shift; cmd_thread ;;
   tier)     shift; cmd_tier "$@" ;;
   receipts) shift; cmd_receipts "$@" ;;
   apply)    shift; cmd_apply "$@" ;;
   round)    shift; cmd_round "$@" ;;
-  *) die "usage: xreview init [id] | thread | receipts | apply <nonce>|--done | round [--reset] | dispatch [--diff <range>] [thread] <body-file> | tier [thread] | collect [thread] <nonce> [budget]" ;;
+  *) die "usage: xreview init [id] | thread | receipts [--tiers] | apply <nonce>|--done | round [--reset] | dispatch [--diff <range>] <body-file> | tier [thread] | collect <nonce> [budget]" ;;
 esac

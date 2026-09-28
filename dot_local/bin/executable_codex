@@ -1,0 +1,108 @@
+#!/bin/sh
+# codex - start interactive Codex sessions on the shared daemon, or refuse.
+#
+# Managed by chezmoi (source: dot_local/bin/executable_codex).
+# Design: docs/superpowers/specs/2026-09-26-xreview-codex-daemon-design.md, section 5.
+#
+# ~/.local/bin is first on PATH, so this shadows the Homebrew binary. Every interactive start
+# must attach to the daemon: with features.daemon_auto_start off, a TUI that finds no daemon
+# runs its own server instead, off the daemon and out of xreview's reach. So the daemon is
+# started through launchd first, and a start that would silently leave it is refused.
+# `--no-daemon` is the one deliberate escape (operator decision, 2026-09-26).
+#
+# Anything that needs the real binary resolves it with `codex-daemon real-bin`, never
+# `command -v codex`, which answers with this script.
+set -eu
+
+# The helper lives beside this launcher first (both are deployed to ~/.local/bin together);
+# PATH is the fallback for an unusual install. Its own stderr is discarded either way, so a
+# failure here prints exactly one message, not two.
+HELPER="$(dirname "$0")/codex-daemon"
+if [ -x "$HELPER" ]; then
+  real="$("$HELPER" real-bin 2>/dev/null)" || real=""
+else
+  HELPER="$(command -v codex-daemon 2>/dev/null || true)"
+  if [ -n "$HELPER" ]; then real="$("$HELPER" real-bin 2>/dev/null)" || real=""; fi
+fi
+if [ -z "${real:-}" ]; then
+  if [ -z "$HELPER" ]; then
+    echo "codex: the codex-daemon helper is not next to this launcher or on PATH" >&2
+  else
+    echo "codex: no real codex on PATH outside ${XDG_BIN_HOME:-$HOME/.local/bin}" >&2
+  fi
+  exit 127
+fi
+
+# Subcommands that are not interactive sessions (codex --help, 0.157.1). `agents` needs the
+# daemon like any interactive start (F9), so it is deliberately not in this set.
+PASSTHROUGH=" exec e review login logout mcp plugin app-server remote-control app completion update doctor sandbox debug apply a queue archive delete migrate-rollouts unarchive cloud exec-server features help "
+
+sub=""
+overrides=0
+nodaemon=0
+remote=0
+helpver=0
+skip=0
+imgskip=0
+dashdash=0
+for a in "$@"; do
+  if [ "$dashdash" = 1 ]; then continue; fi
+  if [ "$a" = "--" ]; then dashdash=1; continue; fi
+  if [ "$imgskip" = 1 ]; then
+    case "$a" in
+      -*) imgskip=0 ;;
+      *) continue ;;
+    esac
+  fi
+  if [ "$skip" = 1 ]; then skip=0; continue; fi
+  case "$a" in
+    --no-daemon) nodaemon=1 ;;
+    --remote) remote=1; skip=1 ;;
+    --remote=*) remote=1 ;;
+    -c|--config|--enable|--disable) overrides=1; skip=1 ;;
+    -c?*|--config=*|--enable=*|--disable=*) overrides=1 ;;
+    -h|--help|-V|--version) helpver=1 ;;
+    -i|--image) imgskip=1 ;;
+    -m|--model|-p|--profile|-s|--sandbox|-a|--ask-for-approval|-C|--cd|--add-dir|--remote-auth-token-env|--local-provider) skip=1 ;;
+    # A short-option CLUSTER holding h or V ("-hV", "-Vh", "-xh", ...) is also help/version:
+    # neither ever takes a value, so any single-dash cluster containing one is unambiguous.
+    # A cluster led by a value-taking short flag (-m/-p/-s/-a/-C/-i) is its attached value,
+    # not further flags, even if that value happens to contain the letter h or V - excluded
+    # first, so e.g. "-mVerbose" or "-i/home/x.png" is never misread as help/version.
+    -[!-]*)
+      case "$a" in
+        -[mpsaCi]*) ;;
+        *h*|*V*) helpver=1 ;;
+      esac ;;
+    -*) ;;
+    *) [ -n "$sub" ] || sub="$a" ;;
+  esac
+done
+
+case "$PASSTHROUGH" in *" $sub "*) exec "$real" "$@" ;; esac
+# -h/-V/--help/--version passes through unconditionally, wherever it appears before `--`:
+# it must never kickstart the daemon (F7), even on `resume --help` or alongside a refused
+# flag such as --remote.
+if [ "$helpver" = 1 ]; then exec "$real" "$@"; fi
+if [ "$nodaemon" = 1 ]; then exec "$real" "$@"; fi
+
+if [ "$remote" = 1 ]; then
+  cat >&2 <<'MSG'
+codex: refusing --remote for an interactive session. A remote server runs its own hooks, so
+herdr could never learn this session's thread id. Start it on this machine's daemon instead.
+MSG
+  exit 2
+fi
+if [ "$overrides" = 1 ]; then
+  cat >&2 <<'MSG'
+codex: refusing -c/--config/--enable/--disable for an interactive session. Any override makes
+the session run its own server instead of the shared daemon. Put the setting in
+~/.codex/config.toml (chezmoi: dot_codex/modify_private_config.toml), or opt out explicitly:
+  codex --no-daemon ...
+MSG
+  exit 2
+fi
+
+"$HELPER" ensure || exit 1
+"$HELPER" check || printf 'codex: starting anyway; xreview refuses to dispatch until the daemon is restarted\n' >&2
+exec "$real" "$@"

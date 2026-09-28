@@ -1,0 +1,696 @@
+#!/usr/bin/python3
+# Pinned to the system interpreter, not `env python3`: an untrusted mise.toml in the
+# reviewed repo can shadow `python3` on PATH, and this must not be shadowable.
+"""xreview-rpc - xreview's client for Codex's shared app-server daemon.
+
+Managed by chezmoi (source: dot_local/bin/executable_xreview-rpc).
+Design: docs/superpowers/specs/2026-09-26-xreview-codex-daemon-design.md, section 7.1.
+
+The daemon speaks JSON-RPC over a WebSocket on a unix socket (GET /rpc), without a
+"jsonrpc" field. XREVIEW_RPC_STDIO replaces that transport with a command speaking
+newline-delimited JSON on stdio: the Claude sandbox denies binding a unix socket, so the
+tests' fake daemon cannot listen on one.
+
+  health
+  thread-start    --cwd DIR                                  prints the new thread's id
+  thread-status   --thread ID                               {"loaded", "status", "running"}
+  thread-resolve  --prefix PREFIX                            prints the one loaded thread id starting with PREFIX
+  turn-start      --thread ID --input FILE --schema FILE [--known FILE]   prints the turn id
+  turn-wait       --thread ID (--turn ID | --new-since FILE) --budget SECS [--schema FILE]
+  thread-archive  --thread ID
+
+Exit codes: 0 ok, 1 failed or unknown, 2 usage, 3 still running at the budget,
+4 answer does not match the schema (raw text on stdout), 5 daemon unreachable,
+6 turn/start sent but not answered - the turn may be running, so never re-dispatch.
+"""
+import argparse
+import base64
+import json
+import os
+import re
+import select
+import socket
+import struct
+import subprocess
+import sys
+import time
+
+TERMINAL = ("completed", "failed", "interrupted")
+
+
+class Unreachable(Exception):
+    pass
+
+
+class Closed(Exception):
+    pass
+
+
+def err(msg):
+    print(f"xreview-rpc: {msg}", file=sys.stderr)
+
+
+def sock_path():
+    return os.environ.get("XREVIEW_RPC_SOCK") or os.path.join(
+        os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex"),
+        "app-server-control", "app-server-control.sock")
+
+
+# --- WebSocket framing (RFC 6455), client side ----------------------------------------
+
+def ws_frame(payload, opcode=1, mask=None):
+    """A single final frame. Client frames must be masked."""
+    mask = mask if mask is not None else os.urandom(4)
+    n = len(payload)
+    head = bytes([0x80 | opcode])
+    if n < 126:
+        head += bytes([0x80 | n])
+    elif n < 65536:
+        head += bytes([0x80 | 126]) + struct.pack(">H", n)
+    else:
+        head += bytes([0x80 | 127]) + struct.pack(">Q", n)
+    return head + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+
+
+def ws_parse(buf):
+    """Split one frame off the front of buf: (fin, opcode, payload, rest), or None."""
+    if len(buf) < 2:
+        return None
+    b0, b1 = buf[0], buf[1]
+    n, i = b1 & 0x7F, 2
+    if n == 126:
+        if len(buf) < 4:
+            return None
+        n, i = struct.unpack(">H", buf[2:4])[0], 4
+    elif n == 127:
+        if len(buf) < 10:
+            return None
+        n, i = struct.unpack(">Q", buf[2:10])[0], 10
+    mask = None
+    if b1 & 0x80:
+        if len(buf) < i + 4:
+            return None
+        mask, i = buf[i:i + 4], i + 4
+    if len(buf) < i + n:
+        return None
+    data = buf[i:i + n]
+    if mask:
+        data = bytes(b ^ mask[k % 4] for k, b in enumerate(data))
+    return bool(b0 & 0x80), b0 & 0x0F, data, buf[i + n:]
+
+
+class WsTransport:
+    """`sock` is a pre-connected socket; the tests pass one end of a socketpair, because the
+    sandbox denies binding a unix socket path."""
+
+    def __init__(self, path, timeout=10, sock=None):
+        # The caller's own deadline (the client's, in absolute time), kept for every send
+        # for the life of this transport - not just the handshake below.
+        self.deadline = time.monotonic() + timeout
+        # One absolute deadline for connect and every handshake read: a daemon dribbling
+        # fragments must not stretch the setup past the caller's budget.
+        deadline = time.monotonic() + min(10.0, max(0.1, timeout))
+
+        def remaining():
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise Unreachable("the WebSocket handshake did not finish within the budget")
+            return left
+
+        try:
+            if sock is None:
+                self.s = socket.socket(socket.AF_UNIX)
+                self.s.settimeout(remaining())
+                self.s.connect(path)
+            else:
+                self.s = sock
+            key = base64.b64encode(os.urandom(16)).decode()
+            self.s.settimeout(remaining())
+            self.s.sendall(("GET /rpc HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\n"
+                            "Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n"
+                            f"Sec-WebSocket-Key: {key}\r\n\r\n").encode())
+            buf = b""
+            while b"\r\n\r\n" not in buf:
+                self.s.settimeout(remaining())
+                chunk = self.s.recv(4096)
+                if not chunk:
+                    raise Unreachable("connection closed during the WebSocket handshake")
+                buf += chunk
+        except OSError as e:
+            raise Unreachable(f"{path}: {e}")
+        head, self.buf = buf.split(b"\r\n\r\n", 1)
+        status = head.split(b"\r\n", 1)[0]
+        if b" 101 " not in status:
+            raise Unreachable("no WebSocket upgrade: " + status.decode(errors="replace"))
+        self.frag = b""
+
+    def _send_timeout(self):
+        """What is left of the client deadline, or 10s, whichever is smaller - set fresh
+        before every sendall, not left over from whatever a previous recv() set it to."""
+        return min(10.0, max(0.01, self.deadline - time.monotonic()))
+
+    def send(self, obj):
+        try:
+            self.s.settimeout(self._send_timeout())
+            self.s.sendall(ws_frame(json.dumps(obj).encode()))
+        except OSError as e:
+            raise Closed(str(e))
+
+    def recv(self, timeout):
+        """The next JSON message, or None when nothing arrives within timeout."""
+        deadline = time.monotonic() + timeout
+        while True:
+            f = ws_parse(self.buf)
+            if f is None:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    return None
+                self.s.settimeout(left)
+                try:
+                    chunk = self.s.recv(65536)
+                except socket.timeout:
+                    return None
+                except OSError as e:
+                    raise Closed(str(e))
+                if not chunk:
+                    raise Closed("daemon closed the connection")
+                self.buf += chunk
+                continue
+            fin, op, data, self.buf = f
+            if op == 9:
+                self.send_raw(ws_frame(data, opcode=10))
+                continue
+            if op == 10:
+                continue
+            if op == 8:
+                raise Closed("daemon closed the connection")
+            self.frag += data
+            if fin:
+                msg, self.frag = self.frag, b""
+                try:
+                    return json.loads(msg)
+                except ValueError:
+                    raise Closed("invalid JSON from the daemon")
+
+    def send_raw(self, frame):
+        try:
+            self.s.settimeout(self._send_timeout())
+            self.s.sendall(frame)
+        except OSError as e:
+            raise Closed(str(e))
+
+
+class StdioTransport:
+    """Test transport: a command speaking newline-delimited JSON on stdio."""
+
+    def __init__(self, cmd):
+        self.p = subprocess.Popen(cmd, shell=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        self.fd = self.p.stdout.fileno()
+        self.buf = b""
+
+    def send(self, obj):
+        try:
+            self.p.stdin.write((json.dumps(obj) + "\n").encode())
+            self.p.stdin.flush()
+        except (BrokenPipeError, OSError) as e:
+            raise Closed(str(e))
+
+    def recv(self, timeout):
+        deadline = time.monotonic() + timeout
+        while b"\n" not in self.buf:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return None
+            ready, _, _ = select.select([self.fd], [], [], left)
+            if not ready:
+                return None
+            chunk = os.read(self.fd, 65536)
+            if not chunk:
+                raise Closed("fake daemon exited")
+            self.buf += chunk
+        line, self.buf = self.buf.split(b"\n", 1)
+        try:
+            return json.loads(line)
+        except ValueError:
+            raise Closed("invalid JSON from the daemon")
+
+
+class Client:
+    """One connection. Every call is bounded by min(its own timeout, the client deadline)."""
+
+    def __init__(self, deadline=None):
+        self.deadline = deadline if deadline is not None else time.monotonic() + 60
+        stdio = os.environ.get("XREVIEW_RPC_STDIO")
+        self.t = StdioTransport(stdio) if stdio else WsTransport(sock_path(), self.deadline - time.monotonic())
+        self.next_id = 0
+        self.notes = []
+        r = self.call("initialize", {"clientInfo": {"name": "xreview", "version": "1"}})
+        if "error" in r:
+            raise Unreachable("initialize refused: " + json.dumps(r["error"]))
+        self.t.send({"method": "initialized"})
+
+    def call(self, method, params, timeout=30):
+        self.next_id += 1
+        rid = self.next_id
+        self.t.send({"id": rid, "method": method, "params": params})
+        deadline = min(time.monotonic() + timeout, self.deadline)
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise Closed(f"no response to {method} within the budget")
+            m = self.t.recv(left)
+            if m is None:
+                continue
+            if m.get("id") == rid and ("result" in m or "error" in m):
+                return m
+            self._other(m)
+
+    def _other(self, m):
+        if "method" in m and "id" in m:
+            # A server request, such as an approval. approvalPolicy is never, so none should
+            # arrive; if one does, decline rather than leave the turn hanging.
+            self.t.send({"id": m["id"], "result": {"decision": "decline"}})
+        elif m.get("method") == "turn/completed":
+            # The only kind any caller waits for. A review turn streams many delta
+            # notifications; keeping those too would make wait_note's rescan O(N^2).
+            self.notes.append(m)
+
+    def wait_note(self, pred, deadline):
+        """The first queued or incoming notification matching pred, or None at deadline."""
+        while True:
+            for i, m in enumerate(self.notes):
+                if pred(m):
+                    return self.notes.pop(i)
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return None
+            m = self.t.recv(min(left, 5))
+            if m is not None:
+                self._other(m)
+
+
+# --- the findings schema ---------------------------------------------------------------
+
+def validate(v, s, path="$"):
+    """The JSON Schema subset the findings schema uses. Returns a list of problems."""
+    if "enum" in s and v not in s["enum"]:
+        return [f"{path}: {v!r} is not one of {s['enum']}"]
+    t = s.get("type")
+    kinds = {"object": dict, "array": list, "string": str, "boolean": bool}
+    if t == "integer":
+        if not isinstance(v, int) or isinstance(v, bool):
+            return [f"{path}: expected an integer"]
+    elif t in kinds and not isinstance(v, kinds[t]):
+        return [f"{path}: expected {t}"]
+    out = []
+    if isinstance(v, dict):
+        props = s.get("properties", {})
+        out += [f"{path}: missing {k}" for k in s.get("required", []) if k not in v]
+        if s.get("additionalProperties") is False:
+            out += [f"{path}: unexpected {k}" for k in v if k not in props]
+        for k, sub in props.items():
+            if k in v:
+                out += validate(v[k], sub, f"{path}.{k}")
+    if isinstance(v, list) and "items" in s:
+        for i, x in enumerate(v):
+            out += validate(x, s["items"], f"{path}[{i}]")
+    return out
+
+
+def final_text(turn):
+    msgs = [i for i in turn.get("items") or [] if i.get("type") == "agentMessage"]
+    final = [i for i in msgs if i.get("phase") == "final_answer"] or msgs[-1:]
+    return final[-1].get("text") if final else None
+
+
+def finish(turn, schema):
+    status = turn.get("status")
+    if status != "completed":
+        err(f"reviewer turn {status}: {json.dumps(turn.get('error'))}")
+        return 1
+    text = final_text(turn)
+    if text is None:
+        err("reviewer turn completed with no answer")
+        return 1
+    if schema is None:
+        print(text)
+        return 0
+    try:
+        doc = json.loads(text)
+        problems = validate(doc, schema)
+    except ValueError:
+        doc, problems = None, ["not JSON"]
+    if problems:
+        sys.stdout.write(text + ("" if text.endswith("\n") else "\n"))
+        err("the answer does not match the findings schema: " + "; ".join(problems[:5]))
+        return 4
+    print(json.dumps(doc, indent=2))
+    return 0
+
+
+# --- commands ----------------------------------------------------------------------------
+
+def cmd_thread_start(c, a):
+    r = c.call("thread/start", {"cwd": a.cwd})
+    if "error" in r:
+        err("thread/start refused: " + json.dumps(r["error"]))
+        return 1
+    print(r["result"]["thread"]["id"])
+    return 0
+
+
+def cmd_thread_status(c, a):
+    r = c.call("thread/read", {"threadId": a.thread})
+    if "error" in r:
+        print(json.dumps({"loaded": False, "status": "unknown", "running": False}))
+        return 0
+    st = ((r.get("result") or {}).get("thread") or {}).get("status") or {}
+    kind = st.get("type", "unknown")
+    print(json.dumps({"loaded": kind not in ("notLoaded", "unknown"), "status": kind,
+                      "running": kind == "active"}))
+    return 0
+
+
+def cmd_turn_start(c, a):
+    with open(a.input, encoding="utf-8") as fh:
+        text = fh.read()
+    with open(a.schema, encoding="utf-8") as fh:
+        schema = json.load(fh)
+    # After a daemon restart a recorded checkpoint thread is no longer loaded, and nothing
+    # else loads it first: the pane only resumes it once the turn exists (spec 7.3).
+    st = c.call("thread/read", {"threadId": a.thread})
+    kind = (((st.get("result") or {}).get("thread") or {}).get("status") or {}).get("type")
+    if kind == "notLoaded":
+        r = c.call("thread/resume", {"threadId": a.thread})
+        if "error" in r:
+            err("cannot load the thread before starting: " + json.dumps(r["error"]))
+            return 1
+    if a.known:
+        # What is on the thread before this start, so an unanswered start can be found later
+        # as the turn that was not there before.
+        tl = c.call("thread/turns/list", {"threadId": a.thread, "limit": 50,
+                                          "sortDirection": "desc", "itemsView": "notLoaded"})
+        if "error" in tl:
+            # A thread with no user message yet (just created by thread-start, never given a
+            # turn) refuses thread/turns/list as "not materialized" - that is an empty
+            # baseline, not an error: every first dispatch of a checkpoint hits this. Any
+            # OTHER error still refuses exactly as before; without a baseline an unanswered
+            # start could later "find" an old turn as new.
+            if "not materialized" in (tl["error"].get("message") or ""):
+                data = []
+            else:
+                err("cannot list the thread's turns before starting: " + json.dumps(tl["error"]))
+                return 1
+        else:
+            data = (tl.get("result") or {}).get("data") or []
+        with open(a.known, "w", encoding="utf-8") as fh:
+            json.dump([t.get("id") for t in data], fh)
+    try:
+        r = c.call("turn/start", {"threadId": a.thread,
+                                  "input": [{"type": "text", "text": text}],
+                                  "outputSchema": schema,
+                                  "sandboxPolicy": {"type": "readOnly"},
+                                  "approvalPolicy": "never"})
+    except (Unreachable, Closed) as e:
+        err(f"turn/start was sent but not answered ({e}); the turn may be running")
+        return 6
+    if "error" in r:
+        err("turn/start refused: " + json.dumps(r["error"]))
+        return 1
+    print(r["result"]["turn"]["id"])
+    return 0
+
+
+def cmd_thread_resolve(c, a):
+    """The one loaded thread whose id starts with a.prefix. The title carries only a prefix
+    (Codex truncates it, F11/F21); a prefix is resolved here and never guessed. Follows
+    nextCursor across as many pages as thread/loaded/list hands back."""
+    ids = []
+    cursor = None
+    while True:
+        params = {"cursor": cursor} if cursor else {}
+        r = c.call("thread/loaded/list", params)
+        if "error" in r:
+            err("thread/loaded/list refused: " + json.dumps(r["error"]))
+            return 1
+        result = r.get("result") or {}
+        for t in result.get("data") or []:
+            tid = t.get("id") if isinstance(t, dict) else t
+            if isinstance(tid, str):
+                ids.append(tid)
+        cursor = result.get("nextCursor")
+        if not cursor:
+            break
+    matches = sorted({i for i in ids if i.startswith(a.prefix)})
+    if len(matches) == 1:
+        print(matches[0])
+        return 0
+    if not matches:
+        err(f"no loaded thread starts with {a.prefix}")
+    else:
+        err(f"{len(matches)} loaded threads start with {a.prefix}: {' '.join(matches)}")
+    return 1
+
+
+def cmd_thread_archive(c, a):
+    r = c.call("thread/archive", {"threadId": a.thread})
+    if "error" in r:
+        err("thread/archive refused: " + json.dumps(r["error"]))
+        return 1
+    return 0
+
+
+class ListUnreadable(Exception):
+    """thread/turns/list errored on every attempt within the budget - distinct from a
+    clean listing that simply never showed the turn, so the caller can say what actually
+    happened instead of the misleading "no turn"."""
+
+
+class PagingIncomplete(ListUnreadable):
+    """The budget ran out while paging thread/turns/list for a fixed turn with a cursor
+    still pending (M2/N2) - unread pages might have held it. This is NOT "every attempt
+    errored" (the base ListUnreadable's own cause): nothing here failed, there just wasn't
+    time to finish. The caller reports it as "still running, try again" (exit 3), not the
+    plain read-failure exit 1."""
+
+
+def turn_state(c, thread, turn, known=None, deadline=None):
+    """The turn by id, or with known given, the oldest turn whose id is not in it.
+
+    A thread/turns/list error is retried within the budget rather than reported as "no
+    turn". With no fixed turn (the --new-since case), "nothing new yet" is retried the
+    same way, re-listing about once a second until something appears or the budget ends
+    - the turn may not have landed on the thread yet when turn/start was sent but never
+    answered. A fixed turn id that is simply absent (no error, no such id) is not
+    retried: by the time collect asks for it, turn-start already returned it.
+
+    Raises ListUnreadable if every attempt within the budget errored - the listing was
+    never actually read, which a bare `return None` cannot tell apart from "read fine,
+    turn genuinely not there".
+
+    A fixed turn id may be older than the newest page (limit 50): follows nextCursor
+    page by page, within the budget, until it is found or there are no more pages. The
+    --new-since path is unchanged - a new turn is on the first page by definition. If the
+    budget runs out mid-paging with a cursor still pending, that is reported as
+    ListUnreadable, never as "no turn" (M2) - unread pages might have held it.
+    """
+    attempt = 0
+    last_error = None
+    while True:
+        # Not just "deadline not yet reached": call()'s own deadline is the same clock,
+        # so attempting one more call with only a sliver of budget left races it - the
+        # call can time out and raise Closed instead of this returning None cleanly. The
+        # very first attempt always runs regardless, even on a near-zero budget.
+        if attempt > 0 and deadline is not None and time.monotonic() >= deadline - 0.3:
+            if last_error is not None:
+                raise ListUnreadable(json.dumps(last_error))
+            return None
+        attempt += 1
+        if turn:
+            cursor = None
+            page_error = None
+            incomplete = False
+            while True:
+                params = {"threadId": thread, "limit": 50, "sortDirection": "desc",
+                          "itemsView": "summary"}
+                if cursor:
+                    params["cursor"] = cursor
+                r = c.call("thread/turns/list", params)
+                if "error" in r:
+                    page_error = r["error"]
+                    break
+                page_error = None
+                result = r.get("result") or {}
+                found = next((t for t in (result.get("data") or []) if t.get("id") == turn), None)
+                if found:
+                    return found
+                cursor = result.get("nextCursor")
+                if not cursor:
+                    break   # no more pages this attempt - fall through, not retried
+                if deadline is not None and time.monotonic() >= deadline - 0.3:
+                    # M2: the budget ran out with a cursor still pending - pages that were
+                    # never read might have held the turn. That is NOT "read every page,
+                    # found nothing" (return None -> the misleading "no turn"); it is the
+                    # listing never having been read to completion, exactly what
+                    # ListUnreadable exists to distinguish.
+                    incomplete = True
+                    break
+            last_error = page_error
+            if incomplete and last_error is None:
+                raise PagingIncomplete(
+                    "budget exhausted while paging thread/turns/list for turn %r "
+                    "(a cursor was still pending)" % turn)
+            if last_error is None:
+                return None   # exhausted every page, no error - a fixed turn is not retried
+        else:
+            r = c.call("thread/turns/list", {"threadId": thread, "limit": 50,
+                                             "sortDirection": "desc", "itemsView": "summary"})
+            if "error" not in r:
+                last_error = None
+                data = (r.get("result") or {}).get("data") or []
+                new = [t for t in data if t.get("id") not in (known or [])]
+                if new:
+                    return new[-1]   # newest first, so the last new one is the oldest
+            else:
+                last_error = r["error"]
+        if deadline is None:
+            return None   # a single-shot re-read (F5); the caller does its own retrying
+        time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
+
+
+def cmd_turn_wait(a):
+    schema = None
+    if a.schema:
+        with open(a.schema, encoding="utf-8") as fh:
+            schema = json.load(fh)
+    known = None
+    if a.new_since:
+        with open(a.new_since, encoding="utf-8") as fh:
+            known = json.load(fh)
+    deadline = time.monotonic() + a.budget
+    last = "never connected"
+    # Once we have connected and seen the turn running (inProgress, not terminal), a later
+    # drop that outlasts the budget means the turn is still running, not that the daemon was
+    # never reached - exit 3, not 5. Exit 5 is reserved for never having connected in time.
+    seen_running = False
+    turn_id = None
+    while True:
+        try:
+            c = Client(deadline)
+            c.call("thread/resume", {"threadId": a.thread})   # subscribe before looking
+            try:
+                t = turn_state(c, a.thread, a.turn, known, deadline)
+            except PagingIncomplete as e:
+                err(f"could not finish reading the thread's turns within the budget; "
+                    f"collect again with a larger budget ({e})")
+                return 3
+            except ListUnreadable as e:
+                err(f"the thread's turns could not be read: {e}")
+                return 1
+            if t is None:
+                err(f"no turn {a.turn or 'started since the dispatch'} on thread {a.thread}")
+                return 1
+            turn_id = t.get("id")
+            if a.resolved and not a.turn:
+                with open(a.resolved, "w", encoding="utf-8") as fh:
+                    fh.write(turn_id + "\n")
+            while t.get("status") not in TERMINAL:
+                seen_running = True
+                n = c.wait_note(lambda m: m.get("method") == "turn/completed"
+                                and ((m.get("params") or {}).get("turn") or {}).get("id") == turn_id,
+                                deadline)
+                if n is None:
+                    err(f"turn {turn_id} is still running")
+                    return 3
+                t = n["params"]["turn"]
+                if t.get("status") == "completed" and final_text(t) is None:
+                    # A Turn can arrive with a partial items view, and a resumed subscriber
+                    # is not guaranteed the final text in the notification (F5/F17). Re-read
+                    # the turn directly rather than take an empty items view as "no answer" -
+                    # but a re-read can itself be a stale listing that has not caught up to
+                    # the notification yet (still inProgress). Only a TERMINAL re-read may
+                    # replace t; otherwise keep the notification's own completed turn, so it
+                    # is never lost to a listing that lags behind it. Retry within the
+                    # budget for a re-read that catches up.
+                    #
+                    # The deadline is checked BEFORE each call, not after: once it has
+                    # passed, turn_state()'s own c.call() raises Closed immediately (its
+                    # deadline is this same one), so a check placed after the call can never
+                    # run - the budget always expires inside the call, not between calls.
+                    # If it ends here with the listing still stale, that is "still running,
+                    # collect again" (exit 3), same as the outer wait_note timeout above -
+                    # never fall through to finish() and report "no answer" for what may
+                    # simply not have been read yet.
+                    while True:
+                        if time.monotonic() >= deadline:
+                            err(f"turn {turn_id} is still running")
+                            return 3
+                        reread = turn_state(c, a.thread, turn_id, None)
+                        if reread is not None and reread.get("status") in TERMINAL:
+                            t = reread
+                            break
+                        time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
+            return finish(t, schema)
+        except (Unreachable, Closed) as e:
+            last = str(e)
+            if time.monotonic() >= deadline:
+                if seen_running:
+                    err(f"turn {turn_id} is still running")
+                    return 3
+                err(f"Codex daemon unreachable: {last}")
+                return 5
+            time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="xreview-rpc")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("health")
+    sub.add_parser("thread-start").add_argument("--cwd", required=True)
+    for name in ("thread-status", "thread-archive"):
+        sub.add_parser(name).add_argument("--thread", required=True)
+    sub.add_parser("thread-resolve").add_argument("--prefix", required=True)
+    p = sub.add_parser("turn-start")
+    p.add_argument("--thread", required=True)
+    p.add_argument("--input", required=True)
+    p.add_argument("--schema", required=True)
+    p.add_argument("--known")
+    p = sub.add_parser("turn-wait")
+    p.add_argument("--thread", required=True)
+    which = p.add_mutually_exclusive_group(required=True)
+    which.add_argument("--turn")
+    which.add_argument("--new-since")
+    p.add_argument("--resolved")
+    p.add_argument("--budget", type=float, required=True)
+    p.add_argument("--schema")
+    a = ap.parse_args(argv)
+    if a.cmd == "turn-wait":
+        return cmd_turn_wait(a)
+    if a.cmd == "thread-resolve":
+        if len(a.prefix) < 13 or re.search(r"[^0-9a-f-]", a.prefix):
+            err(f"invalid prefix: {a.prefix}")
+            return 2
+    try:
+        c = Client()
+    except (Unreachable, Closed) as e:
+        err(f"Codex daemon unreachable: {e}")
+        return 5
+    try:
+        if a.cmd == "health":
+            return 0
+        if a.cmd == "thread-start":
+            return cmd_thread_start(c, a)
+        if a.cmd == "thread-status":
+            return cmd_thread_status(c, a)
+        if a.cmd == "thread-resolve":
+            return cmd_thread_resolve(c, a)
+        if a.cmd == "turn-start":
+            return cmd_turn_start(c, a)
+        return cmd_thread_archive(c, a)
+    except (Unreachable, Closed) as e:
+        err(f"Codex daemon connection lost: {e}")
+        return 5
+
+
+if __name__ == "__main__":
+    sys.exit(main())

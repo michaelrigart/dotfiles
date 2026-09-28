@@ -34,11 +34,11 @@ setopt local_options no_unset pipe_fail no_bg_nice
 MANAGED_TABS=(agents editor runtime)
 EAGER_TABS=(agents runtime)
 BUILDING_SUFFIX=" (building)"
-# Codex's documented role here is reviewer, not implementer, so its panes launch
-# unable to write. Without this they inherit workspace-write with $HOME writable.
-# Read-only is not confinement — reads are still unrestricted — but it removes the
-# write half. Launch an implementer session by hand when you actually want one.
-CODEX_CMD="codex --sandbox read-only --ask-for-approval never"
+# The Codex pane command lives in one file beside this script, read here and by xreview
+# (which restarts the pane on a review thread with the same flags). The reasoning for its
+# flags is in that file.
+CODEX_CMD="$(grep -v '^[[:space:]]*#' "${0:A:h}/codex-pane-command" 2>/dev/null | grep . | head -1)"
+[[ -n "$CODEX_CMD" ]] || { print -ru2 -- "layout.sh: missing ${0:A:h}/codex-pane-command"; exit 1 }
 
 # HL_HERDR — every herdr call, with the session threaded in. herdr 0.8.2 has NO
 # HERDR_SESSION environment variable: only `--session <name>` selects a session, so a
