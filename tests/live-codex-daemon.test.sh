@@ -126,13 +126,18 @@ is "F22 the pane's TUI is freed before the turn exists" "$freed" 1
 f22_thread="$(rpc thread-start --cwd "$SRC")"; rc=$?
 is "F22 thread-start creates a thread" "$rc/$([ -n "$f22_thread" ] && echo yes || echo no)" "0/yes"
 
-# Two unique tokens: token1 is in the PROMPT only, so seeing it proves the pane replayed the
-# turn from its start (F22 itself). token2 is asked for only in the ANSWER, so seeing it is
-# proof the final answer landed - distinct from the prompt replay, which never contains it. A
+# token1 is in the PROMPT only, so seeing it proves the pane replayed the turn from its start
+# (F22 itself). The answer token is split into two fragments given SEPARATELY, asked to be
+# concatenated with NO separator - the joined string is never written anywhere in the prompt
+# itself, only its two halves, so seeing the JOINED string in the pane is proof the final
+# answer actually landed, not just a replay of the prompt (fix round 2/B: the previous version
+# asked for the whole token verbatim, so the instruction line itself satisfied the check). A
 # short but real review (not "just say approve") makes the turn take long enough to be caught
 # genuinely running, not just read after the fact.
 token1="f22-token-$$-$RANDOM"
-token2="f22-marker-$$-$RANDOM"
+frag_a="f22frag-a-$$"
+frag_b="b-$RANDOM-f22frag"
+joined="${frag_a}${frag_b}"
 cat > "$T/scratch22.py" <<PY
 def add(a, b):
     return a - b  # intentional bug for a live canary review
@@ -140,15 +145,21 @@ PY
 {
   printf 'Live canary F22 (%s). Review the Python function below for a correctness bug and\n' "$token1"
   printf 'answer in the findings schema. Include exactly one finding, severity P2, whose\n'
-  printf '"summary" field contains this exact text verbatim: %s\n\n' "$token2"
+  printf '"summary" field is exactly two fragments concatenated with NO separator and nothing\n'
+  printf 'else: first "%s", then "%s".\n\n' "$frag_a" "$frag_b"
   cat "$T/scratch22.py"
 } > "$T/in22"
 is "F22 the prompt carries no literal schema field (so prompt and answer stay distinguishable)" \
    "$(grep -cF '"verdict":' "$T/in22")" 0
+is "F22 the joined answer token never appears literally in the prompt" \
+   "$(grep -cF "$joined" "$T/in22")" 0
 
 # --known, exactly as xreview dispatch itself calls turn-start: exercises thread/turns/list on
-# a zero-turn thread from a fresh connection.
-f22_turn="$(rpc turn-start --thread "$f22_thread" --input "$T/in22" --schema "$SCHEMA" --known "$T/known22")"
+# a zero-turn thread from a fresh connection, whose thread/turns/list refuses as "not
+# materialized" until it has a first turn (item A) - turn-start must still succeed here.
+f22_turn="$(rpc turn-start --thread "$f22_thread" --input "$T/in22" --schema "$SCHEMA" --known "$T/known22")"; rc=$?
+is "F22 turn-start exits 0 on a thread with no turns yet (item A's live check)" "$rc" 0
+is "F22 and the --known baseline is the empty list, not an error" "$(cat "$T/known22" 2>/dev/null)" '[]'
 # turn-wait starts before the pane is even resumed, in the background, so it subscribes and
 # catches turn/completed (F5) regardless of how long the resume itself takes.
 rpc turn-wait --thread "$f22_thread" --turn "$f22_turn" --budget 180 --schema "$SCHEMA" \
@@ -166,8 +177,10 @@ for _ in $(seq 20); do
 done
 is "F22 the resumed pane shows the prompt's own token" "$seen22" 1
 # Mid-turn: right after the pane first shows the token, the daemon must still report the
-# turn running - proof this was caught genuinely mid-flight, not read after it finished.
-is "F22 the turn is still running right after the pane first shows it" \
+# turn running - proof this was caught genuinely mid-flight, not read after it finished. A
+# real review of even a small file (the probe: ~40s) should still be running at this point;
+# if this ever goes red, the turn may simply have finished faster than that, not a bug.
+is "F22 the turn is still running right after the pane first shows it (a fail here may just mean it finished very fast, not a bug)" \
    "$(rpc thread-status --thread "$f22_thread" 2>/dev/null | jq -r .running)" true
 
 wait "$wait_pid"; rc=$?
@@ -179,21 +192,22 @@ case "$verdict22" in
   *) _fail "F22 with a schema-valid verdict" "$verdict22" ;;
 esac
 summary22="$(printf '%s' "$res22" | jq -r '.findings[0].summary // empty' 2>/dev/null)"
-is "F22 the reviewer's answer carries the token it was asked to include" \
-   "$(printf '%s' "$summary22" | grep -cF "$token2")" 1
+is "F22 the reviewer's answer carries the joined token it was asked to concatenate" \
+   "$(printf '%s' "$summary22" | grep -cF "$joined")" 1
 
-# The final-answer check: token2 appears ONLY once the answer has actually landed - never
-# during the prompt replay, since it was never in the prompt. Guard against an empty
-# pattern before grepping for it: an empty grep pattern matches every line.
+# The final-answer check: the JOINED token appears ONLY once the answer has actually landed -
+# never during the prompt replay, since the prompt never writes the two fragments joined
+# (asserted above, before the turn even started). Guard against an empty pattern before
+# grepping for it: an empty grep pattern matches every line.
 seen22final=0
-if [ -n "$token2" ]; then
+if [ -n "$joined" ]; then
   for _ in $(seq 20); do
     out22f="$(herdr pane read "$pane" --source visible 2>/dev/null)"
-    printf '%s' "$out22f" | grep -qF "$token2" && { seen22final=1; break; }
+    printf '%s' "$out22f" | grep -qF "$joined" && { seen22final=1; break; }
     sleep 1
   done
 fi
-is "F22 the pane shows the final answer's own token once the turn completes" "$seen22final" 1
+is "F22 the pane shows the joined answer token once the turn completes (never from the prompt)" "$seen22final" 1
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
