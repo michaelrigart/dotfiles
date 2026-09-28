@@ -236,6 +236,13 @@ case "$cmd" in
 esac
 exit 0
 R
+# Task 15: SLEEP_LOG=1 records each poll sleep in the call log, so a test can prove a retry
+# actually waited before re-reading instead of inferring it from wall-clock timing.
+cat > "$STUB/sleep" <<'SL'
+#!/bin/sh
+[ -n "${SLEEP_LOG:-}" ] && printf 'sleep\n' >> "$CALLS"
+exec /bin/sleep "$@"
+SL
 chmod +x "$STUB"/*
 export PATH="$STUB:$PATH"
 
@@ -245,7 +252,7 @@ fresh() { # a pane showing U0, idle; clean log and state
         RESET_FAIL_ONCE AGENT_EXIT_DELAY \
         AGENT_READ_FAIL_ONCE EXTRA_PANES PANE_CWD XREVIEW_PANE XREVIEW_THREAD RPC_WAIT_OUT \
         RPC_WAIT_RC RPC_THREAD_RUNNING RPC_HEALTH_FAIL AGENT_LAG BEFORE_FAIL_ALWAYS RACE_TITLE_LAG \
-        BEFORE_FAIL_AT
+        BEFORE_FAIL_AT SLEEP_LOG
   export NEW_UUID="$U1"
   printf codex > "$P/agent"; printf '%s | t | d' "$(trunc "$U0")" > "$P/title"; echo idle > "$P/status"
   echo 0 > "$P/ctrlc"
@@ -591,9 +598,7 @@ echo "D18. Task 15: a failed 'before' read must not swallow into adopting the OL
 # would read that failed read as "no id" (before=""), and the fresh-session check then
 # accepts ANY later prefix - including U0, still on screen - as if it were the new thread.
 fresh
-start="$EPOCHREALTIME"
 out="$(BEFORE_FAIL_AT=3 RACE_TITLE_LAG=1 RESET_LAG=2 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
-took="$(awk -v s="$start" -v e="$EPOCHREALTIME" 'BEGIN{printf "%.3f", e-s}')"
 is "D18a dispatch still succeeds once the genuinely new thread shows" \
    "$(printf '%s' "$out" | grep -c '^xr-')" 1
 is "D18a the old thread U0 is never dispatched into, despite reading back mid-race" \
@@ -609,24 +614,20 @@ is "D18a it is the new thread U1 that is dispatched into" \
 between="$(awk '/herdr pane get FAILED/{f=1; next} f && /herdr pane send-keys/{exit} f{print}' "$CALLS")"
 is "D18a exactly one retried read between the failure and the first key sent" \
    "$(printf '%s\n' "$between" | grep -c '^herdr pane get w1:p2$')" 1
-# Fix round 1/I1 (continued): the read-count check above cannot by itself tell a genuine
-# retry of the RIGHT read apart from an irrelevant failure of one of the two TOLERANT reads
-# ahead of it (agent_status, the running-thread gate's own title read) - both shapes show
-# exactly one intervening "pane get" line, because dispatch only ever reads the pane once
-# more before sending keys either way, whether or not anything actually needed retrying.
-# What differs is TIME: a genuine retry sleeps a full XREVIEW_POLL_SECS first (I-1's
-# poll-driven wait); an irrelevant failure elsewhere does not, since the read it precedes
-# was always going to happen right after it regardless. BEFORE_FAIL_AT=2 fails the
-# running-thread gate's own read instead (a stand-in for "the reads got reordered and this
-# marker no longer lands on `before`") under otherwise identical timing parameters - proving
-# the count-1 case above is measurably the SLOW shape, not just coincidentally the same
-# count as a fast, unrelated failure would also produce.
+# The read count alone cannot tell the fix's retry of the `before` read apart from a failed
+# TOLERANT read ahead of it (agent_status, the running-thread gate): both leave exactly one
+# real `pane get` before the first key. Only the retry sleeps first, so the log right after
+# the marker must read `sleep`, then the retried read. A reordering that moves the failure
+# onto a tolerant read goes red here instead of silently passing (BEFORE_FAIL_AT=2 shows it).
 fresh
-start2="$EPOCHREALTIME"
-BEFORE_FAIL_AT=2 RACE_TITLE_LAG=1 RESET_LAG=2 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
-took2="$(awk -v s="$start2" -v e="$EPOCHREALTIME" 'BEGIN{printf "%.3f", e-s}')"
-is "D18a the genuine retry took measurably longer than an irrelevant failure elsewhere - proof the retry actually slept, not just that a read happened to follow" \
-   "$(awk -v a="$took" -v b="$took2" -v p="$XREVIEW_POLL_SECS" 'BEGIN{print (a >= b + p*0.5) ? "yes" : "no ("a"s vs "b"s)"}')" yes
+SLEEP_LOG=1 BEFORE_FAIL_AT=3 RACE_TITLE_LAG=1 RESET_LAG=2 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+is "D18a the failed read is retried only after a poll sleep" \
+   "$(awk '/herdr pane get FAILED/{f=1; next} f{print; if (++n==2) exit}' "$CALLS" | paste -sd'|' -)" \
+   "sleep|herdr pane get w1:p2"
+fresh
+SLEEP_LOG=1 BEFORE_FAIL_AT=2 RACE_TITLE_LAG=1 RESET_LAG=2 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+is "D18a (control) a failed tolerant read is not followed by a retry sleep" \
+   "$(awk '/herdr pane get FAILED/{f=1; next} f{print; exit}' "$CALLS")" "herdr pane get w1:p2"
 
 fresh; export BEFORE_FAIL_ALWAYS=1
 # A tight local wait (I-1): every read fails, so this must genuinely exhaust the deadline.
