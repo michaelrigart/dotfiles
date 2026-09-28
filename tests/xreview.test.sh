@@ -81,6 +81,11 @@ pane_json() {
     if [ "$n" -gt "${RESET_LAG:-1}" ]; then
       t="$(cat "$P/newtitle" 2>/dev/null)"; printf '%s' "$t" > "$P/title"
       rm -f "$P/reset_pending"
+    elif [ -n "${RACE_TITLE_LAG:-}" ]; then
+      : # Task 15: the fresh path issues no reset of its own (M4) - the pane genuinely
+        # keeps showing whatever it showed before, here the OLD thread's title, rather
+        # than an "xreview" in-progress placeholder. $t is already that title from the
+        # `cat "$P/title"` above; leave it alone.
     else
       t=xreview
     fi
@@ -92,6 +97,16 @@ pane_json() {
 case "$1 $2" in
   "pane list") printf '{"result":{"panes":[%s%s]}}\n' "$(pane_json)" "${EXTRA_PANES:-}" ;;
   "pane get")
+    # Task 15: BEFORE_FAIL_AT=<n> fails exactly the n-th `pane get` of the whole dispatch -
+    # used to target pane_prepare's own `before` read specifically (it is not literally
+    # dispatch's first `pane get`: the pre-pane_prepare agent_status and running-thread
+    # gates each make one of their own first). BEFORE_FAIL_ALWAYS fails every `pane get`,
+    # forever, simulating a herdr that never answers.
+    if [ -n "${BEFORE_FAIL_AT:-}" ]; then
+      gn=$(cat "$P/get_seq" 2>/dev/null || echo 0); gn=$((gn + 1)); echo "$gn" > "$P/get_seq"
+      [ "$gn" = "$BEFORE_FAIL_AT" ] && exit 1
+    fi
+    [ -n "${BEFORE_FAIL_ALWAYS:-}" ] && exit 1
     # I-1: consume the fail-once marker on the very first read after the run, simulating a
     # transient herdr failure - exit nonzero with no output, never a title of any kind.
     if [ -e "$P/reset_fail_once" ]; then rm -f "$P/reset_fail_once"; exit 1; fi
@@ -156,6 +171,13 @@ case "$1 $2" in
           printf '%s... | t | d' "$(printf '%s' "$full" | cut -c1-"$len")" > "$P/newtitle"
           if [ "${RESET_LAG:-1}" = 0 ]; then
             cat "$P/newtitle" > "$P/title"
+          elif [ -n "${RACE_TITLE_LAG:-}" ]; then
+            # Task 15: the fresh (bare-launch) path issues no reset of its own (M4) - unlike
+            # the resume path's step (a), nothing here clears the pane's title first, so it
+            # genuinely keeps showing whatever it showed before (the OLD thread) until the
+            # new session's own title lands. Set reset_pending so pane_json still counts
+            # reads toward the lag, but leave $P/title exactly as it was.
+            : > "$P/reset_pending"
           else
             printf xreview > "$P/title"; : > "$P/reset_pending"
           fi
@@ -215,13 +237,14 @@ fresh() { # a pane showing U0, idle; clean log and state
         RPC_START_UNCERTAIN RPC_START_BAD_ID NO_TITLE STUCK_TUI STUCK_TITLE RESET_LAG \
         RESET_FAIL_ONCE AGENT_EXIT_DELAY \
         AGENT_READ_FAIL_ONCE EXTRA_PANES PANE_CWD XREVIEW_PANE XREVIEW_THREAD RPC_WAIT_OUT \
-        RPC_WAIT_RC RPC_THREAD_RUNNING RPC_HEALTH_FAIL AGENT_LAG
+        RPC_WAIT_RC RPC_THREAD_RUNNING RPC_HEALTH_FAIL AGENT_LAG BEFORE_FAIL_ALWAYS RACE_TITLE_LAG \
+        BEFORE_FAIL_AT
   export NEW_UUID="$U1"
   printf codex > "$P/agent"; printf '%s | t | d' "$(trunc "$U0")" > "$P/title"; echo idle > "$P/status"
   echo 0 > "$P/ctrlc"
   rm -f "$P/packet" "$P/status_calls" "$P/get_calls" "$P/lag_active" "$P/reset_calls" \
         "$P/reset_pending" "$P/newtitle" "$P/reset_fail_once" "$P/exit_delay_active" \
-        "$P/exit_delay_calls" "$P/agent_fail_once"
+        "$P/exit_delay_calls" "$P/agent_fail_once" "$P/get_seq"
   bash "$XREVIEW" round --reset >/dev/null 2>&1
   rm -rf "$STATE/superseded" "$STATE/pin" "$STATE/turns"
   rm -f "$STATE/pane"   # F31: the fast-path record must never leak from a previous test
@@ -259,7 +282,7 @@ export NEW_UUID="$U1"
 fresh
 bash "$XREVIEW" round --reset >/dev/null
 before_round="$(bash "$XREVIEW" round)"
-STUCK_TUI=1 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+STUCK_TUI=1 XREVIEW_PANE_WAIT=0.15 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
 is "A2 a pane-preparation failure leaves the round count unchanged" "$(bash "$XREVIEW" round)" "$before_round"
 
 echo "B. inline diffs"
@@ -437,7 +460,7 @@ is "D3f it still succeeds" "$(printf '%s' "$out" | grep -c '^xr-')" 1
 is "D3f the exit wait actually iterated through the delay, not stopped on the failed read" \
    "$(awk '/pane send-keys/{n++} n>=2{print} /pane run/{exit}' "$CALLS" | grep -c 'pane get')" 5
 
-fresh; out="$(NO_TITLE=1 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+fresh; out="$(NO_TITLE=1 XREVIEW_PANE_WAIT=0.15 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
 is "D4 a pane that never shows a thread refuses" "$rc" 1
 is "D4 and no turn starts" "$(called 'xreview-rpc turn-start')" 0
 fresh; printf 'Greet user | chezmoi' > "$P/title"
@@ -447,7 +470,7 @@ is "D5 a pane whose title has no id is restarted and adopted" "$(cat "$STATE/rev
 fresh; out="$(STUCK_TUI=1 XREVIEW_PANE_WAIT=0.15 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
 is "D6 a session that will not exit refuses" "$(printf '%s' "$out" | grep -c 'did not exit')" 1
 is "D6 and never starts a new one" "$(called 'herdr pane run')" 0
-fresh; out="$(RPC_NOT_LOADED=1 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+fresh; out="$(RPC_NOT_LOADED=1 XREVIEW_PANE_WAIT=0.15 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
 is "D7 a thread the daemon has not loaded refuses" "$rc" 1
 is "D7 and no turn starts" "$(called 'xreview-rpc turn-start')" 0
 fresh; out="$(RPC_START_FAIL=1 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
@@ -548,6 +571,31 @@ out="$(RELAUNCH_PREFIX_LEN=36 XREVIEW_PANE_WAIT=0.15 bash "$XREVIEW" dispatch b.
 is "D17 it refuses, never mistaking the shorter prefix for a new thread" "$rc" 1
 is "D17 and says so" "$(printf '%s' "$out" | grep -c 'did not show a new thread')" 1
 is "D17 and never dispatches into the old (or any) thread" "$(called 'xreview-rpc turn-start')" 0
+
+echo "D18. Task 15: a failed 'before' read must not swallow into adopting the OLD thread"
+# The first `pane get` of the dispatch - the `before` read, before anything else has
+# touched the pane - fails once; every read after that succeeds. The fresh path resets
+# nothing of its own (M4), so the pane goes on showing U0's OLD title for a couple more
+# reads even once the new codex process is up and .agent already says so (RACE_TITLE_LAG).
+# pane_title_id's `|| true` would read that failed read as "no id" (before=""), and the
+# fresh-session check then accepts ANY later prefix - including U0, still on screen - as
+# if it were the new thread.
+fresh
+out="$(BEFORE_FAIL_AT=3 RACE_TITLE_LAG=1 RESET_LAG=2 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+is "D18a dispatch still succeeds once the genuinely new thread shows" \
+   "$(printf '%s' "$out" | grep -c '^xr-')" 1
+is "D18a the old thread U0 is never dispatched into, despite reading back mid-race" \
+   "$(called "xreview-rpc turn-start --thread $U0")" 0
+is "D18a it is the new thread U1 that is dispatched into" \
+   "$(called "xreview-rpc turn-start --thread $U1")" 1
+
+fresh; export BEFORE_FAIL_ALWAYS=1
+# A tight local wait (I-1): every read fails, so this must genuinely exhaust the deadline.
+out="$(XREVIEW_PANE_WAIT=0.15 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+is "D18b a pane whose title can never be read refuses" "$rc" 1
+is "D18b and says so" "$(printf '%s' "$out" | grep -c 'could not read')" 1
+is "D18b untouched - no keys were ever sent" "$(untouched)" yes
+unset BEFORE_FAIL_ALWAYS
 
 echo "E. checkpoints and pins"
 fresh
