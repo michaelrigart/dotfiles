@@ -113,6 +113,14 @@ case "$1 $2" in
       gn=$(cat "$P/get_seq" 2>/dev/null || echo 0); gn=$((gn + 1)); echo "$gn" > "$P/get_seq"
       if [ "$gn" = "$BEFORE_FAIL_AT" ]; then printf 'herdr pane get FAILED\n' >> "$CALLS"; exit 1; fi
     fi
+    # PANE_GONE_AT=<n>: from the n-th read on, the pane is closed - herdr's real answer.
+    if [ -n "${PANE_GONE_AT:-}" ]; then
+      gn=$(cat "$P/get_seq" 2>/dev/null || echo 0); gn=$((gn + 1)); echo "$gn" > "$P/get_seq"
+      if [ "$gn" -ge "$PANE_GONE_AT" ]; then
+        echo '{"error":{"code":"pane_not_found","message":"pane w1:p2 not found"},"id":"cli:pane:get"}' >&2
+        exit 1
+      fi
+    fi
     if [ -n "${BEFORE_FAIL_ALWAYS:-}" ]; then printf 'herdr pane get FAILED\n' >> "$CALLS"; exit 1; fi
     # BEFORE_ENVELOPE_AT=<n>: the n-th read exits 0 but answers herdr's error envelope.
     if [ -n "${BEFORE_ENVELOPE_AT:-}" ]; then
@@ -264,7 +272,7 @@ fresh() { # a pane showing U0, idle; clean log and state
         RESET_FAIL_ONCE AGENT_EXIT_DELAY \
         AGENT_READ_FAIL_ONCE EXTRA_PANES PANE_CWD XREVIEW_PANE XREVIEW_THREAD RPC_WAIT_OUT \
         RPC_WAIT_RC RPC_THREAD_RUNNING RPC_HEALTH_FAIL AGENT_LAG BEFORE_FAIL_ALWAYS RACE_TITLE_LAG \
-        BEFORE_FAIL_AT BEFORE_ENVELOPE_AT
+        BEFORE_FAIL_AT BEFORE_ENVELOPE_AT PANE_GONE_AT
   export NEW_UUID="$U1"
   printf codex > "$P/agent"; printf '%s | t | d' "$(trunc "$U0")" > "$P/title"; echo idle > "$P/status"
   echo 0 > "$P/ctrlc"
@@ -619,23 +627,23 @@ is "D18a it is the new thread U1 that is dispatched into" \
    "$(called "xreview-rpc turn-start --thread $U1")" 1
 # Fix round 1/I1: position-independent, so it does not quietly stop catching the mutant if
 # the read order drifts. It looks for the FAILED marker itself (wherever it lands) rather
-# than hardcoding "the 3rd call": exactly one real `pane get` must appear between the
-# marker and the first `pane send-keys` - the fix's own single retry. The old, unfixed code
-# reads 0 there (it never retries at all); a future reordering that inserts another read
-# into that same window reads 2+ - both wrong, and both meant to go red, not silently pass.
+# than hardcoding "the 3rd call": exactly two real `pane get`s must appear between the
+# marker and the first `pane send-keys` - die_if_pane_gone's probe and the fix's own single
+# retry. The old, unfixed code reads 0 there (it never retries at all); a future reordering
+# that inserts another read into that same window reads 3+ - both meant to go red.
 between="$(awk '/herdr pane get FAILED/{f=1; next} f && /herdr pane send-keys/{exit} f{print}' "$CALLS")"
-is "D18a exactly one retried read between the failure and the first key sent" \
-   "$(printf '%s\n' "$between" | grep -c '^herdr pane get w1:p2$')" 1
+is "D18a exactly the gone-probe and one retried read between the failure and the first key sent" \
+   "$(printf '%s\n' "$between" | grep -c '^herdr pane get w1:p2$')" 2
 # The read count alone cannot tell the fix's retry of the `before` read apart from a failed
 # TOLERANT read ahead of it (agent_status, the running-thread gate): both leave exactly one
-# real `pane get` before the first key. Only the retry sleeps first, so the log right after
-# the marker must read `sleep`, then the retried read. A reordering that moves the failure
+# real `pane get` before the first key. Only the retry probes for a closed pane and sleeps
+# first, so the log right after the marker must read the probe, `sleep`, then the retry. A reordering that moves the failure
 # onto a tolerant read goes red here instead of silently passing (BEFORE_FAIL_AT=2 shows it).
 fresh
 BEFORE_FAIL_AT=3 RACE_TITLE_LAG=1 RESET_LAG=2 sleep_logged bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
 is "D18a the failed read is retried only after a poll sleep" \
-   "$(awk '/herdr pane get FAILED/{f=1; next} f{print; if (++n==2) exit}' "$CALLS" | paste -sd'|' -)" \
-   "sleep|herdr pane get w1:p2"
+   "$(awk '/herdr pane get FAILED/{f=1; next} f{print; if (++n==3) exit}' "$CALLS" | paste -sd'|' -)" \
+   "herdr pane get w1:p2|sleep|herdr pane get w1:p2"
 fresh
 BEFORE_FAIL_AT=2 RACE_TITLE_LAG=1 RESET_LAG=2 sleep_logged bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
 is "D18a (control) a failed tolerant read is not followed by a retry sleep" \
@@ -644,8 +652,8 @@ is "D18a (control) a failed tolerant read is not followed by a retry sleep" \
 fresh
 out="$(BEFORE_ENVELOPE_AT=3 RACE_TITLE_LAG=1 RESET_LAG=2 sleep_logged bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
 is "D18d the envelope landed on the 'before' read, which was retried after a poll sleep" \
-   "$(awk '/herdr pane get FAILED/{f=1; next} f{print; if (++n==2) exit}' "$CALLS" | paste -sd'|' -)" \
-   "sleep|herdr pane get w1:p2"
+   "$(awk '/herdr pane get FAILED/{f=1; next} f{print; if (++n==3) exit}' "$CALLS" | paste -sd'|' -)" \
+   "herdr pane get w1:p2|sleep|herdr pane get w1:p2"
 is "D18d an exit-0 error envelope on the 'before' read is a failed read: U0 is never dispatched into" \
    "$(called "xreview-rpc turn-start --thread $U0")" 0
 is "D18d the new thread U1 is" "$(called "xreview-rpc turn-start --thread $U1")" 1
@@ -657,6 +665,20 @@ is "D18b a pane whose title can never be read refuses" "$rc" 1
 is "D18b and says so" "$(printf '%s' "$out" | grep -c 'could not read')" 1
 is "D18b untouched - no keys were ever sent" "$(untouched)" yes
 unset BEFORE_FAIL_ALWAYS
+
+echo "D19. a pane closed mid-prepare refuses at once, naming the closed pane"
+# Read 3 is pane_prepare's `before` read; read 4 is the agent-exit wait's first read.
+fresh
+out="$(PANE_GONE_AT=3 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+is "D19a gone at the 'before' read: it refuses" "$rc" 1
+is "D19a and says the pane closed" "$(printf '%s' "$out" | grep -c 'pane w1:p2 closed')" 1
+is "D19a untouched - no keys were ever sent" "$(untouched)" yes
+fresh
+out="$(PANE_GONE_AT=4 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+is "D19b gone during the agent-exit wait: it refuses" "$rc" 1
+is "D19b and says the pane closed, not that its session did not exit" \
+   "$(printf '%s' "$out" | grep -c 'pane w1:p2 closed')" 1
+is "D19b no turn was started" "$(called 'xreview-rpc turn-start')" 0
 
 echo "D18c. Fix round 1/M3: a title that reads back genuinely empty is an observation, not a failure"
 # pane_raw_title's exit 2 (read succeeded, title empty) must resolve before="" on the spot,
@@ -889,6 +911,11 @@ cd "$UNBORN" || exit 1
 out="$(GIT_CEILING_DIRECTORIES="$UNBORN" bash "$XREVIEW" round 2>&1)"; rc=$?
 is "J3 'xreview round' outside any git repo does not crash" "$rc" 0
 is "J3 and prints a real number, not an empty line" "$(printf '%s' "$out" | grep -cE '^[0-9]+$')" 1
+before_apply="$(find "$XDG_STATE_HOME" -name applying 2>/dev/null | wc -l)"
+out="$(GIT_CEILING_DIRECTORIES="$UNBORN" bash "$XREVIEW" apply xr-1 2>&1)"; rc=$?
+is "J4 'xreview apply' outside any git repo refuses" "$rc" 1
+is "J4 and says why" "$(printf '%s' "$out" | grep -c 'not inside a git repository')" 1
+is "J4 and writes no apply window" "$(find "$XDG_STATE_HOME" -name applying 2>/dev/null | wc -l)" "$before_apply"
 cd "$ROOT/repo" || exit 1
 unset PANE_CWD
 rm -rf "$UNBORN"

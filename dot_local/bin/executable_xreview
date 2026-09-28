@@ -126,6 +126,17 @@ pane_agent() { # pane_agent <pane>: the raw .agent field on a genuinely successf
   printf '%s' "$out" | jq -r '.result.pane.agent // empty' 2>/dev/null
 }
 
+die_if_pane_gone() { # die_if_pane_gone <pane>: called after a failed read. herdr answers a
+  # closed pane with exit 1 and a `pane_not_found` envelope on stderr; stop at once rather
+  # than wait out the budget on a pane that no longer exists and then blame its session.
+  local err
+  err="$(herdr pane get "$1" 2>&1 >/dev/null)" || true
+  case "$err" in
+    *'"pane_not_found"'*) die "the Codex pane $1 closed; no review was started" ;;
+  esac
+  return 0
+}
+
 epoch_now() { # a wall-clock reading as plain seconds with a '.' radix, never the locale's
   # own decimal separator (N1: under e.g. nl_BE, $EPOCHREALTIME itself is "S,ssssss", which
   # `LC_ALL=C awk` then truncates at the comma to whole seconds) and never unset (bash < 5
@@ -203,6 +214,7 @@ pane_prepare() { # pane_prepare <pane> [want] [daemon-generation]: the generatio
     raw="$(pane_raw_title "$pane")" || brc=$?
     if [ "$brc" -eq 0 ]; then before="$(title_id_from "$raw")"; break; fi
     if [ "$brc" -eq 2 ]; then before=""; break; fi
+    die_if_pane_gone "$pane"
     LC_ALL=C awk -v s="$bstart" -v e="$(epoch_now)" -v m="$wait" 'BEGIN{exit !(e-s<m)}' \
       || die "could not read the Codex pane's title; no review was started"
     sleep "$poll"
@@ -229,7 +241,7 @@ pane_prepare() { # pane_prepare <pane> [want] [daemon-generation]: the generatio
     # A failed read is treated as "still codex" (keep waiting), never as "the field read
     # empty" (i.e. already exited) - a transient herdr hiccup here must not end this wait
     # early and resume the pane before its old session has actually gone.
-    agent="$(pane_agent "$pane")" || agent="codex"
+    agent="$(pane_agent "$pane")" || { die_if_pane_gone "$pane"; agent="codex"; }
     [ "$agent" = "codex" ] || break
     LC_ALL=C awk -v s="$start" -v e="$(epoch_now)" -v m="$wait" 'BEGIN{exit !(e-s<m)}' \
       || die "the Codex pane $pane did not exit its session within ${wait}s; no review was started"
@@ -249,8 +261,10 @@ pane_prepare() { # pane_prepare <pane> [want] [daemon-generation]: the generatio
     herdr pane run "$pane" "printf '\033]2;xreview\007'" >/dev/null 2>&1 \
       || die "could not start Codex in pane $pane; no review was started"
     while :; do
-      if raw="$(pane_raw_title "$pane")" && ! prefix_is_of "$(title_id_from "$raw")" "$want"; then
-        break
+      if raw="$(pane_raw_title "$pane")"; then
+        prefix_is_of "$(title_id_from "$raw")" "$want" || break
+      else
+        die_if_pane_gone "$pane"
       fi
       LC_ALL=C awk -v s="$start" -v e="$(epoch_now)" -v m="$wait" 'BEGIN{exit !(e-s<m)}' \
         || die "the Codex pane $pane did not show a reset title within ${wait}s; no review was started"
@@ -270,7 +284,7 @@ pane_prepare() { # pane_prepare <pane> [want] [daemon-generation]: the generatio
   fi
   while :; do
     now=""
-    if raw="$(pane_raw_title "$pane")"; then now="$(title_id_from "$raw")"; fi
+    if raw="$(pane_raw_title "$pane")"; then now="$(title_id_from "$raw")"; else die_if_pane_gone "$pane"; fi
     ok=0; resolved=""
     if [ -n "$want" ]; then
       if [ -n "$now" ] && prefix_is_of "$now" "$want"; then
@@ -425,6 +439,8 @@ cmd_apply() {
     rm -f "$dir/applying"; printf 'xreview: apply window closed\n'; return 0
   fi
   [ -n "${1:-}" ] || die "usage: xreview apply <nonce> | xreview apply --done"
+  git rev-parse --show-toplevel >/dev/null 2>&1 \
+    || die "not inside a git repository; an apply window is scoped to a branch's diff"
   local base; base="$(git merge-base HEAD origin/HEAD 2>/dev/null \
                       || git merge-base HEAD main 2>/dev/null || printf '')"
   mkdir -p "$dir"
