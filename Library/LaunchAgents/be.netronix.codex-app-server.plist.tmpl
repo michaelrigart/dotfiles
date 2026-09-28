@@ -20,9 +20,11 @@
   binary - harmless here, because the daemon this launcher would ensure is the one already
   running it.
 
-  StandardOutPath/StandardErrorPath go to ~/Library/Logs/codex-daemon.log, not /dev/null:
-  a daemon that fails to start (or that a bad PATH entry breaks) otherwise leaves nothing
-  to diagnose it with. ~/Library/Logs always exists on macOS, unlike ~/.local/state.
+  The log is ~/.local/state/codex-daemon.log (XDG state), not /dev/null: a daemon that fails
+  to start (or that a bad PATH entry breaks) otherwise leaves nothing to diagnose it with.
+  The shell creates the directory and redirects, instead of StandardOutPath: launchd opens
+  that path before the program runs and cannot create a missing directory, which a fresh
+  machine may not have yet.
 -->
 <plist version="1.0">
 <dict>
@@ -31,10 +33,9 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>{{ if .is_arm }}/opt/homebrew{{ else }}/usr/local{{ end }}/bin/codex</string>
-        <string>app-server</string>
-        <string>daemon</string>
-        <string>start</string>
+        <string>/bin/sh</string>
+        <string>-c</string>
+        <string>mkdir -p '{{ .chezmoi.homeDir }}/.local/state' &amp;&amp; exec '{{ if .is_arm }}/opt/homebrew{{ else }}/usr/local{{ end }}/bin/codex' app-server daemon start &gt;&gt;'{{ .chezmoi.homeDir }}/.local/state/codex-daemon.log' 2&gt;&amp;1</string>
     </array>
 
     <key>EnvironmentVariables</key>
@@ -52,9 +53,5 @@
     <key>AbandonProcessGroup</key>
     <true/>
 
-    <key>StandardOutPath</key>
-    <string>{{ .chezmoi.homeDir }}/Library/Logs/codex-daemon.log</string>
-    <key>StandardErrorPath</key>
-    <string>{{ .chezmoi.homeDir }}/Library/Logs/codex-daemon.log</string>
 </dict>
 </plist>

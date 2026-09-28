@@ -176,9 +176,23 @@ fi
 if plutil -lint "$rendered_intel" >/dev/null 2>&1; then _pass "the intel-rendered plist is valid"; else _fail "the intel-rendered plist is valid" "$(plutil -lint "$rendered_intel" 2>&1)"; fi
 x() { plutil -extract "$1" raw -o - "$rendered" 2>/dev/null; }
 is "the label is the one codex-daemon kickstarts" "$(x Label)" "be.netronix.codex-app-server"
-is "it runs codex app-server daemon start" "$(x ProgramArguments.1) $(x ProgramArguments.2) $(x ProgramArguments.3)" "app-server daemon start"
+is "it runs through /bin/sh -c" "$(x ProgramArguments.0) $(x ProgramArguments.1)" "/bin/sh -c"
+cmd="$(x ProgramArguments.2)"
+is "it execs the real Homebrew binary's daemon start" \
+   "$(printf '%s' "$cmd" | grep -cE "exec '/opt/homebrew/bin/codex' app-server daemon start ")" 1
 is "the program is the real Homebrew binary, not the launcher" \
-   "$(x ProgramArguments.0 | grep -c '/\.local/bin/')" 0
+   "$(printf '%s' "$cmd" | grep -c '/\.local/bin/')" 0
+is "launchd opens no log path itself (it cannot create a missing directory)" \
+   "$(x StandardOutPath >/dev/null 2>&1 && echo set || echo unset)/$(x StandardErrorPath >/dev/null 2>&1 && echo set || echo unset)" "unset/unset"
+# Run the rendered command with HOME and the binary swapped for a scratch dir and a stub: on
+# a machine without ~/.local/state it must create it and append both streams to the log.
+home_q="$(printf '%s' "$HOME" | sed 's/[][\.*^$/]/\\&/g')"
+printf '#!/bin/sh\necho "out $*"; echo err >&2\n' > "$T/fakecodex"; chmod +x "$T/fakecodex"
+run_cmd="$(printf '%s' "$cmd" | sed -e "s/$home_q/${T//\//\\/}\/home/g" -e "s#'/opt/homebrew/bin/codex'#'$T/fakecodex'#")"
+/bin/sh -c "$run_cmd"; /bin/sh -c "$run_cmd"
+is "it creates ~/.local/state when missing" "$([ -d "$T/home/.local/state" ] && echo yes || echo no)" yes
+is "it appends stdout and stderr to ~/.local/state/codex-daemon.log" \
+   "$(tr '\n' '|' < "$T/home/.local/state/codex-daemon.log")" "out app-server daemon start|err|out app-server daemon start|err|"
 is "it runs at load" "$(x RunAtLoad)" true
 is "launchd does not reap the daemon when start returns" "$(x AbandonProcessGroup)" true
 is "it is not kept alive by launchd (the daemon supervises itself)" "$(x KeepAlive >/dev/null 2>&1 && echo set || echo unset)" unset
