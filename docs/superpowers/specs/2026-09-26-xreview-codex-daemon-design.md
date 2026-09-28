@@ -226,9 +226,11 @@ completes the handshake (F2), declines any server-initiated approval request, an
 - `thread-resolve --prefix <p>` (F21): the one loaded thread id starting with `<p>`. Refuses a
   prefix shorter than 13 characters or containing anything but `[0-9a-f-]`. Zero or several
   matches is an error; never a guess.
-- `turn-start --thread <id> --input <file> --schema <file>`: starts a turn with the findings
-  schema, a read-only sandbox policy and approval `never` set on the turn itself. Prints the
-  turn id.
+- `turn-start --thread <id> --input <file> --schema <file> [--known <file>]`: starts a turn
+  with the findings schema, a read-only sandbox policy and approval `never` set on the turn
+  itself. Prints the turn id. `--known` first records the thread's existing turn ids. A
+  thread with no user message yet refuses `thread/turns/list` as "not materialized"; that is
+  an empty baseline, not an error.
 - `turn-wait --thread <id> --turn <id> --budget <secs>`: subscribes first, then reads the
   turn's status, so a turn that finished before the wait began is still caught. It then waits
   for `turn/completed` and prints the final agent message.
@@ -259,7 +261,8 @@ completes the handshake (F2), declines any server-initiated approval request, an
 ### 7.3 Dispatch
 
 `xreview dispatch [--diff <range>] <body-file>`. The output is unchanged: the nonce on stdout.
-The turn starts first; the pane follows it (F22).
+The pane's old TUI is quit before the turn exists; the turn starts; then the pane resumes
+onto the thread and replays it (F22).
 
 1. **Preconditions, before anything is touched:**
    - `codex-daemon ensure` and then `codex-daemon check` pass. If the daemon carries a pane's
@@ -349,6 +352,7 @@ existing fields, so they are unaffected.
 | Pane closes or its session will not exit while being freed | Refuse. No turn exists yet. |
 | Resumed pane never shows the thread | Warn; the review still runs and `collect` works. Superseded threads are kept for later archiving. |
 | Checkpoint thread still running a turn | Refuse; collect the running turn first. |
+| Refusal after the pane was freed (turn-start refused, a local failure) | Relaunch Codex in the pane (resume the review thread, else a fresh session), then refuse. |
 | Turn failed or interrupted | `collect` exits 1 with the reason. |
 | Output not schema-valid | `collect` exits 4. Raw text is printed and labelled untrusted. |
 | Pane-map hook: herdr unreachable, or no title match | Report nothing and exit 0. |
@@ -366,10 +370,11 @@ Every suite checks that its subject exists and exits 2 if not.
   - Asserts:
     - a contaminated daemon, a missing or ambiguous pane and a busy pane each refuse before
       any pane keystroke or `turn/start`;
-    - a new checkpoint thread comes from `thread-start`, and the turn starts before the pane
-      is touched;
-    - a pane that cannot be pointed at the thread only warns: the nonce is printed and the
-      turn recorded;
+    - a new checkpoint thread comes from `thread-start`;
+    - no keystroke reaches the pane after `turn-start`; the TUI is quit before it;
+    - a pane that will not free refuses with no turn started; a pane that fails to resume
+      after the turn only warns: the nonce is printed and the turn recorded;
+    - a refusal after the pane was freed relaunches Codex in the pane;
     - no re-point when the title already shows the id;
     - exit codes 0, 1, 3 and 4;
     - receipt fields, old and new;
