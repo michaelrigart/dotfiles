@@ -84,9 +84,28 @@ pane_field() { # pane_field <pane> <jq-path>
   herdr pane get "$1" 2>/dev/null | jq -r ".result.pane | $2 // empty" 2>/dev/null || true
 }
 
-pane_title_id() { # the thread id PREFIX at the start of the pane's title, if any (29-36 chars)
-  local t; t="$(pane_field "$1" '(.terminal_title_stripped // .terminal_title)')"
+title_id_from() { # title_id_from <raw-title>: the thread id PREFIX at its start, if any
+  local t="$1"
   if [[ "$t" =~ $ID_RE ]]; then printf '%s\n' "${BASH_REMATCH[1]}"; fi
+}
+
+pane_title_id() { # the thread id PREFIX at the start of the pane's title, if any (29-36 chars)
+  title_id_from "$(pane_field "$1" '(.terminal_title_stripped // .terminal_title)')"
+}
+
+pane_raw_title() { # pane_raw_title <pane>: the raw title text on a genuinely successful,
+  # non-empty read; nothing, with a nonzero exit, on any read failure or an empty title. A
+  # read failure and "the title is genuinely empty" are otherwise indistinguishable from
+  # each other through pane_field's own `|| true`, and neither is an OBSERVATION of
+  # anything - conflating either with "a title that does not show want" is the P1 again
+  # (I-1): a transient read failure during the fast poll must never let a stale `want`
+  # title pass as if the replacement TUI had been seen not showing it.
+  local pane="$1" out rc title
+  out="$(herdr pane get "$pane" 2>/dev/null)"; rc=$?
+  [ "$rc" -eq 0 ] && [ -n "$out" ] || return 1
+  title="$(printf '%s' "$out" | jq -r '.result.pane | (.terminal_title_stripped // .terminal_title) // empty' 2>/dev/null)"
+  [ -n "$title" ] || return 1
+  printf '%s\n' "$title"
 }
 
 # prefix_is_of <prefix> <full-id>: does <full-id> start with <prefix>? Empty prefix never
@@ -131,8 +150,8 @@ daemon_gen() {
 pane_prepare() { # pane_prepare <pane> [want] [daemon-generation]: the generation is taken
                   # ONCE by the caller, before this is called, and never re-read here - a
                   # restart mid-prepare must not let a second read disagree with the first.
-  local pane="$1" want="${2:-}" gen="${3:-}" before cmd now ok resolved waited=0 \
-        wait="${XREVIEW_PANE_WAIT:-20}" poll="${XREVIEW_POLL_SECS:-1}" gap rec \
+  local pane="$1" want="${2:-}" gen="${3:-}" before cmd now ok resolved raw raw_ok \
+        wait="${XREVIEW_PANE_WAIT:-20}" poll="${XREVIEW_POLL_SECS:-1}" gap rec start \
         seen_reset=0 poll_fast step
   before="$(pane_title_id "$pane")"
   rec="$(cat "$(state_dir)/pane" 2>/dev/null || true)"
@@ -144,13 +163,18 @@ pane_prepare() { # pane_prepare <pane> [want] [daemon-generation]: the generatio
   # LC_ALL=C: awk's numeric printf/parsing follows LC_NUMERIC, and a locale like nl_BE
   # writes "0,5" - a decimal comma sleep(1) chokes on under set -e (I-2).
   gap="$(LC_ALL=C awk -v p="$poll" 'BEGIN{printf "%g", p/2}')"
+  # Elapsed wall-clock against a fixed start, not a sum of the sleeps themselves (M3): under
+  # the fast poll `waited` summing only sleep durations drifts arbitrarily far behind the
+  # real clock once each iteration's own herdr/jq calls take real time too, so a bound meant
+  # to be seconds could let the wait run far longer.
+  start="$EPOCHREALTIME"
   herdr pane send-keys "$pane" ctrl+c >/dev/null 2>&1 || true
   sleep "$gap"
   herdr pane send-keys "$pane" ctrl+c >/dev/null 2>&1 || true
   while [ "$(pane_field "$pane" '.agent')" = "codex" ]; do
-    LC_ALL=C awk -v w="$waited" -v m="$wait" 'BEGIN{exit !(w<m)}' \
+    LC_ALL=C awk -v s="$start" -v e="$EPOCHREALTIME" -v m="$wait" 'BEGIN{exit !(e-s<m)}' \
       || die "the Codex pane $pane did not exit its session within ${wait}s; no review was started"
-    sleep "$poll"; waited="$(LC_ALL=C awk -v w="$waited" -v p="$poll" 'BEGIN{printf "%g", w+p}')"
+    sleep "$poll"
   done
   [ -z "$want" ] || cmd="$cmd resume $want"
   # Reset the pane's title before relaunching, typed as one line with the launch command: a
@@ -167,13 +191,17 @@ pane_prepare() { # pane_prepare <pane> [want] [daemon-generation]: the generatio
     poll_fast="$(LC_ALL=C awk -v p="$poll" 'BEGIN{v=p/10; if (v<0.05) v=0.05; printf "%g", v}')"
   fi
   while :; do
-    now="$(pane_title_id "$pane")"
+    now=""; raw_ok=0
+    if raw="$(pane_raw_title "$pane")"; then raw_ok=1; now="$(title_id_from "$raw")"; fi
     ok=0; resolved=""
     if [ -n "$want" ]; then
       if [ "$seen_reset" = 0 ]; then
         # The replacement TUI has not shown `want` yet - require seeing that before ever
         # accepting `want` again, so the still-attached old title can never pass as new.
-        if ! prefix_is_of "$now" "$want"; then seen_reset=1; fi
+        # Only a genuinely successful, non-empty read counts as having observed anything at
+        # all (I-1): a transient herdr failure must never be read as "not want" and let a
+        # stale `want` title through on the strength of it.
+        if [ "$raw_ok" = 1 ] && ! prefix_is_of "$now" "$want"; then seen_reset=1; fi
       elif [ -n "$now" ] && prefix_is_of "$now" "$want"; then
         # We already know the full id (it is what we asked the pane to resume): the title
         # just has to agree that it is showing a prefix of it.
@@ -192,11 +220,11 @@ pane_prepare() { # pane_prepare <pane> [want] [daemon-generation]: the generatio
     if [ "$ok" = 1 ] && [ "$(pane_field "$pane" '.agent')" = "codex" ] && loaded "$resolved"; then
       printf '%s\n' "$resolved"; return 0
     fi
-    LC_ALL=C awk -v w="$waited" -v m="$wait" 'BEGIN{exit !(w<m)}' \
+    LC_ALL=C awk -v s="$start" -v e="$EPOCHREALTIME" -v m="$wait" 'BEGIN{exit !(e-s<m)}' \
       || die "the Codex pane $pane did not show ${want:-a new thread} within ${wait}s; no review was started"
     step="$poll"
     [ -n "$want" ] && [ "$seen_reset" = 0 ] && step="$poll_fast"
-    sleep "$step"; waited="$(LC_ALL=C awk -v w="$waited" -v p="$step" 'BEGIN{printf "%g", w+p}')"
+    sleep "$step"
   done
 }
 

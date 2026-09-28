@@ -47,7 +47,11 @@ export NEW_UUID="$U1"
 trunc() { printf '%s...' "$(printf '%s' "$1" | cut -c1-29)"; }
 cat > "$STUB/herdr" <<'H'
 #!/bin/sh
-echo "herdr $*" >> "$CALLS"
+# printf, not echo: some shells' builtin echo is XSI-compliant and silently turns a literal
+# \033/\007 in a logged argument into real ESC/BEL bytes, which would make the log stop
+# matching the literal text the launch command actually contains (M4). printf's %s never
+# reinterprets its argument.
+printf 'herdr %s\n' "$*" >> "$CALLS"
 pane_json() {
   a="$(cat "$P/agent" 2>/dev/null)"; t="$(cat "$P/title" 2>/dev/null)"
   s="$(cat "$P/status" 2>/dev/null || echo idle)"
@@ -80,12 +84,18 @@ pane_json() {
 }
 case "$1 $2" in
   "pane list") printf '{"result":{"panes":[%s%s]}}\n' "$(pane_json)" "${EXTRA_PANES:-}" ;;
-  "pane get") printf '{"result":{"pane":%s}}\n' "$(pane_json)" ;;
+  "pane get")
+    # I-1: consume the fail-once marker on the very first read after the run, simulating a
+    # transient herdr failure - exit nonzero with no output, never a title of any kind.
+    if [ -e "$P/reset_fail_once" ]; then rm -f "$P/reset_fail_once"; exit 1; fi
+    printf '{"result":{"pane":%s}}\n' "$(pane_json)" ;;
   "pane send-keys")
     n=$(cat "$P/ctrlc" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$P/ctrlc"
     if [ "$n" -ge 2 ] && [ -z "${STUCK_TUI:-}" ]; then : > "$P/agent"; fi ;;
   "pane run")
-    echo 0 > "$P/ctrlc"; rm -f "$P/get_calls" "$P/reset_calls" "$P/reset_pending"; : > "$P/lag_active"
+    echo 0 > "$P/ctrlc"
+    rm -f "$P/get_calls" "$P/reset_calls" "$P/reset_pending" "$P/reset_fail_once"
+    : > "$P/lag_active"
     [ -n "${NO_TITLE:-}" ] && exit 0
     printf codex > "$P/agent"
     # Truncate to a realistic title (F11/F21: 29 chars plus "..." once the thread is named).
@@ -96,14 +106,27 @@ case "$1 $2" in
       # whatever the pane's title showed before - RELAUNCH_PREFIX_LEN simulates that.
       *) full="$NEW_UUID"; len="${RELAUNCH_PREFIX_LEN:-29}" ;;
     esac
-    if [ -n "${STUCK_TITLE:-}" ]; then
-      : # the disconnected TUI never actually attaches: the title stays exactly as it
-        # was, still showing `want` - pane_prepare must never accept that without first
-        # observing a non-want title.
-    else
-      printf '%s... | t | d' "$(printf '%s' "$full" | cut -c1-"$len")" > "$P/newtitle"
-      printf xreview > "$P/title"; : > "$P/reset_pending"
-    fi ;;
+    # M4: react to the literal reset prefix actually being in the typed command, not to
+    # "a pane run happened" - so this stub asserts the real thing (the command really does
+    # reset the title) rather than assuming it.
+    case "$4" in
+      *"printf '\033]2;xreview\007';"*)
+        # I-1: one `pane get` right after the run fails outright (not merely empty),
+        # simulating a transient herdr hiccup during the fast poll. It applies whether or
+        # not the title itself actually resets, so it also covers the exact repro combined
+        # with STUCK_TITLE: a failed read must never be read as "observed a title that is
+        # not want".
+        [ -n "${RESET_FAIL_ONCE:-}" ] && : > "$P/reset_fail_once"
+        if [ -n "${STUCK_TITLE:-}" ]; then
+          : # the disconnected TUI never actually attaches: the title stays exactly as it
+            # was, still showing `want` - pane_prepare must never accept that without first
+            # observing a non-want title.
+        else
+          printf '%s... | t | d' "$(printf '%s' "$full" | cut -c1-"$len")" > "$P/newtitle"
+          printf xreview > "$P/title"; : > "$P/reset_pending"
+        fi ;;
+      *) printf '%s... | t | d' "$(printf '%s' "$full" | cut -c1-"$len")" > "$P/title" ;;
+    esac ;;
 esac
 exit 0
 H
@@ -155,14 +178,14 @@ export PATH="$STUB:$PATH"
 
 fresh() { # a pane showing U0, idle; clean log and state
   unset ENSURE_RC CHECK_RC RPC_NOT_LOADED RPC_NOT_LOADED_ONCE RPC_NOT_LOADED_ONCE_AT RPC_START_FAIL \
-        RPC_START_UNCERTAIN RPC_START_BAD_ID NO_TITLE STUCK_TUI STUCK_TITLE RESET_LAG EXTRA_PANES \
-        PANE_CWD XREVIEW_PANE XREVIEW_THREAD RPC_WAIT_OUT RPC_WAIT_RC RPC_THREAD_RUNNING \
-        RPC_HEALTH_FAIL AGENT_LAG
+        RPC_START_UNCERTAIN RPC_START_BAD_ID NO_TITLE STUCK_TUI STUCK_TITLE RESET_LAG \
+        RESET_FAIL_ONCE EXTRA_PANES PANE_CWD XREVIEW_PANE XREVIEW_THREAD RPC_WAIT_OUT \
+        RPC_WAIT_RC RPC_THREAD_RUNNING RPC_HEALTH_FAIL AGENT_LAG
   export NEW_UUID="$U1"
   printf codex > "$P/agent"; printf '%s | t | d' "$(trunc "$U0")" > "$P/title"; echo idle > "$P/status"
   echo 0 > "$P/ctrlc"
   rm -f "$P/packet" "$P/status_calls" "$P/get_calls" "$P/lag_active" "$P/reset_calls" \
-        "$P/reset_pending" "$P/newtitle"
+        "$P/reset_pending" "$P/newtitle" "$P/reset_fail_once"
   bash "$XREVIEW" round --reset >/dev/null 2>&1
   rm -rf "$STATE/superseded" "$STATE/pin" "$STATE/turns"
   rm -f "$STATE/pane"   # F31: the fast-path record must never leak from a previous test
@@ -306,12 +329,8 @@ is "D2 and goes to the same thread" "$(called "xreview-rpc turn-start --thread $
 printf '%s | t | d' "$(trunc "$U0")" > "$P/title"; : > "$CALLS"
 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
 is "D3 a pane that moved off the thread is resumed onto it" "$(called "herdr pane run w1:p2 .*codex --sandbox read-only --ask-for-approval never resume $U1")" 1
-# The stub's own `echo` (its shell's XSI-style builtin) renders \033/\007 as the real ESC/BEL
-# bytes when it logs $*, exactly as the pane's own shell would when it actually runs the typed
-# printf - so matching on the real bytes here asserts the same thing a real pane would see.
-reset_prefix="printf '$(printf '\033')]2;xreview$(printf '\007')'; codex"
 is "D3b the typed command resets the title first, in the same line" \
-   "$(grep -Fc "herdr pane run w1:p2 $reset_prefix " "$CALLS")" 1
+   "$(grep -Fc "herdr pane run w1:p2 printf '\033]2;xreview\007'; codex " "$CALLS")" 1
 
 echo "D3c. the P1 (slice 2): a disconnected TUI's retained title never passes as the resumed session"
 fresh
@@ -323,6 +342,36 @@ is "D3c it refuses after the wait, never trusting the retained title" \
    "$(printf '%s' "$out" | grep -c 'did not show')" 1
 is "D3c and no turn ever starts on the unwatched pane" "$(called 'xreview-rpc turn-start')" 0
 rm -rf "$CODEX_HOME/app-server-daemon"   # restore the "no daemon.pid yet" baseline for later tests
+
+echo "D3d. I-1: a single failed read right after the run is never mistaken for 'observed not-want'"
+fresh
+bash "$XREVIEW" dispatch b.md >/dev/null 2>&1   # establishes want=U1; the pane's title already shows it
+mkdir -p "$CODEX_HOME/app-server-daemon"; printf '{"pid":999}\n' > "$CODEX_HOME/app-server-daemon/daemon.pid"
+: > "$CALLS"
+out="$(STUCK_TITLE=1 RESET_FAIL_ONCE=1 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+is "D3d it refuses after the wait, a failed read never counted as a real observation" \
+   "$(printf '%s' "$out" | grep -c 'did not show')" 1
+is "D3d and no turn ever starts on the unwatched pane" "$(called 'xreview-rpc turn-start')" 0
+rm -rf "$CODEX_HOME/app-server-daemon"   # restore the "no daemon.pid yet" baseline for later tests
+
+echo "D3e. M5: a real (non-degenerate) poll interval, with a transient lasting several polls"
+# The suite otherwise runs at XREVIEW_POLL_SECS=0.05, floored to the same value as poll_fast
+# (0.05/10 < 0.05), so the fast and normal polls are indistinguishable there. Here poll=0.5s
+# makes poll_fast (0.05s) genuinely smaller, and RESET_LAG=2 keeps the reset title showing
+# for a couple of reads before the real one lands - still resolves quickly, not at 0.5s
+# multiples throughout.
+fresh
+bash "$XREVIEW" dispatch b.md >/dev/null 2>&1   # establishes want=U1
+mkdir -p "$CODEX_HOME/app-server-daemon"; printf '{"pid":999}\n' > "$CODEX_HOME/app-server-daemon/daemon.pid"
+: > "$CALLS"
+start="$EPOCHREALTIME"
+out="$(XREVIEW_POLL_SECS=0.5 XREVIEW_PANE_WAIT=5 RESET_LAG=2 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+took="$(LC_ALL=C awk -v s="$start" -v e="$EPOCHREALTIME" 'BEGIN{printf "%.3f", e-s}')"
+is "D3e it still succeeds under a real poll interval with a multi-poll transient" \
+   "$(printf '%s' "$out" | grep -c '^xr-')" 1
+is "D3e and it stays quick, not several multiples of the 0.5s poll" \
+   "$(LC_ALL=C awk -v t="$took" 'BEGIN{print (t<3) ? "yes" : "no ("t"s)"}')" yes
+rm -rf "$CODEX_HOME/app-server-daemon"
 
 fresh; out="$(NO_TITLE=1 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
 is "D4 a pane that never shows a thread refuses" "$rc" 1
