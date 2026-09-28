@@ -132,7 +132,8 @@ pane_prepare() { # pane_prepare <pane> [want] [daemon-generation]: the generatio
                   # ONCE by the caller, before this is called, and never re-read here - a
                   # restart mid-prepare must not let a second read disagree with the first.
   local pane="$1" want="${2:-}" gen="${3:-}" before cmd now ok resolved waited=0 \
-        wait="${XREVIEW_PANE_WAIT:-20}" poll="${XREVIEW_POLL_SECS:-1}" gap rec
+        wait="${XREVIEW_PANE_WAIT:-20}" poll="${XREVIEW_POLL_SECS:-1}" gap rec \
+        seen_reset=0 poll_fast step
   before="$(pane_title_id "$pane")"
   rec="$(cat "$(state_dir)/pane" 2>/dev/null || true)"
   if [ -n "$want" ] && prefix_is_of "$before" "$want" && [ "$rec" = "$pane $want $gen" ] \
@@ -152,23 +153,39 @@ pane_prepare() { # pane_prepare <pane> [want] [daemon-generation]: the generatio
     sleep "$poll"; waited="$(LC_ALL=C awk -v w="$waited" -v p="$poll" 'BEGIN{printf "%g", w+p}')"
   done
   [ -z "$want" ] || cmd="$cmd resume $want"
+  # Reset the pane's title before relaunching, typed as one line with the launch command: a
+  # disconnected TUI's title otherwise still shows the old thread, which on the resume path
+  # is `want` itself - without a reset, "the title already shows want" is indistinguishable
+  # from "the replacement TUI has attached", and turn/start would run on a pane nothing is
+  # watching yet (P1, slice 2). Harmless on the fresh-session path too.
+  cmd="printf '\033]2;xreview\007'; $cmd"
   herdr pane run "$pane" "$cmd" >/dev/null 2>&1 || die "could not start Codex in pane $pane; no review was started"
+  if [ -n "$want" ]; then
+    # A short transient title (the reset, or the TUI's own startup title before it resumes)
+    # must not be missed between polls, so this phase polls faster than the steady-state
+    # wait - floored so a tiny XREVIEW_POLL_SECS never busy-loops.
+    poll_fast="$(LC_ALL=C awk -v p="$poll" 'BEGIN{v=p/10; if (v<0.05) v=0.05; printf "%g", v}')"
+  fi
   while :; do
     now="$(pane_title_id "$pane")"
     ok=0; resolved=""
-    if [ -n "$now" ]; then
-      if [ -n "$want" ]; then
+    if [ -n "$want" ]; then
+      if [ "$seen_reset" = 0 ]; then
+        # The replacement TUI has not shown `want` yet - require seeing that before ever
+        # accepting `want` again, so the still-attached old title can never pass as new.
+        if ! prefix_is_of "$now" "$want"; then seen_reset=1; fi
+      elif [ -n "$now" ] && prefix_is_of "$now" "$want"; then
         # We already know the full id (it is what we asked the pane to resume): the title
         # just has to agree that it is showing a prefix of it.
-        if prefix_is_of "$now" "$want"; then ok=1; resolved="$want"; fi
-      elif ! prefix_is_of "$now" "$before" && ! prefix_is_of "$before" "$now"; then
-        # A fresh session: neither prefix is a prefix of the other, so this is genuinely a
-        # different thread, not the same one shown at a different truncation length. The
-        # pane's title is the only place its new id appears, and it is only ever a prefix
-        # (F11/F21). Resolve it - never guess it - before using it.
-        resolved="$(xreview-rpc thread-resolve --prefix "$now" 2>/dev/null)" \
-          && [ -n "$resolved" ] && ok=1
+        ok=1; resolved="$want"
       fi
+    elif [ -n "$now" ] && ! prefix_is_of "$now" "$before" && ! prefix_is_of "$before" "$now"; then
+      # A fresh session: neither prefix is a prefix of the other, so this is genuinely a
+      # different thread, not the same one shown at a different truncation length. The
+      # pane's title is the only place its new id appears, and it is only ever a prefix
+      # (F11/F21). Resolve it - never guess it - before using it.
+      resolved="$(xreview-rpc thread-resolve --prefix "$now" 2>/dev/null)" \
+        && [ -n "$resolved" ] && ok=1
     fi
     # A matching title alone can still be stale: the terminal's title escape can land
     # before herdr's own .agent field catches up to the new session. Require both.
@@ -177,7 +194,9 @@ pane_prepare() { # pane_prepare <pane> [want] [daemon-generation]: the generatio
     fi
     LC_ALL=C awk -v w="$waited" -v m="$wait" 'BEGIN{exit !(w<m)}' \
       || die "the Codex pane $pane did not show ${want:-a new thread} within ${wait}s; no review was started"
-    sleep "$poll"; waited="$(LC_ALL=C awk -v w="$waited" -v p="$poll" 'BEGIN{printf "%g", w+p}')"
+    step="$poll"
+    [ -n "$want" ] && [ "$seen_reset" = 0 ] && step="$poll_fast"
+    sleep "$step"; waited="$(LC_ALL=C awk -v w="$waited" -v p="$step" 'BEGIN{printf "%g", w+p}')"
   done
 }
 
