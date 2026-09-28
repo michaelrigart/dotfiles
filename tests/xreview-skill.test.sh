@@ -294,10 +294,18 @@ for stale in 'XREVIEW_THREAD_WARN' 'answered eight' 'send the pane one message' 
     _pass "the skill no longer says '$stale'"
   fi
 done
-if grep -qi 'The turn starts first' "$SKILL"; then
-  _pass "the skill explains turn-first dispatch"
+# fix round 2/E: the ordering is quit-then-turn-then-resume, not "turn starts first" (which
+# omitted the pane-quit step entirely and drifted from spec 7.3 as amended in d9d31a4).
+if grep -qi "the pane's old session is quit first" "$SKILL"; then
+  _pass "the skill explains the quit-then-turn-then-resume ordering"
 else
-  _fail "the skill explains turn-first dispatch" "missing"
+  _fail "the skill explains the quit-then-turn-then-resume ordering" "missing"
+fi
+if grep -q 'The turn starts first' "$SKILL"; then
+  _fail "the skill no longer says the turn starts first" \
+        "stale wording survives - it omits the pane being quit before the turn"
+else
+  _pass "the skill no longer says the turn starts first"
 fi
 if grep -q 'The pane comes first' "$SKILL"; then
   _fail "the skill no longer says the pane comes first" "stale pane-first wording survives"
