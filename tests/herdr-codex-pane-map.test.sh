@@ -210,6 +210,23 @@ is "it exits 0"                                          "$rc" 0
 is "the resolver is asked about the failing prefix only once, despite several retry passes" \
    "$(rpc_calls)" 1
 
+echo "L. two panes sharing the same title prefix never both get the hook's own full id"
+# Both panes' prefix is a prefix of the hook's own session_id, so the shortcut is ambiguous.
+# It must fall back to the resolver for both, which refuses (ambiguous) - so neither is
+# reported, and no later pass is left with two panes stuck on the same full id (item 13).
+cat > "$T/failrpc" <<'R'
+#!/bin/sh
+echo "$*" >> "$RPC_CALLS"
+exit 1
+R
+chmod +x "$T/failrpc"
+fixture "$(pane w20:p2 codex "$(trunc "$U1") | t | d" "")","$(pane w21:p2 codex "$(trunc "$U1") | t | d" "")"
+printf '{"session_id":"%s","source":"startup"}' "$U1" \
+  | XREVIEW_RPC_BIN="$T/failrpc" PANE_MAP_RETRY_SECS=0 hook; rc=$?
+is "it exits 0"                                                 "$rc" 0
+is "neither ambiguous pane is reported"                          "$(reports)" 0
+is "the resolver is asked once, for the shared prefix, and refuses" "$(rpc_calls)" 1
+
 echo
 echo "RESULT: $pass passed, $((pass + fail)) total, $fail failed"
 [ "$fail" -eq 0 ]

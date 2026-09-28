@@ -149,6 +149,23 @@ def reconcile(herdr, done, session_id=None, start_source=None, failed=None):
     if session_id:
         listed = sorted(listed, key=own_pane_first)
 
+    # How many Codex panes' title prefix is a prefix of the hook's own session_id, in this
+    # same listing. Two threads can share a truncated prefix (F13/item 13); the own-session
+    # shortcut below is only safe when exactly one pane matches it - otherwise both would be
+    # reported as if they were the starting session, and a later pass would leave both stuck
+    # (a prefix match is enough to skip re-resolving).
+    own_session_matches = 0
+    if session_id:
+        for p in listed:
+            if not isinstance(p, dict) or p.get("agent") != "codex":
+                continue
+            try:
+                pfx = title_prefix(p)
+            except Exception:
+                continue
+            if pfx and session_id.startswith(pfx):
+                own_session_matches += 1
+
     # One fingerprint for every report this pass makes: they all describe the state
     # observed in this one `pane list`, not one each's own call time.
     seq = time.time_ns()
@@ -173,8 +190,9 @@ def reconcile(herdr, done, session_id=None, start_source=None, failed=None):
             current = agent_session.get("value") if isinstance(agent_session, dict) else None
             if current and current.startswith(prefix):
                 continue   # already correct - a prefix match is enough, never re-resolved
-            if session_id and session_id.startswith(prefix):
+            if session_id and session_id.startswith(prefix) and own_session_matches == 1:
                 # The hook's own session: its full id is already known, no daemon needed.
+                # Only safe when exactly one pane's prefix matches it - see own_session_matches.
                 full, src = session_id, start_source
             elif prefix in failed:
                 full, src = None, None   # already tried and failed this run - never retried
