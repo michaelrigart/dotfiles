@@ -189,13 +189,14 @@ is "M6a and says no turn, not an unreadable-listing error" "$(grep -c 'no turn' 
 is "M6a exactly two pages were fetched, then it stopped" \
    "$(jq -r 'select(.method=="thread/turns/list") | .method' "$FAKE_LOG" | grep -c .)" 2
 
-echo "M6b. a cursor that never ends is reported as unreadable at the budget, never a false 'no turn'"
+echo "M6b. a cursor that never ends exits 3 (still running, try again) at the budget, never a false 'no turn' (N2)"
 forever="$(jq -nc '{result:{data:[{id:"other",status:"completed",items:[]}], nextCursor:"forever"}}')"
 scenario "$(jq -nc --argjson f "$forever" '{responses:{"thread/turns/list":[$f]}}')"
 rpc turn-wait --thread th --turn turn-absent --budget 0.6 --schema "$SCHEMA" >/dev/null 2>"$T/err"; rc=$?
-is "M6b it exits 1" "$rc" 1
-is "M6b and reports the listing as unreadable, never a false 'no turn'" \
-   "$(grep -c 'could not be read' "$T/err")" 1
+is "M6b it exits 3, not the plain read-failure 1" "$rc" 3
+is "M6b and says to collect again with a larger budget" \
+   "$(grep -c 'collect again with a larger budget' "$T/err")" 1
+is "M6b and never the plain read-failure message" "$(grep -c 'could not be read' "$T/err")" 0
 is "M6b and never claims no turn exists" "$(grep -c 'no turn' "$T/err")" 0
 
 echo "E4. a transient thread/turns/list error is retried, not reported as no turn"

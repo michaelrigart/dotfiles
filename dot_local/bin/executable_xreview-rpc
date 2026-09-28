@@ -439,6 +439,14 @@ class ListUnreadable(Exception):
     happened instead of the misleading "no turn"."""
 
 
+class PagingIncomplete(ListUnreadable):
+    """The budget ran out while paging thread/turns/list for a fixed turn with a cursor
+    still pending (M2/N2) - unread pages might have held it. This is NOT "every attempt
+    errored" (the base ListUnreadable's own cause): nothing here failed, there just wasn't
+    time to finish. The caller reports it as "still running, try again" (exit 3), not the
+    plain read-failure exit 1."""
+
+
 def turn_state(c, thread, turn, known=None, deadline=None):
     """The turn by id, or with known given, the oldest turn whose id is not in it.
 
@@ -502,7 +510,7 @@ def turn_state(c, thread, turn, known=None, deadline=None):
                     break
             last_error = page_error
             if incomplete and last_error is None:
-                raise ListUnreadable(
+                raise PagingIncomplete(
                     "budget exhausted while paging thread/turns/list for turn %r "
                     "(a cursor was still pending)" % turn)
             if last_error is None:
@@ -545,6 +553,10 @@ def cmd_turn_wait(a):
             c.call("thread/resume", {"threadId": a.thread})   # subscribe before looking
             try:
                 t = turn_state(c, a.thread, a.turn, known, deadline)
+            except PagingIncomplete as e:
+                err(f"could not finish reading the thread's turns within the budget; "
+                    f"collect again with a larger budget ({e})")
+                return 3
             except ListUnreadable as e:
                 err(f"the thread's turns could not be read: {e}")
                 return 1
