@@ -98,7 +98,7 @@ pane_raw_title() { # pane_raw_title <pane>: the raw title text on a genuinely su
   # read failure and "the title is genuinely empty" are otherwise indistinguishable from
   # each other through pane_field's own `|| true`, and neither is an OBSERVATION of
   # anything - conflating either with "a title that does not show want" is the P1 again
-  # (I-1): a transient read failure during the fast poll must never let a stale `want`
+  # (I-1): a transient read failure during the reset wait must never let a stale `want`
   # title pass as if the replacement TUI had been seen not showing it.
   local pane="$1" out rc=0 title
   out="$(herdr pane get "$pane" 2>/dev/null)" || rc=$?
@@ -185,10 +185,10 @@ pane_prepare() { # pane_prepare <pane> [want] [daemon-generation]: the generatio
   # LC_ALL=C: awk's numeric printf/parsing follows LC_NUMERIC, and a locale like nl_BE
   # writes "0,5" - a decimal comma sleep(1) chokes on under set -e (I-2).
   gap="$(LC_ALL=C awk -v p="$poll" 'BEGIN{printf "%g", p/2}')"
-  # Elapsed wall-clock against a fixed start, not a sum of the sleeps themselves (M3): under
-  # the fast poll `waited` summing only sleep durations drifts arbitrarily far behind the
-  # real clock once each iteration's own herdr/jq calls take real time too, so a bound meant
-  # to be seconds could let the wait run far longer.
+  # Elapsed wall-clock against a fixed start, not a sum of the sleeps themselves (M3): a
+  # `waited` summing only sleep durations drifts arbitrarily far behind the real clock once
+  # each iteration's own herdr/jq calls take real time too, so a bound meant to be seconds
+  # could let the wait run far longer.
   start="$(epoch_now)"
   herdr pane send-keys "$pane" ctrl+c >/dev/null 2>&1 || true
   sleep "$gap"
@@ -232,10 +232,9 @@ pane_prepare() { # pane_prepare <pane> [want] [daemon-generation]: the generatio
     herdr pane run "$pane" "$cmd resume $want" >/dev/null 2>&1 \
       || die "could not start Codex in pane $pane; no review was started"
   else
-    # Harmless on the fresh-session path too, and simpler kept as one step: nothing has shown
-    # `want` there in the first place, so there is no stale title to be mistaken for the
-    # replacement TUI, and its different-prefix check below already rejects a retained title.
-    herdr pane run "$pane" "printf '\033]2;xreview\007'; $cmd" >/dev/null 2>&1 \
+    # No reset here: there is no `want` a retained title could be mistaken for, since the
+    # different-prefix check below already rejects it on its own.
+    herdr pane run "$pane" "$cmd" >/dev/null 2>&1 \
       || die "could not start Codex in pane $pane; no review was started"
   fi
   while :; do

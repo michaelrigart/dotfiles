@@ -24,7 +24,7 @@ export XDG_STATE_HOME="$ROOT/state" XDG_CONFIG_HOME="$ROOT/config" CODEX_HOME="$
 mkdir -p "$XDG_CONFIG_HOME/xreview" "$XDG_CONFIG_HOME/herdr" "$TMPDIR"
 cp "$SRC/dot_config/xreview/findings.schema.json" "$SRC/dot_config/xreview/reviewer.md" "$XDG_CONFIG_HOME/xreview/"
 cp "$SRC/dot_config/herdr/codex-pane-command" "$XDG_CONFIG_HOME/herdr/"
-export XREVIEW_POLL_SECS=0.05 XREVIEW_PANE_WAIT=0.15
+export XREVIEW_POLL_SECS=0.05 XREVIEW_PANE_WAIT=2
 unset XREVIEW_MAX_ROUNDS XREVIEW_PANE XREVIEW_THREAD
 
 mkdir -p "$ROOT/repo" && cd "$ROOT/repo" || exit 1
@@ -110,12 +110,13 @@ case "$1 $2" in
     echo 0 > "$P/ctrlc"
     rm -f "$P/get_calls" "$P/reset_calls" "$P/reset_pending" "$P/reset_fail_once" \
           "$P/exit_delay_active" "$P/exit_delay_calls" "$P/agent_fail_once"
-    # The resume path now sends the reset ALONE, as its own `pane run` (step a), and only
+    # The resume path sends the reset ALONE, as its own `pane run` (step a), and only
     # afterwards the actual launch command (step c) - no more single combined command
-    # (item 21/P2). React to which shape this call actually has, not to "a pane run
-    # happened": the exact reset-alone string is step (a); anything else (a bare resume
-    # command, or the fresh-session path's own combined "reset; launch" line, which never
-    # carries "resume") is the launch itself.
+    # (item 21/P2). The fresh-session path sends no reset at all (M4: its different-prefix
+    # check already holds, so a reset there carries no weight). React to which shape this
+    # call actually has, not to "a pane run happened": the exact reset-alone string is step
+    # (a); anything else (a bare resume command, or the fresh session's own bare launch
+    # command) is the launch itself.
     case "$4" in
       "printf '\033]2;xreview\007'")
         # Step (a): the reset alone. Clears the old session; the title then STAYS at
@@ -135,7 +136,7 @@ case "$1 $2" in
           printf xreview > "$P/title"
         fi ;;
       *)
-        # Step (c) (or the fresh-session's single combined call).
+        # Step (c) (or the fresh-session's own bare launch call - never prefixed by a reset).
         [ -n "${NO_TITLE:-}" ] && exit 0
         printf codex > "$P/agent"
         : > "$P/lag_active"
@@ -378,7 +379,9 @@ fresh
 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1   # establishes want=U1; the pane's title already shows it
 mkdir -p "$CODEX_HOME/app-server-daemon"; printf '{"pid":999}\n' > "$CODEX_HOME/app-server-daemon/daemon.pid"
 : > "$CALLS"
-out="$(STUCK_TITLE=1 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+# A tight local wait: this must genuinely exhaust the deadline to prove the refusal, and the
+# suite-wide XREVIEW_PANE_WAIT (now 2s, I-1) is too generous to reach that within a fast test.
+out="$(STUCK_TITLE=1 XREVIEW_PANE_WAIT=0.15 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
 is "D3c it refuses after the wait, never trusting the retained title" \
    "$(printf '%s' "$out" | grep -c 'did not show')" 1
 is "D3c and no turn ever starts on the unwatched pane" "$(called 'xreview-rpc turn-start')" 0
@@ -389,7 +392,8 @@ fresh
 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1   # establishes want=U1; the pane's title already shows it
 mkdir -p "$CODEX_HOME/app-server-daemon"; printf '{"pid":999}\n' > "$CODEX_HOME/app-server-daemon/daemon.pid"
 : > "$CALLS"
-out="$(STUCK_TITLE=1 RESET_FAIL_ONCE=1 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+# A tight local wait (I-1): must genuinely exhaust the deadline to prove the refusal.
+out="$(STUCK_TITLE=1 RESET_FAIL_ONCE=1 XREVIEW_PANE_WAIT=0.15 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
 is "D3d it refuses after the wait, a failed read never counted as a real observation" \
    "$(printf '%s' "$out" | grep -c 'did not show')" 1
 is "D3d and no turn ever starts on the unwatched pane" "$(called 'xreview-rpc turn-start')" 0
@@ -439,7 +443,8 @@ is "D4 and no turn starts" "$(called 'xreview-rpc turn-start')" 0
 fresh; printf 'Greet user | chezmoi' > "$P/title"
 nonce="$(bash "$XREVIEW" dispatch b.md 2>/dev/null)"
 is "D5 a pane whose title has no id is restarted and adopted" "$(cat "$STATE/review-thread" 2>/dev/null)" "$U1"
-fresh; out="$(STUCK_TUI=1 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+# A tight local wait (I-1): must genuinely exhaust the deadline to prove the refusal.
+fresh; out="$(STUCK_TUI=1 XREVIEW_PANE_WAIT=0.15 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
 is "D6 a session that will not exit refuses" "$(printf '%s' "$out" | grep -c 'did not exit')" 1
 is "D6 and never starts a new one" "$(called 'herdr pane run')" 0
 fresh; out="$(RPC_NOT_LOADED=1 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
@@ -509,13 +514,17 @@ is "D13 a title that updates before .agent says codex is not trusted early" \
 is "D13 dispatch waited for .agent to actually say codex" \
    "$(awk -v t="$took" -v p="$XREVIEW_POLL_SECS" 'BEGIN{print (t >= p) ? "yes" : "no ("t"s)"}')" yes
 fresh; export AGENT_LAG=10
-out="$(bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+# A tight local wait (I-1): AGENT_LAG=10 must genuinely outlast the deadline, and the
+# suite-wide XREVIEW_PANE_WAIT (now 2s) would let 10 polls fit and catch up instead.
+out="$(XREVIEW_PANE_WAIT=0.15 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
 is "D14 .agent never saying codex times out" "$rc" 1
 is "D14 and says so" "$(printf '%s' "$out" | grep -c 'did not show')" 1
 unset AGENT_LAG
 
 fresh; export NEW_UUID=dddddddd-4444-4444-8444-444444444444   # unknown to the resolver stub
-out="$(bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+# A tight local wait (I-1): an unresolvable prefix never matches, so this must genuinely
+# exhaust the deadline to refuse.
+out="$(XREVIEW_PANE_WAIT=0.15 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
 is "D15 a title prefix that resolves to no loaded thread refuses after the wait" \
    "$(printf '%s' "$out" | grep -c 'did not show')" 1
 is "D15 and no turn starts" "$(called 'xreview-rpc turn-start')" 0
@@ -533,7 +542,9 @@ fresh
 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1   # the pane now shows U1's standard 29-char prefix
 bash "$XREVIEW" round --reset >/dev/null 2>&1   # want="" for the next dispatch; the title is untouched
 : > "$CALLS"
-out="$(RELAUNCH_PREFIX_LEN=36 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+# A tight local wait (I-1): the different-prefix check never matches, so this must
+# genuinely exhaust the deadline to refuse.
+out="$(RELAUNCH_PREFIX_LEN=36 XREVIEW_PANE_WAIT=0.15 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
 is "D17 it refuses, never mistaking the shorter prefix for a new thread" "$rc" 1
 is "D17 and says so" "$(printf '%s' "$out" | grep -c 'did not show a new thread')" 1
 is "D17 and never dispatches into the old (or any) thread" "$(called 'xreview-rpc turn-start')" 0
