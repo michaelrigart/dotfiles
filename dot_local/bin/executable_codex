@@ -64,6 +64,16 @@ for a in "$@"; do
     -h|--help|-V|--version) helpver=1 ;;
     -i|--image) imgskip=1 ;;
     -m|--model|-p|--profile|-s|--sandbox|-a|--ask-for-approval|-C|--cd|--add-dir|--remote-auth-token-env|--local-provider) skip=1 ;;
+    # A short-option CLUSTER holding h or V ("-hV", "-Vh", "-xh", ...) is also help/version:
+    # neither ever takes a value, so any single-dash cluster containing one is unambiguous.
+    # A cluster led by a value-taking short flag (-m/-p/-s/-a/-C/-i) is its attached value,
+    # not further flags, even if that value happens to contain the letter h or V - excluded
+    # first, so e.g. "-mVerbose" or "-i/home/x.png" is never misread as help/version.
+    -[!-]*)
+      case "$a" in
+        -[mpsaCi]*) ;;
+        *h*|*V*) helpver=1 ;;
+      esac ;;
     -*) ;;
     *) [ -n "$sub" ] || sub="$a" ;;
   esac

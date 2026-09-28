@@ -161,6 +161,25 @@ is "ensure reached the helper beside the launcher"           "$(grep -c 'codex-d
 is "check reached the helper beside the launcher"            "$(grep -c 'codex-daemon check' "$CALLS")" 1
 is "no 'command not found' from a bare codex-daemon lookup"  "$(grep -ci 'not found' "$T/err")" 0
 
+echo "N. a short-option CLUSTER holding h or V is also help/version, without misreading a value"
+# codex -hV (0.157.1): a short cluster is not matched by the exact "-h|--help|-V|--version"
+# arm, so it fell through to the launcher's ordinary interactive path and called
+# ensure/check before the real binary's own -h/-V handling ever ran.
+is "'-hV' (h and V clustered) passes through"       "$(run -hV)" "REAL -hV"
+is "and never touches the daemon"                    "$(ensured)" 0
+is "'-Vh' (order reversed) passes through"           "$(run -Vh)" "REAL -Vh"
+is "and never touches the daemon"                    "$(ensured)" 0
+is "'-xh' (an unrelated flag clustered with h) passes through" "$(run -xh)" "REAL -xh"
+is "and never touches the daemon"                    "$(ensured)" 0
+is "'resume -hV' passes through regardless of position" "$(run resume -hV)" "REAL resume -hV"
+is "and never touches the daemon"                    "$(ensured)" 0
+# A value-taking short flag leading the cluster makes the rest its attached value, never
+# further flags - "-mV" must still ensure the daemon like any other interactive start with
+# a --model value, not be misread as help/version because the value happens to contain "V".
+is "'-mV' (an attached model value, not a cluster) still starts interactively" \
+   "$(run -mV)" "REAL -mV"
+is "because -m leads it, so it ensures the daemon like any other start" "$(ensured)" 1
+
 echo
 echo "RESULT: $pass passed, $((pass + fail)) total, $fail failed"
 [ "$fail" -eq 0 ]
