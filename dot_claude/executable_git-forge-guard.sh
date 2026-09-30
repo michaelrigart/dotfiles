@@ -103,7 +103,7 @@ case "$payload" in
         [ -n "$a" ] || continue
         case "$payload" in *"$a"*) push_alias=1; break ;; esac
       done <<EOF
-$(git -C "$pcwd" config --get-regexp '^alias\.' 2>/dev/null | sed -n -E 's/^alias\.([^ ]+) (push|!.*push).*/\1/p')
+$(git -C "$pcwd" config --get-regexp '^alias\.' 2>/dev/null | sed -n -E 's/^alias\.([^ ]+) .*(push|send-pack|subtree|submodule|rebase|bisect).*/\1/p')
 EOF
     fi
     ;;

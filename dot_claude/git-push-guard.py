@@ -27,8 +27,11 @@
 # It never asks on doubt (an ask costs Michael a prompt) and never allows on doubt (a push
 # is the one irreversible outward path).
 #
-# Known limit: a push word assembled by expansion (git ${X:-pu}sh) has no literal push in
-# the payload, so the shell fast path never starts this helper; the classifier is the backstop.
+# Threat model: rule 4 covers the commands an agent plausibly writes, accidents included.
+# Deliberate obfuscation is out of scope, because a text-matching hook cannot close it (a
+# script file always gets round it); the auto-mode classifier and server-side branch
+# protection cover it. For example a push word assembled by expansion (git ${X:-pu}sh) has
+# no literal push in the payload, so the shell fast path never starts this helper.
 #
 # Written for /usr/bin/python3 (3.9): no match statements, no X | Y type unions.
 import json
@@ -55,6 +58,9 @@ ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 # Could this text run git push? git, then push (or a push alias), within one command.
 PUSH_SHAPE = re.compile(r"\bgit\b[^;&|\n]*\bpush\b")
 TAILS = {"tail", "head"}
+# An alias whose value names one of these may push (http-push contains push): it is a push
+# candidate, and judge decides on what it expands to. The shell fast path keeps the same list.
+PUSHY_ALIAS = re.compile(r"push|send-pack|subtree|submodule|rebase|bisect")
 # A refspec written as the current branch through a command substitution; anything else
 # carrying $ or a backtick is a value the guard cannot know.
 CURRENT_BRANCH = {"$(git branch --show-current)", "$(git rev-parse --abbrev-ref HEAD)",
@@ -137,12 +143,17 @@ def substitutes(tok):
     return ("$(" in tok or "`" in tok) and tok not in CURRENT_BRANCH
 
 
-def dynamic(word, dollar=True):
+def dynamic(word, dollar=True, star=True):
     """Does the shell rewrite this word before git sees it (a variable, a substitution, a
     brace list, a glob)? The guard reads the literal text, so such a word may run as
     another command or name another ref. dollar=False lets a $ through: the value of -C is
-    expanded by this guard itself, and one it cannot expand fails the repository lookup."""
-    return any(c in word for c in ("$`{}?[*" if dollar else "`{}?[*"))
+    expanded by this guard itself, and one it cannot expand fails the repository lookup.
+    A word holding whitespace was quoted, so its braces and globs stay literal."""
+    if "`" in word or (dollar and "$" in word):
+        return True
+    if any(c.isspace() for c in word):
+        return False
+    return any(c in word for c in ("{}?[*" if star else "{}?["))
 
 
 def parse_plain(tokens, cwd):
@@ -284,18 +295,70 @@ def push_aliases(cwd, selector):
     names = set()
     for line in out.splitlines():
         name, _, value = line.partition(" ")
-        if value.startswith("push") or (value.startswith("!") and re.search(r"\bpush\b", value)):
+        if PUSHY_ALIAS.search(value):
             names.add(name[len("alias."):])
     return names
+
+
+WRAPPERS = {"command", "env", "sudo", "time", "nohup", "xargs", "exec", "nice", "builtin"}
+DASH_PUSH = {"git-push", "git-send-pack", "git-http-push"}
+
+
+def starts_command(tok):
+    """An operator after which a new command begins (not a redirect)."""
+    return is_operator(tok) and "<" not in tok and ">" not in tok
+
+
+def command_words(tokens):
+    """Indexes of the words in command position: at the start, after an operator, after
+    VAR=value assignments, and after a wrapper (command, env, sudo, time, xargs, ...)."""
+    out, i, n, at = [], 0, len(tokens), True
+    while i < n:
+        t = tokens[i]
+        if starts_command(t):
+            at = True
+        elif not is_operator(t) and at:
+            if ASSIGN_RE.match(t):
+                pass
+            elif os.path.basename(t) in WRAPPERS:
+                while i + 1 < n and not is_operator(tokens[i + 1]) and (
+                        tokens[i + 1].startswith("-") or ASSIGN_RE.match(tokens[i + 1])):
+                    i += 1
+            else:
+                out.append(i)
+                at = False
+        i += 1
+    return out
+
+
+def odd_command_word(tokens):
+    """A command word that could be git push under another spelling: git-push,
+    git-send-pack or git-http-push by name (the dash form, also behind a path); a word that
+    starts like git and holds a glob or expansion (gi?, g[i]t); or any word the shell
+    rewrites when a push word follows it."""
+    for k in command_words(tokens):
+        w = tokens[k]
+        base = os.path.basename(w)
+        if base in DASH_PUSH:
+            return True
+        if dynamic(w):
+            if base.startswith("g"):
+                return True
+            for x in tokens[k + 1:]:
+                if starts_command(x):
+                    break
+                if x == "push":
+                    return True
+    return False
 
 
 def dynamic_git_word(tokens):
     """Is a git word followed by a global option or a subcommand the shell rewrites (git
     ${X:-push} ...)? Such a word can name any subcommand, so the text cannot rule out a
-    push."""
+    push. Only a git in command position counts: rg git -g '*.sh' names git as an argument."""
     n = len(tokens)
-    for k, tok in enumerate(tokens):
-        if is_operator(tok) or os.path.basename(tok) != "git":
+    for k in command_words(tokens):
+        if os.path.basename(tokens[k]) != "git":
             continue
         j = k + 1
         while j < n and not is_operator(tokens[j]):
@@ -323,7 +386,7 @@ def could_push(cmd, tokens, cwd):
     Text only; no shape is parsed."""
     if PUSH_SHAPE.search(cmd):
         return True
-    if tokens and dynamic_git_word(tokens):
+    if tokens and (dynamic_git_word(tokens) or odd_command_word(tokens)):
         return True
     if not re.search(r"\bgit\b", cmd):
         return False
@@ -352,7 +415,9 @@ def runs_command_string(sub, args):
     if sub == "bisect":
         return "run" in args
     if sub == "rebase":
-        return any(a.startswith("--exec") or a.startswith("-x") for a in args)
+        # --exec, its abbreviations (--ex, --exe=cmd), -x, and -x inside bundled flags (-ix)
+        return any(len(a.split("=", 1)[0]) >= 4 and "--exec".startswith(a.split("=", 1)[0])
+                   or re.match(r"^-[a-z]*x", a) for a in args)
     return False
 
 
@@ -391,6 +456,13 @@ def judge(s):
 def parse_push(args):
     """Split git push arguments into (flags, remote or None, refspecs). Raises Deny for an
     option outside the modelled set, and for the -- separator."""
+    # Every word of the invocation, option values included: bash expands {x,origin,main}
+    # or a glob before git sees it, so the literal words are not what git receives. A *
+    # is left to the refspec check, which names it as a wildcard.
+    for a in args:
+        if a not in CURRENT_BRANCH and dynamic(a, star=False):
+            raise Deny(UNSUPPORTED.format(
+                "the push word " + a + ", which the shell expands before git sees it"))
     flags, positional, i, n = set(), [], 0, len(args)
     while i < n:
         a = args[i]

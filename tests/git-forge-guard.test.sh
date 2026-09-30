@@ -631,6 +631,41 @@ helper_denies() { # helper_denies <label> <cwd> <command>
 helper_denies "git send-pack, straight to the helper"  "$R" "git send-pack $REMOTES/origin.git main"
 helper_denies "a computed subcommand, straight to the helper" "$R" 'git ${X:-pu}sh origin main'
 
+echo "== rule 4: commands that name git without running it =="
+# git counts only in command position: as an argument it is just a word.
+expect allow "rg for git with a glob argument"        "$TMP" "cd $R && rg git -g '*.sh'"
+expect allow "rg -l git -C 3 *.md"                    "$R"   'rg -l git -C 3 *.md'
+expect allow "grep -l git *.md"                       "$TMP" "cd $R && grep -l git *.md"
+expect allow "a -c alias with braces in a quoted value" "$R" "git -c 'alias.x=!f() { git status; }; f' x"
+
+echo "== rule 4: expansion in option values, the git word, the dash form =="
+expect deny  "-o with a brace list"                   "$R" 'git push -o {x,origin,main}'
+expect deny  "--push-option with a brace list"        "$R" 'git push --push-option {x,origin,main}'
+expect deny  "-u -o with a brace list"                "$R" 'git push -u -o {x,origin,main}'
+expect deny  "a ? glob in the git word"               "$R" '/usr/bin/gi? push origin main'
+expect deny  "a [ ] glob in the git word"             "$R" '/usr/bin/g[i]t push origin main'
+expect deny  "a variable as the command, then push"   "$R" '$G push origin main'
+expect allow "a variable command with no push word"   "$R" '$G status'
+expect deny  "git-send-pack behind exec-path"         "$R" "\$(git --exec-path)/git-send-pack $REMOTES/origin.git main"
+expect deny  "git-send-pack by path"                  "$R" "/opt/homebrew/opt/git/libexec/git-core/git-send-pack $REMOTES/origin.git main"
+expect deny  "git-push, the dash form"                "$R" 'git-push origin main'
+expect deny  "git-http-push by path"                  "$R" '/usr/libexec/git-core/git-http-push origin main'
+# rebase --exec, however it is spelled
+expect deny  "rebase -ix running a push"              "$R" "git rebase -ix 'git push origin main' main"
+expect deny  "rebase --exe running a push"            "$R" "git rebase --exe 'git push origin main' main"
+expect deny  "rebase --ex= running a push"            "$R" "git rebase --ex='git push origin main' main"
+expect allow "rebase --autosquash is not --exec"      "$R" 'git rebase -i --autosquash main'
+
+echo "== rule 4: aliases that expand to pushing commands =="
+ALIASES=$(clone aliases)
+git -C "$ALIASES" config alias.sp send-pack
+git -C "$ALIASES" config alias.sf 'submodule foreach git push origin main'
+git -C "$ALIASES" config alias.rbx 'rebase -x "git push origin main"'
+expect deny  "an alias to send-pack"                  "$ALIASES" "git sp $REMOTES/origin.git main"
+expect deny  "an alias to submodule foreach push"     "$ALIASES" 'git sf'
+expect deny  "an alias to rebase -x push"             "$ALIASES" 'git rbx main'
+expect allow "an alias to status is silent"           "$ALIASES" 'git st'
+
 echo "== rule 4: a slow helper is a deny, never a pass =="
 # Claude Code lets a hook that outruns its timeout through, so the helper gives up first.
 # PUSH_GUARD_BUDGET shortens its total budget for these cases only.
