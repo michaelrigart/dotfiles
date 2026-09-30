@@ -36,6 +36,7 @@ git config commit.gpgsign false
 git commit -q --allow-empty -m init || { printf 'fixture setup failed\n' >&2; exit 1; }
 printf 'body\n' > b.md
 CWD="$(git rev-parse --show-toplevel)"
+BR="$(git rev-parse --abbrev-ref HEAD)"   # the branch the dispatches below run on
 STATE="$XDG_STATE_HOME/xreview/$(printf '%s' "$CWD" | tr '/' '_' | sed 's/^_//')"
 
 # --- stubs ------------------------------------------------------------------------
@@ -313,7 +314,7 @@ is "D1 the pane is resumed onto the new thread" \
 is "D1 herdr is told the pane's thread" \
    "$(called "herdr pane report-agent-session w1:p2 --source herdr:codex --agent codex --agent-session-id $U1")" 1
 is "D1 the checkpoint thread is recorded" "$(cat "$STATE/review-thread")" "$U1"
-is "D1 the nonce maps to thread and turn" "$(cat "$STATE/turns/$nonce")" "$U1 turn-$U1 plan"
+is "D1 the nonce maps to thread and turn" "$(cat "$STATE/turns/$nonce")" "$U1 turn-$U1 plan $BR"
 # C1: nothing may ever send-keys to the pane once the turn exists.
 is "D1 no send-keys appears after turn-start" "$(none_after 'xreview-rpc turn-start' 'herdr pane send-keys')" 0
 
@@ -378,11 +379,11 @@ fresh
 nonce="$(RPC_START_UNCERTAIN=1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>"$ROOT/err")"; rc=$?
 is "D10 an unanswered turn/start still hands back a nonce" "$rc/$(printf '%s' "$nonce" | grep -c '^xr-')" "0/1"
 is "D10 with a do-not-re-dispatch warning" "$(grep -c 'do NOT re-dispatch' "$ROOT/err")" 1
-is "D10 the record marks the turn unknown" "$(cat "$STATE/turns/$nonce")" "$U1 ? plan"
+is "D10 the record marks the turn unknown" "$(cat "$STATE/turns/$nonce")" "$U1 ? plan $BR"
 RPC_WAIT_OUT='{"verdict":"approve","findings":[]}' bash "$XREVIEW" collect "$nonce" >/dev/null 2>&1
 is "D10 collect looks for what is new on the thread" \
    "$(called "turn-wait --thread $U1 --new-since $STATE/turns/$nonce.known --resolved")" 1
-is "D10 the recovered turn replaces the unknown in the record" "$(cat "$STATE/turns/$nonce")" "$U1 turn-recovered plan"
+is "D10 the recovered turn replaces the unknown in the record" "$(cat "$STATE/turns/$nonce")" "$U1 turn-recovered plan $BR"
 is "D10 and the receipt names it" "$(tail -1 "$STATE/reviews.jsonl" | jq -r .turn)" turn-recovered
 : > "$CALLS"; bash "$XREVIEW" collect "$nonce" >/dev/null 2>&1
 is "D10 a later collect waits on that turn by id" "$(called "turn-wait --thread $U1 --turn turn-recovered")" 1
@@ -425,7 +426,7 @@ is "D16 turn-start returning 0 with a malformed id still hands back a nonce" \
    "$rc/$(printf '%s' "$nonce" | grep -c '^xr-')" "0/1"
 is "D16 with a do-not-re-dispatch warning, exactly like exit 6" \
    "$(grep -c 'do NOT re-dispatch' "$ROOT/err")" 1
-is "D16 the record marks the turn unknown" "$(cat "$STATE/turns/$nonce")" "$U1 ? plan"
+is "D16 the record marks the turn unknown" "$(cat "$STATE/turns/$nonce")" "$U1 ? plan $BR"
 
 echo "T1. a new checkpoint thread comes from xreview-rpc thread-start"
 fresh
@@ -451,7 +452,7 @@ out="$(NO_TITLE=1 XREVIEW_PANE_WAIT=0.15 bash "$XREVIEW" dispatch --checkpoint p
 nonce="$(printf '%s' "$out" | grep '^xr-')"
 is "T3 dispatch still exits 0" "$rc" 0
 is "T3 and prints the nonce" "$(printf '%s' "$nonce" | grep -c '^xr-')" 1
-is "T3 the turn is recorded" "$(cat "$STATE/turns/$nonce" 2>/dev/null)" "$U1 turn-$U1 plan"
+is "T3 the turn is recorded" "$(cat "$STATE/turns/$nonce" 2>/dev/null)" "$U1 turn-$U1 plan $BR"
 is "T3 and it warns the review is not shown" \
    "$(printf '%s' "$out" | grep -c 'running but not shown in pane w1:p2')" 1
 is "T3 the round was still consumed" "$(bash "$XREVIEW" round)" 1
@@ -462,7 +463,7 @@ out="$(RELIVE_DURING_TURN=1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1
 nonce="$(printf '%s' "$out" | grep '^xr-')"
 is "D dispatch still exits 0" "$rc" 0
 is "D and prints the nonce" "$(printf '%s' "$nonce" | grep -c '^xr-')" 1
-is "D the turn is recorded" "$(cat "$STATE/turns/$nonce" 2>/dev/null)" "$U1 turn-$U1 plan"
+is "D the turn is recorded" "$(cat "$STATE/turns/$nonce" 2>/dev/null)" "$U1 turn-$U1 plan $BR"
 is "D it warns instead of typing into the live TUI" \
    "$(printf '%s' "$out" | grep -c 'running but not shown in pane w1:p2')" 1
 is "D no pane run ever happens - nothing is typed into it" "$(called 'herdr pane run')" 0
@@ -497,7 +498,7 @@ took="$(awk -v s="$start" -v e="$EPOCHREALTIME" 'BEGIN{printf "%.3f", e-s}')"
 nonce="$(printf '%s' "$out" | grep '^xr-')"
 is "T4b dispatch still exits 0" "$rc" 0
 is "T4b and prints the nonce" "$(printf '%s' "$nonce" | grep -c '^xr-')" 1
-is "T4b the turn is recorded" "$(cat "$STATE/turns/$nonce" 2>/dev/null)" "$U1 turn-$U1 plan"
+is "T4b the turn is recorded" "$(cat "$STATE/turns/$nonce" 2>/dev/null)" "$U1 turn-$U1 plan $BR"
 is "T4b and it warns the review is not shown" \
    "$(printf '%s' "$out" | grep -c 'running but not shown in pane w1:p2')" 1
 is "T4b it returns quickly, not waiting out XREVIEW_PANE_WAIT" \
@@ -707,7 +708,7 @@ is "F14 an unknown checkpoint is refused" "$rc/$(printf '%s' "$out" | grep -c 'u
 is "F14 before anything is touched, too" "$(untouched)" yes
 fresh
 nonce="$(bash "$XREVIEW" dispatch --checkpoint pre-merge --diff HEAD~1..HEAD b.md 2>/dev/null)"
-is "F14 the turn record carries the checkpoint" "$(cat "$STATE/turns/$nonce")" "$U1 turn-$U1 pre-merge"
+is "F14 the turn record carries the checkpoint" "$(cat "$STATE/turns/$nonce")" "$U1 turn-$U1 pre-merge $BR"
 RPC_WAIT_OUT='{"verdict":"approve","findings":[]}' bash "$XREVIEW" collect "$nonce" >/dev/null 2>&1
 is "F14 a pre-merge review's receipt says so" \
    "$(tail -1 "$STATE/reviews.jsonl" | jq -r '"\(.checkpoint)/\(.verdict)"')" "pre-merge/approve"
@@ -717,6 +718,30 @@ printf '%s %s\n' "$U1" "turn-$U1" > "$STATE/turns/xr-1-legacy"
 RPC_WAIT_OUT='{"verdict":"approve","findings":[]}' bash "$XREVIEW" collect xr-1-legacy >/dev/null 2>&1; rc=$?
 is "F14 a legacy two-field record still collects" "$rc" 0
 is "F14 with an empty checkpoint on its receipt" "$(tail -1 "$STATE/reviews.jsonl" | jq -r .checkpoint)" ""
+is "F14 and the branch checked out now"           "$(tail -1 "$STATE/reviews.jsonl" | jq -r .branch)" "$BR"
+
+echo "F15. the receipt names the branch the review was dispatched on"
+# In the shared checkout another session can switch branches between dispatch and collect;
+# the verdict belongs to the branch that was reviewed, never to the one checked out later.
+fresh
+git checkout -q -b review-a
+nonce="$(bash "$XREVIEW" dispatch --checkpoint pre-merge b.md 2>/dev/null)"
+is "F15 the turn record names the dispatch branch" "$(cat "$STATE/turns/$nonce")" "$U1 turn-$U1 pre-merge review-a"
+git checkout -q -b review-b
+git commit -q --allow-empty -m "review-b moves on"
+RPC_WAIT_OUT='{"verdict":"approve","findings":[]}' bash "$XREVIEW" collect "$nonce" >/dev/null 2>&1; rc=$?
+is "F15 collected on another branch, it still collects" "$rc" 0
+is "F15 and the receipt names the dispatch branch" "$(tail -1 "$STATE/reviews.jsonl" | jq -r .branch)" review-a
+is "F15 with that branch's head, not the one checked out" \
+   "$(tail -1 "$STATE/reviews.jsonl" | jq -r .head)" "$(git rev-parse review-a)"
+# A record from before the branch field (checkpoint, no branch) names the current branch.
+printf '%s %s %s\n' "$U1" "turn-$U1" pre-merge > "$STATE/turns/xr-1-legacy3"
+RPC_WAIT_OUT='{"verdict":"approve","findings":[]}' bash "$XREVIEW" collect xr-1-legacy3 >/dev/null 2>&1; rc=$?
+is "F15 a legacy three-field record still collects" "$rc" 0
+is "F15 with its checkpoint and the current branch" \
+   "$(tail -1 "$STATE/reviews.jsonl" | jq -r '"\(.checkpoint)/\(.branch)/\(.head)"')" "pre-merge/review-b/$(git rev-parse HEAD)"
+git checkout -q "$BR"
+git branch -q -D review-a review-b
 
 echo "F10. the packet temp file never lingers, on the paths the explicit rm covers"
 # This proves the explicit `rm -f "$packet"` right after turn-start (success here, a

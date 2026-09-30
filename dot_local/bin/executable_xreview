@@ -341,16 +341,18 @@ archive_superseded() { # archive_superseded <current-thread>
   return 0
 }
 
-# A receipt is the only durable evidence that a review actually happened. It records the
-# branch head at collection time so a reader can tell how far the branch has moved since;
+# A receipt is the only durable evidence that a review actually happened. It names the
+# branch the review was dispatched on, not the one checked out at collect time: in a shared
+# checkout another session may have switched branches in between. It records that branch's
+# head at collection time so a reader can tell how far the branch has moved since;
 # it deliberately does not try to invalidate itself, because applying a finding necessarily
 # moves HEAD and a self-invalidating receipt would demand a second review of the fix.
 # The tier is recorded, never enforced: which model and effort the reviewer runs at is
 # Michael's setting, and a gate pinned to model names refuses every dispatch the day a new
 # one ships. The checkpoint (spec, plan or pre-merge, named at dispatch) IS enforced:
 # xreview-guard.sh admits an MR only on a pre-merge receipt whose verdict is approve.
-record_receipt() { # record_receipt <thread> <nonce> <turn> <findings-json> <checkpoint>
-  local dir tier verdict count; dir="$(state_dir)"
+record_receipt() { # record_receipt <thread> <nonce> <turn> <findings-json> <checkpoint> [branch]
+  local dir tier verdict count branch head; dir="$(state_dir)"
   if ! mkdir -p "$dir" 2>/dev/null; then
     printf 'xreview: could not create %s - the receipt for %s was not recorded\n' "$dir" "$2" >&2
     return 0
@@ -358,9 +360,18 @@ record_receipt() { # record_receipt <thread> <nonce> <turn> <findings-json> <che
   tier="$(codex_tier "$1" 2>/dev/null)" || tier=""
   verdict="$(printf '%s' "$4" | jq -r '.verdict // ""' 2>/dev/null)" || verdict=""
   count="$(printf '%s' "$4" | jq -r '(.findings // []) | length' 2>/dev/null)" || count=0
+  # The branch from the turn record; a record written before it carried one falls back to
+  # the branch checked out now. HEAD is a dispatch from a detached HEAD.
+  branch="${6:-}"
+  [ -n "$branch" ] || branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  if [ -n "$branch" ] && [ "$branch" != HEAD ]; then
+    head="$(git rev-parse --verify --quiet "refs/heads/$branch" 2>/dev/null || true)"
+  else
+    head="$(git rev-parse HEAD 2>/dev/null || true)"
+  fi
   if ! jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-         --arg branch "$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)" \
-         --arg head "$(git rev-parse HEAD 2>/dev/null || true)" \
+         --arg branch "$branch" \
+         --arg head "$head" \
          --arg thread "$1" --arg nonce "$2" --arg tier "$tier" --arg turn "$3" \
          --arg verdict "$verdict" --argjson findings "${count:-0}" --arg checkpoint "${5:-}" \
     '{ts:$ts,branch:$branch,head:$head,thread:$thread,nonce:$nonce,tier:$tier,turn:$turn,verdict:$verdict,findings:$findings,checkpoint:$checkpoint}' \
@@ -517,6 +528,9 @@ cmd_dispatch() {
   body_file="$1"
   [ -r "$body_file" ] || die "cannot read $body_file"
   dir="$(state_dir)"
+  # Read once, now: the review is of this branch, and the receipt must name it even if the
+  # shared checkout has moved to another branch by the time the verdict is collected.
+  local branch; branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
 
   # Preconditions, before the pane is touched or anything is sent.
   guard_project_config
@@ -617,7 +631,7 @@ Report the remaining disagreement, or: xreview round --reset"
   # turn may still be running on the daemon side, so it is never treated as "not started".
   if [ "$rc" = 0 ] && ! is_safe_id "$turn"; then rc=6; fi
   case "$rc" in
-    0) printf '%s %s %s\n' "$thread" "$turn" "$checkpoint" > "$dir/turns/$nonce"
+    0) printf '%s %s %s %s\n' "$thread" "$turn" "$checkpoint" "$branch" > "$dir/turns/$nonce"
        rm -f "$dir/turns/$nonce.known"
        bump_round >/dev/null || true
        trap - EXIT ;;
@@ -625,7 +639,7 @@ Report the remaining disagreement, or: xreview round --reset"
        # turn may be running. Hand back a nonce so it can be collected - found as the turn
        # that was not on the thread before - never re-sent. The round is consumed too: a
        # turn that may be running has already cost one.
-       printf '%s ? %s\n' "$thread" "$checkpoint" > "$dir/turns/$nonce"
+       printf '%s ? %s %s\n' "$thread" "$checkpoint" "$branch" > "$dir/turns/$nonce"
        printf 'xreview: turn/start was sent but not answered - the review may be running. Collect %s; do NOT re-dispatch.\n' "$nonce" >&2
        bump_round >/dev/null || true
        trap - EXIT ;;
@@ -654,7 +668,7 @@ Report the remaining disagreement, or: xreview round --reset"
 COLLECT_BUDGET_DEFAULT=2700
 
 cmd_collect() {
-  local nonce="${1:-}" budget="${2:-$COLLECT_BUDGET_DEFAULT}" rec thread turn checkpoint out rc
+  local nonce="${1:-}" budget="${2:-$COLLECT_BUDGET_DEFAULT}" rec thread turn checkpoint branch out rc
   case "$nonce" in
     xr-*) ;;
     *) die "usage: xreview collect <nonce> [budget] - nonces start with xr-" ;;
@@ -668,8 +682,9 @@ cmd_collect() {
   assert_id "$nonce"
   rec="$(state_dir)/turns/$nonce"
   [ -r "$rec" ] || die "ambiguous: no turn on record for $nonce (do NOT retry the dispatch)"
-  # A third field names the checkpoint; a record from before it existed has two.
-  read -r thread turn checkpoint < "$rec"
+  # A third field names the checkpoint and a fourth the branch dispatched on; a record from
+  # before either existed has two or three, and its receipt names the current branch.
+  read -r thread turn checkpoint branch < "$rec"
   assert_id "$thread"
   local which resolved="$(state_dir)/turns/$nonce.resolved"
   if [ "$turn" = "?" ]; then
@@ -685,12 +700,12 @@ cmd_collect() {
   # receipt name it, instead of rediscovering "whatever is new" each time.
   if [ "$turn" = "?" ] && [ -s "$resolved" ]; then
     turn="$(head -1 "$resolved")"; assert_id "$turn"
-    printf '%s %s%s\n' "$thread" "$turn" "${checkpoint:+ $checkpoint}" > "$rec"
+    printf '%s %s%s\n' "$thread" "$turn" "${checkpoint:+ $checkpoint${branch:+ $branch}}" > "$rec"
     rm -f "$resolved" "$(state_dir)/turns/$nonce.known"
   fi
   case "$rc" in
     0) printf '%s\n' "$out"
-       record_receipt "$thread" "$nonce" "$turn" "$out" "$checkpoint" ;;
+       record_receipt "$thread" "$nonce" "$turn" "$out" "$checkpoint" "$branch" ;;
     3) printf 'xreview: still running after %ss - turn on record for %s.\nWait longer with: xreview collect %s <secs>\n' \
          "$budget" "$nonce" "$nonce" >&2
        exit 3 ;;
