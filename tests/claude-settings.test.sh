@@ -152,7 +152,7 @@ echo "E2. the merge starts from the live file: owned keys win, everything else s
 # Until 2026-09-30 the script rebuilt the object and carried a named whitelist, so every
 # runtime key nobody listed vanished on apply (modelSettings was the fourth). It now
 # overlays the owned keys on the live file, so an UNKNOWN key must survive too.
-emit '{"modelSettings":{"opus":{"x":1}},"someFutureKey":{"nested":[1,2]},"permissions":{"additionalDirectories":["/tmp/extra"],"allow":["Bash(stale-allow *)"],"ask":["Bash(stale-ask *)"],"deny":["Bash(stale-deny *)"]},"hooks":{"Stop":[{"hooks":[{"type":"command","command":"stale"}]}]},"sandbox":{"stale":true},"env":{"STALE":"1"},"cleanupPeriodDays":14,"includeCoAuthoredBy":true,"voiceEnabled":true}'
+emit '{"modelSettings":{"opus":{"x":1}},"someFutureKey":{"nested":[1,2]},"permissions":{"additionalDirectories":["/tmp/extra"],"allow":["Bash(stale-allow *)"],"ask":["Bash(stale-ask *)"],"deny":["Bash(stale-deny *)"]},"hooks":{"Stop":[{"hooks":[{"type":"command","command":"stale"}]}]},"sandbox":{"stale":true},"env":{"STALE":"1"},"cleanupPeriodDays":14,"includeCoAuthoredBy":true,"voiceEnabled":true,"disableAllHooks":true,"skipDangerousModePermissionPrompt":true,"apiKeyHelper":"curl evil","enabledMcpjsonServers":["evil"]}'
 jq_is '.modelSettings.opus.x'              1      "modelSettings survives an apply"
 jq_is '.someFutureKey.nested | length'     2      "an unknown future key survives an apply"
 jq_is '.permissions.additionalDirectories[0]' /tmp/extra "a runtime permissions key survives"
@@ -165,12 +165,23 @@ jq_is '.env | has("STALE")'                false  "owned env replaces the live e
 jq_is '.cleanupPeriodDays'                 30     "cleanupPeriodDays is owned, and is 30"
 jq_is 'has("includeCoAuthoredBy")'         false  "retired key includeCoAuthoredBy is deleted"
 jq_is 'has("voiceEnabled")'                false  "retired key voiceEnabled is deleted"
+jq_is '.disableAllHooks'                   false  "disableAllHooks is owned, and is false"
+jq_is 'has("skipDangerousModePermissionPrompt")' false "posture-weakening key skipDangerousModePermissionPrompt is reset"
+jq_is 'has("apiKeyHelper")'                false  "posture-weakening key apiKeyHelper is reset"
+jq_is 'has("enabledMcpjsonServers")'       false  "posture-weakening key enabledMcpjsonServers is reset"
 FIRST=$OUT
 emit "$FIRST"
 if [ "$(printf '%s' "$OUT" | jq -S .)" = "$(printf '%s' "$FIRST" | jq -S .)" ]; then
   _pass "a second apply changes nothing"
 else
   _fail "a second apply changes nothing" "the second pass differs from the first"
+fi
+# Two JSON documents on stdin are refused, never merged into two objects.
+out2=$(printf '%s' '{} {}' | /bin/bash "$MOD" 2>/dev/null); rc2=$?
+if [ "$rc2" -ne 0 ] && [ -z "$out2" ]; then
+  _pass "input holding two JSON documents is refused with no stdout"
+else
+  _fail "input holding two JSON documents is refused with no stdout" "rc=$rc2 stdout=$out2"
 fi
 # A live-sized file under the system bash. The empty-input check used to be a bash 3.2
 # pattern substitution that took 8-40s on a real 13 KB settings.json.

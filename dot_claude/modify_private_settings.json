@@ -10,7 +10,8 @@
 # because starting from the live file would otherwise keep them forever. model,
 # effortLevel, permissions.defaultMode and outputStyle are seeded only when absent. The
 # plugin/marketplace *intent* is declared in .scripts/reconcile-agents.sh +
-# dot_config/agents/plugins.conf.
+# dot_config/agents/plugins.conf. autoMode is never declared here: it records repo and org
+# names and where secrets live, and this repo is public.
 #
 # private_ prefix => target is deployed 0600. Bash 3.2 compatible. $HOME (not a hardcoded
 # path) keeps the statusline commands correct on any machine.
@@ -21,9 +22,11 @@ input=$(cat)
 # ${input//[[:space:]]/}: bash 3.2 runs that substitution in quadratic time, 8-40s on a
 # real 13 KB settings.json.
 case "$input" in *[![:space:]]*) ;; *) input='{}' ;; esac
-# Never overwrite a broken file: bail with no stdout if the current content isn't valid JSON.
-if ! printf '%s' "$input" | jq empty >/dev/null 2>&1; then
-  echo "modify settings.json: current file is not valid JSON — refusing to overwrite" >&2
+# Never overwrite a broken file: bail with no stdout if the current content isn't valid JSON,
+# or holds more than one document (`{} {}` would otherwise emit two objects).
+if ! printf '%s' "$input" | jq empty >/dev/null 2>&1 \
+  || [ "$(printf '%s' "$input" | jq -s 'length')" != 1 ]; then
+  echo "modify settings.json: current file is not one valid JSON document — refusing to overwrite" >&2
   exit 1
 fi
 
@@ -362,7 +365,8 @@ printf '%s' "$input" | jq \
       "showTurnDuration": true,
       "showMessageTimestamps": true,
       "terminalProgressBarEnabled": true,
-      "skipAutoPermissionPrompt": true
+      "skipAutoPermissionPrompt": true,
+      "disableAllHooks": false
     }
   # permissions is owned only in part: allow, deny and ask above replace the live lists
   # wholesale; every other permissions key in the live file (additionalDirectories, say)
@@ -372,6 +376,9 @@ printf '%s' "$input" | jq \
   # forever unless it is deleted here by name. includeCoAuthoredBy is superseded by
   # attribution, voiceEnabled by the voice object.
   | del(.includeCoAuthoredBy, .voiceEnabled)
+  # Posture-weakening runtime keys: reset on every apply, never carried from the live
+  # file. Declare one in the overlay above to keep it.
+  | del(.skipDangerousModePermissionPrompt, .apiKeyHelper, .enabledMcpjsonServers)
   # default-only: keep the current value if set (runtime /model, /effort, /permissions,
   # /output-style persist), otherwise seed the default; deleting the key and re-applying
   # restores it. outputStyle names a built-in style (Proactive, Concise, Explanatory,
