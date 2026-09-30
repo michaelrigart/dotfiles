@@ -43,9 +43,14 @@ A dispatch carries:
 ## Dispatching
 
 ```
-NONCE=$(xreview dispatch --checkpoint <spec|plan|pre-merge> --diff <base>..<head> <body-file>)
-xreview collect "$NONCE" [budget-secs]
+xreview dispatch --checkpoint <spec|plan|pre-merge> --diff <base>..<head> <body-file>
+xreview collect <nonce> [budget-secs]
 ```
+
+Run each one bare, as its own Bash call: `xreview` is an excluded command, and the
+exclusion applies only when it is the first command of the call, so never wrap it in
+`NONCE=$(…)`, a pipe or a prefix. `dispatch` prints the nonce (`xr-…`) on stdout, and
+nothing else there; pass it to `collect`.
 
 **Name the checkpoint.** `--checkpoint` is required: `spec` at spec sign-off, `plan` at plan
 completion, `pre-merge` before merging. The receipt records it, and the pre-merge gate
@@ -67,12 +72,12 @@ minutes; pass a larger one for a big diff.
 A budget running out is not automatically a timeout:
 
 - **Exit 3 — the turn is on record and still running.** Not ambiguous, not a failure. The
-  reviewer is simply still working. Run `xreview collect "$NONCE" <secs>` again; it
+  reviewer is simply still working. Run `xreview collect <nonce> <secs>` again; it
   resumes the wait and does not re-dispatch or cost another turn. Keep waiting.
 - **Exit 1, "no turn on record"** — genuinely ambiguous: the turn may never have started.
   Report it and stop. Never re-dispatch.
 - **Exit 1, "Codex daemon is unreachable; the turn is on record"** — not the ambiguous
-  case above: run `codex-daemon ensure`, then `xreview collect "$NONCE"` again.
+  case above: run `codex-daemon ensure`, then `xreview collect <nonce>` again.
 - **Exit 1, "the reviewer turn failed"** — the turn itself did not complete. Report it and
   stop. Never re-dispatch.
 
