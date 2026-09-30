@@ -644,8 +644,18 @@ expect deny  "--push-option with a brace list"        "$R" 'git push --push-opti
 expect deny  "-u -o with a brace list"                "$R" 'git push -u -o {x,origin,main}'
 expect deny  "a ? glob in the git word"               "$R" '/usr/bin/gi? push origin main'
 expect deny  "a [ ] glob in the git word"             "$R" '/usr/bin/g[i]t push origin main'
-expect deny  "a variable as the command, then push"   "$R" '$G push origin main'
+# Only the last path component of a command word decides: a variable or a $VAR/ directory
+# in front of a name that is not git is an ordinary command (docker, helm, gradle).
+expect allow "a variable command that pushes, not git" "$R" '$DOCKER push registry/x:1'
+expect allow "a quoted \$HOME path to helm push"      "$R" '"$HOME/bin/helm" push chart.tgz oci://r'
+expect allow "a variable command after &&"            "$R" 'npm run build && $DOCKER push img'
+expect allow "a quoted \$GOPATH path, -l ."           "$TMP" "cd $R && \"\$GOPATH/bin/gofumpt\" -l ."
+expect allow "a \$HOME path to gradle, -c"            "$R" '$HOME/.local/bin/gradle build -c settings.gradle'
 expect allow "a variable command with no push word"   "$R" '$G status'
+# Reserved words leave the next word in command position.
+expect deny  "a glob git word after then"             "$R" 'if true; then /usr/bin/g[i]t push origin main; fi'
+expect deny  "git-send-pack inside a { } group"       "$R" "{ /usr/libexec/git-core/git-send-pack $REMOTES/origin.git main; }"
+expect allow "an if around a git command that does not push" "$R" 'if git diff --quiet; then echo same; fi'
 expect deny  "git-send-pack behind exec-path"         "$R" "\$(git --exec-path)/git-send-pack $REMOTES/origin.git main"
 expect deny  "git-send-pack by path"                  "$R" "/opt/homebrew/opt/git/libexec/git-core/git-send-pack $REMOTES/origin.git main"
 expect deny  "git-push, the dash form"                "$R" 'git-push origin main'
@@ -665,6 +675,14 @@ expect deny  "an alias to send-pack"                  "$ALIASES" "git sp $REMOTE
 expect deny  "an alias to submodule foreach push"     "$ALIASES" 'git sf'
 expect deny  "an alias to rebase -x push"             "$ALIASES" 'git rbx main'
 expect allow "an alias to status is silent"           "$ALIASES" 'git st'
+# A shell alias that runs send-pack is a push too.
+git -C "$ALIASES" config alias.shsp2 '!f() { git send-pack "$@"; }; f'
+expect deny  "a shell alias running send-pack"        "$ALIASES" "git shsp2 $REMOTES/origin.git main"
+# An alias to submodule is not a push alias: it must not turn ordinary commands into denies.
+git -C "$ALIASES" config alias.sub submodule
+expect allow "a commit message naming an alias"       "$ALIASES" 'git add -A && git commit -m "fix sub parser"'
+expect allow "an alias to submodule, chained"         "$ALIASES" 'git fetch && git sub update --init'
+expect deny  "an alias to submodule foreach that pushes" "$ALIASES" 'git sub foreach git push origin main'
 
 echo "== rule 4: a slow helper is a deny, never a pass =="
 # Claude Code lets a hook that outruns its timeout through, so the helper gives up first.

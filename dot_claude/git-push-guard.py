@@ -34,6 +34,7 @@
 # no literal push in the payload, so the shell fast path never starts this helper.
 #
 # Written for /usr/bin/python3 (3.9): no match statements, no X | Y type unions.
+import fnmatch
 import json
 import os
 import re
@@ -60,7 +61,7 @@ PUSH_SHAPE = re.compile(r"\bgit\b[^;&|\n]*\bpush\b")
 TAILS = {"tail", "head"}
 # An alias whose value names one of these may push (http-push contains push): it is a push
 # candidate, and judge decides on what it expands to. The shell fast path keeps the same list.
-PUSHY_ALIAS = re.compile(r"push|send-pack|subtree|submodule|rebase|bisect")
+PUSHY_ALIAS = re.compile(r"push|send-pack")
 # A refspec written as the current branch through a command substitution; anything else
 # carrying $ or a backtick is a value the guard cannot know.
 CURRENT_BRANCH = {"$(git branch --show-current)", "$(git rev-parse --abbrev-ref HEAD)",
@@ -272,7 +273,7 @@ def expand_alias(repo, sub, args, depth=0):
     if value is None:
         return sub, args
     if value.startswith("!"):
-        if re.search(r"\bpush\b", value):
+        if re.search(r"\b(push|send-pack|http-push)\b", value):
             raise Deny(UNSUPPORTED.format("alias." + sub + " is a shell alias that pushes"))
         return sub, args
     try:
@@ -302,6 +303,9 @@ def push_aliases(cwd, selector):
 
 WRAPPERS = {"command", "env", "sudo", "time", "nohup", "xargs", "exec", "nice", "builtin"}
 DASH_PUSH = {"git-push", "git-send-pack", "git-http-push"}
+GIT_NAMES = ("git",) + tuple(sorted(DASH_PUSH))
+# Shell reserved words: the word after one is still in command position.
+RESERVED = {"if", "then", "elif", "else", "do", "while", "until", "!", "{"}
 
 
 def starts_command(tok):
@@ -318,7 +322,7 @@ def command_words(tokens):
         if starts_command(t):
             at = True
         elif not is_operator(t) and at:
-            if ASSIGN_RE.match(t):
+            if ASSIGN_RE.match(t) or t in RESERVED:
                 pass
             elif os.path.basename(t) in WRAPPERS:
                 while i + 1 < n and not is_operator(tokens[i + 1]) and (
@@ -333,22 +337,16 @@ def command_words(tokens):
 
 def odd_command_word(tokens):
     """A command word that could be git push under another spelling: git-push,
-    git-send-pack or git-http-push by name (the dash form, also behind a path); a word that
-    starts like git and holds a glob or expansion (gi?, g[i]t); or any word the shell
-    rewrites when a push word follows it."""
+    git-send-pack or git-http-push by name (the dash form, also behind a path), or a glob
+    that matches git or one of those names (gi?, g[i]t)."""
     for k in command_words(tokens):
-        w = tokens[k]
-        base = os.path.basename(w)
+        base = os.path.basename(tokens[k])
         if base in DASH_PUSH:
             return True
-        if dynamic(w):
-            if base.startswith("g"):
-                return True
-            for x in tokens[k + 1:]:
-                if starts_command(x):
-                    break
-                if x == "push":
-                    return True
+        # Only the last path component decides: $HOME/bin/helm is helm, and $DOCKER is not
+        # a git spelling. A glob there is refused when it can match git or a git-* name.
+        if any(c in base for c in "?[*") and any(fnmatch.fnmatchcase(g, base) for g in GIT_NAMES):
+            return True
     return False
 
 
