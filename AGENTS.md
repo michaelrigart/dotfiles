@@ -24,10 +24,10 @@ Canonical agent context; `CLAUDE.md` imports this file.
 - The global agent instructions are tracked fragments in `.chezmoitemplates/agents/`.
   `global.md` (shared, tool-agnostic) renders into all three targets
   (`~/.config/agents/GLOBAL.md`, `~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`);
-  `claude.md` (Claude Code only, opening with `## Claude Code only`) is appended to
+  `claude-code.md` (Claude Code only, opening with `## Claude Code only`) is appended to
   `~/.claude/CLAUDE.md` alone. Edit a fragment, then `chezmoi apply`. This repo is
   public: nothing private goes in them. `global.md` stays within 180 lines and
-  `claude.md` within 50; `tests/agent-instructions.test.sh` pins both, and the render.
+  `claude-code.md` within 50; `tests/agent-instructions.test.sh` pins both, and the render.
 - This checkout is shared: other sessions switch branches in it, and uncommitted work
   follows the switch. Re-check `git branch --show-current` right before each commit.
   Work here on a branch, not in a harness worktree: xreview needs the repository's own
@@ -54,7 +54,7 @@ Canonical agent context; `CLAUDE.md` imports this file.
 ```
 .chezmoi.toml.tmpl        # chezmoi's own config; must stay at the source root
 .chezmoiignore            # what never reaches $HOME (see Rules)
-.chezmoitemplates/agents/ # the agent instruction fragments: global.md, claude.md (never deployed)
+.chezmoitemplates/agents/ # the agent instruction fragments: global.md, claude-code.md (never deployed)
 .scripts/                 # provisioning helpers (ignored)
 tests/                    # test suites, `./tests/run.sh` runs them (ignored)
 dot_config/               # → ~/.config (git, homebrew/Brewfile, mise, zsh, agents, …)

@@ -2,7 +2,7 @@
 
 Cross-tool guidance for AI coding agents. Source: `.chezmoitemplates/agents/` in the chezmoi
 repo; edit that and `chezmoi apply`, never a rendered copy. Tool-agnostic: Claude-only rules
-go in `claude.md`; project rules live in each repository's `AGENTS.md`.
+go in `claude-code.md`; project rules live in each repository's `AGENTS.md`.
 
 ## Machine and toolchain
 

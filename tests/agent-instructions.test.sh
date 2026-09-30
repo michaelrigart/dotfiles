@@ -16,7 +16,7 @@ FRAG="$SRC/.chezmoitemplates/agents"
 GLOBAL_T=dot_config/agents/GLOBAL.md.tmpl
 CODEX_T=dot_codex/AGENTS.md.tmpl
 CLAUDE_T=dot_claude/CLAUDE.md.tmpl
-for f in "$FRAG/global.md" "$FRAG/claude.md" "$SRC/$GLOBAL_T" "$SRC/$CODEX_T" "$SRC/$CLAUDE_T"; do
+for f in "$FRAG/global.md" "$FRAG/claude-code.md" "$SRC/$GLOBAL_T" "$SRC/$CODEX_T" "$SRC/$CLAUDE_T"; do
   [ -f "$f" ] || { echo "missing file under test: $f" >&2; exit 2; }
 done
 command -v chezmoi >/dev/null 2>&1 || { echo "chezmoi not on PATH" >&2; exit 2; }
@@ -24,7 +24,7 @@ pass=0; fail=0
 _pass() { printf '  PASS: %s\n' "$1"; pass=$((pass + 1)); }
 _fail() { printf '  FAIL: %s\n    | got: %s\n' "$1" "$2"; fail=$((fail + 1)); }
 
-# The heading claude.md opens with. Only the Claude target may carry it.
+# The heading claude-code.md opens with. Only the Claude target may carry it.
 MARKER='## Claude Code only'
 T="$(mktemp -d "${TMPDIR:-/tmp}/agentinstr.XXXXXX")"
 trap 'rm -rf "$T"' EXIT
@@ -75,19 +75,25 @@ else
 fi
 
 is_first() { [ "$(head -1 "$1")" = "$2" ]; }
-is_first "$FRAG/claude.md" "$MARKER" && _pass "claude.md opens with '$MARKER'" \
-  || _fail "claude.md opens with '$MARKER'" "$(head -1 "$FRAG/claude.md")"
+is_first "$FRAG/claude-code.md" "$MARKER" && _pass "claude-code.md opens with '$MARKER'" \
+  || _fail "claude-code.md opens with '$MARKER'" "$(head -1 "$FRAG/claude-code.md")"
 grep -qF -- "$MARKER" "$FRAG/global.md" && _fail "global.md holds no Claude-only heading" "found it" \
   || _pass "global.md holds no Claude-only heading"
 
 lines=$(wc -l < "$FRAG/global.md" | tr -d ' ')
 [ "$lines" -le 180 ] && _pass "global.md is at most 180 lines ($lines)" || _fail "global.md is at most 180 lines" "$lines"
-lines=$(wc -l < "$FRAG/claude.md" | tr -d ' ')
-[ "$lines" -le 50 ] && _pass "claude.md is at most 50 lines ($lines)" || _fail "claude.md is at most 50 lines" "$lines"
+lines=$(wc -l < "$FRAG/claude-code.md" | tr -d ' ')
+[ "$lines" -le 50 ] && _pass "claude-code.md is at most 50 lines ($lines)" || _fail "claude-code.md is at most 50 lines" "$lines"
+
+# On case-insensitive APFS a fragment named claude.md IS a CLAUDE.md, and Claude Code loads
+# it as nested instructions whenever it reads a file in that directory.
+nested=$(find "$SRC/.chezmoitemplates" -iname 'claude.md' 2>/dev/null)
+[ -z "$nested" ] && _pass "no fragment is a CLAUDE.md in another letter case" \
+  || _fail "no fragment is a CLAUDE.md in another letter case" "$nested"
 
 # A template action inside a fragment would run at apply time, with this machine's data,
 # in a file the repo publishes. The fragments are plain text.
-for f in global.md claude.md; do
+for f in global.md claude-code.md; do
   if grep -q '{{' "$FRAG/$f"; then _fail "$f contains no template action" "$(grep -n '{{' "$FRAG/$f" | head -3)"
   else _pass "$f contains no template action"; fi
 done
