@@ -61,6 +61,7 @@ tests/
 !.claude/statusline.sh
 !.claude/subagent-statusline.sh
 !.claude/git-forge-guard.sh
+!.claude/git-push-guard.py
 !.claude/worktree-guard.sh
 !.claude/xreview-guard.sh
 !.claude/xreview-apply-guard.sh
