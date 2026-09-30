@@ -21,6 +21,9 @@ Transcript shape (observed 2026-09-30, Claude Code 2.1.285):
   a backgrounded Bash call answers at once with "running in background with ID: <id>";
   its real outcome is a later user entry whose content is a <task-notification> carrying
   that <task-id>, a <status> (completed or failed) and, in the <summary>, an exit code.
+  While the agent is mid-turn the same notification arrives instead as an `attachment`
+  entry of type queued_command whose origin.kind is "task-notification" and whose text
+  is in attachment.prompt; it settles the call the same way and is never a human turn.
   an interrupt is a `user` entry with no origin whose content is a text block starting
   "[Request interrupted by user".
 
@@ -134,6 +137,22 @@ class Totals:
         self.stretch_minutes = []
 
 
+def settle_notification(body, pending_background, totals):
+    """A background task's outcome: count the xreview call it was running if it failed."""
+    task = TASK_ID_RE.search(body)
+    verbs = pending_background.pop(task.group(1), ()) if task else ()
+    if not verbs:
+        return
+    status = STATUS_RE.search(body)
+    summary = SUMMARY_RE.search(body)
+    codes = EXIT_CODE_RE.findall(summary.group(1)) if summary else []
+    # "(exit code 0)" / "failed with exit code 3": the last one is the outcome
+    if (status and status.group(1).strip() == "failed") or (codes and int(codes[-1]) != 0):
+        for verb in verbs:
+            key = "dispatch_failures" if verb == "dispatch" else "collect_failures"
+            totals.xreview[key] += 1
+
+
 def scan_file(path, scope, cutoff, totals):
     """One transcript. Returns True when it had any entry inside the window."""
     pending_xreview = {}            # tool_use id -> the xreview verbs that call ran
@@ -209,20 +228,17 @@ def scan_file(path, scope, cutoff, totals):
                     continue
                 body = text_of(content)
                 if body.startswith(NOTIFICATION):
-                    task = TASK_ID_RE.search(body)
-                    verbs = pending_background.pop(task.group(1), ()) if task else ()
-                    if verbs:
-                        status = STATUS_RE.search(body)
-                        summary = SUMMARY_RE.search(body)
-                        codes = EXIT_CODE_RE.findall(summary.group(1)) if summary else []
-                        # "(exit code 0)" / "failed with exit code 3": the last one is the outcome
-                        if (status and status.group(1).strip() == "failed") or (codes and int(codes[-1]) != 0):
-                            for verb in verbs:
-                                key = "dispatch_failures" if verb == "dispatch" else "collect_failures"
-                                totals.xreview[key] += 1
+                    settle_notification(body, pending_background, totals)
                     continue
                 if is_interrupt(entry):
                     totals.interrupts[scope] += 1
+                    continue
+            if kind == "attachment":
+                # mid-turn the harness delivers a task notification as a queued_command
+                # attachment whose text is in `prompt`; it is settled, never a human turn
+                prompt = (entry.get("attachment") or {}).get("prompt")
+                if isinstance(prompt, str) and prompt.startswith(NOTIFICATION):
+                    settle_notification(prompt, pending_background, totals)
                     continue
             if scope == "main" and is_human(entry):
                 totals.human_total += 1

@@ -38,11 +38,15 @@ def interrupt(m):
     # the real shape: list content holding the text block, and no origin
     return {"type": "user", "timestamp": ts(m), "message": {"role": "user", "content": [
         {"type": "text", "text": "[Request interrupted by user]"}]}}
-def notification(m, task_id, status, summary):
-    # the real shape of a background task's outcome: a string-content user entry
+def notification(m, task_id, status, summary, queued=False):
+    # the real shape of a background task's outcome: a string-content user entry, or, when
+    # it lands mid-turn, a queued_command attachment with the text in `prompt`
     body = ("<task-notification>\n<task-id>%s</task-id>\n<tool-use-id>toolu_x</tool-use-id>\n"
             "<output-file>/x</output-file>\n<status>%s</status>\n<summary>%s</summary>\n</task-notification>"
             % (task_id, status, summary))
+    if queued:
+        return {"type": "attachment", "timestamp": ts(m), "attachment": {
+            "type": "queued_command", "prompt": body, "origin": {"kind": "task-notification"}}}
     return {"type": "user", "timestamp": ts(m), "origin": {"kind": "task-notification", "producer": "session-task"},
             "message": {"role": "user", "content": body}}
 main = [
@@ -95,6 +99,8 @@ main = [
         # the classifier never ruled, so the command never ran: a dispatch, but no failure
         tool_use("b4", "Bash", {"command": "NONCE=$(xreview dispatch --checkpoint plan c.md)"}),
         tool_use("b5", "Bash", {"command": "xreview collect xr-5 60"}),
+        tool_use("b6", "Bash", {"command": "xreview collect xr-6 60", "run_in_background": True}),
+        tool_use("b7", "Bash", {"command": "xreview collect xr-7 60", "run_in_background": True}),
     ]}},
     {"type": "user", "timestamp": ts(12), "message": {"role": "user", "content": [
         result("b1", "Command running in background with ID: bgfail. Output is being written to: /x/bgfail.output", err=False),
@@ -102,10 +108,14 @@ main = [
         result("b3", "Command running in background with ID: bgexit. Output is being written to: /x/bgexit.output", err=False),
         result("b4", "The server-side auto mode classifier gave no verdict; the command was not run."),
         result("b5", "Exit code 1\nxreview: no such checkpoint"),
+        result("b6", "Command running in background with ID: bgqfail. Output is being written to: /x/bgqfail.output", err=False),
+        result("b7", "Command running in background with ID: bgqok. Output is being written to: /x/bgqok.output", err=False),
     ]}},
     notification(13, "bgfail", "failed", 'Background command "Wait for findings" failed with exit code 3'),
     notification(14, "bgok", "completed", 'Background command "Wait for findings" completed (exit code 0)'),
     notification(14, "bgexit", "completed", 'Background command "Wait for findings" completed (exit code 1)'),
+    notification(14, "bgqfail", "failed", 'Background command "Wait for findings" failed with exit code 1', queued=True),
+    notification(14, "bgqok", "completed", 'Background command "Wait for findings" completed (exit code 0)', queued=True),
     notification(14, "other", "failed", 'Background command "Not an xreview call" failed with exit code 2'),
     "this line is not JSON",
 ]
@@ -147,8 +157,8 @@ is '.sandbox_escapes.main'            1   "a main-session sandbox escape"
 is '.sandbox_escapes.subagent'        1   "a subagent sandbox escape"
 is '.xreview.dispatches'              2   "xreview dispatches inside \$( ); a quoted or single-quoted mention is not one"
 is '.xreview.dispatch_failures'       1   "a foreground dispatch that failed; one the classifier never ruled on is no failure"
-is '.xreview.collects'                5   "xreview collects, foreground and backgrounded"
-is '.xreview.collect_failures'        3   "collects: a backgrounded failed/exit 3, a backgrounded exit 1 and a foreground error; a completed exit 0 and an unrelated task are not"
+is '.xreview.collects'                7   "xreview collects, foreground and backgrounded"
+is '.xreview.collect_failures'        4   "collects: a backgrounded failed/exit 3, a backgrounded exit 1, a mid-turn (attachment) failed notification and a foreground error; completed exit 0 ones and an unrelated task are not"
 is '.xreview.dispatch_failure_rate == 0.5' true "the dispatch failure rate"
 is '.denials["path-resolution-guard"].main'     1 "a guard denial, main session"
 is '.denials["path-resolution-guard"].subagent' 1 "a guard denial, subagent"
