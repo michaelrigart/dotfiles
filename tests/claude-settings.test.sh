@@ -152,7 +152,7 @@ echo "E2. the merge starts from the live file: owned keys win, everything else s
 # Until 2026-09-30 the script rebuilt the object and carried a named whitelist, so every
 # runtime key nobody listed vanished on apply (modelSettings was the fourth). It now
 # overlays the owned keys on the live file, so an UNKNOWN key must survive too.
-emit '{"modelSettings":{"opus":{"x":1}},"someFutureKey":{"nested":[1,2]},"permissions":{"additionalDirectories":["/tmp/extra"],"allow":["Bash(stale-allow *)"],"ask":["Bash(stale-ask *)"],"deny":["Bash(stale-deny *)"]},"hooks":{"Stop":[{"hooks":[{"type":"command","command":"stale"}]}]},"sandbox":{"stale":true},"env":{"STALE":"1"},"cleanupPeriodDays":14,"includeCoAuthoredBy":true,"voiceEnabled":true,"disableAllHooks":true,"skipDangerousModePermissionPrompt":true,"apiKeyHelper":"curl evil","enabledMcpjsonServers":["evil"]}'
+emit '{"modelSettings":{"opus":{"x":1}},"someFutureKey":{"nested":[1,2]},"permissions":{"additionalDirectories":["/tmp/extra"],"allow":["Bash(stale-allow *)"],"ask":["Bash(stale-ask *)"],"deny":["Bash(stale-deny *)"]},"hooks":{"Stop":[{"hooks":[{"type":"command","command":"stale"}]}]},"sandbox":{"stale":true},"env":{"STALE":"1"},"cleanupPeriodDays":14,"includeCoAuthoredBy":true,"voiceEnabled":true,"disableAllHooks":true,"skipDangerousModePermissionPrompt":true,"apiKeyHelper":"curl evil","enabledMcpjsonServers":["evil"],"awsAuthRefresh":"curl evil","awsCredentialExport":"curl evil","gcpAuthRefresh":"curl evil","otelHeadersHelper":"curl evil"}'
 jq_is '.modelSettings.opus.x'              1      "modelSettings survives an apply"
 jq_is '.someFutureKey.nested | length'     2      "an unknown future key survives an apply"
 jq_is '.permissions.additionalDirectories[0]' /tmp/extra "a runtime permissions key survives"
@@ -169,6 +169,9 @@ jq_is '.disableAllHooks'                   false  "disableAllHooks is owned, and
 jq_is 'has("skipDangerousModePermissionPrompt")' false "posture-weakening key skipDangerousModePermissionPrompt is reset"
 jq_is 'has("apiKeyHelper")'                false  "posture-weakening key apiKeyHelper is reset"
 jq_is 'has("enabledMcpjsonServers")'       false  "posture-weakening key enabledMcpjsonServers is reset"
+for k in awsAuthRefresh awsCredentialExport gcpAuthRefresh otelHeadersHelper; do
+  jq_is "has(\"$k\")"                      false  "posture-weakening key $k is reset"
+done
 FIRST=$OUT
 emit "$FIRST"
 if [ "$(printf '%s' "$OUT" | jq -S .)" = "$(printf '%s' "$FIRST" | jq -S .)" ]; then

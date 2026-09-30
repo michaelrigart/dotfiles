@@ -387,8 +387,10 @@ printf '%s' "$input" | jq \
   # its script is gone.
   | del(.includeCoAuthoredBy, .voiceEnabled, .subagentStatusLine)
   # Posture-weakening runtime keys: reset on every apply, never carried from the live
-  # file. Declare one in the overlay above to keep it.
-  | del(.skipDangerousModePermissionPrompt, .apiKeyHelper, .enabledMcpjsonServers)
+  # file. Declare one in the overlay above to keep it. The helper keys each name a shell
+  # command Claude Code runs for credentials or telemetry headers.
+  | del(.skipDangerousModePermissionPrompt, .apiKeyHelper, .enabledMcpjsonServers,
+        .awsAuthRefresh, .awsCredentialExport, .gcpAuthRefresh, .otelHeadersHelper)
   # default-only: keep the current value if set (runtime /model, /effort, /permissions,
   # /output-style persist), otherwise seed the default; deleting the key and re-applying
   # restores it. outputStyle names a built-in style (Proactive, Concise, Explanatory,
