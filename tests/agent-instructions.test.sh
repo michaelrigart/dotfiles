@@ -71,7 +71,7 @@ if [ -n "$marker_at" ] && [ -n "$shared_at" ] && [ "$shared_at" -lt "$marker_at"
    && [ "$marker_at" -eq $((frag_lines + 2)) ] && [ -n "$(tail -n 1 "$claude_out")" ]; then
   _pass "the Claude target is the shared fragment, one blank line, the addendum, no trailing blank"
 else
-  _fail "the Claude target is the shared fragment, then the Claude addendum" "shared at '$shared_at', marker at '$marker_at'"
+  _fail "the Claude target is the shared fragment, one blank line, the addendum, no trailing blank" "shared at '$shared_at', marker at '$marker_at' (expected $((frag_lines + 2))), last line '$(tail -n 1 "$claude_out")'"
 fi
 
 is_first() { [ "$(head -1 "$1")" = "$2" ]; }

@@ -101,6 +101,10 @@ and merge the canonical one first.
   passed/total.
 - Never commit, print or log secrets. Check staged changes before every commit and push.
 - Don't create files the task doesn't need, such as unrequested docs, notes or READMEs.
+- **Every agent confirms first** before force-pushing without a lease, rewriting history
+  others have, deleting branches, tags, data or infrastructure, discarding uncommitted work
+  it did not create, or pushing to the default branch. `--force-with-lease` on your own
+  feature branch needs none. Harness prompts are a backstop, not the check.
 
 ## Autonomy
 
@@ -131,10 +135,6 @@ Michael signs off specs and merges; in between, the driver proceeds on its own.
   items, next step.
 - **Momentum.** Don't stop while the next step is already authorised. Send one
   notification when an unattended stretch ends or is blocked, not one per step.
-- **Confirm first** before force-pushing without a lease, rewriting history others have,
-  deleting branches, tags, data or infrastructure, discarding uncommitted work you did not
-  create, or pushing to the default branch. `--force-with-lease` on your own feature branch
-  needs no confirmation. Harness prompts are a backstop, not the check.
 
 ## Cross-model workflow
 
@@ -161,8 +161,8 @@ unless Michael asks. These are defaults, not capability limits.
 - **Dispatches.** Claude Code dispatches to Codex itself at the checkpoints and when
   genuinely stuck, sending the artifact and its constraints, never its reasoning. Within a
   checkpoint it iterates until the review converges or a disagreement is real, bounded by
-  the round cap and never prolonged for consensus. Outside the checkpoints, neither tool
-  addresses the other on its own.
+  the round cap and never prolonged for consensus; Michael hears about disagreements, not
+  round counts. Outside the checkpoints, neither tool addresses the other on its own.
 - **When Michael relays by hand:** evaluate the input, then report your conclusion, any
   remaining disagreement, the practical consequences and a recommendation, and stop. Reply
   without tags unless he asks for a relay-ready handoff, which Claude Code wraps in
