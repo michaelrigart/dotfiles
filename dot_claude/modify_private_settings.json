@@ -256,6 +256,17 @@ printf '%s' "$input" | jq \
               { "type": "command", "command": "bash $HOME/.claude/path-resolution-guard.sh" }
             ]
           }
+        ],
+        # Prompt audit (spec 2026-09-30 section 5): appends one JSONL line per permission
+        # prompt to ~/.local/state/agent-audit/prompts.jsonl and never decides. Approved
+        # prompts leave no trace in transcripts, so this is the only prompt count there is.
+        "PermissionRequest": [
+          {
+            "matcher": "*",
+            "hooks": [
+              { "type": "command", "command": "bash $HOME/.claude/hooks/prompt-audit.sh" }
+            ]
+          }
         ]
       },
       "sandbox": {

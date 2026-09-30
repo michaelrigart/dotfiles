@@ -527,6 +527,12 @@ emit '{"subagentStatusLine":{"type":"command","command":"bash /x/subagent-status
 jq_is 'has("subagentStatusLine")' false "a live subagentStatusLine is deleted"
 jq_is '.statusLine.command | endswith("/.claude/statusline.sh")' true "the main statusline stays"
 
+echo "R. every permission prompt is audited, never decided"
+emit '{}'
+got=$(hook_matchers PermissionRequest 'bash $HOME/.claude/hooks/prompt-audit.sh')
+if [ "$got" = "*" ]; then _pass "the prompt-audit hook runs once, on every tool"; else _fail "the prompt-audit hook runs once, on every tool" "$got"; fi
+jq_is '.hooks.PermissionRequest | length' 1 "no other PermissionRequest hook"
+
 echo "X. every wired hook script is actually managed by chezmoi"
 # A hook wired to an unmanaged path never deploys and fails open — silently inert.
 # This is what a `.chezmoiignore` allowlist omission (task-3 fix-round-1) looks like:
