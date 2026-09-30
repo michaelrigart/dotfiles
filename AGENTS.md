@@ -21,28 +21,40 @@ Canonical agent context; `CLAUDE.md` imports this file.
   renders one file; `chezmoi apply --dry-run --verbose` previews. Data variables
   (`.name`, `.email`, `.hostname`, `.is_darwin`, `.is_linux`, `.is_arm`) come from
   `.chezmoi.toml.tmpl`, which `chezmoi init` renders — not `apply`.
-- The global agent instructions (`~/.config/agents/GLOBAL.md`, `~/.claude/CLAUDE.md`,
-  `~/.codex/AGENTS.md`) render from the 1Password item *Agent instructions*. Edit the
-  note, then `chezmoi apply`.
+- The global agent instructions are tracked fragments in `.chezmoitemplates/agents/`.
+  `global.md` (shared, tool-agnostic) renders into all three targets
+  (`~/.config/agents/GLOBAL.md`, `~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`);
+  `claude.md` (Claude Code only, opening with `## Claude Code only`) is appended to
+  `~/.claude/CLAUDE.md` alone. Edit a fragment, then `chezmoi apply`. This repo is
+  public: nothing private goes in them. `global.md` stays within 180 lines and
+  `claude.md` within 50; `tests/agent-instructions.test.sh` pins both, and the render.
+- This checkout is shared: other sessions switch branches in it, and uncommitted work
+  follows the switch. Re-check `git branch --show-current` right before each commit.
+  Work here on a branch, not in a harness worktree: xreview needs the repository's own
+  Codex pane.
 - `.scripts/` are ad-hoc helpers (`provision.sh`, `configure.sh`,
   `reconcile-agents.sh`, `preflight-ssh-agent.sh`), deliberately not `run_once_`
-  scripts: they change system settings and need interaction. Mode `755` — git stores
-  only the exec bit, so a clone yields 755, never 700.
+  scripts: they change system settings and need interaction. `measure-interventions.py`
+  sits beside them: the transcript metrics for the safe-autonomy evaluation. Mode `755`
+  — git stores only the exec bit, so a clone yields 755, never 700.
 - `tests/` holds every test suite, one `<subject>.test.sh` per script under test. Same
   mode `755`, and the shebang is load-bearing — see Testing.
 - Permissions: `~/.ssh` 700, private keys 600, public keys 644, sensitive configs 600.
 - Brewfile: only tools actually in use. Add packages via
   `chezmoi edit ~/.config/homebrew/Brewfile`, then `chezmoi apply` and
   `brew bundle install --file ~/.config/homebrew/Brewfile`.
-- `~/.local/bin/codex` is a launcher that shadows Homebrew's `codex`: interactive starts
-  attach to the launchd-started daemon or refuse (`--no-daemon` is the escape). Anything
-  needing the real binary uses `codex-daemon real-bin`, never `command -v codex`.
+- `~/.local/bin/codex` is a launcher that shadows Homebrew's `codex`, because `zshenv`
+  puts `~/.local/bin` in front of Homebrew after `brew shellenv` (which prepends);
+  `tests/zshenv.test.sh` pins the order. Interactive starts attach to the
+  launchd-started daemon or refuse (`--no-daemon` is the escape). Anything needing the
+  real binary uses `codex-daemon real-bin`, never `command -v codex`.
 
 ## Layout
 
 ```
 .chezmoi.toml.tmpl        # chezmoi's own config; must stay at the source root
 .chezmoiignore            # what never reaches $HOME (see Rules)
+.chezmoitemplates/agents/ # the agent instruction fragments: global.md, claude.md (never deployed)
 .scripts/                 # provisioning helpers (ignored)
 tests/                    # test suites, `./tests/run.sh` runs them (ignored)
 dot_config/               # → ~/.config (git, homebrew/Brewfile, mise, zsh, agents, …)
@@ -69,7 +81,9 @@ because it stubs zsh builtins. `./tests/x.test.sh` is always right; `bash tests/
 is the footgun. `run.sh` executes them for this reason.
 
 Suites needing conditions `run.sh` cannot create carry a `# test-requires:` line and are
-skipped by default:
+skipped by default. A substring filter to `./tests/run.sh` keeps that gate; only an
+exact suite name lifts it (so `./tests/run.sh reconcile-agents` runs the suite, while
+`./tests/run.sh reconcile` does not):
 
 | Suite | Needs | Why |
 |---|---|---|
@@ -119,22 +133,19 @@ Two output idioms exist and `run.sh` counts both: prose (`  ok  …` / `  PASS: 
 encodes failures in its values and exits with the count, so it is judged on exit status
 alone — the prose cross-check does not apply to it.
 
-**`HERDR_SESSION` is a layout.sh convention, not a herdr one.** herdr 0.8.2 selects a
-session only via `--session`; there is no environment variable. `layout.sh`, `tab-goto.sh`
-and `phase.sh` each thread it in themselves, and nothing in them may call `command herdr`
-bare — a bare call silently targets the *default* session. That is what made
-`dev-topology`'s isolation a fiction: it built its fixtures into the live session and then
-asserted against an empty `dev-test`. `layout.sh` also starts a server whenever
-`HERDR_SESSION` is set, even inside a Herdr pane, because the pane you are in belongs to a
-different session than the one you named.
+**Inside a Herdr pane, `HERDR_SESSION` does not pick the session.** herdr 0.9.3 reads
+`HERDR_SESSION`, but `HERDR_SOCKET_PATH`, which herdr exports into every pane, outranks it;
+only `--session` outranks the socket (measured 2026-09-30 with `herdr status`). So
+`layout.sh`, `tab-goto.sh` and `phase.sh` thread `--session` in themselves, and nothing in
+them may call `command herdr` bare — from inside a pane a bare call targets the pane's own
+session, whatever `HERDR_SESSION` says. That is what made `dev-topology`'s isolation a
+fiction: it built its fixtures into the live session and then asserted against an empty
+`dev-test`. `layout.sh` also starts a server whenever `HERDR_SESSION` is set, even inside a
+Herdr pane, because the pane you are in belongs to a different session than the one you
+named.
 
 ## Troubleshooting
 
 - "1Password CLI couldn't connect": the app must be running with Settings → Developer →
   CLI integration on; then `eval $(op signin)`.
 - Script permissions wrong: `chmod 755 .scripts/*.sh && git add --chmod=+x .scripts/*.sh`.
-
-## Design Records
-
-Specs and plans are committed under `docs/superpowers/specs/` and `docs/superpowers/plans/`.
-Execution state (`.superpowers/`, `docs/superpowers/runs/`) is never tracked.

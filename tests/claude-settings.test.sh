@@ -586,15 +586,14 @@ for agent in "$SRC"/dot_claude/agents/*.md; do
   else
     _fail "$stem's declared name matches its filename" "declared '$declared'"
   fi
-  # The prompt-side half of the path-resolution guard. GLOBAL.md carries this rule, but
-  # a subagent reaching for `cd` in a repo other than the session's showed it does not
-  # reliably arrive — and its own definition is the one prompt it certainly reads.
-  # Without this, path-resolution-guard.sh still stops the interruption, but every
-  # subagent pays a denied call to learn the rule it should have started with.
+  # The cd/grep bullet is deliberately NOT restated here any more (spec 2026-09-30,
+  # section 3.3): the Bash tool description carries the cd rule, ~/.claude/CLAUDE.md the
+  # recursive-grep trap, and path-resolution-guard.sh enforces both. A copy here is one
+  # more place to keep in step.
   if grep -q 'Never open a Bash command with `cd`' "$agent"; then
-    _pass "$stem carries the no-leading-cd rule"
+    _fail "$stem does not restate the cd/grep rule" "the bullet is back"
   else
-    _fail "$stem carries the no-leading-cd rule" "rule missing — every dispatch relearns it via a denied call"
+    _pass "$stem does not restate the cd/grep rule"
   fi
 done
 

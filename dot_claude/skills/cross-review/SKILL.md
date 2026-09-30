@@ -128,8 +128,10 @@ Verify every claim against the code or the artifact before touching anything. Ne
 on the reviewer's assertion alone.
 
 - **Verified, and no trade-off involved** — fix it, and say that you did.
-- **Design judgement, or a trade-off** — Michael decides. This is most spec and plan
-  findings.
+- **A trade-off inside the approved spec** — rule on it yourself, and record the ruling
+  under "Rulings" in the MR description.
+- **Anything that would change the approved spec** — Michael decides. At spec sign-off
+  that is most findings.
 - **You disagree, or cannot verify it** — Michael decides.
 
 ## Iterating
@@ -161,7 +163,7 @@ Escalate to Michael when, and only when:
 
 - the reviewer **re-raises a finding you already addressed** — that is disagreement,
   not a missed fix
-- a finding needs design judgement or a trade-off
+- a finding needs design judgement or a trade-off that would change the approved spec
 - you cannot verify a claim
 - `xreview` refuses the round (capped at 10; `XREVIEW_MAX_ROUNDS` overrides)
 - `xreview` refuses because the Codex daemon carries a pane's environment. The fix disconnects

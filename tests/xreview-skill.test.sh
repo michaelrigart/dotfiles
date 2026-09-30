@@ -379,6 +379,14 @@ else
   _fail "the skill says Michael sets XREVIEW_PANE, not the model" "missing"
 fi
 
+# Policy 6 (spec 2026-09-30): a trade-off inside the approved spec is the agent's to rule
+# on and record under "Rulings" in the MR; only what would change the spec goes to Michael.
+if grep -q 'Rulings' "$SKILL" && grep -qi 'would change the approved spec' "$SKILL"; then
+  _pass "the skill routes in-spec trade-offs to a recorded ruling"
+else
+  _fail "the skill routes in-spec trade-offs to a recorded ruling" "every trade-off still goes to Michael"
+fi
+
 # The escalation list must actually be exhaustive: refusals only Michael can resolve
 # (no pane, several panes, the daemon down and staying down) belong on it, not just in
 # the "dispatch refuses" prose above it.
