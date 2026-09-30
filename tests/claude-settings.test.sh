@@ -31,6 +31,9 @@ EXP_DENY='["Read(~/.ssh/**)","Edit(~/.ssh/**)",
  "Read(**/*.pem)","Edit(**/*.pem)",
  "Bash(basecamp auth token*)",
  "Bash(op read*)","Bash(op item get*)","Bash(op document get*)","Bash(op inject*)","Bash(op run*)",
+ "Bash(op items get*)","Bash(op documents get*)",
+ "Bash(op --* read*)","Bash(op --* item get*)","Bash(op --* items get*)",
+ "Bash(op --* document get*)","Bash(op --* inject*)","Bash(op --* run*)",
  "mcp__claude_ai_Microsoft_365__outlook_create_filter",
  "mcp__claude_ai_Microsoft_365__outlook_set_vacation"]'
 # "Bash(glab api *)" is DELIBERATELY ABSENT — do not add it back. It gated the mechanism,
@@ -61,17 +64,14 @@ EXP_ASK='["Read(~/.kube/config)",
  "mcp__claude_ai_Microsoft_365__outlook_trash_thread",
  "mcp__claude_ai_Microsoft_365__outlook_delete_event",
  "mcp__claude_ai_Microsoft_365__sharepoint_delete_item",
- "Bash(basecamp projects trash*)","Bash(basecamp projects delete*)",
- "Bash(basecamp todos trash*)","Bash(basecamp todos delete*)",
- "Bash(basecamp todolists trash*)","Bash(basecamp todolists delete*)",
- "Bash(basecamp messages trash*)","Bash(basecamp messages delete*)",
- "Bash(basecamp chat trash*)","Bash(basecamp chat delete*)",
- "Bash(basecamp cards trash*)","Bash(basecamp cards delete*)",
- "Bash(basecamp files trash*)","Bash(basecamp files delete*)",
- "Bash(basecamp checkins trash*)","Bash(basecamp checkins delete*)",
- "Bash(basecamp schedule trash*)","Bash(basecamp schedule delete*)",
- "Bash(basecamp comments trash*)","Bash(basecamp comments delete*)",
- "Bash(helm uninstall*)","Bash(helm delete*)","Bash(az * delete*)","Bash(terraform destroy*)"]'
+ "Bash(basecamp projects delete*)","Bash(basecamp chat delete*)",
+ "Bash(basecamp todos trash*)","Bash(basecamp todolists trash*)",
+ "Bash(basecamp messages trash*)","Bash(basecamp cards trash*)",
+ "Bash(basecamp files trash*)","Bash(basecamp comments trash*)",
+ "Bash(basecamp recordings trash*)","Bash(basecamp vaults trash*)",
+ "Bash(basecamp docs trash*)","Bash(basecamp tools trash*)",
+ "Bash(helm uninstall*)","Bash(helm delete*)",
+ "Bash(az * delete -*)","Bash(az rest * DELETE*)","Bash(terraform destroy*)"]'
 
 jq_is "(.permissions.deny | sort) == ($EXP_DENY | sort)" true "deny array matches approved set exactly"
 jq_is "(.permissions.ask  | sort) == ($EXP_ASK  | sort)" true "ask array matches approved set exactly"
@@ -456,13 +456,25 @@ for r in "Bash(git push --force*)" "Bash(git push -f *)"; do
 done
 # chezmoi cat runs op unsandboxed and can render a private key; it is the classifier's call.
 jq_is '.permissions.allow | index("Bash(chezmoi cat *)")' null "chezmoi cat is not allowlisted"
-# Enumerated per resource, so a comment body that merely says "delete" never matches.
-for res in projects todos todolists messages chat cards files checkins schedule comments; do
-  jq_is ".permissions.ask | (index(\"Bash(basecamp $res trash*)\") != null) and (index(\"Bash(basecamp $res delete*)\") != null)" \
-        true "basecamp $res trash and delete both ask"
+# Enumerated per resource, only for verbs the installed CLI has (checked with
+# basecamp <res> --help): projects and chat delete, the rest trash. A comment body that
+# merely says "delete" never matches.
+for r in "projects delete" "chat delete" "todos trash" "todolists trash" "messages trash" \
+         "cards trash" "files trash" "comments trash" "recordings trash" "vaults trash" \
+         "docs trash" "tools trash"; do
+  jq_is ".permissions.ask | index(\"Bash(basecamp $r*)\") != null" true "basecamp $r asks"
 done
-jq_is '[.permissions.ask[] | select(startswith("Bash(basecamp") and (test(" (trash|delete)\\*\\)$") | not))] | length' 0 \
-      "no basecamp ask rule matches a bare verb anywhere in the text"
+jq_is '[.permissions.ask[] | select(startswith("Bash(basecamp")
+        and (test("^Bash\\(basecamp [a-z-]+ (trash|delete)\\*\\)$") | not))] | length' 0 \
+      "every basecamp ask rule is exactly basecamp <resource> trash|delete*"
+# az delete: a flag must follow, so free text never matches; az rest DELETE is covered.
+jq_is '.permissions.ask | (index("Bash(az * delete -*)") != null) and (index("Bash(az rest * DELETE*)") != null) and (index("Bash(az * delete*)") == null)' true \
+      "az delete needs a trailing flag, az rest DELETE asks"
+# op: plural spellings and a leading global flag must not slip past the denies.
+for r in "op items get*" "op documents get*" "op --* read*" "op --* item get*" "op --* items get*" \
+         "op --* document get*" "op --* inject*" "op --* run*"; do
+  jq_is ".permissions.deny | index(\"Bash($r)\") != null" true "op deny covers $r"
+done
 
 echo "X. every wired hook script is actually managed by chezmoi"
 # A hook wired to an unmanaged path never deploys and fails open — silently inert.

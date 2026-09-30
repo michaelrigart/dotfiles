@@ -105,10 +105,15 @@ printf '%s' "$input" | jq \
           "Read(**/*.pem)",              "Edit(**/*.pem)",
           "Bash(basecamp auth token*)",
           # Secrets never enter the transcript: every op verb that prints or injects a
-          # secret value. op item create/edit/delete stay asks, below.
+          # secret value, in singular and plural spellings and with a leading global
+          # flag (op --account x read). op item create/edit/delete stay asks, below.
           "Bash(op read*)",              "Bash(op item get*)",
-          "Bash(op document get*)",      "Bash(op inject*)",
+          "Bash(op items get*)",         "Bash(op document get*)",
+          "Bash(op documents get*)",     "Bash(op inject*)",
           "Bash(op run*)",
+          "Bash(op --* read*)",          "Bash(op --* item get*)",
+          "Bash(op --* items get*)",     "Bash(op --* document get*)",
+          "Bash(op --* inject*)",        "Bash(op --* run*)",
           # Lasting mail send-out paths: a server-side rule or an auto-reply keeps
           # sending long after the session that set it up.
           "mcp__claude_ai_Microsoft_365__outlook_create_filter",
@@ -148,21 +153,21 @@ printf '%s' "$input" | jq \
           "mcp__claude_ai_Microsoft_365__outlook_trash_thread",
           "mcp__claude_ai_Microsoft_365__outlook_delete_event",
           "mcp__claude_ai_Microsoft_365__sharepoint_delete_item",
-          # Destructive Basecamp verbs, enumerated per resource so that free text which
-          # merely contains the word delete (a comment body, say) never matches.
-          "Bash(basecamp projects trash*)",   "Bash(basecamp projects delete*)",
-          "Bash(basecamp todos trash*)",      "Bash(basecamp todos delete*)",
-          "Bash(basecamp todolists trash*)",  "Bash(basecamp todolists delete*)",
-          "Bash(basecamp messages trash*)",   "Bash(basecamp messages delete*)",
-          "Bash(basecamp chat trash*)",       "Bash(basecamp chat delete*)",
-          "Bash(basecamp cards trash*)",      "Bash(basecamp cards delete*)",
-          "Bash(basecamp files trash*)",      "Bash(basecamp files delete*)",
-          "Bash(basecamp checkins trash*)",   "Bash(basecamp checkins delete*)",
-          "Bash(basecamp schedule trash*)",   "Bash(basecamp schedule delete*)",
-          "Bash(basecamp comments trash*)",   "Bash(basecamp comments delete*)",
+          # Destructive Basecamp verbs, only those the installed CLI really has (projects
+          # and chat have delete, the rest trash), spelled out per resource so that free
+          # text which merely contains the word delete (a comment body, say) never matches.
+          "Bash(basecamp projects delete*)",  "Bash(basecamp chat delete*)",
+          "Bash(basecamp todos trash*)",      "Bash(basecamp todolists trash*)",
+          "Bash(basecamp messages trash*)",   "Bash(basecamp cards trash*)",
+          "Bash(basecamp files trash*)",      "Bash(basecamp comments trash*)",
+          "Bash(basecamp recordings trash*)", "Bash(basecamp vaults trash*)",
+          "Bash(basecamp docs trash*)",       "Bash(basecamp tools trash*)",
           # Infrastructure teardown.
           "Bash(helm uninstall*)",      "Bash(helm delete*)",
-          "Bash(az * delete*)",         "Bash(terraform destroy*)"
+          # A real az delete always carries a flag, so the trailing dash keeps free text
+          # (a PR title saying soft delete) from matching.
+          "Bash(az * delete -*)",       "Bash(az rest * DELETE*)",
+          "Bash(terraform destroy*)"
         ],
         "defaultMode": "default"
       },
