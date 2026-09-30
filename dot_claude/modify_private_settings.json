@@ -109,7 +109,8 @@ printf '%s' "$input" | jq \
           "Bash(op run*)",
           "Bash(op --* read*)",          "Bash(op --* item get*)",
           "Bash(op --* items get*)",     "Bash(op --* document get*)",
-          "Bash(op --* inject*)",        "Bash(op --* run*)",
+          "Bash(op --* documents get*)", "Bash(op --* inject*)",
+          "Bash(op --* run*)",
           # Lasting mail send-out paths: a server-side rule or an auto-reply keeps
           # sending long after the session that set it up.
           "mcp__claude_ai_Microsoft_365__outlook_create_filter",

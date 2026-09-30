@@ -33,7 +33,7 @@ EXP_DENY='["Read(~/.ssh/**)","Edit(~/.ssh/**)",
  "Bash(op read*)","Bash(op item get*)","Bash(op document get*)","Bash(op inject*)","Bash(op run*)",
  "Bash(op items get*)","Bash(op documents get*)",
  "Bash(op --* read*)","Bash(op --* item get*)","Bash(op --* items get*)",
- "Bash(op --* document get*)","Bash(op --* inject*)","Bash(op --* run*)",
+ "Bash(op --* document get*)","Bash(op --* documents get*)","Bash(op --* inject*)","Bash(op --* run*)",
  "mcp__claude_ai_Microsoft_365__outlook_create_filter",
  "mcp__claude_ai_Microsoft_365__outlook_set_vacation"]'
 # "Bash(glab api *)" is DELIBERATELY ABSENT — do not add it back. It gated the mechanism,
@@ -541,7 +541,7 @@ for c in "terraform -chdir=infra plan" "terraform -chdir=infra apply -auto-appro
 done
 # op: plural spellings and a leading global flag must not slip past the denies.
 for r in "op items get*" "op documents get*" "op --* read*" "op --* item get*" "op --* items get*" \
-         "op --* document get*" "op --* inject*" "op --* run*"; do
+         "op --* document get*" "op --* documents get*" "op --* inject*" "op --* run*"; do
   jq_is ".permissions.deny | index(\"Bash($r)\") != null" true "op deny covers $r"
 done
 
