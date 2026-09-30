@@ -29,7 +29,10 @@ EXP_DENY='["Read(~/.ssh/**)","Edit(~/.ssh/**)",
  "Read(**/.env.production*)","Edit(**/.env.production*)",
  "Read(**/*.key)","Edit(**/*.key)",
  "Read(**/*.pem)","Edit(**/*.pem)",
- "Bash(basecamp auth token*)"]'
+ "Bash(basecamp auth token*)",
+ "Bash(op read*)","Bash(op item get*)","Bash(op document get*)","Bash(op inject*)","Bash(op run*)",
+ "mcp__claude_ai_Microsoft_365__outlook_create_filter",
+ "mcp__claude_ai_Microsoft_365__outlook_set_vacation"]'
 # "Bash(glab api *)" is DELIBERATELY ABSENT — do not add it back. It gated the mechanism,
 # not the danger: 156 fires in an 11-day window against 2 real rejections, every sampled
 # call a read-only GET piped into jq. It could not be narrowed here either, because an ask
@@ -45,7 +48,7 @@ EXP_DENY='["Read(~/.ssh/**)","Edit(~/.ssh/**)",
 # absence, for the same reason the note above pins `Bash(glab api *)`.
 EXP_ASK='["Read(~/.kube/config)",
  "Bash(glab mr merge*)","Bash(sudo *)",
- "Bash(git push --force*)","Bash(git push -f *)","Bash(git reset --hard*)",
+ "Bash(git reset --hard*)",
  "Bash(git clean -f*)","Bash(git branch -D*)","Bash(git filter-branch*)",
  "Bash(rm -rf ~/*)","Bash(rm -rf /Users/michael/*)",
  "Bash(rm -r ~/*)","Bash(rm -r /Users/michael/*)",
@@ -53,15 +56,31 @@ EXP_ASK='["Read(~/.kube/config)",
  "Bash(borg *)","Bash(vorta *)",
  "Bash(op item create*)","Bash(op item edit*)","Bash(op item delete*)",
  "Bash(docker rm*)","Bash(docker rmi*)","Bash(docker system prune*)",
- "Bash(docker volume rm*)","Bash(docker compose down*)"]'
+ "Bash(docker volume rm*)","Bash(docker compose down*)",
+ "mcp__claude_ai_Microsoft_365__outlook_batch_delete_messages",
+ "mcp__claude_ai_Microsoft_365__outlook_trash_thread",
+ "mcp__claude_ai_Microsoft_365__outlook_delete_event",
+ "mcp__claude_ai_Microsoft_365__sharepoint_delete_item",
+ "Bash(basecamp projects trash*)","Bash(basecamp projects delete*)",
+ "Bash(basecamp todos trash*)","Bash(basecamp todos delete*)",
+ "Bash(basecamp todolists trash*)","Bash(basecamp todolists delete*)",
+ "Bash(basecamp messages trash*)","Bash(basecamp messages delete*)",
+ "Bash(basecamp chat trash*)","Bash(basecamp chat delete*)",
+ "Bash(basecamp cards trash*)","Bash(basecamp cards delete*)",
+ "Bash(basecamp files trash*)","Bash(basecamp files delete*)",
+ "Bash(basecamp checkins trash*)","Bash(basecamp checkins delete*)",
+ "Bash(basecamp schedule trash*)","Bash(basecamp schedule delete*)",
+ "Bash(basecamp comments trash*)","Bash(basecamp comments delete*)",
+ "Bash(helm uninstall*)","Bash(helm delete*)","Bash(az * delete*)","Bash(terraform destroy*)"]'
 
 jq_is "(.permissions.deny | sort) == ($EXP_DENY | sort)" true "deny array matches approved set exactly"
 jq_is "(.permissions.ask  | sort) == ($EXP_ASK  | sort)" true "ask array matches approved set exactly"
 
-# Belt and braces: every rule is a COMPLETE, closed form naming a tool we actually use.
+# Belt and braces: every rule is a COMPLETE, closed form naming a tool we actually use:
+# Read/Edit/Bash(spec), or one MCP tool named in full (mcp__<server>__<tool>, no wildcard).
 jq_is '[.permissions.deny[], .permissions.ask[]
-        | select(test("^(Read|Edit|Bash)\\([^)]+\\)$") | not)] | length' 0 \
-      "every rule is a complete Read/Edit/Bash(spec) form"
+        | select((test("^(Read|Edit|Bash)\\([^)]+\\)$") or test("^mcp__[A-Za-z0-9_]+__[A-Za-z0-9_]+$")) | not)] | length' 0 \
+      "every rule is a complete Read/Edit/Bash(spec) form or a named MCP tool"
 
 # The allow list exists to stop prompting on read-only inspection of tools this machine
 # actually drives (glab, chezmoi, basecamp). Its danger is not breadth but KIND: an
@@ -232,7 +251,7 @@ jq_is '.permissions.ask | index("Bash(docker *)")' null \
 # scratchpad/$TMPDIR cleanup never spells one: of ~154 rm -rf calls in 30 days, 110 targeted
 # $TMPDIR/scratchpad and only 10 a real path. A blanket "Bash(rm -rf *)" would have re-created
 # 107 of the prompts this change exists to remove.
-for r in "Bash(git push --force*)" "Bash(git reset --hard*)" "Bash(rm -rf ~/*)" \
+for r in "Bash(terraform destroy*)" "Bash(git reset --hard*)" "Bash(rm -rf ~/*)" \
          "Bash(sudo *)" "Bash(borg *)" "Bash(op item edit*)"; do
   jq_is ".permissions.ask | index(\"$r\") != null" true "danger gate present: $r"
 done
@@ -293,7 +312,7 @@ emit '{}'
 jq_is '.permissions.defaultMode' 'auto' "absent defaultMode seeded to auto"
 # The seeding must not disturb the rules themselves.
 emit '{"permissions":{"defaultMode":"plan"}}'
-jq_is '.permissions.deny | length' 15 "deny rules intact when defaultMode carried"
+jq_is "(.permissions.deny | sort) == ($EXP_DENY | sort)" true "deny rules intact when defaultMode carried"
 
 echo "K. git SSH proxying rides CLAUDE_ENV_FILE, not the env block"
 # Claude Code injects an unauthenticated `nc` GIT_SSH_COMMAND at runtime and that injection
@@ -426,6 +445,24 @@ for d in "gitlab.com" "github.com" "raw.githubusercontent.com" "formulae.brew.sh
 done
 # A denied-domains list would silently override the above, so pin that it stays unset.
 jq_is '.sandbox.network.deniedDomains // "unset"' 'unset' "no deniedDomains rule shadowing the allowlist"
+
+echo "Q. the safe-autonomy permission changes (spec section 1.3)"
+emit '{}'
+# The push asks are gone because an ask rule is absolute: a PreToolUse hook returning
+# allow loses to it, so it could never let --force-with-lease through on a feature
+# branch. git-forge-guard.sh rule 4 gates every push instead; do not add them back.
+for r in "Bash(git push --force*)" "Bash(git push -f *)"; do
+  jq_is ".permissions.ask | index(\"$r\")" null "no ask rule for $r - rule 4 of the forge guard owns pushes"
+done
+# chezmoi cat runs op unsandboxed and can render a private key; it is the classifier's call.
+jq_is '.permissions.allow | index("Bash(chezmoi cat *)")' null "chezmoi cat is not allowlisted"
+# Enumerated per resource, so a comment body that merely says "delete" never matches.
+for res in projects todos todolists messages chat cards files checkins schedule comments; do
+  jq_is ".permissions.ask | (index(\"Bash(basecamp $res trash*)\") != null) and (index(\"Bash(basecamp $res delete*)\") != null)" \
+        true "basecamp $res trash and delete both ask"
+done
+jq_is '[.permissions.ask[] | select(startswith("Bash(basecamp") and (test(" (trash|delete)\\*\\)$") | not))] | length' 0 \
+      "no basecamp ask rule matches a bare verb anywhere in the text"
 
 echo "X. every wired hook script is actually managed by chezmoi"
 # A hook wired to an unmanaged path never deploys and fails open — silently inert.
