@@ -71,7 +71,9 @@ EXP_ASK='["Read(~/.kube/config)",
  "Bash(basecamp recordings trash*)","Bash(basecamp vaults trash*)",
  "Bash(basecamp docs trash*)","Bash(basecamp tools trash*)",
  "Bash(helm uninstall*)","Bash(helm delete*)",
- "Bash(az * delete -*)","Bash(az rest * DELETE*)","Bash(terraform destroy*)"]'
+ "Bash(az * delete -*)","Bash(az rest * DELETE*)","Bash(terraform destroy*)",
+ "Bash(terraform -chdir=* destroy*)","Bash(terraform apply -destroy*)",
+ "Bash(terraform -chdir=* apply -destroy*)"]'
 
 jq_is "(.permissions.deny | sort) == ($EXP_DENY | sort)" true "deny array matches approved set exactly"
 jq_is "(.permissions.ask  | sort) == ($EXP_ASK  | sort)" true "ask array matches approved set exactly"
@@ -517,6 +519,26 @@ jq_is '[.permissions.ask[] | select(startswith("Bash(basecamp")
 # az delete: a flag must follow, so free text never matches; az rest DELETE is covered.
 jq_is '.permissions.ask | (index("Bash(az * delete -*)") != null) and (index("Bash(az rest * DELETE*)") != null) and (index("Bash(az * delete*)") == null)' true \
       "az delete needs a trailing flag, az rest DELETE asks"
+# terraform teardown asks in every spelling an agent writes: the no-cd rule steers it to
+# -chdir, and apply -destroy is destroy under another verb. A rule's * matches any text,
+# spaces included, which a shell case pattern reproduces; plan and a plain apply stay silent.
+emit '{}'
+asks() { # asks <command>: does any ask rule match it?
+  local rule pat
+  while IFS= read -r rule; do
+    pat=${rule#Bash(}; pat=${pat%)}
+    # shellcheck disable=SC2254 # the rule is the pattern
+    case "$1" in $pat) return 0 ;; esac
+  done < <(printf '%s' "$OUT" | jq -r '.permissions.ask[] | select(startswith("Bash("))')
+  return 1
+}
+for c in "terraform destroy" "terraform -chdir=infra destroy -auto-approve" \
+         "terraform apply -destroy" "terraform -chdir=infra apply -destroy -auto-approve"; do
+  if asks "$c"; then _pass "teardown asks: $c"; else _fail "teardown asks: $c" "no ask rule matches"; fi
+done
+for c in "terraform -chdir=infra plan" "terraform -chdir=infra apply -auto-approve" "terraform apply"; do
+  if asks "$c"; then _fail "no teardown ask: $c" "an ask rule matches"; else _pass "no teardown ask: $c"; fi
+done
 # op: plural spellings and a leading global flag must not slip past the denies.
 for r in "op items get*" "op documents get*" "op --* read*" "op --* item get*" "op --* items get*" \
          "op --* document get*" "op --* inject*" "op --* run*"; do

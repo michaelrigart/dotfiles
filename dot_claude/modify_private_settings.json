@@ -163,7 +163,10 @@ printf '%s' "$input" | jq \
           # A real az delete always carries a flag, so the trailing dash keeps free text
           # (a PR title saying soft delete) from matching.
           "Bash(az * delete -*)",       "Bash(az rest * DELETE*)",
-          "Bash(terraform destroy*)"
+          # terraform destroy, also as apply -destroy, and behind -chdir (the form the
+          # no-cd rule steers an agent to).
+          "Bash(terraform destroy*)",   "Bash(terraform -chdir=* destroy*)",
+          "Bash(terraform apply -destroy*)", "Bash(terraform -chdir=* apply -destroy*)"
         ]
       },
       "enableAllProjectMcpServers": false,
