@@ -48,6 +48,8 @@ cat > "$GIT_CONFIG_GLOBAL" <<'EOF'
 	st = status
 	pom = push origin main
 	shp = !git push origin main
+[format]
+	pretty = format:%h %s
 EOF
 
 # Rule 4 scans outgoing commits with gitleaks. The decision cases run against a stub
@@ -781,6 +783,101 @@ if command -v chezmoi >/dev/null 2>&1 \
 else
   fail=$((fail + 1)); printf '  FAIL %s\n' "git-push-guard.py is chezmoi-managed"
 fi
+
+echo "== rule 4: the secret scan =="
+PATH="$REALPATH"
+CLEAN=$(clone clean)
+printf 'hello\n' > "$CLEAN/notes.txt"
+git -C "$CLEAN" add notes.txt && git -C "$CLEAN" commit -q -m "a clean change"
+if ! command -v gitleaks >/dev/null 2>&1; then
+  fail=$((fail + 1))
+  printf '  FAIL %s\n' "gitleaks is installed (brew install gitleaks); the scan cases cannot run"
+else
+  # The fixture secret is assembled at runtime from two halves, so no committed file
+  # holds a scannable credential: this suite is itself pushed through the scan it tests.
+  part_a=AKIA; part_b=QX7T2MZL4KRB6WNP
+  SECRET_LINE="aws = \"$part_a$part_b\""
+  LEAKY=$(clone leaky)
+  printf '%s\n' "$SECRET_LINE" > "$LEAKY/creds.txt"
+  git -C "$LEAKY" add creds.txt && git -C "$LEAKY" commit -q -m "add creds"
+  expect allow "a clean feature branch is scanned and passes" "$CLEAN" 'git push origin feat'
+  expect deny  "a secret in the outgoing commits"             "$LEAKY" 'git push origin feat'
+  has_reason   "the deny names rule, file and commit" \
+               "rule aws-access-token in creds.txt at commit" "$LEAKY" 'git push origin feat'
+  got=$(reason "$LEAKY" 'git push origin feat')
+  # The suite's gitconfig carries a format.pretty like Michael's, which once made gitleaks
+  # report findings with no commit. The fingerprint must be commit-bound.
+  if printf '%s\n' "$got" | grep -Eq '\(fingerprint [0-9a-f]{40}:creds\.txt:aws-access-token:1\)'; then
+    pass=$((pass + 1)); printf '  ok   %s\n' "the fingerprint is bound to the commit, despite format.pretty"
+  else
+    fail=$((fail + 1)); printf '  FAIL %s\n' "the fingerprint is bound to the commit, despite format.pretty ($got)"
+  fi
+  # -C selects the repository that is scanned: the same push, two repositories.
+  expect deny  "git -C <leaky repo> is scanned there"  "$CLEAN" "git -C $LEAKY push origin feat"
+  expect allow "git -C <clean repo> is scanned there"  "$LEAKY" "git -C $CLEAN push origin feat"
+  case "$got" in
+    *"$part_b"*) fail=$((fail + 1)); printf '  FAIL %s\n' "the deny never shows the secret" ;;
+    *)           pass=$((pass + 1)); printf '  ok   %s\n' "the deny never shows the secret" ;;
+  esac
+  expect deny  "a secret beats an ask: deny, not ask"         "$LEAKY" 'git push origin feat:main'
+  expect allow "a dry run is never scanned"                   "$LEAKY" 'git push --dry-run origin feat'
+  INLINE=$(clone inline)
+  printf '%s # gitleaks:allow\n' "$SECRET_LINE" > "$INLINE/creds.txt"
+  git -C "$INLINE" add creds.txt && git -C "$INLINE" commit -q -m "add creds inline-allowed"
+  expect deny  "an inline gitleaks:allow is not an exception" "$INLINE" 'git push origin feat'
+  # The reviewed way through: the finding's fingerprint in the tracked .gitleaksignore.
+  fp=$(printf '%s\n' "$got" | sed -n 's/.*(fingerprint \([^)]*\)).*/\1/p' | head -1)
+  printf '%s\n' "$fp" > "$LEAKY/.gitleaksignore"
+  git -C "$LEAKY" add .gitleaksignore && git -C "$LEAKY" commit -q -m "ignore a false positive"
+  expect allow "a fingerprint in .gitleaksignore lets it through" "$LEAKY" 'git push origin feat'
+  # Only the DESTINATION remote's history is excluded. A commit already published on
+  # another remote is still scanned before it reaches this one.
+  TWO=$(clone two-remotes)
+  git -C "$TWO" remote add backup "$REMOTES/backup.git"
+  git -C "$TWO" switch -q -c elsewhere
+  printf '%s\n' "$SECRET_LINE" > "$TWO/creds.txt"
+  git -C "$TWO" add creds.txt && git -C "$TWO" commit -q -m "add creds"
+  git -C "$TWO" push -q backup elsewhere 2>/dev/null
+  expect deny  "a secret reachable only from another remote is still scanned" "$TWO" 'git push origin elsewhere'
+  expect allow "the destination remote's own history is excluded"            "$TWO" 'git push backup elsewhere'
+fi
+
+echo "== rule 4: the scan fails closed =="
+NOGL="$TMP/nogl"; mkdir -p "$NOGL"; ln -s "$(command -v jq)" "$NOGL/jq"
+PATH="$NOGL:/usr/bin:/bin"
+expect deny  "a missing gitleaks denies the push"   "$CLEAN" 'git push origin feat'
+has_reason   "and names the remedy" "brew bundle"   "$CLEAN" 'git push origin feat'
+BROKEN="$TMP/brokengl"; mkdir -p "$BROKEN"
+printf '#!/bin/sh\necho "gitleaks: boom" >&2\nexit 2\n' > "$BROKEN/gitleaks"; chmod 755 "$BROKEN/gitleaks"
+PATH="$BROKEN:$REALPATH"
+expect deny  "a gitleaks error denies the push"     "$CLEAN" 'git push origin feat'
+has_reason   "and carries the error" "boom"         "$CLEAN" 'git push origin feat'
+RECORD="$TMP/recordgl"; mkdir -p "$RECORD"
+printf '#!/bin/sh\necho called >> "%s/calls"\nexit 0\n' "$RECORD" > "$RECORD/gitleaks"; chmod 755 "$RECORD/gitleaks"
+PATH="$RECORD:$REALPATH"
+expect allow "a dry run to main"                    "$CLEAN" 'git push -n origin main'
+if [ -e "$RECORD/calls" ]; then
+  fail=$((fail + 1)); printf '  FAIL %s\n' "a dry run never runs gitleaks"
+else
+  pass=$((pass + 1)); printf '  ok   %s\n' "a dry run never runs gitleaks"
+fi
+# A gitleaks that hangs (or a git it spawns) must end in a deny within the helper's budget,
+# and the whole process group must go: a surviving child would hold the hook open.
+HANG="$TMP/hanggl"; mkdir -p "$HANG"
+printf '#!/bin/sh\nsleep 30\nexit 0\n' > "$HANG/gitleaks"; chmod 755 "$HANG/gitleaks"
+PATH="$HANG:$REALPATH"
+export PUSH_GUARD_BUDGET=2
+started=$(date +%s)
+expect deny  "a gitleaks slower than the budget is a deny" "$CLEAN" 'git push origin feat'
+has_reason   "and the deny says the scan timed out" "did not finish" "$CLEAN" 'git push origin feat'
+elapsed=$(( $(date +%s) - started ))
+unset PUSH_GUARD_BUDGET
+if [ "$elapsed" -le 12 ]; then
+  pass=$((pass + 1)); printf '  ok   %s\n' "a hung gitleaks is cut off at the budget (${elapsed}s for two pushes)"
+else
+  fail=$((fail + 1)); printf '  FAIL %s\n' "a hung gitleaks is cut off at the budget (${elapsed}s for two pushes)"
+fi
+PATH="$STUBBIN:$REALPATH"
 
 echo
 echo "passed: $pass  failed: $fail"

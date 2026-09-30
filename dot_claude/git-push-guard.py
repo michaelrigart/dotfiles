@@ -39,8 +39,11 @@ import json
 import os
 import re
 import shlex
+import shutil
+import signal
 import subprocess
 import sys
+import tempfile
 import time
 
 # Claude Code treats a hook that outruns its timeout as non-blocking, so a slow helper
@@ -104,6 +107,13 @@ DWIM_PREFIXES = ("heads/", "tags/", "remotes/", "refs/")
 
 UNSUPPORTED = ("unsupported push configuration for the push guard: {}; "
                "push by hand or simplify the configuration")
+GITLEAKS_LEAKS_EXIT = 99
+# gitleaks parses `git log -p` output, and log formatting config breaks the parse. Under
+# Michael's own format.pretty it reported "0 commits scanned" and findings with no commit,
+# so no commit-bound fingerprint. These pin git's default output for the scan alone.
+GIT_LOG_DEFAULTS = [("format.pretty", "medium"), ("log.showSignature", "false"),
+                    ("log.abbrevCommit", "false"), ("diff.noprefix", "false"),
+                    ("diff.mnemonicPrefix", "false"), ("color.ui", "false")]
 PLAIN = ("Push guard: this command may run git push in a shape the guard does not check. Run "
          "the push as a plain command of its own: git push [options] <remote> <branch> "
          "(optionally after one cd <path> &&, and piped only to tail or head). If the command "
@@ -519,6 +529,93 @@ def default_branch(repo, remote):
     return "main"
 
 
+# ------------------------------------------------------------------ the secret scan
+def run_gitleaks(cmd, cwd, env):
+    """(returncode, stdout, stderr) of gitleaks, within what is left of the budget. It runs
+    in its own process group so a timeout takes gitleaks and the git it spawned down
+    together: a survivor holding the pipes would keep this helper (and the hook) waiting."""
+    remaining = BUDGET - (time.monotonic() - START)
+    if remaining <= 0:
+        raise Deny(TIMED_OUT)
+    try:
+        p = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, universal_newlines=True,
+                             start_new_session=True)
+    except OSError as e:
+        raise Deny("Push guard: gitleaks could not run ({}), so the push is refused.".format(e))
+    try:
+        out, err = p.communicate(timeout=remaining)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except OSError:
+            p.kill()
+        p.communicate()
+        raise Deny("Push guard: the gitleaks scan did not finish within the push guard's time "
+                   "budget, so the push is refused. Scan by hand (gitleaks git --redact) and "
+                   "push by hand.")
+    return p.returncode, out, err
+
+
+def scan(root, remote, sources):
+    """gitleaks over the commits this push would send. Returns on a clean scan and
+    raises Deny otherwise; a scan that cannot run is a deny, never a pass.
+    --ignore-gitleaks-allow: the only exception is a reviewed .gitleaksignore entry, never
+    an inline comment. A repository's own .gitleaks.toml is honoured; it is tracked and
+    reviewed like any other change."""
+    exe = shutil.which("gitleaks")
+    if not exe:
+        raise Deny("Push guard: gitleaks is not installed, so the outgoing commits cannot be "
+                   "scanned for secrets and the push is refused. Install it with: "
+                   "brew bundle --file ~/.config/homebrew/Brewfile")
+    log_opts = " ".join(sources + ["--not", "--remotes=" + remote])
+    env = dict(os.environ, GIT_CONFIG_COUNT=str(len(GIT_LOG_DEFAULTS)))
+    for i, (key, value) in enumerate(GIT_LOG_DEFAULTS):
+        env["GIT_CONFIG_KEY_%d" % i] = key
+        env["GIT_CONFIG_VALUE_%d" % i] = value
+    fd, report = tempfile.mkstemp(prefix="push-guard-", suffix=".json")
+    os.close(fd)
+    try:
+        code, out, err = run_gitleaks(
+            [exe, "git", "--no-banner", "--no-color", "--redact", "--ignore-gitleaks-allow",
+             "--exit-code", str(GITLEAKS_LEAKS_EXIT),
+             "--report-format", "json", "--report-path", report,
+             "--log-opts=" + log_opts, root], root, env)
+        if code == 0:
+            return
+        if code == GITLEAKS_LEAKS_EXIT:
+            raise Deny(leak_reason(report, remote))
+        tail = "\n".join((err or out or "").strip().splitlines()[-5:])
+        raise Deny("Push guard: gitleaks failed (exit {}), so the push is refused:\n{}"
+                   .format(code, tail))
+    finally:
+        try:
+            os.unlink(report)
+        except OSError:
+            pass
+
+
+def leak_reason(report, remote):
+    try:
+        with open(report, encoding="utf-8") as fh:
+            findings = json.load(fh)
+    except (OSError, ValueError):
+        findings = []
+    lines = ["- rule {} in {} at commit {} (fingerprint {})".format(
+        f.get("RuleID", "?"), f.get("File", "?"), str(f.get("Commit", "?"))[:12],
+        f.get("Fingerprint", "?")) for f in findings[:10]]
+    if len(findings) > 10:
+        lines.append("- and {} more".format(len(findings) - 10))
+    return ("Push guard: gitleaks found {} secret(s) in the commits this push would send to {}:\n"
+            "{}\n\n"
+            "Take the secret out of those commits (rewrite the branch), and rotate it if it is "
+            "real. If a finding is a false positive, add its fingerprint as a line in the "
+            "repository's tracked .gitleaksignore and commit that, so the exception is "
+            "reviewed like any other change.").format(
+                len(findings) or "one or more", remote,
+                "\n".join(lines) or "- (the gitleaks report could not be read)")
+
+
 # ------------------------------------------------------------------ one push
 def evaluate(cwd, assigns, repo_opts, config_opts, args):
     """None to allow, a reason string to ask; raises Deny to deny."""
@@ -637,6 +734,18 @@ def evaluate(cwd, assigns, repo_opts, config_opts, args):
         name = dst[len("refs/heads/"):] if dst.startswith("refs/heads/") else dst
         if not name.startswith("refs/") and name == default:
             asks.append("it updates " + default + ", the default branch of " + remote)
+
+    # The scan runs before any ask is returned: a push Michael approves must already be
+    # clean, and a secret is a deny, which beats an ask.
+    scan_sources = list(sources)
+    if "--tags" in flags:
+        scan_sources.append("--tags")
+    if "--all" in flags:
+        scan_sources.append("--branches")
+    if "--mirror" in flags:
+        scan_sources.append("--all")
+    if scan_sources:
+        scan(root, remote, scan_sources)
 
     if asks:
         return "Push guard: this push needs Michael, because " + "; ".join(asks) + "."
