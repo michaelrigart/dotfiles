@@ -656,6 +656,31 @@ expect allow "a variable command with no push word"   "$R" '$G status'
 expect deny  "a glob git word after then"             "$R" 'if true; then /usr/bin/g[i]t push origin main; fi'
 expect deny  "git-send-pack inside a { } group"       "$R" "{ /usr/libexec/git-core/git-send-pack $REMOTES/origin.git main; }"
 expect allow "an if around a git command that does not push" "$R" 'if git diff --quiet; then echo same; fi'
+# A pattern in command position is not a command: the *) of a case arm after ;; or a
+# newline, or a markdown bullet (* item) in a here-document. A glob with no literal in it
+# spells no command name, and a case pattern such as g*) or g*|*git*) runs nothing.
+expect allow "a *) case arm in a loop, then docker push" "$R" 'for f in a b; do case $f in a) t=1;; *) t=2;; esac; docker push reg/$f:$t; done'
+expect allow "a *) case arm, then docker push"        "$R" 'case "$x" in a) echo a;; *) echo other;; esac; docker push img'
+expect allow "a multi-line case with a push comment"  "$R" 'case "$1" in
+  build) make build;;
+  *) npm publish;;
+esac # push'
+expect allow "case patterns that match git: g*|*git*)" "$R" 'case "$u" in a) ;; g*|*git*) echo vcs;; esac; docker push img'
+expect allow "an empty case arm: g*);;"               "$R" 'case "$u" in a) ;; g*);; esac; docker push img'
+expect deny  "a glob git word as the command of a *) arm" "$R" 'case "$x" in a) ;; *) /usr/bin/g[i]t push origin main;; esac'
+expect deny  "a glob git word in a subshell"          "$R" '(/usr/bin/g[i]t push origin main)'
+expect deny  "a glob git word after xargs, before a )" "$R" '(echo push origin main | xargs /usr/bin/g[i]t)'
+# Here-documents keep the rule above (a heredoc body naming a push is denied): git and push
+# on one line. These bodies hold a bullet and no such line, so they go ahead.
+expect allow "a commit heredoc with a bullet line"    "$R" "git commit -F - <<'EOF'
+Narrow the push alias scan
+
+* keep reserved words
+EOF"
+expect allow "a heredoc bullet, then docker push"     "$R" "cat > $TMP/notes.md <<'EOF'
+* build the image
+EOF
+docker push img"
 expect deny  "git-send-pack behind exec-path"         "$R" "\$(git --exec-path)/git-send-pack $REMOTES/origin.git main"
 expect deny  "git-send-pack by path"                  "$R" "/opt/homebrew/opt/git/libexec/git-core/git-send-pack $REMOTES/origin.git main"
 expect deny  "git-push, the dash form"                "$R" 'git-push origin main'

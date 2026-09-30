@@ -306,6 +306,9 @@ DASH_PUSH = {"git-push", "git-send-pack", "git-http-push"}
 GIT_NAMES = ("git",) + tuple(sorted(DASH_PUSH))
 # Shell reserved words: the word after one is still in command position.
 RESERVED = {"if", "then", "elif", "else", "do", "while", "until", "!", "{"}
+# A word of glob syntax alone (*, ?, [...]) with no literal outside a bracket: the *) of a
+# case arm, or a markdown bullet (* item) in a here-document. It spells no command name.
+GLOB_ONLY = re.compile(r"(?:[*?]|\[[!^]?\]?[^\]]*\])+")
 
 
 def starts_command(tok):
@@ -335,17 +338,33 @@ def command_words(tokens):
     return out
 
 
+def case_pattern(tokens, k):
+    """Is the command word at k a case pattern: right after an operator (;; or a newline),
+    words joined by | and closed by ), as in a) ... ;; g*|*git*) ...? A git spelled there
+    would run with no arguments. A word after a wrapper (xargs g[i]t)) is never one."""
+    if k > 0 and not starts_command(tokens[k - 1]):
+        return False
+    j, n = k + 1, len(tokens)
+    while j + 1 < n and tokens[j] == "|" and not is_operator(tokens[j + 1]):
+        j += 2
+    return j < n and is_operator(tokens[j]) and tokens[j].startswith(")")
+
+
 def odd_command_word(tokens):
     """A command word that could be git push under another spelling: git-push,
     git-send-pack or git-http-push by name (the dash form, also behind a path), or a glob
-    that matches git or one of those names (gi?, g[i]t)."""
+    that matches git or one of those names (gi?, g[i]t). A glob with no literal in it (*)
+    and a case pattern (g*)) are not spellings of a command."""
     for k in command_words(tokens):
         base = os.path.basename(tokens[k])
         if base in DASH_PUSH:
             return True
         # Only the last path component decides: $HOME/bin/helm is helm, and $DOCKER is not
         # a git spelling. A glob there is refused when it can match git or a git-* name.
-        if any(c in base for c in "?[*") and any(fnmatch.fnmatchcase(g, base) for g in GIT_NAMES):
+        if not any(c in base for c in "?[*") or GLOB_ONLY.fullmatch(base) \
+                or case_pattern(tokens, k):
+            continue
+        if any(fnmatch.fnmatchcase(g, base) for g in GIT_NAMES):
             return True
     return False
 
