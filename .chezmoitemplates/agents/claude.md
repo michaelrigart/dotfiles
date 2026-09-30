@@ -28,11 +28,12 @@
   Go up a tier when a task is harder than its label, and say which tier you used when it
   isn't obvious.
 - **Pushing.** Push in a Bash call of its own, as one plain command:
-  `git push [options] <remote> <branch>`, optionally after one leading `cd <path> &&`, and
-  piped only to `tail`/`head`. The push guard denies a push chained after a commit, a push
-  with a trailing comment, and a push inside a shell or substitution. It also runs gitleaks
-  on the outgoing commits. A genuine false positive gets its fingerprint added to
-  `.gitleaksignore`, committed on the branch being pushed.
+  `git push [options] <remote> <branch>` (for another repository, `git -C <path> push …`),
+  optionally piped to `tail`/`head`. The push guard denies a push chained after a commit, a
+  push with a comment, and a push inside a shell or substitution. It also runs gitleaks on
+  the outgoing commits. A genuine false positive gets its fingerprint in `.gitleaksignore`,
+  committed on the branch being pushed. While that file exists, push refs by name, never
+  `--tags`/`--all`.
 - **Cross-review** with Codex runs through the `cross-review` skill (`xreview`). It uses
   the repository's existing Codex pane; never open another. `xreview dispatch` needs
   `--checkpoint spec|plan|pre-merge`.

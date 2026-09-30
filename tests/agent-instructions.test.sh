@@ -36,6 +36,7 @@ render() { # render <template, relative to the source> <out-file>
 }
 
 first_line=$(head -1 "$FRAG/global.md")
+frag_lines=$(wc -l < "$FRAG/global.md" | tr -d ' ')
 for t in "$GLOBAL_T" "$CODEX_T" "$CLAUDE_T"; do
   out="$T/$(basename "$t")"
   if render "$t" "$out" && [ -s "$out" ]; then
@@ -43,10 +44,11 @@ for t in "$GLOBAL_T" "$CODEX_T" "$CLAUDE_T"; do
   else
     _fail "$t renders" "$(cat "$T/err")"
   fi
-  if grep -qxF -- "$first_line" "$out"; then
+  # The whole fragment, not a line of it: the target must open with global.md verbatim.
+  if [ "$(head -n "$frag_lines" "$out")" = "$(cat "$FRAG/global.md")" ]; then
     _pass "$t carries the shared fragment"
   else
-    _fail "$t carries the shared fragment" "first line '$first_line' not found"
+    _fail "$t carries the shared fragment" "$(diff <(head -n "$frag_lines" "$out") "$FRAG/global.md" | head -3)"
   fi
   if grep -q 'onepasswordRead' "$SRC/$t"; then
     _fail "$t no longer reads 1Password" "$(grep -n onepasswordRead "$SRC/$t")"
@@ -65,8 +67,9 @@ done
 claude_out="$T/$(basename "$CLAUDE_T")"
 marker_at=$(grep -nxF -- "$MARKER" "$claude_out" | head -1 | cut -d: -f1)
 shared_at=$(grep -nxF -- "$first_line" "$claude_out" | head -1 | cut -d: -f1)
-if [ -n "$marker_at" ] && [ -n "$shared_at" ] && [ "$shared_at" -lt "$marker_at" ]; then
-  _pass "the Claude target is the shared fragment, then the Claude addendum"
+if [ -n "$marker_at" ] && [ -n "$shared_at" ] && [ "$shared_at" -lt "$marker_at" ] \
+   && [ "$marker_at" -eq $((frag_lines + 2)) ] && [ -n "$(tail -n 1 "$claude_out")" ]; then
+  _pass "the Claude target is the shared fragment, one blank line, the addendum, no trailing blank"
 else
   _fail "the Claude target is the shared fragment, then the Claude addendum" "shared at '$shared_at', marker at '$marker_at'"
 fi

@@ -138,8 +138,9 @@ SCANNED_RE = re.compile(r"\b(\d+) commits? scanned\b")
 ERR_RE = re.compile(r"^\S+\s+ERR\b", re.M)
 PLAIN = ("Push guard: this command may run git push in a shape the guard does not check. Run "
          "the push as a plain command of its own: git push [options] <remote> <branch> "
-         "(optionally after one cd <path> &&, and piped only to tail or head). If the command "
-         "does not push, keep git and push apart in its text, for example rg 'git pu[s]h'.")
+         "(for another repository: git -C <path> push [options] <remote> <branch>; piped only "
+         "to tail or head). If the command does not push, keep git and push apart in its text, "
+         "for example rg 'git pu[s]h'.")
 
 
 TIMED_OUT = "Push guard: the push check timed out, so the push is refused. Retry the push."
