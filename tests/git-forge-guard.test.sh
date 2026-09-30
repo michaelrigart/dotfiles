@@ -916,6 +916,73 @@ else
   printf '%s\n' "$SECRET_LINE" > "$EVIL/creds.txt"; git -C "$EVIL" add creds.txt
   git -C "$EVIL" commit -q -m "merge side"
   expect deny  "a secret introduced while committing a merge"  "$EVIL" 'git push origin feat'
+  # Ways git can be made to show no added text while the secret is there. The scan pins
+  # them for its own git log, and never skips gitleaks on an expected count of zero.
+  echo "== rule 4: a secret git is told not to show =="
+  NODIFF=$(clone nodiff)
+  printf '* -diff\n' > "$NODIFF/.gitattributes"
+  printf '%s\n' "$SECRET_LINE" > "$NODIFF/creds.txt"
+  git -C "$NODIFF" add .gitattributes creds.txt && git -C "$NODIFF" commit -q -m "add creds, marked -diff"
+  expect deny  "a secret under -diff in a committed .gitattributes" "$NODIFF" 'git push origin feat'
+  has_reason   "and it is found, not merely refused" "rule aws-access-token in creds.txt" "$NODIFF" 'git push origin feat'
+  INFOATTR=$(leaky_clone info-attributes)
+  printf '* binary\n' >> "$INFOATTR/.git/info/attributes"
+  expect deny  "a secret under binary in .git/info/attributes"      "$INFOATTR" 'git push origin feat'
+  has_reason   "and it is found, not merely refused" "rule aws-access-token in creds.txt" "$INFOATTR" 'git push origin feat'
+  BIGFILE=$(leaky_clone bigfile)
+  git -C "$BIGFILE" config core.bigFileThreshold 1
+  expect deny  "a secret under core.bigFileThreshold=1"             "$BIGFILE" 'git push origin feat'
+  has_reason   "and it is found, not merely refused" "rule aws-access-token in creds.txt" "$BIGFILE" 'git push origin feat'
+  ORPHAN=$(clone orphan)
+  git -C "$ORPHAN" switch -q --orphan orphan
+  printf '%s\n' "$SECRET_LINE" > "$ORPHAN/creds.txt"
+  git -C "$ORPHAN" add creds.txt && git -C "$ORPHAN" commit -q -m "root with creds"
+  git -C "$ORPHAN" config log.showRoot false
+  expect deny  "a secret in a root commit under log.showRoot=false" "$ORPHAN" 'git push origin orphan'
+  has_reason   "and it is found, not merely refused" "rule aws-access-token in creds.txt" "$ORPHAN" 'git push origin orphan'
+  # None of that may cost an ordinary push its silence. gitleaks counts a commit only when
+  # its patch adds text, and the expected count follows the same rule.
+  FRESH="$TMP/fresh"; git init -q "$FRESH"
+  git init -q --bare "$REMOTES/fresh.git"
+  printf 'one\ntwo\n' > "$FRESH/a.txt"; git -C "$FRESH" add a.txt; git -C "$FRESH" commit -q -m "first"
+  git -C "$FRESH" remote add origin "$REMOTES/fresh.git"; git -C "$FRESH" switch -q -c topic
+  expect allow "a first push of a new repository"            "$FRESH" 'git push origin topic'
+  EMPTIES=$(clone empties)
+  git -C "$EMPTIES" commit -q --allow-empty -m "e1"; git -C "$EMPTIES" commit -q --allow-empty -m "e2"
+  expect allow "empty commits only"                           "$EMPTIES" 'git push origin feat'
+  DELREN=$(clone delren)
+  seq 1 20 > "$DELREN/a.txt"; seq 21 40 > "$DELREN/b.txt"
+  git -C "$DELREN" add a.txt b.txt && git -C "$DELREN" commit -q -m "add a and b"
+  git -C "$DELREN" push -q origin feat 2>/dev/null
+  git -C "$DELREN" rm -q b.txt && git -C "$DELREN" commit -q -m "delete b"
+  expect allow "deletions only"                               "$DELREN" 'git push origin feat'
+  git -C "$DELREN" mv a.txt c.txt && git -C "$DELREN" commit -q -m "rename a"
+  expect allow "a deletion and a rename"                      "$DELREN" 'git push origin feat'
+  BINARY=$(clone binary)
+  printf '\000\001\002\003\n' > "$BINARY/blob.bin"
+  git -C "$BINARY" add blob.bin && git -C "$BINARY" commit -q -m "a binary file"
+  expect allow "a binary-only commit"                         "$BINARY" 'git push origin feat'
+  AMENDED=$(clone amended)
+  printf 'one\n' > "$AMENDED/n.txt"; git -C "$AMENDED" add n.txt; git -C "$AMENDED" commit -q -m "add n"
+  git -C "$AMENDED" push -q origin feat 2>/dev/null
+  printf 'two\n' >> "$AMENDED/n.txt"; git -C "$AMENDED" commit -q -a --amend -m "add n, amended"
+  expect allow "after an amend"                               "$AMENDED" 'git push origin feat'
+  # The exception files are compared with HEAD byte for byte, so git's own ways of hiding a
+  # change (status.showUntrackedFiles, skip-worktree) do not hide it from the guard.
+  HIDDEN=$(leaky_clone hidden-untracked)
+  fp=$(fingerprint_of "$HIDDEN"); printf '%s\n' "$fp" > "$HIDDEN/.gitleaksignore"
+  git -C "$HIDDEN" config status.showUntrackedFiles no
+  expect deny  "an untracked .gitleaksignore under status.showUntrackedFiles=no" "$HIDDEN" 'git push origin feat'
+  has_reason   "and it is refused for being uncommitted" "Commit the exception first" "$HIDDEN" 'git push origin feat'
+  SKIPWT=$(clone skip-worktree)
+  printf '# reviewed\n' > "$SKIPWT/.gitleaksignore"
+  git -C "$SKIPWT" add .gitleaksignore && git -C "$SKIPWT" commit -q -m "add ignore file"
+  printf '%s\n' "$SECRET_LINE" > "$SKIPWT/creds.txt"
+  git -C "$SKIPWT" add creds.txt && git -C "$SKIPWT" commit -q -m "add creds"
+  fp=$(fingerprint_of "$SKIPWT"); printf '%s\n' "$fp" >> "$SKIPWT/.gitleaksignore"
+  git -C "$SKIPWT" update-index --skip-worktree .gitleaksignore
+  expect deny  "a skip-worktree edit to a committed .gitleaksignore" "$SKIPWT" 'git push origin feat'
+  has_reason   "and it is refused for differing from HEAD" "Commit the exception first" "$SKIPWT" 'git push origin feat'
   # A config named in the environment is as unreviewed as an untracked one.
   printf '[extend]\nuseDefault = true\n[allowlist]\npaths = [%s]\n' "'''.*'''" > "$TMP/allow-all.toml"
   GITLEAKS_CONFIG="$TMP/allow-all.toml" expect deny "a GITLEAKS_CONFIG in the environment is ignored" "$EVIL" 'git push origin feat'

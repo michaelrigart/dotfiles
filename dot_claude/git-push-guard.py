@@ -114,10 +114,15 @@ GITLEAKS_LEAKS_EXIT = 99
 GIT_LOG_DEFAULTS = [("format.pretty", "medium"), ("log.showSignature", "false"),
                     ("log.abbrevCommit", "false"), ("diff.noprefix", "false"),
                     ("diff.mnemonicPrefix", "false"), ("color.ui", "false"),
-                    ("color.diff", "false")]
+                    ("color.diff", "false"),
+                    # past this size git prints "Binary files differ" for a text file
+                    ("core.bigFileThreshold", "2g")]
 # The scan reads a merge as the diff against what git would merge by itself (remerge), so a
 # secret added while committing a merge is seen; git log -p shows a merge with no diff.
 MERGE_DIFF = "--diff-merges=remerge"
+# Options that make `git log -p` show every added line: a root commit, a file marked binary
+# or -diff by .gitattributes or .git/info/attributes, a textconv or external diff driver.
+PATCH_OPTS = ["--root", "--text", "--no-textconv", "--no-ext-diff", MERGE_DIFF]
 # Files that change what gitleaks reports. Only a committed one is a reviewed exception.
 GITLEAKS_CONFIG_FILES = [".gitleaksignore", ".gitleaks.toml"]
 SCANNED_RE = re.compile(r"\b(\d+) commits? scanned\b")
@@ -259,14 +264,17 @@ class Repo:
     def __init__(self, cwd, repo_opts):
         self.base = ["git", "-C", cwd] + list(repo_opts)
 
-    def run(self, *args):
-        """stdout of a git query, or None when git fails."""
+    def run(self, *args, env=None, long=False):
+        """stdout of a git query, or None when git fails. env replaces the environment; long
+        lifts the per-call limit to what is left of the budget (a patch listing of a large
+        push). Output is decoded leniently: a patch can carry any bytes."""
         remaining = BUDGET - (time.monotonic() - START)
         if remaining <= 0:
             raise Deny(TIMED_OUT)
         try:
-            p = subprocess.run(self.base + list(args), capture_output=True, text=True,
-                               timeout=min(CALL_TIMEOUT, remaining))
+            p = subprocess.run(self.base + list(args), capture_output=True, env=env,
+                               encoding="utf-8", errors="replace",
+                               timeout=remaining if long else min(CALL_TIMEOUT, remaining))
         except subprocess.TimeoutExpired:
             raise Deny(TIMED_OUT)
         except OSError:
@@ -547,7 +555,7 @@ def run_gitleaks(cmd, cwd, env):
         raise Deny(TIMED_OUT)
     try:
         p = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE,
-                             stderr=subprocess.PIPE, universal_newlines=True,
+                             stderr=subprocess.PIPE, encoding="utf-8", errors="replace",
                              start_new_session=True)
     except OSError as e:
         raise Deny("Push guard: gitleaks could not run ({}), so the push is refused.".format(e))
@@ -565,25 +573,29 @@ def run_gitleaks(cmd, cwd, env):
     return p.returncode, out, err
 
 
-def expected_commits(repo, remote, sources):
-    """How many outgoing commits gitleaks must report scanning: those whose diff adds a
-    line of text (a mode change, a binary, a deletion or an empty commit adds none, and
-    gitleaks does not count it). Read with git itself, under the same budget as every
-    other git call here."""
-    out = repo.run("log", "--no-color", MERGE_DIFF, "--format=%x01%H", "--numstat",
-                   *(list(sources) + ["--not", "--remotes=" + remote]))
+def expected_commits(repo, remote, sources, env):
+    """How many outgoing commits gitleaks must report scanning: those whose patch shows at
+    least one added line. It reads the same `git log -p` stream with the same options and
+    pins gitleaks is given, so the two counts agree unless gitleaks lost something. (An
+    empty commit, a mode change, a pure deletion or a clean merge shows none, and gitleaks
+    does not count it.) Run through Repo.run, under the same budget as every git call."""
+    out = repo.run("log", "-p", "-U0", "--no-color", "--format=%x01%H", *PATCH_OPTS,
+                   *(list(sources) + ["--not", "--remotes=" + remote]), env=env, long=True)
     if out is None:
         raise Deny("Push guard: git could not list the outgoing commits ({}), so the secret "
                    "scan cannot show it covered them and the push is refused. Push by hand."
                    .format(" ".join(sources)))
-    count, current, added = 0, False, False
+    count, current, added, columns = 0, False, False, 0
     for line in out.split("\n"):
         if line.startswith("\x01"):
             count += 1 if current and added else 0
-            current, added = True, False
-        elif line.strip():
-            n = line.split("\t")[0]
-            added = added or (n.isdigit() and int(n) > 0)
+            current, added, columns = True, False, 0
+        elif line.startswith("diff "):
+            columns = 0                                # a header: no hunk yet
+        elif line.startswith("@@"):
+            columns = len(line) - len(line.lstrip("@")) - 1    # 1, or 2+ for a merge
+        elif columns and "+" in line[:columns]:
+            added = True
     return count + (1 if current and added else 0)
 
 
@@ -593,34 +605,43 @@ def scan(root, remote, sources):
     is a deny, never a pass.
     --ignore-gitleaks-allow: the only exception is a reviewed .gitleaksignore entry, never
     an inline comment. gitleaks reads .gitleaksignore and .gitleaks.toml from the working
-    tree, so a copy that is untracked, ignored or modified is refused: commit it first, and
-    the exception is reviewed like any other change. GITLEAKS_* variables are dropped from
-    the environment for the same reason. Commit and annotated-tag messages are not scanned
-    (gitleaks git mode scans patches only)."""
+    tree, so a copy that is not byte-identical to the one committed in HEAD (untracked,
+    ignored, modified, hidden by skip-worktree or status.showUntrackedFiles) is refused:
+    commit it first, and the exception is reviewed like any other change. GITLEAKS_*
+    variables are dropped from the environment for the same reason. Commit and
+    annotated-tag messages are not scanned (gitleaks git mode scans patches only)."""
     exe = shutil.which("gitleaks")
     if not exe:
         raise Deny("Push guard: gitleaks is not installed, so the outgoing commits cannot be "
                    "scanned for secrets and the push is refused. Install it with: "
                    "brew bundle --file ~/.config/homebrew/Brewfile")
     repo = Repo(root, [])
-    dirty = repo.run("status", "--porcelain", "--ignored", "--", *GITLEAKS_CONFIG_FILES)
-    if dirty is None:
-        raise Deny("Push guard: git could not read the state of .gitleaksignore, so the secret "
-                   "scan is refused. Push by hand.")
-    if dirty.strip():
-        raise Deny("Push guard: the secret scan reads a file that is untracked, ignored or "
-                   "changed ({}), so it cannot decide what the scan skips. Commit the "
-                   "exception first (a fingerprint in .gitleaksignore, or a .gitleaks.toml), "
-                   "then push.".format(", ".join(l.strip() for l in dirty.strip().splitlines())))
-    expected = expected_commits(repo, remote, sources)
-    if expected == 0:
-        return                                         # nothing that adds text: nothing to scan
-    log_opts = " ".join(list(sources) + [MERGE_DIFF, "--not", "--remotes=" + remote])
     env = {k: v for k, v in os.environ.items() if not k.startswith("GITLEAKS_")}
     env["GIT_CONFIG_COUNT"] = str(len(GIT_LOG_DEFAULTS))
     for i, (key, value) in enumerate(GIT_LOG_DEFAULTS):
         env["GIT_CONFIG_KEY_%d" % i] = key
         env["GIT_CONFIG_VALUE_%d" % i] = value
+    outgoing = repo.run("rev-list", *(list(sources) + ["--not", "--remotes=" + remote]))
+    if outgoing is None:
+        raise Deny("Push guard: git could not list the outgoing commits ({}), so the secret "
+                   "scan cannot show it covered them and the push is refused. Push by hand."
+                   .format(" ".join(sources)))
+    if not outgoing.strip():
+        return                                         # nothing leaves: nothing to scan
+    for name in GITLEAKS_CONFIG_FILES:
+        if not os.path.lexists(os.path.join(root, name)):
+            continue                                   # gitleaks reads nothing from it
+        worktree = repo.run("hash-object", "--no-filters", "--", name)
+        committed = repo.run("rev-parse", "--verify", "--quiet", "HEAD:" + name)
+        if worktree is None or committed is None or worktree.strip() != committed.strip():
+            raise Deny("Push guard: {} differs from the one committed in HEAD (or HEAD has "
+                       "none), so it cannot decide what the secret scan skips. Commit the "
+                       "exception first (a fingerprint in .gitleaksignore, or a "
+                       ".gitleaks.toml), then push.".format(name))
+    # Never skipped on an expected count of 0: that count is only as good as git's view of
+    # the patches, and gitleaks must agree with it.
+    expected = expected_commits(repo, remote, sources, env)
+    log_opts = " ".join(list(sources) + PATCH_OPTS + ["--not", "--remotes=" + remote])
     fd, report = tempfile.mkstemp(prefix="push-guard-", suffix=".json")
     os.close(fd)
     try:
