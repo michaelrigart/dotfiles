@@ -576,6 +576,68 @@ has_reason   "the deny names the key" \
 expect allow "a dry run is never refused"             "$MATCHING" 'git push --dry-run origin main'
 expect deny  "unbalanced quotes around a push"        "$R" 'git push origin "feat'
 
+echo "== rule 4: ways a push to the default branch could hide =="
+# git resolves a destination such as heads/main to refs/heads/main, so the guard reads only
+# refs/heads/<name> and a plain name; a name with a slash (feat/x) is still a branch name.
+expect deny  "a DWIM destination: feat:heads/main"    "$R" 'git push origin feat:heads/main'
+expect deny  "a bare DWIM refspec: heads/main"        "$R" 'git push origin heads/main'
+expect deny  "a tags/ destination"                    "$R" 'git push origin feat:tags/v1'
+expect deny  "a remotes/ destination"                 "$R" 'git push origin feat:remotes/origin/main'
+expect deny  "a refs/tags/ destination"               "$R" 'git push origin HEAD:refs/tags/v1'
+has_reason   "the DWIM deny names the destination" "the destination heads/main" "$R" 'git push origin feat:heads/main'
+expect ask   "HEAD:refs/heads/main still asks"        "$R" 'git push origin HEAD:refs/heads/main'
+expect allow "a destination with a slash is a branch" "$R" 'git push origin HEAD:feat/x'
+expect allow "a source with a slash is a branch"      "$R" 'git push origin feat/x:feat/x'
+# The shell rewrites braces, globs and variables before git sees the words.
+expect deny  "a brace list of refspecs"               "$R" 'git push origin {feat,main}'
+expect deny  "a brace list inside a destination"      "$R" 'git push origin HEAD:{main,}'
+expect deny  "a ? glob in a refspec"                  "$R" 'git push origin mai?'
+expect deny  "a [ ] glob in a refspec"                "$R" 'git push origin [m]ain'
+expect deny  "a brace list in the remote"             "$R" 'git push or{i,i}gin feat'
+expect deny  "a glob in the remote"                   "$R" 'git push orig?n feat'
+# A subcommand or option the shell computes can be any command.
+expect deny  "the subcommand from a variable default" "$R" 'git ${X:-push} origin main'
+expect deny  "a variable as the subcommand"           "$R" 'X=push; git $X origin main'
+expect deny  "a computed subcommand, no push in the git text" "$R" 'git ${X:-pu}sh origin main
+echo push'
+expect deny  "a computed option word"                 "$R" 'git ${X:--C} . push origin feat'
+expect deny  "a brace list as the subcommand"         "$R" 'git {push,pull} origin feat'
+expect ask   "a -C value through a variable still resolves" "$TMP" 'git -C "$GUARDTMP/work" push origin main'
+# Commands that push without being git push.
+expect deny  "git subtree push"                       "$R" 'git subtree push --prefix=d origin main'
+expect deny  "git http-push"                          "$R" 'git http-push origin main'
+expect deny  "a non-builtin subcommand given push"    "$R" 'git lfs push origin feat'
+expect allow "git subtree split does not push"        "$R" 'git subtree split --prefix=d'
+# send-pack has no "push" in its text, so the shell fast path never starts the helper for it;
+# the helper is driven directly.
+helper_denies() { # helper_denies <label> <cwd> <command>
+  local out
+  out=$(jq -n --arg c "$3" --arg d "$2" '{tool_name:"Bash",cwd:$d,tool_input:{command:$c}}' \
+    | /usr/bin/python3 "$(dirname "$GUARD")/git-push-guard.py")
+  case "$out" in
+    *'"permissionDecision":"deny"'*) pass=$((pass + 1)); printf '  ok   %s\n' "$1" ;;
+    *) fail=$((fail + 1)); printf '  FAIL %s (helper said: %s)\n' "$1" "$out" ;;
+  esac
+}
+helper_denies "git send-pack, straight to the helper"  "$R" "git send-pack $REMOTES/origin.git main"
+helper_denies "a computed subcommand, straight to the helper" "$R" 'git ${X:-pu}sh origin main'
+
+echo "== rule 4: a slow helper is a deny, never a pass =="
+# Claude Code lets a hook that outruns its timeout through, so the helper gives up first.
+# PUSH_GUARD_BUDGET shortens its total budget for these cases only.
+SLOWBIN="$TMP/slowbin"; mkdir -p "$SLOWBIN"
+printf '#!/bin/sh\nsleep 1\nPATH="%s"; export PATH\nexec git "$@"\n' "$REALPATH" > "$SLOWBIN/git"
+chmod 755 "$SLOWBIN/git"
+export PUSH_GUARD_BUDGET=0
+expect deny  "an exhausted budget is a deny"          "$R" 'git push origin feat'
+has_reason   "the timeout deny says to retry" "timed out" "$R" 'git push origin feat'
+export PUSH_GUARD_BUDGET=0.3
+SAVED_PATH=$PATH; export PATH="$SLOWBIN:$PATH"
+expect deny  "a git call slower than the budget is a deny" "$R" 'git push origin feat'
+export PATH=$SAVED_PATH
+unset PUSH_GUARD_BUDGET
+expect allow "with the default budget the same push goes ahead" "$R" 'git push origin feat'
+
 echo "== rule 4 costs nothing on commands that do not push =="
 # The helper is where the time goes (python plus a dozen git calls). A tripwire helper
 # records every run, so a plain command that cannot push must never reach it. A git command

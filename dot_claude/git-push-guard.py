@@ -34,8 +34,20 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 
-PUNCT = ";&|()<>\n"
+# Claude Code treats a hook that outruns its timeout as non-blocking, so a slow helper
+# would let the push through. The helper therefore gives up first, and a give-up is a
+# deny: no single git call may take more than CALL_TIMEOUT, and the whole run may not
+# take more than BUDGET. PUSH_GUARD_BUDGET exists only so the test suite can shorten it.
+START = time.monotonic()
+CALL_TIMEOUT = 5.0
+try:
+    BUDGET = float(os.environ.get("PUSH_GUARD_BUDGET", "30"))
+except ValueError:
+    BUDGET = 30.0
+
+PUNCT =";&|()<>\n"
 ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 # Could this text run git push? git, then push (or a push alias), within one command.
 PUSH_SHAPE = re.compile(r"\bgit\b[^;&|\n]*\bpush\b")
@@ -74,12 +86,21 @@ PUSH_LONG = {"--set-upstream", "--force-with-lease", "--force-if-includes", "--f
 PUSH_LONG_WITH_VALUE = {"--force-with-lease", "--push-option"}    # --x=value accepted
 PUSH_SHORT = set("ufdnqv")                                        # plus -o <value>
 
+# Subcommands that push without being git push: always refused. Any other subcommand that
+# is not a builtin and is given the word push (subtree, lfs, ...) is refused as well.
+PUSHING_SUBCOMMANDS = {"send-pack", "http-push"}
+# A refspec destination that git resolves as a ref path rather than a branch name.
+DWIM_PREFIXES = ("heads/", "tags/", "remotes/", "refs/")
+
 UNSUPPORTED = ("unsupported push configuration for the push guard: {}; "
                "push by hand or simplify the configuration")
 PLAIN = ("Push guard: this command may run git push in a shape the guard does not check. Run "
          "the push as a plain command of its own: git push [options] <remote> <branch> "
          "(optionally after one cd <path> &&, and piped only to tail or head). If the command "
          "does not push, keep git and push apart in its text, for example rg 'git pu[s]h'.")
+
+
+TIMED_OUT = "Push guard: the push check timed out, so the push is refused. Retry the push."
 
 
 class Deny(Exception):
@@ -111,6 +132,14 @@ def is_operator(tok):
 
 def substitutes(tok):
     return ("$(" in tok or "`" in tok) and tok not in CURRENT_BRANCH
+
+
+def dynamic(word, dollar=True):
+    """Does the shell rewrite this word before git sees it (a variable, a substitution, a
+    brace list, a glob)? The guard reads the literal text, so such a word may run as
+    another command or name another ref. dollar=False lets a $ through: the value of -C is
+    expanded by this guard itself, and one it cannot expand fails the repository lookup."""
+    return any(c in word for c in ("$`{}?[*" if dollar else "`{}?[*"))
 
 
 def parse_plain(tokens, cwd):
@@ -148,10 +177,16 @@ def parse_plain(tokens, cwd):
         if w in ("-C", "-c") or (name in GIT_LONG_OPTS_WITH_VALUE and "=" not in w):
             if i + 1 >= n or is_operator(t[i + 1]):
                 return None
+            if dynamic(w) or dynamic(t[i + 1], dollar=(w != "-C")):
+                return None
             opt, i = [w, t[i + 1]], i + 2
         elif name in GIT_LONG_OPTS_WITH_VALUE:
+            if dynamic(w):
+                return None
             opt, i = [w], i + 1
         else:
+            if dynamic(w):
+                return None
             if w not in GIT_FLAGS and not w.startswith("--exec-path"):
                 unknown.append(w)
             i += 1
@@ -164,6 +199,8 @@ def parse_plain(tokens, cwd):
             repo_opts.extend(os.path.expanduser(os.path.expandvars(x)) for x in opt)
     if i >= n or is_operator(t[i]):
         return None
+    if dynamic(t[i]):
+        return None                                    # git ${X:-push} origin main
     sub, args, i = t[i], [], i + 1
     while i < n and not is_operator(t[i]) and t[i:i + 3] != ["2", ">&", "1"]:
         args.append(t[i])
@@ -191,9 +228,15 @@ class Repo:
 
     def run(self, *args):
         """stdout of a git query, or None when git fails."""
+        remaining = BUDGET - (time.monotonic() - START)
+        if remaining <= 0:
+            raise Deny(TIMED_OUT)
         try:
-            p = subprocess.run(self.base + list(args), capture_output=True, text=True, timeout=20)
-        except (OSError, subprocess.TimeoutExpired):
+            p = subprocess.run(self.base + list(args), capture_output=True, text=True,
+                               timeout=min(CALL_TIMEOUT, remaining))
+        except subprocess.TimeoutExpired:
+            raise Deny(TIMED_OUT)
+        except OSError:
             return None
         return p.stdout if p.returncode == 0 else None
 
@@ -243,11 +286,41 @@ def push_aliases(cwd, selector):
     return names
 
 
+def dynamic_git_word(tokens):
+    """Is a git word followed by a global option or a subcommand the shell rewrites (git
+    ${X:-push} ...)? Such a word can name any subcommand, so the text cannot rule out a
+    push."""
+    n = len(tokens)
+    for k, tok in enumerate(tokens):
+        if is_operator(tok) or os.path.basename(tok) != "git":
+            continue
+        j = k + 1
+        while j < n and not is_operator(tokens[j]):
+            w = tokens[j]
+            name = w.split("=", 1)[0]
+            if w in ("-C", "-c") or (name in GIT_LONG_OPTS_WITH_VALUE and "=" not in w):
+                if dynamic(w) or (j + 1 < n and dynamic(tokens[j + 1], dollar=(w != "-C"))):
+                    return True
+                j += 2
+            elif w.startswith("-"):
+                if dynamic(w):
+                    return True
+                j += 1
+            else:
+                if dynamic(w):
+                    return True
+                break
+    return False
+
+
 def could_push(cmd, tokens, cwd):
     """For a command outside the grammar: could it run git push? git and push in its text,
     git and a push alias (from cwd, or a repository a -C, --git-dir or GIT_DIR in it names),
-    or git under a GIT_CONFIG override. Text only; no shape is parsed."""
+    git under a GIT_CONFIG override, or git followed by a subcommand the shell computes.
+    Text only; no shape is parsed."""
     if PUSH_SHAPE.search(cmd):
+        return True
+    if tokens and dynamic_git_word(tokens):
         return True
     if not re.search(r"\bgit\b", cmd):
         return False
@@ -276,6 +349,12 @@ def judge(s):
         # -c options go into the lookup too: `git -c alias.x=push x` defines the alias on
         # the command line itself.
         sub, args = expand_alias(Repo(s["cwd"], s["repo_opts"] + s["config_opts"]), sub, args)
+    if sub != "push" and sub not in GIT_BUILTINS and (
+            sub in PUSHING_SUBCOMMANDS or "push" in args):
+        # git subtree push, git lfs push, git send-pack: a push under another name, with
+        # a destination this guard does not read.
+        raise Deny("Push guard: git " + sub + " can push in a way the guard does not model. "
+                   "Push with git push <remote> <branch>, or push by hand.")
     if sub != "push":
         return None                                    # a plain git command that does not push
     if s["unknown"]:
@@ -364,7 +443,7 @@ def evaluate(cwd, assigns, repo_opts, config_opts, args):
     branch = branch.strip() if branch else None
     if branch and repo.config("branch." + branch + ".pushRemote") is not None:
         raise Deny(UNSUPPORTED.format("branch." + branch + ".pushRemote"))
-    if remote_arg and ("$" in remote_arg or "`" in remote_arg):
+    if remote_arg and dynamic(remote_arg):
         raise Deny("Push guard: the remote " + remote_arg + " is a shell value the guard cannot "
                    "know. Name the remote literally.")
     remote = remote_arg or (branch and repo.config("branch." + branch + ".remote")) or "origin"
@@ -392,7 +471,9 @@ def evaluate(cwd, assigns, repo_opts, config_opts, args):
         asks.append("it force-pushes without a lease (--force or -f)")
     for spec in refspecs:
         s = "HEAD" if spec in CURRENT_BRANCH else spec
-        if "$" in s or "`" in s:
+        if any(c in s for c in "$`{}?["):
+            # A variable, a substitution, a brace list or a glob: bash rewrites the word
+            # before git sees it, so the literal text is not where the push goes.
             raise Deny("Push guard: the refspec " + spec + " is a shell value the guard cannot "
                        "know, so it cannot tell where the push goes. Name the branch literally "
                        "(git push origin <branch>, or HEAD for the current one).")
@@ -426,6 +507,14 @@ def evaluate(cwd, assigns, repo_opts, config_opts, args):
                 dst = branch
         elif not colon:
             dst = src
+        if (colon or src != "HEAD") and not dst.startswith("refs/heads/") \
+                and dst.startswith(DWIM_PREFIXES):
+            # git resolves heads/main, tags/x and refs/... to the ref of that name, so
+            # feat:heads/main updates main while looking like a branch called heads/main.
+            # Only refs/heads/<name> is read; a plain name with a slash (feat/x) is fine.
+            raise Deny(UNSUPPORTED.format(
+                "the destination " + dst + ", which git resolves as a ref path; name the "
+                "branch (main) or write refs/heads/<branch>"))
         sources.append(src)
         dests.append(dst)
     if not refspecs and not (deleting or flags & {"--tags", "--all", "--mirror"}):
