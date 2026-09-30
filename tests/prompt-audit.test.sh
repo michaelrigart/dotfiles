@@ -48,6 +48,29 @@ bash_cmd "curl -H \"Authorization: Bearer $secret\" https://example.com" >/dev/n
 is "flags are never logged"             "$(last .subcommand)" curl
 bash_cmd "op read op://Private/item/$secret" >/dev/null
 is "op read is logged as op read"       "$(last .subcommand)" "op read"
+# The split is on whitespace, which a quote, an escaped space or a substitution in an
+# assignment can span: the word after it may be a fragment of the value, so nothing is
+# logged. Two distinct fragments, so the log check below names which one leaked.
+quoted="${word}3q$RANDOM"; escaped="${word}4e$RANDOM"
+bash_cmd "TOKEN='prefix $quoted suffix' git push origin main" >/dev/null
+is "a quoted assignment spanning words logs no subcommand" "$(last .subcommand)" ""
+bash_cmd "TOKEN=\"prefix $quoted suffix\" git push origin main" >/dev/null
+is "a double-quoted one logs none either" "$(last .subcommand)" ""
+bash_cmd "TOKEN=my\\ $escaped git push origin main" >/dev/null
+is "an escaped space in an assignment logs no subcommand" "$(last .subcommand)" ""
+bash_cmd "TOKEN=\$(cat $escaped file) git push origin main" >/dev/null
+is "a substitution spanning words logs no subcommand" "$(last .subcommand)" ""
+bash_cmd "TOKEN=plain git push origin main" >/dev/null
+is "a plain assignment still logs the subcommand" "$(last .subcommand)" "git push"
+# claude and codex take a free-text prompt as their second word.
+bash_cmd "claude $quoted" >/dev/null
+is "claude logs its first word only" "$(last .subcommand)" claude
+bash_cmd "codex $escaped" >/dev/null
+is "codex logs its first word only" "$(last .subcommand)" codex
+for f in "$quoted" "$escaped"; do
+  if grep -q "$f" "$LOG"; then _fail "the fragment $f appears nowhere in the log" "$(grep -c "$f" "$LOG") lines"
+  else _pass "the fragment $f appears nowhere in the log"; fi
+done
 if grep -q "$secret" "$LOG"; then _fail "no secret ever reaches the log" "$(grep -c "$secret" "$LOG") lines"
 else _pass "no secret ever reaches the log"; fi
 

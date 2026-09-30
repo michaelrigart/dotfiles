@@ -9,7 +9,10 @@
 # the hook. It NEVER logs the tool input: a command line can carry a secret. subcommand is
 # the first word of a Bash command, skipping leading VAR=value assignments, plus the
 # second word only for a known multi-command tool (git push, op read); for an MCP tool it
-# is the tool name; for anything else it is empty.
+# is the tool name; for anything else it is empty. The words are split on whitespace, which
+# a quote, an escaped space or a substitution in an assignment can span
+# (TOKEN='a b' git push): if a leading assignment holds any of those, subcommand is empty,
+# because the word after it may be a fragment of the value.
 #
 # Fails open and silent on every error. Bash 3.2 compatible.
 set -uo pipefail
@@ -22,13 +25,18 @@ dir="${XDG_STATE_HOME:-$HOME/.local/state}/agent-audit"
 mkdir -p "$dir" 2>/dev/null || exit 0
 
 # Tools whose second word is a subcommand. Any other tool logs its first word only: the
-# second word of an arbitrary command (echo, mysql, htpasswd) can be the secret itself.
-multi='["git","glab","gh","op","docker","kubectl","helm","az","aws","terraform","brew","mise","chezmoi","basecamp","herdr","xreview","codex","claude","npm","yarn","pnpm","bundle","rails","cargo","go","uv","pip","borg","vorta","tsh","tctl","kubie"]'
+# second word of an arbitrary command (echo, mysql, htpasswd) can be the secret itself, and
+# so can the second word of claude or codex, which is a free-text prompt.
+multi='["git","glab","gh","op","docker","kubectl","helm","az","aws","terraform","brew","mise","chezmoi","basecamp","herdr","xreview","npm","yarn","pnpm","bundle","rails","cargo","go","uv","pip","borg","vorta","tsh","tctl","kubie"]'
 line=$(printf '%s' "$payload" | jq -c --argjson multi "$multi" '
   def subcommand:
-    [splits("[[:space:]]+") | select(length > 0)]
-    | until((length == 0) or (.[0] | test("^[A-Za-z_][A-Za-z0-9_]*=") | not); .[1:])
-    | if length == 0 then ""
+    [splits("[[:space:]]+") | select(length > 0)] as $w
+    | ([$w | to_entries[] | select(.value | test("^[A-Za-z_][A-Za-z0-9_]*=") | not) | .key]
+       | first // ($w | length)) as $cmd
+    # \u0027 is a single quote: this program sits inside single quotes.
+    | if ($w[:$cmd] | any(test("[\"\u0027\\\\$`(){}]"))) then ""
+      else $w[$cmd:] end
+    | if . == "" or length == 0 then ""
       elif (.[0] | test("^[A-Za-z0-9_./+-]+$") | not) then "?"
       elif (length > 1) and (.[0] | IN($multi[])) and (.[1] | test("^[a-z][a-z0-9-]*$"))
         then "\(.[0]) \(.[1])"
