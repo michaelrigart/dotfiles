@@ -43,9 +43,10 @@ SOURCE_ID="herdr-phase"
 CACHE_DIR="${HERDR_PHASE_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/herdr-phase}"
 STATE_DIR="${HERDR_PHASE_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/herdr-phase}"
 
-# herdr 0.8.2 selects a session only via `--session`, never an environment variable.
-# phase.sh runs as a plugin action and from the prompt, both of which may be inside a
-# named session, so thread it rather than defaulting to the live one.
+# herdr 0.9.3 reads HERDR_SESSION, but HERDR_SOCKET_PATH, which herdr exports into every
+# pane, outranks it, and only `--session` outranks the socket. phase.sh runs as a plugin
+# action and from the prompt, both inside a pane, so thread --session rather than let the
+# pane's socket pick the session.
 HERDR_ARGS=""
 [ -n "${HERDR_SESSION:-}" ] && HERDR_ARGS="--session $HERDR_SESSION"
 TTL="${HERDR_PHASE_TTL:-120}"

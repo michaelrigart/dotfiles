@@ -14,9 +14,10 @@
 emulate -L zsh
 setopt local_options no_unset pipe_fail
 
-# Same session threading as layout.sh: herdr 0.8.2 selects a session only via
-# `--session`, never an environment variable, so a bare `command herdr` here would
-# focus a tab in the DEFAULT session while the caller meant a named one.
+# Same session threading as layout.sh: herdr 0.9.3 reads HERDR_SESSION, but
+# HERDR_SOCKET_PATH, which herdr exports into every pane, outranks it, and only
+# `--session` outranks the socket, so a bare `command herdr` here would focus a tab in
+# the pane's own session while the caller meant a named one.
 typeset -ga HL_HERDR=(command herdr)
 [[ -n "${HERDR_SESSION:-}" ]] && HL_HERDR+=(--session "$HERDR_SESSION")
 
