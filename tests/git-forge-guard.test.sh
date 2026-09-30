@@ -634,6 +634,12 @@ expect deny  "a ? glob in a refspec"                  "$R" 'git push origin mai?
 expect deny  "a [ ] glob in a refspec"                "$R" 'git push origin [m]ain'
 expect deny  "a brace list in the remote"             "$R" 'git push or{i,i}gin feat'
 expect deny  "a glob in the remote"                   "$R" 'git push orig?n feat'
+# parse_push refuses every push word the shell rewrites, so nothing later checks for them
+# again. What still gets through reaches git as written, and git refuses it: a * in the
+# remote (no remote name can hold one) and a quoted refspec holding a space.
+expect deny  "a * glob in the remote"                 "$R" 'git push orig* feat'
+expect deny  "the current-branch form as the remote"  "$R" 'git push "$(git branch --show-current)" feat'
+expect deny  "a quoted refspec holding a space and a brace" "$R" "git push origin 'fe at{x}'"
 # A subcommand or option the shell computes can be any command.
 expect deny  "the subcommand from a variable default" "$R" 'git ${X:-push} origin main'
 expect deny  "a variable as the subcommand"           "$R" 'X=push; git $X origin main'

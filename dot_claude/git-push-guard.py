@@ -809,9 +809,6 @@ def evaluate(cwd, assigns, repo_opts, config_opts, args):
     branch = branch.strip() if branch else None
     if branch and repo.config("branch." + branch + ".pushRemote") is not None:
         raise Deny(UNSUPPORTED.format("branch." + branch + ".pushRemote"))
-    if remote_arg and dynamic(remote_arg):
-        raise Deny("Push guard: the remote " + remote_arg + " is a shell value the guard cannot "
-                   "know. Name the remote literally.")
     remote = remote_arg or (branch and repo.config("branch." + branch + ".remote")) or "origin"
     if remote not in (repo.run("remote") or "").split():
         raise Deny(UNSUPPORTED.format("a push to " + remote + ", which is not a configured remote"))
@@ -837,12 +834,6 @@ def evaluate(cwd, assigns, repo_opts, config_opts, args):
         asks.append("it force-pushes without a lease (--force or -f)")
     for spec in refspecs:
         s = "HEAD" if spec in CURRENT_BRANCH else spec
-        if any(c in s for c in "$`{}?["):
-            # A variable, a substitution, a brace list or a glob: bash rewrites the word
-            # before git sees it, so the literal text is not where the push goes.
-            raise Deny("Push guard: the refspec " + spec + " is a shell value the guard cannot "
-                       "know, so it cannot tell where the push goes. Name the branch literally "
-                       "(git push origin <branch>, or HEAD for the current one).")
         if s.startswith("+"):
             asks.append("the refspec " + spec + " force-pushes without a lease")
             s = s[1:]
