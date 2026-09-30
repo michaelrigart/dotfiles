@@ -113,7 +113,15 @@ GITLEAKS_LEAKS_EXIT = 99
 # so no commit-bound fingerprint. These pin git's default output for the scan alone.
 GIT_LOG_DEFAULTS = [("format.pretty", "medium"), ("log.showSignature", "false"),
                     ("log.abbrevCommit", "false"), ("diff.noprefix", "false"),
-                    ("diff.mnemonicPrefix", "false"), ("color.ui", "false")]
+                    ("diff.mnemonicPrefix", "false"), ("color.ui", "false"),
+                    ("color.diff", "false")]
+# The scan reads a merge as the diff against what git would merge by itself (remerge), so a
+# secret added while committing a merge is seen; git log -p shows a merge with no diff.
+MERGE_DIFF = "--diff-merges=remerge"
+# Files that change what gitleaks reports. Only a committed one is a reviewed exception.
+GITLEAKS_CONFIG_FILES = [".gitleaksignore", ".gitleaks.toml"]
+SCANNED_RE = re.compile(r"\b(\d+) commits? scanned\b")
+ERR_RE = re.compile(r"^\S+\s+ERR\b", re.M)
 PLAIN = ("Push guard: this command may run git push in a shape the guard does not check. Run "
          "the push as a plain command of its own: git push [options] <remote> <branch> "
          "(optionally after one cd <path> &&, and piped only to tail or head). If the command "
@@ -557,19 +565,59 @@ def run_gitleaks(cmd, cwd, env):
     return p.returncode, out, err
 
 
+def expected_commits(repo, remote, sources):
+    """How many outgoing commits gitleaks must report scanning: those whose diff adds a
+    line of text (a mode change, a binary, a deletion or an empty commit adds none, and
+    gitleaks does not count it). Read with git itself, under the same budget as every
+    other git call here."""
+    out = repo.run("log", "--no-color", MERGE_DIFF, "--format=%x01%H", "--numstat",
+                   *(list(sources) + ["--not", "--remotes=" + remote]))
+    if out is None:
+        raise Deny("Push guard: git could not list the outgoing commits ({}), so the secret "
+                   "scan cannot show it covered them and the push is refused. Push by hand."
+                   .format(" ".join(sources)))
+    count, current, added = 0, False, False
+    for line in out.split("\n"):
+        if line.startswith("\x01"):
+            count += 1 if current and added else 0
+            current, added = True, False
+        elif line.strip():
+            n = line.split("\t")[0]
+            added = added or (n.isdigit() and int(n) > 0)
+    return count + (1 if current and added else 0)
+
+
 def scan(root, remote, sources):
     """gitleaks over the commits this push would send. Returns on a clean scan and
-    raises Deny otherwise; a scan that cannot run is a deny, never a pass.
+    raises Deny otherwise; a scan that cannot run, or cannot prove it covered the commits,
+    is a deny, never a pass.
     --ignore-gitleaks-allow: the only exception is a reviewed .gitleaksignore entry, never
-    an inline comment. A repository's own .gitleaks.toml is honoured; it is tracked and
-    reviewed like any other change."""
+    an inline comment. gitleaks reads .gitleaksignore and .gitleaks.toml from the working
+    tree, so a copy that is untracked, ignored or modified is refused: commit it first, and
+    the exception is reviewed like any other change. GITLEAKS_* variables are dropped from
+    the environment for the same reason. Commit and annotated-tag messages are not scanned
+    (gitleaks git mode scans patches only)."""
     exe = shutil.which("gitleaks")
     if not exe:
         raise Deny("Push guard: gitleaks is not installed, so the outgoing commits cannot be "
                    "scanned for secrets and the push is refused. Install it with: "
                    "brew bundle --file ~/.config/homebrew/Brewfile")
-    log_opts = " ".join(sources + ["--not", "--remotes=" + remote])
-    env = dict(os.environ, GIT_CONFIG_COUNT=str(len(GIT_LOG_DEFAULTS)))
+    repo = Repo(root, [])
+    dirty = repo.run("status", "--porcelain", "--ignored", "--", *GITLEAKS_CONFIG_FILES)
+    if dirty is None:
+        raise Deny("Push guard: git could not read the state of .gitleaksignore, so the secret "
+                   "scan is refused. Push by hand.")
+    if dirty.strip():
+        raise Deny("Push guard: the secret scan reads a file that is untracked, ignored or "
+                   "changed ({}), so it cannot decide what the scan skips. Commit the "
+                   "exception first (a fingerprint in .gitleaksignore, or a .gitleaks.toml), "
+                   "then push.".format(", ".join(l.strip() for l in dirty.strip().splitlines())))
+    expected = expected_commits(repo, remote, sources)
+    if expected == 0:
+        return                                         # nothing that adds text: nothing to scan
+    log_opts = " ".join(list(sources) + [MERGE_DIFF, "--not", "--remotes=" + remote])
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GITLEAKS_")}
+    env["GIT_CONFIG_COUNT"] = str(len(GIT_LOG_DEFAULTS))
     for i, (key, value) in enumerate(GIT_LOG_DEFAULTS):
         env["GIT_CONFIG_KEY_%d" % i] = key
         env["GIT_CONFIG_VALUE_%d" % i] = value
@@ -581,13 +629,25 @@ def scan(root, remote, sources):
              "--exit-code", str(GITLEAKS_LEAKS_EXIT),
              "--report-format", "json", "--report-path", report,
              "--log-opts=" + log_opts, root], root, env)
-        if code == 0:
-            return
         if code == GITLEAKS_LEAKS_EXIT:
             raise Deny(leak_reason(report, remote))
         tail = "\n".join((err or out or "").strip().splitlines()[-5:])
-        raise Deny("Push guard: gitleaks failed (exit {}), so the push is refused:\n{}"
-                   .format(code, tail))
+        if code != 0:
+            raise Deny("Push guard: gitleaks failed (exit {}), so the push is refused:\n{}"
+                       .format(code, tail))
+        # A clean exit proves nothing on its own: gitleaks reports "no leaks found" and exits
+        # 0 when its own git log fails or is misparsed (color.diff=always once gave 0
+        # commits scanned). Only a scan of every commit that adds text counts as clean.
+        seen = SCANNED_RE.findall(err or "")
+        if ERR_RE.search(err or ""):
+            raise Deny("Push guard: gitleaks logged an error while scanning, so the push is "
+                       "refused:\n{}".format(tail))
+        if not seen or int(seen[-1]) != expected:
+            raise Deny("Push guard: gitleaks scanned {} commit(s) but this push carries {} "
+                       "with changes to scan, so the scan is not trusted and the push is "
+                       "refused. Check the git log configuration, or scan by hand "
+                       "(gitleaks git --redact) and push by hand.".format(
+                           seen[-1] if seen else "an unknown number of", expected))
     finally:
         try:
             os.unlink(report)

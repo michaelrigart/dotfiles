@@ -476,6 +476,7 @@ expect ask   "push <remote> while on main"            "$ONMAIN" 'git push origin
 expect ask   "push HEAD while on main"                "$ONMAIN" 'git push origin HEAD'
 has_reason   "the ask names the default branch" "main, the default branch of origin" "$R" 'git push origin main'
 TRUNK=$(clone trunk); git -C "$TRUNK" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/trunk
+git -C "$TRUNK" branch trunk
 expect ask   "the default branch comes from origin/HEAD" "$TRUNK" 'git push origin trunk'
 expect allow "main is not special when HEAD names trunk" "$TRUNK" 'git push origin main'
 NOHEAD=$(clone nohead); git -C "$NOHEAD" remote set-head origin -d
@@ -589,7 +590,9 @@ expect deny  "a refs/tags/ destination"               "$R" 'git push origin HEAD
 has_reason   "the DWIM deny names the destination" "the destination heads/main" "$R" 'git push origin feat:heads/main'
 expect ask   "HEAD:refs/heads/main still asks"        "$R" 'git push origin HEAD:refs/heads/main'
 expect allow "a destination with a slash is a branch" "$R" 'git push origin HEAD:feat/x'
-expect allow "a source with a slash is a branch"      "$R" 'git push origin feat/x:feat/x'
+# The scan lists the commits of every source, so a source must name a ref that exists.
+SLASH=$(clone slash); git -C "$SLASH" branch topic/x
+expect allow "a source with a slash is a branch"      "$SLASH" 'git push origin topic/x:topic/x'
 # The shell rewrites braces, globs and variables before git sees the words.
 expect deny  "a brace list of refspecs"               "$R" 'git push origin {feat,main}'
 expect deny  "a brace list inside a destination"      "$R" 'git push origin HEAD:{main,}'
@@ -840,6 +843,83 @@ else
   git -C "$TWO" push -q backup elsewhere 2>/dev/null
   expect deny  "a secret reachable only from another remote is still scanned" "$TWO" 'git push origin elsewhere'
   expect allow "the destination remote's own history is excluded"            "$TWO" 'git push backup elsewhere'
+
+  # leaky_clone <name> -> a clone of a branch that adds the secret. fingerprint_of <repo>
+  # reads the fingerprint the deny reports (it is commit-bound, so it differs per clone).
+  leaky_clone() {
+    local d; d=$(clone "$1")
+    printf '%s\n' "$SECRET_LINE" > "$d/creds.txt"
+    git -C "$d" add creds.txt && git -C "$d" commit -q -m "add creds"
+    printf '%s' "$d"
+  }
+  fingerprint_of() {
+    reason "$1" 'git push origin feat' | sed -n 's/.*(fingerprint \([^)]*\)).*/\1/p' | head -1
+  }
+  # The exception must be reviewed: gitleaks reads .gitleaksignore and .gitleaks.toml from
+  # the working tree, so only a committed copy may decide what the scan skips.
+  echo "== rule 4: a gitleaks exception must be committed =="
+  UNTRACKED=$(leaky_clone untracked-ignore)
+  fp=$(fingerprint_of "$UNTRACKED"); printf '%s\n' "$fp" > "$UNTRACKED/.gitleaksignore"
+  expect deny  "an untracked .gitleaksignore is not an exception" "$UNTRACKED" 'git push origin feat'
+  has_reason   "and the deny says to commit it first" "Commit the exception first" "$UNTRACKED" 'git push origin feat'
+  EXCLUDED=$(leaky_clone excluded-ignore)
+  fp=$(fingerprint_of "$EXCLUDED"); printf '%s\n' "$fp" > "$EXCLUDED/.gitleaksignore"
+  printf '.gitleaksignore\n' >> "$EXCLUDED/.git/info/exclude"
+  expect deny  "a .gitleaksignore in .git/info/exclude is not an exception" "$EXCLUDED" 'git push origin feat'
+  ALLOWALL=$(leaky_clone allow-all-toml)
+  printf '[extend]\nuseDefault = true\n[allowlist]\npaths = [%s]\n' "'''.*'''" > "$ALLOWALL/.gitleaks.toml"
+  expect deny  "an untracked .gitleaks.toml that allows everything" "$ALLOWALL" 'git push origin feat'
+  git -C "$ALLOWALL" add .gitleaks.toml
+  expect deny  "a staged, uncommitted .gitleaks.toml is not an exception" "$ALLOWALL" 'git push origin feat'
+  CHANGED=$(clone changed-ignore)
+  printf '# reviewed\n' > "$CHANGED/.gitleaksignore"
+  git -C "$CHANGED" add .gitleaksignore && git -C "$CHANGED" commit -q -m "add ignore file"
+  printf '%s\n' "$SECRET_LINE" > "$CHANGED/creds.txt"
+  git -C "$CHANGED" add creds.txt && git -C "$CHANGED" commit -q -m "add creds"
+  fp=$(fingerprint_of "$CHANGED"); printf '%s\n' "$fp" >> "$CHANGED/.gitleaksignore"
+  expect deny  "an uncommitted edit to a tracked .gitleaksignore" "$CHANGED" 'git push origin feat'
+  expect allow "the committed fingerprint case still passes"   "$LEAKY" 'git push origin feat'
+
+  echo "== rule 4: the scan must cover what it is asked to =="
+  # color.diff=always once made gitleaks scan 0 commits and report no leaks. The scan pins
+  # the config that breaks its parse, and refuses a run that covers fewer commits.
+  COLORED=$(leaky_clone colored)
+  git -C "$COLORED" config color.diff always
+  expect deny  "a secret is still found under color.diff=always" "$COLORED" 'git push origin feat'
+  has_reason   "and the deny names the rule" "rule aws-access-token" "$COLORED" 'git push origin feat'
+  COLORCLEAN=$(clone colored-clean); git -C "$COLORCLEAN" config color.diff always
+  printf 'hello\n' > "$COLORCLEAN/notes.txt"
+  git -C "$COLORCLEAN" add notes.txt && git -C "$COLORCLEAN" commit -q -m "a clean change"
+  expect allow "a clean push under color.diff=always"          "$COLORCLEAN" 'git push origin feat'
+  # Commits that add no text are not counted by gitleaks, and must not fail the check.
+  MIXED=$(clone mixed)
+  git -C "$MIXED" commit -q --allow-empty -m "empty"
+  printf 'x\n' > "$MIXED/a.txt"; git -C "$MIXED" add a.txt; git -C "$MIXED" commit -q -m "add a"
+  chmod +x "$MIXED/a.txt"; git -C "$MIXED" commit -q -am "mode only"
+  git -C "$MIXED" rm -q a.txt; git -C "$MIXED" commit -q -m "delete a"
+  printf 'y\n' > "$MIXED/b.txt"; git -C "$MIXED" add b.txt; git -C "$MIXED" commit -q -m "add b"
+  expect allow "empty, mode-only and deleting commits do not fail the count" "$MIXED" 'git push origin feat'
+  # A secret added only while committing a merge: git log -p shows no diff for a merge.
+  MERGED=$(clone merged)
+  git -C "$MERGED" switch -q -c side
+  printf 'side\n' > "$MERGED/side.txt"; git -C "$MERGED" add side.txt; git -C "$MERGED" commit -q -m "side"
+  git -C "$MERGED" switch -q feat
+  printf 'main\n' > "$MERGED/other.txt"; git -C "$MERGED" add other.txt; git -C "$MERGED" commit -q -m "other"
+  git -C "$MERGED" merge -q --no-ff -m "merge side" side
+  expect allow "a clean merge is clean"                        "$MERGED" 'git push origin feat'
+  EVIL=$(clone evil-merge)
+  git -C "$EVIL" switch -q -c side
+  printf 'side\n' > "$EVIL/side.txt"; git -C "$EVIL" add side.txt; git -C "$EVIL" commit -q -m "side"
+  git -C "$EVIL" switch -q feat
+  printf 'main\n' > "$EVIL/other.txt"; git -C "$EVIL" add other.txt; git -C "$EVIL" commit -q -m "other"
+  git -C "$EVIL" merge -q --no-ff --no-commit side >/dev/null 2>&1
+  printf '%s\n' "$SECRET_LINE" > "$EVIL/creds.txt"; git -C "$EVIL" add creds.txt
+  git -C "$EVIL" commit -q -m "merge side"
+  expect deny  "a secret introduced while committing a merge"  "$EVIL" 'git push origin feat'
+  # A config named in the environment is as unreviewed as an untracked one.
+  printf '[extend]\nuseDefault = true\n[allowlist]\npaths = [%s]\n' "'''.*'''" > "$TMP/allow-all.toml"
+  GITLEAKS_CONFIG="$TMP/allow-all.toml" expect deny "a GITLEAKS_CONFIG in the environment is ignored" "$EVIL" 'git push origin feat'
+  has_reason   "and the deny names the file" "in creds.txt" "$EVIL" 'git push origin feat'
 fi
 
 echo "== rule 4: the scan fails closed =="
@@ -861,6 +941,33 @@ if [ -e "$RECORD/calls" ]; then
 else
   pass=$((pass + 1)); printf '  ok   %s\n' "a dry run never runs gitleaks"
 fi
+# A clean exit is not proof of a clean scan: gitleaks exits 0 with "0 commits scanned" when
+# its own git log fails or is misparsed. CLEAN carries exactly one commit that adds text.
+for spec in "zero|0 commits scanned.|" "noline||" \
+            "err|1 commits scanned.|ERR [git] fatal: bad revision" "many|2 commits scanned.|"; do
+  name=${spec%%|*}; rest=${spec#*|}; line=${rest%%|*}; errline=${rest#*|}
+  STUB2="$TMP/cov-$name"; mkdir -p "$STUB2"
+  {
+    printf '#!/bin/sh\n'
+    [ -n "$errline" ] && printf 'echo "6:00PM %s" >&2\n' "$errline"
+    [ -n "$line" ] && printf 'echo "6:00PM INF %s" >&2\n' "$line"
+    printf 'exit 0\n'
+  } > "$STUB2/gitleaks"; chmod 755 "$STUB2/gitleaks"
+  PATH="$STUB2:$REALPATH"
+  case $name in
+    zero)  expect deny  "a gitleaks that scanned 0 of 1 commits is a deny" "$CLEAN" 'git push origin feat'
+           has_reason   "and the deny says how many it scanned" "scanned 0 commit(s)" "$CLEAN" 'git push origin feat' ;;
+    noline) expect deny "a gitleaks that reports no count is a deny"       "$CLEAN" 'git push origin feat' ;;
+    err)   expect deny  "a gitleaks that logs an ERR line is a deny"       "$CLEAN" 'git push origin feat' ;;
+    many)  expect deny  "a count that differs from the outgoing one is a deny" "$CLEAN" 'git push origin feat' ;;
+  esac
+done
+OKGL="$TMP/cov-ok"; mkdir -p "$OKGL"
+printf '#!/bin/sh\necho "6:00PM INF 1 commits scanned." >&2\nexit 0\n' > "$OKGL/gitleaks"; chmod 755 "$OKGL/gitleaks"
+PATH="$OKGL:$REALPATH"
+expect allow "a gitleaks that scanned exactly the outgoing commits passes" "$CLEAN" 'git push origin feat'
+# A push naming a ref that does not exist cannot be listed, so it cannot be shown covered.
+expect deny  "a source that is not a ref is a deny"   "$CLEAN" 'git push origin nosuch'
 # A gitleaks that hangs (or a git it spawns) must end in a deny within the helper's budget,
 # and the whole process group must go: a surviving child would hold the hook open.
 HANG="$TMP/hanggl"; mkdir -p "$HANG"
