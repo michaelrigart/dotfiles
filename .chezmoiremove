@@ -5,3 +5,6 @@
 # Zellij, retired 2026-08-30. Removes the config, the dev layout and the
 # vim-zellij-navigator WASM that .chezmoiexternal.toml used to fetch beneath it.
 .config/zellij
+
+# The subagent statusline, retired 2026-09-30: it never rendered.
+.claude/subagent-statusline.sh

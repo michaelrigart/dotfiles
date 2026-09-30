@@ -520,6 +520,13 @@ for r in "op items get*" "op documents get*" "op --* read*" "op --* item get*" "
   jq_is ".permissions.deny | index(\"Bash($r)\") != null" true "op deny covers $r"
 done
 
+echo "S. the subagent statusline is retired"
+# It never rendered. The script is deleted, and the key must go from the LIVE file too:
+# the merge starts from it, so dropping the key from the owned set alone would keep it.
+emit '{"subagentStatusLine":{"type":"command","command":"bash /x/subagent-statusline.sh"}}'
+jq_is 'has("subagentStatusLine")' false "a live subagentStatusLine is deleted"
+jq_is '.statusLine.command | endswith("/.claude/statusline.sh")' true "the main statusline stays"
+
 echo "X. every wired hook script is actually managed by chezmoi"
 # A hook wired to an unmanaged path never deploys and fails open — silently inert.
 # This is what a `.chezmoiignore` allowlist omission (task-3 fix-round-1) looks like:

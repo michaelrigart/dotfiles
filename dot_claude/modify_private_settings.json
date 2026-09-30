@@ -32,7 +32,6 @@ fi
 
 printf '%s' "$input" | jq \
   --arg sl "bash $HOME/.claude/statusline.sh" \
-  --arg subsl "bash $HOME/.claude/subagent-statusline.sh" \
   --arg herdr_hook "bash '$HOME/.claude/hooks/herdr-agent-state.sh' session" \
   --arg agent_socket "$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock" \
   --arg tool_path "$HOME/.local/bin:$HOME/.local/share/mise/shims:$HOME/.cargo/bin:/opt/homebrew/bin:/opt/homebrew/sbin:$HOME/.krew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" '
@@ -169,7 +168,6 @@ printf '%s' "$input" | jq \
       },
       "enableAllProjectMcpServers": false,
       "statusLine": { "type": "command", "command": $sl, "padding": 0 },
-      "subagentStatusLine": { "type": "command", "command": $subsl },
       # Claude Code injects an UNAUTHENTICATED `nc` GIT_SSH_COMMAND at runtime, which
       # overrides the env block above — so setting it there is inert (see the
       # 2026-07-31 post-implementation correction in the security-posture design record).
@@ -374,8 +372,9 @@ printf '%s' "$input" | jq \
   | .permissions = ($perm + .permissions)
   # Retired keys: owned once, owned no more. Starting from the live file keeps a key
   # forever unless it is deleted here by name. includeCoAuthoredBy is superseded by
-  # attribution, voiceEnabled by the voice object.
-  | del(.includeCoAuthoredBy, .voiceEnabled)
+  # attribution, voiceEnabled by the voice object; subagentStatusLine never rendered and
+  # its script is gone.
+  | del(.includeCoAuthoredBy, .voiceEnabled, .subagentStatusLine)
   # Posture-weakening runtime keys: reset on every apply, never carried from the live
   # file. Declare one in the overlay above to keep it.
   | del(.skipDangerousModePermissionPrompt, .apiKeyHelper, .enabledMcpjsonServers)

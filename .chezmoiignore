@@ -59,6 +59,8 @@ tests/
 !.claude/CLAUDE.md
 !.claude/settings.json
 !.claude/statusline.sh
+# Tombstone: re-included only so .chezmoiremove can reach it (chezmoi skips removing an
+# ignored target). The source file is gone.
 !.claude/subagent-statusline.sh
 !.claude/git-forge-guard.sh
 !.claude/git-push-guard.py
