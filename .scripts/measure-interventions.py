@@ -18,6 +18,21 @@ Transcript shape (observed 2026-09-30, Claude Code 2.1.285):
   results, peer messages and task notifications carry other origins or none), or an
   `attachment` entry of type queued_command whose origin.kind is "human" (typed while
   the agent was working).
+  a backgrounded Bash call answers at once with "running in background with ID: <id>";
+  its real outcome is a later user entry whose content is a <task-notification> carrying
+  that <task-id>, a <status> (completed or failed) and, in the <summary>, an exit code.
+  an interrupt is a `user` entry with no origin whose content is a text block starting
+  "[Request interrupted by user".
+
+Known edges of the counts:
+  - a session that straddles the cutoff has its first IN-WINDOW human turn treated as
+    its first, so it does not count toward human_turns.after_first;
+  - an unfinished trailing stretch (the last human turn, never followed by another one
+    the agent waited for) is dropped from autonomous_stretch;
+  - autonomous_stretch.tool_calls counts main-session tool calls only, never a
+    subagent's;
+  - an xreview call the harness or a guard refused (no verdict, a guard denial) never
+    ran, so it still counts as a dispatch or collect but never as a failure.
 """
 import argparse
 import datetime
@@ -49,6 +64,12 @@ DENIAL_RES = [(name, re.compile(r"^(?:PreToolUse:\w+ hook error: )?(?:" + pat + 
 SINGLE_QUOTED = re.compile(r"'[^']*'")
 XREVIEW_RE = re.compile(r"(?:^|[;&|(\n]|\$\()\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:command\s+)?(?:\S*/)?xreview\s+(dispatch|collect)\b")
 INTERRUPT = "[Request interrupted by user"
+BACKGROUND_ID_RE = re.compile(r"running in background with ID: ([A-Za-z0-9_-]+)")
+NOTIFICATION = "<task-notification>"
+TASK_ID_RE = re.compile(r"<task-id>([^<]*)</task-id>")
+STATUS_RE = re.compile(r"<status>([^<]*)</status>")
+EXIT_CODE_RE = re.compile(r"exit(?: code)?[ :]+(\d+)")
+SUMMARY_RE = re.compile(r"<summary>(.*?)</summary>", re.S)
 
 
 def parse_ts(value):
@@ -105,7 +126,7 @@ class Totals:
         self.human_total = 0
         self.human_after_first = 0
         self.human_queued = 0
-        self.interrupts = 0
+        self.interrupts = {"main": 0, "subagent": 0}
         self.denials = {name: {"main": 0, "subagent": 0} for name, _ in DENIALS}
         self.escapes = {"main": 0, "subagent": 0}
         self.xreview = {"dispatches": 0, "dispatch_failures": 0, "collects": 0, "collect_failures": 0}
@@ -116,6 +137,7 @@ class Totals:
 def scan_file(path, scope, cutoff, totals):
     """One transcript. Returns True when it had any entry inside the window."""
     pending_xreview = {}            # tool_use id -> the xreview verbs that call ran
+    pending_background = {}         # background task id -> the xreview verbs it is running
     seen = False
     humans = 0
     tools_since_human = 0
@@ -165,19 +187,42 @@ def scan_file(path, scope, cutoff, totals):
                         if not isinstance(block, dict) or block.get("type") != "tool_result":
                             continue
                         verbs = pending_xreview.pop(block.get("tool_use_id"), ())
+                        text = text_of(block.get("content"))
+                        denied = None
                         if block.get("is_error"):
+                            for name, rx in DENIAL_RES:
+                                if rx.match(text):
+                                    denied = name
+                                    totals.denials[name][scope] += 1
+                                    break
+                        if not verbs or denied:
+                            continue           # a refused call never ran: no failure
+                        background = None if block.get("is_error") else BACKGROUND_ID_RE.search(text)
+                        if background:
+                            # the immediate result is a success either way; the outcome
+                            # arrives later as a task notification
+                            pending_background[background.group(1)] = verbs
+                        elif block.get("is_error"):
                             for verb in verbs:
                                 key = "dispatch_failures" if verb == "dispatch" else "collect_failures"
                                 totals.xreview[key] += 1
-                            text = text_of(block.get("content"))
-                            for name, rx in DENIAL_RES:
-                                if rx.match(text):
-                                    totals.denials[name][scope] += 1
-                                    break
+                    continue
+                body = text_of(content)
+                if body.startswith(NOTIFICATION):
+                    task = TASK_ID_RE.search(body)
+                    verbs = pending_background.pop(task.group(1), ()) if task else ()
+                    if verbs:
+                        status = STATUS_RE.search(body)
+                        summary = SUMMARY_RE.search(body)
+                        codes = EXIT_CODE_RE.findall(summary.group(1)) if summary else []
+                        # "(exit code 0)" / "failed with exit code 3": the last one is the outcome
+                        if (status and status.group(1).strip() == "failed") or (codes and int(codes[-1]) != 0):
+                            for verb in verbs:
+                                key = "dispatch_failures" if verb == "dispatch" else "collect_failures"
+                                totals.xreview[key] += 1
                     continue
                 if is_interrupt(entry):
-                    if scope == "main":
-                        totals.interrupts += 1
+                    totals.interrupts[scope] += 1
                     continue
             if scope == "main" and is_human(entry):
                 totals.human_total += 1

@@ -34,6 +34,17 @@ def tool_use(tid, name, inp):
     return {"type": "tool_use", "id": tid, "name": name, "input": inp}
 def result(tid, text, err=True):
     return {"type": "tool_result", "tool_use_id": tid, "is_error": err, "content": text}
+def interrupt(m):
+    # the real shape: list content holding the text block, and no origin
+    return {"type": "user", "timestamp": ts(m), "message": {"role": "user", "content": [
+        {"type": "text", "text": "[Request interrupted by user]"}]}}
+def notification(m, task_id, status, summary):
+    # the real shape of a background task's outcome: a string-content user entry
+    body = ("<task-notification>\n<task-id>%s</task-id>\n<tool-use-id>toolu_x</tool-use-id>\n"
+            "<output-file>/x</output-file>\n<status>%s</status>\n<summary>%s</summary>\n</task-notification>"
+            % (task_id, status, summary))
+    return {"type": "user", "timestamp": ts(m), "origin": {"kind": "task-notification", "producer": "session-task"},
+            "message": {"role": "user", "content": body}}
 main = [
     # a human turn from 30 days ago: outside the 14-day window, never counted
     {"type": "user", "timestamp": datetime.datetime.fromtimestamp(now - 30 * 86400, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
@@ -73,9 +84,29 @@ main = [
      "message": {"role": "user", "content": "<task-notification>done</task-notification>"}},
     {"type": "user", "timestamp": ts(8), "isMeta": True, "origin": {"kind": "human"},  # not human
      "message": {"role": "user", "content": "meta"}},
-    {"type": "user", "timestamp": ts(9), "origin": {"kind": "human"},               # an interrupt
-     "message": {"role": "user", "content": "[Request interrupted by user]"}},
+    interrupt(9),                                                    # an interrupt, never a turn
     human(10, "next step"),                                          # human turn 3
+    # Backgrounded xreview calls after the last human turn: their tool calls belong to an
+    # unfinished trailing stretch, which is dropped, so the stretch assertions below hold.
+    {"type": "assistant", "timestamp": ts(11), "message": {"role": "assistant", "content": [
+        tool_use("b1", "Bash", {"command": "xreview collect xr-2 60", "run_in_background": True}),
+        tool_use("b2", "Bash", {"command": "xreview collect xr-3 60", "run_in_background": True}),
+        tool_use("b3", "Bash", {"command": "xreview collect xr-4 60", "run_in_background": True}),
+        # the classifier never ruled, so the command never ran: a dispatch, but no failure
+        tool_use("b4", "Bash", {"command": "NONCE=$(xreview dispatch --checkpoint plan c.md)"}),
+        tool_use("b5", "Bash", {"command": "xreview collect xr-5 60"}),
+    ]}},
+    {"type": "user", "timestamp": ts(12), "message": {"role": "user", "content": [
+        result("b1", "Command running in background with ID: bgfail. Output is being written to: /x/bgfail.output", err=False),
+        result("b2", "Command running in background with ID: bgok. Output is being written to: /x/bgok.output", err=False),
+        result("b3", "Command running in background with ID: bgexit. Output is being written to: /x/bgexit.output", err=False),
+        result("b4", "The server-side auto mode classifier gave no verdict; the command was not run."),
+        result("b5", "Exit code 1\nxreview: no such checkpoint"),
+    ]}},
+    notification(13, "bgfail", "failed", 'Background command "Wait for findings" failed with exit code 3'),
+    notification(14, "bgok", "completed", 'Background command "Wait for findings" completed (exit code 0)'),
+    notification(14, "bgexit", "completed", 'Background command "Wait for findings" completed (exit code 1)'),
+    notification(14, "other", "failed", 'Background command "Not an xreview call" failed with exit code 2'),
     "this line is not JSON",
 ]
 with open(os.path.join(proj, "sess-a.jsonl"), "w") as fh:
@@ -88,6 +119,7 @@ sub = [
         result("s1", "Recursive search rooted at `.`.")]}},
     # a subagent prompt with a human origin is still not one of Michael's turns
     human(3, "subagent brief"),
+    interrupt(4),
 ]
 with open(os.path.join(proj, "sess-a", "subagents", "agent-1.jsonl"), "w") as fh:
     for e in sub:
@@ -109,18 +141,20 @@ is '.sessions'                        1   "only sessions active in the window co
 is '.human_turns.total'               3   "human turns: typed, queued and typed again"
 is '.human_turns.after_first'         2   "the first turn of a session is not an intervention"
 is '.human_turns.queued'              1   "a queued_command with a human origin is a human turn"
-is '.interrupts'                      1   "an interrupt is counted apart, never as a turn"
+is '.interrupts.main'                 1   "an interrupt (list content, no origin) is counted apart, never as a turn"
+is '.interrupts.subagent'             1   "an interrupt in a subagent transcript"
 is '.sandbox_escapes.main'            1   "a main-session sandbox escape"
 is '.sandbox_escapes.subagent'        1   "a subagent sandbox escape"
-is '.xreview.dispatches'              1   "an xreview dispatch inside \$( ); a quoted or single-quoted mention is not one"
-is '.xreview.dispatch_failures'       1   "an xreview dispatch that failed"
-is '.xreview.collects'                1   "an xreview collect"
-is '.xreview.collect_failures'        0   "a collect that succeeded is no failure"
-is '.xreview.dispatch_failure_rate == 1' true "the dispatch failure rate"
+is '.xreview.dispatches'              2   "xreview dispatches inside \$( ); a quoted or single-quoted mention is not one"
+is '.xreview.dispatch_failures'       1   "a foreground dispatch that failed; one the classifier never ruled on is no failure"
+is '.xreview.collects'                5   "xreview collects, foreground and backgrounded"
+is '.xreview.collect_failures'        3   "collects: a backgrounded failed/exit 3, a backgrounded exit 1 and a foreground error; a completed exit 0 and an unrelated task are not"
+is '.xreview.dispatch_failure_rate == 0.5' true "the dispatch failure rate"
 is '.denials["path-resolution-guard"].main'     1 "a guard denial, main session"
 is '.denials["path-resolution-guard"].subagent' 1 "a guard denial, subagent"
 is '.denials["classifier-deny"].main' 1   "a classifier denial"
-is '[.denials[][]] | add'             3   "a quoted guard message is not a denial"
+is '.denials["classifier-no-verdict"].main' 1 "a classifier no-verdict is a denial"
+is '[.denials[][]] | add'             4   "a quoted guard message is not a denial"
 is '.autonomous_stretch.n'            1   "one stretch closed by a turn the agent waited for"
 is '.autonomous_stretch.tool_calls.median == 6' true "the stretch counts every tool call since the last turn"
 is '.autonomous_stretch.minutes.median == 4' true "the stretch runs to the last agent activity"
