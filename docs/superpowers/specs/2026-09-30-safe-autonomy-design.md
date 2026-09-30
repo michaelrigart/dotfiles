@@ -1,6 +1,7 @@
 # Safe autonomy: standing policies, enforcement, instruction layout
 
-**Status:** Approved
+**Status:** Implemented (branch `feat/safe-autonomy`; the dotfiles have no MR, so the
+rulings and deviations are recorded in "Implementation notes" at the end)
 **Date:** 2026-09-30
 **Branch:** `feat/safe-autonomy`
 
@@ -363,3 +364,97 @@ All sandboxed suites pass, reported as passed/total.
 - **Looser stops rely on the rest holding:** enforcement, the receipt gate and the
   evaluation. If §5's success criteria fail, the policies are revised before the next
   slice, not after.
+
+## Implementation notes (2026-10-01)
+
+These notes record where the implementation departs from the text above and why. They were
+decided during execution: per-task reviews, a final whole-branch review, and the Codex
+pre-merge review, which approved in round 2.
+
+### Rule 4 (§1.1): what shipped
+
+- **Threat model.** Rule 4 covers the commands agents plausibly write, accidents included.
+  Deliberately obfuscated pushes are left to the auto-mode classifier and to server-side
+  protection. Examples are a push word built by expansion, a globbed git binary, editor or
+  pager hooks, and symref branches. A text-matching hook cannot close that class, because
+  a script file would always get round it.
+- **Whole-command grammar.** A push is judged only when the entire Bash call is one plain
+  push. The grammar allows:
+  - an optional leading `cd <path> &&`;
+  - `VAR=value` assignments;
+  - `command`, `sudo` or `env`, without options;
+  - allowlisted git options, including `-C <path>`;
+  - `push` or a push alias;
+  - allowlisted push options;
+  - a literal remote and refspecs, or one of three current-branch substitutions;
+  - an optional `| tail`/`| head`.
+
+  Anything else that could push is a silent deny asking for a plain push. That includes
+  chains, comments, heredocs, shells and evaluators, and substitutions. So a
+  commit-and-push one-liner becomes two calls.
+- **More silent denies:**
+  - `--git-dir`, `--work-tree`, `GIT_DIR` and `GIT_WORK_TREE` on a push. The spec listed
+    them as selectors; the Codex plan review showed the scan could lose them.
+  - `-c` on a push.
+  - Unrecognised git or push options.
+  - Recursive submodule pushes (`push.recurseSubmodules` or `submodule.recurse`, in git's
+    effective order).
+  - `send-pack`, `http-push`, the `git-<sub>` dash forms, and the exec-capable builtins
+    (submodule foreach, rebase `--exec`, bisect run, filter-branch) when they run a push.
+  - Push options other than `ci.skip`, `ci.variable=…` and `integrations.skip_ci`.
+    `merge_request.*` would open or auto-merge an MR past the pre-merge gate.
+- **The scan:**
+  - It counts what gitleaks counts: commits with a hunk in a file that is not deleted.
+  - It runs with `--root --text --no-textconv --no-ext-diff` and `--diff-merges=remerge`,
+    with `core.bigFileThreshold` pinned and `GIT_NO_REPLACE_OBJECTS=1` set.
+  - It never skips while commits are outgoing.
+  - `.gitleaksignore` must be byte-identical to HEAD and to every pushed source. A pattern
+    push (`--tags`, `--all`, `--mirror`) is refused while one exists.
+  - Any `.gitleaks.*` config file is an unsupported configuration.
+  - The helper has a 30 s budget and fails closed. The forge-guard hook has an explicit
+    `"timeout": 60`.
+
+### Other deviations
+
+- **§1.3.**
+  - The Basecamp asks cover the verbs the installed CLI actually has: `projects delete`,
+    `chat delete`, and `trash` on todos, todolists, messages, cards, files, comments,
+    recordings, vaults, docs and tools.
+  - The `op` denies also cover the plural and flag-first forms.
+  - The `az` ask is narrowed to `az * delete -*` and `az rest * DELETE*`, so a PR titled
+    "…delete…" never prompts.
+  - The terraform `-chdir=` and `apply -destroy` teardown forms ask.
+- **§4.2.** The inverted merge also owns `disableAllHooks: false`. On every apply it resets
+  the posture-weakening runtime keys `skipDangerousModePermissionPrompt`, `apiKeyHelper`,
+  `enabledMcpjsonServers`, `awsAuthRefresh`, `awsCredentialExport`, `gcpAuthRefresh` and
+  `otelHeadersHelper`. A runtime key only survives if it is declared.
+- **§4.5.** The Herdr hook was resynced to herdr 0.9.3 (integration version 10), not 0.9.2.
+- **§4.7.** `xreview dispatch` requires `--checkpoint`, and the branch is recorded at
+  dispatch. The gate reads the latest pre-merge receipt.
+- **§3.1.**
+  - The 1Password render was removed entirely.
+  - The Claude addendum is `claude-code.md`, not `claude.md`, so case-insensitive APFS
+    never loads it as a nested `CLAUDE.md`.
+- **§2.**
+  - "Confirm first" binds every agent and lives in "How to work".
+  - The Autonomy section binds only the top-level driving session.
+  - "progress note" became "next status message", and "phone ping" became "notification".
+
+### Errata and open items
+
+- **§4.6 erratum.** Borg does not back up `$XDG_STATE_HOME`. Add `~/.local/state/zsh` to
+  Vorta by hand if the history should be backed up.
+- **§4.8.** The Ghostty `scrollback-limit` fix is still deferred, blocked by uncommitted
+  edits in that file.
+- **Follow-up.** Move the secret scan into a global git `pre-push` hook. git supplies the
+  exact refs and SHAs, so this covers every push path, and the PreToolUse helper would keep
+  only the ask path (about 450 lines instead of 940).
+- **Evaluation baseline** (§5), from `--days 14` at 2026-10-01:
+  - 470 human turns after the first;
+  - 924 sandbox escapes;
+  - 33 xreview dispatch failures in 299 dispatches;
+  - 2 collect failures;
+  - interrupts: 1 in main sessions, 14 in subagents.
+
+  Re-run `.scripts/measure-interventions.py --days 14` 14 days after apply. The prompt
+  count comes from `~/.local/state/agent-audit/prompts.jsonl`.

@@ -2,7 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** Approved
+**Status:** Implemented. Completed 2026-10-01 on `feat/safe-autonomy`; do not re-run. Review
+fix rounds changed several tasks' code beyond this text. The spec's "Implementation notes"
+record the result.
 
 **Goal:** Let an agent carry a task from signed-off spec to pushed branch or Draft MR without Michael, while the harness (not the model) stops every dangerous push, secret leak and destructive action, and fix the bugs the setup review found.
 
