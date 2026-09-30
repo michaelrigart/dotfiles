@@ -98,6 +98,10 @@ PUSH_LONG = {"--set-upstream", "--force-with-lease", "--force-if-includes", "--f
              "--verbose", "--progress", "--porcelain", "--atomic", "--push-option", "--no-verify"}
 PUSH_LONG_WITH_VALUE = {"--force-with-lease", "--push-option"}    # --x=value accepted
 PUSH_SHORT = set("ufdnqv")                                        # plus -o <value>
+# The push option values (-o, --push-option, push.pushOption) the guard lets through; GitLab
+# reads them. Every other value is refused, merge_request.* above all: it creates or
+# auto-merges an MR from the push, past the pre-merge review gate on glab mr create.
+PUSH_OPTIONS_OK = re.compile(r"ci\.skip|integrations\.skip_ci|ci\.variable=.*", re.S)
 
 # Subcommands that push without being git push: always refused. Any other subcommand that
 # is not a builtin and is given the word push (subtree, lfs, ...) is refused as well.
@@ -501,9 +505,19 @@ def judge(s):
     return evaluate(s["cwd"], s["assigns"], s["repo_opts"], s["config_opts"], args)
 
 
+def push_option(value, where=""):
+    """Refuse a push option value outside PUSH_OPTIONS_OK. None is a -o with no value."""
+    if value is None or not PUSH_OPTIONS_OK.fullmatch(value):
+        raise Deny("Push guard: the push option {}{} is not one the guard allows (only ci.skip, "
+                   "ci.variable=<name>=<value> and integrations.skip_ci). Push without it, and "
+                   "open MRs with glab mr create --draft.".format(
+                       "(missing)" if value is None else value, where))
+
+
 def parse_push(args):
     """Split git push arguments into (flags, remote or None, refspecs). Raises Deny for an
-    option outside the modelled set, and for the -- separator."""
+    option outside the modelled set, a push option value outside PUSH_OPTIONS_OK, and the
+    -- separator."""
     # Every word of the invocation, option values included: bash expands {x,origin,main}
     # or a glob before git sees it, so the literal words are not what git receives. A *
     # is left to the refspec check, which names it as a wildcard.
@@ -517,17 +531,23 @@ def parse_push(args):
         if a == "--":
             raise Deny(UNSUPPORTED.format("the -- separator on the push invocation"))
         if a.startswith("--"):
-            name, eq, _ = a.partition("=")
+            name, eq, value = a.partition("=")
             if name not in PUSH_LONG or (eq and name not in PUSH_LONG_WITH_VALUE):
                 raise Deny(UNSUPPORTED.format("the push option " + a))
-            if name == "--push-option" and not eq:
-                i += 1                   # its value is the next word
+            if name == "--push-option":
+                if not eq:
+                    i += 1               # its value is the next word
+                    value = args[i] if i < n else None
+                push_option(value)
             flags.add(name)
         elif a.startswith("-") and len(a) > 1:
             for j, c in enumerate(a[1:], start=1):
                 if c == "o":             # -o <option> or -o<option>: the rest is its value
                     if j == len(a) - 1:
                         i += 1
+                        push_option(args[i] if i < n else None)
+                    else:
+                        push_option(a[j + 1:])
                     break
                 if c not in PUSH_SHORT:
                     raise Deny(UNSUPPORTED.format("the push option -" + c))
@@ -781,6 +801,10 @@ def evaluate(cwd, assigns, repo_opts, config_opts, args):
         raise Deny(UNSUPPORTED.format("push.default=" + push_default))
     if repo.config("remote.pushDefault") is not None:
         raise Deny(UNSUPPORTED.format("remote.pushDefault"))
+    # git sends these when the command line names no push option.
+    for value in (repo.run("config", "-z", "--get-all", "push.pushOption") or "").split("\0"):
+        if value:
+            push_option(value, " (from push.pushOption)")
     branch = repo.run("symbolic-ref", "--quiet", "--short", "HEAD")
     branch = branch.strip() if branch else None
     if branch and repo.config("branch." + branch + ".pushRemote") is not None:

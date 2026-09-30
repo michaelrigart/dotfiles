@@ -453,8 +453,8 @@ expect deny  "a non-push git command with a comment that says push" "$R" 'git st
 expect deny  "a push after a quoted # inside a substitution" "$R" 'echo "$(echo " # note"; git push origin main)"'
 # A quoted token that begins with # is rejected too: a false deny the grammar accepts.
 expect deny  "a quoted token starting with # is outside the grammar" "$R" "git push -o '#1' origin feat"
-expect allow "a quoted # inside a push option"        "$R"   "git push --push-option='ci.skip#1' origin feat"
-expect allow "a # inside a word is not a comment"     "$R"   'git push -o ci.skip#1 origin feat'
+expect allow "a quoted # inside a push option"        "$R"   "git push --push-option='ci.variable=A#1' origin feat"
+expect allow "a # inside a word is not a comment"     "$R"   'git push -o ci.variable=A#1 origin feat'
 expect allow "a word containing push, no git"         "$R"   'ls pushed/'
 
 echo "== rule 4: pushes that ask =="
@@ -512,6 +512,32 @@ for o in -u --set-upstream -q --quiet -v --verbose --progress --porcelain --atom
   expect allow "allowlisted, silent on a feature branch: $o" "$R" "git push $o origin feat"
 done
 expect allow "allowlisted, silent on a feature branch: --push-option <value>" "$R" 'git push --push-option ci.skip origin feat'
+
+echo "== rule 4: push option values =="
+# GitLab reads push options, and merge_request.* opens or auto-merges an MR from the push,
+# past the pre-merge review gate on glab mr create. Only ci.skip, ci.variable=... and
+# integrations.skip_ci go through; every other value is a silent deny, in every spelling.
+for o in "-o merge_request.create" "-o merge_request.merge_when_pipeline_succeeds" \
+         "-o merge_request.auto_merge" "--push-option=merge_request.create" \
+         "--push-option merge_request.target=main" "-omerge_request.create" \
+         "-uo merge_request.create" "-uomerge_request.create" \
+         "-o ci.skip -o merge_request.create" "-o secret_push_protection.skip_all" \
+         "-o ''" "-o ci.skip=1"; do
+  expect deny  "push option refused: $o"              "$R" "git push $o origin feat"
+done
+expect deny  "a trailing -o with no value"            "$R" 'git push origin feat -o'
+has_reason   "the deny names the option" "the push option merge_request.create" "$R" 'git push -o merge_request.create origin feat'
+has_reason   "and points to a draft MR" "open MRs with glab mr create --draft" "$R" 'git push -o merge_request.create origin feat'
+for o in "-o ci.skip" "-o integrations.skip_ci" "-o ci.variable=DEPLOY=1" \
+         "--push-option=ci.variable=A=b" "-o ci.skip -o ci.variable=X=1" "-uoci.skip"; do
+  expect allow "push option allowed: $o"              "$R" "git push $o origin feat"
+done
+# push.pushOption sends its values on every push that names none.
+POCFG=$(clone push-option-config); git -C "$POCFG" config push.pushOption merge_request.create
+expect deny  "push.pushOption set to merge_request.create" "$POCFG" 'git push origin feat'
+has_reason   "and the deny says where it came from" "(from push.pushOption)" "$POCFG" 'git push origin feat'
+POOK=$(clone push-option-ok); git -C "$POOK" config push.pushOption ci.skip
+expect allow "push.pushOption set to ci.skip"         "$POOK" 'git push origin feat'
 mkdir -p "$R/sub/dir"
 expect allow "a push from a subdirectory"             "$R/sub/dir" 'git push origin feat'
 expect ask   "a push to main from a subdirectory"     "$R/sub/dir" 'git push origin main'
