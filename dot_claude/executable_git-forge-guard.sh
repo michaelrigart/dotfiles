@@ -88,7 +88,7 @@ esac
 # A payload that mentions neither git nor push costs no subprocess at all, and a plain git
 # command costs one git call, never the helper.
 push_word=0; push_selector=0; push_alias=0
-case "$payload" in *push*) push_word=1 ;; esac
+case "$payload" in *push*|*send-pack*) push_word=1 ;; esac
 case "$payload" in
   *git*)
     case "$payload" in

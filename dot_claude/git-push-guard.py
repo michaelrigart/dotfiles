@@ -27,6 +27,9 @@
 # It never asks on doubt (an ask costs Michael a prompt) and never allows on doubt (a push
 # is the one irreversible outward path).
 #
+# Known limit: a push word assembled by expansion (git ${X:-pu}sh) has no literal push in
+# the payload, so the shell fast path never starts this helper; the classifier is the backstop.
+#
 # Written for /usr/bin/python3 (3.9): no match statements, no X | Y type unions.
 import json
 import os
@@ -340,6 +343,19 @@ def could_push(cmd, tokens, cwd):
     return any(re.search(r"\bgit\b[^;&|\n]*\b" + re.escape(a) + r"\b", cmd) for a in names)
 
 
+def runs_command_string(sub, args):
+    """Does this git command execute a shell command given in its arguments?"""
+    if sub == "filter-branch":
+        return True
+    if sub == "submodule":
+        return "foreach" in args
+    if sub == "bisect":
+        return "run" in args
+    if sub == "rebase":
+        return any(a.startswith("--exec") or a.startswith("-x") for a in args)
+    return False
+
+
 def judge(s):
     """None to allow, a reason to ask; raises Deny. s is a plain command from parse_plain."""
     sub, args = s["sub"], s["args"]
@@ -349,6 +365,11 @@ def judge(s):
         # -c options go into the lookup too: `git -c alias.x=push x` defines the alias on
         # the command line itself.
         sub, args = expand_alias(Repo(s["cwd"], s["repo_opts"] + s["config_opts"]), sub, args)
+    if runs_command_string(sub, args) and re.search(r"\bpush\b", " ".join(args)):
+        # git submodule foreach 'git push', git rebase --exec 'git push': the argument is
+        # a shell command that pushes, and it is never read.
+        raise Deny("Push guard: git " + sub + " runs a command that pushes. Push with "
+                   "git push <remote> <branch> on its own, or push by hand.")
     if sub != "push" and sub not in GIT_BUILTINS and (
             sub in PUSHING_SUBCOMMANDS or "push" in args):
         # git subtree push, git lfs push, git send-pack: a push under another name, with

@@ -608,8 +608,17 @@ expect deny  "git subtree push"                       "$R" 'git subtree push --p
 expect deny  "git http-push"                          "$R" 'git http-push origin main'
 expect deny  "a non-builtin subcommand given push"    "$R" 'git lfs push origin feat'
 expect allow "git subtree split does not push"        "$R" 'git subtree split --prefix=d'
-# send-pack has no "push" in its text, so the shell fast path never starts the helper for it;
-# the helper is driven directly.
+expect deny  "git send-pack, through the full guard"  "$R" "git send-pack $REMOTES/origin.git main"
+# Builtins that run a command string: the string is never read, so one that pushes is refused.
+expect deny  "submodule foreach running a push"       "$R" "git submodule foreach 'git push origin main'"
+expect deny  "rebase --exec running a push"           "$R" "git rebase --exec 'git push origin main' main"
+expect deny  "rebase -x running a push"               "$R" "git rebase -x 'git push origin main' main"
+expect deny  "bisect run running a push"              "$R" 'git bisect run git push origin main'
+expect deny  "filter-branch running a push"           "$R" "git filter-branch --tree-filter 'git push origin main' HEAD"
+expect allow "submodule foreach that does not push"   "$R" "git submodule foreach 'git status'"
+expect allow "a commit message that mentions a push"  "$R" 'git commit -m "git push later"'
+# A push word assembled by expansion has no literal push in the payload, so the shell fast
+# path never starts the helper; that is a known limit. Driven directly, the helper denies it.
 helper_denies() { # helper_denies <label> <cwd> <command>
   local out
   out=$(jq -n --arg c "$3" --arg d "$2" '{tool_name:"Bash",cwd:$d,tool_input:{command:$c}}' \
