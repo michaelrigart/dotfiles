@@ -1001,8 +1001,33 @@ else
   printf '%s\n' "$fp" > "$OTHERBR/.gitleaksignore"
   git -C "$OTHERBR" add .gitleaksignore && git -C "$OTHERBR" commit -q -m "ignore, on scratch only"
   expect deny  "an exception committed on HEAD, not on the pushed branch" "$OTHERBR" 'git push origin feat'
-  has_reason   "and the deny says to commit it on the pushed branch" "on the branch being pushed" "$OTHERBR" 'git push origin feat'
+  has_reason   "and the deny says to commit it on the pushed ref" "on the ref being pushed" "$OTHERBR" 'git push origin feat'
   expect allow "the exception on the branch being pushed lets it through" "$OTHERBR" 'git push origin scratch'
+  # --tags, --all and --mirror push refs the guard does not name one by one, so it cannot show
+  # an exception is committed on each of them: with an exception file in the worktree they are
+  # refused. Here the secret is tagged v1 on feat, and the exception is committed on scratch only.
+  TAGGED=$(leaky_clone tagged)
+  fp=$(fingerprint_of "$TAGGED")
+  git -C "$TAGGED" tag v1
+  git -C "$TAGGED" switch -q -c scratch main
+  printf '%s\n' "$fp" > "$TAGGED/.gitleaksignore"
+  git -C "$TAGGED" add .gitleaksignore && git -C "$TAGGED" commit -q -m "ignore, on scratch only"
+  expect deny  "--tags with an exception file in the worktree" "$TAGGED" 'git push origin --tags'
+  has_reason   "and the deny says to push the refs by name" "Push the branches and tags by name" "$TAGGED" 'git push origin --tags'
+  expect deny  "--all with an exception file in the worktree"  "$TAGGED" 'git push --all origin'
+  expect deny  "--mirror with an exception file in the worktree" "$TAGGED" 'git push --mirror origin'
+  expect deny  "the tag pushed by name, its exception missing" "$TAGGED" 'git push origin v1'
+  has_reason   "and the deny fits a tag" "on the ref being pushed" "$TAGGED" 'git push origin v1'
+  # With no exception file anywhere, --tags is scanned as before: silent when clean.
+  TAGCLEAN=$(clone tag-clean)
+  printf 'hello\n' > "$TAGCLEAN/notes.txt"
+  git -C "$TAGCLEAN" add notes.txt && git -C "$TAGCLEAN" commit -q -m "a clean change"
+  git -C "$TAGCLEAN" tag v1
+  expect allow "--tags with no exception file, clean"          "$TAGCLEAN" 'git push origin --tags'
+  TAGLEAK=$(leaky_clone tag-leak)
+  git -C "$TAGLEAK" tag v1
+  expect deny  "--tags with no exception file, a secret"       "$TAGLEAK" 'git push origin --tags'
+  has_reason   "and it is found, not merely refused" "rule aws-access-token in creds.txt" "$TAGLEAK" 'git push origin --tags'
   # A config named in the environment is as unreviewed as an untracked one.
   printf '[extend]\nuseDefault = true\n[allowlist]\npaths = [%s]\n' "'''.*'''" > "$TMP/allow-all.toml"
   GITLEAKS_CONFIG="$TMP/allow-all.toml" expect deny "a GITLEAKS_CONFIG in the environment is ignored" "$EVIL" 'git push origin feat'

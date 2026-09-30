@@ -608,7 +608,9 @@ def scan(root, remote, sources):
     tree, so a copy that is not byte-identical to the one committed on HEAD and on every
     pushed ref (untracked, ignored, modified, hidden by skip-worktree or
     status.showUntrackedFiles, or committed on another branch) is refused: commit it first,
-    and the exception is reviewed like any other change. Every git call here runs with
+    and the exception is reviewed like any other change. A push by pattern (--tags, --all,
+    --mirror) names no refs to compare, so with an exception file present it is refused and
+    the refs must be pushed by name. Every git call here runs with
     replace refs off (GIT_NO_REPLACE_OBJECTS), since a push sends the real objects. GITLEAKS_*
     variables are dropped from the environment for the same reason. Commit and
     annotated-tag messages are not scanned (gitleaks git mode scans patches only)."""
@@ -636,17 +638,24 @@ def scan(root, remote, sources):
         return                                         # nothing leaves: nothing to scan
     # The worktree copy is what gitleaks reads, so it must be the committed one on HEAD and on
     # every ref pushed: an exception committed on another branch reviews nothing here.
-    refs = ["HEAD"] + [x for x in sources if not x.startswith("-") and x != "HEAD"]
-    for name in GITLEAKS_CONFIG_FILES:
-        if not os.path.lexists(os.path.join(root, name)):
-            continue                                   # gitleaks reads nothing from it
+    present = [n for n in GITLEAKS_CONFIG_FILES if os.path.lexists(os.path.join(root, n))]
+    # A pseudo-source (--tags, --branches, --all) stands for refs this check does not list,
+    # so none of them could be compared: with an exception in play, only named refs go.
+    if present and any(x.startswith("-") for x in sources):
+        raise Deny("Push guard: this push sends refs by pattern (--tags, --all or --mirror) and "
+                   "the working tree holds {}, so the guard cannot show that exception is "
+                   "committed on every ref it sends. Push the branches and tags by name "
+                   "(git push {} <branch-or-tag> ...), so each one is checked."
+                   .format(" and ".join(present), remote))
+    refs = ["HEAD"] + [x for x in sources if x != "HEAD"]
+    for name in present:
         worktree = repo.run("hash-object", "--no-filters", "--", name, env=env)
         for ref in refs:
             committed = repo.run("rev-parse", "--verify", "--quiet", ref + ":" + name, env=env)
             if worktree is None or committed is None or worktree.strip() != committed.strip():
                 raise Deny("Push guard: {0} differs from {1}:{0} (or {1} has none), so it "
                            "cannot decide what the secret scan skips. Commit the exception "
-                           "first, on the branch being pushed (a fingerprint in "
+                           "first, on the ref being pushed (a fingerprint in "
                            ".gitleaksignore, or a .gitleaks.toml), then push.".format(name, ref))
     # Never skipped on an expected count of 0: that count is only as good as git's view of
     # the patches, and gitleaks must agree with it.
