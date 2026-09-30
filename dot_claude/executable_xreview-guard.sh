@@ -108,6 +108,7 @@ the findings still need a fix and another round. Run the cross-review skill, or:
 
 Receipts live at $receipts.
 
-If this branch genuinely should go up without one, re-run with XREVIEW_GUARD=off in
-the command — an environment assignment on the command line is read, a trailing
-\`# XREVIEW_GUARD=off\` works too."
+Do not bypass this on your own judgement. Only if Michael has asked, in this
+conversation, for the branch to go up without a review: re-run with XREVIEW_GUARD=off in
+the command (an environment assignment on the command line is read, a trailing
+\`# XREVIEW_GUARD=off\` works too), and say so in the MR."

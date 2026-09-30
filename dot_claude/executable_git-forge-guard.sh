@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # PreToolUse(Bash) guard for git commits and forge MR/PR creation.
 #
-# Enforces the two rules from the "Merge & pull requests" section of
+# Enforces the two rules from the "Merge requests" section of
 # ~/.config/agents/GLOBAL.md that prose alone cannot guarantee:
 #
 #   1. No agent attribution — claude.ai session links, `Claude-Session:` trailers,
@@ -31,8 +31,9 @@
 # no `set -e`; every failure path of rules 1-2 calls allow(); anything unparseable is
 # allowed. Rules 3 and 4 are danger gates and fail the other way (see each).
 #
-# Bypass for a one-off: put FORGE_GUARD=off anywhere in the command. It lifts rules 1
-# and 2 only, the behavioural ones; it never lifts rule 3 or rule 4.
+# Bypass for a one-off, only when Michael has asked for it in the conversation: put
+# FORGE_GUARD=off anywhere in the command. It lifts rules 1 and 2 only, the behavioural
+# ones; it never lifts rule 3 or rule 4.
 #
 # Bash 3.2 compatible (macOS system bash).
 
@@ -396,7 +397,7 @@ if printf '%s' "$haystack" | grep -Eq \
 
 This commit message / MR / PR text contains a session link, a Claude-Session
 trailer, a Co-authored-by agent line, or a \"Generated with …\" footer. Per the
-\"Merge & pull requests\" section of ~/.config/agents/GLOBAL.md, none of that goes
+\"Merge requests\" section of ~/.config/agents/GLOBAL.md, none of that goes
 into commit messages, MR/PR titles or descriptions, issue text, or review
 comments.
 
@@ -496,5 +497,6 @@ Give that file a LITERAL absolute path. This hook does not share \$TMPDIR with
 the command it is checking, so a \$TMPDIR-relative body is one it cannot read:
 it will not be denied, but it will not be checked for attribution either.
 
-If the description genuinely should not follow the template, say so and re-run
-with FORGE_GUARD=off in the command."
+Do not skip the template on your own judgement. Only if Michael has asked, in this
+conversation, for this description to skip it: re-run with FORGE_GUARD=off in the
+command, and say so in the MR."

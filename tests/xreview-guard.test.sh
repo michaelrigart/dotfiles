@@ -102,6 +102,11 @@ out="$(payload 'glab mr create' | bash "$GUARD" 2>/dev/null | jq -r '.hookSpecif
 is "the deny lists what is on record" \
    "$(printf '%s' "$out" | grep -c 'On record for this branch: unrecorded/, spec/approve, plan/approve, pre-merge/changes')" 1
 is "the deny names the dispatch that fixes it" "$(printf '%s' "$out" | grep -c -- '--checkpoint pre-merge')" 1
+# The bypass is Michael's to grant, never the model's: the deny may name it only as that.
+is "the deny offers the bypass only when Michael asked for it" \
+   "$(printf '%s' "$out" | tr '\n' ' ' | grep -c 'Only if Michael has asked, in this conversation')" 1
+is "the deny no longer invites a bypass on the model's own judgement" \
+   "$(printf '%s' "$out" | grep -c 'genuinely should go up without one')" 0
 receipt "$BRANCH" pre-merge approve
 is "an approved pre-merge review allows"          "$(decision 'glab mr create')" allow
 receipt "$BRANCH" pre-merge changes
@@ -111,7 +116,7 @@ printf 'not json at all\n' >> "$RECEIPTS"
 is "a damaged line does not hide the approval before it" "$(decision 'glab mr create')" allow
 
 # --------------------------------------------------------------------- the bypass
-# The deny message tells the model to set XREVIEW_GUARD=off. The only place a model CAN
+# The deny message names XREVIEW_GUARD=off for when Michael asked for it. The only place a model CAN
 # set it is the command it is running, so that is the form that has to work — reading it
 # from the hook's own environment makes the documented escape hatch unreachable. Recorded
 # 2026-09-02 in opsmaster: `XREVIEW_GUARD=off glab mr create …`, sent on Michael's
