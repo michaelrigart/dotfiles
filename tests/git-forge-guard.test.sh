@@ -792,6 +792,24 @@ PATH="$REALPATH"
 CLEAN=$(clone clean)
 printf 'hello\n' > "$CLEAN/notes.txt"
 git -C "$CLEAN" add notes.txt && git -C "$CLEAN" commit -q -m "a clean change"
+# Feature branches of their own (not feat, which other cases push), each carrying one
+# outgoing commit that adds no line: TRIM removes a line, RENTRIM renames a file and
+# removes a line from it. gitleaks counts both, since each has a hunk.
+TRIM=$(clone trim)
+git -C "$TRIM" switch -q -c trim
+printf 'one\ntwo\nthree\n' > "$TRIM/t.txt"; git -C "$TRIM" add t.txt; git -C "$TRIM" commit -q -m "add t"
+git -C "$TRIM" push -q -u origin trim 2>/dev/null
+printf 'one\nthree\n' > "$TRIM/t.txt"; git -C "$TRIM" commit -q -am "remove a line"
+RENTRIM=$(clone rename-trim)
+git -C "$RENTRIM" switch -q -c rentrim
+printf 'one\ntwo\nthree\nfour\n' > "$RENTRIM/t.txt"; git -C "$RENTRIM" add t.txt; git -C "$RENTRIM" commit -q -m "add t"
+git -C "$RENTRIM" push -q -u origin rentrim 2>/dev/null
+git -C "$RENTRIM" mv t.txt u.txt; printf 'one\ntwo\nthree\n' > "$RENTRIM/u.txt"
+git -C "$RENTRIM" commit -q -am "rename t, remove a line"
+[ "$(git -C "$RENTRIM" diff --name-status -M HEAD~1 HEAD | cut -c1)" = R ] \
+  && [ "$(git -C "$RENTRIM" rev-list --count HEAD --not --remotes=origin)" = 1 ] \
+  && [ "$(git -C "$TRIM" rev-list --count HEAD --not --remotes=origin)" = 1 ] \
+  || { echo "the removal-only fixtures are not what they claim" >&2; exit 1; }
 if ! command -v gitleaks >/dev/null 2>&1; then
   fail=$((fail + 1))
   printf '  FAIL %s\n' "gitleaks is installed (brew install gitleaks); the scan cases cannot run"
@@ -940,8 +958,11 @@ else
   git -C "$ORPHAN" config log.showRoot false
   expect deny  "a secret in a root commit under log.showRoot=false" "$ORPHAN" 'git push origin orphan'
   has_reason   "and it is found, not merely refused" "rule aws-access-token in creds.txt" "$ORPHAN" 'git push origin orphan'
-  # None of that may cost an ordinary push its silence. gitleaks counts a commit only when
-  # its patch adds text, and the expected count follows the same rule.
+  # None of that may cost an ordinary push its silence. gitleaks counts a commit when its
+  # patch has a hunk in a file it does not skip (a deleted one), even a hunk that only
+  # removes lines, and the expected count follows the same rule.
+  expect allow "a commit that only removes a line"           "$TRIM" 'git push origin trim'
+  expect allow "a rename that also removes a line"           "$RENTRIM" 'git push origin rentrim'
   FRESH="$TMP/fresh"; git init -q "$FRESH"
   git init -q --bare "$REMOTES/fresh.git"
   printf 'one\ntwo\n' > "$FRESH/a.txt"; git -C "$FRESH" add a.txt; git -C "$FRESH" commit -q -m "first"
@@ -1173,7 +1194,9 @@ for spec in "zero|0 commits scanned.|" "noline||" \
   PATH="$STUB2:$REALPATH"
   case $name in
     zero)  expect deny  "a gitleaks that scanned 0 of 1 commits is a deny" "$CLEAN" 'git push origin feat'
-           has_reason   "and the deny says how many it scanned" "scanned 0 commit(s)" "$CLEAN" 'git push origin feat' ;;
+           has_reason   "and the deny says how many it scanned" "scanned 0 commit(s)" "$CLEAN" 'git push origin feat'
+           # A commit that only removes lines is still one gitleaks must cover.
+           expect deny  "a gitleaks that skipped a removal-only commit is a deny" "$TRIM" 'git push origin trim' ;;
     noline) expect deny "a gitleaks that reports no count is a deny"       "$CLEAN" 'git push origin feat' ;;
     err)   expect deny  "a gitleaks that logs an ERR line is a deny"       "$CLEAN" 'git push origin feat' ;;
     many)  expect deny  "a count that differs from the outgoing one is a deny" "$CLEAN" 'git push origin feat' ;;
@@ -1183,6 +1206,7 @@ OKGL="$TMP/cov-ok"; mkdir -p "$OKGL"
 printf '#!/bin/sh\necho "6:00PM INF 1 commits scanned." >&2\nexit 0\n' > "$OKGL/gitleaks"; chmod 755 "$OKGL/gitleaks"
 PATH="$OKGL:$REALPATH"
 expect allow "a gitleaks that scanned exactly the outgoing commits passes" "$CLEAN" 'git push origin feat'
+expect allow "and so does one that scanned the removal-only commit" "$TRIM" 'git push origin trim'
 # A push naming a ref that does not exist cannot be listed, so it cannot be shown covered.
 expect deny  "a source that is not a ref is a deny"   "$CLEAN" 'git push origin nosuch'
 # A gitleaks that hangs (or a git it spawns) must end in a deny within the helper's budget,

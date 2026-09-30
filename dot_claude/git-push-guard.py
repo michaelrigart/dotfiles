@@ -584,29 +584,34 @@ def run_gitleaks(cmd, cwd, env):
 
 
 def expected_commits(repo, remote, sources, env):
-    """How many outgoing commits gitleaks must report scanning: those whose patch shows at
-    least one added line. It reads the same `git log -p` stream with the same options and
-    pins gitleaks is given, so the two counts agree unless gitleaks lost something. (An
-    empty commit, a mode change, a pure deletion or a clean merge shows none, and gitleaks
-    does not count it.) Run through Repo.run, under the same budget as every git call."""
+    """How many outgoing commits gitleaks must report scanning: those whose patch has a hunk
+    (@@) in a file that is not deleted. gitleaks counts a commit for every file it reads a
+    hunk from, a hunk that only removes lines included, and skips a deleted file; a file
+    with no hunk (a pure rename, a mode change, an empty new file) gives it nothing. So an
+    empty commit, a clean merge or a commit that only deletes files is not counted, and a
+    commit that only removes lines is. It reads the same `git log -p` stream with the same
+    options and pins gitleaks is given, so the two counts agree unless gitleaks lost
+    something. Run through Repo.run, under the same budget as every git call."""
     out = repo.run("log", "-p", "-U0", "--no-color", "--format=%x01%H", *PATCH_OPTS,
                    *(list(sources) + ["--not", "--remotes=" + remote]), env=env, long=True)
     if out is None:
         raise Deny("Push guard: git could not list the outgoing commits ({}), so the secret "
                    "scan cannot show it covered them and the push is refused. Push by hand."
                    .format(" ".join(sources)))
-    count, current, added, columns = 0, False, False, 0
+    # A hunk line never starts with "deleted file mode": every line of a hunk starts with
+    # +, -, a space or a backslash.
+    count, scanned, deleted = 0, False, False
     for line in out.split("\n"):
         if line.startswith("\x01"):
-            count += 1 if current and added else 0
-            current, added, columns = True, False, 0
+            count += 1 if scanned else 0
+            scanned, deleted = False, False
         elif line.startswith("diff "):
-            columns = 0                                # a header: no hunk yet
-        elif line.startswith("@@"):
-            columns = len(line) - len(line.lstrip("@")) - 1    # 1, or 2+ for a merge
-        elif columns and "+" in line[:columns]:
-            added = True
-    return count + (1 if current and added else 0)
+            deleted = False                            # a file header: a new file
+        elif line.startswith("deleted file mode "):
+            deleted = True
+        elif line.startswith("@@") and not deleted:
+            scanned = True
+    return count + (1 if scanned else 0)
 
 
 def toml_statements(text):
@@ -785,7 +790,7 @@ def scan(root, remote, sources):
                        .format(code, tail))
         # A clean exit proves nothing on its own: gitleaks reports "no leaks found" and exits
         # 0 when its own git log fails or is misparsed (color.diff=always once gave 0
-        # commits scanned). Only a scan of every commit that adds text counts as clean.
+        # commits scanned). Only a scan of every commit with a hunk counts as clean.
         seen = SCANNED_RE.findall(err or "")
         if ERR_RE.search(err or ""):
             raise Deny("Push guard: gitleaks logged an error while scanning, so the push is "
