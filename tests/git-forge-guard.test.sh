@@ -983,6 +983,26 @@ else
   git -C "$SKIPWT" update-index --skip-worktree .gitleaksignore
   expect deny  "a skip-worktree edit to a committed .gitleaksignore" "$SKIPWT" 'git push origin feat'
   has_reason   "and it is refused for differing from HEAD" "Commit the exception first" "$SKIPWT" 'git push origin feat'
+  # A replace ref hides an object from git log, but a push sends the real one.
+  REPLBLOB=$(leaky_clone replace-blob)
+  secret_blob=$(git -C "$REPLBLOB" rev-parse HEAD:creds.txt)
+  clean_blob=$(printf 'hello\n' | git -C "$REPLBLOB" hash-object -w --stdin)
+  git -C "$REPLBLOB" replace "$secret_blob" "$clean_blob"
+  expect deny  "a secret hidden by a replaced blob"           "$REPLBLOB" 'git push origin feat'
+  has_reason   "and it is found, not merely refused" "rule aws-access-token in creds.txt" "$REPLBLOB" 'git push origin feat'
+  REPLCOMMIT=$(leaky_clone replace-commit)
+  git -C "$REPLCOMMIT" replace HEAD HEAD~1
+  expect deny  "a secret hidden by a replaced commit"         "$REPLCOMMIT" 'git push origin feat'
+  has_reason   "and it is found, not merely refused" "rule aws-access-token in creds.txt" "$REPLCOMMIT" 'git push origin feat'
+  # An exception committed on the branch you stand on reviews nothing for another branch.
+  OTHERBR=$(leaky_clone otherbranch)
+  fp=$(fingerprint_of "$OTHERBR")
+  git -C "$OTHERBR" switch -q -c scratch
+  printf '%s\n' "$fp" > "$OTHERBR/.gitleaksignore"
+  git -C "$OTHERBR" add .gitleaksignore && git -C "$OTHERBR" commit -q -m "ignore, on scratch only"
+  expect deny  "an exception committed on HEAD, not on the pushed branch" "$OTHERBR" 'git push origin feat'
+  has_reason   "and the deny says to commit it on the pushed branch" "on the branch being pushed" "$OTHERBR" 'git push origin feat'
+  expect allow "the exception on the branch being pushed lets it through" "$OTHERBR" 'git push origin scratch'
   # A config named in the environment is as unreviewed as an untracked one.
   printf '[extend]\nuseDefault = true\n[allowlist]\npaths = [%s]\n' "'''.*'''" > "$TMP/allow-all.toml"
   GITLEAKS_CONFIG="$TMP/allow-all.toml" expect deny "a GITLEAKS_CONFIG in the environment is ignored" "$EVIL" 'git push origin feat'
