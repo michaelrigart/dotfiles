@@ -11,16 +11,19 @@ test "$XDG_LIB_HOME"    || export XDG_LIB_HOME="$HOME/.local/lib"
 # Set ARCHFLAGS to force target builds
 export ARCHFLAGS="-arch $(uname -m)"
 
-# Set $PATH environment variable
-export PATH=$XDG_BIN_HOME:$PATH
-export PATH="${KREW_ROOT:-$HOME/.krew}/bin:$PATH"
-
-# Homebrew configuration
-eval "$(/opt/homebrew/bin/brew shellenv)"
-export HOMEBREW_PREFIX=$(brew --prefix)
+# Homebrew configuration. FIRST, because `brew shellenv` PREPENDS /opt/homebrew/bin:
+# anything put on PATH before it ends up behind Homebrew, which is how Homebrew's codex
+# came to shadow the ~/.local/bin/codex launcher. shellenv also exports HOMEBREW_PREFIX,
+# so nothing below calls `brew --prefix` (which can reach the network).
+eval "$(/opt/homebrew/bin/brew shellenv zsh)"
 export FPATH="$HOMEBREW_PREFIX/share/zsh/site-functions:${FPATH}"
 export HOMEBREW_NO_ANALYTICS=1
 export HOMEBREW_BUNDLE_FILE="$XDG_CONFIG_HOME/homebrew/Brewfile"
+
+# Then the user's own bins, in FRONT of Homebrew: ~/.local/bin first, then krew.
+# tests/zshenv.test.sh pins this order.
+export PATH="${KREW_ROOT:-$HOME/.krew}/bin:$PATH"
+export PATH=$XDG_BIN_HOME:$PATH
 
 # NOTE: TERM is intentionally NOT forced here — Ghostty sets xterm-ghostty
 # locally (full features). Terminfo-poor remotes are handled per-tool: ssh via
@@ -59,4 +62,4 @@ export STARSHIP_CONFIG=$XDG_CONFIG_HOME/starship/config.toml
 # Ruby jemalloc
 export LDFLAGS="-L$HOMEBREW_PREFIX/opt/jemalloc/lib"
 export CPPFLAGS="-I$HOMEBREW_PREFIX/opt/jemalloc/include"
-export RUBY_CONFIGURE_OPTS="--with-jemalloc=$(brew --prefix jemalloc)"
+export RUBY_CONFIGURE_OPTS="--with-jemalloc=$HOMEBREW_PREFIX/opt/jemalloc"
