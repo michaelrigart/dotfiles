@@ -123,17 +123,12 @@ MERGE_DIFF = "--diff-merges=remerge"
 # Options that make `git log -p` show every added line: a root commit, a file marked binary
 # or -diff by .gitattributes or .git/info/attributes, a textconv or external diff driver.
 PATCH_OPTS = ["--root", "--text", "--no-textconv", "--no-ext-diff", MERGE_DIFF]
-# Files that change what gitleaks reports. Only a committed one is a reviewed exception.
-GITLEAKS_CONFIG_FILES = [".gitleaksignore", ".gitleaks.toml"]
-# What a committed .gitleaks.toml may set under [extend]. extend.path loads another config
-# file (and extend.url would, once gitleaks implements it), which is not reviewed with the push.
-EXTEND_KEYS = {("extend", "usedefault"), ("extend", "disabledrules")}
-# A TOML key: bare, "basic" or 'literal'. A basic key holding an escape is not matched, so a
-# config that spells a key with one is refused as unreadable rather than misread.
-TOML_KEY = r"""(?:[a-z0-9_-]+|"[^"\\\n]*"|'[^'\n]*')"""
-TOML_DOTTED = TOML_KEY + r"(?:[ \t]*\.[ \t]*" + TOML_KEY + r")*"
-TOML_HEADER_RE = re.compile(r"\[\[?[ \t]*(" + TOML_DOTTED + r")[ \t]*\]\]?")
-TOML_ASSIGN_RE = re.compile(r"(" + TOML_DOTTED + r")[ \t]*=")
+# The file that changes what gitleaks reports. Only a committed one is a reviewed exception.
+EXCEPTION_FILES = [".gitleaksignore"]
+# A gitleaks config, in any extension or letter case. gitleaks reads one from the directory
+# it scans (.gitleaks.toml, then any .gitleaks.<ext> viper finds beside it), and a config can
+# extend another file, so the guard supports none: the scan always runs the default rules.
+GITLEAKS_CONFIG_RE = re.compile(r"\.gitleaks\..*", re.I)
 SCANNED_RE = re.compile(r"\b(\d+) commits? scanned\b")
 ERR_RE = re.compile(r"^\S+\s+ERR\b", re.M)
 PLAIN = ("Push guard: this command may run git push in a shape the guard does not check. Run "
@@ -614,96 +609,21 @@ def expected_commits(repo, remote, sources, env):
     return count + (1 if scanned else 0)
 
 
-def toml_statements(text):
-    """The statements of a TOML document, lowercased (viper reads keys without case): each
-    table header and each key = value, comments dropped. A value that runs over several
-    lines (an array, a multi-line string) stays inside its statement, so no line of it is
-    read as a header or a key. Raises ValueError on a string left open."""
-    stmts, cur, depth, i, n = [], [], 0, 0, len(text)
-    while i < n:
-        c = text[i]
-        if c == "#":
-            j = text.find("\n", i)
-            i = n if j < 0 else j
-            continue
-        if c in "\"'":
-            q = c * 3 if text.startswith(c * 3, i) else c
-            j = i + len(q)
-            while not text.startswith(q, j):
-                if j >= n or (len(q) == 1 and text[j] == "\n"):
-                    raise ValueError("a string is not closed")
-                j += 2 if c == '"' and text[j] == "\\" else 1
-            j += len(q)
-            extra = 0                  # up to two more quotes are content: '''a'''' holds a'
-            while len(q) == 3 and extra < 2 and j < n and text[j] == c:
-                j, extra = j + 1, extra + 1
-            cur.append(text[i:j])
-            i = j
-            continue
-        if c == "\n" and depth <= 0:
-            stmts.append("".join(cur).strip().lower())
-            cur, depth = [], 0
-        else:
-            depth += (c in "[{") - (c in "]}")
-            cur.append(c)
-        i += 1
-    stmts.append("".join(cur).strip().lower())
-    return [s for s in stmts if s]
-
-
-def toml_path(dotted):
-    """The key path viper makes of a TOML key. viper splits every key on dots, so
-    extend.path, "extend.path" and extend . path all name path under extend."""
-    parts = []
-    for tok in re.findall(TOML_KEY, dotted):
-        if tok[0] in "\"'":
-            tok = tok[1:-1]
-        parts.extend(p.strip() for p in tok.split("."))
-    return tuple(parts)
-
-
-def config_extension(path):
-    """What this gitleaks config sets under extend beyond useDefault and disabledRules
-    (extend.path, which loads another config file), or None. Raises ValueError (or OSError)
-    where it cannot tell: a statement that is not a plain header or key, an escaped key, a
-    string left open, a file that is not UTF-8."""
-    with open(path, "rb") as fh:
-        text = fh.read().decode("utf-8-sig")
-    table = ()
-    for s in toml_statements(text):
-        m = TOML_HEADER_RE.fullmatch(s)
-        if m:
-            table = toml_path(m.group(1))
-            if table[:1] == ("extend",) and len(table) > 1:
-                return "[" + ".".join(table) + "]"
-            continue
-        m = TOML_ASSIGN_RE.match(s)
-        if not m:
-            raise ValueError("the statement starting {!r} is not one it reads".format(
-                s.split("\n")[0][:40]))
-        keys = table + toml_path(m.group(1))
-        if keys == ("extend",):
-            return "extend = { ... }"
-        if keys[:1] == ("extend",) and keys not in EXTEND_KEYS:
-            return ".".join(keys)
-    return None
-
-
 def scan(root, remote, sources):
     """gitleaks over the commits this push would send. Returns on a clean scan and
     raises Deny otherwise; a scan that cannot run, or cannot prove it covered the commits,
     is a deny, never a pass.
+    The scan runs gitleaks' default rules only: a gitleaks config file (.gitleaks.<ext>, in
+    any letter case) in the working tree or committed on a pushed ref is an unsupported
+    configuration, and the push is refused naming it.
     --ignore-gitleaks-allow: the only exception is a reviewed .gitleaksignore entry, never
-    an inline comment. gitleaks reads .gitleaksignore and .gitleaks.toml from the working
+    an inline comment. gitleaks reads .gitleaksignore from the working
     tree, so a copy that is not byte-identical to the one committed on HEAD and on every
     pushed ref (untracked, ignored, modified, hidden by skip-worktree or
     status.showUntrackedFiles, or committed on another branch) is refused: commit it first,
     and the exception is reviewed like any other change. A push by pattern (--tags, --all,
     --mirror) names no refs to compare, so with an exception file present it is refused and
-    the refs must be pushed by name. The committed .gitleaks.toml is passed by name, since
-    gitleaks' own search prefers any .gitleaks.json beside it; one that extends another
-    config (extend.path) is refused, because the file it loads is not reviewed with the
-    push. Every git call here runs with
+    the refs must be pushed by name. Every git call here runs with
     replace refs off (GIT_NO_REPLACE_OBJECTS), since a push sends the real objects. GITLEAKS_*
     variables are dropped from the environment for the same reason. Commit and
     annotated-tag messages are not scanned (gitleaks git mode scans patches only)."""
@@ -729,9 +649,31 @@ def scan(root, remote, sources):
                    .format(" ".join(sources)))
     if not outgoing.strip():
         return                                         # nothing leaves: nothing to scan
+    # A gitleaks config in the working tree would steer this scan, and one committed on a
+    # pushed ref is a configuration this scan does not honour.
+    try:
+        names = sorted(os.listdir(root))
+    except OSError as e:
+        raise Deny("Push guard: cannot list {} ({}), so the guard cannot rule out a gitleaks "
+                   "config there and the push is refused. Push by hand.".format(root, e))
+    for name in names:
+        if GITLEAKS_CONFIG_RE.fullmatch(name):
+            raise Deny(UNSUPPORTED.format("the gitleaks config file " + name + " in the working tree"))
+    for source in sources:
+        trees = repo.run("log", "--no-walk", "--format=%T", source, "--", env=env)
+        listed = [repo.run("ls-tree", "-z", "--name-only", tree, env=env)
+                  for tree in sorted(set((trees or "").split()))]
+        if trees is None or None in listed:
+            raise Deny("Push guard: git could not list the files of {}, so the guard cannot rule "
+                       "out a gitleaks config committed there and the push is refused. Push by "
+                       "hand.".format(source))
+        for name in "\0".join(listed).split("\0"):
+            if GITLEAKS_CONFIG_RE.fullmatch(name):
+                raise Deny(UNSUPPORTED.format(
+                    "the gitleaks config file " + name + " committed on " + source))
     # The worktree copy is what gitleaks reads, so it must be the committed one on HEAD and on
     # every ref pushed: an exception committed on another branch reviews nothing here.
-    present = [n for n in GITLEAKS_CONFIG_FILES if os.path.lexists(os.path.join(root, n))]
+    present = [n for n in EXCEPTION_FILES if os.path.lexists(os.path.join(root, n))]
     # A pseudo-source (--tags, --branches, --all) stands for refs this check does not list,
     # so none of them could be compared: with an exception in play, only named refs go.
     if present and any(x.startswith("-") for x in sources):
@@ -749,27 +691,7 @@ def scan(root, remote, sources):
                 raise Deny("Push guard: {0} differs from {1}:{0} (or {1} has none), so it "
                            "cannot decide what the secret scan skips. Commit the exception "
                            "first, on the ref being pushed (a fingerprint in "
-                           ".gitleaksignore, or a .gitleaks.toml), then push.".format(name, ref))
-    # gitleaks checks only that .gitleaks.toml exists, then lets viper search the source for
-    # .gitleaks.*, which finds an untracked .gitleaks.json first. Naming the committed file
-    # turns the search off. Without one, gitleaks reads its default config and no other file.
-    config = []
-    if ".gitleaks.toml" in present:
-        path = os.path.join(root, ".gitleaks.toml")
-        try:
-            extension = config_extension(path)
-        except (OSError, ValueError) as e:
-            raise Deny("Push guard: the guard cannot read .gitleaks.toml ({}), so it cannot rule "
-                       "out an [extend] path that loads a gitleaks config not reviewed with this "
-                       "push, and the push is refused. Write it with plain keys (no escapes), or "
-                       "push by hand.".format(e))
-        if extension:
-            raise Deny("Push guard: .gitleaks.toml sets {}, so the scan may follow a gitleaks "
-                       "config that is not reviewed with this push. Extended gitleaks configs "
-                       "are not supported by the push guard; inline the rules in .gitleaks.toml "
-                       "([extend] may keep useDefault and disabledRules), commit it, and push "
-                       "again.".format(extension))
-        config = ["--config", path]
+                           ".gitleaksignore), then push.".format(name, ref))
     # Never skipped on an expected count of 0: that count is only as good as git's view of
     # the patches, and gitleaks must agree with it.
     expected = expected_commits(repo, remote, sources, env)
@@ -780,8 +702,8 @@ def scan(root, remote, sources):
         code, out, err = run_gitleaks(
             [exe, "git", "--no-banner", "--no-color", "--redact", "--ignore-gitleaks-allow",
              "--exit-code", str(GITLEAKS_LEAKS_EXIT),
-             "--report-format", "json", "--report-path", report]
-            + config + ["--log-opts=" + log_opts, root], root, env)
+             "--report-format", "json", "--report-path", report,
+             "--log-opts=" + log_opts, root], root, env)
         if code == GITLEAKS_LEAKS_EXIT:
             raise Deny(leak_reason(report, remote))
         tail = "\n".join((err or out or "").strip().splitlines()[-5:])

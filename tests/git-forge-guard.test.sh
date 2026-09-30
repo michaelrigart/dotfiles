@@ -873,8 +873,8 @@ else
   fingerprint_of() {
     reason "$1" 'git push origin feat' | sed -n 's/.*(fingerprint \([^)]*\)).*/\1/p' | head -1
   }
-  # The exception must be reviewed: gitleaks reads .gitleaksignore and .gitleaks.toml from
-  # the working tree, so only a committed copy may decide what the scan skips.
+  # The exception must be reviewed: gitleaks reads .gitleaksignore from the working tree,
+  # so only a committed copy may decide what the scan skips.
   echo "== rule 4: a gitleaks exception must be committed =="
   UNTRACKED=$(leaky_clone untracked-ignore)
   fp=$(fingerprint_of "$UNTRACKED"); printf '%s\n' "$fp" > "$UNTRACKED/.gitleaksignore"
@@ -884,11 +884,6 @@ else
   fp=$(fingerprint_of "$EXCLUDED"); printf '%s\n' "$fp" > "$EXCLUDED/.gitleaksignore"
   printf '.gitleaksignore\n' >> "$EXCLUDED/.git/info/exclude"
   expect deny  "a .gitleaksignore in .git/info/exclude is not an exception" "$EXCLUDED" 'git push origin feat'
-  ALLOWALL=$(leaky_clone allow-all-toml)
-  printf '[extend]\nuseDefault = true\n[allowlist]\npaths = [%s]\n' "'''.*'''" > "$ALLOWALL/.gitleaks.toml"
-  expect deny  "an untracked .gitleaks.toml that allows everything" "$ALLOWALL" 'git push origin feat'
-  git -C "$ALLOWALL" add .gitleaks.toml
-  expect deny  "a staged, uncommitted .gitleaks.toml is not an exception" "$ALLOWALL" 'git push origin feat'
   CHANGED=$(clone changed-ignore)
   printf '# reviewed\n' > "$CHANGED/.gitleaksignore"
   git -C "$CHANGED" add .gitleaksignore && git -C "$CHANGED" commit -q -m "add ignore file"
@@ -1054,110 +1049,59 @@ else
   GITLEAKS_CONFIG="$TMP/allow-all.toml" expect deny "a GITLEAKS_CONFIG in the environment is ignored" "$EVIL" 'git push origin feat'
   has_reason   "and the deny names the file" "in creds.txt" "$EVIL" 'git push origin feat'
 
-  # gitleaks checks that .gitleaks.toml exists, then lets viper search for .gitleaks.*, and
-  # a .gitleaks.json wins over it. The guard names the committed .gitleaks.toml, so no
-  # untracked file stands in for it.
-  echo "== rule 4: the committed .gitleaks.toml is the only config =="
-  DEFAULT_CONFIG=$(printf '[extend]\nuseDefault = true\n')
+  # A gitleaks config decides which rules run and what they allow, and the push guard
+  # supports none: gitleaks reads .gitleaks.toml from the working tree, lets viper find any
+  # .gitleaks.<ext> beside it, and a config can extend a file nobody reviewed. Any such file
+  # in the working tree (tracked or not), or committed on a pushed ref, is a silent deny
+  # naming it, before gitleaks runs.
+  echo "== rule 4: a gitleaks config file is unsupported =="
   ALLOW_ALL=$(printf '[extend]\nuseDefault = true\n[allowlist]\npaths = [%s]\n' "'''.*'''")
-  # with_config <name> -> a clone whose feat commits a default-rules .gitleaks.toml, then the secret
-  with_config() {
-    local d; d=$(clone "$1")
-    printf '%s\n' "$DEFAULT_CONFIG" > "$d/.gitleaks.toml"
-    git -C "$d" add .gitleaks.toml && git -C "$d" commit -q -m "a reviewed gitleaks config"
-    printf '%s\n' "$SECRET_LINE" > "$d/creds.txt"
-    git -C "$d" add creds.txt && git -C "$d" commit -q -m "add creds"
-    printf '%s' "$d"
-  }
-  CFGJSON=$(with_config config-json)
-  printf '%s\n' "$ALLOW_ALL" > "$CFGJSON/.gitleaks.json"
-  expect deny  "an untracked .gitleaks.json beside the committed .gitleaks.toml" "$CFGJSON" 'git push origin feat'
-  has_reason   "and the secret is found, not merely refused" "rule aws-access-token in creds.txt" "$CFGJSON" 'git push origin feat'
-  # The reviewed config is already on the remote, so nothing about it is outgoing.
-  CFGMAIN=$(clone config-on-main)
-  git -C "$CFGMAIN" switch -q main
-  printf '%s\n' "$DEFAULT_CONFIG" > "$CFGMAIN/.gitleaks.toml"
-  git -C "$CFGMAIN" add .gitleaks.toml && git -C "$CFGMAIN" commit -q -m "a reviewed gitleaks config"
-  git -C "$CFGMAIN" push -q origin main 2>/dev/null
-  git -C "$CFGMAIN" switch -q -c topic
-  printf '%s\n' "$SECRET_LINE" > "$CFGMAIN/creds.txt"
-  git -C "$CFGMAIN" add creds.txt && git -C "$CFGMAIN" commit -q -m "add creds"
-  printf '%s\n' "$ALLOW_ALL" > "$CFGMAIN/.gitleaks.json"
-  expect deny  "an untracked .gitleaks.json, the reviewed config already on the remote" "$CFGMAIN" 'git push origin topic'
-  has_reason   "and the secret is found, not merely refused" "rule aws-access-token in creds.txt" "$CFGMAIN" 'git push origin topic'
-  CFGYAML=$(with_config config-yaml)
-  printf '%s\n' "$ALLOW_ALL" > "$CFGYAML/.gitleaks.yaml"
-  printf '%s\n' "$ALLOW_ALL" > "$CFGYAML/.gitleaks.yml"
-  expect deny  "untracked .gitleaks.yaml and .gitleaks.yml beside it" "$CFGYAML" 'git push origin feat'
-  has_reason   "and the secret is found, not merely refused" "rule aws-access-token in creds.txt" "$CFGYAML" 'git push origin feat'
-  # A reviewed config with the default rules, a rule of its own (whose path is not
-  # extend.path) and values over several lines: the scan works as without one.
-  reviewed_config() {
-    cat > "$1/.gitleaks.toml" <<'EOF'
-title = "a reviewed config"
-
-[extend]
-useDefault = true
-disabledRules = [
-  "generic-api-key",   # noisy here
-]
-
-[[rules]]
-id = "demo-env-token"
-description = "a rule with a path, which is not extend.path"
-regex = '''demo_[0-9a-f]{32}'''
-path = '''\.env$'''
-keywords = [
-  "demo_",
-]
-
-[[allowlists]]
-description = "vendored code"
-paths = [
-  '''^vendor/''',
-]
-EOF
-  }
-  CFGCLEAN=$(clone config-clean)
-  reviewed_config "$CFGCLEAN"; printf 'hello\n' > "$CFGCLEAN/notes.txt"
-  git -C "$CFGCLEAN" add .gitleaks.toml notes.txt && git -C "$CFGCLEAN" commit -q -m "a reviewed config, a clean change"
-  expect allow "a committed .gitleaks.toml of default rules: a clean push is silent" "$CFGCLEAN" 'git push origin feat'
-  CFGLEAK=$(leaky_clone config-leak)
-  reviewed_config "$CFGLEAK"
-  git -C "$CFGLEAK" add .gitleaks.toml && git -C "$CFGLEAK" commit -q -m "a reviewed config"
-  expect deny  "a committed .gitleaks.toml of default rules: a secret is denied" "$CFGLEAK" 'git push origin feat'
-  has_reason   "and the deny names the leak" "rule aws-access-token in creds.txt" "$CFGLEAK" 'git push origin feat'
-
-  # [extend] path loads a file that is not reviewed with the push, and its allowlist would
-  # decide the scan. gitleaks 8.30 loads every path spelling below; url is refused for a
-  # gitleaks that implements it.
-  echo "== rule 4: a committed .gitleaks.toml may not extend another config =="
-  printf '%s\n' "$ALLOW_ALL" > "$TMP/outside-allow.toml"
+  # On a clean branch, so the deny can only come from the file. Every extension and case.
+  # The branch carries a clean commit: a push that sends nothing is never scanned.
   n=0
-  for spec in \
-      'a relative [extend] path|[extend]\npath = "local-allow.toml"\n' \
-      "an absolute [extend] path|[extend]\npath = \"$TMP/outside-allow.toml\"\n" \
-      'an [extend] url|[extend]\nurl = "https://example.invalid/gitleaks.toml"\n' \
-      'a dotted extend.path at the top|extend.path = "local-allow.toml"\n' \
-      'an [Extend] Path in capitals|[Extend]\nPath = "local-allow.toml"\n' \
-      'a quoted "extend.path" key|"extend.path" = "local-allow.toml"\n' \
-      'an inline extend = { path }|extend = { path = "local-allow.toml" }\n' \
-      "a path after a multi-line string holding [rules]|[extend]\ndisabledRules = [\n'''\n[rules]\n''',\n]\npath = \"local-allow.toml\"\n"; do
-    n=$((n + 1)); label=${spec%%|*}; body=${spec#*|}
-    EXT=$(leaky_clone "extend-$n")
-    printf "$body" > "$EXT/.gitleaks.toml"
-    git -C "$EXT" add .gitleaks.toml && git -C "$EXT" commit -q -m "extend a config"
-    printf '%s\n' "$ALLOW_ALL" > "$EXT/local-allow.toml"
-    expect deny  "$label is refused" "$EXT" 'git push origin feat'
-    has_reason   "and the deny says extended configs are not supported" \
-                 "Extended gitleaks configs are not supported by the push guard" "$EXT" 'git push origin feat'
+  for name in .gitleaks.toml .gitleaks.json .gitleaks.yaml .gitleaks.yml .GITLEAKS.TOML .Gitleaks.Json; do
+    n=$((n + 1)); CFG=$(clone "config-$n")
+    printf 'hello\n' > "$CFG/notes.txt"
+    git -C "$CFG" add notes.txt && git -C "$CFG" commit -q -m "a clean change"
+    printf '%s\n' "$ALLOW_ALL" > "$CFG/$name"
+    expect deny  "an untracked $name, on a clean branch" "$CFG" 'git push origin feat'
+    has_reason   "and the deny names $name as unsupported" \
+                 "unsupported push configuration for the push guard: the gitleaks config file $name in the working tree" \
+                 "$CFG" 'git push origin feat'
   done
-  UNREAD=$(leaky_clone extend-unreadable)
-  printf '["ext\\u0065nd"]\npath = "local-allow.toml"\n' > "$UNREAD/.gitleaks.toml"
-  git -C "$UNREAD" add .gitleaks.toml && git -C "$UNREAD" commit -q -m "extend a config, key escaped"
-  printf '%s\n' "$ALLOW_ALL" > "$UNREAD/local-allow.toml"
-  expect deny  "a .gitleaks.toml the guard cannot read is refused" "$UNREAD" 'git push origin feat'
-  has_reason   "and the deny says it cannot read it" "cannot read .gitleaks.toml" "$UNREAD" 'git push origin feat'
+  CFGLEAK=$(leaky_clone config-leak)
+  printf '%s\n' "$ALLOW_ALL" > "$CFGLEAK/.gitleaks.toml"
+  expect deny  "an untracked .gitleaks.toml that allows everything" "$CFGLEAK" 'git push origin feat'
+  git -C "$CFGLEAK" add .gitleaks.toml
+  expect deny  "a staged, uncommitted .gitleaks.toml"         "$CFGLEAK" 'git push origin feat'
+  git -C "$CFGLEAK" commit -q -m "a gitleaks config"
+  expect deny  "a committed .gitleaks.toml"                   "$CFGLEAK" 'git push origin feat'
+  has_reason   "and the deny names the file" \
+               "the gitleaks config file .gitleaks.toml in the working tree" "$CFGLEAK" 'git push origin feat'
+  # An [extend] path loads another file. The config is no longer read, only refused.
+  EXT=$(leaky_clone config-extend)
+  printf '[extend]\npath = "local-allow.toml"\n' > "$EXT/.gitleaks.toml"
+  printf '%s\n' "$ALLOW_ALL" > "$EXT/local-allow.toml"
+  git -C "$EXT" add .gitleaks.toml local-allow.toml && git -C "$EXT" commit -q -m "extend a config"
+  expect deny  "a committed .gitleaks.toml that extends another config" "$EXT" 'git push origin feat'
+  has_reason   "and the deny names the file" \
+               "the gitleaks config file .gitleaks.toml in the working tree" "$EXT" 'git push origin feat'
+  # Committed on the pushed ref, absent from the working tree: the push names another branch.
+  TREEONLY=$(clone config-tree-only)
+  git -C "$TREEONLY" switch -q -c withcfg
+  printf '%s\n' "$ALLOW_ALL" > "$TREEONLY/.GitLeaks.Toml"
+  printf 'hello\n' > "$TREEONLY/notes.txt"
+  git -C "$TREEONLY" add .GitLeaks.Toml notes.txt && git -C "$TREEONLY" commit -q -m "a config and a change"
+  git -C "$TREEONLY" switch -q feat
+  expect deny  "a config committed on the pushed ref, not in the working tree" "$TREEONLY" 'git push origin withcfg'
+  has_reason   "and the deny names the file and the ref" \
+               "the gitleaks config file .GitLeaks.Toml committed on withcfg" "$TREEONLY" 'git push origin withcfg'
+  git -C "$TREEONLY" tag cfgtag withcfg
+  expect deny  "a config in a tagged tree, pushed with --tags" "$TREEONLY" 'git push origin --tags'
+  # Only what is pushed counts: a config on a branch that stays home is not in play.
+  printf 'hello\n' > "$TREEONLY/notes.txt"
+  git -C "$TREEONLY" add notes.txt && git -C "$TREEONLY" commit -q -m "a clean change on feat"
+  expect allow "a config on a branch this push does not send" "$TREEONLY" 'git push origin feat'
 fi
 
 echo "== rule 4: the scan fails closed =="
