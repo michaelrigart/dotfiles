@@ -4,7 +4,7 @@
 {{- /*   - seed model/effort/tier prefs ONLY when absent (so /model and       */ -}}
 {{- /*     fast-mode changes persist),                                        */ -}}
 {{- /*   - enforce UI / keybindings / notify / prevent_idle_sleep,            */ -}}
-{{- /*   - keep js_repl explicitly off.                                       */ -}}
+{{- /*   - delete the retired js_repl flag.                                   */ -}}
 {{- /* NB: TOML comments and key ordering are not preserved (parse→serialize).*/ -}}
 {{- $config := dict -}}
 {{- if .chezmoi.stdin -}}
@@ -46,11 +46,7 @@
        Set here, never with -c: any -c override makes a TUI leave the shared daemon. */ -}}
 {{- $config = setValueAtPath "tui.terminal_title" (list "thread-id" "thread-title" "current-dir") $config -}}
 
-{{- /* Enforce feature flags. js_repl is NOT obsolete — 0.149.1 still ships it as a
-       live flag (alongside code_mode_only / js_repl_tools_only) plus js_repl_node_path
-       and js_repl_node_module_dirs. It is off by default today, so unsetting it looked
-       harmless, but that also guaranteed an explicit guard could never persist: one
-       upstream default flip and Codex gets a JS REPL silently. Pin it off instead. */ -}}
+{{- /* Enforce feature flags. */ -}}
 {{- $config = setValueAtPath "features.memories" true $config -}}
 {{- $config = setValueAtPath "features.prevent_idle_sleep" true $config -}}
 {{- /* Required by the Herdr codex integration: its hook only fires with this set.
@@ -71,6 +67,9 @@
        running keeps serving until `codex app-server daemon stop`, or
        `codex-daemon restart`.                                                  */ -}}
 {{- $config = setValueAtPath "features.daemon_auto_start" false $config -}}
-{{- $config = setValueAtPath "features.js_repl" false $config -}}
+{{- /* js_repl was pinned off while Codex shipped it as a live flag; 0.159 removed the
+       flag. Deleted rather than merely no longer set: this template carries every key it
+       does not name, so the old pin would otherwise sit in the live file forever.     */ -}}
+{{- $config = deleteValueAtPath "features.js_repl" $config -}}
 
 {{- $config | toToml -}}

@@ -43,14 +43,13 @@ emit_hooks() {
 }
 
 echo "A. enforced feature flags win over whatever is on disk"
-# The live file had js_repl removed and memories added by Codex itself; both must be
-# pinned by us, not left to the tool.
+# memories was added by Codex itself; it must be pinned by us, not left to the tool.
 emit '[features]
 js_repl = true
 memories = false
 prevent_idle_sleep = false
 '
-has '^\s*js_repl = false'           "js_repl forced off even when the live file says true"
+hasnt '^\s*js_repl'                 "js_repl deleted even when the live file sets it"
 has '^\s*memories = true'           "memories forced on even when the live file says false"
 has '^\s*prevent_idle_sleep = true' "prevent_idle_sleep forced on"
 has '^\s*hooks = true'              "agent hooks forced on for the Herdr integration"
@@ -71,12 +70,16 @@ echo "A3. every TUI puts its thread id first in its title"
 emit 'tui.terminal_title = ["current-dir"]'
 has '^\s*terminal_title = \["thread-id", "thread-title", "current-dir"\]' "terminal_title pinned with thread-id first"
 
-echo "B. js_repl is pinned, not dropped"
-# Regression guard. An earlier revision unset the key on the grounds that it was
-# obsolete; codex 0.149.1 still ships it, so unsetting it silently removed the guard
-# and let an upstream default flip enable a JS REPL. Absent must never be acceptable.
+echo "B. js_repl is deleted, not pinned"
+# It was pinned off while Codex shipped it as a live flag (0.149.1). Codex 0.159 removed
+# the flag. The template carries every key it does not name, so the old pin has to be
+# DELETED from the live file; merely no longer setting it would keep it forever.
+emit '[features]
+js_repl = false
+'
+hasnt '^\s*js_repl' "a leftover js_repl pin is deleted from the live file"
 emit ''
-has '^\s*js_repl = false' "js_repl emitted even when absent from the input"
+hasnt '^\s*js_repl' "js_repl is never emitted"
 
 echo "C. model preferences are seeded, not enforced"
 # /model, /effort and fast-mode changes must persist across an apply.
