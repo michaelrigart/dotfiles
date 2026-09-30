@@ -148,6 +148,41 @@ jq_is '.autoContinueAtUsageLimit' 'true' "autoContinueAtUsageLimit carried throu
 emit '{}'
 jq_is '.autoContinueAtUsageLimit == null' true "autoContinueAtUsageLimit not invented when absent"
 
+echo "E2. the merge starts from the live file: owned keys win, everything else survives"
+# Until 2026-09-30 the script rebuilt the object and carried a named whitelist, so every
+# runtime key nobody listed vanished on apply (modelSettings was the fourth). It now
+# overlays the owned keys on the live file, so an UNKNOWN key must survive too.
+emit '{"modelSettings":{"opus":{"x":1}},"someFutureKey":{"nested":[1,2]},"permissions":{"additionalDirectories":["/tmp/extra"],"allow":["Bash(stale-allow *)"],"ask":["Bash(stale-ask *)"],"deny":["Bash(stale-deny *)"]},"hooks":{"Stop":[{"hooks":[{"type":"command","command":"stale"}]}]},"sandbox":{"stale":true},"env":{"STALE":"1"},"cleanupPeriodDays":14,"includeCoAuthoredBy":true,"voiceEnabled":true}'
+jq_is '.modelSettings.opus.x'              1      "modelSettings survives an apply"
+jq_is '.someFutureKey.nested | length'     2      "an unknown future key survives an apply"
+jq_is '.permissions.additionalDirectories[0]' /tmp/extra "a runtime permissions key survives"
+jq_is '.permissions.allow | index("Bash(stale-allow *)")' null "a stale allow rule is replaced, never merged"
+jq_is '.permissions.ask   | index("Bash(stale-ask *)")'   null "a stale ask rule is replaced, never merged"
+jq_is '.permissions.deny  | index("Bash(stale-deny *)")'  null "a stale deny rule is replaced, never merged"
+jq_is '.hooks | has("Stop")'               false  "owned hooks replace the live hooks wholesale"
+jq_is '.sandbox | has("stale")'            false  "owned sandbox replaces the live sandbox wholesale"
+jq_is '.env | has("STALE")'                false  "owned env replaces the live env wholesale"
+jq_is '.cleanupPeriodDays'                 30     "cleanupPeriodDays is owned, and is 30"
+jq_is 'has("includeCoAuthoredBy")'         false  "retired key includeCoAuthoredBy is deleted"
+jq_is 'has("voiceEnabled")'                false  "retired key voiceEnabled is deleted"
+FIRST=$OUT
+emit "$FIRST"
+if [ "$(printf '%s' "$OUT" | jq -S .)" = "$(printf '%s' "$FIRST" | jq -S .)" ]; then
+  _pass "a second apply changes nothing"
+else
+  _fail "a second apply changes nothing" "the second pass differs from the first"
+fi
+# A live-sized file under the system bash. The empty-input check used to be a bash 3.2
+# pattern substitution that took 8-40s on a real 13 KB settings.json.
+emit '{}'; BIG=$OUT
+start=$SECONDS
+emit "$BIG"
+if [ $((SECONDS - start)) -le 3 ]; then
+  _pass "a live-sized settings file is processed in seconds by /bin/bash"
+else
+  _fail "a live-sized settings file is processed in seconds by /bin/bash" "$((SECONDS - start))s"
+fi
+
 echo "F. layer 2 — agent-backed credential isolation"
 emit '{}'
 AGENT_SOCKET="$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
@@ -333,8 +368,9 @@ echo "K. git SSH proxying rides CLAUDE_ENV_FILE, not the env block"
 emit '{}'
 jq_is '.env | has("GIT_SSH_COMMAND")' false \
       "GIT_SSH_COMMAND absent from env — the runtime overrides it there"
-jq_is '.hooks.SessionStart[0].hooks[0].command
-       | contains("CLAUDE_ENV_FILE") and contains("GIT_SSH_COMMAND") and contains("ssh-sandbox-proxy")' true \
+jq_is '[.hooks.SessionStart[].hooks[].command
+        | select(contains("CLAUDE_ENV_FILE") and contains("GIT_SSH_COMMAND") and contains("ssh-sandbox-proxy"))]
+       | length' 1 \
       "SessionStart hook exports GIT_SSH_COMMAND to CLAUDE_ENV_FILE via the proxy helper"
 jq_is '.env.SSH_AUTH_SOCK | endswith("/t/agent.sock")' true \
       "SSH_AUTH_SOCK points at the 1Password agent socket"
@@ -382,42 +418,39 @@ emit '{}'
 # `includeCoAuthoredBy: false` is NOT sufficient and was the actual 2026-08-24 bug: it is
 # deprecated, and the claude.ai session link rides a SEPARATE `attribution.sessionUrl` gate,
 # so MRs kept carrying a Claude-Session trailer while co-authorship was already off. Pin all
-# three, and keep the deprecated key as the fallback for builds predating `attribution`.
+# three. The deprecated key itself is retired (spec 2026-09-30 section 4 item 2).
 jq_is '.attribution.sessionUrl' 'false' "session link suppressed (attribution.sessionUrl)"
 jq_is '.attribution.commit'     ''      "commit attribution text empty"
 jq_is '.attribution.pr'         ''      "PR attribution text empty"
-jq_is '.includeCoAuthoredBy'    'false' "deprecated co-authored-by fallback still false"
+jq_is 'has("includeCoAuthoredBy")' 'false' "the deprecated includeCoAuthoredBy key is gone"
 
-echo "N. both Bash guards are wired as PreToolUse hooks"
-# Index-pinned, not just length-checked. These assertions are positional, so a
-# reordering would silently retarget them at the wrong guard rather than fail.
-jq_is '.hooks.PreToolUse | length' 5 "exactly five PreToolUse entries"
-jq_is '.hooks.PreToolUse[0].matcher' 'Bash' "forge guard matches the Bash tool"
-jq_is '.hooks.PreToolUse[0].hooks[0].command' 'bash $HOME/.claude/git-forge-guard.sh' \
-      'entry 0 runs the forge guard, $HOME left for the shell to expand'
-jq_is '.hooks.PreToolUse[1].matcher' 'Bash' "worktree guard matches the Bash tool"
-jq_is '.hooks.PreToolUse[1].hooks[0].command' 'bash $HOME/.claude/worktree-guard.sh' \
-      'entry 1 runs the worktree guard, $HOME left for the shell to expand'
-jq_is '.hooks.PreToolUse[2].matcher' 'Bash' "cross-review guard matches the Bash tool"
-jq_is '.hooks.PreToolUse[2].hooks[0].command' 'bash $HOME/.claude/xreview-guard.sh' \
-      'entry 2 runs the cross-review guard, $HOME left for the shell to expand'
-jq_is '.hooks.PreToolUse[3].matcher' '*' "apply guard matches every tool, not just Bash"
-jq_is '.hooks.PreToolUse[3].hooks[0].command' 'bash $HOME/.claude/xreview-apply-guard.sh' \
-      'entry 3 runs the apply-window guard, $HOME left for the shell to expand'
-jq_is '.hooks.PreToolUse[4].matcher' 'Bash' "path-resolution guard matches the Bash tool"
-jq_is '.hooks.PreToolUse[4].hooks[0].command' 'bash $HOME/.claude/path-resolution-guard.sh' \
-      'entry 4 runs the path-resolution guard, $HOME left for the shell to expand'
+echo "N. every guard is wired exactly once, found by its command"
+# Matched by COMMAND, not by list position: entries are added and removed over time, and
+# a positional assertion silently retargets itself at whatever moved into the slot.
+# hook_matchers <event> <command> -> the matchers of every entry running that command.
+hook_matchers() {
+  printf '%s' "$OUT" | jq -r --arg e "$1" --arg c "$2" \
+    '[.hooks[$e][]? | select(any(.hooks[]?; .command == $c)) | .matcher] | map(tostring) | join(",")'
+}
+emit '{}'
+for g in git-forge-guard worktree-guard xreview-guard path-resolution-guard; do
+  got=$(hook_matchers PreToolUse "bash \$HOME/.claude/$g.sh")
+  if [ "$got" = "Bash" ]; then _pass "$g runs once, on the Bash tool"; else _fail "$g runs once, on the Bash tool" "$got"; fi
+done
+# The apply-window guard inspects Edit/Write, so it must match every tool.
+got=$(hook_matchers PreToolUse 'bash $HOME/.claude/xreview-apply-guard.sh')
+if [ "$got" = "*" ]; then _pass "xreview-apply-guard runs once, on every tool"; else _fail "xreview-apply-guard runs once, on every tool" "$got"; fi
+jq_is '.hooks.PreToolUse | length' 5 "no PreToolUse entry beyond the five guards"
+# The forge guard shells out to glab, git and gitleaks (the push helper alone has a 30 s
+# budget), so its hook limit is explicit rather than left to the runtime default.
+jq_is '[.hooks.PreToolUse[].hooks[] | select(.command == "bash $HOME/.claude/git-forge-guard.sh") | .timeout] | join(",")' 60 \
+      "the forge guard hook carries an explicit 60 s timeout"
 # The SessionStart hooks must survive alongside them — adding PreToolUse replaced the
 # whole hooks object once during development.
 jq_is '.hooks.SessionStart | length' 2 "both SessionStart hooks present"
-# Index 0 is pinned by the GIT_SSH_COMMAND assertion above, so the Herdr entry must
-# APPEND. If a future change prepends instead, that assertion breaks rather than this
-# one, which is why both exist.
-jq_is '.hooks.SessionStart[1].hooks[0].command' \
-      "bash '$HOME/.claude/hooks/herdr-agent-state.sh' session" \
-      'entry 1 is the herdr agent-state hook, with an absolute path and a session arg'
-jq_is '.hooks.SessionStart[1].hooks[0].timeout' 10 'the herdr hook keeps the installer timeout'
-jq_is '.hooks.SessionStart[1].matcher' '*' 'the herdr hook keeps the installer matcher'
+jq_is "[.hooks.SessionStart[] | select(.matcher == \"*\") | .hooks[]
+        | select(.command == \"bash '$HOME/.claude/hooks/herdr-agent-state.sh' session\" and .timeout == 10)] | length" 1 \
+      "the herdr agent-state hook: absolute path, session arg, installer matcher and timeout"
 
 echo "O. basecamp is allowlisted read-only"
 # `basecamp auth token` prints the live OAuth token and `basecamp projects delete` trashes a

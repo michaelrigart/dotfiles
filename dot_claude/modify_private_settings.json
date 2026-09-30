@@ -2,23 +2,25 @@
 # chezmoi modify_ script for the target ~/.claude/settings.json.
 #
 # settings.json mixes Michael's stable config with keys Claude Code writes at runtime
-# (`enabledPlugins` from `claude plugin install`, `extraKnownMarketplaces` from marketplace
-# adds, `autoMode` from auto-mode learning). chezmoi can't own the whole file without the two
-# sides clobbering each other, so
-# this receives the CURRENT file on stdin, enforces the strictly-owned keys, carries the
-# tool-written keys through untouched, and seeds model/effortLevel as defaults only (they
-# are mutable via /model and /effort, so runtime changes persist). The plugin/marketplace
-# *intent* is declared in
-# .scripts/reconcile-agents.sh + dot_config/agents/plugins.conf; this just avoids reverting
-# the tool's writes on `chezmoi apply`.
+# (`enabledPlugins`, `extraKnownMarketplaces`, `autoMode`, `modelSettings`, the /config
+# toggles, and whatever a future release adds). This receives the CURRENT file on stdin,
+# starts from it, and overlays only the keys chezmoi owns; every other key survives an
+# apply untouched. Owned keys are replaced wholesale, so a stale rule or hook never lingers
+# in them. Keys chezmoi no longer wants are deleted by name (the retired list at the end),
+# because starting from the live file would otherwise keep them forever. model,
+# effortLevel, permissions.defaultMode and outputStyle are seeded only when absent. The
+# plugin/marketplace *intent* is declared in .scripts/reconcile-agents.sh +
+# dot_config/agents/plugins.conf.
 #
 # private_ prefix => target is deployed 0600. Bash 3.2 compatible. $HOME (not a hardcoded
 # path) keeps the statusline commands correct on any machine.
 set -euo pipefail
 
 input=$(cat)
-# Fresh machine: no existing file => empty stdin => start from {}.
-[ -z "${input//[[:space:]]/}" ] && input='{}'
+# Fresh machine: no existing file => empty stdin => start from {}. A case pattern, not
+# ${input//[[:space:]]/}: bash 3.2 runs that substitution in quadratic time, 8-40s on a
+# real 13 KB settings.json.
+case "$input" in *[![:space:]]*) ;; *) input='{}' ;; esac
 # Never overwrite a broken file: bail with no stdout if the current content isn't valid JSON.
 if ! printf '%s' "$input" | jq empty >/dev/null 2>&1; then
   echo "modify settings.json: current file is not valid JSON — refusing to overwrite" >&2
@@ -31,23 +33,17 @@ printf '%s' "$input" | jq \
   --arg herdr_hook "bash '$HOME/.claude/hooks/herdr-agent-state.sh' session" \
   --arg agent_socket "$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock" \
   --arg tool_path "$HOME/.local/bin:$HOME/.local/share/mise/shims:$HOME/.cargo/bin:/opt/homebrew/bin:/opt/homebrew/sbin:$HOME/.krew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" '
-  # capture from the current file (null when absent): tool-written keys are carried
-  # through as-is; model/effortLevel/defaultMode/outputStyle are seeded as defaults only
-  # (applied at the end) — all four are mutable at runtime via /model, /effort,
-  # /permissions and /output-style.
-  .agentPushNotifEnabled as $pushnotif
-  | .inputNeededNotifEnabled as $inputnotif
-  | .autoContinueAtUsageLimit as $autocontinue
-  | .enabledPlugins as $plugins
-  | .extraKnownMarketplaces as $mkts
-  | .autoMode as $automode
-  | .model as $curmodel
-  | .effortLevel as $cureffort
-  | .permissions.defaultMode as $curmode
-  | .outputStyle as $curstyle
-  | {
+  # Start from the LIVE file and overlay the owned keys with +, which replaces each named
+  # key wholesale and leaves every other key alone. Until 2026-09-30 this rebuilt the object
+  # and carried a named whitelist, so every runtime key nobody listed (the notification
+  # toggles, autoContinueAtUsageLimit, modelSettings) vanished on the next apply.
+  # NB: no apostrophes anywhere in this program; it is one single-quoted shell string.
+  . as $live
+  | ($live.permissions // {}) as $perm
+  | $live + {
       "theme": "custom:tokyo-night",
-      "cleanupPeriodDays": 14,
+      # 30 days of transcripts: the safe-autonomy evaluation measures over them.
+      "cleanupPeriodDays": 30,
       "env": {
         "EDITOR": "nvim",
         "SSH_AUTH_SOCK": $agent_socket,
@@ -70,10 +66,8 @@ printf '%s' "$input" | jq \
       # supersedes the deprecated `includeCoAuthoredBy` and adds `sessionUrl`, which is
       # a SEPARATE gate: `includeCoAuthoredBy: false` alone still appended the
       # `Claude-Session:` trailer and the claude.ai link in PR bodies. Empty strings hide
-      # the commit/PR attribution text. The deprecated key is kept as a fallback for
-      # builds that predate `attribution`; both settings say the same thing.
+      # the commit/PR attribution text. The deprecated key is retired (deleted below).
       "attribution": { "commit": "", "pr": "", "sessionUrl": false },
-      "includeCoAuthoredBy": false,
       "permissions": {
         "allow": [
           "Bash(glab ci list *)",     "Bash(glab ci get *)",
@@ -168,8 +162,7 @@ printf '%s' "$input" | jq \
           # (a PR title saying soft delete) from matching.
           "Bash(az * delete -*)",       "Bash(az rest * DELETE*)",
           "Bash(terraform destroy*)"
-        ],
-        "defaultMode": "default"
+        ]
       },
       "enableAllProjectMcpServers": false,
       "statusLine": { "type": "command", "command": $sl, "padding": 0 },
@@ -198,9 +191,8 @@ printf '%s' "$input" | jq \
           # what the installer actually writes (observed, not guessed): a matcher,
           # a session argument, timeout 10, and an absolute path.
           #
-          # APPENDED deliberately: the GIT_SSH_COMMAND hook must stay at index 0,
-          # which claude-settings.test.sh pins by position. No apostrophes in these
-          # comments; see the note further down about ending the shell string.
+          # claude-settings.test.sh finds each hook by its command, not its position.
+          # No apostrophes in these comments: the program is one single-quoted string.
           {
             "matcher": "*",
             "hooks": [
@@ -220,7 +212,7 @@ printf '%s' "$input" | jq \
         # tests/git-forge-guard.test.sh. $HOME stays literal, expanded when it runs.
         # Second entry: the worktree guard. Denies raw `git worktree remove` on a wt
         # sibling worktree, which skips Herdr workspace closure and leaves husk directories.
-        # Order is load-bearing — claude-settings.test.sh pins each guard by index.
+        # claude-settings.test.sh finds each guard by its command, so order carries no meaning.
         # Third entry: the cross-review guard. Denies proposing a branch for merge with
         # no Codex review on record; a skipped review looks identical to a clean one.
         # Fourth entry: the apply-window guard. Its matcher is a wildcard because it
@@ -236,7 +228,7 @@ printf '%s' "$input" | jq \
           {
             "matcher": "Bash",
             "hooks": [
-              { "type": "command", "command": "bash $HOME/.claude/git-forge-guard.sh" }
+              { "type": "command", "command": "bash $HOME/.claude/git-forge-guard.sh", "timeout": 60 }
             ]
           },
           {
@@ -370,36 +362,22 @@ printf '%s' "$input" | jq \
       "showTurnDuration": true,
       "showMessageTimestamps": true,
       "terminalProgressBarEnabled": true,
-      "skipAutoPermissionPrompt": true,
-      "voiceEnabled": false
+      "skipAutoPermissionPrompt": true
     }
-  # carry the tool-written keys through if the current file had them
-  | (if $plugins then .enabledPlugins = $plugins else . end)
-  | (if $mkts then .extraKnownMarketplaces = $mkts else . end)
-  # autoMode holds the learned environment profile for auto-mode plus the allow rules it has
-  # earned. Claude Code writes it at runtime, per project, and it records internal detail
-  # (repo and org names, where secrets live) that must never reach this PUBLIC repo — so it
-  # is carried through, never declared here. NB: no apostrophes in this comment; it lives
-  # inside the single-quoted jq program and one would end the shell string.
-  | (if $automode then .autoMode = $automode else . end)
-  # Notification toggles are set from the UI, not declared here. They were dropped on every
-  # apply until 2026-08-24 - the third instance this session of a runtime-set key vanishing
-  # because this script rebuilds the object and carries only a named whitelist through
-  # (see also js_repl in the Codex template, and strictAllowlist). If a setting changed via
-  # /config does not survive an apply, this whitelist is why.
-  | (if $pushnotif != null then .agentPushNotifEnabled = $pushnotif else . end)
-  | (if $inputnotif != null then .inputNeededNotifEnabled = $inputnotif else . end)
-  # Set from /config, and it defaults to TRUE when the key is absent — so a drop here
-  # is invisible: the toggle still READS true while nothing is armed, and the session
-  # silently fails to resume at the usage limit. Same class as the notification
-  # toggles above (b2c04a6); this one cost a real diagnosis before it was spotted.
-  | (if $autocontinue != null then .autoContinueAtUsageLimit = $autocontinue else . end)
+  # permissions is owned only in part: allow, deny and ask above replace the live lists
+  # wholesale; every other permissions key in the live file (additionalDirectories, say)
+  # is carried, and defaultMode is seeded below.
+  | .permissions = ($perm + .permissions)
+  # Retired keys: owned once, owned no more. Starting from the live file keeps a key
+  # forever unless it is deleted here by name. includeCoAuthoredBy is superseded by
+  # attribution, voiceEnabled by the voice object.
+  | del(.includeCoAuthoredBy, .voiceEnabled)
   # default-only: keep the current value if set (runtime /model, /effort, /permissions,
   # /output-style persist), otherwise seed the default; deleting the key and re-applying
   # restores it. outputStyle names a built-in style (Proactive, Concise, Explanatory,
   # Learning) or a file in ~/.claude/output-styles.
-  | .model = ($curmodel // "opus[1m]")
-  | .effortLevel = ($cureffort // "xhigh")
-  | .permissions.defaultMode = ($curmode // "auto")
-  | .outputStyle = ($curstyle // "Concise")
+  | .model = ($live.model // "opus[1m]")
+  | .effortLevel = ($live.effortLevel // "xhigh")
+  | .permissions.defaultMode = ($perm.defaultMode // "auto")
+  | .outputStyle = ($live.outputStyle // "Concise")
 '
