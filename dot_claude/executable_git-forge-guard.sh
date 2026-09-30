@@ -135,11 +135,13 @@ if [ "$push_candidate" = 1 ]; then
     *) printf '%s\n' "$verdict"; exit 0 ;;
   esac
   # The fallback denies on the same evidence the fast path acted on: an alias that pushes,
-  # a repository selector (whose aliases only the helper can see), or a literal git push.
-  # The bare word "push" alone is not enough; it is too common in unrelated commands.
+  # a repository selector (whose aliases only the helper can see), or a literal git push,
+  # send-pack or http-push, as a subcommand (git send-pack) or in the dash form, behind a
+  # path or not (git-push, /usr/libexec/git-core/git-http-push). The bare word "push" alone
+  # is not enough; it is too common in unrelated commands.
   if [ "$rc" -ne 0 ]; then
     if [ "$push_alias" = 1 ] || [ "$push_selector" = 1 ] \
-       || printf '%s' "$cmd" | grep -Eq 'git[^;&|]*[[:space:]]push([[:space:]]|$)'; then
+       || printf '%s' "$cmd" | grep -Eq 'git([^;&|]*[[:space:]]|-)(push|send-pack|http-push)([[:space:]]|$)'; then
       deny "Push guard: the push check could not run ($helper exited $rc), so this command, which may push, is refused. Push by hand, or restore the helper (chezmoi apply)."
     fi
   fi

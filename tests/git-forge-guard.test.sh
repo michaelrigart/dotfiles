@@ -815,6 +815,23 @@ expect deny  "an alias push with no helper is refused" "$R" 'git pom'
 expect deny  "a git -C command with no helper is refused" "$TMP" "git -C $R status"
 # The fallback cannot read quotes, so it cannot tell a comment from code: it fails closed.
 expect deny  "a commented git command with no helper is refused" "$R" 'git status # push later'
+# The fast path sends send-pack, http-push and the git-<sub> dash forms to the helper, so
+# the fallback refuses them too.
+expect deny  "git send-pack with no helper is refused" "$R" "git send-pack $REMOTES/origin.git main"
+expect deny  "git http-push with no helper is refused" "$R" 'git http-push origin main'
+expect deny  "git-push with no helper is refused"      "$R" 'git-push origin main'
+expect deny  "a git-core path to git-send-pack with no helper" "$R" '/usr/libexec/git-core/git-send-pack /r.git main'
+expect allow "git log --grep=push with no helper is untouched" "$R" 'git log --grep=push'
+# A helper that runs but fails is the same: the fallback decides.
+FAILHELPER="$TMP/failhelper"; mkdir -p "$FAILHELPER"
+cp "$SAVED_GUARD" "$FAILHELPER/git-forge-guard.sh"
+printf 'import sys\nsys.exit(3)\n' > "$FAILHELPER/git-push-guard.py"
+GUARD="$FAILHELPER/git-forge-guard.sh"
+for c in "git send-pack $REMOTES/origin.git main" 'git http-push origin main' 'git-push origin main' \
+         'git push origin feat'; do
+  expect deny  "a failing helper: $c is refused"       "$R" "$c"
+done
+expect allow "a failing helper: git status is untouched" "$R" 'git status'
 GUARD=$SAVED_GUARD
 
 echo "== the helper deploys beside the guard =="
