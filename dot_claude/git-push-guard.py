@@ -559,6 +559,28 @@ def parse_push(args):
     return flags, remote, positional[1:]
 
 
+def recursing_submodules(repo):
+    """The key=value that makes git push also push unpublished submodule commits, which the
+    scan never sees (it reads only the gitlink), or None. git reads push.recurseSubmodules
+    and submodule.recurse in config order and the last one decides: submodule.recurse=true
+    means on-demand, whatever an earlier push.recurseSubmodules says. Only a false value, or
+    check for push.recurseSubmodules, is taken as not recursing; an unreadable value is."""
+    out = repo.run("config", "-z", "--get-regexp",
+                   r"^(push\.recursesubmodules|submodule\.recurse)$") or ""
+    decider = None
+    for entry in out.split("\0"):
+        if not entry:
+            continue
+        key, nl, value = entry.partition("\n")
+        shown = value if nl else "true"                # a bare key is true
+        off = nl and value.strip().lower() in ("false", "no", "off", "0", "")
+        if key == "push.recursesubmodules":
+            decider = None if off or value == "check" else "push.recurseSubmodules=" + shown
+        else:
+            decider = None if off else "submodule.recurse=" + shown
+    return decider
+
+
 def default_branch(repo, remote):
     head = repo.run("symbolic-ref", "--quiet", "--short", "refs/remotes/" + remote + "/HEAD")
     if head and head.strip().startswith(remote + "/"):
@@ -805,6 +827,10 @@ def evaluate(cwd, assigns, repo_opts, config_opts, args):
     for value in (repo.run("config", "-z", "--get-all", "push.pushOption") or "").split("\0"):
         if value:
             push_option(value, " (from push.pushOption)")
+    # --recurse-submodules is not a modelled option, so parse_push already refuses it.
+    recursing = recursing_submodules(repo)
+    if recursing:
+        raise Deny(UNSUPPORTED.format(recursing + ", which also pushes submodule commits"))
     branch = repo.run("symbolic-ref", "--quiet", "--short", "HEAD")
     branch = branch.strip() if branch else None
     if branch and repo.config("branch." + branch + ".pushRemote") is not None:

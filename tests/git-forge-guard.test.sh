@@ -568,6 +568,32 @@ unsupported "a pushurl"                 remote.origin.pushurl "$REMOTES/backup.g
 unsupported "pushInsteadOf"             url."$REMOTES/backup.git".pushInsteadOf "$REMOTES/origin.git"
 SECOND=$(clone second-url); git -C "$SECOND" config --add remote.origin.url "$REMOTES/backup.git"
 expect deny  "a second url"                           "$SECOND" 'git push origin feat'
+# A push that recurses into submodules also pushes their unpublished commits, which the
+# scan never sees: it reads only the gitlink. git reads push.recurseSubmodules and
+# submodule.recurse in config order and the last one decides.
+unsupported "push.recurseSubmodules=on-demand" push.recurseSubmodules on-demand
+unsupported "push.recurseSubmodules=only"      push.recurseSubmodules only
+unsupported "submodule.recurse=true"           submodule.recurse true
+RSDEMAND=$(clone recurse-on-demand); git -C "$RSDEMAND" config push.recurseSubmodules on-demand
+has_reason   "the deny names the key and value" \
+             "push.recurseSubmodules=on-demand, which also pushes submodule commits" "$RSDEMAND" 'git push origin feat'
+RSCHECK=$(clone recurse-check); git -C "$RSCHECK" config push.recurseSubmodules check
+expect allow "push.recurseSubmodules=check is evaluated normally" "$RSCHECK" 'git push origin feat'
+expect ask   "and a push to main under it still asks" "$RSCHECK" 'git push origin main'
+RSLATE=$(clone recurse-check-then-true)
+git -C "$RSLATE" config push.recurseSubmodules check; git -C "$RSLATE" config submodule.recurse true
+expect deny  "check, then submodule.recurse=true: git recurses" "$RSLATE" 'git push origin feat'
+has_reason   "and the deny names submodule.recurse" \
+             "submodule.recurse=true, which also pushes submodule commits" "$RSLATE" 'git push origin feat'
+RSEARLY=$(clone recurse-true-then-check)
+git -C "$RSEARLY" config submodule.recurse true; git -C "$RSEARLY" config push.recurseSubmodules check
+expect allow "submodule.recurse=true, then check: evaluated normally" "$RSEARLY" 'git push origin feat'
+RSOFF=$(clone recurse-false); git -C "$RSOFF" config submodule.recurse false
+expect allow "submodule.recurse=false"                "$RSOFF" 'git push origin feat'
+cp "$GIT_CONFIG_GLOBAL" "$TMP/gitconfig-recurse"; printf '[submodule]\n\trecurse = true\n' >> "$TMP/gitconfig-recurse"
+GIT_CONFIG_GLOBAL="$TMP/gitconfig-recurse" expect deny "submodule.recurse=true in the global config" "$R" 'git push origin feat'
+expect deny  "--recurse-submodules=on-demand on the push" "$R" 'git push --recurse-submodules=on-demand origin feat'
+expect deny  "--recurse-submodules=only on the push"  "$R" 'git push --recurse-submodules=only origin feat'
 expect deny  "-c on the push invocation"              "$R" 'git -c push.default=current push origin feat'
 expect deny  "GIT_DIR on the push invocation"         "$R" "GIT_DIR=$R/.git git push origin feat"
 expect deny  "a push to a URL, not a remote"          "$R" "git push $REMOTES/origin.git feat"
