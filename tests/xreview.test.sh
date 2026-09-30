@@ -201,11 +201,11 @@ none_after() { # none_after <marker> <target>: <target> never appears in $CALLS 
 
 echo "A. the round cap binds before a turn is spent"
 fresh
-capped() { bash "$XREVIEW" dispatch b.md 2>&1 | grep -c 'exceeds the cap'; }
+capped() { bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1 | grep -c 'exceeds the cap'; }
 is "round counter starts at zero" "$(bash "$XREVIEW" round)" 0
 for _ in $(seq 9); do capped >/dev/null; done
 is "nine rounds are permitted"        "$(bash "$XREVIEW" round)" 9
-out="$(bash "$XREVIEW" dispatch b.md 2>&1)"
+out="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
 is "the tenth round is still allowed"    "$(printf '%s' "$out" | grep -c 'exceeds the cap')" 0
 is "and the tenth round produces a nonce" "$(printf '%s' "$out" | grep -c '^xr-')" 1
 starts="$(called 'xreview-rpc turn-start')"
@@ -217,9 +217,9 @@ is "reset returns the counter to zero" "$(bash "$XREVIEW" round)" 0
 # round --reset drops the checkpoint thread too, so this dispatch calls thread-start again -
 # give it a fresh id so later assertions in this block are unambiguous.
 export NEW_UUID="$U2"
-out="$(XREVIEW_MAX_ROUNDS=1 bash "$XREVIEW" dispatch b.md 2>&1)"
+out="$(XREVIEW_MAX_ROUNDS=1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
 is "dispatch is permitted again after reset" "$(printf '%s' "$out" | grep -c '^xr-')" 1
-is "XREVIEW_MAX_ROUNDS lowers the cap" "$(XREVIEW_MAX_ROUNDS=1 bash "$XREVIEW" dispatch b.md 2>&1 | grep -c 'exceeds the cap')" 1
+is "XREVIEW_MAX_ROUNDS lowers the cap" "$(XREVIEW_MAX_ROUNDS=1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1 | grep -c 'exceeds the cap')" 1
 export NEW_UUID="$U1"
 
 echo "B. inline diffs"
@@ -227,85 +227,85 @@ echo "B. inline diffs"
 # lets it answer from what it was handed (measured 2026-09-01: ~16 steps per review).
 printf 'change\n' > tracked.txt && git add tracked.txt && git commit -q -m "a change to review"
 fresh
-bash "$XREVIEW" dispatch --diff HEAD~1..HEAD b.md >/dev/null 2>&1
+bash "$XREVIEW" dispatch --checkpoint plan --diff HEAD~1..HEAD b.md >/dev/null 2>&1
 is "the diff travels in the packet"          "$(grep -q 'tracked.txt' "$P/packet" && echo yes || echo no)" yes
 is "with the caller's body"                  "$(grep -c '^body$' "$P/packet")" 1
 is "and the reviewer instructions"           "$(grep -c 'independent reviewer' "$P/packet")" 1
 is "wrapped as an authorized request"        "$(head -1 "$P/packet")" "<cross-review-request>"
 is "with no correlation line any more"       "$(grep -c 'correlation' "$P/packet")" 0
 fresh
-out="$(XREVIEW_MAX_DIFF_BYTES=10 bash "$XREVIEW" dispatch --diff HEAD~1..HEAD b.md 2>&1)"
+out="$(XREVIEW_MAX_DIFF_BYTES=10 bash "$XREVIEW" dispatch --checkpoint plan --diff HEAD~1..HEAD b.md 2>&1)"
 is "an oversized diff is refused, never truncated" "$(printf '%s' "$out" | grep -c 'too large')" 1
 is "before anything is touched" "$(untouched)" yes
 fresh
-out="$(bash "$XREVIEW" dispatch --diff no-such-ref..HEAD b.md 2>&1)"
+out="$(bash "$XREVIEW" dispatch --checkpoint plan --diff no-such-ref..HEAD b.md 2>&1)"
 is "an unresolvable range is refused" "$(printf '%s' "$out" | grep -c 'cannot diff')" 1
 fresh
-out="$(bash "$XREVIEW" dispatch --diff HEAD..HEAD b.md 2>&1)"
+out="$(bash "$XREVIEW" dispatch --checkpoint plan --diff HEAD..HEAD b.md 2>&1)"
 is "an empty range is refused" "$(printf '%s' "$out" | grep -c 'nothing to review')" 1
-out="$(bash "$XREVIEW" dispatch --expect x b.md 2>&1)"; rc=$?
+out="$(bash "$XREVIEW" dispatch --checkpoint plan --expect x b.md 2>&1)"; rc=$?
 is "--expect is rejected, not absorbed" "$rc" 1
 is "and mints no nonce" "$(printf '%s' "$out" | grep -c '^xr-')" 0
 
 echo "C. preconditions refuse before anything is touched"
-fresh; out="$(ENSURE_RC=1 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+fresh; out="$(ENSURE_RC=1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
 is "C1 a daemon that will not start refuses" "$rc" 1
 is "C1 untouched" "$(untouched)" yes
-fresh; out="$(CHECK_RC=1 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+fresh; out="$(CHECK_RC=1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
 is "C2 a contaminated daemon refuses" "$rc" 1
 is "C2 and says why" "$(printf '%s' "$out" | grep -c 'refusing to dispatch while the daemon')" 1
 is "C2 untouched" "$(untouched)" yes
-fresh; out="$(RPC_HEALTH_FAIL=1 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+fresh; out="$(RPC_HEALTH_FAIL=1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
 is "C13 an unreachable daemon via xreview-rpc refuses" "$rc" 1
 is "C13 and says so" "$(printf '%s' "$out" | grep -c 'cannot reach the Codex daemon through xreview-rpc')" 1
 is "C13 untouched" "$(untouched)" yes
 is "C13 no round consumed" "$(bash "$XREVIEW" round)" 0
-fresh; : > "$P/agent"; out="$(bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+fresh; : > "$P/agent"; out="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
 is "C3 no Codex pane refuses" "$(printf '%s' "$out" | grep -c 'no Codex pane')" 1
 is "C3 untouched" "$(untouched)" yes
 fresh
 export EXTRA_PANES=",{\"agent\":\"codex\",\"agent_status\":\"idle\",\"cwd\":\"$CWD\",\"pane_id\":\"w9:p2\",\"terminal_title\":\"x\"}"
-out="$(bash "$XREVIEW" dispatch b.md 2>&1)"
+out="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
 is "C4 several Codex panes refuse" "$(printf '%s' "$out" | grep -c 'several Codex panes')" 1
 is "C4 naming both" "$(printf '%s' "$out" | grep -c 'w1:p2 w9:p2')" 1
 is "C4 untouched" "$(untouched)" yes
-out="$(XREVIEW_PANE=w1:p2 bash "$XREVIEW" dispatch b.md 2>&1)"
+out="$(XREVIEW_PANE=w1:p2 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
 is "C5 XREVIEW_PANE picks one" "$(printf '%s' "$out" | grep -c '^xr-')" 1
 fresh
 export EXTRA_PANES=",{\"agent\":\"claude\",\"agent_status\":\"idle\",\"cwd\":\"$CWD\",\"pane_id\":\"w1:p1\",\"terminal_title\":\"x\"}"
-out="$(XREVIEW_PANE=w1:p1 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+out="$(XREVIEW_PANE=w1:p1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
 is "C9 XREVIEW_PANE naming a non-Codex pane refuses" "$rc" 1
 is "C9 and names the pane" "$(printf '%s' "$out" | grep -c 'XREVIEW_PANE=w1:p1 is not a Codex pane')" 1
 is "C9 untouched" "$(untouched)" yes
-fresh; echo working > "$P/status"; out="$(bash "$XREVIEW" dispatch b.md 2>&1)"
+fresh; echo working > "$P/status"; out="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
 is "C6 a pane mid-turn refuses" "$(printf '%s' "$out" | grep -c 'mid-turn')" 1
 is "C6 untouched" "$(untouched)" yes
-fresh; echo blocked > "$P/status"; out="$(bash "$XREVIEW" dispatch b.md 2>&1)"
+fresh; echo blocked > "$P/status"; out="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
 is "C10 a blocked pane refuses" "$(printf '%s' "$out" | grep -c 'mid-turn')" 1
 is "C10 untouched" "$(untouched)" yes
-fresh; out="$(RPC_THREAD_RUNNING=1 bash "$XREVIEW" dispatch b.md 2>&1)"
+fresh; out="$(RPC_THREAD_RUNNING=1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
 is "C11 a running thread behind an idle pane refuses" "$(printf '%s' "$out" | grep -c 'mid-turn')" 1
 is "C11 untouched" "$(untouched)" yes
 fresh
 U5=55555555-5555-4555-8555-555555555555   # never on the resolver stub's known-id list
 printf '%s | t | d' "$(trunc "$U5")" > "$P/title"
-out="$(bash "$XREVIEW" dispatch b.md 2>&1)"
+out="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
 is "C12 the running-thread gate does not block when the title prefix cannot be resolved" \
    "$(printf '%s' "$out" | grep -c '^xr-')" 1
 fresh
-out="$(XREVIEW_PANE='.*' bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+out="$(XREVIEW_PANE='.*' bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
 is "C14 XREVIEW_PANE='.*' is refused, not matched as a regex" "$rc" 1
 is "C14 and names the pane, not a pattern match" "$(printf '%s' "$out" | grep -c 'is not a Codex pane')" 1
 is "C14 untouched" "$(untouched)" yes
-fresh; mkdir .codex; out="$(bash "$XREVIEW" dispatch b.md 2>&1)"; rmdir .codex
+fresh; mkdir .codex; out="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rmdir .codex
 is "C7 a project .codex refuses" "$(printf '%s' "$out" | grep -c 'refusing to dispatch')" 1
 is "C7 untouched" "$(untouched)" yes
-fresh; out="$(XREVIEW_SCHEMA="$ROOT/none.json" bash "$XREVIEW" dispatch b.md 2>&1)"
+fresh; out="$(XREVIEW_SCHEMA="$ROOT/none.json" bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
 is "C8 a missing schema refuses" "$(printf '%s' "$out" | grep -c 'missing findings schema')" 1
 
 echo "D. the pane is freed before the turn, then best-effort resumed onto it (spec 7.3)"
 fresh
-nonce="$(bash "$XREVIEW" dispatch b.md 2>/dev/null)"
+nonce="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>/dev/null)"
 is "D1 a nonce is printed" "$(printf '%s' "$nonce" | grep -c '^xr-')" 1
 is "D1 the pane's session is ended" "$(called 'herdr pane send-keys w1:p2 ctrl+c')" 2
 is "D1 the pane is resumed onto the new thread" \
@@ -313,13 +313,13 @@ is "D1 the pane is resumed onto the new thread" \
 is "D1 herdr is told the pane's thread" \
    "$(called "herdr pane report-agent-session w1:p2 --source herdr:codex --agent codex --agent-session-id $U1")" 1
 is "D1 the checkpoint thread is recorded" "$(cat "$STATE/review-thread")" "$U1"
-is "D1 the nonce maps to thread and turn" "$(cat "$STATE/turns/$nonce")" "$U1 turn-$U1"
+is "D1 the nonce maps to thread and turn" "$(cat "$STATE/turns/$nonce")" "$U1 turn-$U1 plan"
 # C1: nothing may ever send-keys to the pane once the turn exists.
 is "D1 no send-keys appears after turn-start" "$(none_after 'xreview-rpc turn-start' 'herdr pane send-keys')" 0
 
 echo "D3. a pane that moved off the checkpoint thread is resumed back onto it"
 printf '%s | t | d' "$(trunc "$U0")" > "$P/title"; : > "$CALLS"
-bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1
 is "D3 it is resumed back onto the checkpoint thread" \
    "$(called "herdr pane run w1:p2 .*$PANE_CMD resume $U1")" 1
 
@@ -330,7 +330,7 @@ echo "D3f. a failed .agent read during the exit wait keeps waiting, not skips it
 # that first (failed) read - long before the delay actually elapses.
 fresh
 out="$(AGENT_EXIT_DELAY=3 AGENT_READ_FAIL_ONCE=1 XREVIEW_POLL_SECS=0.05 XREVIEW_PANE_WAIT=5 \
-        bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+        bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
 is "D3f it still succeeds" "$(printf '%s' "$out" | grep -c '^xr-')" 1
 # Between the second ctrl+c and `pane run`, the exit-wait loop makes one ".agent" read per
 # iteration: the first (failed) one, then 3 more covering the delay, then the one that
@@ -346,63 +346,63 @@ echo "D8. a refused turn fails the dispatch - the pane was already freed, then r
 # ctrl+c on the pane - unavoidable, since freeing has to happen before the turn can start at
 # all. Fix round 2/C: since pane_free already quit the TUI, the EXIT guard now relaunches
 # Codex there before dying, so the pane is never left sitting at a bare shell.
-fresh; out="$(RPC_START_FAIL=1 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+fresh; out="$(RPC_START_FAIL=1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
 is "D8 a refused turn fails the dispatch" "$rc" 1
 is "D8 and records no nonce" "$(ls "$STATE/turns" 2>/dev/null | grep -c .)" 0
 is "D8 the pane was freed (two ctrl+c)" "$(called 'herdr pane send-keys')" 2
 is "D8 and relaunched as a fresh session" "$(called "^herdr pane run w1:p2 $PANE_CMD\$")" 1
 
 echo "RC. a refusal after pane_free relaunches Codex in the pane (fix round 2/C)"
-fresh; out="$(RPC_START_FAIL=1 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+fresh; out="$(RPC_START_FAIL=1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
 is "RC1 it still refuses" "$rc" 1
 relaunch="^herdr pane run w1:p2 $PANE_CMD\$"
 is "RC1 the relaunch happens after both ctrl+c" \
    "$([ "$(first 'herdr pane send-keys')" -lt "$(first "$relaunch")" ] && echo yes || echo no)" yes
 is "RC1 and exactly once" "$(called "$relaunch")" 1
 fresh
-bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1
 is "RC2 a successful dispatch never runs the relaunch" "$(called "$relaunch")" 0
 fresh
-out="$(XREVIEW_MAX_ROUNDS=0 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+out="$(XREVIEW_MAX_ROUNDS=0 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
 is "RC3 a refusal before pane_free (the round cap) refuses" "$(printf '%s' "$out" | grep -c 'exceeds the cap')" 1
 is "RC3 and never runs the relaunch" "$(called "$relaunch")" 0
 is "RC3 and never touches the pane at all" "$(untouched)" yes
 # An errexit exit (not die): mktemp fails after pane_free. The guard must still know the pane.
-fresh; out="$(TMPDIR="$ROOT/no-such-dir" bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+fresh; out="$(TMPDIR="$ROOT/no-such-dir" bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
 is "RC4 a failed mktemp after pane_free refuses" "$rc" 1
 is "RC4 and no turn was started" "$(called 'xreview-rpc turn-start')" 0
 is "RC4 and the pane is still relaunched" "$(called "$relaunch")" 1
 
 echo "D10. an unanswered turn-start still hands back a nonce; collect recovers it"
 fresh
-nonce="$(RPC_START_UNCERTAIN=1 bash "$XREVIEW" dispatch b.md 2>"$ROOT/err")"; rc=$?
+nonce="$(RPC_START_UNCERTAIN=1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>"$ROOT/err")"; rc=$?
 is "D10 an unanswered turn/start still hands back a nonce" "$rc/$(printf '%s' "$nonce" | grep -c '^xr-')" "0/1"
 is "D10 with a do-not-re-dispatch warning" "$(grep -c 'do NOT re-dispatch' "$ROOT/err")" 1
-is "D10 the record marks the turn unknown" "$(cat "$STATE/turns/$nonce")" "$U1 ?"
+is "D10 the record marks the turn unknown" "$(cat "$STATE/turns/$nonce")" "$U1 ? plan"
 RPC_WAIT_OUT='{"verdict":"approve","findings":[]}' bash "$XREVIEW" collect "$nonce" >/dev/null 2>&1
 is "D10 collect looks for what is new on the thread" \
    "$(called "turn-wait --thread $U1 --new-since $STATE/turns/$nonce.known --resolved")" 1
-is "D10 the recovered turn replaces the unknown in the record" "$(cat "$STATE/turns/$nonce")" "$U1 turn-recovered"
+is "D10 the recovered turn replaces the unknown in the record" "$(cat "$STATE/turns/$nonce")" "$U1 turn-recovered plan"
 is "D10 and the receipt names it" "$(tail -1 "$STATE/reviews.jsonl" | jq -r .turn)" turn-recovered
 : > "$CALLS"; bash "$XREVIEW" collect "$nonce" >/dev/null 2>&1
 is "D10 a later collect waits on that turn by id" "$(called "turn-wait --thread $U1 --turn turn-recovered")" 1
 
 echo "D11. a daemon restart is detected even though the title and pane record still match"
 fresh
-bash "$XREVIEW" dispatch b.md >/dev/null 2>&1   # establishes the fast-path pane record
+bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1   # establishes the fast-path pane record
 mkdir -p "$CODEX_HOME/app-server-daemon"; printf '{"pid":999}\n' > "$CODEX_HOME/app-server-daemon/daemon.pid"
 : > "$CALLS"
-bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1
 is "D11 the pane is re-pointed despite the title still matching" \
    "$(called "herdr pane run w1:p2 .*$PANE_CMD resume $U1")" 1
 
 echo "D11b. a daemon.pid whose content changes (not just appears) is also a detected restart"
 fresh
 mkdir -p "$CODEX_HOME/app-server-daemon"; printf '{"pid":111}\n' > "$CODEX_HOME/app-server-daemon/daemon.pid"
-bash "$XREVIEW" dispatch b.md >/dev/null 2>&1   # records the generation for pid 111
+bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1   # records the generation for pid 111
 printf '{"pid":222}\n' > "$CODEX_HOME/app-server-daemon/daemon.pid"   # content CHANGES, not just appears
 : > "$CALLS"
-bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1
 is "D11b a changed daemon.pid content is also a detected restart" \
    "$(called "herdr pane run w1:p2 .*$PANE_CMD resume $U1")" 1
 rm -rf "$CODEX_HOME/app-server-daemon"   # restore the "no daemon.pid yet" baseline for later tests
@@ -411,32 +411,32 @@ echo "D12. a pin whose title already matches is still resumed once, then takes t
 fresh
 bash "$XREVIEW" init "$U0" >/dev/null    # the pin the pane's title already shows, nothing recorded
 : > "$CALLS"
-bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1
 is "D12 a pin whose title already matches is still resumed once, with nothing recorded yet" \
    "$(called "herdr pane run w1:p2 .*$PANE_CMD resume $U0")" 1
 : > "$CALLS"
-bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1
 is "D12 the dispatch after that takes the fast path" "$(called 'herdr pane send-keys')" 0
 
 echo "D16. turn-start returning 0 with a malformed id still hands back a nonce"
 fresh
-nonce="$(RPC_START_BAD_ID=1 bash "$XREVIEW" dispatch b.md 2>"$ROOT/err")"; rc=$?
+nonce="$(RPC_START_BAD_ID=1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>"$ROOT/err")"; rc=$?
 is "D16 turn-start returning 0 with a malformed id still hands back a nonce" \
    "$rc/$(printf '%s' "$nonce" | grep -c '^xr-')" "0/1"
 is "D16 with a do-not-re-dispatch warning, exactly like exit 6" \
    "$(grep -c 'do NOT re-dispatch' "$ROOT/err")" 1
-is "D16 the record marks the turn unknown" "$(cat "$STATE/turns/$nonce")" "$U1 ?"
+is "D16 the record marks the turn unknown" "$(cat "$STATE/turns/$nonce")" "$U1 ? plan"
 
 echo "T1. a new checkpoint thread comes from xreview-rpc thread-start"
 fresh
-nonce="$(bash "$XREVIEW" dispatch b.md 2>/dev/null)"
+nonce="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>/dev/null)"
 is "T1 thread-start is called with the repo root" "$(called "xreview-rpc thread-start --cwd $CWD")" 1
 is "T1 the new thread is recorded as the checkpoint thread" "$(cat "$STATE/review-thread")" "$U1"
 is "T1 the turn starts on it" "$(called "xreview-rpc turn-start --thread $U1")" 1
 
 echo "T2. no keystroke ever reaches the pane once the turn exists (C1)"
 fresh
-bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1
 is "T2 the pane is freed (send-keys) before turn-start, not after" \
    "$([ "$(first 'herdr pane send-keys')" -lt "$(first 'xreview-rpc turn-start')" ] && echo yes || echo no)" yes
 is "T2 and no send-keys ever appears after turn-start" \
@@ -447,22 +447,22 @@ is "T2 and no send-keys ever appears after turn-start" \
 
 echo "T3. a pane that never shows the thread still succeeds: the review just is not shown"
 fresh
-out="$(NO_TITLE=1 XREVIEW_PANE_WAIT=0.15 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+out="$(NO_TITLE=1 XREVIEW_PANE_WAIT=0.15 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
 nonce="$(printf '%s' "$out" | grep '^xr-')"
 is "T3 dispatch still exits 0" "$rc" 0
 is "T3 and prints the nonce" "$(printf '%s' "$nonce" | grep -c '^xr-')" 1
-is "T3 the turn is recorded" "$(cat "$STATE/turns/$nonce" 2>/dev/null)" "$U1 turn-$U1"
+is "T3 the turn is recorded" "$(cat "$STATE/turns/$nonce" 2>/dev/null)" "$U1 turn-$U1 plan"
 is "T3 and it warns the review is not shown" \
    "$(printf '%s' "$out" | grep -c 'running but not shown in pane w1:p2')" 1
 is "T3 the round was still consumed" "$(bash "$XREVIEW" round)" 1
 
 echo "D. pane_resume must not type into a live TUI (fix round 2/D)"
 fresh
-out="$(RELIVE_DURING_TURN=1 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+out="$(RELIVE_DURING_TURN=1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
 nonce="$(printf '%s' "$out" | grep '^xr-')"
 is "D dispatch still exits 0" "$rc" 0
 is "D and prints the nonce" "$(printf '%s' "$nonce" | grep -c '^xr-')" 1
-is "D the turn is recorded" "$(cat "$STATE/turns/$nonce" 2>/dev/null)" "$U1 turn-$U1"
+is "D the turn is recorded" "$(cat "$STATE/turns/$nonce" 2>/dev/null)" "$U1 turn-$U1 plan"
 is "D it warns instead of typing into the live TUI" \
    "$(printf '%s' "$out" | grep -c 'running but not shown in pane w1:p2')" 1
 is "D no pane run ever happens - nothing is typed into it" "$(called 'herdr pane run')" 0
@@ -472,7 +472,7 @@ echo "T3b. a session that will not exit now REFUSES, before any turn exists (C1)
 # where freeing the pane happened with no turn yet to protect. Now pane_free runs before
 # turn-start, so it can safely die: nothing has started.
 fresh
-out="$(STUCK_TUI=1 XREVIEW_PANE_WAIT=0.15 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+out="$(STUCK_TUI=1 XREVIEW_PANE_WAIT=0.15 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
 is "T3b it refuses" "$rc" 1
 is "T3b and says the session would not exit" "$(printf '%s' "$out" | grep -c 'did not exit its session')" 1
 is "T3b no turn was ever started" "$(called 'xreview-rpc turn-start')" 0
@@ -480,7 +480,7 @@ is "T3b and no nonce is printed" "$(printf '%s' "$out" | grep -c '^xr-')" 0
 
 echo "T4a. a pane that closes (pane_not_found) WHILE BEING FREED refuses; no turn ever starts"
 fresh
-out="$(PANE_GONE_AT=1 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+out="$(PANE_GONE_AT=1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
 is "T4a it refuses" "$rc" 1
 is "T4a and says the pane closed while being freed" \
    "$(printf '%s' "$out" | grep -c 'closed while being freed')" 1
@@ -492,12 +492,12 @@ echo "T4b. a pane that closes (pane_not_found) AFTER the turn starts still warns
 # exactly the spec's step-5 failure mode, unchanged from before this fix round.
 fresh
 start="$EPOCHREALTIME"
-out="$(PANE_GONE_AT=5 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+out="$(PANE_GONE_AT=5 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
 took="$(awk -v s="$start" -v e="$EPOCHREALTIME" 'BEGIN{printf "%.3f", e-s}')"
 nonce="$(printf '%s' "$out" | grep '^xr-')"
 is "T4b dispatch still exits 0" "$rc" 0
 is "T4b and prints the nonce" "$(printf '%s' "$nonce" | grep -c '^xr-')" 1
-is "T4b the turn is recorded" "$(cat "$STATE/turns/$nonce" 2>/dev/null)" "$U1 turn-$U1"
+is "T4b the turn is recorded" "$(cat "$STATE/turns/$nonce" 2>/dev/null)" "$U1 turn-$U1 plan"
 is "T4b and it warns the review is not shown" \
    "$(printf '%s' "$out" | grep -c 'running but not shown in pane w1:p2')" 1
 is "T4b it returns quickly, not waiting out XREVIEW_PANE_WAIT" \
@@ -505,7 +505,7 @@ is "T4b it returns quickly, not waiting out XREVIEW_PANE_WAIT" \
 
 echo "T5. thread-start failing refuses before any turn or pane keystroke"
 fresh
-out="$(RPC_START_THREAD_FAIL=1 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+out="$(RPC_START_THREAD_FAIL=1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
 is "T5 it refuses" "$rc" 1
 is "T5 and says so" "$(printf '%s' "$out" | grep -c 'could not start a new review thread')" 1
 is "T5 no turn was started" "$(called 'xreview-rpc turn-start')" 0
@@ -514,30 +514,30 @@ is "T5 no checkpoint thread was recorded" "$([ -e "$STATE/review-thread" ] && ec
 
 echo "T6. the superseded thread is archived only once the pane step succeeds"
 fresh
-bash "$XREVIEW" dispatch b.md >/dev/null 2>&1        # establishes checkpoint thread U1
+bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1        # establishes checkpoint thread U1
 bash "$XREVIEW" round --reset >/dev/null 2>&1         # supersedes U1; drops the cached thread
 export NEW_UUID="$U2"
 : > "$CALLS"
-bash "$XREVIEW" dispatch b.md >/dev/null 2>&1         # a normal dispatch: the pane step succeeds
+bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1         # a normal dispatch: the pane step succeeds
 is "T6 the superseded thread is archived once the pane step succeeds" \
    "$(called "xreview-rpc thread-archive --thread $U1")" 1
 export NEW_UUID="$U1"
 
 fresh
-bash "$XREVIEW" dispatch b.md >/dev/null 2>&1        # establishes checkpoint thread U1
+bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1        # establishes checkpoint thread U1
 bash "$XREVIEW" round --reset >/dev/null 2>&1
 export NEW_UUID="$U2"
 : > "$CALLS"
-NO_TITLE=1 XREVIEW_PANE_WAIT=0.15 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1   # the pane step fails
+NO_TITLE=1 XREVIEW_PANE_WAIT=0.15 bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1   # the pane step fails
 is "T6 and NOT archived when the pane step fails" "$(called "xreview-rpc thread-archive --thread $U1")" 0
 export NEW_UUID="$U1"
 
 echo "M3. superseded threads accumulate across resets with a failed pane step in between"
 fresh
-bash "$XREVIEW" dispatch b.md >/dev/null 2>&1          # checkpoint thread U1
+bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1          # checkpoint thread U1
 bash "$XREVIEW" round --reset >/dev/null 2>&1           # superseded: [U1]
 export NEW_UUID="$U2"
-NO_TITLE=1 XREVIEW_PANE_WAIT=0.15 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1   # checkpoint U2; pane step FAILS
+NO_TITLE=1 XREVIEW_PANE_WAIT=0.15 bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1   # checkpoint U2; pane step FAILS
 is "M3 a failed pane step leaves the first superseded thread listed, un-archived" \
    "$(cat "$STATE/superseded" 2>/dev/null)" "$U1"
 bash "$XREVIEW" round --reset >/dev/null 2>&1           # a SECOND reset: superseded: [U1, U2]
@@ -550,7 +550,7 @@ is "M3 a second reset APPENDS to the list, not overwrites it" \
 printf codex > "$P/agent"
 export NEW_UUID="$U0"   # distinct from both U1 and U2; the pane's title still shows U1's form
 : > "$CALLS"
-bash "$XREVIEW" dispatch b.md >/dev/null 2>&1           # a normal dispatch: the pane step succeeds
+bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1           # a normal dispatch: the pane step succeeds
 is "M3 a later successful dispatch archives the first superseded thread" \
    "$(called "xreview-rpc thread-archive --thread $U1")" 1
 is "M3 and the second one too" "$(called "xreview-rpc thread-archive --thread $U2")" 1
@@ -560,7 +560,7 @@ export NEW_UUID="$U1"
 echo "M4. the checkpoint thread itself already running a turn refuses, pane untouched"
 fresh
 bash "$XREVIEW" init "$U2" >/dev/null   # pin a thread distinct from the pane's own title (U0)
-out="$(RPC_THREAD_RUNNING_FOR=$U2 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+out="$(RPC_THREAD_RUNNING_FOR=$U2 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
 is "M4 it refuses" "$rc" 1
 is "M4 and says to collect it first" "$(printf '%s' "$out" | grep -c 'collect it first')" 1
 is "M4 no turn was started" "$(called 'xreview-rpc turn-start')" 0
@@ -569,12 +569,12 @@ is "M4 and the pane was never touched" "$(untouched)" yes
 echo "M6a. a refused turn-start leaves the round unconsumed"
 fresh
 before_round="$(bash "$XREVIEW" round)"
-RPC_START_FAIL=1 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+RPC_START_FAIL=1 bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1
 is "M6a the round counter is unchanged" "$(bash "$XREVIEW" round)" "$before_round"
 
 echo "M6b. a failing 'herdr pane run' after the turn starts warns and exits 0"
 fresh
-out="$(PANE_RUN_FAIL=1 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+out="$(PANE_RUN_FAIL=1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
 nonce="$(printf '%s' "$out" | grep '^xr-')"
 is "M6b dispatch still exits 0" "$rc" 0
 is "M6b and prints the nonce" "$(printf '%s' "$nonce" | grep -c '^xr-')" 1
@@ -585,40 +585,40 @@ echo "M6c. a pin and XREVIEW_THREAD each skip thread-start"
 fresh
 bash "$XREVIEW" init "$U0" >/dev/null
 : > "$CALLS"
-bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1
 is "M6c a pin skips thread-start" "$(called 'xreview-rpc thread-start')" 0
 fresh
 : > "$CALLS"
-XREVIEW_THREAD="$U2" bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+XREVIEW_THREAD="$U2" bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1
 is "M6c XREVIEW_THREAD skips thread-start" "$(called 'xreview-rpc thread-start')" 0
 
 echo "T7. the fast path sends no keys and starts no new pane session"
 fresh
-bash "$XREVIEW" dispatch b.md >/dev/null 2>&1   # establishes the pane record for U1
+bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1   # establishes the pane record for U1
 : > "$CALLS"
-bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1
 is "T7 no keys are sent on the fast path" "$(called 'herdr pane send-keys')" 0
 is "T7 and no new pane session is started" "$(called 'herdr pane run')" 0
 is "T7 the turn still starts on the cached thread" "$(called "xreview-rpc turn-start --thread $U1")" 1
 
 echo "E. checkpoints and pins"
 fresh
-bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1
 bash "$XREVIEW" round --reset >/dev/null 2>&1
 is "E1 reset drops the checkpoint thread" "$([ -e "$STATE/review-thread" ] && echo kept || echo dropped)" dropped
 export NEW_UUID="$U2"; : > "$CALLS"
-bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1
 is "E1 the next checkpoint starts a fresh thread" "$(cat "$STATE/review-thread")" "$U2"
 is "E1 the old thread is archived" "$(called "xreview-rpc thread-archive --thread $U1")" 1
 is "E1 after the new turn started" \
    "$([ "$(first 'xreview-rpc turn-start')" -lt "$(first 'xreview-rpc thread-archive')" ] && echo yes || echo no)" yes
 fresh
 bash "$XREVIEW" init "$U0" >/dev/null
-nonce="$(bash "$XREVIEW" dispatch b.md 2>/dev/null)"
+nonce="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>/dev/null)"
 is "E2 a pin is used as the review thread" "$(called "xreview-rpc turn-start --thread $U0")" 1
 is "E2 and is not recorded as a checkpoint thread" "$([ -e "$STATE/review-thread" ] && echo yes || echo no)" no
 bash "$XREVIEW" round --reset >/dev/null 2>&1; : > "$CALLS"
-bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1
 is "E2 a pinned thread is never archived" "$(called "thread-archive --thread $U0")" 0
 fresh
 is "E3 XREVIEW_THREAD overrides" "$(XREVIEW_THREAD=$U2 bash "$XREVIEW" thread)" "$U2"
@@ -645,7 +645,7 @@ echo "E7. the legacy queue-era 'thread' file is inert"
 # it was never a checkpoint thread.
 fresh
 mkdir -p "$STATE" && printf '%s\n' "$U0" > "$STATE/thread"
-nonce="$(bash "$XREVIEW" dispatch b.md 2>/dev/null)"
+nonce="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>/dev/null)"
 is "E7 dispatch never resumes onto the legacy thread" "$(called "resume $U0")" 0
 is "E7 a fresh checkpoint thread is used instead" \
    "$(called "herdr pane run w1:p2 .*$PANE_CMD resume $U1")" 1
@@ -659,7 +659,7 @@ is "E7 reset never archives the legacy file" "$([ -e "$STATE/superseded" ] && ec
 echo "F. collect"
 ANSWER='{"verdict":"changes","findings":[{"severity":"P1","file":"a","line":1,"summary":"s","failure_scenario":"f"}]}'
 fresh
-nonce="$(bash "$XREVIEW" dispatch b.md 2>/dev/null)"
+nonce="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>/dev/null)"
 ROLL1="$CODEX_HOME/sessions/2026/09/01"; mkdir -p "$ROLL1"
 printf '{"type":"turn_context","payload":{"model":"gpt-5.6-sol","effort":"xhigh"}}\n' \
   > "$ROLL1/rollout-2026-09-01T09-00-00-$U1.jsonl"
@@ -672,6 +672,7 @@ is "F1 the receipt keeps the old fields" "$(printf '%s' "$r" | jq -r '[.thread,.
 is "F1 and adds turn, verdict and finding count" "$(printf '%s' "$r" | jq -r '[.turn,.verdict,.findings] | map(tostring) | join(" ")')" "turn-$U1 changes 1"
 is "F1 the tier is a real value read from the thread's own rollout file" \
    "$(printf '%s' "$r" | jq -r .tier)" "gpt-5.6-sol/xhigh"
+is "F1 the receipt records the checkpoint named at dispatch" "$(printf '%s' "$r" | jq -r .checkpoint)" plan
 out="$(RPC_WAIT_RC=3 bash "$XREVIEW" collect "$nonce" 60 2>&1)"; rc=$?
 is "F2 a running turn exits 3" "$rc" 3
 is "F2 says so and how to keep waiting" "$(printf '%s' "$out" | grep -c "xreview collect $nonce")" 1
@@ -694,6 +695,29 @@ for bad in "3.5" "abc" "-1" "10s"; do
   is "F9 '$bad' is never reported as a failed review" "$(printf '%s' "$out" | grep -c 'reviewer turn failed')" 0
 done
 
+echo "F14. every dispatch names its checkpoint, and the receipt carries it"
+fresh
+out="$(bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+is "F14 a dispatch without --checkpoint is refused" "$rc" 1
+is "F14 and the usage names the flag" "$(printf '%s' "$out" | grep -c -- '--checkpoint spec|plan|pre-merge')" 1
+is "F14 before anything is touched" "$(untouched)" yes
+fresh
+out="$(bash "$XREVIEW" dispatch --checkpoint merge b.md 2>&1)"; rc=$?
+is "F14 an unknown checkpoint is refused" "$rc/$(printf '%s' "$out" | grep -c 'unknown checkpoint: merge')" "1/1"
+is "F14 before anything is touched, too" "$(untouched)" yes
+fresh
+nonce="$(bash "$XREVIEW" dispatch --checkpoint pre-merge --diff HEAD~1..HEAD b.md 2>/dev/null)"
+is "F14 the turn record carries the checkpoint" "$(cat "$STATE/turns/$nonce")" "$U1 turn-$U1 pre-merge"
+RPC_WAIT_OUT='{"verdict":"approve","findings":[]}' bash "$XREVIEW" collect "$nonce" >/dev/null 2>&1
+is "F14 a pre-merge review's receipt says so" \
+   "$(tail -1 "$STATE/reviews.jsonl" | jq -r '"\(.checkpoint)/\(.verdict)"')" "pre-merge/approve"
+# A turn record written before the checkpoint existed has two fields; collect must still
+# work and record an empty checkpoint, which the pre-merge gate never accepts.
+printf '%s %s\n' "$U1" "turn-$U1" > "$STATE/turns/xr-1-legacy"
+RPC_WAIT_OUT='{"verdict":"approve","findings":[]}' bash "$XREVIEW" collect xr-1-legacy >/dev/null 2>&1; rc=$?
+is "F14 a legacy two-field record still collects" "$rc" 0
+is "F14 with an empty checkpoint on its receipt" "$(tail -1 "$STATE/reviews.jsonl" | jq -r .checkpoint)" ""
+
 echo "F10. the packet temp file never lingers, on the paths the explicit rm covers"
 # This proves the explicit `rm -f "$packet"` right after turn-start (success here, a
 # refused turn/start, and an unanswered one, exit 6 - every dispatch above too,
@@ -703,14 +727,14 @@ echo "F10. the packet temp file never lingers, on the paths the explicit rm cove
 # is not evidence the trap itself works. The trap is kept anyway as defence for an
 # earlier death (an unexpected failure before turn-start, a signal) that no fixture
 # here reaches.
-fresh; RPC_START_FAIL=1 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
-fresh; RPC_START_UNCERTAIN=1 bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+fresh; RPC_START_FAIL=1 bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1
+fresh; RPC_START_UNCERTAIN=1 bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1
 is "no xreview-packet temp file is left in \$TMPDIR" \
    "$(find "$TMPDIR" -maxdepth 1 -name 'xreview-packet.*' 2>/dev/null | grep -c .)" 0
 
 echo "F11. record_receipt warns on stderr but still exits 0 when it cannot write"
 fresh
-nonce="$(bash "$XREVIEW" dispatch b.md 2>/dev/null)"
+nonce="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>/dev/null)"
 rm -f "$STATE/reviews.jsonl"; mkdir -p "$STATE/reviews.jsonl"   # the append target cannot be written
 out="$(RPC_WAIT_OUT="$ANSWER" bash "$XREVIEW" collect "$nonce" 2>&1)"; rc=$?
 is "F11 it still exits 0" "$rc" 0
@@ -726,13 +750,13 @@ is "F12 and says so" "$(printf '%s' "$out" | grep -c 'refusing unsafe identifier
 echo "F13. missing reviewer instructions or the pane command refuse, pane untouched"
 fresh
 mv "$XDG_CONFIG_HOME/xreview/reviewer.md" "$ROOT/reviewer.md.bak"
-out="$(bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+out="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
 is "F13 a missing reviewer.md refuses" "$(printf '%s' "$out" | grep -c 'missing reviewer instructions')" 1
 is "F13 untouched" "$(untouched)" yes
 mv "$ROOT/reviewer.md.bak" "$XDG_CONFIG_HOME/xreview/reviewer.md"
 fresh
 mv "$XDG_CONFIG_HOME/herdr/codex-pane-command" "$ROOT/codex-pane-command.bak"
-out="$(bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+out="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
 is "F13 a missing codex-pane-command refuses" "$rc" 1
 is "F13 and names the file" "$(printf '%s' "$out" | grep -c 'codex-pane-command')" 1
 is "F13 untouched" "$(untouched)" yes
@@ -768,7 +792,7 @@ git init -q . && git config user.email t@t && git config user.name t && git conf
 git commit -q --allow-empty -m init; printf 'body\n' > b.md
 SPCWD="$(git rev-parse --show-toplevel)"
 fresh; export PANE_CWD="$SPCWD"
-nonce="$(bash "$XREVIEW" dispatch b.md 2>/dev/null)"
+nonce="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>/dev/null)"
 is "the pane is found and the dispatch succeeds" "$(printf '%s' "$nonce" | grep -c '^xr-')" 1
 SPSTATE="$XDG_STATE_HOME/xreview/$(printf '%s' "$SPCWD" | tr '/' '_' | sed 's/^_//')"
 is "its state lands in its own directory" "$(cat "$SPSTATE/review-thread" 2>/dev/null)" "$U1"
@@ -776,7 +800,7 @@ cd "$ROOT/repo" || exit 1
 
 echo "K. a comma-decimal locale does not break the ctrl+c gap or the poll wait (I-2)"
 fresh
-out="$(LC_ALL=nl_BE.UTF-8 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+out="$(LC_ALL=nl_BE.UTF-8 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
 is "K1 a dispatch under nl_BE.UTF-8 still succeeds" "$(printf '%s' "$out" | grep -c '^xr-')" 1
 is "K1 and exactly two ctrl+c were sent, not aborted after the first" \
    "$(called 'herdr pane send-keys')" 2
@@ -788,7 +812,7 @@ echo "K2. N1: \$EPOCHREALTIME's locale radix never truncates a sub-second wait t
 # The radix is checked on epoch_now() itself: timing a whole dispatch against a sub-second
 # bound goes red on a loaded machine without any regression.
 fresh
-out="$(LC_ALL=nl_BE.UTF-8 NO_TITLE=1 XREVIEW_PANE_WAIT=0.15 XREVIEW_POLL_SECS=0.05 bash "$XREVIEW" dispatch b.md 2>&1)"; rc=$?
+out="$(LC_ALL=nl_BE.UTF-8 NO_TITLE=1 XREVIEW_PANE_WAIT=0.15 XREVIEW_POLL_SECS=0.05 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
 is "K2 it still succeeds (never shows a thread, but only warns)" "$(printf '%s' "$out" | grep -c '^xr-')" 1
 out="$(LC_ALL=nl_BE.UTF-8 bash -c "$(sed -n '/^epoch_now() {/,/^}/p' "$XREVIEW")"$'\nepoch_now')"
 is "K2 epoch_now under nl_BE prints a '.' radix with the fraction intact" \
@@ -818,7 +842,7 @@ fresh; export PANE_CWD="$UBCWD"
 out="$(bash "$XREVIEW" round 2>&1)"; rc=$?
 is "J1 'xreview round' on an unborn HEAD does not crash" "$rc" 0
 is "J1 and prints a real number, not an empty line" "$(printf '%s' "$out" | grep -cE '^[0-9]+$')" 1
-nonce="$(bash "$XREVIEW" dispatch b.md 2>/dev/null)"
+nonce="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>/dev/null)"
 is "J2 a dispatch on an unborn HEAD still succeeds" "$(printf '%s' "$nonce" | grep -c '^xr-')" 1
 cd "$UNBORN" || exit 1
 out="$(GIT_CEILING_DIRECTORIES="$UNBORN" bash "$XREVIEW" round 2>&1)"; rc=$?
@@ -838,25 +862,25 @@ fresh
 ORIG_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 git checkout -q -b feat/x
 is "L1 round counter starts at zero on a slash branch" "$(bash "$XREVIEW" round)" 0
-bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1
 is "L2 a dispatch on a slash branch bumps its own counter" "$(bash "$XREVIEW" round)" 1
 git checkout -q -b feat/xy
 is "L3 a sibling branch whose name extends the first starts at its own zero" "$(bash "$XREVIEW" round)" 0
-bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1
 is "L4 and bumps independently" "$(bash "$XREVIEW" round)" 1
 git checkout -q feat/x
 is "L5 feat/x is unaffected by feat/xy's dispatch" "$(bash "$XREVIEW" round)" 1
 XREVIEW_MAX_ROUNDS=1 bash "$XREVIEW" round --reset >/dev/null
 export NEW_UUID="$U2"   # round --reset drops the cached thread, so this dispatch calls
                          # thread-start again - give it a fresh id
-out="$(XREVIEW_MAX_ROUNDS=1 bash "$XREVIEW" dispatch b.md 2>&1)"
+out="$(XREVIEW_MAX_ROUNDS=1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
 is "L6 XREVIEW_MAX_ROUNDS=1 the first dispatch on a slash branch is allowed" \
    "$(printf '%s' "$out" | grep -c '^xr-')" 1
-out="$(XREVIEW_MAX_ROUNDS=1 bash "$XREVIEW" dispatch b.md 2>&1)"
+out="$(XREVIEW_MAX_ROUNDS=1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
 is "L7 and the second is refused at the cap" "$(printf '%s' "$out" | grep -c 'exceeds the cap')" 1
 git checkout -q -b 'a.b+c'
 is "L8 a branch with regex metacharacters ('.', '+') starts at zero" "$(bash "$XREVIEW" round)" 0
-bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1
 is "L9 and bumps to one without disturbing other branches' rows" "$(bash "$XREVIEW" round)" 1
 git checkout -q feat/x
 is "L10 feat/x's row is untouched by the a.b+c branch's dispatch" "$(bash "$XREVIEW" round)" 2
@@ -864,16 +888,16 @@ is "L10 feat/x's row is untouched by the a.b+c branch's dispatch" "$(bash "$XREV
 echo "M. a branch name containing '=' is split on the LAST '=', not the first (I-1)"
 git checkout -q -b 'x=y'
 is "M1 round counter starts at zero on a branch containing '='" "$(bash "$XREVIEW" round)" 0
-bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1
 is "M2 a dispatch on it bumps to one" "$(bash "$XREVIEW" round)" 1
-bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1
 is "M3 and a second dispatch bumps to two" "$(bash "$XREVIEW" round)" 2
-out="$(XREVIEW_MAX_ROUNDS=2 bash "$XREVIEW" dispatch b.md 2>&1)"
+out="$(XREVIEW_MAX_ROUNDS=2 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
 is "M4 XREVIEW_MAX_ROUNDS=2 refuses the third dispatch at the cap" \
    "$(printf '%s' "$out" | grep -c 'exceeds the cap')" 1
 git checkout -q -b x
 is "M5 a coexisting branch 'x' (a prefix of 'x=y') has its own independent count" "$(bash "$XREVIEW" round)" 0
-bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1
 is "M6 and a dispatch on 'x' bumps only its own row" "$(bash "$XREVIEW" round)" 1
 git checkout -q 'x=y'
 is "M7 'x=y' is unaffected by 'x's dispatch" "$(bash "$XREVIEW" round)" 3
@@ -884,7 +908,7 @@ mkdir -p "$STATE"
 printf 'aXb+c=5\n' > "$STATE/rounds"   # 'aXb+c' is NOT 'a.b+c' - but the old grep -v "^a.b+c="
                                        # treated '.' as a wildcard and '+' as literal, so it
                                        # matched and wrongly dropped this row
-bash "$XREVIEW" dispatch b.md >/dev/null 2>&1
+bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1
 is "N1 an unrelated row survives a dispatch on 'a.b+c'" "$(grep -c '^aXb+c=5$' "$STATE/rounds")" 1
 
 echo "O. current_round's read tolerates awk itself failing (e.g. the file vanishing between the -r check and the read) (M3)"

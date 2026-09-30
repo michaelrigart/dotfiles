@@ -43,9 +43,13 @@ A dispatch carries:
 ## Dispatching
 
 ```
-NONCE=$(xreview dispatch --diff <base>..<head> <body-file>)
+NONCE=$(xreview dispatch --checkpoint <spec|plan|pre-merge> --diff <base>..<head> <body-file>)
 xreview collect "$NONCE" [budget-secs]
 ```
+
+**Name the checkpoint.** `--checkpoint` is required: `spec` at spec sign-off, `plan` at plan
+completion, `pre-merge` before merging. The receipt records it, and the pre-merge gate
+below opens only on a `pre-merge` receipt whose latest verdict is `approve`.
 
 **Never gate a dispatch on which model or effort the pane is running.** Whatever the
 Codex pane is set to is Michael's choice, and it is not yours to verify, question, or
@@ -209,9 +213,11 @@ him in another application. Write the ping to be worth reading late.
 ## What is enforced rather than trusted
 
 `xreview collect` writes a receipt to `$XDG_STATE_HOME/xreview/<repo>/reviews.jsonl`,
-and a `PreToolUse` guard denies `glab mr create` / `gh pr create` on a branch with no
-receipt. That is the one part of this workflow prose cannot guarantee: a skipped review
-is otherwise indistinguishable from one that found nothing.
+naming the checkpoint and the verdict, and a `PreToolUse` guard denies `glab mr create` /
+`gh pr create` on a branch unless its latest `pre-merge` receipt has the verdict
+`approve`. Spec and plan receipts never open it, and neither does a pre-merge round that
+came back `changes`. That is the one part of this workflow prose cannot guarantee: a
+skipped review is otherwise indistinguishable from one that found nothing.
 
 Acting on findings runs inside an apply window:
 

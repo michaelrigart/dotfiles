@@ -189,6 +189,33 @@ else
   _fail "the CLI actually accepts --diff" "no --diff case in the dispatch parser"
 fi
 
+# The checkpoint is what the pre-merge gate reads. A dispatch example without it teaches
+# a call the CLI refuses, and the model follows the skill, not the usage line.
+if grep -E '^\s*(NONCE=)?\$?\(?xreview dispatch' "$SKILL" | grep -q -- '--checkpoint'; then
+  _pass "the skill's dispatch example names the checkpoint"
+else
+  _fail "the skill's dispatch example names the checkpoint" "$(grep -E 'xreview dispatch' "$SKILL" | head -1)"
+fi
+if printf '%s' "$xreview_code" | grep -q -- '--checkpoint)'; then
+  _pass "the CLI actually accepts --checkpoint"
+else
+  _fail "the CLI actually accepts --checkpoint" "no --checkpoint case in the dispatch parser"
+fi
+for cp in spec plan pre-merge; do
+  if grep -q -- "\`$cp\`" "$SKILL" && printf '%s' "$xreview_code" | grep -qE "(^|[|[:space:]])$cp([|)]|$)"; then
+    _pass "the skill and the CLI agree on the '$cp' checkpoint"
+  else
+    _fail "the skill and the CLI agree on the '$cp' checkpoint" "named in one and not the other"
+  fi
+done
+# The gate the skill describes is the gate the guard applies.
+if strip_comments "$GUARD" | grep -q 'pre-merge' && strip_comments "$GUARD" | grep -q 'approve' \
+   && grep -qi 'latest .pre-merge. receipt has the verdict' "$SKILL"; then
+  _pass "the skill and the guard agree: only an approved pre-merge receipt opens the gate"
+else
+  _fail "the skill and the guard agree: only an approved pre-merge receipt opens the gate" "skill/guard mismatch"
+fi
+
 # A schema miss is its own exit code. The skill must say what to do with it, or the model
 # treats raw reviewer prose as findings.
 if grep -q 'Exit 4' "$SKILL" && printf '%s' "$xreview_code" | grep -q 'exit 4'; then
