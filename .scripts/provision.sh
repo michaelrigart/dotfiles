@@ -257,6 +257,7 @@ if [ -f "${XDG_CONFIG_HOME}/homebrew/Brewfile" ]; then
 
   # A licence-gated cask must not end the run — the remaining steps still matter.
   # `brew bundle` fails for the whole file, so ask `check` which items actually missed.
+  # A single retry absorbs transient download failures.
   if ! brew bundle install --file "${HOMEBREW_BUNDLE_FILE}"; then
     log_warn "brew bundle had failures — retrying once"
     brew bundle install --file "${HOMEBREW_BUNDLE_FILE}" || true
