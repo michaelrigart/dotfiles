@@ -1,8 +1,8 @@
-#! /bin/sh
+#!/usr/bin/env bash
 # Source: https://github.com/sunknudsen/privacy-guides/tree/master/how-to-clean-uninstall-macos-apps-using-appcleaner-open-source-alternative
 
 if [ -z "$1" ]; then
-  printf "%s\n" "Usage: app-cleaner.sh /path/to/app.app"
+  printf "%s\n" "Usage: app-cleaner /path/to/app.app"
   exit 1
 fi
 
@@ -28,7 +28,7 @@ sleep 1
 
 app_name=$(basename $1 .app)
 
-processes=($(pgrep -afil "$app_name" | grep -v "app-cleaner.sh"))
+processes=($(pgrep -afil "$app_name" | grep -v "app-cleaner"))
 
 if [ ${#processes[@]} -gt 0 ]; then
   printf "%s\n" "${processes[@]}"
