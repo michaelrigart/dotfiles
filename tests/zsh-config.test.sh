@@ -6,7 +6,7 @@
 # old file across; it must never clobber a history file that already exists at the new
 # place, because two shells can start at once.
 #
-# Sources the SOURCE config in a clean zsh with stub starship/direnv/mise/zoxide on PATH,
+# Sources the SOURCE config in a clean zsh with stub starship/direnv/mise on PATH,
 # and a temp HOME, so nothing real is read or written.
 #
 #   ./tests/zsh-config.test.sh   (sandboxed is fine)
@@ -23,7 +23,7 @@ is() { if [ "$2" = "$3" ]; then _pass "$1"; else _fail "$1" "$2"; fi; }
 T="$(mktemp -d "${TMPDIR:-/tmp}/zshconfig.XXXXXX")"
 trap 'rm -rf "$T"' EXIT
 STUB="$T/stub"; mkdir -p "$STUB"
-for tool in starship direnv mise zoxide; do
+for tool in starship direnv mise; do
   printf '#!/bin/sh\nexit 0\n' > "$STUB/$tool"; chmod 755 "$STUB/$tool"
 done
 
