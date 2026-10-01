@@ -10,34 +10,19 @@ CLAUDE.md
 # `chezmoi apply` would create ~/docs/superpowers/... in $HOME.
 docs/
 
-# Version control
-.git
-.gitignore
-.gitattributes
-
-# Scripts directory (these are helpers, not dotfiles to install)
-.scripts/
+# Not listed, because chezmoi already ignores every dot-prefixed source entry: .git,
+# .gitignore, .gitattributes, .scripts/ (helpers, not dotfiles), .backgrounds/ (copied by
+# configure.sh), .DS_Store, editor swap files like .foo.swp, and the .chezmoi* metadata
+# (.chezmoiignore, .chezmoiremove, .chezmoitemplates, .chezmoiversion,
+# .chezmoi.toml.tmpl, .chezmoiexternal*).
 
 # Test suites for the managed scripts — versioned with them, never deployed.
 tests/
-
-# Backgrounds directory (copied by configure.sh, not managed by chezmoi)
-.backgrounds/
 
 # Editor files
 *.swp
 *.swo
 *~
-.*.sw?
-.DS_Store
-
-# Chezmoi metadata files (already handled by chezmoi)
-.chezmoiignore
-.chezmoiremove
-.chezmoitemplates
-.chezmoiversion
-.chezmoi.toml.tmpl
-.chezmoiexternal*
 
 # Temporary files
 *.bak
