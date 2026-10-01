@@ -485,8 +485,11 @@ drops the arguments of provably inert commands before the match. Rulings:
   options also make a git command non-inert.
 - **Flipped to allow on purpose:** `echo "git push origin main"` and
   `rg "git push origin main" docs/`.
-- **Flipped to deny on purpose:** `git log --grep "git push" … | wc -l` and
-  `git grep -n "push"`.
+- **Still denied, as on main:** chained calls whose `log` or `grep` arguments mention a
+  push, such as `git log --grep "git push" 2>/dev/null | wc -l` and
+  `git status && git grep -n "push" -- README.md`. An earlier round of this branch allowed
+  them; narrowing the git set took that back. A standalone `git grep -n "push"` takes the
+  unchanged plain-grammar path and is allowed, as before.
 - **Review.** Codex's adversarial pre-merge review ran four rounds. It found three bypass
   classes (unknown option shapes, shell grouping, file-writing git options), each closed by
   narrowing rather than patching. Round 4 approved. The guard suite passes 554/554, up from
