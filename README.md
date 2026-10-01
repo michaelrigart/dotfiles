@@ -43,13 +43,16 @@ A modern, security-focused macOS development environment featuring:
 
 This will:
 1. Install Xcode Command Line Tools and Homebrew
-2. Set up chezmoi and authenticate with 1Password
-3. Ask for the machine name (it must be listed in [machines.toml](.chezmoidata/machines.toml)) and set the macOS ComputerName, HostName and LocalHostName to it
-4. Clone and apply dotfiles
-5. Install all packages from [Brewfile](dot_config/homebrew/Brewfile.tmpl)
-6. Configure Zsh with Oh My Zsh
-7. Apply macOS system settings
-8. Install development tools via mise
+2. Install the bootstrap tools (chezmoi, the 1Password CLI and app, git)
+3. Clone the dotfiles source
+4. Authenticate with 1Password, then ask for the machine name (it must be listed in [machines.toml](.chezmoidata/machines.toml)), confirm, and set the macOS ComputerName, HostName and LocalHostName to it
+5. Generate the chezmoi config and apply the dotfiles
+6. Switch the chezmoi remote to SSH
+7. Install all packages from [Brewfile](dot_config/homebrew/Brewfile.tmpl)
+8. Reconcile the AI agent plugins, then set Homebrew zsh as the default shell
+9. Install Oh My Zsh
+10. Install development tools via mise
+11. Apply macOS system settings
 
 ---
 
@@ -150,9 +153,21 @@ chezmoi apply --force
 cd ~/.local/share/chezmoi
 git remote set-url origin git@github.com:michaelrigart/dotfiles.git
 
-# 7. Install packages and configure system
-brew bundle install --file ~/.config/homebrew/Brewfile
+# 7. Install packages. Homebrew refuses third-party taps until they are trusted,
+#    so trust each tap the Brewfile declares first (as provision.sh does).
+export HOMEBREW_BUNDLE_FILE=~/.config/homebrew/Brewfile
+for tap in $(sed -n 's/^tap "\([^"]*\)".*/\1/p' "$HOMEBREW_BUNDLE_FILE"); do
+  brew trust --tap "$tap"
+done
+brew bundle install --file "$HOMEBREW_BUNDLE_FILE"
+
+# 8. Default shell, then Oh My Zsh (~/.zshrc sources it unconditionally).
+#    KEEP_ZSHRC=yes stops the installer replacing the chezmoi-managed ~/.zshrc.
 chsh -s $(brew --prefix)/bin/zsh
+export ZSH="$HOME/.local/share/oh-my-zsh"
+KEEP_ZSHRC=yes sh -c "$(curl -fsSL https://raw.githubusercontent.com/robbyrussell/oh-my-zsh/master/tools/install.sh)" "" --unattended
+
+# 9. Development tools, then macOS settings
 mise install
 ~/.local/share/chezmoi/.scripts/configure.sh
 ```
