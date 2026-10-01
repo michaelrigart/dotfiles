@@ -1,6 +1,6 @@
 # xreview: a reliable Codex pane
 
-**Status:** Approved
+**Status:** In progress - branch xreview-option-b
 **Date:** 2026-10-01
 **Builds on:** [`2026-09-26-xreview-codex-daemon-design.md`](2026-09-26-xreview-codex-daemon-design.md)
 (§7.3 dispatch, §8 failure handling). This design replaces that spec's pane record and its
