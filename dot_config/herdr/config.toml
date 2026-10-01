@@ -161,8 +161,8 @@ description = "scratch shell"
 width = "80%"
 height = "80%"
 
-# lazygit on demand rather than a permanent tab: a popup keeps the one-key reach, and
-# layout.sh cannot re-add a tab that gets closed for being in the way.
+# lazygit on demand rather than a permanent tab: a popup keeps the one-key reach and
+# leaves no tab behind to close for being in the way.
 [[keys.command]]
 key = "alt+g"
 type = "popup"

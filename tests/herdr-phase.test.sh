@@ -41,7 +41,7 @@ fi
 T="$(mktemp -d "${TMPDIR:-/tmp}/herdr-phase-test.XXXXXX")"
 trap 'rm -rf "$T"' EXIT
 
-# The five icons, as bytes. Written as escapes rather than literals because this file travels
+# The four icons, as bytes. Written as escapes rather than literals because this file travels
 # through tools that silently drop private-use characters.
 ICON_BRANCH=$(printf '\xee\xb1\xaf')   # U+EC6F cod-git_branch
 ICON_MR=$(printf '\xee\xa9\xa4')       # U+EA64 cod-git_pull_request
@@ -308,7 +308,7 @@ BADSRC=$(grep -c -E "^herdr workspace report-metadata [^ ]+ --source herdr-phase
 TOTAL=$(grep -c -E "^herdr workspace report-metadata " "$CALLS")
 check "$BADSRC" "$TOTAL" "all $TOTAL reports use --source herdr-phase"
 
-# Herdr keeps a token until told otherwise, so the three unused tokens must be cleared on
+# Herdr keeps a token until told otherwise, so the two unused tokens must be cleared on
 # every report or a space that changes phase renders two icons at once.
 missing=0
 for w in w2 w3 w4 w5 w6 w7 w8 w10 w11 w12 w13 wA wB; do

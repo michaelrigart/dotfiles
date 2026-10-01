@@ -688,8 +688,8 @@ _wt_assert_worktree() {
 _wt_herdr_read() {
   emulate -L zsh
   local session="$2" kind out rc
-  # Always --session, the default included: a bare call follows HERDR_SOCKET_PATH,
-  # which can name another session than the one being read.
+  # Always --session, the default included: a bare call follows HERDR_SOCKET_PATH or
+  # HERDR_SESSION, which can name another session than the one being read.
   local -a hargs=(--session "$session")
   for kind in workspace pane; do
     out="$(command herdr $hargs $kind list 2>&1)"; rc=$?

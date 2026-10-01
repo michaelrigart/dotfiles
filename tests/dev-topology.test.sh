@@ -280,9 +280,9 @@ else
   bad "smart-splits.nvim is not linked in Herdr"
 fi
 
-# 7b. The jump must still land after repair. This is the whole reason tab-goto.sh
-#     resolves by label: repair APPENDS (herdr 0.8.2 has no `tab move`), so the
-#     repaired runtime tab is now last — after the unmanaged `notes` tab added
+# 7b. The jump must still land after the re-add. This is the whole reason tab-goto.sh
+#     resolves by label: the re-add APPENDS (herdr 0.8.2 has no `tab move`), so the
+#     re-added runtime tab is now last — after the unmanaged `notes` tab added
 #     earlier — and a position-based lookup would not land reliably on it at all.
 RTAB=$(h tab list --workspace "$WS" | jq -r '.result.tabs[] | select(.label=="runtime") | .tab_id')
 jump_rc=0

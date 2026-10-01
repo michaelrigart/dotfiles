@@ -18,7 +18,7 @@
 #
 # Run: ./tests/dev.test.sh
 set -u
-# zsh sets BG_NICE by default, so backgrounding K10's lock holder tries to renice it
+# zsh sets BG_NICE by default, so backgrounding the D10 and N13 lock holders tries to renice it
 # and prints "nice(5) failed" wherever setpriority is denied. Same reason layout.sh
 # sets it: environment-dependent noise that obscures real failures.
 setopt no_bg_nice
@@ -216,7 +216,7 @@ mock_tabs() {       # <label>...  — tabs w7:t1.. with the given labels, no pan
 # mock_topology <cwd> <label> <tab:panecount>...
 # Tabs, panes and the workspace label in ONE call. Setting them separately is how the
 # fixtures drifted: a workspace with every managed tab and zero panes is not healthy,
-# it is malformed, and separate helpers made a correct classifier look broken.
+# it is malformed, and separate helpers made correct code look broken.
 # The workspace id is parameterised (MOCK_WS_ID, default w7) so a fixture's
 # pre-existing workspace can be told apart from one the code creates — the stub's
 # `workspace create` also answers w7, which made "the other workspace is not focused"
@@ -519,8 +519,8 @@ hasnt "parse error" "F0a does not leak raw jq noise"
 unlogged "workspace create" "F0a nothing is created"
 unlogged "workspace focus"  "F0a nothing is focused"
 
-# Invalid tab JSON reaches the classifier, which previously returned "provisional"
-# with rc=0 and let repair mutate the workspace.
+# Invalid tab JSON must stop the run before anything is created: an unparsable tab list
+# is not "no tabs".
 run_layout "export HERDR_ENV=1
   mock_topology '$R1' 'Netronix/curato' $FULL
   export MOCK_TAB_LIST='{\"result\":{\"tabs\":[' " "$R1"
@@ -542,7 +542,7 @@ has "empty response" "F1a says what was wrong"
 unlogged "workspace create" "F1a nothing is created"
 unlogged "workspace focus"  "F1a nothing is focused"
 
-# Same for tabs, which previously classified as provisional and let repair mutate.
+# Same for tabs: an empty tab response is not "no tabs", so nothing may be created.
 run_layout "export HERDR_ENV=1
   mock_topology '$R1' 'Netronix/curato' $FULL
   export MOCK_EMPTY_FOR='tab list'" "$R1"
@@ -583,8 +583,8 @@ logged "pane split --pane w7:p4 --direction down" "G4 the runtime split targets 
 unlogged "--label editor" "G4 no editor tab is created at build time"
 unlogged "nvim"           "G4 nvim is never launched at build time"
 
-# The git tab is gone: lazygit is an alt+g popup now, not a managed tab that repair
-# would keep reinstating.
+# The git tab is gone: lazygit is an alt+g popup now, not a managed tab that layout.sh
+# would keep re-adding.
 unlogged "--label git" "G4 no git tab is created"
 unlogged "lazygit"     "G4 lazygit is never launched into a pane"
 
@@ -638,7 +638,7 @@ goto "mock_tabs agents editor runtime" runtime
 rc_is 0 "J1 a known label resolves"
 logged "tab focus w7:t3" "J1 focuses the tab carrying that label"
 
-# Order-independence: repair appends, and herdr 0.8.2 has no `tab move`, so a repaired
+# Order-independence: a re-added tab is appended, and herdr 0.8.2 has no `tab move`, so a
 # workspace can hold its managed tabs in any order. An index would land on the wrong one.
 goto "mock_tabs runtime agents editor" runtime
 rc_is 0 "J2 resolves in a reordered workspace"
@@ -770,8 +770,8 @@ gotoc "mock_tabs agents editor runtime
 rc_is 1 "J16 an ordinary jump whose focus returns an error envelope fails too"
 logged "notification show" "J16 the failure is surfaced as a notification"
 
-# Without the flag the behaviour is unchanged: a missing eager tab is repair's job,
-# and a jump that silently built one would hide the real fault.
+# Without the flag the behaviour is unchanged: re-adding a missing eager tab is dev's job
+# (layout.sh), and a jump that silently built one would hide the real fault.
 gotoc "mock_topology '$R1' 'Netronix/curato' agents:2" runtime
 rc_is 1 "J14 a bare jump still refuses to create the tab it cannot find"
 unlogged "tab create" "J14 nothing is created without --create"
@@ -1140,7 +1140,7 @@ has "not inside a git repository" "N9 the reason is on stderr for the caller to 
 unlogged "notification show" "N9 --make-tab does not raise its own toast"
 
 # N11: `tab create` succeeding and `pane run` failing leaves a tab with the right
-# label and the right pane count — so it classifies complete, repair leaves it alone,
+# label and the right pane count — so the workspace looks complete, dev leaves it alone,
 # and every later alt+e focuses an empty shell labelled "editor" forever. During a build
 # the workspace trap covers this; --make-tab has no trap, so it must clean up itself.
 mk "mock_topology '$R1' 'Netronix/curato' $FULL; export MOCK_PANE_RUN_RC=1" --make-tab editor

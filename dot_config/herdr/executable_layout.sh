@@ -147,7 +147,7 @@ hl_shorten() {
 }
 
 # hl_label — the display label. Deterministic from the path so it is stable, but
-# purely cosmetic: identity is the canonical path, checked via pane cwd.
+# purely cosmetic: identity is Herdr's provenance, with a pane at the repo root as the fallback.
 hl_label() {
   # BOTH sides resolved: on macOS a repo under /tmp arrives as /private/tmp/... while
   # $HOME is still /tmp/..., so the prefix would never match.
