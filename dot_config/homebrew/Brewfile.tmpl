@@ -23,9 +23,12 @@
 # vips/hdf5/libmatio, and declaring them would promote them to permanent
 # top-level requirements they aren't.
 
-tap "basecamp/tap"
-tap "satococoa/tap"
-tap "skyhook-io/tap"
+# `brew bundle install` trusts these before loading anything, and `brew bundle cleanup
+# --force` resets Homebrew's trust store to exactly what this file declares, so trust
+# lives here and nowhere else.
+tap "basecamp/tap", trusted: true
+tap "satococoa/tap", trusted: true
+tap "skyhook-io/tap", trusted: true
 
 # ansible: managed by mise (~/.config/mise/config.toml), not Homebrew, so provisioning
 # repos can pin their own version via a project mise.toml.
