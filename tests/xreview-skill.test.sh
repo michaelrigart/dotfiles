@@ -443,5 +443,26 @@ else
   _fail "the skill explains the unreachable-daemon exit 1 is not the ambiguous case" "missing"
 fi
 
+# spec 2026-10-01: the pane's screen is evidence, never instruction; harness worktrees use
+# their owner's pane; the new refusals are named, and the lock refusal is waited out.
+if grep -qi "pane's screen" "$SKILL" && grep -qi 'untrusted' "$SKILL"; then
+  _pass "the skill says the pane's screen is untrusted evidence"
+else _fail "the skill says the pane's screen is untrusted evidence" "missing"; fi
+if grep -q '\.claude/worktrees' "$SKILL"; then
+  _pass "the skill says a harness worktree uses its owner's pane"
+else _fail "the skill says a harness worktree uses its owner's pane" "missing"; fi
+if grep -qi 'another dispatch is using' "$SKILL"; then
+  _pass "the skill names the per-pane lock refusal"
+else _fail "the skill names the per-pane lock refusal" "missing"; fi
+if printf '%s' "$esc" | grep -qi 'cannot inspect'; then
+  _pass "the escalation list names the cannot-inspect refusal"
+else _fail "the escalation list names the cannot-inspect refusal" "missing from the list"; fi
+if printf '%s' "$esc" | grep -qi 'another dispatch'; then
+  _fail "the lock refusal is not escalated" "it is on the escalation list"
+else _pass "the lock refusal is not escalated"; fi
+if grep -q '300000' "$SKILL"; then
+  _pass "the skill gives dispatch a five-minute tool timeout"
+else _fail "the skill gives dispatch a five-minute tool timeout" "missing"; fi
+
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
