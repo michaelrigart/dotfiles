@@ -43,15 +43,3 @@ command = ["/bin/zsh", "-c", "exec \"$HOME/.config/herdr/phase.sh\" refresh"]
 [[events]]
 on = "worktree.removed"
 command = ["/bin/zsh", "-c", "exec \"$HOME/.config/herdr/phase.sh\" refresh"]
-
-[[actions]]
-id = "pin-parked"
-title = "Phase: pin as parked"
-contexts = ["workspace"]
-command = ["/bin/zsh", "-c", "\"$HOME/.config/herdr/phase.sh\" pin parked && exec \"$HOME/.config/herdr/phase.sh\" refresh"]
-
-[[actions]]
-id = "unpin"
-title = "Phase: drop pin"
-contexts = ["workspace"]
-command = ["/bin/zsh", "-c", "\"$HOME/.config/herdr/phase.sh\" unpin && exec \"$HOME/.config/herdr/phase.sh\" refresh"]

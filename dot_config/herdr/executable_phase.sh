@@ -41,7 +41,6 @@ set -u
 
 SOURCE_ID="herdr-phase"
 CACHE_DIR="${HERDR_PHASE_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/herdr-phase}"
-STATE_DIR="${HERDR_PHASE_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/herdr-phase}"
 
 # herdr 0.9.3 reads HERDR_SESSION, but HERDR_SOCKET_PATH, which herdr exports into every
 # pane, outranks it, and only `--session` outranks the socket. phase.sh runs as a plugin
@@ -61,7 +60,6 @@ ICON_BRANCH=$(printf '\xee\xb1\xaf')   # U+EC6F cod-git_branch
 ICON_MR=$(printf '\xee\xa9\xa4')       # U+EA64 cod-git_pull_request
 ICON_DRAFT=$(printf '\xee\xaf\x9b')    # U+EBDB cod-git_pull_request_draft
 ICON_MERGE=$(printf '\xee\xab\xbe')    # U+EAFE cod-git_merge
-ICON_FLAG=$(printf '\xee\xb0\xbf')     # U+EC3F cod-flag
 
 PY=/usr/bin/python3
 [ -x "$PY" ] || PY="$(command -v python3 2>/dev/null || true)"
@@ -71,21 +69,13 @@ usage() {
 phase.sh — badge Herdr spaces with their merge phase
 
   phase.sh refresh [--force] [--workspace ID]   report phases (all spaces, or one)
-  phase.sh pin [--workspace ID] <phase>         override what git says for a space
-  phase.sh unpin [--workspace ID]               drop the override
   phase.sh --help
 
-Phases: active, review, merged, parked. A pin persists on disk and survives the Herdr
-server restart that wipes reported tokens.
+Phases: active, review, merged.
 U
 }
 
 die() { echo "phase.sh: $*" >&2; exit 2; }
-
-# ------------------------------------------------------------------ pins
-# Keyed by checkout path, not workspace id: ids are assigned by the running server, and a pin
-# is meant to outlive it.
-pin_file() { printf '%s/pins/%s\n' "$STATE_DIR" "$(printf '%s' "$1" | tr '/ ' '__')"; }
 
 # ------------------------------------------------------------------ MR state
 # One lookup per repo, cached as a small table so the per-worktree path stays a grep.
@@ -164,23 +154,10 @@ for b, m in seen.items():
 }
 
 # ------------------------------------------------------------------ derivation
-# Prints "<phase> <value>" for one checkout. Order matters: a pin wins outright, then whether
-# work is still local, then what GitLab says.
+# Prints "<phase> <value>" for one checkout. Order matters: whether work is still local
+# comes first, then what GitLab says.
 derive() { # derive <checkout_path> <repo_root> <mr_table>
-  local path="$1" root="$2" table="$3" pf branch base row state iid draft
-
-  pf="$(pin_file "$path")"
-  if [ -f "$pf" ]; then
-    read -r pinned < "$pf"
-    case "$pinned" in
-      active)  printf 'active %s\n' "$ICON_BRANCH" ;;
-      review)  printf 'review %s\n' "$ICON_MR" ;;
-      merged)  printf 'merged %s\n' "$ICON_MERGE" ;;
-      parked)  printf 'parked %s\n' "$ICON_FLAG" ;;
-      *)       printf 'none\n' ;;
-    esac
-    return 0
-  fi
+  local path="$1" root="$2" table="$3" branch base row state iid draft
 
   branch="$(git -C "$path" rev-parse --abbrev-ref HEAD 2>/dev/null)" || { echo none; return 0; }
 
@@ -252,7 +229,7 @@ report() { # report <workspace_id> <phase> <value>
   local -a args
   args=(workspace report-metadata "$ws" --source "$SOURCE_ID")
   local t
-  for t in active review merged parked; do
+  for t in active review merged; do
     if [ "$t" = "$phase" ]; then args+=(--token "$t=$value")
     else args+=(--clear-token "$t"); fi
   done
@@ -283,9 +260,6 @@ for w in d.get("result", {}).get("workspaces", []):
         print("\t".join([w["workspace_id"], path, root]))
 ' 2>/dev/null | LC_ALL=C sort -t"$(printf '\t')" -k3,3 -s
 }
-
-# resolve a workspace id to its checkout path
-path_of() { spaces | awk -F'\t' -v w="$1" '$1 == w { print $2; exit }'; }
 
 # ------------------------------------------------------------------ commands
 cmd_refresh() {
@@ -320,45 +294,8 @@ $list
 EOF
 }
 
-cmd_pin() {
-  local ws="${HERDR_WORKSPACE_ID:-}" phase=""
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --workspace) ws="${2:-}"; shift 2 ;;
-      -*) die "unknown option for pin: $1" ;;
-      *) phase="$1"; shift ;;
-    esac
-  done
-  [ -n "$ws" ] || die "no workspace — pass --workspace or run inside one"
-  case "$phase" in
-    active|review|merged|parked) ;;
-    "") die "pin needs a phase: active, review, merged or parked" ;;
-    *) die "unknown phase: $phase" ;;
-  esac
-  local path; path="$(path_of "$ws")"
-  [ -n "$path" ] || die "workspace $ws is not a linked worktree"
-  mkdir -p "$STATE_DIR/pins"
-  printf '%s\n' "$phase" > "$(pin_file "$path")"
-}
-
-cmd_unpin() {
-  local ws="${HERDR_WORKSPACE_ID:-}"
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --workspace) ws="${2:-}"; shift 2 ;;
-      *) die "unknown option for unpin: $1" ;;
-    esac
-  done
-  [ -n "$ws" ] || die "no workspace — pass --workspace or run inside one"
-  local path; path="$(path_of "$ws")"
-  [ -n "$path" ] || die "workspace $ws is not a linked worktree"
-  rm -f "$(pin_file "$path")"
-}
-
 case "${1:---help}" in
   refresh) shift; cmd_refresh "$@" ;;
-  pin)     shift; cmd_pin "$@" ;;
-  unpin)   shift; cmd_unpin "$@" ;;
   -h|--help|help) usage ;;
   *) usage >&2; die "unknown subcommand: $1" ;;
 esac
