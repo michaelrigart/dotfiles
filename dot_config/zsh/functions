@@ -838,7 +838,8 @@ _wt_herdr_classify() {
 # remove it. Return 0 match, 1 no match/no state, 2 unreadable or unknown schema.
 _wt_stopped_herdr_has_checkout() {
   emulate -L zsh
-  local session="$1" session_dir="$2" dest="${3:A}" state="$session_dir/session.json" n
+  local session="$1" session_dir="$2" dest="${3:A}" n
+  local state="$session_dir/session.json"
   [[ -e "$state" ]] || return 1
   if [[ ! -r "$state" ]] || ! jq -e \
       'type == "object" and .version == 3 and (.workspaces | type == "array")' \
@@ -870,7 +871,6 @@ _wt_stop_herdr_workspaces() {
     print -ru2 -- "wt-rm: jq is unavailable, so Herdr workspace state cannot be verified — refusing."
     return 1
   }
-  # session_dir keeps its name: _wt_stopped_herdr_has_checkout reads it from this scope.
   local dest="${1:A}" listing rc count i name is_default running session_dir sock caller="" default_name="" state id close_out f
   local -a tname tdefault trunning tdir hargs
   local -A own
@@ -908,8 +908,7 @@ _wt_stop_herdr_workspaces() {
   for (( i = 1; i <= ${#tname}; i++ )); do
     name="${tname[i]}"
     if [[ "${trunning[i]}" != true ]]; then
-      session_dir="${tdir[i]}"
-      _wt_stopped_herdr_has_checkout "$name" "$session_dir" "$dest"; state=$?
+      _wt_stopped_herdr_has_checkout "$name" "${tdir[i]}" "$dest"; state=$?
       case "$state" in
         0)
           print -ru2 -- "wt-rm: stopped Herdr session '$name' still remembers $dest — refusing."

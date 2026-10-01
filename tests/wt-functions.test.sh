@@ -1791,7 +1791,7 @@ export MOCK_H_PANES="{\"result\":{\"panes\":[
 run "$REPO" wt-rm foreign-pane
 rc_is 1 "U2 a pane of another workspace inside the checkout refuses removal"
 has "w1:p2" "U2 the refusal names the pane"
-has "Org/repo" "U2 the refusal names the other workspace"
+has "workspace w1 'Org/repo'" "U2 the refusal names the other workspace"
 hunlogged "workspace close" "U2 nothing is closed, not even the checkout's own workspace"
 [[ -f "$REPO/foreign-teardown-ran" ]] && _fail "U2 teardown is skipped" || _pass "U2 teardown is skipped"
 [[ -d "$HFOREIGN" ]] && _pass "U2 the checkout survives" || _fail "U2 the checkout survives"
@@ -1843,7 +1843,7 @@ export MOCK_H_PANES='{"result":{"panes":[]}}'
 HERDR_SESSION=team run "$REPO" wt-rm targeted
 rc_is 0 "U6 the HERDR_SESSION session is handled, not refused"
 hlogged "--session team workspace close w7" "U6 its own workspace is closed"
-hlogged "workspace close w7" "U6 the default session's own workspace is closed too"
+hlogged "--session default workspace close w7" "U6 the default session's own workspace is closed too"
 
 # U7: running wt-rm from inside the workspace it would close refuses.
 setup
@@ -2013,6 +2013,40 @@ run "$REPO" wt-rm unreachable-herdr
 rc_is 1 "U18 a running-but-unreachable Herdr session fails closed"
 has "reported running but its API is unreachable" "U18 the discrepancy is explicit"
 [[ -d "$UNREACHABLE" ]] && _pass "U18 the checkout survives" || _fail "U18 the checkout survives"
+
+# U20: a refusal found only in the SECOND target session still blocks every close. The
+# default session's own w7 must stay open.
+setup
+run "$REPO" wt second-ses
+HSECOND="$HOME/Code/Org/repo-second-ses"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)" "$(session_json team false true)")"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[{\"workspace_id\":\"w7\",\"worktree\":{\"checkout_path\":\"$HSECOND\"}}]}}"
+export MOCK_H_PANES='{"result":{"panes":[]}}'
+export MOCK_H_TEAM_WORKSPACES='{"result":{"workspaces":[{"workspace_id":"w5","label":"scratch"}]}}'
+export MOCK_H_TEAM_PANES="{\"result\":{\"panes\":[{\"workspace_id\":\"w5\",\"pane_id\":\"w5:p3\",\"cwd\":\"$HSECOND/lib\"}]}}"
+HERDR_SESSION=team run "$REPO" wt-rm second-ses
+rc_is 1 "U20 a foreign pane in the second session refuses removal"
+has "w5:p3" "U20 the refusal names the pane"
+has "session 'team'" "U20 the refusal names the session"
+hunlogged "workspace close" "U20 nothing is closed in either session"
+[[ -d "$HSECOND" ]] && _pass "U20 the checkout survives" || _fail "U20 the checkout survives"
+
+# U21: a stopped second session that remembers the checkout blocks every close too.
+setup
+run "$REPO" wt second-stopped
+HSTOP2="$HOME/Code/Org/repo-second-stopped"
+mkdir -p "$ROOTTMP/team"
+print -r -- "{\"version\":3,\"workspaces\":[{\"id\":\"w3\",\"tabs\":[{\"panes\":{\"1\":{\"cwd\":\"$HSTOP2\"}}}]}]}" \
+  > "$ROOTTMP/team/session.json"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)" "$(session_json team false false)")"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[{\"workspace_id\":\"w7\",\"worktree\":{\"checkout_path\":\"$HSTOP2\"}}]}}"
+export MOCK_H_PANES='{"result":{"panes":[]}}'
+HERDR_SESSION=team run "$REPO" wt-rm second-stopped
+rc_is 1 "U21 a stopped second session remembering the checkout refuses removal"
+has "stopped Herdr session 'team'" "U21 the refusal identifies the session"
+has "Start it with: herdr session attach team" "U21 the refusal gives the attach command"
+hunlogged "workspace close" "U21 nothing is closed in either session"
+[[ -d "$HSTOP2" ]] && _pass "U21 the checkout survives" || _fail "U21 the checkout survives"
 
 # Library functions must use `builtin cd`: they must not depend on whatever an interactive
 # shell binds `cd` to, because the `zsh -ic` shells that Herdr popups run never reach a
