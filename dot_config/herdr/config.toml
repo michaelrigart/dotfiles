@@ -135,6 +135,11 @@ toggle_sidebar = "alt+b"
 close_workspace = "alt+q"
 edit_scrollback = "alt+s"
 
+# Ghostty maps Cmd-k to Alt-k. Herdr 0.9.2's clear_pane clears the focused pane's
+# screen and scrollback but keeps the prompt line, and leaves full-screen apps such
+# as Neovim alone. Passing Alt-k through to zsh's clear-screen stopped working in 0.9.
+clear_pane = "alt+k"
+
 # Herdr's built-in creator cannot run .worktreeinclude/.worktreehook or install the
 # ownership lock that keeps native removal behind wt-rm. Its default shortcut is
 # replaced below by a popup calling the safe wt flow; native open/grouping still
@@ -176,10 +181,6 @@ command = "exec \"${SHELL:-zsh}\" -ic wt-prompt"
 description = "new worktree (safe wt flow)"
 width = "60%"
 height = 7
-
-# Deliberately no alt+k: herdr 0.8.2 has no clear method. The only implementation
-# would inject control sequences into whatever occupies the pane, which corrupts
-# Neovim's state or sends stray input to a live agent.
 
 # The on-demand `bin/rails console` slot. Session-modal, so unlike the floating
 # panes of the previous setup, it stays layered over everything else while

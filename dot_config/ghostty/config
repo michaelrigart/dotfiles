@@ -68,9 +68,9 @@ window-theme = auto
 keybind = shift+enter=text:\x1b\r
 
 # Clear screen — Ghostty's built-in clear_screen is a no-op in the alternate
-# screen (i.e. inside Herdr/TUIs), so send Alt-k instead. Herdr deliberately binds
-# no alt+k (0.8.2's pane API has no clear method), so the chord falls through to
-# zsh's `bindkey '\ek' clear-screen`.
+# screen (i.e. inside Herdr/TUIs), so send Alt-k instead. Inside Herdr, its
+# `clear_pane = "alt+k"` clears the pane; in a bare tab, zsh's
+# `bindkey '\ek' clear-screen` does.
 keybind = cmd+k=text:\x1bk
 
 # Navigate splits with Cmd+Arrow
