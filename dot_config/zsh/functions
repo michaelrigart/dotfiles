@@ -765,71 +765,70 @@ _wt_assert_worktree() {
   fi
 }
 
-# Print workspace ids in one running Herdr session whose native checkout or pane cwd
-# points at <dest>. Return 3 when that server stopped between session discovery and
-# the query; callers then inspect persisted state instead. Every other API/schema
-# failure is unsafe uncertainty and returns 1.
-_wt_herdr_runtime_matches() {
+# _wt_herdr_read <is-default> <session> — load one running session's workspace and pane
+# lists into _WT_HWS and _WT_HPANES. 0 loaded, 3 server not running, 1 unusable answer.
+_wt_herdr_read() {
   emulate -L zsh
-  setopt local_options pipe_fail
-  local is_default="$1" session="$2" dest="${3:A}" workspaces panes rc ids1 ids2
-  local -a hargs ids
-  [[ "$is_default" == true ]] || hargs=(--session "$session")
+  local session="$2" kind out rc
+  # Always --session, the default included: a bare call follows HERDR_SOCKET_PATH or
+  # HERDR_SESSION, which can name another session than the one being read.
+  local -a hargs=(--session "$session")
+  for kind in workspace pane; do
+    out="$(command herdr $hargs $kind list 2>&1)"; rc=$?
+    if (( rc )) || ! print -r -- "$out" | jq -e . >/dev/null 2>&1; then
+      print -ru2 -- "wt-rm: Herdr session '$session' returned an invalid $kind list — refusing."
+      return 1
+    fi
+    print -r -- "$out" | jq -e 'type == "object" and .error.code? == "server_not_running"' \
+      >/dev/null 2>&1 && return 3
+    if ! print -r -- "$out" | jq -e --arg k "${kind}s" \
+        'type == "object" and (.result[$k] | type == "array") and (has("error") | not)' \
+        >/dev/null 2>&1; then
+      print -ru2 -- "wt-rm: Herdr session '$session' returned an unexpected $kind list — refusing."
+      return 1
+    fi
+    if [[ "$kind" == workspace ]]; then typeset -g _WT_HWS="$out"; else typeset -g _WT_HPANES="$out"; fi
+  done
+  return 0
+}
 
-  workspaces="$(command herdr $hargs workspace list 2>&1)"; rc=$?
-  if (( rc )) || ! print -r -- "$workspaces" | jq -e . >/dev/null 2>&1; then
-    print -ru2 -- "wt-rm: Herdr session '$session' returned an invalid workspace list — refusing."
-    return 1
-  fi
-  if print -r -- "$workspaces" | jq -e \
-      'type == "object" and .error.code? == "server_not_running"' >/dev/null 2>&1; then
-    return 3
-  fi
-  if ! print -r -- "$workspaces" | jq -e \
-      'type == "object" and (.result.workspaces | type == "array") and (has("error") | not)' \
-      >/dev/null 2>&1; then
-    print -ru2 -- "wt-rm: Herdr session '$session' returned an unexpected workspace list — refusing."
-    return 1
-  fi
+_wt_herdr_label() {
+  print -r -- "$_WT_HWS" | jq -r --arg w "$1" \
+    '[.result.workspaces[] | select(.workspace_id == $w) | (.label // "")][0] // ""' 2>/dev/null
+}
 
-  panes="$(command herdr $hargs pane list 2>&1)"; rc=$?
-  if (( rc )) || ! print -r -- "$panes" | jq -e . >/dev/null 2>&1; then
-    print -ru2 -- "wt-rm: Herdr session '$session' returned an invalid pane list — refusing."
-    return 1
-  fi
-  if print -r -- "$panes" | jq -e \
-      'type == "object" and .error.code? == "server_not_running"' >/dev/null 2>&1; then
-    return 3
-  fi
-  if ! print -r -- "$panes" | jq -e \
-      'type == "object" and (.result.panes | type == "array") and (has("error") | not)' \
-      >/dev/null 2>&1; then
-    print -ru2 -- "wt-rm: Herdr session '$session' returned an unexpected pane list — refusing."
-    return 1
-  fi
-
-  ids1="$(print -r -- "$workspaces" | jq -r --arg d "$dest" '
+# _wt_herdr_classify <dest> — from the loaded session, _WT_OWN is every workspace whose
+# provenance is exactly <dest>; _WT_FOREIGN describes every other pane or workspace in it.
+# Pane cwd follows `cd`, so it never makes a workspace own.
+_wt_herdr_classify() {
+  emulate -L zsh
+  local dest="$1" i
+  local -a recs
+  typeset -ga _WT_OWN _WT_FOREIGN
+  _WT_OWN=() _WT_FOREIGN=()
+  recs=( ${(0)"$(print -r -- "$_WT_HWS" | jq -j '
     .result.workspaces[]
-    | select((.worktree.checkout_path? | type == "string") and
-             (.worktree.checkout_path == $d or (.worktree.checkout_path | startswith($d + "/"))))
-    | if (.workspace_id | type == "string" and length > 0)
-      then .workspace_id else error("matching workspace has no string id") end
-  ')" || {
-    print -ru2 -- "wt-rm: could not read Herdr workspace provenance in session '$session' — refusing."
-    return 1
-  }
-  ids2="$(print -r -- "$panes" | jq -r --arg d "$dest" '
+    | select((.worktree.checkout_path? | type) == "string" and (.worktree.checkout_path | length) > 0)
+    | (.workspace_id | if type == "string" and length > 0 then . else error("workspace without id") end),
+      "\u0000", .worktree.checkout_path, "\u0000"')"} ) || return 1
+  (( ${#recs} % 2 == 0 )) || return 1
+  for (( i = 1; i <= ${#recs}; i += 2 )); do
+    if [[ "${recs[i+1]:A}" == "$dest" ]]; then
+      _WT_OWN+=( "${recs[i]}" )
+    elif [[ "${recs[i+1]:A}" == "$dest"/* ]]; then
+      _WT_FOREIGN+=( "workspace ${recs[i]} '$(_wt_herdr_label "${recs[i]}")' is for ${recs[i+1]}, inside the checkout" )
+    fi
+  done
+  recs=( ${(0)"$(print -r -- "$_WT_HPANES" | jq -j --arg d "$dest" '
     .result.panes[]
-    | select((.cwd | type == "string") and (.cwd == $d or (.cwd | startswith($d + "/"))))
-    | if (.workspace_id | type == "string" and length > 0)
-      then .workspace_id else error("matching pane has no string workspace id") end
-  ')" || {
-    print -ru2 -- "wt-rm: could not read Herdr pane ownership in session '$session' — refusing."
-    return 1
-  }
-  ids=( ${(f)ids1} ${(f)ids2} )
-  ids=( ${ids:#} )
-  (( ${#ids} )) && print -rl -- ${(u)ids}
+    | select((.cwd | type) == "string" and (.cwd == $d or (.cwd | startswith($d + "/"))))
+    | (.workspace_id | if type == "string" and length > 0 then . else error("pane without workspace id") end),
+      "\u0000", (.pane_id // "?" | tostring), "\u0000", .cwd, "\u0000"')"} ) || return 1
+  (( ${#recs} % 3 == 0 )) || return 1
+  for (( i = 1; i <= ${#recs}; i += 3 )); do
+    (( ${_WT_OWN[(Ie)${recs[i]}]} )) && continue
+    _WT_FOREIGN+=( "pane ${recs[i+1]} of workspace ${recs[i]} '$(_wt_herdr_label "${recs[i]}")' is at ${recs[i+2]}" )
+  done
   return 0
 }
 
@@ -861,10 +860,8 @@ _wt_stopped_herdr_has_checkout() {
   return 1
 }
 
-# Close every matching workspace across every running Herdr session, and refuse if a
-# stopped session still remembers the checkout. Session discovery is global rather
-# than default-only: a named Herdr session can hold the same cwd just as surely as the
-# default server can.
+# Close the checkout's own Herdr workspaces, after refusing if anything else is in it.
+# Spec: docs/superpowers/specs/2026-10-01-herdr-wt-simplification-design.md §1.
 _wt_stop_herdr_workspaces() {
   emulate -L zsh
   setopt local_options pipe_fail
@@ -873,15 +870,18 @@ _wt_stop_herdr_workspaces() {
     print -ru2 -- "wt-rm: jq is unavailable, so Herdr workspace state cannot be verified — refusing."
     return 1
   }
-  local dest="${1:A}" listing rc count i name is_default running session_dir matches state id remaining close_out
-  local -a ids hargs
+  # session_dir keeps its name: _wt_stopped_herdr_has_checkout reads it from this scope.
+  local dest="${1:A}" listing rc count i name is_default running session_dir sock caller="" default_name="" state id close_out f
+  local -a tname tdefault trunning tdir hargs
+  local -A own
   listing="$(command herdr session list --json 2>&1)"; rc=$?
   if (( rc )) || ! print -r -- "$listing" | jq -e \
       'type == "object" and (.sessions | type == "array") and
        all(.sessions[]; (.name | type == "string" and length > 0) and
                         (.default | type == "boolean") and
                         (.running | type == "boolean") and
-                        (.session_dir | type == "string" and length > 0))' \
+                        (.session_dir | type == "string" and length > 0) and
+                        ((.socket_path // "") | type == "string"))' \
       >/dev/null 2>&1; then
     print -ru2 -- "wt-rm: Herdr returned an invalid session list — refusing."
     return 1
@@ -889,21 +889,31 @@ _wt_stop_herdr_workspaces() {
   count="$(print -r -- "$listing" | jq -r '.sessions | length')" || return 1
   for (( i = 0; i < count; i++ )); do
     name="$(print -r -- "$listing" | jq -er --argjson i "$i" '.sessions[$i].name')" || return 1
-    is_default="$(print -r -- "$listing" | jq -er --argjson i "$i" \
-      '.sessions[$i].default | if type == "boolean" then tostring else error("not boolean") end')" \
-      || return 1
-    running="$(print -r -- "$listing" | jq -er --argjson i "$i" \
-      '.sessions[$i].running | if type == "boolean" then tostring else error("not boolean") end')" \
-      || return 1
-    session_dir="$(print -r -- "$listing" | jq -er --argjson i "$i" '.sessions[$i].session_dir')" \
-      || return 1
+    is_default="$(print -r -- "$listing" | jq -r --argjson i "$i" '.sessions[$i].default | tostring')" || return 1
+    running="$(print -r -- "$listing" | jq -r --argjson i "$i" '.sessions[$i].running | tostring')" || return 1
+    session_dir="$(print -r -- "$listing" | jq -er --argjson i "$i" '.sessions[$i].session_dir')" || return 1
+    sock="$(print -r -- "$listing" | jq -r --argjson i "$i" '.sessions[$i].socket_path // ""')" || return 1
+    if [[ "$is_default" != true && "$name" != "${HERDR_SESSION:-}" ]]; then
+      print -ru2 -- "wt-rm: Herdr session '$name' exists, and wt-rm handles only the default session — refusing."
+      print -ru2 -- "    Stop and delete it (herdr session delete ${(q-)name}), then retry command wt-rm."
+      return 1
+    fi
+    [[ "$is_default" == true ]] && default_name="$name"
+    [[ -n "${HERDR_SOCKET_PATH:-}" && "$sock" == "$HERDR_SOCKET_PATH" ]] && caller="$name"
+    tname+=( "$name" ); tdefault+=( "$is_default" ); trunning+=( "$running" ); tdir+=( "$session_dir" )
+  done
+  [[ -n "$caller" ]] || caller="$default_name"
 
-    if [[ "$running" != true ]]; then
+  # Pass 1: every refusal is decided before anything closes.
+  for (( i = 1; i <= ${#tname}; i++ )); do
+    name="${tname[i]}"
+    if [[ "${trunning[i]}" != true ]]; then
+      session_dir="${tdir[i]}"
       _wt_stopped_herdr_has_checkout "$name" "$session_dir" "$dest"; state=$?
       case "$state" in
         0)
           print -ru2 -- "wt-rm: stopped Herdr session '$name' still remembers $dest — refusing."
-          if [[ "$is_default" == true ]]; then
+          if [[ "${tdefault[i]}" == true ]]; then
             print -ru2 -- "    Start it with: herdr    then retry command wt-rm."
           else
             print -ru2 -- "    Start it with: herdr session attach ${(q-)name}    then retry command wt-rm."
@@ -913,21 +923,36 @@ _wt_stop_herdr_workspaces() {
         *) return 1 ;;
       esac
     fi
-
-    matches="$(_wt_herdr_runtime_matches "$is_default" "$name" "$dest")"; state=$?
+    _wt_herdr_read "${tdefault[i]}" "$name"; state=$?
     if (( state == 3 )); then
-      # `session list` just called this server running. An API-level
-      # server_not_running response may instead mean the process cannot reach the
-      # socket (the exact sandbox failure this lifecycle already guards).
-      # Persisted state cannot prove that no live process exists, so fail closed.
       print -ru2 -- "wt-rm: Herdr session '$name' reported running but its API is unreachable — refusing."
       return 1
     fi
     (( state == 0 )) || return 1
-    ids=( ${(f)matches} )
-    ids=( ${ids:#} )
-    [[ "$is_default" == true ]] && hargs=() || hargs=(--session "$name")
-    for id in $ids; do
+    _wt_herdr_classify "$dest" || {
+      print -ru2 -- "wt-rm: could not read Herdr workspace state in session '$name' — refusing."
+      return 1
+    }
+    if (( ${#_WT_FOREIGN} )); then
+      print -ru2 -- "wt-rm: other Herdr workspaces in session '$name' are using $dest — refusing."
+      for f in $_WT_FOREIGN; do print -ru2 -- "    $f"; done
+      print -ru2 -- "    Move them out of the checkout or close them, then retry command wt-rm."
+      return 1
+    fi
+    if [[ "$name" == "$caller" && -n "${HERDR_WORKSPACE_ID:-}" ]] \
+       && (( ${_WT_OWN[(Ie)$HERDR_WORKSPACE_ID]} )); then
+      print -ru2 -- "wt-rm: this shell runs in Herdr workspace $HERDR_WORKSPACE_ID, which belongs to $dest — run wt-rm from another workspace."
+      return 1
+    fi
+    own[$name]="${(j: :)_WT_OWN}"
+  done
+
+  # Pass 2: close the own workspaces, then confirm nothing is left in the checkout.
+  for (( i = 1; i <= ${#tname}; i++ )); do
+    [[ "${trunning[i]}" == true ]] || continue
+    name="${tname[i]}"
+    hargs=(--session "$name")
+    for id in ${(s: :)own[$name]}; do
       close_out="$(command herdr $hargs workspace close "$id" 2>&1)"; rc=$?
       if (( rc )) \
         || { [[ -n "$close_out" ]] && ! print -r -- "$close_out" | jq -e . >/dev/null 2>&1; } \
@@ -937,16 +962,14 @@ _wt_stop_herdr_workspaces() {
         return 1
       fi
     done
-
-    # A zero exit from close is necessary but not sufficient evidence that no pane
-    # still holds the cwd. Re-read the runtime state before allowing teardown.
-    remaining="$(_wt_herdr_runtime_matches "$is_default" "$name" "$dest")"; state=$?
+    _wt_herdr_read "${tdefault[i]}" "$name"; state=$?
     if (( state == 3 )); then
       print -ru2 -- "wt-rm: Herdr session '$name' became unreachable before workspace closure could be verified — refusing."
       return 1
     fi
     (( state == 0 )) || return 1
-    if [[ -n "$remaining" ]]; then
+    _wt_herdr_classify "$dest" || return 1
+    if (( ${#_WT_OWN} || ${#_WT_FOREIGN} )); then
       print -ru2 -- "wt-rm: Herdr session '$name' still has workspace(s) at $dest after close — refusing."
       return 1
     fi
@@ -1108,9 +1131,7 @@ wt-rm() {
       *) return 1 ;;
     esac
 
-    # Stop every Herdr workspace first. This scans named sessions as well as the
-    # default one and refuses stopped persisted state; otherwise a later restore can
-    # restart panes into a checkout that no longer exists.
+    # Close the checkout's own Herdr workspaces; refuse first if anything else is in it (spec §1).
     _wt_stop_herdr_workspaces "$dest" || return 1
 
     # Check 2 — shutdown can flush files; that is how the Bootsnap husks arose.

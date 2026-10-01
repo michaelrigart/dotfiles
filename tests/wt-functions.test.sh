@@ -101,7 +101,7 @@ STUB
 cat > "$STUBS/herdr" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$HLOG"
-session=default
+session="${HERDR_SESSION:-default}"
 [ "${1:-}" = --session ] && session="$2"
 closed=0
 [ -n "${MOCK_H_CLOSED_FILE:-}" ] && grep -Fqx -- "$session" "$MOCK_H_CLOSED_FILE" 2>/dev/null && closed=1
@@ -112,6 +112,8 @@ case "$*" in
   *"workspace list")
     if [ "$closed" -eq 1 ]; then
       printf '%s' '{"result":{"workspaces":[]}}'
+    elif [ "$session" = team ] && [ -n "${MOCK_H_TEAM_WORKSPACES:-}" ]; then
+      printf '%s' "$MOCK_H_TEAM_WORKSPACES"
     else
       printf '%s' "${MOCK_H_WORKSPACES:-}"
     fi
@@ -119,6 +121,8 @@ case "$*" in
   *"pane list")
     if [ "$closed" -eq 1 ]; then
       printf '%s' '{"result":{"panes":[]}}'
+    elif [ "$session" = team ] && [ -n "${MOCK_H_TEAM_PANES:-}" ]; then
+      printf '%s' "$MOCK_H_TEAM_PANES"
     else
       printf '%s' "${MOCK_H_PANES:-}"
     fi
@@ -231,6 +235,7 @@ chmod +x "$FAILSTUBS/git"
 # --- fixture ----------------------------------------------------------------
 ROOTTMP=""
 setup() {   # fresh $HOME with Code/Org/repo, fresh logs, default mock behaviour
+  unset HERDR_WORKSPACE_ID HERDR_SOCKET_PATH HERDR_SESSION HERDR_ENV
   [[ -n "$ROOTTMP" ]] && rm -rf "$ROOTTMP"
   ROOTTMP=$(mkd) || { print -ru2 -- "mktemp failed"; exit 1 }
   ROOTTMP="${ROOTTMP:A}"        # resolve /tmp -> /private/tmp up front, so the paths
@@ -252,7 +257,7 @@ setup() {   # fresh $HOME with Code/Org/repo, fresh logs, default mock behaviour
   # can never return nothing — this shell's own cwd is always in the answer — so
   # "no records at all" is reserved for the failure the caller must fail closed on.
   export MOCK_LSOF_RC=0 MOCK_LSOF_SPEC="$(lsof_spec 1 launchd /)"
-  unset MOCK_LSOF_RAW
+  unset MOCK_LSOF_RAW MOCK_H_TEAM_WORKSPACES MOCK_H_TEAM_PANES
 }
 # run <dir> <command...> — source the functions fresh and run one command in $dir.
 # A subshell per scenario keeps zsh options/state from leaking between tests.
@@ -323,6 +328,11 @@ lsof_spec() {
   while (( $# >= 3 )); do rows+=( "$1"$'\t'"$2"$'\t'"$3" ); shift 3; done
   print -rl -- $rows
 }
+# session_json <name> <default> <running> — one session-list entry with a socket path.
+session_json() {
+  print -r -- "{\"default\":$2,\"name\":\"$1\",\"running\":$3,\"session_dir\":\"$ROOTTMP/$1\",\"socket_path\":\"$ROOTTMP/$1.sock\"}"
+}
+sessions() { local IFS=,; print -r -- "{\"sessions\":[$*]}" }
 mkhook() {   # mkhook <repo> <body>  — tracked, executable, committed
   print -r -- "$2" > "$1/.worktreehook"
   chmod +x "$1/.worktreehook"
@@ -1128,7 +1138,7 @@ run "$REPO" wt n7
 print -r -- "a.env" > "$REPO/.worktreeinclude"; print -r -- "A" > "$REPO/a.env"
 mkhook "$REPO" '#!/bin/sh
 exit 0'
-export MOCK_H_SESSION_LIST="{\"sessions\":[{\"default\":true,\"name\":\"default\",\"running\":true,\"session_dir\":\"$ROOTTMP/default\"}]}"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)")"
 export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[{\"workspace_id\":\"wn7\",\"worktree\":{\"checkout_path\":\"$HOME/Code/Org/repo-n7\"}}]}}"
 export MOCK_H_PANES='{"result":{"panes":[]}}'
 : > "$HLOG"; : > "$DLOG"
@@ -1750,119 +1760,237 @@ hasnt "is not a registered worktree" \
 print -r -- ""
 print -r -- "U. wt-rm — Herdr workspace shutdown and persisted-state safety"
 
-# Every running session is inspected. Native provenance and pane cwd are both valid
-# evidence: the latter catches a plain workspace opened by hand in the checkout.
+# U1: the workspace whose provenance is the checkout is closed, and removal proceeds.
 setup
 run "$REPO" wt herdr-close
 HCLOSE="$HOME/Code/Org/repo-herdr-close"
-export MOCK_H_SESSION_LIST="{\"sessions\":[
-  {\"default\":true,\"name\":\"default\",\"running\":true,\"session_dir\":\"$ROOTTMP/default\"},
-  {\"default\":false,\"name\":\"team\",\"running\":true,\"session_dir\":\"$ROOTTMP/team\"}
-]}"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)")"
 export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[
-  {\"workspace_id\":\"w7\",\"worktree\":{\"checkout_path\":\"$HCLOSE\",\"is_linked_worktree\":true}}
-]}}"
-export MOCK_H_PANES="{\"result\":{\"panes\":[
-  {\"workspace_id\":\"w7\",\"cwd\":\"$HCLOSE/src\"}
-]}}"
+  {\"workspace_id\":\"w7\",\"label\":\"herdr-close\",\"worktree\":{\"checkout_path\":\"$HCLOSE\",\"is_linked_worktree\":true}}]}}"
+export MOCK_H_PANES="{\"result\":{\"panes\":[{\"workspace_id\":\"w7\",\"pane_id\":\"w7:p1\",\"cwd\":\"$HCLOSE/src\"}]}}"
 run "$REPO" wt-rm herdr-close
-rc_is 0 "wt-rm closes matching Herdr workspaces before removing the checkout"
-hlogged "workspace close w7" "the default Herdr workspace is closed"
-hlogged "--session team workspace close w7" "a matching named-session workspace is also closed"
-[[ -d "$HCLOSE" ]] && _fail "the checkout is removed after every Herdr close succeeds" \
-                        || _pass "the checkout is removed after every Herdr close succeeds"
+rc_is 0 "U1 wt-rm closes the checkout's own workspace and removes it"
+hlogged "workspace close w7" "U1 the workspace whose provenance is the checkout is closed"
+[[ -d "$HCLOSE" ]] && _fail "U1 the checkout is removed" || _pass "U1 the checkout is removed"
 
-# A close failure is destructive-boundary failure: keep the checkout and skip teardown
-# and Git removal rather than pretending Herdr was absent.
+# U2 (bug 1): a pane of the PRIMARY's workspace that cd'd into the checkout must not get
+# the primary's workspace closed. Refuse, and close nothing at all.
+setup
+mkhook "$REPO" '#!/bin/sh
+[ "$1" = teardown ] && touch "$WT_MAIN/foreign-teardown-ran"
+exit 0'
+run "$REPO" wt foreign-pane
+HFOREIGN="$HOME/Code/Org/repo-foreign-pane"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)")"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[
+  {\"workspace_id\":\"w1\",\"label\":\"Org/repo\",\"worktree\":{\"checkout_path\":\"$REPO\",\"is_linked_worktree\":false}},
+  {\"workspace_id\":\"w7\",\"label\":\"foreign-pane\",\"worktree\":{\"checkout_path\":\"$HFOREIGN\",\"is_linked_worktree\":true}}]}}"
+export MOCK_H_PANES="{\"result\":{\"panes\":[
+  {\"workspace_id\":\"w1\",\"pane_id\":\"w1:p2\",\"cwd\":\"$HFOREIGN/app\"},
+  {\"workspace_id\":\"w7\",\"pane_id\":\"w7:p1\",\"cwd\":\"$HFOREIGN\"}]}}"
+run "$REPO" wt-rm foreign-pane
+rc_is 1 "U2 a pane of another workspace inside the checkout refuses removal"
+has "w1:p2" "U2 the refusal names the pane"
+has "Org/repo" "U2 the refusal names the other workspace"
+hunlogged "workspace close" "U2 nothing is closed, not even the checkout's own workspace"
+[[ -f "$REPO/foreign-teardown-ran" ]] && _fail "U2 teardown is skipped" || _pass "U2 teardown is skipped"
+[[ -d "$HFOREIGN" ]] && _pass "U2 the checkout survives" || _fail "U2 the checkout survives"
+
+# U3: a workspace with no provenance at all (made by hand) is never closed for a pane cwd.
+setup
+run "$REPO" wt plain-ws
+HPLAIN="$HOME/Code/Org/repo-plain-ws"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)")"
+export MOCK_H_WORKSPACES='{"result":{"workspaces":[{"workspace_id":"w9","label":"scratch"}]}}'
+export MOCK_H_PANES="{\"result\":{\"panes\":[{\"workspace_id\":\"w9\",\"pane_id\":\"w9:p1\",\"cwd\":\"$HPLAIN/deep\"}]}}"
+run "$REPO" wt-rm plain-ws
+rc_is 1 "U3 a pane cwd alone never makes a workspace closable"
+hunlogged "workspace close" "U3 the provenance-less workspace is not closed"
+
+# U4: a workspace whose provenance is a nested repository inside the checkout refuses.
+setup
+run "$REPO" wt nested
+HNEST="$HOME/Code/Org/repo-nested"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)")"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[
+  {\"workspace_id\":\"w4\",\"label\":\"vendored\",\"worktree\":{\"checkout_path\":\"$HNEST/vendor/lib\",\"is_linked_worktree\":false}}]}}"
+export MOCK_H_PANES='{"result":{"panes":[]}}'
+run "$REPO" wt-rm nested
+rc_is 1 "U4 a nested repository's workspace refuses removal"
+has "inside the checkout" "U4 the refusal says why"
+hunlogged "workspace close" "U4 nothing is closed"
+
+# U5: any named session other than $HERDR_SESSION refuses before anything is read or closed.
+setup
+run "$REPO" wt named
+HNAMED="$HOME/Code/Org/repo-named"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)" "$(session_json team false true)")"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[{\"workspace_id\":\"w7\",\"worktree\":{\"checkout_path\":\"$HNAMED\"}}]}}"
+export MOCK_H_PANES='{"result":{"panes":[]}}'
+run "$REPO" wt-rm named
+rc_is 1 "U5 a named Herdr session refuses removal"
+has "session 'team'" "U5 the refusal names the session"
+hunlogged "workspace close" "U5 nothing is closed"
+[[ -d "$HNAMED" ]] && _pass "U5 the checkout survives" || _fail "U5 the checkout survives"
+
+# U6: the session named by $HERDR_SESSION is a target alongside the default.
+setup
+run "$REPO" wt targeted
+HTGT="$HOME/Code/Org/repo-targeted"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)" "$(session_json team false true)")"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[{\"workspace_id\":\"w7\",\"worktree\":{\"checkout_path\":\"$HTGT\"}}]}}"
+export MOCK_H_PANES='{"result":{"panes":[]}}'
+HERDR_SESSION=team run "$REPO" wt-rm targeted
+rc_is 0 "U6 the HERDR_SESSION session is handled, not refused"
+hlogged "--session team workspace close w7" "U6 its own workspace is closed"
+hlogged "workspace close w7" "U6 the default session's own workspace is closed too"
+
+# U7: running wt-rm from inside the workspace it would close refuses.
+setup
+run "$REPO" wt selfclose
+HSELF="$HOME/Code/Org/repo-selfclose"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)")"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[{\"workspace_id\":\"w7\",\"worktree\":{\"checkout_path\":\"$HSELF\"}}]}}"
+export MOCK_H_PANES='{"result":{"panes":[]}}'
+HERDR_WORKSPACE_ID=w7 HERDR_SOCKET_PATH="$ROOTTMP/default.sock" run "$REPO" wt-rm selfclose
+rc_is 1 "U7 wt-rm refuses to close the workspace it runs in"
+has "run wt-rm from another workspace" "U7 the refusal says what to do"
+hunlogged "workspace close" "U7 nothing is closed"
+
+# U8: HERDR_SESSION does not hide the caller's own session from the self-close check.
+setup
+run "$REPO" wt selfclose2
+HSELF2="$HOME/Code/Org/repo-selfclose2"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)" "$(session_json team false true)")"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[{\"workspace_id\":\"w7\",\"worktree\":{\"checkout_path\":\"$HSELF2\"}}]}}"
+export MOCK_H_PANES='{"result":{"panes":[]}}'
+export MOCK_H_TEAM_WORKSPACES='{"result":{"workspaces":[]}}' MOCK_H_TEAM_PANES='{"result":{"panes":[]}}'
+HERDR_SESSION=team HERDR_WORKSPACE_ID=w7 HERDR_SOCKET_PATH="$ROOTTMP/default.sock" \
+  run "$REPO" wt-rm selfclose2
+rc_is 1 "U8 the caller's session is found by socket, not by HERDR_SESSION"
+hunlogged "workspace close" "U8 nothing is closed"
+
+# U9: the converse — a caller in another session may close the default's workspace w7.
+setup
+run "$REPO" wt otherses
+HOTHER="$HOME/Code/Org/repo-otherses"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)" "$(session_json team false true)")"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[{\"workspace_id\":\"w7\",\"worktree\":{\"checkout_path\":\"$HOTHER\"}}]}}"
+export MOCK_H_PANES='{"result":{"panes":[]}}'
+export MOCK_H_TEAM_WORKSPACES='{"result":{"workspaces":[]}}' MOCK_H_TEAM_PANES='{"result":{"panes":[]}}'
+HERDR_SESSION=team HERDR_WORKSPACE_ID=w7 HERDR_SOCKET_PATH="$ROOTTMP/team.sock" \
+  run "$REPO" wt-rm otherses
+rc_is 0 "U9 a same-numbered workspace in another session is not the caller's"
+hlogged "workspace close w7" "U9 the default session's own workspace is closed"
+
+# U10 (review focus 1): provenance reported through a symlinked path is still own.
+setup
+run "$REPO" wt linked-path
+HLINK="$HOME/Code/Org/repo-linked-path"
+ln -s "$HOME/Code" "$ROOTTMP/codelink"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)")"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[{\"workspace_id\":\"w7\",\"worktree\":{\"checkout_path\":\"$ROOTTMP/codelink/Org/repo-linked-path\"}}]}}"
+export MOCK_H_PANES='{"result":{"panes":[]}}'
+run "$REPO" wt-rm linked-path
+rc_is 0 "U10 provenance through a symlink resolves to the checkout"
+hlogged "workspace close w7" "U10 the symlink-reported workspace is closed as own"
+
+# U11 (review focus 5): HERDR_SESSION naming no listed session changes nothing.
+setup
+run "$REPO" wt ghost
+HGHOST="$HOME/Code/Org/repo-ghost"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)")"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[{\"workspace_id\":\"w7\",\"worktree\":{\"checkout_path\":\"$HGHOST\"}}]}}"
+export MOCK_H_PANES='{"result":{"panes":[]}}'
+HERDR_SESSION=ghost run "$REPO" wt-rm ghost
+rc_is 0 "U11 a HERDR_SESSION with no matching session is not a refusal"
+
+# U19: with HERDR_SESSION naming another session, the default session is still the one
+# read for the default's occupancy. A bare call there would read team and miss w1:p2.
+setup
+run "$REPO" wt routed
+HROUTED="$HOME/Code/Org/repo-routed"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)" "$(session_json team false true)")"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[
+  {\"workspace_id\":\"w1\",\"label\":\"Org/repo\",\"worktree\":{\"checkout_path\":\"$REPO\"}}]}}"
+export MOCK_H_PANES="{\"result\":{\"panes\":[{\"workspace_id\":\"w1\",\"pane_id\":\"w1:p2\",\"cwd\":\"$HROUTED\"}]}}"
+export MOCK_H_TEAM_WORKSPACES='{"result":{"workspaces":[]}}' MOCK_H_TEAM_PANES='{"result":{"panes":[]}}'
+HERDR_SESSION=team run "$REPO" wt-rm routed
+rc_is 1 "U19 the default session is read explicitly even when HERDR_SESSION names another"
+has "w1:p2" "U19 the default session's foreign pane is found"
+hlogged "--session default workspace list" "U19 the default session is addressed by name"
+
+# U12: a close failure keeps the checkout and skips teardown.
 setup
 mkhook "$REPO" '#!/bin/sh
 [ "$1" = teardown ] && touch "$WT_MAIN/herdr-close-teardown-ran"
 exit 0'
 run "$REPO" wt herdr-fail
 HFAIL="$HOME/Code/Org/repo-herdr-fail"
-export MOCK_H_SESSION_LIST="{\"sessions\":[{\"default\":true,\"name\":\"default\",\"running\":true,\"session_dir\":\"$ROOTTMP/default\"}]}"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)")"
 export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[{\"workspace_id\":\"w8\",\"worktree\":{\"checkout_path\":\"$HFAIL\"}}]}}"
 export MOCK_H_PANES='{"result":{"panes":[]}}' MOCK_H_CLOSE_RC=1
 run "$REPO" wt-rm herdr-fail
-rc_is 1 "a failed Herdr workspace close aborts removal"
-has "could not close Herdr workspace" "the close failure names the unsafe live workspace"
-# Removal is strictly after teardown in wt-rm's sequence, so "teardown never ran" also
-# proves Git removal was never reached. Registration is the direct observation a bare
-# `-d` check cannot make: a directory can survive a *failed* removal, but a
-# still-registered worktree proves `git worktree remove` did not succeed.
-[[ -f "$REPO/herdr-close-teardown-ran" ]] && _fail "teardown is skipped after a Herdr close failure" \
-                                                  || _pass "teardown is skipped after a Herdr close failure"
-[[ -d "$HFAIL" ]] && _pass "the checkout survives a Herdr close failure" \
-                       || _fail "the checkout survives a Herdr close failure"
+rc_is 1 "U12 a failed Herdr workspace close aborts removal"
+has "could not close Herdr workspace" "U12 the close failure is named"
+[[ -f "$REPO/herdr-close-teardown-ran" ]] && _fail "U12 teardown is skipped" || _pass "U12 teardown is skipped"
 run "$REPO" git worktree list --porcelain
-has "$HFAIL" "the checkout is still a registered worktree after a Herdr close failure"
+has "$HFAIL" "U12 the checkout is still a registered worktree"
 
-# Some Herdr commands historically returned an error envelope with exit 0. Closure
-# must inspect both channels or this looks successful and removal continues.
+# U13: an exit-zero error envelope from close is a close failure.
 setup
 run "$REPO" wt herdr-envelope
 HENVELOPE="$HOME/Code/Org/repo-herdr-envelope"
-export MOCK_H_SESSION_LIST="{\"sessions\":[{\"default\":true,\"name\":\"default\",\"running\":true,\"session_dir\":\"$ROOTTMP/default\"}]}"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)")"
 export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[{\"workspace_id\":\"w8e\",\"worktree\":{\"checkout_path\":\"$HENVELOPE\"}}]}}"
 export MOCK_H_PANES='{"result":{"panes":[]}}' \
        MOCK_H_CLOSE_OUT='{"error":{"code":"busy","message":"not closed"}}'
 run "$REPO" wt-rm herdr-envelope
-rc_is 1 "an exit-zero error envelope from workspace close aborts removal"
-has "could not close Herdr workspace" "the error envelope is reported as a close failure"
-[[ -d "$HENVELOPE" ]] && _pass "the checkout survives a Herdr close error envelope" \
-                           || _fail "the checkout survives a Herdr close error envelope"
+rc_is 1 "U13 an exit-zero error envelope from close aborts removal"
+[[ -d "$HENVELOPE" ]] && _pass "U13 the checkout survives" || _fail "U13 the checkout survives"
 
-# Closing Herdr can flush files, just as the previous multiplexer's teardown could.
-# Check 2 must see that dirt.
+# U14: dirt flushed by closing the own workspace is caught by check 2.
 setup
 mkhook "$REPO" '#!/bin/sh
 [ "$1" = teardown ] && touch "$WT_MAIN/herdr-flush-teardown-ran"
 exit 0'
 run "$REPO" wt herdr-flush
 HFLUSH="$HOME/Code/Org/repo-herdr-flush"
-export MOCK_H_SESSION_LIST="{\"sessions\":[{\"default\":true,\"name\":\"default\",\"running\":true,\"session_dir\":\"$ROOTTMP/default\"}]}"
-export MOCK_H_WORKSPACES='{"result":{"workspaces":[]}}'
-export MOCK_H_PANES="{\"result\":{\"panes\":[{\"workspace_id\":\"w9\",\"cwd\":\"$HFLUSH/deep\"}]}}"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)")"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[{\"workspace_id\":\"w9\",\"worktree\":{\"checkout_path\":\"$HFLUSH\"}}]}}"
+export MOCK_H_PANES="{\"result\":{\"panes\":[{\"workspace_id\":\"w9\",\"pane_id\":\"w9:p1\",\"cwd\":\"$HFLUSH/deep\"}]}}"
 export MOCK_H_CLOSE_TOUCH="$HFLUSH/flushed-by-herdr.txt"
 run "$REPO" wt-rm herdr-flush
-rc_is 1 "dirt flushed by Herdr shutdown is caught and removal is refused"
-has "closing Herdr workspaces left changes" "the existing post-shutdown check reports the flush"
-[[ -f "$REPO/herdr-flush-teardown-ran" ]] && _fail "teardown does not run after a Herdr flush" \
-                                                   || _pass "teardown does not run after a Herdr flush"
+rc_is 1 "U14 dirt flushed by Herdr shutdown is caught"
+has "closing Herdr workspaces left changes" "U14 check 2 reports the flush"
+[[ -f "$REPO/herdr-flush-teardown-ran" ]] && _fail "U14 teardown does not run" || _pass "U14 teardown does not run"
 
-# A stopped session has no processes to close, but its persisted workspace would be
-# restored later into a deleted cwd. Refuse and tell the user to start that session;
-# never edit Herdr's versioned session.json behind its back.
+# U15: a stopped default session that remembers the checkout refuses.
 setup
 run "$REPO" wt herdr-stopped
 HSTOP="$HOME/Code/Org/repo-herdr-stopped"
-mkdir -p "$ROOTTMP/stopped"
+mkdir -p "$ROOTTMP/default"
 print -r -- "{\"version\":3,\"workspaces\":[{\"id\":\"w10\",\"tabs\":[{\"panes\":{\"1\":{\"cwd\":\"$HSTOP\"}}}]}]}" \
-  > "$ROOTTMP/stopped/session.json"
-export MOCK_H_SESSION_LIST="{\"sessions\":[{\"default\":false,\"name\":\"sleeping\",\"running\":false,\"session_dir\":\"$ROOTTMP/stopped\"}]}"
+  > "$ROOTTMP/default/session.json"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true false)")"
 run "$REPO" wt-rm herdr-stopped
-rc_is 1 "persisted state in a stopped Herdr session blocks removal"
-has "stopped Herdr session 'sleeping'" "the refusal identifies the session to start"
-has "herdr session attach sleeping" "the refusal gives the safe recovery command"
-[[ -d "$HSTOP" ]] && _pass "the checkout survives while stopped Herdr state refers to it" \
-                       || _fail "the checkout survives while stopped Herdr state refers to it"
+rc_is 1 "U15 persisted state in the stopped default session blocks removal"
+has "stopped Herdr session 'default'" "U15 the refusal identifies the session"
+has "Start it with: herdr" "U15 the refusal gives the recovery command"
+[[ -d "$HSTOP" ]] && _pass "U15 the checkout survives" || _fail "U15 the checkout survives"
 
-# This guard must be selective: unrelated stopped state is ordinary and should not
-# force Herdr to be running for every removal.
+# U16: unrelated stopped state does not block removal.
 setup
 run "$REPO" wt unrelated-state
 UNRELATED="$HOME/Code/Org/repo-unrelated-state"
-mkdir -p "$ROOTTMP/stopped"
+mkdir -p "$ROOTTMP/default"
 print -r -- '{"version":3,"workspaces":[{"id":"w1","tabs":[{"panes":{"1":{"cwd":"/somewhere/else"}}}]}]}' \
-  > "$ROOTTMP/stopped/session.json"
-export MOCK_H_SESSION_LIST="{\"sessions\":[{\"default\":false,\"name\":\"sleeping\",\"running\":false,\"session_dir\":\"$ROOTTMP/stopped\"}]}"
+  > "$ROOTTMP/default/session.json"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true false)")"
 run "$REPO" wt-rm unrelated-state
-rc_is 0 "unrelated stopped Herdr state does not block removal"
-[[ -d "$UNRELATED" ]] && _fail "a checkout unrelated to that stopped state is removed normally" \
-                           || _pass "a checkout unrelated to that stopped state is removed normally"
+rc_is 0 "U16 unrelated stopped Herdr state does not block removal"
 
-# Session discovery is itself a safety boundary. Invalid JSON or a changed persisted
-# schema must fail closed before anything is disrupted.
+# U17: invalid session discovery fails closed before anything is disrupted.
 setup
 mkhook "$REPO" '#!/bin/sh
 [ "$1" = teardown ] && touch "$WT_MAIN/bad-state-teardown-ran"
@@ -1871,36 +1999,20 @@ run "$REPO" wt bad-herdr-state
 BADSTATE="$HOME/Code/Org/repo-bad-herdr-state"
 export MOCK_H_SESSION_LIST='not-json'
 run "$REPO" wt-rm bad-herdr-state
-rc_is 1 "invalid Herdr session discovery fails closed"
-has "invalid session list" "the malformed Herdr response is diagnosed"
-[[ -f "$REPO/bad-state-teardown-ran" ]] && _fail "teardown is skipped when Herdr discovery is invalid" \
-                                        || _pass "teardown is skipped when Herdr discovery is invalid"
-[[ -d "$BADSTATE" ]] && _pass "the checkout survives invalid Herdr discovery" \
-                          || _fail "the checkout survives invalid Herdr discovery"
-run "$REPO" git worktree list --porcelain
-has "$BADSTATE" "the checkout is still a registered worktree after invalid Herdr discovery"
+rc_is 1 "U17 invalid Herdr session discovery fails closed"
+has "invalid session list" "U17 the malformed response is diagnosed"
+[[ -f "$REPO/bad-state-teardown-ran" ]] && _fail "U17 teardown is skipped" || _pass "U17 teardown is skipped"
 
-# A session advertised as running but unreachable is not equivalent to a stopped
-# session. Treating server_not_running as absence would recreate the sandbox bug this
-# lifecycle already guards: live processes become invisible and the checkout is removed
-# underneath them.
+# U18: running-but-unreachable is not "stopped".
 setup
-mkhook "$REPO" '#!/bin/sh
-[ "$1" = teardown ] && touch "$WT_MAIN/unreachable-teardown-ran"
-exit 0'
 run "$REPO" wt unreachable-herdr
 UNREACHABLE="$HOME/Code/Org/repo-unreachable-herdr"
-export MOCK_H_SESSION_LIST="{\"sessions\":[{\"default\":true,\"name\":\"default\",\"running\":true,\"session_dir\":\"$ROOTTMP/default\"}]}"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)")"
 export MOCK_H_WORKSPACES='{"error":{"code":"server_not_running","message":"not reachable"}}'
 run "$REPO" wt-rm unreachable-herdr
-rc_is 1 "a running-but-unreachable Herdr session fails closed"
-has "reported running but its API is unreachable" "the Herdr reachability discrepancy is explicit"
-[[ -f "$REPO/unreachable-teardown-ran" ]] && _fail "teardown is skipped when Herdr is unreachable" \
-                                          || _pass "teardown is skipped when Herdr is unreachable"
-[[ -d "$UNREACHABLE" ]] && _pass "the checkout survives an unreachable Herdr server" \
-                             || _fail "the checkout survives an unreachable Herdr server"
-run "$REPO" git worktree list --porcelain
-has "$UNREACHABLE" "the checkout is still a registered worktree after an unreachable Herdr server"
+rc_is 1 "U18 a running-but-unreachable Herdr session fails closed"
+has "reported running but its API is unreachable" "U18 the discrepancy is explicit"
+[[ -d "$UNREACHABLE" ]] && _pass "U18 the checkout survives" || _fail "U18 the checkout survives"
 
 # Library functions must use `builtin cd`: they must not depend on whatever an interactive
 # shell binds `cd` to, because the `zsh -ic` shells that Herdr popups run never reach a
