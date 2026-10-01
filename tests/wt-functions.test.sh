@@ -1042,6 +1042,18 @@ eq "$(stat -f %Lp "$HOME/Code/Org/repo-cp3/config/master.key")" "600" "CP3 maste
 eq "$(<"$HOME/Code/Org/repo-cp3/secrets.d/inner/x.env")" "IN" "CP3 the directory's nested file arrived"
 eq "$(stat -f %Lp "$HOME/Code/Org/repo-cp3/secrets.d/inner/x.env")" "640" "CP3 nested modes survive"
 
+# CP5: overlapping entries carry once; the second never nests a duplicate inside the first.
+setup
+printf 'secrets.d\nsecrets.d/inner\n' > "$REPO/.worktreeinclude"
+mkdir -p "$REPO/secrets.d/inner"
+print -r -- "IN" > "$REPO/secrets.d/inner/x.env"
+run "$REPO" wt cp5
+rc_is 0 "CP5 overlapping entries are carried"
+[[ -f "$HOME/Code/Org/repo-cp5/secrets.d/inner/x.env" ]] && _pass "CP5 the nested file arrived" \
+                                                         || _fail "CP5 the nested file arrived"
+[[ -e "$HOME/Code/Org/repo-cp5/secrets.d/inner/inner" ]] && _fail "CP5 no duplicate nests inside the first copy" \
+                                                         || _pass "CP5 no duplicate nests inside the first copy"
+
 # CP4: a partly copied directory entry is removed, so the recovery run copies it again.
 setup
 run "$REPO" wt cp4

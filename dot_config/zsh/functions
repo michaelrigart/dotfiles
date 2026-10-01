@@ -534,6 +534,7 @@ _wt_do_prepare() {
 
   local entry
   for entry in $_WT_CARRY; do
+    [[ -e "$dest/$entry" || -L "$dest/$entry" ]] && continue
     if ! { mkdir -p -- "$dest/${entry:h}" && cp -pR -- "$main/$entry" "$dest/$entry" }; then
       rm -rf -- "$dest/$entry"
       print -ru2 -- "wt: copying .worktreeinclude entry '$entry' into $dest failed."
