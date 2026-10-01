@@ -153,10 +153,9 @@ dev() {
   repo="${repo:A}"
   [[ -n "$repo" && -e "$repo/.git" ]] || { print -ru2 -- "dev: no git repo resolved."; return 1 }
 
-  # A linked checkout must enter through layout.sh's worktree mode. That mode uses
-  # Herdr's native `worktree open`, preserving worktree provenance and grouping under
-  # the primary workspace; treating it as an ordinary path would create an unrelated
-  # workspace that wt-rm could not identify safely.
+  # A linked checkout must enter through layout.sh's worktree mode, which keeps
+  # Herdr's worktree provenance; an ordinary workspace could not be identified safely
+  # by wt-rm.
   if [[ -f "$repo/.git" ]]; then
     local main
     main="$(builtin cd "$repo" && _wt_primary)" || return 1
@@ -172,11 +171,9 @@ dev() {
 # interactive shell binds `cd` to, because the `zsh -ic <cmd>` shells that Herdr popups
 # run never reach a prompt.
 
-# _wt_git — git with its routing environment cleared. Every Git call in the
-# worktree lifecycle goes through this. An exported GIT_DIR or GIT_WORK_TREE
-# silently redirects git to another checkout: `status` then reports a dirty
-# worktree as clean *with exit status 0*, and `worktree list`, `ls-files`,
-# `worktree remove` and `branch -d` all act on the wrong repository.
+# _wt_git — git with its routing environment cleared. Every Git call in the lifecycle
+# goes through this: an exported GIT_DIR or GIT_WORK_TREE redirects git to another
+# checkout, and `status` then reports a dirty worktree as clean with exit status 0.
 _wt_git() {
   emulate -L zsh
   command env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR \
@@ -186,15 +183,12 @@ _wt_git() {
 
 # _wt_primary — absolute path of the repository's primary worktree.
 #
-# Resolved from `worktree list`, never by path arithmetic on --git-common-dir:
-# taking the parent of the common dir is correct for a standard repo
-# (/…/repo/.git → /…/repo) but yields the *containing directory* for a bare one
-# (/…/repo.git → /…/), which is not a worktree at all.
+# Resolved from `worktree list`, never by path arithmetic on --git-common-dir, which
+# yields the containing directory for a bare repo.
 #
-# -z is required: the line-based porcelain format gives no guarantee that a path
-# is emitted raw, so a path needing quoting cannot be parsed unambiguously.
-# Records are NUL-terminated; ${(0)} drops the empty separator records, leaving
-# field 1 = "worktree <path>" and, for a bare repo, field 2 = "bare".
+# -z is required: the line-based porcelain format may quote a path. ${(0)} drops the
+# empty separator records, leaving field 1 = "worktree <path>" and, for a bare repo,
+# field 2 = "bare".
 _wt_primary() {
   emulate -L zsh
   local -a f
@@ -208,20 +202,16 @@ _wt_primary() {
 
 # _wt_clean <worktree> — 0 clean, 1 dirty, 2 state unknown.
 #
-# Three-state on purpose. A failed `git status` (corrupt index, unreadable
-# worktree) produces empty output, so testing output alone reads the case where
-# we know least as "no changes" — the most dangerous possible misreading.
+# Three-state on purpose: a failed `git status` produces empty output, which testing
+# output alone would read as "no changes".
 #
 # Each flag closes a way a dirty tree can report clean:
 #   --untracked-files=normal   defeats status.showUntrackedFiles=no
 #   --ignore-submodules=none   defeats diff.ignoreSubmodules / submodule.*.ignore
 #   --porcelain=v1             pins the format against a default change
-# and _wt_git clears GIT_WORK_TREE/GIT_DIR, which otherwise redirect the check to
-# a different checkout entirely and return empty output with exit status 0.
 #
-# The assignment is deliberately split from `local`: `local x="$(cmd)"` reports
-# the *builtin's* status, not the command substitution's, hiding the failure this
-# helper exists to catch.
+# The assignment is split from `local` on purpose: `local x="$(cmd)"` reports the
+# builtin's status, not the command substitution's.
 _wt_clean() {
   emulate -L zsh
   local wt="$1" out rc
@@ -236,28 +226,22 @@ _wt_clean() {
 # target worktree, so `wt-prepare` cannot copy into a directory `wt-rm` is
 # removing.
 #
-# `zsystem flock` is an fcntl(2) record lock despite the name, and its semantics
-# drive three requirements:
+# `zsystem flock` is an fcntl(2) record lock despite the name:
 #
 #   1. The lock file must already exist — zsystem opens it and will not create it.
-#   2. Release must be explicit. These are *sourced functions*: returning does not
+#   2. Release must be explicit. These are sourced functions: returning does not
 #      close the descriptor, so without an unlock the fd stays open in the
-#      interactive shell. Because locks are per-process (requirement 3) that does
-#      NOT block the same shell — it blocks every OTHER process's lifecycle
-#      command on that target until this shell exits, while leaking one descriptor
-#      per run. Kernel release on process death is the backstop for every path
-#      an explicit unlock cannot reach — chiefly an interrupt, which unwinds the
-#      command without running the `always` block (see the interruption note
+#      interactive shell and blocks every OTHER process's lifecycle command on that
+#      target until the shell exits. Kernel release on process death is the backstop
+#      for an interrupt, which skips the `always` block (see the interruption note
 #      below _wt_unlock).
-#   3. Locks are per-process, not per-descriptor. A nested acquisition inside the
-#      same shell SUCCEEDS, and unlocking any one descriptor drops the process's
-#      lock on the file entirely — so a routine that took its own lock would
-#      silently release its caller's. Only the outermost command locks; see the
-#      command/routine split in wt-prepare.
+#   3. Locks are per-process, not per-descriptor. A nested acquisition in the same
+#      shell SUCCEEDS, and unlocking any one descriptor drops the process's lock
+#      entirely — a routine that took its own lock would release its caller's. Only
+#      the outermost command locks (the command/routine split in wt-prepare).
 #
-# Consequently there is no intra-process exclusion. That is fine: one shell runs
-# one lifecycle command at a time, and the case being defended is concurrent
-# commands in different terminals.
+# So there is no intra-process exclusion; the case defended is concurrent commands
+# in different terminals.
 _wt_lock() {
   emulate -L zsh
   zmodload zsh/system 2>/dev/null || {
@@ -280,7 +264,10 @@ _wt_unlock() {
   return 0
 }
 
-# The lifecycle lock: wt applies it at creation and dev re-applies it; only wt-rm crosses it, with Git's double force, after every check. Herdr's one --force cannot.
+# The lifecycle lock: wt applies it at creation and dev re-applies it. Only wt-rm
+# crosses it, with Git's double force, after every check. Herdr's native removal
+# (one --force) cannot cross it, which keeps it blocked: it skips teardown and the
+# cleanliness checks.
 _wt_herdr_lock_reason() {
   print -r -- "wt-managed; remove with command wt-rm"
 }
@@ -288,9 +275,8 @@ _wt_herdr_lock_reason() {
 # _wt_git_lock_state <root> <dest> — 0 locked (reason in _WT_GIT_LOCK_REASON),
 # 1 registered but unlocked, 2 state unreadable/not registered.
 #
-# Parse the NUL porcelain form for the same reason _wt_primary does: paths may need
-# quoting in the line format. A new `worktree ` token starts each record, so empty
-# record separators do not need to survive zsh's ${(0)} expansion.
+# NUL porcelain, for the same reason as _wt_primary. A `worktree ` token starts each
+# record, so empty separators need not survive ${(0)}.
 _wt_git_lock_state() {
   emulate -L zsh
   # Never name a local `path` in zsh: it is the tied array behind PATH, and
@@ -298,12 +284,10 @@ _wt_git_lock_state() {
   local root="$1" dest="${2:A}" rec wt_path rc in_target=0 seen=0
   local -a fields
   typeset -g _WT_GIT_LOCK_REASON=""
-  # zsh scalars cannot carry NUL bytes: assigning porcelain -z to `raw` would make the
-  # assignment itself fail with 127. An array assignment fed straight through ${(0)}
-  # decodes the NUL records and still reports the command's status, so one call yields
-  # both. Reading it in two — status from the first, records from the second — would
-  # parse a failed read as authoritative, and an empty result from a broken read is
-  # indistinguishable here from a worktree that is not registered at all.
+  # zsh scalars cannot carry NUL bytes, so the array assignment through ${(0)} is the
+  # one call that yields both the records and the command's status. Reading twice
+  # would parse a failed read as authoritative: its empty result looks like an
+  # unregistered worktree.
   fields=( ${(0)"$(_wt_git -C "$root" worktree list --porcelain -z 2>/dev/null)"} ); rc=$?
   if (( rc )); then
     print -ru2 -- "wt: cannot read Git worktree lock state for $dest — refusing."
@@ -348,9 +332,9 @@ _wt_ensure_herdr_lock() {
   esac
 }
 
-# Serialize Herdr adoption against wt-prepare/wt-rm, revalidate the checkout while
-# holding that lifecycle lock, then apply the persistent Git ownership lock. The
-# layout handoff stays outside the fcntl lock because it attaches a long-lived TUI.
+# Serialize the Herdr handoff against wt-prepare/wt-rm, revalidate the checkout under
+# that lock, then apply the persistent Git lock. The layout handoff stays outside the
+# fcntl lock because it attaches a long-lived TUI.
 _wt_prepare_for_herdr() {
   emulate -L zsh
   local main="$1" dest="$2" branch slug expected common
@@ -378,55 +362,30 @@ _wt_prepare_for_herdr() {
 
 # --- Interruption and the lock ---------------------------------------------
 #
-# There is deliberately NO `trap ... INT TERM` in any lifecycle command. An
-# earlier revision installed `trap '_wt_unlock; return 130' INT TERM` in all
-# three, to satisfy a spec §9.4 requirement — "the lock is released on INT and
-# TERM" — that has since been withdrawn. The trap was removed because it is
-# fail-open, and fail-open on the destructive path:
+# There is deliberately NO `trap ... INT TERM` in any lifecycle command: it is
+# fail-open on the destructive path. `return` inside a trap handler unwinds only the
+# innermost function and zsh discards its status, so the interrupted helper reports
+# 0 — and 0 is the permissive answer for every gate (_wt_clean "clean",
+# _wt_hook_check "valid", _wt_assert_worktree "right branch"). Under SIGINT's
+# default disposition the whole command unwinds and no status is fabricated.
 #
-#   * `return` inside a trap handler unwinds only the INNERMOST function, not
-#     the call stack, and zsh discards the handler's return status. The
-#     interrupted helper therefore reports 0 to its caller, never 130.
-#   * 0 is the permissive answer for every helper the lifecycle gates on:
-#     _wt_clean 0 is "clean", _wt_hook_check 0 is "valid", _wt_assert_worktree 0
-#     is "the right worktree on the right branch". An interrupted check reads as
-#     permission to proceed. This is not theoretical: with the trap installed, a
-#     real SIGINT during wt-rm's first cleanliness check made a DIRTY worktree
-#     read as clean and let the terminal-shutdown step run on it.
-#
-# Under SIGINT's default disposition the whole command unwinds instead, so no
-# helper's status is ever fabricated. That is the property these commands need.
-#
-# The accepted cost, documented in spec §9.4: an interactive shell that survives
-# an interruption may still hold the descriptor. Because fcntl locks are held per
-# *process*, that does NOT block the shell holding it — retrying from that same
-# shell works — it blocks other processes' lifecycle commands on the same target
-# until that shell exits. Trading a rare, self-inflicted and self-recoverable
-# lock retention for a destructive fail-open is the right way round.
-#
-# `always { _wt_unlock }` still covers every ordinary exit path: success,
-# failure, and early return. Kernel release on process death covers a shell that
-# the interrupt actually takes down.
+# The accepted cost: a shell that survives an interrupt may keep the descriptor,
+# which blocks other processes' lifecycle commands on that target until it exits.
+# `always { _wt_unlock }` covers every ordinary exit path.
+# Full argument: docs/superpowers/specs/2026-07-30-worktree-hook-protocol-design.md §9.4.
 
 # _wt_hook_check <main> — 0 valid, 1 invalid, 2 absent (not opted in).
 #
-# Both the index entry and the working-tree path must be checked. A tracked
-# symlink satisfies "tracked" and "executable" (test -x follows it) while the code
-# that actually runs lives outside the repository; conversely the index mode alone
-# cannot see an unstaged local swap.
-#
-# Requiring 100755 *in the index* — not merely on disk — makes opt-in
-# reproducible: a hook tracked as 100644 arrives non-executable in every clone.
-# Selecting stage 0 rejects a conflicted hook, which has no stage-0 entry.
+# Both the index entry and the working-tree path are checked: a tracked symlink
+# passes "tracked" and "executable" while the code that runs lives outside the
+# repository, and the index mode alone cannot see an unstaged local swap.
+# Requiring 100755 in the index makes opt-in reproducible across clones. Stage 0
+# rejects a conflicted hook.
 _wt_hook_check() {
   emulate -L zsh
   local main="$1" hook="$1/.worktreehook" raw mode rc
-  # Status captured separately, for the same reason as _wt_clean: a failed
-  # ls-files also leaves `raw` empty, and falling through on that emptiness
-  # would misread an unreadable index by whatever happens to be on disk —
-  # "not opted in" (2) when no working-tree file exists, or a bogus "untracked"
-  # refusal (1, wrong message) when one does. Either way the true index state
-  # is unknown, so it is refused unconditionally, before `raw` is inspected.
+  # Status captured separately, as in _wt_clean: a failed ls-files leaves `raw`
+  # empty, which must not be read as "not opted in".
   raw="$(_wt_git -C "$main" ls-files --stage -- .worktreehook 2>/dev/null)"; rc=$?
   if (( rc )); then
     print -ru2 -- "wt: cannot read the index of $main to validate .worktreehook — refusing."
@@ -460,12 +419,9 @@ _wt_hook_check() {
 
 # _wt_hook_run <main> <worktree> <branch> <slug> <verb> — run the project hook.
 #
-# Validation happens here, immediately before execution, not only at the earlier
-# pre-flight. Validation checks a pathname while execution happens later, so the
-# early check in `wt` is a usability guard that avoids creating a worktree for a
-# misconfigured repository — it does not substitute for this one. Concurrent
-# mutation of the primary hook during a command remains unsupported (see the spec,
-# §5.1 "Validation is point-in-time").
+# Validated here, immediately before execution: the pre-flight in `wt` is only a
+# usability guard and does not substitute (hook-protocol design §5.1, "Validation is
+# point-in-time").
 #
 # Executed as a process so its shebang picks the interpreter, in a subshell so cwd
 # and WT_* never leak back into the caller.
@@ -482,9 +438,8 @@ _wt_hook_run() {
        "$main/.worktreehook" "$verb" )
   local hrc=$?
   (( hrc == 0 )) && return 0
-  # Normalized to 1: the documented interface is 0/1, and callers branch on
-  # success or failure only. The hook's own status is surfaced in the message
-  # rather than returned, so `exit 130` and `exit 3` are handled identically.
+  # Normalized to 1: the documented interface is 0/1; the hook's own status goes in
+  # the message.
   print -ru2 -- "wt: .worktreehook $verb exited $hrc."
   return 1
 }
@@ -492,19 +447,17 @@ _wt_hook_run() {
 # _wt_manifest <main> <dest> — validate .worktreeinclude and fill _WT_CARRY with
 # the entries whose destination is still missing.
 #
-# Entries already present at the destination are skipped, never overwritten: a local edit in the worktree wins.
+# Entries already present at the destination are skipped, never overwritten: a local
+# edit in the worktree wins.
 #
-# Containment is checked lexically *and* through the filesystem. A path with no
-# ".." still escapes if a directory component is a symlink — the target worktree's
-# tree comes from the feature branch, so a branch committing `config` as a symlink
-# redirects `config/master.key` on write. The rule is asymmetric:
+# Containment is checked lexically and through the filesystem: a path with no ".."
+# still escapes through a symlinked directory component, and the destination tree
+# comes from the feature branch. The rule is asymmetric:
 #
-#   source:      no component may be a symlink, INCLUDING the final one. A final
-#                source symlink is dereferenced on read, so pointing it at an
-#                external directory copies that directory's contents in.
-#   destination: no PARENT component may be a symlink. An existing final symlink
-#                is fine precisely because it is filtered out below as "already
-#                present" — skipped, never followed, never written through.
+#   source:      no component may be a symlink, INCLUDING the final one, which is
+#                dereferenced on read.
+#   destination: no PARENT component may be a symlink. A final symlink is fine
+#                because it is skipped below as "already present", never followed.
 _wt_manifest() {
   emulate -L zsh
   setopt local_options extended_glob
@@ -558,16 +511,14 @@ _wt_manifest() {
 }
 
 # _wt_do_prepare <main> <dest> <branch> <slug> — copy missing manifest entries,
-# then run the project setup hook. The UNLOCKED routine: `wt` calls it under the
-# lock it already holds, and `wt-prepare` is the thin locked wrapper. It must not
-# lock itself — fcntl locks are per-process, so a nested acquire/release here
-# would silently drop the caller's lock (see _wt_lock).
+# then run the project setup hook. The UNLOCKED routine: `wt` calls it under the lock
+# it already holds, and `wt-prepare` is the locked wrapper. It must not lock itself
+# (per-process locks, see _wt_lock).
 _wt_do_prepare() {
   emulate -L zsh
   local main="$1" dest="$2" branch="$3" slug="$4" qb="${(q-)branch}"
 
-  # Validate the hook before copying, so a misconfigured repository changes
-  # nothing. This mirrors wt-rm, which validates before disrupting the session.
+  # Validate the hook before copying, so a misconfigured repository changes nothing.
   _wt_hook_check "$main" >/dev/null 2>&1
   local hrc=$?
   if (( hrc == 1 )); then
@@ -601,13 +552,9 @@ _wt_do_prepare() {
 
 # wt-prepare <branch> — re-run preparation against an existing worktree.
 #
-# The named recovery path for a partial copy or a failed setup hook. Re-running
-# `wt` cannot do this: on an existing worktree `wt` takes the reopen path, which
-# deliberately skips preparation.
-#
-# It never creates, closes or attaches a Herdr workspace, so it may run while the
-# target workspace and application are live. Project hooks must tolerate that or
-# document their own restriction.
+# The recovery path for a partial copy or a failed setup hook; `wt` on an existing
+# worktree reopens and skips preparation. It never touches a Herdr workspace, so it
+# may run while the target is live.
 wt-prepare() {
   emulate -L zsh
   local branch="$1"
@@ -638,16 +585,14 @@ wt-prepare() {
 #   wt hotfix origin/main  branch "hotfix" from an explicit start point
 # Run from anywhere inside the repo (or one of its worktrees).
 #
-# A new branch starts from the *caller's* HEAD, matching plain `git worktree add -b`:
-# branch from where you are, and keep working offline. Pass a start point to override.
+# A new branch starts from the *caller's* HEAD, matching plain `git worktree add -b`.
+# Pass a start point to override.
 #
-# Creation runs under the per-target lock (see _wt_lock) and pre-validates the
-# project hook before touching anything: a misconfigured repository leaves no
-# worktree and no branch behind. Once the worktree exists (fresh or an existing
-# branch with none yet), preparation — manifest copy, then the setup hook — is
-# delegated to the shared, unlocked `_wt_do_prepare` (see wt-prepare). The caller's
-# Herdr handoff runs OUTSIDE the lock and only on success, so a long-lived workspace
-# never holds the lock and a failed setup never opens a half-built worktree.
+# Creation runs under the per-target lock (see _wt_lock) and pre-validates the hook,
+# so a misconfigured repository leaves no worktree and no branch behind. Preparation
+# is the shared, unlocked `_wt_do_prepare`. The caller's Herdr handoff runs OUTSIDE
+# the lock and only on success, so a long-lived workspace never holds the lock and a
+# failed setup never opens a half-built worktree.
 _wt_create_or_prepare() {
   emulate -L zsh
   local branch="$1" start="${2-}"
@@ -664,9 +609,7 @@ _wt_create_or_prepare() {
       _wt_assert_worktree "$main" "$dest" "$branch" || return 1
       print -ru2 -- "wt: reopening $dest"; created=
     else
-      # Pre-validate before creating anything: a misconfigured repository should
-      # leave no worktree and no branch behind. This does NOT replace the check
-      # inside _wt_hook_run immediately before execution.
+      # Pre-validate before creating anything; _wt_hook_run still re-checks.
       _wt_hook_check "$main" >/dev/null 2>&1
       (( $? == 1 )) && { _wt_hook_check "$main"; return 1 }
 
@@ -696,18 +639,15 @@ _wt_create_or_prepare() {
 }
 
 # The `wt` command itself: create or reopen through the locked lifecycle above, then
-# open the checkout as a native Herdr worktree workspace. Herdr supplies grouping,
-# provenance and the agent dashboard; Git creation, .worktreeinclude and .worktreehook
-# stay on the proven lifecycle.
+# open the checkout as a native Herdr worktree workspace.
 wt() {
   [[ -n "${1:-}" ]] || { print -ru2 -- "usage: wt <branch> [start-point]"; return 1; }
   _wt_create_or_prepare "$@" || return 1
   dev "$_WT_DEST"
 }
 
-# wt-prompt — interactive surface for Herdr's worktree popup. Keep the prompt tiny:
-# all creation, preparation, locking and native Herdr adoption remain in wt, so the
-# TUI cannot grow a second lifecycle implementation.
+# wt-prompt — interactive surface for Herdr's worktree popup. Kept tiny: everything
+# else stays in wt, so the TUI cannot grow a second lifecycle implementation.
 wt-prompt() {
   emulate -L zsh
   local branch
@@ -721,10 +661,9 @@ wt-prompt() {
 }
 
 # _wt_assert_worktree <root> <dest> <branch> — succeed only if <dest> is a worktree
-# registered to <root> and currently on <branch>. Shared by `wt` (reopen) and `wt-rm`
-# (removal): both must refuse husks and slug collisions rather than act on the wrong
-# directory. Paths are resolved before comparison — git reports real paths, and ~/Code
-# may sit behind a symlink.
+# registered to <root> and currently on <branch>, so `wt` (reopen) and `wt-rm` refuse
+# husks and slug collisions. Paths are resolved before comparison: git reports real
+# paths, and ~/Code may sit behind a symlink.
 _wt_assert_worktree() {
   emulate -L zsh
   local root="$1" dest="$2" branch="$3"
@@ -749,8 +688,8 @@ _wt_assert_worktree() {
 _wt_herdr_read() {
   emulate -L zsh
   local session="$2" kind out rc
-  # Always --session, the default included: a bare call follows HERDR_SOCKET_PATH or
-  # HERDR_SESSION, which can name another session than the one being read.
+  # Always --session, the default included: a bare call follows HERDR_SOCKET_PATH,
+  # which can name another session than the one being read.
   local -a hargs=(--session "$session")
   for kind in workspace pane; do
     out="$(command herdr $hargs $kind list 2>&1)"; rc=$?
@@ -811,10 +750,10 @@ _wt_herdr_classify() {
   return 0
 }
 
-# A stopped Herdr session has no live process, but its session.json can restore panes
-# into the checkout later. Do not rewrite Herdr's versioned state behind its back;
-# detect a reference and require the session to be started so the public close API can
-# remove it. Return 0 match, 1 no match/no state, 2 unreadable or unknown schema.
+# A stopped session's session.json can restore panes into the checkout later. Herdr's
+# versioned state is never rewritten here: detect a reference and require the session
+# to be started so the public close API can remove it. Return 0 match, 1 no match or
+# no state, 2 unreadable or unknown schema.
 _wt_stopped_herdr_has_checkout() {
   emulate -L zsh
   local session="$1" session_dir="$2" dest="${3:A}" n
@@ -955,75 +894,19 @@ _wt_stop_herdr_workspaces() {
   return 0
 }
 
-# wt-rm — retire a worktree made by `wt`: validate the project hook, run three
-# cleanliness checks around the Herdr workspace shutdown and the teardown hook, check
-# that no process of the caller's is sitting in the checkout, remove the worktree, then
-# delete the branch.
-#   wt-rm <branch>
-# Run from another checkout of the same repo, never from inside the one being removed.
-#
-# Runs under the per-target lock (see _wt_lock), released in an `always` block so
-# every return path — including a mid-sequence abort — unlocks. An interruption
-# is not an exit path this block covers: SIGINT unwinds the command outright and
-# the kernel releases the lock with the process. See the interruption note under
-# _wt_unlock for why no INT/TERM trap is installed.
-#
-# Ordering follows the sequence of things that can go wrong, each guarded right before
-# it happens rather than once up front:
-#
-#   1. Hook validation, before anything is disrupted. A misconfigured repository must
-#      never cost you the workspace or the worktree just for running `wt-rm`.
-#   2. Check 1 (_wt_clean), before anything is disrupted. Catches pre-existing
-#      uncommitted work — the case `git worktree remove` would refuse anyway, but by
-#      then the workspace would already be gone.
-#   3. Stop every matching Herdr workspace. No workspace at all counts as successful
-#      shutdown — the normal state on a retry — but a workspace that exists and cannot
-#      be closed aborts unconditionally: a live process holding the directory open is
-#      exactly how an empty tmp/ husk is left behind, so stopping first is an invariant
-#      here, not a courtesy.
-#   4. Check 2 (_wt_clean), after shutdown, before teardown. Shutdown can itself flush
-#      files to disk — a live app writing on exit is exactly how the observed Bootsnap
-#      husks arose — so this check exists specifically to catch dirt introduced BY
-#      closing the workspace, distinct from check 1's pre-existing dirt.
-#   5. Run the .worktreehook teardown verb. Idempotent by contract, which matters
-#      because a failure here preserves the worktree with its workspace already
-#      closed — retrying `wt-rm` re-runs teardown from that state.
-#   6. Check 3 (_wt_clean), after teardown, before removal. Ties any non-ignored
-#      teardown output to its cause before Git's more generic removal refusal would
-#      otherwise appear a step later with a less specific message.
-#   7. Check 4 (`wt-teardown scan`), the last thing before Git deletes files. Every
-#      check above reads Git or Herdr; this one reads the OS, because a process that
-#      escaped its pane's process group is invisible to both. Last rather than first
-#      because stopping project services is what teardown is for — scanning ahead of
-#      it would refuse every repository that shuts its own daemons down properly.
-#      A heuristic, not a guarantee; it converts the common husk into a refusal and
-#      does not make removal safe by proof.
-#
-# All three checks fail closed on _wt_clean's unknown state (2), same as every other
-# consumer of that helper.
 # _wt_branch_content_merged — true when <branch> would add nothing to <base>.
 #
-# `git branch -d` asks an ancestry question: are this branch's commits reachable
-# from the base? A squash-merge answers no by construction — it replays the whole
-# branch as a single new commit — so -d refuses branches whose every line is
-# already in. GitLab squash-merges by default, so that refusal is the ordinary end
-# of a merge request here, not an edge case.
+# `git branch -d` asks an ancestry question, which a squash-merge (GitLab's default)
+# answers no by construction. This asks instead whether merging would still change
+# anything: `merge-tree --write-tree` merges in memory, and if the resulting tree is
+# the base's own tree the branch contributes nothing.
 #
-# The question that actually matters is whether merging the branch would still
-# change anything. `merge-tree --write-tree` answers it directly: it performs the
-# merge in memory and prints the resulting tree. If that tree is the base's own
-# tree, the branch contributes nothing and deleting the ref loses no work.
+# Do not compare the two tip trees (`git diff base branch`) instead: that holds only
+# while the base's tip IS the squash commit, and stops working after the next
+# unrelated merge.
 #
-# Comparing the two tip trees instead (`git diff base branch`) looks equivalent and
-# is not: it holds only while the base's tip IS the squash commit. One later merge
-# into the base and the trees differ again, so that test would quietly stop
-# detecting squash-merges after the first unrelated MR landed — working in the
-# scenario it was written against and nowhere else.
-#
-# Both the local base and the remote's default branch count: content reachable from
-# either is content this repository already has. Fails closed — no base, an
-# unmergeable branch, or a git too old for --write-tree all return non-zero, which
-# keeps the branch.
+# Both the local base and the remote's default branch count. Fails closed: no base,
+# an unmergeable branch, or a git without --write-tree all keep the branch.
 _wt_branch_content_merged() {
   emulate -L zsh
   local main="$1" branch="$2" base merged want mb
@@ -1035,11 +918,8 @@ _wt_branch_content_merged() {
   (( ${#bases} )) || return 1
   for base in $bases; do
     [[ -n "$base" && "$base" != "$branch" ]] || continue
-    # A branch that never changed anything is not a squash-merge, it is a branch
-    # that did no work — and the older contract is that wt-rm does not force-delete
-    # a branch carrying commits the base lacks, however empty they are. Requiring a
-    # real diff against the merge-base keeps that promise: only a branch that
-    # genuinely contributed content, and whose content is now in the base, is spent.
+    # Require a real diff against the merge-base: wt-rm never force-deletes a branch
+    # carrying commits the base lacks, however empty they are.
     mb="$(_wt_git -C "$main" merge-base "$base" "$branch" 2>/dev/null)" || continue
     _wt_git -C "$main" diff --quiet "$mb" "$branch" 2>/dev/null && continue
     merged="$(_wt_git -C "$main" merge-tree --write-tree "$base" "$branch" 2>/dev/null)" || continue
@@ -1050,6 +930,23 @@ _wt_branch_content_merged() {
   return 1
 }
 
+# wt-rm <branch> — retire a worktree made by `wt`. Run from another checkout of the
+# same repo, never from inside the one being removed.
+#
+# Each step is guarded right before it happens, and every check fails closed:
+#   1. hook validation and check 1 (_wt_clean), before anything is disrupted
+#   2. stop the checkout's Herdr workspaces: a live process holding the directory
+#      open is how a husk is left behind, so this must come first
+#   3. check 2, because shutdown can flush files (a live app writing on exit)
+#   4. the .worktreehook teardown verb, idempotent so a retry re-runs it
+#   5. check 3, tying non-ignored teardown output to its cause
+#   6. check 4 (`wt-teardown scan`), last before Git deletes files: it reads the OS,
+#      which Git and Herdr cannot see. After teardown because stopping project
+#      services is what teardown is for. A heuristic, not a proof.
+#
+# Runs under the per-target lock, released in an `always` block. An interrupt is not
+# covered by it; see the interruption note above _wt_hook_check for why no INT/TERM
+# trap is installed.
 wt-rm() {
   emulate -L zsh
   local branch="$1"
@@ -1068,15 +965,8 @@ wt-rm() {
     [[ "${here:A}" == "${dest:A}" ]] && {
       print -ru2 -- "wt-rm: you're inside $dest — run this from another checkout."; return 1 }
 
-    # Check 1 — before anything is disrupted.
-    #
-    # `*`, not `2`: 2 is the only unknown status _wt_clean can currently produce,
-    # so this arm is unreachable defensive code, kept so that anything which is
-    # not a definite 0 fails closed rather than falling through as "clean".
-    #
-    # It is NOT protection against an interrupt-produced status. That premise was
-    # wrong: an interrupt unwinds the whole command rather than handing this
-    # `case` a status at all (see the interruption note under _wt_unlock).
+    # Check 1 — before anything is disrupted. `*`, not `2`, so that anything which
+    # is not a definite 0 fails closed rather than reading as "clean".
     _wt_clean "$dest"
     case $? in
       0) ;;
@@ -1089,10 +979,8 @@ wt-rm() {
     _wt_hook_check "$main" >/dev/null 2>&1
     (( $? == 1 )) && { _wt_hook_check "$main"; return 1 }
 
-    # A Git lock may belong to this Herdr lifecycle or to the user/another tool.
-    # Classify it before stopping anything. Only our exact reason authorizes the
-    # two-force removal Git requires for a locked worktree; every other lock is an
-    # explicit preservation request and must remain untouched.
+    # Classify the Git lock before stopping anything. Only our exact reason
+    # authorizes the double-force removal; any other lock is a preservation request.
     local git_lock_state herdr_owned=0 wanted_lock
     wanted_lock="$(_wt_herdr_lock_reason)"
     _wt_git_lock_state "$main" "$dest"; git_lock_state=$?
@@ -1112,7 +1000,7 @@ wt-rm() {
     # Close the checkout's own Herdr workspaces; refuse first if anything else is in it (spec §1).
     _wt_stop_herdr_workspaces "$dest" || return 1
 
-    # Check 2 — shutdown can flush files; that is how the Bootsnap husks arose.
+    # Check 2 — closing the workspaces can flush files into the checkout.
     _wt_clean "$dest"
     case $? in
       0) ;;
@@ -1140,10 +1028,9 @@ wt-rm() {
     esac
 
     # Check 4 — the last witness before Git deletes anything, and the only one that
-    # asks the OS rather than Herdr. Deliberately after teardown: stopping project
-    # services is what the teardown verb is for, so scanning before it would refuse
-    # every repository that does the right thing. As late as the sequence allows, which
-    # is the most a snapshot can offer — see `_scan` in dot_local/bin/executable_wt-teardown for what it cannot see.
+    # asks the OS. After teardown, so a repository that stops its own services is
+    # not refused. What the snapshot cannot see: `_scan` in
+    # dot_local/bin/executable_wt-teardown.
     local busy line
     busy="$(WT_WORKTREE="$dest" command wt-teardown scan)" || {
       print -ru2 -- "wt-rm: could not scan for processes still in $dest — refusing."
@@ -1157,17 +1044,13 @@ wt-rm() {
       return 1
     fi
 
-    # Removal is the third post-shutdown failure mode (spec §9.3), and reports the
-    # same exact partial state as the other two. Git's own refusal names only the
-    # obstruction; on its own it leaves the reader unsure whether teardown ran, so
-    # the reclamation state and both recovery routes are spelled out here.
+    # Removal is the third post-shutdown failure mode (hook-protocol design §9.3);
+    # the message spells out the partial state and both recovery routes.
     local -a remove_args
     remove_args=(worktree remove "$dest")
-    # Keep the ownership lock in force until Git performs the removal. Unlocking
-    # first creates an interrupt window where a checkout meant to be protected is
-    # left exposed. Git's double-force form crosses the lock and removes its admin
-    # record in one operation; it is used only after all three clean checks and only
-    # for the exact lock reason above.
+    # The Git lock stays in force until removal: unlocking first opens an interrupt
+    # window that leaves the checkout unprotected. The double-force form crosses it
+    # and is used only for the exact lock reason above.
     (( herdr_owned )) && remove_args=(worktree remove --force --force "$dest")
     if ! _wt_git $remove_args; then
       print -ru2 -- "wt-rm: removing $dest failed — worktree kept, Herdr workspaces closed. Resources may already be reclaimed."
@@ -1177,10 +1060,8 @@ wt-rm() {
     fi
     print -r -- "✓ removed worktree $dest"
 
-    # -d first: it is the conservative test and its success message names the SHA.
-    # Its stderr is suppressed because a refusal here is not yet a verdict — a
-    # squash-merged branch fails -d and is still entirely merged. Only if the
-    # content test also declines does the branch genuinely have unmerged work.
+    # -d first, stderr suppressed: its refusal is not a verdict, since a squash-merged
+    # branch fails -d. Only if the content test also declines is the work unmerged.
     if ! _wt_git -C "$main" branch -d "$branch" 2>/dev/null; then
       if _wt_branch_content_merged "$main" "$branch" \
          && _wt_git -C "$main" branch -D "$branch" >/dev/null 2>&1; then
