@@ -37,7 +37,11 @@ non-interactive shell.) A worktree owned by another tool goes through that tool'
 lifecycle. For a deliberate manual reconciliation, re-run with WT_GUARD=off."
 
 NL=$'\n'; TAB=$'\t'
-prefix_re='^[[:space:]]*((if|while|until|do|then|else|elif|time|command|!|\{|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|sudo)[[:space:]]+)*(/[^[:space:]]*/)?git([[:space:]]+-[^[:space:]]+([[:space:]]+[^[:space:]-][^[:space:]]*)?)*[[:space:]]+worktree[[:space:]]+'
+sq="'"
+# A git option's argument: one word whose first unit is not "-", where a unit is a
+# plain char or a complete quoted string, so a quoted value never ends the word early.
+optarg="(([^[:space:]\"$sq-]|\"[^\"]*\"|$sq[^$sq]*$sq)([^[:space:]\"$sq]|\"[^\"]*\"|$sq[^$sq]*$sq)*)"
+prefix_re='^[[:space:]]*((if|while|until|do|then|else|elif|time|command|!|\{|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|sudo)[[:space:]]+)*(/[^[:space:]]*/)?git([[:space:]]+-[^[:space:]]+([[:space:]]+'"$optarg"')?)*[[:space:]]+worktree[[:space:]]+'
 
 # sibling_of <abs-target> — print "<repo-dir> <slug>" when the target is a wt sibling.
 sibling_of() {
