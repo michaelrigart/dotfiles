@@ -43,14 +43,16 @@ cursor-style-blink = false
 
 # Shell Integration
 shell-integration = detect
-shell-integration-features = cursor,sudo,title,ssh-env,ssh-terminfo
+# Ghostty's default features (no sudo/ssh wrappers); the explicit list was switched off
+# locally on 2026-09-18.
+#shell-integration-features = cursor,sudo,title,ssh-env,ssh-terminfo
 
 # Mouse
 mouse-hide-while-typing = true
 copy-on-select = clipboard
 
 # Scrollback
-scrollback-limit = 10000
+scrollback-limit-lines = 10000
 
 # Performance
 resize-overlay = never
