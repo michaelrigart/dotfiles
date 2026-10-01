@@ -493,6 +493,19 @@ expect deny  "grep -nO<cmd>, -O inside a bundle"      "$R"   "git status && git 
 expect deny  "fetch -qu <cmd>, -u inside a bundle"    "$R"   "git status && git fetch -qu \"sh -c 'git push'\" origin"
 expect deny  "config planting uploadpack, then fetch" "$R"   "git status && git config remote.origin.uploadpack \"sh -c 'git push'\" && git fetch origin"
 expect deny  "rebase -ix running a push, after add"   "$R"   'git add f && git rebase -ix "git push" main'
+# Only a flat list of simple commands is redacted: operators && || ; | alone, redirects only
+# to /dev/null or between descriptors, no shell keyword as a command word. Anything else
+# (a group, a loop, a newline, a background job, |&, a file redirect) is read raw.
+expect allow "a wc over two files"                    "$R"   'wc -l a b'
+expect deny  "a subshell of echo piped to sh"         "$R"   '(echo "git push origin main") | sh'
+expect deny  "a { } group of echo piped to sh"        "$R"   '{ echo "git push origin main"; } | sh'
+expect deny  "a subshell of echo written, then run"   "$R"   '(echo "git push origin main") > x.sh && sh x.sh'
+expect deny  "echo piped over a newline to sh"        "$R"   'echo "git push origin main" |
+sh'
+expect deny  "echo in the background, then sh"        "$R"   'echo "git push origin main" & sh x.sh'
+expect deny  "echo written to a file, then sh"        "$R"   'echo "git push" > x.sh; sh x.sh'
+expect deny  "an if around echo, piped to sh"         "$R"   'if true; then echo "git push origin main"; fi | sh'
+expect deny  "echo piped with |& to sh"               "$R"   'echo "git push origin main" |& sh'
 # Whatever can run text keeps counting it.
 expect deny  "add, then a push"                       "$R"   'git add f && git push origin main'
 expect deny  "true, then a push"                      "$R"   'true; git push origin main'

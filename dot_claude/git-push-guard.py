@@ -480,16 +480,35 @@ def exec_long_option(word):
     return bool(name) and any(o.startswith(name) for o in GIT_EXEC_LONG)
 
 
-def writes_file(seg):
-    """Does this simple command redirect output to anything but /dev/null or a descriptor?
-    A written file can be run by a later command of the same call."""
-    for j, t in enumerate(seg):
-        if is_operator(t) and ">" in t:
-            nxt = seg[j + 1] if j + 1 < len(seg) else ""
-            if nxt == "/dev/null" or (t.endswith("&") and (nxt.isdigit() or nxt == "-")):
-                continue
-            return True
+# The only operators of a flat list of simple commands. Anything else (a newline, a paren,
+# |&, &, ;;) can nest or detach a command from what it feeds, so the text is read raw.
+FLAT_OPS = {"&&", "||", ";", "|"}
+# A shell keyword as a command word means a compound command (a group, a loop, a test).
+SHELL_KEYWORDS = {"{", "}", "if", "then", "else", "elif", "fi", "for", "while", "until", "do",
+                  "done", "case", "esac", "select", "function", "!", "[[", "]]"}
+
+
+def flat_redirect(tokens, j):
+    """Is the redirect operator at tokens[j] harmless: output to /dev/null, or a descriptor
+    duplication (2>&1, >&2)? Any other redirect can write a file a later command runs, or
+    read one into a shell."""
+    op, nxt = tokens[j], tokens[j + 1] if j + 1 < len(tokens) else ""
+    if op in (">", ">>", "&>", "&>>"):
+        return nxt == "/dev/null"
+    if op == ">&":
+        return nxt in ("-", "/dev/null") or nxt.isdigit()
     return False
+
+
+def flat_list(tokens):
+    """Is this a flat list of simple commands: operators only && || ; |, redirects only to
+    /dev/null or between descriptors?"""
+    for j, t in enumerate(tokens):
+        if not is_operator(t) or t in FLAT_OPS:
+            continue
+        if ("<" not in t and ">" not in t) or not flat_redirect(tokens, j):
+            return False
+    return True
 
 
 def inert_git(args):
@@ -547,26 +566,32 @@ def inert_text(cmd, tokens):
     arguments of provably inert simple commands dropped. Everything that can execute or
     re-parse text stays: a command the tokenizer cannot split reliably (unbalanced quotes,
     here-document, backtick, $( ), <( ), >( ), $'..', a # comment), every command word that is
-    not inert, a pipeline that feeds any non-inert command (it may run its stdin), and an
-    inert command that writes a file next to a non-inert one (that one may run it)."""
+    not inert, and a pipeline that feeds any non-inert command (it may run its stdin).
+    It redacts only a flat list of simple commands (see flat_list): a group, a loop, a
+    newline, a background job, |&, or a redirect to anything but /dev/null or a descriptor
+    returns the raw text, as does a shell keyword in command position."""
     if tokens is None or UNSPLITTABLE.search(cmd) or any(t.startswith("#") for t in tokens):
+        return cmd
+    if not flat_list(tokens):
         return cmd
     segs, ops = [[]], []
     for t in tokens:
-        if starts_command(t):
+        if t in FLAT_OPS:
             ops.append(t)
             segs.append([])
         else:
             segs[-1].append(t)
+    for s in segs:
+        words = command_words(s)
+        if any(t in SHELL_KEYWORDS for t in (s[:words[0] + 1] if words else s)):
+            return cmd
     cut = [inert_command(s) for s in segs]
     if all(c is None for c in cut):
         return cmd                                     # nothing dropped: read the raw text
-    if any(c is None for c in cut):
-        cut = [None if c is not None and writes_file(s) else c for c, s in zip(cut, segs)]
     start = 0
-    while start < len(segs):                           # a pipeline: segments joined by | or |&
+    while start < len(segs):                           # a pipeline: segments joined by |
         end = start
-        while end < len(ops) and ops[end] in ("|", "|&"):
+        while end < len(ops) and ops[end] == "|":
             end += 1
         if any(c is None for c in cut[start:end + 1]):
             cut[start:end + 1] = [None] * (end + 1 - start)
