@@ -244,17 +244,6 @@ if [ -f "${XDG_CONFIG_HOME}/homebrew/Brewfile" ]; then
   log_info "Installing packages from Brewfile..."
   export HOMEBREW_BUNDLE_FILE="${XDG_CONFIG_HOME}/homebrew/Brewfile"
 
-  # Homebrew refuses to load formulae/casks from third-party taps until they are
-  # trusted, which aborts `brew bundle` on a fresh machine. Trust each tap the
-  # Brewfile declares — adding a tap there is already the decision to install and
-  # run software from it. Tap-level (rather than per-formula) trust also covers
-  # entries written as a bare name, e.g. cask "basecamp-cli" from basecamp/tap.
-  # Idempotent, so re-running provisioning is safe.
-  for tap in $(sed -n 's/^tap "\([^"]*\)".*/\1/p' "${HOMEBREW_BUNDLE_FILE}"); do
-    log_info "Trusting tap: ${tap}"
-    brew trust --tap "${tap}" || warn "could not trust tap ${tap}"
-  done
-
   # A licence-gated cask must not end the run — the remaining steps still matter.
   # `brew bundle` fails for the whole file, so ask `check` which items actually missed.
   # A single retry absorbs transient download failures.

@@ -153,12 +153,9 @@ chezmoi apply --force
 cd ~/.local/share/chezmoi
 git remote set-url origin git@github.com:michaelrigart/dotfiles.git
 
-# 7. Install packages. Homebrew refuses third-party taps until they are trusted,
-#    so trust each tap the Brewfile declares first (as provision.sh does).
+# 7. Install packages. The Brewfile marks its taps `trusted: true`, so
+#    `brew bundle install` trusts them itself.
 export HOMEBREW_BUNDLE_FILE=~/.config/homebrew/Brewfile
-for tap in $(sed -n 's/^tap "\([^"]*\)".*/\1/p' "$HOMEBREW_BUNDLE_FILE"); do
-  brew trust --tap "$tap"
-done
 brew bundle install --file "$HOMEBREW_BUNDLE_FILE"
 
 # 8. Default shell, then Oh My Zsh (~/.zshrc sources it unconditionally).
