@@ -281,12 +281,7 @@ _wt_unlock() {
   return 0
 }
 
-# A native Herdr worktree must not be removable through `herdr worktree remove`:
-# that path knows nothing about .worktreehook teardown or the three cleanliness
-# checks below. Git's own worktree lock is the enforcement boundary. Herdr 0.8.2
-# exposes one `--force`; Git requires force twice to remove a locked worktree, so
-# the native action remains safely blocked while `wt-rm` can recognize the lock it
-# owns and remove only after the full lifecycle succeeds.
+# The lifecycle lock: wt applies it at creation and dev re-applies it; only wt-rm crosses it, with Git's double force, after every check. Herdr's one --force cannot.
 _wt_herdr_lock_reason() {
   print -r -- "wt-managed; remove with command wt-rm"
 }
@@ -694,7 +689,7 @@ _wt_create_or_prepare() {
       if _wt_git -C "$main" show-ref --quiet --verify "refs/heads/$branch"; then
         [[ -z "$start" ]] || {
           print -ru2 -- "wt: branch $qb already exists — drop the start point."; return 1 }
-        _wt_git worktree add "$dest" "$branch" || return 1
+        _wt_git worktree add --lock --reason "$(_wt_herdr_lock_reason)" "$dest" "$branch" || return 1
       else
         local base
         if [[ -n "$start" ]]; then
@@ -704,7 +699,7 @@ _wt_create_or_prepare() {
             || base="detached@$(_wt_git rev-parse --short HEAD 2>/dev/null)"
         fi
         print -r -- "wt: branching $qb from $base"
-        _wt_git worktree add "$dest" -b "$branch" ${start:+"$start"} || return 1
+        _wt_git worktree add --lock --reason "$(_wt_herdr_lock_reason)" "$dest" -b "$branch" ${start:+"$start"} || return 1
       fi
     fi
 

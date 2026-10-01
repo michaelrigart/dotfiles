@@ -320,6 +320,12 @@ sigint_run() {
   [[ -e "$once" ]] && SIGFIRED=yes || SIGFIRED=no
 }
 sha() { git -C "$1" rev-parse HEAD 2>/dev/null }
+# lock_reason_of <worktree> — the lock reason git records for it, or nothing.
+lock_reason_of() {
+  git -C "$REPO" worktree list --porcelain | awk -v p="$1" '
+    /^worktree /{ cur = substr($0, 10) }
+    /^locked/   { if (cur == p) { sub(/^locked ?/, ""); print } }'
+}
 # lsof_spec <pid> <cmd> <cwd> [...] — build MOCK_LSOF_SPEC rows. The cwd column is
 # lsof's rendering of a path, so pass it as lsof would print it: a real backslash as two
 # characters, a real newline as the two characters \ and n.
@@ -1217,6 +1223,32 @@ has "reopening" "the reopen path is announced"
 [[ -s "$WLOG" ]] && _fail "reopening invokes wtcp not at all" \
                  || _pass "reopening invokes wtcp not at all"
 dlogged "--worktree $REPO $HOME/Code/Org/repo-o5" "reopening still hands off to dev"
+
+# Locked at creation (spec §3): a failed setup never reaches dev, which used to be the
+# only place the lock was applied.
+setup
+mkhook "$REPO" '#!/bin/sh
+exit 5'
+run "$REPO" wt lk1
+rc_is 1 "LK1 a failed setup fails wt"
+eq "$(lock_reason_of "$HOME/Code/Org/repo-lk1")" "wt-managed; remove with command wt-rm" \
+  "LK1 a new branch's worktree is locked from creation"
+
+setup
+git -C "$REPO" branch lk2
+mkhook "$REPO" '#!/bin/sh
+exit 5'
+run "$REPO" wt lk2
+eq "$(lock_reason_of "$HOME/Code/Org/repo-lk2")" "wt-managed; remove with command wt-rm" \
+  "LK2 an existing branch's new worktree is locked from creation"
+mkhook "$REPO" '#!/bin/sh
+exit 0'
+run "$REPO" wt-prepare lk2
+rc_is 0 "LK3 wt-prepare works on a worktree locked at creation"
+run "$REPO" wt-rm lk2
+rc_is 0 "LK4 wt-rm removes a worktree locked at creation"
+[[ -d "$HOME/Code/Org/repo-lk2" ]] && _fail "LK4 the locked checkout is gone" \
+                                   || _pass "LK4 the locked checkout is gone"
 
 print -r -- "O. wt-rm teardown"
 setup
