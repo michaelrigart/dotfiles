@@ -1,6 +1,9 @@
 # xreview reliable Codex pane Implementation Plan
 
-**Status:** Approved
+**Status:** Implemented - branch xreview-option-b
+
+> Completed 2026-10-01. Do not run again. Departures decided during execution are recorded in
+> the spec's "Implementation notes"; the task text below is the plan as approved.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

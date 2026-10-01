@@ -1,6 +1,6 @@
 # xreview: a reliable Codex pane
 
-**Status:** In progress - branch xreview-option-b
+**Status:** Implemented - branch xreview-option-b
 **Date:** 2026-10-01
 **Builds on:** [`2026-09-26-xreview-codex-daemon-design.md`](2026-09-26-xreview-codex-daemon-design.md)
 (§7.3 dispatch, §8 failure handling). This design replaces that spec's pane record and its
@@ -149,7 +149,7 @@ existing remedy.
 
 The second condition is the observation the record stood in for. A TUI left over from
 before a daemon restart has no connection to the new daemon. A TUI running its own
-embedded server (`-c`, `--no-daemon`, the real binary run directly) never has one. Any
+embedded server (`-c`, `--no-daemon`) never has one. Any
 read that fails (`process-info`, `daemon.pid`, `lsof`) counts as "not observed", and the
 slow path runs. A resume that confirmed after xreview stopped waiting is now kept by the
 next dispatch, rather than quit and relaunched.
@@ -262,6 +262,8 @@ resumed onto a running review.
   bound, refuse: `another dispatch is using the Codex pane <id>; no review was started`.
   Any other failure to lock (no `python3`, a filesystem without `flock`) refuses as
   `cannot lock the Codex pane <id> (<lock file>); no review was started`, never as contention.
+  A lock directory or file that cannot be created or opened refuses as `cannot create <dir>`
+  or `cannot open <file>` (each followed by `; no review was started`).
 - **Not locked.** `collect` and the other subcommands never touch the pane, so they take no
   lock. Pane ids are unique within one herdr server, and xreview talks to one server.
 
@@ -405,6 +407,100 @@ Every suite keeps its existence check (exit 2 when its subject is missing).
 ## 10. Rollout
 
 Michael merges and runs `chezmoi apply`. The launcher and xreview take effect immediately.
-The config pin takes effect at each TUI's next start. No daemon restart is needed. The first
+The config pin takes effect at each TUI's next start. No daemon restart is needed, except
+for the LaunchAgent's XDG variables (§4.10), which wait for a fresh launchd start. The first
 dispatch afterwards in each repository takes the slow path once, because no pane record
 exists to trust. That is expected, not a regression.
+
+## 11. Implementation notes (2026-10-01)
+
+These record where the implementation departs from the text above, and why. Each was
+decided during subagent-driven execution and reviewed per task, in a final whole-branch
+review, and in the Codex plan and pre-merge reviews.
+
+### Live gate (plan Task 1)
+
+The live canary confirmed V1, V2, G1 and G3 before anything relied on them:
+- Codex 0.159.3 does show the directory chooser for a resume run from another directory.
+- `-C <review root>` suppresses the chooser.
+- The ctrl+c ladder frees a pane held at the chooser, and the shell then runs the next
+  command.
+- herdr reports the chooser's `agent_status` as `unknown`, so the guard's mid-turn check lets
+  the ladder run.
+- xreview's own readers (`pane_proc`, `proc_codex`, `resume_target`,
+  `connected_to_daemon`), sed-extracted into the canary, read real panes correctly.
+
+The same run found the §4.10 defect, which was added to this branch.
+
+### Departures from §4
+
+- **§4.4 guard, stricter than written.**
+  - `pane_proc` rejects any foreground process without a string `name` and a non-empty
+    `argv` array. A missing argv would otherwise read as "resumes nothing".
+  - The guard reads the pane once (`herdr pane get`, validated) for both status and title. A
+    failed read refuses.
+  - A `thread-resolve` exit other than 0 or 1 refuses.
+  - `resume_target` accepts only three readable shapes: no positional, `resume <id>`, and
+    `fork [<id>]`. Any other positional (a prompt, `exec …`) or a `--` refuses, because pair
+    one would start a session whose first turn pair two interrupts.
+  - The chosen review thread's own running check also fails closed when `thread-status`
+    itself fails.
+- **§4.4, accepted as not running.** `xreview-rpc thread-status` reports a daemon-side
+  `thread/read` error as `running: false`. A thread the daemon cannot read cannot be running
+  on it, and refusing would block panes that resume archived threads. `thread-resolve`'s
+  exit 1 likewise stays "does not block": a TUI attached to a running turn reports `working`,
+  which the guard refuses.
+- **§4.2.** `find_pane` skips panes whose `cwd` is not a string; a null `cwd` used to crash
+  the pane listing. A bare `xreview init` refuses where the pane root is not the review root,
+  instead of pinning another tree's thread.
+- **§4.6.** Over 1,000 bytes the excerpt keeps the bottom (`tail -c`), where the actionable
+  prompt is, and strips UTF-8 continuation bytes the cut leaves at its start.
+- **§4.7.** `-c`/`--config`/`--enable`/`--disable` and `-p`/`--profile` also suppress
+  narrowing, because an explicit operator choice wins. A rollout `jq` cannot fully parse
+  passes the resume through un-narrowed, rather than trusting an earlier turn.
+- **§4.9.**
+  - The default `XREVIEW_LOCK_WAIT` is 60 s, not 90 s. That keeps one holder's wait plus this
+    dispatch's ladder and resume inside a caller's 120 s tool timeout after turn-start.
+  - The skill tells callers to give `xreview dispatch` a 300000 ms Bash timeout.
+  - The lock helper exits 75 only at the bound (contention); any other failure is
+    `cannot lock…`.
+  - `unlock_pane` closes fd 9 without redirecting the shell's stderr.
+
+### Messages beyond the Global Constraints
+
+- `cannot read the Codex pane <id> (herdr pane get); no review was started`
+- `cannot read whether thread <prefix> in the Codex pane <id> is running; no review was started`
+  (the resolver variant)
+- `cannot read whether the review thread <t> is running; no review was started`
+- `cannot lock the Codex pane <id> (<lock file>); no review was started`
+- `cannot create <dir>; no review was started` and `cannot open <file>; no review was started`
+- `xreview init` without an id, in a harness worktree:
+  `the Codex pane belongs to <root>; pass a thread id: xreview init <thread-id>`
+
+### §4.10 measured effect
+
+Under the daemon's real environment, the deployed hook took 5.20 s per `SessionStart`: it
+cannot reach herdr, so it spins in its retry loop. The fixed hook takes 0.09 s, and reaches
+the live server. A new Codex session's first turn waits on that hook. This is the likely
+cause of the canary's intermittent F15 failure ("the pane shows the turn another client
+started", a 10 s window), which failed in two of three runs before `chezmoi apply`. Re-run
+the canary after applying to confirm.
+
+### Plan text
+
+The plan's Task 7 code blocks show the pre-review excerpt pipeline (`head -c`), and its
+Task 6 blocks show the 90 s default. Both are kept as written; the code above is current.
+
+### Verification at the end of execution
+
+- `./tests/run.sh` (sandboxed): 28 suites passed, 2681/2681 assertions, 8 skipped for their
+  `needs:` tags. That includes xreview 406/406, xreview-skill 76/76, codex-launcher 117/117,
+  herdr-codex-pane-map 71/71, codex-daemon 60/60 and codex-config 38/38.
+- `live-codex-daemon` (unsandboxed): 35/36. The one failure is F15, explained above.
+
+### Activation
+
+`chezmoi apply` deploys the launcher, xreview, the hook, the skill and the config pin. The
+LaunchAgent's XDG variables apply only after
+`launchctl bootout gui/$UID/be.netronix.codex-app-server` and `launchctl bootstrap …`,
+which disconnects every Codex TUI, so Michael decides when.
