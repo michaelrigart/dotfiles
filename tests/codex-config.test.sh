@@ -64,6 +64,13 @@ has '^\s*daemon_auto_start = false' "daemon_auto_start forced off even when the 
 emit ''
 has '^\s*daemon_auto_start = false' "daemon_auto_start emitted even when absent from the input"
 
+echo "A2b. the in-TUI update prompt stays off (spec 2026-10-01 §4.1)"
+emit 'check_for_update_on_startup = true
+'
+has '^\s*check_for_update_on_startup = false' "the update prompt is forced off over a live 'true'"
+emit ''
+has '^\s*check_for_update_on_startup = false' "and pinned off on an empty live file"
+
 echo "A3. every TUI puts its thread id first in its title"
 # The pane-map hook and xreview join a pane to its thread through the title. Codex
 # truncates long titles, so thread-id must be FIRST or it is the part that gets cut.
