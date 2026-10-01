@@ -95,6 +95,8 @@ expect deny  "with -C, absolute target"     "$TMP" "git -C $REPO worktree remove
 expect allow "-c value quotes a worktree verb"  "$TMP" 'git -c alias.example="git worktree unlock x" config --get user.name'
 expect allow "-c single-quoted verb value"      "$TMP" "git -c alias.wtu='worktree unlock' config --get alias.wtu"
 expect deny  "-c quoted value, real unlock"     "$TMP" 'git -c core.x="y" worktree unlock x'
+expect allow "-c value with escaped quotes"     "$TMP" 'git -c alias.example="echo \"git worktree unlock x\"" config --get alias.example'
+expect deny  "-c escaped quote, real unlock"    "$TMP" 'git -c core.x="a\"b" worktree unlock x'
 expect deny  "-C quoted path, real unlock"      "$TMP" 'git -C "/my path" worktree unlock x'
 expect deny  "--force before the target"    "$TMP" "git worktree remove --force $SIB"
 # The exact shapes of the six commands that produced the husks.
