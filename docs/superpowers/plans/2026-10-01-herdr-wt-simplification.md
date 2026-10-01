@@ -1,5 +1,7 @@
 # Herdr/wt simplification Implementation Plan
 
+> **Completed 2026-10-02.** Do not re-run; the execution banners below bound that run only. Deviations and rulings are in the spec's "Implementation notes".
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Fix the three verified wt/Herdr bugs and delete the machinery behind two of them, as specified in the design.

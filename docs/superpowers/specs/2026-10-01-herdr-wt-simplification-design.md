@@ -1,6 +1,6 @@
 # Herdr/wt simplification
 
-**Status:** In progress (branch herdr-wt-simplify; the dotfiles have no MR)
+**Status:** Implemented (branch herdr-wt-simplify; the dotfiles have no MR, so the rulings and deviations are recorded in "Implementation notes" at the end)
 **Date:** 2026-10-01
 **Branch:** `herdr-wt-simplify`
 
@@ -303,3 +303,63 @@ exact name, unsandboxed.
   the checkout. `dev-topology` asserts the field against the real binary.
 - **A new named session** stops `wt-rm` until it is deleted. That is intended: none exist in
   normal use, and a scan over all of them is the code this design removes.
+
+## Implementation notes
+
+What shipped differs from the sections above in the ways listed here. The dated text above is
+left as it was signed off; these notes are the record of each change. The dotfiles have no
+MR, so this list is the place the rulings land.
+
+**Deviations and rulings**
+- **§1, stopped-session helper.** `_wt_stopped_herdr_has_checkout` built its state path in the
+  same `local` line that declared `session_dir`. zsh expands every argument of a `local` line
+  before assigning any, so it read the *caller's* `session_dir`. That only worked because the
+  old caller happened to use that name. Under the new two-pass loop it would have failed open.
+  The fix splits the declaration, a comment warns against re-joining it, and test U22 fails if
+  the lines are joined again.
+- **§1, tests.** Two assertions mandated by the plan passed whatever the code did, and were
+  tightened (U2, U6). U20 and U21 now pin "all refusals before the first close" across a
+  second session: a single-pass implementation fails them.
+- **§2.** The comment listing the scan's three bounds landed in Task 2's fix round, because no
+  task text had assigned it.
+- **§4, segment starts.** The guard also treats `do`, `then`, `else`, `elif`, `if`, `while`,
+  `until`, `time`, `command`, `!`, `{` and an absolute path before `git` (`/usr/bin/git`) as
+  segment starts. §4 named only `sudo` and `NAME=value`. The three rules are unchanged; the
+  likeliest way an agent crosses the lock is a `for …; do git worktree remove -ff …; done`
+  cleanup loop, and a reasonable reader expects that to be caught.
+- **§4, latency.** Spec §4's fast path (`worktree` anywhere in the payload) sent every Bash call
+  of a harness-worktree session to the slow path: about 120 ms instead of 8 ms, and seconds on
+  long commit messages. The fast path now requires `worktree` followed by whitespace or a
+  backslash. A command-level verb check and a per-segment pre-check follow it. A side-by-side
+  run of 840 commands shows no input the old guard denied that the new one allows.
+- **§4, heredocs and comments.** The scanner treats heredoc bodies and `#` comments as text
+  that never starts a segment; §4 named only quoted text. Known remaining false deny: a
+  commit-message heredoc inside `"$(cat <<'EOF' …)"` whose body has an odd number of `"` flips
+  the quote state, so a later body line starting with `git worktree unlock` is denied. The
+  reason it prints is actionable; recorded rather than fixed.
+- **§4, not segment starts.** `exec`, `env`, `nohup`, `time -p`, `sudo -u` and quoted
+  subcommands (`git work"tree" …`) are not segment starts. The Git lock still refuses those
+  removals.
+- **§5, provenance on fresh workspaces.** herdr 0.9.3 records no `worktree` provenance on a
+  fresh `workspace create --cwd`; only `worktree open` does. The live session's primary
+  workspaces carry it (the Baseline's 18 of 21), apparently added later, on restore. So a
+  workspace that `dev` has just built is found through the pane-cwd fallback until then.
+  Behaviour is correct either way. The live gate accepts either identity and fails when
+  neither holds.
+- **§5, lock timeout.** Deleting section K removed the only lock-timeout test. It was ported to
+  path mode as D10. N7d pins `--make-tab`'s toplevel resolution from a subdirectory pane.
+- **§8, partial copy.** A failed `cp -pR` of a directory entry left a partial copy, which the
+  prescribed `wt-prepare` recovery then skipped as "already present". On failure the partial
+  copy is now removed with `rm -rf` (CP4). Residual: an interrupted copy, or a read-only
+  subdirectory that stops the `rm`, can still leave a partial entry.
+- **§8, symlinks.** `cp -pR` writes through an existing destination symlink. Unlike `wtcp`, it
+  does not refuse existing destinations, so `_wt_manifest`'s present-entry filter is the only
+  guard. An end-to-end test (m6) pins it.
+- **§9.** Herdr lists a newly split pane directly after the pane it split. The gate therefore
+  snapshots the agents panes before the manual split. Three gate checks that could pass
+  without testing anything were made to prove their preconditions: the tab close, the split,
+  and the plugin listing.
+
+**Not done, by decision:** workspace-id format validation in `_wt_herdr_classify`, comparing
+pane cwd unresolved (only provenance is resolved, as §1 asks), and the remaining test-precision
+minors. They are recorded in the execution ledger and do not affect behaviour.
