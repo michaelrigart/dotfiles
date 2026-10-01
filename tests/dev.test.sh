@@ -455,6 +455,24 @@ run_layout "export HERDR_ENV=1
 logged "workspace create" "D9 another checkout's workspace is not adopted; a new one is built"
 unlogged "workspace focus w5" "D9 the other checkout's workspace is not focused"
 
+# D10: a lock held by another process times out loudly and builds nothing. Two dev runs
+# racing past a stuck lock is how duplicate workspaces get made.
+D10_LOCKDIR="$XDG_STATE_HOME/herdr-layout"
+mkdir -p "$D10_LOCKDIR"
+D10_KEY="${R1//\//-}"; D10_KEY="${D10_KEY#-}"
+D10_LOCK="$D10_LOCKDIR/$D10_KEY.lock"
+: >> "$D10_LOCK"
+zsh -c "zmodload -F zsh/system b:zsystem; zsystem flock '$D10_LOCK'; sleep 8" &
+D10_HOLDER=$!
+sleep 0.7
+run_layout "export HERDR_ENV=1 HL_LOCK_TIMEOUT=1; mock_panes '/nowhere'" "$R1"
+kill $D10_HOLDER 2>/dev/null; wait $D10_HOLDER 2>/dev/null
+unset HL_LOCK_TIMEOUT
+rc_is 1 "D10 a held lock fails the run"
+has "held the lock" "D10 says why"
+unlogged "workspace create" "D10 nothing is created"
+unlogged "workspace focus" "D10 nothing is focused"
+
 # --- E: existing workspaces: focus, add missing tabs -----------------------
 print -r -- "-- E: an existing workspace is never refused"
 L="Netronix/curato"
