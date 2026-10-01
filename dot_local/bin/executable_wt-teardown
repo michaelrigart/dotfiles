@@ -23,6 +23,7 @@ typeset -i KILL_WAIT=${WT_TEARDOWN_KILL_WAIT:-5}
 die() { print -ru2 -- "$PROG: $*"; exit 1 }
 usage() {
   print -ru2 -- "usage: $PROG [--pidfile REL]... [--sweep COMMAND]... setup|teardown"
+  print -ru2 -- "       $PROG scan"
   exit 64
 }
 
@@ -42,10 +43,11 @@ typeset VERB="$1"
 case "$VERB" in
   setup)    exit 0 ;;
   teardown) ;;
+  scan)     (( ${#PIDFILES} || ${#SWEEPS} )) && usage ;;
   *)        usage ;;
 esac
 
-# Everything below is the teardown verb.
+# Everything below serves the teardown and scan verbs.
 #
 # Validated here rather than trusted: the protocol supplies these, but a hook run by
 # hand supplies nothing, and a helper that resolved paths from a half-set environment
@@ -192,6 +194,12 @@ _scan() {
   (( ${#hits} )) && print -rl -- $hits
   return 0
 }
+
+# scan: report occupants for wt-rm's last check, signal nothing.
+if [[ "$VERB" == scan ]]; then
+  _scan "$WT"
+  exit $?
+fi
 
 # _still_here <pid>... — filter a pid list down to those lsof still reports inside $WT.
 # Returns 1 if the scan itself failed, so callers fail closed rather than signalling blind.

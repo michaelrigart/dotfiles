@@ -43,6 +43,8 @@ run() { WT_WORKTREE="$WT" zsh "$SUBJECT" "$@" 2>&1; }
 # Real lsof never reports a zombie — it has no cwd. Reparenting to launchd, which reaps
 # immediately, is what makes the stub agree with the thing it stands in for.
 spawn() { ( "$@" >/dev/null 2>&1 & echo $! ); }
+# spawn_in <dir> <cmd...> — spawn, detached, with its cwd in <dir>.
+spawn_in() { ( cd "$1" || exit 1; shift; "$@" >/dev/null 2>&1 & echo $! ); }
 
 echo "A. verbs"
 out="$(run setup)"; is "setup is an accepted no-op" "$?" "0"
@@ -84,7 +86,7 @@ emulate -L zsh
 local d="${0:h}"
 if [[ "$(cat "$d/mode" 2>/dev/null)" == raw ]]; then
   cat "$d/raw"
-  exit 0
+  exit "$(cat "$d/rc" 2>/dev/null || echo 0)"
 fi
 # Count fixture calls so a test can say "present for the first N scans, gone afterwards".
 # The subject scans four times per run: build OCCUPANT, re-check before TERM, re-check before
@@ -135,7 +137,7 @@ fi
 STUB
 chmod +x "$T/bin/lsof"
 : > "$T/bin/live"; : > "$T/bin/raw"; echo live > "$T/bin/mode"
-mk_raw()  { printf "$@" > "$T/bin/raw"; echo raw > "$T/bin/mode"; : > "$T/bin/calls"; rm -f "$T/bin/drop_after"; }
+mk_raw()  { printf "$@" > "$T/bin/raw"; echo raw > "$T/bin/mode"; : > "$T/bin/calls"; rm -f "$T/bin/drop_after" "$T/bin/rc"; }
 mk_live() { cat > "$T/bin/live"; echo live > "$T/bin/mode"; : > "$T/bin/calls"; rm -f "$T/bin/drop_after"; }
 srun() { PATH="$T/bin:/usr/bin:/bin" WT_WORKTREE="$WT" zsh "$SUBJECT" "$@" 2>&1; }
 
@@ -513,6 +515,100 @@ out="$(PATH="$T/bin:/usr/bin:/bin" WT_WORKTREE="$WT" \
 is "an unconfirmed stop exits nonzero even with a clear final scan" "$?" "1"
 kill -9 "$unconfirmed" 2>/dev/null
 rm -f "$T/bin/drop_after" "$T/unconfirmed.ready"
+
+echo
+echo "U. scan reports occupants and signals nothing"
+mk_live </dev/null
+out="$(srun scan)"; is "an idle worktree scans clean" "$?" "0"
+is "and reports nothing" "$out" ""
+is "scan reads the process list exactly once" "$(cat "$T/bin/calls")" "1"
+
+occ="$(spawn command sleep 300)"
+mk_live <<EOT
+$occ sleep $WT/tmp/deep
+EOT
+out="$(srun scan)"; is "scan exits 0 when the worktree is occupied" "$?" "0"
+has "and prints pid and command" "$out" "^$occ sleep"
+sleep 0.3
+is "scan signals nothing" "$(kill -0 "$occ" 2>/dev/null; echo $?)" "0"
+kill -9 "$occ" 2>/dev/null
+
+sib="$(spawn command sleep 300)"
+mk_live <<EOT
+$sib sleep ${WT}-two/x
+EOT
+out="$(srun scan)"; is "a sibling suffix is not an occupant" "$out" ""
+kill -9 "$sib" 2>/dev/null
+
+out="$(srun --sweep ruby scan)"; is "scan with --sweep is a usage error" "$?" "64"
+out="$(srun --pidfile tmp/pids/x.pid scan)"; is "scan with --pidfile is a usage error" "$?" "64"
+out="$(WT_WORKTREE= zsh "$SUBJECT" scan 2>&1)"; is "scan needs WT_WORKTREE" "$?" "1"
+out="$(PATH=/bin WT_WORKTREE="$WT" /bin/zsh "$SUBJECT" scan 2>&1)"
+is "scan without lsof fails closed" "$?" "1"
+has "and names lsof" "$out" "lsof is unavailable"
+
+echo
+echo "V. scan fails closed on a listing it cannot trust"
+mk_raw ''
+out="$(srun scan)"; is "an empty listing fails scan closed" "$?" "1"
+has "and says the list was unreadable" "$out" "could not read the process list"
+mk_raw 'p1\0R1\0claunchd\0fcwd\0nnot/absolute\0'
+out="$(srun scan)"; is "a relative cwd fails scan closed" "$?" "1"
+mk_raw 'pnot-a-pid\0R1\0claunchd\0fcwd\0n/\0'
+out="$(srun scan)"; is "a non-numeric pid fails scan closed" "$?" "1"
+mk_raw 'p1\0R1\0claunchd\0fcwd\0n/\0p4321\0R1\0chalfway\0fcwd\0n%s\0' "$WT"
+echo 1 > "$T/bin/rc"
+out="$(srun scan)"; is "a nonzero lsof exit fails scan closed even with records" "$?" "1"
+case "$out" in
+  *halfway*) _fail "records from a failed scan are not reported" ;;
+  *)         _pass "records from a failed scan are not reported" ;;
+esac
+mk_raw 'p1\0R1\0claunchd\0fcwd\0n%s\0' "/outside\\np99\\ncphantom\\nfcwd\\nn$WT"
+out="$(srun scan)"; is "a rendered path outside the checkout parses" "$?" "0"
+case "$out" in
+  *phantom*) _fail "escaped text never becomes a record" ;;
+  *)         _pass "escaped text never becomes a record" ;;
+esac
+
+echo
+echo "W. scan compares against lsof's LC_ALL=C rendering"
+BS="$T/back\\slash-co"; mkdir -p "$BS"
+mk_raw 'p1\0R1\0claunchd\0fcwd\0n/\0p4242\0R1\0cdaemon\0fcwd\0n%s\0' "$T/back\\\\slash-co"
+out="$(PATH="$T/bin:/usr/bin:/bin" WT_WORKTREE="$BS" zsh "$SUBJECT" scan 2>&1)"
+is "a backslash path scans" "$?" "0"
+has "and matches lsof's doubled backslash" "$out" "^4242 daemon"
+CTL="$T/ctrl"$'\n'"co"; mkdir -p "$CTL"
+mk_raw 'p1\0R1\0claunchd\0fcwd\0n/\0'
+out="$(PATH="$T/bin:/usr/bin:/bin" WT_WORKTREE="$CTL" zsh "$SUBJECT" scan 2>&1)"
+is "a control character in the path fails closed" "$?" "1"
+has "and says why" "$out" "control character"
+U8="$T/café-co"; mkdir -p "$U8"
+mk_raw 'p1\0R1\0claunchd\0fcwd\0n/\0p4244\0R1\0cdaemon\0fcwd\0n%s\0' "$T/caf\\xc3\\xa9-co"
+out="$(PATH="$T/bin:/usr/bin:/bin" WT_WORKTREE="$U8" zsh "$SUBJECT" scan 2>&1)"
+is "a non-ASCII path scans" "$?" "0"
+has "and matches the pinned rendering" "$out" "^4244 daemon"
+
+echo
+echo "X. scan against the real lsof"
+mkdir -p "$WT/deep" "${WT}-extra"
+inside="$(spawn_in "$WT/deep" sleep 60)"
+outside="$(spawn_in "${WT}-extra" sleep 60)"
+RU="$T/réal-çheckout"; mkdir -p "$RU/deep"
+u8pid="$(spawn_in "$RU/deep" sleep 60)"
+sleep 1
+out="$(PATH=/usr/sbin:/usr/bin:/bin WT_WORKTREE="$WT" zsh "$SUBJECT" scan 2>&1)"
+is "the real lsof listing is read" "$?" "0"
+has "a real process inside is reported" "$out" "^$inside sleep"
+case "$out" in
+  *"$outside sleep"*) _fail "a real process in the sibling path is not reported" ;;
+  *)                  _pass "a real process in the sibling path is not reported" ;;
+esac
+for loc in C en_US.UTF-8; do
+  out="$(LC_ALL=$loc PATH=/usr/sbin:/usr/bin:/bin WT_WORKTREE="$RU" zsh "$SUBJECT" scan 2>&1)"
+  is "a real non-ASCII checkout scans (LC_ALL=$loc)" "$?" "0"
+  has "and its occupant is found (LC_ALL=$loc)" "$out" "^$u8pid sleep"
+done
+kill -9 "$inside" "$outside" "$u8pid" 2>/dev/null
 
 echo
 echo "RESULT: $pass passed, $((pass + fail)) total, $fail failed"
