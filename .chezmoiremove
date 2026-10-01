@@ -18,7 +18,8 @@
 # first in fpath, so this stale copy shadows the Homebrew _mise and is never regenerated.
 .local/share/oh-my-zsh/cache/completions/_mise
 
-# Sourced a google-cloud-sdk that is not installed; nothing sources this file.
+# GCP is no longer used. This sourced a google-cloud-sdk that is not installed, and
+# nothing sources the file.
 .config/zsh/gcloud
 
 # Completion dumps in the old host-named style. The current dump, zcompdump-$ZSH_VERSION
