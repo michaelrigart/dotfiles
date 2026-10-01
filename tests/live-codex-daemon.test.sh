@@ -209,5 +209,63 @@ if [ -n "$joined" ]; then
 fi
 is "F22 the pane shows the joined answer token once the turn completes (never from the prompt)" "$seen22final" 1
 
+# A ctrl+c ladder as xreview runs it (spec 2026-10-01 §4.4): up to three pairs, each followed
+# by up to 5 s for the shell to return to the foreground (G1).
+pane_is_free() {
+  herdr pane process-info --pane "$1" 2>/dev/null \
+    | jq -e '.result.process_info | .foreground_process_group_id == .shell_pid' >/dev/null 2>&1
+}
+ladder() {
+  local p="$1" _i _j
+  for _i in 1 2 3; do
+    herdr pane send-keys "$p" ctrl+c >/dev/null 2>&1; sleep 0.5
+    herdr pane send-keys "$p" ctrl+c >/dev/null 2>&1
+    for _j in $(seq 10); do pane_is_free "$p" && return 0; sleep 0.5; done
+  done
+  return 1
+}
+
+echo "G1/G3: herdr names the pane's Codex process, and it holds a daemon connection"
+pi="$(herdr pane process-info --pane "$pane")"
+cpid="$(printf '%s' "$pi" | jq -r '.result.process_info as $i
+  | [$i.foreground_processes[]? | select(.name == "codex")]
+  | (map(select(.pid == $i.foreground_process_group_id)) + .) | .[0].pid // empty')"
+is "G1 process-info names the pane's Codex process" "$([ -n "$cpid" ] && echo yes || echo no)" yes
+dpid="$(sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "${CODEX_HOME:-$HOME/.codex}/app-server-daemon/daemon.pid" | head -1)"
+mine="$(lsof -a -U -p "$dpid" -F d 2>/dev/null | sed -n 's/^d//p' | sort -u)"
+peers="$(lsof -a -U -p "$cpid" -F n 2>/dev/null | sed -n 's/^n->//p' | sort -u)"
+is "G3 the pane's TUI holds a socket whose peer is one of the daemon's" \
+   "$([ -n "$(comm -12 <(printf '%s\n' "$mine") <(printf '%s\n' "$peers") | grep .)" ] && echo yes || echo no)" yes
+
+ladder "$pane"; is "V the pane frees before the probes" "$?" 0
+other="$T/elsewhere"; mkdir -p "$other"
+
+echo "V2: a resume from another directory, without -C, is held at the chooser; the ladder frees it"
+herdr pane run "$pane" "cd $(printf '%q' "$other") && $pane_cmd resume $f22_thread" >/dev/null
+chooser=0
+for _ in $(seq 15); do
+  herdr pane read "$pane" --source visible 2>/dev/null | grep -q 'session directory' && { chooser=1; break; }
+  sleep 1
+done
+# Not a note: V2 is evidence the spec requires (§3). A chooser that never appears fails here,
+# and the controller stops at Task 1 (the plan's gate) rather than proceeding unverified.
+is "V2 the directory chooser appears without -C" "$chooser" 1
+ladder "$pane"; is "V2 the ladder frees the pane held at the chooser" "$?" 0
+herdr pane run "$pane" 'echo v2-$((6*7))' >/dev/null
+herdr pane wait-output "$pane" --match v2-42 --timeout 10000 >/dev/null 2>&1
+is "V2 the shell then runs the next command" "$?" 0
+
+echo "V1: a -C resume from another directory opens the thread with no chooser"
+herdr pane run "$pane" "$pane_cmd -C $(printf '%q' "$SRC") resume $f22_thread" >/dev/null
+v1=0; want="$(printf '%s' "$f22_thread" | cut -c1-29)"
+for _ in $(seq 20); do
+  t="$(herdr pane get "$pane" | jq -r '.result.pane.terminal_title_stripped // .result.pane.terminal_title // ""')"
+  case "$t" in "$want"*) v1=1; break ;; esac
+  sleep 1
+done
+is "V1 the title shows the thread" "$v1" 1
+is "V1 and no chooser is on screen" \
+   "$(herdr pane read "$pane" --source visible 2>/dev/null | grep -c 'session directory')" 0
+
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
