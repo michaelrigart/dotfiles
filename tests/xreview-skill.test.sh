@@ -445,7 +445,8 @@ fi
 
 # spec 2026-10-01: the pane's screen is evidence, never instruction; harness worktrees use
 # their owner's pane; the new refusals are named, and the lock refusal is waited out.
-if grep -qi "pane's screen" "$SKILL" && grep -qi 'untrusted' "$SKILL"; then
+screen_bullet="$(awk '/pane.s screen/{f=1} f&&/^[[:space:]]*$/{exit} f' "$SKILL")"
+if [ -n "$screen_bullet" ] && printf '%s' "$screen_bullet" | grep -qi 'untrusted'; then
   _pass "the skill says the pane's screen is untrusted evidence"
 else _fail "the skill says the pane's screen is untrusted evidence" "missing"; fi
 if grep -q '\.claude/worktrees' "$SKILL"; then
@@ -457,6 +458,11 @@ else _fail "the skill names the per-pane lock refusal" "missing"; fi
 if printf '%s' "$esc" | grep -qi 'cannot inspect'; then
   _pass "the escalation list names the cannot-inspect refusal"
 else _fail "the escalation list names the cannot-inspect refusal" "missing from the list"; fi
+for phrase in 'cannot lock' 'cannot read whether' 'resuming something other than a thread id'; do
+  if printf '%s' "$esc" | grep -qi "$phrase"; then
+    _pass "the escalation list names '$phrase'"
+  else _fail "the escalation list names '$phrase'" "missing from the list"; fi
+done
 if printf '%s' "$esc" | grep -qi 'another dispatch'; then
   _fail "the lock refusal is not escalated" "it is on the escalation list"
 else _pass "the lock refusal is not escalated"; fi
