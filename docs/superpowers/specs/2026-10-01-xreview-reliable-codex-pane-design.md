@@ -250,10 +250,10 @@ resumed onto a running review.
   released once the resume step ends (confirmed or warned) by closing the descriptor, and
   by process exit on every other path. Every pane check in §4.4 runs inside it, so the
   checks see the state left by the previous holder. Nothing started inside the scope
-  outlives the dispatch: herdr, `xreview-rpc`, `ps` and `lsof` all exit. The daemon is
-  started earlier (`codex-daemon ensure`), by launchd, and inherits nothing. Every child
-  the scope does start runs with the descriptor closed anyway (`9>&-`), so a future
-  long-lived child cannot pin the lock.
+  outlives the dispatch: herdr, `xreview-rpc`, `jq` and `lsof` all exit. The daemon is
+  started earlier (`codex-daemon ensure`), by launchd, and inherits nothing. The resumed
+  TUI is started by the pane's shell, which is a child of the herdr server, not of
+  xreview, so it never inherits the descriptor either.
 - **Waiting.** The helper polls `LOCK_EX | LOCK_NB` until it succeeds or
   `XREVIEW_LOCK_WAIT` runs out. The default, 90 s, is above one holder's worst case: a
   20 s ladder, the turn start and a 20 s resume. At the bound, refuse:
