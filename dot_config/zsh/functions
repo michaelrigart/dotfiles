@@ -1144,7 +1144,7 @@ wt-rm() {
     # asks the OS rather than Herdr. Deliberately after teardown: stopping project
     # services is what the teardown verb is for, so scanning before it would refuse
     # every repository that does the right thing. As late as the sequence allows, which
-    # is the most a snapshot can offer — see `wt-teardown scan` for what it cannot see.
+    # is the most a snapshot can offer — see `_scan` in dot_local/bin/executable_wt-teardown for what it cannot see.
     local busy line
     busy="$(WT_WORKTREE="$dest" command wt-teardown scan)" || {
       print -ru2 -- "wt-rm: could not scan for processes still in $dest — refusing."

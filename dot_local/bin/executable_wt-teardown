@@ -148,7 +148,13 @@ _ancestors() {
 # the pid -> ppid map _ancestors reads, from the same listing — see _ancestors for why
 # one call has to feed both.
 #
-# The parse discipline is deliberate and mirrors _wt_live_processes:
+# What a clean result means: no process of the caller's had its cwd in <abs-dir> at the
+# instant of the scan — not that nothing is using it. Three bounds, all deliberate:
+# unprivileged lsof cannot see other users' processes; a descriptor held open from a cwd
+# outside <abs-dir> is not seen; and it is a snapshot, so a process can enter afterwards.
+# The full argument is in docs/superpowers/specs/2026-09-11-worktree-teardown-helper-design.md.
+#
+# The parse discipline is deliberate:
 #   -F0 gives NUL-terminated fields, so framing does not rest on lsof's escaping of a
 #   newline inside a pathname. A single invocation keeps the status attached to the
 #   listing actually parsed — split across two, a scan that died partway would read as an
