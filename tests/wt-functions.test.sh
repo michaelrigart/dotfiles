@@ -968,13 +968,15 @@ ln -s "$ROOTTMP/elsewhere/t.env" "$D/t.env"
 print -r -- "t.env" > "$REPO/.worktreeinclude"
 OUT="$(cd "$REPO" && source "$FUNCS" && _wt_manifest "$REPO" "$D" && print -r -- "${#_WT_CARRY[@]}")"
 eq "$OUT" "0" "an existing final destination symlink is filtered, not carried"
-# No separate write-through assertion: the property is pinned entirely by
-# _WT_CARRY being empty above. _wt_manifest performs no writes under any code
-# path, so a direct "the target file is unchanged" check would pass whether
-# filtering works, is broken, or the function doesn't exist at all — it was
-# tried and proven vacuous. An end-to-end version (through the copy) wouldn't
-# discriminate either: cp would write through an existing destination symlink, so
-# the property only holds because the manifest is filtered first.
+# End to end, because BSD `cp -pR` writes THROUGH an existing destination symlink, to a
+# file or a directory. The present-entry filter above is the only thing standing
+# between a symlinked destination and a write outside the worktree, so the copy itself
+# is run and the symlink's target checked. (A check on _wt_manifest alone passes
+# whether or not _wt_do_prepare honours the filter.)
+run "$REPO" wt-prepare m6
+rc_is 0 "prepare over a destination symlink succeeds"
+eq "$(<"$ROOTTMP/elsewhere/t.env")" "UNTOUCHED" "prepare never writes through a destination symlink"
+[[ -L "$D/t.env" ]] && _pass "the destination symlink is left in place" || _fail "the destination symlink is left in place"
 
 # Missing source warns and continues.
 setup
