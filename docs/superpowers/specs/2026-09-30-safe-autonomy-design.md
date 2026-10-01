@@ -458,3 +458,38 @@ pre-merge review, which approved in round 2.
 
   Re-run `.scripts/measure-interventions.py --days 14` 14 days after apply. The prompt
   count comes from `~/.local/state/agent-audit/prompts.jsonl`.
+
+### Rule 4 follow-up: inert arguments (branch `fix/guard-inert-text`, 2026-10-01)
+
+Outside the plain grammar, `could_push` denied on the raw text matching `git … push`. That
+falsely denied calls that cannot push: a commit message mentioning a push in a chain, or a
+filename such as `git-push-guard.py` passed to `rg`, `wc` or `git add`. Now `inert_text`
+drops the arguments of provably inert commands before the match. Rulings:
+
+- **Structure.**
+  - Redaction applies only to a flat list of simple commands: operators exactly
+    `&& || ; |`, no keywords or groups, and redirections only to `/dev/null` or descriptor
+    duplicates.
+  - A pipeline with any non-inert member stays whole.
+  - Anything else keeps the raw text: heredocs, substitutions, `$'…'`, `#`, newlines, `&`,
+    `|&`, parens, and file redirects. So does a call in which nothing is inert.
+- **Inert tools:** `rg grep fd cat head tail wc echo printf ls eza diff cmp cut sort tr jq
+  test [`. The exceptions are `rg --pre`/`--hostname-bin`, `fd -x/-X/--exec`, `sort -o`,
+  `--o*` and `--c*`, and `printf -v`. `uniq` was excluded because it writes its second
+  operand.
+- **Inert git:** `add commit status switch branch rm mv restore rev-parse tag`, plus `stash`
+  with `push`, `save`, `pop`, `apply`, `drop`, `clear` or `branch`. The rest are excluded:
+  `log`, `show`, `diff`, `grep`, `fetch` and others carry options that execute or write files
+  (`--output`, `--upload-pack`, `-O`, `--exec`), and abbreviations and short bundles kept
+  reopening them. Abbreviated dangerous long options, `-c`, `--config-env` and unknown global
+  options also make a git command non-inert.
+- **Flipped to allow on purpose:** `echo "git push origin main"` and
+  `rg "git push origin main" docs/`.
+- **Flipped to deny on purpose:** `git log --grep "git push" … | wc -l` and
+  `git grep -n "push"`.
+- **Review.** Codex's adversarial pre-merge review ran four rounds. It found three bypass
+  classes (unknown option shapes, shell grouping, file-writing git options), each closed by
+  narrowing rather than patching. Round 4 approved. The guard suite passes 554/554, up from
+  485.
+- **Evaluation impact.** False push-guard denies on such commands stop from this merge.
+  Count them separately when comparing against the baseline above.
