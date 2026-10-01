@@ -179,6 +179,58 @@ text
 EOF
 git worktree unlock x"
 
+echo "== segment starts: compound-command and wrapper shapes =="
+expect deny  "for loop, -ff"                "$TMP" 'for w in a b; do git worktree remove -ff "$w"; done'
+expect deny  "if/then unlock"               "$TMP" 'if true; then git worktree unlock x; fi'
+expect deny  "brace group unlock"           "$TMP" '{ git worktree unlock x; }'
+expect deny  "negated unlock"               "$TMP" '! git worktree unlock x'
+expect deny  "time unlock"                  "$TMP" 'time git worktree unlock x'
+expect deny  "command unlock"               "$TMP" 'command git worktree unlock x'
+expect deny  "absolute git path unlock"     "$TMP" '/usr/bin/git worktree unlock x'
+expect deny  "else branch unlock"           "$TMP" 'if false; then true; else git worktree unlock x; fi'
+expect deny  "sudo after a keyword"         "$TMP" 'do sudo git worktree unlock x'
+expect deny  "env then command"             "$TMP" 'A=1 command /usr/bin/git -C . worktree unlock x'
+expect allow "plain for loop"               "$TMP" 'for w in a b; do echo "$w"; done'
+expect allow "plain if"                     "$TMP" 'if true; then ls; fi'
+expect allow "for loop, worktree list"      "$TMP" 'for w in a b; do git worktree list; done'
+expect allow "absolute path, not git"       "$TMP" '/usr/bin/mygit worktree unlock x'
+
+echo "== fast path: a harness cwd alone must not start jq =="
+STUBBIN="$TMP/stubbin"; mkdir -p "$STUBBIN"
+cat >"$STUBBIN/jq" <<STUB
+#!/bin/sh
+touch "$TMP/jq-called"
+PATH=\${PATH#"$STUBBIN:"}
+exec jq "\$@"
+STUB
+chmod +x "$STUBBIN/jq"
+# jq_called <cwd> <command> -> yes|no: did the guard reach jq?
+jq_called() {
+  rm -f "$TMP/jq-called"
+  jq -n --arg c "$2" --arg d "$1" \
+    '{hook_event_name:"PreToolUse",tool_name:"Bash",cwd:$d,transcript_path:($d+"/t.jsonl"),tool_input:{command:$c}}' \
+    | PATH="$STUBBIN:$PATH" bash "$GUARD" >/dev/null
+  if [ -e "$TMP/jq-called" ]; then echo yes; else echo no; fi
+}
+expect_jq() {
+  local want=$1 label=$2 got
+  got=$(jq_called "$3" "$4")
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf '  ok   %s\n' "$label"
+  else
+    fail=$((fail + 1)); printf '  FAIL %s (jq called: want %s, got %s)\n' "$label" "$want" "$got"
+  fi
+}
+expect_jq no  "harness cwd + ls: fast path"            "$REPO/.claude/worktrees/x" 'ls'
+expect_jq no  "harness cwd + "worktrees" in text: fast path"   "$REPO/.claude/worktrees/x" 'git commit -m "fix worktrees layout"'
+expect_jq no  "worktree word at the end: fast path"    "$REPO/.claude/worktrees/x" 'echo worktree'
+expect_jq yes "git worktree remove reaches jq"         "$TMP" 'git worktree remove x'
+expect_jq yes "tab-separated reaches jq"               "$TMP" $'git worktree\tunlock x'
+expect_jq yes "continuation reaches jq"                "$TMP" $'git worktree \\\nunlock x'
+expect deny  "harness cwd, unlock still denied"        "$REPO/.claude/worktrees/x" 'git worktree unlock x'
+expect deny  "tab between worktree and verb"           "$TMP" $'git worktree\tunlock x'
+expect allow "harness cwd + git worktree list"         "$REPO/.claude/worktrees/x" 'git worktree list'
+
 echo "== bypass switch, any position =="
 expect allow "bypass leading"   "$TMP" "WT_GUARD=off git worktree remove $SIB"
 expect allow "bypass middle"    "$TMP" "cd /tmp && WT_GUARD=off git worktree remove $SIB"

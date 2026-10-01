@@ -20,11 +20,13 @@ deny() {
 }
 
 payload=$(cat)
-case "$payload" in *worktree*) ;; *) allow ;; esac
+case "$payload" in *worktree[[:space:]\\]*) ;; *) allow ;; esac
 command -v jq >/dev/null 2>&1 || allow
 cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command // empty' 2>/dev/null) || allow
 [ -n "$cmd" ] && [ "$cmd" != null ] || allow
 case "$cmd" in *WT_GUARD=off*) allow ;; esac
+verb_re='worktree([[:space:]]|\\)+(remove|unlock)'
+[[ $cmd =~ $verb_re ]] || allow
 
 REMEDY="Retire a wt worktree with:
 
@@ -35,7 +37,7 @@ non-interactive shell.) A worktree owned by another tool goes through that tool'
 lifecycle. For a deliberate manual reconciliation, re-run with WT_GUARD=off."
 
 NL=$'\n'; TAB=$'\t'
-prefix_re='^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*(sudo[[:space:]]+)?git([[:space:]]+-[^[:space:]]+([[:space:]]+[^[:space:]-][^[:space:]]*)?)*[[:space:]]+worktree[[:space:]]+'
+prefix_re='^[[:space:]]*((do|then|else|elif|time|command|!|\{|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|sudo)[[:space:]]+)*(/[^[:space:]]*/)?git([[:space:]]+-[^[:space:]]+([[:space:]]+[^[:space:]-][^[:space:]]*)?)*[[:space:]]+worktree[[:space:]]+'
 
 # sibling_of <abs-target> — print "<repo-dir> <slug>" when the target is a wt sibling.
 sibling_of() {
@@ -79,6 +81,7 @@ target_of() {
 check() {
   local seg=$1 sub args force=0 tok f target sib
   seg=${seg%%"$NL"*}   # a quoted string may span lines; only its first line can be a command
+  case "$seg" in *worktree*) ;; *) return 0 ;; esac
   printf '%s' "$seg" | grep -Eq "${prefix_re}(remove|unlock)([[:space:]]|\$)" || return 0
   sub=$(printf '%s' "$seg" | sed -E "s#${prefix_re}##")
   case "$sub" in
