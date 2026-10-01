@@ -429,10 +429,11 @@ expect allow "a shell running a push that is not git" "$R"   "bash -c 'docker pu
 expect allow "a shell running git that cannot push"   "$R"   "bash -c 'git status'"
 expect deny  "a shell alias that pushes"              "$R"   'git shp'
 expect allow "an alias that does not push"           "$R"   'git st'
-# Text that holds git and push outside a plain push is denied too: the guard reads no
-# shape but the plain one, so it cannot tell a mention from a call.
-expect deny  "echo mentioning a push"                 "$R"   'echo "git push origin main"'
-expect deny  "rg for the text"                        "$R"   'rg "git push origin main" docs/'
+# Text that holds git and push outside a plain push is denied too, unless it sits in the
+# arguments of a command that never runs them (echo, rg, cat, git commit, ...): the guard
+# reads no shape but the plain one, so any other command may run what it is given.
+expect allow "echo mentioning a push"                 "$R"   'echo "git push origin main"'
+expect allow "rg for the text"                        "$R"   'rg "git push origin main" docs/'
 expect allow "rg for the text, with git and push kept apart" "$R" "rg 'git pu[s]h origin main' docs/"
 expect allow "a commit message about pushing"         "$R"   'git commit --allow-empty -m "push to main later"'
 # Here-documents are not modelled: any << next to something push-shaped is denied, even
@@ -464,6 +465,91 @@ expect deny  "a quoted token starting with # is outside the grammar" "$R" "git p
 expect allow "a quoted # inside a push option"        "$R"   "git push --push-option='ci.variable=A#1' origin feat"
 expect allow "a # inside a word is not a comment"     "$R"   'git push -o ci.variable=A#1 origin feat'
 expect allow "a word containing push, no git"         "$R"   'ls pushed/'
+
+echo "== rule 4: text in the arguments of an inert command is data =="
+# Outside the plain grammar the guard reads the command text, but the arguments of a tool
+# that never runs them (a commit message, a file name, a search pattern) are not counted.
+expect allow "a commit message mentioning a push, after add" "$R" 'git add f && git commit -m "Set autoSetupRemote so a first push needs no -u"'
+expect allow "a commit message saying push, then echo" "$R"   'git commit -m "push docs"; echo done'
+expect allow "rg over the guard file"                 "$R"   'rg -n x dot_claude/git-push-guard.py'
+expect allow "rg over the guard file, quoted pattern" "$R"   "rg -n 'x' dot_claude/git-push-guard.py"
+expect allow "wc over the guard file"                 "$R"   'wc -l dot_claude/git-push-guard.py tests/x.test.sh'
+expect allow "git log piped to rg push"               "$R"   'git log --oneline | rg push'
+expect allow "cat piped to grep for git push"         "$R"   'cat notes | grep "git push"'
+expect deny  "git log is not inert, even to /dev/null" "$R" 'git log --grep "git push" 2>/dev/null | wc -l'
+expect allow "an inert git command redirected to /dev/null" "$R" 'git status 2>/dev/null && git commit -m "push later"'
+expect allow "add, status, then a commit message about a push" "$R" 'git add f && git status && git commit -m "push later"'
+expect allow "switch -c, then a commit message about push defaults" "$R" 'git switch -c x && git commit -m "explain push defaults"'
+# Only an explicit set of git subcommands is inert; difftool, clone and friends run words.
+expect deny  "difftool -x running a push"             "$R"   "git add f && git difftool -x 'git push origin main' HEAD"
+expect deny  "difftool --extcmd running a push"       "$R"   "git add f && git difftool --extcmd='git push' HEAD"
+expect deny  "clone --template, which is not inert"   "$R"   "rg x && git clone --template=/tmp/t 'git push' y"
+expect deny  "mergetool, then a push of its own"      "$R"   'git add f && git mergetool --tool-help; git push origin main'
+expect deny  "git grep is not inert, after status"    "$R"   'git status && git grep -n "push" -- README.md'
+expect allow "add of the guard file, then a commit"   "$R"   'git add dot_claude/git-push-guard.py && git commit -m x'
+expect allow "stash push is not a push"               "$R"   'git stash push -m wip && git status'
+# Only subcommands whose options neither run a command nor write a file are inert: log,
+# show and diff take --output=<file>, which a later command can run.
+expect deny  "log --output writing a push, then sh"   "$R"   'git log -1 --format="git push origin main%n" --output=x.sh && sh x.sh'
+expect deny  "log --output as separate values, then sh" "$R" 'git log -1 --format "git push origin main%n" --output x.sh && sh x.sh'
+expect deny  "show --output, then sh"                 "$R"   'git show --format="git push origin main%n" --output=x.sh HEAD && sh x.sh'
+expect deny  "diff is not inert: its words count"     "$R"   'git diff --output=x.sh -- "git push" && sh x.sh'
+expect deny  "stash list takes log options"           "$R"   'git stash list --format="git push origin main" --output=x.sh && sh x.sh'
+expect allow "add, then a commit message about docs"  "$R"   'git add f && git commit -m "push docs"'
+# git takes any unambiguous prefix of a long option, and a short option inside a bundle.
+expect deny  "an abbreviated --upload-pa=<cmd>"       "$R"   "git status && git ls-remote --upload-pa=\"sh -c 'git push origin main'\" ."
+expect deny  "an abbreviated --upload-pa <cmd>"       "$R"   "git status && git ls-remote --upload-pa \"sh -c 'git push origin main'\" ."
+expect deny  "grep -nO<cmd>, -O inside a bundle"      "$R"   "git status && git grep -nO\"sh -c 'git push origin main'\" x -- README.md"
+expect deny  "fetch -qu <cmd>, -u inside a bundle"    "$R"   "git status && git fetch -qu \"sh -c 'git push'\" origin"
+expect deny  "config planting uploadpack, then fetch" "$R"   "git status && git config remote.origin.uploadpack \"sh -c 'git push'\" && git fetch origin"
+expect deny  "rebase -ix running a push, after add"   "$R"   'git add f && git rebase -ix "git push" main'
+# Only a flat list of simple commands is redacted: operators && || ; | alone, redirects only
+# to /dev/null or between descriptors, no shell keyword as a command word. Anything else
+# (a group, a loop, a newline, a background job, |&, a file redirect) is read raw.
+expect allow "a wc over two files"                    "$R"   'wc -l a b'
+expect deny  "a subshell of echo piped to sh"         "$R"   '(echo "git push origin main") | sh'
+expect deny  "a { } group of echo piped to sh"        "$R"   '{ echo "git push origin main"; } | sh'
+expect deny  "a subshell of echo written, then run"   "$R"   '(echo "git push origin main") > x.sh && sh x.sh'
+expect deny  "echo piped over a newline to sh"        "$R"   'echo "git push origin main" |
+sh'
+expect deny  "echo in the background, then sh"        "$R"   'echo "git push origin main" & sh x.sh'
+expect deny  "echo written to a file, then sh"        "$R"   'echo "git push" > x.sh; sh x.sh'
+expect deny  "an if around echo, piped to sh"         "$R"   'if true; then echo "git push origin main"; fi | sh'
+expect deny  "echo piped with |& to sh"               "$R"   'echo "git push origin main" |& sh'
+# Whatever can run text keeps counting it.
+expect deny  "add, then a push"                       "$R"   'git add f && git push origin main'
+expect deny  "true, then a push"                      "$R"   'true; git push origin main'
+expect deny  "xargs running a push"                   "$R"   'echo origin | xargs git push'
+expect deny  "sh -c with a push, in a chain"          "$R"   'rg x && sh -c "git push origin main"'
+expect deny  "bash -c with a push"                    "$R"   "bash -c 'git push'"
+expect deny  "eval with a push, in a chain"           "$R"   'ls && eval "git push origin main"'
+expect deny  "a push in a substitution in a message"  "$R"   'git commit -m "$(git push origin main)"'
+expect deny  "a push in backticks in a message"       "$R"   'git commit -m "`git push`"'
+expect deny  "find -exec running a push"              "$R"   'find . -name x -exec git push \;'
+expect deny  "awk calling system on a push"           "$R"   "awk 'BEGIN{system(\"git push\")}'"
+expect deny  "rebase --exec pushing, after add"       "$R"   'git add f && git rebase --exec "git push" main'
+expect deny  "submodule foreach pushing, after add"   "$R"   'git add f && git submodule foreach "git push"'
+expect deny  "a heredoc into sh"                      "$R"   'cat <<EOF | sh
+git push
+EOF'
+expect deny  "env git push, then true"                "$R"   'env git push origin main && true'
+expect deny  "command git push, then true"            "$R"   'command git push origin main; true'
+expect deny  "a -c alias push after rg"               "$R"   'rg x && git -c alias.y=push y origin main'
+# Data fed to something that runs it, or written for a later command to run.
+expect deny  "echo piped to sh"                       "$R"   'echo "git push origin main" | sh'
+expect deny  "printf piped through cat to bash"       "$R"   "printf 'git push' | cat | bash"
+expect deny  "echo into a file that sh then runs"     "$R"   'echo "git push origin main" > x.sh && sh x.sh'
+expect deny  "printf -v into a variable that eval runs" "$R" "printf -v c 'git push origin main'; eval \"\$c\""
+expect deny  "rg --pre running a push"                "$R"   "rg --pre 'git push' x docs/"
+expect deny  "fd --exec running a push"               "$R"   'fd -x git push'
+expect deny  "sort -o writing a file that sh runs"    "$R"   'echo "git push origin main" | sort -o x.sh && sh x.sh'
+expect deny  "an abbreviated sort --outp=<file>"      "$R"   'echo "git push origin main" | sort --outp=x.sh && sh x.sh'
+expect deny  "uniq writing its second operand"        "$R"   'echo "git push origin main" | uniq - x.sh && sh x.sh'
+expect allow "sort with no output file stays inert"   "$R"   'rg -n "git push" docs | sort'
+expect deny  "git config planting a push alias"       "$R"   "git config alias.p '!git push origin main' && git p"
+expect deny  "git -c core.pager running a push"       "$R"   "git -c core.pager='git push' log | wc -l"
+expect deny  "a comment after an inert command"       "$R"   'git status # git push'
+expect deny  "ANSI-C quoting hiding a push"           "$R"   "echo \$'\\'' ; git push origin main ; echo \$'\\''"
 
 echo "== rule 4: pushes that ask =="
 expect ask   "HEAD:main"                              "$R" 'git push origin HEAD:main'

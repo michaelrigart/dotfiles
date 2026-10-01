@@ -18,10 +18,13 @@
 #
 # No token may hold a $( ) or backtick substitution other than the three current-branch
 # forms, and no token may begin with # (a comment, or a quoted '#...' literal: both are
-# outside the grammar). could_push always reads the raw command text. A single git command of the same shape that does not push is left alone. Any
-# other command that could run git push (git and push in its text, or git and a push
-# alias) is a silent deny asking for the push as a plain command. Nothing else is parsed:
-# no control structures, subshells, heredocs, evaluators or chains.
+# outside the grammar). A single git command of the same shape that does not push is left
+# alone. Any other command that could run git push (git and push in its text, or git and a
+# push alias) is a silent deny asking for the push as a plain command. could_push reads the
+# command text as a superset, except that the arguments of provably inert commands (rg, cat,
+# echo, git commit, ...: see inert_text) are data and do not count, so a commit message or a
+# file name that mentions a push is no push. Nothing else is parsed: no control structures,
+# subshells, heredocs, evaluators or chains.
 #
 # Fail direction: a push this cannot resolve is DENIED with a reason the agent can act on.
 # It never asks on doubt (an ask costs Michael a prompt) and never allows on doubt (a push
@@ -431,12 +434,189 @@ def dynamic_git_word(tokens):
     return False
 
 
+# Tools that never execute their arguments: what follows the command word is data, so a
+# quoted "git push" there is a mention, not a call. Anything else (a shell, find, sed, awk,
+# ssh, watch, timeout, parallel, every WRAPPERS member) may run or re-parse its words.
+# uniq is not one: it writes its second operand, a file a later command can run.
+INERT_TOOLS = {"rg", "grep", "fd", "cat", "head", "tail", "wc", "echo", "printf", "ls", "eza",
+               "diff", "cmp", "cut", "sort", "tr", "jq", "test", "["}
+# The git subcommands whose arguments are data: none of their options runs a command or
+# writes a file. An allowlist, kept to subcommands with a small option surface: log, show,
+# diff, grep, fetch, rebase and the like keep yielding options that do (--output, -O,
+# --upload-pack, --exec), and config and remote can plant a command for a later word.
+INERT_GIT_SUBCOMMANDS = {
+    "add", "commit", "status", "switch", "branch", "rm", "mv", "restore", "rev-parse",
+    "tag", "stash",
+}
+# stash is inert only for these actions: stash list takes log options and stash show diff
+# options, both with --output=<file>.
+INERT_STASH_ACTIONS = {"push", "save", "pop", "apply", "drop", "clear", "branch"}
+# Text that the tokenizer cannot be trusted to split, or that nests a command in a word: the
+# whole command is then read raw. A here-document, a backtick, $( ), <( ), >( ) and $'..'
+# (shlex does not know it, so a quote inside could hide a push).
+UNSPLITTABLE = re.compile(r"<<|`|\$\(|<\(|>\(|\$'")
+# Options that make an inert tool run one of its arguments or write a file: rg --pre, fd
+# -x/-X/--exec, sort --compress-program and -o/--output (getopt_long takes any prefix, so
+# every --c* and --o* counts, and -o anywhere in a bundle), printf -v (assigns text a later
+# eval runs).
+TOOL_EXEC_ARG = {
+    "rg": re.compile(r"^--(pre|hostname-bin)\b"),
+    "fd": re.compile(r"^(--exec|-[A-Za-z0-9]*[xX])"),
+    "sort": re.compile(r"^(--[co]|-[^-]*o)"),
+    "printf": re.compile(r"^-v"),
+}
+# git long options that hand an argument to a shell or plant one. git accepts any unambiguous
+# prefix (--upload-pa), so a --name that is a prefix of one of these counts.
+GIT_EXEC_LONG = ("upload-pack", "receive-pack", "exec", "open-files-in-pager", "extcmd",
+                 "template", "config-env", "sendmail-cmd", "to-cmd", "cc-cmd", "header-cmd",
+                 "tool-cmd")
+# The short options that do the same, wherever they sit in a bundle (-nO<cmd>, -qu <cmd>).
+GREP_PAGER_BUNDLE = re.compile(r"^-[A-Za-z]*O")
+UPLOAD_PACK_BUNDLE = re.compile(r"^-[A-Za-z]*u")
+
+
+def exec_long_option(word):
+    """Is this --name or --name=value a prefix of an option that runs or plants a command?"""
+    if not word.startswith("--"):
+        return False
+    name = word[2:].split("=", 1)[0]
+    return bool(name) and any(o.startswith(name) for o in GIT_EXEC_LONG)
+
+
+# The only operators of a flat list of simple commands. Anything else (a newline, a paren,
+# |&, &, ;;) can nest or detach a command from what it feeds, so the text is read raw.
+FLAT_OPS = {"&&", "||", ";", "|"}
+# A shell keyword as a command word means a compound command (a group, a loop, a test).
+SHELL_KEYWORDS = {"{", "}", "if", "then", "else", "elif", "fi", "for", "while", "until", "do",
+                  "done", "case", "esac", "select", "function", "!", "[[", "]]"}
+
+
+def flat_redirect(tokens, j):
+    """Is the redirect operator at tokens[j] harmless: output to /dev/null, or a descriptor
+    duplication (2>&1, >&2)? Any other redirect can write a file a later command runs, or
+    read one into a shell."""
+    op, nxt = tokens[j], tokens[j + 1] if j + 1 < len(tokens) else ""
+    if op in (">", ">>", "&>", "&>>"):
+        return nxt == "/dev/null"
+    if op == ">&":
+        return nxt in ("-", "/dev/null") or nxt.isdigit()
+    return False
+
+
+def flat_list(tokens):
+    """Is this a flat list of simple commands: operators only && || ; |, redirects only to
+    /dev/null or between descriptors?"""
+    for j, t in enumerate(tokens):
+        if not is_operator(t) or t in FLAT_OPS:
+            continue
+        if ("<" not in t and ">" not in t) or not flat_redirect(tokens, j):
+            return False
+    return True
+
+
+def inert_git(args):
+    """Are the arguments after a git command word data? Only for a builtin that is neither
+    a push nor a command runner, with no -c or --config-env (config can name a command git
+    runs), and no option that hands a word to a shell."""
+    i, n = 0, len(args)
+    while i < n and args[i].startswith("-") and not is_operator(args[i]):
+        w = args[i]
+        name = w.split("=", 1)[0]
+        if dynamic(w) or name in GIT_CONFIG_OPTS:
+            return False
+        if w == "-C" or (name in GIT_LONG_OPTS_WITH_VALUE and "=" not in w):
+            i += 2
+        elif w in GIT_FLAGS or name in GIT_LONG_OPTS_WITH_VALUE:
+            i += 1
+        else:
+            return False
+    if i >= n or is_operator(args[i]) or dynamic(args[i]):
+        return False
+    sub, rest = args[i], args[i + 1:]
+    if sub not in INERT_GIT_SUBCOMMANDS or runs_command_string(sub, rest):
+        return False
+    if sub == "stash" and (not rest or rest[0] not in INERT_STASH_ACTIONS):
+        return False
+    if any(exec_long_option(a) for a in rest):
+        return False
+    if sub == "grep" and any(GREP_PAGER_BUNDLE.match(a) for a in rest):
+        return False
+    if sub in ("clone", "fetch", "pull", "ls-remote") and any(
+            UPLOAD_PACK_BUNDLE.match(a) for a in rest):
+        return False
+    return True
+
+
+def inert_command(seg):
+    """For one simple command: the index just past its command word when its arguments are
+    inert data, else None. Wrappers (command, env, sudo, xargs, exec, ...) run the next words,
+    so they are never inert; assignments before the command stay in the text."""
+    words = command_words(seg)
+    if not words:
+        return None
+    k = words[0]
+    if any(os.path.basename(t) in WRAPPERS for t in seg[:k]):
+        return None
+    word, args = seg[k], seg[k + 1:]
+    if word == "git":
+        return k + 1 if inert_git(args) else None
+    if word in INERT_TOOLS and not any(
+            TOOL_EXEC_ARG[word].match(a) for a in args if word in TOOL_EXEC_ARG):
+        return k + 1
+    return None
+
+
+def inert_text(cmd, tokens):
+    """The text could_push matches PUSH_SHAPE and the alias regex against: cmd with the
+    arguments of provably inert simple commands dropped. Everything that can execute or
+    re-parse text stays: a command the tokenizer cannot split reliably (unbalanced quotes,
+    here-document, backtick, $( ), <( ), >( ), $'..', a # comment), every command word that is
+    not inert, and a pipeline that feeds any non-inert command (it may run its stdin).
+    It redacts only a flat list of simple commands (see flat_list): a group, a loop, a
+    newline, a background job, |&, or a redirect to anything but /dev/null or a descriptor
+    returns the raw text, as does a shell keyword in command position."""
+    if tokens is None or UNSPLITTABLE.search(cmd) or any(t.startswith("#") for t in tokens):
+        return cmd
+    if not flat_list(tokens):
+        return cmd
+    segs, ops = [[]], []
+    for t in tokens:
+        if t in FLAT_OPS:
+            ops.append(t)
+            segs.append([])
+        else:
+            segs[-1].append(t)
+    for s in segs:
+        words = command_words(s)
+        if any(t in SHELL_KEYWORDS for t in (s[:words[0] + 1] if words else s)):
+            return cmd
+    cut = [inert_command(s) for s in segs]
+    if all(c is None for c in cut):
+        return cmd                                     # nothing dropped: read the raw text
+    start = 0
+    while start < len(segs):                           # a pipeline: segments joined by |
+        end = start
+        while end < len(ops) and ops[end] == "|":
+            end += 1
+        if any(c is None for c in cut[start:end + 1]):
+            cut[start:end + 1] = [None] * (end + 1 - start)
+        start = end + 1
+    out = []
+    for i, seg in enumerate(segs):
+        out.extend(seg if cut[i] is None else seg[:cut[i]])
+        if i < len(ops):
+            out.append(ops[i])
+    return " ".join(out)
+
+
 def could_push(cmd, tokens, cwd):
     """For a command outside the grammar: could it run git push? git and push in its text,
     git and a push alias (from cwd, or a repository a -C, --git-dir or GIT_DIR in it names),
     git under a GIT_CONFIG override, or git followed by a subcommand the shell computes.
-    Text only; no shape is parsed."""
-    if PUSH_SHAPE.search(cmd):
+    The text is cmd without the arguments of provably inert commands (inert_text); no shape
+    is parsed."""
+    text = inert_text(cmd, tokens)
+    if PUSH_SHAPE.search(text):
         return True
     if tokens and (dynamic_git_word(tokens) or odd_command_word(tokens)):
         return True
@@ -455,7 +635,7 @@ def could_push(cmd, tokens, cwd):
     names = set()
     for sel in selectors:
         names |= push_aliases(cwd, sel)
-    return any(re.search(r"\bgit\b[^;&|\n]*\b" + re.escape(a) + r"\b", cmd) for a in names)
+    return any(re.search(r"\bgit\b[^;&|\n]*\b" + re.escape(a) + r"\b", text) for a in names)
 
 
 def runs_command_string(sub, args):
