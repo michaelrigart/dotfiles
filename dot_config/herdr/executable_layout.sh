@@ -40,13 +40,14 @@ BUILDING_SUFFIX=" (building)"
 CODEX_CMD="$(grep -v '^[[:space:]]*#' "${0:A:h}/codex-pane-command" 2>/dev/null | grep . | head -1)"
 [[ -n "$CODEX_CMD" ]] || { print -ru2 -- "layout.sh: missing ${0:A:h}/codex-pane-command"; exit 1 }
 
-# HL_HERDR — every herdr call, with the session threaded in. herdr 0.8.2 has NO
-# HERDR_SESSION environment variable: only `--session <name>` selects a session, so a
-# bare `command herdr` always talks to the DEFAULT one. That made the live gate's
+# HL_HERDR — every herdr call, with the session threaded in. herdr 0.9.3 reads
+# HERDR_SESSION, but HERDR_SOCKET_PATH, which herdr exports into every pane, outranks it,
+# and only `--session <name>` outranks the socket: inside a pane a bare `command herdr`
+# talks to the pane's own session, whatever HERDR_SESSION says. That made the live gate's
 # isolation a fiction — it set HERDR_SESSION=dev-test, layout.sh built into the live
-# default session anyway, and the gate then asserted against an empty dev-test and
-# failed every case after the bootstrap. The leaked fixture workspaces are still
-# visible in `herdr workspace list`. Nothing here may call `command herdr` directly.
+# session anyway, and the gate then asserted against an empty dev-test and failed every
+# case after the bootstrap. The leaked fixture workspaces are still visible in
+# `herdr workspace list`. Nothing here may call `command herdr` directly.
 typeset -ga HL_HERDR=(command herdr)
 [[ -n "${HERDR_SESSION:-}" ]] && HL_HERDR+=(--session "$HERDR_SESSION")
 # Pre-quoted for the `trap` strings below, which are eval'd as text rather than run.

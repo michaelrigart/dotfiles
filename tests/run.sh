@@ -23,7 +23,8 @@
 #
 # Suites with a `# test-requires:` line need conditions this runner cannot create
 # (an unsandboxed shell, a live herdr, a fresh Claude session). They are listed and
-# skipped unless named or --all is passed. Read the tag before believing their output.
+# skipped unless named EXACTLY (`./tests/run.sh live-agent-auth`) or --all is passed; a
+# substring filter (`live`) still skips them. Read the tag before believing their output.
 set -uo pipefail
 
 self=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")
@@ -48,6 +49,16 @@ matches() { # matches <name>
   return 1
 }
 
+# Only an exact suite name lifts the requirement gate. A substring filter used to lift it
+# too, so `./tests/run.sh live` ran the sandbox-measuring suites in whatever mode the
+# shell happened to be in — the inverted-result trap AGENTS.md warns about.
+named() { # named <name>
+  [ ${#filters[@]} -eq 0 ] && return 1
+  local f
+  for f in "${filters[@]}"; do [ "$f" = "$1" ] && return 0; done
+  return 1
+}
+
 suites=0 green=0 red=0 broken=0 skipped=0
 declare -a problems=()
 
@@ -57,7 +68,7 @@ for f in ./*.test.sh; do
 
   req=$(sed -n 's/^# test-requires: *//p' "$f" | head -1)
   req=${req%%  #*}
-  if [ -n "$req" ] && [ "$all" -eq 0 ] && [ ${#filters[@]} -eq 0 ]; then
+  if [ -n "$req" ] && [ "$all" -eq 0 ] && ! named "$name"; then
     printf '  skip  %-28s needs: %s\n' "$name" "$req"
     skipped=$((skipped + 1))
     continue

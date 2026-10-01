@@ -43,9 +43,18 @@ A dispatch carries:
 ## Dispatching
 
 ```
-NONCE=$(xreview dispatch --diff <base>..<head> <body-file>)
-xreview collect "$NONCE" [budget-secs]
+xreview dispatch --checkpoint <spec|plan|pre-merge> --diff <base>..<head> <body-file>
+xreview collect <nonce> [budget-secs]
 ```
+
+Run each one bare, as its own Bash call: `xreview` is an excluded command, and the
+exclusion applies only when it is the first command of the call, so never wrap it in
+`NONCE=$(…)`, a pipe or a prefix. `dispatch` prints the nonce (`xr-…`) on stdout, and
+nothing else there; pass it to `collect`.
+
+**Name the checkpoint.** `--checkpoint` is required: `spec` at spec sign-off, `plan` at plan
+completion, `pre-merge` before merging. The receipt records it, and the pre-merge gate
+below opens only on a `pre-merge` receipt whose latest verdict is `approve`.
 
 **Never gate a dispatch on which model or effort the pane is running.** Whatever the
 Codex pane is set to is Michael's choice, and it is not yours to verify, question, or
@@ -63,12 +72,12 @@ minutes; pass a larger one for a big diff.
 A budget running out is not automatically a timeout:
 
 - **Exit 3 — the turn is on record and still running.** Not ambiguous, not a failure. The
-  reviewer is simply still working. Run `xreview collect "$NONCE" <secs>` again; it
+  reviewer is simply still working. Run `xreview collect <nonce> <secs>` again; it
   resumes the wait and does not re-dispatch or cost another turn. Keep waiting.
 - **Exit 1, "no turn on record"** — genuinely ambiguous: the turn may never have started.
   Report it and stop. Never re-dispatch.
 - **Exit 1, "Codex daemon is unreachable; the turn is on record"** — not the ambiguous
-  case above: run `codex-daemon ensure`, then `xreview collect "$NONCE"` again.
+  case above: run `codex-daemon ensure`, then `xreview collect <nonce>` again.
 - **Exit 1, "the reviewer turn failed"** — the turn itself did not complete. Report it and
   stop. Never re-dispatch.
 
@@ -124,8 +133,10 @@ Verify every claim against the code or the artifact before touching anything. Ne
 on the reviewer's assertion alone.
 
 - **Verified, and no trade-off involved** — fix it, and say that you did.
-- **Design judgement, or a trade-off** — Michael decides. This is most spec and plan
-  findings.
+- **A trade-off inside the approved spec** — rule on it yourself, and record the ruling
+  under "Rulings" in the MR description.
+- **Anything that would change the approved spec** — Michael decides. At spec sign-off
+  that is most findings.
 - **You disagree, or cannot verify it** — Michael decides.
 
 ## Iterating
@@ -157,7 +168,7 @@ Escalate to Michael when, and only when:
 
 - the reviewer **re-raises a finding you already addressed** — that is disagreement,
   not a missed fix
-- a finding needs design judgement or a trade-off
+- a finding needs design judgement or a trade-off that would change the approved spec
 - you cannot verify a claim
 - `xreview` refuses the round (capped at 10; `XREVIEW_MAX_ROUNDS` overrides)
 - `xreview` refuses because the Codex daemon carries a pane's environment. The fix disconnects
@@ -209,9 +220,11 @@ him in another application. Write the ping to be worth reading late.
 ## What is enforced rather than trusted
 
 `xreview collect` writes a receipt to `$XDG_STATE_HOME/xreview/<repo>/reviews.jsonl`,
-and a `PreToolUse` guard denies `glab mr create` / `gh pr create` on a branch with no
-receipt. That is the one part of this workflow prose cannot guarantee: a skipped review
-is otherwise indistinguishable from one that found nothing.
+naming the checkpoint and the verdict, and a `PreToolUse` guard denies `glab mr create` /
+`gh pr create` on a branch unless its latest `pre-merge` receipt has the verdict
+`approve`. Spec and plan receipts never open it, and neither does a pre-merge round that
+came back `changes`. That is the one part of this workflow prose cannot guarantee: a
+skipped review is otherwise indistinguishable from one that found nothing.
 
 Acting on findings runs inside an apply window:
 

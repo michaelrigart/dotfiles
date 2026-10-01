@@ -2,9 +2,11 @@
 # PreToolUse(Bash) guard for the pre-merge cross-review checkpoint.
 #
 # Enforces the one part of the cross-review workflow that prose cannot: that a
-# branch is not proposed for merge without Codex having reviewed it at least once.
-# The relay itself is automatic, but nothing otherwise guarantees it ran — and a
-# skipped review is indistinguishable from one that found nothing.
+# branch is not proposed for merge without an approving pre-merge Codex review. The
+# relay itself is automatic, but nothing otherwise guarantees it ran — and a skipped
+# review is indistinguishable from one that found nothing. Since 2026-09-30 a receipt
+# names its checkpoint (xreview dispatch --checkpoint): a spec or plan review, or a
+# pre-merge review whose latest verdict is `changes`, does not open the gate.
 #
 # Scope is deliberately ONE command shape: creating a merge/pull request via glab
 # or gh. Merging locally, pushing, forge web UIs, other CLIs and XREVIEW_GUARD=off
@@ -78,21 +80,35 @@ branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || allow
 key=$(printf '%s' "$root" | tr '/' '_' | sed 's/^_//')
 receipts="${XDG_STATE_HOME:-$HOME/.local/state}/xreview/$key/reviews.jsonl"
 
-# No receipts file at all, or none naming this branch.
-if [ -r "$receipts" ] &&
-   jq -e --arg b "$branch" 'select(.branch == $b)' "$receipts" >/dev/null 2>&1; then
-  allow
-fi
+# The LATEST pre-merge receipt for this branch must approve: an earlier approve that a
+# later pre-merge round overturned does not count. Lines are parsed one at a time
+# (fromjson?), so one damaged line cannot hide the rest of the file.
+latest=""
+[ -r "$receipts" ] && latest=$(jq -Rrn --arg b "$branch" '
+  [inputs | fromjson? | select(type == "object" and .branch == $b and .checkpoint == "pre-merge")]
+  | last | .verdict // ""' "$receipts" 2>/dev/null)
+[ "$latest" = approve ] && allow
 
-deny "No Codex cross-review on record for branch '$branch'.
+onrecord=""
+[ -r "$receipts" ] && onrecord=$(jq -Rrn --arg b "$branch" '
+  [inputs | fromjson? | select(type == "object" and .branch == $b)
+   | "\(.checkpoint // "" | if . == "" then "unrecorded" else . end)/\(.verdict // "")"]
+  | join(", ")' "$receipts" 2>/dev/null)
 
-The pre-merge checkpoint requires one review of this branch before it is proposed
-for merge. Run the cross-review skill, or dispatch directly:
+deny "No approved pre-merge Codex cross-review on record for branch '$branch'.
 
-    xreview dispatch <body-file>   # then: xreview collect <nonce>
+On record for this branch: ${onrecord:-nothing}.
+
+A branch is proposed for merge only after a pre-merge review whose latest verdict is
+approve. Spec and plan reviews do not count, and a pre-merge verdict of changes means
+the findings still need a fix and another round. Run the cross-review skill, or:
+
+    xreview dispatch --checkpoint pre-merge --diff <base>..HEAD <body-file>
+    xreview collect <nonce>
 
 Receipts live at $receipts.
 
-If this branch genuinely should go up without one, re-run with XREVIEW_GUARD=off in
-the command — an environment assignment on the command line is read, a trailing
-\`# XREVIEW_GUARD=off\` works too."
+Do not bypass this on your own judgement. Only if Michael has asked, in this
+conversation, for the branch to go up without a review: re-run with XREVIEW_GUARD=off in
+the command (an environment assignment on the command line is read, a trailing
+\`# XREVIEW_GUARD=off\` works too), and say so in the MR."

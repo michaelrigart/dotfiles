@@ -79,15 +79,44 @@ is "a card comment about a GitHub download is allowed" \
   "$(decision "printf '%s' '<p>Weights were fetched from <strong>github.com/ultralytics/assets</strong>; the proposed change recreates that path.</p>' | basecamp comments create 1 - --in 2")" allow
 
 # ------------------------------------------------------------------------- receipts
+# Only a pre-merge receipt whose LATEST verdict is approve opens the gate (spec
+# 2026-09-30, section 4 item 7). receipt <branch> <checkpoint> <verdict> appends one.
+receipt() {
+  printf '{"ts":"t","branch":"%s","head":"h","thread":"x","nonce":"n","verdict":"%s","checkpoint":"%s"}\n' \
+    "$1" "$3" "$2" >> "$RECEIPTS"
+}
 mkdir -p "$(dirname "$RECEIPTS")"
-printf '{"ts":"t","branch":"other","head":"h","thread":"x","nonce":"n"}\n' > "$RECEIPTS"
-is "a receipt for a DIFFERENT branch still denies" "$(decision 'glab mr create')" deny
-
+: > "$RECEIPTS"
+receipt other pre-merge approve
+is "an approved pre-merge receipt for a DIFFERENT branch still denies" "$(decision 'glab mr create')" deny
+: > "$RECEIPTS"
 printf '{"ts":"t","branch":"%s","head":"h","thread":"x","nonce":"n"}\n' "$BRANCH" >> "$RECEIPTS"
-is "a receipt for this branch allows"          "$(decision 'glab mr create')" allow
+is "a receipt from before checkpoints existed denies" "$(decision 'glab mr create')" deny
+receipt "$BRANCH" spec approve
+is "an approved spec review denies"               "$(decision 'glab mr create')" deny
+receipt "$BRANCH" plan approve
+is "an approved plan review denies"               "$(decision 'gh pr create --fill')" deny
+receipt "$BRANCH" pre-merge changes
+is "a pre-merge verdict of changes denies"        "$(decision 'glab mr create')" deny
+out="$(payload 'glab mr create' | bash "$GUARD" 2>/dev/null | jq -r '.hookSpecificOutput.permissionDecisionReason')"
+is "the deny lists what is on record" \
+   "$(printf '%s' "$out" | grep -c 'On record for this branch: unrecorded/, spec/approve, plan/approve, pre-merge/changes')" 1
+is "the deny names the dispatch that fixes it" "$(printf '%s' "$out" | grep -c -- '--checkpoint pre-merge')" 1
+# The bypass is Michael's to grant, never the model's: the deny may name it only as that.
+is "the deny offers the bypass only when Michael asked for it" \
+   "$(printf '%s' "$out" | tr '\n' ' ' | grep -c 'Only if Michael has asked, in this conversation')" 1
+is "the deny no longer invites a bypass on the model's own judgement" \
+   "$(printf '%s' "$out" | grep -c 'genuinely should go up without one')" 0
+receipt "$BRANCH" pre-merge approve
+is "an approved pre-merge review allows"          "$(decision 'glab mr create')" allow
+receipt "$BRANCH" pre-merge changes
+is "a later pre-merge verdict of changes closes it again" "$(decision 'glab mr create')" deny
+receipt "$BRANCH" pre-merge approve
+printf 'not json at all\n' >> "$RECEIPTS"
+is "a damaged line does not hide the approval before it" "$(decision 'glab mr create')" allow
 
 # --------------------------------------------------------------------- the bypass
-# The deny message tells the model to set XREVIEW_GUARD=off. The only place a model CAN
+# The deny message names XREVIEW_GUARD=off for when Michael asked for it. The only place a model CAN
 # set it is the command it is running, so that is the form that has to work — reading it
 # from the hook's own environment makes the documented escape hatch unreachable. Recorded
 # 2026-09-02 in opsmaster: `XREVIEW_GUARD=off glab mr create …`, sent on Michael's

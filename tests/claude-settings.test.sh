@@ -29,7 +29,13 @@ EXP_DENY='["Read(~/.ssh/**)","Edit(~/.ssh/**)",
  "Read(**/.env.production*)","Edit(**/.env.production*)",
  "Read(**/*.key)","Edit(**/*.key)",
  "Read(**/*.pem)","Edit(**/*.pem)",
- "Bash(basecamp auth token*)"]'
+ "Bash(basecamp auth token*)",
+ "Bash(op read*)","Bash(op item get*)","Bash(op document get*)","Bash(op inject*)","Bash(op run*)",
+ "Bash(op items get*)","Bash(op documents get*)",
+ "Bash(op --* read*)","Bash(op --* item get*)","Bash(op --* items get*)",
+ "Bash(op --* document get*)","Bash(op --* documents get*)","Bash(op --* inject*)","Bash(op --* run*)",
+ "mcp__claude_ai_Microsoft_365__outlook_create_filter",
+ "mcp__claude_ai_Microsoft_365__outlook_set_vacation"]'
 # "Bash(glab api *)" is DELIBERATELY ABSENT — do not add it back. It gated the mechanism,
 # not the danger: 156 fires in an 11-day window against 2 real rejections, every sampled
 # call a read-only GET piped into jq. It could not be narrowed here either, because an ask
@@ -45,7 +51,7 @@ EXP_DENY='["Read(~/.ssh/**)","Edit(~/.ssh/**)",
 # absence, for the same reason the note above pins `Bash(glab api *)`.
 EXP_ASK='["Read(~/.kube/config)",
  "Bash(glab mr merge*)","Bash(sudo *)",
- "Bash(git push --force*)","Bash(git push -f *)","Bash(git reset --hard*)",
+ "Bash(git reset --hard*)",
  "Bash(git clean -f*)","Bash(git branch -D*)","Bash(git filter-branch*)",
  "Bash(rm -rf ~/*)","Bash(rm -rf /Users/michael/*)",
  "Bash(rm -r ~/*)","Bash(rm -r /Users/michael/*)",
@@ -53,15 +59,30 @@ EXP_ASK='["Read(~/.kube/config)",
  "Bash(borg *)","Bash(vorta *)",
  "Bash(op item create*)","Bash(op item edit*)","Bash(op item delete*)",
  "Bash(docker rm*)","Bash(docker rmi*)","Bash(docker system prune*)",
- "Bash(docker volume rm*)","Bash(docker compose down*)"]'
+ "Bash(docker volume rm*)","Bash(docker compose down*)",
+ "mcp__claude_ai_Microsoft_365__outlook_batch_delete_messages",
+ "mcp__claude_ai_Microsoft_365__outlook_trash_thread",
+ "mcp__claude_ai_Microsoft_365__outlook_delete_event",
+ "mcp__claude_ai_Microsoft_365__sharepoint_delete_item",
+ "Bash(basecamp projects delete*)","Bash(basecamp chat delete*)",
+ "Bash(basecamp todos trash*)","Bash(basecamp todolists trash*)",
+ "Bash(basecamp messages trash*)","Bash(basecamp cards trash*)",
+ "Bash(basecamp files trash*)","Bash(basecamp comments trash*)",
+ "Bash(basecamp recordings trash*)","Bash(basecamp vaults trash*)",
+ "Bash(basecamp docs trash*)","Bash(basecamp tools trash*)",
+ "Bash(helm uninstall*)","Bash(helm delete*)",
+ "Bash(az * delete -*)","Bash(az rest * DELETE*)","Bash(terraform destroy*)",
+ "Bash(terraform -chdir=* destroy*)","Bash(terraform apply -destroy*)",
+ "Bash(terraform -chdir=* apply -destroy*)"]'
 
 jq_is "(.permissions.deny | sort) == ($EXP_DENY | sort)" true "deny array matches approved set exactly"
 jq_is "(.permissions.ask  | sort) == ($EXP_ASK  | sort)" true "ask array matches approved set exactly"
 
-# Belt and braces: every rule is a COMPLETE, closed form naming a tool we actually use.
+# Belt and braces: every rule is a COMPLETE, closed form naming a tool we actually use:
+# Read/Edit/Bash(spec), or one MCP tool named in full (mcp__<server>__<tool>, no wildcard).
 jq_is '[.permissions.deny[], .permissions.ask[]
-        | select(test("^(Read|Edit|Bash)\\([^)]+\\)$") | not)] | length' 0 \
-      "every rule is a complete Read/Edit/Bash(spec) form"
+        | select((test("^(Read|Edit|Bash)\\([^)]+\\)$") or test("^mcp__[A-Za-z0-9_]+__[A-Za-z0-9_]+$")) | not)] | length' 0 \
+      "every rule is a complete Read/Edit/Bash(spec) form or a named MCP tool"
 
 # The allow list exists to stop prompting on read-only inspection of tools this machine
 # actually drives (glab, chezmoi, basecamp). Its danger is not breadth but KIND: an
@@ -128,6 +149,55 @@ jq_is '.inputNeededNotifEnabled' 'true' "inputNeededNotifEnabled carried through
 jq_is '.autoContinueAtUsageLimit' 'true' "autoContinueAtUsageLimit carried through"
 emit '{}'
 jq_is '.autoContinueAtUsageLimit == null' true "autoContinueAtUsageLimit not invented when absent"
+
+echo "E2. the merge starts from the live file: owned keys win, everything else survives"
+# Until 2026-09-30 the script rebuilt the object and carried a named whitelist, so every
+# runtime key nobody listed vanished on apply (modelSettings was the fourth). It now
+# overlays the owned keys on the live file, so an UNKNOWN key must survive too.
+emit '{"modelSettings":{"opus":{"x":1}},"someFutureKey":{"nested":[1,2]},"permissions":{"additionalDirectories":["/tmp/extra"],"allow":["Bash(stale-allow *)"],"ask":["Bash(stale-ask *)"],"deny":["Bash(stale-deny *)"]},"hooks":{"Stop":[{"hooks":[{"type":"command","command":"stale"}]}]},"sandbox":{"stale":true},"env":{"STALE":"1"},"cleanupPeriodDays":14,"includeCoAuthoredBy":true,"voiceEnabled":true,"disableAllHooks":true,"skipDangerousModePermissionPrompt":true,"apiKeyHelper":"curl evil","enabledMcpjsonServers":["evil"],"awsAuthRefresh":"curl evil","awsCredentialExport":"curl evil","gcpAuthRefresh":"curl evil","otelHeadersHelper":"curl evil"}'
+jq_is '.modelSettings.opus.x'              1      "modelSettings survives an apply"
+jq_is '.someFutureKey.nested | length'     2      "an unknown future key survives an apply"
+jq_is '.permissions.additionalDirectories[0]' /tmp/extra "a runtime permissions key survives"
+jq_is '.permissions.allow | index("Bash(stale-allow *)")' null "a stale allow rule is replaced, never merged"
+jq_is '.permissions.ask   | index("Bash(stale-ask *)")'   null "a stale ask rule is replaced, never merged"
+jq_is '.permissions.deny  | index("Bash(stale-deny *)")'  null "a stale deny rule is replaced, never merged"
+jq_is '.hooks | has("Stop")'               false  "owned hooks replace the live hooks wholesale"
+jq_is '.sandbox | has("stale")'            false  "owned sandbox replaces the live sandbox wholesale"
+jq_is '.env | has("STALE")'                false  "owned env replaces the live env wholesale"
+jq_is '.cleanupPeriodDays'                 30     "cleanupPeriodDays is owned, and is 30"
+jq_is 'has("includeCoAuthoredBy")'         false  "retired key includeCoAuthoredBy is deleted"
+jq_is 'has("voiceEnabled")'                false  "retired key voiceEnabled is deleted"
+jq_is '.disableAllHooks'                   false  "disableAllHooks is owned, and is false"
+jq_is 'has("skipDangerousModePermissionPrompt")' false "posture-weakening key skipDangerousModePermissionPrompt is reset"
+jq_is 'has("apiKeyHelper")'                false  "posture-weakening key apiKeyHelper is reset"
+jq_is 'has("enabledMcpjsonServers")'       false  "posture-weakening key enabledMcpjsonServers is reset"
+for k in awsAuthRefresh awsCredentialExport gcpAuthRefresh otelHeadersHelper; do
+  jq_is "has(\"$k\")"                      false  "posture-weakening key $k is reset"
+done
+FIRST=$OUT
+emit "$FIRST"
+if [ "$(printf '%s' "$OUT" | jq -S .)" = "$(printf '%s' "$FIRST" | jq -S .)" ]; then
+  _pass "a second apply changes nothing"
+else
+  _fail "a second apply changes nothing" "the second pass differs from the first"
+fi
+# Two JSON documents on stdin are refused, never merged into two objects.
+out2=$(printf '%s' '{} {}' | /bin/bash "$MOD" 2>/dev/null); rc2=$?
+if [ "$rc2" -ne 0 ] && [ -z "$out2" ]; then
+  _pass "input holding two JSON documents is refused with no stdout"
+else
+  _fail "input holding two JSON documents is refused with no stdout" "rc=$rc2 stdout=$out2"
+fi
+# A live-sized file under the system bash. The empty-input check used to be a bash 3.2
+# pattern substitution that took 8-40s on a real 13 KB settings.json.
+emit '{}'; BIG=$OUT
+start=$SECONDS
+emit "$BIG"
+if [ $((SECONDS - start)) -le 3 ]; then
+  _pass "a live-sized settings file is processed in seconds by /bin/bash"
+else
+  _fail "a live-sized settings file is processed in seconds by /bin/bash" "$((SECONDS - start))s"
+fi
 
 echo "F. layer 2 — agent-backed credential isolation"
 emit '{}'
@@ -232,7 +302,7 @@ jq_is '.permissions.ask | index("Bash(docker *)")' null \
 # scratchpad/$TMPDIR cleanup never spells one: of ~154 rm -rf calls in 30 days, 110 targeted
 # $TMPDIR/scratchpad and only 10 a real path. A blanket "Bash(rm -rf *)" would have re-created
 # 107 of the prompts this change exists to remove.
-for r in "Bash(git push --force*)" "Bash(git reset --hard*)" "Bash(rm -rf ~/*)" \
+for r in "Bash(terraform destroy*)" "Bash(git reset --hard*)" "Bash(rm -rf ~/*)" \
          "Bash(sudo *)" "Bash(borg *)" "Bash(op item edit*)"; do
   jq_is ".permissions.ask | index(\"$r\") != null" true "danger gate present: $r"
 done
@@ -293,7 +363,7 @@ emit '{}'
 jq_is '.permissions.defaultMode' 'auto' "absent defaultMode seeded to auto"
 # The seeding must not disturb the rules themselves.
 emit '{"permissions":{"defaultMode":"plan"}}'
-jq_is '.permissions.deny | length' 15 "deny rules intact when defaultMode carried"
+jq_is "(.permissions.deny | sort) == ($EXP_DENY | sort)" true "deny rules intact when defaultMode carried"
 
 echo "K. git SSH proxying rides CLAUDE_ENV_FILE, not the env block"
 # Claude Code injects an unauthenticated `nc` GIT_SSH_COMMAND at runtime and that injection
@@ -314,8 +384,9 @@ echo "K. git SSH proxying rides CLAUDE_ENV_FILE, not the env block"
 emit '{}'
 jq_is '.env | has("GIT_SSH_COMMAND")' false \
       "GIT_SSH_COMMAND absent from env — the runtime overrides it there"
-jq_is '.hooks.SessionStart[0].hooks[0].command
-       | contains("CLAUDE_ENV_FILE") and contains("GIT_SSH_COMMAND") and contains("ssh-sandbox-proxy")' true \
+jq_is '[.hooks.SessionStart[].hooks[].command
+        | select(contains("CLAUDE_ENV_FILE") and contains("GIT_SSH_COMMAND") and contains("ssh-sandbox-proxy"))]
+       | length' 1 \
       "SessionStart hook exports GIT_SSH_COMMAND to CLAUDE_ENV_FILE via the proxy helper"
 jq_is '.env.SSH_AUTH_SOCK | endswith("/t/agent.sock")' true \
       "SSH_AUTH_SOCK points at the 1Password agent socket"
@@ -363,42 +434,39 @@ emit '{}'
 # `includeCoAuthoredBy: false` is NOT sufficient and was the actual 2026-08-24 bug: it is
 # deprecated, and the claude.ai session link rides a SEPARATE `attribution.sessionUrl` gate,
 # so MRs kept carrying a Claude-Session trailer while co-authorship was already off. Pin all
-# three, and keep the deprecated key as the fallback for builds predating `attribution`.
+# three. The deprecated key itself is retired (spec 2026-09-30 section 4 item 2).
 jq_is '.attribution.sessionUrl' 'false' "session link suppressed (attribution.sessionUrl)"
 jq_is '.attribution.commit'     ''      "commit attribution text empty"
 jq_is '.attribution.pr'         ''      "PR attribution text empty"
-jq_is '.includeCoAuthoredBy'    'false' "deprecated co-authored-by fallback still false"
+jq_is 'has("includeCoAuthoredBy")' 'false' "the deprecated includeCoAuthoredBy key is gone"
 
-echo "N. both Bash guards are wired as PreToolUse hooks"
-# Index-pinned, not just length-checked. These assertions are positional, so a
-# reordering would silently retarget them at the wrong guard rather than fail.
-jq_is '.hooks.PreToolUse | length' 5 "exactly five PreToolUse entries"
-jq_is '.hooks.PreToolUse[0].matcher' 'Bash' "forge guard matches the Bash tool"
-jq_is '.hooks.PreToolUse[0].hooks[0].command' 'bash $HOME/.claude/git-forge-guard.sh' \
-      'entry 0 runs the forge guard, $HOME left for the shell to expand'
-jq_is '.hooks.PreToolUse[1].matcher' 'Bash' "worktree guard matches the Bash tool"
-jq_is '.hooks.PreToolUse[1].hooks[0].command' 'bash $HOME/.claude/worktree-guard.sh' \
-      'entry 1 runs the worktree guard, $HOME left for the shell to expand'
-jq_is '.hooks.PreToolUse[2].matcher' 'Bash' "cross-review guard matches the Bash tool"
-jq_is '.hooks.PreToolUse[2].hooks[0].command' 'bash $HOME/.claude/xreview-guard.sh' \
-      'entry 2 runs the cross-review guard, $HOME left for the shell to expand'
-jq_is '.hooks.PreToolUse[3].matcher' '*' "apply guard matches every tool, not just Bash"
-jq_is '.hooks.PreToolUse[3].hooks[0].command' 'bash $HOME/.claude/xreview-apply-guard.sh' \
-      'entry 3 runs the apply-window guard, $HOME left for the shell to expand'
-jq_is '.hooks.PreToolUse[4].matcher' 'Bash' "path-resolution guard matches the Bash tool"
-jq_is '.hooks.PreToolUse[4].hooks[0].command' 'bash $HOME/.claude/path-resolution-guard.sh' \
-      'entry 4 runs the path-resolution guard, $HOME left for the shell to expand'
+echo "N. every guard is wired exactly once, found by its command"
+# Matched by COMMAND, not by list position: entries are added and removed over time, and
+# a positional assertion silently retargets itself at whatever moved into the slot.
+# hook_matchers <event> <command> -> the matchers of every entry running that command.
+hook_matchers() {
+  printf '%s' "$OUT" | jq -r --arg e "$1" --arg c "$2" \
+    '[.hooks[$e][]? | select(any(.hooks[]?; .command == $c)) | .matcher] | map(tostring) | join(",")'
+}
+emit '{}'
+for g in git-forge-guard worktree-guard xreview-guard path-resolution-guard; do
+  got=$(hook_matchers PreToolUse "bash \$HOME/.claude/$g.sh")
+  if [ "$got" = "Bash" ]; then _pass "$g runs once, on the Bash tool"; else _fail "$g runs once, on the Bash tool" "$got"; fi
+done
+# The apply-window guard inspects Edit/Write, so it must match every tool.
+got=$(hook_matchers PreToolUse 'bash $HOME/.claude/xreview-apply-guard.sh')
+if [ "$got" = "*" ]; then _pass "xreview-apply-guard runs once, on every tool"; else _fail "xreview-apply-guard runs once, on every tool" "$got"; fi
+jq_is '.hooks.PreToolUse | length' 5 "no PreToolUse entry beyond the five guards"
+# The forge guard shells out to glab, git and gitleaks (the push helper alone has a 30 s
+# budget), so its hook limit is explicit rather than left to the runtime default.
+jq_is '[.hooks.PreToolUse[].hooks[] | select(.command == "bash $HOME/.claude/git-forge-guard.sh") | .timeout] | join(",")' 60 \
+      "the forge guard hook carries an explicit 60 s timeout"
 # The SessionStart hooks must survive alongside them — adding PreToolUse replaced the
 # whole hooks object once during development.
 jq_is '.hooks.SessionStart | length' 2 "both SessionStart hooks present"
-# Index 0 is pinned by the GIT_SSH_COMMAND assertion above, so the Herdr entry must
-# APPEND. If a future change prepends instead, that assertion breaks rather than this
-# one, which is why both exist.
-jq_is '.hooks.SessionStart[1].hooks[0].command' \
-      "bash '$HOME/.claude/hooks/herdr-agent-state.sh' session" \
-      'entry 1 is the herdr agent-state hook, with an absolute path and a session arg'
-jq_is '.hooks.SessionStart[1].hooks[0].timeout' 10 'the herdr hook keeps the installer timeout'
-jq_is '.hooks.SessionStart[1].matcher' '*' 'the herdr hook keeps the installer matcher'
+jq_is "[.hooks.SessionStart[] | select(.matcher == \"*\") | .hooks[]
+        | select(.command == \"bash '$HOME/.claude/hooks/herdr-agent-state.sh' session\" and .timeout == 10)] | length" 1 \
+      "the herdr agent-state hook: absolute path, session arg, installer matcher and timeout"
 
 echo "O. basecamp is allowlisted read-only"
 # `basecamp auth token` prints the live OAuth token and `basecamp projects delete` trashes a
@@ -426,6 +494,69 @@ for d in "gitlab.com" "github.com" "raw.githubusercontent.com" "formulae.brew.sh
 done
 # A denied-domains list would silently override the above, so pin that it stays unset.
 jq_is '.sandbox.network.deniedDomains // "unset"' 'unset' "no deniedDomains rule shadowing the allowlist"
+
+echo "Q. the safe-autonomy permission changes (spec section 1.3)"
+emit '{}'
+# The push asks are gone because an ask rule is absolute: a PreToolUse hook returning
+# allow loses to it, so it could never let --force-with-lease through on a feature
+# branch. git-forge-guard.sh rule 4 gates every push instead; do not add them back.
+for r in "Bash(git push --force*)" "Bash(git push -f *)"; do
+  jq_is ".permissions.ask | index(\"$r\")" null "no ask rule for $r - rule 4 of the forge guard owns pushes"
+done
+# chezmoi cat runs op unsandboxed and can render a private key; it is the classifier's call.
+jq_is '.permissions.allow | index("Bash(chezmoi cat *)")' null "chezmoi cat is not allowlisted"
+# Enumerated per resource, only for verbs the installed CLI has (checked with
+# basecamp <res> --help): projects and chat delete, the rest trash. A comment body that
+# merely says "delete" never matches.
+for r in "projects delete" "chat delete" "todos trash" "todolists trash" "messages trash" \
+         "cards trash" "files trash" "comments trash" "recordings trash" "vaults trash" \
+         "docs trash" "tools trash"; do
+  jq_is ".permissions.ask | index(\"Bash(basecamp $r*)\") != null" true "basecamp $r asks"
+done
+jq_is '[.permissions.ask[] | select(startswith("Bash(basecamp")
+        and (test("^Bash\\(basecamp [a-z-]+ (trash|delete)\\*\\)$") | not))] | length' 0 \
+      "every basecamp ask rule is exactly basecamp <resource> trash|delete*"
+# az delete: a flag must follow, so free text never matches; az rest DELETE is covered.
+jq_is '.permissions.ask | (index("Bash(az * delete -*)") != null) and (index("Bash(az rest * DELETE*)") != null) and (index("Bash(az * delete*)") == null)' true \
+      "az delete needs a trailing flag, az rest DELETE asks"
+# terraform teardown asks in every spelling an agent writes: the no-cd rule steers it to
+# -chdir, and apply -destroy is destroy under another verb. A rule's * matches any text,
+# spaces included, which a shell case pattern reproduces; plan and a plain apply stay silent.
+emit '{}'
+asks() { # asks <command>: does any ask rule match it?
+  local rule pat
+  while IFS= read -r rule; do
+    pat=${rule#Bash(}; pat=${pat%)}
+    # shellcheck disable=SC2254 # the rule is the pattern
+    case "$1" in $pat) return 0 ;; esac
+  done < <(printf '%s' "$OUT" | jq -r '.permissions.ask[] | select(startswith("Bash("))')
+  return 1
+}
+for c in "terraform destroy" "terraform -chdir=infra destroy -auto-approve" \
+         "terraform apply -destroy" "terraform -chdir=infra apply -destroy -auto-approve"; do
+  if asks "$c"; then _pass "teardown asks: $c"; else _fail "teardown asks: $c" "no ask rule matches"; fi
+done
+for c in "terraform -chdir=infra plan" "terraform -chdir=infra apply -auto-approve" "terraform apply"; do
+  if asks "$c"; then _fail "no teardown ask: $c" "an ask rule matches"; else _pass "no teardown ask: $c"; fi
+done
+# op: plural spellings and a leading global flag must not slip past the denies.
+for r in "op items get*" "op documents get*" "op --* read*" "op --* item get*" "op --* items get*" \
+         "op --* document get*" "op --* documents get*" "op --* inject*" "op --* run*"; do
+  jq_is ".permissions.deny | index(\"Bash($r)\") != null" true "op deny covers $r"
+done
+
+echo "S. the subagent statusline is retired"
+# It never rendered. The script is deleted, and the key must go from the LIVE file too:
+# the merge starts from it, so dropping the key from the owned set alone would keep it.
+emit '{"subagentStatusLine":{"type":"command","command":"bash /x/subagent-statusline.sh"}}'
+jq_is 'has("subagentStatusLine")' false "a live subagentStatusLine is deleted"
+jq_is '.statusLine.command | endswith("/.claude/statusline.sh")' true "the main statusline stays"
+
+echo "R. every permission prompt is audited, never decided"
+emit '{}'
+got=$(hook_matchers PermissionRequest 'bash $HOME/.claude/hooks/prompt-audit.sh')
+if [ "$got" = "*" ]; then _pass "the prompt-audit hook runs once, on every tool"; else _fail "the prompt-audit hook runs once, on every tool" "$got"; fi
+jq_is '.hooks.PermissionRequest | length' 1 "no other PermissionRequest hook"
 
 echo "X. every wired hook script is actually managed by chezmoi"
 # A hook wired to an unmanaged path never deploys and fails open — silently inert.
@@ -480,15 +611,14 @@ for agent in "$SRC"/dot_claude/agents/*.md; do
   else
     _fail "$stem's declared name matches its filename" "declared '$declared'"
   fi
-  # The prompt-side half of the path-resolution guard. GLOBAL.md carries this rule, but
-  # a subagent reaching for `cd` in a repo other than the session's showed it does not
-  # reliably arrive — and its own definition is the one prompt it certainly reads.
-  # Without this, path-resolution-guard.sh still stops the interruption, but every
-  # subagent pays a denied call to learn the rule it should have started with.
+  # The cd/grep bullet is deliberately NOT restated here any more (spec 2026-09-30,
+  # section 3.3): the Bash tool description carries the cd rule, ~/.claude/CLAUDE.md the
+  # recursive-grep trap, and path-resolution-guard.sh enforces both. A copy here is one
+  # more place to keep in step.
   if grep -q 'Never open a Bash command with `cd`' "$agent"; then
-    _pass "$stem carries the no-leading-cd rule"
+    _fail "$stem does not restate the cd/grep rule" "the bullet is back"
   else
-    _fail "$stem carries the no-leading-cd rule" "rule missing — every dispatch relearns it via a denied call"
+    _pass "$stem does not restate the cd/grep rule"
   fi
 done
 

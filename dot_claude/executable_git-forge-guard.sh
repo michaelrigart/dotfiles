@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 # PreToolUse(Bash) guard for git commits and forge MR/PR creation.
 #
-# Enforces the two rules from the "Merge & pull requests" section of
+# Enforces the two rules from the "Merge requests" section of
 # ~/.config/agents/GLOBAL.md that prose alone cannot guarantee:
 #
 #   1. No agent attribution — claude.ai session links, `Claude-Session:` trailers,
 #      `Co-authored-by:` agent lines, "Generated with …" footers.
 #   2. If the repo ships an MR/PR template, the description must follow it.
 #
-# It also carries one genuine danger gate (rule 3): `glab api` calls that write.
+# It also carries two genuine danger gates: `glab api` calls that write (rule 3), and
+# `git push` (rule 4, in git-push-guard.py beside this file: default-branch, force,
+# delete and mirror pushes ask; an unsupported push configuration or a secret in the
+# outgoing commits is denied).
 #
 # Rules 1 and 2 are reported as permissionDecision=deny. That is NOT a user prompt: the
 # model reads the reason and rewrites, so a violation costs a retry, not an
@@ -25,15 +28,21 @@
 # through to the auto-mode classifier, writes ask.
 #
 # SAFETY: a guard that breaks unrelated commands is worse than no guard. There is
-# no `set -e`; every failure path calls allow(); anything unparseable is allowed.
+# no `set -e`; every failure path of rules 1-2 calls allow(); anything unparseable is
+# allowed. Rules 3 and 4 are danger gates and fail the other way (see each).
 #
-# Bypass for a one-off: put FORGE_GUARD=off anywhere in the command.
+# Bypass for a one-off, only when Michael has asked for it in the conversation: put
+# FORGE_GUARD=off anywhere in the command. It lifts rules 1 and 2 only, the behavioural
+# ones; it never lifts rule 3 or rule 4.
 #
 # Bash 3.2 compatible (macOS system bash).
 
 set -uo pipefail
 
-allow() { exit 0; }
+# A rule-4 ask is held here rather than printed at once, so that a rule 1-2 deny
+# further down still wins over it (deny beats ask). allow() releases it.
+pending=""
+allow() { [ -z "$pending" ] || printf '%s\n' "$pending"; exit 0; }
 
 # A deny reason can contain anything (template markdown, quotes, newlines), so it
 # is passed through jq -Rs rather than hand-escaped. If jq fails, allow.
@@ -60,18 +69,83 @@ command -v jq >/dev/null 2>&1 || allow
 # Fast path. This hook fires on EVERY Bash call, so the common case must cost no
 # subprocess at all — a shell-builtin substring test on the raw payload, before
 # any JSON parsing. Everything below is reached only by the handful of commands
-# that even mention a commit or an MR/PR.
+# that even mention a commit, an MR/PR, or a push.
+forge_candidate=0
 case "$payload" in
   *"git commit"*|*"glab mr create"*|*"glab mr update"* \
   |*"gh pr create"*|*"gh pr edit"*|*"az repos pr create"*|*"az repos pr update"* \
-  |*"glab api"*) ;;
-  *) allow ;;
+  |*"glab api"*) forge_candidate=1 ;;
 esac
+
+# Rule 4 candidates, from three independent signals:
+#   push_word      the payload mentions "push" at all (cheap and broad);
+#   push_selector  it mentions git together with something that selects ANOTHER repository
+#                  or configuration (-C, --git-dir, --work-tree, -c, GIT_DIR, GIT_WORK_TREE,
+#                  GIT_CONFIG*, a cd). An alias defined there cannot be listed from here,
+#                  so the helper resolves it in the repository git would select;
+#   push_alias     it names an alias that expands to a push (the dotfiles define
+#                  pom = push origin main), listed with ONE git call in the payload's cwd,
+#                  read from the raw JSON with a builtin match.
+# A payload that mentions neither git nor push costs no subprocess at all, and a plain git
+# command costs one git call, never the helper.
+push_word=0; push_selector=0; push_alias=0
+case "$payload" in *push*|*send-pack*) push_word=1 ;; esac
+case "$payload" in
+  *git*)
+    case "$payload" in
+      *" -C"*|*"--git-dir"*|*"--work-tree"*|*" -c"*|*GIT_DIR*|*GIT_WORK_TREE*|*GIT_CONFIG*|*"cd "*)
+        push_selector=1 ;;
+    esac
+    if [ "$push_selector" = 0 ]; then
+      pcwd=.
+      cwd_re='"cwd"[[:space:]]*:[[:space:]]*"([^"]*)"'
+      [[ $payload =~ $cwd_re ]] && pcwd=${BASH_REMATCH[1]}
+      while IFS= read -r a; do
+        [ -n "$a" ] || continue
+        case "$payload" in *"$a"*) push_alias=1; break ;; esac
+      done <<EOF
+$(git -C "$pcwd" config --get-regexp '^alias\.' 2>/dev/null | sed -n -E 's/^alias\.([^ ]+) .*(push|send-pack).*/\1/p')
+EOF
+    fi
+    ;;
+esac
+push_candidate=0
+[ "$push_word$push_selector$push_alias" = 000 ] || push_candidate=1
+
+[ "$forge_candidate" = 1 ] || [ "$push_candidate" = 1 ] || allow
 
 cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command // empty' 2>/dev/null) || allow
 [ -n "$cmd" ] || allow
 
-case "$cmd" in *FORGE_GUARD=off*) allow ;; esac
+# ------------------------------------------------------------ rule 4: git push
+# The work is in git-push-guard.py beside this file: it prints a finished decision (ask
+# or deny) or nothing. A deny is final. An ask is held in $pending and released by
+# allow(), so the rules below can still deny. FAIL DIRECTION IS CLOSED: if the helper
+# cannot run at all, a command that looks like a push is denied, with a reason the agent
+# can act on. Runs before the FORGE_GUARD=off check below, which never lifts it.
+if [ "$push_candidate" = 1 ]; then
+  py=/usr/bin/python3
+  [ -x "$py" ] || py=python3
+  helper="$(dirname "$0")/git-push-guard.py"
+  verdict=$(printf '%s' "$payload" | "$py" "$helper" 2>/dev/null)
+  rc=$?
+  case "$verdict" in
+    '') ;;
+    *'"permissionDecision":"ask"'*) pending=$verdict ;;
+    *) printf '%s\n' "$verdict"; exit 0 ;;
+  esac
+  # The fallback denies on the same evidence the fast path acted on: an alias that pushes,
+  # a repository selector (whose aliases only the helper can see), or a literal git push,
+  # send-pack or http-push, as a subcommand (git send-pack) or in the dash form, behind a
+  # path or not (git-push, /usr/libexec/git-core/git-http-push). The bare word "push" alone
+  # is not enough; it is too common in unrelated commands.
+  if [ "$rc" -ne 0 ]; then
+    if [ "$push_alias" = 1 ] || [ "$push_selector" = 1 ] \
+       || printf '%s' "$cmd" | grep -Eq 'git([^;&|]*[[:space:]]|-)(push|send-pack|http-push)([[:space:]]|$)'; then
+      deny "Push guard: the push check could not run ($helper exited $rc), so this command, which may push, is refused. Push by hand, or restore the helper (chezmoi apply)."
+    fi
+  fi
+fi
 
 # ------------------------------------------------------- rule 3: glab api writes
 # Read-only `glab api` (the overwhelming majority: pipeline status, job traces, MR
@@ -187,6 +261,10 @@ flag by eye."
     esac
     ;;
 esac
+
+# The bypass lifts rules 1 and 2 only. It sits here, after both danger gates, so a
+# FORGE_GUARD=off in the command can never reach a push or a glab api write.
+case "$cmd" in *FORGE_GUARD=off*) allow ;; esac
 
 # Precise gate: the forge command must actually sit in command position. Without
 # this, `rg "git commit" docs/` or a heredoc quoting one of these would trip the
@@ -321,7 +399,7 @@ if printf '%s' "$haystack" | grep -Eq \
 
 This commit message / MR / PR text contains a session link, a Claude-Session
 trailer, a Co-authored-by agent line, or a \"Generated with …\" footer. Per the
-\"Merge & pull requests\" section of ~/.config/agents/GLOBAL.md, none of that goes
+\"Merge requests\" section of ~/.config/agents/GLOBAL.md, none of that goes
 into commit messages, MR/PR titles or descriptions, issue text, or review
 comments.
 
@@ -421,5 +499,6 @@ Give that file a LITERAL absolute path. This hook does not share \$TMPDIR with
 the command it is checking, so a \$TMPDIR-relative body is one it cannot read:
 it will not be denied, but it will not be checked for attribution either.
 
-If the description genuinely should not follow the template, say so and re-run
-with FORGE_GUARD=off in the command."
+Do not skip the template on your own judgement. Only if Michael has asked, in this
+conversation, for this description to skip it: re-run with FORGE_GUARD=off in the
+command, and say so in the MR."
