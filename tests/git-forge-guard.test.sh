@@ -484,6 +484,15 @@ expect deny  "difftool -x running a push"             "$R"   "git add f && git d
 expect deny  "difftool --extcmd running a push"       "$R"   "git add f && git difftool --extcmd='git push' HEAD"
 expect deny  "clone --template, which is not inert"   "$R"   "rg x && git clone --template=/tmp/t 'git push' y"
 expect deny  "mergetool, then a push of its own"      "$R"   'git add f && git mergetool --tool-help; git push origin main'
+expect allow "git grep for push, after status"        "$R"   'git status && git grep -n "push" -- README.md'
+expect allow "add, then a commit message about docs"  "$R"   'git add f && git commit -m "push docs"'
+# git takes any unambiguous prefix of a long option, and a short option inside a bundle.
+expect deny  "an abbreviated --upload-pa=<cmd>"       "$R"   "git status && git ls-remote --upload-pa=\"sh -c 'git push origin main'\" ."
+expect deny  "an abbreviated --upload-pa <cmd>"       "$R"   "git status && git ls-remote --upload-pa \"sh -c 'git push origin main'\" ."
+expect deny  "grep -nO<cmd>, -O inside a bundle"      "$R"   "git status && git grep -nO\"sh -c 'git push origin main'\" x -- README.md"
+expect deny  "fetch -qu <cmd>, -u inside a bundle"    "$R"   "git status && git fetch -qu \"sh -c 'git push'\" origin"
+expect deny  "config planting uploadpack, then fetch" "$R"   "git status && git config remote.origin.uploadpack \"sh -c 'git push'\" && git fetch origin"
+expect deny  "rebase -ix running a push, after add"   "$R"   'git add f && git rebase -ix "git push" main'
 # Whatever can run text keeps counting it.
 expect deny  "add, then a push"                       "$R"   'git add f && git push origin main'
 expect deny  "true, then a push"                      "$R"   'true; git push origin main'

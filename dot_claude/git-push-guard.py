@@ -441,11 +441,12 @@ INERT_TOOLS = {"rg", "grep", "fd", "cat", "head", "tail", "wc", "echo", "printf"
                "diff", "cmp", "cut", "sort", "uniq", "tr", "jq", "test", "["}
 # The git subcommands whose arguments are data. An allowlist, not "every builtin minus the
 # runners": difftool -x, mergetool, send-email --*-cmd, clone --template, submodule, bisect,
-# filter-branch, archive and am all hand a word to a shell or plant one, so they stay out.
+# filter-branch, archive and am all hand a word to a shell or plant one, so they stay out;
+# so do config and remote, which can set uploadpack, a URL or a helper for a later word.
 INERT_GIT_SUBCOMMANDS = {
-    "add", "blame", "branch", "cat-file", "checkout", "cherry-pick", "commit", "config",
+    "add", "blame", "branch", "cat-file", "checkout", "cherry-pick", "commit",
     "describe", "diff", "fetch", "for-each-ref", "grep", "log", "ls-files", "ls-remote",
-    "ls-tree", "merge", "merge-base", "mv", "pull", "rebase", "reflog", "remote", "reset",
+    "ls-tree", "merge", "merge-base", "mv", "pull", "rebase", "reflog", "reset",
     "restore", "rev-list", "rev-parse", "rm", "shortlog", "show", "show-ref", "stash",
     "status", "switch", "symbolic-ref", "tag", "worktree",
 }
@@ -461,8 +462,22 @@ TOOL_EXEC_ARG = {
     "sort": re.compile(r"^--compress"),
     "printf": re.compile(r"^-v"),
 }
-# git options that hand an argument to a shell, and sub-specific spellings of the same.
-GIT_EXEC_ARG = re.compile(r"^--(upload-pack|receive-pack|exec|open-files-in-pager)\b")
+# git long options that hand an argument to a shell or plant one. git accepts any unambiguous
+# prefix (--upload-pa), so a --name that is a prefix of one of these counts.
+GIT_EXEC_LONG = ("upload-pack", "receive-pack", "exec", "open-files-in-pager", "extcmd",
+                 "template", "config-env", "sendmail-cmd", "to-cmd", "cc-cmd", "header-cmd",
+                 "tool-cmd")
+# The short options that do the same, wherever they sit in a bundle (-nO<cmd>, -qu <cmd>).
+GREP_PAGER_BUNDLE = re.compile(r"^-[A-Za-z]*O")
+UPLOAD_PACK_BUNDLE = re.compile(r"^-[A-Za-z]*u")
+
+
+def exec_long_option(word):
+    """Is this --name or --name=value a prefix of an option that runs or plants a command?"""
+    if not word.startswith("--"):
+        return False
+    name = word[2:].split("=", 1)[0]
+    return bool(name) and any(o.startswith(name) for o in GIT_EXEC_LONG)
 
 
 def writes_file(seg):
@@ -498,15 +513,12 @@ def inert_git(args):
     sub, rest = args[i], args[i + 1:]
     if sub not in INERT_GIT_SUBCOMMANDS or runs_command_string(sub, rest):
         return False
-    if any(GIT_EXEC_ARG.match(a) for a in rest):
+    if any(exec_long_option(a) for a in rest):
         return False
-    if sub == "grep" and any(a.startswith("-O") for a in rest):
+    if sub == "grep" and any(GREP_PAGER_BUNDLE.match(a) for a in rest):
         return False
-    if sub in ("clone", "fetch", "pull", "ls-remote") and any(a.startswith("-u") for a in rest):
-        return False
-    # git config can plant an alias or a command (core.pager) that a later word of the same
-    # call runs; the plain `git config user.name x` stays inert.
-    if sub == "config" and any(re.match(r"(alias|core)\.|!", a, re.I) for a in rest):
+    if sub in ("clone", "fetch", "pull", "ls-remote") and any(
+            UPLOAD_PACK_BUNDLE.match(a) for a in rest):
         return False
     return True
 
