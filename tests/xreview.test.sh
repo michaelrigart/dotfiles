@@ -223,6 +223,8 @@ case "$cmd" in
   thread-status)
     # RPC_STATUS_FAIL_FOR=<id>: that one thread's state cannot be read.
     [ -n "${RPC_STATUS_FAIL_FOR:-}" ] && [ "$th" = "$RPC_STATUS_FAIL_FOR" ] && exit 1
+    # RPC_STATUS_NOBOOL_FOR=<id>: that thread's status answers, but with no boolean `running`.
+    [ -n "${RPC_STATUS_NOBOOL_FOR:-}" ] && [ "$th" = "$RPC_STATUS_NOBOOL_FOR" ] && { echo '{"loaded":true,"status":"idle","running":"no"}'; exit 0; }
     # RPC_THREAD_RUNNING: every thread queried is running. RPC_THREAD_RUNNING_FOR=<id>:
     # only that one thread is (Minor 4's own check runs on the CHOSEN thread, separately
     # from the precondition gate's check on whatever the pane's title resolves to, so a
@@ -259,7 +261,7 @@ fresh() { # a pane showing U0, idle, its TUI not connected to the daemon; clean 
         RELIVE_DURING_TURN RPC_SWITCH_BRANCH_TO RPC_SWITCH_BRANCH_EARLY \
         KEY_DELAY DISPATCH_ID XREVIEW_LOCK_WAIT RPC_RUNNING_AFTER_START \
         PROCINFO_FAIL PRESESSION GONE_AFTER_KEYS GONE_AFTER_RUN LSOF_FAIL READ_FAIL \
-        RPC_STATUS_FAIL_FOR CODEX_CHILD XREVIEW_RUNG_WAIT GET_FAIL PROCINFO_BAD RPC_RESOLVE_RC
+        RPC_STATUS_FAIL_FOR RPC_STATUS_NOBOOL_FOR CODEX_CHILD XREVIEW_RUNG_WAIT GET_FAIL PROCINFO_BAD RPC_RESOLVE_RC
   export NEW_UUID="$U1"
   printf codex > "$P/agent"; printf '%s | t | d' "$(trunc "$U0")" > "$P/title"; echo idle > "$P/status"
   echo 0 > "$P/ctrlc"
@@ -727,6 +729,19 @@ out="$(NO_TITLE=1 XREVIEW_PANE_WAIT=0.15 bash "$XREVIEW" dispatch --checkpoint p
 is "S6b a short screen shows exactly its last 12 rows" "$(printf '%s' "$out" | grep -c '^  | ')" 12
 is "S6b from row 19 to the final row, trailing blank rows dropped" \
    "$(printf '%s' "$out" | grep '^  | ' | sed -n '1p;$p' | tr '\n' '/')" "  | line 19/  | line 30/"
+# S6c: the byte cut lands inside a 3-byte character (`›`, E2 80 BA): the first of the last 12
+# rows is 'ab' plus 40 of them (122 bytes with its newline) and the other 11 are 80 bytes each,
+# so the cut leaves 120 bytes of row 1 - one byte into the first character, with its two
+# continuation bytes (80 BA) at the head of the 39 whole characters that follow. The excerpt must not open on them.
+chars="$(printf '›%.0s' $(seq 40))"; y79="$(head -c 79 /dev/zero | tr '\0' y)"
+fresh; { printf 'ab%s\n' "$chars"; for _ in $(seq 11); do printf '%s\n' "$y79"; done; } > "$P/screen"
+out="$(NO_TITLE=1 XREVIEW_PANE_WAIT=0.15 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
+first="$(printf '%s' "$out" | LC_ALL=C grep -a '^  | ' | head -1 | LC_ALL=C sed 's/^  | //')"
+b0="$(printf '%s' "$first" | head -c 1 | od -An -tu1 | tr -d ' ')"
+is "S6c the excerpt's first line does not begin on a UTF-8 continuation byte" \
+   "$([ "${b0:-0}" -ge 128 ] && [ "${b0:-0}" -le 191 ] && echo "continuation ($b0)" || echo "ok")" ok
+is "S6c and starts at the first whole character that remains of the cut row" "$first" "${chars#›}"
+is "S6c the excerpt is still twelve lines" "$(printf '%s' "$out" | LC_ALL=C grep -ac '^  | ')" 12
 fresh; printf 'codex resume %s' "$U2" > "$P/argv"; : > "$P/title"
 out="$(RPC_THREAD_RUNNING_FOR=$U2 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
 is "S7 a pane resuming a running thread refuses as mid-turn" "$(printf '%s' "$out" | grep -c "thread $U2 is mid-turn")" 1
@@ -771,7 +786,8 @@ is "S17 then refuses with the exact line" \
    "$rc/$(printf '%s' "$out" | grep -cx 'xreview: the Codex pane w1:p2 did not exit its session within 10s; no review was started')" "1/1"
 is "S17 no turn" "$(called 'xreview-rpc turn-start')" 0
 # An argv the guard cannot read for certain refuses; one it can still reads as before.
-for case_argv in "codex --newflag v resume $U2" "codex resume $U2 prompt"; do
+for case_argv in "codex --newflag v resume $U2" "codex resume $U2 prompt" "codex fix-the-tests" \
+                 "codex exec x" "codex fork $U2 x" "codex -- resume $U2"; do
   fresh; printf '%s' "$case_argv" > "$P/argv"
   out="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
   is "S18 '$case_argv' refuses" \
@@ -781,6 +797,19 @@ done
 fresh; printf 'codex fork %s' "$U2" > "$P/argv"
 out="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
 is "S19 a fork is no resume: the dispatch proceeds" "$(printf '%s' "$out" | grep -c '^xr-')" 1
+fresh; printf 'codex' > "$P/argv"
+out="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
+is "S19 a bare codex (no positional) is a fresh session: the dispatch proceeds" "$(printf '%s' "$out" | grep -c '^xr-')" 1
+fresh; printf 'codex fork' > "$P/argv"
+out="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
+is "S19 a bare fork proceeds too" "$(printf '%s' "$out" | grep -c '^xr-')" 1
+# The chosen review thread's own running check fails closed too, before any keystroke.
+for how in FAIL NOBOOL; do
+  fresh; out="$(env RPC_STATUS_${how}_FOR=$U1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
+  is "S22 an unreadable status for the chosen thread ($how) refuses, exactly" \
+     "$rc/$(printf '%s' "$out" | grep -cx "xreview: cannot read whether the review thread $U1 is running; no review was started")" "1/1"
+  is "S22 $how: untouched, no turn, no key" "$(untouched)" yes
+done
 # The title check fails closed: a pane read that fails, or a resolver that cannot reach the
 # daemon, refuses before any keystroke. A prefix that resolves to nothing still does not block.
 for how in exit envelope; do
@@ -1083,23 +1112,24 @@ is "P7 stderr written after unlock_pane is still visible" "$(printf '%s' "$out" 
 is "P7 and the lock is free after unlock_pane" "$(printf '%s' "$out" | grep -cx free)" 1
 # P8: a helper that fails for any reason but the bound is not "another dispatch". The lock
 # helper is swapped for a stand-in that runs the real python with fd 9 closed (flock raises
-# EBADF, the helper's own exit-2 path), or that exits 1 (a real timeout). No sandbox-safe way
+# EBADF, the helper's own exit-2 path), or that exits 75 (the bound ran out), or exits 1 (any other status is "cannot lock"). No sandbox-safe way
 # exists to make flock itself fail on this filesystem, so the interpreter path is patched in
 # a copy of the script, in lock_pane only.
 printf '#!/bin/sh\nexec 9>&-\nexec /usr/bin/python3 "$@"\n' > "$ROOT/py-nolock"
-printf '#!/bin/sh\nexit 1\n' > "$ROOT/py-timeout"
-chmod +x "$ROOT/py-nolock" "$ROOT/py-timeout"
-for variant in nolock timeout; do
+printf '#!/bin/sh\nexit 75\n' > "$ROOT/py-timeout"
+printf '#!/bin/sh\nexit 1\n' > "$ROOT/py-exit1"
+chmod +x "$ROOT/py-nolock" "$ROOT/py-timeout" "$ROOT/py-exit1"
+for variant in nolock exit1 timeout; do
   sed "/^lock_pane() {/,/^}/ s#/usr/bin/python3#$ROOT/py-$variant#" "$XREVIEW" > "$ROOT/xreview-$variant"
   fresh
   out="$(bash "$ROOT/xreview-$variant" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
-  if [ "$variant" = nolock ]; then
-    is "P8 a helper that cannot lock refuses as 'cannot lock'" \
+  if [ "$variant" = nolock ] || [ "$variant" = exit1 ]; then
+    is "P8 a helper that cannot lock ($variant) refuses as 'cannot lock'" \
        "$rc/$(printf '%s' "$out" | grep -c "^xreview: cannot lock the Codex pane w1:p2 (.*w1_p2.lock); no review was started$")" "1/1"
     is "P8 and never as contention" "$(printf '%s' "$out" | grep -c 'another dispatch')" 0
     is "P8 and no traceback" "$(printf '%s' "$out" | grep -c 'Traceback')" 0
   else
-    is "P8 a helper that times out refuses as 'another dispatch'" \
+    is "P8 a helper that times out (exit 75) refuses as 'another dispatch'" \
        "$rc/$(printf '%s' "$out" | grep -c '^xreview: another dispatch is using the Codex pane w1:p2; no review was started$')" "1/1"
   fi
   is "P8 $variant: untouched" "$(untouched)" yes

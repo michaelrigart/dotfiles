@@ -77,7 +77,8 @@ pane_root() {
 }
 
 # --- the Codex pane ----------------------------------------------------------------
-# The repository's one herdr pane running Codex in the repository root. It is the reviewer's
+# The repository's one herdr pane running Codex in the pane root (the repository root, or the
+# main checkout's for a harness worktree under .claude/worktrees/). It is the reviewer's
 # screen: dispatch frees it before the turn starts, then best-effort resumes it onto the
 # review thread once the turn is running.
 
@@ -91,7 +92,7 @@ find_pane() {
     || die "cannot read herdr's pane list"
   # XREVIEW_PANE picks AMONG the valid Codex panes for this root; it does not replace
   # validation. A typo or a stale id pointing at some other pane (the idle Claude Code
-  # pane, say) would otherwise get two ctrl+c and a `codex …` command typed into it.
+  # pane, say) would otherwise get up to three ctrl+c pairs and a `codex …` command typed into it.
   if [ -n "${XREVIEW_PANE:-}" ]; then
     if printf '%s\n' "$ids" | grep -Fqx -- "$XREVIEW_PANE"; then
       printf '%s\n' "$XREVIEW_PANE"; return 0
@@ -186,10 +187,11 @@ proc_freed() { # proc_freed <proc-json>: the pane's shell is back in the foregro
 }
 
 resume_target() { # resume_target <codex-proc-json>: the thread id this Codex process resumes.
-  # Nothing for one that resumes nothing (a fresh session, a fork). Exit 1 for one that
-  # resumes something other than a plain thread id (`resume --last`, a picker, a name), and
-  # for any argv it cannot read for certain: `resume` after another positional (the value of
-  # a flag this list does not know, say), or anything after the id (a prompt).
+  # Only three shapes are readable: no positional at all (a fresh session), `resume <id>`, and
+  # `fork` or `fork <id>`. Nothing for the first and last; the id for the middle one. Exit 1 for
+  # anything else - `resume --last`, a picker, a name, a prompt (`codex "fix it"`), another
+  # subcommand (`codex exec …`), anything after the id, a `--` anywhere, or `resume` after
+  # another positional (the value of a flag this list does not know, say).
   # Values of the value-taking flags are skipped, so `codex -m resume` is no resume.
   local r
   r="$(printf '%s' "$1" | jq -r '
@@ -202,9 +204,11 @@ resume_target() { # resume_target <codex-proc-json>: the thread id this Codex pr
         elif ($vf | index([$a[$i]])) then .skip = true
         elif ($a[$i] | startswith("-")) then .
         else .pos += [$a[$i]] end)).pos as $p
-    | if ($p | any(. == "resume")) | not then "none"
+    | if ($a | any(. == "--")) then "bad"
+      elif ($p | length) == 0 then "none"
       elif $p[0] == "resume" and ($p | length) == 2
            and ($p[1] | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")) then "id " + $p[1]
+      elif $p[0] == "fork" and ($p | length) <= 2 then "none"
       else "bad" end' 2>/dev/null)" || return 1
   case "$r" in
     none) return 0 ;;
@@ -286,9 +290,12 @@ pane_screen() { # pane_screen <pane>: the bottom of the pane's visible screen - 
   # `tail -c` can cut the first kept line short. The prefix is added by awk, which ends every
   # line it prints with a newline, so whatever follows on stdout or stderr (the nonce, under
   # 2>&1) always starts on a line of its own.
+  # The byte cut can also land inside a multi-byte character; the continuation bytes it leaves
+  # at the start of the first line are dropped, so the excerpt never opens on a stray one.
   { printf '%s\n' "$out" | LC_ALL=C tr -d '\000-\010\013-\037\177' \
       | awk '{ l[NR] = $0 } NF { last = NR } END { for (i = 1; i <= last; i++) print l[i] }' \
-      | tail -n 12 | tail -c 1000 | awk '{ print "  | " $0 }'; } || true
+      | tail -n 12 | tail -c 1000 \
+      | LC_ALL=C awk 'NR == 1 { sub(/^[\200-\277]+/, "") } { print "  | " $0 }'; } || true
 }
 
 die_with_screen() { # die_with_screen <pane> <message>: die, then show the pane's screen
@@ -332,8 +339,16 @@ pane_command() {
   printf '%s\n' "$c"
 }
 
-thread_running() { # thread_running <thread>: xreview-rpc thread-status reports a live turn
-  xreview-rpc thread-status --thread "$1" 2>/dev/null | jq -e '.running == true' >/dev/null 2>&1
+thread_running() { # thread_running <thread>: 0 when xreview-rpc thread-status reports a live
+  # turn, 1 when it reports none. Dies when the state cannot be read - a failed status call,
+  # or output with no boolean `.running` - because the one caller (the chosen review thread,
+  # just before pane_free) must never read "could not tell" as "not running".
+  local out
+  if ! out="$(xreview-rpc thread-status --thread "$1" 2>/dev/null)" \
+     || ! printf '%s' "$out" | jq -e '.running | type == "boolean"' >/dev/null 2>&1; then
+    die "cannot read whether the review thread $1 is running; no review was started"
+  fi
+  printf '%s' "$out" | jq -e '.running == true' >/dev/null 2>&1
 }
 
 # pane_free <pane> <thread> <proc-json> - spec 2026-10-01 §4.3/§4.4, BEFORE any turn exists.
@@ -462,8 +477,9 @@ lock_pane() { # lock_pane <pane>: wait, bounded, for the pane's lock; dies at th
   mkdir -p "$dir" 2>/dev/null && [ -d "$dir" ] || die "cannot create $dir; no review was started"
   f="$dir/$(printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_').lock"
   { exec 9>>"$f"; } 2>/dev/null || die "cannot open $f; no review was started"
-  # Exit 1 only when the bound runs out with the lock still held; any other failure (no
-  # python, no flock on this filesystem) exits 2, so it is never reported as contention.
+  # Exit 75 only when the bound runs out with the lock still held; the helper's own other
+  # failure exits 2. Bash trusts only 75 as contention: any other status (1, 2, 127, a signal -
+  # no python, no flock on this filesystem) is "cannot lock", never reported as contention.
   /usr/bin/python3 -c '
 import fcntl, sys, time
 try:
@@ -474,14 +490,14 @@ try:
             sys.exit(0)
         except BlockingIOError:
             if time.monotonic() >= deadline:
-                sys.exit(1)
+                sys.exit(75)
             time.sleep(0.1)
 except Exception:
     sys.exit(2)
 ' "$wait" 2>/dev/null || rc=$?
   case "$rc" in
     0) ;;
-    1) die "another dispatch is using the Codex pane $1; no review was started" ;;
+    75) die "another dispatch is using the Codex pane $1; no review was started" ;;
     *) die "cannot lock the Codex pane $1 ($f); no review was started" ;;
   esac
 }
