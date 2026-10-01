@@ -1147,6 +1147,31 @@ else
   printf '\000\001\002\003\n' > "$BINARY/blob.bin"
   git -C "$BINARY" add blob.bin && git -C "$BINARY" commit -q -m "a binary file"
   expect allow "a binary-only commit"                         "$BINARY" 'git push origin feat'
+  # --text puts a binary file's bytes in the patch, and a GIF, PNG or font can hold CR before
+  # the 0x01 commit marker or @@. Read in text mode, the listing broke there too and counted
+  # phantom commits (598 expected, 573 scanned): git and gitleaks split at LF alone. The gif
+  # is added, then deleted: a phantom marker inside a deleted file once counted as well.
+  CRBIN=$(clone cr-binary)
+  printf 'GIF89a\000\r\001x\r@@ -0,0 +1 @@\r\001y\000\n' > "$CRBIN/cam.gif"
+  git -C "$CRBIN" add cam.gif && git -C "$CRBIN" commit -q -m "add a gif"
+  git -C "$CRBIN" rm -q cam.gif && git -C "$CRBIN" commit -q -m "delete the gif"
+  printf 'hello\n' > "$CRBIN/notes.txt"
+  git -C "$CRBIN" add notes.txt && git -C "$CRBIN" commit -q -m "a clean change"
+  expect allow "a binary holding CR before the commit marker and @@" "$CRBIN" 'git push origin feat'
+  # The count still fails closed when gitleaks really covers less. This git hides the commits
+  # that only modify files from gitleaks' own log (a diff filter the guard's listing never
+  # gets), so gitleaks scans 2 of the 3 commits with changes: deny, with the exact counts.
+  CRMOD="$TMP/cr-binary-modified"; cp -R "$CRBIN" "$CRMOD"
+  printf 'more\n' >> "$CRMOD/notes.txt"; git -C "$CRMOD" commit -q -am "modify notes"
+  HIDEBIN="$TMP/hidebin"; mkdir -p "$HIDEBIN"
+  printf '#!/bin/sh\nPATH="%s"; export PATH\ncase " $* " in\n  *" --format=%%x01%%H "*) ;;\n  *" log -p -U0 "*) exec git "$@" --diff-filter=A ;;\nesac\nexec git "$@"\n' \
+    "$REALPATH" > "$HIDEBIN/git"
+  chmod 755 "$HIDEBIN/git"
+  PATH="$HIDEBIN:$REALPATH"
+  expect deny  "a gitleaks log that hides modifying commits is a deny" "$CRMOD" 'git push origin feat'
+  has_reason   "and the deny gives both counts" "scanned 2 commit(s) but this push carries 3" "$CRMOD" 'git push origin feat'
+  PATH="$REALPATH"
+  expect allow "the same branch, its log not filtered"        "$CRMOD" 'git push origin feat'
   AMENDED=$(clone amended)
   printf 'one\n' > "$AMENDED/n.txt"; git -C "$AMENDED" add n.txt; git -C "$AMENDED" commit -q -m "add n"
   git -C "$AMENDED" push -q origin feat 2>/dev/null

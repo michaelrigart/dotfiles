@@ -276,16 +276,17 @@ class Repo:
     def __init__(self, cwd, repo_opts):
         self.base = ["git", "-C", cwd] + list(repo_opts)
 
-    def run(self, *args, env=None, long=False):
+    def run(self, *args, env=None, long=False, raw=False):
         """stdout of a git query, or None when git fails. env replaces the environment; long
         lifts the per-call limit to what is left of the budget (a patch listing of a large
-        push). Output is decoded leniently: a patch can carry any bytes."""
+        push). Output is decoded leniently: git can print any bytes. raw returns the bytes as
+        git wrote them, for a patch listing: text mode also turns every CR into a line break."""
         remaining = BUDGET - (time.monotonic() - START)
         if remaining <= 0:
             raise Deny(TIMED_OUT)
+        text = {} if raw else {"encoding": "utf-8", "errors": "replace"}
         try:
-            p = subprocess.run(self.base + list(args), capture_output=True, env=env,
-                               encoding="utf-8", errors="replace",
+            p = subprocess.run(self.base + list(args), capture_output=True, env=env, **text,
                                timeout=remaining if long else min(CALL_TIMEOUT, remaining))
         except subprocess.TimeoutExpired:
             raise Deny(TIMED_OUT)
@@ -808,25 +809,30 @@ def expected_commits(repo, remote, sources, env):
     empty commit, a clean merge or a commit that only deletes files is not counted, and a
     commit that only removes lines is. It reads the same `git log -p` stream with the same
     options and pins gitleaks is given, so the two counts agree unless gitleaks lost
-    something. Run through Repo.run, under the same budget as every git call."""
+    something. Run through Repo.run, under the same budget as every git call.
+    The listing is read as bytes and split at LF alone, as gitleaks splits it. Decoded text
+    also breaks at CR, and --text puts a binary file's bytes in the patch: a GIF, PNG or font
+    holding CR before the 0x01 marker or @@ gave phantom commits and hunks, so 598 expected
+    where gitleaks rightly scanned all 573 outgoing commits."""
     out = repo.run("log", "-p", "-U0", "--no-color", "--format=%x01%H", *PATCH_OPTS,
-                   *(list(sources) + ["--not", "--remotes=" + remote]), env=env, long=True)
+                   *(list(sources) + ["--not", "--remotes=" + remote]), env=env, long=True,
+                   raw=True)
     if out is None:
         raise Deny("Push guard: git could not list the outgoing commits ({}), so the secret "
                    "scan cannot show it covered them and the push is refused. Push by hand."
                    .format(" ".join(sources)))
-    # A hunk line never starts with "deleted file mode": every line of a hunk starts with
-    # +, -, a space or a backslash.
+    # A hunk line never starts with \x01, "diff ", "deleted file mode" or @@: every line of
+    # a hunk starts with +, -, a space or a backslash.
     count, scanned, deleted = 0, False, False
-    for line in out.split("\n"):
-        if line.startswith("\x01"):
+    for line in out.split(b"\n"):
+        if line.startswith(b"\x01"):
             count += 1 if scanned else 0
             scanned, deleted = False, False
-        elif line.startswith("diff "):
+        elif line.startswith(b"diff "):
             deleted = False                            # a file header: a new file
-        elif line.startswith("deleted file mode "):
+        elif line.startswith(b"deleted file mode "):
             deleted = True
-        elif line.startswith("@@") and not deleted:
+        elif line.startswith(b"@@") and not deleted:
             scanned = True
     return count + (1 if scanned else 0)
 
