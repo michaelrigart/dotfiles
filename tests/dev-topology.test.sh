@@ -83,6 +83,19 @@ for l in agents runtime; do
         '[.result.tabs[] | select(.label == $l)] | length')
   [[ "$n" == 1 ]] && ok "exactly one '$l' tab" || bad "'$l' tab count = $n"
 done
+# Measured against herdr 0.9.3 in this gate: a plain `workspace create --cwd` workspace
+# carries NO worktree provenance (only `worktree open` records it, section 6b), so
+# layout.sh finds it by the fallback, a pane at the repo root. Pin whichever identity the
+# real binary reports, so a change in either direction is visible, and a workspace that
+# layout.sh could not re-find fails here rather than as a duplicate later.
+ident=$(h workspace list | jq -r --arg d "$REPO" --argjson panes "$(h pane list | jq -c .)" '
+  .result.workspaces[] as $w
+  | if ($w.worktree.checkout_path? // "") == $d then "provenance"
+    elif $w.worktree == null and any($panes.result.panes[]; .workspace_id == $w.workspace_id and .cwd == $d)
+    then "pane-cwd" else empty end' | head -1)
+[[ -n "$ident" ]] \
+  && ok "the bootstrapped workspace is identifiable by $ident" \
+  || bad "the bootstrapped workspace has neither provenance for $REPO nor a bare pane at it"
 # The editor tab is lazy: nothing builds it, alt+e does. Asserting its ABSENCE here is
 # the only thing standing between "layout.sh stopped building it" and "layout.sh still
 # builds it and the mocked suite is wrong about the real binary".
@@ -207,7 +220,7 @@ custom_rm_rc=0
 remaining_wt=$(h workspace list | jq -r --arg d "$WT" \
   '[.result.workspaces[] | select(.worktree.checkout_path == $d)] | length')
 [[ "$custom_rm_rc" == 0 && ! -d "$WT" && "$remaining_wt" == 0 ]] \
-  && ok "command wt-rm closes Herdr and safely removes the checkout" \
+  && ok "the sourced wt-rm closes Herdr and safely removes the checkout" \
   || bad "wt-rm rc=$custom_rm_rc checkout-exists=$([[ -d "$WT" ]] && print yes || print no) workspaces=$remaining_wt"
 
 # 7. dev re-adds a closed eager tab (what the retired plugin action did), and a manual
@@ -215,21 +228,33 @@ remaining_wt=$(h workspace list | jq -r --arg d "$WT" \
 close_rc=0
 h tab close "$(h tab list --workspace "$WS" | jq -r '.result.tabs[] | select(.label=="runtime") | .tab_id')" >/dev/null \
   || close_rc=$?
+# This CLI reports some failures as error envelopes with exit 0, so the close is proven
+# by the tab count, not its exit status.
+closed_n=$(h tab list --workspace "$WS" | jq -r '[.result.tabs[] | select(.label=="runtime")] | length')
+[[ "$close_rc" == 0 && "$closed_n" == 0 ]] \
+  && ok "the runtime tab is closed before the re-add" \
+  || bad "close rc=$close_rc, runtime tabs after the close=$closed_n, expected 0"
 readd_rc=0
 HERDR_SESSION="$SESSION" DEV_NO_ATTACH=1 "$DEV_LAYOUT" "$REPO" >/dev/null 2>&1 || readd_rc=$?
 n=$(h tab list --workspace "$WS" | jq -r '[.result.tabs[] | select(.label=="runtime")] | length')
-[[ "$close_rc" == 0 && "$readd_rc" == 0 && "$n" == 1 ]] \
+[[ "$readd_rc" == 0 && "$n" == 1 ]] \
   && ok "dev re-adds a closed runtime tab" \
-  || bad "re-add rc=$close_rc/$readd_rc, runtime tabs=$n"
+  || bad "re-add rc=$readd_rc, runtime tabs=$n"
 # The agents panes, taken BEFORE the split: herdr lists a new pane right after the pane it
 # split, so afterwards the second entry is the new pane, not the right-hand agent.
 APANES=( ${(f)"$(h pane list --workspace "$WS" | jq -r --arg t "$AT" \
   '.result.panes[] | select(.tab_id==$t) | .pane_id')"} )
+manual_split_rc=0
 h pane split --pane "$(h pane list --workspace "$WS" | jq -r --arg t "$AT" \
-  '[.result.panes[] | select(.tab_id==$t)][0].pane_id')" --direction down --no-focus >/dev/null
+  '[.result.panes[] | select(.tab_id==$t)][0].pane_id')" --direction down --no-focus >/dev/null \
+  || manual_split_rc=$?
+n=$(h pane list --workspace "$WS" | jq -r --arg t "$AT" '[.result.panes[] | select(.tab_id==$t)] | length')
+[[ "$manual_split_rc" == 0 && "$n" == 3 ]] \
+  && ok "the manual split gives the agents tab 3 panes" \
+  || bad "manual split rc=$manual_split_rc, agents panes=$n, expected 3"
 split_rc=0
 HERDR_SESSION="$SESSION" DEV_NO_ATTACH=1 "$DEV_LAYOUT" "$REPO" >/dev/null 2>&1 || split_rc=$?
-[[ "$split_rc" == 0 ]] && ok "a manual split does not stop dev from focusing" \
+[[ "$split_rc" == 0 ]] && ok "dev still succeeds after a manual split" \
                        || bad "dev after a manual split rc=$split_rc"
 
 # 7a. smart-splits' Herdr dispatcher is live, not merely named in config. Move to the
@@ -330,9 +355,15 @@ STATE_AFTER=$(ls ~/.local/state/herdr-layout 2>/dev/null | wc -l | tr -d ' ')
 [[ "$STATE_AFTER" == "$STATE_BEFORE" ]] \
   && ok "no lock file leaked into ~/.local/state/herdr-layout" \
   || bad "lock files in ~/.local/state/herdr-layout went from $STATE_BEFORE to $STATE_AFTER"
-command herdr plugin list 2>/dev/null | grep -q 'dev.layout.test' \
-  && bad "a dev.layout.test plugin registration exists" \
-  || ok "no test plugin registration exists"
+pl_rc=0
+pl=$(command herdr plugin list 2>&1) || pl_rc=$?
+if (( pl_rc )); then
+  bad "herdr plugin list failed (rc=$pl_rc), so test plugin registrations were not checked: $pl"
+elif print -r -- "$pl" | grep -q 'dev.layout.test'; then
+  bad "a dev.layout.test plugin registration exists"
+else
+  ok "no test plugin registration exists"
+fi
 
 print -r -- "=== $pass passed, $fail failed ==="
 (( fail == 0 ))
