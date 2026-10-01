@@ -115,6 +115,14 @@ case "$1 $2" in
     # with ($P/argv, or the pane command). CODEX_CHILD puts a codex child in its group, listed
     # first. PROCINFO_BAD describes the TUI incompletely: argv empty, null or missing, or no
     # name. A pane without a TUI is its shell, pid 4241, in the foreground (G1).
+    # PROCINFO_FG: a foreground group that is not the shell (4242) but whose process list is
+    # empty (empty) or holds only a non-Codex process (vim); or the shell itself in the
+    # foreground while herdr still reports the pane's agent (shell).
+    case "${PROCINFO_FG:-}" in
+      empty) printf '{"result":{"process_info":{"foreground_process_group_id":4242,"foreground_processes":[],"pane_id":"w1:p2","shell_pid":4241}}}\n'; exit 0 ;;
+      shell) printf '{"result":{"process_info":{"foreground_process_group_id":4241,"foreground_processes":[{"argv":["-zsh"],"name":"zsh","pid":4241}],"pane_id":"w1:p2","shell_pid":4241}}}\n'; exit 0 ;;
+      vim)   printf '{"result":{"process_info":{"foreground_process_group_id":4242,"foreground_processes":[{"argv":["vim","x"],"name":"vim","pid":4242}],"pane_id":"w1:p2","shell_pid":4241}}}\n'; exit 0 ;;
+    esac
     if [ "$(agent_now)" = codex ]; then
       argv="$(cat "$P/argv" 2>/dev/null || printf 'codex --sandbox read-only --ask-for-approval never')"
       argv="$(printf '%s' "$argv" | jq -R -c 'split(" ")')"
@@ -261,7 +269,7 @@ fresh() { # a pane showing U0, idle, its TUI not connected to the daemon; clean 
         RELIVE_DURING_TURN RPC_SWITCH_BRANCH_TO RPC_SWITCH_BRANCH_EARLY \
         KEY_DELAY DISPATCH_ID XREVIEW_LOCK_WAIT RPC_RUNNING_AFTER_START \
         PROCINFO_FAIL PRESESSION GONE_AFTER_KEYS GONE_AFTER_RUN LSOF_FAIL READ_FAIL \
-        RPC_STATUS_FAIL_FOR RPC_STATUS_NOBOOL_FOR CODEX_CHILD XREVIEW_RUNG_WAIT GET_FAIL PROCINFO_BAD RPC_RESOLVE_RC
+        RPC_STATUS_FAIL_FOR RPC_STATUS_NOBOOL_FOR CODEX_CHILD XREVIEW_RUNG_WAIT GET_FAIL PROCINFO_BAD RPC_RESOLVE_RC PROCINFO_FG
   export NEW_UUID="$U1"
   printf codex > "$P/agent"; printf '%s | t | d' "$(trunc "$U0")" > "$P/title"; echo idle > "$P/status"
   echo 0 > "$P/ctrlc"
@@ -835,6 +843,21 @@ for bad in argv-empty argv-null argv-missing name-missing; do
      "$(printf '%s' "$out" | grep -cx "xreview: cannot read the Codex pane w1:p2's process (herdr pane process-info); no review was started")" 1
   is "S22 $bad: untouched" "$(untouched)" yes
 done
+# A foreground group that is not the shell, with no Codex process to read, is no observation:
+# a TUI on a pre-session screen could be resuming a running thread. Refused before any key,
+# whatever the title and status say.
+for fg in empty vim; do
+  fresh; : > "$P/title"; rm -f "$P/status"
+  out="$(PROCINFO_FG=$fg bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
+  is "S23 a non-shell foreground with $fg and no Codex process refuses as unreadable" \
+     "$rc/$(printf '%s' "$out" | grep -cx "xreview: cannot read the Codex pane w1:p2's process (herdr pane process-info); no review was started")" "1/1"
+  is "S23 $fg: untouched" "$(untouched)" yes
+done
+# The shell in the foreground is already free: no key, and the resume.
+fresh
+out="$(PROCINFO_FG=shell bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
+is "S24 the shell in the foreground proceeds, with a nonce" "$rc/$(printf '%s' "$out" | grep -c '^xr-')" "0/1"
+is "S24 with no key sent, and the resume" "$(called 'herdr pane send-keys')/$(resumed "$U1")" "0/1"
 
 echo "E. checkpoints and pins"
 fresh

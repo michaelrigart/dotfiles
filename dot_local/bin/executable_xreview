@@ -273,6 +273,11 @@ pane_guard() {
     esac
   fi
   codex="$(proc_codex "$proc")"
+  # A foreground group that is not the shell and holds no Codex process is no observation: it
+  # could be a TUI on a pre-session screen, resuming a thread the guard cannot read.
+  if [ -z "$codex" ] && ! proc_freed "$proc"; then
+    die "cannot read the Codex pane $pane's process (herdr pane process-info); no review was started"
+  fi
   if [ -n "$codex" ]; then
     target="$(resume_target "$codex")" \
       || die "the Codex pane $pane is resuming something other than a thread id; no review was started"
