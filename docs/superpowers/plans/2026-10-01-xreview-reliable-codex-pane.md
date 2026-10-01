@@ -36,7 +36,7 @@ before any task: section numbers (§4.4 and so on) below refer to it.
 - Defaults:
   - `XREVIEW_PANE_WAIT` 20 s (unchanged)
   - `XREVIEW_RUNG_WAIT` 5 s (new; the poll per ctrl+c pair)
-  - `XREVIEW_LOCK_WAIT` 90 s (new)
+  - `XREVIEW_LOCK_WAIT` 60 s (new; lowered from 90 s during execution, Ruling 8)
 - The pane-screen excerpt is at most 12 lines and 1,000 bytes, has control characters
   stripped, and each line is prefixed `  | `.
 - The `codex` launcher stays POSIX `sh`: no bashisms. xreview stays bash with the existing
@@ -610,8 +610,8 @@ is "P6 nor any key at all" "$(called '^b herdr pane send-keys')" 0
 # crashes included. No stale lock is ever left behind to reclaim. The lock file is never
 # deleted: a waiter could otherwise lock an unlinked inode while a newcomer locks a new one.
 lock_pane() { # lock_pane <pane>: wait, bounded, for the pane's lock; dies at the bound
-  local dir f wait="${XREVIEW_LOCK_WAIT:-90}"
-  printf '%s' "$wait" | grep -Eq '^([0-9]+(\.[0-9]*)?|\.[0-9]+)$' || wait=90
+  local dir f wait="${XREVIEW_LOCK_WAIT:-60}"
+  printf '%s' "$wait" | grep -Eq '^([0-9]+(\.[0-9]*)?|\.[0-9]+)$' || wait=60
   dir="${XDG_STATE_HOME:-$HOME/.local/state}/xreview/locks"
   mkdir -p "$dir" 2>/dev/null && [ -d "$dir" ] || die "cannot create $dir; no review was started"
   f="$dir/$(printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_').lock"
@@ -1088,10 +1088,13 @@ else _fail "the escalation list names the cannot-inspect refusal" "missing from 
 if printf '%s' "$esc" | grep -qi 'another dispatch'; then
   _fail "the lock refusal is not escalated" "it is on the escalation list"
 else _pass "the lock refusal is not escalated"; fi
+if grep -q '300000' "$SKILL"; then
+  _pass "the skill gives dispatch a five-minute tool timeout"
+else _fail "the skill gives dispatch a five-minute tool timeout" "missing"; fi
 ```
 
 - [ ] **Step 2: Run it and watch it fail.** Run: `./tests/xreview-skill.test.sh`. Expected:
-  four FAIL; the "not escalated" pin passes.
+  five FAIL; the "not escalated" pin passes.
 
 - [ ] **Step 3: Edit `SKILL.md`.**
 
@@ -1115,6 +1118,16 @@ else _pass "the lock refusal is not escalated"; fi
   resuming, or cannot read whether that thread is running;
 - another dispatch is using the pane (`another dispatch is using the Codex pane`). Wait for
   it, then dispatch again.
+```
+
+  In "Dispatching", after the paragraph about running each command bare, add (Ruling 8: a
+  dispatch can wait for the pane lock, then ladder and resume, so the default 120 s tool
+  timeout could kill it after the turn has started but before the nonce is printed):
+
+```
+Give `xreview dispatch` a Bash timeout of 300000 ms (five minutes). It may wait up to 60 s
+for another dispatch using the same pane, then free and resume the pane; a timeout that
+kills it after the turn starts leaves the review running with no nonce to collect.
 ```
 
   In the escalation list, add, after the "would not free" item:

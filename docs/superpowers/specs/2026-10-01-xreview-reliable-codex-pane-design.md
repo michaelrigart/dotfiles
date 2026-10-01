@@ -255,9 +255,13 @@ resumed onto a running review.
   TUI is started by the pane's shell, which is a child of the herdr server, not of
   xreview, so it never inherits the descriptor either.
 - **Waiting.** The helper polls `LOCK_EX | LOCK_NB` until it succeeds or
-  `XREVIEW_LOCK_WAIT` runs out. The default, 90 s, is above one holder's worst case: a
-  20 s ladder, the turn start and a 20 s resume. At the bound, refuse:
-  `another dispatch is using the Codex pane <id>; no review was started`.
+  `XREVIEW_LOCK_WAIT` runs out. The default, 60 s, is above one holder's worst case: a
+  20 s ladder, the turn start and a 20 s resume. It is also low enough that a wait plus the
+  dispatch's own ladder and resume stays inside a caller's 120 s tool timeout, so the
+  caller is never killed after the turn has started and before the nonce is printed. At the
+  bound, refuse: `another dispatch is using the Codex pane <id>; no review was started`.
+  Any other failure to lock (no `python3`, a filesystem without `flock`) refuses as
+  `cannot lock the Codex pane <id> (<lock file>); no review was started`, never as contention.
 - **Not locked.** `collect` and the other subcommands never touch the pane, so they take no
   lock. Pane ids are unique within one herdr server, and xreview talks to one server.
 
@@ -301,7 +305,7 @@ or from its saved session.
 | Pane's process or a thread's running state unreadable before the ladder | Refuse before any keystroke, naming the check. |
 | Pane's argv resumes no plain thread id | Refuse before any keystroke. |
 | Process read fails inside the ladder | Counts as "still Codex". |
-| Another dispatch holds the pane | Wait up to 90 s, then refuse. A crashed holder's lock is already gone (the kernel released it). |
+| Another dispatch holds the pane | Wait up to 60 s, then refuse. A crashed holder's lock is already gone (the kernel released it). |
 | Harness worktree | Uses the pane of the registered worktree that holds it. Zero or several candidates refuse as today. |
 | `codex resume <id>` of a read-only thread, no flags | Launcher adds the thread's sandbox and approval. |
 | Rollout missing or unreadable at resume | Launcher passes through unchanged. |
@@ -392,7 +396,7 @@ Every suite keeps its existence check (exit 2 when its subject is missing).
 - No Codex session shows the update prompt. Upgrades come from `brew upgrade`.
 - `$state_dir/pane` is no longer used. Old files are left in place and ignored.
 - A harness worktree's reviews and its owner's reviews share one pane and take turns in it.
-  A dispatch can wait up to 90 s for another to finish with the pane.
+  A dispatch can wait up to 60 s for another to finish with the pane.
 - Reopening a read-only thread for writing needs an explicit `--sandbox` flag.
 - xreview depends on `herdr pane process-info` and `herdr pane read` (herdr 0.9.3), and on
   `lsof`. The stubbed suite pins their shapes, and the live canary re-checks them. Without
