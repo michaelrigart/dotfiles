@@ -5,57 +5,39 @@
 # Managed by chezmoi (source: dot_config/herdr/executable_phase.sh).
 #
 # Reported tokens are display-only and do NOT survive a Herdr server restart, so this script
-# is the only thing keeping the badges alive. It must therefore be cheap and safely
-# re-runnable, and it must never read back state it previously reported.
+# is the only thing keeping the badges alive. It must be cheap and safely re-runnable, and
+# it must never read back state it previously reported.
 #
 # Three things drive it, and the periodic one is not redundant:
 #   - the dev.phase plugin's [[startup]] hook, which repaints every badge after a restart;
 #   - its [[events]] hooks on workspace.focused / worktree.created / worktree.removed;
 #   - a LaunchAgent (be.netronix.herdr-phase-refresh) running `refresh` every 3 minutes.
 #
-# The event hooks alone cannot keep an MR badge true, because the state that changes is not
-# local: opening an MR from the worktree you are sitting in, or someone merging one while you
-# are away, produces no Herdr event at all, so the badge stays whatever it last was until you
-# happen to switch spaces. Observed 2026-09-09: two worktrees with open MRs (!49 and !34) sat
-# unbadged while the derivation below returned the correct `review` phase for both. Separately,
-# herdr 0.9.0's workspace.focused hook did not fire for UI-driven workspace switches at all —
-# the plugin command log held only the startup entry across two days and ~10 focus events,
-# while a CLI `herdr workspace focus` fired it every time. The timer covers both without
-# depending on which of them is true today.
-#
-# That timer then spent a month not working, and the two ways it failed are why the code below
-# looks the way it does. Measured 2026-09-11: (1) the LaunchAgent carried ProcessType=Background
-# and LowPriorityIO, which stretched a 13-second run to roughly six minutes — longer than its own
-# 180 s interval, so launchd skipped cycle after cycle while reporting runs=739 and exit code 0;
-# (2) `derive` consulted GitLab last, so a single untracked file was enough to repaint a space in
-# review as active. An open MR now outranks every local signal, and the plist asks for no
-# throttling.
+# The event hooks alone cannot keep an MR badge true: opening or merging an MR produces no
+# Herdr event, and UI-driven workspace switches may not fire workspace.focused. The
+# LaunchAgent must not be throttled (no ProcessType=Background or LowPriorityIO): a run
+# that outlasts its 180 s interval makes launchd skip cycles while reporting exit code 0.
 #
 # When Herdr is not running, `spaces` comes back empty and refresh returns before any git or
-# glab work — so the timer costs nothing on a machine with no session up.
-#
-# It also never fetches. `origin/<branch>` is read as-is, which is what a push from the
-# worktree itself updates; the MR state comes from GitLab and is where freshness actually
-# matters, so that is what gets cached with a TTL.
+# glab work. It never fetches: `origin/<branch>` is read as-is, and only the MR state, where
+# freshness matters, is cached with a TTL.
 set -u
 
 SOURCE_ID="herdr-phase"
 CACHE_DIR="${HERDR_PHASE_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/herdr-phase}"
 
-# herdr 0.9.3 reads HERDR_SESSION, but HERDR_SOCKET_PATH, which herdr exports into every
-# pane, outranks it, and only `--session` outranks the socket. phase.sh runs as a plugin
-# action and from the prompt, both inside a pane, so thread --session rather than let the
-# pane's socket pick the session.
+# phase.sh runs inside a pane, where HERDR_SOCKET_PATH outranks HERDR_SESSION, so thread
+# --session rather than let the pane's socket pick the session (see AGENTS.md).
 HERDR_ARGS=""
 [ -n "${HERDR_SESSION:-}" ] && HERDR_ARGS="--session $HERDR_SESSION"
 TTL="${HERDR_PHASE_TTL:-120}"
 
-# Appended rather than prepended: a plugin hook runs with a minimal PATH and needs these, but
-# an explicit override earlier in PATH (a test stub) must still win.
+# Appended, not prepended: a plugin hook's minimal PATH needs these, but an override earlier
+# in PATH (a test stub) must still win.
 case ":$PATH:" in *:/opt/homebrew/bin:*) ;; *) PATH="$PATH:/opt/homebrew/bin" ;; esac
 
 # Nerd Font private-use codepoints, written as escapes because literals do not survive every
-# editor and pipeline they pass through. A wrong codepoint renders as tofu and reports nothing.
+# editor and pipeline.
 ICON_BRANCH=$(printf '\xee\xb1\xaf')   # U+EC6F cod-git_branch
 ICON_MR=$(printf '\xee\xa9\xa4')       # U+EA64 cod-git_pull_request
 ICON_DRAFT=$(printf '\xee\xaf\x9b')    # U+EBDB cod-git_pull_request_draft
@@ -94,25 +76,19 @@ mr_table() { # mr_table <repo_root> <force>
     if [ "$age" -lt "$TTL" ]; then cat "$cache"; return 0; fi
   fi
 
-  # Two queries, not one. `glab mr list` caps --per-page at 100 and this never paginates, so a
-  # single --all query silently drops the oldest rows once a repo passes 100 merge requests.
-  # netronix/curato is at !123: its cached table held 99 rows ending at !120, and the three
-  # worktrees whose MRs were !121-!123 sat unbadged. Asking for the OPEN list on its own puts
-  # the only rows a review badge depends on nowhere near the cap, and merged state — which is
-  # about work that already landed — is fine with the hundred most recent.
+  # Two queries, not one: `glab mr list` caps --per-page at 100 and this never paginates, so
+  # a single --all query drops the oldest rows once a repo passes 100 MRs. The OPEN list on
+  # its own keeps the rows a review badge depends on far from the cap.
   local open_json merged_json table
   open_json="$(glab mr list --repo "$slug" --output json --per-page 100 2>/dev/null)" || open_json=""
   if [ -z "$open_json" ]; then
-    # A failed lookup is not evidence that the MRs went away. Returning nothing here makes every
-    # worktree in the repo fall through to `active`, so one blocked request wipes every review
-    # badge at once. A stale table is strictly better than a table asserted to be empty.
+    # A failed lookup is not evidence that the MRs went away: returning nothing would wipe
+    # every review badge at once. A stale table beats a table asserted to be empty.
     if [ -f "$cache" ]; then cat "$cache"; return 0; fi
     return 1
   fi
-  # Merged state is best-effort: if only this half fails the run still has the open rows, which
-  # are what a review badge needs. The table just does not get cached, so the miss lasts one
-  # cycle instead of a TTL — a landed branch reading `active` for three minutes is nothing next
-  # to caching a table that claims nothing ever merged.
+  # Merged state is best-effort: if only this half fails the open rows still stand, and the
+  # table is not cached, so the miss lasts one cycle instead of a TTL.
   local cacheable=1
   merged_json="$(glab mr list --repo "$slug" --merged --output json --per-page 100 2>/dev/null)" || merged_json=""
   [ -n "$merged_json" ] || { merged_json="[]"; cacheable=0; }
@@ -162,12 +138,9 @@ derive() { # derive <checkout_path> <repo_root> <mr_table>
   branch="$(git -C "$path" rev-parse --abbrev-ref HEAD 2>/dev/null)" || { echo none; return 0; }
 
   state=""; iid=""; draft=""
-  # Whole-field equality, not a substring search. A trailing tab anchors the END of the field
-  # and nothing anchors its start, so `grep -F "mr-suffix<TAB>"` also matches inside the row for
-  # `owner/mr-suffix` — and the branch inherits an MR it has nothing to do with. It collides in
-  # both directions: without the tab, `feature/rev` picks up `feature/review`. Comparing the
-  # whole first field is the only thing that rejects both. The branch travels in the environment
-  # rather than through `awk -v`, which processes escape sequences in the value.
+  # Whole-field equality, not a substring search: `grep -F` collides in both directions
+  # (`mr-suffix` inside `owner/mr-suffix`, `feature/rev` against `feature/review`). The
+  # branch travels in the environment, not `awk -v`, which processes escape sequences.
   row="$(printf '%s\n' "$table" | B="$branch" awk -F'\t' 'BEGIN{b=ENVIRON["B"]} $1==b {print; exit}')"
   if [ -n "$row" ]; then
     state="$(printf '%s' "$row" | cut -f2)"
@@ -175,12 +148,8 @@ derive() { # derive <checkout_path> <repo_root> <mr_table>
     draft="$(printf '%s' "$row" | cut -f4)"
   fi
 
-  # An open MR outranks everything git can see locally, and this is the whole point of the
-  # ordering. It is the one fact that says somebody else is waiting on this branch, and it does
-  # not stop being true because you opened a file in the worktree or committed a review fix you
-  # have not pushed yet — which is precisely what the two tests below would otherwise conclude.
-  # Measured 2026-09-11: curato-issue-98 reported `active` with !120 open because of a single
-  # untracked probe file, and curato-issue-91 because of two unpushed commits.
+  # An open MR outranks everything git can see locally: it says somebody else is waiting on
+  # this branch, and an untracked file or an unpushed review fix does not change that.
   if [ "$state" = "opened" ]; then
     if [ "$draft" = "1" ]; then printf 'active %s\n' "$ICON_DRAFT"
     else printf 'review %s !%s\n' "$ICON_MR" "$iid"; fi
@@ -194,8 +163,7 @@ derive() { # derive <checkout_path> <repo_root> <mr_table>
   base="$(git -C "$root" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)"
   [ -n "$base" ] || base="origin/main"
 
-  # Unpushed work is still yours. Without a remote branch the comparison is against the base,
-  # which is the only honest reading of "there is work here that has gone nowhere".
+  # Unpushed work is still yours. Without a remote branch, compare against the base.
   local ahead
   if git -C "$path" rev-parse --verify --quiet "origin/$branch" >/dev/null 2>&1; then
     ahead="$(git -C "$path" rev-list --count "origin/$branch..HEAD" 2>/dev/null || echo 0)"
@@ -204,26 +172,20 @@ derive() { # derive <checkout_path> <repo_root> <mr_table>
   fi
   if [ "${ahead:-0}" -gt 0 ]; then printf 'active %s\n' "$ICON_BRANCH"; return 0; fi
 
-  # Merged stays BELOW the local tests, unlike opened. Once a branch has landed there is nobody
-  # waiting on it, so new work in that worktree is new work — badging it merged would hide it.
+  # Merged stays BELOW the local tests, unlike opened: once landed, nobody is waiting, so
+  # new work in that worktree is new work.
   if [ "$state" = "merged" ]; then
     printf 'merged %s !%s\n' "$ICON_MERGE" "$iid"; return 0
   fi
 
-  # Nothing above matched: no local work, and no MR saying anyone else has it. That is still
-  # yours, so it reads as active.
-  #
-  # Emphatically NOT inferred here: "HEAD is contained in the base, therefore merged". A
-  # worktree created minutes ago has no commits of its own, which makes it contained in the
-  # base too — so that test marks every new worktree as merged and invites deleting work that
-  # was never done. It also cannot catch what it was meant to: a squash merge rewrites the
-  # commits, so a squash-merged branch is never an ancestor either. Only a merged MR is
-  # evidence that something landed.
+  # No local work and no MR: still yours, so active. Do NOT infer "HEAD is contained in the
+  # base, therefore merged": a new worktree is contained in the base too, and a squash merge
+  # is never an ancestor. Only a merged MR is evidence that something landed.
   printf 'active %s\n' "$ICON_BRANCH"
 }
 
-# Herdr keeps a token until told otherwise, so the three unused ones are cleared on every
-# report — otherwise a space moving review -> merged renders both icons at once.
+# Herdr keeps a token until told otherwise, so the two unused ones are cleared on every
+# report; otherwise a space moving review -> merged renders both icons at once.
 report() { # report <workspace_id> <phase> <value>
   local ws="$1" phase="$2" value="$3"
   local -a args
@@ -237,13 +199,11 @@ report() { # report <workspace_id> <phase> <value>
 }
 
 # ------------------------------------------------------------------ spaces
-# Only linked worktrees are badged. A repo's main checkout is nearly always dirty with local
-# scratch, and badging it would mark every project permanently active.
+# Only linked worktrees are badged: a main checkout is nearly always dirty, and would read
+# permanently active.
 #
-# Sorted by repo_root because Herdr does not return the list grouped — the live session returns
-# VM.Portal, VM.Portal, curato, VM.Portal, curato, curato — and cmd_refresh holds exactly one MR
-# table at a time, so every switch back to a repo it already looked up refetched it. The sort is
-# stable, so workspaces keep their Herdr order within a repo.
+# Sorted by repo_root because Herdr does not return the list grouped and cmd_refresh holds
+# one MR table at a time. The sort is stable, so Herdr order holds within a repo.
 spaces() {
   herdr $HERDR_ARGS workspace list 2>/dev/null | "$PY" -c '
 import json, sys

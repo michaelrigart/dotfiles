@@ -4,44 +4,32 @@
 #
 #   layout.sh <repo-path>   build-or-focus, called by dev from a shell
 #   layout.sh --worktree <primary> <checkout>
-#                           open/adopt a native Herdr worktree workspace
+#                           open a native Herdr worktree workspace
 #   layout.sh --make-tab <label>
 #                           create one managed tab on demand and print its id, called
 #                           by tab-goto.sh --create for the lazy editor tab
 #
 # The single definition of what a project workspace looks like.
 emulate -L zsh
-# no_bg_nice: zsh sets BG_NICE by default, so `cmd &` renices the job. That renice
-# fails outright where setpriority is denied (a sandbox, some CI), taking the
-# backgrounded server with it — and even where it succeeds, quietly deprioritising the
-# Herdr server every agent runs inside is not what anyone wants.
+# no_bg_nice: zsh renices `cmd &` by default; that fails where setpriority is denied
+# (a sandbox, some CI), taking the backgrounded server with it.
 setopt local_options no_unset pipe_fail no_bg_nice
 
-# MANAGED_TABS — every label layout.sh knows how to create.
-#
+# MANAGED_TABS — every label layout.sh knows how to create; also what --make-tab accepts.
 # EAGER_TABS — the subset built with the space and added back when missing. `editor` is
-# deliberately outside it: nvim is expensive to start, most spaces are opened to run a
-# command or read an agent's output, and a tab nobody asked for is one more thing to
-# tab past. alt+e creates it on demand through --make-tab.
-#
-# MANAGED_TABS is also what --make-tab accepts; nothing validates an existing workspace's
-# shape, so a manual split or a duplicate label is the user's business.
+# outside it because nvim is expensive to start: alt+e creates it through --make-tab.
+# Nothing validates an existing workspace's shape.
 MANAGED_TABS=(agents editor runtime)
 EAGER_TABS=(agents runtime)
-# The Codex pane command lives in one file beside this script, read here and by xreview
-# (which restarts the pane on a review thread with the same flags). The reasoning for its
-# flags is in that file.
+# The Codex pane command lives in one file beside this script, read here and by xreview.
+# The reasoning for its flags is in that file.
 CODEX_CMD="$(grep -v '^[[:space:]]*#' "${0:A:h}/codex-pane-command" 2>/dev/null | grep . | head -1)"
 [[ -n "$CODEX_CMD" ]] || { print -ru2 -- "layout.sh: missing ${0:A:h}/codex-pane-command"; exit 1 }
 
-# HL_HERDR — every herdr call, with the session threaded in. herdr 0.9.3 reads
-# HERDR_SESSION, but HERDR_SOCKET_PATH, which herdr exports into every pane, outranks it,
-# and only `--session <name>` outranks the socket: inside a pane a bare `command herdr`
-# talks to the pane's own session, whatever HERDR_SESSION says. That made the live gate's
-# isolation a fiction — it set HERDR_SESSION=dev-test, layout.sh built into the live
-# session anyway, and the gate then asserted against an empty dev-test and failed every
-# case after the bootstrap. The leaked fixture workspaces are still visible in
-# `herdr workspace list`. Nothing here may call `command herdr` directly.
+# HL_HERDR — every herdr call, with the session threaded in. Inside a pane,
+# HERDR_SOCKET_PATH outranks HERDR_SESSION and only `--session` outranks the socket, so a
+# bare `command herdr` talks to the pane's own session. Nothing here may call
+# `command herdr` directly. See AGENTS.md, "Inside a Herdr pane".
 typeset -ga HL_HERDR=(command herdr)
 [[ -n "${HERDR_SESSION:-}" ]] && HL_HERDR+=(--session "$HERDR_SESSION")
 # Pre-quoted for the `trap` strings below, which are eval'd as text rather than run.
@@ -49,9 +37,7 @@ HL_HERDR_Q="${(j: :)${(@q)HL_HERDR}}"
 
 die() { print -ru2 -- "layout.sh: $*"; exit 1 }
 
-# hl_git — git with its routing environment cleared, mirroring _wt_git in
-# zsh/functions. An exported GIT_DIR or GIT_WORK_TREE silently redirects git at
-# another checkout, which would make the worktree guard answer about the wrong repo.
+# hl_git — git with its routing environment cleared, mirroring _wt_git in zsh/functions.
 hl_git() {
   command env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR \
     -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_NAMESPACE \
@@ -59,9 +45,7 @@ hl_git() {
 }
 
 # hl_api — run a herdr CLI call, return its JSON on stdout. Non-zero on failure, with
-# the server's message. Every call goes through here so failures are uniform: a
-# previous shape returned 0 from every step while the layout silently failed, and
-# exit status was no guard.
+# the server's message. Every call goes through here so failures are uniform.
 hl_api() {
   local out rc
   out="$("${HL_HERDR[@]}" "$@" 2>&1)"; rc=$?
@@ -70,17 +54,14 @@ hl_api() {
     return 1
   fi
   if [[ -n "$out" ]]; then
-    # Validate at the boundary, once. Without this, malformed JSON reaches every jq
-    # consumer downstream, each of which discards its status inside a command
-    # substitution or array assignment, so a corrupt response became plausible state.
+    # Validate at the boundary, once: downstream jq consumers discard their status
+    # inside command substitutions, so malformed JSON would become plausible state.
     if ! print -r -- "$out" | jq -e . >/dev/null 2>&1; then
       print -ru2 -- "layout.sh: herdr $* returned invalid JSON"
       return 1
     fi
-    # Envelope check on the PARSED top level, not a substring match on '"error"'.
-    # A substring test rejects valid data that merely contains the word — a tab the
-    # user labelled "error", an agent status, a repo path. It did catch a genuine
-    # error envelope; this keeps that while dropping the false positives.
+    # Envelope check on the PARSED top level, not a substring match on '"error"',
+    # which would reject valid data that merely contains the word (a tab label).
     if print -r -- "$out" | jq -e 'type == "object" and has("error")' >/dev/null 2>&1; then
       print -ru2 -- "layout.sh: herdr $* failed: $out"
       return 1
@@ -89,11 +70,9 @@ hl_api() {
   print -r -- "$out"
 }
 
-# hl_api_json — for calls that MUST return a payload: list, layout, create, split.
-# Empty output is legitimate for focus/run/rename/close, but for these it is a failure
-# wearing a success's clothes: `jq` exits 0 on empty input, so an empty response
-# degraded into "no workspace found" (→ build a duplicate) or "provisional" (→ let
-# repair mutate), both with rc=0.
+# hl_api_json — for calls that MUST return a payload: list, create, split. Empty output
+# is legitimate for focus/run/rename/close, but `jq` exits 0 on empty input, so an empty
+# response here would read as "no workspace found" and build a duplicate.
 hl_api_json() {
   local out
   out="$(hl_api "$@")" || return 1
@@ -105,8 +84,7 @@ hl_api_json() {
 }
 
 # hl_server_ready — is a server actually answering? `herdr status server` exits 0 even
-# while reporting "not running", so exit status is not a readiness signal, and there is
-# no CLI `ping`. The probe is therefore a real call that fails when the server is down.
+# while reporting "not running" and there is no `ping`, so the probe is a real call.
 hl_server_ready() {
   local out
   out="$("${HL_HERDR[@]}" workspace list 2>&1)" || return 1
@@ -116,9 +94,8 @@ hl_server_ready() {
 
 hl_ensure_server() {
   hl_server_ready && return 0
-  # `herdr server` runs in the foreground: background and detach it explicitly. A
-  # second dev racing this must neither fail nor start a second server, so the start
-  # is fire-and-forget and readiness is what we actually wait on.
+  # `herdr server` runs in the foreground, so detach it. The start is fire-and-forget
+  # because a racing second dev must neither fail nor start a second server.
   ("${HL_HERDR[@]}" server >/dev/null 2>&1 &) || true
   local tries="${HL_READY_TRIES:-40}" i=1
   while (( i <= tries )); do
@@ -131,44 +108,27 @@ hl_ensure_server() {
 
 # hl_shorten <text> <budget> — <text> if it fits, otherwise head…tail inside <budget>.
 #
-# Biased toward the tail. A branch carries its identity at the end — -design against
-# -rollout — and Herdr truncates the far end away, so two siblings whose slugs share a
-# long prefix render as one string: distinct workspaces, one visible name. Shortening
-# here is the only version that stays derivable from the path; shortening against
-# whatever siblings happen to exist would make a name depend on the order they were
-# created in.
+# Biased toward the tail: a branch carries its identity at the end (-design against
+# -rollout), and Herdr truncates the far end. Derived from the text alone, never from
+# whichever siblings exist.
 #
-# Nothing is nudged inward, at either end. The invariant is worth more than the tidier
-# break: the head and the tail are both RETAINED text, so a pair differing at either end
-# must still differ in the label, and only the discarded middle may collapse. A nudge
-# that trims a retained end to a word boundary silently deletes — two slugs differing at
-# the character just inside that boundary come back as one string, which is the exact
-# failure this function exists to prevent. So the tail may only GROW to a boundary, paid
-# for out of the head, and the head is simply the first characters that remain.
-#
-# The cost is a head that can stop mid-word. That is the right trade: a label that is
-# ugly is still a label, and a label that is wrong is a different worktree.
-#
+# Nothing is nudged inward at either end: head and tail are both RETAINED text, so a pair
+# differing at either end must still differ in the label and only the discarded middle
+# may collapse. The tail may only GROW to a word boundary, paid for out of the head,
+# which can therefore stop mid-word.
 hl_shorten() {
   emulate -L zsh
-  # The budget counts characters, and how many characters a string has is a question the
-  # caller's locale answers: under LC_ALL=C zsh measures and slices bytes, so the same
-  # slug comes back a different length and cut mid-codepoint. Pin it, so the label is a
-  # function of its argument and nothing else. If the locale is missing zsh falls back to
-  # C and this degrades to the byte behaviour rather than failing — cosmetic, as ever.
-  #
-  # Characters, not display columns: a slug of double-width glyphs still overruns a rail
-  # measured in columns. Branch names are ASCII in practice, and a wcwidth table in zsh
-  # is a large amount of machinery for a label.
+  # Pin the locale: under LC_ALL=C zsh counts and slices bytes, cutting mid-codepoint. A
+  # missing locale degrades to byte behaviour, which is cosmetic. The budget counts
+  # characters, not display columns; branch names are ASCII in practice.
   local LC_ALL=en_US.UTF-8
   local text="$1" budget="$2" slack=8 keep tail_want start lo cand seg t i
   (( ${#text} <= budget )) && { print -r -- "$text"; return 0 }
-  # No columns, no label. Guarded ahead of the tail slice below, where zsh reads an index
-  # of -0 as 0 and hands back the whole string — the opposite of a budget.
+  # Guarded ahead of the tail slice below, where zsh reads an index of -0 as 0 and
+  # returns the whole string.
   (( budget < 1 )) && { print -r -- ""; return 0 }
-  # Below three there is no room for a head, an ellipsis and a tail. Keep the tail: the
-  # contract is that the identifying end survives, and the degenerate case is no place to
-  # start contradicting it. Unreachable from hl_label, which always passes 34.
+  # Below three there is no room for a head, an ellipsis and a tail: keep the tail.
+  # Unreachable from hl_label, which always passes 34.
   (( budget < 3 )) && { print -r -- "${text[-budget,-1]}"; return 0 }
   keep=$(( budget - 1 ))                              # one column for the ellipsis
   tail_want=$(( keep / 2 + keep % 2 ))                # the tail carries the identity
@@ -189,47 +149,25 @@ hl_shorten() {
 # hl_label — the display label. Deterministic from the path so it is stable, but
 # purely cosmetic: identity is the canonical path, checked via pane cwd.
 hl_label() {
-  # BOTH sides resolved. dev hands over "${repo:A}", so on macOS a repo under /tmp
-  # arrives as /private/tmp/... while $HOME is still /tmp/... — the prefix never
-  # matches and the label silently degrades to the full absolute path. The same
-  # applies to any ~/Code behind a symlink, which _wt_assert_worktree already warns
-  # about: "git reports real paths, and ~/Code may sit behind a symlink."
+  # BOTH sides resolved: on macOS a repo under /tmp arrives as /private/tmp/... while
+  # $HOME is still /tmp/..., so the prefix would never match.
   local repo="${1:A}" home="${HOME:A}" common main slug
-  # A linked checkout is a sibling named "<primary>-<slug>", so its own path leads with
-  # everything it shares with the primary and only reaches the part that differs at the
-  # end — which is where a 40-column rail has already truncated it. Both halves of the
-  # name are wrong to show on their own: the whole path makes every worktree of one
-  # project read identically, and so does the project alone. The slug is the half that
-  # answers "which checkout is this". Nothing here answers "of what", because Herdr
-  # already marks a grouped checkout as subordinate to its primary — a marker in the
-  # label too would say it a second time, in a rail with no columns to spare.
+  # A linked checkout is labelled by its slug alone, the part that answers "which
+  # checkout is this" (Herdr already marks it as subordinate to its primary). Derived
+  # from the path, not HEAD, so it cannot go stale when a checkout switches branches;
+  # long slugs go through hl_shorten. A pair differing only in the discarded middle is
+  # known and accepted.
   #
-  # Derived from the path, not from HEAD: a label is written once, at open or repair,
-  # so reading the branch would leave it stale the moment a checkout switched branches.
-  # The slug is what `wt` built the directory from and what `wt-rm` matches on.
-  #
-  # Over-long slugs go through hl_shorten, which keeps the tail, so two siblings sharing
-  # a long prefix stay distinct rather than both being truncated to it by Herdr. What
-  # that does not cover is a pair differing only in the discarded middle: known, accepted,
-  # and not worth a hash suffix on every label to defend. The alternative — shortening a
-  # checkout relative to whatever other checkouts happen to exist — would make the name
-  # depend on the order they were created in and stop it being derivable from the path.
-  #
-  # `.git` as a FILE is what distinguishes a linked checkout, the test `dev`
-  # makes too. If git cannot name the common directory, or the directory does not
-  # carry the primary's name as a prefix, the label degrades to the path-derived form
-  # below rather than guessing: a cosmetic label is never worth an abort, and identity
-  # is the canonical path regardless.
+  # `.git` as a FILE is what distinguishes a linked checkout, as in `dev`. If git cannot
+  # name the common directory, or the name is not primary-prefixed, the label degrades
+  # to the path-derived form below: a cosmetic label is never worth an abort.
   if [[ -f "$repo/.git" ]]; then
     common="$(hl_git -C "$repo" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
     if [[ -n "$common" ]]; then
       main="${${common:A}:h}"
       slug="${${repo:t}#${main:t}-}"
-      # Sibling AND prefixed. The basenames alone are not enough: a checkout of the same
-      # primary parked under another directory still reads as conventional — repo-feature
-      # against repo — so a name-only test would slug it, and collide with the real
-      # sibling of that name if one existed. Two different checkouts must never reduce to
-      # one label.
+      # Sibling AND prefixed: a checkout of the same primary parked under another
+      # directory would otherwise slug to the same label as the real sibling.
       [[ "${repo:h}" == "${main:h}" && -n "$slug" && "$slug" != "${repo:t}" ]] \
         && { print -r -- "$(hl_shorten "$slug" 34)"; return 0 }
     fi
@@ -241,18 +179,13 @@ hl_label() {
   esac
 }
 
-# hl_lock — serialise per canonical repo path. Acquired BEFORE any scan, and the scan
-# repeated underneath it: classifying first and locking second permits a delayed
-# duplicate, where B scans empty, waits while A builds and releases, then acts on its
-# stale observation and creates a second workspace for the same repo.
+# hl_lock — serialise per canonical repo path. Taken BEFORE any scan, which is repeated
+# underneath it: scanning first lets a waiter act on a stale empty observation and
+# create a duplicate workspace.
 #
-# `zsystem flock`, matching _wt_lock in zsh/functions — NOT a mkdir sentinel. The
-# reason is stated there: an fcntl record lock is released by the kernel when the
-# process dies, "the backstop for every path an explicit unlock cannot reach." A mkdir
-# lock has no such backstop, so one SIGKILL would wedge that repository until someone
-# removed the directory by hand.
-#
-# zsystem opens but does not create the lock file, so it must exist first.
+# `zsystem flock`, as in _wt_lock, not a mkdir sentinel: the kernel releases an fcntl lock
+# when the process dies, so one SIGKILL cannot wedge the repository. zsystem opens but
+# does not create the lock file, so it must exist first.
 hl_lock() {
   local key="${1//\//-}" dir="${XDG_STATE_HOME:-$HOME/.local/state}/herdr-layout"
   mkdir -p "$dir"
@@ -264,10 +197,8 @@ hl_lock() {
 
   # Returns non-zero rather than calling die, so each caller decides how to fail.
   local t="${HL_LOCK_TIMEOUT:-10}"
-  # Emitted BEFORE the blocking call, unlike LOCK-ACQUIRED after it. A test that wants
-  # to act while another process is stuck here has to observe that it is stuck; timing
-  # it with a sleep is an assumption, and an assumption that holds on the machine it
-  # was written on is how an ordering test quietly stops testing ordering.
+  # Emitted BEFORE the blocking call so a test can observe that a process is stuck here
+  # rather than time it with a sleep.
   [[ -n "${HL_TRACE_LOCK:-}" ]] && print -ru2 -- "LOCK-WAIT"
   if ! zsystem flock -t "$t" "$HL_LOCKFILE" 2>/dev/null; then
     print -ru2 -- "layout.sh: another layout.sh has held the lock for $1 for over ${t}s"
@@ -311,42 +242,31 @@ hl_find_workspace() {
   print -r -- "${ids[1]}"
 }
 
-# hl_id <json> <jq-path> <what> — pull a mandatory id out of a response.
-# hl_api_json proves a payload exists and parses; it says nothing about whether the
-# fields we need are present. `jq -er` fails on null or missing, so a truncated or
-# reshaped response stops here instead of producing "null" and being passed to the
-# next command as a pane id.
+# hl_id <json> <jq-path> <what> — pull a mandatory id out of a response, so a truncated
+# or reshaped response stops here instead of passing "null" on as a pane id.
 hl_id() {
   local v
-  # `jq -er` alone only rejects null/false: it happily returns 7 or {} with exit 0,
-  # so an API reshape could still hand nonsense to herdr — and that value reaches an
-  # interpolated trap command. Require a non-empty JSON string; the id's internal
-  # shape stays opaque, as it should.
+  # `jq -er` alone rejects only null/false and returns 7 or {} with exit 0, and the value
+  # reaches an interpolated trap command. Require a non-empty JSON string.
   v="$(print -r -- "$1" | jq -er "($2) | select(type == \"string\" and length > 0)" 2>/dev/null)" \
     || { print -ru2 -- "layout.sh: response is missing $3"; return 1 }
   [[ -n "$v" ]] || { print -ru2 -- "layout.sh: response is missing $3"; return 1 }
   print -r -- "$v"
 }
 
-# hl_make_tab — create one managed tab and populate it. Prints its TAB id, which is
-# what --make-tab hands back to tab-goto.sh to focus. Returning the id from the create
-# response rather than having the caller re-list is the point: a second list between
-# the create and the focus is a window another attached client can change the tab set
-# in, and the id is already in hand.
+# hl_make_tab — create one managed tab and populate it. Prints its TAB id for tab-goto.sh
+# to focus; taken from the create response, so no second list opens a window for another
+# client to change the tab set.
 hl_make_tab() {
   local ws="$1" label="$2" repo="$3" out pane tab
   out="$(hl_api_json tab create --workspace "$ws" --label "$label" --cwd "$repo" --no-focus)" || return 1
-  # The TAB id first, and on its own line: once `tab create` has answered, the tab
-  # exists on the server, and from here every failure has to be able to remove it.
-  # Parsing the pane id first left the response-shape failures — a create that answered
-  # without a usable root pane — returning with no id to clean up with.
+  # The TAB id first: once `tab create` has answered the tab exists, and every later
+  # failure must be able to remove it.
   tab="$(hl_id "$out" '.result.tab.tab_id' "a tab id for tab '$label'")" || return 1
 
-  # Everything after the tab exists runs through one exit point. Without it, a `tab
-  # create` that succeeds and a `pane run` that fails leaves a tab with the right label
-  # and the right pane count — which classifies COMPLETE, so repair never touches it
-  # and every later alt+e focuses an empty shell labelled "editor". hl_build has a
-  # workspace-level trap that hides this; --make-tab has no trap and must not need one.
+  # Everything after the tab exists runs through one exit point: a failed `pane run`
+  # would otherwise leave an empty tab with the right label, and every later alt+e would
+  # focus it. --make-tab has no trap and must not need one.
   if ! {
     pane="$(hl_id "$out" '.result.root_pane.pane_id' "a root pane for tab '$label'")" \
       && hl_populate_tab "$label" "$pane" "$repo"
@@ -357,8 +277,7 @@ hl_make_tab() {
   print -r -- "$tab"
 }
 
-# hl_populate_tab <label> <root-pane> <repo> — run what belongs in a freshly created
-# tab. Split out of hl_make_tab purely so failure has one exit point to clean up after.
+# hl_populate_tab <label> <root-pane> <repo> — run what belongs in a freshly created tab.
 hl_populate_tab() {
   local label="$1" pane="$2" repo="$3"
   case "$label" in
@@ -368,17 +287,15 @@ hl_populate_tab() {
   esac
 }
 
-# hl_ensure_tab <ws> <repo> <label> — print the tab id for <label>, creating the tab
-# first if it is absent. The caller holds the lock, so the list here is the
-# authoritative re-check: tab-goto.sh looks before it calls, and without a second look
-# under the lock two fast alt+e presses both see nothing and build two editor tabs.
+# hl_ensure_tab <ws> <repo> <label> — print the tab id for <label>, creating it if absent.
+# The list under the lock is the authoritative re-check: tab-goto.sh's own look would
+# let two fast alt+e presses build two editor tabs.
 hl_ensure_tab() {
   local ws="$1" repo="$2" label="$3" tabs count id
   tabs="$(hl_api_json tab list --workspace "$ws")" || return 1
   count=$(print -r -- "$tabs" | jq -r --arg l "$label" \
             '[.result.tabs[] | select(.label == $l)] | length') || return 1
-  # Same refusal as tab-goto.sh: choosing which duplicate to adopt means choosing
-  # which one the user loses, and nothing here knows enough to choose.
+  # Same refusal as tab-goto.sh: nothing here knows which duplicate the user wants.
   (( count > 1 )) && { print -ru2 -- "layout.sh: $count tabs labelled '$label' — refusing to guess"; return 1 }
   if (( count == 1 )); then
     id="$(print -r -- "$tabs" | jq -r --arg l "$label" \
@@ -440,9 +357,8 @@ hl_build() {
   hl_api tab focus "$tab" >/dev/null || return 1
 }
 
-# hl_open_worktree — use Herdr's native open operation so the checkout carries
-# worktree provenance and is grouped under its primary workspace. Git creation,
-# project preparation and teardown remain in the shell lifecycle around this call.
+# hl_open_worktree — Herdr's native open, so the checkout carries worktree provenance and
+# is grouped under its primary workspace.
 hl_open_worktree() {
   local main="$1" repo="$2" out ws tab pane reported linked already
   [[ -f "$repo/.git" ]] || die "$repo is not a linked worktree"
@@ -535,32 +451,24 @@ main() {
     repo="${repo:A}"
   fi
 
-  # HERDR_ENV means "already inside a Herdr pane", so normally there is a server and
-  # nothing to start. That inference breaks the moment an explicit HERDR_SESSION names
-  # a DIFFERENT session: the pane we are in belongs to another one, and its server says
-  # nothing about the target's. The live gate runs exactly that way, and before this
-  # check it inherited HERDR_ENV from the surrounding pane, skipped the start, and —
-  # with the old unsessioned calls — built its fixtures into the live default session.
-  #
-  # make-tab is exempt: it exists only to serve a keybinding, so there is by
-  # construction a server and a workspace already. Probing — and, on a slow answer,
-  # starting a second server — on every alt+e is latency spent to learn something we
-  # were told by being invoked at all.
+  # HERDR_ENV means "already inside a Herdr pane", so there is normally a server. An
+  # explicit HERDR_SESSION breaks that inference: the pane we are in then belongs to a
+  # different session than the one named. make-tab is exempt: it serves a keybinding, so
+  # a server and workspace exist by construction.
   if [[ "$mode" != make-tab ]] \
     && { [[ -z "${HERDR_ENV:-}" ]] || [[ -n "${HERDR_SESSION:-}" ]] }; then
     hl_ensure_server
   fi
 
   if [[ "$mode" == make-tab ]]; then
-    # Same resolution order as tab-goto.sh, because this runs from the same detached
-    # keybinding: Herdr injects the active context.
+    # Same resolution order as tab-goto.sh, which runs from the same detached keybinding.
     # tab-goto.sh captures this script's stderr and raises the toast, so every failure
     # below reports through plain `die`.
     local ws="${HERDR_ACTIVE_WORKSPACE_ID:-${HERDR_WORKSPACE_ID:-}}"
     [[ -n "$ws" ]] \
       || die "no active workspace in the environment (expected HERDR_ACTIVE_WORKSPACE_ID)"
-    # Checked before anything is resolved, so a typo in config.toml cannot start
-    # populating tabs this script has no shape for. Cheapest guard first, too.
+    # Checked first, so a typo in config.toml cannot populate a tab this script has no
+    # shape for.
     (( ${MANAGED_TABS[(Ie)$make_label]} )) \
       || die "'$make_label' is not a managed tab"
 

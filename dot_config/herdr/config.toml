@@ -18,58 +18,40 @@ onboarding = false
 [theme]
 name = "tokyo-night"
 
-# Three greys and one blue, all of them Tokyo Night's own tokens rather than picked by
-# eye. The rail sits a step under Ghostty's #1a1b26 so it reads as a recessed surface;
-# the row you are on lifts by the same distance in the other direction. The accent is
-# the blue Starship ends every prompt line with, so the highlight in the sidebar and
-# the lambda under it are the same colour on purpose.
+# Tokyo Night tokens. The rail sits a step under Ghostty's #1a1b26 as a recessed surface
+# and the active row lifts the same distance; the accent is Starship's prompt blue.
 [theme.custom]
 sidebar_bg = "#16161e"
 active_row_bg = "#292e42"
 selection_bg = "#283457"
 accent = "#7aa2f7"
-# The status colours, same argument as the accent: these are the exact red and green the
-# prompt already uses for a failed and a successful command, so a blocked agent is the
-# colour I read as "stopped" rather than a near-miss of it.
+# The status colours are the prompt's own red and green for failed and successful commands.
 red = "#f7768e"
 green = "#9ece6a"
 
-# Pinning `onboarding = false` above skips the first-run prompt that would otherwise
-# ask how notifications should be delivered — and the shipped default is
-# `delivery = "off"`. Left unset, `herdr notification show` returns
-# {"reason":"disabled","shown":false} and does nothing, which silently removes the
-# only feedback channel a detached `[[keys.command]]` or a plugin action has. A failed
-# tab jump then looks exactly like a dead keybinding.
+# The shipped default is `delivery = "off"`, and then `herdr notification show` does
+# nothing, which removes the only feedback channel a detached `[[keys.command]]` has: a
+# failed tab jump would look like a dead keybinding.
 #
-# "herdr" = in-app toasts: visible wherever the TUI is, and needs no OS permission.
-# Not "system"/"terminal", which would raise a real desktop notification. Both signals
-# Herdr has are scoped to background activity — the popup delivery here, and
-# `[ui.sound]` — so a finish in whatever I am currently looking at may be silent and
-# popup-less, and nothing reaches me in another application. Accepted knowingly rather
-# than grant Herdr notification permission: the sidebar still carries the state.
+# "herdr" = in-app toasts, which need no OS permission. Both signals Herdr has (this and
+# `[ui.sound]`) are scoped to background activity, so nothing reaches me in another
+# application. Accepted: the sidebar still carries the state.
 #
-# The sidebar borrows the prompt's palette rather than inventing one. Starship ends
-# every line with a λ in #7aa2f7 and names the host in #7dcfff; those are the two
-# colours already in my eye all day, so here they mean "this is the space you are in"
-# and "this is the branch". Nothing else is coloured, which is what keeps them legible.
+# The sidebar borrows the prompt's palette: #7aa2f7 marks the space you are in and
+# #7dcfff the branch. Nothing else is coloured, which keeps them legible.
 [ui]
 # Keep the sidebar grouped by workspace rather than a flat agent list.
 agent_panel_sort = "spaces"
 # Three numbers, because the width auto-scales to the workspace names and only the floor
-# is binding when they are short: my longest label is in the low thirties, so a ceiling
-# alone changes nothing — the rail simply sizes itself to the names and stops. The floor
-# is what makes the rail wider than its contents require.
+# binds when they are short.
 #
-# Paired with hl_shorten's budget in layout.sh, which sits below this rather than at it:
-# grouping indents a linked checkout, the state glyph takes its own columns and a
-# scrollbar appears on a long list, so the label token never gets the whole rail. Move
-# them together — narrow the rail alone and Herdr truncates the end of a slug, which is
-# the half that identifies it.
+# Paired with hl_shorten's budget in layout.sh, which sits below this: indentation, the
+# state glyph and a scrollbar take columns. Move them together, or Herdr truncates the
+# end of a slug, which is the half that identifies it.
 sidebar_width = 40
 sidebar_min_width = 36
 sidebar_max_width = 44
-# Shape, not just colour. At eight spaces with two agents each, a glyph is scannable
-# in peripheral vision and a coloured dot is not.
+# Shape, not just colour: a glyph is scannable in peripheral vision.
 status_indicators = "symbols"
 # Alt-q closes only the current workspace: one Herdr session owns many projects, so
 # keep Herdr's confirmation rather than killing every repository in the server.
@@ -78,17 +60,12 @@ confirm_close = true
 [ui.toast]
 delivery = "herdr"
 
-# Two rows per space: which checkout, then which branch. The label already separates
-# the worktrees of one project — it is the slug, and Herdr's own grouping says which
-# project — so this row is not the only thing standing between them. It still earns a row of
-# its own: it is the longest string in the rail and the one worth reading unabbreviated.
-# Status rides along with the name above, where a two-character token costs nothing.
+# Two rows per space: which checkout, then which branch. The branch is the longest string
+# in the rail and the one worth reading unabbreviated.
 [ui.sidebar.spaces]
 row_gap = 1
-# The phase marker leads row 2 so it survives truncation: at this width a long branch name
-# is cut off, and a marker placed after it would be the part that disappears. Three tokens
-# with exactly one ever set is what buys a colour per phase — an inline style is fixed per
-# token, so a single $phase token could only ever have one colour.
+# The phase marker leads row 2 so it survives truncation. Three tokens with exactly one
+# set buys a colour per phase: an inline style is fixed per token.
 # Reported by ~/.config/herdr/phase.sh; see the dev.phase plugin for when it runs.
 rows = [
   ["state_icon", { token = "workspace", bold = true }, { token = "git_status", dim = true }],
@@ -99,8 +76,7 @@ rows = [
 ]
 
 # `workspace` is deliberately absent: agent_panel_sort = "spaces" already groups these
-# under their space, so repeating it spends a third of the width restating the heading
-# directly above. What is missing at a glance is which agent, and what it is on.
+# under their space.
 [ui.sidebar.agents]
 row_gap = 1
 rows = [
@@ -108,17 +84,13 @@ rows = [
   [{ token = "terminal_title_stripped", dim = true }],
 ]
 
-# Codex titles its pane after the repository, which is the space it is already filed
-# under, so its second row restates the heading and costs a line in every workspace.
-# Claude titles its pane after the conversation — "Herdr worktree cleanup behavior" —
-# which is the one thing here that says what an agent is actually doing, so it keeps
-# both rows. Same token, different value: worth a row from one agent and not the other.
+# Codex titles its pane after the repository, which restates the heading; Claude titles
+# it after the conversation, which says what it is doing, so it keeps both rows.
 [ui.sidebar.agents.rows_by_agent]
 codex = [["state_icon", { token = "agent", bold = true }]]
 
 [session]
-# The single setting the Claude/Codex integrations exist to serve. It is the shipped
-# default but arrives commented out; pinning it keeps the dependency legible.
+# What the Claude/Codex integrations exist to serve; the shipped default, pinned.
 resume_agents_on_restore = true
 
 [keys]
@@ -134,9 +106,8 @@ toggle_sidebar = "alt+b"
 close_workspace = "alt+q"
 edit_scrollback = "alt+s"
 
-# Ghostty maps Cmd-k to Alt-k. Herdr 0.9.2's clear_pane clears the focused pane's
-# screen and scrollback but keeps the prompt line, and leaves full-screen apps such
-# as Neovim alone. Passing Alt-k through to zsh's clear-screen stopped working in 0.9.
+# Ghostty maps Cmd-k to Alt-k. clear_pane keeps the prompt line and leaves full-screen
+# apps alone; passing Alt-k through to zsh's clear-screen stopped working in 0.9.
 clear_pane = "alt+k"
 
 # Herdr's built-in creator cannot run .worktreeinclude/.worktreehook or install the
@@ -181,9 +152,7 @@ description = "new worktree (safe wt flow)"
 width = "60%"
 height = 7
 
-# The on-demand `bin/rails console` slot. Session-modal, so unlike the floating
-# panes of the previous setup, it stays layered over everything else while
-# visible without disturbing the tab layout.
+# The on-demand `bin/rails console` slot, layered over the tab layout while visible.
 [[keys.command]]
 key = "alt+p"
 type = "popup"
@@ -192,11 +161,8 @@ description = "scratch shell"
 width = "80%"
 height = "80%"
 
-# lazygit on demand rather than a permanent tab. A fourth managed tab sitting on
-# lazygit all day earned its slot only if git work were constant, and it is not:
-# `runtime` already holds two repo-rooted shells and alt+p a full-size scratch one.
-# A popup keeps the one-key reach without the tab, and without repair recreating a
-# tab that gets closed for being in the way.
+# lazygit on demand rather than a permanent tab: a popup keeps the one-key reach, and
+# layout.sh cannot re-add a tab that gets closed for being in the way.
 [[keys.command]]
 key = "alt+g"
 type = "popup"
@@ -205,21 +171,17 @@ description = "lazygit"
 width = "90%"
 height = "90%"
 
-# Tab jumps. `switch_tab` is range-only ("prefix+1..9") — there is no switch_tab_1,
-# and tab.focus takes a tab_id, not an index. These resolve by LABEL instead, which
-# also survives a tab being appended out of order (herdr still has no `tab move` as of
-# 0.9.0, and `tab create` takes no position).
+# Tab jumps. `switch_tab` is range-only and tab.focus takes a tab_id, so these resolve
+# by LABEL, which also survives tabs being appended out of order.
 [[keys.command]]
 key = "alt+a"
 type = "shell"
 command = "~/.config/herdr/tab-goto.sh agents"
 description = "tab: agents"
 
-# --create, because the editor tab is lazy: a space is built without it, so alt+e is
-# the only thing that ever brings it into existence. Without the flag this would fire a
-# "no tab labelled editor" notification in every space nvim had not been opened in yet.
-# The eager jumps above and below deliberately do NOT create — a missing agents or
-# runtime tab is a fault for repair to fix, not something to paper over.
+# --create, because the editor tab is lazy: alt+e is the only thing that brings it into
+# existence. The eager jumps deliberately do NOT create: layout.sh re-adds a missing
+# agents or runtime tab, and a jump that built one would hide the fault.
 [[keys.command]]
 key = "alt+e"
 type = "shell"
@@ -232,9 +194,7 @@ type = "shell"
 command = "~/.config/herdr/tab-goto.sh runtime"
 description = "tab: runtime"
 
-# Forced refresh. A LaunchAgent repaints the badges every 3 minutes and the plugin's event
-# hooks cover restarts and worktree changes, but MR state is cached with a TTL — this bypasses
-# it for when you have just merged something in the browser and want the badge now.
+# Forced refresh: bypasses the MR-state TTL, for right after merging in the browser.
 [[keys.command]]
 key = "prefix+shift+p"
 type = "shell"
