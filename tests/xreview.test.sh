@@ -730,7 +730,7 @@ is "S6b a short screen shows exactly its last 12 rows" "$(printf '%s' "$out" | g
 is "S6b from row 19 to the final row, trailing blank rows dropped" \
    "$(printf '%s' "$out" | grep '^  | ' | sed -n '1p;$p' | tr '\n' '/')" "  | line 19/  | line 30/"
 # S6c: the byte cut lands inside a 3-byte character (`›`, E2 80 BA): the first of the last 12
-# rows is 'ab' plus 40 of them (122 bytes with its newline) and the other 11 are 80 bytes each,
+# rows is 'ab' plus 40 of them (122 bytes, 123 with its newline) and the other 11 are 80 bytes each,
 # so the cut leaves 120 bytes of row 1 - one byte into the first character, with its two
 # continuation bytes (80 BA) at the head of the 39 whole characters that follow. The excerpt must not open on them.
 chars="$(printf '›%.0s' $(seq 40))"; y79="$(head -c 79 /dev/zero | tr '\0' y)"

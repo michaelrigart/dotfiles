@@ -340,9 +340,11 @@ pane_command() {
 }
 
 thread_running() { # thread_running <thread>: 0 when xreview-rpc thread-status reports a live
-  # turn, 1 when it reports none. Dies when the state cannot be read - a failed status call,
-  # or output with no boolean `.running` - because the one caller (the chosen review thread,
-  # just before pane_free) must never read "could not tell" as "not running".
+  # turn, 1 when it reports none. Dies when thread-status itself fails (non-zero exit, e.g. the
+  # daemon is unreachable) or prints no boolean `.running`, so those never read as "not
+  # running". A daemon-side thread/read error is mapped by `xreview-rpc thread-status` to
+  # {"running":false} with exit 0, which reads as "not running": a thread the daemon cannot
+  # read cannot be running on it (controller Ruling 10).
   local out
   if ! out="$(xreview-rpc thread-status --thread "$1" 2>/dev/null)" \
      || ! printf '%s' "$out" | jq -e '.running | type == "boolean"' >/dev/null 2>&1; then
