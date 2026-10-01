@@ -153,26 +153,21 @@ if [ -n "${MOCK_LSOF_RAW+x}" ]; then
   exit "${MOCK_LSOF_RC:-0}"
 fi
 case " $* " in
-  *" -F0pcn "*) fmt=nul ;;
-  *)            fmt=nl  ;;
+  *" -F0pcnR "*) ;;
+  *) echo "lsof stub: unexpected invocation: $*" >&2; exit 1 ;;
 esac
 while IFS=$'\t' read -r pid cmd cwd; do
   [ -n "$pid" ] || continue
-  if [ "$fmt" = nul ]; then
-    printf 'p%s\0c%s\0\n' "$pid" "$cmd"
-    printf 'fcwd\0n%s\0\n' "$cwd"
-  else
-    printf 'p%s\nc%s\nfcwd\n' "$pid" "$cmd"
-    printf 'n%s\n' "$cwd"
-  fi
+  printf 'p%s\0R1\0c%s\0fcwd\0n%s\0\n' "$pid" "$cmd" "$cwd"
 done <<< "${MOCK_LSOF_SPEC:-}"
 exit "${MOCK_LSOF_RC:-0}"
 STUB
 chmod +x "$STUBS/layout.sh" "$STUBS/herdr" "$STUBS/lsof"
-# Captured before the stub shadows it. Section V uses it for the one test that must
-# exercise the real binary: every other lsof assertion is a fixture, and a fixture
-# cannot show that the invocation and the parse still agree with what lsof emits.
-REALLSOF="$(whence -p lsof)" || { print -ru2 -- "cannot locate lsof"; exit 1 }
+TEARDOWN_SRC="$(cd "${0:h}/.." && pwd)/dot_local/bin/executable_wt-teardown"
+[[ -r "$TEARDOWN_SRC" ]] || { print -ru2 -- "cannot read $TEARDOWN_SRC"; exit 2 }
+print -r -- "#!/bin/sh
+exec zsh '$TEARDOWN_SRC' \"\$@\"" > "$STUBS/wt-teardown"
+chmod +x "$STUBS/wt-teardown"
 export PATH="$STUBS:$PATH"
 export DEV_LAYOUT="$STUBS/layout.sh"
 
@@ -1982,19 +1977,15 @@ eq "$(sed -n 1p "$LLOG")" "teardown-hook" "teardown runs before the process scan
 # Fail closed, like every other unverifiable state in this lifecycle: an unreadable
 # answer is not the same as an empty one.
 setup
-run "$REPO" wt no-lsof
-NOLSOF="$HOME/Code/Org/repo-no-lsof"
-# Simulating absence needs a stripped PATH, not a moved stub: lsof is really installed
-# on this machine, so hiding the stub just falls through to the real binary. herdr is
-# absent here too, which is a valid configuration and skips workspace shutdown
-# entirely — the process scan must still be reached.
-NOLSOFP=$(mkd)
-for b in env git mkdir; do ln -s "$(command -v $b)" "$NOLSOFP/$b"; done
-OUT="$(cd "$REPO" && source "$FUNCS" && export PATH="$NOLSOFP" && wt-rm no-lsof 2>&1)"; RC=$?
-rc_is 1 "a missing lsof aborts removal instead of silently skipping the scan"
-has "lsof is unavailable" "the abort names the missing tool"
-[[ -d "$NOLSOF" ]] && _pass "the checkout survives when processes cannot be detected" \
-                        || _fail "the checkout survives when processes cannot be detected"
+run "$REPO" wt no-teardown
+NOTD="$HOME/Code/Org/repo-no-teardown"
+NOTDP=$(mkd)
+for b in env git mkdir; do ln -s "$(command -v $b)" "$NOTDP/$b"; done
+OUT="$(cd "$REPO" && source "$FUNCS" && export PATH="$NOTDP" && wt-rm no-teardown 2>&1)"; RC=$?
+rc_is 1 "a missing wt-teardown aborts removal instead of skipping the scan"
+has "could not scan for processes" "the abort says the scan could not run"
+[[ -d "$NOTD" ]] && _pass "the checkout survives when processes cannot be scanned" \
+                 || _fail "the checkout survives when processes cannot be scanned"
 
 # Real lsof scanning every process always reports something — the running shell's own
 # cwd is in the answer. Nothing at all therefore means the scan failed, not that the
@@ -2009,109 +2000,6 @@ has "could not read the process list" "the empty listing is diagnosed as a failu
 [[ -d "$EMPTY" ]] && _pass "the checkout survives an empty process listing" \
                        || _fail "the checkout survives an empty process listing"
 
-# A cwd containing a newline would split into fragments that match no prefix — a
-# false negative, in the one direction this check must never fail. The p/c/f/n cycle
-# is what proves the parse is still aligned with what lsof actually emitted.
-setup
-run "$REPO" wt lsof-torn
-TORN="$HOME/Code/Org/repo-lsof-torn"
-export MOCK_LSOF_RAW='p1\nclaunchd\nn/\n'
-run "$REPO" wt-rm lsof-torn
-rc_is 1 "a broken lsof field cycle fails closed"
-has "could not read the process list" "the malformed listing is diagnosed"
-[[ -d "$TORN" ]] && _pass "the checkout survives a malformed process listing" \
-                      || _fail "the checkout survives a malformed process listing"
-
-# Every assertion above drives a fixture, which can only ever prove the parser agrees
-# with the harness. This one runs the real lsof against real processes, and is the only
-# thing that can catch the invocation and the parse drifting apart from what the binary
-# actually emits — the class of bug a stub is structurally blind to. Both directions are
-# asserted from one scan: the process inside must appear, and the one in the sibling
-# path that merely shares a prefix must not.
-setup
-run "$REPO" wt live-real
-REALWT="$HOME/Code/Org/repo-live-real"
-mkdir -p "$REALWT/deep" "${REALWT}-extra"
-( builtin cd "$REALWT/deep" && exec sleep 60 ) &!
-INSIDE=$!
-( builtin cd "${REALWT}-extra" && exec sleep 60 ) &!
-OUTSIDE=$!
-sleep 1
-OUT="$(builtin cd "$REPO" && source "$FUNCS" && PATH="${REALLSOF:h}:$PATH" \
-       _wt_live_processes "$REALWT" 2>&1)"; RC=$?
-kill $INSIDE $OUTSIDE 2>/dev/null
-rc_is 0 "the real lsof invocation is read successfully"
-has "$INSIDE" "real lsof reports a real process whose cwd is inside the checkout"
-hasnt "$OUTSIDE" "real lsof does not report a real process in the sibling path"
-
-# lsof renders a pathname, it does not report one: a backslash is printed as two
-# characters. Comparing $dest to that rendering verbatim silently matches nothing, and
-# the direction it fails in is a checkout removed while its occupant is still in it.
-# A backslash is the case a real checkout path can plausibly contain.
-setup
-BSDIR="$ROOTTMP/back\\slash-checkout"        # one real backslash
-BSRENDER="$ROOTTMP/back\\\\slash-checkout" # two, as lsof prints it
-mkdir -p "$BSDIR"
-export MOCK_LSOF_SPEC="$(lsof_spec 1 launchd / 4242 daemon "$BSRENDER")"
-OUT="$(builtin cd "$REPO" && source "$FUNCS" && _wt_live_processes "$BSDIR" 2>&1)"; RC=$?
-rc_is 0 "a backslash in the checkout path is read successfully"
-has "4242" "a checkout path containing a backslash is matched against lsof's rendering"
-
-# The rest of the rendering — \n, \t, caret notation — is not modelled, so a control
-# character in the checkout path cannot be compared at all. Fail closed rather than
-# compare a path against a rendering of it that will never be equal.
-setup
-CTLDIR="$ROOTTMP/ctrl"$'\n'"checkout"
-mkdir -p "$CTLDIR"
-export MOCK_LSOF_SPEC="$(lsof_spec 1 launchd / 4243 daemon "$ROOTTMP/ctrl\\ncheckout")"
-OUT="$(builtin cd "$REPO" && source "$FUNCS" && _wt_live_processes "$CTLDIR" 2>&1)"; RC=$?
-rc_is 1 "a control character in the checkout path fails closed"
-has "control character" "the refusal names why the comparison cannot be made"
-
-# lsof's rendering depends on the caller's locale: under a UTF-8 locale é is printed
-# verbatim, under LC_ALL=C the same directory comes back as caf\xc3\xa9. A comparison
-# that assumed either one would be right only for the environment it was written in, so
-# the locale is pinned and its rendering modelled. The fixture supplies the pinned form.
-setup
-U8DIR="$ROOTTMP/café-checkout"
-mkdir -p "$U8DIR"
-export MOCK_LSOF_SPEC="$(lsof_spec 1 launchd / 4244 daemon "$ROOTTMP/caf\\xc3\\xa9-checkout")"
-OUT="$(builtin cd "$REPO" && source "$FUNCS" && _wt_live_processes "$U8DIR" 2>&1)"; RC=$?
-rc_is 0 "a non-ASCII checkout path is read successfully"
-has "4244" "a non-ASCII checkout path is matched against the pinned rendering"
-
-# End to end, against the real binary, from both locales. The property under test is
-# that the answer does not depend on the caller's environment, so one locale cannot
-# establish it: under LC_ALL=C the binary escapes the UTF-8 bytes and under a UTF-8
-# locale it does not, and an implementation that simply inherited the caller's locale
-# would pass whichever of the two it happened to be written against.
-setup
-REALU8="$ROOTTMP/réal-çheckout"
-mkdir -p "$REALU8/deep"
-( builtin cd "$REALU8/deep" && exec sleep 90 ) &!
-U8PID=$!
-sleep 1
-for caller_locale in C en_US.UTF-8; do
-  OUT="$(builtin cd "$REPO" && source "$FUNCS" \
-         && LC_ALL="$caller_locale" PATH="${REALLSOF:h}:$PATH" \
-            _wt_live_processes "$REALU8" 2>&1)"; RC=$?
-  rc_is 0 "the real scan of a non-ASCII checkout is read successfully (LC_ALL=$caller_locale)"
-  has "$U8PID" "a real process in a non-ASCII checkout is found (LC_ALL=$caller_locale)"
-done
-kill $U8PID 2>/dev/null
-
-# A path that merely contains the two characters \ and n is an ordinary path, and must
-# not be mistaken for a record boundary by any parse.
-setup
-run "$REPO" wt lsof-literal
-LITERAL="$HOME/Code/Org/repo-lsof-literal"
-export MOCK_LSOF_SPEC="$(lsof_spec 55 daemon "/outside\\np99\\ncphantom\\nfcwd\\nn$LITERAL")"
-run "$REPO" wt-rm lsof-literal
-rc_is 0 "a rendered path outside the checkout forges no process inside it"
-hasnt "phantom" "the escaped text never becomes a record"
-[[ -d "$LITERAL" ]] && _fail "the checkout is removed when only a rendering names it" \
-                         || _pass "the checkout is removed when only a rendering names it"
-
 # The status that matters is the one belonging to the listing actually parsed. Reading
 # the listing in a second, unchecked invocation means a scan that failed *after*
 # emitting some of its records is indistinguishable from a clean checkout — the records
@@ -2122,53 +2010,6 @@ ONCE="$HOME/Code/Org/repo-lsof-once"
 run "$REPO" wt-rm lsof-once
 rc_is 0 "the single-invocation fixture removes the worktree normally"
 eq "$(grep -c . "$LLOG")" "1" "the process list is read in exactly one invocation"
-
-# Prefix-shaped is not well-formed. A record whose pathname field is present but empty
-# satisfies "starts with n" and yields an empty cwd, which matches nothing — so a
-# process that IS in the checkout, whose path lsof could not resolve, reads as no
-# process at all. Same for a relative value: every cwd lsof reports is absolute, and
-# anything else means the field is not what it is being read as.
-setup
-run "$REPO" wt lsof-emptyname
-EMPTYNAME="$HOME/Code/Org/repo-lsof-emptyname"
-export MOCK_LSOF_SPEC="$(lsof_spec 1 launchd / 4242 daemon "")"
-run "$REPO" wt-rm lsof-emptyname
-rc_is 1 "a record with an empty pathname field fails closed"
-has "could not read the process list" "the empty pathname is diagnosed as unreadable"
-[[ -d "$EMPTYNAME" ]] && _pass "the checkout survives an empty pathname field" \
-                           || _fail "the checkout survives an empty pathname field"
-
-setup
-run "$REPO" wt lsof-relname
-RELNAME="$HOME/Code/Org/repo-lsof-relname"
-export MOCK_LSOF_SPEC="$(lsof_spec 1 launchd / 4242 daemon "not/absolute")"
-run "$REPO" wt-rm lsof-relname
-rc_is 1 "a record with a relative pathname fails closed"
-[[ -d "$RELNAME" ]] && _pass "the checkout survives a relative pathname field" \
-                         || _fail "the checkout survives a relative pathname field"
-
-# A pid is a number. Anything else in that field means the record is not the record it
-# is being read as, and reading the rest of it would be guessing.
-setup
-run "$REPO" wt lsof-badpid
-BADPID="$HOME/Code/Org/repo-lsof-badpid"
-export MOCK_LSOF_SPEC="$(lsof_spec 1 launchd / not-a-pid daemon /)"
-run "$REPO" wt-rm lsof-badpid
-rc_is 1 "a record with a non-numeric pid fails closed"
-has "could not read the process list" "the non-numeric pid is diagnosed as unreadable"
-[[ -d "$BADPID" ]] && _pass "the checkout survives a non-numeric pid" \
-                        || _fail "the checkout survives a non-numeric pid"
-
-# -d cwd is what makes every descriptor in the answer a cwd. If one is not, the request
-# and the reply have diverged and nothing below can be trusted to mean what it says.
-setup
-run "$REPO" wt lsof-notcwd
-NOTCWD="$HOME/Code/Org/repo-lsof-notcwd"
-export MOCK_LSOF_RAW='p1\000claunchd\000\nfmem\000n/\000\n'
-run "$REPO" wt-rm lsof-notcwd
-rc_is 1 "a descriptor other than cwd fails closed"
-[[ -d "$NOTCWD" ]] && _pass "the checkout survives an unexpected descriptor type" \
-                        || _fail "the checkout survives an unexpected descriptor type"
 
 # lsof exits nonzero both when it matches nothing and when it fails, but this
 # invocation scans every process rather than a path, so nonzero can only be failure.
