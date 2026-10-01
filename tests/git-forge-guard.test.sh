@@ -477,6 +477,13 @@ expect allow "wc over the guard file"                 "$R"   'wc -l dot_claude/g
 expect allow "git log piped to rg push"               "$R"   'git log --oneline | rg push'
 expect allow "cat piped to grep for git push"         "$R"   'cat notes | grep "git push"'
 expect allow "an inert git command redirected to /dev/null" "$R" 'git log --grep "git push" 2>/dev/null | wc -l'
+expect allow "add, status, then a commit message about a push" "$R" 'git add f && git status && git commit -m "push later"'
+expect allow "switch -c, then a commit message about push defaults" "$R" 'git switch -c x && git commit -m "explain push defaults"'
+# Only an explicit set of git subcommands is inert; difftool, clone and friends run words.
+expect deny  "difftool -x running a push"             "$R"   "git add f && git difftool -x 'git push origin main' HEAD"
+expect deny  "difftool --extcmd running a push"       "$R"   "git add f && git difftool --extcmd='git push' HEAD"
+expect deny  "clone --template, which is not inert"   "$R"   "rg x && git clone --template=/tmp/t 'git push' y"
+expect deny  "mergetool, then a push of its own"      "$R"   'git add f && git mergetool --tool-help; git push origin main'
 # Whatever can run text keeps counting it.
 expect deny  "add, then a push"                       "$R"   'git add f && git push origin main'
 expect deny  "true, then a push"                      "$R"   'true; git push origin main'

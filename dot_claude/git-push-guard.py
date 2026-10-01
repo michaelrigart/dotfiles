@@ -439,6 +439,16 @@ def dynamic_git_word(tokens):
 # ssh, watch, timeout, parallel, every WRAPPERS member) may run or re-parse its words.
 INERT_TOOLS = {"rg", "grep", "fd", "cat", "head", "tail", "wc", "echo", "printf", "ls", "eza",
                "diff", "cmp", "cut", "sort", "uniq", "tr", "jq", "test", "["}
+# The git subcommands whose arguments are data. An allowlist, not "every builtin minus the
+# runners": difftool -x, mergetool, send-email --*-cmd, clone --template, submodule, bisect,
+# filter-branch, archive and am all hand a word to a shell or plant one, so they stay out.
+INERT_GIT_SUBCOMMANDS = {
+    "add", "blame", "branch", "cat-file", "checkout", "cherry-pick", "commit", "config",
+    "describe", "diff", "fetch", "for-each-ref", "grep", "log", "ls-files", "ls-remote",
+    "ls-tree", "merge", "merge-base", "mv", "pull", "rebase", "reflog", "remote", "reset",
+    "restore", "rev-list", "rev-parse", "rm", "shortlog", "show", "show-ref", "stash",
+    "status", "switch", "symbolic-ref", "tag", "worktree",
+}
 # Text that the tokenizer cannot be trusted to split, or that nests a command in a word: the
 # whole command is then read raw. A here-document, a backtick, $( ), <( ), >( ) and $'..'
 # (shlex does not know it, so a quote inside could hide a push).
@@ -486,7 +496,7 @@ def inert_git(args):
     if i >= n or is_operator(args[i]) or dynamic(args[i]):
         return False
     sub, rest = args[i], args[i + 1:]
-    if sub not in GIT_BUILTINS or sub in PUSHING_SUBCOMMANDS or runs_command_string(sub, rest):
+    if sub not in INERT_GIT_SUBCOMMANDS or runs_command_string(sub, rest):
         return False
     if any(GIT_EXEC_ARG.match(a) for a in rest):
         return False
@@ -537,6 +547,8 @@ def inert_text(cmd, tokens):
         else:
             segs[-1].append(t)
     cut = [inert_command(s) for s in segs]
+    if all(c is None for c in cut):
+        return cmd                                     # nothing dropped: read the raw text
     if any(c is None for c in cut):
         cut = [None if c is not None and writes_file(s) else c for c, s in zip(cut, segs)]
     start = 0
