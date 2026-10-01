@@ -1040,6 +1040,24 @@ eq "$(stat -f %Lp "$HOME/Code/Org/repo-cp3/config/master.key")" "600" "CP3 maste
 eq "$(<"$HOME/Code/Org/repo-cp3/secrets.d/inner/x.env")" "IN" "CP3 the directory's nested file arrived"
 eq "$(stat -f %Lp "$HOME/Code/Org/repo-cp3/secrets.d/inner/x.env")" "640" "CP3 nested modes survive"
 
+# CP4: a partly copied directory entry is removed, so the recovery run copies it again.
+setup
+run "$REPO" wt cp4
+printf 'secrets.d\n' > "$REPO/.worktreeinclude"
+mkdir -p "$REPO/secrets.d"
+print -r -- "AA" > "$REPO/secrets.d/a.env"
+print -r -- "BB" > "$REPO/secrets.d/b.env"
+chmod 000 "$REPO/secrets.d/b.env"
+run "$REPO" wt-prepare cp4
+chmod 600 "$REPO/secrets.d/b.env"
+rc_is 1 "CP4 a partly failed directory copy fails prepare"
+[[ -e "$HOME/Code/Org/repo-cp4/secrets.d" ]] && _fail "CP4 the partial copy is removed" \
+                                             || _pass "CP4 the partial copy is removed"
+run "$REPO" wt-prepare cp4
+rc_is 0 "CP4 the recovery run succeeds"
+eq "$(<"$HOME/Code/Org/repo-cp4/secrets.d/a.env" 2>/dev/null)" "AA" "CP4 the readable file arrived on recovery"
+eq "$(<"$HOME/Code/Org/repo-cp4/secrets.d/b.env" 2>/dev/null)" "BB" "CP4 the formerly unreadable file arrived on recovery"
+
 # Setup failure is reported with both recovery steps, branch name quoted.
 setup
 run "$REPO" 'wt' 'x&y'
