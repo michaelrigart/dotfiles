@@ -2,7 +2,7 @@
 
 macOS dotfiles managed with chezmoi: XDG layout, secrets rendered from 1Password at
 apply time, one-line provisioning. **This repo is public.** Human docs: `README.md`.
-Canonical agent context; `CLAUDE.md` imports this file.
+Canonical agent context for every agent: Claude Code and Codex both load it natively.
 
 ## Rules
 
