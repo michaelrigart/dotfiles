@@ -118,7 +118,10 @@ run_json() {
 # response ([] or {"installed":[]}), which reconciles normally.
 project() {
   local __json=$1 __schema=$2 __filter=$3 __outvar=$4 __label=$5 __data
-  if ! printf '%s' "$__json" | jq -e "$__schema" >/dev/null 2>&1; then
+  # Exactly one top-level JSON value first: given several, jq -e reports only the LAST
+  # result's truthiness, so "{}\n[]" would pass a schema that rejects {}.
+  if ! printf '%s' "$__json" | jq -e -s 'length == 1' >/dev/null 2>&1 \
+     || ! printf '%s' "$__json" | jq -e "$__schema" >/dev/null 2>&1; then
     log_warn "$__label: unexpected JSON shape — skipping"
     status=1; return 1
   fi

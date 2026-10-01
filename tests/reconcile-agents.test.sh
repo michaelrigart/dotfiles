@@ -31,8 +31,8 @@ cat > "$BIN/codex" <<'STUB'
 case "$*" in
   "plugin marketplace list --json") printf '%s' "$MOCK_CX_MKT" ;;
   "plugin list --json")             printf '%s' "$MOCK_CX_PLUGINS" ;;
-  "plugin marketplace add"*)        exit 0 ;;
-  "plugin add"*)                    exit 0 ;;
+  "plugin marketplace add"*)        echo "codex $*" >> "$CALLS"; exit 0 ;;
+  "plugin add"*)                    echo "codex $*" >> "$CALLS"; exit 0 ;;
   *) exit 0 ;;
 esac
 STUB
@@ -110,6 +110,28 @@ reject_case "array-of-empty-object" '[{}]'
 reject_case "scope-null"            '[{"id":"foo@m","scope":null,"enabled":false}]'
 reject_case "enabled-string"        '[{"id":"foo@m","scope":"user","enabled":"yes"}]'
 reject_case "non-object-element"    '["foo@m"]'
+
+echo "F0. more than one top-level JSON value is rejected (jq -e judges only the last)"
+reset_mocks; export MOCK_CL_PLUGINS=$'{}\n[]'
+run "claude_plugin foo@m"
+has   "claude plugin list: unexpected JSON shape" "claude plugin list {} then []: shape warning"
+not_called "plugin install"                       "claude plugin list {} then []: nothing installed"
+rc_is 1                                           "claude plugin list {} then []: exit 1"
+reset_mocks; export MOCK_CL_MKT=$'[]\n[]'
+run "claude_marketplace owner/repo"
+has   "claude marketplace list: unexpected JSON shape" "claude marketplace list [] then []: shape warning"
+not_called "marketplace add"                           "claude marketplace list [] then []: nothing added"
+rc_is 1                                                "claude marketplace list [] then []: exit 1"
+reset_mocks; export MOCK_CX_PLUGINS=$'{}\n{"installed":[]}'
+run "codex_plugin foo@bar"
+has   "codex plugin list: unexpected JSON shape" "codex plugin list with two documents: shape warning"
+not_called "codex plugin add"                    "codex plugin list with two documents: nothing added"
+rc_is 1                                          "codex plugin list with two documents: exit 1"
+reset_mocks; export MOCK_CX_MKT=$'{}\n{"marketplaces":[]}'
+run "codex_marketplace owner/repo"
+has   "codex marketplace list: unexpected JSON shape" "codex marketplace list with two documents: shape warning"
+not_called "codex plugin marketplace add"             "codex marketplace list with two documents: nothing added"
+rc_is 1                                               "codex marketplace list with two documents: exit 1"
 
 echo "F1. marketplace .repo must be a string when present; null counts as absent"
 reset_mocks; export MOCK_CL_MKT='[{"name":"m","source":"github","repo":42}]'
