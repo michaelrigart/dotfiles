@@ -1907,11 +1907,9 @@ has "reported running but its API is unreachable" "the Herdr reachability discre
 run "$REPO" git worktree list --porcelain
 has "$UNREACHABLE" "the checkout is still a registered worktree after an unreachable Herdr server"
 
-# Library functions must use `builtin cd`. .zshrc sources aliases before functions, so
-# a bare `cd` is alias-expanded at parse time into zoxide's `z` — whose implementation
-# loads only from a precmd hook, which never fires in the `zsh -ic` shells every Herdr
-# popup runs. A bare cd there dies with "command not found: z", and the popup closes
-# before the error can be read.
+# Library functions must use `builtin cd`: they must not depend on whatever an interactive
+# shell binds `cd` to, because the `zsh -ic` shells that Herdr popups run never reach a
+# prompt.
 OUT="$(grep -nE '(^|[^[:alnum:]_.])cd ' "$FUNCS" | grep -vE 'builtin cd|command cd' | grep -vE '^[0-9]+: *#')"
 [[ -z "$OUT" ]] \
   && _pass "library functions use builtin cd, never alias-expandable bare cd" \

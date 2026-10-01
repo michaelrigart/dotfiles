@@ -19,8 +19,8 @@ Canonical agent context; `CLAUDE.md` imports this file.
   they never land in `$HOME`.
 - Edit here and `chezmoi apply`; never hand-edit a deployed file. `chezmoi cat <target>`
   renders one file; `chezmoi apply --dry-run --verbose` previews. Data variables
-  (`.name`, `.email`, `.hostname`, `.is_darwin`, `.is_linux`, `.is_arm`) come from
-  `.chezmoi.toml.tmpl`, which `chezmoi init` renders — not `apply`.
+  (`.name`, `.email`, `.is_arm`) come from `.chezmoi.toml.tmpl`, which `chezmoi init`
+  renders — not `apply`; `.known_hostnames` comes from `.chezmoidata/machines.toml`.
 - The global agent instructions are tracked fragments in `.chezmoitemplates/agents/`.
   `global.md` (shared, tool-agnostic) renders into all three targets
   (`~/.config/agents/GLOBAL.md`, `~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`);

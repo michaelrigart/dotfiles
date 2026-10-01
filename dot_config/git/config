@@ -2,7 +2,6 @@
     name = Michaël Rigart
     email = michael@netronix.be
     signingkey = ~/.config/git/signing.pub
-    #signingkey = 6A48E395326ED58A
 [core]
     pager = delta
     excludesfile = ~/.config/git/gitignore_global
@@ -40,12 +39,8 @@
     r = !git --no-pager l -20
     ra = !git r --all
     ff = merge --ff-only
-    pullff = pull --ff-only
     l = log --graph --abbrev-commit --date=relative
     la = !git l --all
-    div = divergence
-    gn = goodness
-    gnc = goodness --cached
     fa = fetch --all
     pom = push origin main
 [format]
@@ -53,8 +48,6 @@
 [merge]
     tool = vimdiff
     conflictStyle = zdiff3
-[diff "bin"]
-    textconv = hexdump -v -C
 [commit]
     gpgsign = true
     template = ~/.config/git/templates/gitmessage
@@ -62,9 +55,14 @@
 	templatedir = ~/.config/git/templates
 	defaultBranch = main
 [gpg]
-  #program = gpg
 	format = ssh
 [gpg "ssh"]
 	allowedSignersFile = ~/.config/git/allowed_signers
 [pull]
 	ff = only
+[push]
+    autoSetupRemote = true
+[fetch]
+    prune = true
+[diff]
+    algorithm = histogram

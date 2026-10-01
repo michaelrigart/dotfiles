@@ -1,9 +1,6 @@
 #!/usr/bin/env zsh
 
-# Set name of the theme to load --- if set to "random", it will
-# load a random theme each time oh-my-zsh is loaded, in which case,
-# to know which specific one was loaded, run: echo $RANDOM_THEME
-# See https://github.com/robbyrussell/oh-my-zsh/wiki/Themes
+# Starship draws the prompt, so oh-my-zsh loads no theme.
 ZSH_THEME=""
 eval "$(starship init zsh)"
 
@@ -13,60 +10,6 @@ eval "$(direnv hook zsh)"
 # Activate mise
 eval "$(mise activate zsh)"
 
-# enable zoxide — deferred so it initializes after oh-my-zsh installs its
-# chpwd hook (config is sourced before oh-my-zsh.sh in .zshrc); avoids the
-# "initialize zoxide at the end of your shell config" warning.
-autoload -Uz add-zsh-hook
-__init_zoxide() {
-  eval "$(zoxide init zsh)"
-  add-zsh-hook -d precmd __init_zoxide
-  unset -f __init_zoxide
-}
-add-zsh-hook precmd __init_zoxide
-
-
-# Set list of themes to pick from when loading at random
-# Setting this variable when ZSH_THEME=random will cause zsh to load
-# a theme from this variable instead of looking in ~/.oh-my-zsh/themes/
-# If set to an empty array, this variable will have no effect.
-# ZSH_THEME_RANDOM_CANDIDATES=( "robbyrussell" "agnoster" )
-
-# Uncomment the following line to use case-sensitive completion.
-# CASE_SENSITIVE="true"
-
-# Uncomment the following line to use hyphen-insensitive completion.
-# Case-sensitive completion must be off. _ and - will be interchangeable.
-# HYPHEN_INSENSITIVE="true"
-
-# Uncomment the following line to disable bi-weekly auto-update checks.
-# DISABLE_AUTO_UPDATE="true"
-
-# Uncomment the following line to automatically update without prompting.
-# DISABLE_UPDATE_PROMPT="true"
-
-# Uncomment the following line to change how often to auto-update (in days).
-# export UPDATE_ZSH_DAYS=13
-
-# Uncomment the following line if pasting URLs and other text is messed up.
-# DISABLE_MAGIC_FUNCTIONS=true
-
-# Uncomment the following line to disable colors in ls.
-# DISABLE_LS_COLORS="true"
-
-# Uncomment the following line to disable auto-setting terminal title.
-# DISABLE_AUTO_TITLE="true"
-
-# Uncomment the following line to enable command auto-correction.
-# ENABLE_CORRECTION="true"
-
-# Uncomment the following line to display red dots whilst waiting for completion.
-# COMPLETION_WAITING_DOTS="true"
-
-# Uncomment the following line if you want to disable marking untracked files
-# under VCS as dirty. This makes repository status check for large repositories
-# much, much faster.
-# DISABLE_UNTRACKED_FILES_DIRTY="true"
-
 # History is state, not cache: it lives in $XDG_STATE_HOME. The first shell start after
 # the move carries the old $XDG_CACHE_HOME file across, and never overwrites a history
 # that already exists at the new place (two shells can start at once).
@@ -75,30 +18,16 @@ HISTFILE="$XDG_STATE_HOME/zsh/zsh_history"
 if [[ ! -e "$HISTFILE" && -f "$XDG_CACHE_HOME/zsh/zsh_history" ]]; then
   mv -n "$XDG_CACHE_HOME/zsh/zsh_history" "$HISTFILE" 2>/dev/null
 fi
-SAVEHIST=1000
-HISTSIZE=999
 setopt share_history
 setopt hist_expire_dups_first
 setopt hist_ignore_dups
 setopt hist_verify
 
-# Uncomment the following line if you want to change the command execution time
-# stamp shown in the history command output.
-# You can set one of the optional three formats:
-# "mm/dd/yyyy"|"dd.mm.yyyy"|"yyyy-mm-dd"
-# or set a custom format using the strftime function format specifications,
-# see 'man strftime' for details.
-# HIST_STAMPS="mm/dd/yyyy"
+# Skip oh-my-zsh's compaudit pass on every start; this is a single-user machine.
+# Must be set before oh-my-zsh.sh is sourced.
+ZSH_DISABLE_COMPFIX=true
 
-# Would you like to use another custom folder than $ZSH/custom?
-# ZSH_CUSTOM=/path/to/new-custom-folder
-
-# Which plugins would you like to load?
-# Standard plugins can be found in ~/.oh-my-zsh/plugins/*
-# Custom plugins may be added to ~/.oh-my-zsh/custom/plugins/
-# Example format: plugins=(rails git textmate ruby lighthouse)
-# Add wisely, as too many plugins slow down shell startup.
-plugins=(bundler direnv docker fzf gem git mise rails rake ssh sudo)
+plugins=(bundler docker fzf gem git rails rake ssh sudo)
 
 # Disable terminal flow control (Ctrl-s / Ctrl-q) so a stray Ctrl-s in a shell
 # pane can't XOFF-freeze it. Herdr's prefix is Ctrl-b and does not claim Ctrl-s.

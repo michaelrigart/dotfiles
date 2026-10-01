@@ -237,24 +237,6 @@ else
 fi
 
 # ============================================================================
-# Safari & Privacy Settings
-# ============================================================================
-log_info "Configuring Safari privacy settings..."
-
-# Note: Safari settings may not work due to sandboxing in modern macOS
-# These settings should be configured manually in Safari preferences
-log_warn "Safari settings must be configured manually due to app sandboxing:"
-log_warn "  - Disable search suggestions in Safari > Settings > Search"
-log_warn "  - Enable Develop menu in Safari > Settings > Advanced"
-
-# These will only work if Safari is not sandboxed (unlikely in modern macOS)
-# defaults write com.apple.Safari UniversalSearchEnabled -bool false 2>/dev/null || true
-# defaults write com.apple.Safari SuppressSearchSuggestions -bool true 2>/dev/null || true
-# defaults write com.apple.Safari IncludeDevelopMenu -bool true 2>/dev/null || true
-
-log_info "✓ Safari configuration noted (manual setup required)"
-
-# ============================================================================
 # Activity Monitor
 # ============================================================================
 log_info "Configuring Activity Monitor..."

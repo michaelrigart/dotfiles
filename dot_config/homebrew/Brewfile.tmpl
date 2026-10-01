@@ -1,6 +1,5 @@
-{{- /* Identity is read LIVE from scutil, not from chezmoi's .hostname: .hostname is
-     captured once at `chezmoi init` and never refreshed, so after a rename it reports
-     the old name forever and a guard built on it could never fire. */ -}}
+{{- /* Identity is read LIVE from scutil, not from chezmoi config data, which is rendered
+     only at `chezmoi init` and goes stale after a rename. */ -}}
 {{- $live := output "scutil" "--get" "ComputerName" | trim -}}
 {{- $hn := output "scutil" "--get" "HostName" | trim -}}
 {{- if not (has $live .known_hostnames) -}}
@@ -24,14 +23,16 @@
 # vips/hdf5/libmatio, and declaring them would promote them to permanent
 # top-level requirements they aren't.
 
-tap "basecamp/tap"
-tap "satococoa/tap"
-tap "skyhook-io/tap"
+# `brew bundle install` trusts these before loading anything, and `brew bundle cleanup
+# --force` resets Homebrew's trust store to exactly what this file declares, so trust
+# lives here and nowhere else.
+tap "basecamp/tap", trusted: true
+tap "satococoa/tap", trusted: true
+tap "skyhook-io/tap", trusted: true
 
 # ansible: managed by mise (~/.config/mise/config.toml), not Homebrew, so provisioning
 # repos can pin their own version via a project mise.toml.
 brew "arping"                          # edge-node network diagnostics
-brew "asitop"
 brew "awscli"
 brew "azure-cli"
 brew "borgbackup"                      # Vorta requires it. The borgbackup-fuse variant
@@ -42,6 +43,7 @@ brew "borgbackup"                      # Vorta requires it. The borgbackup-fuse 
                                        # else — backup, restore, check, prune, extract —
                                        # is unaffected.
 brew "btop"
+brew "ccusage"                         # Claude Code usage reports
 brew "chezmoi"
 brew "coreutils"
 brew "direnv"
@@ -65,12 +67,13 @@ brew "k9s"
 brew "krew"
 brew "kubie"
 brew "lazygit"
+brew "lazysql"
 brew "libpq"                           # Rails / pg
 brew "mise"
 brew "mono-libgdiplus"                 # Iris.WeInspect Reporting Service — System.Drawing.Common on macOS
 brew "mtr"
 brew "neovim"
-brew "nmap"
+brew "nmap"                            # supplies `ncat`, which dot_local/bin/executable_ssh-sandbox-proxy uses
 brew "oxipng"                          # michaelrigart Rakefile:88 PNG optimization
 brew "ripgrep"                         # `rg`; also a hard dependency of the codex cask
 brew "s3cmd"
@@ -84,9 +87,7 @@ brew "teleport"
 brew "vips"                            # Rails image processing
 brew "watch"
 brew "wget"
-brew "zoxide"
 brew "zsh"
-brew "zsh-completions"
 brew "zsh-syntax-highlighting"
 
 cask "1password"
@@ -99,6 +100,7 @@ cask "claude-code@latest"              # @latest channel — plain `claude-code`
 cask "codex"                           # depends on the ripgrep formula
 cask "docker-desktop"
 {{ if eq $live "fenrir" -}}
+cask "battle-net"
 cask "elgato-control-center"
 cask "focusrite-control"
 cask "jiggler"
@@ -135,8 +137,8 @@ cask "whatsapp"
 cask "yubico-authenticator"
 cask "zen"
 
-cask "font-fira-code-nerd-font"
-cask "font-hack-nerd-font"
 cask "font-jetbrains-mono"
-cask "font-jetbrains-mono-nerd-font"
 cask "font-sf-pro"
+cask "font-symbols-only-nerd-font"     # fallback for icons newer than Ghostty's built-in Symbols
+                                       # Nerd Font, e.g. the cod-git_branch and cod-flag badges
+                                       # in herdr/phase.sh
