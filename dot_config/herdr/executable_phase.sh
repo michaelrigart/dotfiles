@@ -130,8 +130,8 @@ for b, m in seen.items():
 }
 
 # ------------------------------------------------------------------ derivation
-# Prints "<phase> <value>" for one checkout. Order matters: whether work is still local
-# comes first, then what GitLab says.
+# Prints "<phase> <value>" for one checkout. Order matters: an open MR outranks every local
+# signal; local work outranks a merged MR.
 derive() { # derive <checkout_path> <repo_root> <mr_table>
   local path="$1" root="$2" table="$3" branch base row state iid draft
 

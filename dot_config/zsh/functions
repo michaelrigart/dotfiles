@@ -757,6 +757,8 @@ _wt_herdr_classify() {
 _wt_stopped_herdr_has_checkout() {
   emulate -L zsh
   local session="$1" session_dir="$2" dest="${3:A}" n
+  # Own line: a `local` expands all its arguments before assigning any, so on the line
+  # above `$session_dir` would be the caller's.
   local state="$session_dir/session.json"
   [[ -e "$state" ]] || return 1
   if [[ ! -r "$state" ]] || ! jq -e \
