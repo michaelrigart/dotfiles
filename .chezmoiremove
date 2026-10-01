@@ -17,3 +17,13 @@
 # Left behind by the retired oh-my-zsh mise plugin. oh-my-zsh puts $ZSH/cache/completions
 # first in fpath, so this stale copy shadows the Homebrew _mise and is never regenerated.
 .local/share/oh-my-zsh/cache/completions/_mise
+
+# Sourced a google-cloud-sdk that is not installed; nothing sources this file.
+.config/zsh/gcloud
+
+# Completion dumps in the old host-named style. The current dump, zcompdump-$ZSH_VERSION
+# with one dash, must survive, so the pattern needs both dashes.
+.cache/zsh/zcompdump-*-*
+
+# oh-my-zsh's default dump name in $HOME, from before ZSH_COMPDUMP moved it.
+.zcompdump-*
