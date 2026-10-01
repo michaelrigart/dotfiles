@@ -63,3 +63,8 @@ docs/superpowers/runs/
 # Emacs auto-save and lock files
 \#*\#
 .\#*
+
+# Local chezmoi data files: keep private overrides out of this public repo
+.chezmoidata.toml
+.chezmoidata.yaml
+.chezmoidata.json

@@ -10,22 +10,34 @@ CLAUDE.md
 # `chezmoi apply` would create ~/docs/superpowers/... in $HOME.
 docs/
 
-# Not listed, because chezmoi already ignores every dot-prefixed SOURCE entry: .git,
-# .gitignore, .gitattributes, .scripts/ (helpers, not dotfiles), .backgrounds/ (copied by
-# configure.sh), and the .chezmoi* metadata (.chezmoiignore, .chezmoiremove,
-# .chezmoitemplates, .chezmoiversion, .chezmoi.toml.tmpl, .chezmoiexternal*).
+# Version control
+.git
+.gitignore
+.gitattributes
+
+# Scripts directory (these are helpers, not dotfiles to install)
+.scripts/
 
 # Test suites for the managed scripts — versioned with them, never deployed.
 tests/
+
+# Backgrounds directory (copied by configure.sh, not managed by chezmoi)
+.backgrounds/
 
 # Editor files
 *.swp
 *.swo
 *~
-# These two guard TARGET paths, which the dot-prefix rule does not cover: without them
-# `chezmoi unmanaged` lists ~/.DS_Store and `chezmoi add ~/.DS_Store` is no longer refused.
 .*.sw?
 .DS_Store
+
+# Chezmoi metadata files (already handled by chezmoi)
+.chezmoiignore
+.chezmoiremove
+.chezmoitemplates
+.chezmoiversion
+.chezmoi.toml.tmpl
+.chezmoiexternal*
 
 # Temporary files
 *.bak
