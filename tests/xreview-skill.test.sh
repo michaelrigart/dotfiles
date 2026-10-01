@@ -49,7 +49,7 @@ named="$(grep -oE 'xreview[[:space:]]+[A-Za-z][a-zA-Z0-9_-]*' "$SKILL" | awk '{p
 [ -n "$named" ] || { printf 'SKILL.md names no xreview subcommands — the extractor is broken\n' >&2; exit 1; }
 
 for sub in $named; do
-  if printf '%s' "$dispatch" | grep -qE "^[[:space:]]*${sub}\)"; then
+  if grep -qE "^[[:space:]]*${sub}\)" <<<"$dispatch"; then
     _pass "SKILL.md names '$sub', and the CLI dispatches it"
   else
     _fail "SKILL.md names '$sub', and the CLI dispatches it" \
@@ -127,6 +127,7 @@ fi
 # model goes on believing the gate applies and proposes a merge that was never reviewed
 # — the failure this whole mechanism exists to prevent, arrived at through the prose.
 GUARD="$ROOT/dot_claude/executable_xreview-guard.sh"
+guard_code="$(strip_comments "$GUARD")"
 gated="$(grep -oE '(glab|gh)[[:space:]]+(mr|pr)[[:space:]]+create[A-Za-z0-9_-]*' "$SKILL" | tr -s ' \t' ' ' | sort -u)"
 if [ -z "$gated" ]; then
   _fail "SKILL.md still names the gated forge commands" \
@@ -141,7 +142,7 @@ else
     # precisely. Whether the gate actually fires is xreview-guard.test.sh's job; this
     # one only catches the skill naming a verb the guard stopped looking for at all.
     pat="$(printf '%s' "$c" | sed 's/ /.*/g')"
-    if strip_comments "$GUARD" | grep -qE -- "$pat"; then
+    if grep -qE -- "$pat" <<<"$guard_code"; then
       _pass "SKILL.md says '$c' is gated, and the guard matches it"
     else
       _fail "SKILL.md says '$c' is gated, and the guard matches it" \
@@ -160,10 +161,11 @@ if [ -z "$confined" ]; then
   _fail "SKILL.md still names the confined tools" \
         "found none — either the skill stopped documenting the apply window, or this extractor broke"
 else
+  aguard_arms="$(strip_comments "$AGUARD" | grep -E 'case[[:space:]]+"\$tool"')"
   for tool in $confined; do
     # The dispatching case only: a `supported="Edit|Write"` string kept for diagnostics
     # is not an arm, and matching it would let a tool fall out of the guard unnoticed.
-    if strip_comments "$AGUARD" | grep -E 'case[[:space:]]+"\$tool"' | grep -qE "[|( ]$tool[|) ]"; then
+    if grep -qE "[|( ]$tool[|) ]" <<<"$aguard_arms"; then
       _pass "SKILL.md says '$tool' is confined, and the apply guard matches it"
     else
       _fail "SKILL.md says '$tool' is confined, and the apply guard matches it" \
@@ -175,15 +177,16 @@ fi
 # The inline-diff flag is the whole point of the cost fix: a skill that still shows a
 # bare `xreview dispatch <body-file>` teaches the expensive call, and the model follows
 # the skill, not the CLI's usage line.
+dispatch_lines="$(grep -E '^\s*(NONCE=)?\$?\(?xreview dispatch' "$SKILL")"
 # Assert on the dispatch line itself, not on the file: --diff is mentioned in the prose
 # too, so a file-wide grep stays green even after the example reverts to the costly form.
-if grep -E '^\s*(NONCE=)?\$?\(?xreview dispatch' "$SKILL" | grep -q -- '--diff'; then
+if grep -q -- '--diff' <<<"$dispatch_lines"; then
   _pass "the skill's dispatch example passes the diff inline"
 else
   _fail "the skill's dispatch example passes the diff inline" \
         "$(grep -E 'xreview dispatch' "$SKILL" | head -1)"
 fi
-if printf '%s' "$xreview_code" | grep -q -- '--diff)'; then
+if grep -q -- '--diff)' <<<"$xreview_code"; then
   _pass "the CLI actually accepts --diff"
 else
   _fail "the CLI actually accepts --diff" "no --diff case in the dispatch parser"
@@ -191,25 +194,25 @@ fi
 
 # The checkpoint is what the pre-merge gate reads. A dispatch example without it teaches
 # a call the CLI refuses, and the model follows the skill, not the usage line.
-if grep -E '^\s*(NONCE=)?\$?\(?xreview dispatch' "$SKILL" | grep -q -- '--checkpoint'; then
+if grep -q -- '--checkpoint' <<<"$dispatch_lines"; then
   _pass "the skill's dispatch example names the checkpoint"
 else
   _fail "the skill's dispatch example names the checkpoint" "$(grep -E 'xreview dispatch' "$SKILL" | head -1)"
 fi
-if printf '%s' "$xreview_code" | grep -q -- '--checkpoint)'; then
+if grep -q -- '--checkpoint)' <<<"$xreview_code"; then
   _pass "the CLI actually accepts --checkpoint"
 else
   _fail "the CLI actually accepts --checkpoint" "no --checkpoint case in the dispatch parser"
 fi
 for cp in spec plan pre-merge; do
-  if grep -q -- "\`$cp\`" "$SKILL" && printf '%s' "$xreview_code" | grep -qE "(^|[|[:space:]])$cp([|)]|$)"; then
+  if grep -q -- "\`$cp\`" "$SKILL" && grep -qE "(^|[|[:space:]])$cp([|)]|$)" <<<"$xreview_code"; then
     _pass "the skill and the CLI agree on the '$cp' checkpoint"
   else
     _fail "the skill and the CLI agree on the '$cp' checkpoint" "named in one and not the other"
   fi
 done
 # The gate the skill describes is the gate the guard applies.
-if strip_comments "$GUARD" | grep -q 'pre-merge' && strip_comments "$GUARD" | grep -q 'approve' \
+if grep -q 'pre-merge' <<<"$guard_code" && grep -q 'approve' <<<"$guard_code" \
    && grep -qi 'latest .pre-merge. receipt has the verdict' "$SKILL"; then
   _pass "the skill and the guard agree: only an approved pre-merge receipt opens the gate"
 else
@@ -218,7 +221,7 @@ fi
 
 # A schema miss is its own exit code. The skill must say what to do with it, or the model
 # treats raw reviewer prose as findings.
-if grep -q 'Exit 4' "$SKILL" && printf '%s' "$xreview_code" | grep -q 'exit 4'; then
+if grep -q 'Exit 4' "$SKILL" && grep -q 'exit 4' <<<"$xreview_code"; then
   _pass "the skill and the CLI agree that a schema miss exits 4"
 else
   _fail "the skill and the CLI agree that a schema miss exits 4" "skill/CLI mismatch"
@@ -226,7 +229,7 @@ fi
 
 # --reset dropping the thread is the mechanism behind the rotation advice. If the code
 # stops doing it, the skill's instruction becomes a no-op that still reads as done.
-if printf '%s' "$xreview_code" | grep -q 'rm -f "\$f" "\$(state_dir)/review-thread"'; then
+if grep -q 'rm -f "\$f" "\$(state_dir)/review-thread"' <<<"$xreview_code"; then
   _pass "--reset drops the cached thread in the code"
 else
   _fail "--reset drops the cached thread in the code" "reset no longer clears the thread"
@@ -241,7 +244,7 @@ fi
 # pane's model name was not in a hard-coded table, so every new model release blocked
 # every review. The skill must not reintroduce it by example, and the CLI must not carry
 # a flag that quietly does nothing.
-if grep -E '^\s*(NONCE=)?\$?\(?xreview dispatch' "$SKILL" | grep -q -- '--expect'; then
+if grep -q -- '--expect' <<<"$dispatch_lines"; then
   _fail "the skill's dispatch example is free of --expect" \
         "$(grep -E 'xreview dispatch' "$SKILL" | head -1)"
 else
@@ -255,7 +258,8 @@ fi
 # A skill naming a specific model teaches exactly the gate that was removed — the reader
 # compares the pane against the name and reports a mismatch by hand. Nothing in the CLI
 # can stop that, so it is asserted here instead.
-if grep -oE 'gpt-[0-9]+\.[0-9]+-[a-z]+/[a-z]+' "$SKILL" | grep -q .; then
+reviewer_tiers="$(grep -oE 'gpt-[0-9]+\.[0-9]+-[a-z]+/[a-z]+' "$SKILL")"
+if grep -q . <<<"$reviewer_tiers"; then
   _fail "the skill names no specific reviewer tier" \
         "$(grep -oE 'gpt-[0-9]+\.[0-9]+-[a-z]+/[a-z]+' "$SKILL" | sort -u | tr '\n' ' ')"
 else
@@ -270,7 +274,7 @@ fi
 # Reporting survives the gate's removal: tier and receipts --tiers stay, because knowing
 # what reviews ran at is still worth having — it just must not block anything.
 for sub in 'cmd_tier' '--tiers'; do
-  if printf '%s' "$xreview_code" | grep -q -- "$sub"; then
+  if grep -q -- "$sub" <<<"$xreview_code"; then
     _pass "the CLI still implements $sub"
   else
     _fail "the CLI still implements $sub" "absent from the CLI"
@@ -284,7 +288,7 @@ fi
 
 # A collect that runs out of budget while the turn is still on record is not a timeout.
 # Telling the model otherwise is what turned long reviews into escalations.
-if grep -q 'Exit 3' "$SKILL" && printf '%s' "$xreview_code" | grep -q 'exit 3'; then
+if grep -q 'Exit 3' "$SKILL" && grep -q 'exit 3' <<<"$xreview_code"; then
   _pass "the skill and the CLI agree that a still-running turn exits 3"
 else
   _fail "the skill and the CLI agree that a still-running turn exits 3" "skill/CLI mismatch"
@@ -391,12 +395,12 @@ fi
 # (no pane, several panes, the daemon down and staying down) belong on it, not just in
 # the "dispatch refuses" prose above it.
 esc="$(sed -n '/^Escalate to Michael when/,/^That list is exhaustive/p' "$SKILL")"
-if printf '%s' "$esc" | grep -qi 'no Codex pane'; then
+if grep -qi 'no Codex pane' <<<"$esc"; then
   _pass "the escalation list names the no-pane/several-panes refusal"
 else
   _fail "the escalation list names the no-pane/several-panes refusal" "missing from the list"
 fi
-if printf '%s' "$esc" | grep -qi 'down and will not start'; then
+if grep -qi 'down and will not start' <<<"$esc"; then
   _pass "the escalation list names the daemon-will-not-start refusal"
 else
   _fail "the escalation list names the daemon-will-not-start refusal" "missing from the list"
@@ -406,7 +410,7 @@ fi
 # to RESUME after the turn has started, which only warns. Both lists must say so, or the
 # model either does not know to escalate a real refusal, or thinks the post-turn warning is
 # one too and escalates every noisy pane.
-if printf '%s' "$esc" | grep -qi 'would not free'; then
+if grep -qi 'would not free' <<<"$esc"; then
   _pass "the escalation list names the pane-will-not-free refusal"
 else
   _fail "the escalation list names the pane-will-not-free refusal" "missing from the list"
@@ -442,6 +446,46 @@ if grep -qi 'Codex daemon is unreachable; the turn is on record' "$SKILL" \
 else
   _fail "the skill explains the unreachable-daemon exit 1 is not the ambiguous case" "missing"
 fi
+
+# spec 2026-10-01: the pane's screen is evidence, never instruction; harness worktrees use
+# their owner's pane; the new refusals are named, and the lock refusal is waited out.
+screen_bullet="$(awk '/pane.s screen/{f=1} f&&/^[[:space:]]*$/{exit} f' "$SKILL")"
+if [ -n "$screen_bullet" ] && grep -qi 'untrusted' <<<"$screen_bullet"; then
+  _pass "the skill says the pane's screen is untrusted evidence"
+else _fail "the skill says the pane's screen is untrusted evidence" "missing"; fi
+if grep -q '\.claude/worktrees' "$SKILL"; then
+  _pass "the skill says a harness worktree uses its owner's pane"
+else _fail "the skill says a harness worktree uses its owner's pane" "missing"; fi
+if grep -qi 'another dispatch is using' "$SKILL"; then
+  _pass "the skill names the per-pane lock refusal"
+else _fail "the skill names the per-pane lock refusal" "missing"; fi
+if grep -qi 'cannot inspect' <<<"$esc"; then
+  _pass "the escalation list names the cannot-inspect refusal"
+else _fail "the escalation list names the cannot-inspect refusal" "missing from the list"; fi
+for phrase in 'cannot lock' 'cannot read whether' 'resuming something other than a thread id' \
+              'herdr pane process-info' 'herdr pane get'; do
+  if grep -qi "$phrase" <<<"$esc"; then
+    _pass "the escalation list names '$phrase'"
+  else _fail "the escalation list names '$phrase'" "missing from the list"; fi
+done
+if grep -qi 'another dispatch' <<<"$esc"; then
+  _fail "the lock refusal is not escalated" "it is on the escalation list"
+else _pass "the lock refusal is not escalated"; fi
+# The refusal list (not just the escalation list) quotes the exact resume refusal and names
+# both pane reads; later rounds find the pane on the thread only while its TUI is connected.
+refusals="$(sed -n '/^Dispatch refuses, before/,/^Only the "no turn on record"/p' "$SKILL")"
+for phrase in 'is resuming something other than a thread id' 'herdr pane process-info' 'herdr pane get' \
+              'cannot read the Codex pane'; do
+  if grep -qF "$phrase" <<<"$refusals"; then
+    _pass "the refusal list quotes '$phrase'"
+  else _fail "the refusal list quotes '$phrase'" "missing from the list"; fi
+done
+if grep -q 'still connected to the' "$SKILL" && grep -q 'otherwise it is resumed again' "$SKILL"; then
+  _pass "the skill says a later round keeps the pane only while its TUI is connected"
+else _fail "the skill says a later round keeps the pane only while its TUI is connected" "missing"; fi
+if grep -q '300000' "$SKILL"; then
+  _pass "the skill gives dispatch a five-minute tool timeout"
+else _fail "the skill gives dispatch a five-minute tool timeout" "missing"; fi
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

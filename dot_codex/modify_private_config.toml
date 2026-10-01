@@ -45,6 +45,12 @@
        Codex truncates long titles, so anything after the id may be cut but the id is not.
        Set here, never with -c: any -c override makes a TUI leave the shared daemon. */ -}}
 {{- $config = setValueAtPath "tui.terminal_title" (list "thread-id" "thread-title" "current-dir") $config -}}
+{{- /* No in-TUI update prompt. Homebrew owns Codex upgrades (the Brewfile). The prompt is a
+       screen Codex shows BEFORE it loads a session: a pane xreview resumes stops on it, and
+       the next ctrl+c dismisses it into the session instead of quitting (spec
+       2026-10-01-xreview-reliable-codex-pane §1). Set here, never with -c: any -c override
+       makes a TUI leave the shared daemon.                                              */ -}}
+{{- $config = setValueAtPath "check_for_update_on_startup" false $config -}}
 
 {{- /* Enforce feature flags. */ -}}
 {{- $config = setValueAtPath "features.memories" true $config -}}

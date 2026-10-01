@@ -198,6 +198,16 @@ is "launchd does not reap the daemon when start returns" "$(x AbandonProcessGrou
 is "it is not kept alive by launchd (the daemon supervises itself)" "$(x KeepAlive >/dev/null 2>&1 && echo set || echo unset)" unset
 is "no HERDR_ variable is handed to the daemon" \
    "$(plutil -extract EnvironmentVariables json -o - "$rendered" 2>/dev/null | grep -c 'HERDR_')" 0
+for r in "$rendered" "$rendered_intel"; do
+  tag="$(basename "$r" .plist)"
+  xr() { plutil -extract "EnvironmentVariables.$1" raw -o - "$r" 2>/dev/null; }
+  is "$tag: XDG_CONFIG_HOME mirrors the strict XDG layout" "$(xr XDG_CONFIG_HOME)" "$HOME/.config"
+  is "$tag: XDG_DATA_HOME mirrors the strict XDG layout" "$(xr XDG_DATA_HOME)" "$HOME/.local/share"
+  is "$tag: XDG_STATE_HOME mirrors the strict XDG layout" "$(xr XDG_STATE_HOME)" "$HOME/.local/state"
+  is "$tag: XDG_CACHE_HOME mirrors the strict XDG layout" "$(xr XDG_CACHE_HOME)" "$HOME/.cache"
+  is "$tag: no EnvironmentVariables key starts with HERDR_" \
+     "$(plutil -extract EnvironmentVariables xml1 -o - "$r" 2>/dev/null | grep -c '<key>HERDR_')" 0
+done
 is "the PATH covers the mise shims" "$(x EnvironmentVariables.PATH | grep -c '/.local/share/mise/shims')" 1
 
 echo

@@ -18,7 +18,9 @@
   and `xreview-rpc` to the launcher's own directory. A bare `codex` invoked from inside the
   daemon (the reviewer's tools, say) resolves to the ~/.local/bin launcher too, not the real
   binary - harmless here, because the daemon this launcher would ensure is the one already
-  running it.
+  running it. The XDG variables mirror the strict XDG layout so herdr (whose default socket
+  follows XDG_CONFIG_HOME) and the reviewer's tools resolve the same paths as a shell; they
+  apply only at a fresh launchd start.
 
   The log is ~/.local/state/codex-daemon.log (XDG state), not /dev/null: a daemon that fails
   to start (or that a bad PATH entry breaks) otherwise leaves nothing to diagnose it with.
@@ -42,6 +44,14 @@
     <dict>
         <key>PATH</key>
         <string>{{ .chezmoi.homeDir }}/.local/share/mise/shims:{{ .chezmoi.homeDir }}/.local/bin:{{ if .is_arm }}/opt/homebrew/bin:/opt/homebrew/sbin:{{ end }}/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>XDG_CONFIG_HOME</key>
+        <string>{{ .chezmoi.homeDir }}/.config</string>
+        <key>XDG_DATA_HOME</key>
+        <string>{{ .chezmoi.homeDir }}/.local/share</string>
+        <key>XDG_STATE_HOME</key>
+        <string>{{ .chezmoi.homeDir }}/.local/state</string>
+        <key>XDG_CACHE_HOME</key>
+        <string>{{ .chezmoi.homeDir }}/.cache</string>
     </dict>
 
     <key>WorkingDirectory</key>

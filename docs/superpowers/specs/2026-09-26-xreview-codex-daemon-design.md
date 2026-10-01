@@ -5,6 +5,9 @@
 **Amended:** 2026-09-28 - dispatch is turn first: xreview creates the thread over the daemon,
 starts the turn, then resumes the pane onto the thread, which replays the turn from its start
 (F22, §7.3). This supersedes the original pane-first ordering (§12).
+**Amended:** 2026-10-01 - the pane record and the two-keystroke quit (§7.3 step 3) are
+replaced by observation, a fail-closed guard, a ctrl+c ladder and a per-pane lock: see
+[2026-10-01-xreview-reliable-codex-pane-design.md](2026-10-01-xreview-reliable-codex-pane-design.md).
 
 ## 1. Problem
 

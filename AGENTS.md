@@ -30,8 +30,7 @@ Canonical agent context; `CLAUDE.md` imports this file.
   `claude-code.md` within 50; `tests/agent-instructions.test.sh` pins both, and the render.
 - This checkout is shared: other sessions switch branches in it, and uncommitted work
   follows the switch. Re-check `git branch --show-current` right before each commit.
-  Work here on a branch, not in a harness worktree: xreview needs the repository's own
-  Codex pane.
+  Work here on a branch; a harness worktree reviews in this checkout's Codex pane.
 - `.scripts/` are ad-hoc helpers (`provision.sh`, `configure.sh`,
   `reconcile-agents.sh`, `preflight-ssh-agent.sh`), deliberately not `run_once_`
   scripts: they change system settings and need interaction. `measure-interventions.py`
