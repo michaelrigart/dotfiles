@@ -2,14 +2,17 @@
 # Tests for dot_local/bin/executable_xreview on the Codex daemon (spec section 7).
 #
 # Every collaborator is stubbed on PATH:
-#   herdr         one Codex pane, w1:p2, whose title and agent live in files under $P
+#   herdr         one Codex pane, w1:p2, whose title, agent, process argv, screen and daemon
+#                 connection live in files under $P
+#   lsof          the daemon's own sockets, and the pane TUI's peer (connected or elsewhere)
 #   codex-daemon  ensure/check exit codes
 #   xreview-rpc   thread-start, thread status/resolve, turn start and wait, archive
 # Each stub logs its calls to $CALLS, so ordering is asserted from the log. Dispatch FREES
-# the pane (quits its TUI, if it is not already on the checkpoint thread) BEFORE any turn
-# exists, THEN starts the review turn, and only THEN best-effort resumes the pane onto it
-# (F22: a TUI resuming a thread mid-turn replays it from the start). No precondition may be
-# skipped, and no keystroke (send-keys) may ever reach the pane once the turn exists (C1).
+# the pane (a ctrl+c ladder, unless the pane already shows the checkpoint thread on a TUI
+# connected to the daemon) BEFORE any turn exists, THEN starts the review turn, and only THEN
+# best-effort resumes the pane onto it (F22: a TUI resuming a thread mid-turn replays it from
+# the start). No precondition may be skipped, and no keystroke (send-keys) may ever reach the
+# pane once the turn exists (C1).
 set -uo pipefail
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
 XREVIEW="$SRC/dot_local/bin/executable_xreview"
@@ -55,16 +58,21 @@ cat > "$STUB/herdr" <<'H'
 # \033/\007 in a logged argument into real ESC/BEL bytes, which would make the log stop
 # matching the literal text the launch command actually contains.
 printf '%sherdr %s\n' "${DISPATCH_ID:+$DISPATCH_ID }" "$*" >> "$CALLS"
-pane_json() {
-  a="$(cat "$P/agent" 2>/dev/null)"; t="$(cat "$P/title" 2>/dev/null)"
-  s="$(cat "$P/status" 2>/dev/null || echo idle)"
-  # AGENT_EXIT_DELAY simulates the pane's OWN exit taking a few more polls to actually show
-  # up in .agent, after send-keys has already flipped the real state - so the agent-exit
-  # wait genuinely iterates a few times, the same way a real TUI would.
+agent_now() { # the pane's agent as this read sees it: "codex" while a TUI runs, else empty
+  a="$(cat "$P/agent" 2>/dev/null)"
+  # AGENT_EXIT_DELAY simulates the pane's OWN exit taking a few more reads to actually show
+  # up, after send-keys has already flipped the real state - so the ladder's poll genuinely
+  # iterates a few times, the same way a real TUI would. Every read counts against the delay:
+  # .agent in a pane get or list, and the foreground process in a process-info.
   if [ -n "${AGENT_EXIT_DELAY:-}" ] && [ -e "$P/exit_delay_active" ]; then
     n=$(cat "$P/exit_delay_calls" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$P/exit_delay_calls"
     if [ "$n" -le "$AGENT_EXIT_DELAY" ]; then a=codex; else rm -f "$P/exit_delay_active"; fi
   fi
+  printf '%s' "$a"
+}
+pane_json() {
+  a="$(agent_now)"; t="$(cat "$P/title" 2>/dev/null)"
+  s="$(cat "$P/status" 2>/dev/null || echo idle)"
   # The resume command's own title takes one extra read to land, so the final wait loop
   # genuinely iterates at least once, the same way a real TUI's title update would.
   if [ -e "$P/reset_pending" ]; then
@@ -81,40 +89,64 @@ pane_json() {
 case "$1 $2" in
   "pane list") printf '{"result":{"panes":[%s%s]}}\n' "$(pane_json)" "${EXTRA_PANES:-}" ;;
   "pane get")
-    # PANE_GONE_AT=<n>: from the n-th read on, the pane is closed - herdr's real answer for a
-    # closed pane. Used to simulate the pane closing mid-prepare (T4).
-    if [ -n "${PANE_GONE_AT:-}" ]; then
-      gn=$(cat "$P/get_seq" 2>/dev/null || echo 0); gn=$((gn + 1)); echo "$gn" > "$P/get_seq"
-      if [ "$gn" -ge "$PANE_GONE_AT" ]; then
-        echo '{"error":{"code":"pane_not_found","message":"pane w1:p2 not found"},"id":"cli:pane:get"}' >&2
-        exit 1
-      fi
+    # A closed pane gets herdr's real answer: exit 1 and a pane_not_found envelope on stderr.
+    # GONE_AFTER_KEYS and GONE_AFTER_RUN close it mid-dispatch (T4).
+    if [ -e "$P/gone" ]; then
+      echo '{"error":{"code":"pane_not_found","message":"pane w1:p2 not found"},"id":"cli:pane:get"}' >&2
+      exit 1
     fi
-    # I-1: consume the fail-once marker on the very first read after send-keys, simulating a
-    # transient herdr failure during the exit wait - exit nonzero with no output, never a
-    # title of any kind.
-    if [ -e "$P/agent_fail_once" ]; then rm -f "$P/agent_fail_once"; exit 1; fi
     printf '{"result":{"pane":%s}}\n' "$(pane_json)" ;;
+  "pane process-info")
+    [ -n "${PROCINFO_FAIL:-}" ] && exit 1
+    # I-1: consume the fail-once marker on the very first process-info read after the quit,
+    # simulating a transient herdr failure during the ladder's poll - exit nonzero with no
+    # output, never a process of any kind.
+    if [ -e "$P/procinfo_fail_once" ]; then rm -f "$P/procinfo_fail_once"; exit 1; fi
+    if [ -e "$P/gone" ]; then
+      echo '{"error":{"code":"pane_not_found","message":"pane w1:p2 not found"}}' >&2; exit 1
+    fi
+    # A running TUI is the foreground group's leader, pid 4242, with the argv it was started
+    # with ($P/argv, or the pane command). CODEX_CHILD puts a codex child in its group, listed
+    # first. A pane without one is its shell, pid 4241, in the foreground (G1).
+    if [ "$(agent_now)" = codex ]; then
+      argv="$(cat "$P/argv" 2>/dev/null || printf 'codex --sandbox read-only --ask-for-approval never')"
+      extra=""; [ -n "${CODEX_CHILD:-}" ] && extra=',{"argv":["codex","app-server"],"name":"codex","pid":4243}'
+      printf '{"result":{"process_info":{"foreground_process_group_id":4242,"foreground_processes":[%s{"argv":%s,"name":"codex","pid":4242}],"pane_id":"w1:p2","shell_pid":4241}}}\n' \
+        "${extra:+${extra#,},}" "$(printf '%s' "$argv" | jq -R -c 'split(" ")')"
+    else
+      printf '{"result":{"process_info":{"foreground_process_group_id":4241,"foreground_processes":[{"argv":["-zsh"],"name":"zsh","pid":4241}],"pane_id":"w1:p2","shell_pid":4241}}}\n'
+    fi ;;
+  "pane read")
+    [ -n "${READ_FAIL:-}" ] && exit 1
+    cat "$P/screen" 2>/dev/null || printf '%s\n' '› Ask Codex to do anything' ;;
   "pane send-keys")
     sleep "${KEY_DELAY:-0}"
+    [ -n "${GONE_AFTER_KEYS:-}" ] && : > "$P/gone"
     n=$(cat "$P/ctrlc" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$P/ctrlc"
-    if [ "$n" -ge 2 ] && [ -z "${STUCK_TUI:-}" ]; then
-      : > "$P/agent"
+    # The TUI quits at the second ctrl+c. PRESESSION holds it on a pre-session screen, which
+    # the first pair only dismisses, so it quits at the fourth (G8). STUCK_TUI never quits.
+    # A TUI that quits takes its daemon connection with it.
+    q=2; [ -n "${PRESESSION:-}" ] && q=4
+    if [ "$n" -ge "$q" ] && [ -z "${STUCK_TUI:-}" ]; then
+      : > "$P/agent"; rm -f "$P/connected"
       : > "$P/exit_delay_active"; rm -f "$P/exit_delay_calls"
-      [ -n "${AGENT_READ_FAIL_ONCE:-}" ] && : > "$P/agent_fail_once"
+      [ -n "${AGENT_READ_FAIL_ONCE:-}" ] && : > "$P/procinfo_fail_once"
     fi ;;
   "pane run")
     # PANE_RUN_FAIL simulates herdr itself failing the launch command (Minor 6) - it must
     # never reach the pane's title/agent state at all.
     [ -n "${PANE_RUN_FAIL:-}" ] && exit 1
+    [ -n "${GONE_AFTER_RUN:-}" ] && : > "$P/gone"
     echo 0 > "$P/ctrlc"
     rm -f "$P/reset_calls" "$P/reset_pending" "$P/exit_delay_active" "$P/exit_delay_calls" \
-          "$P/agent_fail_once"
-    # pane_resume only ever issues one shape of launch command: "$cmd resume $thread" - the
-    # thread is always known before the pane is touched. NO_TITLE simulates a pane that never
-    # shows any title at all, however long dispatch waits.
+          "$P/procinfo_fail_once"
+    # pane_resume only ever issues one shape of launch command: "$cmd -C <root> resume
+    # $thread" - the thread is always known before the pane is touched. NO_TITLE simulates a
+    # pane that never shows any title at all, however long dispatch waits: no TUI starts.
     [ -n "${NO_TITLE:-}" ] && exit 0
+    # The relaunched TUI runs the command it was given, connected to the daemon.
     printf codex > "$P/agent"
+    printf '%s' "$4" > "$P/argv"; : > "$P/connected"
     full="${4##* resume }"
     # Truncate to a realistic title (F11/F21: 29 chars plus "..." once the thread is named).
     printf '%s... | t | d' "$(printf '%s' "$full" | cut -c1-29)" > "$P/newtitle"
@@ -131,6 +163,20 @@ case "$1" in
          exit "${CHECK_RC:-0}" ;;
 esac
 D
+# The daemon (pid 999, from fresh's daemon.pid) owns two unix sockets. The pane's TUI (4242)
+# holds a peer on one of them while $P/connected exists, and a peer elsewhere otherwise (G3).
+cat > "$STUB/lsof" <<'L'
+#!/bin/sh
+printf 'lsof %s\n' "$*" >> "$CALLS"
+[ -n "${LSOF_FAIL:-}" ] && exit 1
+pid=""; field=""
+while [ "$#" -gt 0 ]; do case "$1" in -p) pid="$2"; shift ;; -F) field="$2"; shift ;; esac; shift; done
+case "$pid/$field" in
+  999/d)  printf 'p999\nf10\nd0xdaemon1\nf11\nd0xdaemon2\n' ;;
+  4242/n) if [ -e "$P/connected" ]; then printf 'p4242\nf5\nn->0xdaemon2\n'; else printf 'p4242\nf5\nn->0xelsewhere\n'; fi ;;
+esac
+exit 0
+L
 cat > "$STUB/xreview-rpc" <<'R'
 #!/bin/sh
 printf '%sxreview-rpc %s\n' "${DISPATCH_ID:+$DISPATCH_ID }" "$*" >> "$CALLS"
@@ -152,6 +198,8 @@ case "$cmd" in
     done
     exit 1 ;;
   thread-status)
+    # RPC_STATUS_FAIL_FOR=<id>: that one thread's state cannot be read.
+    [ -n "${RPC_STATUS_FAIL_FOR:-}" ] && [ "$th" = "$RPC_STATUS_FAIL_FOR" ] && exit 1
     # RPC_THREAD_RUNNING: every thread queried is running. RPC_THREAD_RUNNING_FOR=<id>:
     # only that one thread is (Minor 4's own check runs on the CHOSEN thread, separately
     # from the precondition gate's check on whatever the pane's title resolves to, so a
@@ -164,8 +212,8 @@ case "$cmd" in
   turn-start) cp "$input" "$P/packet"; [ -n "$known" ] && echo '[]' > "$known"
               [ -n "${RPC_RUNNING_AFTER_START:-}" ] && : > "$P/running.$th"
               # RELIVE_DURING_TURN simulates a live Codex TUI reappearing in the pane while
-              # the turn itself was starting (fix round 2/D) - pane_free already confirmed
-              # the agent was not codex before this ran; this is what a race would look like.
+              # the turn itself was starting (fix round 2/D) - pane_free already saw the shell
+              # back in the foreground before this ran; this is what a race would look like.
               [ -n "${RELIVE_DURING_TURN:-}" ] && printf codex > "$P/agent"
               [ -n "${RPC_SWITCH_BRANCH_TO:-}" ] && git checkout -q "$RPC_SWITCH_BRANCH_TO" 2>/dev/null
               [ -n "${RPC_START_FAIL:-}" ] && exit 1
@@ -180,25 +228,29 @@ R
 chmod +x "$STUB"/*
 export PATH="$STUB:$PATH"
 
-fresh() { # a pane showing U0, idle; clean log and state
+fresh() { # a pane showing U0, idle, its TUI not connected to the daemon; clean log and state
   unset ENSURE_RC CHECK_RC RPC_START_FAIL RPC_START_UNCERTAIN RPC_START_BAD_ID \
         RPC_START_THREAD_FAIL NO_TITLE STUCK_TUI AGENT_EXIT_DELAY PANE_RUN_FAIL \
         AGENT_READ_FAIL_ONCE EXTRA_PANES PANE_CWD XREVIEW_PANE XREVIEW_THREAD RPC_WAIT_OUT \
-        RPC_WAIT_RC RPC_THREAD_RUNNING RPC_THREAD_RUNNING_FOR RPC_HEALTH_FAIL PANE_GONE_AT \
+        RPC_WAIT_RC RPC_THREAD_RUNNING RPC_THREAD_RUNNING_FOR RPC_HEALTH_FAIL \
         RELIVE_DURING_TURN RPC_SWITCH_BRANCH_TO RPC_SWITCH_BRANCH_EARLY \
-        KEY_DELAY DISPATCH_ID XREVIEW_LOCK_WAIT RPC_RUNNING_AFTER_START
+        KEY_DELAY DISPATCH_ID XREVIEW_LOCK_WAIT RPC_RUNNING_AFTER_START \
+        PROCINFO_FAIL PRESESSION GONE_AFTER_KEYS GONE_AFTER_RUN LSOF_FAIL READ_FAIL \
+        RPC_STATUS_FAIL_FOR CODEX_CHILD XREVIEW_RUNG_WAIT
   export NEW_UUID="$U1"
   printf codex > "$P/agent"; printf '%s | t | d' "$(trunc "$U0")" > "$P/title"; echo idle > "$P/status"
   echo 0 > "$P/ctrlc"
   rm -f "$P/packet" "$P/reset_calls" "$P/reset_pending" "$P/newtitle" \
-        "$P/exit_delay_active" "$P/exit_delay_calls" "$P/agent_fail_once" "$P/get_seq"
+        "$P/exit_delay_active" "$P/exit_delay_calls"
+  rm -f "$P/connected" "$P/argv" "$P/screen" "$P/gone" "$P/procinfo_fail_once"
   rm -f "$P"/running.*
+  mkdir -p "$CODEX_HOME/app-server-daemon"; printf '{"pid":999}\n' > "$CODEX_HOME/app-server-daemon/daemon.pid"
   bash "$XREVIEW" round --reset >/dev/null 2>&1
   rm -rf "$STATE/superseded" "$STATE/pin" "$STATE/turns"
-  rm -f "$STATE/pane"   # the fast-path record must never leak from a previous test
   : > "$CALLS"
 }
 called() { grep -c -- "$1" "$CALLS" 2>/dev/null || true; }
+resumed() { called "herdr pane run w1:p2 $PANE_CMD -C .* resume $1"; }   # resumed <thread>: count
 first() { grep -n -- "$1" "$CALLS" | head -1 | cut -d: -f1; }
 untouched() { # nothing reached the pane or the reviewer
   [ "$(called 'herdr pane send-keys')$(called 'herdr pane run')$(called 'xreview-rpc turn-start')" = 000 ] && echo yes || echo no
@@ -317,8 +369,7 @@ fresh
 nonce="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>/dev/null)"
 is "D1 a nonce is printed" "$(printf '%s' "$nonce" | grep -c '^xr-')" 1
 is "D1 the pane's session is ended" "$(called 'herdr pane send-keys w1:p2 ctrl+c')" 2
-is "D1 the pane is resumed onto the new thread" \
-   "$(called "herdr pane run w1:p2 .*$PANE_CMD resume $U1")" 1
+is "D1 the pane is resumed onto the new thread" "$(resumed "$U1")" 1
 is "D1 herdr is told the pane's thread" \
    "$(called "herdr pane report-agent-session w1:p2 --source herdr:codex --agent codex --agent-session-id $U1")" 1
 is "D1 the checkpoint thread is recorded" "$(cat "$STATE/review-thread")" "$U1"
@@ -329,26 +380,27 @@ is "D1 no send-keys appears after turn-start" "$(none_after 'xreview-rpc turn-st
 echo "D3. a pane that moved off the checkpoint thread is resumed back onto it"
 printf '%s | t | d' "$(trunc "$U0")" > "$P/title"; : > "$CALLS"
 bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1
-is "D3 it is resumed back onto the checkpoint thread" \
-   "$(called "herdr pane run w1:p2 .*$PANE_CMD resume $U1")" 1
+is "D3 it is resumed back onto the checkpoint thread" "$(resumed "$U1")" 1
 
-echo "D3f. a failed .agent read during the exit wait keeps waiting, not skips it"
-# AGENT_EXIT_DELAY makes .agent genuinely keep reading "codex" for a few more polls after
-# send-keys, as a slow-exiting TUI would; AGENT_READ_FAIL_ONCE fails the very first read of
-# that phase outright. A read failure treated as "the field is empty" would end the wait on
-# that first (failed) read - long before the delay actually elapses.
+echo "D3f. a failed process-info read during the ladder keeps waiting, not ends it"
+# AGENT_EXIT_DELAY makes the pane genuinely keep reading as Codex for a few more reads after
+# send-keys, as a slow-exiting TUI would; AGENT_READ_FAIL_ONCE fails the very first
+# process-info read of that phase outright. A failed read counted as "freed" would end the
+# ladder on that first (failed) read - long before the delay actually elapses.
 fresh
 out="$(AGENT_EXIT_DELAY=3 AGENT_READ_FAIL_ONCE=1 XREVIEW_POLL_SECS=0.05 XREVIEW_PANE_WAIT=5 \
         bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
 is "D3f it still succeeds" "$(printf '%s' "$out" | grep -c '^xr-')" 1
-# Between the second ctrl+c and `pane run`, the exit-wait loop makes one ".agent" read per
-# iteration: the first (failed) one, then 3 more covering the delay, then the one that
-# finally reads empty and breaks the loop - 5 - plus pane_resume's own fix round 2/D check
-# (agent not codex, right before it calls `pane run`) - 6 in total. A failed read misread as
-# "already exited" would instead call `pane run` after just that first (failed) read - 2 (1
-# plus pane_resume's own check), not 6.
-is "D3f the exit wait actually iterated through the delay, not stopped on the failed read" \
-   "$(awk '/pane send-keys/{n++} n>=2{print} /pane run/{exit}' "$CALLS" | grep -c 'pane get')" 6
+# Between the second ctrl+c and `pane run`, the ladder's poll makes one process-info read per
+# iteration: the first (failed) one - after which pane_gone's own `pane get`, checking the
+# pane did not close, uses up the first of the 3 delayed reads - then 2 more that still read
+# Codex, then the one that finally reads the shell and ends the ladder - 4 - plus
+# pane_resume's own fix round 2/D check (the shell in the foreground, right before it calls
+# `pane run`) - 5 in total. A failed read misread as "freed" would instead end the ladder
+# after just that first (failed) read, and pane_resume's check, still seeing Codex, would
+# then warn and never call `pane run` - 2 (1 plus pane_resume's own check), not 5.
+is "D3f the ladder actually polled through the delay, not stopped on the failed read" \
+   "$(awk '/pane send-keys/{n++} n>=2{print} /pane run/{exit}' "$CALLS" | grep -c 'pane process-info')" 5
 
 echo "D8. a refused turn fails the dispatch - the pane was already freed, then relaunched (fix round 2/C)"
 # The pane is freed BEFORE turn-start now (C1), so a turn-start failure still costs two
@@ -396,36 +448,27 @@ is "D10 and the receipt names it" "$(tail -1 "$STATE/reviews.jsonl" | jq -r .tur
 : > "$CALLS"; bash "$XREVIEW" collect "$nonce" >/dev/null 2>&1
 is "D10 a later collect waits on that turn by id" "$(called "turn-wait --thread $U1 --turn turn-recovered")" 1
 
-echo "D11. a daemon restart is detected even though the title and pane record still match"
+echo "D11. a TUI without a daemon connection is re-pointed even though its title matches"
+# A TUI left over from before a daemon restart keeps its title but holds no connection to the
+# new daemon (G3): the title alone never takes the fast path, the observed connection does.
 fresh
-bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1   # establishes the fast-path pane record
-mkdir -p "$CODEX_HOME/app-server-daemon"; printf '{"pid":999}\n' > "$CODEX_HOME/app-server-daemon/daemon.pid"
-: > "$CALLS"
+bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1   # the resumed TUI shows U1, connected
+rm -f "$P/connected"; : > "$CALLS"
 bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1
-is "D11 the pane is re-pointed despite the title still matching" \
-   "$(called "herdr pane run w1:p2 .*$PANE_CMD resume $U1")" 1
+is "D11 the pane is re-pointed despite the title still matching" "$(resumed "$U1")" 1
 
-echo "D11b. a daemon.pid whose content changes (not just appears) is also a detected restart"
+echo "D12. a pin whose title already matches takes the fast path at once on a connected TUI"
 fresh
-mkdir -p "$CODEX_HOME/app-server-daemon"; printf '{"pid":111}\n' > "$CODEX_HOME/app-server-daemon/daemon.pid"
-bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1   # records the generation for pid 111
-printf '{"pid":222}\n' > "$CODEX_HOME/app-server-daemon/daemon.pid"   # content CHANGES, not just appears
-: > "$CALLS"
+bash "$XREVIEW" init "$U0" >/dev/null    # the pin the pane's title already shows
+: > "$P/connected"; : > "$CALLS"
 bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1
-is "D11b a changed daemon.pid content is also a detected restart" \
-   "$(called "herdr pane run w1:p2 .*$PANE_CMD resume $U1")" 1
-rm -rf "$CODEX_HOME/app-server-daemon"   # restore the "no daemon.pid yet" baseline for later tests
-
-echo "D12. a pin whose title already matches is still resumed once, then takes the fast path"
+is "D12 a matching, connected pin sends no keys" "$(called 'herdr pane send-keys')" 0
+is "D12 and starts no new pane session" "$(called 'herdr pane run')" 0
 fresh
-bash "$XREVIEW" init "$U0" >/dev/null    # the pin the pane's title already shows, nothing recorded
+bash "$XREVIEW" init "$U0" >/dev/null    # the same pin, on a TUI with no daemon connection
 : > "$CALLS"
 bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1
-is "D12 a pin whose title already matches is still resumed once, with nothing recorded yet" \
-   "$(called "herdr pane run w1:p2 .*$PANE_CMD resume $U0")" 1
-: > "$CALLS"
-bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1
-is "D12 the dispatch after that takes the fast path" "$(called 'herdr pane send-keys')" 0
+is "D12 without a daemon connection it is resumed exactly once" "$(resumed "$U0")" 1
 
 echo "D16. turn-start returning 0 with a malformed id still hands back a nonce"
 fresh
@@ -476,20 +519,24 @@ is "D it warns instead of typing into the live TUI" \
    "$(printf '%s' "$out" | grep -c 'running but not shown in pane w1:p2')" 1
 is "D no pane run ever happens - nothing is typed into it" "$(called 'herdr pane run')" 0
 
-echo "T3b. a session that will not exit now REFUSES, before any turn exists (C1)"
+echo "T3b. a session that will not exit even after the ladder REFUSES, before any turn exists (C1)"
 # The old behaviour (warn, still exit 0) belonged to the OLD pane-first-then-turn design,
 # where freeing the pane happened with no turn yet to protect. Now pane_free runs before
-# turn-start, so it can safely die: nothing has started.
+# turn-start, so it can safely die: nothing has started. The ladder is bounded: at most
+# three ctrl+c pairs, all inside XREVIEW_PANE_WAIT (spec 2026-10-01 §4.4).
 fresh
-out="$(STUCK_TUI=1 XREVIEW_PANE_WAIT=0.15 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
+out="$(STUCK_TUI=1 XREVIEW_RUNG_WAIT=0.1 XREVIEW_PANE_WAIT=1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
 is "T3b it refuses" "$rc" 1
-is "T3b and says the session would not exit" "$(printf '%s' "$out" | grep -c 'did not exit its session')" 1
+is "T3b with the exact line" \
+   "$(printf '%s' "$out" | grep -cx 'xreview: the Codex pane w1:p2 did not exit its session within 1s; no review was started')" 1
+is "T3b after at most three ctrl+c pairs" \
+   "$(called 'herdr pane send-keys' | awk '{print ($1 >= 2 && $1 <= 6) ? "yes" : "no ("$1")"}')" yes
 is "T3b no turn was ever started" "$(called 'xreview-rpc turn-start')" 0
 is "T3b and no nonce is printed" "$(printf '%s' "$out" | grep -c '^xr-')" 0
 
 echo "T4a. a pane that closes (pane_not_found) WHILE BEING FREED refuses; no turn ever starts"
 fresh
-out="$(PANE_GONE_AT=1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
+out="$(GONE_AFTER_KEYS=1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
 is "T4a it refuses" "$rc" 1
 is "T4a and says the pane closed while being freed" \
    "$(printf '%s' "$out" | grep -c 'closed while being freed')" 1
@@ -497,11 +544,12 @@ is "T4a no turn was ever started" "$(called 'xreview-rpc turn-start')" 0
 is "T4a and no nonce is printed" "$(printf '%s' "$out" | grep -c '^xr-')" 0
 
 echo "T4b. a pane that closes (pane_not_found) AFTER the turn starts still warns, quickly, exit 0"
-# The turn already exists by the time this fires (pane_free itself succeeded), so this is
-# exactly the spec's step-5 failure mode, unchanged from before this fix round.
+# The turn already exists by the time this fires (pane_free itself succeeded, and the pane
+# closes as it is resumed), so this is exactly the spec's step-5 failure mode, unchanged from
+# before this fix round.
 fresh
 start="$EPOCHREALTIME"
-out="$(PANE_GONE_AT=5 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
+out="$(GONE_AFTER_RUN=1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
 took="$(awk -v s="$start" -v e="$EPOCHREALTIME" 'BEGIN{printf "%.3f", e-s}')"
 nonce="$(printf '%s' "$out" | grep '^xr-')"
 is "T4b dispatch still exits 0" "$rc" 0
@@ -603,12 +651,82 @@ is "M6c XREVIEW_THREAD skips thread-start" "$(called 'xreview-rpc thread-start')
 
 echo "T7. the fast path sends no keys and starts no new pane session"
 fresh
-bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1   # establishes the pane record for U1
+bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1   # the resumed TUI shows U1, connected
 : > "$CALLS"
 bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1
 is "T7 no keys are sent on the fast path" "$(called 'herdr pane send-keys')" 0
 is "T7 and no new pane session is started" "$(called 'herdr pane run')" 0
 is "T7 the turn still starts on the cached thread" "$(called "xreview-rpc turn-start --thread $U1")" 1
+
+echo "S. observation, guard, ladder and screen (spec 2026-10-01 §4.3-§4.6)"
+fresh
+bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1; : > "$CALLS"
+bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1
+is "S1 a matching, connected pane takes the fast path: no keys" "$(called 'herdr pane send-keys')" 0
+is "S1 and no resume" "$(called 'herdr pane run')" 0
+: > "$CALLS"; LSOF_FAIL=1 bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1
+is "S2 an unreadable lsof is not observed: ladder, then resume" "$(resumed "$U1")" 1
+printf 'codex -c model=x resume %s' "$U1" > "$P/argv"; rm -f "$P/connected"; : > "$CALLS"
+bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1
+is "S3 an embedded TUI (no daemon connection) is re-pointed" "$(resumed "$U1")" 1
+fresh; PRESESSION=1 XREVIEW_RUNG_WAIT=0.3 XREVIEW_PANE_WAIT=5 bash "$XREVIEW" dispatch --checkpoint plan b.md > "$ROOT/o" 2>&1; rc=$?
+is "S4 a pre-session screen is freed by the second pair" "$rc/$(grep -c '^xr-' "$ROOT/o")" "0/1"
+is "S4 with four ctrl+c" "$(called 'herdr pane send-keys')" 4
+is "S4 all before the turn" "$(none_after 'xreview-rpc turn-start' 'herdr pane send-keys')" 0
+fresh; printf 'Update available! 0.160.0\n\033[31mpress enter\033[0m\n' > "$P/screen"
+out="$(STUCK_TUI=1 XREVIEW_RUNG_WAIT=0.1 XREVIEW_PANE_WAIT=1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
+is "S5 a pane that never quits refuses" "$rc" 1
+is "S5 with the exact line" "$(printf '%s' "$out" | grep -cx 'xreview: the Codex pane w1:p2 did not exit its session within 1s; no review was started')" 1
+is "S5 then the screen, indented" "$(printf '%s' "$out" | grep -cx '  | Update available! 0.160.0')" 1
+is "S5 with escapes stripped" "$(printf '%s' "$out" | grep -c "$(printf '\033')")" 0
+is "S5 no turn" "$(called 'xreview-rpc turn-start')" 0
+fresh; { for _ in $(seq 30); do printf 'line\n'; done; head -c 3000 /dev/zero | tr '\0' x; printf '\n'; } > "$P/screen"
+out="$(NO_TITLE=1 XREVIEW_PANE_WAIT=0.15 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
+is "S6 a resume that does not confirm keeps the exact warning" \
+   "$(printf '%s' "$out" | grep -cx 'xreview: the review is running but not shown in pane w1:p2')" 1
+is "S6 the excerpt is at most 12 lines" "$(printf '%s' "$out" | grep -c '^  | ')" 12
+is "S6 and at most 1,000 bytes of screen" "$(printf '%s' "$out" | grep '^  | ' | sed 's/^  | //' | tr -d '\n' | wc -c | tr -d ' ')" \
+   "$(printf '%s' "$out" | grep '^  | ' | sed 's/^  | //' | tr -d '\n' | wc -c | awk '{print ($1 <= 1000) ? $1 : "over"}')"
+is "S6 and the nonce is still printed, on a line of its own" "$(printf '%s' "$out" | grep -c '^xr-')" 1
+is "S6 the excerpt's last line is complete (ends in a newline)" \
+   "$(printf '%s' "$out" | grep '^  | ' | tail -1 | grep -c 'xr-')" 0
+is "S6 and no key reaches the pane after the turn" "$(none_after 'xreview-rpc turn-start' 'herdr pane send-keys')" 0
+fresh; printf 'codex resume %s' "$U2" > "$P/argv"; : > "$P/title"
+out="$(RPC_THREAD_RUNNING_FOR=$U2 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
+is "S7 a pane resuming a running thread refuses as mid-turn" "$(printf '%s' "$out" | grep -c "thread $U2 is mid-turn")" 1
+is "S7 untouched" "$(untouched)" yes
+fresh; out="$(PROCINFO_FAIL=1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
+is "S8 an unreadable process refuses, naming the check" "$(printf '%s' "$out" | grep -cx "xreview: cannot read the Codex pane w1:p2's process (herdr pane process-info); no review was started")" 1
+is "S8 untouched" "$(untouched)" yes
+fresh; printf 'codex resume %s' "$U2" > "$P/argv"
+out="$(RPC_STATUS_FAIL_FOR=$U2 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
+is "S9 an unreadable running state refuses" "$(printf '%s' "$out" | grep -cx "xreview: cannot read whether thread $U2 in the Codex pane w1:p2 is running; no review was started")" 1
+is "S9 untouched" "$(untouched)" yes
+fresh; printf 'codex resume --last' > "$P/argv"
+out="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
+is "S10 resume --last refuses" "$(printf '%s' "$out" | grep -cx 'xreview: the Codex pane w1:p2 is resuming something other than a thread id; no review was started')" 1
+is "S10 untouched" "$(untouched)" yes
+fresh; printf 'codex -m resume' > "$P/argv"
+out="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
+is "S11 a flag value 'resume' is not a resume" "$(printf '%s' "$out" | grep -c '^xr-')" 1
+fresh; bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1; : > "$CALLS"
+CODEX_CHILD=1 bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1
+is "S12 with a codex child in the group, the leader is judged: fast path" "$(called 'herdr pane send-keys')" 0
+fresh; bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1
+is "S13 the resume pins the review root with -C" "$(called "herdr pane run w1:p2 $PANE_CMD -C $CWD resume $U1")" 1
+is "S14 nothing writes a pane record" "$([ -e "$STATE/pane" ] && echo yes || echo no)" no
+# Spec §4.3/§6: daemon.pid is the third read the fast path needs; unreadable, it is no
+# observation either. Same setup as S1, which takes the fast path with it.
+fresh; bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1
+rm -f "$CODEX_HOME/app-server-daemon/daemon.pid"; : > "$CALLS"
+bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1
+is "S15 an unreadable daemon.pid is not observed: ladder, then resume" "$(resumed "$U1")" 1
+# The screen is evidence only: a failed read prints no excerpt, and costs nothing else - the
+# turn exists by then, so the nonce must still be printed.
+fresh; out="$(NO_TITLE=1 READ_FAIL=1 XREVIEW_PANE_WAIT=0.15 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
+is "S16 an unreadable screen still warns, exit 0, with the nonce" \
+   "$rc/$(printf '%s' "$out" | grep -cx 'xreview: the review is running but not shown in pane w1:p2')/$(printf '%s' "$out" | grep -c '^xr-')" "0/1/1"
+is "S16 and shows no excerpt" "$(printf '%s' "$out" | grep -c '^  | ')" 0
 
 echo "E. checkpoints and pins"
 fresh
@@ -656,8 +774,7 @@ fresh
 mkdir -p "$STATE" && printf '%s\n' "$U0" > "$STATE/thread"
 nonce="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>/dev/null)"
 is "E7 dispatch never resumes onto the legacy thread" "$(called "resume $U0")" 0
-is "E7 a fresh checkpoint thread is used instead" \
-   "$(called "herdr pane run w1:p2 .*$PANE_CMD resume $U1")" 1
+is "E7 a fresh checkpoint thread is used instead" "$(resumed "$U1")" 1
 is "E7 the checkpoint gets its own fresh thread" "$(cat "$STATE/review-thread")" "$U1"
 fresh
 mkdir -p "$STATE" && printf '%s\n' "$U0" > "$STATE/thread"
@@ -808,12 +925,13 @@ is "the tier summary counts each tier" "$(printf '%s' "$out" | grep -c 'gpt-5.6-
 is "and receipts without a tier as unrecorded" "$(printf '%s' "$out" | grep -ci unrecorded)" 1
 is "no --expect handling survives" "$(grep -c -- '--expect' "$XREVIEW")" 0
 
-echo "H. the queue-era machinery, and the pane-first race machinery, are gone"
+echo "H. the queue-era machinery, the pane-first race machinery and the pane record are gone"
 code="$(grep -v '^[[:space:]]*#' "$XREVIEW")"
 for gone in 'codex queue' 'thread_history' 'XREVIEW_THREAD_WARN' 'herdr agent list' 'sqlite3' \
-            'die_if_pane_gone'; do
+            'die_if_pane_gone' 'daemon_gen' 'pane_agent'; do
   is "no '$gone' in the code" "$(printf '%s' "$code" | grep -c -- "$gone")" 0
 done
+is "nothing reads or writes \$(state_dir)/pane (spec 2026-10-01 §4.3)" "$(grep -c 'state_dir)/pane"' "$XREVIEW")" 0
 is "no title-reset escape sequence in the code (the two-step reset is gone)" \
    "$(printf '%s' "$code" | grep -cF '2;xreview')" 0
 is "pane_prepare never calls thread-resolve any more (the thread is always already known)" \
@@ -933,6 +1051,8 @@ nonce="$(bash "$XREVIEW" dispatch --checkpoint plan "$CWD/b.md" 2>/dev/null)"
 is "Q1 the harness worktree finds its main checkout's pane" "$(printf '%s' "$nonce" | grep -c '^xr-')" 1
 is "Q1 its thread starts in the harness worktree" "$(called "xreview-rpc thread-start --cwd $H1")" 1
 is "Q1 and its state is its own" "$(cat "$(hstate "$H1")/review-thread" 2>/dev/null)" "$U1"
+is "Q1 the owner's pane resumes it with -C <harness root> (spec §6)" \
+   "$(called "herdr pane run w1:p2 $PANE_CMD -C $H1 resume $U1")" 1
 cd "$CWD" || exit 1
 git worktree add -q "$ROOT/repo-sib" -b sib
 SIB="$(git -C "$ROOT/repo-sib" rev-parse --show-toplevel)"
