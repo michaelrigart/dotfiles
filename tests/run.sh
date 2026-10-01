@@ -117,7 +117,11 @@ for f in ./*.test.sh; do
     green=$((green + p))
   else
     printf '  FAIL  %-28s %s/%s (exit=%s)%s\n' "$name" "$p" "$tot" "$rc" "$note"
-    printf '%s\n' "$out" | grep -E '^[[:space:]]*(FAIL|not ok)' | sed 's/^/          /'
+    # Each failure with up to 3 continuation lines (the suite's `| got:` detail).
+    printf '%s\n' "$out" | awk '
+      /^[[:space:]]*(FAIL|not ok)/ { print; keep = 3; next }
+      keep > 0 && /^[[:space:]]+[^[:space:]]/ && !/^[[:space:]]*(ok|PASS)([[:space:]]|:)/ { print; keep--; next }
+      { keep = 0 }' | sed 's/^/          /'
     if [ "$idiom" = kv ]; then problems+=("$name (exit=$rc)"); else problems+=("$name ($fl failed)"); fi
     red=$((red + p))
   fi

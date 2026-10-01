@@ -7,42 +7,22 @@
 set -u
 RECON="$(cd "$(dirname "$0")/.." && pwd)/.scripts/reconcile-agents.sh"
 [ -f "$RECON" ] || { echo "missing script under test: $RECON" >&2; exit 2; }
-BIN=$(mktemp -d); CFG=$(mktemp -d); CLD=$(mktemp -d)
-mkdir -p "$CFG/agents" "$CLD/plugins"
-trap 'rm -rf "$BIN" "$CFG" "$CLD"' EXIT   # clean temp dirs even on interrupt
+BIN=$(mktemp -d); CFG=$(mktemp -d); CALLS="$BIN/calls.log"
+mkdir -p "$CFG/agents"
+trap 'rm -rf "$BIN" "$CFG"' EXIT   # clean temp dirs even on interrupt
 pass=0; fail=0; OUT=""; RC=0
 
-# Claude state is read from files, not the CLI: `claude plugin list` no longer exists and
-# `marketplace list` lost --json. Scenarios below still AUTHOR the legacy CLI shapes
-# (readable, and unchanged from when this suite was written); run() materializes them into
-# the real on-disk layout under $CLD. Anything that does not convert is written through
-# verbatim so the malformed/wrong-shape scenarios still reach the schema guard.
-# The `type == "array"` guards are load-bearing. jq's map() on {} yields [] rather than
-# failing, so without them the {} rejection scenario would be converted into a valid
-# "nothing installed" state and the reconciler would reinstall every declared plugin —
-# silently deleting the very case section F exists to pin.
-materialize_claude_state() {
-  local conv
-  if conv=$(printf '%s' "$MOCK_CL_MKT" | jq -ce 'if type == "array" then (map({key: .repo, value: {source: {source: "github", repo: .repo}}}) | from_entries) else error("not-legacy") end' 2>/dev/null); then
-    printf '%s' "$conv" > "$CLD/plugins/known_marketplaces.json"
-  else
-    printf '%s' "$MOCK_CL_MKT" > "$CLD/plugins/known_marketplaces.json"
-  fi
-  if conv=$(printf '%s' "$MOCK_CL_PLUGINS" | jq -ce 'if type == "array" then {version: 2, plugins: (map({key: .id, value: [{scope: .scope}]}) | from_entries)} else error("not-legacy") end' 2>/dev/null); then
-    printf '%s' "$conv" > "$CLD/plugins/installed_plugins.json"
-    printf '%s' "$MOCK_CL_PLUGINS" | jq -c '{enabledPlugins: (map({key: .id, value: .enabled}) | from_entries)}' > "$CLD/settings.json"
-  else
-    printf '%s' "$MOCK_CL_PLUGINS" > "$CLD/plugins/installed_plugins.json"
-    printf '{}' > "$CLD/settings.json"
-  fi
-}
-
-# install/add still go through the CLI — those subcommands exist and are asserted live below.
+# Both CLIs are stubbed on PATH. The claude stub serves `plugin list --json` and
+# `plugin marketplace list --json` from MOCK_CL_PLUGINS / MOCK_CL_MKT (exit codes from
+# MOCK_CL_PLUGINS_RC / MOCK_CL_MKT_RC) and appends every add/install call to $CALLS, so
+# "no installs" is asserted on what was actually invoked, not just on log text.
 cat > "$BIN/claude" <<'STUB'
 #!/usr/bin/env bash
 case "$*" in
-  "plugin install"*)         exit "$MOCK_CL_INSTALL_RC" ;;
-  "plugin marketplace add"*) exit 0 ;;
+  "plugin marketplace list --json") printf '%s' "$MOCK_CL_MKT"; exit "$MOCK_CL_MKT_RC" ;;
+  "plugin list --json")             printf '%s' "$MOCK_CL_PLUGINS"; exit "$MOCK_CL_PLUGINS_RC" ;;
+  "plugin install"*)                echo "$*" >> "$CALLS"; exit "$MOCK_CL_INSTALL_RC" ;;
+  "plugin marketplace add"*)        echo "$*" >> "$CALLS"; exit 0 ;;
   *) exit 0 ;;
 esac
 STUB
@@ -51,8 +31,8 @@ cat > "$BIN/codex" <<'STUB'
 case "$*" in
   "plugin marketplace list --json") printf '%s' "$MOCK_CX_MKT" ;;
   "plugin list --json")             printf '%s' "$MOCK_CX_PLUGINS" ;;
-  "plugin marketplace add"*)        exit 0 ;;
-  "plugin add"*)                    exit 0 ;;
+  "plugin marketplace add"*)        echo "codex $*" >> "$CALLS"; exit 0 ;;
+  "plugin add"*)                    echo "codex $*" >> "$CALLS"; exit 0 ;;
   *) exit 0 ;;
 esac
 STUB
@@ -60,12 +40,13 @@ chmod +x "$BIN/claude" "$BIN/codex"
 
 reset_mocks() {  # sane valid-empty defaults; scenarios override specific ones
   export MOCK_CL_MKT='[]' MOCK_CL_PLUGINS='[]' MOCK_CL_INSTALL_RC=0
+  export MOCK_CL_MKT_RC=0 MOCK_CL_PLUGINS_RC=0
   export MOCK_CX_MKT='{"marketplaces":[]}' MOCK_CX_PLUGINS='{"installed":[]}'
 }
-run() {  # run <manifest> (\n allowed) ; sets $OUT and $RC
+run() {  # run <manifest> (\n allowed) ; sets $OUT and $RC; resets the call log
   printf '%b\n' "$1" > "$CFG/agents/plugins.conf"
-  materialize_claude_state
-  OUT=$(PATH="$BIN:$PATH" XDG_CONFIG_HOME="$CFG" CLAUDE_CONFIG_DIR="$CLD" /bin/bash "$RECON" 2>&1); RC=$?
+  : > "$CALLS"
+  OUT=$(CALLS="$CALLS" PATH="$BIN:$PATH" XDG_CONFIG_HOME="$CFG" /bin/bash "$RECON" 2>&1); RC=$?
 }
 _pass() { echo "  PASS: $1"; pass=$((pass + 1)); }
 _fail() { echo "  FAIL: $1"; printf '%s\n' "$OUT" | sed 's/^/    | /'; fail=$((fail + 1)); }
@@ -74,6 +55,9 @@ _fail() { echo "  FAIL: $1"; printf '%s\n' "$OUT" | sed 's/^/    | /'; fail=$((f
 _fail_live() { echo "  FAIL: $1"; fail=$((fail + 1)); }
 has()   { case "$OUT" in *"$1"*) _pass "$2" ;; *) _fail "$2" ;; esac; }
 hasnt() { case "$OUT" in *"$1"*) _fail "$2" ;; *) _pass "$2" ;; esac; }
+# called/not_called look at the add/install calls the claude stub recorded
+called()     { if grep -qF -- "$1" "$CALLS"; then _pass "$2"; else _fail "$2"; fi; }
+not_called() { if grep -qF -- "$1" "$CALLS"; then _fail "$2"; else _pass "$2"; fi; }
 rc_is() { if [ "$RC" -eq "$1" ]; then _pass "$2"; else _fail "$2"; fi; }
 
 echo "A. substring collision — declared code-review, installed only xcode-review"
@@ -81,12 +65,14 @@ reset_mocks; export MOCK_CL_PLUGINS='[{"id":"xcode-review@m","scope":"user","ena
 run "claude_plugin code-review@m"
 has "install: code-review@m" "code-review treated as MISSING (would install), not falsely present"
 has "drift"                  "xcode-review reported as drift"
+called "plugin install code-review@m --scope user" "install reached the CLI"
 
 echo "B. malformed JSON from plugin list"
 reset_mocks; export MOCK_CL_PLUGINS='not json {{{'
 run "claude_plugin foo@m"
 has   "claude plugin list: unexpected JSON shape" "block skipped on malformed JSON"
 hasnt "install: foo@m"                            "no spurious install attempted"
+not_called "plugin install"                       "no install call reached the CLI"
 rc_is 1                                           "exit status 1"
 
 echo "C. schema drift — valid JSON, wrong top-level shape"
@@ -100,12 +86,14 @@ reset_mocks; export MOCK_CL_PLUGINS='[{"id":"foo@m","scope":"user","enabled":fal
 run "claude_plugin foo@m"
 has   "disabled (left as-is): foo@m" "disabled reported"
 hasnt "install: foo@m"               "not reinstalled"
+not_called "plugin install"          "no install call reached the CLI"
 
 echo "E. failed install sets status=1"
 reset_mocks; export MOCK_CL_INSTALL_RC=1
 run "claude_plugin foo@m"
 has   "failed to install claude plugin: foo@m" "failure surfaced"
 rc_is 1                                        "exit status 1"
+called "plugin install foo@m --scope user"     "install was attempted at user scope"
 
 echo "F. schema gap — empty stdout / {} / [{}] rejected (jq exit status alone misses these)"
 reject_case() {  # reject_case <name> <json>
@@ -113,11 +101,95 @@ reject_case() {  # reject_case <name> <json>
   run "claude_plugin foo@m"
   has   "unexpected JSON shape" "$1: block skipped"
   hasnt "install: foo@m"        "$1: no spurious install"
+  not_called "plugin install"   "$1: no install call reached the CLI"
   rc_is 1                       "$1: exit 1"
 }
 reject_case "empty-stdout"          ''
 reject_case "empty-object"          '{}'
 reject_case "array-of-empty-object" '[{}]'
+reject_case "scope-null"            '[{"id":"foo@m","scope":null,"enabled":false}]'
+reject_case "enabled-string"        '[{"id":"foo@m","scope":"user","enabled":"yes"}]'
+reject_case "non-object-element"    '["foo@m"]'
+
+echo "F0. more than one top-level JSON value is rejected (jq -e judges only the last)"
+reset_mocks; export MOCK_CL_PLUGINS=$'{}\n[]'
+run "claude_plugin foo@m"
+has   "claude plugin list: unexpected JSON shape" "claude plugin list {} then []: shape warning"
+not_called "plugin install"                       "claude plugin list {} then []: nothing installed"
+rc_is 1                                           "claude plugin list {} then []: exit 1"
+reset_mocks; export MOCK_CL_MKT=$'[]\n[]'
+run "claude_marketplace owner/repo"
+has   "claude marketplace list: unexpected JSON shape" "claude marketplace list [] then []: shape warning"
+not_called "marketplace add"                           "claude marketplace list [] then []: nothing added"
+rc_is 1                                                "claude marketplace list [] then []: exit 1"
+reset_mocks; export MOCK_CX_PLUGINS=$'{}\n{"installed":[]}'
+run "codex_plugin foo@bar"
+has   "codex plugin list: unexpected JSON shape" "codex plugin list with two documents: shape warning"
+not_called "codex plugin add"                    "codex plugin list with two documents: nothing added"
+rc_is 1                                          "codex plugin list with two documents: exit 1"
+reset_mocks; export MOCK_CX_MKT=$'{}\n{"marketplaces":[]}'
+run "codex_marketplace owner/repo"
+has   "codex marketplace list: unexpected JSON shape" "codex marketplace list with two documents: shape warning"
+not_called "codex plugin marketplace add"             "codex marketplace list with two documents: nothing added"
+rc_is 1                                               "codex marketplace list with two documents: exit 1"
+
+echo "F1. marketplace .repo must be a string when present; null counts as absent"
+reset_mocks; export MOCK_CL_MKT='[{"name":"m","source":"github","repo":42}]'
+run "claude_marketplace owner/repo"
+has   "claude marketplace list: unexpected JSON shape" "repo:42 rejected"
+not_called "marketplace add"                           "repo:42: nothing added"
+rc_is 1                                                "repo:42: exit 1"
+reset_mocks; export MOCK_CL_MKT='[{"name":"m","source":"git","repo":null}]'
+run "# nothing declared"
+hasnt "unexpected JSON shape"        "repo:null tolerated"
+not_called "marketplace add"         "repo:null with nothing declared: nothing added"
+rc_is 0                              "repo:null: exit 0"
+run "claude_marketplace owner/repo"
+called "marketplace add owner/repo"  "repo:null counts as absent: a declared marketplace is still added"
+
+echo "F2. a failing or garbage CLI response is never read as none installed"
+reset_mocks; export MOCK_CL_PLUGINS='[]' MOCK_CL_PLUGINS_RC=1
+run "claude_plugin foo@m"
+has   "claude plugin list failed" "plugin list exit 1 surfaced (even with a valid-looking body)"
+not_called "plugin install"       "plugin list exit 1: nothing installed"
+rc_is 1                           "plugin list exit 1: exit status 1"
+reset_mocks; export MOCK_CL_MKT='<html>oops</html>'
+run "claude_marketplace owner/repo"
+has   "claude marketplace list: unexpected JSON shape" "garbage marketplace list rejected"
+not_called "marketplace add"                           "garbage marketplace list: nothing added"
+rc_is 1                                                "garbage marketplace list: exit status 1"
+reset_mocks; export MOCK_CL_MKT='[]' MOCK_CL_MKT_RC=1
+run "claude_marketplace owner/repo"
+has   "claude plugin marketplace list failed" "marketplace list exit 1 surfaced"
+not_called "marketplace add"                  "marketplace list exit 1: nothing added"
+rc_is 1                                       "marketplace list exit 1: exit status 1"
+reset_mocks; export MOCK_CL_MKT='{"name":"x"}'
+run "claude_marketplace owner/repo"
+has   "claude marketplace list: unexpected JSON shape" "marketplace object (not array) rejected"
+not_called "marketplace add"                           "marketplace object: nothing added"
+
+echo "F3. marketplaces — present ones are not re-added, missing ones are, non-GitHub entries tolerated"
+reset_mocks; export MOCK_CL_MKT='[{"name":"a","source":"github","repo":"owner/have"},{"name":"b","source":"git","url":"https://example.com/x.git"}]'
+run "claude_marketplace owner/have\nclaude_marketplace owner/missing"
+has   "marketplace present: owner/have"  "installed marketplace reported present"
+not_called "marketplace add owner/have"  "present marketplace not re-added"
+called "marketplace add owner/missing"   "missing marketplace added"
+rc_is 0                                  "entry without .repo does not fail the run"
+
+echo "F4. marketplaces are added before plugins are installed"
+reset_mocks
+run "claude_marketplace owner/repo\nclaude_plugin foo@mkt"
+if [ "$(sed -n 1p "$CALLS")" = "plugin marketplace add owner/repo" ] && [ "$(sed -n 2p "$CALLS")" = "plugin install foo@mkt --scope user" ]; then
+  _pass "marketplace add precedes plugin install"
+else _fail "marketplace add precedes plugin install"; fi
+
+echo "F5. present plugin is not reinstalled; missing one is"
+reset_mocks; export MOCK_CL_PLUGINS='[{"id":"have@m","version":"1","scope":"user","enabled":true,"projectEnabled":false}]'
+run "claude_plugin have@m\nclaude_plugin missing@m"
+has   "plugin present: have@m"          "installed plugin reported present"
+not_called "plugin install have@m"      "present plugin not reinstalled"
+called "plugin install missing@m"       "missing plugin installed"
+rc_is 0                                 "exit status 0"
 
 echo "G. codex marketplace — normalized exact match on the git source"
 reset_mocks; export MOCK_CX_MKT='{"marketplaces":[{"name":"agent-skills","marketplaceSource":{"source":"https://github.com/addyosmani/agent-skills.git"}}]}'
@@ -138,45 +210,22 @@ run "codex_plugin foo@bar"
 has   "codex plugin list: unexpected JSON shape" "codex [{}]-in-installed rejected"
 rc_is 1                                          "codex schema drift exit 1"
 
-echo "I. LIVE contract — the real state files and the real CLI surface"
+echo "I. LIVE contract — the real CLI surface"
 # Everything above this line is mocked, so it agrees with itself no matter what Claude Code
 # actually does. That is how `claude plugin list --json` stayed green in this suite long
 # after the subcommand was removed, while the reconciler silently reconciled nothing.
-# These assertions read the real files and the real `claude --help` output, so a schema or
-# CLI change goes RED here. Absent tooling SKIPS loudly rather than passing.
+# These assertions call the real `claude` (read-only list/help commands), so a CLI or
+# schema change goes RED here. Absent tooling SKIPS loudly rather than passing.
 _skip() { echo "  SKIP: $1"; }
-LIVE_HOME="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-LIVE_INST="$LIVE_HOME/plugins/installed_plugins.json"
-LIVE_MKT="$LIVE_HOME/plugins/known_marketplaces.json"
-
-if [ -r "$LIVE_INST" ]; then
-  ver=$(jq -r '.version // empty' "$LIVE_INST" 2>/dev/null)
-  if [ "$ver" = "2" ]; then _pass "installed_plugins.json is schema version 2 (reader is pinned to it)"
-  else _fail_live "installed_plugins.json schema version is '$ver', reader expects 2"; fi
-  if jq -e '(.plugins | type) == "object"' "$LIVE_INST" >/dev/null 2>&1; then
-    _pass "installed_plugins.json .plugins is an object keyed by plugin id"
-  else _fail_live "installed_plugins.json .plugins is not an object"; fi
-  if jq -e '[.plugins[][] | select(has("scope"))] | length > 0' "$LIVE_INST" >/dev/null 2>&1; then
-    _pass "install records carry .scope (user-scope projection depends on it)"
-  else _fail_live "install records have no .scope field"; fi
-else
-  _skip "installed_plugins.json absent — live schema unverified"
-fi
-
-if [ -r "$LIVE_MKT" ]; then
-  if jq -e 'type == "object" and (to_entries | length > 0) and all(.[]; has("source"))' "$LIVE_MKT" >/dev/null 2>&1; then
-    _pass "known_marketplaces.json is an object whose entries carry .source"
-  else _fail_live "known_marketplaces.json shape changed"; fi
-  if jq -e '[.[] | select((.source.repo? // "") != "")] | length > 0' "$LIVE_MKT" >/dev/null 2>&1; then
-    _pass "at least one marketplace exposes .source.repo (the projection field)"
-  else _fail_live "no marketplace exposes .source.repo"; fi
-else
-  _skip "known_marketplaces.json absent — live schema unverified"
-fi
-
-# The reconciler still SHELLS OUT for the mutating half. These are the only two CLI
-# surfaces it depends on; `plugin list` is deliberately not among them any more.
 if command -v claude >/dev/null 2>&1; then
+  if live=$(claude plugin list --json 2>/dev/null) \
+     && printf '%s' "$live" | jq -e 'type == "array" and all(.[]; has("id") and has("scope") and has("enabled"))' >/dev/null 2>&1; then
+    _pass "claude plugin list --json is an array of {id, scope, enabled} (the reconciler's schema)"
+  else _fail_live "claude plugin list --json failed or changed shape"; fi
+  if live=$(claude plugin marketplace list --json 2>/dev/null) \
+     && printf '%s' "$live" | jq -e 'type == "array" and all(.[]; type == "object" and has("name"))' >/dev/null 2>&1; then
+    _pass "claude plugin marketplace list --json is an array of named objects (the reconciler's schema)"
+  else _fail_live "claude plugin marketplace list --json failed or changed shape"; fi
   cl_help=$(claude plugin --help 2>&1)
   case "$cl_help" in
     *install*) _pass "claude plugin install still exists (used to add missing plugins)" ;;
@@ -194,30 +243,14 @@ else
   _skip "claude not on PATH — live CLI surface unverified"
 fi
 
-# run_fresh <manifest>: no Claude state files at all, as on a machine where Claude
-# Code has never written them. This is the clean-install case that used to abort.
-run_fresh() {
-  printf '%b\n' "$1" > "$CFG/agents/plugins.conf"
-  rm -f "$CLD/plugins/known_marketplaces.json" "$CLD/plugins/installed_plugins.json" "$CLD/settings.json"
-  OUT=$(PATH="$BIN:$PATH" XDG_CONFIG_HOME="$CFG" CLAUDE_CONFIG_DIR="$CLD" /bin/bash "$RECON" 2>&1); RC=$?
-}
-
-echo "J. fresh machine — absent state means nothing installed, not an error"
+echo "J. fresh machine — an empty [] from both queries means nothing installed"
 reset_mocks
-run_fresh "claude_marketplace owner/repo\nclaude_plugin foo@mkt"
+run "claude_marketplace owner/repo\nclaude_plugin foo@mkt"
 has   "marketplace add: owner/repo" "a declared marketplace is added on a fresh machine"
 has   "install: foo@mkt"            "a declared plugin is installed on a fresh machine"
-hasnt "not readable"                "absent state is not reported as unreadable"
+called "plugin marketplace add owner/repo"   "marketplace add reached the CLI"
+called "plugin install foo@mkt --scope user" "plugin install reached the CLI"
 rc_is 0                             "a fresh machine reconciles cleanly"
-
-echo "K. present but unreadable still fails loudly"
-reset_mocks
-run_fresh "claude_plugin foo@mkt"
-printf '{}' > "$CLD/plugins/installed_plugins.json"; chmod 000 "$CLD/plugins/installed_plugins.json"
-OUT=$(PATH="$BIN:$PATH" XDG_CONFIG_HOME="$CFG" CLAUDE_CONFIG_DIR="$CLD" /bin/bash "$RECON" 2>&1); RC=$?
-chmod 644 "$CLD/plugins/installed_plugins.json"
-has   "not readable" "an existing but unreadable file is still an error"
-rc_is 1              "unreadable state exits 1"
 
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

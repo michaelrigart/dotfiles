@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Feeds fixtures through dot_codex/modify_private_config.toml and asserts the emitted
 # config. Unlike the Claude settings script this one is a chezmoi *template*, not a
-# plain filter, so it is exercised with `chezmoi execute-template --init` and the
-# fixture piped in as stdin.
+# plain filter, so it is exercised with `chezmoi execute-template` and the fixture piped
+# in as stdin. That runs hermetically, with the suite's own config, state and source and
+# never the live ones: the live chezmoi.toml, persistent state and shared main checkout
+# change under the suite (`chezmoi init`, branch switches), and the template reads only
+# .chezmoi.homeDir and .chezmoi.stdin, so it needs none of them.
 #
 # The split this pins: Codex writes this file at runtime (model, effort, plugins,
 # marketplaces, project trust), so anything the template does NOT enforce must survive
@@ -19,13 +22,23 @@ HOOKS_TPL="$SRC/dot_codex/modify_private_hooks.json"
 [ -f "$HOOKS_TPL" ] || { echo "missing template: $HOOKS_TPL" >&2; exit 1; }
 command -v chezmoi >/dev/null 2>&1 || { echo "chezmoi not on PATH" >&2; exit 1; }
 
+T="$(mktemp -d "${TMPDIR:-/tmp}/codex-config.XXXXXX")"
+trap 'rm -rf "$T"' EXIT
+CFG="$T/chezmoi.toml"
+STATE="$T/chezmoistate.boltdb"
+printf '[template]\n  options = ["missingkey=error"]\n' > "$CFG"
+
 pass=0; fail=0; OUT=""
 
 _pass() { echo "  PASS: $1"; pass=$((pass + 1)); }
 _fail() { echo "  FAIL: $1"; printf '    | got: %s\n' "$2"; fail=$((fail + 1)); }
 
 # --with-stdin is what populates .chezmoi.stdin, the live file the modify_ template parses.
-emit() { OUT=$(printf '%s' "$1" | chezmoi execute-template --with-stdin --file "$TPL" 2>&1); }
+emit() {
+  OUT=$(printf '%s' "$1" | chezmoi --config "$CFG" --config-format toml \
+    --persistent-state "$STATE" --source "$SRC" --destination "$HOME" \
+    execute-template --with-stdin --file "$TPL" 2>&1)
+}
 
 # has <regex> <label> — the emitted TOML must contain it
 has() {
@@ -38,7 +51,7 @@ hasnt() {
 }
 
 emit_hooks() {
-  OUT=$(printf '%s' "$1" | chezmoi --config /dev/null --config-format toml \
+  OUT=$(printf '%s' "$1" | chezmoi --config "$CFG" --config-format toml --persistent-state "$STATE" \
     --source "$SRC" --destination "$HOME" execute-template --with-stdin --file "$HOOKS_TPL" 2>&1)
 }
 
@@ -198,7 +211,7 @@ else
   _fail "re-rendering hooks.json is semantically idempotent" "second render differs"
 fi
 
-if printf '{broken' | chezmoi --config /dev/null --config-format toml \
+if printf '{broken' | chezmoi --config "$CFG" --config-format toml --persistent-state "$STATE" \
     --source "$SRC" --destination "$HOME" execute-template --with-stdin --file "$HOOKS_TPL" \
     >/dev/null 2>&1; then
   _fail "invalid hooks.json is rejected" "template accepted malformed JSON"
@@ -207,7 +220,7 @@ else
 fi
 
 echo "J. every Codex integration target is managed by chezmoi"
-managed=$(chezmoi --source "$SRC" managed 2>/dev/null)
+managed=$(chezmoi --config "$CFG" --config-format toml --persistent-state "$STATE" --source "$SRC" --destination "$HOME" managed 2>/dev/null)
 for target in .codex/config.toml .codex/herdr-agent-state.sh .codex/hooks.json .codex/herdr-codex-pane-map.py; do
   case "$managed" in
     *"$target"*) _pass "$target is chezmoi-managed" ;;
