@@ -27,4 +27,4 @@ alias lt='eza --tree --level=2 --long --icons --git'
 alias lta='lt -a'
 
 # Start Cloud-code in Second Brain
-alias brain='cd /Users/michael/Library/Mobile\ Documents/iCloud\~md\~obsidian/Documents/MSB/ && claude'
+alias brain='cd $HOME/Library/Mobile\ Documents/iCloud\~md\~obsidian/Documents/MSB/ && claude'
