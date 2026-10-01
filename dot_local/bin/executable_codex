@@ -41,8 +41,10 @@ PASSTHROUGH=" exec e review login logout mcp plugin app-server remote-control ap
 
 # thread_mode <id>: the sandbox (and approval policy, when it is a plain string) that the
 # thread's LAST turn ran with, from its rollout (spec 2026-10-01 §4.7, G5): "read-only never",
-# "read-only", "workspace-write on-request", ... Nothing for anything that is not a plain
-# thread id, a thread with no rollout, or no jq.
+# "read-only", "workspace-write on-request", ... When sandbox_policy is missing or not an
+# object it prints the approval policy alone ("never"); the caller matches only the read-only
+# forms, so that never narrows anything. Nothing for anything that is not a plain thread id,
+# a thread with no rollout, or no jq.
 thread_mode() {
   case "$1" in ''|*[!0-9a-f-]*) return 0 ;; esac
   [ "${#1}" -eq 36 ] || return 0

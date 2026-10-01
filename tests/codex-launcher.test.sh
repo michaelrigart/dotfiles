@@ -249,7 +249,7 @@ is "O29 an unreadable rollout is untouched" "$(runj resume $UNR)" "REAL resume $
 chmod 644 "$R/rollout-2026-10-01T10-00-05-$UNR.jsonl"
 # No jq on PATH: only the tools the launcher itself needs, symlinked from /usr/bin.
 mkdir -p "$T/nojq"
-for t in find sort tail grep dirname cat; do ln -sf "/usr/bin/$t" "$T/nojq/$t"; done
+for t in find sort tail grep dirname; do ln -sf "/usr/bin/$t" "$T/nojq/$t"; done
 is "O30 without jq the resume is untouched" \
    "$(PATH="$T/localbin:$T/nojq:/bin" XDG_BIN_HOME="$T/localbin" sh "$T/localbin/codex" resume $RO 2>"$T/err")" "REAL resume $RO"
 unset CODEX_HOME
