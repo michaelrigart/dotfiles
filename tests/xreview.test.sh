@@ -907,6 +907,8 @@ fresh; rm -rf "$(hstate "$H2")"; export PANE_CWD="$SIB"
 cd "$H2" || exit 1
 nonce="$(bash "$XREVIEW" dispatch --checkpoint plan "$CWD/b.md" 2>/dev/null)"
 is "Q2 a harness worktree inside a wt sibling finds the sibling's pane" "$(printf '%s' "$nonce" | grep -c '^xr-')" 1
+is "Q2 its thread starts in that harness worktree" "$(called "xreview-rpc thread-start --cwd $H2")" 1
+is "Q2 and its state is its own" "$(cat "$(hstate "$H2")/review-thread" 2>/dev/null)" "$U1"
 fresh; rm -rf "$(hstate "$SIB")"     # the pane's cwd is the main checkout again
 cd "$SIB" || exit 1
 out="$(bash "$XREVIEW" dispatch --checkpoint plan "$CWD/b.md" 2>&1)"
@@ -917,8 +919,44 @@ fresh; export PANE_CWD="$H1"     # the owner's TUI reports a harness worktree as
 nonce="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>/dev/null)"
 is "Q4 the owner's pane is still found" "$(printf '%s' "$nonce" | grep -c '^xr-')" 1
 unset PANE_CWD
-git worktree remove --force "$H2"; git worktree remove --force "$SIB"; git worktree remove --force "$H1"
-git branch -q -D h1 h2 sib
+echo "Q5. the longest registered holder wins"
+git -C "$H1" worktree add -q "$H1/.claude/worktrees/h3" -b h3
+H3="$(git -C "$H1/.claude/worktrees/h3" rev-parse --show-toplevel)"
+fresh; rm -rf "$(hstate "$H3")"; export PANE_CWD="$H1"
+cd "$H3" || exit 1
+nonce="$(bash "$XREVIEW" dispatch --checkpoint plan "$CWD/b.md" 2>/dev/null)"
+is "Q5 a nested harness worktree finds the pane of the worktree that holds it" "$(printf '%s' "$nonce" | grep -c '^xr-')" 1
+fresh; rm -rf "$(hstate "$H3")"     # the pane's cwd is the main checkout
+out="$(bash "$XREVIEW" dispatch --checkpoint plan "$CWD/b.md" 2>&1)"
+is "Q5 and never the main checkout's pane" "$(printf '%s' "$out" | grep -c "no Codex pane for $H1")" 1
+is "Q5 untouched" "$(untouched)" yes
+cd "$CWD" || exit 1
+
+echo "Q6. a pane without a usable cwd, or under a look-alike directory, never breaks or wins the search"
+fresh
+export EXTRA_PANES=',{"agent":"codex","agent_status":"idle","pane_id":"w8:p2","terminal_title":"x"},{"agent":"codex","agent_status":"idle","cwd":null,"pane_id":"w8:p3","terminal_title":"x"}'
+nonce="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>/dev/null)"
+is "Q6 Codex panes with no cwd or a null cwd do not stop the search" "$(printf '%s' "$nonce" | grep -c '^xr-')" 1
+fresh; export PANE_CWD="$ROOT/elsewhere"
+export EXTRA_PANES=",{\"agent\":\"codex\",\"agent_status\":\"idle\",\"cwd\":\"$CWD/.claude/worktreesX\",\"pane_id\":\"w8:p4\",\"terminal_title\":\"x\"}"
+out="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
+is "Q6 a pane under .claude/worktreesX is not the owner's" "$(printf '%s' "$out" | grep -c "no Codex pane for $CWD")" 1
+is "Q6 untouched" "$(untouched)" yes
+
+echo "Q7. a bare init from a harness worktree refuses; an explicit id still pins"
+fresh; rm -rf "$(hstate "$H1")"
+cd "$H1" || exit 1
+out="$(bash "$XREVIEW" init 2>&1)"; rc=$?
+is "Q7 a bare init refuses" "$rc" 1
+is "Q7 naming the pane's owner" "$(printf '%s' "$out" | grep -c "the Codex pane belongs to $CWD; pass a thread id: xreview init <thread-id>")" 1
+is "Q7 and pins nothing" "$([ -e "$(hstate "$H1")/pin" ] && echo yes || echo no)" no
+bash "$XREVIEW" init "$U0" >/dev/null 2>&1
+is "Q7 init with an id pins it in the worktree's own state" "$(cat "$(hstate "$H1")/pin" 2>/dev/null)" "$U0"
+rm -rf "$(hstate "$H1")"
+cd "$CWD" || exit 1
+fresh
+git worktree remove --force "$H3"; git worktree remove --force "$H2"; git worktree remove --force "$SIB"; git worktree remove --force "$H1"
+git branch -q -D h1 h2 h3 sib
 
 echo "K. a comma-decimal locale does not break the ctrl+c gap or the poll wait (I-2)"
 fresh

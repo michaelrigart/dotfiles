@@ -81,7 +81,7 @@ find_pane() {
   snap="$(herdr pane list 2>/dev/null || true)"
   [ -n "$snap" ] || die "cannot list herdr panes - is herdr running?"
   ids="$(printf '%s' "$snap" | jq -r --arg cwd "$root" \
-    '.result.panes[]? | select(.agent == "codex" and (.cwd == $cwd or (.cwd | startswith($cwd + "/.claude/worktrees/")))) | .pane_id' 2>/dev/null)" \
+    '.result.panes[]? | select(.agent == "codex" and ((.cwd | type) == "string") and (.cwd == $cwd or (.cwd | startswith($cwd + "/.claude/worktrees/")))) | .pane_id' 2>/dev/null)" \
     || die "cannot read herdr's pane list"
   # XREVIEW_PANE picks AMONG the valid Codex panes for this root; it does not replace
   # validation. A typo or a stale id pointing at some other pane (the idle Claude Code
@@ -350,10 +350,14 @@ cmd_thread() {
 # A pin is an instruction, not a cache entry: it outranks the checkpoint thread and is never
 # archived. `xreview round --reset` drops it. Without an id, the pane's current thread.
 cmd_init() {
-  local dir id prefix pane
+  local dir id prefix pane root proot
   dir="$(state_dir)"
   id="${1:-}"
   if [ -z "$id" ]; then
+    # A harness worktree shares its owner's pane, whose thread belongs to the owner: pinning
+    # it here would bind the wrong review to this worktree's state (spec 2026-10-01 §4.2).
+    root="$(repo_root)"; proot="$(pane_root)"
+    [ "$proot" = "$root" ] || die "the Codex pane belongs to $proot; pass a thread id: xreview init <thread-id>"
     # find_pane is its own top-level assignment, not nested inside another command
     # substitution: a "no Codex pane" die() there must be the ONE error printed, not
     # swallowed by the outer call and followed by a second, misleading message here.
