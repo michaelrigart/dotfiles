@@ -119,20 +119,30 @@ pane_title_id() { # the thread id PREFIX at the start of the pane's title, if an
   title_id_from "$(pane_field "$1" '(.terminal_title_stripped // .terminal_title)')"
 }
 
-pane_raw_title() { # pane_raw_title <pane>: prints the raw title text on a genuinely
-  # successful, non-empty read (exit 0). Exit 1: the READ ITSELF failed (herdr errored or
-  # produced no output) - never an observation of anything (I-1): pane_prepare's wait loop
-  # must not read a transient herdr hiccup as "the title does not show the thread yet" and
-  # let it count against the wait. herdr can also exit 0 with an `{"error":…}` envelope or
-  # output that is not a pane at all; that too is a failed read (exit 1), never an empty
-  # title. Exit 2: the read SUCCEEDED and returned a pane, but its title reads back empty -
-  # a real observation, distinct from exit 1. pane_prepare treats 1 and 2 alike (both mean
-  # "no thread id yet"; only exit 1 additionally checks pane_gone).
-  local pane="$1" out rc=0 title
-  out="$(herdr pane get "$pane" 2>/dev/null)" || rc=$?
+pane_obj() { # pane_obj <pane>: herdr's pane object, as compact JSON, on a genuinely successful
+  # read (exit 0). Exit 1: the READ ITSELF failed - herdr errored or printed nothing, or it
+  # exited 0 with an `{"error":…}` envelope or anything else that is not a pane. A failed
+  # read is never an observation of anything (I-1).
+  local out rc=0
+  out="$(herdr pane get "$1" 2>/dev/null)" || rc=$?
   [ "$rc" -eq 0 ] && [ -n "$out" ] || return 1
-  printf '%s' "$out" | jq -e '.result.pane | type == "object"' >/dev/null 2>&1 || return 1
-  title="$(printf '%s' "$out" | jq -r '.result.pane | (.terminal_title_stripped // .terminal_title) // empty' 2>/dev/null)"
+  printf '%s' "$out" | jq -ce '.result.pane | objects' 2>/dev/null || return 1
+}
+
+title_of() { # title_of <pane-json>: the pane's raw title text, or nothing
+  printf '%s' "$1" | jq -r '(.terminal_title_stripped // .terminal_title) // empty' 2>/dev/null
+}
+
+pane_raw_title() { # pane_raw_title <pane>: prints the raw title text on a genuinely
+  # successful, non-empty read (exit 0). Exit 1: the READ ITSELF failed (pane_obj) - never an
+  # observation of anything (I-1): pane_resume's wait loop must not read a transient herdr
+  # hiccup as "the title does not show the thread yet" and let it count against the wait.
+  # Exit 2: the read SUCCEEDED and returned a pane, but its title reads back empty - a real
+  # observation, distinct from exit 1. The wait loop treats 1 and 2 alike (both mean "no
+  # thread id yet"; only exit 1 additionally checks pane_gone).
+  local obj title
+  obj="$(pane_obj "$1")" || return 1
+  title="$(title_of "$obj")"
   [ -n "$title" ] || return 2
   printf '%s\n' "$title"
 }
@@ -150,14 +160,17 @@ pane_gone() { # pane_gone <pane>: true (exit 0) when herdr reports the pane clos
 
 # --- observing the pane's process (spec 2026-10-01 §4.3/§4.4; G1, G3) -------------------
 pane_proc() { # pane_proc <pane>: herdr's process info for the pane, as compact JSON, on a
-  # genuinely successful read; exit 1 on any failure, which is never an observation. A
-  # foreground process that is not an object is a failed read too, so nothing downstream
-  # ever has to parse one.
+  # genuinely successful read; exit 1 on any failure, which is never an observation. Every
+  # foreground process must be fully described - an object with a name and a non-empty argv
+  # - or the read failed too: a Codex process without them would be passed over by the
+  # guard, which could then never check the thread it resumes.
   local out
   out="$(herdr pane process-info --pane "$1" 2>/dev/null)" || return 1
   printf '%s' "$out" | jq -e '.result.process_info
     | (.shell_pid | type == "number")
-      and (.foreground_processes | type == "array" and all(type == "object"))' >/dev/null 2>&1 || return 1
+      and (.foreground_processes | type == "array"
+           and all(type == "object" and (.name | type == "string")
+                   and (.argv | type == "array" and length > 0)))' >/dev/null 2>&1 || return 1
   printf '%s' "$out" | jq -c '.result.process_info'
 }
 
@@ -174,7 +187,9 @@ proc_freed() { # proc_freed <proc-json>: the pane's shell is back in the foregro
 
 resume_target() { # resume_target <codex-proc-json>: the thread id this Codex process resumes.
   # Nothing for one that resumes nothing (a fresh session, a fork). Exit 1 for one that
-  # resumes something other than a plain thread id (`resume --last`, a picker, a name).
+  # resumes something other than a plain thread id (`resume --last`, a picker, a name), and
+  # for any argv it cannot read for certain: `resume` after another positional (the value of
+  # a flag this list does not know, say), or anything after the id (a prompt).
   # Values of the value-taking flags are skipped, so `codex -m resume` is no resume.
   local r
   r="$(printf '%s' "$1" | jq -r '
@@ -187,8 +202,9 @@ resume_target() { # resume_target <codex-proc-json>: the thread id this Codex pr
         elif ($vf | index([$a[$i]])) then .skip = true
         elif ($a[$i] | startswith("-")) then .
         else .pos += [$a[$i]] end)).pos as $p
-    | if ($p[0] // "") != "resume" then "none"
-      elif (($p[1] // "") | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")) then "id " + $p[1]
+    | if ($p | any(. == "resume")) | not then "none"
+      elif $p[0] == "resume" and ($p | length) == 2
+           and ($p[1] | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")) then "id " + $p[1]
       else "bad" end' 2>/dev/null)" || return 1
   case "$r" in
     none) return 0 ;;
@@ -229,17 +245,28 @@ thread_state_or_die() { # thread_state_or_die <pane> <thread>: die if <thread> i
 # pre-session screen has no title yet) must be known not to be running a turn. herdr's
 # agent field never substitutes for an unreadable process.
 pane_guard() {
-  local pane="$1" proc="$2" status prefix t codex target
-  status="$(pane_field "$pane" '.agent_status')"
+  local pane="$1" proc="$2" obj status prefix t rrc=0 codex target
+  # One successful read serves both the status and the title: a read that fails is a check
+  # that could not be completed, never an idle pane or an empty title.
+  obj="$(pane_obj "$pane")" \
+    || die "cannot read the Codex pane $pane (herdr pane get); no review was started"
+  status="$(printf '%s' "$obj" | jq -r '.agent_status // empty' 2>/dev/null)"
   case "$status" in
     working|blocked) die "the Codex pane $pane is mid-turn; wait for it to finish, then dispatch again" ;;
   esac
-  # A title prefix that does not resolve names no loaded thread, so nothing of it can be
-  # running: it does not block (unchanged).
-  prefix="$(pane_title_id "$pane")"
+  # The title only ever carries a prefix (F11/F21). Resolve exit 1 - no loaded thread starts
+  # with it (or several do) - does not block, as before. Any other failure means the daemon
+  # could not be asked, and that refuses.
+  prefix="$(title_id_from "$(title_of "$obj")")"
   if [ -n "$prefix" ]; then
-    t="$(xreview-rpc thread-resolve --prefix "$prefix" 2>/dev/null)" || t=""
-    [ -z "$t" ] || thread_state_or_die "$pane" "$t"
+    t="$(xreview-rpc thread-resolve --prefix "$prefix" 2>/dev/null)" || rrc=$?
+    case "$rrc" in
+      0) is_safe_id "$t" \
+           || die "cannot read whether thread $prefix in the Codex pane $pane is running; no review was started"
+         thread_state_or_die "$pane" "$t" ;;
+      1) ;;
+      *) die "cannot read whether thread $prefix in the Codex pane $pane is running; no review was started" ;;
+    esac
   fi
   codex="$(proc_codex "$proc")"
   if [ -n "$codex" ]; then
@@ -250,17 +277,18 @@ pane_guard() {
 }
 
 # --- the screen, as evidence (spec 2026-10-01 §4.6) ---------------------------------------
-pane_screen() { # pane_screen <pane>: the pane's visible screen, at most 12 lines and 1,000
-  # bytes, control characters stripped, trailing blank lines dropped, each line indented
+pane_screen() { # pane_screen <pane>: the bottom of the pane's visible screen - its last 12
+  # lines, and of those the last 1,000 bytes, since the bottom rows hold the prompt that is
+  # waiting - control characters stripped, trailing blank lines dropped, each line indented
   # under the message. Prints nothing when the read fails. Untrusted text: evidence only.
   local out
   out="$(herdr pane read "$1" --source visible --lines 12 --format text 2>/dev/null)" || return 0
-  # The prefix is added by awk, never sed: `head -c` can cut the last line short, and awk
-  # still ends every line it prints with a newline, so whatever follows on stdout or stderr
-  # (the nonce, under 2>&1) starts on a line of its own.
+  # `tail -c` can cut the first kept line short. The prefix is added by awk, which ends every
+  # line it prints with a newline, so whatever follows on stdout or stderr (the nonce, under
+  # 2>&1) always starts on a line of its own.
   { printf '%s\n' "$out" | LC_ALL=C tr -d '\000-\010\013-\037\177' \
       | awk '{ l[NR] = $0 } NF { last = NR } END { for (i = 1; i <= last; i++) print l[i] }' \
-      | tail -n 12 | head -c 1000 | awk '{ print "  | " $0 }'; } || true
+      | tail -n 12 | tail -c 1000 | awk '{ print "  | " $0 }'; } || true
 }
 
 die_with_screen() { # die_with_screen <pane> <message>: die, then show the pane's screen

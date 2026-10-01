@@ -95,6 +95,12 @@ case "$1 $2" in
       echo '{"error":{"code":"pane_not_found","message":"pane w1:p2 not found"},"id":"cli:pane:get"}' >&2
       exit 1
     fi
+    # GET_FAIL: a read that fails without the pane being gone - herdr exiting nonzero
+    # (exit), or exiting 0 with an error envelope (envelope).
+    case "${GET_FAIL:-}" in
+      exit) exit 1 ;;
+      envelope) echo '{"error":{"code":"internal","message":"boom"},"id":"cli:pane:get"}'; exit 0 ;;
+    esac
     printf '{"result":{"pane":%s}}\n' "$(pane_json)" ;;
   "pane process-info")
     [ -n "${PROCINFO_FAIL:-}" ] && exit 1
@@ -107,12 +113,21 @@ case "$1 $2" in
     fi
     # A running TUI is the foreground group's leader, pid 4242, with the argv it was started
     # with ($P/argv, or the pane command). CODEX_CHILD puts a codex child in its group, listed
-    # first. A pane without one is its shell, pid 4241, in the foreground (G1).
+    # first. PROCINFO_BAD describes the TUI incompletely: argv empty, null or missing, or no
+    # name. A pane without a TUI is its shell, pid 4241, in the foreground (G1).
     if [ "$(agent_now)" = codex ]; then
       argv="$(cat "$P/argv" 2>/dev/null || printf 'codex --sandbox read-only --ask-for-approval never')"
+      argv="$(printf '%s' "$argv" | jq -R -c 'split(" ")')"
+      case "${PROCINFO_BAD:-}" in
+        argv-empty)   fields='"argv":[],"name":"codex"' ;;
+        argv-null)    fields='"argv":null,"name":"codex"' ;;
+        argv-missing) fields='"name":"codex"' ;;
+        name-missing) fields="\"argv\":$argv" ;;
+        *)            fields="\"argv\":$argv,\"name\":\"codex\"" ;;
+      esac
       extra=""; [ -n "${CODEX_CHILD:-}" ] && extra=',{"argv":["codex","app-server"],"name":"codex","pid":4243}'
-      printf '{"result":{"process_info":{"foreground_process_group_id":4242,"foreground_processes":[%s{"argv":%s,"name":"codex","pid":4242}],"pane_id":"w1:p2","shell_pid":4241}}}\n' \
-        "${extra:+${extra#,},}" "$(printf '%s' "$argv" | jq -R -c 'split(" ")')"
+      printf '{"result":{"process_info":{"foreground_process_group_id":4242,"foreground_processes":[%s{%s,"pid":4242}],"pane_id":"w1:p2","shell_pid":4241}}}\n' \
+        "${extra:+${extra#,},}" "$fields"
     else
       printf '{"result":{"process_info":{"foreground_process_group_id":4241,"foreground_processes":[{"argv":["-zsh"],"name":"zsh","pid":4241}],"pane_id":"w1:p2","shell_pid":4241}}}\n'
     fi ;;
@@ -165,12 +180,18 @@ esac
 D
 # The daemon (pid 999, from fresh's daemon.pid) owns two unix sockets. The pane's TUI (4242)
 # holds a peer on one of them while $P/connected exists, and a peer elsewhere otherwise (G3).
+# It answers only a call that passes both -a and -U: without -a, lsof ORs its selections
+# (every unix socket on the machine, or every file of the pid), and without -U it lists
+# every file type. Either is a mis-call, answered with nothing.
 cat > "$STUB/lsof" <<'L'
 #!/bin/sh
 printf 'lsof %s\n' "$*" >> "$CALLS"
 [ -n "${LSOF_FAIL:-}" ] && exit 1
-pid=""; field=""
-while [ "$#" -gt 0 ]; do case "$1" in -p) pid="$2"; shift ;; -F) field="$2"; shift ;; esac; shift; done
+pid=""; field=""; and=""; unix=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in -a) and=1 ;; -U) unix=1 ;; -p) pid="$2"; shift ;; -F) field="$2"; shift ;; esac; shift
+done
+[ -n "$and" ] && [ -n "$unix" ] || exit 0
 case "$pid/$field" in
   999/d)  printf 'p999\nf10\nd0xdaemon1\nf11\nd0xdaemon2\n' ;;
   4242/n) if [ -e "$P/connected" ]; then printf 'p4242\nf5\nn->0xdaemon2\n'; else printf 'p4242\nf5\nn->0xelsewhere\n'; fi ;;
@@ -193,6 +214,8 @@ case "$cmd" in
   thread-start) [ -n "${RPC_START_THREAD_FAIL:-}" ] && exit 1
                 echo "$NEW_UUID" ;;
   thread-resolve)
+    # RPC_RESOLVE_RC=<n>: the resolver exits n (5: daemon unreachable, 2: usage, 1: no match).
+    [ -n "${RPC_RESOLVE_RC:-}" ] && exit "$RPC_RESOLVE_RC"
     for u in "$U0" "$U1" "$U2"; do
       case "$u" in "$prefix"*) echo "$u"; exit 0 ;; esac
     done
@@ -236,7 +259,7 @@ fresh() { # a pane showing U0, idle, its TUI not connected to the daemon; clean 
         RELIVE_DURING_TURN RPC_SWITCH_BRANCH_TO RPC_SWITCH_BRANCH_EARLY \
         KEY_DELAY DISPATCH_ID XREVIEW_LOCK_WAIT RPC_RUNNING_AFTER_START \
         PROCINFO_FAIL PRESESSION GONE_AFTER_KEYS GONE_AFTER_RUN LSOF_FAIL READ_FAIL \
-        RPC_STATUS_FAIL_FOR CODEX_CHILD XREVIEW_RUNG_WAIT
+        RPC_STATUS_FAIL_FOR CODEX_CHILD XREVIEW_RUNG_WAIT GET_FAIL PROCINFO_BAD RPC_RESOLVE_RC
   export NEW_UUID="$U1"
   printf codex > "$P/agent"; printf '%s | t | d' "$(trunc "$U0")" > "$P/title"; echo idle > "$P/status"
   echo 0 > "$P/ctrlc"
@@ -680,17 +703,30 @@ is "S5 with the exact line" "$(printf '%s' "$out" | grep -cx 'xreview: the Codex
 is "S5 then the screen, indented" "$(printf '%s' "$out" | grep -cx '  | Update available! 0.160.0')" 1
 is "S5 with escapes stripped" "$(printf '%s' "$out" | grep -c "$(printf '\033')")" 0
 is "S5 no turn" "$(called 'xreview-rpc turn-start')" 0
-fresh; { for _ in $(seq 30); do printf 'line\n'; done; head -c 3000 /dev/zero | tr '\0' x; printf '\n'; } > "$P/screen"
+# S6: 30 rows of 97 characters, so the last 12 rows (1,176 bytes) are over the byte cap. The
+# excerpt keeps the bottom: the last 1,000 bytes are rows 21-30 whole, after the tail of row 20.
+x90="$(head -c 90 /dev/zero | tr '\0' x)"
+fresh; for i in $(seq -w 1 30); do printf 'row %s %s\n' "$i" "$x90"; done > "$P/screen"
 out="$(NO_TITLE=1 XREVIEW_PANE_WAIT=0.15 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
 is "S6 a resume that does not confirm keeps the exact warning" \
    "$(printf '%s' "$out" | grep -cx 'xreview: the review is running but not shown in pane w1:p2')" 1
-is "S6 the excerpt is at most 12 lines" "$(printf '%s' "$out" | grep -c '^  | ')" 12
+is "S6 the excerpt ends with the screen's final row, whole" "$(printf '%s' "$out" | grep '^  | ' | tail -1)" "  | row 30 $x90"
+is "S6 and the byte cap cut the top of the last 12 rows, not the bottom" \
+   "$(printf '%s' "$out" | grep -c '^  | row 19 ')/$(printf '%s' "$out" | grep -c '^  | row 21 ')" "0/1"
+is "S6 the excerpt is at most 12 lines" \
+   "$(printf '%s' "$out" | grep -c '^  | ' | awk '{print ($1 >= 1 && $1 <= 12) ? "yes" : "no ("$1")"}')" yes
 is "S6 and at most 1,000 bytes of screen" "$(printf '%s' "$out" | grep '^  | ' | sed 's/^  | //' | tr -d '\n' | wc -c | tr -d ' ')" \
    "$(printf '%s' "$out" | grep '^  | ' | sed 's/^  | //' | tr -d '\n' | wc -c | awk '{print ($1 <= 1000) ? $1 : "over"}')"
 is "S6 and the nonce is still printed, on a line of its own" "$(printf '%s' "$out" | grep -c '^xr-')" 1
 is "S6 the excerpt's last line is complete (ends in a newline)" \
    "$(printf '%s' "$out" | grep '^  | ' | tail -1 | grep -c 'xr-')" 0
 is "S6 and no key reaches the pane after the turn" "$(none_after 'xreview-rpc turn-start' 'herdr pane send-keys')" 0
+# S6b: short rows, so the 12-line cap is the one that binds; trailing blank rows are dropped first.
+fresh; { for i in $(seq -w 1 30); do printf 'line %s\n' "$i"; done; printf '\n   \n\n'; } > "$P/screen"
+out="$(NO_TITLE=1 XREVIEW_PANE_WAIT=0.15 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
+is "S6b a short screen shows exactly its last 12 rows" "$(printf '%s' "$out" | grep -c '^  | ')" 12
+is "S6b from row 19 to the final row, trailing blank rows dropped" \
+   "$(printf '%s' "$out" | grep '^  | ' | sed -n '1p;$p' | tr '\n' '/')" "  | line 19/  | line 30/"
 fresh; printf 'codex resume %s' "$U2" > "$P/argv"; : > "$P/title"
 out="$(RPC_THREAD_RUNNING_FOR=$U2 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
 is "S7 a pane resuming a running thread refuses as mid-turn" "$(printf '%s' "$out" | grep -c "thread $U2 is mid-turn")" 1
@@ -727,6 +763,49 @@ fresh; out="$(NO_TITLE=1 READ_FAIL=1 XREVIEW_PANE_WAIT=0.15 bash "$XREVIEW" disp
 is "S16 an unreadable screen still warns, exit 0, with the nonce" \
    "$rc/$(printf '%s' "$out" | grep -cx 'xreview: the review is running but not shown in pane w1:p2')/$(printf '%s' "$out" | grep -c '^xr-')" "0/1/1"
 is "S16 and shows no excerpt" "$(printf '%s' "$out" | grep -c '^  | ')" 0
+# The three-pair cap, with a bound far beyond three short rungs: the cap ends the ladder.
+fresh
+out="$(STUCK_TUI=1 XREVIEW_POLL_SECS=0.05 XREVIEW_RUNG_WAIT=0.1 XREVIEW_PANE_WAIT=10 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
+is "S17 a pane that never quits gets exactly three ctrl+c pairs" "$(called 'herdr pane send-keys')" 6
+is "S17 then refuses with the exact line" \
+   "$rc/$(printf '%s' "$out" | grep -cx 'xreview: the Codex pane w1:p2 did not exit its session within 10s; no review was started')" "1/1"
+is "S17 no turn" "$(called 'xreview-rpc turn-start')" 0
+# An argv the guard cannot read for certain refuses; one it can still reads as before.
+for case_argv in "codex --newflag v resume $U2" "codex resume $U2 prompt"; do
+  fresh; printf '%s' "$case_argv" > "$P/argv"
+  out="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
+  is "S18 '$case_argv' refuses" \
+     "$(printf '%s' "$out" | grep -cx 'xreview: the Codex pane w1:p2 is resuming something other than a thread id; no review was started')" 1
+  is "S18 '$case_argv': untouched" "$(untouched)" yes
+done
+fresh; printf 'codex fork %s' "$U2" > "$P/argv"
+out="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
+is "S19 a fork is no resume: the dispatch proceeds" "$(printf '%s' "$out" | grep -c '^xr-')" 1
+# The title check fails closed: a pane read that fails, or a resolver that cannot reach the
+# daemon, refuses before any keystroke. A prefix that resolves to nothing still does not block.
+for how in exit envelope; do
+  fresh; out="$(GET_FAIL=$how bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
+  is "S20 a failed pane read ($how) refuses, naming the check" \
+     "$(printf '%s' "$out" | grep -cx 'xreview: cannot read the Codex pane w1:p2 (herdr pane get); no review was started')" 1
+  is "S20 $how: untouched" "$(untouched)" yes
+done
+P29="$(printf '%s' "$U0" | cut -c1-29)"   # the prefix the pane's title shows
+for rrc in 5 2; do
+  fresh; out="$(RPC_RESOLVE_RC=$rrc bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
+  is "S21 a resolver exiting $rrc refuses, naming the prefix" \
+     "$(printf '%s' "$out" | grep -cx "xreview: cannot read whether thread $P29 in the Codex pane w1:p2 is running; no review was started")" 1
+  is "S21 exit $rrc: untouched" "$(untouched)" yes
+done
+fresh; out="$(RPC_RESOLVE_RC=1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
+is "S21 a resolver exiting 1 (no such thread) does not block" "$(printf '%s' "$out" | grep -c '^xr-')" 1
+# A Codex process that is not fully described is no observation: before the ladder, the
+# process-info refusal.
+for bad in argv-empty argv-null argv-missing name-missing; do
+  fresh; out="$(PROCINFO_BAD=$bad bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
+  is "S22 a Codex process with $bad refuses as unreadable" \
+     "$(printf '%s' "$out" | grep -cx "xreview: cannot read the Codex pane w1:p2's process (herdr pane process-info); no review was started")" 1
+  is "S22 $bad: untouched" "$(untouched)" yes
+done
 
 echo "E. checkpoints and pins"
 fresh
