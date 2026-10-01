@@ -66,8 +66,8 @@ before any task: section numbers (§4.4 and so on) below refer to it.
    the pane untouched. The test goes in Task 6.
 4. **A pane screen with escape sequences or one line over 1,000 bytes.** The excerpt is
    capped and clean. The test goes in Task 7.
-5. **A garbage `XREVIEW_LOCK_WAIT`** (`abc`). Fall back to the default rather than misreport
-   "another dispatch". The test goes in Task 6.
+5. **A garbage `XREVIEW_LOCK_WAIT`** (`abc`, `.`, `1.2.3`). Fall back to the default rather
+   than misreport "another dispatch". The test goes in Task 6.
 
 ---
 
@@ -120,15 +120,17 @@ is "G3 the pane's TUI holds a socket whose peer is one of the daemon's" \
 ladder "$pane"; is "V the pane frees before the probes" "$?" 0
 other="$T/elsewhere"; mkdir -p "$other"
 
-echo "V2: a resume from another directory, without -C; the ladder frees whatever it shows"
+echo "V2: a resume from another directory, without -C, is held at the chooser; the ladder frees it"
 herdr pane run "$pane" "cd $(printf '%q' "$other") && $pane_cmd resume $f22_thread" >/dev/null
-sleep 6
-if herdr pane read "$pane" --source visible 2>/dev/null | grep -q 'session directory'; then
-  _pass "V2 the directory chooser appears without -C"
-else
-  echo "  NOTE: no directory chooser appeared without -C; V2 ran on whatever screen the TUI showed"
-fi
-ladder "$pane"; is "V2 the ladder frees the pane" "$?" 0
+chooser=0
+for _ in $(seq 15); do
+  herdr pane read "$pane" --source visible 2>/dev/null | grep -q 'session directory' && { chooser=1; break; }
+  sleep 1
+done
+# Not a note: V2 is evidence the spec requires (§3). A chooser that never appears fails here,
+# and the controller stops at Task 1 (the plan's gate) rather than proceeding unverified.
+is "V2 the directory chooser appears without -C" "$chooser" 1
+ladder "$pane"; is "V2 the ladder frees the pane held at the chooser" "$?" 0
 herdr pane run "$pane" 'echo v2-$((6*7))' >/dev/null
 herdr pane wait-output "$pane" --match v2-42 --timeout 10000 >/dev/null 2>&1
 is "V2 the shell then runs the next command" "$?" 0
@@ -163,6 +165,8 @@ git commit -m "Probe the -C resume, the ctrl+c ladder and daemon attachment live
 Run, unsandboxed, from a herdr pane: `./tests/run.sh live-codex-daemon`.
 Expected: G1, G3, V2 and V1 PASS. Act on the outcome:
 - V1 fails: drop `-C` from Task 7, amend spec §4.1 and §3, and tell Michael.
+- V2's chooser never appears: V2 is unverified. Stop at this gate, amend spec §3, and tell
+  Michael before Task 7.
 - The V2 ladder fails: stop, amend spec §4.4, and tell Michael.
 - G1 or G3 fails: stop, because §4.3 rests on them.
 
@@ -528,7 +532,12 @@ git commit -m "Review a harness worktree in the Codex pane of the worktree that 
     `printf '%sherdr %s\n' "${DISPATCH_ID:+$DISPATCH_ID }" "$*" >> "$CALLS"`, and the
     xreview-rpc stub uses `printf '%sxreview-rpc %s\n' "${DISPATCH_ID:+$DISPATCH_ID }" "$*" >> "$CALLS"`.
   - The herdr stub's `pane send-keys` arm starts with `sleep "${KEY_DELAY:-0}"`.
-  - Add `KEY_DELAY DISPATCH_ID XREVIEW_LOCK_WAIT` to `fresh()`'s `unset`.
+  - The xreview-rpc stub keeps a started turn running when `RPC_RUNNING_AFTER_START=1`:
+    - its `turn-start` arm adds
+      `[ -n "${RPC_RUNNING_AFTER_START:-}" ] && : > "$P/running.$th"`;
+    - its `thread-status` arm also reports `running:true` when `[ -e "$P/running.$th" ]`.
+  - Add `KEY_DELAY DISPATCH_ID XREVIEW_LOCK_WAIT RPC_RUNNING_AFTER_START` to `fresh()`'s
+    `unset`, and `rm -f "$P"/running.*` to its cleanup.
   - Add a section before `echo "Q. …"`:
 
 ```bash
@@ -568,13 +577,29 @@ out="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
 is "P4 an uncreatable lock directory refuses" "$rc/$(printf '%s' "$out" | grep -c 'cannot create')" "1/1"
 is "P4 untouched" "$(untouched)" yes
 rm -f "$XDG_STATE_HOME/xreview/locks"
+for bad in abc . 1.2.3; do
+  fresh
+  out="$(XREVIEW_LOCK_WAIT=$bad bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
+  is "P5 a garbage XREVIEW_LOCK_WAIT ('$bad') falls back to the default" "$(printf '%s' "$out" | grep -c '^xr-')" 1
+done
+# P6 (spec §6): a waiter that gets the lock while the first dispatch's review turn is running
+# refuses as mid-turn, and never sends a key into the pane the first one resumed.
 fresh
-out="$(XREVIEW_LOCK_WAIT=abc bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
-is "P5 a garbage XREVIEW_LOCK_WAIT falls back to the default" "$(printf '%s' "$out" | grep -c '^xr-')" 1
+( DISPATCH_ID=a KEY_DELAY=1 RPC_RUNNING_AFTER_START=1 XREVIEW_LOCK_WAIT=30 \
+    bash "$XREVIEW" dispatch --checkpoint plan b.md > "$ROOT/par.a" 2>&1 ) &
+for _ in $(seq 200); do grep -q '^a herdr pane send-keys' "$CALLS" && break; sleep 0.05; done
+( DISPATCH_ID=b RPC_RUNNING_AFTER_START=1 XREVIEW_LOCK_WAIT=30 \
+    bash "$XREVIEW" dispatch --checkpoint plan b.md > "$ROOT/par.b" 2>&1 ) &
+wait
+is "P6 the first dispatch's review started" "$(grep -c '^xr-' "$ROOT/par.a")" 1
+is "P6 the waiter refuses as mid-turn once it gets the lock" "$(grep -c 'mid-turn' "$ROOT/par.b")" 1
+is "P6 and sends no key after the first's turn-start" \
+   "$(none_after '^a xreview-rpc turn-start' '^b herdr pane send-keys')" 0
+is "P6 nor any key at all" "$(called '^b herdr pane send-keys')" 0
 ```
 
-- [ ] **Step 2: Run it and watch it fail.** Run: `./tests/xreview.test.sh`. Expected: P1 and
-  P3 (interleaving) FAIL, and so does P4.
+- [ ] **Step 2: Run it and watch it fail.** Run: `./tests/xreview.test.sh`. Expected: P1, P3
+  (interleaving), P4 and P6 FAIL.
 
 - [ ] **Step 3: Implement.** Add after `report_to_herdr`:
 
@@ -586,7 +611,7 @@ is "P5 a garbage XREVIEW_LOCK_WAIT falls back to the default" "$(printf '%s' "$o
 # deleted: a waiter could otherwise lock an unlinked inode while a newcomer locks a new one.
 lock_pane() { # lock_pane <pane>: wait, bounded, for the pane's lock; dies at the bound
   local dir f wait="${XREVIEW_LOCK_WAIT:-90}"
-  case "$wait" in ''|*[!0-9.]*|*.*.*) wait=90 ;; esac
+  printf '%s' "$wait" | grep -Eq '^([0-9]+(\.[0-9]*)?|\.[0-9]+)$' || wait=90
   dir="${XDG_STATE_HOME:-$HOME/.local/state}/xreview/locks"
   mkdir -p "$dir" 2>/dev/null && [ -d "$dir" ] || die "cannot create $dir; no review was started"
   f="$dir/$(printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_').lock"
@@ -774,7 +799,9 @@ is "S6 a resume that does not confirm keeps the exact warning" \
 is "S6 the excerpt is at most 12 lines" "$(printf '%s' "$out" | grep -c '^  | ')" 12
 is "S6 and at most 1,000 bytes of screen" "$(printf '%s' "$out" | grep '^  | ' | sed 's/^  | //' | tr -d '\n' | wc -c | tr -d ' ')" \
    "$(printf '%s' "$out" | grep '^  | ' | sed 's/^  | //' | tr -d '\n' | wc -c | awk '{print ($1 <= 1000) ? $1 : "over"}')"
-is "S6 and the nonce is still printed" "$(printf '%s' "$out" | grep -c '^xr-')" 1
+is "S6 and the nonce is still printed, on a line of its own" "$(printf '%s' "$out" | grep -c '^xr-')" 1
+is "S6 the excerpt's last line is complete (ends in a newline)" \
+   "$(printf '%s' "$out" | grep '^  | ' | tail -1 | grep -c 'xr-')" 0
 fresh; printf 'codex resume %s' "$U2" > "$P/argv"; : > "$P/title"
 out="$(RPC_THREAD_RUNNING_FOR=$U2 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
 is "S7 a pane resuming a running thread refuses as mid-turn" "$(printf '%s' "$out" | grep -c "thread $U2 is mid-turn")" 1
@@ -918,9 +945,12 @@ pane_screen() { # pane_screen <pane>: the pane's visible screen, at most 12 line
   # under the message. Prints nothing when the read fails. Untrusted text: evidence only.
   local out
   out="$(herdr pane read "$1" --source visible --lines 12 --format text 2>/dev/null)" || return 0
+  # The prefix is added by awk, never sed: `head -c` can cut the last line short, and awk
+  # still ends every line it prints with a newline, so whatever follows on stdout or stderr
+  # (the nonce, under 2>&1) starts on a line of its own.
   { printf '%s\n' "$out" | LC_ALL=C tr -d '\000-\010\013-\037\177' \
       | awk '{ l[NR] = $0 } NF { last = NR } END { for (i = 1; i <= last; i++) print l[i] }' \
-      | tail -n 12 | head -c 1000 | sed 's/^/  | /'; } || true
+      | tail -n 12 | head -c 1000 | awk '{ print "  | " $0 }'; } || true
 }
 
 die_with_screen() { # die_with_screen <pane> <message>: die, then show the pane's screen
