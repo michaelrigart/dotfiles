@@ -118,8 +118,7 @@ tsh() {
 # session names any more, so such an argument matches no repo by basename or substring
 # and falls through to the fzf picker.
 #
-# Resolution only. Everything about Herdr lives in layout.sh, which is also what the
-# `dev.layout.apply` plugin action calls — one topology definition, two entry points.
+# Resolution only. Everything about Herdr lives in layout.sh.
 dev() {
   emulate -L zsh
   setopt local_options null_glob extended_glob
