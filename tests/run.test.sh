@@ -26,6 +26,14 @@ cat > "$T/plain-alpha.test.sh" <<'SUITE'
 #!/usr/bin/env bash
 echo "  ok  plain suite ran"
 SUITE
+cat > "$T/broken-alpha.test.sh" <<'SUITE'
+#!/usr/bin/env bash
+echo "  ok  first"
+echo "  FAIL: x"
+echo "    | got: detail"
+echo "  ok  after"
+exit 1
+SUITE
 chmod 755 "$T"/*.sh
 
 # ran <label> <yes|no> <extended regex> <output> - run.sh prints `ok    <suite>` for a
@@ -51,6 +59,9 @@ out="$("$T/run.sh" plain gated-alpha 2>&1)"
 ran "an exact name among several filters lifts it" yes 'ok +gated-alpha' "$out"
 out="$("$T/run.sh" --all alpha 2>&1)"
 ran "--all lifts the gate"                       yes 'ok +gated-alpha' "$out"
+out="$("$T/run.sh" broken 2>&1)"
+ran "a failing suite's detail line is printed"   yes '\| got: detail' "$out"
+ran "the following ok line is not folded in"     no  '^ +  ok  after' "$out"
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
