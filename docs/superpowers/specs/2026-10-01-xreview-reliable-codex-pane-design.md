@@ -261,6 +261,32 @@ resumed onto a running review.
 - **Not locked.** `collect` and the other subcommands never touch the pane, so they take no
   lock. Pane ids are unique within one herdr server, and xreview talks to one server.
 
+### 4.10 The pane-map hook reaches herdr
+
+*Added 2026-10-01 during execution:* the plan's Task 1 canary found this defect, and
+Michael asked for everything found on this path to be fixed in this branch.
+
+The pane-map hook (`herdr-codex-pane-map.py`) does run inside the daemon on every
+`SessionStart`: a probe saw it as a child of the daemon process. But under the daemon's
+launchd environment, `herdr` finds no server. That environment has neither `XDG_CONFIG_HOME`
+nor `HERDR_SOCKET_PATH`, so herdr 0.9.3 looks for its socket under `$TMPDIR/herdr/` and
+answers `server_not_running`. The live server listens on `~/.config/herdr/herdr.sock`. The
+hook therefore never reports, and herdr learns a pane's thread only from xreview's own report
+or from its saved session.
+
+- **The hook.** Every herdr call it makes runs with `XDG_CONFIG_HOME=~/.config` when its
+  environment carries neither `HERDR_SOCKET_PATH` nor `XDG_CONFIG_HOME`. This takes effect at
+  the next session start after `chezmoi apply`.
+- **The LaunchAgent.** Its `EnvironmentVariables` gain `XDG_CONFIG_HOME`, `XDG_DATA_HOME`,
+  `XDG_STATE_HOME` and `XDG_CACHE_HOME`, set to the strict XDG layout. The daemon and every
+  tool the reviewer runs then see the same layout as an interactive shell. No `HERDR_*`
+  variable is added, so `codex-daemon check` is unaffected.
+  - This takes effect only when launchd starts the daemon afresh. The daemon's own
+    self-update restarts inherit the supervisor's old environment, so it needs
+    `launchctl bootout` and `bootstrap`, which disconnects every Codex TUI. Michael decides
+    when.
+  - The hook fix does not wait for that.
+
 ## 5. Failure handling
 
 | Condition | Behaviour |

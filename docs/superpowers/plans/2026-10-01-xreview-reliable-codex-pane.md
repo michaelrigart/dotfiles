@@ -1141,6 +1141,98 @@ git commit -m "Document the pane screen, the pane lock and harness worktree revi
 
 ---
 
+### Task 10: The pane-map hook reaches herdr (spec §4.10)
+
+*Added during execution, after Task 1's canary found the defect. It runs before Task 9.*
+
+**Files:**
+- Modify: `dot_codex/executable_herdr-codex-pane-map.py` (`run`, plus a new `herdr_env`)
+- Modify: `Library/LaunchAgents/be.netronix.codex-app-server.plist.tmpl` (EnvironmentVariables)
+- Test: `tests/herdr-codex-pane-map.test.sh` and `tests/codex-daemon.test.sh`
+
+**Interfaces:** none consumed or produced by other tasks.
+
+- [ ] **Step 1: Write the failing tests.**
+  - In `tests/herdr-codex-pane-map.test.sh`, the herdr stub's `pane list` arm first appends
+    `printf 'xdg=%s sock=%s\n' "${XDG_CONFIG_HOME:-}" "${HERDR_SOCKET_PATH:-}" >> "$T/env-seen"`.
+    Then add a section before the final totals:
+
+```bash
+echo "X. the hook reaches herdr from the daemon's launchd environment (spec 2026-10-01 §4.10)"
+fixture "$(pane w1:p2 codex "$(trunc "$U1") | t | d" "")"
+: > "$T/env-seen"
+env -u XDG_CONFIG_HOME -u HERDR_SOCKET_PATH HOME="$T/home" /usr/bin/python3 "$HOOK" --reconcile
+is "X1 with neither variable, herdr is called with XDG_CONFIG_HOME=~/.config" \
+   "$(head -1 "$T/env-seen")" "xdg=$T/home/.config sock="
+: > "$T/env-seen"
+env -u HERDR_SOCKET_PATH XDG_CONFIG_HOME=/elsewhere /usr/bin/python3 "$HOOK" --reconcile
+is "X2 an XDG_CONFIG_HOME already set is kept" "$(head -1 "$T/env-seen")" "xdg=/elsewhere sock="
+: > "$T/env-seen"
+env -u XDG_CONFIG_HOME HERDR_SOCKET_PATH=/s.sock /usr/bin/python3 "$HOOK" --reconcile
+is "X3 a HERDR_SOCKET_PATH set adds nothing" "$(head -1 "$T/env-seen")" "xdg= sock=/s.sock"
+```
+
+  - In `tests/codex-daemon.test.sh`, next to the existing plist render checks (around line
+    165): for both renders (`$rendered`, `$rendered_intel`), assert with
+    `plutil -extract EnvironmentVariables.<KEY> raw` that `XDG_CONFIG_HOME`, `XDG_DATA_HOME`,
+    `XDG_STATE_HOME` and `XDG_CACHE_HOME` equal `<home>/.config`, `<home>/.local/share`,
+    `<home>/.local/state` and `<home>/.cache`. `<home>` is whatever home directory the suite
+    renders the template with: read how it renders before writing the expected values. Also
+    assert that no `EnvironmentVariables` key starts with `HERDR_`.
+
+- [ ] **Step 2: Run them and watch them fail.** Run `./tests/herdr-codex-pane-map.test.sh`
+  and `./tests/codex-daemon.test.sh`. Expected: X1 fails (`xdg= sock=`) and the four XDG
+  plist assertions fail. Everything else passes.
+
+- [ ] **Step 3: Implement.**
+  - In the hook, add after `left()`:
+
+```python
+def herdr_env():
+    """The environment for a herdr call. Inside the Codex daemon (launchd's environment)
+    neither HERDR_SOCKET_PATH nor XDG_CONFIG_HOME is set, and herdr then looks for its socket
+    under $TMPDIR instead of ~/.config/herdr, finds no server, and every report is lost
+    (spec 2026-10-01 §4.10)."""
+    env = dict(os.environ)
+    if not env.get("HERDR_SOCKET_PATH") and not env.get("XDG_CONFIG_HOME"):
+        env["XDG_CONFIG_HOME"] = os.path.expanduser("~/.config")
+    return env
+```
+
+    and `run()` passes `env=herdr_env()` to `subprocess.run`. `run` is only used for herdr
+    calls; check that before relying on it. If something else uses it, give herdr calls their
+    own env and leave the rest untouched.
+  - In the plist template's `EnvironmentVariables`, after `PATH`:
+
+```xml
+        <key>XDG_CONFIG_HOME</key>
+        <string>{{ .chezmoi.homeDir }}/.config</string>
+        <key>XDG_DATA_HOME</key>
+        <string>{{ .chezmoi.homeDir }}/.local/share</string>
+        <key>XDG_STATE_HOME</key>
+        <string>{{ .chezmoi.homeDir }}/.local/state</string>
+        <key>XDG_CACHE_HOME</key>
+        <string>{{ .chezmoi.homeDir }}/.cache</string>
+```
+
+    Then add one sentence to the template's header comment: the XDG variables mirror the
+    strict XDG layout so herdr (whose default socket follows `XDG_CONFIG_HOME`) and the
+    reviewer's tools resolve the same paths as a shell; they apply only at a fresh launchd
+    start.
+
+- [ ] **Step 4: Run them and watch them pass.** Run both suites, plus
+  `./tests/run.sh codex herdr`, and report each suite's passed/total.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add dot_codex/executable_herdr-codex-pane-map.py tests/herdr-codex-pane-map.test.sh \
+        Library/LaunchAgents/be.netronix.codex-app-server.plist.tmpl tests/codex-daemon.test.sh
+git commit -m "Let the pane-map hook reach herdr from the daemon's environment"
+```
+
+---
+
 ### Task 9 (controller): Records and full verification
 
 **Files:**
