@@ -189,7 +189,7 @@ is "'-i/home/x.png' (an attached image path, not a cluster) still starts interac
 is "because -i leads it, so it ensures the daemon like any other start" "$(ensured)" 1
 
 echo
-echo "J. a resumed read-only thread stays read-only (spec 2026-10-01 §4.7)"
+echo "O. a resumed read-only thread stays read-only (spec 2026-10-01 §4.7)"
 # run's PATH (/usr/bin) carries macOS's own jq (1.7.1), which the launcher uses.
 export CODEX_HOME="$T/codexhome"
 mkdir -p "$CODEX_HOME/sessions/2026/10/01"
@@ -204,26 +204,54 @@ tcx() { printf '{"type":"turn_context","payload":{"sandbox_policy":{"type":"%s"}
 { tcx read-only never; tcx workspace-write on-request; } > "$R/rollout-2026-10-01T10-00-01-$RW.jsonl"
 printf '{"type":"turn_context","payload":{"sandbox_policy":{"type":"read-only"},"approval_policy":{"granular":{}}}}\n' \
   > "$R/rollout-2026-10-01T10-00-02-$NOAP.jsonl"
-is "J1 a read-only thread resumes read-only with its approval policy" \
+is "O1 a read-only thread resumes read-only with its approval policy" \
    "$(runj resume $RO)" "REAL --sandbox read-only --ask-for-approval never resume $RO"
-is "J2 a non-string approval policy adds only --sandbox" \
+is "O2 a non-string approval policy adds only --sandbox" \
    "$(runj resume $NOAP)" "REAL --sandbox read-only resume $NOAP"
-is "J3 an explicit --sandbox wins" "$(runj --sandbox workspace-write resume $RO)" "REAL --sandbox workspace-write resume $RO"
-is "J4 an explicit -s wins"        "$(runj -s workspace-write resume $RO)" "REAL -s workspace-write resume $RO"
-is "J5 an explicit -a wins"        "$(runj -a on-request resume $RO)" "REAL -a on-request resume $RO"
-is "J6 --ask-for-approval= wins"   "$(runj --ask-for-approval=on-request resume $RO)" "REAL --ask-for-approval=on-request resume $RO"
-is "J7 --full-auto wins"           "$(runj --full-auto resume $RO)" "REAL --full-auto resume $RO"
-is "J8 the bypass flag wins"       "$(runj --dangerously-bypass-approvals-and-sandbox resume $RO)" "REAL --dangerously-bypass-approvals-and-sandbox resume $RO"
-is "J9 a workspace-write thread is untouched" "$(runj resume $RW)" "REAL resume $RW"
-is "J10 a thread with no rollout is untouched" "$(runj resume $NONE)" "REAL resume $NONE"
-is "J11 a malformed id is untouched"          "$(runj resume ../x)" "REAL resume ../x"
-is "J12 resume with no id is untouched"       "$(runj resume)" "REAL resume"
-is "J13 resume --last is untouched"           "$(runj resume --last)" "REAL resume --last"
-is "J14 fork is untouched"                    "$(runj fork $RO)" "REAL fork $RO"
-is "J15 an option value is not the subcommand" "$(runj -m resume)" "REAL -m resume"
-is "J16 -C before resume still counts"        "$(runj -C /tmp resume $RO)" "REAL --sandbox read-only --ask-for-approval never -C /tmp resume $RO"
-is "J17 --no-daemon resume is read-only too"  "$(runj --no-daemon resume $RO)" "REAL --sandbox read-only --ask-for-approval never --no-daemon resume $RO"
-is "J18 help still passes through untouched"  "$(runj resume --help)" "REAL resume --help"
+is "O3 an explicit --sandbox wins" "$(runj --sandbox workspace-write resume $RO)" "REAL --sandbox workspace-write resume $RO"
+is "O4 an explicit -s wins"        "$(runj -s workspace-write resume $RO)" "REAL -s workspace-write resume $RO"
+is "O5 an explicit -a wins"        "$(runj -a on-request resume $RO)" "REAL -a on-request resume $RO"
+is "O6 --ask-for-approval= wins"   "$(runj --ask-for-approval=on-request resume $RO)" "REAL --ask-for-approval=on-request resume $RO"
+is "O7 --full-auto wins"           "$(runj --full-auto resume $RO)" "REAL --full-auto resume $RO"
+is "O8 the bypass flag wins"       "$(runj --dangerously-bypass-approvals-and-sandbox resume $RO)" "REAL --dangerously-bypass-approvals-and-sandbox resume $RO"
+is "O9 a workspace-write thread is untouched" "$(runj resume $RW)" "REAL resume $RW"
+is "O10 a thread with no rollout is untouched" "$(runj resume $NONE)" "REAL resume $NONE"
+is "O11 a malformed id is untouched"          "$(runj resume ../x)" "REAL resume ../x"
+is "O12 resume with no id is untouched"       "$(runj resume)" "REAL resume"
+is "O13 resume --last is untouched"           "$(runj resume --last)" "REAL resume --last"
+is "O14 fork is untouched"                    "$(runj fork $RO)" "REAL fork $RO"
+is "O15 an option value is not the subcommand" "$(runj -m resume)" "REAL -m resume"
+is "O16 -C before resume still counts"        "$(runj -C /tmp resume $RO)" "REAL --sandbox read-only --ask-for-approval never -C /tmp resume $RO"
+is "O17 --no-daemon resume is read-only too"  "$(runj --no-daemon resume $RO)" "REAL --sandbox read-only --ask-for-approval never --no-daemon resume $RO"
+is "O18 help still passes through untouched"  "$(runj resume --help)" "REAL resume --help"
+is "O19 -sVALUE attached wins"            "$(runj -sworkspace-write resume $RO)" "REAL -sworkspace-write resume $RO"
+is "O20 --sandbox=VALUE wins"             "$(runj --sandbox=workspace-write resume $RO)" "REAL --sandbox=workspace-write resume $RO"
+is "O21 --yolo wins"                      "$(runj --yolo resume $RO)" "REAL --yolo resume $RO"
+is "O22 a mode flag after the subcommand wins" "$(runj resume -s workspace-write $RO)" "REAL resume -s workspace-write $RO"
+is "O23 a -c override wins"               "$(runj --no-daemon -c sandbox_mode=workspace-write resume $RO)" "REAL --no-daemon -c sandbox_mode=workspace-write resume $RO"
+is "O24 -p wins"                          "$(runj -p work resume $RO)" "REAL -p work resume $RO"
+is "O25 --profile=VALUE wins"             "$(runj --profile=work resume $RO)" "REAL --profile=work resume $RO"
+is "O26 -pVALUE attached wins"            "$(runj -pwork resume $RO)" "REAL -pwork resume $RO"
+# A malformed line makes jq stop: the earlier read-only turn must not be mistaken for the last.
+BAD=01a0e1d4-0000-7000-8000-000000000002
+{ tcx read-only never; echo 'not json'; tcx workspace-write on-request; } > "$R/rollout-2026-10-01T10-00-03-$BAD.jsonl"
+is "O27 a malformed rollout line is untouched" "$(runj resume $BAD)" "REAL resume $BAD"
+# A last turn whose sandbox_policy is a plain string is not read-only.
+STR=01a0e1d5-0000-7000-8000-000000000003
+{ tcx read-only never; printf '{"type":"turn_context","payload":{"sandbox_policy":"read-only","approval_policy":"never"}}\n'; } \
+  > "$R/rollout-2026-10-01T10-00-04-$STR.jsonl"
+is "O28 a string sandbox_policy is untouched" "$(runj resume $STR)" "REAL resume $STR"
+# An unreadable rollout.
+UNR=01a0e1d6-0000-7000-8000-000000000004
+tcx read-only never > "$R/rollout-2026-10-01T10-00-05-$UNR.jsonl"
+chmod 000 "$R/rollout-2026-10-01T10-00-05-$UNR.jsonl"
+is "O29 an unreadable rollout is untouched" "$(runj resume $UNR)" "REAL resume $UNR"
+chmod 644 "$R/rollout-2026-10-01T10-00-05-$UNR.jsonl"
+# No jq on PATH: only the tools the launcher itself needs, symlinked from /usr/bin.
+mkdir -p "$T/nojq"
+for t in find sort tail grep dirname cat; do ln -sf "/usr/bin/$t" "$T/nojq/$t"; done
+is "O30 without jq the resume is untouched" \
+   "$(PATH="$T/localbin:$T/nojq:/bin" XDG_BIN_HOME="$T/localbin" sh "$T/localbin/codex" resume $RO 2>"$T/err")" "REAL resume $RO"
 unset CODEX_HOME
 
 echo "RESULT: $pass passed, $((pass + fail)) total, $fail failed"
