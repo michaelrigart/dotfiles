@@ -31,7 +31,6 @@ tap "skyhook-io/tap"
 # ansible: managed by mise (~/.config/mise/config.toml), not Homebrew, so provisioning
 # repos can pin their own version via a project mise.toml.
 brew "arping"                          # edge-node network diagnostics
-brew "asitop"
 brew "awscli"
 brew "azure-cli"
 brew "borgbackup"                      # Vorta requires it. The borgbackup-fuse variant
@@ -42,6 +41,7 @@ brew "borgbackup"                      # Vorta requires it. The borgbackup-fuse 
                                        # else — backup, restore, check, prune, extract —
                                        # is unaffected.
 brew "btop"
+brew "ccusage"                        # Claude Code usage reports
 brew "chezmoi"
 brew "coreutils"
 brew "direnv"
@@ -65,6 +65,7 @@ brew "k9s"
 brew "krew"
 brew "kubie"
 brew "lazygit"
+brew "lazysql"
 brew "libpq"                           # Rails / pg
 brew "mise"
 brew "mono-libgdiplus"                 # Iris.WeInspect Reporting Service — System.Drawing.Common on macOS
@@ -98,6 +99,7 @@ cask "claude-code@latest"              # @latest channel — plain `claude-code`
 cask "codex"                           # depends on the ripgrep formula
 cask "docker-desktop"
 {{ if eq $live "fenrir" -}}
+cask "battle-net"
 cask "elgato-control-center"
 cask "focusrite-control"
 cask "jiggler"
@@ -134,8 +136,5 @@ cask "whatsapp"
 cask "yubico-authenticator"
 cask "zen"
 
-cask "font-fira-code-nerd-font"
-cask "font-hack-nerd-font"
 cask "font-jetbrains-mono"
-cask "font-jetbrains-mono-nerd-font"
 cask "font-sf-pro"
