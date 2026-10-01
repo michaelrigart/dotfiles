@@ -60,3 +60,9 @@
 	allowedSignersFile = ~/.config/git/allowed_signers
 [pull]
 	ff = only
+[push]
+    autoSetupRemote = true
+[fetch]
+    prune = true
+[diff]
+    algorithm = histogram
