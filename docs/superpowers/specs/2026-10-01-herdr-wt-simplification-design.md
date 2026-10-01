@@ -1,6 +1,6 @@
 # Herdr/wt simplification
 
-**Status:** Approved
+**Status:** In progress (branch herdr-wt-simplify; the dotfiles have no MR)
 **Date:** 2026-10-01
 **Branch:** `herdr-wt-simplify`
 
