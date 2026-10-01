@@ -3,9 +3,6 @@
 
 command_timeout = 700
 
-[gcloud]
-disabled = true
-
 [username]
 show_always = true
 style_user = "#7aa2f7"

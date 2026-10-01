@@ -10,18 +10,6 @@ eval "$(direnv hook zsh)"
 # Activate mise
 eval "$(mise activate zsh)"
 
-# enable zoxide — deferred so it initializes after oh-my-zsh installs its
-# chpwd hook (config is sourced before oh-my-zsh.sh in .zshrc); avoids the
-# "initialize zoxide at the end of your shell config" warning.
-autoload -Uz add-zsh-hook
-__init_zoxide() {
-  eval "$(zoxide init zsh)"
-  add-zsh-hook -d precmd __init_zoxide
-  unset -f __init_zoxide
-}
-add-zsh-hook precmd __init_zoxide
-
-
 # History is state, not cache: it lives in $XDG_STATE_HOME. The first shell start after
 # the move carries the old $XDG_CACHE_HOME file across, and never overwrites a history
 # that already exists at the new place (two shells can start at once).

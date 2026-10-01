@@ -169,11 +169,9 @@ dev() {
   "${DEV_LAYOUT:-$HOME/.config/herdr/layout.sh}" "$repo"
 }
 
-# Library functions use `builtin cd`, never bare `cd`. aliases is sourced before
-# functions in .zshrc, so a bare `cd` is alias-expanded at parse time into zoxide's
-# `z` — whose implementation only loads from a precmd hook. A `zsh -ic <cmd>` shell
-# (every Herdr popup) never reaches a prompt, so `z` does not exist and the cd fails
-# with the popup closing before the error can be read.
+# Library functions use `builtin cd`, never bare `cd`: they must not depend on whatever an
+# interactive shell binds `cd` to, because the `zsh -ic <cmd>` shells that Herdr popups
+# run never reach a prompt.
 
 # _wt_git — git with its routing environment cleared. Every Git call in the
 # worktree lifecycle goes through this. An exported GIT_DIR or GIT_WORK_TREE
