@@ -20,6 +20,19 @@ _fail() { printf '  FAIL: %s\n    | got: %s\n' "$1" "$2"; fail=$((fail + 1)); }
 is() { if [ "$2" = "$3" ]; then _pass "$1"; else _fail "$1" "$2"; fi; }
 rpc() { python3 "$RPCF" "$@"; }
 
+# xreview's own readers of the pane, extracted from the deployed-source script so the live
+# facts are checked against the code that will run, never against a reimplementation (the unit
+# suite does the same for epoch_now). `die` is the one collaborator they may call.
+XREVIEW="$SRC/dot_local/bin/executable_xreview"
+[ -f "$XREVIEW" ] || { echo "missing file under test: $XREVIEW" >&2; exit 2; }
+CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}"
+die() { printf 'xreview: %s\n' "$1" >&2; return 1; }
+xr_src="$(sed -n '/^pane_proc() {/,/^}/p;/^proc_codex() {/,/^}/p;/^resume_target() {/,/^}/p;/^daemon_pid() {/,/^}/p;/^connected_to_daemon() {/,/^}/p' "$XREVIEW")"
+for fn in pane_proc proc_codex resume_target daemon_pid connected_to_daemon; do
+  printf '%s\n' "$xr_src" | grep -q "^$fn() {" || { echo "xreview no longer defines $fn" >&2; exit 2; }
+done
+eval "$xr_src"
+
 command -v herdr >/dev/null || { echo "INCONCLUSIVE: herdr not on PATH" >&2; exit 2; }
 command -v jq >/dev/null || { echo "INCONCLUSIVE: jq not on PATH" >&2; exit 2; }
 codex-daemon check || { echo "INCONCLUSIVE: the Codex daemon is not running clean" >&2; exit 2; }
@@ -237,7 +250,17 @@ peers="$(lsof -a -U -p "$cpid" -F n 2>/dev/null | sed -n 's/^n->//p' | sort -u)"
 is "G3 the pane's TUI holds a socket whose peer is one of the daemon's" \
    "$([ -n "$(comm -12 <(printf '%s\n' "$mine") <(printf '%s\n' "$peers") | grep .)" ] && echo yes || echo no)" yes
 
+is "C3 herdr pane read returns text on the Codex pane" \
+   "$([ -n "$(herdr pane read "$pane" --source visible --lines 12 --format text 2>/dev/null | tr -d '[:space:]')" ] && echo yes || echo no)" yes
+xp="$(pane_proc "$pane")"; rc=$?
+xcpid="$(proc_codex "$xp" | jq -r '.pid // empty' 2>/dev/null)"
+is "C2a xreview's pane_proc reads the Codex pane, and proc_codex finds a pid" \
+   "$rc/$([ -n "$xcpid" ] && echo yes || echo no)" "0/yes"
+
 ladder "$pane"; is "V the pane frees before the probes" "$?" 0
+xp="$(pane_proc "$pane")"; rc=$?
+is "C2c on the freed shell xreview's pane_proc succeeds and proc_codex is empty" \
+   "$rc/$([ -z "$(proc_codex "$xp")" ] && echo empty || echo codex)" "0/empty"
 other="$T/elsewhere"; mkdir -p "$other"
 
 echo "V2: a resume from another directory, without -C, is held at the chooser; the ladder frees it"
@@ -250,31 +273,64 @@ done
 # Not a note: V2 is evidence the spec requires (§3). A chooser that never appears fails here,
 # and the controller stops at Task 1 (the plan's gate) rather than proceeding unverified.
 is "V2 the directory chooser appears without -C" "$chooser" 1
+# The guard refuses a pane whose agent_status is working or blocked as mid-turn, so a chooser
+# reported that way would block the ladder. A live finding if it fails; never weaken it.
+chooser_obj="$(herdr pane get "$pane" 2>/dev/null | jq -ce '.result.pane | objects' 2>/dev/null)"; rc=$?
+chooser_status="$(printf '%s' "$chooser_obj" | jq -r '.agent_status // empty' 2>/dev/null)"
+case "$chooser_status" in
+  working|blocked) chooser_idle="$chooser_status" ;;
+  *) chooser_idle=ok ;;
+esac
+is "V2 the chooser's pane read succeeds, and agent_status is not working or blocked (was '$chooser_status')" \
+   "$rc/$chooser_idle" "0/ok"
 ladder "$pane"; is "V2 the ladder frees the pane held at the chooser" "$?" 0
+xp="$(pane_proc "$pane")"; rc=$?
+is "C2c after the V2 ladder xreview's pane_proc succeeds and proc_codex is empty" \
+   "$rc/$([ -z "$(proc_codex "$xp")" ] && echo empty || echo codex)" "0/empty"
 herdr pane run "$pane" 'echo v2-$((6*7))' >/dev/null
 herdr pane wait-output "$pane" --match v2-42 --timeout 10000 >/dev/null 2>&1
 is "V2 the shell then runs the next command" "$?" 0
 
 echo "V1: a -C resume from another directory opens the thread with no chooser"
 want="$(printf '%s' "$f22_thread" | cut -c1-29)"
-pane_title() { herdr pane get "$pane" | jq -r '.result.pane.terminal_title_stripped // .result.pane.terminal_title // ""'; }
+# A failed read, or an envelope that is not a pane, fails (an empty title from a successful
+# read is a valid answer): a stale probe that reads nothing must never pass for "no stale title".
+pane_title() {
+  local o
+  o="$(herdr pane get "$pane" 2>/dev/null)" || return 1
+  printf '%s' "$o" | jq -er '.result.pane | objects | (.terminal_title_stripped // .terminal_title // "")' 2>/dev/null
+}
+v1=0
 if [ -z "$want" ]; then
   _fail "V1 the title shows the thread" "no f22 thread to resume"
 else
   # The pane's previous session was on this thread: a stale title must not pass for the resume.
-  t="$(pane_title)"; stale=0
+  t="$(pane_title)"; read_rc=$?; stale=0
   case "$t" in "$want"*) stale=1 ;; esac
+  is "V1 the pre-resume title read succeeded" "$read_rc" 0
   is "V1 the title does not already show the thread before the resume" "$stale" 0
   herdr pane run "$pane" "$pane_cmd -C $(printf '%q' "$SRC") resume $f22_thread" >/dev/null
-  v1=0
   for _ in $(seq 20); do
-    t="$(pane_title)"
+    t="$(pane_title)" || t=""
     case "$t" in "$want"*) v1=1; break ;; esac
     sleep 1
   done
   is "V1 the title shows the thread" "$v1" 1
   is "V1 and no chooser is on screen" \
      "$(herdr pane read "$pane" --source visible 2>/dev/null | grep -c 'session directory')" 0
+fi
+# xreview's own readers on the resumed pane: the thread its argv resumes, and whether its TUI
+# holds a daemon connection (retried: the connection may trail the title by a moment).
+if [ "$v1" = 1 ]; then
+  xp="$(pane_proc "$pane")"; xcpid="$(proc_codex "$xp" | jq -r '.pid // empty' 2>/dev/null)"
+  is "C2b after the -C resume xreview's resume_target gives the thread" \
+     "$(resume_target "$(proc_codex "$xp")" 2>/dev/null)" "$f22_thread"
+  conn=no
+  for _ in $(seq 10); do
+    [ -n "$xcpid" ] && connected_to_daemon "$xcpid" && { conn=yes; break; }
+    sleep 1
+  done
+  is "C2b and connected_to_daemon is true for its TUI" "$conn" yes
 fi
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
