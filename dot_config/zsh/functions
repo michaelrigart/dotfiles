@@ -493,9 +493,7 @@ _wt_hook_run() {
 # _wt_manifest <main> <dest> — validate .worktreeinclude and fill _WT_CARRY with
 # the entries whose destination is still missing.
 #
-# Filtering is required for correctness, not tidiness: wtcp refuses existing
-# destinations and returns NONZERO while still copying the missing ones, so
-# passing the whole manifest on a retry fails every second run by construction.
+# Entries already present at the destination are skipped, never overwritten: a local edit in the worktree wins.
 #
 # Containment is checked lexically *and* through the filesystem. A path with no
 # ".." still escapes if a directory component is a symlink — the target worktree's
@@ -584,28 +582,14 @@ _wt_do_prepare() {
     return 1
   }
 
-  if (( ${#_WT_CARRY} )); then
-    if (( ! $+commands[wtcp] )); then
-      print -ru2 -- "wt: files need copying but wtcp is missing (brew install satococoa/tap/wtcp)."
-      print -ru2 -- "    The worktree exists — install wtcp, then: wt-prepare $qb && wt $qb"
-      return 1
-    fi
-    # `--` is mandatory: manifest entries are arbitrary strings, and one named
-    # "-h" is otherwise parsed as an option and prints usage instead of copying.
-    # MISE_NO_ENV: wtcp copies into the *current* directory, so this cd is unavoidable, and
-    # `mise activate zsh` registers a chpwd hook. The cd therefore loads the new worktree's
-    # mise.toml — which already declares its required vars — while mise.local.toml, the file
-    # this very line is about to copy, is not there yet: one warning per required var, about
-    # a state the next line fixes. MISE_QUIET does not cover them (mise classes these as
-    # warnings, not chatter). Exported before the cd rather than prefixed onto wtcp, because
-    # the cd is what triggers it. Nothing here needs project env, and a genuinely missing
-    # var still warns on the next real cd into the worktree.
-    if ! ( export MISE_NO_ENV=1; builtin cd "$dest" && wtcp --from "$main" -- "${_WT_CARRY[@]}" ); then
-      print -ru2 -- "wt: copying .worktreeinclude files into $dest failed."
+  local entry
+  for entry in $_WT_CARRY; do
+    if ! { mkdir -p -- "$dest/${entry:h}" && cp -pR -- "$main/$entry" "$dest/$entry" }; then
+      print -ru2 -- "wt: copying .worktreeinclude entry '$entry' into $dest failed."
       print -ru2 -- "    The worktree exists — fix the copy, then: wt-prepare $qb && wt $qb"
       return 1
     fi
-  fi
+  done
 
   if ! _wt_hook_run "$main" "$dest" "$branch" "$slug" setup; then
     print -ru2 -- "wt: .worktreehook setup failed for $dest."

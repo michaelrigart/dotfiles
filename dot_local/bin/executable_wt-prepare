@@ -13,8 +13,8 @@ emulate -L zsh
 
 conf="${XDG_CONFIG_HOME:-$HOME/.config}"
 
-# zshenv is not optional: without it a bare zsh has no XDG variables and no wtcp
-# on PATH, which wt-prepare needs to copy the manifest. Only the XDG base
+# zshenv is not optional: without it a bare zsh has no XDG variables and no
+# Homebrew on PATH. Only the XDG base
 # variables are guarded, so sourcing re-prepends PATH; harmless in a process that
 # exits immediately. No `set -u`: zshenv tests unset variables by design.
 for f in zshenv functions; do

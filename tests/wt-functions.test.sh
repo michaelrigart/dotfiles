@@ -5,7 +5,7 @@
 #
 #   B  wt                  destination validation (husks, slug collisions)
 #   C  wt                  branch base: caller's HEAD, explicit start point, detached
-#   D  wt                  .worktreeinclude copy failures and missing wtcp
+#   D  wt                  .worktreeinclude copy failures
 #   E  wt-rm               dirty preflight ordering and refusal cases
 #   G  _wt_git/_wt_primary routing clearance, bare repos, linked worktrees
 #   H  _wt_clean           three-state cleanliness, config- and routing-resistant
@@ -13,7 +13,7 @@
 #   J  _wt_hook_check      index + working-tree validation, fail-closed index reads
 #   K  _wt_hook_run        interface, subshell isolation, shebang, trust boundary
 #   L  _wt_manifest        containment, filtering, missing sources
-#   M  wt-prepare          copy/setup recovery path, quoting, wtcp presence
+#   M  wt-prepare          copy/setup recovery path, quoting
 #   N  wt                  creation paths, pre-validation consequences, reopening
 #   O  wt-rm               teardown ordering, the three cleanliness checks, retry
 #   Q  PATH wrappers       the functions are reachable from a non-interactive shell
@@ -22,7 +22,7 @@
 #   U  wt-rm               Herdr workspace shutdown and persisted-state safety
 #   V  wt-rm               live processes still inside the checkout block removal
 #
-# Herdr, layout.sh and wtcp are stubbed on PATH and every invocation is logged, so the
+# Herdr and layout.sh are stubbed on PATH and every invocation is logged, so the
 # tests can assert *ordering* — notably that a dirty worktree never loses its terminal
 # workspace — without launching anything. Git is NOT stubbed: real repos are used,
 # because git's own refusals (unmerged branch, dirty tree) are part of what's under
@@ -62,37 +62,6 @@ SIGSTUBS=$(mkd)
 FAILSTUBS=$(mkd)
 trap 'rm -rf "$STUBS" "$SIGSTUBS" "$FAILSTUBS" "${ROOTTMP:-}"' EXIT
 
-cat > "$STUBS/wtcp" <<'STUB'
-#!/usr/bin/env bash
-# Faithful enough for the properties the protocol depends on: honors --from,
-# treats `--` as end-of-options (so an entry named -h is copied rather than
-# parsed), refuses an existing destination with a NONZERO exit while still
-# copying the missing ones — the behaviour that makes destination filtering a
-# correctness requirement — and can still be forced to fail via MOCK_WTCP_RC.
-printf '%s\n' "$*" >> "$WLOG"
-[ "${MOCK_WTCP_RC:-0}" -ne 0 ] && exit "$MOCK_WTCP_RC"
-from="."; rc=0; endopts=0; paths=()
-while [ $# -gt 0 ]; do
-  if [ "$endopts" -eq 0 ]; then
-    case "$1" in
-      --from) from="$2"; shift 2; continue ;;
-      --)     endopts=1; shift; continue ;;
-      -h|--help) echo "wtcp: usage"; exit 1 ;;
-      -*)     echo "wtcp: unknown option $1" >&2; exit 1 ;;
-    esac
-  fi
-  paths+=("$1"); shift
-done
-for p in "${paths[@]}"; do
-  if [ -e "$PWD/$p" ]; then
-    echo "wtcp: destination exists (use --force): $p" >&2; rc=1; continue
-  fi
-  mkdir -p "$(dirname "$PWD/$p")"
-  cp -R "$from/$p" "$PWD/$p" && echo "copied: $p"
-done
-exit $rc
-STUB
-chmod +x "$STUBS/wtcp"
 cat > "$STUBS/layout.sh" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$DLOG"
@@ -244,12 +213,11 @@ setup() {   # fresh $HOME with Code/Org/repo, fresh logs, default mock behaviour
   REPO="$HOME/Code/Org/repo"
   git init -q -b main "$REPO"
   git -C "$REPO" commit -q --allow-empty -m init
-  export WLOG="$ROOTTMP/wtcp.log" DLOG="$ROOTTMP/layout.log" \
+  export DLOG="$ROOTTMP/layout.log" \
          HLOG="$ROOTTMP/herdr.log" LLOG="$ROOTTMP/lsof.log" \
          FLOG="$ROOTTMP/git-fail.log" MOCK_H_CLOSED_FILE="$ROOTTMP/herdr-closed"
-  : > "$WLOG"; : > "$DLOG"; : > "$HLOG"; : > "$LLOG"; : > "$FLOG"; : > "$MOCK_H_CLOSED_FILE"
-  export MOCK_WTCP_RC=0 \
-         MOCK_LAYOUT_RC=0 MOCK_H_SESSION_LIST='{"sessions":[]}' MOCK_H_SESSION_RC=0 \
+  : > "$DLOG"; : > "$HLOG"; : > "$LLOG"; : > "$FLOG"; : > "$MOCK_H_CLOSED_FILE"
+  export MOCK_LAYOUT_RC=0 MOCK_H_SESSION_LIST='{"sessions":[]}' MOCK_H_SESSION_RC=0 \
          MOCK_H_WORKSPACES='{"result":{"workspaces":[]}}' \
          MOCK_H_PANES='{"result":{"panes":[]}}' MOCK_H_LIST_RC=0 MOCK_H_CLOSE_RC=0 \
          MOCK_H_CLOSE_TOUCH="" MOCK_H_CLOSE_OUT=""
@@ -382,19 +350,18 @@ has "branching d from detached@" "detached HEAD base is shown, not warned about"
 rc_is 0 "detached HEAD is allowed"
 
 print -r -- "D. wt — .worktreeinclude copy failures"
+# CP1: a copy that fails stops wt with the recovery message (spec §8).
 setup
 print -r -- "env.local" > "$REPO/.worktreeinclude"
 print -r -- "secret" > "$REPO/env.local"
-MOCK_WTCP_RC=1 run "$REPO" wt e
-rc_is 1 "wtcp failure propagates"
-# Task 8 rework: creation now delegates preparation to the shared
-# _wt_do_prepare (see wt-prepare), so a copy failure's recovery message is
-# _wt_do_prepare's own ("wt-prepare <branch> && wt <branch>"), not wt's old
-# inline "dev $dest" — re-running wt-prepare is now the correct next step
-# because wt-prepare itself did not exist when this assertion was written.
-has "wt-prepare e && wt e" "failure message prints the recovery command"
-[[ -d "$HOME/Code/Org/repo-e" ]] && _pass "worktree is left in place to recover" \
-                                 || _fail "worktree is left in place to recover"
+chmod 000 "$REPO/env.local"
+run "$REPO" wt e
+chmod 600 "$REPO/env.local"
+rc_is 1 "CP1 a failed copy fails wt"
+has "entry 'env.local'" "CP1 the failure names the entry that could not be copied"
+has "wt-prepare e && wt e" "CP1 the failure prints the recovery command"
+[[ -d "$HOME/Code/Org/repo-e" ]] && _pass "CP1 the worktree is left in place to recover" \
+                                 || _fail "CP1 the worktree is left in place to recover"
 
 setup
 printf 'env.local\nmissing.local\n' > "$REPO/.worktreeinclude"
@@ -403,20 +370,6 @@ run "$REPO" wt f
 rc_is 0 "a missing .worktreeinclude entry is only a warning"
 has "not found in" "missing entry is reported"
 dlogged "--worktree $REPO $HOME/Code/Org/repo-f" "dev still launches after a missing-entry warning"
-
-setup
-print -r -- "env.local" > "$REPO/.worktreeinclude"
-print -r -- "secret" > "$REPO/env.local"
-# Simulating absence needs a stripped PATH, not a moved stub: wtcp is really installed
-# on this machine, so hiding the stub just falls through to the real binary.
-CLEANP=$(mkd)
-# Every external the lifecycle reaches before the wtcp check. wtcp is absent on
-# purpose. If a helper later grows a new external dependency, add it here too, or
-# this test starts failing for a reason that has nothing to do with wtcp.
-for b in env git awk mkdir; do ln -s "$(command -v $b)" "$CLEANP/$b"; done
-OUT="$(cd "$REPO" && source "$FUNCS" && export PATH="$CLEANP" && wt g 2>&1)"; RC=$?
-rc_is 1 "missing wtcp aborts instead of silently skipping the copy"
-has "wtcp is missing" "abort names the missing tool"
 
 print -r -- "E. wt-rm"
 setup
@@ -1019,10 +972,9 @@ eq "$OUT" "0" "an existing final destination symlink is filtered, not carried"
 # _WT_CARRY being empty above. _wt_manifest performs no writes under any code
 # path, so a direct "the target file is unchanged" check would pass whether
 # filtering works, is broken, or the function doesn't exist at all — it was
-# tried and proven vacuous. An end-to-end version (through wtcp) wouldn't
-# discriminate either: wtcp refuses an existing destination (a symlink counts
-# as existing) and returns nonzero before writing anything, so a broken filter
-# would surface as a nonzero wt-prepare, never as a modified external file.
+# tried and proven vacuous. An end-to-end version (through the copy) wouldn't
+# discriminate either: cp would write through an existing destination symlink, so
+# the property only holds because the manifest is filtered first.
 
 # Missing source warns and continues.
 setup
@@ -1063,15 +1015,30 @@ run "$REPO" wt-prepare n2
 rc_is 0 "an entry named -h is copied, not parsed as an option"
 eq "$(<"$HOME/Code/Org/repo-n2/-h")" "DASH" "the -h entry's contents actually arrived"
 
-# wtcp failure aborts before setup.
+# CP2: a failed copy aborts prepare before the setup hook.
 setup
 run "$REPO" wt n3
 print -r -- "a.env" > "$REPO/.worktreeinclude"; print -r -- "A" > "$REPO/a.env"
 mkhook "$REPO" '#!/bin/sh
 touch "$WT_MAIN/setup-ran"; exit 0'
-MOCK_WTCP_RC=1 run "$REPO" wt-prepare n3
-rc_is 1 "wtcp failure fails prepare"
-[[ -f "$REPO/setup-ran" ]] && _fail "setup is skipped after a copy failure" || _pass "setup is skipped after a copy failure"
+chmod 000 "$REPO/a.env"
+run "$REPO" wt-prepare n3
+chmod 600 "$REPO/a.env"
+rc_is 1 "CP2 a failed copy fails prepare"
+[[ -f "$REPO/setup-ran" ]] && _fail "CP2 setup is skipped after a copy failure" \
+                           || _pass "CP2 setup is skipped after a copy failure"
+
+# CP3 (review focus 4): modes survive, and a directory entry arrives whole.
+setup
+printf 'config/master.key\nsecrets.d\n' > "$REPO/.worktreeinclude"
+mkdir -p "$REPO/config" "$REPO/secrets.d/inner"
+print -r -- "KEY" > "$REPO/config/master.key"; chmod 600 "$REPO/config/master.key"
+print -r -- "IN" > "$REPO/secrets.d/inner/x.env"; chmod 640 "$REPO/secrets.d/inner/x.env"
+run "$REPO" wt cp3
+rc_is 0 "CP3 a nested file and a directory entry are carried"
+eq "$(stat -f %Lp "$HOME/Code/Org/repo-cp3/config/master.key")" "600" "CP3 master.key keeps mode 600"
+eq "$(<"$HOME/Code/Org/repo-cp3/secrets.d/inner/x.env")" "IN" "CP3 the directory's nested file arrived"
+eq "$(stat -f %Lp "$HOME/Code/Org/repo-cp3/secrets.d/inner/x.env")" "640" "CP3 nested modes survive"
 
 # Setup failure is reported with both recovery steps, branch name quoted.
 setup
@@ -1102,37 +1069,6 @@ rc_is 1 "invalid hook aborts prepare before copying"
   && _fail "manifest file is not copied when the hook is invalid" \
   || _pass "manifest file is not copied when the hook is invalid"
 has "wt-prepare n4 && wt n4" "recovery message names both steps"
-
-# The wtcp-presence guard (`if (( ${#_WT_CARRY} ))`) is scoped to when a copy
-# is actually needed: a repository whose destinations are already fully
-# populated must not require wtcp to be installed. Discriminating: with that
-# guard removed, the presence check fires unconditionally and this fails
-# even though nothing needs copying. Stripped PATH, not a moved stub — wtcp
-# is really installed on this machine, so hiding the stub just falls through
-# to the real binary (same rationale as section D's CLEANP).
-setup
-run "$REPO" wt n5
-print -r -- "a.env" > "$REPO/.worktreeinclude"; print -r -- "A" > "$REPO/a.env"
-print -r -- "A" > "$HOME/Code/Org/repo-n5/a.env"   # already present at the destination
-CLEANP=$(mkd)
-# Every external the lifecycle reaches before the wtcp check. wtcp is absent
-# on purpose. If a helper later grows a new external dependency, add it here
-# too, or this test starts failing for a reason that has nothing to do with
-# wtcp.
-for b in env git awk mkdir; do ln -s "$(command -v $b)" "$CLEANP/$b"; done
-OUT="$(cd "$REPO" && source "$FUNCS" && export PATH="$CLEANP" && wt-prepare n5 2>&1)"; RC=$?
-rc_is 0 "already-populated destinations don't require wtcp"
-
-# Mirrors section D's coverage of a missing wtcp during copy, for
-# wt-prepare's own path (D only exercises this through `wt`).
-setup
-run "$REPO" wt n6
-print -r -- "a.env" > "$REPO/.worktreeinclude"; print -r -- "A" > "$REPO/a.env"
-CLEANP=$(mkd)
-for b in env git awk mkdir; do ln -s "$(command -v $b)" "$CLEANP/$b"; done
-OUT="$(cd "$REPO" && source "$FUNCS" && export PATH="$CLEANP" && wt-prepare n6 2>&1)"; RC=$?
-rc_is 1 "missing destination with wtcp absent aborts instead of silently skipping"
-has "wtcp is missing" "abort names the missing tool"
 
 # Spec §11.3 wants "no multiplexer calls, *including with an active session*". The
 # n1 fixture above runs with no Herdr session at all, which is the easy half: a
@@ -1212,7 +1148,7 @@ rc_is 0 "the worktree is created and prepared once"
 [[ -f "$HOME/Code/Org/repo-o5/a.env" ]] && _pass "creation copied the manifest entry" \
                                         || _fail "creation copied the manifest entry"
 rm "$REPO/setup-ran-o5" "$HOME/Code/Org/repo-o5/a.env"
-: > "$DLOG"; : > "$WLOG"
+: > "$DLOG"
 run "$REPO" wt o5                        # reopen
 rc_is 0 "reopening an existing worktree succeeds"
 has "reopening" "the reopen path is announced"
@@ -1220,8 +1156,6 @@ has "reopening" "the reopen path is announced"
                               || _pass "reopening does not re-run setup"
 [[ -f "$HOME/Code/Org/repo-o5/a.env" ]] && _fail "reopening does not re-copy the manifest" \
                                         || _pass "reopening does not re-copy the manifest"
-[[ -s "$WLOG" ]] && _fail "reopening invokes wtcp not at all" \
-                 || _pass "reopening invokes wtcp not at all"
 dlogged "--worktree $REPO $HOME/Code/Org/repo-o5" "reopening still hands off to dev"
 
 # Locked at creation (spec §3): a failed setup never reaches dev, which used to be the
@@ -1636,7 +1570,9 @@ rc_is 128 "Herdr's one-force native removal cannot bypass the lifecycle lock"
 setup
 print -r -- "env.local" > "$REPO/.worktreeinclude"
 print -r -- "secret" > "$REPO/env.local"
-MOCK_WTCP_RC=1 run "$REPO" wt broken
+chmod 000 "$REPO/env.local"
+run "$REPO" wt broken
+chmod 600 "$REPO/env.local"
 rc_is 1 "wt propagates preparation failure"
 dunlogged "--worktree" "a half-prepared checkout is not opened in Herdr"
 [[ -d "$HOME/Code/Org/repo-broken" ]] \
