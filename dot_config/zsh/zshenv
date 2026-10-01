@@ -16,7 +16,6 @@ export ARCHFLAGS="-arch $(uname -m)"
 # came to shadow the ~/.local/bin/codex launcher. shellenv also exports HOMEBREW_PREFIX,
 # so nothing below calls `brew --prefix` (which can reach the network).
 eval "$(/opt/homebrew/bin/brew shellenv zsh)"
-export FPATH="$HOMEBREW_PREFIX/share/zsh/site-functions:${FPATH}"
 export HOMEBREW_NO_ANALYTICS=1
 export HOMEBREW_BUNDLE_FILE="$XDG_CONFIG_HOME/homebrew/Brewfile"
 
@@ -29,8 +28,9 @@ export PATH=$XDG_BIN_HOME:$PATH
 # locally (full features). Terminfo-poor remotes are handled per-tool: ssh via
 # Ghostty's ssh-env/ssh-terminfo, Teleport via the tsh() wrapper in zsh/functions.
 
-# Set ZSH compdump file
-export ZSH_COMPDUMP="$XDG_CACHE_HOME/zsh/zcompdump-${HOST}-${ZSH_VERSION}"
+# Set ZSH compdump file. No ${HOST}: it varies (this cache holds dumps named 0.0.0.0 and
+# fenrir), and every new name costs a full compinit.
+export ZSH_COMPDUMP="$XDG_CACHE_HOME/zsh/zcompdump-$ZSH_VERSION"
 
 # Path to oh-my-zsh installation.
 export ZSH="$XDG_DATA_HOME/oh-my-zsh"
