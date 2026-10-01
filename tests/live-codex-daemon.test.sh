@@ -213,7 +213,7 @@ is "F22 the pane shows the joined answer token once the turn completes (never fr
 # by up to 5 s for the shell to return to the foreground (G1).
 pane_is_free() {
   herdr pane process-info --pane "$1" 2>/dev/null \
-    | jq -e '.result.process_info | .foreground_process_group_id == .shell_pid' >/dev/null 2>&1
+    | jq -e '.result.process_info | (.shell_pid | type == "number") and (.foreground_process_group_id | type == "number") and (.foreground_process_group_id == .shell_pid)' >/dev/null 2>&1
 }
 ladder() {
   local p="$1" _i _j
@@ -256,16 +256,26 @@ herdr pane wait-output "$pane" --match v2-42 --timeout 10000 >/dev/null 2>&1
 is "V2 the shell then runs the next command" "$?" 0
 
 echo "V1: a -C resume from another directory opens the thread with no chooser"
-herdr pane run "$pane" "$pane_cmd -C $(printf '%q' "$SRC") resume $f22_thread" >/dev/null
-v1=0; want="$(printf '%s' "$f22_thread" | cut -c1-29)"
-for _ in $(seq 20); do
-  t="$(herdr pane get "$pane" | jq -r '.result.pane.terminal_title_stripped // .result.pane.terminal_title // ""')"
-  case "$t" in "$want"*) v1=1; break ;; esac
-  sleep 1
-done
-is "V1 the title shows the thread" "$v1" 1
-is "V1 and no chooser is on screen" \
-   "$(herdr pane read "$pane" --source visible 2>/dev/null | grep -c 'session directory')" 0
+want="$(printf '%s' "$f22_thread" | cut -c1-29)"
+pane_title() { herdr pane get "$pane" | jq -r '.result.pane.terminal_title_stripped // .result.pane.terminal_title // ""'; }
+if [ -z "$want" ]; then
+  _fail "V1 the title shows the thread" "no f22 thread to resume"
+else
+  # The pane's previous session was on this thread: a stale title must not pass for the resume.
+  t="$(pane_title)"; stale=0
+  case "$t" in "$want"*) stale=1 ;; esac
+  is "V1 the title does not already show the thread before the resume" "$stale" 0
+  herdr pane run "$pane" "$pane_cmd -C $(printf '%q' "$SRC") resume $f22_thread" >/dev/null
+  v1=0
+  for _ in $(seq 20); do
+    t="$(pane_title)"
+    case "$t" in "$want"*) v1=1; break ;; esac
+    sleep 1
+  done
+  is "V1 the title shows the thread" "$v1" 1
+  is "V1 and no chooser is on screen" \
+     "$(herdr pane read "$pane" --source visible 2>/dev/null | grep -c 'session directory')" 0
+fi
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
