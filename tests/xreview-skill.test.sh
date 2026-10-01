@@ -127,6 +127,7 @@ fi
 # model goes on believing the gate applies and proposes a merge that was never reviewed
 # — the failure this whole mechanism exists to prevent, arrived at through the prose.
 GUARD="$ROOT/dot_claude/executable_xreview-guard.sh"
+guard_code="$(strip_comments "$GUARD")"
 gated="$(grep -oE '(glab|gh)[[:space:]]+(mr|pr)[[:space:]]+create[A-Za-z0-9_-]*' "$SKILL" | tr -s ' \t' ' ' | sort -u)"
 if [ -z "$gated" ]; then
   _fail "SKILL.md still names the gated forge commands" \
@@ -141,7 +142,7 @@ else
     # precisely. Whether the gate actually fires is xreview-guard.test.sh's job; this
     # one only catches the skill naming a verb the guard stopped looking for at all.
     pat="$(printf '%s' "$c" | sed 's/ /.*/g')"
-    if strip_comments "$GUARD" | grep -qE -- "$pat"; then
+    if grep -qE -- "$pat" <<<"$guard_code"; then
       _pass "SKILL.md says '$c' is gated, and the guard matches it"
     else
       _fail "SKILL.md says '$c' is gated, and the guard matches it" \
@@ -160,10 +161,11 @@ if [ -z "$confined" ]; then
   _fail "SKILL.md still names the confined tools" \
         "found none — either the skill stopped documenting the apply window, or this extractor broke"
 else
+  aguard_arms="$(strip_comments "$AGUARD" | grep -E 'case[[:space:]]+"\$tool"')"
   for tool in $confined; do
     # The dispatching case only: a `supported="Edit|Write"` string kept for diagnostics
     # is not an arm, and matching it would let a tool fall out of the guard unnoticed.
-    if strip_comments "$AGUARD" | grep -E 'case[[:space:]]+"\$tool"' | grep -qE "[|( ]$tool[|) ]"; then
+    if grep -qE "[|( ]$tool[|) ]" <<<"$aguard_arms"; then
       _pass "SKILL.md says '$tool' is confined, and the apply guard matches it"
     else
       _fail "SKILL.md says '$tool' is confined, and the apply guard matches it" \
@@ -175,9 +177,10 @@ fi
 # The inline-diff flag is the whole point of the cost fix: a skill that still shows a
 # bare `xreview dispatch <body-file>` teaches the expensive call, and the model follows
 # the skill, not the CLI's usage line.
+dispatch_lines="$(grep -E '^\s*(NONCE=)?\$?\(?xreview dispatch' "$SKILL")"
 # Assert on the dispatch line itself, not on the file: --diff is mentioned in the prose
 # too, so a file-wide grep stays green even after the example reverts to the costly form.
-if grep -E '^\s*(NONCE=)?\$?\(?xreview dispatch' "$SKILL" | grep -q -- '--diff'; then
+if grep -q -- '--diff' <<<"$dispatch_lines"; then
   _pass "the skill's dispatch example passes the diff inline"
 else
   _fail "the skill's dispatch example passes the diff inline" \
@@ -191,7 +194,7 @@ fi
 
 # The checkpoint is what the pre-merge gate reads. A dispatch example without it teaches
 # a call the CLI refuses, and the model follows the skill, not the usage line.
-if grep -E '^\s*(NONCE=)?\$?\(?xreview dispatch' "$SKILL" | grep -q -- '--checkpoint'; then
+if grep -q -- '--checkpoint' <<<"$dispatch_lines"; then
   _pass "the skill's dispatch example names the checkpoint"
 else
   _fail "the skill's dispatch example names the checkpoint" "$(grep -E 'xreview dispatch' "$SKILL" | head -1)"
@@ -209,7 +212,7 @@ for cp in spec plan pre-merge; do
   fi
 done
 # The gate the skill describes is the gate the guard applies.
-if strip_comments "$GUARD" | grep -q 'pre-merge' && strip_comments "$GUARD" | grep -q 'approve' \
+if grep -q 'pre-merge' <<<"$guard_code" && grep -q 'approve' <<<"$guard_code" \
    && grep -qi 'latest .pre-merge. receipt has the verdict' "$SKILL"; then
   _pass "the skill and the guard agree: only an approved pre-merge receipt opens the gate"
 else
@@ -241,7 +244,7 @@ fi
 # pane's model name was not in a hard-coded table, so every new model release blocked
 # every review. The skill must not reintroduce it by example, and the CLI must not carry
 # a flag that quietly does nothing.
-if grep -E '^\s*(NONCE=)?\$?\(?xreview dispatch' "$SKILL" | grep -q -- '--expect'; then
+if grep -q -- '--expect' <<<"$dispatch_lines"; then
   _fail "the skill's dispatch example is free of --expect" \
         "$(grep -E 'xreview dispatch' "$SKILL" | head -1)"
 else
@@ -255,7 +258,8 @@ fi
 # A skill naming a specific model teaches exactly the gate that was removed — the reader
 # compares the pane against the name and reports a mismatch by hand. Nothing in the CLI
 # can stop that, so it is asserted here instead.
-if grep -oE 'gpt-[0-9]+\.[0-9]+-[a-z]+/[a-z]+' "$SKILL" | grep -q .; then
+reviewer_tiers="$(grep -oE 'gpt-[0-9]+\.[0-9]+-[a-z]+/[a-z]+' "$SKILL")"
+if grep -q . <<<"$reviewer_tiers"; then
   _fail "the skill names no specific reviewer tier" \
         "$(grep -oE 'gpt-[0-9]+\.[0-9]+-[a-z]+/[a-z]+' "$SKILL" | sort -u | tr '\n' ' ')"
 else
