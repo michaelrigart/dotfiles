@@ -303,6 +303,34 @@ report_to_herdr() { # report_to_herdr <pane> <thread>
     >/dev/null 2>&1 || true
 }
 
+# --- one dispatch per pane (spec 2026-10-01 §4.9; G9) ----------------------------------
+# A kernel flock on descriptor 9, taken by a python helper on the inherited descriptor. The
+# lock belongs to the open file, so it holds until this process closes fd 9 or exits -
+# crashes included. No stale lock is ever left behind to reclaim. The lock file is never
+# deleted: a waiter could otherwise lock an unlinked inode while a newcomer locks a new one.
+lock_pane() { # lock_pane <pane>: wait, bounded, for the pane's lock; dies at the bound
+  local dir f wait="${XREVIEW_LOCK_WAIT:-90}"
+  printf '%s' "$wait" | grep -Eq '^([0-9]+(\.[0-9]*)?|\.[0-9]+)$' || wait=90
+  dir="${XDG_STATE_HOME:-$HOME/.local/state}/xreview/locks"
+  mkdir -p "$dir" 2>/dev/null && [ -d "$dir" ] || die "cannot create $dir; no review was started"
+  f="$dir/$(printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_').lock"
+  { exec 9>>"$f"; } 2>/dev/null || die "cannot open $f; no review was started"
+  /usr/bin/python3 -c '
+import fcntl, sys, time
+deadline = time.monotonic() + float(sys.argv[1])
+while True:
+    try:
+        fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        sys.exit(0)
+    except BlockingIOError:
+        if time.monotonic() >= deadline:
+            sys.exit(1)
+        time.sleep(0.1)
+' "$wait" || die "another dispatch is using the Codex pane $1; no review was started"
+}
+
+unlock_pane() { exec 9>&- 2>/dev/null || true; }
+
 # --- threads and checkpoints --------------------------------------------------------
 # The review thread, in precedence order: XREVIEW_THREAD > an `xreview init` pin > this
 # checkpoint's thread. Empty means the next dispatch starts one, in the pane.
@@ -564,6 +592,7 @@ cmd_dispatch() {
   codex-daemon check || die "refusing to dispatch while the daemon carries a pane's environment (see above)"
   xreview-rpc health || die "cannot reach the Codex daemon through xreview-rpc (see above); no review was started"
   pane="$(find_pane)"
+  lock_pane "$pane"
   status="$(pane_field "$pane" '.agent_status')"
   case "$status" in
     working|blocked) die "the Codex pane $pane is mid-turn; wait for it to finish, then dispatch again" ;;
@@ -678,6 +707,7 @@ Report the remaining disagreement, or: xreview round --reset"
   else
     archive_superseded "$thread"
   fi
+  unlock_pane
   printf '%s\n' "$nonce"
 }
 

@@ -54,7 +54,7 @@ cat > "$STUB/herdr" <<'H'
 # printf, not echo: some shells' builtin echo is XSI-compliant and silently turns a literal
 # \033/\007 in a logged argument into real ESC/BEL bytes, which would make the log stop
 # matching the literal text the launch command actually contains.
-printf 'herdr %s\n' "$*" >> "$CALLS"
+printf '%sherdr %s\n' "${DISPATCH_ID:+$DISPATCH_ID }" "$*" >> "$CALLS"
 pane_json() {
   a="$(cat "$P/agent" 2>/dev/null)"; t="$(cat "$P/title" 2>/dev/null)"
   s="$(cat "$P/status" 2>/dev/null || echo idle)"
@@ -96,6 +96,7 @@ case "$1 $2" in
     if [ -e "$P/agent_fail_once" ]; then rm -f "$P/agent_fail_once"; exit 1; fi
     printf '{"result":{"pane":%s}}\n' "$(pane_json)" ;;
   "pane send-keys")
+    sleep "${KEY_DELAY:-0}"
     n=$(cat "$P/ctrlc" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$P/ctrlc"
     if [ "$n" -ge 2 ] && [ -z "${STUCK_TUI:-}" ]; then
       : > "$P/agent"
@@ -132,7 +133,7 @@ esac
 D
 cat > "$STUB/xreview-rpc" <<'R'
 #!/bin/sh
-echo "xreview-rpc $*" >> "$CALLS"
+printf '%sxreview-rpc %s\n' "${DISPATCH_ID:+$DISPATCH_ID }" "$*" >> "$CALLS"
 cmd="$1"; shift
 th=""; input=""; known=""; resolved=""; prefix=""; cwd=""
 while [ "$#" -gt 0 ]; do
@@ -157,8 +158,11 @@ case "$cmd" in
     # test targeting one must not also trip the other).
     if [ -n "${RPC_THREAD_RUNNING:-}" ] || { [ -n "${RPC_THREAD_RUNNING_FOR:-}" ] && [ "$th" = "$RPC_THREAD_RUNNING_FOR" ]; }; then
       echo '{"loaded":true,"status":"active","running":true}'
+    elif [ -e "$P/running.$th" ]; then
+      echo '{"loaded":true,"status":"active","running":true}'
     else echo '{"loaded":true,"status":"idle","running":false}'; fi ;;
   turn-start) cp "$input" "$P/packet"; [ -n "$known" ] && echo '[]' > "$known"
+              [ -n "${RPC_RUNNING_AFTER_START:-}" ] && : > "$P/running.$th"
               # RELIVE_DURING_TURN simulates a live Codex TUI reappearing in the pane while
               # the turn itself was starting (fix round 2/D) - pane_free already confirmed
               # the agent was not codex before this ran; this is what a race would look like.
@@ -181,12 +185,14 @@ fresh() { # a pane showing U0, idle; clean log and state
         RPC_START_THREAD_FAIL NO_TITLE STUCK_TUI AGENT_EXIT_DELAY PANE_RUN_FAIL \
         AGENT_READ_FAIL_ONCE EXTRA_PANES PANE_CWD XREVIEW_PANE XREVIEW_THREAD RPC_WAIT_OUT \
         RPC_WAIT_RC RPC_THREAD_RUNNING RPC_THREAD_RUNNING_FOR RPC_HEALTH_FAIL PANE_GONE_AT \
-        RELIVE_DURING_TURN RPC_SWITCH_BRANCH_TO RPC_SWITCH_BRANCH_EARLY
+        RELIVE_DURING_TURN RPC_SWITCH_BRANCH_TO RPC_SWITCH_BRANCH_EARLY \
+        KEY_DELAY DISPATCH_ID XREVIEW_LOCK_WAIT RPC_RUNNING_AFTER_START
   export NEW_UUID="$U1"
   printf codex > "$P/agent"; printf '%s | t | d' "$(trunc "$U0")" > "$P/title"; echo idle > "$P/status"
   echo 0 > "$P/ctrlc"
   rm -f "$P/packet" "$P/reset_calls" "$P/reset_pending" "$P/newtitle" \
         "$P/exit_delay_active" "$P/exit_delay_calls" "$P/agent_fail_once" "$P/get_seq"
+  rm -f "$P"/running.*
   bash "$XREVIEW" round --reset >/dev/null 2>&1
   rm -rf "$STATE/superseded" "$STATE/pin" "$STATE/turns"
   rm -f "$STATE/pane"   # the fast-path record must never leak from a previous test
@@ -824,6 +830,62 @@ is "the pane is found and the dispatch succeeds" "$(printf '%s' "$nonce" | grep 
 SPSTATE="$XDG_STATE_HOME/xreview/$(printf '%s' "$SPCWD" | tr '/' '_' | sed 's/^_//')"
 is "its state lands in its own directory" "$(cat "$SPSTATE/review-thread" 2>/dev/null)" "$U1"
 cd "$ROOT/repo" || exit 1
+
+echo "P. one dispatch at a time per pane (spec 2026-10-01 §4.9)"
+LOCKF="$XDG_STATE_HOME/xreview/locks/w1_p2.lock"
+fresh; mkdir -p "$(dirname "$LOCKF")"; rm -f "$ROOT/held"
+/usr/bin/python3 -c 'import fcntl,sys,time
+f = open(sys.argv[1], "a"); fcntl.flock(f, fcntl.LOCK_EX); open(sys.argv[2], "w").close(); time.sleep(60)' \
+  "$LOCKF" "$ROOT/held" &
+holder=$!
+for _ in $(seq 50); do [ -e "$ROOT/held" ] && break; sleep 0.1; done
+out="$(XREVIEW_LOCK_WAIT=0.5 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
+is "P1 a held pane refuses at the bound" "$rc" 1
+is "P1 with the exact message" \
+   "$(printf '%s' "$out" | grep -cx 'xreview: another dispatch is using the Codex pane w1:p2; no review was started')" 1
+is "P1 untouched" "$(untouched)" yes
+is "P1 and no round consumed" "$(bash "$XREVIEW" round)" 0
+kill -9 "$holder"; wait "$holder" 2>/dev/null
+: > "$CALLS"
+out="$(XREVIEW_LOCK_WAIT=2 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
+is "P2 a SIGKILLed holder's lock is free at once" "$(printf '%s' "$out" | grep -c '^xr-')" 1
+is "P2 the lock file is never deleted" "$([ -e "$LOCKF" ] && echo yes || echo no)" yes
+fresh
+for id in a b c; do
+  ( DISPATCH_ID=$id KEY_DELAY=0.2 XREVIEW_LOCK_WAIT=30 \
+      bash "$XREVIEW" dispatch --checkpoint plan b.md > "$ROOT/par.$id" 2>&1 ) &
+done
+wait
+blocks="$(grep -E '^[abc] (herdr pane (get|process-info|send-keys|run|read|report-agent-session)|xreview-rpc turn-start)' "$CALLS" \
+          | awk '{print $1}' | uniq)"
+is "P3 every dispatch reached the pane section" "$(printf '%s\n' "$blocks" | sort -u | grep -c .)" 3
+is "P3 no two dispatches interleave inside it" "$(printf '%s\n' "$blocks" | sort | uniq -d | grep -c .)" 0
+is "P3 each one ended in a nonce or a clean refusal" \
+   "$(for id in a b c; do grep -qE '^(xr-|xreview: )' "$ROOT/par.$id" && echo ok; done | grep -c ok)" 3
+fresh; rm -rf "$XDG_STATE_HOME/xreview/locks"; : > "$XDG_STATE_HOME/xreview/locks"
+out="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
+is "P4 an uncreatable lock directory refuses" "$rc/$(printf '%s' "$out" | grep -c 'cannot create')" "1/1"
+is "P4 untouched" "$(untouched)" yes
+rm -f "$XDG_STATE_HOME/xreview/locks"
+for bad in abc . 1.2.3; do
+  fresh
+  out="$(XREVIEW_LOCK_WAIT=$bad bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
+  is "P5 a garbage XREVIEW_LOCK_WAIT ('$bad') falls back to the default" "$(printf '%s' "$out" | grep -c '^xr-')" 1
+done
+# P6 (spec §6): a waiter that gets the lock while the first dispatch's review turn is running
+# refuses as mid-turn, and never sends a key into the pane the first one resumed.
+fresh
+( DISPATCH_ID=a KEY_DELAY=1 RPC_RUNNING_AFTER_START=1 XREVIEW_LOCK_WAIT=30 \
+    bash "$XREVIEW" dispatch --checkpoint plan b.md > "$ROOT/par.a" 2>&1 ) &
+for _ in $(seq 200); do grep -q '^a herdr pane send-keys' "$CALLS" && break; sleep 0.05; done
+( DISPATCH_ID=b RPC_RUNNING_AFTER_START=1 XREVIEW_LOCK_WAIT=30 \
+    bash "$XREVIEW" dispatch --checkpoint plan b.md > "$ROOT/par.b" 2>&1 ) &
+wait
+is "P6 the first dispatch's review started" "$(grep -c '^xr-' "$ROOT/par.a")" 1
+is "P6 the waiter refuses as mid-turn once it gets the lock" "$(grep -c 'mid-turn' "$ROOT/par.b")" 1
+is "P6 and sends no key after the first's turn-start" \
+   "$(none_after '^a xreview-rpc turn-start' '^b herdr pane send-keys')" 0
+is "P6 nor any key at all" "$(called '^b herdr pane send-keys')" 0
 
 echo "Q. a harness worktree reviews in the pane of the worktree that holds it (spec 2026-10-01 §4.2)"
 cd "$CWD" || exit 1
