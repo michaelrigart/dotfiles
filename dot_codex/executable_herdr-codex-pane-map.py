@@ -56,13 +56,24 @@ def left():
     return DEADLINE - time.monotonic()
 
 
-def run(cmd):
-    """Run a herdr command bounded by what is left of the deadline; None when out of time."""
+def herdr_env():
+    """The environment for a herdr call. Inside the Codex daemon (launchd's environment)
+    neither HERDR_SOCKET_PATH nor XDG_CONFIG_HOME is set, and herdr then looks for its socket
+    under $TMPDIR instead of ~/.config/herdr, finds no server, and every report is lost
+    (spec 2026-10-01 §4.10)."""
+    env = dict(os.environ)
+    if not env.get("HERDR_SOCKET_PATH") and not env.get("XDG_CONFIG_HOME"):
+        env["XDG_CONFIG_HOME"] = os.path.expanduser("~/.config")
+    return env
+
+
+def run(cmd, env=None):
+    """Run a command bounded by what is left of the deadline; None when out of time."""
     budget = min(3.0, left())
     if budget <= 0:
         return None
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=budget)
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=budget, env=env)
     except Exception:
         return None
 
@@ -102,7 +113,7 @@ def resolve_thread_id(prefix):
 
 
 def panes(herdr):
-    out = run([herdr, "pane", "list"])
+    out = run([herdr, "pane", "list"], herdr_env())
     try:
         return json.loads(out.stdout)["result"]["panes"] if out else []
     except Exception:
@@ -124,7 +135,7 @@ def report(herdr, pane_id, uuid, seq, start_source):
            "--agent", "codex", "--agent-session-id", uuid, "--seq", str(seq)]
     if start_source:
         cmd += ["--session-start-source", start_source]
-    run(cmd)
+    run(cmd, herdr_env())
 
 
 def reconcile(herdr, done, session_id=None, start_source=None, failed=None):

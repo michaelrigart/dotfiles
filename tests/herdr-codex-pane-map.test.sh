@@ -15,11 +15,12 @@ _fail() { printf '  FAIL: %s\n    | got: %s\n' "$1" "$2"; fail=$((fail + 1)); }
 is() { if [ "$2" = "$3" ]; then _pass "$1"; else _fail "$1" "$2"; fi; }
 
 T="$(mktemp -d "${TMPDIR:-/tmp}/pane-map.XXXXXX")"; trap 'rm -rf "$T"' EXIT
-export CALLS="$T/calls" PANES="$T/panes.json" HERDR_BIN="$T/herdr" PANE_MAP_RETRY_SECS=1
+export T CALLS="$T/calls" PANES="$T/panes.json" HERDR_BIN="$T/herdr" PANE_MAP_RETRY_SECS=1
 cat > "$T/herdr" <<'H'
 #!/bin/sh
 case "$1 $2" in
-  "pane list") [ -n "${HERDR_FAIL:-}" ] && exit 1; cat "$PANES" ;;
+  "pane list") printf 'xdg=%s sock=%s\n' "${XDG_CONFIG_HOME:-}" "${HERDR_SOCKET_PATH:-}" >> "$T/env-seen"
+               [ -n "${HERDR_FAIL:-}" ] && exit 1; cat "$PANES" ;;
   "pane report-agent-session") shift 2; echo "$*" >> "$CALLS" ;;
 esac
 exit 0
@@ -278,6 +279,19 @@ printf '{"session_id":"%s","source":"startup"}' "$U1" \
   | XREVIEW_RPC_BIN="$T/nonexistent-rpc" PANE_MAP_RETRY_SECS=0 hook; rc=$?
 is "M5 it exits 0"                                      "$rc" 0
 is "M5 a missing resolver binary also reports nothing" "$(reports)" 0
+
+echo "X. the hook reaches herdr from the daemon's launchd environment (spec 2026-10-01 §4.10)"
+fixture "$(pane w1:p2 codex "$(trunc "$U1") | t | d" "")"
+: > "$T/env-seen"
+env -u XDG_CONFIG_HOME -u HERDR_SOCKET_PATH HOME="$T/home" /usr/bin/python3 "$HOOK" --reconcile
+is "X1 with neither variable, herdr is called with XDG_CONFIG_HOME=~/.config" \
+   "$(head -1 "$T/env-seen")" "xdg=$T/home/.config sock="
+: > "$T/env-seen"
+env -u HERDR_SOCKET_PATH XDG_CONFIG_HOME=/elsewhere /usr/bin/python3 "$HOOK" --reconcile
+is "X2 an XDG_CONFIG_HOME already set is kept" "$(head -1 "$T/env-seen")" "xdg=/elsewhere sock="
+: > "$T/env-seen"
+env -u XDG_CONFIG_HOME HERDR_SOCKET_PATH=/s.sock /usr/bin/python3 "$HOOK" --reconcile
+is "X3 a HERDR_SOCKET_PATH set adds nothing" "$(head -1 "$T/env-seen")" "xdg= sock=/s.sock"
 
 echo
 echo "RESULT: $pass passed, $((pass + fail)) total, $fail failed"
