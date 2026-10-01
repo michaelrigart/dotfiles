@@ -311,25 +311,6 @@ hl_find_workspace() {
   print -r -- "${ids[1]}"
 }
 
-# hl_is_native_worktree_workspace <workspace-id> <canonical-checkout>
-# A linked checkout is safe to repair only when Herdr itself records matching
-# worktree provenance. A workspace opened by plain `workspace create` has the same
-# pane cwd but is not grouped or discoverable through the worktree lifecycle.
-hl_is_native_worktree_workspace() {
-  local ws="$1" repo="$2" list count checkout linked
-  list="$(hl_api_json workspace list)" || return 1
-  count=$(print -r -- "$list" | jq -r --arg w "$ws" \
-    '[.result.workspaces[] | select(.workspace_id == $w)] | length') || return 1
-  [[ "$count" == 1 ]] || return 1
-  checkout=$(print -r -- "$list" | jq -er --arg w "$ws" \
-    '.result.workspaces[] | select(.workspace_id == $w) | .worktree.checkout_path | select(type == "string" and length > 0)' 2>/dev/null) \
-    || return 1
-  linked=$(print -r -- "$list" | jq -er --arg w "$ws" \
-    '.result.workspaces[] | select(.workspace_id == $w) | .worktree.is_linked_worktree | if type == "boolean" then tostring else error("not boolean") end' 2>/dev/null) \
-    || return 1
-  [[ "$linked" == true && "${checkout:A}" == "$repo" ]]
-}
-
 # hl_id <json> <jq-path> <what> — pull a mandatory id out of a response.
 # hl_api_json proves a payload exists and parses; it says nothing about whether the
 # fields we need are present. `jq -er` fails on null or missing, so a truncated or
@@ -502,47 +483,26 @@ hl_open_worktree() {
   fi
 }
 
-# hl_context_repo <ws> — resolve the guarded repository root for a workspace we were
-# handed by Herdr, into HL_CONTEXT_REPO. Dies (visibly) if the workspace is not a place
-# this script may touch.
-#
-# Sets a global rather than printing, because every failure here goes through die and
-# `repo="$(hl_context_repo …)"` would run that inside a command substitution — killing
-# the subshell, not the script, and leaving the caller to carry on with an empty repo path.
+# hl_context_repo <ws> — the checkout a workspace belongs to, into HL_CONTEXT_REPO: its
+# Herdr provenance, else its first pane's git toplevel. A global, not stdout, because
+# `die` inside a command substitution would kill only the subshell.
 hl_context_repo() {
-  local ws="$1" wrepo root
-  # Target by context, never by a path lookup. A path lookup would find the very
-  # workspace the action was invoked from, focus it, exit 0 and apply nothing — a
-  # silent no-op, and the most confusing possible outcome.
-  wrepo="$(hl_api_json pane list --workspace "$ws" | jq -r '.result.panes[0].cwd')" \
-    || die "could not read the workspace's panes"
-  [[ -n "$wrepo" && "$wrepo" != null ]] || die "workspace $ws has no pane cwd to work from"
-  wrepo="${wrepo:A}"
-
-  # Resolve to the repository ROOT before anything else. A pane's cwd is wherever
-  # the user last cd'd, and `.git` is a file only at the root — so checking the raw
-  # cwd lets any subdirectory of a linked worktree walk straight past the guard.
-  # dev never had this problem: it resolves with rev-parse before guarding.
-  #
-  # Fail CLOSED. Keeping the raw cwd when rev-parse fails meant a workspace sitting
-  # in a non-repo directory — the plain ~ workspace being the obvious one — was
-  # classified provisional and "repaired" into a full managed workspace, with
-  # agents launched in $HOME. Refusing costs nothing; the action is only
-  # meaningful in a repo.
-  root="$(hl_git -C "$wrepo" rev-parse --show-toplevel 2>/dev/null)" \
-    || die "$wrepo is not inside a git repository — refusing"
-  [[ -n "$root" ]] || die "$wrepo is not inside a git repository — refusing"
-  wrepo="${root:A}"
-
-  # A linked checkout is allowed only when Herdr owns it as a native worktree
-  # workspace. Plain workspace creation carries no provenance, so wt-rm could not
-  # identify it reliably during teardown.
-  if [[ -f "$wrepo/.git" ]] \
-    && ! hl_is_native_worktree_workspace "$ws" "$wrepo"; then
-    die "$wrepo is not a native Herdr worktree workspace — refusing"
+  local ws="$1" list cpath cwd root
+  list="$(hl_api_json workspace list)" || die "could not read the workspace list"
+  cpath="$(print -r -- "$list" | jq -r --arg w "$ws" '
+    [.result.workspaces[] | select(.workspace_id == $w) | .worktree.checkout_path
+     | select(type == "string" and length > 0)][0] // ""')" || die "could not read workspace $ws"
+  if [[ -n "$cpath" ]]; then
+    typeset -g HL_CONTEXT_REPO="${cpath:A}"
+    return 0
   fi
-
-  typeset -g HL_CONTEXT_REPO="$wrepo"
+  cwd="$(hl_api_json pane list --workspace "$ws" | jq -r '.result.panes[0].cwd')" \
+    || die "could not read the workspace's panes"
+  [[ -n "$cwd" && "$cwd" != null ]] || die "workspace $ws has no pane cwd to work from"
+  root="$(hl_git -C "${cwd:A}" rev-parse --show-toplevel 2>/dev/null)" \
+    || die "${cwd:A} is not inside a git repository — refusing"
+  [[ -n "$root" ]] || die "${cwd:A} is not inside a git repository — refusing"
+  typeset -g HL_CONTEXT_REPO="${root:A}"
 }
 
 # hl_attach — from a shell, the point of dev is to end up *inside* Herdr. Build or

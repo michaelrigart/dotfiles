@@ -1100,12 +1100,11 @@ OUT="$(HOME="$ROOTTMP" env -u HERDR_ACTIVE_WORKSPACE_ID -u HERDR_WORKSPACE_ID \
 rc_is 1 "N6 without a workspace in context it refuses to run"
 has "no active workspace" "N6 says what is missing"
 
-# Provenance guard: a hand-made workspace in a linked checkout has
-# no native ownership, so wt-rm could not find it during teardown.
+# A linked checkout without provenance still gets its tab: its repo is the pane's toplevel.
 mk "mock_topology '$WT' 'curato-feature' $FULL" --make-tab editor
-rc_is 1 "N7 an unregistered linked-worktree workspace is refused"
-has "native Herdr worktree" "N7 says what is missing"
-unlogged "tab create" "N7 nothing is created"
+rc_is 0 "N7 a linked checkout without provenance gets its editor tab"
+logged "tab create --workspace w7 --label editor --cwd $WT --no-focus" \
+  "N7 created in the pane's own checkout"
 
 mk "mock_topology '$WT' 'curato-feature' $FULL
   export MOCK_WS_LIST='{\"result\":{\"workspaces\":[{\"workspace_id\":\"w7\",\"label\":\"curato-feature\",\"worktree\":{\"checkout_path\":\"$WT\",\"is_linked_worktree\":true}}]}}'" \
@@ -1113,6 +1112,20 @@ mk "mock_topology '$WT' 'curato-feature' $FULL
 rc_is 0 "N7b a native worktree workspace gets its editor tab"
 logged "tab create --workspace w7 --label editor --cwd $WT --no-focus" \
   "N7b created in the worktree checkout, not the primary"
+
+# Provenance outranks the first pane's cwd.
+mk "mock_topology '$R1' 'curato-feature' $FULL
+  export MOCK_WS_LIST='{\"result\":{\"workspaces\":[{\"workspace_id\":\"w7\",\"label\":\"curato-feature\",\"worktree\":{\"checkout_path\":\"$WT\",\"is_linked_worktree\":true}}]}}'" \
+  --make-tab editor
+logged "tab create --workspace w7 --label editor --cwd $WT --no-focus" \
+  "N7c the workspace's provenance decides the repo, not where its first pane stands"
+
+# Without provenance the toplevel, not a subdirectory, is the repo.
+mkdir -p "$WT/src/deep"
+mk "mock_topology '$WT/src/deep' 'curato-feature' $FULL" --make-tab editor
+rc_is 0 "N7d a pane in a subdirectory still resolves"
+logged "tab create --workspace w7 --label editor --cwd $WT --no-focus" \
+  "N7d the checkout's toplevel, not the subdirectory"
 
 mk "mock_topology '$R1' 'Netronix/curato' $FULL" --make-tab
 rc_is 1 "N8 --make-tab with no label fails"
