@@ -12,6 +12,8 @@
 #
 # Anything that needs the real binary resolves it with `codex-daemon real-bin`, never
 # `command -v codex`, which answers with this script.
+#
+# A resumed thread that last ran read-only resumes read-only (spec 2026-10-01 §4.7).
 set -eu
 
 # The helper lives beside this launcher first (both are deployed to ~/.local/bin together);
@@ -37,7 +39,26 @@ fi
 # daemon like any interactive start (F9), so it is deliberately not in this set.
 PASSTHROUGH=" exec e review login logout mcp plugin app-server remote-control app completion update doctor sandbox debug apply a queue archive delete migrate-rollouts unarchive cloud exec-server features help "
 
+# thread_mode <id>: the sandbox (and approval policy, when it is a plain string) that the
+# thread's LAST turn ran with, from its rollout (spec 2026-10-01 §4.7, G5): "read-only never",
+# "read-only", "workspace-write on-request", ... Nothing for anything that is not a plain
+# thread id, a thread with no rollout, or no jq.
+thread_mode() {
+  case "$1" in ''|*[!0-9a-f-]*) return 0 ;; esac
+  [ "${#1}" -eq 36 ] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  f="$(find "${CODEX_HOME:-$HOME/.codex}/sessions" -type f -name "rollout-*-$1.jsonl" 2>/dev/null | sort | tail -1)"
+  [ -n "$f" ] && [ -r "$f" ] || return 0
+  jq -r 'select(.type == "turn_context")
+         | [(.payload.sandbox_policy.type // ""),
+            (.payload.approval_policy | if type == "string" then . else "" end)]
+         | map(select(. != "")) | join(" ")' "$f" 2>/dev/null \
+    | tail -1 | grep -E '^[a-z-]+( [a-z-]+)?$' || true
+}
+
 sub=""
+arg2=""
+modeflag=0
 overrides=0
 nodaemon=0
 remote=0
@@ -63,7 +84,9 @@ for a in "$@"; do
     -c?*|--config=*|--enable=*|--disable=*) overrides=1 ;;
     -h|--help|-V|--version) helpver=1 ;;
     -i|--image) imgskip=1 ;;
-    -m|--model|-p|--profile|-s|--sandbox|-a|--ask-for-approval|-C|--cd|--add-dir|--remote-auth-token-env|--local-provider) skip=1 ;;
+    -s|--sandbox|-a|--ask-for-approval) modeflag=1; skip=1 ;;
+    --sandbox=*|--ask-for-approval=*|--full-auto|--dangerously-bypass-approvals-and-sandbox|--yolo) modeflag=1 ;;
+    -m|--model|-p|--profile|-C|--cd|--add-dir|--remote-auth-token-env|--local-provider) skip=1 ;;
     # A short-option CLUSTER holding h or V ("-hV", "-Vh", "-xh", ...) is also help/version:
     # neither ever takes a value, so any single-dash cluster containing one is unambiguous.
     # A cluster led by a value-taking short flag (-m/-p/-s/-a/-C/-i) is its attached value,
@@ -71,11 +94,12 @@ for a in "$@"; do
     # first, so e.g. "-mVerbose" or "-i/home/x.png" is never misread as help/version.
     -[!-]*)
       case "$a" in
-        -[mpsaCi]*) ;;
+        -[sa]?*) modeflag=1 ;;
+        -[mpCi]*) ;;
         *h*|*V*) helpver=1 ;;
       esac ;;
     -*) ;;
-    *) [ -n "$sub" ] || sub="$a" ;;
+    *) if [ -z "$sub" ]; then sub="$a"; elif [ -z "$arg2" ]; then arg2="$a"; fi ;;
   esac
 done
 
@@ -84,6 +108,17 @@ case "$PASSTHROUGH" in *" $sub "*) exec "$real" "$@" ;; esac
 # it must never kickstart the daemon (F7), even on `resume --help` or alongside a refused
 # flag such as --remote.
 if [ "$helpver" = 1 ]; then exec "$real" "$@"; fi
+
+# A resumed thread that last ran read-only resumes read-only (spec 2026-10-01 §4.7): herdr's
+# restore types a bare `codex resume <id>`, which would otherwise come back workspace-write.
+# Never widens a sandbox; any explicit sandbox or approval flag wins.
+if [ "$sub" = resume ] && [ "$modeflag" = 0 ]; then
+  mode="$(thread_mode "$arg2")"
+  case "$mode" in
+    read-only) set -- --sandbox read-only "$@" ;;
+    "read-only "*) set -- --sandbox read-only --ask-for-approval "${mode#read-only }" "$@" ;;
+  esac
+fi
 if [ "$nodaemon" = 1 ]; then exec "$real" "$@"; fi
 
 if [ "$remote" = 1 ]; then
