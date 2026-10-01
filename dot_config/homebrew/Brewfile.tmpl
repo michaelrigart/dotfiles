@@ -1,6 +1,5 @@
-{{- /* Identity is read LIVE from scutil, not from chezmoi's .hostname: .hostname is
-     captured once at `chezmoi init` and never refreshed, so after a rename it reports
-     the old name forever and a guard built on it could never fire. */ -}}
+{{- /* Identity is read LIVE from scutil, not from chezmoi config data, which is rendered
+     only at `chezmoi init` and goes stale after a rename. */ -}}
 {{- $live := output "scutil" "--get" "ComputerName" | trim -}}
 {{- $hn := output "scutil" "--get" "HostName" | trim -}}
 {{- if not (has $live .known_hostnames) -}}
