@@ -14,7 +14,7 @@ go in `claude-code.md`; project rules live in each repository's `AGENTS.md`.
   `$PATH`), cache `~/.cache`, state `~/.local/state`; `$HOME` stays clean.
 - **Shell and tools:** zsh with Oh My Zsh, Starship, Ghostty, Neovim (`vi`/`vim` run
   `nvim`); Herdr manages terminal workspaces. Prefer `rg`, `fd`, `eza`, `zoxide` and `fzf`;
-  there is no `bat`. Interactive aliases (`ls`, `cd`) are absent in non-interactive shells.
+  there is no `bat`. Aliases (`ls`, zoxide's `cd`) are absent in non-interactive shells.
 - **Packages:** Homebrew packages go in `~/.config/homebrew/Brewfile`; runtimes (Ruby,
   Python, Rust, .NET) go in mise (`~/.config/mise/config.toml`). Never install ad hoc or as
   global toolchains.

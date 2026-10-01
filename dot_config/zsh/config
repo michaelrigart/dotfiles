@@ -15,7 +15,7 @@ eval "$(mise activate zsh)"
 # "initialize zoxide at the end of your shell config" warning.
 autoload -Uz add-zsh-hook
 __init_zoxide() {
-  eval "$(zoxide init zsh)"
+  eval "$(zoxide init zsh --cmd cd)"
   add-zsh-hook -d precmd __init_zoxide
   unset -f __init_zoxide
 }
