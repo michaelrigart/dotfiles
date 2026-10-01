@@ -6,9 +6,8 @@
 # binary can, so this runs against it — in an isolated named session, never the live
 # one.
 #
-# A named session isolates the socket and runtime state. It does NOT isolate plugin
-# registration, which is global — hence the distinct plugin id below. Reusing
-# `dev.layout` would let teardown unlink the plugin the live setup depends on.
+# It runs the SOURCE copies of layout.sh, tab-goto.sh, the zsh functions and wt-teardown
+# through scratch wrappers, and keeps layout.sh's lock files in the scratch directory.
 #
 # Run manually, unsandboxed: ./tests/dev-topology.test.sh
 # test-requires: unsandboxed, herdr  # drives the real herdr binary, whose socket the sandbox denies
@@ -16,13 +15,21 @@ emulate -L zsh
 set -u
 setopt no_bg_nice   # see the same note in layout.sh
 SESSION=dev-test
-PLUGIN_ID=dev.layout.test
 TMP_BASE=${TMPDIR:-/tmp}
 TMP_BASE=${TMP_BASE%/}
 h() { command herdr --session "$SESSION" "$@" }
 
+ROOT="${0:A:h:h}"
+SRC_LAYOUT="$ROOT/dot_config/herdr/executable_layout.sh"
+SRC_TABGOTO="$ROOT/dot_config/herdr/executable_tab-goto.sh"
+SRC_FUNCS="$ROOT/dot_config/zsh/functions"
+SRC_TEARDOWN="$ROOT/dot_local/bin/executable_wt-teardown"
+for f in "$SRC_LAYOUT" "$SRC_TABGOTO" "$SRC_FUNCS" "$SRC_TEARDOWN"; do
+  [[ -r "$f" ]] || { print -ru2 -- "dev-topology: missing $f"; exit 2 }
+done
+STATE_BEFORE=$(ls ~/.local/state/herdr-layout 2>/dev/null | wc -l | tr -d ' ')
+
 pass=0 fail=0
-plugin_linked=0
 ok()   { print -r -- "  PASS: $1"; pass=$((pass+1)) }
 bad()  { print -r -- "  FAIL: $1"; fail=$((fail+1)) }
 
@@ -31,10 +38,6 @@ cleanup() {
   # ~/.config/herdr/sessions/<name> and restores them next start. Without an explicit
   # delete, every run inherited the previous run's workspaces and `workspace list`
   # answered about stale ones.
-  # Unlink while this named server is still reachable. Plugin registration is global,
-  # but the CLI mutation still needs a running server; stopping first leaves a stale
-  # registration pointing at the deleted fixture directory.
-  (( plugin_linked )) && h plugin unlink "$PLUGIN_ID" >/dev/null 2>&1 || true
   h server stop >/dev/null 2>&1 || true
   command herdr session delete "$SESSION" >/dev/null 2>&1 || true
   if [[ -n "${SCRATCH:-}" && "$SCRATCH" == $TMP_BASE/dev-live.* ]]; then
@@ -51,6 +54,14 @@ git -C "$REPO" init -q || exit 1
 # "${repo:A}" (/private/...), so an unresolved comparison never matches a pane cwd.
 REPO="${REPO:A}"
 
+mkdir -p "$SCRATCH/bin" "$SCRATCH/state" || exit 1
+print -r -- "#!/bin/sh
+exec zsh '$SRC_LAYOUT' \"\$@\"" > "$SCRATCH/bin/layout.sh"
+print -r -- "#!/bin/sh
+exec zsh '$SRC_TEARDOWN' \"\$@\"" > "$SCRATCH/bin/wt-teardown"
+chmod +x "$SCRATCH/bin/layout.sh" "$SCRATCH/bin/wt-teardown"
+export PATH="$SCRATCH/bin:$PATH" DEV_LAYOUT="$SCRATCH/bin/layout.sh" XDG_STATE_HOME="$SCRATCH/state"
+
 # Start clean as well as finish clean: a run killed mid-way leaves state behind.
 # STOP before DELETE — `session delete` only acts on a stopped session, so deleting
 # first silently fails against a surviving server and the persisted state is then
@@ -62,7 +73,7 @@ print -r -- "=== live topology gate (session: $SESSION) ==="
 
 # 1. Cold bootstrap: no server running.
 h server stop >/dev/null 2>&1 || true
-HERDR_SESSION="$SESSION" DEV_NO_ATTACH=1 ~/.config/herdr/layout.sh "$REPO" \
+HERDR_SESSION="$SESSION" DEV_NO_ATTACH=1 "$DEV_LAYOUT" "$REPO" \
   && ok "cold bootstrap builds a workspace" || bad "cold bootstrap failed"
 
 # 2. Topology is what we think it is.
@@ -80,12 +91,12 @@ n=$(h tab list --workspace "$WS" | jq -r '[.result.tabs[] | select(.label == "ed
 
 # ...and then the keybinding's script actually creates one against the real server.
 et=$(HERDR_SESSION="$SESSION" HERDR_ACTIVE_WORKSPACE_ID="$WS" \
-       ~/.config/herdr/layout.sh --make-tab editor 2>&1)
+       "$DEV_LAYOUT" --make-tab editor 2>&1)
 n=$(h tab list --workspace "$WS" | jq -r '[.result.tabs[] | select(.label == "editor")] | length')
 [[ "$n" == 1 ]] && ok "--make-tab creates the editor tab" || bad "after --make-tab, editor count = $n ($et)"
 # Idempotent: a second press must focus the same tab, not append another.
 et2=$(HERDR_SESSION="$SESSION" HERDR_ACTIVE_WORKSPACE_ID="$WS" \
-        ~/.config/herdr/layout.sh --make-tab editor 2>&1)
+        "$DEV_LAYOUT" --make-tab editor 2>&1)
 n=$(h tab list --workspace "$WS" | jq -r '[.result.tabs[] | select(.label == "editor")] | length')
 [[ "$n" == 1 && "$et2" == "$et" ]] \
   && ok "--make-tab is idempotent and returns the same tab id" \
@@ -96,7 +107,7 @@ n=$(h pane list --workspace "$WS" | jq -r --arg t "$AT" '[.result.panes[] | sele
 
 # 3. Idempotency: a second run focuses, never duplicates.
 second_rc=0
-HERDR_SESSION="$SESSION" DEV_NO_ATTACH=1 ~/.config/herdr/layout.sh "$REPO" >/dev/null \
+HERDR_SESSION="$SESSION" DEV_NO_ATTACH=1 "$DEV_LAYOUT" "$REPO" >/dev/null \
   || second_rc=$?
 n=$(h workspace list | jq -r '.result.workspaces | length')
 [[ "$second_rc" == 0 && "$n" == 1 ]] \
@@ -106,7 +117,7 @@ n=$(h workspace list | jq -r '.result.workspaces | length')
 # 4. Extra tabs survive.
 h tab create --workspace "$WS" --label notes >/dev/null
 notes_rc=0
-HERDR_SESSION="$SESSION" DEV_NO_ATTACH=1 ~/.config/herdr/layout.sh "$REPO" >/dev/null \
+HERDR_SESSION="$SESSION" DEV_NO_ATTACH=1 "$DEV_LAYOUT" "$REPO" >/dev/null \
   || notes_rc=$?
 [[ "$notes_rc" == 0 ]] \
   && h tab list --workspace "$WS" | jq -e '.result.tabs[] | select(.label=="notes")' >/dev/null \
@@ -121,11 +132,11 @@ REPO2="${REPO2:A}"
 # B sleeps BEFORE taking the lock, so it arrives after A has built and released —
 # the stale-observation schedule. Launching two at once would usually serialise
 # harmlessly and prove nothing.
-( HERDR_SESSION="$SESSION" DEV_NO_ATTACH=1 HL_LOCK_DELAY=3 ~/.config/herdr/layout.sh "$REPO2" ) &
+( HERDR_SESSION="$SESSION" DEV_NO_ATTACH=1 HL_LOCK_DELAY=3 "$DEV_LAYOUT" "$REPO2" ) &
 B=$!
 sleep 0.2
 a_rc=0
-HERDR_SESSION="$SESSION" DEV_NO_ATTACH=1 ~/.config/herdr/layout.sh "$REPO2" >/dev/null 2>&1 \
+HERDR_SESSION="$SESSION" DEV_NO_ATTACH=1 "$DEV_LAYOUT" "$REPO2" >/dev/null 2>&1 \
   || a_rc=$?
 b_rc=0
 wait $B 2>/dev/null || b_rc=$?
@@ -155,7 +166,7 @@ git -C "$PRIMARY" -c user.name=gate -c user.email=gate@example.invalid \
 PRIMARY="${PRIMARY:A}"
 WT="$SCRATCH/Code/Test/worktree-proj-live-wt"
 wt_rc=0
-( cd "$PRIMARY" && source ~/.config/zsh/functions && \
+( cd "$PRIMARY" && source "$SRC_FUNCS" && \
   HERDR_SESSION="$SESSION" DEV_NO_ATTACH=1 wt live-wt ) >/dev/null 2>&1 || wt_rc=$?
 WT="${WT:A}"
 WWS=$(h workspace list | jq -r --arg d "$WT" \
@@ -170,7 +181,7 @@ lock_reason=$(git -C "$PRIMARY" worktree list --porcelain | sed -n '/worktree .*
 
 # Reopen must return to the same native workspace, not create an ordinary duplicate.
 reopen_rc=0
-( cd "$PRIMARY" && source ~/.config/zsh/functions && \
+( cd "$PRIMARY" && source "$SRC_FUNCS" && \
   HERDR_SESSION="$SESSION" DEV_NO_ATTACH=1 wt live-wt ) >/dev/null 2>&1 || reopen_rc=$?
 wns=$(h workspace list | jq -r --arg d "$WT" \
   '[.result.workspaces[] | select(.worktree.checkout_path == $d)] | length')
@@ -186,65 +197,45 @@ h worktree remove --workspace "$WWS" --force >/dev/null 2>&1 || native_rm_rc=$?
 [[ "$native_rm_rc" != 0 && -d "$WT" ]] \
   && ok "Herdr native removal cannot bypass wt-rm teardown" \
   || bad "native removal rc=$native_rm_rc checkout-exists=$([[ -d "$WT" ]] && print yes || print no)"
-( cd "$PRIMARY" && source ~/.config/zsh/functions && \
+( cd "$PRIMARY" && source "$SRC_FUNCS" && \
   HERDR_SESSION="$SESSION" DEV_NO_ATTACH=1 wt live-wt ) >/dev/null 2>&1 || true
 
 # The approved teardown path closes Herdr state, crosses only its own Git lock after
 # all checks, removes the checkout and deletes the merged branch.
 custom_rm_rc=0
-( cd "$PRIMARY" && command wt-rm live-wt ) >/dev/null 2>&1 || custom_rm_rc=$?
+( cd "$PRIMARY" && source "$SRC_FUNCS" && HERDR_SESSION="$SESSION" wt-rm live-wt ) >/dev/null 2>&1 || custom_rm_rc=$?
 remaining_wt=$(h workspace list | jq -r --arg d "$WT" \
   '[.result.workspaces[] | select(.worktree.checkout_path == $d)] | length')
 [[ "$custom_rm_rc" == 0 && ! -d "$WT" && "$remaining_wt" == 0 ]] \
   && ok "command wt-rm closes Herdr and safely removes the checkout" \
   || bad "wt-rm rc=$custom_rm_rc checkout-exists=$([[ -d "$WT" ]] && print yes || print no) workspaces=$remaining_wt"
 
-# 7. The plugin: link under a DISTINCT id, invoke it, unlink. Registration is global,
-#    so reusing dev.layout would let this teardown unlink the real one.
-PDIR="$SCRATCH/plugin"
-mkdir -p "$PDIR" || exit 1
-# Match the plugin id EXACTLY. `s/^id = .*/` also rewrites the [[actions]] entry's
-# `id = "apply"` — TOML nested tables are not indented — which renames the action
-# too, leaving "$PLUGIN_ID.apply" pointing at nothing.
-sed 's|^id = "dev.layout"$|id = "'"$PLUGIN_ID"'"|' \
-  ~/.config/herdr/plugin/herdr-plugin.toml > "$PDIR/herdr-plugin.toml" || exit 1
-grep -q '^id = "apply"' "$PDIR/herdr-plugin.toml" \
-  && ok "the action id survived the id rewrite" || bad "the action id was rewritten too"
-# Remove a registration left by an older interrupted gate before linking this run's
-# fixture. Registration is global, but both mutations are routed through the live,
-# isolated server so they cannot fail merely because the default server is stopped.
-h plugin unlink "$PLUGIN_ID" >/dev/null 2>&1 || true
-h plugin link "$PDIR" >/dev/null \
-  && { plugin_linked=1; ok "the plugin links"; } || bad "plugin link failed"
+# 7. dev re-adds a closed eager tab (what the retired plugin action did), and a manual
+#    split never stops dev from focusing (bug 2).
 close_rc=0
 h tab close "$(h tab list --workspace "$WS" | jq -r '.result.tabs[] | select(.label=="runtime") | .tab_id')" >/dev/null \
   || close_rc=$?
-closed_n=$(h tab list --workspace "$WS" | jq -r '[.result.tabs[] | select(.label=="runtime")] | length')
-# The action's context is taken from the FOCUSED workspace, so focus it first —
-# otherwise the plugin repairs whichever workspace happens to be focused.
-focus_rc=0
-h workspace focus "$WS" >/dev/null || focus_rc=$?
-invoke_rc=0
-h plugin action invoke "$PLUGIN_ID.apply" >/dev/null 2>&1 || invoke_rc=$?   # session-scoped: the
-# topology lives in dev-test, and a bare `herdr plugin action invoke` would run it
-# against the default session instead.
-# `plugin action invoke` returns while the action is still "running" — poll rather
-# than assuming it finished.
-for i in {1..20}; do
-  n=$(h tab list --workspace "$WS" | jq -r '[.result.tabs[] | select(.label=="runtime")] | length')
-  [[ "$n" == 1 ]] && break
-  sleep 0.5
-done
-[[ "$close_rc" == 0 && "$closed_n" == 0 && "$focus_rc" == 0 && "$invoke_rc" == 0 && "$n" == 1 ]] \
-  && ok "the plugin action repairs a closed managed tab" \
-  || bad "repair preconditions/actions rc=$close_rc/$focus_rc/$invoke_rc, counts=$closed_n->$n"
+readd_rc=0
+HERDR_SESSION="$SESSION" DEV_NO_ATTACH=1 "$DEV_LAYOUT" "$REPO" >/dev/null 2>&1 || readd_rc=$?
+n=$(h tab list --workspace "$WS" | jq -r '[.result.tabs[] | select(.label=="runtime")] | length')
+[[ "$close_rc" == 0 && "$readd_rc" == 0 && "$n" == 1 ]] \
+  && ok "dev re-adds a closed runtime tab" \
+  || bad "re-add rc=$close_rc/$readd_rc, runtime tabs=$n"
+# The agents panes, taken BEFORE the split: herdr lists a new pane right after the pane it
+# split, so afterwards the second entry is the new pane, not the right-hand agent.
+APANES=( ${(f)"$(h pane list --workspace "$WS" | jq -r --arg t "$AT" \
+  '.result.panes[] | select(.tab_id==$t) | .pane_id')"} )
+h pane split --pane "$(h pane list --workspace "$WS" | jq -r --arg t "$AT" \
+  '[.result.panes[] | select(.tab_id==$t)][0].pane_id')" --direction down --no-focus >/dev/null
+split_rc=0
+HERDR_SESSION="$SESSION" DEV_NO_ATTACH=1 "$DEV_LAYOUT" "$REPO" >/dev/null 2>&1 || split_rc=$?
+[[ "$split_rc" == 0 ]] && ok "a manual split does not stop dev from focusing" \
+                       || bad "dev after a manual split rc=$split_rc"
 
 # 7a. smart-splits' Herdr dispatcher is live, not merely named in config. Move to the
 # left agents pane, invoke right, and wait for the detached plugin action to focus its
 # neighbor. Neovim uses the same plugin's native Herdr backend at split edges.
 if h plugin list | grep -Fq 'smart-splits.nvim'; then
-  APANES=( ${(f)"$(h pane list --workspace "$WS" | jq -r --arg t "$AT" \
-    '.result.panes[] | select(.tab_id==$t) | .pane_id')"} )
   left="${APANES[1]}"; right="${APANES[2]}"
   # Focus left deterministically by starting from right and moving left.
   h pane focus --pane "$right" --direction left >/dev/null 2>&1 || true
@@ -270,7 +261,7 @@ fi
 #     earlier — and a position-based lookup would not land reliably on it at all.
 RTAB=$(h tab list --workspace "$WS" | jq -r '.result.tabs[] | select(.label=="runtime") | .tab_id')
 jump_rc=0
-HERDR_ACTIVE_WORKSPACE_ID="$WS" HERDR_SESSION="$SESSION" ~/.config/herdr/tab-goto.sh runtime \
+HERDR_ACTIVE_WORKSPACE_ID="$WS" HERDR_SESSION="$SESSION" zsh "$SRC_TABGOTO" runtime \
   || jump_rc=$?
 ACTIVE=$(h workspace get "$WS" | jq -r '.result.workspace.active_tab_id')
 [[ "$jump_rc" == 0 && "$ACTIVE" == "$RTAB" ]] \
@@ -306,33 +297,6 @@ done
 (( enabled )) && ok "notification delivery is enabled (reason: $r)" \
   || bad "notification delivery is off (last reason: ${r:-none}) — failure feedback would be invisible"
 
-# Assert the global side effect is gone before the fixture directory disappears. The
-# EXIT trap is only a backstop for interruption; a green run must prove its teardown.
-if (( plugin_linked )); then
-  unlink_out=$(h plugin unlink "$PLUGIN_ID" 2>/dev/null) || unlink_out=''
-  removed=0
-  if print -r -- "$unlink_out" | jq -e --arg id "$PLUGIN_ID" \
-      '.result.plugin_id == $id and .result.removed == true' >/dev/null 2>&1; then
-    # The command response is not enough: an interrupted earlier run left the plugin
-    # in global plugins.json while reporting removed=true. The fixture directory then
-    # disappeared, leaving a live registration pointing at nothing. Verify the
-    # persisted owner before allowing cleanup to delete this run's directory.
-    for i in {1..20}; do
-      if ! jq -e --arg id "$PLUGIN_ID" '.[] | select(.plugin_id == $id)' \
-          ~/.config/herdr/plugins.json >/dev/null 2>&1; then
-        removed=1
-        break
-      fi
-      sleep 0.1
-    done
-  fi
-  if (( removed )); then
-    plugin_linked=0
-  else
-    bad "the test plugin registration was not removed"
-  fi
-fi
-
 # Persisted session schema. wt-rm inspects a STOPPED session's session.json to decide
 # whether it still references a checkout, and pins `.version == 3`, refusing anything
 # else rather than guessing at an unknown shape. That is the right fail-closed call,
@@ -361,6 +325,14 @@ else
     && ok "persisted session schema is version 3, as wt-rm requires" \
     || bad "persisted session schema is '${SVER:-unreadable}', not 3 — wt-rm will refuse worktree teardown"
 fi
+
+STATE_AFTER=$(ls ~/.local/state/herdr-layout 2>/dev/null | wc -l | tr -d ' ')
+[[ "$STATE_AFTER" == "$STATE_BEFORE" ]] \
+  && ok "no lock file leaked into ~/.local/state/herdr-layout" \
+  || bad "lock files in ~/.local/state/herdr-layout went from $STATE_BEFORE to $STATE_AFTER"
+command herdr plugin list 2>/dev/null | grep -q 'dev.layout.test' \
+  && bad "a dev.layout.test plugin registration exists" \
+  || ok "no test plugin registration exists"
 
 print -r -- "=== $pass passed, $fail failed ==="
 (( fail == 0 ))
