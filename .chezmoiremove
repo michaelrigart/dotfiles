@@ -8,3 +8,12 @@
 
 # The subagent statusline, retired 2026-09-30: it never rendered.
 .claude/subagent-statusline.sh
+
+# LazyVim starter leftovers: an example spec that returns {} before loading anything,
+# and the starter README.
+.config/nvim/lua/plugins/example.lua
+.config/nvim/README.md
+
+# Left behind by the retired oh-my-zsh mise plugin. oh-my-zsh puts $ZSH/cache/completions
+# first in fpath, so this stale copy shadows the Homebrew _mise and is never regenerated.
+.local/share/oh-my-zsh/cache/completions/_mise

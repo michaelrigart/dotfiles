@@ -220,14 +220,6 @@ log_info "Applying dotfiles with chezmoi..."
 # Force apply to overwrite any local changes
 chezmoi apply --force
 
-# Set proper permissions on SSH directory and private keys only
-if [ -d "${HOME}/.ssh" ]; then
-  log_info "Setting SSH key permissions..."
-  chmod 700 "${HOME}/.ssh"
-  # Only change permissions on private keys (files without .pub extension and not config)
-  find "${HOME}/.ssh" -type f ! -name "*.pub" ! -name "config" -exec chmod 600 {} \; 2>/dev/null || true
-fi
-
 # ============================================================================
 # 7. Switch chezmoi remote to SSH for future commits
 # ============================================================================
@@ -265,12 +257,8 @@ if [ -f "${XDG_CONFIG_HOME}/homebrew/Brewfile" ]; then
 
   # A licence-gated cask must not end the run — the remaining steps still matter.
   # `brew bundle` fails for the whole file, so ask `check` which items actually missed.
-  #
-  # The retry is not superstition: `brew bundle` installs every formula before any
-  # cask, and borgbackup-fuse is a formula that requires the macfuse cask. On a clean
-  # machine the first pass always fails on it; by the second pass macfuse exists.
   if ! brew bundle install --file "${HOMEBREW_BUNDLE_FILE}"; then
-    log_warn "brew bundle had failures — retrying once (formula-before-cask ordering)"
+    log_warn "brew bundle had failures — retrying once"
     brew bundle install --file "${HOMEBREW_BUNDLE_FILE}" || true
   fi
   if ! brew bundle check --file "${HOMEBREW_BUNDLE_FILE}" >/dev/null 2>&1; then
@@ -319,8 +307,7 @@ fi
 log_info "Installing oh-my-zsh..."
 if [ -d "${XDG_DATA_HOME}/oh-my-zsh" ]; then
   log_info "✓ oh-my-zsh already installed"
-  cd "${XDG_DATA_HOME}/oh-my-zsh"
-  git pull
+  (cd "${XDG_DATA_HOME}/oh-my-zsh" && git pull)
 else
   log_info "Installing oh-my-zsh to ${XDG_DATA_HOME}/oh-my-zsh..."
   # Set ZSH to XDG location before installation

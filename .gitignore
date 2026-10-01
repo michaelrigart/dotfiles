@@ -60,18 +60,11 @@ docs/superpowers/runs/
 # Logs
 *.log
 
-# Backup files from editors
-*~
+# Emacs auto-save and lock files
 \#*\#
 .\#*
 
-# Chezmoi state files (shouldn't be in source, but just in case)
+# Local chezmoi data files: keep private overrides out of this public repo
 .chezmoidata.toml
 .chezmoidata.yaml
 .chezmoidata.json
-
-# Superpowers execution state and generated artifacts — task briefs, per-task
-# reports, review diffs, progress ledgers. Approved specs and plans under
-# docs/superpowers/{specs,plans}/ ARE tracked; only the execution exhaust is not.
-.superpowers/
-docs/superpowers/runs/
