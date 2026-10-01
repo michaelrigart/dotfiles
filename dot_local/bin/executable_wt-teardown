@@ -12,11 +12,10 @@ emulate -L zsh
 
 typeset PROG=wt-teardown
 typeset -a PIDFILES SWEEPS
-# pid -> ppid, populated by the most recent _scan call. _ancestors reads it rather than
-# calling lsof itself — see _scan and _ancestors below for why one listing must feed both.
+# pid -> ppid, populated by the most recent _scan call; _ancestors reads it (one lsof
+# listing must feed both, see _ancestors).
 typeset -gA _WT_PARENT
-# Seconds to wait after TERM, then after KILL. Overridable so the test suite does not
-# spend fifteen seconds per case; there is no reason to change them in use.
+# Seconds to wait after TERM, then after KILL; overridable for the test suite.
 typeset -i TERM_WAIT=${WT_TEARDOWN_TERM_WAIT:-10}
 typeset -i KILL_WAIT=${WT_TEARDOWN_KILL_WAIT:-5}
 
@@ -49,30 +48,25 @@ esac
 
 # Everything below serves the teardown and scan verbs.
 #
-# Validated here rather than trusted: the protocol supplies these, but a hook run by
-# hand supplies nothing, and a helper that resolved paths from a half-set environment
+# Validated, not trusted: a hook run by hand supplies nothing, and a half-set environment
 # would sweep the wrong directory.
 [[ -n "${WT_WORKTREE:-}" ]] || die "WT_WORKTREE is not set — this runs from a .worktreehook."
 [[ "$WT_WORKTREE" == /* ]] || die "WT_WORKTREE is not absolute: $WT_WORKTREE"
 [[ -d "$WT_WORKTREE" ]]    || die "WT_WORKTREE is not a directory: $WT_WORKTREE"
 typeset WT="${WT_WORKTREE:A}"
 
-# Stand outside the worktree for the rest of the run. Every path this script uses is absolute,
-# so the cwd buys nothing — and keeping it makes the script an occupant of the very directory it
-# is about to scan. wt-rm invokes the hook with cwd inside the worktree, so without this the
-# subshell that `$(_scan ...)` forks shows up in lsof as a process holding the checkout open, and
-# the post-teardown re-scan vetoes its own success.
+# Stand outside the worktree: wt-rm runs the hook with cwd inside it, so otherwise the
+# subshell that `$(_scan ...)` forks shows up in lsof as an occupant and the post-teardown
+# re-scan vetoes its own success. Every path here is absolute, so the cwd buys nothing.
 builtin cd -q / || die "cannot leave $WT to scan it"
 
 # _render <path> — the pathname as lsof itself renders it under LC_ALL=C.
 #
-# Comparing against the raw path would be wrong for any path lsof escapes. This concerns
-# $WT alone: a rendered character INSIDE the checkout still sits after the prefix that
-# has to match.
+# Comparing against the raw path would be wrong for any path lsof escapes. Only $WT needs
+# this; a rendered character inside the checkout sits after the prefix that must match.
 _render() {
   emulate -L zsh
-  # Byte-wise, because that is how lsof escapes under LC_ALL=C. NO_MULTIBYTE makes zsh's
-  # indexing agree with it.
+  # Byte-wise, as lsof escapes under LC_ALL=C; NO_MULTIBYTE makes zsh's indexing agree.
   setopt local_options no_multibyte
   local s="$1" out="" c i n
   for (( i = 1; i <= ${#s}; i++ )); do
@@ -86,40 +80,25 @@ _render() {
   print -r -- "$out"
 }
 
-# _ancestors — this pid and every ancestor, one per line. Must be called only after a
-# _scan, which is what populates _WT_PARENT; called any other time it fails closed on an
-# empty map.
+# _ancestors — this pid and every ancestor, one per line. Call only after a _scan, which
+# populates _WT_PARENT; otherwise it fails closed on the empty map.
 #
-# Unconditional, not merely covered by the allowlist: wt-rm runs the hook with cwd inside the
-# worktree, so this process and the chain that started it appear in every scan. A repository
+# Unconditional, not merely covered by the allowlist: wt-rm runs the hook with cwd inside
+# the worktree, so this process and its parents appear in every scan, and a repository
 # declaring `--sweep zsh` must not kill the shell interpreting its own hook.
 #
-# Ancestry comes from _WT_PARENT, the parent map _scan built from lsof's own R field, rather
-# than from `ps`. ps is unavailable under the sandbox agents run wt-rm in, and a walk that
-# stops early there returns a TRUNCATED chain while reporting success — which leaves a
-# grandparent eligible to be signalled whenever a hook omits `exec`.
+# Ancestry comes from _WT_PARENT (lsof's own R field), not `ps`, which is unavailable under
+# the sandbox and would return a TRUNCATED chain while reporting success.
 #
-# The walk climbs while parents are known, and treats an unknown parent as the top of the
-# reachable tree, not an error (RULING R9): MINE only needs to cover every ancestor that could
-# also be a sweep target, sweep targets come from OCCUPANT, and OCCUPANT and _WT_PARENT are
-# built from the very same lsof listing — one call, in _scan, feeding both — so an ancestor
-# lsof cannot report can never be a target either, and stopping the climb there loses nothing.
-# This is what makes the argument hold: it was FALSE when _scan and this function issued
-# separate lsof calls, because a process present in one snapshot and gone from the other left a
-# visible ancestor unprotected. Splitting the calls again — even to add a field, even for a
-# single caller — reopens exactly that hole; keep them one call.
+# An unknown parent is the top of the reachable tree, not an error. That holds only because
+# OCCUPANT and _WT_PARENT come from the very same lsof listing: an ancestor lsof cannot
+# report can never be a sweep target either. Never split _scan into two lsof calls, even to
+# add a field: a process present in one snapshot and gone from the other would leave a
+# visible ancestor unprotected. Keep them one call.
 #
-# On macOS the first unreadable link is the root-owned `login` every session descends from;
-# above it lie only root processes whose cwd is never inside a user worktree. What must never
-# happen is a chain truncated BELOW a visible ancestor — exactly what the old `ps` walk did
-# whenever ps was unavailable. Fails closed only where nothing at all is known: _scan was never
-# run, or it ran against a listing empty enough to leave the parent map empty.
-#
-# The 64-hop cap is a fail-closed guard, not a silent truncation: exhausting it means the walk
-# reached neither an unknown parent nor pid 0, so the chain is INCOMPLETE and an ancestor beyond
-# hop 64 is still unaccounted for and still eligible to be signalled. That is exactly the failure
-# mode this function exists to rule out, so running out of hops returns 1 the same as an empty
-# map, rather than reporting a partial chain as though it were the whole one.
+# The 64-hop cap fails closed, as does an empty map: exhausting it means the chain is
+# INCOMPLETE, and an ancestor beyond it would still be eligible to be signalled.
+# Full argument: docs/superpowers/specs/2026-09-11-worktree-teardown-helper-design.md.
 _ancestors() {
   emulate -L zsh
   local p
@@ -135,30 +114,24 @@ _ancestors() {
     (( p == 0 )) && { complete=1; break }               # reached the top of the tree
     chain+=( "$p" )
   done
-  # Budget exhausted rather than chain ended: the ancestry is incomplete, and an ancestor we
-  # never reached is still eligible to be signalled. Refuse instead of sweeping on a partial
-  # chain — the same rule as an empty map, for the same reason.
+  # Budget exhausted rather than chain ended: refuse instead of sweeping on a partial chain.
   (( complete )) || return 1
   print -rl -- $chain
   return 0
 }
 
 # _scan <abs-dir> — print "<pid> <command>" for every process whose cwd is at or below
-# <abs-dir>. Return 1 when the answer cannot be trusted. Also (re)populates _WT_PARENT,
-# the pid -> ppid map _ancestors reads, from the same listing — see _ancestors for why
-# one call has to feed both.
+# <abs-dir>. Return 1 when the answer cannot be trusted. Also (re)populates _WT_PARENT
+# from the same listing; see _ancestors for why one call must feed both.
 #
-# What a clean result means: no process of the caller's had its cwd in <abs-dir> at the
-# instant of the scan — not that nothing is using it. Three bounds, all deliberate:
-# unprivileged lsof cannot see other users' processes; a descriptor held open from a cwd
-# outside <abs-dir> is not seen; and it is a snapshot, so a process can enter afterwards.
-# The full argument is in docs/superpowers/specs/2026-09-11-worktree-teardown-helper-design.md.
+# A clean result means no process of the caller's had its cwd in <abs-dir> at the instant
+# of the scan, not that nothing is using it: unprivileged lsof cannot see other users'
+# processes, a descriptor held open from a cwd outside <abs-dir> is not seen, and it is a
+# snapshot. Full argument: docs/superpowers/specs/2026-09-11-worktree-teardown-helper-design.md.
 #
-# The parse discipline is deliberate:
 #   -F0 gives NUL-terminated fields, so framing does not rest on lsof's escaping of a
-#   newline inside a pathname. A single invocation keeps the status attached to the
-#   listing actually parsed — split across two, a scan that died partway would read as an
-#   idle checkout, since the records it never reached are exactly where the occupant is.
+#   newline in a pathname. Keep it a single invocation: split across two, a scan that died
+#   partway would read as an idle checkout.
 _scan() {
   emulate -L zsh
   local dir="$1" edir rc i pid ppid cmd cwd
@@ -180,8 +153,8 @@ _scan() {
   # Each record set ends with a newline after its final NUL, which lands at the front of
   # the next field. Strip exactly one.
   lines=( ${lines#$'\n'} )
-  # Real lsof cannot come back empty: this shell has a cwd of its own and is in every
-  # answer. Nothing at all therefore means the scan failed.
+  # Real lsof cannot come back empty (this shell is in every answer), so nothing at all
+  # means the scan failed.
   if (( ${#lines} == 0 )) || (( ${#lines} % 5 )); then
     print -ru2 -- "$PROG: could not read the process list from lsof — refusing."
     return 1
@@ -222,9 +195,7 @@ _still_here() {
     if (( ${+here[$p]} )); then
       keep+=( "$p" )
     else
-      # stderr, not stdout: this function's stdout is captured by callers as the
-      # filtered pid list, and a message sharing that stream would be word-split
-      # straight into it.
+      # stderr: stdout is captured by callers as the pid list.
       print -ru2 -- "$PROG: $p is no longer in $WT — not signalling it"
     fi
   done
@@ -233,10 +204,9 @@ _still_here() {
 
 # _stop <pid>... — TERM, poll, KILL, poll. Return 1 if anything is still alive.
 #
-# Polling uses kill -0 because it is cheap; the authority on whether the checkout is
-# clear is the re-scan afterwards, not this. A process that ignores TERM is the ordinary
-# case here — a supervisor trapping it to shut children down first — so escalation is
-# the rule, not an edge.
+# Polling uses kill -0 because it is cheap; the authority on whether the checkout is clear
+# is the re-scan afterwards. A process that ignores TERM is the ordinary case (a supervisor
+# shutting its children down first), so escalation is the rule.
 _stop() {
   emulate -L zsh
   local -a pids left
@@ -244,10 +214,8 @@ _stop() {
   (( ${#pids} )) || return 0
   local p
   local -i i
-  # Ownership was proved by the scan that built OCCUPANT, but ancestry discovery and the
-  # whole pidfile loop run between that snapshot and here — including another lsof call —
-  # so the evidence can be stale by the time the first signal goes out. Re-prove it now,
-  # the same way the pre-KILL escalation below does.
+  # The scan that built OCCUPANT is stale by now (ancestry and the pidfile loop ran since),
+  # so re-prove ownership before the first signal, as before KILL below.
   pids=( $(_still_here $pids) ) || return 1
   (( ${#pids} )) || return 0
   for p in $pids; do kill -TERM "$p" 2>/dev/null; done
@@ -258,11 +226,9 @@ _stop() {
     (( ${#left} )) || return 0
     command sleep 0.1
   done
-  # Ownership is proved at scan time, and KILL lands up to TERM_WAIT seconds later. A process
-  # that trapped TERM and left the worktree, or a pid recycled inside that window, is no longer
-  # the process we identified — so re-prove occupancy before the escalation, and drop whatever
-  # can no longer be shown to be here. A fresh scan narrows the window to sub-second; nothing a
-  # shell can do makes pid identity atomic.
+  # KILL lands up to TERM_WAIT seconds after the scan: a process that trapped TERM and left,
+  # or a recycled pid, is no longer the one we identified. Re-prove occupancy and drop what
+  # cannot be shown to be here; pid identity cannot be made atomic from a shell.
   left=( $(_still_here $left) ) || return 1
   (( ${#left} )) || return 0
   for p in $left; do kill -KILL "$p" 2>/dev/null; done
@@ -280,10 +246,8 @@ _stop() {
 #   2                   no such file — nothing to stop, the ordinary retry case
 #   1                   refusal, message on stderr
 #
-# Containment is checked lexically AND through the filesystem, the same asymmetric rule
-# _wt_manifest applies: the worktree's tree comes from the feature branch, so a branch
-# committing `tmp` as a symlink redirects this read outside the checkout, and a path with
-# no ".." in it still escapes that way.
+# Containment is checked lexically AND through the filesystem, as in _wt_manifest: the
+# tree comes from the feature branch, so a symlinked `tmp` redirects this read outside it.
 _pidfile_pid() {
   emulate -L zsh
   local rel="$1" wt="$2" abs real pid
@@ -312,10 +276,8 @@ typeset scan_out
 typeset _wt_scan_tmp
 typeset -i _wt_scan_rc
 _wt_scan_tmp="$(mktemp "${TMPDIR:-/tmp}/wt-teardown-scan.XXXXXX")" || die "cannot create a scratch file to run the initial scan"
-# Run directly, not via $(...): command substitution forks a subshell, and _WT_PARENT — the
-# parent map _ancestors reads below — is a global _scan mutates, which a fork would confine
-# to the child and lose. Redirecting to a real file instead keeps this call in the running
-# shell, so the map _scan just built is still there when _ancestors reads it.
+# Run directly, not via $(...): a fork would confine the _WT_PARENT map that _scan builds
+# and _ancestors reads to the child.
 _scan "$WT" > "$_wt_scan_tmp"; _wt_scan_rc=$?
 scan_out="$(<$_wt_scan_tmp)"
 rm -f "$_wt_scan_tmp"
@@ -359,8 +321,7 @@ done
 typeset pid cmd want
 for pid cmd in ${(kv)OCCUPANT}; do
   (( ${+MINE[$pid]} )) && continue
-  # Already taken by a declared pidfile: appending it again would stop nothing extra and would
-  # print a second "stopping" line for one process.
+  # Already taken by a declared pidfile.
   (( ${TARGETS[(Ie)$pid]} )) && continue
   for want in $SWEEPS; do
     # Exact equality, never substring: `ruby` must not select `rubyfmt`.
@@ -374,9 +335,9 @@ if (( stop_rc == 0 )); then
   typeset f fpid kerr
   for f in ${(k)CLEAR_PIDS}; do
     fpid="${CLEAR_PIDS[$f]}"
-    # Confirmed gone, not merely "we tried", and not merely "we could not look". kill -0 fails
-    # both for a process that does not exist and for one owned by another user, and deleting the
-    # file on the second reading throws away the only handle anything has on a live process.
+    # Confirmed gone, not merely "we could not look": kill -0 fails both for a process that
+    # does not exist and for one owned by another user, and deleting the file on the second
+    # reading throws away the only handle on a live process.
     kerr="$(LC_ALL=C kill -0 "$fpid" 2>&1)" && continue          # alive: keep the file
     [[ "$kerr" == *"no such process"* || "$kerr" == *"No such process"* ]] || {
       print -ru2 -- "$PROG: cannot confirm pid $fpid is gone ($kerr) — keeping $f"
@@ -387,9 +348,8 @@ if (( stop_rc == 0 )); then
   done
 fi
 
-# The re-scan is the authority, not the signals. A pid that exited leaves no cwd record;
-# anything still listed is still holding the checkout open, and reporting success here
-# would hand wt-rm a directory that reappears after Git deletes it.
+# The re-scan is the authority, not the signals: anything still listed holds the checkout
+# open and would reappear after Git deletes it.
 typeset rescan_out
 rescan_out="$(_scan "$WT")" || exit 1
 typeset -a survivors
@@ -406,9 +366,8 @@ if (( ${#survivors} )); then
   exit 1
 fi
 
-# A failed stop is a failed teardown even when the final scan comes back clear: the scan that
-# failed is the one that would have told us what we were signalling. wt-rm keeps the worktree
-# and the retry re-runs from a known state.
+# A failed stop is a failed teardown even when the final scan is clear. wt-rm keeps the
+# worktree and the retry re-runs from a known state.
 (( stop_rc )) && {
   print -ru2 -- "$PROG: could not confirm every target was stopped — refusing."
   exit 1
