@@ -141,7 +141,8 @@ while [ "$#" -gt 0 ]; do
                --cwd) cwd="$2"; shift ;; esac; shift
 done
 case "$cmd" in
-  health) [ -z "${RPC_HEALTH_FAIL:-}" ] || exit 5; exit 0 ;;
+  health) [ -n "${RPC_SWITCH_BRANCH_EARLY:-}" ] && git checkout -q "$RPC_SWITCH_BRANCH_EARLY" 2>/dev/null
+          [ -z "${RPC_HEALTH_FAIL:-}" ] || exit 5; exit 0 ;;
   thread-start) [ -n "${RPC_START_THREAD_FAIL:-}" ] && exit 1
                 echo "$NEW_UUID" ;;
   thread-resolve)
@@ -162,10 +163,10 @@ case "$cmd" in
               # the turn itself was starting (fix round 2/D) - pane_free already confirmed
               # the agent was not codex before this ran; this is what a race would look like.
               [ -n "${RELIVE_DURING_TURN:-}" ] && printf codex > "$P/agent"
+              [ -n "${RPC_SWITCH_BRANCH_TO:-}" ] && git checkout -q "$RPC_SWITCH_BRANCH_TO" 2>/dev/null
               [ -n "${RPC_START_FAIL:-}" ] && exit 1
               [ -n "${RPC_START_UNCERTAIN:-}" ] && exit 6
               if [ -n "${RPC_START_BAD_ID:-}" ]; then echo "turn id/with spaces"; exit 0; fi
-              [ -n "${RPC_SWITCH_BRANCH_TO:-}" ] && git checkout -q "$RPC_SWITCH_BRANCH_TO" 2>/dev/null
               echo "turn-$th" ;;
   turn-wait) [ -n "$resolved" ] && echo turn-recovered > "$resolved"
              printf '%s\n' "${RPC_WAIT_OUT:-}"; exit "${RPC_WAIT_RC:-0}" ;;
@@ -180,7 +181,7 @@ fresh() { # a pane showing U0, idle; clean log and state
         RPC_START_THREAD_FAIL NO_TITLE STUCK_TUI AGENT_EXIT_DELAY PANE_RUN_FAIL \
         AGENT_READ_FAIL_ONCE EXTRA_PANES PANE_CWD XREVIEW_PANE XREVIEW_THREAD RPC_WAIT_OUT \
         RPC_WAIT_RC RPC_THREAD_RUNNING RPC_THREAD_RUNNING_FOR RPC_HEALTH_FAIL PANE_GONE_AT \
-        RELIVE_DURING_TURN RPC_SWITCH_BRANCH_TO
+        RELIVE_DURING_TURN RPC_SWITCH_BRANCH_TO RPC_SWITCH_BRANCH_EARLY
   export NEW_UUID="$U1"
   printf codex > "$P/agent"; printf '%s | t | d' "$(trunc "$U0")" > "$P/title"; echo idle > "$P/status"
   echo 0 > "$P/ctrlc"
@@ -891,6 +892,24 @@ is "R1 the shared checkout moved to rc-b mid-dispatch" "$(git rev-parse --abbrev
 is "R1 rc-b's counter is untouched" "$(bash "$XREVIEW" round)" 0
 git checkout -q rc-a
 is "R1 rc-a, the dispatched branch, counts the round" "$(bash "$XREVIEW" round)" 1
+git checkout -q "$BR" && git branch -q -D rc-a rc-b
+fresh
+git checkout -q -b rc-a && git branch -q rc-b
+printf 'rc-a=10\n' > "$STATE/rounds"
+out="$(RPC_SWITCH_BRANCH_EARLY=rc-b bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
+is "R2 the checkout moved to rc-b before the cap check" "$(git rev-parse --abbrev-ref HEAD)" rc-b
+is "R2 the dispatched branch is refused at its cap" "$rc:$(printf '%s' "$out" | grep -c 'exceeds the cap')" 1:1
+is "R2 and no turn was started" "$(called 'xreview-rpc turn-start')" 0
+is "R2 the over-cap bump lands on rc-a" "$(grep -c '^rc-a=11$' "$STATE/rounds")" 1
+is "R2 and rc-b gets no row" "$(grep -c '^rc-b=' "$STATE/rounds")" 0
+git checkout -q "$BR" && git branch -q -D rc-a rc-b
+fresh
+git checkout -q -b rc-a && git branch -q rc-b
+RPC_SWITCH_BRANCH_TO=rc-b RPC_START_UNCERTAIN=1 bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1
+is "R3 the checkout moved to rc-b mid-dispatch" "$(git rev-parse --abbrev-ref HEAD)" rc-b
+is "R3 an uncertain turn-start leaves rc-b's counter untouched" "$(bash "$XREVIEW" round)" 0
+git checkout -q rc-a
+is "R3 and bumps rc-a, the dispatched branch" "$(bash "$XREVIEW" round)" 1
 git checkout -q "$BR" && git branch -q -D rc-a rc-b
 
 echo "L. round counting is exact-match, not sed/grep regex, so a branch with '/' or metacharacters works"
