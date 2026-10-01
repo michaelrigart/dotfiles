@@ -165,6 +165,7 @@ case "$cmd" in
               [ -n "${RPC_START_FAIL:-}" ] && exit 1
               [ -n "${RPC_START_UNCERTAIN:-}" ] && exit 6
               if [ -n "${RPC_START_BAD_ID:-}" ]; then echo "turn id/with spaces"; exit 0; fi
+              [ -n "${RPC_SWITCH_BRANCH_TO:-}" ] && git checkout -q "$RPC_SWITCH_BRANCH_TO" 2>/dev/null
               echo "turn-$th" ;;
   turn-wait) [ -n "$resolved" ] && echo turn-recovered > "$resolved"
              printf '%s\n' "${RPC_WAIT_OUT:-}"; exit "${RPC_WAIT_RC:-0}" ;;
@@ -179,7 +180,7 @@ fresh() { # a pane showing U0, idle; clean log and state
         RPC_START_THREAD_FAIL NO_TITLE STUCK_TUI AGENT_EXIT_DELAY PANE_RUN_FAIL \
         AGENT_READ_FAIL_ONCE EXTRA_PANES PANE_CWD XREVIEW_PANE XREVIEW_THREAD RPC_WAIT_OUT \
         RPC_WAIT_RC RPC_THREAD_RUNNING RPC_THREAD_RUNNING_FOR RPC_HEALTH_FAIL PANE_GONE_AT \
-        RELIVE_DURING_TURN
+        RELIVE_DURING_TURN RPC_SWITCH_BRANCH_TO
   export NEW_UUID="$U1"
   printf codex > "$P/agent"; printf '%s | t | d' "$(trunc "$U0")" > "$P/title"; echo idle > "$P/status"
   echo 0 > "$P/ctrlc"
@@ -881,6 +882,16 @@ is "J4 and writes no apply window" "$(find "$XDG_STATE_HOME" -name applying 2>/d
 cd "$ROOT/repo" || exit 1
 unset PANE_CWD
 rm -rf "$UNBORN"
+
+echo "R. the round counter binds to the branch the dispatch recorded (spec 2026-10-01 §4.8)"
+fresh
+git checkout -q -b rc-a && git branch -q rc-b
+RPC_SWITCH_BRANCH_TO=rc-b bash "$XREVIEW" dispatch --checkpoint plan b.md >/dev/null 2>&1
+is "R1 the shared checkout moved to rc-b mid-dispatch" "$(git rev-parse --abbrev-ref HEAD)" rc-b
+is "R1 rc-b's counter is untouched" "$(bash "$XREVIEW" round)" 0
+git checkout -q rc-a
+is "R1 rc-a, the dispatched branch, counts the round" "$(bash "$XREVIEW" round)" 1
+git checkout -q "$BR" && git branch -q -D rc-a rc-b
 
 echo "L. round counting is exact-match, not sed/grep regex, so a branch with '/' or metacharacters works"
 fresh

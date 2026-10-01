@@ -411,16 +411,19 @@ cmd_round() {
   esac
 }
 
+# The branch is the dispatch's own: a shared checkout can switch branches mid-dispatch.
 current_round() {
-  local f b n; f="$(round_file)"; b="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  local f b n; f="$(round_file)"
+  if [ "$#" -ge 1 ]; then b="$1"; else b="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"; fi
   [ -r "$f" ] || { printf 0; return; }
   n="$(awk -v b="$b" '{ i = match($0, /=[^=]*$/) } i && substr($0, 1, i-1) == b { print substr($0, i+1); exit }' "$f" 2>/dev/null || true)"
   printf '%s' "${n:-0}"
 }
 
 bump_round() {
-  local f b n; f="$(round_file)"; b="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-  n=$(( $(current_round) + 1 ))
+  local f b n; f="$(round_file)"
+  if [ "$#" -ge 1 ]; then b="$1"; else b="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"; fi
+  n=$(( $(current_round "$b") + 1 ))
   mkdir -p "$(dirname "$f")" || return 0
   { [ -r "$f" ] && awk -v b="$b" '{ i = match($0, /=[^=]*$/) } !i || substr($0, 1, i-1) != b' "$f" 2>/dev/null; printf '%s=%s\n' "$b" "$n"; } \
     > "$f.tmp" 2>/dev/null && mv "$f.tmp" "$f"
@@ -562,9 +565,9 @@ cmd_dispatch() {
   # The cap binds before the pane is touched at all: a round over the cap is refused
   # without so much as a ctrl+c, and the counter still advances so a retry stays refused.
   local max="${XREVIEW_MAX_ROUNDS:-10}" round
-  round=$(( $(current_round) + 1 ))
+  round=$(( $(current_round "$branch") + 1 ))
   if [ "$round" -gt "$max" ]; then
-    bump_round >/dev/null
+    bump_round "$branch" >/dev/null
     die "round $round exceeds the cap of $max for this branch.
 Two models circling the same point is Michael's call, not another turn.
 Report the remaining disagreement, or: xreview round --reset"
@@ -633,7 +636,7 @@ Report the remaining disagreement, or: xreview round --reset"
   case "$rc" in
     0) printf '%s %s %s %s\n' "$thread" "$turn" "$checkpoint" "$branch" > "$dir/turns/$nonce"
        rm -f "$dir/turns/$nonce.known"
-       bump_round >/dev/null || true
+       bump_round "$branch" >/dev/null || true
        trap - EXIT ;;
     6) # Sent but not answered (or answered with an id that does not look like one): the
        # turn may be running. Hand back a nonce so it can be collected - found as the turn
@@ -641,7 +644,7 @@ Report the remaining disagreement, or: xreview round --reset"
        # turn that may be running has already cost one.
        printf '%s ? %s %s\n' "$thread" "$checkpoint" "$branch" > "$dir/turns/$nonce"
        printf 'xreview: turn/start was sent but not answered - the review may be running. Collect %s; do NOT re-dispatch.\n' "$nonce" >&2
-       bump_round >/dev/null || true
+       bump_round "$branch" >/dev/null || true
        trap - EXIT ;;
     *) rm -f "$dir/turns/$nonce.known"
        die "the review turn could not be started on $thread" ;;
