@@ -2034,6 +2034,25 @@ has "Start it with: herdr session attach team" "U21 the refusal gives the attach
 hunlogged "workspace close" "U21 nothing is closed in either session"
 [[ -d "$HSTOP2" ]] && _pass "U21 the checkout survives" || _fail "U21 the checkout survives"
 
+# U22: the stopped default session is listed FIRST and the running one LAST, so the
+# caller's `session_dir` still holds the running session's directory when the stopped one
+# is inspected. `_wt_stopped_herdr_has_checkout` must read the state under its own $2; a
+# combined `local` line would read the caller's directory and fail open.
+setup
+run "$REPO" wt stopped-first
+HSTOP3="$HOME/Code/Org/repo-stopped-first"
+mkdir -p "$ROOTTMP/default"
+print -r -- "{\"version\":3,\"workspaces\":[{\"id\":\"w3\",\"tabs\":[{\"panes\":{\"1\":{\"cwd\":\"$HSTOP3\"}}}]}]}" \
+  > "$ROOTTMP/default/session.json"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true false)" "$(session_json team false true)")"
+export MOCK_H_TEAM_WORKSPACES='{"result":{"workspaces":[]}}'
+export MOCK_H_TEAM_PANES='{"result":{"panes":[]}}'
+HERDR_SESSION=team run "$REPO" wt-rm stopped-first
+rc_is 1 "U22 a stopped default session listed before a running one still refuses removal"
+has "stopped Herdr session 'default'" "U22 the refusal identifies the stopped session"
+hunlogged "workspace close" "U22 nothing is closed"
+[[ -d "$HSTOP3" ]] && _pass "U22 the checkout survives" || _fail "U22 the checkout survives"
+
 # Library functions must use `builtin cd`: they must not depend on whatever an interactive
 # shell binds `cd` to, because the `zsh -ic` shells that Herdr popups run never reach a
 # prompt.
