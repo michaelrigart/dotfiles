@@ -825,6 +825,39 @@ SPSTATE="$XDG_STATE_HOME/xreview/$(printf '%s' "$SPCWD" | tr '/' '_' | sed 's/^_
 is "its state lands in its own directory" "$(cat "$SPSTATE/review-thread" 2>/dev/null)" "$U1"
 cd "$ROOT/repo" || exit 1
 
+echo "Q. a harness worktree reviews in the pane of the worktree that holds it (spec 2026-10-01 §4.2)"
+cd "$CWD" || exit 1
+git worktree add -q "$CWD/.claude/worktrees/h1" -b h1
+H1="$(git -C "$CWD/.claude/worktrees/h1" rev-parse --show-toplevel)"
+hstate() { printf '%s/xreview/%s' "$XDG_STATE_HOME" "$(printf '%s' "$1" | tr '/' '_' | sed 's/^_//')"; }
+fresh; rm -rf "$(hstate "$H1")"
+cd "$H1" || exit 1
+nonce="$(bash "$XREVIEW" dispatch --checkpoint plan "$CWD/b.md" 2>/dev/null)"
+is "Q1 the harness worktree finds its main checkout's pane" "$(printf '%s' "$nonce" | grep -c '^xr-')" 1
+is "Q1 its thread starts in the harness worktree" "$(called "xreview-rpc thread-start --cwd $H1")" 1
+is "Q1 and its state is its own" "$(cat "$(hstate "$H1")/review-thread" 2>/dev/null)" "$U1"
+cd "$CWD" || exit 1
+git worktree add -q "$ROOT/repo-sib" -b sib
+SIB="$(git -C "$ROOT/repo-sib" rev-parse --show-toplevel)"
+git -C "$SIB" worktree add -q "$SIB/.claude/worktrees/h2" -b h2
+H2="$(git -C "$SIB/.claude/worktrees/h2" rev-parse --show-toplevel)"
+fresh; rm -rf "$(hstate "$H2")"; export PANE_CWD="$SIB"
+cd "$H2" || exit 1
+nonce="$(bash "$XREVIEW" dispatch --checkpoint plan "$CWD/b.md" 2>/dev/null)"
+is "Q2 a harness worktree inside a wt sibling finds the sibling's pane" "$(printf '%s' "$nonce" | grep -c '^xr-')" 1
+fresh; rm -rf "$(hstate "$SIB")"     # the pane's cwd is the main checkout again
+cd "$SIB" || exit 1
+out="$(bash "$XREVIEW" dispatch --checkpoint plan "$CWD/b.md" 2>&1)"
+is "Q3 a wt sibling never falls back to the main checkout's pane" "$(printf '%s' "$out" | grep -c "no Codex pane for $SIB")" 1
+is "Q3 untouched" "$(untouched)" yes
+cd "$CWD" || exit 1
+fresh; export PANE_CWD="$H1"     # the owner's TUI reports a harness worktree as its cwd
+nonce="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>/dev/null)"
+is "Q4 the owner's pane is still found" "$(printf '%s' "$nonce" | grep -c '^xr-')" 1
+unset PANE_CWD
+git worktree remove --force "$H2"; git worktree remove --force "$SIB"; git worktree remove --force "$H1"
+git branch -q -D h1 h2 sib
+
 echo "K. a comma-decimal locale does not break the ctrl+c gap or the poll wait (I-2)"
 fresh
 out="$(LC_ALL=nl_BE.UTF-8 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?

@@ -54,6 +54,22 @@ is_safe_id() {
   return 0
 }
 
+# pane_root - the directory whose Codex pane serves this repository (spec 2026-10-01 §4.2). A
+# harness worktree (<W>/.claude/worktrees/<name>) is served by the registered worktree W that
+# holds it - the main checkout, or a wt sibling with its own pane - and the longest such W
+# wins. Anything else is served by its own root.
+pane_root() {
+  local root w best=""
+  root="$(repo_root)"
+  while IFS= read -r w; do
+    [ -n "$w" ] && [ "$w" != "$root" ] || continue
+    case "$root/" in
+      "$w/.claude/worktrees/"*) [ "${#w}" -gt "${#best}" ] && best="$w" ;;
+    esac
+  done < <(git worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p')
+  printf '%s\n' "${best:-$root}"
+}
+
 # --- the Codex pane ----------------------------------------------------------------
 # The repository's one herdr pane running Codex in the repository root. It is the reviewer's
 # screen: dispatch frees it before the turn starts, then best-effort resumes it onto the
@@ -61,11 +77,11 @@ is_safe_id() {
 
 find_pane() {
   local root snap ids n
-  root="$(repo_root)"
+  root="$(pane_root)"
   snap="$(herdr pane list 2>/dev/null || true)"
   [ -n "$snap" ] || die "cannot list herdr panes - is herdr running?"
   ids="$(printf '%s' "$snap" | jq -r --arg cwd "$root" \
-    '.result.panes[]? | select(.agent == "codex" and .cwd == $cwd) | .pane_id' 2>/dev/null)" \
+    '.result.panes[]? | select(.agent == "codex" and (.cwd == $cwd or (.cwd | startswith($cwd + "/.claude/worktrees/")))) | .pane_id' 2>/dev/null)" \
     || die "cannot read herdr's pane list"
   # XREVIEW_PANE picks AMONG the valid Codex panes for this root; it does not replace
   # validation. A typo or a stale id pointing at some other pane (the idle Claude Code
