@@ -309,27 +309,38 @@ report_to_herdr() { # report_to_herdr <pane> <thread>
 # crashes included. No stale lock is ever left behind to reclaim. The lock file is never
 # deleted: a waiter could otherwise lock an unlinked inode while a newcomer locks a new one.
 lock_pane() { # lock_pane <pane>: wait, bounded, for the pane's lock; dies at the bound
-  local dir f wait="${XREVIEW_LOCK_WAIT:-90}"
-  printf '%s' "$wait" | grep -Eq '^([0-9]+(\.[0-9]*)?|\.[0-9]+)$' || wait=90
+  local dir f rc=0 wait="${XREVIEW_LOCK_WAIT:-60}" re='^([0-9]+(\.[0-9]*)?|\.[0-9]+)$'
+  [[ $wait =~ $re ]] || wait=60
   dir="${XDG_STATE_HOME:-$HOME/.local/state}/xreview/locks"
   mkdir -p "$dir" 2>/dev/null && [ -d "$dir" ] || die "cannot create $dir; no review was started"
   f="$dir/$(printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_').lock"
   { exec 9>>"$f"; } 2>/dev/null || die "cannot open $f; no review was started"
+  # Exit 1 only when the bound runs out with the lock still held; any other failure (no
+  # python, no flock on this filesystem) exits 2, so it is never reported as contention.
   /usr/bin/python3 -c '
 import fcntl, sys, time
-deadline = time.monotonic() + float(sys.argv[1])
-while True:
-    try:
-        fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        sys.exit(0)
-    except BlockingIOError:
-        if time.monotonic() >= deadline:
-            sys.exit(1)
-        time.sleep(0.1)
-' "$wait" || die "another dispatch is using the Codex pane $1; no review was started"
+try:
+    deadline = time.monotonic() + float(sys.argv[1])
+    while True:
+        try:
+            fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            sys.exit(0)
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                sys.exit(1)
+            time.sleep(0.1)
+except Exception:
+    sys.exit(2)
+' "$wait" 2>/dev/null || rc=$?
+  case "$rc" in
+    0) ;;
+    1) die "another dispatch is using the Codex pane $1; no review was started" ;;
+    *) die "cannot lock the Codex pane $1 ($f); no review was started" ;;
+  esac
 }
 
-unlock_pane() { exec 9>&- 2>/dev/null || true; }
+# A command-less exec makes its redirections permanent, so nothing but the fd is closed here.
+unlock_pane() { exec 9>&-; }
 
 # --- threads and checkpoints --------------------------------------------------------
 # The review thread, in precedence order: XREVIEW_THREAD > an `xreview init` pin > this

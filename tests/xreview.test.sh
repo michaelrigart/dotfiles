@@ -861,16 +861,51 @@ blocks="$(grep -E '^[abc] (herdr pane (get|process-info|send-keys|run|read|repor
 is "P3 every dispatch reached the pane section" "$(printf '%s\n' "$blocks" | sort -u | grep -c .)" 3
 is "P3 no two dispatches interleave inside it" "$(printf '%s\n' "$blocks" | sort | uniq -d | grep -c .)" 0
 is "P3 each one ended in a nonce or a clean refusal" \
-   "$(for id in a b c; do grep -qE '^(xr-|xreview: )' "$ROOT/par.$id" && echo ok; done | grep -c ok)" 3
+   "$(for id in a b c; do grep -qE '^(xr-|xreview: (the Codex pane w1:p2 is mid-turn|the Codex pane w1:p2.s thread .* is mid-turn|another dispatch is using the Codex pane))' "$ROOT/par.$id" && echo ok; done | grep -c ok)" 3
 fresh; rm -rf "$XDG_STATE_HOME/xreview/locks"; : > "$XDG_STATE_HOME/xreview/locks"
 out="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
 is "P4 an uncreatable lock directory refuses" "$rc/$(printf '%s' "$out" | grep -c 'cannot create')" "1/1"
 is "P4 untouched" "$(untouched)" yes
 rm -f "$XDG_STATE_HOME/xreview/locks"
-for bad in abc . 1.2.3; do
+for bad in abc . 1.2.3 $'5\nx'; do
   fresh
   out="$(XREVIEW_LOCK_WAIT=$bad bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
-  is "P5 a garbage XREVIEW_LOCK_WAIT ('$bad') falls back to the default" "$(printf '%s' "$out" | grep -c '^xr-')" 1
+  is "P5 a garbage XREVIEW_LOCK_WAIT ($(printf '%q' "$bad")) falls back to the default" "$(printf '%s' "$out" | grep -c '^xr-')" 1
+done
+# P7: unlock_pane closes fd 9 and nothing else - stderr must stay visible afterwards, and the
+# lock must be free for the next locker.
+fresh
+lock_src="$(sed -n '/^lock_pane() {/,/^}/p;/^unlock_pane() {/p' "$XREVIEW")"
+out="$(bash -c "die() { printf 'xreview: %s\n' \"\$1\" >&2; exit 1; }
+$lock_src
+lock_pane wP:p7
+unlock_pane
+echo probe >&2
+/usr/bin/python3 -c 'import fcntl,sys; fcntl.flock(open(sys.argv[1], \"a\"), fcntl.LOCK_EX | fcntl.LOCK_NB)' \"\$XDG_STATE_HOME/xreview/locks/wP_p7.lock\" && echo free" 2>&1)"
+is "P7 stderr written after unlock_pane is still visible" "$(printf '%s' "$out" | grep -cx probe)" 1
+is "P7 and the lock is free after unlock_pane" "$(printf '%s' "$out" | grep -cx free)" 1
+# P8: a helper that fails for any reason but the bound is not "another dispatch". The lock
+# helper is swapped for a stand-in that runs the real python with fd 9 closed (flock raises
+# EBADF, the helper's own exit-2 path), or that exits 1 (a real timeout). No sandbox-safe way
+# exists to make flock itself fail on this filesystem, so the interpreter path is patched in
+# a copy of the script, in lock_pane only.
+printf '#!/bin/sh\nexec 9>&-\nexec /usr/bin/python3 "$@"\n' > "$ROOT/py-nolock"
+printf '#!/bin/sh\nexit 1\n' > "$ROOT/py-timeout"
+chmod +x "$ROOT/py-nolock" "$ROOT/py-timeout"
+for variant in nolock timeout; do
+  sed "/^lock_pane() {/,/^}/ s#/usr/bin/python3#$ROOT/py-$variant#" "$XREVIEW" > "$ROOT/xreview-$variant"
+  fresh
+  out="$(bash "$ROOT/xreview-$variant" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
+  if [ "$variant" = nolock ]; then
+    is "P8 a helper that cannot lock refuses as 'cannot lock'" \
+       "$rc/$(printf '%s' "$out" | grep -c "^xreview: cannot lock the Codex pane w1:p2 (.*w1_p2.lock); no review was started$")" "1/1"
+    is "P8 and never as contention" "$(printf '%s' "$out" | grep -c 'another dispatch')" 0
+    is "P8 and no traceback" "$(printf '%s' "$out" | grep -c 'Traceback')" 0
+  else
+    is "P8 a helper that times out refuses as 'another dispatch'" \
+       "$rc/$(printf '%s' "$out" | grep -c '^xreview: another dispatch is using the Codex pane w1:p2; no review was started$')" "1/1"
+  fi
+  is "P8 $variant: untouched" "$(untouched)" yes
 done
 # P6 (spec §6): a waiter that gets the lock while the first dispatch's review turn is running
 # refuses as mid-turn, and never sends a key into the pane the first one resumed.
