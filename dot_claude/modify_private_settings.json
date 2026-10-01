@@ -215,8 +215,8 @@ printf '%s' "$input" | jq \
         # so a violation costs a retry and never reaches Michael. Fires on every Bash
         # call, so the script fast-paths out in ~6ms; tests in
         # tests/git-forge-guard.test.sh. $HOME stays literal, expanded when it runs.
-        # Second entry: the worktree guard. Denies raw `git worktree remove` on a wt
-        # sibling worktree, which skips Herdr workspace closure and leaves husk directories.
+        # Second entry: the worktree guard. Denies `git worktree unlock`, a double-forced
+        # `git worktree remove`, and raw removal of a wt sibling: wt-rm owns that lifecycle.
         # claude-settings.test.sh finds each guard by its command, so order carries no meaning.
         # Third entry: the cross-review guard. Denies proposing a branch for merge with
         # no Codex review on record; a skipped review looks identical to a clean one.
