@@ -458,7 +458,8 @@ else _fail "the skill names the per-pane lock refusal" "missing"; fi
 if printf '%s' "$esc" | grep -qi 'cannot inspect'; then
   _pass "the escalation list names the cannot-inspect refusal"
 else _fail "the escalation list names the cannot-inspect refusal" "missing from the list"; fi
-for phrase in 'cannot lock' 'cannot read whether' 'resuming something other than a thread id'; do
+for phrase in 'cannot lock' 'cannot read whether' 'resuming something other than a thread id' \
+              'herdr pane process-info' 'herdr pane get'; do
   if printf '%s' "$esc" | grep -qi "$phrase"; then
     _pass "the escalation list names '$phrase'"
   else _fail "the escalation list names '$phrase'" "missing from the list"; fi
@@ -466,6 +467,18 @@ done
 if printf '%s' "$esc" | grep -qi 'another dispatch'; then
   _fail "the lock refusal is not escalated" "it is on the escalation list"
 else _pass "the lock refusal is not escalated"; fi
+# The refusal list (not just the escalation list) quotes the exact resume refusal and names
+# both pane reads; later rounds find the pane on the thread only while its TUI is connected.
+refusals="$(sed -n '/^Dispatch refuses, before/,/^Only the "no turn on record"/p' "$SKILL")"
+for phrase in 'is resuming something other than a thread id' 'herdr pane process-info' 'herdr pane get' \
+              'cannot read the Codex pane'; do
+  if printf '%s' "$refusals" | grep -qF "$phrase"; then
+    _pass "the refusal list quotes '$phrase'"
+  else _fail "the refusal list quotes '$phrase'" "missing from the list"; fi
+done
+if grep -q 'still connected to the' "$SKILL" && grep -q 'otherwise it is resumed again' "$SKILL"; then
+  _pass "the skill says a later round keeps the pane only while its TUI is connected"
+else _fail "the skill says a later round keeps the pane only while its TUI is connected" "missing"; fi
 if grep -q '300000' "$SKILL"; then
   _pass "the skill gives dispatch a five-minute tool timeout"
 else _fail "the skill gives dispatch a five-minute tool timeout" "missing"; fi

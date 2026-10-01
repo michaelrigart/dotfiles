@@ -104,7 +104,8 @@ first token and streams the rest live, so Michael sees the same thing either way
 is never waiting on the pane.
 - The first dispatch of a checkpoint starts a fresh thread over the daemon. That thread becomes
   the checkpoint's review thread, and the pane is resumed onto it.
-- Later rounds find the pane already on it.
+- Later rounds find the pane already on it, as long as its TUI is still connected to the
+  daemon; otherwise it is resumed again.
 - **A pane that cannot be pointed at the thread only warns — the review still runs, and
   `collect` still works.** Report the warning if you see one; it costs Michael the live view of
   that one round, never the review itself.
@@ -120,18 +121,22 @@ Dispatch refuses, before starting a turn or touching the pane, when:
 - the Codex daemon is down and will not start;
 - the daemon carries a herdr pane's environment. The fix is `codex-daemon restart`, which
   disconnects every open Codex TUI, so it is Michael's call: report it, never run it;
-- there is no Codex pane for the repository, or several (Michael can set `XREVIEW_PANE` to one of them). A harness worktree
+- there is no Codex pane for the repository, or several
+  (Michael can set `XREVIEW_PANE` to one of them). A harness worktree
   (`.claude/worktrees/<name>`) uses the Codex pane of the worktree that holds it;
 - the Codex pane is mid-turn. Wait for it, then dispatch again;
 - **the pane will not free** - it closes, or its session will not exit even after up to three
   `ctrl+c` pairs, while dispatch is quitting its TUI to make way for the turn. No turn exists
   yet at that point, so refusing costs nothing; this is different from the pane failing to
   resume AFTER the turn starts, which only warns (above);
-- dispatch cannot inspect the pane (`herdr pane process-info`), cannot tell which thread it is
-  resuming, or cannot read whether that thread is running;
+- dispatch cannot inspect the pane (`herdr pane process-info` or `herdr pane get`; the
+  message is "cannot read the Codex pane"), or the pane
+  "is resuming something other than a thread id", or dispatch cannot read whether a thread
+  (the pane's, or the review thread's) is running;
 - another dispatch is using the pane (`another dispatch is using the Codex pane`). Wait for
-  it, then dispatch again. If dispatch cannot take the lock at all (`cannot lock the Codex pane`,
-  or it cannot create or open the lock file), that is a local failure, not contention.
+  it, then dispatch again. If dispatch cannot take the lock at all
+  (`cannot lock the Codex pane`, or it cannot create or open the lock file), that is a local
+  failure, not contention.
 
 Only the "no turn on record" collect is a timeout, and that one is **ambiguous, never
 retried** — report it and stop. A still-running turn is not a timeout; wait it out.
@@ -188,8 +193,9 @@ Escalate to Michael when, and only when:
 - `xreview` refuses because there is no Codex pane for the repository, or several.
 - `xreview` refuses because the Codex daemon is down and will not start.
 - `xreview` refuses because the pane would not free (it closed, or its session would not exit).
-- `xreview` refuses because it cannot inspect the Codex pane, cannot read whether the pane's
-  thread is running, or cannot lock the Codex pane (or cannot create or open its lock file).
+- `xreview` refuses because it cannot inspect the Codex pane (`herdr pane process-info` or
+  `herdr pane get`), cannot read whether a thread is running, or cannot lock the Codex pane
+  (or cannot create or open its lock file).
 - `xreview` refuses because the pane is resuming something other than a thread id (for
   example `codex resume --last` or a picker). The pane is Michael's.
 
