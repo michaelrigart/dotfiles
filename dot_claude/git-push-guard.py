@@ -437,29 +437,32 @@ def dynamic_git_word(tokens):
 # Tools that never execute their arguments: what follows the command word is data, so a
 # quoted "git push" there is a mention, not a call. Anything else (a shell, find, sed, awk,
 # ssh, watch, timeout, parallel, every WRAPPERS member) may run or re-parse its words.
+# uniq is not one: it writes its second operand, a file a later command can run.
 INERT_TOOLS = {"rg", "grep", "fd", "cat", "head", "tail", "wc", "echo", "printf", "ls", "eza",
-               "diff", "cmp", "cut", "sort", "uniq", "tr", "jq", "test", "["}
-# The git subcommands whose arguments are data. An allowlist, not "every builtin minus the
-# runners": difftool -x, mergetool, send-email --*-cmd, clone --template, submodule, bisect,
-# filter-branch, archive and am all hand a word to a shell or plant one, so they stay out;
-# so do config and remote, which can set uploadpack, a URL or a helper for a later word.
+               "diff", "cmp", "cut", "sort", "tr", "jq", "test", "["}
+# The git subcommands whose arguments are data: none of their options runs a command or
+# writes a file. An allowlist, kept to subcommands with a small option surface: log, show,
+# diff, grep, fetch, rebase and the like keep yielding options that do (--output, -O,
+# --upload-pack, --exec), and config and remote can plant a command for a later word.
 INERT_GIT_SUBCOMMANDS = {
-    "add", "blame", "branch", "cat-file", "checkout", "cherry-pick", "commit",
-    "describe", "diff", "fetch", "for-each-ref", "grep", "log", "ls-files", "ls-remote",
-    "ls-tree", "merge", "merge-base", "mv", "pull", "rebase", "reflog", "reset",
-    "restore", "rev-list", "rev-parse", "rm", "shortlog", "show", "show-ref", "stash",
-    "status", "switch", "symbolic-ref", "tag", "worktree",
+    "add", "commit", "status", "switch", "branch", "rm", "mv", "restore", "rev-parse",
+    "tag", "stash",
 }
+# stash is inert only for these actions: stash list takes log options and stash show diff
+# options, both with --output=<file>.
+INERT_STASH_ACTIONS = {"push", "save", "pop", "apply", "drop", "clear", "branch"}
 # Text that the tokenizer cannot be trusted to split, or that nests a command in a word: the
 # whole command is then read raw. A here-document, a backtick, $( ), <( ), >( ) and $'..'
 # (shlex does not know it, so a quote inside could hide a push).
 UNSPLITTABLE = re.compile(r"<<|`|\$\(|<\(|>\(|\$'")
-# Options that make an inert tool run one of its arguments: rg --pre, fd -x/-X/--exec,
-# sort --compress-program, printf -v (assigns text a later eval runs).
+# Options that make an inert tool run one of its arguments or write a file: rg --pre, fd
+# -x/-X/--exec, sort --compress-program and -o/--output (getopt_long takes any prefix, so
+# every --c* and --o* counts, and -o anywhere in a bundle), printf -v (assigns text a later
+# eval runs).
 TOOL_EXEC_ARG = {
     "rg": re.compile(r"^--(pre|hostname-bin)\b"),
     "fd": re.compile(r"^(--exec|-[A-Za-z0-9]*[xX])"),
-    "sort": re.compile(r"^--compress"),
+    "sort": re.compile(r"^(--[co]|-[^-]*o)"),
     "printf": re.compile(r"^-v"),
 }
 # git long options that hand an argument to a shell or plant one. git accepts any unambiguous
@@ -531,6 +534,8 @@ def inert_git(args):
         return False
     sub, rest = args[i], args[i + 1:]
     if sub not in INERT_GIT_SUBCOMMANDS or runs_command_string(sub, rest):
+        return False
+    if sub == "stash" and (not rest or rest[0] not in INERT_STASH_ACTIONS):
         return False
     if any(exec_long_option(a) for a in rest):
         return False

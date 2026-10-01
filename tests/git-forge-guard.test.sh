@@ -476,7 +476,8 @@ expect allow "rg over the guard file, quoted pattern" "$R"   "rg -n 'x' dot_clau
 expect allow "wc over the guard file"                 "$R"   'wc -l dot_claude/git-push-guard.py tests/x.test.sh'
 expect allow "git log piped to rg push"               "$R"   'git log --oneline | rg push'
 expect allow "cat piped to grep for git push"         "$R"   'cat notes | grep "git push"'
-expect allow "an inert git command redirected to /dev/null" "$R" 'git log --grep "git push" 2>/dev/null | wc -l'
+expect deny  "git log is not inert, even to /dev/null" "$R" 'git log --grep "git push" 2>/dev/null | wc -l'
+expect allow "an inert git command redirected to /dev/null" "$R" 'git status 2>/dev/null && git commit -m "push later"'
 expect allow "add, status, then a commit message about a push" "$R" 'git add f && git status && git commit -m "push later"'
 expect allow "switch -c, then a commit message about push defaults" "$R" 'git switch -c x && git commit -m "explain push defaults"'
 # Only an explicit set of git subcommands is inert; difftool, clone and friends run words.
@@ -484,7 +485,16 @@ expect deny  "difftool -x running a push"             "$R"   "git add f && git d
 expect deny  "difftool --extcmd running a push"       "$R"   "git add f && git difftool --extcmd='git push' HEAD"
 expect deny  "clone --template, which is not inert"   "$R"   "rg x && git clone --template=/tmp/t 'git push' y"
 expect deny  "mergetool, then a push of its own"      "$R"   'git add f && git mergetool --tool-help; git push origin main'
-expect allow "git grep for push, after status"        "$R"   'git status && git grep -n "push" -- README.md'
+expect deny  "git grep is not inert, after status"    "$R"   'git status && git grep -n "push" -- README.md'
+expect allow "add of the guard file, then a commit"   "$R"   'git add dot_claude/git-push-guard.py && git commit -m x'
+expect allow "stash push is not a push"               "$R"   'git stash push -m wip && git status'
+# Only subcommands whose options neither run a command nor write a file are inert: log,
+# show and diff take --output=<file>, which a later command can run.
+expect deny  "log --output writing a push, then sh"   "$R"   'git log -1 --format="git push origin main%n" --output=x.sh && sh x.sh'
+expect deny  "log --output as separate values, then sh" "$R" 'git log -1 --format "git push origin main%n" --output x.sh && sh x.sh'
+expect deny  "show --output, then sh"                 "$R"   'git show --format="git push origin main%n" --output=x.sh HEAD && sh x.sh'
+expect deny  "diff is not inert: its words count"     "$R"   'git diff --output=x.sh -- "git push" && sh x.sh'
+expect deny  "stash list takes log options"           "$R"   'git stash list --format="git push origin main" --output=x.sh && sh x.sh'
 expect allow "add, then a commit message about docs"  "$R"   'git add f && git commit -m "push docs"'
 # git takes any unambiguous prefix of a long option, and a short option inside a bundle.
 expect deny  "an abbreviated --upload-pa=<cmd>"       "$R"   "git status && git ls-remote --upload-pa=\"sh -c 'git push origin main'\" ."
@@ -532,6 +542,10 @@ expect deny  "echo into a file that sh then runs"     "$R"   'echo "git push ori
 expect deny  "printf -v into a variable that eval runs" "$R" "printf -v c 'git push origin main'; eval \"\$c\""
 expect deny  "rg --pre running a push"                "$R"   "rg --pre 'git push' x docs/"
 expect deny  "fd --exec running a push"               "$R"   'fd -x git push'
+expect deny  "sort -o writing a file that sh runs"    "$R"   'echo "git push origin main" | sort -o x.sh && sh x.sh'
+expect deny  "an abbreviated sort --outp=<file>"      "$R"   'echo "git push origin main" | sort --outp=x.sh && sh x.sh'
+expect deny  "uniq writing its second operand"        "$R"   'echo "git push origin main" | uniq - x.sh && sh x.sh'
+expect allow "sort with no output file stays inert"   "$R"   'rg -n "git push" docs | sort'
 expect deny  "git config planting a push alias"       "$R"   "git config alias.p '!git push origin main' && git p"
 expect deny  "git -c core.pager running a push"       "$R"   "git -c core.pager='git push' log | wc -l"
 expect deny  "a comment after an inert command"       "$R"   'git status # git push'
