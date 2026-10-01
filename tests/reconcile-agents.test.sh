@@ -107,6 +107,23 @@ reject_case() {  # reject_case <name> <json>
 reject_case "empty-stdout"          ''
 reject_case "empty-object"          '{}'
 reject_case "array-of-empty-object" '[{}]'
+reject_case "scope-null"            '[{"id":"foo@m","scope":null,"enabled":false}]'
+reject_case "enabled-string"        '[{"id":"foo@m","scope":"user","enabled":"yes"}]'
+reject_case "non-object-element"    '["foo@m"]'
+
+echo "F1. marketplace .repo must be a string when present; null counts as absent"
+reset_mocks; export MOCK_CL_MKT='[{"name":"m","source":"github","repo":42}]'
+run "claude_marketplace owner/repo"
+has   "claude marketplace list: unexpected JSON shape" "repo:42 rejected"
+not_called "marketplace add"                           "repo:42: nothing added"
+rc_is 1                                                "repo:42: exit 1"
+reset_mocks; export MOCK_CL_MKT='[{"name":"m","source":"git","repo":null}]'
+run "# nothing declared"
+hasnt "unexpected JSON shape"        "repo:null tolerated"
+not_called "marketplace add"         "repo:null with nothing declared: nothing added"
+rc_is 0                              "repo:null: exit 0"
+run "claude_marketplace owner/repo"
+called "marketplace add owner/repo"  "repo:null counts as absent: a declared marketplace is still added"
 
 echo "F2. a failing or garbage CLI response is never read as none installed"
 reset_mocks; export MOCK_CL_PLUGINS='[]' MOCK_CL_PLUGINS_RC=1

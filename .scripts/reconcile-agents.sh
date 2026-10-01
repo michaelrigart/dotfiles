@@ -143,7 +143,7 @@ reconcile_claude() {
   # Entries without a .repo (non-GitHub sources) are valid and simply project to nothing.
   if run_json json "claude plugin marketplace list" claude plugin marketplace list --json \
      && project "$json" \
-          '(type=="array") and all(.[]; type=="object" and has("name") and (.name|type=="string"))' \
+          '(type=="array") and all(.[]; type=="object" and has("name") and (.name|type=="string") and ((has("repo")|not) or .repo == null or (.repo|type=="string")))' \
           '.[] | .repo // empty' have "claude marketplace list"; then
     for repo in "${claude_mkts[@]}"; do
       if printf '%s\n' "$have" | grep -qxF "$repo"; then
@@ -159,7 +159,7 @@ reconcile_claude() {
   local proj id enabled line
   if run_json json "claude plugin list" claude plugin list --json \
      && project "$json" \
-          '(type=="array") and all(.[]; has("id") and (.id|type=="string") and has("scope") and has("enabled"))' \
+          '(type=="array") and all(.[]; type=="object" and (.id|type=="string") and (.scope|type=="string") and (.enabled|type=="boolean"))' \
           '.[] | select(.scope=="user") | "\(.id)\t\(.enabled)"' proj "claude plugin list"; then
     # Install missing / report disabled. Exact match on field 1 (an id can be a substring
     # of another, e.g. code-review vs xcode-review), so awk on the tab-delimited field.
