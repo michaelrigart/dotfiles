@@ -28,8 +28,8 @@ Both Python files deploy to `~/.claude`, which the sandbox cannot write.
 
 ## Global Constraints
 
-Copied from the spec, with the rulings of plan review round 1 marked as such. Every task's
-requirements include these.
+Copied from the spec, with the rulings of plan review rounds 1 and 2 marked as such. Every
+task's requirements include these.
 
 **The change and its fingerprint (§3.1)**
 - A review target is (repository = absolute git common directory, `dest`, base commit, tip
@@ -75,6 +75,9 @@ requirements include these.
   - under the break lock, the main lock is removed only if it still carries the stale token
     seen;
   - a release removes the lock only while it carries the releaser's own token.
+- Plan review round 2 serialized the release: it takes `<ledger>.lock.break`, checks its
+  token, removes the lock, then drops the break lock. A release that cannot take the break
+  lock within the retry window leaves the lock to go stale, and only warns.
 - A pending-write failure is fatal: the dispatch is refused before any turn. A receipt-write
   failure only warns on stderr.
 - Reads parse one line at a time and skip a damaged line.
@@ -121,6 +124,19 @@ requirements include these.
   - a here-document with an unquoted delimiter (`<<EOF`, `<<-EOF`) is scanned the same way for
     its substitutions, and the rest of its body stays inert;
   - a quoted delimiter (`<<'EOF'`, `<<"EOF"`, `<<\EOF`) keeps the whole body inert.
+- Plan review round 2 ruled:
+  - **API host.** Without `--hostname`, the effective host of a `gh api` call is the guard's
+    own `GH_HOST`, else `github.com`; for `glab api` it is `GITLAB_HOST` (or `GITLAB_URI`,
+    `GITLAB_URL`), else the host of the repository's remote. It must equal origin's host, or
+    the call is denied with a message naming `--hostname <origin host>`. `api.<host>` stays
+    accepted for an absolute URL. Decision 17 adds a step to gh's order that was measured
+    after the ruling: the one host in gh's `hosts.yml`, when it lists exactly one.
+  - **Redirections** are recognized wherever they stand in a word, outside quotes: `>`,
+    `>>`, `<`, `2>`, `&>`, `>&`, `N>&M`, `<>`, `>|`. The operator and its operand are split
+    off.
+  - **Here-document delimiters** are read as a whole shell word: `'…'` or `"…"` holding any
+    characters, a backslash escape, or unquoted up to a metacharacter. The closing line is
+    compared with the delimiter, quotes removed. `<<-` strips leading tabs.
 - **Creation** reads `git ls-remote <remote> refs/heads/<source>`. The source repository must
   be the checkout's `origin`, so forks are denied.
 - **Forge merges:**
@@ -169,7 +185,7 @@ Test IDs are per suite, written as suite and ID: "ledger" is `tests/xreview-ledg
 2. **Commands that only mention a gated verb.** They must stay allowed. Recorded transcripts
    held nine false denies to five real ones for the first matcher. The cases:
    - an MR body written through a here-document whose lines begin with `git merge` or
-     `glab mr create`;
+     `glab mr create`, its delimiter spelled `EOF`, `'MR-BODY'`, `END.md` or `"a b"`;
    - a `#` inside a quoted title;
    - a commit message that says "merge";
    - `rg 'glab mr merge'`;
@@ -177,14 +193,14 @@ Test IDs are per suite, written as suite and ID: "ledger" is `tests/xreview-ledg
    - a redirection around an approved merge (`git merge feature > merge.log 2>&1`).
 
    The reverse also holds. None of these may hide a real verb:
-   - a redirection;
+   - a redirection, with or without blanks around it (`git>log merge x`);
    - a `sudo` option;
    - a `--help` option value;
    - a command substitution, whether inside double quotes or inside an unquoted
      here-document. This includes a backtick code span in an MR body written through
      `<<EOF`, which bash really runs.
 
-   Tests: Task 6, guard A1-A14, B12-B32, C9 and C16-C18; Task 7, guard H8.
+   Tests: Task 6, guard A1-A19, B12-B39, C9 and C16-C22; Task 7, guard H8.
 3. **Merges the forge defers on its own.** These must be denied:
    - glab 1.120 turns auto-merge on while a pipeline runs, so `glab mr merge <n> --sha <head>`
      alone is a deferred merge, and the message must name `--auto-merge=false`;
@@ -210,8 +226,8 @@ Test IDs are per suite, written as suite and ID: "ledger" is `tests/xreview-ledg
 ## Decisions this plan takes
 
 Each of these resolves a point the spec leaves open, improves the suggested design, or records
-a ruling from plan review round 1 (marked R1, with Codex's finding number). Each one stays
-within the spec's goals.
+a ruling from plan review round 1 or 2 (marked R1 or R2, with Codex's finding number). Each
+one stays within the spec's goals.
 
 **Where the code lives**
 
@@ -235,9 +251,14 @@ within the spec's goals.
    - A stale lock is broken only under `<ledger>.lock.break`, and only while it still
      carries the stale token seen. The break lock is itself cleared by a plain `rmdir` after
      60 s.
-   - A release removes only the releaser's own lock.
+   - A release removes only the releaser's own lock, and checks and removes it under
+     `<ledger>.lock.break` (R2, finding 3). Without that, a breaker could replace a lock
+     between the releaser's check and its removal, and the releaser would delete the new
+     holder's lock. A release that cannot take the break lock in time leaves its lock to go
+     stale, and warns.
    - The two-breaker interleaving is tested deterministically, through the module's own
-     functions with injected timestamps.
+     functions with injected timestamps. So is the release: a test seam, `RELEASE_PAUSE`,
+     stops a release between its check and its removal while a breaker tries to step in.
    - Rejected: Python's `fcntl.flock`. It is simpler and leaves nothing stale, but the spec
      names `mkdir`.
 5. **One list of diff flags for the fingerprint and the packet (R1, finding 1).**
@@ -297,8 +318,21 @@ within the spec's goals.
       treated as GraphQL.
     - A `-R` with a host must match origin's host.
     - A PR/MR URL argument must name origin's host and project before any lookup.
-    - Not modelled: `gh api` without `--hostname` goes to `$GH_HOST` or github.com. That
-      differs from origin only for GitHub Enterprise.
+    - Without `--hostname` the CLI picks the host, and that host must be origin's too (R2,
+      finding 1):
+      - `gh api`: `GH_HOST`, else the only host in gh's `hosts.yml` when it lists exactly one,
+        else `github.com`. The middle step goes beyond the ruling. It was measured with gh
+        2.102: with one host configured, `gh api user` went to that host, and with two it went
+        to github.com, inside a repository whose origin was on the configured host as well.
+        Only the file's top-level keys are read, never a value, and an unreadable file is a
+        deny (`GH_HOSTS`).
+      - `glab api`: `glab help api` says the host is "the authenticated host in the current
+        directory"; the binary also reads `GITLAB_HOST`, `GITLAB_URI` and `GITLAB_URL`. Their
+        order is not documented, so every one that is set must name origin's host. With none
+        set, glab picks a remote on a host it is signed in to, so every remote (from
+        `git remote -v`, fetch and push) must be on origin's host (`SEVERAL_HOSTS`).
+      - The guard reads its own environment. The command cannot change it, because an
+        assignment, `env` or `export` in front of a gated verb is not a plain command.
 18. **When the command does not name a project,** `origin` must be the checkout's only
     remote. With several remotes the CLI could pick another project; the deny tells the agent
     to pass `-R`.
@@ -323,6 +357,16 @@ within the spec's goals.
       delimiter, is data.
     - A gated verb found in a substitution is never part of a plain command: the command is
       denied with the plain-form message. Nesting deeper than 8 levels is denied.
+    - Redirections need no blank around them (R2, finding 2). Outside quotes, an operator is
+      recognized wherever it stands: where a word starts it may carry a descriptor (`2>`,
+      `2>&1`), and inside a word it is the operator alone, as bash reads `feature2>err` as
+      the word `feature2`. So `git>log merge x` is `git merge x`, and `git merge x>log`
+      merges `x`.
+    - A here-document delimiter is the whole shell word after `<<` or `<<-` (R2, finding 4):
+      quoted parts are taken whole, whatever they hold (`'MR-BODY'`, `"a b"`), a backslash
+      escapes one character, and an unquoted word runs to a metacharacter (`END.md`). Any
+      quoting makes the body inert. The body ends at the line equal to the delimiter with
+      its quotes removed, after leading tabs only for `<<-`.
 21. **A `git merge` anywhere in a compound command is denied, on any branch.** The branch the
     merge will run on cannot be known from the text. A plain `git merge` with no ref on the
     default branch is denied; `git merge-base` is another command.
@@ -994,7 +1038,11 @@ git commit -m "Add the xreview ledger helper: range normalization and the change
       is stale and still carries the token `seen`;
     - `acquire(lock) -> str`: returns this holder's token. `XREVIEW_LEDGER_LOCK_WAIT`
       overrides the 5 s wait;
-    - `release(lock, token)`: removes the lock only while it carries `token`.
+    - `release(lock, token)`: under `<lock>.break`, removes the lock only while it carries
+      `token`. When it cannot take the break lock within the wait, it leaves the lock to go
+      stale and warns on stderr;
+    - `RELEASE_PAUSE`: `None`, or a function a test sets; `release` calls it between its
+      token check and the removal.
   - `append(common: str, entry: dict) -> "appended" | "present"`. It raises `Fail` unless the
     entry is v2 with kind `pending` or `receipt`, a nonce, a `dispatched_at`, and a non-empty
     `targets` list whose every `repo` is `common`.
@@ -1097,11 +1145,48 @@ is "E26 B's own release frees it" "$(printf '%s\n' "$lines" | grep -c '^own-rele
 is "E27 a stale break lock is cleared with a plain rmdir" "$(printf '%s\n' "$lines" | grep -c '^stale-break-lock-cleared False False$')" 1
 is "E28 and the stale lock is broken on the next try" "$(printf '%s\n' "$lines" | grep -c '^then-broken True False$')" 1
 is "E29 a fresh break lock means another breaker is deciding: wait" "$(printf '%s\n' "$lines" | grep -c '^fresh-break-lock-waits False True$')" 1
+# A release checks its token and is suspended (the module's test seam) while B, finding A's
+# lock stale, tries to break it and take its own. The release holds the break lock, so B must
+# wait, and A then removes only its own lock. A release that cannot take the break lock in
+# time leaves the lock and warns.
+LR="$ROOT/release.lock"
+lines="$(XREVIEW_LEDGER_LOCK_WAIT=0.2 /usr/bin/python3 - "$LEDGER" "$LR" <<'PY'
+import contextlib, importlib.util, io, os, sys, time
+spec = importlib.util.spec_from_file_location("ledger", sys.argv[1])
+ledger = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(ledger)
+lock, old = sys.argv[2], time.time() - 120
+token_a = ledger.acquire(lock)
+os.utime(lock, (old, old))                    # A is slow: its lock looks stale to B
+seen = []
+
+def b_breaks_in():
+    try:
+        seen.append(("b-acquired", ledger.acquire(lock)))
+    except ledger.Fail:
+        seen.append(("b-waited", None))
+
+ledger.RELEASE_PAUSE = b_breaks_in
+ledger.release(lock, token_a)
+ledger.RELEASE_PAUSE = None
+print("b-during-release", seen[0][0])
+print("release-freed", os.path.isdir(lock), os.path.isdir(lock + ".break"))
+token_c = ledger.acquire(lock)
+os.mkdir(lock + ".break")                     # a breaker is deciding right now
+err = io.StringIO()
+with contextlib.redirect_stderr(err):
+    ledger.release(lock, token_c)
+print("blocked-release-kept", ledger.owner_of(lock) == token_c, "could not take" in err.getvalue())
+PY
+)"
+is "E30 a release holds the break lock: a breaker arriving mid-release waits" "$(printf '%s\n' "$lines" | grep -c '^b-during-release b-waited$')" 1
+is "E31 and the release frees its own lock and the break lock" "$(printf '%s\n' "$lines" | grep -c '^release-freed False False$')" 1
+is "E32 a release that cannot take the break lock leaves the lock and warns" "$(printf '%s\n' "$lines" | grep -c '^blocked-release-kept True True$')" 1
 
 ```
 
 - [ ] **Step 2: Run it and confirm it fails.** `./tests/xreview-ledger.test.sh`: expect
-  `passed: 59  failed: 27`. E1-E11, E13-E16 and E18-E29 fail, because `append`, `show` and
+  `passed: 59  failed: 30`. E1-E11, E13-E16 and E18-E32 fail, because `append`, `show` and
   the lock functions do not exist yet.
 
 - [ ] **Step 3: Add the writes.** In `dot_claude/xreview-ledger.py`, insert this block
@@ -1147,7 +1232,8 @@ def lock_wait():
 # writer. Breaking it is serialized by a second directory, <lock>.break, and only removes a
 # lock that still carries the token seen when it was judged stale: two writers that both saw
 # it stale can never remove the fresh lock one of them took in between. A release removes the
-# lock only while it carries the releaser's own token.
+# lock only while it carries the releaser's own token, checked and removed under the same
+# break lock, so a breaker cannot slip in between the check and the removal.
 def owner_of(lock):
     try:
         with open(os.path.join(lock, "owner"), encoding="utf-8") as fh:
@@ -1216,18 +1302,51 @@ def acquire(lock):
         return token
 
 
+RELEASE_PAUSE = None    # a test seam: called between a release's token check and its removal
+
+
 def release(lock, token):
-    """Remove the lock, only while it carries token."""
-    if owner_of(lock) != token:
-        return
+    """Remove the lock, only while it carries token. The check and the removal run under
+    <lock>.break, the breakers' own lock, so no breaker can replace the lock in between. A
+    release that cannot take the break lock in time leaves the lock to go stale and be
+    broken later, and only warns."""
+    guard = lock + ".break"
+    deadline = time.monotonic() + lock_wait()
+    while True:
+        try:
+            os.mkdir(guard)
+            break
+        except FileExistsError:
+            pass
+        if stale(guard):
+            try:
+                os.rmdir(guard)
+            except OSError:
+                pass
+        elif time.monotonic() >= deadline:
+            print("xreview-ledger: could not take {} to release {}; it will be broken once "
+                  "stale".format(guard, lock), file=sys.stderr)
+            return
+        else:
+            time.sleep(0.05)
     try:
-        os.unlink(os.path.join(lock, "owner"))
-    except OSError:
-        pass
-    try:
-        os.rmdir(lock)
-    except OSError:
-        pass
+        if owner_of(lock) != token:
+            return
+        if RELEASE_PAUSE:
+            RELEASE_PAUSE()
+        try:
+            os.unlink(os.path.join(lock, "owner"))
+        except OSError:
+            pass
+        try:
+            os.rmdir(lock)
+        except OSError:
+            pass
+    finally:
+        try:
+            os.rmdir(guard)
+        except OSError:
+            pass
 
 
 def append(common, entry):
@@ -1344,7 +1463,7 @@ if __name__ == "__main__":
 ```
 
 - [ ] **Step 5: Run it and confirm it passes.** `./tests/xreview-ledger.test.sh`: expect
-  `passed: 86  failed: 0`.
+  `passed: 89  failed: 0`.
 
 - [ ] **Step 6: Commit.** Check the branch, then:
 
@@ -1500,7 +1619,7 @@ is "G5 and never a/b, for identical blobs and destination" "$(L decide "$ROOT/is
 ```
 
 - [ ] **Step 2: Run it and confirm it fails.** `./tests/xreview-ledger.test.sh`: expect
-  `passed: 90  failed: 34`. Every F and G decision fails, because `decide` is a usage error so
+  `passed: 93  failed: 34`. Every F and G decision fails, because `decide` is a usage error so
   far.
 
 - [ ] **Step 3: Add the decision.** In `dot_claude/xreview-ledger.py`, insert this block
@@ -1698,7 +1817,7 @@ if __name__ == "__main__":
 ```
 
 - [ ] **Step 5: Run it and confirm it passes.** `./tests/xreview-ledger.test.sh`: expect
-  `passed: 124  failed: 0`.
+  `passed: 127  failed: 0`.
 
 - [ ] **Step 6: Commit.** Check the branch, then:
 
@@ -2640,9 +2759,13 @@ git commit -m "Write xreview receipts to each target repository's ledger, once p
 - Produces, in `xreview-guard.py`:
   - `tokenize(cmd) -> list[str]`, with here-document bodies, comments and redirections
     stripped (`split_heredocs`, `strip_comments`, `strip_redirections`, `skip_word`).
-  - `split_heredocs(cmd) -> (text, expanding_bodies)`; `substitutions(text, shell=True) ->
-    list[str]`; `closing_paren(text, i)`; `substituted_commands(cmd)`;
+  - `split_heredocs(cmd) -> (text, expanding_bodies)`, which finds each `<<`/`<<-` with
+    `HEREDOC_START` and reads its delimiter with `heredoc_word(line, i) -> (delimiter,
+    quoted) | None`, the whole shell word (`METACHARS` end it); `substitutions(text,
+    shell=True) -> list[str]`; `closing_paren(text, i)`; `substituted_commands(cmd)`;
     `gated_in_substitution(cmd, depth=0) -> bool`.
+  - `strip_redirections(cmd)`: `REDIRECT_RE` (an optional descriptor, then the operator) where
+    a word starts, `REDIRECT_MID_RE` (the operator alone) inside a word, both outside quotes.
   - `command_words(tokens) -> list[int]`: every word after a wrapper is a candidate;
     `segment(tokens, k) -> list[str]`; `literal(word) -> bool`.
   - `gated_verb(words) -> dict | None`, as
@@ -2701,6 +2824,10 @@ export GIT_CONFIG_GLOBAL="$ROOT/gitconfig" GIT_CONFIG_NOSYSTEM=1
 printf '[user]\n\tname = t\n\temail = t@t\n[commit]\n\tgpgsign = false\n[init]\n\tdefaultBranch = main\n' \
   > "$GIT_CONFIG_GLOBAL"
 unset XREVIEW_GUARD XREVIEW_GUARD_BUDGET XREVIEW_LEDGER_LOCK_WAIT
+# The forge CLIs pick an API host from these when no --hostname is given; the fixtures' forge
+# is forge.example, and gh's configuration directory starts empty.
+export GH_HOST=forge.example GH_CONFIG_DIR="$ROOT/gh"
+unset GITLAB_HOST GITLAB_URI GITLAB_URL
 
 # W: the work repository, on main; feature is one change ahead. SIDE: a second worktree, on
 # side. origin holds main only, until a section publishes more.
@@ -2773,6 +2900,27 @@ is "A11 a merge on a branch other than the default is not gated" "$(decision "$S
 is "A12 nor through git -C <path> on such a branch" "$(decision "$W" "git -C $SIDE merge feature")" allow
 is "A13 a glab api read of an MR" "$(decision "$W" 'glab api projects/:id/merge_requests/7')" allow
 is "A14 a gh api read of pulls" "$(decision "$W" "gh api 'repos/{owner}/{repo}/pulls' --jq '.[].number'")" allow
+# A here-document delimiter is a whole shell word: quoted with any characters in it, or
+# unquoted up to a metacharacter. The closing line must equal it, quotes removed.
+SQ="'"; TAB="$(printf '\t')"
+is "A15 a quoted delimiter with a hyphen" "$(decision "$W" "cat > \"\$TMPDIR/mr-body.md\" <<'MR-BODY'
+## How to land it
+git merge feature
+glab mr create --target-branch main
+MR-BODY")" allow
+is "A16 the same under <<-, its closing line tab-indented" "$(decision "$W" "cat <<-'MR-BODY'
+${TAB}git merge feature
+${TAB}MR-BODY")" allow
+is "A17 an unquoted delimiter with a dot" "$(decision "$W" 'cat > notes.md <<END.md
+git merge feature
+END.md')" allow
+is "A18 a quoted delimiter with a space keeps its body inert" "$(decision "$W" 'cat <<"a b"
+$(git merge feature)
+a b')" allow
+is "A19 only <<- strips tabs: under <<, a tab-indented delimiter is body" "$(decision "$W" "cat <<'EOF'
+${TAB}EOF
+git merge feature
+EOF")" allow
 
 echo "B. a gated verb must be a plain command"
 is "B1 a chain that switches branch first" "$(decision "$W" 'git switch main && git merge feature')" deny
@@ -2795,7 +2943,6 @@ is "B16 a creation titled --help is still gated" "$(decision "$W" 'glab mr creat
 is "B17 --abort beside a ref is still gated" "$(decision "$W" 'git merge --abort feature')" deny
 is "B18 a process substitution runs a command" "$(decision "$W" 'cat <(git merge feature)')" deny
 # Command substitutions run, quoted with double quotes or not; single quotes keep them inert.
-SQ="'"; TAB="$(printf '\t')"
 is "B19 a substitution inside double quotes runs its command" "$(decision "$W" 'echo "$(git merge feature)"')" deny
 is "B20 so does a backtick substitution inside double quotes" "$(decision "$W" 'echo "`git merge feature`"')" deny
 is "B21 and an unquoted backtick one" "$(decision "$W" 'echo `git merge feature`')" deny
@@ -2828,6 +2975,19 @@ $(git merge feature)
 EOF') $(decision "$W" 'cat <<\EOF
 `git merge feature`
 EOF')" "allow allow allow"
+is "B33 an unquoted delimiter with a dot still expands its body" "$(decision "$W" 'cat <<END.md
+$(git merge feature)
+END.md')" deny
+# A redirection operator needs no blank before it: git>log is git, then a redirection.
+is "B34 a redirection fused to the command word" "$(decision "$W" 'git>merge.log merge feature')" deny
+is "B35 fused to the verb" "$(decision "$W" 'git merge>merge.log feature')" deny
+is "B36 fused to glab's subcommand" "$(decision "$W" 'glab mr>create.log create -s feature -b main')" deny
+is "B37 and to glab" "$(decision "$W" 'glab>create.log mr create -s feature -b main')" deny
+is "B38 fused redirections before the command word" "$(decision "$W" '>merge.log<in.txt git merge feature')" deny
+is "B39 a <<- body ends at its tab-indented delimiter, and what follows runs" "$(decision "$W" "cat <<-'EOF'
+${TAB}EOF
+git merge feature
+EOF")" deny
 
 echo "C. git merge into the default branch"
 is "C1 an unreviewed merge into main is denied" "$(decision "$W" 'git merge feature')" deny
@@ -2852,6 +3012,13 @@ is "C15 an empty change is denied" "$(decision "$W" 'git merge side')" deny
 is "C16 redirections after an approved merge are read past" "$(decision "$W" 'git merge feature > merge.log 2>&1')" allow
 is "C17 and before it" "$(decision "$W" '>merge.log git merge feature')" allow
 is "C18 a harmless substitution in an approved merge stays allowed" "$(decision "$W" 'git merge -m "$(cat /tmp/msg)" feature')" allow
+is "C19 a redirection fused to the ref is read past" "$(decision "$W" 'git merge feature>merge.log')" allow
+is "C20 and one fused to the command word" "$(decision "$W" 'git>merge.log merge feature')" allow
+is "C21 and one fused to the verb" "$(decision "$W" 'git merge>merge.log feature')" allow
+is "C22 every operator form, fused" \
+   "$(for c in 'feature>>m.log' 'feature<in.txt' 'feature 2>err>m.log' 'feature&>m.log' 'feature>&2' 'feature 2>&1' 'feature<>m.log' 'feature>|m.log'; do
+        decision "$W" "git merge $c"; printf ' '; done)" \
+   "allow allow allow allow allow allow allow allow "
 
 echo "D. it fails closed"
 is "D1 a merge outside any repository is denied" "$(decision "$ROOT/norepo" 'git merge feature')" deny
@@ -3053,30 +3220,58 @@ def decision(reason):
 # ------------------------------------------------------------------ tokens
 PUNCT = ";&|()<>\n"
 ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-# A here-document marker: <<WORD or <<-WORD, the delimiter optionally quoted ('WORD', "WORD")
-# or escaped (\WORD), which keeps the body from expanding.
-HEREDOC_RE = re.compile(r"(?<!<)<<-?[ \t]*(\\?)(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\2")
+# A here-document operator, << or <<- (not the here-string <<<); its delimiter word follows.
+HEREDOC_START = re.compile(r"(?<!<)<<(?!<)(-?)[ \t]*")
+METACHARS = " \t\n;&|()<>"
 WRAPPERS = {"command", "env", "sudo", "time", "nohup", "xargs", "exec", "nice", "builtin"}
 RESERVED = {"if", "then", "elif", "else", "do", "while", "until", "!", "{"}
 MAX_NESTING = 8
 
 
+def heredoc_word(line, i):
+    """(delimiter, quoted) of the here-document word starting at line[i], read as the shell
+    reads it: up to a metacharacter, a '...' or "..." part taken whole whatever it holds, and a
+    backslash escaping the next character. Any quoting or escaping makes it quoted: the body
+    then does not expand. None when there is no word or a quote never closes."""
+    out, quoted, n = [], False, len(line)
+    while i < n and line[i] not in METACHARS:
+        c = line[i]
+        if c == "\\" and i + 1 < n:
+            out.append(line[i + 1])
+            quoted, i = True, i + 2
+        elif c in "'\"":
+            j = line.find(c, i + 1)
+            if j < 0:
+                return None
+            out.append(line[i + 1:j])
+            quoted, i = True, j + 1
+        else:
+            out.append(c)
+            i += 1
+    return ("".join(out), quoted) if out else None
+
+
 def split_heredocs(cmd):
     """(cmd without the bodies of its here-documents, the bodies that expand). A body is data,
     never a command; but when its delimiter is unquoted the shell still runs the $( ) and
-    backtick substitutions in it, so those bodies are kept for scanning. A marker whose
+    backtick substitutions in it, so those bodies are kept for scanning. A body ends at the
+    line that is exactly its unquoted delimiter (after leading tabs, for <<-). A marker whose
     terminator line never comes is left alone, so no text is dropped on a guess."""
     lines, out, expanding, i = cmd.split("\n"), [], [], 0
     while i < len(lines):
         line = lines[i]
         out.append(line)
         i += 1
-        for m in HEREDOC_RE.finditer(line):
+        for m in HEREDOC_START.finditer(line):
+            word = heredoc_word(line, m.end())
+            if word is None:
+                continue
+            delimiter, quoted = word
             j = i
-            while j < len(lines) and lines[j].lstrip("\t") != m.group(3):
+            while j < len(lines) and (lines[j].lstrip("\t") if m.group(1) else lines[j]) != delimiter:
                 j += 1
             if j < len(lines):
-                if not m.group(1) and not m.group(2):
+                if not quoted:
                     expanding.append("\n".join(lines[i:j]))
                 i = j + 1
     return "\n".join(out), expanding
@@ -3191,10 +3386,12 @@ def strip_comments(cmd):
     return "".join(out)
 
 
-# A redirection operator at the start of a word: >, >>, >|, <, <>, <&, >&, &>, &>>, a here-string
-# or a here-document marker, with an optional descriptor number (2>, 2>&1). Not a process
-# substitution, <( ) or >( ), which runs a command.
-REDIRECT_RE = re.compile(r"\d*(?:&>>|&>|>>|>&|>\||<>|<&|<<<|<<-|<<|>|<)(?!\()")
+# A redirection operator: >, >>, >|, <, <>, <&, >&, &>, &>>, a here-string or a here-document
+# marker, anywhere in an unquoted word; at the start of a word it may carry a descriptor
+# number (2>, 2>&1). Not a process substitution, <( ) or >( ), which runs a command.
+REDIRECT_OP = r"(?:&>>|&>|>>|>&|>\||<>|<&|<<<|<<-|<<|>|<)(?!\()"
+REDIRECT_RE = re.compile(r"\d*" + REDIRECT_OP)
+REDIRECT_MID_RE = re.compile(REDIRECT_OP)
 WORD_END = " \t\n;&|()<>"
 
 
@@ -3217,15 +3414,17 @@ def skip_word(cmd, i):
 
 
 def strip_redirections(cmd):
-    """cmd without its redirections: an unquoted operator that starts a word (>f, > f, 2>f,
-    &>f, <f, N>&M, <<<, a here-document marker) and its operand. A redirection changes where
-    input and output go, never what runs, so the gate reads past it wherever it stands, before
-    the command word and between arguments alike."""
+    """cmd without its redirections: an unquoted operator (>f, > f, 2>f, &>f, <f, N>&M, <>f,
+    >|f, <<<, a here-document marker) and its operand, split off the word it touches
+    (git>log merge is git, then merge). A redirection changes where input and output go,
+    never what runs, so the gate reads past it wherever it stands, before the command word
+    and between arguments alike. Quoted text is left alone."""
     out, i, n, quoting = [], 0, len(cmd), None
     while i < n:
         c = cmd[i]
-        if quoting is None and (i == 0 or cmd[i - 1] in " \t\n;&|()"):
-            m = REDIRECT_RE.match(cmd, i)
+        if quoting is None:
+            starts_word = i == 0 or cmd[i - 1] in " \t\n;&|()"
+            m = (REDIRECT_RE if starts_word else REDIRECT_MID_RE).match(cmd, i)
             if m:
                 j = m.end()
                 while j < n and cmd[j] in " \t":
@@ -3771,7 +3970,7 @@ with:
 ```
 
 - [ ] **Step 7: Run them and confirm they pass.**
-  - `./tests/xreview-guard.test.sh`: expect `passed: 79  failed: 0`.
+  - `./tests/xreview-guard.test.sh`: expect `passed: 95  failed: 0`.
   - `./tests/xreview-skill.test.sh`: expect `passed: 76  failed: 0`.
   - `./tests/claude-settings.test.sh 2>&1 | tail -1`: expect `RESULT: 179 passed, 0 failed`.
 
@@ -3800,8 +3999,14 @@ git commit -m "Gate a git merge into the default branch on the exact change's ap
   - `flag_on(values) -> bool`;
   - `field(fields, name, top, ledger) -> str | None`;
   - `lookup_json(argv, top, what)`;
-  - `origin_host(cwd) -> str` and `check_api_host(cwd, call)`: `--hostname` and an absolute
-    endpoint must name origin's host (message `OTHER_HOST`);
+  - `origin_host(cwd) -> str`; `host_of(value) -> str`; `gh_default_host() -> str | None`
+    (`GH_HOST`, else the one top-level key of gh's `hosts.yml`, else `github.com`; `None` when
+    that file cannot be read); `remote_hosts(top) -> set | None`, from `git remote -v`;
+  - `check_api_host(cwd, tool, call)`: the host the call goes to must be origin's. That is
+    the absolute endpoint's host (`api.<host>` accepted) and any `--hostname`; without
+    either, `gh_default_host()` for gh, and for glab every set `GITLAB_HOST`, `GITLAB_URI`
+    and `GITLAB_URL`, or, with none set, every remote's host. Messages `OTHER_HOST` (it names
+    `--hostname <origin host>`), `SEVERAL_HOSTS` and `GH_HOSTS`;
   - `gitlab_project(cwd, segment, hostname=None)` and `github_project(cwd, owner, repo)`;
   - `judge_create_cli`, `judge_create_gitlab_api(shape, ledger, segment, fields, call)`,
     `judge_create_github_api(shape, ledger, owner, repo, fields, call)` and `judge_api`.
@@ -3908,12 +4113,47 @@ is "K17 an absolute GitHub endpoint on another host is denied" \
    "$(decision "$W" 'gh api -X POST https://evil.example/api/v3/repos/acme/app/pulls -f head=feature -f base=main')" deny
 is "K18 an absolute endpoint on origin's host is allowed" \
    "$(decision "$W" 'gh api -X POST https://forge.example/api/v3/repos/acme/app/pulls -f head=feature -f base=main')" allow
+# Without --hostname, gh api goes to GH_HOST, else to the one host gh's hosts.yml lists, else to
+# github.com; glab api to GITLAB_HOST, GITLAB_URI or GITLAB_URL, else to a remote's host.
+GHCREATE='gh api repos/acme/app/pulls -f head=feature -f base=main'
+GLCREATE='glab api -X POST projects/acme%2Fapp/merge_requests -f source_branch=feature -f target_branch=main'
+is "K19 gh api with no GH_HOST goes to github.com, not origin's host" "$(GH_HOST= decision "$W" "$GHCREATE")" deny
+is "K20 the deny names origin's host to pass" "$(GH_HOST= reason "$W" "$GHCREATE" | grep -c -- '--hostname forge.example')" 1
+is "K21 a stray GH_HOST is denied" "$(GH_HOST=github.example decision "$W" "$GHCREATE")" deny
+is "K22 --hostname naming origin's host outranks it" "$(GH_HOST=github.example decision "$W" "gh api --hostname forge.example ${GHCREATE#gh api }")" allow
+mkdir -p "$GH_CONFIG_DIR"; printf 'forge.example:\n    user: t\n    git_protocol: ssh\n' > "$GH_CONFIG_DIR/hosts.yml"
+is "K23 gh's one configured host is its default" "$(GH_HOST= decision "$W" "$GHCREATE")" allow
+printf 'github.com:\n    user: t\n' >> "$GH_CONFIG_DIR/hosts.yml"
+is "K24 with two, the default is github.com again" "$(GH_HOST= decision "$W" "$GHCREATE")" deny
+# The same with origin on github.com: gh's one configured host elsewhere takes the call there.
+git -C "$W" config --add "url.$ORIGIN.insteadOf" 'git@github.com:acme/app.git'
+git -C "$W" remote set-url origin 'git@github.com:acme/app.git'
+printf 'forge.example:\n    user: t\n' > "$GH_CONFIG_DIR/hosts.yml"
+is "K25 an origin on github.com, and gh's one configured host elsewhere" "$(GH_HOST= decision "$W" "$GHCREATE")" deny
+printf 'github.com:\n    user: t\n' > "$GH_CONFIG_DIR/hosts.yml"
+is "K26 and that one host github.com" "$(GH_HOST= decision "$W" "$GHCREATE")" allow
+git -C "$W" remote set-url origin 'git@forge.example:acme/app.git'
+git -C "$W" config --unset "url.$ORIGIN.insteadOf" 'github'
+rm "$GH_CONFIG_DIR/hosts.yml"
+git -C "$W" remote add mirror 'git@forge.example:acme/app-mirror.git'
+is "K27 glab api with every remote on origin's host" "$(decision "$W" "$GLCREATE")" allow
+is "K28 GITLAB_HOST on another host is denied" "$(GITLAB_HOST=gitlab.com decision "$W" "$GLCREATE")" deny
+is "K29 so is GITLAB_URL" "$(GITLAB_URL=https://gitlab.com decision "$W" "$GLCREATE")" deny
+is "K30 GITLAB_URI naming origin's host is allowed" "$(GITLAB_URI=https://forge.example decision "$W" "$GLCREATE")" allow
+is "K31 --hostname naming origin's host outranks a stray GITLAB_HOST" \
+   "$(GITLAB_HOST=gitlab.com decision "$W" "glab api --hostname forge.example ${GLCREATE#glab api }")" allow
+git -C "$W" remote set-url mirror 'git@gitlab.com:acme/app.git'
+is "K32 a remote on another host is denied" "$(decision "$W" "$GLCREATE")" deny
+is "K33 naming origin's host to pass" "$(reason "$W" "$GLCREATE" | grep -c -- '--hostname forge.example')" 1
+is "K34 --hostname naming origin's host is allowed" "$(decision "$W" "glab api --hostname forge.example ${GLCREATE#glab api }")" allow
+git -C "$W" remote remove mirror
 
 ```
 
 - [ ] **Step 2: Run it and confirm it fails.** `./tests/xreview-guard.test.sh`: expect
-  `passed: 102  failed: 29`. Every allow case in H-K fails, and so do the deny reasons naming a
-  flag, a fetch or a project, because each creation is still denied with `NOT_MODELLED`.
+  `passed: 125  failed: 38`. Every allow case in H-K fails, and so do the deny reasons naming a
+  flag, a fetch, a project or a host, because each creation is still denied with
+  `NOT_MODELLED`.
 
 - [ ] **Step 3: Add the messages.** In `dot_claude/xreview-guard.py`, insert this block
   immediately above the line that starts `NOT_MODELLED = `:
@@ -3924,8 +4164,13 @@ NO_ORIGIN = ("Pre-merge gate: {} has no origin remote, so the forge project cann
              "Run the command from the project's own checkout.")
 OTHER_PROJECT = ("Pre-merge gate: the command names the project {}, but this checkout's origin "
                  "is {}. Run it from that project's checkout.")
-OTHER_HOST = ("Pre-merge gate: this call goes to {}, but this checkout's origin is on {}. Run it "
-              "against origin's host, from that project's checkout.")
+OTHER_HOST = ("Pre-merge gate: this call goes to {0}, but this checkout's origin is on {1}. Send "
+              "it to origin's host, --hostname {1}, from that project's checkout.")
+SEVERAL_HOSTS = ("Pre-merge gate: without --hostname, glab api picks its host from this "
+                 "checkout's remotes, and some are on another host than origin's ({0}). Name "
+                 "origin's host: --hostname {1}.")
+GH_HOSTS = ("Pre-merge gate: gh's hosts.yml cannot be read, so the host this gh api call goes to "
+            "is unknown. Name origin's host: --hostname {}.")
 SEVERAL_REMOTES = ("Pre-merge gate: this checkout has remotes besides origin ({}), so the CLI "
                    "could pick another project. Name origin's project explicitly: -R {}.")
 FORK = ("Pre-merge gate: {} proposes from another repository. Merge requests from forks are not "
@@ -4132,16 +4377,83 @@ def origin_host(cwd):
     return split_url(url)[0]
 
 
-def check_api_host(cwd, call):
-    """An api call goes to its --hostname, or to an absolute endpoint's host; either must be
-    origin's. An absolute GitHub endpoint may name origin's api. host (api.github.com)."""
-    host = origin_host(cwd)
-    if call["hostname"] is not None and call["hostname"].lower() != host:
-        raise Deny(OTHER_HOST.format(call["hostname"], host or "a local path"))
-    if "://" in (call["endpoint"] or ""):
-        named = (urlsplit(call["endpoint"]).hostname or "").lower()
+def host_of(value):
+    """The lowercased host of a hostname, a host:port or a URL."""
+    v = value.strip()
+    return (urlsplit(v if "://" in v else "//" + v).hostname or "").lower()
+
+
+def gh_default_host():
+    """The host gh api goes to without --hostname: GH_HOST, else the one host gh's hosts.yml
+    lists when it lists exactly one, else github.com. None when hosts.yml cannot be read. Only
+    the top-level keys are read; the values (tokens among them) never are."""
+    if os.environ.get("GH_HOST"):
+        return host_of(os.environ["GH_HOST"])
+    base = os.environ.get("GH_CONFIG_DIR") or os.path.join(
+        os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "gh")
+    hosts = []
+    try:
+        with open(os.path.join(base, "hosts.yml"), encoding="utf-8") as f:
+            for line in f:
+                if line[:1] not in ("", " ", "\t", "#", "\n", "-") and ":" in line:
+                    hosts.append(line.split(":", 1)[0].strip().strip("'\""))
+    except FileNotFoundError:
+        pass
+    except (OSError, UnicodeDecodeError):
+        return None
+    return host_of(hosts[0]) if len(hosts) == 1 else "github.com"
+
+
+def remote_hosts(top):
+    """The hosts of every remote URL, fetch and push, as git rewrites them; None when git
+    cannot list them. A local-path remote has no host and is left out."""
+    out = run(["git", "-C", top, "remote", "-v"])
+    if out is None:
+        return None
+    hosts = set()
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and split_url(parts[1])[0]:
+            hosts.add(split_url(parts[1])[0])
+    return hosts
+
+
+def check_api_host(cwd, tool, call):
+    """An api call must go to origin's host. An absolute endpoint names its host (a GitHub one
+    may name origin's api. host); so does --hostname. Without either the CLI picks the host:
+    gh from GH_HOST, else from its hosts.yml, else github.com; glab from GITLAB_HOST,
+    GITLAB_URI or GITLAB_URL, else from a remote on a host it is signed in to, so every remote
+    must then be on origin's host. The guard reads its own environment: the command cannot
+    set one, because an assignment or an env wrapper is not a plain command."""
+    top = toplevel(cwd)
+    host = origin_host(top)
+    where = host or "a local path"
+    endpoint = call["endpoint"] or ""
+    chosen = []
+    if call["hostname"] is not None:
+        chosen = [call["hostname"]]
+    elif "://" in endpoint:
+        pass
+    elif tool == "gh":
+        picked = gh_default_host()
+        if picked is None:
+            raise Deny(GH_HOSTS.format(where))
+        chosen = [picked]
+    else:
+        chosen = [os.environ[k] for k in ("GITLAB_HOST", "GITLAB_URI", "GITLAB_URL")
+                  if os.environ.get(k)]
+        if not chosen:
+            hosts = remote_hosts(top)
+            if hosts is None or hosts - {host}:
+                raise Deny(SEVERAL_HOSTS.format(
+                    ", ".join(sorted(hosts - {host})) if hosts else "unreadable", where))
+    for value in chosen:
+        if host_of(value) != host:
+            raise Deny(OTHER_HOST.format(host_of(value) or value, where))
+    if "://" in endpoint:
+        named = host_of(endpoint)
         if named not in (host, "api." + host):
-            raise Deny(OTHER_HOST.format(named, host or "a local path"))
+            raise Deny(OTHER_HOST.format(named, where))
 
 
 def gitlab_project(cwd, segment, hostname=None):
@@ -4204,7 +4516,7 @@ def judge_api(shape, ledger):
         raise Deny(LITERAL.format("the api endpoint", endpoint))
     if call["body"]:
         raise Deny(UNRESOLVED_API.format(tool))
-    check_api_host(shape["cwd"], call)
+    check_api_host(shape["cwd"], tool, call)
     path, query = endpoint_parts(endpoint)
     fields = dict(query)
     fields.update(call["fields"])
@@ -4233,7 +4545,7 @@ def judge(shape, ledger):
 ```
 
 - [ ] **Step 6: Run it and confirm it passes.** `./tests/xreview-guard.test.sh`: expect
-  `passed: 131  failed: 0`.
+  `passed: 163  failed: 0`.
 
 - [ ] **Step 7: Commit.** Check the branch, then:
 
@@ -4427,11 +4739,15 @@ is "P25 -R naming another host is denied (gh)" \
    "$(decision "$W" "gh pr merge 9 -R evil.example/acme/app --match-head-commit $REBASED")" deny
 is "P26 -R as a URL on another host is denied (glab)" \
    "$(decision "$W" "glab mr merge 7 -R https://evil.example/acme/app --sha $REBASED --auto-merge=false")" deny
+is "P27 a gh REST merge with no GH_HOST goes to github.com and is denied" \
+   "$(GH_HOST= decision "$W" "gh api -X PUT repos/acme/app/pulls/9/merge -f sha=$REBASED")" deny
+is "P28 a glab REST merge under a stray GITLAB_HOST is denied" \
+   "$(GITLAB_HOST=gitlab.com decision "$W" "glab api -X PUT projects/acme%2Fapp/merge_requests/7/merge -f sha=$REBASED")" deny
 
 ```
 
 - [ ] **Step 2: Run it and confirm it fails.** `./tests/xreview-guard.test.sh`: expect
-  `passed: 173  failed: 23`. The failures are L1-L9, M2, M6, N2, N5, N7, N9, P2, P4, P6, P11,
+  `passed: 207  failed: 23`. The failures are L1-L9, M2, M6, N2, N5, N7, N9, P2, P4, P6, P11,
   P19, P20, P22 and P24: merges are still denied with `NOT_MODELLED`, or as unresolved API
   writes.
 
@@ -4648,7 +4964,7 @@ def judge_api(shape, ledger):
         raise Deny(LITERAL.format("the api endpoint", endpoint))
     if call["body"]:
         raise Deny(UNRESOLVED_API.format(tool))
-    check_api_host(shape["cwd"], call)
+    check_api_host(shape["cwd"], tool, call)
     path, query = endpoint_parts(endpoint)
     fields = dict(query)
     fields.update(call["fields"])
@@ -4682,7 +4998,7 @@ def judge(shape, ledger):
 ```
 
 - [ ] **Step 5: Run it and confirm it passes.** `./tests/xreview-guard.test.sh`: expect
-  `passed: 196  failed: 0`. Then `grep -c NOT_MODELLED dot_claude/xreview-guard.py` must print
+  `passed: 230  failed: 0`. Then `grep -c NOT_MODELLED dot_claude/xreview-guard.py` must print
   `0`.
 
 - [ ] **Step 6: Commit.** Check the branch, then:
@@ -4987,15 +5303,15 @@ owns it.
 
 - [ ] **Step 1: Run every suite.** Run `./tests/run.sh` as one foreground Bash call with a
   timeout of 600000 ms. Do not filter it, and do not run any other suite while it runs.
-  - It took 596 s on the scratch clone, so it will likely reach the limit. If the call is moved to the
+  - It took 660 s on the scratch clone, so it will likely reach the limit. If the call is moved to the
     background there, wait for its completion notice and read its output file. Do not start a
     second run.
   - Expected:
     - every suite `ok`;
     - `29 suites run, 8 skipped (see the needs: lines)`;
-    - `all 29 suites passed (3223 assertions)`.
+    - `all 29 suites passed (3260 assertions)`.
   - The eight skipped suites carry a `# test-requires:` line.
-  - Report the total as passed/total, `3223/3223`, copied from the runner's last line.
+  - Report the total as passed/total, `3260/3260`, copied from the runner's last line.
 
 - [ ] **Step 2: Confirm the deployed set.** Run
   `chezmoi managed --include=files | grep -c -E '^\.claude/xreview-(guard|ledger)\.py$'` and
@@ -5025,21 +5341,21 @@ Test IDs are per suite: ledger = `tests/xreview-ledger.test.sh`, xreview =
 | §1.2 only two command shapes | T6-T8 | guard B, C, H-K, L-O |
 | §1.3 no freshness check | T3, T6 | ledger F17; guard C10 |
 | §1.4 ledgers split per checkout | T1, T5 | ledger C4-C7; xreview W19 |
-| §1.5 unlocked appends | T2 | ledger E9-E17, E21-E29 |
+| §1.5 unlocked appends | T2 | ledger E9-E17, E21-E32 |
 | §2 goals | all | the rows below |
 | §3.1 target, default branch, normalization, fingerprint | T1 | ledger A1-A21, B1-B21, D1-D6 |
 | §3.2 entries, idempotency, a review's state, v1 | T2, T3 | ledger E1-E8, F12, F20, F21 |
 | §3.3 location, key, `repo` file | T1, T2 | ledger C1-C3, E2 |
-| §3.3 the lock | T2 | ledger E9-E17, E21-E29 |
+| §3.3 the lock | T2 | ledger E9-E17, E21-E32 |
 | §3.3 pending write fatal, receipt write warns | T4, T5 | xreview V9-V12, W8-W10, F11 |
 | §3.4 dispatch | T4 | xreview V1-V27 |
 | §3.5 collect | T5 | xreview W1-W22, D10, F1, F14, F15 |
-| §3.6 gated shapes, plain grammar, fast path | T6-T8 | guard A, B, C16-C18, F1-F4, H, L, O |
-| §3.6 creation reads the remote head; project and forks | T7 | guard H1, H2, J1-J4, K1-K18 |
+| §3.6 gated shapes, plain grammar, fast path | T6-T8 | guard A, B, C16-C22, F1-F4, H, L, O |
+| §3.6 creation reads the remote head; project and forks | T7 | guard H1, H2, J1-J4, K1-K34 |
 | §3.6 forge merges pinned, never deferred | T7, T8 | guard I10, M1-M11, N1-N5, P10-P16 |
 | §3.6 destination commit and decision | T3, T6-T8 | ledger F1-F33; guard C5, I1-I4, N3, N4 |
 | §3.6 fails closed | T3, T6-T8 | ledger F27-F32; guard D1-D6, I11, I12, J3, J4, K9, N6-N9 |
-| §3.6 repository of an API shape, numeric id, placeholders | T7, T8 | guard H9-H13, K3, K12-K18, L6-L9, P17-P24 |
+| §3.6 repository and host of an API shape, numeric id, placeholders | T7, T8 | guard H9-H13, K3, K12-K34, L6-L9, P17-P28 |
 | §3.6 deny message and the bypass | T6 | guard B11, C2-C4, C11, E1-E5 |
 | §3.7 skill text, guard header | T6, T9 | skill: the §3.7 pins and the stale-text checks |
 | §4 push and forge guards unchanged | T10 | the full run (the git-forge-guard suite) |
@@ -5094,7 +5410,7 @@ Each §5 bullet:
 | multi-repository: a pending entry and a receipt in each ledger, each opening its own gate | T5, T4 | xreview W16-W18, V18-V20 |
 | worktrees: a review collected in a harness worktree opens the main checkout's gate | T5, T1 | xreview W19; ledger C5 |
 | isolation: paths colliding under `/`→`_` get separate ledgers, never sharing an approval | T3, T1 | ledger G1-G5, C1, C2 |
-| locking: 20 concurrent appends make 20 valid lines; a stale lock is broken | T2 | ledger E9-E12, E16, E17, E21-E29 |
+| locking: 20 concurrent appends make 20 valid lines; a stale lock is broken | T2 | ledger E9-E12, E16, E17, E21-E32 |
 | old turn records without a targets file still collect, as v1 | T5 | xreview W13-W15 (and the F14, F15 legacy records) |
 
 Plan review round 1 (Codex, ten findings), each with the coordinator's ruling as applied:
@@ -5118,3 +5434,13 @@ Before round 2, the coordinator added two rulings on substitutions:
 |---|---|---|---|
 | a command substitution, `$(…)` or backticks, inside double quotes (or unquoted backticks) runs its command | T6 | every substitution body outside single quotes and comments is scanned as a command, recursively | guard B19-B27, C18 |
 | a here-document with an unquoted delimiter runs the substitutions in its body | T6 | those substitutions are scanned; the rest of the body, and quoted-delimiter bodies, stay data | guard B28-B32, A7 |
+
+Plan review round 2 (Codex, four findings), each with the coordinator's ruling as applied.
+Every new test was mutation-checked: it fails with the fix removed.
+
+| Finding | Task | Change | Tests |
+|---|---|---|---|
+| 1 (P1) `gh api`/`glab api` without `--hostname` goes to an implicit host | T7, T8 | the effective host (gh: `GH_HOST`, gh's one configured host, github.com; glab: `GITLAB_HOST`/`URI`/`URL`, else every remote's host) must be origin's; the deny names `--hostname <origin host>` | guard K19-K34, P27, P28 |
+| 2 (P1) redirections fused to a word hide a gated verb | T6 | operators are recognized anywhere outside quotes; a descriptor only where a word starts | guard B34-B38, C19-C22 |
+| 3 (P2) a release can delete a lock a breaker just replaced | T2 | release checks and removes under `<ledger>.lock.break`; without it in time, it leaves the lock and warns | ledger E30-E32 |
+| 4 (P2) quoted here-document delimiters with punctuation | T6 | the delimiter is the whole shell word; the closing line is compared unquoted; tabs stripped only for `<<-` | guard A15-A19, B32, B33, B39 |
