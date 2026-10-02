@@ -113,6 +113,24 @@ is "A20 with the content as committed, never converted" "$(printf '%s\n' "$out" 
 is "A21 and the fingerprint ignores all three settings too" "$(fp "$R/deep" main rel)" "$F_ROOT"
 git -C "$R" config --unset diff.relative; git -C "$R" config --unset diff.external
 git -C "$R" config --unset diff.upper.textconv; rm "$R/.git/info/attributes"
+# Binary is decided by content, never by gitattributes: a text path marked -diff, or bound to a
+# driver with binary=true, must still show its changed lines in the packet.
+variant "$R" attr; sed -i '' 's/^two$/TWO2/' "$R/a.txt"; commit "$R" "text under attributes"
+printf '*.txt -diff\n' > "$R/.git/info/attributes"
+is "A22 a path marked -diff still shows its changed line" "$(L diff "$R" main attr | grep -c '^+TWO2$')" 1
+printf '*.txt diff=hide\n' > "$R/.git/info/attributes"; git -C "$R" config diff.hide.binary true
+is "A23 so does a diff driver with binary=true" "$(L diff "$R" main attr | grep -c '^+TWO2$')" 1
+git -C "$R" config --unset diff.hide.binary; rm "$R/.git/info/attributes"
+variant "$R" bn; printf '\000\001\002\003\007' > "$R/b.bin"; commit "$R" "binary change"
+L diff "$R" main bn > "$ROOT/bn.patch"
+is "A24 a true binary file gets one summary line with both blob ids" \
+   "$(cat "$ROOT/bn.patch")" "Binary file b.bin: $(git -C "$R" rev-parse main:b.bin) -> $(git -C "$R" rev-parse bn:b.bin)"
+is "A25 and the patch holds no NUL byte" "$(tr -d '\000' < "$ROOT/bn.patch" | wc -c | tr -d ' ')" "$(wc -c < "$ROOT/bn.patch" | tr -d ' ')"
+variant "$R" glob; printf 'g\n' > "$R/*.txt"; printf 'a\000b\n' > "$R/a.txt"; commit "$R" "a file named *.txt, and a binary a.txt"
+L diff "$R" main glob > "$ROOT/glob.patch"
+is "A26 a file named *.txt is read literally: its own line shows" "$(grep -c '^+g$' "$ROOT/glob.patch")" 1
+is "A27 and does not pull in another .txt path as text" "$(grep -c '^diff --git a/a.txt' "$ROOT/glob.patch")" 0
+is "A28 which is summarized as binary" "$(grep -c '^Binary file a.txt: ' "$ROOT/glob.patch")" 1
 git -C "$R" switch -q main
 
 echo "B. range normalization (spec 3.1)"

@@ -125,6 +125,18 @@ def fingerprint(repo, base, tip):
     """SHA-256 over the sorted records <path> TAB <old mode> TAB <new mode> TAB <old blob>
     TAB <new blob>, one per changed path, each ended by NUL (git paths cannot hold NUL, so
     the encoding is unambiguous). None when nothing changed."""
+    records = [b"\t".join(r) for r in raw_records(repo, base, tip)]
+    if not records:
+        return None
+    digest = hashlib.sha256()
+    for record in sorted(records):
+        digest.update(record + b"\0")
+    return digest.hexdigest()
+
+
+def raw_records(repo, base, tip):
+    """The changed paths of base..tip as (path, old mode, new mode, old blob, new blob) byte
+    tuples, from the raw diff both the fingerprint and the patch read."""
     out = git(repo, *DIFF_RAW, base, tip, "--", raw=True)
     if out is None:
         raise Fail("cannot diff {}..{} in {}".format(base, tip, repo))
@@ -134,23 +146,64 @@ def fingerprint(repo, base, tip):
         if not fields[i].startswith(b":") or len(meta) != 5 or meta[4][:1] in (b"R", b"C"):
             raise Fail("unexpected raw diff output for {}..{}".format(base, tip))
         old_mode, new_mode, old_blob, new_blob = meta[:4]
-        records.append(b"\t".join([fields[i + 1], old_mode, new_mode, old_blob, new_blob]))
+        records.append((fields[i + 1], old_mode, new_mode, old_blob, new_blob))
         i += 2
-    if not records:
-        return None
-    digest = hashlib.sha256()
-    for record in sorted(records):
-        digest.update(record + b"\0")
-    return digest.hexdigest()
+    return records
+
+
+def has_nul(repo, blobs):
+    """The subset of blobs whose content holds a NUL byte, from one `git cat-file --batch`."""
+    blobs = sorted(set(blobs))
+    if not blobs:
+        return set()
+    try:
+        p = subprocess.run(["git", "-C", repo, "cat-file", "--batch"], capture_output=True,
+                           input=b"".join(b + b"\n" for b in blobs), timeout=CALL_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired):
+        raise Fail("cannot read blobs in {}".format(repo))
+    if p.returncode != 0:
+        raise Fail("cannot read blobs in {}".format(repo))
+    out, pos, found = p.stdout, 0, set()
+    for blob in blobs:
+        end = out.find(b"\n", pos)
+        head = out[pos:end].split(b" ") if end >= 0 else []
+        if len(head) != 3 or head[0] != blob or head[1] != b"blob":
+            raise Fail("cannot read blob {} in {}".format(blob.decode("ascii", "replace"), repo))
+        size = int(head[2])
+        if b"\0" in out[end + 1:end + 1 + size]:
+            found.add(blob)
+        pos = end + 1 + size + 1
+    return found
 
 
 def patch(repo, base, tip):
-    """The change base..tip as a patch, with the fingerprint's own flags, so the reviewer reads
-    every path and every byte the fingerprint names. Raises Fail when git cannot diff it."""
-    out = git(repo, *DIFF_PATCH, base, tip, "--", raw=True)
-    if out is None:
-        raise Fail("cannot diff {}..{} in {}".format(base, tip, repo))
-    return out
+    """The change base..tip as a patch the reviewer can read in full. Binary is decided by the
+    content, never by gitattributes (a path marked -diff would otherwise show only a "Binary
+    files differ" line for text the fingerprint binds): a path whose old or new blob holds a NUL
+    byte gets one summary line, `Binary file <path>: <old blob> -> <new blob>`, after the text
+    patch; every other path is rendered with --text, as a literal top-level pathspec, with the
+    fingerprint's own flags. The output never holds a NUL byte (a blob with a NUL anywhere, not
+    only in git's first 8000 bytes, is summarized). Raises Fail when git cannot diff it."""
+    records = sorted(raw_records(repo, base, tip))
+    want = set()
+    for _path, old_mode, new_mode, old_blob, new_blob in records:
+        if old_mode != b"160000" and old_blob.strip(b"0"):
+            want.add(old_blob)
+        if new_mode != b"160000" and new_blob.strip(b"0"):
+            want.add(new_blob)
+    binary = has_nul(repo, want)
+    text, lines = [], []
+    for path, old_mode, new_mode, old_blob, new_blob in records:
+        if old_blob in binary or new_blob in binary:
+            lines.append(b"Binary file " + path + b": " + old_blob + b" -> " + new_blob + b"\n")
+        else:
+            text.append(b":(top,literal)" + path)
+    out = b""
+    if text:
+        out = git(repo, *(DIFF_PATCH + ["--text", base, tip, "--"] + text), raw=True)
+        if out is None:
+            raise Fail("cannot diff {}..{} in {}".format(base, tip, repo))
+    return out + b"".join(lines)
 
 
 def branch_of(repo, right):
