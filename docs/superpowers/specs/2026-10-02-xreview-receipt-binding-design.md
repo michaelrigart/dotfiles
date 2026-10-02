@@ -1,6 +1,6 @@
 # xreview receipt binding (P1-A)
 
-**Status:** Approved (signed off by Michael 2026-10-02 after five Codex spec rounds)
+**Status:** In progress (branch `feat/xreview-receipt-binding`; plan `docs/superpowers/plans/2026-10-02-xreview-receipt-binding.md`, Codex-approved after four plan rounds)
 **Date:** 2026-10-02
 **Scope:** `dot_local/bin/executable_xreview`, `dot_claude/executable_xreview-guard.sh`, the
 cross-review skill, and their test suites. This closes P1-A, which has been open since the relay
