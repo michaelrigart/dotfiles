@@ -496,3 +496,27 @@ drops the arguments of provably inert commands before the match. Rulings:
   485.
 - **Evaluation impact.** False push-guard denies on such commands stop from this merge.
   Count them separately when comparing against the baseline above.
+
+### Rule 4 follow-up: the scan count (branch `fix/guard-scan-count`, 2026-10-02)
+
+The first push of VM.Portal's `feature/machines` was refused with "gitleaks scanned 573
+commit(s) but this push carries 598". gitleaks was right: the branch has 573 outgoing
+commits, and the guard's expected count was wrong.
+
+- **Cause.** `expected_commits` read the patch listing as decoded text, and Python's text
+  mode turns every CR into a line break. `--text` puts a binary file's bytes in the patch.
+  Five commits add or delete GIFs, PNGs or Inter `.woff2` fonts whose bytes hold a CR
+  before the `0x01` commit marker or before `@@`. Each such CR became a phantom commit or
+  hunk: 27 phantom commits were counted, and two real ones were credited to phantoms, a net
+  of 25 too many.
+- **Fix.** `Repo.run(raw=True)` returns bytes, and `expected_commits` splits the listing at
+  LF alone, as git writes it and gitleaks parses it. A probe confirmed that gitleaks does
+  not break at CR: phantom `commit <sha>` headers behind CRs left its count unchanged. The
+  predicate and the strict equality are unchanged, with no tolerance and no exclusion.
+- **Tests.**
+  - A binary holding CR before the marker and `@@`, added and then deleted, is allowed. It
+    was denied before the fix.
+  - A git that hides the modifying commits from gitleaks' own log still denies, with
+    "scanned 2 commit(s) but this push carries 3". Before the fix it said 5.
+- **Verified.** The real push is now allowed, at 573 of 573 commits in about 3 s. The guard
+  suite passes 558/558, up from 554.
