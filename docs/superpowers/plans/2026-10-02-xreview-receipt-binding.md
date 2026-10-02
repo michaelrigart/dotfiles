@@ -28,7 +28,7 @@ Both Python files deploy to `~/.claude`, which the sandbox cannot write.
 
 ## Global Constraints
 
-Copied from the spec, with the rulings of plan review rounds 1 and 2 marked as such. Every
+Copied from the spec, with the rulings of plan review rounds 1 to 3 marked as such. Every
 task's requirements include these.
 
 **The change and its fingerprint (§3.1)**
@@ -70,14 +70,17 @@ task's requirements include these.
   retries for up to 5 s, and a lock older than 60 s is broken.
 - Plan review round 1 added how a lock is broken:
   - each holder writes a unique owner token inside the lock directory;
-  - breaking is serialized by `mkdir <ledger>.lock.break`, which is itself removed by a plain
-    `rmdir` once it is older than 60 s;
+  - breaking is serialized by `mkdir <ledger>.lock.break`;
   - under the break lock, the main lock is removed only if it still carries the stale token
     seen;
   - a release removes the lock only while it carries the releaser's own token.
 - Plan review round 2 serialized the release: it takes `<ledger>.lock.break`, checks its
   token, removes the lock, then drops the break lock. A release that cannot take the break
   lock within the retry window leaves the lock to go stale, and only warns.
+- Plan review round 3 ruled that `<ledger>.lock.break` is never broken automatically. It is
+  held only for the few operations around a break or a release. If it exists and is older
+  than 60 s, the writer fails closed: a dispatch refuses, and a collect or a release warns.
+  The message names the path to remove by hand.
 - A pending-write failure is fatal: the dispatch is refused before any turn. A receipt-write
   failure only warns on stderr.
 - Reads parse one line at a time and skip a damaged line.
@@ -131,6 +134,11 @@ task's requirements include these.
     the call is denied with a message naming `--hostname <origin host>`. `api.<host>` stays
     accepted for an absolute URL. Decision 17 adds a step to gh's order that was measured
     after the ruling: the one host in gh's `hosts.yml`, when it lists exactly one.
+- Plan review round 3 ruled that the lookups inherit that host. `check_api_host` (or its
+  caller) returns the single effective host, and every dependent lookup for the command (the
+  MR/PR, the merge train or queue, the project) passes it explicitly: `--hostname <host>` for
+  `glab api` and `gh api`, and `-R <host>/<owner>/<repo>` for `gh pr view`. The remote head
+  is read from origin with `git ls-remote`.
   - **Redirections** are recognized wherever they stand in a word, outside quotes: `>`,
     `>>`, `<`, `2>`, `&>`, `>&`, `N>&M`, `<>`, `>|`. The operator and its operand are split
     off.
@@ -226,8 +234,8 @@ Test IDs are per suite, written as suite and ID: "ledger" is `tests/xreview-ledg
 ## Decisions this plan takes
 
 Each of these resolves a point the spec leaves open, improves the suggested design, or records
-a ruling from plan review round 1 or 2 (marked R1 or R2, with Codex's finding number). Each
-one stays within the spec's goals.
+a ruling from plan review rounds 1 to 3 (marked R1, R2 or R3, with Codex's finding number).
+Each one stays within the spec's goals.
 
 **Where the code lives**
 
@@ -249,8 +257,14 @@ one stays within the spec's goals.
 4. **Locking is `mkdir`, as the spec says, with owner tokens (R1, finding 8).**
    - Each holder writes a unique token into the lock directory.
    - A stale lock is broken only under `<ledger>.lock.break`, and only while it still
-     carries the stale token seen. The break lock is itself cleared by a plain `rmdir` after
-     60 s.
+     carries the stale token seen.
+   - The break lock is never broken automatically (R3, finding 2). Two writers that both
+     judged it stale could each remove it, and each would then break or release under a
+     break lock of its own. It is held only for a few steps, so one older than 60 s means a
+     writer died holding it: `check_break_lock` makes every writer fail closed, naming the
+     path to remove by hand. `acquire` checks it before each try, so an append fails at once
+     rather than after the wait; a release that finds it leaves its own lock and warns.
+     xreview's collect passes the helper's reason into its warning.
    - A release removes only the releaser's own lock, and checks and removes it under
      `<ledger>.lock.break` (R2, finding 3). Without that, a breaker could replace a lock
      between the releaser's check and its removal, and the releaser would delete the new
@@ -316,7 +330,11 @@ one stays within the spec's goals.
     - `glab api`/`gh api --hostname`, and an absolute endpoint, must name origin's host. An
       absolute GitHub endpoint may name `api.<host>`, and an absolute `…/graphql` endpoint is
       treated as GraphQL.
-    - A `-R` with a host must match origin's host.
+    - A `-R` with a host must match origin's host. gh reads `-R [HOST/]OWNER/REPO`. glab
+      reads any `-R` but a URL or an scp-style address as a project path on its default
+      host (measured with glab 1.120: `-R other.example/acme/app` requests the project
+      `other.example/acme/app`), so for glab `-R HOST/PATH` names another project and is
+      denied (R3; it was accepted before).
     - A PR/MR URL argument must name origin's host and project before any lookup.
     - Without `--hostname` the CLI picks the host, and that host must be origin's too (R2,
       finding 1):
@@ -325,17 +343,48 @@ one stays within the spec's goals.
         2.102: with one host configured, `gh api user` went to that host, and with two it went
         to github.com, inside a repository whose origin was on the configured host as well.
         Only the file's top-level keys are read, never a value, and an unreadable file is a
-        deny (`GH_HOSTS`).
+        deny (`UNREADABLE`).
       - `glab api`: `glab help api` says the host is "the authenticated host in the current
-        directory"; the binary also reads `GITLAB_HOST`, `GITLAB_URI` and `GITLAB_URL`. Their
-        order is not documented, so every one that is set must name origin's host. With none
-        set, glab picks a remote on a host it is signed in to, so every remote (from
+        directory". `glab help config` documents the host variables, first one set wins:
+        `GITLAB_HOST`, `GITLAB_URI`, `GL_HOST`; `glab help api` adds `GITLAB_URL`. Every one
+        that is set must name origin's host, which also covers their order. With none set,
+        glab picks a remote on a host it is signed in to, so every remote (from
         `git remote -v`, fetch and push) must be on origin's host (`SEVERAL_HOSTS`).
+      - `GITLAB_API_HOST`, glab's documented override of the API host, must be origin's host
+        when set (`API_HOST_VAR`). Measured: it sends `glab api` there, whatever the host.
       - The guard reads its own environment. The command cannot change it, because an
         assignment, `env` or `export` in front of a gated verb is not a plain command.
+    - Every lookup goes to that host (R3, finding 1). `check_api_host` returns origin's host,
+      and the MR, project-id and merge-train lookups pass `glab api --hostname <host>`, the
+      merge-queue lookup `gh api graphql --hostname <host>`, and the PR lookup
+      `gh pr view <n> -R <host>/<owner>/<repo>`. They name origin's project path, never the
+      command's placeholder or numeric id, which the environment could resolve elsewhere.
+    - A CLI verb's own host is checked the same way (beyond the letter of the R3 ruling).
+      Pinning its lookups while the verb itself followed the environment would recreate the
+      split the finding describes: the lookup on origin, the merge somewhere else.
+      - A `-R` with a host (a URL, or gh's `HOST/OWNER/REPO`) was checked by
+        `forge_context`.
+      - A bare `-R OWNER/REPO` goes to the CLI's default host. Measured: gh 2.102 sends
+        `gh pr view 9 -R acme/app` to gh's one configured host, and glab 1.120 sends
+        `glab mr view 7 -R acme/app` to `GITLAB_HOST`, else to its config's `host`, else to
+        gitlab.com, even inside a repository whose origin is elsewhere. So gh's default is
+        `gh_default_host()`, and glab's is every set host variable, else every `host` key in
+        its config.yml (the global one and the repository's own `.git/glab-cli/config.yml`),
+        else gitlab.com. A default elsewhere is denied with `DEFAULT_HOST`, which names the
+        `-R` that carries origin's host: `<host>/<path>` for gh, `https://<host>/<path>` for
+        glab.
+      - `GH_REPO` and `GITLAB_REPO` stand in for a missing `-R`. Measured: each retargets the
+        verb. They must name origin's project, and they also fill the `:id` and
+        `{owner}/{repo}` placeholders of an api call.
+      - With no project named, the CLI takes origin, the only remote. Measured: a `GH_HOST`
+        or `GITLAB_HOST` naming another host makes gh and glab fail ("none of the git remotes
+        configured for this repository correspond to the … environment variable").
+      - `gh pr merge` with no target keeps an unqualified `gh pr view --json …` lookup: gh
+        refuses `-R` without a target, and this resolves the current branch's PR exactly as
+        the merge does, on the host just checked.
 18. **When the command does not name a project,** `origin` must be the checkout's only
     remote. With several remotes the CLI could pick another project; the deny tells the agent
-    to pass `-R`.
+    to pass the `-R` that carries origin's host (`explicit_repo`).
 19. **Every other `POST`, `PUT` or `PATCH` under `merge_requests` or `pulls` is denied,** MR
     notes and approvals included (spec-literal). The CLI equivalents are not gated.
 
@@ -1034,13 +1083,16 @@ git commit -m "Add the xreview ledger helper: range normalization and the change
   - `read_entries(path) -> list[dict]`: skips damaged lines; raises `OSError` when unreadable.
   - The lock, `<ledger>.lock`:
     - `owner_of(lock) -> str | None` and `stale(path) -> bool`;
+    - `check_break_lock(guard)`: raises `Fail` when the break lock is older than 60 s,
+      naming it: `remove it by hand (rmdir <guard>)`. Nothing removes it automatically;
     - `break_stale(lock, seen) -> bool`: under `<lock>.break`, removes the lock only while it
-      is stale and still carries the token `seen`;
-    - `acquire(lock) -> str`: returns this holder's token. `XREVIEW_LEDGER_LOCK_WAIT`
-      overrides the 5 s wait;
+      is stale and still carries the token `seen`. It returns `False` while another writer
+      holds the break lock, and raises through `check_break_lock` when that one is stale;
+    - `acquire(lock) -> str`: returns this holder's token, and fails at once while a stale
+      break lock stands. `XREVIEW_LEDGER_LOCK_WAIT` overrides the 5 s wait;
     - `release(lock, token)`: under `<lock>.break`, removes the lock only while it carries
-      `token`. When it cannot take the break lock within the wait, it leaves the lock to go
-      stale and warns on stderr;
+      `token`. When it cannot take the break lock within the wait, or finds it stale, it
+      leaves the lock and warns on stderr, naming a stale break lock;
     - `RELEASE_PAUSE`: `None`, or a function a test sets; `release` calls it between its
       token check and the removal.
   - `append(common: str, entry: dict) -> "appended" | "present"`. It raises `Fail` unless the
@@ -1127,12 +1179,17 @@ print("foreign-release-kept", os.path.isdir(lock))
 ledger.release(lock, token_b)
 print("own-release-freed", os.path.isdir(lock))
 stale_lock("dead2")
-os.mkdir(lock + ".break")                               # a breaker crashed mid-break...
+os.mkdir(lock + ".break")                               # a writer died holding the break lock
 os.utime(lock + ".break", (old, old))
-print("stale-break-lock-cleared", ledger.break_stale(lock, "dead2"), os.path.isdir(lock + ".break"))
+try:
+    print("stale-break-lock", "broken", ledger.break_stale(lock, "dead2"))
+except ledger.Fail as e:
+    print("stale-break-lock", "failed", ("rmdir " + lock + ".break") in str(e))
+print("both-left", os.path.isdir(lock + ".break"), os.path.isdir(lock))
+os.rmdir(lock + ".break")                               # removed by hand
 print("then-broken", ledger.break_stale(lock, "dead2"), os.path.isdir(lock))
 stale_lock("dead3")
-os.mkdir(lock + ".break")                               # ...while another is breaking right now
+os.mkdir(lock + ".break")                               # another writer is breaking right now
 print("fresh-break-lock-waits", ledger.break_stale(lock, "dead3"), os.path.isdir(lock))
 PY
 )"
@@ -1142,13 +1199,14 @@ is "E23 A, resuming, never removes B's lock" "$(printf '%s\n' "$lines" | grep -c
 is "E24 B still holds it" "$(printf '%s\n' "$lines" | grep -c '^b-still-holds True$')" 1
 is "E25 a release by another token leaves the lock" "$(printf '%s\n' "$lines" | grep -c '^foreign-release-kept True$')" 1
 is "E26 B's own release frees it" "$(printf '%s\n' "$lines" | grep -c '^own-release-freed False$')" 1
-is "E27 a stale break lock is cleared with a plain rmdir" "$(printf '%s\n' "$lines" | grep -c '^stale-break-lock-cleared False False$')" 1
-is "E28 and the stale lock is broken on the next try" "$(printf '%s\n' "$lines" | grep -c '^then-broken True False$')" 1
+is "E27 a stale break lock is never removed: breaking fails, naming it to remove by hand" "$(printf '%s\n' "$lines" | grep -c '^stale-break-lock failed True$')" 1
+is "E28 both locks are left; removed by hand, the stale lock is then broken" \
+   "$(printf '%s\n' "$lines" | grep -c -E '^(both-left True True|then-broken True False)$')" 2
 is "E29 a fresh break lock means another breaker is deciding: wait" "$(printf '%s\n' "$lines" | grep -c '^fresh-break-lock-waits False True$')" 1
 # A release checks its token and is suspended (the module's test seam) while B, finding A's
 # lock stale, tries to break it and take its own. The release holds the break lock, so B must
 # wait, and A then removes only its own lock. A release that cannot take the break lock in
-# time leaves the lock and warns.
+# time, or finds it stale, leaves the lock and warns.
 LR="$ROOT/release.lock"
 lines="$(XREVIEW_LEDGER_LOCK_WAIT=0.2 /usr/bin/python3 - "$LEDGER" "$LR" <<'PY'
 import contextlib, importlib.util, io, os, sys, time
@@ -1177,16 +1235,32 @@ err = io.StringIO()
 with contextlib.redirect_stderr(err):
     ledger.release(lock, token_c)
 print("blocked-release-kept", ledger.owner_of(lock) == token_c, "could not take" in err.getvalue())
+os.utime(lock + ".break", (old, old))         # that breaker died holding the break lock
+err = io.StringIO()
+with contextlib.redirect_stderr(err):
+    ledger.release(lock, token_c)
+print("stale-break-release-kept", ledger.owner_of(lock) == token_c, os.path.isdir(lock + ".break"),
+      ("rmdir " + lock + ".break") in err.getvalue())
 PY
 )"
 is "E30 a release holds the break lock: a breaker arriving mid-release waits" "$(printf '%s\n' "$lines" | grep -c '^b-during-release b-waited$')" 1
 is "E31 and the release frees its own lock and the break lock" "$(printf '%s\n' "$lines" | grep -c '^release-freed False False$')" 1
 is "E32 a release that cannot take the break lock leaves the lock and warns" "$(printf '%s\n' "$lines" | grep -c '^blocked-release-kept True True$')" 1
+is "E33 one that finds it stale leaves both, and warns naming it" "$(printf '%s\n' "$lines" | grep -c '^stale-break-release-kept True True True$')" 1
+# A writer that died holding the break lock stops every append until it is removed by hand.
+mkdir "$PF.lock.break"
+/usr/bin/python3 -c 'import os,sys,time; t=time.time()-120; os.utime(sys.argv[1],(t,t))' "$PF.lock.break"
+out="$(L append "$PC" "$(entry pending xr-stuck "$PC")" 2>&1)"; rc=$?
+is "E34 a stale break lock: an append fails closed, naming it to remove by hand" \
+   "$rc/$(printf '%s' "$out" | grep -c -F "remove it by hand (rmdir $PF.lock.break)")" "1/1"
+is "E35 it appends nothing and leaves the break lock" "$(grep -c xr-stuck "$PF")/$([ -d "$PF.lock.break" ] && echo kept || echo gone)" "0/kept"
+rmdir "$PF.lock.break"
+is "E36 removed by hand, appends go through again" "$(L append "$PC" "$(entry pending xr-stuck "$PC")")" appended
 
 ```
 
 - [ ] **Step 2: Run it and confirm it fails.** `./tests/xreview-ledger.test.sh`: expect
-  `passed: 59  failed: 30`. E1-E11, E13-E16 and E18-E32 fail, because `append`, `show` and
+  `passed: 59  failed: 34`. E1-E11, E13-E16 and E18-E36 fail, because `append`, `show` and
   the lock functions do not exist yet.
 
 - [ ] **Step 3: Add the writes.** In `dot_claude/xreview-ledger.py`, insert this block
@@ -1234,6 +1308,11 @@ def lock_wait():
 # it stale can never remove the fresh lock one of them took in between. A release removes the
 # lock only while it carries the releaser's own token, checked and removed under the same
 # break lock, so a breaker cannot slip in between the check and the removal.
+#
+# The break lock is held only for those few steps, and is never broken automatically: two
+# writers that both judged it stale could each remove it and then each break or release
+# under a break lock of its own. One older than LOCK_STALE means a writer died holding it, so
+# every writer fails closed, naming it, until it is removed by hand.
 def owner_of(lock):
     try:
         with open(os.path.join(lock, "owner"), encoding="utf-8") as fh:
@@ -1249,19 +1328,24 @@ def stale(path):
         return False
 
 
+def check_break_lock(guard):
+    """Fail when the break lock guard is stale: a writer died holding it, and only a person
+    may remove it."""
+    if stale(guard):
+        raise Fail("the break lock {0} is older than {1:.0f} s: a writer died holding it, and "
+                   "it is never removed automatically. Check that no xreview is running, "
+                   "remove it by hand (rmdir {0}), then retry".format(guard, LOCK_STALE))
+
+
 def break_stale(lock, seen):
     """Remove lock if it is still stale and still carries the token seen (None: no owner
-    file). Returns True when it removed the lock. A break lock older than LOCK_STALE was left
-    by a crashed breaker and is removed with a plain rmdir."""
+    file). Returns True when it removed the lock, False when it did not or another writer
+    holds the break lock. Raises Fail when the break lock is stale."""
     guard = lock + ".break"
     try:
         os.mkdir(guard)
     except FileExistsError:
-        if stale(guard):
-            try:
-                os.rmdir(guard)
-            except OSError:
-                pass
+        check_break_lock(guard)
         return False
     try:
         if owner_of(lock) != seen or not stale(lock):
@@ -1283,10 +1367,12 @@ def break_stale(lock, seen):
 
 
 def acquire(lock):
-    """Take the ledger lock, waiting up to lock_wait(); returns this holder's token."""
+    """Take the ledger lock, waiting up to lock_wait(); returns this holder's token. Fails at
+    once while a stale break lock stands."""
     token = "{}-{}".format(os.getpid(), uuid.uuid4().hex)
     deadline = time.monotonic() + lock_wait()
     while True:
+        check_break_lock(lock + ".break")
         try:
             os.mkdir(lock)
         except FileExistsError:
@@ -1308,8 +1394,8 @@ RELEASE_PAUSE = None    # a test seam: called between a release's token check an
 def release(lock, token):
     """Remove the lock, only while it carries token. The check and the removal run under
     <lock>.break, the breakers' own lock, so no breaker can replace the lock in between. A
-    release that cannot take the break lock in time leaves the lock to go stale and be
-    broken later, and only warns."""
+    release that cannot take the break lock in time, or finds it stale, leaves the lock and
+    only warns."""
     guard = lock + ".break"
     deadline = time.monotonic() + lock_wait()
     while True:
@@ -1318,17 +1404,16 @@ def release(lock, token):
             break
         except FileExistsError:
             pass
-        if stale(guard):
-            try:
-                os.rmdir(guard)
-            except OSError:
-                pass
-        elif time.monotonic() >= deadline:
+        try:
+            check_break_lock(guard)
+        except Fail as e:
+            print("xreview-ledger: {}; {} is left in place".format(e, lock), file=sys.stderr)
+            return
+        if time.monotonic() >= deadline:
             print("xreview-ledger: could not take {} to release {}; it will be broken once "
                   "stale".format(guard, lock), file=sys.stderr)
             return
-        else:
-            time.sleep(0.05)
+        time.sleep(0.05)
     try:
         if owner_of(lock) != token:
             return
@@ -1463,7 +1548,7 @@ if __name__ == "__main__":
 ```
 
 - [ ] **Step 5: Run it and confirm it passes.** `./tests/xreview-ledger.test.sh`: expect
-  `passed: 89  failed: 0`.
+  `passed: 93  failed: 0`.
 
 - [ ] **Step 6: Commit.** Check the branch, then:
 
@@ -1619,7 +1704,7 @@ is "G5 and never a/b, for identical blobs and destination" "$(L decide "$ROOT/is
 ```
 
 - [ ] **Step 2: Run it and confirm it fails.** `./tests/xreview-ledger.test.sh`: expect
-  `passed: 93  failed: 34`. Every F and G decision fails, because `decide` is a usage error so
+  `passed: 97  failed: 34`. Every F and G decision fails, because `decide` is a usage error so
   far.
 
 - [ ] **Step 3: Add the decision.** In `dot_claude/xreview-ledger.py`, insert this block
@@ -1817,7 +1902,7 @@ if __name__ == "__main__":
 ```
 
 - [ ] **Step 5: Run it and confirm it passes.** `./tests/xreview-ledger.test.sh`: expect
-  `passed: 127  failed: 0`.
+  `passed: 131  failed: 0`.
 
 - [ ] **Step 6: Commit.** Check the branch, then:
 
@@ -2375,7 +2460,8 @@ git commit -m "Record review targets and pre-merge pending entries at xreview di
 - Produces:
   - `record_receipts <thread> <nonce> <turn> <findings-json> <targets-file>`: one receipt per
     target repository, through `append`, which keeps it idempotent. On a failed write it warns
-    `xreview: could not write the receipt for <nonce> to the ledger of <repo>` and returns 0.
+    `xreview: could not write the receipt for <nonce> to the ledger of <repo> (<the helper's
+    reason>)` and returns 0. A stale break lock's reason names the path to remove by hand.
   - `cmd_receipts` prints `ledger show`. `--tiers` counts receipts only.
   - `record_receipt`, the v1 receipt, now runs only for a turn that has no targets file.
 
@@ -2591,13 +2677,28 @@ is "W21 and this checkout's v1 receipts after it" "$(printf '%s\n' "$out" | tail
 is "W22 --tiers counts receipts, never pending entries" \
    "$(bash "$XREVIEW" receipts --tiers | awk '{s += $1} END {print s}')" \
    "$(( $(jq -r 'select(.kind == "receipt") | .nonce' "$VLEDGER" | wc -l) + 1 ))"
+# A writer that died holding the ledger's break lock leaves it in place: collect warns, naming
+# it, and a pre-merge dispatch is refused until it is removed by hand.
+fresh; export PANE_CWD="$VCWD"
+n5="$(bash "$XREVIEW" dispatch --checkpoint pre-merge --diff main...feature b.md 2>/dev/null)"
+mkdir "$VLEDGER.lock.break"
+/usr/bin/python3 -c 'import os,sys,time; t=time.time()-120; os.utime(sys.argv[1],(t,t))' "$VLEDGER.lock.break"
+out="$(RPC_WAIT_OUT="$APPROVE" bash "$XREVIEW" collect "$n5" 2>&1)"; rc=$?
+is "W23 a stale break lock: collect warns, naming it to remove by hand, and still exits 0" \
+   "$rc/$(printf '%s' "$out" | grep -c -F "remove it by hand (rmdir $VLEDGER.lock.break)")" "0/1"
+fresh; export PANE_CWD="$VCWD"
+out="$(bash "$XREVIEW" dispatch --checkpoint pre-merge --diff main...feature b.md 2>&1)"; rc=$?
+is "W24 and a pre-merge dispatch is refused, naming it" \
+   "$rc/$(printf '%s' "$out" | grep -c -F "remove it by hand (rmdir $VLEDGER.lock.break)")" "1/1"
+is "W25 the break lock is left in place" "$([ -d "$VLEDGER.lock.break" ] && echo kept || echo gone)" kept
+rmdir "$VLEDGER.lock.break"
 cd "$ROOT/repo" || exit 1
 unset PANE_CWD
 ```
 
 - [ ] **Step 2: Run it and confirm it fails.** `./tests/xreview.test.sh` (timeout 600000 ms):
-  expect `passed: 440  failed: 21`. The failures are D10, F1 (4 assertions), F14, F15 (2), F11,
-  W2-W4, W8, W10, W11 and W17-W22.
+  expect `passed: 442  failed: 22`. The failures are D10, F1 (4 assertions), F14, F15 (2), F11,
+  W2-W4, W8, W10, W11 and W17-W23.
 
 - [ ] **Step 3: Implement.** Apply these edits to `dot_local/bin/executable_xreview`, in
   order:
@@ -2654,7 +2755,7 @@ with:
 # dispatch and nothing about them is read again. A failed write only warns: the pending entry
 # stays the newest state of that change, so the gate stays closed until a later collect.
 record_receipts() {
-  local tier verdict count repos repo entry
+  local tier verdict count repos repo entry err
   tier="$(codex_tier "$1" 2>/dev/null)" || tier=""
   verdict="$(printf '%s' "$4" | jq -r '.verdict // ""' 2>/dev/null)" || verdict=""
   count="$(printf '%s' "$4" | jq -r '(.findings // []) | length' 2>/dev/null)" || count=0
@@ -2664,13 +2765,15 @@ record_receipts() {
   fi
   while IFS= read -r repo; do
     [ -n "$repo" ] || continue
+    err=""
     if ! entry="$(jq -c --arg r "$repo" --arg thread "$1" --arg turn "$3" --arg tier "$tier" \
                      --arg verdict "$verdict" --argjson findings "${count:-0}" \
            '{v:2,kind:"receipt",nonce,dispatched_at,checkpoint,verdict:$verdict,findings:$findings,
              thread:$thread,turn:$turn,tier:$tier,targets:[.targets[] | select(.repo == $r)]}' \
            "$5" 2>/dev/null)" \
-       || ! ledger append "$repo" "$entry" >/dev/null 2>&1; then
-      printf 'xreview: could not write the receipt for %s to the ledger of %s\n' "$2" "$repo" >&2
+       || ! err="$(ledger append "$repo" "$entry" 2>&1 >/dev/null)"; then
+      printf 'xreview: could not write the receipt for %s to the ledger of %s%s\n' "$2" "$repo" \
+        "${err:+ ($err)}" >&2
     fi
   done <<<"$repos"
   return 0
@@ -2732,7 +2835,7 @@ with:
 ```
 
 - [ ] **Step 4: Run it and confirm it passes.** `./tests/xreview.test.sh` (timeout 600000 ms):
-  expect `passed: 461  failed: 0`.
+  expect `passed: 464  failed: 0`.
 
 - [ ] **Step 5: Commit.** Check the branch, then:
 
@@ -2824,10 +2927,12 @@ export GIT_CONFIG_GLOBAL="$ROOT/gitconfig" GIT_CONFIG_NOSYSTEM=1
 printf '[user]\n\tname = t\n\temail = t@t\n[commit]\n\tgpgsign = false\n[init]\n\tdefaultBranch = main\n' \
   > "$GIT_CONFIG_GLOBAL"
 unset XREVIEW_GUARD XREVIEW_GUARD_BUDGET XREVIEW_LEDGER_LOCK_WAIT
-# The forge CLIs pick an API host from these when no --hostname is given; the fixtures' forge
-# is forge.example, and gh's configuration directory starts empty.
-export GH_HOST=forge.example GH_CONFIG_DIR="$ROOT/gh"
-unset GITLAB_HOST GITLAB_URI GITLAB_URL
+# The forge CLIs pick a host from these when no --hostname or host-qualified -R names one; the
+# fixtures' forge is forge.example. gh's configuration directory starts empty, and glab's
+# config names forge.example as its default host.
+export GH_HOST=forge.example GH_CONFIG_DIR="$ROOT/gh" GLAB_CONFIG_DIR="$ROOT/glab"
+unset GITLAB_HOST GITLAB_URI GL_HOST GITLAB_URL GITLAB_API_HOST GITLAB_REPO GH_REPO
+mkdir -p "$GLAB_CONFIG_DIR" && printf 'host: forge.example\n' > "$GLAB_CONFIG_DIR/config.yml"
 
 # W: the work repository, on main; feature is one change ahead. SIDE: a second worktree, on
 # side. origin holds main only, until a section publishes more.
@@ -3992,24 +4097,41 @@ git commit -m "Gate a git merge into the default branch on the exact change's ap
   `is_graphql`, `literal`, `Deny`, and the messages `LITERAL`, `NO_REPO` and `NOT_MODELLED`.
 - Produces:
   - `one(flags, names, label) -> str | None`;
-  - `split_url(url) -> (host, path)`; `same_project(named, host, path) -> bool`, where a
-    URL or a host-prefixed `-R` must name origin's host;
-  - `forge_context(cwd, named) -> (toplevel, host, path)`;
+  - `split_url(url) -> (host, path)`; `same_project(named, host, path, tool) -> bool`: a
+    URL or scp-style address must name origin's host and path; otherwise the value must be
+    origin's path, or for gh also `<origin host>/<path>`;
+  - `explicit_repo(tool, host, path) -> str`: the `-R` value that carries origin's host;
+  - `forge_context(cwd, named, tool) -> (toplevel, host, path)`;
   - `remote_head(top, branch) -> str`;
   - `flag_on(values) -> bool`;
   - `field(fields, name, top, ledger) -> str | None`;
   - `lookup_json(argv, top, what)`;
-  - `origin_host(cwd) -> str`; `host_of(value) -> str`; `gh_default_host() -> str | None`
-    (`GH_HOST`, else the one top-level key of gh's `hosts.yml`, else `github.com`; `None` when
-    that file cannot be read); `remote_hosts(top) -> set | None`, from `git remote -v`;
-  - `check_api_host(cwd, tool, call)`: the host the call goes to must be origin's. That is
-    the absolute endpoint's host (`api.<host>` accepted) and any `--hostname`; without
-    either, `gh_default_host()` for gh, and for glab every set `GITLAB_HOST`, `GITLAB_URI`
-    and `GITLAB_URL`, or, with none set, every remote's host. Messages `OTHER_HOST` (it names
-    `--hostname <origin host>`), `SEVERAL_HOSTS` and `GH_HOSTS`;
-  - `gitlab_project(cwd, segment, hostname=None)` and `github_project(cwd, owner, repo)`;
-  - `judge_create_cli`, `judge_create_gitlab_api(shape, ledger, segment, fields, call)`,
-    `judge_create_github_api(shape, ledger, owner, repo, fields, call)` and `judge_api`.
+  - `origin_host(cwd) -> str`; `host_of(value) -> str`; `set_values(names) -> list`;
+    `config_dir(variable, name)`; `top_level(path) -> list | None`, the top-level
+    `(key, value)` lines of a YAML file, indented lines unread;
+  - `gh_default_host() -> str | None`: `GH_HOST`, else the one top-level key of gh's
+    `hosts.yml`, else `github.com`; `None` when that file cannot be read;
+  - `glab_default_hosts(top) -> list | None`: every set `GITLAB_HOST`, `GITLAB_URI`,
+    `GL_HOST` and `GITLAB_URL` (`GLAB_HOST_VARS`), else the `host` keys (`GLAB_HOST_KEYS`)
+    of the global and the repository's `glab-cli/config.yml`, else `gitlab.com`;
+  - `remote_hosts(top) -> set | None`, from `git remote -v`;
+  - `check_api_host_var(host)`: a set `GITLAB_API_HOST` must be origin's host (message
+    `API_HOST_VAR`);
+  - `check_api_host(cwd, tool, call) -> str`: the host the call goes to must be origin's.
+    That is the absolute endpoint's host (`api.<host>` accepted) and any `--hostname`;
+    without either, `gh_default_host()` for gh, and for glab every set `GLAB_HOST_VARS`, or,
+    with none set, every remote's host. Returns origin's host, which every lookup the command
+    needs is then given. Messages `OTHER_HOST` (it names `--hostname <origin host>`),
+    `SEVERAL_HOSTS` and `UNREADABLE`;
+  - `env_repo(tool) -> str | None`: `GITLAB_REPO` or `GH_REPO`, the project a verb takes
+    without `-R`;
+  - `check_cli_host(tool, top, host, path, named) -> str`: a `glab`/`gh` verb's own host
+    must be origin's; a bare `-R OWNER/REPO` (or `env_repo`) takes the CLI's default host
+    (message `DEFAULT_HOST`, naming `-R` with `explicit_repo`);
+  - `gitlab_project(cwd, segment, hostname)`, which looks a numeric id up on `hostname`,
+    and `github_project(cwd, owner, repo)`; placeholders take `env_repo`;
+  - `judge_create_cli`, `judge_create_gitlab_api(shape, ledger, segment, fields, host)`,
+    `judge_create_github_api(shape, ledger, owner, repo, fields)` and `judge_api`.
     Until Task 8, `judge_api` checks the create endpoints only and denies the rest;
   - the constants `FALSE`, `FULL_ID`, `GITLAB_MR`, `GITHUB_PR` and
     `BRANCH_PLACEHOLDERS`.
@@ -4020,13 +4142,19 @@ git commit -m "Gate a git merge into the default branch on the exact change's ap
 ```bash
 echo "H. creating an MR/PR"
 # glab answers the one lookup creation makes, a numeric project id; anything else fails, so an
-# unexpected call shows up as a deny rather than passing silently.
+# unexpected call shows up as a deny rather than passing silently. The host a call reaches is
+# its --hostname, else glab's host variables, else origin's; on another host, project 4242 is
+# ELSEWHERE_PATH.
 STUB="$ROOT/stub"; mkdir -p "$STUB"
 cat > "$STUB/glab" <<'SH'
 #!/bin/sh
 printf 'glab %s\n' "$*" >> "$CALLS"
+host="${GITLAB_HOST:-${GITLAB_URI:-${GL_HOST:-forge.example}}}"
+if [ "$1" = api ] && [ "$2" = --hostname ]; then host="$3"; shift 3; set -- api "$@"; fi
+path="${PROJECT_PATH:-acme/app}"
+[ "$host" = forge.example ] || path="${ELSEWHERE_PATH:-$path}"
 case "$*" in
-  "api projects/4242") printf '{"id":4242,"path_with_namespace":"acme/app"}\n' ;;
+  "api projects/4242") printf '{"id":4242,"path_with_namespace":"%s"}\n' "$path" ;;
   *) exit 1 ;;
 esac
 SH
@@ -4049,7 +4177,7 @@ is "H11 by the :id placeholder, the source as :branch" "$(decision "$FW" 'glab a
 is "H12 the GitHub REST create" "$(decision "$W" 'gh api repos/acme/app/pulls -f head=feature -f base=main -f title=x')" allow
 is "H13 with the {owner}/{repo} placeholders and an owner:branch head" "$(decision "$W" "gh api -X POST 'repos/{owner}/{repo}/pulls' -f head=acme:feature -f base=main")" allow
 is "H14 -R naming origin's project" "$(decision "$W" 'gh pr create -R acme/app --head feature --base main')" allow
-is "H15 -R with the host" "$(decision "$W" 'glab mr create -R forge.example/acme/app -s feature -b main')" allow
+is "H15 gh -R with the host" "$(decision "$W" 'gh pr create -R forge.example/acme/app --head feature --base main')" allow
 is "H16 -R as a URL" "$(decision "$W" 'glab mr create -R https://forge.example/acme/app.git -s feature -b main')" allow
 is "H17 cd <path> && glab mr create is checked in that path" "$(decision "$ROOT/norepo" "cd $W && glab mr create -s feature -b main")" allow
 
@@ -4147,11 +4275,34 @@ is "K32 a remote on another host is denied" "$(decision "$W" "$GLCREATE")" deny
 is "K33 naming origin's host to pass" "$(reason "$W" "$GLCREATE" | grep -c -- '--hostname forge.example')" 1
 is "K34 --hostname naming origin's host is allowed" "$(decision "$W" "glab api --hostname forge.example ${GLCREATE#glab api }")" allow
 git -C "$W" remote remove mirror
+# A CLI verb reaches the host its -R names. A bare OWNER/REPO, GH_REPO or GITLAB_REPO takes the
+# CLI's default host, which must be origin's too.
+is "K35 gh -R without a host, gh's default host elsewhere" \
+   "$(GH_HOST=github.example decision "$W" 'gh pr create -R acme/app --head feature --base main')" deny
+is "K36 naming the host-qualified -R to pass" \
+   "$(GH_HOST=github.example reason "$W" 'gh pr create -R acme/app --head feature --base main' | grep -c -- '-R forge.example/acme/app')" 1
+is "K37 glab -R without a host, glab's default host gitlab.com" \
+   "$(GLAB_CONFIG_DIR="$ROOT/glab-none" decision "$W" 'glab mr create -R acme/app -s feature -b main')" deny
+is "K38 glab's config naming origin's host" "$(decision "$W" 'glab mr create -R acme/app -s feature -b main')" allow
+is "K39 a host variable outranks the config" "$(GITLAB_HOST=gitlab.com decision "$W" 'glab mr create -R acme/app -s feature -b main')" deny
+mkdir -p "$W/.git/glab-cli" && printf 'host: gitlab.com\n' > "$W/.git/glab-cli/config.yml"
+is "K40 so does the repository's own glab config" "$(decision "$W" 'glab mr create -R acme/app -s feature -b main')" deny
+rm -r "$W/.git/glab-cli"
+is "K41 GH_REPO naming another project is denied" "$(GH_REPO=other/app decision "$W" 'gh pr create --head feature --base main')" deny
+is "K42 so is GITLAB_REPO" "$(GITLAB_REPO=other/app decision "$W" 'glab mr create -s feature -b main')" deny
+is "K43 GH_REPO naming origin's project is allowed" "$(GH_REPO=acme/app decision "$W" 'gh pr create --head feature --base main')" allow
+is "K44 GITLAB_API_HOST on another host is denied" "$(GITLAB_API_HOST=api.other.example decision "$W" 'glab mr create -s feature -b main')" deny
+is "K45 for an api call too" "$(GITLAB_API_HOST=api.other.example decision "$W" "$GLCREATE")" deny
+is "K46 glab reads -R HOST/PATH as a group path on its default host: another project" \
+   "$(decision "$W" 'glab mr create -R forge.example/acme/app -s feature -b main')" deny
+# A numeric project id is looked up on origin's host, never on the host the environment picks.
+is "K47 a project id is looked up on origin's host" \
+   "$(GITLAB_HOST=other.example PROJECT_PATH=other/app ELSEWHERE_PATH=acme/app decision "$W" 'glab api -X POST https://forge.example/api/v4/projects/4242/merge_requests -f source_branch=feature -f target_branch=main')" deny
 
 ```
 
 - [ ] **Step 2: Run it and confirm it fails.** `./tests/xreview-guard.test.sh`: expect
-  `passed: 125  failed: 38`. Every allow case in H-K fails, and so do the deny reasons naming a
+  `passed: 135  failed: 41`. Every allow case in H-K fails, and so do the deny reasons naming a
   flag, a fetch, a project or a host, because each creation is still denied with
   `NOT_MODELLED`.
 
@@ -4162,15 +4313,21 @@ git -C "$W" remote remove mirror
 ONCE = "Pre-merge gate: name {} once."
 NO_ORIGIN = ("Pre-merge gate: {} has no origin remote, so the forge project cannot be checked. "
              "Run the command from the project's own checkout.")
-OTHER_PROJECT = ("Pre-merge gate: the command names the project {}, but this checkout's origin "
-                 "is {}. Run it from that project's checkout.")
+OTHER_PROJECT = ("Pre-merge gate: the command acts on the project {} (named by -R, or by GH_REPO or "
+                 "GITLAB_REPO in the environment), but this checkout's origin is {}. Run it from "
+                 "that project's checkout.")
 OTHER_HOST = ("Pre-merge gate: this call goes to {0}, but this checkout's origin is on {1}. Send "
               "it to origin's host, --hostname {1}, from that project's checkout.")
 SEVERAL_HOSTS = ("Pre-merge gate: without --hostname, glab api picks its host from this "
                  "checkout's remotes, and some are on another host than origin's ({0}). Name "
                  "origin's host: --hostname {1}.")
-GH_HOSTS = ("Pre-merge gate: gh's hosts.yml cannot be read, so the host this gh api call goes to "
-            "is unknown. Name origin's host: --hostname {}.")
+DEFAULT_HOST = ("Pre-merge gate: {0} names no host, so the CLI sends this to its default host, "
+                "{1}, but this checkout's origin is on {2}. Name origin's host: {3}.")
+API_HOST_VAR = ("Pre-merge gate: GITLAB_API_HOST sends glab's API requests to {0}, not to "
+                "origin's host {1}, so the gate cannot check what this command does. Run it "
+                "without GITLAB_API_HOST.")
+UNREADABLE = ("Pre-merge gate: {0} cannot be read, so the host this call goes to is unknown. "
+              "Name origin's host: {1}.")
 SEVERAL_REMOTES = ("Pre-merge gate: this checkout has remotes besides origin ({}), so the CLI "
                    "could pick another project. Name origin's project explicitly: -R {}.")
 FORK = ("Pre-merge gate: {} proposes from another repository. Merge requests from forks are not "
@@ -4237,9 +4394,10 @@ def split_url(url):
     return host.lower(), path
 
 
-def same_project(named, host, path):
-    """Does a project the command names (OWNER/REPO, GROUP/SUB/REPO, HOST/OWNER/REPO, or a
-    URL) equal origin's (host, path)?"""
+def same_project(named, host, path, tool):
+    """Does a project the command names equal origin's (host, path)? A URL or an scp-style
+    address names its host. Otherwise glab reads the whole value as a project path
+    (GROUP/SUB/REPO, on its default host), and gh reads [HOST/]OWNER/REPO."""
     want = path.lower()
     if "://" in named or SCP_RE.match(named):
         h, p = split_url(named)
@@ -4247,13 +4405,18 @@ def same_project(named, host, path):
     v = named.strip("/").lower()
     if v.endswith(".git"):
         v = v[:-4]
-    return v == want or (bool(host) and v == host + "/" + want)
+    return v == want or (tool == "gh" and bool(host) and v == host + "/" + want)
 
 
-def forge_context(cwd, named):
-    """(toplevel, origin host, origin path) of the repository a forge verb runs in. named is
-    the project the command names, or None; then origin must be the only remote, because the
-    CLI could otherwise pick another one."""
+def explicit_repo(tool, host, path):
+    """The -R value that names origin's project with its host, as each CLI reads it."""
+    return ("https://{}/{}" if tool == "glab" else "{}/{}").format(host or "<host>", path)
+
+
+def forge_context(cwd, named, tool):
+    """(toplevel, origin host, origin path) of the repository a glab or gh verb runs in. named
+    is the project the command names, or None; then origin must be the only remote, because
+    the CLI could otherwise pick another one."""
     top = toplevel(cwd)
     url = run(["git", "-C", top, "config", "--get", "remote.origin.url"])
     if not url or not url.strip():
@@ -4262,12 +4425,13 @@ def forge_context(cwd, named):
     if named is not None:
         if not literal(named):
             raise Deny(LITERAL.format("the project", named))
-        if not same_project(named, host, path):
+        if not same_project(named, host, path, tool):
             raise Deny(OTHER_PROJECT.format(named, path))
     else:
         remotes = (run(["git", "-C", top, "remote"]) or "").split()
         if remotes != ["origin"]:
-            raise Deny(SEVERAL_REMOTES.format(", ".join(r for r in remotes if r != "origin"), path))
+            raise Deny(SEVERAL_REMOTES.format(", ".join(r for r in remotes if r != "origin"),
+                                              explicit_repo(tool, host, path)))
     return top, host, path
 
 
@@ -4309,7 +4473,9 @@ def judge_create_cli(shape, ledger):
     current branch, as origin has it; the destination must be named."""
     tool = shape["tool"]
     flags, _ = parse_flags(shape["args"], GLAB_CREATE_VALUE if tool == "glab" else GH_CREATE_VALUE)
-    top, host, path = forge_context(shape["cwd"], one(flags, ("-R", "--repo"), "-R/--repo"))
+    named = one(flags, ("-R", "--repo"), "-R/--repo") or env_repo(tool)
+    top, host, path = forge_context(shape["cwd"], named, tool)
+    check_cli_host(tool, top, host, path, named)
     if tool == "glab":
         if flags.get("-H") or flags.get("--head"):
             raise Deny(FORK.format("--head"))
@@ -4383,25 +4549,79 @@ def host_of(value):
     return (urlsplit(v if "://" in v else "//" + v).hostname or "").lower()
 
 
-def gh_default_host():
-    """The host gh api goes to without --hostname: GH_HOST, else the one host gh's hosts.yml
-    lists when it lists exactly one, else github.com. None when hosts.yml cannot be read. Only
-    the top-level keys are read; the values (tokens among them) never are."""
-    if os.environ.get("GH_HOST"):
-        return host_of(os.environ["GH_HOST"])
-    base = os.environ.get("GH_CONFIG_DIR") or os.path.join(
-        os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "gh")
-    hosts = []
+GLAB_HOST_VARS = ("GITLAB_HOST", "GITLAB_URI", "GL_HOST", "GITLAB_URL")
+GLAB_HOST_KEYS = ("host", "gitlab_host", "gitlab_uri", "gl_host")
+
+
+def set_values(names):
+    """The values of those environment variables that are set and not empty."""
+    return [os.environ[k] for k in names if os.environ.get(k)]
+
+
+def config_dir(variable, name):
+    return os.environ.get(variable) or os.path.join(
+        os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), name)
+
+
+def top_level(path):
+    """(key, value) of each top-level line of a YAML config file; [] when there is no such
+    file, None when it cannot be read. Indented lines (a host's token among them) are skipped
+    unread."""
+    found = []
     try:
-        with open(os.path.join(base, "hosts.yml"), encoding="utf-8") as f:
-            for line in f:
-                if line[:1] not in ("", " ", "\t", "#", "\n", "-") and ":" in line:
-                    hosts.append(line.split(":", 1)[0].strip().strip("'\""))
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                if line[:1] in ("", " ", "\t", "#", "\n", "-") or ":" not in line:
+                    continue
+                key, _, value = line.partition(":")
+                found.append((key.strip().strip("'\""), value.strip().strip("'\"")))
     except FileNotFoundError:
-        pass
+        return []
     except (OSError, UnicodeDecodeError):
         return None
-    return host_of(hosts[0]) if len(hosts) == 1 else "github.com"
+    return found
+
+
+def gh_default_host():
+    """The host gh goes to when nothing names one (gh api without --hostname, -R OWNER/REPO):
+    GH_HOST, else the one host gh's hosts.yml lists when it lists exactly one, else github.com.
+    None when hosts.yml cannot be read."""
+    if os.environ.get("GH_HOST"):
+        return host_of(os.environ["GH_HOST"])
+    hosts = top_level(os.path.join(config_dir("GH_CONFIG_DIR", "gh"), "hosts.yml"))
+    if hosts is None:
+        return None
+    return host_of(hosts[0][0]) if len(hosts) == 1 else "github.com"
+
+
+def glab_default_hosts(top):
+    """The hosts glab may take for a project named without one: every set GITLAB_HOST,
+    GITLAB_URI, GL_HOST and GITLAB_URL, else the host keys of its config.yml - the global one
+    and the repository's own .git/glab-cli/config.yml - else gitlab.com. None when a config
+    file cannot be read."""
+    env = set_values(GLAB_HOST_VARS)
+    if env:
+        return env
+    files = [os.path.join(config_dir("GLAB_CONFIG_DIR", "glab-cli"), "config.yml")]
+    for flag in ("--absolute-git-dir", "--git-common-dir"):
+        out = run(["git", "-C", top, "rev-parse", flag])
+        if out is None or not out.strip():
+            return None
+        files.append(os.path.join(top, out.strip(), "glab-cli", "config.yml"))
+    hosts = []
+    for path in files:
+        found = top_level(path)
+        if found is None:
+            return None
+        hosts.extend(value for key, value in found if key in GLAB_HOST_KEYS and value)
+    return hosts or ["gitlab.com"]
+
+
+def check_api_host_var(host):
+    """GITLAB_API_HOST, when set, sends every glab API request to its host: it must be origin's."""
+    for value in set_values(("GITLAB_API_HOST",)):
+        if host_of(value) != host:
+            raise Deny(API_HOST_VAR.format(host_of(value) or value, host or "a local path"))
 
 
 def remote_hosts(top):
@@ -4422,12 +4642,16 @@ def check_api_host(cwd, tool, call):
     """An api call must go to origin's host. An absolute endpoint names its host (a GitHub one
     may name origin's api. host); so does --hostname. Without either the CLI picks the host:
     gh from GH_HOST, else from its hosts.yml, else github.com; glab from GITLAB_HOST,
-    GITLAB_URI or GITLAB_URL, else from a remote on a host it is signed in to, so every remote
-    must then be on origin's host. The guard reads its own environment: the command cannot
-    set one, because an assignment or an env wrapper is not a plain command."""
+    GITLAB_URI, GL_HOST or GITLAB_URL, else from a remote on a host it is signed in to, so
+    every remote must then be on origin's host. The guard reads its own environment: the
+    command cannot set one, because an assignment or an env wrapper is not a plain command.
+    Returns origin's host: every lookup the command needs is sent there, with --hostname or a
+    host-qualified -R, never left to the environment."""
     top = toplevel(cwd)
     host = origin_host(top)
     where = host or "a local path"
+    if tool == "glab":
+        check_api_host_var(host)
     endpoint = call["endpoint"] or ""
     chosen = []
     if call["hostname"] is not None:
@@ -4437,11 +4661,10 @@ def check_api_host(cwd, tool, call):
     elif tool == "gh":
         picked = gh_default_host()
         if picked is None:
-            raise Deny(GH_HOSTS.format(where))
+            raise Deny(UNREADABLE.format("gh's hosts.yml", "--hostname " + where))
         chosen = [picked]
     else:
-        chosen = [os.environ[k] for k in ("GITLAB_HOST", "GITLAB_URI", "GITLAB_URL")
-                  if os.environ.get(k)]
+        chosen = set_values(GLAB_HOST_VARS)
         if not chosen:
             hosts = remote_hosts(top)
             if hosts is None or hosts - {host}:
@@ -4454,31 +4677,71 @@ def check_api_host(cwd, tool, call):
         named = host_of(endpoint)
         if named not in (host, "api." + host):
             raise Deny(OTHER_HOST.format(named, where))
+    return host
 
 
-def gitlab_project(cwd, segment, hostname=None):
+def env_repo(tool):
+    """The project the environment names for a CLI verb given no -R: GITLAB_REPO for glab,
+    GH_REPO for gh. It also fills the :id and {owner}/{repo} placeholders of an api call."""
+    return os.environ.get("GITLAB_REPO" if tool == "glab" else "GH_REPO") or None
+
+
+def check_cli_host(tool, top, host, path, named):
+    """A glab or gh verb must reach origin's host too. A project named with its host (a URL,
+    or gh's HOST/OWNER/REPO) has had it checked by forge_context. One named by its path alone
+    goes to the CLI's default host: gh_default_host() for gh, glab_default_hosts() for glab.
+    With no project named, the CLI takes the checkout's one remote, origin, and fails when a
+    host variable names another host. Returns origin's host, where every lookup is then
+    sent."""
+    where = host or "a local path"
+    if tool == "glab":
+        check_api_host_var(host)
+    if named is None or "://" in named or SCP_RE.match(named):
+        return host
+    bare = named.strip("/").lower()
+    if bare.endswith(".git"):
+        bare = bare[:-4]
+    if bare != path.lower():
+        return host
+    fix = "-R " + explicit_repo(tool, host, path)
+    if tool == "gh":
+        picked = gh_default_host()
+        if picked is None:
+            raise Deny(UNREADABLE.format("gh's hosts.yml", fix))
+        chosen = [picked]
+    else:
+        chosen = glab_default_hosts(top)
+        if chosen is None:
+            raise Deny(UNREADABLE.format("glab's config.yml", fix))
+    for value in chosen:
+        if host_of(value) != host:
+            raise Deny(DEFAULT_HOST.format(named, host_of(value) or value, where, fix))
+    return host
+
+
+def gitlab_project(cwd, segment, hostname):
     """The repository context of a GitLab project segment - an encoded path, a numeric id
-    (looked up), or the :id / :fullpath placeholder - checked against origin."""
+    (looked up on hostname), or the :id / :fullpath placeholder - checked against origin."""
     if segment in (":id", ":fullpath"):
-        return forge_context(cwd, None)
+        return forge_context(cwd, env_repo("glab"), "glab")
     if segment.isdigit():
-        found = lookup_json(["glab", "api"] + (["--hostname", hostname] if hostname else [])
-                            + ["projects/" + segment], toplevel(cwd), "project " + segment)
+        found = lookup_json(["glab", "api", "--hostname", hostname, "projects/" + segment],
+                            toplevel(cwd), "project " + segment)
         named = found.get("path_with_namespace") if isinstance(found, dict) else None
         if not isinstance(named, str) or not named:
             raise Deny(LOOKUP.format("project " + segment))
-        return forge_context(cwd, named)
-    return forge_context(cwd, unquote(segment))
+        return forge_context(cwd, named, "glab")
+    return forge_context(cwd, unquote(segment), "glab")
 
 
 def github_project(cwd, owner, repo):
     if (owner, repo) == ("{owner}", "{repo}"):
-        return forge_context(cwd, None)
-    return forge_context(cwd, owner + "/" + repo)
+        return forge_context(cwd, env_repo("gh"), "gh")
+    return forge_context(cwd, owner + "/" + repo, "gh")
 
 
-def judge_create_gitlab_api(shape, ledger, segment, fields, call):
-    top, host, path = gitlab_project(shape["cwd"], segment, call["hostname"])
+def judge_create_gitlab_api(shape, ledger, segment, fields, host):
+    top, host, path = gitlab_project(shape["cwd"], segment, host)
     if "target_project_id" in fields:
         raise Deny(FORK.format("target_project_id"))
     source = field(fields, "source_branch", top, ledger)
@@ -4489,7 +4752,7 @@ def judge_create_gitlab_api(shape, ledger, segment, fields, call):
           "origin/{}...{}".format(dest, source), None)
 
 
-def judge_create_github_api(shape, ledger, owner, repo, fields, call):
+def judge_create_github_api(shape, ledger, owner, repo, fields):
     top, host, path = github_project(shape["cwd"], owner, repo)
     if "head_repo" in fields:
         raise Deny(FORK.format("head_repo"))
@@ -4516,18 +4779,18 @@ def judge_api(shape, ledger):
         raise Deny(LITERAL.format("the api endpoint", endpoint))
     if call["body"]:
         raise Deny(UNRESOLVED_API.format(tool))
-    check_api_host(shape["cwd"], tool, call)
+    host = check_api_host(shape["cwd"], tool, call)
     path, query = endpoint_parts(endpoint)
     fields = dict(query)
     fields.update(call["fields"])
     if tool == "glab":
         m = GITLAB_MR.match(path)
         if m and call["method"] == "POST" and m.group(2) is None:
-            return judge_create_gitlab_api(shape, ledger, m.group(1), fields, call)
+            return judge_create_gitlab_api(shape, ledger, m.group(1), fields, host)
     else:
         m = GITHUB_PR.match(path)
         if m and call["method"] == "POST" and m.group(3) is None:
-            return judge_create_github_api(shape, ledger, m.group(1), m.group(2), fields, call)
+            return judge_create_github_api(shape, ledger, m.group(1), m.group(2), fields)
     raise Deny(UNRESOLVED_API.format(tool))
 
 
@@ -4545,7 +4808,7 @@ def judge(shape, ledger):
 ```
 
 - [ ] **Step 6: Run it and confirm it passes.** `./tests/xreview-guard.test.sh`: expect
-  `passed: 163  failed: 0`.
+  `passed: 176  failed: 0`.
 
 - [ ] **Step 7: Commit.** Check the branch, then:
 
@@ -4568,22 +4831,26 @@ git commit -m "Gate MR and PR creation on origin's head of the approved change"
   - `explicitly_off(values)` and `on_value(value)`;
   - `url_number(target, host, path, pattern, what) -> str`, with the patterns `PR_URL` and
     `MR_URL` (message `OTHER_URL`);
-  - `gitlab_mr(top, project, number, branch, hostname=None) -> (source, target, head, iid)`,
+  - `gitlab_mr(top, project, number, branch, hostname) -> (source, target, head, iid)`,
     which denies an MR whose project ids differ;
-  - `github_pr(top, target, repo_flag, owner, name) -> (source, base, head)`, which denies a
+  - `github_pr(top, target, repo, owner, name) -> (source, base, head)`, where `repo` is
+    `<host>/<owner>/<name>`, passed as `-R` whenever there is a target; it denies a
     cross-repository PR;
-  - `gitlab_merge_train(top, project, hostname=None)` and
+  - `gitlab_merge_train(top, project, hostname)` and
     `github_merge_queue(top, host, owner, name, dest)` (message `QUEUED`);
   - `merge_pinned(ledger, top, source, dest, head, pin, hint)`;
-  - `judge_merge_cli`, `judge_merge_gitlab_api`, `judge_merge_github_api`;
+  - `judge_merge_cli`, `judge_merge_gitlab_api(shape, ledger, segment, number, fields, host)`,
+    `judge_merge_github_api(shape, ledger, owner, repo, number, fields, host)`;
   - the final `judge_api` and `judge`. `NOT_MODELLED` is removed.
-- The forge lookups, exactly as the test stubs answer them:
-  - `glab api [--hostname <h>] projects/<project>/merge_requests/<n>`;
-  - `glab api projects/<project>/merge_requests?source_branch=<branch>&state=opened`;
-  - `glab api [--hostname <h>] projects/<project>`: the id, `path_with_namespace` and
+- The forge lookups, exactly as the test stubs answer them. `<h>` is always origin's host
+  and `<project>` origin's encoded path:
+  - `glab api --hostname <h> projects/<project>/merge_requests/<n>`;
+  - `glab api --hostname <h> projects/<project>/merge_requests?source_branch=<branch>&state=opened`;
+  - `glab api --hostname <h> projects/<project>`: the id, `path_with_namespace` and
     `merge_trains_enabled`;
-  - `gh pr view [<n>] [-R <repo>] --json baseRefName,headRefName,headRefOid,isCrossRepository,headRepository,headRepositoryOwner`;
-  - `gh api graphql --hostname <origin host> -f query=<MERGE_QUEUE> -f owner=… -f name=… -f branch=<dest>`.
+  - `gh pr view <n> -R <h>/<owner>/<name> --json baseRefName,headRefName,headRefOid,isCrossRepository,headRepository,headRepositoryOwner`,
+    or `gh pr view --json …` for the current branch's PR;
+  - `gh api graphql --hostname <h> -f query=<MERGE_QUEUE> -f owner=… -f name=… -f branch=<dest>`.
 
 - [ ] **Step 1: Write the failing test.** Insert this block into `tests/xreview-guard.test.sh`
   immediately above the line `printf '\npassed: %d  failed: %d\n' "$pass" "$fail"`:
@@ -4594,13 +4861,20 @@ echo "L. merging an MR/PR on the forge"
 # from MR_TARGET/MR_SHA and PR_BASE/PR_SHA. MR_SOURCE_PROJECT, PR_CROSS and PR_OWNER make them
 # come from a fork; MERGE_TRAINS and MERGE_QUEUE put a train or a queue on the destination, and
 # TRAIN_FAIL and QUEUE_FAIL fail those lookups. FORGE_FAIL fails every lookup; FORGE_SLOW
-# delays it. A leading glab --hostname is accepted and dropped.
+# delays it. A call reaches the host its --hostname or host-qualified -R names, else the one
+# the CLI's environment picks, else origin's. Another host answers with its own MR and PR:
+# ELSEWHERE_TARGET, ELSEWHERE_TRAINS and ELSEWHERE_BASE.
 cat > "$STUB/glab" <<'SH'
 #!/bin/sh
 printf 'glab %s\n' "$*" >> "$CALLS"
 [ -n "${FORGE_SLOW:-}" ] && sleep "$FORGE_SLOW"
 [ -n "${FORGE_FAIL:-}" ] && exit 1
-if [ "$1" = api ] && [ "$2" = --hostname ]; then shift 3; set -- api "$@"; fi
+host="${GITLAB_HOST:-${GITLAB_URI:-${GL_HOST:-forge.example}}}"
+if [ "$1" = api ] && [ "$2" = --hostname ]; then host="$3"; shift 3; set -- api "$@"; fi
+if [ "$host" != forge.example ]; then
+  MR_TARGET="${ELSEWHERE_TARGET:-${MR_TARGET:-main}}"
+  MERGE_TRAINS="${ELSEWHERE_TRAINS:-${MERGE_TRAINS:-false}}"
+fi
 mr() { printf '{"iid":7,"project_id":4242,"source_project_id":%s,"target_project_id":4242,"source_branch":"feature","target_branch":"%s","sha":"%s"}' \
   "${MR_SOURCE_PROJECT:-4242}" "${MR_TARGET:-main}" "${MR_SHA:-}"; }
 project() { [ -n "${TRAIN_FAIL:-}" ] && exit 1
@@ -4616,6 +4890,15 @@ cat > "$STUB/gh" <<'SH'
 #!/bin/sh
 printf 'gh %s\n' "$*" >> "$CALLS"
 [ -n "${FORGE_FAIL:-}" ] && exit 1
+host=forge.example; prev=
+for a in "$@"; do
+  case "$prev" in
+    --hostname) host="$a" ;;
+    -R) case "$a" in */*/*) host="${a%%/*}" ;; *) host="${GH_HOST:-github.com}" ;; esac ;;
+  esac
+  prev="$a"
+done
+[ "$host" = forge.example ] || PR_BASE="${ELSEWHERE_BASE:-${PR_BASE:-main}}"
 F=baseRefName,headRefName,headRefOid,isCrossRepository,headRepository,headRepositoryOwner
 case "$*" in
   "pr view 9 --json $F"|"pr view 9 -R acme/app --json $F"|"pr view 9 -R "*"/acme/app --json $F"|"pr view --json $F"|"pr view https://"*" --json $F")
@@ -4743,12 +5026,33 @@ is "P27 a gh REST merge with no GH_HOST goes to github.com and is denied" \
    "$(GH_HOST= decision "$W" "gh api -X PUT repos/acme/app/pulls/9/merge -f sha=$REBASED")" deny
 is "P28 a glab REST merge under a stray GITLAB_HOST is denied" \
    "$(GITLAB_HOST=gitlab.com decision "$W" "glab api -X PUT projects/acme%2Fapp/merge_requests/7/merge -f sha=$REBASED")" deny
+# Every lookup goes to the host the command reaches, never to the one the environment picks.
+# On other.example, MR 7 and PR 9 target main, which is approved; on origin's host, release2.
+GLMERGE="glab api -X PUT https://forge.example/api/v4/projects/acme%2Fapp/merge_requests/7/merge -f sha=$REBASED"
+GHMERGE="gh api -X PUT https://forge.example/api/v3/repos/acme/app/pulls/9/merge -f sha=$REBASED"
+is "P29 a GitLab REST merge to origin's absolute endpoint reads origin's MR" \
+   "$(GITLAB_HOST=other.example ELSEWHERE_TARGET=main MR_TARGET=release2 decision "$W" "$GLMERGE")" deny
+is "P30 and origin's merge train" \
+   "$(GITLAB_HOST=other.example ELSEWHERE_TRAINS=false MERGE_TRAINS=true decision "$W" "$GLMERGE")" deny
+is "P31 with both hosts agreeing, it is allowed" "$(GITLAB_HOST=other.example decision "$W" "$GLMERGE")" allow
+is "P32 a GitHub REST merge to origin's absolute endpoint reads origin's PR" \
+   "$(GH_HOST=other.example ELSEWHERE_BASE=main PR_BASE=release2 decision "$W" "$GHMERGE")" deny
+is "P33 with both hosts agreeing, it is allowed" "$(GH_HOST=other.example decision "$W" "$GHMERGE")" allow
+is "P34 glab mr merge -R <url> reads the MR on that URL's host" \
+   "$(GITLAB_HOST=other.example ELSEWHERE_TARGET=main MR_TARGET=release2 decision "$W" "glab mr merge 7 -R https://forge.example/acme/app --sha $REBASED --auto-merge=false")" deny
+is "P35 gh pr merge -R without a host, gh's default host elsewhere" \
+   "$(GH_HOST=other.example decision "$W" "gh pr merge 9 -R acme/app --match-head-commit $REBASED")" deny
+is "P36 glab mr merge -R without a host, glab's default host gitlab.com" \
+   "$(GLAB_CONFIG_DIR="$ROOT/glab-none" decision "$W" "glab mr merge 7 -R acme/app --sha $REBASED --auto-merge=false")" deny
+is "P37 GH_REPO naming another project is denied" "$(GH_REPO=other/app decision "$W" "gh pr merge 9 --match-head-commit $REBASED")" deny
+is "P38 so is GITLAB_REPO" "$(GITLAB_REPO=other/app decision "$W" "glab mr merge 7 --sha $REBASED --auto-merge=false")" deny
+is "P39 and GITLAB_API_HOST on another host" "$(GITLAB_API_HOST=api.other.example decision "$W" "glab mr merge 7 --sha $REBASED --auto-merge=false")" deny
 
 ```
 
 - [ ] **Step 2: Run it and confirm it fails.** `./tests/xreview-guard.test.sh`: expect
-  `passed: 207  failed: 23`. The failures are L1-L9, M2, M6, N2, N5, N7, N9, P2, P4, P6, P11,
-  P19, P20, P22 and P24: merges are still denied with `NOT_MODELLED`, or as unresolved API
+  `passed: 229  failed: 25`. The failures are L1-L9, M2, M6, N2, N5, N7, N9, P2, P4, P6, P11,
+  P19, P20, P22, P24, P31 and P33: merges are still denied with `NOT_MODELLED`, or as unresolved API
   writes.
 
 - [ ] **Step 3: Replace the placeholder message.** In `dot_claude/xreview-guard.py`, replace
@@ -4807,11 +5111,11 @@ def url_number(target, host, path, pattern, what):
     return m.group(2)
 
 
-def gitlab_mr(top, project, number, branch, hostname=None):
-    """(source, target, head, iid) of a GitLab MR - by number, or the one open MR from branch.
-    Its source and target project must be the project it was looked up in: a fork's MR is
-    denied."""
-    base = ["glab", "api"] + (["--hostname", hostname] if hostname else [])
+def gitlab_mr(top, project, number, branch, hostname):
+    """(source, target, head, iid) of a GitLab MR on hostname - by number, or the one open MR
+    from branch. Its source and target project must be the project it was looked up in: a
+    fork's MR is denied."""
+    base = ["glab", "api", "--hostname", hostname]
     if number is not None:
         mr = lookup_json(base + ["projects/{}/merge_requests/{}".format(project, number)], top,
                          "MR !" + number)
@@ -4831,24 +5135,26 @@ def gitlab_mr(top, project, number, branch, hostname=None):
     return mr["source_branch"], mr["target_branch"], mr["sha"], str(mr.get("iid") or number or "")
 
 
-def gitlab_merge_train(top, project, hostname=None):
-    """Deny when the project merges through a merge train: the merge would join the train, a
-    deferred merge. A failed lookup is a deny too; a project without the setting has no train."""
-    base = ["glab", "api"] + (["--hostname", hostname] if hostname else [])
-    found = lookup_json(base + ["projects/" + project], top, "project " + unquote(project))
+def gitlab_merge_train(top, project, hostname):
+    """Deny when the project on hostname merges through a merge train: the merge would join
+    the train, a deferred merge. A failed lookup is a deny too; a project without the setting
+    has no train."""
+    found = lookup_json(["glab", "api", "--hostname", hostname, "projects/" + project], top,
+                        "project " + unquote(project))
     if not isinstance(found, dict):
         raise Deny(LOOKUP.format("project " + unquote(project)))
     if found.get("merge_trains_enabled") is True:
         raise Deny(QUEUED.format("the merge train of " + unquote(project)))
 
 
-def github_pr(top, target, repo_flag, owner, name):
-    """(source, base, head) of a GitHub PR, as gh pr view resolves target and repo_flag. A
-    cross-repository PR, or one whose head lives anywhere but origin's project, is denied."""
+def github_pr(top, target, repo, owner, name):
+    """(source, base, head) of a GitHub PR, as gh pr view resolves target in repo, a
+    host-qualified HOST/OWNER/NAME. With no target, gh needs no -R: it takes the current
+    branch's PR where the merge itself would. A cross-repository PR, or one whose head lives
+    anywhere but origin's project, is denied."""
     what = "PR " + (target or "of the current branch")
-    pr = lookup_json(["gh", "pr", "view"] + ([target] if target else [])
-                     + (["-R", repo_flag] if repo_flag else []) + ["--json", GH_VIEW_FIELDS],
-                     top, what)
+    pr = lookup_json(["gh", "pr", "view"] + ([target, "-R", repo] if target else [])
+                     + ["--json", GH_VIEW_FIELDS], top, what)
     if not isinstance(pr, dict):
         raise Deny(LOOKUP.format(what))
     values = [pr.get(k) for k in ("headRefName", "baseRefName", "headRefOid")]
@@ -4868,9 +5174,9 @@ def github_merge_queue(top, host, owner, name, dest):
     """Deny when dest merges through a merge queue: gh pr merge would then enable auto-merge
     or enqueue the PR, a deferred merge. A failed lookup is a deny too."""
     what = "the merge queue of " + dest
-    found = lookup_json(["gh", "api", "graphql"] + (["--hostname", host] if host else [])
-                        + ["-f", "query=" + MERGE_QUEUE, "-f", "owner=" + owner,
-                           "-f", "name=" + name, "-f", "branch=" + dest], top, what)
+    found = lookup_json(["gh", "api", "graphql", "--hostname", host,
+                         "-f", "query=" + MERGE_QUEUE, "-f", "owner=" + owner,
+                         "-f", "name=" + name, "-f", "branch=" + dest], top, what)
     try:
         queue = found["data"]["repository"]["mergeQueue"]
     except (KeyError, TypeError):
@@ -4894,8 +5200,9 @@ def judge_merge_cli(shape, ledger):
     immediate, from origin's own project, and the destination read from the forge."""
     tool = shape["tool"]
     flags, pos = parse_flags(shape["args"], GLAB_MERGE_VALUE if tool == "glab" else GH_MERGE_VALUE)
-    repo_flag = one(flags, ("-R", "--repo"), "-R/--repo")
-    top, host, path = forge_context(shape["cwd"], repo_flag)
+    named = one(flags, ("-R", "--repo"), "-R/--repo") or env_repo(tool)
+    top, host, path = forge_context(shape["cwd"], named, tool)
+    check_cli_host(tool, top, host, path, named)
     if len(pos) > 1:
         raise Deny(ONE_TARGET.format("MR" if tool == "glab" else "PR"))
     target = pos[0] if pos else None
@@ -4914,8 +5221,8 @@ def judge_merge_cli(shape, ledger):
         if number is None and branch is None:
             raise Deny(DETACHED.format(top, "the MR number"))
         project = quote(path, safe="")
-        source, dest, head, iid = gitlab_mr(top, project, number, branch)
-        gitlab_merge_train(top, project)
+        source, dest, head, iid = gitlab_mr(top, project, number, branch, host)
+        gitlab_merge_train(top, project, host)
         pin = one(flags, ("--sha",), "--sha")
         hint = "glab mr merge " + (iid or "<n>") + " --sha {} --auto-merge=false"
     else:
@@ -4924,30 +5231,31 @@ def judge_merge_cli(shape, ledger):
         if target is not None and "://" in target:
             target = url_number(target, host, path, PR_URL, "PR")
         owner, _, name = path.partition("/")
-        source, dest, head = github_pr(top, target, repo_flag, owner, name)
+        source, dest, head = github_pr(top, target, host + "/" + path, owner, name)
         github_merge_queue(top, host, owner, name, dest)
         pin = one(flags, ("--match-head-commit",), "--match-head-commit")
         hint = "gh pr merge " + (target or "<n>") + " --match-head-commit {}"
     merge_pinned(ledger, top, source, dest, head, pin, hint)
 
 
-def judge_merge_gitlab_api(shape, ledger, segment, number, fields, call):
-    top, host, path = gitlab_project(shape["cwd"], segment, call["hostname"])
+def judge_merge_gitlab_api(shape, ledger, segment, number, fields, host):
+    """A REST merge: the MR and the project's merge train are read from origin's project on
+    host, the host the call was checked to reach."""
+    top, host, path = gitlab_project(shape["cwd"], segment, host)
     hint = "glab api -X PUT projects/{}/merge_requests/{}/merge -f sha={{}}".format(segment, number)
     if on_value(fields.get("merge_when_pipeline_succeeds")) or on_value(fields.get("auto_merge")):
         raise Deny(DEFERRED.format("merge_when_pipeline_succeeds/auto_merge", hint.format("<head>")))
-    source, dest, head, _ = gitlab_mr(top, segment, number, None, call["hostname"])
-    gitlab_merge_train(top, segment, call["hostname"])
+    project = quote(path, safe="")
+    source, dest, head, _ = gitlab_mr(top, project, number, None, host)
+    gitlab_merge_train(top, project, host)
     merge_pinned(ledger, top, source, dest, head, field(fields, "sha", top, ledger), hint)
 
 
-def judge_merge_github_api(shape, ledger, owner, repo, number, fields, call):
+def judge_merge_github_api(shape, ledger, owner, repo, number, fields, host):
+    """A REST merge: the PR and the merge queue are read from origin's project on host."""
     top, host, path = github_project(shape["cwd"], owner, repo)
-    named = None if (owner, repo) == ("{owner}", "{repo}") else owner + "/" + repo
-    if named and call["hostname"]:
-        named = call["hostname"] + "/" + named
     o, _, n = path.partition("/")
-    source, dest, head = github_pr(top, number, named, o, n)
+    source, dest, head = github_pr(top, number, host + "/" + path, o, n)
     github_merge_queue(top, host, o, n, dest)
     merge_pinned(ledger, top, source, dest, head, field(fields, "sha", top, ledger),
                  "gh api -X PUT repos/{}/{}/pulls/{}/merge -f sha={{}}".format(owner, repo, number))
@@ -4964,23 +5272,23 @@ def judge_api(shape, ledger):
         raise Deny(LITERAL.format("the api endpoint", endpoint))
     if call["body"]:
         raise Deny(UNRESOLVED_API.format(tool))
-    check_api_host(shape["cwd"], tool, call)
+    host = check_api_host(shape["cwd"], tool, call)
     path, query = endpoint_parts(endpoint)
     fields = dict(query)
     fields.update(call["fields"])
     if tool == "glab":
         m = GITLAB_MR.match(path)
         if m and call["method"] == "POST" and m.group(2) is None:
-            return judge_create_gitlab_api(shape, ledger, m.group(1), fields, call)
+            return judge_create_gitlab_api(shape, ledger, m.group(1), fields, host)
         if m and call["method"] == "PUT" and m.group(3):
-            return judge_merge_gitlab_api(shape, ledger, m.group(1), m.group(2), fields, call)
+            return judge_merge_gitlab_api(shape, ledger, m.group(1), m.group(2), fields, host)
     else:
         m = GITHUB_PR.match(path)
         if m and call["method"] == "POST" and m.group(3) is None:
-            return judge_create_github_api(shape, ledger, m.group(1), m.group(2), fields, call)
+            return judge_create_github_api(shape, ledger, m.group(1), m.group(2), fields)
         if m and call["method"] == "PUT" and m.group(4):
             return judge_merge_github_api(shape, ledger, m.group(1), m.group(2), m.group(3),
-                                          fields, call)
+                                          fields, host)
     raise Deny(UNRESOLVED_API.format(tool))
 
 
@@ -4998,7 +5306,7 @@ def judge(shape, ledger):
 ```
 
 - [ ] **Step 5: Run it and confirm it passes.** `./tests/xreview-guard.test.sh`: expect
-  `passed: 230  failed: 0`. Then `grep -c NOT_MODELLED dot_claude/xreview-guard.py` must print
+  `passed: 254  failed: 0`. Then `grep -c NOT_MODELLED dot_claude/xreview-guard.py` must print
   `0`.
 
 - [ ] **Step 6: Commit.** Check the branch, then:
@@ -5303,15 +5611,15 @@ owns it.
 
 - [ ] **Step 1: Run every suite.** Run `./tests/run.sh` as one foreground Bash call with a
   timeout of 600000 ms. Do not filter it, and do not run any other suite while it runs.
-  - It took 660 s on the scratch clone, so it will likely reach the limit. If the call is moved to the
+  - It took 618 s on the scratch clone, so it will likely reach the limit. If the call is moved to the
     background there, wait for its completion notice and read its output file. Do not start a
     second run.
   - Expected:
     - every suite `ok`;
     - `29 suites run, 8 skipped (see the needs: lines)`;
-    - `all 29 suites passed (3260 assertions)`.
+    - `all 29 suites passed (3291 assertions)`.
   - The eight skipped suites carry a `# test-requires:` line.
-  - Report the total as passed/total, `3260/3260`, copied from the runner's last line.
+  - Report the total as passed/total, `3291/3291`, copied from the runner's last line.
 
 - [ ] **Step 2: Confirm the deployed set.** Run
   `chezmoi managed --include=files | grep -c -E '^\.claude/xreview-(guard|ledger)\.py$'` and
@@ -5341,21 +5649,21 @@ Test IDs are per suite: ledger = `tests/xreview-ledger.test.sh`, xreview =
 | §1.2 only two command shapes | T6-T8 | guard B, C, H-K, L-O |
 | §1.3 no freshness check | T3, T6 | ledger F17; guard C10 |
 | §1.4 ledgers split per checkout | T1, T5 | ledger C4-C7; xreview W19 |
-| §1.5 unlocked appends | T2 | ledger E9-E17, E21-E32 |
+| §1.5 unlocked appends | T2, T5 | ledger E9-E17, E21-E36; xreview W23-W25 |
 | §2 goals | all | the rows below |
 | §3.1 target, default branch, normalization, fingerprint | T1 | ledger A1-A21, B1-B21, D1-D6 |
 | §3.2 entries, idempotency, a review's state, v1 | T2, T3 | ledger E1-E8, F12, F20, F21 |
 | §3.3 location, key, `repo` file | T1, T2 | ledger C1-C3, E2 |
-| §3.3 the lock | T2 | ledger E9-E17, E21-E32 |
-| §3.3 pending write fatal, receipt write warns | T4, T5 | xreview V9-V12, W8-W10, F11 |
+| §3.3 the lock | T2, T5 | ledger E9-E17, E21-E36; xreview W23-W25 |
+| §3.3 pending write fatal, receipt write warns | T4, T5 | xreview V9-V12, W8-W10, W23-W25, F11 |
 | §3.4 dispatch | T4 | xreview V1-V27 |
-| §3.5 collect | T5 | xreview W1-W22, D10, F1, F14, F15 |
+| §3.5 collect | T5 | xreview W1-W25, D10, F1, F14, F15 |
 | §3.6 gated shapes, plain grammar, fast path | T6-T8 | guard A, B, C16-C22, F1-F4, H, L, O |
-| §3.6 creation reads the remote head; project and forks | T7 | guard H1, H2, J1-J4, K1-K34 |
+| §3.6 creation reads the remote head; project and forks | T7 | guard H1, H2, J1-J4, K1-K47 |
 | §3.6 forge merges pinned, never deferred | T7, T8 | guard I10, M1-M11, N1-N5, P10-P16 |
 | §3.6 destination commit and decision | T3, T6-T8 | ledger F1-F33; guard C5, I1-I4, N3, N4 |
 | §3.6 fails closed | T3, T6-T8 | ledger F27-F32; guard D1-D6, I11, I12, J3, J4, K9, N6-N9 |
-| §3.6 repository and host of an API shape, numeric id, placeholders | T7, T8 | guard H9-H13, K3, K12-K34, L6-L9, P17-P28 |
+| §3.6 repository and host of a forge shape and of its lookups, numeric id, placeholders | T7, T8 | guard H9-H13, K3, K12-K47, L6-L9, P17-P39 |
 | §3.6 deny message and the bypass | T6 | guard B11, C2-C4, C11, E1-E5 |
 | §3.7 skill text, guard header | T6, T9 | skill: the §3.7 pins and the stale-text checks |
 | §4 push and forge guards unchanged | T10 | the full run (the git-forge-guard suite) |
@@ -5410,7 +5718,7 @@ Each §5 bullet:
 | multi-repository: a pending entry and a receipt in each ledger, each opening its own gate | T5, T4 | xreview W16-W18, V18-V20 |
 | worktrees: a review collected in a harness worktree opens the main checkout's gate | T5, T1 | xreview W19; ledger C5 |
 | isolation: paths colliding under `/`→`_` get separate ledgers, never sharing an approval | T3, T1 | ledger G1-G5, C1, C2 |
-| locking: 20 concurrent appends make 20 valid lines; a stale lock is broken | T2 | ledger E9-E12, E16, E17, E21-E32 |
+| locking: 20 concurrent appends make 20 valid lines; a stale lock is broken | T2 | ledger E9-E12, E16, E17, E21-E36 |
 | old turn records without a targets file still collect, as v1 | T5 | xreview W13-W15 (and the F14, F15 legacy records) |
 
 Plan review round 1 (Codex, ten findings), each with the coordinator's ruling as applied:
@@ -5444,3 +5752,11 @@ Every new test was mutation-checked: it fails with the fix removed.
 | 2 (P1) redirections fused to a word hide a gated verb | T6 | operators are recognized anywhere outside quotes; a descriptor only where a word starts | guard B34-B38, C19-C22 |
 | 3 (P2) a release can delete a lock a breaker just replaced | T2 | release checks and removes under `<ledger>.lock.break`; without it in time, it leaves the lock and warns | ledger E30-E32 |
 | 4 (P2) quoted here-document delimiters with punctuation | T6 | the delimiter is the whole shell word; the closing line is compared unquoted; tabs stripped only for `<<-` | guard A15-A19, B32, B33, B39 |
+
+Plan review round 3 (Codex, two findings), each with the coordinator's ruling as applied.
+Every new test was mutation-checked: it fails with the fix removed.
+
+| Finding | Task | Change | Tests |
+|---|---|---|---|
+| 1 (P1) forge lookups do not inherit the validated host | T7, T8 | `check_api_host` returns origin's host, and every MR/PR, project-id, merge-train and merge-queue lookup passes it (`--hostname <host>`, `gh pr view <n> -R <host>/<owner>/<repo>`) on origin's project path. A CLI verb's own host is checked too: a bare `-R`, `GH_REPO` or `GITLAB_REPO` takes the CLI's default host, and `GITLAB_API_HOST` must be origin's. glab's `-R HOST/PATH`, which glab reads as another project's path, is denied | guard H15, K35-K47, P29-P39 |
+| 2 (P2) stale break-lock recovery races | T2, T5 | the break lock is never broken automatically; a stale one makes every writer fail closed, naming the path to remove by hand; collect's warning carries the helper's reason | ledger E27, E28, E33-E36; xreview W23-W25 |
