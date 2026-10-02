@@ -28,7 +28,8 @@ Both Python files deploy to `~/.claude`, which the sandbox cannot write.
 
 ## Global Constraints
 
-Copied from the spec. Every task's requirements include these.
+Copied from the spec, with the rulings of plan review round 1 marked as such. Every task's
+requirements include these.
 
 **The change and its fingerprint (§3.1)**
 - A review target is (repository = absolute git common directory, `dest`, base commit, tip
@@ -47,7 +48,10 @@ Copied from the spec. Every task's requirements include these.
   git diff --raw -z --no-abbrev --no-renames --no-ext-diff --no-textconv --ignore-submodules=none <base> <tip>
   ```
 - An empty diff has no fingerprint and cannot be approved.
-- The inlined review diff also uses `--ignore-submodules=none`.
+- The inlined review diff also uses `--ignore-submodules=none`. Plan review round 1 ruled that
+  each target's packet diff is rendered by one function, from the recorded base..tip pair,
+  with the fingerprint's flags: `--no-relative --no-ext-diff --no-textconv --no-renames
+  --ignore-submodules=none`.
 
 **Ledger entries (§3.2)**
 - Both kinds carry `v:2`, `nonce`, `dispatched_at` (UTC, fixed at dispatch), `checkpoint` and
@@ -64,6 +68,13 @@ Copied from the spec. Every task's requirements include these.
   SHA-256 of the absolute git common directory path. A `repo` file beside it names the path.
 - **Lock:** each append takes a `mkdir <ledger>.lock` lock (macOS has no `flock(1)`). It
   retries for up to 5 s, and a lock older than 60 s is broken.
+- Plan review round 1 added how a lock is broken:
+  - each holder writes a unique owner token inside the lock directory;
+  - breaking is serialized by `mkdir <ledger>.lock.break`, which is itself removed by a plain
+    `rmdir` once it is older than 60 s;
+  - under the break lock, the main lock is removed only if it still carries the stale token
+    seen;
+  - a release removes the lock only while it carries the releaser's own token.
 - A pending-write failure is fatal: the dispatch is refused before any turn. A receipt-write
   failure only warns on stderr.
 - Reads parse one line at a time and skip a damaged line.
@@ -94,6 +105,22 @@ Copied from the spec. Every task's requirements include these.
     `glab -R <repo>`, `gh -R <repo>`, and `XREVIEW_GUARD=off`;
   - any other `VAR=` or an `env` wrapper on a gated verb is denied;
   - any other compound holding a gated verb is denied.
+- Plan review round 1 ruled on three details of this grammar and on two things the gate
+  checks:
+  - redirections are read past wherever they stand;
+  - `sudo` is plain only when bare;
+  - `--help`/`-h` exempts a command only as the first argument after the subcommand, and a
+    merge's `--abort`/`--quit`/`--continue` only as its sole argument;
+  - an API call's `--hostname`, an absolute endpoint, a `-R` host and a PR/MR URL argument
+    must all name origin's host and project;
+  - a forge merge must come from origin's own project (no fork MR/PR), and must not go
+    through a merge queue or merge train.
+- Before round 2 the coordinator ruled on substitutions:
+  - the body of every `$(…)` and backtick substitution is a candidate command, inside double
+    quotes and outside; one inside single quotes stays inert;
+  - a here-document with an unquoted delimiter (`<<EOF`, `<<-EOF`) is scanned the same way for
+    its substitutions, and the rest of its body stays inert;
+  - a quoted delimiter (`<<'EOF'`, `<<"EOF"`, `<<\EOF`) keeps the whole body inert.
 - **Creation** reads `git ls-remote <remote> refs/heads/<source>`. The source repository must
   be the checkout's `origin`, so forks are denied.
 - **Forge merges:**
@@ -146,104 +173,178 @@ Test IDs are per suite, written as suite and ID: "ledger" is `tests/xreview-ledg
    - a `#` inside a quoted title;
    - a commit message that says "merge";
    - `rg 'glab mr merge'`;
-   - `--help`.
+   - `--help`;
+   - a redirection around an approved merge (`git merge feature > merge.log 2>&1`).
 
-   Tests: Task 6, guard A1-A14 and C9; Task 7, guard H8.
-3. **glab's default auto-merge.** glab 1.120 turns auto-merge on while a pipeline runs, so
-   `glab mr merge <n> --sha <head>` alone is a deferred merge. It must be denied, and the
-   message must name `--auto-merge=false`. Task 8: guard M5 and M6.
+   The reverse also holds. None of these may hide a real verb:
+   - a redirection;
+   - a `sudo` option;
+   - a `--help` option value;
+   - a command substitution, whether inside double quotes or inside an unquoted
+     here-document. This includes a backtick code span in an MR body written through
+     `<<EOF`, which bash really runs.
+
+   Tests: Task 6, guard A1-A14, B12-B32, C9 and C16-C18; Task 7, guard H8.
+3. **Merges the forge defers on its own.** These must be denied:
+   - glab 1.120 turns auto-merge on while a pipeline runs, so `glab mr merge <n> --sha <head>`
+     alone is a deferred merge, and the message must name `--auto-merge=false`;
+   - `gh pr merge` on a branch with a merge queue enables auto-merge or enqueues;
+   - GitLab merge trains do the same.
+
+   Task 8: guard M5, M6 and P10-P16.
 4. **The deny's own dispatch, run as printed, must open the gate.** For forge shapes it names
    `origin/<dest>...<source>`, and a pre-merge dispatch with no `--diff` targets
    `origin/<default>...<branch>`. This keeps a stale local branch out of the fingerprint.
    - Task 7: guard I3 and I4.
    - Task 1: ledger D4.
-5. **Ordering when dispatches are close together or written out of order.** A newer pending
-   review or `changes` verdict must never be shadowed by an older approval:
-   - dispatched in the same microsecond (the ledger order breaks the tie);
-   - an older review's receipt collected after a newer review's.
+5. **A reviewed repository whose configuration changes what `git diff` shows.** Three
+   settings could make the reviewer see less than the receipt names: `diff.relative` with
+   xreview run from a subdirectory, a `diff.external` driver, and a textconv attribute. The
+   packet must still hold every path and every byte the fingerprint names.
+   - Task 1: ledger A18-A21.
+   - Task 4: xreview V24 and V25.
 
-   Task 3: ledger F13, F14 and F25.
+   Ordering when dispatches are close together or out of order (ledger F13, F14 and F25)
+   stays pinned in Task 3.
 
 ## Decisions this plan takes
 
-Each of these resolves a point the spec leaves open, or improves the suggested design. Each
-one stays within the spec's goals.
+Each of these resolves a point the spec leaves open, improves the suggested design, or records
+a ruling from plan review round 1 (marked R1, with Codex's finding number). Each one stays
+within the spec's goals.
+
+**Where the code lives**
 
 1. **The helper lives in `dot_claude/xreview-ledger.py`, not `dot_local/bin/executable_xreview-ledger`.**
    - Why: `~/.local/bin` is sandbox-writable, and the gate must not execute code an agent can
      edit. `~/.claude` is not writable from the sandbox.
-   - How it is reached: `xreview` runs it as `/usr/bin/python3 "${XREVIEW_LEDGER:-$HOME/.claude/xreview-ledger.py}"`,
-     and the guard imports it from its own directory. One file, no copies.
+   - How it is reached: `xreview` runs it as
+     `/usr/bin/python3 "${XREVIEW_LEDGER:-$HOME/.claude/xreview-ledger.py}"`, and the guard
+     imports it from its own directory. One file, no copies.
 2. **The interpreter is pinned to `/usr/bin/python3`, not `/usr/bin/env python3`.** A reviewed
    repository's mise configuration can shadow `python3` on PATH. `xreview-rpc` and the push
    guard pin it for the same reason.
 3. **The guard imports the helper rather than shelling out.** That saves a second interpreter
    start on every gated command, and every plain `git merge` reaches the decision code. The
    helper keeps its full command line for xreview and the tests.
-4. **Locking is `mkdir`, as the spec says.**
-   - A stale lock is renamed aside before it is removed, so two writers breaking it at once
-     cannot remove a lock a third has just taken.
-   - Rejected: Python's `fcntl.flock`. It is simpler and leaves no stale lock, but the spec
-     names `mkdir` and pins a stale-lock test.
-   - The worst case of the break race is a duplicate identical line, which readers tolerate.
-5. **Fingerprint records end with NUL rather than a newline.** A git path cannot hold NUL,
-   but it can hold a newline, so this encoding is unambiguous. The diff also passes
-   `--no-relative`, so `diff.relative` cannot drop paths.
+
+**The ledger**
+
+4. **Locking is `mkdir`, as the spec says, with owner tokens (R1, finding 8).**
+   - Each holder writes a unique token into the lock directory.
+   - A stale lock is broken only under `<ledger>.lock.break`, and only while it still
+     carries the stale token seen. The break lock is itself cleared by a plain `rmdir` after
+     60 s.
+   - A release removes only the releaser's own lock.
+   - The two-breaker interleaving is tested deterministically, through the module's own
+     functions with injected timestamps.
+   - Rejected: Python's `fcntl.flock`. It is simpler and leaves nothing stale, but the spec
+     names `mkdir`.
+5. **One list of diff flags for the fingerprint and the packet (R1, finding 1).**
+   - The helper's `patch()` (command `diff`) renders each target's packet from the recorded
+     base..tip.
+   - It uses the fingerprint's flags (`--no-relative --no-ext-diff --no-textconv --no-renames
+     --ignore-submodules=none`), plus `--no-color`.
+   - Fingerprint records end with NUL rather than a newline: a git path cannot hold NUL, but it
+     can hold a newline.
 6. **The common directory is canonicalized with `realpath`.** git already resolves symlinks
    at discovery; this is defense in depth for paths recorded by worktrees.
 7. **`dispatched_at` has microsecond precision,** and reviews with an equal time keep ledger
    order.
-8. **Spec and plan reviews:**
+8. **A commit on the left of a range keeps its literal base (R1, finding 9).** This holds for
+   both `C..B` and `C...B` (spec §3.1), and the packet shows exactly that base..tip.
+
+**Dispatch and collect**
+
+9. **Spec and plan reviews:**
    - with no target, they write no ledger entry (spec-literal). Their reviewer tier then
      appears only in the turn records, not in `xreview receipts --tiers`;
    - with targets, they get a receipt but no pending entry, because the spec writes pending
      entries for pre-merge only.
-9. **Every empty target is refused**, as today. This is stricter than "all empty".
-10. **The pending entries and the targets file are written after the pane checks and before
+10. **Every empty target is refused**, as today. This is stricter than "all empty".
+11. **The pending entries and the targets file are written after the pane checks and before
     the pane is freed.**
     - A refused pending write therefore touches nothing.
     - A turn-start that fails afterwards leaves an orphan pending entry. It keeps that change's
       gate closed until a new review, which is the conservative side.
-11. **Turns from before this change still collect.** They write the v1 receipt into the
+12. **Turns from before this change still collect.** They write the v1 receipt into the
     per-checkout file, as today. The guard reads that file only to show what is on record.
-12. **Ranges that suggest themselves use origin.** A pre-merge dispatch with no `--diff` uses
+13. **Ranges that suggest themselves use origin.** A pre-merge dispatch with no `--diff` uses
     `origin/<default>` when that ref exists, and a forge deny suggests
     `origin/<dest>...<source>`. Both measure against what the forge merges into.
-13. **A glab merge must say `--auto-merge=false`.** Otherwise it is denied as deferred
+
+**The guard: forges**
+
+14. **A glab merge must say `--auto-merge=false`.** Otherwise it is denied as deferred
     (measured from `glab mr merge --help`, glab 1.120). `glab mr create --auto-merge` is
     denied too.
-14. **Destination lookups:**
+15. **Destination lookups, and the source repository (R1, finding 6):**
     - GitLab: `glab api projects/<project>/merge_requests/<n>`. For the `<branch>` and no-id
-      forms, the one open MR whose `source_branch` matches.
-    - GitHub: `gh pr view [<n>] [-R <repo>] --json baseRefName,headRefName,headRefOid`.
-15. **When the command does not name a project,** `origin` must be the checkout's only
+      forms, the one open MR whose `source_branch` matches. The MR's `project_id`,
+      `source_project_id` and `target_project_id` must all be equal, and it was looked up in
+      origin's project.
+    - GitHub: `gh pr view [<n>] [-R <repo>] --json baseRefName,headRefName,headRefOid,isCrossRepository,headRepository,headRepositoryOwner`.
+      The PR must not be cross-repository, and its head owner and name must be origin's.
+16. **Merge queues and merge trains are deferred merges (R1, finding 7).**
+    - GitHub merges, CLI and REST, query `repository(owner,name){mergeQueue(branch:D){id}}`
+      through `gh api graphql`. A non-null result or a failed lookup is denied. This also
+      denies `gh pr merge --admin` on such a branch.
+    - GitLab merges read `glab api projects/<p>`. `merge_trains_enabled: true` or a failed
+      lookup is denied. A project without that field (no trains on that tier) is allowed.
+17. **Hosts (R1, findings 4 and 5):**
+    - `glab api`/`gh api --hostname`, and an absolute endpoint, must name origin's host. An
+      absolute GitHub endpoint may name `api.<host>`, and an absolute `…/graphql` endpoint is
+      treated as GraphQL.
+    - A `-R` with a host must match origin's host.
+    - A PR/MR URL argument must name origin's host and project before any lookup.
+    - Not modelled: `gh api` without `--hostname` goes to `$GH_HOST` or github.com. That
+      differs from origin only for GitHub Enterprise.
+18. **When the command does not name a project,** `origin` must be the checkout's only
     remote. With several remotes the CLI could pick another project; the deny tells the agent
     to pass `-R`.
-16. **Every other `POST`, `PUT` or `PATCH` under `merge_requests` or `pulls` is denied,** MR
+19. **Every other `POST`, `PUT` or `PATCH` under `merge_requests` or `pulls` is denied,** MR
     notes and approvals included (spec-literal). The CLI equivalents are not gated.
-17. **A `git merge` anywhere in a compound command is denied, on any branch.** The branch the
-    merge will run on cannot be known from the text. Two cases are not gated:
-    - `git merge --abort`, `--quit`, `--continue` and `--help`;
-    - `git merge-base`.
 
-    A plain `git merge` with no ref on the default branch is denied.
-18. **Here-document bodies and comments are stripped before tokenizing,** so an MR body
-    cannot trip the gate. `XREVIEW_GUARD=off` keeps matching anywhere in the command, as today.
-19. **Timeouts:**
+**The guard: grammar**
+
+20. **What counts as part of a gated command (R1, findings 2 and 3):**
+    - Here-document bodies, comments and redirections (any operator, any operand, before the
+      command word or between arguments) are read past.
+    - A process substitution counts as a command.
+    - After a wrapper (`sudo`, `env`, `command`, `time`, `xargs`, …), every later word is a
+      candidate command, so `sudo -u root git merge` is seen. It is then denied, because only
+      a bare `sudo` is plain.
+    - `--help`/`-h` exempts a command only as the first word after the verb, and `--abort`,
+      `--quit` and `--continue` only as a merge's sole argument.
+    - Substitutions (coordinator, before round 2): the body of every `$(…)` and backtick
+      substitution is scanned as a command, recursively, outside single quotes and comments,
+      double-quoted or not. So is each substitution in a here-document body whose delimiter is
+      unquoted. The rest of such a body, and the whole body under a quoted or escaped
+      delimiter, is data.
+    - A gated verb found in a substitution is never part of a plain command: the command is
+      denied with the plain-form message. Nesting deeper than 8 levels is denied.
+21. **A `git merge` anywhere in a compound command is denied, on any branch.** The branch the
+    merge will run on cannot be known from the text. A plain `git merge` with no ref on the
+    default branch is denied; `git merge-base` is another command.
+22. **`XREVIEW_GUARD=off` keeps matching anywhere in the command,** as today.
+23. **Timeouts:**
     - the hook gets an explicit 60 s limit (`modify_private_settings.json`, pinned by
       `claude-settings.test.sh`);
     - the guard gives up at 40 s through `SIGALRM`;
-    - each subprocess gets 8 s.
+    - each subprocess gets 8 s, the merge-queue and train lookups included.
 
     A hook that outruns its limit is non-blocking, so giving up early fails closed.
-20. **The shell front has a second substring stage** (`glab|gh|git`), so payloads that only
+24. **The shell front has a second substring stage** (`glab|gh|git`), so payloads that only
     mention "new" or "create" still start no interpreter.
-21. **Fingerprint, normalization, locking and isolation tests live in a new
+
+**Tests, evaluation and gaps**
+
+25. **Fingerprint, normalization, locking and isolation tests live in a new
     `tests/xreview-ledger.test.sh`.** AGENTS.md wants one suite per script.
     `tests/xreview.test.sh` and `tests/xreview-guard.test.sh` cover the rest of §5.
-22. **§4's evaluation attribution:** `.scripts/measure-interventions.py` learns the new
+26. **§4's evaluation attribution:** `.scripts/measure-interventions.py` learns the new
     "Pre-merge gate:" deny wording. A dated note goes into the safe-autonomy spec.
-23. **`git pull`, `git rebase` and `git reset` onto the default branch are not gated.** The
+27. **`git pull`, `git rebase` and `git reset` onto the default branch are not gated.** The
     spec names only `git merge`; this is reported as a residual gap rather than added.
 
 ## Files
@@ -321,15 +422,21 @@ one stays within the spec's goals.
       `default_range(repo) -> str`: `origin/<default>...<branch>` when that ref exists, else
       `<default>...<branch or HEAD>`.
     - `merge_base(repo, a, b) -> str`: raises `Fail`.
+    - `DIFF_FLAGS`, shared by `DIFF_RAW` (the fingerprint) and `DIFF_PATCH` (the packet):
+      `--no-relative --no-ext-diff --no-textconv --no-renames --ignore-submodules=none`.
     - `fingerprint(repo, base, tip) -> str | None`: 64 hex characters, or `None` when nothing
       changed.
+    - `patch(repo, base, tip) -> bytes`: the change as a patch, with the same flags plus
+      `--no-color`. Raises `Fail`.
     - `normalize(repo, rng) -> dict` with the keys `repo, dest, dest_ref, branch, range, base,
-      tip, full, fingerprint`.
+      tip, full, fingerprint`. A commit on the left keeps its literal base in both the `..` and
+      the `...` form.
     - `now() -> str`: `YYYY-MM-DDTHH:MM:SS.ffffffZ`.
     - `state_home() -> str`; `ledger_key(common) -> str`; `ledger_file(common) -> str`.
   - Command line:
     - `key COMMON_DIR`, `path REPO`, `default-branch REPO`, `default-range REPO`, `now`;
     - `fingerprint REPO BASE TIP`: exit 3 and no output when the change is empty;
+    - `diff REPO BASE TIP`: the patch on stdout, as bytes;
     - `normalize REPO RANGE`: compact JSON;
     - errors: exit 1 with `xreview-ledger: <reason>` on stderr; usage errors exit 2.
 
@@ -434,6 +541,24 @@ variant "$R" mv; git -C "$R" mv a.txt moved.txt; commit "$R" "rename"
 is "A17 a rename is a delete plus an add, whatever diff.renames says" \
    "$(fp "$R" main mv | grep -cE '^[0-9a-f]{64}$')" 1
 git -C "$R" config --unset diff.renames
+variant "$R" rel; mkdir -p "$R/deep"; printf 'in\n' > "$R/deep/in.txt"; printf 'out\n' > "$R/out.txt"
+commit "$R" "one file inside deep/, one outside"
+F_ROOT="$(fp "$R" main rel)"
+git -C "$R" config diff.relative true
+is "A18 run from a subdirectory under diff.relative, the fingerprint is the same" "$(fp "$R/deep" main rel)" "$F_ROOT"
+# The patch the reviewer reads, under every setting that could hide a path or rewrite content:
+# diff.relative from a subdirectory, an external driver that prints nothing, and a textconv.
+printf '#!/bin/sh\nexit 0\n' > "$ROOT/silent-diff"; chmod +x "$ROOT/silent-diff"
+git -C "$R" config diff.external "$ROOT/silent-diff"
+git -C "$R" config diff.upper.textconv 'tr a-z A-Z'
+printf '*.txt diff=upper\n' > "$R/.git/info/attributes"
+out="$(L diff "$R/deep" main rel)"
+is "A19 the patch names every path the fingerprint names" \
+   "$(printf '%s\n' "$out" | sed -n 's/^diff --git a\/\([^ ]*\) .*/\1/p' | sort | tr '\n' ' ')" "deep/in.txt out.txt "
+is "A20 with the content as committed, never converted" "$(printf '%s\n' "$out" | grep -c '^+in$')" 1
+is "A21 and the fingerprint ignores all three settings too" "$(fp "$R/deep" main rel)" "$F_ROOT"
+git -C "$R" config --unset diff.relative; git -C "$R" config --unset diff.external
+git -C "$R" config --unset diff.upper.textconv; rm "$R/.git/info/attributes"
 git -C "$R" switch -q main
 
 echo "B. range normalization (spec 3.1)"
@@ -451,26 +576,34 @@ is "B6 the range is kept as written" "$(printf '%s' "$t" | jq -r .range)" "main.
 is "B7 main...feature normalizes to the same change" \
    "$(L normalize "$N" main...feature | jq -r '"\(.base) \(.fingerprint) \(.full)"')" \
    "$(printf '%s' "$t" | jq -r '"\(.base) \(.fingerprint) \(.full)"')"
-git -C "$N" switch -q -c hotfix main~1; printf 'h\n' > "$N/h.txt"; commit "$N" "hotfix"
+# hotfix starts at main's head; the remote release/1.2 is there too, while a stale local
+# release/1.2 still sits on the root commit, so the two refs give different merge-bases.
+git -C "$N" switch -q -c hotfix main; printf 'h\n' > "$N/h.txt"; commit "$N" "hotfix"
 git -C "$N" update-ref refs/remotes/origin/release/1.2 main
+REMOTE_MB="$(git -C "$N" merge-base origin/release/1.2 hotfix)"
 t="$(L normalize "$N" origin/release/1.2...hotfix)"
 is "B8 origin/release/1.2...hotfix with no local release/1.2 is full" "$(printf '%s' "$t" | jq -r .full)" true
 is "B9 for the destination release/1.2" "$(printf '%s' "$t" | jq -r .dest)" "release/1.2"
 is "B10 with the ref as written" "$(printf '%s' "$t" | jq -r .dest_ref)" "origin/release/1.2"
-is "B11 its base comes from the remote ref" "$(printf '%s' "$t" | jq -r .base)" "$(git -C "$N" merge-base origin/release/1.2 hotfix)"
+is "B11 its base comes from the remote ref" "$(printf '%s' "$t" | jq -r .base)" "$REMOTE_MB"
 git -C "$N" branch release/1.2 "$(git -C "$N" rev-list --max-parents=0 main)"   # a stale local branch
-is "B12 a stale local release/1.2 is not used" \
-   "$(L normalize "$N" origin/release/1.2...hotfix | jq -r .base)" "$(git -C "$N" merge-base origin/release/1.2 hotfix)"
+differs "B12 the stale local release/1.2 would give another base" "$(git -C "$N" merge-base release/1.2 hotfix)" "$REMOTE_MB"
+is "B13 and it is not used" "$(L normalize "$N" origin/release/1.2...hotfix | jq -r .base)" "$REMOTE_MB"
 SHA="$(git -C "$N" rev-parse main~1)"
 t="$(L normalize "$N" "${SHA:0:7}..feature")"
-is "B13 a commit-based left side is partial" "$(printf '%s' "$t" | jq -r '"\(.full)/\(.dest)"')" "false/null"
-is "B14 and keeps its literal base" "$(printf '%s' "$t" | jq -r .base)" "$SHA"
-is "B15 HEAD~1..HEAD is partial" "$(L normalize "$N" HEAD~1..HEAD | jq -r .full)" false
+is "B14 a commit-based left side is partial" "$(printf '%s' "$t" | jq -r '"\(.full)/\(.dest)"')" "false/null"
+is "B15 and keeps its literal base" "$(printf '%s' "$t" | jq -r .base)" "$SHA"
+is "B16 HEAD~1..HEAD is partial" "$(L normalize "$N" HEAD~1..HEAD | jq -r .full)" false
 out="$(L normalize "$N" feature 2>&1)"; rc=$?
-is "B16 a range without .. is refused" "$rc/$(printf '%s' "$out" | grep -c '<base>..<tip>')" "1/1"
+is "B17 a range without .. is refused" "$rc/$(printf '%s' "$out" | grep -c '<base>..<tip>')" "1/1"
 out="$(L normalize "$N" no-such..feature 2>&1)"; rc=$?
-is "B17 an unresolvable side is refused" "$rc/$(printf '%s' "$out" | grep -c 'cannot resolve no-such')" "1/1"
-is "B18 an empty range normalizes with no fingerprint" "$(L normalize "$N" main...main | jq -r .fingerprint)" null
+is "B18 an unresolvable side is refused" "$rc/$(printf '%s' "$out" | grep -c 'cannot resolve no-such')" "1/1"
+is "B19 an empty range normalizes with no fingerprint" "$(L normalize "$N" main...main | jq -r .fingerprint)" null
+C="$(git -C "$N" rev-parse hotfix)"     # diverged from feature: their merge-base is the root
+t="$(L normalize "$N" "$C...feature")"
+is "B20 a divergent commit...branch keeps its literal base, not the merge-base" \
+   "$(printf '%s' "$t" | jq -r '"\(.base) \(.full)"')" "$C false"
+is "B21 and names the change base..tip" "$(printf '%s' "$t" | jq -r .fingerprint)" "$(fp "$N" "$C" feature)"
 
 echo "C. one ledger per repository (spec 3.3)"
 REAL="$(cd "$N" && pwd -P)"
@@ -565,6 +698,7 @@ and the decision in 3.6.
   default-branch REPO                       origin/HEAD's branch, else main, else master
   default-range  REPO                       <origin/default or default>...<current branch or HEAD>
   fingerprint    REPO BASE TIP              the change's exact content identity (exit 3: empty)
+  diff           REPO BASE TIP              the change as a patch, for the review packet
   normalize      REPO RANGE                 one review target, as JSON
   now                                       the UTC time, to the microsecond
   append         COMMON_DIR ENTRY_JSON      one v2 entry, locked, idempotent per (nonce, kind)
@@ -577,7 +711,6 @@ Written for /usr/bin/python3 (3.9): no match statements, no X | Y type unions.
 import hashlib
 import json
 import os
-import shutil
 import subprocess
 import sys
 import time
@@ -587,14 +720,18 @@ from datetime import datetime, timezone
 LOCK_WAIT = 5.0          # seconds an append waits for the ledger lock
 LOCK_STALE = 60.0        # a lock older than this was left by a crashed writer
 CALL_TIMEOUT = 20.0      # per git call; the guard lowers it to fit its own budget
-# The fingerprint's diff. Every flag pins an input the user's configuration could change:
-# renames would merge a delete and an add, an external or textconv driver would rewrite the
-# content, diff.ignoreSubmodules or submodule.<name>.ignore would hide a gitlink, and
-# diff.relative would drop paths outside the current directory.
-DIFF_RAW = ["diff", "--raw", "-z", "--no-abbrev", "--no-renames", "--no-ext-diff",
-            "--no-textconv", "--ignore-submodules=none", "--no-relative"]
+# The flags of every diff the ledger names or renders - the fingerprint, and the patch the
+# reviewer reads - so the two always cover the same paths and content. Each pins an input the
+# user's configuration could change: diff.relative would drop paths outside the current
+# directory, an external or textconv driver would rewrite or hide content, renames would merge
+# a delete and an add, and diff.ignoreSubmodules or submodule.<name>.ignore would hide a gitlink.
+DIFF_FLAGS = ["--no-relative", "--no-ext-diff", "--no-textconv", "--no-renames",
+              "--ignore-submodules=none"]
+DIFF_RAW = ["diff", "--raw", "-z", "--no-abbrev"] + DIFF_FLAGS
+DIFF_PATCH = ["diff", "--no-color"] + DIFF_FLAGS
 USAGE = ("usage: xreview-ledger key COMMON_DIR | path REPO | default-branch REPO | "
-         "default-range REPO | fingerprint REPO BASE TIP | normalize REPO RANGE | now | "
+         "default-range REPO | fingerprint REPO BASE TIP | diff REPO BASE TIP | "
+         "normalize REPO RANGE | now | "
          "append COMMON_DIR ENTRY_JSON | decide REPO DEST DEST_REV TIP [--branch NAME] | "
          "show REPO")
 
@@ -691,6 +828,15 @@ def fingerprint(repo, base, tip):
     return digest.hexdigest()
 
 
+def patch(repo, base, tip):
+    """The change base..tip as a patch, with the fingerprint's own flags, so the reviewer reads
+    every path and every byte the fingerprint names. Raises Fail when git cannot diff it."""
+    out = git(repo, *DIFF_PATCH, base, tip, "--", raw=True)
+    if out is None:
+        raise Fail("cannot diff {}..{} in {}".format(base, tip, repo))
+    return out
+
+
 def branch_of(repo, right):
     """The branch a range's right side names: the current branch for HEAD, a local branch,
     or the branch of an origin/<b> remote-tracking ref; None for anything else."""
@@ -707,7 +853,8 @@ def normalize(repo, rng):
     """One review target for rng (<left>..<tip> or <left>...<tip>). A left side naming a
     branch (X, or origin/X) is normalized: dest is X, dest_ref the ref as written, base the
     merge-base of dest_ref and the tip, and the target is full. Any other left side keeps its
-    literal base (the merge-base for ...), has no dest, and is partial."""
+    literal base in both forms (spec 3.1), has no dest, and is partial; the packet shows
+    exactly base..tip, so the reviewed diff and the record always agree."""
     for dots in ("...", ".."):
         if dots in rng:
             left, right = rng.split(dots, 1)
@@ -727,10 +874,9 @@ def normalize(repo, rng):
     if full_ref is not None:
         base = merge_base(repo, full_ref, tip)
     else:
-        start = commit_of(repo, left)
-        if start is None:
+        base = commit_of(repo, left)
+        if base is None:
             raise Fail("cannot resolve {} in {}".format(left, repo))
-        base = merge_base(repo, start, tip) if dots == "..." else start
     return {"repo": common, "dest": dest, "dest_ref": dest_ref,
             "branch": branch_of(repo, right), "range": rng, "base": base, "tip": tip,
             "full": dest is not None, "fingerprint": fingerprint(repo, base, tip)}
@@ -781,6 +927,10 @@ def main(argv):
                 return 3
             print(change)
             return 0
+        if cmd == "diff" and len(args) == 3:
+            sys.stdout.flush()
+            sys.stdout.buffer.write(patch(*args))
+            return 0
         if cmd == "normalize" and len(args) == 2:
             print(json.dumps(normalize(args[0], args[1]), separators=(",", ":")))
             return 0
@@ -815,7 +965,7 @@ with:
 ```
 
 - [ ] **Step 6: Run both and confirm they pass.**
-  - `./tests/xreview-ledger.test.sh`: expect `passed: 50  failed: 0`.
+  - `./tests/xreview-ledger.test.sh`: expect `passed: 57  failed: 0`.
   - `./tests/claude-settings.test.sh 2>&1 | tail -1`: expect `RESULT: 177 passed, 0 failed`.
 
 - [ ] **Step 7: Commit.** Check that `git branch --show-current` prints
@@ -838,8 +988,13 @@ git commit -m "Add the xreview ledger helper: range normalization and the change
   - `legacy_file(repo) -> str | None`: the per-checkout v1 file,
     `$XDG_STATE_HOME/xreview/<toplevel with / mapped to _, the leading _ dropped>/reviews.jsonl`.
   - `read_entries(path) -> list[dict]`: skips damaged lines; raises `OSError` when unreadable.
-  - `acquire(lock)`: the lock is `<ledger>.lock`. `XREVIEW_LEDGER_LOCK_WAIT` overrides the 5 s
-    wait.
+  - The lock, `<ledger>.lock`:
+    - `owner_of(lock) -> str | None` and `stale(path) -> bool`;
+    - `break_stale(lock, seen) -> bool`: under `<lock>.break`, removes the lock only while it
+      is stale and still carries the token `seen`;
+    - `acquire(lock) -> str`: returns this holder's token. `XREVIEW_LEDGER_LOCK_WAIT`
+      overrides the 5 s wait;
+    - `release(lock, token)`: removes the lock only while it carries `token`.
   - `append(common: str, entry: dict) -> "appended" | "present"`. It raises `Fail` unless the
     entry is v2 with kind `pending` or `receipt`, a nonce, a `dispatched_at`, and a non-empty
     `targets` list whose every `repo` is `common`.
@@ -893,12 +1048,61 @@ mkdir -p "$LEG" && printf '{"branch":"main","checkpoint":"pre-merge","verdict":"
 is "E19 and then the checkout's legacy receipts" "$(L show "$E" | tail -1 | jq -r .branch)" main
 out="$(L show "$D")"; rc=$?
 is "E20 with nothing on record it exits 1" "$rc/$out" "1/"
+# Two writers both find the same stale lock. Breaker A judges it stale and is suspended;
+# breaker B breaks it, takes a fresh lock and still holds it when A resumes. The steps run in
+# this order, deterministically, through the module's own functions: no sleeps, no races.
+LK="$ROOT/interleave.lock"
+lines="$(/usr/bin/python3 - "$LEDGER" "$LK" <<'PY'
+import importlib.util, os, sys, time
+spec = importlib.util.spec_from_file_location("ledger", sys.argv[1])
+ledger = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(ledger)
+lock, old = sys.argv[2], time.time() - 120
+
+def stale_lock(token):
+    os.mkdir(lock)
+    with open(os.path.join(lock, "owner"), "w") as fh:
+        fh.write(token + "\n")
+    os.utime(lock, (old, old))
+
+stale_lock("dead")
+seen_by_a = ledger.owner_of(lock)                       # A: "dead", and stale
+print("a-saw-stale", seen_by_a, ledger.stale(lock))
+token_b = ledger.acquire(lock)                          # B: breaks it, takes a fresh lock
+print("b-holds", ledger.owner_of(lock) == token_b)
+os.utime(lock, (old, old))      # and is slow: its lock looks stale too, so only the token tells
+
+print("a-breaks", ledger.break_stale(lock, seen_by_a))  # A resumes: the token moved on
+print("b-still-holds", ledger.owner_of(lock) == token_b)
+ledger.release(lock, "not-the-holder")
+print("foreign-release-kept", os.path.isdir(lock))
+ledger.release(lock, token_b)
+print("own-release-freed", os.path.isdir(lock))
+stale_lock("dead2")
+os.mkdir(lock + ".break")                               # a breaker crashed mid-break...
+os.utime(lock + ".break", (old, old))
+print("stale-break-lock-cleared", ledger.break_stale(lock, "dead2"), os.path.isdir(lock + ".break"))
+print("then-broken", ledger.break_stale(lock, "dead2"), os.path.isdir(lock))
+stale_lock("dead3")
+os.mkdir(lock + ".break")                               # ...while another is breaking right now
+print("fresh-break-lock-waits", ledger.break_stale(lock, "dead3"), os.path.isdir(lock))
+PY
+)"
+is "E21 breaker A first judges the lock stale" "$(printf '%s\n' "$lines" | grep -c '^a-saw-stale dead True$')" 1
+is "E22 breaker B breaks it and holds a fresh lock" "$(printf '%s\n' "$lines" | grep -c '^b-holds True$')" 1
+is "E23 A, resuming, never removes B's lock" "$(printf '%s\n' "$lines" | grep -c '^a-breaks False$')" 1
+is "E24 B still holds it" "$(printf '%s\n' "$lines" | grep -c '^b-still-holds True$')" 1
+is "E25 a release by another token leaves the lock" "$(printf '%s\n' "$lines" | grep -c '^foreign-release-kept True$')" 1
+is "E26 B's own release frees it" "$(printf '%s\n' "$lines" | grep -c '^own-release-freed False$')" 1
+is "E27 a stale break lock is cleared with a plain rmdir" "$(printf '%s\n' "$lines" | grep -c '^stale-break-lock-cleared False False$')" 1
+is "E28 and the stale lock is broken on the next try" "$(printf '%s\n' "$lines" | grep -c '^then-broken True False$')" 1
+is "E29 a fresh break lock means another breaker is deciding: wait" "$(printf '%s\n' "$lines" | grep -c '^fresh-break-lock-waits False True$')" 1
 
 ```
 
 - [ ] **Step 2: Run it and confirm it fails.** `./tests/xreview-ledger.test.sh`: expect
-  `passed: 52  failed: 18`. E1-E11 and E13-E20 fail, because `append` and `show` do not exist
-  yet.
+  `passed: 59  failed: 27`. E1-E11, E13-E16 and E18-E29 fail, because `append`, `show` and
+  the lock functions do not exist yet.
 
 - [ ] **Step 3: Add the writes.** In `dot_claude/xreview-ledger.py`, insert this block
   immediately above the line
@@ -938,32 +1142,92 @@ def lock_wait():
         return LOCK_WAIT
 
 
+# The ledger lock is a directory (mkdir is atomic, and macOS has no flock(1)) holding one file,
+# owner, with its holder's unique token. A lock older than LOCK_STALE was left by a crashed
+# writer. Breaking it is serialized by a second directory, <lock>.break, and only removes a
+# lock that still carries the token seen when it was judged stale: two writers that both saw
+# it stale can never remove the fresh lock one of them took in between. A release removes the
+# lock only while it carries the releaser's own token.
+def owner_of(lock):
+    try:
+        with open(os.path.join(lock, "owner"), encoding="utf-8") as fh:
+            return fh.read().strip() or None
+    except OSError:
+        return None
+
+
+def stale(path):
+    try:
+        return time.time() - os.stat(path).st_mtime > LOCK_STALE
+    except FileNotFoundError:
+        return False
+
+
+def break_stale(lock, seen):
+    """Remove lock if it is still stale and still carries the token seen (None: no owner
+    file). Returns True when it removed the lock. A break lock older than LOCK_STALE was left
+    by a crashed breaker and is removed with a plain rmdir."""
+    guard = lock + ".break"
+    try:
+        os.mkdir(guard)
+    except FileExistsError:
+        if stale(guard):
+            try:
+                os.rmdir(guard)
+            except OSError:
+                pass
+        return False
+    try:
+        if owner_of(lock) != seen or not stale(lock):
+            return False
+        try:
+            os.unlink(os.path.join(lock, "owner"))
+        except OSError:
+            pass
+        try:
+            os.rmdir(lock)
+        except OSError:
+            return False
+        return True
+    finally:
+        try:
+            os.rmdir(guard)
+        except OSError:
+            pass
+
+
 def acquire(lock):
-    """Take the ledger lock: mkdir is atomic, and macOS has no flock(1). A lock older than
-    LOCK_STALE was left by a crashed writer and is broken: renamed aside first, so two
-    breakers never remove a lock a third writer has just taken."""
+    """Take the ledger lock, waiting up to lock_wait(); returns this holder's token."""
+    token = "{}-{}".format(os.getpid(), uuid.uuid4().hex)
     deadline = time.monotonic() + lock_wait()
     while True:
         try:
             os.mkdir(lock)
-            return
         except FileExistsError:
-            pass
-        try:
-            stale = time.time() - os.stat(lock).st_mtime > LOCK_STALE
-        except FileNotFoundError:
-            stale = False
-        if stale:
-            grave = "{}.stale.{}.{}".format(lock, os.getpid(), uuid.uuid4().hex)
-            try:
-                os.rename(lock, grave)
-            except OSError:
-                pass
-            shutil.rmtree(grave, ignore_errors=True)
-        elif time.monotonic() >= deadline:
-            raise Fail("the ledger lock {} is held".format(lock))
-        else:
+            seen = owner_of(lock)
+            if stale(lock) and break_stale(lock, seen):
+                continue
+            if time.monotonic() >= deadline:
+                raise Fail("the ledger lock {} is held".format(lock))
             time.sleep(0.05)
+            continue
+        with open(os.path.join(lock, "owner"), "w", encoding="utf-8") as fh:
+            fh.write(token + "\n")
+        return token
+
+
+def release(lock, token):
+    """Remove the lock, only while it carries token."""
+    if owner_of(lock) != token:
+        return
+    try:
+        os.unlink(os.path.join(lock, "owner"))
+    except OSError:
+        pass
+    try:
+        os.rmdir(lock)
+    except OSError:
+        pass
 
 
 def append(common, entry):
@@ -984,7 +1248,7 @@ def append(common, entry):
         with open(note, "w", encoding="utf-8") as fh:
             fh.write(common + "\n")
     lock = path + ".lock"
-    acquire(lock)
+    token = acquire(lock)
     try:
         if os.path.lexists(path):
             for held in read_entries(path):
@@ -1000,10 +1264,7 @@ def append(common, entry):
             os.close(fd)
         return "appended"
     finally:
-        try:
-            os.rmdir(lock)
-        except OSError:
-            pass
+        release(lock, token)
 
 
 ```
@@ -1052,6 +1313,10 @@ def main(argv):
                 return 3
             print(change)
             return 0
+        if cmd == "diff" and len(args) == 3:
+            sys.stdout.flush()
+            sys.stdout.buffer.write(patch(*args))
+            return 0
         if cmd == "normalize" and len(args) == 2:
             print(json.dumps(normalize(args[0], args[1]), separators=(",", ":")))
             return 0
@@ -1079,7 +1344,7 @@ if __name__ == "__main__":
 ```
 
 - [ ] **Step 5: Run it and confirm it passes.** `./tests/xreview-ledger.test.sh`: expect
-  `passed: 70  failed: 0`.
+  `passed: 86  failed: 0`.
 
 - [ ] **Step 6: Commit.** Check the branch, then:
 
@@ -1235,7 +1500,7 @@ is "G5 and never a/b, for identical blobs and destination" "$(L decide "$ROOT/is
 ```
 
 - [ ] **Step 2: Run it and confirm it fails.** `./tests/xreview-ledger.test.sh`: expect
-  `passed: 74  failed: 34`. Every F and G decision fails, because `decide` is a usage error so
+  `passed: 90  failed: 34`. Every F and G decision fails, because `decide` is a usage error so
   far.
 
 - [ ] **Step 3: Add the decision.** In `dot_claude/xreview-ledger.py`, insert this block
@@ -1398,6 +1663,10 @@ def main(argv):
                 return 3
             print(change)
             return 0
+        if cmd == "diff" and len(args) == 3:
+            sys.stdout.flush()
+            sys.stdout.buffer.write(patch(*args))
+            return 0
         if cmd == "normalize" and len(args) == 2:
             print(json.dumps(normalize(args[0], args[1]), separators=(",", ":")))
             return 0
@@ -1429,7 +1698,7 @@ if __name__ == "__main__":
 ```
 
 - [ ] **Step 5: Run it and confirm it passes.** `./tests/xreview-ledger.test.sh`: expect
-  `passed: 108  failed: 0`.
+  `passed: 124  failed: 0`.
 
 - [ ] **Step 6: Commit.** Check the branch, then:
 
@@ -1445,13 +1714,14 @@ git commit -m "Decide the pre-merge gate from the latest review of the exact cha
 - Modify: `tests/xreview.test.sh`
 
 **Interfaces:**
-- Consumes (Tasks 1-2): the helper's `normalize`, `default-range`, `now` and `append`
+- Consumes (Tasks 1-2): the helper's `normalize`, `diff`, `default-range`, `now` and `append`
   subcommands.
 - Produces:
   - in xreview:
     - `ledger <subcommand> …`: runs `/usr/bin/python3 "${XREVIEW_LEDGER:-$HOME/.claude/xreview-ledger.py}"`;
     - `add_target <spec>`: appends to `cmd_dispatch`'s locals `TARGETS` (a JSON array),
-      `DIFFS` and `DIFF_BYTES`;
+      `DIFFS` and `DIFF_BYTES`. The packet diff is `ledger diff <dir> <base> <tip>`, the
+      recorded pair, with the fingerprint's flags;
     - `record_pending <targets-doc>`: returns 1 on the first ledger it cannot write.
   - The file `$(state_dir)/turns/<nonce>.targets`, as one JSON line:
     `{"v":2,"nonce":…,"dispatched_at":…,"checkpoint":…,"targets":[…]}`.
@@ -1650,19 +1920,52 @@ is "V22 untouched" "$(untouched)" yes
 fresh; export PANE_CWD="$VCWD"
 out="$(bash "$XREVIEW" dispatch --checkpoint plan --diff "$ROOT/no-such:main...feature" b.md 2>&1)"; rc=$?
 is "V23 a --diff naming no directory is refused" "$rc/$(printf '%s' "$out" | grep -c 'is not a directory')" "1/1"
+# The packet shows every path and byte the fingerprint names, whatever the reviewed repository's
+# configuration says: diff.relative with xreview run from a subdirectory, an external diff
+# driver that prints nothing, and a textconv that rewrites content.
+git switch -q -c hostile main
+mkdir -p deep && printf 'in\n' > deep/in.txt && printf 'out\n' > out.txt
+git add deep/in.txt out.txt && git commit -q -m "one file inside deep/, one outside"
+printf '#!/bin/sh\nexit 0\n' > "$ROOT/silent-diff"; chmod +x "$ROOT/silent-diff"
+git config diff.relative true
+git config diff.external "$ROOT/silent-diff"
+git config diff.upper.textconv 'tr a-z A-Z'
+printf '*.txt diff=upper\n' > .git/info/attributes
+cd deep || exit 1
+fresh; export PANE_CWD="$VCWD"
+bash "$XREVIEW" dispatch --checkpoint plan --diff main...hostile ../b.md >/dev/null 2>&1
+cd "$V" || exit 1
+want="$(git diff --no-relative --no-renames --name-only main...hostile | sort | tr '\n' ' ')"
+is "V24 from a subdirectory, under diff.relative, an external driver and a textconv, the packet holds every changed path" \
+   "$(sed -n 's/^diff --git a\/\([^ ]*\) .*/\1/p' "$P/packet" | sort | tr '\n' ' ')" "$want"
+is "V25 with the content as committed, never converted" "$(grep -c '^+in$' "$P/packet")" 1
+git config --unset diff.relative; git config --unset diff.external; git config --unset diff.upper.textconv
+rm .git/info/attributes
+# A partial range keeps its literal base, and the packet shows exactly that base..tip: from a
+# divergent commit, the commit's own file goes away.
+git switch -q -c divergent main
+printf 'd\n' > div.txt && git add div.txt && git commit -q -m divergent
+DIV="$(git rev-parse HEAD)"
+git switch -q feature
+fresh; export PANE_CWD="$VCWD"
+nonce="$(bash "$XREVIEW" dispatch --checkpoint plan --diff "$DIV...feature" b.md 2>/dev/null)"
+is "V26 a divergent commit...branch is recorded with its literal base" \
+   "$(jq -r '.targets[0] | "\(.base) \(.full)"' "$VSTATE/turns/$nonce.targets")" "$DIV false"
+is "V27 and the packet shows that base..tip" "$(grep -c '^diff --git a/div.txt b/div.txt$' "$P/packet")" 1
 cd "$ROOT/repo" || exit 1
 unset PANE_CWD
 ```
 
 - [ ] **Step 4: Run it and confirm it fails.** `./tests/xreview.test.sh` (timeout 600000 ms):
-  expect `passed: 419  failed: 16`. The failures are V2, V5-V7, V9-V11, V13, V14, V16-V21
-  and V23.
+  expect `passed: 419  failed: 20`. The failures are V2, V5-V7, V9-V11, V13, V14, V16-V21
+  and V23-V27.
 
 - [ ] **Step 5: Implement.** Apply these edits to `dot_local/bin/executable_xreview`, in
   order:
   - Edit 1 adds the `ledger` helper.
   - Edit 2 adds `record_pending`.
-  - Edit 3 replaces `inline_diff` with `add_target`.
+  - Edit 3 replaces `inline_diff` with `add_target`, which renders the packet diff through
+    `ledger diff`.
   - Edits 4-11 change `cmd_dispatch` and the usage line.
 
 Edit 1 - replace:
@@ -1746,8 +2049,9 @@ with:
 # everything before the last colon, since a ref can never hold one. A dispatch that names a
 # path makes the reviewer open it, and every search and read is a full-context model step
 # (measured 2026-09-01: ~16 steps and ~2.0M tokens per review), so the diff travels inline.
-# The diff is base..tip as normalized - exactly the change the receipt will name - and counts
-# every gitlink, whatever diff.ignoreSubmodules says.
+# The diff is base..tip as recorded, rendered by the ledger helper with the fingerprint's own
+# flags, so the reviewer reads every path and byte the receipt will name, whatever
+# diff.relative, an external or textconv driver, or diff.ignoreSubmodules would do.
 add_target() {
   local spec="$1" rdir rng t base tip d
   case "$spec" in
@@ -1759,7 +2063,7 @@ add_target() {
     || die "cannot diff $spec - check the range resolves in that repository"
   base="$(printf '%s' "$t" | jq -r .base)"
   tip="$(printf '%s' "$t" | jq -r .tip)"
-  d="$(git -C "$rdir" diff --ignore-submodules=none "$base" "$tip" 2>/dev/null)" \
+  d="$(ledger diff "$rdir" "$base" "$tip" 2>/dev/null)" \
     || die "cannot diff $spec - check the range resolves in that repository"
   [ -n "$d" ] || die "cannot diff $spec - the range is empty, so there is nothing to review"
   TARGETS="$(printf '%s' "$TARGETS" | jq -c --argjson t "$t" '. + [$t]')"
@@ -1928,7 +2232,7 @@ dispatch --checkpoint spec|plan|pre-merge [--diff [<repo-path>:]<range>]... <bod
 ```
 
 - [ ] **Step 6: Run the suites and confirm they pass.**
-  - `./tests/xreview.test.sh` (timeout 600000 ms): expect `passed: 435  failed: 0`.
+  - `./tests/xreview.test.sh` (timeout 600000 ms): expect `passed: 439  failed: 0`.
   - `./tests/xreview-skill.test.sh`: expect `passed: 76  failed: 0`. The parser still has a
     `--diff)` arm.
 
@@ -2173,7 +2477,7 @@ unset PANE_CWD
 ```
 
 - [ ] **Step 2: Run it and confirm it fails.** `./tests/xreview.test.sh` (timeout 600000 ms):
-  expect `passed: 436  failed: 21`. The failures are D10, F1 (4 assertions), F14, F15 (2), F11,
+  expect `passed: 440  failed: 21`. The failures are D10, F1 (4 assertions), F14, F15 (2), F11,
   W2-W4, W8, W10, W11 and W17-W22.
 
 - [ ] **Step 3: Implement.** Apply these edits to `dot_local/bin/executable_xreview`, in
@@ -2309,7 +2613,7 @@ with:
 ```
 
 - [ ] **Step 4: Run it and confirm it passes.** `./tests/xreview.test.sh` (timeout 600000 ms):
-  expect `passed: 457  failed: 0`.
+  expect `passed: 461  failed: 0`.
 
 - [ ] **Step 5: Commit.** Check the branch, then:
 
@@ -2334,13 +2638,17 @@ git commit -m "Write xreview receipts to each target repository's ledger, once p
   `$XREVIEW_LEDGER`. The guard uses `decide`, `default_branch`, `current_branch` and
   `CALL_TIMEOUT`.
 - Produces, in `xreview-guard.py`:
-  - `tokenize(cmd) -> list[str]`, with here-document bodies and comments stripped.
-  - `command_words(tokens) -> list[int]`; `segment(tokens, k) -> list[str]`;
-    `literal(word) -> bool`.
+  - `tokenize(cmd) -> list[str]`, with here-document bodies, comments and redirections
+    stripped (`split_heredocs`, `strip_comments`, `strip_redirections`, `skip_word`).
+  - `split_heredocs(cmd) -> (text, expanding_bodies)`; `substitutions(text, shell=True) ->
+    list[str]`; `closing_paren(text, i)`; `substituted_commands(cmd)`;
+    `gated_in_substitution(cmd, depth=0) -> bool`.
+  - `command_words(tokens) -> list[int]`: every word after a wrapper is a candidate;
+    `segment(tokens, k) -> list[str]`; `literal(word) -> bool`.
   - `gated_verb(words) -> dict | None`, as
     `{"tool": "git" | "glab" | "gh", "kind": "merge-local" | "create" | "merge" | "api", "args": [...]}`.
   - `parse_api(args) -> dict` with `endpoint, method, fields, body, hostname`;
-    `endpoint_parts`; `api_gated`.
+    `endpoint_parts`; `is_graphql`; `api_gated`.
   - `parse_plain(tokens, cwd) -> dict | None`, which adds `cwd`.
   - `parse_flags(args, takes_value) -> (dict, list)`.
   - `run(argv, cwd=None) -> str | None`; `toplevel(cwd) -> str`, which raises `Deny`.
@@ -2479,6 +2787,47 @@ is "B8 a subshell" "$(decision "$W" '(git merge feature)')" deny
 is "B9 a merge in a chain on a feature branch is denied too" "$(decision "$SIDE" 'git fetch origin && git merge origin/main')" deny
 is "B10 an API merge piped to jq" "$(decision "$W" 'glab api -X PUT projects/:id/merge_requests/7/merge | jq .state')" deny
 is "B11 the deny asks for the plain form" "$(reason "$W" 'git switch main && git merge feature' | grep -c 'plain command of its own')" 1
+is "B12 a leading redirection hides no verb" "$(decision "$W" '>merge.log git merge feature')" deny
+is "B13 nor does a descriptor redirection" "$(decision "$W" '2>err git merge feature')" deny
+is "B14 sudo with an option is denied" "$(decision "$W" 'sudo -u root git merge feature')" deny
+is "B15 a merge whose message is --help is still gated" "$(decision "$W" 'git merge -m "--help" feature')" deny
+is "B16 a creation titled --help is still gated" "$(decision "$W" 'glab mr create -s feature -b main --title --help')" deny
+is "B17 --abort beside a ref is still gated" "$(decision "$W" 'git merge --abort feature')" deny
+is "B18 a process substitution runs a command" "$(decision "$W" 'cat <(git merge feature)')" deny
+# Command substitutions run, quoted with double quotes or not; single quotes keep them inert.
+SQ="'"; TAB="$(printf '\t')"
+is "B19 a substitution inside double quotes runs its command" "$(decision "$W" 'echo "$(git merge feature)"')" deny
+is "B20 so does a backtick substitution inside double quotes" "$(decision "$W" 'echo "`git merge feature`"')" deny
+is "B21 and an unquoted backtick one" "$(decision "$W" 'echo `git merge feature`')" deny
+is "B22 even in an ungated command's message" "$(decision "$W" 'git commit -m "$(git merge feature)"')" deny
+is "B23 at any depth" "$(decision "$W" 'echo "$(echo `git merge feature`)"')" deny
+is "B24 the deny asks for the plain form" "$(reason "$W" 'echo "$(git merge feature)"' | grep -c 'plain command of its own')" 1
+is "B25 single quotes keep both kinds inert" "$(decision "$W" "echo ${SQ}\$(git merge feature)${SQ} ${SQ}\`git merge feature\`${SQ}")" allow
+is "B26 so does a backslash" "$(decision "$W" 'echo "\$(git merge feature)"')" allow
+is "B27 and a comment" "$(decision "$W" 'git status # $(git merge feature)')" allow
+# A here-document whose delimiter is unquoted expands its substitutions; the rest of its body,
+# and the whole body under a quoted delimiter, is data.
+is "B28 an unquoted here-document runs its substitutions" "$(decision "$W" 'cat > notes.md <<EOF
+done: $(git merge feature)
+EOF')" deny
+is "B29 a backtick code span in an unquoted MR body runs too" "$(decision "$W" 'cat > "$TMPDIR/mr-body.md" <<EOF
+Land it with `glab mr create --target-branch main`.
+EOF')" deny
+is "B30 so does a tab-stripped <<-EOF body" "$(decision "$W" "cat <<-EOF
+${TAB}\$(git merge feature)
+${TAB}EOF")" deny
+is "B31 the rest of an unquoted body is data" "$(decision "$W" 'cat > notes.md <<EOF
+git merge feature
+on $(date +%F)
+EOF')" allow
+is "B32 a quoted or escaped delimiter keeps the whole body inert" \
+   "$(decision "$W" "cat <<${SQ}EOF${SQ}
+\$(git merge feature)
+EOF") $(decision "$W" 'cat <<"EOF"
+$(git merge feature)
+EOF') $(decision "$W" 'cat <<\EOF
+`git merge feature`
+EOF')" "allow allow allow"
 
 echo "C. git merge into the default branch"
 is "C1 an unreviewed merge into main is denied" "$(decision "$W" 'git merge feature')" deny
@@ -2500,6 +2849,9 @@ is "C12 a fresh full-range round reopens it" "$(decision "$W" 'git merge feature
 is "C13 two refs at once are denied" "$(decision "$W" 'git merge feature side')" deny
 is "C14 a merge that names no ref is denied" "$(decision "$W" 'git merge')" deny
 is "C15 an empty change is denied" "$(decision "$W" 'git merge side')" deny
+is "C16 redirections after an approved merge are read past" "$(decision "$W" 'git merge feature > merge.log 2>&1')" allow
+is "C17 and before it" "$(decision "$W" '>merge.log git merge feature')" allow
+is "C18 a harmless substitution in an approved merge stays allowed" "$(decision "$W" 'git merge -m "$(cat /tmp/msg)" feature')" allow
 
 echo "D. it fails closed"
 is "D1 a merge outside any repository is denied" "$(decision "$ROOT/norepo" 'git merge feature')" deny
@@ -2636,8 +2988,12 @@ guard_code="$(strip_comments "$GUARD" "$ROOT/dot_claude/xreview-guard.py" "$ROOT
 #   [cd <literal path> &&] [sudo] glab|gh api [options] <endpoint>   (an MR/PR write, or graphql)
 #
 # Any other command holding a gated verb in command position (a chain, a pipe, a newline, a
-# subshell, an assignment, env or another wrapper) is denied, asking for the plain form. A
-# here-document body and a comment are data, and --help/-h is never gated.
+# subshell, an assignment, env, sudo with an option, or another wrapper) is denied, asking for
+# the plain form. So is any command whose substitutions run one: a $( ) or backtick body,
+# unquoted or inside double quotes, or inside a here-document whose delimiter is unquoted.
+# A comment, a redirection, single-quoted text and the rest of a here-document body are read
+# past, wherever they stand. --help or -h right after the verb, and a merge's lone --abort,
+# --quit or --continue, are never gated.
 #
 # Threat model: the commands an agent plausibly writes. A verb assembled from variables, eval,
 # a script file or an alias passes; the auto-mode classifier covers those.
@@ -2697,26 +3053,117 @@ def decision(reason):
 # ------------------------------------------------------------------ tokens
 PUNCT = ";&|()<>\n"
 ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-HEREDOC_RE = re.compile(r"(?<!<)<<-?[ \t]*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+# A here-document marker: <<WORD or <<-WORD, the delimiter optionally quoted ('WORD', "WORD")
+# or escaped (\WORD), which keeps the body from expanding.
+HEREDOC_RE = re.compile(r"(?<!<)<<-?[ \t]*(\\?)(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\2")
 WRAPPERS = {"command", "env", "sudo", "time", "nohup", "xargs", "exec", "nice", "builtin"}
 RESERVED = {"if", "then", "elif", "else", "do", "while", "until", "!", "{"}
+MAX_NESTING = 8
 
 
-def strip_heredocs(cmd):
-    """cmd without the bodies of its here-documents: a body is data, never a command. A
-    marker whose terminator line never comes is left alone, so no text is dropped on a guess."""
-    lines, out, i = cmd.split("\n"), [], 0
+def split_heredocs(cmd):
+    """(cmd without the bodies of its here-documents, the bodies that expand). A body is data,
+    never a command; but when its delimiter is unquoted the shell still runs the $( ) and
+    backtick substitutions in it, so those bodies are kept for scanning. A marker whose
+    terminator line never comes is left alone, so no text is dropped on a guess."""
+    lines, out, expanding, i = cmd.split("\n"), [], [], 0
     while i < len(lines):
         line = lines[i]
         out.append(line)
         i += 1
         for m in HEREDOC_RE.finditer(line):
             j = i
-            while j < len(lines) and lines[j].lstrip("\t") != m.group(2):
+            while j < len(lines) and lines[j].lstrip("\t") != m.group(3):
                 j += 1
             if j < len(lines):
+                if not m.group(1) and not m.group(2):
+                    expanding.append("\n".join(lines[i:j]))
                 i = j + 1
-    return "\n".join(out)
+    return "\n".join(out), expanding
+
+
+def closing_paren(text, i):
+    """The index of the ) that closes a $( opened just before i: nested parentheses and quotes
+    inside it are tracked. len(text) when it never closes."""
+    depth, quoting, n = 1, None, len(text)
+    while i < n:
+        c = text[i]
+        if c == "\\" and quoting != "'" and i + 1 < n:
+            i += 2
+            continue
+        if quoting:
+            if c == quoting:
+                quoting = None
+        elif c in "'\"":
+            quoting = c
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return n
+
+
+def substitutions(text, shell=True):
+    """The bodies of the command substitutions, $( ) and backticks, that run when text does.
+    In shell text (shell=True) single quotes keep them inert, double quotes do not. In an
+    expanding here-document body (shell=False) quotes are plain characters; only a
+    backslash keeps a $ or a backtick literal."""
+    out, i, n, quoting = [], 0, len(text), None
+    while i < n:
+        c = text[i]
+        if c == "\\" and quoting != "'" and i + 1 < n:
+            i += 2
+            continue
+        if shell and quoting is None and c in "'\"":
+            quoting = c
+        elif shell and c == quoting:
+            quoting = None
+        elif quoting != "'" and text.startswith("$(", i):
+            j = closing_paren(text, i + 2)
+            out.append(text[i + 2:j])
+            i = j + 1
+            continue
+        elif quoting != "'" and c == "`":
+            j = i + 1
+            while j < n and text[j] != "`":
+                j += 2 if text[j] == "\\" else 1
+            out.append(text[i + 1:j])
+            i = j + 1
+            continue
+        i += 1
+    return out
+
+
+def substituted_commands(cmd):
+    """The command texts cmd runs through substitution: every $( ) and backtick body outside
+    single quotes and comments, and each one in a here-document body whose delimiter is
+    unquoted. Nested ones are found when each body is read in turn."""
+    main, expanding = split_heredocs(cmd)
+    bodies = substitutions(strip_comments(main.replace("\\\n", " ")))
+    for body in expanding:
+        bodies.extend(substitutions(body, shell=False))
+    return bodies
+
+
+def gated_in_substitution(cmd, depth=0):
+    """Does a command substitution in cmd, at any depth, run a gated verb?"""
+    for body in substituted_commands(cmd):
+        if depth >= MAX_NESTING:
+            return True
+        try:
+            tokens = tokenize(body)
+        except ValueError:
+            if CRUDE.search(body):
+                return True
+            continue
+        if any(gated_verb(segment(tokens, k)) for k in command_words(tokens)):
+            return True
+        if gated_in_substitution(body, depth + 1):
+            return True
+    return False
 
 
 def strip_comments(cmd):
@@ -2744,10 +3191,65 @@ def strip_comments(cmd):
     return "".join(out)
 
 
+# A redirection operator at the start of a word: >, >>, >|, <, <>, <&, >&, &>, &>>, a here-string
+# or a here-document marker, with an optional descriptor number (2>, 2>&1). Not a process
+# substitution, <( ) or >( ), which runs a command.
+REDIRECT_RE = re.compile(r"\d*(?:&>>|&>|>>|>&|>\||<>|<&|<<<|<<-|<<|>|<)(?!\()")
+WORD_END = " \t\n;&|()<>"
+
+
+def skip_word(cmd, i):
+    """The index just past the shell word that starts at i, quotes and backslashes included."""
+    n, quoting = len(cmd), None
+    while i < n:
+        c = cmd[i]
+        if quoting is None and c in WORD_END:
+            break
+        if c == "\\" and quoting != "'" and i + 1 < n:
+            i += 2
+            continue
+        if quoting is None and c in "'\"":
+            quoting = c
+        elif c == quoting:
+            quoting = None
+        i += 1
+    return i
+
+
+def strip_redirections(cmd):
+    """cmd without its redirections: an unquoted operator that starts a word (>f, > f, 2>f,
+    &>f, <f, N>&M, <<<, a here-document marker) and its operand. A redirection changes where
+    input and output go, never what runs, so the gate reads past it wherever it stands, before
+    the command word and between arguments alike."""
+    out, i, n, quoting = [], 0, len(cmd), None
+    while i < n:
+        c = cmd[i]
+        if quoting is None and (i == 0 or cmd[i - 1] in " \t\n;&|()"):
+            m = REDIRECT_RE.match(cmd, i)
+            if m:
+                j = m.end()
+                while j < n and cmd[j] in " \t":
+                    j += 1
+                out.append(" ")
+                i = skip_word(cmd, j)
+                continue
+        out.append(c)
+        if c == "\\" and quoting != "'" and i + 1 < n:
+            out.append(cmd[i + 1])
+            i += 2
+            continue
+        if quoting is None and c in "'\"":
+            quoting = c
+        elif c == quoting:
+            quoting = None
+        i += 1
+    return "".join(out)
+
+
 def tokenize(cmd):
-    """Shell words and operator tokens, here-document bodies and comments dropped. Raises
-    ValueError on unbalanced quotes."""
-    text = strip_comments(strip_heredocs(cmd)).replace("\\\n", " ")
+    """Shell words and operator tokens, with here-document bodies, comments and redirections
+    dropped. Raises ValueError on unbalanced quotes."""
+    text = strip_redirections(strip_comments(split_heredocs(cmd)[0].replace("\\\n", " ")))
     lx = shlex.shlex(text, posix=True, punctuation_chars=PUNCT)
     lx.whitespace = " \t\r"          # a newline separates commands; it is not a blank
     lx.whitespace_split = True
@@ -2760,13 +3262,16 @@ def is_operator(tok):
 
 
 def starts_command(tok):
-    """An operator after which a new command begins (not a redirect)."""
-    return is_operator(tok) and "<" not in tok and ">" not in tok
+    """An operator after which a new command begins: a separator, a pipe, a subshell or a
+    process substitution."""
+    return is_operator(tok) and ("(" in tok or ("<" not in tok and ">" not in tok))
 
 
 def command_words(tokens):
-    """Indexes of the words in command position: at the start, after an operator, after
-    VAR=value assignments, and after a wrapper (command, env, sudo, time, xargs, ...)."""
+    """Indexes of the words that may run as a command: the first word of each simple command,
+    after VAR=value assignments and reserved words, and - after a wrapper (command, env, sudo,
+    time, xargs, ...) - every later word of that command. A wrapper's options can take an
+    argument (sudo -u root git merge ...), so which word it runs cannot be read from the text."""
     out, i, n, at = [], 0, len(tokens), True
     while i < n:
         t = tokens[i]
@@ -2776,9 +3281,13 @@ def command_words(tokens):
             if ASSIGN_RE.match(t) or t in RESERVED:
                 pass
             elif os.path.basename(t) in WRAPPERS:
-                while i + 1 < n and not is_operator(tokens[i + 1]) and (
-                        tokens[i + 1].startswith("-") or ASSIGN_RE.match(tokens[i + 1])):
-                    i += 1
+                j = i + 1
+                while j < n and not is_operator(tokens[j]):
+                    out.append(j)
+                    j += 1
+                at = False
+                i = j
+                continue
             else:
                 out.append(i)
                 at = False
@@ -2878,11 +3387,16 @@ def endpoint_parts(endpoint):
     return path, dict(parse_qsl(query, keep_blank_values=True))
 
 
+def is_graphql(endpoint):
+    """graphql, or an absolute URL whose path ends in /graphql."""
+    return endpoint_parts(endpoint)[0].split("/")[-1] == "graphql"
+
+
 def api_gated(call):
     """A GraphQL call carrying an MR/PR create, merge or auto-merge mutation, or a query the
     gate cannot read; or a POST, PUT or PATCH to a path naming merge_requests or pulls."""
     endpoint = call["endpoint"] or ""
-    if endpoint == "graphql":
+    if is_graphql(endpoint):
         return call["body"] or bool(MUTATIONS.search(" ".join(call["fields"].values())))
     path, _ = endpoint_parts(endpoint)
     return call["method"] in ("POST", "PUT", "PATCH") and bool(NAMES_MR_PATH.search(path))
@@ -2891,23 +3405,33 @@ def api_gated(call):
 def gated_verb(words):
     """The gated verb that words (a command word and its arguments) spell, as {tool, kind,
     args}, or None. kind is merge-local (git merge), create, merge or api; args are the words
-    after the verb, with an option written before the noun (glab -R x mr ...) kept in front."""
+    after the verb, with an option written before the noun (glab -R x mr ...) kept in front.
+    Help is exempt only as the first word after the verb, and a merge's --abort, --quit or
+    --continue only as its sole argument: anywhere else either may be an option's value."""
     if not words:
         return None
     tool, rest = os.path.basename(words[0]), words[1:]
-    if tool not in ("git", "glab", "gh") or any(w in HELP for w in rest):
+    if tool not in ("git", "glab", "gh"):
         return None
     if tool == "git":
         i = skip_options(rest, 0, GIT_VALUE_OPTS)
-        if i < len(rest) and rest[i] == "merge" and not MERGE_CONTROL & set(rest[i + 1:]):
+        if i < len(rest) and rest[i] == "merge":
+            after = rest[i + 1:]
+            if after[:1] and after[0] in HELP or len(after) == 1 and after[0] in MERGE_CONTROL:
+                return None
             return {"tool": "git", "kind": "merge-local", "args": rest}
         return None
     i = skip_options(rest, 0, FORGE_VALUE_OPTS)
     if i + 1 < len(rest) and (tool, rest[i], rest[i + 1]) in CLI_VERBS:
+        if rest[i + 2:i + 3] and rest[i + 2] in HELP:
+            return None
         return {"tool": tool, "kind": CLI_VERBS[(tool, rest[i], rest[i + 1])],
                 "args": rest[:i] + rest[i + 2:]}
-    if i < len(rest) and rest[i] == "api" and api_gated(parse_api(rest[i + 1:])):
-        return {"tool": tool, "kind": "api", "args": rest[i + 1:]}
+    if i < len(rest) and rest[i] == "api":
+        if rest[i + 1:i + 2] and rest[i + 1] in HELP:
+            return None
+        if api_gated(parse_api(rest[i + 1:])):
+            return {"tool": tool, "kind": "api", "args": rest[i + 1:]}
     return None
 
 
@@ -3106,10 +3630,12 @@ def main():
             if CRUDE.search(cmd):
                 raise Deny(UNPARSEABLE)
             return
-        gated = any(gated_verb(segment(tokens, k)) for k in command_words(tokens))
+        # A gated verb run by a substitution is never part of a plain command.
+        hidden = gated_in_substitution(cmd)
+        gated = hidden or any(gated_verb(segment(tokens, k)) for k in command_words(tokens))
         if not gated:
             return
-        shape = parse_plain(tokens, cwd)
+        shape = None if hidden else parse_plain(tokens, cwd)
         if shape is None:
             raise Deny(PLAIN)
         judge(shape, load_ledger())
@@ -3245,7 +3771,7 @@ with:
 ```
 
 - [ ] **Step 7: Run them and confirm they pass.**
-  - `./tests/xreview-guard.test.sh`: expect `passed: 55  failed: 0`.
+  - `./tests/xreview-guard.test.sh`: expect `passed: 79  failed: 0`.
   - `./tests/xreview-skill.test.sh`: expect `passed: 76  failed: 0`.
   - `./tests/claude-settings.test.sh 2>&1 | tail -1`: expect `RESULT: 179 passed, 0 failed`.
 
@@ -3264,19 +3790,22 @@ git commit -m "Gate a git merge into the default branch on the exact change's ap
 
 **Interfaces:**
 - Consumes (Task 6): `parse_flags`, `run`, `toplevel`, `check`, `parse_api`, `endpoint_parts`,
-  `literal`, `Deny`, and the messages `LITERAL`, `NO_REPO` and `NOT_MODELLED`.
+  `is_graphql`, `literal`, `Deny`, and the messages `LITERAL`, `NO_REPO` and `NOT_MODELLED`.
 - Produces:
   - `one(flags, names, label) -> str | None`;
-  - `split_url(url) -> (host, path)`; `same_project(named, host, path) -> bool`;
+  - `split_url(url) -> (host, path)`; `same_project(named, host, path) -> bool`, where a
+    URL or a host-prefixed `-R` must name origin's host;
   - `forge_context(cwd, named) -> (toplevel, host, path)`;
   - `remote_head(top, branch) -> str`;
   - `flag_on(values) -> bool`;
   - `field(fields, name, top, ledger) -> str | None`;
   - `lookup_json(argv, top, what)`;
-  - `gitlab_project(cwd, segment)` and `github_project(cwd, owner, repo)`;
-  - `judge_create_cli`, `judge_create_gitlab_api`, `judge_create_github_api` and
-    `judge_api`. Until Task 8, `judge_api` checks the create endpoints only and denies the
-    rest;
+  - `origin_host(cwd) -> str` and `check_api_host(cwd, call)`: `--hostname` and an absolute
+    endpoint must name origin's host (message `OTHER_HOST`);
+  - `gitlab_project(cwd, segment, hostname=None)` and `github_project(cwd, owner, repo)`;
+  - `judge_create_cli`, `judge_create_gitlab_api(shape, ledger, segment, fields, call)`,
+    `judge_create_github_api(shape, ledger, owner, repo, fields, call)` and `judge_api`.
+    Until Task 8, `judge_api` checks the create endpoints only and denies the rest;
   - the constants `FALSE`, `FULL_ID`, `GITLAB_MR`, `GITHUB_PR` and
     `BRANCH_PLACEHOLDERS`.
 
@@ -3364,11 +3893,26 @@ is "K7 several remotes and no project named is denied" "$(decision "$W" 'gh pr c
 is "K8 naming origin's project with -R is allowed" "$(decision "$W" 'gh pr create -R acme/app --head feature --base main')" allow
 git -C "$W" remote remove upstream
 is "K9 outside a repository, creation is denied" "$(decision "$ROOT/norepo" 'gh pr create --head feature --base main')" deny
+is "K10 -R naming another host is denied" "$(decision "$W" 'gh pr create -R evil.example/acme/app --head feature --base main')" deny
+is "K11 -R as a URL on another host is denied" "$(decision "$W" 'glab mr create -R https://evil.example/acme/app -s feature -b main')" deny
+is "K12 glab api --hostname on another host is denied" \
+   "$(decision "$W" 'glab api --hostname evil.example -X POST projects/acme%2Fapp/merge_requests -f source_branch=feature -f target_branch=main')" deny
+is "K13 gh api --hostname on another host is denied" \
+   "$(decision "$W" 'gh api --hostname evil.example repos/acme/app/pulls -f head=feature -f base=main')" deny
+is "K14 glab api --hostname naming origin's host is allowed" \
+   "$(decision "$W" 'glab api --hostname forge.example -X POST projects/acme%2Fapp/merge_requests -f source_branch=feature -f target_branch=main')" allow
+is "K15 and gh api" "$(decision "$W" 'gh api --hostname forge.example repos/acme/app/pulls -f head=feature -f base=main')" allow
+is "K16 an absolute GitLab endpoint on another host is denied" \
+   "$(decision "$W" 'glab api -X POST https://evil.example/api/v4/projects/acme%2Fapp/merge_requests -f source_branch=feature -f target_branch=main')" deny
+is "K17 an absolute GitHub endpoint on another host is denied" \
+   "$(decision "$W" 'gh api -X POST https://evil.example/api/v3/repos/acme/app/pulls -f head=feature -f base=main')" deny
+is "K18 an absolute endpoint on origin's host is allowed" \
+   "$(decision "$W" 'gh api -X POST https://forge.example/api/v3/repos/acme/app/pulls -f head=feature -f base=main')" allow
 
 ```
 
 - [ ] **Step 2: Run it and confirm it fails.** `./tests/xreview-guard.test.sh`: expect
-  `passed: 72  failed: 26`. Every allow case in H-K fails, and so do the deny reasons naming a
+  `passed: 102  failed: 29`. Every allow case in H-K fails, and so do the deny reasons naming a
   flag, a fetch or a project, because each creation is still denied with `NOT_MODELLED`.
 
 - [ ] **Step 3: Add the messages.** In `dot_claude/xreview-guard.py`, insert this block
@@ -3380,6 +3924,8 @@ NO_ORIGIN = ("Pre-merge gate: {} has no origin remote, so the forge project cann
              "Run the command from the project's own checkout.")
 OTHER_PROJECT = ("Pre-merge gate: the command names the project {}, but this checkout's origin "
                  "is {}. Run it from that project's checkout.")
+OTHER_HOST = ("Pre-merge gate: this call goes to {}, but this checkout's origin is on {}. Run it "
+              "against origin's host, from that project's checkout.")
 SEVERAL_REMOTES = ("Pre-merge gate: this checkout has remotes besides origin ({}), so the CLI "
                    "could pick another project. Name origin's project explicitly: -R {}.")
 FORK = ("Pre-merge gate: {} proposes from another repository. Merge requests from forks are not "
@@ -3452,7 +3998,7 @@ def same_project(named, host, path):
     want = path.lower()
     if "://" in named or SCP_RE.match(named):
         h, p = split_url(named)
-        return p.lower() == want and (not h or not host or h == host)
+        return p.lower() == want and h == host
     v = named.strip("/").lower()
     if v.endswith(".git"):
         v = v[:-4]
@@ -3578,14 +4124,34 @@ def lookup_json(argv, top, what):
     return value
 
 
-def gitlab_project(cwd, segment):
+def origin_host(cwd):
+    top = toplevel(cwd)
+    url = run(["git", "-C", top, "config", "--get", "remote.origin.url"])
+    if not url or not url.strip():
+        raise Deny(NO_ORIGIN.format(top))
+    return split_url(url)[0]
+
+
+def check_api_host(cwd, call):
+    """An api call goes to its --hostname, or to an absolute endpoint's host; either must be
+    origin's. An absolute GitHub endpoint may name origin's api. host (api.github.com)."""
+    host = origin_host(cwd)
+    if call["hostname"] is not None and call["hostname"].lower() != host:
+        raise Deny(OTHER_HOST.format(call["hostname"], host or "a local path"))
+    if "://" in (call["endpoint"] or ""):
+        named = (urlsplit(call["endpoint"]).hostname or "").lower()
+        if named not in (host, "api." + host):
+            raise Deny(OTHER_HOST.format(named, host or "a local path"))
+
+
+def gitlab_project(cwd, segment, hostname=None):
     """The repository context of a GitLab project segment - an encoded path, a numeric id
     (looked up), or the :id / :fullpath placeholder - checked against origin."""
     if segment in (":id", ":fullpath"):
         return forge_context(cwd, None)
     if segment.isdigit():
-        found = lookup_json(["glab", "api", "projects/" + segment], toplevel(cwd),
-                            "project " + segment)
+        found = lookup_json(["glab", "api"] + (["--hostname", hostname] if hostname else [])
+                            + ["projects/" + segment], toplevel(cwd), "project " + segment)
         named = found.get("path_with_namespace") if isinstance(found, dict) else None
         if not isinstance(named, str) or not named:
             raise Deny(LOOKUP.format("project " + segment))
@@ -3599,8 +4165,8 @@ def github_project(cwd, owner, repo):
     return forge_context(cwd, owner + "/" + repo)
 
 
-def judge_create_gitlab_api(shape, ledger, segment, fields):
-    top, host, path = gitlab_project(shape["cwd"], segment)
+def judge_create_gitlab_api(shape, ledger, segment, fields, call):
+    top, host, path = gitlab_project(shape["cwd"], segment, call["hostname"])
     if "target_project_id" in fields:
         raise Deny(FORK.format("target_project_id"))
     source = field(fields, "source_branch", top, ledger)
@@ -3611,7 +4177,7 @@ def judge_create_gitlab_api(shape, ledger, segment, fields):
           "origin/{}...{}".format(dest, source), None)
 
 
-def judge_create_github_api(shape, ledger, owner, repo, fields):
+def judge_create_github_api(shape, ledger, owner, repo, fields, call):
     top, host, path = github_project(shape["cwd"], owner, repo)
     if "head_repo" in fields:
         raise Deny(FORK.format("head_repo"))
@@ -3628,26 +4194,28 @@ def judge_create_github_api(shape, ledger, owner, repo, fields):
 
 
 def judge_api(shape, ledger):
-    """The REST create endpoints are checked; every other MR/PR write is denied."""
+    """The REST create endpoints are checked; every other MR/PR write is denied. The call must
+    reach origin's host."""
     tool, call = shape["tool"], parse_api(shape["args"])
     endpoint = call["endpoint"] or ""
-    if endpoint == "graphql":
+    if is_graphql(endpoint):
         raise Deny(NOT_MODELLED)
     if not literal(endpoint):
         raise Deny(LITERAL.format("the api endpoint", endpoint))
     if call["body"]:
         raise Deny(UNRESOLVED_API.format(tool))
+    check_api_host(shape["cwd"], call)
     path, query = endpoint_parts(endpoint)
     fields = dict(query)
     fields.update(call["fields"])
     if tool == "glab":
         m = GITLAB_MR.match(path)
         if m and call["method"] == "POST" and m.group(2) is None:
-            return judge_create_gitlab_api(shape, ledger, m.group(1), fields)
+            return judge_create_gitlab_api(shape, ledger, m.group(1), fields, call)
     else:
         m = GITHUB_PR.match(path)
         if m and call["method"] == "POST" and m.group(3) is None:
-            return judge_create_github_api(shape, ledger, m.group(1), m.group(2), fields)
+            return judge_create_github_api(shape, ledger, m.group(1), m.group(2), fields, call)
     raise Deny(UNRESOLVED_API.format(tool))
 
 
@@ -3665,7 +4233,7 @@ def judge(shape, ledger):
 ```
 
 - [ ] **Step 6: Run it and confirm it passes.** `./tests/xreview-guard.test.sh`: expect
-  `passed: 98  failed: 0`.
+  `passed: 131  failed: 0`.
 
 - [ ] **Step 7: Commit.** Check the branch, then:
 
@@ -3674,44 +4242,59 @@ git add dot_claude/xreview-guard.py tests/xreview-guard.test.sh
 git commit -m "Gate MR and PR creation on origin's head of the approved change"
 ```
 
-## Task 8: The guard: forge merges, GraphQL and other API writes
+## Task 8: The guard: forge merges, forks, merge queues and trains, GraphQL and other API writes
 
 **Files:**
 - Modify: `dot_claude/xreview-guard.py`
 - Modify: `tests/xreview-guard.test.sh`
 
 **Interfaces:**
-- Consumes (Tasks 6-7): `parse_flags`, `one`, `forge_context`, `flag_on`, `field`,
-  `lookup_json`, `gitlab_project`, `github_project`, `check`, `FULL_ID`, `GITLAB_MR`,
-  `GITHUB_PR`.
+- Consumes (Tasks 6-7): `parse_flags`, `one`, `forge_context`, `check_api_host`, `flag_on`,
+  `field`, `lookup_json`, `gitlab_project`, `github_project`, `check`, `is_graphql`, `FULL_ID`,
+  `GITLAB_MR`, `GITHUB_PR`.
 - Produces:
   - `explicitly_off(values)` and `on_value(value)`;
-  - `gitlab_mr(top, project, number, branch, hostname=None) -> (source, target, head, iid)`;
-  - `github_pr(top, target, repo_flag) -> (source, base, head)`;
+  - `url_number(target, host, path, pattern, what) -> str`, with the patterns `PR_URL` and
+    `MR_URL` (message `OTHER_URL`);
+  - `gitlab_mr(top, project, number, branch, hostname=None) -> (source, target, head, iid)`,
+    which denies an MR whose project ids differ;
+  - `github_pr(top, target, repo_flag, owner, name) -> (source, base, head)`, which denies a
+    cross-repository PR;
+  - `gitlab_merge_train(top, project, hostname=None)` and
+    `github_merge_queue(top, host, owner, name, dest)` (message `QUEUED`);
   - `merge_pinned(ledger, top, source, dest, head, pin, hint)`;
   - `judge_merge_cli`, `judge_merge_gitlab_api`, `judge_merge_github_api`;
   - the final `judge_api` and `judge`. `NOT_MODELLED` is removed.
 - The forge lookups, exactly as the test stubs answer them:
-  - `glab api projects/<project>/merge_requests/<n>`;
+  - `glab api [--hostname <h>] projects/<project>/merge_requests/<n>`;
   - `glab api projects/<project>/merge_requests?source_branch=<branch>&state=opened`;
-  - `glab api projects/<id>`;
-  - `gh pr view [<n>] [-R <repo>] --json baseRefName,headRefName,headRefOid`.
+  - `glab api [--hostname <h>] projects/<project>`: the id, `path_with_namespace` and
+    `merge_trains_enabled`;
+  - `gh pr view [<n>] [-R <repo>] --json baseRefName,headRefName,headRefOid,isCrossRepository,headRepository,headRepositoryOwner`;
+  - `gh api graphql --hostname <origin host> -f query=<MERGE_QUEUE> -f owner=… -f name=… -f branch=<dest>`.
 
 - [ ] **Step 1: Write the failing test.** Insert this block into `tests/xreview-guard.test.sh`
   immediately above the line `printf '\npassed: %d  failed: %d\n' "$pass" "$fail"`:
 
 ```bash
 echo "L. merging an MR/PR on the forge"
-# MR 7 and PR 9 come from feature. Their destination and head come from MR_TARGET/MR_SHA and
-# PR_BASE/PR_SHA; FORGE_FAIL fails every lookup; FORGE_SLOW delays it.
+# MR 7 and PR 9 come from feature in acme/app (project 4242). Their destination and head come
+# from MR_TARGET/MR_SHA and PR_BASE/PR_SHA. MR_SOURCE_PROJECT, PR_CROSS and PR_OWNER make them
+# come from a fork; MERGE_TRAINS and MERGE_QUEUE put a train or a queue on the destination, and
+# TRAIN_FAIL and QUEUE_FAIL fail those lookups. FORGE_FAIL fails every lookup; FORGE_SLOW
+# delays it. A leading glab --hostname is accepted and dropped.
 cat > "$STUB/glab" <<'SH'
 #!/bin/sh
 printf 'glab %s\n' "$*" >> "$CALLS"
 [ -n "${FORGE_SLOW:-}" ] && sleep "$FORGE_SLOW"
 [ -n "${FORGE_FAIL:-}" ] && exit 1
-mr() { printf '{"iid":7,"source_branch":"feature","target_branch":"%s","sha":"%s"}' "${MR_TARGET:-main}" "${MR_SHA:-}"; }
+if [ "$1" = api ] && [ "$2" = --hostname ]; then shift 3; set -- api "$@"; fi
+mr() { printf '{"iid":7,"project_id":4242,"source_project_id":%s,"target_project_id":4242,"source_branch":"feature","target_branch":"%s","sha":"%s"}' \
+  "${MR_SOURCE_PROJECT:-4242}" "${MR_TARGET:-main}" "${MR_SHA:-}"; }
+project() { [ -n "${TRAIN_FAIL:-}" ] && exit 1
+  printf '{"id":4242,"path_with_namespace":"acme/app","merge_trains_enabled":%s}\n' "${MERGE_TRAINS:-false}"; }
 case "$*" in
-  "api projects/4242") printf '{"id":4242,"path_with_namespace":"acme/app"}\n' ;;
+  "api projects/4242"|"api projects/acme%2Fapp"|"api projects/:id") project ;;
   "api projects/acme%2Fapp/merge_requests/7"|"api projects/:id/merge_requests/7"|"api projects/4242/merge_requests/7") mr; echo ;;
   "api projects/acme%2Fapp/merge_requests?source_branch=feature&state=opened") printf '['; mr; printf ']\n' ;;
   *) exit 1 ;;
@@ -3721,9 +4304,14 @@ cat > "$STUB/gh" <<'SH'
 #!/bin/sh
 printf 'gh %s\n' "$*" >> "$CALLS"
 [ -n "${FORGE_FAIL:-}" ] && exit 1
+F=baseRefName,headRefName,headRefOid,isCrossRepository,headRepository,headRepositoryOwner
 case "$*" in
-  "pr view 9 --json baseRefName,headRefName,headRefOid"|"pr view 9 -R acme/app --json baseRefName,headRefName,headRefOid"|"pr view --json baseRefName,headRefName,headRefOid")
-    printf '{"baseRefName":"%s","headRefName":"feature","headRefOid":"%s"}\n' "${PR_BASE:-main}" "${PR_SHA:-}" ;;
+  "pr view 9 --json $F"|"pr view 9 -R acme/app --json $F"|"pr view 9 -R "*"/acme/app --json $F"|"pr view --json $F"|"pr view https://"*" --json $F")
+    printf '{"baseRefName":"%s","headRefName":"feature","headRefOid":"%s","isCrossRepository":%s,"headRepository":{"name":"app"},"headRepositoryOwner":{"login":"%s"}}\n' \
+      "${PR_BASE:-main}" "${PR_SHA:-}" "${PR_CROSS:-false}" "${PR_OWNER:-acme}" ;;
+  "api graphql --hostname forge.example -f query="*mergeQueue*)
+    [ -n "${QUEUE_FAIL:-}" ] && exit 1
+    printf '{"data":{"repository":{"mergeQueue":%s}}}\n' "${MERGE_QUEUE:-null}" ;;
   *) exit 1 ;;
 esac
 SH
@@ -3782,12 +4370,70 @@ is "O6 a GraphQL query from a file is denied" "$(decision "$W" 'gh api graphql -
 is "O7 an MR note through the API is an unresolved write" "$(decision "$W" 'glab api -X POST projects/:id/merge_requests/7/notes -f body=hi')" deny
 is "O8 a PATCH of a pull request (a retarget) is denied" "$(decision "$W" 'gh api -X PATCH repos/acme/app/pulls/9 -f base=release')" deny
 is "O9 a REST create whose body comes from a file is denied" "$(decision "$W" 'glab api -X POST projects/:id/merge_requests --input mr.json')" deny
+is "O10 an absolute GraphQL endpoint carrying a merge mutation is denied" \
+   "$(decision "$W" "gh api https://api.github.com/graphql -f query='mutation { mergePullRequest(input: {}) { clientMutationId } }'")" deny
+
+echo "P. a forge merge reaches only origin's own project, and merges at once"
+export MR_SHA="$REBASED" PR_SHA="$REBASED"
+is "P1 a PR URL on another host is denied, even with an approved pin" \
+   "$(decision "$W" "gh pr merge https://github.com/acme/app/pull/9 --match-head-commit $REBASED")" deny
+is "P2 saying it is not on origin" \
+   "$(reason "$W" "gh pr merge https://github.com/acme/app/pull/9 --match-head-commit $REBASED" | grep -c "is not on this checkout's origin")" 1
+is "P3 a PR URL in another project is denied" \
+   "$(decision "$W" "gh pr merge https://forge.example/other/app/pull/9 --match-head-commit $REBASED")" deny
+is "P4 origin's own PR URL is allowed" \
+   "$(decision "$W" "gh pr merge https://forge.example/acme/app/pull/9 --match-head-commit $REBASED")" allow
+is "P5 an MR URL on another host is denied" \
+   "$(decision "$W" "glab mr merge https://evil.example/acme/app/-/merge_requests/7 --sha $REBASED --auto-merge=false")" deny
+is "P6 origin's own MR URL is allowed" \
+   "$(decision "$W" "glab mr merge https://forge.example/acme/app/-/merge_requests/7 --sha $REBASED --auto-merge=false")" allow
+is "P7 an MR from a fork is denied" \
+   "$(MR_SOURCE_PROJECT=99 decision "$W" "glab mr merge 7 --sha $REBASED --auto-merge=false")" deny
+is "P8 a cross-repository PR is denied" \
+   "$(PR_CROSS=true decision "$W" "gh pr merge 9 --match-head-commit $REBASED")" deny
+is "P9 a PR whose head lives in another owner's repository is denied" \
+   "$(PR_OWNER=someone decision "$W" "gh pr merge 9 --match-head-commit $REBASED")" deny
+is "P10 a destination with a merge queue is a deferred merge" \
+   "$(MERGE_QUEUE='{"id":"MQ_1"}' decision "$W" "gh pr merge 9 --match-head-commit $REBASED")" deny
+is "P11 saying so" \
+   "$(MERGE_QUEUE='{"id":"MQ_1"}' reason "$W" "gh pr merge 9 --match-head-commit $REBASED" | grep -c 'the merge queue of main')" 1
+is "P12 a failed merge-queue lookup is denied" \
+   "$(QUEUE_FAIL=1 decision "$W" "gh pr merge 9 --match-head-commit $REBASED")" deny
+is "P13 a project with merge trains is a deferred merge" \
+   "$(MERGE_TRAINS=true decision "$W" "glab mr merge 7 --sha $REBASED --auto-merge=false")" deny
+is "P14 a failed project lookup is denied" \
+   "$(TRAIN_FAIL=1 decision "$W" "glab mr merge 7 --sha $REBASED --auto-merge=false")" deny
+is "P15 the GitLab REST merge checks the train too" \
+   "$(MERGE_TRAINS=true decision "$W" "glab api -X PUT projects/:id/merge_requests/7/merge -f sha=$REBASED")" deny
+is "P16 and the GitHub REST merge the queue" \
+   "$(MERGE_QUEUE='{"id":"MQ_1"}' decision "$W" "gh api -X PUT repos/acme/app/pulls/9/merge -f sha=$REBASED")" deny
+is "P17 gh api --hostname on another host is denied" \
+   "$(decision "$W" "gh api --hostname evil.example -X PUT repos/acme/app/pulls/9/merge -f sha=$REBASED")" deny
+is "P18 glab api --hostname on another host is denied" \
+   "$(decision "$W" "glab api --hostname evil.example -X PUT projects/acme%2Fapp/merge_requests/7/merge -f sha=$REBASED")" deny
+is "P19 gh api --hostname naming origin's host is allowed" \
+   "$(decision "$W" "gh api --hostname forge.example -X PUT repos/acme/app/pulls/9/merge -f sha=$REBASED")" allow
+is "P20 glab api --hostname naming origin's host is allowed" \
+   "$(decision "$W" "glab api --hostname forge.example -X PUT projects/acme%2Fapp/merge_requests/7/merge -f sha=$REBASED")" allow
+is "P21 an absolute GitLab endpoint on another host is denied" \
+   "$(decision "$W" "glab api -X PUT https://evil.example/api/v4/projects/acme%2Fapp/merge_requests/7/merge -f sha=$REBASED")" deny
+is "P22 on origin's host it is allowed" \
+   "$(decision "$W" "glab api -X PUT https://forge.example/api/v4/projects/acme%2Fapp/merge_requests/7/merge -f sha=$REBASED")" allow
+is "P23 an absolute GitHub endpoint on another host is denied" \
+   "$(decision "$W" "gh api -X PUT https://evil.example/api/v3/repos/acme/app/pulls/9/merge -f sha=$REBASED")" deny
+is "P24 on origin's host it is allowed" \
+   "$(decision "$W" "gh api -X PUT https://forge.example/api/v3/repos/acme/app/pulls/9/merge -f sha=$REBASED")" allow
+is "P25 -R naming another host is denied (gh)" \
+   "$(decision "$W" "gh pr merge 9 -R evil.example/acme/app --match-head-commit $REBASED")" deny
+is "P26 -R as a URL on another host is denied (glab)" \
+   "$(decision "$W" "glab mr merge 7 -R https://evil.example/acme/app --sha $REBASED --auto-merge=false")" deny
 
 ```
 
 - [ ] **Step 2: Run it and confirm it fails.** `./tests/xreview-guard.test.sh`: expect
-  `passed: 121  failed: 15`. The failures are L1-L9, M2, M6, N2, N5, N7 and N9: merges are
-  still denied with `NOT_MODELLED`, or as unresolved API writes.
+  `passed: 173  failed: 23`. The failures are L1-L9, M2, M6, N2, N5, N7, N9, P2, P4, P6, P11,
+  P19, P20, P22 and P24: merges are still denied with `NOT_MODELLED`, or as unresolved API
+  writes.
 
 - [ ] **Step 3: Replace the placeholder message.** In `dot_claude/xreview-guard.py`, replace
   the line that starts `NOT_MODELLED = ` with:
@@ -3801,6 +4447,11 @@ ONE_TARGET = "Pre-merge gate: name one {} to merge."
 GRAPHQL = ("Pre-merge gate: this GraphQL call creates or merges an MR/PR, enables auto-merge, or "
            "carries a query the gate cannot read. Use the forms the gate checks: glab mr "
            "create|merge, gh pr create|merge, or the REST merge_requests/pulls endpoints.")
+OTHER_URL = ("Pre-merge gate: the {} {} is not on this checkout's origin ({}/{}). Run the merge "
+             "from that project's checkout, or name the MR/PR by number.")
+QUEUED = ("Pre-merge gate: this merge would go through {}: it would be enqueued, or set to merge "
+          "once checks pass - a deferred merge, which the gate never allows, since nothing can pin "
+          "what finally lands. A merge through a queue or a train is Michael's to run.")
 ```
 
 - [ ] **Step 4: Add merging.** Replace everything from the line
@@ -3813,7 +4464,12 @@ GRAPHQL = ("Pre-merge gate: this GraphQL call creates or merges an MR/PR, enable
 GLAB_MERGE_VALUE = {"-m", "--message", "--sha", "--squash-message", "-R", "--repo"}
 GH_MERGE_VALUE = {"-A", "--author-email", "-b", "--body", "-F", "--body-file",
                   "--match-head-commit", "-t", "--subject", "-R", "--repo"}
-GH_VIEW_FIELDS = "baseRefName,headRefName,headRefOid"
+GH_VIEW_FIELDS = ("baseRefName,headRefName,headRefOid,isCrossRepository,headRepository,"
+                  "headRepositoryOwner")
+PR_URL = re.compile(r"^/(.+)/pull/(\d+)/?$")
+MR_URL = re.compile(r"^/(.+)/-/merge_requests/(\d+)/?$")
+MERGE_QUEUE = ("query($owner:String!,$name:String!,$branch:String!){repository(owner:$owner,"
+               "name:$name){mergeQueue(branch:$branch){id}}}")
 
 
 def explicitly_off(values):
@@ -3825,8 +4481,20 @@ def on_value(value):
     return value is not None and value.lower() not in FALSE
 
 
+def url_number(target, host, path, pattern, what):
+    """The number of the MR/PR a URL argument names, once its host and project are origin's:
+    a URL can name any repository on any forge."""
+    parts = urlsplit(target)
+    m = pattern.match(parts.path)
+    if not m or (parts.hostname or "").lower() != host or m.group(1).lower() != path.lower():
+        raise Deny(OTHER_URL.format(what, target, host, path))
+    return m.group(2)
+
+
 def gitlab_mr(top, project, number, branch, hostname=None):
-    """(source, target, head, iid) of a GitLab MR: by number, or the one open MR from branch."""
+    """(source, target, head, iid) of a GitLab MR - by number, or the one open MR from branch.
+    Its source and target project must be the project it was looked up in: a fork's MR is
+    denied."""
     base = ["glab", "api"] + (["--hostname", hostname] if hostname else [])
     if number is not None:
         mr = lookup_json(base + ["projects/{}/merge_requests/{}".format(project, number)], top,
@@ -3841,19 +4509,58 @@ def gitlab_mr(top, project, number, branch, hostname=None):
     if not isinstance(mr, dict) or not all(isinstance(mr.get(k), str) and mr.get(k)
                                            for k in ("source_branch", "target_branch", "sha")):
         raise Deny(LOOKUP.format("MR " + (number or branch)))
+    ids = [mr.get(k) for k in ("project_id", "source_project_id", "target_project_id")]
+    if not all(isinstance(i, int) for i in ids) or len(set(ids)) != 1:
+        raise Deny(FORK.format("MR !" + str(mr.get("iid") or number or branch)))
     return mr["source_branch"], mr["target_branch"], mr["sha"], str(mr.get("iid") or number or "")
 
 
-def github_pr(top, target, repo_flag):
-    """(source, base, head) of a GitHub PR, as gh pr view resolves target and repo_flag."""
+def gitlab_merge_train(top, project, hostname=None):
+    """Deny when the project merges through a merge train: the merge would join the train, a
+    deferred merge. A failed lookup is a deny too; a project without the setting has no train."""
+    base = ["glab", "api"] + (["--hostname", hostname] if hostname else [])
+    found = lookup_json(base + ["projects/" + project], top, "project " + unquote(project))
+    if not isinstance(found, dict):
+        raise Deny(LOOKUP.format("project " + unquote(project)))
+    if found.get("merge_trains_enabled") is True:
+        raise Deny(QUEUED.format("the merge train of " + unquote(project)))
+
+
+def github_pr(top, target, repo_flag, owner, name):
+    """(source, base, head) of a GitHub PR, as gh pr view resolves target and repo_flag. A
+    cross-repository PR, or one whose head lives anywhere but origin's project, is denied."""
+    what = "PR " + (target or "of the current branch")
     pr = lookup_json(["gh", "pr", "view"] + ([target] if target else [])
                      + (["-R", repo_flag] if repo_flag else []) + ["--json", GH_VIEW_FIELDS],
-                     top, "PR " + (target or "of the current branch"))
-    values = [pr.get(k) if isinstance(pr, dict) else None
-              for k in ("headRefName", "baseRefName", "headRefOid")]
+                     top, what)
+    if not isinstance(pr, dict):
+        raise Deny(LOOKUP.format(what))
+    values = [pr.get(k) for k in ("headRefName", "baseRefName", "headRefOid")]
     if not all(isinstance(v, str) and v for v in values):
-        raise Deny(LOOKUP.format("PR " + (target or "of the current branch")))
+        raise Deny(LOOKUP.format(what))
+    head_repo = pr.get("headRepository") if isinstance(pr.get("headRepository"), dict) else {}
+    head_owner = (pr.get("headRepositoryOwner")
+                  if isinstance(pr.get("headRepositoryOwner"), dict) else {})
+    if (pr.get("isCrossRepository") is not False
+            or str(head_owner.get("login", "")).lower() != owner.lower()
+            or str(head_repo.get("name", "")).lower() != name.lower()):
+        raise Deny(FORK.format(what))
     return values[0], values[1], values[2]
+
+
+def github_merge_queue(top, host, owner, name, dest):
+    """Deny when dest merges through a merge queue: gh pr merge would then enable auto-merge
+    or enqueue the PR, a deferred merge. A failed lookup is a deny too."""
+    what = "the merge queue of " + dest
+    found = lookup_json(["gh", "api", "graphql"] + (["--hostname", host] if host else [])
+                        + ["-f", "query=" + MERGE_QUEUE, "-f", "owner=" + owner,
+                           "-f", "name=" + name, "-f", "branch=" + dest], top, what)
+    try:
+        queue = found["data"]["repository"]["mergeQueue"]
+    except (KeyError, TypeError):
+        raise Deny(LOOKUP.format(what))
+    if queue is not None:
+        raise Deny(QUEUED.format(what))
 
 
 def merge_pinned(ledger, top, source, dest, head, pin, hint):
@@ -3867,8 +4574,8 @@ def merge_pinned(ledger, top, source, dest, head, pin, hint):
 
 
 def judge_merge_cli(shape, ledger):
-    """glab mr merge|accept [<n>|<branch>], gh pr merge [<n>|<url>|<branch>]: pinned, immediate,
-    and the destination read from the forge."""
+    """glab mr merge|accept [<n>|<branch>|<url>], gh pr merge [<n>|<url>|<branch>]: pinned,
+    immediate, from origin's own project, and the destination read from the forge."""
     tool = shape["tool"]
     flags, pos = parse_flags(shape["args"], GLAB_MERGE_VALUE if tool == "glab" else GH_MERGE_VALUE)
     repo_flag = one(flags, ("-R", "--repo"), "-R/--repo")
@@ -3884,28 +4591,37 @@ def judge_merge_cli(shape, ledger):
         if not explicitly_off(flags.get("--auto-merge")) or flag_on(flags.get("--when-pipeline-succeeds")):
             raise Deny(DEFERRED.format("glab mr merge without --auto-merge=false",
                                        "glab mr merge <n> --sha <head> --auto-merge=false"))
+        if target is not None and "://" in target:
+            target = url_number(target, host, path, MR_URL, "MR")
         number = target if target and target.isdigit() else None
         branch = None if number else (target or ledger.current_branch(top))
         if number is None and branch is None:
             raise Deny(DETACHED.format(top, "the MR number"))
-        source, dest, head, iid = gitlab_mr(top, quote(path, safe=""), number, branch)
+        project = quote(path, safe="")
+        source, dest, head, iid = gitlab_mr(top, project, number, branch)
+        gitlab_merge_train(top, project)
         pin = one(flags, ("--sha",), "--sha")
         hint = "glab mr merge " + (iid or "<n>") + " --sha {} --auto-merge=false"
     else:
         if flag_on(flags.get("--auto")):
             raise Deny(DEFERRED.format("gh pr merge --auto", "gh pr merge <n> --match-head-commit <head>"))
-        source, dest, head = github_pr(top, target, repo_flag)
+        if target is not None and "://" in target:
+            target = url_number(target, host, path, PR_URL, "PR")
+        owner, _, name = path.partition("/")
+        source, dest, head = github_pr(top, target, repo_flag, owner, name)
+        github_merge_queue(top, host, owner, name, dest)
         pin = one(flags, ("--match-head-commit",), "--match-head-commit")
         hint = "gh pr merge " + (target or "<n>") + " --match-head-commit {}"
     merge_pinned(ledger, top, source, dest, head, pin, hint)
 
 
 def judge_merge_gitlab_api(shape, ledger, segment, number, fields, call):
-    top, host, path = gitlab_project(shape["cwd"], segment)
+    top, host, path = gitlab_project(shape["cwd"], segment, call["hostname"])
     hint = "glab api -X PUT projects/{}/merge_requests/{}/merge -f sha={{}}".format(segment, number)
     if on_value(fields.get("merge_when_pipeline_succeeds")) or on_value(fields.get("auto_merge")):
         raise Deny(DEFERRED.format("merge_when_pipeline_succeeds/auto_merge", hint.format("<head>")))
     source, dest, head, _ = gitlab_mr(top, segment, number, None, call["hostname"])
+    gitlab_merge_train(top, segment, call["hostname"])
     merge_pinned(ledger, top, source, dest, head, field(fields, "sha", top, ledger), hint)
 
 
@@ -3914,35 +4630,38 @@ def judge_merge_github_api(shape, ledger, owner, repo, number, fields, call):
     named = None if (owner, repo) == ("{owner}", "{repo}") else owner + "/" + repo
     if named and call["hostname"]:
         named = call["hostname"] + "/" + named
-    source, dest, head = github_pr(top, number, named)
+    o, _, n = path.partition("/")
+    source, dest, head = github_pr(top, number, named, o, n)
+    github_merge_queue(top, host, o, n, dest)
     merge_pinned(ledger, top, source, dest, head, field(fields, "sha", top, ledger),
                  "gh api -X PUT repos/{}/{}/pulls/{}/merge -f sha={{}}".format(owner, repo, number))
 
 
 def judge_api(shape, ledger):
     """The REST create and merge endpoints are checked; GraphQL and every other MR/PR write
-    are denied."""
+    are denied. The call must reach origin's host."""
     tool, call = shape["tool"], parse_api(shape["args"])
     endpoint = call["endpoint"] or ""
-    if endpoint == "graphql":
+    if is_graphql(endpoint):
         raise Deny(GRAPHQL)
     if not literal(endpoint):
         raise Deny(LITERAL.format("the api endpoint", endpoint))
     if call["body"]:
         raise Deny(UNRESOLVED_API.format(tool))
+    check_api_host(shape["cwd"], call)
     path, query = endpoint_parts(endpoint)
     fields = dict(query)
     fields.update(call["fields"])
     if tool == "glab":
         m = GITLAB_MR.match(path)
         if m and call["method"] == "POST" and m.group(2) is None:
-            return judge_create_gitlab_api(shape, ledger, m.group(1), fields)
+            return judge_create_gitlab_api(shape, ledger, m.group(1), fields, call)
         if m and call["method"] == "PUT" and m.group(3):
             return judge_merge_gitlab_api(shape, ledger, m.group(1), m.group(2), fields, call)
     else:
         m = GITHUB_PR.match(path)
         if m and call["method"] == "POST" and m.group(3) is None:
-            return judge_create_github_api(shape, ledger, m.group(1), m.group(2), fields)
+            return judge_create_github_api(shape, ledger, m.group(1), m.group(2), fields, call)
         if m and call["method"] == "PUT" and m.group(4):
             return judge_merge_github_api(shape, ledger, m.group(1), m.group(2), m.group(3),
                                           fields, call)
@@ -3963,7 +4682,7 @@ def judge(shape, ledger):
 ```
 
 - [ ] **Step 5: Run it and confirm it passes.** `./tests/xreview-guard.test.sh`: expect
-  `passed: 136  failed: 0`. Then `grep -c NOT_MODELLED dot_claude/xreview-guard.py` must print
+  `passed: 196  failed: 0`. Then `grep -c NOT_MODELLED dot_claude/xreview-guard.py` must print
   `0`.
 
 - [ ] **Step 6: Commit.** Check the branch, then:
@@ -4268,15 +4987,15 @@ owns it.
 
 - [ ] **Step 1: Run every suite.** Run `./tests/run.sh` as one foreground Bash call with a
   timeout of 600000 ms. Do not filter it, and do not run any other suite while it runs.
-  - It took 559 s on the scratch clone, so it may reach the limit. If the call is moved to the
+  - It took 596 s on the scratch clone, so it will likely reach the limit. If the call is moved to the
     background there, wait for its completion notice and read its output file. Do not start a
     second run.
   - Expected:
     - every suite `ok`;
     - `29 suites run, 8 skipped (see the needs: lines)`;
-    - `all 29 suites passed (3143 assertions)`.
+    - `all 29 suites passed (3223 assertions)`.
   - The eight skipped suites carry a `# test-requires:` line.
-  - Report the total as passed/total, `3143/3143`, copied from the runner's last line.
+  - Report the total as passed/total, `3223/3223`, copied from the runner's last line.
 
 - [ ] **Step 2: Confirm the deployed set.** Run
   `chezmoi managed --include=files | grep -c -E '^\.claude/xreview-(guard|ledger)\.py$'` and
@@ -4306,21 +5025,21 @@ Test IDs are per suite: ledger = `tests/xreview-ledger.test.sh`, xreview =
 | §1.2 only two command shapes | T6-T8 | guard B, C, H-K, L-O |
 | §1.3 no freshness check | T3, T6 | ledger F17; guard C10 |
 | §1.4 ledgers split per checkout | T1, T5 | ledger C4-C7; xreview W19 |
-| §1.5 unlocked appends | T2 | ledger E9-E17 |
+| §1.5 unlocked appends | T2 | ledger E9-E17, E21-E29 |
 | §2 goals | all | the rows below |
-| §3.1 target, default branch, normalization, fingerprint | T1 | ledger A1-A17, B1-B18, D1-D6 |
+| §3.1 target, default branch, normalization, fingerprint | T1 | ledger A1-A21, B1-B21, D1-D6 |
 | §3.2 entries, idempotency, a review's state, v1 | T2, T3 | ledger E1-E8, F12, F20, F21 |
 | §3.3 location, key, `repo` file | T1, T2 | ledger C1-C3, E2 |
-| §3.3 the lock | T2 | ledger E9-E17 |
+| §3.3 the lock | T2 | ledger E9-E17, E21-E29 |
 | §3.3 pending write fatal, receipt write warns | T4, T5 | xreview V9-V12, W8-W10, F11 |
-| §3.4 dispatch | T4 | xreview V1-V23 |
+| §3.4 dispatch | T4 | xreview V1-V27 |
 | §3.5 collect | T5 | xreview W1-W22, D10, F1, F14, F15 |
-| §3.6 gated shapes, plain grammar, fast path | T6-T8 | guard A, B, F1-F4, H, L, O |
-| §3.6 creation reads the remote head; project and forks | T7 | guard H1, H2, J1-J4, K1-K9 |
-| §3.6 forge merges pinned, never deferred | T7, T8 | guard I10, M1-M11, N1-N5 |
+| §3.6 gated shapes, plain grammar, fast path | T6-T8 | guard A, B, C16-C18, F1-F4, H, L, O |
+| §3.6 creation reads the remote head; project and forks | T7 | guard H1, H2, J1-J4, K1-K18 |
+| §3.6 forge merges pinned, never deferred | T7, T8 | guard I10, M1-M11, N1-N5, P10-P16 |
 | §3.6 destination commit and decision | T3, T6-T8 | ledger F1-F33; guard C5, I1-I4, N3, N4 |
 | §3.6 fails closed | T3, T6-T8 | ledger F27-F32; guard D1-D6, I11, I12, J3, J4, K9, N6-N9 |
-| §3.6 repository of an API shape, numeric id, placeholders | T7, T8 | guard H9-H13, K3, L6-L9 |
+| §3.6 repository of an API shape, numeric id, placeholders | T7, T8 | guard H9-H13, K3, K12-K18, L6-L9, P17-P24 |
 | §3.6 deny message and the bypass | T6 | guard B11, C2-C4, C11, E1-E5 |
 | §3.7 skill text, guard header | T6, T9 | skill: the §3.7 pins and the stale-text checks |
 | §4 push and forge guards unchanged | T10 | the full run (the git-forge-guard suite) |
@@ -4341,10 +5060,10 @@ Each §5 bullet:
 | one-byte binary change changes it | T1 | ledger A11 |
 | mode-only change changes it | T1 | ledger A12, A13 |
 | gitlink change, even with `diff.ignoreSubmodules=all` | T1, T4 | ledger A14, A15; xreview V17 |
-| an empty range has none | T1 | ledger A16, B18 |
+| an empty range has none | T1 | ledger A16, B19 |
 | `main..feature` after `main` advanced: normalized and full | T1, T4 | ledger B1-B7; xreview V15, V16 |
-| `origin/release/1.2...hotfix`: the remote ref, never a stale local one | T1 | ledger B8-B12 |
-| a commit-based left side is partial | T1 | ledger B13, B14 |
+| `origin/release/1.2...hotfix`: the remote ref, never a stale local one | T1 | ledger B8-B13 |
+| a commit-based left side is partial | T1, T4 | ledger B14, B15, B20, B21; xreview V26, V27 |
 | an approved full change opens every gated shape for its dest, and only that dest | T3, T6-T8 | ledger F4, F6; guard C5-C9, H3-H17, I1-I4, L1-L9, N3, N4 |
 | one extra commit closes it | T3, T6 | ledger F17; guard C10 |
 | a later `changes` verdict closes it | T3, T5 | ledger F10; xreview W6 |
@@ -4355,16 +5074,16 @@ Each §5 bullet:
 | each create and merge form, `glab mr new`/`accept`, `gh pr new`, `gh api` PUT/POST pulls | T7, T8 | guard H3-H13, L1-L9 |
 | the GraphQL mutations are denied | T8 | guard O1-O4, O6 |
 | `git -C <path> merge`: gated on the default branch, not on another | T6 | guard C8, A11, A12 |
-| `git switch main && git merge x` and `x; glab mr create` denied as compound | T6 | guard B1, B2 |
+| `git switch main && git merge x` and `x; glab mr create` denied as compound | T6 | guard B1, B2, B18-B24, B28-B30 |
 | `cd <path> && glab mr create` checked in that path | T7, T6 | guard H17, C7 |
-| `GH_REPO=o/r gh pr create`, `GIT_DIR=… git merge x`, `env … glab mr merge` denied | T6 | guard B5-B7 |
+| `GH_REPO=o/r gh pr create`, `GIT_DIR=… git merge x`, `env … glab mr merge` denied | T6 | guard B5-B7, B14 |
 | an unpinned forge merge is denied | T8 | guard M1-M4 |
-| a deferred merge is denied, even pinned | T8, T7 | guard M5, M7-M10, I10 |
+| a deferred merge is denied, even pinned | T8, T7 | guard M5, M7-M10, P10-P16, I10 |
 | a CLI creation without `--target-branch`/`--base` is denied | T7 | guard I5-I8 |
 | a pin whose fingerprint is unapproved is denied | T8 | guard N1, N2 |
 | a rebased pin with an unchanged fingerprint is allowed | T8 | guard N5 |
 | a creation whose remote head differs from the approved local branch is denied | T7 | guard J1, J2 |
-| a fork source is denied | T7 | guard K4-K6 |
+| a fork source is denied | T7, T8 | guard K4-K6, P7-P9 |
 | `rg 'glab mr merge'` and a commit message with "merge" are not gated | T6 | guard A2, A3 |
 | spec and plan dispatches with no `--diff` still work | T4 | xreview V1-V4 |
 | a pre-merge dispatch whose pending write fails is refused | T4 | xreview V9-V12 |
@@ -4375,5 +5094,27 @@ Each §5 bullet:
 | multi-repository: a pending entry and a receipt in each ledger, each opening its own gate | T5, T4 | xreview W16-W18, V18-V20 |
 | worktrees: a review collected in a harness worktree opens the main checkout's gate | T5, T1 | xreview W19; ledger C5 |
 | isolation: paths colliding under `/`→`_` get separate ledgers, never sharing an approval | T3, T1 | ledger G1-G5, C1, C2 |
-| locking: 20 concurrent appends make 20 valid lines; a stale lock is broken | T2 | ledger E9-E12, E16, E17 |
+| locking: 20 concurrent appends make 20 valid lines; a stale lock is broken | T2 | ledger E9-E12, E16, E17, E21-E29 |
 | old turn records without a targets file still collect, as v1 | T5 | xreview W13-W15 (and the F14, F15 legacy records) |
+
+Plan review round 1 (Codex, ten findings), each with the coordinator's ruling as applied:
+
+| Finding | Task | Change | Tests |
+|---|---|---|---|
+| 1 (P1) the inlined diff can omit fingerprinted content | T1, T4 | one `patch()` with the fingerprint's flags renders every target's packet from the recorded base..tip | ledger A18-A21; xreview V24, V25 |
+| 2 (P1) leading redirections and wrapper option arguments hide gated verbs | T6 | redirections read past anywhere; every word after a wrapper is a candidate; only bare `sudo` is plain | guard B12-B14, B18, C16, C17 |
+| 3 (P1) help and merge-control exemptions match option values | T6 | `--help`/`-h` only first after the verb; `--abort`/`--quit`/`--continue` only alone | guard B15-B17, A8, A9 |
+| 4 (P1) API calls ignore the endpoint host | T7, T8 | `--hostname`, absolute endpoints and `-R` hosts must be origin's; an absolute `/graphql` is GraphQL | guard K10-K18, P17-P26, O10 |
+| 5 (P1) a PR/MR URL argument can transfer approval | T8 | a URL must name origin's host and project before any lookup | guard P1-P6 |
+| 6 (P1) forge merges do not verify the source repository | T8 | GitLab project ids must agree; GitHub PRs must not be cross-repository | guard P7-P9 |
+| 7 (P1) deferred merges through a merge queue or train | T8 | `mergeQueue` (GraphQL) and `merge_trains_enabled` lookups; non-null, true or failed is denied | guard P10-P16 |
+| 8 (P2) the stale-lock break can steal a fresh lock | T2 | owner tokens, a `.break` lock, token-checked break and release | ledger E21-E29 |
+| 9 (P2) commit-left ranges | T1, T4 | literal base for `C..B` and `C...B`; the packet shows base..tip | ledger B20, B21; xreview V26, V27 |
+| 10 (P2) B12 cannot tell the two destination refs apart | T1 | `hotfix` starts at main's head, so the stale local branch gives another merge-base | ledger B12, B13 (mutation-checked) |
+
+Before round 2, the coordinator added two rulings on substitutions:
+
+| Gap | Task | Change | Tests |
+|---|---|---|---|
+| a command substitution, `$(…)` or backticks, inside double quotes (or unquoted backticks) runs its command | T6 | every substitution body outside single quotes and comments is scanned as a command, recursively | guard B19-B27, C18 |
+| a here-document with an unquoted delimiter runs the substitutions in its body | T6 | those substitutions are scanned; the rest of the body, and quoted-delimiter bodies, stay data | guard B28-B32, A7 |
