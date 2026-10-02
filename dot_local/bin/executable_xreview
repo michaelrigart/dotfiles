@@ -652,6 +652,8 @@ record_receipts() {
        || ! err="$(ledger append "$repo" "$entry" 2>&1 >/dev/null)"; then
       printf 'xreview: could not write the receipt for %s to the ledger of %s%s\n' "$2" "$repo" \
         "${err:+ ($err)}" >&2
+    else
+      [ -z "$err" ] || printf '%s\n' "$err" >&2
     fi
   done <<<"$repos"
   return 0

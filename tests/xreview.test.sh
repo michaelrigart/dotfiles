@@ -1562,6 +1562,7 @@ n2="$(bash "$XREVIEW" dispatch --checkpoint pre-merge --diff main...feature b.md
 is "W5 a newer pending review closes it" "$(vgate "$V")" deny
 RPC_WAIT_OUT="$CHANGES" bash "$XREVIEW" collect "$n2" >/dev/null 2>&1
 is "W6 a later changes verdict keeps it closed" "$(vgate "$V")" deny
+is "W6b with the changes receipt for that nonce on record" "$(receipts_of "$n2" "$VLEDGER")" changes
 RPC_WAIT_OUT="$APPROVE" bash "$XREVIEW" collect "$n1" >/dev/null 2>&1
 is "W7 re-collecting the old approve does not reopen it" "$(vgate "$V")" deny
 fresh; export PANE_CWD="$VCWD"
@@ -1612,6 +1613,25 @@ is "W21 and this checkout's v1 receipts after it" "$(printf '%s\n' "$out" | tail
 is "W22 --tiers counts receipts, never pending entries" \
    "$(bash "$XREVIEW" receipts --tiers | awk '{s += $1} END {print s}')" \
    "$(( $(jq -r 'select(.kind == "receipt") | .nonce' "$VLEDGER" | wc -l) + 1 ))"
+fresh; export PANE_CWD="$VCWD"
+nA="$(bash "$XREVIEW" dispatch --checkpoint pre-merge --diff main...feature b.md 2>/dev/null)"
+nB="$(bash "$XREVIEW" dispatch --checkpoint pre-merge --diff main...feature b.md 2>/dev/null)"
+RPC_WAIT_OUT="$CHANGES" bash "$XREVIEW" collect "$nB" >/dev/null 2>&1
+RPC_WAIT_OUT="$APPROVE" bash "$XREVIEW" collect "$nA" >/dev/null 2>&1
+is "W26 a first-time approve of the older dispatch, collected last, leaves it closed" "$(vgate "$V")" deny
+is "W27 because a receipt keeps its dispatch time" \
+   "$(jq -r --arg n "$nA" 'select(.nonce == $n and .kind == "receipt") | .dispatched_at' "$VLEDGER")" \
+   "$(jq -r --arg n "$nA" 'select(.nonce == $n and .kind == "pending") | .dispatched_at' "$VLEDGER")"
+# A helper that succeeds but warns (a release that could not take the break lock): collect
+# passes the warning through on stderr and still exits 0.
+printf '%s\n' 'import os, runpy, sys' \
+  'if "append" in sys.argv: sys.stderr.write("xreview-ledger: stub warning\n")' \
+  'runpy.run_path(os.environ["XREVIEW_REAL_LEDGER"], run_name="__main__")' > "$ROOT/warn-ledger.py"
+fresh; export PANE_CWD="$VCWD"
+nWn="$(bash "$XREVIEW" dispatch --checkpoint pre-merge --diff main...feature b.md 2>/dev/null)"
+out="$(XREVIEW_REAL_LEDGER="$LEDGER" XREVIEW_LEDGER="$ROOT/warn-ledger.py" RPC_WAIT_OUT="$APPROVE" bash "$XREVIEW" collect "$nWn" 2>&1 >/dev/null)"; rc=$?
+is "W28 a helper warning on a successful receipt write reaches stderr, and collect exits 0" \
+   "$rc/$(printf '%s' "$out" | grep -c 'xreview-ledger: stub warning')/$(receipts_of "$nWn" "$VLEDGER")" "0/1/approve"
 # A writer that died holding the ledger's break lock leaves it in place: collect warns, naming
 # it, and a pre-merge dispatch is refused until it is removed by hand.
 fresh; export PANE_CWD="$VCWD"
