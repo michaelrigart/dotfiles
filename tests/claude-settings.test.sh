@@ -581,6 +581,15 @@ if command -v chezmoi >/dev/null 2>&1; then
       esac
     done
   fi
+  # The pre-merge gate's Python halves deploy beside its shell front, each through its own
+  # .chezmoiignore allowlist entry. Without one the file never deploys: the gate then refuses
+  # every gated command, and xreview cannot dispatch.
+  for f in .claude/xreview-ledger.py; do
+    case "$managed" in
+      *"$f"*) _pass "helper $f is chezmoi-managed" ;;
+      *)      _fail "helper $f is chezmoi-managed" "not in \`chezmoi managed\`" ;;
+    esac
+  done
 else
   echo "  SKIP: chezmoi absent — hook-script management unverified"
 fi

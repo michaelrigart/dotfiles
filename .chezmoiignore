@@ -66,6 +66,7 @@ tests/
 !.claude/git-push-guard.py
 !.claude/worktree-guard.sh
 !.claude/xreview-guard.sh
+!.claude/xreview-ledger.py
 !.claude/xreview-apply-guard.sh
 !.claude/path-resolution-guard.sh
 !.claude/agents/
