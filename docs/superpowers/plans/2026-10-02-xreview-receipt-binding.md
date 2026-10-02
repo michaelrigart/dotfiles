@@ -652,6 +652,24 @@ is "A20 with the content as committed, never converted" "$(printf '%s\n' "$out" 
 is "A21 and the fingerprint ignores all three settings too" "$(fp "$R/deep" main rel)" "$F_ROOT"
 git -C "$R" config --unset diff.relative; git -C "$R" config --unset diff.external
 git -C "$R" config --unset diff.upper.textconv; rm "$R/.git/info/attributes"
+# Binary is decided by content, never by gitattributes: a text path marked -diff, or bound to a
+# driver with binary=true, must still show its changed lines in the packet.
+variant "$R" attr; sed -i '' 's/^two$/TWO2/' "$R/a.txt"; commit "$R" "text under attributes"
+printf '*.txt -diff\n' > "$R/.git/info/attributes"
+is "A22 a path marked -diff still shows its changed line" "$(L diff "$R" main attr | grep -c '^+TWO2$')" 1
+printf '*.txt diff=hide\n' > "$R/.git/info/attributes"; git -C "$R" config diff.hide.binary true
+is "A23 so does a diff driver with binary=true" "$(L diff "$R" main attr | grep -c '^+TWO2$')" 1
+git -C "$R" config --unset diff.hide.binary; rm "$R/.git/info/attributes"
+variant "$R" bn; printf '\000\001\002\003\007' > "$R/b.bin"; commit "$R" "binary change"
+L diff "$R" main bn > "$ROOT/bn.patch"
+is "A24 a true binary file gets one summary line with both blob ids" \
+   "$(cat "$ROOT/bn.patch")" "Binary file b.bin: $(git -C "$R" rev-parse main:b.bin) -> $(git -C "$R" rev-parse bn:b.bin)"
+is "A25 and the patch holds no NUL byte" "$(tr -d '\000' < "$ROOT/bn.patch" | wc -c | tr -d ' ')" "$(wc -c < "$ROOT/bn.patch" | tr -d ' ')"
+variant "$R" glob; printf 'g\n' > "$R/*.txt"; printf 'a\000b\n' > "$R/a.txt"; commit "$R" "a file named *.txt, and a binary a.txt"
+L diff "$R" main glob > "$ROOT/glob.patch"
+is "A26 a file named *.txt is read literally: its own line shows" "$(grep -c '^+g$' "$ROOT/glob.patch")" 1
+is "A27 and does not pull in another .txt path as text" "$(grep -c '^diff --git a/a.txt' "$ROOT/glob.patch")" 0
+is "A28 which is summarized as binary" "$(grep -c '^Binary file a.txt: ' "$ROOT/glob.patch")" 1
 git -C "$R" switch -q main
 
 echo "B. range normalization (spec 3.1)"
@@ -902,6 +920,18 @@ def fingerprint(repo, base, tip):
     """SHA-256 over the sorted records <path> TAB <old mode> TAB <new mode> TAB <old blob>
     TAB <new blob>, one per changed path, each ended by NUL (git paths cannot hold NUL, so
     the encoding is unambiguous). None when nothing changed."""
+    records = [b"\t".join(r) for r in raw_records(repo, base, tip)]
+    if not records:
+        return None
+    digest = hashlib.sha256()
+    for record in sorted(records):
+        digest.update(record + b"\0")
+    return digest.hexdigest()
+
+
+def raw_records(repo, base, tip):
+    """The changed paths of base..tip as (path, old mode, new mode, old blob, new blob) byte
+    tuples, from the raw diff both the fingerprint and the patch read."""
     out = git(repo, *DIFF_RAW, base, tip, "--", raw=True)
     if out is None:
         raise Fail("cannot diff {}..{} in {}".format(base, tip, repo))
@@ -911,23 +941,64 @@ def fingerprint(repo, base, tip):
         if not fields[i].startswith(b":") or len(meta) != 5 or meta[4][:1] in (b"R", b"C"):
             raise Fail("unexpected raw diff output for {}..{}".format(base, tip))
         old_mode, new_mode, old_blob, new_blob = meta[:4]
-        records.append(b"\t".join([fields[i + 1], old_mode, new_mode, old_blob, new_blob]))
+        records.append((fields[i + 1], old_mode, new_mode, old_blob, new_blob))
         i += 2
-    if not records:
-        return None
-    digest = hashlib.sha256()
-    for record in sorted(records):
-        digest.update(record + b"\0")
-    return digest.hexdigest()
+    return records
+
+
+def has_nul(repo, blobs):
+    """The subset of blobs whose content holds a NUL byte, from one `git cat-file --batch`."""
+    blobs = sorted(set(blobs))
+    if not blobs:
+        return set()
+    try:
+        p = subprocess.run(["git", "-C", repo, "cat-file", "--batch"], capture_output=True,
+                           input=b"".join(b + b"\n" for b in blobs), timeout=CALL_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired):
+        raise Fail("cannot read blobs in {}".format(repo))
+    if p.returncode != 0:
+        raise Fail("cannot read blobs in {}".format(repo))
+    out, pos, found = p.stdout, 0, set()
+    for blob in blobs:
+        end = out.find(b"\n", pos)
+        head = out[pos:end].split(b" ") if end >= 0 else []
+        if len(head) != 3 or head[0] != blob or head[1] != b"blob":
+            raise Fail("cannot read blob {} in {}".format(blob.decode("ascii", "replace"), repo))
+        size = int(head[2])
+        if b"\0" in out[end + 1:end + 1 + size]:
+            found.add(blob)
+        pos = end + 1 + size + 1
+    return found
 
 
 def patch(repo, base, tip):
-    """The change base..tip as a patch, with the fingerprint's own flags, so the reviewer reads
-    every path and every byte the fingerprint names. Raises Fail when git cannot diff it."""
-    out = git(repo, *DIFF_PATCH, base, tip, "--", raw=True)
-    if out is None:
-        raise Fail("cannot diff {}..{} in {}".format(base, tip, repo))
-    return out
+    """The change base..tip as a patch the reviewer can read in full. Binary is decided by the
+    content, never by gitattributes (a path marked -diff would otherwise show only a "Binary
+    files differ" line for text the fingerprint binds): a path whose old or new blob holds a NUL
+    byte gets one summary line, `Binary file <path>: <old blob> -> <new blob>`, after the text
+    patch; every other path is rendered with --text, as a literal top-level pathspec, with the
+    fingerprint's own flags. The output never holds a NUL byte (a blob with a NUL anywhere, not
+    only in git's first 8000 bytes, is summarized). Raises Fail when git cannot diff it."""
+    records = sorted(raw_records(repo, base, tip))
+    want = set()
+    for _path, old_mode, new_mode, old_blob, new_blob in records:
+        if old_mode != b"160000" and old_blob.strip(b"0"):
+            want.add(old_blob)
+        if new_mode != b"160000" and new_blob.strip(b"0"):
+            want.add(new_blob)
+    binary = has_nul(repo, want)
+    text, lines = [], []
+    for path, old_mode, new_mode, old_blob, new_blob in records:
+        if old_blob in binary or new_blob in binary:
+            lines.append(b"Binary file " + path + b": " + old_blob + b" -> " + new_blob + b"\n")
+        else:
+            text.append(b":(top,literal)" + path)
+    out = b""
+    if text:
+        out = git(repo, *(DIFF_PATCH + ["--text", base, tip, "--"] + text), raw=True)
+        if out is None:
+            raise Fail("cannot diff {}..{} in {}".format(base, tip, repo))
+    return out + b"".join(lines)
 
 
 def branch_of(repo, right):
@@ -1058,7 +1129,7 @@ with:
 ```
 
 - [ ] **Step 6: Run both and confirm they pass.**
-  - `./tests/xreview-ledger.test.sh`: expect `passed: 57  failed: 0`.
+  - `./tests/xreview-ledger.test.sh`: expect `passed: 64  failed: 0`.
   - `./tests/claude-settings.test.sh 2>&1 | tail -1`: expect `RESULT: 177 passed, 0 failed`.
 
 - [ ] **Step 7: Commit.** Check that `git branch --show-current` prints
@@ -1260,7 +1331,7 @@ is "E36 removed by hand, appends go through again" "$(L append "$PC" "$(entry pe
 ```
 
 - [ ] **Step 2: Run it and confirm it fails.** `./tests/xreview-ledger.test.sh`: expect
-  `passed: 59  failed: 34`. E1-E11, E13-E16 and E18-E36 fail, because `append`, `show` and
+  `passed: 66  failed: 34`. E1-E11, E13-E16 and E18-E36 fail, because `append`, `show` and
   the lock functions do not exist yet.
 
 - [ ] **Step 3: Add the writes.** In `dot_claude/xreview-ledger.py`, insert this block
@@ -1548,7 +1619,7 @@ if __name__ == "__main__":
 ```
 
 - [ ] **Step 5: Run it and confirm it passes.** `./tests/xreview-ledger.test.sh`: expect
-  `passed: 93  failed: 0`.
+  `passed: 100  failed: 0`.
 
 - [ ] **Step 6: Commit.** Check the branch, then:
 
@@ -1704,7 +1775,7 @@ is "G5 and never a/b, for identical blobs and destination" "$(L decide "$ROOT/is
 ```
 
 - [ ] **Step 2: Run it and confirm it fails.** `./tests/xreview-ledger.test.sh`: expect
-  `passed: 97  failed: 34`. Every F and G decision fails, because `decide` is a usage error so
+  `passed: 104  failed: 34`. Every F and G decision fails, because `decide` is a usage error so
   far.
 
 - [ ] **Step 3: Add the decision.** In `dot_claude/xreview-ledger.py`, insert this block
@@ -1902,7 +1973,7 @@ if __name__ == "__main__":
 ```
 
 - [ ] **Step 5: Run it and confirm it passes.** `./tests/xreview-ledger.test.sh`: expect
-  `passed: 131  failed: 0`.
+  `passed: 138  failed: 0`.
 
 - [ ] **Step 6: Commit.** Check the branch, then:
 
@@ -5617,9 +5688,9 @@ owns it.
   - Expected:
     - every suite `ok`;
     - `29 suites run, 8 skipped (see the needs: lines)`;
-    - `all 29 suites passed (3291 assertions)`.
+    - `all 29 suites passed (3298 assertions)`.
   - The eight skipped suites carry a `# test-requires:` line.
-  - Report the total as passed/total, `3291/3291`, copied from the runner's last line.
+  - Report the total as passed/total, `3298/3298`, copied from the runner's last line.
 
 - [ ] **Step 2: Confirm the deployed set.** Run
   `chezmoi managed --include=files | grep -c -E '^\.claude/xreview-(guard|ledger)\.py$'` and
