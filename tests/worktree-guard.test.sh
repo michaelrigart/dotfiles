@@ -87,11 +87,17 @@ HOSTILE="$TMP/repo-x|y"; mkdir -p "$HOSTILE"
 mkdir -p "$TMP/my repo" && git -C "$TMP/my repo" init -q 2>/dev/null
 SPACED="$TMP/my repo-topic"; mkdir -p "$SPACED"
 
-echo "== the one denied shape: literal absolute wt sibling =="
+echo "== rule 3: literal absolute wt sibling =="
 expect deny  "absolute sibling target"      "$TMP" "git worktree remove $SIB"
 expect_reason_contains "deny reason names the command-prefixed remedy" \
   "$TMP" "git worktree remove $SIB" "command wt-rm <branch>"
 expect deny  "with -C, absolute target"     "$TMP" "git -C $REPO worktree remove $SIB"
+expect allow "-c value quotes a worktree verb"  "$TMP" 'git -c alias.example="git worktree unlock x" config --get user.name'
+expect allow "-c single-quoted verb value"      "$TMP" "git -c alias.wtu='worktree unlock' config --get alias.wtu"
+expect deny  "-c quoted value, real unlock"     "$TMP" 'git -c core.x="y" worktree unlock x'
+expect allow "-c value with escaped quotes"     "$TMP" 'git -c alias.example="echo \"git worktree unlock x\"" config --get alias.example'
+expect deny  "-c escaped quote, real unlock"    "$TMP" 'git -c core.x="a\"b" worktree unlock x'
+expect deny  "-C quoted path, real unlock"      "$TMP" 'git -C "/my path" worktree unlock x'
 expect deny  "--force before the target"    "$TMP" "git worktree remove --force $SIB"
 # The exact shapes of the six commands that produced the husks.
 expect deny  "observed: pipe after"         "$TMP" "git worktree remove $SIB 2>&1 | tail -3"
@@ -103,12 +109,10 @@ expect deny  "trailing semicolon"           "$TMP" "git worktree remove $SIB;"
 # "after" check already does, or this shape names a path git never receives
 # and falls through to allow.
 expect deny  "glued redirect after target"  "$TMP" "git worktree remove $SIB>log"
-# Scope is a standalone, beginning-anchored invocation. A PRECEDING command puts
-# the removal mid-string, where no regex can bind a target to the right
-# invocation — so it fails open, by design rather than by accident.
-expect allow "preceding command"            "$TMP" "cd /tmp && git worktree remove $SIB"
+# Every command segment is checked (spec §4); a chained removal is caught.
+expect deny  "preceding command"            "$TMP" "cd /tmp && git worktree remove $SIB"
 expect allow "decoy remove token"           "$TMP" "echo remove \"$SIB\" && git worktree remove $TMP/nope"
-expect allow "removal in a second clause"   "$TMP" "git worktree remove $TMP/nope; git worktree remove \"$SIB\""
+expect deny  "removal in a second clause"   "$TMP" "git worktree remove $TMP/nope; git worktree remove \"$SIB\""
 expect deny  "double-quoted target"         "$TMP" "git worktree remove \"$SIB\""
 expect deny  "single-quoted target"         "$TMP" "git worktree remove '$SIB'"
 expect deny  "quoted slug with a pipe"      "$TMP" "git worktree remove \"$HOSTILE\""
@@ -146,10 +150,108 @@ run git worktree remove later
 EOF"
 expect allow "plain ls"                     "$TMP" 'ls -la'
 
+echo "== rules 1 and 2: crossing the lifecycle lock, any target =="
+expect deny  "unlock"                       "$TMP" 'git worktree unlock ../anything'
+expect deny  "unlock under -C"              "$TMP" "git -C $REPO worktree unlock repo-topic"
+expect deny  "unlock after sudo"            "$TMP" 'sudo git worktree unlock x'
+expect deny  "unlock after env prefix"      "$TMP" 'GIT_TRACE=1 git worktree unlock x'
+expect deny  "unlock chained"               "$TMP" 'git status && git worktree unlock x'
+expect deny  "unlock on the second line"    "$TMP" 'git status
+git worktree unlock x'
+expect deny  "remove -f -f"                 "$TMP" 'git worktree remove -f -f ../anything'
+expect deny  "remove -ff"                   "$TMP" 'git worktree remove -ff ../anything'
+expect deny  "remove --force --force"       "$TMP" 'git worktree remove --force --force rel'
+expect deny  "remove -f --force"            "$TMP" "git -C $REPO worktree remove -f --force rel"
+expect_reason_contains "lock-crossing deny names the remedy" \
+  "$TMP" 'git worktree unlock x' "command wt-rm <branch>"
+expect allow "single force, not a sibling"  "$TMP" "git worktree remove --force $REPO/.claude/worktrees/scratch"
+expect allow "lock"                         "$TMP" 'git worktree lock x'
+expect allow "add"                          "$TMP" 'git worktree add ../x'
+
+echo "== text that only spells the command =="
+expect allow "quoted unlock"                "$TMP" 'echo "git worktree unlock x"'
+expect allow "bash -c quoted (documented)"  "$TMP" 'bash -c "git worktree unlock x"'
+expect allow "comment after a command"      "$TMP" 'git status # ; git worktree unlock x'
+expect allow "heredoc body line"            "$TMP" "cat <<'EOF'
+git worktree unlock x
+git worktree remove -ff y
+EOF"
+expect allow "heredoc with dash"           "$TMP" $'cat <<-EOF\n\tgit worktree unlock x\n\tEOF'
+expect deny  "unlock after a here-string"   "$TMP" $'cat <<< hello\ngit worktree unlock x'
+expect deny  "unlock across a continuation" "$TMP" $'git worktree \\\nunlock x'
+expect deny  "-f -f across a continuation"  "$TMP" $'git worktree remove -f \\\n  -f ../x'
+expect deny  "a command after the heredoc"  "$TMP" "cat <<EOF
+text
+EOF
+git worktree unlock x"
+
+echo "== segment starts: compound-command and wrapper shapes =="
+expect deny  "for loop, -ff"                "$TMP" 'for w in a b; do git worktree remove -ff "$w"; done'
+expect deny  "if/then unlock"               "$TMP" 'if true; then git worktree unlock x; fi'
+expect deny  "brace group unlock"           "$TMP" '{ git worktree unlock x; }'
+expect deny  "negated unlock"               "$TMP" '! git worktree unlock x'
+expect deny  "time unlock"                  "$TMP" 'time git worktree unlock x'
+expect deny  "command unlock"               "$TMP" 'command git worktree unlock x'
+expect deny  "absolute git path unlock"     "$TMP" '/usr/bin/git worktree unlock x'
+expect deny  "else branch unlock"           "$TMP" 'if false; then true; else git worktree unlock x; fi'
+expect deny  "if unlock"                    "$TMP" 'if git worktree unlock x; then :; fi'
+expect deny  "while unlock"                 "$TMP" 'while git worktree unlock x; do :; done'
+expect deny  "until unlock"                 "$TMP" 'until git worktree unlock x; do :; done'
+expect deny  "sudo after a keyword"         "$TMP" 'do sudo git worktree unlock x'
+expect deny  "env then command"             "$TMP" 'A=1 command /usr/bin/git -C . worktree unlock x'
+expect allow "plain for loop"               "$TMP" 'for w in a b; do echo "$w"; done'
+expect allow "plain if"                     "$TMP" 'if true; then ls; fi'
+expect allow "if git diff"                  "$TMP" 'if git diff --quiet; then echo clean; fi'
+expect allow "while read loop"              "$TMP" 'while read -r l; do echo "$l"; done < f'
+expect allow "for loop, worktree list"      "$TMP" 'for w in a b; do git worktree list; done'
+expect allow "absolute path, not git"       "$TMP" '/usr/bin/mygit worktree unlock x'
+
+echo "== fast path: a harness cwd alone must not start jq =="
+STUBBIN="$TMP/stubbin"; mkdir -p "$STUBBIN"
+cat >"$STUBBIN/jq" <<STUB
+#!/bin/sh
+touch "$TMP/jq-called"
+PATH=\${PATH#"$STUBBIN:"}
+exec jq "\$@"
+STUB
+chmod +x "$STUBBIN/jq"
+# jq_called <cwd> <command> -> yes|no: did the guard reach jq?
+jq_called() {
+  rm -f "$TMP/jq-called"
+  jq -n --arg c "$2" --arg d "$1" \
+    '{hook_event_name:"PreToolUse",tool_name:"Bash",cwd:$d,transcript_path:($d+"/t.jsonl"),tool_input:{command:$c}}' \
+    | PATH="$STUBBIN:$PATH" bash "$GUARD" >/dev/null
+  if [ -e "$TMP/jq-called" ]; then echo yes; else echo no; fi
+}
+expect_jq() {
+  local want=$1 label=$2 got
+  got=$(jq_called "$3" "$4")
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf '  ok   %s\n' "$label"
+  else
+    fail=$((fail + 1)); printf '  FAIL %s (jq called: want %s, got %s)\n' "$label" "$want" "$got"
+  fi
+}
+expect_jq no  "harness cwd + ls: fast path"            "$REPO/.claude/worktrees/x" 'ls'
+expect_jq no  "harness cwd + "worktrees" in text: fast path"   "$REPO/.claude/worktrees/x" 'git commit -m "fix worktrees layout"'
+expect_jq no  "worktree word at the end: fast path"    "$REPO/.claude/worktrees/x" 'echo worktree'
+expect_jq yes "git worktree remove reaches jq"         "$TMP" 'git worktree remove x'
+expect_jq yes "tab-separated reaches jq"               "$TMP" $'git worktree\tunlock x'
+expect_jq yes "continuation reaches jq"                "$TMP" $'git worktree \\\nunlock x'
+expect deny  "harness cwd, unlock still denied"        "$REPO/.claude/worktrees/x" 'git worktree unlock x'
+expect deny  "tab between worktree and verb"           "$TMP" $'git worktree\tunlock x'
+expect allow "harness cwd + git worktree list"         "$REPO/.claude/worktrees/x" 'git worktree list'
+
 echo "== bypass switch, any position =="
 expect allow "bypass leading"   "$TMP" "WT_GUARD=off git worktree remove $SIB"
 expect allow "bypass middle"    "$TMP" "cd /tmp && WT_GUARD=off git worktree remove $SIB"
 expect allow "bypass trailing"  "$TMP" "git worktree remove $SIB # WT_GUARD=off"
+
+echo "== jq absent fails open =="
+out=$(jq -n --arg c 'git worktree unlock x' '{tool_input:{command:$c}}' \
+      | env PATH=/bin /bin/bash "$GUARD" 2>/dev/null)
+if [ -z "$out" ]; then pass=$((pass + 1)); echo '  ok   no jq allows'
+else fail=$((fail + 1)); echo '  FAIL no jq allows'; fi
 
 echo "== degenerate input fails open =="
 expect_raw_allow "empty payload"        ''

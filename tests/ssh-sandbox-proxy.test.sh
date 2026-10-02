@@ -79,9 +79,9 @@ fi
 #
 # A shim is not merely redundant, it is actively harmful. It is a `#!/usr/bin/env bash`
 # script, so it needs `bash` on PATH; wt-functions.test.sh builds a deliberately stripped
-# PATH (env, git, awk, mkdir) to simulate a missing wtcp, and there `git` dies with
-# "env: bash: No such file or directory" (rc=127) before the lifecycle reaches the wtcp
-# check. That cost three assertions in that suite while this one stayed green.
+# PATH (env, git, awk, mkdir) to simulate a missing tool, and there `git` dies with
+# "env: bash: No such file or directory" (rc=127). That cost three assertions in that
+# suite while this one stayed green.
 if [ ! -e "$GIT_SHIM" ]; then
   echo "  PASS: no git PATH shim in the chezmoi source — SSH routes via GIT_SSH_COMMAND"
   pass=$((pass + 1))

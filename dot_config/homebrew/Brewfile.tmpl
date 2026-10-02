@@ -27,7 +27,6 @@
 # --force` resets Homebrew's trust store to exactly what this file declares, so trust
 # lives here and nowhere else.
 tap "basecamp/tap", trusted: true
-tap "satococoa/tap", trusted: true
 tap "skyhook-io/tap", trusted: true
 
 # ansible: managed by mise (~/.config/mise/config.toml), not Homebrew, so provisioning
@@ -77,7 +76,6 @@ brew "nmap"                            # supplies `ncat`, which dot_local/bin/ex
 brew "oxipng"                          # michaelrigart Rakefile:88 PNG optimization
 brew "ripgrep"                         # `rg`; also a hard dependency of the codex cask
 brew "s3cmd"
-brew "satococoa/tap/wtcp"              # carries gitignored env files into new git worktrees (the wt() function in zsh/functions)
 brew "shellcheck"                      # curato ops/backup/*.sh lint clean under it (see 257a032); zsh provisioning scripts out of scope
 brew "skyhook-io/tap/radar"            # Kubernetes topology/traffic viewer
 brew "sshpass"                         # Ansible password-based SSH (VM.Provisioning.Ansible inventories)

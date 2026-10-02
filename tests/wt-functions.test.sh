@@ -5,7 +5,7 @@
 #
 #   B  wt                  destination validation (husks, slug collisions)
 #   C  wt                  branch base: caller's HEAD, explicit start point, detached
-#   D  wt                  .worktreeinclude copy failures and missing wtcp
+#   D  wt                  .worktreeinclude copy failures
 #   E  wt-rm               dirty preflight ordering and refusal cases
 #   G  _wt_git/_wt_primary routing clearance, bare repos, linked worktrees
 #   H  _wt_clean           three-state cleanliness, config- and routing-resistant
@@ -13,7 +13,7 @@
 #   J  _wt_hook_check      index + working-tree validation, fail-closed index reads
 #   K  _wt_hook_run        interface, subshell isolation, shebang, trust boundary
 #   L  _wt_manifest        containment, filtering, missing sources
-#   M  wt-prepare          copy/setup recovery path, quoting, wtcp presence
+#   M  wt-prepare          copy/setup recovery path, quoting
 #   N  wt                  creation paths, pre-validation consequences, reopening
 #   O  wt-rm               teardown ordering, the three cleanliness checks, retry
 #   Q  PATH wrappers       the functions are reachable from a non-interactive shell
@@ -22,7 +22,7 @@
 #   U  wt-rm               Herdr workspace shutdown and persisted-state safety
 #   V  wt-rm               live processes still inside the checkout block removal
 #
-# Herdr, layout.sh and wtcp are stubbed on PATH and every invocation is logged, so the
+# Herdr and layout.sh are stubbed on PATH and every invocation is logged, so the
 # tests can assert *ordering* — notably that a dirty worktree never loses its terminal
 # workspace — without launching anything. Git is NOT stubbed: real repos are used,
 # because git's own refusals (unmerged branch, dirty tree) are part of what's under
@@ -62,37 +62,6 @@ SIGSTUBS=$(mkd)
 FAILSTUBS=$(mkd)
 trap 'rm -rf "$STUBS" "$SIGSTUBS" "$FAILSTUBS" "${ROOTTMP:-}"' EXIT
 
-cat > "$STUBS/wtcp" <<'STUB'
-#!/usr/bin/env bash
-# Faithful enough for the properties the protocol depends on: honors --from,
-# treats `--` as end-of-options (so an entry named -h is copied rather than
-# parsed), refuses an existing destination with a NONZERO exit while still
-# copying the missing ones — the behaviour that makes destination filtering a
-# correctness requirement — and can still be forced to fail via MOCK_WTCP_RC.
-printf '%s\n' "$*" >> "$WLOG"
-[ "${MOCK_WTCP_RC:-0}" -ne 0 ] && exit "$MOCK_WTCP_RC"
-from="."; rc=0; endopts=0; paths=()
-while [ $# -gt 0 ]; do
-  if [ "$endopts" -eq 0 ]; then
-    case "$1" in
-      --from) from="$2"; shift 2; continue ;;
-      --)     endopts=1; shift; continue ;;
-      -h|--help) echo "wtcp: usage"; exit 1 ;;
-      -*)     echo "wtcp: unknown option $1" >&2; exit 1 ;;
-    esac
-  fi
-  paths+=("$1"); shift
-done
-for p in "${paths[@]}"; do
-  if [ -e "$PWD/$p" ]; then
-    echo "wtcp: destination exists (use --force): $p" >&2; rc=1; continue
-  fi
-  mkdir -p "$(dirname "$PWD/$p")"
-  cp -R "$from/$p" "$PWD/$p" && echo "copied: $p"
-done
-exit $rc
-STUB
-chmod +x "$STUBS/wtcp"
 cat > "$STUBS/layout.sh" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$DLOG"
@@ -101,7 +70,7 @@ STUB
 cat > "$STUBS/herdr" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$HLOG"
-session=default
+session="${HERDR_SESSION:-default}"
 [ "${1:-}" = --session ] && session="$2"
 closed=0
 [ -n "${MOCK_H_CLOSED_FILE:-}" ] && grep -Fqx -- "$session" "$MOCK_H_CLOSED_FILE" 2>/dev/null && closed=1
@@ -112,6 +81,8 @@ case "$*" in
   *"workspace list")
     if [ "$closed" -eq 1 ]; then
       printf '%s' '{"result":{"workspaces":[]}}'
+    elif [ "$session" = team ] && [ -n "${MOCK_H_TEAM_WORKSPACES:-}" ]; then
+      printf '%s' "$MOCK_H_TEAM_WORKSPACES"
     else
       printf '%s' "${MOCK_H_WORKSPACES:-}"
     fi
@@ -119,6 +90,8 @@ case "$*" in
   *"pane list")
     if [ "$closed" -eq 1 ]; then
       printf '%s' '{"result":{"panes":[]}}'
+    elif [ "$session" = team ] && [ -n "${MOCK_H_TEAM_PANES:-}" ]; then
+      printf '%s' "$MOCK_H_TEAM_PANES"
     else
       printf '%s' "${MOCK_H_PANES:-}"
     fi
@@ -153,26 +126,21 @@ if [ -n "${MOCK_LSOF_RAW+x}" ]; then
   exit "${MOCK_LSOF_RC:-0}"
 fi
 case " $* " in
-  *" -F0pcn "*) fmt=nul ;;
-  *)            fmt=nl  ;;
+  *" -F0pcnR "*) ;;
+  *) echo "lsof stub: unexpected invocation: $*" >&2; exit 1 ;;
 esac
 while IFS=$'\t' read -r pid cmd cwd; do
   [ -n "$pid" ] || continue
-  if [ "$fmt" = nul ]; then
-    printf 'p%s\0c%s\0\n' "$pid" "$cmd"
-    printf 'fcwd\0n%s\0\n' "$cwd"
-  else
-    printf 'p%s\nc%s\nfcwd\n' "$pid" "$cmd"
-    printf 'n%s\n' "$cwd"
-  fi
+  printf 'p%s\0R1\0c%s\0fcwd\0n%s\0\n' "$pid" "$cmd" "$cwd"
 done <<< "${MOCK_LSOF_SPEC:-}"
 exit "${MOCK_LSOF_RC:-0}"
 STUB
 chmod +x "$STUBS/layout.sh" "$STUBS/herdr" "$STUBS/lsof"
-# Captured before the stub shadows it. Section V uses it for the one test that must
-# exercise the real binary: every other lsof assertion is a fixture, and a fixture
-# cannot show that the invocation and the parse still agree with what lsof emits.
-REALLSOF="$(whence -p lsof)" || { print -ru2 -- "cannot locate lsof"; exit 1 }
+TEARDOWN_SRC="$(cd "${0:h}/.." && pwd)/dot_local/bin/executable_wt-teardown"
+[[ -r "$TEARDOWN_SRC" ]] || { print -ru2 -- "cannot read $TEARDOWN_SRC"; exit 2 }
+print -r -- "#!/bin/sh
+exec zsh '$TEARDOWN_SRC' \"\$@\"" > "$STUBS/wt-teardown"
+chmod +x "$STUBS/wt-teardown"
 export PATH="$STUBS:$PATH"
 export DEV_LAYOUT="$STUBS/layout.sh"
 
@@ -236,6 +204,7 @@ chmod +x "$FAILSTUBS/git"
 # --- fixture ----------------------------------------------------------------
 ROOTTMP=""
 setup() {   # fresh $HOME with Code/Org/repo, fresh logs, default mock behaviour
+  unset HERDR_WORKSPACE_ID HERDR_SOCKET_PATH HERDR_SESSION HERDR_ENV
   [[ -n "$ROOTTMP" ]] && rm -rf "$ROOTTMP"
   ROOTTMP=$(mkd) || { print -ru2 -- "mktemp failed"; exit 1 }
   ROOTTMP="${ROOTTMP:A}"        # resolve /tmp -> /private/tmp up front, so the paths
@@ -244,12 +213,11 @@ setup() {   # fresh $HOME with Code/Org/repo, fresh logs, default mock behaviour
   REPO="$HOME/Code/Org/repo"
   git init -q -b main "$REPO"
   git -C "$REPO" commit -q --allow-empty -m init
-  export WLOG="$ROOTTMP/wtcp.log" DLOG="$ROOTTMP/layout.log" \
+  export DLOG="$ROOTTMP/layout.log" \
          HLOG="$ROOTTMP/herdr.log" LLOG="$ROOTTMP/lsof.log" \
          FLOG="$ROOTTMP/git-fail.log" MOCK_H_CLOSED_FILE="$ROOTTMP/herdr-closed"
-  : > "$WLOG"; : > "$DLOG"; : > "$HLOG"; : > "$LLOG"; : > "$FLOG"; : > "$MOCK_H_CLOSED_FILE"
-  export MOCK_WTCP_RC=0 \
-         MOCK_LAYOUT_RC=0 MOCK_H_SESSION_LIST='{"sessions":[]}' MOCK_H_SESSION_RC=0 \
+  : > "$DLOG"; : > "$HLOG"; : > "$LLOG"; : > "$FLOG"; : > "$MOCK_H_CLOSED_FILE"
+  export MOCK_LAYOUT_RC=0 MOCK_H_SESSION_LIST='{"sessions":[]}' MOCK_H_SESSION_RC=0 \
          MOCK_H_WORKSPACES='{"result":{"workspaces":[]}}' \
          MOCK_H_PANES='{"result":{"panes":[]}}' MOCK_H_LIST_RC=0 MOCK_H_CLOSE_RC=0 \
          MOCK_H_CLOSE_TOUCH="" MOCK_H_CLOSE_OUT=""
@@ -257,7 +225,7 @@ setup() {   # fresh $HOME with Code/Org/repo, fresh logs, default mock behaviour
   # can never return nothing — this shell's own cwd is always in the answer — so
   # "no records at all" is reserved for the failure the caller must fail closed on.
   export MOCK_LSOF_RC=0 MOCK_LSOF_SPEC="$(lsof_spec 1 launchd /)"
-  unset MOCK_LSOF_RAW
+  unset MOCK_LSOF_RAW MOCK_H_TEAM_WORKSPACES MOCK_H_TEAM_PANES
 }
 # run <dir> <command...> — source the functions fresh and run one command in $dir.
 # A subshell per scenario keeps zsh options/state from leaking between tests.
@@ -320,6 +288,12 @@ sigint_run() {
   [[ -e "$once" ]] && SIGFIRED=yes || SIGFIRED=no
 }
 sha() { git -C "$1" rev-parse HEAD 2>/dev/null }
+# lock_reason_of <worktree> — the lock reason git records for it, or nothing.
+lock_reason_of() {
+  git -C "$REPO" worktree list --porcelain | awk -v p="$1" '
+    /^worktree /{ cur = substr($0, 10) }
+    /^locked/   { if (cur == p) { sub(/^locked ?/, ""); print } }'
+}
 # lsof_spec <pid> <cmd> <cwd> [...] — build MOCK_LSOF_SPEC rows. The cwd column is
 # lsof's rendering of a path, so pass it as lsof would print it: a real backslash as two
 # characters, a real newline as the two characters \ and n.
@@ -328,6 +302,11 @@ lsof_spec() {
   while (( $# >= 3 )); do rows+=( "$1"$'\t'"$2"$'\t'"$3" ); shift 3; done
   print -rl -- $rows
 }
+# session_json <name> <default> <running> — one session-list entry with a socket path.
+session_json() {
+  print -r -- "{\"default\":$2,\"name\":\"$1\",\"running\":$3,\"session_dir\":\"$ROOTTMP/$1\",\"socket_path\":\"$ROOTTMP/$1.sock\"}"
+}
+sessions() { local IFS=,; print -r -- "{\"sessions\":[$*]}" }
 mkhook() {   # mkhook <repo> <body>  — tracked, executable, committed
   print -r -- "$2" > "$1/.worktreehook"
   chmod +x "$1/.worktreehook"
@@ -371,19 +350,18 @@ has "branching d from detached@" "detached HEAD base is shown, not warned about"
 rc_is 0 "detached HEAD is allowed"
 
 print -r -- "D. wt — .worktreeinclude copy failures"
+# CP1: a copy that fails stops wt with the recovery message (spec §8).
 setup
 print -r -- "env.local" > "$REPO/.worktreeinclude"
 print -r -- "secret" > "$REPO/env.local"
-MOCK_WTCP_RC=1 run "$REPO" wt e
-rc_is 1 "wtcp failure propagates"
-# Task 8 rework: creation now delegates preparation to the shared
-# _wt_do_prepare (see wt-prepare), so a copy failure's recovery message is
-# _wt_do_prepare's own ("wt-prepare <branch> && wt <branch>"), not wt's old
-# inline "dev $dest" — re-running wt-prepare is now the correct next step
-# because wt-prepare itself did not exist when this assertion was written.
-has "wt-prepare e && wt e" "failure message prints the recovery command"
-[[ -d "$HOME/Code/Org/repo-e" ]] && _pass "worktree is left in place to recover" \
-                                 || _fail "worktree is left in place to recover"
+chmod 000 "$REPO/env.local"
+run "$REPO" wt e
+chmod 600 "$REPO/env.local"
+rc_is 1 "CP1 a failed copy fails wt"
+has "entry 'env.local'" "CP1 the failure names the entry that could not be copied"
+has "wt-prepare e && wt e" "CP1 the failure prints the recovery command"
+[[ -d "$HOME/Code/Org/repo-e" ]] && _pass "CP1 the worktree is left in place to recover" \
+                                 || _fail "CP1 the worktree is left in place to recover"
 
 setup
 printf 'env.local\nmissing.local\n' > "$REPO/.worktreeinclude"
@@ -392,20 +370,6 @@ run "$REPO" wt f
 rc_is 0 "a missing .worktreeinclude entry is only a warning"
 has "not found in" "missing entry is reported"
 dlogged "--worktree $REPO $HOME/Code/Org/repo-f" "dev still launches after a missing-entry warning"
-
-setup
-print -r -- "env.local" > "$REPO/.worktreeinclude"
-print -r -- "secret" > "$REPO/env.local"
-# Simulating absence needs a stripped PATH, not a moved stub: wtcp is really installed
-# on this machine, so hiding the stub just falls through to the real binary.
-CLEANP=$(mkd)
-# Every external the lifecycle reaches before the wtcp check. wtcp is absent on
-# purpose. If a helper later grows a new external dependency, add it here too, or
-# this test starts failing for a reason that has nothing to do with wtcp.
-for b in env git awk mkdir; do ln -s "$(command -v $b)" "$CLEANP/$b"; done
-OUT="$(cd "$REPO" && source "$FUNCS" && export PATH="$CLEANP" && wt g 2>&1)"; RC=$?
-rc_is 1 "missing wtcp aborts instead of silently skipping the copy"
-has "wtcp is missing" "abort names the missing tool"
 
 print -r -- "E. wt-rm"
 setup
@@ -1004,14 +968,15 @@ ln -s "$ROOTTMP/elsewhere/t.env" "$D/t.env"
 print -r -- "t.env" > "$REPO/.worktreeinclude"
 OUT="$(cd "$REPO" && source "$FUNCS" && _wt_manifest "$REPO" "$D" && print -r -- "${#_WT_CARRY[@]}")"
 eq "$OUT" "0" "an existing final destination symlink is filtered, not carried"
-# No separate write-through assertion: the property is pinned entirely by
-# _WT_CARRY being empty above. _wt_manifest performs no writes under any code
-# path, so a direct "the target file is unchanged" check would pass whether
-# filtering works, is broken, or the function doesn't exist at all — it was
-# tried and proven vacuous. An end-to-end version (through wtcp) wouldn't
-# discriminate either: wtcp refuses an existing destination (a symlink counts
-# as existing) and returns nonzero before writing anything, so a broken filter
-# would surface as a nonzero wt-prepare, never as a modified external file.
+# End to end, because BSD `cp -pR` writes THROUGH an existing destination symlink, to a
+# file or a directory. The present-entry filter above is the only thing standing
+# between a symlinked destination and a write outside the worktree, so the copy itself
+# is run and the symlink's target checked. (A check on _wt_manifest alone passes
+# whether or not _wt_do_prepare honours the filter.)
+run "$REPO" wt-prepare m6
+rc_is 0 "prepare over a destination symlink succeeds"
+eq "$(<"$ROOTTMP/elsewhere/t.env")" "UNTOUCHED" "prepare never writes through a destination symlink"
+[[ -L "$D/t.env" ]] && _pass "the destination symlink is left in place" || _fail "the destination symlink is left in place"
 
 # Missing source warns and continues.
 setup
@@ -1052,15 +1017,60 @@ run "$REPO" wt-prepare n2
 rc_is 0 "an entry named -h is copied, not parsed as an option"
 eq "$(<"$HOME/Code/Org/repo-n2/-h")" "DASH" "the -h entry's contents actually arrived"
 
-# wtcp failure aborts before setup.
+# CP2: a failed copy aborts prepare before the setup hook.
 setup
 run "$REPO" wt n3
 print -r -- "a.env" > "$REPO/.worktreeinclude"; print -r -- "A" > "$REPO/a.env"
 mkhook "$REPO" '#!/bin/sh
 touch "$WT_MAIN/setup-ran"; exit 0'
-MOCK_WTCP_RC=1 run "$REPO" wt-prepare n3
-rc_is 1 "wtcp failure fails prepare"
-[[ -f "$REPO/setup-ran" ]] && _fail "setup is skipped after a copy failure" || _pass "setup is skipped after a copy failure"
+chmod 000 "$REPO/a.env"
+run "$REPO" wt-prepare n3
+chmod 600 "$REPO/a.env"
+rc_is 1 "CP2 a failed copy fails prepare"
+[[ -f "$REPO/setup-ran" ]] && _fail "CP2 setup is skipped after a copy failure" \
+                           || _pass "CP2 setup is skipped after a copy failure"
+
+# CP3 (review focus 4): modes survive, and a directory entry arrives whole.
+setup
+printf 'config/master.key\nsecrets.d\n' > "$REPO/.worktreeinclude"
+mkdir -p "$REPO/config" "$REPO/secrets.d/inner"
+print -r -- "KEY" > "$REPO/config/master.key"; chmod 600 "$REPO/config/master.key"
+print -r -- "IN" > "$REPO/secrets.d/inner/x.env"; chmod 640 "$REPO/secrets.d/inner/x.env"
+run "$REPO" wt cp3
+rc_is 0 "CP3 a nested file and a directory entry are carried"
+eq "$(stat -f %Lp "$HOME/Code/Org/repo-cp3/config/master.key")" "600" "CP3 master.key keeps mode 600"
+eq "$(<"$HOME/Code/Org/repo-cp3/secrets.d/inner/x.env")" "IN" "CP3 the directory's nested file arrived"
+eq "$(stat -f %Lp "$HOME/Code/Org/repo-cp3/secrets.d/inner/x.env")" "640" "CP3 nested modes survive"
+
+# CP5: overlapping entries carry once; the second never nests a duplicate inside the first.
+setup
+printf 'secrets.d\nsecrets.d/inner\n' > "$REPO/.worktreeinclude"
+mkdir -p "$REPO/secrets.d/inner"
+print -r -- "IN" > "$REPO/secrets.d/inner/x.env"
+run "$REPO" wt cp5
+rc_is 0 "CP5 overlapping entries are carried"
+[[ -f "$HOME/Code/Org/repo-cp5/secrets.d/inner/x.env" ]] && _pass "CP5 the nested file arrived" \
+                                                         || _fail "CP5 the nested file arrived"
+[[ -e "$HOME/Code/Org/repo-cp5/secrets.d/inner/inner" ]] && _fail "CP5 no duplicate nests inside the first copy" \
+                                                         || _pass "CP5 no duplicate nests inside the first copy"
+
+# CP4: a partly copied directory entry is removed, so the recovery run copies it again.
+setup
+run "$REPO" wt cp4
+printf 'secrets.d\n' > "$REPO/.worktreeinclude"
+mkdir -p "$REPO/secrets.d"
+print -r -- "AA" > "$REPO/secrets.d/a.env"
+print -r -- "BB" > "$REPO/secrets.d/b.env"
+chmod 000 "$REPO/secrets.d/b.env"
+run "$REPO" wt-prepare cp4
+chmod 600 "$REPO/secrets.d/b.env"
+rc_is 1 "CP4 a partly failed directory copy fails prepare"
+[[ -e "$HOME/Code/Org/repo-cp4/secrets.d" ]] && _fail "CP4 the partial copy is removed" \
+                                             || _pass "CP4 the partial copy is removed"
+run "$REPO" wt-prepare cp4
+rc_is 0 "CP4 the recovery run succeeds"
+eq "$(<"$HOME/Code/Org/repo-cp4/secrets.d/a.env" 2>/dev/null)" "AA" "CP4 the readable file arrived on recovery"
+eq "$(<"$HOME/Code/Org/repo-cp4/secrets.d/b.env" 2>/dev/null)" "BB" "CP4 the formerly unreadable file arrived on recovery"
 
 # Setup failure is reported with both recovery steps, branch name quoted.
 setup
@@ -1092,37 +1102,6 @@ rc_is 1 "invalid hook aborts prepare before copying"
   || _pass "manifest file is not copied when the hook is invalid"
 has "wt-prepare n4 && wt n4" "recovery message names both steps"
 
-# The wtcp-presence guard (`if (( ${#_WT_CARRY} ))`) is scoped to when a copy
-# is actually needed: a repository whose destinations are already fully
-# populated must not require wtcp to be installed. Discriminating: with that
-# guard removed, the presence check fires unconditionally and this fails
-# even though nothing needs copying. Stripped PATH, not a moved stub — wtcp
-# is really installed on this machine, so hiding the stub just falls through
-# to the real binary (same rationale as section D's CLEANP).
-setup
-run "$REPO" wt n5
-print -r -- "a.env" > "$REPO/.worktreeinclude"; print -r -- "A" > "$REPO/a.env"
-print -r -- "A" > "$HOME/Code/Org/repo-n5/a.env"   # already present at the destination
-CLEANP=$(mkd)
-# Every external the lifecycle reaches before the wtcp check. wtcp is absent
-# on purpose. If a helper later grows a new external dependency, add it here
-# too, or this test starts failing for a reason that has nothing to do with
-# wtcp.
-for b in env git awk mkdir; do ln -s "$(command -v $b)" "$CLEANP/$b"; done
-OUT="$(cd "$REPO" && source "$FUNCS" && export PATH="$CLEANP" && wt-prepare n5 2>&1)"; RC=$?
-rc_is 0 "already-populated destinations don't require wtcp"
-
-# Mirrors section D's coverage of a missing wtcp during copy, for
-# wt-prepare's own path (D only exercises this through `wt`).
-setup
-run "$REPO" wt n6
-print -r -- "a.env" > "$REPO/.worktreeinclude"; print -r -- "A" > "$REPO/a.env"
-CLEANP=$(mkd)
-for b in env git awk mkdir; do ln -s "$(command -v $b)" "$CLEANP/$b"; done
-OUT="$(cd "$REPO" && source "$FUNCS" && export PATH="$CLEANP" && wt-prepare n6 2>&1)"; RC=$?
-rc_is 1 "missing destination with wtcp absent aborts instead of silently skipping"
-has "wtcp is missing" "abort names the missing tool"
-
 # Spec §11.3 wants "no multiplexer calls, *including with an active session*". The
 # n1 fixture above runs with no Herdr session at all, which is the easy half: a
 # regression that closed or focused the workspace would plausibly guard on it
@@ -1133,7 +1112,7 @@ run "$REPO" wt n7
 print -r -- "a.env" > "$REPO/.worktreeinclude"; print -r -- "A" > "$REPO/a.env"
 mkhook "$REPO" '#!/bin/sh
 exit 0'
-export MOCK_H_SESSION_LIST="{\"sessions\":[{\"default\":true,\"name\":\"default\",\"running\":true,\"session_dir\":\"$ROOTTMP/default\"}]}"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)")"
 export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[{\"workspace_id\":\"wn7\",\"worktree\":{\"checkout_path\":\"$HOME/Code/Org/repo-n7\"}}]}}"
 export MOCK_H_PANES='{"result":{"panes":[]}}'
 : > "$HLOG"; : > "$DLOG"
@@ -1201,7 +1180,7 @@ rc_is 0 "the worktree is created and prepared once"
 [[ -f "$HOME/Code/Org/repo-o5/a.env" ]] && _pass "creation copied the manifest entry" \
                                         || _fail "creation copied the manifest entry"
 rm "$REPO/setup-ran-o5" "$HOME/Code/Org/repo-o5/a.env"
-: > "$DLOG"; : > "$WLOG"
+: > "$DLOG"
 run "$REPO" wt o5                        # reopen
 rc_is 0 "reopening an existing worktree succeeds"
 has "reopening" "the reopen path is announced"
@@ -1209,9 +1188,33 @@ has "reopening" "the reopen path is announced"
                               || _pass "reopening does not re-run setup"
 [[ -f "$HOME/Code/Org/repo-o5/a.env" ]] && _fail "reopening does not re-copy the manifest" \
                                         || _pass "reopening does not re-copy the manifest"
-[[ -s "$WLOG" ]] && _fail "reopening invokes wtcp not at all" \
-                 || _pass "reopening invokes wtcp not at all"
 dlogged "--worktree $REPO $HOME/Code/Org/repo-o5" "reopening still hands off to dev"
+
+# Locked at creation (spec §3): a failed setup never reaches dev, which used to be the
+# only place the lock was applied.
+setup
+mkhook "$REPO" '#!/bin/sh
+exit 5'
+run "$REPO" wt lk1
+rc_is 1 "LK1 a failed setup fails wt"
+eq "$(lock_reason_of "$HOME/Code/Org/repo-lk1")" "wt-managed; remove with command wt-rm" \
+  "LK1 a new branch's worktree is locked from creation"
+
+setup
+git -C "$REPO" branch lk2
+mkhook "$REPO" '#!/bin/sh
+exit 5'
+run "$REPO" wt lk2
+eq "$(lock_reason_of "$HOME/Code/Org/repo-lk2")" "wt-managed; remove with command wt-rm" \
+  "LK2 an existing branch's new worktree is locked from creation"
+mkhook "$REPO" '#!/bin/sh
+exit 0'
+run "$REPO" wt-prepare lk2
+rc_is 0 "LK3 wt-prepare works on a worktree locked at creation"
+run "$REPO" wt-rm lk2
+rc_is 0 "LK4 wt-rm removes a worktree locked at creation"
+[[ -d "$HOME/Code/Org/repo-lk2" ]] && _fail "LK4 the locked checkout is gone" \
+                                   || _pass "LK4 the locked checkout is gone"
 
 print -r -- "O. wt-rm teardown"
 setup
@@ -1599,7 +1602,9 @@ rc_is 128 "Herdr's one-force native removal cannot bypass the lifecycle lock"
 setup
 print -r -- "env.local" > "$REPO/.worktreeinclude"
 print -r -- "secret" > "$REPO/env.local"
-MOCK_WTCP_RC=1 run "$REPO" wt broken
+chmod 000 "$REPO/env.local"
+run "$REPO" wt broken
+chmod 600 "$REPO/env.local"
 rc_is 1 "wt propagates preparation failure"
 dunlogged "--worktree" "a half-prepared checkout is not opened in Herdr"
 [[ -d "$HOME/Code/Org/repo-broken" ]] \
@@ -1755,119 +1760,237 @@ hasnt "is not a registered worktree" \
 print -r -- ""
 print -r -- "U. wt-rm — Herdr workspace shutdown and persisted-state safety"
 
-# Every running session is inspected. Native provenance and pane cwd are both valid
-# evidence: the latter catches a plain workspace opened by hand in the checkout.
+# U1: the workspace whose provenance is the checkout is closed, and removal proceeds.
 setup
 run "$REPO" wt herdr-close
 HCLOSE="$HOME/Code/Org/repo-herdr-close"
-export MOCK_H_SESSION_LIST="{\"sessions\":[
-  {\"default\":true,\"name\":\"default\",\"running\":true,\"session_dir\":\"$ROOTTMP/default\"},
-  {\"default\":false,\"name\":\"team\",\"running\":true,\"session_dir\":\"$ROOTTMP/team\"}
-]}"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)")"
 export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[
-  {\"workspace_id\":\"w7\",\"worktree\":{\"checkout_path\":\"$HCLOSE\",\"is_linked_worktree\":true}}
-]}}"
-export MOCK_H_PANES="{\"result\":{\"panes\":[
-  {\"workspace_id\":\"w7\",\"cwd\":\"$HCLOSE/src\"}
-]}}"
+  {\"workspace_id\":\"w7\",\"label\":\"herdr-close\",\"worktree\":{\"checkout_path\":\"$HCLOSE\",\"is_linked_worktree\":true}}]}}"
+export MOCK_H_PANES="{\"result\":{\"panes\":[{\"workspace_id\":\"w7\",\"pane_id\":\"w7:p1\",\"cwd\":\"$HCLOSE/src\"}]}}"
 run "$REPO" wt-rm herdr-close
-rc_is 0 "wt-rm closes matching Herdr workspaces before removing the checkout"
-hlogged "workspace close w7" "the default Herdr workspace is closed"
-hlogged "--session team workspace close w7" "a matching named-session workspace is also closed"
-[[ -d "$HCLOSE" ]] && _fail "the checkout is removed after every Herdr close succeeds" \
-                        || _pass "the checkout is removed after every Herdr close succeeds"
+rc_is 0 "U1 wt-rm closes the checkout's own workspace and removes it"
+hlogged "workspace close w7" "U1 the workspace whose provenance is the checkout is closed"
+[[ -d "$HCLOSE" ]] && _fail "U1 the checkout is removed" || _pass "U1 the checkout is removed"
 
-# A close failure is destructive-boundary failure: keep the checkout and skip teardown
-# and Git removal rather than pretending Herdr was absent.
+# U2 (bug 1): a pane of the PRIMARY's workspace that cd'd into the checkout must not get
+# the primary's workspace closed. Refuse, and close nothing at all.
+setup
+mkhook "$REPO" '#!/bin/sh
+[ "$1" = teardown ] && touch "$WT_MAIN/foreign-teardown-ran"
+exit 0'
+run "$REPO" wt foreign-pane
+HFOREIGN="$HOME/Code/Org/repo-foreign-pane"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)")"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[
+  {\"workspace_id\":\"w1\",\"label\":\"Org/repo\",\"worktree\":{\"checkout_path\":\"$REPO\",\"is_linked_worktree\":false}},
+  {\"workspace_id\":\"w7\",\"label\":\"foreign-pane\",\"worktree\":{\"checkout_path\":\"$HFOREIGN\",\"is_linked_worktree\":true}}]}}"
+export MOCK_H_PANES="{\"result\":{\"panes\":[
+  {\"workspace_id\":\"w1\",\"pane_id\":\"w1:p2\",\"cwd\":\"$HFOREIGN/app\"},
+  {\"workspace_id\":\"w7\",\"pane_id\":\"w7:p1\",\"cwd\":\"$HFOREIGN\"}]}}"
+run "$REPO" wt-rm foreign-pane
+rc_is 1 "U2 a pane of another workspace inside the checkout refuses removal"
+has "w1:p2" "U2 the refusal names the pane"
+has "workspace w1 'Org/repo'" "U2 the refusal names the other workspace"
+hunlogged "workspace close" "U2 nothing is closed, not even the checkout's own workspace"
+[[ -f "$REPO/foreign-teardown-ran" ]] && _fail "U2 teardown is skipped" || _pass "U2 teardown is skipped"
+[[ -d "$HFOREIGN" ]] && _pass "U2 the checkout survives" || _fail "U2 the checkout survives"
+
+# U3: a workspace with no provenance at all (made by hand) is never closed for a pane cwd.
+setup
+run "$REPO" wt plain-ws
+HPLAIN="$HOME/Code/Org/repo-plain-ws"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)")"
+export MOCK_H_WORKSPACES='{"result":{"workspaces":[{"workspace_id":"w9","label":"scratch"}]}}'
+export MOCK_H_PANES="{\"result\":{\"panes\":[{\"workspace_id\":\"w9\",\"pane_id\":\"w9:p1\",\"cwd\":\"$HPLAIN/deep\"}]}}"
+run "$REPO" wt-rm plain-ws
+rc_is 1 "U3 a pane cwd alone never makes a workspace closable"
+hunlogged "workspace close" "U3 the provenance-less workspace is not closed"
+
+# U4: a workspace whose provenance is a nested repository inside the checkout refuses.
+setup
+run "$REPO" wt nested
+HNEST="$HOME/Code/Org/repo-nested"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)")"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[
+  {\"workspace_id\":\"w4\",\"label\":\"vendored\",\"worktree\":{\"checkout_path\":\"$HNEST/vendor/lib\",\"is_linked_worktree\":false}}]}}"
+export MOCK_H_PANES='{"result":{"panes":[]}}'
+run "$REPO" wt-rm nested
+rc_is 1 "U4 a nested repository's workspace refuses removal"
+has "inside the checkout" "U4 the refusal says why"
+hunlogged "workspace close" "U4 nothing is closed"
+
+# U5: any named session other than $HERDR_SESSION refuses before anything is read or closed.
+setup
+run "$REPO" wt named
+HNAMED="$HOME/Code/Org/repo-named"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)" "$(session_json team false true)")"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[{\"workspace_id\":\"w7\",\"worktree\":{\"checkout_path\":\"$HNAMED\"}}]}}"
+export MOCK_H_PANES='{"result":{"panes":[]}}'
+run "$REPO" wt-rm named
+rc_is 1 "U5 a named Herdr session refuses removal"
+has "session 'team'" "U5 the refusal names the session"
+hunlogged "workspace close" "U5 nothing is closed"
+[[ -d "$HNAMED" ]] && _pass "U5 the checkout survives" || _fail "U5 the checkout survives"
+
+# U6: the session named by $HERDR_SESSION is a target alongside the default.
+setup
+run "$REPO" wt targeted
+HTGT="$HOME/Code/Org/repo-targeted"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)" "$(session_json team false true)")"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[{\"workspace_id\":\"w7\",\"worktree\":{\"checkout_path\":\"$HTGT\"}}]}}"
+export MOCK_H_PANES='{"result":{"panes":[]}}'
+HERDR_SESSION=team run "$REPO" wt-rm targeted
+rc_is 0 "U6 the HERDR_SESSION session is handled, not refused"
+hlogged "--session team workspace close w7" "U6 its own workspace is closed"
+hlogged "--session default workspace close w7" "U6 the default session's own workspace is closed too"
+
+# U7: running wt-rm from inside the workspace it would close refuses.
+setup
+run "$REPO" wt selfclose
+HSELF="$HOME/Code/Org/repo-selfclose"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)")"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[{\"workspace_id\":\"w7\",\"worktree\":{\"checkout_path\":\"$HSELF\"}}]}}"
+export MOCK_H_PANES='{"result":{"panes":[]}}'
+HERDR_WORKSPACE_ID=w7 HERDR_SOCKET_PATH="$ROOTTMP/default.sock" run "$REPO" wt-rm selfclose
+rc_is 1 "U7 wt-rm refuses to close the workspace it runs in"
+has "run wt-rm from another workspace" "U7 the refusal says what to do"
+hunlogged "workspace close" "U7 nothing is closed"
+
+# U8: HERDR_SESSION does not hide the caller's own session from the self-close check.
+setup
+run "$REPO" wt selfclose2
+HSELF2="$HOME/Code/Org/repo-selfclose2"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)" "$(session_json team false true)")"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[{\"workspace_id\":\"w7\",\"worktree\":{\"checkout_path\":\"$HSELF2\"}}]}}"
+export MOCK_H_PANES='{"result":{"panes":[]}}'
+export MOCK_H_TEAM_WORKSPACES='{"result":{"workspaces":[]}}' MOCK_H_TEAM_PANES='{"result":{"panes":[]}}'
+HERDR_SESSION=team HERDR_WORKSPACE_ID=w7 HERDR_SOCKET_PATH="$ROOTTMP/default.sock" \
+  run "$REPO" wt-rm selfclose2
+rc_is 1 "U8 the caller's session is found by socket, not by HERDR_SESSION"
+hunlogged "workspace close" "U8 nothing is closed"
+
+# U9: the converse — a caller in another session may close the default's workspace w7.
+setup
+run "$REPO" wt otherses
+HOTHER="$HOME/Code/Org/repo-otherses"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)" "$(session_json team false true)")"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[{\"workspace_id\":\"w7\",\"worktree\":{\"checkout_path\":\"$HOTHER\"}}]}}"
+export MOCK_H_PANES='{"result":{"panes":[]}}'
+export MOCK_H_TEAM_WORKSPACES='{"result":{"workspaces":[]}}' MOCK_H_TEAM_PANES='{"result":{"panes":[]}}'
+HERDR_SESSION=team HERDR_WORKSPACE_ID=w7 HERDR_SOCKET_PATH="$ROOTTMP/team.sock" \
+  run "$REPO" wt-rm otherses
+rc_is 0 "U9 a same-numbered workspace in another session is not the caller's"
+hlogged "workspace close w7" "U9 the default session's own workspace is closed"
+
+# U10 (review focus 1): provenance reported through a symlinked path is still own.
+setup
+run "$REPO" wt linked-path
+HLINK="$HOME/Code/Org/repo-linked-path"
+ln -s "$HOME/Code" "$ROOTTMP/codelink"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)")"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[{\"workspace_id\":\"w7\",\"worktree\":{\"checkout_path\":\"$ROOTTMP/codelink/Org/repo-linked-path\"}}]}}"
+export MOCK_H_PANES='{"result":{"panes":[]}}'
+run "$REPO" wt-rm linked-path
+rc_is 0 "U10 provenance through a symlink resolves to the checkout"
+hlogged "workspace close w7" "U10 the symlink-reported workspace is closed as own"
+
+# U11 (review focus 5): HERDR_SESSION naming no listed session changes nothing.
+setup
+run "$REPO" wt ghost
+HGHOST="$HOME/Code/Org/repo-ghost"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)")"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[{\"workspace_id\":\"w7\",\"worktree\":{\"checkout_path\":\"$HGHOST\"}}]}}"
+export MOCK_H_PANES='{"result":{"panes":[]}}'
+HERDR_SESSION=ghost run "$REPO" wt-rm ghost
+rc_is 0 "U11 a HERDR_SESSION with no matching session is not a refusal"
+
+# U19: with HERDR_SESSION naming another session, the default session is still the one
+# read for the default's occupancy. A bare call there would read team and miss w1:p2.
+setup
+run "$REPO" wt routed
+HROUTED="$HOME/Code/Org/repo-routed"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)" "$(session_json team false true)")"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[
+  {\"workspace_id\":\"w1\",\"label\":\"Org/repo\",\"worktree\":{\"checkout_path\":\"$REPO\"}}]}}"
+export MOCK_H_PANES="{\"result\":{\"panes\":[{\"workspace_id\":\"w1\",\"pane_id\":\"w1:p2\",\"cwd\":\"$HROUTED\"}]}}"
+export MOCK_H_TEAM_WORKSPACES='{"result":{"workspaces":[]}}' MOCK_H_TEAM_PANES='{"result":{"panes":[]}}'
+HERDR_SESSION=team run "$REPO" wt-rm routed
+rc_is 1 "U19 the default session is read explicitly even when HERDR_SESSION names another"
+has "w1:p2" "U19 the default session's foreign pane is found"
+hlogged "--session default workspace list" "U19 the default session is addressed by name"
+
+# U12: a close failure keeps the checkout and skips teardown.
 setup
 mkhook "$REPO" '#!/bin/sh
 [ "$1" = teardown ] && touch "$WT_MAIN/herdr-close-teardown-ran"
 exit 0'
 run "$REPO" wt herdr-fail
 HFAIL="$HOME/Code/Org/repo-herdr-fail"
-export MOCK_H_SESSION_LIST="{\"sessions\":[{\"default\":true,\"name\":\"default\",\"running\":true,\"session_dir\":\"$ROOTTMP/default\"}]}"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)")"
 export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[{\"workspace_id\":\"w8\",\"worktree\":{\"checkout_path\":\"$HFAIL\"}}]}}"
 export MOCK_H_PANES='{"result":{"panes":[]}}' MOCK_H_CLOSE_RC=1
 run "$REPO" wt-rm herdr-fail
-rc_is 1 "a failed Herdr workspace close aborts removal"
-has "could not close Herdr workspace" "the close failure names the unsafe live workspace"
-# Removal is strictly after teardown in wt-rm's sequence, so "teardown never ran" also
-# proves Git removal was never reached. Registration is the direct observation a bare
-# `-d` check cannot make: a directory can survive a *failed* removal, but a
-# still-registered worktree proves `git worktree remove` did not succeed.
-[[ -f "$REPO/herdr-close-teardown-ran" ]] && _fail "teardown is skipped after a Herdr close failure" \
-                                                  || _pass "teardown is skipped after a Herdr close failure"
-[[ -d "$HFAIL" ]] && _pass "the checkout survives a Herdr close failure" \
-                       || _fail "the checkout survives a Herdr close failure"
+rc_is 1 "U12 a failed Herdr workspace close aborts removal"
+has "could not close Herdr workspace" "U12 the close failure is named"
+[[ -f "$REPO/herdr-close-teardown-ran" ]] && _fail "U12 teardown is skipped" || _pass "U12 teardown is skipped"
 run "$REPO" git worktree list --porcelain
-has "$HFAIL" "the checkout is still a registered worktree after a Herdr close failure"
+has "$HFAIL" "U12 the checkout is still a registered worktree"
 
-# Some Herdr commands historically returned an error envelope with exit 0. Closure
-# must inspect both channels or this looks successful and removal continues.
+# U13: an exit-zero error envelope from close is a close failure.
 setup
 run "$REPO" wt herdr-envelope
 HENVELOPE="$HOME/Code/Org/repo-herdr-envelope"
-export MOCK_H_SESSION_LIST="{\"sessions\":[{\"default\":true,\"name\":\"default\",\"running\":true,\"session_dir\":\"$ROOTTMP/default\"}]}"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)")"
 export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[{\"workspace_id\":\"w8e\",\"worktree\":{\"checkout_path\":\"$HENVELOPE\"}}]}}"
 export MOCK_H_PANES='{"result":{"panes":[]}}' \
        MOCK_H_CLOSE_OUT='{"error":{"code":"busy","message":"not closed"}}'
 run "$REPO" wt-rm herdr-envelope
-rc_is 1 "an exit-zero error envelope from workspace close aborts removal"
-has "could not close Herdr workspace" "the error envelope is reported as a close failure"
-[[ -d "$HENVELOPE" ]] && _pass "the checkout survives a Herdr close error envelope" \
-                           || _fail "the checkout survives a Herdr close error envelope"
+rc_is 1 "U13 an exit-zero error envelope from close aborts removal"
+[[ -d "$HENVELOPE" ]] && _pass "U13 the checkout survives" || _fail "U13 the checkout survives"
 
-# Closing Herdr can flush files, just as the previous multiplexer's teardown could.
-# Check 2 must see that dirt.
+# U14: dirt flushed by closing the own workspace is caught by check 2.
 setup
 mkhook "$REPO" '#!/bin/sh
 [ "$1" = teardown ] && touch "$WT_MAIN/herdr-flush-teardown-ran"
 exit 0'
 run "$REPO" wt herdr-flush
 HFLUSH="$HOME/Code/Org/repo-herdr-flush"
-export MOCK_H_SESSION_LIST="{\"sessions\":[{\"default\":true,\"name\":\"default\",\"running\":true,\"session_dir\":\"$ROOTTMP/default\"}]}"
-export MOCK_H_WORKSPACES='{"result":{"workspaces":[]}}'
-export MOCK_H_PANES="{\"result\":{\"panes\":[{\"workspace_id\":\"w9\",\"cwd\":\"$HFLUSH/deep\"}]}}"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)")"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[{\"workspace_id\":\"w9\",\"worktree\":{\"checkout_path\":\"$HFLUSH\"}}]}}"
+export MOCK_H_PANES="{\"result\":{\"panes\":[{\"workspace_id\":\"w9\",\"pane_id\":\"w9:p1\",\"cwd\":\"$HFLUSH/deep\"}]}}"
 export MOCK_H_CLOSE_TOUCH="$HFLUSH/flushed-by-herdr.txt"
 run "$REPO" wt-rm herdr-flush
-rc_is 1 "dirt flushed by Herdr shutdown is caught and removal is refused"
-has "closing Herdr workspaces left changes" "the existing post-shutdown check reports the flush"
-[[ -f "$REPO/herdr-flush-teardown-ran" ]] && _fail "teardown does not run after a Herdr flush" \
-                                                   || _pass "teardown does not run after a Herdr flush"
+rc_is 1 "U14 dirt flushed by Herdr shutdown is caught"
+has "closing Herdr workspaces left changes" "U14 check 2 reports the flush"
+[[ -f "$REPO/herdr-flush-teardown-ran" ]] && _fail "U14 teardown does not run" || _pass "U14 teardown does not run"
 
-# A stopped session has no processes to close, but its persisted workspace would be
-# restored later into a deleted cwd. Refuse and tell the user to start that session;
-# never edit Herdr's versioned session.json behind its back.
+# U15: a stopped default session that remembers the checkout refuses.
 setup
 run "$REPO" wt herdr-stopped
 HSTOP="$HOME/Code/Org/repo-herdr-stopped"
-mkdir -p "$ROOTTMP/stopped"
+mkdir -p "$ROOTTMP/default"
 print -r -- "{\"version\":3,\"workspaces\":[{\"id\":\"w10\",\"tabs\":[{\"panes\":{\"1\":{\"cwd\":\"$HSTOP\"}}}]}]}" \
-  > "$ROOTTMP/stopped/session.json"
-export MOCK_H_SESSION_LIST="{\"sessions\":[{\"default\":false,\"name\":\"sleeping\",\"running\":false,\"session_dir\":\"$ROOTTMP/stopped\"}]}"
+  > "$ROOTTMP/default/session.json"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true false)")"
 run "$REPO" wt-rm herdr-stopped
-rc_is 1 "persisted state in a stopped Herdr session blocks removal"
-has "stopped Herdr session 'sleeping'" "the refusal identifies the session to start"
-has "herdr session attach sleeping" "the refusal gives the safe recovery command"
-[[ -d "$HSTOP" ]] && _pass "the checkout survives while stopped Herdr state refers to it" \
-                       || _fail "the checkout survives while stopped Herdr state refers to it"
+rc_is 1 "U15 persisted state in the stopped default session blocks removal"
+has "stopped Herdr session 'default'" "U15 the refusal identifies the session"
+has "Start it with: herdr" "U15 the refusal gives the recovery command"
+[[ -d "$HSTOP" ]] && _pass "U15 the checkout survives" || _fail "U15 the checkout survives"
 
-# This guard must be selective: unrelated stopped state is ordinary and should not
-# force Herdr to be running for every removal.
+# U16: unrelated stopped state does not block removal.
 setup
 run "$REPO" wt unrelated-state
 UNRELATED="$HOME/Code/Org/repo-unrelated-state"
-mkdir -p "$ROOTTMP/stopped"
+mkdir -p "$ROOTTMP/default"
 print -r -- '{"version":3,"workspaces":[{"id":"w1","tabs":[{"panes":{"1":{"cwd":"/somewhere/else"}}}]}]}' \
-  > "$ROOTTMP/stopped/session.json"
-export MOCK_H_SESSION_LIST="{\"sessions\":[{\"default\":false,\"name\":\"sleeping\",\"running\":false,\"session_dir\":\"$ROOTTMP/stopped\"}]}"
+  > "$ROOTTMP/default/session.json"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true false)")"
 run "$REPO" wt-rm unrelated-state
-rc_is 0 "unrelated stopped Herdr state does not block removal"
-[[ -d "$UNRELATED" ]] && _fail "a checkout unrelated to that stopped state is removed normally" \
-                           || _pass "a checkout unrelated to that stopped state is removed normally"
+rc_is 0 "U16 unrelated stopped Herdr state does not block removal"
 
-# Session discovery is itself a safety boundary. Invalid JSON or a changed persisted
-# schema must fail closed before anything is disrupted.
+# U17: invalid session discovery fails closed before anything is disrupted.
 setup
 mkhook "$REPO" '#!/bin/sh
 [ "$1" = teardown ] && touch "$WT_MAIN/bad-state-teardown-ran"
@@ -1876,36 +1999,73 @@ run "$REPO" wt bad-herdr-state
 BADSTATE="$HOME/Code/Org/repo-bad-herdr-state"
 export MOCK_H_SESSION_LIST='not-json'
 run "$REPO" wt-rm bad-herdr-state
-rc_is 1 "invalid Herdr session discovery fails closed"
-has "invalid session list" "the malformed Herdr response is diagnosed"
-[[ -f "$REPO/bad-state-teardown-ran" ]] && _fail "teardown is skipped when Herdr discovery is invalid" \
-                                        || _pass "teardown is skipped when Herdr discovery is invalid"
-[[ -d "$BADSTATE" ]] && _pass "the checkout survives invalid Herdr discovery" \
-                          || _fail "the checkout survives invalid Herdr discovery"
-run "$REPO" git worktree list --porcelain
-has "$BADSTATE" "the checkout is still a registered worktree after invalid Herdr discovery"
+rc_is 1 "U17 invalid Herdr session discovery fails closed"
+has "invalid session list" "U17 the malformed response is diagnosed"
+[[ -f "$REPO/bad-state-teardown-ran" ]] && _fail "U17 teardown is skipped" || _pass "U17 teardown is skipped"
 
-# A session advertised as running but unreachable is not equivalent to a stopped
-# session. Treating server_not_running as absence would recreate the sandbox bug this
-# lifecycle already guards: live processes become invisible and the checkout is removed
-# underneath them.
+# U18: running-but-unreachable is not "stopped".
 setup
-mkhook "$REPO" '#!/bin/sh
-[ "$1" = teardown ] && touch "$WT_MAIN/unreachable-teardown-ran"
-exit 0'
 run "$REPO" wt unreachable-herdr
 UNREACHABLE="$HOME/Code/Org/repo-unreachable-herdr"
-export MOCK_H_SESSION_LIST="{\"sessions\":[{\"default\":true,\"name\":\"default\",\"running\":true,\"session_dir\":\"$ROOTTMP/default\"}]}"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)")"
 export MOCK_H_WORKSPACES='{"error":{"code":"server_not_running","message":"not reachable"}}'
 run "$REPO" wt-rm unreachable-herdr
-rc_is 1 "a running-but-unreachable Herdr session fails closed"
-has "reported running but its API is unreachable" "the Herdr reachability discrepancy is explicit"
-[[ -f "$REPO/unreachable-teardown-ran" ]] && _fail "teardown is skipped when Herdr is unreachable" \
-                                          || _pass "teardown is skipped when Herdr is unreachable"
-[[ -d "$UNREACHABLE" ]] && _pass "the checkout survives an unreachable Herdr server" \
-                             || _fail "the checkout survives an unreachable Herdr server"
-run "$REPO" git worktree list --porcelain
-has "$UNREACHABLE" "the checkout is still a registered worktree after an unreachable Herdr server"
+rc_is 1 "U18 a running-but-unreachable Herdr session fails closed"
+has "reported running but its API is unreachable" "U18 the discrepancy is explicit"
+[[ -d "$UNREACHABLE" ]] && _pass "U18 the checkout survives" || _fail "U18 the checkout survives"
+
+# U20: a refusal found only in the SECOND target session still blocks every close. The
+# default session's own w7 must stay open.
+setup
+run "$REPO" wt second-ses
+HSECOND="$HOME/Code/Org/repo-second-ses"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)" "$(session_json team false true)")"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[{\"workspace_id\":\"w7\",\"worktree\":{\"checkout_path\":\"$HSECOND\"}}]}}"
+export MOCK_H_PANES='{"result":{"panes":[]}}'
+export MOCK_H_TEAM_WORKSPACES='{"result":{"workspaces":[{"workspace_id":"w5","label":"scratch"}]}}'
+export MOCK_H_TEAM_PANES="{\"result\":{\"panes\":[{\"workspace_id\":\"w5\",\"pane_id\":\"w5:p3\",\"cwd\":\"$HSECOND/lib\"}]}}"
+HERDR_SESSION=team run "$REPO" wt-rm second-ses
+rc_is 1 "U20 a foreign pane in the second session refuses removal"
+has "w5:p3" "U20 the refusal names the pane"
+has "session 'team'" "U20 the refusal names the session"
+hunlogged "workspace close" "U20 nothing is closed in either session"
+[[ -d "$HSECOND" ]] && _pass "U20 the checkout survives" || _fail "U20 the checkout survives"
+
+# U21: a stopped second session that remembers the checkout blocks every close too.
+setup
+run "$REPO" wt second-stopped
+HSTOP2="$HOME/Code/Org/repo-second-stopped"
+mkdir -p "$ROOTTMP/team"
+print -r -- "{\"version\":3,\"workspaces\":[{\"id\":\"w3\",\"tabs\":[{\"panes\":{\"1\":{\"cwd\":\"$HSTOP2\"}}}]}]}" \
+  > "$ROOTTMP/team/session.json"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)" "$(session_json team false false)")"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[{\"workspace_id\":\"w7\",\"worktree\":{\"checkout_path\":\"$HSTOP2\"}}]}}"
+export MOCK_H_PANES='{"result":{"panes":[]}}'
+HERDR_SESSION=team run "$REPO" wt-rm second-stopped
+rc_is 1 "U21 a stopped second session remembering the checkout refuses removal"
+has "stopped Herdr session 'team'" "U21 the refusal identifies the session"
+has "Start it with: herdr session attach team" "U21 the refusal gives the attach command"
+hunlogged "workspace close" "U21 nothing is closed in either session"
+[[ -d "$HSTOP2" ]] && _pass "U21 the checkout survives" || _fail "U21 the checkout survives"
+
+# U22: the stopped default session is listed FIRST and the running one LAST, so the
+# caller's `session_dir` still holds the running session's directory when the stopped one
+# is inspected. `_wt_stopped_herdr_has_checkout` must read the state under its own $2; a
+# combined `local` line would read the caller's directory and fail open.
+setup
+run "$REPO" wt stopped-first
+HSTOP3="$HOME/Code/Org/repo-stopped-first"
+mkdir -p "$ROOTTMP/default"
+print -r -- "{\"version\":3,\"workspaces\":[{\"id\":\"w3\",\"tabs\":[{\"panes\":{\"1\":{\"cwd\":\"$HSTOP3\"}}}]}]}" \
+  > "$ROOTTMP/default/session.json"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true false)" "$(session_json team false true)")"
+export MOCK_H_TEAM_WORKSPACES='{"result":{"workspaces":[]}}'
+export MOCK_H_TEAM_PANES='{"result":{"panes":[]}}'
+HERDR_SESSION=team run "$REPO" wt-rm stopped-first
+rc_is 1 "U22 a stopped default session listed before a running one still refuses removal"
+has "stopped Herdr session 'default'" "U22 the refusal identifies the stopped session"
+hunlogged "workspace close" "U22 nothing is closed"
+[[ -d "$HSTOP3" ]] && _pass "U22 the checkout survives" || _fail "U22 the checkout survives"
 
 # Library functions must use `builtin cd`: they must not depend on whatever an interactive
 # shell binds `cd` to, because the `zsh -ic` shells that Herdr popups run never reach a
@@ -1982,19 +2142,15 @@ eq "$(sed -n 1p "$LLOG")" "teardown-hook" "teardown runs before the process scan
 # Fail closed, like every other unverifiable state in this lifecycle: an unreadable
 # answer is not the same as an empty one.
 setup
-run "$REPO" wt no-lsof
-NOLSOF="$HOME/Code/Org/repo-no-lsof"
-# Simulating absence needs a stripped PATH, not a moved stub: lsof is really installed
-# on this machine, so hiding the stub just falls through to the real binary. herdr is
-# absent here too, which is a valid configuration and skips workspace shutdown
-# entirely — the process scan must still be reached.
-NOLSOFP=$(mkd)
-for b in env git mkdir; do ln -s "$(command -v $b)" "$NOLSOFP/$b"; done
-OUT="$(cd "$REPO" && source "$FUNCS" && export PATH="$NOLSOFP" && wt-rm no-lsof 2>&1)"; RC=$?
-rc_is 1 "a missing lsof aborts removal instead of silently skipping the scan"
-has "lsof is unavailable" "the abort names the missing tool"
-[[ -d "$NOLSOF" ]] && _pass "the checkout survives when processes cannot be detected" \
-                        || _fail "the checkout survives when processes cannot be detected"
+run "$REPO" wt no-teardown
+NOTD="$HOME/Code/Org/repo-no-teardown"
+NOTDP=$(mkd)
+for b in env git mkdir; do ln -s "$(command -v $b)" "$NOTDP/$b"; done
+OUT="$(cd "$REPO" && source "$FUNCS" && export PATH="$NOTDP" && wt-rm no-teardown 2>&1)"; RC=$?
+rc_is 1 "a missing wt-teardown aborts removal instead of skipping the scan"
+has "could not scan for processes" "the abort says the scan could not run"
+[[ -d "$NOTD" ]] && _pass "the checkout survives when processes cannot be scanned" \
+                 || _fail "the checkout survives when processes cannot be scanned"
 
 # Real lsof scanning every process always reports something — the running shell's own
 # cwd is in the answer. Nothing at all therefore means the scan failed, not that the
@@ -2009,109 +2165,6 @@ has "could not read the process list" "the empty listing is diagnosed as a failu
 [[ -d "$EMPTY" ]] && _pass "the checkout survives an empty process listing" \
                        || _fail "the checkout survives an empty process listing"
 
-# A cwd containing a newline would split into fragments that match no prefix — a
-# false negative, in the one direction this check must never fail. The p/c/f/n cycle
-# is what proves the parse is still aligned with what lsof actually emitted.
-setup
-run "$REPO" wt lsof-torn
-TORN="$HOME/Code/Org/repo-lsof-torn"
-export MOCK_LSOF_RAW='p1\nclaunchd\nn/\n'
-run "$REPO" wt-rm lsof-torn
-rc_is 1 "a broken lsof field cycle fails closed"
-has "could not read the process list" "the malformed listing is diagnosed"
-[[ -d "$TORN" ]] && _pass "the checkout survives a malformed process listing" \
-                      || _fail "the checkout survives a malformed process listing"
-
-# Every assertion above drives a fixture, which can only ever prove the parser agrees
-# with the harness. This one runs the real lsof against real processes, and is the only
-# thing that can catch the invocation and the parse drifting apart from what the binary
-# actually emits — the class of bug a stub is structurally blind to. Both directions are
-# asserted from one scan: the process inside must appear, and the one in the sibling
-# path that merely shares a prefix must not.
-setup
-run "$REPO" wt live-real
-REALWT="$HOME/Code/Org/repo-live-real"
-mkdir -p "$REALWT/deep" "${REALWT}-extra"
-( builtin cd "$REALWT/deep" && exec sleep 60 ) &!
-INSIDE=$!
-( builtin cd "${REALWT}-extra" && exec sleep 60 ) &!
-OUTSIDE=$!
-sleep 1
-OUT="$(builtin cd "$REPO" && source "$FUNCS" && PATH="${REALLSOF:h}:$PATH" \
-       _wt_live_processes "$REALWT" 2>&1)"; RC=$?
-kill $INSIDE $OUTSIDE 2>/dev/null
-rc_is 0 "the real lsof invocation is read successfully"
-has "$INSIDE" "real lsof reports a real process whose cwd is inside the checkout"
-hasnt "$OUTSIDE" "real lsof does not report a real process in the sibling path"
-
-# lsof renders a pathname, it does not report one: a backslash is printed as two
-# characters. Comparing $dest to that rendering verbatim silently matches nothing, and
-# the direction it fails in is a checkout removed while its occupant is still in it.
-# A backslash is the case a real checkout path can plausibly contain.
-setup
-BSDIR="$ROOTTMP/back\\slash-checkout"        # one real backslash
-BSRENDER="$ROOTTMP/back\\\\slash-checkout" # two, as lsof prints it
-mkdir -p "$BSDIR"
-export MOCK_LSOF_SPEC="$(lsof_spec 1 launchd / 4242 daemon "$BSRENDER")"
-OUT="$(builtin cd "$REPO" && source "$FUNCS" && _wt_live_processes "$BSDIR" 2>&1)"; RC=$?
-rc_is 0 "a backslash in the checkout path is read successfully"
-has "4242" "a checkout path containing a backslash is matched against lsof's rendering"
-
-# The rest of the rendering — \n, \t, caret notation — is not modelled, so a control
-# character in the checkout path cannot be compared at all. Fail closed rather than
-# compare a path against a rendering of it that will never be equal.
-setup
-CTLDIR="$ROOTTMP/ctrl"$'\n'"checkout"
-mkdir -p "$CTLDIR"
-export MOCK_LSOF_SPEC="$(lsof_spec 1 launchd / 4243 daemon "$ROOTTMP/ctrl\\ncheckout")"
-OUT="$(builtin cd "$REPO" && source "$FUNCS" && _wt_live_processes "$CTLDIR" 2>&1)"; RC=$?
-rc_is 1 "a control character in the checkout path fails closed"
-has "control character" "the refusal names why the comparison cannot be made"
-
-# lsof's rendering depends on the caller's locale: under a UTF-8 locale é is printed
-# verbatim, under LC_ALL=C the same directory comes back as caf\xc3\xa9. A comparison
-# that assumed either one would be right only for the environment it was written in, so
-# the locale is pinned and its rendering modelled. The fixture supplies the pinned form.
-setup
-U8DIR="$ROOTTMP/café-checkout"
-mkdir -p "$U8DIR"
-export MOCK_LSOF_SPEC="$(lsof_spec 1 launchd / 4244 daemon "$ROOTTMP/caf\\xc3\\xa9-checkout")"
-OUT="$(builtin cd "$REPO" && source "$FUNCS" && _wt_live_processes "$U8DIR" 2>&1)"; RC=$?
-rc_is 0 "a non-ASCII checkout path is read successfully"
-has "4244" "a non-ASCII checkout path is matched against the pinned rendering"
-
-# End to end, against the real binary, from both locales. The property under test is
-# that the answer does not depend on the caller's environment, so one locale cannot
-# establish it: under LC_ALL=C the binary escapes the UTF-8 bytes and under a UTF-8
-# locale it does not, and an implementation that simply inherited the caller's locale
-# would pass whichever of the two it happened to be written against.
-setup
-REALU8="$ROOTTMP/réal-çheckout"
-mkdir -p "$REALU8/deep"
-( builtin cd "$REALU8/deep" && exec sleep 90 ) &!
-U8PID=$!
-sleep 1
-for caller_locale in C en_US.UTF-8; do
-  OUT="$(builtin cd "$REPO" && source "$FUNCS" \
-         && LC_ALL="$caller_locale" PATH="${REALLSOF:h}:$PATH" \
-            _wt_live_processes "$REALU8" 2>&1)"; RC=$?
-  rc_is 0 "the real scan of a non-ASCII checkout is read successfully (LC_ALL=$caller_locale)"
-  has "$U8PID" "a real process in a non-ASCII checkout is found (LC_ALL=$caller_locale)"
-done
-kill $U8PID 2>/dev/null
-
-# A path that merely contains the two characters \ and n is an ordinary path, and must
-# not be mistaken for a record boundary by any parse.
-setup
-run "$REPO" wt lsof-literal
-LITERAL="$HOME/Code/Org/repo-lsof-literal"
-export MOCK_LSOF_SPEC="$(lsof_spec 55 daemon "/outside\\np99\\ncphantom\\nfcwd\\nn$LITERAL")"
-run "$REPO" wt-rm lsof-literal
-rc_is 0 "a rendered path outside the checkout forges no process inside it"
-hasnt "phantom" "the escaped text never becomes a record"
-[[ -d "$LITERAL" ]] && _fail "the checkout is removed when only a rendering names it" \
-                         || _pass "the checkout is removed when only a rendering names it"
-
 # The status that matters is the one belonging to the listing actually parsed. Reading
 # the listing in a second, unchecked invocation means a scan that failed *after*
 # emitting some of its records is indistinguishable from a clean checkout — the records
@@ -2122,53 +2175,6 @@ ONCE="$HOME/Code/Org/repo-lsof-once"
 run "$REPO" wt-rm lsof-once
 rc_is 0 "the single-invocation fixture removes the worktree normally"
 eq "$(grep -c . "$LLOG")" "1" "the process list is read in exactly one invocation"
-
-# Prefix-shaped is not well-formed. A record whose pathname field is present but empty
-# satisfies "starts with n" and yields an empty cwd, which matches nothing — so a
-# process that IS in the checkout, whose path lsof could not resolve, reads as no
-# process at all. Same for a relative value: every cwd lsof reports is absolute, and
-# anything else means the field is not what it is being read as.
-setup
-run "$REPO" wt lsof-emptyname
-EMPTYNAME="$HOME/Code/Org/repo-lsof-emptyname"
-export MOCK_LSOF_SPEC="$(lsof_spec 1 launchd / 4242 daemon "")"
-run "$REPO" wt-rm lsof-emptyname
-rc_is 1 "a record with an empty pathname field fails closed"
-has "could not read the process list" "the empty pathname is diagnosed as unreadable"
-[[ -d "$EMPTYNAME" ]] && _pass "the checkout survives an empty pathname field" \
-                           || _fail "the checkout survives an empty pathname field"
-
-setup
-run "$REPO" wt lsof-relname
-RELNAME="$HOME/Code/Org/repo-lsof-relname"
-export MOCK_LSOF_SPEC="$(lsof_spec 1 launchd / 4242 daemon "not/absolute")"
-run "$REPO" wt-rm lsof-relname
-rc_is 1 "a record with a relative pathname fails closed"
-[[ -d "$RELNAME" ]] && _pass "the checkout survives a relative pathname field" \
-                         || _fail "the checkout survives a relative pathname field"
-
-# A pid is a number. Anything else in that field means the record is not the record it
-# is being read as, and reading the rest of it would be guessing.
-setup
-run "$REPO" wt lsof-badpid
-BADPID="$HOME/Code/Org/repo-lsof-badpid"
-export MOCK_LSOF_SPEC="$(lsof_spec 1 launchd / not-a-pid daemon /)"
-run "$REPO" wt-rm lsof-badpid
-rc_is 1 "a record with a non-numeric pid fails closed"
-has "could not read the process list" "the non-numeric pid is diagnosed as unreadable"
-[[ -d "$BADPID" ]] && _pass "the checkout survives a non-numeric pid" \
-                        || _fail "the checkout survives a non-numeric pid"
-
-# -d cwd is what makes every descriptor in the answer a cwd. If one is not, the request
-# and the reply have diverged and nothing below can be trusted to mean what it says.
-setup
-run "$REPO" wt lsof-notcwd
-NOTCWD="$HOME/Code/Org/repo-lsof-notcwd"
-export MOCK_LSOF_RAW='p1\000claunchd\000\nfmem\000n/\000\n'
-run "$REPO" wt-rm lsof-notcwd
-rc_is 1 "a descriptor other than cwd fails closed"
-[[ -d "$NOTCWD" ]] && _pass "the checkout survives an unexpected descriptor type" \
-                        || _fail "the checkout survives an unexpected descriptor type"
 
 # lsof exits nonzero both when it matches nothing and when it fails, but this
 # invocation scans every process rather than a path, so nonzero can only be failure.

@@ -28,3 +28,12 @@
 
 # oh-my-zsh's default dump name in $HOME, from before ZSH_COMPDUMP moved it.
 .zcompdump-*
+
+# The dev.layout plugin, retired 2026-10-01: `dev .` does what its action did. Its Herdr
+# registration is separate: `herdr plugin unlink dev.layout` once after apply.
+.config/herdr/plugin
+
+# Lock files leaked by dev-topology runs before 2026-10-01, which now keep their state
+# in a scratch directory. Both patterns match test fixtures only.
+.local/state/herdr-layout/*dev-live.*
+.local/state/herdr-layout/*scratchpad-probe*

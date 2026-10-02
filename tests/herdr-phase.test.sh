@@ -11,7 +11,7 @@
 #   2. A workspace accepts sequenced token reports from at most 32 DISTINCT sources for its
 #      lifetime, and clearing or expiry does not release a slot. Every report must therefore
 #      use the one stable --source; a per-run source id would exhaust a long-lived workspace.
-#   3. Exactly one of the four phase tokens may be set at a time, and the other three must be
+#   3. Exactly one of the three phase tokens may be set at a time, and the other two must be
 #      explicitly cleared. Herdr keeps a token until told otherwise, so a space that moves
 #      review -> merged would otherwise render both icons at once.
 #   4. The icons are Nerd Font private-use codepoints. A wrong codepoint renders as tofu in
@@ -41,13 +41,12 @@ fi
 T="$(mktemp -d "${TMPDIR:-/tmp}/herdr-phase-test.XXXXXX")"
 trap 'rm -rf "$T"' EXIT
 
-# The five icons, as bytes. Written as escapes rather than literals because this file travels
+# The four icons, as bytes. Written as escapes rather than literals because this file travels
 # through tools that silently drop private-use characters.
 ICON_BRANCH=$(printf '\xee\xb1\xaf')   # U+EC6F cod-git_branch
 ICON_MR=$(printf '\xee\xa9\xa4')       # U+EA64 cod-git_pull_request
 ICON_DRAFT=$(printf '\xee\xaf\x9b')    # U+EBDB cod-git_pull_request_draft
 ICON_MERGE=$(printf '\xee\xab\xbe')    # U+EAFE cod-git_merge
-ICON_FLAG=$(printf '\xee\xb0\xbf')     # U+EC3F cod-flag
 
 # ---------------------------------------------------------------- git fixture
 # One bare origin, one main checkout, and a linked worktree per phase we want to exercise.
@@ -226,7 +225,6 @@ run() { # run <args...> -> stdout+stderr, sets RC; each run starts a clean call 
   : > "$CALLS"
   OUT=$(PATH="$BIN:$PATH" \
         HERDR_PHASE_CACHE_DIR="$T/cache" \
-        HERDR_PHASE_STATE_DIR="$T/state" \
         HERDR_PHASE_TTL="${TTL:-120}" \
         bash "$PHASE" "$@" 2>&1); RC=$?
 }
@@ -238,9 +236,10 @@ echo "A. usage"
 run --help
 check "$RC" "0" "--help exits 0"
 case "$OUT" in *refresh*) _pass "--help documents refresh";; *) _fail "--help documents refresh";; esac
-case "$OUT" in *pin*) _pass "--help documents pin";; *) _fail "--help documents pin";; esac
+case "$OUT" in *pin*) _fail "--help no longer offers pin";; *) _pass "--help no longer offers pin";; esac
 run bogus-subcommand
 [ "$RC" -ne 0 ] && _pass "unknown subcommand is an error" || _fail "unknown subcommand is an error"
+run pin --workspace w2 parked; [ "$RC" -ne 0 ] && _pass "pin is gone" || _fail "pin is gone"
 
 echo
 echo "B. phase derivation"
@@ -309,16 +308,16 @@ BADSRC=$(grep -c -E "^herdr workspace report-metadata [^ ]+ --source herdr-phase
 TOTAL=$(grep -c -E "^herdr workspace report-metadata " "$CALLS")
 check "$BADSRC" "$TOTAL" "all $TOTAL reports use --source herdr-phase"
 
-# Herdr keeps a token until told otherwise, so the three unused tokens must be cleared on
+# Herdr keeps a token until told otherwise, so the two unused tokens must be cleared on
 # every report or a space that changes phase renders two icons at once.
 missing=0
 for w in w2 w3 w4 w5 w6 w7 w8 w10 w11 w12 w13 wA wB; do
   line="$(report_for $w)"
   set_count=$(printf '%s\n' "$line" | grep -o -- "--token " | wc -l | tr -d ' ')
   clear_count=$(printf '%s\n' "$line" | grep -o -- "--clear-token " | wc -l | tr -d ' ')
-  [ $((set_count + clear_count)) -eq 4 ] || missing=$((missing + 1))
+  [ $((set_count + clear_count)) -eq 3 ] || missing=$((missing + 1))
 done
-check "$missing" "0" "each report accounts for all four phase tokens"
+check "$missing" "0" "each report accounts for all three phase tokens"
 
 echo
 echo "D. MR lookups are cached per repo"
@@ -349,29 +348,6 @@ check "$(glab_calls)" "4" "--force bypasses the cache"
 TTL=0 run refresh
 check "$(glab_calls)" "4" "an expired cache is refetched"
 unset TTL
-
-echo
-echo "E. a pin overrides what git says"
-run pin --workspace w2 parked
-check "$RC" "0" "pin exits 0"
-run refresh
-case "$(report_for w2)" in *"--token parked=$ICON_FLAG"*) _pass "pinned space reports parked, not its git state";;
-  *) _fail "pinned space reports parked, not its git state (got: $(report_for w2))";; esac
-case "$(report_for w4)" in *"--token review=$ICON_MR !10"*) _pass "pinning one space leaves the others derived";;
-  *) _fail "pinning one space leaves the others derived";; esac
-
-run unpin --workspace w2
-check "$RC" "0" "unpin exits 0"
-run refresh
-case "$(report_for w2)" in *"--token active=$ICON_BRANCH"*) _pass "unpin restores the derived phase";;
-  *) _fail "unpin restores the derived phase (got: $(report_for w2))";; esac
-
-# A pin has to outlive the server restart that wipes the reported tokens, so it belongs on
-# disk rather than in Herdr.
-run pin --workspace w4 parked
-[ -n "$(find "$T/state" -type f 2>/dev/null)" ] && _pass "a pin is persisted outside Herdr" \
-  || _fail "a pin is persisted outside Herdr"
-run unpin --workspace w4
 
 echo
 echo "F. a single space can be refreshed on its own"
@@ -489,10 +465,14 @@ else
     || _fail "the focus hook refreshes only the focused space"
 
   # A token the sidebar never references is reported into a void.
-  for tok in active review merged parked; do
+  for tok in active review merged; do
     grep -q "token = \"[\$]$tok\"" "$CONF" \
       && _pass "sidebar renders \$$tok" || _fail "sidebar renders \$$tok"
   done
+  grep -q 'parked' "$CONF" && _fail "the sidebar no longer renders \$parked" \
+                           || _pass "the sidebar no longer renders \$parked"
+  grep -Eq 'pin-parked|"unpin"' "$MANIFEST" && _fail "the plugin no longer offers pin actions" \
+                                            || _pass "the plugin no longer offers pin actions"
   grep -q 'phase.sh refresh --force' "$CONF" \
     && _pass "a keybinding forces a refresh" || _fail "a keybinding forces a refresh"
 fi

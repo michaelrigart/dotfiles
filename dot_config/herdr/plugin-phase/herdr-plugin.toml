@@ -2,9 +2,8 @@
 # Managed by chezmoi (source: dot_config/herdr/plugin-phase/herdr-plugin.toml).
 # Registered with: herdr plugin link ~/.config/herdr/plugin-phase
 #
-# Deliberately a second plugin rather than actions bolted onto dev.layout: registration is
-# GLOBAL across named sessions and rollback is per-id, so `herdr plugin unlink dev.phase`
-# must be able to remove the badges without touching the layout plugin.
+# Deliberately its own plugin: registration is GLOBAL across named sessions and rollback
+# is per-id, so `herdr plugin unlink dev.phase` removes the badges and nothing else.
 #
 # The [[startup]] hook is the whole reason the badges persist. Reported tokens are display-only
 # and do NOT survive a server restart, so without a replay every space comes back blank. This
@@ -43,15 +42,3 @@ command = ["/bin/zsh", "-c", "exec \"$HOME/.config/herdr/phase.sh\" refresh"]
 [[events]]
 on = "worktree.removed"
 command = ["/bin/zsh", "-c", "exec \"$HOME/.config/herdr/phase.sh\" refresh"]
-
-[[actions]]
-id = "pin-parked"
-title = "Phase: pin as parked"
-contexts = ["workspace"]
-command = ["/bin/zsh", "-c", "\"$HOME/.config/herdr/phase.sh\" pin parked && exec \"$HOME/.config/herdr/phase.sh\" refresh"]
-
-[[actions]]
-id = "unpin"
-title = "Phase: drop pin"
-contexts = ["workspace"]
-command = ["/bin/zsh", "-c", "\"$HOME/.config/herdr/phase.sh\" unpin && exec \"$HOME/.config/herdr/phase.sh\" refresh"]
