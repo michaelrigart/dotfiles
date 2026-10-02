@@ -509,6 +509,115 @@ def append(common, entry):
         release(lock, token)
 
 
+# ------------------------------------------------------------------ the decision
+def states_of(entries, match):
+    """Each review's state - its receipt if one exists, otherwise its pending entry - for
+    the v2 entries with a target that satisfies match, oldest dispatch first. Reviews
+    dispatched in the same microsecond keep the order they reached the ledger."""
+    first, state = {}, {}
+    for index, entry in enumerate(entries):
+        if entry.get("v") != 2 or entry.get("kind") not in ("pending", "receipt"):
+            continue
+        nonce, at = entry.get("nonce"), entry.get("dispatched_at")
+        targets = entry.get("targets") if isinstance(entry.get("targets"), list) else []
+        if not isinstance(nonce, str) or not isinstance(at, str):
+            continue
+        if not any(isinstance(t, dict) and match(t) for t in targets):
+            continue
+        first.setdefault(nonce, index)
+        held = state.get(nonce)
+        if held is None or (held["kind"] == "pending" and entry["kind"] == "receipt"):
+            state[nonce] = entry
+    return sorted(state.values(), key=lambda e: (e["dispatched_at"], first[e["nonce"]]))
+
+
+def describe(entry):
+    if entry.get("v") != 2:
+        return "{}/{} (v1, never opens the gate)".format(entry.get("checkpoint") or "unrecorded",
+                                                          entry.get("verdict") or "")
+    state = entry.get("verdict") if entry.get("kind") == "receipt" else "pending"
+    return "{}/{} {} at {}".format(entry.get("checkpoint"), state or "", entry.get("nonce"),
+                                   entry.get("dispatched_at"))
+
+
+def branch_record(entries, branch):
+    """What is on record for a branch name: every v2 review with a target on that branch,
+    then every v1 receipt naming it."""
+    lines = []
+    for entry in states_of(entries, lambda t: t.get("branch") == branch):
+        target = next(t for t in entry["targets"]
+                      if isinstance(t, dict) and t.get("branch") == branch)
+        lines.append("{} (dest {}, {}, fingerprint {})".format(
+            describe(entry), target.get("dest") or "none",
+            "full" if target.get("full") is True else "partial",
+            (target.get("fingerprint") or "none")[:12]))
+    lines.extend(describe(e) for e in entries if e.get("v") is None and e.get("branch") == branch)
+    return lines
+
+
+def decide(repo, dest, dest_rev, tip, branch=None):
+    """The gate's decision for the change tip would land on dest, whose commit is dest_rev,
+    in the repository repo is in. A dict: allow, reason (no final period), repo, dest, tip,
+    base, fingerprint, on_record (this change's reviews) and on_record_branch."""
+    out = {"allow": False, "reason": "", "repo": None, "dest": dest, "tip": None,
+           "base": None, "fingerprint": None, "on_record": [], "on_record_branch": []}
+    try:
+        common = common_dir(repo)
+    except Fail as e:
+        out["reason"] = str(e)
+        return out
+    out["repo"] = common
+    head = commit_of(repo, tip)
+    if head is None:
+        out["reason"] = ("the head {} is not available locally; fetch it (git fetch origin), "
+                         "then retry".format(tip))
+        return out
+    out["tip"] = head
+    target = commit_of(repo, dest_rev)
+    if target is None:
+        out["reason"] = ("the destination {} ({}) is not available locally; fetch it (git "
+                         "fetch origin), then retry".format(dest, dest_rev))
+        return out
+    try:
+        base = merge_base(repo, target, head)
+        change = fingerprint(repo, base, head)
+    except Fail as e:
+        out["reason"] = str(e)
+        return out
+    out["base"], out["fingerprint"] = base, change
+    if change is None:
+        out["reason"] = "the change is empty: {} holds nothing that {} lacks".format(tip, dest)
+        return out
+    path = ledger_file(common)
+    try:
+        entries = read_entries(path) if os.path.lexists(path) else []
+    except OSError as e:
+        out["reason"] = "the review ledger {} is unreadable ({})".format(path, e.strerror or e)
+        return out
+    legacy = []
+    old = legacy_file(repo)
+    if old and os.path.exists(old):
+        try:
+            legacy = read_entries(old)
+        except OSError:
+            legacy = []
+    reviews = states_of([e for e in entries if e.get("checkpoint") == "pre-merge"],
+                        lambda t: (t.get("repo") == common and t.get("dest") == dest
+                                   and t.get("full") is True and t.get("fingerprint") == change))
+    out["on_record"] = [describe(e) for e in reviews]
+    if branch:
+        out["on_record_branch"] = branch_record(entries + legacy, branch)
+    if reviews and reviews[-1]["kind"] == "receipt" and reviews[-1].get("verdict") == "approve":
+        out["allow"] = True
+        out["reason"] = "approved by the pre-merge review {}".format(reviews[-1]["nonce"])
+    elif reviews:
+        out["reason"] = "the latest review of this change is {}, not an approval".format(
+            describe(reviews[-1]))
+    else:
+        out["reason"] = "no full-range pre-merge review of this change is on record"
+    return out
+
+
 # ------------------------------------------------------------------ the command line
 def show(repo):
     """Print every line on record for repo: its ledger, then its checkout's legacy file.
@@ -567,6 +676,10 @@ def main(argv):
             return 0
         if cmd == "show" and len(args) == 1:
             return 0 if show(args[0]) else 1
+        if cmd == "decide" and (len(args) == 4 or (len(args) == 6 and args[4] == "--branch")):
+            result = decide(args[0], args[1], args[2], args[3], args[5] if len(args) == 6 else None)
+            print(json.dumps(result, separators=(",", ":")))
+            return 0 if result["allow"] else 1
     except (Fail, OSError) as e:
         print("xreview-ledger: {}".format(e), file=sys.stderr)
         return 1

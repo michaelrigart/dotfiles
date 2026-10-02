@@ -429,5 +429,116 @@ is "E35 it appends nothing and leaves the break lock" "$(grep -c xr-stuck "$PF")
 rmdir "$PF.lock.break"
 is "E36 removed by hand, appends go through again" "$(L append "$PC" "$(entry pending xr-stuck "$PC")")" appended
 
+echo "F. the decision (spec 3.6)"
+G="$ROOT/gate"; mkrepo "$G"
+variant "$G" feature; printf 'f\n' > "$G/f.txt"; commit "$G" "feature"
+git -C "$G" switch -q main
+GT="$(L normalize "$G" main...feature)"
+GC="$(printf '%s' "$GT" | jq -r .repo)"
+# put <nonce> <kind> [verdict] [checkpoint] [target-json] [dispatched_at]: one entry in G's
+# ledger; prints appended or present. A pending entry fixes its nonce's dispatch time (now,
+# unless given), and the nonce's receipt reuses it.
+put() {
+  local at="${6:-}"
+  if [ -z "$at" ]; then
+    if [ "$2" = pending ]; then at="$(L now)"; else at="$(cat "$ROOT/at.$1")"; fi
+  fi
+  [ "$2" = pending ] && printf '%s' "$at" > "$ROOT/at.$1"
+  L append "$GC" "$(jq -nc --arg n "$1" --arg k "$2" --arg v "${3:-}" --arg cp "${4:-pre-merge}" \
+      --arg at "$at" --argjson t "${5:-$GT}" \
+    '{v:2,kind:$k,nonce:$n,dispatched_at:$at,checkpoint:$cp,targets:[$t]}
+     + (if $k == "receipt" then {verdict:$v,findings:0,thread:"t",turn:"u",tier:""} else {} end)')"
+}
+# gate [dest] [dest-rev] [tip]: allow or deny for tip landing on dest (default feature on main).
+gate() { L decide "$G" "${1:-main}" "${2:-main}" "${3:-feature}" | jq -r 'if .allow then "allow" else "deny" end'; }
+why() { L decide "$G" "${1:-main}" "${2:-main}" "${3:-feature}" --branch feature | jq -r .reason; }
+is "F1 nothing on record denies" "$(gate)" deny
+is "F2 saying so" "$(why)" "no full-range pre-merge review of this change is on record"
+put r1 pending >/dev/null
+is "F3 a pending review alone denies" "$(gate)" deny
+put r1 receipt approve >/dev/null
+is "F4 an approved full change allows" "$(gate)" allow
+L decide "$G" main main feature >/dev/null; rc=$?
+is "F5 decide exits 0 on allow" "$rc" 0
+git -C "$G" branch release main
+is "F6 the same change into another branch is denied" "$(gate release release)" deny
+put r2 pending >/dev/null
+is "F7 a newer pending review closes it" "$(gate)" deny
+is "F8 and names it" "$(why | grep -c 'pre-merge/pending r2')" 1
+L decide "$G" main main feature >/dev/null; rc=$?
+is "F9 decide exits 1 on deny" "$rc" 1
+put r2 receipt changes >/dev/null
+is "F10 a later changes verdict closes it" "$(gate)" deny
+put r3 pending >/dev/null; put r3 receipt approve >/dev/null
+is "F11 a fresh approving round reopens it" "$(gate)" allow
+is "F12 re-collecting a receipt appends nothing" "$(put r3 receipt approve)" present
+OLDER="$(L now)"
+put r4 pending >/dev/null; put r4 receipt changes >/dev/null
+put r5 pending "" pre-merge "$GT" "$OLDER" >/dev/null; put r5 receipt approve >/dev/null
+is "F13 an older review's approve collected after a newer changes does not reopen it" "$(gate)" deny
+put r6 pending >/dev/null; put r6 receipt approve >/dev/null
+is "F14 the latest dispatch decides, whatever the ledger order" "$(gate)" allow
+put r7 pending >/dev/null
+is "F15 a failed receipt write (its pending entry newest) leaves it closed" "$(gate)" deny
+put r7 receipt approve >/dev/null
+is "F16 until a later collect records the receipt" "$(gate)" allow
+git -C "$G" switch -q feature; printf 'g\n' > "$G/g.txt"; commit "$G" "one extra commit"; git -C "$G" switch -q main
+is "F17 one extra commit closes it" "$(gate)" deny
+GT2="$(L normalize "$G" main...feature)"
+PART="$(L normalize "$G" "$(git -C "$G" rev-parse main)..feature")"
+put r8 pending "" pre-merge "$PART" >/dev/null; put r8 receipt approve pre-merge "$PART" >/dev/null
+is "F18 a partial-range approve does not open it" "$(gate)" deny
+put r9 pending "" spec "$GT2" >/dev/null; put r9 receipt approve spec "$GT2" >/dev/null
+put r10 pending "" plan "$GT2" >/dev/null; put r10 receipt approve plan "$GT2" >/dev/null
+is "F19 approved spec and plan reviews do not open it" "$(gate)" deny
+LEGG="$XDG_STATE_HOME/xreview/$(printf '%s' "$(git -C "$G" rev-parse --show-toplevel)" | tr '/' '_' | sed 's/^_//')"
+mkdir -p "$LEGG" && printf '{"branch":"feature","checkpoint":"pre-merge","verdict":"approve"}\n' > "$LEGG/reviews.jsonl"
+is "F20 a v1 approve does not open it" "$(gate)" deny
+rec="$(L decide "$G" main main feature --branch feature | jq -r '.on_record_branch | join("|")')"
+is "F21 the branch record lists the v1 receipt" "$(printf '%s' "$rec" | grep -c 'pre-merge/approve (v1, never opens the gate)')" 1
+is "F22 the spec review, full" "$(printf '%s' "$rec" | grep -c 'spec/approve r9 at [^ ]* (dest main, full,')" 1
+is "F23 and the partial approve" "$(printf '%s' "$rec" | grep -c 'pre-merge/approve r8 at [^ ]* (dest none, partial,')" 1
+put r11 pending "" pre-merge "$GT2" >/dev/null; put r11 receipt approve pre-merge "$GT2" >/dev/null
+is "F24 a full-range approve of the new head opens it" "$(gate)" allow
+AT="$(L now)"
+put r12 pending "" pre-merge "$GT2" "$AT" >/dev/null; put r12 receipt approve pre-merge "$GT2" >/dev/null
+put r13 pending "" pre-merge "$GT2" "$AT" >/dev/null
+is "F25 a review dispatched in the same microsecond, later on record, wins the tie" "$(gate)" deny
+put r13 receipt approve pre-merge "$GT2" >/dev/null
+git -C "$G" switch -q -c moved main; printf 'm\n' > "$G/m.txt"; commit "$G" "main moves on, elsewhere"
+git -C "$G" switch -q main; git -C "$G" merge -q --ff-only moved
+git -C "$G" switch -q -c rebased feature; git -C "$G" rebase -q main; git -C "$G" switch -q main
+is "F26 a rebased head with an unchanged fingerprint is allowed" "$(gate main main rebased)" allow
+is "F27 an empty change is denied" "$(gate main main main)" deny
+is "F28 saying so" "$(L decide "$G" main main main | jq -r .reason | grep -c '^the change is empty')" 1
+is "F29 a head that is not available locally is denied" \
+   "$(L decide "$G" main main 1234567890123456789012345678901234567890 | jq -r .reason | grep -c 'is not available locally; fetch it')" 1
+is "F30 a destination that is not available locally is denied" \
+   "$(L decide "$G" ghost refs/remotes/origin/ghost feature | jq -r .reason | grep -c '^the destination ghost')" 1
+is "F31 outside a repository it is denied" \
+   "$(L decide "$ROOT" main main feature | jq -r '"\(.allow) \(.reason)"' | grep -c '^false not inside a git repository')" 1
+GF="$(L path "$G")"
+chmod 000 "$GF"
+is "F32 an unreadable ledger is denied" \
+   "$(L decide "$G" main main rebased | jq -r '"\(.allow) \(.reason)"' | grep -c '^false the review ledger .* is unreadable')" 1
+chmod 644 "$GF"
+is "F33 readable again, it allows" "$(gate main main rebased)" allow
+
+echo "G. repositories never share a ledger (spec 3.3, isolation)"
+export GIT_AUTHOR_DATE="2026-01-01T00:00:00Z" GIT_COMMITTER_DATE="2026-01-01T00:00:00Z"
+for d in "$ROOT/iso/a_b" "$ROOT/iso/a/b"; do
+  mkrepo "$d"; variant "$d" feature; printf 'same\n' > "$d/s.txt"; commit "$d" "same change"; git -C "$d" switch -q main
+done
+unset GIT_AUTHOR_DATE GIT_COMMITTER_DATE
+is "G1 the two repositories hold identical commits" "$(git -C "$ROOT/iso/a_b" rev-parse feature)" "$(git -C "$ROOT/iso/a/b" rev-parse feature)"
+is "G2 their old per-checkout keys collide" \
+   "$(printf '%s' "$ROOT/iso/a_b" | tr '/' '_')" "$(printf '%s' "$ROOT/iso/a/b" | tr '/' '_')"
+differs "G3 their ledgers do not" "$(L path "$ROOT/iso/a_b")" "$(L path "$ROOT/iso/a/b")"
+T="$(L normalize "$ROOT/iso/a_b" main...feature)"; C="$(printf '%s' "$T" | jq -r .repo)"
+L append "$C" "$(jq -nc --argjson t "$T" '{v:2,kind:"pending",nonce:"xr-iso",dispatched_at:"2026-10-02T00:00:00.000000Z",checkpoint:"pre-merge",targets:[$t]}')" >/dev/null
+L append "$C" "$(jq -nc --argjson t "$T" '{v:2,kind:"receipt",nonce:"xr-iso",dispatched_at:"2026-10-02T00:00:00.000000Z",checkpoint:"pre-merge",verdict:"approve",targets:[$t]}')" >/dev/null
+is "G4 the approval opens a_b" "$(L decide "$ROOT/iso/a_b" main main feature | jq -r .allow)" true
+is "G5 and never a/b, for identical blobs and destination" "$(L decide "$ROOT/iso/a/b" main main feature | jq -r .allow)" false
+
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))
