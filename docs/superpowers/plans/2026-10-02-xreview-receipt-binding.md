@@ -145,6 +145,23 @@ task's requirements include these.
   - **Here-document delimiters** are read as a whole shell word: `'…'` or `"…"` holding any
     characters, a backslash escape, or unquoted up to a metacharacter. The closing line is
     compared with the delimiter, quotes removed. `<<-` strips leading tabs.
+- The Task 6 review (fix round 1) ruled:
+  - every non-operator word is a candidate command word, and `parse_plain` still decides what
+    is plain; zsh's `=word` is read as `word`, `NAME+=value` is an assignment, and the `-c`
+    string of `sh`, `bash`, `zsh`, `dash` and `ksh` and `env -S`'s string are read as
+    commands. An unquoted mention (`echo git merge x`) is denied; that cost is accepted;
+  - a current-branch lookup that returns nothing allows only on a verifiably detached HEAD;
+  - the shell front's missing-helper fallback joins continuations and matches whole words;
+  - backslash-newline is deleted before tokenizing, escape-aware, here-document bodies
+    included, and `CRUDE` runs on the joined text;
+  - `<<WORD` starts a here-document only outside quotes and comments, with `$(` nesting
+    tracked inside double quotes;
+  - `$'…'` is modelled in every quote tracker;
+  - `--attr-source` takes a value;
+  - the fast path drops `'`, `"` and `\` from the payload before its substring tests;
+  - a payload that is not JSON is denied when `CRUDE` matches it;
+  - the guard's header names aliases (`git -c alias.*` included), eval and script files as
+    out of scope (spec §7), and says it models bash and zsh syntax.
 - **Creation** reads `git ls-remote <remote> refs/heads/<source>`. The source repository must
   be the checkout's `origin`, so forks are denied.
 - **Forge merges:**
@@ -400,9 +417,22 @@ Each one stays within the spec's goals.
     - Here-document bodies, comments and redirections (any operator, any operand, before the
       command word or between arguments) are read past.
     - A process substitution counts as a command.
-    - After a wrapper (`sudo`, `env`, `command`, `time`, `xargs`, …), every later word is a
-      candidate command, so `sudo -u root git merge` is seen. It is then denied, because only
-      a bare `sudo` is plain.
+    - Every unquoted word naming `git`, `glab` or `gh` is a candidate command word (Task 6
+      review, fix round 1; it replaces "every word after a listed wrapper"). Any word can run
+      as a command: after an unlisted wrapper (`timeout 30`, `caffeinate -i`, `stdbuf -oL`,
+      `xcrun`, `find -exec`), a zsh precommand modifier (`noglob`, `nocorrect`,
+      `repeat 1`), a keyword (`coproc`, `function f {`) or an assignment (`A+=1`).
+      `parse_plain` still decides what is plain, so each of these is denied with the
+      plain-form message; zsh's `=git` is read as `git`. Accepted cost: an unquoted mention
+      (`echo git merge x`) is denied too, and quoting it is the fix.
+    - The `-c` string of `sh`, `bash`, `zsh`, `dash` and `ksh`, and `env -S`/`--split-string`'s
+      string, are read as commands, the way substitutions are.
+    - The text is read in one pass, as the shell reads it (fix round 1): an unescaped
+      backslash-newline is deleted first (an escaped backslash does not continue its line,
+      and a comment never does); `<<WORD` starts a here-document only in shell text, never
+      inside quotes or a comment, while a `$( )` inside double quotes is shell text again, so
+      `"$(cat <<'EOF' … EOF)"` keeps working; `$'…'` strings are decoded, their escaped
+      quotes included; a `case` pattern's `)` does not end a substitution.
     - `--help`/`-h` exempts a command only as the first word after the verb, and `--abort`,
       `--quit` and `--continue` only as a merge's sole argument.
     - Substitutions (coordinator, before round 2): the body of every `$(…)` and backtick
@@ -424,7 +454,12 @@ Each one stays within the spec's goals.
       its quotes removed, after leading tabs only for `<<-`.
 21. **A `git merge` anywhere in a compound command is denied, on any branch.** The branch the
     merge will run on cannot be known from the text. A plain `git merge` with no ref on the
-    default branch is denied; `git merge-base` is another command.
+    default branch is denied; `git merge-base` is another command. A current-branch lookup
+    that fails or times out denies the merge; only a verifiably detached HEAD (`git rev-parse
+    --abbrev-ref HEAD` prints `HEAD`) is not the default branch (fix round 1).
+    `--attr-source` is one of the git global options that take a value: git 2.56 has `-C`,
+    `-c`, `--git-dir`, `--work-tree`, `--namespace`, `--config-env` and `--attr-source`, while
+    `--list-cmds` and `--exec-path` take one only after `=`.
 22. **`XREVIEW_GUARD=off` keeps matching anywhere in the command,** as today.
 23. **Timeouts:**
     - the hook gets an explicit 60 s limit (`modify_private_settings.json`, pinned by
@@ -434,7 +469,12 @@ Each one stays within the spec's goals.
 
     A hook that outruns its limit is non-blocking, so giving up early fails closed.
 24. **The shell front has a second substring stage** (`glab|gh|git`), so payloads that only
-    mention "new" or "create" still start no interpreter.
+    mention "new" or "create" still start no interpreter. Both stages read the payload with
+    quotes, backslashes and line continuations dropped, so `g''it mer''ge` and `mer\<newline>ge`
+    reach the helper (fix round 1). When the helper cannot run, the front's own last resort is
+    `CRUDE`'s shape - whole words on one line - on the command with quotes and backslashes
+    dropped, read with every backslash-newline joined and without. A payload that is not
+    JSON is denied when `crude` matches its text.
 
 **Tests, evaluation and gaps**
 
@@ -3114,17 +3154,24 @@ git commit -m "Write xreview receipts to each target repository's ledger, once p
   `$XREVIEW_LEDGER`. The guard uses `decide`, `default_branch`, `current_branch` and
   `CALL_TIMEOUT`.
 - Produces, in `xreview-guard.py`:
-  - `tokenize(cmd) -> list[str]`, with here-document bodies, comments and redirections
-    stripped (`split_heredocs`, `strip_comments`, `strip_redirections`, `skip_word`).
-  - `split_heredocs(cmd) -> (text, expanding_bodies)`, which finds each `<<`/`<<-` with
-    `HEREDOC_START` and reads its delimiter with `heredoc_word(line, i) -> (delimiter,
-    quoted) | None`, the whole shell word (`METACHARS` end it); `substitutions(text,
-    shell=True) -> list[str]`; `closing_paren(text, i)`; `substituted_commands(cmd)`;
-    `gated_in_substitution(cmd, depth=0) -> bool`.
-  - `strip_redirections(cmd)`: `REDIRECT_RE` (an optional descriptor, then the operator) where
-    a word starts, `REDIRECT_MID_RE` (the operator alone) inside a word, both outside quotes.
-  - `command_words(tokens) -> list[int]`: every word after a wrapper is a candidate;
-    `segment(tokens, k) -> list[str]`; `literal(word) -> bool`.
+  - `lex(cmd, body=False) -> (text, substitutions, expanding)`: one pass that reads cmd as the
+    shell does. It deletes each unescaped backslash-newline, drops comments and here-document
+    bodies, rewrites each `$'...'` string (`ansi_c`) in single quotes, and tracks quoting as a
+    stack, so a `$( )` inside double quotes is shell text again. A `<<`/`<<-` (`HEREDOC_START`)
+    starts a here-document only in shell text; `heredoc_word(line, i)` reads its delimiter,
+    and `here_bodies(cmd, i, pending, expanding)` reads the bodies after the line ends. A
+    `case` pattern's `)` does not end a `$( )`.
+  - `tokenize(text) -> list[str]`: shlex words and operators of lexed text, its redirections
+    dropped (`strip_redirections`, `skip_word`, `REDIRECT_RE`, `REDIRECT_MID_RE`).
+  - `scan(cmd, depth=0) -> (tokens, hidden)`: hidden when a substitution, an expanding
+    here-document's substitution, a shell's `-c` string or `env -S`'s string
+    (`shell_strings(tokens)`) runs a gated verb, at any depth up to `MAX_NESTING`.
+  - `command_name(word)`: the basename, zsh's `=name` read as `name`; `candidates(tokens)`:
+    every word naming `git`, `glab` or `gh`, with the rest of its simple command;
+    `gated_anywhere(tokens) -> bool`; `literal(word) -> bool`.
+  - `crude(text) -> bool`: `CRUDE` on the text with quotes and backslashes dropped, read with
+    every backslash-newline joined and without - the last resort for text the grammar cannot
+    read (unbalanced quotes, a payload that is not JSON, an internal error).
   - `gated_verb(words) -> dict | None`, as
     `{"tool": "git" | "glab" | "gh", "kind": "merge-local" | "create" | "merge" | "api", "args": [...]}`.
   - `parse_api(args) -> dict` with `endpoint, method, fields, body, hostname`;
@@ -3140,6 +3187,9 @@ git commit -m "Write xreview receipts to each target repository's ledger, once p
     denied with it.
   - The environment knobs `XREVIEW_LEDGER` (tests) and `XREVIEW_GUARD_BUDGET` (whole seconds,
     default 40).
+  - `judge_git_merge` reads a branch lookup that returns nothing as "not the default branch"
+    only when `git rev-parse --abbrev-ref HEAD` prints `HEAD` (detached); otherwise it denies
+    (`NO_BRANCH`). A payload that is not JSON is denied when `crude` matches it (`MALFORMED`).
 
 - [ ] **Step 1: Write the failing guard test.** Replace the whole content of
   `tests/xreview-guard.test.sh` with:
@@ -3280,6 +3330,23 @@ is "A19 only <<- strips tabs: under <<, a tab-indented delimiter is body" "$(dec
 ${TAB}EOF
 git merge feature
 EOF")" allow
+# Every unquoted word naming git, glab or gh is read as a command word (section B), so these
+# mentions stay allowed only because each is quoted, or not a gated verb at all.
+is "A20 the commit-message idiom: a quoted here-document inside \$( ) inside double quotes" \
+   "$(decision "$W" "git commit --allow-empty -m \"\$(cat <<'EOF'
+Land it: git merge feature
+Then \`glab mr create --target-branch main\`.
+EOF
+)\"")" allow
+is "A21 rg with an alternation of gated verbs" "$(decision "$W" "rg -n 'git merge|glab mr create' docs/")" allow
+is "A22 read-only uses of the same words" \
+   "$(decision "$W" 'git log --merges --oneline') $(decision "$W" 'git branch --merged main') $(decision "$W" 'gh pr list --state merged') $(decision "$W" 'glab mr view 7')" \
+   "allow allow allow allow"
+is "A23 quoted mentions: single-quoted backticks, an echo to a file, a chained commit message" \
+   "$(decision "$W" "git commit -m 'Use \`git merge\` with care'") $(decision "$W" "echo 'git merge feature' > notes.txt") $(decision "$W" 'git add -A && git commit -m "merge notes for gh pr create"')" \
+   "allow allow allow"
+is "A24 git merge-base in a chain" "$(decision "$W" 'git merge-base --is-ancestor feature main && echo yes')" allow
+is "A25 an ANSI-C string is one quoted word" "$(decision "$W" "printf \$${SQ}%s\\n${SQ} \$${SQ}git merge feature${SQ}")" allow
 
 echo "B. a gated verb must be a plain command"
 is "B1 a chain that switches branch first" "$(decision "$W" 'git switch main && git merge feature')" deny
@@ -3347,6 +3414,59 @@ is "B39 a <<- body ends at its tab-indented delimiter, and what follows runs" "$
 ${TAB}EOF
 git merge feature
 EOF")" deny
+# Any word can be a command word: after a wrapper, a zsh precommand modifier, a keyword or an
+# assignment. Each of these really runs the merge, under bash, zsh or both.
+is "B40 timeout runs its command" "$(decision "$W" 'timeout 30 git merge feature')" deny
+is "B41 so do caffeinate, stdbuf and xcrun" \
+   "$(decision "$W" 'caffeinate -i git merge feature') $(decision "$W" 'stdbuf -oL git merge feature') $(decision "$W" 'xcrun git merge feature')" \
+   "deny deny deny"
+is "B42 and find -exec" "$(decision "$W" 'find . -maxdepth 0 -exec git merge feature \;')" deny
+is "B43 a wrapped MR or PR creation" \
+   "$(decision "$W" 'timeout 30 glab mr create --target-branch main') $(decision "$W" 'timeout 30 gh pr create --base main')" \
+   "deny deny"
+is "B44 a function body" "$(decision "$W" 'function f { git merge feature; }; f')" deny
+is "B45 coproc" "$(decision "$W" 'coproc git merge feature; wait')" deny
+is "B46 a NAME+= assignment" "$(decision "$W" 'A+=1 git merge feature')" deny
+is "B47 zsh's noglob, nocorrect and repeat" \
+   "$(decision "$W" 'noglob git merge feature') $(decision "$W" 'nocorrect git merge feature') $(decision "$W" 'repeat 1 git merge feature')" \
+   "deny deny deny"
+is "B48 zsh's =git is git" "$(decision "$W" '=git merge feature')" deny
+is "B49 env -S and --split-string hand their string to a command" \
+   "$(decision "$W" "env -S 'git merge feature'") $(decision "$W" "env --split-string='git merge feature'")" "deny deny"
+is "B50 so does a shell's -c" \
+   "$(decision "$W" "bash -c 'git merge feature'") $(decision "$W" "zsh -c 'git merge feature'") $(decision "$W" "sh -lc 'git merge feature'")" \
+   "deny deny deny"
+is "B51 an unquoted mention is denied too" "$(decision "$W" 'echo git merge feature')" deny
+is "B52 asking to quote it" "$(reason "$W" 'echo git merge feature' | grep -c 'quote the mention')" 1
+# A backslash-newline is deleted before anything else is read, as the shell deletes it, unless
+# the backslash is itself escaped.
+is "B53 a continuation inside the verb" "$(decision "$W" 'git mer\
+ge feature')" deny
+is "B54 an escaped backslash does not continue the line" "$(decision "$W" 'echo x\\
+git merge feature')" deny
+is "B55 a continuation inside an expanding here-document's substitution" "$(decision "$W" 'cat <<EOF
+$(git mer\
+ge feature)
+EOF')" deny
+is "B56 a continuation after a here-document operator joins the next line to the command" "$(decision "$W" 'cat <<EOF \
+&& git merge feature
+body
+EOF')" deny
+# << starts a here-document only in shell text, never inside quotes or a comment.
+is "B57 inside a comment it hides nothing" "$(decision "$W" 'git status # see <<EOF
+git merge feature
+EOF')" deny
+is "B58 nor inside a double-quoted string" "$(decision "$W" 'echo "x <<EOF y"
+git merge feature
+EOF')" deny
+is "B59 an ANSI-C string, its escaped quote included, is one word" \
+   "$(decision "$W" "echo \$${SQ}a\\${SQ}b${SQ} ; git merge feature ; echo ${SQ}\\${SQ}")" deny
+is "B60 and keeps the rest of the command readable" "$(decision "$W" "echo \$${SQ}it\\${SQ}s${SQ}
+git \\
+merge feature")" deny
+is "B61 git --attr-source takes a value" "$(decision "$W" 'git --attr-source HEAD merge feature')" deny
+is "B62 a case pattern's ) does not end a substitution" \
+   "$(decision "$W" 'echo "$(case x in x) git merge feature;; esac)"')" deny
 
 echo "C. git merge into the default branch"
 is "C1 an unreviewed merge into main is denied" "$(decision "$W" 'git merge feature')" deny
@@ -3378,6 +3498,10 @@ is "C22 every operator form, fused" \
    "$(for c in 'feature>>m.log' 'feature<in.txt' 'feature 2>err>m.log' 'feature&>m.log' 'feature>&2' 'feature 2>&1' 'feature<>m.log' 'feature>|m.log'; do
         decision "$W" "git merge $c"; printf ' '; done)" \
    "allow allow allow allow allow allow allow allow "
+is "C23 an approved merge across line continuations" "$(decision "$W" 'git merge \
+feature') $(decision "$W" 'git mer\
+ge feature')" "allow allow"
+is "C24 and run as zsh's =git" "$(decision "$W" '=git merge feature')" allow
 
 echo "D. it fails closed"
 is "D1 a merge outside any repository is denied" "$(decision "$ROOT/norepo" 'git merge feature')" deny
@@ -3389,6 +3513,23 @@ is "D4 naming it" "$(reason "$W" 'git merge feature' | grep -c 'is unreadable')"
 chmod 644 "$LF"
 is "D5 readable again, the approval stands" "$(decision "$W" 'git merge feature')" allow
 is "D6 unbalanced quotes around a gated verb" "$(decision "$W" 'git merge "feature')" deny
+# The current branch decides whether a merge is gated. A lookup that fails or times out says
+# nothing, so it must not open the gate; only a verifiably detached HEAD is no branch.
+WRAP="$ROOT/wrap"; mkdir -p "$WRAP"; REALGIT="$(command -v git)"
+shim() { printf '%s\n' '#!/bin/sh' "case \"\$*\" in *\"symbolic-ref --quiet --short HEAD\") $1 ;; esac" "exec $REALGIT \"\$@\"" > "$WRAP/git"; chmod +x "$WRAP/git"; }
+shim 'exit 128'
+is "D7 a failing branch lookup is a deny, even for an approved merge" "$(PATH="$WRAP:$PATH" decision "$W" 'git merge feature')" deny
+is "D8 saying why" "$(PATH="$WRAP:$PATH" reason "$W" 'git merge feature' | grep -c 'current branch of .* cannot be read')" 1
+shim 'sleep 9; exit 0'
+is "D9 so is one that times out" "$(PATH="$WRAP:$PATH" decision "$W" 'git merge feature')" deny
+git -C "$SIDE" switch -q --detach
+is "D10 a detached HEAD is no branch, so its merge is not gated" "$(decision "$SIDE" 'git merge feature')" allow
+git -C "$SIDE" switch -q side
+# A payload that is not JSON is read as text.
+is "D11 a truncated payload holding a merge is denied" \
+   "$(printf '%s' '{"tool_input":{"command":"git merge feature"},"cwd":"'"$W"'"' | bash "$GUARD" 2>/dev/null | jq -r .hookSpecificOutput.permissionDecision)" deny
+is "D12 one that only mentions merges is let through" \
+   "$(printf '%s' '{"tool_input":{"command":"git log --merges"' | bash "$GUARD" 2>/dev/null)" ""
 
 echo "E. the bypass is Michael's"
 is "E1 XREVIEW_GUARD=off on the command" "$(decision "$W" 'XREVIEW_GUARD=off git merge side')" allow
@@ -3415,6 +3556,30 @@ out="$(payload "$W" 'git merge feature' | bash "$TRIP/xreview-guard.sh" 2>/dev/n
 is "F3 a helper that cannot run denies a gated verb" "$(printf '%s' "$out" | jq -r .hookSpecificOutput.permissionDecision)" deny
 out="$(payload "$W" 'git commit -m "a new test"' | bash "$TRIP/xreview-guard.sh" 2>/dev/null)"
 is "F4 and leaves an ungated command alone" "$out" ""
+# The fast path reads the payload with quotes, backslashes and continuations dropped.
+printf 'import sys\nopen(sys.argv[0] + ".ran", "a").write("x")\n' > "$TRIP/xreview-guard.py"
+rm -f "$TRIP/xreview-guard.py.ran"
+payload /tmp "g''it mer''ge feature" | bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
+is "F5 quotes inside a word do not hide a verb from the fast path" "$(tripped)" ran
+rm -f "$TRIP/xreview-guard.py.ran"
+payload /tmp 'git mer\
+ge feature' | bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
+is "F6 nor does a line continuation" "$(tripped)" ran
+is "F7 and the helper reads the merge (side has no change of its own: denied)" "$(decision "$W" "g''it mer''ge side")" deny
+# With the helper missing, the front's own last resort reads whole words, joined lines and
+# words split by quotes.
+NOH="$ROOT/nohelper"; mkdir -p "$NOH"; cp "$GUARD" "$NOH/xreview-guard.sh"
+fallback() { local out; out="$(payload "$W" "$1" | bash "$NOH/xreview-guard.sh" 2>/dev/null)"
+  [ -n "$out" ] && printf '%s' "$out" | jq -r .hookSpecificOutput.permissionDecision || printf allow; }
+is "F8 with the helper missing, fused redirections are denied" \
+   "$(fallback 'git>m.log merge feature') $(fallback 'git merge>m.log feature') $(fallback 'glab mr>c.log create -b main')" \
+   "deny deny deny"
+is "F9 and so are a continuation, a backtick and an escaped backslash" \
+   "$(fallback 'git \
+merge feature') $(fallback 'echo `git merge`') $(fallback 'echo x\\
+git merge feature')" "deny deny deny"
+is "F10 and a word split by quotes" "$(fallback "g''it mer''ge feature")" deny
+is "F11 while a mention of merges stays allowed" "$(fallback 'git log --merges')" allow
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))
@@ -3506,23 +3671,31 @@ guard_code="$(strip_comments "$GUARD" "$ROOT/dot_claude/xreview-guard.py" "$ROOT
 # nothing. It never asks, and it never allows on doubt: a gated shape it cannot complete is
 # denied with a reason the agent can act on. A command holding no gated verb is allowed.
 #
-# A gated verb counts only in command position, and it must be a plain command:
+# A gated verb must be a plain command:
 #
 #   [cd <literal path> &&] [sudo] git [-C <path>]... merge [options] <ref>   (onto the default branch)
 #   [cd <literal path> &&] [sudo] glab mr create|new|merge|accept [options]
 #   [cd <literal path> &&] [sudo] gh pr create|new|merge [options]
 #   [cd <literal path> &&] [sudo] glab|gh api [options] <endpoint>   (an MR/PR write, or graphql)
 #
-# Any other command holding a gated verb in command position (a chain, a pipe, a newline, a
-# subshell, an assignment, env, sudo with an option, or another wrapper) is denied, asking for
-# the plain form. So is any command whose substitutions run one: a $( ) or backtick body,
-# unquoted or inside double quotes, or inside a here-document whose delimiter is unquoted.
-# A comment, a redirection, single-quoted text and the rest of a here-document body are read
-# past, wherever they stand. --help or -h right after the verb, and a merge's lone --abort,
-# --quit or --continue, are never gated.
+# Any word may be a command word: one after a wrapper (timeout 30, caffeinate -i, xcrun,
+# find -exec, xargs, sudo -u root), a zsh precommand modifier (noglob, repeat 1), a keyword
+# (coproc, function f {) or an assignment (A+=1). So every unquoted word naming git, glab or
+# gh is read as one, and a gated verb anywhere but in the plain form above is denied, asking
+# for the plain form; an unquoted mention (echo git merge x) is denied with it, and quoting
+# the mention keeps it out. So is any command whose substitutions run one - a $( ) or
+# backtick body, unquoted or inside double quotes, or inside a here-document whose delimiter
+# is unquoted - and any command that hands one to another shell: sh, bash, zsh, dash or ksh
+# -c '...', or env -S '...'. A comment, a redirection, single-quoted text ($'...' included)
+# and the rest of a here-document body are read past, wherever they stand, and a line
+# continuation is joined first, as the shell joins it. --help or -h right after the verb, and
+# a merge's lone --abort, --quit or --continue, are never gated.
 #
-# Threat model: the commands an agent plausibly writes. A verb assembled from variables, eval,
-# a script file or an alias passes; the auto-mode classifier covers those.
+# The grammar is bash's and zsh's: the Bash tool runs its commands under zsh here, and scripts
+# run under bash. Threat model: the commands an agent plausibly writes. Out of scope, as spec
+# section 7 says: an alias (git -c alias.m=merge m included), eval, a script file or a script
+# fed to a shell on stdin, and a verb assembled from variables; the auto-mode classifier
+# covers those.
 #
 # Written for /usr/bin/python3 (3.9): no match statements, no X | Y type unions.
 import importlib.util
@@ -3553,10 +3726,14 @@ TAIL = ("\n\nDo not bypass this on your own judgement. Only if Michael has asked
 PLAIN = ("Pre-merge gate: this command proposes or merges a change in a shape the gate does not "
          "check. Run the verb as a plain command of its own - [cd <path> &&] git [-C <path>] "
          "merge <ref>, glab mr ..., gh pr ..., or glab|gh api ... - with no chain, pipe, "
-         "newline, subshell, environment assignment or env wrapper. If the command only "
-         "mentions the verb, keep it out of command position (quote it).")
+         "newline, subshell, environment assignment, wrapper or nested shell. If the command "
+         "only mentions the verb, quote the mention.")
 UNPARSEABLE = ("Pre-merge gate: this command cannot be parsed (unbalanced quotes), and it may "
                "propose or merge a change. Fix the quoting, and run the verb as a plain command.")
+MALFORMED = ("Pre-merge gate: the hook's payload is not valid JSON, and its text may propose or "
+             "merge a change, so the command is refused. Retry it.")
+NO_BRANCH = ("Pre-merge gate: the current branch of {} cannot be read, so whether this merge "
+             "lands on the default branch is unknown and it is refused. Retry it.")
 TIMED_OUT = "Pre-merge gate: the check did not finish in time, so the command is refused. Retry it."
 LITERAL = "Pre-merge gate: {} must be a literal value the gate can read, not {}."
 NO_REPO = "Pre-merge gate: {} is not inside a git repository, so the change cannot be checked."
@@ -3578,13 +3755,16 @@ def decision(reason):
 
 # ------------------------------------------------------------------ tokens
 PUNCT = ";&|()<>\n"
-ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 # A here-document operator, << or <<- (not the here-string <<<); its delimiter word follows.
 HEREDOC_START = re.compile(r"(?<!<)<<(?!<)(-?)[ \t]*")
 METACHARS = " \t\n;&|()<>"
-WRAPPERS = {"command", "env", "sudo", "time", "nohup", "xargs", "exec", "nice", "builtin"}
-RESERVED = {"if", "then", "elif", "else", "do", "while", "until", "!", "{"}
+TOOLS = {"git", "glab", "gh"}
+SHELLS = {"sh", "bash", "zsh", "dash", "ksh"}
 MAX_NESTING = 8
+# The escapes of an ANSI-C $'...' string, as bash and zsh decode them.
+ANSI_C = {"a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "n": "\n", "r": "\r",
+          "t": "\t", "v": "\v", "\\": "\\", "'": "'", '"': '"', "?": "?"}
+ANSI_NUMBER = re.compile(r"[0-7]{1,3}|x[0-9A-Fa-f]{1,2}|u[0-9A-Fa-f]{1,4}|U[0-9A-Fa-f]{1,8}")
 
 
 def heredoc_word(line, i):
@@ -3610,139 +3790,182 @@ def heredoc_word(line, i):
     return ("".join(out), quoted) if out else None
 
 
-def split_heredocs(cmd):
-    """(cmd without the bodies of its here-documents, the bodies that expand). A body is data,
-    never a command; but when its delimiter is unquoted the shell still runs the $( ) and
-    backtick substitutions in it, so those bodies are kept for scanning. A body ends at the
-    line that is exactly its unquoted delimiter (after leading tabs, for <<-). A marker whose
-    terminator line never comes is left alone, so no text is dropped on a guess."""
-    lines, out, expanding, i = cmd.split("\n"), [], [], 0
-    while i < len(lines):
-        line = lines[i]
-        out.append(line)
-        i += 1
-        for m in HEREDOC_START.finditer(line):
-            word = heredoc_word(line, m.end())
-            if word is None:
-                continue
-            delimiter, quoted = word
-            j = i
-            while j < len(lines) and (lines[j].lstrip("\t") if m.group(1) else lines[j]) != delimiter:
-                j += 1
-            if j < len(lines):
-                if not quoted:
-                    expanding.append("\n".join(lines[i:j]))
-                i = j + 1
-    return "\n".join(out), expanding
-
-
-def closing_paren(text, i):
-    """The index of the ) that closes a $( opened just before i: nested parentheses and quotes
-    inside it are tracked. len(text) when it never closes."""
-    depth, quoting, n = 1, None, len(text)
-    while i < n:
-        c = text[i]
-        if c == "\\" and quoting != "'" and i + 1 < n:
-            i += 2
-            continue
-        if quoting:
-            if c == quoting:
-                quoting = None
-        elif c in "'\"":
-            quoting = c
-        elif c == "(":
-            depth += 1
-        elif c == ")":
-            depth -= 1
-            if depth == 0:
-                return i
-        i += 1
-    return n
-
-
-def substitutions(text, shell=True):
-    """The bodies of the command substitutions, $( ) and backticks, that run when text does.
-    In shell text (shell=True) single quotes keep them inert, double quotes do not. In an
-    expanding here-document body (shell=False) quotes are plain characters; only a
-    backslash keeps a $ or a backtick literal."""
-    out, i, n, quoting = [], 0, len(text), None
-    while i < n:
-        c = text[i]
-        if c == "\\" and quoting != "'" and i + 1 < n:
-            i += 2
-            continue
-        if shell and quoting is None and c in "'\"":
-            quoting = c
-        elif shell and c == quoting:
-            quoting = None
-        elif quoting != "'" and text.startswith("$(", i):
-            j = closing_paren(text, i + 2)
-            out.append(text[i + 2:j])
-            i = j + 1
-            continue
-        elif quoting != "'" and c == "`":
-            j = i + 1
-            while j < n and text[j] != "`":
-                j += 2 if text[j] == "\\" else 1
-            out.append(text[i + 1:j])
-            i = j + 1
-            continue
-        i += 1
-    return out
-
-
-def substituted_commands(cmd):
-    """The command texts cmd runs through substitution: every $( ) and backtick body outside
-    single quotes and comments, and each one in a here-document body whose delimiter is
-    unquoted. Nested ones are found when each body is read in turn."""
-    main, expanding = split_heredocs(cmd)
-    bodies = substitutions(strip_comments(main.replace("\\\n", " ")))
-    for body in expanding:
-        bodies.extend(substitutions(body, shell=False))
-    return bodies
-
-
-def gated_in_substitution(cmd, depth=0):
-    """Does a command substitution in cmd, at any depth, run a gated verb?"""
-    for body in substituted_commands(cmd):
-        if depth >= MAX_NESTING:
-            return True
-        try:
-            tokens = tokenize(body)
-        except ValueError:
-            if CRUDE.search(body):
-                return True
-            continue
-        if any(gated_verb(segment(tokens, k)) for k in command_words(tokens)):
-            return True
-        if gated_in_substitution(body, depth + 1):
-            return True
-    return False
-
-
-def strip_comments(cmd):
-    """cmd without its comments: an unquoted # that starts a word, to the end of its line.
-    Quotes and backslashes are tracked as the shell does, so a quoted '#12 fix' stays."""
-    out, i, n, quoting = [], 0, len(cmd), None
+def ansi_c(cmd, i):
+    """(value, end) of the $'...' string whose text starts at cmd[i]: its escapes decoded, and
+    the index past its closing quote. end is None when the string never closes."""
+    out, n = [], len(cmd)
     while i < n:
         c = cmd[i]
-        if quoting is None and c == "#" and (i == 0 or cmd[i - 1] in " \t\n;&|()"):
-            j = cmd.find("\n", i)
-            if j < 0:
-                break
-            i = j
+        if c == "'":
+            return "".join(out), i + 1
+        if c == "\\" and i + 1 < n:
+            e, m = cmd[i + 1], ANSI_NUMBER.match(cmd, i + 1)
+            if e in ANSI_C:
+                out.append(ANSI_C[e])
+                i += 2
+            elif e == "c" and i + 2 < n:
+                out.append(chr(ord(cmd[i + 2]) & 0x1f))
+                i += 3
+            elif m:
+                code = m.group(0)
+                value = int(code, 8) if code[0] in "01234567" else int(code[1:], 16)
+                out.append(chr(min(value, 0x10FFFF)))
+                i = m.end()
+            else:
+                out.append(cmd[i:i + 2])
+                i += 2
             continue
         out.append(c)
-        if c == "\\" and quoting != "'" and i + 1 < n:
-            out.append(cmd[i + 1])
+        i += 1
+    return "".join(out), None
+
+
+def word_at(cmd, i):
+    j = i
+    while j < len(cmd) and cmd[j] not in METACHARS:
+        j += 1
+    return cmd[i:j]
+
+
+def here_bodies(cmd, i, pending, expanding):
+    """Read the bodies of the pending here-documents, in order, from cmd[i] - the line after
+    their operators; returns the index past the last one read. A body ends at the line that is
+    exactly its unquoted delimiter (after leading tabs, for <<-), and an expanding one (its
+    delimiter unquoted) is kept in expanding. A body whose delimiter line never comes is left
+    in place, so no text is dropped on a guess."""
+    n = len(cmd)
+    for delimiter, quoted, strip in pending:
+        j = i
+        while True:
+            e = cmd.find("\n", j)
+            line = cmd[j:n if e < 0 else e]
+            if (line.lstrip("\t") if strip else line) == delimiter:
+                if not quoted:
+                    expanding.append(cmd[i:j])
+                i = n if e < 0 else e + 1
+                break
+            if e < 0:
+                return i
+            j = e + 1
+    return i
+
+
+def lex(cmd, body=False):
+    """Read cmd as the shell reads it before it runs anything. Returns (text, substitutions,
+    expanding): text is cmd with each line continuation (an unescaped backslash-newline),
+    comment and here-document body removed, and each $'...' string rewritten in single quotes;
+    substitutions are the bodies of the outermost $( ) and backtick substitutions, each to be
+    read in turn; expanding are the bodies of the here-documents whose delimiter is unquoted.
+    Quoting nests as the shell's does: a $( ) inside double quotes is shell text again, so the
+    here-document of "$(cat <<'EOF' ... EOF)" is found, while a << or a # inside quotes is
+    text. body=True reads an expanding here-document body: no quote is special in it, and a
+    backslash escapes only $, a backtick, a backslash or a newline."""
+    out, subs, expanding, pending = [], [], [], []
+    # Each frame: [kind, where its body starts in out, open parentheses, open case statements].
+    stack = [["body" if body else "sh", 0, 0, 0]]
+
+    def close():
+        frame = stack.pop()
+        if not any(f[0] in ("$(", "`") for f in stack):
+            subs.append("".join(out[frame[1]:]))
+
+    i, n = 0, len(cmd)
+    while i < n:
+        frame = stack[-1]
+        kind, c = frame[0], cmd[i]
+        if kind == "'":
+            out.append(c)
+            if c == "'":
+                stack.pop()
+            i += 1
+            continue
+        if c == "\\" and i + 1 < n:
+            nxt = cmd[i + 1]
+            if nxt == "\n":
+                i += 2
+            elif (kind == '"' and nxt not in '$`"\\') or (kind == "body" and nxt not in "$`\\"):
+                out.append(c)
+                i += 1
+            else:
+                out.append(cmd[i:i + 2])
+                i += 2
+            continue
+        if kind == "`":
+            if c == "`":
+                close()
+            out.append(c)
+            i += 1
+            continue
+        if kind in ('"', "body"):
+            if c == '"' and kind == '"':
+                stack.pop()
+                out.append(c)
+                i += 1
+            elif cmd.startswith("$(", i):
+                out.append("$(")
+                stack.append(["$(", len(out), 1, 0])
+                i += 2
+            else:
+                if c == "`":
+                    stack.append(["`", len(out) + 1, 0, 0])
+                out.append(c)
+                i += 1
+            continue
+        # Shell text: the command line itself, or the inside of a $( ).
+        prev = out[-1][-1] if out else "\n"
+        if c == "#" and prev in METACHARS:
+            j = cmd.find("\n", i)
+            i = n if j < 0 else j
+            continue
+        if cmd.startswith("$'", i):
+            value, end = ansi_c(cmd, i + 2)
+            if end is None:
+                out.append(cmd[i:])
+                i = n
+            else:
+                out.append("'" + value.replace("'", "'\"'\"'") + "'")
+                i = end
+            continue
+        if c in "'\"`":
+            stack.append([c, len(out) + 1, 0, 0])
+            out.append(c)
+            i += 1
+            continue
+        if cmd.startswith("$(", i):
+            out.append("$(")
+            stack.append(["$(", len(out), 1, 0])
             i += 2
             continue
-        if quoting is None and c in "'\"":
-            quoting = c
-        elif c == quoting:
-            quoting = None
+        if kind == "$(":
+            if c == "(":
+                frame[2] += 1
+            elif c == ")" and not (frame[3] and frame[2] == 1):   # not a case pattern's )
+                frame[2] -= 1
+                if frame[2] == 0:
+                    close()
+                    out.append(c)
+                    i += 1
+                    continue
+            elif c in "ce" and prev in METACHARS and word_at(cmd, i) in ("case", "esac"):
+                frame[3] = max(0, frame[3] + (1 if word_at(cmd, i) == "case" else -1))
+        m = HEREDOC_START.match(cmd, i) if c == "<" else None
+        if m:
+            word = heredoc_word(cmd, m.end())
+            if word is not None:
+                pending.append((word[0], word[1], m.group(1) == "-"))
+            out.append(cmd[i:m.end()])
+            i = m.end()
+            continue
+        out.append(c)
         i += 1
-    return "".join(out)
+        if c == "\n" and pending:
+            i = here_bodies(cmd, i, pending, expanding)
+            pending = []
+    for frame in stack:
+        if frame[0] in ("$(", "`"):
+            subs.append("".join(out[frame[1]:]))
+            break
+    return "".join(out), subs, expanding
 
 
 # A redirection operator: >, >>, >|, <, <>, <&, >&, &>, &>>, a here-string or a here-document
@@ -3777,7 +4000,8 @@ def strip_redirections(cmd):
     >|f, <<<, a here-document marker) and its operand, split off the word it touches
     (git>log merge is git, then merge). A redirection changes where input and output go,
     never what runs, so the gate reads past it wherever it stands, before the command word
-    and between arguments alike. Quoted text is left alone."""
+    and between arguments alike. Quoted text is left alone. cmd has been through lex, so the
+    only quotes left are '...' and "..."."""
     out, i, n, quoting = [], 0, len(cmd), None
     while i < n:
         c = cmd[i]
@@ -3804,11 +4028,10 @@ def strip_redirections(cmd):
     return "".join(out)
 
 
-def tokenize(cmd):
-    """Shell words and operator tokens, with here-document bodies, comments and redirections
-    dropped. Raises ValueError on unbalanced quotes."""
-    text = strip_redirections(strip_comments(split_heredocs(cmd)[0].replace("\\\n", " ")))
-    lx = shlex.shlex(text, posix=True, punctuation_chars=PUNCT)
+def tokenize(text):
+    """The words and operator tokens of lexed text, its redirections dropped. Raises
+    ValueError on unbalanced quotes."""
+    lx = shlex.shlex(strip_redirections(text), posix=True, punctuation_chars=PUNCT)
     lx.whitespace = " \t\r"          # a newline separates commands; it is not a blank
     lx.whitespace_split = True
     lx.commenters = ""
@@ -3819,46 +4042,70 @@ def is_operator(tok):
     return bool(tok) and all(c in PUNCT for c in tok)
 
 
-def starts_command(tok):
-    """An operator after which a new command begins: a separator, a pipe, a subshell or a
-    process substitution."""
-    return is_operator(tok) and ("(" in tok or ("<" not in tok and ">" not in tok))
+def command_name(word):
+    """The program a word names: its basename, and for zsh's =name (name's path) the name."""
+    return os.path.basename(word[1:] if word.startswith("=") else word)
 
 
-def command_words(tokens):
-    """Indexes of the words that may run as a command: the first word of each simple command,
-    after VAR=value assignments and reserved words, and - after a wrapper (command, env, sudo,
-    time, xargs, ...) - every later word of that command. A wrapper's options can take an
-    argument (sudo -u root git merge ...), so which word it runs cannot be read from the text."""
-    out, i, n, at = [], 0, len(tokens), True
-    while i < n:
-        t = tokens[i]
-        if starts_command(t):
-            at = True
-        elif not is_operator(t) and at:
-            if ASSIGN_RE.match(t) or t in RESERVED:
-                pass
-            elif os.path.basename(t) in WRAPPERS:
-                j = i + 1
-                while j < n and not is_operator(tokens[j]):
-                    out.append(j)
-                    j += 1
-                at = False
-                i = j
-                continue
-            else:
-                out.append(i)
-                at = False
-        i += 1
+def candidates(tokens):
+    """Each word naming git, glab or gh, with the words after it in its simple command. Any
+    word may be a command word - after a wrapper (timeout 30, caffeinate -i, find -exec,
+    xargs), a zsh precommand modifier (noglob, repeat 1), a keyword (coproc, function f {) or
+    an assignment (A+=1) - so the gate never tries to tell which word runs. Whether the command
+    is plain is parse_plain's question."""
+    out, end = [], len(tokens)
+    for k in range(len(tokens) - 1, -1, -1):
+        if is_operator(tokens[k]):
+            end = k
+        elif command_name(tokens[k]) in TOOLS:
+            out.append(tokens[k:end])
+    return out[::-1]
+
+
+def shell_strings(tokens):
+    """The command strings a word hands to another shell: every word after an option cluster
+    holding c given to sh, bash, zsh, dash or ksh (its -c string, and the words after it), and
+    the string of env -S or --split-string."""
+    out, n = [], len(tokens)
+    for k, word in enumerate(tokens):
+        name, j, rest = command_name(word), k + 1, False
+        while (name in SHELLS or name == "env") and j < n and not is_operator(tokens[j]):
+            w, after = tokens[j], tokens[j + 1] if j + 1 < n else ""
+            if rest:
+                out.append(w)
+            elif name == "env" and w.startswith("--split-string"):
+                out.append(w.partition("=")[2] if "=" in w else after)
+            elif name == "env" and w.startswith("-") and not w.startswith("--") and "S" in w:
+                out.append(w[w.index("S") + 1:] or after)
+            elif name in SHELLS and w[:1] in ("-", "+") and w[1:2] != "-" and "c" in w[1:]:
+                rest = True
+            j += 1
     return out
 
 
-def segment(tokens, k):
-    """The words of the simple command whose command word is at k."""
-    end = k
-    while end < len(tokens) and not is_operator(tokens[end]):
-        end += 1
-    return tokens[k:end]
+def scan(cmd, depth=0):
+    """(tokens, hidden): cmd's words and operators, and whether a command that cmd runs some
+    other way holds a gated verb, at any depth - a $( ) or backtick substitution (outside
+    single quotes, or in an expanding here-document), a shell's -c string, env -S's string.
+    Nesting deeper than MAX_NESTING counts as hidden. Raises ValueError when cmd has unbalanced
+    quotes."""
+    text, nested, expanding = lex(cmd)
+    for body in expanding:
+        nested.extend(lex(body, body=True)[1])
+    tokens = tokenize(text)
+    nested.extend(shell_strings(tokens))
+    for inner in nested:
+        if depth >= MAX_NESTING:
+            return tokens, True
+        try:
+            inner_tokens, inner_hidden = scan(inner, depth + 1)
+        except ValueError:
+            if crude(inner):
+                return tokens, True
+            continue
+        if inner_hidden or gated_anywhere(inner_tokens):
+            return tokens, True
+    return tokens, False
 
 
 def literal(word):
@@ -3867,8 +4114,10 @@ def literal(word):
 
 
 # ------------------------------------------------------------------ the gated verbs
+# git's global options that take their value as the next word (git 2.56: --list-cmds and
+# --exec-path take one only after =; --super-prefix is from older releases).
 GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env",
-                  "--super-prefix"}
+                  "--attr-source", "--super-prefix"}
 FORGE_VALUE_OPTS = {"-R", "--repo"}
 HELP = {"--help", "-h"}
 MERGE_CONTROL = {"--abort", "--quit", "--continue"}
@@ -3968,8 +4217,8 @@ def gated_verb(words):
     --continue only as its sole argument: anywhere else either may be an option's value."""
     if not words:
         return None
-    tool, rest = os.path.basename(words[0]), words[1:]
-    if tool not in ("git", "glab", "gh"):
+    tool, rest = command_name(words[0]), words[1:]
+    if tool not in TOOLS:
         return None
     if tool == "git":
         i = skip_options(rest, 0, GIT_VALUE_OPTS)
@@ -3991,6 +4240,10 @@ def gated_verb(words):
         if api_gated(parse_api(rest[i + 1:])):
             return {"tool": tool, "kind": "api", "args": rest[i + 1:]}
     return None
+
+
+def gated_anywhere(tokens):
+    return any(gated_verb(words) for words in candidates(tokens))
 
 
 # ------------------------------------------------------------------ the plain command
@@ -4131,7 +4384,14 @@ def judge_git_merge(shape, ledger):
             raise Deny(PLAIN)
     top = toplevel(cwd)
     dest = ledger.default_branch(top)
-    if ledger.current_branch(top) != dest:
+    branch = ledger.current_branch(top)
+    if branch is None:
+        # No branch: a detached HEAD, which is no branch at all, or a lookup that failed or
+        # timed out, which says nothing and must not open the gate.
+        if (ledger.git(top, "rev-parse", "--abbrev-ref", "HEAD") or "") != "HEAD":
+            raise Deny(NO_BRANCH.format(top))
+        return
+    if branch != dest:
         return
     _, refs = parse_flags(args[i + 1:], MERGE_VALUE)
     if len(refs) != 1:
@@ -4153,6 +4413,16 @@ def judge(shape, ledger):
 CRUDE = re.compile(r"\b(glab|gh)\b[^\n]*\b(mr|pr|api)\b|\bgit\b[^\n]*\bmerge\b")
 
 
+def crude(text):
+    """The last resort, for text the grammar cannot read: glab or gh with mr, pr or api, or git
+    with merge, with quotes and backslashes dropped (g''it is git), read both with every
+    backslash-newline joined (mer\\<newline>ge is merge) and without (an escaped backslash
+    does not continue its line)."""
+    def flat(t):
+        return re.sub(r"[\\'\"]", "", t)
+    return bool(CRUDE.search(flat(text.replace("\\\n", ""))) or CRUDE.search(flat(text)))
+
+
 def on_alarm(signum, frame):
     raise Deny(TIMED_OUT)
 
@@ -4169,11 +4439,16 @@ def load_ledger():
 
 
 def main():
+    raw = sys.stdin.read()
     try:
-        payload = json.load(sys.stdin)
+        payload = json.loads(raw)
         cmd = payload.get("tool_input", {}).get("command") or ""
         cwd = payload.get("cwd") or os.getcwd()
     except (ValueError, AttributeError):
+        # A payload that is not JSON is read as text, its JSON escapes undone roughly.
+        text = raw.replace("\\\\", "\0").replace("\\n", "\n").replace("\\t", "\t")
+        if "XREVIEW_GUARD=off" not in raw and crude(text.replace("\0", "\\")):
+            print(decision(MALFORMED))
         return
     # The bypass is read from the command, the only place a model can write it.
     if not isinstance(cmd, str) or not cmd or "XREVIEW_GUARD=off" in cmd:
@@ -4183,14 +4458,14 @@ def main():
     gated = False
     try:
         try:
-            tokens = tokenize(cmd)
+            tokens, hidden = scan(cmd)
         except ValueError:
-            if CRUDE.search(cmd):
+            if crude(cmd):
                 raise Deny(UNPARSEABLE)
             return
-        # A gated verb run by a substitution is never part of a plain command.
-        hidden = gated_in_substitution(cmd)
-        gated = hidden or any(gated_verb(segment(tokens, k)) for k in command_words(tokens))
+        # A gated verb run some other way - a substitution, a nested shell - is never part of
+        # a plain command.
+        gated = hidden or gated_anywhere(tokens)
         if not gated:
             return
         shape = None if hidden else parse_plain(tokens, cwd)
@@ -4200,7 +4475,7 @@ def main():
     except Deny as d:
         print(decision(str(d)))
     except Exception as e:                             # a bug here must not open the gate
-        if gated or CRUDE.search(cmd):
+        if gated or crude(cmd):
             print(decision("Pre-merge gate: internal error ({}: {}), so the command is "
                            "refused.".format(type(e).__name__, e)))
     finally:
@@ -4234,8 +4509,10 @@ if __name__ == "__main__":
 #
 # This shell front is the fast path. The hook fires on EVERY Bash call, so a payload that
 # names none of create, new, merge, accept, pulls or graphql, or none of glab, gh or git,
-# costs no subprocess at all. Everything else goes to xreview-guard.py beside this file,
-# which owns the grammar and the checks and fails closed on a gated shape.
+# costs no subprocess at all. It reads the payload with quotes, backslashes and line
+# continuations dropped, as the shell would join them: g''it, mer""ge and mer\<newline>ge
+# all name their verb. Everything else goes to xreview-guard.py beside this file, which owns
+# the grammar and the checks and fails closed on a gated shape.
 #
 # The bypass is XREVIEW_GUARD=off, for Michael's explicit use only: in this hook's
 # environment, or anywhere in the command (the only place a model can write it).
@@ -4249,11 +4526,15 @@ set -f
 payload=$(cat)
 [ -n "$payload" ] || exit 0
 
-case "$payload" in
+# A line continuation is spelled \\\n in the JSON payload; then quotes and backslashes go.
+json_continuation='\\\n'
+flat=${payload//"$json_continuation"/}
+flat=${flat//[\'\"\\]/}
+case "$flat" in
   *create*|*new*|*merge*|*accept*|*pulls*|*graphql*) ;;
   *) exit 0 ;;
 esac
-case "$payload" in
+case "$flat" in
   *glab*|*gh*|*git*) ;;
   *) exit 0 ;;
 esac
@@ -4270,10 +4551,17 @@ fi
 [ "$rc" -eq 0 ] && exit 0
 
 # The helper could not run at all. FAIL DIRECTION IS CLOSED for a command that may propose or
-# merge: glab/gh with mr, pr or api, or git with merge, in its text. Anything else is allowed.
+# merge: glab/gh with mr, pr or api, or git with merge, as whole words on one line - the
+# helper's own last resort (CRUDE). The text is read with quotes and backslashes dropped,
+# both with every backslash-newline joined and without, so neither a fused redirection
+# (git>log merge), a continuation (git \<newline>merge) nor a backtick hides the verb.
+# Anything else is allowed.
 cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command // empty' 2>/dev/null) || cmd=$payload
 case "$cmd" in *XREVIEW_GUARD=off*) exit 0 ;; esac
-if printf '%s' "$cmd" | grep -Eq '(glab|gh)[[:space:]]+([^;&|]*[[:space:]])?(mr|pr|api)([[:space:]]|$)|git[[:space:]]+([^;&|]*[[:space:]])?merge([[:space:]]|$)'; then
+continuation=$'\\\n'
+joined=${cmd//"$continuation"/}
+crude='\b(glab|gh)\b.*\b(mr|pr|api)\b|\bgit\b.*\bmerge\b'
+if printf '%s\n%s' "${joined//[\'\"\\]/}" "${cmd//[\'\"\\]/}" | grep -Eq "$crude"; then
   reason="Pre-merge gate: the gate's check could not run ($helper exited $rc), so this command, which may propose or merge a change, is refused. Restore the helper (chezmoi apply)."
   printf '%s' "$reason" | jq -Rs \
     '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:.}}' 2>/dev/null \
@@ -4329,7 +4617,7 @@ with:
 ```
 
 - [ ] **Step 7: Run them and confirm they pass.**
-  - `./tests/xreview-guard.test.sh`: expect `passed: 95  failed: 0`.
+  - `./tests/xreview-guard.test.sh`: expect `passed: 139  failed: 0`.
   - `./tests/xreview-skill.test.sh`: expect `passed: 76  failed: 0`.
   - `./tests/claude-settings.test.sh 2>&1 | tail -1`: expect `RESULT: 179 passed, 0 failed`.
 
@@ -4556,7 +4844,7 @@ is "K47 a project id is looked up on origin's host" \
 ```
 
 - [ ] **Step 2: Run it and confirm it fails.** `./tests/xreview-guard.test.sh`: expect
-  `passed: 135  failed: 41`. Every allow case in H-K fails, and so do the deny reasons naming a
+  `passed: 179  failed: 41`. Every allow case in H-K fails, and so do the deny reasons naming a
   flag, a fetch, a project or a host, because each creation is still denied with
   `NOT_MODELLED`.
 
@@ -5062,7 +5350,7 @@ def judge(shape, ledger):
 ```
 
 - [ ] **Step 6: Run it and confirm it passes.** `./tests/xreview-guard.test.sh`: expect
-  `passed: 176  failed: 0`.
+  `passed: 220  failed: 0`.
 
 - [ ] **Step 7: Commit.** Check the branch, then:
 
@@ -5305,7 +5593,7 @@ is "P39 and GITLAB_API_HOST on another host" "$(GITLAB_API_HOST=api.other.exampl
 ```
 
 - [ ] **Step 2: Run it and confirm it fails.** `./tests/xreview-guard.test.sh`: expect
-  `passed: 229  failed: 25`. The failures are L1-L9, M2, M6, N2, N5, N7, N9, P2, P4, P6, P11,
+  `passed: 273  failed: 25`. The failures are L1-L9, M2, M6, N2, N5, N7, N9, P2, P4, P6, P11,
   P19, P20, P22, P24, P31 and P33: merges are still denied with `NOT_MODELLED`, or as unresolved API
   writes.
 
@@ -5560,7 +5848,7 @@ def judge(shape, ledger):
 ```
 
 - [ ] **Step 5: Run it and confirm it passes.** `./tests/xreview-guard.test.sh`: expect
-  `passed: 254  failed: 0`. Then `grep -c NOT_MODELLED dot_claude/xreview-guard.py` must print
+  `passed: 298  failed: 0`. Then `grep -c NOT_MODELLED dot_claude/xreview-guard.py` must print
   `0`.
 
 - [ ] **Step 6: Commit.** Check the branch, then:
@@ -5871,9 +6159,9 @@ owns it.
   - Expected:
     - every suite `ok`;
     - `29 suites run, 8 skipped (see the needs: lines)`;
-    - `all 29 suites passed (3332 assertions)`.
+    - `all 29 suites passed (3376 assertions)`.
   - The eight skipped suites carry a `# test-requires:` line.
-  - Report the total as passed/total, `3332/3332`, copied from the runner's last line.
+  - Report the total as passed/total, `3376/3376`, copied from the runner's last line.
 
 - [ ] **Step 2: Confirm the deployed set.** Run
   `chezmoi managed --include=files | grep -c -E '^\.claude/xreview-(guard|ledger)\.py$'` and
