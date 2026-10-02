@@ -906,6 +906,7 @@ Written for /usr/bin/python3 (3.9): no match statements, no X | Y type unions.
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -1169,6 +1170,10 @@ def normalize(repo, rng):
 
 def now():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+# Reviews are ordered by comparing dispatched_at as strings, so only now()'s format is kept.
+AT_FORMAT = re.compile(r"\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z\Z")
 
 
 # ------------------------------------------------------------------ the ledger
@@ -1634,6 +1639,7 @@ def append(common, entry):
             and entry.get("kind") in ("pending", "receipt")
             and isinstance(entry.get("nonce"), str) and entry["nonce"]
             and isinstance(entry.get("dispatched_at"), str)
+            and AT_FORMAT.match(entry["dispatched_at"])
             and isinstance(entry.get("targets"), list) and entry["targets"]
             and all(isinstance(t, dict) and t.get("repo") == common for t in entry["targets"])):
         raise Fail("not a v2 ledger entry for {}".format(common))
@@ -1652,6 +1658,11 @@ def append(common, entry):
                         and held.get("kind") == entry["kind"]):
                     return "present"
         line = (json.dumps(entry, separators=(",", ":")) + "\n").encode("utf-8")
+        if os.path.lexists(path) and os.path.getsize(path) > 0:
+            with open(path, "rb") as fh:
+                fh.seek(-1, os.SEEK_END)
+                if fh.read(1) != b"\n":
+                    line = b"\n" + line
         fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
         try:
             if os.write(fd, line) != len(line):
@@ -1893,10 +1904,39 @@ L append "$C" "$(jq -nc --argjson t "$T" '{v:2,kind:"receipt",nonce:"xr-iso",dis
 is "G4 the approval opens a_b" "$(L decide "$ROOT/iso/a_b" main main feature | jq -r .allow)" true
 is "G5 and never a/b, for identical blobs and destination" "$(L decide "$ROOT/iso/a/b" main main feature | jq -r .allow)" false
 
+echo "H. a damaged ledger never lets the gate fail open"
+D="$ROOT/dmg"; mkrepo "$D"
+variant "$D" feature; printf 'd\n' > "$D/d.txt"; commit "$D" "feature"; git -C "$D" switch -q main
+DT="$(L normalize "$D" main...feature)"; DC="$(printf '%s' "$DT" | jq -r .repo)"; DF="$(L path "$D")"
+dentry() {
+  jq -nc --arg k "$1" --arg n "$2" --argjson t "${3:-$DT}" --arg at "${4-$(L now)}" \
+    '{v:2,kind:$k,nonce:$n,dispatched_at:$at,checkpoint:"pre-merge",targets:[$t]}
+     + (if $k == "receipt" then {verdict:"approve",findings:0,thread:"t",turn:"u",tier:""} else {} end)'
+}
+DAT="$(L now)"
+L append "$DC" "$(dentry pending r1 "$DT" "$DAT")" >/dev/null; L append "$DC" "$(dentry receipt r1 "$DT" "$DAT")" >/dev/null
+is "H1 an approved change allows" "$(L decide "$D" main main feature | jq -r .allow)" true
+printf '{"v":2,"kind":"receipt","nonce":"other","dispa' >> "$DF"
+is "H2 a later pending entry is appended after a partial line" "$(L append "$DC" "$(dentry pending r2)")" appended
+is "H3 it is readable" "$(grep -c '"nonce":"r2"' "$DF")" 1
+is "H4 and it closes the gate" "$(L decide "$D" main main feature | jq -r .allow)" false
+is "H5 on a line of its own" "$(grep -c '^{"v":2,"kind":"pending","nonce":"r2"' "$DF")" 1
+before="$(wc -c < "$DF" | tr -d ' ')"
+for bad in "2026-10-02T00:00:00Z" "" "x"; do
+  out="$(L append "$DC" "$(dentry pending r3 "$DT" "$bad")" 2>&1)"; rc=$?
+  is "H6 dispatched_at '$bad' is refused" "$rc/$(printf '%s' "$out" | grep -c 'not a v2 ledger entry')" "1/1"
+done
+is "H7 and nothing is appended" "$(wc -c < "$DF" | tr -d ' ')" "$before"
+NUMT="$(printf '%s' "$DT" | jq -c '.fingerprint = 12345 | .branch = "numeric"')"
+L append "$DC" "$(dentry pending r4 "$NUMT")" >/dev/null
+out="$(L decide "$D" main main feature --branch numeric 2>&1)"; rc=$?
+is "H8 a numeric fingerprint is no traceback" "$([ "$rc" -le 1 ] && printf '%s' "$out" | jq -e 'has("allow")' >/dev/null && ! printf '%s' "$out" | grep -q Traceback && echo ok)" ok
+is "H9 and the branch record shows it" "$(printf '%s' "$out" | jq -r '.on_record_branch | join("|")' | grep -c 'pending r4')" 1
+
 ```
 
 - [ ] **Step 2: Run it and confirm it fails.** `./tests/xreview-ledger.test.sh`: expect
-  `passed: 123  failed: 34`. Every F and G decision fails, because `decide` is a usage error so
+  `passed: 130  failed: 38`. Every F and G decision fails, because `decide` is a usage error so
   far.
 
 - [ ] **Step 3: Add the decision.** In `dot_claude/xreview-ledger.py`, insert this block
@@ -1945,7 +1985,7 @@ def branch_record(entries, branch):
         lines.append("{} (dest {}, {}, fingerprint {})".format(
             describe(entry), target.get("dest") or "none",
             "full" if target.get("full") is True else "partial",
-            (target.get("fingerprint") or "none")[:12]))
+            str(target.get("fingerprint") or "none")[:12]))
     lines.extend(describe(e) for e in entries if e.get("v") is None and e.get("branch") == branch)
     return lines
 
@@ -2094,7 +2134,7 @@ if __name__ == "__main__":
 ```
 
 - [ ] **Step 5: Run it and confirm it passes.** `./tests/xreview-ledger.test.sh`: expect
-  `passed: 157  failed: 0`.
+  `passed: 168  failed: 0`.
 
 - [ ] **Step 6: Commit.** Check the branch, then:
 
@@ -5809,9 +5849,9 @@ owns it.
   - Expected:
     - every suite `ok`;
     - `29 suites run, 8 skipped (see the needs: lines)`;
-    - `all 29 suites passed (3317 assertions)`.
+    - `all 29 suites passed (3328 assertions)`.
   - The eight skipped suites carry a `# test-requires:` line.
-  - Report the total as passed/total, `3317/3317`, copied from the runner's last line.
+  - Report the total as passed/total, `3328/3328`, copied from the runner's last line.
 
 - [ ] **Step 2: Confirm the deployed set.** Run
   `chezmoi managed --include=files | grep -c -E '^\.claude/xreview-(guard|ledger)\.py$'` and
