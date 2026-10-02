@@ -575,16 +575,12 @@ archive_superseded() { # archive_superseded <current-thread>
   return 0
 }
 
-# A receipt is the only durable evidence that a review actually happened. It names the
-# branch the review was dispatched on, not the one checked out at collect time: in a shared
-# checkout another session may have switched branches in between. It records that branch's
-# head at collection time so a reader can tell how far the branch has moved since;
-# it deliberately does not try to invalidate itself, because applying a finding necessarily
-# moves HEAD and a self-invalidating receipt would demand a second review of the fix.
+# The v1 receipt, written only for a turn dispatched before review targets existed (no
+# turns/<nonce>.targets): it stays in the per-checkout file, names the branch the review was
+# dispatched on, and never opens the pre-merge gate (spec 2026-10-02 §3.2, §3.5).
 # The tier is recorded, never enforced: which model and effort the reviewer runs at is
 # Michael's setting, and a gate pinned to model names refuses every dispatch the day a new
-# one ships. The checkpoint (spec, plan or pre-merge, named at dispatch) IS enforced:
-# xreview-guard.sh admits an MR only on a pre-merge receipt whose verdict is approve.
+# one ships.
 record_receipt() { # record_receipt <thread> <nonce> <turn> <findings-json> <checkpoint> [branch]
   local dir tier verdict count branch head; dir="$(state_dir)"
   if ! mkdir -p "$dir" 2>/dev/null; then
@@ -628,6 +624,35 @@ record_pending() {
       '{v:2,kind:"pending",nonce,dispatched_at,checkpoint,targets:[.targets[] | select(.repo == $r)]}')" \
       || return 1
     ledger append "$repo" "$entry" >/dev/null || return 1
+  done <<<"$repos"
+  return 0
+}
+
+# record_receipts <thread> <nonce> <turn> <findings-json> <targets-file> - spec 2026-10-02
+# §3.5: one receipt per target repository, idempotent per nonce. The targets were fixed at
+# dispatch and nothing about them is read again. A failed write only warns: the pending entry
+# stays the newest state of that change, so the gate stays closed until a later collect.
+record_receipts() {
+  local tier verdict count repos repo entry err
+  tier="$(codex_tier "$1" 2>/dev/null)" || tier=""
+  verdict="$(printf '%s' "$4" | jq -r '.verdict // ""' 2>/dev/null)" || verdict=""
+  count="$(printf '%s' "$4" | jq -r '(.findings // []) | length' 2>/dev/null)" || count=0
+  if ! repos="$(jq -r '[.targets[].repo] | unique | .[]' "$5" 2>/dev/null)"; then
+    printf 'xreview: could not write the receipt for %s: its targets in %s cannot be read\n' "$2" "$5" >&2
+    return 0
+  fi
+  while IFS= read -r repo; do
+    [ -n "$repo" ] || continue
+    err=""
+    if ! entry="$(jq -c --arg r "$repo" --arg thread "$1" --arg turn "$3" --arg tier "$tier" \
+                     --arg verdict "$verdict" --argjson findings "${count:-0}" \
+           '{v:2,kind:"receipt",nonce,dispatched_at,checkpoint,verdict:$verdict,findings:$findings,
+             thread:$thread,turn:$turn,tier:$tier,targets:[.targets[] | select(.repo == $r)]}' \
+           "$5" 2>/dev/null)" \
+       || ! err="$(ledger append "$repo" "$entry" 2>&1 >/dev/null)"; then
+      printf 'xreview: could not write the receipt for %s to the ledger of %s%s\n' "$2" "$repo" \
+        "${err:+ ($err)}" >&2
+    fi
   done <<<"$repos"
   return 0
 }
@@ -702,15 +727,19 @@ cmd_apply() {
     "$1" "$(grep -c '^file=' "$dir/applying" 2>/dev/null || printf 0)"
 }
 
+# Everything on record for this repository: its ledger (shared by every worktree), then this
+# checkout's v1 receipts. --tiers counts the receipts only, never the pending entries.
 cmd_receipts() {
-  local f; f="$(state_dir)/reviews.jsonl"
-  [ -r "$f" ] || { printf 'no reviews recorded for %s\n' "$(repo_root)"; return 1; }
+  local out
+  out="$(ledger show "$(pwd)" 2>/dev/null)" \
+    || { printf 'no reviews recorded for %s\n' "$(repo_root)"; return 1; }
   if [ "${1:-}" = "--tiers" ]; then
-    jq -r '(.tier // "") | if . == "" then "(unrecorded)" else . end' "$f" 2>/dev/null \
+    printf '%s\n' "$out" | jq -Rr 'fromjson? | select((.kind // "receipt") == "receipt")
+      | (.tier // "") | if . == "" then "(unrecorded)" else . end' 2>/dev/null \
       | sort | uniq -c | sort -rn
     return 0
   fi
-  cat "$f"
+  printf '%s\n' "$out"
 }
 
 # A repo listed as trusted in ~/.codex/config.toml has its own .codex/config.toml applied,
@@ -990,7 +1019,13 @@ cmd_collect() {
   fi
   case "$rc" in
     0) printf '%s\n' "$out"
-       record_receipt "$thread" "$nonce" "$turn" "$out" "$checkpoint" "$branch" ;;
+       # A turn dispatched before review targets existed has no targets file: its receipt
+       # is the v1 one, as before, so every turn in flight at rollout still collects.
+       if [ -e "$(state_dir)/turns/$nonce.targets" ]; then
+         record_receipts "$thread" "$nonce" "$turn" "$out" "$(state_dir)/turns/$nonce.targets"
+       else
+         record_receipt "$thread" "$nonce" "$turn" "$out" "$checkpoint" "$branch"
+       fi ;;
     3) printf 'xreview: still running after %ss - turn on record for %s.\nWait longer with: xreview collect %s <secs>\n' \
          "$budget" "$nonce" "$nonce" >&2
        exit 3 ;;
