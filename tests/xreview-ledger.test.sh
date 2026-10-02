@@ -278,5 +278,156 @@ git -C "$D" switch -q --detach
 is "D6 a detached HEAD targets HEAD" "$(L default-range "$D")" "master...HEAD"
 is "D7 now is UTC to the microsecond" "$(L now | grep -cE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z$')" 1
 
+echo "E. appends are locked and idempotent (spec 3.2, 3.3)"
+E="$ROOT/app"; mkrepo "$E"
+EC="$(L normalize "$E" HEAD..HEAD | jq -r .repo)"
+EF="$(L path "$E")"
+# entry <kind> <nonce> [repo]: a minimal v2 entry for the ledger of <repo> (default: E's).
+entry() {
+  jq -nc --arg k "$1" --arg n "$2" --arg r "${3:-$EC}" \
+    '{v:2,kind:$k,nonce:$n,dispatched_at:"2026-10-02T10:00:00.000000Z",checkpoint:"pre-merge",
+      targets:[{repo:$r,dest:"main",full:true,fingerprint:"f"}]}'
+}
+is "E1 a pending entry is appended" "$(L append "$EC" "$(entry pending xr-1)")" appended
+is "E2 the ledger directory names its repository" "$(cat "$(dirname "$EF")/repo")" "$EC"
+is "E3 the same pending again is already present" "$(L append "$EC" "$(entry pending xr-1)")" present
+is "E4 its receipt is appended" "$(L append "$EC" "$(entry receipt xr-1)")" appended
+is "E5 a second receipt for that nonce is not" "$(L append "$EC" "$(entry receipt xr-1)")" present
+is "E6 so the ledger holds two lines" "$(wc -l < "$EF" | tr -d ' ')" 2
+out="$(L append "$EC" "$(entry receipt xr-2 /elsewhere/.git)" 2>&1)"; rc=$?
+is "E7 an entry whose target is another repository is refused" "$rc/$(printf '%s' "$out" | grep -c 'not a v2 ledger entry')" "1/1"
+out="$(L append "$EC" '{"branch":"main","verdict":"approve"}' 2>&1)"; rc=$?
+is "E8 a v1-shaped entry is refused" "$rc" 1
+P="$ROOT/par"; mkrepo "$P"; PC="$(L normalize "$P" HEAD..HEAD | jq -r .repo)"; PF="$(L path "$P")"
+for i in $(seq 1 20); do L append "$PC" "$(entry pending "xr-par-$i" "$PC")" >/dev/null & done
+wait
+is "E9 20 concurrent appends produce 20 lines" "$(wc -l < "$PF" | tr -d ' ')" 20
+is "E10 every one of them valid JSON" "$(jq -c . < "$PF" 2>/dev/null | wc -l | tr -d ' ')" 20
+is "E11 with 20 distinct nonces" "$(jq -r .nonce < "$PF" | sort -u | wc -l | tr -d ' ')" 20
+is "E12 and no lock left behind" "$([ -e "$PF.lock" ] && echo held || echo free)" free
+mkdir "$PF.lock"
+out="$(XREVIEW_LEDGER_LOCK_WAIT=0.3 L append "$PC" "$(entry pending xr-held "$PC")" 2>&1)"; rc=$?
+is "E13 a held lock refuses at the bound" "$rc/$(printf '%s' "$out" | grep -c 'is held')" "1/1"
+is "E14 and appends nothing" "$(grep -c xr-held "$PF")" 0
+is "E15 a fresh lock is never broken" "$([ -d "$PF.lock" ] && echo held || echo free)" held
+/usr/bin/python3 -c 'import os,sys,time; t=time.time()-120; os.utime(sys.argv[1],(t,t))' "$PF.lock"
+is "E16 a stale lock is broken" "$(XREVIEW_LEDGER_LOCK_WAIT=0.3 L append "$PC" "$(entry pending xr-stale "$PC")")" appended
+is "E17 and released" "$([ -e "$PF.lock" ] && echo held || echo free)" free
+L_SHOW="$(L show "$E")"; rc=$?
+is "E18 show lists the ledger" "$rc/$(printf '%s\n' "$L_SHOW" | grep -c '"nonce":"xr-1"')" "0/2"
+LEG="$XDG_STATE_HOME/xreview/$(printf '%s' "$(git -C "$E" rev-parse --show-toplevel)" | tr '/' '_' | sed 's/^_//')"
+mkdir -p "$LEG" && printf '{"branch":"main","checkpoint":"pre-merge","verdict":"approve"}\n' > "$LEG/reviews.jsonl"
+is "E19 and then the checkout's legacy receipts" "$(L show "$E" | tail -1 | jq -r .branch)" main
+out="$(L show "$D")"; rc=$?
+is "E20 with nothing on record it exits 1" "$rc/$out" "1/"
+# Two writers both find the same stale lock. Breaker A judges it stale and is suspended;
+# breaker B breaks it, takes a fresh lock and still holds it when A resumes. The steps run in
+# this order, deterministically, through the module's own functions: no sleeps, no races.
+LK="$ROOT/interleave.lock"
+lines="$(/usr/bin/python3 - "$LEDGER" "$LK" <<'PY'
+import importlib.util, os, sys, time
+spec = importlib.util.spec_from_file_location("ledger", sys.argv[1])
+ledger = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(ledger)
+lock, old = sys.argv[2], time.time() - 120
+
+def stale_lock(token):
+    os.mkdir(lock)
+    with open(os.path.join(lock, "owner"), "w") as fh:
+        fh.write(token + "\n")
+    os.utime(lock, (old, old))
+
+stale_lock("dead")
+seen_by_a = ledger.owner_of(lock)                       # A: "dead", and stale
+print("a-saw-stale", seen_by_a, ledger.stale(lock))
+token_b = ledger.acquire(lock)                          # B: breaks it, takes a fresh lock
+print("b-holds", ledger.owner_of(lock) == token_b)
+os.utime(lock, (old, old))      # and is slow: its lock looks stale too, so only the token tells
+
+print("a-breaks", ledger.break_stale(lock, seen_by_a))  # A resumes: the token moved on
+print("b-still-holds", ledger.owner_of(lock) == token_b)
+ledger.release(lock, "not-the-holder")
+print("foreign-release-kept", os.path.isdir(lock))
+ledger.release(lock, token_b)
+print("own-release-freed", os.path.isdir(lock))
+stale_lock("dead2")
+os.mkdir(lock + ".break")                               # a writer died holding the break lock
+os.utime(lock + ".break", (old, old))
+try:
+    print("stale-break-lock", "broken", ledger.break_stale(lock, "dead2"))
+except ledger.Fail as e:
+    print("stale-break-lock", "failed", ("rmdir " + lock + ".break") in str(e))
+print("both-left", os.path.isdir(lock + ".break"), os.path.isdir(lock))
+os.rmdir(lock + ".break")                               # removed by hand
+print("then-broken", ledger.break_stale(lock, "dead2"), os.path.isdir(lock))
+stale_lock("dead3")
+os.mkdir(lock + ".break")                               # another writer is breaking right now
+print("fresh-break-lock-waits", ledger.break_stale(lock, "dead3"), os.path.isdir(lock))
+PY
+)"
+is "E21 breaker A first judges the lock stale" "$(printf '%s\n' "$lines" | grep -c '^a-saw-stale dead True$')" 1
+is "E22 breaker B breaks it and holds a fresh lock" "$(printf '%s\n' "$lines" | grep -c '^b-holds True$')" 1
+is "E23 A, resuming, never removes B's lock" "$(printf '%s\n' "$lines" | grep -c '^a-breaks False$')" 1
+is "E24 B still holds it" "$(printf '%s\n' "$lines" | grep -c '^b-still-holds True$')" 1
+is "E25 a release by another token leaves the lock" "$(printf '%s\n' "$lines" | grep -c '^foreign-release-kept True$')" 1
+is "E26 B's own release frees it" "$(printf '%s\n' "$lines" | grep -c '^own-release-freed False$')" 1
+is "E27 a stale break lock is never removed: breaking fails, naming it to remove by hand" "$(printf '%s\n' "$lines" | grep -c '^stale-break-lock failed True$')" 1
+is "E28 both locks are left; removed by hand, the stale lock is then broken" \
+   "$(printf '%s\n' "$lines" | grep -c -E '^(both-left True True|then-broken True False)$')" 2
+is "E29 a fresh break lock means another breaker is deciding: wait" "$(printf '%s\n' "$lines" | grep -c '^fresh-break-lock-waits False True$')" 1
+# A release checks its token and is suspended (the module's test seam) while B, finding A's
+# lock stale, tries to break it and take its own. The release holds the break lock, so B must
+# wait, and A then removes only its own lock. A release that cannot take the break lock in
+# time, or finds it stale, leaves the lock and warns.
+LR="$ROOT/release.lock"
+lines="$(XREVIEW_LEDGER_LOCK_WAIT=0.2 /usr/bin/python3 - "$LEDGER" "$LR" <<'PY'
+import contextlib, importlib.util, io, os, sys, time
+spec = importlib.util.spec_from_file_location("ledger", sys.argv[1])
+ledger = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(ledger)
+lock, old = sys.argv[2], time.time() - 120
+token_a = ledger.acquire(lock)
+os.utime(lock, (old, old))                    # A is slow: its lock looks stale to B
+seen = []
+
+def b_breaks_in():
+    try:
+        seen.append(("b-acquired", ledger.acquire(lock)))
+    except ledger.Fail:
+        seen.append(("b-waited", None))
+
+ledger.RELEASE_PAUSE = b_breaks_in
+ledger.release(lock, token_a)
+ledger.RELEASE_PAUSE = None
+print("b-during-release", seen[0][0])
+print("release-freed", os.path.isdir(lock), os.path.isdir(lock + ".break"))
+token_c = ledger.acquire(lock)
+os.mkdir(lock + ".break")                     # a breaker is deciding right now
+err = io.StringIO()
+with contextlib.redirect_stderr(err):
+    ledger.release(lock, token_c)
+print("blocked-release-kept", ledger.owner_of(lock) == token_c, "could not take" in err.getvalue())
+os.utime(lock + ".break", (old, old))         # that breaker died holding the break lock
+err = io.StringIO()
+with contextlib.redirect_stderr(err):
+    ledger.release(lock, token_c)
+print("stale-break-release-kept", ledger.owner_of(lock) == token_c, os.path.isdir(lock + ".break"),
+      ("rmdir " + lock + ".break") in err.getvalue())
+PY
+)"
+is "E30 a release holds the break lock: a breaker arriving mid-release waits" "$(printf '%s\n' "$lines" | grep -c '^b-during-release b-waited$')" 1
+is "E31 and the release frees its own lock and the break lock" "$(printf '%s\n' "$lines" | grep -c '^release-freed False False$')" 1
+is "E32 a release that cannot take the break lock leaves the lock and warns" "$(printf '%s\n' "$lines" | grep -c '^blocked-release-kept True True$')" 1
+is "E33 one that finds it stale leaves both, and warns naming it" "$(printf '%s\n' "$lines" | grep -c '^stale-break-release-kept True True True$')" 1
+# A writer that died holding the break lock stops every append until it is removed by hand.
+mkdir "$PF.lock.break"
+/usr/bin/python3 -c 'import os,sys,time; t=time.time()-120; os.utime(sys.argv[1],(t,t))' "$PF.lock.break"
+out="$(L append "$PC" "$(entry pending xr-stuck "$PC")" 2>&1)"; rc=$?
+is "E34 a stale break lock: an append fails closed, naming it to remove by hand" \
+   "$rc/$(printf '%s' "$out" | grep -c -F "remove it by hand (rmdir $PF.lock.break)")" "1/1"
+is "E35 it appends nothing and leaves the break lock" "$(grep -c xr-stuck "$PF")/$([ -d "$PF.lock.break" ] && echo kept || echo gone)" "0/kept"
+rmdir "$PF.lock.break"
+is "E36 removed by hand, appends go through again" "$(L append "$PC" "$(entry pending xr-stuck "$PC")")" appended
+
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))

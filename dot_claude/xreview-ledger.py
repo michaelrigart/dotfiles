@@ -306,7 +306,222 @@ def ledger_file(common):
     return os.path.join(state_home(), "xreview", "ledgers", ledger_key(common), "reviews.jsonl")
 
 
+def legacy_file(repo):
+    """The per-checkout v1 receipt file of the checkout repo is in (keyed by its top-level
+    path, / mapped to _), or None outside a work tree."""
+    top = git(repo, "rev-parse", "--show-toplevel")
+    if not top:
+        return None
+    key = top.replace("/", "_")
+    return os.path.join(state_home(), "xreview", key[1:] if key.startswith("_") else key,
+                        "reviews.jsonl")
+
+
+def read_entries(path):
+    """The JSON objects on record in path, one per line. A damaged line is skipped, as jq's
+    fromjson? skips it. Raises OSError when the file cannot be read."""
+    entries = []
+    with open(path, "rb") as fh:
+        for line in fh:
+            try:
+                entry = json.loads(line.decode("utf-8"))
+            except ValueError:
+                continue
+            if isinstance(entry, dict):
+                entries.append(entry)
+    return entries
+
+
+def lock_wait():
+    try:
+        return float(os.environ.get("XREVIEW_LEDGER_LOCK_WAIT", LOCK_WAIT))
+    except ValueError:
+        return LOCK_WAIT
+
+
+# The ledger lock is a directory (mkdir is atomic, and macOS has no flock(1)) holding one file,
+# owner, with its holder's unique token. A lock older than LOCK_STALE was left by a crashed
+# writer. Breaking it is serialized by a second directory, <lock>.break, and only removes a
+# lock that still carries the token seen when it was judged stale: two writers that both saw
+# it stale can never remove the fresh lock one of them took in between. A release removes the
+# lock only while it carries the releaser's own token, checked and removed under the same
+# break lock, so a breaker cannot slip in between the check and the removal.
+#
+# The break lock is held only for those few steps, and is never broken automatically: two
+# writers that both judged it stale could each remove it and then each break or release
+# under a break lock of its own. One older than LOCK_STALE means a writer died holding it, so
+# every writer fails closed, naming it, until it is removed by hand.
+def owner_of(lock):
+    try:
+        with open(os.path.join(lock, "owner"), encoding="utf-8") as fh:
+            return fh.read().strip() or None
+    except OSError:
+        return None
+
+
+def stale(path):
+    try:
+        return time.time() - os.stat(path).st_mtime > LOCK_STALE
+    except FileNotFoundError:
+        return False
+
+
+def check_break_lock(guard):
+    """Fail when the break lock guard is stale: a writer died holding it, and only a person
+    may remove it."""
+    if stale(guard):
+        raise Fail("the break lock {0} is older than {1:.0f} s: a writer died holding it, and "
+                   "it is never removed automatically. Check that no xreview is running, "
+                   "remove it by hand (rmdir {0}), then retry".format(guard, LOCK_STALE))
+
+
+def break_stale(lock, seen):
+    """Remove lock if it is still stale and still carries the token seen (None: no owner
+    file). Returns True when it removed the lock, False when it did not or another writer
+    holds the break lock. Raises Fail when the break lock is stale."""
+    guard = lock + ".break"
+    try:
+        os.mkdir(guard)
+    except FileExistsError:
+        check_break_lock(guard)
+        return False
+    try:
+        if owner_of(lock) != seen or not stale(lock):
+            return False
+        try:
+            os.unlink(os.path.join(lock, "owner"))
+        except OSError:
+            pass
+        try:
+            os.rmdir(lock)
+        except OSError:
+            return False
+        return True
+    finally:
+        try:
+            os.rmdir(guard)
+        except OSError:
+            pass
+
+
+def acquire(lock):
+    """Take the ledger lock, waiting up to lock_wait(); returns this holder's token. Fails at
+    once while a stale break lock stands."""
+    token = "{}-{}".format(os.getpid(), uuid.uuid4().hex)
+    deadline = time.monotonic() + lock_wait()
+    while True:
+        check_break_lock(lock + ".break")
+        try:
+            os.mkdir(lock)
+        except FileExistsError:
+            seen = owner_of(lock)
+            if stale(lock) and break_stale(lock, seen):
+                continue
+            if time.monotonic() >= deadline:
+                raise Fail("the ledger lock {} is held".format(lock))
+            time.sleep(0.05)
+            continue
+        with open(os.path.join(lock, "owner"), "w", encoding="utf-8") as fh:
+            fh.write(token + "\n")
+        return token
+
+
+RELEASE_PAUSE = None    # a test seam: called between a release's token check and its removal
+
+
+def release(lock, token):
+    """Remove the lock, only while it carries token. The check and the removal run under
+    <lock>.break, the breakers' own lock, so no breaker can replace the lock in between. A
+    release that cannot take the break lock in time, or finds it stale, leaves the lock and
+    only warns."""
+    guard = lock + ".break"
+    deadline = time.monotonic() + lock_wait()
+    while True:
+        try:
+            os.mkdir(guard)
+            break
+        except FileExistsError:
+            pass
+        try:
+            check_break_lock(guard)
+        except Fail as e:
+            print("xreview-ledger: {}; {} is left in place".format(e, lock), file=sys.stderr)
+            return
+        if time.monotonic() >= deadline:
+            print("xreview-ledger: could not take {} to release {}; it will be broken once "
+                  "stale".format(guard, lock), file=sys.stderr)
+            return
+        time.sleep(0.05)
+    try:
+        if owner_of(lock) != token:
+            return
+        if RELEASE_PAUSE:
+            RELEASE_PAUSE()
+        try:
+            os.unlink(os.path.join(lock, "owner"))
+        except OSError:
+            pass
+        try:
+            os.rmdir(lock)
+        except OSError:
+            pass
+    finally:
+        try:
+            os.rmdir(guard)
+        except OSError:
+            pass
+
+
+def append(common, entry):
+    """Append one v2 entry to common's ledger, under its lock. Returns "appended", or
+    "present" when the ledger already holds an entry of that kind for that nonce."""
+    common = os.path.realpath(common)
+    if not (isinstance(entry, dict) and entry.get("v") == 2
+            and entry.get("kind") in ("pending", "receipt")
+            and isinstance(entry.get("nonce"), str) and entry["nonce"]
+            and isinstance(entry.get("dispatched_at"), str)
+            and isinstance(entry.get("targets"), list) and entry["targets"]
+            and all(isinstance(t, dict) and t.get("repo") == common for t in entry["targets"])):
+        raise Fail("not a v2 ledger entry for {}".format(common))
+    path = ledger_file(common)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    note = os.path.join(os.path.dirname(path), "repo")
+    if not os.path.exists(note):
+        with open(note, "w", encoding="utf-8") as fh:
+            fh.write(common + "\n")
+    lock = path + ".lock"
+    token = acquire(lock)
+    try:
+        if os.path.lexists(path):
+            for held in read_entries(path):
+                if (held.get("v") == 2 and held.get("nonce") == entry["nonce"]
+                        and held.get("kind") == entry["kind"]):
+                    return "present"
+        line = (json.dumps(entry, separators=(",", ":")) + "\n").encode("utf-8")
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+        try:
+            if os.write(fd, line) != len(line):
+                raise Fail("a short write to {}".format(path))
+        finally:
+            os.close(fd)
+        return "appended"
+    finally:
+        release(lock, token)
+
+
 # ------------------------------------------------------------------ the command line
+def show(repo):
+    """Print every line on record for repo: its ledger, then its checkout's legacy file.
+    False when neither exists."""
+    found = False
+    for path in (ledger_file(common_dir(repo)), legacy_file(repo)):
+        if path and os.path.exists(path):
+            found = True
+            with open(path, "rb") as fh:
+                sys.stdout.write(fh.read().decode("utf-8", "replace"))
+    return found
+
+
 def main(argv):
     if not argv:
         print(USAGE, file=sys.stderr)
@@ -343,6 +558,15 @@ def main(argv):
         if cmd == "now" and not args:
             print(now())
             return 0
+        if cmd == "append" and len(args) == 2:
+            try:
+                entry = json.loads(args[1])
+            except ValueError:
+                raise Fail("the entry is not JSON")
+            print(append(args[0], entry))
+            return 0
+        if cmd == "show" and len(args) == 1:
+            return 0 if show(args[0]) else 1
     except (Fail, OSError) as e:
         print("xreview-ledger: {}".format(e), file=sys.stderr)
         return 1
