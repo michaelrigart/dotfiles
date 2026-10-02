@@ -16,7 +16,10 @@
 set -uo pipefail
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
 XREVIEW="$SRC/dot_local/bin/executable_xreview"
-[ -f "$XREVIEW" ] || { echo "missing CLI under test: $XREVIEW" >&2; exit 2; }
+LEDGER="$SRC/dot_claude/xreview-ledger.py"
+for f in "$XREVIEW" "$LEDGER"; do
+  [ -f "$f" ] || { echo "missing file under test: $f" >&2; exit 2; }
+done
 pass=0; fail=0
 _pass() { printf '  PASS: %s\n' "$1"; pass=$((pass + 1)); }
 _fail() { printf '  FAIL: %s\n    | got: %s\n' "$1" "$2"; fail=$((fail + 1)); }
@@ -29,8 +32,8 @@ export XDG_STATE_HOME="$ROOT/state" XDG_CONFIG_HOME="$ROOT/config" CODEX_HOME="$
 mkdir -p "$XDG_CONFIG_HOME/xreview" "$XDG_CONFIG_HOME/herdr" "$TMPDIR"
 cp "$SRC/dot_config/xreview/findings.schema.json" "$SRC/dot_config/xreview/reviewer.md" "$XDG_CONFIG_HOME/xreview/"
 cp "$SRC/dot_config/herdr/codex-pane-command" "$XDG_CONFIG_HOME/herdr/"
-export XREVIEW_POLL_SECS=0.05 XREVIEW_PANE_WAIT=2
-unset XREVIEW_MAX_ROUNDS XREVIEW_PANE XREVIEW_THREAD
+export XREVIEW_POLL_SECS=0.05 XREVIEW_PANE_WAIT=2 XREVIEW_LEDGER="$LEDGER"
+unset XREVIEW_MAX_ROUNDS XREVIEW_PANE XREVIEW_THREAD XREVIEW_LEDGER_LOCK_WAIT
 PANE_CMD='codex --sandbox read-only --ask-for-approval never'
 
 mkdir -p "$ROOT/repo" && cd "$ROOT/repo" || exit 1
@@ -243,6 +246,8 @@ case "$cmd" in
       echo '{"loaded":true,"status":"active","running":true}'
     else echo '{"loaded":true,"status":"idle","running":false}'; fi ;;
   turn-start) cp "$input" "$P/packet"; [ -n "$known" ] && echo '[]' > "$known"
+              # SNAP_LEDGER: keep a copy of that ledger as it stood when the turn started.
+              [ -n "${SNAP_LEDGER:-}" ] && cp "$SNAP_LEDGER" "$P/ledger-at-start" 2>/dev/null
               [ -n "${RPC_RUNNING_AFTER_START:-}" ] && : > "$P/running.$th"
               # RELIVE_DURING_TURN simulates a live Codex TUI reappearing in the pane while
               # the turn itself was starting (fix round 2/D) - pane_free already saw the shell
@@ -269,14 +274,15 @@ fresh() { # a pane showing U0, idle, its TUI not connected to the daemon; clean 
         RELIVE_DURING_TURN RPC_SWITCH_BRANCH_TO RPC_SWITCH_BRANCH_EARLY \
         KEY_DELAY DISPATCH_ID XREVIEW_LOCK_WAIT RPC_RUNNING_AFTER_START \
         PROCINFO_FAIL PRESESSION GONE_AFTER_KEYS GONE_AFTER_RUN LSOF_FAIL READ_FAIL \
-        RPC_STATUS_FAIL_FOR RPC_STATUS_NOBOOL_FOR CODEX_CHILD XREVIEW_RUNG_WAIT GET_FAIL PROCINFO_BAD RPC_RESOLVE_RC PROCINFO_FG
+        RPC_STATUS_FAIL_FOR RPC_STATUS_NOBOOL_FOR CODEX_CHILD XREVIEW_RUNG_WAIT GET_FAIL PROCINFO_BAD RPC_RESOLVE_RC PROCINFO_FG \
+        SNAP_LEDGER XREVIEW_LEDGER_LOCK_WAIT
   export NEW_UUID="$U1"
   printf codex > "$P/agent"; printf '%s | t | d' "$(trunc "$U0")" > "$P/title"; echo idle > "$P/status"
   echo 0 > "$P/ctrlc"
   rm -f "$P/packet" "$P/reset_calls" "$P/reset_pending" "$P/newtitle" \
         "$P/exit_delay_active" "$P/exit_delay_calls"
   rm -f "$P/connected" "$P/argv" "$P/screen" "$P/gone" "$P/procinfo_fail_once"
-  rm -f "$P"/running.*
+  rm -f "$P"/running.* "$P/ledger-at-start"
   mkdir -p "$CODEX_HOME/app-server-daemon"; printf '{"pid":999}\n' > "$CODEX_HOME/app-server-daemon/daemon.pid"
   bash "$XREVIEW" round --reset >/dev/null 2>&1
   rm -rf "$STATE/superseded" "$STATE/pin" "$STATE/turns"
@@ -981,7 +987,8 @@ echo "F15. the receipt names the branch the review was dispatched on"
 # the verdict belongs to the branch that was reviewed, never to the one checked out later.
 fresh
 git checkout -q -b review-a
-nonce="$(bash "$XREVIEW" dispatch --checkpoint pre-merge b.md 2>/dev/null)"
+printf 'a\n' > review-a.txt && git add review-a.txt && git commit -q -m "review-a's change"
+nonce="$(bash "$XREVIEW" dispatch --checkpoint pre-merge --diff "$BR...review-a" b.md 2>/dev/null)"
 is "F15 the turn record names the dispatch branch" "$(cat "$STATE/turns/$nonce")" "$U1 turn-$U1 pre-merge review-a"
 git checkout -q -b review-b
 git commit -q --allow-empty -m "review-b moves on"
@@ -1409,6 +1416,127 @@ is "O1 and still prints a number, not an empty line" "$(printf '%s' "$out" | gre
 
 git checkout -q "$ORIG_BRANCH"
 git branch -q -D feat/x feat/xy 'a.b+c' 'x=y' x
+
+echo "V. review targets and pending entries (spec 2026-10-02 §3.2-§3.4)"
+# vrepo <dir>: a repository on main with one commit, and a branch, feature, one change ahead and
+# checked out. Its own default branch is main, whatever this machine's git configuration says.
+vrepo() {
+  mkdir -p "$1" && git -C "$1" init -q -b main && git -C "$1" config user.email t@t \
+    && git -C "$1" config user.name t && git -C "$1" config commit.gpgsign false
+  printf 'one\n' > "$1/a.txt" && git -C "$1" add a.txt && git -C "$1" commit -q -m init
+  git -C "$1" switch -q -c feature && printf 'two\n' >> "$1/a.txt" && git -C "$1" commit -q -am feature
+  printf 'body\n' > "$1/b.md"
+}
+V="$ROOT/v-one"; vrepo "$V"
+V2="$ROOT/v-two"; vrepo "$V2"
+VCWD="$(git -C "$V" rev-parse --show-toplevel)"
+VSTATE="$XDG_STATE_HOME/xreview/$(printf '%s' "$VCWD" | tr '/' '_' | sed 's/^_//')"
+VLEDGER="$(/usr/bin/python3 "$LEDGER" path "$V")"
+V2LEDGER="$(/usr/bin/python3 "$LEDGER" path "$V2")"
+targets_files() { find "$VSTATE/turns" -name '*.targets' 2>/dev/null | wc -l | tr -d ' '; }
+cd "$V" || exit 1
+fresh; export PANE_CWD="$VCWD"
+nonce="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>/dev/null)"
+is "V1 a plan dispatch with no --diff still works" "$(printf '%s' "$nonce" | grep -c '^xr-')" 1
+is "V2 its targets file names no target" "$(jq -c .targets "$VSTATE/turns/$nonce.targets")" "[]"
+is "V3 and it writes no ledger entry" "$([ -e "$VLEDGER" ] && echo written || echo none)" none
+fresh; export PANE_CWD="$VCWD"
+nonce="$(bash "$XREVIEW" dispatch --checkpoint spec b.md 2>/dev/null)"
+is "V4 so does a spec dispatch" "$(printf '%s' "$nonce" | grep -c '^xr-')" 1
+fresh; export PANE_CWD="$VCWD"
+nonce="$(SNAP_LEDGER="$VLEDGER" bash "$XREVIEW" dispatch --checkpoint pre-merge b.md 2>/dev/null)"
+is "V5 a pre-merge dispatch with no --diff targets the branch against the default branch" \
+   "$(jq -r '.targets[0] | "\(.range) \(.dest) \(.branch) \(.full)"' "$VSTATE/turns/$nonce.targets")" \
+   "main...feature main feature true"
+is "V6 its targets file carries the nonce, the checkpoint and the dispatch time" \
+   "$(jq -r '"\(.nonce) \(.checkpoint) \(.dispatched_at | test("^[0-9-]+T[0-9:]+\\.[0-9]{6}Z$"))"' "$VSTATE/turns/$nonce.targets")" \
+   "$nonce pre-merge true"
+is "V7 its pending entry was on record before the turn started" \
+   "$(jq -r 'select(.kind == "pending") | .nonce' "$P/ledger-at-start" 2>/dev/null)" "$nonce"
+is "V8 naming the same targets" \
+   "$(jq -c --arg n "$nonce" 'select(.nonce == $n and .kind == "pending") | .targets' "$VLEDGER")" \
+   "$(jq -c .targets "$VSTATE/turns/$nonce.targets")"
+fresh; export PANE_CWD="$VCWD"
+before="$(targets_files)"
+mkdir "$VLEDGER.lock"   # another writer holds the ledger past the wait
+out="$(XREVIEW_LEDGER_LOCK_WAIT=0.2 bash "$XREVIEW" dispatch --checkpoint pre-merge b.md 2>&1)"; rc=$?
+is "V9 a pre-merge dispatch whose pending write fails is refused" \
+   "$rc/$(printf '%s' "$out" | grep -c 'cannot record the pending review in every target ledger')" "1/1"
+is "V10 before the pane or the reviewer is touched" "$(untouched)" yes
+is "V11 with no nonce handed back" "$(printf '%s' "$out" | grep -c '^xr-')" 0
+is "V12 and no targets file left behind" "$(targets_files)" "$before"
+rmdir "$VLEDGER.lock"
+fresh; export PANE_CWD="$VCWD"
+git switch -q main
+out="$(bash "$XREVIEW" dispatch --checkpoint pre-merge b.md 2>&1)"; rc=$?
+is "V13 a pre-merge dispatch whose target is empty is refused" \
+   "$rc/$(printf '%s' "$out" | grep -c 'nothing to review')" "1/1"
+is "V14 untouched" "$(untouched)" yes
+printf 'm\n' > m.txt && git add m.txt && git commit -q -m "main moves on"
+git switch -q feature
+fresh; export PANE_CWD="$VCWD"
+bash "$XREVIEW" dispatch --checkpoint pre-merge --diff main..feature b.md >/dev/null 2>&1
+is "V15 main..feature is normalized: the packet carries the branch's own change" "$(grep -c '^+two$' "$P/packet")" 1
+is "V16 and not main's later change, reversed" "$(grep -c 'm.txt' "$P/packet")" 0
+git switch -q -c sub main
+git update-index --add --cacheinfo 160000,1111111111111111111111111111111111111111,lib
+git commit -q -m "a gitlink"
+git config diff.ignoreSubmodules all
+fresh; export PANE_CWD="$VCWD"
+bash "$XREVIEW" dispatch --checkpoint plan --diff main...sub b.md >/dev/null 2>&1
+is "V17 the inlined diff shows a gitlink even with diff.ignoreSubmodules=all" \
+   "$(grep -c '^+Subproject commit 1111111111111111111111111111111111111111$' "$P/packet")" 1
+git config --unset diff.ignoreSubmodules
+git switch -q feature
+fresh; export PANE_CWD="$VCWD"
+nonce="$(bash "$XREVIEW" dispatch --checkpoint plan --diff main...feature --diff "$V2:main...feature" b.md 2>/dev/null)"
+is "V18 --diff repeats: both diffs travel in the packet" "$(grep -c '^--- diff (' "$P/packet")" 2
+is "V19 the second labelled with its repository" "$(grep -cF -- "--- diff ($V2:main...feature) ---" "$P/packet")" 1
+is "V20 one target per repository" \
+   "$(jq -r '[.targets[].repo] | unique | length' "$VSTATE/turns/$nonce.targets")" 2
+one="$(git -C "$V2" diff main...feature | wc -c | tr -d ' ')"
+fresh; export PANE_CWD="$VCWD"
+out="$(XREVIEW_MAX_DIFF_BYTES=$((one * 2 - 10)) bash "$XREVIEW" dispatch --checkpoint plan \
+         --diff main...feature --diff "$V2:main...feature" b.md 2>&1)"
+is "V21 the size cap binds the total of all the diffs" "$(printf '%s' "$out" | grep -c 'too large')" 1
+is "V22 untouched" "$(untouched)" yes
+fresh; export PANE_CWD="$VCWD"
+out="$(bash "$XREVIEW" dispatch --checkpoint plan --diff "$ROOT/no-such:main...feature" b.md 2>&1)"; rc=$?
+is "V23 a --diff naming no directory is refused" "$rc/$(printf '%s' "$out" | grep -c 'is not a directory')" "1/1"
+# The packet shows every path and byte the fingerprint names, whatever the reviewed repository's
+# configuration says: diff.relative with xreview run from a subdirectory, an external diff
+# driver that prints nothing, and a textconv that rewrites content.
+git switch -q -c hostile main
+mkdir -p deep && printf 'in\n' > deep/in.txt && printf 'out\n' > out.txt
+git add deep/in.txt out.txt && git commit -q -m "one file inside deep/, one outside"
+printf '#!/bin/sh\nexit 0\n' > "$ROOT/silent-diff"; chmod +x "$ROOT/silent-diff"
+git config diff.relative true
+git config diff.external "$ROOT/silent-diff"
+git config diff.upper.textconv 'tr a-z A-Z'
+printf '*.txt diff=upper\n' > .git/info/attributes
+cd deep || exit 1
+fresh; export PANE_CWD="$VCWD"
+bash "$XREVIEW" dispatch --checkpoint plan --diff main...hostile ../b.md >/dev/null 2>&1
+cd "$V" || exit 1
+want="$(git diff --no-relative --no-renames --name-only main...hostile | sort | tr '\n' ' ')"
+is "V24 from a subdirectory, under diff.relative, an external driver and a textconv, the packet holds every changed path" \
+   "$(sed -n 's/^diff --git a\/\([^ ]*\) .*/\1/p' "$P/packet" | sort | tr '\n' ' ')" "$want"
+is "V25 with the content as committed, never converted" "$(grep -c '^+in$' "$P/packet")" 1
+git config --unset diff.relative; git config --unset diff.external; git config --unset diff.upper.textconv
+rm .git/info/attributes
+# A partial range keeps its literal base, and the packet shows exactly that base..tip: from a
+# divergent commit, the commit's own file goes away.
+git switch -q -c divergent main
+printf 'd\n' > div.txt && git add div.txt && git commit -q -m divergent
+DIV="$(git rev-parse HEAD)"
+git switch -q feature
+fresh; export PANE_CWD="$VCWD"
+nonce="$(bash "$XREVIEW" dispatch --checkpoint plan --diff "$DIV...feature" b.md 2>/dev/null)"
+is "V26 a divergent commit...branch is recorded with its literal base" \
+   "$(jq -r '.targets[0] | "\(.base) \(.full)"' "$VSTATE/turns/$nonce.targets")" "$DIV false"
+is "V27 and the packet shows that base..tip" "$(grep -c '^diff --git a/div.txt b/div.txt$' "$P/packet")" 1
+cd "$ROOT/repo" || exit 1
+unset PANE_CWD
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))

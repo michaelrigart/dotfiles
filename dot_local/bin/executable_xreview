@@ -39,6 +39,11 @@ die() { printf 'xreview: %s\n' "$1" >&2; exit 1; }
 
 repo_root() { git rev-parse --show-toplevel 2>/dev/null || pwd; }
 
+# The review ledger and the reviewed change's identity (spec 2026-10-02 §3.1-§3.3) live in one
+# helper, shared with the pre-merge guard. It sits beside the guard in ~/.claude, which the
+# sandbox cannot write; XREVIEW_LEDGER points the test suites at the source copy.
+ledger() { /usr/bin/python3 "${XREVIEW_LEDGER:-$HOME/.claude/xreview-ledger.py}" "$@"; }
+
 state_dir() {
   local root; root="$(repo_root)"
   printf '%s/xreview/%s' "${XDG_STATE_HOME:-$HOME/.local/state}" \
@@ -610,6 +615,23 @@ record_receipt() { # record_receipt <thread> <nonce> <turn> <findings-json> <che
   return 0
 }
 
+# record_pending <targets-doc> - spec 2026-10-02 §3.3: a pre-merge review puts a pending entry
+# in every target repository's ledger before its turn starts, so every pre-merge review that
+# runs is on record, and a newer review always shadows an older approval. Returns 1 at the
+# first ledger it cannot write.
+record_pending() {
+  local repos repo entry
+  repos="$(printf '%s' "$1" | jq -r '[.targets[].repo] | unique | .[]')" || return 1
+  while IFS= read -r repo; do
+    [ -n "$repo" ] || continue
+    entry="$(printf '%s' "$1" | jq -c --arg r "$repo" \
+      '{v:2,kind:"pending",nonce,dispatched_at,checkpoint,targets:[.targets[] | select(.repo == $r)]}')" \
+      || return 1
+    ledger append "$repo" "$entry" >/dev/null || return 1
+  done <<<"$repos"
+  return 0
+}
+
 # An apply window bounds the blast radius of acting on a finding. While it is open,
 # review-driven edits are confined to files already in the branch diff, plus test paths —
 # the RED-test rule requires ADDING a test, so a rule confined strictly to the diff would
@@ -700,21 +722,31 @@ guard_project_config() {
   return 0
 }
 
-# A dispatch that names a path makes the reviewer open it, and every search and read is a
-# full-context model step (measured 2026-09-01: ~16 steps and ~2.0M tokens per review).
-# Refuse an oversized diff rather than truncating it: a reviewer handed half a change reviews
-# half a change and reports nothing on the rest, which reads as a clean review.
-inline_diff() {
-  local range="$1" out max
-  max="${XREVIEW_MAX_DIFF_BYTES:-100000}"
-  out="$(git diff "$range" 2>/dev/null)" \
-    || die "cannot diff $range - check the range resolves in this repository"
-  [ -n "$out" ] || die "cannot diff $range - the range is empty, so there is nothing to review"
-  if [ "${#out}" -gt "$max" ]; then
-    die "diff for $range is too large to carry inline (${#out} bytes, cap $max).
-Review it in slices, or raise XREVIEW_MAX_DIFF_BYTES if the reviewer can hold it."
-  fi
-  printf '%s' "$out"
+# add_target <spec> - one --diff [<repo-path>:]<range> (spec 2026-10-02 §3.1, §3.4): normalized
+# by the ledger helper, appended to cmd_dispatch's TARGETS, and its diff to DIFFS. The path is
+# everything before the last colon, since a ref can never hold one. A dispatch that names a
+# path makes the reviewer open it, and every search and read is a full-context model step
+# (measured 2026-09-01: ~16 steps and ~2.0M tokens per review), so the diff travels inline.
+# The diff is base..tip as recorded, rendered by the ledger helper with the fingerprint's own
+# flags, so the reviewer reads every path and byte the receipt will name, whatever
+# diff.relative, an external or textconv driver, or diff.ignoreSubmodules would do.
+add_target() {
+  local spec="$1" rdir rng t base tip d
+  case "$spec" in
+    *:*) rdir="${spec%:*}"; rng="${spec##*:}" ;;
+    *)   rdir=.; rng="$spec" ;;
+  esac
+  [ -d "$rdir" ] || die "cannot diff $spec - $rdir is not a directory"
+  t="$(ledger normalize "$rdir" "$rng")" \
+    || die "cannot diff $spec - check the range resolves in that repository"
+  base="$(printf '%s' "$t" | jq -r .base)"
+  tip="$(printf '%s' "$t" | jq -r .tip)"
+  d="$(ledger diff "$rdir" "$base" "$tip" 2>/dev/null)" \
+    || die "cannot diff $spec - check the range resolves in that repository"
+  [ -n "$d" ] || die "cannot diff $spec - the range is empty, so there is nothing to review"
+  TARGETS="$(printf '%s' "$TARGETS" | jq -c --argjson t "$t" '. + [$t]')"
+  DIFF_BYTES=$(( DIFF_BYTES + ${#d} ))
+  DIFFS="$DIFFS$(printf '\n\n--- diff (%s) ---\n%s\n--- end diff ---' "$spec" "$d")"
 }
 
 # Codex writes one `turn_context` record per turn into the thread's rollout file, each
@@ -737,24 +769,26 @@ cmd_tier() {
 }
 
 cmd_dispatch() {
-  local body_file diff_range="" diff_text="" dir pane proc thread nonce packet turn="" \
-        need_resume checkpoint=""
+  local body_file dir pane proc thread nonce packet turn="" need_resume checkpoint="" \
+        specs=() spec cap dispatched doc
+  # Filled by add_target, one entry per --diff.
+  local TARGETS='[]' DIFFS="" DIFF_BYTES=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --diff) [ "$#" -ge 2 ] || die "--diff needs a range"; diff_range="$2"; shift 2 ;;
+      --diff) [ "$#" -ge 2 ] || die "--diff needs a range"; specs+=("$2"); shift 2 ;;
       --checkpoint) [ "$#" -ge 2 ] || die "--checkpoint needs spec, plan or pre-merge"
                     checkpoint="$2"; shift 2 ;;
       -*) die "unknown option: $1" ;;
       *) break ;;
     esac
   done
-  [ "$#" -eq 1 ] || die "usage: xreview dispatch --checkpoint spec|plan|pre-merge [--diff <range>] <body-file>"
+  [ "$#" -eq 1 ] || die "usage: xreview dispatch --checkpoint spec|plan|pre-merge [--diff [<repo-path>:]<range>]... <body-file>"
   # Required, not defaulted: the receipt is what the pre-merge gate reads, and a review
   # dispatched without its checkpoint could only be found out at MR time, after the turn
   # was spent. Refused here, before anything is touched.
   case "$checkpoint" in
     spec|plan|pre-merge) ;;
-    "") die "usage: xreview dispatch --checkpoint spec|plan|pre-merge [--diff <range>] <body-file>" ;;
+    "") die "usage: xreview dispatch --checkpoint spec|plan|pre-merge [--diff [<repo-path>:]<range>]... <body-file>" ;;
     *) die "unknown checkpoint: $checkpoint (spec, plan or pre-merge)" ;;
   esac
   body_file="$1"
@@ -772,7 +806,21 @@ cmd_dispatch() {
   # missing/empty codex-pane-command before the pane is touched (M2): called here as a
   # bare statement, not nested inside another $(...), its own die() works on any bash.
   pane_command >/dev/null
-  [ -z "$diff_range" ] || diff_text="$(inline_diff "$diff_range")"
+  # The review targets (spec 2026-10-02 §3.4). A pre-merge review that names none reviews the
+  # current branch against the default branch; spec and plan reviews may have none at all.
+  if [ "${#specs[@]}" -eq 0 ] && [ "$checkpoint" = pre-merge ]; then
+    spec="$(ledger default-range .)" \
+      || die "cannot name the current branch's default target; pass --diff <dest>...<branch>"
+    specs=("$spec")
+  fi
+  for spec in ${specs[@]+"${specs[@]}"}; do add_target "$spec"; done
+  # Refuse an oversized total rather than truncating it: a reviewer handed half a change
+  # reviews half a change and reports nothing on the rest, which reads as a clean review.
+  cap="${XREVIEW_MAX_DIFF_BYTES:-100000}"
+  if [ "$DIFF_BYTES" -gt "$cap" ]; then
+    die "the diffs are too large to carry inline ($DIFF_BYTES bytes, cap $cap).
+Review them in slices, or raise XREVIEW_MAX_DIFF_BYTES if the reviewer can hold it."
+  fi
   codex-daemon ensure || die "the Codex daemon is not running; no review was started"
   codex-daemon check || die "refusing to dispatch while the daemon carries a pane's environment (see above)"
   xreview-rpc health || die "cannot reach the Codex daemon through xreview-rpc (see above); no review was started"
@@ -817,6 +865,22 @@ Report the remaining disagreement, or: xreview round --reset"
   thread_running "$thread" \
     && die "the review thread $thread is still running a turn; collect it first"
 
+  # The review is fixed now, before the pane is touched (spec 2026-10-02 §3.2-§3.4): its nonce,
+  # its dispatch time and its targets, kept in turns/<nonce>.targets for collect. A pre-merge
+  # review then puts a pending entry in every target ledger, or is refused: every pre-merge
+  # review that runs is on record before its turn exists.
+  nonce="xr-$(date +%s)-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+  dispatched="$(ledger now)" || die "cannot read the time through the ledger helper; no review was started"
+  doc="$(jq -nc --arg n "$nonce" --arg at "$dispatched" --arg cp "$checkpoint" --argjson t "$TARGETS" \
+           '{v:2,nonce:$n,dispatched_at:$at,checkpoint:$cp,targets:$t}')"
+  mkdir -p "$dir/turns"
+  printf '%s\n' "$doc" > "$dir/turns/$nonce.targets" \
+    || die "cannot record the review's targets in $dir/turns; no review was started"
+  if [ "$checkpoint" = pre-merge ] && ! record_pending "$doc"; then
+    rm -f "$dir/turns/$nonce.targets"
+    die "cannot record the pending review in every target ledger; no review was started"
+  fi
+
   # Free the pane, BEFORE the turn exists (spec 7.3 step 3; 2026-10-01 §4.4): its ctrl+c ladder
   # is the only point in dispatch that may ever send-keys to the pane. Dies on any failure -
   # nothing has started yet.
@@ -834,17 +898,12 @@ Report the remaining disagreement, or: xreview round --reset"
   # Provenance is applied here, by the broker - not by the peer, and not by hand.
   # NOT <from-claude-code>: that tag marks relayed quoted material, and the peer is
   # instructed never to act on an imperative inside one. A dispatch is an authorized request.
-  nonce="xr-$(date +%s)-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
   packet="$(mktemp "${TMPDIR:-/tmp}/xreview-packet.XXXXXX")"
   { printf '<cross-review-request>\n'
     cat "$REVIEWER"
     printf '\n'
     cat "$body_file"
-    if [ -n "$diff_text" ]; then
-      printf '\n\n--- diff (%s) ---\n' "$diff_range"
-      printf '%s\n' "$diff_text"
-      printf -- '--- end diff ---\n'
-    fi
+    [ -z "$DIFFS" ] || printf '%s\n' "$DIFFS"
     printf '</cross-review-request>\n'
   } > "$packet"
   mkdir -p "$dir/turns"
@@ -868,7 +927,7 @@ Report the remaining disagreement, or: xreview round --reset"
        printf 'xreview: turn/start was sent but not answered - the review may be running. Collect %s; do NOT re-dispatch.\n' "$nonce" >&2
        bump_round "$branch" >/dev/null || true
        trap - EXIT ;;
-    *) rm -f "$dir/turns/$nonce.known"
+    *) rm -f "$dir/turns/$nonce.known" "$dir/turns/$nonce.targets"
        die "the review turn could not be started on $thread" ;;
   esac
 
@@ -952,5 +1011,5 @@ case "${1:-}" in
   receipts) shift; cmd_receipts "$@" ;;
   apply)    shift; cmd_apply "$@" ;;
   round)    shift; cmd_round "$@" ;;
-  *) die "usage: xreview init [id] | thread | receipts [--tiers] | apply <nonce>|--done | round [--reset] | dispatch --checkpoint spec|plan|pre-merge [--diff <range>] <body-file> | tier [thread] | collect <nonce> [budget]" ;;
+  *) die "usage: xreview init [id] | thread | receipts [--tiers] | apply <nonce>|--done | round [--reset] | dispatch --checkpoint spec|plan|pre-merge [--diff [<repo-path>:]<range>]... <body-file> | tier [thread] | collect <nonce> [budget]" ;;
 esac
