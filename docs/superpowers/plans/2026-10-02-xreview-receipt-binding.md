@@ -225,7 +225,7 @@ Test IDs are per suite, written as suite and ID: "ledger" is `tests/xreview-ledg
    settings could make the reviewer see less than the receipt names: `diff.relative` with
    xreview run from a subdirectory, a `diff.external` driver, and a textconv attribute. The
    packet must still hold every path and every byte the fingerprint names.
-   - Task 1: ledger A18-A39.
+   - Task 1: ledger A18-A47.
    - Task 4: xreview V24 and V25.
 
    Ordering when dispatches are close together or out of order (ledger F13, F14 and F25)
@@ -281,9 +281,10 @@ Each one stays within the spec's goals.
    - It uses the fingerprint's flags (`--no-relative --no-ext-diff --no-textconv --no-renames
      --ignore-submodules=none`), plus `--no-color` and `--text`. Binary is decided by the blob's
      content, never by gitattributes: a binary path is excluded from the one text diff and gets
-     a summary line with both modes and both blob ids, its name quoted when it holds a control
-     character, a double quote or a backslash. The count of `diff --git` headers is checked
-     against the text paths, and `git` drops the `GIT_*_PATHSPECS` variables from its
+     a summary line with both modes and both blob ids, its name quoted as git quotes a header
+     path. The count of `diff --git` headers is checked against what the text records call
+     for (two for a change between a regular file, a symlink and a gitlink, which git renders
+     as a delete and a create), and `git` drops the `GIT_*_PATHSPECS` variables from its
      environment, so a packet that does not match the fingerprint fails closed.
    - Fingerprint records end with NUL rather than a newline: a git path cannot hold NUL, but it
      can hold a newline.
@@ -529,10 +530,12 @@ Each one stays within the spec's goals.
       `git diff --text` with the same flags plus `--no-color` covers every text path, with the
       binary paths excluded as literal top-level pathspecs. After it come one summary line per
       binary path, `Binary file <path>: <old mode> <old blob> -> <new mode> <new blob>`, the
-      path quoted as git quotes a header path when it holds a control character, a double
-      quote or a backslash. The output has no NUL byte, and it raises `Fail` when git cannot
-      diff or when its `diff --git` headers do not number the text paths. `git` drops the
-      four `GIT_*_PATHSPECS` variables from the environment of every call.
+      path quoted as git quotes a header path (a control character, DEL, a byte of 0x80 or
+      more, a double quote or a backslash puts it in double quotes, with git's short escapes
+      and octal for the rest). The output has no NUL byte, and it raises `Fail` when git
+      cannot diff or when its `diff --git` headers do not number what the text records call
+      for: one each, two for a change between a regular file, a symlink and a gitlink. `git`
+      drops the four `GIT_*_PATHSPECS` variables from the environment of every call.
     - `normalize(repo, rng) -> dict` with the keys `repo, dest, dest_ref, branch, range, base,
       tip, full, fingerprint`. A commit on the left keeps its literal base in both the `..` and
       the `...` form.
@@ -727,6 +730,30 @@ try:
 except m.Fail as e:
     print("refused" if "does not match the change" in str(e) else str(e))
 ' "$LEDGER" "$R")" refused
+# A change between a regular file, a symlink and a gitlink is a delete plus a create in a patch:
+# two headers for one raw record, which the cross-check must expect.
+variant "$R" tc; rm "$R/a.txt"; ln -s target "$R/a.txt"; commit "$R" "a.txt becomes a symlink"
+out="$(L diff "$R" main tc 2>&1)"
+is "A40 a file turned symlink renders the old side" "$(printf '%s\n' "$out" | grep -c '^-one$')" 1
+is "A41 and the new side" "$(printf '%s\n' "$out" | grep -c '^+target$')" 1
+git -C "$R" switch -q -c tc2 tc; rm "$R/a.txt"; printf 'back\n' > "$R/a.txt"; commit "$R" "a.txt is a file again"
+out="$(L diff "$R" tc tc2 2>&1)"
+is "A42 a symlink turned file renders the new side" "$(printf '%s\n' "$out" | grep -c '^+back$')" 1
+is "A43 and the old side" "$(printf '%s\n' "$out" | grep -c '^-target$')" 1
+variant "$R" tg
+git -C "$R" update-index --add --cacheinfo 160000,1111111111111111111111111111111111111111,a.txt
+git -C "$R" commit -q -m "a.txt becomes a gitlink"; git -C "$R" switch -q -f main
+out="$(L diff "$R" main tg 2>&1)"
+is "A44 a file turned gitlink renders the old side" "$(printf '%s\n' "$out" | grep -c '^-one$')" 1
+is "A45 and the new side" "$(printf '%s\n' "$out" | grep -c '^+Subproject commit 1111111111111111111111111111111111111111$')" 1
+# Path quoting is git's own: short escapes, octal for the rest, bytes of 0x80 and up in octal.
+QN=$'q\a\b\v\f\r\001\303\251"\\z'
+variant "$R" qp; printf 'a\000b\n' > "$R/$QN"; commit "$R" "a binary file with an awkward name"
+git -C "$R" diff --raw --no-renames main qp | cut -f2 > "$ROOT/qp.git"
+L diff "$R" main qp | sed -n 's/^Binary file \(.*\): 000000 .*/\1/p' > "$ROOT/qp.ours"
+is "A46 the quoted name is what git writes for it" "$(cat "$ROOT/qp.ours")" "$(cat "$ROOT/qp.git")"
+is "A47 as spelled out: short escapes, then octal" "$(cat "$ROOT/qp.ours")" '"q\a\b\v\f\r\001\303\251\"\\z"'
+git -C "$R" switch -q main
 git -C "$R" switch -q main
 
 echo "B. range normalization (spec 3.1)"
@@ -1042,14 +1069,16 @@ def patch(repo, base, tip):
     """The change base..tip as a patch the reviewer can read in full. Binary is decided by the
     content, never by gitattributes (a path marked -diff would otherwise show only a "Binary
     files differ" line for text the fingerprint binds): a path whose old or new blob holds a NUL
-    byte gets one summary line, `Binary file <path>: <old blob> -> <new blob>`, after the text
-    patch, with both modes and, quoted as git quotes a header path when it holds a control
-    character, a double quote or a backslash, so a file name cannot forge a line. Every other
-    path is rendered by one `git diff --text` over the whole range with the fingerprint's own
-    flags, the binary paths excluded as literal top-level pathspecs. The output never holds a
-    NUL byte (a blob with a NUL anywhere, not only in git's first 8000 bytes, is summarized).
-    The number of `diff --git` headers must equal the number of text paths, or the packet does
-    not match the fingerprint and Fail is raised. Raises Fail when git cannot diff it."""
+    byte gets one summary line after the text patch,
+    `Binary file <path>: <old mode> <old blob> -> <new mode> <new blob>`, with the path quoted
+    as git quotes a header path (see quote_path), so a file name cannot forge a line. Every
+    other path is rendered by one `git diff --text` over the whole range with the fingerprint's
+    own flags, the binary paths excluded as literal top-level pathspecs. The output never holds
+    a NUL byte (a blob with a NUL anywhere, not only in git's first 8000 bytes, is summarized).
+    The number of `diff --git` headers must equal the number the text records call for: one
+    each, two for a change between a regular file, a symlink or a gitlink (git renders that as
+    a delete and a create). Otherwise the packet does not match the fingerprint and Fail is
+    raised. Raises Fail when git cannot diff it."""
     records = sorted(raw_records(repo, base, tip))
     want = set()
     for _path, old_mode, new_mode, old_blob, new_blob in records:
@@ -1065,7 +1094,8 @@ def patch(repo, base, tip):
             lines.append(b"Binary file " + quote_path(path) + b": " + old_mode + b" " + old_blob
                          + b" -> " + new_mode + b" " + new_blob + b"\n")
         else:
-            texts += 1
+            both = old_mode != b"000000" and new_mode != b"000000"
+            texts += 2 if both and old_mode[:2] != new_mode[:2] else 1
     out = b""
     if texts:
         pathspec = ["--", ":(top)"] + skip if skip else []
@@ -1074,18 +1104,21 @@ def patch(repo, base, tip):
             raise Fail("cannot diff {}..{} in {}".format(base, tip, repo))
     headers = sum(1 for line in out.split(b"\n") if line.startswith(b"diff --git "))
     if headers != texts:
-        raise Fail("the review packet does not match the change: {} text paths, {} diffs, "
+        raise Fail("the review packet does not match the change: {} diffs expected, {} found, "
                    "for {}..{} in {}".format(texts, headers, base, tip, repo))
     return out + b"".join(lines)
 
 
 def quote_path(path):
-    """path as git quotes a header path when it holds a control character, a double quote or a
-    backslash (C-style, in double quotes); any other path as it is."""
-    if not any(c < 0x20 or c == 0x7f or c in b'"\\' for c in path):
+    """path as git quotes it in a header under its default core.quotePath: when it holds a
+    control character, DEL, a byte of 0x80 or more, a double quote or a backslash, it is in
+    double quotes with \\a \\b \\t \\n \\v \\f \\r \\" \\\\ and three-digit octal for the rest;
+    any other path as it is."""
+    if not any(c < 0x20 or c >= 0x7f or c in b'"\\' for c in path):
         return path
-    names = {0x0a: b"\\n", 0x09: b"\\t", 0x22: b'\\"', 0x5c: b"\\\\"}
-    return b'"' + b"".join(names.get(c) or (b"\\%03o" % c if c < 0x20 or c == 0x7f else
+    names = {0x07: b"\\a", 0x08: b"\\b", 0x09: b"\\t", 0x0a: b"\\n", 0x0b: b"\\v",
+             0x0c: b"\\f", 0x0d: b"\\r", 0x22: b'\\"', 0x5c: b"\\\\"}
+    return b'"' + b"".join(names.get(c) or (b"\\%03o" % c if c < 0x20 or c >= 0x7f else
                                             bytes([c])) for c in path) + b'"'
 
 
@@ -1217,7 +1250,7 @@ with:
 ```
 
 - [ ] **Step 6: Run both and confirm they pass.**
-  - `./tests/xreview-ledger.test.sh`: expect `passed: 75  failed: 0`.
+  - `./tests/xreview-ledger.test.sh`: expect `passed: 83  failed: 0`.
   - `./tests/claude-settings.test.sh 2>&1 | tail -1`: expect `RESULT: 177 passed, 0 failed`.
 
 - [ ] **Step 7: Commit.** Check that `git branch --show-current` prints
@@ -1419,7 +1452,7 @@ is "E36 removed by hand, appends go through again" "$(L append "$PC" "$(entry pe
 ```
 
 - [ ] **Step 2: Run it and confirm it fails.** `./tests/xreview-ledger.test.sh`: expect
-  `passed: 77  failed: 34`. E1-E11, E13-E16 and E18-E36 fail, because `append`, `show` and
+  `passed: 85  failed: 34`. E1-E11, E13-E16 and E18-E36 fail, because `append`, `show` and
   the lock functions do not exist yet.
 
 - [ ] **Step 3: Add the writes.** In `dot_claude/xreview-ledger.py`, insert this block
@@ -1707,7 +1740,7 @@ if __name__ == "__main__":
 ```
 
 - [ ] **Step 5: Run it and confirm it passes.** `./tests/xreview-ledger.test.sh`: expect
-  `passed: 111  failed: 0`.
+  `passed: 119  failed: 0`.
 
 - [ ] **Step 6: Commit.** Check the branch, then:
 
@@ -1863,7 +1896,7 @@ is "G5 and never a/b, for identical blobs and destination" "$(L decide "$ROOT/is
 ```
 
 - [ ] **Step 2: Run it and confirm it fails.** `./tests/xreview-ledger.test.sh`: expect
-  `passed: 115  failed: 34`. Every F and G decision fails, because `decide` is a usage error so
+  `passed: 123  failed: 34`. Every F and G decision fails, because `decide` is a usage error so
   far.
 
 - [ ] **Step 3: Add the decision.** In `dot_claude/xreview-ledger.py`, insert this block
@@ -2061,7 +2094,7 @@ if __name__ == "__main__":
 ```
 
 - [ ] **Step 5: Run it and confirm it passes.** `./tests/xreview-ledger.test.sh`: expect
-  `passed: 149  failed: 0`.
+  `passed: 157  failed: 0`.
 
 - [ ] **Step 6: Commit.** Check the branch, then:
 
@@ -5776,9 +5809,9 @@ owns it.
   - Expected:
     - every suite `ok`;
     - `29 suites run, 8 skipped (see the needs: lines)`;
-    - `all 29 suites passed (3309 assertions)`.
+    - `all 29 suites passed (3317 assertions)`.
   - The eight skipped suites carry a `# test-requires:` line.
-  - Report the total as passed/total, `3309/3309`, copied from the runner's last line.
+  - Report the total as passed/total, `3317/3317`, copied from the runner's last line.
 
 - [ ] **Step 2: Confirm the deployed set.** Run
   `chezmoi managed --include=files | grep -c -E '^\.claude/xreview-(guard|ledger)\.py$'` and
@@ -5810,7 +5843,7 @@ Test IDs are per suite: ledger = `tests/xreview-ledger.test.sh`, xreview =
 | §1.4 ledgers split per checkout | T1, T5 | ledger C4-C7; xreview W19 |
 | §1.5 unlocked appends | T2, T5 | ledger E9-E17, E21-E36; xreview W23-W25 |
 | §2 goals | all | the rows below |
-| §3.1 target, default branch, normalization, fingerprint | T1 | ledger A1-A39, B1-B21, D1-D6 |
+| §3.1 target, default branch, normalization, fingerprint | T1 | ledger A1-A47, B1-B21, D1-D6 |
 | §3.2 entries, idempotency, a review's state, v1 | T2, T3 | ledger E1-E8, F12, F20, F21 |
 | §3.3 location, key, `repo` file | T1, T2 | ledger C1-C3, E2 |
 | §3.3 the lock | T2, T5 | ledger E9-E17, E21-E36; xreview W23-W25 |
@@ -5884,7 +5917,7 @@ Plan review round 1 (Codex, ten findings), each with the coordinator's ruling as
 
 | Finding | Task | Change | Tests |
 |---|---|---|---|
-| 1 (P1) the inlined diff can omit fingerprinted content | T1, T4 | one `patch()` with the fingerprint's flags renders every target's packet from the recorded base..tip | ledger A18-A39; xreview V24, V25 |
+| 1 (P1) the inlined diff can omit fingerprinted content | T1, T4 | one `patch()` with the fingerprint's flags renders every target's packet from the recorded base..tip | ledger A18-A47; xreview V24, V25 |
 | 2 (P1) leading redirections and wrapper option arguments hide gated verbs | T6 | redirections read past anywhere; every word after a wrapper is a candidate; only bare `sudo` is plain | guard B12-B14, B18, C16, C17 |
 | 3 (P1) help and merge-control exemptions match option values | T6 | `--help`/`-h` only first after the verb; `--abort`/`--quit`/`--continue` only alone | guard B15-B17, A8, A9 |
 | 4 (P1) API calls ignore the endpoint host | T7, T8 | `--hostname`, absolute endpoints and `-R` hosts must be origin's; an absolute `/graphql` is GraphQL | guard K10-K18, P17-P26, O10 |
