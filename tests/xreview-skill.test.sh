@@ -16,7 +16,8 @@ SKILL="$ROOT/dot_claude/skills/cross-review/SKILL.md"
 # The skill documents a system, not one file: the CLI plus the two PreToolUse guards
 # that enforce the parts prose cannot. XREVIEW_GUARD lives in the guards, so scoping the
 # search to the CLI reports drift that is not there.
-IMPL=("$XREVIEW" "$ROOT/dot_claude/executable_xreview-guard.sh" "$ROOT/dot_claude/executable_xreview-apply-guard.sh")
+IMPL=("$XREVIEW" "$ROOT/dot_claude/executable_xreview-guard.sh" "$ROOT/dot_claude/xreview-guard.py"
+      "$ROOT/dot_claude/xreview-ledger.py" "$ROOT/dot_claude/executable_xreview-apply-guard.sh")
 for _f in "$SKILL" "${IMPL[@]}"; do
   [ -f "$_f" ] || { echo "missing file under test: $_f" >&2; exit 2; }
 done
@@ -126,8 +127,9 @@ fi
 # The skill tells the model which commands are gated. If an arm is dropped there, the
 # model goes on believing the gate applies and proposes a merge that was never reviewed
 # — the failure this whole mechanism exists to prevent, arrived at through the prose.
+# The gate is the shell front, the Python grammar beside it, and the ledger it decides with.
 GUARD="$ROOT/dot_claude/executable_xreview-guard.sh"
-guard_code="$(strip_comments "$GUARD")"
+guard_code="$(strip_comments "$GUARD" "$ROOT/dot_claude/xreview-guard.py" "$ROOT/dot_claude/xreview-ledger.py")"
 gated="$(grep -oE '(glab|gh)[[:space:]]+(mr|pr)[[:space:]]+create[A-Za-z0-9_-]*' "$SKILL" | tr -s ' \t' ' ' | sort -u)"
 if [ -z "$gated" ]; then
   _fail "SKILL.md still names the gated forge commands" \
