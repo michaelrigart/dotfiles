@@ -43,6 +43,8 @@ CALL_TIMEOUT = 20.0      # per git call; the guard lowers it to fit its own budg
 # a delete and an add, and diff.ignoreSubmodules or submodule.<name>.ignore would hide a gitlink.
 DIFF_FLAGS = ["--no-relative", "--no-ext-diff", "--no-textconv", "--no-renames",
               "--ignore-submodules=none"]
+PATHSPEC_VARS = ("GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS",
+                 "GIT_ICASE_PATHSPECS")
 DIFF_RAW = ["diff", "--raw", "-z", "--no-abbrev"] + DIFF_FLAGS
 DIFF_PATCH = ["diff", "--no-color"] + DIFF_FLAGS
 USAGE = ("usage: xreview-ledger key COMMON_DIR | path REPO | default-branch REPO | "
@@ -57,11 +59,18 @@ class Fail(Exception):
 
 
 # ------------------------------------------------------------------ git
+def git_env():
+    """The environment of every git call, without the variables that change how a pathspec is
+    read: a reviewed repository's mise.toml or direnv could set them, and the packet's
+    pathspecs would then match other paths than the ones the fingerprint names."""
+    return {k: v for k, v in os.environ.items() if k not in PATHSPEC_VARS}
+
+
 def git(repo, *args, raw=False):
     """stdout of `git -C repo args` (stripped text, or bytes when raw), or None on failure."""
     try:
         p = subprocess.run(["git", "-C", repo] + list(args), capture_output=True,
-                           timeout=CALL_TIMEOUT)
+                           timeout=CALL_TIMEOUT, env=git_env())
     except (OSError, subprocess.TimeoutExpired):
         return None
     if p.returncode != 0:
@@ -158,7 +167,8 @@ def has_nul(repo, blobs):
         return set()
     try:
         p = subprocess.run(["git", "-C", repo, "cat-file", "--batch"], capture_output=True,
-                           input=b"".join(b + b"\n" for b in blobs), timeout=CALL_TIMEOUT)
+                           input=b"".join(b + b"\n" for b in blobs), timeout=CALL_TIMEOUT,
+                           env=git_env())
     except (OSError, subprocess.TimeoutExpired):
         raise Fail("cannot read blobs in {}".format(repo))
     if p.returncode != 0:
@@ -181,9 +191,13 @@ def patch(repo, base, tip):
     content, never by gitattributes (a path marked -diff would otherwise show only a "Binary
     files differ" line for text the fingerprint binds): a path whose old or new blob holds a NUL
     byte gets one summary line, `Binary file <path>: <old blob> -> <new blob>`, after the text
-    patch; every other path is rendered with --text, as a literal top-level pathspec, with the
-    fingerprint's own flags. The output never holds a NUL byte (a blob with a NUL anywhere, not
-    only in git's first 8000 bytes, is summarized). Raises Fail when git cannot diff it."""
+    patch, with both modes and, quoted as git quotes a header path when it holds a control
+    character, a double quote or a backslash, so a file name cannot forge a line. Every other
+    path is rendered by one `git diff --text` over the whole range with the fingerprint's own
+    flags, the binary paths excluded as literal top-level pathspecs. The output never holds a
+    NUL byte (a blob with a NUL anywhere, not only in git's first 8000 bytes, is summarized).
+    The number of `diff --git` headers must equal the number of text paths, or the packet does
+    not match the fingerprint and Fail is raised. Raises Fail when git cannot diff it."""
     records = sorted(raw_records(repo, base, tip))
     want = set()
     for _path, old_mode, new_mode, old_blob, new_blob in records:
@@ -192,18 +206,35 @@ def patch(repo, base, tip):
         if new_mode != b"160000" and new_blob.strip(b"0"):
             want.add(new_blob)
     binary = has_nul(repo, want)
-    text, lines = [], []
+    texts, skip, lines = 0, [], []
     for path, old_mode, new_mode, old_blob, new_blob in records:
         if old_blob in binary or new_blob in binary:
-            lines.append(b"Binary file " + path + b": " + old_blob + b" -> " + new_blob + b"\n")
+            skip.append(b":(top,exclude,literal)" + path)
+            lines.append(b"Binary file " + quote_path(path) + b": " + old_mode + b" " + old_blob
+                         + b" -> " + new_mode + b" " + new_blob + b"\n")
         else:
-            text.append(b":(top,literal)" + path)
+            texts += 1
     out = b""
-    if text:
-        out = git(repo, *(DIFF_PATCH + ["--text", base, tip, "--"] + text), raw=True)
+    if texts:
+        pathspec = ["--", ":(top)"] + skip if skip else []
+        out = git(repo, *(DIFF_PATCH + ["--text", base, tip] + pathspec), raw=True)
         if out is None:
             raise Fail("cannot diff {}..{} in {}".format(base, tip, repo))
+    headers = sum(1 for line in out.split(b"\n") if line.startswith(b"diff --git "))
+    if headers != texts:
+        raise Fail("the review packet does not match the change: {} text paths, {} diffs, "
+                   "for {}..{} in {}".format(texts, headers, base, tip, repo))
     return out + b"".join(lines)
+
+
+def quote_path(path):
+    """path as git quotes a header path when it holds a control character, a double quote or a
+    backslash (C-style, in double quotes); any other path as it is."""
+    if not any(c < 0x20 or c == 0x7f or c in b'"\\' for c in path):
+        return path
+    names = {0x0a: b"\\n", 0x09: b"\\t", 0x22: b'\\"', 0x5c: b"\\\\"}
+    return b'"' + b"".join(names.get(c) or (b"\\%03o" % c if c < 0x20 or c == 0x7f else
+                                            bytes([c])) for c in path) + b'"'
 
 
 def branch_of(repo, right):

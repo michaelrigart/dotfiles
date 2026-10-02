@@ -124,13 +124,58 @@ git -C "$R" config --unset diff.hide.binary; rm "$R/.git/info/attributes"
 variant "$R" bn; printf '\000\001\002\003\007' > "$R/b.bin"; commit "$R" "binary change"
 L diff "$R" main bn > "$ROOT/bn.patch"
 is "A24 a true binary file gets one summary line with both blob ids" \
-   "$(cat "$ROOT/bn.patch")" "Binary file b.bin: $(git -C "$R" rev-parse main:b.bin) -> $(git -C "$R" rev-parse bn:b.bin)"
+   "$(cat "$ROOT/bn.patch")" "Binary file b.bin: 100644 $(git -C "$R" rev-parse main:b.bin) -> 100644 $(git -C "$R" rev-parse bn:b.bin)"
 is "A25 and the patch holds no NUL byte" "$(tr -d '\000' < "$ROOT/bn.patch" | wc -c | tr -d ' ')" "$(wc -c < "$ROOT/bn.patch" | tr -d ' ')"
 variant "$R" glob; printf 'g\n' > "$R/*.txt"; printf 'a\000b\n' > "$R/a.txt"; commit "$R" "a file named *.txt, and a binary a.txt"
 L diff "$R" main glob > "$ROOT/glob.patch"
 is "A26 a file named *.txt is read literally: its own line shows" "$(grep -c '^+g$' "$ROOT/glob.patch")" 1
 is "A27 and does not pull in another .txt path as text" "$(grep -c '^diff --git a/a.txt' "$ROOT/glob.patch")" 0
 is "A28 which is summarized as binary" "$(grep -c '^Binary file a.txt: ' "$ROOT/glob.patch")" 1
+# The pathspec environment variables a reviewed repository's mise.toml or direnv could set must
+# not change what the packet holds.
+is "A29 GIT_LITERAL_PATHSPECS=1 does not hide the text change" \
+   "$(GIT_LITERAL_PATHSPECS=1 L diff "$R" main glob | grep -c '^+g$')" 1
+is "A30 GIT_GLOB_PATHSPECS=1 leaves the packet unchanged" \
+   "$(GIT_GLOB_PATHSPECS=1 L diff "$R" main glob | cmp - "$ROOT/glob.patch" && echo same)" same
+is "A31 and so does GIT_NOGLOB_PATHSPECS=1" \
+   "$(GIT_NOGLOB_PATHSPECS=1 L diff "$R" main glob | cmp - "$ROOT/glob.patch" && echo same)" same
+git -C "$R" config diff.relative true; mkdir -p "$R/sub"
+is "A32 with binary paths, run from a subdirectory under diff.relative, the packet is the same" \
+   "$(L diff "$R/sub" main glob | cmp - "$ROOT/glob.patch" && echo same)" same
+git -C "$R" config --unset diff.relative; rmdir "$R/sub"
+git -C "$R" reset -q --hard
+# x.txt (text) and X.txt (binary), built through the index: case-colliding paths.
+h_text="$(printf 'lower\n' | git -C "$R" hash-object -w --stdin)"
+h_bin="$(printf 'a\000b\n' | git -C "$R" hash-object -w --stdin)"
+variant "$R" icase
+git -C "$R" update-index --add --cacheinfo "100644,$h_text,x.txt"
+git -C "$R" update-index --add --cacheinfo "100644,$h_bin,X.txt"
+git -C "$R" commit -q -m "x.txt and X.txt"; git -C "$R" switch -q -f main   # the two collide on disk
+GIT_ICASE_PATHSPECS=1 L diff "$R" main icase > "$ROOT/icase.patch"
+is "A33 GIT_ICASE_PATHSPECS=1: no NUL byte in the packet" \
+   "$(tr -d '\000' < "$ROOT/icase.patch" | wc -c | tr -d ' ')" "$(wc -c < "$ROOT/icase.patch" | tr -d ' ')"
+ZERO="$(printf '0%.0s' {1..40})"
+is "A34 X.txt is a summary line" "$(grep -cxF "Binary file X.txt: 000000 $ZERO -> 100644 $h_bin" "$ROOT/icase.patch")" 1
+is "A35 and x.txt still shows its text" "$(grep -c '^+lower$' "$ROOT/icase.patch")" 1
+variant "$R" bmode; chmod +x "$R/b.bin"; git -C "$R" update-index --chmod=+x b.bin; git -C "$R" commit -q -m "binary mode"
+B_ID="$(git -C "$R" rev-parse main:b.bin)"
+is "A36 a binary mode-only change shows both modes" "$(L diff "$R" main bmode)" \
+   "Binary file b.bin: 100644 $B_ID -> 100755 $B_ID"
+variant "$R" nl; printf 'a\000b\n' > "$R/$(printf 'bad\nforged')"; commit "$R" "a binary file with a newline in its name"
+L diff "$R" main nl > "$ROOT/nl.patch"
+is "A37 a newline in a file name cannot start a packet line" "$(grep -c '^forged' "$ROOT/nl.patch")" 0
+is "A38 the name appears quoted" "$(grep -c '^Binary file "bad\\nforged": ' "$ROOT/nl.patch")" 1
+is "A39 a packet that does not match the change is refused" "$(/usr/bin/python3 -c '
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ledger", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+real = m.git
+m.git = lambda repo, *a, raw=False: b"" if "--text" in a else real(repo, *a, raw=raw)
+try:
+    m.patch(sys.argv[2], "main", "attr"); print("accepted")
+except m.Fail as e:
+    print("refused" if "does not match the change" in str(e) else str(e))
+' "$LEDGER" "$R")" refused
 git -C "$R" switch -q main
 
 echo "B. range normalization (spec 3.1)"
