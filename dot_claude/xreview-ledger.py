@@ -27,6 +27,7 @@ Written for /usr/bin/python3 (3.9): no match statements, no X | Y type unions.
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -292,6 +293,10 @@ def now():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
+# Reviews are ordered by comparing dispatched_at as strings, so only now()'s format is kept.
+AT_FORMAT = re.compile(r"\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z\Z")
+
+
 # ------------------------------------------------------------------ the ledger
 def state_home():
     return os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"),
@@ -480,6 +485,7 @@ def append(common, entry):
             and entry.get("kind") in ("pending", "receipt")
             and isinstance(entry.get("nonce"), str) and entry["nonce"]
             and isinstance(entry.get("dispatched_at"), str)
+            and AT_FORMAT.match(entry["dispatched_at"])
             and isinstance(entry.get("targets"), list) and entry["targets"]
             and all(isinstance(t, dict) and t.get("repo") == common for t in entry["targets"])):
         raise Fail("not a v2 ledger entry for {}".format(common))
@@ -498,6 +504,11 @@ def append(common, entry):
                         and held.get("kind") == entry["kind"]):
                     return "present"
         line = (json.dumps(entry, separators=(",", ":")) + "\n").encode("utf-8")
+        if os.path.lexists(path) and os.path.getsize(path) > 0:
+            with open(path, "rb") as fh:
+                fh.seek(-1, os.SEEK_END)
+                if fh.read(1) != b"\n":
+                    line = b"\n" + line
         fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
         try:
             if os.write(fd, line) != len(line):
@@ -550,7 +561,7 @@ def branch_record(entries, branch):
         lines.append("{} (dest {}, {}, fingerprint {})".format(
             describe(entry), target.get("dest") or "none",
             "full" if target.get("full") is True else "partial",
-            (target.get("fingerprint") or "none")[:12]))
+            str(target.get("fingerprint") or "none")[:12]))
     lines.extend(describe(e) for e in entries if e.get("v") is None and e.get("branch") == branch)
     return lines
 

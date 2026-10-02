@@ -540,5 +540,34 @@ L append "$C" "$(jq -nc --argjson t "$T" '{v:2,kind:"receipt",nonce:"xr-iso",dis
 is "G4 the approval opens a_b" "$(L decide "$ROOT/iso/a_b" main main feature | jq -r .allow)" true
 is "G5 and never a/b, for identical blobs and destination" "$(L decide "$ROOT/iso/a/b" main main feature | jq -r .allow)" false
 
+echo "H. a damaged ledger never lets the gate fail open"
+D="$ROOT/dmg"; mkrepo "$D"
+variant "$D" feature; printf 'd\n' > "$D/d.txt"; commit "$D" "feature"; git -C "$D" switch -q main
+DT="$(L normalize "$D" main...feature)"; DC="$(printf '%s' "$DT" | jq -r .repo)"; DF="$(L path "$D")"
+dentry() {
+  jq -nc --arg k "$1" --arg n "$2" --argjson t "${3:-$DT}" --arg at "${4-$(L now)}" \
+    '{v:2,kind:$k,nonce:$n,dispatched_at:$at,checkpoint:"pre-merge",targets:[$t]}
+     + (if $k == "receipt" then {verdict:"approve",findings:0,thread:"t",turn:"u",tier:""} else {} end)'
+}
+DAT="$(L now)"
+L append "$DC" "$(dentry pending r1 "$DT" "$DAT")" >/dev/null; L append "$DC" "$(dentry receipt r1 "$DT" "$DAT")" >/dev/null
+is "H1 an approved change allows" "$(L decide "$D" main main feature | jq -r .allow)" true
+printf '{"v":2,"kind":"receipt","nonce":"other","dispa' >> "$DF"
+is "H2 a later pending entry is appended after a partial line" "$(L append "$DC" "$(dentry pending r2)")" appended
+is "H3 it is readable" "$(grep -c '"nonce":"r2"' "$DF")" 1
+is "H4 and it closes the gate" "$(L decide "$D" main main feature | jq -r .allow)" false
+is "H5 on a line of its own" "$(grep -c '^{"v":2,"kind":"pending","nonce":"r2"' "$DF")" 1
+before="$(wc -c < "$DF" | tr -d ' ')"
+for bad in "2026-10-02T00:00:00Z" "" "x"; do
+  out="$(L append "$DC" "$(dentry pending r3 "$DT" "$bad")" 2>&1)"; rc=$?
+  is "H6 dispatched_at '$bad' is refused" "$rc/$(printf '%s' "$out" | grep -c 'not a v2 ledger entry')" "1/1"
+done
+is "H7 and nothing is appended" "$(wc -c < "$DF" | tr -d ' ')" "$before"
+NUMT="$(printf '%s' "$DT" | jq -c '.fingerprint = 12345 | .branch = "numeric"')"
+L append "$DC" "$(dentry pending r4 "$NUMT")" >/dev/null
+out="$(L decide "$D" main main feature --branch numeric 2>&1)"; rc=$?
+is "H8 a numeric fingerprint is no traceback" "$([ "$rc" -le 1 ] && printf '%s' "$out" | jq -e 'has("allow")' >/dev/null && ! printf '%s' "$out" | grep -q Traceback && echo ok)" ok
+is "H9 and the branch record shows it" "$(printf '%s' "$out" | jq -r '.on_record_branch | join("|")' | grep -c 'pending r4')" 1
+
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))
