@@ -190,14 +190,16 @@ def patch(repo, base, tip):
     """The change base..tip as a patch the reviewer can read in full. Binary is decided by the
     content, never by gitattributes (a path marked -diff would otherwise show only a "Binary
     files differ" line for text the fingerprint binds): a path whose old or new blob holds a NUL
-    byte gets one summary line, `Binary file <path>: <old blob> -> <new blob>`, after the text
-    patch, with both modes and, quoted as git quotes a header path when it holds a control
-    character, a double quote or a backslash, so a file name cannot forge a line. Every other
-    path is rendered by one `git diff --text` over the whole range with the fingerprint's own
-    flags, the binary paths excluded as literal top-level pathspecs. The output never holds a
-    NUL byte (a blob with a NUL anywhere, not only in git's first 8000 bytes, is summarized).
-    The number of `diff --git` headers must equal the number of text paths, or the packet does
-    not match the fingerprint and Fail is raised. Raises Fail when git cannot diff it."""
+    byte gets one summary line after the text patch,
+    `Binary file <path>: <old mode> <old blob> -> <new mode> <new blob>`, with the path quoted
+    as git quotes a header path (see quote_path), so a file name cannot forge a line. Every
+    other path is rendered by one `git diff --text` over the whole range with the fingerprint's
+    own flags, the binary paths excluded as literal top-level pathspecs. The output never holds
+    a NUL byte (a blob with a NUL anywhere, not only in git's first 8000 bytes, is summarized).
+    The number of `diff --git` headers must equal the number the text records call for: one
+    each, two for a change between a regular file, a symlink or a gitlink (git renders that as
+    a delete and a create). Otherwise the packet does not match the fingerprint and Fail is
+    raised. Raises Fail when git cannot diff it."""
     records = sorted(raw_records(repo, base, tip))
     want = set()
     for _path, old_mode, new_mode, old_blob, new_blob in records:
@@ -213,7 +215,8 @@ def patch(repo, base, tip):
             lines.append(b"Binary file " + quote_path(path) + b": " + old_mode + b" " + old_blob
                          + b" -> " + new_mode + b" " + new_blob + b"\n")
         else:
-            texts += 1
+            both = old_mode != b"000000" and new_mode != b"000000"
+            texts += 2 if both and old_mode[:2] != new_mode[:2] else 1
     out = b""
     if texts:
         pathspec = ["--", ":(top)"] + skip if skip else []
@@ -222,18 +225,21 @@ def patch(repo, base, tip):
             raise Fail("cannot diff {}..{} in {}".format(base, tip, repo))
     headers = sum(1 for line in out.split(b"\n") if line.startswith(b"diff --git "))
     if headers != texts:
-        raise Fail("the review packet does not match the change: {} text paths, {} diffs, "
+        raise Fail("the review packet does not match the change: {} diffs expected, {} found, "
                    "for {}..{} in {}".format(texts, headers, base, tip, repo))
     return out + b"".join(lines)
 
 
 def quote_path(path):
-    """path as git quotes a header path when it holds a control character, a double quote or a
-    backslash (C-style, in double quotes); any other path as it is."""
-    if not any(c < 0x20 or c == 0x7f or c in b'"\\' for c in path):
+    """path as git quotes it in a header under its default core.quotePath: when it holds a
+    control character, DEL, a byte of 0x80 or more, a double quote or a backslash, it is in
+    double quotes with \\a \\b \\t \\n \\v \\f \\r \\" \\\\ and three-digit octal for the rest;
+    any other path as it is."""
+    if not any(c < 0x20 or c >= 0x7f or c in b'"\\' for c in path):
         return path
-    names = {0x0a: b"\\n", 0x09: b"\\t", 0x22: b'\\"', 0x5c: b"\\\\"}
-    return b'"' + b"".join(names.get(c) or (b"\\%03o" % c if c < 0x20 or c == 0x7f else
+    names = {0x07: b"\\a", 0x08: b"\\b", 0x09: b"\\t", 0x0a: b"\\n", 0x0b: b"\\v",
+             0x0c: b"\\f", 0x0d: b"\\r", 0x22: b'\\"', 0x5c: b"\\\\"}
+    return b'"' + b"".join(names.get(c) or (b"\\%03o" % c if c < 0x20 or c >= 0x7f else
                                             bytes([c])) for c in path) + b'"'
 
 

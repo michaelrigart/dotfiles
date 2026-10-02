@@ -176,6 +176,30 @@ try:
 except m.Fail as e:
     print("refused" if "does not match the change" in str(e) else str(e))
 ' "$LEDGER" "$R")" refused
+# A change between a regular file, a symlink and a gitlink is a delete plus a create in a patch:
+# two headers for one raw record, which the cross-check must expect.
+variant "$R" tc; rm "$R/a.txt"; ln -s target "$R/a.txt"; commit "$R" "a.txt becomes a symlink"
+out="$(L diff "$R" main tc 2>&1)"
+is "A40 a file turned symlink renders the old side" "$(printf '%s\n' "$out" | grep -c '^-one$')" 1
+is "A41 and the new side" "$(printf '%s\n' "$out" | grep -c '^+target$')" 1
+git -C "$R" switch -q -c tc2 tc; rm "$R/a.txt"; printf 'back\n' > "$R/a.txt"; commit "$R" "a.txt is a file again"
+out="$(L diff "$R" tc tc2 2>&1)"
+is "A42 a symlink turned file renders the new side" "$(printf '%s\n' "$out" | grep -c '^+back$')" 1
+is "A43 and the old side" "$(printf '%s\n' "$out" | grep -c '^-target$')" 1
+variant "$R" tg
+git -C "$R" update-index --add --cacheinfo 160000,1111111111111111111111111111111111111111,a.txt
+git -C "$R" commit -q -m "a.txt becomes a gitlink"; git -C "$R" switch -q -f main
+out="$(L diff "$R" main tg 2>&1)"
+is "A44 a file turned gitlink renders the old side" "$(printf '%s\n' "$out" | grep -c '^-one$')" 1
+is "A45 and the new side" "$(printf '%s\n' "$out" | grep -c '^+Subproject commit 1111111111111111111111111111111111111111$')" 1
+# Path quoting is git's own: short escapes, octal for the rest, bytes of 0x80 and up in octal.
+QN=$'q\a\b\v\f\r\001\303\251"\\z'
+variant "$R" qp; printf 'a\000b\n' > "$R/$QN"; commit "$R" "a binary file with an awkward name"
+git -C "$R" diff --raw --no-renames main qp | cut -f2 > "$ROOT/qp.git"
+L diff "$R" main qp | sed -n 's/^Binary file \(.*\): 000000 .*/\1/p' > "$ROOT/qp.ours"
+is "A46 the quoted name is what git writes for it" "$(cat "$ROOT/qp.ours")" "$(cat "$ROOT/qp.git")"
+is "A47 as spelled out: short escapes, then octal" "$(cat "$ROOT/qp.ours")" '"q\a\b\v\f\r\001\303\251\"\\z"'
+git -C "$R" switch -q main
 git -C "$R" switch -q main
 
 echo "B. range normalization (spec 3.1)"
