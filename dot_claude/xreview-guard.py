@@ -8,23 +8,31 @@
 # nothing. It never asks, and it never allows on doubt: a gated shape it cannot complete is
 # denied with a reason the agent can act on. A command holding no gated verb is allowed.
 #
-# A gated verb counts only in command position, and it must be a plain command:
+# A gated verb must be a plain command:
 #
 #   [cd <literal path> &&] [sudo] git [-C <path>]... merge [options] <ref>   (onto the default branch)
 #   [cd <literal path> &&] [sudo] glab mr create|new|merge|accept [options]
 #   [cd <literal path> &&] [sudo] gh pr create|new|merge [options]
 #   [cd <literal path> &&] [sudo] glab|gh api [options] <endpoint>   (an MR/PR write, or graphql)
 #
-# Any other command holding a gated verb in command position (a chain, a pipe, a newline, a
-# subshell, an assignment, env, sudo with an option, or another wrapper) is denied, asking for
-# the plain form. So is any command whose substitutions run one: a $( ) or backtick body,
-# unquoted or inside double quotes, or inside a here-document whose delimiter is unquoted.
-# A comment, a redirection, single-quoted text and the rest of a here-document body are read
-# past, wherever they stand. --help or -h right after the verb, and a merge's lone --abort,
-# --quit or --continue, are never gated.
+# Any word may be a command word: one after a wrapper (timeout 30, caffeinate -i, xcrun,
+# find -exec, xargs, sudo -u root), a zsh precommand modifier (noglob, repeat 1), a keyword
+# (coproc, function f {) or an assignment (A+=1). So every unquoted word naming git, glab or
+# gh is read as one, and a gated verb anywhere but in the plain form above is denied, asking
+# for the plain form; an unquoted mention (echo git merge x) is denied with it, and quoting
+# the mention keeps it out. So is any command whose substitutions run one - a $( ) or
+# backtick body, unquoted or inside double quotes, or inside a here-document whose delimiter
+# is unquoted - and any command that hands one to another shell: sh, bash, zsh, dash or ksh
+# -c '...', or env -S '...'. A comment, a redirection, single-quoted text ($'...' included)
+# and the rest of a here-document body are read past, wherever they stand, and a line
+# continuation is joined first, as the shell joins it. --help or -h right after the verb, and
+# a merge's lone --abort, --quit or --continue, are never gated.
 #
-# Threat model: the commands an agent plausibly writes. A verb assembled from variables, eval,
-# a script file or an alias passes; the auto-mode classifier covers those.
+# The grammar is bash's and zsh's: the Bash tool runs its commands under zsh here, and scripts
+# run under bash. Threat model: the commands an agent plausibly writes. Out of scope, as spec
+# section 7 says: an alias (git -c alias.m=merge m included), eval, a script file or a script
+# fed to a shell on stdin, and a verb assembled from variables; the auto-mode classifier
+# covers those.
 #
 # Written for /usr/bin/python3 (3.9): no match statements, no X | Y type unions.
 import importlib.util
@@ -55,10 +63,14 @@ TAIL = ("\n\nDo not bypass this on your own judgement. Only if Michael has asked
 PLAIN = ("Pre-merge gate: this command proposes or merges a change in a shape the gate does not "
          "check. Run the verb as a plain command of its own - [cd <path> &&] git [-C <path>] "
          "merge <ref>, glab mr ..., gh pr ..., or glab|gh api ... - with no chain, pipe, "
-         "newline, subshell, environment assignment or env wrapper. If the command only "
-         "mentions the verb, keep it out of command position (quote it).")
+         "newline, subshell, environment assignment, wrapper or nested shell. If the command "
+         "only mentions the verb, quote the mention.")
 UNPARSEABLE = ("Pre-merge gate: this command cannot be parsed (unbalanced quotes), and it may "
                "propose or merge a change. Fix the quoting, and run the verb as a plain command.")
+MALFORMED = ("Pre-merge gate: the hook's payload is not valid JSON, and its text may propose or "
+             "merge a change, so the command is refused. Retry it.")
+NO_BRANCH = ("Pre-merge gate: the current branch of {} cannot be read, so whether this merge "
+             "lands on the default branch is unknown and it is refused. Retry it.")
 TIMED_OUT = "Pre-merge gate: the check did not finish in time, so the command is refused. Retry it."
 LITERAL = "Pre-merge gate: {} must be a literal value the gate can read, not {}."
 NO_REPO = "Pre-merge gate: {} is not inside a git repository, so the change cannot be checked."
@@ -80,13 +92,16 @@ def decision(reason):
 
 # ------------------------------------------------------------------ tokens
 PUNCT = ";&|()<>\n"
-ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 # A here-document operator, << or <<- (not the here-string <<<); its delimiter word follows.
 HEREDOC_START = re.compile(r"(?<!<)<<(?!<)(-?)[ \t]*")
 METACHARS = " \t\n;&|()<>"
-WRAPPERS = {"command", "env", "sudo", "time", "nohup", "xargs", "exec", "nice", "builtin"}
-RESERVED = {"if", "then", "elif", "else", "do", "while", "until", "!", "{"}
+TOOLS = {"git", "glab", "gh"}
+SHELLS = {"sh", "bash", "zsh", "dash", "ksh"}
 MAX_NESTING = 8
+# The escapes of an ANSI-C $'...' string, as bash and zsh decode them.
+ANSI_C = {"a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "n": "\n", "r": "\r",
+          "t": "\t", "v": "\v", "\\": "\\", "'": "'", '"': '"', "?": "?"}
+ANSI_NUMBER = re.compile(r"[0-7]{1,3}|x[0-9A-Fa-f]{1,2}|u[0-9A-Fa-f]{1,4}|U[0-9A-Fa-f]{1,8}")
 
 
 def heredoc_word(line, i):
@@ -112,139 +127,182 @@ def heredoc_word(line, i):
     return ("".join(out), quoted) if out else None
 
 
-def split_heredocs(cmd):
-    """(cmd without the bodies of its here-documents, the bodies that expand). A body is data,
-    never a command; but when its delimiter is unquoted the shell still runs the $( ) and
-    backtick substitutions in it, so those bodies are kept for scanning. A body ends at the
-    line that is exactly its unquoted delimiter (after leading tabs, for <<-). A marker whose
-    terminator line never comes is left alone, so no text is dropped on a guess."""
-    lines, out, expanding, i = cmd.split("\n"), [], [], 0
-    while i < len(lines):
-        line = lines[i]
-        out.append(line)
-        i += 1
-        for m in HEREDOC_START.finditer(line):
-            word = heredoc_word(line, m.end())
-            if word is None:
-                continue
-            delimiter, quoted = word
-            j = i
-            while j < len(lines) and (lines[j].lstrip("\t") if m.group(1) else lines[j]) != delimiter:
-                j += 1
-            if j < len(lines):
-                if not quoted:
-                    expanding.append("\n".join(lines[i:j]))
-                i = j + 1
-    return "\n".join(out), expanding
-
-
-def closing_paren(text, i):
-    """The index of the ) that closes a $( opened just before i: nested parentheses and quotes
-    inside it are tracked. len(text) when it never closes."""
-    depth, quoting, n = 1, None, len(text)
-    while i < n:
-        c = text[i]
-        if c == "\\" and quoting != "'" and i + 1 < n:
-            i += 2
-            continue
-        if quoting:
-            if c == quoting:
-                quoting = None
-        elif c in "'\"":
-            quoting = c
-        elif c == "(":
-            depth += 1
-        elif c == ")":
-            depth -= 1
-            if depth == 0:
-                return i
-        i += 1
-    return n
-
-
-def substitutions(text, shell=True):
-    """The bodies of the command substitutions, $( ) and backticks, that run when text does.
-    In shell text (shell=True) single quotes keep them inert, double quotes do not. In an
-    expanding here-document body (shell=False) quotes are plain characters; only a
-    backslash keeps a $ or a backtick literal."""
-    out, i, n, quoting = [], 0, len(text), None
-    while i < n:
-        c = text[i]
-        if c == "\\" and quoting != "'" and i + 1 < n:
-            i += 2
-            continue
-        if shell and quoting is None and c in "'\"":
-            quoting = c
-        elif shell and c == quoting:
-            quoting = None
-        elif quoting != "'" and text.startswith("$(", i):
-            j = closing_paren(text, i + 2)
-            out.append(text[i + 2:j])
-            i = j + 1
-            continue
-        elif quoting != "'" and c == "`":
-            j = i + 1
-            while j < n and text[j] != "`":
-                j += 2 if text[j] == "\\" else 1
-            out.append(text[i + 1:j])
-            i = j + 1
-            continue
-        i += 1
-    return out
-
-
-def substituted_commands(cmd):
-    """The command texts cmd runs through substitution: every $( ) and backtick body outside
-    single quotes and comments, and each one in a here-document body whose delimiter is
-    unquoted. Nested ones are found when each body is read in turn."""
-    main, expanding = split_heredocs(cmd)
-    bodies = substitutions(strip_comments(main.replace("\\\n", " ")))
-    for body in expanding:
-        bodies.extend(substitutions(body, shell=False))
-    return bodies
-
-
-def gated_in_substitution(cmd, depth=0):
-    """Does a command substitution in cmd, at any depth, run a gated verb?"""
-    for body in substituted_commands(cmd):
-        if depth >= MAX_NESTING:
-            return True
-        try:
-            tokens = tokenize(body)
-        except ValueError:
-            if CRUDE.search(body):
-                return True
-            continue
-        if any(gated_verb(segment(tokens, k)) for k in command_words(tokens)):
-            return True
-        if gated_in_substitution(body, depth + 1):
-            return True
-    return False
-
-
-def strip_comments(cmd):
-    """cmd without its comments: an unquoted # that starts a word, to the end of its line.
-    Quotes and backslashes are tracked as the shell does, so a quoted '#12 fix' stays."""
-    out, i, n, quoting = [], 0, len(cmd), None
+def ansi_c(cmd, i):
+    """(value, end) of the $'...' string whose text starts at cmd[i]: its escapes decoded, and
+    the index past its closing quote. end is None when the string never closes."""
+    out, n = [], len(cmd)
     while i < n:
         c = cmd[i]
-        if quoting is None and c == "#" and (i == 0 or cmd[i - 1] in " \t\n;&|()"):
-            j = cmd.find("\n", i)
-            if j < 0:
-                break
-            i = j
+        if c == "'":
+            return "".join(out), i + 1
+        if c == "\\" and i + 1 < n:
+            e, m = cmd[i + 1], ANSI_NUMBER.match(cmd, i + 1)
+            if e in ANSI_C:
+                out.append(ANSI_C[e])
+                i += 2
+            elif e == "c" and i + 2 < n:
+                out.append(chr(ord(cmd[i + 2]) & 0x1f))
+                i += 3
+            elif m:
+                code = m.group(0)
+                value = int(code, 8) if code[0] in "01234567" else int(code[1:], 16)
+                out.append(chr(min(value, 0x10FFFF)))
+                i = m.end()
+            else:
+                out.append(cmd[i:i + 2])
+                i += 2
             continue
         out.append(c)
-        if c == "\\" and quoting != "'" and i + 1 < n:
-            out.append(cmd[i + 1])
+        i += 1
+    return "".join(out), None
+
+
+def word_at(cmd, i):
+    j = i
+    while j < len(cmd) and cmd[j] not in METACHARS:
+        j += 1
+    return cmd[i:j]
+
+
+def here_bodies(cmd, i, pending, expanding):
+    """Read the bodies of the pending here-documents, in order, from cmd[i] - the line after
+    their operators; returns the index past the last one read. A body ends at the line that is
+    exactly its unquoted delimiter (after leading tabs, for <<-), and an expanding one (its
+    delimiter unquoted) is kept in expanding. A body whose delimiter line never comes is left
+    in place, so no text is dropped on a guess."""
+    n = len(cmd)
+    for delimiter, quoted, strip in pending:
+        j = i
+        while True:
+            e = cmd.find("\n", j)
+            line = cmd[j:n if e < 0 else e]
+            if (line.lstrip("\t") if strip else line) == delimiter:
+                if not quoted:
+                    expanding.append(cmd[i:j])
+                i = n if e < 0 else e + 1
+                break
+            if e < 0:
+                return i
+            j = e + 1
+    return i
+
+
+def lex(cmd, body=False):
+    """Read cmd as the shell reads it before it runs anything. Returns (text, substitutions,
+    expanding): text is cmd with each line continuation (an unescaped backslash-newline),
+    comment and here-document body removed, and each $'...' string rewritten in single quotes;
+    substitutions are the bodies of the outermost $( ) and backtick substitutions, each to be
+    read in turn; expanding are the bodies of the here-documents whose delimiter is unquoted.
+    Quoting nests as the shell's does: a $( ) inside double quotes is shell text again, so the
+    here-document of "$(cat <<'EOF' ... EOF)" is found, while a << or a # inside quotes is
+    text. body=True reads an expanding here-document body: no quote is special in it, and a
+    backslash escapes only $, a backtick, a backslash or a newline."""
+    out, subs, expanding, pending = [], [], [], []
+    # Each frame: [kind, where its body starts in out, open parentheses, open case statements].
+    stack = [["body" if body else "sh", 0, 0, 0]]
+
+    def close():
+        frame = stack.pop()
+        if not any(f[0] in ("$(", "`") for f in stack):
+            subs.append("".join(out[frame[1]:]))
+
+    i, n = 0, len(cmd)
+    while i < n:
+        frame = stack[-1]
+        kind, c = frame[0], cmd[i]
+        if kind == "'":
+            out.append(c)
+            if c == "'":
+                stack.pop()
+            i += 1
+            continue
+        if c == "\\" and i + 1 < n:
+            nxt = cmd[i + 1]
+            if nxt == "\n":
+                i += 2
+            elif (kind == '"' and nxt not in '$`"\\') or (kind == "body" and nxt not in "$`\\"):
+                out.append(c)
+                i += 1
+            else:
+                out.append(cmd[i:i + 2])
+                i += 2
+            continue
+        if kind == "`":
+            if c == "`":
+                close()
+            out.append(c)
+            i += 1
+            continue
+        if kind in ('"', "body"):
+            if c == '"' and kind == '"':
+                stack.pop()
+                out.append(c)
+                i += 1
+            elif cmd.startswith("$(", i):
+                out.append("$(")
+                stack.append(["$(", len(out), 1, 0])
+                i += 2
+            else:
+                if c == "`":
+                    stack.append(["`", len(out) + 1, 0, 0])
+                out.append(c)
+                i += 1
+            continue
+        # Shell text: the command line itself, or the inside of a $( ).
+        prev = out[-1][-1] if out else "\n"
+        if c == "#" and prev in METACHARS:
+            j = cmd.find("\n", i)
+            i = n if j < 0 else j
+            continue
+        if cmd.startswith("$'", i):
+            value, end = ansi_c(cmd, i + 2)
+            if end is None:
+                out.append(cmd[i:])
+                i = n
+            else:
+                out.append("'" + value.replace("'", "'\"'\"'") + "'")
+                i = end
+            continue
+        if c in "'\"`":
+            stack.append([c, len(out) + 1, 0, 0])
+            out.append(c)
+            i += 1
+            continue
+        if cmd.startswith("$(", i):
+            out.append("$(")
+            stack.append(["$(", len(out), 1, 0])
             i += 2
             continue
-        if quoting is None and c in "'\"":
-            quoting = c
-        elif c == quoting:
-            quoting = None
+        if kind == "$(":
+            if c == "(":
+                frame[2] += 1
+            elif c == ")" and not (frame[3] and frame[2] == 1):   # not a case pattern's )
+                frame[2] -= 1
+                if frame[2] == 0:
+                    close()
+                    out.append(c)
+                    i += 1
+                    continue
+            elif c in "ce" and prev in METACHARS and word_at(cmd, i) in ("case", "esac"):
+                frame[3] = max(0, frame[3] + (1 if word_at(cmd, i) == "case" else -1))
+        m = HEREDOC_START.match(cmd, i) if c == "<" else None
+        if m:
+            word = heredoc_word(cmd, m.end())
+            if word is not None:
+                pending.append((word[0], word[1], m.group(1) == "-"))
+            out.append(cmd[i:m.end()])
+            i = m.end()
+            continue
+        out.append(c)
         i += 1
-    return "".join(out)
+        if c == "\n" and pending:
+            i = here_bodies(cmd, i, pending, expanding)
+            pending = []
+    for frame in stack:
+        if frame[0] in ("$(", "`"):
+            subs.append("".join(out[frame[1]:]))
+            break
+    return "".join(out), subs, expanding
 
 
 # A redirection operator: >, >>, >|, <, <>, <&, >&, &>, &>>, a here-string or a here-document
@@ -279,7 +337,8 @@ def strip_redirections(cmd):
     >|f, <<<, a here-document marker) and its operand, split off the word it touches
     (git>log merge is git, then merge). A redirection changes where input and output go,
     never what runs, so the gate reads past it wherever it stands, before the command word
-    and between arguments alike. Quoted text is left alone."""
+    and between arguments alike. Quoted text is left alone. cmd has been through lex, so the
+    only quotes left are '...' and "..."."""
     out, i, n, quoting = [], 0, len(cmd), None
     while i < n:
         c = cmd[i]
@@ -306,11 +365,10 @@ def strip_redirections(cmd):
     return "".join(out)
 
 
-def tokenize(cmd):
-    """Shell words and operator tokens, with here-document bodies, comments and redirections
-    dropped. Raises ValueError on unbalanced quotes."""
-    text = strip_redirections(strip_comments(split_heredocs(cmd)[0].replace("\\\n", " ")))
-    lx = shlex.shlex(text, posix=True, punctuation_chars=PUNCT)
+def tokenize(text):
+    """The words and operator tokens of lexed text, its redirections dropped. Raises
+    ValueError on unbalanced quotes."""
+    lx = shlex.shlex(strip_redirections(text), posix=True, punctuation_chars=PUNCT)
     lx.whitespace = " \t\r"          # a newline separates commands; it is not a blank
     lx.whitespace_split = True
     lx.commenters = ""
@@ -321,46 +379,70 @@ def is_operator(tok):
     return bool(tok) and all(c in PUNCT for c in tok)
 
 
-def starts_command(tok):
-    """An operator after which a new command begins: a separator, a pipe, a subshell or a
-    process substitution."""
-    return is_operator(tok) and ("(" in tok or ("<" not in tok and ">" not in tok))
+def command_name(word):
+    """The program a word names: its basename, and for zsh's =name (name's path) the name."""
+    return os.path.basename(word[1:] if word.startswith("=") else word)
 
 
-def command_words(tokens):
-    """Indexes of the words that may run as a command: the first word of each simple command,
-    after VAR=value assignments and reserved words, and - after a wrapper (command, env, sudo,
-    time, xargs, ...) - every later word of that command. A wrapper's options can take an
-    argument (sudo -u root git merge ...), so which word it runs cannot be read from the text."""
-    out, i, n, at = [], 0, len(tokens), True
-    while i < n:
-        t = tokens[i]
-        if starts_command(t):
-            at = True
-        elif not is_operator(t) and at:
-            if ASSIGN_RE.match(t) or t in RESERVED:
-                pass
-            elif os.path.basename(t) in WRAPPERS:
-                j = i + 1
-                while j < n and not is_operator(tokens[j]):
-                    out.append(j)
-                    j += 1
-                at = False
-                i = j
-                continue
-            else:
-                out.append(i)
-                at = False
-        i += 1
+def candidates(tokens):
+    """Each word naming git, glab or gh, with the words after it in its simple command. Any
+    word may be a command word - after a wrapper (timeout 30, caffeinate -i, find -exec,
+    xargs), a zsh precommand modifier (noglob, repeat 1), a keyword (coproc, function f {) or
+    an assignment (A+=1) - so the gate never tries to tell which word runs. Whether the command
+    is plain is parse_plain's question."""
+    out, end = [], len(tokens)
+    for k in range(len(tokens) - 1, -1, -1):
+        if is_operator(tokens[k]):
+            end = k
+        elif command_name(tokens[k]) in TOOLS:
+            out.append(tokens[k:end])
+    return out[::-1]
+
+
+def shell_strings(tokens):
+    """The command strings a word hands to another shell: every word after an option cluster
+    holding c given to sh, bash, zsh, dash or ksh (its -c string, and the words after it), and
+    the string of env -S or --split-string."""
+    out, n = [], len(tokens)
+    for k, word in enumerate(tokens):
+        name, j, rest = command_name(word), k + 1, False
+        while (name in SHELLS or name == "env") and j < n and not is_operator(tokens[j]):
+            w, after = tokens[j], tokens[j + 1] if j + 1 < n else ""
+            if rest:
+                out.append(w)
+            elif name == "env" and w.startswith("--split-string"):
+                out.append(w.partition("=")[2] if "=" in w else after)
+            elif name == "env" and w.startswith("-") and not w.startswith("--") and "S" in w:
+                out.append(w[w.index("S") + 1:] or after)
+            elif name in SHELLS and w[:1] in ("-", "+") and w[1:2] != "-" and "c" in w[1:]:
+                rest = True
+            j += 1
     return out
 
 
-def segment(tokens, k):
-    """The words of the simple command whose command word is at k."""
-    end = k
-    while end < len(tokens) and not is_operator(tokens[end]):
-        end += 1
-    return tokens[k:end]
+def scan(cmd, depth=0):
+    """(tokens, hidden): cmd's words and operators, and whether a command that cmd runs some
+    other way holds a gated verb, at any depth - a $( ) or backtick substitution (outside
+    single quotes, or in an expanding here-document), a shell's -c string, env -S's string.
+    Nesting deeper than MAX_NESTING counts as hidden. Raises ValueError when cmd has unbalanced
+    quotes."""
+    text, nested, expanding = lex(cmd)
+    for body in expanding:
+        nested.extend(lex(body, body=True)[1])
+    tokens = tokenize(text)
+    nested.extend(shell_strings(tokens))
+    for inner in nested:
+        if depth >= MAX_NESTING:
+            return tokens, True
+        try:
+            inner_tokens, inner_hidden = scan(inner, depth + 1)
+        except ValueError:
+            if crude(inner):
+                return tokens, True
+            continue
+        if inner_hidden or gated_anywhere(inner_tokens):
+            return tokens, True
+    return tokens, False
 
 
 def literal(word):
@@ -369,8 +451,10 @@ def literal(word):
 
 
 # ------------------------------------------------------------------ the gated verbs
+# git's global options that take their value as the next word (git 2.56: --list-cmds and
+# --exec-path take one only after =; --super-prefix is from older releases).
 GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env",
-                  "--super-prefix"}
+                  "--attr-source", "--super-prefix"}
 FORGE_VALUE_OPTS = {"-R", "--repo"}
 HELP = {"--help", "-h"}
 MERGE_CONTROL = {"--abort", "--quit", "--continue"}
@@ -470,8 +554,8 @@ def gated_verb(words):
     --continue only as its sole argument: anywhere else either may be an option's value."""
     if not words:
         return None
-    tool, rest = os.path.basename(words[0]), words[1:]
-    if tool not in ("git", "glab", "gh"):
+    tool, rest = command_name(words[0]), words[1:]
+    if tool not in TOOLS:
         return None
     if tool == "git":
         i = skip_options(rest, 0, GIT_VALUE_OPTS)
@@ -493,6 +577,10 @@ def gated_verb(words):
         if api_gated(parse_api(rest[i + 1:])):
             return {"tool": tool, "kind": "api", "args": rest[i + 1:]}
     return None
+
+
+def gated_anywhere(tokens):
+    return any(gated_verb(words) for words in candidates(tokens))
 
 
 # ------------------------------------------------------------------ the plain command
@@ -633,7 +721,14 @@ def judge_git_merge(shape, ledger):
             raise Deny(PLAIN)
     top = toplevel(cwd)
     dest = ledger.default_branch(top)
-    if ledger.current_branch(top) != dest:
+    branch = ledger.current_branch(top)
+    if branch is None:
+        # No branch: a detached HEAD, which is no branch at all, or a lookup that failed or
+        # timed out, which says nothing and must not open the gate.
+        if (ledger.git(top, "rev-parse", "--abbrev-ref", "HEAD") or "") != "HEAD":
+            raise Deny(NO_BRANCH.format(top))
+        return
+    if branch != dest:
         return
     _, refs = parse_flags(args[i + 1:], MERGE_VALUE)
     if len(refs) != 1:
@@ -655,6 +750,16 @@ def judge(shape, ledger):
 CRUDE = re.compile(r"\b(glab|gh)\b[^\n]*\b(mr|pr|api)\b|\bgit\b[^\n]*\bmerge\b")
 
 
+def crude(text):
+    """The last resort, for text the grammar cannot read: glab or gh with mr, pr or api, or git
+    with merge, with quotes and backslashes dropped (g''it is git), read both with every
+    backslash-newline joined (mer\\<newline>ge is merge) and without (an escaped backslash
+    does not continue its line)."""
+    def flat(t):
+        return re.sub(r"[\\'\"]", "", t)
+    return bool(CRUDE.search(flat(text.replace("\\\n", ""))) or CRUDE.search(flat(text)))
+
+
 def on_alarm(signum, frame):
     raise Deny(TIMED_OUT)
 
@@ -671,11 +776,16 @@ def load_ledger():
 
 
 def main():
+    raw = sys.stdin.read()
     try:
-        payload = json.load(sys.stdin)
+        payload = json.loads(raw)
         cmd = payload.get("tool_input", {}).get("command") or ""
         cwd = payload.get("cwd") or os.getcwd()
     except (ValueError, AttributeError):
+        # A payload that is not JSON is read as text, its JSON escapes undone roughly.
+        text = raw.replace("\\\\", "\0").replace("\\n", "\n").replace("\\t", "\t")
+        if "XREVIEW_GUARD=off" not in raw and crude(text.replace("\0", "\\")):
+            print(decision(MALFORMED))
         return
     # The bypass is read from the command, the only place a model can write it.
     if not isinstance(cmd, str) or not cmd or "XREVIEW_GUARD=off" in cmd:
@@ -685,14 +795,14 @@ def main():
     gated = False
     try:
         try:
-            tokens = tokenize(cmd)
+            tokens, hidden = scan(cmd)
         except ValueError:
-            if CRUDE.search(cmd):
+            if crude(cmd):
                 raise Deny(UNPARSEABLE)
             return
-        # A gated verb run by a substitution is never part of a plain command.
-        hidden = gated_in_substitution(cmd)
-        gated = hidden or any(gated_verb(segment(tokens, k)) for k in command_words(tokens))
+        # A gated verb run some other way - a substitution, a nested shell - is never part of
+        # a plain command.
+        gated = hidden or gated_anywhere(tokens)
         if not gated:
             return
         shape = None if hidden else parse_plain(tokens, cwd)
@@ -702,7 +812,7 @@ def main():
     except Deny as d:
         print(decision(str(d)))
     except Exception as e:                             # a bug here must not open the gate
-        if gated or CRUDE.search(cmd):
+        if gated or crude(cmd):
             print(decision("Pre-merge gate: internal error ({}: {}), so the command is "
                            "refused.".format(type(e).__name__, e)))
     finally:

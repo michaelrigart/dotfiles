@@ -133,6 +133,23 @@ is "A19 only <<- strips tabs: under <<, a tab-indented delimiter is body" "$(dec
 ${TAB}EOF
 git merge feature
 EOF")" allow
+# Every unquoted word naming git, glab or gh is read as a command word (section B), so these
+# mentions stay allowed only because each is quoted, or not a gated verb at all.
+is "A20 the commit-message idiom: a quoted here-document inside \$( ) inside double quotes" \
+   "$(decision "$W" "git commit --allow-empty -m \"\$(cat <<'EOF'
+Land it: git merge feature
+Then \`glab mr create --target-branch main\`.
+EOF
+)\"")" allow
+is "A21 rg with an alternation of gated verbs" "$(decision "$W" "rg -n 'git merge|glab mr create' docs/")" allow
+is "A22 read-only uses of the same words" \
+   "$(decision "$W" 'git log --merges --oneline') $(decision "$W" 'git branch --merged main') $(decision "$W" 'gh pr list --state merged') $(decision "$W" 'glab mr view 7')" \
+   "allow allow allow allow"
+is "A23 quoted mentions: single-quoted backticks, an echo to a file, a chained commit message" \
+   "$(decision "$W" "git commit -m 'Use \`git merge\` with care'") $(decision "$W" "echo 'git merge feature' > notes.txt") $(decision "$W" 'git add -A && git commit -m "merge notes for gh pr create"')" \
+   "allow allow allow"
+is "A24 git merge-base in a chain" "$(decision "$W" 'git merge-base --is-ancestor feature main && echo yes')" allow
+is "A25 an ANSI-C string is one quoted word" "$(decision "$W" "printf \$${SQ}%s\\n${SQ} \$${SQ}git merge feature${SQ}")" allow
 
 echo "B. a gated verb must be a plain command"
 is "B1 a chain that switches branch first" "$(decision "$W" 'git switch main && git merge feature')" deny
@@ -200,6 +217,59 @@ is "B39 a <<- body ends at its tab-indented delimiter, and what follows runs" "$
 ${TAB}EOF
 git merge feature
 EOF")" deny
+# Any word can be a command word: after a wrapper, a zsh precommand modifier, a keyword or an
+# assignment. Each of these really runs the merge, under bash, zsh or both.
+is "B40 timeout runs its command" "$(decision "$W" 'timeout 30 git merge feature')" deny
+is "B41 so do caffeinate, stdbuf and xcrun" \
+   "$(decision "$W" 'caffeinate -i git merge feature') $(decision "$W" 'stdbuf -oL git merge feature') $(decision "$W" 'xcrun git merge feature')" \
+   "deny deny deny"
+is "B42 and find -exec" "$(decision "$W" 'find . -maxdepth 0 -exec git merge feature \;')" deny
+is "B43 a wrapped MR or PR creation" \
+   "$(decision "$W" 'timeout 30 glab mr create --target-branch main') $(decision "$W" 'timeout 30 gh pr create --base main')" \
+   "deny deny"
+is "B44 a function body" "$(decision "$W" 'function f { git merge feature; }; f')" deny
+is "B45 coproc" "$(decision "$W" 'coproc git merge feature; wait')" deny
+is "B46 a NAME+= assignment" "$(decision "$W" 'A+=1 git merge feature')" deny
+is "B47 zsh's noglob, nocorrect and repeat" \
+   "$(decision "$W" 'noglob git merge feature') $(decision "$W" 'nocorrect git merge feature') $(decision "$W" 'repeat 1 git merge feature')" \
+   "deny deny deny"
+is "B48 zsh's =git is git" "$(decision "$W" '=git merge feature')" deny
+is "B49 env -S and --split-string hand their string to a command" \
+   "$(decision "$W" "env -S 'git merge feature'") $(decision "$W" "env --split-string='git merge feature'")" "deny deny"
+is "B50 so does a shell's -c" \
+   "$(decision "$W" "bash -c 'git merge feature'") $(decision "$W" "zsh -c 'git merge feature'") $(decision "$W" "sh -lc 'git merge feature'")" \
+   "deny deny deny"
+is "B51 an unquoted mention is denied too" "$(decision "$W" 'echo git merge feature')" deny
+is "B52 asking to quote it" "$(reason "$W" 'echo git merge feature' | grep -c 'quote the mention')" 1
+# A backslash-newline is deleted before anything else is read, as the shell deletes it, unless
+# the backslash is itself escaped.
+is "B53 a continuation inside the verb" "$(decision "$W" 'git mer\
+ge feature')" deny
+is "B54 an escaped backslash does not continue the line" "$(decision "$W" 'echo x\\
+git merge feature')" deny
+is "B55 a continuation inside an expanding here-document's substitution" "$(decision "$W" 'cat <<EOF
+$(git mer\
+ge feature)
+EOF')" deny
+is "B56 a continuation after a here-document operator joins the next line to the command" "$(decision "$W" 'cat <<EOF \
+&& git merge feature
+body
+EOF')" deny
+# << starts a here-document only in shell text, never inside quotes or a comment.
+is "B57 inside a comment it hides nothing" "$(decision "$W" 'git status # see <<EOF
+git merge feature
+EOF')" deny
+is "B58 nor inside a double-quoted string" "$(decision "$W" 'echo "x <<EOF y"
+git merge feature
+EOF')" deny
+is "B59 an ANSI-C string, its escaped quote included, is one word" \
+   "$(decision "$W" "echo \$${SQ}a\\${SQ}b${SQ} ; git merge feature ; echo ${SQ}\\${SQ}")" deny
+is "B60 and keeps the rest of the command readable" "$(decision "$W" "echo \$${SQ}it\\${SQ}s${SQ}
+git \\
+merge feature")" deny
+is "B61 git --attr-source takes a value" "$(decision "$W" 'git --attr-source HEAD merge feature')" deny
+is "B62 a case pattern's ) does not end a substitution" \
+   "$(decision "$W" 'echo "$(case x in x) git merge feature;; esac)"')" deny
 
 echo "C. git merge into the default branch"
 is "C1 an unreviewed merge into main is denied" "$(decision "$W" 'git merge feature')" deny
@@ -231,6 +301,10 @@ is "C22 every operator form, fused" \
    "$(for c in 'feature>>m.log' 'feature<in.txt' 'feature 2>err>m.log' 'feature&>m.log' 'feature>&2' 'feature 2>&1' 'feature<>m.log' 'feature>|m.log'; do
         decision "$W" "git merge $c"; printf ' '; done)" \
    "allow allow allow allow allow allow allow allow "
+is "C23 an approved merge across line continuations" "$(decision "$W" 'git merge \
+feature') $(decision "$W" 'git mer\
+ge feature')" "allow allow"
+is "C24 and run as zsh's =git" "$(decision "$W" '=git merge feature')" allow
 
 echo "D. it fails closed"
 is "D1 a merge outside any repository is denied" "$(decision "$ROOT/norepo" 'git merge feature')" deny
@@ -242,6 +316,23 @@ is "D4 naming it" "$(reason "$W" 'git merge feature' | grep -c 'is unreadable')"
 chmod 644 "$LF"
 is "D5 readable again, the approval stands" "$(decision "$W" 'git merge feature')" allow
 is "D6 unbalanced quotes around a gated verb" "$(decision "$W" 'git merge "feature')" deny
+# The current branch decides whether a merge is gated. A lookup that fails or times out says
+# nothing, so it must not open the gate; only a verifiably detached HEAD is no branch.
+WRAP="$ROOT/wrap"; mkdir -p "$WRAP"; REALGIT="$(command -v git)"
+shim() { printf '%s\n' '#!/bin/sh' "case \"\$*\" in *\"symbolic-ref --quiet --short HEAD\") $1 ;; esac" "exec $REALGIT \"\$@\"" > "$WRAP/git"; chmod +x "$WRAP/git"; }
+shim 'exit 128'
+is "D7 a failing branch lookup is a deny, even for an approved merge" "$(PATH="$WRAP:$PATH" decision "$W" 'git merge feature')" deny
+is "D8 saying why" "$(PATH="$WRAP:$PATH" reason "$W" 'git merge feature' | grep -c 'current branch of .* cannot be read')" 1
+shim 'sleep 9; exit 0'
+is "D9 so is one that times out" "$(PATH="$WRAP:$PATH" decision "$W" 'git merge feature')" deny
+git -C "$SIDE" switch -q --detach
+is "D10 a detached HEAD is no branch, so its merge is not gated" "$(decision "$SIDE" 'git merge feature')" allow
+git -C "$SIDE" switch -q side
+# A payload that is not JSON is read as text.
+is "D11 a truncated payload holding a merge is denied" \
+   "$(printf '%s' '{"tool_input":{"command":"git merge feature"},"cwd":"'"$W"'"' | bash "$GUARD" 2>/dev/null | jq -r .hookSpecificOutput.permissionDecision)" deny
+is "D12 one that only mentions merges is let through" \
+   "$(printf '%s' '{"tool_input":{"command":"git log --merges"' | bash "$GUARD" 2>/dev/null)" ""
 
 echo "E. the bypass is Michael's"
 is "E1 XREVIEW_GUARD=off on the command" "$(decision "$W" 'XREVIEW_GUARD=off git merge side')" allow
@@ -268,6 +359,30 @@ out="$(payload "$W" 'git merge feature' | bash "$TRIP/xreview-guard.sh" 2>/dev/n
 is "F3 a helper that cannot run denies a gated verb" "$(printf '%s' "$out" | jq -r .hookSpecificOutput.permissionDecision)" deny
 out="$(payload "$W" 'git commit -m "a new test"' | bash "$TRIP/xreview-guard.sh" 2>/dev/null)"
 is "F4 and leaves an ungated command alone" "$out" ""
+# The fast path reads the payload with quotes, backslashes and continuations dropped.
+printf 'import sys\nopen(sys.argv[0] + ".ran", "a").write("x")\n' > "$TRIP/xreview-guard.py"
+rm -f "$TRIP/xreview-guard.py.ran"
+payload /tmp "g''it mer''ge feature" | bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
+is "F5 quotes inside a word do not hide a verb from the fast path" "$(tripped)" ran
+rm -f "$TRIP/xreview-guard.py.ran"
+payload /tmp 'git mer\
+ge feature' | bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
+is "F6 nor does a line continuation" "$(tripped)" ran
+is "F7 and the helper reads the merge (side has no change of its own: denied)" "$(decision "$W" "g''it mer''ge side")" deny
+# With the helper missing, the front's own last resort reads whole words, joined lines and
+# words split by quotes.
+NOH="$ROOT/nohelper"; mkdir -p "$NOH"; cp "$GUARD" "$NOH/xreview-guard.sh"
+fallback() { local out; out="$(payload "$W" "$1" | bash "$NOH/xreview-guard.sh" 2>/dev/null)"
+  [ -n "$out" ] && printf '%s' "$out" | jq -r .hookSpecificOutput.permissionDecision || printf allow; }
+is "F8 with the helper missing, fused redirections are denied" \
+   "$(fallback 'git>m.log merge feature') $(fallback 'git merge>m.log feature') $(fallback 'glab mr>c.log create -b main')" \
+   "deny deny deny"
+is "F9 and so are a continuation, a backtick and an escaped backslash" \
+   "$(fallback 'git \
+merge feature') $(fallback 'echo `git merge`') $(fallback 'echo x\\
+git merge feature')" "deny deny deny"
+is "F10 and a word split by quotes" "$(fallback "g''it mer''ge feature")" deny
+is "F11 while a mention of merges stays allowed" "$(fallback 'git log --merges')" allow
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))

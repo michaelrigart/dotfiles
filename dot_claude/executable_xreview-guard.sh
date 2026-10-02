@@ -16,8 +16,10 @@
 #
 # This shell front is the fast path. The hook fires on EVERY Bash call, so a payload that
 # names none of create, new, merge, accept, pulls or graphql, or none of glab, gh or git,
-# costs no subprocess at all. Everything else goes to xreview-guard.py beside this file,
-# which owns the grammar and the checks and fails closed on a gated shape.
+# costs no subprocess at all. It reads the payload with quotes, backslashes and line
+# continuations dropped, as the shell would join them: g''it, mer""ge and mer\<newline>ge
+# all name their verb. Everything else goes to xreview-guard.py beside this file, which owns
+# the grammar and the checks and fails closed on a gated shape.
 #
 # The bypass is XREVIEW_GUARD=off, for Michael's explicit use only: in this hook's
 # environment, or anywhere in the command (the only place a model can write it).
@@ -31,11 +33,15 @@ set -f
 payload=$(cat)
 [ -n "$payload" ] || exit 0
 
-case "$payload" in
+# A line continuation is spelled \\\n in the JSON payload; then quotes and backslashes go.
+json_continuation='\\\n'
+flat=${payload//"$json_continuation"/}
+flat=${flat//[\'\"\\]/}
+case "$flat" in
   *create*|*new*|*merge*|*accept*|*pulls*|*graphql*) ;;
   *) exit 0 ;;
 esac
-case "$payload" in
+case "$flat" in
   *glab*|*gh*|*git*) ;;
   *) exit 0 ;;
 esac
@@ -52,10 +58,17 @@ fi
 [ "$rc" -eq 0 ] && exit 0
 
 # The helper could not run at all. FAIL DIRECTION IS CLOSED for a command that may propose or
-# merge: glab/gh with mr, pr or api, or git with merge, in its text. Anything else is allowed.
+# merge: glab/gh with mr, pr or api, or git with merge, as whole words on one line - the
+# helper's own last resort (CRUDE). The text is read with quotes and backslashes dropped,
+# both with every backslash-newline joined and without, so neither a fused redirection
+# (git>log merge), a continuation (git \<newline>merge) nor a backtick hides the verb.
+# Anything else is allowed.
 cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command // empty' 2>/dev/null) || cmd=$payload
 case "$cmd" in *XREVIEW_GUARD=off*) exit 0 ;; esac
-if printf '%s' "$cmd" | grep -Eq '(glab|gh)[[:space:]]+([^;&|]*[[:space:]])?(mr|pr|api)([[:space:]]|$)|git[[:space:]]+([^;&|]*[[:space:]])?merge([[:space:]]|$)'; then
+continuation=$'\\\n'
+joined=${cmd//"$continuation"/}
+crude='\b(glab|gh)\b.*\b(mr|pr|api)\b|\bgit\b.*\bmerge\b'
+if printf '%s\n%s' "${joined//[\'\"\\]/}" "${cmd//[\'\"\\]/}" | grep -Eq "$crude"; then
   reason="Pre-merge gate: the gate's check could not run ($helper exited $rc), so this command, which may propose or merge a change, is refused. Restore the helper (chezmoi apply)."
   printf '%s' "$reason" | jq -Rs \
     '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:.}}' 2>/dev/null \
