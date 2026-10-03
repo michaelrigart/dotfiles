@@ -159,9 +159,18 @@ task's requirements include these.
   - `$'…'` is modelled in every quote tracker;
   - `--attr-source` takes a value;
   - the fast path drops `'`, `"` and `\` from the payload before its substring tests;
+    fix round 2 replaced that substitution, which is super-linear under `/bin/bash` 3.2 (a
+    15 KB command got no decision inside the hook's limit, which lets it through), with one
+    `[[ =~ ]]` per trigger word that allows the raw-JSON spellings of quotes, backslashes and
+    continuations between letters; the missing-helper fallback uses `tr -d`;
   - a payload that is not JSON is denied when `CRUDE` matches it;
   - the guard's header names aliases (`git -c alias.*` included), eval and script files as
-    out of scope (spec §7), and says it models bash and zsh syntax.
+    out of scope (spec §7), and says it models bash and zsh syntax;
+  - fix round 2: a `#` after the `)` that closes a `$( )` is not a comment; a backtick body
+    is unescaped before it is read again; continuations are joined before an unquoted
+    here-document's lines are compared with its delimiter; `$((` is arithmetic; `crude` also
+    reads the lexer's decoded text. Further deliberately obfuscated spellings are out of
+    scope under spec §7.
 - **Creation** reads `git ls-remote <remote> refs/heads/<source>`. The source repository must
   be the checkout's `origin`, so forks are denied.
 - **Forge merges:**
@@ -469,12 +478,16 @@ Each one stays within the spec's goals.
 
     A hook that outruns its limit is non-blocking, so giving up early fails closed.
 24. **The shell front has a second substring stage** (`glab|gh|git`), so payloads that only
-    mention "new" or "create" still start no interpreter. Both stages read the payload with
-    quotes, backslashes and line continuations dropped, so `g''it mer''ge` and `mer\<newline>ge`
-    reach the helper (fix round 1). When the helper cannot run, the front's own last resort is
-    `CRUDE`'s shape - whole words on one line - on the command with quotes and backslashes
-    dropped, read with every backslash-newline joined and without. A payload that is not
-    JSON is denied when `crude` matches its text.
+    mention "new" or "create" still start no interpreter. Each stage matches its words with one
+    `[[ =~ ]]` per word, allowing a single quote or an escaped `"`, `\` or newline between two
+    letters as the raw JSON payload spells them, so `g''it mer''ge` and `mer\<newline>ge` reach
+    the helper (fix rounds 1 and 2). That stays linear in the payload's size under `/bin/bash`
+    3.2, where a `${payload//…}` substitution took 52 s on 10 KB, and the hook lets a command
+    through when it times out. A payload holding a `$'…'` string always goes on. When the
+    helper cannot run, the front's own last resort is `CRUDE`'s shape - whole words on one line
+    - on the command with quotes and backslashes dropped (`tr -d`), read with every
+    backslash-newline joined (`awk`) and without. A payload that is not JSON is denied when
+    `crude` matches its text.
 
 **Tests, evaluation and gaps**
 
@@ -3159,8 +3172,14 @@ git commit -m "Write xreview receipts to each target repository's ledger, once p
     bodies, rewrites each `$'...'` string (`ansi_c`) in single quotes, and tracks quoting as a
     stack, so a `$( )` inside double quotes is shell text again. A `<<`/`<<-` (`HEREDOC_START`)
     starts a here-document only in shell text; `heredoc_word(line, i)` reads its delimiter,
-    and `here_bodies(cmd, i, pending, expanding)` reads the bodies after the line ends. A
-    `case` pattern's `)` does not end a `$( )`.
+    and `here_bodies(cmd, i, pending, expanding)` reads the bodies after the line ends,
+    joining continuations first under an unquoted delimiter. A `case` pattern's `)` does not
+    end a `$( )` (`case` counts only in command position, `command_position(out)`). `$((` and
+    a `((` that starts a command are arithmetic frames when their parentheses close as `))`
+    (`arithmetic(cmd, j)`), where `<<` and `#` are text; `$((cmd) | …)` stays a substitution.
+    A `#` glued to a closing `)` or backtick is part of its word. Each outermost substitution
+    body is taken out of the text (fix round 2), so quotes inside it never pair with quotes
+    around it; a backtick body has its `` \` ``, `\\` and `\$` undone before it is read.
   - `tokenize(text) -> list[str]`: shlex words and operators of lexed text, its redirections
     dropped (`strip_redirections`, `skip_word`, `REDIRECT_RE`, `REDIRECT_MID_RE`).
   - `scan(cmd, depth=0) -> (tokens, hidden)`: hidden when a substitution, an expanding
@@ -3170,8 +3189,9 @@ git commit -m "Write xreview receipts to each target repository's ledger, once p
     every word naming `git`, `glab` or `gh`, with the rest of its simple command;
     `gated_anywhere(tokens) -> bool`; `literal(word) -> bool`.
   - `crude(text) -> bool`: `CRUDE` on the text with quotes and backslashes dropped, read with
-    every backslash-newline joined and without - the last resort for text the grammar cannot
-    read (unbalanced quotes, a payload that is not JSON, an internal error).
+    every backslash-newline joined, as written, and as `lex` reads it (`$'\x67it'` is `git`) -
+    the last resort for text the grammar cannot read (unbalanced quotes, a payload that is not
+    JSON, an internal error).
   - `gated_verb(words) -> dict | None`, as
     `{"tool": "git" | "glab" | "gh", "kind": "merge-local" | "create" | "merge" | "api", "args": [...]}`.
   - `parse_api(args) -> dict` with `endpoint, method, fields, body, hostname`;
@@ -3347,6 +3367,21 @@ is "A23 quoted mentions: single-quoted backticks, an echo to a file, a chained c
    "allow allow allow"
 is "A24 git merge-base in a chain" "$(decision "$W" 'git merge-base --is-ancestor feature main && echo yes')" allow
 is "A25 an ANSI-C string is one quoted word" "$(decision "$W" "printf \$${SQ}%s\\n${SQ} \$${SQ}git merge feature${SQ}")" allow
+is "A26 the commit-message idiom with an apostrophe and a case) in its body" \
+   "$(decision "$W" "git commit -m \"\$(cat <<'EOF'
+Merge notes: run git merge feature, then gh pr create.
+It's the edge case) fix.
+EOF
+)\"")" allow
+is "A27 arithmetic is data" "$(decision "$W" 'echo $((1 << 2)) $(( (1 + 2) * 3 ))')" allow
+is "A28 case as a plain word inside a substitution ends nothing" \
+   "$(decision "$W" 'git commit -m "$(echo merge the edge case)"')" allow
+is "A29 quotes nested in a substitution inside double quotes" \
+   "$(decision "$W" "gh pr edit 12 --title \"\$(jq -r '.title + \" (rev)\"' meta.json)\"")" allow
+is "A30 \$((cmd) | ...) is a substitution: a quoted here-document in it is data" "$(decision "$W" "echo \$((cat <<'EOF'
+git merge feature
+EOF
+) | tr a-z A-Z)")" allow
 
 echo "B. a gated verb must be a plain command"
 is "B1 a chain that switches branch first" "$(decision "$W" 'git switch main && git merge feature')" deny
@@ -3467,6 +3502,32 @@ merge feature")" deny
 is "B61 git --attr-source takes a value" "$(decision "$W" 'git --attr-source HEAD merge feature')" deny
 is "B62 a case pattern's ) does not end a substitution" \
    "$(decision "$W" 'echo "$(case x in x) git merge feature;; esac)"')" deny
+is "B63 a # glued to a substitution's ) is part of the word, not a comment" \
+   "$(decision "$W" 'echo $(echo a)#b; git merge feature')" deny
+is "B64 a backtick body's escaped backticks nest a substitution" \
+   "$(decision "$W" 'echo `echo \`git merge feature\``')" deny
+is "B65 a continuation can form an unquoted here-document's delimiter" "$(decision "$W" 'cat <<EOF
+x
+EO\
+F
+git merge feature
+EOF')" deny
+is "B66 << inside arithmetic is a shift, not a here-document" "$(decision "$W" 'echo $((1<<2))
+git merge feature
+2') $(decision "$W" 'echo "$((1<<2))"
+git merge feature
+2')" "deny deny"
+is "B67 \$((cmd) | ...) is a substitution holding a subshell, not arithmetic" \
+   "$(decision "$W" 'echo $((echo a) | git merge feature)')" deny
+is "B68 an ANSI-C string can spell the command word" "$(decision "$W" "\$${SQ}\\x67it${SQ} merge feature")" deny
+is "B69 and is read even where the rest cannot be parsed" \
+   "$(decision "$W" "\$${SQ}\\x67it${SQ} merge feature; echo \"unterminated")" deny
+is "B70 case only counts as a keyword where a command starts" "$(decision "$W" 'echo "$(echo case) <<EOF "
+#"
+git merge feature
+EOF')" deny
+is "B71 quotes inside a substitution never pair with the quotes around it" \
+   "$(decision "$W" "echo \"\$(printf '\"')\" ; git merge feature ; echo \"\$(printf '\"')\"")" deny
 
 echo "C. git merge into the default branch"
 is "C1 an unreviewed merge into main is denied" "$(decision "$W" 'git merge feature')" deny
@@ -3580,6 +3641,38 @@ merge feature') $(fallback 'echo `git merge`') $(fallback 'echo x\\
 git merge feature')" "deny deny deny"
 is "F10 and a word split by quotes" "$(fallback "g''it mer''ge feature")" deny
 is "F11 while a mention of merges stays allowed" "$(fallback 'git log --merges')" allow
+# The hook gives up at its time limit and then lets the command through, so the front must be
+# linear in the payload's size under the oldest bash a client may run, macOS's /bin/bash 3.2.
+# timed <payload-file>: the front's decision under /bin/bash and its wall time in ms; a run past
+# 30 s is cut off and reads "timeout".
+timed() {
+  /usr/bin/python3 - "$GUARD" "$1" <<'PY'
+import json, subprocess, sys, time
+start = time.time()
+try:
+    with open(sys.argv[2], "rb") as fh:
+        out = subprocess.run(["/bin/bash", sys.argv[1]], stdin=fh, capture_output=True,
+                             timeout=30).stdout
+    verdict = json.loads(out)["hookSpecificOutput"]["permissionDecision"] if out.strip() else "allow"
+except subprocess.TimeoutExpired:
+    verdict = "timeout"
+print(verdict, int((time.time() - start) * 1000))
+PY
+}
+big="$(/usr/bin/python3 -c "import sys; sys.stdout.write(('lorem ipsum dolor sit amet \"quoted\" it\\'s a \\\\ path\\n') * 340)")"
+payload "$W" "cat > out.txt <<'X'
+$big
+X
+git merge feature" > "$ROOT/big-gated.json"
+payload "$W" "cat > out.txt <<'X'
+$big
+X" > "$ROOT/big-plain.json"
+read -r verdict ms < <(timed "$ROOT/big-gated.json")
+is "F12 a 15 KB payload ending in a gated verb is denied within seconds under /bin/bash" \
+   "$verdict $([ "$ms" -lt 5000 ] && echo fast || echo "slow:${ms}ms")" "deny fast"
+read -r verdict ms < <(timed "$ROOT/big-plain.json")
+is "F13 and one with no gated verb is allowed at once" \
+   "$verdict $([ "$ms" -lt 2000 ] && echo fast || echo "slow:${ms}ms")" "allow fast"
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))
@@ -3694,8 +3787,8 @@ guard_code="$(strip_comments "$GUARD" "$ROOT/dot_claude/xreview-guard.py" "$ROOT
 # The grammar is bash's and zsh's: the Bash tool runs its commands under zsh here, and scripts
 # run under bash. Threat model: the commands an agent plausibly writes. Out of scope, as spec
 # section 7 says: an alias (git -c alias.m=merge m included), eval, a script file or a script
-# fed to a shell on stdin, and a verb assembled from variables; the auto-mode classifier
-# covers those.
+# fed to a shell on stdin, a verb assembled from variables, and any other deliberately
+# obfuscated spelling; the auto-mode classifier covers those.
 #
 # Written for /usr/bin/python3 (3.9): no match statements, no X | Y type unions.
 import importlib.util
@@ -3761,6 +3854,8 @@ METACHARS = " \t\n;&|()<>"
 TOOLS = {"git", "glab", "gh"}
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh"}
 MAX_NESTING = 8
+# The words after which a command starts, as after an operator.
+COMMAND_KEYWORDS = {"then", "do", "else", "elif", "if", "while", "until", "{", "!", "time"}
 # The escapes of an ANSI-C $'...' string, as bash and zsh decode them.
 ANSI_C = {"a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "n": "\n", "r": "\r",
           "t": "\t", "v": "\v", "\\": "\\", "'": "'", '"': '"', "?": "?"}
@@ -3827,21 +3922,69 @@ def word_at(cmd, i):
     return cmd[i:j]
 
 
+def tail(out, n=40):
+    """The last n characters lex has emitted."""
+    text, k = "", len(out)
+    while k and len(text) < n:
+        k -= 1
+        text = out[k] + text
+    return text[-n:]
+
+
+def command_position(out):
+    """Does the next word start a command: after an operator, a newline or a ( - or a keyword
+    that a command follows (then, do, else, ...)?"""
+    t = tail(out).rstrip(" \t")
+    return not t or t[-1] in ";&|(\n" or t.split()[-1] in COMMAND_KEYWORDS
+
+
+def arithmetic(cmd, j):
+    """Is the (( that ends just before cmd[j] arithmetic - do its parentheses close as )) - or
+    a subshell's ( after a ( or a $(, as in $((cmd) | tr)? The shells decide it so too."""
+    depth, n, quoting = 2, len(cmd), None
+    while j < n:
+        c = cmd[j]
+        if c == "\\" and quoting != "'":
+            j += 2
+            continue
+        if quoting:
+            if c == quoting:
+                quoting = None
+        elif c in "'\"":
+            quoting = c
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 1:
+                return j + 1 < n and cmd[j + 1] == ")"
+        j += 1
+    return False
+
+
 def here_bodies(cmd, i, pending, expanding):
     """Read the bodies of the pending here-documents, in order, from cmd[i] - the line after
     their operators; returns the index past the last one read. A body ends at the line that is
-    exactly its unquoted delimiter (after leading tabs, for <<-), and an expanding one (its
+    exactly its unquoted delimiter (after leading tabs, for <<-); under an unquoted delimiter a
+    line continuation joins two lines first, as the shell joins them. An expanding body (its
     delimiter unquoted) is kept in expanding. A body whose delimiter line never comes is left
     in place, so no text is dropped on a guess."""
     n = len(cmd)
     for delimiter, quoted, strip in pending:
         j = i
         while True:
-            e = cmd.find("\n", j)
-            line = cmd[j:n if e < 0 else e]
+            start, line = j, ""
+            while True:
+                e = cmd.find("\n", j)
+                piece = cmd[j:n if e < 0 else e]
+                if not quoted and e >= 0 and (len(piece) - len(piece.rstrip("\\"))) % 2:
+                    line, j = line + piece[:-1], e + 1
+                    continue
+                line += piece
+                break
             if (line.lstrip("\t") if strip else line) == delimiter:
                 if not quoted:
-                    expanding.append(cmd[i:j])
+                    expanding.append(cmd[i:start])
                 i = n if e < 0 else e + 1
                 break
             if e < 0:
@@ -3852,22 +3995,30 @@ def here_bodies(cmd, i, pending, expanding):
 
 def lex(cmd, body=False):
     """Read cmd as the shell reads it before it runs anything. Returns (text, substitutions,
-    expanding): text is cmd with each line continuation (an unescaped backslash-newline),
-    comment and here-document body removed, and each $'...' string rewritten in single quotes;
-    substitutions are the bodies of the outermost $( ) and backtick substitutions, each to be
-    read in turn; expanding are the bodies of the here-documents whose delimiter is unquoted.
+    expanding). text is cmd with each line continuation (an unescaped backslash-newline),
+    comment and here-document body removed, each $'...' string rewritten in single quotes,
+    and the body of each substitution taken out ($( ) and `` stay, empty), so the text holds
+    no quoting nested inside one. substitutions are the bodies of the outermost $( ) and
+    backtick substitutions, each to be read in turn - a backtick body with its \\`, \\\\ and
+    \\$ undone. expanding are the bodies of the here-documents whose delimiter is unquoted.
     Quoting nests as the shell's does: a $( ) inside double quotes is shell text again, so the
-    here-document of "$(cat <<'EOF' ... EOF)" is found, while a << or a # inside quotes is
-    text. body=True reads an expanding here-document body: no quote is special in it, and a
-    backslash escapes only $, a backtick, a backslash or a newline."""
+    here-document of "$(cat <<'EOF' ... EOF)" is found, while a << or a # inside quotes or
+    arithmetic is text, and so is a # that a closing ) or ` joins to its word. body=True reads
+    an expanding here-document body: no quote is special in it, and a backslash escapes only
+    $, a backtick, a backslash or a newline."""
     out, subs, expanding, pending = [], [], [], []
     # Each frame: [kind, where its body starts in out, open parentheses, open case statements].
     stack = [["body" if body else "sh", 0, 0, 0]]
+    glued = -1                      # len(out) right after a substitution closed: no word break
 
     def close():
         frame = stack.pop()
         if not any(f[0] in ("$(", "`") for f in stack):
-            subs.append("".join(out[frame[1]:]))
+            text = "".join(out[frame[1]:])
+            if frame[0] == "`":
+                text = re.sub(r"\\([`\\$])", r"\1", text)
+            subs.append(text)
+            del out[frame[1]:]
 
     i, n = 0, len(cmd)
     while i < n:
@@ -3893,9 +4044,29 @@ def lex(cmd, body=False):
         if kind == "`":
             if c == "`":
                 close()
+                glued = len(out) + 1
             out.append(c)
             i += 1
             continue
+        if cmd.startswith("$((", i) and arithmetic(cmd, i + 3):
+            out.append("$((")
+            stack.append(["((", len(out), 2, 0])
+            i += 3
+            continue
+        if kind == "((":
+            if c == "(":
+                frame[2] += 1
+            elif c == ")":
+                frame[2] -= 1
+                if frame[2] == 0:
+                    stack.pop()
+                    glued = len(out) + 1
+            elif cmd.startswith("$(", i) or c in "'\"`":
+                kind = "sh"                     # open the substitution or quote below
+            if kind == "((":
+                out.append(c)
+                i += 1
+                continue
         if kind in ('"', "body"):
             if c == '"' and kind == '"':
                 stack.pop()
@@ -3913,7 +4084,8 @@ def lex(cmd, body=False):
             continue
         # Shell text: the command line itself, or the inside of a $( ).
         prev = out[-1][-1] if out else "\n"
-        if c == "#" and prev in METACHARS:
+        at_word = prev in METACHARS and len(out) != glued
+        if c == "#" and at_word:
             j = cmd.find("\n", i)
             i = n if j < 0 else j
             continue
@@ -3936,6 +4108,11 @@ def lex(cmd, body=False):
             stack.append(["$(", len(out), 1, 0])
             i += 2
             continue
+        if cmd.startswith("((", i) and at_word and arithmetic(cmd, i + 2):
+            out.append("((")
+            stack.append(["((", len(out), 2, 0])
+            i += 2
+            continue
         if kind == "$(":
             if c == "(":
                 frame[2] += 1
@@ -3944,9 +4121,10 @@ def lex(cmd, body=False):
                 if frame[2] == 0:
                     close()
                     out.append(c)
+                    glued = len(out)
                     i += 1
                     continue
-            elif c in "ce" and prev in METACHARS and word_at(cmd, i) in ("case", "esac"):
+            elif c in "ce" and at_word and command_position(out) and word_at(cmd, i) in ("case", "esac"):
                 frame[3] = max(0, frame[3] + (1 if word_at(cmd, i) == "case" else -1))
         m = HEREDOC_START.match(cmd, i) if c == "<" else None
         if m:
@@ -3964,6 +4142,7 @@ def lex(cmd, body=False):
     for frame in stack:
         if frame[0] in ("$(", "`"):
             subs.append("".join(out[frame[1]:]))
+            del out[frame[1]:]
             break
     return "".join(out), subs, expanding
 
@@ -4415,12 +4594,16 @@ CRUDE = re.compile(r"\b(glab|gh)\b[^\n]*\b(mr|pr|api)\b|\bgit\b[^\n]*\bmerge\b")
 
 def crude(text):
     """The last resort, for text the grammar cannot read: glab or gh with mr, pr or api, or git
-    with merge, with quotes and backslashes dropped (g''it is git), read both with every
-    backslash-newline joined (mer\\<newline>ge is merge) and without (an escaped backslash
-    does not continue its line)."""
+    with merge, with quotes and backslashes dropped (g''it is git). The text is read three
+    ways: with every backslash-newline joined (mer\\<newline>ge is merge), as written (an
+    escaped backslash does not continue its line), and as lex reads it ($'\\x67it' is git)."""
     def flat(t):
         return re.sub(r"[\\'\"]", "", t)
-    return bool(CRUDE.search(flat(text.replace("\\\n", ""))) or CRUDE.search(flat(text)))
+    try:
+        lexed = lex(text)[0]
+    except Exception:                                  # crude is the fallback; it never fails
+        lexed = ""
+    return any(CRUDE.search(flat(t)) for t in (text.replace("\\\n", ""), text, lexed))
 
 
 def on_alarm(signum, frame):
@@ -4509,10 +4692,11 @@ if __name__ == "__main__":
 #
 # This shell front is the fast path. The hook fires on EVERY Bash call, so a payload that
 # names none of create, new, merge, accept, pulls or graphql, or none of glab, gh or git,
-# costs no subprocess at all. It reads the payload with quotes, backslashes and line
-# continuations dropped, as the shell would join them: g''it, mer""ge and mer\<newline>ge
-# all name their verb. Everything else goes to xreview-guard.py beside this file, which owns
-# the grammar and the checks and fails closed on a gated shape.
+# costs no subprocess at all. It matches each word as the raw JSON payload can spell it, with
+# quotes, backslashes and line continuations allowed between its letters: g''it, mer""ge and
+# mer\<newline>ge all name their verb. A payload holding an ANSI-C $'...' string, which can
+# spell any word with escapes, always goes on. Everything else goes to xreview-guard.py
+# beside this file, which owns the grammar and the checks and fails closed on a gated shape.
 #
 # The bypass is XREVIEW_GUARD=off, for Michael's explicit use only: in this hook's
 # environment, or anywhere in the command (the only place a model can write it).
@@ -4526,17 +4710,24 @@ set -f
 payload=$(cat)
 [ -n "$payload" ] || exit 0
 
-# A line continuation is spelled \\\n in the JSON payload; then quotes and backslashes go.
-json_continuation='\\\n'
-flat=${payload//"$json_continuation"/}
-flat=${flat//[\'\"\\]/}
-case "$flat" in
-  *create*|*new*|*merge*|*accept*|*pulls*|*graphql*) ;;
-  *) exit 0 ;;
-esac
-case "$flat" in
-  *glab*|*gh*|*git*) ;;
-  *) exit 0 ;;
+# Between two letters of a word the JSON payload may hold a single quote, or an escaped double
+# quote, backslash or newline (\" \\ \n): g is that gap. One [[ =~ ]] per word keeps this
+# linear; a ${payload//...} substitution is quadratic in bash 5 and far worse in bash 3.2,
+# which leaves a large command without a decision inside the hook's time limit.
+g="('|\\\\[\"\\\\n])*"
+spells() {
+  local word re i
+  for word in "$@"; do
+    re=${word:0:1}
+    for (( i = 1; i < ${#word}; i++ )); do re="$re$g${word:i:1}"; done
+    [[ $payload =~ $re ]] && return 0
+  done
+  return 1
+}
+case "$payload" in
+  *"\$'"*) ;;
+  *) spells create new merge accept pulls graphql || exit 0
+     spells glab gh git || exit 0 ;;
 esac
 
 py=/usr/bin/python3
@@ -4558,10 +4749,9 @@ fi
 # Anything else is allowed.
 cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command // empty' 2>/dev/null) || cmd=$payload
 case "$cmd" in *XREVIEW_GUARD=off*) exit 0 ;; esac
-continuation=$'\\\n'
-joined=${cmd//"$continuation"/}
 crude='\b(glab|gh)\b.*\b(mr|pr|api)\b|\bgit\b.*\bmerge\b'
-if printf '%s\n%s' "${joined//[\'\"\\]/}" "${cmd//[\'\"\\]/}" | grep -Eq "$crude"; then
+if { printf '%s\n' "$cmd" | awk '{ if (sub(/\\$/, "")) printf "%s", $0; else print }'
+     printf '%s\n' "$cmd"; } | tr -d "'\"\\\\" | grep -Eq "$crude"; then
   reason="Pre-merge gate: the gate's check could not run ($helper exited $rc), so this command, which may propose or merge a change, is refused. Restore the helper (chezmoi apply)."
   printf '%s' "$reason" | jq -Rs \
     '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:.}}' 2>/dev/null \
@@ -4617,7 +4807,7 @@ with:
 ```
 
 - [ ] **Step 7: Run them and confirm they pass.**
-  - `./tests/xreview-guard.test.sh`: expect `passed: 139  failed: 0`.
+  - `./tests/xreview-guard.test.sh`: expect `passed: 155  failed: 0`.
   - `./tests/xreview-skill.test.sh`: expect `passed: 76  failed: 0`.
   - `./tests/claude-settings.test.sh 2>&1 | tail -1`: expect `RESULT: 179 passed, 0 failed`.
 
@@ -4844,7 +5034,7 @@ is "K47 a project id is looked up on origin's host" \
 ```
 
 - [ ] **Step 2: Run it and confirm it fails.** `./tests/xreview-guard.test.sh`: expect
-  `passed: 179  failed: 41`. Every allow case in H-K fails, and so do the deny reasons naming a
+  `passed: 195  failed: 41`. Every allow case in H-K fails, and so do the deny reasons naming a
   flag, a fetch, a project or a host, because each creation is still denied with
   `NOT_MODELLED`.
 
@@ -5350,7 +5540,7 @@ def judge(shape, ledger):
 ```
 
 - [ ] **Step 6: Run it and confirm it passes.** `./tests/xreview-guard.test.sh`: expect
-  `passed: 220  failed: 0`.
+  `passed: 236  failed: 0`.
 
 - [ ] **Step 7: Commit.** Check the branch, then:
 
@@ -5593,7 +5783,7 @@ is "P39 and GITLAB_API_HOST on another host" "$(GITLAB_API_HOST=api.other.exampl
 ```
 
 - [ ] **Step 2: Run it and confirm it fails.** `./tests/xreview-guard.test.sh`: expect
-  `passed: 273  failed: 25`. The failures are L1-L9, M2, M6, N2, N5, N7, N9, P2, P4, P6, P11,
+  `passed: 289  failed: 25`. The failures are L1-L9, M2, M6, N2, N5, N7, N9, P2, P4, P6, P11,
   P19, P20, P22, P24, P31 and P33: merges are still denied with `NOT_MODELLED`, or as unresolved API
   writes.
 
@@ -5848,7 +6038,7 @@ def judge(shape, ledger):
 ```
 
 - [ ] **Step 5: Run it and confirm it passes.** `./tests/xreview-guard.test.sh`: expect
-  `passed: 298  failed: 0`. Then `grep -c NOT_MODELLED dot_claude/xreview-guard.py` must print
+  `passed: 314  failed: 0`. Then `grep -c NOT_MODELLED dot_claude/xreview-guard.py` must print
   `0`.
 
 - [ ] **Step 6: Commit.** Check the branch, then:
@@ -6159,9 +6349,9 @@ owns it.
   - Expected:
     - every suite `ok`;
     - `29 suites run, 8 skipped (see the needs: lines)`;
-    - `all 29 suites passed (3376 assertions)`.
+    - `all 29 suites passed (3392 assertions)`.
   - The eight skipped suites carry a `# test-requires:` line.
-  - Report the total as passed/total, `3376/3376`, copied from the runner's last line.
+  - Report the total as passed/total, `3392/3392`, copied from the runner's last line.
 
 - [ ] **Step 2: Confirm the deployed set.** Run
   `chezmoi managed --include=files | grep -c -E '^\.claude/xreview-(guard|ledger)\.py$'` and
