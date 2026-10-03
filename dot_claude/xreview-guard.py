@@ -175,11 +175,18 @@ def tail(out, n=40):
     return text[-n:]
 
 
-def command_position(out):
-    """Does the next word start a command: after an operator, a newline or a ( - or a keyword
-    that a command follows (then, do, else, ...)?"""
+def command_position(out, in_case=False):
+    """Does the next word start a command: after an operator, a newline or a (, after the ) that
+    ends a pattern of an open case statement (in_case), or after a keyword that a command
+    follows (then, do, else, {, !, time, time -p, ...) - however it touches a ( before it,
+    as in $({ or $(time?"""
     t = tail(out).rstrip(" \t")
-    return not t or t[-1] in ";&|(\n" or t.split()[-1] in COMMAND_KEYWORDS
+    if not t or t[-1] in ";&|(\n" or (in_case and t[-1] == ")"):
+        return True
+    words = [w for w in re.split(r"[ \t\n()]+", t) if w]
+    if len(words) > 1 and words[-2:] == ["time", "-p"]:
+        words.pop()
+    return bool(words) and words[-1] in COMMAND_KEYWORDS
 
 
 def arithmetic(cmd, j):
@@ -241,10 +248,11 @@ def lex(cmd, body=False):
     """Read cmd as the shell reads it before it runs anything. Returns (text, substitutions,
     expanding). text is cmd with each line continuation (an unescaped backslash-newline),
     comment and here-document body removed, each $'...' string rewritten in single quotes,
-    and the body of each substitution taken out ($( ) and `` stay, empty), so the text holds
-    no quoting nested inside one. substitutions are the bodies of the outermost $( ) and
-    backtick substitutions, each to be read in turn - a backtick body with its \\`, \\\\ and
-    \\$ undone. expanding are the bodies of the here-documents whose delimiter is unquoted.
+    and the body of each substitution taken out ($( ), <( ), >( ) and `` stay, empty), so the
+    text holds no quoting nested inside one. substitutions are the bodies of the outermost
+    command and process substitutions, each to be read in turn - a backtick body with its \\`,
+    \\\\ and \\$ undone. expanding are the bodies of the here-documents whose delimiter is
+    unquoted.
     Quoting nests as the shell's does: a $( ) inside double quotes is shell text again, so the
     here-document of "$(cat <<'EOF' ... EOF)" is found, while a << or a # inside quotes or
     arithmetic is text, and so is a # that a closing ) or ` joins to its word. body=True reads
@@ -347,8 +355,10 @@ def lex(cmd, body=False):
             out.append(c)
             i += 1
             continue
-        if cmd.startswith("$(", i):
-            out.append("$(")
+        if cmd.startswith("$(", i) or (c in "<>" and cmd.startswith("(", i + 1)):
+            # A command substitution, or a process substitution <( ) or >( ): both run their
+            # body, and both glue their closing ) to the word that follows.
+            out.append(cmd[i:i + 2])
             stack.append(["$(", len(out), 1, 0])
             i += 2
             continue
@@ -368,7 +378,8 @@ def lex(cmd, body=False):
                     glued = len(out)
                     i += 1
                     continue
-            elif c in "ce" and at_word and command_position(out) and word_at(cmd, i) in ("case", "esac"):
+            elif (c in "ce" and at_word and word_at(cmd, i) in ("case", "esac")
+                  and command_position(out, frame[3] > 0)):
                 frame[3] = max(0, frame[3] + (1 if word_at(cmd, i) == "case" else -1))
         m = HEREDOC_START.match(cmd, i) if c == "<" else None
         if m:

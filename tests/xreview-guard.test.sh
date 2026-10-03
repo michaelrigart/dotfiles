@@ -311,6 +311,15 @@ git merge feature
 EOF')" deny
 is "B71 quotes inside a substitution never pair with the quotes around it" \
    "$(decision "$W" "echo \"\$(printf '\"')\" ; git merge feature ; echo \"\$(printf '\"')\"")" deny
+# case counts at every command start, so its patterns' ) never end the substitution early.
+is "B72 a case that starts a case pattern's command" \
+   "$(decision "$W" 'echo "$(case c in a) case b in b) :;; esac;; c) git merge feature;; esac)"')" deny
+is "B73 a case after time -p" "$(decision "$W" 'echo "$(time -p case x in x) git merge feature;; esac)"')" deny
+is "B74 a case right after \$(! and \$({" \
+   "$(decision "$W" 'echo "$(! case x in x) git merge feature;; esac)"') $(decision "$W" 'echo "$({ case x in x) git merge feature;; esac; })"')" \
+   "deny deny"
+is "B75 a # glued to a process substitution's ) is part of the word, not a comment" \
+   "$(decision "$W" 'cat <(echo a)#b; git merge feature')" deny
 
 echo "C. git merge into the default branch"
 is "C1 an unreviewed merge into main is denied" "$(decision "$W" 'git merge feature')" deny
