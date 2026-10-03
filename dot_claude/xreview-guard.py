@@ -244,7 +244,7 @@ def here_bodies(cmd, i, pending, expanding):
     return i
 
 
-def lex(cmd, body=False):
+def lex(cmd, body=False, everywhere=False):
     """Read cmd as the shell reads it before it runs anything. Returns (text, substitutions,
     expanding). text is cmd with each line continuation (an unescaped backslash-newline),
     comment and here-document body removed, each $'...' string rewritten in single quotes,
@@ -257,7 +257,10 @@ def lex(cmd, body=False):
     here-document of "$(cat <<'EOF' ... EOF)" is found, while a << or a # inside quotes or
     arithmetic is text, and so is a # that a closing ) or ` joins to its word. body=True reads
     an expanding here-document body: no quote is special in it, and a backslash escapes only
-    $, a backtick, a backslash or a newline."""
+    $, a backtick, a backslash or a newline. A case statement's pattern ) does not end a
+    substitution: case counts where a command starts, or, with everywhere=True, wherever the
+    word stands. Counting it too often can only end a substitution late, never early, so the
+    second reading's bodies hold everything the substitutions run (scan reads both)."""
     out, subs, expanding, pending = [], [], [], []
     # Each frame: [kind, where its body starts in out, open parentheses, open case statements].
     stack = [["body" if body else "sh", 0, 0, 0]]
@@ -379,7 +382,7 @@ def lex(cmd, body=False):
                     i += 1
                     continue
             elif (c in "ce" and at_word and word_at(cmd, i) in ("case", "esac")
-                  and command_position(out, frame[3] > 0)):
+                  and (everywhere or command_position(out, frame[3] > 0))):
                 frame[3] = max(0, frame[3] + (1 if word_at(cmd, i) == "case" else -1))
         m = HEREDOC_START.match(cmd, i) if c == "<" else None
         if m:
@@ -521,11 +524,16 @@ def scan(cmd, depth=0):
     """(tokens, hidden): cmd's words and operators, and whether a command that cmd runs some
     other way holds a gated verb, at any depth - a $( ) or backtick substitution (outside
     single quotes, or in an expanding here-document), a shell's -c string, env -S's string.
-    Nesting deeper than MAX_NESTING counts as hidden. Raises ValueError when cmd has unbalanced
-    quotes."""
+    The substitutions are read twice: as the command-start reading of case finds them, and as
+    the reading that counts case everywhere finds them, so no command start the first one
+    misses can end a substitution early and hide the rest of it. The tokens come from the
+    first. Nesting deeper than MAX_NESTING counts as hidden. Raises ValueError when cmd has
+    unbalanced quotes."""
     text, nested, expanding = lex(cmd)
+    nested.extend(b for b in lex(cmd, everywhere=True)[1] if b not in nested)
     for body in expanding:
-        nested.extend(lex(body, body=True)[1])
+        for flag in (False, True):
+            nested.extend(b for b in lex(body, body=True, everywhere=flag)[1] if b not in nested)
     tokens = tokenize(text)
     nested.extend(shell_strings(tokens))
     for inner in nested:

@@ -320,6 +320,18 @@ is "B74 a case right after \$(! and \$({" \
    "deny deny"
 is "B75 a # glued to a process substitution's ) is part of the word, not a comment" \
    "$(decision "$W" 'cat <(echo a)#b; git merge feature')" deny
+# Substitution bodies are read a second time, counting case wherever the word stands, so a
+# command start the first reading misses cannot end a substitution early.
+is "B76 a case that is a function's body" "$(decision "$W" 'echo "$(f() case x in x) git merge feature;; esac; f)"')" deny
+is "B77 a case after coproc" "$(decision "$W" 'echo "$(coproc case x in x) git merge feature;; esac; wait)"')" deny
+is "B78 a case after zsh's repeat 1" "$(decision "$W" 'echo "$(repeat 1 case x in x) git merge feature;; esac)"')" deny
+is "B79 a case after zsh's short for" "$(decision "$W" 'echo "$(for x (a) case $x in a) git merge feature;; esac)"')" deny
+is "B80 and after then {, a (pattern), a nested group and select do" \
+   "$(decision "$W" 'echo "$(if true; then { case x in x) git merge feature;; esac; }; fi)"') $(decision "$W" 'echo "$(case x in (x) git merge feature;; esac)"') $(decision "$W" 'echo "$(case c in c) { case d in d) git merge feature;; esac; };; esac)"') $(decision "$W" 'echo "$(select v in a; do case $v in *) git merge feature;; esac; break; done <<< 1)"')" \
+   "deny deny deny deny"
+is "B81 the second reading covers an expanding here-document's substitutions too" "$(decision "$W" 'cat <<EOF
+$(f() case x in x) git merge feature;; esac; f)
+EOF')" deny
 
 echo "C. git merge into the default branch"
 is "C1 an unreviewed merge into main is denied" "$(decision "$W" 'git merge feature')" deny
