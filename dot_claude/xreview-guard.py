@@ -31,8 +31,8 @@
 # The grammar is bash's and zsh's: the Bash tool runs its commands under zsh here, and scripts
 # run under bash. Threat model: the commands an agent plausibly writes. Out of scope, as spec
 # section 7 says: an alias (git -c alias.m=merge m included), eval, a script file or a script
-# fed to a shell on stdin, and a verb assembled from variables; the auto-mode classifier
-# covers those.
+# fed to a shell on stdin, a verb assembled from variables, and any other deliberately
+# obfuscated spelling; the auto-mode classifier covers those.
 #
 # Written for /usr/bin/python3 (3.9): no match statements, no X | Y type unions.
 import importlib.util
@@ -98,6 +98,8 @@ METACHARS = " \t\n;&|()<>"
 TOOLS = {"git", "glab", "gh"}
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh"}
 MAX_NESTING = 8
+# The words after which a command starts, as after an operator.
+COMMAND_KEYWORDS = {"then", "do", "else", "elif", "if", "while", "until", "{", "!", "time"}
 # The escapes of an ANSI-C $'...' string, as bash and zsh decode them.
 ANSI_C = {"a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "n": "\n", "r": "\r",
           "t": "\t", "v": "\v", "\\": "\\", "'": "'", '"': '"', "?": "?"}
@@ -164,21 +166,69 @@ def word_at(cmd, i):
     return cmd[i:j]
 
 
+def tail(out, n=40):
+    """The last n characters lex has emitted."""
+    text, k = "", len(out)
+    while k and len(text) < n:
+        k -= 1
+        text = out[k] + text
+    return text[-n:]
+
+
+def command_position(out):
+    """Does the next word start a command: after an operator, a newline or a ( - or a keyword
+    that a command follows (then, do, else, ...)?"""
+    t = tail(out).rstrip(" \t")
+    return not t or t[-1] in ";&|(\n" or t.split()[-1] in COMMAND_KEYWORDS
+
+
+def arithmetic(cmd, j):
+    """Is the (( that ends just before cmd[j] arithmetic - do its parentheses close as )) - or
+    a subshell's ( after a ( or a $(, as in $((cmd) | tr)? The shells decide it so too."""
+    depth, n, quoting = 2, len(cmd), None
+    while j < n:
+        c = cmd[j]
+        if c == "\\" and quoting != "'":
+            j += 2
+            continue
+        if quoting:
+            if c == quoting:
+                quoting = None
+        elif c in "'\"":
+            quoting = c
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 1:
+                return j + 1 < n and cmd[j + 1] == ")"
+        j += 1
+    return False
+
+
 def here_bodies(cmd, i, pending, expanding):
     """Read the bodies of the pending here-documents, in order, from cmd[i] - the line after
     their operators; returns the index past the last one read. A body ends at the line that is
-    exactly its unquoted delimiter (after leading tabs, for <<-), and an expanding one (its
+    exactly its unquoted delimiter (after leading tabs, for <<-); under an unquoted delimiter a
+    line continuation joins two lines first, as the shell joins them. An expanding body (its
     delimiter unquoted) is kept in expanding. A body whose delimiter line never comes is left
     in place, so no text is dropped on a guess."""
     n = len(cmd)
     for delimiter, quoted, strip in pending:
         j = i
         while True:
-            e = cmd.find("\n", j)
-            line = cmd[j:n if e < 0 else e]
+            start, line = j, ""
+            while True:
+                e = cmd.find("\n", j)
+                piece = cmd[j:n if e < 0 else e]
+                if not quoted and e >= 0 and (len(piece) - len(piece.rstrip("\\"))) % 2:
+                    line, j = line + piece[:-1], e + 1
+                    continue
+                line += piece
+                break
             if (line.lstrip("\t") if strip else line) == delimiter:
                 if not quoted:
-                    expanding.append(cmd[i:j])
+                    expanding.append(cmd[i:start])
                 i = n if e < 0 else e + 1
                 break
             if e < 0:
@@ -189,22 +239,30 @@ def here_bodies(cmd, i, pending, expanding):
 
 def lex(cmd, body=False):
     """Read cmd as the shell reads it before it runs anything. Returns (text, substitutions,
-    expanding): text is cmd with each line continuation (an unescaped backslash-newline),
-    comment and here-document body removed, and each $'...' string rewritten in single quotes;
-    substitutions are the bodies of the outermost $( ) and backtick substitutions, each to be
-    read in turn; expanding are the bodies of the here-documents whose delimiter is unquoted.
+    expanding). text is cmd with each line continuation (an unescaped backslash-newline),
+    comment and here-document body removed, each $'...' string rewritten in single quotes,
+    and the body of each substitution taken out ($( ) and `` stay, empty), so the text holds
+    no quoting nested inside one. substitutions are the bodies of the outermost $( ) and
+    backtick substitutions, each to be read in turn - a backtick body with its \\`, \\\\ and
+    \\$ undone. expanding are the bodies of the here-documents whose delimiter is unquoted.
     Quoting nests as the shell's does: a $( ) inside double quotes is shell text again, so the
-    here-document of "$(cat <<'EOF' ... EOF)" is found, while a << or a # inside quotes is
-    text. body=True reads an expanding here-document body: no quote is special in it, and a
-    backslash escapes only $, a backtick, a backslash or a newline."""
+    here-document of "$(cat <<'EOF' ... EOF)" is found, while a << or a # inside quotes or
+    arithmetic is text, and so is a # that a closing ) or ` joins to its word. body=True reads
+    an expanding here-document body: no quote is special in it, and a backslash escapes only
+    $, a backtick, a backslash or a newline."""
     out, subs, expanding, pending = [], [], [], []
     # Each frame: [kind, where its body starts in out, open parentheses, open case statements].
     stack = [["body" if body else "sh", 0, 0, 0]]
+    glued = -1                      # len(out) right after a substitution closed: no word break
 
     def close():
         frame = stack.pop()
         if not any(f[0] in ("$(", "`") for f in stack):
-            subs.append("".join(out[frame[1]:]))
+            text = "".join(out[frame[1]:])
+            if frame[0] == "`":
+                text = re.sub(r"\\([`\\$])", r"\1", text)
+            subs.append(text)
+            del out[frame[1]:]
 
     i, n = 0, len(cmd)
     while i < n:
@@ -230,9 +288,29 @@ def lex(cmd, body=False):
         if kind == "`":
             if c == "`":
                 close()
+                glued = len(out) + 1
             out.append(c)
             i += 1
             continue
+        if cmd.startswith("$((", i) and arithmetic(cmd, i + 3):
+            out.append("$((")
+            stack.append(["((", len(out), 2, 0])
+            i += 3
+            continue
+        if kind == "((":
+            if c == "(":
+                frame[2] += 1
+            elif c == ")":
+                frame[2] -= 1
+                if frame[2] == 0:
+                    stack.pop()
+                    glued = len(out) + 1
+            elif cmd.startswith("$(", i) or c in "'\"`":
+                kind = "sh"                     # open the substitution or quote below
+            if kind == "((":
+                out.append(c)
+                i += 1
+                continue
         if kind in ('"', "body"):
             if c == '"' and kind == '"':
                 stack.pop()
@@ -250,7 +328,8 @@ def lex(cmd, body=False):
             continue
         # Shell text: the command line itself, or the inside of a $( ).
         prev = out[-1][-1] if out else "\n"
-        if c == "#" and prev in METACHARS:
+        at_word = prev in METACHARS and len(out) != glued
+        if c == "#" and at_word:
             j = cmd.find("\n", i)
             i = n if j < 0 else j
             continue
@@ -273,6 +352,11 @@ def lex(cmd, body=False):
             stack.append(["$(", len(out), 1, 0])
             i += 2
             continue
+        if cmd.startswith("((", i) and at_word and arithmetic(cmd, i + 2):
+            out.append("((")
+            stack.append(["((", len(out), 2, 0])
+            i += 2
+            continue
         if kind == "$(":
             if c == "(":
                 frame[2] += 1
@@ -281,9 +365,10 @@ def lex(cmd, body=False):
                 if frame[2] == 0:
                     close()
                     out.append(c)
+                    glued = len(out)
                     i += 1
                     continue
-            elif c in "ce" and prev in METACHARS and word_at(cmd, i) in ("case", "esac"):
+            elif c in "ce" and at_word and command_position(out) and word_at(cmd, i) in ("case", "esac"):
                 frame[3] = max(0, frame[3] + (1 if word_at(cmd, i) == "case" else -1))
         m = HEREDOC_START.match(cmd, i) if c == "<" else None
         if m:
@@ -301,6 +386,7 @@ def lex(cmd, body=False):
     for frame in stack:
         if frame[0] in ("$(", "`"):
             subs.append("".join(out[frame[1]:]))
+            del out[frame[1]:]
             break
     return "".join(out), subs, expanding
 
@@ -752,12 +838,16 @@ CRUDE = re.compile(r"\b(glab|gh)\b[^\n]*\b(mr|pr|api)\b|\bgit\b[^\n]*\bmerge\b")
 
 def crude(text):
     """The last resort, for text the grammar cannot read: glab or gh with mr, pr or api, or git
-    with merge, with quotes and backslashes dropped (g''it is git), read both with every
-    backslash-newline joined (mer\\<newline>ge is merge) and without (an escaped backslash
-    does not continue its line)."""
+    with merge, with quotes and backslashes dropped (g''it is git). The text is read three
+    ways: with every backslash-newline joined (mer\\<newline>ge is merge), as written (an
+    escaped backslash does not continue its line), and as lex reads it ($'\\x67it' is git)."""
     def flat(t):
         return re.sub(r"[\\'\"]", "", t)
-    return bool(CRUDE.search(flat(text.replace("\\\n", ""))) or CRUDE.search(flat(text)))
+    try:
+        lexed = lex(text)[0]
+    except Exception:                                  # crude is the fallback; it never fails
+        lexed = ""
+    return any(CRUDE.search(flat(t)) for t in (text.replace("\\\n", ""), text, lexed))
 
 
 def on_alarm(signum, frame):

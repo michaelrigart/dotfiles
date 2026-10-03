@@ -150,6 +150,21 @@ is "A23 quoted mentions: single-quoted backticks, an echo to a file, a chained c
    "allow allow allow"
 is "A24 git merge-base in a chain" "$(decision "$W" 'git merge-base --is-ancestor feature main && echo yes')" allow
 is "A25 an ANSI-C string is one quoted word" "$(decision "$W" "printf \$${SQ}%s\\n${SQ} \$${SQ}git merge feature${SQ}")" allow
+is "A26 the commit-message idiom with an apostrophe and a case) in its body" \
+   "$(decision "$W" "git commit -m \"\$(cat <<'EOF'
+Merge notes: run git merge feature, then gh pr create.
+It's the edge case) fix.
+EOF
+)\"")" allow
+is "A27 arithmetic is data" "$(decision "$W" 'echo $((1 << 2)) $(( (1 + 2) * 3 ))')" allow
+is "A28 case as a plain word inside a substitution ends nothing" \
+   "$(decision "$W" 'git commit -m "$(echo merge the edge case)"')" allow
+is "A29 quotes nested in a substitution inside double quotes" \
+   "$(decision "$W" "gh pr edit 12 --title \"\$(jq -r '.title + \" (rev)\"' meta.json)\"")" allow
+is "A30 \$((cmd) | ...) is a substitution: a quoted here-document in it is data" "$(decision "$W" "echo \$((cat <<'EOF'
+git merge feature
+EOF
+) | tr a-z A-Z)")" allow
 
 echo "B. a gated verb must be a plain command"
 is "B1 a chain that switches branch first" "$(decision "$W" 'git switch main && git merge feature')" deny
@@ -270,6 +285,32 @@ merge feature")" deny
 is "B61 git --attr-source takes a value" "$(decision "$W" 'git --attr-source HEAD merge feature')" deny
 is "B62 a case pattern's ) does not end a substitution" \
    "$(decision "$W" 'echo "$(case x in x) git merge feature;; esac)"')" deny
+is "B63 a # glued to a substitution's ) is part of the word, not a comment" \
+   "$(decision "$W" 'echo $(echo a)#b; git merge feature')" deny
+is "B64 a backtick body's escaped backticks nest a substitution" \
+   "$(decision "$W" 'echo `echo \`git merge feature\``')" deny
+is "B65 a continuation can form an unquoted here-document's delimiter" "$(decision "$W" 'cat <<EOF
+x
+EO\
+F
+git merge feature
+EOF')" deny
+is "B66 << inside arithmetic is a shift, not a here-document" "$(decision "$W" 'echo $((1<<2))
+git merge feature
+2') $(decision "$W" 'echo "$((1<<2))"
+git merge feature
+2')" "deny deny"
+is "B67 \$((cmd) | ...) is a substitution holding a subshell, not arithmetic" \
+   "$(decision "$W" 'echo $((echo a) | git merge feature)')" deny
+is "B68 an ANSI-C string can spell the command word" "$(decision "$W" "\$${SQ}\\x67it${SQ} merge feature")" deny
+is "B69 and is read even where the rest cannot be parsed" \
+   "$(decision "$W" "\$${SQ}\\x67it${SQ} merge feature; echo \"unterminated")" deny
+is "B70 case only counts as a keyword where a command starts" "$(decision "$W" 'echo "$(echo case) <<EOF "
+#"
+git merge feature
+EOF')" deny
+is "B71 quotes inside a substitution never pair with the quotes around it" \
+   "$(decision "$W" "echo \"\$(printf '\"')\" ; git merge feature ; echo \"\$(printf '\"')\"")" deny
 
 echo "C. git merge into the default branch"
 is "C1 an unreviewed merge into main is denied" "$(decision "$W" 'git merge feature')" deny
@@ -383,6 +424,38 @@ merge feature') $(fallback 'echo `git merge`') $(fallback 'echo x\\
 git merge feature')" "deny deny deny"
 is "F10 and a word split by quotes" "$(fallback "g''it mer''ge feature")" deny
 is "F11 while a mention of merges stays allowed" "$(fallback 'git log --merges')" allow
+# The hook gives up at its time limit and then lets the command through, so the front must be
+# linear in the payload's size under the oldest bash a client may run, macOS's /bin/bash 3.2.
+# timed <payload-file>: the front's decision under /bin/bash and its wall time in ms; a run past
+# 30 s is cut off and reads "timeout".
+timed() {
+  /usr/bin/python3 - "$GUARD" "$1" <<'PY'
+import json, subprocess, sys, time
+start = time.time()
+try:
+    with open(sys.argv[2], "rb") as fh:
+        out = subprocess.run(["/bin/bash", sys.argv[1]], stdin=fh, capture_output=True,
+                             timeout=30).stdout
+    verdict = json.loads(out)["hookSpecificOutput"]["permissionDecision"] if out.strip() else "allow"
+except subprocess.TimeoutExpired:
+    verdict = "timeout"
+print(verdict, int((time.time() - start) * 1000))
+PY
+}
+big="$(/usr/bin/python3 -c "import sys; sys.stdout.write(('lorem ipsum dolor sit amet \"quoted\" it\\'s a \\\\ path\\n') * 340)")"
+payload "$W" "cat > out.txt <<'X'
+$big
+X
+git merge feature" > "$ROOT/big-gated.json"
+payload "$W" "cat > out.txt <<'X'
+$big
+X" > "$ROOT/big-plain.json"
+read -r verdict ms < <(timed "$ROOT/big-gated.json")
+is "F12 a 15 KB payload ending in a gated verb is denied within seconds under /bin/bash" \
+   "$verdict $([ "$ms" -lt 5000 ] && echo fast || echo "slow:${ms}ms")" "deny fast"
+read -r verdict ms < <(timed "$ROOT/big-plain.json")
+is "F13 and one with no gated verb is allowed at once" \
+   "$verdict $([ "$ms" -lt 2000 ] && echo fast || echo "slow:${ms}ms")" "allow fast"
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))

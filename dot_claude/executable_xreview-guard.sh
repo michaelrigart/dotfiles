@@ -16,10 +16,11 @@
 #
 # This shell front is the fast path. The hook fires on EVERY Bash call, so a payload that
 # names none of create, new, merge, accept, pulls or graphql, or none of glab, gh or git,
-# costs no subprocess at all. It reads the payload with quotes, backslashes and line
-# continuations dropped, as the shell would join them: g''it, mer""ge and mer\<newline>ge
-# all name their verb. Everything else goes to xreview-guard.py beside this file, which owns
-# the grammar and the checks and fails closed on a gated shape.
+# costs no subprocess at all. It matches each word as the raw JSON payload can spell it, with
+# quotes, backslashes and line continuations allowed between its letters: g''it, mer""ge and
+# mer\<newline>ge all name their verb. A payload holding an ANSI-C $'...' string, which can
+# spell any word with escapes, always goes on. Everything else goes to xreview-guard.py
+# beside this file, which owns the grammar and the checks and fails closed on a gated shape.
 #
 # The bypass is XREVIEW_GUARD=off, for Michael's explicit use only: in this hook's
 # environment, or anywhere in the command (the only place a model can write it).
@@ -33,17 +34,24 @@ set -f
 payload=$(cat)
 [ -n "$payload" ] || exit 0
 
-# A line continuation is spelled \\\n in the JSON payload; then quotes and backslashes go.
-json_continuation='\\\n'
-flat=${payload//"$json_continuation"/}
-flat=${flat//[\'\"\\]/}
-case "$flat" in
-  *create*|*new*|*merge*|*accept*|*pulls*|*graphql*) ;;
-  *) exit 0 ;;
-esac
-case "$flat" in
-  *glab*|*gh*|*git*) ;;
-  *) exit 0 ;;
+# Between two letters of a word the JSON payload may hold a single quote, or an escaped double
+# quote, backslash or newline (\" \\ \n): g is that gap. One [[ =~ ]] per word keeps this
+# linear; a ${payload//...} substitution is quadratic in bash 5 and far worse in bash 3.2,
+# which leaves a large command without a decision inside the hook's time limit.
+g="('|\\\\[\"\\\\n])*"
+spells() {
+  local word re i
+  for word in "$@"; do
+    re=${word:0:1}
+    for (( i = 1; i < ${#word}; i++ )); do re="$re$g${word:i:1}"; done
+    [[ $payload =~ $re ]] && return 0
+  done
+  return 1
+}
+case "$payload" in
+  *"\$'"*) ;;
+  *) spells create new merge accept pulls graphql || exit 0
+     spells glab gh git || exit 0 ;;
 esac
 
 py=/usr/bin/python3
@@ -65,10 +73,9 @@ fi
 # Anything else is allowed.
 cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command // empty' 2>/dev/null) || cmd=$payload
 case "$cmd" in *XREVIEW_GUARD=off*) exit 0 ;; esac
-continuation=$'\\\n'
-joined=${cmd//"$continuation"/}
 crude='\b(glab|gh)\b.*\b(mr|pr|api)\b|\bgit\b.*\bmerge\b'
-if printf '%s\n%s' "${joined//[\'\"\\]/}" "${cmd//[\'\"\\]/}" | grep -Eq "$crude"; then
+if { printf '%s\n' "$cmd" | awk '{ if (sub(/\\$/, "")) printf "%s", $0; else print }'
+     printf '%s\n' "$cmd"; } | tr -d "'\"\\\\" | grep -Eq "$crude"; then
   reason="Pre-merge gate: the gate's check could not run ($helper exited $rc), so this command, which may propose or merge a change, is refused. Restore the helper (chezmoi apply)."
   printf '%s' "$reason" | jq -Rs \
     '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:.}}' 2>/dev/null \
