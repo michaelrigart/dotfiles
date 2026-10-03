@@ -165,6 +165,8 @@ is "A30 \$((cmd) | ...) is a substitution: a quoted here-document in it is data"
 git merge feature
 EOF
 ) | tr a-z A-Z)")" allow
+is "A31 a ) inside a parameter expansion is text" \
+   "$(decision "$W" 'echo "$(echo ${x%)})"') $(decision "$W" 'git log --format="${fmt:-%h (%s)}"')" "allow allow"
 
 echo "B. a gated verb must be a plain command"
 is "B1 a chain that switches branch first" "$(decision "$W" 'git switch main && git merge feature')" deny
@@ -331,6 +333,22 @@ is "B80 and after then {, a (pattern), a nested group and select do" \
    "deny deny deny deny"
 is "B81 the second reading covers an expanding here-document's substitutions too" "$(decision "$W" 'cat <<EOF
 $(f() case x in x) git merge feature;; esac; f)
+EOF')" deny
+# esac lowers the count only where a command starts: an esac argument ends no case.
+is "B82 esac as an argument, after a missed case start" \
+   "$(decision "$W" 'echo "$(f() case y in x) echo esac;; y) git merge feature;; esac; f)"')" deny
+is "B83 the same inside an expanding here-document" "$(decision "$W" 'cat <<EOF
+$(f() case y in x) echo esac;; y) git merge feature;; esac; f)
+EOF')" deny
+is "B84 and after coproc, or at a counted case start" \
+   "$(decision "$W" 'echo "$(coproc case y in x) echo esac;; y) git merge feature;; esac; wait)"') $(decision "$W" 'echo "$(case y in x) echo esac;; y) git merge feature;; esac)"')" \
+   "deny deny"
+# Inside ${...} a ( or ) is text: it never ends the substitution around it.
+is "B85 a ) in \${x//)/} or \${x:-)}" \
+   "$(decision "$W" 'echo "$(echo ${x//)/}; git merge feature)"') $(decision "$W" 'echo "$(echo ${x:-)}; git merge feature)"')" \
+   "deny deny"
+is "B86 the same in an expanding here-document's substitution" "$(decision "$W" 'cat <<EOF
+$(echo ${x//)/}; git merge feature)
 EOF')" deny
 
 echo "C. git merge into the default branch"

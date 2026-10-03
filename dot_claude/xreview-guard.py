@@ -259,10 +259,14 @@ def lex(cmd, body=False, everywhere=False):
     an expanding here-document body: no quote is special in it, and a backslash escapes only
     $, a backtick, a backslash or a newline. A case statement's pattern ) does not end a
     substitution: case counts where a command starts, or, with everywhere=True, wherever the
-    word stands. Counting it too often can only end a substitution late, never early, so the
-    second reading's bodies hold everything the substitutions run (scan reads both)."""
+    word stands, and esac counts only where a command starts. Counting case too often, or
+    missing an esac, can only end a substitution late, never early, so the second reading's
+    bodies hold everything the substitutions run (scan reads both). Inside a ${...} parameter
+    expansion a ( or ) is text and case is a word ($(echo ${x//)/}) runs one command); an
+    unmatched ${ keeps the substitution open."""
     out, subs, expanding, pending = [], [], [], []
-    # Each frame: [kind, where its body starts in out, open parentheses, open case statements].
+    # Each frame: [kind, where its body starts in out, open parentheses, open case statements,
+    # and for a $( frame open ${ parameter expansions].
     stack = [["body" if body else "sh", 0, 0, 0]]
     glued = -1                      # len(out) right after a substitution closed: no word break
 
@@ -329,7 +333,7 @@ def lex(cmd, body=False, everywhere=False):
                 i += 1
             elif cmd.startswith("$(", i):
                 out.append("$(")
-                stack.append(["$(", len(out), 1, 0])
+                stack.append(["$(", len(out), 1, 0, 0])
                 i += 2
             else:
                 if c == "`":
@@ -362,7 +366,7 @@ def lex(cmd, body=False, everywhere=False):
             # A command substitution, or a process substitution <( ) or >( ): both run their
             # body, and both glue their closing ) to the word that follows.
             out.append(cmd[i:i + 2])
-            stack.append(["$(", len(out), 1, 0])
+            stack.append(["$(", len(out), 1, 0, 0])
             i += 2
             continue
         if cmd.startswith("((", i) and at_word and arithmetic(cmd, i + 2):
@@ -371,7 +375,13 @@ def lex(cmd, body=False, everywhere=False):
             i += 2
             continue
         if kind == "$(":
-            if c == "(":
+            if cmd.startswith("${", i):
+                frame[4] += 1
+            elif c == "}" and frame[4]:
+                frame[4] -= 1
+            elif frame[4]:
+                pass                            # inside ${...}: a ( or ) is text, case a word
+            elif c == "(":
                 frame[2] += 1
             elif c == ")" and not (frame[3] and frame[2] == 1):   # not a case pattern's )
                 frame[2] -= 1
@@ -381,9 +391,13 @@ def lex(cmd, body=False, everywhere=False):
                     glued = len(out)
                     i += 1
                     continue
-            elif (c in "ce" and at_word and word_at(cmd, i) in ("case", "esac")
-                  and (everywhere or command_position(out, frame[3] > 0))):
-                frame[3] = max(0, frame[3] + (1 if word_at(cmd, i) == "case" else -1))
+            elif c in "ce" and at_word and word_at(cmd, i) in ("case", "esac"):
+                # Over-counting case, or missing an esac, only ends a substitution late.
+                start = command_position(out, frame[3] > 0)
+                if word_at(cmd, i) == "case" and (everywhere or start):
+                    frame[3] += 1
+                elif word_at(cmd, i) == "esac" and start:
+                    frame[3] = max(0, frame[3] - 1)
         m = HEREDOC_START.match(cmd, i) if c == "<" else None
         if m:
             word = heredoc_word(cmd, m.end())
