@@ -170,7 +170,11 @@ task's requirements include these.
     is unescaped before it is read again; continuations are joined before an unquoted
     here-document's lines are compared with its delimiter; `$((` is arithmetic; `crude` also
     reads the lexer's decoded text. Further deliberately obfuscated spellings are out of
-    scope under spec §7.
+    scope under spec §7;
+  - fix round 3: `case` counts at every command start - the command-start test splits on
+    `(` and `)` as well as blanks, skips `time`'s `-p`, and reads a `)` inside an open case
+    as a command start - and a process substitution's closing `)` glues to its word as a
+    `$( )`'s does. `$"…"` locale-quote splits stay out of scope.
 - **Creation** reads `git ls-remote <remote> refs/heads/<source>`. The source repository must
   be the checkout's `origin`, so forks are denied.
 - **Forge merges:**
@@ -3174,7 +3178,9 @@ git commit -m "Write xreview receipts to each target repository's ledger, once p
     starts a here-document only in shell text; `heredoc_word(line, i)` reads its delimiter,
     and `here_bodies(cmd, i, pending, expanding)` reads the bodies after the line ends,
     joining continuations first under an unquoted delimiter. A `case` pattern's `)` does not
-    end a `$( )` (`case` counts only in command position, `command_position(out)`). `$((` and
+    end a `$( )`: `case` counts at every command start (`command_position(out, in_case)`),
+    including right after `$({`, `$(!`, `$(time`, `time -p` and an open case's pattern `)`.
+    A process substitution, `<( )` or `>( )`, is read like a `$( )`. `$((` and
     a `((` that starts a command are arithmetic frames when their parentheses close as `))`
     (`arithmetic(cmd, j)`), where `<<` and `#` are text; `$((cmd) | …)` stays a substitution.
     A `#` glued to a closing `)` or backtick is part of its word. Each outermost substitution
@@ -3528,6 +3534,15 @@ git merge feature
 EOF')" deny
 is "B71 quotes inside a substitution never pair with the quotes around it" \
    "$(decision "$W" "echo \"\$(printf '\"')\" ; git merge feature ; echo \"\$(printf '\"')\"")" deny
+# case counts at every command start, so its patterns' ) never end the substitution early.
+is "B72 a case that starts a case pattern's command" \
+   "$(decision "$W" 'echo "$(case c in a) case b in b) :;; esac;; c) git merge feature;; esac)"')" deny
+is "B73 a case after time -p" "$(decision "$W" 'echo "$(time -p case x in x) git merge feature;; esac)"')" deny
+is "B74 a case right after \$(! and \$({" \
+   "$(decision "$W" 'echo "$(! case x in x) git merge feature;; esac)"') $(decision "$W" 'echo "$({ case x in x) git merge feature;; esac; })"')" \
+   "deny deny"
+is "B75 a # glued to a process substitution's ) is part of the word, not a comment" \
+   "$(decision "$W" 'cat <(echo a)#b; git merge feature')" deny
 
 echo "C. git merge into the default branch"
 is "C1 an unreviewed merge into main is denied" "$(decision "$W" 'git merge feature')" deny
@@ -3931,11 +3946,18 @@ def tail(out, n=40):
     return text[-n:]
 
 
-def command_position(out):
-    """Does the next word start a command: after an operator, a newline or a ( - or a keyword
-    that a command follows (then, do, else, ...)?"""
+def command_position(out, in_case=False):
+    """Does the next word start a command: after an operator, a newline or a (, after the ) that
+    ends a pattern of an open case statement (in_case), or after a keyword that a command
+    follows (then, do, else, {, !, time, time -p, ...) - however it touches a ( before it,
+    as in $({ or $(time?"""
     t = tail(out).rstrip(" \t")
-    return not t or t[-1] in ";&|(\n" or t.split()[-1] in COMMAND_KEYWORDS
+    if not t or t[-1] in ";&|(\n" or (in_case and t[-1] == ")"):
+        return True
+    words = [w for w in re.split(r"[ \t\n()]+", t) if w]
+    if len(words) > 1 and words[-2:] == ["time", "-p"]:
+        words.pop()
+    return bool(words) and words[-1] in COMMAND_KEYWORDS
 
 
 def arithmetic(cmd, j):
@@ -3997,10 +4019,11 @@ def lex(cmd, body=False):
     """Read cmd as the shell reads it before it runs anything. Returns (text, substitutions,
     expanding). text is cmd with each line continuation (an unescaped backslash-newline),
     comment and here-document body removed, each $'...' string rewritten in single quotes,
-    and the body of each substitution taken out ($( ) and `` stay, empty), so the text holds
-    no quoting nested inside one. substitutions are the bodies of the outermost $( ) and
-    backtick substitutions, each to be read in turn - a backtick body with its \\`, \\\\ and
-    \\$ undone. expanding are the bodies of the here-documents whose delimiter is unquoted.
+    and the body of each substitution taken out ($( ), <( ), >( ) and `` stay, empty), so the
+    text holds no quoting nested inside one. substitutions are the bodies of the outermost
+    command and process substitutions, each to be read in turn - a backtick body with its \\`,
+    \\\\ and \\$ undone. expanding are the bodies of the here-documents whose delimiter is
+    unquoted.
     Quoting nests as the shell's does: a $( ) inside double quotes is shell text again, so the
     here-document of "$(cat <<'EOF' ... EOF)" is found, while a << or a # inside quotes or
     arithmetic is text, and so is a # that a closing ) or ` joins to its word. body=True reads
@@ -4103,8 +4126,10 @@ def lex(cmd, body=False):
             out.append(c)
             i += 1
             continue
-        if cmd.startswith("$(", i):
-            out.append("$(")
+        if cmd.startswith("$(", i) or (c in "<>" and cmd.startswith("(", i + 1)):
+            # A command substitution, or a process substitution <( ) or >( ): both run their
+            # body, and both glue their closing ) to the word that follows.
+            out.append(cmd[i:i + 2])
             stack.append(["$(", len(out), 1, 0])
             i += 2
             continue
@@ -4124,7 +4149,8 @@ def lex(cmd, body=False):
                     glued = len(out)
                     i += 1
                     continue
-            elif c in "ce" and at_word and command_position(out) and word_at(cmd, i) in ("case", "esac"):
+            elif (c in "ce" and at_word and word_at(cmd, i) in ("case", "esac")
+                  and command_position(out, frame[3] > 0)):
                 frame[3] = max(0, frame[3] + (1 if word_at(cmd, i) == "case" else -1))
         m = HEREDOC_START.match(cmd, i) if c == "<" else None
         if m:
@@ -4807,7 +4833,7 @@ with:
 ```
 
 - [ ] **Step 7: Run them and confirm they pass.**
-  - `./tests/xreview-guard.test.sh`: expect `passed: 155  failed: 0`.
+  - `./tests/xreview-guard.test.sh`: expect `passed: 159  failed: 0`.
   - `./tests/xreview-skill.test.sh`: expect `passed: 76  failed: 0`.
   - `./tests/claude-settings.test.sh 2>&1 | tail -1`: expect `RESULT: 179 passed, 0 failed`.
 
@@ -5034,7 +5060,7 @@ is "K47 a project id is looked up on origin's host" \
 ```
 
 - [ ] **Step 2: Run it and confirm it fails.** `./tests/xreview-guard.test.sh`: expect
-  `passed: 195  failed: 41`. Every allow case in H-K fails, and so do the deny reasons naming a
+  `passed: 199  failed: 41`. Every allow case in H-K fails, and so do the deny reasons naming a
   flag, a fetch, a project or a host, because each creation is still denied with
   `NOT_MODELLED`.
 
@@ -5540,7 +5566,7 @@ def judge(shape, ledger):
 ```
 
 - [ ] **Step 6: Run it and confirm it passes.** `./tests/xreview-guard.test.sh`: expect
-  `passed: 236  failed: 0`.
+  `passed: 240  failed: 0`.
 
 - [ ] **Step 7: Commit.** Check the branch, then:
 
@@ -5783,7 +5809,7 @@ is "P39 and GITLAB_API_HOST on another host" "$(GITLAB_API_HOST=api.other.exampl
 ```
 
 - [ ] **Step 2: Run it and confirm it fails.** `./tests/xreview-guard.test.sh`: expect
-  `passed: 289  failed: 25`. The failures are L1-L9, M2, M6, N2, N5, N7, N9, P2, P4, P6, P11,
+  `passed: 293  failed: 25`. The failures are L1-L9, M2, M6, N2, N5, N7, N9, P2, P4, P6, P11,
   P19, P20, P22, P24, P31 and P33: merges are still denied with `NOT_MODELLED`, or as unresolved API
   writes.
 
@@ -6038,7 +6064,7 @@ def judge(shape, ledger):
 ```
 
 - [ ] **Step 5: Run it and confirm it passes.** `./tests/xreview-guard.test.sh`: expect
-  `passed: 314  failed: 0`. Then `grep -c NOT_MODELLED dot_claude/xreview-guard.py` must print
+  `passed: 318  failed: 0`. Then `grep -c NOT_MODELLED dot_claude/xreview-guard.py` must print
   `0`.
 
 - [ ] **Step 6: Commit.** Check the branch, then:
@@ -6349,9 +6375,9 @@ owns it.
   - Expected:
     - every suite `ok`;
     - `29 suites run, 8 skipped (see the needs: lines)`;
-    - `all 29 suites passed (3392 assertions)`.
+    - `all 29 suites passed (3396 assertions)`.
   - The eight skipped suites carry a `# test-requires:` line.
-  - Report the total as passed/total, `3392/3392`, copied from the runner's last line.
+  - Report the total as passed/total, `3396/3396`, copied from the runner's last line.
 
 - [ ] **Step 2: Confirm the deployed set.** Run
   `chezmoi managed --include=files | grep -c -E '^\.claude/xreview-(guard|ledger)\.py$'` and
