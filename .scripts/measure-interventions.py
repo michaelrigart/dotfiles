@@ -49,7 +49,8 @@ DENIALS = [
     ("git-forge-guard", r"This repo ships an MR/PR template|Agent attribution is not allowed"),
     ("push-guard", r"Push guard|unsupported push configuration for the push guard"),
     ("worktree-guard", r"Raw `git worktree remove`"),
-    ("xreview-guard", r"No (approved pre-merge )?Codex cross-review on record"),
+    # "Pre-merge gate:" from the receipt binding on (spec 2026-10-02); the older wording before.
+    ("xreview-guard", r"No (approved pre-merge )?Codex cross-review on record|Pre-merge gate: "),
     ("xreview-apply-guard", r"Outside the cross-review apply window"),
     ("classifier-deny", r"Permission for this action was denied by the Claude Code auto mode"),
     ("classifier-no-verdict", r"The server-side auto mode classifier gave no verdict"),

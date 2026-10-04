@@ -43,7 +43,7 @@ A dispatch carries:
 ## Dispatching
 
 ```
-xreview dispatch --checkpoint <spec|plan|pre-merge> --diff <base>..<head> <body-file>
+xreview dispatch --checkpoint <spec|plan|pre-merge> --diff <dest>...<branch> <body-file>
 xreview collect <nonce> [budget-secs]
 ```
 
@@ -58,7 +58,29 @@ kills it after the turn starts leaves the review running with no nonce to collec
 
 **Name the checkpoint.** `--checkpoint` is required: `spec` at spec sign-off, `plan` at plan
 completion, `pre-merge` before merging. The receipt records it, and the pre-merge gate
-below opens only on a `pre-merge` receipt whose latest verdict is `approve`.
+below opens only for a change whose latest full-range `pre-merge` review approved it.
+
+**A pre-merge review opens the gate only for the change it saw.** Use the
+full range against the branch it will land on: `<dest>...<branch>`, or `<dest>..<branch>`,
+which is normalized to the same thing; for a forge MR/PR the destination is origin's,
+`origin/<dest>...<branch>`. With no `--diff`, a pre-merge dispatch reviews the current
+branch against the default branch. A range that starts at a commit (`5c86f2c..<branch>`) is
+partial: it is recorded but never opens the gate, so point the reviewer at the new commits
+in the body, not in `--diff`. Every fix round needs a fresh full-range round: any change to
+the content after the approval closes the gate again, and a clean rebase does not. One
+review can cover several repositories, each with its own `--diff <repo-path>:<range>`:
+
+```
+xreview dispatch --checkpoint pre-merge --diff main...feat/x --diff ../api:main...feat/x <body-file>
+```
+
+**Land through the gate.** MR/PR creation names its destination explicitly
+(`glab mr create --target-branch <dest>`, `gh pr create --base <dest>`), from a branch
+already published to origin. A forge merge by an agent pins the head and is never deferred:
+wait for the pipeline, then merge immediately with
+`glab mr merge <n> --sha <head> --auto-merge=false` (glab otherwise turns auto-merge on
+while a pipeline runs) or `gh pr merge <n> --match-head-commit <head>`. Run each as a plain
+command of its own: a chain, a pipe or an environment assignment on the verb is denied.
 
 **Never gate a dispatch on which model or effort the pane is running.** Whatever the
 Codex pane is set to is Michael's choice, and it is not yours to verify, question, or
@@ -241,12 +263,17 @@ him in another application. Write the ping to be worth reading late.
 
 ## What is enforced rather than trusted
 
-`xreview collect` writes a receipt to `$XDG_STATE_HOME/xreview/<repo>/reviews.jsonl`,
-naming the checkpoint and the verdict, and a `PreToolUse` guard denies `glab mr create` /
-`gh pr create` on a branch unless its latest `pre-merge` receipt has the verdict
-`approve`. Spec and plan receipts never open it, and neither does a pre-merge round that
-came back `changes`. That is the one part of this workflow prose cannot guarantee: a
-skipped review is otherwise indistinguishable from one that found nothing.
+`xreview dispatch` puts a pending entry, and `xreview collect` a receipt, in the
+repository's ledger, `$XDG_STATE_HOME/xreview/ledgers/<key>/reviews.jsonl`: one ledger per
+repository, shared by all its worktrees. An entry names the exact change reviewed (a content
+fingerprint) and the branch it is meant to land on. A `PreToolUse` guard gates
+`glab mr create`/`new`, `gh pr create`/`new`, `glab mr merge`/`accept`, `gh pr merge`, their
+REST forms through `glab api`/`gh api`, and a local `git merge` into the default branch. It
+denies them unless the latest full-range `pre-merge` review of exactly that change, for that
+destination, has the verdict `approve`. Spec and plan reviews never open it, a partial
+range never does, and neither does a newer pending review or a verdict of `changes`. That is
+the one part of this workflow prose cannot guarantee: a skipped review is otherwise
+indistinguishable from one that found nothing.
 
 Acting on findings runs inside an apply window:
 
@@ -260,15 +287,15 @@ Test paths stay writable, because the RED-test rule requires adding one. That bo
 where a mistake can land; whether a RED test was genuinely written first is not
 mechanisable and remains discipline.
 
-The guards are deliberately narrow — local merges, pushes, forge web UIs and other CLIs
-fail open, and `XREVIEW_GUARD=off` bypasses it. A guard that never fires spuriously is
+The guards are deliberately narrow — pushes, merges in a forge web UI, other CLIs and a
+command assembled from variables fail open, and `XREVIEW_GUARD=off` bypasses it. A guard that never fires spuriously is
 worth more than a broad one that gets switched off. `xreview receipts` lists what is on
 record.
 
 **Skipping the review is Michael's call to make, and it has to still work.** Put the
 bypass in the command — `XREVIEW_GUARD=off glab mr create …` — because that is the only
 place a model can set it; the hook runs beside the command, not inside it. Say in the MR
-description that it went up without a cross-review and why. The pre-merge guard only ever
-looks at `glab mr create` / `gh pr create` in command position, so writing the Basecamp
-card, the comment and the MR body is never gated — if one of those is refused, it is a
+description that it went up without a cross-review and why. The pre-merge guard only reads
+a gated verb in command position, so writing the Basecamp card, the comment and the MR body
+is never gated — if one of those is refused, it is a
 bug in the guard, not a checkpoint you missed.

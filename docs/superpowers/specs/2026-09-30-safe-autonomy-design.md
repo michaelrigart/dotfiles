@@ -520,3 +520,20 @@ commits, and the guard's expected count was wrong.
     "scanned 2 commit(s) but this push carries 3". Before the fix it said 5.
 - **Verified.** The real push is now allowed, at 573 of 573 commits in about 3 s. The guard
   suite passes 558/558, up from 554.
+
+### Pre-merge gate follow-up: receipt binding (branch `feat/xreview-receipt-binding`, 2026-10-05)
+
+The pre-merge gate now binds an approval to the exact change and its destination
+(`docs/superpowers/specs/2026-10-02-xreview-receipt-binding-design.md`).
+
+- **What it gates.** From this merge, the gate also gates:
+  - forge merges;
+  - the REST and GraphQL forms;
+  - a local `git merge` into the default branch;
+  - every creation or merge whose change has no current full-range approval.
+
+  v1 receipts no longer open it, so every in-flight branch needs one fresh full-range
+  pre-merge round.
+- **Evaluation impact.** Its deny reasons now begin "Pre-merge gate:", and
+  `measure-interventions.py` counts them as xreview-guard. Count the denies from this date
+  separately when comparing against the baseline above: a rise is expected, not a regression.
