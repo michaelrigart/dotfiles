@@ -228,19 +228,19 @@ fi
 for phrase in 'full range against the branch it will land on' '<dest>...<branch>' \
               'names its destination explicitly' 'never deferred' '--auto-merge=false' \
               '--sha <head>' '--match-head-commit <head>' 'fresh full-range round' \
-              '--diff <repo-path>:<range>' 'xreview/ledgers/'; do
+              '--diff <repo-path>:<range>' 'xreview/ledgers/' '--head <branch>'; do
   if grep -qF -- "$phrase" "$SKILL"; then
     _pass "the skill says '$phrase'"
   else _fail "the skill says '$phrase'" "missing"; fi
 done
-for flag in '"--auto-merge"' '"--sha"' '"--match-head-commit"' '"--target-branch"' '"--base"'; do
+for flag in '"--auto-merge"' '"--sha"' '"--match-head-commit"' '"--target-branch"' '"--base"' '"--head"'; do
   if grep -qF -- "$flag" <<<"$guard_code"; then
     _pass "the guard reads $flag"
   else _fail "the guard reads $flag" "the skill names a flag the guard never reads"; fi
 done
 for stale in 'advisory about freshness' '`glab mr create` / `gh pr create` in command position' \
              'local merges, pushes, forge web UIs'; do
-  if grep -qiF -- "$stale" "$GUARD" "$SKILL"; then
+  if grep -qiF -- "$stale" "$GUARD" "$ROOT/dot_claude/xreview-guard.py" "$SKILL"; then
     _fail "no '$stale' survives" "still present"
   else _pass "no '$stale' survives"; fi
 done

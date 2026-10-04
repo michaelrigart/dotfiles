@@ -1673,7 +1673,7 @@ def judge_merge_cli(shape, ledger):
             raise Deny(DEFERRED.format("glab mr merge without --auto-merge=false",
                                        "glab mr merge <n> --sha <head> --auto-merge=false"))
     elif flag_on(flags.get("--auto")):
-        raise Deny(DEFERRED.format("gh pr merge --auto", "gh pr merge <n> --match-head-commit <head>"))
+        raise Deny(DEFERRED.format("gh pr merge --auto", "gh pr merge <n> --merge --match-head-commit <head>"))
     allowed, verb = ((GLAB_MERGE_ALLOWED, "glab mr merge") if tool == "glab"
                      else (GH_MERGE_ALLOWED, "gh pr merge"))
     for flag in flags:
@@ -1698,7 +1698,7 @@ def judge_merge_cli(shape, ledger):
         source, dest, head = github_pr(top, target, host + "/" + path, owner, name)
         github_merge_queue(top, host, owner, name, dest)
         pin = one(flags, ("--match-head-commit",), "--match-head-commit")
-        hint = "gh pr merge " + (target or "<n>") + " --match-head-commit {}"
+        hint = "gh pr merge " + (target or "<n>") + " --merge --match-head-commit {}"
     merge_pinned(ledger, top, source, dest, head, pin, hint)
 
 

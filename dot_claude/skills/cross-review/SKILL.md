@@ -67,7 +67,8 @@ which is normalized to the same thing; for a forge MR/PR the destination is orig
 branch against the default branch. A range that starts at a commit (`5c86f2c..<branch>`) is
 partial: it is recorded but never opens the gate, so point the reviewer at the new commits
 in the body, not in `--diff`. Every fix round needs a fresh full-range round: any change to
-the content after the approval closes the gate again, and a clean rebase does not. One
+the content after the approval closes the gate again, and a clean rebase over changes to
+other files does not. One
 review can cover several repositories, each with its own `--diff <repo-path>:<range>`:
 
 ```
@@ -75,12 +76,13 @@ xreview dispatch --checkpoint pre-merge --diff main...feat/x --diff ../api:main.
 ```
 
 **Land through the gate.** MR/PR creation names its destination explicitly
-(`glab mr create --target-branch <dest>`, `gh pr create --base <dest>`), from a branch
+(`glab mr create --target-branch <dest>`, `gh pr create --head <branch> --base <dest>`), from a branch
 already published to origin. A forge merge by an agent pins the head and is never deferred:
 wait for the pipeline, then merge immediately with
 `glab mr merge <n> --sha <head> --auto-merge=false` (glab otherwise turns auto-merge on
-while a pipeline runs) or `gh pr merge <n> --match-head-commit <head>`. Run each as a plain
-command of its own: a chain, a pipe or an environment assignment on the verb is denied.
+while a pipeline runs) or `gh pr merge <n> --merge --match-head-commit <head>`. Run each as
+a plain command of its own: a chain, a pipe or any other environment assignment on the verb
+is denied.
 
 **Never gate a dispatch on which model or effort the pane is running.** Whatever the
 Codex pane is set to is Michael's choice, and it is not yours to verify, question, or
@@ -269,7 +271,9 @@ repository, shared by all its worktrees. An entry names the exact change reviewe
 fingerprint) and the branch it is meant to land on. A `PreToolUse` guard gates
 `glab mr create`/`new`, `gh pr create`/`new`, `glab mr merge`/`accept`, `gh pr merge`, their
 REST forms through `glab api`/`gh api`, and a local `git merge` into the default branch. It
-denies them unless the latest full-range `pre-merge` review of exactly that change, for that
+also denies GraphQL mutations that create, merge, enqueue or retarget, `glab mr for`,
+`gh pr revert`, and merges onto a branch with a merge queue or train. It
+denies the rest unless the latest full-range `pre-merge` review of exactly that change, for that
 destination, has the verdict `approve`. Spec and plan reviews never open it, a partial
 range never does, and neither does a newer pending review or a verdict of `changes`. That is
 the one part of this workflow prose cannot guarantee: a skipped review is otherwise

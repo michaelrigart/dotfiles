@@ -832,7 +832,7 @@ echo "N. what the pin names"
 printf 'seven\n' >> "$FW/b.txt"; git -C "$FW" commit -q -am "never reviewed"
 UNREVIEWED="$(git -C "$FW" rev-parse HEAD)"; git -C "$FW" reset -q --hard HEAD~1
 is "N1 a pin whose fingerprint is unapproved is denied" "$(denies "$W" "gh pr merge 9 --match-head-commit $UNREVIEWED" 'no full-range pre-merge review of this change is on record')" 1
-is "N2 the deny names the pinned merge to run once approved" "$(reason "$W" "gh pr merge 9 --match-head-commit $UNREVIEWED" | grep -c "Then merge it pinned and immediate: gh pr merge 9 --match-head-commit $UNREVIEWED")" 1
+is "N2 the deny names the pinned merge to run once approved" "$(reason "$W" "gh pr merge 9 --match-head-commit $UNREVIEWED" | grep -c "Then merge it pinned and immediate: gh pr merge 9 --merge --match-head-commit $UNREVIEWED")" 1
 is "N3 a destination origin does not have is denied" "$(MR_TARGET=ghost2 denies "$W" "glab mr merge 7 --sha $HEAD_SHA --auto-merge=false" 'the destination ghost2 (refs/remotes/origin/ghost2) is not available locally')" 1
 git -C "$W" branch release2 main && publish release2
 is "N4 an MR retargeted to an unapproved destination is denied" "$(PR_BASE=release2 denies "$W" "gh pr merge 9 --match-head-commit $HEAD_SHA" 'feature -> release2')" 1
