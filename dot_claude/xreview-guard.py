@@ -343,7 +343,7 @@ def here_bodies(cmd, i, pending, expanding):
     return i
 
 
-def lex(cmd, body=False, everywhere=False):
+def lex(cmd, body=False, everywhere=False, naive=False):
     """Read cmd as the shell reads it before it runs anything. Returns (text, substitutions,
     expanding). text is cmd with each line continuation (an unescaped backslash-newline),
     comment and here-document body removed, each $'...' string rewritten in single quotes,
@@ -362,7 +362,9 @@ def lex(cmd, body=False, everywhere=False):
     missing an esac, can only end a substitution late, never early, so the second reading's
     bodies hold everything the substitutions run (scan reads both). Inside a ${...} parameter
     expansion a ( or ) is text and case is a word ($(echo ${x//)/}) runs one command); an
-    unmatched ${ keeps the substitution open."""
+    unmatched ${ keeps the substitution open. naive=True reads as bash 3.2 does (/bin/bash, and
+    macOS /bin/sh): a $( ) ends at its first unmatched ), a case pattern's or one inside
+    ${...} included."""
     out, subs, expanding, pending = [], [], [], []
     # Each frame: [kind, where its body starts in out, open parentheses, open case statements,
     # and for a $( frame open ${ parameter expansions].
@@ -494,7 +496,7 @@ def lex(cmd, body=False, everywhere=False):
             i += 2
             continue
         if kind == "$(":
-            if cmd.startswith("${", i):
+            if not naive and cmd.startswith("${", i):
                 frame[4] += 1
             elif c == "}" and frame[4]:
                 frame[4] -= 1
@@ -510,7 +512,7 @@ def lex(cmd, body=False, everywhere=False):
                     glued = len(out)
                     i += 1
                     continue
-            elif c in "ce" and at_word and word_at(cmd, i) in ("case", "esac"):
+            elif not naive and c in "ce" and at_word and word_at(cmd, i) in ("case", "esac"):
                 # Over-counting case, or missing an esac, only ends a substitution late.
                 start = command_position(out, frame[3] > 0)
                 if word_at(cmd, i) == "case" and (everywhere or start):
@@ -660,14 +662,25 @@ def scan(cmd, depth=0):
     The substitutions are read twice: as the command-start reading of case finds them, and as
     the reading that counts case everywhere finds them, so no command start the first one
     misses can end a substitution early and hide the rest of it. The tokens come from the
-    first. Nesting deeper than MAX_NESTING counts as hidden. Raises ValueError when cmd has
-    unbalanced quotes."""
+    first. A third, bash 3.2 reading (lex naive) adds its substitutions, and a gated verb only
+    its text puts in command position is hidden from the others. Nesting deeper than
+    MAX_NESTING counts as hidden. Raises ValueError when cmd has unbalanced quotes."""
     text, nested, expanding = lex(cmd)
     nested.extend(b for b in lex(cmd, everywhere=True)[1] if b not in nested)
     for body in expanding:
         for flag in (False, True):
             nested.extend(b for b in lex(body, body=True, everywhere=flag)[1] if b not in nested)
     tokens = tokenize(text)
+    # bash 3.2 (/bin/bash, macOS /bin/sh) ends $( at its first ) - a case pattern's or one in
+    # ${...}: a verb only that reading puts in command position is hidden from the others.
+    naive_text, naive_nested, _ = lex(cmd, naive=True)
+    nested.extend(b for b in naive_nested if b not in nested)
+    try:
+        naive_tokens = tokenize(naive_text)
+    except ValueError:
+        naive_tokens = []
+    if gated_anywhere(naive_tokens) and not gated_anywhere(tokens):
+        return tokens, True
     nested.extend(shell_strings(tokens))
     for inner in nested:
         if depth >= MAX_NESTING:

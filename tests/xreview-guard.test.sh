@@ -374,6 +374,16 @@ is "B92 an argument } or a { group inside one does not end it" \
    "$(reason "$W" 'echo "${ echo }; git merge feature; }"' | grep -c 'plain command of its own') $(reason "$W" 'echo "${ { true; }; git merge feature; }"' | grep -c 'plain command of its own')" \
    "1 1"
 is "B93 a parameter expansion stays text" "$(decision "$W" 'echo "${x:-git merge feature} ${#x} ${x}"')" allow
+# bash 3.2 (/bin/bash, and macOS /bin/sh) ends a $( ) at its first ), a case pattern's or one
+# inside ${...}, so a quote after it pairs differently and a verb the other readings see as
+# quoted text runs there.
+SQ="'"; T1='echo "$(echo ${x//)/} " ; git merge feature ; ")"'; V1='echo "$(case x in x) echo " ; git merge feature ; " ;; esac)"'
+is "B94 a ) inside \${...}, read as bash 3.2 reads it: direct, through sh -c and /bin/bash -c" \
+   "$(reason "$W" "$T1" | grep -c 'plain command of its own') $(reason "$W" "sh -c $SQ$T1$SQ" | grep -c 'plain command of its own') $(reason "$W" "/bin/bash -c $SQ$T1$SQ" | grep -c 'plain command of its own')" \
+   "1 1 1"
+is "B95 and a case pattern's ), direct and through sh -c" \
+   "$(reason "$W" "$V1" | grep -c 'plain command of its own') $(reason "$W" "sh -c $SQ$V1$SQ" | grep -c 'plain command of its own')" \
+   "1 1"
 
 echo "C. git merge into the default branch"
 is "C1 an unreviewed merge into main is denied" "$(decision "$W" 'git merge feature')" deny
