@@ -1,6 +1,6 @@
 # xreview receipt binding (P1-A)
 
-**Status:** In progress (branch `feat/xreview-receipt-binding`; plan `docs/superpowers/plans/2026-10-02-xreview-receipt-binding.md`, Codex-approved after four plan rounds)
+**Status:** Implemented (branch `feat/xreview-receipt-binding`; the dotfiles have no MR)
 **Date:** 2026-10-02
 **Scope:** `dot_local/bin/executable_xreview`, `dot_claude/executable_xreview-guard.sh`, the
 cross-review skill, and their test suites. This closes P1-A, which has been open since the relay
@@ -420,3 +420,90 @@ in-flight branches).
 - **Stale lock:** a crashed writer can hold the ledger lock for up to 60 s before it is
   broken. Dispatch and collect wait at most 5 s. Dispatch then refuses; collect then warns,
   and the pending entry keeps the gate closed.
+- **Implementation limits:** the known limits of the implementation are listed in §8.
+
+## 8. Implementation rulings (2026-10-05)
+
+The implementation deliberately goes beyond §3.6 or narrows it in the places below. Each was
+ruled in plan or code review, within §2's goals. The code and its tests are authoritative.
+
+**Beyond §3.6: more is denied**
+- `gh pr create` must name `--head`. Without it, gh takes the head from push configuration
+  (`pushRemote`, `@{push}`), which the gate does not read.
+- `-R`/`--repo` on `glab api`/`gh api` is denied wherever it stands. glab resolves `:id` from
+  it, so it picks the project the call acts on.
+- The GraphQL list also names five mutations:
+  - `mergeBranch` merges a branch with no PR;
+  - `enqueuePullRequest` puts a PR in a merge queue, a deferred merge;
+  - `updatePullRequest` and `mergeRequestUpdate` can retarget, from arguments the gate does
+    not tie to the mutation;
+  - `revertPullRequest` creates a PR.
+- A POST, PUT or PATCH to `repos/<o>/<r>/merges` is denied, absolute URLs included. It merges
+  one branch into another with no PR, so no review can bind it.
+- `glab mr for`/`new-for`/`create-for` and `gh pr revert` are always denied. Each creates an
+  MR/PR from a branch the forge makes itself, which no review can have seen.
+- Create and merge flags are per-CLI allowlists, read from glab 1.120's and gh 2.102's
+  `--help`. Any other flag is denied by name, `--admin` included: a flag the gate has not
+  weighed could change what is proposed, or merge past the forge's own checks.
+- glab's `--fill`/`-f`/`--push` are allowed only as a push that changes nothing (HEAD already
+  is origin's head of the source), and `--recover` is denied. Either could otherwise propose a
+  head the review never saw.
+- The `remote.*.gh-resolved`/`glab-resolved` keys and glab's default host are checked. Either
+  can send a command that names no project or host to another one.
+- cobra takes a subcommand's options before its name and between its words. So a gated verb
+  that some reading of the options puts in another order must be written in the canonical
+  form (`[-R <project>] noun verb`, `api` right after the tool), or it is denied.
+- A gh write is read from its body only, and a query string on a gated gh write is denied:
+  GitHub may not read a write's query string. glab's query string is read with its fields,
+  as GitLab reads both.
+- Beyond §3.6's word list, the fast path also triggers on:
+  - `revert`;
+  - `mr` together with `for`;
+  - `api` together with a percent-escape.
+
+  Without them, those verbs would never reach the helper that denies them. A word split by
+  quotes, backslashes or a line continuation still triggers.
+- The grammar models bash 3.2, bash 5.3 and zsh syntax:
+  - substitution bodies are read three ways: `case` counted at command starts, `case` counted
+    anywhere, and bash 3.2 ending `$(` at its first `)`;
+  - it reads here-documents, `$'…'`, bash 5.3's `${ cmd; }` and `${| cmd; }`, and the `-c`
+    strings of shells.
+
+  Every non-operator word is a candidate command word, so an unquoted mention
+  (`echo git merge x`) is denied. Quote it, or write a body through a `<<'EOF'` here-document.
+- A forge merge also looks up the destination's merge queue (GitHub) and the project's merge
+  trains (GitLab). A queue, a train or a failed lookup makes it a deferred merge, which is
+  denied.
+- An API path is read with its percent-escapes decoded (`m%65rge_requests`, `graph%71l`), as a
+  forge's router may read it. The project segment of the REST forms the gate checks keeps
+  them (`acme%2Fapp`).
+- `git merge FETCH_HEAD` is allowed only while this worktree's FETCH_HEAD holds exactly one
+  head marked for merge. git merges every such head in one merge, and the gate reads one.
+- A review range whose left side is a symbolic ref (`origin/HEAD...<b>`) is recorded as the
+  branch the ref points at. One that names no branch, or a plain ref named HEAD, is refused
+  at dispatch.
+
+**Narrower than §3.6: less is gated**
+- On the default branch, `git merge <ref>` is allowed when git resolves `<ref>`'s name to
+  `refs/remotes/origin/<default>`: `origin/main`, `refs/remotes/origin/main`, or `@{u}` when
+  that is its upstream. Syncing lands work that is already on origin. Another ref at the same
+  commit is still gated, and a second ref is denied as before.
+- `gh pr merge [<n>] --disable-auto`, with no flag but `-R`, is allowed. It turns auto-merge
+  off and merges nothing.
+
+**Known limits**
+- **Deliberate obfuscation stays out of scope (§2, §7).** That covers a verb or path built
+  from variables, brace or glob expansion, `eval`, a script file, an alias, and bash's `$"…"`
+  locale strings.
+- **Direct ref writes are push equivalents, outside this gate.** Examples: `gh api` PATCH
+  `repos/<o>/<r>/git/refs/…`, GraphQL `createCommitOnBranch`/`updateRef`, and GitLab's
+  commits API.
+- **The GraphQL list is name-based.** A new mutation that creates or merges passes until it
+  is added.
+- **CLI versions drift.** The flag allowlists, URL patterns and host rules were measured on
+  glab 1.120 and gh 2.102. A new flag on a gated verb is denied by name, but a new verb that
+  creates or merges is not gated.
+- **Spec-level gaps, left for a follow-up spec:**
+  - `git pull`/`rebase`/`reset`/`cherry-pick` onto the default branch;
+  - `glab stack sync`;
+  - `az repos pr create` and `--auto-complete`.

@@ -1,5 +1,16 @@
 # xreview receipt binding (P1-A) Implementation Plan
 
+**Status:** Implemented (branch `feat/xreview-receipt-binding`; the dotfiles have no MR)
+
+> **Completed: do not run this plan again.** It was executed in full on the branch
+> `feat/xreview-receipt-binding`, and its last amendment is ca3fd90. The final fix wave then
+> changed the code without amending this plan:
+> - d88e284 "Close the FETCH_HEAD, sync, symref and bash 5.3 gaps, and decode API paths";
+> - f658e98 "Read a bash 3.2 third pass for substitution bodies".
+>
+> Its blocks and counts therefore no longer match the code. The code, its tests, and the
+> spec's §8 "Implementation rulings (2026-10-05)" are authoritative.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Bind every pre-merge approval to the exact change Codex reviewed and the branch it is

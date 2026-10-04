@@ -532,8 +532,11 @@ The pre-merge gate now binds an approval to the exact change and its destination
   - a local `git merge` into the default branch;
   - every creation or merge whose change has no current full-range approval.
 
-  v1 receipts no longer open it, so every in-flight branch needs one fresh full-range
-  pre-merge round.
+  v1 receipts never open it. So after the first `chezmoi apply` that follows this branch's
+  merge, every branch that was reviewed but not yet proposed or merged needs one fresh
+  full-range pre-merge round.
 - **Evaluation impact.** Its deny reasons now begin "Pre-merge gate:", and
-  `measure-interventions.py` counts them as xreview-guard. Count the denies from this date
-  separately when comparing against the baseline above: a rise is expected, not a regression.
+  `measure-interventions.py` counts them as xreview-guard. The new denies start with the first
+  `chezmoi apply` after this branch merges, not with the date above. Count them from that
+  apply separately when comparing against the baseline above: a rise is expected, not a
+  regression.
