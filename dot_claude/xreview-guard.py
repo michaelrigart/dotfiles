@@ -75,6 +75,43 @@ TIMED_OUT = "Pre-merge gate: the check did not finish in time, so the command is
 LITERAL = "Pre-merge gate: {} must be a literal value the gate can read, not {}."
 NO_REPO = "Pre-merge gate: {} is not inside a git repository, so the change cannot be checked."
 ONE_REF = "Pre-merge gate: merge one named ref at a time: git merge <ref>."
+ONCE = "Pre-merge gate: name {} once."
+NO_ORIGIN = ("Pre-merge gate: {} has no origin remote, so the forge project cannot be checked. "
+             "Run the command from the project's own checkout.")
+OTHER_PROJECT = ("Pre-merge gate: the command acts on the project {} (named by -R, or by GH_REPO or "
+                 "GITLAB_REPO in the environment), but this checkout's origin is {}. Run it from "
+                 "that project's checkout.")
+OTHER_HOST = ("Pre-merge gate: this call goes to {0}, but this checkout's origin is on {1}. Send "
+              "it to origin's host, --hostname {1}, from that project's checkout.")
+SEVERAL_HOSTS = ("Pre-merge gate: without --hostname, glab api picks its host from this "
+                 "checkout's remotes, and some are on another host than origin's ({0}). Name "
+                 "origin's host: --hostname {1}.")
+DEFAULT_HOST = ("Pre-merge gate: {0} names no host, so the CLI sends this to its default host, "
+                "{1}, but this checkout's origin is on {2}. Name origin's host: {3}.")
+API_HOST_VAR = ("Pre-merge gate: GITLAB_API_HOST sends glab's API requests to {0}, not to "
+                "origin's host {1}, so the gate cannot check what this command does. Run it "
+                "without GITLAB_API_HOST.")
+UNREADABLE = ("Pre-merge gate: {0} cannot be read, so the host this call goes to is unknown. "
+              "Name origin's host: {1}.")
+SEVERAL_REMOTES = ("Pre-merge gate: this checkout has remotes besides origin ({}), so the CLI "
+                   "could pick another project. Name origin's project explicitly: -R {}.")
+FORK = ("Pre-merge gate: {} proposes from another repository. Merge requests from forks are not "
+        "checked by the gate; propose from the checkout's origin.")
+DETACHED = "Pre-merge gate: HEAD is detached in {}, so the source branch is unknown. Name it with {}."
+NEED_DEST = ("Pre-merge gate: name the destination explicitly with {}. The CLI could otherwise "
+             "take an implicit base from per-branch configuration, which the gate does not read.")
+NOT_ON_ORIGIN = ("Pre-merge gate: the branch {} is not on origin, so the change the forge would "
+                 "propose cannot be read. Publish the branch to origin first, then retry.")
+LS_REMOTE = ("Pre-merge gate: cannot read origin's head of {} (git ls-remote failed), so the "
+             "command is refused.")
+DEFERRED = ("Pre-merge gate: {} is a deferred merge (auto-merge, or merge when the pipeline "
+            "succeeds), which the gate never allows: the MR/PR could be retargeted while it "
+            "waits. Wait for the pipeline, then merge immediately and pinned: {}.")
+LOOKUP = ("Pre-merge gate: the forge lookup of {} failed, so its destination is unknown and the "
+          "merge is refused. Check that it exists and that the CLI is signed in, then retry.")
+UNRESOLVED_API = ("Pre-merge gate: this {} api call writes to an MR/PR path whose source, head or "
+                  "destination the gate cannot read. Use the CLI (glab mr ..., gh pr ...) or the "
+                  "REST create and merge endpoints with literal fields.")
 NOT_MODELLED = "Pre-merge gate: the gate does not check this forge command yet, so it is refused."
 
 
@@ -767,6 +804,18 @@ def parse_flags(args, takes_value):
     return flags, pos
 
 
+def one(flags, names, label):
+    """The single literal value of an option spelt any of names; None when it is absent."""
+    values = [v for name in names for v in flags.get(name, [])]
+    if len(values) > 1:
+        raise Deny(ONCE.format(label))
+    if not values:
+        return None
+    if values[0] is None or not values[0] or not literal(values[0]):
+        raise Deny(LITERAL.format(label, values[0] or "an empty value"))
+    return values[0]
+
+
 # ------------------------------------------------------------------ the repository
 def run(argv, cwd=None):
     """stdout of a command, or None when it fails or cannot start."""
@@ -859,9 +908,436 @@ def judge_git_merge(shape, ledger):
     check(ledger, top, source, dest, "HEAD", ref, "{}...{}".format(dest, ref), None)
 
 
+# ------------------------------------------------------------------ the forge project
+SCP_RE = re.compile(r"^(?:[^/@:]+@)?[^/:]+:(?!/)")
+
+
+def split_url(url):
+    """(host, project path) of a remote URL or a project reference: lowercased host, path as
+    written, .git dropped."""
+    u = url.strip()
+    if "://" in u:
+        parts = urlsplit(u)
+        host, path = parts.hostname or "", parts.path
+    elif SCP_RE.match(u):
+        head, path = u.split(":", 1)
+        host = head.split("@")[-1]
+    else:
+        host, path = "", u
+    path = path.strip("/")
+    if path.endswith(".git"):
+        path = path[:-4]
+    return host.lower(), path
+
+
+def same_project(named, host, path, tool):
+    """Does a project the command names equal origin's (host, path)? A URL or an scp-style
+    address names its host. Otherwise glab reads the whole value as a project path
+    (GROUP/SUB/REPO, on its default host), and gh reads [HOST/]OWNER/REPO."""
+    want = path.lower()
+    if "://" in named or SCP_RE.match(named):
+        h, p = split_url(named)
+        return p.lower() == want and h == host
+    v = named.strip("/").lower()
+    if v.endswith(".git"):
+        v = v[:-4]
+    return v == want or (tool == "gh" and bool(host) and v == host + "/" + want)
+
+
+def explicit_repo(tool, host, path):
+    """The -R value that names origin's project with its host, as each CLI reads it."""
+    return ("https://{}/{}" if tool == "glab" else "{}/{}").format(host or "<host>", path)
+
+
+def forge_context(cwd, named, tool):
+    """(toplevel, origin host, origin path) of the repository a glab or gh verb runs in. named
+    is the project the command names, or None; then origin must be the only remote, because
+    the CLI could otherwise pick another one."""
+    top = toplevel(cwd)
+    url = run(["git", "-C", top, "config", "--get", "remote.origin.url"])
+    if not url or not url.strip():
+        raise Deny(NO_ORIGIN.format(top))
+    host, path = split_url(url)
+    if named is not None:
+        if not literal(named):
+            raise Deny(LITERAL.format("the project", named))
+        if not same_project(named, host, path, tool):
+            raise Deny(OTHER_PROJECT.format(named, path))
+    else:
+        remotes = (run(["git", "-C", top, "remote"]) or "").split()
+        if remotes != ["origin"]:
+            raise Deny(SEVERAL_REMOTES.format(", ".join(r for r in remotes if r != "origin"),
+                                              explicit_repo(tool, host, path)))
+    return top, host, path
+
+
+def remote_head(top, branch):
+    """origin's head of branch, as git ls-remote reads it: what the forge would propose."""
+    if not literal(branch) or branch.startswith("-"):
+        raise Deny(LITERAL.format("the source branch", branch))
+    out = run(["git", "-C", top, "ls-remote", "origin", "refs/heads/" + branch])
+    if out is None:
+        raise Deny(LS_REMOTE.format(branch))
+    for line in out.splitlines():
+        sha, _, ref = line.partition("\t")
+        if ref.strip() == "refs/heads/" + branch and FULL_ID.fullmatch(sha):
+            return sha
+    raise Deny(NOT_ON_ORIGIN.format(branch))
+
+
+# ------------------------------------------------------------------ creating an MR/PR
+GLAB_CREATE_VALUE = {"-s", "--source-branch", "-b", "--target-branch", "-R", "--repo", "-H",
+                     "--head", "-t", "--title", "-d", "--description", "--description-file",
+                     "-a", "--assignee", "-l", "--label", "-m", "--milestone", "--reviewer",
+                     "-i", "--related-issue", "--template", "--attach"}
+GH_CREATE_VALUE = {"-B", "--base", "-H", "--head", "-R", "--repo", "-a", "--assignee",
+                   "--attach", "-b", "--body", "-F", "--body-file", "-l", "--label", "-m",
+                   "--milestone", "-p", "--project", "--recover", "-r", "--reviewer", "-T",
+                   "--template", "-t", "--title"}
+FALSE = ("false", "0", "f")
+FULL_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+
+
+def flag_on(values):
+    """A boolean CLI flag as the CLI reads it: on when given bare or with a value other than
+    false."""
+    return bool(values) and (values[-1] is None or values[-1].lower() not in FALSE)
+
+
+def judge_create_cli(shape, ledger):
+    """glab mr create|new, gh pr create|new: the source is --source-branch/--head or the
+    current branch, as origin has it; the destination must be named."""
+    tool = shape["tool"]
+    flags, _ = parse_flags(shape["args"], GLAB_CREATE_VALUE if tool == "glab" else GH_CREATE_VALUE)
+    named = one(flags, ("-R", "--repo"), "-R/--repo") or env_repo(tool)
+    top, host, path = forge_context(shape["cwd"], named, tool)
+    check_cli_host(tool, top, host, path, named)
+    if tool == "glab":
+        if flags.get("-H") or flags.get("--head"):
+            raise Deny(FORK.format("--head"))
+        if flag_on(flags.get("--auto-merge")):
+            raise Deny(DEFERRED.format("glab mr create --auto-merge",
+                                       "glab mr merge <n> --sha <head> --auto-merge=false"))
+        source = one(flags, ("-s", "--source-branch"), "--source-branch")
+        dest = one(flags, ("-b", "--target-branch"), "--target-branch")
+        if dest is None:
+            raise Deny(NEED_DEST.format("--target-branch <branch>"))
+    else:
+        source = one(flags, ("-H", "--head"), "--head")
+        dest = one(flags, ("-B", "--base"), "--base")
+        if dest is None:
+            raise Deny(NEED_DEST.format("--base <branch>"))
+        if source is not None and ":" in source:
+            owner, _, source = source.partition(":")
+            if owner.lower() != path.split("/")[0].lower():
+                raise Deny(FORK.format("--head " + owner + ":" + source))
+    if source is None:
+        source = ledger.current_branch(top)
+        if source is None:
+            raise Deny(DETACHED.format(top, "--source-branch" if tool == "glab" else "--head"))
+    check(ledger, top, source, dest, "refs/remotes/origin/" + dest, remote_head(top, source),
+          "origin/{}...{}".format(dest, source), None)
+
+
+GITLAB_MR = re.compile(r"^projects/([^/]+)/merge_requests(?:/(\d+)(/merge)?)?$")
+GITHUB_PR = re.compile(r"^repos/([^/]+)/([^/]+)/pulls(?:/(\d+)(/merge)?)?$")
+BRANCH_PLACEHOLDERS = (":branch", "{branch}")
+
+
+def field(fields, name, top, ledger):
+    """An api field's literal value, the current-branch placeholder resolved; None when the
+    field is absent."""
+    if name not in fields:
+        return None
+    value = fields[name]
+    if value in BRANCH_PLACEHOLDERS:
+        value = ledger.current_branch(top)
+        if value is None:
+            raise Deny(DETACHED.format(top, "the field " + name))
+    if not value or not literal(value):
+        raise Deny(LITERAL.format("the field " + name, value or "an empty value"))
+    return value
+
+
+def lookup_json(argv, top, what):
+    value = None
+    out = run(argv, top)
+    try:
+        value = json.loads(out) if out else None
+    except ValueError:
+        value = None
+    if value is None:
+        raise Deny(LOOKUP.format(what))
+    return value
+
+
+def origin_host(cwd):
+    top = toplevel(cwd)
+    url = run(["git", "-C", top, "config", "--get", "remote.origin.url"])
+    if not url or not url.strip():
+        raise Deny(NO_ORIGIN.format(top))
+    return split_url(url)[0]
+
+
+def host_of(value):
+    """The lowercased host of a hostname, a host:port or a URL."""
+    v = value.strip()
+    return (urlsplit(v if "://" in v else "//" + v).hostname or "").lower()
+
+
+GLAB_HOST_VARS = ("GITLAB_HOST", "GITLAB_URI", "GL_HOST", "GITLAB_URL")
+GLAB_HOST_KEYS = ("host", "gitlab_host", "gitlab_uri", "gl_host")
+
+
+def set_values(names):
+    """The values of those environment variables that are set and not empty."""
+    return [os.environ[k] for k in names if os.environ.get(k)]
+
+
+def config_dir(variable, name):
+    return os.environ.get(variable) or os.path.join(
+        os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), name)
+
+
+def top_level(path):
+    """(key, value) of each top-level line of a YAML config file; [] when there is no such
+    file, None when it cannot be read. Indented lines (a host's token among them) are skipped
+    unread."""
+    found = []
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                if line[:1] in ("", " ", "\t", "#", "\n", "-") or ":" not in line:
+                    continue
+                key, _, value = line.partition(":")
+                found.append((key.strip().strip("'\""), value.strip().strip("'\"")))
+    except FileNotFoundError:
+        return []
+    except (OSError, UnicodeDecodeError):
+        return None
+    return found
+
+
+def gh_default_host():
+    """The host gh goes to when nothing names one (gh api without --hostname, -R OWNER/REPO):
+    GH_HOST, else the one host gh's hosts.yml lists when it lists exactly one, else github.com.
+    None when hosts.yml cannot be read."""
+    if os.environ.get("GH_HOST"):
+        return host_of(os.environ["GH_HOST"])
+    hosts = top_level(os.path.join(config_dir("GH_CONFIG_DIR", "gh"), "hosts.yml"))
+    if hosts is None:
+        return None
+    return host_of(hosts[0][0]) if len(hosts) == 1 else "github.com"
+
+
+def glab_default_hosts(top):
+    """The hosts glab may take for a project named without one: every set GITLAB_HOST,
+    GITLAB_URI, GL_HOST and GITLAB_URL, else the host keys of its config.yml - the global one
+    and the repository's own .git/glab-cli/config.yml - else gitlab.com. None when a config
+    file cannot be read."""
+    env = set_values(GLAB_HOST_VARS)
+    if env:
+        return env
+    files = [os.path.join(config_dir("GLAB_CONFIG_DIR", "glab-cli"), "config.yml")]
+    for flag in ("--absolute-git-dir", "--git-common-dir"):
+        out = run(["git", "-C", top, "rev-parse", flag])
+        if out is None or not out.strip():
+            return None
+        files.append(os.path.join(top, out.strip(), "glab-cli", "config.yml"))
+    hosts = []
+    for path in files:
+        found = top_level(path)
+        if found is None:
+            return None
+        hosts.extend(value for key, value in found if key in GLAB_HOST_KEYS and value)
+    return hosts or ["gitlab.com"]
+
+
+def check_api_host_var(host):
+    """GITLAB_API_HOST, when set, sends every glab API request to its host: it must be origin's."""
+    for value in set_values(("GITLAB_API_HOST",)):
+        if host_of(value) != host:
+            raise Deny(API_HOST_VAR.format(host_of(value) or value, host or "a local path"))
+
+
+def remote_hosts(top):
+    """The hosts of every remote URL, fetch and push, as git rewrites them; None when git
+    cannot list them. A local-path remote has no host and is left out."""
+    out = run(["git", "-C", top, "remote", "-v"])
+    if out is None:
+        return None
+    hosts = set()
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and split_url(parts[1])[0]:
+            hosts.add(split_url(parts[1])[0])
+    return hosts
+
+
+def check_api_host(cwd, tool, call):
+    """An api call must go to origin's host. An absolute endpoint names its host (a GitHub one
+    may name origin's api. host); so does --hostname. Without either the CLI picks the host:
+    gh from GH_HOST, else from its hosts.yml, else github.com; glab from GITLAB_HOST,
+    GITLAB_URI, GL_HOST or GITLAB_URL, else from a remote on a host it is signed in to, so
+    every remote must then be on origin's host. The guard reads its own environment: the
+    command cannot set one, because an assignment or an env wrapper is not a plain command.
+    Returns origin's host: every lookup the command needs is sent there, with --hostname or a
+    host-qualified -R, never left to the environment."""
+    top = toplevel(cwd)
+    host = origin_host(top)
+    where = host or "a local path"
+    if tool == "glab":
+        check_api_host_var(host)
+    endpoint = call["endpoint"] or ""
+    chosen = []
+    if call["hostname"] is not None:
+        chosen = [call["hostname"]]
+    elif "://" in endpoint:
+        pass
+    elif tool == "gh":
+        picked = gh_default_host()
+        if picked is None:
+            raise Deny(UNREADABLE.format("gh's hosts.yml", "--hostname " + where))
+        chosen = [picked]
+    else:
+        chosen = set_values(GLAB_HOST_VARS)
+        if not chosen:
+            hosts = remote_hosts(top)
+            if hosts is None or hosts - {host}:
+                raise Deny(SEVERAL_HOSTS.format(
+                    ", ".join(sorted(hosts - {host})) if hosts else "unreadable", where))
+    for value in chosen:
+        if host_of(value) != host:
+            raise Deny(OTHER_HOST.format(host_of(value) or value, where))
+    if "://" in endpoint:
+        named = host_of(endpoint)
+        if named not in (host, "api." + host):
+            raise Deny(OTHER_HOST.format(named, where))
+    return host
+
+
+def env_repo(tool):
+    """The project the environment names for a CLI verb given no -R: GITLAB_REPO for glab,
+    GH_REPO for gh. It also fills the :id and {owner}/{repo} placeholders of an api call."""
+    return os.environ.get("GITLAB_REPO" if tool == "glab" else "GH_REPO") or None
+
+
+def check_cli_host(tool, top, host, path, named):
+    """A glab or gh verb must reach origin's host too. A project named with its host (a URL,
+    or gh's HOST/OWNER/REPO) has had it checked by forge_context. One named by its path alone
+    goes to the CLI's default host: gh_default_host() for gh, glab_default_hosts() for glab.
+    With no project named, the CLI takes the checkout's one remote, origin, and fails when a
+    host variable names another host. Returns origin's host, where every lookup is then
+    sent."""
+    where = host or "a local path"
+    if tool == "glab":
+        check_api_host_var(host)
+    if named is None or "://" in named or SCP_RE.match(named):
+        return host
+    bare = named.strip("/").lower()
+    if bare.endswith(".git"):
+        bare = bare[:-4]
+    if bare != path.lower():
+        return host
+    fix = "-R " + explicit_repo(tool, host, path)
+    if tool == "gh":
+        picked = gh_default_host()
+        if picked is None:
+            raise Deny(UNREADABLE.format("gh's hosts.yml", fix))
+        chosen = [picked]
+    else:
+        chosen = glab_default_hosts(top)
+        if chosen is None:
+            raise Deny(UNREADABLE.format("glab's config.yml", fix))
+    for value in chosen:
+        if host_of(value) != host:
+            raise Deny(DEFAULT_HOST.format(named, host_of(value) or value, where, fix))
+    return host
+
+
+def gitlab_project(cwd, segment, hostname):
+    """The repository context of a GitLab project segment - an encoded path, a numeric id
+    (looked up on hostname), or the :id / :fullpath placeholder - checked against origin."""
+    if segment in (":id", ":fullpath"):
+        return forge_context(cwd, env_repo("glab"), "glab")
+    if segment.isdigit():
+        found = lookup_json(["glab", "api", "--hostname", hostname, "projects/" + segment],
+                            toplevel(cwd), "project " + segment)
+        named = found.get("path_with_namespace") if isinstance(found, dict) else None
+        if not isinstance(named, str) or not named:
+            raise Deny(LOOKUP.format("project " + segment))
+        return forge_context(cwd, named, "glab")
+    return forge_context(cwd, unquote(segment), "glab")
+
+
+def github_project(cwd, owner, repo):
+    if (owner, repo) == ("{owner}", "{repo}"):
+        return forge_context(cwd, env_repo("gh"), "gh")
+    return forge_context(cwd, owner + "/" + repo, "gh")
+
+
+def judge_create_gitlab_api(shape, ledger, segment, fields, host):
+    top, host, path = gitlab_project(shape["cwd"], segment, host)
+    if "target_project_id" in fields:
+        raise Deny(FORK.format("target_project_id"))
+    source = field(fields, "source_branch", top, ledger)
+    dest = field(fields, "target_branch", top, ledger)
+    if source is None or dest is None:
+        raise Deny(UNRESOLVED_API.format("glab"))
+    check(ledger, top, source, dest, "refs/remotes/origin/" + dest, remote_head(top, source),
+          "origin/{}...{}".format(dest, source), None)
+
+
+def judge_create_github_api(shape, ledger, owner, repo, fields):
+    top, host, path = github_project(shape["cwd"], owner, repo)
+    if "head_repo" in fields:
+        raise Deny(FORK.format("head_repo"))
+    source = field(fields, "head", top, ledger)
+    dest = field(fields, "base", top, ledger)
+    if source is None or dest is None:
+        raise Deny(UNRESOLVED_API.format("gh"))
+    if ":" in source:
+        who, _, source = source.partition(":")
+        if who.lower() != path.split("/")[0].lower():
+            raise Deny(FORK.format("head " + who + ":" + source))
+    check(ledger, top, source, dest, "refs/remotes/origin/" + dest, remote_head(top, source),
+          "origin/{}...{}".format(dest, source), None)
+
+
+def judge_api(shape, ledger):
+    """The REST create endpoints are checked; every other MR/PR write is denied. The call must
+    reach origin's host."""
+    tool, call = shape["tool"], parse_api(shape["args"])
+    endpoint = call["endpoint"] or ""
+    if is_graphql(endpoint):
+        raise Deny(NOT_MODELLED)
+    if not literal(endpoint):
+        raise Deny(LITERAL.format("the api endpoint", endpoint))
+    if call["body"]:
+        raise Deny(UNRESOLVED_API.format(tool))
+    host = check_api_host(shape["cwd"], tool, call)
+    path, query = endpoint_parts(endpoint)
+    fields = dict(query)
+    fields.update(call["fields"])
+    if tool == "glab":
+        m = GITLAB_MR.match(path)
+        if m and call["method"] == "POST" and m.group(2) is None:
+            return judge_create_gitlab_api(shape, ledger, m.group(1), fields, host)
+    else:
+        m = GITHUB_PR.match(path)
+        if m and call["method"] == "POST" and m.group(3) is None:
+            return judge_create_github_api(shape, ledger, m.group(1), m.group(2), fields)
+    raise Deny(UNRESOLVED_API.format(tool))
+
+
 def judge(shape, ledger):
-    if shape["kind"] == "merge-local":
+    kind = shape["kind"]
+    if kind == "merge-local":
         return judge_git_merge(shape, ledger)
+    if kind == "create":
+        return judge_create_cli(shape, ledger)
+    if kind == "api":
+        return judge_api(shape, ledger)
     raise Deny(NOT_MODELLED)
 
 

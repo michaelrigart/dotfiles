@@ -496,5 +496,164 @@ read -r verdict ms < <(timed "$ROOT/big-plain.json")
 is "F13 and one with no gated verb is allowed at once" \
    "$verdict $([ "$ms" -lt 2000 ] && echo fast || echo "slow:${ms}ms")" "allow fast"
 
+echo "H. creating an MR/PR"
+# glab answers the one lookup creation makes, a numeric project id; anything else fails, so an
+# unexpected call shows up as a deny rather than passing silently. The host a call reaches is
+# its --hostname, else glab's host variables, else origin's; on another host, project 4242 is
+# ELSEWHERE_PATH.
+STUB="$ROOT/stub"; mkdir -p "$STUB"
+cat > "$STUB/glab" <<'SH'
+#!/bin/sh
+printf 'glab %s\n' "$*" >> "$CALLS"
+host="${GITLAB_HOST:-${GITLAB_URI:-${GL_HOST:-forge.example}}}"
+if [ "$1" = api ] && [ "$2" = --hostname ]; then host="$3"; shift 3; set -- api "$@"; fi
+path="${PROJECT_PATH:-acme/app}"
+[ "$host" = forge.example ] || path="${ELSEWHERE_PATH:-$path}"
+case "$*" in
+  "api projects/4242") printf '{"id":4242,"path_with_namespace":"%s"}\n' "$path" ;;
+  *) exit 1 ;;
+esac
+SH
+printf '#!/bin/sh\nprintf "gh %%s\\n" "$*" >> "$CALLS"\nexit 1\n' > "$STUB/gh"
+chmod +x "$STUB/glab" "$STUB/gh"
+export PATH="$STUB:$PATH"
+FW="$ROOT/work/app-feature"; git -C "$W" worktree add -q "$FW" feature
+is "H1 a branch not yet on origin is denied" "$(decision "$W" 'glab mr create --source-branch feature --target-branch main --fill --yes')" deny
+is "H2 saying to publish it" "$(reason "$W" 'glab mr create -s feature -b main' | grep -c 'is not on origin')" 1
+publish feature
+is "H3 glab mr create, approved" "$(decision "$W" 'glab mr create -s feature -b main --fill --yes')" allow
+is "H4 glab mr new, = forms" "$(decision "$W" 'glab mr new --source-branch=feature --target-branch=main')" allow
+is "H5 gh pr create" "$(decision "$W" 'gh pr create --head feature --base main --title "Land feature" --body-file /tmp/body.md')" allow
+is "H6 gh pr new, short flags" "$(decision "$W" 'gh pr new -H feature -B main')" allow
+is "H7 the source defaults to the current branch" "$(decision "$FW" 'glab mr create --target-branch main --fill')" allow
+is "H8 a # inside a quoted title is a value, not a comment" "$(decision "$W" 'glab mr create --title "Land it # 12" -s feature -b main')" allow
+is "H9 the GitLab REST create" "$(decision "$W" 'glab api -X POST projects/acme%2Fapp/merge_requests -f source_branch=feature -f target_branch=main -f title=x')" allow
+is "H10 by numeric project id, POST implied by the fields" "$(decision "$W" 'glab api projects/4242/merge_requests -f source_branch=feature -f target_branch=main')" allow
+is "H11 by the :id placeholder, the source as :branch" "$(decision "$FW" 'glab api --method POST projects/:id/merge_requests -F source_branch=:branch -f target_branch=main')" allow
+is "H12 the GitHub REST create" "$(decision "$W" 'gh api repos/acme/app/pulls -f head=feature -f base=main -f title=x')" allow
+is "H13 with the {owner}/{repo} placeholders and an owner:branch head" "$(decision "$W" "gh api -X POST 'repos/{owner}/{repo}/pulls' -f head=acme:feature -f base=main")" allow
+is "H14 -R naming origin's project" "$(decision "$W" 'gh pr create -R acme/app --head feature --base main')" allow
+is "H15 gh -R with the host" "$(decision "$W" 'gh pr create -R forge.example/acme/app --head feature --base main')" allow
+is "H16 -R as a URL" "$(decision "$W" 'glab mr create -R https://forge.example/acme/app.git -s feature -b main')" allow
+is "H17 cd <path> && glab mr create is checked in that path" "$(decision "$ROOT/norepo" "cd $W && glab mr create -s feature -b main")" allow
+
+echo "I. the destination is part of the approval"
+git -C "$W" branch release main && publish release
+is "I1 the same change proposed into another branch is denied" "$(decision "$W" 'glab mr create -s feature -b release')" deny
+r="$(reason "$W" 'glab mr create -s feature -b release')"
+is "I2 because nothing on record approves it there" "$(printf '%s' "$r" | grep -c 'no full-range pre-merge review of this change is on record')" 1
+rng="$(printf '%s\n' "$r" | sed -n 's/.*--diff \([^ ]*\) <body-file>.*/\1/p')"
+is "I3 the deny names the range against origin's destination" "$rng" "origin/release...feature"
+review "$W" "$rng" approve
+is "I4 and that dispatch, run as named, opens the gate" "$(decision "$W" 'glab mr create -s feature -b release')" allow
+is "I5 a CLI creation without --target-branch is denied" "$(decision "$W" 'glab mr create -s feature --fill')" deny
+is "I6 naming the flag" "$(reason "$W" 'glab mr create -s feature --fill' | grep -c -- '--target-branch')" 1
+is "I7 gh without --base is denied" "$(decision "$W" 'gh pr create --head feature --fill')" deny
+is "I8 naming the flag" "$(reason "$W" 'gh pr create --head feature --fill' | grep -c -- '--base')" 1
+is "I9 --target-branch twice is denied" "$(decision "$W" 'glab mr create -s feature -b main -b release')" deny
+is "I10 glab mr create --auto-merge is a deferred merge" "$(decision "$W" 'glab mr create -s feature -b main --auto-merge')" deny
+is "I11 a destination origin does not have is denied" "$(decision "$W" 'glab mr create -s feature -b ghost')" deny
+is "I12 saying to fetch" "$(reason "$W" 'glab mr create -s feature -b ghost' | grep -c 'not available locally; fetch it')" 1
+is "I13 a source in a variable is denied" "$(decision "$W" 'glab mr create -s "$BRANCH" -b main')" deny
+
+echo "J. creation reads the remote head"
+printf 'five\n' >> "$FW/b.txt"; git -C "$FW" commit -q -am "an unreviewed change"
+publish feature                                   # origin now holds an unreviewed head
+printf 'six\n' >> "$FW/b.txt"; git -C "$FW" commit -q -am "fixed locally"
+review "$W" main...feature approve                # only the local head is approved
+is "J1 a creation whose remote head differs from the approved local branch is denied" "$(decision "$W" 'glab mr create -s feature -b main')" deny
+publish feature
+is "J2 once origin has the approved head, it is allowed" "$(decision "$W" 'glab mr create -s feature -b main')" allow
+OTHER="$ROOT/other"; git clone -q "$ORIGIN" "$OTHER"
+git -C "$OTHER" switch -q -c remote-only; printf 'r\n' > "$OTHER/r.txt"; git -C "$OTHER" add r.txt; git -C "$OTHER" commit -q -m "remote only"
+git -C "$ORIGIN" fetch -q "$OTHER" +refs/heads/remote-only:refs/heads/remote-only
+is "J3 a remote head that is not available locally is denied" "$(decision "$W" 'glab mr create -s remote-only -b main')" deny
+is "J4 saying to fetch" "$(reason "$W" 'glab mr create -s remote-only -b main' | grep -c 'not available locally; fetch it')" 1
+
+echo "K. the project and forks"
+is "K1 -R naming another project is denied" "$(decision "$W" 'glab mr create -R other/app -s feature -b main')" deny
+is "K2 saying to run from its checkout" "$(reason "$W" 'glab mr create -R other/app -s feature -b main' | grep -c "Run it from that project's checkout")" 1
+is "K3 an API path naming another project" "$(decision "$W" 'glab api -X POST projects/other%2Fapp/merge_requests -f source_branch=feature -f target_branch=main')" deny
+is "K4 a GitHub fork head" "$(decision "$W" 'gh pr create --head someone:feature --base main')" deny
+is "K5 a glab head repository" "$(decision "$W" 'glab mr create -H someone/app -s feature -b main')" deny
+is "K6 a GitLab target_project_id" "$(decision "$W" 'glab api -X POST projects/:id/merge_requests -f source_branch=feature -f target_branch=main -f target_project_id=9')" deny
+git -C "$W" remote add upstream 'git@forge.example:upstream/app.git'
+is "K7 several remotes and no project named is denied" "$(decision "$W" 'gh pr create --head feature --base main')" deny
+is "K8 naming origin's project with -R is allowed" "$(decision "$W" 'gh pr create -R acme/app --head feature --base main')" allow
+git -C "$W" remote remove upstream
+is "K9 outside a repository, creation is denied" "$(decision "$ROOT/norepo" 'gh pr create --head feature --base main')" deny
+is "K10 -R naming another host is denied" "$(decision "$W" 'gh pr create -R evil.example/acme/app --head feature --base main')" deny
+is "K11 -R as a URL on another host is denied" "$(decision "$W" 'glab mr create -R https://evil.example/acme/app -s feature -b main')" deny
+is "K12 glab api --hostname on another host is denied" \
+   "$(decision "$W" 'glab api --hostname evil.example -X POST projects/acme%2Fapp/merge_requests -f source_branch=feature -f target_branch=main')" deny
+is "K13 gh api --hostname on another host is denied" \
+   "$(decision "$W" 'gh api --hostname evil.example repos/acme/app/pulls -f head=feature -f base=main')" deny
+is "K14 glab api --hostname naming origin's host is allowed" \
+   "$(decision "$W" 'glab api --hostname forge.example -X POST projects/acme%2Fapp/merge_requests -f source_branch=feature -f target_branch=main')" allow
+is "K15 and gh api" "$(decision "$W" 'gh api --hostname forge.example repos/acme/app/pulls -f head=feature -f base=main')" allow
+is "K16 an absolute GitLab endpoint on another host is denied" \
+   "$(decision "$W" 'glab api -X POST https://evil.example/api/v4/projects/acme%2Fapp/merge_requests -f source_branch=feature -f target_branch=main')" deny
+is "K17 an absolute GitHub endpoint on another host is denied" \
+   "$(decision "$W" 'gh api -X POST https://evil.example/api/v3/repos/acme/app/pulls -f head=feature -f base=main')" deny
+is "K18 an absolute endpoint on origin's host is allowed" \
+   "$(decision "$W" 'gh api -X POST https://forge.example/api/v3/repos/acme/app/pulls -f head=feature -f base=main')" allow
+# Without --hostname, gh api goes to GH_HOST, else to the one host gh's hosts.yml lists, else to
+# github.com; glab api to GITLAB_HOST, GITLAB_URI or GITLAB_URL, else to a remote's host.
+GHCREATE='gh api repos/acme/app/pulls -f head=feature -f base=main'
+GLCREATE='glab api -X POST projects/acme%2Fapp/merge_requests -f source_branch=feature -f target_branch=main'
+is "K19 gh api with no GH_HOST goes to github.com, not origin's host" "$(GH_HOST= decision "$W" "$GHCREATE")" deny
+is "K20 the deny names origin's host to pass" "$(GH_HOST= reason "$W" "$GHCREATE" | grep -c -- '--hostname forge.example')" 1
+is "K21 a stray GH_HOST is denied" "$(GH_HOST=github.example decision "$W" "$GHCREATE")" deny
+is "K22 --hostname naming origin's host outranks it" "$(GH_HOST=github.example decision "$W" "gh api --hostname forge.example ${GHCREATE#gh api }")" allow
+mkdir -p "$GH_CONFIG_DIR"; printf 'forge.example:\n    user: t\n    git_protocol: ssh\n' > "$GH_CONFIG_DIR/hosts.yml"
+is "K23 gh's one configured host is its default" "$(GH_HOST= decision "$W" "$GHCREATE")" allow
+printf 'github.com:\n    user: t\n' >> "$GH_CONFIG_DIR/hosts.yml"
+is "K24 with two, the default is github.com again" "$(GH_HOST= decision "$W" "$GHCREATE")" deny
+# The same with origin on github.com: gh's one configured host elsewhere takes the call there.
+git -C "$W" config --add "url.$ORIGIN.insteadOf" 'git@github.com:acme/app.git'
+git -C "$W" remote set-url origin 'git@github.com:acme/app.git'
+printf 'forge.example:\n    user: t\n' > "$GH_CONFIG_DIR/hosts.yml"
+is "K25 an origin on github.com, and gh's one configured host elsewhere" "$(GH_HOST= decision "$W" "$GHCREATE")" deny
+printf 'github.com:\n    user: t\n' > "$GH_CONFIG_DIR/hosts.yml"
+is "K26 and that one host github.com" "$(GH_HOST= decision "$W" "$GHCREATE")" allow
+git -C "$W" remote set-url origin 'git@forge.example:acme/app.git'
+git -C "$W" config --unset "url.$ORIGIN.insteadOf" 'github'
+rm "$GH_CONFIG_DIR/hosts.yml"
+git -C "$W" remote add mirror 'git@forge.example:acme/app-mirror.git'
+is "K27 glab api with every remote on origin's host" "$(decision "$W" "$GLCREATE")" allow
+is "K28 GITLAB_HOST on another host is denied" "$(GITLAB_HOST=gitlab.com decision "$W" "$GLCREATE")" deny
+is "K29 so is GITLAB_URL" "$(GITLAB_URL=https://gitlab.com decision "$W" "$GLCREATE")" deny
+is "K30 GITLAB_URI naming origin's host is allowed" "$(GITLAB_URI=https://forge.example decision "$W" "$GLCREATE")" allow
+is "K31 --hostname naming origin's host outranks a stray GITLAB_HOST" \
+   "$(GITLAB_HOST=gitlab.com decision "$W" "glab api --hostname forge.example ${GLCREATE#glab api }")" allow
+git -C "$W" remote set-url mirror 'git@gitlab.com:acme/app.git'
+is "K32 a remote on another host is denied" "$(decision "$W" "$GLCREATE")" deny
+is "K33 naming origin's host to pass" "$(reason "$W" "$GLCREATE" | grep -c -- '--hostname forge.example')" 1
+is "K34 --hostname naming origin's host is allowed" "$(decision "$W" "glab api --hostname forge.example ${GLCREATE#glab api }")" allow
+git -C "$W" remote remove mirror
+# A CLI verb reaches the host its -R names. A bare OWNER/REPO, GH_REPO or GITLAB_REPO takes the
+# CLI's default host, which must be origin's too.
+is "K35 gh -R without a host, gh's default host elsewhere" \
+   "$(GH_HOST=github.example decision "$W" 'gh pr create -R acme/app --head feature --base main')" deny
+is "K36 naming the host-qualified -R to pass" \
+   "$(GH_HOST=github.example reason "$W" 'gh pr create -R acme/app --head feature --base main' | grep -c -- '-R forge.example/acme/app')" 1
+is "K37 glab -R without a host, glab's default host gitlab.com" \
+   "$(GLAB_CONFIG_DIR="$ROOT/glab-none" decision "$W" 'glab mr create -R acme/app -s feature -b main')" deny
+is "K38 glab's config naming origin's host" "$(decision "$W" 'glab mr create -R acme/app -s feature -b main')" allow
+is "K39 a host variable outranks the config" "$(GITLAB_HOST=gitlab.com decision "$W" 'glab mr create -R acme/app -s feature -b main')" deny
+mkdir -p "$W/.git/glab-cli" && printf 'host: gitlab.com\n' > "$W/.git/glab-cli/config.yml"
+is "K40 so does the repository's own glab config" "$(decision "$W" 'glab mr create -R acme/app -s feature -b main')" deny
+rm -r "$W/.git/glab-cli"
+is "K41 GH_REPO naming another project is denied" "$(GH_REPO=other/app decision "$W" 'gh pr create --head feature --base main')" deny
+is "K42 so is GITLAB_REPO" "$(GITLAB_REPO=other/app decision "$W" 'glab mr create -s feature -b main')" deny
+is "K43 GH_REPO naming origin's project is allowed" "$(GH_REPO=acme/app decision "$W" 'gh pr create --head feature --base main')" allow
+is "K44 GITLAB_API_HOST on another host is denied" "$(GITLAB_API_HOST=api.other.example decision "$W" 'glab mr create -s feature -b main')" deny
+is "K45 for an api call too" "$(GITLAB_API_HOST=api.other.example decision "$W" "$GLCREATE")" deny
+is "K46 glab reads -R HOST/PATH as a group path on its default host: another project" \
+   "$(decision "$W" 'glab mr create -R forge.example/acme/app -s feature -b main')" deny
+# A numeric project id is looked up on origin's host, never on the host the environment picks.
+is "K47 a project id is looked up on origin's host" \
+   "$(GITLAB_HOST=other.example PROJECT_PATH=other/app ELSEWHERE_PATH=acme/app decision "$W" 'glab api -X POST https://forge.example/api/v4/projects/4242/merge_requests -f source_branch=feature -f target_branch=main')" deny
+
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))
