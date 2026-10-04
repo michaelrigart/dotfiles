@@ -7,20 +7,22 @@
 # Design: docs/superpowers/specs/2026-10-02-xreview-receipt-binding-design.md, section 3.6.
 #
 # Gated: MR/PR creation and agent-run merges - glab mr create|new|merge|accept, gh pr
-# create|new|merge, their REST forms through glab api / gh api, GraphQL mutations that create
-# or merge (denied outright), and a local git merge into the default branch. Each opens only
-# when the latest full-range pre-merge review of that exact change, for that destination,
-# approved it. The change is named by a content fingerprint, so any content change after the
-# approval closes the gate again, while a clean rebase keeps it open. The receipts live in one
-# ledger per repository, shared by all its worktrees (xreview-ledger.py beside this file).
+# create|new|merge, their REST forms through glab api / gh api, and a local git merge into the
+# default branch. Each opens only when the latest full-range pre-merge review of that exact
+# change, for that destination, approved it. GraphQL mutations that create or merge, glab mr
+# for and gh pr revert are denied outright. The change is named by a content fingerprint, so
+# any content change after the approval closes the gate again, while a clean rebase keeps it
+# open. The receipts live in one ledger per repository, shared by all its worktrees
+# (xreview-ledger.py beside this file).
 #
 # This shell front is the fast path. The hook fires on EVERY Bash call, so a payload that
-# names none of create, new, merge, accept, pulls or graphql, or none of glab, gh or git,
-# costs no subprocess at all. It matches each word as the raw JSON payload can spell it, with
-# quotes, backslashes and line continuations allowed between its letters: g''it, mer""ge and
-# mer\<newline>ge all name their verb. A payload holding an ANSI-C $'...' string, which can
-# spell any word with escapes, always goes on. Everything else goes to xreview-guard.py
-# beside this file, which owns the grammar and the checks and fails closed on a gated shape.
+# names none of create, new, merge, accept, pulls, graphql or revert (nor mr together with
+# for), or none of glab, gh or git, costs no subprocess at all. It matches each word as the
+# raw JSON payload can spell it, with quotes, backslashes and line continuations allowed
+# between its letters: g''it, mer""ge and mer\<newline>ge all name their verb. A payload
+# holding an ANSI-C $'...' string, which can spell any word with escapes, always goes on.
+# Everything else goes to xreview-guard.py beside this file, which owns the grammar and the
+# checks and fails closed on a gated shape.
 #
 # The bypass is XREVIEW_GUARD=off, for Michael's explicit use only: in this hook's
 # environment, or anywhere in the command (the only place a model can write it).
@@ -50,7 +52,7 @@ spells() {
 }
 case "$payload" in
   *"\$'"*) ;;
-  *) spells create new merge accept pulls graphql || exit 0
+  *) spells create new merge accept pulls graphql revert || { spells mr && spells for; } || exit 0
      spells glab gh git || exit 0 ;;
 esac
 

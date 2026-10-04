@@ -1,8 +1,8 @@
 #!/usr/bin/python3
 # The pre-merge gate: its command grammar and its checks. xreview-guard.sh beside this file
-# runs it for a payload that mentions create, new, merge, accept, pulls or graphql and one of
-# glab, gh or git. Design: docs/superpowers/specs/2026-10-02-xreview-receipt-binding-design.md,
-# section 3.6.
+# runs it for a payload that mentions create, new, merge, accept, pulls, graphql or revert (or
+# mr with for) and one of glab, gh or git. Design:
+# docs/superpowers/specs/2026-10-02-xreview-receipt-binding-design.md, section 3.6.
 #
 # Reads the PreToolUse payload on stdin. Prints ONE hookSpecificOutput deny object, or
 # nothing. It never asks, and it never allows on doubt: a gated shape it cannot complete is
@@ -14,6 +14,9 @@
 #   [cd <literal path> &&] [sudo] glab mr create|new|merge|accept [options]
 #   [cd <literal path> &&] [sudo] gh pr create|new|merge [options]
 #   [cd <literal path> &&] [sudo] glab|gh api [options] <endpoint>   (an MR/PR write, or graphql)
+#
+# glab mr for (new-for, create-for) and gh pr revert are gated too, and always denied: each
+# proposes a branch the forge makes itself, which no review can have seen.
 #
 # Any word may be a command word: one after a wrapper (timeout 30, caffeinate -i, xcrun,
 # find -exec, xargs, sudo -u root), a zsh precommand modifier (noglob, repeat 1), a keyword
@@ -141,14 +144,27 @@ UNPINNED = ("Pre-merge gate: a forge merge must pin the head it merges. Its head
 FULL_SHA = "Pre-merge gate: pin the head with a full commit id, not {}."
 NOT_ONE = "Pre-merge gate: {} open merge requests come from {}; name the one to merge by number."
 ONE_TARGET = "Pre-merge gate: name one {} to merge."
-GRAPHQL = ("Pre-merge gate: this GraphQL call creates or merges an MR/PR, enables auto-merge, or "
-           "carries a query the gate cannot read. Use the forms the gate checks: glab mr "
-           "create|merge, gh pr create|merge, or the REST merge_requests/pulls endpoints.")
+GRAPHQL = ("Pre-merge gate: this GraphQL call creates, updates, reverts, merges or enqueues an "
+           "MR/PR, merges a branch, enables auto-merge, or carries a query the gate cannot read. "
+           "Use the forms the gate checks: glab mr create|merge, gh pr create|merge, or the REST "
+           "merge_requests/pulls endpoints; edit an MR/PR with glab mr update or gh pr edit.")
 OTHER_URL = ("Pre-merge gate: the {} {} is not on this checkout's origin ({}/{}). Run the merge "
              "from that project's checkout, or name the MR/PR by number.")
 QUEUED = ("Pre-merge gate: this merge would go through {}: it would be enqueued, or set to merge "
           "once checks pass - a deferred merge, which the gate never allows, since nothing can pin "
           "what finally lands. A merge through a queue or a train is Michael's to run.")
+MERGE_FLAG = ("Pre-merge gate: {0} is not among the flags the gate allows for {1}: it could "
+              "merge past the forge's own checks, or defer or change the merge, in a way the "
+              "gate does not read. Run the command without it.")
+BRANCH_MERGE = ("Pre-merge gate: this {} api call writes to a merges endpoint, which merges one "
+                "branch into another with no MR/PR, so no review can bind it. Propose the branch "
+                "as an MR/PR, and merge that pinned once its pre-merge review approves it.")
+QUERY_STRING = ("Pre-merge gate: this gh api write carries a query string ({}). gh sends -f/-F "
+                "fields in the request body, and GitHub may not read a write's query string, so "
+                "the gate reads only the body. Pass each field with -f instead.")
+FORGE_MADE = ("Pre-merge gate: {0} creates an MR/PR from a branch the forge makes itself, which "
+              "no review can have seen, so the gate never allows it. Make the branch, push it, "
+              "and once its pre-merge review approves it, propose it with {1}.")
 
 
 class Deny(Exception):
@@ -653,12 +669,19 @@ MERGE_CONTROL = {"--abort", "--quit", "--continue"}
 CLI_VERBS = {
     ("glab", "mr", "create"): "create", ("glab", "mr", "new"): "create",
     ("glab", "mr", "merge"): "merge", ("glab", "mr", "accept"): "merge",
+    ("glab", "mr", "for"): "forge-made", ("glab", "mr", "new-for"): "forge-made",
+    ("glab", "mr", "create-for"): "forge-made",
     ("gh", "pr", "create"): "create", ("gh", "pr", "new"): "create",
-    ("gh", "pr", "merge"): "merge",
+    ("gh", "pr", "merge"): "merge", ("gh", "pr", "revert"): "forge-made",
 }
-MUTATIONS = re.compile(r"\b(mergeRequestCreate|mergeRequestAccept|mergeRequestSetAutoMerge|"
-                       r"createPullRequest|mergePullRequest|enablePullRequestAutoMerge)\b")
-NAMES_MR_PATH = re.compile(r"(^|/)(merge_requests|pulls)(/|$)")
+# The GraphQL mutations that create, update, revert, merge or enqueue an MR/PR, merge a branch
+# with no PR, or turn auto-merge on. An update can retarget, from arguments a variable may
+# carry, so it is denied by name. Every other mutation (review threads, comments) is allowed.
+MUTATIONS = re.compile(r"\b(mergeRequestCreate|mergeRequestUpdate|mergeRequestAccept|"
+                       r"mergeRequestSetAutoMerge|createPullRequest|updatePullRequest|"
+                       r"revertPullRequest|mergePullRequest|enqueuePullRequest|"
+                       r"enablePullRequestAutoMerge|mergeBranch)\b")
+NAMES_MR_PATH = re.compile(r"(^|/)(merge_requests|pulls|merges)(/|$)")
 API_VALUE = {"-X", "--method", "-f", "--raw-field", "-F", "--field", "--form", "-H", "--header",
              "--input", "--hostname", "-q", "--jq", "-t", "--template", "--cache", "-p",
              "--preview", "--output", "-R", "--repo"}
@@ -733,8 +756,9 @@ def is_graphql(endpoint):
 
 
 def api_gated(call):
-    """A GraphQL call carrying an MR/PR create, merge or auto-merge mutation, or a query the
-    gate cannot read; or a POST, PUT or PATCH to a path naming merge_requests or pulls."""
+    """A GraphQL call carrying one of MUTATIONS, or a query the gate cannot read; or a POST,
+    PUT or PATCH to a path naming merge_requests, pulls or merges (a branch merged with no
+    PR)."""
     endpoint = call["endpoint"] or ""
     if is_graphql(endpoint):
         return call["body"] or bool(MUTATIONS.search(" ".join(call["fields"].values())))
@@ -792,9 +816,9 @@ def reordered(tool, rest):
 
 def gated_verb(words):
     """The gated verb that words (a command word and its arguments) spell, as {tool, kind,
-    args}, or None. kind is merge-local (git merge), create, merge or api; args are the words
-    after the verb, with an option written before the noun (glab -R x mr ..., glab -R x api
-    ...) kept in front.
+    args}, or None. kind is merge-local (git merge), create, forge-made, merge or api; args
+    are the words after the verb, with an option written before the noun (glab -R x mr ...,
+    glab -R x api ...) kept in front.
     Help is exempt only as the first word after the verb, and a merge's --abort, --quit or
     --continue only as its sole argument: anywhere else either may be an option's value. The
     gate checks glab and gh only in its own order - [-R <project>] noun verb, or api right
@@ -1494,12 +1518,30 @@ def judge_create_github_api(shape, ledger, owner, repo, fields):
 GLAB_MERGE_VALUE = {"-m", "--message", "--sha", "--squash-message", "-R", "--repo"}
 GH_MERGE_VALUE = {"-A", "--author-email", "-b", "--body", "-F", "--body-file",
                   "--match-head-commit", "-t", "--subject", "-R", "--repo"}
+# The flags a merge allows, per CLI (glab 1.120, gh 2.102); any other is denied by name. Denied
+# on purpose: gh's --admin (it merges past required reviews and checks) and glab's hidden
+# --when-pipeline-succeeds. glab's --auto-merge is read by the deferred-merge check, which
+# allows it only when it is off.
+GLAB_MERGE_ALLOWED = {"--sha", "--auto-merge", "-m", "--message", "-s", "--squash",
+                      "--squash-message", "-r", "--rebase", "-d", "--remove-source-branch", "-y",
+                      "--yes", "-R", "--repo"}
+GH_MERGE_ALLOWED = {"--match-head-commit", "-m", "--merge", "-r", "--rebase", "-s", "--squash",
+                    "-t", "--subject", "-b", "--body", "-F", "--body-file", "-A", "--author-email",
+                    "-d", "--delete-branch", "-R", "--repo"}
 GH_VIEW_FIELDS = ("baseRefName,headRefName,headRefOid,isCrossRepository,headRepository,"
                   "headRepositoryOwner")
-PR_URL = re.compile(r"^/(.+)/pull/(\d+)/?$")
-MR_URL = re.compile(r"^/(.+)/-/merge_requests/(\d+)/?$")
+# The CLIs' own patterns for the path of a PR/MR URL (gh 2.102's and glab 1.120's, read from
+# their binaries): each takes the number before any trailing path (/files, /diffs, /commits),
+# and glab takes the /-/ as optional.
+PR_URL = re.compile(r"^/([^/]+/[^/]+)/pull/(\d+)(.*$)")
+MR_URL = re.compile(r"^(/(?:[^-][^/]+/){2,})+(?:-/)?merge_requests/(\d+)(?:/.*)?$")
 MERGE_QUEUE = ("query($owner:String!,$name:String!,$branch:String!){repository(owner:$owner,"
                "name:$name){mergeQueue(branch:$branch){id}}}")
+BRANCH_MERGES = re.compile(r"(^|/)merges(/|$)")
+FORGE_MADE_FORMS = {
+    "glab": ("glab mr for", "glab mr create --source-branch <branch> --target-branch <dest>"),
+    "gh": ("gh pr revert", "gh pr create --head <branch> --base <dest>"),
+}
 
 
 def explicitly_off(values):
@@ -1516,7 +1558,8 @@ def url_number(target, host, path, pattern, what):
     a URL can name any repository on any forge."""
     parts = urlsplit(target)
     m = pattern.match(parts.path)
-    if not m or (parts.hostname or "").lower() != host or m.group(1).lower() != path.lower():
+    if (not m or (parts.hostname or "").lower() != host
+            or m.group(1).strip("/").lower() != path.lower()):
         raise Deny(OTHER_URL.format(what, target, host, path))
     return m.group(2)
 
@@ -1606,10 +1649,15 @@ def merge_pinned(ledger, top, source, dest, head, pin, hint):
 
 
 def judge_merge_cli(shape, ledger):
-    """glab mr merge|accept [<n>|<branch>|<url>], gh pr merge [<n>|<url>|<branch>]: pinned,
-    immediate, from origin's own project, and the destination read from the forge."""
+    """glab mr merge|accept [<n>|!<n>|<branch>|<url>], gh pr merge [<n>|<url>|<branch>]:
+    pinned, immediate, from origin's own project, and the destination read from the forge.
+    Only the flags in GLAB_MERGE_ALLOWED and GH_MERGE_ALLOWED may be given. gh pr merge
+    --disable-auto, with no other flag but -R, turns auto-merge off and merges nothing."""
     tool = shape["tool"]
     flags, pos = parse_flags(shape["args"], GLAB_MERGE_VALUE if tool == "glab" else GH_MERGE_VALUE)
+    if (tool == "gh" and flag_on(flags.get("--disable-auto"))
+            and set(flags) <= {"--disable-auto", "-R", "--repo"}):
+        return
     named = one(flags, ("-R", "--repo"), "-R/--repo") or env_repo(tool)
     top, host, path = forge_context(shape["cwd"], named, tool)
     check_cli_host(tool, top, host, path, named)
@@ -1624,8 +1672,18 @@ def judge_merge_cli(shape, ledger):
         if not explicitly_off(flags.get("--auto-merge")) or flag_on(flags.get("--when-pipeline-succeeds")):
             raise Deny(DEFERRED.format("glab mr merge without --auto-merge=false",
                                        "glab mr merge <n> --sha <head> --auto-merge=false"))
+    elif flag_on(flags.get("--auto")):
+        raise Deny(DEFERRED.format("gh pr merge --auto", "gh pr merge <n> --match-head-commit <head>"))
+    allowed, verb = ((GLAB_MERGE_ALLOWED, "glab mr merge") if tool == "glab"
+                     else (GH_MERGE_ALLOWED, "gh pr merge"))
+    for flag in flags:
+        if flag not in allowed:
+            raise Deny(MERGE_FLAG.format(flag, verb))
+    if tool == "glab":
         if target is not None and "://" in target:
             target = url_number(target, host, path, MR_URL, "MR")
+        elif target is not None and re.fullmatch(r"![0-9]+", target):
+            target = target[1:]                        # glab reads !7 as MR 7
         number = target if target and target.isdigit() else None
         branch = None if number else (target or current_source(ledger, top, "the MR number"))
         project = quote(path, safe="")
@@ -1634,8 +1692,6 @@ def judge_merge_cli(shape, ledger):
         pin = one(flags, ("--sha",), "--sha")
         hint = "glab mr merge " + (iid or "<n>") + " --sha {} --auto-merge=false"
     else:
-        if flag_on(flags.get("--auto")):
-            raise Deny(DEFERRED.format("gh pr merge --auto", "gh pr merge <n> --match-head-commit <head>"))
         if target is not None and "://" in target:
             target = url_number(target, host, path, PR_URL, "PR")
         owner, _, name = path.partition("/")
@@ -1670,16 +1726,22 @@ def judge_merge_github_api(shape, ledger, owner, repo, number, fields, host):
 
 
 def judge_api(shape, ledger):
-    """The REST create and merge endpoints are checked; GraphQL and every other MR/PR write
-    are denied. The call must reach origin's host."""
+    """The REST create and merge endpoints are checked; GraphQL, the merges endpoint and every
+    other MR/PR write are denied. The call must reach origin's host. gh sends a write's fields
+    in its body, and GitHub may not read a write's query string, so a gh write carrying one is
+    denied; glab's query fields are read with its body fields, as GitLab reads both."""
     tool, call = shape["tool"], parse_api(shape["args"])
     endpoint = call["endpoint"] or ""
     if is_graphql(endpoint):
         raise Deny(GRAPHQL)
+    if BRANCH_MERGES.search(endpoint_parts(endpoint)[0]):
+        raise Deny(BRANCH_MERGE.format(tool))
     if not literal(endpoint):
         raise Deny(LITERAL.format("the api endpoint", endpoint))
     if call["body"]:
         raise Deny(UNRESOLVED_API.format(tool))
+    if tool == "gh" and "?" in endpoint:
+        raise Deny(QUERY_STRING.format(endpoint))
     host = check_api_host(shape["cwd"], tool, call)
     path, query = endpoint_parts(endpoint)
     fields = dict(query)
@@ -1706,6 +1768,8 @@ def judge(shape, ledger):
         return judge_git_merge(shape, ledger)
     if kind == "create":
         return judge_create_cli(shape, ledger)
+    if kind == "forge-made":
+        raise Deny(FORGE_MADE.format(*FORGE_MADE_FORMS[shape["tool"]]))
     if kind == "merge":
         return judge_merge_cli(shape, ledger)
     return judge_api(shape, ledger)
