@@ -190,6 +190,12 @@ task's requirements include these.
   project other than origin's denied; glab api also checks glab's default host; `gh pr
   create` must name `--head`; every new deny test pins its reason; a failed branch lookup is
   not called a detached HEAD; inline YAML comments are dropped.
+- The Task 7 review (fix round 2) ruled: model cobra's flag order - when any reading of
+  options alone before a word makes it a gated noun and verb (or `api`), the command must be in
+  the canonical form, only `-R`/`--repo` before the noun, noun and verb adjacent, `api` right
+  after the tool, or it is denied as not plain, for the merge verbs too; `check_resolved`
+  calls git itself, rc 1 being no match and any other failure or a timeout a deny; `-f=false`
+  reads as pflag reads it; Task 8's `judge_merge_cli` uses `current_source()`.
 - **Creation** reads `git ls-remote <remote> refs/heads/<source>`. The source repository must
   be the checkout's `origin`, so forks are denied.
 - **Forge merges:**
@@ -492,6 +498,12 @@ Each one stays within the spec's goals.
       quotes included; a `case` pattern's `)` does not end a substitution.
     - `--help`/`-h` exempts a command only as the first word after the verb, and `--abort`,
       `--quit` and `--continue` only as a merge's sole argument.
+    - glab and gh (cobra) take a subcommand's options before its name and between its words
+      (`glab -s other mr create`, `gh pr --head other create`, `glab -X POST api …`), and
+      which options take a value cannot be read from the text. So the gate checks them only in
+      its own order - `[-R <project>] noun verb`, or `api` right after the tool - and any
+      reading in another order that spells a gated verb is denied, naming that order (Task 7
+      review, fix round 2). Reads stay allowed: `gh pr list --search merge`.
     - Substitutions (coordinator, before round 2): the body of every `$(…)` and backtick
       substitution is scanned as a command, recursively, outside single quotes and comments,
       double-quoted or not. So is each substitution in a here-document body whose delimiter is
@@ -3252,12 +3264,19 @@ git commit -m "Write xreview receipts to each target repository's ledger, once p
     JSON, an internal error).
   - `gated_verb(words) -> dict | None`, as
     `{"tool": "git" | "glab" | "gh", "kind": "merge-local" | "create" | "merge" | "api", "args": [...]}`.
+    glab and gh are checked only in the gate's own order, `[-R <project>] noun verb` or `api`
+    right after the tool (`only_repo`). cobra takes a subcommand's options before its name and
+    between its words, so `reordered(tool, rest)` reads every word after options alone
+    (`only_options`) as a possible noun or `api`, and every later word after options alone as
+    a possible verb; a gated verb found that way is kind `reordered`, which `parse_plain`
+    denies with `REORDERED`, naming the canonical form (Task 7 fix round 2).
   - `parse_api(args) -> dict` with `endpoint, method, fields, body, hostname, repo` (an
     `-R`/`--repo` wherever it stands; `gated_verb` hands an api call the options written
     before `api` too, Task 7 fix round 1);
     `endpoint_parts`; `is_graphql`; `api_gated`.
   - `parse_plain(tokens, cwd) -> dict | None`, which adds `cwd`.
-  - `parse_flags(args, takes_value) -> (dict, list)`.
+  - `parse_flags(args, takes_value) -> (dict, list)`; a short flag's `=value` is read as
+    pflag reads it (`-f=false` is `--fill` off).
   - `run(argv, cwd=None) -> str | None`; `toplevel(cwd) -> str`, which raises `Deny`.
   - `check(ledger, top, source, dest, dest_rev, tip, dispatch_range, merge_hint)`: returns on
     allow, raises `Deny` otherwise.
@@ -3444,6 +3463,9 @@ EOF
 ) | tr a-z A-Z)")" allow
 is "A31 a ) inside a parameter expansion is text" \
    "$(decision "$W" 'echo "$(echo ${x%)})"') $(decision "$W" 'git log --format="${fmt:-%h (%s)}"')" "allow allow"
+is "A32 reads whose options name merge stay allowed, whatever their order" \
+   "$(decision "$W" 'gh pr list --search merge') $(decision "$W" 'glab mr list --merged') $(decision "$W" 'gh pr view 12 --json title,mergedAt') $(decision "$W" 'glab mr view 7 --comments') $(decision "$W" 'gh -R acme/app pr view 1')" \
+   "allow allow allow allow allow"
 
 echo "B. a gated verb must be a plain command"
 is "B1 a chain that switches branch first" "$(decision "$W" 'git switch main && git merge feature')" deny
@@ -3627,6 +3649,18 @@ is "B85 a ) in \${x//)/} or \${x:-)}" \
 is "B86 the same in an expanding here-document's substitution" "$(decision "$W" 'cat <<EOF
 $(echo ${x//)/}; git merge feature)
 EOF')" deny
+# glab and gh (cobra) take a subcommand's options before its name and between its words; the
+# gate checks them only in its own order, so any other order that could spell a gated verb is
+# denied, naming that order.
+order() { reason "$W" "$1" | grep -c -F -- "$2"; }
+is "B87 glab with a creation's options before or inside mr create, even -y alone" \
+   "$(order 'glab -s other mr create -b main -t T --yes' 'Write it as glab [-R <project>] mr create')$(order 'glab mr -s other create -b main -t T --yes' 'Write it as glab [-R <project>] mr create')$(order 'glab -b main mr create -s other -t T --yes' 'Write it as glab [-R <project>] mr create')$(order 'glab -y mr create -s feature -b main -t T' 'Write it as glab [-R <project>] mr create')" 1111
+is "B88 glab with an api call's options before api" \
+   "$(order 'glab -X POST api projects/:id/merge_requests -f source_branch=other -f target_branch=main' 'Write it as glab api [options] <endpoint>')$(order 'glab -f source_branch=other api -X POST projects/:id/merge_requests -f target_branch=main' 'Write it as glab api [options] <endpoint>')" 11
+is "B89 gh the same" \
+   "$(order 'gh --head other pr create --base main -t T -b B' 'Write it as gh [-R <project>] pr create')$(order 'gh pr --head other create --base main -t T -b B' 'Write it as gh [-R <project>] pr create')$(order 'gh -X POST api repos/acme/app/pulls -f head=other -f base=main' 'Write it as gh api [options] <endpoint>')" 111
+is "B90 and the merge verbs" \
+   "$(order 'glab --sha abc mr merge 5' 'Write it as glab [-R <project>] mr merge')$(order 'gh pr --match-head-commit abc merge 5' 'Write it as gh [-R <project>] pr merge')" 11
 
 echo "C. git merge into the default branch"
 is "C1 an unreviewed merge into main is denied" "$(decision "$W" 'git merge feature')" deny
@@ -3924,6 +3958,9 @@ UNPARSEABLE = ("Pre-merge gate: this command cannot be parsed (unbalanced quotes
                "propose or merge a change. Fix the quoting, and run the verb as a plain command.")
 MALFORMED = ("Pre-merge gate: the hook's payload is not valid JSON, and its text may propose or "
              "merge a change, so the command is refused. Retry it.")
+REORDERED = ("Pre-merge gate: {0} takes a subcommand's options before its name and between its "
+             "words, so this could run {0} {1}, which the gate checks only in its own order. Write "
+             "it as {2}, with every other option after it.")
 NO_BRANCH = ("Pre-merge gate: the current branch of {} cannot be read, so whether this merge "
              "lands on the default branch is unknown and it is refused. Retry it.")
 TIMED_OUT = "Pre-merge gate: the check did not finish in time, so the command is refused. Retry it."
@@ -4524,13 +4561,63 @@ def api_gated(call):
     return call["method"] in ("POST", "PUT", "PATCH") and bool(NAMES_MR_PATH.search(path))
 
 
+def only_options(words):
+    """Could cobra read words as options alone: each word an option, or the value of the
+    option before it?"""
+    after_option = False
+    for w in words:
+        if w.startswith("-") and w != "-":
+            after_option = True
+        elif after_option:
+            after_option = False
+        else:
+            return False
+    return True
+
+
+def only_repo(words):
+    """Are words nothing but -R/--repo options with their values?"""
+    i = 0
+    while i < len(words):
+        w = words[i]
+        if w in FORGE_VALUE_OPTS:
+            i += 2
+        elif w.startswith("--repo=") or (w.startswith("-R") and len(w) > 2):
+            i += 1
+        else:
+            return False
+    return True
+
+
+def reordered(tool, rest):
+    """The gated verb cobra could find in rest written out of the gate's order, as (noun, verb),
+    or None. cobra takes a subcommand's options before its name and between noun and verb, and
+    which options take a value cannot be read from the text, so every word after options alone
+    may be the noun, and every word after the noun and options alone may be the verb."""
+    noun = "mr" if tool == "glab" else "pr"
+    for k, word in enumerate(rest):
+        if word.startswith("-") or not only_options(rest[:k]):
+            continue
+        if word == "api" and api_gated(parse_api(rest[:k] + rest[k + 1:])):
+            return "api", ""
+        if word != noun:
+            continue
+        for j in range(k + 1, len(rest)):
+            if (not rest[j].startswith("-") and only_options(rest[k + 1:j])
+                    and (tool, noun, rest[j]) in CLI_VERBS):
+                return noun, rest[j]
+    return None
+
+
 def gated_verb(words):
     """The gated verb that words (a command word and its arguments) spell, as {tool, kind,
     args}, or None. kind is merge-local (git merge), create, merge or api; args are the words
     after the verb, with an option written before the noun (glab -R x mr ..., glab -R x api
     ...) kept in front.
     Help is exempt only as the first word after the verb, and a merge's --abort, --quit or
-    --continue only as its sole argument: anywhere else either may be an option's value."""
+    --continue only as its sole argument: anywhere else either may be an option's value. The
+    gate checks glab and gh only in its own order - [-R <project>] noun verb, or api right
+    after the tool; a gated verb cobra could find in another order is kind reordered."""
     if not words:
         return None
     tool, rest = command_name(words[0]), words[1:]
@@ -4545,17 +4632,21 @@ def gated_verb(words):
             return {"tool": "git", "kind": "merge-local", "args": rest}
         return None
     i = skip_options(rest, 0, FORGE_VALUE_OPTS)
-    if i + 1 < len(rest) and (tool, rest[i], rest[i + 1]) in CLI_VERBS:
+    canonical = only_repo(rest[:i])
+    if canonical and i + 1 < len(rest) and (tool, rest[i], rest[i + 1]) in CLI_VERBS:
         if rest[i + 2:i + 3] and rest[i + 2] in HELP:
             return None
         return {"tool": tool, "kind": CLI_VERBS[(tool, rest[i], rest[i + 1])],
                 "args": rest[:i] + rest[i + 2:]}
-    if i < len(rest) and rest[i] == "api":
-        if rest[i + 1:i + 2] and rest[i + 1] in HELP:
+    if i == 0 and rest[:1] == ["api"]:
+        if rest[1:2] and rest[1] in HELP:
             return None
-        args = rest[:i] + rest[i + 1:]
-        if api_gated(parse_api(args)):
-            return {"tool": tool, "kind": "api", "args": args}
+        if api_gated(parse_api(rest[1:])):
+            return {"tool": tool, "kind": "api", "args": rest[1:]}
+        return None
+    found = reordered(tool, rest)
+    if found is not None:
+        return {"tool": tool, "kind": "reordered", "args": rest, "verb": found}
     return None
 
 
@@ -4584,6 +4675,12 @@ def parse_plain(tokens, cwd):
     if not words or any(is_operator(w) for w in words):
         return None
     verb = gated_verb(words)
+    if verb is not None and verb["kind"] == "reordered":
+        noun, name = verb["verb"]
+        tool = verb["tool"]
+        form = ("{} api [options] <endpoint>".format(tool) if noun == "api"
+                else "{} [-R <project>] {} {} [options]".format(tool, noun, name))
+        raise Deny(REORDERED.format(tool, (noun + " " + name).strip(), form))
     if verb is not None:
         verb["cwd"] = cwd
     return verb
@@ -4619,6 +4716,9 @@ def parse_flags(args, takes_value):
                         i += 1
                         rest = args[i] if i < n else None
                     flags.setdefault(name, []).append(rest)
+                    break
+                if a[j + 1:j + 2] == "=":               # -f=false: pflag's value form
+                    flags.setdefault(name, []).append(a[j + 2:])
                     break
                 flags.setdefault(name, []).append(None)
                 j += 1
@@ -4945,7 +5045,7 @@ with:
 ```
 
 - [ ] **Step 7: Run them and confirm they pass.**
-  - `./tests/xreview-guard.test.sh`: expect `passed: 171  failed: 0`.
+  - `./tests/xreview-guard.test.sh`: expect `passed: 176  failed: 0`.
   - `./tests/xreview-skill.test.sh`: expect `passed: 76  failed: 0`.
   - `./tests/claude-settings.test.sh 2>&1 | tail -1`: expect `RESULT: 179 passed, 0 failed`.
 
@@ -4974,6 +5074,8 @@ git commit -m "Gate a git merge into the default branch on the exact change's ap
   - `forge_context(cwd, named, tool) -> (toplevel, host, path)`; with no project named it
     also calls `check_resolved(top, host, path)`: `remote.<name>.gh-resolved` and
     `remote.<name>.glab-resolved` must be `base` or origin's project (message `RESOLVED`);
+    `git config` exiting 1 means no such setting, and any other failure or a timeout denies
+    (`RESOLVED_UNREADABLE`);
   - `remote_head(top, branch) -> str`;
   - `current_source(ledger, top, name) -> str`: the current branch; a detached HEAD
     (`DETACHED`) and a failed or timed-out lookup (`BRANCH_LOOKUP`) are denied apart;
@@ -5203,8 +5305,8 @@ is "K55 gh must name --head: it could take the head from push configuration" \
    "$(denies "$W" 'gh pr create --base main -t T -b B' '--head <branch>')" 1
 # -R/--repo on an api call picks the project behind :id and the path: denied wherever it stands.
 GLMR='-X POST projects/:id/merge_requests -f source_branch=feature -f target_branch=main'
-is "K56 -R before api, after api, after the endpoint, and --repo=" \
-   "$(denies "$W" "glab -R other/app api $GLMR" 'on glab api picks')$(denies "$W" "glab api -R acme/app $GLMR" 'on glab api picks')$(denies "$W" 'glab api projects/:id/merge_requests -R other/app -X POST -f source_branch=feature -f target_branch=main' 'on glab api picks')$(denies "$W" 'glab api --repo=acme/app -X POST projects/acme%2Fapp/merge_requests -f source_branch=feature -f target_branch=main' 'on glab api picks')$(denies "$W" 'gh api -R acme/app repos/acme/app/pulls -f head=feature -f base=main' 'on gh api picks')" 11111
+is "K56 -R before api (not the gate's order), after api, after the endpoint, and --repo=" \
+   "$(denies "$W" "glab -R other/app api $GLMR" 'Write it as glab api [options] <endpoint>')$(denies "$W" "glab api -R acme/app $GLMR" 'on glab api picks')$(denies "$W" 'glab api projects/:id/merge_requests -R other/app -X POST -f source_branch=feature -f target_branch=main' 'on glab api picks')$(denies "$W" 'glab api --repo=acme/app -X POST projects/acme%2Fapp/merge_requests -f source_branch=feature -f target_branch=main' 'on glab api picks')$(denies "$W" 'gh api -R acme/app repos/acme/app/pulls -f head=feature -f base=main' 'on gh api picks')" 11111
 is "K57 a read with -R is no MR/PR write, and stays allowed" "$(decision "$W" 'glab api -R acme/app projects/:id/merge_requests/7')" allow
 # gh and glab remember a base project per remote; one other than origin's retargets a command
 # that names no project.
@@ -5234,11 +5336,25 @@ is "K64 a failed branch lookup is not called a detached HEAD" \
 git -C "$FW" switch -q --detach
 is "K65 a detached HEAD is" "$(denies "$FW" 'glab mr create --target-branch main' 'HEAD is detached')" 1
 git -C "$FW" switch -q feature
+# The remembered-project lookup fails closed: git config exits 1 only when there is none.
+cfgshim() { printf '%s\n' '#!/bin/sh' "case \"\$*\" in *\"config --get-regexp\"*) $1 ;; esac" "exec $REALGIT \"\$@\"" > "$WRAP/git"; chmod +x "$WRAP/git"; }
+cfgshim 'exit 3'
+is "K66 a git config that fails reading remembered projects is a deny" \
+   "$(PATH="$WRAP:$PATH" denies "$W" 'gh pr create --head feature --base main' 'cannot be read (git config failed')" 1
+cfgshim 'sleep 9; exit 0'
+is "K67 so is one that times out" \
+   "$(PATH="$WRAP:$PATH" denies "$W" 'gh pr create --head feature --base main' 'cannot be read (git config failed')" 1
+# pflag reads -f=false as --fill off.
+printf 'ahead\n' >> "$FW/b.txt"; git -C "$FW" commit -q -am "ahead of origin, never reviewed"
+is "K68 -f=false turns --fill off: nothing is pushed, origin's head is proposed" \
+   "$(decision "$FW" 'glab mr create -b main -t T -f=false --yes')" allow
+is "K69 while -f=true still pushes" "$(denies "$FW" 'glab mr create -b main -t T -f=true --yes' 'makes glab push')" 1
+git -C "$FW" reset -q --hard HEAD~1
 
 ```
 
 - [ ] **Step 2: Run it and confirm it fails.** `./tests/xreview-guard.test.sh`: expect
-  `passed: 212  failed: 58`. Every allow case in H-K fails, and so does every deny test
+  `passed: 217  failed: 62`. Every allow case in H-K fails, and so does every deny test
   that pins its reason (a flag, a fetch, a project, a host, a push, a remembered project, a
   branch lookup), because each creation is still denied with `NOT_MODELLED`.
 
@@ -5291,6 +5407,9 @@ NEED_HEAD = ("Pre-merge gate: name the source branch explicitly with --head <bra
              "does not read.")
 RESOLVED = ("Pre-merge gate: {0} is {1}, so a {2} command that names no project acts on {1}, not "
             "on origin's {3}. Name origin's project with -R {4}, or remove that setting.")
+RESOLVED_UNREADABLE = ("Pre-merge gate: the git configuration of {} cannot be read (git config "
+                       "failed or timed out), so the project a command naming none acts on is "
+                       "unknown. Retry it, or name origin's project with -R.")
 API_REPO = ("Pre-merge gate: -R/--repo ({1}) on {0} api picks the project the call acts on, which "
             "the gate does not check. Run it without -R, from the project's own checkout.")
 API_DEFAULT_HOST = ("Pre-merge gate: without --hostname, glab api falls back to its default host "
@@ -5393,9 +5512,19 @@ def forge_context(cwd, named, tool):
 def check_resolved(top, host, path):
     """gh and glab remember a base project per remote - remote.<name>.gh-resolved (gh repo
     set-default writes it) and remote.<name>.glab-resolved - and a command naming no project
-    acts on it. Each must be base or origin's project."""
-    out = run(["git", "-C", top, "config", "--get-regexp", r"^remote\..*\.(gh|glab)-resolved$"])
-    for line in (out or "").splitlines():
+    acts on it. Each must be base or origin's project. git config exits 1 when there is no
+    such setting; any other failure, or a timeout, is a deny."""
+    try:
+        p = subprocess.run(["git", "-C", top, "config", "--get-regexp",
+                            r"^remote\..*\.(gh|glab)-resolved$"], capture_output=True,
+                           timeout=CALL_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired):
+        raise Deny(RESOLVED_UNREADABLE.format(top))
+    if p.returncode == 1:
+        return
+    if p.returncode != 0:
+        raise Deny(RESOLVED_UNREADABLE.format(top))
+    for line in p.stdout.decode("utf-8", "replace").splitlines():
         key, _, value = line.partition(" ")
         cli = "gh" if key.endswith(".gh-resolved") else "glab"
         value = value.strip()
@@ -5833,7 +5962,7 @@ def judge(shape, ledger):
 ```
 
 - [ ] **Step 6: Run it and confirm it passes.** `./tests/xreview-guard.test.sh`: expect
-  `passed: 270  failed: 0`.
+  `passed: 279  failed: 0`.
 
 - [ ] **Step 7: Commit.** Check the branch, then:
 
@@ -5864,7 +5993,9 @@ git commit -m "Gate MR and PR creation on origin's head of the approved change"
   - `gitlab_merge_train(top, project, hostname)` and
     `github_merge_queue(top, host, owner, name, dest)` (message `QUEUED`);
   - `merge_pinned(ledger, top, source, dest, head, pin, hint)`;
-  - `judge_merge_cli`, `judge_merge_gitlab_api(shape, ledger, segment, number, fields, host)`,
+  - `judge_merge_cli`, which takes the MR of the current branch through Task 7's
+    `current_source()`, so a failed lookup is not called a detached HEAD;
+    `judge_merge_gitlab_api(shape, ledger, segment, number, fields, host)`,
     `judge_merge_github_api(shape, ledger, owner, repo, number, fields, host)`;
   - the final `judge_api` and `judge`. `NOT_MODELLED` is removed.
 - The forge lookups, exactly as the test stubs answer them. `<h>` is always origin's host
@@ -6073,12 +6204,16 @@ is "P37 GH_REPO naming another project is denied" "$(GH_REPO=other/app decision 
 is "P38 so is GITLAB_REPO" "$(GITLAB_REPO=other/app decision "$W" "glab mr merge 7 --sha $REBASED --auto-merge=false")" deny
 is "P39 and GITLAB_API_HOST on another host" "$(GITLAB_API_HOST=api.other.example decision "$W" "glab mr merge 7 --sha $REBASED --auto-merge=false")" deny
 
+# The MR of the current branch: a failed branch lookup is not called a detached HEAD.
+shim 'exit 128'
+is "P40 glab mr merge with no MR named, the branch lookup failing" \
+   "$(PATH="$WRAP:$PATH" reason "$FW" "glab mr merge --sha $REBASED --auto-merge=false" | grep -c -F 'cannot be read (the lookup failed')" 1
 ```
 
 - [ ] **Step 2: Run it and confirm it fails.** `./tests/xreview-guard.test.sh`: expect
-  `passed: 323  failed: 25`. The failures are L1-L9, M2, M6, N2, N5, N7, N9, P2, P4, P6, P11,
-  P19, P20, P22, P24, P31 and P33: merges are still denied with `NOT_MODELLED`, or as unresolved API
-  writes.
+  `passed: 332  failed: 26`. The failures are L1-L9, M2, M6, N2, N5, N7, N9, P2, P4, P6, P11,
+  P19, P20, P22, P24, P31, P33 and P40: merges are still denied with `NOT_MODELLED`, or as
+  unresolved API writes.
 
 - [ ] **Step 3: Replace the placeholder message.** In `dot_claude/xreview-guard.py`, replace
   the line that starts `NOT_MODELLED = ` with:
@@ -6242,9 +6377,7 @@ def judge_merge_cli(shape, ledger):
         if target is not None and "://" in target:
             target = url_number(target, host, path, MR_URL, "MR")
         number = target if target and target.isdigit() else None
-        branch = None if number else (target or ledger.current_branch(top))
-        if number is None and branch is None:
-            raise Deny(DETACHED.format(top, "the MR number"))
+        branch = None if number else (target or current_source(ledger, top, "the MR number"))
         project = quote(path, safe="")
         source, dest, head, iid = gitlab_mr(top, project, number, branch, host)
         gitlab_merge_train(top, project, host)
@@ -6331,7 +6464,7 @@ def judge(shape, ledger):
 ```
 
 - [ ] **Step 5: Run it and confirm it passes.** `./tests/xreview-guard.test.sh`: expect
-  `passed: 348  failed: 0`. Then `grep -c NOT_MODELLED dot_claude/xreview-guard.py` must print
+  `passed: 358  failed: 0`. Then `grep -c NOT_MODELLED dot_claude/xreview-guard.py` must print
   `0`.
 
 - [ ] **Step 6: Commit.** Check the branch, then:
@@ -6642,9 +6775,9 @@ owns it.
   - Expected:
     - every suite `ok`;
     - `29 suites run, 8 skipped (see the needs: lines)`;
-    - `all 29 suites passed (3426 assertions)`.
+    - `all 29 suites passed (3436 assertions)`.
   - The eight skipped suites carry a `# test-requires:` line.
-  - Report the total as passed/total, `3426/3426`, copied from the runner's last line.
+  - Report the total as passed/total, `3436/3436`, copied from the runner's last line.
 
 - [ ] **Step 2: Confirm the deployed set.** Run
   `chezmoi managed --include=files | grep -c -E '^\.claude/xreview-(guard|ledger)\.py$'` and
