@@ -184,6 +184,12 @@ task's requirements include these.
     (missing an `esac` keeps a substitution open, the safe direction), and a `$( )` frame
     tracks `${…}` depth, inside which `(`, `)` and `case` are text (an unmatched `${` keeps
     the substitution open).
+- The Task 7 review (fix round 1) ruled: creation flags are an allowlist per CLI, any other
+  denied by name; glab's `--fill`/`-f`/`--push` only when the push changes nothing; `-R` on
+  `glab api`/`gh api` denied anywhere; `--recover` denied; a `gh-resolved`/`glab-resolved`
+  project other than origin's denied; glab api also checks glab's default host; `gh pr
+  create` must name `--head`; every new deny test pins its reason; a failed branch lookup is
+  not called a detached HEAD; inline YAML comments are dropped.
 - **Creation** reads `git ls-remote <remote> refs/heads/<source>`. The source repository must
   be the checkout's `origin`, so forks are denied.
 - **Forge merges:**
@@ -429,9 +435,38 @@ Each one stays within the spec's goals.
         the merge does, on the host just checked.
 18. **When the command does not name a project,** `origin` must be the checkout's only
     remote. With several remotes the CLI could pick another project; the deny tells the agent
-    to pass the `-R` that carries origin's host (`explicit_repo`).
+    to pass the `-R` that carries origin's host (`explicit_repo`). gh and glab also remember a
+    base project per remote, `remote.<name>.gh-resolved` (written by `gh repo set-default`)
+    and `remote.<name>.glab-resolved`; either one naming another project than origin's, and
+    not `base`, is denied (Task 7 review, fix round 1; measured with gh 2.102 and glab
+    1.120). An `-R`/`--repo` on `glab api` or `gh api`, before `api`, after it or after the
+    endpoint, is denied: glab resolves `:id` from it. Without `--hostname` and with no host
+    variable, glab api also needs glab's configured default host to be origin's, because
+    glab falls back to it when it has no login for origin's host.
 19. **Every other `POST`, `PUT` or `PATCH` under `merge_requests` or `pulls` is denied,** MR
     notes and approvals included (spec-literal). The CLI equivalents are not gated.
+19a. **Creation flags are an allowlist (Task 7 review, fix round 1).** Any flag of `glab mr
+    create`/`new` or `gh pr create`/`new` outside it is denied by name, so a flag the gate
+    has not weighed cannot change what is proposed. Decided from glab 1.120's and gh 2.102's
+    `--help`:
+    - allowed, both: title, description/body and their files, draft, labels, assignees,
+      reviewers, milestone, `--template`, `--attach`, the destination and source flags, and
+      `-R` (origin only); glab also `-y`/`--yes`, `--wip`, `--no-editor`, `--signoff`,
+      `--remove-source-branch`, `--squash-before-merge`, `--allow-collaboration` (forks are
+      denied anyway), `--copy-issue-labels` and `--auto-merge=false`; gh also `-p`/
+      `--project`, `--no-maintainer-edit`, `-e`/`--editor`, `--dry-run` (it pushes only
+      without `--head`, which gh must name) and `--fill`/`--fill-first`/`--fill-verbose`
+      (title and body only, with `--head`);
+    - glab's `--fill`/`-f` and `--push` push the checkout's HEAD to the source branch, so they
+      are allowed only when HEAD already is origin's head of the source; otherwise the deny
+      says to push first. `--fill-commit-body` goes with `--fill`;
+    - denied: `--recover` (both CLIs: it replays options from a file the agent can write),
+      `-w`/`--web` (the browser completes the creation, outside the gate), glab's
+      `-i`/`--related-issue` (the issue can supply the branch) and `--create-source-branch`
+      (it acts only on a branch origin lacks, which the gate denies anyway); glab's
+      `-H`/`--head` is a fork (`FORK`), and `--auto-merge` a deferred merge (`DEFERRED`).
+    - `gh pr create` must name `--head`: without it gh takes the head from push
+      configuration (`pushRemote`, `@{push}`), which the gate does not read.
 
 **The guard: grammar**
 
@@ -3217,7 +3252,9 @@ git commit -m "Write xreview receipts to each target repository's ledger, once p
     JSON, an internal error).
   - `gated_verb(words) -> dict | None`, as
     `{"tool": "git" | "glab" | "gh", "kind": "merge-local" | "create" | "merge" | "api", "args": [...]}`.
-  - `parse_api(args) -> dict` with `endpoint, method, fields, body, hostname`;
+  - `parse_api(args) -> dict` with `endpoint, method, fields, body, hostname, repo` (an
+    `-R`/`--repo` wherever it stands; `gated_verb` hands an api call the options written
+    before `api` too, Task 7 fix round 1);
     `endpoint_parts`; `is_graphql`; `api_gated`.
   - `parse_plain(tokens, cwd) -> dict | None`, which adds `cwd`.
   - `parse_flags(args, takes_value) -> (dict, list)`.
@@ -4406,7 +4443,7 @@ MUTATIONS = re.compile(r"\b(mergeRequestCreate|mergeRequestAccept|mergeRequestSe
 NAMES_MR_PATH = re.compile(r"(^|/)(merge_requests|pulls)(/|$)")
 API_VALUE = {"-X", "--method", "-f", "--raw-field", "-F", "--field", "--form", "-H", "--header",
              "--input", "--hostname", "-q", "--jq", "-t", "--template", "--cache", "-p",
-             "--preview", "--output"}
+             "--preview", "--output", "-R", "--repo"}
 API_FIELD = {"-f": False, "--raw-field": False, "-F": True, "--field": True, "--form": True}
 
 
@@ -4419,8 +4456,10 @@ def skip_options(words, i, value_opts):
 def parse_api(args):
     """The parts of a glab/gh api call the gate reads: endpoint, method (the CLIs' default:
     POST once a field or a body is given, GET otherwise), fields (name -> last value), body
-    (True when the body or a typed field comes from a file or stdin) and hostname."""
-    call = {"endpoint": None, "method": None, "fields": {}, "body": False, "hostname": None}
+    (True when the body or a typed field comes from a file or stdin), hostname and repo (an
+    -R/--repo, wherever it stands: glab takes it before api, after it and after the endpoint)."""
+    call = {"endpoint": None, "method": None, "fields": {}, "body": False, "hostname": None,
+            "repo": None}
     i, n = 0, len(args)
     while i < n:
         a, name, value = args[i], None, None
@@ -4450,6 +4489,8 @@ def parse_api(args):
             call["body"] = True
         elif name == "--hostname":
             call["hostname"] = value
+        elif name in ("-R", "--repo"):
+            call["repo"] = value
         i += 1
     if call["method"] is None:
         call["method"] = "POST" if call["fields"] or call["body"] else "GET"
@@ -4486,7 +4527,8 @@ def api_gated(call):
 def gated_verb(words):
     """The gated verb that words (a command word and its arguments) spell, as {tool, kind,
     args}, or None. kind is merge-local (git merge), create, merge or api; args are the words
-    after the verb, with an option written before the noun (glab -R x mr ...) kept in front.
+    after the verb, with an option written before the noun (glab -R x mr ..., glab -R x api
+    ...) kept in front.
     Help is exempt only as the first word after the verb, and a merge's --abort, --quit or
     --continue only as its sole argument: anywhere else either may be an option's value."""
     if not words:
@@ -4511,8 +4553,9 @@ def gated_verb(words):
     if i < len(rest) and rest[i] == "api":
         if rest[i + 1:i + 2] and rest[i + 1] in HELP:
             return None
-        if api_gated(parse_api(rest[i + 1:])):
-            return {"tool": tool, "kind": "api", "args": rest[i + 1:]}
+        args = rest[:i] + rest[i + 1:]
+        if api_gated(parse_api(args)):
+            return {"tool": tool, "kind": "api", "args": args}
     return None
 
 
@@ -4928,14 +4971,19 @@ git commit -m "Gate a git merge into the default branch on the exact change's ap
     URL or scp-style address must name origin's host and path; otherwise the value must be
     origin's path, or for gh also `<origin host>/<path>`;
   - `explicit_repo(tool, host, path) -> str`: the `-R` value that carries origin's host;
-  - `forge_context(cwd, named, tool) -> (toplevel, host, path)`;
+  - `forge_context(cwd, named, tool) -> (toplevel, host, path)`; with no project named it
+    also calls `check_resolved(top, host, path)`: `remote.<name>.gh-resolved` and
+    `remote.<name>.glab-resolved` must be `base` or origin's project (message `RESOLVED`);
   - `remote_head(top, branch) -> str`;
+  - `current_source(ledger, top, name) -> str`: the current branch; a detached HEAD
+    (`DETACHED`) and a failed or timed-out lookup (`BRANCH_LOOKUP`) are denied apart;
   - `flag_on(values) -> bool`;
   - `field(fields, name, top, ledger) -> str | None`;
   - `lookup_json(argv, top, what)`;
   - `origin_host(cwd) -> str`; `host_of(value) -> str`; `set_values(names) -> list`;
     `config_dir(variable, name)`; `top_level(path) -> list | None`, the top-level
-    `(key, value)` lines of a YAML file, indented lines unread;
+    `(key, value)` lines of a YAML file, indented lines unread, a value unquoted or cut at an
+    inline `#` comment;
   - `gh_default_host() -> str | None`: `GH_HOST`, else the one top-level key of gh's
     `hosts.yml`, else `github.com`; `None` when that file cannot be read;
   - `glab_default_hosts(top) -> list | None`: every set `GITLAB_HOST`, `GITLAB_URI`,
@@ -4948,7 +4996,9 @@ git commit -m "Gate a git merge into the default branch on the exact change's ap
     That is the absolute endpoint's host (`api.<host>` accepted) and any `--hostname`;
     without either, `gh_default_host()` for gh, and for glab every set `GLAB_HOST_VARS`, or,
     with none set, every remote's host. Returns origin's host, which every lookup the command
-    needs is then given. Messages `OTHER_HOST` (it names `--hostname <origin host>`),
+    needs is then given. An `-R`/`--repo` on the call is denied (`API_REPO`), and glab with
+    no host variable also needs its configured default host to be origin's
+    (`API_DEFAULT_HOST`). Messages `OTHER_HOST` (it names `--hostname <origin host>`),
     `SEVERAL_HOSTS` and `UNREADABLE`;
   - `env_repo(tool) -> str | None`: `GITLAB_REPO` or `GH_REPO`, the project a verb takes
     without `-R`;
@@ -4957,6 +5007,10 @@ git commit -m "Gate a git merge into the default branch on the exact change's ap
     (message `DEFAULT_HOST`, naming `-R` with `explicit_repo`);
   - `gitlab_project(cwd, segment, hostname)`, which looks a numeric id up on `hostname`,
     and `github_project(cwd, owner, repo)`; placeholders take `env_repo`;
+  - `GLAB_CREATE_ALLOWED`, `GH_CREATE_ALLOWED` and `GLAB_PUSHING`: `judge_create_cli` denies
+    any other creation flag by name (`CREATE_FLAG`), needs gh's `--head` (`NEED_HEAD`), and
+    allows glab's `--fill`/`-f`/`--push` only when `git rev-parse HEAD` is origin's head of
+    the source (`PUSHES`);
   - `judge_create_cli`, `judge_create_gitlab_api(shape, ledger, segment, fields, host)`,
     `judge_create_github_api(shape, ledger, owner, repo, fields)` and `judge_api`.
     Until Task 8, `judge_api` checks the create endpoints only and denies the rest;
@@ -4992,7 +5046,7 @@ FW="$ROOT/work/app-feature"; git -C "$W" worktree add -q "$FW" feature
 is "H1 a branch not yet on origin is denied" "$(decision "$W" 'glab mr create --source-branch feature --target-branch main --fill --yes')" deny
 is "H2 saying to publish it" "$(reason "$W" 'glab mr create -s feature -b main' | grep -c 'is not on origin')" 1
 publish feature
-is "H3 glab mr create, approved" "$(decision "$W" 'glab mr create -s feature -b main --fill --yes')" allow
+is "H3 glab mr create, approved, --fill from a checkout whose HEAD is origin's" "$(decision "$FW" 'glab mr create -s feature -b main --fill --yes')" allow
 is "H4 glab mr new, = forms" "$(decision "$W" 'glab mr new --source-branch=feature --target-branch=main')" allow
 is "H5 gh pr create" "$(decision "$W" 'gh pr create --head feature --base main --title "Land feature" --body-file /tmp/body.md')" allow
 is "H6 gh pr new, short flags" "$(decision "$W" 'gh pr new -H feature -B main')" allow
@@ -5125,13 +5179,68 @@ is "K46 glab reads -R HOST/PATH as a group path on its default host: another pro
 # A numeric project id is looked up on origin's host, never on the host the environment picks.
 is "K47 a project id is looked up on origin's host" \
    "$(GITLAB_HOST=other.example PROJECT_PATH=other/app ELSEWHERE_PATH=acme/app decision "$W" 'glab api -X POST https://forge.example/api/v4/projects/4242/merge_requests -f source_branch=feature -f target_branch=main')" deny
+# denies <cwd> <command> <phrase>: 1 when the command is denied with phrase in its reason.
+denies() { reason "$1" "$2" | grep -c -F -- "$3"; }
+# glab's --fill and --push push this checkout's HEAD to the source branch: allowed only when
+# that push changes nothing, because HEAD already is origin's head of the source.
+is "K48 --fill from another branch's checkout would push its HEAD to feature" \
+   "$(denies "$W" 'glab mr create -s feature -b main --fill --yes' 'Push the branch to origin first')" 1
+printf 'ahead\n' >> "$FW/b.txt"; git -C "$FW" commit -q -am "ahead of origin, never reviewed"
+is "K49 --fill, -fy and --push with HEAD ahead of origin's feature" \
+   "$(denies "$FW" 'glab mr create -b main --fill' 'makes glab push')$(denies "$FW" 'glab mr create -b main -fy' 'makes glab push')$(denies "$FW" 'glab mr create -b main --push -t T --yes' 'makes glab push')" 111
+git -C "$FW" reset -q --hard HEAD~1
+is "K50 --push in step with origin pushes nothing, and is allowed" "$(decision "$FW" 'glab mr create -b main --push -t T --yes')" allow
+# Creation flags are an allowlist: any other flag is denied by name.
+is "K51 --recover replays options from a file the gate does not read" \
+   "$(denies "$W" 'glab mr create --recover -s feature -b main --yes' '--recover is not among')$(denies "$W" 'gh pr create --recover x --head feature --base main' '--recover is not among')" 11
+is "K52 so are --web, --related-issue, --create-source-branch and unknown flags" \
+   "$(denies "$W" 'glab mr create -s feature -b main --web' '--web is not among')$(denies "$W" 'glab mr create -s feature -b main -i 3' '-i is not among')$(denies "$W" 'glab mr create -s feature -b main --create-source-branch' '--create-source-branch is not among')$(denies "$W" 'gh pr create --head feature --base main -w' '-w is not among')$(denies "$W" 'gh pr create --head feature --base main --bogus' '--bogus is not among')" 11111
+is "K53 every allowed glab flag" \
+   "$(decision "$W" 'glab mr create -s feature -b main -t T -d D --description-file f.md -a me -l x,y -m 1 --reviewer r --template t --attach a.png --allow-collaboration --copy-issue-labels --draft --wip --fill-commit-body --no-editor --remove-source-branch --signoff --squash-before-merge --auto-merge=false -y')" allow
+is "K54 every allowed gh flag" \
+   "$(decision "$W" 'gh pr create -H feature -B main -t T -b B -F f.md -a me --attach a.png -l x -m M -p P -r r -T t -d --dry-run -e -f --fill-first --fill-verbose --no-maintainer-edit')" allow
+is "K55 gh must name --head: it could take the head from push configuration" \
+   "$(denies "$W" 'gh pr create --base main -t T -b B' '--head <branch>')" 1
+# -R/--repo on an api call picks the project behind :id and the path: denied wherever it stands.
+GLMR='-X POST projects/:id/merge_requests -f source_branch=feature -f target_branch=main'
+is "K56 -R before api, after api, after the endpoint, and --repo=" \
+   "$(denies "$W" "glab -R other/app api $GLMR" 'on glab api picks')$(denies "$W" "glab api -R acme/app $GLMR" 'on glab api picks')$(denies "$W" 'glab api projects/:id/merge_requests -R other/app -X POST -f source_branch=feature -f target_branch=main' 'on glab api picks')$(denies "$W" 'glab api --repo=acme/app -X POST projects/acme%2Fapp/merge_requests -f source_branch=feature -f target_branch=main' 'on glab api picks')$(denies "$W" 'gh api -R acme/app repos/acme/app/pulls -f head=feature -f base=main' 'on gh api picks')" 11111
+is "K57 a read with -R is no MR/PR write, and stays allowed" "$(decision "$W" 'glab api -R acme/app projects/:id/merge_requests/7')" allow
+# gh and glab remember a base project per remote; one other than origin's retargets a command
+# that names no project.
+git -C "$W" config remote.origin.gh-resolved other/app
+is "K58 gh-resolved naming another project" \
+   "$(denies "$W" 'gh pr create --head feature --base main' 'remote.origin.gh-resolved is other/app')$(denies "$W" "gh api 'repos/{owner}/{repo}/pulls' -f head=feature -f base=main" 'remote.origin.gh-resolved is other/app')" 11
+is "K59 naming origin's project with -R is allowed" "$(decision "$W" 'gh pr create -R acme/app --head feature --base main')" allow
+git -C "$W" config remote.origin.gh-resolved base
+is "K60 base, or origin's own project, is allowed" "$(decision "$W" 'gh pr create --head feature --base main')" allow
+git -C "$W" config --unset remote.origin.gh-resolved
+git -C "$W" config remote.origin.glab-resolved other/app
+is "K61 glab-resolved naming another project" \
+   "$(denies "$W" 'glab mr create -s feature -b main' 'remote.origin.glab-resolved is other/app')$(denies "$W" "glab api $GLMR" 'remote.origin.glab-resolved is other/app')" 11
+git -C "$W" config --unset remote.origin.glab-resolved
+# Without --hostname, glab api falls back to its configured default host when it has no login
+# for origin's host.
+mkdir -p "$ROOT/glab-gitlab" && printf 'host: gitlab.com\n' > "$ROOT/glab-gitlab/config.yml"
+is "K62 glab api with glab's default host elsewhere" \
+   "$(GLAB_CONFIG_DIR="$ROOT/glab-gitlab" denies "$W" "$GLCREATE" 'falls back to its default host gitlab.com')" 1
+mkdir -p "$ROOT/glab-comment" && printf 'host: forge.example # the forge\n' > "$ROOT/glab-comment/config.yml"
+is "K63 an inline comment in glab's config is no part of the host" \
+   "$(GLAB_CONFIG_DIR="$ROOT/glab-comment" decision "$W" 'glab mr create -R acme/app -s feature -b main')" allow
+# A detached HEAD and a branch lookup that failed are denied apart.
+shim 'exit 128'
+is "K64 a failed branch lookup is not called a detached HEAD" \
+   "$(PATH="$WRAP:$PATH" denies "$FW" 'glab mr create --target-branch main' 'cannot be read (the lookup failed')" 1
+git -C "$FW" switch -q --detach
+is "K65 a detached HEAD is" "$(denies "$FW" 'glab mr create --target-branch main' 'HEAD is detached')" 1
+git -C "$FW" switch -q feature
 
 ```
 
 - [ ] **Step 2: Run it and confirm it fails.** `./tests/xreview-guard.test.sh`: expect
-  `passed: 211  failed: 41`. Every allow case in H-K fails, and so do the deny reasons naming a
-  flag, a fetch, a project or a host, because each creation is still denied with
-  `NOT_MODELLED`.
+  `passed: 212  failed: 58`. Every allow case in H-K fails, and so does every deny test
+  that pins its reason (a flag, a fetch, a project, a host, a push, a remembered project, a
+  branch lookup), because each creation is still denied with `NOT_MODELLED`.
 
 - [ ] **Step 3: Add the messages.** In `dot_claude/xreview-guard.py`, insert this block
   immediately above the line that starts `NOT_MODELLED = `:
@@ -5171,6 +5280,24 @@ DEFERRED = ("Pre-merge gate: {} is a deferred merge (auto-merge, or merge when t
             "waits. Wait for the pipeline, then merge immediately and pinned: {}.")
 LOOKUP = ("Pre-merge gate: the forge lookup of {} failed, so its destination is unknown and the "
           "merge is refused. Check that it exists and that the CLI is signed in, then retry.")
+CREATE_FLAG = ("Pre-merge gate: {0} is not among the flags the gate allows for {1}: it could "
+               "change what the MR/PR proposes, or where, in a way the gate does not read. Run "
+               "the command without it.")
+PUSHES = ("Pre-merge gate: {0} makes glab push this checkout's HEAD ({1}) to {2}, but origin's "
+          "{2} is {3}, so the MR would propose a head that was never reviewed. Push the branch "
+          "to origin first (git push), then retry; or create the MR without {0}.")
+NEED_HEAD = ("Pre-merge gate: name the source branch explicitly with --head <branch>. gh could "
+             "otherwise take it from push configuration (pushRemote, @{push}), which the gate "
+             "does not read.")
+RESOLVED = ("Pre-merge gate: {0} is {1}, so a {2} command that names no project acts on {1}, not "
+            "on origin's {3}. Name origin's project with -R {4}, or remove that setting.")
+API_REPO = ("Pre-merge gate: -R/--repo ({1}) on {0} api picks the project the call acts on, which "
+            "the gate does not check. Run it without -R, from the project's own checkout.")
+API_DEFAULT_HOST = ("Pre-merge gate: without --hostname, glab api falls back to its default host "
+                    "{0} when it has no login for origin's host {1}, so the call may go there. "
+                    "Name origin's host: --hostname {1}.")
+BRANCH_LOOKUP = ("Pre-merge gate: the current branch of {} cannot be read (the lookup failed or "
+                 "timed out), so the source branch is unknown. Retry it, or name it with {}.")
 UNRESOLVED_API = ("Pre-merge gate: this {} api call writes to an MR/PR path whose source, head or "
                   "destination the gate cannot read. Use the CLI (glab mr ..., gh pr ...) or the "
                   "REST create and merge endpoints with literal fields.")
@@ -5259,7 +5386,21 @@ def forge_context(cwd, named, tool):
         if remotes != ["origin"]:
             raise Deny(SEVERAL_REMOTES.format(", ".join(r for r in remotes if r != "origin"),
                                               explicit_repo(tool, host, path)))
+        check_resolved(top, host, path)
     return top, host, path
+
+
+def check_resolved(top, host, path):
+    """gh and glab remember a base project per remote - remote.<name>.gh-resolved (gh repo
+    set-default writes it) and remote.<name>.glab-resolved - and a command naming no project
+    acts on it. Each must be base or origin's project."""
+    out = run(["git", "-C", top, "config", "--get-regexp", r"^remote\..*\.(gh|glab)-resolved$"])
+    for line in (out or "").splitlines():
+        key, _, value = line.partition(" ")
+        cli = "gh" if key.endswith(".gh-resolved") else "glab"
+        value = value.strip()
+        if value and value != "base" and not same_project(value, host, path, cli):
+            raise Deny(RESOLVED.format(key, value, cli, path, explicit_repo(cli, host, path)))
 
 
 def remote_head(top, branch):
@@ -5285,6 +5426,24 @@ GH_CREATE_VALUE = {"-B", "--base", "-H", "--head", "-R", "--repo", "-a", "--assi
                    "--attach", "-b", "--body", "-F", "--body-file", "-l", "--label", "-m",
                    "--milestone", "-p", "--project", "--recover", "-r", "--reviewer", "-T",
                    "--template", "-t", "--title"}
+# The flags creation allows, per CLI (glab 1.120, gh 2.102); any other is denied by name. Denied
+# on purpose: --recover (replays options from a file), -w/--web (the browser finishes the
+# creation), glab's -i/--related-issue (the issue can supply the branch) and
+# --create-source-branch (only acts on a branch origin lacks, which the gate denies anyway).
+# glab's -H/--head is a fork (FORK). --fill and --push are glab's pushing flags (see below).
+GLAB_CREATE_ALLOWED = {"-s", "--source-branch", "-b", "--target-branch", "-R", "--repo", "-t",
+                       "--title", "-d", "--description", "--description-file", "-a",
+                       "--assignee", "-l", "--label", "-m", "--milestone", "--reviewer",
+                       "--template", "--attach", "--allow-collaboration", "--auto-merge",
+                       "--copy-issue-labels", "--draft", "--wip", "-f", "--fill",
+                       "--fill-commit-body", "--no-editor", "--push", "--remove-source-branch",
+                       "--signoff", "--squash-before-merge", "-y", "--yes"}
+GH_CREATE_ALLOWED = {"-B", "--base", "-H", "--head", "-R", "--repo", "-a", "--assignee", "--attach",
+                     "-b", "--body", "-F", "--body-file", "-l", "--label", "-m", "--milestone",
+                     "-p", "--project", "-r", "--reviewer", "-T", "--template", "-t", "--title",
+                     "-d", "--draft", "--dry-run", "-e", "--editor", "-f", "--fill",
+                     "--fill-first", "--fill-verbose", "--no-maintainer-edit"}
+GLAB_PUSHING = ("-f", "--fill", "--push")
 FALSE = ("false", "0", "f")
 FULL_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
@@ -5295,9 +5454,24 @@ def flag_on(values):
     return bool(values) and (values[-1] is None or values[-1].lower() not in FALSE)
 
 
+def current_source(ledger, top, name):
+    """The current branch, the source when none is named. A detached HEAD has none; a lookup
+    that failed or timed out says nothing. Both are denied, each with its own reason."""
+    branch = ledger.current_branch(top)
+    if branch is None:
+        if (ledger.git(top, "rev-parse", "--abbrev-ref", "HEAD") or "") == "HEAD":
+            raise Deny(DETACHED.format(top, name))
+        raise Deny(BRANCH_LOOKUP.format(top, name))
+    return branch
+
+
 def judge_create_cli(shape, ledger):
     """glab mr create|new, gh pr create|new: the source is --source-branch/--head or the
-    current branch, as origin has it; the destination must be named."""
+    current branch, as origin has it; the destination must be named. Only the flags in
+    GLAB_CREATE_ALLOWED and GH_CREATE_ALLOWED may be given. gh must name --head, because gh
+    would otherwise take the head from push configuration. glab's --fill and --push push this
+    checkout's HEAD to the source branch, so they are allowed only when that push changes
+    nothing: HEAD is already origin's head of the source."""
     tool = shape["tool"]
     flags, _ = parse_flags(shape["args"], GLAB_CREATE_VALUE if tool == "glab" else GH_CREATE_VALUE)
     named = one(flags, ("-R", "--repo"), "-R/--repo") or env_repo(tool)
@@ -5309,6 +5483,11 @@ def judge_create_cli(shape, ledger):
         if flag_on(flags.get("--auto-merge")):
             raise Deny(DEFERRED.format("glab mr create --auto-merge",
                                        "glab mr merge <n> --sha <head> --auto-merge=false"))
+    allowed = GLAB_CREATE_ALLOWED if tool == "glab" else GH_CREATE_ALLOWED
+    for name in flags:
+        if name not in allowed:
+            raise Deny(CREATE_FLAG.format(name, "glab mr create" if tool == "glab" else "gh pr create"))
+    if tool == "glab":
         source = one(flags, ("-s", "--source-branch"), "--source-branch")
         dest = one(flags, ("-b", "--target-branch"), "--target-branch")
         if dest is None:
@@ -5318,15 +5497,21 @@ def judge_create_cli(shape, ledger):
         dest = one(flags, ("-B", "--base"), "--base")
         if dest is None:
             raise Deny(NEED_DEST.format("--base <branch>"))
-        if source is not None and ":" in source:
+        if source is None:
+            raise Deny(NEED_HEAD)
+        if ":" in source:
             owner, _, source = source.partition(":")
             if owner.lower() != path.split("/")[0].lower():
                 raise Deny(FORK.format("--head " + owner + ":" + source))
     if source is None:
-        source = ledger.current_branch(top)
-        if source is None:
-            raise Deny(DETACHED.format(top, "--source-branch" if tool == "glab" else "--head"))
-    check(ledger, top, source, dest, "refs/remotes/origin/" + dest, remote_head(top, source),
+        source = current_source(ledger, top, "--source-branch")
+    head = remote_head(top, source)
+    pushing = [n for n in GLAB_PUSHING if tool == "glab" and flag_on(flags.get(n))]
+    if pushing:
+        local = (run(["git", "-C", top, "rev-parse", "HEAD"]) or "").strip()
+        if local != head:
+            raise Deny(PUSHES.format(pushing[0], local or "unknown", source, head))
+    check(ledger, top, source, dest, "refs/remotes/origin/" + dest, head,
           "origin/{}...{}".format(dest, source), None)
 
 
@@ -5342,9 +5527,7 @@ def field(fields, name, top, ledger):
         return None
     value = fields[name]
     if value in BRANCH_PLACEHOLDERS:
-        value = ledger.current_branch(top)
-        if value is None:
-            raise Deny(DETACHED.format(top, "the field " + name))
+        value = current_source(ledger, top, "the field " + name)
     if not value or not literal(value):
         raise Deny(LITERAL.format("the field " + name, value or "an empty value"))
     return value
@@ -5393,7 +5576,7 @@ def config_dir(variable, name):
 def top_level(path):
     """(key, value) of each top-level line of a YAML config file; [] when there is no such
     file, None when it cannot be read. Indented lines (a host's token among them) are skipped
-    unread."""
+    unread. A value is unquoted, or loses an inline # comment."""
     found = []
     try:
         with open(path, encoding="utf-8") as fh:
@@ -5401,7 +5584,12 @@ def top_level(path):
                 if line[:1] in ("", " ", "\t", "#", "\n", "-") or ":" not in line:
                     continue
                 key, _, value = line.partition(":")
-                found.append((key.strip().strip("'\""), value.strip().strip("'\"")))
+                value = value.strip()
+                if value[:1] in ("'", '"') and value.find(value[0], 1) > 0:
+                    value = value[1:value.find(value[0], 1)]
+                else:
+                    value = re.split(r"\s#", value, maxsplit=1)[0].strip()
+                found.append((key.strip().strip("'\""), value))
     except FileNotFoundError:
         return []
     except (OSError, UnicodeDecodeError):
@@ -5472,8 +5660,11 @@ def check_api_host(cwd, tool, call):
     GITLAB_URI, GL_HOST or GITLAB_URL, else from a remote on a host it is signed in to, so
     every remote must then be on origin's host. The guard reads its own environment: the
     command cannot set one, because an assignment or an env wrapper is not a plain command.
-    Returns origin's host: every lookup the command needs is sent there, with --hostname or a
-    host-qualified -R, never left to the environment."""
+    Without --hostname glab also needs its configured default host to be origin's. An -R/--repo
+    on the call is denied. Returns origin's host: every lookup the command needs is sent there,
+    with --hostname or a host-qualified -R, never left to the environment."""
+    if call["repo"] is not None:
+        raise Deny(API_REPO.format(tool, call["repo"]))
     top = toplevel(cwd)
     host = origin_host(top)
     where = host or "a local path"
@@ -5497,6 +5688,13 @@ def check_api_host(cwd, tool, call):
             if hosts is None or hosts - {host}:
                 raise Deny(SEVERAL_HOSTS.format(
                     ", ".join(sorted(hosts - {host})) if hosts else "unreadable", where))
+            # With no login for origin's host, glab falls back to its configured default host.
+            defaults = glab_default_hosts(top)
+            if defaults is None:
+                raise Deny(UNREADABLE.format("glab's config.yml", "--hostname " + where))
+            for value in defaults:
+                if host_of(value) != host:
+                    raise Deny(API_DEFAULT_HOST.format(host_of(value) or value, where))
     for value in chosen:
         if host_of(value) != host:
             raise Deny(OTHER_HOST.format(host_of(value) or value, where))
@@ -5635,7 +5833,7 @@ def judge(shape, ledger):
 ```
 
 - [ ] **Step 6: Run it and confirm it passes.** `./tests/xreview-guard.test.sh`: expect
-  `passed: 252  failed: 0`.
+  `passed: 270  failed: 0`.
 
 - [ ] **Step 7: Commit.** Check the branch, then:
 
@@ -5878,7 +6076,7 @@ is "P39 and GITLAB_API_HOST on another host" "$(GITLAB_API_HOST=api.other.exampl
 ```
 
 - [ ] **Step 2: Run it and confirm it fails.** `./tests/xreview-guard.test.sh`: expect
-  `passed: 305  failed: 25`. The failures are L1-L9, M2, M6, N2, N5, N7, N9, P2, P4, P6, P11,
+  `passed: 323  failed: 25`. The failures are L1-L9, M2, M6, N2, N5, N7, N9, P2, P4, P6, P11,
   P19, P20, P22, P24, P31 and P33: merges are still denied with `NOT_MODELLED`, or as unresolved API
   writes.
 
@@ -6133,7 +6331,7 @@ def judge(shape, ledger):
 ```
 
 - [ ] **Step 5: Run it and confirm it passes.** `./tests/xreview-guard.test.sh`: expect
-  `passed: 330  failed: 0`. Then `grep -c NOT_MODELLED dot_claude/xreview-guard.py` must print
+  `passed: 348  failed: 0`. Then `grep -c NOT_MODELLED dot_claude/xreview-guard.py` must print
   `0`.
 
 - [ ] **Step 6: Commit.** Check the branch, then:
@@ -6444,9 +6642,9 @@ owns it.
   - Expected:
     - every suite `ok`;
     - `29 suites run, 8 skipped (see the needs: lines)`;
-    - `all 29 suites passed (3408 assertions)`.
+    - `all 29 suites passed (3426 assertions)`.
   - The eight skipped suites carry a `# test-requires:` line.
-  - Report the total as passed/total, `3408/3408`, copied from the runner's last line.
+  - Report the total as passed/total, `3426/3426`, copied from the runner's last line.
 
 - [ ] **Step 2: Confirm the deployed set.** Run
   `chezmoi managed --include=files | grep -c -E '^\.claude/xreview-(guard|ledger)\.py$'` and
