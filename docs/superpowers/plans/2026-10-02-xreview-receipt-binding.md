@@ -6188,7 +6188,7 @@ echo "N. what the pin names"
 printf 'seven\n' >> "$FW/b.txt"; git -C "$FW" commit -q -am "never reviewed"
 UNREVIEWED="$(git -C "$FW" rev-parse HEAD)"; git -C "$FW" reset -q --hard HEAD~1
 is "N1 a pin whose fingerprint is unapproved is denied" "$(denies "$W" "gh pr merge 9 --match-head-commit $UNREVIEWED" 'no full-range pre-merge review of this change is on record')" 1
-is "N2 the deny names the pinned merge to run once approved" "$(reason "$W" "gh pr merge 9 --match-head-commit $UNREVIEWED" | grep -c "Then merge it pinned and immediate: gh pr merge 9 --match-head-commit $UNREVIEWED")" 1
+is "N2 the deny names the pinned merge to run once approved" "$(reason "$W" "gh pr merge 9 --match-head-commit $UNREVIEWED" | grep -c "Then merge it pinned and immediate: gh pr merge 9 --merge --match-head-commit $UNREVIEWED")" 1
 is "N3 a destination origin does not have is denied" "$(MR_TARGET=ghost2 denies "$W" "glab mr merge 7 --sha $HEAD_SHA --auto-merge=false" 'the destination ghost2 (refs/remotes/origin/ghost2) is not available locally')" 1
 git -C "$W" branch release2 main && publish release2
 is "N4 an MR retargeted to an unapproved destination is denied" "$(PR_BASE=release2 denies "$W" "gh pr merge 9 --match-head-commit $HEAD_SHA" 'feature -> release2')" 1
@@ -6567,7 +6567,7 @@ def judge_merge_cli(shape, ledger):
             raise Deny(DEFERRED.format("glab mr merge without --auto-merge=false",
                                        "glab mr merge <n> --sha <head> --auto-merge=false"))
     elif flag_on(flags.get("--auto")):
-        raise Deny(DEFERRED.format("gh pr merge --auto", "gh pr merge <n> --match-head-commit <head>"))
+        raise Deny(DEFERRED.format("gh pr merge --auto", "gh pr merge <n> --merge --match-head-commit <head>"))
     allowed, verb = ((GLAB_MERGE_ALLOWED, "glab mr merge") if tool == "glab"
                      else (GH_MERGE_ALLOWED, "gh pr merge"))
     for flag in flags:
@@ -6592,7 +6592,7 @@ def judge_merge_cli(shape, ledger):
         source, dest, head = github_pr(top, target, host + "/" + path, owner, name)
         github_merge_queue(top, host, owner, name, dest)
         pin = one(flags, ("--match-head-commit",), "--match-head-commit")
-        hint = "gh pr merge " + (target or "<n>") + " --match-head-commit {}"
+        hint = "gh pr merge " + (target or "<n>") + " --merge --match-head-commit {}"
     merge_pinned(ledger, top, source, dest, head, pin, hint)
 
 
@@ -6744,19 +6744,19 @@ with:
 for phrase in 'full range against the branch it will land on' '<dest>...<branch>' \
               'names its destination explicitly' 'never deferred' '--auto-merge=false' \
               '--sha <head>' '--match-head-commit <head>' 'fresh full-range round' \
-              '--diff <repo-path>:<range>' 'xreview/ledgers/'; do
+              '--diff <repo-path>:<range>' 'xreview/ledgers/' '--head <branch>'; do
   if grep -qF -- "$phrase" "$SKILL"; then
     _pass "the skill says '$phrase'"
   else _fail "the skill says '$phrase'" "missing"; fi
 done
-for flag in '"--auto-merge"' '"--sha"' '"--match-head-commit"' '"--target-branch"' '"--base"'; do
+for flag in '"--auto-merge"' '"--sha"' '"--match-head-commit"' '"--target-branch"' '"--base"' '"--head"'; do
   if grep -qF -- "$flag" <<<"$guard_code"; then
     _pass "the guard reads $flag"
   else _fail "the guard reads $flag" "the skill names a flag the guard never reads"; fi
 done
 for stale in 'advisory about freshness' '`glab mr create` / `gh pr create` in command position' \
              'local merges, pushes, forge web UIs'; do
-  if grep -qiF -- "$stale" "$GUARD" "$SKILL"; then
+  if grep -qiF -- "$stale" "$GUARD" "$ROOT/dot_claude/xreview-guard.py" "$SKILL"; then
     _fail "no '$stale' survives" "still present"
   else _pass "no '$stale' survives"; fi
 done
@@ -6798,8 +6798,8 @@ else _fail "the pre-merge gate's denies, old and new wording, count as xreview-g
 ```
 
 - [ ] **Step 3: Run them and confirm they fail.**
-  - `./tests/xreview-skill.test.sh`: expect `passed: 81  failed: 13`. The gate sentence fails,
-    so do the ten §3.7 phrases, and so do the two stale phrases still in the skill.
+  - `./tests/xreview-skill.test.sh`: expect `passed: 82  failed: 14`. The gate sentence fails,
+    so do the eleven §3.7 phrases, and so do the two stale phrases still in the skill.
   - `./tests/measure-interventions.test.sh`: expect `passed: 24  failed: 1`, which is the
     pre-merge-gate attribution.
 
@@ -6844,7 +6844,8 @@ which is normalized to the same thing; for a forge MR/PR the destination is orig
 branch against the default branch. A range that starts at a commit (`5c86f2c..<branch>`) is
 partial: it is recorded but never opens the gate, so point the reviewer at the new commits
 in the body, not in `--diff`. Every fix round needs a fresh full-range round: any change to
-the content after the approval closes the gate again, and a clean rebase does not. One
+the content after the approval closes the gate again, and a clean rebase over changes to
+other files does not. One
 review can cover several repositories, each with its own `--diff <repo-path>:<range>`:
 
 ```
@@ -6852,12 +6853,13 @@ xreview dispatch --checkpoint pre-merge --diff main...feat/x --diff ../api:main.
 ```
 
 **Land through the gate.** MR/PR creation names its destination explicitly
-(`glab mr create --target-branch <dest>`, `gh pr create --base <dest>`), from a branch
+(`glab mr create --target-branch <dest>`, `gh pr create --head <branch> --base <dest>`), from a branch
 already published to origin. A forge merge by an agent pins the head and is never deferred:
 wait for the pipeline, then merge immediately with
 `glab mr merge <n> --sha <head> --auto-merge=false` (glab otherwise turns auto-merge on
-while a pipeline runs) or `gh pr merge <n> --match-head-commit <head>`. Run each as a plain
-command of its own: a chain, a pipe or an environment assignment on the verb is denied.
+while a pipeline runs) or `gh pr merge <n> --merge --match-head-commit <head>`. Run each as
+a plain command of its own: a chain, a pipe or any other environment assignment on the verb
+is denied.
 ````
 
 Edit 3 - replace:
@@ -6880,7 +6882,9 @@ repository, shared by all its worktrees. An entry names the exact change reviewe
 fingerprint) and the branch it is meant to land on. A `PreToolUse` guard gates
 `glab mr create`/`new`, `gh pr create`/`new`, `glab mr merge`/`accept`, `gh pr merge`, their
 REST forms through `glab api`/`gh api`, and a local `git merge` into the default branch. It
-denies them unless the latest full-range `pre-merge` review of exactly that change, for that
+also denies GraphQL mutations that create, merge, enqueue or retarget, `glab mr for`,
+`gh pr revert`, and merges onto a branch with a merge queue or train. It
+denies the rest unless the latest full-range `pre-merge` review of exactly that change, for that
 destination, has the verdict `approve`. Spec and plan reviews never open it, a partial
 range never does, and neither does a newer pending review or a verdict of `changes`. That is
 the one part of this workflow prose cannot guarantee: a skipped review is otherwise
@@ -6934,7 +6938,7 @@ with:
 ```
 
 - [ ] **Step 6: Run them and confirm they pass.**
-  - `./tests/xreview-skill.test.sh`: expect `passed: 96  failed: 0`.
+  - `./tests/xreview-skill.test.sh`: expect `passed: 98  failed: 0`.
   - `./tests/measure-interventions.test.sh`: expect `passed: 25  failed: 0`.
 
 - [ ] **Step 7: Record the rollout in the safe-autonomy spec (§4).** Run `date +%F` and use
@@ -6983,9 +6987,9 @@ owns it.
   - Expected:
     - every suite `ok`;
     - `29 suites run, 8 skipped (see the needs: lines)`;
-    - `all 29 suites passed (3464 assertions)`.
+    - `all 29 suites passed (3466 assertions)`.
   - The eight skipped suites carry a `# test-requires:` line.
-  - Report the total as passed/total, `3464/3464`, copied from the runner's last line.
+  - Report the total as passed/total, `3466/3466`, copied from the runner's last line.
 
 - [ ] **Step 2: Confirm the deployed set.** Run
   `chezmoi managed --include=files | grep -c -E '^\.claude/xreview-(guard|ledger)\.py$'` and
