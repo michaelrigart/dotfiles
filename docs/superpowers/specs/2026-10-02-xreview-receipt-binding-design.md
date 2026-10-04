@@ -450,6 +450,15 @@ ruled in plan or code review, within §2's goals. The code and its tests are aut
   head the review never saw.
 - The `remote.*.gh-resolved`/`glab-resolved` keys and glab's default host are checked. Either
   can send a command that names no project or host to another one.
+- When a command names no project, origin must be the checkout's only remote. With several
+  remotes, the CLI could pick another project.
+- `glab mr merge`/`accept` must say `--auto-merge=false`. glab 1.120 turns auto-merge on
+  while a pipeline runs, which is a deferred merge.
+- The host a call reaches must be origin's, read as the CLI reads it:
+  - for gh, the one host in gh's `hosts.yml` when it lists exactly one;
+  - for glab, `GITLAB_API_HOST` when it is set;
+  - for `glab api` without `--hostname`, every remote must be on origin's host, since glab
+    picks its host from the remotes.
 - cobra takes a subcommand's options before its name and between its words. So a gated verb
   that some reading of the options puts in another order must be written in the canonical
   form (`[-R <project>] noun verb`, `api` right after the tool), or it is denied.
@@ -479,15 +488,24 @@ ruled in plan or code review, within §2's goals. The code and its tests are aut
   them (`acme%2Fapp`).
 - `git merge FETCH_HEAD` is allowed only while this worktree's FETCH_HEAD holds exactly one
   head marked for merge. git merges every such head in one merge, and the gate reads one.
+  The tip checked is that single for-merge head. FETCH_HEAD read as a ref is the file's first
+  line, whatever its marking.
 - A review range whose left side is a symbolic ref (`origin/HEAD...<b>`) is recorded as the
   branch the ref points at. One that names no branch, or a plain ref named HEAD, is refused
   at dispatch.
+- A missing or broken helper gets its own deny reason. A ledger helper that cannot be loaded
+  names itself, and a guard helper that cannot run falls back to the front's word match.
 
 **Narrower than §3.6: less is gated**
 - On the default branch, `git merge <ref>` is allowed when git resolves `<ref>`'s name to
   `refs/remotes/origin/<default>`: `origin/main`, `refs/remotes/origin/main`, or `@{u}` when
   that is its upstream. Syncing lands work that is already on origin. Another ref at the same
   commit is still gated, and a second ref is denied as before.
+  - Any merge flags are allowed with that ref (`-s`, `-X`, `--squash`). None of them brings in
+    content from anything but the named ref.
+  - The allowance trusts the local `refs/remotes/origin/<default>`. After
+    `git fetch . x:refs/remotes/origin/main` it would merge x. That residual is accepted:
+    `git pull . x` is not gated at all.
 - `gh pr merge [<n>] --disable-auto`, with no flag but `-R`, is allowed. It turns auto-merge
   off and merges nothing.
 
@@ -500,6 +518,9 @@ ruled in plan or code review, within §2's goals. The code and its tests are aut
   commits API.
 - **The GraphQL list is name-based.** A new mutation that creates or merges passes until it
   is added.
+- **A project path can look like an MR path.** An encoded project or group named `merges`,
+  `pulls` or `merge_requests` (`acme%2Fmerges`) decodes to such a segment. Its writes are
+  falsely denied, a write under `merges` as a branch merge. This is accepted as rare.
 - **CLI versions drift.** The flag allowlists, URL patterns and host rules were measured on
   glab 1.120 and gh 2.102. A new flag on a gated verb is denied by name, but a new verb that
   creates or merges is not gated.

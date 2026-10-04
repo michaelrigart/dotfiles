@@ -469,13 +469,16 @@ def lex(cmd, body=False, everywhere=False, naive=False):
             continue
         if funsub(cmd, i):
             # bash 5.3's ${ cmd; } and ${| cmd; } run cmd in the current shell; } ends them
-            # where it starts a command, as it ends a { group.
+            # where it starts a command, as it ends a { group. A { counts at any word start,
+            # so a function body or a group after a case pattern counts too: counting one too
+            # many only ends the substitution late.
             out.append("${")
             stack.append(["${", len(out), 1, 0, 0])
             i += 2
             continue
-        if kind == "${" and at_word and command_position(out) and (
-                c == "}" or (c == "{" and cmd[i + 1:i + 2] in (" ", "\t", "\n"))):
+        if kind == "${" and at_word and (
+                (c == "}" and command_position(out))
+                or (c == "{" and cmd[i + 1:i + 2] in (" ", "\t", "\n"))):
             frame[2] += 1 if c == "{" else -1
             if frame[2] == 0:
                 close()
@@ -1047,9 +1050,9 @@ MERGE_VALUE = {"-m", "-F", "-s", "-X", "--message", "--file", "--strategy",
 
 
 def fetch_heads(top):
-    """How many heads git merge FETCH_HEAD merges: the lines of this worktree's FETCH_HEAD not
-    marked not-for-merge. None when it cannot be read. Each worktree has its own FETCH_HEAD,
-    so git names the file (--git-path)."""
+    """The heads git merge FETCH_HEAD merges: the commit of each line of this worktree's
+    FETCH_HEAD not marked not-for-merge. None when it cannot be read. Each worktree has its own
+    FETCH_HEAD, so git names the file (--git-path)."""
     path = run(["git", "-C", top, "rev-parse", "--git-path", "FETCH_HEAD"])
     if not path or not path.strip():
         return None
@@ -1058,7 +1061,8 @@ def fetch_heads(top):
             lines = fh.read().splitlines()
     except OSError:
         return None
-    return sum(1 for line in lines if line.strip() and line.split("\t")[1:2] != ["not-for-merge"])
+    return [line.split("\t")[0] for line in lines
+            if line.strip() and line.split("\t")[1:2] != ["not-for-merge"]]
 
 
 def judge_git_merge(shape, ledger):
@@ -1098,13 +1102,15 @@ def judge_git_merge(shape, ledger):
     full = run(["git", "-C", top, "rev-parse", "--symbolic-full-name", ref])
     if (full or "").strip() == "refs/remotes/origin/" + dest:
         return
+    tip = ref
     if ref == "FETCH_HEAD":
         heads = fetch_heads(top)
-        if heads != 1:
+        if heads is None or len(heads) != 1:
             raise Deny(FETCH_HEADS.format("it cannot be read" if heads is None
-                                          else "it holds {}".format(heads)))
+                                          else "it holds {}".format(len(heads))))
+        tip = heads[0]          # what git merges; FETCH_HEAD as a ref is the file's first line
     source = ref[len("origin/"):] if ref.startswith("origin/") else ref
-    check(ledger, top, source, dest, "HEAD", ref, "{}...{}".format(dest, ref), None)
+    check(ledger, top, source, dest, "HEAD", tip, "{}...{}".format(dest, tip), None)
 
 
 # ------------------------------------------------------------------ the forge project

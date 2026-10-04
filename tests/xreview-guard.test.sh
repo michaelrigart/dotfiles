@@ -384,6 +384,14 @@ is "B94 a ) inside \${...}, read as bash 3.2 reads it: direct, through sh -c and
 is "B95 and a case pattern's ), direct and through sh -c" \
    "$(reason "$W" "$V1" | grep -c 'plain command of its own') $(reason "$W" "sh -c $SQ$V1$SQ" | grep -c 'plain command of its own')" \
    "1 1"
+# Inside bash 5.3's ${ cmd; }, a function body's } or a group's after a case pattern does not
+# end it: a { counts wherever a word starts.
+is "B96 a function body inside \${ cmd; }" \
+   "$(reason "$W" "bash -c 'echo \"\${ f() { echo; }; git merge feature; }\"'" | grep -c 'plain command of its own')" 1
+is "B97 the function keyword form" \
+   "$(reason "$W" "bash -c 'echo \"\${ function f { echo; }; git merge feature; }\"'" | grep -c 'plain command of its own')" 1
+is "B98 a group after a case pattern" \
+   "$(reason "$W" "bash -c 'echo \"\${ case x in x) { echo; };; esac; git merge feature; }\"'" | grep -c 'plain command of its own')" 1
 
 echo "C. git merge into the default branch"
 is "C1 an unreviewed merge into main is denied" "$(decision "$W" 'git merge feature')" deny
@@ -451,6 +459,14 @@ git -C "$W" branch -q --unset-upstream main; git -C "$W" update-ref refs/remotes
 git -C "$W" branch -q -D landed
 is "C32 a harmless bash 5.3 substitution in an approved merge stays allowed" \
    "$(decision "$W" 'git merge -m ${ cat /tmp/msg; } feature')" allow
+# FETCH_HEAD read as a ref is the file's first line, whatever its marking; git merges the one
+# for-merge head, so that is the head checked. zbad is a change no review saw.
+git -C "$W" switch -q -c zbad main; printf 'z\n' > "$W/z.txt"; git -C "$W" add z.txt
+git -C "$W" commit -q -m zbad; git -C "$W" switch -q main
+fetch_head "$W" "$FEAT\tnot-for-merge\tbranch 'feature' of x\n$(git -C "$W" rev-parse zbad)\t\tbranch 'zbad' of x"
+is "C33 the for-merge head is checked, not the approved first line" \
+   "$(reason "$W" 'git merge FETCH_HEAD' | grep -c 'no full-range pre-merge review of this change is on record')" 1
+git -C "$W" branch -q -D zbad
 
 echo "D. it fails closed"
 is "D1 a merge outside any repository is denied" "$(decision "$ROOT/norepo" 'git merge feature')" deny
