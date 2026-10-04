@@ -167,6 +167,9 @@ EOF
 ) | tr a-z A-Z)")" allow
 is "A31 a ) inside a parameter expansion is text" \
    "$(decision "$W" 'echo "$(echo ${x%)})"') $(decision "$W" 'git log --format="${fmt:-%h (%s)}"')" "allow allow"
+is "A32 reads whose options name merge stay allowed, whatever their order" \
+   "$(decision "$W" 'gh pr list --search merge') $(decision "$W" 'glab mr list --merged') $(decision "$W" 'gh pr view 12 --json title,mergedAt') $(decision "$W" 'glab mr view 7 --comments') $(decision "$W" 'gh -R acme/app pr view 1')" \
+   "allow allow allow allow allow"
 
 echo "B. a gated verb must be a plain command"
 is "B1 a chain that switches branch first" "$(decision "$W" 'git switch main && git merge feature')" deny
@@ -350,6 +353,18 @@ is "B85 a ) in \${x//)/} or \${x:-)}" \
 is "B86 the same in an expanding here-document's substitution" "$(decision "$W" 'cat <<EOF
 $(echo ${x//)/}; git merge feature)
 EOF')" deny
+# glab and gh (cobra) take a subcommand's options before its name and between its words; the
+# gate checks them only in its own order, so any other order that could spell a gated verb is
+# denied, naming that order.
+order() { reason "$W" "$1" | grep -c -F -- "$2"; }
+is "B87 glab with a creation's options before or inside mr create, even -y alone" \
+   "$(order 'glab -s other mr create -b main -t T --yes' 'Write it as glab [-R <project>] mr create')$(order 'glab mr -s other create -b main -t T --yes' 'Write it as glab [-R <project>] mr create')$(order 'glab -b main mr create -s other -t T --yes' 'Write it as glab [-R <project>] mr create')$(order 'glab -y mr create -s feature -b main -t T' 'Write it as glab [-R <project>] mr create')" 1111
+is "B88 glab with an api call's options before api" \
+   "$(order 'glab -X POST api projects/:id/merge_requests -f source_branch=other -f target_branch=main' 'Write it as glab api [options] <endpoint>')$(order 'glab -f source_branch=other api -X POST projects/:id/merge_requests -f target_branch=main' 'Write it as glab api [options] <endpoint>')" 11
+is "B89 gh the same" \
+   "$(order 'gh --head other pr create --base main -t T -b B' 'Write it as gh [-R <project>] pr create')$(order 'gh pr --head other create --base main -t T -b B' 'Write it as gh [-R <project>] pr create')$(order 'gh -X POST api repos/acme/app/pulls -f head=other -f base=main' 'Write it as gh api [options] <endpoint>')" 111
+is "B90 and the merge verbs" \
+   "$(order 'glab --sha abc mr merge 5' 'Write it as glab [-R <project>] mr merge')$(order 'gh pr --match-head-commit abc merge 5' 'Write it as gh [-R <project>] pr merge')" 11
 
 echo "C. git merge into the default branch"
 is "C1 an unreviewed merge into main is denied" "$(decision "$W" 'git merge feature')" deny
@@ -678,8 +693,8 @@ is "K55 gh must name --head: it could take the head from push configuration" \
    "$(denies "$W" 'gh pr create --base main -t T -b B' '--head <branch>')" 1
 # -R/--repo on an api call picks the project behind :id and the path: denied wherever it stands.
 GLMR='-X POST projects/:id/merge_requests -f source_branch=feature -f target_branch=main'
-is "K56 -R before api, after api, after the endpoint, and --repo=" \
-   "$(denies "$W" "glab -R other/app api $GLMR" 'on glab api picks')$(denies "$W" "glab api -R acme/app $GLMR" 'on glab api picks')$(denies "$W" 'glab api projects/:id/merge_requests -R other/app -X POST -f source_branch=feature -f target_branch=main' 'on glab api picks')$(denies "$W" 'glab api --repo=acme/app -X POST projects/acme%2Fapp/merge_requests -f source_branch=feature -f target_branch=main' 'on glab api picks')$(denies "$W" 'gh api -R acme/app repos/acme/app/pulls -f head=feature -f base=main' 'on gh api picks')" 11111
+is "K56 -R before api (not the gate's order), after api, after the endpoint, and --repo=" \
+   "$(denies "$W" "glab -R other/app api $GLMR" 'Write it as glab api [options] <endpoint>')$(denies "$W" "glab api -R acme/app $GLMR" 'on glab api picks')$(denies "$W" 'glab api projects/:id/merge_requests -R other/app -X POST -f source_branch=feature -f target_branch=main' 'on glab api picks')$(denies "$W" 'glab api --repo=acme/app -X POST projects/acme%2Fapp/merge_requests -f source_branch=feature -f target_branch=main' 'on glab api picks')$(denies "$W" 'gh api -R acme/app repos/acme/app/pulls -f head=feature -f base=main' 'on gh api picks')" 11111
 is "K57 a read with -R is no MR/PR write, and stays allowed" "$(decision "$W" 'glab api -R acme/app projects/:id/merge_requests/7')" allow
 # gh and glab remember a base project per remote; one other than origin's retargets a command
 # that names no project.
@@ -709,6 +724,20 @@ is "K64 a failed branch lookup is not called a detached HEAD" \
 git -C "$FW" switch -q --detach
 is "K65 a detached HEAD is" "$(denies "$FW" 'glab mr create --target-branch main' 'HEAD is detached')" 1
 git -C "$FW" switch -q feature
+# The remembered-project lookup fails closed: git config exits 1 only when there is none.
+cfgshim() { printf '%s\n' '#!/bin/sh' "case \"\$*\" in *\"config --get-regexp\"*) $1 ;; esac" "exec $REALGIT \"\$@\"" > "$WRAP/git"; chmod +x "$WRAP/git"; }
+cfgshim 'exit 3'
+is "K66 a git config that fails reading remembered projects is a deny" \
+   "$(PATH="$WRAP:$PATH" denies "$W" 'gh pr create --head feature --base main' 'cannot be read (git config failed')" 1
+cfgshim 'sleep 9; exit 0'
+is "K67 so is one that times out" \
+   "$(PATH="$WRAP:$PATH" denies "$W" 'gh pr create --head feature --base main' 'cannot be read (git config failed')" 1
+# pflag reads -f=false as --fill off.
+printf 'ahead\n' >> "$FW/b.txt"; git -C "$FW" commit -q -am "ahead of origin, never reviewed"
+is "K68 -f=false turns --fill off: nothing is pushed, origin's head is proposed" \
+   "$(decision "$FW" 'glab mr create -b main -t T -f=false --yes')" allow
+is "K69 while -f=true still pushes" "$(denies "$FW" 'glab mr create -b main -t T -f=true --yes' 'makes glab push')" 1
+git -C "$FW" reset -q --hard HEAD~1
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))

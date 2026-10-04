@@ -69,6 +69,9 @@ UNPARSEABLE = ("Pre-merge gate: this command cannot be parsed (unbalanced quotes
                "propose or merge a change. Fix the quoting, and run the verb as a plain command.")
 MALFORMED = ("Pre-merge gate: the hook's payload is not valid JSON, and its text may propose or "
              "merge a change, so the command is refused. Retry it.")
+REORDERED = ("Pre-merge gate: {0} takes a subcommand's options before its name and between its "
+             "words, so this could run {0} {1}, which the gate checks only in its own order. Write "
+             "it as {2}, with every other option after it.")
 NO_BRANCH = ("Pre-merge gate: the current branch of {} cannot be read, so whether this merge "
              "lands on the default branch is unknown and it is refused. Retry it.")
 TIMED_OUT = "Pre-merge gate: the check did not finish in time, so the command is refused. Retry it."
@@ -120,6 +123,9 @@ NEED_HEAD = ("Pre-merge gate: name the source branch explicitly with --head <bra
              "does not read.")
 RESOLVED = ("Pre-merge gate: {0} is {1}, so a {2} command that names no project acts on {1}, not "
             "on origin's {3}. Name origin's project with -R {4}, or remove that setting.")
+RESOLVED_UNREADABLE = ("Pre-merge gate: the git configuration of {} cannot be read (git config "
+                       "failed or timed out), so the project a command naming none acts on is "
+                       "unknown. Retry it, or name origin's project with -R.")
 API_REPO = ("Pre-merge gate: -R/--repo ({1}) on {0} api picks the project the call acts on, which "
             "the gate does not check. Run it without -R, from the project's own checkout.")
 API_DEFAULT_HOST = ("Pre-merge gate: without --hostname, glab api falls back to its default host "
@@ -724,13 +730,63 @@ def api_gated(call):
     return call["method"] in ("POST", "PUT", "PATCH") and bool(NAMES_MR_PATH.search(path))
 
 
+def only_options(words):
+    """Could cobra read words as options alone: each word an option, or the value of the
+    option before it?"""
+    after_option = False
+    for w in words:
+        if w.startswith("-") and w != "-":
+            after_option = True
+        elif after_option:
+            after_option = False
+        else:
+            return False
+    return True
+
+
+def only_repo(words):
+    """Are words nothing but -R/--repo options with their values?"""
+    i = 0
+    while i < len(words):
+        w = words[i]
+        if w in FORGE_VALUE_OPTS:
+            i += 2
+        elif w.startswith("--repo=") or (w.startswith("-R") and len(w) > 2):
+            i += 1
+        else:
+            return False
+    return True
+
+
+def reordered(tool, rest):
+    """The gated verb cobra could find in rest written out of the gate's order, as (noun, verb),
+    or None. cobra takes a subcommand's options before its name and between noun and verb, and
+    which options take a value cannot be read from the text, so every word after options alone
+    may be the noun, and every word after the noun and options alone may be the verb."""
+    noun = "mr" if tool == "glab" else "pr"
+    for k, word in enumerate(rest):
+        if word.startswith("-") or not only_options(rest[:k]):
+            continue
+        if word == "api" and api_gated(parse_api(rest[:k] + rest[k + 1:])):
+            return "api", ""
+        if word != noun:
+            continue
+        for j in range(k + 1, len(rest)):
+            if (not rest[j].startswith("-") and only_options(rest[k + 1:j])
+                    and (tool, noun, rest[j]) in CLI_VERBS):
+                return noun, rest[j]
+    return None
+
+
 def gated_verb(words):
     """The gated verb that words (a command word and its arguments) spell, as {tool, kind,
     args}, or None. kind is merge-local (git merge), create, merge or api; args are the words
     after the verb, with an option written before the noun (glab -R x mr ..., glab -R x api
     ...) kept in front.
     Help is exempt only as the first word after the verb, and a merge's --abort, --quit or
-    --continue only as its sole argument: anywhere else either may be an option's value."""
+    --continue only as its sole argument: anywhere else either may be an option's value. The
+    gate checks glab and gh only in its own order - [-R <project>] noun verb, or api right
+    after the tool; a gated verb cobra could find in another order is kind reordered."""
     if not words:
         return None
     tool, rest = command_name(words[0]), words[1:]
@@ -745,17 +801,21 @@ def gated_verb(words):
             return {"tool": "git", "kind": "merge-local", "args": rest}
         return None
     i = skip_options(rest, 0, FORGE_VALUE_OPTS)
-    if i + 1 < len(rest) and (tool, rest[i], rest[i + 1]) in CLI_VERBS:
+    canonical = only_repo(rest[:i])
+    if canonical and i + 1 < len(rest) and (tool, rest[i], rest[i + 1]) in CLI_VERBS:
         if rest[i + 2:i + 3] and rest[i + 2] in HELP:
             return None
         return {"tool": tool, "kind": CLI_VERBS[(tool, rest[i], rest[i + 1])],
                 "args": rest[:i] + rest[i + 2:]}
-    if i < len(rest) and rest[i] == "api":
-        if rest[i + 1:i + 2] and rest[i + 1] in HELP:
+    if i == 0 and rest[:1] == ["api"]:
+        if rest[1:2] and rest[1] in HELP:
             return None
-        args = rest[:i] + rest[i + 1:]
-        if api_gated(parse_api(args)):
-            return {"tool": tool, "kind": "api", "args": args}
+        if api_gated(parse_api(rest[1:])):
+            return {"tool": tool, "kind": "api", "args": rest[1:]}
+        return None
+    found = reordered(tool, rest)
+    if found is not None:
+        return {"tool": tool, "kind": "reordered", "args": rest, "verb": found}
     return None
 
 
@@ -784,6 +844,12 @@ def parse_plain(tokens, cwd):
     if not words or any(is_operator(w) for w in words):
         return None
     verb = gated_verb(words)
+    if verb is not None and verb["kind"] == "reordered":
+        noun, name = verb["verb"]
+        tool = verb["tool"]
+        form = ("{} api [options] <endpoint>".format(tool) if noun == "api"
+                else "{} [-R <project>] {} {} [options]".format(tool, noun, name))
+        raise Deny(REORDERED.format(tool, (noun + " " + name).strip(), form))
     if verb is not None:
         verb["cwd"] = cwd
     return verb
@@ -819,6 +885,9 @@ def parse_flags(args, takes_value):
                         i += 1
                         rest = args[i] if i < n else None
                     flags.setdefault(name, []).append(rest)
+                    break
+                if a[j + 1:j + 2] == "=":               # -f=false: pflag's value form
+                    flags.setdefault(name, []).append(a[j + 2:])
                     break
                 flags.setdefault(name, []).append(None)
                 j += 1
@@ -999,9 +1068,19 @@ def forge_context(cwd, named, tool):
 def check_resolved(top, host, path):
     """gh and glab remember a base project per remote - remote.<name>.gh-resolved (gh repo
     set-default writes it) and remote.<name>.glab-resolved - and a command naming no project
-    acts on it. Each must be base or origin's project."""
-    out = run(["git", "-C", top, "config", "--get-regexp", r"^remote\..*\.(gh|glab)-resolved$"])
-    for line in (out or "").splitlines():
+    acts on it. Each must be base or origin's project. git config exits 1 when there is no
+    such setting; any other failure, or a timeout, is a deny."""
+    try:
+        p = subprocess.run(["git", "-C", top, "config", "--get-regexp",
+                            r"^remote\..*\.(gh|glab)-resolved$"], capture_output=True,
+                           timeout=CALL_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired):
+        raise Deny(RESOLVED_UNREADABLE.format(top))
+    if p.returncode == 1:
+        return
+    if p.returncode != 0:
+        raise Deny(RESOLVED_UNREADABLE.format(top))
+    for line in p.stdout.decode("utf-8", "replace").splitlines():
         key, _, value = line.partition(" ")
         cli = "gh" if key.endswith(".gh-resolved") else "glab"
         value = value.strip()
