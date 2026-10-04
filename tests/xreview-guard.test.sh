@@ -521,7 +521,7 @@ FW="$ROOT/work/app-feature"; git -C "$W" worktree add -q "$FW" feature
 is "H1 a branch not yet on origin is denied" "$(decision "$W" 'glab mr create --source-branch feature --target-branch main --fill --yes')" deny
 is "H2 saying to publish it" "$(reason "$W" 'glab mr create -s feature -b main' | grep -c 'is not on origin')" 1
 publish feature
-is "H3 glab mr create, approved" "$(decision "$W" 'glab mr create -s feature -b main --fill --yes')" allow
+is "H3 glab mr create, approved, --fill from a checkout whose HEAD is origin's" "$(decision "$FW" 'glab mr create -s feature -b main --fill --yes')" allow
 is "H4 glab mr new, = forms" "$(decision "$W" 'glab mr new --source-branch=feature --target-branch=main')" allow
 is "H5 gh pr create" "$(decision "$W" 'gh pr create --head feature --base main --title "Land feature" --body-file /tmp/body.md')" allow
 is "H6 gh pr new, short flags" "$(decision "$W" 'gh pr new -H feature -B main')" allow
@@ -654,6 +654,61 @@ is "K46 glab reads -R HOST/PATH as a group path on its default host: another pro
 # A numeric project id is looked up on origin's host, never on the host the environment picks.
 is "K47 a project id is looked up on origin's host" \
    "$(GITLAB_HOST=other.example PROJECT_PATH=other/app ELSEWHERE_PATH=acme/app decision "$W" 'glab api -X POST https://forge.example/api/v4/projects/4242/merge_requests -f source_branch=feature -f target_branch=main')" deny
+# denies <cwd> <command> <phrase>: 1 when the command is denied with phrase in its reason.
+denies() { reason "$1" "$2" | grep -c -F -- "$3"; }
+# glab's --fill and --push push this checkout's HEAD to the source branch: allowed only when
+# that push changes nothing, because HEAD already is origin's head of the source.
+is "K48 --fill from another branch's checkout would push its HEAD to feature" \
+   "$(denies "$W" 'glab mr create -s feature -b main --fill --yes' 'Push the branch to origin first')" 1
+printf 'ahead\n' >> "$FW/b.txt"; git -C "$FW" commit -q -am "ahead of origin, never reviewed"
+is "K49 --fill, -fy and --push with HEAD ahead of origin's feature" \
+   "$(denies "$FW" 'glab mr create -b main --fill' 'makes glab push')$(denies "$FW" 'glab mr create -b main -fy' 'makes glab push')$(denies "$FW" 'glab mr create -b main --push -t T --yes' 'makes glab push')" 111
+git -C "$FW" reset -q --hard HEAD~1
+is "K50 --push in step with origin pushes nothing, and is allowed" "$(decision "$FW" 'glab mr create -b main --push -t T --yes')" allow
+# Creation flags are an allowlist: any other flag is denied by name.
+is "K51 --recover replays options from a file the gate does not read" \
+   "$(denies "$W" 'glab mr create --recover -s feature -b main --yes' '--recover is not among')$(denies "$W" 'gh pr create --recover x --head feature --base main' '--recover is not among')" 11
+is "K52 so are --web, --related-issue, --create-source-branch and unknown flags" \
+   "$(denies "$W" 'glab mr create -s feature -b main --web' '--web is not among')$(denies "$W" 'glab mr create -s feature -b main -i 3' '-i is not among')$(denies "$W" 'glab mr create -s feature -b main --create-source-branch' '--create-source-branch is not among')$(denies "$W" 'gh pr create --head feature --base main -w' '-w is not among')$(denies "$W" 'gh pr create --head feature --base main --bogus' '--bogus is not among')" 11111
+is "K53 every allowed glab flag" \
+   "$(decision "$W" 'glab mr create -s feature -b main -t T -d D --description-file f.md -a me -l x,y -m 1 --reviewer r --template t --attach a.png --allow-collaboration --copy-issue-labels --draft --wip --fill-commit-body --no-editor --remove-source-branch --signoff --squash-before-merge --auto-merge=false -y')" allow
+is "K54 every allowed gh flag" \
+   "$(decision "$W" 'gh pr create -H feature -B main -t T -b B -F f.md -a me --attach a.png -l x -m M -p P -r r -T t -d --dry-run -e -f --fill-first --fill-verbose --no-maintainer-edit')" allow
+is "K55 gh must name --head: it could take the head from push configuration" \
+   "$(denies "$W" 'gh pr create --base main -t T -b B' '--head <branch>')" 1
+# -R/--repo on an api call picks the project behind :id and the path: denied wherever it stands.
+GLMR='-X POST projects/:id/merge_requests -f source_branch=feature -f target_branch=main'
+is "K56 -R before api, after api, after the endpoint, and --repo=" \
+   "$(denies "$W" "glab -R other/app api $GLMR" 'on glab api picks')$(denies "$W" "glab api -R acme/app $GLMR" 'on glab api picks')$(denies "$W" 'glab api projects/:id/merge_requests -R other/app -X POST -f source_branch=feature -f target_branch=main' 'on glab api picks')$(denies "$W" 'glab api --repo=acme/app -X POST projects/acme%2Fapp/merge_requests -f source_branch=feature -f target_branch=main' 'on glab api picks')$(denies "$W" 'gh api -R acme/app repos/acme/app/pulls -f head=feature -f base=main' 'on gh api picks')" 11111
+is "K57 a read with -R is no MR/PR write, and stays allowed" "$(decision "$W" 'glab api -R acme/app projects/:id/merge_requests/7')" allow
+# gh and glab remember a base project per remote; one other than origin's retargets a command
+# that names no project.
+git -C "$W" config remote.origin.gh-resolved other/app
+is "K58 gh-resolved naming another project" \
+   "$(denies "$W" 'gh pr create --head feature --base main' 'remote.origin.gh-resolved is other/app')$(denies "$W" "gh api 'repos/{owner}/{repo}/pulls' -f head=feature -f base=main" 'remote.origin.gh-resolved is other/app')" 11
+is "K59 naming origin's project with -R is allowed" "$(decision "$W" 'gh pr create -R acme/app --head feature --base main')" allow
+git -C "$W" config remote.origin.gh-resolved base
+is "K60 base, or origin's own project, is allowed" "$(decision "$W" 'gh pr create --head feature --base main')" allow
+git -C "$W" config --unset remote.origin.gh-resolved
+git -C "$W" config remote.origin.glab-resolved other/app
+is "K61 glab-resolved naming another project" \
+   "$(denies "$W" 'glab mr create -s feature -b main' 'remote.origin.glab-resolved is other/app')$(denies "$W" "glab api $GLMR" 'remote.origin.glab-resolved is other/app')" 11
+git -C "$W" config --unset remote.origin.glab-resolved
+# Without --hostname, glab api falls back to its configured default host when it has no login
+# for origin's host.
+mkdir -p "$ROOT/glab-gitlab" && printf 'host: gitlab.com\n' > "$ROOT/glab-gitlab/config.yml"
+is "K62 glab api with glab's default host elsewhere" \
+   "$(GLAB_CONFIG_DIR="$ROOT/glab-gitlab" denies "$W" "$GLCREATE" 'falls back to its default host gitlab.com')" 1
+mkdir -p "$ROOT/glab-comment" && printf 'host: forge.example # the forge\n' > "$ROOT/glab-comment/config.yml"
+is "K63 an inline comment in glab's config is no part of the host" \
+   "$(GLAB_CONFIG_DIR="$ROOT/glab-comment" decision "$W" 'glab mr create -R acme/app -s feature -b main')" allow
+# A detached HEAD and a branch lookup that failed are denied apart.
+shim 'exit 128'
+is "K64 a failed branch lookup is not called a detached HEAD" \
+   "$(PATH="$WRAP:$PATH" denies "$FW" 'glab mr create --target-branch main' 'cannot be read (the lookup failed')" 1
+git -C "$FW" switch -q --detach
+is "K65 a detached HEAD is" "$(denies "$FW" 'glab mr create --target-branch main' 'HEAD is detached')" 1
+git -C "$FW" switch -q feature
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))

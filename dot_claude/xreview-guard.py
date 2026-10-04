@@ -109,6 +109,24 @@ DEFERRED = ("Pre-merge gate: {} is a deferred merge (auto-merge, or merge when t
             "waits. Wait for the pipeline, then merge immediately and pinned: {}.")
 LOOKUP = ("Pre-merge gate: the forge lookup of {} failed, so its destination is unknown and the "
           "merge is refused. Check that it exists and that the CLI is signed in, then retry.")
+CREATE_FLAG = ("Pre-merge gate: {0} is not among the flags the gate allows for {1}: it could "
+               "change what the MR/PR proposes, or where, in a way the gate does not read. Run "
+               "the command without it.")
+PUSHES = ("Pre-merge gate: {0} makes glab push this checkout's HEAD ({1}) to {2}, but origin's "
+          "{2} is {3}, so the MR would propose a head that was never reviewed. Push the branch "
+          "to origin first (git push), then retry; or create the MR without {0}.")
+NEED_HEAD = ("Pre-merge gate: name the source branch explicitly with --head <branch>. gh could "
+             "otherwise take it from push configuration (pushRemote, @{push}), which the gate "
+             "does not read.")
+RESOLVED = ("Pre-merge gate: {0} is {1}, so a {2} command that names no project acts on {1}, not "
+            "on origin's {3}. Name origin's project with -R {4}, or remove that setting.")
+API_REPO = ("Pre-merge gate: -R/--repo ({1}) on {0} api picks the project the call acts on, which "
+            "the gate does not check. Run it without -R, from the project's own checkout.")
+API_DEFAULT_HOST = ("Pre-merge gate: without --hostname, glab api falls back to its default host "
+                    "{0} when it has no login for origin's host {1}, so the call may go there. "
+                    "Name origin's host: --hostname {1}.")
+BRANCH_LOOKUP = ("Pre-merge gate: the current branch of {} cannot be read (the lookup failed or "
+                 "timed out), so the source branch is unknown. Retry it, or name it with {}.")
 UNRESOLVED_API = ("Pre-merge gate: this {} api call writes to an MR/PR path whose source, head or "
                   "destination the gate cannot read. Use the CLI (glab mr ..., gh pr ...) or the "
                   "REST create and merge endpoints with literal fields.")
@@ -625,7 +643,7 @@ MUTATIONS = re.compile(r"\b(mergeRequestCreate|mergeRequestAccept|mergeRequestSe
 NAMES_MR_PATH = re.compile(r"(^|/)(merge_requests|pulls)(/|$)")
 API_VALUE = {"-X", "--method", "-f", "--raw-field", "-F", "--field", "--form", "-H", "--header",
              "--input", "--hostname", "-q", "--jq", "-t", "--template", "--cache", "-p",
-             "--preview", "--output"}
+             "--preview", "--output", "-R", "--repo"}
 API_FIELD = {"-f": False, "--raw-field": False, "-F": True, "--field": True, "--form": True}
 
 
@@ -638,8 +656,10 @@ def skip_options(words, i, value_opts):
 def parse_api(args):
     """The parts of a glab/gh api call the gate reads: endpoint, method (the CLIs' default:
     POST once a field or a body is given, GET otherwise), fields (name -> last value), body
-    (True when the body or a typed field comes from a file or stdin) and hostname."""
-    call = {"endpoint": None, "method": None, "fields": {}, "body": False, "hostname": None}
+    (True when the body or a typed field comes from a file or stdin), hostname and repo (an
+    -R/--repo, wherever it stands: glab takes it before api, after it and after the endpoint)."""
+    call = {"endpoint": None, "method": None, "fields": {}, "body": False, "hostname": None,
+            "repo": None}
     i, n = 0, len(args)
     while i < n:
         a, name, value = args[i], None, None
@@ -669,6 +689,8 @@ def parse_api(args):
             call["body"] = True
         elif name == "--hostname":
             call["hostname"] = value
+        elif name in ("-R", "--repo"):
+            call["repo"] = value
         i += 1
     if call["method"] is None:
         call["method"] = "POST" if call["fields"] or call["body"] else "GET"
@@ -705,7 +727,8 @@ def api_gated(call):
 def gated_verb(words):
     """The gated verb that words (a command word and its arguments) spell, as {tool, kind,
     args}, or None. kind is merge-local (git merge), create, merge or api; args are the words
-    after the verb, with an option written before the noun (glab -R x mr ...) kept in front.
+    after the verb, with an option written before the noun (glab -R x mr ..., glab -R x api
+    ...) kept in front.
     Help is exempt only as the first word after the verb, and a merge's --abort, --quit or
     --continue only as its sole argument: anywhere else either may be an option's value."""
     if not words:
@@ -730,8 +753,9 @@ def gated_verb(words):
     if i < len(rest) and rest[i] == "api":
         if rest[i + 1:i + 2] and rest[i + 1] in HELP:
             return None
-        if api_gated(parse_api(rest[i + 1:])):
-            return {"tool": tool, "kind": "api", "args": rest[i + 1:]}
+        args = rest[:i] + rest[i + 1:]
+        if api_gated(parse_api(args)):
+            return {"tool": tool, "kind": "api", "args": args}
     return None
 
 
@@ -968,7 +992,21 @@ def forge_context(cwd, named, tool):
         if remotes != ["origin"]:
             raise Deny(SEVERAL_REMOTES.format(", ".join(r for r in remotes if r != "origin"),
                                               explicit_repo(tool, host, path)))
+        check_resolved(top, host, path)
     return top, host, path
+
+
+def check_resolved(top, host, path):
+    """gh and glab remember a base project per remote - remote.<name>.gh-resolved (gh repo
+    set-default writes it) and remote.<name>.glab-resolved - and a command naming no project
+    acts on it. Each must be base or origin's project."""
+    out = run(["git", "-C", top, "config", "--get-regexp", r"^remote\..*\.(gh|glab)-resolved$"])
+    for line in (out or "").splitlines():
+        key, _, value = line.partition(" ")
+        cli = "gh" if key.endswith(".gh-resolved") else "glab"
+        value = value.strip()
+        if value and value != "base" and not same_project(value, host, path, cli):
+            raise Deny(RESOLVED.format(key, value, cli, path, explicit_repo(cli, host, path)))
 
 
 def remote_head(top, branch):
@@ -994,6 +1032,24 @@ GH_CREATE_VALUE = {"-B", "--base", "-H", "--head", "-R", "--repo", "-a", "--assi
                    "--attach", "-b", "--body", "-F", "--body-file", "-l", "--label", "-m",
                    "--milestone", "-p", "--project", "--recover", "-r", "--reviewer", "-T",
                    "--template", "-t", "--title"}
+# The flags creation allows, per CLI (glab 1.120, gh 2.102); any other is denied by name. Denied
+# on purpose: --recover (replays options from a file), -w/--web (the browser finishes the
+# creation), glab's -i/--related-issue (the issue can supply the branch) and
+# --create-source-branch (only acts on a branch origin lacks, which the gate denies anyway).
+# glab's -H/--head is a fork (FORK). --fill and --push are glab's pushing flags (see below).
+GLAB_CREATE_ALLOWED = {"-s", "--source-branch", "-b", "--target-branch", "-R", "--repo", "-t",
+                       "--title", "-d", "--description", "--description-file", "-a",
+                       "--assignee", "-l", "--label", "-m", "--milestone", "--reviewer",
+                       "--template", "--attach", "--allow-collaboration", "--auto-merge",
+                       "--copy-issue-labels", "--draft", "--wip", "-f", "--fill",
+                       "--fill-commit-body", "--no-editor", "--push", "--remove-source-branch",
+                       "--signoff", "--squash-before-merge", "-y", "--yes"}
+GH_CREATE_ALLOWED = {"-B", "--base", "-H", "--head", "-R", "--repo", "-a", "--assignee", "--attach",
+                     "-b", "--body", "-F", "--body-file", "-l", "--label", "-m", "--milestone",
+                     "-p", "--project", "-r", "--reviewer", "-T", "--template", "-t", "--title",
+                     "-d", "--draft", "--dry-run", "-e", "--editor", "-f", "--fill",
+                     "--fill-first", "--fill-verbose", "--no-maintainer-edit"}
+GLAB_PUSHING = ("-f", "--fill", "--push")
 FALSE = ("false", "0", "f")
 FULL_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
@@ -1004,9 +1060,24 @@ def flag_on(values):
     return bool(values) and (values[-1] is None or values[-1].lower() not in FALSE)
 
 
+def current_source(ledger, top, name):
+    """The current branch, the source when none is named. A detached HEAD has none; a lookup
+    that failed or timed out says nothing. Both are denied, each with its own reason."""
+    branch = ledger.current_branch(top)
+    if branch is None:
+        if (ledger.git(top, "rev-parse", "--abbrev-ref", "HEAD") or "") == "HEAD":
+            raise Deny(DETACHED.format(top, name))
+        raise Deny(BRANCH_LOOKUP.format(top, name))
+    return branch
+
+
 def judge_create_cli(shape, ledger):
     """glab mr create|new, gh pr create|new: the source is --source-branch/--head or the
-    current branch, as origin has it; the destination must be named."""
+    current branch, as origin has it; the destination must be named. Only the flags in
+    GLAB_CREATE_ALLOWED and GH_CREATE_ALLOWED may be given. gh must name --head, because gh
+    would otherwise take the head from push configuration. glab's --fill and --push push this
+    checkout's HEAD to the source branch, so they are allowed only when that push changes
+    nothing: HEAD is already origin's head of the source."""
     tool = shape["tool"]
     flags, _ = parse_flags(shape["args"], GLAB_CREATE_VALUE if tool == "glab" else GH_CREATE_VALUE)
     named = one(flags, ("-R", "--repo"), "-R/--repo") or env_repo(tool)
@@ -1018,6 +1089,11 @@ def judge_create_cli(shape, ledger):
         if flag_on(flags.get("--auto-merge")):
             raise Deny(DEFERRED.format("glab mr create --auto-merge",
                                        "glab mr merge <n> --sha <head> --auto-merge=false"))
+    allowed = GLAB_CREATE_ALLOWED if tool == "glab" else GH_CREATE_ALLOWED
+    for name in flags:
+        if name not in allowed:
+            raise Deny(CREATE_FLAG.format(name, "glab mr create" if tool == "glab" else "gh pr create"))
+    if tool == "glab":
         source = one(flags, ("-s", "--source-branch"), "--source-branch")
         dest = one(flags, ("-b", "--target-branch"), "--target-branch")
         if dest is None:
@@ -1027,15 +1103,21 @@ def judge_create_cli(shape, ledger):
         dest = one(flags, ("-B", "--base"), "--base")
         if dest is None:
             raise Deny(NEED_DEST.format("--base <branch>"))
-        if source is not None and ":" in source:
+        if source is None:
+            raise Deny(NEED_HEAD)
+        if ":" in source:
             owner, _, source = source.partition(":")
             if owner.lower() != path.split("/")[0].lower():
                 raise Deny(FORK.format("--head " + owner + ":" + source))
     if source is None:
-        source = ledger.current_branch(top)
-        if source is None:
-            raise Deny(DETACHED.format(top, "--source-branch" if tool == "glab" else "--head"))
-    check(ledger, top, source, dest, "refs/remotes/origin/" + dest, remote_head(top, source),
+        source = current_source(ledger, top, "--source-branch")
+    head = remote_head(top, source)
+    pushing = [n for n in GLAB_PUSHING if tool == "glab" and flag_on(flags.get(n))]
+    if pushing:
+        local = (run(["git", "-C", top, "rev-parse", "HEAD"]) or "").strip()
+        if local != head:
+            raise Deny(PUSHES.format(pushing[0], local or "unknown", source, head))
+    check(ledger, top, source, dest, "refs/remotes/origin/" + dest, head,
           "origin/{}...{}".format(dest, source), None)
 
 
@@ -1051,9 +1133,7 @@ def field(fields, name, top, ledger):
         return None
     value = fields[name]
     if value in BRANCH_PLACEHOLDERS:
-        value = ledger.current_branch(top)
-        if value is None:
-            raise Deny(DETACHED.format(top, "the field " + name))
+        value = current_source(ledger, top, "the field " + name)
     if not value or not literal(value):
         raise Deny(LITERAL.format("the field " + name, value or "an empty value"))
     return value
@@ -1102,7 +1182,7 @@ def config_dir(variable, name):
 def top_level(path):
     """(key, value) of each top-level line of a YAML config file; [] when there is no such
     file, None when it cannot be read. Indented lines (a host's token among them) are skipped
-    unread."""
+    unread. A value is unquoted, or loses an inline # comment."""
     found = []
     try:
         with open(path, encoding="utf-8") as fh:
@@ -1110,7 +1190,12 @@ def top_level(path):
                 if line[:1] in ("", " ", "\t", "#", "\n", "-") or ":" not in line:
                     continue
                 key, _, value = line.partition(":")
-                found.append((key.strip().strip("'\""), value.strip().strip("'\"")))
+                value = value.strip()
+                if value[:1] in ("'", '"') and value.find(value[0], 1) > 0:
+                    value = value[1:value.find(value[0], 1)]
+                else:
+                    value = re.split(r"\s#", value, maxsplit=1)[0].strip()
+                found.append((key.strip().strip("'\""), value))
     except FileNotFoundError:
         return []
     except (OSError, UnicodeDecodeError):
@@ -1181,8 +1266,11 @@ def check_api_host(cwd, tool, call):
     GITLAB_URI, GL_HOST or GITLAB_URL, else from a remote on a host it is signed in to, so
     every remote must then be on origin's host. The guard reads its own environment: the
     command cannot set one, because an assignment or an env wrapper is not a plain command.
-    Returns origin's host: every lookup the command needs is sent there, with --hostname or a
-    host-qualified -R, never left to the environment."""
+    Without --hostname glab also needs its configured default host to be origin's. An -R/--repo
+    on the call is denied. Returns origin's host: every lookup the command needs is sent there,
+    with --hostname or a host-qualified -R, never left to the environment."""
+    if call["repo"] is not None:
+        raise Deny(API_REPO.format(tool, call["repo"]))
     top = toplevel(cwd)
     host = origin_host(top)
     where = host or "a local path"
@@ -1206,6 +1294,13 @@ def check_api_host(cwd, tool, call):
             if hosts is None or hosts - {host}:
                 raise Deny(SEVERAL_HOSTS.format(
                     ", ".join(sorted(hosts - {host})) if hosts else "unreadable", where))
+            # With no login for origin's host, glab falls back to its configured default host.
+            defaults = glab_default_hosts(top)
+            if defaults is None:
+                raise Deny(UNREADABLE.format("glab's config.yml", "--hostname " + where))
+            for value in defaults:
+                if host_of(value) != host:
+                    raise Deny(API_DEFAULT_HOST.format(host_of(value) or value, where))
     for value in chosen:
         if host_of(value) != host:
             raise Deny(OTHER_HOST.format(host_of(value) or value, where))
