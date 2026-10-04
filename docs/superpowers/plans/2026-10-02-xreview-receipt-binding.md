@@ -100,12 +100,15 @@ task's requirements include these.
   - `glab api`/`gh api` POST to `…/merge_requests` or `repos/<o>/<r>/pulls`;
   - `git merge <ref>` while the repository's current branch is its default branch;
   - `glab mr merge`/`accept [<n>]`; `glab api` PUT `…/merge_requests/<n>/merge`;
-  - `gh pr merge [<n>]`; `gh api` PUT `repos/<o>/<r>/pulls/<n>/merge`.
+  - `gh pr merge [<n>]`; `gh api` PUT `repos/<o>/<r>/pulls/<n>/merge`;
+  - `glab mr for`/`new-for`/`create-for` and `gh pr revert`, always denied (Decision 19b).
 - CLI creation must name `--target-branch`/`-b` (glab) or `--base`/`-B` (gh).
 - **Denied as unresolved:** any `glab api`/`gh api` POST, PUT or PATCH whose path names
-  `merge_requests` or `pulls`, unless the gate can read it. Also any GraphQL call carrying
-  `mergeRequestCreate`, `mergeRequestAccept`, `mergeRequestSetAutoMerge`, `createPullRequest`,
-  `mergePullRequest` or `enablePullRequestAutoMerge`.
+  `merge_requests`, `pulls` or `merges`, unless the gate can read it (a `merges` path never
+  can). Also any GraphQL call carrying `mergeRequestCreate`, `mergeRequestUpdate`,
+  `mergeRequestAccept`, `mergeRequestSetAutoMerge`, `createPullRequest`, `updatePullRequest`,
+  `revertPullRequest`, `mergePullRequest`, `enqueuePullRequest`, `enablePullRequestAutoMerge`
+  or `mergeBranch`.
 - **Plain commands only:**
   - allowed: an optional leading `cd <literal path> &&`, `sudo`, `git -C <path>`,
     `glab -R <repo>`, `gh -R <repo>`, and `XREVIEW_GUARD=off`;
@@ -196,6 +199,20 @@ task's requirements include these.
   after the tool, or it is denied as not plain, for the merge verbs too; `check_resolved`
   calls git itself, rc 1 being no match and any other failure or a timeout a deny; `-f=false`
   reads as pflag reads it; Task 8's `judge_merge_cli` uses `current_source()`.
+- The Task 8 review (fix round 1) ruled, within §2 and §3.6:
+  - the GraphQL shape list adds `mergeBranch` (a branch merged with no PR) and
+    `enqueuePullRequest` (a merge queue), and the retargeting `updatePullRequest` and
+    `mergeRequestUpdate`, denied by name; review-thread mutations stay allowed;
+  - every POST, PUT or PATCH to `repos/<o>/<r>/merges` is denied, absolute forms included;
+  - a gh write's gated fields come from its body only, and a query string on a gated gh write
+    is denied; glab still reads the query string, as GitLab does;
+  - merge flags are an allowlist per CLI, checked against `--help`; `--admin` and any unknown
+    flag are denied by name, and the deferred-merge and pin checks stay as they were;
+  - glab's `!<n>` is MR n, `gh pr merge [<n>] --disable-auto` alone is allowed, and an MR/PR
+    URL may carry a trailing path;
+  - the L-P deny tests pin their reasons, as every new deny test does;
+  - `glab mr for` is denied as an unmodelled creation, pointing to `glab mr create`. The plan
+    puts `gh pr revert` and `revertPullRequest`, which create a PR the same way, in that class.
 - **Creation** reads `git ls-remote <remote> refs/heads/<source>`. The source repository must
   be the checkout's `origin`, so forks are denied.
 - **Forge merges:**
@@ -211,8 +228,10 @@ task's requirements include these.
   - allow if and only if the latest by `dispatched_at` is a receipt that says `approve`.
 - **Fails closed** on a gated shape when there is no repository, the head is not available
   locally, the forge lookup fails, the change is empty, or the ledger is unreadable.
-- **Fast path:** a payload containing none of `create`, `new`, `merge`, `accept`, `pulls` or
-  `graphql` costs no subprocess.
+- **Fast path:** a payload containing none of `create`, `new`, `merge`, `accept`, `pulls`,
+  `graphql` or `revert`, nor `mr` together with `for`, costs no subprocess. `revert` and
+  `mr` with `for` go beyond the spec's list (Task 8 review, fix round 1): without them
+  `gh pr revert` and `glab mr for` would never reach the helper that denies them.
 - **Deny message:** it names the change (repo, source, destination, tip, fingerprint) and
   what is on record for it and for the branch name, v1 and pending entries included. It gives
   the dispatch `xreview dispatch --checkpoint pre-merge --diff <dest>...<branch> <body>`, and
@@ -266,7 +285,7 @@ Test IDs are per suite, written as suite and ID: "ledger" is `tests/xreview-ledg
    - `gh pr merge` on a branch with a merge queue enables auto-merge or enqueues;
    - GitLab merge trains do the same.
 
-   Task 8: guard M5, M6 and P10-P16.
+   Task 8: guard M5, M6, P10-P16 and Q3.
 4. **The deny's own dispatch, run as printed, must open the gate.** For forge shapes it names
    `origin/<dest>...<source>`, and a pre-merge dispatch with no `--diff` targets
    `origin/<default>...<branch>`. This keeps a stale local branch out of the fingerprint.
@@ -450,7 +469,10 @@ Each one stays within the spec's goals.
     variable, glab api also needs glab's configured default host to be origin's, because
     glab falls back to it when it has no login for origin's host.
 19. **Every other `POST`, `PUT` or `PATCH` under `merge_requests` or `pulls` is denied,** MR
-    notes and approvals included (spec-literal). The CLI equivalents are not gated.
+    notes and approvals included (spec-literal). The CLI equivalents are not gated. A write
+    under `merges` is always denied (`BRANCH_MERGE`): GitHub's `repos/<o>/<r>/merges` merges
+    one branch into another with no PR, so no review can bind it (Task 8 review, fix
+    round 1).
 19a. **Creation flags are an allowlist (Task 7 review, fix round 1).** Any flag of `glab mr
     create`/`new` or `gh pr create`/`new` outside it is denied by name, so a flag the gate
     has not weighed cannot change what is proposed. Decided from glab 1.120's and gh 2.102's
@@ -473,6 +495,45 @@ Each one stays within the spec's goals.
       `-H`/`--head` is a fork (`FORK`), and `--auto-merge` a deferred merge (`DEFERRED`).
     - `gh pr create` must name `--head`: without it gh takes the head from push
       configuration (`pushRemote`, `@{push}`), which the gate does not read.
+19b. **The shape lists (Task 8 review, fix round 1).**
+    - GraphQL: `MUTATIONS` adds `mergeBranch` (merges a branch with no PR),
+      `enqueuePullRequest` (a merge queue, so a deferred merge), `revertPullRequest` (creates
+      a PR), and `updatePullRequest`/`mergeRequestUpdate`. An update can retarget, and its
+      arguments can sit in GraphQL variables the gate does not tie to the mutation, so it is
+      denied by name; an agent edits an MR/PR with `gh pr edit` or `glab mr update`. Every
+      other mutation, review threads included, stays allowed, and `updatePullRequestBranch`
+      is not `updatePullRequest`.
+    - `glab mr for` (aliases `new-for`, `create-for`) and `gh pr revert` create an MR/PR from
+      a branch the forge makes itself, which no review can have seen. They are kind
+      `forge-made` and always denied (`FORGE_MADE`), pointing to `glab mr create` or
+      `gh pr create`. `gh pr revert` and `revertPullRequest` go beyond the ruling, which
+      named `glab mr for`: they are the same unmodelled creation.
+    - The fast path learns `revert`, and `mr` together with `for`, since neither verb names
+      another trigger word. A `for` loop without `mr` still costs no subprocess (guard F1,
+      F14, F15).
+19c. **A gh write is read from its body (Task 8 review, fix round 1).** gh sends a write's
+    `-f`/`-F` fields in its JSON body and leaves a query string on the URL, and GitHub may not
+    read a write's query string, so a pin written there might never reach it. A gated gh
+    write carrying a query string is denied (`QUERY_STRING`). glab still reads the query
+    string with the fields, as GitLab's API reads both.
+19d. **Merge flags are an allowlist (Task 8 review, fix round 1).** Any other flag is denied
+    by name (`MERGE_FLAG`), after the deferred-merge checks. Decided from glab 1.120's and gh
+    2.102's `--help`:
+    - glab mr merge/accept: `--sha`, `--auto-merge` (the deferred check allows it only off),
+      `-m`/`--message`, `-s`/`--squash`, `--squash-message`, `-r`/`--rebase`,
+      `-d`/`--remove-source-branch`, `-y`/`--yes`, `-R`/`--repo`;
+    - gh pr merge: `--match-head-commit`, `-m`/`--merge`, `-r`/`--rebase`, `-s`/`--squash`,
+      `-t`/`--subject`, `-b`/`--body`, `-F`/`--body-file`, `-A`/`--author-email`,
+      `-d`/`--delete-branch`, `-R`/`--repo`;
+    - denied: gh's `--admin` (it merges past required reviews and checks), glab's hidden
+      `--when-pipeline-succeeds` (a deferred merge when on), and anything unknown.
+    - Three forms the gate used to deny: `gh pr merge [<n>] --disable-auto`, with no flag but
+      `-R`, turns auto-merge off and merges nothing, so it is allowed; glab reads `!<n>` as
+      MR n; and both CLIs read the number of a PR/MR URL before any trailing path (`/files`,
+      `/diffs`, `/commits`). `PR_URL` and `MR_URL` are the CLIs' own patterns, read from the
+      gh 2.102 and glab 1.120 binaries; glab's makes the `/-/` optional. Measured with glab
+      1.120 against a fake API: `!7`, `…/7/diffs`, `…/7/commits` and `…/7#note_1` all merge
+      MR 7.
 
 **The guard: grammar**
 
@@ -602,7 +663,8 @@ Each one stays within the spec's goals.
   `git -C <origin> fetch <work> +refs/heads/<b>:refs/heads/<b>`.
 - Execute suites directly, never through an interpreter.
 - `./tests/xreview.test.sh` takes about four minutes: give that Bash call a timeout of
-  600000 ms. The other suites take under a minute.
+  600000 ms. `./tests/xreview-guard.test.sh` takes about 70 s once Task 8 is in; the other
+  suites take under a minute.
 
 **Expected counts**
 - Each "Expected" count is passed/total, measured on a scratch clone with every step of this
@@ -3263,7 +3325,9 @@ git commit -m "Write xreview receipts to each target repository's ledger, once p
     the last resort for text the grammar cannot read (unbalanced quotes, a payload that is not
     JSON, an internal error).
   - `gated_verb(words) -> dict | None`, as
-    `{"tool": "git" | "glab" | "gh", "kind": "merge-local" | "create" | "merge" | "api", "args": [...]}`.
+    `{"tool": "git" | "glab" | "gh", "kind": "merge-local" | "create" | "forge-made" | "merge" | "api", "args": [...]}`.
+    `forge-made` is `glab mr for`/`new-for`/`create-for` and `gh pr revert` (`CLI_VERBS`),
+    which Task 8 denies outright; Tasks 6 and 7 deny it with `NOT_MODELLED`.
     glab and gh are checked only in the gate's own order, `[-R <project>] noun verb` or `api`
     right after the tool (`only_repo`). cobra takes a subcommand's options before its name and
     between its words, so `reordered(tool, rest)` reads every word after options alone
@@ -3739,7 +3803,8 @@ TRIP="$ROOT/trip"; mkdir -p "$TRIP"
 cp "$GUARD" "$TRIP/xreview-guard.sh"
 printf 'import sys\nopen(sys.argv[0] + ".ran", "a").write("x")\n' > "$TRIP/xreview-guard.py"
 tripped() { [ -e "$TRIP/xreview-guard.py.ran" ] && echo ran || echo idle; }
-for c in 'ls -la' 'git status' 'npm test' 'git log --oneline -5' 'mkdir -p newdir'; do
+for c in 'ls -la' 'git status' 'npm test' 'git log --oneline -5' 'mkdir -p newdir' \
+         'for f in a b; do git add "$f"; done'; do
   payload /tmp "$c" | bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
 done
 is "F1 commands without a trigger word never start the helper" "$(tripped)" idle
@@ -3806,6 +3871,14 @@ is "F12 a 15 KB payload ending in a gated verb is denied within seconds under /b
 read -r verdict ms < <(timed "$ROOT/big-plain.json")
 is "F13 and one with no gated verb is allowed at once" \
    "$verdict $([ "$ms" -lt 2000 ] && echo fast || echo "slow:${ms}ms")" "allow fast"
+# glab mr for and gh pr revert name no other trigger word: mr with for, and revert, reach the
+# helper (a for loop without mr does not, F1).
+rm -f "$TRIP/xreview-guard.py.ran"
+payload /tmp 'glab mr for 3' | bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
+is "F14 glab mr for starts the helper" "$(tripped)" ran
+rm -f "$TRIP/xreview-guard.py.ran"
+payload /tmp 'gh pr revert 9' | bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
+is "F15 so does gh pr revert" "$(tripped)" ran
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))
@@ -3889,9 +3962,9 @@ guard_code="$(strip_comments "$GUARD" "$ROOT/dot_claude/xreview-guard.py" "$ROOT
 ```python
 #!/usr/bin/python3
 # The pre-merge gate: its command grammar and its checks. xreview-guard.sh beside this file
-# runs it for a payload that mentions create, new, merge, accept, pulls or graphql and one of
-# glab, gh or git. Design: docs/superpowers/specs/2026-10-02-xreview-receipt-binding-design.md,
-# section 3.6.
+# runs it for a payload that mentions create, new, merge, accept, pulls, graphql or revert (or
+# mr with for) and one of glab, gh or git. Design:
+# docs/superpowers/specs/2026-10-02-xreview-receipt-binding-design.md, section 3.6.
 #
 # Reads the PreToolUse payload on stdin. Prints ONE hookSpecificOutput deny object, or
 # nothing. It never asks, and it never allows on doubt: a gated shape it cannot complete is
@@ -3903,6 +3976,9 @@ guard_code="$(strip_comments "$GUARD" "$ROOT/dot_claude/xreview-guard.py" "$ROOT
 #   [cd <literal path> &&] [sudo] glab mr create|new|merge|accept [options]
 #   [cd <literal path> &&] [sudo] gh pr create|new|merge [options]
 #   [cd <literal path> &&] [sudo] glab|gh api [options] <endpoint>   (an MR/PR write, or graphql)
+#
+# glab mr for (new-for, create-for) and gh pr revert are gated too, and always denied: each
+# proposes a branch the forge makes itself, which no review can have seen.
 #
 # Any word may be a command word: one after a wrapper (timeout 30, caffeinate -i, xcrun,
 # find -exec, xargs, sudo -u root), a zsh precommand modifier (noglob, repeat 1), a keyword
@@ -4472,12 +4548,19 @@ MERGE_CONTROL = {"--abort", "--quit", "--continue"}
 CLI_VERBS = {
     ("glab", "mr", "create"): "create", ("glab", "mr", "new"): "create",
     ("glab", "mr", "merge"): "merge", ("glab", "mr", "accept"): "merge",
+    ("glab", "mr", "for"): "forge-made", ("glab", "mr", "new-for"): "forge-made",
+    ("glab", "mr", "create-for"): "forge-made",
     ("gh", "pr", "create"): "create", ("gh", "pr", "new"): "create",
-    ("gh", "pr", "merge"): "merge",
+    ("gh", "pr", "merge"): "merge", ("gh", "pr", "revert"): "forge-made",
 }
-MUTATIONS = re.compile(r"\b(mergeRequestCreate|mergeRequestAccept|mergeRequestSetAutoMerge|"
-                       r"createPullRequest|mergePullRequest|enablePullRequestAutoMerge)\b")
-NAMES_MR_PATH = re.compile(r"(^|/)(merge_requests|pulls)(/|$)")
+# The GraphQL mutations that create, update, revert, merge or enqueue an MR/PR, merge a branch
+# with no PR, or turn auto-merge on. An update can retarget, from arguments a variable may
+# carry, so it is denied by name. Every other mutation (review threads, comments) is allowed.
+MUTATIONS = re.compile(r"\b(mergeRequestCreate|mergeRequestUpdate|mergeRequestAccept|"
+                       r"mergeRequestSetAutoMerge|createPullRequest|updatePullRequest|"
+                       r"revertPullRequest|mergePullRequest|enqueuePullRequest|"
+                       r"enablePullRequestAutoMerge|mergeBranch)\b")
+NAMES_MR_PATH = re.compile(r"(^|/)(merge_requests|pulls|merges)(/|$)")
 API_VALUE = {"-X", "--method", "-f", "--raw-field", "-F", "--field", "--form", "-H", "--header",
              "--input", "--hostname", "-q", "--jq", "-t", "--template", "--cache", "-p",
              "--preview", "--output", "-R", "--repo"}
@@ -4552,8 +4635,9 @@ def is_graphql(endpoint):
 
 
 def api_gated(call):
-    """A GraphQL call carrying an MR/PR create, merge or auto-merge mutation, or a query the
-    gate cannot read; or a POST, PUT or PATCH to a path naming merge_requests or pulls."""
+    """A GraphQL call carrying one of MUTATIONS, or a query the gate cannot read; or a POST,
+    PUT or PATCH to a path naming merge_requests, pulls or merges (a branch merged with no
+    PR)."""
     endpoint = call["endpoint"] or ""
     if is_graphql(endpoint):
         return call["body"] or bool(MUTATIONS.search(" ".join(call["fields"].values())))
@@ -4611,9 +4695,9 @@ def reordered(tool, rest):
 
 def gated_verb(words):
     """The gated verb that words (a command word and its arguments) spell, as {tool, kind,
-    args}, or None. kind is merge-local (git merge), create, merge or api; args are the words
-    after the verb, with an option written before the noun (glab -R x mr ..., glab -R x api
-    ...) kept in front.
+    args}, or None. kind is merge-local (git merge), create, forge-made, merge or api; args
+    are the words after the verb, with an option written before the noun (glab -R x mr ...,
+    glab -R x api ...) kept in front.
     Help is exempt only as the first word after the verb, and a merge's --abort, --quit or
     --continue only as its sole argument: anywhere else either may be an option's value. The
     gate checks glab and gh only in its own order - [-R <project>] noun verb, or api right
@@ -4921,20 +5005,22 @@ if __name__ == "__main__":
 # Design: docs/superpowers/specs/2026-10-02-xreview-receipt-binding-design.md, section 3.6.
 #
 # Gated: MR/PR creation and agent-run merges - glab mr create|new|merge|accept, gh pr
-# create|new|merge, their REST forms through glab api / gh api, GraphQL mutations that create
-# or merge (denied outright), and a local git merge into the default branch. Each opens only
-# when the latest full-range pre-merge review of that exact change, for that destination,
-# approved it. The change is named by a content fingerprint, so any content change after the
-# approval closes the gate again, while a clean rebase keeps it open. The receipts live in one
-# ledger per repository, shared by all its worktrees (xreview-ledger.py beside this file).
+# create|new|merge, their REST forms through glab api / gh api, and a local git merge into the
+# default branch. Each opens only when the latest full-range pre-merge review of that exact
+# change, for that destination, approved it. GraphQL mutations that create or merge, glab mr
+# for and gh pr revert are denied outright. The change is named by a content fingerprint, so
+# any content change after the approval closes the gate again, while a clean rebase keeps it
+# open. The receipts live in one ledger per repository, shared by all its worktrees
+# (xreview-ledger.py beside this file).
 #
 # This shell front is the fast path. The hook fires on EVERY Bash call, so a payload that
-# names none of create, new, merge, accept, pulls or graphql, or none of glab, gh or git,
-# costs no subprocess at all. It matches each word as the raw JSON payload can spell it, with
-# quotes, backslashes and line continuations allowed between its letters: g''it, mer""ge and
-# mer\<newline>ge all name their verb. A payload holding an ANSI-C $'...' string, which can
-# spell any word with escapes, always goes on. Everything else goes to xreview-guard.py
-# beside this file, which owns the grammar and the checks and fails closed on a gated shape.
+# names none of create, new, merge, accept, pulls, graphql or revert (nor mr together with
+# for), or none of glab, gh or git, costs no subprocess at all. It matches each word as the
+# raw JSON payload can spell it, with quotes, backslashes and line continuations allowed
+# between its letters: g''it, mer""ge and mer\<newline>ge all name their verb. A payload
+# holding an ANSI-C $'...' string, which can spell any word with escapes, always goes on.
+# Everything else goes to xreview-guard.py beside this file, which owns the grammar and the
+# checks and fails closed on a gated shape.
 #
 # The bypass is XREVIEW_GUARD=off, for Michael's explicit use only: in this hook's
 # environment, or anywhere in the command (the only place a model can write it).
@@ -4964,7 +5050,7 @@ spells() {
 }
 case "$payload" in
   *"\$'"*) ;;
-  *) spells create new merge accept pulls graphql || exit 0
+  *) spells create new merge accept pulls graphql revert || { spells mr && spells for; } || exit 0
      spells glab gh git || exit 0 ;;
 esac
 
@@ -5045,7 +5131,7 @@ with:
 ```
 
 - [ ] **Step 7: Run them and confirm they pass.**
-  - `./tests/xreview-guard.test.sh`: expect `passed: 176  failed: 0`.
+  - `./tests/xreview-guard.test.sh`: expect `passed: 178  failed: 0`.
   - `./tests/xreview-skill.test.sh`: expect `passed: 76  failed: 0`.
   - `./tests/claude-settings.test.sh 2>&1 | tail -1`: expect `RESULT: 179 passed, 0 failed`.
 
@@ -5354,7 +5440,7 @@ git -C "$FW" reset -q --hard HEAD~1
 ```
 
 - [ ] **Step 2: Run it and confirm it fails.** `./tests/xreview-guard.test.sh`: expect
-  `passed: 217  failed: 62`. Every allow case in H-K fails, and so does every deny test
+  `passed: 219  failed: 62`. Every allow case in H-K fails, and so does every deny test
   that pins its reason (a flag, a fetch, a project, a host, a push, a remembered project, a
   branch lookup), because each creation is still denied with `NOT_MODELLED`.
 
@@ -5962,7 +6048,7 @@ def judge(shape, ledger):
 ```
 
 - [ ] **Step 6: Run it and confirm it passes.** `./tests/xreview-guard.test.sh`: expect
-  `passed: 279  failed: 0`.
+  `passed: 281  failed: 0`.
 
 - [ ] **Step 7: Commit.** Check the branch, then:
 
@@ -5980,11 +6066,12 @@ git commit -m "Gate MR and PR creation on origin's head of the approved change"
 **Interfaces:**
 - Consumes (Tasks 6-7): `parse_flags`, `one`, `forge_context`, `check_api_host`, `flag_on`,
   `field`, `lookup_json`, `gitlab_project`, `github_project`, `check`, `is_graphql`, `FULL_ID`,
-  `GITLAB_MR`, `GITHUB_PR`.
+  `GITLAB_MR`, `GITHUB_PR`, `endpoint_parts`, and Task 6's kind `forge-made`.
 - Produces:
   - `explicitly_off(values)` and `on_value(value)`;
-  - `url_number(target, host, path, pattern, what) -> str`, with the patterns `PR_URL` and
-    `MR_URL` (message `OTHER_URL`);
+  - `url_number(target, host, path, pattern, what) -> str`, with gh's and glab's own patterns
+    `PR_URL` and `MR_URL` (message `OTHER_URL`): a trailing path after the number is read
+    past, and glab's `/-/` is optional;
   - `gitlab_mr(top, project, number, branch, hostname) -> (source, target, head, iid)`,
     which denies an MR whose project ids differ;
   - `github_pr(top, target, repo, owner, name) -> (source, base, head)`, where `repo` is
@@ -5994,10 +6081,15 @@ git commit -m "Gate MR and PR creation on origin's head of the approved change"
     `github_merge_queue(top, host, owner, name, dest)` (message `QUEUED`);
   - `merge_pinned(ledger, top, source, dest, head, pin, hint)`;
   - `judge_merge_cli`, which takes the MR of the current branch through Task 7's
-    `current_source()`, so a failed lookup is not called a detached HEAD;
+    `current_source()`, so a failed lookup is not called a detached HEAD. Its flags must be in
+    `GLAB_MERGE_ALLOWED` or `GH_MERGE_ALLOWED` (message `MERGE_FLAG`); `gh pr merge
+    --disable-auto` with no flag but `-R` returns at once, and glab's `!<n>` is MR n;
     `judge_merge_gitlab_api(shape, ledger, segment, number, fields, host)`,
     `judge_merge_github_api(shape, ledger, owner, repo, number, fields, host)`;
-  - the final `judge_api` and `judge`. `NOT_MODELLED` is removed.
+  - the final `judge_api`, which denies a `merges` path (`BRANCH_MERGES`, message
+    `BRANCH_MERGE`) and a gh write carrying a query string (`QUERY_STRING`), and the final
+    `judge`, which denies kind `forge-made` (`FORGE_MADE`, `FORGE_MADE_FORMS`).
+    `NOT_MODELLED` is removed.
 - The forge lookups, exactly as the test stubs answer them. `<h>` is always origin's host
   and `<project>` origin's encoded path:
   - `glab api --hostname <h> projects/<project>/merge_requests/<n>`;
@@ -6080,140 +6172,203 @@ is "L8 by numeric project id" "$(decision "$W" "glab api -X PUT projects/4242/me
 is "L9 the GitHub REST merge" "$(decision "$W" "gh api -X PUT repos/acme/app/pulls/9/merge -f sha=$HEAD_SHA")" allow
 
 echo "M. a forge merge is pinned and immediate"
-is "M1 an unpinned glab merge is denied" "$(decision "$W" 'glab mr merge 7 --auto-merge=false')" deny
+is "M1 an unpinned glab merge is denied" "$(denies "$W" 'glab mr merge 7 --auto-merge=false' 'a forge merge must pin the head it merges')" 1
 is "M2 naming the head to pin" "$(reason "$W" 'glab mr merge 7 --auto-merge=false' | grep -c "glab mr merge 7 --sha $HEAD_SHA --auto-merge=false")" 1
-is "M3 an unpinned gh merge is denied" "$(decision "$W" 'gh pr merge 9 --squash')" deny
-is "M4 an unpinned REST merge is denied" "$(decision "$W" 'gh api -X PUT repos/acme/app/pulls/9/merge')" deny
-is "M5 glab's default auto-merge is a deferred merge, even pinned" "$(decision "$W" "glab mr merge 7 --sha $HEAD_SHA")" deny
+is "M3 an unpinned gh merge is denied" "$(denies "$W" 'gh pr merge 9 --squash' 'a forge merge must pin the head it merges')" 1
+is "M4 an unpinned REST merge is denied" "$(denies "$W" 'gh api -X PUT repos/acme/app/pulls/9/merge' 'a forge merge must pin the head it merges')" 1
+is "M5 glab's default auto-merge is a deferred merge, even pinned" "$(denies "$W" "glab mr merge 7 --sha $HEAD_SHA" 'glab mr merge without --auto-merge=false is a deferred merge')" 1
 is "M6 naming --auto-merge=false" "$(reason "$W" "glab mr merge 7 --sha $HEAD_SHA" | grep -c -- '--auto-merge=false')" 1
-is "M7 glab --auto-merge, even pinned" "$(decision "$W" "glab mr merge 7 --sha $HEAD_SHA --auto-merge")" deny
-is "M8 gh --auto, even pinned" "$(decision "$W" "gh pr merge 9 --auto --match-head-commit $HEAD_SHA")" deny
-is "M9 merge_when_pipeline_succeeds, even pinned" "$(decision "$W" "glab api -X PUT projects/:id/merge_requests/7/merge -f sha=$HEAD_SHA -F merge_when_pipeline_succeeds=true")" deny
-is "M10 auto_merge, even pinned" "$(decision "$W" "glab api -X PUT projects/:id/merge_requests/7/merge -f sha=$HEAD_SHA -F auto_merge=true")" deny
-is "M11 an abbreviated pin" "$(decision "$W" "gh pr merge 9 --match-head-commit ${HEAD_SHA:0:12}")" deny
+is "M7 glab --auto-merge, even pinned" "$(denies "$W" "glab mr merge 7 --sha $HEAD_SHA --auto-merge" 'glab mr merge without --auto-merge=false is a deferred merge')" 1
+is "M8 gh --auto, even pinned" "$(denies "$W" "gh pr merge 9 --auto --match-head-commit $HEAD_SHA" 'gh pr merge --auto is a deferred merge')" 1
+is "M9 merge_when_pipeline_succeeds, even pinned" "$(denies "$W" "glab api -X PUT projects/:id/merge_requests/7/merge -f sha=$HEAD_SHA -F merge_when_pipeline_succeeds=true" 'merge_when_pipeline_succeeds/auto_merge is a deferred merge')" 1
+is "M10 auto_merge, even pinned" "$(denies "$W" "glab api -X PUT projects/:id/merge_requests/7/merge -f sha=$HEAD_SHA -F auto_merge=true" 'merge_when_pipeline_succeeds/auto_merge is a deferred merge')" 1
+is "M11 an abbreviated pin" "$(denies "$W" "gh pr merge 9 --match-head-commit ${HEAD_SHA:0:12}" 'pin the head with a full commit id')" 1
 
 echo "N. what the pin names"
 printf 'seven\n' >> "$FW/b.txt"; git -C "$FW" commit -q -am "never reviewed"
 UNREVIEWED="$(git -C "$FW" rev-parse HEAD)"; git -C "$FW" reset -q --hard HEAD~1
-is "N1 a pin whose fingerprint is unapproved is denied" "$(decision "$W" "gh pr merge 9 --match-head-commit $UNREVIEWED")" deny
+is "N1 a pin whose fingerprint is unapproved is denied" "$(denies "$W" "gh pr merge 9 --match-head-commit $UNREVIEWED" 'no full-range pre-merge review of this change is on record')" 1
 is "N2 the deny names the pinned merge to run once approved" "$(reason "$W" "gh pr merge 9 --match-head-commit $UNREVIEWED" | grep -c "Then merge it pinned and immediate: gh pr merge 9 --match-head-commit $UNREVIEWED")" 1
-is "N3 a destination origin does not have is denied" "$(MR_TARGET=ghost2 decision "$W" "glab mr merge 7 --sha $HEAD_SHA --auto-merge=false")" deny
+is "N3 a destination origin does not have is denied" "$(MR_TARGET=ghost2 denies "$W" "glab mr merge 7 --sha $HEAD_SHA --auto-merge=false" 'the destination ghost2 (refs/remotes/origin/ghost2) is not available locally')" 1
 git -C "$W" branch release2 main && publish release2
-is "N4 an MR retargeted to an unapproved destination is denied" "$(PR_BASE=release2 decision "$W" "gh pr merge 9 --match-head-commit $HEAD_SHA")" deny
+is "N4 an MR retargeted to an unapproved destination is denied" "$(PR_BASE=release2 denies "$W" "gh pr merge 9 --match-head-commit $HEAD_SHA" 'feature -> release2')" 1
 printf 'm\n' > "$W/m.txt"; git -C "$W" add m.txt; git -C "$W" commit -q -m "main moves on, elsewhere"; publish main
 git -C "$FW" rebase -q main; publish feature
 REBASED="$(git -C "$W" rev-parse refs/remotes/origin/feature)"
 is "N5 a rebased pin with an unchanged fingerprint is allowed" "$(PR_SHA=$REBASED decision "$W" "gh pr merge 9 --match-head-commit $REBASED")" allow
-is "N6 a forge lookup failure is denied" "$(FORGE_FAIL=1 decision "$W" "glab mr merge 7 --sha $REBASED --auto-merge=false")" deny
+is "N6 a forge lookup failure is denied" "$(FORGE_FAIL=1 denies "$W" "glab mr merge 7 --sha $REBASED --auto-merge=false" 'so its destination is unknown and the merge is refused')" 1
 is "N7 saying so" "$(FORGE_FAIL=1 reason "$W" "glab mr merge 7 --sha $REBASED --auto-merge=false" | grep -c 'forge lookup of MR !7 failed')" 1
-is "N8 a forge slower than the budget is denied" "$(FORGE_SLOW=3 XREVIEW_GUARD_BUDGET=1 decision "$W" "glab mr merge 7 --sha $REBASED --auto-merge=false")" deny
+is "N8 a forge slower than the budget is denied" "$(FORGE_SLOW=3 XREVIEW_GUARD_BUDGET=1 denies "$W" "glab mr merge 7 --sha $REBASED --auto-merge=false" 'the check did not finish in time')" 1
 is "N9 saying it ran out of time" "$(FORGE_SLOW=3 XREVIEW_GUARD_BUDGET=1 reason "$W" "glab mr merge 7 --sha $REBASED --auto-merge=false" | grep -c 'did not finish in time')" 1
 
 echo "O. GraphQL and other API writes"
-is "O1 createPullRequest is denied" "$(decision "$W" "gh api graphql -f query='mutation { createPullRequest(input: {}) { clientMutationId } }'")" deny
-is "O2 mergeRequestAccept is denied" "$(decision "$W" "glab api graphql -f query='mutation { mergeRequestAccept(input: {}) { errors } }'")" deny
-is "O3 enablePullRequestAutoMerge is denied" "$(decision "$W" "gh api graphql -f query='mutation { enablePullRequestAutoMerge(input: {}) { clientMutationId } }'")" deny
+is "O1 createPullRequest is denied" "$(denies "$W" "gh api graphql -f query='mutation { createPullRequest(input: {}) { clientMutationId } }'" 'this GraphQL call')" 1
+is "O2 mergeRequestAccept is denied" "$(denies "$W" "glab api graphql -f query='mutation { mergeRequestAccept(input: {}) { errors } }'" 'this GraphQL call')" 1
+is "O3 enablePullRequestAutoMerge is denied" "$(denies "$W" "gh api graphql -f query='mutation { enablePullRequestAutoMerge(input: {}) { clientMutationId } }'" 'this GraphQL call')" 1
 is "O4 mergePullRequest, mergeRequestCreate and mergeRequestSetAutoMerge too" \
-   "$(decision "$W" "gh api graphql -f query='mutation { mergePullRequest(input: {}) { clientMutationId } }'") $(decision "$W" "glab api graphql -f query='mutation { mergeRequestCreate(input: {}) { errors } }'") $(decision "$W" "glab api graphql -f query='mutation { mergeRequestSetAutoMerge(input: {}) { errors } }'")" \
-   "deny deny deny"
+   "$(denies "$W" "gh api graphql -f query='mutation { mergePullRequest(input: {}) { clientMutationId } }'" 'this GraphQL call') $(denies "$W" "glab api graphql -f query='mutation { mergeRequestCreate(input: {}) { errors } }'" 'this GraphQL call') $(denies "$W" "glab api graphql -f query='mutation { mergeRequestSetAutoMerge(input: {}) { errors } }'" 'this GraphQL call')" \
+   "1 1 1"
 is "O5 a GraphQL read is allowed" "$(decision "$W" "gh api graphql -f query='query { viewer { login } }'")" allow
-is "O6 a GraphQL query from a file is denied" "$(decision "$W" 'gh api graphql -F query=@q.graphql')" deny
-is "O7 an MR note through the API is an unresolved write" "$(decision "$W" 'glab api -X POST projects/:id/merge_requests/7/notes -f body=hi')" deny
-is "O8 a PATCH of a pull request (a retarget) is denied" "$(decision "$W" 'gh api -X PATCH repos/acme/app/pulls/9 -f base=release')" deny
-is "O9 a REST create whose body comes from a file is denied" "$(decision "$W" 'glab api -X POST projects/:id/merge_requests --input mr.json')" deny
+is "O6 a GraphQL query from a file is denied" "$(denies "$W" 'gh api graphql -F query=@q.graphql' 'this GraphQL call')" 1
+is "O7 an MR note through the API is an unresolved write" "$(denies "$W" 'glab api -X POST projects/:id/merge_requests/7/notes -f body=hi' 'this glab api call writes to an MR/PR path whose source, head or destination')" 1
+is "O8 a PATCH of a pull request (a retarget) is denied" "$(denies "$W" 'gh api -X PATCH repos/acme/app/pulls/9 -f base=release' 'this gh api call writes to an MR/PR path whose source, head or destination')" 1
+is "O9 a REST create whose body comes from a file is denied" "$(denies "$W" 'glab api -X POST projects/:id/merge_requests --input mr.json' 'this glab api call writes to an MR/PR path whose source, head or destination')" 1
 is "O10 an absolute GraphQL endpoint carrying a merge mutation is denied" \
-   "$(decision "$W" "gh api https://api.github.com/graphql -f query='mutation { mergePullRequest(input: {}) { clientMutationId } }'")" deny
+   "$(denies "$W" "gh api https://api.github.com/graphql -f query='mutation { mergePullRequest(input: {}) { clientMutationId } }'" 'this GraphQL call')" 1
 
 echo "P. a forge merge reaches only origin's own project, and merges at once"
 export MR_SHA="$REBASED" PR_SHA="$REBASED"
 is "P1 a PR URL on another host is denied, even with an approved pin" \
-   "$(decision "$W" "gh pr merge https://github.com/acme/app/pull/9 --match-head-commit $REBASED")" deny
+   "$(denies "$W" "gh pr merge https://github.com/acme/app/pull/9 --match-head-commit $REBASED" "is not on this checkout's origin (forge.example/acme/app)")" 1
 is "P2 saying it is not on origin" \
    "$(reason "$W" "gh pr merge https://github.com/acme/app/pull/9 --match-head-commit $REBASED" | grep -c "is not on this checkout's origin")" 1
 is "P3 a PR URL in another project is denied" \
-   "$(decision "$W" "gh pr merge https://forge.example/other/app/pull/9 --match-head-commit $REBASED")" deny
+   "$(denies "$W" "gh pr merge https://forge.example/other/app/pull/9 --match-head-commit $REBASED" "the PR https://forge.example/other/app/pull/9 is not on this checkout's origin")" 1
 is "P4 origin's own PR URL is allowed" \
    "$(decision "$W" "gh pr merge https://forge.example/acme/app/pull/9 --match-head-commit $REBASED")" allow
 is "P5 an MR URL on another host is denied" \
-   "$(decision "$W" "glab mr merge https://evil.example/acme/app/-/merge_requests/7 --sha $REBASED --auto-merge=false")" deny
+   "$(denies "$W" "glab mr merge https://evil.example/acme/app/-/merge_requests/7 --sha $REBASED --auto-merge=false" "the MR https://evil.example/acme/app/-/merge_requests/7 is not on this checkout's origin")" 1
 is "P6 origin's own MR URL is allowed" \
    "$(decision "$W" "glab mr merge https://forge.example/acme/app/-/merge_requests/7 --sha $REBASED --auto-merge=false")" allow
 is "P7 an MR from a fork is denied" \
-   "$(MR_SOURCE_PROJECT=99 decision "$W" "glab mr merge 7 --sha $REBASED --auto-merge=false")" deny
+   "$(MR_SOURCE_PROJECT=99 denies "$W" "glab mr merge 7 --sha $REBASED --auto-merge=false" 'MR !7 proposes from another repository')" 1
 is "P8 a cross-repository PR is denied" \
-   "$(PR_CROSS=true decision "$W" "gh pr merge 9 --match-head-commit $REBASED")" deny
+   "$(PR_CROSS=true denies "$W" "gh pr merge 9 --match-head-commit $REBASED" 'PR 9 proposes from another repository')" 1
 is "P9 a PR whose head lives in another owner's repository is denied" \
-   "$(PR_OWNER=someone decision "$W" "gh pr merge 9 --match-head-commit $REBASED")" deny
+   "$(PR_OWNER=someone denies "$W" "gh pr merge 9 --match-head-commit $REBASED" 'PR 9 proposes from another repository')" 1
 is "P10 a destination with a merge queue is a deferred merge" \
-   "$(MERGE_QUEUE='{"id":"MQ_1"}' decision "$W" "gh pr merge 9 --match-head-commit $REBASED")" deny
+   "$(MERGE_QUEUE='{"id":"MQ_1"}' denies "$W" "gh pr merge 9 --match-head-commit $REBASED" 'this merge would go through the merge queue of main')" 1
 is "P11 saying so" \
    "$(MERGE_QUEUE='{"id":"MQ_1"}' reason "$W" "gh pr merge 9 --match-head-commit $REBASED" | grep -c 'the merge queue of main')" 1
 is "P12 a failed merge-queue lookup is denied" \
-   "$(QUEUE_FAIL=1 decision "$W" "gh pr merge 9 --match-head-commit $REBASED")" deny
+   "$(QUEUE_FAIL=1 denies "$W" "gh pr merge 9 --match-head-commit $REBASED" 'the forge lookup of the merge queue of main failed')" 1
 is "P13 a project with merge trains is a deferred merge" \
-   "$(MERGE_TRAINS=true decision "$W" "glab mr merge 7 --sha $REBASED --auto-merge=false")" deny
+   "$(MERGE_TRAINS=true denies "$W" "glab mr merge 7 --sha $REBASED --auto-merge=false" 'this merge would go through the merge train of acme/app')" 1
 is "P14 a failed project lookup is denied" \
-   "$(TRAIN_FAIL=1 decision "$W" "glab mr merge 7 --sha $REBASED --auto-merge=false")" deny
+   "$(TRAIN_FAIL=1 denies "$W" "glab mr merge 7 --sha $REBASED --auto-merge=false" 'the forge lookup of project acme/app failed')" 1
 is "P15 the GitLab REST merge checks the train too" \
-   "$(MERGE_TRAINS=true decision "$W" "glab api -X PUT projects/:id/merge_requests/7/merge -f sha=$REBASED")" deny
+   "$(MERGE_TRAINS=true denies "$W" "glab api -X PUT projects/:id/merge_requests/7/merge -f sha=$REBASED" 'this merge would go through the merge train of acme/app')" 1
 is "P16 and the GitHub REST merge the queue" \
-   "$(MERGE_QUEUE='{"id":"MQ_1"}' decision "$W" "gh api -X PUT repos/acme/app/pulls/9/merge -f sha=$REBASED")" deny
+   "$(MERGE_QUEUE='{"id":"MQ_1"}' denies "$W" "gh api -X PUT repos/acme/app/pulls/9/merge -f sha=$REBASED" 'this merge would go through the merge queue of main')" 1
 is "P17 gh api --hostname on another host is denied" \
-   "$(decision "$W" "gh api --hostname evil.example -X PUT repos/acme/app/pulls/9/merge -f sha=$REBASED")" deny
+   "$(denies "$W" "gh api --hostname evil.example -X PUT repos/acme/app/pulls/9/merge -f sha=$REBASED" 'this call goes to evil.example, but')" 1
 is "P18 glab api --hostname on another host is denied" \
-   "$(decision "$W" "glab api --hostname evil.example -X PUT projects/acme%2Fapp/merge_requests/7/merge -f sha=$REBASED")" deny
+   "$(denies "$W" "glab api --hostname evil.example -X PUT projects/acme%2Fapp/merge_requests/7/merge -f sha=$REBASED" 'this call goes to evil.example, but')" 1
 is "P19 gh api --hostname naming origin's host is allowed" \
    "$(decision "$W" "gh api --hostname forge.example -X PUT repos/acme/app/pulls/9/merge -f sha=$REBASED")" allow
 is "P20 glab api --hostname naming origin's host is allowed" \
    "$(decision "$W" "glab api --hostname forge.example -X PUT projects/acme%2Fapp/merge_requests/7/merge -f sha=$REBASED")" allow
 is "P21 an absolute GitLab endpoint on another host is denied" \
-   "$(decision "$W" "glab api -X PUT https://evil.example/api/v4/projects/acme%2Fapp/merge_requests/7/merge -f sha=$REBASED")" deny
+   "$(denies "$W" "glab api -X PUT https://evil.example/api/v4/projects/acme%2Fapp/merge_requests/7/merge -f sha=$REBASED" 'this call goes to evil.example, but')" 1
 is "P22 on origin's host it is allowed" \
    "$(decision "$W" "glab api -X PUT https://forge.example/api/v4/projects/acme%2Fapp/merge_requests/7/merge -f sha=$REBASED")" allow
 is "P23 an absolute GitHub endpoint on another host is denied" \
-   "$(decision "$W" "gh api -X PUT https://evil.example/api/v3/repos/acme/app/pulls/9/merge -f sha=$REBASED")" deny
+   "$(denies "$W" "gh api -X PUT https://evil.example/api/v3/repos/acme/app/pulls/9/merge -f sha=$REBASED" 'this call goes to evil.example, but')" 1
 is "P24 on origin's host it is allowed" \
    "$(decision "$W" "gh api -X PUT https://forge.example/api/v3/repos/acme/app/pulls/9/merge -f sha=$REBASED")" allow
 is "P25 -R naming another host is denied (gh)" \
-   "$(decision "$W" "gh pr merge 9 -R evil.example/acme/app --match-head-commit $REBASED")" deny
+   "$(denies "$W" "gh pr merge 9 -R evil.example/acme/app --match-head-commit $REBASED" 'acts on the project evil.example/acme/app')" 1
 is "P26 -R as a URL on another host is denied (glab)" \
-   "$(decision "$W" "glab mr merge 7 -R https://evil.example/acme/app --sha $REBASED --auto-merge=false")" deny
+   "$(denies "$W" "glab mr merge 7 -R https://evil.example/acme/app --sha $REBASED --auto-merge=false" 'acts on the project https://evil.example/acme/app')" 1
 is "P27 a gh REST merge with no GH_HOST goes to github.com and is denied" \
-   "$(GH_HOST= decision "$W" "gh api -X PUT repos/acme/app/pulls/9/merge -f sha=$REBASED")" deny
+   "$(GH_HOST= denies "$W" "gh api -X PUT repos/acme/app/pulls/9/merge -f sha=$REBASED" 'this call goes to github.com, but')" 1
 is "P28 a glab REST merge under a stray GITLAB_HOST is denied" \
-   "$(GITLAB_HOST=gitlab.com decision "$W" "glab api -X PUT projects/acme%2Fapp/merge_requests/7/merge -f sha=$REBASED")" deny
+   "$(GITLAB_HOST=gitlab.com denies "$W" "glab api -X PUT projects/acme%2Fapp/merge_requests/7/merge -f sha=$REBASED" 'this call goes to gitlab.com, but')" 1
 # Every lookup goes to the host the command reaches, never to the one the environment picks.
 # On other.example, MR 7 and PR 9 target main, which is approved; on origin's host, release2.
 GLMERGE="glab api -X PUT https://forge.example/api/v4/projects/acme%2Fapp/merge_requests/7/merge -f sha=$REBASED"
 GHMERGE="gh api -X PUT https://forge.example/api/v3/repos/acme/app/pulls/9/merge -f sha=$REBASED"
 is "P29 a GitLab REST merge to origin's absolute endpoint reads origin's MR" \
-   "$(GITLAB_HOST=other.example ELSEWHERE_TARGET=main MR_TARGET=release2 decision "$W" "$GLMERGE")" deny
+   "$(GITLAB_HOST=other.example ELSEWHERE_TARGET=main MR_TARGET=release2 denies "$W" "$GLMERGE" 'feature -> release2')" 1
 is "P30 and origin's merge train" \
-   "$(GITLAB_HOST=other.example ELSEWHERE_TRAINS=false MERGE_TRAINS=true decision "$W" "$GLMERGE")" deny
+   "$(GITLAB_HOST=other.example ELSEWHERE_TRAINS=false MERGE_TRAINS=true denies "$W" "$GLMERGE" 'this merge would go through the merge train of acme/app')" 1
 is "P31 with both hosts agreeing, it is allowed" "$(GITLAB_HOST=other.example decision "$W" "$GLMERGE")" allow
 is "P32 a GitHub REST merge to origin's absolute endpoint reads origin's PR" \
-   "$(GH_HOST=other.example ELSEWHERE_BASE=main PR_BASE=release2 decision "$W" "$GHMERGE")" deny
+   "$(GH_HOST=other.example ELSEWHERE_BASE=main PR_BASE=release2 denies "$W" "$GHMERGE" 'feature -> release2')" 1
 is "P33 with both hosts agreeing, it is allowed" "$(GH_HOST=other.example decision "$W" "$GHMERGE")" allow
 is "P34 glab mr merge -R <url> reads the MR on that URL's host" \
-   "$(GITLAB_HOST=other.example ELSEWHERE_TARGET=main MR_TARGET=release2 decision "$W" "glab mr merge 7 -R https://forge.example/acme/app --sha $REBASED --auto-merge=false")" deny
+   "$(GITLAB_HOST=other.example ELSEWHERE_TARGET=main MR_TARGET=release2 denies "$W" "glab mr merge 7 -R https://forge.example/acme/app --sha $REBASED --auto-merge=false" 'feature -> release2')" 1
 is "P35 gh pr merge -R without a host, gh's default host elsewhere" \
-   "$(GH_HOST=other.example decision "$W" "gh pr merge 9 -R acme/app --match-head-commit $REBASED")" deny
+   "$(GH_HOST=other.example denies "$W" "gh pr merge 9 -R acme/app --match-head-commit $REBASED" 'acme/app names no host, so the CLI sends this to its default host, other.example')" 1
 is "P36 glab mr merge -R without a host, glab's default host gitlab.com" \
-   "$(GLAB_CONFIG_DIR="$ROOT/glab-none" decision "$W" "glab mr merge 7 -R acme/app --sha $REBASED --auto-merge=false")" deny
-is "P37 GH_REPO naming another project is denied" "$(GH_REPO=other/app decision "$W" "gh pr merge 9 --match-head-commit $REBASED")" deny
-is "P38 so is GITLAB_REPO" "$(GITLAB_REPO=other/app decision "$W" "glab mr merge 7 --sha $REBASED --auto-merge=false")" deny
-is "P39 and GITLAB_API_HOST on another host" "$(GITLAB_API_HOST=api.other.example decision "$W" "glab mr merge 7 --sha $REBASED --auto-merge=false")" deny
+   "$(GLAB_CONFIG_DIR="$ROOT/glab-none" denies "$W" "glab mr merge 7 -R acme/app --sha $REBASED --auto-merge=false" 'acme/app names no host, so the CLI sends this to its default host, gitlab.com')" 1
+is "P37 GH_REPO naming another project is denied" "$(GH_REPO=other/app denies "$W" "gh pr merge 9 --match-head-commit $REBASED" 'acts on the project other/app')" 1
+is "P38 so is GITLAB_REPO" "$(GITLAB_REPO=other/app denies "$W" "glab mr merge 7 --sha $REBASED --auto-merge=false" 'acts on the project other/app')" 1
+is "P39 and GITLAB_API_HOST on another host" "$(GITLAB_API_HOST=api.other.example denies "$W" "glab mr merge 7 --sha $REBASED --auto-merge=false" "GITLAB_API_HOST sends glab's API requests to api.other.example")" 1
 
 # The MR of the current branch: a failed branch lookup is not called a detached HEAD.
 shim 'exit 128'
 is "P40 glab mr merge with no MR named, the branch lookup failing" \
    "$(PATH="$WRAP:$PATH" reason "$FW" "glab mr merge --sha $REBASED --auto-merge=false" | grep -c -F 'cannot be read (the lookup failed')" 1
+
+echo "Q. what a forge merge may say, and the forms that merge or propose around it"
+is "Q1 gh pr merge --admin is denied by name" \
+   "$(denies "$W" "gh pr merge 9 --match-head-commit $REBASED --admin" '--admin is not among the flags the gate allows for gh pr merge')" 1
+is "Q2 so is a flag the gate does not know" \
+   "$(denies "$W" "glab mr merge 7 --sha $REBASED --auto-merge=false --bogus" '--bogus is not among the flags the gate allows for glab mr merge')" 1
+is "Q3 glab's hidden --when-pipeline-succeeds is a deferred merge" \
+   "$(denies "$W" "glab mr merge 7 --sha $REBASED --auto-merge=false --when-pipeline-succeeds" 'glab mr merge without --auto-merge=false is a deferred merge')" 1
+is "Q4 and is denied by name when off" \
+   "$(denies "$W" "glab mr merge 7 --sha $REBASED --auto-merge=false --when-pipeline-succeeds=false" '--when-pipeline-succeeds is not among the flags')" 1
+is "Q5 glab's merge flags, short" \
+   "$(decision "$W" "glab mr merge 7 -R acme/app --sha $REBASED --auto-merge=false -s --squash-message Q -m M -d -y")" allow
+is "Q6 and long" \
+   "$(decision "$W" "glab mr merge 7 --repo acme/app --sha $REBASED --auto-merge=false --squash --message M --remove-source-branch --yes")" allow
+is "Q7 a rebase merge, either spelling" \
+   "$(decision "$W" "glab mr merge 7 --sha $REBASED --auto-merge=false -r") $(decision "$W" "glab mr merge 7 --sha $REBASED --auto-merge=false --rebase")" \
+   "allow allow"
+is "Q8 gh's merge flags, short" \
+   "$(decision "$W" "gh pr merge 9 -R acme/app --match-head-commit $REBASED -s -t S -b B -A a@b -d")" allow
+is "Q9 and long" \
+   "$(decision "$W" "gh pr merge 9 --repo acme/app --match-head-commit $REBASED --squash --subject S --body-file m.txt --author-email a@b --delete-branch")" allow
+is "Q10 a merge commit or a rebase, either spelling" \
+   "$(decision "$W" "gh pr merge 9 --match-head-commit $REBASED -m -F m.txt") $(decision "$W" "gh pr merge 9 --match-head-commit $REBASED --merge --body B") $(decision "$W" "gh pr merge 9 --match-head-commit $REBASED -r") $(decision "$W" "gh pr merge 9 --match-head-commit $REBASED --rebase")" \
+   "allow allow allow allow"
+is "Q11 gh pr merge --disable-auto turns auto-merge off and merges nothing" \
+   "$(decision "$W" 'gh pr merge 9 --disable-auto') $(decision "$W" 'gh pr merge --disable-auto') $(decision "$W" 'gh pr merge 9 -R acme/app --disable-auto')" \
+   "allow allow allow"
+is "Q12 beside another flag, or off, it is not among a merge's flags" \
+   "$(denies "$W" "gh pr merge 9 --disable-auto --squash --match-head-commit $REBASED" '--disable-auto is not among the flags') $(denies "$W" 'gh pr merge 9 --disable-auto=false' '--disable-auto is not among the flags')" \
+   "1 1"
+is "Q13 glab reads !7 as MR 7" "$(decision "$W" "glab mr merge !7 --sha $REBASED --auto-merge=false")" allow
+is "Q14 a PR URL with a trailing path names its PR" \
+   "$(decision "$W" "gh pr merge https://forge.example/acme/app/pull/9/files --match-head-commit $REBASED")" allow
+is "Q15 so does an MR URL, and glab takes its /-/ as optional" \
+   "$(decision "$W" "glab mr merge https://forge.example/acme/app/-/merge_requests/7/diffs --sha $REBASED --auto-merge=false") $(decision "$W" "glab mr merge https://forge.example/acme/app/merge_requests/7 --sha $REBASED --auto-merge=false")" \
+   "allow allow"
+is "Q16 an MR URL names the project glab reads from it" \
+   "$(denies "$W" "glab mr merge https://forge.example/acme/app/merge_requests/77/merge_requests/7 --sha $REBASED --auto-merge=false" "is not on this checkout's origin")" 1
+is "Q17 GraphQL mergeBranch, a branch merged with no PR, is denied" \
+   "$(denies "$W" "gh api graphql -f query='mutation { mergeBranch(input: {repositoryId: \"R_1\", base: \"main\", head: \"other\"}) { mergeCommit { oid } } }'" 'this GraphQL call')" 1
+is "Q18 so are enqueuePullRequest, revertPullRequest, updatePullRequest and mergeRequestUpdate" \
+   "$(denies "$W" "gh api graphql -f query='mutation { enqueuePullRequest(input: {}) { clientMutationId } }'" 'this GraphQL call') $(denies "$W" "gh api graphql -f query='mutation { revertPullRequest(input: {}) { clientMutationId } }'" 'this GraphQL call') $(denies "$W" "gh api graphql -f query='mutation { updatePullRequest(input: {baseRefName: \"release\"}) { clientMutationId } }'" 'this GraphQL call') $(denies "$W" "glab api graphql -f query='mutation { mergeRequestUpdate(input: {targetBranch: \"release\"}) { errors } }'" 'this GraphQL call')" \
+   "1 1 1 1"
+is "Q19 a review thread, or updating a PR's branch from its base, stays allowed" \
+   "$(decision "$W" "gh api graphql -f query='mutation { addPullRequestReviewThread(input: {}) { clientMutationId } }'") $(decision "$W" "gh api graphql -f query='mutation { updatePullRequestBranch(input: {}) { clientMutationId } }'")" \
+   "allow allow"
+is "Q20 a write to the merges endpoint is denied" \
+   "$(denies "$W" 'gh api repos/acme/app/merges -f base=main -f head=other' 'writes to a merges endpoint')" 1
+is "Q21 so is one to its absolute URL" \
+   "$(denies "$W" 'gh api -X POST https://forge.example/api/v3/repos/acme/app/merges -f base=main -f head=feature' 'writes to a merges endpoint')" 1
+is "Q22 a gh write's pin in the query string is denied" \
+   "$(denies "$W" "gh api -X PUT 'repos/acme/app/pulls/9/merge?sha=$REBASED'" 'carries a query string')" 1
+is "Q23 so is any query string on a gh write, beside a pin in the body" \
+   "$(denies "$W" "gh api -X PUT 'repos/acme/app/pulls/9/merge?merge_method=squash' -f sha=$REBASED" 'carries a query string')" 1
+is "Q24 GitLab reads the query string, so a glab pin there is read" \
+   "$(decision "$W" "glab api -X PUT 'projects/acme%2Fapp/merge_requests/7/merge?sha=$REBASED'")" allow
+is "Q25 glab mr for is denied: the forge makes its branch" \
+   "$(denies "$W" 'glab mr for 3 --target-branch main' 'glab mr for creates an MR/PR from a branch the forge makes itself')" 1
+is "Q26 so are its aliases and gh pr revert, each pointing to the create the gate checks" \
+   "$(denies "$W" 'glab mr new-for 3' 'propose it with glab mr create') $(denies "$W" 'glab mr create-for 3' 'propose it with glab mr create') $(denies "$W" 'gh pr revert 9' 'propose it with gh pr create')" \
+   "1 1 1"
+
 ```
 
 - [ ] **Step 2: Run it and confirm it fails.** `./tests/xreview-guard.test.sh`: expect
-  `passed: 332  failed: 26`. The failures are L1-L9, M2, M6, N2, N5, N7, N9, P2, P4, P6, P11,
-  P19, P20, P22, P24, P31, P33 and P40: merges are still denied with `NOT_MODELLED`, or as
-  unresolved API writes.
+  `passed: 292  failed: 94`. The failures are every test in sections L, M and N, O1-O4, O6,
+  O10, P1-P16, P19, P20, P22, P24-P26, P29-P40, Q1-Q18 and Q20-Q26: merges are still denied
+  with `NOT_MODELLED` or as unresolved API writes, so every allow case fails, and so does every
+  deny test that pins a reason Task 8 adds.
 
 - [ ] **Step 3: Replace the placeholder message.** In `dot_claude/xreview-guard.py`, replace
   the line that starts `NOT_MODELLED = ` with:
@@ -6224,14 +6379,27 @@ UNPINNED = ("Pre-merge gate: a forge merge must pin the head it merges. Its head
 FULL_SHA = "Pre-merge gate: pin the head with a full commit id, not {}."
 NOT_ONE = "Pre-merge gate: {} open merge requests come from {}; name the one to merge by number."
 ONE_TARGET = "Pre-merge gate: name one {} to merge."
-GRAPHQL = ("Pre-merge gate: this GraphQL call creates or merges an MR/PR, enables auto-merge, or "
-           "carries a query the gate cannot read. Use the forms the gate checks: glab mr "
-           "create|merge, gh pr create|merge, or the REST merge_requests/pulls endpoints.")
+GRAPHQL = ("Pre-merge gate: this GraphQL call creates, updates, reverts, merges or enqueues an "
+           "MR/PR, merges a branch, enables auto-merge, or carries a query the gate cannot read. "
+           "Use the forms the gate checks: glab mr create|merge, gh pr create|merge, or the REST "
+           "merge_requests/pulls endpoints; edit an MR/PR with glab mr update or gh pr edit.")
 OTHER_URL = ("Pre-merge gate: the {} {} is not on this checkout's origin ({}/{}). Run the merge "
              "from that project's checkout, or name the MR/PR by number.")
 QUEUED = ("Pre-merge gate: this merge would go through {}: it would be enqueued, or set to merge "
           "once checks pass - a deferred merge, which the gate never allows, since nothing can pin "
           "what finally lands. A merge through a queue or a train is Michael's to run.")
+MERGE_FLAG = ("Pre-merge gate: {0} is not among the flags the gate allows for {1}: it could "
+              "merge past the forge's own checks, or defer or change the merge, in a way the "
+              "gate does not read. Run the command without it.")
+BRANCH_MERGE = ("Pre-merge gate: this {} api call writes to a merges endpoint, which merges one "
+                "branch into another with no MR/PR, so no review can bind it. Propose the branch "
+                "as an MR/PR, and merge that pinned once its pre-merge review approves it.")
+QUERY_STRING = ("Pre-merge gate: this gh api write carries a query string ({}). gh sends -f/-F "
+                "fields in the request body, and GitHub may not read a write's query string, so "
+                "the gate reads only the body. Pass each field with -f instead.")
+FORGE_MADE = ("Pre-merge gate: {0} creates an MR/PR from a branch the forge makes itself, which "
+              "no review can have seen, so the gate never allows it. Make the branch, push it, "
+              "and once its pre-merge review approves it, propose it with {1}.")
 ```
 
 - [ ] **Step 4: Add merging.** Replace everything from the line
@@ -6244,12 +6412,30 @@ QUEUED = ("Pre-merge gate: this merge would go through {}: it would be enqueued,
 GLAB_MERGE_VALUE = {"-m", "--message", "--sha", "--squash-message", "-R", "--repo"}
 GH_MERGE_VALUE = {"-A", "--author-email", "-b", "--body", "-F", "--body-file",
                   "--match-head-commit", "-t", "--subject", "-R", "--repo"}
+# The flags a merge allows, per CLI (glab 1.120, gh 2.102); any other is denied by name. Denied
+# on purpose: gh's --admin (it merges past required reviews and checks) and glab's hidden
+# --when-pipeline-succeeds. glab's --auto-merge is read by the deferred-merge check, which
+# allows it only when it is off.
+GLAB_MERGE_ALLOWED = {"--sha", "--auto-merge", "-m", "--message", "-s", "--squash",
+                      "--squash-message", "-r", "--rebase", "-d", "--remove-source-branch", "-y",
+                      "--yes", "-R", "--repo"}
+GH_MERGE_ALLOWED = {"--match-head-commit", "-m", "--merge", "-r", "--rebase", "-s", "--squash",
+                    "-t", "--subject", "-b", "--body", "-F", "--body-file", "-A", "--author-email",
+                    "-d", "--delete-branch", "-R", "--repo"}
 GH_VIEW_FIELDS = ("baseRefName,headRefName,headRefOid,isCrossRepository,headRepository,"
                   "headRepositoryOwner")
-PR_URL = re.compile(r"^/(.+)/pull/(\d+)/?$")
-MR_URL = re.compile(r"^/(.+)/-/merge_requests/(\d+)/?$")
+# The CLIs' own patterns for the path of a PR/MR URL (gh 2.102's and glab 1.120's, read from
+# their binaries): each takes the number before any trailing path (/files, /diffs, /commits),
+# and glab takes the /-/ as optional.
+PR_URL = re.compile(r"^/([^/]+/[^/]+)/pull/(\d+)(.*$)")
+MR_URL = re.compile(r"^(/(?:[^-][^/]+/){2,})+(?:-/)?merge_requests/(\d+)(?:/.*)?$")
 MERGE_QUEUE = ("query($owner:String!,$name:String!,$branch:String!){repository(owner:$owner,"
                "name:$name){mergeQueue(branch:$branch){id}}}")
+BRANCH_MERGES = re.compile(r"(^|/)merges(/|$)")
+FORGE_MADE_FORMS = {
+    "glab": ("glab mr for", "glab mr create --source-branch <branch> --target-branch <dest>"),
+    "gh": ("gh pr revert", "gh pr create --head <branch> --base <dest>"),
+}
 
 
 def explicitly_off(values):
@@ -6266,7 +6452,8 @@ def url_number(target, host, path, pattern, what):
     a URL can name any repository on any forge."""
     parts = urlsplit(target)
     m = pattern.match(parts.path)
-    if not m or (parts.hostname or "").lower() != host or m.group(1).lower() != path.lower():
+    if (not m or (parts.hostname or "").lower() != host
+            or m.group(1).strip("/").lower() != path.lower()):
         raise Deny(OTHER_URL.format(what, target, host, path))
     return m.group(2)
 
@@ -6356,10 +6543,15 @@ def merge_pinned(ledger, top, source, dest, head, pin, hint):
 
 
 def judge_merge_cli(shape, ledger):
-    """glab mr merge|accept [<n>|<branch>|<url>], gh pr merge [<n>|<url>|<branch>]: pinned,
-    immediate, from origin's own project, and the destination read from the forge."""
+    """glab mr merge|accept [<n>|!<n>|<branch>|<url>], gh pr merge [<n>|<url>|<branch>]:
+    pinned, immediate, from origin's own project, and the destination read from the forge.
+    Only the flags in GLAB_MERGE_ALLOWED and GH_MERGE_ALLOWED may be given. gh pr merge
+    --disable-auto, with no other flag but -R, turns auto-merge off and merges nothing."""
     tool = shape["tool"]
     flags, pos = parse_flags(shape["args"], GLAB_MERGE_VALUE if tool == "glab" else GH_MERGE_VALUE)
+    if (tool == "gh" and flag_on(flags.get("--disable-auto"))
+            and set(flags) <= {"--disable-auto", "-R", "--repo"}):
+        return
     named = one(flags, ("-R", "--repo"), "-R/--repo") or env_repo(tool)
     top, host, path = forge_context(shape["cwd"], named, tool)
     check_cli_host(tool, top, host, path, named)
@@ -6374,8 +6566,18 @@ def judge_merge_cli(shape, ledger):
         if not explicitly_off(flags.get("--auto-merge")) or flag_on(flags.get("--when-pipeline-succeeds")):
             raise Deny(DEFERRED.format("glab mr merge without --auto-merge=false",
                                        "glab mr merge <n> --sha <head> --auto-merge=false"))
+    elif flag_on(flags.get("--auto")):
+        raise Deny(DEFERRED.format("gh pr merge --auto", "gh pr merge <n> --match-head-commit <head>"))
+    allowed, verb = ((GLAB_MERGE_ALLOWED, "glab mr merge") if tool == "glab"
+                     else (GH_MERGE_ALLOWED, "gh pr merge"))
+    for flag in flags:
+        if flag not in allowed:
+            raise Deny(MERGE_FLAG.format(flag, verb))
+    if tool == "glab":
         if target is not None and "://" in target:
             target = url_number(target, host, path, MR_URL, "MR")
+        elif target is not None and re.fullmatch(r"![0-9]+", target):
+            target = target[1:]                        # glab reads !7 as MR 7
         number = target if target and target.isdigit() else None
         branch = None if number else (target or current_source(ledger, top, "the MR number"))
         project = quote(path, safe="")
@@ -6384,8 +6586,6 @@ def judge_merge_cli(shape, ledger):
         pin = one(flags, ("--sha",), "--sha")
         hint = "glab mr merge " + (iid or "<n>") + " --sha {} --auto-merge=false"
     else:
-        if flag_on(flags.get("--auto")):
-            raise Deny(DEFERRED.format("gh pr merge --auto", "gh pr merge <n> --match-head-commit <head>"))
         if target is not None and "://" in target:
             target = url_number(target, host, path, PR_URL, "PR")
         owner, _, name = path.partition("/")
@@ -6420,16 +6620,22 @@ def judge_merge_github_api(shape, ledger, owner, repo, number, fields, host):
 
 
 def judge_api(shape, ledger):
-    """The REST create and merge endpoints are checked; GraphQL and every other MR/PR write
-    are denied. The call must reach origin's host."""
+    """The REST create and merge endpoints are checked; GraphQL, the merges endpoint and every
+    other MR/PR write are denied. The call must reach origin's host. gh sends a write's fields
+    in its body, and GitHub may not read a write's query string, so a gh write carrying one is
+    denied; glab's query fields are read with its body fields, as GitLab reads both."""
     tool, call = shape["tool"], parse_api(shape["args"])
     endpoint = call["endpoint"] or ""
     if is_graphql(endpoint):
         raise Deny(GRAPHQL)
+    if BRANCH_MERGES.search(endpoint_parts(endpoint)[0]):
+        raise Deny(BRANCH_MERGE.format(tool))
     if not literal(endpoint):
         raise Deny(LITERAL.format("the api endpoint", endpoint))
     if call["body"]:
         raise Deny(UNRESOLVED_API.format(tool))
+    if tool == "gh" and "?" in endpoint:
+        raise Deny(QUERY_STRING.format(endpoint))
     host = check_api_host(shape["cwd"], tool, call)
     path, query = endpoint_parts(endpoint)
     fields = dict(query)
@@ -6456,6 +6662,8 @@ def judge(shape, ledger):
         return judge_git_merge(shape, ledger)
     if kind == "create":
         return judge_create_cli(shape, ledger)
+    if kind == "forge-made":
+        raise Deny(FORGE_MADE.format(*FORGE_MADE_FORMS[shape["tool"]]))
     if kind == "merge":
         return judge_merge_cli(shape, ledger)
     return judge_api(shape, ledger)
@@ -6464,7 +6672,7 @@ def judge(shape, ledger):
 ```
 
 - [ ] **Step 5: Run it and confirm it passes.** `./tests/xreview-guard.test.sh`: expect
-  `passed: 358  failed: 0`. Then `grep -c NOT_MODELLED dot_claude/xreview-guard.py` must print
+  `passed: 386  failed: 0`. Then `grep -c NOT_MODELLED dot_claude/xreview-guard.py` must print
   `0`.
 
 - [ ] **Step 6: Commit.** Check the branch, then:
@@ -6775,9 +6983,9 @@ owns it.
   - Expected:
     - every suite `ok`;
     - `29 suites run, 8 skipped (see the needs: lines)`;
-    - `all 29 suites passed (3436 assertions)`.
+    - `all 29 suites passed (3464 assertions)`.
   - The eight skipped suites carry a `# test-requires:` line.
-  - Report the total as passed/total, `3436/3436`, copied from the runner's last line.
+  - Report the total as passed/total, `3464/3464`, copied from the runner's last line.
 
 - [ ] **Step 2: Confirm the deployed set.** Run
   `chezmoi managed --include=files | grep -c -E '^\.claude/xreview-(guard|ledger)\.py$'` and
