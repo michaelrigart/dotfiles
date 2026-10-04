@@ -1647,6 +1647,12 @@ is "W24 and a pre-merge dispatch is refused, naming it" \
    "$rc/$(printf '%s' "$out" | grep -c -F "remove it by hand (rmdir $VLEDGER.lock.break)")" "1/1"
 is "W25 the break lock is left in place" "$([ -d "$VLEDGER.lock.break" ] && echo kept || echo gone)" kept
 rmdir "$VLEDGER.lock.break"
+# record_pending on a targets document that names no repository would put nothing on record
+# and report success, so the review would run with nothing pending for it.
+rp="$(bash -c 'calls="$2"; ledger() { echo called >> "$calls"; }; eval "$(sed -n "/^record_pending() {/,/^}/p" "$1")"
+  record_pending "{\"v\":2,\"nonce\":\"xr-none\",\"checkpoint\":\"pre-merge\",\"targets\":[]}"; echo "$?"' _ "$XREVIEW" "$ROOT/rp-calls")"
+is "W29 record_pending fails on a targets document naming no repository, writing nothing" \
+   "$rp/$([ -e "$ROOT/rp-calls" ] && echo wrote || echo none)" "1/none"
 cd "$ROOT/repo" || exit 1
 unset PANE_CWD
 

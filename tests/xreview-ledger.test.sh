@@ -245,6 +245,26 @@ t="$(L normalize "$N" "$C...feature")"
 is "B20 a divergent commit...branch keeps its literal base, not the merge-base" \
    "$(printf '%s' "$t" | jq -r '"\(.base) \(.full)"')" "$C false"
 is "B21 and names the change base..tip" "$(printf '%s' "$t" | jq -r .fingerprint)" "$(fp "$N" "$C" feature)"
+# A symbolic left side names the branch it points at: origin/HEAD is origin's default branch,
+# never a destination called HEAD.
+git -C "$N" update-ref refs/remotes/origin/main main
+git -C "$N" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+t="$(L normalize "$N" origin/HEAD...feature)"
+is "B22 origin/HEAD...feature lands on origin's main" \
+   "$(printf '%s' "$t" | jq -r '"\(.dest) \(.dest_ref) \(.full)"')" "main origin/main true"
+is "B23 and names the same change as origin/main...feature" "$(printf '%s' "$t" | jq -r .fingerprint)" \
+   "$(L normalize "$N" origin/main...feature | jq -r .fingerprint)"
+git -C "$N" symbolic-ref refs/heads/trunk refs/heads/main
+is "B24 a local symbolic branch names its target" \
+   "$(L normalize "$N" trunk...feature | jq -r '"\(.dest) \(.dest_ref)"')" "main main"
+git -C "$N" tag v1 main; git -C "$N" symbolic-ref refs/remotes/origin/HEAD refs/tags/v1
+out="$(L normalize "$N" origin/HEAD...feature 2>&1)"; rc=$?
+is "B25 one pointing at no branch is refused" "$rc/$(printf '%s' "$out" | grep -c 'neither a branch nor origin')" "1/1"
+git -C "$N" symbolic-ref --delete refs/remotes/origin/HEAD; git -C "$N" update-ref refs/remotes/origin/HEAD main
+out="$(L normalize "$N" origin/HEAD...feature 2>&1)"; rc=$?
+is "B26 a plain ref named HEAD is refused" "$rc/$(printf '%s' "$out" | grep -c 'names HEAD, not a branch')" "1/1"
+git -C "$N" update-ref -d refs/remotes/origin/HEAD; git -C "$N" symbolic-ref --delete refs/heads/trunk
+git -C "$N" tag -d v1 >/dev/null
 
 echo "C. one ledger per repository (spec 3.3)"
 REAL="$(cd "$N" && pwd -P)"

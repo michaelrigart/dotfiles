@@ -299,7 +299,8 @@ record.
 **Skipping the review is Michael's call to make, and it has to still work.** Put the
 bypass in the command — `XREVIEW_GUARD=off glab mr create …` — because that is the only
 place a model can set it; the hook runs beside the command, not inside it. Say in the MR
-description that it went up without a cross-review and why. The pre-merge guard only reads
-a gated verb in command position, so writing the Basecamp card, the comment and the MR body
-is never gated — if one of those is refused, it is a
-bug in the guard, not a checkpoint you missed.
+description that it went up without a cross-review and why. The pre-merge guard reads every
+unquoted word as a possible command, so an unquoted mention of a gated verb
+(`echo git merge x`) is denied by design. Quote a mention, and write the Basecamp card, the
+comment and the MR body from a file or a `<<'EOF'` here-document, whose body is never read
+as commands; then writing them is never gated.

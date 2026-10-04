@@ -239,10 +239,19 @@ for flag in '"--auto-merge"' '"--sha"' '"--match-head-commit"' '"--target-branch
   else _fail "the guard reads $flag" "the skill names a flag the guard never reads"; fi
 done
 for stale in 'advisory about freshness' '`glab mr create` / `gh pr create` in command position' \
-             'local merges, pushes, forge web UIs'; do
+             'local merges, pushes, forge web UIs' 'a gated verb in command position' \
+             'bug in the guard, not a checkpoint you missed'; do
   if grep -qiF -- "$stale" "$GUARD" "$ROOT/dot_claude/xreview-guard.py" "$SKILL"; then
     _fail "no '$stale' survives" "still present"
   else _pass "no '$stale' survives"; fi
+done
+
+# The guard reads every unquoted word as a possible command, so the skill must not promise
+# that a mention is safe: it says to quote one and to write bodies through <<'EOF'.
+for phrase in 'is denied by design' "<<'EOF'" 'Quote a mention'; do
+  if grep -qF -- "$phrase" "$SKILL"; then
+    _pass "the skill says '$phrase' about mentions"
+  else _fail "the skill says '$phrase' about mentions" "missing"; fi
 done
 
 # A schema miss is its own exit code. The skill must say what to do with it, or the model

@@ -81,6 +81,10 @@ TIMED_OUT = "Pre-merge gate: the check did not finish in time, so the command is
 LITERAL = "Pre-merge gate: {} must be a literal value the gate can read, not {}."
 NO_REPO = "Pre-merge gate: {} is not inside a git repository, so the change cannot be checked."
 ONE_REF = "Pre-merge gate: merge one named ref at a time: git merge <ref>."
+FETCH_HEADS = ("Pre-merge gate: git merge FETCH_HEAD merges every head the last fetch marked for "
+               "merge, all in one merge, and the gate reads only one, so it allows FETCH_HEAD only "
+               "while it holds exactly one ({}). Merge the one you mean by name: git merge "
+               "origin/<branch>.")
 ONCE = "Pre-merge gate: name {} once."
 NO_ORIGIN = ("Pre-merge gate: {} has no origin remote, so the forge project cannot be checked. "
              "Run the command from the project's own checkout.")
@@ -248,6 +252,12 @@ def ansi_c(cmd, i):
     return "".join(out), None
 
 
+def funsub(cmd, i):
+    """Does cmd[i] start bash 5.3's ${ cmd; } or ${| cmd; }: ${ followed by a blank, a newline
+    or |? A parameter expansion (${x}, ${x:-y}, ${#x}) never is."""
+    return cmd.startswith("${", i) and cmd[i + 2:i + 3] in (" ", "\t", "\n", "|")
+
+
 def word_at(cmd, i):
     j = i
     while j < len(cmd) and cmd[j] not in METACHARS:
@@ -268,9 +278,9 @@ def command_position(out, in_case=False):
     """Does the next word start a command: after an operator, a newline or a (, after the ) that
     ends a pattern of an open case statement (in_case), or after a keyword that a command
     follows (then, do, else, {, !, time, time -p, ...) - however it touches a ( before it,
-    as in $({ or $(time?"""
+    as in $({ or $(time - or right after bash 5.3's ${ ?"""
     t = tail(out).rstrip(" \t")
-    if not t or t[-1] in ";&|(\n" or (in_case and t[-1] == ")"):
+    if not t or t[-1] in ";&|(\n" or t.endswith("${") or (in_case and t[-1] == ")"):
         return True
     words = [w for w in re.split(r"[ \t\n()]+", t) if w]
     if len(words) > 1 and words[-2:] == ["time", "-p"]:
@@ -361,7 +371,7 @@ def lex(cmd, body=False, everywhere=False):
 
     def close():
         frame = stack.pop()
-        if not any(f[0] in ("$(", "`") for f in stack):
+        if not any(f[0] in ("$(", "${", "`") for f in stack):
             text = "".join(out[frame[1]:])
             if frame[0] == "`":
                 text = re.sub(r"\\([`\\$])", r"\1", text)
@@ -424,6 +434,10 @@ def lex(cmd, body=False, everywhere=False):
                 out.append("$(")
                 stack.append(["$(", len(out), 1, 0, 0])
                 i += 2
+            elif funsub(cmd, i):
+                out.append("${")
+                stack.append(["${", len(out), 1, 0, 0])
+                i += 2
             else:
                 if c == "`":
                     stack.append(["`", len(out) + 1, 0, 0])
@@ -451,6 +465,22 @@ def lex(cmd, body=False, everywhere=False):
             out.append(c)
             i += 1
             continue
+        if funsub(cmd, i):
+            # bash 5.3's ${ cmd; } and ${| cmd; } run cmd in the current shell; } ends them
+            # where it starts a command, as it ends a { group.
+            out.append("${")
+            stack.append(["${", len(out), 1, 0, 0])
+            i += 2
+            continue
+        if kind == "${" and at_word and command_position(out) and (
+                c == "}" or (c == "{" and cmd[i + 1:i + 2] in (" ", "\t", "\n"))):
+            frame[2] += 1 if c == "{" else -1
+            if frame[2] == 0:
+                close()
+                out.append(c)
+                glued = len(out)
+                i += 1
+                continue
         if cmd.startswith("$(", i) or (c in "<>" and cmd.startswith("(", i + 1)):
             # A command substitution, or a process substitution <( ) or >( ): both run their
             # body, and both glue their closing ) to the word that follows.
@@ -501,7 +531,7 @@ def lex(cmd, body=False, everywhere=False):
             i = here_bodies(cmd, i, pending, expanding)
             pending = []
     for frame in stack:
-        if frame[0] in ("$(", "`"):
+        if frame[0] in ("$(", "${", "`"):
             subs.append("".join(out[frame[1]:]))
             del out[frame[1]:]
             break
@@ -751,19 +781,20 @@ def endpoint_parts(endpoint):
 
 
 def is_graphql(endpoint):
-    """graphql, or an absolute URL whose path ends in /graphql."""
-    return endpoint_parts(endpoint)[0].split("/")[-1] == "graphql"
+    """graphql, or an absolute URL whose path ends in /graphql, percent-escapes decoded."""
+    return unquote(endpoint_parts(endpoint)[0]).split("/")[-1] == "graphql"
 
 
 def api_gated(call):
     """A GraphQL call carrying one of MUTATIONS, or a query the gate cannot read; or a POST,
     PUT or PATCH to a path naming merge_requests, pulls or merges (a branch merged with no
-    PR)."""
+    PR). The path is read with its percent-escapes decoded, as a forge's router may read it:
+    m%65rge_requests names merge_requests."""
     endpoint = call["endpoint"] or ""
     if is_graphql(endpoint):
         return call["body"] or bool(MUTATIONS.search(" ".join(call["fields"].values())))
     path, _ = endpoint_parts(endpoint)
-    return call["method"] in ("POST", "PUT", "PATCH") and bool(NAMES_MR_PATH.search(path))
+    return call["method"] in ("POST", "PUT", "PATCH") and bool(NAMES_MR_PATH.search(unquote(path)))
 
 
 def only_options(words):
@@ -1002,6 +1033,21 @@ MERGE_VALUE = {"-m", "-F", "-s", "-X", "--message", "--file", "--strategy",
                "--strategy-option", "--into-name"}
 
 
+def fetch_heads(top):
+    """How many heads git merge FETCH_HEAD merges: the lines of this worktree's FETCH_HEAD not
+    marked not-for-merge. None when it cannot be read. Each worktree has its own FETCH_HEAD,
+    so git names the file (--git-path)."""
+    path = run(["git", "-C", top, "rev-parse", "--git-path", "FETCH_HEAD"])
+    if not path or not path.strip():
+        return None
+    try:
+        with open(os.path.join(top, path.strip())) as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return None
+    return sum(1 for line in lines if line.strip() and line.split("\t")[1:2] != ["not-for-merge"])
+
+
 def judge_git_merge(shape, ledger):
     """git [-C <path>]... merge <ref>: gated only while the repository's current branch is its
     default branch; the change is <ref>, landing on that branch's HEAD."""
@@ -1033,6 +1079,17 @@ def judge_git_merge(shape, ledger):
     ref = refs[0]
     if not literal(ref) or ref.startswith("-"):
         raise Deny(LITERAL.format("the merged ref", ref))
+    # Syncing with origin's own default branch lands work that is already there. The ref must
+    # name it, as git resolves the name (origin/main, refs/remotes/origin/main, @{u}): another
+    # ref at the same commit is still a change of its own.
+    full = run(["git", "-C", top, "rev-parse", "--symbolic-full-name", ref])
+    if (full or "").strip() == "refs/remotes/origin/" + dest:
+        return
+    if ref == "FETCH_HEAD":
+        heads = fetch_heads(top)
+        if heads != 1:
+            raise Deny(FETCH_HEADS.format("it cannot be read" if heads is None
+                                          else "it holds {}".format(heads)))
     source = ref[len("origin/"):] if ref.startswith("origin/") else ref
     check(ledger, top, source, dest, "HEAD", ref, "{}...{}".format(dest, ref), None)
 
@@ -1734,7 +1791,7 @@ def judge_api(shape, ledger):
     endpoint = call["endpoint"] or ""
     if is_graphql(endpoint):
         raise Deny(GRAPHQL)
-    if BRANCH_MERGES.search(endpoint_parts(endpoint)[0]):
+    if BRANCH_MERGES.search(unquote(endpoint_parts(endpoint)[0])):
         raise Deny(BRANCH_MERGE.format(tool))
     if not literal(endpoint):
         raise Deny(LITERAL.format("the api endpoint", endpoint))
@@ -1798,12 +1855,16 @@ def on_alarm(signum, frame):
 
 
 def load_ledger():
+    missing = Deny("Pre-merge gate: the ledger helper {} cannot be loaded, so the command is "
+                   "refused. Restore it (chezmoi apply).".format(LEDGER_PATH))
     spec = importlib.util.spec_from_file_location("xreview_ledger", LEDGER_PATH)
     if spec is None or spec.loader is None:
-        raise Deny("Pre-merge gate: the ledger helper {} cannot be loaded, so the command is "
-                   "refused. Restore it (chezmoi apply).".format(LEDGER_PATH))
+        raise missing
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    except Exception:                                  # missing, unreadable or broken
+        raise missing
     module.CALL_TIMEOUT = CALL_TIMEOUT
     return module
 

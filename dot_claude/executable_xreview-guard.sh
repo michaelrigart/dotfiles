@@ -17,10 +17,11 @@
 #
 # This shell front is the fast path. The hook fires on EVERY Bash call, so a payload that
 # names none of create, new, merge, accept, pulls, graphql or revert (nor mr together with
-# for), or none of glab, gh or git, costs no subprocess at all. It matches each word as the
-# raw JSON payload can spell it, with quotes, backslashes and line continuations allowed
-# between its letters: g''it, mer""ge and mer\<newline>ge all name their verb. A payload
-# holding an ANSI-C $'...' string, which can spell any word with escapes, always goes on.
+# for, nor api together with a percent-escape such as m%65rge), or none of glab, gh or git,
+# costs no subprocess at all. It matches each word as the raw JSON payload can spell it, with
+# quotes, backslashes and line continuations allowed between its letters: g''it, mer""ge and
+# mer\<newline>ge all name their verb. A payload holding an ANSI-C $'...' string, which can
+# spell any word with escapes, always goes on.
 # Everything else goes to xreview-guard.py beside this file, which owns the grammar and the
 # checks and fails closed on a gated shape.
 #
@@ -41,6 +42,7 @@ payload=$(cat)
 # linear; a ${payload//...} substitution is quadratic in bash 5 and far worse in bash 3.2,
 # which leaves a large command without a decision inside the hook's time limit.
 g="('|\\\\[\"\\\\n])*"
+pct='%[0-9A-Fa-f][0-9A-Fa-f]'
 spells() {
   local word re i
   for word in "$@"; do
@@ -52,7 +54,8 @@ spells() {
 }
 case "$payload" in
   *"\$'"*) ;;
-  *) spells create new merge accept pulls graphql revert || { spells mr && spells for; } || exit 0
+  *) spells create new merge accept pulls graphql revert || { spells mr && spells for; } \
+       || { spells api && [[ $payload =~ $pct ]]; } || exit 0
      spells glab gh git || exit 0 ;;
 esac
 

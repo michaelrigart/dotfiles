@@ -259,9 +259,10 @@ def branch_of(repo, right):
 def normalize(repo, rng):
     """One review target for rng (<left>..<tip> or <left>...<tip>). A left side naming a
     branch (X, or origin/X) is normalized: dest is X, dest_ref the ref as written, base the
-    merge-base of dest_ref and the tip, and the target is full. Any other left side keeps its
-    literal base in both forms (spec 3.1), has no dest, and is partial; the packet shows
-    exactly base..tip, so the reviewed diff and the record always agree."""
+    merge-base of dest_ref and the tip, and the target is full. A symbolic ref (origin/HEAD) is
+    read as the branch it points at; one that names no branch is refused. Any other left side
+    keeps its literal base in both forms (spec 3.1), has no dest, and is partial; the packet
+    shows exactly base..tip, so the reviewed diff and the record always agree."""
     for dots in ("...", ".."):
         if dots in rng:
             left, right = rng.split(dots, 1)
@@ -279,6 +280,20 @@ def normalize(repo, rng):
     elif left.startswith("origin/") and has_ref(repo, "refs/remotes/" + left):
         dest, dest_ref, full_ref = left[len("origin/"):], left, "refs/remotes/" + left
     if full_ref is not None:
+        # A symbolic ref (origin/HEAD) names the branch it points at; HEAD is no destination.
+        target = git(repo, "symbolic-ref", "--quiet", full_ref)
+        if target and target.startswith("refs/heads/"):
+            dest = dest_ref = target[len("refs/heads/"):]
+            full_ref = target
+        elif target and target.startswith("refs/remotes/origin/"):
+            dest, dest_ref, full_ref = (target[len("refs/remotes/origin/"):],
+                                        target[len("refs/remotes/"):], target)
+        elif target:
+            raise Fail("{} points at {}, which is neither a branch nor origin's: name the branch "
+                       "the change lands on".format(left, target))
+        if dest == "HEAD":
+            raise Fail("{} names HEAD, not a branch: name the branch the change lands on, as "
+                       "origin/<branch> or <branch>".format(left))
         base = merge_base(repo, full_ref, tip)
     else:
         base = commit_of(repo, left)

@@ -614,10 +614,11 @@ record_receipt() { # record_receipt <thread> <nonce> <turn> <findings-json> <che
 # record_pending <targets-doc> - spec 2026-10-02 §3.3: a pre-merge review puts a pending entry
 # in every target repository's ledger before its turn starts, so every pre-merge review that
 # runs is on record, and a newer review always shadows an older approval. Returns 1 at the
-# first ledger it cannot write.
+# first ledger it cannot write, and when the document names no repository at all.
 record_pending() {
   local repos repo entry
   repos="$(printf '%s' "$1" | jq -r '[.targets[].repo] | unique | .[]')" || return 1
+  [ -n "$repos" ] || return 1
   while IFS= read -r repo; do
     [ -n "$repo" ] || continue
     entry="$(printf '%s' "$1" | jq -c --arg r "$repo" \

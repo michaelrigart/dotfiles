@@ -365,6 +365,15 @@ is "B89 gh the same" \
    "$(order 'gh --head other pr create --base main -t T -b B' 'Write it as gh [-R <project>] pr create')$(order 'gh pr --head other create --base main -t T -b B' 'Write it as gh [-R <project>] pr create')$(order 'gh -X POST api repos/acme/app/pulls -f head=other -f base=main' 'Write it as gh api [options] <endpoint>')" 111
 is "B90 and the merge verbs" \
    "$(order 'glab --sha abc mr merge 5' 'Write it as glab [-R <project>] mr merge')$(order 'gh pr --match-head-commit abc merge 5' 'Write it as gh [-R <project>] pr merge')" 11
+# bash 5.3 runs ${ cmd; } and ${| cmd; } in the current shell, as $( ) runs cmd; a } that
+# starts a command ends one, and a { group inside it does not.
+is "B91 bash 5.3's \${ cmd; } and \${| cmd; } run their command" \
+   "$(reason "$W" 'echo "${ git merge feature; }"' | grep -c 'plain command of its own') $(reason "$W" "bash -c 'echo \"\${ git merge feature; }\"'" | grep -c 'plain command of its own') $(reason "$W" 'echo ${| REPLY=x; git merge feature; }' | grep -c 'plain command of its own')" \
+   "1 1 1"
+is "B92 an argument } or a { group inside one does not end it" \
+   "$(reason "$W" 'echo "${ echo }; git merge feature; }"' | grep -c 'plain command of its own') $(reason "$W" 'echo "${ { true; }; git merge feature; }"' | grep -c 'plain command of its own')" \
+   "1 1"
+is "B93 a parameter expansion stays text" "$(decision "$W" 'echo "${x:-git merge feature} ${#x} ${x}"')" allow
 
 echo "C. git merge into the default branch"
 is "C1 an unreviewed merge into main is denied" "$(decision "$W" 'git merge feature')" deny
@@ -400,6 +409,38 @@ is "C23 an approved merge across line continuations" "$(decision "$W" 'git merge
 feature') $(decision "$W" 'git mer\
 ge feature')" "allow allow"
 is "C24 and run as zsh's =git" "$(decision "$W" '=git merge feature')" allow
+# git merge FETCH_HEAD merges every head this worktree's last fetch marked for merge, all at
+# once, so the gate allows it only while there is exactly one.
+fetch_head() { printf '%b\n' "$2" > "$(git -C "$1" rev-parse --path-format=absolute --git-path FETCH_HEAD)"; }
+FEAT="$(git -C "$W" rev-parse feature)"; SIDEC="$(git -C "$W" rev-parse side)"
+git -C "$W" fetch -q "$W" feature side
+is "C25 FETCH_HEAD with two heads to merge is denied" \
+   "$(reason "$W" 'git merge FETCH_HEAD' | grep -c 'merges every head the last fetch marked for merge')" 1
+git -C "$W" fetch -q "$W" feature
+is "C26 with one, it is that head: the approved change merges" "$(decision "$W" 'git merge FETCH_HEAD')" allow
+fetch_head "$W" "$FEAT\t\tbranch 'feature' of x\n$SIDEC\tnot-for-merge\tbranch 'side' of x"
+is "C27 a head marked not-for-merge does not count" "$(decision "$W" 'git merge FETCH_HEAD')" allow
+WT2="$ROOT/work/app-main2"; git -C "$W" worktree add -q -f "$WT2" main
+fetch_head "$W" "$FEAT\t\tbranch 'feature' of x\n$SIDEC\t\tbranch 'side' of x"
+fetch_head "$WT2" "$FEAT\t\tbranch 'feature' of x"
+is "C28 each worktree has its own FETCH_HEAD" "$(decision "$WT2" 'git merge FETCH_HEAD')" allow
+git -C "$W" worktree remove --force "$WT2"
+# On main, syncing with origin's own main lands work that is already there; another ref at the
+# same commit is still a change of its own. origin/main moves to a commit no review saw.
+git -C "$W" switch -q -c landed main; printf 'landed\n' > "$W/l.txt"; git -C "$W" add l.txt
+git -C "$W" commit -q -m landed; git -C "$W" switch -q main
+SAVED="$(git -C "$W" rev-parse refs/remotes/origin/main)"
+git -C "$W" update-ref refs/remotes/origin/main landed
+git -C "$W" branch -q --set-upstream-to=origin/main main
+is "C29 git merge --ff-only origin/main is a sync, allowed" "$(decision "$W" 'git merge --ff-only origin/main')" allow
+is "C30 so are refs/remotes/origin/main and @{u}" \
+   "$(decision "$W" 'git merge refs/remotes/origin/main') $(decision "$W" 'git merge --ff-only @{u}')" "allow allow"
+is "C31 a branch at the same commit is gated" \
+   "$(reason "$W" 'git merge landed' | grep -c 'no full-range pre-merge review of this change is on record')" 1
+git -C "$W" branch -q --unset-upstream main; git -C "$W" update-ref refs/remotes/origin/main "$SAVED"
+git -C "$W" branch -q -D landed
+is "C32 a harmless bash 5.3 substitution in an approved merge stays allowed" \
+   "$(decision "$W" 'git merge -m ${ cat /tmp/msg; } feature')" allow
 
 echo "D. it fails closed"
 is "D1 a merge outside any repository is denied" "$(decision "$ROOT/norepo" 'git merge feature')" deny
@@ -444,7 +485,7 @@ cp "$GUARD" "$TRIP/xreview-guard.sh"
 printf 'import sys\nopen(sys.argv[0] + ".ran", "a").write("x")\n' > "$TRIP/xreview-guard.py"
 tripped() { [ -e "$TRIP/xreview-guard.py.ran" ] && echo ran || echo idle; }
 for c in 'ls -la' 'git status' 'npm test' 'git log --oneline -5' 'mkdir -p newdir' \
-         'for f in a b; do git add "$f"; done'; do
+         'for f in a b; do git add "$f"; done' 'git log --format=%ad -3'; do
   payload /tmp "$c" | bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
 done
 is "F1 commands without a trigger word never start the helper" "$(tripped)" idle
@@ -519,6 +560,25 @@ is "F14 glab mr for starts the helper" "$(tripped)" ran
 rm -f "$TRIP/xreview-guard.py.ran"
 payload /tmp 'gh pr revert 9' | bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
 is "F15 so does gh pr revert" "$(tripped)" ran
+# A percent-escape can spell any word of an api call's path (m%65rge_requests), so api with one
+# reaches the helper (a %ad format without api does not, F1).
+rm -f "$TRIP/xreview-guard.py.ran"
+payload /tmp "gh api graph%71l -f query='mutation { enqueuePullRequest(input: {}) { clientMutationId } }'" | bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
+is "F16 an api call with a percent-escape starts the helper" "$(tripped)" ran
+# The deployed layout: the front, the guard and the ledger helper side by side, as in ~/.claude,
+# with no XREVIEW_LEDGER: the guard finds the helper beside itself.
+DEP="$ROOT/deployed"; mkdir -p "$DEP"
+cp "$GUARD" "$DEP/xreview-guard.sh"; cp "$HELPER" "$LEDGER" "$DEP/"
+deployed() { payload "$W" "$1" | env -u XREVIEW_LEDGER bash "$DEP/xreview-guard.sh" 2>/dev/null; }
+is "F17 deployed, an approved merge is decided from the ledger beside the guard" "$(deployed 'git merge feature')" ""
+is "F18 and an unreviewed one is denied for its change" \
+   "$(deployed 'git merge side' | jq -r .hookSpecificOutput.permissionDecisionReason | grep -c 'Pre-merge gate: the change is empty')" 1
+mv "$DEP/xreview-ledger.py" "$DEP/ledger.moved"
+is "F19 a missing ledger helper denies" \
+   "$(deployed 'git merge feature' | jq -r .hookSpecificOutput.permissionDecisionReason | grep -c 'cannot be loaded, so the command is refused')" 1
+mv "$DEP/ledger.moved" "$DEP/xreview-ledger.py"; mv "$DEP/xreview-guard.py" "$DEP/guard.moved"
+is "F20 a missing guard helper denies a gated verb" \
+   "$(deployed 'git merge feature' | jq -r .hookSpecificOutput.permissionDecisionReason | grep -c 'could not run')" 1
 
 echo "H. creating an MR/PR"
 # glab answers the one lookup creation makes, a numeric project id; anything else fails, so an
@@ -1005,6 +1065,17 @@ is "Q25 glab mr for is denied: the forge makes its branch" \
 is "Q26 so are its aliases and gh pr revert, each pointing to the create the gate checks" \
    "$(denies "$W" 'glab mr new-for 3' 'propose it with glab mr create') $(denies "$W" 'glab mr create-for 3' 'propose it with glab mr create') $(denies "$W" 'gh pr revert 9' 'propose it with gh pr create')" \
    "1 1 1"
+# A forge's router may decode a percent-escape in the path, so the gate reads the path decoded,
+# except in the project segment of the REST forms it checks (acme%2Fapp).
+is "Q27 a percent-escaped MR path is gated" \
+   "$(denies "$W" 'glab api -X POST projects/:id/m%65rge_requests -f source_branch=other -f target_branch=main' 'writes to an MR/PR path whose source, head or destination')" 1
+is "Q28 a percent-escaped graphql endpoint is GraphQL" \
+   "$(denies "$W" "gh api graph%71l -f query='mutation { enqueuePullRequest(input: {}) { clientMutationId } }'" 'this GraphQL call')" 1
+is "Q29 a percent-escaped merges endpoint is a branch merge" \
+   "$(denies "$W" 'gh api repos/acme/app/merg%65s -f base=main -f head=other' 'writes to a merges endpoint')" 1
+is "Q30 an encoded project path still reads and merges" \
+   "$(decision "$W" 'glab api projects/acme%2Fapp/merge_requests/7') $(decision "$W" "glab api -X PUT projects/acme%2Fapp/merge_requests/7/merge -f sha=$REBASED")" \
+   "allow allow"
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))
