@@ -136,7 +136,19 @@ BRANCH_LOOKUP = ("Pre-merge gate: the current branch of {} cannot be read (the l
 UNRESOLVED_API = ("Pre-merge gate: this {} api call writes to an MR/PR path whose source, head or "
                   "destination the gate cannot read. Use the CLI (glab mr ..., gh pr ...) or the "
                   "REST create and merge endpoints with literal fields.")
-NOT_MODELLED = "Pre-merge gate: the gate does not check this forge command yet, so it is refused."
+UNPINNED = ("Pre-merge gate: a forge merge must pin the head it merges. Its head is now {}. Once "
+            "a pre-merge review of that head approves it, merge with: {}.")
+FULL_SHA = "Pre-merge gate: pin the head with a full commit id, not {}."
+NOT_ONE = "Pre-merge gate: {} open merge requests come from {}; name the one to merge by number."
+ONE_TARGET = "Pre-merge gate: name one {} to merge."
+GRAPHQL = ("Pre-merge gate: this GraphQL call creates or merges an MR/PR, enables auto-merge, or "
+           "carries a query the gate cannot read. Use the forms the gate checks: glab mr "
+           "create|merge, gh pr create|merge, or the REST merge_requests/pulls endpoints.")
+OTHER_URL = ("Pre-merge gate: the {} {} is not on this checkout's origin ({}/{}). Run the merge "
+             "from that project's checkout, or name the MR/PR by number.")
+QUEUED = ("Pre-merge gate: this merge would go through {}: it would be enqueued, or set to merge "
+          "once checks pass - a deferred merge, which the gate never allows, since nothing can pin "
+          "what finally lands. A merge through a queue or a train is Michael's to run.")
 
 
 class Deny(Exception):
@@ -1478,13 +1490,192 @@ def judge_create_github_api(shape, ledger, owner, repo, fields):
           "origin/{}...{}".format(dest, source), None)
 
 
+# ------------------------------------------------------------------ merging an MR/PR
+GLAB_MERGE_VALUE = {"-m", "--message", "--sha", "--squash-message", "-R", "--repo"}
+GH_MERGE_VALUE = {"-A", "--author-email", "-b", "--body", "-F", "--body-file",
+                  "--match-head-commit", "-t", "--subject", "-R", "--repo"}
+GH_VIEW_FIELDS = ("baseRefName,headRefName,headRefOid,isCrossRepository,headRepository,"
+                  "headRepositoryOwner")
+PR_URL = re.compile(r"^/(.+)/pull/(\d+)/?$")
+MR_URL = re.compile(r"^/(.+)/-/merge_requests/(\d+)/?$")
+MERGE_QUEUE = ("query($owner:String!,$name:String!,$branch:String!){repository(owner:$owner,"
+               "name:$name){mergeQueue(branch:$branch){id}}}")
+
+
+def explicitly_off(values):
+    return bool(values) and values[-1] is not None and values[-1].lower() in FALSE
+
+
+def on_value(value):
+    """An api field that switches something on: present with any value but false."""
+    return value is not None and value.lower() not in FALSE
+
+
+def url_number(target, host, path, pattern, what):
+    """The number of the MR/PR a URL argument names, once its host and project are origin's:
+    a URL can name any repository on any forge."""
+    parts = urlsplit(target)
+    m = pattern.match(parts.path)
+    if not m or (parts.hostname or "").lower() != host or m.group(1).lower() != path.lower():
+        raise Deny(OTHER_URL.format(what, target, host, path))
+    return m.group(2)
+
+
+def gitlab_mr(top, project, number, branch, hostname):
+    """(source, target, head, iid) of a GitLab MR on hostname - by number, or the one open MR
+    from branch. Its source and target project must be the project it was looked up in: a
+    fork's MR is denied."""
+    base = ["glab", "api", "--hostname", hostname]
+    if number is not None:
+        mr = lookup_json(base + ["projects/{}/merge_requests/{}".format(project, number)], top,
+                         "MR !" + number)
+    else:
+        found = lookup_json(base + ["projects/{}/merge_requests?source_branch={}&state=opened"
+                                    .format(project, quote(branch, safe=""))], top,
+                            "the MR from " + branch)
+        if not isinstance(found, list) or len(found) != 1:
+            raise Deny(NOT_ONE.format(len(found) if isinstance(found, list) else "no", branch))
+        mr = found[0]
+    if not isinstance(mr, dict) or not all(isinstance(mr.get(k), str) and mr.get(k)
+                                           for k in ("source_branch", "target_branch", "sha")):
+        raise Deny(LOOKUP.format("MR " + (number or branch)))
+    ids = [mr.get(k) for k in ("project_id", "source_project_id", "target_project_id")]
+    if not all(isinstance(i, int) for i in ids) or len(set(ids)) != 1:
+        raise Deny(FORK.format("MR !" + str(mr.get("iid") or number or branch)))
+    return mr["source_branch"], mr["target_branch"], mr["sha"], str(mr.get("iid") or number or "")
+
+
+def gitlab_merge_train(top, project, hostname):
+    """Deny when the project on hostname merges through a merge train: the merge would join
+    the train, a deferred merge. A failed lookup is a deny too; a project without the setting
+    has no train."""
+    found = lookup_json(["glab", "api", "--hostname", hostname, "projects/" + project], top,
+                        "project " + unquote(project))
+    if not isinstance(found, dict):
+        raise Deny(LOOKUP.format("project " + unquote(project)))
+    if found.get("merge_trains_enabled") is True:
+        raise Deny(QUEUED.format("the merge train of " + unquote(project)))
+
+
+def github_pr(top, target, repo, owner, name):
+    """(source, base, head) of a GitHub PR, as gh pr view resolves target in repo, a
+    host-qualified HOST/OWNER/NAME. With no target, gh needs no -R: it takes the current
+    branch's PR where the merge itself would. A cross-repository PR, or one whose head lives
+    anywhere but origin's project, is denied."""
+    what = "PR " + (target or "of the current branch")
+    pr = lookup_json(["gh", "pr", "view"] + ([target, "-R", repo] if target else [])
+                     + ["--json", GH_VIEW_FIELDS], top, what)
+    if not isinstance(pr, dict):
+        raise Deny(LOOKUP.format(what))
+    values = [pr.get(k) for k in ("headRefName", "baseRefName", "headRefOid")]
+    if not all(isinstance(v, str) and v for v in values):
+        raise Deny(LOOKUP.format(what))
+    head_repo = pr.get("headRepository") if isinstance(pr.get("headRepository"), dict) else {}
+    head_owner = (pr.get("headRepositoryOwner")
+                  if isinstance(pr.get("headRepositoryOwner"), dict) else {})
+    if (pr.get("isCrossRepository") is not False
+            or str(head_owner.get("login", "")).lower() != owner.lower()
+            or str(head_repo.get("name", "")).lower() != name.lower()):
+        raise Deny(FORK.format(what))
+    return values[0], values[1], values[2]
+
+
+def github_merge_queue(top, host, owner, name, dest):
+    """Deny when dest merges through a merge queue: gh pr merge would then enable auto-merge
+    or enqueue the PR, a deferred merge. A failed lookup is a deny too."""
+    what = "the merge queue of " + dest
+    found = lookup_json(["gh", "api", "graphql", "--hostname", host,
+                         "-f", "query=" + MERGE_QUEUE, "-f", "owner=" + owner,
+                         "-f", "name=" + name, "-f", "branch=" + dest], top, what)
+    try:
+        queue = found["data"]["repository"]["mergeQueue"]
+    except (KeyError, TypeError):
+        raise Deny(LOOKUP.format(what))
+    if queue is not None:
+        raise Deny(QUEUED.format(what))
+
+
+def merge_pinned(ledger, top, source, dest, head, pin, hint):
+    """A forge merge pinned to pin; hint is the immediate pinned merge, {} for the head."""
+    if pin is None:
+        raise Deny(UNPINNED.format(head, hint.format(head)))
+    if not FULL_ID.fullmatch(pin):
+        raise Deny(FULL_SHA.format(pin))
+    check(ledger, top, source, dest, "refs/remotes/origin/" + dest, pin,
+          "origin/{}...{}".format(dest, source), hint.format(pin))
+
+
+def judge_merge_cli(shape, ledger):
+    """glab mr merge|accept [<n>|<branch>|<url>], gh pr merge [<n>|<url>|<branch>]: pinned,
+    immediate, from origin's own project, and the destination read from the forge."""
+    tool = shape["tool"]
+    flags, pos = parse_flags(shape["args"], GLAB_MERGE_VALUE if tool == "glab" else GH_MERGE_VALUE)
+    named = one(flags, ("-R", "--repo"), "-R/--repo") or env_repo(tool)
+    top, host, path = forge_context(shape["cwd"], named, tool)
+    check_cli_host(tool, top, host, path, named)
+    if len(pos) > 1:
+        raise Deny(ONE_TARGET.format("MR" if tool == "glab" else "PR"))
+    target = pos[0] if pos else None
+    if target is not None and not literal(target):
+        raise Deny(LITERAL.format("the MR/PR", target))
+    if tool == "glab":
+        # glab turns auto-merge on by default while a pipeline runs: only an explicit
+        # --auto-merge=false is an immediate merge.
+        if not explicitly_off(flags.get("--auto-merge")) or flag_on(flags.get("--when-pipeline-succeeds")):
+            raise Deny(DEFERRED.format("glab mr merge without --auto-merge=false",
+                                       "glab mr merge <n> --sha <head> --auto-merge=false"))
+        if target is not None and "://" in target:
+            target = url_number(target, host, path, MR_URL, "MR")
+        number = target if target and target.isdigit() else None
+        branch = None if number else (target or current_source(ledger, top, "the MR number"))
+        project = quote(path, safe="")
+        source, dest, head, iid = gitlab_mr(top, project, number, branch, host)
+        gitlab_merge_train(top, project, host)
+        pin = one(flags, ("--sha",), "--sha")
+        hint = "glab mr merge " + (iid or "<n>") + " --sha {} --auto-merge=false"
+    else:
+        if flag_on(flags.get("--auto")):
+            raise Deny(DEFERRED.format("gh pr merge --auto", "gh pr merge <n> --match-head-commit <head>"))
+        if target is not None and "://" in target:
+            target = url_number(target, host, path, PR_URL, "PR")
+        owner, _, name = path.partition("/")
+        source, dest, head = github_pr(top, target, host + "/" + path, owner, name)
+        github_merge_queue(top, host, owner, name, dest)
+        pin = one(flags, ("--match-head-commit",), "--match-head-commit")
+        hint = "gh pr merge " + (target or "<n>") + " --match-head-commit {}"
+    merge_pinned(ledger, top, source, dest, head, pin, hint)
+
+
+def judge_merge_gitlab_api(shape, ledger, segment, number, fields, host):
+    """A REST merge: the MR and the project's merge train are read from origin's project on
+    host, the host the call was checked to reach."""
+    top, host, path = gitlab_project(shape["cwd"], segment, host)
+    hint = "glab api -X PUT projects/{}/merge_requests/{}/merge -f sha={{}}".format(segment, number)
+    if on_value(fields.get("merge_when_pipeline_succeeds")) or on_value(fields.get("auto_merge")):
+        raise Deny(DEFERRED.format("merge_when_pipeline_succeeds/auto_merge", hint.format("<head>")))
+    project = quote(path, safe="")
+    source, dest, head, _ = gitlab_mr(top, project, number, None, host)
+    gitlab_merge_train(top, project, host)
+    merge_pinned(ledger, top, source, dest, head, field(fields, "sha", top, ledger), hint)
+
+
+def judge_merge_github_api(shape, ledger, owner, repo, number, fields, host):
+    """A REST merge: the PR and the merge queue are read from origin's project on host."""
+    top, host, path = github_project(shape["cwd"], owner, repo)
+    o, _, n = path.partition("/")
+    source, dest, head = github_pr(top, number, host + "/" + path, o, n)
+    github_merge_queue(top, host, o, n, dest)
+    merge_pinned(ledger, top, source, dest, head, field(fields, "sha", top, ledger),
+                 "gh api -X PUT repos/{}/{}/pulls/{}/merge -f sha={{}}".format(owner, repo, number))
+
+
 def judge_api(shape, ledger):
-    """The REST create endpoints are checked; every other MR/PR write is denied. The call must
-    reach origin's host."""
+    """The REST create and merge endpoints are checked; GraphQL and every other MR/PR write
+    are denied. The call must reach origin's host."""
     tool, call = shape["tool"], parse_api(shape["args"])
     endpoint = call["endpoint"] or ""
     if is_graphql(endpoint):
-        raise Deny(NOT_MODELLED)
+        raise Deny(GRAPHQL)
     if not literal(endpoint):
         raise Deny(LITERAL.format("the api endpoint", endpoint))
     if call["body"]:
@@ -1497,10 +1688,15 @@ def judge_api(shape, ledger):
         m = GITLAB_MR.match(path)
         if m and call["method"] == "POST" and m.group(2) is None:
             return judge_create_gitlab_api(shape, ledger, m.group(1), fields, host)
+        if m and call["method"] == "PUT" and m.group(3):
+            return judge_merge_gitlab_api(shape, ledger, m.group(1), m.group(2), fields, host)
     else:
         m = GITHUB_PR.match(path)
         if m and call["method"] == "POST" and m.group(3) is None:
             return judge_create_github_api(shape, ledger, m.group(1), m.group(2), fields)
+        if m and call["method"] == "PUT" and m.group(4):
+            return judge_merge_github_api(shape, ledger, m.group(1), m.group(2), m.group(3),
+                                          fields, host)
     raise Deny(UNRESOLVED_API.format(tool))
 
 
@@ -1510,9 +1706,9 @@ def judge(shape, ledger):
         return judge_git_merge(shape, ledger)
     if kind == "create":
         return judge_create_cli(shape, ledger)
-    if kind == "api":
-        return judge_api(shape, ledger)
-    raise Deny(NOT_MODELLED)
+    if kind == "merge":
+        return judge_merge_cli(shape, ledger)
+    return judge_api(shape, ledger)
 
 
 # ------------------------------------------------------------------ main

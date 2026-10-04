@@ -739,5 +739,202 @@ is "K68 -f=false turns --fill off: nothing is pushed, origin's head is proposed"
 is "K69 while -f=true still pushes" "$(denies "$FW" 'glab mr create -b main -t T -f=true --yes' 'makes glab push')" 1
 git -C "$FW" reset -q --hard HEAD~1
 
+echo "L. merging an MR/PR on the forge"
+# MR 7 and PR 9 come from feature in acme/app (project 4242). Their destination and head come
+# from MR_TARGET/MR_SHA and PR_BASE/PR_SHA. MR_SOURCE_PROJECT, PR_CROSS and PR_OWNER make them
+# come from a fork; MERGE_TRAINS and MERGE_QUEUE put a train or a queue on the destination, and
+# TRAIN_FAIL and QUEUE_FAIL fail those lookups. FORGE_FAIL fails every lookup; FORGE_SLOW
+# delays it. A call reaches the host its --hostname or host-qualified -R names, else the one
+# the CLI's environment picks, else origin's. Another host answers with its own MR and PR:
+# ELSEWHERE_TARGET, ELSEWHERE_TRAINS and ELSEWHERE_BASE.
+cat > "$STUB/glab" <<'SH'
+#!/bin/sh
+printf 'glab %s\n' "$*" >> "$CALLS"
+[ -n "${FORGE_SLOW:-}" ] && sleep "$FORGE_SLOW"
+[ -n "${FORGE_FAIL:-}" ] && exit 1
+host="${GITLAB_HOST:-${GITLAB_URI:-${GL_HOST:-forge.example}}}"
+if [ "$1" = api ] && [ "$2" = --hostname ]; then host="$3"; shift 3; set -- api "$@"; fi
+if [ "$host" != forge.example ]; then
+  MR_TARGET="${ELSEWHERE_TARGET:-${MR_TARGET:-main}}"
+  MERGE_TRAINS="${ELSEWHERE_TRAINS:-${MERGE_TRAINS:-false}}"
+fi
+mr() { printf '{"iid":7,"project_id":4242,"source_project_id":%s,"target_project_id":4242,"source_branch":"feature","target_branch":"%s","sha":"%s"}' \
+  "${MR_SOURCE_PROJECT:-4242}" "${MR_TARGET:-main}" "${MR_SHA:-}"; }
+project() { [ -n "${TRAIN_FAIL:-}" ] && exit 1
+  printf '{"id":4242,"path_with_namespace":"acme/app","merge_trains_enabled":%s}\n' "${MERGE_TRAINS:-false}"; }
+case "$*" in
+  "api projects/4242"|"api projects/acme%2Fapp"|"api projects/:id") project ;;
+  "api projects/acme%2Fapp/merge_requests/7"|"api projects/:id/merge_requests/7"|"api projects/4242/merge_requests/7") mr; echo ;;
+  "api projects/acme%2Fapp/merge_requests?source_branch=feature&state=opened") printf '['; mr; printf ']\n' ;;
+  *) exit 1 ;;
+esac
+SH
+cat > "$STUB/gh" <<'SH'
+#!/bin/sh
+printf 'gh %s\n' "$*" >> "$CALLS"
+[ -n "${FORGE_FAIL:-}" ] && exit 1
+host=forge.example; prev=
+for a in "$@"; do
+  case "$prev" in
+    --hostname) host="$a" ;;
+    -R) case "$a" in */*/*) host="${a%%/*}" ;; *) host="${GH_HOST:-github.com}" ;; esac ;;
+  esac
+  prev="$a"
+done
+[ "$host" = forge.example ] || PR_BASE="${ELSEWHERE_BASE:-${PR_BASE:-main}}"
+F=baseRefName,headRefName,headRefOid,isCrossRepository,headRepository,headRepositoryOwner
+case "$*" in
+  "pr view 9 --json $F"|"pr view 9 -R acme/app --json $F"|"pr view 9 -R "*"/acme/app --json $F"|"pr view --json $F"|"pr view https://"*" --json $F")
+    printf '{"baseRefName":"%s","headRefName":"feature","headRefOid":"%s","isCrossRepository":%s,"headRepository":{"name":"app"},"headRepositoryOwner":{"login":"%s"}}\n' \
+      "${PR_BASE:-main}" "${PR_SHA:-}" "${PR_CROSS:-false}" "${PR_OWNER:-acme}" ;;
+  "api graphql --hostname forge.example -f query="*mergeQueue*)
+    [ -n "${QUEUE_FAIL:-}" ] && exit 1
+    printf '{"data":{"repository":{"mergeQueue":%s}}}\n' "${MERGE_QUEUE:-null}" ;;
+  *) exit 1 ;;
+esac
+SH
+chmod +x "$STUB/glab" "$STUB/gh"
+HEAD_SHA="$(git -C "$W" rev-parse refs/remotes/origin/feature)"
+export MR_SHA="$HEAD_SHA" PR_SHA="$HEAD_SHA"
+is "L1 glab mr merge, pinned and immediate, approved" "$(decision "$W" "glab mr merge 7 --sha $HEAD_SHA --auto-merge=false --yes")" allow
+is "L2 glab mr accept" "$(decision "$W" "glab mr accept 7 --sha=$HEAD_SHA --auto-merge=false")" allow
+is "L3 the MR of the current branch" "$(decision "$FW" "glab mr merge --sha $HEAD_SHA --auto-merge=false")" allow
+is "L4 gh pr merge" "$(decision "$W" "gh pr merge 9 --match-head-commit $HEAD_SHA --squash")" allow
+is "L5 gh pr merge -R" "$(decision "$W" "gh pr merge 9 -R acme/app --match-head-commit $HEAD_SHA")" allow
+is "L6 the GitLab REST merge" "$(decision "$W" "glab api -X PUT projects/acme%2Fapp/merge_requests/7/merge -f sha=$HEAD_SHA")" allow
+is "L7 by the :id placeholder" "$(decision "$W" "glab api --method PUT projects/:id/merge_requests/7/merge -f sha=$HEAD_SHA")" allow
+is "L8 by numeric project id" "$(decision "$W" "glab api -X PUT projects/4242/merge_requests/7/merge -f sha=$HEAD_SHA")" allow
+is "L9 the GitHub REST merge" "$(decision "$W" "gh api -X PUT repos/acme/app/pulls/9/merge -f sha=$HEAD_SHA")" allow
+
+echo "M. a forge merge is pinned and immediate"
+is "M1 an unpinned glab merge is denied" "$(decision "$W" 'glab mr merge 7 --auto-merge=false')" deny
+is "M2 naming the head to pin" "$(reason "$W" 'glab mr merge 7 --auto-merge=false' | grep -c "glab mr merge 7 --sha $HEAD_SHA --auto-merge=false")" 1
+is "M3 an unpinned gh merge is denied" "$(decision "$W" 'gh pr merge 9 --squash')" deny
+is "M4 an unpinned REST merge is denied" "$(decision "$W" 'gh api -X PUT repos/acme/app/pulls/9/merge')" deny
+is "M5 glab's default auto-merge is a deferred merge, even pinned" "$(decision "$W" "glab mr merge 7 --sha $HEAD_SHA")" deny
+is "M6 naming --auto-merge=false" "$(reason "$W" "glab mr merge 7 --sha $HEAD_SHA" | grep -c -- '--auto-merge=false')" 1
+is "M7 glab --auto-merge, even pinned" "$(decision "$W" "glab mr merge 7 --sha $HEAD_SHA --auto-merge")" deny
+is "M8 gh --auto, even pinned" "$(decision "$W" "gh pr merge 9 --auto --match-head-commit $HEAD_SHA")" deny
+is "M9 merge_when_pipeline_succeeds, even pinned" "$(decision "$W" "glab api -X PUT projects/:id/merge_requests/7/merge -f sha=$HEAD_SHA -F merge_when_pipeline_succeeds=true")" deny
+is "M10 auto_merge, even pinned" "$(decision "$W" "glab api -X PUT projects/:id/merge_requests/7/merge -f sha=$HEAD_SHA -F auto_merge=true")" deny
+is "M11 an abbreviated pin" "$(decision "$W" "gh pr merge 9 --match-head-commit ${HEAD_SHA:0:12}")" deny
+
+echo "N. what the pin names"
+printf 'seven\n' >> "$FW/b.txt"; git -C "$FW" commit -q -am "never reviewed"
+UNREVIEWED="$(git -C "$FW" rev-parse HEAD)"; git -C "$FW" reset -q --hard HEAD~1
+is "N1 a pin whose fingerprint is unapproved is denied" "$(decision "$W" "gh pr merge 9 --match-head-commit $UNREVIEWED")" deny
+is "N2 the deny names the pinned merge to run once approved" "$(reason "$W" "gh pr merge 9 --match-head-commit $UNREVIEWED" | grep -c "Then merge it pinned and immediate: gh pr merge 9 --match-head-commit $UNREVIEWED")" 1
+is "N3 a destination origin does not have is denied" "$(MR_TARGET=ghost2 decision "$W" "glab mr merge 7 --sha $HEAD_SHA --auto-merge=false")" deny
+git -C "$W" branch release2 main && publish release2
+is "N4 an MR retargeted to an unapproved destination is denied" "$(PR_BASE=release2 decision "$W" "gh pr merge 9 --match-head-commit $HEAD_SHA")" deny
+printf 'm\n' > "$W/m.txt"; git -C "$W" add m.txt; git -C "$W" commit -q -m "main moves on, elsewhere"; publish main
+git -C "$FW" rebase -q main; publish feature
+REBASED="$(git -C "$W" rev-parse refs/remotes/origin/feature)"
+is "N5 a rebased pin with an unchanged fingerprint is allowed" "$(PR_SHA=$REBASED decision "$W" "gh pr merge 9 --match-head-commit $REBASED")" allow
+is "N6 a forge lookup failure is denied" "$(FORGE_FAIL=1 decision "$W" "glab mr merge 7 --sha $REBASED --auto-merge=false")" deny
+is "N7 saying so" "$(FORGE_FAIL=1 reason "$W" "glab mr merge 7 --sha $REBASED --auto-merge=false" | grep -c 'forge lookup of MR !7 failed')" 1
+is "N8 a forge slower than the budget is denied" "$(FORGE_SLOW=3 XREVIEW_GUARD_BUDGET=1 decision "$W" "glab mr merge 7 --sha $REBASED --auto-merge=false")" deny
+is "N9 saying it ran out of time" "$(FORGE_SLOW=3 XREVIEW_GUARD_BUDGET=1 reason "$W" "glab mr merge 7 --sha $REBASED --auto-merge=false" | grep -c 'did not finish in time')" 1
+
+echo "O. GraphQL and other API writes"
+is "O1 createPullRequest is denied" "$(decision "$W" "gh api graphql -f query='mutation { createPullRequest(input: {}) { clientMutationId } }'")" deny
+is "O2 mergeRequestAccept is denied" "$(decision "$W" "glab api graphql -f query='mutation { mergeRequestAccept(input: {}) { errors } }'")" deny
+is "O3 enablePullRequestAutoMerge is denied" "$(decision "$W" "gh api graphql -f query='mutation { enablePullRequestAutoMerge(input: {}) { clientMutationId } }'")" deny
+is "O4 mergePullRequest, mergeRequestCreate and mergeRequestSetAutoMerge too" \
+   "$(decision "$W" "gh api graphql -f query='mutation { mergePullRequest(input: {}) { clientMutationId } }'") $(decision "$W" "glab api graphql -f query='mutation { mergeRequestCreate(input: {}) { errors } }'") $(decision "$W" "glab api graphql -f query='mutation { mergeRequestSetAutoMerge(input: {}) { errors } }'")" \
+   "deny deny deny"
+is "O5 a GraphQL read is allowed" "$(decision "$W" "gh api graphql -f query='query { viewer { login } }'")" allow
+is "O6 a GraphQL query from a file is denied" "$(decision "$W" 'gh api graphql -F query=@q.graphql')" deny
+is "O7 an MR note through the API is an unresolved write" "$(decision "$W" 'glab api -X POST projects/:id/merge_requests/7/notes -f body=hi')" deny
+is "O8 a PATCH of a pull request (a retarget) is denied" "$(decision "$W" 'gh api -X PATCH repos/acme/app/pulls/9 -f base=release')" deny
+is "O9 a REST create whose body comes from a file is denied" "$(decision "$W" 'glab api -X POST projects/:id/merge_requests --input mr.json')" deny
+is "O10 an absolute GraphQL endpoint carrying a merge mutation is denied" \
+   "$(decision "$W" "gh api https://api.github.com/graphql -f query='mutation { mergePullRequest(input: {}) { clientMutationId } }'")" deny
+
+echo "P. a forge merge reaches only origin's own project, and merges at once"
+export MR_SHA="$REBASED" PR_SHA="$REBASED"
+is "P1 a PR URL on another host is denied, even with an approved pin" \
+   "$(decision "$W" "gh pr merge https://github.com/acme/app/pull/9 --match-head-commit $REBASED")" deny
+is "P2 saying it is not on origin" \
+   "$(reason "$W" "gh pr merge https://github.com/acme/app/pull/9 --match-head-commit $REBASED" | grep -c "is not on this checkout's origin")" 1
+is "P3 a PR URL in another project is denied" \
+   "$(decision "$W" "gh pr merge https://forge.example/other/app/pull/9 --match-head-commit $REBASED")" deny
+is "P4 origin's own PR URL is allowed" \
+   "$(decision "$W" "gh pr merge https://forge.example/acme/app/pull/9 --match-head-commit $REBASED")" allow
+is "P5 an MR URL on another host is denied" \
+   "$(decision "$W" "glab mr merge https://evil.example/acme/app/-/merge_requests/7 --sha $REBASED --auto-merge=false")" deny
+is "P6 origin's own MR URL is allowed" \
+   "$(decision "$W" "glab mr merge https://forge.example/acme/app/-/merge_requests/7 --sha $REBASED --auto-merge=false")" allow
+is "P7 an MR from a fork is denied" \
+   "$(MR_SOURCE_PROJECT=99 decision "$W" "glab mr merge 7 --sha $REBASED --auto-merge=false")" deny
+is "P8 a cross-repository PR is denied" \
+   "$(PR_CROSS=true decision "$W" "gh pr merge 9 --match-head-commit $REBASED")" deny
+is "P9 a PR whose head lives in another owner's repository is denied" \
+   "$(PR_OWNER=someone decision "$W" "gh pr merge 9 --match-head-commit $REBASED")" deny
+is "P10 a destination with a merge queue is a deferred merge" \
+   "$(MERGE_QUEUE='{"id":"MQ_1"}' decision "$W" "gh pr merge 9 --match-head-commit $REBASED")" deny
+is "P11 saying so" \
+   "$(MERGE_QUEUE='{"id":"MQ_1"}' reason "$W" "gh pr merge 9 --match-head-commit $REBASED" | grep -c 'the merge queue of main')" 1
+is "P12 a failed merge-queue lookup is denied" \
+   "$(QUEUE_FAIL=1 decision "$W" "gh pr merge 9 --match-head-commit $REBASED")" deny
+is "P13 a project with merge trains is a deferred merge" \
+   "$(MERGE_TRAINS=true decision "$W" "glab mr merge 7 --sha $REBASED --auto-merge=false")" deny
+is "P14 a failed project lookup is denied" \
+   "$(TRAIN_FAIL=1 decision "$W" "glab mr merge 7 --sha $REBASED --auto-merge=false")" deny
+is "P15 the GitLab REST merge checks the train too" \
+   "$(MERGE_TRAINS=true decision "$W" "glab api -X PUT projects/:id/merge_requests/7/merge -f sha=$REBASED")" deny
+is "P16 and the GitHub REST merge the queue" \
+   "$(MERGE_QUEUE='{"id":"MQ_1"}' decision "$W" "gh api -X PUT repos/acme/app/pulls/9/merge -f sha=$REBASED")" deny
+is "P17 gh api --hostname on another host is denied" \
+   "$(decision "$W" "gh api --hostname evil.example -X PUT repos/acme/app/pulls/9/merge -f sha=$REBASED")" deny
+is "P18 glab api --hostname on another host is denied" \
+   "$(decision "$W" "glab api --hostname evil.example -X PUT projects/acme%2Fapp/merge_requests/7/merge -f sha=$REBASED")" deny
+is "P19 gh api --hostname naming origin's host is allowed" \
+   "$(decision "$W" "gh api --hostname forge.example -X PUT repos/acme/app/pulls/9/merge -f sha=$REBASED")" allow
+is "P20 glab api --hostname naming origin's host is allowed" \
+   "$(decision "$W" "glab api --hostname forge.example -X PUT projects/acme%2Fapp/merge_requests/7/merge -f sha=$REBASED")" allow
+is "P21 an absolute GitLab endpoint on another host is denied" \
+   "$(decision "$W" "glab api -X PUT https://evil.example/api/v4/projects/acme%2Fapp/merge_requests/7/merge -f sha=$REBASED")" deny
+is "P22 on origin's host it is allowed" \
+   "$(decision "$W" "glab api -X PUT https://forge.example/api/v4/projects/acme%2Fapp/merge_requests/7/merge -f sha=$REBASED")" allow
+is "P23 an absolute GitHub endpoint on another host is denied" \
+   "$(decision "$W" "gh api -X PUT https://evil.example/api/v3/repos/acme/app/pulls/9/merge -f sha=$REBASED")" deny
+is "P24 on origin's host it is allowed" \
+   "$(decision "$W" "gh api -X PUT https://forge.example/api/v3/repos/acme/app/pulls/9/merge -f sha=$REBASED")" allow
+is "P25 -R naming another host is denied (gh)" \
+   "$(decision "$W" "gh pr merge 9 -R evil.example/acme/app --match-head-commit $REBASED")" deny
+is "P26 -R as a URL on another host is denied (glab)" \
+   "$(decision "$W" "glab mr merge 7 -R https://evil.example/acme/app --sha $REBASED --auto-merge=false")" deny
+is "P27 a gh REST merge with no GH_HOST goes to github.com and is denied" \
+   "$(GH_HOST= decision "$W" "gh api -X PUT repos/acme/app/pulls/9/merge -f sha=$REBASED")" deny
+is "P28 a glab REST merge under a stray GITLAB_HOST is denied" \
+   "$(GITLAB_HOST=gitlab.com decision "$W" "glab api -X PUT projects/acme%2Fapp/merge_requests/7/merge -f sha=$REBASED")" deny
+# Every lookup goes to the host the command reaches, never to the one the environment picks.
+# On other.example, MR 7 and PR 9 target main, which is approved; on origin's host, release2.
+GLMERGE="glab api -X PUT https://forge.example/api/v4/projects/acme%2Fapp/merge_requests/7/merge -f sha=$REBASED"
+GHMERGE="gh api -X PUT https://forge.example/api/v3/repos/acme/app/pulls/9/merge -f sha=$REBASED"
+is "P29 a GitLab REST merge to origin's absolute endpoint reads origin's MR" \
+   "$(GITLAB_HOST=other.example ELSEWHERE_TARGET=main MR_TARGET=release2 decision "$W" "$GLMERGE")" deny
+is "P30 and origin's merge train" \
+   "$(GITLAB_HOST=other.example ELSEWHERE_TRAINS=false MERGE_TRAINS=true decision "$W" "$GLMERGE")" deny
+is "P31 with both hosts agreeing, it is allowed" "$(GITLAB_HOST=other.example decision "$W" "$GLMERGE")" allow
+is "P32 a GitHub REST merge to origin's absolute endpoint reads origin's PR" \
+   "$(GH_HOST=other.example ELSEWHERE_BASE=main PR_BASE=release2 decision "$W" "$GHMERGE")" deny
+is "P33 with both hosts agreeing, it is allowed" "$(GH_HOST=other.example decision "$W" "$GHMERGE")" allow
+is "P34 glab mr merge -R <url> reads the MR on that URL's host" \
+   "$(GITLAB_HOST=other.example ELSEWHERE_TARGET=main MR_TARGET=release2 decision "$W" "glab mr merge 7 -R https://forge.example/acme/app --sha $REBASED --auto-merge=false")" deny
+is "P35 gh pr merge -R without a host, gh's default host elsewhere" \
+   "$(GH_HOST=other.example decision "$W" "gh pr merge 9 -R acme/app --match-head-commit $REBASED")" deny
+is "P36 glab mr merge -R without a host, glab's default host gitlab.com" \
+   "$(GLAB_CONFIG_DIR="$ROOT/glab-none" decision "$W" "glab mr merge 7 -R acme/app --sha $REBASED --auto-merge=false")" deny
+is "P37 GH_REPO naming another project is denied" "$(GH_REPO=other/app decision "$W" "gh pr merge 9 --match-head-commit $REBASED")" deny
+is "P38 so is GITLAB_REPO" "$(GITLAB_REPO=other/app decision "$W" "glab mr merge 7 --sha $REBASED --auto-merge=false")" deny
+is "P39 and GITLAB_API_HOST on another host" "$(GITLAB_API_HOST=api.other.example decision "$W" "glab mr merge 7 --sha $REBASED --auto-merge=false")" deny
+
+# The MR of the current branch: a failed branch lookup is not called a detached HEAD.
+shim 'exit 128'
+is "P40 glab mr merge with no MR named, the branch lookup failing" \
+   "$(PATH="$WRAP:$PATH" reason "$FW" "glab mr merge --sha $REBASED --auto-merge=false" | grep -c -F 'cannot be read (the lookup failed')" 1
+
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))
