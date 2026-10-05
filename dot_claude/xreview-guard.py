@@ -143,6 +143,9 @@ BRANCH_LOOKUP = ("Pre-merge gate: the current branch of {} cannot be read (the l
 UNRESOLVED_API = ("Pre-merge gate: this {} api call writes to an MR/PR path whose source, head or "
                   "destination the gate cannot read. Use the CLI (glab mr ..., gh pr ...) or the "
                   "REST create and merge endpoints with literal fields.")
+API_SPELLING = ("Pre-merge gate: this {0} api call names an MR/PR path and may write to it, but the "
+                "gate cannot read its options as {0} reads them. Write each option and its value "
+                "as separate words: {0} api -X <METHOD> <endpoint> -f <key>=<value>.")
 UNPINNED = ("Pre-merge gate: a forge merge must pin the head it merges. Its head is now {}. Once "
             "a pre-merge review of that head approves it, merge with: {}.")
 FULL_SHA = "Pre-merge gate: pin the head with a full commit id, not {}."
@@ -728,10 +731,16 @@ MUTATIONS = re.compile(r"\b(mergeRequestCreate|mergeRequestUpdate|mergeRequestAc
                        r"revertPullRequest|mergePullRequest|enqueuePullRequest|"
                        r"enablePullRequestAutoMerge|mergeBranch)\b")
 NAMES_MR_PATH = re.compile(r"(^|/)(merge_requests|pulls|merges)(/|$)")
-API_VALUE = {"-X", "--method", "-f", "--raw-field", "-F", "--field", "--form", "-H", "--header",
-             "--input", "--hostname", "-q", "--jq", "-t", "--template", "--cache", "-p",
-             "--preview", "--output", "-R", "--repo"}
+# The api options that take a value, per CLI (gh 2.102's and glab 1.120's --help), and -R/--repo,
+# which glab takes before api, after it and after the endpoint. Every other option is a boolean.
+GH_API_VALUE = {"-F", "--field", "-H", "--header", "--hostname", "--input", "-q", "--jq", "-X",
+                "--method", "-p", "--preview", "-f", "--raw-field", "-t", "--template", "--cache",
+                "-R", "--repo"}
+GLAB_API_VALUE = {"-F", "--field", "--form", "-H", "--header", "--hostname", "--input", "-X",
+                  "--method", "--output", "-f", "--raw-field", "-R", "--repo"}
 API_FIELD = {"-f": False, "--raw-field": False, "-F": True, "--field": True, "--form": True}
+API_WRITE_FIELDS = ("--field", "--raw-field", "--input", "--form")
+READ_METHODS = ("GET", "HEAD")
 
 
 def skip_options(words, i, value_opts):
@@ -740,31 +749,58 @@ def skip_options(words, i, value_opts):
     return i
 
 
-def parse_api(args):
-    """The parts of a glab/gh api call the gate reads: endpoint, method (the CLIs' default:
-    POST once a field or a body is given, GET otherwise), fields (name -> last value), body
-    (True when the body or a typed field comes from a file or stdin), hostname and repo (an
-    -R/--repo, wherever it stands: glab takes it before api, after it and after the endpoint)."""
-    call = {"endpoint": None, "method": None, "fields": {}, "body": False, "hostname": None,
-            "repo": None}
-    i, n = 0, len(args)
+def api_options(args, takes_value):
+    """(options, positionals) of an api call's words, read as pflag reads them: --name=value
+    and --name value; a short bundle (-iX PUT, -iXPUT) whose booleans come first and whose
+    value-taking short takes the rest of the word, after an = if one follows it (-X=PUT), or
+    else the next word; -- ends the options. options is a list of (name, value)."""
+    opts, pos, i, n = [], [], 0, len(args)
     while i < n:
-        a, name, value = args[i], None, None
+        a = args[i]
+        if a == "--":
+            pos.extend(args[i + 1:])
+            break
         if a.startswith("--") and len(a) > 2:
             name, eq, value = a.partition("=")
-            if name in API_VALUE and not eq:
-                i += 1
-                value = args[i] if i < n else ""
-        elif a.startswith("-") and len(a) > 1:
-            name = a[:2]
-            if name in API_VALUE:
-                if len(a) > 2:
-                    value = a[2:]
-                else:
+            if not eq:
+                value = None
+                if name in takes_value:
                     i += 1
                     value = args[i] if i < n else ""
-        elif call["endpoint"] is None:
-            call["endpoint"] = a
+            opts.append((name, value))
+        elif a.startswith("-") and len(a) > 1:
+            j = 1
+            while j < len(a):
+                name, rest = "-" + a[j], a[j + 1:]
+                if rest.startswith("=") and len(a[j:]) > 2:        # -X=PUT, -i=false
+                    opts.append((name, rest[1:]))
+                    break
+                if name in takes_value:
+                    if not rest:
+                        i += 1
+                        rest = args[i] if i < n else ""
+                    opts.append((name, rest))
+                    break
+                opts.append((name, None))
+                j += 1
+        else:
+            pos.append(a)
+        i += 1
+    return opts, pos
+
+
+def parse_api(args, tool):
+    """The parts of a glab/gh api call the gate reads, its options read as the CLI reads them
+    (api_options): endpoint, method (the CLIs' default: POST once a field or a body is given,
+    GET otherwise), fields (name -> last value), body (True when the body or a typed field
+    comes from a file or stdin), hostname and repo (an -R/--repo, wherever it stands: glab
+    takes it before api, after it and after the endpoint)."""
+    call = {"endpoint": None, "method": None, "fields": {}, "body": False, "hostname": None,
+            "repo": None}
+    opts, pos = api_options(args, GLAB_API_VALUE if tool == "glab" else GH_API_VALUE)
+    if pos:
+        call["endpoint"] = pos[0]
+    for name, value in opts:
         if name in ("-X", "--method"):
             call["method"] = (value or "").upper()
         elif name in API_FIELD:
@@ -778,7 +814,6 @@ def parse_api(args):
             call["hostname"] = value
         elif name in ("-R", "--repo"):
             call["repo"] = value
-        i += 1
     if call["method"] is None:
         call["method"] = "POST" if call["fields"] or call["body"] else "GET"
     return call
@@ -811,6 +846,50 @@ def api_gated(call):
         return call["body"] or bool(MUTATIONS.search(" ".join(call["fields"].values())))
     path, _ = endpoint_parts(endpoint)
     return call["method"] in ("POST", "PUT", "PATCH") and bool(NAMES_MR_PATH.search(unquote(path)))
+
+
+def names_gated_path(word):
+    """Does a word name an MR/PR, merges or graphql path, percent-escapes decoded? A key=value
+    word (a field) does not."""
+    if word.startswith("-") or re.match(r"[^/]*=", word):
+        return False
+    path = unquote(endpoint_parts(word)[0])
+    return bool(NAMES_MR_PATH.search(path)) or path.split("/")[-1] == "graphql"
+
+
+def may_write(args):
+    """Could the call write, read from its words alone, whatever the options' grammar: a method
+    word other than GET or HEAD in any spelling (-X, a short bundle holding X, --method), or,
+    with no method word, a field or input flag, which makes the CLIs default to POST. A short
+    bundle counts every letter, as if any could be a flag."""
+    methods, fields = [], False
+    for k, a in enumerate(args):
+        after = args[k + 1] if k + 1 < len(args) else ""
+        if a.startswith("--"):
+            name, eq, value = a.partition("=")
+            if name == "--method":
+                methods.append(value if eq else after)
+            elif name in API_WRITE_FIELDS:
+                fields = True
+        elif a.startswith("-") and len(a) > 1:
+            letters = a[1:]
+            fields = fields or "f" in letters or "F" in letters
+            x = letters.find("X")
+            if x >= 0:
+                methods.append(letters[x + 1:].lstrip("=") or after)
+    if methods:
+        return any(m.upper() not in READ_METHODS for m in methods)
+    return fields
+
+
+def api_unplaced(args, tool):
+    """A net beside the parse: the words name a gated path and may write to it, but the parse
+    does not read the call as a gated write (api_gated), so it cannot be checked. A call the
+    parse reads as GraphQL is left to its mutations."""
+    if not (any(names_gated_path(a) for a in args) and may_write(args)):
+        return False
+    call = parse_api(args, tool)
+    return not is_graphql(call["endpoint"] or "") and not api_gated(call)
 
 
 def only_options(words):
@@ -850,8 +929,10 @@ def reordered(tool, rest):
     for k, word in enumerate(rest):
         if word.startswith("-") or not only_options(rest[:k]):
             continue
-        if word == "api" and api_gated(parse_api(rest[:k] + rest[k + 1:])):
-            return "api", ""
+        if word == "api":
+            args = rest[:k] + rest[k + 1:]
+            if api_gated(parse_api(args, tool)) or api_unplaced(args, tool):
+                return "api", ""
         if word != noun:
             continue
         for j in range(k + 1, len(rest)):
@@ -893,7 +974,7 @@ def gated_verb(words):
     if i == 0 and rest[:1] == ["api"]:
         if rest[1:2] and rest[1] in HELP:
             return None
-        if api_gated(parse_api(rest[1:])):
+        if api_gated(parse_api(rest[1:], tool)) or api_unplaced(rest[1:], tool):
             return {"tool": tool, "kind": "api", "args": rest[1:]}
         return None
     found = reordered(tool, rest)
@@ -1806,7 +1887,9 @@ def judge_api(shape, ledger):
     other MR/PR write are denied. The call must reach origin's host. gh sends a write's fields
     in its body, and GitHub may not read a write's query string, so a gh write carrying one is
     denied; glab's query fields are read with its body fields, as GitLab reads both."""
-    tool, call = shape["tool"], parse_api(shape["args"])
+    tool, call = shape["tool"], parse_api(shape["args"], shape["tool"])
+    if api_unplaced(shape["args"], tool):
+        raise Deny(API_SPELLING.format(tool))
     endpoint = call["endpoint"] or ""
     if is_graphql(endpoint):
         raise Deny(GRAPHQL)

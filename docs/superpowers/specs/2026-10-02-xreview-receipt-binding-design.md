@@ -462,6 +462,15 @@ ruled in plan or code review, within §2's goals. The code and its tests are aut
 - cobra takes a subcommand's options before its name and between its words. So a gated verb
   that some reading of the options puts in another order must be written in the canonical
   form (`[-R <project>] noun verb`, `api` right after the tool), or it is denied.
+- `glab api`/`gh api` options are read as pflag reads them, with each CLI's value-taking flags
+  from its `--help`:
+  - short bundles (`-iX PUT`, `-iXPUT`);
+  - attached and `=` values (`-XPUT`, `-X=PUT`, `--method=PUT`).
+
+  A net sits beside that parse. Some calls name an MR/PR, merges or graphql path in their
+  words and may write: a method word other than GET or HEAD, in any spelling, or, with no
+  method word, a field or input flag. Such a call is denied as unresolved unless the parse
+  reads it as a gated write, and the message gives the canonical spelling.
 - A gh write is read from its body only, and a query string on a gated gh write is denied:
   GitHub may not read a write's query string. glab's query string is read with its fields,
   as GitLab reads both.

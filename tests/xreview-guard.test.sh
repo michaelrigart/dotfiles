@@ -1103,5 +1103,30 @@ is "Q30 an encoded project path still reads and merges" \
    "$(decision "$W" 'glab api projects/acme%2Fapp/merge_requests/7') $(decision "$W" "glab api -X PUT projects/acme%2Fapp/merge_requests/7/merge -f sha=$REBASED")" \
    "allow allow"
 
+echo "R. api options as the CLIs read them"
+# pflag reads -iX PUT, -iXPUT, -X=PUT and --method=PUT alike: each is the same gated write.
+GHM=repos/acme/app/pulls/9/merge; GLM=projects/acme%2Fapp/merge_requests/7/merge
+PIN='a forge merge must pin the head it merges'
+is "R1 gh: a bundle, an = value and an attached value are each an unpinned merge" \
+   "$(denies "$W" "gh api -iX PUT $GHM" "$PIN") $(denies "$W" "gh api -X=PUT $GHM" "$PIN") $(denies "$W" "gh api -XPUT $GHM" "$PIN") $(denies "$W" "gh api --method=PUT $GHM" "$PIN")" \
+   "1 1 1 1"
+is "R2 glab the same" \
+   "$(denies "$W" "glab api -iX PUT $GLM" "$PIN") $(denies "$W" "glab api -X=PUT $GLM" "$PIN") $(denies "$W" "glab api -XPUT $GLM" "$PIN") $(denies "$W" "glab api --method=PUT $GLM" "$PIN")" \
+   "1 1 1 1"
+is "R3 a field in a bundle makes the call a POST" \
+   "$(denies "$W" "gh api $GHM -if sha=$REBASED" 'writes to an MR/PR path whose source, head or destination') $(denies "$W" "glab api $GLM -if sha=$REBASED" 'writes to an MR/PR path whose source, head or destination')" \
+   "1 1"
+is "R4 approved, pinned merges in these spellings are allowed" \
+   "$(decision "$W" "gh api -iX PUT $GHM -f sha=$REBASED") $(decision "$W" "gh api -X=PUT $GHM -if sha=$REBASED") $(decision "$W" "glab api -iXPUT $GLM -f sha=$REBASED") $(decision "$W" "glab api --method=PUT $GLM -f=sha=$REBASED")" \
+   "allow allow allow allow"
+is "R5 reads with bundles stay allowed" \
+   "$(decision "$W" 'gh api -i repos/acme/app/pulls/9') $(decision "$W" 'gh api -iq .title repos/acme/app/pulls/9') $(decision "$W" 'glab api -i projects/acme%2Fapp/merge_requests/7') $(decision "$W" 'gh api -X GET repos/acme/app/pulls -f state=open')" \
+   "allow allow allow allow"
+# A net beside the parse: words that name a gated path and may write, which the parse does not
+# read as a write to it, are denied with the canonical spelling.
+is "R6 a write the parse cannot place is denied, naming the canonical form" \
+   "$(denies "$W" "gh api -HX PUT $GHM" 'cannot read its options as gh reads them') $(denies "$W" "glab api -HX PUT $GLM" 'cannot read its options as glab reads them') $(denies "$W" 'gh api -Hf x=1 repos/acme/app/pulls' 'cannot read its options as gh reads them') $(denies "$W" "gh api -X PUT -X GET $GHM" 'cannot read its options as gh reads them')" \
+   "1 1 1 1"
+
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))
