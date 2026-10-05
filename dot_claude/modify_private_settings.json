@@ -218,8 +218,10 @@ printf '%s' "$input" | jq \
         # Second entry: the worktree guard. Denies `git worktree unlock`, a double-forced
         # `git worktree remove`, and raw removal of a wt sibling: wt-rm owns that lifecycle.
         # claude-settings.test.sh finds each guard by its command, so order carries no meaning.
-        # Third entry: the cross-review guard. Denies proposing a branch for merge with
-        # no Codex review on record; a skipped review looks identical to a clean one.
+        # Third entry: the cross-review guard. Denies proposing or merging a change that no
+        # approving pre-merge Codex review of it is on record for; a skipped review looks
+        # identical to a clean one. It reads origin and the forge, and gives up at 40 s inside
+        # an explicit 60 s limit, so a slow forge is a deny rather than a fall-through.
         # Fourth entry: the apply-window guard. Its matcher is a wildcard because it
         # inspects Edit/Write rather than Bash; it is inert unless xreview apply has
         # opened a window.
@@ -245,7 +247,7 @@ printf '%s' "$input" | jq \
           {
             "matcher": "Bash",
             "hooks": [
-              { "type": "command", "command": "bash $HOME/.claude/xreview-guard.sh" }
+              { "type": "command", "command": "bash $HOME/.claude/xreview-guard.sh", "timeout": 60 }
             ]
           },
           {

@@ -1,114 +1,89 @@
 #!/usr/bin/env bash
-# PreToolUse(Bash) guard for the pre-merge cross-review checkpoint.
+# PreToolUse(Bash) guard for the pre-merge cross-review gate.
 #
-# Enforces the one part of the cross-review workflow that prose cannot: that a
-# branch is not proposed for merge without an approving pre-merge Codex review. The
-# relay itself is automatic, but nothing otherwise guarantees it ran — and a skipped
-# review is indistinguishable from one that found nothing. Since 2026-09-30 a receipt
-# names its checkpoint (xreview dispatch --checkpoint): a spec or plan review, or a
-# pre-merge review whose latest verdict is `changes`, does not open the gate.
+# Enforces the one part of the cross-review workflow that prose cannot: that nothing is
+# proposed or merged without an approving pre-merge Codex review of exactly that change. A
+# skipped review is otherwise indistinguishable from one that found nothing.
+# Design: docs/superpowers/specs/2026-10-02-xreview-receipt-binding-design.md, section 3.6.
 #
-# Scope is deliberately ONE command shape: creating a merge/pull request via glab
-# or gh. Merging locally, pushing, forge web UIs, other CLIs and XREVIEW_GUARD=off
-# are documented blind spots that fail open. A narrow guard that never fires
-# spuriously is worth more than a broad one that gets disabled.
+# Gated: MR/PR creation and agent-run merges - glab mr create|new|merge|accept, gh pr
+# create|new|merge, their REST forms through glab api / gh api, and a local git merge into the
+# default branch. Each opens only when the latest full-range pre-merge review of that exact
+# change, for that destination, approved it. GraphQL mutations that create or merge, glab mr
+# for and gh pr revert are denied outright. The change is named by a content fingerprint, so
+# any content change after the approval closes the gate again, while a clean rebase keeps it
+# open. The receipts live in one ledger per repository, shared by all its worktrees
+# (xreview-ledger.py beside this file).
 #
-# The receipt is advisory about freshness, not about existence: it records the head
-# at review time but does not invalidate itself when HEAD moves, because applying a
-# review finding necessarily moves HEAD and a self-invalidating receipt would demand
-# a review of the fix for the review.
+# This shell front is the fast path. The hook fires on EVERY Bash call, so a payload that
+# names none of create, new, merge, accept, pulls, graphql or revert (nor mr together with
+# for, nor api together with a percent-escape such as m%65rge), or none of glab, gh or git,
+# costs no subprocess at all. It matches each word as the raw JSON payload can spell it, with
+# quotes, backslashes and line continuations allowed between its letters: g''it, mer""ge and
+# mer\<newline>ge all name their verb. A payload holding an ANSI-C $'...' string, which can
+# spell any word with escapes, always goes on.
+# Everything else goes to xreview-guard.py beside this file, which owns the grammar and the
+# checks and fails closed on a gated shape.
+#
+# The bypass is XREVIEW_GUARD=off, for Michael's explicit use only: in this hook's
+# environment, or anywhere in the command (the only place a model can write it).
+#
+# Bash 3.2 compatible (macOS system bash).
 set -uo pipefail
 set -f
 
-allow() { exit 0; }
-
-deny() {
-  printf '%s' "$1" | jq -Rs \
-    '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:.}}' \
-    2>/dev/null || exit 0
-  exit 0
-}
-
-[ "${XREVIEW_GUARD:-}" = "off" ] && allow
+[ "${XREVIEW_GUARD:-}" = "off" ] && exit 0
 
 payload=$(cat)
-[ -n "$payload" ] || allow
-command -v jq >/dev/null 2>&1 || allow
+[ -n "$payload" ] || exit 0
 
-# Fast path. This hook fires on EVERY Bash call, so the common case must cost no
-# subprocess at all — a shell-builtin substring test on the raw payload, before any
-# JSON parsing. `create` is the one word both gated verbs must contain, so nothing
-# real can slip past it, and almost nothing else reaches the check below.
+# Between two letters of a word the JSON payload may hold a single quote, or an escaped double
+# quote, backslash or newline (\" \\ \n): g is that gap. One [[ =~ ]] per word keeps this
+# linear; a ${payload//...} substitution is quadratic in bash 5 and far worse in bash 3.2,
+# which leaves a large command without a decision inside the hook's time limit.
+g="('|\\\\[\"\\\\n])*"
+pct='%[0-9A-Fa-f][0-9A-Fa-f]'
+spells() {
+  local word re i
+  for word in "$@"; do
+    re=${word:0:1}
+    for (( i = 1; i < ${#word}; i++ )); do re="$re$g${word:i:1}"; done
+    [[ $payload =~ $re ]] && return 0
+  done
+  return 1
+}
 case "$payload" in
-  *create*) ;;
-  *) allow ;;
+  *"\$'"*) ;;
+  *) spells create new merge accept pulls graphql revert || { spells mr && spells for; } \
+       || { spells api && [[ $payload =~ $pct ]]; } || exit 0
+     spells glab gh git || exit 0 ;;
 esac
 
-cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command // empty' 2>/dev/null) || allow
-[ -n "$cmd" ] || allow
+py=/usr/bin/python3
+[ -x "$py" ] || py=python3
+helper="$(dirname "$0")/xreview-guard.py"
+verdict=$(printf '%s' "$payload" | "$py" "$helper" 2>/dev/null)
+rc=$?
+if [ -n "$verdict" ]; then
+  printf '%s\n' "$verdict"
+  exit 0
+fi
+[ "$rc" -eq 0 ] && exit 0
 
-# The bypass has to be readable from the COMMAND, not just from this process's
-# environment. A model cannot export a variable into a hook that runs beside it; the
-# only place it can write one is the command line, which is also the form the deny
-# message names. Recorded 2026-09-02: `XREVIEW_GUARD=off glab mr create ...`, sent on
-# an explicit instruction to merge without a review, denied anyway because the env
-# assignment applied to `glab` and never reached here. Matched anywhere in the string
-# so the trailing-comment form works too, exactly as WT_GUARD=off does.
-case "$cmd" in *XREVIEW_GUARD=off*) allow ;; esac
-
-# One shape only: `glab mr create` or `gh pr create`, and it must sit in COMMAND
-# POSITION. The first version of this matched `*glab*mr*create*|*gh*pr*create*` against
-# the whole command, which reads "gh" out of "outright", "pr" out of "proposed" and
-# "create" out of "recreate" — so a Basecamp comment describing the branch, an MR body
-# written to the scratchpad, or `rg 'gh pr create' docs/` was denied with a message
-# about cross-review. Nine such denies against five real ones in the recorded
-# transcripts (measured 2026-09-03). Same fix, same regex shape, as rule 2 of
-# git-forge-guard.sh; see the note there.
-#
-# `^` anchors per LINE under grep, which is deliberate: the real-world shape writes the
-# body first and puts the verb on its own line after an assignment. It shares the known
-# limit of every matcher here — a heredoc body whose line BEGINS with the verb still
-# matches, and a command assembled from a variable still does not. This is a guard, not
-# a sandbox.
-verb_re='(^|[;&|(])[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*(sudo[[:space:]]+)?(glab[[:space:]]+mr[[:space:]]+create|gh[[:space:]]+pr[[:space:]]+create)([[:space:]]|$)'
-printf '%s' "$cmd" | grep -Eq "$verb_re" || allow
-
-root=$(git rev-parse --show-toplevel 2>/dev/null) || allow
-[ -n "$root" ] || allow
-branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || allow
-
-key=$(printf '%s' "$root" | tr '/' '_' | sed 's/^_//')
-receipts="${XDG_STATE_HOME:-$HOME/.local/state}/xreview/$key/reviews.jsonl"
-
-# The LATEST pre-merge receipt for this branch must approve: an earlier approve that a
-# later pre-merge round overturned does not count. Lines are parsed one at a time
-# (fromjson?), so one damaged line cannot hide the rest of the file.
-latest=""
-[ -r "$receipts" ] && latest=$(jq -Rrn --arg b "$branch" '
-  [inputs | fromjson? | select(type == "object" and .branch == $b and .checkpoint == "pre-merge")]
-  | last | .verdict // ""' "$receipts" 2>/dev/null)
-[ "$latest" = approve ] && allow
-
-onrecord=""
-[ -r "$receipts" ] && onrecord=$(jq -Rrn --arg b "$branch" '
-  [inputs | fromjson? | select(type == "object" and .branch == $b)
-   | "\(.checkpoint // "" | if . == "" then "unrecorded" else . end)/\(.verdict // "")"]
-  | join(", ")' "$receipts" 2>/dev/null)
-
-deny "No approved pre-merge Codex cross-review on record for branch '$branch'.
-
-On record for this branch: ${onrecord:-nothing}.
-
-A branch is proposed for merge only after a pre-merge review whose latest verdict is
-approve. Spec and plan reviews do not count, and a pre-merge verdict of changes means
-the findings still need a fix and another round. Run the cross-review skill, or:
-
-    xreview dispatch --checkpoint pre-merge --diff <base>..HEAD <body-file>
-    xreview collect <nonce>
-
-Receipts live at $receipts.
-
-Do not bypass this on your own judgement. Only if Michael has asked, in this
-conversation, for the branch to go up without a review: re-run with XREVIEW_GUARD=off in
-the command (an environment assignment on the command line is read, a trailing
-\`# XREVIEW_GUARD=off\` works too), and say so in the MR."
+# The helper could not run at all. FAIL DIRECTION IS CLOSED for a command that may propose or
+# merge: glab/gh with mr, pr or api, or git with merge, as whole words on one line - the
+# helper's own last resort (CRUDE). The text is read with quotes and backslashes dropped,
+# both with every backslash-newline joined and without, so neither a fused redirection
+# (git>log merge), a continuation (git \<newline>merge) nor a backtick hides the verb.
+# Anything else is allowed.
+cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command // empty' 2>/dev/null) || cmd=$payload
+case "$cmd" in *XREVIEW_GUARD=off*) exit 0 ;; esac
+crude='\b(glab|gh)\b.*\b(mr|pr|api)\b|\bgit\b.*\bmerge\b'
+if { printf '%s\n' "$cmd" | awk '{ if (sub(/\\$/, "")) printf "%s", $0; else print }'
+     printf '%s\n' "$cmd"; } | tr -d "'\"\\\\" | grep -Eq "$crude"; then
+  reason="Pre-merge gate: the gate's check could not run ($helper exited $rc), so this command, which may propose or merge a change, is refused. Restore the helper (chezmoi apply)."
+  printf '%s' "$reason" | jq -Rs \
+    '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:.}}' 2>/dev/null \
+    || printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Pre-merge gate: the check could not run, so this command is refused."}}'
+fi
+exit 0

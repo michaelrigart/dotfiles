@@ -174,5 +174,23 @@ out="$(/usr/bin/python3 "$SCRIPT" --days 0 --projects-dir "$ROOT/projects" 2>&1)
 out="$(/usr/bin/python3 "$SCRIPT" --projects-dir "$ROOT/nope" 2>&1)"; rc=$?
 [ "$rc" -eq 2 ] && _pass "a missing projects dir is a usage error" || _fail "a missing projects dir is a usage error" "rc=$rc"
 
+# spec 2026-10-02 §4: the pre-merge gate's denies read "Pre-merge gate: ..." from the receipt
+# binding on. The evaluation attributes them, and the older wording, to xreview-guard; a
+# result that merely quotes the text is still no denial.
+names="$(/usr/bin/python3 - "$SCRIPT" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("measure", sys.argv[1])
+measure = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(measure)
+for text in ("PreToolUse:Bash hook error: Pre-merge gate: no full-range pre-merge review of this change is on record.",
+             "PreToolUse:Bash hook error: No approved pre-merge Codex cross-review on record for branch 'x'.",
+             "grep: Pre-merge gate: appears in a file"):
+    print(next((name for name, rx in measure.DENIAL_RES if rx.match(text)), "none"))
+PY
+)"
+if [ "$names" = "$(printf 'xreview-guard\nxreview-guard\nnone')" ]; then
+  _pass "the pre-merge gate's denies, old and new wording, count as xreview-guard"
+else _fail "the pre-merge gate's denies, old and new wording, count as xreview-guard" "$names"; fi
+
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

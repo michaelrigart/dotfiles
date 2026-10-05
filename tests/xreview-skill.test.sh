@@ -16,7 +16,8 @@ SKILL="$ROOT/dot_claude/skills/cross-review/SKILL.md"
 # The skill documents a system, not one file: the CLI plus the two PreToolUse guards
 # that enforce the parts prose cannot. XREVIEW_GUARD lives in the guards, so scoping the
 # search to the CLI reports drift that is not there.
-IMPL=("$XREVIEW" "$ROOT/dot_claude/executable_xreview-guard.sh" "$ROOT/dot_claude/executable_xreview-apply-guard.sh")
+IMPL=("$XREVIEW" "$ROOT/dot_claude/executable_xreview-guard.sh" "$ROOT/dot_claude/xreview-guard.py"
+      "$ROOT/dot_claude/xreview-ledger.py" "$ROOT/dot_claude/executable_xreview-apply-guard.sh")
 for _f in "$SKILL" "${IMPL[@]}"; do
   [ -f "$_f" ] || { echo "missing file under test: $_f" >&2; exit 2; }
 done
@@ -126,9 +127,10 @@ fi
 # The skill tells the model which commands are gated. If an arm is dropped there, the
 # model goes on believing the gate applies and proposes a merge that was never reviewed
 # — the failure this whole mechanism exists to prevent, arrived at through the prose.
+# The gate is the shell front, the Python grammar beside it, and the ledger it decides with.
 GUARD="$ROOT/dot_claude/executable_xreview-guard.sh"
-guard_code="$(strip_comments "$GUARD")"
-gated="$(grep -oE '(glab|gh)[[:space:]]+(mr|pr)[[:space:]]+create[A-Za-z0-9_-]*' "$SKILL" | tr -s ' \t' ' ' | sort -u)"
+guard_code="$(strip_comments "$GUARD" "$ROOT/dot_claude/xreview-guard.py" "$ROOT/dot_claude/xreview-ledger.py")"
+gated="$(grep -oE '(glab|gh)[[:space:]]+(mr|pr)[[:space:]]+(create|new|merge|accept)[A-Za-z0-9_-]*' "$SKILL" | tr -s ' \t' ' ' | sort -u)"
 if [ -z "$gated" ]; then
   _fail "SKILL.md still names the gated forge commands" \
         "found none — either the skill stopped documenting the gate, or this extractor broke"
@@ -213,11 +215,44 @@ for cp in spec plan pre-merge; do
 done
 # The gate the skill describes is the gate the guard applies.
 if grep -q 'pre-merge' <<<"$guard_code" && grep -q 'approve' <<<"$guard_code" \
-   && grep -qi 'latest .pre-merge. receipt has the verdict' "$SKILL"; then
+   && grep -qi 'latest full-range .pre-merge. review of exactly that change' "$SKILL"; then
   _pass "the skill and the guard agree: only an approved pre-merge receipt opens the gate"
 else
   _fail "the skill and the guard agree: only an approved pre-merge receipt opens the gate" "skill/guard mismatch"
 fi
+
+# spec 2026-10-02 §3.7: the gate opens only for the full range of the change a review saw,
+# a forge merge is pinned and immediate, creation names its destination, and a fix round
+# needs a fresh full-range round. A skill that drifts from these teaches a call the gate
+# denies, and the guard must read every flag the skill tells the model to pass.
+for phrase in 'full range against the branch it will land on' '<dest>...<branch>' \
+              'names its destination explicitly' 'never deferred' '--auto-merge=false' \
+              '--sha <head>' '--match-head-commit <head>' 'fresh full-range round' \
+              '--diff <repo-path>:<range>' 'xreview/ledgers/' '--head <branch>'; do
+  if grep -qF -- "$phrase" "$SKILL"; then
+    _pass "the skill says '$phrase'"
+  else _fail "the skill says '$phrase'" "missing"; fi
+done
+for flag in '"--auto-merge"' '"--sha"' '"--match-head-commit"' '"--target-branch"' '"--base"' '"--head"'; do
+  if grep -qF -- "$flag" <<<"$guard_code"; then
+    _pass "the guard reads $flag"
+  else _fail "the guard reads $flag" "the skill names a flag the guard never reads"; fi
+done
+for stale in 'advisory about freshness' '`glab mr create` / `gh pr create` in command position' \
+             'local merges, pushes, forge web UIs' 'a gated verb in command position' \
+             'bug in the guard, not a checkpoint you missed'; do
+  if grep -qiF -- "$stale" "$GUARD" "$ROOT/dot_claude/xreview-guard.py" "$SKILL"; then
+    _fail "no '$stale' survives" "still present"
+  else _pass "no '$stale' survives"; fi
+done
+
+# The guard reads every unquoted word as a possible command, so the skill must not promise
+# that a mention is safe: it says to quote one and to write bodies through <<'EOF'.
+for phrase in 'is denied by design' "<<'EOF'" 'Quote a mention'; do
+  if grep -qF -- "$phrase" "$SKILL"; then
+    _pass "the skill says '$phrase' about mentions"
+  else _fail "the skill says '$phrase' about mentions" "missing"; fi
+done
 
 # A schema miss is its own exit code. The skill must say what to do with it, or the model
 # treats raw reviewer prose as findings.

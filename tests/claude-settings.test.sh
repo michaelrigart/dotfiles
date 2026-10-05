@@ -461,6 +461,10 @@ jq_is '.hooks.PreToolUse | length' 5 "no PreToolUse entry beyond the five guards
 # budget), so its hook limit is explicit rather than left to the runtime default.
 jq_is '[.hooks.PreToolUse[].hooks[] | select(.command == "bash $HOME/.claude/git-forge-guard.sh") | .timeout] | join(",")' 60 \
       "the forge guard hook carries an explicit 60 s timeout"
+# The pre-merge guard reads origin (git ls-remote) and the forge (glab, gh). It gives up at
+# 40 s, inside this limit: a hook that outruns its timeout is treated as non-blocking.
+jq_is '[.hooks.PreToolUse[].hooks[] | select(.command == "bash $HOME/.claude/xreview-guard.sh") | .timeout] | join(",")' 60 \
+      "the pre-merge guard hook carries an explicit 60 s timeout"
 # The SessionStart hooks must survive alongside them — adding PreToolUse replaced the
 # whole hooks object once during development.
 jq_is '.hooks.SessionStart | length' 2 "both SessionStart hooks present"
@@ -581,6 +585,15 @@ if command -v chezmoi >/dev/null 2>&1; then
       esac
     done
   fi
+  # The pre-merge gate's Python halves deploy beside its shell front, each through its own
+  # .chezmoiignore allowlist entry. Without one the file never deploys: the gate then refuses
+  # every gated command, and xreview cannot dispatch.
+  for f in .claude/xreview-guard.py .claude/xreview-ledger.py; do
+    case "$managed" in
+      *"$f"*) _pass "helper $f is chezmoi-managed" ;;
+      *)      _fail "helper $f is chezmoi-managed" "not in \`chezmoi managed\`" ;;
+    esac
+  done
 else
   echo "  SKIP: chezmoi absent — hook-script management unverified"
 fi
