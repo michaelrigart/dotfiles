@@ -1123,10 +1123,17 @@ is "R5 reads with bundles stay allowed" \
    "$(decision "$W" 'gh api -i repos/acme/app/pulls/9') $(decision "$W" 'gh api -iq .title repos/acme/app/pulls/9') $(decision "$W" 'glab api -i projects/acme%2Fapp/merge_requests/7') $(decision "$W" 'gh api -X GET repos/acme/app/pulls -f state=open')" \
    "allow allow allow allow"
 # A net beside the parse: words that name a gated path and may write, which the parse does not
-# read as a write to it, are denied with the canonical spelling.
+# read as a gated write, are denied with the canonical spelling. Here a second endpoint, which
+# the CLIs refuse, names the path, or the method words disagree.
+SPELL='cannot read its options as'
 is "R6 a write the parse cannot place is denied, naming the canonical form" \
-   "$(denies "$W" "gh api -HX PUT $GHM" 'cannot read its options as gh reads them') $(denies "$W" "glab api -HX PUT $GLM" 'cannot read its options as glab reads them') $(denies "$W" 'gh api -Hf x=1 repos/acme/app/pulls' 'cannot read its options as gh reads them') $(denies "$W" "gh api -X PUT -X GET $GHM" 'cannot read its options as gh reads them')" \
-   "1 1 1 1"
+   "$(denies "$W" "gh api -X PUT repos/acme/app/issues $GHM" "$SPELL gh") $(denies "$W" "glab api -X PUT projects/acme%2Fapp/issues $GLM" "$SPELL glab") $(denies "$W" "gh api -iXPUT repos/acme/app/issues $GHM" "$SPELL gh") $(denies "$W" 'gh api repos/acme/app/issues repos/acme/app/pulls -f x=1' "$SPELL gh") $(denies "$W" "gh api -X PUT -X GET $GHM" "$SPELL gh")" \
+   "1 1 1 1 1"
+# A value-taking short ends its bundle: the rest of the word is its value, so the X of a header
+# is no method.
+is "R7 a read with an attached header value stays allowed" \
+   "$(decision "$W" 'gh api -X GET repos/acme/app/pulls -HX-GitHub-Api-Version:2022-11-28') $(decision "$W" 'glab api -X GET projects/acme%2Fapp/merge_requests -HX-Custom:1')" \
+   "allow allow"
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))

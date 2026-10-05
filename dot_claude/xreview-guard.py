@@ -857,11 +857,13 @@ def names_gated_path(word):
     return bool(NAMES_MR_PATH.search(path)) or path.split("/")[-1] == "graphql"
 
 
-def may_write(args):
-    """Could the call write, read from its words alone, whatever the options' grammar: a method
-    word other than GET or HEAD in any spelling (-X, a short bundle holding X, --method), or,
-    with no method word, a field or input flag, which makes the CLIs default to POST. A short
-    bundle counts every letter, as if any could be a flag."""
+def may_write(args, tool):
+    """Could the call write, read from its words alone, whatever the order of its options: a
+    method word other than GET or HEAD in any spelling (-X, a short bundle holding X,
+    --method), or, with no method word, a field or input flag, which makes the CLIs default to
+    POST. A short bundle is read as pflag reads it: its letters are flags until a value-taking
+    one, whose value is the rest of the word (-HX-Api-Version:1 is a header)."""
+    takes_value = GLAB_API_VALUE if tool == "glab" else GH_API_VALUE
     methods, fields = [], False
     for k, a in enumerate(args):
         after = args[k + 1] if k + 1 < len(args) else ""
@@ -872,11 +874,13 @@ def may_write(args):
             elif name in API_WRITE_FIELDS:
                 fields = True
         elif a.startswith("-") and len(a) > 1:
-            letters = a[1:]
-            fields = fields or "f" in letters or "F" in letters
-            x = letters.find("X")
-            if x >= 0:
-                methods.append(letters[x + 1:].lstrip("=") or after)
+            for j, letter in enumerate(a[1:], 1):
+                if letter in "fF":
+                    fields = True
+                elif letter == "X":
+                    methods.append(a[j + 1:].lstrip("=") or after)
+                if "-" + letter in takes_value:
+                    break
     if methods:
         return any(m.upper() not in READ_METHODS for m in methods)
     return fields
@@ -886,7 +890,7 @@ def api_unplaced(args, tool):
     """A net beside the parse: the words name a gated path and may write to it, but the parse
     does not read the call as a gated write (api_gated), so it cannot be checked. A call the
     parse reads as GraphQL is left to its mutations."""
-    if not (any(names_gated_path(a) for a in args) and may_write(args)):
+    if not (any(names_gated_path(a) for a in args) and may_write(args, tool)):
         return False
     call = parse_api(args, tool)
     return not is_graphql(call["endpoint"] or "") and not api_gated(call)
