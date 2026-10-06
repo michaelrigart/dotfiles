@@ -180,6 +180,22 @@ on the reviewer's assertion alone.
   that is most findings.
 - **You disagree, or cannot verify it** — Michael decides.
 
+**Make each fix round leave less for the next one.** Every round re-reviews the whole
+artifact, and fixes are where the next round's findings come from. Before re-dispatching:
+
+1. **Fix the class, not the instance.** For each verified finding, look for the same
+   defect elsewhere in the artifact (at pre-merge, the whole branch diff) and fix every
+   occurrence in this round.
+2. **One cause, one fix.** Findings that share a cause get one fix at the cause, not one
+   patch per symptom.
+3. **Check each fix against its failure scenario.** The scenario must now be impossible,
+   not just the cited line changed. A fix that comes with a test runs it.
+4. **Re-read what depends on the changed text.** Summaries, derived sections,
+   cross-references, and tests or docs that restate it are where a fix leaves a
+   contradiction. Fix those in the same round.
+5. **One dispatch per round.** Re-dispatch once every finding of the round has been fixed
+   or ruled on, never per finding; a finding that went to Michael waits for his decision.
+
 ## Iterating
 
 Keep going until the review converges or the disagreement is real. Michael is the
@@ -188,11 +204,12 @@ judgement, never because a round ended.
 
 **Rounds within a checkpoint stay on the same thread.** Round 4 of a spec sign-off is
 normal operation, not degradation — iterating on one thread is how a review converges,
-and the round cap is the only limit on it. Never stop, rotate or escalate because a
-thread has answered a few rounds.
+and there is no limit on rounds: a review ends when it converges or on a trigger in the
+escalation list below. Never stop, rotate or escalate because a thread has answered a few
+rounds.
 
 **Staleness is mechanical, not a judgement.** Each checkpoint starts on a fresh thread, so a
-thread only ever holds the rounds of one checkpoint, and the round cap bounds those.
+thread only ever holds the rounds of one checkpoint.
 - Do not infer staleness from the round number, from how long the exchange feels, or from
   the reviewer agreeing with you.
 - Never rotate a thread within a checkpoint.
@@ -211,7 +228,8 @@ Escalate to Michael when, and only when:
   not a missed fix
 - a finding needs design judgement or a trade-off that would change the approved spec
 - you cannot verify a claim
-- `xreview` refuses the round (capped at 10; `XREVIEW_MAX_ROUNDS` overrides)
+- `xreview` refuses the round because Michael set `XREVIEW_MAX_ROUNDS` and the review
+  reached it. Unset, rounds are not limited.
 - `xreview` refuses because the Codex daemon carries a pane's environment. The fix disconnects
   every Codex TUI.
 - `xreview` refuses because there is no Codex pane for the repository, or several.

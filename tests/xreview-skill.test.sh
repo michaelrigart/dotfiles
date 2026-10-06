@@ -97,31 +97,27 @@ for var in $vars; do
 done
 
 # --- the round cap -----------------------------------------------------------
-# The number in the prose drives an escalation decision, so it has to be the number the
-# code enforces. Both sides are read rather than hardcoded here: a test that restated
-# the value would just be a third place to update.
-# Every cap statement, not the first: a second sentence saying something else means the
-# skill contradicts itself, and comparing only the first would hide whichever one is
-# wrong. More than one distinct value is itself the defect.
-doc_caps="$(grep -oE 'capped at [0-9]+' "$SKILL" | grep -oE '[0-9]+' | sort -u)"
-doc_cap="$(printf '%s' "$doc_caps" | head -1)"
-doc_n="$(printf '%s\n' "$doc_caps" | grep -c '[0-9]')"
-# Anchored on the assignment to `max`, which is the name the comparison uses. A second
-# expansion kept for a diagnostic would otherwise report the documented number while the
-# enforced one had moved.
-code_cap="$(strip_comments "$XREVIEW" | grep -oE '(^|[[:space:]])max="\$\{XREVIEW_MAX_ROUNDS:-[0-9]+\}"' | grep -oE '[0-9]+' | sort -u)"
-if [ "$doc_n" -gt 1 ]; then
-  _fail "the documented round cap matches the code" \
-        "SKILL.md states more than one cap ($(printf '%s' "$doc_caps" | tr '\n' ' ')) — it contradicts itself"
-elif [ -z "$doc_cap" ] || [ -z "$code_cap" ]; then
-  _fail "the documented round cap matches the code" \
-        "could not read both values (doc='$doc_cap' code='$code_cap')"
-elif [ "$doc_cap" = "$code_cap" ]; then
-  _pass "the documented round cap ($doc_cap) matches the code"
-else
-  _fail "the documented round cap matches the code" \
-        "SKILL.md says $doc_cap, the CLI defaults to $code_cap"
-fi
+# There is no default cap (spec 2026-10-06 section 3.1): the skill must not state one and the
+# code must not carry one, or an escalation would fire on a count instead of on the review.
+# XREVIEW_MAX_ROUNDS stays as Michael's opt-in bound, so the skill has to name it: a refusal
+# under it would otherwise read as an unexplained failure.
+doc_caps="$(grep -oE 'capped at [0-9]+' "$SKILL" | sort -u)"
+code_default="$(printf '%s\n' "$xreview_code" | grep -oE 'XREVIEW_MAX_ROUNDS:-[0-9]+' | sort -u)"
+if [ -n "$doc_caps" ]; then
+  _fail "the skill states no default round cap" "SKILL.md says: $(printf '%s' "$doc_caps" | tr '\n' ' ')"
+else _pass "the skill states no default round cap"; fi
+if [ -n "$code_default" ]; then
+  _fail "the CLI carries no default round cap" "found: $code_default"
+else _pass "the CLI carries no default round cap"; fi
+if grep -q 'XREVIEW_MAX_ROUNDS' "$SKILL" && printf '%s\n' "$xreview_code" | grep -q 'XREVIEW_MAX_ROUNDS'; then
+  _pass "the opt-in XREVIEW_MAX_ROUNDS is named in the skill and read by the CLI"
+else _fail "the opt-in XREVIEW_MAX_ROUNDS is named in the skill and read by the CLI" "missing on one side"; fi
+if grep -qF 'there is no limit on rounds' "$SKILL"; then
+  _pass "the skill says rounds are not limited"
+else _fail "the skill says rounds are not limited" "missing"; fi
+if grep -q 'round cap' "$SKILL" "$ROOT/.chezmoitemplates/agents/global.md"; then
+  _fail "neither the skill nor global.md calls on a round cap" "$(grep -n 'round cap' "$SKILL" "$ROOT/.chezmoitemplates/agents/global.md")"
+else _pass "neither the skill nor global.md calls on a round cap"; fi
 
 # --- the operations the guard promises to deny -------------------------------
 # The skill tells the model which commands are gated. If an arm is dropped there, the
@@ -521,6 +517,27 @@ else _fail "the skill says a later round keeps the pane only while its TUI is co
 if grep -q '300000' "$SKILL"; then
   _pass "the skill gives dispatch a five-minute tool timeout"
 else _fail "the skill gives dispatch a five-minute tool timeout" "missing"; fi
+
+# --- fix rounds (spec 2026-10-06 section 3.3) --------------------------------
+# With no round cap, every avoidable round is wall clock. These rules make a fix round leave
+# less for the next one; they must sit under "Acting on findings", where the model reads
+# them while fixing.
+acting="$(sed -n '/^## Acting on findings/,/^## /p' "$SKILL")"
+for rule in 'Fix the class, not the instance.' 'One cause, one fix.' \
+            'Check each fix against its failure scenario.' \
+            'Re-read what depends on the changed text.' 'One dispatch per round.'; do
+  if printf '%s\n' "$acting" | grep -qF "**$rule**"; then
+    _pass "the fix-round rule '$rule' is under Acting on findings"
+  else _fail "the fix-round rule '$rule' is under Acting on findings" "missing"; fi
+done
+# The rule bodies carry the operative wording; a title alone can survive a rewritten body.
+for phrase in '(at pre-merge, the whole branch diff)' 'A fix that comes with a test runs it.' \
+              'Re-dispatch once every finding of the round has been fixed' \
+              'or ruled on, never per finding; a finding that went to Michael waits for his decision.'; do
+  if printf '%s\n' "$acting" | tr '\n' ' ' | sed 's/  */ /g' | grep -qF "$phrase"; then
+    _pass "the fix-round rule text '$phrase' is under Acting on findings"
+  else _fail "the fix-round rule text '$phrase' is under Acting on findings" "missing"; fi
+done
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

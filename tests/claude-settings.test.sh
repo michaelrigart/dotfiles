@@ -467,7 +467,10 @@ jq_is '[.hooks.PreToolUse[].hooks[] | select(.command == "bash $HOME/.claude/xre
       "the pre-merge guard hook carries an explicit 60 s timeout"
 # The SessionStart hooks must survive alongside them — adding PreToolUse replaced the
 # whole hooks object once during development.
-jq_is '.hooks.SessionStart | length' 2 "both SessionStart hooks present"
+jq_is '.hooks.SessionStart | length' 3 "all three SessionStart hooks present"
+jq_is '[.hooks.SessionStart[] | select(has("matcher") | not) | .hooks[]
+        | select(.command == "bash $HOME/.claude/hooks/memory-health.sh" and .timeout == 10)] | length' 1 \
+      "the memory health hook: no matcher, timeout 10"
 jq_is "[.hooks.SessionStart[] | select(.matcher == \"*\") | .hooks[]
         | select(.command == \"bash '$HOME/.claude/hooks/herdr-agent-state.sh' session\" and .timeout == 10)] | length" 1 \
       "the herdr agent-state hook: absolute path, session arg, installer matcher and timeout"
