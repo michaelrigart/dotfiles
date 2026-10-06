@@ -530,6 +530,14 @@ for rule in 'Fix the class, not the instance.' 'One cause, one fix.' \
     _pass "the fix-round rule '$rule' is under Acting on findings"
   else _fail "the fix-round rule '$rule' is under Acting on findings" "missing"; fi
 done
+# The rule bodies carry the operative wording; a title alone can survive a rewritten body.
+for phrase in '(at pre-merge, the whole branch diff)' 'A fix that comes with a test runs it.' \
+              'Re-dispatch once every finding of the round has been fixed' \
+              'or ruled on, never per finding; a finding that went to Michael waits for his decision.'; do
+  if printf '%s\n' "$acting" | tr '\n' ' ' | sed 's/  */ /g' | grep -qF "$phrase"; then
+    _pass "the fix-round rule text '$phrase' is under Acting on findings"
+  else _fail "the fix-round rule text '$phrase' is under Acting on findings" "missing"; fi
+done
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -14,7 +14,7 @@ _fail() { printf '  FAIL: %s\n    | got: %s\n' "$1" "$2"; fail=$((fail + 1)); }
 is() { if [ "$2" = "$3" ]; then _pass "$1"; else _fail "$1" "$2"; fi; }
 has() { case "$2" in *"$3"*) _pass "$1" ;; *) _fail "$1" "$2" ;; esac; }
 
-ROOT="$(mktemp -d "${TMPDIR:-/tmp}/memhealth.XXXXXX")"
+ROOT="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/memhealth.XXXXXX")" && pwd -P)"
 trap 'rm -rf "$ROOT"' EXIT
 
 # mem <project> -> creates a fresh project with an empty memory dir; prints the memory dir
@@ -44,6 +44,8 @@ is "179 lines is silent" "$(fire lines)" ""
 has "180 lines warns, with the count" "$(ctx lines)" "180 lines"
 { filler 179; printf '\n\n\n   \n'; } > "$d/MEMORY.md"
 is "179 lines plus trailing blank lines is silent (counted trimmed)" "$(fire lines)" ""
+d="$(mem leading)"; { printf '\n\n\n\n\n'; filler 179; } > "$d/MEMORY.md"
+is "five leading blank lines plus 179 content lines is silent (counted trimmed)" "$(fire leading)" ""
 d="$(mem chars)"; printf '%*s' 22499 '' | tr ' ' x > "$d/MEMORY.md"
 is "22,499 characters is silent" "$(fire chars)" ""
 printf '%*s' 22500 '' | tr ' ' x > "$d/MEMORY.md"
@@ -63,6 +65,10 @@ has "an unindexed memory file is named" "$(ctx orphan)" "orphan.md"
 d="$(mem names)"; note "$d" 'my note.md'; note "$d" 'a+b.md'
 { link 'my note.md'; link 'a+b.md'; } > "$d/MEMORY.md"
 is "names with spaces and regex characters match exactly" "$(fire names)" ""
+d="$(mem anchor)"; note "$d" a.md; printf -- '- [a](a.md#sec) — hook\n' > "$d/MEMORY.md"
+is "a link with an #anchor is the same file" "$(fire anchor)" ""
+d="$(mem titled)"; note "$d" o.md; printf -- '- [o](o.md "t") — hook\n' > "$d/MEMORY.md"
+is "a link with a title is the same file" "$(fire titled)" ""
 d="$(mem dotslash)"; note "$d" a.md; printf -- '- [a](./a.md) — hook\n' > "$d/MEMORY.md"
 is "a ./ link prefix is the same file" "$(fire dotslash)" ""
 d="$(mem wiki)"; note "$d" a.md; { link a.md; printf -- '- see [[not-yet]]\n'; } > "$d/MEMORY.md"
@@ -94,6 +100,39 @@ stub="$ROOT/stub"; mkdir -p "$stub"; printf '#!/bin/sh\nexit 2\n' > "$stub/grep"
 d="$(mem greperr)"; note "$d" a.md; note "$d" orphan.md; link a.md > "$d/MEMORY.md"
 out="$(jq -cn --arg t "$ROOT/greperr/sess.jsonl" '{transcript_path:$t}' | PATH="$stub:$PATH" bash "$HOOK")"; rc=$?
 is "a grep read error is silent, exit 0, never 'unindexed' advice" "$rc/$out" "0/"
+
+echo "F. the memory directory follows the repository root, not the session cwd"
+# Claude Code keys transcripts on the session cwd and auto-memory on the main repository
+# root, so a linked-worktree or subdirectory session must read the main checkout's memory.
+key() { printf '%s' "$1" | sed 's/[^A-Za-z0-9]/-/g'; }
+PROJ="$ROOT/projects"; mkdir -p "$PROJ"
+REPO="$ROOT/repo"; WT="$ROOT/repo-wt"
+git init -q "$REPO" >/dev/null 2>&1
+git -C "$REPO" -c user.email=t@t -c user.name=t -c commit.gpgsign=false commit -q --allow-empty -m init >/dev/null 2>&1
+git -C "$REPO" worktree add -q -b wt "$WT" >/dev/null 2>&1
+mkdir -p "$REPO/sub" "$PROJ/$(key "$REPO")/memory"
+note "$PROJ/$(key "$REPO")/memory" a.md; note "$PROJ/$(key "$REPO")/memory" orphan.md
+link a.md > "$PROJ/$(key "$REPO")/memory/MEMORY.md"
+# fireat <transcript> <cwd> -> the hook's additionalContext
+fireat() {
+  jq -cn --arg t "$1" --arg c "$2" '{hook_event_name:"SessionStart",transcript_path:$t,cwd:$c}' \
+    | bash "$HOOK" | jq -r '.hookSpecificOutput.additionalContext // empty'
+}
+out="$(fireat "$PROJ/$(key "$WT")/sess.jsonl" "$WT")"
+has "a linked-worktree session reports the main checkout's memory" "$out" "orphan.md"
+has "and names that memory directory" "$out" "$PROJ/$(key "$REPO")/memory"
+out="$(fireat "$PROJ/$(key "$REPO/sub")/sess.jsonl" "$REPO/sub")"
+has "a subdirectory session reports the main checkout's memory" "$out" "orphan.md"
+out="$(fireat "$PROJ/$(key "$REPO")/sess.jsonl" "$REPO")"
+has "a main-checkout session reports its own memory" "$out" "orphan.md"
+mkdir -p "$ROOT/plain" "$ROOT/nogit"
+d="$(mem plain)"; note "$d" a.md; note "$d" orphan.md; link a.md > "$d/MEMORY.md"
+out="$(fireat "$ROOT/plain/sess.jsonl" "$ROOT/nogit")"
+has "a non-git cwd falls back to the transcript's own directory" "$out" "orphan.md"
+out="$(fireat "$ROOT/plain/sess.jsonl" "$ROOT/does-not-exist")"
+has "a missing cwd falls back to the transcript's own directory" "$out" "orphan.md"
+is "a non-git cwd with no memory beside the transcript is silent" \
+   "$(fireat "$PROJ/$(key "$WT")/sess.jsonl" "$ROOT/nogit")" ""
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

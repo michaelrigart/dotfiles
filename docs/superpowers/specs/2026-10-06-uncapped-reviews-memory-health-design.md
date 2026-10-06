@@ -100,9 +100,17 @@ the reviewer.
 ### 4.1 The hook
 
 `~/.claude/hooks/memory-health.sh`, a SessionStart hook (no matcher, timeout 10). It reads
-the hook payload from stdin, takes `transcript_path`, and checks `<its directory>/memory`.
-No memory directory, no `transcript_path`, unreadable input, or any internal error: exit 0
-with no output. Bash 3.2 and standard tools only; read-only.
+the hook payload from stdin and takes `transcript_path` and `cwd`. Claude Code keys
+transcripts on the session cwd but auto-memory on the main repository root, so the memory
+directory is derived from the root, not from the transcript's own directory: when
+`git -C <cwd> rev-parse --path-format=absolute --git-common-dir` succeeds, the root is that
+path's parent (a linked worktree maps to its main checkout, a subdirectory to its
+checkout), the project key is the root with every character outside `[A-Za-z0-9]` replaced
+by `-`, and the directory is `<projects dir>/<key>/memory`, where the projects dir is the
+transcript directory's parent. With no usable `cwd` or no repository it falls back to
+`<transcript directory>/memory`. No memory directory, no `transcript_path`, unreadable
+input, or any internal error: exit 0 with no output. Bash 3.2 and standard tools only;
+read-only.
 
 ### 4.2 Checks
 
@@ -152,7 +160,9 @@ It goes to the agent, not to Michael: fixing the index is the agent's own memory
 - `tests/memory-health.test.sh` (new) against fixture directories: healthy is silent; 180
   lines warns; 22,500 characters warns; a dangling link and an unindexed file are each named;
   a `[[link]]` to a missing memory is not flagged; no memory directory, no `transcript_path`
-  and malformed input are each silent with exit 0.
+  and malformed input are each silent with exit 0; a linked-worktree session and a
+  subdirectory session read the main checkout's memory, and a non-git or missing `cwd`
+  falls back to the transcript's own directory.
 - `tests/claude-settings.test.sh`: three SessionStart entries, the new one by its command and
   timeout.
 

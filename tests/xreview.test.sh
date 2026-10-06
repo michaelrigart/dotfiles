@@ -304,8 +304,10 @@ echo "A. rounds are not capped by default; XREVIEW_MAX_ROUNDS is an opt-in bound
 fresh
 capped() { bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1 | grep -c 'exceeds the cap'; }
 is "round counter starts at zero" "$(bash "$XREVIEW" round)" 0
+before="$(called 'xreview-rpc turn-start')"
 for _ in $(seq 11); do capped >/dev/null; done
 is "eleven rounds are dispatched with no cap set" "$(bash "$XREVIEW" round)" 11
+is "and each of the eleven started a turn" "$(called 'xreview-rpc turn-start')" "$((before + 11))"
 starts="$(called 'xreview-rpc turn-start')"
 out="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
 is "the twelfth round is not refused"       "$(printf '%s' "$out" | grep -c 'exceeds the cap')" 0

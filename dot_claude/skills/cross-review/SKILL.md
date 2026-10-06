@@ -193,8 +193,8 @@ artifact, and fixes are where the next round's findings come from. Before re-dis
 4. **Re-read what depends on the changed text.** Summaries, derived sections,
    cross-references, and tests or docs that restate it are where a fix leaves a
    contradiction. Fix those in the same round.
-5. **One dispatch per round.** Re-dispatch once every finding of the round has been fixed,
-   ruled on or escalated, never per finding.
+5. **One dispatch per round.** Re-dispatch once every finding of the round has been fixed
+   or ruled on, never per finding; a finding that went to Michael waits for his decision.
 
 ## Iterating
 

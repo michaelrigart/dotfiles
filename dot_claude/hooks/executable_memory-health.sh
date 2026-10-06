@@ -2,6 +2,13 @@
 # SessionStart hook: checks the session's project memory index and, only when something is
 # wrong, tells the agent what to fix (spec 2026-10-06 section 4). Healthy is silent.
 #
+# The memory directory is where Claude Code keeps auto-memory: transcripts are keyed on the
+# session cwd, memory on the main repository root. So the root is the parent of the cwd's
+# `git rev-parse --git-common-dir` (a linked worktree maps to its main checkout, a
+# subdirectory to its checkout), the project key is that root with every character outside
+# [A-Za-z0-9] turned into "-", and the directory is <projects dir>/<key>/memory. No usable
+# cwd or no repository: the transcript's own directory + /memory.
+#
 #   - MEMORY.md at 90% or more of the limits Claude Code loads it under, 200 lines and
 #     25,000 characters (read from the Claude Code 2.1.289 binary), counted on the trimmed
 #     content as Claude Code counts it: characters are UTF-16 code units (a JavaScript
@@ -21,7 +28,17 @@ command -v jq >/dev/null 2>&1 || exit 0
 payload=$(cat) || exit 0
 transcript=$(printf '%s' "$payload" | jq -r '.transcript_path // empty') || exit 0
 [ -n "$transcript" ] || exit 0
-dir="$(dirname "$transcript")/memory"
+tdir=$(dirname "$transcript")
+dir="$tdir/memory"
+cwd=$(printf '%s' "$payload" | jq -r '.cwd // empty') || cwd=""
+if [ -n "$cwd" ] && [ -d "$cwd" ] && command -v git >/dev/null 2>&1; then
+  common=$(git -C "$cwd" rev-parse --path-format=absolute --git-common-dir) || common=""
+  if [ -n "$common" ]; then
+    root=$(dirname "$common")
+    key=$(printf '%s' "$root" | sed 's/[^A-Za-z0-9]/-/g')
+    [ -n "$key" ] && dir="$(dirname "$tdir")/$key/memory"
+  fi
+fi
 [ -d "$dir" ] || exit 0
 index="$dir/MEMORY.md"
 
@@ -46,11 +63,11 @@ if [ -f "$index" ]; then
   if [ "$lines" -ge "$WARN_LINES" ] || [ "$chars" -ge "$WARN_CHARS" ]; then
     add "MEMORY.md is at $lines lines and $chars characters; Claude Code loads at most $LIMIT_LINES lines and $LIMIT_CHARS characters of it. Consolidate the index (merge or shorten entries, one line each) to under $WARN_LINES lines and $WARN_CHARS characters."
   fi
-  raw=$(grep -oE '\]\([^)]+\.md\)' "$index"); rc=$?
+  raw=$(grep -oE '\]\([^)#]+\.md(#[^)]*)?( "[^"]*")?\)' "$index"); rc=$?
   # grep exits 1 when the index has no links; anything above that is a read error, and a
   # read error must stay silent rather than report every file as unindexed.
   [ "$rc" -le 1 ] || exit 0
-  linked=$(printf '%s\n' "$raw" | sed -e 's/^](//' -e 's/)$//' -e 's|^\./||' \
+  linked=$(printf '%s\n' "$raw" | sed -e 's/^](//' -e 's/)$//' -e 's/ "[^"]*"$//' -e 's/#.*$//' -e 's|^\./||' \
              | awk 'NF && !/:\/\//' | sort -u) || exit 0
 fi
 
@@ -65,7 +82,7 @@ EOF
 unindexed=""
 for f in "$dir"/*.md; do
   [ -f "$f" ] || continue
-  name=$(basename "$f")
+  name=${f##*/}
   [ "$name" = MEMORY.md ] && continue
   # A case match, not a grep pipe: no pipe can lose a match to SIGPIPE under pipefail.
   case "
