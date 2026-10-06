@@ -518,5 +518,18 @@ if grep -q '300000' "$SKILL"; then
   _pass "the skill gives dispatch a five-minute tool timeout"
 else _fail "the skill gives dispatch a five-minute tool timeout" "missing"; fi
 
+# --- fix rounds (spec 2026-10-06 section 3.3) --------------------------------
+# With no round cap, every avoidable round is wall clock. These rules make a fix round leave
+# less for the next one; they must sit under "Acting on findings", where the model reads
+# them while fixing.
+acting="$(sed -n '/^## Acting on findings/,/^## /p' "$SKILL")"
+for rule in 'Fix the class, not the instance.' 'One cause, one fix.' \
+            'Check each fix against its failure scenario.' \
+            'Re-read what depends on the changed text.' 'One dispatch per round.'; do
+  if printf '%s\n' "$acting" | grep -qF "**$rule**"; then
+    _pass "the fix-round rule '$rule' is under Acting on findings"
+  else _fail "the fix-round rule '$rule' is under Acting on findings" "missing"; fi
+done
+
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

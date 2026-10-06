@@ -180,6 +180,22 @@ on the reviewer's assertion alone.
   that is most findings.
 - **You disagree, or cannot verify it** — Michael decides.
 
+**Make each fix round leave less for the next one.** Every round re-reviews the whole
+artifact, and fixes are where the next round's findings come from. Before re-dispatching:
+
+1. **Fix the class, not the instance.** For each verified finding, look for the same
+   defect elsewhere in the artifact (at pre-merge, the whole branch diff) and fix every
+   occurrence in this round.
+2. **One cause, one fix.** Findings that share a cause get one fix at the cause, not one
+   patch per symptom.
+3. **Check each fix against its failure scenario.** The scenario must now be impossible,
+   not just the cited line changed. A fix that comes with a test runs it.
+4. **Re-read what depends on the changed text.** Summaries, derived sections,
+   cross-references, and tests or docs that restate it are where a fix leaves a
+   contradiction. Fix those in the same round.
+5. **One dispatch per round.** Re-dispatch once every finding of the round has been fixed,
+   ruled on or escalated, never per finding.
+
 ## Iterating
 
 Keep going until the review converges or the disagreement is real. Michael is the
