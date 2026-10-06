@@ -300,19 +300,24 @@ none_after() { # none_after <marker> <target>: <target> never appears in $CALLS 
   awk -v m="$1" -v t="$2" '$0 ~ m {f=1} f && $0 ~ t {c++} END{print c+0}' "$CALLS"
 }
 
-echo "A. the round cap binds before a turn is spent"
+echo "A. rounds are not capped by default; XREVIEW_MAX_ROUNDS is an opt-in bound"
 fresh
 capped() { bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1 | grep -c 'exceeds the cap'; }
 is "round counter starts at zero" "$(bash "$XREVIEW" round)" 0
-for _ in $(seq 9); do capped >/dev/null; done
-is "nine rounds are permitted"        "$(bash "$XREVIEW" round)" 9
-out="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
-is "the tenth round is still allowed"    "$(printf '%s' "$out" | grep -c 'exceeds the cap')" 0
-is "and the tenth round produces a nonce" "$(printf '%s' "$out" | grep -c '^xr-')" 1
+for _ in $(seq 11); do capped >/dev/null; done
+is "eleven rounds are dispatched with no cap set" "$(bash "$XREVIEW" round)" 11
 starts="$(called 'xreview-rpc turn-start')"
-is "the eleventh round is refused"    "$(capped)" 1
+out="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
+is "the twelfth round is not refused"       "$(printf '%s' "$out" | grep -c 'exceeds the cap')" 0
+is "and the twelfth round produces a nonce" "$(printf '%s' "$out" | grep -c '^xr-')" 1
+is "and starts a turn"                      "$(called 'xreview-rpc turn-start')" "$((starts + 1))"
+out="$(XREVIEW_MAX_ROUNDS= bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
+is "an empty XREVIEW_MAX_ROUNDS is no cap either" "$(printf '%s' "$out" | grep -c '^xr-')" 1
+starts="$(called 'xreview-rpc turn-start')"
+out="$(XREVIEW_MAX_ROUNDS=13 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
+is "XREVIEW_MAX_ROUNDS=13 refuses the fourteenth round" "$(printf '%s' "$out" | grep -c 'exceeds the cap')" 1
 is "and starts no turn"               "$(called 'xreview-rpc turn-start')" "$starts"
-is "a refused round still increments, so retrying stays refused" "$(bash "$XREVIEW" round)" 11
+is "a refused round still increments, so retrying stays refused" "$(bash "$XREVIEW" round)" 14
 bash "$XREVIEW" round --reset >/dev/null
 is "reset returns the counter to zero" "$(bash "$XREVIEW" round)" 0
 # round --reset drops the checkpoint thread too, so this dispatch calls thread-start again -
@@ -322,6 +327,18 @@ out="$(XREVIEW_MAX_ROUNDS=1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1
 is "dispatch is permitted again after reset" "$(printf '%s' "$out" | grep -c '^xr-')" 1
 is "XREVIEW_MAX_ROUNDS lowers the cap" "$(XREVIEW_MAX_ROUNDS=1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1 | grep -c 'exceeds the cap')" 1
 export NEW_UUID="$U1"
+
+echo "A2. a malformed XREVIEW_MAX_ROUNDS is refused before the pane is touched"
+for v in abc 5x ' 5' -1; do
+  fresh
+  out="$(XREVIEW_MAX_ROUNDS="$v" bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
+  is "A2 XREVIEW_MAX_ROUNDS='$v' is refused, naming the value" \
+     "$rc/$(printf '%s' "$out" | grep -c -F "not '$v'")" "1/1"
+  is "A2 and with '$v' nothing reaches the pane or the reviewer" "$(untouched)" yes
+done
+fresh
+out="$(XREVIEW_MAX_ROUNDS=0 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
+is "A2 a whole number (0) is accepted as a bound" "$(printf '%s' "$out" | grep -c 'exceeds the cap')" 1
 
 echo "B. inline diffs"
 # A dispatch that names a path makes the reviewer go and read it; carrying the diff inline
@@ -1327,7 +1344,7 @@ git checkout -q "$BR" && git branch -q -D rc-a rc-b
 fresh
 git checkout -q -b rc-a && git branch -q rc-b
 printf 'rc-a=10\n' > "$STATE/rounds"
-out="$(RPC_SWITCH_BRANCH_EARLY=rc-b bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
+out="$(XREVIEW_MAX_ROUNDS=10 RPC_SWITCH_BRANCH_EARLY=rc-b bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
 is "R2 the checkout moved to rc-b before the cap check" "$(git rev-parse --abbrev-ref HEAD)" rc-b
 is "R2 the dispatched branch is refused at its cap" "$rc:$(printf '%s' "$out" | grep -c 'exceeds the cap')" 1:1
 is "R2 and no turn was started" "$(called 'xreview-rpc turn-start')" 0

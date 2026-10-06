@@ -188,11 +188,12 @@ judgement, never because a round ended.
 
 **Rounds within a checkpoint stay on the same thread.** Round 4 of a spec sign-off is
 normal operation, not degradation — iterating on one thread is how a review converges,
-and the round cap is the only limit on it. Never stop, rotate or escalate because a
-thread has answered a few rounds.
+and there is no limit on rounds: a review ends when it converges or on a trigger in the
+escalation list below. Never stop, rotate or escalate because a thread has answered a few
+rounds.
 
 **Staleness is mechanical, not a judgement.** Each checkpoint starts on a fresh thread, so a
-thread only ever holds the rounds of one checkpoint, and the round cap bounds those.
+thread only ever holds the rounds of one checkpoint.
 - Do not infer staleness from the round number, from how long the exchange feels, or from
   the reviewer agreeing with you.
 - Never rotate a thread within a checkpoint.
@@ -211,7 +212,8 @@ Escalate to Michael when, and only when:
   not a missed fix
 - a finding needs design judgement or a trade-off that would change the approved spec
 - you cannot verify a claim
-- `xreview` refuses the round (capped at 10; `XREVIEW_MAX_ROUNDS` overrides)
+- `xreview` refuses the round because Michael set `XREVIEW_MAX_ROUNDS` and the review
+  reached it. Unset, rounds are not limited.
 - `xreview` refuses because the Codex daemon carries a pane's environment. The fix disconnects
   every Codex TUI.
 - `xreview` refuses because there is no Codex pane for the repository, or several.

@@ -160,8 +160,8 @@ unless Michael asks. These are defaults, not capability limits.
   role.
 - **Dispatches.** Claude Code dispatches to Codex itself at the checkpoints and when
   genuinely stuck, sending the artifact and its constraints, never its reasoning. Within a
-  checkpoint it iterates until the review converges or a disagreement is real, bounded by
-  the round cap and never prolonged for consensus; Michael hears about disagreements, not
+  checkpoint it iterates until the review converges or a disagreement is real, with no
+  round limit and never prolonged for consensus; Michael hears about disagreements, not
   round counts. Outside the checkpoints, neither tool addresses the other on its own.
 - **When Michael relays by hand:** evaluate the input, then report your conclusion, any
   remaining disagreement, the practical consequences and a recommendation, and stop. Reply

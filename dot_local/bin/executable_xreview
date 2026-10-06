@@ -664,9 +664,10 @@ record_receipts() {
 # review-driven edits are confined to files already in the branch diff, plus test paths —
 # the RED-test rule requires ADDING a test, so a rule confined strictly to the diff would
 # forbid the very thing it demands.
-# Review rounds iterate until the models converge or genuinely disagree, so the stop
-# condition cannot be "one round" — but it cannot be unbounded either. The cap is mechanical
-# because a limit that depends on noticing you have hit it is not a limit.
+# Review rounds iterate until the models converge or genuinely disagree. The cross-review
+# skill escalates two models circling, so there is no default cap (spec 2026-10-06): the
+# counter is kept so a long review stays visible, and XREVIEW_MAX_ROUNDS, when set, turns it
+# into a mechanical bound.
 round_file() { printf '%s/rounds' "$(state_dir)"; }
 
 cmd_round() {
@@ -838,6 +839,13 @@ cmd_dispatch() {
   # missing/empty codex-pane-command before the pane is touched (M2): called here as a
   # bare statement, not nested inside another $(...), its own die() works on any bash.
   pane_command >/dev/null
+  # XREVIEW_MAX_ROUNDS is an opt-in bound: unset or empty means no limit. Anything else must
+  # be a whole number, checked before the pane is touched - a value [ -gt ] cannot compare
+  # would otherwise make the cap vanish without a word.
+  local max="${XREVIEW_MAX_ROUNDS:-}"
+  case "$max" in
+    *[!0-9]*) die "XREVIEW_MAX_ROUNDS must be a whole number, not '$max'; no review was started" ;;
+  esac
   # The review targets (spec 2026-10-02 §3.4). A pre-merge review that names none reviews the
   # current branch against the default branch; spec and plan reviews may have none at all.
   if [ "${#specs[@]}" -eq 0 ] && [ "$checkpoint" = pre-merge ]; then
@@ -867,11 +875,12 @@ Review them in slices, or raise XREVIEW_MAX_DIFF_BYTES if the reviewer can hold 
   # title's thread id prefix, and a TUI on a pre-session screen is about to open the thread
   # its argv resumes. The guard refuses on either, or when it cannot tell.
   pane_guard "$pane" "$proc"
-  # The cap binds before the pane is touched at all: a round over the cap is refused
-  # without so much as a ctrl+c, and the counter still advances so a retry stays refused.
-  local max="${XREVIEW_MAX_ROUNDS:-10}" round
+  # With XREVIEW_MAX_ROUNDS set, the cap binds before the pane is touched at all: a round over
+  # it is refused without so much as a ctrl+c, and the counter still advances so a retry stays
+  # refused. Unset, a review stops when it converges or on a real disagreement, never on a count.
+  local round
   round=$(( $(current_round "$branch") + 1 ))
-  if [ "$round" -gt "$max" ]; then
+  if [ -n "$max" ] && [ "$round" -gt "$max" ]; then
     bump_round "$branch" >/dev/null
     die "round $round exceeds the cap of $max for this branch.
 Two models circling the same point is Michael's call, not another turn.
