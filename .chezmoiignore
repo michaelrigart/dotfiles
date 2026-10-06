@@ -83,6 +83,7 @@ tests/
 .claude/hooks/*
 !.claude/hooks/herdr-agent-state.sh
 !.claude/hooks/prompt-audit.sh
+!.claude/hooks/memory-health.sh
 !.claude/skills/
 .claude/skills/*
 !.claude/skills/cross-review/

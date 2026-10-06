@@ -207,6 +207,17 @@ printf '%s' "$input" | jq \
                 "timeout": 10
               }
             ]
+          },
+          # The memory health check (spec 2026-10-06 section 4). Silent when the project
+          # memory index is healthy; otherwise it tells the agent what to fix. Read-only.
+          {
+            "hooks": [
+              {
+                "type": "command",
+                "command": "bash $HOME/.claude/hooks/memory-health.sh",
+                "timeout": 10
+              }
+            ]
           }
         ],
         # Backstop for the two "Merge requests" rules in GLOBAL.md that prose
