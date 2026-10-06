@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** Approved
+**Status:** Implemented — completed 2026-10-06; do not run again
 **Goal:** Remove xreview's default round cap, make each fix round leave less for the next, and add a silent-unless-broken SessionStart check of the project memory index.
 
 **Architecture:** Three independent changes. (1) `xreview dispatch` caps rounds only when `XREVIEW_MAX_ROUNDS` is set, and validates it; the cross-review skill and `global.md` stop describing a cap. (2) The cross-review skill gains five fix-round rules. (3) A new read-only bash hook, `memory-health.sh`, wired as a SessionStart hook, reports a `MEMORY.md` near Claude Code's limits, dangling index links and unindexed memory files to the agent.

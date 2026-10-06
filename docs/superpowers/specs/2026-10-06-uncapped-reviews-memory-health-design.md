@@ -1,6 +1,6 @@
 # Uncapped review rounds and memory health
 
-**Status:** In progress (branch `feat/review-convergence-memory-health`; the dotfiles have no MR)
+**Status:** Implemented (branch `feat/review-convergence-memory-health`; the dotfiles have no MR)
 **Date:** 2026-10-06
 **Scope:** `dot_local/bin/executable_xreview` (the round cap), the cross-review skill,
 `.chezmoitemplates/agents/global.md` (one phrase), a new SessionStart hook
@@ -89,8 +89,8 @@ Added to the skill's "Acting on findings", after the existing rule to verify eac
 4. **Re-read what depends on the changed text.** Summaries, derived sections,
    cross-references, and tests or docs that restate it are where a fix leaves a
    contradiction. Fix those in the same round.
-5. **One dispatch per round.** Re-dispatch once every finding of the round has been dealt
-   with, never per finding.
+5. **One dispatch per round.** Re-dispatch once every finding of the round has been fixed or
+   ruled on, never per finding; a finding that went to Michael waits for his decision.
 
 These are discipline; nothing enforces them. They add no review step and send nothing new to
 the reviewer.
@@ -117,7 +117,8 @@ read-only.
 1. **Size.** `MEMORY.md` at 180 lines or more, or 22,500 characters or more (90% of each
    limit), counted on the trimmed content as Claude Code counts it.
 2. **Dangling entries.** A link `](<name>.md)` in `MEMORY.md` whose file does not exist in
-   the directory.
+   the directory. A link may carry an anchor (`<name>.md#section`) or a title
+   (`<name>.md "title"`); both name the same file.
 3. **Unindexed files.** A `*.md` file in the directory, other than `MEMORY.md`, that no link
    in `MEMORY.md` names.
 
@@ -180,3 +181,23 @@ dispatch.
   which the Codex session logs show, not as a gate.
 - **The memory limits are the binary's, today.** If Claude Code changes them, the thresholds
   in the hook need updating; the hook names the version they were read from.
+- **The project key is modelled, not read.** The hook rebuilds Claude Code's key from the
+  repository root. Claude Code truncates a key over 200 characters and appends a hash, which
+  the hook does not model: such a project, and any future change to the key scheme, makes the
+  hook find no directory and stay silent rather than report wrongly.
+
+## 8. Implementation rulings (2026-10-06)
+
+- **Memory directory from the repository root (§4.1).** The approved text checked
+  `<transcript directory>/memory`. The final branch review showed Claude Code keys memory on
+  the main repository root (`canonicalWcRootForProject ?? <git root> ?? cwd` in 2.1.289),
+  so worktree and subdirectory sessions found no memory at all; none of 43 worktree project
+  directories has one. The derivation was corrected to serve the spec's goal, "its project's
+  memory index", and §4.1 rewritten to match.
+- **Rule 5 wording (§3.3).** "Dealt with" read as permitting a re-dispatch while an
+  escalated finding waits for Michael, contradicting §3.2. It now says such a finding waits.
+- **Left as they are:** an all-digit `XREVIEW_MAX_ROUNDS` too large for `[ -gt ]` (it
+  prints an error rather than failing silently, and is no practical bound); one invalid
+  UTF-8 byte in `MEMORY.md` silencing every check (§4.1 requires silent exit on internal
+  error); a link whose case differs from its file on a case-insensitive volume; the rule 5
+  test pin being two fragments rather than one sentence.
