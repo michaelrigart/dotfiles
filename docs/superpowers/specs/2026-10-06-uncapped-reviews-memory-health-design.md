@@ -1,6 +1,6 @@
 # Uncapped review rounds and memory health
 
-**Status:** Approved
+**Status:** In progress (branch `feat/review-convergence-memory-health`; the dotfiles have no MR)
 **Date:** 2026-10-06
 **Scope:** `dot_local/bin/executable_xreview` (the round cap), the cross-review skill,
 `.chezmoitemplates/agents/global.md` (one phrase), a new SessionStart hook
