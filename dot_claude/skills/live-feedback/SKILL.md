@@ -56,9 +56,9 @@ Line formats:
 
 ## Request ids and the ledger
 
-Every point gets the next number. Every message you send an agent carries a request id:
-the point number for a point's first brief (`#3`, or `#5` for a queued point handed to
-`#3`'s agent), and a sub-id for anything after that (`#3.1`, `#3.2`).
+Every point gets the next number. Every message you send a point's agent carries a
+request id: the point number for a point's first brief (`#3`, or `#5` for a queued point
+handed to `#3`'s agent), and a sub-id for anything after that (`#3.1`, `#3.2`).
 
 The ledger lives in this conversation. Every ack, landing and commit line repeats the
 point numbers, so a compacted summary keeps it. For each point it holds the state, the
@@ -178,7 +178,8 @@ When an agent reports:
    against every point it names, never splitting it between points. A point's status is
    always the one in the latest report naming it. A point with an unanswered id stays in
    flight, whatever the report says. Once all its ids are answered, the point is:
-   - landed, if its status is finished;
+   - landed, if its status is finished (dropped instead, if the report answers an undo
+     request for a dropped point);
    - stopped, if its status is stopped;
    - escalated, if its status is beyond tier (stopped instead, if its agent is already
      `sp-architect`).
@@ -196,7 +197,7 @@ When an agent reports:
 4. If the point landed, hand the next queued point for that area to the same agent. A
    point queued behind a stopped or escalated point waits for that point's owner (after
    an escalation, the new agent) and goes to it once the point lands or is resolved.
-   Otherwise dispatch the next queued point if a slot freed.
+   Then, if a slot freed, dispatch the next queued point that is not waiting on an area.
 
 Do no review and run no tests here: Michael's next message waits on this turn.
 

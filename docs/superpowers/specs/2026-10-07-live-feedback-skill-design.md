@@ -396,8 +396,36 @@ sandboxed. The acceptance session checks this.
   else does not end the mode.
 - **The suite pins the lock flags (§4.1).** Besides checking that `lockf` accepts the
   skill's flags, it checks that they are exactly `-k -t 900`.
+- **Competing process skills (§3.2).** Michael's sessions load superpowers'
+  using-superpowers, which sends bugs to systematic-debugging and features to
+  brainstorming. The skill states that the mode is the process for every point: the
+  driver invokes no brainstorming, debugging, verification or planning skill for a point,
+  since the agent locates, debugs and tests and a point needing design is parked.
+- **Files are recorded unsplit (§3.5, §3.6).** One agent can hold several points, and its
+  Files line is cumulative. The contract asks for one unsplit list, and landing records
+  the whole list against every point the report names. Splitting by guess could leave a
+  stopped point's half-finished edit out of the hold-back and commit it with a landed
+  point.
+- **Hand-off waits for the owner (§3.4, §3.6).** §3.6 step 4 hands the next queued point
+  to the same agent unconditionally; the skill follows §3.4 instead. A point queued
+  behind a stopped or escalated point waits for that point's owner (after an escalation,
+  the new agent) until the point lands or is resolved.
+- **A dropped state (§3.2, §3.6, §3.8).** When Michael drops a stopped point and its
+  agent reports the undo, the point is dropped: never landed or committed, no longer
+  holding back other groups, and listed at exit.
+- **Follow-ups on committed points (§3.2).** The follow-up row also covers committed
+  points, since commits happen at every quiescence.
+- **Explore answers are not points (§3.2).** A question's Explore agent gets no point
+  number and no request id, does not count as busy, never holds a commit, and its answer
+  is relayed, not landed.
+- **No worktree isolation for agents (§3.5).** The driver never passes
+  `isolation: worktree`: the running app must see every change.
 - **Left as they are:** the default-branch fallback stays `main` or `master` when
-  `origin/HEAD` is missing; a dropped point has no line format; a borderline point naming
-  a page but not a file may get `sp-mechanical`.
-- **Pressure scenarios (§5).** Without the skill 1 of 19 passed; with the final skill 19
-  of 19, and the id-less report scenario passed 3 of 3 independent runs.
+  `origin/HEAD` is missing; a dropped point has no line format of its own; a borderline
+  point naming a page but not a file may get `sp-mechanical`.
+- **Pressure scenarios (§5).** Appendix A's 19 scenarios: 1 passed without the skill. With
+  the skill at e7f4625 all 19 passed, and the id-less report scenario passed 3 of 3
+  independent runs. The final branch review added Appendix B: S18–S23, and an SP arm with
+  superpowers' session-start context and Skill tool. With the skill at dd07170 all 25
+  passed, and the SP arm passed 4 of 4 with no competing Skill call. Without the skill, 3
+  of the 6 new scenarios passed. Later commits change only wording.
