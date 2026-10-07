@@ -159,15 +159,18 @@ Rules for this request:
 
 When an agent reports:
 
-1. Mark the ids it covers as answered, record its files, and take each named point's
-   status from it. A point's status is always the one in the latest report naming it.
-   A point with an unanswered id stays in flight, whatever the report says. Once all
+1. Mark as answered only the ids the report names on its Ids covered line, and take each
+   point's status only from the status the report gives for it. Never infer either: a
+   report without the contract's Ids covered line or a status for each point answers
+   nothing, so ask its agent for the report in the contract format, under a new sub-id,
+   and leave its points in flight. Otherwise record its files. A point's status is
+   always the one in the latest report naming it. A point with an unanswered id stays in flight, whatever the report says. Once all
    its ids are answered, the point is:
    - landed, if its status is finished;
    - stopped, if its status is stopped;
    - escalated, if its status is beyond tier (stopped instead, if its agent is already
      `sp-architect`).
-2. Post one line:
+2. Post one line, using only what the report gave:
    - finished: `#3 landed: Save disabled until valid. Reload the invoice form.`
    - stopped: `#3 stopped: <question> (edited: <files>)`
    - beyond tier: escalate now (above), before step 3 — unless the agent is already
@@ -204,9 +207,10 @@ Commit only at quiescence, when no agent is busy, and never on the default branc
      and committing the rest would leave the fix incomplete. The group stays landed;
      name the file.
 4. Commit each remaining group as exactly its reported files:
-   `git add -- <files>`, then `git commit -m "<message>" -- <files>`. One point uses its
-   agent's message. Several points get a message naming each point's change. No agent
-   attribution.
+   `git add -- <files>`, then `git commit -m "<message>" -- <files>`. One point uses the
+   message its agent reported. Several points get a message naming each point's reported
+   change. Never write a message the report did not give: ask its agent for it under a
+   new sub-id, and commit once it answers. No agent attribution.
 5. Never commit what nobody reported. Flag any working-tree change outside the baseline
    that no point reported.
 6. Post one line: `Committed: #3 a1b2c3d; #4+#5 e4f5a6b (shared nl.yml).`
