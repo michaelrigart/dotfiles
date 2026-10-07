@@ -89,6 +89,9 @@ tests/
 !.claude/skills/cross-review/
 .claude/skills/cross-review/*
 !.claude/skills/cross-review/SKILL.md
+!.claude/skills/live-feedback/
+.claude/skills/live-feedback/*
+!.claude/skills/live-feedback/SKILL.md
 
 .codex/*
 !.codex/AGENTS.md

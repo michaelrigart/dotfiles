@@ -1,6 +1,6 @@
 # Live-feedback mode
 
-**Status:** Approved
+**Status:** In progress (branch `feat/live-feedback-skill`; the dotfiles have no MR)
 **Date:** 2026-10-07
 **Scope:** a new skill (`dot_claude/skills/live-feedback/SKILL.md`), its `.chezmoiignore`
 allowlist entries, and a new test suite (`tests/live-feedback-skill.test.sh`).

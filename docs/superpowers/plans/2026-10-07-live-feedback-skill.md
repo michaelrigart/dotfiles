@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** Approved
+**Status:** In progress
 **Goal:** Ship a `live-feedback` skill. While Michael tests a running app by hand, it
 sends each change request to a background subagent, so the main session answers in one
 line and is free for his next point.
