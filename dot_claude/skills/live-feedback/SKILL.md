@@ -175,7 +175,9 @@ When an agent reports:
      harder in place of the question. If the old agent still has an id unanswered, wait
      for that report; meanwhile the point stays in flight.
 3. If no agent is busy, commit (below). But if the only busy agent is the one that just
-   reported, and its report left an id unanswered, first ask it about that id.
+   reported, and its report left an id unanswered, first ask it about that id. The ask
+   only requests its report on that id, under a new sub-id; it never cancels or changes
+   the work asked for.
 4. Hand the next queued point for that area to the same agent, or dispatch the next
    queued point if a slot freed.
 
