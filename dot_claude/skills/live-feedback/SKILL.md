@@ -164,8 +164,8 @@ When an agent reports:
    report without the contract's Ids covered line or a status for each point answers
    nothing, so ask its agent for the report in the contract format, under a new sub-id,
    and leave its points in flight. Otherwise record its files. A point's status is
-   always the one in the latest report naming it. A point with an unanswered id stays in flight, whatever the report says. Once all
-   its ids are answered, the point is:
+   always the one in the latest report naming it. A point with an unanswered id stays in
+   flight, whatever the report says. Once all its ids are answered, the point is:
    - landed, if its status is finished;
    - stopped, if its status is stopped;
    - escalated, if its status is beyond tier (stopped instead, if its agent is already
@@ -208,9 +208,9 @@ Commit only at quiescence, when no agent is busy, and never on the default branc
      name the file.
 4. Commit each remaining group as exactly its reported files:
    `git add -- <files>`, then `git commit -m "<message>" -- <files>`. One point uses the
-   message its agent reported. Several points get a message naming each point's reported
-   change. Never write a message the report did not give: ask its agent for it under a
-   new sub-id, and commit once it answers. No agent attribution.
+   message its agent reported; if a finished report gave none, ask its agent for it under
+   a new sub-id and commit once it answers, never writing one yourself. Several points
+   get one message composed from their agents' reported messages. No agent attribution.
 5. Never commit what nobody reported. Flag any working-tree change outside the baseline
    that no point reported.
 6. Post one line: `Committed: #3 a1b2c3d; #4+#5 e4f5a6b (shared nl.yml).`
