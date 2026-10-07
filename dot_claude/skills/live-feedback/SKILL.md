@@ -170,8 +170,10 @@ When an agent reports:
 2. Post one line:
    - finished: `#3 landed: Save disabled until valid. Reload the invoice form.`
    - stopped: `#3 stopped: <question> (edited: <files>)`
-   - beyond tier: escalate now (above), before step 3. If the old agent still has an
-     id unanswered, wait for that report; meanwhile the point stays in flight.
+   - beyond tier: escalate now (above), before step 3 — unless the agent is already
+     `sp-architect`; then the point is stopped: post the stopped line, with what makes it
+     harder in place of the question. If the old agent still has an id unanswered, wait
+     for that report; meanwhile the point stays in flight.
 3. If no agent is busy, commit (below). But if the only busy agent is the one that just
    reported, and its report left an id unanswered, first ask it about that id.
 4. Hand the next queued point for that area to the same agent, or dispatch the next
