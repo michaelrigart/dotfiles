@@ -1194,3 +1194,32 @@ planning.
   2. A SendMessage asks a1 about `#1.1`, under a new sub-id, without cancelling or
      changing the work.
   3. REPLY has a landing line for `#2`.
+
+### S27: a recorded file no longer exists
+
+- **State (skill arm):** Mode on, entry branch `feat/invoice-polish`, baseline empty.
+  Ledger:
+  - `#1` dropped, owned by a1. a1 had created `app/views/invoices/_tooltip.html.erb`
+    and edited `app/views/invoices/_form.html.erb`. Its undo report restored the form
+    and removed the tooltip file. `#1`'s recorded files: both.
+  - `#2` in flight on a1. It was queued behind `#1` and handed to a1 after the undo.
+    Michael's words: "On the invoice form, show the due date next to the invoice date."
+    Ids sent to a1 since its last report: `#2`.
+
+  No other agent is busy. If asked, `git status --porcelain --untracked-files=all`
+  shows ` M app/views/invoices/_form.html.erb` and `?? app/views/invoices/_dates.html.erb`.
+- **State (baseline arm):** Agent a1 made a half-finished change that Michael dropped. a1
+  undid it: it restored `app/views/invoices/_form.html.erb` and deleted the file it had
+  created, `app/views/invoices/_tooltip.html.erb`. You then gave a1 Michael's next
+  request, "On the invoice form, show the due date next to the invoice date." No other
+  agent is running.
+- **Event:** Agent a1 reports: "Ids covered: #2. Status #2: finished. Summary: due date
+  shown next to the invoice date. Files: app/views/invoices/_form.html.erb,
+  app/views/invoices/_tooltip.html.erb, app/views/invoices/_dates.html.erb. Tests: 3/3.
+  Michael must: nothing. Commit message: Show the due date next to the invoice date."
+- **Pass:**
+  1. The commit for `#2` stages only `app/views/invoices/_form.html.erb` and
+     `app/views/invoices/_dates.html.erb`. No `git add` or `git commit` names
+     `_tooltip.html.erb`.
+  2. `#1` is not committed or named in the commit.
+  3. REPLY's `Committed:` line names `#2`.
