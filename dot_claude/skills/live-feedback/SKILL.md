@@ -227,14 +227,19 @@ Commit only at quiescence, when no agent is busy, and never on the default branc
    - contains a baseline path. Committing it would sweep in Michael's own changes,
      and committing the rest would leave the fix incomplete. The group stays landed;
      name the file.
-4. Commit each remaining group as exactly its reported files:
-   `git add -- <files>`, then `git commit -m "<message>" -- <files>`. One point uses the
-   message its agent reported; if a finished report gave none, ask its agent for it under
-   a new sub-id and commit once it answers, never writing one yourself. Several points
-   get one message composed from their agents' reported messages. No agent attribution.
+4. Commit each remaining group as exactly the reported files git still shows as
+   changed. Run `git status --porcelain --untracked-files=all -- <files>` and keep only
+   the paths it lists: a file created and later removed is gone from git and drops out,
+   a deleted tracked file stays (` D`), and an unchanged file drops out. Then
+   `git add -- <paths>` and `git commit -m "<message>" -- <paths>`. If no path remains,
+   the group needs no commit: its points count as committed with no sha, and the
+   Committed line says "no change" for them. One point uses the message its agent
+   reported; if a finished report gave none, ask its agent for it under a new sub-id and
+   commit once it answers, never writing one yourself. Several points get one message
+   composed from their agents' reported messages. No agent attribution.
 5. Never commit what nobody reported. Flag any working-tree change outside the baseline
    that no point reported.
-6. Post one line: `Committed: #3 a1b2c3d; #4+#5 e4f5a6b (shared nl.yml).`
+6. Post one line: `Committed: #3 a1b2c3d; #4+#5 e4f5a6b (shared nl.yml); #6 no change.`
 
 ## Exit
 

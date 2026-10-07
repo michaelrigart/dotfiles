@@ -436,6 +436,10 @@ sandboxed. The acceptance session checks this.
   unanswered, once per id, whenever every busy agent is such an agent. Otherwise an
   omission reported while another agent was still busy could hold commits and exit
   forever.
+- **Commit paths come from git (§3.7).** A point's recorded files stay cumulative for
+  ownership and hold-backs, but a commit stages only those git still reports as changed.
+  A created-then-removed file drops out, a tracked deletion is kept, and a group with
+  nothing left needs no commit.
 - **Left as they are:** the default-branch fallback stays `main` or `master` when
   `origin/HEAD` is missing; a dropped point has no line format of its own; a borderline
   point naming a page but not a file may get `sp-mechanical`.
