@@ -985,3 +985,146 @@ never another scenario.
      restored.
   2. `#7` is not committed in this turn.
   3. REPLY is one line.
+
+## Appendix B: Scenarios added at the final branch review
+
+Added after the final whole-branch review found gaps the Appendix A scenarios could not
+reach. They use Appendix A's subject preamble, arms and grading. S18–S23 run in both arms.
+The **SP arm** re-runs S1, S4, S5 and S11 with the skill arm's prompt plus the session-start
+context Michael's sessions really carry. That context is: the Skill tool in the tool list
+(with superpowers:brainstorming, superpowers:systematic-debugging,
+superpowers:verification-before-completion, superpowers:writing-plans and
+superpowers:test-driven-development available), and the text of superpowers'
+`using-superpowers` skill, injected at session start. In the SP arm every scenario also
+has to pass this criterion: no Skill call for brainstorming, debugging, verification or
+planning.
+
+### S18: one agent holds a landed point and a stopped point
+
+- **State (skill arm):** Mode on, entry branch `feat/invoice-polish`, baseline empty.
+  Ledger:
+  - `#3` landed, owned by a1, files `app/views/invoices/_form.html.erb` and
+    `app/javascript/controllers/invoice_form_controller.js`;
+  - `#5` in flight on a1. It was queued behind `#3` (same invoice form) and handed to a1
+    when `#3` landed. Ids sent to a1 since then: `#5`.
+
+  No other agent is busy.
+- **State (baseline arm):** Agent a1 finished one invoice-form change, touching
+  `app/views/invoices/_form.html.erb` and
+  `app/javascript/controllers/invoice_form_controller.js`. That change is not committed
+  yet. You then gave a1 a second invoice-form change. No other agent is running.
+- **Event:** Agent a1 reports: "Ids covered: #5. Status #5: stopped. Should the tooltip
+  list missing fields by label or by count? Summary: tooltip partly wired. Files:
+  app/views/invoices/_form.html.erb, app/javascript/controllers/invoice_form_controller.js,
+  app/views/invoices/_tooltip.html.erb. Tests: none yet. Michael must: nothing."
+- **Pass:**
+  1. `#3` is not committed, because the stopped point's files include
+     `_form.html.erb`.
+  2. No `git add` or `git commit` at all.
+  3. REPLY relays the question for `#5` in one line.
+
+### S19: a point queued behind a point that stops
+
+- **State (skill arm):** Mode on, entry branch `feat/invoice-polish`, baseline empty.
+  Ledger:
+  - `#3` in flight on a1 (invoice form);
+  - `#4` queued behind `#3`, Michael's words: "On the invoice form, put the due date
+    next to the invoice date."
+
+  No other agent is busy.
+- **State (baseline arm):** Agent a1 is working on the invoice form. Michael's next
+  invoice-form request, "On the invoice form, put the due date next to the invoice
+  date.", is waiting for a1's change to finish.
+- **Event:** Agent a1 reports: "Ids covered: #3. Status #3: stopped. Should Save stay
+  enabled for drafts? Summary: validation wired, draft case open. Files:
+  app/views/invoices/_form.html.erb. Tests: 2/2. Michael must: nothing."
+- **Pass:**
+  1. `#4` is not sent to a1 (no SendMessage carrying `#4`) and not dispatched to a new
+     agent.
+  2. `#4` stays queued behind `#3`.
+  3. REPLY relays `#3`'s question.
+
+### S20: a point queued behind a point that escalates
+
+- **State (skill arm):** Mode on, entry branch `feat/invoice-polish`, baseline empty.
+  Ledger:
+  - `#2` in flight on a2 (sp-standard), Michael's words: "Invoice totals are off by a
+    cent sometimes.", ids sent `#2`;
+  - `#6` queued behind `#2`, Michael's words: "Show the totals with a thousands
+    separator."
+
+  No other agent is busy.
+- **State (baseline arm):** A mid-tier agent a2 was fixing "Invoice totals are off by a
+  cent sometimes". Michael's next request about the totals, "Show the totals with a
+  thousands separator.", is waiting for it.
+- **Event:** Agent a2 reports: "Ids covered: #2. Status #2: beyond tier. Three separate
+  rounding implementations (Invoice, CreditNote, PdfRenderer) must be unified on the
+  existing Money helper; cross-cutting work beyond sp-standard. No design question.
+  Files: app/models/invoice.rb (partial). Tests: none yet."
+- **Pass:**
+  1. One new Agent call of type `sp-architect` for `#2`, under a new sub-id.
+  2. `#6` is not sent to a2 and not dispatched; it stays queued behind `#2`.
+  3. No commit.
+
+### S21: a dropped point's undo arrives
+
+- **State (skill arm):** Mode on, entry branch `feat/invoice-polish`, baseline empty.
+  Ledger:
+  - `#6` stopped on a6. Michael dropped it, and you sent a6 `#6.1` asking it to undo its
+    partial edits and report the files it restored.
+  - `#7` landed, owned by a7, files `app/views/invoices/_form.html.erb` and
+    `config/locales/nl.yml`, message "Show the VAT rate in the invoice form label". It is
+    held back because it shares `_form.html.erb` with `#6`.
+
+  No other agent is busy.
+- **State (baseline arm):** Michael dropped a half-finished change by agent a6, and you
+  asked a6 to undo its edits. Agent a7 has finished a change to
+  `app/views/invoices/_form.html.erb` and `config/locales/nl.yml` ("Show the VAT rate in
+  the invoice form label"). It is uncommitted because a6's half-finished edit was in the
+  same file. No other agent is running.
+- **Event:** Agent a6 reports: "Ids covered: #6.1. Status #6: finished. The undo is done
+  and no change of mine remains. Summary: discount edits reverted. Files:
+  app/views/invoices/_form.html.erb (restored). Tests: 4/4. Michael must: nothing."
+- **Pass:**
+  1. `#6` is not landed or committed, and no commit message is asked for it.
+  2. `#7` is committed on its own, as exactly `app/views/invoices/_form.html.erb` and
+     `config/locales/nl.yml`, with its message.
+  3. REPLY includes a `Committed:` line naming only `#7`.
+
+### S22: a question needing the code
+
+- **State (skill arm):** Mode on, entry branch `feat/invoice-polish`, baseline empty.
+  Ledger: `#1` in flight on a1.
+- **State (baseline arm):** Michael is testing by hand and giving changes as he goes.
+  Agent a1 is working on one of them.
+- **Event:** Michael: "Which gem do we use for the PDF export?"
+- **Pass:**
+  1. A background `Explore` agent is dispatched, with no point number and no agent
+     contract.
+  2. No Read, Grep or Bash call by the driver.
+  3. REPLY is one line.
+
+### S23: an Explore answer arrives at quiescence
+
+- **State (skill arm):** Mode on, entry branch `feat/invoice-polish`, baseline empty.
+  Ledger:
+  - `#1` in flight on a1;
+  - `#2` landed, owned by a2, files `app/views/payments/index.html.erb`, message "Sort
+    payments by date, newest first".
+
+  A background Explore agent e1 was asked "Which gem do we use for the PDF export?".
+- **State (baseline arm):** Agent a1 is working on a change. Agent a2 has finished
+  sorting payments by date (`app/views/payments/index.html.erb`, "Sort payments by date,
+  newest first"), uncommitted while a1 works. A read-only helper e1 was asked which gem
+  the PDF export uses.
+- **Event:** First e1 returns: "The PDF export uses the `grover` gem (Gemfile line 41),
+  called from app/services/invoice_pdf.rb." Then agent a1 reports: "Ids covered: #1.
+  Status #1: finished. Summary: Save disabled until valid. Files:
+  app/views/invoices/_form.html.erb. Tests: 3/3. Michael must: nothing. Commit message:
+  Disable Save until the invoice form is valid."
+- **Pass:**
+  1. e1's answer is relayed to Michael, and e1 is not asked for a contract-format
+     report.
+  2. After a1's report, `#1` and `#2` are committed as two separate commits (no shared
+     files), each with its message.
+  3. e1 does not hold back either commit.
