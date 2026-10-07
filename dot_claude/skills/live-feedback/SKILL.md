@@ -116,7 +116,8 @@ beyond tier, dispatch a new agent one tier up under a new sub-id. Its brief adds
 
 - Michael's words for every id of the point, follow-ups included
 - every report of the old agent
-- the files it already edited, which the new agent continues from
+- the files it already edited, which the new agent continues from and lists in its own
+  Files line, besides any it changes itself
 
 From then on the new agent owns the point. Follow-ups and points queued behind it go to
 the new agent, and the old agent gets nothing further. An `sp-architect` agent that
@@ -154,11 +155,11 @@ Rules for this request:
   reproduced, or is beyond your tier. For the last, say what makes it harder.
 - Every message you receive carries a request id (#3, #3.1, …). End with this report:
   - Ids covered: every id you received since your last report.
-  - Status per point you worked on (one agent can hold several), for the WHOLE point.
-    It is finished only when everything asked under that point so far is done: the
-    original request and every follow-up. Otherwise it is stopped, with your question,
-    or beyond tier, with what makes it harder. Finishing a follow-up does not finish
-    the point.
+  - Status for each point named by an id you received since your last report (one agent
+    can hold several), for the WHOLE point, not for points you reported earlier. It is
+    finished only when everything asked under that point so far is done: the original
+    request and every follow-up. Otherwise it is stopped, with your question, or beyond
+    tier, with what makes it harder. Finishing a follow-up does not finish the point.
   - Summary: one line.
   - Files: one list of every file changed or created so far, not split by point.
   - Tests: what you ran, as passed/total.
@@ -174,10 +175,14 @@ When an agent reports:
    point's status only from the status the report gives for it. Never infer either: a
    report without the contract's Ids covered line or a status for each point answers
    nothing, so ask its agent for the report in the contract format, under a new sub-id,
-   and leave its points in flight. Otherwise record the report's whole Files list
-   against every point it names, never splitting it between points. A point's status is
-   always the one in the latest report naming it. A point with an unanswered id stays in
-   flight, whatever the report says. Once all its ids are answered, the point is:
+   and leave its points in flight. Otherwise add the report's whole Files list to every
+   point it names, never splitting it between points. A point's files are the union of
+   every Files list reported for it, across all its owners; they never shrink. Set a
+   point's status only if the report covers an id of that point. A status the report
+   gives for any other point is ignored, and that point keeps its state: a committed or
+   dropped point is reopened only by a new id for it. A point's status is always the one
+   in the latest report covering it. A point with an unanswered id stays in flight,
+   whatever the report says. Once all its ids are answered, the point is:
    - landed, if its status is finished (dropped instead, if the report answers an undo
      request for a dropped point);
    - stopped, if its status is stopped;
@@ -190,10 +195,10 @@ When an agent reports:
      `sp-architect`; then the point is stopped: post the stopped line, with what makes it
      harder in place of the question. If the old agent still has an id unanswered, wait
      for that report; meanwhile the point stays in flight.
-3. If no agent is busy, commit (below). But if the only busy agent is the one that just
-   reported, and its report left an id unanswered, first ask it about that id. The ask
-   only requests its report on that id, under a new sub-id; it never cancels or changes
-   the work asked for.
+3. If no agent is busy, commit (below). Otherwise, if every busy agent is one whose
+   latest report left an id unanswered, ask each of them about its unanswered ids, once
+   per id (never about the sub-id of an ask). The ask only requests its report on that
+   id, under a new sub-id; it never cancels or changes the work asked for.
 4. If the point landed, hand the next queued point for that area to the same agent. A
    point queued behind a stopped or escalated point waits for that point's owner (after
    an escalation, the new agent) and goes to it once the point lands or is resolved.
@@ -237,8 +242,9 @@ The mode ends when Michael says he is done testing, or runs `/live-feedback done
 "done" in answer to something else does not end it. Messages after that are ordinary
 session messages.
 
-1. Drain: dispatch queued points as slots free, and wait until no agent is busy. A point
-   queued behind a stopped point stays queued.
+1. Drain: dispatch queued points as slots free, and wait until no agent is busy, asking
+   agents that left an id unanswered as in Landing step 3. A point queued behind a
+   stopped point stays queued.
 2. Commit at that quiescence.
 3. Run the full suite once, under the lock, and report passed/total.
 4. List every point with its final state:

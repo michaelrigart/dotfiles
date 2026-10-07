@@ -424,6 +424,18 @@ sandboxed. The acceptance session checks this.
   is relayed, not landed.
 - **No worktree isolation for agents (§3.5).** The driver never passes
   `isolation: worktree`: the running app must see every change.
+- **A point's files only grow (§3.3, §3.6).** The files recorded for a point are the
+  union of every report naming it, across all its owners. The escalation brief asks the
+  new agent to list the files it inherited. Otherwise a successor that listed only its
+  own edits would drop its predecessor's edit from the commit or from the hold-back.
+- **Statuses only for covered points (§3.5, §3.6).** A report gives a status only for
+  points it covers an id of, and the driver ignores any other. A committed or dropped
+  point reopens only through a new id for it.
+- **Unanswered ids are asked across agents (§3.6).** §3.6 step 3 asks only the agent that
+  just reported. The skill asks every busy agent whose latest report left an id
+  unanswered, once per id, whenever every busy agent is such an agent. Otherwise an
+  omission reported while another agent was still busy could hold commits and exit
+  forever.
 - **Left as they are:** the default-branch fallback stays `main` or `master` when
   `origin/HEAD` is missing; a dropped point has no line format of its own; a borderline
   point naming a page but not a file may get `sp-mechanical`.
