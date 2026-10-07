@@ -1,6 +1,6 @@
 ---
 name: live-feedback
-description: Use when Michael is testing a running app by hand and gives change requests as he goes, says he is live-testing or manually testing, or runs /live-feedback. "/live-feedback done" or "done testing" ends it.
+description: Use when Michael says he is live- or manually testing a running app and wants changes made as he goes, or runs /live-feedback. "/live-feedback done" or "done testing" ends it.
 ---
 
 # Live feedback
@@ -8,7 +8,7 @@ description: Use when Michael is testing a running app by hand and gives change 
 Michael is testing the running app and sending changes one after another. In this mode
 your job is to stay free for his next point. Every change goes to a background agent,
 and your turn ends with a one-line ack. You coordinate. You do not edit code, you do not
-read code to find where a change goes, and you never wait for an agent.
+read code to find where a change goes, and you never wait for an agent before replying.
 
 ## Entry
 
@@ -31,15 +31,22 @@ read code to find where a change goes, and you never wait for an agent.
 |---|---|
 | A clear change request | Brief and dispatch an agent, ack in one line, end the turn |
 | Ambiguous request | Ask one question; dispatch once answered |
-| Follow-up on an earlier point (in flight, landed or stopped) | `SendMessage` to that point's agent under a new sub-id |
+| Follow-up on an earlier point (in flight, landed, committed or stopped) | `SendMessage` to that point's agent under a new sub-id |
 | Same page, component or reported files as a point in flight or stopped | Queue it behind that point |
 | Needs a design decision (new flow, scope change) | Park it, say so in one line, never dispatch it |
 | A question | Answer inline only if this conversation already holds the answer; otherwise dispatch a background `Explore` agent and relay its answer when it returns |
 | "What's in flight?" | The ledger as a table: #, state, tier, summary, files |
 
+An `Explore` answer is relayed, not landed: it gets no point number, does not count as
+busy, and never holds a commit.
+
 Judge ambiguity from Michael's words alone. Never read or search code before
 dispatching. Finding the code is the agent's job, and investigating brings back the wait
 this mode exists to remove.
+
+This mode is the process for every point. Do not invoke brainstorming, debugging,
+verification or planning skills for a point yourself: the agent locates, debugs and
+tests, and a point that needs design is parked.
 
 Line formats:
 
@@ -65,13 +72,16 @@ States:
 - **stopped**: its agent stopped with a question for Michael, possibly after editing
   files
 - **parked**: needs a design decision; never dispatched
+- **dropped**: Michael dropped it and its agent undid its edits; never landed or
+  committed
 
 An agent is **busy** while any id sent to it is unanswered.
 
 ## Dispatch
 
 Dispatch with the Agent tool, which runs agents in the background. At most four agents
-are busy at once. Further points queue and dispatch as agents finish.
+are busy at once. Further points queue and dispatch as agents finish. Never pass
+`isolation: worktree`: the running app must see every change.
 
 Pick the tier from the task, judging from Michael's words:
 
@@ -110,7 +120,8 @@ beyond tier, dispatch a new agent one tier up under a new sub-id. Its brief adds
 
 From then on the new agent owns the point. Follow-ups and points queued behind it go to
 the new agent, and the old agent gets nothing further. An `sp-architect` agent that
-reports beyond tier has nowhere to go: the point is stopped, and you relay it to Michael as a question.
+reports beyond tier has nowhere to go: the point is stopped, and you relay it to Michael
+as a question.
 
 Line: `#3 ↑ sp-architect: the totals bug spans the invoice and payment models`
 
@@ -149,7 +160,7 @@ Rules for this request:
     or beyond tier, with what makes it harder. Finishing a follow-up does not finish
     the point.
   - Summary: one line.
-  - Files: every file changed or created so far.
+  - Files: one list of every file changed or created so far, not split by point.
   - Tests: what you ran, as passed/total.
   - Michael must: anything he has to do (restart the server, reseed), or "nothing".
   - Commit message: imperative mood, for finished points only.
@@ -163,7 +174,8 @@ When an agent reports:
    point's status only from the status the report gives for it. Never infer either: a
    report without the contract's Ids covered line or a status for each point answers
    nothing, so ask its agent for the report in the contract format, under a new sub-id,
-   and leave its points in flight. Otherwise record its files. A point's status is
+   and leave its points in flight. Otherwise record the report's whole Files list
+   against every point it names, never splitting it between points. A point's status is
    always the one in the latest report naming it. A point with an unanswered id stays in
    flight, whatever the report says. Once all its ids are answered, the point is:
    - landed, if its status is finished;
@@ -181,8 +193,10 @@ When an agent reports:
    reported, and its report left an id unanswered, first ask it about that id. The ask
    only requests its report on that id, under a new sub-id; it never cancels or changes
    the work asked for.
-4. Hand the next queued point for that area to the same agent, or dispatch the next
-   queued point if a slot freed.
+4. If the point landed, hand the next queued point for that area to the same agent. A
+   point queued behind a stopped or escalated point waits for that point's owner (after
+   an escalation, the new agent) and goes to it once the point lands or is resolved.
+   Otherwise dispatch the next queued point if a slot freed.
 
 Do no review and run no tests here: Michael's next message waits on this turn.
 
@@ -191,7 +205,8 @@ A stopped point is resolved in one of two ways:
 - Michael answers: send the answer under a new sub-id, and the point resolves when its
   agent reports it finished.
 - Michael drops it: ask its agent to undo its partial edits and report the files it
-  restored.
+  restored. When it reports the undo, the point is dropped. It is never landed or
+  committed, and no longer holds back other groups.
 
 ## Committing
 
@@ -230,7 +245,8 @@ session messages.
    - landed but uncommitted, with the reason;
    - stopped, with its question and edited files;
    - queued behind a stopped point, naming that point;
-   - parked.
+   - parked;
+   - dropped.
 
    Then list any flagged change.
 
