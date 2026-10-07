@@ -401,6 +401,10 @@ sandboxed. The acceptance session checks this.
   brainstorming. The skill states that the mode is the process for every point: the
   driver invokes no brainstorming, debugging, verification or planning skill for a point,
   since the agent locates, debugs and tests and a point needing design is parked.
+  Role-play could not show the risk. The injected text was used with its subagent
+  opt-out removed, and neither this skill nor the skill before this sentence led a
+  subject to call a competing skill (0 of 8 runs). The sentence stays as stated
+  precedence.
 - **Files are recorded unsplit (§3.5, §3.6).** One agent can hold several points, and its
   Files line is cumulative. The contract asks for one unsplit list, and landing records
   the whole list against every point the report names. Splitting by guess could leave a
