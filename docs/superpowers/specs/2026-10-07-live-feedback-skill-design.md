@@ -1,6 +1,6 @@
 # Live-feedback mode
 
-**Status:** In progress (branch `feat/live-feedback-skill`; the dotfiles have no MR)
+**Status:** Implemented (branch `feat/live-feedback-skill`; the dotfiles have no MR)
 **Date:** 2026-10-07
 **Scope:** a new skill (`dot_claude/skills/live-feedback/SKILL.md`), its `.chezmoiignore`
 allowlist entries, and a new test suite (`tests/live-feedback-skill.test.sh`).
@@ -374,3 +374,30 @@ must exist.
 
 Expected net change: 0. Agents use the same tools inline work does, and `lockf` runs
 sandboxed. The acceptance session checks this.
+
+## 9. Implementation rulings (2026-10-07)
+
+- **Only named ids count (§3.6).** A pressure scenario showed a driver landing and
+  committing a point from a report with no "Ids covered" line, by inferring the id from
+  what the agent had been sent. The skill now answers only the ids a report names and
+  takes a status only from the report. A report outside the contract format answers
+  nothing and is asked for again, under a new sub-id.
+- **A missing commit message is asked for (§3.7).** The spec says a single point uses its
+  agent's message, but not what happens when a finished report gives none. The skill asks
+  the agent for it under a new sub-id and commits once it answers, never writing one
+  itself. The agent is busy meanwhile, so commits wait for its answer.
+- **An architect's beyond-tier stop is a stopped point (§3.3, §3.6).** Landing marks it
+  stopped, not escalated, so its files hold back shared groups like any other stopped
+  point, and it posts the stopped line.
+- **The unanswered-id ask never changes the work (§3.6).** Asking an agent about an
+  unanswered id requests its report on that id. It never cancels or redirects a
+  follow-up.
+- **The exit trigger is "done testing" (§3.8).** A bare "done" in answer to something
+  else does not end the mode.
+- **The suite pins the lock flags (§4.1).** Besides checking that `lockf` accepts the
+  skill's flags, it checks that they are exactly `-k -t 900`.
+- **Left as they are:** the default-branch fallback stays `main` or `master` when
+  `origin/HEAD` is missing; a dropped point has no line format; a borderline point naming
+  a page but not a file may get `sp-mechanical`.
+- **Pressure scenarios (§5).** Without the skill 1 of 19 passed; with the final skill 19
+  of 19, and the id-less report scenario passed 3 of 3 independent runs.
