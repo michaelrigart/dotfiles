@@ -110,7 +110,7 @@ beyond tier, dispatch a new agent one tier up under a new sub-id. Its brief adds
 
 From then on the new agent owns the point. Follow-ups and points queued behind it go to
 the new agent, and the old agent gets nothing further. An `sp-architect` agent that
-reports beyond tier has nowhere to go: relay it to Michael as a question.
+reports beyond tier has nowhere to go: the point is stopped, and you relay it to Michael as a question.
 
 Line: `#3 ↑ sp-architect: the totals bug spans the invoice and payment models`
 
@@ -165,7 +165,8 @@ When an agent reports:
    its ids are answered, the point is:
    - landed, if its status is finished;
    - stopped, if its status is stopped;
-   - escalated, if its status is beyond tier.
+   - escalated, if its status is beyond tier (stopped instead, if its agent is already
+     `sp-architect`).
 2. Post one line:
    - finished: `#3 landed: Save disabled until valid. Reload the invoice form.`
    - stopped: `#3 stopped: <question> (edited: <files>)`
@@ -208,8 +209,9 @@ Commit only at quiescence, when no agent is busy, and never on the default branc
 
 ## Exit
 
-The mode ends on "done", "done testing" or `/live-feedback done`. Messages after that
-are ordinary session messages.
+The mode ends when Michael says he is done testing, or runs `/live-feedback done`. A bare
+"done" in answer to something else does not end it. Messages after that are ordinary
+session messages.
 
 1. Drain: dispatch queued points as slots free, and wait until no agent is busy. A point
    queued behind a stopped point stays queued.

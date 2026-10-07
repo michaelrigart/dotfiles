@@ -67,6 +67,8 @@ if command -v lockf >/dev/null 2>&1; then _pass "lockf is on PATH"
 else _fail "lockf is on PATH" "not found"; fi
 if [ -n "$lockline" ] && command -v lockf >/dev/null 2>&1; then
   flags="$(printf '%s' "$lockline" | sed -E 's/^lockf (.*) "\$\(git rev-parse.*$/\1/')"
+  if [ "$flags" = "-k -t 900" ]; then _pass "the lock flags are exactly -k -t 900"
+  else _fail "the lock flags are exactly -k -t 900" "got '$flags'"; fi
   # shellcheck disable=SC2086 # the flags are words on purpose
   lockf $flags "$T/plain.lock" true; rc=$?
   if [ "$rc" = 0 ]; then _pass "the skill's lockf flags run a command"
