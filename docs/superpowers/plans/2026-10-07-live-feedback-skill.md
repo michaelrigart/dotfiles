@@ -1172,7 +1172,7 @@ planning.
   Show the due date next to the invoice date."
 - **Pass:**
   1. `#1` stays committed: it is not landed again or named in a new commit.
-  2. One commit for `#2` holds all three reported files, with the message for `#2`.
+  2. One commit for `#2` holds the reported files git still shows as changed, with the message for `#2`.
   3. REPLY's `Committed:` line names only `#2`.
 
 ### S26: an unanswered id left while another agent was busy

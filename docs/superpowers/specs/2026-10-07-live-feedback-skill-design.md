@@ -448,4 +448,7 @@ sandboxed. The acceptance session checks this.
   independent runs. The final branch review added Appendix B: S18–S23, and an SP arm with
   superpowers' session-start context and Skill tool. With the skill at dd07170 all 25
   passed, and the SP arm passed 4 of 4 with no competing Skill call. Without the skill, 3
-  of the 6 new scenarios passed. Later commits change only wording.
+  of the 6 new scenarios passed. The pre-merge review's fixes added S24–S27. With the
+  skill at 9d721c7 all 28 scenarios then present passed, and with the skill at 95b3b35 the
+  7 scenarios that reach the commit step, S27 among them, passed. Without the skill S24,
+  S25 and S27 also passed and S26 failed.
