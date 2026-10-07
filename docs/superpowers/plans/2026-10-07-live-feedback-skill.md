@@ -1128,3 +1128,69 @@ planning.
   2. After a1's report, `#1` and `#2` are committed as two separate commits (no shared
      files), each with its message.
   3. e1 does not hold back either commit.
+
+### S24: an escalated point's successor lists only its own files
+
+- **State (skill arm):** Mode on, entry branch `feat/invoice-polish`, baseline empty.
+  Ledger: `#2` in flight on a3 (sp-architect), ids sent to a3: `#2.1`. Michael's words for
+  `#2`: "Invoice totals are off by a cent sometimes." `#2` was escalated from a2
+  (sp-standard), whose report said beyond tier and listed
+  `app/models/invoice.rb (partial)`. `#2`'s recorded files: `app/models/invoice.rb`. No
+  other agent is busy.
+- **State (baseline arm):** A mid-tier agent a2 partly edited `app/models/invoice.rb` for
+  "Invoice totals are off by a cent sometimes", then said the fix was beyond its tier. You
+  handed the work to a stronger agent a3, which continued from a2's edit. No other agent
+  is running.
+- **Event:** Agent a3 reports: "Ids covered: #2.1. Status #2: finished. Summary: rounding
+  unified on the Money helper. Files: app/services/invoice_pdf.rb,
+  app/models/credit_note.rb. Tests: 12/12. Michael must: nothing. Commit message: Unify
+  invoice rounding on the Money helper."
+- **Pass:**
+  1. One commit holds `app/models/invoice.rb`, `app/services/invoice_pdf.rb` and
+     `app/models/credit_note.rb`, with a3's message.
+  2. `app/models/invoice.rb` is not left uncommitted or flagged as an unreported change.
+
+### S25: a cumulative report names an already committed point
+
+- **State (skill arm):** Mode on, entry branch `feat/invoice-polish`, baseline empty.
+  Ledger:
+  - `#1` committed (1a2b3c4), owned by a1, files `app/views/invoices/_form.html.erb` and
+    `app/javascript/controllers/invoice_form_controller.js`;
+  - `#2` in flight on a1. It was queued behind `#1` and handed to a1. Michael's words:
+    "On the invoice form, show the due date next to the invoice date." Ids sent to a1
+    since its last report: `#2`.
+
+  No other agent is busy.
+- **State (baseline arm):** Agent a1 made one invoice-form change, which is committed. You
+  then gave a1 a second invoice-form change: "On the invoice form, show the due date next
+  to the invoice date." No other agent is running.
+- **Event:** Agent a1 reports: "Ids covered: #2. Status #1: finished. Status #2: finished.
+  Summary: due date shown next to the invoice date. Files:
+  app/views/invoices/_form.html.erb,
+  app/javascript/controllers/invoice_form_controller.js,
+  app/views/invoices/_dates.html.erb. Tests: 4/4. Michael must: nothing. Commit message:
+  Show the due date next to the invoice date."
+- **Pass:**
+  1. `#1` stays committed: it is not landed again or named in a new commit.
+  2. One commit for `#2` holds all three reported files, with the message for `#2`.
+  3. REPLY's `Committed:` line names only `#2`.
+
+### S26: an unanswered id left while another agent was busy
+
+- **State (skill arm):** Mode on, entry branch `feat/invoice-polish`, baseline empty.
+  Ledger:
+  - `#1` in flight on a1, ids sent `#1` and `#1.1` (Michael's words for `#1.1`: "also
+    show a tooltip on the disabled Save button"). a1's last report covered `#1` only. No
+    ask was sent then, because a2 was busy.
+  - `#2` in flight on a2, ids sent `#2`.
+- **State (baseline arm):** Agent a1 reported its Save-button change but said nothing about
+  the tooltip follow-up you had sent it. Agent a2 was working on the payments page then,
+  and is about to report. Nothing has been asked of a1 since.
+- **Event:** Agent a2 reports: "Ids covered: #2. Status #2: finished. Summary: payments
+  sorted by date, newest first. Files: app/views/payments/index.html.erb. Tests: 2/2.
+  Michael must: nothing. Commit message: Sort payments by date, newest first."
+- **Pass:**
+  1. No commit, because a1 is still busy.
+  2. A SendMessage asks a1 about `#1.1`, under a new sub-id, without cancelling or
+     changing the work.
+  3. REPLY has a landing line for `#2`.
