@@ -20,20 +20,23 @@ T="$(mktemp -d "${TMPDIR:-/tmp}/tagteam-config.XXXXXX")"
 trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/tagteam"
 cp "$CFG" "$T/tagteam/config.toml"
-json=$(XDG_CONFIG_HOME="$T" tagteam config list --json 2>&1) || { _fail "tagteam config list" "$json"; json='{}'; }
+chmod 700 "$T/tagteam"
+chmod 600 "$T/tagteam/config.toml"
+json=$(XDG_CONFIG_HOME="$T" tagteam config list --json 2>"$T/err") || { _fail "tagteam config list" "$json $(cat "$T/err")"; json='{}'; }
+err=$(cat "$T/err")
 
 if printf '%s' "$json" | jq -e '.keys[] | select(.key == "autoswitch.threshold") | .value == 95 and .source == "global"' >/dev/null; then
   _pass "autoswitch.threshold is 95, from the file"
-else _fail "autoswitch.threshold" "$(printf '%s' "$json" | jq -c '.keys[]? | select(.key == "autoswitch.threshold")')"; fi
+else _fail "autoswitch.threshold" "$(printf '%s' "$json" | jq -c '.keys[]? | select(.key == "autoswitch.threshold")') stderr: $err"; fi
 
 if printf '%s' "$json" | jq -e '.keys[] | select(.key == "autoswitch.strategy") | .value == "consume-first" and .source == "global"' >/dev/null; then
   _pass "autoswitch.strategy is consume-first, from the file"
-else _fail "autoswitch.strategy" "$(printf '%s' "$json" | jq -c '.keys[]? | select(.key == "autoswitch.strategy")')"; fi
+else _fail "autoswitch.strategy" "$(printf '%s' "$json" | jq -c '.keys[]? | select(.key == "autoswitch.strategy")') stderr: $err"; fi
 
 others=$(printf '%s' "$json" | jq -c '[.keys[]? | select(.source != "default") | .key] | sort')
 if [ "$others" = '["autoswitch.strategy","autoswitch.threshold"]' ]; then
   _pass "no other key leaves its default"
-else _fail "only the two autoswitch keys may be set" "$others"; fi
+else _fail "only the two autoswitch keys may be set" "$others stderr: $err"; fi
 
 echo "tagteam-config: $pass passed, $fail failed"
 exit "$fail"
