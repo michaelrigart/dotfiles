@@ -1,6 +1,7 @@
 # tagteam integration
 
-**Status:** Approved
+**Status:** Implemented (branch `feat/tagteam-integration`). The dotfiles have no MR, so the
+rulings are recorded under "Implementation notes" at the end.
 
 **Date:** 2026-10-13
 
@@ -123,7 +124,8 @@ strategy = "consume-first"
 
 Only the keys that differ from tagteam's defaults are set. `tagteam config list` then reports
 both keys with source `global`. Settings change through chezmoi from now on: a
-`tagteam config set` is overwritten by the next apply.
+`tagteam config set` shows up as a chezmoi diff, and the next apply offers to put the managed
+file back.
 
 ## Out of scope
 
@@ -175,3 +177,42 @@ unattended.
   - The statusline shows the segment.
   - `tagteam config list` shows `threshold` and `strategy` with source `global`.
   - `tagteam doctor` reports the directories as private.
+
+## Implementation notes
+
+Built from `docs/superpowers/plans/2026-10-13-tagteam-integration.md` on 2026-10-13/14.
+Codex approved the spec (round 3) and the plan (round 2). Every task passed its own review,
+and a final whole-branch review followed. The rulings made during execution:
+
+- **15 deny rules, not 17.** The plan's interface note miscounted. The listed rules are 6
+  `Read`/`Edit` rules for the three tagteam paths, 1 `tagteam` rule and 8 `security` rules, and
+  `tests/claude-settings.test.sh` pins exactly those.
+- **The mid-pattern `*` matches the plain command.** Checked in the Claude Code 2.1.296
+  matcher: each `*` becomes `.*`, anchored `^…$`. So `Bash(security *find-generic-password*)`
+  also denies a plain `security find-generic-password -w`. The plan's after-merge check 3
+  confirms this end to end.
+- **Indirect `security` calls stay open.** `env security …`, `xcrun security …` and
+  `sh -c …` pass the prefix rules. That is within the transcript-only scope accepted under
+  "The Keychain: accepted as known"; Claude Code's own wrapper stripping
+  (`command`, `timeout`, `nice`, …) covers the common forms.
+- **The statusline test locates jq by probing, not with `command -v`.** On this machine
+  `command -v jq` finds a mise shim, which fails under `env -i`. The suite takes the first
+  `type -ap jq` candidate that runs under `env -i` and exits 2 if there is none.
+- **No timeout around `tagteam statusline`.** It reads stored data only: 15 ms measured, no
+  Keychain, no network, and a WAL store with a 5 s busy timeout. Revisit this when the
+  launchd auto-switch agent is specified, because it will write to the same store.
+- **The sanitiser is broader than the spec's "ANSI escapes".** It strips terminated and
+  unterminated OSC, any CSI, and other `ESC` sequences, then every C0 control. Malformed
+  input (an OSC containing a stray `ESC`, a truncated CSI) and DCS/SOS/PM/APC bodies can
+  still leave stray text or a shorter segment, but never a wrong width. tagteam runs with
+  `--no-color`, and its format emits none of them.
+- **The probes classify by errno, never by `stat`.** The sandbox denies metadata of a denied
+  file and returns it only for directories. So the boundary suite reads each candidate
+  directly, both inside `rescue/` and `displaced/` and inside each session directory, and
+  classifies the result by `dd`'s error. A missing path reports ENOENT even under a deny.
+- **The deployed modes rest on the source spelling.** `private_` on the directory and the
+  file gives 0700 and 0600; the after-merge `tagteam doctor` check verifies them.
+- **`.[!.]*` skips names that start with `..`.** tagteam writes flat `<id>.json` entries
+  (`displace.rs`, `rescue.rs`), so nothing it creates is missed.
+- **The dated security-posture spec keeps its "(exit 12)".** Specs are point-in-time.
+  `AGENTS.md` and the suite header now say "12 or more".

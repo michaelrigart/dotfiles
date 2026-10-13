@@ -2,7 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** In progress
+**Status:** Implemented (branch `feat/tagteam-integration`). Rulings are in the spec's
+"Implementation notes".
+
+> **Completed 2026-10-14.** Do not re-run the tasks below. Only the "After merge" list at the
+> end is still open, until Michael has merged and applied.
 
 **Goal:** Fit tagteam into the dotfiles. Its plaintext logins and Keychain secrets stay out of
 agent reads and transcripts, the statusline shows the live account and its usage, and its
@@ -584,10 +588,22 @@ These are the spec's live checks. They need the merged settings deployed and a f
 session, so they cannot run before the merge:
 
 1. Run `chezmoi apply`, then start a fresh Claude Code session.
-2. **Boundary:** plant `~/.local/share/tagteam/rescue/.boundary-probe` outside the sandbox
-   (for example in a plain terminal). In the fresh sandboxed session, run
-   `./tests/run.sh live-credential-boundary`; expect `TAGTEAM_RESCUE=DENIED` and exit 0.
-   Then remove the probe file.
+2. **Boundary:** in a plain terminal, outside the sandbox, plant two probes in private
+   directories, so tagteam's 0700 check in step 6 still holds:
+
+   ```sh
+   D=~/.local/share/tagteam
+   mkdir -m 700 -p "$D/rescue" "$D/sessions"   # -m sets only the last component's mode
+   mkdir -m 700 "$D/sessions/boundary-probe"
+   printf x > "$D/rescue/.boundary-probe"
+   printf x > "$D/sessions/boundary-probe/.credentials.json"
+   ```
+
+   In the fresh sandboxed session, run `./tests/run.sh live-credential-boundary`. Expect
+   `TAGTEAM_RESCUE=DENIED`, `TAGTEAM_SESSION_CREDENTIALS=DENIED` and exit 0. Then remove
+   both probes, along with any directory they created:
+   `rm -r "$D/sessions/boundary-probe"; rm "$D/rescue/.boundary-probe"; rmdir "$D/rescue" "$D/sessions" 2>/dev/null`.
+   `rmdir` removes only directories left empty, so tagteam's own entries are never touched.
 3. **Deny rules:** in the fresh session, ask the agent to run
    `security find-generic-password -s tagteam >/dev/null`. This attribute-only form prints no
    secret. Expect a permission denial. That confirms the mid-pattern `*` matches the plain form.
