@@ -593,17 +593,24 @@ session, so they cannot run before the merge:
 
    ```sh
    D=~/.local/share/tagteam
-   mkdir -m 700 -p "$D/rescue" "$D/sessions"   # -m sets only the last component's mode
+   mkdir -m 700 -p "$D"   # BSD -m sets only the last component's mode
+   had_r=0; [ -d "$D/rescue" ] && had_r=1
+   had_s=0; [ -d "$D/sessions" ] && had_s=1
+   mkdir -m 700 -p "$D/rescue" "$D/sessions"
    mkdir -m 700 "$D/sessions/boundary-probe"
    printf x > "$D/rescue/.boundary-probe"
    printf x > "$D/sessions/boundary-probe/.credentials.json"
    ```
 
    In the fresh sandboxed session, run `./tests/run.sh live-credential-boundary`. Expect
-   `TAGTEAM_RESCUE=DENIED`, `TAGTEAM_SESSION_CREDENTIALS=DENIED` and exit 0. Then remove
-   both probes, along with any directory they created:
-   `rm -r "$D/sessions/boundary-probe"; rm "$D/rescue/.boundary-probe"; rmdir "$D/rescue" "$D/sessions" 2>/dev/null`.
-   `rmdir` removes only directories left empty, so tagteam's own entries are never touched.
+   `TAGTEAM_RESCUE=DENIED`, `TAGTEAM_SESSION_CREDENTIALS=DENIED` and exit 0. Then, in the
+   same terminal, remove both probes and only the directories the plant step created:
+
+   ```sh
+   rm -r "$D/sessions/boundary-probe"; rm "$D/rescue/.boundary-probe"
+   [ "$had_r" = 0 ] && rmdir "$D/rescue"
+   [ "$had_s" = 0 ] && rmdir "$D/sessions"
+   ```
 3. **Deny rules:** in the fresh session, ask the agent to run
    `security find-generic-password -s tagteam >/dev/null`. This attribute-only form prints no
    secret. Expect a permission denial. That confirms the mid-pattern `*` matches the plain form.

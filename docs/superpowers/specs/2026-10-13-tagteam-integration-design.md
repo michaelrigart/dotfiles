@@ -187,8 +187,9 @@ and a final whole-branch review followed. The rulings made during execution:
 - **15 deny rules, not 17.** The plan's interface note miscounted. The listed rules are 6
   `Read`/`Edit` rules for the three tagteam paths, 1 `tagteam` rule and 8 `security` rules, and
   `tests/claude-settings.test.sh` pins exactly those.
-- **The mid-pattern `*` matches the plain command.** Checked in the Claude Code 2.1.296
-  matcher: each `*` becomes `.*`, anchored `^…$`. So `Bash(security *find-generic-password*)`
+- **The mid-pattern `*` matches the plain command.** The ruling rested on the Claude Code
+  permissions docs ("a `*` in a Bash rule matches any text"). The final whole-branch review
+  then traced the 2.1.296 matcher: each `*` becomes `.*`, anchored `^…$`. So `Bash(security *find-generic-password*)`
   also denies a plain `security find-generic-password -w`. The plan's after-merge check 3
   confirms this end to end.
 - **Indirect `security` calls stay open.** `env security …`, `xcrun security …` and
@@ -203,16 +204,19 @@ and a final whole-branch review followed. The rulings made during execution:
   launchd auto-switch agent is specified, because it will write to the same store.
 - **The sanitiser is broader than the spec's "ANSI escapes".** It strips terminated and
   unterminated OSC, any CSI, and other `ESC` sequences, then every C0 control. Malformed
-  input (an OSC containing a stray `ESC`, a truncated CSI) and DCS/SOS/PM/APC bodies can
-  still leave stray text or a shorter segment, but never a wrong width. tagteam runs with
-  `--no-color`, and its format emits none of them.
+  input (an OSC containing a stray `ESC`, a truncated CSI), DCS/SOS/PM/APC bodies and C1
+  controls in their two-byte UTF-8 form can still leave stray text or a shorter segment, but
+  never a wrong width. tagteam runs with `--no-color`, and its format emits none of them. The
+  test stub writes escapes with `printf '%b'` and `\x1b`, which relies on macOS `/bin/sh`
+  being bash. On a dash `/bin/sh` those tests would fail loudly, never pass falsely.
 - **The probes classify by errno, never by `stat`.** The sandbox denies metadata of a denied
   file and returns it only for directories. So the boundary suite reads each candidate
   directly, both inside `rescue/` and `displaced/` and inside each session directory, and
   classifies the result by `dd`'s error. A missing path reports ENOENT even under a deny.
 - **The deployed modes rest on the source spelling.** `private_` on the directory and the
   file gives 0700 and 0600; the after-merge `tagteam doctor` check verifies them.
-- **`.[!.]*` skips names that start with `..`.** tagteam writes flat `<id>.json` entries
-  (`displace.rs`, `rescue.rs`), so nothing it creates is missed.
+- **`.[!.]*` skips names that start with `..`.** tagteam writes flat `<id>.json` entries:
+  the task review traced `displace.rs` and the final review traced `rescue.rs`. So nothing it
+  creates is missed.
 - **The dated security-posture spec keeps its "(exit 12)".** Specs are point-in-time.
   `AGENTS.md` and the suite header now say "12 or more".
