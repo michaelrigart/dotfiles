@@ -1044,7 +1044,8 @@ _wt_rm_registration() {
 #   5. check 3, tying non-ignored teardown output to its cause
 #   6. check 4 (`wt-teardown scan`), last before Git deletes files: it reads the OS,
 #      which Git and Herdr cannot see. After teardown because stopping project
-#      services is what teardown is for. A heuristic, not a proof.
+#      services is what teardown is for. It re-scans every 0.5 s for up to 5 s, since
+#      some processes exit only after their workspace closes. A heuristic, not a proof.
 #
 # A checkout that is gone while Git still registers it — a removal that failed after
 # deleting it — skips steps 1-6: _wt_rm_registration proves the absence, reruns the
@@ -1129,13 +1130,19 @@ wt-rm() {
     # asks the OS. After teardown, so a repository that stops its own services is
     # not refused. What the snapshot cannot see: `_scan` in
     # dot_local/bin/executable_wt-teardown.
-    local busy line
-    busy="$(WT_WORKTREE="$dest" command wt-teardown scan)" || {
-      print -ru2 -- "wt-rm: could not scan for processes still in $dest — refusing."
-      return 1
-    }
+    local busy line polls=0
+    while :; do
+      busy="$(WT_WORKTREE="$dest" command wt-teardown scan)" || {
+        print -ru2 -- "wt-rm: could not scan for processes still in $dest — refusing."
+        return 1
+      }
+      [[ -z "$busy" ]] && break
+      (( polls == 10 )) && break
+      command sleep 0.5
+      (( ++polls ))
+    done
     if [[ -n "$busy" ]]; then
-      print -ru2 -- "wt-rm: $dest is still in use by a running process — removal aborted. Resources may already be reclaimed."
+      print -ru2 -- "wt-rm: $dest is still in use by a running process after waiting 5 s — removal aborted. Resources may already be reclaimed."
       for line in ${(f)busy}; do print -ru2 -- "    $line"; done
       print -ru2 -- "    Herdr's workspaces for this checkout are closed already; these are still in it."
       print -ru2 -- "    Stop them — from .worktreehook teardown if the project starts them — then retry: wt-rm $qb"

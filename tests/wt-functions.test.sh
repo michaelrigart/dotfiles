@@ -120,6 +120,10 @@ cat > "$STUBS/lsof" <<'STUB'
 # produces, and would silently simulate an occupant the helper cannot match. MOCK_LSOF_RAW overrides it for malformed output, and the exit
 # status is separately controllable: real lsof exits 1 both when it matches nothing and
 # when it fails, which is the ambiguity the caller has to resolve.
+#
+# MOCK_LSOF_BUSY_N and MOCK_LSOF_BUSY_SPEC make the first N calls since $LLOG was last
+# emptied answer with the busy spec; after those, calls answer with MOCK_LSOF_SPEC, or
+# with nothing at all (a failed read) when MOCK_LSOF_THEN_FAIL is set.
 printf '%s\n' "$*" >> "$LLOG"
 if [ -n "${MOCK_LSOF_RAW+x}" ]; then
   printf '%b' "$MOCK_LSOF_RAW"
@@ -129,13 +133,27 @@ case " $* " in
   *" -F0pcnR "*) ;;
   *) echo "lsof stub: unexpected invocation: $*" >&2; exit 1 ;;
 esac
+spec="${MOCK_LSOF_SPEC:-}"
+if [ -n "${MOCK_LSOF_BUSY_N:-}" ]; then
+  n=$(wc -l < "$LLOG")
+  if [ "$n" -le "$MOCK_LSOF_BUSY_N" ]; then
+    spec="${MOCK_LSOF_BUSY_SPEC:-}"
+  elif [ -n "${MOCK_LSOF_THEN_FAIL:-}" ]; then
+    exit 0
+  fi
+fi
 while IFS=$'\t' read -r pid cmd cwd; do
   [ -n "$pid" ] || continue
   printf 'p%s\0R1\0c%s\0fcwd\0n%s\0\n' "$pid" "$cmd" "$cwd"
-done <<< "${MOCK_LSOF_SPEC:-}"
+done <<< "$spec"
 exit "${MOCK_LSOF_RC:-0}"
 STUB
-chmod +x "$STUBS/layout.sh" "$STUBS/herdr" "$STUBS/lsof"
+cat > "$STUBS/sleep" <<'STUB'
+#!/bin/sh
+# Instant and logged: wt-rm's grace period is asserted by its schedule, never waited out.
+printf '%s\n' "$*" >> "${SLOG:-/dev/null}"
+STUB
+chmod +x "$STUBS/layout.sh" "$STUBS/herdr" "$STUBS/lsof" "$STUBS/sleep"
 TEARDOWN_SRC="$(cd "${0:h}/.." && pwd)/dot_local/bin/executable_wt-teardown"
 [[ -r "$TEARDOWN_SRC" ]] || { print -ru2 -- "cannot read $TEARDOWN_SRC"; exit 2 }
 print -r -- "#!/bin/sh
@@ -214,9 +232,9 @@ setup() {   # fresh $HOME with Code/Org/repo, fresh logs, default mock behaviour
   git init -q -b main "$REPO"
   git -C "$REPO" commit -q --allow-empty -m init
   export DLOG="$ROOTTMP/layout.log" \
-         HLOG="$ROOTTMP/herdr.log" LLOG="$ROOTTMP/lsof.log" \
+         HLOG="$ROOTTMP/herdr.log" LLOG="$ROOTTMP/lsof.log" SLOG="$ROOTTMP/sleep.log" \
          FLOG="$ROOTTMP/git-fail.log" MOCK_H_CLOSED_FILE="$ROOTTMP/herdr-closed"
-  : > "$DLOG"; : > "$HLOG"; : > "$LLOG"; : > "$FLOG"; : > "$MOCK_H_CLOSED_FILE"
+  : > "$DLOG"; : > "$HLOG"; : > "$LLOG"; : > "$FLOG"; : > "$SLOG"; : > "$MOCK_H_CLOSED_FILE"
   export MOCK_LAYOUT_RC=0 MOCK_H_SESSION_LIST='{"sessions":[]}' MOCK_H_SESSION_RC=0 \
          MOCK_H_WORKSPACES='{"result":{"workspaces":[]}}' \
          MOCK_H_PANES='{"result":{"panes":[]}}' MOCK_H_LIST_RC=0 MOCK_H_CLOSE_RC=0 \
@@ -225,7 +243,8 @@ setup() {   # fresh $HOME with Code/Org/repo, fresh logs, default mock behaviour
   # can never return nothing — this shell's own cwd is always in the answer — so
   # "no records at all" is reserved for the failure the caller must fail closed on.
   export MOCK_LSOF_RC=0 MOCK_LSOF_SPEC="$(lsof_spec 1 launchd /)"
-  unset MOCK_LSOF_RAW MOCK_H_TEAM_WORKSPACES MOCK_H_TEAM_PANES
+  unset MOCK_LSOF_RAW MOCK_H_TEAM_WORKSPACES MOCK_H_TEAM_PANES \
+        MOCK_LSOF_BUSY_N MOCK_LSOF_BUSY_SPEC MOCK_LSOF_THEN_FAIL
 }
 # run <dir> <command...> — source the functions fresh and run one command in $dir.
 # A subshell per scenario keeps zsh options/state from leaking between tests.
@@ -2297,6 +2316,50 @@ run "$REPO" wt-rm live-sib
 rc_is 0 "a process in a sibling path that merely shares a prefix does not block removal"
 [[ -d "$SIB" ]] && _fail "the checkout is removed when only siblings are busy" \
                      || _pass "the checkout is removed when only siblings are busy"
+
+# Closing a workspace ends some processes only after a delay: Codex's app-server daemon
+# stops a thread's MCP servers a few seconds after its client goes. Check 4 re-scans for
+# up to 5 s before refusing, and the schedule is the assertion.
+setup
+run "$REPO" wt grace-clears
+GC="$HOME/Code/Org/repo-grace-clears"
+export MOCK_LSOF_BUSY_N=3 MOCK_LSOF_BUSY_SPEC="$(lsof_spec 1 launchd / 5150 node_repl "$GC")"
+: > "$LLOG"; : > "$SLOG"
+run "$REPO" wt-rm grace-clears
+rc_is 0 "a process that exits within the grace period does not block removal"
+eq "$(<$SLOG)" $'0.5\n0.5\n0.5' "removal proceeds after exactly three 0.5 s polls"
+[[ -d "$GC" ]] && _fail "the checkout is removed once the scan clears" \
+               || _pass "the checkout is removed once the scan clears"
+
+setup
+run "$REPO" wt grace-stays
+GS="$HOME/Code/Org/repo-grace-stays"
+export MOCK_LSOF_SPEC="$(lsof_spec 1 launchd / 5150 node_repl "$GS")"
+: > "$SLOG"
+run "$REPO" wt-rm grace-stays
+rc_is 1 "a process still there after the grace period blocks removal"
+has "still in use by a running process after waiting 5 s" "the refusal says it waited"
+eq "$(wc -l < "$SLOG" | tr -d ' ')" "10" "it polled exactly ten times"
+eq "$(sort -u "$SLOG")" "0.5" "every poll sleeps 0.5 s"
+[[ -d "$GS" ]] && _pass "the checkout survives the refusal" || _fail "the checkout survives the refusal"
+eq "$(lock_reason_of "$GS")" "wt-managed; remove with command wt-rm" "the registration survives the refusal"
+run "$REPO" git branch --list --format='%(refname:short)' grace-stays
+eq "$OUT" "grace-stays" "the branch survives the refusal"
+
+setup
+run "$REPO" wt grace-fails
+GF="$HOME/Code/Org/repo-grace-fails"
+export MOCK_LSOF_BUSY_N=1 MOCK_LSOF_BUSY_SPEC="$(lsof_spec 1 launchd / 5150 node_repl "$GF")" \
+       MOCK_LSOF_THEN_FAIL=1
+: > "$LLOG"; : > "$SLOG"
+run "$REPO" wt-rm grace-fails
+rc_is 1 "a scan that fails during the grace period fails closed"
+has "could not scan for processes still in $GF" "the refusal names the failed scan"
+eq "$(wc -l < "$SLOG" | tr -d ' ')" "1" "polling stops at the failed scan"
+[[ -d "$GF" ]] && _pass "the checkout survives the failed scan" || _fail "the checkout survives the failed scan"
+eq "$(lock_reason_of "$GF")" "wt-managed; remove with command wt-rm" "the registration survives the failed scan"
+run "$REPO" git branch --list --format='%(refname:short)' grace-fails
+eq "$OUT" "grace-fails" "the branch survives the failed scan"
 
 # Ordering is the whole design of this check. Stopping project services is exactly
 # what .worktreehook teardown is for, so scanning before teardown would refuse every
