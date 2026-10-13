@@ -150,8 +150,8 @@ else _fail "skill segment background without tagteam" "$(strip "$out")"; fi
 INPUT=$INPUT_PLAIN
 
 # --- characters of unknown width: the line's width cannot be established, so the segment
-# is left out. Known: printable ASCII, U+00A0-02FF, U+0380-07FF, and the statusline's own
-# glyphs. ---
+# is left out. Known: printable ASCII, U+00A0-00AC, U+00AE-02FF, the assigned U+0380-03FF,
+# U+0400-0482, U+048A-052F, and the statusline's own glyphs. ---
 INPUT_PLAIN=$INPUT
 # in_dir <basename>: the workspace directory is $T/<basename> (a JSON string body).
 in_dir() {
@@ -189,13 +189,22 @@ in_dir "$(printf 'done\xe2\x9c\x85')";        left_out "an E2-led emoji (U+2705)
 in_dir "$(printf 'cafe\xcc\x81')";            left_out "a combining mark (U+0301) in the directory" "$TT"
 in_dir 'tab\tdir';                            left_out "a tab in the directory" "$TT"
 in_dir "$(printf 'nel\xc2\x85dir')";          left_out "a C1 control (U+0085) in the directory" "$TT"
+in_dir "$(printf 'a\xd2\x83')";               left_out "a Cyrillic combining mark (U+0483) in the directory" "$TT"
+in_dir "$(printf 'a\xd6\xb0')";               left_out "a Hebrew point (U+05B0) in the directory" "$TT"
+in_dir "$(printf '\xd5\xa1')";                left_out "an Armenian letter (U+0561) in the directory" "$TT"
+in_dir "$(printf 'a\xce\x8b')";               left_out "an unassigned Greek code point (U+038B) in the directory" "$TT"
 in_dir repo-invalid;                          left_out "invalid UTF-8 (a stray continuation byte) in the branch" "$TT"
 INPUT=$INPUT_PLAIN
 left_out "a 4-byte emoji in the account alias" "work\xf0\x9f\x9a\x80 $DOT 5h 31% $DOT 7d 12%"
 left_out "a fullwidth A (U+FF21) in the account alias" "work\xef\xbc\xa1 $DOT 5h 31% $DOT 7d 12%"
 left_out "invalid UTF-8 (a stray continuation byte) in tagteam's output" "work\x80 $DOT 5h 31% $DOT 7d 12%"
+left_out "a soft hyphen (U+00AD) in the account alias" "wo\xc2\xadrk $DOT 5h 31% $DOT 7d 12%"
 in_dir "$(printf 'caf\xc3\xa9')";             shown "a precomposed accented directory" "$TT" "$TT"
 in_dir "$(printf '\xd0\xb4\xd0\xb0\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xb5')"; shown "a Cyrillic directory" "$TT" "$TT"
+in_dir "$(printf '\xce\x84\xce\xb1')";        shown "a Greek directory (U+0384, U+03B1)" "$TT" "$TT"
+in_dir "$(printf 'z\xc5\xbc')";               shown "a Latin Extended-A directory (U+017C)" "$TT" "$TT"
+in_dir "$(printf 'a\xd2\x82')";               shown "U+0482, the last Cyrillic before the combining marks," "$TT" "$TT"
+in_dir "$(printf 'a\xd2\x8a')";               shown "U+048A, the first Cyrillic after the combining marks," "$TT" "$TT"
 # The statusline's own glyphs never trip the guard: an ASCII run with a branch carries all
 # of them (SEP, BR, DOT, ARR, DASH), and they may appear in tagteam's text as well.
 in_dir repo-main

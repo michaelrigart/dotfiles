@@ -107,18 +107,24 @@ build_segs() {
 # (0x80-0xBF). Locale-independent, so it is correct no matter what LC_* the harness hands us.
 # On invalid UTF-8 that sed fails and prints nothing; unknown then leaves the segment out and
 # the line is what it always was, so its error message is discarded.
-# unknown: the count of bytes that belong to no character of known width. Known: printable
-# ASCII, U+00A0-02FF and U+0380-07FF (C2 A0-BF, or lead C3-CB or CE-DF, then one
-# continuation byte) and the glyphs SEP BR ARR DASH. Under LC_ALL=C one left-to-right pass
-# over out removes the colour codes and every known non-ASCII character; unknown counts the
-# bytes left that are not printable ASCII: those of a control character (C0, DEL, or C1 at
-# U+0080-009F; an ESC starting a colour code has no width and is removed first),
-# U+0300-037F (the combining marks, and the Greek characters U+0370-037F that
-# share lead byte CD), any other three- or four-byte character, or invalid UTF-8. It reads
-# out, not plain, because plain is empty on invalid UTF-8.
+# unknown: the count of bytes that belong to no character of known width. Known, each
+# exactly one cell wide: printable ASCII; the glyphs SEP BR ARR DASH; and these two-byte
+# characters, which include no zero-width, format, unassigned or wide one:
+#   U+00A0-00AC, U+00AE-02FF  Latin-1 without the soft hyphen, Latin Extended-A and B, IPA,
+#                             spacing modifiers   (C2 A0-AC AE-BF, C3-CB 80-BF)
+#   U+0380-03FF, assigned     Greek and Coptic    (CE 84-8A 8C 8E-A1 A3-BF, CF 80-BF)
+#   U+0400-0482, U+048A-052F  Cyrillic without its combining marks
+#                             (D0-D1 80-BF, D2 80-82 8A-BF, D3 80-BF, D4 80-AF)
+# Ambiguous-width characters among them (Greek, Cyrillic, the glyphs) are taken as narrow,
+# as everywhere in this statusline. Under LC_ALL=C one left-to-right pass over out removes
+# the colour codes and every known non-ASCII character; unknown counts the bytes left that
+# are not printable ASCII: those of a control character (C0, DEL, or C1 at U+0080-009F; an
+# ESC starting a colour code has no width and is removed first), any other two-, three- or
+# four-byte character, or invalid UTF-8. It reads out, not plain, because plain is empty on
+# invalid UTF-8.
 render() {
   local s fg rest bg text plain esc=$'\033' narrow
-  printf -v narrow '\xc2[\xa0-\xbf]|[\xc3-\xcb\xce-\xdf][\x80-\xbf]'
+  printf -v narrow '\xc2[\xa0-\xac\xae-\xbf]|[\xc3-\xcb\xcf-\xd1\xd3][\x80-\xbf]|\xce[\x84-\x8a\x8c\x8e-\xa1\xa3-\xbf]|\xd2[\x80-\x82\x8a-\xbf]|\xd4[\x80-\xaf]'
   out=""; prevbg=""
   for s in "${segs[@]}"; do
     fg=${s%%|*}; rest=${s#*|}; bg=${rest%%|*}; text=${rest#*|}
@@ -137,9 +143,9 @@ render() {
 
 # The renderer never truncates, so the tagteam segment is kept only when the closing
 # separator and at least one column of filler still fit (w <= cols - 2) and every
-# character's width is known (unknown = 0). Then each character takes the one column w
-# counts for it, or none if it is zero-width, so the line ends at $cols at the latest.
-# Otherwise the line is what it was without tagteam.
+# character's width is known (unknown = 0). Then each character takes exactly the one
+# column w counts for it, so the line ends exactly at $cols. Otherwise the line is what it
+# was without tagteam.
 if [ -n "$tt" ]; then
   build_segs 1; render
   { [ "$w" -le $((cols - 2)) ] && [ "$unknown" -eq 0 ]; } || { build_segs 0; render; }

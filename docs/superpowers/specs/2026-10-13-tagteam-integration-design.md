@@ -212,21 +212,25 @@ and a final whole-branch review followed. The rulings made during execution:
   counts codepoints, not terminal cells. So a wide character (CJK, Hangul, fullwidth forms,
   most emoji) would make a line that "fits" overflow, and a combining mark would leave it
   short. The pre-merge reviews caught both. The segment is now shown only when every
-  character's width is known. Known means printable ASCII, U+00A0–U+02FF, U+0380–U+07FF,
-  and the statusline's own glyphs SEP, BR, ARR and DASH (U+E0B0, U+E0A0, U+25B8, U+2014).
+  character's width is known. Known means printable ASCII; the statusline's own glyphs SEP,
+  BR, ARR and DASH (U+E0B0, U+E0A0, U+25B8, U+2014); U+00A0–U+00AC and U+00AE–U+02FF
+  (Latin-1 without the soft hyphen, Latin Extended-A and B, IPA, spacing modifier letters);
+  the assigned characters of U+0380–U+03FF (Greek and Coptic, which has no combining
+  marks); and U+0400–U+0482 and U+048A–U+052F (Cyrillic and Cyrillic Supplement without the
+  combining U+0483–U+0489). None of these is zero-width, a format character or wide.
   Anything else leaves the segment out. That includes every control character (C0, DEL and
   the C1 range U+0080–U+009F) except an `ESC` that starts a colour code, which has no width
-  and is removed first; U+0300–U+037F (the combining marks, and the Greek characters
-  U+0370–U+037F that share their lead byte); every other three- or four-byte character; and
-  invalid UTF-8. The check reads the line byte by byte, so the locale cannot change it. The
-  tagteam sanitiser runs byte-wise too, so invalid UTF-8 from tagteam reaches the check
-  whole. Measuring true cell width would need a wcwidth table in bash 3.2, and this keeps a
-  line without the segment exactly as it was. The cost: a line with CJK, emoji or any other
-  character outside that set never shows the segment. The residual: a zero-width character
-  inside those ranges, such as a Hebrew point, an Arabic mark or a Cyrillic combining mark,
-  can leave a line one column short. Ambiguous-width characters, such as Greek, Cyrillic and
-  the statusline's own glyphs, count as narrow, as the statusline has always assumed.
-  Nothing can make a line that shows the segment overflow.
+  and is removed first; the soft hyphen; U+0300–U+037F (the combining marks, and the Greek
+  characters that share their lead byte); U+0530–U+07FF (Armenian onward, with the Hebrew
+  points, Arabic marks, Syriac, Thaana and NKo); every other three- or
+  four-byte character; and invalid UTF-8. The check reads the line byte by byte, so the
+  locale cannot change it. The tagteam sanitiser runs byte-wise too, so invalid UTF-8 from
+  tagteam reaches the check whole. Measuring true cell width would need a wcwidth table in
+  bash 3.2, and this keeps a line without the segment exactly as it was. The cost: a line
+  with CJK, emoji or any other character outside that set never shows the segment. Every
+  known character occupies exactly one cell. Ambiguous-width characters, such as Greek,
+  Cyrillic and the statusline's own glyphs, count as narrow, as the statusline has always
+  assumed. Under that assumption, a line that shows the segment is exactly `$COLUMNS` wide.
 - **The probes classify by errno, never by `stat`.** The sandbox denies metadata of a denied
   file and returns it only for directories. So the boundary suite reads each candidate
   directly, both inside `rescue/` and `displaced/` and inside each session directory, and
