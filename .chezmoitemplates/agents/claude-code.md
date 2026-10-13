@@ -27,6 +27,11 @@
 
   Go up a tier when a task is harder than its label, and say which tier you used when it
   isn't obvious.
+- **Parallel tasks.** A plan runs entirely in its own worktree; never create a worktree for
+  one of its tasks. Plans give each task a `Depends on:` line. Tasks with no pending
+  dependency that touch disjoint files form one batch: dispatch their implementers together
+  in that worktree. Each commits only its own paths and runs only its focused tests; the
+  controller runs the full suite once per batch and reviews each task on its own files.
 - **Pushing.** Push in a Bash call of its own, as one plain command:
   `git push [options] <remote> <branch>` (for another repository, `git -C <path> push …`),
   optionally piped to `tail`/`head`. The push guard denies a push chained after a commit, a
