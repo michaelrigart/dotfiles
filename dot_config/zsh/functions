@@ -1048,8 +1048,9 @@ _wt_rm_registration() {
 #      some processes exit only after their workspace closes. A heuristic, not a proof.
 #
 # A checkout that is gone while Git still registers it — a removal that failed after
-# deleting it — skips steps 1-6: _wt_rm_registration proves the absence, reruns the
-# lock and Herdr checks, and removes only the registration.
+# deleting it — skips hook validation, checks 1-4 and teardown (steps 1 and 3-6):
+# _wt_rm_registration proves the absence, reruns the lock classification and step 2,
+# and removes only the registration.
 #
 # Runs under the per-target lock, released in an `always` block. An interrupt is not
 # covered by it; see the interruption note above _wt_hook_check for why no INT/TERM

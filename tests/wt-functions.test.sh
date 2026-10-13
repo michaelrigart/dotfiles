@@ -1433,6 +1433,14 @@ eq "$(lock_reason_of "$Q12")" "wt-managed; remove with command wt-rm" \
    "Q12 the registration remains and still carries the Herdr lock"
 run "$REPO" git branch --list --format='%(refname:short)' q12
 eq "$OUT" "q12" "Q12 the branch is kept"
+run "$REPO" wt-rm q12
+rc_is 1 "Q12 a retry that Git's registration still blocks fails"
+has "removing Git's registration of $Q12 failed — it remains; branch q12 kept" "Q12 the recovery failure says the registration remains"
+has "retry: wt-rm q12" "Q12 the recovery failure offers the retry"
+run "$REPO" git branch --list --format='%(refname:short)' q12
+eq "$OUT" "q12" "Q12 the branch is kept by the failed retry"
+eq "$(lock_reason_of "$Q12")" "wt-managed; remove with command wt-rm" \
+   "Q12 the registration and its lock survive the failed retry"
 chmod 700 "$Q12_REG"
 run "$REPO" wt-rm q12
 rc_is 0 "Q12 a retry finishes the partial removal"
@@ -1473,6 +1481,12 @@ Q15="$HOME/Code/Org/repo-q15"
 git -C "$REPO" worktree unlock "$Q15"
 git -C "$REPO" worktree lock --reason "user maintenance" "$Q15"
 rm -rf "$Q15"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)")"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[
+  {\"workspace_id\":\"w15\",\"label\":\"q15\",\"worktree\":{\"checkout_path\":\"$Q15\",\"is_linked_worktree\":true}}]}}"
+export MOCK_H_PANES="{\"result\":{\"panes\":[
+  {\"workspace_id\":\"w15\",\"pane_id\":\"w15:p1\",\"cwd\":\"$Q15\"}]}}"
+: > "$HLOG"
 run "$REPO" wt-rm q15
 rc_is 1 "Q15 a missing checkout under another owner's lock is refused"
 has "locked for another reason: user maintenance" "Q15 the refusal names the lock"
@@ -1543,6 +1557,7 @@ has "$Q19 does not exist." "Q19 it gets the existing refusal, not recovery"
 rm -f "$Q19"; : > "$Q19"
 run "$REPO" wt-rm q19
 rc_is 1 "Q19 a plain file at the target is refused"
+has "$Q19 does not exist." "Q19 the plain file gets the existing refusal, not recovery"
 run "$REPO" git worktree list --porcelain
 has "$Q19" "Q19 the registration survives both"
 
@@ -2336,11 +2351,13 @@ run "$REPO" wt grace-stays
 GS="$HOME/Code/Org/repo-grace-stays"
 export MOCK_LSOF_SPEC="$(lsof_spec 1 launchd / 5150 node_repl "$GS")"
 : > "$SLOG"
+: > "$LLOG"
 run "$REPO" wt-rm grace-stays
 rc_is 1 "a process still there after the grace period blocks removal"
 has "still in use by a running process after waiting 5 s" "the refusal says it waited"
 eq "$(wc -l < "$SLOG" | tr -d ' ')" "10" "it polled exactly ten times"
 eq "$(sort -u "$SLOG")" "0.5" "every poll sleeps 0.5 s"
+eq "$(grep -c . "$LLOG")" "11" "it scans once more after the last sleep"
 [[ -d "$GS" ]] && _pass "the checkout survives the refusal" || _fail "the checkout survives the refusal"
 eq "$(lock_reason_of "$GS")" "wt-managed; remove with command wt-rm" "the registration survives the refusal"
 run "$REPO" git branch --list --format='%(refname:short)' grace-stays
