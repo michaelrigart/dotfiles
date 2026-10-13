@@ -61,11 +61,13 @@ tt=""
 if command -v tagteam >/dev/null 2>&1; then
   tt=$(tagteam --no-color statusline </dev/null 2>/dev/null) || tt=""
   tt=${tt%%$'\n'*}
-  # Drop OSC sequences (BEL or ESC \ terminated, e.g. hyperlinks), then any CSI sequence,
-  # then whatever C0 control or DEL byte is left (CR, a stray ESC).
+  # Drop OSC sequences (BEL or ESC \ terminated, e.g. hyperlinks; an unterminated one runs
+  # to the end of the line), then any CSI sequence, then any other ESC sequence, then
+  # whatever C0 control or DEL byte is left (CR, a stray ESC). sed runs under LC_ALL=C so
+  # the bracket ranges are byte-exact.
   esc=$'\033'; bel=$'\007'
   tt=$(printf '%s' "$tt" \
-    | sed -E "s#${esc}\][^${bel}${esc}]*(${bel}|${esc}\\\\)##g; s#${esc}\[[0-9:;<=>?]*[ -/]*[A-Za-z]##g" \
+    | LC_ALL=C sed -E "s#${esc}\][^${bel}${esc}]*(${bel}|${esc}\\\\)##g; s#${esc}\].*\$##; s#${esc}\[[0-9:;<=>?]*[ -/]*[@-~]##g; s#${esc}[ -/]*[0-~]##g" \
     | tr -d '\000-\037\177')
 fi
 tt_fg=$TEAL

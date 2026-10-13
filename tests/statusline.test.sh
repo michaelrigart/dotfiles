@@ -98,6 +98,18 @@ if [ "$out" = "$plain_run" ]; then
   _pass "a BEL-terminated OSC 8 hyperlink is stripped (byte-identical)"
 else _fail "BEL-terminated OSC must not reach the statusline" "$(printf '%s' "$out" | od -c | head -3)"; fi
 
+# --- every CSI final byte, other ESC sequences and an unterminated OSC are stripped ---
+# (\x1b, not \033: printf %b would read "\0337" as one octal escape)
+check_plain() {
+  local out
+  out=$(run tt 200 "$2\n")
+  if [ "$out" = "$plain_run" ]; then _pass "$1 are stripped (byte-identical)"
+  else _fail "$1 must not reach the statusline" "$(printf '%s' "$out" | od -c | head -3)"; fi
+}
+check_plain "CSI 5~ and CSI 2@" "\x1b[5~work\x1b[2@ $DOT 5h 31% $DOT 7d 12%"
+check_plain "ESC ( B and ESC 7" "\x1b(Bwork\x1b7 $DOT 5h 31% $DOT 7d 12%"
+check_plain "an unterminated OSC 8 after the usage text" "work $DOT 5h 31% $DOT 7d 12%\x1b]8;;http://example.test/a"
+
 # --- only the first line is used ---
 out=$(run tt 200 "$TT\nsecond line\n")
 if has "$(strip "$out")" "$TT" && ! has "$(strip "$out")" "second line"; then
