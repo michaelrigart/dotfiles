@@ -27,6 +27,7 @@
 # --force` resets Homebrew's trust store to exactly what this file declares, so trust
 # lives here and nowhere else.
 tap "basecamp/tap", trusted: true
+tap "michaelrigart/tap", trusted: true
 tap "skyhook-io/tap", trusted: true
 
 # ansible: managed by mise (~/.config/mise/config.toml), not Homebrew, so provisioning
@@ -68,6 +69,7 @@ brew "kubie"
 brew "lazygit"
 brew "lazysql"
 brew "libpq"                           # Rails / pg
+brew "michaelrigart/tap/tagteam"       # multi-account switcher for the agent CLIs (~/Code/tagteam)
 brew "mise"
 brew "mono-libgdiplus"                 # Iris.WeInspect Reporting Service — System.Drawing.Common on macOS
 brew "mtr"
