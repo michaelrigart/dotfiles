@@ -412,6 +412,7 @@ rc_is 1 "refuses to remove the worktree it is standing in"
 setup
 run "$REPO" wt-rm nope
 rc_is 1 "unknown worktree is refused"
+has "does not exist." "an unknown worktree keeps the specific refusal"
 
 # A failing `git status` must never read as "clean". Corrupt the linked worktree's index
 # specifically: HEAD stays readable, so _wt_assert_worktree still passes and execution
@@ -557,9 +558,9 @@ rc_is 1 "missing zsh/system refuses instead of running unlocked"
 # 1) A lock held by another process makes every lifecycle command refuse and
 #    name the slug. Held here in the test shell, contended from run()'s
 #    subshell — a different process, which is the only kind fcntl locks exclude.
-#    The target is created first: `wt-rm` and `wt-prepare` refuse an absent
-#    directory BEFORE they reach the lock, so an empty fixture would produce the
-#    wrong refusal and prove nothing about contention.
+#    The target is created first: `wt-prepare` refuses an absent directory BEFORE
+#    it reaches the lock, so an empty fixture would produce the wrong refusal and
+#    prove nothing about contention.
 setup
 CD="$REPO/.git"
 run "$REPO" wt z1
@@ -579,6 +580,21 @@ has "another lifecycle command is working on 'z1'" "wt-rm's refusal names the sl
 [[ -d "$HOME/Code/Org/repo-z1" ]] && _pass "the refused wt-rm removed nothing" \
                                   || _fail "the refused wt-rm removed nothing"
 _wt_unlock
+
+# z5: wt-rm decides between its two paths only under the lock, so a recovery
+# candidate is refused while another lifecycle command holds the target.
+setup
+CD="$REPO/.git"
+run "$REPO" wt z5
+rm -rf "$HOME/Code/Org/repo-z5"
+source "$FUNCS"
+_wt_lock "$CD" z5 >/dev/null 2>&1
+run "$REPO" wt-rm z5
+rc_is 1 "z5 wt-rm refuses a recovery candidate while the lock is held"
+has "another lifecycle command is working on 'z5'" "z5 the refusal is the lock's"
+_wt_unlock
+run "$REPO" git worktree list --porcelain
+has "$HOME/Code/Org/repo-z5" "z5 the registration survives the refused recovery"
 
 # 2) Release after a SUCCESSFUL command, observed from the shell that ran it.
 setup
@@ -1399,6 +1415,136 @@ eq "$(lock_reason_of "$Q12")" "wt-managed; remove with command wt-rm" \
 run "$REPO" git branch --list --format='%(refname:short)' q12
 eq "$OUT" "q12" "Q12 the branch is kept"
 chmod 700 "$Q12_REG"
+run "$REPO" wt-rm q12
+rc_is 0 "Q12 a retry finishes the partial removal"
+has "is already gone — finishing its removal without re-running teardown" "Q12 the retry says teardown is skipped"
+has "reclaim its resources yourself" "Q12 the retry says what it leaves to the user"
+eq "$(wc -l < "$REPO/q12-teardowns" | tr -d ' ')" "1" "Q12 teardown ran once, not again on the retry"
+run "$REPO" git worktree list --porcelain
+hasnt "$Q12" "Q12 the Herdr-locked registration is removed (only --force --force can)"
+run "$REPO" git branch --list --format='%(refname:short)' q12
+eq "$OUT" "" "Q12 the merged branch is deleted"
+
+# Q13: an unlocked registration whose checkout is gone takes a plain remove.
+setup
+run "$REPO" wt q13
+Q13="$HOME/Code/Org/repo-q13"
+git -C "$REPO" worktree unlock "$Q13"
+rm -rf "$Q13"
+run "$REPO" wt-rm q13
+rc_is 0 "Q13 an unlocked registration whose checkout is gone is removed"
+run "$REPO" git worktree list --porcelain
+hasnt "$Q13" "Q13 the registration is removed"
+
+# Q14: a registration at the right path on another branch is refused.
+setup
+Q14="$HOME/Code/Org/repo-q14"
+git -C "$REPO" worktree add -q "$Q14" -b q14-other
+rm -rf "$Q14"
+run "$REPO" wt-rm q14
+rc_is 1 "Q14 a missing checkout registered on another branch is refused"
+has "is on 'q14-other', not 'q14'" "Q14 the refusal names the branch it has"
+run "$REPO" git worktree list --porcelain
+has "$Q14" "Q14 the registration survives"
+
+# Q15: another owner's lock is never crossed, checkout or no checkout.
+setup
+run "$REPO" wt q15
+Q15="$HOME/Code/Org/repo-q15"
+git -C "$REPO" worktree unlock "$Q15"
+git -C "$REPO" worktree lock --reason "user maintenance" "$Q15"
+rm -rf "$Q15"
+run "$REPO" wt-rm q15
+rc_is 1 "Q15 a missing checkout under another owner's lock is refused"
+has "locked for another reason: user maintenance" "Q15 the refusal names the lock"
+hunlogged "workspace close" "Q15 nothing is closed"
+eq "$(lock_reason_of "$Q15")" "user maintenance" "Q15 the registration and its lock survive"
+run "$REPO" git branch --list --format='%(refname:short)' q15
+eq "$OUT" "q15" "Q15 the branch survives"
+
+# Q16: absence must be proven. A parent that cannot be listed proves nothing, because
+# a denied stat looks just like a missing path. Mode 100 keeps the parent searchable,
+# so the main checkout beside the target still works.
+setup
+run "$REPO" wt q16
+Q16="$HOME/Code/Org/repo-q16"
+rm -rf "$Q16"
+chmod 100 "$HOME/Code/Org"
+run "$REPO" wt-rm q16
+chmod 755 "$HOME/Code/Org"
+rc_is 1 "Q16 a target whose parent cannot be listed is refused"
+has "cannot confirm $Q16 is gone" "Q16 the refusal says absence is unproven"
+run "$REPO" git worktree list --porcelain
+has "$Q16" "Q16 the registration survives"
+run "$REPO" git branch --list --format='%(refname:short)' q16
+eq "$OUT" "q16" "Q16 the branch survives"
+
+# Q17: a foreign Herdr pane still inside the deleted path refuses, closing nothing.
+setup
+run "$REPO" wt q17
+Q17="$HOME/Code/Org/repo-q17"
+rm -rf "$Q17"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)")"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[
+  {\"workspace_id\":\"w1\",\"label\":\"Org/repo\",\"worktree\":{\"checkout_path\":\"$REPO\",\"is_linked_worktree\":false}}]}}"
+export MOCK_H_PANES="{\"result\":{\"panes\":[
+  {\"workspace_id\":\"w1\",\"pane_id\":\"w1:p2\",\"cwd\":\"$Q17/app\"}]}}"
+run "$REPO" wt-rm q17
+rc_is 1 "Q17 a foreign pane inside the deleted path refuses recovery"
+has "w1:p2" "Q17 the refusal names the pane"
+hunlogged "workspace close" "Q17 nothing is closed"
+run "$REPO" git worktree list --porcelain
+has "$Q17" "Q17 the registration survives"
+
+# Q18: the checkout's own workspace, still pointing at the deleted path, is closed.
+setup
+run "$REPO" wt q18
+Q18="$HOME/Code/Org/repo-q18"
+rm -rf "$Q18"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)")"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[
+  {\"workspace_id\":\"w7\",\"label\":\"q18\",\"worktree\":{\"checkout_path\":\"$Q18\",\"is_linked_worktree\":true}}]}}"
+export MOCK_H_PANES="{\"result\":{\"panes\":[
+  {\"workspace_id\":\"w7\",\"pane_id\":\"w7:p1\",\"cwd\":\"$Q18\"}]}}"
+run "$REPO" wt-rm q18
+rc_is 0 "Q18 recovery closes the deleted checkout's own workspace and finishes"
+hlogged "workspace close w7" "Q18 the own workspace is closed"
+run "$REPO" git worktree list --porcelain
+hasnt "$Q18" "Q18 the registration is removed"
+
+# Q19: a dangling symlink, or a plain file, at the target is not absence.
+setup
+run "$REPO" wt q19
+Q19="$HOME/Code/Org/repo-q19"
+rm -rf "$Q19"
+ln -s "$ROOTTMP/nowhere" "$Q19"
+run "$REPO" wt-rm q19
+rc_is 1 "Q19 a dangling symlink at the target is refused"
+has "$Q19 does not exist." "Q19 it gets the existing refusal, not recovery"
+rm -f "$Q19"; : > "$Q19"
+run "$REPO" wt-rm q19
+rc_is 1 "Q19 a plain file at the target is refused"
+run "$REPO" git worktree list --porcelain
+has "$Q19" "Q19 the registration survives both"
+
+# Q20: a branch with a slash matches on the branch, not on the slug.
+setup
+run "$REPO" wt fix/q20
+Q20="$HOME/Code/Org/repo-fix-q20"
+rm -rf "$Q20"
+run "$REPO" wt-rm fix/q20
+rc_is 0 "Q20 recovery matches a slashed branch on its full name"
+run "$REPO" git branch --list --format='%(refname:short)' fix/q20
+eq "$OUT" "" "Q20 its merged branch is deleted"
+
+# Q21: a detached registration at the target is refused.
+setup
+Q21="$HOME/Code/Org/repo-q21"
+git -C "$REPO" worktree add -q --detach "$Q21"
+rm -rf "$Q21"
+run "$REPO" wt-rm q21
+rc_is 1 "Q21 a missing checkout on a detached HEAD is refused"
+has "is on 'a detached HEAD', not 'q21'" "Q21 the refusal says it is detached"
 
 # --- a real SIGINT during wt-rm must destroy nothing -------------------------
 #

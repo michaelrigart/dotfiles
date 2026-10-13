@@ -933,6 +933,105 @@ _wt_branch_content_merged() {
   return 1
 }
 
+# _wt_rm_lock_class <main> <dest> — 0 Herdr-owned (crossed with Git's double force),
+# 1 unlocked, 2 refused: another owner's lock, or lock state that cannot be read.
+_wt_rm_lock_class() {
+  emulate -L zsh
+  _wt_git_lock_state "$1" "$2"
+  case $? in
+    0) [[ "$_WT_GIT_LOCK_REASON" == "$(_wt_herdr_lock_reason)" ]] && return 0
+       print -ru2 -- "wt-rm: $2 is locked for another reason: ${_WT_GIT_LOCK_REASON:-<no reason>}"
+       print -ru2 -- "    Unlock it yourself only if that owner no longer needs it."
+       return 2 ;;
+    1) return 1 ;;
+    *) return 2 ;;
+  esac
+}
+
+# _wt_rm_branch <main> <branch> <qb> — delete a removed worktree's branch if its work
+# is merged; keeping it is not a failure.
+_wt_rm_branch() {
+  emulate -L zsh
+  local main="$1" branch="$2" qb="$3"
+  # -d first, stderr suppressed: its refusal is not a verdict, since a squash-merged
+  # branch fails -d. Only if the content test also declines is the work unmerged.
+  if ! _wt_git -C "$main" branch -d "$branch" 2>/dev/null; then
+    if _wt_branch_content_merged "$main" "$branch" \
+       && _wt_git -C "$main" branch -D "$branch" >/dev/null 2>&1; then
+      print -r -- "✓ deleted branch $qb (squash-merged — its content is already in the base)"
+    else
+      print -ru2 -- "wt-rm: branch $qb kept (not fully merged) — inspect or merge it before deleting it explicitly."
+    fi
+  fi
+  return 0
+}
+
+# _wt_rm_registration <main> <dest> <branch> <qb> — finish a removal that deleted the
+# checkout but not Git's registration of it. Runs under wt-rm's lock, when $dest is
+# not a directory.
+#
+# Absence is proven, not inferred: a denied stat fails exactly like a missing path, and
+# Git's own prunable test with it. $dest's parent also holds the main checkout, so a
+# listing that lacks the main checkout is a listing that failed.
+_wt_rm_registration() {
+  emulate -L zsh
+  local main="$1" dest="$2" branch="$3" qb="$4" rec wt_path have="" rc in_target=0 found=0
+  local -a names fields
+  if [[ -e "$dest" || -L "$dest" ]]; then
+    print -ru2 -- "wt-rm: $dest does not exist."
+    return 1
+  fi
+  names=( "${dest:h}"/*(DN:t) )
+  if (( ! ${names[(Ie)${main:t}]} || ${names[(Ie)${dest:t}]} )); then
+    print -ru2 -- "wt-rm: cannot confirm $dest is gone — ${dest:h} cannot be listed reliably. Refusing."
+    return 1
+  fi
+  fields=( ${(0)"$(_wt_git -C "$main" worktree list --porcelain -z 2>/dev/null)"} ); rc=$?
+  if (( rc )); then
+    print -ru2 -- "wt-rm: cannot read Git's worktree list — refusing."
+    return 1
+  fi
+  for rec in $fields; do
+    if [[ "$rec" == 'worktree '* ]]; then
+      wt_path="${rec#worktree }"
+      in_target=0
+      [[ "${wt_path:A}" == "${dest:A}" ]] && { in_target=1; found=1 }
+    elif (( in_target )) && [[ "$rec" == 'branch refs/heads/'* ]]; then
+      have="${rec#branch refs/heads/}"
+    fi
+  done
+  if (( ! found )); then
+    print -ru2 -- "wt-rm: $dest does not exist."
+    return 1
+  fi
+  if [[ "$have" != "$branch" ]]; then
+    print -ru2 -- "wt-rm: Git's registration of $dest is on '${have:-a detached HEAD}', not '$branch' — refusing."
+    return 1
+  fi
+
+  local herdr_owned=0
+  _wt_rm_lock_class "$main" "$dest"
+  case $? in
+    0) herdr_owned=1 ;;
+    1) ;;
+    *) return 1 ;;
+  esac
+  _wt_stop_herdr_workspaces "$dest" || return 1
+
+  print -ru2 -- "wt-rm: $dest is already gone — finishing its removal without re-running teardown."
+  print -ru2 -- "    If it was deleted by hand rather than by an interrupted wt-rm, reclaim its resources yourself."
+  local -a remove_args
+  remove_args=(worktree remove "$dest")
+  (( herdr_owned )) && remove_args=(worktree remove --force --force "$dest")
+  if ! _wt_git -C "$main" $remove_args; then
+    print -ru2 -- "wt-rm: removing Git's registration of $dest failed — it remains; branch $qb kept."
+    print -ru2 -- "    Fix the obstruction Git reported above, then retry: wt-rm $qb"
+    return 1
+  fi
+  print -r -- "✓ removed Git's registration of $dest"
+  _wt_rm_branch "$main" "$branch" "$qb"
+}
+
 # wt-rm <branch> — retire a worktree made by `wt`. Run from another checkout of the
 # same repo, never from inside the one being removed.
 #
@@ -947,6 +1046,10 @@ _wt_branch_content_merged() {
 #      which Git and Herdr cannot see. After teardown because stopping project
 #      services is what teardown is for. A heuristic, not a proof.
 #
+# A checkout that is gone while Git still registers it — a removal that failed after
+# deleting it — skips steps 1-6: _wt_rm_registration proves the absence, reruns the
+# lock and Herdr checks, and removes only the registration.
+#
 # Runs under the per-target lock, released in an `always` block. An interrupt is not
 # covered by it; see the interruption note above _wt_hook_check for why no INT/TERM
 # trap is installed.
@@ -959,9 +1062,9 @@ wt-rm() {
   common="$(_wt_git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
   dest="${main:h}/${main:t}-${slug}"
 
-  [[ -d "$dest" ]] || { print -ru2 -- "wt-rm: $dest does not exist."; return 1; }
   _wt_lock "$common" "$slug" || return 1
   {
+    [[ -d "$dest" ]] || { _wt_rm_registration "$main" "$dest" "$branch" "$qb"; return }
     _wt_assert_worktree "$main" "$dest" "$branch" || return 1
 
     local here; here="$(_wt_git rev-parse --path-format=absolute --show-toplevel 2>/dev/null)"
@@ -984,18 +1087,10 @@ wt-rm() {
 
     # Classify the Git lock before stopping anything. Only our exact reason
     # authorizes the double-force removal; any other lock is a preservation request.
-    local git_lock_state herdr_owned=0 wanted_lock
-    wanted_lock="$(_wt_herdr_lock_reason)"
-    _wt_git_lock_state "$main" "$dest"; git_lock_state=$?
-    case "$git_lock_state" in
-      0)
-        if [[ "$_WT_GIT_LOCK_REASON" == "$wanted_lock" ]]; then
-          herdr_owned=1
-        else
-          print -ru2 -- "wt-rm: $dest is locked for another reason: ${_WT_GIT_LOCK_REASON:-<no reason>}"
-          print -ru2 -- "    Unlock it yourself only if that owner no longer needs it."
-          return 1
-        fi ;;
+    local herdr_owned=0
+    _wt_rm_lock_class "$main" "$dest"
+    case $? in
+      0) herdr_owned=1 ;;
       1) ;;
       *) return 1 ;;
     esac
@@ -1068,16 +1163,7 @@ wt-rm() {
     fi
     print -r -- "✓ removed worktree $dest"
 
-    # -d first, stderr suppressed: its refusal is not a verdict, since a squash-merged
-    # branch fails -d. Only if the content test also declines is the work unmerged.
-    if ! _wt_git -C "$main" branch -d "$branch" 2>/dev/null; then
-      if _wt_branch_content_merged "$main" "$branch" \
-         && _wt_git -C "$main" branch -D "$branch" >/dev/null 2>&1; then
-        print -r -- "✓ deleted branch $qb (squash-merged — its content is already in the base)"
-      else
-        print -ru2 -- "wt-rm: branch $qb kept (not fully merged) — inspect or merge it before deleting it explicitly."
-      fi
-    fi
+    _wt_rm_branch "$main" "$branch" "$qb"
 
     [[ -d "$dest" ]] \
       && print -ru2 -- "wt-rm: $dest still exists (files recreated during removal) — remove it manually."
