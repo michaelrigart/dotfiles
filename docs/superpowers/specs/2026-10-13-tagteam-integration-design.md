@@ -209,6 +209,14 @@ and a final whole-branch review followed. The rulings made during execution:
   never a wrong width. tagteam runs with `--no-color`, and its format emits none of them. The
   test stub writes escapes with `printf '%b'` and `\x1b`, which relies on macOS `/bin/sh`
   being bash. On a dash `/bin/sh` those tests would fail loudly, never pass falsely.
+- **The segment is shown only when the line's width can be established.** The renderer
+  counts codepoints, not terminal cells. So a double-width character (CJK, Hangul, most
+  emoji) would make a line that "fits" overflow, which the pre-merge review caught. The
+  segment is now left out whenever the line contains a UTF-8 lead byte E3–ED or F0–F4, which
+  covers U+3000–U+DFFF and every 4-byte character. Measuring true cell width would need a
+  wcwidth table in bash 3.2, and this keeps a line without the segment exactly as it was. The
+  cost: a line containing CJK or emoji never shows the segment. A rare wide character outside
+  those ranges, such as a fullwidth `EF` form, could still overflow by its extra cell.
 - **The probes classify by errno, never by `stat`.** The sandbox denies metadata of a denied
   file and returns it only for directories. So the boundary suite reads each candidate
   directly, both inside `rescue/` and `displaced/` and inside each session directory, and
