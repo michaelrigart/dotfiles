@@ -43,6 +43,8 @@ CYAN="125;207;255"    # #7dcfff  model text
 GREEN="158;206;106"   # #9ece6a  branch text
 MAGENTA="187;154;247" # #bb9af7  skill text (accent)
 YELLOW="224;175;104"  # #e0af68  effort text (beside the model)
+TEAL="115;218;202"    # #73daca  tagteam account + usage text
+RED="247;118;142"     # #f7768e  the same at 90% or more
 
 # Glyphs are built from raw UTF-8 bytes so the source stays pure ASCII (private-use
 # Nerd Font codepoints get stripped if written literally).
@@ -53,35 +55,71 @@ DASH=$(printf '\xe2\x80\x94')  # U+2014  — em dash (no-skill placeholder)
 DOT=$(printf '\xc2\xb7')       # U+00B7  · middot (model / effort separator)
 R=$'\033[0m'
 
-# segments: "fg|bg|text"  (';' is used inside colors, so '|' is a safe delimiter)
-segs=()
-segs+=("$BLUE|$NIGHT|$dir")
-[ -n "$branch" ] && segs+=("$GREEN|$BGHL|$BR $branch")
+# --- tagteam: the live account and its usage. Empty when tagteam is missing, fails (it
+# cannot open its store inside the sandbox) or prints nothing; then no segment is shown. ---
+tt=""
+if command -v tagteam >/dev/null 2>&1; then
+  tt=$(tagteam --no-color statusline </dev/null 2>/dev/null) || tt=""
+  tt=${tt%%$'\n'*}
+  tt=$(printf '%s' "$tt" | sed $'s/\033\\[[0-9;]*m//g')
+fi
+tt_fg=$TEAL
+if [ -n "$tt" ]; then
+  max=$(printf '%s' "$tt" | grep -oE '[0-9]+(\.[0-9]+)?%' | cut -d. -f1 | tr -d '%' | sort -n | tail -1)
+  [ -n "$max" ] && [ "$max" -ge 90 ] && tt_fg=$RED
+fi
+
 # model, with the live reasoning effort beside it in muted yellow (omitted when
 # the model doesn't expose an effort level, i.e. .effort.level is absent)
 model_seg="$model"
 [ -n "$effort" ] && model_seg="$model $(printf '\033[38;2;%sm' "$YELLOW")$DOT $effort"
-segs+=("$CYAN|$NIGHT|$model_seg")
-if [ -n "$skill" ]; then
-  segs+=("$MAGENTA|$BGHL|$ARR $skill")
+
+# segments: "fg|bg|text"  (';' is used inside colors, so '|' is a safe delimiter)
+# build_segs <0|1>: 1 adds the tagteam segment after the model; the skill segment then
+# takes the NIGHT shade so neighbouring backgrounds keep alternating.
+build_segs() {
+  local skill_bg=$BGHL
+  segs=()
+  segs+=("$BLUE|$NIGHT|$dir")
+  [ -n "$branch" ] && segs+=("$GREEN|$BGHL|$BR $branch")
+  segs+=("$CYAN|$NIGHT|$model_seg")
+  if [ "$1" = 1 ]; then
+    segs+=("$tt_fg|$BGHL|$tt")
+    skill_bg=$NIGHT
+  fi
+  if [ -n "$skill" ]; then
+    segs+=("$MAGENTA|$skill_bg|$ARR $skill")
+  else
+    segs+=("$COMMENT|$skill_bg|$ARR $DASH")
+  fi
+}
+
+# render: segs -> out, prevbg, and w (the cluster's visible width). Strip ANSI, then
+# count UTF-8 codepoints as the bytes that are NOT continuation bytes (0x80-0xBF).
+# Locale-independent, so it is correct no matter what LC_* the harness hands us.
+render() {
+  local s fg rest bg text plain
+  out=""; prevbg=""
+  for s in "${segs[@]}"; do
+    fg=${s%%|*}; rest=${s#*|}; bg=${rest%%|*}; text=${rest#*|}
+    [ -n "$prevbg" ] && out+=$'\033['"38;2;${prevbg};48;2;${bg}m${SEP}"
+    out+=$'\033['"38;2;${fg};48;2;${bg}m ${text} "
+    prevbg=$bg
+  done
+  plain=$(printf '%s' "$out" | sed $'s/\033\\[[0-9;]*m//g')
+  w=$(printf '%s' "$plain" | LC_ALL=C tr -d '\200-\277' | LC_ALL=C wc -c)
+  w=$((w))
+}
+
+# The renderer never truncates, so the tagteam segment is kept only when the closing
+# separator and at least one column of filler still fit: then the line ends exactly at
+# $cols. Otherwise the line is what it was without tagteam.
+if [ -n "$tt" ]; then
+  build_segs 1; render
+  [ "$w" -le $((cols - 2)) ] || { build_segs 0; render; }
 else
-  segs+=("$COMMENT|$BGHL|$ARR $DASH")
+  build_segs 0; render
 fi
-
-out=""; prevbg=""
-for s in "${segs[@]}"; do
-  fg=${s%%|*}; rest=${s#*|}; bg=${rest%%|*}; text=${rest#*|}
-  [ -n "$prevbg" ] && out+=$'\033['"38;2;${prevbg};48;2;${bg}m${SEP}"
-  out+=$'\033['"38;2;${fg};48;2;${bg}m ${text} "
-  prevbg=$bg
-done
-
-# Visible width of the cluster: strip ANSI, then count UTF-8 codepoints as the
-# bytes that are NOT continuation bytes (0x80-0xBF). Locale-independent, so it is
-# correct no matter what LC_* the harness hands us.
-plain=$(printf '%s' "$out" | sed $'s/\033\\[[0-9;]*m//g')
-w=$(printf '%s' "$plain" | LC_ALL=C tr -d '\200-\277' | LC_ALL=C wc -c)
-w=$((w))
 
 # filler bar to the right edge (total visible width == cols)
 n=$((cols - w - 1))
