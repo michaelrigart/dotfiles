@@ -1,6 +1,6 @@
 # wt-rm: finish a partial removal
 
-**Status:** Approved
+**Status:** In progress (branch fix/wt-rm-partial-removal; the dotfiles have no MR)
 
 Amends the removal step of the [worktree hook protocol](2026-07-30-worktree-hook-protocol-design.md)
 (§9.3) and check 4 of the [Herdr/wt simplification](2026-10-01-herdr-wt-simplification-design.md)
