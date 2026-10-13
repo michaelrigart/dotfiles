@@ -1,6 +1,6 @@
 # wt-rm: finish a partial removal
 
-**Status:** In progress (branch fix/wt-rm-partial-removal; the dotfiles have no MR)
+**Status:** Implemented (branch fix/wt-rm-partial-removal; the dotfiles have no MR, so the rulings are recorded in "Implementation notes" at the end)
 
 Amends the removal step of the [worktree hook protocol](2026-07-30-worktree-hook-protocol-design.md)
 (§9.3) and check 4 of the [Herdr/wt simplification](2026-10-01-herdr-wt-simplification-design.md)
@@ -223,3 +223,42 @@ today.
   - **Both gone** has no fixture. Git reports failure only when a delete fails, so in
     practice something is always left behind. That row exists to fail closed, not because
     it was observed.
+
+## Implementation notes
+
+The branch is `fix/wt-rm-partial-removal`. It ran as four plan tasks, with a fresh review after each and three fix rounds on Task 4. Codex approved the spec, the §1 amendment, the plan and the added Task 4, each in its second round.
+
+### Beyond the spec's letter
+
+- **Absence proof (§2).** It also requires the main checkout's name in the parent listing. The glob's `N` qualifier returns nothing for a listing that failed, so without that check a failed listing would read as "absent".
+- **Shared lookup.** The recovery path and the §1 report share one quiet record lookup, `_wt_worktree_record`. An empty worktree list counts as a failed read.
+- **Proving the `.git` link is gone.** This uses `command ls -A`, with its exit status checked. Its environment is pinned (`CLICOLOR_FORCE` and `LS_COLORS` unset, `QUOTING_STYLE=literal`, `LC_ALL=C`), so decorated output cannot fail the exact `.git` match. A failed match would read as "link gone", which is the unsafe direction.
+- **Test injector.** The suite's git call-failure injector gained `WT_FAIL_SKIP`, which fails a mutating call without running it, and a second slot (`WT_FAIL_MATCH2`, `WT_FAIL_NTH2`, `WT_FAIL_LOG2`), which always runs the real git first.
+
+### Rulings
+
+Each ruling lists what it costs if it is wrong.
+
+- **The original q11 message.** It was escalated rather than changed under the first spec. Michael chose to fix it, which became the §1 amendment. Cost: none now.
+- **Lock files for typos.** `wt-rm <typo>` now creates an empty `.git/wt-locks/<slug>.lock` before refusing, because the decision is made under the lock (§2). `wt` already does this. Cost: empty lock files.
+- **A checkout moved by hand** (not deleted) looks absent, and the retry unregisters it. Its files survive at the new place, and unmerged branches are kept. Cost: `git worktree repair` no longer applies to it.
+- **Grace-period wording.** "after waiting 5 s" counts sleep time only. A deadline loop would make the instant-`sleep` schedule untestable. Cost: the real wait is about 5 s plus 11 `lsof` runs.
+- **Record walker.** The recovery path's record walker is separate from `_wt_git_lock_state`'s and `_wt_primary`'s. Folding them together would touch helpers the normal path depends on. Cost: the walkers could drift apart.
+- **Unsearchable parent.** `$dest`'s own existence is still decided by `-e`/`-L`. When its parent cannot be searched, the result is the "checkout is deleted … finish with: wt-rm" message. That is retry advice, never deletion advice, and the retry's own absence proof then refuses. Cost: one misleading message in that case.
+- **Test-hygiene gaps.** These were accepted:
+  - The restores after `chmod 500` (Q12, q11) and `chmod 100` (Q16) have no trap. A failed assertion never aborts the suite.
+  - q11 cannot catch a "both messages printed" regression.
+
+  Cost: stray temporary directories, and one undetected double message.
+- **Branches with no fixture.** These fail closed, but cannot be reached without faking Git or Seatbelt:
+  - the "both gone" row;
+  - the half of the absence proof where the name is listed but `stat` fails;
+  - the top-level-mismatch branch of the working-checkout test.
+
+  Cost: three untested branches.
+- **The q23 ls-decoration check** only discriminates where `ls` is BSD ls. GNU ls never colours a pipe by default, so there the pin is inert. Cost: no guard on a GNU-ls machine, where the hazard does not arise either.
+
+### Test record
+
+- `tests/wt-functions.test.sh`: 509/509 (it was 385 before the branch).
+- Full `./tests/run.sh` on 4e56515: 31 suites passed, 3714/3714 assertions; 8 skipped by their `needs:` tags.

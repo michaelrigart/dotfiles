@@ -1,5 +1,7 @@
 # wt-rm partial-removal recovery — implementation plan
 
+**Status:** Completed 2026-10-13 on branch `fix/wt-rm-partial-removal` (Tasks 1–4). Do not execute again.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** When `git worktree remove` deletes a checkout but not Git's registration, `wt-rm`
