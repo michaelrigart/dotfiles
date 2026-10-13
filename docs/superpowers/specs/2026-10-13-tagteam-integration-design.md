@@ -210,13 +210,21 @@ and a final whole-branch review followed. The rulings made during execution:
   test stub writes escapes with `printf '%b'` and `\x1b`, which relies on macOS `/bin/sh`
   being bash. On a dash `/bin/sh` those tests would fail loudly, never pass falsely.
 - **The segment is shown only when the line's width can be established.** The renderer
-  counts codepoints, not terminal cells. So a double-width character (CJK, Hangul, most
-  emoji) would make a line that "fits" overflow, which the pre-merge review caught. The
-  segment is now left out whenever the line contains a UTF-8 lead byte E3–ED or F0–F4, which
-  covers U+3000–U+DFFF and every 4-byte character. Measuring true cell width would need a
-  wcwidth table in bash 3.2, and this keeps a line without the segment exactly as it was. The
-  cost: a line containing CJK or emoji never shows the segment. A rare wide character outside
-  those ranges, such as a fullwidth `EF` form, could still overflow by its extra cell.
+  counts codepoints, not terminal cells. So a wide character (CJK, Hangul, fullwidth forms,
+  most emoji) would make a line that "fits" overflow, and a combining mark would leave it
+  short. The pre-merge reviews caught both. The segment is now shown only when every
+  character's width is known. Known means printable ASCII, a two-byte UTF-8 character other
+  than the combining marks U+0300–U+036F (lead bytes C2–CB and CE–DF), or one of the
+  statusline's own glyphs (U+E0B0, U+E0A0, U+25B8, U+2014). Anything else leaves the segment
+  out: any other three- or four-byte character, a combining mark, a control character or
+  invalid UTF-8. The check reads the line byte by byte, so the locale cannot change it.
+  Measuring true cell width would need a wcwidth table in bash 3.2, and this keeps a line
+  without the segment exactly as it was. The cost: a line with CJK, emoji or any other
+  character outside that set never shows the segment. The residual: a zero-width character
+  inside the two-byte range, such as a Hebrew point, an Arabic mark or a combining mark
+  outside U+0300–U+036F, can leave a line one column short. Ambiguous-width characters, such
+  as Greek, Cyrillic and the statusline's own glyphs, count as narrow, as the statusline
+  has always assumed. Nothing can make a line that shows the segment overflow.
 - **The probes classify by errno, never by `stat`.** The sandbox denies metadata of a denied
   file and returns it only for directories. So the boundary suite reads each candidate
   directly, both inside `rescue/` and `displaced/` and inside each session directory, and

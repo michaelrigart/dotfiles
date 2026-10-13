@@ -101,12 +101,19 @@ build_segs() {
   fi
 }
 
-# render: segs -> out, prevbg, w (the cluster's visible width) and wide (the count of lead
-# bytes of double-width characters: CJK, kana, Hangul, emoji). Strip ANSI, then
-# count UTF-8 codepoints as the bytes that are NOT continuation bytes (0x80-0xBF).
-# Locale-independent, so it is correct no matter what LC_* the harness hands us.
+# render: segs -> out, prevbg, w (the cluster's visible width) and unknown.
+# w: strip ANSI, then count UTF-8 codepoints as the bytes that are NOT continuation bytes
+# (0x80-0xBF). Locale-independent, so it is correct no matter what LC_* the harness hands us.
+# unknown: the count of bytes that belong to no character of known width. Under LC_ALL=C,
+# one left-to-right pass over out removes the colour codes, the glyphs SEP BR ARR DASH and
+# every two-byte character with lead C2-CB or CE-DF (CC and CD lead the combining marks
+# U+0300-036F); unknown counts the bytes left that are not printable ASCII: those of any
+# other three- or four-byte character, a combining mark, a control character or invalid
+# UTF-8. It reads out, not plain, because on invalid UTF-8 the sed that builds plain prints
+# nothing.
 render() {
-  local s fg rest bg text plain
+  local s fg rest bg text plain esc=$'\033' narrow
+  printf -v narrow '[\xc2-\xcb\xce-\xdf][\x80-\xbf]'
   out=""; prevbg=""
   for s in "${segs[@]}"; do
     fg=${s%%|*}; rest=${s#*|}; bg=${rest%%|*}; text=${rest#*|}
@@ -117,18 +124,20 @@ render() {
   plain=$(printf '%s' "$out" | sed $'s/\033\\[[0-9;]*m//g')
   w=$(printf '%s' "$plain" | LC_ALL=C tr -d '\200-\277' | LC_ALL=C wc -c)
   w=$((w))
-  wide=$(printf '%s' "$plain" | LC_ALL=C tr -dc '\343-\355\360-\364' | LC_ALL=C wc -c)
-  wide=$((wide))
+  unknown=$(printf '%s' "$out" \
+    | LC_ALL=C sed -E "s/${esc}\[[0-9;]*m|$SEP|$BR|$ARR|$DASH|$narrow//g" \
+    | LC_ALL=C tr -d ' -~' | LC_ALL=C wc -c)
+  unknown=$((unknown))
 }
 
 # The renderer never truncates, so the tagteam segment is kept only when the closing
-# separator and at least one column of filler still fit: then the line ends exactly at
-# $cols. Otherwise the line is what it was without tagteam. w counts codepoints, which is
-# columns only for single-width text; with any double-width character (wide) the real width
-# is unknown, so the segment is left out rather than risk a line wider than $cols.
+# separator and at least one column of filler still fit (w <= cols - 2) and every
+# character's width is known (unknown = 0). Then each character takes the one column w
+# counts for it, or none if it is zero-width, so the line ends at $cols at the latest.
+# Otherwise the line is what it was without tagteam.
 if [ -n "$tt" ]; then
   build_segs 1; render
-  { [ "$w" -le $((cols - 2)) ] && [ "$wide" -eq 0 ]; } || { build_segs 0; render; }
+  { [ "$w" -le $((cols - 2)) ] && [ "$unknown" -eq 0 ]; } || { build_segs 0; render; }
 else
   build_segs 0; render
 fi

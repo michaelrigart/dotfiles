@@ -2,7 +2,8 @@
 # Feeds a session JSON through dot_claude/executable_statusline.sh with a stub tagteam on
 # PATH and checks the tagteam segment:
 #   - shown in teal, and in red once a percentage reaches 90;
-#   - left out when tagteam is absent, fails or prints nothing, and when it would not fit.
+#   - left out when tagteam is absent, fails or prints nothing, when it would not fit, and
+#     when a character of unknown width makes the line's width unknown.
 # Left out means byte-identical to a run without tagteam.
 # Runs under /bin/bash (3.2), the oldest bash the statusline must run under.
 #
@@ -148,27 +149,56 @@ if has "$(strip "$out")" "brainstorming" && has "$out" "38;2;26;27;38;$BGHL_BG" 
 else _fail "skill segment background without tagteam" "$(strip "$out")"; fi
 INPUT=$INPUT_PLAIN
 
-# --- double-width text: the width cannot be established, so the segment is left out ---
+# --- characters of unknown width: the line's width cannot be established, so the segment
+# is left out. Known: printable ASCII, two-byte UTF-8 other than the combining marks
+# U+0300-036F, and the statusline's own glyphs. ---
 INPUT_PLAIN=$INPUT
-CJK_DIR="$T/$(printf '\xe9\xa1\xb9\xe7\x9b\xae')"
-ACC_DIR="$T/$(printf 'caf\xc3\xa9')"
-mkdir -p "$CJK_DIR" "$ACC_DIR"
-INPUT=$(printf '{"model":{"display_name":"Opus 5.5"},"effort":{"level":"high"},"workspace":{"current_dir":"%s"}}' "$CJK_DIR")
-out=$(run tt 200 "$TT\n")
-if [ "$out" = "$(run none 200)" ] && ! has "$out" "$TEAL"; then
-  _pass "a CJK workspace directory leaves the segment out (byte-identical)"
-else _fail "CJK directory should leave the segment out" "$(strip "$out")"; fi
+# in_dir <basename>: the workspace directory is $T/<basename> (a JSON string body).
+in_dir() {
+  INPUT=$(printf '{"model":{"display_name":"Opus 5.5"},"effort":{"level":"high"},"workspace":{"current_dir":"%s"}}' "$T/$1")
+}
+# left_out <label> <TT_OUT>: byte-identical to the same input without tagteam.
+left_out() {
+  local out
+  out=$(run tt 200 "$2\n")
+  if [ "$out" = "$(run none 200)" ] && ! has "$out" "$TEAL"; then _pass "$1 leaves the segment out (byte-identical)"
+  else _fail "$1 should leave the segment out" "$(strip "$out")"; fi
+}
+# shown <label> <TT_OUT> <expected text>...: teal, each text present, exactly 200 wide.
+shown() {
+  local out e ok=1
+  out=$(run tt 200 "$2\n")
+  for e in "${@:3}"; do has "$(strip "$out")" "$e" || ok=0; done
+  if [ "$ok" = 1 ] && has "$out" "$TEAL" && [ "$(vis "$out")" = 200 ]; then
+    _pass "$1 shows the segment, exactly 200 wide"
+  else _fail "$1 should show the segment" "$(strip "$out")"; fi
+}
+# mkrepo <basename> <branch>: a work tree built by hand (no `git init`), HEAD on <branch>.
+mkrepo() {
+  mkdir -p "$T/$1/.git/objects" "$T/$1/.git/refs/heads"
+  printf 'ref: refs/heads/%s\n' "$2" > "$T/$1/.git/HEAD"
+}
+mkrepo repo-main main
+mkrepo repo-invalid "$(printf 'br\x80nch')"
+BR=$(printf '\xee\x82\xa0'); ARR=$(printf '\xe2\x96\xb8'); DASH=$(printf '\xe2\x80\x94')
+SEP=$(printf '\xee\x82\xb0')
+in_dir "$(printf '\xe9\xa1\xb9\xe7\x9b\xae')"; left_out "a CJK directory" "$TT"
+in_dir "$(printf 'done\xe2\x9c\x85')";        left_out "an E2-led emoji (U+2705) in the directory" "$TT"
+in_dir "$(printf 'cafe\xcc\x81')";            left_out "a combining mark (U+0301) in the directory" "$TT"
+in_dir 'tab\tdir';                            left_out "a tab in the directory" "$TT"
+in_dir repo-invalid;                          left_out "invalid UTF-8 (a stray continuation byte) in the branch" "$TT"
 INPUT=$INPUT_PLAIN
-out=$(run tt 200 "work\xf0\x9f\x9a\x80 $DOT 5h 31% $DOT 7d 12%\n")
-if [ "$out" = "$(run none 200)" ] && ! has "$out" "$TEAL"; then
-  _pass "an emoji in tagteam's output leaves the segment out (byte-identical)"
-else _fail "emoji should leave the segment out" "$(strip "$out")"; fi
-INPUT=$(printf '{"model":{"display_name":"Opus 5.5"},"effort":{"level":"high"},"workspace":{"current_dir":"%s"}}' "$ACC_DIR")
-out=$(run tt 200 "$TT\n")
-if has "$out" "$TEAL" && has "$(strip "$out")" "$TT" && [ "$(vis "$out")" = 200 ]; then
-  _pass "a narrow accented directory still shows the segment, 200 wide"
-else _fail "accented directory should still show the segment" "$(strip "$out")"; fi
+left_out "a 4-byte emoji in the account alias" "work\xf0\x9f\x9a\x80 $DOT 5h 31% $DOT 7d 12%"
+left_out "a fullwidth A (U+FF21) in the account alias" "work\xef\xbc\xa1 $DOT 5h 31% $DOT 7d 12%"
+in_dir "$(printf 'caf\xc3\xa9')";             shown "a precomposed accented directory" "$TT" "$TT"
+in_dir "$(printf '\xd0\xb4\xd0\xb0\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xb5')"; shown "a Cyrillic directory" "$TT" "$TT"
+# The statusline's own glyphs never trip the guard: an ASCII run with a branch carries all
+# of them (SEP, BR, DOT, ARR, DASH), and they may appear in tagteam's text as well.
+in_dir repo-main
+shown "an ASCII run with a branch" "$TT" "$TT" "$BR main" "$ARR $DASH" "$SEP"
 INPUT=$INPUT_PLAIN
+GLYPHS="$SEP $BR $ARR $DASH $DOT"
+shown "account text with the statusline's own glyphs" "work $GLYPHS 5h 31%" "work $GLYPHS 5h 31%"
 
 # --- the fit boundary ---
 # Cluster width without tagteam, from a wide run: total = cols = w + 1 (separator) + pad.
