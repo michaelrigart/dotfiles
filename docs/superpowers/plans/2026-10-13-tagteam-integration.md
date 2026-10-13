@@ -91,22 +91,26 @@ Expected: FAIL on the section A exact-array comparison of the deny list; every o
 assertion passes.
 
 - [ ] **Step 3: Implement.** In `dot_claude/modify_private_settings.json`, directly after the
-  line `"Bash(basecamp auth token*)",` inside `"deny": [`, insert (indented 10 spaces, like
-  its neighbours):
+  line `"Bash(basecamp auth token*)",` inside `"deny": [`, insert the block below, indented 10
+  spaces like its neighbours.
+
+  The whole jq program in that file is one single-quoted shell string, so **no apostrophe may
+  appear anywhere in it, comments included**: one would end the string and break the modifier.
+  The block below has none. Keep it that way if you reword anything.
 
 ```
           # tagteam can hold a login in plaintext in three places: rescue/, displaced/ and
-          # each `tagteam run` profile. A Read() deny is also copied into the sandbox's
+          # each tagteam run profile. A Read() deny is also copied into the sandbox
           # read-deny list, so this covers sandboxed Bash as well as the Read tool.
           "Read(~/.local/share/tagteam/rescue/**)",    "Edit(~/.local/share/tagteam/rescue/**)",
           "Read(~/.local/share/tagteam/displaced/**)", "Edit(~/.local/share/tagteam/displaced/**)",
           "Read(~/.local/share/tagteam/sessions/*/.credentials.json)",
           "Edit(~/.local/share/tagteam/sessions/*/.credentials.json)",
-          # Keychain secrets never enter the transcript: tagteam's stored logins, Claude
-          # Code's own and gh/glab's tokens all sit in the login Keychain, which the
-          # sandbox does not cover. This keeps them out of the transcript only; a script
-          # can still call security. Accepted as known in the tagteam integration spec.
-          # The leading * also catches a global option before the verb.
+          # Keychain secrets never enter the transcript: the logins tagteam stores, the
+          # Claude Code login and the gh and glab tokens all sit in the login Keychain,
+          # which the sandbox does not cover. This keeps them out of the transcript only;
+          # a script can still call security. Accepted as known in the tagteam
+          # integration spec. The leading * also catches a global option before the verb.
           "Bash(tagteam *export*)",
           "Bash(security *find-generic-password*)",  "Bash(/usr/bin/security *find-generic-password*)",
           "Bash(security *find-internet-password*)", "Bash(/usr/bin/security *find-internet-password*)",
@@ -178,10 +182,11 @@ RED='38;2;247;118;142'
 INPUT=$(printf '{"model":{"display_name":"Opus 5.5"},"effort":{"level":"high"},"workspace":{"current_dir":"%s"}}' \
   "$T/a-rather-long-project-directory-name")
 
-# run <bin: none|tt> <cols> [TT_OUT] [TT_RC] [TT_ERR] -> the statusline's stdout
+# run <bin: none|tt> <cols> [TT_OUT] [TT_RC] [TT_ERR] -> the statusline's stdout.
+# Its stderr goes to $T/stderr, so a leak can be asserted on.
 run() {
   printf '%s' "$INPUT" | env -i HOME="$T" PATH="$T/$1:/usr/bin:/bin" COLUMNS="$2" \
-    STUB_ARGS="$T/args" TT_OUT="${3:-}" TT_RC="${4:-0}" TT_ERR="${5:-}" bash "$SL" 2>/dev/null
+    STUB_ARGS="$T/args" TT_OUT="${3:-}" TT_RC="${4:-0}" TT_ERR="${5:-}" bash "$SL" 2>"$T/stderr"
 }
 strip() { printf '%s' "$1" | sed $'s/\033\\[[0-9;]*m//g'; }
 vis()   { strip "$1" | LC_ALL=C tr -d '\200-\277' | LC_ALL=C wc -c | tr -d ' '; }
@@ -216,11 +221,12 @@ if has "$out" "$TEAL" && has "$(strip "$out")" "work $DOT no usage yet"; then
   _pass "a line without percentages shows in teal"
 else _fail "line without percentages" "$(strip "$out")"; fi
 
-# --- ANSI in tagteam's output is stripped; width still exact ---
+# --- ANSI in tagteam's output is stripped: the raw bytes equal the plain-output run ---
+plain_run=$(run tt 200 "$TT\n")
 out=$(run tt 200 "\033[1mwork\033[0m $DOT 5h 31% $DOT 7d 12%\n")
-if has "$(strip "$out")" "$TT" && [ "$(vis "$out")" = 200 ]; then
-  _pass "ANSI escapes in tagteam's output are stripped and the width stays exact"
-else _fail "ANSI in tagteam output" "$(strip "$out")"; fi
+if has "$(strip "$plain_run")" "$TT" && [ "$out" = "$plain_run" ]; then
+  _pass "ANSI escapes in tagteam's output are stripped (byte-identical to plain output)"
+else _fail "ANSI in tagteam output must not reach the statusline" "$(printf '%s' "$out" | od -c | head -3)"; fi
 
 # --- only the first line is used ---
 out=$(run tt 200 "$TT\nsecond line\n")
@@ -233,8 +239,10 @@ ref=$(run none 200)
 if ! has "$ref" "$TEAL" && ! has "$ref" "$RED"; then _pass "without tagteam there is no segment"
 else _fail "segment without tagteam" "$(strip "$ref")"; fi
 out=$(run tt 200 "$TT\n" 1 "tagteam: store error: unable to open database file")
-if [ "$out" = "$ref" ]; then _pass "exit 1 (sandboxed store error) leaves the line unchanged, stderr hidden"
+if [ "$out" = "$ref" ]; then _pass "exit 1 (sandboxed store error) leaves the line unchanged"
 else _fail "exit 1 should leave the line unchanged" "$(strip "$out")"; fi
+if [ ! -s "$T/stderr" ]; then _pass "tagteam's stderr never reaches the statusline's stderr"
+else _fail "tagteam stderr leaked" "$(cat "$T/stderr")"; fi
 out=$(run tt 200 "")
 if [ "$out" = "$ref" ]; then _pass "empty output leaves the line unchanged"
 else _fail "empty output should leave the line unchanged" "$(strip "$out")"; fi
@@ -264,8 +272,9 @@ exit "$fail"
 - [ ] **Step 2: Run the test and confirm it fails.**
 
 Run: `chmod 755 tests/statusline.test.sh && ./tests/statusline.test.sh`
-Expected: the tests that need the segment fail (teal, red, ANSI, multi-line, fit at
-COLUMNS - 2). The left-out cases pass already.
+Expected: the tests that need the segment fail: teal, arguments, red, no percentage, ANSI
+(it requires the segment in the plain run), multi-line, and fit at COLUMNS - 2. The left-out
+cases already pass, stderr included.
 
 - [ ] **Step 3: Implement.** In `dot_claude/executable_statusline.sh`:
 
