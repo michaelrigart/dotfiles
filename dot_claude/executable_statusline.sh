@@ -112,7 +112,8 @@ build_segs() {
 # continuation byte) and the glyphs SEP BR ARR DASH. Under LC_ALL=C one left-to-right pass
 # over out removes the colour codes and every known non-ASCII character; unknown counts the
 # bytes left that are not printable ASCII: those of a control character (C0, DEL, or C1 at
-# U+0080-009F), U+0300-037F (the combining marks, and the Greek letters U+0370-037F that
+# U+0080-009F; an ESC starting a colour code has no width and is removed first),
+# U+0300-037F (the combining marks, and the Greek characters U+0370-037F that
 # share lead byte CD), any other three- or four-byte character, or invalid UTF-8. It reads
 # out, not plain, because plain is empty on invalid UTF-8.
 render() {

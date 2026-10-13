@@ -204,9 +204,8 @@ and a final whole-branch review followed. The rulings made during execution:
   launchd auto-switch agent is specified, because it will write to the same store.
 - **The sanitiser is broader than the spec's "ANSI escapes".** It strips terminated and
   unterminated OSC, any CSI, and other `ESC` sequences, then every C0 control. Malformed
-  input (an OSC containing a stray `ESC`, a truncated CSI), DCS/SOS/PM/APC bodies and C1
-  controls in their two-byte UTF-8 form can still leave stray text or a shorter segment, but
-  never a wrong width. tagteam runs with `--no-color`, and its format emits none of them. The
+  input (an OSC containing a stray `ESC`, a truncated CSI) and DCS/SOS/PM/APC bodies can still
+  leave stray text or a shorter segment, but never a wrong width. tagteam runs with `--no-color`, and its format emits none of them. The
   test stub writes escapes with `printf '%b'` and `\x1b`, which relies on macOS `/bin/sh`
   being bash. On a dash `/bin/sh` those tests would fail loudly, never pass falsely.
 - **The segment is shown only when the line's width can be established.** The renderer
@@ -216,8 +215,9 @@ and a final whole-branch review followed. The rulings made during execution:
   character's width is known. Known means printable ASCII, U+00A0–U+02FF, U+0380–U+07FF,
   and the statusline's own glyphs SEP, BR, ARR and DASH (U+E0B0, U+E0A0, U+25B8, U+2014).
   Anything else leaves the segment out. That includes every control character (C0, DEL and
-  the C1 range U+0080–U+009F), U+0300–U+037F (the combining marks, and the Greek letters
-  U+0370–U+037F that share their lead byte), every other three- or four-byte character, and
+  the C1 range U+0080–U+009F) except an `ESC` that starts a colour code, which has no width
+  and is removed first; U+0300–U+037F (the combining marks, and the Greek characters
+  U+0370–U+037F that share their lead byte); every other three- or four-byte character; and
   invalid UTF-8. The check reads the line byte by byte, so the locale cannot change it. The
   tagteam sanitiser runs byte-wise too, so invalid UTF-8 from tagteam reaches the check
   whole. Measuring true cell width would need a wcwidth table in bash 3.2, and this keeps a
