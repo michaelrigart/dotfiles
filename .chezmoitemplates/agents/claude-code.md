@@ -27,6 +27,13 @@
 
   Go up a tier when a task is harder than its label, and say which tier you used when it
   isn't obvious.
+- **Parallel tasks.** A plan runs entirely in its own worktree; never create a worktree for
+  one of its tasks. Plans give each task a `Depends on:` line. A batch is tasks with no
+  pending dependency, disjoint files (neither one's tests load the other's), and no shared
+  test resource such as a database, server or port. Dispatch a batch's implementers
+  together in that worktree. They do not commit, and they run only their focused tests.
+  The controller then commits each task on its own, one commit at a time. It reviews each
+  task on exactly that commit, and runs the full suite once per batch.
 - **Pushing.** Push in a Bash call of its own, as one plain command:
   `git push [options] <remote> <branch>` (for another repository, `git -C <path> push …`),
   optionally piped to `tail`/`head`. The push guard denies a push chained after a commit, a
