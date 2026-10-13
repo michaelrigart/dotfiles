@@ -120,6 +120,10 @@ cat > "$STUBS/lsof" <<'STUB'
 # produces, and would silently simulate an occupant the helper cannot match. MOCK_LSOF_RAW overrides it for malformed output, and the exit
 # status is separately controllable: real lsof exits 1 both when it matches nothing and
 # when it fails, which is the ambiguity the caller has to resolve.
+#
+# MOCK_LSOF_BUSY_N and MOCK_LSOF_BUSY_SPEC make the first N calls since $LLOG was last
+# emptied answer with the busy spec; after those, calls answer with MOCK_LSOF_SPEC, or
+# with nothing at all (a failed read) when MOCK_LSOF_THEN_FAIL is set.
 printf '%s\n' "$*" >> "$LLOG"
 if [ -n "${MOCK_LSOF_RAW+x}" ]; then
   printf '%b' "$MOCK_LSOF_RAW"
@@ -129,13 +133,27 @@ case " $* " in
   *" -F0pcnR "*) ;;
   *) echo "lsof stub: unexpected invocation: $*" >&2; exit 1 ;;
 esac
+spec="${MOCK_LSOF_SPEC:-}"
+if [ -n "${MOCK_LSOF_BUSY_N:-}" ]; then
+  n=$(wc -l < "$LLOG")
+  if [ "$n" -le "$MOCK_LSOF_BUSY_N" ]; then
+    spec="${MOCK_LSOF_BUSY_SPEC:-}"
+  elif [ -n "${MOCK_LSOF_THEN_FAIL:-}" ]; then
+    exit 0
+  fi
+fi
 while IFS=$'\t' read -r pid cmd cwd; do
   [ -n "$pid" ] || continue
   printf 'p%s\0R1\0c%s\0fcwd\0n%s\0\n' "$pid" "$cmd" "$cwd"
-done <<< "${MOCK_LSOF_SPEC:-}"
+done <<< "$spec"
 exit "${MOCK_LSOF_RC:-0}"
 STUB
-chmod +x "$STUBS/layout.sh" "$STUBS/herdr" "$STUBS/lsof"
+cat > "$STUBS/sleep" <<'STUB'
+#!/bin/sh
+# Instant and logged: wt-rm's grace period is asserted by its schedule, never waited out.
+printf '%s\n' "$*" >> "${SLOG:-/dev/null}"
+STUB
+chmod +x "$STUBS/layout.sh" "$STUBS/herdr" "$STUBS/lsof" "$STUBS/sleep"
 TEARDOWN_SRC="$(cd "${0:h}/.." && pwd)/dot_local/bin/executable_wt-teardown"
 [[ -r "$TEARDOWN_SRC" ]] || { print -ru2 -- "cannot read $TEARDOWN_SRC"; exit 2 }
 print -r -- "#!/bin/sh
@@ -175,9 +193,14 @@ chmod +x "$SIGSTUBS/git"
 # --- git call-failure injector ----------------------------------------------
 # A second pass-through `git`, in its own directory and prepended to PATH for one test
 # at a time. It logs every call whose argv contains WT_FAIL_MATCH and fails the
-# WT_FAIL_NTH such call, then execs the real git with the identical argv. Like the
+# WT_FAIL_NTH such call: it runs the real git first (unless WT_FAIL_SKIP is set), then
+# exits 128. Every other call passes through to the real git with the identical argv. Like the
 # SIGINT shim it fakes nothing about the code under test; it decides only which
-# invocation of a repeated read is the one that breaks.
+# invocation of a repeated read is the one that breaks. With WT_FAIL_SKIP set, the failed
+# call never reaches the real git, so a mutating command can be made to fail without its
+# side effects. WT_FAIL_MATCH2, WT_FAIL_NTH2 and WT_FAIL_LOG2 are a second slot, so one test
+# can fail one call of each of two commands. The second slot always runs the real git,
+# because WT_FAIL_SKIP applies only to the first.
 #
 # That distinction is the point: a helper that checks the status of one call and parses
 # the output of another cannot be caught by failing the call it checks. It has to be
@@ -190,6 +213,19 @@ if [ -n "\${WT_FAIL_MATCH:-}" ]; then
       printf '%s\\n' "\$*" >> "\$WT_FAIL_LOG"
       n=\$(wc -l < "\$WT_FAIL_LOG")
       if [ "\$n" -eq "\${WT_FAIL_NTH:-0}" ]; then
+        [ -n "\${WT_FAIL_SKIP:-}" ] || $REALGIT "\$@"
+        echo "git: injected read failure" >&2
+        exit 128
+      fi
+      ;;
+  esac
+fi
+if [ -n "\${WT_FAIL_MATCH2:-}" ]; then
+  case " \$* " in
+    *" \$WT_FAIL_MATCH2 "*)
+      printf '%s\\n' "\$*" >> "\$WT_FAIL_LOG2"
+      n=\$(wc -l < "\$WT_FAIL_LOG2")
+      if [ "\$n" -eq "\${WT_FAIL_NTH2:-0}" ]; then
         $REALGIT "\$@"
         echo "git: injected read failure" >&2
         exit 128
@@ -214,9 +250,9 @@ setup() {   # fresh $HOME with Code/Org/repo, fresh logs, default mock behaviour
   git init -q -b main "$REPO"
   git -C "$REPO" commit -q --allow-empty -m init
   export DLOG="$ROOTTMP/layout.log" \
-         HLOG="$ROOTTMP/herdr.log" LLOG="$ROOTTMP/lsof.log" \
+         HLOG="$ROOTTMP/herdr.log" LLOG="$ROOTTMP/lsof.log" SLOG="$ROOTTMP/sleep.log" \
          FLOG="$ROOTTMP/git-fail.log" MOCK_H_CLOSED_FILE="$ROOTTMP/herdr-closed"
-  : > "$DLOG"; : > "$HLOG"; : > "$LLOG"; : > "$FLOG"; : > "$MOCK_H_CLOSED_FILE"
+  : > "$DLOG"; : > "$HLOG"; : > "$LLOG"; : > "$FLOG"; : > "$SLOG"; : > "$MOCK_H_CLOSED_FILE"
   export MOCK_LAYOUT_RC=0 MOCK_H_SESSION_LIST='{"sessions":[]}' MOCK_H_SESSION_RC=0 \
          MOCK_H_WORKSPACES='{"result":{"workspaces":[]}}' \
          MOCK_H_PANES='{"result":{"panes":[]}}' MOCK_H_LIST_RC=0 MOCK_H_CLOSE_RC=0 \
@@ -225,7 +261,8 @@ setup() {   # fresh $HOME with Code/Org/repo, fresh logs, default mock behaviour
   # can never return nothing — this shell's own cwd is always in the answer — so
   # "no records at all" is reserved for the failure the caller must fail closed on.
   export MOCK_LSOF_RC=0 MOCK_LSOF_SPEC="$(lsof_spec 1 launchd /)"
-  unset MOCK_LSOF_RAW MOCK_H_TEAM_WORKSPACES MOCK_H_TEAM_PANES
+  unset MOCK_LSOF_RAW MOCK_H_TEAM_WORKSPACES MOCK_H_TEAM_PANES \
+        MOCK_LSOF_BUSY_N MOCK_LSOF_BUSY_SPEC MOCK_LSOF_THEN_FAIL
 }
 # run <dir> <command...> — source the functions fresh and run one command in $dir.
 # A subshell per scenario keeps zsh options/state from leaking between tests.
@@ -412,6 +449,7 @@ rc_is 1 "refuses to remove the worktree it is standing in"
 setup
 run "$REPO" wt-rm nope
 rc_is 1 "unknown worktree is refused"
+has "does not exist." "an unknown worktree keeps the specific refusal"
 
 # A failing `git status` must never read as "clean". Corrupt the linked worktree's index
 # specifically: HEAD stays readable, so _wt_assert_worktree still passes and execution
@@ -557,9 +595,9 @@ rc_is 1 "missing zsh/system refuses instead of running unlocked"
 # 1) A lock held by another process makes every lifecycle command refuse and
 #    name the slug. Held here in the test shell, contended from run()'s
 #    subshell — a different process, which is the only kind fcntl locks exclude.
-#    The target is created first: `wt-rm` and `wt-prepare` refuse an absent
-#    directory BEFORE they reach the lock, so an empty fixture would produce the
-#    wrong refusal and prove nothing about contention.
+#    The target is created first: `wt-prepare` refuses an absent directory BEFORE
+#    it reaches the lock, so an empty fixture would produce the wrong refusal and
+#    prove nothing about contention.
 setup
 CD="$REPO/.git"
 run "$REPO" wt z1
@@ -579,6 +617,21 @@ has "another lifecycle command is working on 'z1'" "wt-rm's refusal names the sl
 [[ -d "$HOME/Code/Org/repo-z1" ]] && _pass "the refused wt-rm removed nothing" \
                                   || _fail "the refused wt-rm removed nothing"
 _wt_unlock
+
+# z5: wt-rm decides between its two paths only under the lock, so a recovery
+# candidate is refused while another lifecycle command holds the target.
+setup
+CD="$REPO/.git"
+run "$REPO" wt z5
+rm -rf "$HOME/Code/Org/repo-z5"
+source "$FUNCS"
+_wt_lock "$CD" z5 >/dev/null 2>&1
+run "$REPO" wt-rm z5
+rc_is 1 "z5 wt-rm refuses a recovery candidate while the lock is held"
+has "another lifecycle command is working on 'z5'" "z5 the refusal is the lock's"
+_wt_unlock
+run "$REPO" git worktree list --porcelain
+has "$HOME/Code/Org/repo-z5" "z5 the registration survives the refused recovery"
 
 # 2) Release after a SUCCESSFUL command, observed from the shell that ran it.
 setup
@@ -1341,13 +1394,12 @@ eq "$(grep -c call "$REPO/teardown-calls")" "2" "the retry reran teardown rather
 [[ -d "$HOME/Code/Org/repo-q10" ]] && _fail "the retry actually removes the worktree" \
                                    || _pass "the retry actually removes the worktree"
 
-# A removal that fails after a SUCCESSFUL teardown is spec §9.3's third
-# post-shutdown failure mode, and must report the same exact partial state as
-# the other two — Git's bare refusal names the obstruction but not whether
-# resources were already reclaimed. The obstruction is a git-ignored directory
-# stripped of write permission by teardown itself: ignored files leave all three
-# cleanliness checks satisfied (so the code under test is genuinely reached),
-# while the unwritable directory makes Git's own recursive delete fail.
+# A removal that fails after a SUCCESSFUL teardown. The obstruction is a git-ignored
+# directory stripped of write permission by teardown itself: ignored files leave all three
+# cleanliness checks satisfied (so the code under test is genuinely reached), while the
+# unwritable directory makes Git's own recursive delete fail. Git still deletes the
+# registration after that failure, so what is left is an unregistered directory — and the
+# message must say so, not "worktree kept" with two routes that both refuse.
 setup
 print -r -- "blocked/" > "$REPO/.gitignore"
 git -C "$REPO" add .gitignore >/dev/null; git -C "$REPO" commit -q -m ignore
@@ -1360,16 +1412,348 @@ fi
 exit 0'
 run "$REPO" wt q11
 run "$REPO" wt-rm q11
+Q11="$HOME/Code/Org/repo-q11"
 rc_is 1 "a failed removal after a successful teardown fails wt-rm"
-has "worktree kept, Herdr workspaces closed" "the failure reports the exact partial state"
-has "Resources may already be reclaimed" "it says resources may already be gone"
-has "retry: wt-rm q11" "it offers the fix-and-retry recovery route"
-has "wt-prepare q11 && wt q11" "it offers the resume-work recovery route"
-[[ -d "$HOME/Code/Org/repo-q11" ]] && _pass "the worktree is kept when removal fails" \
-                                   || _fail "the worktree is kept when removal fails"
-run "$REPO" git branch --list q11
-eq "$OUT" "  q11" "the branch is not deleted when removal fails"
-chmod 700 "$HOME/Code/Org/repo-q11/blocked" 2>/dev/null
+has "Git's registration of it is removed, but the directory remains and is no longer a worktree" \
+    "q11 the failure reports the leftover directory"
+has "teardown done; branch q11 kept" "q11 it says teardown ran and the branch is kept"
+has "git branch -d q11" "q11 it gives the branch-deletion advice"
+hasnt "worktree kept" "q11 it does not claim the worktree was kept"
+hasnt "retry: wt-rm q11" "q11 it offers no retry, which would refuse"
+hasnt "wt-prepare q11" "q11 it offers no resume route, which would refuse"
+[[ -d "$Q11" ]] && _pass "q11 the leftover directory remains" || _fail "q11 the leftover directory remains"
+run "$REPO" git worktree list --porcelain
+hasnt "$Q11" "q11 Git no longer registers the leftover"
+run "$REPO" git branch --list --format='%(refname:short)' q11
+eq "$OUT" "q11" "q11 the branch is kept"
+chmod 700 "$Q11/blocked" 2>/dev/null
+rm -rf "$Q11"
+run "$REPO" git branch -d q11
+rc_is 0 "q11 the advised cleanup works: the leftover deletes and the merged branch goes with -d"
+
+# A removal that deletes the checkout and then fails on Git's registration of it, as a
+# sandboxed agent's did on 2026-10-13. Git deletes the checkout before the registration,
+# so an unwritable registration directory reproduces exactly that partial state.
+setup
+mkhook "$REPO" '#!/bin/sh
+if [ "$1" = teardown ]; then
+  printf "x\n" >> "$WT_MAIN/q12-teardowns"
+  chmod 500 "$(git -C "$WT_WORKTREE" rev-parse --absolute-git-dir)"
+fi
+exit 0'
+run "$REPO" wt q12
+Q12="$HOME/Code/Org/repo-q12"
+Q12_REG="$REPO/.git/worktrees/repo-q12"
+[[ -d "$Q12_REG" ]] && _pass "Q12 fixture: the registration directory is where expected" \
+                    || _fail "Q12 fixture: the registration directory is where expected"
+run "$REPO" wt-rm q12
+rc_is 1 "Q12 a removal that fails on Git's registration fails wt-rm"
+has "the checkout is deleted, but Git's registration of it remains" "Q12 the failure reports the partial state"
+has "teardown done; branch q12 kept" "Q12 it says teardown ran and the branch is kept"
+has "finish with: wt-rm q12" "Q12 it offers the retry that finishes the removal"
+hasnt "worktree kept" "Q12 it does not claim the worktree was kept"
+hasnt "wt-prepare q12" "Q12 it offers no resume route for a deleted checkout"
+[[ -e "$Q12" ]] && _fail "Q12 the checkout is deleted" || _pass "Q12 the checkout is deleted"
+eq "$(lock_reason_of "$Q12")" "wt-managed; remove with command wt-rm" \
+   "Q12 the registration remains and still carries the Herdr lock"
+run "$REPO" git branch --list --format='%(refname:short)' q12
+eq "$OUT" "q12" "Q12 the branch is kept"
+run "$REPO" wt-rm q12
+rc_is 1 "Q12 a retry that Git's registration still blocks fails"
+has "removing Git's registration of $Q12 failed — it remains; branch q12 kept" "Q12 the recovery failure says the registration remains"
+has "retry: wt-rm q12" "Q12 the recovery failure offers the retry"
+run "$REPO" git branch --list --format='%(refname:short)' q12
+eq "$OUT" "q12" "Q12 the branch is kept by the failed retry"
+eq "$(lock_reason_of "$Q12")" "wt-managed; remove with command wt-rm" \
+   "Q12 the registration and its lock survive the failed retry"
+chmod 700 "$Q12_REG"
+run "$REPO" wt-rm q12
+rc_is 0 "Q12 a retry finishes the partial removal"
+has "is already gone — finishing its removal without re-running teardown" "Q12 the retry says teardown is skipped"
+has "reclaim its resources yourself" "Q12 the retry says what it leaves to the user"
+eq "$(wc -l < "$REPO/q12-teardowns" | tr -d ' ')" "1" "Q12 teardown ran once, not again on the retry"
+run "$REPO" git worktree list --porcelain
+hasnt "$Q12" "Q12 the Herdr-locked registration is removed (only --force --force can)"
+run "$REPO" git branch --list --format='%(refname:short)' q12
+eq "$OUT" "" "Q12 the merged branch is deleted"
+
+# Q13: an unlocked registration whose checkout is gone takes a plain remove.
+setup
+run "$REPO" wt q13
+Q13="$HOME/Code/Org/repo-q13"
+git -C "$REPO" worktree unlock "$Q13"
+rm -rf "$Q13"
+run "$REPO" wt-rm q13
+rc_is 0 "Q13 an unlocked registration whose checkout is gone is removed"
+run "$REPO" git worktree list --porcelain
+hasnt "$Q13" "Q13 the registration is removed"
+
+# Q14: a registration at the right path on another branch is refused.
+setup
+Q14="$HOME/Code/Org/repo-q14"
+git -C "$REPO" worktree add -q "$Q14" -b q14-other
+rm -rf "$Q14"
+run "$REPO" wt-rm q14
+rc_is 1 "Q14 a missing checkout registered on another branch is refused"
+has "is on 'q14-other', not 'q14'" "Q14 the refusal names the branch it has"
+run "$REPO" git worktree list --porcelain
+has "$Q14" "Q14 the registration survives"
+
+# Q15: another owner's lock is never crossed, checkout or no checkout.
+setup
+run "$REPO" wt q15
+Q15="$HOME/Code/Org/repo-q15"
+git -C "$REPO" worktree unlock "$Q15"
+git -C "$REPO" worktree lock --reason "user maintenance" "$Q15"
+rm -rf "$Q15"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)")"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[
+  {\"workspace_id\":\"w15\",\"label\":\"q15\",\"worktree\":{\"checkout_path\":\"$Q15\",\"is_linked_worktree\":true}}]}}"
+export MOCK_H_PANES="{\"result\":{\"panes\":[
+  {\"workspace_id\":\"w15\",\"pane_id\":\"w15:p1\",\"cwd\":\"$Q15\"}]}}"
+: > "$HLOG"
+run "$REPO" wt-rm q15
+rc_is 1 "Q15 a missing checkout under another owner's lock is refused"
+has "locked for another reason: user maintenance" "Q15 the refusal names the lock"
+hunlogged "workspace close" "Q15 nothing is closed"
+eq "$(lock_reason_of "$Q15")" "user maintenance" "Q15 the registration and its lock survive"
+run "$REPO" git branch --list --format='%(refname:short)' q15
+eq "$OUT" "q15" "Q15 the branch survives"
+
+# Q16: absence must be proven. A parent that cannot be listed proves nothing, because
+# a denied stat looks just like a missing path. Mode 100 keeps the parent searchable,
+# so the main checkout beside the target still works.
+setup
+run "$REPO" wt q16
+Q16="$HOME/Code/Org/repo-q16"
+rm -rf "$Q16"
+chmod 100 "$HOME/Code/Org"
+run "$REPO" wt-rm q16
+chmod 755 "$HOME/Code/Org"
+rc_is 1 "Q16 a target whose parent cannot be listed is refused"
+has "cannot confirm $Q16 is gone" "Q16 the refusal says absence is unproven"
+run "$REPO" git worktree list --porcelain
+has "$Q16" "Q16 the registration survives"
+run "$REPO" git branch --list --format='%(refname:short)' q16
+eq "$OUT" "q16" "Q16 the branch survives"
+
+# Q17: a foreign Herdr pane still inside the deleted path refuses, closing nothing.
+setup
+run "$REPO" wt q17
+Q17="$HOME/Code/Org/repo-q17"
+rm -rf "$Q17"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)")"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[
+  {\"workspace_id\":\"w1\",\"label\":\"Org/repo\",\"worktree\":{\"checkout_path\":\"$REPO\",\"is_linked_worktree\":false}}]}}"
+export MOCK_H_PANES="{\"result\":{\"panes\":[
+  {\"workspace_id\":\"w1\",\"pane_id\":\"w1:p2\",\"cwd\":\"$Q17/app\"}]}}"
+run "$REPO" wt-rm q17
+rc_is 1 "Q17 a foreign pane inside the deleted path refuses recovery"
+has "w1:p2" "Q17 the refusal names the pane"
+hunlogged "workspace close" "Q17 nothing is closed"
+run "$REPO" git worktree list --porcelain
+has "$Q17" "Q17 the registration survives"
+
+# Q18: the checkout's own workspace, still pointing at the deleted path, is closed.
+setup
+run "$REPO" wt q18
+Q18="$HOME/Code/Org/repo-q18"
+rm -rf "$Q18"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)")"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[
+  {\"workspace_id\":\"w7\",\"label\":\"q18\",\"worktree\":{\"checkout_path\":\"$Q18\",\"is_linked_worktree\":true}}]}}"
+export MOCK_H_PANES="{\"result\":{\"panes\":[
+  {\"workspace_id\":\"w7\",\"pane_id\":\"w7:p1\",\"cwd\":\"$Q18\"}]}}"
+run "$REPO" wt-rm q18
+rc_is 0 "Q18 recovery closes the deleted checkout's own workspace and finishes"
+hlogged "workspace close w7" "Q18 the own workspace is closed"
+run "$REPO" git worktree list --porcelain
+hasnt "$Q18" "Q18 the registration is removed"
+
+# Q19: a dangling symlink, or a plain file, at the target is not absence.
+setup
+run "$REPO" wt q19
+Q19="$HOME/Code/Org/repo-q19"
+rm -rf "$Q19"
+ln -s "$ROOTTMP/nowhere" "$Q19"
+run "$REPO" wt-rm q19
+rc_is 1 "Q19 a dangling symlink at the target is refused"
+has "$Q19 does not exist." "Q19 it gets the existing refusal, not recovery"
+rm -f "$Q19"; : > "$Q19"
+run "$REPO" wt-rm q19
+rc_is 1 "Q19 a plain file at the target is refused"
+has "$Q19 does not exist." "Q19 the plain file gets the existing refusal, not recovery"
+run "$REPO" git worktree list --porcelain
+has "$Q19" "Q19 the registration survives both"
+
+# Q20: a branch with a slash matches on the branch, not on the slug.
+setup
+run "$REPO" wt fix/q20
+Q20="$HOME/Code/Org/repo-fix-q20"
+rm -rf "$Q20"
+run "$REPO" wt-rm fix/q20
+rc_is 0 "Q20 recovery matches a slashed branch on its full name"
+run "$REPO" git branch --list --format='%(refname:short)' fix/q20
+eq "$OUT" "" "Q20 its merged branch is deleted"
+
+# Q21: a detached registration at the target is refused.
+setup
+Q21="$HOME/Code/Org/repo-q21"
+git -C "$REPO" worktree add -q --detach "$Q21"
+rm -rf "$Q21"
+run "$REPO" wt-rm q21
+rc_is 1 "Q21 a missing checkout on a detached HEAD is refused"
+has "is on 'a detached HEAD', not 'q21'" "Q21 the refusal says it is detached"
+
+# q22: both deletes fail. Git removes the checkout's .git link first, so the directory
+# that survives is no longer a working checkout, while the registration remains.
+setup
+print -r -- "blocked/" > "$REPO/.gitignore"
+git -C "$REPO" add .gitignore >/dev/null; git -C "$REPO" commit -q -m ignore
+mkhook "$REPO" '#!/bin/sh
+if [ "$1" = teardown ]; then
+  mkdir -p "$WT_WORKTREE/blocked"
+  : > "$WT_WORKTREE/blocked/pinned"
+  chmod 500 "$WT_WORKTREE/blocked"
+  chmod 500 "$(git -C "$WT_WORKTREE" rev-parse --absolute-git-dir)"
+fi
+exit 0'
+run "$REPO" wt q22
+Q22="$HOME/Code/Org/repo-q22"
+Q22_REG="$REPO/.git/worktrees/repo-q22"
+run "$REPO" wt-rm q22
+rc_is 1 "q22 a removal that fails on both deletes fails wt-rm"
+[[ -d "$Q22" && ! -e "$Q22/.git" ]] && _pass "q22 fixture: the directory survives without its .git link" \
+                                    || _fail "q22 fixture: the directory survives without its .git link"
+has "the checkout is partly deleted and no longer a working checkout, but Git's registration of it remains" \
+    "q22 the failure reports the partly deleted checkout"
+has "delete what is left in $Q22 yourself, then finish with: wt-rm q22" "q22 it gives the route that works"
+hasnt "worktree kept" "q22 it does not claim the worktree was kept"
+hasnt "wt-prepare q22" "q22 it offers no resume route, which would refuse"
+eq "$(lock_reason_of "$Q22")" "wt-managed; remove with command wt-rm" "q22 the registration remains, still locked"
+chmod 700 "$Q22/blocked" "$Q22_REG"
+rm -rf "$Q22"
+run "$REPO" wt-rm q22
+rc_is 0 "q22 the advised route works: after deleting the leftover, wt-rm finishes"
+run "$REPO" git worktree list --porcelain
+hasnt "$Q22" "q22 the registration is removed"
+
+# q23: the removal fails before Git touches anything, so a working checkout and its
+# registration both remain. "worktree kept" is true here, and so are both routes.
+setup
+run "$REPO" wt q23
+Q23="$HOME/Code/Org/repo-q23"
+: > "$FLOG"
+# BSD ls colours an executable even when colour is forced, and never a plain file, so the
+# .git link is made executable for the one run whose environment forces colour.
+chmod +x "$Q23/.git"
+OUT="$(builtin cd "$REPO" && source "$FUNCS" \
+       && PATH="$FAILSTUBS:$PATH" WT_FAIL_LOG="$FLOG" CLICOLOR=1 CLICOLOR_FORCE=1 WT_FAIL_NTH=1 WT_FAIL_SKIP=1 \
+          WT_FAIL_MATCH="worktree remove" \
+          wt-rm q23 2>&1)"; RC=$?
+rc_is 1 "q23 a removal that fails before deleting anything fails wt-rm"
+eq "$(grep -c . "$FLOG")" "1" "q23 fixture: exactly the one remove call was failed"
+has "worktree kept, Herdr workspaces closed" "q23 an intact checkout is reported as kept"
+hasnt "delete what is left" "q23 decorated ls output never reads as a missing .git link"
+has "retry: wt-rm q23" "q23 it offers the retry"
+has "wt-prepare q23 && wt q23" "q23 it offers the resume route"
+[[ -e "$Q23/.git" ]] && _pass "q23 the checkout is intact" || _fail "q23 the checkout is intact"
+chmod -x "$Q23/.git"
+run "$REPO" wt-rm q23
+rc_is 0 "q23 the advised retry works"
+[[ -e "$Q23" ]] && _fail "q23 the retry removes the checkout" || _pass "q23 the retry removes the checkout"
+
+# q24: what remains cannot be read. The removal fails as in Q12, then the injector fails
+# the worktree-list read that follows it, which is the last such read wt-rm makes.
+setup
+mkhook "$REPO" '#!/bin/sh
+[ "$1" = teardown ] && chmod 500 "$(git -C "$WT_WORKTREE" rev-parse --absolute-git-dir)"
+exit 0'
+run "$REPO" wt q24
+Q24_REG="$REPO/.git/worktrees/repo-q24"
+: > "$FLOG"
+OUT="$(builtin cd "$REPO" && source "$FUNCS" \
+       && PATH="$FAILSTUBS:$PATH" WT_FAIL_LOG="$FLOG" WT_FAIL_NTH=4 \
+          WT_FAIL_MATCH="worktree list --porcelain -z" \
+          wt-rm q24 2>&1)"; RC=$?
+rc_is 1 "q24 a failed removal whose aftermath cannot be read fails wt-rm"
+eq "$(grep -c . "$FLOG")" "4" "q24 fixture: the failed read is the last worktree-list read"
+has "cannot be read to tell what remains" "q24 the failure says the state is unknown"
+has "branch q24 kept" "q24 it says the branch is kept"
+hasnt "worktree kept" "q24 it claims nothing about what is left"
+run "$REPO" git branch --list --format='%(refname:short)' q24
+eq "$OUT" "q24" "q24 the branch is kept"
+chmod 700 "$Q24_REG"
+
+# q25: the surviving checkout's own Git state cannot be confirmed. Its .git link is there,
+# but the branch read fails after printing the right answer. That is unknown, never
+# "kept", and never advice to delete a registered checkout.
+setup
+run "$REPO" wt q25
+Q25="$HOME/Code/Org/repo-q25"
+F2LOG="$ROOTTMP/git-fail2.log"
+: > "$FLOG"; : > "$F2LOG"
+OUT="$(builtin cd "$REPO" && source "$FUNCS" \
+       && PATH="$FAILSTUBS:$PATH" WT_FAIL_LOG="$FLOG" WT_FAIL_NTH=1 WT_FAIL_SKIP=1 \
+          WT_FAIL_MATCH="worktree remove" \
+          WT_FAIL_LOG2="$F2LOG" WT_FAIL_NTH2=2 \
+          WT_FAIL_MATCH2="symbolic-ref --quiet --short HEAD" \
+          wt-rm q25 2>&1)"; RC=$?
+rc_is 1 "q25 a removal whose leftover cannot be confirmed fails wt-rm"
+eq "$(grep -c . "$F2LOG")" "2" "q25 fixture: the failed read is the last branch read"
+has "cannot be read to tell what remains" "q25 an unconfirmed checkout is reported as unknown"
+hasnt "worktree kept" "q25 it is never reported as kept"
+hasnt "delete what is left" "q25 it never advises deleting a registered checkout"
+[[ -e "$Q25/.git" ]] && _pass "q25 the checkout is intact" || _fail "q25 the checkout is intact"
+run "$REPO" git branch --list --format='%(refname:short)' q25
+eq "$OUT" "q25" "q25 the branch is kept"
+eq "$(lock_reason_of "$Q25")" "wt-managed; remove with command wt-rm" "q25 the registration remains, still locked"
+
+# q25b: as q25, but the failed read is the checkout's toplevel, which also printed the right
+# answer before failing.
+setup
+run "$REPO" wt q25b
+Q25B="$HOME/Code/Org/repo-q25b"
+F2LOG="$ROOTTMP/git-fail2.log"
+: > "$FLOG"; : > "$F2LOG"
+OUT="$(builtin cd "$REPO" && source "$FUNCS" \
+       && PATH="$FAILSTUBS:$PATH" WT_FAIL_LOG="$FLOG" WT_FAIL_NTH=1 WT_FAIL_SKIP=1 \
+          WT_FAIL_MATCH="worktree remove" \
+          WT_FAIL_LOG2="$F2LOG" WT_FAIL_NTH2=2 \
+          WT_FAIL_MATCH2="rev-parse --path-format=absolute --show-toplevel" \
+          wt-rm q25b 2>&1)"; RC=$?
+rc_is 1 "q25b a removal whose toplevel cannot be confirmed fails wt-rm"
+eq "$(grep -c . "$F2LOG")" "2" "q25b fixture: the failed read is the last toplevel read"
+has "cannot be read to tell what remains" "q25b an unconfirmed checkout is reported as unknown"
+hasnt "worktree kept" "q25b it is never reported as kept"
+hasnt "delete what is left" "q25b it never advises deleting a registered checkout"
+[[ -e "$Q25B/.git" ]] && _pass "q25b the checkout is intact" || _fail "q25b the checkout is intact"
+run "$REPO" git branch --list --format='%(refname:short)' q25b
+eq "$OUT" "q25b" "q25b the branch is kept"
+eq "$(lock_reason_of "$Q25B")" "wt-managed; remove with command wt-rm" "q25b the registration remains, still locked"
+
+# q26: the removal fails before Git touches anything, as in q23, but a listing of the
+# directory fails. The .git link is there, yet its absence cannot be proven or disproven by
+# a failed read, so the state is unknown: never "kept", never advice to delete.
+setup
+run "$REPO" wt q26
+Q26="$HOME/Code/Org/repo-q26"
+LSSTUBS=$(mkd)
+printf '#!/bin/sh\nexit 1\n' > "$LSSTUBS/ls"; chmod +x "$LSSTUBS/ls"
+: > "$FLOG"
+OUT="$(builtin cd "$REPO" && source "$FUNCS" \
+       && PATH="$LSSTUBS:$FAILSTUBS:$PATH" WT_FAIL_LOG="$FLOG" WT_FAIL_NTH=1 WT_FAIL_SKIP=1 \
+          WT_FAIL_MATCH="worktree remove" \
+          wt-rm q26 2>&1)"; RC=$?
+rc_is 1 "q26 a removal whose leftover cannot be listed fails wt-rm"
+eq "$(grep -c . "$FLOG")" "1" "q26 fixture: exactly the one remove call was failed"
+has "cannot be read to tell what remains" "q26 an unlistable checkout is reported as unknown"
+hasnt "worktree kept" "q26 it is never reported as kept"
+hasnt "delete what is left" "q26 it never advises deleting a registered checkout"
+[[ -e "$Q26/.git" ]] && _pass "q26 the checkout is intact" || _fail "q26 the checkout is intact"
+run "$REPO" git branch --list --format='%(refname:short)' q26
+eq "$OUT" "q26" "q26 the branch is kept"
+eq "$(lock_reason_of "$Q26")" "wt-managed; remove with command wt-rm" "q26 the registration remains, still locked"
 
 # --- a real SIGINT during wt-rm must destroy nothing -------------------------
 #
@@ -2122,6 +2506,52 @@ run "$REPO" wt-rm live-sib
 rc_is 0 "a process in a sibling path that merely shares a prefix does not block removal"
 [[ -d "$SIB" ]] && _fail "the checkout is removed when only siblings are busy" \
                      || _pass "the checkout is removed when only siblings are busy"
+
+# Closing a workspace ends some processes only after a delay: Codex's app-server daemon
+# stops a thread's MCP servers a few seconds after its client goes. Check 4 re-scans for
+# up to 5 s before refusing, and the schedule is the assertion.
+setup
+run "$REPO" wt grace-clears
+GC="$HOME/Code/Org/repo-grace-clears"
+export MOCK_LSOF_BUSY_N=3 MOCK_LSOF_BUSY_SPEC="$(lsof_spec 1 launchd / 5150 node_repl "$GC")"
+: > "$LLOG"; : > "$SLOG"
+run "$REPO" wt-rm grace-clears
+rc_is 0 "a process that exits within the grace period does not block removal"
+eq "$(<$SLOG)" $'0.5\n0.5\n0.5' "removal proceeds after exactly three 0.5 s polls"
+[[ -d "$GC" ]] && _fail "the checkout is removed once the scan clears" \
+               || _pass "the checkout is removed once the scan clears"
+
+setup
+run "$REPO" wt grace-stays
+GS="$HOME/Code/Org/repo-grace-stays"
+export MOCK_LSOF_SPEC="$(lsof_spec 1 launchd / 5150 node_repl "$GS")"
+: > "$SLOG"
+: > "$LLOG"
+run "$REPO" wt-rm grace-stays
+rc_is 1 "a process still there after the grace period blocks removal"
+has "still in use by a running process after waiting 5 s" "the refusal says it waited"
+eq "$(wc -l < "$SLOG" | tr -d ' ')" "10" "it polled exactly ten times"
+eq "$(sort -u "$SLOG")" "0.5" "every poll sleeps 0.5 s"
+eq "$(grep -c . "$LLOG")" "11" "it scans once more after the last sleep"
+[[ -d "$GS" ]] && _pass "the checkout survives the refusal" || _fail "the checkout survives the refusal"
+eq "$(lock_reason_of "$GS")" "wt-managed; remove with command wt-rm" "the registration survives the refusal"
+run "$REPO" git branch --list --format='%(refname:short)' grace-stays
+eq "$OUT" "grace-stays" "the branch survives the refusal"
+
+setup
+run "$REPO" wt grace-fails
+GF="$HOME/Code/Org/repo-grace-fails"
+export MOCK_LSOF_BUSY_N=1 MOCK_LSOF_BUSY_SPEC="$(lsof_spec 1 launchd / 5150 node_repl "$GF")" \
+       MOCK_LSOF_THEN_FAIL=1
+: > "$LLOG"; : > "$SLOG"
+run "$REPO" wt-rm grace-fails
+rc_is 1 "a scan that fails during the grace period fails closed"
+has "could not scan for processes still in $GF" "the refusal names the failed scan"
+eq "$(wc -l < "$SLOG" | tr -d ' ')" "1" "polling stops at the failed scan"
+[[ -d "$GF" ]] && _pass "the checkout survives the failed scan" || _fail "the checkout survives the failed scan"
+eq "$(lock_reason_of "$GF")" "wt-managed; remove with command wt-rm" "the registration survives the failed scan"
+run "$REPO" git branch --list --format='%(refname:short)' grace-fails
+eq "$OUT" "grace-fails" "the branch survives the failed scan"
 
 # Ordering is the whole design of this check. Stopping project services is exactly
 # what .worktreehook teardown is for, so scanning before teardown would refuse every
