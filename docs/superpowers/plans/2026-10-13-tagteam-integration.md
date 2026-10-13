@@ -588,8 +588,11 @@ session, so they cannot run before the merge:
    (for example in a plain terminal). In the fresh sandboxed session, run
    `./tests/run.sh live-credential-boundary`; expect `TAGTEAM_RESCUE=DENIED` and exit 0.
    Then remove the probe file.
-3. **Statusline:** it shows `work · 5h …% · 7d …%`, or the aliases of your own accounts.
-4. **Settings:** `tagteam config list` shows `autoswitch.threshold` 95 and
+3. **Deny rules:** in the fresh session, ask the agent to run
+   `security find-generic-password -s tagteam >/dev/null`. This attribute-only form prints no
+   secret. Expect a permission denial. That confirms the mid-pattern `*` matches the plain form.
+4. **Statusline:** it shows `work · 5h …% · 7d …%`, or the aliases of your own accounts.
+5. **Settings:** `tagteam config list` shows `autoswitch.threshold` 95 and
    `autoswitch.strategy` consume-first, both with source `global`.
-5. **Doctor:** `tagteam doctor` reports "the store, the vault and tagteam's directories are
+6. **Doctor:** `tagteam doctor` reports "the store, the vault and tagteam's directories are
    private".
