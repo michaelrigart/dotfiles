@@ -11,12 +11,13 @@ set -uo pipefail
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
 SL="$SRC/dot_claude/executable_statusline.sh"
 [ -f "$SL" ] || { echo "missing script under test: $SL" >&2; exit 2; }
-# A mise shim would re-enter mise under the controlled env and fail, so skip those.
+# The first jq on PATH that works under the suite's own conditions (an empty environment).
+# A mise shim re-enters mise there and fails, so it is passed over.
 JQ=""
-for c in $(type -ap jq); do
-  case "$c" in */mise/shims/*) ;; *) JQ="$c"; break ;; esac
-done
-[ -n "$JQ" ] || { echo "a real jq (not a mise shim) is required" >&2; exit 2; }
+while IFS= read -r c; do
+  if env -i "$c" -n 1 >/dev/null 2>&1; then JQ="$c"; break; fi
+done < <(type -ap jq)
+[ -n "$JQ" ] || { echo "no jq that runs under env -i" >&2; exit 2; }
 pass=0; fail=0
 _pass() { printf '  PASS: %s\n' "$1"; pass=$((pass + 1)); }
 _fail() { printf '  FAIL: %s\n    | got: %s\n' "$1" "$2"; fail=$((fail + 1)); }
@@ -65,12 +66,12 @@ else _fail "tagteam arguments" "$(cat "$T/args")"; fi
 # --- red from 90% (integer part decides) ---
 for pct in 90 92 90.4; do
   out=$(run tt 200 "work $DOT 5h 25% $DOT 7d $pct%\n")
-  if has "$out" "$RED" && ! has "$out" "$TEAL"; then _pass "$pct% turns the segment red"
+  if has "$out" "$RED" && ! has "$out" "$TEAL" && [ "$(vis "$out")" = 200 ]; then _pass "$pct% turns the segment red"
   else _fail "$pct% should be red" "$(strip "$out")"; fi
 done
 for pct in 89 89.6; do
   out=$(run tt 200 "work $DOT 5h 25% $DOT 7d $pct%\n")
-  if has "$out" "$TEAL" && ! has "$out" "$RED"; then _pass "$pct% stays teal"
+  if has "$out" "$TEAL" && ! has "$out" "$RED" && [ "$(vis "$out")" = 200 ]; then _pass "$pct% stays teal"
   else _fail "$pct% should be teal" "$(strip "$out")"; fi
 done
 
@@ -86,6 +87,16 @@ out=$(run tt 200 "\033[1mwork\033[0m $DOT 5h 31% $DOT 7d 12%\n")
 if has "$(strip "$plain_run")" "$TT" && [ "$out" = "$plain_run" ]; then
   _pass "ANSI escapes in tagteam's output are stripped (byte-identical to plain output)"
 else _fail "ANSI in tagteam output must not reach the statusline" "$(printf '%s' "$out" | od -c | head -3)"; fi
+
+# --- CR, other CSI and OSC 8 hyperlinks are stripped too ---
+out=$(run tt 200 "\r\033[2K\033]8;;http://example.test/a\033\\\\work\033]8;;\033\\\\ $DOT 5h 31% $DOT 7d 12%\n")
+if [ "$out" = "$plain_run" ]; then
+  _pass "CR, a non-SGR CSI and an ESC-terminated OSC 8 hyperlink are stripped (byte-identical)"
+else _fail "CR/CSI/OSC must not reach the statusline" "$(printf '%s' "$out" | od -c | head -3)"; fi
+out=$(run tt 200 "\033]8;;http://example.test/a\007work\033]8;;\007 $DOT 5h 31% $DOT 7d 12%\n")
+if [ "$out" = "$plain_run" ]; then
+  _pass "a BEL-terminated OSC 8 hyperlink is stripped (byte-identical)"
+else _fail "BEL-terminated OSC must not reach the statusline" "$(printf '%s' "$out" | od -c | head -3)"; fi
 
 # --- only the first line is used ---
 out=$(run tt 200 "$TT\nsecond line\n")
@@ -105,6 +116,25 @@ else _fail "tagteam stderr leaked" "$(cat "$T/stderr")"; fi
 out=$(run tt 200 "")
 if [ "$out" = "$ref" ]; then _pass "empty output leaves the line unchanged"
 else _fail "empty output should leave the line unchanged" "$(strip "$out")"; fi
+
+# --- skill segment background alternates: NIGHT after the tagteam segment, BGHL without ---
+printf '%s\n' '{"message":{"content":[{"type":"tool_use","name":"Skill","input":{"skill":"brainstorming"}}]}}' > "$T/transcript.jsonl"
+INPUT_PLAIN=$INPUT
+INPUT=$(printf '{"model":{"display_name":"Opus 5.5"},"effort":{"level":"high"},"workspace":{"current_dir":"%s"},"transcript_path":"%s"}' \
+  "$T/a-rather-long-project-directory-name" "$T/transcript.jsonl")
+MAG='38;2;187;154;247'; NIGHT_BG='48;2;26;27;38'; BGHL_BG='48;2;41;46;66'
+out=$(run tt 200 "$TT\n")
+if has "$(strip "$out")" "brainstorming" && has "$out" "$TEAL;$BGHL_BG" \
+   && has "$out" "38;2;41;46;66;$NIGHT_BG" && has "$out" "$MAG;$NIGHT_BG" \
+   && ! has "$out" "$MAG;$BGHL_BG" && [ "$(vis "$out")" = 200 ]; then
+  _pass "with tagteam the skill segment takes the NIGHT background"
+else _fail "skill segment background with tagteam" "$(strip "$out")"; fi
+out=$(run none 200)
+if has "$(strip "$out")" "brainstorming" && has "$out" "38;2;26;27;38;$BGHL_BG" \
+   && has "$out" "$MAG;$BGHL_BG" && ! has "$out" "$MAG;$NIGHT_BG" && [ "$(vis "$out")" = 200 ]; then
+  _pass "without tagteam the skill segment keeps the BGHL background"
+else _fail "skill segment background without tagteam" "$(strip "$out")"; fi
+INPUT=$INPUT_PLAIN
 
 # --- the fit boundary ---
 # Cluster width without tagteam, from a wide run: total = cols = w + 1 (separator) + pad.

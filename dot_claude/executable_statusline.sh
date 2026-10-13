@@ -61,7 +61,12 @@ tt=""
 if command -v tagteam >/dev/null 2>&1; then
   tt=$(tagteam --no-color statusline </dev/null 2>/dev/null) || tt=""
   tt=${tt%%$'\n'*}
-  tt=$(printf '%s' "$tt" | sed $'s/\033\\[[0-9;]*m//g')
+  # Drop OSC sequences (BEL or ESC \ terminated, e.g. hyperlinks), then any CSI sequence,
+  # then whatever C0 control or DEL byte is left (CR, a stray ESC).
+  esc=$'\033'; bel=$'\007'
+  tt=$(printf '%s' "$tt" \
+    | sed -E "s#${esc}\][^${bel}${esc}]*(${bel}|${esc}\\\\)##g; s#${esc}\[[0-9:;<=>?]*[ -/]*[A-Za-z]##g" \
+    | tr -d '\000-\037\177')
 fi
 tt_fg=$TEAL
 if [ -n "$tt" ]; then
