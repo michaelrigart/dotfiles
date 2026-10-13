@@ -933,6 +933,30 @@ _wt_branch_content_merged() {
   return 1
 }
 
+# _wt_worktree_record <root> <dest> — Git's record of the worktree at <dest>, quietly.
+# 0 registered (its branch, or "" when detached, in _WT_REC_BRANCH), 1 not registered,
+# 2 Git's worktree list cannot be read. An empty list is a failed read: the main
+# checkout is always in a real one.
+_wt_worktree_record() {
+  emulate -L zsh
+  local root="$1" dest="${2:A}" rec wt_path rc in_target=0 found=0
+  local -a fields
+  typeset -g _WT_REC_BRANCH=""
+  fields=( ${(0)"$(_wt_git -C "$root" worktree list --porcelain -z 2>/dev/null)"} ); rc=$?
+  (( rc || ! ${#fields} )) && return 2
+  for rec in $fields; do
+    if [[ "$rec" == 'worktree '* ]]; then
+      wt_path="${rec#worktree }"
+      in_target=0
+      [[ "${wt_path:A}" == "$dest" ]] && { in_target=1; found=1 }
+    elif (( in_target )) && [[ "$rec" == 'branch refs/heads/'* ]]; then
+      _WT_REC_BRANCH="${rec#branch refs/heads/}"
+    fi
+  done
+  (( found )) && return 0
+  return 1
+}
+
 # _wt_rm_lock_class <main> <dest> — 0 Herdr-owned (crossed with Git's double force),
 # 1 unlocked, 2 refused: another owner's lock, or lock state that cannot be read.
 _wt_rm_lock_class() {
@@ -975,8 +999,8 @@ _wt_rm_branch() {
 # listing that lacks the main checkout is a listing that failed.
 _wt_rm_registration() {
   emulate -L zsh
-  local main="$1" dest="$2" branch="$3" qb="$4" rec wt_path have="" rc in_target=0 found=0
-  local -a names fields
+  local main="$1" dest="$2" branch="$3" qb="$4"
+  local -a names
   if [[ -e "$dest" || -L "$dest" ]]; then
     print -ru2 -- "wt-rm: $dest does not exist."
     return 1
@@ -986,26 +1010,14 @@ _wt_rm_registration() {
     print -ru2 -- "wt-rm: cannot confirm $dest is gone — ${dest:h} cannot be listed reliably. Refusing."
     return 1
   fi
-  fields=( ${(0)"$(_wt_git -C "$main" worktree list --porcelain -z 2>/dev/null)"} ); rc=$?
-  if (( rc )); then
-    print -ru2 -- "wt-rm: cannot read Git's worktree list — refusing."
-    return 1
-  fi
-  for rec in $fields; do
-    if [[ "$rec" == 'worktree '* ]]; then
-      wt_path="${rec#worktree }"
-      in_target=0
-      [[ "${wt_path:A}" == "${dest:A}" ]] && { in_target=1; found=1 }
-    elif (( in_target )) && [[ "$rec" == 'branch refs/heads/'* ]]; then
-      have="${rec#branch refs/heads/}"
-    fi
-  done
-  if (( ! found )); then
-    print -ru2 -- "wt-rm: $dest does not exist."
-    return 1
-  fi
-  if [[ "$have" != "$branch" ]]; then
-    print -ru2 -- "wt-rm: Git's registration of $dest is on '${have:-a detached HEAD}', not '$branch' — refusing."
+  _wt_worktree_record "$main" "$dest"
+  case $? in
+    0) ;;
+    1) print -ru2 -- "wt-rm: $dest does not exist."; return 1 ;;
+    *) print -ru2 -- "wt-rm: cannot read Git's worktree list — refusing."; return 1 ;;
+  esac
+  if [[ "$_WT_REC_BRANCH" != "$branch" ]]; then
+    print -ru2 -- "wt-rm: Git's registration of $dest is on '${_WT_REC_BRANCH:-a detached HEAD}', not '$branch' — refusing."
     return 1
   fi
 
@@ -1150,8 +1162,8 @@ wt-rm() {
       return 1
     fi
 
-    # Removal is the third post-shutdown failure mode (hook-protocol design §9.3);
-    # the message spells out the partial state and both recovery routes.
+    # Removal is the third post-shutdown failure mode (hook-protocol design §9.3). The
+    # message reports what Git actually left, and offers only a route that works from it.
     local -a remove_args
     remove_args=(worktree remove "$dest")
     # The Git lock stays in force until removal: unlocking first opens an interrupt
@@ -1159,13 +1171,40 @@ wt-rm() {
     # and is used only for the exact lock reason above.
     (( herdr_owned )) && remove_args=(worktree remove --force --force "$dest")
     if ! _wt_git $remove_args; then
-      if [[ -e "$dest" || -L "$dest" ]]; then
+      local left=0 linked=0 working=0 reg top head
+      [[ -e "$dest" || -L "$dest" ]] && left=1
+      [[ -e "$dest/.git" || -L "$dest/.git" ]] && linked=1
+      _wt_worktree_record "$main" "$dest"; reg=$?
+      # A registered checkout that keeps its .git link is "kept" only when Git confirms it:
+      # each read must succeed, not merely print the expected answer.
+      if (( reg == 0 && linked )); then
+        if top="$(_wt_git -C "$dest" rev-parse --path-format=absolute --show-toplevel 2>/dev/null)" \
+           && head="$(_wt_git -C "$dest" symbolic-ref --quiet --short HEAD 2>/dev/null)" \
+           && [[ "${top:A}" == "${dest:A}" && "$head" == "$branch" ]]; then
+          working=1
+        else
+          reg=2
+        fi
+      fi
+      if (( reg == 2 )); then
+        print -ru2 -- "wt-rm: removing $dest failed, and Git's state cannot be read to tell what remains. Herdr workspaces closed, teardown done; branch $qb kept."
+        print -ru2 -- "    Check $dest and \`git worktree list\` yourself before retrying."
+      elif (( reg == 0 && working )); then
         print -ru2 -- "wt-rm: removing $dest failed — worktree kept, Herdr workspaces closed. Resources may already be reclaimed."
         print -ru2 -- "    Fix the obstruction and retry: wt-rm $qb    (teardown is idempotent)"
         print -ru2 -- "    Or resume work with: wt-prepare $qb && wt $qb"
-      else
+      elif (( reg == 0 && left )); then
+        print -ru2 -- "wt-rm: removing $dest failed partway — the checkout is partly deleted and no longer a working checkout, but Git's registration of it remains. Herdr workspaces closed, teardown done; branch $qb kept."
+        print -ru2 -- "    Fix the obstruction Git reported above, delete what is left in $dest yourself, then finish with: wt-rm $qb"
+      elif (( reg == 0 )); then
         print -ru2 -- "wt-rm: removing $dest failed partway — the checkout is deleted, but Git's registration of it remains. Herdr workspaces closed, teardown done; branch $qb kept."
         print -ru2 -- "    Fix the obstruction Git reported above, then finish with: wt-rm $qb"
+      elif (( left )); then
+        print -ru2 -- "wt-rm: removing $dest failed partway — Git's registration of it is removed, but the directory remains and is no longer a worktree. Herdr workspaces closed, teardown done; branch $qb kept."
+        print -ru2 -- "    Inspect what is left in $dest and delete it yourself, then delete the branch if its work is merged: git branch -d $qb"
+      else
+        print -ru2 -- "wt-rm: removing $dest failed partway — Git's registration of it is removed, and nothing is left at $dest. Herdr workspaces closed, teardown done; branch $qb kept."
+        print -ru2 -- "    Delete the branch if its work is merged: git branch -d $qb"
       fi
       return 1
     fi
