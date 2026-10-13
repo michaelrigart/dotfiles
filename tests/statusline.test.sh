@@ -148,6 +148,28 @@ if has "$(strip "$out")" "brainstorming" && has "$out" "38;2;26;27;38;$BGHL_BG" 
 else _fail "skill segment background without tagteam" "$(strip "$out")"; fi
 INPUT=$INPUT_PLAIN
 
+# --- double-width text: the width cannot be established, so the segment is left out ---
+INPUT_PLAIN=$INPUT
+CJK_DIR="$T/$(printf '\xe9\xa1\xb9\xe7\x9b\xae')"
+ACC_DIR="$T/$(printf 'caf\xc3\xa9')"
+mkdir -p "$CJK_DIR" "$ACC_DIR"
+INPUT=$(printf '{"model":{"display_name":"Opus 5.5"},"effort":{"level":"high"},"workspace":{"current_dir":"%s"}}' "$CJK_DIR")
+out=$(run tt 200 "$TT\n")
+if [ "$out" = "$(run none 200)" ] && ! has "$out" "$TEAL"; then
+  _pass "a CJK workspace directory leaves the segment out (byte-identical)"
+else _fail "CJK directory should leave the segment out" "$(strip "$out")"; fi
+INPUT=$INPUT_PLAIN
+out=$(run tt 200 "work\xf0\x9f\x9a\x80 $DOT 5h 31% $DOT 7d 12%\n")
+if [ "$out" = "$(run none 200)" ] && ! has "$out" "$TEAL"; then
+  _pass "an emoji in tagteam's output leaves the segment out (byte-identical)"
+else _fail "emoji should leave the segment out" "$(strip "$out")"; fi
+INPUT=$(printf '{"model":{"display_name":"Opus 5.5"},"effort":{"level":"high"},"workspace":{"current_dir":"%s"}}' "$ACC_DIR")
+out=$(run tt 200 "$TT\n")
+if has "$out" "$TEAL" && has "$(strip "$out")" "$TT" && [ "$(vis "$out")" = 200 ]; then
+  _pass "a narrow accented directory still shows the segment, 200 wide"
+else _fail "accented directory should still show the segment" "$(strip "$out")"; fi
+INPUT=$INPUT_PLAIN
+
 # --- the fit boundary ---
 # Cluster width without tagteam, from a wide run: total = cols = w + 1 (separator) + pad.
 wide=$(strip "$(run none 500)")

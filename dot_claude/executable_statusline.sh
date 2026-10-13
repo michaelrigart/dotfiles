@@ -101,7 +101,8 @@ build_segs() {
   fi
 }
 
-# render: segs -> out, prevbg, and w (the cluster's visible width). Strip ANSI, then
+# render: segs -> out, prevbg, w (the cluster's visible width) and wide (the count of lead
+# bytes of double-width characters: CJK, kana, Hangul, emoji). Strip ANSI, then
 # count UTF-8 codepoints as the bytes that are NOT continuation bytes (0x80-0xBF).
 # Locale-independent, so it is correct no matter what LC_* the harness hands us.
 render() {
@@ -116,14 +117,18 @@ render() {
   plain=$(printf '%s' "$out" | sed $'s/\033\\[[0-9;]*m//g')
   w=$(printf '%s' "$plain" | LC_ALL=C tr -d '\200-\277' | LC_ALL=C wc -c)
   w=$((w))
+  wide=$(printf '%s' "$plain" | LC_ALL=C tr -dc '\343-\355\360-\364' | LC_ALL=C wc -c)
+  wide=$((wide))
 }
 
 # The renderer never truncates, so the tagteam segment is kept only when the closing
 # separator and at least one column of filler still fit: then the line ends exactly at
-# $cols. Otherwise the line is what it was without tagteam.
+# $cols. Otherwise the line is what it was without tagteam. w counts codepoints, which is
+# columns only for single-width text; with any double-width character (wide) the real width
+# is unknown, so the segment is left out rather than risk a line wider than $cols.
 if [ -n "$tt" ]; then
   build_segs 1; render
-  [ "$w" -le $((cols - 2)) ] || { build_segs 0; render; }
+  { [ "$w" -le $((cols - 2)) ] && [ "$wide" -eq 0 ]; } || { build_segs 0; render; }
 else
   build_segs 0; render
 fi
