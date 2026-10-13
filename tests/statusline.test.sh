@@ -150,19 +150,21 @@ else _fail "skill segment background without tagteam" "$(strip "$out")"; fi
 INPUT=$INPUT_PLAIN
 
 # --- characters of unknown width: the line's width cannot be established, so the segment
-# is left out. Known: printable ASCII, two-byte UTF-8 other than the combining marks
-# U+0300-036F, and the statusline's own glyphs. ---
+# is left out. Known: printable ASCII, U+00A0-02FF, U+0380-07FF, and the statusline's own
+# glyphs. ---
 INPUT_PLAIN=$INPUT
 # in_dir <basename>: the workspace directory is $T/<basename> (a JSON string body).
 in_dir() {
   INPUT=$(printf '{"model":{"display_name":"Opus 5.5"},"effort":{"level":"high"},"workspace":{"current_dir":"%s"}}' "$T/$1")
 }
-# left_out <label> <TT_OUT>: byte-identical to the same input without tagteam.
+# left_out <label> <TT_OUT>: byte-identical to the same input without tagteam, and the
+# statusline writes nothing to stderr.
 left_out() {
-  local out
-  out=$(run tt 200 "$2\n")
-  if [ "$out" = "$(run none 200)" ] && ! has "$out" "$TEAL"; then _pass "$1 leaves the segment out (byte-identical)"
-  else _fail "$1 should leave the segment out" "$(strip "$out")"; fi
+  local out err
+  out=$(run tt 200 "$2\n"); err=$(cat "$T/stderr")
+  if [ "$out" = "$(run none 200)" ] && ! has "$out" "$TEAL" && [ -z "$err" ]; then
+    _pass "$1 leaves the segment out (byte-identical, no stderr)"
+  else _fail "$1 should leave the segment out" "$(strip "$out" 2>&1) | stderr: $err"; fi
 }
 # shown <label> <TT_OUT> <expected text>...: teal, each text present, exactly 200 wide.
 shown() {
@@ -186,10 +188,12 @@ in_dir "$(printf '\xe9\xa1\xb9\xe7\x9b\xae')"; left_out "a CJK directory" "$TT"
 in_dir "$(printf 'done\xe2\x9c\x85')";        left_out "an E2-led emoji (U+2705) in the directory" "$TT"
 in_dir "$(printf 'cafe\xcc\x81')";            left_out "a combining mark (U+0301) in the directory" "$TT"
 in_dir 'tab\tdir';                            left_out "a tab in the directory" "$TT"
+in_dir "$(printf 'nel\xc2\x85dir')";          left_out "a C1 control (U+0085) in the directory" "$TT"
 in_dir repo-invalid;                          left_out "invalid UTF-8 (a stray continuation byte) in the branch" "$TT"
 INPUT=$INPUT_PLAIN
 left_out "a 4-byte emoji in the account alias" "work\xf0\x9f\x9a\x80 $DOT 5h 31% $DOT 7d 12%"
 left_out "a fullwidth A (U+FF21) in the account alias" "work\xef\xbc\xa1 $DOT 5h 31% $DOT 7d 12%"
+left_out "invalid UTF-8 (a stray continuation byte) in tagteam's output" "work\x80 $DOT 5h 31% $DOT 7d 12%"
 in_dir "$(printf 'caf\xc3\xa9')";             shown "a precomposed accented directory" "$TT" "$TT"
 in_dir "$(printf '\xd0\xb4\xd0\xb0\xd0\xbd\xd0\xbd\xd1\x8b\xd0\xb5')"; shown "a Cyrillic directory" "$TT" "$TT"
 # The statusline's own glyphs never trip the guard: an ASCII run with a branch carries all

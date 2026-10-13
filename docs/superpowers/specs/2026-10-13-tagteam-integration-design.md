@@ -213,18 +213,20 @@ and a final whole-branch review followed. The rulings made during execution:
   counts codepoints, not terminal cells. So a wide character (CJK, Hangul, fullwidth forms,
   most emoji) would make a line that "fits" overflow, and a combining mark would leave it
   short. The pre-merge reviews caught both. The segment is now shown only when every
-  character's width is known. Known means printable ASCII, a two-byte UTF-8 character other
-  than the combining marks U+0300–U+036F (lead bytes C2–CB and CE–DF), or one of the
-  statusline's own glyphs (U+E0B0, U+E0A0, U+25B8, U+2014). Anything else leaves the segment
-  out: any other three- or four-byte character, a combining mark, a control character or
-  invalid UTF-8. The check reads the line byte by byte, so the locale cannot change it.
-  Measuring true cell width would need a wcwidth table in bash 3.2, and this keeps a line
-  without the segment exactly as it was. The cost: a line with CJK, emoji or any other
+  character's width is known. Known means printable ASCII, U+00A0–U+02FF, U+0380–U+07FF,
+  and the statusline's own glyphs SEP, BR, ARR and DASH (U+E0B0, U+E0A0, U+25B8, U+2014).
+  Anything else leaves the segment out. That includes every control character (C0, DEL and
+  the C1 range U+0080–U+009F), U+0300–U+037F (the combining marks, and the Greek letters
+  U+0370–U+037F that share their lead byte), every other three- or four-byte character, and
+  invalid UTF-8. The check reads the line byte by byte, so the locale cannot change it. The
+  tagteam sanitiser runs byte-wise too, so invalid UTF-8 from tagteam reaches the check
+  whole. Measuring true cell width would need a wcwidth table in bash 3.2, and this keeps a
+  line without the segment exactly as it was. The cost: a line with CJK, emoji or any other
   character outside that set never shows the segment. The residual: a zero-width character
-  inside the two-byte range, such as a Hebrew point, an Arabic mark or a combining mark
-  outside U+0300–U+036F, can leave a line one column short. Ambiguous-width characters, such
-  as Greek, Cyrillic and the statusline's own glyphs, count as narrow, as the statusline
-  has always assumed. Nothing can make a line that shows the segment overflow.
+  inside those ranges, such as a Hebrew point, an Arabic mark or a Cyrillic combining mark,
+  can leave a line one column short. Ambiguous-width characters, such as Greek, Cyrillic and
+  the statusline's own glyphs, count as narrow, as the statusline has always assumed.
+  Nothing can make a line that shows the segment overflow.
 - **The probes classify by errno, never by `stat`.** The sandbox denies metadata of a denied
   file and returns it only for directories. So the boundary suite reads each candidate
   directly, both inside `rescue/` and `displaced/` and inside each session directory, and

@@ -63,12 +63,13 @@ if command -v tagteam >/dev/null 2>&1; then
   tt=${tt%%$'\n'*}
   # Drop OSC sequences (BEL or ESC \ terminated, e.g. hyperlinks; an unterminated one runs
   # to the end of the line), then any CSI sequence, then any other ESC sequence, then
-  # whatever C0 control or DEL byte is left (CR, a stray ESC). sed runs under LC_ALL=C so
-  # the bracket ranges are byte-exact.
+  # whatever C0 control or DEL byte is left (CR, a stray ESC). sed and tr run under LC_ALL=C
+  # so the ranges are byte-exact and invalid UTF-8 passes through whole; render then counts
+  # it as unknown width and the segment is left out.
   esc=$'\033'; bel=$'\007'
   tt=$(printf '%s' "$tt" \
     | LC_ALL=C sed -E "s#${esc}\][^${bel}${esc}]*(${bel}|${esc}\\\\)##g; s#${esc}\].*\$##; s#${esc}\[[0-9:;<=>?]*[ -/]*[@-~]##g; s#${esc}[ -/]*[0-~]##g" \
-    | tr -d '\000-\037\177')
+    | LC_ALL=C tr -d '\000-\037\177')
 fi
 tt_fg=$TEAL
 if [ -n "$tt" ]; then
@@ -104,16 +105,19 @@ build_segs() {
 # render: segs -> out, prevbg, w (the cluster's visible width) and unknown.
 # w: strip ANSI, then count UTF-8 codepoints as the bytes that are NOT continuation bytes
 # (0x80-0xBF). Locale-independent, so it is correct no matter what LC_* the harness hands us.
-# unknown: the count of bytes that belong to no character of known width. Under LC_ALL=C,
-# one left-to-right pass over out removes the colour codes, the glyphs SEP BR ARR DASH and
-# every two-byte character with lead C2-CB or CE-DF (CC and CD lead the combining marks
-# U+0300-036F); unknown counts the bytes left that are not printable ASCII: those of any
-# other three- or four-byte character, a combining mark, a control character or invalid
-# UTF-8. It reads out, not plain, because on invalid UTF-8 the sed that builds plain prints
-# nothing.
+# On invalid UTF-8 that sed fails and prints nothing; unknown then leaves the segment out and
+# the line is what it always was, so its error message is discarded.
+# unknown: the count of bytes that belong to no character of known width. Known: printable
+# ASCII, U+00A0-02FF and U+0380-07FF (C2 A0-BF, or lead C3-CB or CE-DF, then one
+# continuation byte) and the glyphs SEP BR ARR DASH. Under LC_ALL=C one left-to-right pass
+# over out removes the colour codes and every known non-ASCII character; unknown counts the
+# bytes left that are not printable ASCII: those of a control character (C0, DEL, or C1 at
+# U+0080-009F), U+0300-037F (the combining marks, and the Greek letters U+0370-037F that
+# share lead byte CD), any other three- or four-byte character, or invalid UTF-8. It reads
+# out, not plain, because plain is empty on invalid UTF-8.
 render() {
   local s fg rest bg text plain esc=$'\033' narrow
-  printf -v narrow '[\xc2-\xcb\xce-\xdf][\x80-\xbf]'
+  printf -v narrow '\xc2[\xa0-\xbf]|[\xc3-\xcb\xce-\xdf][\x80-\xbf]'
   out=""; prevbg=""
   for s in "${segs[@]}"; do
     fg=${s%%|*}; rest=${s#*|}; bg=${rest%%|*}; text=${rest#*|}
@@ -121,7 +125,7 @@ render() {
     out+=$'\033['"38;2;${fg};48;2;${bg}m ${text} "
     prevbg=$bg
   done
-  plain=$(printf '%s' "$out" | sed $'s/\033\\[[0-9;]*m//g')
+  plain=$(printf '%s' "$out" | sed $'s/\033\\[[0-9;]*m//g' 2>/dev/null)
   w=$(printf '%s' "$plain" | LC_ALL=C tr -d '\200-\277' | LC_ALL=C wc -c)
   w=$((w))
   unknown=$(printf '%s' "$out" \
