@@ -655,3 +655,360 @@ git branch --show-current   # must print fix/wt-rm-partial-removal
 git add dot_config/zsh/functions tests/wt-functions.test.sh
 git commit -m "Wait up to 5 s for exiting processes before wt-rm refuses"
 ```
+
+---
+
+### Task 4: Report every state a failed removal leaves
+
+Added after the spec's §1 amendment (commit 07451da). Tasks 1–3 are done.
+
+**Files:**
+- Modify: `dot_config/zsh/functions`:
+  - a new helper `_wt_worktree_record`, directly above `_wt_rm_lock_class`;
+  - `_wt_rm_registration`, whose record lookup moves into that helper;
+  - `wt-rm`'s removal-failure block and the two comment lines above `local -a remove_args`.
+- Modify: `docs/superpowers/specs/2026-07-30-worktree-hook-protocol-design.md`, the
+  `2026-10-13 — amended` banner.
+- Test: `tests/wt-functions.test.sh`:
+  - the git call-failure injector (`FAILSTUBS/git`) and its header comment;
+  - the q11 case in section O;
+  - new cases q22, q23 and q24, directly after the Q21 case.
+
+**Interfaces:**
+- Consumes: `_wt_git`, and `_wt_rm_registration` from Task 2.
+- Produces: `_wt_worktree_record <root> <dest>`. It returns 0 when `<dest>` is registered,
+  with that record's branch (or "" when detached) in the global `_WT_REC_BRANCH`. It returns
+  1 when `<dest>` is not registered, and 2 when Git's worktree list cannot be read. It is
+  quiet: it prints nothing.
+- The injector gains `WT_FAIL_SKIP`. When it is set, the failed call exits 128 without
+  running the real git. It also gains a second, independent slot: `WT_FAIL_MATCH2`,
+  `WT_FAIL_NTH2` and `WT_FAIL_LOG2`, which fail one call of a second pattern after running
+  it. The second slot never skips.
+
+- [ ] **Step 1: Extend the injector.** In the `FAILSTUBS/git` heredoc, replace
+
+```
+      if [ "\$n" -eq "\${WT_FAIL_NTH:-0}" ]; then
+        $REALGIT "\$@"
+```
+
+with
+
+```
+      if [ "\$n" -eq "\${WT_FAIL_NTH:-0}" ]; then
+        [ -n "\${WT_FAIL_SKIP:-}" ] || $REALGIT "\$@"
+```
+
+Then, directly after the injector's existing `if [ -n "\${WT_FAIL_MATCH:-}" ]; then … fi`
+block and before its final `exec`, add the second slot:
+
+```
+if [ -n "\${WT_FAIL_MATCH2:-}" ]; then
+  case " \$* " in
+    *" \$WT_FAIL_MATCH2 "*)
+      printf '%s\\n' "\$*" >> "\$WT_FAIL_LOG2"
+      n=\$(wc -l < "\$WT_FAIL_LOG2")
+      if [ "\$n" -eq "\${WT_FAIL_NTH2:-0}" ]; then
+        $REALGIT "\$@"
+        echo "git: injected read failure" >&2
+        exit 128
+      fi
+      ;;
+  esac
+fi
+```
+
+Add to the injector's header comment: "With WT_FAIL_SKIP set, the failed call never reaches
+the real git, so a mutating command can be made to fail without its side effects.
+WT_FAIL_MATCH2, WT_FAIL_NTH2 and WT_FAIL_LOG2 are a second slot, so one test can fail one call
+of each of two commands."
+
+Check the result by reading the generated stub: `cat "$FAILSTUBS/git"` after the heredoc
+runs must show `$*`, `$@` and `\n` unexpanded, exactly as the first slot does.
+
+- [ ] **Step 2: Write the failing tests.** Replace the q11 block's comment and its assertions
+  from `run "$REPO" wt-rm q11` through `chmod 700 "$HOME/Code/Org/repo-q11/blocked" 2>/dev/null`.
+
+The comment becomes:
+
+```zsh
+# A removal that fails after a SUCCESSFUL teardown. The obstruction is a git-ignored
+# directory stripped of write permission by teardown itself: ignored files leave all three
+# cleanliness checks satisfied (so the code under test is genuinely reached), while the
+# unwritable directory makes Git's own recursive delete fail. Git still deletes the
+# registration after that failure, so what is left is an unregistered directory — and the
+# message must say so, not "worktree kept" with two routes that both refuse.
+```
+
+The assertions become:
+
+```zsh
+run "$REPO" wt-rm q11
+Q11="$HOME/Code/Org/repo-q11"
+rc_is 1 "a failed removal after a successful teardown fails wt-rm"
+has "Git's registration of it is removed, but the directory remains and is no longer a worktree" \
+    "q11 the failure reports the leftover directory"
+has "teardown done; branch q11 kept" "q11 it says teardown ran and the branch is kept"
+has "git branch -d q11" "q11 it gives the branch-deletion advice"
+hasnt "worktree kept" "q11 it does not claim the worktree was kept"
+hasnt "retry: wt-rm q11" "q11 it offers no retry, which would refuse"
+hasnt "wt-prepare q11" "q11 it offers no resume route, which would refuse"
+[[ -d "$Q11" ]] && _pass "q11 the leftover directory remains" || _fail "q11 the leftover directory remains"
+run "$REPO" git worktree list --porcelain
+hasnt "$Q11" "q11 Git no longer registers the leftover"
+run "$REPO" git branch --list --format='%(refname:short)' q11
+eq "$OUT" "q11" "q11 the branch is kept"
+chmod 700 "$Q11/blocked" 2>/dev/null
+rm -rf "$Q11"
+run "$REPO" git branch -d q11
+rc_is 0 "q11 the advised cleanup works: the leftover deletes and the merged branch goes with -d"
+```
+
+Directly after the Q21 case, add:
+
+```zsh
+# q22: both deletes fail. Git removes the checkout's .git link first, so the directory
+# that survives is no longer a working checkout, while the registration remains.
+setup
+print -r -- "blocked/" > "$REPO/.gitignore"
+git -C "$REPO" add .gitignore >/dev/null; git -C "$REPO" commit -q -m ignore
+mkhook "$REPO" '#!/bin/sh
+if [ "$1" = teardown ]; then
+  mkdir -p "$WT_WORKTREE/blocked"
+  : > "$WT_WORKTREE/blocked/pinned"
+  chmod 500 "$WT_WORKTREE/blocked"
+  chmod 500 "$(git -C "$WT_WORKTREE" rev-parse --absolute-git-dir)"
+fi
+exit 0'
+run "$REPO" wt q22
+Q22="$HOME/Code/Org/repo-q22"
+Q22_REG="$REPO/.git/worktrees/repo-q22"
+run "$REPO" wt-rm q22
+rc_is 1 "q22 a removal that fails on both deletes fails wt-rm"
+[[ -d "$Q22" && ! -e "$Q22/.git" ]] && _pass "q22 fixture: the directory survives without its .git link" \
+                                    || _fail "q22 fixture: the directory survives without its .git link"
+has "the checkout is partly deleted and no longer a working checkout, but Git's registration of it remains" \
+    "q22 the failure reports the partly deleted checkout"
+has "delete what is left in $Q22 yourself, then finish with: wt-rm q22" "q22 it gives the route that works"
+hasnt "worktree kept" "q22 it does not claim the worktree was kept"
+hasnt "wt-prepare q22" "q22 it offers no resume route, which would refuse"
+eq "$(lock_reason_of "$Q22")" "wt-managed; remove with command wt-rm" "q22 the registration remains, still locked"
+chmod 700 "$Q22/blocked" "$Q22_REG"
+rm -rf "$Q22"
+run "$REPO" wt-rm q22
+rc_is 0 "q22 the advised route works: after deleting the leftover, wt-rm finishes"
+run "$REPO" git worktree list --porcelain
+hasnt "$Q22" "q22 the registration is removed"
+
+# q23: the removal fails before Git touches anything, so a working checkout and its
+# registration both remain. "worktree kept" is true here, and so are both routes.
+setup
+run "$REPO" wt q23
+Q23="$HOME/Code/Org/repo-q23"
+: > "$FLOG"
+OUT="$(builtin cd "$REPO" && source "$FUNCS" \
+       && PATH="$FAILSTUBS:$PATH" WT_FAIL_LOG="$FLOG" WT_FAIL_NTH=1 WT_FAIL_SKIP=1 \
+          WT_FAIL_MATCH="worktree remove" \
+          wt-rm q23 2>&1)"; RC=$?
+rc_is 1 "q23 a removal that fails before deleting anything fails wt-rm"
+eq "$(grep -c . "$FLOG")" "1" "q23 fixture: exactly the one remove call was failed"
+has "worktree kept, Herdr workspaces closed" "q23 an intact checkout is reported as kept"
+has "retry: wt-rm q23" "q23 it offers the retry"
+has "wt-prepare q23 && wt q23" "q23 it offers the resume route"
+[[ -e "$Q23/.git" ]] && _pass "q23 the checkout is intact" || _fail "q23 the checkout is intact"
+run "$REPO" wt-rm q23
+rc_is 0 "q23 the advised retry works"
+[[ -e "$Q23" ]] && _fail "q23 the retry removes the checkout" || _pass "q23 the retry removes the checkout"
+
+# q24: what remains cannot be read. The removal fails as in Q12, then the injector fails
+# the worktree-list read that follows it, which is the last such read wt-rm makes.
+setup
+mkhook "$REPO" '#!/bin/sh
+[ "$1" = teardown ] && chmod 500 "$(git -C "$WT_WORKTREE" rev-parse --absolute-git-dir)"
+exit 0'
+run "$REPO" wt q24
+Q24_REG="$REPO/.git/worktrees/repo-q24"
+: > "$FLOG"
+OUT="$(builtin cd "$REPO" && source "$FUNCS" \
+       && PATH="$FAILSTUBS:$PATH" WT_FAIL_LOG="$FLOG" WT_FAIL_NTH=N24 \
+          WT_FAIL_MATCH="worktree list --porcelain -z" \
+          wt-rm q24 2>&1)"; RC=$?
+rc_is 1 "q24 a failed removal whose aftermath cannot be read fails wt-rm"
+eq "$(grep -c . "$FLOG")" "N24" "q24 fixture: the failed read is the last worktree-list read"
+has "cannot be read to tell what remains" "q24 the failure says the state is unknown"
+has "branch q24 kept" "q24 it says the branch is kept"
+hasnt "worktree kept" "q24 it claims nothing about what is left"
+run "$REPO" git branch --list --format='%(refname:short)' q24
+eq "$OUT" "q24" "q24 the branch is kept"
+chmod 700 "$Q24_REG"
+
+# q25: the surviving checkout's own Git state cannot be confirmed. Its .git link is there,
+# but the branch read fails after printing the right answer. That is unknown, never
+# "kept", and never advice to delete a registered checkout.
+setup
+run "$REPO" wt q25
+Q25="$HOME/Code/Org/repo-q25"
+F2LOG="$ROOTTMP/git-fail2.log"
+: > "$FLOG"; : > "$F2LOG"
+OUT="$(builtin cd "$REPO" && source "$FUNCS" \
+       && PATH="$FAILSTUBS:$PATH" WT_FAIL_LOG="$FLOG" WT_FAIL_NTH=1 WT_FAIL_SKIP=1 \
+          WT_FAIL_MATCH="worktree remove" \
+          WT_FAIL_LOG2="$F2LOG" WT_FAIL_NTH2=N25 \
+          WT_FAIL_MATCH2="symbolic-ref --quiet --short HEAD" \
+          wt-rm q25 2>&1)"; RC=$?
+rc_is 1 "q25 a removal whose leftover cannot be confirmed fails wt-rm"
+eq "$(grep -c . "$F2LOG")" "N25" "q25 fixture: the failed read is the last branch read"
+has "cannot be read to tell what remains" "q25 an unconfirmed checkout is reported as unknown"
+hasnt "worktree kept" "q25 it is never reported as kept"
+hasnt "delete what is left" "q25 it never advises deleting a registered checkout"
+[[ -e "$Q25/.git" ]] && _pass "q25 the checkout is intact" || _fail "q25 the checkout is intact"
+```
+
+`N24` and `N25` each appear twice. Until Step 4 is in, write `0` in all four places.
+- `N24` is the number of `worktree list --porcelain -z` calls that `wt-rm q24` makes. To
+  measure it after Step 4, run the q24 case once with `WT_FAIL_NTH=0` (which never fails a
+  call) and read `grep -c . "$FLOG"`.
+- `N25` is the number of `symbolic-ref --quiet --short HEAD` calls that `wt-rm q25` makes.
+  Measure it the same way, with `WT_FAIL_NTH2=0`, by reading `grep -c . "$F2LOG"`.
+
+Put each number in both of its places. The fixture assertions then fail loudly if a later
+change moves either read.
+
+- [ ] **Step 3: Run them and check that they fail.** Run
+  `./tests/wt-functions.test.sh 2>&1 | rg 'FAIL|passed|failed'` with `N24` temporarily set to
+  `0`. Expected:
+  - q11 fails its six message assertions: the leftover line, "teardown done", the branch
+    advice, and the three `hasnt` checks. Its cleanup assertions pass.
+  - q22 fails its four message assertions. Today's code reports "worktree kept" with the
+    `wt-prepare` route. Its fixture, lock and route assertions pass, because the recovery
+    path from Task 2 already finishes once the leftover is deleted.
+  - q23 passes in full. It pins the row that keeps today's message.
+  - q24 fails its "cannot be read" assertion. It also fails its fixture count, because `N24`
+    is still a placeholder until Step 5.
+  - q25 fails its "cannot be read" and "never kept" assertions. Today's code reports
+    "worktree kept", because it never checks the checkout. It also fails its fixture count,
+    because `N25` is still a placeholder.
+  - If the q22 fixture assertion fails (the directory still has its `.git` link), stop and
+    report. Git's delete order then differs from the measured one, and the case would be
+    testing a different row.
+
+- [ ] **Step 4: Implement.** Insert directly above the `# _wt_rm_lock_class <main> <dest>`
+  comment:
+
+```zsh
+# _wt_worktree_record <root> <dest> — Git's record of the worktree at <dest>, quietly.
+# 0 registered (its branch, or "" when detached, in _WT_REC_BRANCH), 1 not registered,
+# 2 Git's worktree list cannot be read. An empty list is a failed read: the main
+# checkout is always in a real one.
+_wt_worktree_record() {
+  emulate -L zsh
+  local root="$1" dest="${2:A}" rec wt_path rc in_target=0 found=0
+  local -a fields
+  typeset -g _WT_REC_BRANCH=""
+  fields=( ${(0)"$(_wt_git -C "$root" worktree list --porcelain -z 2>/dev/null)"} ); rc=$?
+  (( rc || ! ${#fields} )) && return 2
+  for rec in $fields; do
+    if [[ "$rec" == 'worktree '* ]]; then
+      wt_path="${rec#worktree }"
+      in_target=0
+      [[ "${wt_path:A}" == "$dest" ]] && { in_target=1; found=1 }
+    elif (( in_target )) && [[ "$rec" == 'branch refs/heads/'* ]]; then
+      _WT_REC_BRANCH="${rec#branch refs/heads/}"
+    fi
+  done
+  (( found )) && return 0
+  return 1
+}
+```
+
+In `_wt_rm_registration`:
+- trim its locals to
+  `local main="$1" dest="$2" branch="$3" qb="$4"` and `local -a names`;
+- replace everything from `fields=( ${(0)"$(_wt_git -C "$main" worktree list` through the
+  `fi` that closes the branch-mismatch refusal with:
+
+```zsh
+  _wt_worktree_record "$main" "$dest"
+  case $? in
+    0) ;;
+    1) print -ru2 -- "wt-rm: $dest does not exist."; return 1 ;;
+    *) print -ru2 -- "wt-rm: cannot read Git's worktree list — refusing."; return 1 ;;
+  esac
+  if [[ "$_WT_REC_BRANCH" != "$branch" ]]; then
+    print -ru2 -- "wt-rm: Git's registration of $dest is on '${_WT_REC_BRANCH:-a detached HEAD}', not '$branch' — refusing."
+    return 1
+  fi
+```
+
+In `wt-rm`, change the two comment lines above `local -a remove_args` to:
+
+```zsh
+    # Removal is the third post-shutdown failure mode (hook-protocol design §9.3). The
+    # message reports what Git actually left, and offers only a route that works from it.
+```
+
+Then replace the whole `if ! _wt_git $remove_args; then … fi` block with:
+
+```zsh
+    if ! _wt_git $remove_args; then
+      local left=0 linked=0 working=0 reg top head
+      [[ -e "$dest" || -L "$dest" ]] && left=1
+      [[ -e "$dest/.git" || -L "$dest/.git" ]] && linked=1
+      _wt_worktree_record "$main" "$dest"; reg=$?
+      # A registered checkout that keeps its .git link is "kept" only when Git confirms it:
+      # each read must succeed, not merely print the expected answer.
+      if (( reg == 0 && linked )); then
+        if top="$(_wt_git -C "$dest" rev-parse --path-format=absolute --show-toplevel 2>/dev/null)" \
+           && head="$(_wt_git -C "$dest" symbolic-ref --quiet --short HEAD 2>/dev/null)" \
+           && [[ "${top:A}" == "${dest:A}" && "$head" == "$branch" ]]; then
+          working=1
+        else
+          reg=2
+        fi
+      fi
+      if (( reg == 2 )); then
+        print -ru2 -- "wt-rm: removing $dest failed, and Git's state cannot be read to tell what remains. Herdr workspaces closed, teardown done; branch $qb kept."
+        print -ru2 -- "    Check $dest and \`git worktree list\` yourself before retrying."
+      elif (( reg == 0 && working )); then
+        print -ru2 -- "wt-rm: removing $dest failed — worktree kept, Herdr workspaces closed. Resources may already be reclaimed."
+        print -ru2 -- "    Fix the obstruction and retry: wt-rm $qb    (teardown is idempotent)"
+        print -ru2 -- "    Or resume work with: wt-prepare $qb && wt $qb"
+      elif (( reg == 0 && left )); then
+        print -ru2 -- "wt-rm: removing $dest failed partway — the checkout is partly deleted and no longer a working checkout, but Git's registration of it remains. Herdr workspaces closed, teardown done; branch $qb kept."
+        print -ru2 -- "    Fix the obstruction Git reported above, delete what is left in $dest yourself, then finish with: wt-rm $qb"
+      elif (( reg == 0 )); then
+        print -ru2 -- "wt-rm: removing $dest failed partway — the checkout is deleted, but Git's registration of it remains. Herdr workspaces closed, teardown done; branch $qb kept."
+        print -ru2 -- "    Fix the obstruction Git reported above, then finish with: wt-rm $qb"
+      elif (( left )); then
+        print -ru2 -- "wt-rm: removing $dest failed partway — Git's registration of it is removed, but the directory remains and is no longer a worktree. Herdr workspaces closed, teardown done; branch $qb kept."
+        print -ru2 -- "    Inspect what is left in $dest and delete it yourself, then delete the branch if its work is merged: git branch -d $qb"
+      else
+        print -ru2 -- "wt-rm: removing $dest failed partway — Git's registration of it is removed, and nothing is left at $dest. Herdr workspaces closed, teardown done; branch $qb kept."
+        print -ru2 -- "    Delete the branch if its work is merged: git branch -d $qb"
+      fi
+      return 1
+    fi
+```
+
+Each `x="$(…)"` sits in an `if` condition on its own, so the condition takes the command's
+exit status. Inside `[[ … ]]` that status is lost, which is the failure q25 pins.
+
+The `reg == 0 && left` branch is reached only when the `.git` link is gone. When the link is
+there, the checkout is either confirmed working or the state becomes unknown (`reg=2`).
+
+In the hook-protocol record, replace the banner's text after `§9.3's removal failure:` with
+"a failed removal now reports what Git actually left, and a retry finishes one whose checkout
+is gone; see [wt-rm: finish a partial removal](./2026-10-13-wt-rm-partial-removal-design.md)."
+
+- [ ] **Step 5: Fix `N24` and `N25`, then run the whole suite.** Measure both as Step 2
+  describes and put each one in its two places. Then run `./tests/run.sh wt-functions`, which takes about two
+  minutes. Expected: every assertion passes, including Q12 (whose message is now chosen by
+  the table) and Q14 and Q21 (whose refusals now come through `_wt_worktree_record`).
+
+- [ ] **Step 6: Commit.**
+
+```bash
+git branch --show-current   # must print fix/wt-rm-partial-removal
+git add dot_config/zsh/functions tests/wt-functions.test.sh docs/superpowers/specs/2026-07-30-worktree-hook-protocol-design.md
+git commit -m "Report what a failed wt-rm removal actually left"
+```
