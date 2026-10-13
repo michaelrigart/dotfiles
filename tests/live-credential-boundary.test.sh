@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run inside a fresh Claude sandbox. Reads at most one byte per file to /dev/null and reports only
 # status; never emits file contents.
-# test-requires: sandboxed, fresh-session  # measures the sandbox; unsandboxed it inverts and exits 12
+# test-requires: sandboxed, fresh-session  # measures the sandbox; unsandboxed it inverts and exits 12 or more
 set -u
 fail=0
 
@@ -46,18 +46,19 @@ fi
 # not measured (ABSENT); only a readable one is a failure. The sandbox answers ENOENT for a
 # missing path even under a deny, and EPERM for an existing denied one, so the error text
 # tells the two apart. A sandboxed suite cannot create a fixture there itself.
-TT_DATA="${XDG_DATA_HOME:-$HOME/.local/share}/tagteam"
+case "${XDG_DATA_HOME:-}" in /*) TT_BASE=$XDG_DATA_HOME ;; *) TT_BASE=$HOME/.local/share ;; esac  # tagteam ignores a relative one
+TT_DATA="$TT_BASE/tagteam"
 
 probe_dir() { # probe_dir <KEY> <dir>
   local key=$1 dir=$2 err f st=ABSENT
   if err=$(/bin/ls -A "$dir" 2>&1 >/dev/null); then
     for f in "$dir"/* "$dir"/.[!.]*; do
-      [ -f "$f" ] || continue
-      if dd if="$f" of=/dev/null bs=1 count=1 2>/dev/null; then st=READABLE; break; fi
-      st=DENIED
+      case "$f" in */'*' | */'.[!.]*') continue ;; esac   # the glob matched nothing
+      if err=$(dd if="$f" of=/dev/null bs=1 count=1 2>&1 >/dev/null); then st=READABLE; break; fi
+      case "$err" in *"No such file"* | *"Is a directory"*) ;; *) st=DENIED ;; esac
     done
   else
-    case "$err" in *"No such file"*) st=ABSENT ;; *) st=DENIED ;; esac
+    case "$err" in *"No such file"* | *"Not a directory"*) st=ABSENT ;; *) st=DENIED ;; esac
   fi
   echo "$key=$st"
   [ "$st" = READABLE ] && fail=$((fail + 1))
