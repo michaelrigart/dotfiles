@@ -1644,6 +1644,9 @@ setup
 run "$REPO" wt q23
 Q23="$HOME/Code/Org/repo-q23"
 : > "$FLOG"
+# BSD ls colours an executable even when colour is forced, and never a plain file, so the
+# .git link is made executable for the one run whose environment forces colour.
+chmod +x "$Q23/.git"
 OUT="$(builtin cd "$REPO" && source "$FUNCS" \
        && PATH="$FAILSTUBS:$PATH" WT_FAIL_LOG="$FLOG" CLICOLOR=1 CLICOLOR_FORCE=1 WT_FAIL_NTH=1 WT_FAIL_SKIP=1 \
           WT_FAIL_MATCH="worktree remove" \
@@ -1651,10 +1654,11 @@ OUT="$(builtin cd "$REPO" && source "$FUNCS" \
 rc_is 1 "q23 a removal that fails before deleting anything fails wt-rm"
 eq "$(grep -c . "$FLOG")" "1" "q23 fixture: exactly the one remove call was failed"
 has "worktree kept, Herdr workspaces closed" "q23 an intact checkout is reported as kept"
-has "worktree kept" "q23 it is still reported as kept with CLICOLOR_FORCE set"
+hasnt "delete what is left" "q23 decorated ls output never reads as a missing .git link"
 has "retry: wt-rm q23" "q23 it offers the retry"
 has "wt-prepare q23 && wt q23" "q23 it offers the resume route"
 [[ -e "$Q23/.git" ]] && _pass "q23 the checkout is intact" || _fail "q23 the checkout is intact"
+chmod -x "$Q23/.git"
 run "$REPO" wt-rm q23
 rc_is 0 "q23 the advised retry works"
 [[ -e "$Q23" ]] && _fail "q23 the retry removes the checkout" || _pass "q23 the retry removes the checkout"
