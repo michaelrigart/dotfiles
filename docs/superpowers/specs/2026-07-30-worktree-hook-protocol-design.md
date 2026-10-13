@@ -8,6 +8,10 @@
 > the raw `git worktree remove` this record's §10 leaves unguaranteed. No protocol
 > semantics in this document changed; it remains accurate as written.
 
+> **2026-10-13 — amended.** §9.3's removal failure: a removal that deletes the checkout but
+> not Git's registration now reports that state, and a retry finishes it; see
+> [wt-rm: finish a partial removal](./2026-10-13-wt-rm-partial-removal-design.md).
+
 ## 1. Problem
 
 The dotfiles repository provides a general development workflow:

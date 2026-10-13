@@ -4,6 +4,9 @@
 **Date:** 2026-10-01
 **Branch:** `herdr-wt-simplify`
 
+> **2026-10-13 — amended.** §2's check 4 now re-scans every 0.5 s for up to 5 s before
+> refusing; see [wt-rm: finish a partial removal](./2026-10-13-wt-rm-partial-removal-design.md).
+
 ## Goal
 
 Fix three verified bugs in the worktree and Herdr tooling, and delete the machinery that
