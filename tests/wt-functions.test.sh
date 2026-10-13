@@ -1371,6 +1371,35 @@ run "$REPO" git branch --list q11
 eq "$OUT" "  q11" "the branch is not deleted when removal fails"
 chmod 700 "$HOME/Code/Org/repo-q11/blocked" 2>/dev/null
 
+# A removal that deletes the checkout and then fails on Git's registration of it, as a
+# sandboxed agent's did on 2026-10-13. Git deletes the checkout before the registration,
+# so an unwritable registration directory reproduces exactly that partial state.
+setup
+mkhook "$REPO" '#!/bin/sh
+if [ "$1" = teardown ]; then
+  printf "x\n" >> "$WT_MAIN/q12-teardowns"
+  chmod 500 "$(git -C "$WT_WORKTREE" rev-parse --absolute-git-dir)"
+fi
+exit 0'
+run "$REPO" wt q12
+Q12="$HOME/Code/Org/repo-q12"
+Q12_REG="$REPO/.git/worktrees/repo-q12"
+[[ -d "$Q12_REG" ]] && _pass "Q12 fixture: the registration directory is where expected" \
+                    || _fail "Q12 fixture: the registration directory is where expected"
+run "$REPO" wt-rm q12
+rc_is 1 "Q12 a removal that fails on Git's registration fails wt-rm"
+has "the checkout is deleted, but Git's registration of it remains" "Q12 the failure reports the partial state"
+has "teardown done; branch q12 kept" "Q12 it says teardown ran and the branch is kept"
+has "finish with: wt-rm q12" "Q12 it offers the retry that finishes the removal"
+hasnt "worktree kept" "Q12 it does not claim the worktree was kept"
+hasnt "wt-prepare q12" "Q12 it offers no resume route for a deleted checkout"
+[[ -e "$Q12" ]] && _fail "Q12 the checkout is deleted" || _pass "Q12 the checkout is deleted"
+eq "$(lock_reason_of "$Q12")" "wt-managed; remove with command wt-rm" \
+   "Q12 the registration remains and still carries the Herdr lock"
+run "$REPO" git branch --list --format='%(refname:short)' q12
+eq "$OUT" "q12" "Q12 the branch is kept"
+chmod 700 "$Q12_REG"
+
 # --- a real SIGINT during wt-rm must destroy nothing -------------------------
 #
 # This replaces a set of assertions that overrode _wt_clean to return a

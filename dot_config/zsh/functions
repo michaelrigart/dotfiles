@@ -1056,9 +1056,14 @@ wt-rm() {
     # and is used only for the exact lock reason above.
     (( herdr_owned )) && remove_args=(worktree remove --force --force "$dest")
     if ! _wt_git $remove_args; then
-      print -ru2 -- "wt-rm: removing $dest failed — worktree kept, Herdr workspaces closed. Resources may already be reclaimed."
-      print -ru2 -- "    Fix the obstruction and retry: wt-rm $qb    (teardown is idempotent)"
-      print -ru2 -- "    Or resume work with: wt-prepare $qb && wt $qb"
+      if [[ -e "$dest" || -L "$dest" ]]; then
+        print -ru2 -- "wt-rm: removing $dest failed — worktree kept, Herdr workspaces closed. Resources may already be reclaimed."
+        print -ru2 -- "    Fix the obstruction and retry: wt-rm $qb    (teardown is idempotent)"
+        print -ru2 -- "    Or resume work with: wt-prepare $qb && wt $qb"
+      else
+        print -ru2 -- "wt-rm: removing $dest failed partway — the checkout is deleted, but Git's registration of it remains. Herdr workspaces closed, teardown done; branch $qb kept."
+        print -ru2 -- "    Fix the obstruction Git reported above, then finish with: wt-rm $qb"
+      fi
       return 1
     fi
     print -r -- "✓ removed worktree $dest"
