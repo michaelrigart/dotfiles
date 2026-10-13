@@ -33,11 +33,46 @@ passed both times.
 
 ### 1. An honest failure message
 
-When `git worktree remove` fails in the normal path, `wt-rm` checks whether `$dest` still
-exists (`-e` or `-L`).
+> **2026-10-13 — amended at Michael's request.** The first version split only on whether
+> `$dest` still exists and kept the old message whenever it did. Git also fails the other
+> way: when it cannot delete the checkout (the existing q11 case), it still deletes the
+> registration. That left "worktree kept" false, and both routes it offered refuse with
+> "not a registered worktree". When both deletes fail, Git has still removed the checkout's
+> `.git` link, so a surviving directory is not necessarily a working checkout.
 
-- **It exists:** the message stays as it is, with both recovery routes.
-- **It is gone:** the message reports that partial state instead:
+When `git worktree remove` fails in the normal path, `wt-rm` reports what is actually left.
+It checks three things:
+- whether `$dest` still exists (`-e` or `-L`);
+- whether it is still a **working checkout** of the branch. That means Git, run inside
+  `$dest`, reports `$dest` as its top level and `<b>` as its branch: the same test
+  `_wt_assert_worktree` applies, and which both the retry and `wt-prepare` go through. Git
+  deletes a checkout's `.git` link before the rest, so a checkout that is only partly
+  deleted fails this test.
+- whether Git still registers a worktree at `$dest`. Git's worktree list is read quietly;
+  a list that cannot be read counts as unknown, never as "gone".
+
+| Checkout | Registration | Message |
+|---|---|---|
+| a working checkout | registered | unchanged: "worktree kept", with both recovery routes |
+| exists, not a working checkout | registered | the partly-deleted message below; once the leftover is deleted, the retry finishes it (§2) |
+| gone | registered | the partial-removal message below; the retry finishes it (§2) |
+| exists | gone | the leftover message below |
+| gone | gone | the leftover message, saying nothing is left on disk |
+| any | unknown | the unknown-state message below |
+
+Every case exits 1 and keeps the branch. Every route a message offers is one that works from
+that state.
+
+- **Partly deleted, registration left:**
+
+  ```
+  wt-rm: removing <dest> failed partway — the checkout is partly deleted and no longer a working checkout, but Git's registration of it remains. Herdr workspaces closed, teardown done; branch <b> kept.
+      Fix the obstruction Git reported above, delete what is left in <dest> yourself, then finish with: wt-rm <b>
+  ```
+
+  The leftover holds only what checks 1–3 allowed (ignored files), or files that were
+  recreated during the removal.
+- **Checkout gone, registration left:**
 
   ```
   wt-rm: removing <dest> failed partway — the checkout is deleted, but Git's registration of it remains. Herdr workspaces closed, teardown done; branch <b> kept.
@@ -45,6 +80,23 @@ exists (`-e` or `-L`).
   ```
 
   It offers no `wt-prepare` route, because there is no checkout left to prepare.
+- **Registration gone, checkout left:**
+
+  ```
+  wt-rm: removing <dest> failed partway — Git's registration of it is removed, but the directory remains and is no longer a worktree. Herdr workspaces closed, teardown done; branch <b> kept.
+      Inspect what is left in <dest> and delete it yourself, then delete the branch if its work is merged: git branch -d <b>
+  ```
+
+  `wt-rm` never deletes an unregistered directory, and it offers no retry. A retry would
+  refuse at "not a registered worktree", whose own hint already says to remove the leftover.
+  When both are gone, the first line ends "…and nothing is left at <dest>" instead, and the
+  second line keeps only the `git branch -d` advice.
+- **Unknown:**
+
+  ```
+  wt-rm: removing <dest> failed, and Git's worktree list cannot be read to tell what remains. Herdr workspaces closed, teardown done; branch <b> kept.
+      Check <dest> and `git worktree list` yourself before retrying.
+  ```
 
 ### 2. A retry that finishes the removal
 
@@ -141,5 +193,21 @@ today.
     the checkout, registration and branch survive.
   - A scan that is busy, then fails: `wt-rm` fails closed, and the checkout, registration
     and branch survive.
-- **Unchanged:** the existing q11 case, where the checkout survives a failed removal, still
-  reports "worktree kept" with both routes.
+- **Every row of the §1 table, each with its route exercised:**
+  - **A working checkout, registered.** A test-only mode of the git call-failure injector
+    fails `git worktree remove` without running it. Expected: "worktree kept" and both
+    routes. A retry of `wt-rm <b>` without the injector then exits 0.
+  - **Partly deleted, registered.** Teardown makes both the registration directory and an
+    ignored subdirectory of the checkout unwritable. Expected: the partly-deleted message,
+    without "worktree kept" or the `wt-prepare` route. Then the permissions are restored and
+    the leftover is deleted by hand, and `wt-rm <b>` exits 0 and removes the registration.
+  - **Checkout gone, registration left:** the partial-removal case above.
+  - **Registration gone, checkout left:** the existing q11 fixture. It now expects the
+    leftover message, without "worktree kept", the retry or the `wt-prepare` route. The
+    directory remains, Git no longer lists it, and the branch is kept. Deleting the leftover
+    and running `git branch -d <b>` both succeed.
+  - **Unknown:** the injector fails the worktree-list read that follows the failed removal.
+    Expected: the unknown-state message, and the branch kept.
+  - **Both gone** has no fixture. Git reports failure only when a delete fails, so in
+    practice something is always left behind. That row exists to fail closed, not because
+    it was observed.
