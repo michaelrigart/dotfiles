@@ -199,7 +199,8 @@ chmod +x "$SIGSTUBS/git"
 # invocation of a repeated read is the one that breaks. With WT_FAIL_SKIP set, the failed
 # call never reaches the real git, so a mutating command can be made to fail without its
 # side effects. WT_FAIL_MATCH2, WT_FAIL_NTH2 and WT_FAIL_LOG2 are a second slot, so one test
-# can fail one call of each of two commands.
+# can fail one call of each of two commands. The second slot always runs the real git,
+# because WT_FAIL_SKIP applies only to the first.
 #
 # That distinction is the point: a helper that checks the status of one call and parses
 # the output of another cannot be caught by failing the call it checks. It has to be
@@ -1644,12 +1645,13 @@ run "$REPO" wt q23
 Q23="$HOME/Code/Org/repo-q23"
 : > "$FLOG"
 OUT="$(builtin cd "$REPO" && source "$FUNCS" \
-       && PATH="$FAILSTUBS:$PATH" WT_FAIL_LOG="$FLOG" WT_FAIL_NTH=1 WT_FAIL_SKIP=1 \
+       && PATH="$FAILSTUBS:$PATH" WT_FAIL_LOG="$FLOG" CLICOLOR=1 CLICOLOR_FORCE=1 WT_FAIL_NTH=1 WT_FAIL_SKIP=1 \
           WT_FAIL_MATCH="worktree remove" \
           wt-rm q23 2>&1)"; RC=$?
 rc_is 1 "q23 a removal that fails before deleting anything fails wt-rm"
 eq "$(grep -c . "$FLOG")" "1" "q23 fixture: exactly the one remove call was failed"
 has "worktree kept, Herdr workspaces closed" "q23 an intact checkout is reported as kept"
+has "worktree kept" "q23 it is still reported as kept with CLICOLOR_FORCE set"
 has "retry: wt-rm q23" "q23 it offers the retry"
 has "wt-prepare q23 && wt q23" "q23 it offers the resume route"
 [[ -e "$Q23/.git" ]] && _pass "q23 the checkout is intact" || _fail "q23 the checkout is intact"

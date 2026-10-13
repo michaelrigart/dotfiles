@@ -1178,7 +1178,7 @@ wt-rm() {
       # The link is gone only if a listing of $dest, whose status is checked, lacks it: a
       # failed stat proves nothing, so a failed listing leaves the state unknown.
       if (( reg == 0 && left )); then
-        listing="$(command ls -A -- "$dest" 2>/dev/null)"; lrc=$?
+        listing="$(unset CLICOLOR_FORCE LS_COLORS; QUOTING_STYLE=literal LC_ALL=C command ls -A -- "$dest" 2>/dev/null)"; lrc=$?
         entries=( ${(f)listing} )
         if (( lrc )); then
           reg=2
