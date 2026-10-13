@@ -1,5 +1,5 @@
 # tagteam settings, managed by chezmoi: edit the source in the dotfiles, not this file.
-# A `tagteam config set` is overwritten by the next `chezmoi apply`.
+# A `tagteam config set` shows up as a chezmoi diff; the next `chezmoi apply` offers to put this file back.
 # Spec: docs/superpowers/specs/2026-10-13-tagteam-integration-design.md
 
 [autoswitch]

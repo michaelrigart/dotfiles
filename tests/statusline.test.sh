@@ -4,7 +4,7 @@
 #   - shown in teal, and in red once a percentage reaches 90;
 #   - left out when tagteam is absent, fails or prints nothing, and when it would not fit.
 # Left out means byte-identical to a run without tagteam.
-# Runs under /bin/bash, the bash that runs the statusline in practice.
+# Runs under /bin/bash (3.2), the oldest bash the statusline must run under.
 #
 #   ./tests/statusline.test.sh   (sandboxed is fine)
 set -uo pipefail

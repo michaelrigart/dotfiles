@@ -68,9 +68,9 @@ probe_dir TAGTEAM_RESCUE "$TT_DATA/rescue"
 probe_dir TAGTEAM_DISPLACED "$TT_DATA/displaced"
 
 st=ABSENT
-for f in "$TT_DATA"/sessions/*/.credentials.json; do
-  case "$f" in *'*'*) continue ;; esac   # the glob matched nothing
-  if err=$(dd if="$f" of=/dev/null bs=1 count=1 2>&1 >/dev/null); then st=READABLE; break; fi
+for d in "$TT_DATA"/sessions/*/; do
+  case "$d" in *'*'*) continue ;; esac   # the glob matched nothing
+  if err=$(dd if="${d}.credentials.json" of=/dev/null bs=1 count=1 2>&1 >/dev/null); then st=READABLE; break; fi
   case "$err" in *"No such file"*) ;; *) st=DENIED ;; esac
 done
 echo "TAGTEAM_SESSION_CREDENTIALS=$st"
