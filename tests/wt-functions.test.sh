@@ -193,7 +193,8 @@ chmod +x "$SIGSTUBS/git"
 # --- git call-failure injector ----------------------------------------------
 # A second pass-through `git`, in its own directory and prepended to PATH for one test
 # at a time. It logs every call whose argv contains WT_FAIL_MATCH and fails the
-# WT_FAIL_NTH such call, then execs the real git with the identical argv. Like the
+# WT_FAIL_NTH such call: it runs the real git first (unless WT_FAIL_SKIP is set), then
+# exits 128. Every other call passes through to the real git with the identical argv. Like the
 # SIGINT shim it fakes nothing about the code under test; it decides only which
 # invocation of a repeated read is the one that breaks. With WT_FAIL_SKIP set, the failed
 # call never reaches the real git, so a mutating command can be made to fail without its
@@ -1698,6 +1699,55 @@ has "cannot be read to tell what remains" "q25 an unconfirmed checkout is report
 hasnt "worktree kept" "q25 it is never reported as kept"
 hasnt "delete what is left" "q25 it never advises deleting a registered checkout"
 [[ -e "$Q25/.git" ]] && _pass "q25 the checkout is intact" || _fail "q25 the checkout is intact"
+run "$REPO" git branch --list --format='%(refname:short)' q25
+eq "$OUT" "q25" "q25 the branch is kept"
+eq "$(lock_reason_of "$Q25")" "wt-managed; remove with command wt-rm" "q25 the registration remains, still locked"
+
+# q25b: as q25, but the failed read is the checkout's toplevel, which also printed the right
+# answer before failing.
+setup
+run "$REPO" wt q25b
+Q25B="$HOME/Code/Org/repo-q25b"
+F2LOG="$ROOTTMP/git-fail2.log"
+: > "$FLOG"; : > "$F2LOG"
+OUT="$(builtin cd "$REPO" && source "$FUNCS" \
+       && PATH="$FAILSTUBS:$PATH" WT_FAIL_LOG="$FLOG" WT_FAIL_NTH=1 WT_FAIL_SKIP=1 \
+          WT_FAIL_MATCH="worktree remove" \
+          WT_FAIL_LOG2="$F2LOG" WT_FAIL_NTH2=2 \
+          WT_FAIL_MATCH2="rev-parse --path-format=absolute --show-toplevel" \
+          wt-rm q25b 2>&1)"; RC=$?
+rc_is 1 "q25b a removal whose toplevel cannot be confirmed fails wt-rm"
+eq "$(grep -c . "$F2LOG")" "2" "q25b fixture: the failed read is the last toplevel read"
+has "cannot be read to tell what remains" "q25b an unconfirmed checkout is reported as unknown"
+hasnt "worktree kept" "q25b it is never reported as kept"
+hasnt "delete what is left" "q25b it never advises deleting a registered checkout"
+[[ -e "$Q25B/.git" ]] && _pass "q25b the checkout is intact" || _fail "q25b the checkout is intact"
+run "$REPO" git branch --list --format='%(refname:short)' q25b
+eq "$OUT" "q25b" "q25b the branch is kept"
+eq "$(lock_reason_of "$Q25B")" "wt-managed; remove with command wt-rm" "q25b the registration remains, still locked"
+
+# q26: the removal fails before Git touches anything, as in q23, but a listing of the
+# directory fails. The .git link is there, yet its absence cannot be proven or disproven by
+# a failed read, so the state is unknown: never "kept", never advice to delete.
+setup
+run "$REPO" wt q26
+Q26="$HOME/Code/Org/repo-q26"
+LSSTUBS=$(mkd)
+printf '#!/bin/sh\nexit 1\n' > "$LSSTUBS/ls"; chmod +x "$LSSTUBS/ls"
+: > "$FLOG"
+OUT="$(builtin cd "$REPO" && source "$FUNCS" \
+       && PATH="$LSSTUBS:$FAILSTUBS:$PATH" WT_FAIL_LOG="$FLOG" WT_FAIL_NTH=1 WT_FAIL_SKIP=1 \
+          WT_FAIL_MATCH="worktree remove" \
+          wt-rm q26 2>&1)"; RC=$?
+rc_is 1 "q26 a removal whose leftover cannot be listed fails wt-rm"
+eq "$(grep -c . "$FLOG")" "1" "q26 fixture: exactly the one remove call was failed"
+has "cannot be read to tell what remains" "q26 an unlistable checkout is reported as unknown"
+hasnt "worktree kept" "q26 it is never reported as kept"
+hasnt "delete what is left" "q26 it never advises deleting a registered checkout"
+[[ -e "$Q26/.git" ]] && _pass "q26 the checkout is intact" || _fail "q26 the checkout is intact"
+run "$REPO" git branch --list --format='%(refname:short)' q26
+eq "$OUT" "q26" "q26 the branch is kept"
+eq "$(lock_reason_of "$Q26")" "wt-managed; remove with command wt-rm" "q26 the registration remains, still locked"
 
 # --- a real SIGINT during wt-rm must destroy nothing -------------------------
 #

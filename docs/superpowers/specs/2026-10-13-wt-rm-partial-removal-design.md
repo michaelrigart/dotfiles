@@ -53,7 +53,9 @@ It checks three things:
   registered directory that still has its `.git` link.
 
 A directory whose `.git` link is gone is not a working checkout. Git deletes that link before
-the rest of the checkout, so a partly deleted checkout lacks it. An unregistered directory is
+the rest of the checkout, so a partly deleted checkout lacks it. That the link is gone is
+proven from a listing of `$dest`, as §2 proves absence. A failed `stat` of `$dest/.git`
+proves nothing, so a listing that fails makes the state unknown. An unregistered directory is
 not a worktree, whatever it holds.
 
 | Checkout | Registration | Message |

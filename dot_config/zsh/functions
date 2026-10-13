@@ -1171,10 +1171,21 @@ wt-rm() {
     # and is used only for the exact lock reason above.
     (( herdr_owned )) && remove_args=(worktree remove --force --force "$dest")
     if ! _wt_git $remove_args; then
-      local left=0 linked=0 working=0 reg top head
+      local left=0 linked=0 working=0 reg top head listing lrc
+      local -a entries
       [[ -e "$dest" || -L "$dest" ]] && left=1
-      [[ -e "$dest/.git" || -L "$dest/.git" ]] && linked=1
       _wt_worktree_record "$main" "$dest"; reg=$?
+      # The link is gone only if a listing of $dest, whose status is checked, lacks it: a
+      # failed stat proves nothing, so a failed listing leaves the state unknown.
+      if (( reg == 0 && left )); then
+        listing="$(command ls -A -- "$dest" 2>/dev/null)"; lrc=$?
+        entries=( ${(f)listing} )
+        if (( lrc )); then
+          reg=2
+        elif (( ${entries[(Ie).git]} )); then
+          linked=1
+        fi
+      fi
       # A registered checkout that keeps its .git link is "kept" only when Git confirms it:
       # each read must succeed, not merely print the expected answer.
       if (( reg == 0 && linked )); then
