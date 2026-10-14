@@ -1,0 +1,10 @@
+# tagteam settings, managed by chezmoi: edit the source in the dotfiles, not this file.
+# A `tagteam config set` shows up as a chezmoi diff; the next `chezmoi apply` offers to put this file back.
+# Spec: docs/superpowers/specs/2026-10-13-tagteam-integration-design.md
+
+[autoswitch]
+# Switch away above 95% of a window (tagteam's default is 90).
+threshold = 95
+# Use up the account whose weekly window resets soonest first, so less capacity expires
+# unused; the weekly window is the one that runs out.
+strategy = "consume-first"

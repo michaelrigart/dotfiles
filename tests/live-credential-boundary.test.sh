@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Run inside a fresh Claude sandbox. Reads at most one byte to /dev/null and reports only
+# Run inside a fresh Claude sandbox. Reads at most one byte per file to /dev/null and reports only
 # status; never emits file contents.
-# test-requires: sandboxed, fresh-session  # measures the sandbox; unsandboxed it inverts and exits 12
+# test-requires: sandboxed, fresh-session  # measures the sandbox; unsandboxed it inverts and exits 12 or more
 set -u
 fail=0
 
@@ -41,5 +41,39 @@ else
   echo "AGENT=FAILED"
   fail=$((fail + 1))
 fi
+
+# tagteam can hold a login in plaintext in three places. A path that does not exist yet was
+# not measured (ABSENT); only a readable one is a failure. The sandbox answers ENOENT for a
+# missing path even under a deny, and EPERM for an existing denied one, so the error text
+# tells the two apart. A sandboxed suite cannot create a fixture there itself.
+case "${XDG_DATA_HOME:-}" in /*) TT_BASE=$XDG_DATA_HOME ;; *) TT_BASE=$HOME/.local/share ;; esac  # tagteam ignores a relative one
+TT_DATA="$TT_BASE/tagteam"
+
+probe_dir() { # probe_dir <KEY> <dir>
+  local key=$1 dir=$2 err f st=ABSENT
+  if err=$(/bin/ls -A "$dir" 2>&1 >/dev/null); then
+    for f in "$dir"/* "$dir"/.[!.]*; do
+      case "$f" in */'*' | */'.[!.]*') continue ;; esac   # the glob matched nothing
+      if err=$(dd if="$f" of=/dev/null bs=1 count=1 2>&1 >/dev/null); then st=READABLE; break; fi
+      case "$err" in *"No such file"* | *"Is a directory"*) ;; *) st=DENIED ;; esac
+    done
+  else
+    case "$err" in *"No such file"* | *"Not a directory"*) st=ABSENT ;; *) st=DENIED ;; esac
+  fi
+  echo "$key=$st"
+  [ "$st" = READABLE ] && fail=$((fail + 1))
+  return 0
+}
+probe_dir TAGTEAM_RESCUE "$TT_DATA/rescue"
+probe_dir TAGTEAM_DISPLACED "$TT_DATA/displaced"
+
+st=ABSENT
+for d in "$TT_DATA"/sessions/*/; do
+  case "$d" in *'*'*) continue ;; esac   # the glob matched nothing
+  if err=$(dd if="${d}.credentials.json" of=/dev/null bs=1 count=1 2>&1 >/dev/null); then st=READABLE; break; fi
+  case "$err" in *"No such file"*) ;; *) st=DENIED ;; esac
+done
+echo "TAGTEAM_SESSION_CREDENTIALS=$st"
+[ "$st" = READABLE ] && fail=$((fail + 1))
 
 exit "$fail"

@@ -100,6 +100,23 @@ printf '%s' "$input" | jq \
           "Read(**/*.key)",              "Edit(**/*.key)",
           "Read(**/*.pem)",              "Edit(**/*.pem)",
           "Bash(basecamp auth token*)",
+          # tagteam can hold a login in plaintext in three places: rescue/, displaced/ and
+          # each tagteam run profile. A Read() deny is also copied into the sandbox
+          # read-deny list, so this covers sandboxed Bash as well as the Read tool.
+          "Read(~/.local/share/tagteam/rescue/**)",    "Edit(~/.local/share/tagteam/rescue/**)",
+          "Read(~/.local/share/tagteam/displaced/**)", "Edit(~/.local/share/tagteam/displaced/**)",
+          "Read(~/.local/share/tagteam/sessions/*/.credentials.json)",
+          "Edit(~/.local/share/tagteam/sessions/*/.credentials.json)",
+          # Keychain secrets never enter the transcript: the logins tagteam stores, the
+          # Claude Code login and the gh and glab tokens all sit in the login Keychain,
+          # which the sandbox does not cover. This keeps them out of the transcript only;
+          # a script can still call security. Accepted as known in the tagteam
+          # integration spec. The leading * also catches a global option before the verb.
+          "Bash(tagteam *export*)",
+          "Bash(security *find-generic-password*)",  "Bash(/usr/bin/security *find-generic-password*)",
+          "Bash(security *find-internet-password*)", "Bash(/usr/bin/security *find-internet-password*)",
+          "Bash(security *dump-keychain*)",          "Bash(/usr/bin/security *dump-keychain*)",
+          "Bash(security *export*)",                 "Bash(/usr/bin/security *export*)",
           # Secrets never enter the transcript: every op verb that prints or injects a
           # secret value, in singular and plural spellings and with a leading global
           # flag (op --account x read). op item create/edit/delete stay asks, below.

@@ -96,7 +96,7 @@ exact suite name lifts it (so `./tests/run.sh reconcile-agents` runs the suite, 
 **Never run `live-agent-auth`, `live-agent-signing` or `live-credential-boundary` with
 the sandbox disabled.** They measure the sandbox, so disabling it inverts the result:
 `live-credential-boundary.test.sh` then reports every private key readable and exits
-12. That is the suite working, not a regression.
+12 or more. That is the suite working, not a regression.
 
 **Control for sandbox mode before calling anything a regression.** Comparing a sandboxed
 run against an unsandboxed one once produced a believable "18-test regression" that was

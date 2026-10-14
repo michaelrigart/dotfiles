@@ -43,6 +43,8 @@ CYAN="125;207;255"    # #7dcfff  model text
 GREEN="158;206;106"   # #9ece6a  branch text
 MAGENTA="187;154;247" # #bb9af7  skill text (accent)
 YELLOW="224;175;104"  # #e0af68  effort text (beside the model)
+TEAL="115;218;202"    # #73daca  tagteam account + usage text
+RED="247;118;142"     # #f7768e  the same at 90% or more
 
 # Glyphs are built from raw UTF-8 bytes so the source stays pure ASCII (private-use
 # Nerd Font codepoints get stripped if written literally).
@@ -53,35 +55,103 @@ DASH=$(printf '\xe2\x80\x94')  # U+2014  — em dash (no-skill placeholder)
 DOT=$(printf '\xc2\xb7')       # U+00B7  · middot (model / effort separator)
 R=$'\033[0m'
 
-# segments: "fg|bg|text"  (';' is used inside colors, so '|' is a safe delimiter)
-segs=()
-segs+=("$BLUE|$NIGHT|$dir")
-[ -n "$branch" ] && segs+=("$GREEN|$BGHL|$BR $branch")
+# --- tagteam: the live account and its usage. Empty when tagteam is missing, fails (it
+# cannot open its store inside the sandbox) or prints nothing; then no segment is shown. ---
+tt=""
+if command -v tagteam >/dev/null 2>&1; then
+  tt=$(tagteam --no-color statusline </dev/null 2>/dev/null) || tt=""
+  tt=${tt%%$'\n'*}
+  # Drop OSC sequences (BEL or ESC \ terminated, e.g. hyperlinks; an unterminated one runs
+  # to the end of the line), then any CSI sequence, then any other ESC sequence, then
+  # whatever C0 control or DEL byte is left (CR, a stray ESC). sed and tr run under LC_ALL=C
+  # so the ranges are byte-exact and invalid UTF-8 passes through whole; render then counts
+  # it as unknown width and the segment is left out.
+  esc=$'\033'; bel=$'\007'
+  tt=$(printf '%s' "$tt" \
+    | LC_ALL=C sed -E "s#${esc}\][^${bel}${esc}]*(${bel}|${esc}\\\\)##g; s#${esc}\].*\$##; s#${esc}\[[0-9:;<=>?]*[ -/]*[@-~]##g; s#${esc}[ -/]*[0-~]##g" \
+    | LC_ALL=C tr -d '\000-\037\177')
+fi
+tt_fg=$TEAL
+if [ -n "$tt" ]; then
+  max=$(printf '%s' "$tt" | grep -oE '[0-9]+(\.[0-9]+)?%' | cut -d. -f1 | tr -d '%' | sort -n | tail -1)
+  [ -n "$max" ] && [ "$max" -ge 90 ] && tt_fg=$RED
+fi
+
 # model, with the live reasoning effort beside it in muted yellow (omitted when
 # the model doesn't expose an effort level, i.e. .effort.level is absent)
 model_seg="$model"
 [ -n "$effort" ] && model_seg="$model $(printf '\033[38;2;%sm' "$YELLOW")$DOT $effort"
-segs+=("$CYAN|$NIGHT|$model_seg")
-if [ -n "$skill" ]; then
-  segs+=("$MAGENTA|$BGHL|$ARR $skill")
+
+# segments: "fg|bg|text"  (';' is used inside colors, so '|' is a safe delimiter)
+# build_segs <0|1>: 1 adds the tagteam segment after the model; the skill segment then
+# takes the NIGHT shade so neighbouring backgrounds keep alternating.
+build_segs() {
+  local skill_bg=$BGHL
+  segs=()
+  segs+=("$BLUE|$NIGHT|$dir")
+  [ -n "$branch" ] && segs+=("$GREEN|$BGHL|$BR $branch")
+  segs+=("$CYAN|$NIGHT|$model_seg")
+  if [ "$1" = 1 ]; then
+    segs+=("$tt_fg|$BGHL|$tt")
+    skill_bg=$NIGHT
+  fi
+  if [ -n "$skill" ]; then
+    segs+=("$MAGENTA|$skill_bg|$ARR $skill")
+  else
+    segs+=("$COMMENT|$skill_bg|$ARR $DASH")
+  fi
+}
+
+# render: segs -> out, prevbg, w (the cluster's visible width) and unknown.
+# w: strip ANSI, then count UTF-8 codepoints as the bytes that are NOT continuation bytes
+# (0x80-0xBF). Locale-independent, so it is correct no matter what LC_* the harness hands us.
+# On invalid UTF-8 that sed fails and prints nothing; unknown then leaves the segment out and
+# the line is what it always was, so its error message is discarded.
+# unknown: the count of bytes that belong to no character of known width. Known, each
+# exactly one cell wide: printable ASCII; the glyphs SEP BR ARR DASH; and these two-byte
+# characters, which include no zero-width, format, unassigned or wide one:
+#   U+00A0-00AC, U+00AE-02FF  Latin-1 without the soft hyphen, Latin Extended-A and B, IPA,
+#                             spacing modifiers   (C2 A0-AC AE-BF, C3-CB 80-BF)
+#   U+0380-03FF, assigned     Greek and Coptic    (CE 84-8A 8C 8E-A1 A3-BF, CF 80-BF)
+#   U+0400-0482, U+048A-052F  Cyrillic without its combining marks
+#                             (D0-D1 80-BF, D2 80-82 8A-BF, D3 80-BF, D4 80-AF)
+# Ambiguous-width characters among them (Greek, Cyrillic, the glyphs) are taken as narrow,
+# as everywhere in this statusline. Under LC_ALL=C one left-to-right pass over out removes
+# the colour codes and every known non-ASCII character; unknown counts the bytes left that
+# are not printable ASCII: those of a control character (C0, DEL, or C1 at U+0080-009F; an
+# ESC starting a colour code has no width and is removed first), any other two-, three- or
+# four-byte character, or invalid UTF-8. It reads out, not plain, because plain is empty on
+# invalid UTF-8.
+render() {
+  local s fg rest bg text plain esc=$'\033' narrow
+  printf -v narrow '\xc2[\xa0-\xac\xae-\xbf]|[\xc3-\xcb\xcf-\xd1\xd3][\x80-\xbf]|\xce[\x84-\x8a\x8c\x8e-\xa1\xa3-\xbf]|\xd2[\x80-\x82\x8a-\xbf]|\xd4[\x80-\xaf]'
+  out=""; prevbg=""
+  for s in "${segs[@]}"; do
+    fg=${s%%|*}; rest=${s#*|}; bg=${rest%%|*}; text=${rest#*|}
+    [ -n "$prevbg" ] && out+=$'\033['"38;2;${prevbg};48;2;${bg}m${SEP}"
+    out+=$'\033['"38;2;${fg};48;2;${bg}m ${text} "
+    prevbg=$bg
+  done
+  plain=$(printf '%s' "$out" | sed $'s/\033\\[[0-9;]*m//g' 2>/dev/null)
+  w=$(printf '%s' "$plain" | LC_ALL=C tr -d '\200-\277' | LC_ALL=C wc -c)
+  w=$((w))
+  unknown=$(printf '%s' "$out" \
+    | LC_ALL=C sed -E "s/${esc}\[[0-9;]*m|$SEP|$BR|$ARR|$DASH|$narrow//g" \
+    | LC_ALL=C tr -d ' -~' | LC_ALL=C wc -c)
+  unknown=$((unknown))
+}
+
+# The renderer never truncates, so the tagteam segment is kept only when the closing
+# separator and at least one column of filler still fit (w <= cols - 2) and every
+# character's width is known (unknown = 0). Then each character takes exactly the one
+# column w counts for it, so the line ends exactly at $cols. Otherwise the line is what it
+# was without tagteam.
+if [ -n "$tt" ]; then
+  build_segs 1; render
+  { [ "$w" -le $((cols - 2)) ] && [ "$unknown" -eq 0 ]; } || { build_segs 0; render; }
 else
-  segs+=("$COMMENT|$BGHL|$ARR $DASH")
+  build_segs 0; render
 fi
-
-out=""; prevbg=""
-for s in "${segs[@]}"; do
-  fg=${s%%|*}; rest=${s#*|}; bg=${rest%%|*}; text=${rest#*|}
-  [ -n "$prevbg" ] && out+=$'\033['"38;2;${prevbg};48;2;${bg}m${SEP}"
-  out+=$'\033['"38;2;${fg};48;2;${bg}m ${text} "
-  prevbg=$bg
-done
-
-# Visible width of the cluster: strip ANSI, then count UTF-8 codepoints as the
-# bytes that are NOT continuation bytes (0x80-0xBF). Locale-independent, so it is
-# correct no matter what LC_* the harness hands us.
-plain=$(printf '%s' "$out" | sed $'s/\033\\[[0-9;]*m//g')
-w=$(printf '%s' "$plain" | LC_ALL=C tr -d '\200-\277' | LC_ALL=C wc -c)
-w=$((w))
 
 # filler bar to the right edge (total visible width == cols)
 n=$((cols - w - 1))
