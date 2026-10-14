@@ -9,9 +9,28 @@ source "$HOME/.config/zsh/functions"
 
 # Keybindings — must come after oh-my-zsh.sh, which resets the emacs keymap and
 # drops any custom bind set earlier. Ghostty maps Cmd-k → Alt-k (its built-in
-# clear_screen no-ops in the alternate screen / inside Herdr). Inside Herdr the
-# chord is consumed by its clear_pane binding; this covers a bare Ghostty tab.
-bindkey '\ek' clear-screen
+# clear_screen no-ops in the alternate screen / inside Herdr). In a bare Ghostty tab
+# the chord lands here directly. Inside Herdr, ~/.config/herdr/clear-pane.sh signals the
+# shell with SIGURG instead of typing Alt-k into the pane.
+#
+# clear-screen redraws the whole prompt. Its ED2 must reach the terminal before the ED3
+# that drops the scrollback: at a prompt Ghostty answers ED2 by scrolling the screen into
+# the scrollback, so an earlier ED3 would leave that screen behind. zle -R flushes zle's
+# buffered output first.
+clear-screen-and-scrollback() {
+  zle clear-screen
+  zle -R
+  print -n -- $'\e[3J'
+}
+zle -N clear-screen-and-scrollback
+bindkey '\ek' clear-screen-and-scrollback
+
+# The SIGURG path. A key typed in after clear-pane.sh found zsh idle could land in
+# whatever took the foreground since; a signal reaches only zsh, which clears only
+# while its line editor is active, i.e. at the prompt. The explicit return 0 keeps the
+# trap from ever acting as an interrupt: a trap that returns non-zero aborts the
+# command list it arrived during.
+TRAPURG() { zle && zle clear-screen-and-scrollback; return 0 }
 
 # Added by LM Studio CLI (lms)
 export PATH="$PATH:$HOME/.lmstudio/bin"

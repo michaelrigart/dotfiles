@@ -106,10 +106,6 @@ toggle_sidebar = "alt+b"
 close_workspace = "alt+q"
 edit_scrollback = "alt+s"
 
-# Ghostty maps Cmd-k to Alt-k. clear_pane keeps the prompt line and leaves full-screen
-# apps alone; passing Alt-k through to zsh's clear-screen stopped working in 0.9.
-clear_pane = "alt+k"
-
 # Herdr's built-in creator cannot run .worktreeinclude/.worktreehook or install the
 # ownership lock that keeps native removal behind wt-rm. Its default shortcut is
 # replaced below by a popup calling the safe wt flow; native open/grouping still
@@ -170,6 +166,15 @@ command = "exec lazygit"
 description = "lazygit"
 width = "90%"
 height = "90%"
+
+# Ghostty maps Cmd-k to Alt-k. Not keys.clear_pane: it keeps only the cursor's row, which
+# drops the top line of the two-line prompt. clear-pane.sh signals the pane's zsh when it
+# is idle at its prompt, and does nothing otherwise; nothing is typed into the pane.
+[[keys.command]]
+key = "alt+k"
+type = "shell"
+command = "~/.config/herdr/clear-pane.sh"
+description = "clear pane (shell prompt)"
 
 # Tab jumps. `switch_tab` is range-only and tab.focus takes a tab_id, so these resolve
 # by LABEL, which also survives tabs being appended out of order.
