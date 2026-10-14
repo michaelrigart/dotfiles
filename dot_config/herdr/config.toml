@@ -168,8 +168,8 @@ width = "90%"
 height = "90%"
 
 # Ghostty maps Cmd-k to Alt-k. Not keys.clear_pane: it keeps only the cursor's row, which
-# drops the top line of the two-line prompt. clear-pane.sh hands the key to zsh when it is
-# idle at its prompt and does nothing otherwise.
+# drops the top line of the two-line prompt. clear-pane.sh signals the pane's zsh when it
+# is idle at its prompt, and does nothing otherwise; nothing is typed into the pane.
 [[keys.command]]
 key = "alt+k"
 type = "shell"

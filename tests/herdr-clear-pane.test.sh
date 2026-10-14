@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Tests for dot_config/herdr/executable_clear-pane.sh: Alt-k (Ghostty's Cmd-k) inside Herdr.
 #
-# The script passes Alt-k to the focused pane only while zsh is idle at its prompt, so the
-# zsh widget redraws the whole two-line prompt; anything else in the foreground gets
-# nothing, because LazyVim binds <A-k> to "move line up". `herdr` is stubbed on PATH: it
-# logs each call and answers process-info from $STUB_INFO (exit status $STUB_RC). Also
-# checks that config.toml binds alt+k to this script and nothing else.
+# The script signals the pane's shell with SIGURG, and only while that shell is an idle zsh;
+# dot_zshrc's trap then clears. It never types into the pane. `herdr` is stubbed on PATH: it
+# logs each call and answers process-info from $STUB_INFO (exit status $STUB_RC). The shell
+# is a real helper process that records each SIGURG it receives. Also checks that
+# config.toml binds alt+k to this script and nothing else.
 #
 #   ./tests/herdr-clear-pane.test.sh   (sandboxed is fine)
 set -uo pipefail
@@ -28,7 +28,8 @@ _fail() { printf '  FAIL: %s\n    | got: %s\n' "$1" "$2"; fail=$((fail + 1)); }
 is() { if [ "$2" = "$3" ]; then _pass "$1"; else _fail "$1" "$2"; fi; }
 
 T="$(mktemp -d "${TMPDIR:-/tmp}/clearpane.XXXXXX")"
-trap 'rm -rf "$T"' EXIT
+HPID=""
+trap '[ -n "$HPID" ] && kill "$HPID" 2>/dev/null; rm -rf "$T"' EXIT
 mkdir -p "$T/bin" "$T/home"
 ln -s "$JQ" "$T/bin/jq"
 cat > "$T/bin/herdr" <<'SH'
@@ -41,39 +42,45 @@ exit 0
 SH
 chmod 755 "$T/bin/herdr"
 
-# run <process-info json> [VAR=value ...] -> the herdr calls, one per line, joined by " | "
+# The pane's shell: records every SIGURG in $T/sig.
+bash -c 'trap "echo URG >> \"$1\"" URG; while :; do sleep 0.05; done' helper "$T/sig" &
+HPID=$!
+sleep 0.2
+
+# run <process-info json> [VAR=value ...] -> "rc=<status> sig=<URGs the shell got> <herdr calls>"
 run() {
-  local info="$1"; shift
-  : > "$T/log"
+  local info="$1" i got; shift
+  : > "$T/log"; : > "$T/sig"
   env -i HOME="$T/home" PATH="$T/bin:/usr/bin:/bin" STUB_LOG="$T/log" STUB_INFO="$info" \
     HERDR_ACTIVE_PANE_ID=w1:p2 "$@" /bin/zsh "$SCRIPT" >/dev/null 2>&1
-  echo "rc=$? $(paste -sd'|' "$T/log" | sed 's/|/ | /g')"
+  local rc=$?
+  for i in 1 2 3 4 5 6 7 8 9 10; do [ -s "$T/sig" ] && break; sleep 0.05; done
+  got=$(wc -l < "$T/sig" | tr -d ' ')
+  echo "rc=$rc sig=$got $(paste -sd'|' "$T/log" | sed 's/|/ | /g')"
 }
 
 info() { # info <fg pgid> <shell pid> <name of the shell pid's process>
   printf '{"id":"cli:pane:process_info","result":{"process_info":{"foreground_process_group_id":%s,"foreground_processes":[{"name":"%s","pid":%s}],"pane_id":"w1:p2","shell_pid":%s},"type":"pane_process_info"}}' "$1" "$3" "$2" "$2"
 }
-AGENT='{"id":"x","result":{"process_info":{"foreground_process_group_id":2292,"foreground_processes":[{"name":"claude","pid":2292}],"pane_id":"w1:p2","shell_pid":98623},"type":"pane_process_info"}}'
+AGENT="{\"id\":\"x\",\"result\":{\"process_info\":{\"foreground_process_group_id\":2292,\"foreground_processes\":[{\"name\":\"claude\",\"pid\":2292}],\"pane_id\":\"w1:p2\",\"shell_pid\":$HPID},\"type\":\"pane_process_info\"}}"
 ENVELOPE='{"id":"cli:pane:process_info","error":{"code":"pane_not_found","message":"no pane"}}'
+CALL="pane process-info --pane w1:p2"
 
-is "an idle zsh prompt gets Alt-k" \
-   "$(run "$(info 97087 97087 zsh)")" \
-   "rc=0 pane process-info --pane w1:p2 | pane send-keys w1:p2 alt+k"
-is "an agent in the foreground gets nothing" \
-   "$(run "$AGENT")" "rc=0 pane process-info --pane w1:p2"
-is "a pane whose own process is not zsh gets nothing (a popup's exec lazygit)" \
-   "$(run "$(info 4100 4100 lazygit)")" "rc=0 pane process-info --pane w1:p2"
-is "an error envelope at exit 0 sends nothing" \
-   "$(run "$ENVELOPE")" "rc=0 pane process-info --pane w1:p2"
-is "a failed process-info sends nothing and still exits 0" \
-   "$(run "$(info 97087 97087 zsh)" STUB_RC=1)" "rc=0 pane process-info --pane w1:p2"
-is "garbage from process-info sends nothing" \
-   "$(run 'not json')" "rc=0 pane process-info --pane w1:p2"
+is "an idle zsh gets one SIGURG, and nothing is typed into the pane" \
+   "$(run "$(info "$HPID" "$HPID" zsh)")" "rc=0 sig=1 $CALL"
+is "an agent in the foreground: no signal" "$(run "$AGENT")" "rc=0 sig=0 $CALL"
+is "a pane whose own process is not zsh: no signal (a popup's exec lazygit)" \
+   "$(run "$(info "$HPID" "$HPID" lazygit)")" "rc=0 sig=0 $CALL"
+is "an error envelope at exit 0: no signal" "$(run "$ENVELOPE")" "rc=0 sig=0 $CALL"
+is "a failed process-info: no signal, and still exit 0" \
+   "$(run "$(info "$HPID" "$HPID" zsh)" STUB_RC=1)" "rc=0 sig=0 $CALL"
+is "garbage from process-info: no signal" "$(run 'not json')" "rc=0 sig=0 $CALL"
+is "shell pid 0 is never signalled (kill 0 means the whole process group)" \
+   "$(run "$(info 0 0 zsh)")" "rc=0 sig=0 $CALL"
 is "no focused pane: herdr is not called" \
-   "$(run "$(info 97087 97087 zsh)" HERDR_ACTIVE_PANE_ID=)" "rc=0 "
-is "HERDR_SESSION is threaded into every call" \
-   "$(run "$(info 97087 97087 zsh)" HERDR_SESSION=dev)" \
-   "rc=0 --session dev pane process-info --pane w1:p2 | --session dev pane send-keys w1:p2 alt+k"
+   "$(run "$(info "$HPID" "$HPID" zsh)" HERDR_ACTIVE_PANE_ID=)" "rc=0 sig=0 "
+is "HERDR_SESSION is threaded into the call" \
+   "$(run "$(info "$HPID" "$HPID" zsh)" HERDR_SESSION=dev)" "rc=0 sig=1 --session dev $CALL"
 
 # config.toml: alt+k runs this script, and no other binding claims alt+k.
 PY="$(command -v python3)" || { echo "no python3" >&2; exit 2; }

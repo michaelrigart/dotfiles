@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Tests for dot_zshrc: Alt-k (Ghostty's Cmd-k, also forwarded by herdr/clear-pane.sh).
+# Tests for dot_zshrc: Cmd-k, which reaches zsh as Alt-k in a bare Ghostty tab and as
+# SIGURG from herdr/clear-pane.sh inside Herdr.
 #
 # Starts an interactive zsh on a pseudo-terminal, sources the SOURCE dot_zshrc with every
-# file it sources stubbed in a temp HOME, sets a two-line prompt and presses Alt-k. Then it
-# reads what zsh wrote back: the screen clear (ED2), the whole prompt redrawn after it, and
-# the scrollback erase (ED3) only after the ED2, because at a prompt Ghostty answers ED2 by
-# scrolling the screen into the scrollback.
+# file it sources stubbed in a temp HOME, and sets a two-line prompt. Then, for Alt-k and for
+# SIGURG at the idle prompt, it reads what zsh wrote back: the screen clear (ED2), the whole
+# prompt redrawn after it, and the scrollback erase (ED3) only after the ED2, because at a
+# prompt Ghostty answers ED2 by scrolling the screen into the scrollback. A SIGURG while a
+# command runs must clear nothing and must not cut the command list short.
 #
 # Needs a pseudo-terminal, which the sandbox does not provide; there it exits 2.
 #   ./tests/zshrc.test.sh
@@ -28,10 +30,11 @@ for f in zshenv config aliases functions; do : > "$T/home/.config/zsh/$f"; done
 : > "$T/omz/oh-my-zsh.sh"
 : > "$T/brew/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"
 
-# Prints one line: "<ed2> <ed3-after-ed2> <prompt-top-after-ed2> <prompt-bottom-after-ed2>",
-# each yes/no, or a diagnostic starting with "error".
+# Prints one line of yes/no fields, or a diagnostic starting with "error": for Alt-k, then
+# for SIGURG at the prompt, "<ed2> <ed3-after-ed2> <prompt-top-after> <prompt-bottom-after>";
+# then, for SIGURG during `sleep 1; print AFTER-$((40+2))`, "<ed2> <the list ran to the end>".
 result="$("$PY" -I - "$ZSHRC" "$T" <<'PY' 2>"$T/py.err"
-import os, pty, select, sys, time
+import os, pty, select, signal, sys, time
 zshrc, tmp = sys.argv[1], sys.argv[2]
 env = {"HOME": tmp + "/home", "ZSH": tmp + "/omz", "HOMEBREW_PREFIX": tmp + "/brew",
        "TERM": "xterm-256color", "PATH": "/usr/bin:/bin"}
@@ -62,14 +65,24 @@ read_until(b"%", 3.0)
 os.write(fd, ("source '%s'; PS1=$'TOP-LINE\\nBOTTOM> '\r" % zshrc).encode())
 if b"BOTTOM> " not in read_until(b"BOTTOM> "):
     print("error: the two-line prompt never appeared"); sys.exit(0)
+yn = lambda b: "yes" if b else "no"
+def cleared(out):
+    ed2 = out.rfind(b"\x1b[2J")
+    after = out[ed2:] if ed2 >= 0 else b""
+    return [yn(ed2 >= 0), yn(b"\x1b[3J" in after), yn(b"TOP-LINE" in after), yn(b"BOTTOM> " in after)]
+fields = []
 os.write(fd, b"\x1bk")
-out = read_until(None, 1.5)
+fields += cleared(read_until(None, 1.5))
+os.kill(pid, signal.SIGURG)
+fields += cleared(read_until(None, 1.5))
+os.write(fd, b"sleep 1; print AFTER-$((40+2))\r")
+time.sleep(0.4)
+os.kill(pid, signal.SIGURG)
+busy = read_until(b"AFTER-42", 5.0) + read_until(b"BOTTOM> ", 2.0)
+fields += [yn(b"\x1b[2J" in busy), yn(b"AFTER-42" in busy)]
 os.kill(pid, 9)
 os.waitpid(pid, 0)
-ed2 = out.rfind(b"\x1b[2J")
-yn = lambda b: "yes" if b else "no"
-after = out[ed2:] if ed2 >= 0 else b""
-print(yn(ed2 >= 0), yn(b"\x1b[3J" in after), yn(b"TOP-LINE" in after), yn(b"BOTTOM> " in after))
+print(" ".join(fields))
 PY
 )"
 
@@ -77,11 +90,17 @@ case "$result" in
   nopty*) echo "INCONCLUSIVE: no pseudo-terminal ($result); run it unsandboxed" >&2; exit 2 ;;
   ''|error*) _fail "the pty run completed" "${result:-$(tail -3 "$T/py.err")}" ;;
   *)
-    read -r ed2 ed3 top bottom <<<"$result"
-    is "Alt-k clears the screen (ED2)" "$ed2" yes
-    is "the scrollback erase (ED3) follows the ED2" "$ed3" yes
-    is "the prompt's top line is redrawn after the clear" "$top" yes
-    is "and its bottom line" "$bottom" yes ;;
+    read -r k2 k3 ktop kbot u2 u3 utop ubot b2 bdone <<<"$result"
+    is "Alt-k clears the screen (ED2)" "$k2" yes
+    is "the scrollback erase (ED3) follows the ED2" "$k3" yes
+    is "the prompt's top line is redrawn after the clear" "$ktop" yes
+    is "and its bottom line" "$kbot" yes
+    is "SIGURG at the idle prompt clears the screen (ED2)" "$u2" yes
+    is "its ED3 follows the ED2" "$u3" yes
+    is "its prompt's top line is redrawn after the clear" "$utop" yes
+    is "and its bottom line" "$ubot" yes
+    is "SIGURG while a command runs clears nothing" "$b2" no
+    is "and the command list still runs to the end" "$bdone" yes ;;
 esac
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
