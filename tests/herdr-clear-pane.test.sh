@@ -42,10 +42,14 @@ exit 0
 SH
 chmod 755 "$T/bin/herdr"
 
-# The pane's shell: records every SIGURG in $T/sig.
-bash -c 'trap "echo URG >> \"$1\"" URG; while :; do sleep 0.05; done' helper "$T/sig" &
+# The pane's shell: records every SIGURG in $T/sig, and END on SIGUSR1. bash runs pending
+# traps in signal-number order and SIGURG (16) is below SIGUSR1 (30), so once END is
+# written, any SIGURG the script sent before it is written too.
+bash -c 'trap "echo URG >> \"$1\"" URG; trap "echo END >> \"$1\"" USR1
+  echo ready > "$2"; while :; do sleep 0.05; done' helper "$T/sig" "$T/ready" &
 HPID=$!
-sleep 0.2
+for _ in $(seq 100); do [ -s "$T/ready" ] && break; sleep 0.05; done
+[ -s "$T/ready" ] || { echo "the helper shell never started" >&2; exit 2; }
 
 # run <process-info json> [VAR=value ...] -> "rc=<status> sig=<URGs the shell got> <herdr calls>"
 run() {
@@ -54,8 +58,10 @@ run() {
   env -i HOME="$T/home" PATH="$T/bin:/usr/bin:/bin" STUB_LOG="$T/log" STUB_INFO="$info" \
     HERDR_ACTIVE_PANE_ID=w1:p2 "$@" /bin/zsh "$SCRIPT" >/dev/null 2>&1
   local rc=$?
-  for i in 1 2 3 4 5 6 7 8 9 10; do [ -s "$T/sig" ] && break; sleep 0.05; done
-  got=$(wc -l < "$T/sig" | tr -d ' ')
+  kill -USR1 "$HPID"
+  for i in $(seq 100); do grep -q END "$T/sig" && break; sleep 0.05; done
+  grep -q END "$T/sig" || { echo "rc=$rc the helper never answered"; return; }
+  got=$(grep -c URG "$T/sig")
   echo "rc=$rc sig=$got $(paste -sd'|' "$T/log" | sed 's/|/ | /g')"
 }
 
