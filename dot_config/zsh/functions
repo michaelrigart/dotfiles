@@ -1054,13 +1054,16 @@ _wt_rm_registration() {
 #   3. check 2, because shutdown can flush files (a live app writing on exit)
 #   4. the .worktreehook teardown verb, idempotent so a retry re-runs it
 #   5. check 3, tying non-ignored teardown output to its cause
-#   6. check 4 (`wt-teardown scan`), last before Git deletes files: it reads the OS,
+#   6. release the checkout's Codex sessions (`xreview-rpc release`): the daemon keeps a
+#      thread's MCP helpers running in the checkout for ~60 s after its TUI goes. Only
+#      exit 0 or 5 continues; any other status may have left a session archived.
+#   7. check 4 (`wt-teardown scan`), last before Git deletes files: it reads the OS,
 #      which Git and Herdr cannot see. After teardown because stopping project
 #      services is what teardown is for. It re-scans every 0.5 s for up to 5 s, since
 #      some processes exit only after their workspace closes. A heuristic, not a proof.
 #
 # A checkout that is gone while Git still registers it — a removal that failed after
-# deleting it — skips hook validation, checks 1-4 and teardown (steps 1 and 3-6):
+# deleting it — skips hook validation, checks 1-4, teardown and the release (steps 1 and 3-7):
 # _wt_rm_registration proves the absence, reruns the lock classification and step 2,
 # and removes only the registration.
 #
@@ -1138,6 +1141,32 @@ wt-rm() {
       *) print -ru2 -- "wt-rm: cannot determine whether $dest is clean after teardown — refusing. Resources may already be reclaimed."
          return 1 ;;
     esac
+
+    # Release the checkout's Codex sessions, which check 4 would otherwise find: the daemon
+    # unloads an idle thread, and stops its MCP helpers, only ~60 s after its TUI goes. Exit
+    # 5 is the command's own statement that the daemon is unreachable and no restore is owed
+    # here; every other failure, a killed release included, may have left a session archived,
+    # so the checkout stays for the retry to restore it. Spec:
+    # docs/superpowers/specs/2026-10-15-wt-rm-codex-session-release-design.md
+    local rel_out rel_err rel_line
+    local -i rel_rc
+    rel_err="$(command mktemp "${TMPDIR:-/tmp}/wt-rm-release.XXXXXX")" || {
+      print -ru2 -- "wt-rm: cannot create a scratch file to release Codex sessions — refusing."
+      return 1
+    }
+    rel_out="$(command xreview-rpc release --dir "$dest" 2>"$rel_err")"; rel_rc=$?
+    case $rel_rc in
+      0) for rel_line in ${(f)rel_out}; do
+           [[ "$rel_line" == "released "* ]] && print -r -- "✓ released Codex session ${rel_line#"released "}"
+         done ;;
+      5) print -ru2 -- "wt-rm: the Codex daemon is not reachable — continuing; check 4 decides." ;;
+      *) print -ru2 -- "wt-rm: could not release the Codex sessions in $dest (status $rel_rc) — removal aborted. Resources may already be reclaimed."
+         for rel_line in ${(f)"$(<$rel_err)"}; do print -ru2 -- "    $rel_line"; done
+         print -ru2 -- "    Then retry: wt-rm $qb"
+         command rm -f -- "$rel_err"
+         return 1 ;;
+    esac
+    command rm -f -- "$rel_err"
 
     # Check 4 — the last witness before Git deletes anything, and the only one that
     # asks the OS. After teardown, so a repository that stops its own services is

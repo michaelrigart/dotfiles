@@ -1,6 +1,6 @@
 #!/usr/bin/env zsh
 # Mocked test for the worktree/session helpers and the .worktreehook protocol in
-# dot_config/zsh/functions. Eighteen sections, in dependency order — helpers
+# dot_config/zsh/functions. Nineteen sections, in dependency order — helpers
 # first, then the commands composed from them:
 #
 #   B  wt                  destination validation (husks, slug collisions)
@@ -21,6 +21,7 @@
 #   T  wt                  a proven Git lifecycle opens a native Herdr workspace
 #   U  wt-rm               Herdr workspace shutdown and persisted-state safety
 #   V  wt-rm               live processes still inside the checkout block removal
+#   W  wt-rm               the checkout's Codex sessions are released before check 4
 #
 # Herdr and layout.sh are stubbed on PATH and every invocation is logged, so the
 # tests can assert *ordering* — notably that a dirty worktree never loses its terminal
@@ -159,6 +160,20 @@ TEARDOWN_SRC="$(cd "${0:h}/.." && pwd)/dot_local/bin/executable_wt-teardown"
 print -r -- "#!/bin/sh
 exec zsh '$TEARDOWN_SRC' \"\$@\"" > "$STUBS/wt-teardown"
 chmod +x "$STUBS/wt-teardown"
+# Never the real daemon. Logs its argv one argument per line, so the --dir value is checked
+# as exactly one argument, then answers as MOCK_XRPC_* say: by default exit 0, nothing
+# released. MOCK_XRPC_TO_LLOG also marks the call in $LLOG, for ordering against teardown
+# and the check-4 scan.
+cat > "$STUBS/xreview-rpc" <<'STUB'
+#!/bin/sh
+{ printf -- '---\n'; for a in "$@"; do printf '%s\n' "$a"; done; } >> "${XLOG:-/dev/null}"
+[ -n "${MOCK_XRPC_TO_LLOG:-}" ] && printf 'xreview-rpc\n' >> "$LLOG"
+[ -n "${MOCK_XRPC_OUT:-}" ] && printf '%b' "$MOCK_XRPC_OUT"
+[ -n "${MOCK_XRPC_ERR:-}" ] && printf '%b' "$MOCK_XRPC_ERR" >&2
+[ -n "${MOCK_XRPC_SIGNAL:-}" ] && kill -s "$MOCK_XRPC_SIGNAL" $$
+exit "${MOCK_XRPC_RC:-0}"
+STUB
+chmod +x "$STUBS/xreview-rpc"
 export PATH="$STUBS:$PATH"
 export DEV_LAYOUT="$STUBS/layout.sh"
 
@@ -251,8 +266,8 @@ setup() {   # fresh $HOME with Code/Org/repo, fresh logs, default mock behaviour
   git -C "$REPO" commit -q --allow-empty -m init
   export DLOG="$ROOTTMP/layout.log" \
          HLOG="$ROOTTMP/herdr.log" LLOG="$ROOTTMP/lsof.log" SLOG="$ROOTTMP/sleep.log" \
-         FLOG="$ROOTTMP/git-fail.log" MOCK_H_CLOSED_FILE="$ROOTTMP/herdr-closed"
-  : > "$DLOG"; : > "$HLOG"; : > "$LLOG"; : > "$FLOG"; : > "$SLOG"; : > "$MOCK_H_CLOSED_FILE"
+         FLOG="$ROOTTMP/git-fail.log" XLOG="$ROOTTMP/xreview-rpc.log" MOCK_H_CLOSED_FILE="$ROOTTMP/herdr-closed"
+  : > "$DLOG"; : > "$HLOG"; : > "$LLOG"; : > "$FLOG"; : > "$SLOG"; : > "$XLOG"; : > "$MOCK_H_CLOSED_FILE"
   export MOCK_LAYOUT_RC=0 MOCK_H_SESSION_LIST='{"sessions":[]}' MOCK_H_SESSION_RC=0 \
          MOCK_H_WORKSPACES='{"result":{"workspaces":[]}}' \
          MOCK_H_PANES='{"result":{"panes":[]}}' MOCK_H_LIST_RC=0 MOCK_H_CLOSE_RC=0 \
@@ -262,7 +277,8 @@ setup() {   # fresh $HOME with Code/Org/repo, fresh logs, default mock behaviour
   # "no records at all" is reserved for the failure the caller must fail closed on.
   export MOCK_LSOF_RC=0 MOCK_LSOF_SPEC="$(lsof_spec 1 launchd /)"
   unset MOCK_LSOF_RAW MOCK_H_TEAM_WORKSPACES MOCK_H_TEAM_PANES \
-        MOCK_LSOF_BUSY_N MOCK_LSOF_BUSY_SPEC MOCK_LSOF_THEN_FAIL
+        MOCK_LSOF_BUSY_N MOCK_LSOF_BUSY_SPEC MOCK_LSOF_THEN_FAIL \
+        MOCK_XRPC_RC MOCK_XRPC_OUT MOCK_XRPC_ERR MOCK_XRPC_SIGNAL MOCK_XRPC_TO_LLOG
 }
 # run <dir> <command...> — source the functions fresh and run one command in $dir.
 # A subshell per scenario keeps zsh options/state from leaking between tests.
@@ -2507,9 +2523,9 @@ rc_is 0 "a process in a sibling path that merely shares a prefix does not block 
 [[ -d "$SIB" ]] && _fail "the checkout is removed when only siblings are busy" \
                      || _pass "the checkout is removed when only siblings are busy"
 
-# Closing a workspace ends some processes only after a delay: Codex's app-server daemon
-# stops a thread's MCP servers a few seconds after its client goes. Check 4 re-scans for
-# up to 5 s before refusing, and the schedule is the assertion.
+# Closing a workspace ends some processes only after a delay, so check 4 re-scans for up
+# to 5 s before refusing, and the schedule is the assertion. (Codex's daemon keeps a
+# thread's MCP servers for ~60 s, far beyond this; section W covers how wt-rm frees them.)
 setup
 run "$REPO" wt grace-clears
 GC="$HOME/Code/Org/repo-grace-clears"
@@ -2575,7 +2591,8 @@ setup
 run "$REPO" wt no-teardown
 NOTD="$HOME/Code/Org/repo-no-teardown"
 NOTDP=$(mkd)
-for b in env git mkdir; do ln -s "$(command -v $b)" "$NOTDP/$b"; done
+for b in env git mkdir mktemp rm; do ln -s "$(command -v $b)" "$NOTDP/$b"; done
+ln -s "$STUBS/xreview-rpc" "$NOTDP/xreview-rpc"   # the release must pass to reach check 4
 OUT="$(cd "$REPO" && source "$FUNCS" && export PATH="$NOTDP" && wt-rm no-teardown 2>&1)"; RC=$?
 rc_is 1 "a missing wt-teardown aborts removal instead of skipping the scan"
 has "could not scan for processes" "the abort says the scan could not run"
@@ -2685,6 +2702,95 @@ git -C "$HOME/Code/Org/repo-sq4" add -A
 git -C "$HOME/Code/Org/repo-sq4" commit -q -m "added after the merge"
 run "$REPO" wt-rm sq4
 has "not fully merged" "a partly-merged branch is kept"
+
+print -r -- ""
+print -r -- "W. wt-rm — the checkout's Codex sessions are released before check 4"
+
+# Codex's daemon keeps a thread loaded, and its MCP helpers running inside the checkout, for
+# about 60 s after the TUI goes, so wt-rm asks it to release them. Only exit 5 (daemon
+# unreachable, no restore owed) continues without a release: any other status may have left
+# a session archived, and the retry restores it.
+setup
+mkhook "$REPO" '#!/bin/sh
+[ "$1" = teardown ] && echo teardown-hook >> "$LLOG"
+exit 0'
+run "$REPO" wt rel-order
+RO="$HOME/Code/Org/repo-rel-order"
+export MOCK_XRPC_TO_LLOG=1
+run "$REPO" wt-rm rel-order
+rc_is 0 "W1 the release fixture removes the worktree normally"
+eq "$(sed -n 1p "$LLOG")" "teardown-hook" "W1 teardown runs first"
+eq "$(sed -n 2p "$LLOG")" "xreview-rpc" "W1 the release runs after teardown and check 3"
+[[ "$(sed -n 3p "$LLOG")" == *"-F"* ]] && _pass "W1 check 4 scans after the release" \
+                                        || _fail "W1 check 4 scans after the release"
+eq "$(<$XLOG)" $'---\nrelease\n--dir\n'"$RO" "W1 the release gets the checkout as one --dir argument"
+
+setup
+run "$REPO" wt rel-ok
+ROK="$HOME/Code/Org/repo-rel-ok"
+export MOCK_XRPC_OUT='released th-1\nreleased th-2\n'
+run "$REPO" wt-rm rel-ok
+rc_is 0 "W2 released sessions let removal proceed"
+has "✓ released Codex session th-1" "W2 the first released session is reported"
+has "✓ released Codex session th-2" "W2 the second released session is reported"
+[[ -d "$ROK" ]] && _fail "W2 the checkout is removed" || _pass "W2 the checkout is removed"
+
+setup
+run "$REPO" wt rel-none
+run "$REPO" wt-rm rel-none
+rc_is 0 "W3 nothing to release: removal proceeds"
+hasnt "released Codex session" "W3 nothing to release: nothing is reported"
+
+for st in 1 2 signal; do
+  setup
+  run "$REPO" wt rel-refuse
+  RR="$HOME/Code/Org/repo-rel-refuse"
+  if [[ $st == signal ]]; then
+    export MOCK_XRPC_SIGNAL=TERM; want=143
+  else
+    export MOCK_XRPC_RC=$st; want=$st
+  fi
+  export MOCK_XRPC_ERR='xreview-rpc: th-1 is running a turn — let it finish\n'
+  : > "$LLOG"
+  run "$REPO" wt-rm rel-refuse
+  rc_is 1 "W4 release status $want refuses removal"
+  has "wt-rm: could not release the Codex sessions in $RR (status $want) — removal aborted. Resources may already be reclaimed." \
+      "W4 status $want: the refusal names the status"
+  has "    xreview-rpc: th-1 is running a turn — let it finish" "W4 status $want: the command's lines follow, indented"
+  has "    Then retry: wt-rm rel-refuse" "W4 status $want: the retry is offered"
+  [[ -d "$RR" ]] && _pass "W4 status $want: the checkout survives" || _fail "W4 status $want: the checkout survives"
+  eq "$(lock_reason_of "$RR")" "wt-managed; remove with command wt-rm" "W4 status $want: the registration survives"
+  run "$REPO" git branch --list --format='%(refname:short)' rel-refuse
+  eq "$OUT" "rel-refuse" "W4 status $want: the branch survives"
+  eq "$(grep -c -- '-F' "$LLOG")" "0" "W4 status $want: check 4 never runs"
+done
+
+setup
+run "$REPO" wt rel-missing
+RMI="$HOME/Code/Org/repo-rel-missing"
+NOXR=$(mkd)
+for b in env git mkdir mktemp rm; do ln -s "$(command -v $b)" "$NOXR/$b"; done
+OUT="$(cd "$REPO" && source "$FUNCS" && export PATH="$NOXR" && wt-rm rel-missing 2>&1)"; RC=$?
+rc_is 1 "W5 a missing xreview-rpc refuses removal"
+has "(status 127)" "W5 the refusal carries the missing command's status"
+[[ -d "$RMI" ]] && _pass "W5 the checkout survives" || _fail "W5 the checkout survives"
+
+setup
+run "$REPO" wt rel-down
+RD="$HOME/Code/Org/repo-rel-down"
+export MOCK_XRPC_RC=5 MOCK_XRPC_ERR='xreview-rpc: Codex daemon unreachable: gone\n'
+run "$REPO" wt-rm rel-down
+rc_is 0 "W6 an unreachable daemon with no restore owed continues"
+has "wt-rm: the Codex daemon is not reachable — continuing; check 4 decides." "W6 it says it continues"
+hasnt "Codex daemon unreachable: gone" "W6 the command's own diagnostic is not repeated"
+[[ -d "$RD" ]] && _fail "W6 check 4 and removal still run" || _pass "W6 check 4 and removal still run"
+
+setup
+run "$REPO" wt rel-dirty
+print -r -- "wip" > "$HOME/Code/Org/repo-rel-dirty/dirty.txt"
+run "$REPO" wt-rm rel-dirty
+rc_is 1 "W7 a dirty checkout is refused at check 1"
+eq "$(<$XLOG)" "" "W7 a refusal before teardown never calls xreview-rpc"
 
 export HOME="$REAL_HOME"
 print -r -- ""
