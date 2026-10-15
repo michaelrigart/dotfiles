@@ -222,7 +222,7 @@ covers the ~1 s it takes the released helpers to exit (C4).
 
 ## Implementation notes
 
-The branch is `feat/wt-rm-codex-session-release`. It ran as four plan tasks, with a fresh review after each, up to three fix rounds on a task, and a final whole-branch review whose findings went into one last fix wave. The dotfiles have no MR, so the rulings below are the record.
+The branch is `feat/wt-rm-codex-session-release`. It ran as four plan tasks, with a fresh review after each, up to three fix rounds on a task, and a final whole-branch review whose findings went into one last fix wave. Codex approved the spec and the plan, each in its third round. The dotfiles have no MR, so the rulings below are the record.
 
 ### Beyond the spec's letter
 
@@ -247,13 +247,18 @@ Each ruling lists what it costs if it is wrong.
 - **One corrupt pending record blocks every release.** Its scope is unknown, so the run fails closed and names the file. Cost: one stray file blocks all `wt-rm` runs until it is deleted.
 - **Archive failed, and the listing shows the thread archived.** Only the spec's `archive failed` text is printed. The kept record is settled by the next run's step 1. Cost: one less explicit message.
 - **No `__pycache__` backstop.** Neither `.gitignore` nor `.chezmoiignore` gains an entry; both suites set `PYTHONDONTWRITEBYTECODE`, and a `.chezmoiignore` change is outside this work. Cost: a stray cache from a future ad-hoc import could deploy to `~/.local/bin`.
+- **The ten source kinds.** `SOURCE_KINDS` holds the ten values copied from the 0.162.1 generated schema's `ThreadSourceKind` enum; the canary's R1 checks the listing live. Cost: a source kind added by a later Codex would make `archived()` miss an archived thread of that kind, so a restore would read as confirmed and the record would be dropped while the thread stays archived. The live canary is the guard after Codex upgrades.
+- **`XREVIEW_RPC_LOCK_BUSY_MARK` stays in production code.** It was added at plan review round 2 to make the lock-wait tests deterministic. Cost: one inert env read in `take_lock`.
+- **`cmd_thread_resolve` shares `loaded_ids()`.** Folding the duplicate paging loop was preferred to keeping two. Cost: a less specific thread-resolve diagnostic; no caller reads the daemon's error JSON (xreview discards stderr).
+- **Streaming the `waiting for …` lines.** The spec's §2 capture predates the discovery that step 5 waits up to 90 s, and a silent wait looks like a hang. Cost: a three-stage pipeline in `wt-rm`.
+- **Every finding is fixed in its own round.** Every review finding, Minor included, was fixed in its own round (Michael's review-loop preference), and the live canary was re-run whenever code it executes changed. Cost: slightly larger fix rounds.
 
 ### Test record
 
 - `tests/xreview-rpc.test.sh`: 204/204
 - `tests/wt-functions.test.sh`: 573/573
-- Full `./tests/run.sh`: <to be filled by the controller>
+- Full `./tests/run.sh` on 98bbe4c: 34 suites passed, 3930/3930 assertions; 9 skipped by their `needs:` tags.
 
 ### Open items
 
-- The live canary (`tests/live-codex-daemon.test.sh`) fails two checks that predate this branch and that it does not touch: F15 ("the pane shows the turn another client started") and V2 ("the directory chooser appears without -C"). Both are screen-text checks, likely Codex TUI drift. Canary run 2026-10-15: 44/46, every new R1 assertion passing.
+- The live canary (`tests/live-codex-daemon.test.sh`) has two failing checks whose code paths this branch does not touch: F15 ("the pane shows the turn another client started") and V2 ("the directory chooser appears without -C"). Both are screen-text checks, likely Codex TUI drift; the canary was not run on `main` to confirm they predate the branch. Canary result on 98bbe4c (unsandboxed, from a Herdr pane, Codex 0.162.1): 45/47, every R1 assertion passing.

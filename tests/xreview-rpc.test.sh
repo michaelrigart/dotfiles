@@ -521,7 +521,7 @@ PY
 is "records round-trip, refuse non-id names, skip unfinished writes, fail on corrupt ones" "$out" ok
 
 rm -rf "$XDG_STATE_HOME"
-out="$(/usr/bin/python3 - "$RPC" <<PY
+out="$(/usr/bin/python3 - "$RPC" 2>/dev/null <<PY
 $load
 import os, subprocess, time
 sd = m.state_dir()
