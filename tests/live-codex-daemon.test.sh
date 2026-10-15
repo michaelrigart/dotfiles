@@ -7,6 +7,7 @@
 # (`chezmoi apply`) and a clean daemon (`codex-daemon check`).
 # test-requires: unsandboxed, herdr, codex-daemon  # drives the real daemon and a scratch herdr tab
 set -uo pipefail
+export PYTHONDONTWRITEBYTECODE=1
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
 RPCF="$SRC/dot_local/bin/executable_xreview-rpc"
 SCHEMA="$SRC/dot_config/xreview/findings.schema.json"
