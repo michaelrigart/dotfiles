@@ -19,6 +19,10 @@ _pass() { printf '  PASS: %s\n' "$1"; pass=$((pass + 1)); }
 _fail() { printf '  FAIL: %s\n    | got: %s\n' "$1" "$2"; fail=$((fail + 1)); }
 is() { if [ "$2" = "$3" ]; then _pass "$1"; else _fail "$1" "$2"; fi; }
 rpc() { python3 "$RPCF" "$@"; }
+# The visible screen of the scratch pane into $screen. The status is herdr's own, so callers
+# check it: a failed read must never be taken for an empty or chooser-free screen. Callers use a
+# here-string, never a pipe, so grep -q's early exit cannot SIGPIPE the reader under pipefail.
+read_screen() { screen="$(herdr pane read "$pane" --source visible 2>/dev/null)"; }
 
 # xreview's own readers of the pane, extracted from the deployed-source script so the live
 # facts are checked against the code that will run, never against a reimplementation (the unit
@@ -96,7 +100,7 @@ rpc turn-wait --thread "$thread" --turn "$turn" --budget 180 --schema "$SCHEMA" 
 wait_pid=$!
 seen=0
 for _ in $(seq 10); do
-  grep -q 'Live canary' <<<"$(herdr pane read "$pane" --source visible 2>/dev/null)" && { seen=1; break; }; sleep 1
+  read_screen && grep -q 'Live canary' <<<"$screen" && { seen=1; break; }; sleep 1
 done
 is "the pane shows the turn another client started" "$seen" 1
 
@@ -320,7 +324,7 @@ case "$resume_cwd" in
   "")
     chooser=0
     for _ in $(seq 15); do
-      herdr pane read "$pane" --source visible 2>/dev/null | grep -q 'session directory' && { chooser=1; break; }
+      read_screen && grep -q 'session directory' <<<"$screen" && { chooser=1; break; }
       sleep 1
     done
     # Not a note: V2 is evidence the spec requires (§3). A chooser that never appears fails here,
@@ -350,8 +354,7 @@ case "$resume_cwd" in
     is "V2 the resume starts a Codex TUI" "$started" 1
     titled=0; end=$((SECONDS + 15))
     while [ "$SECONDS" -lt "$end" ]; do
-      t="$(herdr pane get "$pane" 2>/dev/null | jq -r '.result.pane.terminal_title_stripped // .result.pane.terminal_title // ""' 2>/dev/null)"
-      case "$t" in "$v2want"*) [ -n "$v2want" ] && { titled=1; break; } ;; esac
+      t="$(pane_title)" && case "$t" in "$v2want"*) [ -n "$v2want" ] && { titled=1; break; } ;; esac
       sleep 1
     done
     is "V2 the resumed TUI shows this thread in its title" "$titled" 1
@@ -363,10 +366,12 @@ case "$resume_cwd" in
       [ "$got_cwd" = "$want_cwd" ] && break; sleep 1
     done
     is "V2 with tui.resume_cwd=$resume_cwd the resumed thread's cwd is that directory" "${got_cwd:-<none>}" "$want_cwd"
-    # One read of the settled screen, proven non-empty, so an empty read cannot pass for "no chooser".
-    scr="$(herdr pane read "$pane" --source visible 2>/dev/null)"
-    is "V2 the screen read returns text" "$([ -n "$(printf '%s' "$scr" | tr -d '[:space:]')" ] && echo yes || echo no)" yes
-    is "V2 and no chooser appears" "$(grep -c 'session directory' <<<"$scr")" 0
+    # One read of the settled screen, proven successful and non-empty, so a failed or empty read
+    # cannot pass for "no chooser".
+    read_screen; rc=$?
+    is "V2 the screen read succeeds and returns text" \
+       "$rc/$([ -n "$(printf '%s' "$screen" | tr -d '[:space:]')" ] && echo yes || echo no)" "0/yes"
+    is "V2 and no chooser appears" "$(grep -c 'session directory' <<<"$screen")" 0
     echo "  NOTE: the chooser itself is not exercised while tui.resume_cwd is set"
     ;;
   *) _fail "V2 tui.resume_cwd has a known value (unset, current, session)" "$resume_cwd" ;;
@@ -397,8 +402,10 @@ else
     sleep 1
   done
   is "V1 the title shows the thread" "$v1" 1
-  is "V1 and no chooser is on screen" \
-     "$(herdr pane read "$pane" --source visible 2>/dev/null | grep -c 'session directory')" 0
+  read_screen; rc=$?
+  is "V1 the screen read succeeds and returns text" \
+     "$rc/$([ -n "$(printf '%s' "$screen" | tr -d '[:space:]')" ] && echo yes || echo no)" "0/yes"
+  is "V1 and no chooser is on screen" "$(grep -c 'session directory' <<<"$screen")" 0
 fi
 # xreview's own readers on the resumed pane: the thread its argv resumes, and whether its TUI
 # holds a daemon connection (retried: the connection may trail the title by a moment).
