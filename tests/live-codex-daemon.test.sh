@@ -96,7 +96,7 @@ rpc turn-wait --thread "$thread" --turn "$turn" --budget 180 --schema "$SCHEMA" 
 wait_pid=$!
 seen=0
 for _ in $(seq 10); do
-  grep -q 'Live canary' <<<"$(herdr pane read "$pane" 2>/dev/null)" && { seen=1; break; }; sleep 1
+  grep -q 'Live canary' <<<"$(herdr pane read "$pane" --source visible 2>/dev/null)" && { seen=1; break; }; sleep 1
 done
 is "the pane shows the turn another client started" "$seen" 1
 
@@ -263,27 +263,89 @@ is "C2c on the freed shell xreview's pane_proc succeeds and proc_codex is empty"
    "$rc/$([ -z "$(proc_codex "$xp")" ] && echo empty || echo codex)" "0/empty"
 other="$T/elsewhere"; mkdir -p "$other"
 
-echo "V2: a resume from another directory, without -C, is held at the chooser; the ladder frees it"
+# The thread's cwd as the daemon reports it (thread/read), empty on any error. -B keeps a
+# __pycache__ out of the source tree; the module is loaded as the unit suite loads it.
+thread_cwd() {
+  /usr/bin/python3 -B - "$RPCF" "$1" 2>/dev/null <<'PY'
+import importlib.machinery, importlib.util, sys
+try:
+    loader = importlib.machinery.SourceFileLoader("xreview_rpc", sys.argv[1])
+    spec = importlib.util.spec_from_loader("xreview_rpc", loader)
+    m = importlib.util.module_from_spec(spec); loader.exec_module(m)
+    r = m.Client().call("thread/read", {"threadId": sys.argv[2], "includeTurns": False})
+    print(r["result"]["thread"]["cwd"])
+except Exception:
+    print("")
+PY
+}
+
+# Codex shows the resume directory chooser only while tui.resume_cwd is unset. Choosing
+# "Always use current directory" saves "current" (resume in the shell's directory); the other
+# value is "session" (resume in the session's own directory). Either way no chooser appears, so
+# the chooser is checked only while the setting is unset, and otherwise the directory the
+# setting names. xreview is unaffected: it always resumes with -C (V1).
+echo "V2: a resume from another directory without -C, per tui.resume_cwd; the ladder frees the pane"
+resume_cwd="$(python3 - "$CODEX_HOME_DIR/config.toml" <<'PY'
+import sys, tomllib
+try:
+    with open(sys.argv[1], "rb") as f:
+        c = tomllib.load(f)
+except FileNotFoundError:
+    c = {}
+print((c.get("tui") or {}).get("resume_cwd") or "")
+PY
+)"; rc=$?
+is "V2 the Codex config's tui.resume_cwd is readable" "$rc" 0
+printf '  (tui.resume_cwd=%s)\n' "${resume_cwd:-unset}"
 herdr pane run "$pane" "cd $(printf '%q' "$other") && $pane_cmd resume $f22_thread" >/dev/null
-chooser=0
-for _ in $(seq 15); do
-  herdr pane read "$pane" --source visible 2>/dev/null | grep -q 'session directory' && { chooser=1; break; }
-  sleep 1
-done
-# Not a note: V2 is evidence the spec requires (§3). A chooser that never appears fails here,
-# and the controller stops at Task 1 (the plan's gate) rather than proceeding unverified.
-is "V2 the directory chooser appears without -C" "$chooser" 1
-# The guard refuses a pane whose agent_status is working or blocked as mid-turn, so a chooser
-# reported that way would block the ladder. A live finding if it fails; never weaken it.
-chooser_obj="$(herdr pane get "$pane" 2>/dev/null | jq -ce '.result.pane | objects' 2>/dev/null)"; rc=$?
-chooser_status="$(printf '%s' "$chooser_obj" | jq -r '.agent_status // empty' 2>/dev/null)"
-case "$chooser_status" in
-  working|blocked) chooser_idle="$chooser_status" ;;
-  *) chooser_idle=ok ;;
+case "$resume_cwd" in
+  "")
+    chooser=0
+    for _ in $(seq 15); do
+      herdr pane read "$pane" --source visible 2>/dev/null | grep -q 'session directory' && { chooser=1; break; }
+      sleep 1
+    done
+    # Not a note: V2 is evidence the spec requires (§3). A chooser that never appears fails here,
+    # and the controller stops at Task 1 (the plan's gate) rather than proceeding unverified.
+    is "V2 the directory chooser appears without -C" "$chooser" 1
+    # The guard refuses a pane whose agent_status is working or blocked as mid-turn, so a chooser
+    # reported that way would block the ladder. A live finding if it fails; never weaken it.
+    chooser_obj="$(herdr pane get "$pane" 2>/dev/null | jq -ce '.result.pane | objects' 2>/dev/null)"; rc=$?
+    chooser_status="$(printf '%s' "$chooser_obj" | jq -r '.agent_status // empty' 2>/dev/null)"
+    case "$chooser_status" in
+      working|blocked) chooser_idle="$chooser_status" ;;
+      *) chooser_idle=ok ;;
+    esac
+    is "V2 the chooser's pane read succeeds, and agent_status is not working or blocked (was '$chooser_status')" \
+       "$rc/$chooser_idle" "0/ok"
+    ;;
+  current|session)
+    # The resume opens straight away: wait for a Codex process, then for the daemon to report
+    # the directory the setting names (real paths: the temp dir may sit behind a symlink).
+    started=0
+    for _ in $(seq 15); do
+      [ -n "$(proc_codex "$(pane_proc "$pane")")" ] && { started=1; break; }
+      sleep 1
+    done
+    is "V2 the resume starts a Codex TUI" "$started" 1
+    if [ "$resume_cwd" = current ]; then want_cwd="$(cd "$other" && pwd -P)"; else want_cwd="$(cd "$SRC" && pwd -P)"; fi
+    got_cwd=""
+    for _ in $(seq 15); do
+      got_cwd="$(thread_cwd "$f22_thread")"
+      [ "$got_cwd" = "$want_cwd" ] && break; sleep 1
+    done
+    is "V2 with tui.resume_cwd=$resume_cwd the resumed thread's cwd is that directory" "$got_cwd" "$want_cwd"
+    chooser=0
+    for _ in $(seq 5); do
+      herdr pane read "$pane" --source visible 2>/dev/null | grep -q 'session directory' && { chooser=1; break; }
+      sleep 1
+    done
+    is "V2 and no chooser appears" "$chooser" 0
+    echo "  NOTE: the chooser itself is not exercised while tui.resume_cwd is set"
+    ;;
+  *) _fail "V2 tui.resume_cwd has a known value (unset, current, session)" "$resume_cwd" ;;
 esac
-is "V2 the chooser's pane read succeeds, and agent_status is not working or blocked (was '$chooser_status')" \
-   "$rc/$chooser_idle" "0/ok"
-ladder "$pane"; is "V2 the ladder frees the pane held at the chooser" "$?" 0
+ladder "$pane"; is "V2 the ladder frees the pane" "$?" 0
 xp="$(pane_proc "$pane")"; rc=$?
 is "C2c after the V2 ladder xreview's pane_proc succeeds and proc_codex is empty" \
    "$rc/$([ -z "$(proc_codex "$xp")" ] && echo empty || echo codex)" "0/empty"
