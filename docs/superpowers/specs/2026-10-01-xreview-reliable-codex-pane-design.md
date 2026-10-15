@@ -102,6 +102,8 @@ Probed by the plan's first task, before anything relies on them:
 | V1 | `codex -C <root> resume <id>`, run from a shell in another directory, opens the thread with no directory chooser. | Drop `-C` and amend §4.1. Detection (§4.5) still reports the chooser. |
 | V2 | A TUI held at the directory chooser (a resume from another directory, without `-C`) is quit by the ladder (§4.4) within its bound, and the shell then runs a `herdr pane run` command. | Stop and amend §4.4. |
 
+> **2026-10-15 — amended.** Codex shows the directory chooser only while `tui.resume_cwd` is unset; choosing "Always use current directory" saves `"current"` (the other value is `"session"`). The canary's V2 now checks the chooser only while the setting is unset, and otherwise the directory the setting names (the daemon's `thread/read` cwd). F15 now reads the pane with `--source visible`: the default `recent` source returns only the last 80 lines, which missed the prompt on a taller pane.
+
 ## 4. Design
 
 ### 4.1 Prevent the known screens
