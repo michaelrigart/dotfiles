@@ -25,7 +25,8 @@ cat > "$T/fake.py" <<'PY'
 # start takes the next run (FAKE_COUNTER), so a dropped connection and the reconnect can
 # behave differently. A run maps a method to its response and to notifications sent after
 # that response; "exit_after" drops the connection after that many messages sent,
-# "drop_on" vanishes on receiving a method, and "silent" never answers a method.
+# "drop_on" vanishes on receiving a method, and "silent" never answers a method. In a
+# "responses" list, the string "__silent__" leaves that one call unanswered.
 import json, os, sys
 scen = json.load(open(os.environ["FAKE_SCENARIO"]))
 runs = scen.get("runs") or [scen]
@@ -59,7 +60,8 @@ for line in sys.stdin:
         if isinstance(resp, list):   # a different answer on each successive call
             i = calls.get(meth, 0); calls[meth] = i + 1
             resp = resp[min(i, len(resp) - 1)]
-        out(dict(resp, id=m["id"]))
+        if resp != "__silent__":
+            out(dict(resp, id=m["id"]))
         for note in run.get("after", {}).get(meth, []):
             out(note)
 PY
@@ -881,6 +883,16 @@ took=$SECONDS
 is "R11 a deadline that ends the wait first still exits 1" "$rc" 1
 grep -q "e (ephemeral) is still loaded — close the Codex client using it" "$T/err" && _pass "R11 it gives the same message, not a lost connection" || _fail "R11 it gives the same message, not a lost connection" "$(cat "$T/err")"
 is "R11 the poll sleep is cut short at the deadline" "$([ "$took" -lt 8 ] && echo yes || echo "no, took ${took}s")" yes
+# A poll the daemon never answers is bounded by the end of the wait, not by the 30 s call
+# timeout nor the 20 s release deadline: the wait is 1 s, so the run ends in about 1 s.
+scenario "$(jq -nc --argjson e "$(th e "$W/repo" idle true)" \
+  '{responses:{"thread/loaded/list":[{result:{data:["e"]}},"__silent__"],"thread/read":$e}}')"
+SECONDS=0
+XREVIEW_RPC_EPHEMERAL_WAIT=1 XREVIEW_RPC_EPHEMERAL_POLL=0.1 XREVIEW_RPC_RELEASE_DEADLINE=20 rpc release --dir "$W/repo" 2>"$T/err"; rc=$?
+took=$SECONDS
+is "R11 a poll left unanswered ends the wait as still loaded (1)" "$rc" 1
+grep -q "e (ephemeral) is still loaded — close the Codex client using it" "$T/err" && _pass "R11 it gives the still-loaded message, not a lost connection" || _fail "R11 it gives the still-loaded message, not a lost connection" "$(cat "$T/err")"
+is "R11 an unanswered poll cannot stretch the wait past its end" "$([ "$took" -lt 5 ] && echo yes || echo "no, took ${took}s")" yes
 
 fresh
 scenario "$(jq -nc --argjson x "$(th x "$W/repo-x" idle)" '{responses:{"thread/loaded/list":{result:{data:["x"]}},"thread/read":$x}}')"

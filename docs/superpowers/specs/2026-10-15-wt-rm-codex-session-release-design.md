@@ -229,7 +229,7 @@ The branch is `feat/wt-rm-codex-session-release`. It ran as four plan tasks, wit
 - **Shared loaded-thread listing.** `cmd_thread_resolve` now calls `loaded_ids()` instead of keeping its own paging loop. Its refusal no longer carries the daemon's error JSON.
 - **`settle()`.** One helper drops a record once its restore is confirmed. When the record cannot be removed, step 1 and step 4 say `<id> was restored, but its record could not be removed: …`, return 1 and keep the record for the next run's step 1. Step 1 still tries every other record and names every restore that is still owed.
 - **Archive failed, record not removable.** Step 4's archive-failed message gains `; its record could not be removed: …` when the listing confirms the thread was never archived and the record cannot be dropped.
-- **Ephemeral wait.** The poll sleep is capped at the end of the wait, and a `Closed` raised mid-poll ends the wait with the same "still loaded" message instead of a lost connection.
+- **Ephemeral wait.** The poll sleep is capped at the end of the wait, and a `Closed` raised mid-poll ends the wait with the same "still loaded" message instead of a lost connection. Each poll, pagination included, is bounded by the end of the wait, so a hung daemon cannot stretch the 90 s wait.
 - **`wt-rm` output.** Only the release's `waiting for …` lines of stderr reach the terminal live, through `{ release 2>&1 >out } | tee err | grep --line-buffered`; the rest is kept for a refusal. `✓ released Codex session` lines print before a refusal too, so an id released before a later failure is not lost. The scratch directory is removed in `wt-rm`'s `always` block.
 - **Lock wait notice.** `take_lock` prints `waiting for another release to finish` through `err` the first time it finds the lock busy, so `wt-rm` is not silent for up to the 120 s deadline.
 - **`XREVIEW_RPC_LOCK_BUSY_MARK`.** A test hook: a file touched the first time the lock is found busy, so the lock-wait tests assert on the wait instead of timing it. Precedent: `WT_TEARDOWN_TERM_WAIT`.
@@ -255,7 +255,7 @@ Each ruling lists what it costs if it is wrong.
 
 ### Test record
 
-- `tests/xreview-rpc.test.sh`: 204/204
+- `tests/xreview-rpc.test.sh`: 207/207
 - `tests/wt-functions.test.sh`: 573/573
 - Full `./tests/run.sh` on 98bbe4c: 34 suites passed, 3930/3930 assertions; 9 skipped by their `needs:` tags.
 

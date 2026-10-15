@@ -582,13 +582,15 @@ def archived(c, tid, cwd):
             return False
 
 
-def loaded_ids(c):
+def loaded_ids(c, until=None):
     """Every loaded thread id, following nextCursor; None when a page answers with an error.
     A timeout or lost connection raises Closed/Unreachable from Client.call; callers handle
-    that."""
+    that. With until (a monotonic time), every page call is bounded by it, so the listing
+    raises Closed rather than run past until."""
     ids, cursor = [], None
     while True:
-        r = c.call("thread/loaded/list", {"cursor": cursor} if cursor else {})
+        kw = {} if until is None else {"timeout": max(0.0, until - time.monotonic())}
+        r = c.call("thread/loaded/list", {"cursor": cursor} if cursor else {}, **kw)
         if "error" in r:
             return None
         res = r.get("result") or {}
@@ -707,10 +709,12 @@ def release(c, sd, d, mine):
         end = min(time.monotonic() + wait, c.deadline)
         left_e = list(eph)
         while True:
+            if time.monotonic() >= end:
+                break
             try:
-                now = loaded_ids(c)
+                now = loaded_ids(c, until=end)
             except Closed:
-                break    # the deadline ran out mid-poll: the threads are still loaded
+                break    # the wait or the deadline ran out mid-poll: still loaded
             if now is not None:
                 left_e = [t for t in left_e if t in now]
             if not left_e or time.monotonic() >= end:
