@@ -353,15 +353,22 @@ rel_turn="$(rpc turn-start --thread "$rel_thread" --input "$T/rel-in" --schema "
 rpc turn-wait --thread "$rel_thread" --turn "$rel_turn" --budget 180 --schema "$SCHEMA" >/dev/null
 is "R1 the scratch thread is loaded before the release" \
    "$(rpc thread-status --thread "$rel_thread" | jq -r .loaded)" true
+# Same scan as below: helpers must exist before the release, or "none left" proves nothing.
+scan="$(lsof -a -d cwd -Fn 2>/dev/null)"
+if [ -z "$scan" ]; then before=unknown
+elif grep -qxF "n$RELD" <<< "$scan"; then before=present
+else before=absent; fi
+is "R1 helpers run in the scratch directory before the release (C1)" "$before" present
 out="$(XDG_STATE_HOME="$T/rel/state" rpc release --dir "$RELD")"; rc=$?
 is "R1 release exits 0" "$rc" 0
 is "R1 release names the thread" "$out" "released $rel_thread"
-is "R1 the thread is no longer loaded" "$(rpc thread-status --thread "$rel_thread" | jq -r .loaded)" false
+is "R1 the thread is notLoaded after the release" "$(rpc thread-status --thread "$rel_thread" | jq -r .status)" notLoaded
 # No pipe into grep -q: under pipefail an early-exiting grep can SIGPIPE lsof and read as
 # "absent". An empty listing is a failed scan (this shell's own cwd is always in a real one),
 # so it never counts as absence either.
 procs=unknown
-for _ in $(seq 10); do
+deadline=$((SECONDS + 2))
+while [ "$SECONDS" -le "$deadline" ]; do
   scan="$(lsof -a -d cwd -Fn 2>/dev/null)"
   if [ -z "$scan" ]; then
     procs=unknown
@@ -374,6 +381,7 @@ for _ in $(seq 10); do
 done
 is "R1 no process is left in the scratch directory within 2 s" "$procs" gone
 is "R1 the archived listing does not show the restored thread" "$(rel_archived "$rel_thread" "$RELD")" false
+is "R1 the release used the overridden state directory" "$([ -d "$T/rel/state/xreview-rpc" ] && echo yes || echo no)" yes
 is "R1 no pending record is left" \
    "$(ls "$T/rel/state/xreview-rpc/release-pending" 2>/dev/null | wc -l | tr -d ' ')" 0
 rpc thread-archive --thread "$rel_thread"
