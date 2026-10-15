@@ -25,6 +25,7 @@ Exit codes: 0 ok, 1 failed or unknown, 2 usage, 3 still running at the budget,
 """
 import argparse
 import base64
+import fcntl
 import json
 import os
 import re
@@ -458,6 +459,141 @@ def cmd_thread_archive(c, a):
         err("thread/archive refused: " + json.dumps(r["error"]))
         return 1
     return 0
+
+
+# --- release (spec: docs/superpowers/specs/2026-10-15-wt-rm-codex-session-release-design.md)
+
+# Every ThreadSourceKind of the protocol schema. thread/list without sourceKinds lists only
+# interactive sources (C9), so a confirmation that omitted them could miss an archived thread.
+SOURCE_KINDS = ("cli", "vscode", "exec", "appServer", "subAgent", "subAgentReview",
+                "subAgentCompact", "subAgentThreadSpawn", "subAgentOther", "unknown")
+# A thread id becomes a file name under release-pending/, so it must be one plain name.
+THREAD_ID = re.compile(r"^[0-9A-Za-z][0-9A-Za-z_-]*$")
+
+
+class RecordError(Exception):
+    pass
+
+
+def state_dir():
+    base = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
+    return os.path.join(base, "xreview-rpc")
+
+
+def under(path, d):
+    """True when path is d or lies below it, by real path, whole components at a time:
+    repo and repo-x are neighbours by construction."""
+    p, r = os.path.realpath(path), os.path.realpath(d)
+    return p == r or p.startswith(r.rstrip(os.sep) + os.sep)
+
+
+def take_lock(sd, deadline):
+    """The exclusive release lock's fd, or None if another process still holds it at deadline.
+    flock is dropped by the kernel when the holder dies, however it dies, so it never goes
+    stale. Raises OSError when the state directory or the lock file cannot be made."""
+    os.makedirs(sd, exist_ok=True)
+    fd = os.open(os.path.join(sd, "release.lock"), os.O_RDWR | os.O_CREAT, 0o600)
+    # For the test suites only: a file touched the first time the lock is found busy, so a
+    # test can see the wait begin instead of guessing it from elapsed time.
+    mark = os.environ.get("XREVIEW_RPC_LOCK_BUSY_MARK")
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except BlockingIOError:
+            if mark:
+                open(mark, "w").close()
+                mark = None
+            if time.monotonic() >= deadline:
+                os.close(fd)
+                return None
+            time.sleep(0.2)
+
+
+def _record_path(sd, tid):
+    if not isinstance(tid, str) or not THREAD_ID.match(tid):
+        raise RecordError(f"refusing an unexpected thread id: {tid!r}")
+    return os.path.join(sd, "release-pending", tid)
+
+
+def write_record(sd, tid, cwd):
+    """Record that tid may be archived, before it is. Written whole or not at all: a .tmp
+    left by a crash means the archive was never sent."""
+    path = _record_path(sd, tid)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump({"cwd": cwd}, fh)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
+
+
+def drop_record(sd, tid):
+    try:
+        os.remove(_record_path(sd, tid))
+    except FileNotFoundError:
+        pass
+
+
+def read_records(sd):
+    """[(thread id, recorded cwd)] for every pending record, sorted by id. A record that
+    cannot be read raises RecordError: its cwd, and so its scope, is unknown."""
+    d = os.path.join(sd, "release-pending")
+    try:
+        names = sorted(os.listdir(d))
+    except FileNotFoundError:
+        return []
+    out = []
+    for name in names:
+        if name.endswith(".tmp"):
+            continue
+        path = os.path.join(d, name)
+        try:
+            with open(path, encoding="utf-8") as fh:
+                cwd = json.load(fh).get("cwd")
+        except (OSError, ValueError, AttributeError) as e:
+            raise RecordError(f"cannot read pending record {path}: {e}")
+        if not THREAD_ID.match(name) or not isinstance(cwd, str) or not cwd:
+            raise RecordError(f"malformed pending record {path}")
+        out.append((name, cwd))
+    return out
+
+
+def archived(c, tid, cwd):
+    """Whether thread/list shows tid archived (C9): True, False, or None when a page cannot
+    be read. Only False confirms a restore; thread/unarchive's own answer cannot (C5)."""
+    cursor = None
+    while True:
+        p = {"archived": True, "cwd": [cwd], "sourceKinds": list(SOURCE_KINDS)}
+        if cursor:
+            p["cursor"] = cursor
+        r = c.call("thread/list", p)
+        if "error" in r:
+            return None
+        res = r.get("result") or {}
+        if any(isinstance(t, dict) and t.get("id") == tid for t in res.get("data") or []):
+            return True
+        cursor = res.get("nextCursor")
+        if not cursor:
+            return False
+
+
+def loaded_ids(c):
+    """Every loaded thread id, following nextCursor; None when a page cannot be read."""
+    ids, cursor = [], None
+    while True:
+        r = c.call("thread/loaded/list", {"cursor": cursor} if cursor else {})
+        if "error" in r:
+            return None
+        res = r.get("result") or {}
+        for t in res.get("data") or []:
+            tid = t.get("id") if isinstance(t, dict) else t
+            if isinstance(tid, str):
+                ids.append(tid)
+        cursor = res.get("nextCursor")
+        if not cursor:
+            return ids
 
 
 class ListUnreadable(Exception):

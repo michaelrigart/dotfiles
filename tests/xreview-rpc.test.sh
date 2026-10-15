@@ -448,6 +448,159 @@ scenario '{}'
 rpc thread-archive --thread th; is "it exits 0" "$?" 0
 is "it archives that thread" "$(params thread/archive | jq -r .threadId)" th
 
+echo "R0. release building blocks"
+export XDG_STATE_HOME="$T/state"
+W="$(mkdir -p "$T/w/repo/sub" "$T/w/repo-x" && cd "$T/w" && pwd -P)"
+ln -s "$W/repo" "$T/w/link"
+load='import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("xreview_rpc", sys.argv[1])
+spec = importlib.util.spec_from_loader("xreview_rpc", loader)
+m = importlib.util.module_from_spec(spec); loader.exec_module(m)'
+
+out="$(python3 - "$RPC" "$W" "$T/w/link" <<PY
+$load
+w, link = sys.argv[2], sys.argv[3]
+cases = [
+    (w + "/repo", w + "/repo", True),
+    (w + "/repo/sub", w + "/repo", True),
+    (w + "/repo/gone/deeper", w + "/repo", True),   # a cwd that no longer exists
+    (w + "/repo-x", w + "/repo", False),            # a sibling sharing the prefix
+    (w + "/repo", w + "/repo-x", False),
+    (w + "/repo", w + "/repo/", True),              # trailing slash on the dir
+    (w + "/repo/sub", link, True),                  # the dir through a symlink
+    (w, w + "/repo", False),                        # a parent is not under its child
+]
+bad = [c for c in cases if m.under(c[0], c[1]) != c[2]]
+print("ok" if not bad else "bad " + repr(bad))
+PY
+)"
+is "under() compares whole components, through symlinks, trailing slashes and missing paths" "$out" ok
+
+rm -rf "$XDG_STATE_HOME"
+out="$(python3 - "$RPC" "$XDG_STATE_HOME" <<PY
+$load
+import os
+sd = m.state_dir()
+ok = sd == os.path.join(sys.argv[2], "xreview-rpc")
+m.write_record(sd, "th-1", "/x/repo")
+m.write_record(sd, "th-2", "/x/repo-x")
+ok &= m.read_records(sd) == [("th-1", "/x/repo"), ("th-2", "/x/repo-x")]
+m.drop_record(sd, "th-1"); m.drop_record(sd, "th-1")   # dropping twice is harmless
+ok &= m.read_records(sd) == [("th-2", "/x/repo-x")]
+for bad_id in ("../evil", "a/b", "", ".hidden"):
+    try:
+        m.write_record(sd, bad_id, "/x"); ok = False
+    except m.RecordError:
+        pass
+ok &= not os.path.exists(os.path.join(sd, "evil"))
+pend = os.path.join(sd, "release-pending")
+open(os.path.join(pend, "th-4.tmp"), "w").write("{")   # a write that never finished
+ok &= m.read_records(sd) == [("th-2", "/x/repo-x")]
+open(os.path.join(pend, "th-3"), "w").write("not json")
+try:
+    m.read_records(sd); ok = False
+except m.RecordError as e:
+    ok &= "th-3" in str(e)
+print("ok" if ok else "bad")
+PY
+)"
+is "records round-trip, refuse non-id names, skip unfinished writes, fail on corrupt ones" "$out" ok
+
+rm -rf "$XDG_STATE_HOME"
+out="$(python3 - "$RPC" <<PY
+$load
+import os, subprocess, time
+sd = m.state_dir()
+fd = m.take_lock(sd, time.monotonic() + 1)
+ok = fd is not None
+probe = "import fcntl,os,sys; fd=os.open(sys.argv[1], os.O_RDWR); fcntl.flock(fd, fcntl.LOCK_EX|fcntl.LOCK_NB)"
+lock = os.path.join(sd, "release.lock")
+ok &= subprocess.run([sys.executable, "-c", probe, lock], stderr=subprocess.DEVNULL).returncode != 0
+os.close(fd)
+holder = subprocess.Popen([sys.executable, "-c",
+    "import fcntl,os,sys,time; fd=os.open(sys.argv[1], os.O_RDWR); fcntl.flock(fd, fcntl.LOCK_EX); print('held', flush=True); time.sleep(30)",
+    lock], stdout=subprocess.PIPE)
+holder.stdout.readline()
+t0 = time.monotonic()
+ok &= m.take_lock(sd, time.monotonic() + 0.4) is None
+ok &= time.monotonic() - t0 >= 0.4
+holder.kill(); holder.wait()
+fd = m.take_lock(sd, time.monotonic() + 1)
+ok &= fd is not None   # SIGKILL freed it
+os.close(fd)
+# A waiter whose holder lets go before the deadline gets the lock in that same call. The
+# holder lets go only once the busy mark shows the waiter has met it, so no timing is assumed.
+mark = os.path.join(os.path.dirname(sd), "busy-mark")
+os.environ["XREVIEW_RPC_LOCK_BUSY_MARK"] = mark
+holder = subprocess.Popen([sys.executable, "-c",
+    "import fcntl,os,sys,time\n"
+    "fd=os.open(sys.argv[1], os.O_RDWR); fcntl.flock(fd, fcntl.LOCK_EX); print('held', flush=True)\n"
+    "while not os.path.exists(sys.argv[2]): time.sleep(0.02)",
+    lock, mark], stdout=subprocess.PIPE)
+holder.stdout.readline()
+fd = m.take_lock(sd, time.monotonic() + 30)
+ok &= fd is not None and os.path.exists(mark)
+holder.wait()
+del os.environ["XREVIEW_RPC_LOCK_BUSY_MARK"]
+print("ok" if ok else "bad")
+PY
+)"
+is "the lock is exclusive across processes, times out, is freed by a killed holder, and is taken once freed" "$out" ok
+
+: > "$T/afile"
+out="$(XDG_STATE_HOME="$T/afile" python3 - "$RPC" <<PY
+$load
+import time
+try:
+    m.take_lock(m.state_dir(), time.monotonic() + 1); print("bad")
+except OSError:
+    print("ok")
+PY
+)"
+is "a state directory that cannot be created raises OSError" "$out" ok
+
+scenario '{"responses":{"thread/list":[{"result":{"data":[{"id":"other"}],"nextCursor":"p2"}},{"result":{"data":[{"id":"th"}]}}]}}'
+out="$(python3 - "$RPC" <<PY
+$load
+print(m.archived(m.Client(), "th", "/x/repo"))
+PY
+)"
+is "archived() follows pages and finds the thread" "$out" True
+is "it asks for archived threads of the exact cwd, all ten source kinds" \
+   "$(params thread/list | jq -c '[.archived, .cwd, (.sourceKinds | length)]')" '[true,["/x/repo"],10]'
+is "the second page is asked for by cursor" \
+   "$(jq -c 'select(.method == "thread/list") | .params.cursor' "$FAKE_LOG" | tail -1)" '"p2"'
+scenario '{"responses":{"thread/list":{"result":{"data":[]}}}}'
+is "archived() is False when the listing lacks the thread" \
+   "$(python3 - "$RPC" <<PY
+$load
+print(m.archived(m.Client(), "th", "/x/repo"))
+PY
+)" False
+scenario '{"responses":{"thread/list":{"error":{"code":-1,"message":"nope"}}}}'
+is "archived() is None when the listing fails" \
+   "$(python3 - "$RPC" <<PY
+$load
+print(m.archived(m.Client(), "th", "/x/repo"))
+PY
+)" None
+
+scenario '{"responses":{"thread/loaded/list":[{"result":{"data":["a"],"nextCursor":"c"}},{"result":{"data":[{"id":"b"}]}}]}}'
+is "loaded_ids() follows pages and accepts ids or objects" \
+   "$(python3 - "$RPC" <<PY
+$load
+print(m.loaded_ids(m.Client()))
+PY
+)" "['a', 'b']"
+scenario '{"responses":{"thread/loaded/list":{"error":{"code":-1,"message":"nope"}}}}'
+is "loaded_ids() is None when a page fails" \
+   "$(python3 - "$RPC" <<PY
+$load
+print(m.loaded_ids(m.Client()))
+PY
+)" None
+unset XDG_STATE_HOME
+
 echo
 echo "RESULT: $pass passed, $((pass + fail)) total, $fail failed"
 [ "$fail" -eq 0 ]
