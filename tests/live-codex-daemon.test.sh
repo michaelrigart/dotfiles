@@ -263,19 +263,21 @@ is "C2c on the freed shell xreview's pane_proc succeeds and proc_codex is empty"
    "$rc/$([ -z "$(proc_codex "$xp")" ] && echo empty || echo codex)" "0/empty"
 other="$T/elsewhere"; mkdir -p "$other"
 
-# The thread's cwd as the daemon reports it (thread/read), empty on any error. -B keeps a
-# __pycache__ out of the source tree; the module is loaded as the unit suite loads it.
+# The thread's real cwd as the daemon reports it (thread/read), or "error: <type>: <message>"
+# on any failure, so the FAIL line says why. -B keeps a __pycache__ out of the source tree; the
+# module is loaded as the unit suite loads it; the short deadline stops a daemon that accepts
+# but never answers from holding the suite.
 thread_cwd() {
-  /usr/bin/python3 -B - "$RPCF" "$1" 2>/dev/null <<'PY'
-import importlib.machinery, importlib.util, sys
+  /usr/bin/python3 -B - "$RPCF" "$1" 2>&1 <<'PY'
+import importlib.machinery, importlib.util, os, sys, time
 try:
     loader = importlib.machinery.SourceFileLoader("xreview_rpc", sys.argv[1])
     spec = importlib.util.spec_from_loader("xreview_rpc", loader)
     m = importlib.util.module_from_spec(spec); loader.exec_module(m)
-    r = m.Client().call("thread/read", {"threadId": sys.argv[2], "includeTurns": False})
-    print(r["result"]["thread"]["cwd"])
-except Exception:
-    print("")
+    r = m.Client(deadline=time.monotonic() + 10).call("thread/read", {"threadId": sys.argv[2], "includeTurns": False})
+    print(os.path.realpath(r["result"]["thread"]["cwd"]))
+except Exception as e:
+    print("error: %s: %s" % (type(e).__name__, e))
 PY
 }
 
@@ -320,27 +322,36 @@ case "$resume_cwd" in
        "$rc/$chooser_idle" "0/ok"
     ;;
   current|session)
-    # The resume opens straight away: wait for a Codex process, then for the daemon to report
-    # the directory the setting names (real paths: the temp dir may sit behind a symlink).
+    # The resume opens straight away. Wait for a Codex process, then for its title to carry
+    # this thread (proof it opened THIS thread: the thread was created in $SRC, so its cwd alone
+    # proves nothing for "session"), then for the daemon to report the directory the setting
+    # names (real paths on both sides: the temp dir may sit behind a symlink).
     started=0
     for _ in $(seq 15); do
       [ -n "$(proc_codex "$(pane_proc "$pane")")" ] && { started=1; break; }
       sleep 1
     done
     is "V2 the resume starts a Codex TUI" "$started" 1
+    v2want="$(printf '%s' "$f22_thread" | cut -c1-29)"
+    titled=0; end=$((SECONDS + 15))
+    while [ "$SECONDS" -lt "$end" ]; do
+      t="$(herdr pane get "$pane" 2>/dev/null | jq -r '.result.pane.terminal_title_stripped // .result.pane.terminal_title // ""' 2>/dev/null)"
+      case "$t" in "$v2want"*) [ -n "$v2want" ] && { titled=1; break; } ;; esac
+      sleep 1
+    done
+    is "V2 the resumed TUI shows this thread in its title" "$titled" 1
     if [ "$resume_cwd" = current ]; then want_cwd="$(cd "$other" && pwd -P)"; else want_cwd="$(cd "$SRC" && pwd -P)"; fi
-    got_cwd=""
-    for _ in $(seq 15); do
+    is "V2 the expected directory is known" "$([ -n "$want_cwd" ] && echo yes || echo no)" yes
+    got_cwd=""; end=$((SECONDS + 20))
+    while [ "$SECONDS" -lt "$end" ]; do
       got_cwd="$(thread_cwd "$f22_thread")"
       [ "$got_cwd" = "$want_cwd" ] && break; sleep 1
     done
-    is "V2 with tui.resume_cwd=$resume_cwd the resumed thread's cwd is that directory" "$got_cwd" "$want_cwd"
-    chooser=0
-    for _ in $(seq 5); do
-      herdr pane read "$pane" --source visible 2>/dev/null | grep -q 'session directory' && { chooser=1; break; }
-      sleep 1
-    done
-    is "V2 and no chooser appears" "$chooser" 0
+    is "V2 with tui.resume_cwd=$resume_cwd the resumed thread's cwd is that directory" "${got_cwd:-<none>}" "$want_cwd"
+    # One read of the settled screen, proven non-empty, so an empty read cannot pass for "no chooser".
+    scr="$(herdr pane read "$pane" --source visible 2>/dev/null)"
+    is "V2 the screen read returns text" "$([ -n "$(printf '%s' "$scr" | tr -d '[:space:]')" ] && echo yes || echo no)" yes
+    is "V2 and no chooser appears" "$(grep -c 'session directory' <<<"$scr")" 0
     echo "  NOTE: the chooser itself is not exercised while tui.resume_cwd is set"
     ;;
   *) _fail "V2 tui.resume_cwd has a known value (unset, current, session)" "$resume_cwd" ;;
