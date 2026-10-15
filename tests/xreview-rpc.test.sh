@@ -285,6 +285,19 @@ is "MB11 the barrier comes before the --known baseline and turn/start" \
 mb_scn "[$(mcp "[$ST]"),$(mcp "[$OK]")]"
 XREVIEW_MCP_WAIT=soon XREVIEW_MCP_POLL=-1 rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" >/dev/null; rc=$?
 is "MB12 unparseable XREVIEW_MCP_WAIT/POLL fall back to the defaults" "$rc/$(order)" "0/mcpServerStatus/list,mcpServerStatus/list,turn/start"
+# A dropped connection before turn/start is "no review was started" (exit 5), whichever
+# pre-start call it hits.
+for drop in mcpServerStatus/list thread/resume thread/turns/list; do
+  case "$drop" in
+    thread/resume) rd="$RD_COLD" ;;
+    *) rd="$RD_IDLE" ;;
+  esac
+  scenario "{\"responses\":{$rd,$MBTS},\"drop_on\":[\"$drop\"]}"
+  rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" --known "$T/known-drop" >/dev/null 2>"$T/err"; rc=$?
+  is "MB13 a drop on $drop exits 5 and sends no turn/start" "$rc/$(nsent turn/start)" "5/0"
+  is "MB13 a drop on $drop says no review was started" \
+     "$(grep -c "connection lost before the turn was started .*no review was started" "$T/err")" 1
+done
 unset XREVIEW_MCP_POLL XREVIEW_MCP_WAIT
 
 echo "MN. a turn/start refused before anything was written is not 'sent but unanswered'"

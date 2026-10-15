@@ -500,7 +500,7 @@ cl_status="$(rpc thread-status --thread "$cl_thread" 2>/dev/null | jq -r .status
 is "CL the release leaves the thread notLoaded (else the case is inconclusive, not a pass)" "$cl_status" notLoaded
 if [ "$cl_status" = notLoaded ]; then
   # The turn runs a shell command and takes a few seconds, so the TUI attaches while it is live.
-  printf 'Live canary. Run `ls` and then `sleep 5` in the shell, then reply with verdict "approve" and no findings.\n' > "$T/cl-in2"
+  printf 'Live canary. Run `ls` and then `sleep 10` in the shell, then reply with verdict "approve" and no findings.\n' > "$T/cl-in2"
   cl_turn2="$(rpc turn-start --thread "$cl_thread" --input "$T/cl-in2" --schema "$SCHEMA" --known "$T/cl-known")"; rc=$?
   is "CL the cold turn-start exits 0" "$rc" 0
   # The resume follows turn-start at once, as xreview's dispatch types it.
@@ -512,6 +512,10 @@ if [ "$cl_status" = notLoaded ]; then
     sleep 1
   done
   is "CL the resumed TUI shows the thread in its title" "$cl_titled" 1
+  # The turn must still be running now, else the TUI attached after it finished and the case
+  # proves nothing about a turn that was live when the pane resumed.
+  is "CL the turn is still running right after the TUI shows the thread (a fail here may just mean it finished very fast, not a bug)" \
+     "$(rpc thread-status --thread "$cl_thread" 2>/dev/null | jq -r .running)" true
   # The late subscriber, as xreview collect runs it: the pane is attached before turn-wait is.
   rpc turn-wait --thread "$cl_thread" --turn "$cl_turn2" --budget 180 --schema "$SCHEMA" >/dev/null; rc=$?
   is "CL turn-wait completes on the cold-started turn" "$rc" 0
