@@ -409,6 +409,51 @@ PY
 )"
 is "a dribbling handshake ends at the budget, and a real frame round-trips" "$out" 'unreachable fast {"id": 1}'
 
+echo "M2. a slow send counts against the call's own budget"
+out="$(/usr/bin/python3 - "$RPC" <<'PY'
+import importlib.machinery, importlib.util, sys, time
+loader = importlib.machinery.SourceFileLoader("xreview_rpc", sys.argv[1])
+spec = importlib.util.spec_from_loader("xreview_rpc", loader)
+m = importlib.util.module_from_spec(spec); loader.exec_module(m)
+class T:   # a send that takes 5 s unless it is given a bound
+    def send(self, obj, until=None):
+        time.sleep(5 if until is None else max(0, min(5, until - time.monotonic())))
+    def recv(self, timeout):
+        time.sleep(timeout); return None
+c = m.Client.__new__(m.Client)
+c.t, c.next_id, c.notes, c.deadline = T(), 0, [], time.monotonic() + 60
+t0 = time.monotonic()
+try:
+    c.call("x", {}, timeout=1); res = "answered"
+except m.Closed:
+    res = "closed"
+took = time.monotonic() - t0
+print(res, "fast" if took < 3 else f"slow({took:.1f}s)")
+PY
+)"
+is "a call whose send is slow raises Closed at its own timeout, not after the send" "$out" "closed fast"
+out="$(/usr/bin/python3 - "$RPC" <<'PY'
+import importlib.machinery, importlib.util, socket, sys, threading, time
+loader = importlib.machinery.SourceFileLoader("xreview_rpc", sys.argv[1])
+spec = importlib.util.spec_from_loader("xreview_rpc", loader)
+m = importlib.util.module_from_spec(spec); loader.exec_module(m)
+c, d = socket.socketpair(socket.AF_UNIX)
+def serve():   # completes the handshake, then never reads again
+    d.recv(4096)
+    d.sendall(b"HTTP/1.1 101 Switching Protocols\r\n\r\n")
+threading.Thread(target=serve, daemon=True).start()
+t = m.WsTransport("socketpair", timeout=60, sock=c)
+t0 = time.monotonic()
+try:
+    t.send({"p": "x" * 2000000}, until=time.monotonic() + 0.5); res = "sent"
+except m.Closed:
+    res = "closed"
+took = time.monotonic() - t0
+print(res, "fast" if took < 3 else f"slow({took:.1f}s)")
+PY
+)"
+is "a WebSocket send to a peer that never reads raises Closed at the call's bound" "$out" "closed fast"
+
 echo "N. thread-resolve"
 loadedlist() { jq -nc --argjson ids "$1" '{result:{data:($ids | map({id:.}))}}'; }
 scenario "$(jq -nc --argjson l "$(loadedlist '["01a0e328-c41e-7de0-a526-042e024f74b9","bbbbbbbb-1111-4111-8111-111111111111"]')" '{responses:{"thread/loaded/list":$l}}')"

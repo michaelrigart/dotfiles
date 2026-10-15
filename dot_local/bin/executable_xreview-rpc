@@ -149,15 +149,22 @@ class WsTransport:
             raise Unreachable("no WebSocket upgrade: " + status.decode(errors="replace"))
         self.frag = b""
 
-    def _send_timeout(self):
-        """What is left of the client deadline, or 10s, whichever is smaller - set fresh
-        before every sendall, not left over from whatever a previous recv() set it to."""
-        return min(10.0, max(0.01, self.deadline - time.monotonic()))
+    def _send_timeout(self, until=None):
+        """What is left of until (default: the client deadline), or 10s, whichever is smaller
+        - set fresh before every sendall, not left over from whatever a previous recv() set
+        it to."""
+        end = self.deadline if until is None else until
+        return min(10.0, max(0.01, end - time.monotonic()))
 
-    def send(self, obj):
+    def send(self, obj, until=None):
+        """until: the calling call's own deadline; a send that cannot finish by it raises
+        Closed, and one begun after it is not sent at all."""
+        if until is not None and time.monotonic() >= until:
+            raise Closed("the call's budget ran out before it could be sent")
         try:
-            self.s.settimeout(self._send_timeout())
-            self.s.sendall(ws_frame(json.dumps(obj).encode()))
+            frame = ws_frame(json.dumps(obj).encode())
+            self.s.settimeout(self._send_timeout(until))
+            self.s.sendall(frame)
         except OSError as e:
             raise Closed(str(e))
 
@@ -213,7 +220,8 @@ class StdioTransport:
         self.fd = self.p.stdout.fileno()
         self.buf = b""
 
-    def send(self, obj):
+    def send(self, obj, until=None):
+        # until is accepted and ignored: a pipe write to the tests' fake daemon is not bounded.
         try:
             self.p.stdin.write((json.dumps(obj) + "\n").encode())
             self.p.stdin.flush()
@@ -257,8 +265,12 @@ class Client:
     def call(self, method, params, timeout=30):
         self.next_id += 1
         rid = self.next_id
-        self.t.send({"id": rid, "method": method, "params": params})
+        # The call's deadline starts before the send and bounds it: a slow send counts
+        # against the call's own budget.
         deadline = min(time.monotonic() + timeout, self.deadline)
+        if deadline - time.monotonic() <= 0:
+            raise Closed(f"no response to {method} within the budget")
+        self.t.send({"id": rid, "method": method, "params": params}, until=deadline)
         while True:
             left = deadline - time.monotonic()
             if left <= 0:
