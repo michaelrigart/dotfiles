@@ -434,16 +434,6 @@ m = importlib.util.module_from_spec(spec); loader.exec_module(m)
 print({True: "true", False: "false", None: "unknown"}[m.archived(m.Client(), sys.argv[2], sys.argv[3])])
 PY
 }
-# The cwd thread/read reports for a thread: what the release records and confirms with.
-rel_thread_cwd() { python3 - "$RPCF" "$1" <<'PY'
-import importlib.machinery, importlib.util, sys
-loader = importlib.machinery.SourceFileLoader("xreview_rpc", sys.argv[1])
-spec = importlib.util.spec_from_loader("xreview_rpc", loader)
-m = importlib.util.module_from_spec(spec); loader.exec_module(m)
-r = m.Client().call("thread/read", {"threadId": sys.argv[2], "includeTurns": False})
-print(((r.get("result") or {}).get("thread") or {}).get("cwd") or "")
-PY
-}
 RELD="$(mkdir -p "$T/rel/scratch" && cd "$T/rel/scratch" && pwd -P)"
 rel_thread="$(rpc thread-start --cwd "$RELD")"
 printf 'Live canary. Reply with verdict "approve" and no findings.\n' > "$T/rel-in"
@@ -451,7 +441,9 @@ rel_turn="$(rpc turn-start --thread "$rel_thread" --input "$T/rel-in" --schema "
 rpc turn-wait --thread "$rel_thread" --turn "$rel_turn" --budget 180 --schema "$SCHEMA" >/dev/null
 is "R1 the scratch thread is loaded before the release" \
    "$(rpc thread-status --thread "$rel_thread" | jq -r .loaded)" true
-rel_cwd="$(rel_thread_cwd "$rel_thread")"
+# thread_cwd, as in V2. $RELD is a real path (pwd -P), so the real path is the cwd the daemon
+# recorded, which the archived listing (C9) needs as its key.
+rel_cwd="$(thread_cwd "$rel_thread")"
 is "R1 thread/read reports the scratch directory as the thread's cwd" "$rel_cwd" "$RELD"
 # Same scan as below: helpers must exist before the release, or "none left" proves nothing.
 scan="$(lsof -a -d cwd -Fn 2>/dev/null)"
