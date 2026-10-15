@@ -40,7 +40,7 @@ ws="${HERDR_WORKSPACE_ID:-}"
 [ -n "$ws" ] || { echo "INCONCLUSIVE: run from inside a herdr pane" >&2; exit 2; }
 
 T="$(mktemp -d "${TMPDIR:-/tmp}/live-codex.XXXXXX")"
-tab=""; pane=""; thread=""; prefix=""; wait_pid=""; f22_thread=""
+tab=""; pane=""; thread=""; prefix=""; wait_pid=""; f22_thread=""; rel_thread=""
 cleanup() {
   # A turn-wait backgrounded for F16/F17 must never outlive an early exit above it.
   if [ -n "$wait_pid" ] && kill -0 "$wait_pid" 2>/dev/null; then
@@ -59,6 +59,7 @@ cleanup() {
   fi
   [ -n "$thread" ] && rpc thread-archive --thread "$thread" >/dev/null 2>&1
   [ -n "$f22_thread" ] && rpc thread-archive --thread "$f22_thread" >/dev/null 2>&1
+  [ -n "$rel_thread" ] && rpc thread-archive --thread "$rel_thread" >/dev/null 2>&1
   rm -rf "$T"
 }
 trap cleanup EXIT
@@ -332,6 +333,51 @@ if [ "$v1" = 1 ]; then
   done
   is "C2b and connected_to_daemon is true for its TUI" "$conn" yes
 fi
+
+# release --dir (spec 2026-10-15, C4/C5/C9): archive unloads a thread with saved history at
+# once and its helpers exit; unarchive restores it; the archived listing tells the two apart.
+echo "R1: release --dir unloads a scratch thread at once and restores it"
+rel_archived() { python3 - "$RPCF" "$1" "$2" <<'PY'
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("xreview_rpc", sys.argv[1])
+spec = importlib.util.spec_from_loader("xreview_rpc", loader)
+m = importlib.util.module_from_spec(spec); loader.exec_module(m)
+print({True: "true", False: "false", None: "unknown"}[m.archived(m.Client(), sys.argv[2], sys.argv[3])])
+PY
+}
+RELD="$(mkdir -p "$T/rel/scratch" && cd "$T/rel/scratch" && pwd -P)"
+rel_thread="$(rpc thread-start --cwd "$RELD")"
+printf 'Live canary. Reply with verdict "approve" and no findings.\n' > "$T/rel-in"
+rel_turn="$(rpc turn-start --thread "$rel_thread" --input "$T/rel-in" --schema "$SCHEMA")"
+rpc turn-wait --thread "$rel_thread" --turn "$rel_turn" --budget 180 --schema "$SCHEMA" >/dev/null
+is "R1 the scratch thread is loaded before the release" \
+   "$(rpc thread-status --thread "$rel_thread" | jq -r .loaded)" true
+out="$(XDG_STATE_HOME="$T/rel/state" rpc release --dir "$RELD")"; rc=$?
+is "R1 release exits 0" "$rc" 0
+is "R1 release names the thread" "$out" "released $rel_thread"
+is "R1 the thread is no longer loaded" "$(rpc thread-status --thread "$rel_thread" | jq -r .loaded)" false
+# No pipe into grep -q: under pipefail an early-exiting grep can SIGPIPE lsof and read as
+# "absent". An empty listing is a failed scan (this shell's own cwd is always in a real one),
+# so it never counts as absence either.
+procs=unknown
+for _ in $(seq 10); do
+  scan="$(lsof -a -d cwd -Fn 2>/dev/null)"
+  if [ -z "$scan" ]; then
+    procs=unknown
+  elif grep -qxF "n$RELD" <<< "$scan"; then
+    procs=present
+  else
+    procs=gone; break
+  fi
+  sleep 0.2
+done
+is "R1 no process is left in the scratch directory within 2 s" "$procs" gone
+is "R1 the archived listing does not show the restored thread" "$(rel_archived "$rel_thread" "$RELD")" false
+is "R1 no pending record is left" \
+   "$(ls "$T/rel/state/xreview-rpc/release-pending" 2>/dev/null | wc -l | tr -d ' ')" 0
+rpc thread-archive --thread "$rel_thread"
+is "R1 the archived listing does show it once archived (C9 is not vacuous)" \
+   "$(rel_archived "$rel_thread" "$RELD")" true
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
