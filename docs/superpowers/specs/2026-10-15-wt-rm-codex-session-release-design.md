@@ -258,8 +258,8 @@ Each ruling lists what it costs if it is wrong.
 
 - `tests/xreview-rpc.test.sh`: 209/209
 - `tests/wt-functions.test.sh`: 573/573
-- Full `./tests/run.sh` on 18d43fa: 34 suites passed, 3933/3933 assertions; 9 skipped by their `needs:` tags.
+- Full `./tests/run.sh` on 9cdd31b: 34 suites passed, 3935/3935 assertions; 9 skipped by their `needs:` tags.
 
 ### Open items
 
-- The live canary (`tests/live-codex-daemon.test.sh`) has two failing checks whose code paths this branch does not touch: F15 ("the pane shows the turn another client started") and V2 ("the directory chooser appears without -C"). Both are screen-text checks, likely Codex TUI drift; the canary was not run on `main` to confirm they predate the branch. Canary result on 18d43fa (unsandboxed, from a Herdr pane, Codex 0.162.1): 45/47, every R1 assertion passing.
+- The live canary (`tests/live-codex-daemon.test.sh`) has two failing checks whose code paths this branch does not touch: F15 ("the pane shows the turn another client started") and V2 ("the directory chooser appears without -C"). Both are screen-text checks, likely Codex TUI drift; the canary was not run on `main` to confirm they predate the branch. Canary result on 9cdd31b (unsandboxed, from a Herdr pane, Codex 0.162.1): 45/47, every R1 assertion passing.
