@@ -1,6 +1,6 @@
 # wt-rm: release the checkout's Codex sessions
 
-**Status:** Approved
+**Status:** In progress (branch `feat/wt-rm-codex-session-release`; the dotfiles have no MR)
 **Date:** 2026-10-15
 **Branch:** `feat/wt-rm-codex-session-release`
 
