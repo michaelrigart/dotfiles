@@ -501,6 +501,18 @@ try:
     m.read_records(sd); ok = False
 except m.RecordError as e:
     ok &= "th-3" in str(e)
+for content in ("[]", "null"):
+    open(os.path.join(pend, "th-3"), "w").write(content)
+    try:
+        m.read_records(sd); ok = False
+    except m.RecordError:
+        pass
+os.remove(os.path.join(pend, "th-3"))
+open(os.path.join(pend, "bad name"), "w").write('{"cwd": "/x"}')
+try:
+    m.read_records(sd); ok = False
+except m.RecordError as e:
+    ok &= "bad name" in str(e)
 print("ok" if ok else "bad")
 PY
 )"
@@ -535,12 +547,13 @@ os.environ["XREVIEW_RPC_LOCK_BUSY_MARK"] = mark
 holder = subprocess.Popen([sys.executable, "-c",
     "import fcntl,os,sys,time\n"
     "fd=os.open(sys.argv[1], os.O_RDWR); fcntl.flock(fd, fcntl.LOCK_EX); print('held', flush=True)\n"
-    "while not os.path.exists(sys.argv[2]): time.sleep(0.02)",
+    "end=time.monotonic()+10\n"
+    "while not os.path.exists(sys.argv[2]) and time.monotonic()<end: time.sleep(0.02)",
     lock, mark], stdout=subprocess.PIPE)
 holder.stdout.readline()
 fd = m.take_lock(sd, time.monotonic() + 30)
 ok &= fd is not None and os.path.exists(mark)
-holder.wait()
+holder.wait(timeout=20)
 del os.environ["XREVIEW_RPC_LOCK_BUSY_MARK"]
 print("ok" if ok else "bad")
 PY
@@ -594,6 +607,20 @@ PY
 )" "['a', 'b']"
 scenario '{"responses":{"thread/loaded/list":{"error":{"code":-1,"message":"nope"}}}}'
 is "loaded_ids() is None when a page fails" \
+   "$(python3 - "$RPC" <<PY
+$load
+print(m.loaded_ids(m.Client()))
+PY
+)" None
+scenario '{"responses":{"thread/list":[{"result":{"data":[],"nextCursor":"p2"}},{"error":{"code":-1,"message":"nope"}}]}}'
+is "archived() is None when a later page fails" \
+   "$(python3 - "$RPC" <<PY
+$load
+print(m.archived(m.Client(), "th", "/x/repo"))
+PY
+)" None
+scenario '{"responses":{"thread/loaded/list":[{"result":{"data":["a"],"nextCursor":"c"}},{"error":{"code":-1,"message":"nope"}}]}}'
+is "loaded_ids() is None when a later page fails" \
    "$(python3 - "$RPC" <<PY
 $load
 print(m.loaded_ids(m.Client()))

@@ -426,22 +426,10 @@ def cmd_thread_resolve(c, a):
     """The one loaded thread whose id starts with a.prefix. The title carries only a prefix
     (Codex truncates it, F11/F21); a prefix is resolved here and never guessed. Follows
     nextCursor across as many pages as thread/loaded/list hands back."""
-    ids = []
-    cursor = None
-    while True:
-        params = {"cursor": cursor} if cursor else {}
-        r = c.call("thread/loaded/list", params)
-        if "error" in r:
-            err("thread/loaded/list refused: " + json.dumps(r["error"]))
-            return 1
-        result = r.get("result") or {}
-        for t in result.get("data") or []:
-            tid = t.get("id") if isinstance(t, dict) else t
-            if isinstance(tid, str):
-                ids.append(tid)
-        cursor = result.get("nextCursor")
-        if not cursor:
-            break
+    ids = loaded_ids(c)
+    if ids is None:
+        err("thread/loaded/list refused")
+        return 1
     matches = sorted({i for i in ids if i.startswith(a.prefix)})
     if len(matches) == 1:
         print(matches[0])
@@ -527,6 +515,11 @@ def write_record(sd, tid, cwd):
         fh.flush()
         os.fsync(fh.fileno())
     os.replace(tmp, path)
+    dfd = os.open(os.path.dirname(path), os.O_RDONLY)
+    try:
+        os.fsync(dfd)
+    finally:
+        os.close(dfd)
 
 
 def drop_record(sd, tid):
@@ -561,8 +554,10 @@ def read_records(sd):
 
 
 def archived(c, tid, cwd):
-    """Whether thread/list shows tid archived (C9): True, False, or None when a page cannot
-    be read. Only False confirms a restore; thread/unarchive's own answer cannot (C5)."""
+    """Whether thread/list shows tid archived (C9): True, False, or None when a page answers
+    with an error. A timeout or lost connection raises Closed/Unreachable from Client.call;
+    callers handle that. Only False confirms a restore; thread/unarchive's own answer
+    cannot (C5)."""
     cursor = None
     while True:
         p = {"archived": True, "cwd": [cwd], "sourceKinds": list(SOURCE_KINDS)}
@@ -580,7 +575,9 @@ def archived(c, tid, cwd):
 
 
 def loaded_ids(c):
-    """Every loaded thread id, following nextCursor; None when a page cannot be read."""
+    """Every loaded thread id, following nextCursor; None when a page answers with an error.
+    A timeout or lost connection raises Closed/Unreachable from Client.call; callers handle
+    that."""
     ids, cursor = [], None
     while True:
         r = c.call("thread/loaded/list", {"cursor": cursor} if cursor else {})
