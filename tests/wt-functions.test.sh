@@ -2591,7 +2591,7 @@ setup
 run "$REPO" wt no-teardown
 NOTD="$HOME/Code/Org/repo-no-teardown"
 NOTDP=$(mkd)
-for b in env git mkdir mktemp rm; do ln -s "$(command -v $b)" "$NOTDP/$b"; done
+for b in env git mkdir mktemp rm tee grep; do ln -s "$(command -v $b)" "$NOTDP/$b"; done
 ln -s "$STUBS/xreview-rpc" "$NOTDP/xreview-rpc"   # the release must pass to reach check 4
 OUT="$(cd "$REPO" && source "$FUNCS" && export PATH="$NOTDP" && wt-rm no-teardown 2>&1)"; RC=$?
 rc_is 1 "a missing wt-teardown aborts removal instead of skipping the scan"
@@ -2729,11 +2729,24 @@ setup
 run "$REPO" wt rel-ok
 ROK="$HOME/Code/Org/repo-rel-ok"
 export MOCK_XRPC_OUT='released th-1\nreleased th-2\n'
-run "$REPO" wt-rm rel-ok
+RT=$(mkd)
+TMPDIR="$RT" run "$REPO" wt-rm rel-ok
 rc_is 0 "W2 released sessions let removal proceed"
 has "✓ released Codex session th-1" "W2 the first released session is reported"
 has "✓ released Codex session th-2" "W2 the second released session is reported"
 [[ -d "$ROK" ]] && _fail "W2 the checkout is removed" || _pass "W2 the checkout is removed"
+eq "$(ls "$RT" | grep -c 'wt-rm-release')" "0" "W2 the scratch directory is removed"
+
+# Only the progress line of stderr is shown live; the rest is kept for a refusal.
+setup
+run "$REPO" wt rel-wait
+export MOCK_XRPC_OUT='released e\n' \
+       MOCK_XRPC_ERR='xreview-rpc: waiting for ephemeral e to unload (up to 90 s)\nxreview-rpc: noise\n'
+run "$REPO" wt-rm rel-wait
+rc_is 0 "W2b a release that waits still lets removal proceed"
+has "xreview-rpc: waiting for ephemeral e to unload (up to 90 s)" "W2b the wait is shown live"
+has "✓ released Codex session e" "W2b the released session is reported"
+hasnt "xreview-rpc: noise" "W2b other stderr is not shown on success"
 
 setup
 run "$REPO" wt rel-none
@@ -2750,10 +2763,14 @@ for st in 1 2 signal; do
   else
     export MOCK_XRPC_RC=$st; want=$st
   fi
+  export MOCK_XRPC_OUT='released th-0\n'
   export MOCK_XRPC_ERR='xreview-rpc: th-1 is running a turn — let it finish\n'
   : > "$LLOG"
-  run "$REPO" wt-rm rel-refuse
+  RT=$(mkd)
+  TMPDIR="$RT" run "$REPO" wt-rm rel-refuse
   rc_is 1 "W4 release status $want refuses removal"
+  has "✓ released Codex session th-0" "W4 status $want: an id released before the failure is still reported"
+  [[ $st == 1 ]] && eq "$(ls "$RT" | grep -c 'wt-rm-release')" "0" "W4 status 1: the scratch directory is removed"
   has "wt-rm: could not release the Codex sessions in $RR (status $want) — removal aborted. Resources may already be reclaimed." \
       "W4 status $want: the refusal names the status"
   has "    xreview-rpc: th-1 is running a turn — let it finish" "W4 status $want: the command's lines follow, indented"
@@ -2769,11 +2786,20 @@ setup
 run "$REPO" wt rel-missing
 RMI="$HOME/Code/Org/repo-rel-missing"
 NOXR=$(mkd)
-for b in env git mkdir mktemp rm; do ln -s "$(command -v $b)" "$NOXR/$b"; done
+for b in env git mkdir mktemp rm tee grep; do ln -s "$(command -v $b)" "$NOXR/$b"; done
 OUT="$(cd "$REPO" && source "$FUNCS" && export PATH="$NOXR" && wt-rm rel-missing 2>&1)"; RC=$?
 rc_is 1 "W5 a missing xreview-rpc refuses removal"
 has "(status 127)" "W5 the refusal carries the missing command's status"
 [[ -d "$RMI" ]] && _pass "W5 the checkout survives" || _fail "W5 the checkout survives"
+
+setup
+run "$REPO" wt rel-noscratch
+RNS="$HOME/Code/Org/repo-rel-noscratch"
+TMPDIR="$ROOTTMP/does-not-exist" run "$REPO" wt-rm rel-noscratch
+rc_is 1 "W4b an unusable TMPDIR refuses removal"
+has "cannot create a scratch directory to release Codex sessions — refusing." "W4b it says why"
+[[ -d "$RNS" ]] && _pass "W4b the checkout survives" || _fail "W4b the checkout survives"
+eq "$(<$XLOG)" "" "W4b xreview-rpc is never called"
 
 setup
 run "$REPO" wt rel-down

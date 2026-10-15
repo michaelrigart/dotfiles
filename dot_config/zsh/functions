@@ -1074,7 +1074,7 @@ wt-rm() {
   emulate -L zsh
   local branch="$1"
   [[ -n "$branch" ]] || { print -ru2 -- "usage: wt-rm <branch>"; return 1; }
-  local slug="${branch//\//-}" qb="${(q-)branch}" main common dest
+  local slug="${branch//\//-}" qb="${(q-)branch}" main common dest rel_dir=""
   main="$(_wt_primary)" || return 1
   common="$(_wt_git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
   dest="${main:h}/${main:t}-${slug}"
@@ -1148,25 +1148,32 @@ wt-rm() {
     # here; every other failure, a killed release included, may have left a session archived,
     # so the checkout stays for the retry to restore it. Spec:
     # docs/superpowers/specs/2026-10-15-wt-rm-codex-session-release-design.md
-    local rel_out rel_err rel_line
+    local rel_line
     local -i rel_rc
-    rel_err="$(command mktemp "${TMPDIR:-/tmp}/wt-rm-release.XXXXXX")" || {
-      print -ru2 -- "wt-rm: cannot create a scratch file to release Codex sessions — refusing."
+    rel_dir="$(command mktemp -d "${TMPDIR:-/tmp}/wt-rm-release.XXXXXX")" || {
+      print -ru2 -- "wt-rm: cannot create a scratch directory to release Codex sessions — refusing."
       return 1
     }
-    rel_out="$(command xreview-rpc release --dir "$dest" 2>"$rel_err")"; rel_rc=$?
+    # stdout (the "released <id>" lines) goes to a file and stderr is kept whole for a
+    # refusal; its one progress line, the ephemeral wait of up to 90 s, reaches the terminal
+    # at once so the wait never looks like a hang. pipestatus[1] is the release's own
+    # status, a signal's 128+n included.
+    { command xreview-rpc release --dir "$dest" 2>&1 >"$rel_dir/out" } \
+      | command tee "$rel_dir/err" \
+      | command grep --line-buffered '^xreview-rpc: waiting for ephemeral ' >&2
+    rel_rc=${pipestatus[1]}
+    # Reported for every status, so an id released before a later failure is not lost.
+    for rel_line in ${(f)"$(<$rel_dir/out)"}; do
+      [[ "$rel_line" == "released "* ]] && print -r -- "✓ released Codex session ${rel_line#"released "}"
+    done
     case $rel_rc in
-      0) for rel_line in ${(f)rel_out}; do
-           [[ "$rel_line" == "released "* ]] && print -r -- "✓ released Codex session ${rel_line#"released "}"
-         done ;;
+      0) ;;
       5) print -ru2 -- "wt-rm: the Codex daemon is not reachable — continuing; check 4 decides." ;;
       *) print -ru2 -- "wt-rm: could not release the Codex sessions in $dest (status $rel_rc) — removal aborted. Resources may already be reclaimed."
-         for rel_line in ${(f)"$(<$rel_err)"}; do print -ru2 -- "    $rel_line"; done
+         for rel_line in ${(f)"$(<$rel_dir/err)"}; do print -ru2 -- "    $rel_line"; done
          print -ru2 -- "    Then retry: wt-rm $qb"
-         command rm -f -- "$rel_err"
          return 1 ;;
     esac
-    command rm -f -- "$rel_err"
 
     # Check 4 — the last witness before Git deletes anything, and the only one that
     # asks the OS. After teardown, so a repository that stops its own services is
@@ -1257,5 +1264,6 @@ wt-rm() {
     return 0
   } always {
     _wt_unlock
+    [[ -n "$rel_dir" ]] && command rm -rf -- "$rel_dir"
   }
 }
