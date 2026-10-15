@@ -602,6 +602,17 @@ def owed(records):
         err(f"{tid} is archived and could not be restored yet")
 
 
+def settle(sd, tid):
+    """Drop tid's record once its restore is confirmed. False, after saying so, when the
+    record cannot be removed: the thread is restored, and the next run's step 1 settles it."""
+    try:
+        drop_record(sd, tid)
+    except OSError as e:
+        err(f"{tid} was restored, but its record could not be removed: {e}")
+        return False
+    return True
+
+
 def release(c, sd, d, mine):
     """Steps 1-5 of spec §1, on a connected client, with the lock held. mine: the pending
     records under d. Returns the exit status."""
@@ -611,7 +622,8 @@ def release(c, sd, d, mine):
     for tid, cwd in mine:
         c.call("thread/unarchive", {"threadId": tid})
         if archived(c, tid, cwd) is False:
-            drop_record(sd, tid)
+            if not settle(sd, tid):
+                return 1
         else:
             left.append((tid, cwd))
     if left:
@@ -658,16 +670,23 @@ def release(c, sd, d, mine):
         write_record(sd, tid, cwd)
         r = c.call("thread/archive", {"threadId": tid})
         if "error" in r:
-            if archived(c, tid, cwd) is False:
-                drop_record(sd, tid)
             e = r["error"]
-            err(f"{tid}: archive failed: {e.get('message', e) if isinstance(e, dict) else e}")
+            why = f"{tid}: archive failed: {e.get('message', e) if isinstance(e, dict) else e}"
+            if archived(c, tid, cwd) is False:
+                try:
+                    drop_record(sd, tid)
+                except OSError as oe:
+                    # Never archived, so nothing is owed: say only that the record stays,
+                    # for the next run's step 1 to settle.
+                    why += f"; its record could not be removed: {oe}"
+            err(why)
             return 1
         c.call("thread/unarchive", {"threadId": tid})
         if archived(c, tid, cwd) is not False:
             owed([(tid, cwd)])
             return 1
-        drop_record(sd, tid)
+        if not settle(sd, tid):
+            return 1
         print(f"released {tid}", flush=True)
 
     # 5. Ephemeral threads cannot be archived (C6); only the daemon's idle timer (C2)
@@ -681,12 +700,15 @@ def release(c, sd, d, mine):
         end = min(time.monotonic() + wait, c.deadline)
         left_e = list(eph)
         while True:
-            now = loaded_ids(c)
+            try:
+                now = loaded_ids(c)
+            except Closed:
+                break    # the deadline ran out mid-poll: the threads are still loaded
             if now is not None:
                 left_e = [t for t in left_e if t in now]
             if not left_e or time.monotonic() >= end:
                 break
-            time.sleep(poll)
+            time.sleep(min(poll, max(0.0, end - time.monotonic())))
         if left_e:
             for tid in left_e:
                 err(f"{tid} (ephemeral) is still loaded — close the Codex client using it")

@@ -699,6 +699,13 @@ is "R6 an unconfirmed restore exits 1" "$rc" 1
 grep -q "a is archived and could not be restored yet" "$T/err" && _pass "R6 it says the restore is owed" || _fail "R6 it says the restore is owed" "$(cat "$T/err")"
 is "R6 the record is kept" "$(pending)" a
 fresh
+record a "$W/repo"
+scenario "$(jq -nc --argjson b "$(th b "$W/repo" idle)" --argjson l "$(ARCH a)" \
+  '{responses:{"thread/loaded/list":{result:{data:["b"]}},"thread/read":$b,"thread/list":$l}}')"
+rpc release --dir "$W/repo" 2>"$T/err"; rc=$?
+is "R6 an owed restore refuses before anything is selected or archived" "$rc:$(methods):$(pending)" "1:thread/unarchive a|thread/list |:a"
+grep -q "a is archived and could not be restored yet" "$T/err" && _pass "R6 it names the owed restore" || _fail "R6 it names the owed restore" "$(cat "$T/err")"
+fresh
 scenario "$(jq -nc --argjson a "$(th a "$W/repo" idle)" --argjson e "$ERR" \
   '{responses:{"thread/loaded/list":{result:{data:["a"]}},"thread/read":$a,"thread/list":$e}}')"
 rpc release --dir "$W/repo" 2>/dev/null; rc=$?
@@ -716,6 +723,48 @@ out="$(rpc release --dir "$W/repo")"; rc=$?
 is "R7 the next run restores it first, then finds nothing loaded" "$rc:$out" "0:"
 is "R7 the restore precedes the selection" "$(methods)" "thread/unarchive a|thread/list |thread/loaded/list |"
 is "R7 the record is gone" "$(pending)" ""
+
+# A restore that is confirmed but whose record cannot be removed is not an owed restore.
+fresh
+record a "$W/repo"
+chmod 500 "$PEND"
+scenario "$(jq -nc --argjson n "$NOTARCH" '{responses:{"thread/loaded/list":{result:{data:[]}},"thread/list":$n}}')"
+rpc release --dir "$W/repo" 2>"$T/err"; rc=$?
+chmod 700 "$PEND"
+is "R7 a confirmed restore whose record cannot be removed exits 1 and keeps the record" "$rc:$(pending)" "1:a"
+grep -q "a was restored, but its record could not be removed" "$T/err" && ! grep -q "could not be restored yet" "$T/err" \
+  && _pass "R7 it says the record, not the restore, is the problem" || _fail "R7 it says the record, not the restore, is the problem" "$(cat "$T/err")"
+
+# A thread whose archive failed and is confirmed not archived owes no restore either. The
+# record is made undeletable at the moment the archive fails, by a stand-in for the client.
+fresh
+out="$(python3 - "$RPC" "$XDG_STATE_HOME/xreview-rpc" "$W/repo" <<PY
+$load
+import contextlib, io, os
+sd, d = sys.argv[2], sys.argv[3]
+pend = os.path.join(sd, "release-pending")
+class C:
+    def call(self, meth, params, timeout=30):
+        if meth == "thread/loaded/list":
+            return {"result": {"data": ["a"]}}
+        if meth == "thread/read":
+            return {"result": {"thread": {"cwd": d, "status": {"type": "idle"}}}}
+        if meth == "thread/archive":
+            os.chmod(pend, 0o500)
+            return {"error": {"code": -1, "message": "nope"}}
+        return {"result": {"data": []}}
+buf = io.StringIO()
+try:
+    with contextlib.redirect_stderr(buf):
+        rc = m.release(C(), sd, d, [])
+finally:
+    os.chmod(pend, 0o700)
+msg = buf.getvalue()
+ok = rc == 1 and os.listdir(pend) == ["a"] and "a: archive failed: nope; its record could not be removed" in msg
+print("ok" if ok and "could not be restored yet" not in msg else "bad " + msg)
+PY
+)"
+is "R7 a failed archive whose record cannot be removed exits 1, keeps the record and does not claim an owed restore" "$out" ok
 
 fresh
 scenario "$(jq -nc --argjson a "$(th a "$W/repo" idle)" '{responses:{"thread/loaded/list":{result:{data:["a"]}},"thread/read":$a},drop_on:["thread/archive"]}')"
@@ -752,6 +801,9 @@ scenario "$(jq -nc --argjson e "$(th e "$W/repo" idle true)" '{responses:{"threa
 XREVIEW_RPC_EPHEMERAL_WAIT=0.2 XREVIEW_RPC_EPHEMERAL_POLL=0.05 rpc release --dir "$W/repo" 2>"$T/err"; rc=$?
 is "R11 an ephemeral thread still loaded at the end of the wait exits 1" "$rc" 1
 grep -q "e (ephemeral) is still loaded — close the Codex client using it" "$T/err" && _pass "R11 it names the thread" || _fail "R11 it names the thread" "$(cat "$T/err")"
+XREVIEW_RPC_RELEASE_DEADLINE=1 XREVIEW_RPC_EPHEMERAL_POLL=5 rpc release --dir "$W/repo" 2>"$T/err"; rc=$?
+is "R11 a deadline that ends the wait first still exits 1" "$rc" 1
+grep -q "e (ephemeral) is still loaded — close the Codex client using it" "$T/err" && _pass "R11 it gives the same message, not a lost connection" || _fail "R11 it gives the same message, not a lost connection" "$(cat "$T/err")"
 
 fresh
 scenario "$(jq -nc --argjson x "$(th x "$W/repo-x" idle)" '{responses:{"thread/loaded/list":{result:{data:["x"]}},"thread/read":$x}}')"
