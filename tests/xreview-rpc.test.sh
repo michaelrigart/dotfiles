@@ -735,6 +735,19 @@ is "R7 a confirmed restore whose record cannot be removed exits 1 and keeps the 
 grep -q "a was restored, but its record could not be removed" "$T/err" && ! grep -q "could not be restored yet" "$T/err" \
   && _pass "R7 it says the record, not the restore, is the problem" || _fail "R7 it says the record, not the restore, is the problem" "$(cat "$T/err")"
 
+# A record that cannot be removed does not hide the restores still owed, nor stop the others.
+fresh
+record a "$W/repo"; record b "$W/repo"
+chmod 500 "$PEND"
+scenario "$(jq -nc --argjson l "$(ARCH a)" --argjson n "$NOTARCH" \
+  '{responses:{"thread/list":[$l,$n],"thread/loaded/list":{result:{data:[]}}}}')"
+rpc release --dir "$W/repo" 2>"$T/err"; rc=$?
+chmod 700 "$PEND"
+is "R7 one unremovable record and one owed restore both refuse (1) and are kept" "$rc:$(pending)" "1:a b"
+grep -q "a is archived and could not be restored yet" "$T/err" && _pass "R7 the owed restore is still named" || _fail "R7 the owed restore is still named" "$(cat "$T/err")"
+grep -q "b was restored, but its record could not be removed" "$T/err" && _pass "R7 the unremovable record is named" || _fail "R7 the unremovable record is named" "$(cat "$T/err")"
+is "R7 both records were tried" "$(grep -c 'thread/unarchive' "$FAKE_LOG")" 2
+
 # A thread whose archive failed and is confirmed not archived owes no restore either. The
 # record is made undeletable at the moment the archive fails, by a stand-in for the client.
 fresh
@@ -765,6 +778,35 @@ print("ok" if ok and "could not be restored yet" not in msg else "bad " + msg)
 PY
 )"
 is "R7 a failed archive whose record cannot be removed exits 1, keeps the record and does not claim an owed restore" "$out" ok
+
+# A saved thread that is archived and restored, but whose record cannot be removed.
+fresh
+out="$(python3 - "$RPC" "$XDG_STATE_HOME/xreview-rpc" "$W/repo" <<PY
+$load
+import contextlib, io, os
+sd, d = sys.argv[2], sys.argv[3]
+pend = os.path.join(sd, "release-pending")
+class C:
+    def call(self, meth, params, timeout=30):
+        if meth == "thread/loaded/list":
+            return {"result": {"data": ["a"]}}
+        if meth == "thread/read":
+            return {"result": {"thread": {"cwd": d, "status": {"type": "idle"}}}}
+        if meth == "thread/unarchive":
+            os.chmod(pend, 0o500)   # the restore succeeds; only the record is stuck
+        return {"result": {"data": []}}
+buf = io.StringIO()
+try:
+    with contextlib.redirect_stderr(buf), contextlib.redirect_stdout(io.StringIO()) as so:
+        rc = m.release(C(), sd, d, [])
+finally:
+    os.chmod(pend, 0o700)
+msg = buf.getvalue()
+ok = rc == 1 and os.listdir(pend) == ["a"] and "a was restored, but its record could not be removed" in msg
+print("ok" if ok and "could not be restored yet" not in msg and "released" not in so.getvalue() else "bad " + msg)
+PY
+)"
+is "R7 a restored saved thread whose record cannot be removed exits 1, keeps the record, is not reported released" "$out" ok
 
 fresh
 scenario "$(jq -nc --argjson a "$(th a "$W/repo" idle)" '{responses:{"thread/loaded/list":{result:{data:["a"]}},"thread/read":$a},drop_on:["thread/archive"]}')"
@@ -801,9 +843,14 @@ scenario "$(jq -nc --argjson e "$(th e "$W/repo" idle true)" '{responses:{"threa
 XREVIEW_RPC_EPHEMERAL_WAIT=0.2 XREVIEW_RPC_EPHEMERAL_POLL=0.05 rpc release --dir "$W/repo" 2>"$T/err"; rc=$?
 is "R11 an ephemeral thread still loaded at the end of the wait exits 1" "$rc" 1
 grep -q "e (ephemeral) is still loaded — close the Codex client using it" "$T/err" && _pass "R11 it names the thread" || _fail "R11 it names the thread" "$(cat "$T/err")"
-XREVIEW_RPC_RELEASE_DEADLINE=1 XREVIEW_RPC_EPHEMERAL_POLL=5 rpc release --dir "$W/repo" 2>"$T/err"; rc=$?
+# The deadline, not the wait, ends it: the sleep is capped at the deadline (about 3 s here;
+# uncapped it would last the whole 10 s poll interval).
+SECONDS=0
+XREVIEW_RPC_RELEASE_DEADLINE=3 XREVIEW_RPC_EPHEMERAL_POLL=10 rpc release --dir "$W/repo" 2>"$T/err"; rc=$?
+took=$SECONDS
 is "R11 a deadline that ends the wait first still exits 1" "$rc" 1
 grep -q "e (ephemeral) is still loaded — close the Codex client using it" "$T/err" && _pass "R11 it gives the same message, not a lost connection" || _fail "R11 it gives the same message, not a lost connection" "$(cat "$T/err")"
+is "R11 the poll sleep is cut short at the deadline" "$([ "$took" -lt 8 ] && echo yes || echo "no, took ${took}s")" yes
 
 fresh
 scenario "$(jq -nc --argjson x "$(th x "$W/repo-x" idle)" '{responses:{"thread/loaded/list":{result:{data:["x"]}},"thread/read":$x}}')"

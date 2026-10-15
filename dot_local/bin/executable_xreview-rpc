@@ -618,15 +618,14 @@ def release(c, sd, d, mine):
     records under d. Returns the exit status."""
     # 1. Finish earlier restores. thread/unarchive's answer is not evidence (C5); the
     #    archived listing is. Nothing more is archived while a restore is owed.
-    left = []
+    left, stuck = [], False
     for tid, cwd in mine:
         c.call("thread/unarchive", {"threadId": tid})
         if archived(c, tid, cwd) is False:
-            if not settle(sd, tid):
-                return 1
+            stuck = not settle(sd, tid) or stuck
         else:
             left.append((tid, cwd))
-    if left:
+    if left or stuck:
         owed(left)
         return 1
 
