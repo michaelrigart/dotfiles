@@ -747,6 +747,17 @@ is "R7 one unremovable record and one owed restore both refuse (1) and are kept"
 grep -q "a is archived and could not be restored yet" "$T/err" && _pass "R7 the owed restore is still named" || _fail "R7 the owed restore is still named" "$(cat "$T/err")"
 grep -q "b was restored, but its record could not be removed" "$T/err" && _pass "R7 the unremovable record is named" || _fail "R7 the unremovable record is named" "$(cat "$T/err")"
 is "R7 both records were tried" "$(grep -c 'thread/unarchive' "$FAKE_LOG")" 2
+# The same with the stuck record first: the owed one after it must still be tried and named.
+fresh
+record a "$W/repo"; record b "$W/repo"
+chmod 500 "$PEND"
+scenario "$(jq -nc --argjson l "$(ARCH b)" --argjson n "$NOTARCH" \
+  '{responses:{"thread/list":[$n,$l],"thread/loaded/list":{result:{data:[]}}}}')"
+rpc release --dir "$W/repo" 2>"$T/err"; rc=$?
+chmod 700 "$PEND"
+is "R7 a stuck record first does not stop the owed restore after it" "$rc:$(pending):$(grep -c 'thread/unarchive' "$FAKE_LOG")" "1:a b:2"
+grep -q "a was restored, but its record could not be removed" "$T/err" && _pass "R7 the stuck record is named first" || _fail "R7 the stuck record is named first" "$(cat "$T/err")"
+grep -q "b is archived and could not be restored yet" "$T/err" && _pass "R7 the owed restore after it is named" || _fail "R7 the owed restore after it is named" "$(cat "$T/err")"
 
 # A thread whose archive failed and is confirmed not archived owes no restore either. The
 # record is made undeletable at the moment the archive fails, by a stand-in for the client.
