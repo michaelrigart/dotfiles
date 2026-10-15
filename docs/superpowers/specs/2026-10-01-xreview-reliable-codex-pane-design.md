@@ -189,6 +189,22 @@ reaches the pane).
      It is followed by the pane's screen (§4.6).
    - Inside the ladder, a failed process read counts as "still Codex", never as "freed".
 
+> **2026-10-15 — amended.** The ladder could not quit a TUI that an earlier dispatch had
+> resumed, whenever that earlier turn started on a thread the daemon had not loaded. On Codex
+> 0.162.1, `turn-start` loads such a thread with `thread/resume` and sent `turn/start` about
+> 30 ms later, while the thread's MCP servers were still starting. A TUI resumed onto that
+> turn keeps a "turn running" state after it completes: every `ctrl+c` reaches the daemon as
+> an `interrupt` op, f12 does nothing, and only `/quit` exits. A loaded thread, or a turn
+> started after MCP startup settles, quits on the first `ctrl+c` (by hand: stuck in 3 of 3
+> cold starts, quit in all 6 other runs). The ladder is unchanged. Instead, `turn-start` now waits, on every call and once the
+> thread is loaded, until `mcpServerStatus/list` (`threadId`, `detail: "toolsAndAuthOnly"`,
+> every page) reports each server `connected`, `authenticationRequired`, `failed`,
+> `cancelled` or `disabled`; any other status, null included, is unresolved. A list error,
+> or 30 s unresolved, refuses before `turn/start` with "no review was started", naming the
+> servers. A `turn/start` refused before any byte is sent exits 1, not 6. Waiting on
+> `mcpServer/startupStatus/updated` notifications was rejected, because nothing orders them
+> before the resume answer. Reviewed by Codex over three rounds.
+
 ### 4.5 Resume, and report a pane that does not follow
 
 The resume runs as today, with `-C` (§4.1), and the success test is unchanged: the title
@@ -302,6 +318,7 @@ or from its saved session.
 | Pane on a pre-session screen, before the turn | The ladder: pair one moves it off the screen, pair two quits it. The dispatch proceeds. |
 | Pane on a pre-session screen, resuming a thread with a running turn | Refuse as mid-turn, before any keystroke. |
 | Pane will not quit within the bound | Refuse as today, plus the pane's screen. No turn exists. |
+| The thread's MCP servers still unresolved after 30 s, or their status unreadable (2026-10-15) | `turn-start` refuses before `turn/start`, naming the servers; dispatch reports the turn could not be started. |
 | Resumed TUI does not show the thread | Warn as today, plus the pane's screen. The review runs, `collect` works, and the TUI is left in place. |
 | Pane already on the thread, TUI connected to the daemon | No keystroke and no resume. |
 | Pane on the thread, TUI not connected (daemon restarted, embedded server) | Ladder, then resume. |
