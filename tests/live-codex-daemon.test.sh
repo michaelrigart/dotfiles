@@ -263,6 +263,14 @@ is "C2c on the freed shell xreview's pane_proc succeeds and proc_codex is empty"
    "$rc/$([ -z "$(proc_codex "$xp")" ] && echo empty || echo codex)" "0/empty"
 other="$T/elsewhere"; mkdir -p "$other"
 
+# A failed read, or an envelope that is not a pane, fails (an empty title from a successful
+# read is a valid answer): a stale probe that reads nothing must never pass for "no stale title".
+pane_title() {
+  local o
+  o="$(herdr pane get "$pane" 2>/dev/null)" || return 1
+  printf '%s' "$o" | jq -er '.result.pane | objects | (.terminal_title_stripped // .terminal_title // "")' 2>/dev/null
+}
+
 # The thread's real cwd as the daemon reports it (thread/read), or "error: <type>: <message>"
 # on any failure, so the FAIL line says why. -B keeps a __pycache__ out of the source tree; the
 # module is loaded as the unit suite loads it; the short deadline stops a daemon that accepts
@@ -299,6 +307,14 @@ PY
 )"; rc=$?
 is "V2 the Codex config's tui.resume_cwd is readable" "$rc" 0
 printf '  (tui.resume_cwd=%s)\n' "${resume_cwd:-unset}"
+# The pane's previous session was on this thread (the F22 resume): a stale title must not pass
+# for this resume, so the title is read first and must not already show the thread.
+v2want="$(printf '%s' "$f22_thread" | cut -c1-29)"
+t="$(pane_title)"; read_rc=$?; stale=0
+case "$t" in "$v2want"*) stale=1 ;; esac
+[ -n "$v2want" ] || stale=1
+is "V2 the pre-resume title read succeeded" "$read_rc" 0
+is "V2 the title does not already show the thread before the resume" "$stale" 0
 herdr pane run "$pane" "cd $(printf '%q' "$other") && $pane_cmd resume $f22_thread" >/dev/null
 case "$resume_cwd" in
   "")
@@ -332,7 +348,6 @@ case "$resume_cwd" in
       sleep 1
     done
     is "V2 the resume starts a Codex TUI" "$started" 1
-    v2want="$(printf '%s' "$f22_thread" | cut -c1-29)"
     titled=0; end=$((SECONDS + 15))
     while [ "$SECONDS" -lt "$end" ]; do
       t="$(herdr pane get "$pane" 2>/dev/null | jq -r '.result.pane.terminal_title_stripped // .result.pane.terminal_title // ""' 2>/dev/null)"
@@ -366,13 +381,6 @@ is "V2 the shell then runs the next command" "$?" 0
 
 echo "V1: a -C resume from another directory opens the thread with no chooser"
 want="$(printf '%s' "$f22_thread" | cut -c1-29)"
-# A failed read, or an envelope that is not a pane, fails (an empty title from a successful
-# read is a valid answer): a stale probe that reads nothing must never pass for "no stale title".
-pane_title() {
-  local o
-  o="$(herdr pane get "$pane" 2>/dev/null)" || return 1
-  printf '%s' "$o" | jq -er '.result.pane | objects | (.terminal_title_stripped // .terminal_title // "")' 2>/dev/null
-}
 v1=0
 if [ -z "$want" ]; then
   _fail "V1 the title shows the thread" "no f22 thread to resume"
