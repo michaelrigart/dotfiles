@@ -51,6 +51,11 @@ class Closed(Exception):
     pass
 
 
+class NotSent(Closed):
+    """A call refused before any byte of its request was written. Still a Closed to every
+    caller that does not care; turn-start tells it from "sent but not answered"."""
+
+
 def err(msg):
     print(f"xreview-rpc: {msg}", file=sys.stderr)
 
@@ -158,15 +163,18 @@ class WsTransport:
 
     def send(self, obj, until=None):
         """until: the calling call's own deadline; a send that cannot finish by it raises
-        Closed, and one begun after it is not sent at all."""
+        Closed, and one begun after it is not sent at all (NotSent)."""
         if until is not None and time.monotonic() >= until:
-            raise Closed("the call's budget ran out before it could be sent")
+            raise NotSent("the call's budget ran out before it could be sent")
         try:
             frame = ws_frame(json.dumps(obj).encode())
             self.s.settimeout(self._send_timeout(until))
+        except OSError as e:
+            raise NotSent(str(e))    # nothing has been written yet
+        try:
             self.s.sendall(frame)
         except OSError as e:
-            raise Closed(str(e))
+            raise Closed(str(e))     # some bytes may have gone out
 
     def recv(self, timeout):
         """The next JSON message, or None when nothing arrives within timeout."""
@@ -269,7 +277,7 @@ class Client:
         # against the call's own budget.
         deadline = min(time.monotonic() + timeout, self.deadline)
         if deadline - time.monotonic() <= 0:
-            raise Closed(f"no response to {method} within the budget")
+            raise NotSent(f"no response to {method} within the budget")
         self.t.send({"id": rid, "method": method, "params": params}, until=deadline)
         while True:
             left = deadline - time.monotonic()
@@ -388,6 +396,81 @@ def cmd_thread_status(c, a):
     return 0
 
 
+# What mcpServerStatus/list reports once a server has stopped starting, one way or another.
+MCP_SETTLED = ("connected", "authenticationRequired", "failed", "cancelled", "disabled")
+
+
+def env_secs(name, default):
+    """A non-negative number of seconds from the environment (a test knob), else default."""
+    try:
+        v = float(os.environ.get(name, ""))
+    except ValueError:
+        return default
+    return v if 0 <= v < float("inf") else default
+
+
+def mcp_servers(c, thread, until):
+    """(servers, None) across every page of mcpServerStatus/list, or (None, error). A page
+    that has no list under data counts as empty. Raises Closed if until passes mid-call."""
+    servers, cursor = [], None
+    while True:
+        params = {"threadId": thread, "detail": "toolsAndAuthOnly"}
+        if cursor:
+            params["cursor"] = cursor
+        r = c.call("mcpServerStatus/list", params, timeout=max(0.0, until - time.monotonic()))
+        if "error" in r:
+            return None, r["error"]
+        res = r.get("result") or {}
+        data = res.get("data")
+        if isinstance(data, list):
+            servers += [s if isinstance(s, dict) else {} for s in data]
+        cursor = res.get("nextCursor")
+        if not cursor:
+            return servers, None
+
+
+def mcp_barrier(c, thread):
+    """0 once every MCP server of the loaded thread has stopped starting, else 1 with the
+    refusal printed. A turn started while they still start leaves a resumed TUI with a stale
+    "turn running" state its ctrl+c ladder cannot quit (spec 2026-10-01, 2026-10-15
+    amendment). Nothing has been sent for the turn yet, so every refusal is a clean one."""
+    wait = env_secs("XREVIEW_MCP_WAIT", 30.0)
+    poll = env_secs("XREVIEW_MCP_POLL", 0.2)
+    start = time.monotonic()
+    # The turn/start that follows needs budget of its own.
+    bound = min(start + wait, c.deadline - 10)
+    if bound <= start:
+        err("too little time is left to check the thread's MCP servers; no review was started")
+        return 1
+    held = None
+    while True:
+        try:
+            servers, e = mcp_servers(c, thread, bound)
+        except Closed:
+            if time.monotonic() < bound:
+                raise    # a dropped connection, not the bound
+            servers, e = None, None
+        if e is not None:
+            err(f"cannot read the thread's MCP server status: {json.dumps(e)}; no review was started")
+            return 1
+        if servers is not None:
+            held = [(s.get("name"), s.get("runtimeStatus")) for s in servers
+                    if s.get("runtimeStatus") not in MCP_SETTLED]
+            if not held:
+                return 0
+        if servers is None or time.monotonic() >= bound:
+            secs = f"{round(bound - start, 1):g}s"
+            if held:
+                what = ", ".join(f"{n}={'null' if st is None else st}" for n, st in held)
+                err(f"the thread's MCP servers did not finish starting within {secs} ({what}); "
+                    "no review was started")
+            else:
+                err(f"the thread's MCP server status was not readable within {secs}; "
+                    "no review was started")
+            return 1
+        time.sleep(min(poll, max(0.0, bound - time.monotonic())))
+
+
 def cmd_turn_start(c, a):
     with open(a.input, encoding="utf-8") as fh:
         text = fh.read()
@@ -402,6 +485,10 @@ def cmd_turn_start(c, a):
         if "error" in r:
             err("cannot load the thread before starting: " + json.dumps(r["error"]))
             return 1
+    # Before the baseline and the start: see mcp_barrier. thread/resume answering is not
+    # enough, the thread's MCP servers are still starting then.
+    if mcp_barrier(c, a.thread):
+        return 1
     if a.known:
         # What is on the thread before this start, so an unanswered start can be found later
         # as the turn that was not there before.
@@ -428,6 +515,9 @@ def cmd_turn_start(c, a):
                                   "outputSchema": schema,
                                   "sandboxPolicy": {"type": "readOnly"},
                                   "approvalPolicy": "never"})
+    except NotSent as e:
+        err(f"turn/start could not be sent ({e}); no review was started")
+        return 1
     except (Unreachable, Closed) as e:
         err(f"turn/start was sent but not answered ({e}); the turn may be running")
         return 6

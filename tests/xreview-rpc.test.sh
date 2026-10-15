@@ -187,6 +187,193 @@ rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" 2>/dev/null
 is "TL3 a thread that will not load refuses (1)" "$?" 1
 is "TL3 and never calls turn/start" "$(jq -r 'select(.method=="turn/start") | .method' "$FAKE_LOG" | grep -c .)" 0
 
+echo "MB. turn/start waits for the thread's MCP servers to stop starting"
+# A turn started while they still start leaves a resumed TUI with a stale "turn running"
+# state. The barrier sits after the load step and before the baseline and turn/start.
+export XREVIEW_MCP_POLL=0.05 XREVIEW_MCP_WAIT=5
+MBTS='"turn/start":{"result":{"turn":{"id":"turn-mb","status":"inProgress"}}}'
+RD_IDLE='"thread/read":{"result":{"thread":{"status":{"type":"idle"}}}}'
+RD_COLD='"thread/read":{"result":{"thread":{"status":{"type":"notLoaded"}}}}'
+mcp() { jq -nc --argjson d "$1" '{result:{data:$d}}'; }
+# mb_scn <list of successive mcpServerStatus/list answers> [thread/read entry]
+mb_scn() { scenario "{\"responses\":{${2:-$RD_IDLE},\"mcpServerStatus/list\":$1,$MBTS}}"; }
+order() { jq -r 'select(.method) | .method' "$FAKE_LOG" | grep -E '^(thread/resume|mcpServerStatus/list|turn/start)$' | paste -sd, -; }
+nsent() { jq -r "select(.method==\"$1\") | .method" "$FAKE_LOG" | grep -c .; }
+ST='{"name":"node_repl","runtimeStatus":"starting"}'
+OK='{"name":"node_repl","runtimeStatus":"connected"}'
+mb_scn "[$(mcp "[$ST]"),$(mcp "[$OK]")]"
+out="$(rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA")"; rc=$?
+is "MB1 a server that is starting holds turn/start back until connected" "$rc/$out" "0/turn-mb"
+is "MB1 and the start follows the second list call" "$(order)" "mcpServerStatus/list,mcpServerStatus/list,turn/start"
+for odd in '{"name":"node_repl","runtimeStatus":"notStarted"}' \
+           '{"name":"node_repl","runtimeStatus":null}' \
+           '{"name":"node_repl"}' \
+           '{"name":"node_repl","runtimeStatus":"warmingUp"}'; do
+  mb_scn "[$(mcp "[$odd]"),$(mcp "[$OK]")]"
+  rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" >/dev/null; rc=$?
+  is "MB2 $(printf '%s' "$odd" | jq -c '.runtimeStatus // "no-status"') is unresolved, so the start waits" \
+     "$rc/$(order)" "0/mcpServerStatus/list,mcpServerStatus/list,turn/start"
+done
+mb_scn "[$(mcp '[{"name":"a","runtimeStatus":"connected"},{"name":"b","runtimeStatus":"authenticationRequired"},{"name":"c","runtimeStatus":"failed"},{"name":"d","runtimeStatus":"cancelled"},{"name":"e","runtimeStatus":"disabled"}]')]"
+rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" >/dev/null; rc=$?
+is "MB3 connected, authenticationRequired, failed, cancelled and disabled all count as settled" \
+   "$rc/$(order)" "0/mcpServerStatus/list,turn/start"
+mb_scn "[$(mcp '[]')]"
+rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" >/dev/null; rc=$?
+is "MB4 an empty server list is settled after one call" "$rc/$(order)" "0/mcpServerStatus/list,turn/start"
+mb_scn "[{\"result\":{}}]"
+rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" >/dev/null; rc=$?
+is "MB4 a result with no data is settled too" "$rc/$(order)" "0/mcpServerStatus/list,turn/start"
+
+p1="$(jq -nc --argjson o "$OK" '{result:{data:[$o], nextCursor:"c2"}}')"
+p2s="$(mcp "[$ST]")"; p2ok="$(mcp "[$OK]")"
+mb_scn "[$p1,$p2s,$p1,$p2ok]"
+rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" >/dev/null; rc=$?
+is "MB5 a starting server on page 2 holds the start back, across both pages again" \
+   "$rc/$(order)" "0/mcpServerStatus/list,mcpServerStatus/list,mcpServerStatus/list,mcpServerStatus/list,turn/start"
+is "MB5 the first page has no cursor, the second carries it" \
+   "$(jq -r 'select(.method=="mcpServerStatus/list") | .params.cursor // "none"' "$FAKE_LOG" | sed -n 1,2p | paste -sd, -)" "none,c2"
+is "MB5 the next round starts from the first page again" \
+   "$(jq -r 'select(.method=="mcpServerStatus/list") | .params.cursor // "none"' "$FAKE_LOG" | sed -n 3p)" none
+
+mb_scn "[$(mcp '[{"name":"node_repl","runtimeStatus":"starting"},{"name":"x","runtimeStatus":null}]')]"
+XREVIEW_MCP_WAIT=0.4 rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" >/dev/null 2>"$T/err"; rc=$?
+is "MB6 a server that never settles refuses at the bound (1)" "$rc" 1
+is "MB6 and never calls turn/start" "$(nsent turn/start)" 0
+is "MB6 stderr names each server and its status, null shown as null" \
+   "$(grep -c 'node_repl=starting, x=null' "$T/err")" 1
+is "MB6 and says no review was started" "$(grep -c 'no review was started' "$T/err")" 1
+
+mb_scn '[{"error":{"code":-32600,"message":"thread not found: th"}}]'
+rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" >/dev/null 2>"$T/err"; rc=$?
+is "MB7 a list error refuses (1)" "$rc" 1
+is "MB7 and never calls turn/start" "$(nsent turn/start)" 0
+is "MB7 and names the error and that no review was started" \
+   "$(grep -c "cannot read the thread's MCP server status: .*thread not found.*no review was started" "$T/err")" 1
+
+mb_scn "[$(mcp "[$ST]"),$(mcp "[$OK]")]" "$RD_COLD"
+rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" >/dev/null; rc=$?
+is "MB8 a cold thread: resume, then the list, then turn/start" \
+   "$rc/$(order)" "0/thread/resume,mcpServerStatus/list,mcpServerStatus/list,turn/start"
+
+mb_scn "[$(mcp "[$ST]")]" "$RD_COLD"
+XREVIEW_MCP_WAIT=0.3 rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" >/dev/null 2>&1; rc=$?
+is "MB9 the cold thread's first attempt refuses at the bound" "$rc/$(nsent turn/start)" "1/0"
+mb_scn "[$(mcp "[$ST]")]"
+XREVIEW_MCP_WAIT=0.3 rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" >/dev/null 2>&1; rc=$?
+is "MB9 a retry on the now-loaded thread is held back again" "$rc/$(nsent turn/start)" "1/0"
+
+mb_scn "[$(mcp "[$OK]")]"
+rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" >/dev/null
+is "MB10 the list asks about the thread" "$(params mcpServerStatus/list | jq -r .threadId)" th
+is "MB10 with the toolsAndAuthOnly detail" "$(params mcpServerStatus/list | jq -r .detail)" toolsAndAuthOnly
+
+mb_scn "[$(mcp "[$OK]")]"
+rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" --known "$T/known5" >/dev/null
+is "MB11 the barrier comes before the --known baseline and turn/start" \
+   "$(jq -r 'select(.method) | .method' "$FAKE_LOG" | grep -E '^(mcpServerStatus/list|thread/turns/list|turn/start)$' | paste -sd, -)" \
+   "mcpServerStatus/list,thread/turns/list,turn/start"
+# A garbled wait knob falls back to the default (30 s), it never crashes or waits forever.
+mb_scn "[$(mcp "[$OK]")]"
+XREVIEW_MCP_WAIT=soon XREVIEW_MCP_POLL=-1 rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" >/dev/null; rc=$?
+is "MB12 unparseable XREVIEW_MCP_WAIT/POLL fall back to the defaults" "$rc" 0
+unset XREVIEW_MCP_POLL XREVIEW_MCP_WAIT
+
+echo "MN. a turn/start refused before anything was written is not 'sent but unanswered'"
+# Deterministic: a real Client over a scripted transport, whose budget is spent the moment the
+# MCP list is answered. Client.call then refuses turn/start at its entry check, with nothing
+# written - no sleeping, no timing race.
+out="$(/usr/bin/python3 - "$RPC" "$T/in" "$SCHEMA" <<'PY' 2>&1
+import argparse, importlib.machinery, importlib.util, io, contextlib, socket, sys, time
+loader = importlib.machinery.SourceFileLoader("xreview_rpc", sys.argv[1])
+spec = importlib.util.spec_from_loader("xreview_rpc", loader)
+m = importlib.util.module_from_spec(spec); loader.exec_module(m)
+args = argparse.Namespace(thread="th", input=sys.argv[2], schema=sys.argv[3], known=None)
+ANS = {"thread/read": {"thread": {"status": {"type": "idle"}}},
+       "mcpServerStatus/list": {"data": []},
+       "turn/start": {"turn": {"id": "t1"}}}
+class T:
+    def __init__(self, c, spend=False, fail_start=False):
+        self.c, self.spend, self.fail_start, self.sent, self.q = c, spend, fail_start, [], []
+    def send(self, obj, until=None):
+        self.sent.append(obj["method"])
+        if obj["method"] == "turn/start" and self.fail_start:
+            raise m.Closed("pipe broke")      # bytes may have gone out
+        self.q.append({"id": obj["id"], "result": ANS[obj["method"]]})
+        if obj["method"] == "mcpServerStatus/list" and self.spend:
+            self.c.deadline = time.monotonic() - 1
+    def recv(self, timeout):
+        return self.q.pop(0) if self.q else None
+def run(deadline=60, **kw):
+    c = m.Client.__new__(m.Client)
+    c.next_id, c.notes, c.deadline = 0, [], time.monotonic() + deadline
+    c.t = T(c, **kw)
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        rc = m.cmd_turn_start(c, args)
+    return rc, c.t.sent, err.getvalue()
+rc, sent, e = run(spend=True)
+print("spent", rc, "turn/start" in sent, "no review was started" in e)
+rc, sent, e = run(fail_start=True)
+print("sentfail", rc, "turn/start" in sent)
+rc, sent, e = run(deadline=5)
+print("short", rc, "turn/start" in sent, "no review was started" in e)
+# The transport itself: send() past its bound raises NotSent and writes nothing.
+a, b = socket.socketpair(socket.AF_UNIX)
+def ws(sock):
+    b.recv(4096); b.sendall(b"HTTP/1.1 101 Switching Protocols\r\n\r\n")
+import threading
+threading.Thread(target=ws, args=(b,), daemon=True).start()
+t = m.WsTransport("socketpair", timeout=5, sock=a)
+time.sleep(0.1); b.setblocking(False)
+try:
+    t.send({"method": "x"}, until=time.monotonic() - 1); r = "sent"
+except m.NotSent:
+    r = "notsent"
+try:
+    wrote = len(b.recv(4096))
+except BlockingIOError:
+    wrote = 0
+print("ws-past", r, wrote)
+# An OSError before sendall begins is NotSent; one from sendall itself stays a plain Closed.
+a2, b2 = socket.socketpair(socket.AF_UNIX)
+threading.Thread(target=lambda: (b2.recv(4096), b2.sendall(b"HTTP/1.1 101 Switching Protocols\r\n\r\n")), daemon=True).start()
+t2 = m.WsTransport("socketpair", timeout=5, sock=a2)
+a2.close()
+try:
+    t2.send({"method": "x"}); r = "sent"
+except m.NotSent:
+    r = "notsent"
+except m.Closed:
+    r = "closed"
+print("ws-prewrite-oserror", r)
+a3, b3 = socket.socketpair(socket.AF_UNIX)
+threading.Thread(target=lambda: (b3.recv(4096), b3.sendall(b"HTTP/1.1 101 Switching Protocols\r\n\r\n")), daemon=True).start()
+t3 = m.WsTransport("socketpair", timeout=5, sock=a3)
+a3.shutdown(socket.SHUT_WR)
+try:
+    t3.send({"method": "x"}); r = "sent"
+except m.NotSent:
+    r = "notsent"
+except m.Closed:
+    r = "closed"
+print("ws-sendall-oserror", r)
+print("subclass", issubclass(m.NotSent, m.Closed))
+PY
+)"
+is "MN1 an exhausted budget before turn/start exits 1, never sends it, and says so" \
+   "$(printf '%s\n' "$out" | grep '^spent')" "spent 1 False True"
+is "MN2 a turn/start whose write failed (plain Closed) was still sent" \
+   "$(printf '%s\n' "$out" | grep '^sentfail' | cut -d' ' -f3)" True
+is "MN2b and exits 6, not 1" "$(printf '%s\n' "$out" | grep '^sentfail' | cut -d' ' -f2)" 6
+is "MN3 a client with under 10 s left refuses the start rather than racing it" \
+   "$(printf '%s\n' "$out" | grep '^short')" "short 1 False True"
+is "MN4 WsTransport.send with until in the past raises NotSent and writes nothing" \
+   "$(printf '%s\n' "$out" | grep '^ws-past')" "ws-past notsent 0"
+is "MN5 an OSError before sendall is NotSent" "$(printf '%s\n' "$out" | grep '^ws-prewrite')" "ws-prewrite-oserror notsent"
+is "MN6 an OSError from sendall stays Closed" "$(printf '%s\n' "$out" | grep '^ws-sendall')" "ws-sendall-oserror closed"
+is "MN7 NotSent is a Closed" "$(printf '%s\n' "$out" | grep '^subclass')" "subclass True"
+
 echo "D3. any other thread/turns/list error still refuses, unchanged"
 scenario '{"responses":{"thread/turns/list":{"error":{"code":-1,"message":"some other failure"}}},"drop_on":["turn/start"]}'
 rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" --known "$T/known4" 2>/dev/null
