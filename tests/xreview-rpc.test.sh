@@ -66,7 +66,9 @@ PY
 export FAKE_LOG="$T/log" FAKE_COUNTER="$T/counter" FAKE_SCENARIO="$T/scenario.json"
 export XREVIEW_RPC_STDIO="python3 $T/fake.py"
 scenario() { printf '%s' "$1" > "$FAKE_SCENARIO"; : > "$FAKE_LOG"; rm -f "$FAKE_COUNTER"; }
-rpc() { python3 "$RPC" "$@"; }
+# Executed directly, so the shebang's interpreter (the system python3) runs the script, as in
+# production; the module-loader snippets below name /usr/bin/python3 for the same reason.
+rpc() { "$RPC" "$@"; }
 params() { jq -c "select(.method == \"$1\") | .params" "$FAKE_LOG" | head -1; }
 ANSWER='{"verdict":"changes","findings":[{"severity":"P1","file":"a.sh","line":3,"summary":"s","failure_scenario":"f"}]}'
 turn() { # turn <status> <final-text>
@@ -77,7 +79,7 @@ turn() { # turn <status> <final-text>
 listing() { jq -nc --argjson t "$1" '{result:{data:[$t]}}'; }
 
 echo "A. WebSocket framing"
-out="$(python3 - "$RPC" <<'PY'
+out="$(/usr/bin/python3 - "$RPC" <<'PY'
 import importlib.machinery, importlib.util, sys
 loader = importlib.machinery.SourceFileLoader("xreview_rpc", sys.argv[1])
 spec = importlib.util.spec_from_loader("xreview_rpc", loader)
@@ -95,7 +97,7 @@ PY
 is "frames round-trip at every length encoding, and partial frames wait" "$out" ok
 
 echo "A2. Client._other keeps notes empty for anything but turn/completed"
-out="$(python3 - "$RPC" <<'PY'
+out="$(/usr/bin/python3 - "$RPC" <<'PY'
 import importlib.machinery, importlib.util, sys
 loader = importlib.machinery.SourceFileLoader("xreview_rpc", sys.argv[1])
 spec = importlib.util.spec_from_loader("xreview_rpc", loader)
@@ -115,7 +117,7 @@ scenario '{}'
 rpc health; is "a daemon that answers initialize is healthy" "$?" 0
 is "the client sends initialized after initialize" "$(jq -r 'select(.method=="initialized") | .method' "$FAKE_LOG")" initialized
 XREVIEW_RPC_STDIO=false rpc health 2>/dev/null; is "a daemon that goes away is unreachable (5)" "$?" 5
-env -u XREVIEW_RPC_STDIO XREVIEW_RPC_SOCK="$T/no.sock" python3 "$RPC" health 2>/dev/null
+env -u XREVIEW_RPC_STDIO XREVIEW_RPC_SOCK="$T/no.sock" "$RPC" health 2>/dev/null
 is "a missing socket is unreachable (5)" "$?" 5
 
 echo "B2. thread-start"
@@ -371,7 +373,7 @@ is "a daemon that never answers initialize ends at the budget" "$([ "$took" -le 
 is "as unreachable (5)" "$rc" 5
 
 echo "M. the WebSocket transport, over a socketpair"
-out="$(python3 - "$RPC" <<'PY'
+out="$(/usr/bin/python3 - "$RPC" <<'PY'
 import importlib.machinery, importlib.util, json, socket, sys, threading, time
 loader = importlib.machinery.SourceFileLoader("xreview_rpc", sys.argv[1])
 spec = importlib.util.spec_from_loader("xreview_rpc", loader)
@@ -457,7 +459,7 @@ loader = importlib.machinery.SourceFileLoader("xreview_rpc", sys.argv[1])
 spec = importlib.util.spec_from_loader("xreview_rpc", loader)
 m = importlib.util.module_from_spec(spec); loader.exec_module(m)'
 
-out="$(python3 - "$RPC" "$W" "$T/w/link" <<PY
+out="$(/usr/bin/python3 - "$RPC" "$W" "$T/w/link" <<PY
 $load
 w, link = sys.argv[2], sys.argv[3]
 cases = [
@@ -477,7 +479,7 @@ PY
 is "under() compares whole components, through symlinks, trailing slashes and missing paths" "$out" ok
 
 rm -rf "$XDG_STATE_HOME"
-out="$(python3 - "$RPC" "$XDG_STATE_HOME" <<PY
+out="$(/usr/bin/python3 - "$RPC" "$XDG_STATE_HOME" <<PY
 $load
 import os
 sd = m.state_dir()
@@ -487,7 +489,7 @@ m.write_record(sd, "th-2", "/x/repo-x")
 ok &= m.read_records(sd) == [("th-1", "/x/repo"), ("th-2", "/x/repo-x")]
 m.drop_record(sd, "th-1"); m.drop_record(sd, "th-1")   # dropping twice is harmless
 ok &= m.read_records(sd) == [("th-2", "/x/repo-x")]
-for bad_id in ("../evil", "a/b", "", ".hidden"):
+for bad_id in ("../evil", "a/b", "", ".hidden", "abc\n"):
     try:
         m.write_record(sd, bad_id, "/x"); ok = False
     except m.RecordError:
@@ -519,7 +521,7 @@ PY
 is "records round-trip, refuse non-id names, skip unfinished writes, fail on corrupt ones" "$out" ok
 
 rm -rf "$XDG_STATE_HOME"
-out="$(python3 - "$RPC" <<PY
+out="$(/usr/bin/python3 - "$RPC" <<PY
 $load
 import os, subprocess, time
 sd = m.state_dir()
@@ -561,7 +563,7 @@ PY
 is "the lock is exclusive across processes, times out, is freed by a killed holder, and is taken once freed" "$out" ok
 
 : > "$T/afile"
-out="$(XDG_STATE_HOME="$T/afile" python3 - "$RPC" <<PY
+out="$(XDG_STATE_HOME="$T/afile" /usr/bin/python3 - "$RPC" <<PY
 $load
 import time
 try:
@@ -573,7 +575,7 @@ PY
 is "a state directory that cannot be created raises OSError" "$out" ok
 
 scenario '{"responses":{"thread/list":[{"result":{"data":[{"id":"other"}],"nextCursor":"p2"}},{"result":{"data":[{"id":"th"}]}}]}}'
-out="$(python3 - "$RPC" <<PY
+out="$(/usr/bin/python3 - "$RPC" <<PY
 $load
 print(m.archived(m.Client(), "th", "/x/repo"))
 PY
@@ -585,14 +587,14 @@ is "the second page is asked for by cursor" \
    "$(jq -c 'select(.method == "thread/list") | .params.cursor' "$FAKE_LOG" | tail -1)" '"p2"'
 scenario '{"responses":{"thread/list":{"result":{"data":[]}}}}'
 is "archived() is False when the listing lacks the thread" \
-   "$(python3 - "$RPC" <<PY
+   "$(/usr/bin/python3 - "$RPC" <<PY
 $load
 print(m.archived(m.Client(), "th", "/x/repo"))
 PY
 )" False
 scenario '{"responses":{"thread/list":{"error":{"code":-1,"message":"nope"}}}}'
 is "archived() is None when the listing fails" \
-   "$(python3 - "$RPC" <<PY
+   "$(/usr/bin/python3 - "$RPC" <<PY
 $load
 print(m.archived(m.Client(), "th", "/x/repo"))
 PY
@@ -600,28 +602,28 @@ PY
 
 scenario '{"responses":{"thread/loaded/list":[{"result":{"data":["a"],"nextCursor":"c"}},{"result":{"data":[{"id":"b"}]}}]}}'
 is "loaded_ids() follows pages and accepts ids or objects" \
-   "$(python3 - "$RPC" <<PY
+   "$(/usr/bin/python3 - "$RPC" <<PY
 $load
 print(m.loaded_ids(m.Client()))
 PY
 )" "['a', 'b']"
 scenario '{"responses":{"thread/loaded/list":{"error":{"code":-1,"message":"nope"}}}}'
 is "loaded_ids() is None when a page fails" \
-   "$(python3 - "$RPC" <<PY
+   "$(/usr/bin/python3 - "$RPC" <<PY
 $load
 print(m.loaded_ids(m.Client()))
 PY
 )" None
 scenario '{"responses":{"thread/list":[{"result":{"data":[],"nextCursor":"p2"}},{"error":{"code":-1,"message":"nope"}}]}}'
 is "archived() is None when a later page fails" \
-   "$(python3 - "$RPC" <<PY
+   "$(/usr/bin/python3 - "$RPC" <<PY
 $load
 print(m.archived(m.Client(), "th", "/x/repo"))
 PY
 )" None
 scenario '{"responses":{"thread/loaded/list":[{"result":{"data":["a"],"nextCursor":"c"}},{"error":{"code":-1,"message":"nope"}}]}}'
 is "loaded_ids() is None when a later page fails" \
-   "$(python3 - "$RPC" <<PY
+   "$(/usr/bin/python3 - "$RPC" <<PY
 $load
 print(m.loaded_ids(m.Client()))
 PY
@@ -653,6 +655,8 @@ is "R1 the checkout and its subdirectory are selected, the prefix sibling is not
 is "R1 each thread is archived, restored, then confirmed, in that order" "$(methods)" \
    "thread/loaded/list |thread/read a|thread/read b|thread/read x|thread/archive a|thread/unarchive a|thread/list |thread/archive b|thread/unarchive b|thread/list |"
 is "R1 no record is left" "$(pending)" ""
+is "R1 each confirmation lists the thread's own cwd, not --dir (the symlink)" \
+   "$(jq -r 'select(.method=="thread/list") | .params.cwd[0]' "$FAKE_LOG")" "$W/repo"$'\n'"$W/repo/sub"
 
 fresh
 scenario "$(jq -nc --argjson a "$(th a "$W/repo" idle)" --argjson b "$(th b "$W/repo" idle)" --argjson n "$NOTARCH" \
@@ -690,6 +694,11 @@ scenario "$(jq -nc --argjson a "$(th a "$W/repo" idle)" --argjson e "$ERR" --arg
   '{responses:{"thread/loaded/list":{result:{data:["a"]}},"thread/read":$a,"thread/archive":$e,"thread/list":$l}}')"
 rpc release --dir "$W/repo" 2>/dev/null
 is "R5 a failed archive that did archive keeps the record" "$(pending)" a
+fresh
+scenario "$(jq -nc --argjson a "$(th a "$W/repo" idle)" --argjson e "$ERR" \
+  '{responses:{"thread/loaded/list":{result:{data:["a"]}},"thread/read":$a,"thread/archive":$e,"thread/list":$e}}')"
+rpc release --dir "$W/repo" 2>/dev/null; rc=$?
+is "R5 a failed archive whose confirmation listing also fails exits 1 and keeps the record" "$rc:$(pending)" "1:a"
 
 fresh
 scenario "$(jq -nc --argjson a "$(th a "$W/repo" idle)" --argjson e "$ERR" --argjson l "$(ARCH a)" \
@@ -710,6 +719,13 @@ scenario "$(jq -nc --argjson a "$(th a "$W/repo" idle)" --argjson e "$ERR" \
   '{responses:{"thread/loaded/list":{result:{data:["a"]}},"thread/read":$a,"thread/list":$e}}')"
 rpc release --dir "$W/repo" 2>/dev/null; rc=$?
 is "R6 a failed confirmation listing exits 1 and keeps the record" "$rc:$(pending)" "1:a"
+fresh
+record a "$W/repo"
+scenario "$(jq -nc --argjson e "$ERR" '{responses:{"thread/list":$e,"thread/loaded/list":{result:{data:[]}}}}')"
+rpc release --dir "$W/repo" 2>"$T/err"; rc=$?
+is "R6 an owed restore whose confirmation listing fails refuses (1) and keeps the record" "$rc:$(pending)" "1:a"
+grep -q "a is archived and could not be restored yet" "$T/err" && _pass "R6 it names the owed restore" || _fail "R6 it names the owed restore" "$(cat "$T/err")"
+is "R6 it stops before selecting anything" "$(methods)" "thread/unarchive a|thread/list |"
 
 fresh
 scenario "$(jq -nc --argjson a "$(th a "$W/repo" idle)" --argjson n "$NOTARCH" \
@@ -762,7 +778,7 @@ grep -q "b is archived and could not be restored yet" "$T/err" && _pass "R7 the 
 # A thread whose archive failed and is confirmed not archived owes no restore either. The
 # record is made undeletable at the moment the archive fails, by a stand-in for the client.
 fresh
-out="$(python3 - "$RPC" "$XDG_STATE_HOME/xreview-rpc" "$W/repo" <<PY
+out="$(/usr/bin/python3 - "$RPC" "$XDG_STATE_HOME/xreview-rpc" "$W/repo" <<PY
 $load
 import contextlib, io, os
 sd, d = sys.argv[2], sys.argv[3]
@@ -792,7 +808,7 @@ is "R7 a failed archive whose record cannot be removed exits 1, keeps the record
 
 # A saved thread that is archived and restored, but whose record cannot be removed.
 fresh
-out="$(python3 - "$RPC" "$XDG_STATE_HOME/xreview-rpc" "$W/repo" <<PY
+out="$(/usr/bin/python3 - "$RPC" "$XDG_STATE_HOME/xreview-rpc" "$W/repo" <<PY
 $load
 import contextlib, io, os
 sd, d = sys.argv[2], sys.argv[3]
@@ -820,9 +836,10 @@ PY
 is "R7 a restored saved thread whose record cannot be removed exits 1, keeps the record, is not reported released" "$out" ok
 
 fresh
-scenario "$(jq -nc --argjson a "$(th a "$W/repo" idle)" '{responses:{"thread/loaded/list":{result:{data:["a"]}},"thread/read":$a},drop_on:["thread/archive"]}')"
+scenario "$(jq -nc --argjson a "$(th a "$W/repo/sub" idle)" '{responses:{"thread/loaded/list":{result:{data:["a"]}},"thread/read":$a},drop_on:["thread/archive"]}')"
 rpc release --dir "$W/repo" 2>/dev/null
 is "R8 the record is written before the archive is sent" "$(pending)" a
+is "R8 it holds the thread's own cwd, not --dir" "$(jq -r .cwd "$PEND/a")" "$W/repo/sub"
 
 fresh
 record a "$W/repo"
@@ -850,6 +867,8 @@ out="$(XREVIEW_RPC_EPHEMERAL_POLL=0.01 rpc release --dir "$W/repo" 2>"$T/err")";
 is "R11 an ephemeral thread is waited out, a failed poll counting as loaded" "$rc:$out" "0:released e"
 grep -q "waiting for ephemeral e to unload (up to 90 s)" "$T/err" && _pass "R11 the wait is announced" || _fail "R11 the wait is announced" "$(cat "$T/err")"
 is "R11 an ephemeral thread is never archived" "$(grep -c 'thread/archive' "$FAKE_LOG")" 0
+is "R11 the failed poll was polled past: four loaded listings in all" \
+   "$(jq -r 'select(.method=="thread/loaded/list") | .method' "$FAKE_LOG" | grep -c .)" 4
 scenario "$(jq -nc --argjson e "$(th e "$W/repo" idle true)" '{responses:{"thread/loaded/list":{result:{data:["e"]}},"thread/read":$e}}')"
 XREVIEW_RPC_EPHEMERAL_WAIT=0.2 XREVIEW_RPC_EPHEMERAL_POLL=0.05 rpc release --dir "$W/repo" 2>"$T/err"; rc=$?
 is "R11 an ephemeral thread still loaded at the end of the wait exits 1" "$rc" 1
@@ -876,6 +895,13 @@ rpc release --dir "$W/repo" 2>/dev/null; rc=$?
 is "R13 a thread id that is not a plain name refuses (1)" "$rc" 1
 is "R13 it archives nothing and writes nothing outside the record directory" \
    "$(grep -c 'thread/archive' "$FAKE_LOG"):$(ls "$XDG_STATE_HOME/xreview-rpc" | tr '\n' ' ')" "0:release.lock "
+fresh
+scenario "$(jq -nc --argjson a "$(th a "$W/repo" idle)" --argjson b "$(th $'b\n' "$W/repo" idle)" \
+  '{responses:{"thread/loaded/list":{result:{data:["a","b\n"]}},"thread/read":[$a,$b]}}')"
+rpc release --dir "$W/repo" 2>"$T/err"; rc=$?
+is "R13 a bad id listed after a good one refuses (1) before the good one is archived" \
+   "$rc:$(grep -c 'thread/archive' "$FAKE_LOG"):$(pending)" "1:0:"
+grep -q "refusing an unexpected thread id" "$T/err" && _pass "R13 it says why" || _fail "R13 it says why" "$(cat "$T/err")"
 
 fresh
 mkdir -p "$PEND"; printf 'not json' > "$PEND/bad"
@@ -900,6 +926,8 @@ scenario '{"responses":{"thread/loaded/list":{"result":{"data":[]}}}}'
 XREVIEW_RPC_RELEASE_DEADLINE=0.5 rpc release --dir "$W/repo" 2>"$T/err"; rc=$?
 is "R16 a release still blocked on the lock at its deadline exits 1" "$rc" 1
 grep -q "another release is running" "$T/err" && _pass "R16 it says why" || _fail "R16 it says why" "$(cat "$T/err")"
+[ "$(grep -c '^xreview-rpc: waiting for another release to finish$' "$T/err")" = 1 ] \
+  && _pass "R16 it announced the wait, once" || _fail "R16 it announced the wait, once" "$(cat "$T/err")"
 is "R16 it sent nothing to the daemon" "$(wc -l < "$FAKE_LOG" | tr -d ' ')" 0
 kill -9 "$holder"; wait "$holder" 2>/dev/null
 rpc release --dir "$W/repo"; is "R16 a holder killed with SIGKILL frees the lock" "$?" 0
@@ -928,6 +956,8 @@ is "R17 while waiting it sends nothing and writes no record" "$(wc -l < "$FAKE_L
 : > "$T/go"; wait "$holder" 2>/dev/null
 wait "$waiter"; rc=$?
 is "R17 once the holder lets go, the same release finishes" "$rc:$(cat "$T/waiter.out")" "0:released a"
+[ "$(grep -c '^xreview-rpc: waiting for another release to finish$' "$T/err")" = 1 ] \
+  && _pass "R17 the wait was announced, once" || _fail "R17 the wait was announced, once" "$(cat "$T/err")"
 
 # A deadline that has passed is exit 1, never the "unreachable" exit 5 that lets wt-rm go on.
 fresh

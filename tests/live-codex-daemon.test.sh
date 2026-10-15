@@ -346,6 +346,16 @@ m = importlib.util.module_from_spec(spec); loader.exec_module(m)
 print({True: "true", False: "false", None: "unknown"}[m.archived(m.Client(), sys.argv[2], sys.argv[3])])
 PY
 }
+# The cwd thread/read reports for a thread: what the release records and confirms with.
+rel_thread_cwd() { python3 - "$RPCF" "$1" <<'PY'
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("xreview_rpc", sys.argv[1])
+spec = importlib.util.spec_from_loader("xreview_rpc", loader)
+m = importlib.util.module_from_spec(spec); loader.exec_module(m)
+r = m.Client().call("thread/read", {"threadId": sys.argv[2], "includeTurns": False})
+print(((r.get("result") or {}).get("thread") or {}).get("cwd") or "")
+PY
+}
 RELD="$(mkdir -p "$T/rel/scratch" && cd "$T/rel/scratch" && pwd -P)"
 rel_thread="$(rpc thread-start --cwd "$RELD")"
 printf 'Live canary. Reply with verdict "approve" and no findings.\n' > "$T/rel-in"
@@ -353,6 +363,8 @@ rel_turn="$(rpc turn-start --thread "$rel_thread" --input "$T/rel-in" --schema "
 rpc turn-wait --thread "$rel_thread" --turn "$rel_turn" --budget 180 --schema "$SCHEMA" >/dev/null
 is "R1 the scratch thread is loaded before the release" \
    "$(rpc thread-status --thread "$rel_thread" | jq -r .loaded)" true
+rel_cwd="$(rel_thread_cwd "$rel_thread")"
+is "R1 thread/read reports the scratch directory as the thread's cwd" "$rel_cwd" "$RELD"
 # Same scan as below: helpers must exist before the release, or "none left" proves nothing.
 scan="$(lsof -a -d cwd -Fn 2>/dev/null)"
 if [ -z "$scan" ]; then before=unknown
@@ -380,13 +392,13 @@ while [ "$SECONDS" -le "$deadline" ]; do
   sleep 0.2
 done
 is "R1 no process is left in the scratch directory within 2 s" "$procs" gone
-is "R1 the archived listing does not show the restored thread" "$(rel_archived "$rel_thread" "$RELD")" false
+is "R1 the archived listing does not show the restored thread" "$(rel_archived "$rel_thread" "$rel_cwd")" false
 is "R1 the release used the overridden state directory" "$([ -d "$T/rel/state/xreview-rpc" ] && echo yes || echo no)" yes
 is "R1 no pending record is left" \
    "$(ls "$T/rel/state/xreview-rpc/release-pending" 2>/dev/null | wc -l | tr -d ' ')" 0
 rpc thread-archive --thread "$rel_thread"
 is "R1 the archived listing does show it once archived (C9 is not vacuous)" \
-   "$(rel_archived "$rel_thread" "$RELD")" true
+   "$(rel_archived "$rel_thread" "$rel_cwd")" true
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

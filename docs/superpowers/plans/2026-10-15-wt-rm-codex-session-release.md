@@ -1,5 +1,7 @@
 # wt-rm Codex Session Release Implementation Plan
 
+**Status:** Completed 2026-10-15 on branch `feat/wt-rm-codex-session-release` (Tasks 1–4). Do not execute again.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** `wt-rm` unloads the Codex sessions of the checkout it retires (archive, then restore), so the daemon's MCP helpers no longer make check 4 refuse.

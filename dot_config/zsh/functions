@@ -1155,12 +1155,12 @@ wt-rm() {
       return 1
     }
     # stdout (the "released <id>" lines) goes to a file and stderr is kept whole for a
-    # refusal; its one progress line, the ephemeral wait of up to 90 s, reaches the terminal
-    # at once so the wait never looks like a hang. pipestatus[1] is the release's own
-    # status, a signal's 128+n included.
+    # refusal; its "waiting for ..." progress lines (the lock held by another release, the
+    # ephemeral wait of up to 90 s) reach the terminal at once so a wait never looks like a
+    # hang. pipestatus[1] is the release's own status, a signal's 128+n included.
     { command xreview-rpc release --dir "$dest" 2>&1 >"$rel_dir/out" } \
       | command tee "$rel_dir/err" \
-      | command grep --line-buffered '^xreview-rpc: waiting for ephemeral ' >&2
+      | command grep --line-buffered '^xreview-rpc: waiting for ' >&2
     rel_rc=${pipestatus[1]}
     # Reported for every status, so an id released before a later failure is not lost.
     for rel_line in ${(f)"$(<$rel_dir/out)"}; do

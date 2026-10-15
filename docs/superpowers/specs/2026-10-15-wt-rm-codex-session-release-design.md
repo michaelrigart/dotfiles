@@ -1,6 +1,6 @@
 # wt-rm: release the checkout's Codex sessions
 
-**Status:** In progress (branch `feat/wt-rm-codex-session-release`; the dotfiles have no MR)
+**Status:** Implemented (branch `feat/wt-rm-codex-session-release`; the dotfiles have no MR, so the rulings are recorded in "Implementation notes" at the end)
 **Date:** 2026-10-15
 **Branch:** `feat/wt-rm-codex-session-release`
 
@@ -219,3 +219,41 @@ covers the ~1 s it takes the released helpers to exit (C4).
   thread is `notLoaded`, no process has its cwd in the scratch directory within 2 s, the
   archived listing of C9 does not show it, and no pending record is left (C4, C5, C9). The
   thread is archived at the end.
+
+## Implementation notes
+
+The branch is `feat/wt-rm-codex-session-release`. It ran as four plan tasks, with a fresh review after each, up to three fix rounds on a task, and a final whole-branch review whose findings went into one last fix wave. The dotfiles have no MR, so the rulings below are the record.
+
+### Beyond the spec's letter
+
+- **Shared loaded-thread listing.** `cmd_thread_resolve` now calls `loaded_ids()` instead of keeping its own paging loop. Its refusal no longer carries the daemon's error JSON.
+- **`settle()`.** One helper drops a record once its restore is confirmed. When the record cannot be removed, step 1 and step 4 say `<id> was restored, but its record could not be removed: …`, return 1 and keep the record for the next run's step 1. Step 1 still tries every other record and names every restore that is still owed.
+- **Archive failed, record not removable.** Step 4's archive-failed message gains `; its record could not be removed: …` when the listing confirms the thread was never archived and the record cannot be dropped.
+- **Ephemeral wait.** The poll sleep is capped at the end of the wait, and a `Closed` raised mid-poll ends the wait with the same "still loaded" message instead of a lost connection.
+- **`wt-rm` output.** Only the release's `waiting for …` lines of stderr reach the terminal live, through `{ release 2>&1 >out } | tee err | grep --line-buffered`; the rest is kept for a refusal. `✓ released Codex session` lines print before a refusal too, so an id released before a later failure is not lost. The scratch directory is removed in `wt-rm`'s `always` block.
+- **Lock wait notice.** `take_lock` prints `waiting for another release to finish` through `err` the first time it finds the lock busy, so `wt-rm` is not silent for up to the 120 s deadline.
+- **`XREVIEW_RPC_LOCK_BUSY_MARK`.** A test hook: a file touched the first time the lock is found busy, so the lock-wait tests assert on the wait instead of timing it. Precedent: `WT_TEARDOWN_TERM_WAIT`.
+- **Thread ids are validated in step 2.** Every selected id is checked against the record-name rule (a full match, so a trailing newline fails) before anything is archived. A bad id refuses the run before any thread listed ahead of it is released.
+- **The lock is not only held by the ephemeral wait.** §1's "only the ephemeral wait can hold the lock for up to 90 s" is not quite true: a daemon that hangs holds it until the 120 s deadline.
+
+### Rulings
+
+Each ruling lists what it costs if it is wrong.
+
+- **Parallel batch, controller commits.** Tasks 1 and 3 ran in parallel and the implementers did not commit; the controller committed each task alone. Michael's global instructions (parallel tasks) override the skill's default. Cost: a cross-task interference the scan missed, which the per-task review on its own commit would catch.
+- **Shared checkout, no worktree.** Execution ran on the branch in the shared checkout; `wt` worktrees are Michael's. Cost: another session's branch switch carries uncommitted batch work, mitigated by re-checking the branch before every commit.
+- **Case-variant paths are not matched.** A `--dir` typed in different case selects nothing, and check 4 refuses as before; the archived listing needs the exact recorded cwd anyway. `$dest` comes from Git's top level. Cost: a session left loaded for a checkout typed in different case.
+- **The turn-start window between steps 3 and 4.** A turn that starts after step 3's active check and before step 4's archive is cut short. `wt-rm` runs the release after the checkout's Herdr workspaces are closed, so only an outside client could start one, and the spec leaves it unaddressed. Cost: one turn cut short by an archive.
+- **One corrupt pending record blocks every release.** Its scope is unknown, so the run fails closed and names the file. Cost: one stray file blocks all `wt-rm` runs until it is deleted.
+- **Archive failed, and the listing shows the thread archived.** Only the spec's `archive failed` text is printed. The kept record is settled by the next run's step 1. Cost: one less explicit message.
+- **No `__pycache__` backstop.** Neither `.gitignore` nor `.chezmoiignore` gains an entry; both suites set `PYTHONDONTWRITEBYTECODE`, and a `.chezmoiignore` change is outside this work. Cost: a stray cache from a future ad-hoc import could deploy to `~/.local/bin`.
+
+### Test record
+
+- `tests/xreview-rpc.test.sh`: 204/204
+- `tests/wt-functions.test.sh`: 573/573
+- Full `./tests/run.sh`: <to be filled by the controller>
+
+### Open items
+
+- The live canary (`tests/live-codex-daemon.test.sh`) fails two checks that predate this branch and that it does not touch: F15 ("the pane shows the turn another client started") and V2 ("the directory chooser appears without -C"). Both are screen-text checks, likely Codex TUI drift. Canary run 2026-10-15: 44/46, every new R1 assertion passing.

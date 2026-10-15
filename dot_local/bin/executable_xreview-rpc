@@ -460,7 +460,7 @@ def cmd_thread_archive(c, a):
 SOURCE_KINDS = ("cli", "vscode", "exec", "appServer", "subAgent", "subAgentReview",
                 "subAgentCompact", "subAgentThreadSpawn", "subAgentOther", "unknown")
 # A thread id becomes a file name under release-pending/, so it must be one plain name.
-THREAD_ID = re.compile(r"^[0-9A-Za-z][0-9A-Za-z_-]*$")
+THREAD_ID = re.compile(r"[0-9A-Za-z][0-9A-Za-z_-]*")
 
 
 class RecordError(Exception):
@@ -488,11 +488,15 @@ def take_lock(sd, deadline):
     # For the test suites only: a file touched the first time the lock is found busy, so a
     # test can see the wait begin instead of guessing it from elapsed time.
     mark = os.environ.get("XREVIEW_RPC_LOCK_BUSY_MARK")
+    noticed = False
     while True:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             return fd
         except BlockingIOError:
+            if not noticed:
+                err("waiting for another release to finish")
+                noticed = True
             if mark:
                 open(mark, "w").close()
                 mark = None
@@ -503,7 +507,7 @@ def take_lock(sd, deadline):
 
 
 def _record_path(sd, tid):
-    if not isinstance(tid, str) or not THREAD_ID.match(tid):
+    if not isinstance(tid, str) or not THREAD_ID.fullmatch(tid):
         raise RecordError(f"refusing an unexpected thread id: {tid!r}")
     return os.path.join(sd, "release-pending", tid)
 
@@ -551,7 +555,7 @@ def read_records(sd):
                 cwd = json.load(fh).get("cwd")
         except (OSError, ValueError, AttributeError) as e:
             raise RecordError(f"cannot read pending record {path}: {e}")
-        if not THREAD_ID.match(name) or not isinstance(cwd, str) or not cwd:
+        if not THREAD_ID.fullmatch(name) or not isinstance(cwd, str) or not cwd:
             raise RecordError(f"malformed pending record {path}")
         out.append((name, cwd))
     return out
@@ -652,6 +656,10 @@ def release(c, sd, d, mine):
             for tid in still:
                 err(f"cannot read Codex session {tid}")
             return 1
+    # Every selected id becomes a record name: refuse a bad one before anything is archived,
+    # so no thread listed ahead of it is released only to leave the run half done.
+    for th in sel:
+        _record_path(sd, th["id"])
 
     # 3. A running turn is never cut short.
     running = [th["id"] for th in sel if (th.get("status") or {}).get("type") == "active"]

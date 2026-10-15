@@ -2725,6 +2725,18 @@ eq "$(sed -n 2p "$LLOG")" "xreview-rpc" "W1 the release runs after teardown and 
                                         || _fail "W1 check 4 scans after the release"
 eq "$(<$XLOG)" $'---\nrelease\n--dir\n'"$RO" "W1 the release gets the checkout as one --dir argument"
 
+# The release comes after check 3: teardown output Git can see refuses removal before the
+# release is ever asked (the order above cannot show it, because check 3 logs nothing).
+setup
+mkhook "$REPO" '#!/bin/sh
+[ "$1" = teardown ] && echo report > "$WT_WORKTREE/teardown-report.txt"
+exit 0'
+run "$REPO" wt rel-c3
+run "$REPO" wt-rm rel-c3
+rc_is 1 "W1b non-ignored teardown output still aborts removal"
+has "teardown left changes" "W1b check 3 is what refused"
+eq "$(<$XLOG)" "" "W1b the release is not asked before check 3 has passed"
+
 setup
 run "$REPO" wt rel-ok
 ROK="$HOME/Code/Org/repo-rel-ok"
@@ -2737,7 +2749,7 @@ has "✓ released Codex session th-2" "W2 the second released session is reporte
 [[ -d "$ROK" ]] && _fail "W2 the checkout is removed" || _pass "W2 the checkout is removed"
 eq "$(ls "$RT" | grep -c 'wt-rm-release')" "0" "W2 the scratch directory is removed"
 
-# Only the progress line of stderr is shown live; the rest is kept for a refusal.
+# Only the "waiting for ..." progress lines of stderr are shown live; the rest is kept for a refusal.
 setup
 run "$REPO" wt rel-wait
 export MOCK_XRPC_OUT='released e\n' \
@@ -2747,6 +2759,17 @@ rc_is 0 "W2b a release that waits still lets removal proceed"
 has "xreview-rpc: waiting for ephemeral e to unload (up to 90 s)" "W2b the wait is shown live"
 has "✓ released Codex session e" "W2b the released session is reported"
 hasnt "xreview-rpc: noise" "W2b other stderr is not shown on success"
+
+# The notice that another release holds the lock is a progress line too: shown live.
+setup
+run "$REPO" wt rel-lock
+export MOCK_XRPC_OUT='released th-1\n' \
+       MOCK_XRPC_ERR='xreview-rpc: waiting for another release to finish\nxreview-rpc: noise\n'
+run "$REPO" wt-rm rel-lock
+rc_is 0 "W2c a release that waits for the lock still lets removal proceed"
+has "xreview-rpc: waiting for another release to finish" "W2c the lock wait is shown live"
+has "✓ released Codex session th-1" "W2c the released session is reported"
+hasnt "xreview-rpc: noise" "W2c other stderr is still not shown on success"
 
 setup
 run "$REPO" wt rel-none
