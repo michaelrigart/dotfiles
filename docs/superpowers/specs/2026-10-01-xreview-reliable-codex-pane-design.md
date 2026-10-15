@@ -199,9 +199,9 @@ reaches the pane).
 > cold starts, quit in all 6 other runs). The ladder is unchanged. Instead, `turn-start` now waits, on every call and once the
 > thread is loaded, until `mcpServerStatus/list` (`threadId`, `detail: "toolsAndAuthOnly"`,
 > every page) reports each server `connected`, `authenticationRequired`, `failed`,
-> `cancelled` or `disabled`; any other status, null included, is unresolved. A list error,
-> or 30 s unresolved, refuses before `turn/start` with "no review was started", naming the
-> servers. A `turn/start` refused before any byte is sent exits 1, not 6. Waiting on
+> `cancelled` or `disabled`; any other status, null included, is unresolved, and an empty
+> list is settled. A list error, an answer without a server list, or 30 s unresolved refuses
+> before `turn/start` with "no review was started", naming the servers. A `turn/start` refused before any byte is sent exits 1, not 6. Waiting on
 > `mcpServer/startupStatus/updated` notifications was rejected, because nothing orders them
 > before the resume answer. Reviewed by Codex over three rounds.
 

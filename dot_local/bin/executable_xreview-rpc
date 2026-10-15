@@ -279,16 +279,20 @@ class Client:
         if deadline - time.monotonic() <= 0:
             raise NotSent(f"no response to {method} within the budget")
         self.t.send({"id": rid, "method": method, "params": params}, until=deadline)
-        while True:
-            left = deadline - time.monotonic()
-            if left <= 0:
-                raise Closed(f"no response to {method} within the budget")
-            m = self.t.recv(left)
-            if m is None:
-                continue
-            if m.get("id") == rid and ("result" in m or "error" in m):
-                return m
-            self._other(m)
+        # From here the request is written: only its own send may report NotSent.
+        try:
+            while True:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise Closed(f"no response to {method} within the budget")
+                m = self.t.recv(left)
+                if m is None:
+                    continue
+                if m.get("id") == rid and ("result" in m or "error" in m):
+                    return m
+                self._other(m)
+        except NotSent as e:
+            raise Closed(str(e))
 
     def _other(self, m):
         if "method" in m and "id" in m:
@@ -410,8 +414,9 @@ def env_secs(name, default):
 
 
 def mcp_servers(c, thread, until):
-    """(servers, None) across every page of mcpServerStatus/list, or (None, error). A page
-    that has no list under data counts as empty. Raises Closed if until passes mid-call."""
+    """(servers, None) across every page of mcpServerStatus/list, or (None, error), where error
+    is the daemon's error object or a string for an answer of the wrong shape. Raises Closed
+    if until passes mid-call."""
     servers, cursor = [], None
     while True:
         params = {"threadId": thread, "detail": "toolsAndAuthOnly"}
@@ -420,10 +425,10 @@ def mcp_servers(c, thread, until):
         r = c.call("mcpServerStatus/list", params, timeout=max(0.0, until - time.monotonic()))
         if "error" in r:
             return None, r["error"]
-        res = r.get("result") or {}
-        data = res.get("data")
-        if isinstance(data, list):
-            servers += [s if isinstance(s, dict) else {} for s in data]
+        res = r.get("result")
+        if not isinstance(res, dict) or not isinstance(res.get("data"), list):
+            return None, "unexpected answer " + json.dumps(res, separators=(",", ":"))
+        servers += [s if isinstance(s, dict) else {} for s in res["data"]]
         cursor = res.get("nextCursor")
         if not cursor:
             return servers, None
@@ -451,7 +456,7 @@ def mcp_barrier(c, thread):
                 raise    # a dropped connection, not the bound
             servers, e = None, None
         if e is not None:
-            err(f"cannot read the thread's MCP server status: {json.dumps(e)}; no review was started")
+            err(f"cannot read the thread's MCP server status: {e if isinstance(e, str) else json.dumps(e)}; no review was started")
             return 1
         if servers is not None:
             held = [(s.get("name"), s.get("runtimeStatus")) for s in servers

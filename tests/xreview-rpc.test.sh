@@ -56,7 +56,9 @@ for line in sys.stdin:
         sys.stdout.write("not-json-at-all\n"); sys.stdout.flush()
         sys.exit(0)
     if "id" in m and meth and meth not in run.get("silent", []):
-        resp = run.get("responses", {}).get(meth, {"result": {}})
+        # An unscripted mcpServerStatus/list answers "no servers"; the barrier refuses any other shape.
+        dflt = {"result": {"data": [], "nextCursor": None}} if meth == "mcpServerStatus/list" else {"result": {}}
+        resp = run.get("responses", {}).get(meth, dflt)
         if isinstance(resp, list):   # a different answer on each successive call
             i = calls.get(meth, 0); calls[meth] = i + 1
             resp = resp[min(i, len(resp) - 1)]
@@ -211,7 +213,7 @@ for odd in '{"name":"node_repl","runtimeStatus":"notStarted"}' \
            '{"name":"node_repl","runtimeStatus":"warmingUp"}'; do
   mb_scn "[$(mcp "[$odd]"),$(mcp "[$OK]")]"
   rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" >/dev/null; rc=$?
-  is "MB2 $(printf '%s' "$odd" | jq -c '.runtimeStatus // "no-status"') is unresolved, so the start waits" \
+  is "MB2 $(printf '%s' "$odd" | jq -c 'if has("runtimeStatus") then .runtimeStatus else "missing-field" end') is unresolved, so the start waits" \
      "$rc/$(order)" "0/mcpServerStatus/list,mcpServerStatus/list,turn/start"
 done
 mb_scn "[$(mcp '[{"name":"a","runtimeStatus":"connected"},{"name":"b","runtimeStatus":"authenticationRequired"},{"name":"c","runtimeStatus":"failed"},{"name":"d","runtimeStatus":"cancelled"},{"name":"e","runtimeStatus":"disabled"}]')]"
@@ -221,9 +223,14 @@ is "MB3 connected, authenticationRequired, failed, cancelled and disabled all co
 mb_scn "[$(mcp '[]')]"
 rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" >/dev/null; rc=$?
 is "MB4 an empty server list is settled after one call" "$rc/$(order)" "0/mcpServerStatus/list,turn/start"
-mb_scn "[{\"result\":{}}]"
-rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" >/dev/null; rc=$?
-is "MB4 a result with no data is settled too" "$rc/$(order)" "0/mcpServerStatus/list,turn/start"
+# An answer that is not a list under result.data is not "no servers": it refuses.
+for odd in '{"result":{}}' '{"result":null}' '{"result":{"data":"x"}}'; do
+  mb_scn "[$odd]"
+  rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" >/dev/null 2>"$T/err"; rc=$?
+  is "MB4 $odd refuses (1) and never calls turn/start" "$rc/$(nsent turn/start)" "1/0"
+  is "MB4 $odd says unexpected answer and that no review was started" \
+     "$(grep -c "cannot read the thread's MCP server status: unexpected answer .*no review was started" "$T/err")" 1
+done
 
 p1="$(jq -nc --argjson o "$OK" '{result:{data:[$o], nextCursor:"c2"}}')"
 p2s="$(mcp "[$ST]")"; p2ok="$(mcp "[$OK]")"
@@ -274,9 +281,10 @@ is "MB11 the barrier comes before the --known baseline and turn/start" \
    "$(jq -r 'select(.method) | .method' "$FAKE_LOG" | grep -E '^(mcpServerStatus/list|thread/turns/list|turn/start)$' | paste -sd, -)" \
    "mcpServerStatus/list,thread/turns/list,turn/start"
 # A garbled wait knob falls back to the default (30 s), it never crashes or waits forever.
-mb_scn "[$(mcp "[$OK]")]"
+# The first answer is "starting", so one poll sleep happens: a negative POLL must not reach it.
+mb_scn "[$(mcp "[$ST]"),$(mcp "[$OK]")]"
 XREVIEW_MCP_WAIT=soon XREVIEW_MCP_POLL=-1 rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" >/dev/null; rc=$?
-is "MB12 unparseable XREVIEW_MCP_WAIT/POLL fall back to the defaults" "$rc" 0
+is "MB12 unparseable XREVIEW_MCP_WAIT/POLL fall back to the defaults" "$rc/$(order)" "0/mcpServerStatus/list,mcpServerStatus/list,turn/start"
 unset XREVIEW_MCP_POLL XREVIEW_MCP_WAIT
 
 echo "MN. a turn/start refused before anything was written is not 'sent but unanswered'"
@@ -293,12 +301,18 @@ ANS = {"thread/read": {"thread": {"status": {"type": "idle"}}},
        "mcpServerStatus/list": {"data": []},
        "turn/start": {"turn": {"id": "t1"}}}
 class T:
-    def __init__(self, c, spend=False, fail_start=False):
-        self.c, self.spend, self.fail_start, self.sent, self.q = c, spend, fail_start, [], []
+    def __init__(self, c, spend=False, fail_start=False, decline_fail=False):
+        self.c, self.spend, self.fail_start, self.decline_fail, self.sent, self.q = c, spend, fail_start, decline_fail, [], []
     def send(self, obj, until=None):
+        if "method" not in obj:               # a reply to a server request
+            if self.decline_fail:
+                raise m.NotSent("budget gone before the decline")
+            return
         self.sent.append(obj["method"])
         if obj["method"] == "turn/start" and self.fail_start:
             raise m.Closed("pipe broke")      # bytes may have gone out
+        if obj["method"] == "turn/start" and self.decline_fail:
+            self.q.append({"id": 77, "method": "item/commandExecution/requestApproval", "params": {}})
         self.q.append({"id": obj["id"], "result": ANS[obj["method"]]})
         if obj["method"] == "mcpServerStatus/list" and self.spend:
             self.c.deadline = time.monotonic() - 1
@@ -316,6 +330,8 @@ rc, sent, e = run(spend=True)
 print("spent", rc, "turn/start" in sent, "no review was started" in e)
 rc, sent, e = run(fail_start=True)
 print("sentfail", rc, "turn/start" in sent)
+rc, sent, e = run(decline_fail=True)
+print("declinefail", rc)
 rc, sent, e = run(deadline=5)
 print("short", rc, "turn/start" in sent, "no review was started" in e)
 # The transport itself: send() past its bound raises NotSent and writes nothing.
@@ -363,9 +379,9 @@ PY
 )"
 is "MN1 an exhausted budget before turn/start exits 1, never sends it, and says so" \
    "$(printf '%s\n' "$out" | grep '^spent')" "spent 1 False True"
-is "MN2 a turn/start whose write failed (plain Closed) was still sent" \
-   "$(printf '%s\n' "$out" | grep '^sentfail' | cut -d' ' -f3)" True
-is "MN2b and exits 6, not 1" "$(printf '%s\n' "$out" | grep '^sentfail' | cut -d' ' -f2)" 6
+is "MN2 a turn/start whose write failed (plain Closed) exits 6, not 1" "$(printf '%s\n' "$out" | grep '^sentfail' | cut -d' ' -f2)" 6
+is "MN2c a NotSent from the decline reply after turn/start was written exits 6, not 1" \
+   "$(printf '%s\n' "$out" | grep '^declinefail')" "declinefail 6"
 is "MN3 a client with under 10 s left refuses the start rather than racing it" \
    "$(printf '%s\n' "$out" | grep '^short')" "short 1 False True"
 is "MN4 WsTransport.send with until in the past raises NotSent and writes nothing" \
