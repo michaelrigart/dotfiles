@@ -45,7 +45,7 @@ ws="${HERDR_WORKSPACE_ID:-}"
 [ -n "$ws" ] || { echo "INCONCLUSIVE: run from inside a herdr pane" >&2; exit 2; }
 
 T="$(mktemp -d "${TMPDIR:-/tmp}/live-codex.XXXXXX")"
-tab=""; pane=""; thread=""; prefix=""; wait_pid=""; f22_thread=""; rel_thread=""
+tab=""; pane=""; thread=""; prefix=""; wait_pid=""; f22_thread=""; rel_thread=""; cl_thread=""
 cleanup() {
   # A turn-wait backgrounded for F16/F17 must never outlive an early exit above it.
   if [ -n "$wait_pid" ] && kill -0 "$wait_pid" 2>/dev/null; then
@@ -65,6 +65,7 @@ cleanup() {
   [ -n "$thread" ] && rpc thread-archive --thread "$thread" >/dev/null 2>&1
   [ -n "$f22_thread" ] && rpc thread-archive --thread "$f22_thread" >/dev/null 2>&1
   [ -n "$rel_thread" ] && rpc thread-archive --thread "$rel_thread" >/dev/null 2>&1
+  [ -n "$cl_thread" ] && rpc thread-archive --thread "$cl_thread" >/dev/null 2>&1
   rm -rf "$T"
 }
 trap cleanup EXIT
@@ -479,6 +480,46 @@ is "R1 no pending record is left" \
 rpc thread-archive --thread "$rel_thread"
 is "R1 the archived listing does show it once archived (C9 is not vacuous)" \
    "$(rel_archived "$rel_thread" "$rel_cwd")" true
+
+# xreview's dispatch on a thread the daemon has NOT loaded: turn-start resumes it and sends
+# turn/start while its MCP servers are still starting, and a TUI resumed onto that turn keeps a
+# stale "turn running" state after the turn completes - every ctrl+c becomes an interrupt, so the
+# next dispatch's ladder cannot free the pane. F22 never reaches this: its thread is freshly
+# created (already loaded) and its turn-wait subscribes before the pane resumes.
+echo "CL: a TUI resumed onto a turn started on a cold thread still quits"
+ladder "$pane"; is "CL the pane is free before the cold-start case" "$?" 0
+CLD="$(mkdir -p "$T/cl/scratch" && cd "$T/cl/scratch" && pwd -P)"
+cl_thread="$(rpc thread-start --cwd "$CLD")"
+# A thread needs a completed turn before it can be unloaded and resumed.
+printf 'Live canary. Reply with verdict "approve" and no findings.\n' > "$T/cl-in1"
+cl_turn1="$(rpc turn-start --thread "$cl_thread" --input "$T/cl-in1" --schema "$SCHEMA")"
+rpc turn-wait --thread "$cl_thread" --turn "$cl_turn1" --budget 180 --schema "$SCHEMA" >/dev/null
+XDG_STATE_HOME="$T/cl/state" rpc release --dir "$CLD" >/dev/null
+cl_status="$(rpc thread-status --thread "$cl_thread" 2>/dev/null | jq -r .status 2>/dev/null)"
+# Still loaded means the next turn-start would not take the cold path: the case proves nothing.
+is "CL the release leaves the thread notLoaded (else the case is inconclusive, not a pass)" "$cl_status" notLoaded
+if [ "$cl_status" = notLoaded ]; then
+  # The turn runs a shell command and takes a few seconds, so the TUI attaches while it is live.
+  printf 'Live canary. Run `ls` and then `sleep 5` in the shell, then reply with verdict "approve" and no findings.\n' > "$T/cl-in2"
+  cl_turn2="$(rpc turn-start --thread "$cl_thread" --input "$T/cl-in2" --schema "$SCHEMA" --known "$T/cl-known")"; rc=$?
+  is "CL the cold turn-start exits 0" "$rc" 0
+  # The resume follows turn-start at once, as xreview's dispatch types it.
+  herdr pane run "$pane" "$pane_cmd -C $(printf '%q' "$CLD") resume $cl_thread" >/dev/null
+  cl_want="$(printf '%s' "$cl_thread" | cut -c1-29)"
+  cl_titled=0; end=$((SECONDS + 20))
+  while [ "$SECONDS" -lt "$end" ]; do
+    t="$(pane_title)" && case "$t" in "$cl_want"*) [ -n "$cl_want" ] && { cl_titled=1; break; } ;; esac
+    sleep 1
+  done
+  is "CL the resumed TUI shows the thread in its title" "$cl_titled" 1
+  # The late subscriber, as xreview collect runs it: the pane is attached before turn-wait is.
+  rpc turn-wait --thread "$cl_thread" --turn "$cl_turn2" --budget 180 --schema "$SCHEMA" >/dev/null; rc=$?
+  is "CL turn-wait completes on the cold-started turn" "$rc" 0
+  ladder "$pane"; is "CL the ladder frees a TUI resumed onto a turn started on a cold thread" "$?" 0
+  xp="$(pane_proc "$pane")"; rc=$?
+  is "CL no Codex process is left in the pane" \
+     "$rc/$([ -z "$(proc_codex "$xp")" ] && echo empty || echo codex)" "0/empty"
+fi
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
