@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 # Pinned to the system interpreter, not `env python3`: an untrusted mise.toml in the
 # reviewed repo can shadow `python3` on PATH, and this must not be shadowable.
-"""xreview-rpc - xreview's client for Codex's shared app-server daemon.
+"""xreview-rpc - the dotfiles' client for Codex's shared app-server daemon (xreview, wt-rm).
 
 Managed by chezmoi (source: dot_local/bin/executable_xreview-rpc).
 Design: docs/superpowers/specs/2026-09-26-xreview-codex-daemon-design.md, section 7.1.
@@ -18,13 +18,18 @@ tests' fake daemon cannot listen on one.
   turn-start      --thread ID --input FILE --schema FILE [--known FILE]   prints the turn id
   turn-wait       --thread ID (--turn ID | --new-since FILE) --budget SECS [--schema FILE]
   thread-archive  --thread ID
+  release         --dir DIR                                  unload every thread under DIR
+                  (archive, then restore); prints "released <id>" per thread.
+                  Spec: docs/superpowers/specs/2026-10-15-wt-rm-codex-session-release-design.md
 
 Exit codes: 0 ok, 1 failed or unknown, 2 usage, 3 still running at the budget,
 4 answer does not match the schema (raw text on stdout), 5 daemon unreachable,
 6 turn/start sent but not answered - the turn may be running, so never re-dispatch.
+release: 5 only when no restore is owed under DIR; a lost connection is 1.
 """
 import argparse
 import base64
+import fcntl
 import json
 import os
 import re
@@ -144,15 +149,22 @@ class WsTransport:
             raise Unreachable("no WebSocket upgrade: " + status.decode(errors="replace"))
         self.frag = b""
 
-    def _send_timeout(self):
-        """What is left of the client deadline, or 10s, whichever is smaller - set fresh
-        before every sendall, not left over from whatever a previous recv() set it to."""
-        return min(10.0, max(0.01, self.deadline - time.monotonic()))
+    def _send_timeout(self, until=None):
+        """What is left of until (default: the client deadline), or 10s, whichever is smaller
+        - set fresh before every sendall, not left over from whatever a previous recv() set
+        it to."""
+        end = self.deadline if until is None else until
+        return min(10.0, max(0.01, end - time.monotonic()))
 
-    def send(self, obj):
+    def send(self, obj, until=None):
+        """until: the calling call's own deadline; a send that cannot finish by it raises
+        Closed, and one begun after it is not sent at all."""
+        if until is not None and time.monotonic() >= until:
+            raise Closed("the call's budget ran out before it could be sent")
         try:
-            self.s.settimeout(self._send_timeout())
-            self.s.sendall(ws_frame(json.dumps(obj).encode()))
+            frame = ws_frame(json.dumps(obj).encode())
+            self.s.settimeout(self._send_timeout(until))
+            self.s.sendall(frame)
         except OSError as e:
             raise Closed(str(e))
 
@@ -208,7 +220,8 @@ class StdioTransport:
         self.fd = self.p.stdout.fileno()
         self.buf = b""
 
-    def send(self, obj):
+    def send(self, obj, until=None):
+        # until is accepted and ignored: a pipe write to the tests' fake daemon is not bounded.
         try:
             self.p.stdin.write((json.dumps(obj) + "\n").encode())
             self.p.stdin.flush()
@@ -252,8 +265,12 @@ class Client:
     def call(self, method, params, timeout=30):
         self.next_id += 1
         rid = self.next_id
-        self.t.send({"id": rid, "method": method, "params": params})
+        # The call's deadline starts before the send and bounds it: a slow send counts
+        # against the call's own budget.
         deadline = min(time.monotonic() + timeout, self.deadline)
+        if deadline - time.monotonic() <= 0:
+            raise Closed(f"no response to {method} within the budget")
+        self.t.send({"id": rid, "method": method, "params": params}, until=deadline)
         while True:
             left = deadline - time.monotonic()
             if left <= 0:
@@ -425,22 +442,10 @@ def cmd_thread_resolve(c, a):
     """The one loaded thread whose id starts with a.prefix. The title carries only a prefix
     (Codex truncates it, F11/F21); a prefix is resolved here and never guessed. Follows
     nextCursor across as many pages as thread/loaded/list hands back."""
-    ids = []
-    cursor = None
-    while True:
-        params = {"cursor": cursor} if cursor else {}
-        r = c.call("thread/loaded/list", params)
-        if "error" in r:
-            err("thread/loaded/list refused: " + json.dumps(r["error"]))
-            return 1
-        result = r.get("result") or {}
-        for t in result.get("data") or []:
-            tid = t.get("id") if isinstance(t, dict) else t
-            if isinstance(tid, str):
-                ids.append(tid)
-        cursor = result.get("nextCursor")
-        if not cursor:
-            break
+    ids = loaded_ids(c)
+    if ids is None:
+        err("thread/loaded/list refused")
+        return 1
     matches = sorted({i for i in ids if i.startswith(a.prefix)})
     if len(matches) == 1:
         print(matches[0])
@@ -458,6 +463,323 @@ def cmd_thread_archive(c, a):
         err("thread/archive refused: " + json.dumps(r["error"]))
         return 1
     return 0
+
+
+# --- release (spec: docs/superpowers/specs/2026-10-15-wt-rm-codex-session-release-design.md)
+
+# Every ThreadSourceKind of the protocol schema. thread/list without sourceKinds lists only
+# interactive sources (C9), so a confirmation that omitted them could miss an archived thread.
+SOURCE_KINDS = ("cli", "vscode", "exec", "appServer", "subAgent", "subAgentReview",
+                "subAgentCompact", "subAgentThreadSpawn", "subAgentOther", "unknown")
+# A thread id becomes a file name under release-pending/, so it must be one plain name.
+THREAD_ID = re.compile(r"[0-9A-Za-z][0-9A-Za-z_-]*")
+
+
+class RecordError(Exception):
+    pass
+
+
+def state_dir():
+    base = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
+    return os.path.join(base, "xreview-rpc")
+
+
+def under(path, d):
+    """True when path is d or lies below it, by real path, whole components at a time:
+    repo and repo-x are neighbours by construction."""
+    p, r = os.path.realpath(path), os.path.realpath(d)
+    return p == r or p.startswith(r.rstrip(os.sep) + os.sep)
+
+
+def take_lock(sd, deadline):
+    """The exclusive release lock's fd, or None if another process still holds it at deadline.
+    flock is dropped by the kernel when the holder dies, however it dies, so it never goes
+    stale. Raises OSError when the state directory or the lock file cannot be made."""
+    os.makedirs(sd, exist_ok=True)
+    fd = os.open(os.path.join(sd, "release.lock"), os.O_RDWR | os.O_CREAT, 0o600)
+    # For the test suites only: a file touched the first time the lock is found busy, so a
+    # test can see the wait begin instead of guessing it from elapsed time.
+    mark = os.environ.get("XREVIEW_RPC_LOCK_BUSY_MARK")
+    noticed = False
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except BlockingIOError:
+            if not noticed:
+                err("waiting for another release to finish")
+                noticed = True
+            if mark:
+                open(mark, "w").close()
+                mark = None
+            if time.monotonic() >= deadline:
+                os.close(fd)
+                return None
+            time.sleep(0.2)
+
+
+def _record_path(sd, tid):
+    if not isinstance(tid, str) or not THREAD_ID.fullmatch(tid):
+        raise RecordError(f"refusing an unexpected thread id: {tid!r}")
+    return os.path.join(sd, "release-pending", tid)
+
+
+def write_record(sd, tid, cwd):
+    """Record that tid may be archived, before it is. Written whole or not at all: a .tmp
+    left by a crash means the archive was never sent."""
+    path = _record_path(sd, tid)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump({"cwd": cwd}, fh)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
+    dfd = os.open(os.path.dirname(path), os.O_RDONLY)
+    try:
+        os.fsync(dfd)
+    finally:
+        os.close(dfd)
+
+
+def drop_record(sd, tid):
+    try:
+        os.remove(_record_path(sd, tid))
+    except FileNotFoundError:
+        pass
+
+
+def read_records(sd):
+    """[(thread id, recorded cwd)] for every pending record, sorted by id. A record that
+    cannot be read raises RecordError: its cwd, and so its scope, is unknown."""
+    d = os.path.join(sd, "release-pending")
+    try:
+        names = sorted(os.listdir(d))
+    except FileNotFoundError:
+        return []
+    out = []
+    for name in names:
+        if name.endswith(".tmp"):
+            continue
+        path = os.path.join(d, name)
+        try:
+            with open(path, encoding="utf-8") as fh:
+                cwd = json.load(fh).get("cwd")
+        except (OSError, ValueError, AttributeError) as e:
+            raise RecordError(f"cannot read pending record {path}: {e}")
+        if not THREAD_ID.fullmatch(name) or not isinstance(cwd, str) or not cwd:
+            raise RecordError(f"malformed pending record {path}")
+        out.append((name, cwd))
+    return out
+
+
+def archived(c, tid, cwd):
+    """Whether thread/list shows tid archived (C9): True, False, or None when a page answers
+    with an error. A timeout or lost connection raises Closed/Unreachable from Client.call;
+    callers handle that. Only False confirms a restore; thread/unarchive's own answer
+    cannot (C5)."""
+    cursor = None
+    while True:
+        p = {"archived": True, "cwd": [cwd], "sourceKinds": list(SOURCE_KINDS)}
+        if cursor:
+            p["cursor"] = cursor
+        r = c.call("thread/list", p)
+        if "error" in r:
+            return None
+        res = r.get("result") or {}
+        if any(isinstance(t, dict) and t.get("id") == tid for t in res.get("data") or []):
+            return True
+        cursor = res.get("nextCursor")
+        if not cursor:
+            return False
+
+
+def loaded_ids(c, until=None):
+    """Every loaded thread id, following nextCursor; None when a page answers with an error.
+    A timeout or lost connection raises Closed/Unreachable from Client.call; callers handle
+    that. With until (a monotonic time), every page call is bounded by it, so the listing
+    raises Closed rather than run past until."""
+    ids, cursor = [], None
+    while True:
+        kw = {} if until is None else {"timeout": max(0.0, until - time.monotonic())}
+        r = c.call("thread/loaded/list", {"cursor": cursor} if cursor else {}, **kw)
+        if "error" in r:
+            return None
+        res = r.get("result") or {}
+        for t in res.get("data") or []:
+            tid = t.get("id") if isinstance(t, dict) else t
+            if isinstance(tid, str):
+                ids.append(tid)
+        cursor = res.get("nextCursor")
+        if not cursor:
+            return ids
+
+
+def owed(records):
+    for tid, _ in records:
+        err(f"{tid} is archived and could not be restored yet")
+
+
+def settle(sd, tid):
+    """Drop tid's record once its restore is confirmed. False, after saying so, when the
+    record cannot be removed: the thread is restored, and the next run's step 1 settles it."""
+    try:
+        drop_record(sd, tid)
+    except OSError as e:
+        err(f"{tid} was restored, but its record could not be removed: {e}")
+        return False
+    return True
+
+
+def release(c, sd, d, mine):
+    """Steps 1-5 of spec §1, on a connected client, with the lock held. mine: the pending
+    records under d. Returns the exit status."""
+    # 1. Finish earlier restores. thread/unarchive's answer is not evidence (C5); the
+    #    archived listing is. Nothing more is archived while a restore is owed.
+    left, stuck = [], False
+    for tid, cwd in mine:
+        c.call("thread/unarchive", {"threadId": tid})
+        if archived(c, tid, cwd) is False:
+            stuck = not settle(sd, tid) or stuck
+        else:
+            left.append((tid, cwd))
+    if left or stuck:
+        owed(left)
+        return 1
+
+    # 2. Select the loaded threads under d. An id thread/read cannot answer for is unknown
+    #    unless a second listing shows it gone.
+    ids = loaded_ids(c)
+    if ids is None:
+        err("cannot list the loaded Codex sessions")
+        return 1
+    sel, unread = [], []
+    for tid in ids:
+        r = c.call("thread/read", {"threadId": tid, "includeTurns": False})
+        th = None if "error" in r else (r.get("result") or {}).get("thread")
+        if not isinstance(th, dict) or not isinstance(th.get("cwd"), str) or not th["cwd"]:
+            unread.append(tid)
+            continue
+        if (th.get("status") or {}).get("type") == "notLoaded" or not under(th["cwd"], d):
+            continue
+        sel.append(dict(th, id=tid))
+    if unread:
+        again = loaded_ids(c)
+        still = unread if again is None else [t for t in unread if t in again]
+        if still:
+            for tid in still:
+                err(f"cannot read Codex session {tid}")
+            return 1
+    # Every selected id becomes a record name: refuse a bad one before anything is archived,
+    # so no thread listed ahead of it is released only to leave the run half done.
+    for th in sel:
+        _record_path(sd, th["id"])
+
+    # 3. A running turn is never cut short.
+    running = [th["id"] for th in sel if (th.get("status") or {}).get("type") == "active"]
+    if running:
+        for tid in running:
+            err(f"{tid} is running a turn — let it finish, or open it with codex resume {tid} and interrupt it")
+        return 1
+
+    # 4. Saved threads: archive unloads at once (C4), unarchive restores (C5). The record is
+    #    written first and dropped only on a confirmed restore.
+    for th in sel:
+        if th.get("ephemeral"):
+            continue
+        tid, cwd = th["id"], th["cwd"]
+        write_record(sd, tid, cwd)
+        r = c.call("thread/archive", {"threadId": tid})
+        if "error" in r:
+            e = r["error"]
+            why = f"{tid}: archive failed: {e.get('message', e) if isinstance(e, dict) else e}"
+            if archived(c, tid, cwd) is False:
+                try:
+                    drop_record(sd, tid)
+                except OSError as oe:
+                    # Never archived, so nothing is owed: say only that the record stays,
+                    # for the next run's step 1 to settle.
+                    why += f"; its record could not be removed: {oe}"
+            err(why)
+            return 1
+        c.call("thread/unarchive", {"threadId": tid})
+        if archived(c, tid, cwd) is not False:
+            owed([(tid, cwd)])
+            return 1
+        if not settle(sd, tid):
+            return 1
+        print(f"released {tid}", flush=True)
+
+    # 5. Ephemeral threads cannot be archived (C6); only the daemon's idle timer (C2)
+    #    unloads them. A failed poll counts as still loaded.
+    eph = [th["id"] for th in sel if th.get("ephemeral")]
+    if eph:
+        wait = float(os.environ.get("XREVIEW_RPC_EPHEMERAL_WAIT", "90"))
+        poll = float(os.environ.get("XREVIEW_RPC_EPHEMERAL_POLL", "2"))
+        for tid in eph:
+            err(f"waiting for ephemeral {tid} to unload (up to {wait:g} s)")
+        end = min(time.monotonic() + wait, c.deadline)
+        left_e = list(eph)
+        while True:
+            if time.monotonic() >= end:
+                break
+            try:
+                now = loaded_ids(c, until=end)
+            except Closed:
+                break    # the wait or the deadline ran out mid-poll: still loaded
+            if now is not None:
+                left_e = [t for t in left_e if t in now]
+            if not left_e or time.monotonic() >= end:
+                break
+            time.sleep(min(poll, max(0.0, end - time.monotonic())))
+        if left_e:
+            for tid in left_e:
+                err(f"{tid} (ephemeral) is still loaded — close the Codex client using it")
+            return 1
+        for tid in eph:
+            print(f"released {tid}", flush=True)
+    return 0
+
+
+def cmd_release(a):
+    deadline = time.monotonic() + float(os.environ.get("XREVIEW_RPC_RELEASE_DEADLINE", "120"))
+    sd = state_dir()
+    try:
+        fd = take_lock(sd, deadline)
+    except OSError as e:
+        err(f"cannot lock {sd}: {e}")
+        return 1
+    if fd is None:
+        err("another release is running")
+        return 1
+    # The lock stays held until this process exits (fd is never closed). take_lock tries
+    # once more before it looks at the clock, so it can return after the deadline: a passed
+    # deadline is exit 1 (spec §1), never the "unreachable" of exit 5.
+    if time.monotonic() >= deadline:
+        err("the release deadline passed while waiting for the lock")
+        return 1
+    try:
+        mine = [(t, cwd) for t, cwd in read_records(sd) if under(cwd, a.dir)]
+        try:
+            c = Client(deadline=deadline)
+        except (Unreachable, Closed) as e:
+            err(f"Codex daemon unreachable: {e}")
+            # A connection that failed because the deadline ran out is not unreachable.
+            if mine or time.monotonic() >= deadline:
+                owed(mine)
+                return 1
+            return 5
+        return release(c, sd, a.dir, mine)
+    except (Unreachable, Closed) as e:
+        err(f"Codex daemon connection lost: {e}")
+    except (OSError, RecordError) as e:
+        err(str(e))
+    # Whatever stopped the run, every record still under a.dir is a restore owed (spec §1).
+    try:
+        owed([(t, cwd) for t, cwd in read_records(sd) if under(cwd, a.dir)])
+    except (OSError, RecordError):
+        pass
+    return 1
 
 
 class ListUnreadable(Exception):
@@ -663,7 +985,13 @@ def main(argv=None):
     p.add_argument("--resolved")
     p.add_argument("--budget", type=float, required=True)
     p.add_argument("--schema")
+    sub.add_parser("release").add_argument("--dir", required=True)
     a = ap.parse_args(argv)
+    if a.cmd == "release":
+        if not os.path.isdir(a.dir):
+            err(f"not a directory: {a.dir}")
+            return 2
+        return cmd_release(a)
     if a.cmd == "turn-wait":
         return cmd_turn_wait(a)
     if a.cmd == "thread-resolve":

@@ -220,6 +220,10 @@ It resolves `herdr` by absolute path, because the daemon's `PATH` is launchd's.
 
 ### 7.1 `xreview-rpc`
 
+> **2026-10-15 — amended.** Adds `release --dir <dir>`, which unloads every thread under a
+> checkout for `wt-rm`; see
+> [wt-rm: release the checkout's Codex sessions](2026-10-15-wt-rm-codex-session-release-design.md).
+
 A Python 3 client using only the standard library. It connects to the daemon socket (F1),
 completes the handshake (F2), declines any server-initiated approval request, and exposes:
 

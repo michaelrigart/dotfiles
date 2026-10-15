@@ -154,6 +154,11 @@ than raced.
 
 ### 3. A grace period before check 4 refuses
 
+> **2026-10-15 — amended.** The Codex daemon keeps an idle thread, and its MCP helpers,
+> loaded for ~60 s after its client goes, not "a few seconds"; this grace period does not
+> cover it. `wt-rm` now releases the checkout's Codex sessions before check 4; see
+> [wt-rm: release the checkout's Codex sessions](2026-10-15-wt-rm-codex-session-release-design.md).
+
 When `wt-teardown scan` lists processes, `wt-rm` scans again every 0.5 s, for up to 5 s in
 total.
 
@@ -171,6 +176,8 @@ There is no setting for the grace period. The test suite stubs `sleep`.
   sandboxed failure is a plain retry from outside the sandbox.
 - **Treating Codex-daemon processes specially in the scan.** The grace period covers any
   process that exits shortly after its workspace closes.
+  > **2026-10-15 — amended.** Still not done in the scan: `wt-rm` releases the sessions
+  > before it instead; see [the release spec](2026-10-15-wt-rm-codex-session-release-design.md).
 
 ## Testing
 
