@@ -243,6 +243,40 @@ PY
   is '.xreview.collect_failures'      1   "$fork_name: a copied failure notification keeps its original's call"
 done
 
+# A fork that drops a typed turn before a queued one: the stretch the next typed turn closes
+# still starts at the dropped turn, as in the original.
+for fork_name in a-fork z-fork; do
+  GAP="$ROOT/gap-$fork_name/-Users-x-Code-demo"
+  mkdir -p "$GAP"
+  /usr/bin/python3 - "$GAP" "$fork_name" <<'PY'
+import datetime, json, os, sys, time
+proj, fork_name = sys.argv[1], sys.argv[2]
+t0 = time.time() - 3600
+def stamp(m):
+    return datetime.datetime.fromtimestamp(t0 + m * 60, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+def human(u, m, text):
+    return {"type": "user", "uuid": u, "timestamp": stamp(m), "origin": {"kind": "human"},
+            "message": {"role": "user", "content": text}}
+def queued(u, m, text):
+    return {"type": "attachment", "uuid": u, "timestamp": stamp(m), "attachment": {
+        "type": "queued_command", "prompt": text, "origin": {"kind": "human"}}}
+def tool(u, m, tid):
+    return {"type": "assistant", "uuid": u, "timestamp": stamp(m), "message": {"role": "assistant", "content": [
+        {"type": "tool_use", "id": tid, "name": "Read", "input": {"file_path": "/x"}}]}}
+orig = [human("h0", 0, "start"), tool("a1", 1, "g1"), human("h2", 2, "next"),
+        queued("q3", 3, "also"), tool("a4", 4, "g4"), human("h5", 5, "more")]
+fork = [e for e in orig if e["uuid"] != "h2"]
+for name, entries in (("orig.jsonl", orig), (fork_name + ".jsonl", fork)):
+    with open(os.path.join(proj, name), "w") as fh:
+        for e in entries:
+            fh.write(json.dumps(e) + "\n")
+PY
+  OUT="$(/usr/bin/python3 "$SCRIPT" --days 14 --projects-dir "$ROOT/gap-$fork_name" 2>&1)"
+  is '.autonomous_stretch.n'          2   "$fork_name: a copy missing a typed turn adds no stretch"
+  is '.autonomous_stretch.tool_calls.p90 == 1' true "$fork_name: a stretch keeps its original's start, not a copy's earlier one"
+  is '.autonomous_stretch.minutes.p90 == 1.9' true "$fork_name: a stretch keeps its original's duration"
+done
+
 out="$(/usr/bin/python3 "$SCRIPT" --days 0 --projects-dir "$ROOT/projects" 2>&1)"; rc=$?
 [ "$rc" -eq 2 ] && _pass "--days 0 is a usage error" || _fail "--days 0 is a usage error" "rc=$rc"
 out="$(/usr/bin/python3 "$SCRIPT" --projects-dir "$ROOT/nope" 2>&1)"; rc=$?

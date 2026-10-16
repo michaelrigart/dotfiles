@@ -147,9 +147,10 @@ class Totals:
         self.failures = {}          # (outcome entry uuid, call or task id, verb) -> verb
 
     def add_turn(self, uuid, turn):
-        """turn is (previous human turn's ts or -inf, stretch tool calls or -1, stretch
-        minutes or -1, queued). Of a turn's occurrences, the one with the latest predecessor,
-        then the longest stretch, has the most of the original's history."""
+        """turn is (previous human turn's ts or -inf, its stretch's start or -inf, stretch
+        tool calls or -1, stretch minutes or -1, queued). A copy holds a subset of the
+        original's earlier entries, so the original is at least as late or as large in each
+        component, in that order: the greatest occurrence is the original's."""
         key = uuid if uuid else ("no uuid", len(self.turns))
         if key not in self.turns or turn > self.turns[key]:
             self.turns[key] = turn
@@ -163,7 +164,7 @@ class Totals:
     def fold(self):
         for verb in self.failures.values():
             self.xreview["dispatch_failures" if verb == "dispatch" else "collect_failures"] += 1
-        for prev_ts, tools, minutes, queued in self.turns.values():
+        for prev_ts, _start, tools, minutes, queued in self.turns.values():
             self.human_total += 1
             self.human_queued += queued
             if prev_ts > float("-inf"):
@@ -284,14 +285,14 @@ def scan_file(path, scope, cutoff, totals, counted):
                     continue
             if scope == "main" and is_human(entry):
                 queued = kind == "attachment"
-                tools, minutes = -1, -1.0
+                start, tools, minutes = float("-inf"), -1, -1.0
                 # The stretch a typed-ahead (queued) message interrupts is not over, so
                 # only a turn the agent actually waited for closes one.
                 if humans > 0 and not queued and last_human_ts is not None:
                     end = last_agent_ts if last_agent_ts and last_agent_ts >= last_human_ts else last_human_ts
-                    tools, minutes = tools_since_human, (end - last_human_ts) / 60.0
+                    start, tools, minutes = last_human_ts, tools_since_human, (end - last_human_ts) / 60.0
                 # every occurrence is offered, a copy included: the best-placed one counts
-                totals.add_turn(uuid, (prev_human_ts, tools, minutes, queued))
+                totals.add_turn(uuid, (prev_human_ts, start, tools, minutes, queued))
                 humans += 1
                 prev_human_ts = ts
                 if not queued:
