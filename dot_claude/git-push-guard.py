@@ -61,8 +61,12 @@ except ValueError:
     BUDGET = 30.0
 # Environment for the object lookups that must stay local: lazy fetch off, so a remote that
 # config marks a promisor is never asked for a missing object (that would run its
-# uploadpack, vcs and credential settings, unsandboxed).
-LOCAL_ENV = dict(os.environ, GIT_NO_LAZY_FETCH="1")
+# uploadpack, vcs and credential settings, unsandboxed). Replacement objects, grafts and the
+# commit-graph are off too (LOCAL_OPTS carries the last): each is local state the sandbox can
+# write, and each can make an unmerged branch look like an ancestor of the default branch.
+LOCAL_ENV = dict(os.environ, GIT_NO_LAZY_FETCH="1", GIT_NO_REPLACE_OBJECTS="1",
+                 GIT_GRAFT_FILE=os.devnull)
+LOCAL_OPTS = ("-c", "core.commitGraph=false")
 
 PUNCT =";&|()<>\n"
 ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
@@ -868,7 +872,9 @@ def check_merged_delete(repo, remote, default, names, leases):
     --upload-pack overrides remote.<name>.uploadpack. The lookups after it (cat-file and
     merge-base) read only what is here, with lazy fetch off (LOCAL_ENV): a remote that config
     marks a promisor would otherwise have git fetch a missing tip from it, running its
-    uploadpack, vcs and credential settings unsandboxed. A missing tip asks."""
+    uploadpack, vcs and credential settings unsandboxed. A missing tip asks. They also ignore
+    replacement objects, grafts and the commit-graph, which a write inside the sandbox could
+    use to give an unmerged tip the default branch as a descendant."""
     if repo.config("core.sshCommand") is not None or repo.config("core.gitProxy") is not None \
             or repo.config("remote." + remote + ".vcs") is not None:
         return None
@@ -902,13 +908,13 @@ def check_merged_delete(repo, remote, default, names, leases):
         return None
     if not all(SHA_RE.fullmatch(tips.get(h, "")) for h in heads):
         return None
-    if any(repo.run("cat-file", "-e", tips[h] + "^{commit}", env=LOCAL_ENV) is None
+    if any(repo.run(*LOCAL_OPTS, "cat-file", "-e", tips[h] + "^{commit}", env=LOCAL_ENV) is None
            for h in heads):
         return None
     for n in names:
         for target in (tips[local_default], local_default):
-            if repo.run("merge-base", "--is-ancestor", tips["refs/heads/" + n], target,
-                        env=LOCAL_ENV) is None:
+            if repo.run(*LOCAL_OPTS, "merge-base", "--is-ancestor", tips["refs/heads/" + n],
+                        target, env=LOCAL_ENV) is None:
                 return None
 
     def pin_of(n, lease):
@@ -917,13 +923,16 @@ def check_merged_delete(repo, remote, default, names, leases):
     if all(any(pin_of(n, lease) for n in names) for lease in leases) \
             and all(any(pin_of(n, lease) for lease in leases) for n in names):
         return True
-    pins = " ".join("--force-with-lease={}:{}".format(n, tips["refs/heads/" + n]) for n in names)
+    # Quoted: git allows ', ; $ and backticks in a branch name, and this text is a command
+    # to run.
+    pins = " ".join(shlex.quote("--force-with-lease={}:{}".format(n, tips["refs/heads/" + n]))
+                    for n in names)
     where = "".join(shlex.quote(x) + " " for x in repo.repo_opts)   # git -C <path>, as written
     return ("Push guard: {} {} merged into {}, on {} and here. Pin the delete to the tip just "
             "read, so git refuses it if the branch has moved, and it needs no ask: "
             "git {}push {} {} --delete {}").format(
                 ", ".join(names), "is" if len(names) == 1 else "are", default, remote,
-                where, pins, remote, " ".join(names))
+                where, pins, shlex.quote(remote), " ".join(shlex.quote(n) for n in names))
 
 
 # ------------------------------------------------------------------ the secret scan

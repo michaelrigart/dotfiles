@@ -720,6 +720,37 @@ git -C "$DLOC" switch -q main && git -C "$DLOC" merge -q --ff-only lm
 LM=$(git -C "$DLOC" rev-parse lm)
 expect ask   "merged here but not on the remote"          "$DLOC" "git push --force-with-lease=lm:$LM origin --delete lm"
 
+# History a write inside the sandbox can rewrite must not make an unmerged branch look merged:
+# a replacement of, or a graft on, the default tip that adds open's tip as a parent.
+DREP=$(cp -R "$DEL" "$TMP/delreplace" && printf '%s' "$TMP/delreplace")
+git -C "$DREP" replace --graft "$MAIN" "$DONE" "$OPEN"
+expect ask   "an unmerged branch made an ancestor by git replace" "$DREP" "git push --force-with-lease=open:$OPEN origin --delete open"
+DGRAFT=$(cp -R "$DEL" "$TMP/delgraft" && printf '%s' "$TMP/delgraft")
+printf '%s %s %s\n' "$MAIN" "$DONE" "$OPEN" > "$DGRAFT/.git/info/grafts"
+expect ask   "an unmerged branch made an ancestor by info/grafts" "$DGRAFT" "git push --force-with-lease=open:$OPEN origin --delete open"
+
+# The pinned command in the deny is a command to run, so a branch name with a quote or a
+# semicolon in it must come back as that one argument.
+DQ=$(cp -R "$DEL" "$TMP/delquote" && printf '%s' "$TMP/delquote")
+cp -R "$REMOTES/del.git" "$REMOTES/delquote.git"
+git -C "$DQ" remote set-url origin "$REMOTES/delquote.git"
+git -C "$DQ" switch -q -c "o'brien" main; git -C "$DQ" commit -q --allow-empty -m quote
+git -C "$DQ" switch -q -c "a;b";         git -C "$DQ" commit -q --allow-empty -m semi
+git -C "$DQ" switch -q main && git -C "$DQ" merge -q --ff-only "a;b"
+git -C "$DQ" push -q origin main "o'brien" "a;b" 2>/dev/null
+QUOTE_TIP=$(git -C "$DQ" rev-parse "o'brien"); SEMI_TIP=$(git -C "$DQ" rev-parse "a;b")
+QCMD="git push origin --delete \"o'brien\" 'a;b'"
+QREASON=$(reason "$DQ" "$QCMD")
+QPINNED=${QREASON##*needs no ask: }
+QGOT=$(python3 -I -c 'import shlex, sys; print("\n".join(shlex.split(sys.argv[1])))' "$QPINNED" 2>&1)
+QWANT=$(printf '%s\n' git push "--force-with-lease=o'brien:$QUOTE_TIP" "--force-with-lease=a;b:$SEMI_TIP" origin --delete "o'brien" "a;b")
+if [ "$QGOT" = "$QWANT" ]; then
+  pass=$((pass + 1)); printf '  ok   %s\n' "the deny's command parses to the intended argv for quote and semicolon names"
+else
+  fail=$((fail + 1)); printf '  FAIL %s\n%s\n' "the deny's command does not parse to the intended argv" "$QREASON"
+fi
+expect allow "the quoted pinned command is allowed as written" "$DQ" "$QPINNED"
+
 # From here on the remote moves: another clone merges far into main and pushes both.
 OTHER="$TMP/delother"
 git clone -q "$REMOTES/del.git" "$OTHER" 2>/dev/null
