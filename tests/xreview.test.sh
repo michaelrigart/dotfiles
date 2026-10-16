@@ -1675,5 +1675,28 @@ is "W29 record_pending fails on a targets document naming no repository, writing
 cd "$ROOT/repo" || exit 1
 unset PANE_CWD
 
+# H1-H6: every help form prints the usage of every subcommand on stdout and exits 0,
+# touching nothing.
+: > "$CALLS"
+for form in "help" "-h" "--help" "dispatch --help" "collect xr-1-a -h" "apply --help"; do
+  # shellcheck disable=SC2086
+  out="$(bash "$XREVIEW" $form 2>"$ROOT/help-err")"; rc=$?
+  missing=""
+  # Each needle is the start of its own usage line: two spaces of indent, then the command
+  # word and its arguments. A bare "thread" would also match the "tier [thread]" line.
+  for sub in "dispatch --checkpoint spec|plan|pre-merge" "collect <nonce>" "apply <nonce>" \
+             "apply --done" "round [--reset]" "receipts [--tiers]" "tier [thread]" "thread  " \
+             "init [id]" "help, -h, --help"; do
+    found=""
+    while IFS= read -r line; do
+      [[ $line == "  $sub"* ]] && found=1
+    done <<< "$out"
+    [ -n "$found" ] || missing="$missing [$sub]"
+  done
+  is "H xreview $form exits 0 with every subcommand's usage on stdout and nothing on stderr" \
+     "$rc/${missing:-all}/$(wc -c < "$ROOT/help-err" | tr -d ' ')" "0/all/0"
+done
+is "H7 no help form called herdr, the daemon or the reviewer" "$(wc -c < "$CALLS" | tr -d ' ')" 0
+
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))

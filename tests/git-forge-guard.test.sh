@@ -564,6 +564,238 @@ expect ask   "-d"                                     "$R" 'git push -d origin o
 expect ask   "--prune"                                "$R" 'git push --prune origin feat'
 expect ask   "--mirror"                               "$R" 'git push --mirror origin'
 expect ask   "--all"                                  "$R" 'git push --all origin'
+
+echo "== rule 4: merged-branch deletes =="
+# A remote of its own, so the cases that move it never touch the fixtures above. done and
+# done2 are merged into main, here and on the remote; open is not merged; v1 is a tag; gone
+# exists only here. The cases that move the remote run last.
+git init -q --bare "$REMOTES/del.git"
+DEL="$TMP/delwork"
+git init -q "$DEL"
+git -C "$DEL" commit -q --allow-empty -m init
+git -C "$DEL" remote add origin "$REMOTES/del.git"
+git -C "$DEL" switch -q -c done;  git -C "$DEL" commit -q --allow-empty -m done
+git -C "$DEL" switch -q -c done2; git -C "$DEL" commit -q --allow-empty -m done2
+git -C "$DEL" switch -q main;     git -C "$DEL" merge -q --ff-only done2
+git -C "$DEL" switch -q -c open;  git -C "$DEL" commit -q --allow-empty -m open
+git -C "$DEL" switch -q -c gone main; git -C "$DEL" commit -q --allow-empty -m gone
+git -C "$DEL" tag v1 main
+git -C "$DEL" switch -q -c work main
+git -C "$DEL" push -q origin main done done2 open v1 2>/dev/null
+git -C "$DEL" remote set-head origin main
+DONE=$(git -C "$DEL" rev-parse done); DONE2=$(git -C "$DEL" rev-parse done2)
+OPEN=$(git -C "$DEL" rev-parse open); MAIN=$(git -C "$DEL" rev-parse main)
+GONE=$(git -C "$DEL" rev-parse gone)
+[ "$(git -C "$DEL" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)" = origin/main ] \
+  && [ -n "$(git ls-remote "$REMOTES/del.git" refs/heads/done)" ] \
+  || { echo "merged-delete fixture setup failed" >&2; exit 1; }
+
+expect allow "a merged delete pinned, by --delete"        "$DEL" "git push --force-with-lease=done:$DONE origin --delete done"
+expect allow "a merged delete pinned, by -d"              "$DEL" "git push --force-with-lease=done:$DONE origin -d done"
+expect allow "a merged delete pinned, by a :ref refspec"  "$DEL" "git push --force-with-lease=done:$DONE origin :done"
+expect allow "a refs/heads/ lease"                        "$DEL" "git push --force-with-lease=refs/heads/done:$DONE origin --delete done"
+expect allow "a refs/heads/ destination"                  "$DEL" "git push --force-with-lease=done:$DONE origin --delete refs/heads/done"
+expect allow "options after the branch"                   "$DEL" "git push origin --delete done --force-with-lease=done:$DONE"
+expect allow "two merged deletes, both pinned"            "$DEL" "git push --force-with-lease=done:$DONE --force-with-lease=done2:$DONE2 origin --delete done done2"
+expect deny  "a merged delete with no pin"                "$DEL" 'git push origin --delete done'
+has_reason   "the deny names the pinned command" \
+             "git push --force-with-lease=done:$DONE origin --delete done" "$DEL" 'git push origin --delete done'
+cp -R "$DEL" "$TMP/del work"
+has_reason   "the deny carries the push's -C path into the pinned command" \
+             "git -C $DEL push --force-with-lease=done:$DONE origin --delete done" \
+             "$TMP" "git -C $DEL push origin --delete done"
+has_reason   "and quotes a -C path that needs it" \
+             "git -C '$TMP/del work' push --force-with-lease=done:$DONE origin --delete done" \
+             "$TMP" "git -C '$TMP/del work' push origin --delete done"
+expect deny  "a bare --force-with-lease"                  "$DEL" 'git push --force-with-lease origin --delete done'
+expect deny  "a lease without a sha"                      "$DEL" 'git push --force-with-lease=done origin --delete done'
+expect deny  "a pin to another sha"                       "$DEL" "git push --force-with-lease=done:$OPEN origin --delete done"
+expect deny  "two leases on one branch, one wrong"        "$DEL" "git push --force-with-lease=done:$DONE --force-with-lease=done:$OPEN origin --delete done"
+has_reason   "a partly pinned pair: the command pins both" \
+             "git push --force-with-lease=done:$DONE --force-with-lease=done2:$DONE2 origin --delete done done2" \
+             "$DEL" "git push --force-with-lease=done:$DONE origin --delete done done2"
+expect ask   "an unmerged branch, pinned"                 "$DEL" "git push --force-with-lease=open:$OPEN origin --delete open"
+expect ask   "a merged and an unmerged branch"            "$DEL" "git push --force-with-lease=done:$DONE --force-with-lease=open:$OPEN origin --delete done open"
+expect ask   "the default branch, pinned"                 "$DEL" "git push --force-with-lease=main:$MAIN origin --delete main"
+expect ask   "the default branch as refs/heads/main"      "$DEL" "git push --force-with-lease=main:$MAIN origin --delete refs/heads/main"
+expect ask   "a tag by name"                              "$DEL" "git push --force-with-lease=v1:$MAIN origin --delete v1"
+expect ask   "a tag by ref"                               "$DEL" 'git push origin :refs/tags/v1'
+expect ask   "a branch missing on the remote"             "$DEL" "git push --force-with-lease=gone:$GONE origin --delete gone"
+expect ask   "--prune beside a pinned delete"             "$DEL" "git push --prune --force-with-lease=done:$DONE origin :done"
+expect ask   "--force beside a pinned delete"             "$DEL" "git push --force --force-with-lease=done:$DONE origin --delete done"
+expect ask   "a delete mixed with a push"                 "$DEL" "git push --force-with-lease=done:$DONE origin :done work"
+DBROKEN=$(cp -R "$DEL" "$TMP/delbroken" && printf '%s' "$TMP/delbroken")
+git -C "$DBROKEN" remote set-url origin "$REMOTES/nowhere.git"
+expect ask   "a remote that cannot be read"               "$DBROKEN" "git push --force-with-lease=done:$DONE origin --delete done"
+cp -R "$REMOTES/del.git" "$REMOTES/delhead.git"
+git --git-dir="$REMOTES/delhead.git" symbolic-ref HEAD refs/heads/done2
+DHEAD=$(cp -R "$DEL" "$TMP/delhead" && printf '%s' "$TMP/delhead")
+git -C "$DHEAD" remote set-url origin "$REMOTES/delhead.git"
+expect ask   "the remote's HEAD names another branch"     "$DHEAD" "git push --force-with-lease=done:$DONE origin --delete done"
+# A local check that times out after ls-remote has answered asks, as before, rather than
+# denying: a git on PATH that hangs on merge-base until the guard's per-call limit (5 s).
+SLOWGIT="$TMP/slowgit"; mkdir -p "$SLOWGIT"; REALGIT=$(command -v git)
+printf '#!/bin/sh\ncase "$*" in *merge-base*) exec sleep 6 ;; esac\nexec "%s" "$@"\n' "$REALGIT" > "$SLOWGIT/git"
+chmod 755 "$SLOWGIT/git"
+PATH="$SLOWGIT:$PATH" expect ask "a merge-base that times out" "$DEL" "git push --force-with-lease=done:$DONE origin --delete done"
+DPUSH=$(cp -R "$DEL" "$TMP/delpushurl" && printf '%s' "$TMP/delpushurl")
+git -C "$DPUSH" config remote.origin.pushurl "$REMOTES/backup.git"
+expect deny  "a remote with a separate push URL is still refused" "$DPUSH" "git push --force-with-lease=done:$DONE origin --delete done"
+expect deny  "a bare --force-with-lease beside the pin"   "$DEL" "git push --force-with-lease --force-with-lease=done:$DONE origin --delete done"
+expect deny  "a heads/ lease beside the pin"              "$DEL" "git push --force-with-lease=heads/done --force-with-lease=done:$DONE origin --delete done"
+expect deny  "a lease for an unrelated branch beside the pin" "$DEL" "git push --force-with-lease=other:$DONE --force-with-lease=done:$DONE origin --delete done"
+expect ask   "--tags beside a pinned delete"              "$DEL" "git push --tags --force-with-lease=done:$DONE origin --delete done"
+expect ask   "--follow-tags beside a pinned delete"       "$DEL" "git push --follow-tags --force-with-lease=done:$DONE origin --delete done"
+
+# The guard's read of the remote runs outside the sandbox, where git honours any command a
+# config file names. None of these may run one, and a config that would only break the read
+# must not stop it.
+DSSH=$(cp -R "$DEL" "$TMP/delssh" && printf '%s' "$TMP/delssh")
+git -C "$DSSH" config core.sshCommand false
+expect ask   "core.sshCommand is set"                     "$DSSH" "git push --force-with-lease=done:$DONE origin --delete done"
+DPROXY=$(cp -R "$DEL" "$TMP/delproxy" && printf '%s' "$TMP/delproxy")
+git -C "$DPROXY" config core.gitProxy false
+expect ask   "core.gitProxy is set"                       "$DPROXY" "git push --force-with-lease=done:$DONE origin --delete done"
+DUP=$(cp -R "$DEL" "$TMP/delupload" && printf '%s' "$TMP/delupload")
+git -C "$DUP" config remote.origin.uploadpack /nonexistent/upload-pack
+expect allow "remote.origin.uploadpack is overridden"     "$DUP" "git push --force-with-lease=done:$DONE origin --delete done"
+DEXT=$(cp -R "$DEL" "$TMP/delext" && printf '%s' "$TMP/delext")
+EXTMARK="$TMP/ext-marker"
+git -C "$DEXT" config protocol.ext.allow always
+git -C "$DEXT" config "url.ext::touch $EXTMARK.insteadOf" "$REMOTES/del.git"
+expect ask   "an ext:: remote built by insteadOf"         "$DEXT" "git push --force-with-lease=done:$DONE origin --delete done"
+if [ -e "$EXTMARK" ]; then
+  fail=$((fail + 1)); printf '  FAIL %s\n' "the ext:: command ran (the guard's read of the remote executed it)"
+else
+  pass=$((pass + 1)); printf '  ok   %s\n' "the ext:: command did not run"
+fi
+# A protocol.<name>.allow in config outranks the generic override, so a git-remote-<name>
+# helper on PATH would run for a foo:// URL, or for any URL once remote.<name>.vcs names it.
+HELPERS="$TMP/helpers"; mkdir -p "$HELPERS"
+for h in foo bar; do
+  printf '#!/bin/sh\ntouch "%s/%s-marker"\nexit 1\n' "$TMP" "$h" > "$HELPERS/git-remote-$h"
+  chmod 755 "$HELPERS/git-remote-$h"
+done
+DFOO=$(cp -R "$DEL" "$TMP/delfoo" && printf '%s' "$TMP/delfoo")
+git -C "$DFOO" config protocol.foo.allow always
+git -C "$DFOO" config "url.foo://host/del.git.insteadOf" "$REMOTES/del.git"
+PATH="$HELPERS:$PATH" expect ask "a foo:// remote with a helper allowed in config" "$DFOO" "git push --force-with-lease=done:$DONE origin --delete done"
+if [ -e "$TMP/foo-marker" ]; then
+  fail=$((fail + 1)); printf '  FAIL %s\n' "the foo helper ran (the guard's read of the remote executed it)"
+else
+  pass=$((pass + 1)); printf '  ok   %s\n' "the foo helper did not run"
+fi
+DVCS=$(cp -R "$DEL" "$TMP/delvcs" && printf '%s' "$TMP/delvcs")
+git -C "$DVCS" config remote.origin.vcs bar
+git -C "$DVCS" config protocol.bar.allow always
+PATH="$HELPERS:$PATH" expect ask "remote.origin.vcs names a helper" "$DVCS" "git push --force-with-lease=done:$DONE origin --delete done"
+if [ -e "$TMP/bar-marker" ]; then
+  fail=$((fail + 1)); printf '  FAIL %s\n' "the bar helper ran (remote.origin.vcs selected it)"
+else
+  pass=$((pass + 1)); printf '  ok   %s\n' "the bar helper did not run"
+fi
+DGIT=$(cp -R "$DEL" "$TMP/delgit" && printf '%s' "$TMP/delgit")
+git -C "$DGIT" remote set-url origin git://127.0.0.1:9/del.git
+expect ask   "a git:// remote"                            "$DGIT" "git push --force-with-lease=done:$DONE origin --delete done"
+
+# A branch that is a symref on the remote is not a branch to delete.
+cp -R "$REMOTES/del.git" "$REMOTES/delsym.git"
+git --git-dir="$REMOTES/delsym.git" symbolic-ref refs/heads/alias refs/heads/main
+DSYM=$(cp -R "$DEL" "$TMP/delsym" && printf '%s' "$TMP/delsym")
+git -C "$DSYM" remote set-url origin "$REMOTES/delsym.git"
+expect ask   "a branch that is a symref on the remote"    "$DSYM" "git push --force-with-lease=alias:$MAIN origin --delete alias"
+# Protocol v0 does not advertise a non-HEAD symref, so the guard pins version 2 itself.
+DSYM0=$(cp -R "$DSYM" "$TMP/delsym0" && printf '%s' "$TMP/delsym0")
+git -C "$DSYM0" config protocol.version 0
+expect ask   "a symref, with protocol.version=0 in config" "$DSYM0" "git push --force-with-lease=alias:$MAIN origin --delete alias"
+
+# Merged into the local default branch, but not into the remote's.
+cp -R "$REMOTES/del.git" "$REMOTES/delloc.git"
+DLOC=$(cp -R "$DEL" "$TMP/delloc" && printf '%s' "$TMP/delloc")
+git -C "$DLOC" remote set-url origin "$REMOTES/delloc.git"
+git -C "$DLOC" switch -q -c lm main
+git -C "$DLOC" commit -q --allow-empty -m lm
+git -C "$DLOC" push -q origin lm 2>/dev/null
+git -C "$DLOC" switch -q main && git -C "$DLOC" merge -q --ff-only lm
+LM=$(git -C "$DLOC" rev-parse lm)
+expect ask   "merged here but not on the remote"          "$DLOC" "git push --force-with-lease=lm:$LM origin --delete lm"
+
+# History a write inside the sandbox can rewrite must not make an unmerged branch look merged:
+# a replacement of, or a graft on, the default tip that adds open's tip as a parent.
+DREP=$(cp -R "$DEL" "$TMP/delreplace" && printf '%s' "$TMP/delreplace")
+git -C "$DREP" replace --graft "$MAIN" "$DONE" "$OPEN"
+expect ask   "an unmerged branch made an ancestor by git replace" "$DREP" "git push --force-with-lease=open:$OPEN origin --delete open"
+DGRAFT=$(cp -R "$DEL" "$TMP/delgraft" && printf '%s' "$TMP/delgraft")
+printf '%s %s %s\n' "$MAIN" "$DONE" "$OPEN" > "$DGRAFT/.git/info/grafts"
+expect ask   "an unmerged branch made an ancestor by info/grafts" "$DGRAFT" "git push --force-with-lease=open:$OPEN origin --delete open"
+
+# The pinned command in the deny is a command to run, so a branch name with a quote or a
+# semicolon in it must come back as that one argument.
+DQ=$(cp -R "$DEL" "$TMP/delquote" && printf '%s' "$TMP/delquote")
+cp -R "$REMOTES/del.git" "$REMOTES/delquote.git"
+git -C "$DQ" remote set-url origin "$REMOTES/delquote.git"
+git -C "$DQ" switch -q -c "o'brien" main; git -C "$DQ" commit -q --allow-empty -m quote
+git -C "$DQ" switch -q -c "a;b";         git -C "$DQ" commit -q --allow-empty -m semi
+git -C "$DQ" switch -q main && git -C "$DQ" merge -q --ff-only "a;b"
+git -C "$DQ" push -q origin main "o'brien" "a;b" 2>/dev/null
+QUOTE_TIP=$(git -C "$DQ" rev-parse "o'brien"); SEMI_TIP=$(git -C "$DQ" rev-parse "a;b")
+QCMD="git push origin --delete \"o'brien\" 'a;b'"
+QREASON=$(reason "$DQ" "$QCMD")
+QPINNED=${QREASON##*needs no ask: }
+QGOT=$(python3 -I -c 'import shlex, sys; print("\n".join(shlex.split(sys.argv[1])))' "$QPINNED" 2>&1)
+QWANT=$(printf '%s\n' git push "--force-with-lease=o'brien:$QUOTE_TIP" "--force-with-lease=a;b:$SEMI_TIP" origin --delete "o'brien" "a;b")
+if [ "$QGOT" = "$QWANT" ]; then
+  pass=$((pass + 1)); printf '  ok   %s\n' "the deny's command parses to the intended argv for quote and semicolon names"
+else
+  fail=$((fail + 1)); printf '  FAIL %s\n%s\n' "the deny's command does not parse to the intended argv" "$QREASON"
+fi
+expect allow "the quoted pinned command is allowed as written" "$DQ" "$QPINNED"
+
+# From here on the remote moves: another clone merges far into main and pushes both.
+OTHER="$TMP/delother"
+git clone -q "$REMOTES/del.git" "$OTHER" 2>/dev/null
+git -C "$OTHER" switch -q -c far
+git -C "$OTHER" commit -q --allow-empty -m far
+git -C "$OTHER" switch -q main && git -C "$OTHER" merge -q --ff-only far
+git -C "$OTHER" push -q origin main far 2>/dev/null
+FAR=$(git -C "$OTHER" rev-parse far)
+expect ask   "a merged tip this repository lacks"         "$DEL" "git push --force-with-lease=far:$FAR origin --delete far"
+# The remote's default tip is missing here. A remote marked a promisor in config would have
+# git fetch it for the local lookups, running that remote's uploadpack unsandboxed: the
+# lookups run with lazy fetch off, so the delete asks and the command does not run.
+DPROM=$(cp -R "$DEL" "$TMP/delprom" && printf '%s' "$TMP/delprom")
+PROMMARK="$TMP/promisor-marker"
+git -C "$DPROM" config remote.origin.promisor true
+git -C "$DPROM" config remote.origin.uploadpack "touch $PROMMARK; git-upload-pack"
+expect ask   "a promisor remote, its default tip missing here" "$DPROM" "git push --force-with-lease=done:$DONE origin --delete done"
+if [ -e "$PROMMARK" ]; then
+  fail=$((fail + 1)); printf '  FAIL %s\n' "the promisor's uploadpack ran (a local lookup lazy-fetched from the remote)"
+else
+  pass=$((pass + 1)); printf '  ok   %s\n' "the promisor's uploadpack did not run"
+fi
+git -C "$DEL" fetch -q origin
+expect ask   "a tip the local default branch lacks"       "$DEL" "git push --force-with-lease=far:$FAR origin --delete far"
+expect allow "after the fetch, done is still merged and pinned" "$DEL" "git push --force-with-lease=done:$DONE origin --delete done"
+# done moves on the remote after it was merged: the guard reads the new tip and asks, and
+# git itself refuses a delete pinned to the old one. That refusal is what the pin relies on.
+git -C "$OTHER" switch -q -c done origin/done
+git -C "$OTHER" commit -q --allow-empty -m "moved on"
+git -C "$OTHER" push -q origin done 2>/dev/null
+MOVED=$(git -C "$OTHER" rev-parse done)
+expect ask   "a branch that moved past its merge"         "$DEL" "git push --force-with-lease=done:$DONE origin --delete done"
+if git -C "$DEL" push -q --force-with-lease="done:$DONE" origin --delete done 2>/dev/null; then
+  fail=$((fail + 1)); printf '  FAIL %s\n' "git refuses a delete pinned to a tip the branch has moved past (it deleted it)"
+elif [ "$(git ls-remote "$REMOTES/del.git" refs/heads/done | cut -f1)" = "$MOVED" ]; then
+  pass=$((pass + 1)); printf '  ok   %s\n' "git refuses a delete pinned to a tip the branch has moved past"
+else
+  fail=$((fail + 1)); printf '  FAIL %s\n' "git refuses a delete pinned to a moved tip (the branch changed anyway)"
+fi
+if git -C "$DEL" push -q --force-with-lease="done2:$DONE2" origin --delete done2 2>/dev/null \
+   && [ -z "$(git ls-remote "$REMOTES/del.git" refs/heads/done2)" ]; then
+  pass=$((pass + 1)); printf '  ok   %s\n' "git deletes a branch pinned to its current tip"
+else
+  fail=$((fail + 1)); printf '  FAIL %s\n' "git deletes a branch pinned to its current tip"
+fi
 ONMAIN=$(clone onmain); git -C "$ONMAIN" switch -q main
 expect ask   "a bare push while on main"              "$ONMAIN" 'git push'
 expect ask   "push <remote> while on main"            "$ONMAIN" 'git push origin'

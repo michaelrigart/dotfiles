@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# sdd-clean <workspace>...: delete finished subagent-driven-development plan workspaces.
+#
+# A workspace is deleted only when it is not a symlink, its real path is
+# <top>/.superpowers/sdd/<name> where <top> is the top level of the git work tree holding
+# it, git ignores it, git tracks no file inside it, and no .git (a nested repository or a
+# linked worktree, whose unpushed or uncommitted work rm -rf would lose) lies inside. Every argument is checked before
+# anything is deleted, so one refusal deletes nothing. The command is allowlisted
+# (Bash(sdd-clean *)): these checks are all that stands between an agent and a silent
+# rm -rf, so each one fails closed.
+set -uo pipefail
+
+[ "$#" -ge 1 ] || { echo "usage: sdd-clean <workspace>..." >&2; exit 2; }
+
+refused=0
+targets=()
+refuse() { printf 'sdd-clean: refusing %s: %s\n' "$1" "$2" >&2; refused=1; }
+
+for arg in "$@"; do
+  p=$arg
+  while [ "${#p}" -gt 1 ] && [ "${p%/}" != "$p" ]; do p=${p%/}; done
+  if [ -L "$p" ]; then refuse "$arg" "it is a symlink"; continue; fi
+  if [ ! -d "$p" ]; then refuse "$arg" "it is not a directory"; continue; fi
+  real=$(CDPATH= cd -P -- "$p" 2>/dev/null && pwd -P) \
+    || { refuse "$arg" "its real path cannot be resolved"; continue; }
+  top=$(git -C "$real" rev-parse --show-toplevel 2>/dev/null) || top=""
+  [ -n "$top" ] || { refuse "$arg" "it is not inside a git work tree"; continue; }
+  top=$(CDPATH= cd -P -- "$top" 2>/dev/null && pwd -P) \
+    || { refuse "$arg" "its work tree cannot be resolved"; continue; }
+  name=${real##*/}
+  case $name in ''|.|..) refuse "$arg" "it names no workspace"; continue ;; esac
+  if [ "$real" != "$top/.superpowers/sdd/$name" ]; then
+    refuse "$arg" "it is not a workspace directly under $top/.superpowers/sdd/"; continue
+  fi
+  tracked=$(git -C "$top" ls-files -- ".superpowers/sdd/$name") \
+    || { refuse "$arg" "git cannot list what it tracks"; continue; }
+  if [ -n "$tracked" ]; then refuse "$arg" "git tracks files inside it"; continue; fi
+  if ! git -C "$top" check-ignore -q -- ".superpowers/sdd/$name"; then
+    refuse "$arg" "git does not ignore it"; continue
+  fi
+  nested=$(find "$real" -mindepth 1 -name .git -print -quit 2>/dev/null) \
+    || { refuse "$arg" "its contents cannot be listed"; continue; }
+  [ -z "$nested" ] || { refuse "$arg" "it holds a git repository or worktree: $nested"; continue; }
+  targets+=("$real")
+done
+
+[ "$refused" = 0 ] || { echo "sdd-clean: nothing deleted" >&2; exit 1; }
+for t in "${targets[@]}"; do
+  rm -rf -- "$t" || { printf 'sdd-clean: could not delete %s\n' "$t" >&2; exit 1; }
+done

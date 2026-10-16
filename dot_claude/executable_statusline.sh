@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Claude Code status line — Tokyo Night, full width.
-# Segments: dir  git branch  model  most-recent skill/plugin, then a bar to the
-# right edge. Receives the session JSON on stdin; terminal width from $COLUMNS.
+# Segments: dir  git branch (both left out inside a Herdr pane, whose workspace shows
+# them)  model  tagteam  most-recent skill/plugin  plan progress, then a bar to the right
+# edge. Receives the session JSON on stdin; terminal width from $COLUMNS.
 export LC_ALL=en_US.UTF-8   # count runes, not bytes, in ${#text} width math
 
 input=$(cat)
@@ -13,9 +14,10 @@ effort=$(printf '%s' "$input"     | jq -r '.effort.level // empty')
 cols="${COLUMNS:-120}"
 [ "$cols" -gt 0 ] 2>/dev/null || cols=120
 
-# --- git branch (only if cwd is a work tree) ---
+# --- git branch (only if cwd is a work tree; Herdr's workspace shows it inside a pane) ---
 branch=""
-if [ -n "$cwd" ] && git -C "$cwd" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+if [ -z "${HERDR_PANE_ID:-}" ] && [ -n "$cwd" ] \
+   && git -C "$cwd" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   branch=$(git -C "$cwd" branch --show-current 2>/dev/null)
   [ -z "$branch" ] && branch=$(git -C "$cwd" rev-parse --short HEAD 2>/dev/null)
 fi
@@ -45,6 +47,7 @@ MAGENTA="187;154;247" # #bb9af7  skill text (accent)
 YELLOW="224;175;104"  # #e0af68  effort text (beside the model)
 TEAL="115;218;202"    # #73daca  tagteam account + usage text
 RED="247;118;142"     # #f7768e  the same at 90% or more
+ORANGE="255;158;100"  # #ff9e64  plan progress text
 
 # Glyphs are built from raw UTF-8 bytes so the source stays pure ASCII (private-use
 # Nerd Font codepoints get stripped if written literally).
@@ -77,19 +80,73 @@ if [ -n "$tt" ]; then
   [ -n "$max" ] && [ "$max" -ge 90 ] && tt_fg=$RED
 fi
 
+# --- plan progress: the newest subagent-driven plan run in this repository ---
+# The ledger is the most recently modified <top>/.superpowers/sdd/*/progress.md. It counts
+# when it was modified within 6 hours and its first line names a plan file that resolves
+# inside <top>. total counts the plan's "### Task <N>" headings, done the distinct N on the
+# ledger's "Task <N>: complete" lines; the segment shows while 0 < total and done < total.
+# The ETA (ledger age / done x tasks left) needs a finished task and a ledger created within
+# 12 hours: minutes under an hour, half hours above. Any failure leaves plan empty.
+plan=""
+plan_progress() {
+  local top best f now mt bt first path pdir total finished age eta m halves
+  top=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null) || return
+  [ -n "$top" ] || return
+  best=""
+  for f in "$top"/.superpowers/sdd/*/progress.md; do
+    [ -f "$f" ] || continue
+    if [ -z "$best" ] || [ "$f" -nt "$best" ]; then best=$f; fi
+  done
+  [ -n "$best" ] || return
+  now=$(date +%s)
+  mt=$(stat -f %m "$best" 2>/dev/null) || return
+  [ $((now - mt)) -le 21600 ] || return
+  first=""
+  { IFS= read -r first < "$best"; } 2>/dev/null || [ -n "$first" ] || return
+  first=${first%$'\r'}
+  case $first in "# SDD ledger $DASH plan: "?*) ;; *) return ;; esac
+  path=${first#"# SDD ledger $DASH plan: "}
+  case $path in /*) ;; *) path=$top/$path ;; esac
+  [ -f "$path" ] && [ ! -L "$path" ] || return
+  pdir=$(CDPATH= cd -P -- "${path%/*}" 2>/dev/null && pwd -P) || return
+  case $pdir/ in "$top"/*) ;; *) return ;; esac
+  total=$(grep -cE '^### Task [0-9]+([^0-9]|$)' "$path" 2>/dev/null) || return
+  finished=$(grep -oE 'Task [0-9]+: complete' "$best" 2>/dev/null | sort -u | wc -l | tr -d ' ')
+  [ "$total" -gt 0 ] && [ "$finished" -lt "$total" ] || return
+  plan="plan $finished/$total"
+  bt=$(stat -f %B "$best" 2>/dev/null) || return
+  age=$((now - bt))
+  [ "$finished" -ge 1 ] && [ "$age" -ge 0 ] && [ "$age" -le 43200 ] || return
+  eta=$((age * (total - finished) / finished))
+  m=$(((eta + 30) / 60))
+  if [ "$m" -lt 60 ]; then
+    [ "$m" -ge 1 ] || m=1
+    plan="$plan $DOT ~${m}m"
+  else
+    halves=$(((eta + 900) / 1800))
+    if [ $((halves % 2)) -eq 1 ]; then plan="$plan $DOT ~$((halves / 2)).5h"
+    else plan="$plan $DOT ~$((halves / 2))h"; fi
+  fi
+}
+[ -n "$cwd" ] && plan_progress
+
 # model, with the live reasoning effort beside it in muted yellow (omitted when
 # the model doesn't expose an effort level, i.e. .effort.level is absent)
 model_seg="$model"
 [ -n "$effort" ] && model_seg="$model $(printf '\033[38;2;%sm' "$YELLOW")$DOT $effort"
 
 # segments: "fg|bg|text"  (';' is used inside colors, so '|' is a safe delimiter)
-# build_segs <0|1>: 1 adds the tagteam segment after the model; the skill segment then
-# takes the NIGHT shade so neighbouring backgrounds keep alternating.
+# build_segs <tagteam 0|1> <plan 0|1>: 1 adds that segment. The tagteam segment goes after
+# the model and gives the skill segment the NIGHT shade; the plan segment goes last, in the
+# shade the skill segment does not use, so neighbouring backgrounds keep alternating. Inside
+# a Herdr pane the directory and branch segments are left out.
 build_segs() {
-  local skill_bg=$BGHL
+  local skill_bg=$BGHL plan_bg
   segs=()
-  segs+=("$BLUE|$NIGHT|$dir")
-  [ -n "$branch" ] && segs+=("$GREEN|$BGHL|$BR $branch")
+  if [ -z "${HERDR_PANE_ID:-}" ]; then
+    segs+=("$BLUE|$NIGHT|$dir")
+    [ -n "$branch" ] && segs+=("$GREEN|$BGHL|$BR $branch")
+  fi
   segs+=("$CYAN|$NIGHT|$model_seg")
   if [ "$1" = 1 ]; then
     segs+=("$tt_fg|$BGHL|$tt")
@@ -99,6 +156,10 @@ build_segs() {
     segs+=("$MAGENTA|$skill_bg|$ARR $skill")
   else
     segs+=("$COMMENT|$skill_bg|$ARR $DASH")
+  fi
+  if [ "$2" = 1 ]; then
+    plan_bg=$BGHL; [ "$skill_bg" = "$BGHL" ] && plan_bg=$NIGHT
+    segs+=("$ORANGE|$plan_bg|$plan")
   fi
 }
 
@@ -141,17 +202,21 @@ render() {
   unknown=$((unknown))
 }
 
-# The renderer never truncates, so the tagteam segment is kept only when the closing
-# separator and at least one column of filler still fit (w <= cols - 2) and every
-# character's width is known (unknown = 0). Then each character takes exactly the one
-# column w counts for it, so the line ends exactly at $cols. Otherwise the line is what it
-# was without tagteam.
-if [ -n "$tt" ]; then
-  build_segs 1; render
-  { [ "$w" -le $((cols - 2)) ] && [ "$unknown" -eq 0 ]; } || { build_segs 0; render; }
-else
-  build_segs 0; render
+# The renderer never truncates, so an optional segment (plan, tagteam) is kept only when the
+# closing separator and at least one column of filler still fit (w <= cols - 2) and every
+# character's width is known (unknown = 0). Then each character takes exactly the one column
+# w counts for it, so the line ends exactly at $cols. The plan segment is dropped first;
+# when tagteam does not fit either, the plan segment alone is tried; without both the line
+# is what it always was.
+fits() { [ "$w" -le $((cols - 2)) ] && [ "$unknown" -eq 0 ]; }
+use_tt=0; [ -n "$tt" ] && use_tt=1
+kept=0
+if [ -n "$plan" ]; then build_segs "$use_tt" 1; render; fits && kept=1; fi
+if [ "$kept" = 0 ] && [ "$use_tt" = 1 ]; then build_segs 1 0; render; fits && kept=1; fi
+if [ "$kept" = 0 ] && [ -n "$plan" ] && [ "$use_tt" = 1 ]; then
+  build_segs 0 1; render; fits && kept=1
 fi
+[ "$kept" = 0 ] && { build_segs 0 0; render; }
 
 # filler bar to the right edge (total visible width == cols)
 n=$((cols - w - 1))

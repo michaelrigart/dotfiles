@@ -59,6 +59,14 @@ try:
     BUDGET = float(os.environ.get("PUSH_GUARD_BUDGET", "30"))
 except ValueError:
     BUDGET = 30.0
+# Environment for the object lookups that must stay local: lazy fetch off, so a remote that
+# config marks a promisor is never asked for a missing object (that would run its
+# uploadpack, vcs and credential settings, unsandboxed). Replacement objects, grafts and the
+# commit-graph are off too (LOCAL_OPTS carries the last): each is local state the sandbox can
+# write, and each can make an unmerged branch look like an ancestor of the default branch.
+LOCAL_ENV = dict(os.environ, GIT_NO_LAZY_FETCH="1", GIT_NO_REPLACE_OBJECTS="1",
+                 GIT_GRAFT_FILE=os.devnull)
+LOCAL_OPTS = ("-c", "core.commitGraph=false")
 
 PUNCT =";&|()<>\n"
 ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
@@ -111,6 +119,11 @@ PUSH_OPTIONS_OK = re.compile(r"ci\.skip|integrations\.skip_ci|ci\.variable=.*", 
 PUSHING_SUBCOMMANDS = {"send-pack", "http-push"}
 # A refspec destination that git resolves as a ref path rather than a branch name.
 DWIM_PREFIXES = ("heads/", "tags/", "remotes/", "refs/")
+# A delete-only push of merged branches needs no ask once each delete is pinned to the tip
+# the guard read (spec 2026-10-16, section 4). A push carrying one of these flags updates,
+# prunes or force-pushes more than the branches it names, so it is never delete-only.
+NOT_DELETE_ONLY = {"--prune", "--mirror", "--all", "--force", "-f", "--tags", "--follow-tags"}
+SHA_RE = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
 
 UNSUPPORTED = ("unsupported push configuration for the push guard: {}; "
                "push by hand or simplify the configuration")
@@ -275,6 +288,7 @@ def parse_plain(tokens, cwd):
 class Repo:
     def __init__(self, cwd, repo_opts):
         self.base = ["git", "-C", cwd] + list(repo_opts)
+        self.repo_opts = list(repo_opts)
 
     def run(self, *args, env=None, long=False, raw=False):
         """stdout of a git query, or None when git fails. env replaces the environment; long
@@ -773,6 +787,154 @@ def default_branch(repo, remote):
     return "main"
 
 
+def delete_targets(flags, refspecs):
+    """The branch names a delete-only push deletes, or None when the push also updates,
+    prunes or force-pushes something, or deletes a ref that is not a plain branch."""
+    if flags & NOT_DELETE_ONLY or not refspecs:
+        return None
+    deleting = "-d" in flags or "--delete" in flags
+    names = []
+    for spec in refspecs:
+        if deleting:
+            dst = spec
+        elif spec.startswith(":"):
+            dst = spec[1:]
+        else:
+            return None                                # it pushes something
+        if dst.startswith("refs/heads/"):
+            dst = dst[len("refs/heads/"):]
+        if not dst or dst in ("HEAD", "@") or dst in CURRENT_BRANCH \
+                or dst.startswith(DWIM_PREFIXES) or dst[0] in "+-:" or ":" in dst:
+            return None
+        names.append(dst)
+    return names
+
+
+def push_leases(args):
+    """(ref, expected sha) for every --force-with-lease on the push: (None, None) for a bare
+    one, (ref, None) for one without a sha. git matches a lease by refname and the first
+    match wins, so every one counts, not only those that look like a pin."""
+    leases = []
+    for a in args:
+        if a == "--force-with-lease":
+            leases.append((None, None))
+        elif a.startswith("--force-with-lease="):
+            ref, colon, sha = a[len("--force-with-lease="):].partition(":")
+            leases.append((ref, sha if colon else None))
+    return leases
+
+
+def plain_transport(url):
+    """Whether url is a transport git runs without a helper program: a local path, file://,
+    ssh:// (git+ssh:// and ssh+git:// too), https://, or the scp-like [user@]host:path."""
+    if "::" in url:
+        return False                                   # <helper>::<address>
+    scheme, sep, _ = url.partition("://")
+    if sep:
+        return scheme in ("file", "ssh", "git+ssh", "ssh+git", "https")
+    return True                                        # a path, or scp-like host:path (over ssh)
+
+
+def merged_delete(repo, remote, default, names, leases):
+    """Whether a delete-only push of the branches in names goes without an ask: True when
+    every one is merged and pinned; a deny reason naming the pinned command when every one
+    is merged but a pin is missing or names another tip; None (an ask, as before) otherwise,
+    a failed read of the remote included. A timeout anywhere in these checks asks as well:
+    Repo.run raises it as a Deny, which here would turn today's ask into a deny."""
+    try:
+        return check_merged_delete(repo, remote, default, names, leases)
+    except Deny:
+        return None
+
+
+def check_merged_delete(repo, remote, default, names, leases):
+    """merged_delete without the timeout fallback.
+
+    Merged: one ls-remote of the remote, whose single push URL is its fetch URL (evaluate
+    refuses any other remote before this runs), shows its HEAD on the default branch and
+    every branch present; the remote's default tip and every branch tip exist here; and
+    each branch tip is an ancestor of both the remote's default tip and refs/heads/<default>,
+    so its commits survive in both. A deleted head that is a symref on the remote asks.
+    Pinned: every --force-with-lease on the push (bare and ref-only ones included) is
+    exactly <branch>:<tip> or refs/heads/<branch>:<tip> for a deleted branch and the tip just
+    read, and every deleted branch has one, so git refuses the delete if the branch moved
+    after this read.
+
+    This ls-remote is the guard's first network call and runs outside the sandbox, where git
+    runs any command a config level names for it. A config file the sandbox can write could
+    so run a command unsandboxed, just by a delete-shaped push. core.sshCommand, core.gitProxy
+    and remote.<name>.vcs (which picks a git-remote-<vcs> helper whatever the URL says) ask
+    instead, and so does a URL outside plain_transport, since a protocol.<name>.allow in
+    config outranks the generic override and would let a git-remote-<name> helper run. The -c
+    overrides below, which outrank every config file, drop the other protocols for the
+    transports that remain, clear credential.helper and core.askPass, and pin protocol
+    version 2, the only one whose ls-remote --symref shows the symref a non-HEAD head can be;
+    --upload-pack overrides remote.<name>.uploadpack. The lookups after it (cat-file and
+    merge-base) read only what is here, with lazy fetch off (LOCAL_ENV): a remote that config
+    marks a promisor would otherwise have git fetch a missing tip from it, running its
+    uploadpack, vcs and credential settings unsandboxed. A missing tip asks. They also ignore
+    replacement objects, grafts and the commit-graph, which a write inside the sandbox could
+    use to give an unmerged tip the default branch as a descendant."""
+    if repo.config("core.sshCommand") is not None or repo.config("core.gitProxy") is not None \
+            or repo.config("remote." + remote + ".vcs") is not None:
+        return None
+    url = repo.run("remote", "get-url", remote)
+    if url is None or not plain_transport(url.strip()):
+        return None
+    heads = ["refs/heads/" + n for n in [default] + names]
+    out = repo.run("-c", "protocol.version=2",
+                   "-c", "protocol.allow=never", "-c", "protocol.ext.allow=never",
+                   "-c", "protocol.file.allow=always", "-c", "protocol.ssh.allow=always",
+                   "-c", "protocol.https.allow=always", "-c", "credential.helper=",
+                   "-c", "core.askPass=",
+                   "ls-remote", "--upload-pack=git-upload-pack", "--symref", remote, "HEAD", *heads,
+                   env=dict(os.environ, GIT_TERMINAL_PROMPT="0"))
+    if out is None:
+        return None
+    tips, remote_head = {}, None
+    for line in out.splitlines():
+        left, tab, ref = line.partition("\t")
+        if not tab:
+            continue
+        if left.startswith("ref: "):
+            if ref == "HEAD":
+                remote_head = left[len("ref: "):].strip()
+            elif ref in heads:
+                return None                            # a symref: deleting it is not deleting a branch
+        elif ref in heads:
+            tips[ref] = left.strip()
+    local_default = "refs/heads/" + default
+    if remote_head != local_default or not repo.has_ref(local_default):
+        return None
+    if not all(SHA_RE.fullmatch(tips.get(h, "")) for h in heads):
+        return None
+    if any(repo.run(*LOCAL_OPTS, "cat-file", "-e", tips[h] + "^{commit}", env=LOCAL_ENV) is None
+           for h in heads):
+        return None
+    for n in names:
+        for target in (tips[local_default], local_default):
+            if repo.run(*LOCAL_OPTS, "merge-base", "--is-ancestor", tips["refs/heads/" + n],
+                        target, env=LOCAL_ENV) is None:
+                return None
+
+    def pin_of(n, lease):
+        return lease in ((n, tips["refs/heads/" + n]), ("refs/heads/" + n, tips["refs/heads/" + n]))
+
+    if all(any(pin_of(n, lease) for n in names) for lease in leases) \
+            and all(any(pin_of(n, lease) for lease in leases) for n in names):
+        return True
+    # Quoted: git allows ', ; $ and backticks in a branch name, and this text is a command
+    # to run.
+    pins = " ".join(shlex.quote("--force-with-lease={}:{}".format(n, tips["refs/heads/" + n]))
+                    for n in names)
+    where = "".join(shlex.quote(x) + " " for x in repo.repo_opts)   # git -C <path>, as written
+    return ("Push guard: {} {} merged into {}, on {} and here. Pin the delete to the tip just "
+            "read, so git refuses it if the branch has moved, and it needs no ask: "
+            "git {}push {} {} --delete {}").format(
+                ", ".join(names), "is" if len(names) == 1 else "are", default, remote,
+                where, pins, shlex.quote(remote), " ".join(shlex.quote(n) for n in names))
+
+
 # ------------------------------------------------------------------ the secret scan
 def run_gitleaks(cmd, cwd, env):
     """(returncode, stdout, stderr) of gitleaks, within what is left of the budget. It runs
@@ -1108,6 +1270,17 @@ def evaluate(cwd, assigns, repo_opts, config_opts, args):
         scan_sources.append("--all")
     if scan_sources:
         scan(root, remote, scan_sources)
+
+    # A delete-only push of merged branches, each pinned to the tip read here, needs no ask;
+    # merged but unpinned is a silent deny naming the pinned command. delete_targets admits
+    # no flag or refspec that adds any other ask, so the asks it replaces are delete asks.
+    targets = delete_targets(flags, refspecs)
+    if asks and targets is not None and default not in targets:
+        verdict = merged_delete(repo, remote, default, targets, push_leases(args))
+        if verdict is True:
+            return None
+        if verdict:
+            raise Deny(verdict)
 
     if asks:
         return "Push guard: this push needs Michael, because " + "; ".join(asks) + "."

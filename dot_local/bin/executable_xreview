@@ -1049,7 +1049,32 @@ cmd_collect() {
   esac
 }
 
+usage() {
+  cat <<'USAGE'
+usage: xreview <command> [args]
+
+  dispatch --checkpoint spec|plan|pre-merge [--diff [<repo-path>:]<range>]... <body-file>
+                          start a review turn; prints its nonce
+  collect <nonce> [budget]
+                          wait for the reviewer's answer (budget in whole seconds)
+  apply <nonce>           open the apply window for that review's findings
+  apply --done            close the apply window
+  round [--reset]         print the round counter; --reset drops the cached thread and pin
+  receipts [--tiers]      list the reviews on record
+  tier [thread]           print the reviewer's model and effort
+  thread                  print the checkpoint's review thread
+  init [id]               pin a review thread (the pane's own without an id)
+  help, -h, --help        print this
+USAGE
+}
+
+# A help flag anywhere, or the help command, prints the usage and does nothing else.
+for a in "$@"; do
+  case $a in -h|--help) usage; exit 0 ;; esac
+done
+
 case "${1:-}" in
+  help)     usage; exit 0 ;;
   dispatch) shift; cmd_dispatch "$@" ;;
   collect)  shift; cmd_collect "$@" ;;
   init)     shift; cmd_init "$@" ;;

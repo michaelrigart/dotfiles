@@ -98,5 +98,26 @@ for f in global.md claude-code.md; do
   else _pass "$f contains no template action"; fi
 done
 
+# The rules spec 2026-10-16 adds: both shapes the path-resolution guard denies, the plan
+# workspace cleaner, and progress on a long run. Each is a fixed string on one line.
+need() { # need <fragment> <fixed text> <label>
+  if grep -qF -- "$2" "$FRAG/$1"; then _pass "$3"; else _fail "$3" "missing: $2"; fi
+}
+need claude-code.md '- **Path-resolution guard.** Never chain commands after a leading `cd`: use absolute paths' \
+  "claude-code.md carries the path-resolution guard rule"
+need claude-code.md '  or `git -C`; a lone `cd` lasts only in the main session. Name directories, not a recursive' \
+  "the path-resolution rule says a lone cd lasts only in the main session"
+need claude-code.md '`grep`/`rg` over `.`, which re-prompts in any tree that could hold a deny-glob match.' \
+  "the path-resolution rule keeps the recursive-search shape"
+need claude-code.md '`sdd-clean <workspace>`, never `rm -rf`.' \
+  "claude-code.md deletes a finished plan workspace with sdd-clean"
+need global.md 'to take over about 15 minutes, give its size and ETA at the start and one line per' \
+  "global.md's Momentum rule asks for size and ETA on a long run"
+if grep -qF -- '**Recursive search.**' "$FRAG/claude-code.md"; then
+  _fail "the Recursive search bullet is folded into the path-resolution rule" "still present"
+else
+  _pass "the Recursive search bullet is folded into the path-resolution rule"
+fi
+
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

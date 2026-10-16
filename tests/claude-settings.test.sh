@@ -116,6 +116,10 @@ jq_is '[.permissions.allow[]
       "every allow rule is a complete Bash(spec) or WebFetch(domain:host) form"
 jq_is '.permissions.allow | index("Bash(glab api *)")' null \
       "glab api stays out — it is not read-only"
+# sdd-clean is the one allowlisted command that deletes: it refuses anything but a
+# git-ignored .superpowers/sdd/<plan> workspace (tests/sdd-clean.test.sh pins that).
+jq_is '.permissions.allow | index("Bash(sdd-clean *)") != null' true \
+      "sdd-clean is allowlisted, so a finished plan's cleanup needs no prompt"
 
 echo "B. layer 1 — read/edit pairing on every secret pattern"
 for p in '**/secrets.*.yml' '**/.env.production*' '**/*.key' '**/*.pem' \

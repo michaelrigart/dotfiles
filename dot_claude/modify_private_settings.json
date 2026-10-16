@@ -77,6 +77,9 @@ printf '%s' "$input" | jq \
           "Bash(glab auth status)",
           "Bash(chezmoi diff)",       "Bash(chezmoi diff *)",
           "Bash(chezmoi status)",     "Bash(chezmoi status *)",
+          # sdd-clean deletes only a git-ignored .superpowers/sdd/<plan> workspace and
+          # refuses anything else, so cleaning up a finished plan needs no prompt.
+          "Bash(sdd-clean *)",
           # NOTE: no chezmoi cat here. It runs op unsandboxed and can render private
           # keys, so it goes to the auto-mode classifier like any other command.
           # Basecamp: read-only verbs only. These were auto-learned into
