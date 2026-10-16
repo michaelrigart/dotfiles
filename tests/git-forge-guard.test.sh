@@ -771,14 +771,44 @@ fi
 # The guard's PATH is pinned: a git first on the caller's PATH must never run.
 EVIL="$TMP/evilbin"; mkdir -p "$EVIL"
 printf '#!/bin/sh\ntouch "%s/evil-marker"\nexec /usr/bin/git "$@"\n' "$TMP" > "$EVIL/git"; chmod 755 "$EVIL/git"
-( PATH="$EVIL:$PATH"; unset PINNED_PATH
-  jq -n --arg c 'git push origin work' --arg d "$DEL" \
+PINNED_OUT=$( PATH="$EVIL:$PATH"; unset PINNED_PATH
+  jq -n --arg c 'git push origin work' --arg d "$LAZY" \
     '{hook_event_name:"PreToolUse",tool_name:"Bash",cwd:$d,tool_input:{command:$c}}' \
-    | bash "$GUARD" >/dev/null )
+    | bash "$GUARD" )
 if [ -e "$TMP/evil-marker" ]; then
   fail=$((fail + 1)); printf '  FAIL %s\n' "the guard ran a git from the caller's PATH"
 else
   pass=$((pass + 1)); printf '  ok   %s\n' "the guard's PATH is pinned"
+fi
+# ...and the pin costs the guard nothing: its verdict is the usual one (the same deny
+# the suite's own PATH gets for this repository).
+if [ -n "$PINNED_OUT" ] && [ "$PINNED_OUT" = "$(run "$LAZY" 'git push origin work')" ] \
+   && printf '%s' "$PINNED_OUT" | jq -e '.hookSpecificOutput.permissionDecision=="deny"' >/dev/null 2>&1; then
+  pass=$((pass + 1)); printf '  ok   %s\n' "under the pinned PATH the verdict is the usual deny"
+else
+  fail=$((fail + 1)); printf '  FAIL %s (said: %s)\n' "under the pinned PATH the verdict is not the usual deny" "$PINNED_OUT"
+fi
+
+# Lazy fetch is off for the patch listing and gitleaks too: the repository's configuration
+# stays agent-writable, so a promisor remote is never trusted. The outgoing commit's tree
+# names a blob that is not present (git mktree --missing), so reading its patch would fetch
+# it from the promisor remote, whose uploadpack writes a marker. The push is denied (the
+# outgoing patches cannot be read: push by hand) and no marker appears.
+LAZYB=$(cp -R "$DEL" "$TMP/dellazyblob" && printf '%s' "$TMP/dellazyblob")
+git -C "$LAZYB" switch -q work
+MISSING_TREE=$(printf '100644 blob 2222222222222222222222222222222222222222\tghost.txt\n' \
+  | git -C "$LAZYB" mktree --missing)
+MISSING_COMMIT=$(git -C "$LAZYB" commit-tree "$MISSING_TREE" -p "$(git -C "$LAZYB" rev-parse work)" -m "missing blob")
+git -C "$LAZYB" update-ref refs/heads/work "$MISSING_COMMIT"
+git -C "$LAZYB" config remote.origin.promisor true
+git -C "$LAZYB" config remote.origin.partialclonefilter blob:none
+git -C "$LAZYB" config remote.origin.uploadpack "touch $TMP/lazyblob-marker; git-upload-pack"
+expect deny "an outgoing commit naming a missing blob, with a promisor remote" "$LAZYB" 'git push origin work'
+has_reason  "and the deny says to push by hand" "Push by hand" "$LAZYB" 'git push origin work'
+if [ -e "$TMP/lazyblob-marker" ]; then
+  fail=$((fail + 1)); printf '  FAIL %s\n' "the patch listing lazy-fetched through the promisor remote"
+else
+  pass=$((pass + 1)); printf '  ok   %s\n' "the patch listing never lazy-fetches"
 fi
 
 # From here on the remote moves: another clone merges far into main and pushes both.

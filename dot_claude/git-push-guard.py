@@ -290,19 +290,18 @@ class Repo:
         self.base = ["git", "-C", cwd] + list(repo_opts)
         self.repo_opts = list(repo_opts)
 
-    def run(self, *args, env=None, long=False, raw=False, lazy=False):
+    def run(self, *args, env=None, long=False, raw=False):
         """stdout of a git query, or None when git fails. env replaces the environment; long
         lifts the per-call limit to what is left of the budget (a patch listing of a large
         push). Output is decoded leniently: git can print any bytes. raw returns the bytes as
         git wrote them, for a patch listing: text mode also turns every CR into a line break.
-        Lazy fetch is off (GIT_NO_LAZY_FETCH) unless lazy is set: a promisor remote that
-        config names would otherwise run its uploadpack, unsandboxed, for a missing object."""
+        Lazy fetch is always off (GIT_NO_LAZY_FETCH): a promisor remote that config names
+        would otherwise run its uploadpack, unsandboxed, for a missing object."""
         remaining = BUDGET - (time.monotonic() - START)
         if remaining <= 0:
             raise Deny(TIMED_OUT)
         env = dict(env if env is not None else os.environ)
-        if not lazy:
-            env["GIT_NO_LAZY_FETCH"] = "1"
+        env["GIT_NO_LAZY_FETCH"] = "1"
         text = {} if raw else {"encoding": "utf-8", "errors": "replace"}
         try:
             p = subprocess.run(self.base + list(args), capture_output=True, env=env, **text,
@@ -983,7 +982,7 @@ def expected_commits(repo, remote, sources, env):
     where gitleaks rightly scanned all 573 outgoing commits."""
     out = repo.run("log", "-p", "-U0", "--no-color", "--format=%x01%H", *PATCH_OPTS,
                    *(list(sources) + ["--not", "--remotes=" + remote]), env=env, long=True,
-                   raw=True, lazy=True)
+                   raw=True)
     if out is None:
         raise Deny("Push guard: git could not list the outgoing commits ({}), so the secret "
                    "scan cannot show it covered them and the push is refused. Push by hand."
@@ -1020,9 +1019,10 @@ def scan(root, remote, sources):
     --mirror) names no refs to compare, so with an exception file present it is refused and
     the refs must be pushed by name. Every git call here runs with
     replace refs off (GIT_NO_REPLACE_OBJECTS), since a push sends the real objects. GITLEAKS_*
-    variables are dropped from the environment for the same reason. Every git call runs with
-    lazy fetch off except the patch listing and gitleaks, which may need blobs in a genuine
-    partial clone; a sandboxed command can no longer configure a promisor remote. Commit and
+    variables are dropped from the environment for the same reason. Lazy fetch is off
+    for every git call and for gitleaks (GIT_NO_LAZY_FETCH): the repository's configuration
+    stays agent-writable, so a promisor remote is never trusted. A genuine blob-filtered
+    partial clone is denied with the "Push by hand" message. Commit and
     annotated-tag messages are not scanned (gitleaks git mode scans patches only)."""
     exe = shutil.which("gitleaks")
     if not exe:
@@ -1034,6 +1034,7 @@ def scan(root, remote, sources):
     # A replace ref swaps an object for another in git log, but pack-objects sends the real
     # one: the scan must read what will be sent, in every git call it makes.
     env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    env["GIT_NO_LAZY_FETCH"] = "1"
     env["GIT_CONFIG_COUNT"] = str(len(GIT_LOG_DEFAULTS))
     for i, (key, value) in enumerate(GIT_LOG_DEFAULTS):
         env["GIT_CONFIG_KEY_%d" % i] = key
