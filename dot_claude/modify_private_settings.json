@@ -366,14 +366,13 @@ printf '%s' "$input" | jq \
             "~/Library/Mobile Documents/iCloud~md~obsidian"
           ],
           # What is written under a work root can run outside the sandbox later: git hooks
-          # and the git files that name commands, and the vault plugins. Scoped to the work
-          # roots, never a bare glob, so git init in TMPDIR keeps working. Objects, refs and
-          # the index stay writable. Built from the same two lists as the allowWrite roots.
+          # (also inside submodules) and the vault plugins. Scoped to the work roots, never
+          # a bare glob, so git init in TMPDIR keeps working. Git configuration files,
+          # objects, refs and the index stay writable, so sandboxed git config, branch -u,
+          # clone and submodule keep working. Hooks only, per spec 83f6b2b.
           "denyWrite": (
             ["~/Code", "~/.local/share/chezmoi", "~/Documents", "~/Library/Mobile Documents/iCloud~md~obsidian"] as $roots
-            | [".git/hooks", ".git/hooks/**", ".git/config", ".git/config.worktree",
-               ".git/modules/**/hooks", ".git/modules/**/hooks/**", ".git/modules/**/config",
-               ".git/modules/**/config.worktree", ".git/worktrees/*/config.worktree"] as $git
+            | [".git/hooks", ".git/hooks/**", ".git/modules/**/hooks", ".git/modules/**/hooks/**"] as $git
             | [$roots[] as $root | $git[] | "\($root)/**/\(.)"]
               + [$git[] | "~/.local/share/chezmoi/\(.)"]
               + ["~/Library/Mobile Documents/iCloud~md~obsidian/Documents/*/.obsidian",

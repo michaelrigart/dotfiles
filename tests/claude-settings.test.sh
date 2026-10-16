@@ -295,13 +295,12 @@ jq_is '[.sandbox.filesystem.allowRead[]
 EXP_ALLOW_WRITE='["~/Code","~/.local/share/chezmoi","~/Documents","~/Library/Mobile Documents/iCloud~md~obsidian"]'
 jq_is ".sandbox.filesystem.allowWrite == $EXP_ALLOW_WRITE" true \
       "allowWrite is exactly the four work roots"
-# denyWrite: in each work root, at any depth, git hooks and the git files that name
-# commands; the chezmoi checkout's own top-level .git; the vault's .obsidian. Objects, refs
-# and the index stay writable, a branch named config or hooks still is, and $TMPDIR is
-# untouched (suites and agents git init there).
-GITFILES='[".git/hooks",".git/hooks/**",".git/config",".git/config.worktree",
- ".git/modules/**/hooks",".git/modules/**/hooks/**",".git/modules/**/config",
- ".git/modules/**/config.worktree",".git/worktrees/*/config.worktree"]'
+# denyWrite: in each work root, at any depth, git hooks only (also inside submodules); the
+# chezmoi checkout's own top-level .git; the vault's .obsidian. Git configuration files,
+# objects, refs and the index stay writable, so sandboxed git config, branch -u, clone and
+# submodule keep working; a branch named config or hooks still is writable, and $TMPDIR is
+# untouched (suites and agents git init there). Michael decided hooks-only, spec 83f6b2b.
+GITFILES='[".git/hooks",".git/hooks/**",".git/modules/**/hooks",".git/modules/**/hooks/**"]'
 ROOTS='["~/Code","~/.local/share/chezmoi","~/Documents","~/Library/Mobile Documents/iCloud~md~obsidian"]'
 EXP_DENY_WRITE=$(jq -cn --argjson g "$GITFILES" --argjson r "$ROOTS" '
   [$r[] as $root | $g[] | "\($root)/**/\(.)"]
@@ -309,13 +308,16 @@ EXP_DENY_WRITE=$(jq -cn --argjson g "$GITFILES" --argjson r "$ROOTS" '
   + ["~/Library/Mobile Documents/iCloud~md~obsidian/Documents/*/.obsidian",
      "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/*/.obsidian/**"]')
 jq_is ".sandbox.filesystem.denyWrite == $EXP_DENY_WRITE" true \
-      "denyWrite is exactly the executing git files in each work root, and .obsidian"
-jq_is '[.sandbox.filesystem.denyWrite[] | select(startswith("**") or startswith("/tmp") or startswith("/private"))] | length' 0 \
-      "no deny glob reaches outside the work roots, so git init in TMPDIR still works"
+      "denyWrite is exactly the git hooks in each work root, and .obsidian"
+jq_is "[.sandbox.filesystem.denyWrite[] | . as \$d
+        | select(any($ROOTS[]; . as \$r | \$d | startswith(\$r + \"/\")) | not)] | length" 0 \
+      "every deny glob starts with a work root and a slash, so git init in TMPDIR still works"
 jq_is '[.sandbox.filesystem.denyWrite[] | select(test("/refs|/objects|/index$"))] | length' 0 \
       "no deny glob reaches refs, objects or the index"
+jq_is '[.sandbox.filesystem.denyWrite[] | select(test("config"))] | length' 0 \
+      "no deny glob reaches a git configuration file"
 jq_is '[.sandbox.filesystem.denyWrite[] | select((test("/\\.git/") or test("/\\.obsidian(/|$)")) | not)] | length' 0 \
-      "every deny glob names a git file or .obsidian, never a bare config or hooks name"
+      "every deny glob names a git hooks path or .obsidian, never a bare hooks name"
 jq_is '[.sandbox.filesystem.allowWrite[] | select(test("(^|/)\\.ssh(/|$)") or test("(^|/)\\.aws(/|$)") or test("/op(/|$)"))] | length' 0 \
       "no credential path is writable through allowWrite"
 
