@@ -67,7 +67,7 @@ Controller steps outside the tasks: set the spec's status to `In progress` befor
     # untouched (suites and agents git init there).
     GITFILES='[".git/hooks",".git/hooks/**",".git/config",".git/config.worktree",
      ".git/modules/**/hooks",".git/modules/**/hooks/**",".git/modules/**/config",
-     ".git/worktrees/*/config.worktree"]'
+     ".git/modules/**/config.worktree",".git/worktrees/*/config.worktree"]'
     ROOTS='["~/Code","~/.local/share/chezmoi","~/Documents","~/Library/Mobile Documents/iCloud~md~obsidian"]'
     EXP_DENY_WRITE=$(jq -cn --argjson g "$GITFILES" --argjson r "$ROOTS" '
       [$r[] as $root | $g[] | "\($root)/**/\(.)"]
@@ -78,8 +78,10 @@ Controller steps outside the tasks: set the spec's status to `In progress` befor
           "denyWrite is exactly the executing git files in each work root, and .obsidian"
     jq_is '[.sandbox.filesystem.denyWrite[] | select(startswith("**") or startswith("/tmp") or startswith("/private"))] | length' 0 \
           "no deny glob reaches outside the work roots, so git init in TMPDIR still works"
-    jq_is '[.sandbox.filesystem.denyWrite[] | select(test("refs|objects|(^|/)\\*\\*/config$|(^|/)\\*\\*/hooks$"))] | length' 0 \
-          "no deny glob reaches refs, objects, or a bare **/config or **/hooks"
+    jq_is '[.sandbox.filesystem.denyWrite[] | select(test("/refs|/objects|/index$"))] | length' 0 \
+          "no deny glob reaches refs, objects or the index"
+    jq_is '[.sandbox.filesystem.denyWrite[] | select((test("/\\.git/") or test("/\\.obsidian(/|$)")) | not)] | length' 0 \
+          "every deny glob names a git file or .obsidian, never a bare config or hooks name"
     jq_is '[.sandbox.filesystem.allowWrite[] | select(test("(^|/)\\.ssh(/|$)") or test("(^|/)\\.aws(/|$)") or test("/op(/|$)"))] | length' 0 \
           "no credential path is writable through allowWrite"
     ```
@@ -105,7 +107,7 @@ Controller steps outside the tasks: set the spec's status to `In progress` befor
       ["~/Code", "~/.local/share/chezmoi", "~/Documents", "~/Library/Mobile Documents/iCloud~md~obsidian"] as $roots
       | [".git/hooks", ".git/hooks/**", ".git/config", ".git/config.worktree",
          ".git/modules/**/hooks", ".git/modules/**/hooks/**", ".git/modules/**/config",
-         ".git/worktrees/*/config.worktree"] as $git
+         ".git/modules/**/config.worktree", ".git/worktrees/*/config.worktree"] as $git
       | [$roots[] as $root | $git[] | "\($root)/**/\(.)"]
         + [$git[] | "~/.local/share/chezmoi/\(.)"]
         + ["~/Library/Mobile Documents/iCloud~md~obsidian/Documents/*/.obsidian",
@@ -318,13 +320,18 @@ Controller steps outside the tasks: set the spec's status to `In progress` befor
   for t in jq git herdr python3; do
     printf '#!/bin/sh\necho %s >> "%s/hostile-marker"\nexit 0\n' "$t" "$ROOT" > "$HOSTILE/$t"; chmod 755 "$HOSTILE/$t"
   done
-  out="$( (unset PINNED_PATH; HOME="$ROOT/hosthome" PATH="$HOSTILE:$PATH" bash "$XREVIEW" round) 2>&1)"
-  is "P1 xreview round runs with a hostile PATH and no PINNED_PATH" "$( [ -e "$ROOT/hostile-marker" ] && cat "$ROOT/hostile-marker" | tr '\n' ' ' || echo clean)" clean
+  # bash itself is on the hostile list, and xreview runs as an executable, the way the Bash
+  # tool runs an excluded command: its shebang must not resolve bash through PATH.
+  printf '#!/bin/sh\necho bash >> "%s/hostile-marker"\nexit 0\n' "$ROOT" > "$HOSTILE/bash"; chmod 755 "$HOSTILE/bash"
+  cp "$XREVIEW" "$ROOT/xreview-exec"; chmod 755 "$ROOT/xreview-exec"
+  out="$( (unset PINNED_PATH; HOME="$ROOT/hosthome" PATH="$HOSTILE:$PATH" "$ROOT/xreview-exec" round) 2>&1)"
+  is "P1 xreview round runs with a hostile PATH (bash included) and no PINNED_PATH" "$( [ -e "$ROOT/hostile-marker" ] && cat "$ROOT/hostile-marker" | tr '\n' ' ' || echo clean)" clean
   is "P2 and still answers" "$(printf '%s' "$out" | grep -c '^[0-9]')" 1
   ```
   In `tests/xreview-rpc.test.sh`, add the analogous case for one `xreview-rpc` subcommand that needs no daemon (pick one the suite already exercises against its stubs), asserting the hostile marker is absent.
 - [ ] **Step 3: Run** both suites — the new cases FAIL.
 - [ ] **Step 4: Implement.**
+  - `executable_xreview` line 1: `#!/usr/bin/env bash` becomes `#!/opt/homebrew/bin/bash`, so the Bash tool's direct run of the excluded command never resolves `bash` through `PATH` (a mise shim would load a repository's `mise.toml` before the pin below runs). `executable_codex-daemon` (`#!/bin/sh`) and `executable_xreview-rpc` (`#!/usr/bin/python3`) already name absolute interpreters.
   - `executable_xreview`, right after `set -euo pipefail` (line 19):
     ```bash
     # Runs outside the sandbox (an excluded command), so it resolves no mise shim, which would
@@ -378,8 +385,8 @@ Controller steps outside the tasks: set the spec's status to `In progress` befor
   _fail() { print "  FAIL: $1\n    | got: $2"; (( fail++ )) }
   T=$(mktemp -d "${TMPDIR:-/tmp}/chezmoi-wrapper.XXXXXX")
   trap 'rm -rf "$T"' EXIT
-  export GIT_CONFIG_GLOBAL=$T/gitconfig GIT_CONFIG_NOSYSTEM=1 TMPDIR=$T/tmp
-  mkdir -p $T/tmp $T/bin
+  export GIT_CONFIG_GLOBAL=$T/gitconfig GIT_CONFIG_NOSYSTEM=1 TMPDIR=$T/tmp XDG_CACHE_HOME=$T/cache
+  mkdir -p $T/tmp $T/bin $T/cache
   print -r -- $'[user]\n\tname = t\n\temail = t@t\n[commit]\n\tgpgsign = false\n[init]\n\tdefaultBranch = main' > $GIT_CONFIG_GLOBAL
 
   # The stub: `chezmoi source-path` prints the checkout; anything else logs its arguments and
@@ -390,6 +397,7 @@ Controller steps outside the tasks: set the spec's status to `In progress` befor
   src=""; prev=""
   for a in "$@"; do [ "$prev" = --source ] && src=$a; prev=$a; done
   printf 'ARGS %s\n' "$*" > "$LOG"
+  printf 'TMPDIR %s\n' "$TMPDIR" >> "$LOG"
   if [ -n "$src" ]; then printf 'SOURCE %s\n' "$src" >> "$LOG"; ls -A "$src" >> "$LOG"; else echo WORKTREE >> "$LOG"; fi
   EOF
   chmod 755 $T/bin/chezmoi
@@ -406,11 +414,20 @@ Controller steps outside the tasks: set the spec's status to `In progress` befor
 
   fresh() { rm -rf $T/co; git clone -q $T/origin.git $T/co 2>/dev/null; export CHECKOUT=$T/co; rm -f $LOG }
   applied_clone() { [[ -f $LOG ]] && grep -q '^SOURCE ' $LOG && grep -qx dot_testfile $LOG && ! grep -q "$1" $LOG }
-  tmp_clean() { [[ -z $(ls -A $T/tmp) ]] }
+  tmp_clean() { [[ ! -d $T/cache/chezmoi-apply || -z $(ls -A $T/cache/chezmoi-apply) ]] }
 
   fresh; chezmoi apply >/dev/null 2>&1
-  if applied_clone NOPE && grep -q "^ARGS --source .* apply$" $LOG && tmp_clean; then _pass "a clean main equal to origin applies a fresh clone"
-  else _fail "clean main applies a fresh clone" "$(cat $LOG 2>/dev/null)"; fi
+  if applied_clone NOPE && grep -q "^ARGS --source $T/cache/chezmoi-apply/run\..*/src apply$" $LOG \
+     && grep -q "^TMPDIR $T/cache/chezmoi-apply/run\..*/tmp$" $LOG && tmp_clean; then
+    _pass "a clean main equal to origin applies a fresh clone kept under the cache, with chezmoi's TMPDIR there"
+  else _fail "clean main applies a fresh clone under the cache" "$(cat $LOG 2>/dev/null)"; fi
+  fresh; chezmoi -v apply >/dev/null 2>&1
+  applied_clone NOPE && _pass "a global flag before apply still takes the wrapper's path" || _fail "-v apply" "$(cat $LOG 2>/dev/null)"
+  for form in "--source $T/co apply" "apply --source $T/co" "-S $T/co apply" "apply --config $T/x.toml"; do
+    fresh; err=$(chezmoi ${=form} 2>&1 >/dev/null); rc=$?
+    (( rc == 1 )) && [[ $err == *"the wrapper chooses the source"* ]] && [[ ! -e $LOG ]] \
+      && _pass "chezmoi $form is refused" || _fail "chezmoi $form is refused" "rc=$rc err=$err"
+  done
   fresh; chezmoi apply --dry-run --verbose >/dev/null 2>&1
   grep -q -- '--dry-run --verbose' $LOG 2>/dev/null && applied_clone NOPE && _pass "the dry-run preview takes the same path" || _fail "dry-run" "$(cat $LOG 2>/dev/null)"
 
@@ -465,8 +482,17 @@ Controller steps outside the tasks: set the spec's status to `In progress` befor
   # --dirty-ok applies the working tree anyway, for a deliberate local change.
   chezmoi() {
     local -a args=("$@")
-    local sub="" a
-    for a in "${args[@]}"; do [[ $a == -* ]] || { sub=$a; break }; done
+    local sub="" a skip=0
+    # The subcommand is the first word that is neither an option nor an option's value.
+    for a in "${args[@]}"; do
+      if (( skip )); then skip=0; continue; fi
+      case $a in
+        -S|-W|-c|-D|-o|--source|--working-tree|--config|--destination|--output|--cache|\
+        --config-format|--color|--mode|--persistent-state|--override-data|--override-data-file) skip=1 ;;
+        -*) ;;
+        *) sub=$a; break ;;
+      esac
+    done
     case $sub in
       apply|update) ;;
       init|edit)
@@ -480,7 +506,15 @@ Controller steps outside the tasks: set the spec's status to `In progress` befor
     if (( ${args[(Ie)--dirty-ok]} )); then
       command chezmoi "${(@)args:#--dirty-ok}"; return
     fi
-    local src st want head url tmp
+    # An option that picks the source or the configuration would undo the choice below.
+    for a in "${args[@]}"; do
+      case $a in
+        -S*|--source|--source=*|-W*|--working-tree|--working-tree=*|-c*|--config|--config=*)
+          print -u2 "chezmoi: refusing $sub with $a: the wrapper chooses the source (--dirty-ok passes everything through)"
+          return 1 ;;
+      esac
+    done
+    local src st want head url tmp base
     src=$(command chezmoi source-path) || return
     if [[ $sub == update ]]; then
       git -C "$src" pull -q --ff-only || { print -u2 "chezmoi: git pull --ff-only failed in $src"; return 1 }
@@ -503,7 +537,11 @@ Controller steps outside the tasks: set the spec's status to `In progress` befor
       return 1
     }
     url=$(git -C "$src" remote get-url origin) || return
-    tmp=$(mktemp -d "${TMPDIR:-/tmp}/chezmoi-apply.XXXXXX") || return
+    # The clone lives where the sandbox cannot write (~/.cache is outside its write set), and
+    # chezmoi writes its scripts there too: nothing sandboxed can change them between the check
+    # and the apply.
+    base=${XDG_CACHE_HOME:-$HOME/.cache}/chezmoi-apply
+    mkdir -p -m 700 "$base" && tmp=$(mktemp -d "$base/run.XXXXXX") || return
     {
       GIT_NO_REPLACE_OBJECTS=1 git clone -q --depth 1 --branch main --template= -- "$url" "$tmp/src" \
         || { print -u2 "chezmoi: cannot clone origin's main"; return 1 }
@@ -511,7 +549,7 @@ Controller steps outside the tasks: set the spec's status to `In progress` befor
         || { print -u2 "chezmoi: origin's main moved during the clone; run it again"; return 1 }
       print -u2 "chezmoi: applying origin's main ${want[1,12]} from a fresh clone"
       [[ $sub == update ]] && args[${args[(i)update]}]=apply
-      command chezmoi --source "$tmp/src" "${args[@]}"
+      mkdir -p "$tmp/tmp" && TMPDIR="$tmp/tmp" command chezmoi --source "$tmp/src" "${args[@]}"
     } always {
       rm -rf -- "$tmp"
     }
@@ -567,12 +605,14 @@ Controller steps outside the tasks: set the spec's status to `In progress` befor
   for root in "$HOME/Code" "$HOME/.local/share/chezmoi" "$HOME/Documents"; do
     k=$(basename "$root" | tr -c 'a-zA-Z0-9\n' '_')
     g="$root/$stamp/.git"
-    if mkdir -p "$g/objects" "$g/refs/heads" "$g/modules/sub" "$g/worktrees/wt" 2>/dev/null; then
+    if mkdir -p "$g/objects" "$g/refs/heads" "$g/modules/sub/worktrees/swt" "$g/worktrees/wt" 2>/dev/null; then
       denied "${k}_git_hooks" "$g/hooks/"
       denied "${k}_git_config" "$g/config"
       denied "${k}_git_config_worktree" "$g/config.worktree"
       denied "${k}_git_module_hooks" "$g/modules/sub/hooks/"
       denied "${k}_git_module_config" "$g/modules/sub/config"
+      denied "${k}_git_module_config_worktree" "$g/modules/sub/config.worktree"
+      denied "${k}_git_module_worktree_config" "$g/modules/sub/worktrees/swt/config.worktree"
       denied "${k}_git_worktree_config" "$g/worktrees/wt/config.worktree"
       allowed "${k}_git_objects" "$g/objects/$stamp"
       allowed "${k}_git_branch_named_config" "$g/refs/heads/config"
@@ -586,6 +626,10 @@ Controller steps outside the tasks: set the spec's status to `In progress` befor
   tg="${TMPDIR:-/tmp}/$stamp/.git"
   if mkdir -p "$tg" 2>/dev/null; then allowed tmpdir_git_config "$tg/config"; rm -rf "${TMPDIR:-/tmp}/$stamp"
   else echo "tmpdir_root=DENIED"; fail=$((fail + 1)); fi
+  # The chezmoi wrapper clones into ~/.cache/chezmoi-apply and points chezmoi's TMPDIR there:
+  # the sandbox must not be able to touch that clone between the check and the apply.
+  denied cache_chezmoi_apply "$HOME/.cache/chezmoi-apply/$stamp"
+  denied cache "$HOME/.cache/$stamp"
   allowed code "$HOME/Code/$stamp"
   allowed chezmoi_source "$HOME/.local/share/chezmoi/$stamp"
   allowed documents "$HOME/Documents/$stamp"
