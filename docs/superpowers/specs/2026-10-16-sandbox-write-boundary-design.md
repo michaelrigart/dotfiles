@@ -79,14 +79,25 @@ these places should cost no escapes.
     that needs a tool from `~/.local/bin` calls it by absolute path; with §1 that directory is
     no longer sandbox-writable.
   - The suites still stub a tool (the statusline's `tagteam`, for one) through an override
-    variable. The script reads that variable only from its own environment, which Claude Code
-    sets and no sandboxed command can change.
+    variable, `PINNED_PATH`. The script reads that variable only from its own environment. For
+    a hook that environment is Claude Code's. For an excluded command it is the Bash tool's
+    base environment: a command prefixed with an assignment is no longer excluded, so it runs
+    sandboxed. No sandboxed command can change either environment.
 - **The push guard.** Every git call it makes runs with lazy fetch off
   (`GIT_NO_LAZY_FETCH=1`, which git 2.54 supports), except the gitleaks scan. That scan may
   need blobs in a genuine partial clone, and with §1 no sandboxed command can configure a
   promisor remote any more. This closes the reproduced `rev-list` route.
-- **Excluded commands and launchd jobs** resolve through `~/.local/bin` and `~/.config`, which
-  §1 closes. They need no change.
+- **Excluded commands.**
+  - `docker`, `basecamp` and `herdr` are binaries, so §1 covers them.
+  - `xreview` is a script of ours. It and the helpers it calls (`xreview-rpc`, `codex-daemon`)
+    look up `jq`, `git` and the rest by name, which would reach a mise shim and so a trusted
+    repository's `mise.toml`. They pin
+    `PATH=$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin`, with no mise
+    shims. `~/.local/bin` stays first, so the `codex` launcher still shadows Homebrew's, and §1
+    makes it unwritable.
+- **Launchd jobs** resolve through `~/.local/bin` and `~/.config`, which §1 closes.
+- **The test override.** Every pinned script takes its `PATH` from `PINNED_PATH` when that is
+  set. The suites set it to their stub directories.
 
 ### 3. `chezmoi apply` deploys only reviewed source
 
@@ -143,6 +154,8 @@ A zsh wrapper around `chezmoi` handles `apply` and `update`.
 - **The hooks.** Each hook and the statusline runs with a hostile `PATH`: a directory first on
   it holds `bash`, `jq`, `git` and `python3` stubs that write a marker. No marker may appear.
   The list of hooks comes from the settings themselves, so a new hook without the pin fails.
+  `xreview`, `xreview-rpc` and `codex-daemon` get the same check, with a mise-shim directory
+  holding a stub `jq`.
 - **`git-forge-guard`.** The reproduced lazy fetch: a dangling remote-tracking ref plus a
   promisor remote whose `uploadpack` writes a marker. The push still gets its usual verdict,
   and no marker appears.
