@@ -1,5 +1,7 @@
 # Post-evaluation optimisations Implementation Plan
 
+**Status:** Implemented on `feat/post-evaluation-optimisations`; executed once, do not run again.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Cut the measured friction from the +14-day evaluation: subagents' `cd` denials, status-check turns, `xreview --help` failures and about 40 prompts per two weeks, without adding a prompt.

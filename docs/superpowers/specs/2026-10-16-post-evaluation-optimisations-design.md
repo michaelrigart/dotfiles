@@ -1,6 +1,6 @@
 # Post-evaluation optimisations
 
-**Status:** In progress
+**Status:** Implemented
 **Date:** 2026-10-16
 **Branch:** `feat/post-evaluation-optimisations`
 
