@@ -31,8 +31,8 @@ if ! printf '%s' "$input" | jq empty >/dev/null 2>&1 \
 fi
 
 printf '%s' "$input" | jq \
-  --arg sl "bash $HOME/.claude/statusline.sh" \
-  --arg herdr_hook "bash '$HOME/.claude/hooks/herdr-agent-state.sh' session" \
+  --arg sl "/opt/homebrew/bin/bash $HOME/.claude/statusline.sh" \
+  --arg herdr_hook "/opt/homebrew/bin/bash '$HOME/.claude/hooks/herdr-agent-state.sh' session" \
   --arg agent_socket "$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock" \
   --arg tool_path "$HOME/.local/bin:$HOME/.local/share/mise/shims:$HOME/.cargo/bin:/opt/homebrew/bin:/opt/homebrew/sbin:$HOME/.krew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" '
   # Start from the LIVE file and overlay the owned keys with +, which replaces each named
@@ -234,7 +234,7 @@ printf '%s' "$input" | jq \
             "hooks": [
               {
                 "type": "command",
-                "command": "bash $HOME/.claude/hooks/memory-health.sh",
+                "command": "/opt/homebrew/bin/bash $HOME/.claude/hooks/memory-health.sh",
                 "timeout": 10
               }
             ]
@@ -266,31 +266,31 @@ printf '%s' "$input" | jq \
           {
             "matcher": "Bash",
             "hooks": [
-              { "type": "command", "command": "bash $HOME/.claude/git-forge-guard.sh", "timeout": 60 }
+              { "type": "command", "command": "/opt/homebrew/bin/bash $HOME/.claude/git-forge-guard.sh", "timeout": 60 }
             ]
           },
           {
             "matcher": "Bash",
             "hooks": [
-              { "type": "command", "command": "bash $HOME/.claude/worktree-guard.sh" }
+              { "type": "command", "command": "/opt/homebrew/bin/bash $HOME/.claude/worktree-guard.sh" }
             ]
           },
           {
             "matcher": "Bash",
             "hooks": [
-              { "type": "command", "command": "bash $HOME/.claude/xreview-guard.sh", "timeout": 60 }
+              { "type": "command", "command": "/opt/homebrew/bin/bash $HOME/.claude/xreview-guard.sh", "timeout": 60 }
             ]
           },
           {
             "matcher": "*",
             "hooks": [
-              { "type": "command", "command": "bash $HOME/.claude/xreview-apply-guard.sh" }
+              { "type": "command", "command": "/opt/homebrew/bin/bash $HOME/.claude/xreview-apply-guard.sh" }
             ]
           },
           {
             "matcher": "Bash",
             "hooks": [
-              { "type": "command", "command": "bash $HOME/.claude/path-resolution-guard.sh" }
+              { "type": "command", "command": "/opt/homebrew/bin/bash $HOME/.claude/path-resolution-guard.sh" }
             ]
           }
         ],
@@ -301,7 +301,7 @@ printf '%s' "$input" | jq \
           {
             "matcher": "*",
             "hooks": [
-              { "type": "command", "command": "bash $HOME/.claude/hooks/prompt-audit.sh" }
+              { "type": "command", "command": "/opt/homebrew/bin/bash $HOME/.claude/hooks/prompt-audit.sh" }
             ]
           }
         ]
@@ -355,14 +355,29 @@ printf '%s' "$input" | jq \
             "~/.ssh/michael_rsa.pub",
             "~/.ssh/viumore_rsa.pub"
           ],
+          # Ordinary work only: source trees, the chezmoi source, documents and the vault.
+          # ~/.config and ~/.local/bin are out on purpose (spec 2026-10-16, sandbox write
+          # boundary): what is written there runs later outside the sandbox, as shell
+          # startup, git, mise, herdr, the hooks and the excluded commands.
           "allowWrite": [
             "~/Code",
             "~/.local/share/chezmoi",
-            "~/.local/bin",
-            "~/.config",
             "~/Documents",
             "~/Library/Mobile Documents/iCloud~md~obsidian"
-          ]
+          ],
+          # What is written under a work root can run outside the sandbox later: git hooks
+          # and the git files that name commands, and the vault plugins. Scoped to the work
+          # roots, never a bare glob, so git init in TMPDIR keeps working. Objects, refs and
+          # the index stay writable. Built from the same two lists as the allowWrite roots.
+          "denyWrite": (
+            ["~/Code", "~/.local/share/chezmoi", "~/Documents", "~/Library/Mobile Documents/iCloud~md~obsidian"] as $roots
+            | [".git/hooks", ".git/hooks/**", ".git/config", ".git/config.worktree",
+               ".git/modules/**/hooks", ".git/modules/**/hooks/**", ".git/modules/**/config",
+               ".git/modules/**/config.worktree", ".git/worktrees/*/config.worktree"] as $git
+            | [$roots[] as $root | $git[] | "\($root)/**/\(.)"]
+              + [$git[] | "~/.local/share/chezmoi/\(.)"]
+              + ["~/Library/Mobile Documents/iCloud~md~obsidian/Documents/*/.obsidian",
+                 "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/*/.obsidian/**"])
         },
         # strictAllowlist is what makes this list DO anything: without it non-listed
         # hosts are merely prompted, and autoAllowBashIfSandboxed suppresses that prompt

@@ -120,6 +120,14 @@ jq_is '.permissions.allow | index("Bash(glab api *)")' null \
 # git-ignored .superpowers/sdd/<plan> workspace (tests/sdd-clean.test.sh pins that).
 jq_is '.permissions.allow | index("Bash(sdd-clean *)") != null' true \
       "sdd-clean is allowlisted, so a finished plan's cleanup needs no prompt"
+# Hooks and the statusline run outside the sandbox: their interpreter is named by absolute
+# path, so nothing on PATH can stand in for it (spec 2026-10-16, section 2).
+jq_is '[.hooks[][]?.hooks[]?.command, .statusLine.command
+        | select(test("^(bash|sh|zsh|python3?) "))] | length' 0 \
+      "no hook or statusline command starts with a bare interpreter"
+jq_is '[.hooks[][]?.hooks[]?.command, .statusLine.command
+        | select(test("\\.(sh|py)\\b")) | select(startswith("/opt/homebrew/bin/bash ") | not)] | length' 0 \
+      "every hook and statusline script runs under /opt/homebrew/bin/bash"
 
 echo "B. layer 1 — read/edit pairing on every secret pattern"
 for p in '**/secrets.*.yml' '**/.env.production*' '**/*.key' '**/*.pem' \
@@ -280,18 +288,36 @@ jq_is ".sandbox.filesystem.allowRead | sort == ($EXP_ALLOW_READ | sort)" true \
 jq_is '[.sandbox.filesystem.allowRead[]
         | select((endswith(".pub") or . == "~/.ssh/config" or . == "~/.ssh/known_hosts") | not)]
        | length' 0 "no private key path is readable through allowRead"
-# allowWrite exists so ordinary work (source trees, chezmoi source + its apply targets, the
-# Obsidian vault) runs INSIDE the sandbox instead of escaping it — 24% of Bash calls were
-# escaping, and every escape hit the ask-gate. Widening writes is not a credential decision:
-# credentials.files and the Read/Edit denials outrank allowWrite, which section F above and
-# live-credential-boundary.test.sh both pin. What must never appear here is an SSH, AWS, or
-# op path — that would be a write exception over a denied credential.
-jq_is '.sandbox.filesystem.allowWrite | length > 0' true "allowWrite is present so routine work stays sandboxed"
-jq_is '[.sandbox.filesystem.allowWrite[]
-        | select(test("(^|/)\\.ssh(/|$)") or test("(^|/)\\.aws(/|$)") or test("/op(/|$)"))]
-       | length' 0 "no credential path is writable through allowWrite"
-jq_is '.sandbox.filesystem.allowWrite | index("~") != null' false \
-      "allowWrite is scoped, never all of \$HOME"
+# allowWrite keeps ordinary work sandboxed: source trees, the chezmoi source, documents and
+# the vault. ~/.config and ~/.local/bin are out (spec 2026-10-16, sandbox write boundary):
+# what is written there runs later outside the sandbox — shells, git, mise, herdr, the
+# hooks, the excluded commands. Credential denials still outrank allowWrite.
+EXP_ALLOW_WRITE='["~/Code","~/.local/share/chezmoi","~/Documents","~/Library/Mobile Documents/iCloud~md~obsidian"]'
+jq_is ".sandbox.filesystem.allowWrite == $EXP_ALLOW_WRITE" true \
+      "allowWrite is exactly the four work roots"
+# denyWrite: in each work root, at any depth, git hooks and the git files that name
+# commands; the chezmoi checkout's own top-level .git; the vault's .obsidian. Objects, refs
+# and the index stay writable, a branch named config or hooks still is, and $TMPDIR is
+# untouched (suites and agents git init there).
+GITFILES='[".git/hooks",".git/hooks/**",".git/config",".git/config.worktree",
+ ".git/modules/**/hooks",".git/modules/**/hooks/**",".git/modules/**/config",
+ ".git/modules/**/config.worktree",".git/worktrees/*/config.worktree"]'
+ROOTS='["~/Code","~/.local/share/chezmoi","~/Documents","~/Library/Mobile Documents/iCloud~md~obsidian"]'
+EXP_DENY_WRITE=$(jq -cn --argjson g "$GITFILES" --argjson r "$ROOTS" '
+  [$r[] as $root | $g[] | "\($root)/**/\(.)"]
+  + [$g[] | "~/.local/share/chezmoi/\(.)"]
+  + ["~/Library/Mobile Documents/iCloud~md~obsidian/Documents/*/.obsidian",
+     "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/*/.obsidian/**"]')
+jq_is ".sandbox.filesystem.denyWrite == $EXP_DENY_WRITE" true \
+      "denyWrite is exactly the executing git files in each work root, and .obsidian"
+jq_is '[.sandbox.filesystem.denyWrite[] | select(startswith("**") or startswith("/tmp") or startswith("/private"))] | length' 0 \
+      "no deny glob reaches outside the work roots, so git init in TMPDIR still works"
+jq_is '[.sandbox.filesystem.denyWrite[] | select(test("/refs|/objects|/index$"))] | length' 0 \
+      "no deny glob reaches refs, objects or the index"
+jq_is '[.sandbox.filesystem.denyWrite[] | select((test("/\\.git/") or test("/\\.obsidian(/|$)")) | not)] | length' 0 \
+      "every deny glob names a git file or .obsidian, never a bare config or hooks name"
+jq_is '[.sandbox.filesystem.allowWrite[] | select(test("(^|/)\\.ssh(/|$)") or test("(^|/)\\.aws(/|$)") or test("/op(/|$)"))] | length' 0 \
+      "no credential path is writable through allowWrite"
 
 echo "G. layer 4 — escape routes"
 emit '{}'
@@ -462,29 +488,29 @@ hook_matchers() {
 }
 emit '{}'
 for g in git-forge-guard worktree-guard xreview-guard path-resolution-guard; do
-  got=$(hook_matchers PreToolUse "bash \$HOME/.claude/$g.sh")
+  got=$(hook_matchers PreToolUse "/opt/homebrew/bin/bash \$HOME/.claude/$g.sh")
   if [ "$got" = "Bash" ]; then _pass "$g runs once, on the Bash tool"; else _fail "$g runs once, on the Bash tool" "$got"; fi
 done
 # The apply-window guard inspects Edit/Write, so it must match every tool.
-got=$(hook_matchers PreToolUse 'bash $HOME/.claude/xreview-apply-guard.sh')
+got=$(hook_matchers PreToolUse '/opt/homebrew/bin/bash $HOME/.claude/xreview-apply-guard.sh')
 if [ "$got" = "*" ]; then _pass "xreview-apply-guard runs once, on every tool"; else _fail "xreview-apply-guard runs once, on every tool" "$got"; fi
 jq_is '.hooks.PreToolUse | length' 5 "no PreToolUse entry beyond the five guards"
 # The forge guard shells out to glab, git and gitleaks (the push helper alone has a 30 s
 # budget), so its hook limit is explicit rather than left to the runtime default.
-jq_is '[.hooks.PreToolUse[].hooks[] | select(.command == "bash $HOME/.claude/git-forge-guard.sh") | .timeout] | join(",")' 60 \
+jq_is '[.hooks.PreToolUse[].hooks[] | select(.command == "/opt/homebrew/bin/bash $HOME/.claude/git-forge-guard.sh") | .timeout] | join(",")' 60 \
       "the forge guard hook carries an explicit 60 s timeout"
 # The pre-merge guard reads origin (git ls-remote) and the forge (glab, gh). It gives up at
 # 40 s, inside this limit: a hook that outruns its timeout is treated as non-blocking.
-jq_is '[.hooks.PreToolUse[].hooks[] | select(.command == "bash $HOME/.claude/xreview-guard.sh") | .timeout] | join(",")' 60 \
+jq_is '[.hooks.PreToolUse[].hooks[] | select(.command == "/opt/homebrew/bin/bash $HOME/.claude/xreview-guard.sh") | .timeout] | join(",")' 60 \
       "the pre-merge guard hook carries an explicit 60 s timeout"
 # The SessionStart hooks must survive alongside them — adding PreToolUse replaced the
 # whole hooks object once during development.
 jq_is '.hooks.SessionStart | length' 3 "all three SessionStart hooks present"
 jq_is '[.hooks.SessionStart[] | select(has("matcher") | not) | .hooks[]
-        | select(.command == "bash $HOME/.claude/hooks/memory-health.sh" and .timeout == 10)] | length' 1 \
+        | select(.command == "/opt/homebrew/bin/bash $HOME/.claude/hooks/memory-health.sh" and .timeout == 10)] | length' 1 \
       "the memory health hook: no matcher, timeout 10"
 jq_is "[.hooks.SessionStart[] | select(.matcher == \"*\") | .hooks[]
-        | select(.command == \"bash '$HOME/.claude/hooks/herdr-agent-state.sh' session\" and .timeout == 10)] | length" 1 \
+        | select(.command == \"/opt/homebrew/bin/bash '$HOME/.claude/hooks/herdr-agent-state.sh' session\" and .timeout == 10)] | length" 1 \
       "the herdr agent-state hook: absolute path, session arg, installer matcher and timeout"
 
 echo "O. basecamp is allowlisted read-only"
@@ -573,7 +599,7 @@ jq_is '.statusLine.command | endswith("/.claude/statusline.sh")' true "the main 
 
 echo "R. every permission prompt is audited, never decided"
 emit '{}'
-got=$(hook_matchers PermissionRequest 'bash $HOME/.claude/hooks/prompt-audit.sh')
+got=$(hook_matchers PermissionRequest '/opt/homebrew/bin/bash $HOME/.claude/hooks/prompt-audit.sh')
 if [ "$got" = "*" ]; then _pass "the prompt-audit hook runs once, on every tool"; else _fail "the prompt-audit hook runs once, on every tool" "$got"; fi
 jq_is '.hooks.PermissionRequest | length' 1 "no other PermissionRequest hook"
 
