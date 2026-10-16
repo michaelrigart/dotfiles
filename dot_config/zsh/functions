@@ -87,8 +87,12 @@ op-edit() {
   done < <(grep -rlF "op://$vault/$item/" "$src" --include='*.tmpl' 2>/dev/null)
 
   if (( ${#targets} )); then
-    chezmoi apply "${targets[@]}" \
-      && print -r -- "✓ '$item' updated → applied: ${targets[*]/#$HOME/~}"
+    if chezmoi apply "${targets[@]}"; then
+      print -r -- "✓ '$item' updated → applied: ${targets[*]/#$HOME/~}"
+    else
+      print -ru2 -- "op-edit: '$item' is updated, but the apply did not run; re-apply the targets with chezmoi apply <targets> from a clean main."
+      return 1
+    fi
   else
     print -r -- "✓ '$item' updated."
   fi
@@ -1272,16 +1276,19 @@ wt-rm() {
 # section 3). The checkout cannot prove what was reviewed: a sandboxed command can commit to
 # it, hide files from git status, add replace refs or forge objects. So the checkout must be a
 # clean main equal to origin's, and chezmoi reads a fresh clone of that commit instead of it.
+# Origin is the pinned URL below, never the checkout's remote.origin.url, which the sandbox can
+# write. CHEZMOI_REVIEWED_ORIGIN overrides it from the wrapper's own environment, for the suite.
 # --dirty-ok applies the working tree anyway, for a deliberate local change.
 # _chezmoi_short <token> <letters>: true when <token> is a single-dash option group that names
-# one of <letters> before a letter taking a value (c, D, o, S, W: the rest is that value).
+# one of <letters> before a letter taking a value (c, C, d, D, i, o, S, W, x: the rest is that
+# value).
 _chezmoi_short() {
   local t=${1#-} c
   [[ $1 == -[!-]* ]] || return 1
   while [[ -n $t ]]; do
     c=${t[1]}; t=${t[2,-1]}
     [[ $2 == *$c* ]] && return 0
-    [[ $c == [cDoSW] ]] && return 1
+    [[ $c == [cCdDioSWx] ]] && return 1
   done
   return 1
 }
@@ -1301,13 +1308,27 @@ chezmoi() {
   case $sub in
     apply|update) ;;
     init|edit)
-      # --apply in any spelling: --apply, --apply=<value>, or -a anywhere in a short-option group.
+      # Every spelling that would apply the working tree: --apply, --one-shot, --watch (each
+      # also as --flag=<value>) and -a anywhere in a short-option group.
       for a in "${args[@]:1}"; do
         if [[ $a == --apply || $a == --apply=* ]] || _chezmoi_short "$a" a; then
           print -u2 "chezmoi: $sub --apply is refused; run chezmoi apply, which deploys origin's main"
           return 1
         fi
+        if [[ $sub == init && ( $a == --one-shot || $a == --one-shot=* ) ]]; then
+          print -u2 "chezmoi: init --one-shot is refused; run chezmoi apply, which deploys origin's main"
+          return 1
+        fi
+        if [[ $sub == edit && ( $a == --watch || $a == --watch=* ) ]]; then
+          print -u2 "chezmoi: edit --watch is refused; run chezmoi apply, which deploys origin's main"
+          return 1
+        fi
       done
+      if [[ $sub == init ]]; then
+        # init renders the checkout's .chezmoi.toml.tmpl into the config every later apply trusts.
+        print -u2 "chezmoi: init is refused; run chezmoi apply --init, which renders the config from origin's main"
+        return 1
+      fi
       command chezmoi "$@"; return ;;
     *) command chezmoi "$@"; return ;;
   esac
@@ -1316,44 +1337,53 @@ chezmoi() {
   if (( ${args[(Ie)--dirty-ok]} )); then
     command chezmoi "${(@)args:#--dirty-ok}"; return
   fi
-  # An option that picks the source or the configuration would undo the choice below.
   for a in "${args[@]}"; do
+    # An option that picks the source or the configuration would undo the choice below.
     if [[ $a == (--source|--source=*|--working-tree|--working-tree=*|--config|--config=*) ]] \
        || _chezmoi_short "$a" SWc; then
       print -u2 "chezmoi: refusing $sub with $a: the wrapper chooses the source (--dirty-ok passes everything through)"
       return 1
     fi
+    # update's own flags would be forwarded to apply, which does not know them.
+    if [[ $sub == update ]] && { [[ $a == (--apply|--apply=*|--recurse-submodules|--recurse-submodules=*) ]] \
+       || _chezmoi_short "$a" a }; then
+      print -u2 "chezmoi: refusing update with $a: update-only flags are not supported: the wrapper always pulls origin's main and then applies it"
+      return 1
+    fi
   done
   local src st want head url tmp base
+  local -a g
+  url=${CHEZMOI_REVIEWED_ORIGIN:-git@github.com:michaelrigart/dotfiles.git}
   src=$(command chezmoi source-path) || return
-  if [[ $sub == update ]]; then
-    git -C "$src" pull -q --ff-only || { print -u2 "chezmoi: git pull --ff-only failed in $src"; return 1 }
-  fi
-  [[ $(git -C "$src" symbolic-ref -q --short HEAD) == main ]] \
+  g=(git -c core.fsmonitor=false -C "$src")
+  [[ $("${g[@]}" symbolic-ref -q --short HEAD) == main ]] \
     || { print -u2 "chezmoi: refusing $sub: $src is not on main"; return 1 }
-  st=$(git -C "$src" status --porcelain --untracked-files=all) || return
+  st=$("${g[@]}" status --porcelain --untracked-files=all) || return
   if [[ -n $st ]]; then
     print -u2 "chezmoi: refusing $sub: $src has uncommitted or untracked changes:"
     print -u2 -r -- "$st"
     print -u2 "  (chezmoi $sub --dirty-ok applies the working tree anyway)"
     return 1
   fi
-  want=$(git -C "$src" ls-remote origin refs/heads/main) || { print -u2 "chezmoi: refusing $sub: cannot read origin's main"; return 1 }
+  if [[ $sub == update ]]; then
+    "${g[@]}" pull -q --ff-only "$url" main || { print -u2 "chezmoi: git pull --ff-only failed in $src"; return 1 }
+  fi
+  # -C /: no repository, so no checkout configuration (url rewrites included) reaches these.
+  want=$(git -C / ls-remote "$url" refs/heads/main) || { print -u2 "chezmoi: refusing $sub: cannot read origin's main"; return 1 }
   want=${want%%$'\t'*}
   [[ $want =~ '^[0-9a-f]{40}([0-9a-f]{24})?$' ]] || { print -u2 "chezmoi: refusing $sub: origin has no main"; return 1 }
-  head=$(git -C "$src" rev-parse HEAD) || return
+  head=$("${g[@]}" rev-parse HEAD) || return
   [[ $head == $want ]] || {
     print -u2 "chezmoi: refusing $sub: $src is at ${head[1,12]}, origin's main is ${want[1,12]}; pull or push first"
     return 1
   }
-  url=$(git -C "$src" remote get-url origin) || return
   # The clone lives where the sandbox cannot write (~/.cache is outside its write set), and
   # chezmoi writes its scripts there too: nothing sandboxed can change them between the check
   # and the apply.
   base=${XDG_CACHE_HOME:-$HOME/.cache}/chezmoi-apply
   mkdir -p -m 700 "$base" && tmp=$(mktemp -d "$base/run.XXXXXX") || return
   {
-    git clone -q --depth 1 --branch main --template= -- "$url" "$tmp/src" \
+    git -C / clone -q --depth 1 --branch main --template= -- "$url" "$tmp/src" \
       || { print -u2 "chezmoi: cannot clone origin's main"; return 1 }
     [[ $(git -C "$tmp/src" rev-parse HEAD) == $want ]] \
       || { print -u2 "chezmoi: origin's main moved during the clone; run it again"; return 1 }

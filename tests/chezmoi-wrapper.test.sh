@@ -30,10 +30,23 @@ for a in "$@"; do [ "$prev" = --source ] && src=$a; prev=$a; done
 printf 'ARGS %s\n' "$*" > "$LOG"
 printf 'TMPDIR %s\n' "$TMPDIR" >> "$LOG"
 if [ -n "$src" ]; then printf 'SOURCE %s\n' "$src" >> "$LOG"; ls -A "$src" >> "$LOG"; else echo WORKTREE >> "$LOG"; fi
+exit ${STUBRC:-0}
 EOF
 chmod 755 $T/bin/chezmoi
+# The git stub: GITSTUB=clonefail makes `git clone` fail; GITSTUB=badhead makes the fresh clone
+# report a HEAD that is not origin's. Anything else goes to the real git.
+export REALGIT=$(command -v git)
+cat > $T/bin/git <<'EOF'
+#!/bin/sh
+case "$GITSTUB" in
+  clonefail) for a in "$@"; do [ "$a" = clone ] && exit 128; done ;;
+  badhead) if [ "$1" = -C ]; then case "$2" in */src) [ "$3" = rev-parse ] && { echo 0000000000000000000000000000000000000000; exit 0; } ;; esac; fi ;;
+esac
+exec "$REALGIT" "$@"
+EOF
+chmod 755 $T/bin/git
 path=($T/bin /usr/bin /bin /opt/homebrew/bin)
-export LOG=$T/log
+export LOG=$T/log CHEZMOI_REVIEWED_ORIGIN=$T/origin.git
 source $FUNCS
 
 # origin: a bare repo whose main holds dot_testfile.
@@ -127,6 +140,59 @@ if mkevil && mkdir -p ${obj:h} && printf 'tree %s\nauthor x <x> 0 +0000\ncommitt
     || _fail "origin's object" "forged through a hard link"
 else _fail "forged-object fixture" "setup failed"; fi
 
+# The checkout's own remote is not what is deployed: another repository whose main carries
+# run_evil.sh, set as remote.origin.url, changes nothing, for apply and for update.
+git init -q --bare $T/evil.git
+git clone -q $T/origin.git $T/evilseed 2>/dev/null
+print 'touch PWNED' > $T/evilseed/run_evil.sh
+git -C $T/evilseed add run_evil.sh && git -C $T/evilseed commit -q -m evil && git -C $T/evilseed push -q $T/evil.git main 2>/dev/null
+fresh; git -C $T/co remote set-url origin $T/evil.git; chezmoi apply >/dev/null 2>&1
+applied_clone run_evil.sh && _pass "a repointed remote.origin.url still deploys the pinned origin's main" || _fail "repointed remote" "$(cat $LOG 2>/dev/null)"
+fresh; git -C $T/co remote set-url origin $T/evil.git
+git -C $T/seed commit -q --allow-empty -m ahead3 && git -C $T/seed push -q origin main 2>/dev/null
+chezmoi update >/dev/null 2>&1
+applied_clone run_evil.sh && [[ $(git -C $T/co rev-parse HEAD) == $(git -C $T/seed rev-parse HEAD) ]] \
+  && _pass "update pulls from the pinned origin, not the repointed remote" || _fail "update with a repointed remote" "$(cat $LOG 2>/dev/null)"
+# The checkout's configuration cannot run a program through the wrapper's git reads.
+print -r -- $'#!/bin/sh\ntouch "$FSMON_MARK"' > $T/fsmon.sh; chmod 755 $T/fsmon.sh
+fresh; git -C $T/co config core.fsmonitor $T/fsmon.sh
+FSMON_MARK=$T/FSMON chezmoi apply >/dev/null 2>&1
+[[ ! -e $T/FSMON ]] && applied_clone NOPE && _pass "core.fsmonitor in the checkout is never run" || _fail "core.fsmonitor ran" "$(cat $LOG 2>/dev/null)"
+
+# Every command that would apply the working tree is refused, with a pointer to apply.
+refused() { # refused <command line> <expected text>: returns 1, names it, runs nothing
+  fresh; local err; err=$(chezmoi ${=1} 2>&1 >/dev/null); local rc=$?
+  (( rc == 1 )) && [[ $err == *"$2"* ]] && [[ ! -e $LOG ]] \
+    && _pass "chezmoi $1 is refused" || _fail "chezmoi $1 is refused" "rc=$rc err=$err log=$(cat $LOG 2>/dev/null)"
+}
+refused "init --one-shot" "--one-shot is refused"
+refused "init --one-shot=true" "--one-shot is refused"
+refused "edit --watch" "--watch is refused"
+refused "edit --watch=true x" "--watch is refused"
+refused "init" "chezmoi apply --init"
+refused "init $T/origin.git" "chezmoi apply --init"
+refused "update --apply=false" "update-only flags are not supported"
+refused "update -a" "update-only flags are not supported"
+refused "update --recurse-submodules=false" "update-only flags are not supported"
+fresh; chezmoi apply -xscripts >/dev/null 2>&1
+applied_clone NOPE && grep -q -- ' apply -xscripts$' $LOG && _pass "-xscripts is a value, not -c: apply is not refused" || _fail "apply -xscripts" "$(cat $LOG 2>/dev/null)"
+# update checks the branch before it pulls: a feature branch is refused and does not move.
+fresh; git -C $T/co switch -q -c feature
+git -C $T/seed commit -q --allow-empty -m ahead4 && git -C $T/seed push -q origin main 2>/dev/null
+before=$(git -C $T/co rev-parse HEAD); err=$(chezmoi update 2>&1 >/dev/null); rc=$?
+(( rc == 1 )) && [[ $err == *"not on main"* ]] && [[ ! -e $LOG ]] \
+  && [[ $(git -C $T/co rev-parse HEAD) == $before && $(git -C $T/co symbolic-ref --short HEAD) == feature ]] \
+  && _pass "update on a feature branch is refused and the branch does not move" || _fail "update on a feature branch" "rc=$rc err=$err"
+
+# The temporary clone is removed however the run ends.
+fresh; ( export GITSTUB=clonefail; chezmoi apply ) >/dev/null 2>&1; rc=$?
+(( rc != 0 )) && [[ ! -e $LOG ]] && tmp_clean && _pass "a failed clone leaves nothing behind" || _fail "failed clone" "rc=$rc left=$(ls -A $T/cache/chezmoi-apply)"
+fresh; err=$( ( export GITSTUB=badhead; chezmoi apply ) 2>&1 >/dev/null ); rc=$?
+(( rc == 1 )) && [[ $err == *"moved during the clone"* ]] && [[ ! -e $LOG ]] && tmp_clean \
+  && _pass "a clone whose HEAD is not origin's is not applied and leaves nothing behind" || _fail "clone HEAD mismatch" "rc=$rc err=$err left=$(ls -A $T/cache/chezmoi-apply)"
+fresh; ( export STUBRC=3; chezmoi apply ) >/dev/null 2>&1; rc=$?
+(( rc == 3 )) && [[ -e $LOG ]] && tmp_clean && _pass "chezmoi's exit status is returned and the clone is removed" || _fail "chezmoi exits non-zero" "rc=$rc left=$(ls -A $T/cache/chezmoi-apply)"
+
 fresh; print change >> $T/co/dot_testfile; chezmoi apply --dirty-ok >/dev/null 2>&1
 grep -qx WORKTREE $LOG 2>/dev/null && ! grep -q -- --dirty-ok $LOG && _pass "--dirty-ok applies the working tree and never reaches chezmoi" || _fail "--dirty-ok" "$(cat $LOG 2>/dev/null)"
 fresh; chezmoi status >/dev/null 2>&1; grep -q '^ARGS status$' $LOG && _pass "other subcommands pass through" || _fail "passthrough" "$(cat $LOG 2>/dev/null)"
@@ -134,7 +200,7 @@ fresh; git -C $T/seed commit -q --allow-empty -m ahead2 && git -C $T/seed push -
 chezmoi update >/dev/null 2>&1
 grep -q '^ARGS --source .* apply$' $LOG 2>/dev/null && [[ $(git -C $T/co rev-parse HEAD) == $(git -C $T/seed rev-parse HEAD) ]] \
   && _pass "update fast-forwards, then applies a fresh clone" || _fail "update" "$(cat $LOG 2>/dev/null)"
-tmp_clean && _pass "no temporary clone is left behind" || _fail "temporary clones" "$(ls $T/tmp)"
+tmp_clean && _pass "no temporary clone is left behind" || _fail "temporary clones" "$(ls -A $T/cache/chezmoi-apply)"
 
 print "\npassed: $pass  failed: $fail"
 (( fail == 0 ))
