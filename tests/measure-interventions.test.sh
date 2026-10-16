@@ -169,6 +169,40 @@ is '.autonomous_stretch.n'            1   "one stretch closed by a turn the agen
 is '.autonomous_stretch.tool_calls.median == 6' true "the stretch counts every tool call since the last turn"
 is '.autonomous_stretch.minutes.median == 4' true "the stretch runs to the last agent activity"
 
+# A forked or resumed session copies earlier entries, uuid and all, into its own file. Each
+# copy is counted once, whichever file is scanned first: the fork sorts before its original.
+FORK="$ROOT/forked/-Users-x-Code-demo"
+mkdir -p "$FORK"
+/usr/bin/python3 - "$FORK" <<'PY'
+import datetime, json, os, sys, time
+proj = sys.argv[1]
+t0 = time.time() - 3600
+def ts(m):
+    return datetime.datetime.fromtimestamp(t0 + m * 60, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+def human(u, m, text):
+    return {"type": "user", "uuid": u, "timestamp": ts(m), "origin": {"kind": "human"},
+            "message": {"role": "user", "content": text}}
+def escape(u, m, tid):
+    return {"type": "assistant", "uuid": u, "timestamp": ts(m), "message": {"role": "assistant", "content": [
+        {"type": "tool_use", "id": tid, "name": "Bash", "input": {"command": "ls", "dangerouslyDisableSandbox": True}}]}}
+def denied(u, m, tid):
+    return {"type": "user", "uuid": u, "timestamp": ts(m), "message": {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": tid, "is_error": True, "content": "Compound command starting with `cd`."}]}}
+orig = [human("u1", 0, "start"), escape("u2", 1, "f1"), denied("u3", 2, "f1"),
+        human("u4", 3, "next"), human("u6", 5, "more")]
+fork = orig[:4] + [human("u10", 10, "fork step"), escape("u11", 11, "f2"), human("u12", 12, "fork again")]
+for name, entries in (("orig.jsonl", orig), ("a-fork.jsonl", fork)):
+    with open(os.path.join(proj, name), "w") as fh:
+        for e in entries:
+            fh.write(json.dumps(e) + "\n")
+PY
+OUT="$(/usr/bin/python3 "$SCRIPT" --days 14 --projects-dir "$ROOT/forked" 2>&1)"
+is '.sessions'                        2   "a fork is a session of its own"
+is '.human_turns.total'               5   "a human turn copied into a fork counts once"
+is '.human_turns.after_first'         4   "a fork's new turns follow the first it copied"
+is '.sandbox_escapes.main'            2   "a sandbox escape copied into a fork counts once"
+is '.denials["path-resolution-guard"].main' 1 "a denial copied into a fork counts once"
+
 out="$(/usr/bin/python3 "$SCRIPT" --days 0 --projects-dir "$ROOT/projects" 2>&1)"; rc=$?
 [ "$rc" -eq 2 ] && _pass "--days 0 is a usage error" || _fail "--days 0 is a usage error" "rc=$rc"
 out="$(/usr/bin/python3 "$SCRIPT" --projects-dir "$ROOT/nope" 2>&1)"; rc=$?

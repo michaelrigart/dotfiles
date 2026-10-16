@@ -8,8 +8,9 @@ hand-labelling pass.
 
     .scripts/measure-interventions.py [--days 14] [--projects-dir ~/.claude/projects]
 
-Prints one JSON object. Streams every file line by line and keeps only per-file state,
-so a month of transcripts never has to fit in memory. Standard library only.
+Prints one JSON object. Streams every file line by line and keeps only per-file state and
+the set of entry uuids already counted, so a month of transcripts never has to fit in
+memory. Standard library only.
 
 Transcript shape (observed 2026-09-30, Claude Code 2.1.285):
   <projects-dir>/<project>/<session>.jsonl                  a main session
@@ -26,6 +27,9 @@ Transcript shape (observed 2026-09-30, Claude Code 2.1.285):
   is in attachment.prompt; it settles the call the same way and is never a human turn.
   an interrupt is a `user` entry with no origin whose content is a text block starting
   "[Request interrupted by user".
+
+  a forked or resumed session starts its file with copies of earlier entries that keep
+  their uuid; each uuid is counted once, in whichever file is scanned first.
 
 Known edges of the counts:
   - a session that straddles the cutoff has its first IN-WINDOW human turn treated as
@@ -154,10 +158,11 @@ def settle_notification(body, pending_background, totals):
             totals.xreview[key] += 1
 
 
-def scan_file(path, scope, cutoff, totals):
+def scan_file(path, scope, cutoff, totals, counted):
     """One transcript. Returns True when it had any entry inside the window."""
     pending_xreview = {}            # tool_use id -> the xreview verbs that call ran
     pending_background = {}         # background task id -> the xreview verbs it is running
+    scratch = Totals()
     seen = False
     humans = 0
     tools_since_human = 0
@@ -179,6 +184,12 @@ def scan_file(path, scope, cutoff, totals):
             if ts is None or ts < cutoff:
                 continue
             seen = True
+            # A forked or resumed session copies earlier entries, uuid and all, into its own
+            # file. A copy still advances this file's state, but counts toward scratch.
+            uuid = entry.get("uuid")
+            t = scratch if uuid in counted else totals
+            if uuid:
+                counted.add(uuid)
             kind = entry.get("type")
             if kind == "assistant":
                 last_agent_ts = ts
@@ -190,11 +201,11 @@ def scan_file(path, scope, cutoff, totals):
                     if block.get("name") != "Bash" or not isinstance(inp, dict):
                         continue
                     if inp.get("dangerouslyDisableSandbox"):
-                        totals.escapes[scope] += 1
+                        t.escapes[scope] += 1
                     command = SINGLE_QUOTED.sub("''", inp.get("command") or "").strip()
                     verbs = set(XREVIEW_RE.findall(command))
                     for verb in verbs:
-                        totals.xreview["dispatches" if verb == "dispatch" else "collects"] += 1
+                        t.xreview["dispatches" if verb == "dispatch" else "collects"] += 1
                     if verbs:
                         pending_xreview[block.get("id")] = verbs
                 continue
@@ -213,7 +224,7 @@ def scan_file(path, scope, cutoff, totals):
                             for name, rx in DENIAL_RES:
                                 if rx.match(text):
                                     denied = name
-                                    totals.denials[name][scope] += 1
+                                    t.denials[name][scope] += 1
                                     break
                         if not verbs or denied:
                             continue           # a refused call never ran: no failure
@@ -225,35 +236,35 @@ def scan_file(path, scope, cutoff, totals):
                         elif block.get("is_error"):
                             for verb in verbs:
                                 key = "dispatch_failures" if verb == "dispatch" else "collect_failures"
-                                totals.xreview[key] += 1
+                                t.xreview[key] += 1
                     continue
                 body = text_of(content)
                 if body.startswith(NOTIFICATION):
-                    settle_notification(body, pending_background, totals)
+                    settle_notification(body, pending_background, t)
                     continue
                 if is_interrupt(entry):
-                    totals.interrupts[scope] += 1
+                    t.interrupts[scope] += 1
                     continue
             if kind == "attachment":
                 # mid-turn the harness delivers a task notification as a queued_command
                 # attachment whose text is in `prompt`; it is settled, never a human turn
                 prompt = (entry.get("attachment") or {}).get("prompt")
                 if isinstance(prompt, str) and prompt.startswith(NOTIFICATION):
-                    settle_notification(prompt, pending_background, totals)
+                    settle_notification(prompt, pending_background, t)
                     continue
             if scope == "main" and is_human(entry):
-                totals.human_total += 1
+                t.human_total += 1
                 queued = kind == "attachment"
                 if queued:
-                    totals.human_queued += 1
+                    t.human_queued += 1
                 if humans > 0:
-                    totals.human_after_first += 1
+                    t.human_after_first += 1
                     # The stretch a typed-ahead (queued) message interrupts is not over, so
                     # only a turn the agent actually waited for closes one.
                     if not queued and last_human_ts is not None:
-                        totals.stretch_tools.append(tools_since_human)
+                        t.stretch_tools.append(tools_since_human)
                         end = last_agent_ts if last_agent_ts and last_agent_ts >= last_human_ts else last_human_ts
-                        totals.stretch_minutes.append((end - last_human_ts) / 60.0)
+                        t.stretch_minutes.append((end - last_human_ts) / 60.0)
                 humans += 1
                 if not queued:
                     tools_since_human = 0
@@ -265,6 +276,7 @@ def measure(projects_dir, days, now=None):
     now = now if now is not None else datetime.datetime.now(datetime.timezone.utc).timestamp()
     cutoff = now - days * 86400
     totals = Totals()
+    counted = set()                 # every entry uuid already counted, across files
     for project in sorted(os.listdir(projects_dir)):
         pdir = os.path.join(projects_dir, project)
         if not os.path.isdir(pdir):
@@ -275,14 +287,14 @@ def measure(projects_dir, days, now=None):
                 continue
             if os.path.getmtime(path) < cutoff:
                 continue
-            if scan_file(path, "main", cutoff, totals):
+            if scan_file(path, "main", cutoff, totals, counted):
                 totals.sessions += 1
             subdir = os.path.join(pdir, name[:-len(".jsonl")], "subagents")
             if os.path.isdir(subdir):
                 for sub in sorted(os.listdir(subdir)):
                     spath = os.path.join(subdir, sub)
                     if sub.endswith(".jsonl") and os.path.getmtime(spath) >= cutoff:
-                        scan_file(spath, "subagent", cutoff, totals)
+                        scan_file(spath, "subagent", cutoff, totals, counted)
     x = totals.xreview
     return {
         "window_days": days,
