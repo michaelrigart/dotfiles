@@ -92,8 +92,7 @@ and merge the canonical one first.
 
 ## How to work
 
-- Be concise and direct. Lead with the answer, diff or command, and skip preamble and
-  flattery.
+- Be concise and direct. Lead with the answer, diff or command; skip preamble and flattery.
 - Make small, focused commits with imperative-mood messages. Add no license headers or
   explanatory comments unless asked, and match the surrounding code.
 - Suggest improvements when something better exists; nothing here is sacred.
@@ -127,14 +126,15 @@ Michael signs off specs and merges; in between, the driver proceeds on its own.
   you report the work as done.
 - **Rulings.** Rule on review trade-offs that stay inside the approved spec, and record
   each one under "Rulings" in the MR. Escalate only what would change the spec.
-- **Fix now.** Fix in-scope findings in the same branch. No follow-up MRs unless Michael
-  asks.
+- **Fix now.** Fix in-scope findings on this branch. No follow-up MRs unless Michael asks.
 - **Finishing.** Push the feature branch and open a Draft MR where the repository uses MRs.
   For the dotfiles, the pushed branch is the end. Show no finishing menus, and never merge.
 - **Reporting.** End every final report with one state line: pushed, review receipt, open
   items, next step.
-- **Momentum.** Don't stop while the next step is already authorised. Send one
-  notification when an unattended stretch ends or is blocked, not one per step.
+- **Momentum.** Don't stop while the next step is already authorised. For a run expected
+  to take over about 15 minutes, give its size and ETA at the start and one line per
+  milestone, without stopping. Send one notification when an unattended stretch ends or
+  is blocked, not one per step.
 
 ## Cross-model workflow
 

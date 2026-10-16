@@ -12,9 +12,11 @@
   - The declaration only applies when the tool is the first command of the Bash call, on
     its own. Do setup in a separate call, and never pipe or prefix these tools.
   - Never pass the escape flag for them.
-- **Recursive search.** A recursive `grep`/`rg` over `.` in a tree that could hold a
-  deny-glob match (such as `**/secrets.*.yml`) re-prompts every time. Name the directories
-  instead.
+- **Path-resolution guard.** Never start a Bash call with `cd`: use absolute paths,
+  `git -C`, or a `cd` in a call of its own. Name directories instead of a recursive
+  `grep`/`rg` over `.`, which re-prompts in any tree that could hold a deny-glob match.
+- **Plan workspaces.** Delete a finished `.superpowers/sdd/<plan>` workspace with
+  `sdd-clean <workspace>`, never `rm -rf`.
 - **Subagents.** Use the named types in `~/.claude/agents/`. Each pairs a model with an
   effort, which the Agent tool cannot set per call.
 
