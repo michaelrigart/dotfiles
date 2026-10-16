@@ -552,12 +552,13 @@ is "F11 while a mention of merges stays allowed" "$(fallback 'git log --merges')
 # 30 s is cut off and reads "timeout".
 timed() {
   /usr/bin/python3 - "$GUARD" "$1" <<'PY'
-import json, subprocess, sys, time
+import json, os, subprocess, sys, time
 start = time.time()
 try:
     with open(sys.argv[2], "rb") as fh:
         out = subprocess.run(["/bin/bash", sys.argv[1]], stdin=fh, capture_output=True,
-                             timeout=30).stdout
+                             timeout=30,
+                             env={**os.environ, "PINNED_PATH": os.environ["PATH"]}).stdout
     verdict = json.loads(out)["hookSpecificOutput"]["permissionDecision"] if out.strip() else "allow"
 except subprocess.TimeoutExpired:
     verdict = "timeout"
