@@ -1682,9 +1682,16 @@ for form in "help" "-h" "--help" "dispatch --help" "collect xr-1-a -h" "apply --
   # shellcheck disable=SC2086
   out="$(bash "$XREVIEW" $form 2>"$ROOT/help-err")"; rc=$?
   missing=""
+  # Each needle is the start of its own usage line: two spaces of indent, then the command
+  # word and its arguments. A bare "thread" would also match the "tier [thread]" line.
   for sub in "dispatch --checkpoint spec|plan|pre-merge" "collect <nonce>" "apply <nonce>" \
-             "apply --done" "round [--reset]" "receipts [--tiers]" "tier [thread]" "thread" "init [id]"; do
-    printf '%s' "$out" | grep -qF -- "$sub" || missing="$missing [$sub]"
+             "apply --done" "round [--reset]" "receipts [--tiers]" "tier [thread]" "thread  " \
+             "init [id]" "help, -h, --help"; do
+    found=""
+    while IFS= read -r line; do
+      [[ $line == "  $sub"* ]] && found=1
+    done <<< "$out"
+    [ -n "$found" ] || missing="$missing [$sub]"
   done
   is "H xreview $form exits 0 with every subcommand's usage on stdout and nothing on stderr" \
      "$rc/${missing:-all}/$(wc -c < "$ROOT/help-err" | tr -d ' ')" "0/all/0"
