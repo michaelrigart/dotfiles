@@ -34,8 +34,9 @@ All five tasks have no dependency, touch disjoint files, and share no test resou
 
 Controller steps outside the tasks:
 - Before dispatching: set the spec's `**Status:**` to `In progress` and commit it ("Mark the post-evaluation optimisations spec in progress").
-- After the batch: run `./tests/run.sh`, then the whole-branch review and the Codex pre-merge review (`xreview round --reset`, then `--checkpoint pre-merge --diff main...feat/post-evaluation-optimisations`).
-- Final pre-merge commit: the spec's status `Implemented`, this plan marked completed (a `**Status:** Completed` line under the title), then push the branch.
+- After the batch: run `./tests/run.sh` and the whole-branch review, and fix what they find.
+- Then the final pre-merge commit: the spec's status `Implemented`, and this plan marked so it is not run again (a `**Status:** Implemented` line under the title).
+- Then the Codex pre-merge review of the whole branch, that commit included (`xreview round --reset`, then `--checkpoint pre-merge --diff main...feat/post-evaluation-optimisations`). Every fix round gets a fresh full-range round, so no commit lands after the last approval. Then push the branch.
 
 ---
 
@@ -241,6 +242,8 @@ ledger "$WS" 10 "# notes" 1;           no_plan "a ledger whose first line names 
 ledger "$WS" 10 "# SDD ledger $DASH plan: docs/missing.md" 1; no_plan "a ledger whose plan file is missing"
 ledger "$WS" 10 "# SDD ledger $DASH plan: ../outside/plan.md" 1; no_plan "a plan path outside the top level"
 ledger "$WS" 10 "# SDD ledger $DASH plan: $T/outside/plan.md" 1; no_plan "an absolute plan path outside the top level"
+ln -s "$T/outside/plan.md" "$PR/docs/link.md"
+ledger "$WS" 10 "# SDD ledger $DASH plan: docs/link.md" 1; no_plan "a plan file that is a symlink to one outside the top level"
 ledger "$WS" 10 "# SDD ledger $DASH plan: $PR/docs/plan.md" 1;  plan_is "an absolute plan path" "plan 1/4 $DOT ~30m"
 ledger "$WS2" 60 "$LHEAD" 1 2 3; touch -t "$(ago 30)" "$WS2/progress.md"
 ledger "$WS" 10 "$LHEAD" 1;            plan_is "the most recently modified ledger" "plan 1/4 $DOT ~30m"
@@ -350,7 +353,7 @@ plan_progress() {
   case $first in "# SDD ledger $DASH plan: "?*) ;; *) return ;; esac
   path=${first#"# SDD ledger $DASH plan: "}
   case $path in /*) ;; *) path=$top/$path ;; esac
-  [ -f "$path" ] || return
+  [ -f "$path" ] && [ ! -L "$path" ] || return
   pdir=$(CDPATH= cd -P -- "${path%/*}" 2>/dev/null && pwd -P) || return
   case $pdir/ in "$top"/*) ;; *) return ;; esac
   total=$(grep -cE '^### Task [0-9]+([^0-9]|$)' "$path" 2>/dev/null) || return
@@ -374,7 +377,7 @@ plan_progress() {
 [ -n "$cwd" ] && plan_progress
 ```
 
-`git rev-parse --show-toplevel` prints the physical path, so `pdir` is compared physically too.
+`git rev-parse --show-toplevel` prints the physical path, so `pdir` is compared physically too. The plan file itself must not be a symlink: `cd -P` resolves only its directory, so a symlinked file could point outside the top level.
 
 5. Replace `build_segs` with a two-flag version:
 
@@ -578,12 +581,13 @@ deleted() {
   if [ "$rc" = 0 ] && [ "$gone" = 1 ]; then _pass "$label"
   else _fail "$label" "rc=$rc, stderr: $(cat "$T/err")"; fi
 }
-# refused <label> <reason text> <args...>: exit 1, the reason on stderr, every argument
-# still in place.
+# refused <label> <reason text> <args...>: exit 1, the reason on stderr, and every argument
+# that existed before the call still in place.
 refused() {
-  local label=$1 why=$2 a kept=1 rc; shift 2
+  local label=$1 why=$2 a kept=1 rc pre=(); shift 2
+  for a in "$@"; do if [ -e "$a" ] || [ -L "$a" ]; then pre+=("$a"); fi; done
   "$SC" "$@" 2>"$T/err"; rc=$?
-  for a in "$@"; do [ -e "$a" ] || [ -L "$a" ] || kept=0; done
+  for a in ${pre[@]+"${pre[@]}"}; do [ -e "$a" ] || [ -L "$a" ] || kept=0; done
   if [ "$rc" = 1 ] && [ "$kept" = 1 ] && grep -qF -- "$why" "$T/err"; then _pass "$label"
   else _fail "$label" "rc=$rc kept=$kept, stderr: $(cat "$T/err")"; fi
 }
@@ -727,7 +731,7 @@ Run: `./tests/claude-settings.test.sh` — Expected: every case PASSes, the "no 
 
 **Interfaces:**
 - Consumes: `Repo.run`, `Repo.has_ref`, `Deny`, `DWIM_PREFIXES`, `CURRENT_BRANCH`, and in `evaluate()` the locals `flags`, `refspecs`, `args`, `remote`, `default`, `asks`, `repo`.
-- Produces: `delete_targets(flags, refspecs) -> list[str] | None`, `push_leases(args) -> list[tuple[str, str]]`, `merged_delete(repo, remote, default, names, leases) -> True | str | None`.
+- Produces: `delete_targets(flags, refspecs) -> list[str] | None`, `push_leases(args) -> list[tuple[str, str]]`, `merged_delete(repo, remote, default, names, leases) -> True | str | None` (and `check_merged_delete`, the same without the timeout fallback).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -794,6 +798,12 @@ git --git-dir="$REMOTES/delhead.git" symbolic-ref HEAD refs/heads/done2
 DHEAD=$(cp -R "$DEL" "$TMP/delhead" && printf '%s' "$TMP/delhead")
 git -C "$DHEAD" remote set-url origin "$REMOTES/delhead.git"
 expect ask   "the remote's HEAD names another branch"     "$DHEAD" "git push --force-with-lease=done:$DONE origin --delete done"
+# A local check that times out after ls-remote has answered asks, as before, rather than
+# denying: a git on PATH that hangs on merge-base until the guard's per-call limit (5 s).
+SLOWGIT="$TMP/slowgit"; mkdir -p "$SLOWGIT"; REALGIT=$(command -v git)
+printf '#!/bin/sh\ncase "$*" in *merge-base*) exec sleep 6 ;; esac\nexec "%s" "$@"\n' "$REALGIT" > "$SLOWGIT/git"
+chmod 755 "$SLOWGIT/git"
+PATH="$SLOWGIT:$PATH" expect ask "a merge-base that times out" "$DEL" "git push --force-with-lease=done:$DONE origin --delete done"
 DPUSH=$(cp -R "$DEL" "$TMP/delpushurl" && printf '%s' "$TMP/delpushurl")
 git -C "$DPUSH" config remote.origin.pushurl "$REMOTES/backup.git"
 expect deny  "a remote with a separate push URL is still refused" "$DPUSH" "git push --force-with-lease=done:$DONE origin --delete done"
@@ -891,7 +901,16 @@ def merged_delete(repo, remote, default, names, leases):
     """Whether a delete-only push of the branches in names goes without an ask: True when
     every one is merged and pinned; a deny reason naming the pinned command when every one
     is merged but a pin is missing or names another tip; None (an ask, as before) otherwise,
-    a failed or slow read of the remote included.
+    a failed read of the remote included. A timeout anywhere in these checks asks as well:
+    Repo.run raises it as a Deny, which here would turn today's ask into a deny."""
+    try:
+        return check_merged_delete(repo, remote, default, names, leases)
+    except Deny:
+        return None
+
+
+def check_merged_delete(repo, remote, default, names, leases):
+    """merged_delete without the timeout fallback.
 
     Merged: one ls-remote of the remote, whose single push URL is its fetch URL (evaluate
     refuses any other remote before this runs), shows its HEAD on the default branch and
@@ -901,11 +920,8 @@ def merged_delete(repo, remote, default, names, leases):
     refs/heads/<branch>:<sha> names the tip just read and no lease on that branch names
     another, so git refuses the delete if the branch moved after this read."""
     heads = ["refs/heads/" + n for n in [default] + names]
-    try:
-        out = repo.run("ls-remote", "--symref", remote, "HEAD", *heads,
-                       env=dict(os.environ, GIT_TERMINAL_PROMPT="0"))
-    except Deny:
-        return None                                    # timed out: ask, as before
+    out = repo.run("ls-remote", "--symref", remote, "HEAD", *heads,
+                   env=dict(os.environ, GIT_TERMINAL_PROMPT="0"))
     if out is None:
         return None
     tips, remote_head = {}, None
