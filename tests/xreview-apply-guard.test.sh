@@ -19,7 +19,7 @@ decide() {
     || printf 'allow'
 }
 edit() { printf '{"tool_name":"%s","tool_input":{"file_path":"%s"}}' "${2:-Edit}" "$1" \
-         | bash "$GUARD" 2>/dev/null | decide; }
+         | PINNED_PATH="$PATH" bash "$GUARD" 2>/dev/null | decide; }
 
 ROOT="$(mktemp -d "${TMPDIR:-/tmp}/xrapply.XXXXXX")"
 trap 'rm -rf "$ROOT"' EXIT

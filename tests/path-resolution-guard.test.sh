@@ -25,7 +25,7 @@ pass=0; fail=0
 run() {
   jq -n --arg c "$1" \
     '{hook_event_name:"PreToolUse",tool_name:"Bash",tool_input:{command:$c}}' \
-    | bash "$GUARD"
+    | PINNED_PATH="$PATH" bash "$GUARD"
 }
 
 # expect <allow|deny> <label> <command>
@@ -113,7 +113,7 @@ echo "Fails open:"
 # Payload-level failure modes need hand-built payloads rather than run().
 check_raw() {
   local label=$1 payload=$2 out
-  out=$(printf '%s' "$payload" | bash "$GUARD")
+  out=$(printf '%s' "$payload" | PINNED_PATH="$PATH" bash "$GUARD")
   if [ -z "$out" ]; then
     pass=$((pass+1)); printf '  ok   %s\n' "$label"
   else

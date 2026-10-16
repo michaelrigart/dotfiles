@@ -67,7 +67,7 @@ mkdir -p "$ROOT/norepo"
 payload() { jq -n --arg d "$1" --arg c "$2" '{hook_event_name:"PreToolUse",tool_name:"Bash",cwd:$d,tool_input:{command:$c}}'; }
 # The payload is materialised before the pipeline: the guard can exit without reading stdin,
 # and jq writing into a closed pipe prints an error that looks like a test failure.
-run_guard() { local p; p="$(payload "$1" "$2")"; printf '%s' "$p" | bash "$GUARD" 2>/dev/null; }
+run_guard() { local p; p="$(payload "$1" "$2")"; printf '%s' "$p" | PINNED_PATH="$PATH" bash "$GUARD" 2>/dev/null; }
 # decision <cwd> <command>: allow (silence), deny, or what else the guard printed.
 decision() {
   local out; out="$(run_guard "$1" "$2")"
@@ -492,9 +492,9 @@ is "D10 a detached HEAD is no branch, so its merge is not gated" "$(decision "$S
 git -C "$SIDE" switch -q side
 # A payload that is not JSON is read as text.
 is "D11 a truncated payload holding a merge is denied" \
-   "$(printf '%s' '{"tool_input":{"command":"git merge feature"},"cwd":"'"$W"'"' | bash "$GUARD" 2>/dev/null | jq -r .hookSpecificOutput.permissionDecision)" deny
+   "$(printf '%s' '{"tool_input":{"command":"git merge feature"},"cwd":"'"$W"'"' | PINNED_PATH="$PATH" bash "$GUARD" 2>/dev/null | jq -r .hookSpecificOutput.permissionDecision)" deny
 is "D12 one that only mentions merges is let through" \
-   "$(printf '%s' '{"tool_input":{"command":"git log --merges"' | bash "$GUARD" 2>/dev/null)" ""
+   "$(printf '%s' '{"tool_input":{"command":"git log --merges"' | PINNED_PATH="$PATH" bash "$GUARD" 2>/dev/null)" ""
 
 echo "E. the bypass is Michael's"
 is "E1 XREVIEW_GUARD=off on the command" "$(decision "$W" 'XREVIEW_GUARD=off git merge side')" allow
@@ -503,7 +503,7 @@ is "E3 in a trailing comment" "$(decision "$W" 'glab mr create --fill # XREVIEW_
 XREVIEW_GUARD=off; export XREVIEW_GUARD
 is "E4 in the hook's environment" "$(decision "$W" 'git merge side')" allow
 unset XREVIEW_GUARD
-is "E5 an empty payload fails open" "$(printf '' | bash "$GUARD" 2>/dev/null | wc -c | tr -d ' ')" 0
+is "E5 an empty payload fails open" "$(printf '' | PINNED_PATH="$PATH" bash "$GUARD" 2>/dev/null | wc -c | tr -d ' ')" 0
 
 echo "F. the fast path costs nothing, and a helper that cannot run fails closed"
 TRIP="$ROOT/trip"; mkdir -p "$TRIP"
@@ -512,30 +512,30 @@ printf 'import sys\nopen(sys.argv[0] + ".ran", "a").write("x")\n' > "$TRIP/xrevi
 tripped() { [ -e "$TRIP/xreview-guard.py.ran" ] && echo ran || echo idle; }
 for c in 'ls -la' 'git status' 'npm test' 'git log --oneline -5' 'mkdir -p newdir' \
          'for f in a b; do git add "$f"; done' 'git log --format=%ad -3'; do
-  payload /tmp "$c" | bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
+  payload /tmp "$c" | PINNED_PATH="$PATH" bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
 done
 is "F1 commands without a trigger word never start the helper" "$(tripped)" idle
-payload /tmp 'git merge feature' | bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
+payload /tmp 'git merge feature' | PINNED_PATH="$PATH" bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
 is "F2 a gated verb does" "$(tripped)" ran
 printf 'import sys\nsys.exit(3)\n' > "$TRIP/xreview-guard.py"
-out="$(payload "$W" 'git merge feature' | bash "$TRIP/xreview-guard.sh" 2>/dev/null)"
+out="$(payload "$W" 'git merge feature' | PINNED_PATH="$PATH" bash "$TRIP/xreview-guard.sh" 2>/dev/null)"
 is "F3 a helper that cannot run denies a gated verb" "$(printf '%s' "$out" | jq -r .hookSpecificOutput.permissionDecision)" deny
-out="$(payload "$W" 'git commit -m "a new test"' | bash "$TRIP/xreview-guard.sh" 2>/dev/null)"
+out="$(payload "$W" 'git commit -m "a new test"' | PINNED_PATH="$PATH" bash "$TRIP/xreview-guard.sh" 2>/dev/null)"
 is "F4 and leaves an ungated command alone" "$out" ""
 # The fast path reads the payload with quotes, backslashes and continuations dropped.
 printf 'import sys\nopen(sys.argv[0] + ".ran", "a").write("x")\n' > "$TRIP/xreview-guard.py"
 rm -f "$TRIP/xreview-guard.py.ran"
-payload /tmp "g''it mer''ge feature" | bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
+payload /tmp "g''it mer''ge feature" | PINNED_PATH="$PATH" bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
 is "F5 quotes inside a word do not hide a verb from the fast path" "$(tripped)" ran
 rm -f "$TRIP/xreview-guard.py.ran"
 payload /tmp 'git mer\
-ge feature' | bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
+ge feature' | PINNED_PATH="$PATH" bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
 is "F6 nor does a line continuation" "$(tripped)" ran
 is "F7 and the helper reads the merge (side has no change of its own: denied)" "$(decision "$W" "g''it mer''ge side")" deny
 # With the helper missing, the front's own last resort reads whole words, joined lines and
 # words split by quotes.
 NOH="$ROOT/nohelper"; mkdir -p "$NOH"; cp "$GUARD" "$NOH/xreview-guard.sh"
-fallback() { local out; out="$(payload "$W" "$1" | bash "$NOH/xreview-guard.sh" 2>/dev/null)"
+fallback() { local out; out="$(payload "$W" "$1" | PINNED_PATH="$PATH" bash "$NOH/xreview-guard.sh" 2>/dev/null)"
   [ -n "$out" ] && printf '%s' "$out" | jq -r .hookSpecificOutput.permissionDecision || printf allow; }
 is "F8 with the helper missing, fused redirections are denied" \
    "$(fallback 'git>m.log merge feature') $(fallback 'git merge>m.log feature') $(fallback 'glab mr>c.log create -b main')" \
@@ -581,21 +581,21 @@ is "F13 and one with no gated verb is allowed at once" \
 # glab mr for and gh pr revert name no other trigger word: mr with for, and revert, reach the
 # helper (a for loop without mr does not, F1).
 rm -f "$TRIP/xreview-guard.py.ran"
-payload /tmp 'glab mr for 3' | bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
+payload /tmp 'glab mr for 3' | PINNED_PATH="$PATH" bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
 is "F14 glab mr for starts the helper" "$(tripped)" ran
 rm -f "$TRIP/xreview-guard.py.ran"
-payload /tmp 'gh pr revert 9' | bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
+payload /tmp 'gh pr revert 9' | PINNED_PATH="$PATH" bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
 is "F15 so does gh pr revert" "$(tripped)" ran
 # A percent-escape can spell any word of an api call's path (m%65rge_requests), so api with one
 # reaches the helper (a %ad format without api does not, F1).
 rm -f "$TRIP/xreview-guard.py.ran"
-payload /tmp "gh api graph%71l -f query='mutation { enqueuePullRequest(input: {}) { clientMutationId } }'" | bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
+payload /tmp "gh api graph%71l -f query='mutation { enqueuePullRequest(input: {}) { clientMutationId } }'" | PINNED_PATH="$PATH" bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
 is "F16 an api call with a percent-escape starts the helper" "$(tripped)" ran
 # The deployed layout: the front, the guard and the ledger helper side by side, as in ~/.claude,
 # with no XREVIEW_LEDGER: the guard finds the helper beside itself.
 DEP="$ROOT/deployed"; mkdir -p "$DEP"
 cp "$GUARD" "$DEP/xreview-guard.sh"; cp "$HELPER" "$LEDGER" "$DEP/"
-deployed() { payload "$W" "$1" | env -u XREVIEW_LEDGER bash "$DEP/xreview-guard.sh" 2>/dev/null; }
+deployed() { payload "$W" "$1" | env -u XREVIEW_LEDGER PINNED_PATH="$PATH" bash "$DEP/xreview-guard.sh" 2>/dev/null; }
 is "F17 deployed, an approved merge is decided from the ledger beside the guard" "$(deployed 'git merge feature')" ""
 is "F18 and an unreviewed one is denied for its change" \
    "$(deployed 'git merge side' | jq -r .hookSpecificOutput.permissionDecisionReason | grep -c 'Pre-merge gate: the change is empty')" 1

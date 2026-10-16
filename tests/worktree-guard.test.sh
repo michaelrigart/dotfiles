@@ -23,7 +23,7 @@ run() {
   local cwd=$1 cmd=$2
   jq -n --arg c "$cmd" --arg d "$cwd" \
     '{hook_event_name:"PreToolUse",tool_name:"Bash",cwd:$d,tool_input:{command:$c}}' \
-    | bash "$GUARD"
+    | PINNED_PATH="$PATH" bash "$GUARD"
 }
 
 # expect <allow|deny> <label> <cwd> <command>
@@ -62,7 +62,7 @@ expect_reason_contains() {
 # raw <stdin> -> asserts the guard allows whatever degenerate input it is handed
 expect_raw_allow() {
   local label=$1 payload=$2 out
-  out=$(printf '%s' "$payload" | bash "$GUARD" 2>/dev/null)
+  out=$(printf '%s' "$payload" | PINNED_PATH="$PATH" bash "$GUARD" 2>/dev/null)
   if [ -z "$out" ]; then
     pass=$((pass + 1)); printf '  ok   %s\n' "$label"
   else
@@ -220,7 +220,7 @@ jq_called() {
   rm -f "$TMP/jq-called"
   jq -n --arg c "$2" --arg d "$1" \
     '{hook_event_name:"PreToolUse",tool_name:"Bash",cwd:$d,transcript_path:($d+"/t.jsonl"),tool_input:{command:$c}}' \
-    | PATH="$STUBBIN:$PATH" bash "$GUARD" >/dev/null
+    | PATH="$STUBBIN:$PATH" PINNED_PATH="$STUBBIN:$PATH" bash "$GUARD" >/dev/null
   if [ -e "$TMP/jq-called" ]; then echo yes; else echo no; fi
 }
 expect_jq() {
@@ -249,7 +249,7 @@ expect allow "bypass trailing"  "$TMP" "git worktree remove $SIB # WT_GUARD=off"
 
 echo "== jq absent fails open =="
 out=$(jq -n --arg c 'git worktree unlock x' '{tool_input:{command:$c}}' \
-      | env PATH=/bin /bin/bash "$GUARD" 2>/dev/null)
+      | env PATH=/bin PINNED_PATH=/bin /bin/bash "$GUARD" 2>/dev/null)
 if [ -z "$out" ]; then pass=$((pass + 1)); echo '  ok   no jq allows'
 else fail=$((fail + 1)); echo '  FAIL no jq allows'; fi
 

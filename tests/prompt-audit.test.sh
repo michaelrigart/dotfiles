@@ -25,7 +25,7 @@ LOG="$XDG_STATE_HOME/agent-audit/prompts.jsonl"
 fire() {
   jq -cn --arg t "$1" --argjson i "$2" \
     '{hook_event_name:"PermissionRequest",session_id:"sess-1",cwd:"/work/repo",tool_name:$t,tool_input:$i,permission_suggestions:[]}' \
-    | bash "$HOOK"
+    | PINNED_PATH="$PATH" bash "$HOOK"
 }
 bash_cmd() { fire Bash "$(jq -cn --arg c "$1" '{command:$c,description:"d"}')"; }
 last() { tail -1 "$LOG" | jq -r "$1"; }
@@ -80,10 +80,10 @@ fire Edit '{"file_path":"/work/repo/x","old_string":"a","new_string":"b"}' >/dev
 is "any other tool logs no subcommand"  "$(last .subcommand)" ""
 
 lines=$(wc -l < "$LOG" | tr -d ' ')
-out=$(printf 'not json' | bash "$HOOK"; echo "rc=$?")
+out=$(printf 'not json' | PINNED_PATH="$PATH" bash "$HOOK"; echo "rc=$?")
 is "a malformed payload fails open and silent" "$out" "rc=0"
 is "and appends nothing" "$(wc -l < "$LOG" | tr -d ' ')" "$lines"
-out=$(printf '' | bash "$HOOK"; echo "rc=$?")
+out=$(printf '' | PINNED_PATH="$PATH" bash "$HOOK"; echo "rc=$?")
 is "an empty payload fails open and silent" "$out" "rc=0"
 
 mkdir -p "$ROOT/ro/agent-audit"; : > "$ROOT/ro/agent-audit/prompts.jsonl"; chmod 444 "$ROOT/ro/agent-audit/prompts.jsonl"

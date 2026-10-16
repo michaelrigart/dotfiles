@@ -15,6 +15,9 @@
 # because the word after it may be a fragment of the value.
 #
 # Fails open and silent on every error. Bash 3.2 compatible.
+# Runs outside the sandbox, so it resolves nothing a sandboxed command can write (spec
+# 2026-10-16, sandbox write boundary). PINNED_PATH is for the suites only.
+PATH=${PINNED_PATH:-/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin}; export PATH
 set -uo pipefail
 
 payload=$(cat) || exit 0

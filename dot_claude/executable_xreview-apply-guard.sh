@@ -13,6 +13,9 @@
 # ordinary edit. Anything unexpected — missing jq, unparseable payload, path outside the
 # repo — fails open, on the same reasoning as the other guards: a gate that fires
 # spuriously gets switched off, and then guards nothing.
+# Runs outside the sandbox, so it resolves nothing a sandboxed command can write (spec
+# 2026-10-16, sandbox write boundary). PINNED_PATH is for the suites only.
+PATH=${PINNED_PATH:-/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin}; export PATH
 set -uo pipefail
 set -f
 
