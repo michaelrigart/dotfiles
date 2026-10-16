@@ -540,3 +540,34 @@ The pre-merge gate now binds an approval to the exact change and its destination
   `chezmoi apply` after this branch merges, not with the date above. Count them from that
   apply separately when comparing against the baseline above: a rise is expected, not a
   regression.
+
+### Evaluation, 2026-10-16 (+14 days)
+
+Window 2026-10-02..16, 52 main sessions, measured with `measure-interventions.py --days 14`
+after its fork fix (merge ff9f75d: a forked or resumed session copies earlier entries, uuid and
+all, which had counted 43 turns twice). The prompt counts come from the audit log.
+
+| §5 criterion | Result | Verdict |
+|---|---|---|
+| Avoidable share below 15% | 11.7% (96 of 818); about 15% if the borderline asks count | Pass |
+| Prompts per week no higher than the first | 40, 34, then 53 in week 42 (Monday to Thursday) | Fails as stated |
+| No unintended default-branch push, pushed secret, or unasked destructive action | 18 default-branch pushes, every one asked, none by a subagent; gitleaks stopped 4 pushes | Pass |
+
+- **Labelling.** Five labellers, one strict rubric with the baseline's six avoidable categories.
+  The baseline's own rubric was not recorded, so read 35% to 11.7% as a large drop, not an exact
+  one. Codex relay fell from 68 to 12 turns, and asks with a standing answer from 50 to 9.
+  Status checks are now 65 of the 96, mostly during plan runs and backfills of several hours.
+- **Prompts.** 127 permission prompts, plus 52 agent questions. Each one was an ask by design:
+  about 27 default-branch pushes, 20 remote branch deletes, 22 deletes of a finished plan's
+  `.superpowers/sdd/` workspace, 8 docker removals. Week 42 held three dotfiles merges.
+- **Against the 2026-10-01 baseline.** After-first turns 820 (470); sandbox escapes 2,056
+  (924), up about 75% per session; xreview dispatch failures 7.8% (11%), of which 16 were
+  `--help` probes and 13 the cold-thread stuck pane fixed in 79ba2aa; path-resolution denials
+  1,102 (89), 97% in subagents; pre-merge gate 56 denials (41 shapes it does not check, and
+  `XREVIEW_GUARD=off` used 9 times); push guard 32 (4 gitleaks catches, about 22 false shape
+  denials).
+- **Decisions.** `allowUnsandboxedCommands` stays true: closing it would block about 150
+  commands a day, and the escape audit below is the zero-prompt route. The pre-push hook and the
+  escape audit get their own specs. No guard retires: each one either prevents prompts or caught
+  something. The follow-up is
+  [post-evaluation optimisations](2026-10-16-post-evaluation-optimisations-design.md).
