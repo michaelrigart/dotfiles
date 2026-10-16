@@ -802,15 +802,28 @@ def delete_targets(flags, refspecs):
 
 
 def push_leases(args):
-    """(ref, expected sha) for every --force-with-lease=<ref>:<sha> on the push; a bare
-    --force-with-lease or one without a sha pins nothing."""
+    """(ref, expected sha) for every --force-with-lease on the push: (None, None) for a bare
+    one, (ref, None) for one without a sha. git matches a lease by refname and the first
+    match wins, so every one counts, not only those that look like a pin."""
     leases = []
     for a in args:
-        if a.startswith("--force-with-lease="):
+        if a == "--force-with-lease":
+            leases.append((None, None))
+        elif a.startswith("--force-with-lease="):
             ref, colon, sha = a[len("--force-with-lease="):].partition(":")
-            if colon:
-                leases.append((ref, sha))
+            leases.append((ref, sha if colon else None))
     return leases
+
+
+def plain_transport(url):
+    """Whether url is a transport git runs without a helper program: a local path, file://,
+    ssh:// (git+ssh:// and ssh+git:// too), https://, or the scp-like [user@]host:path."""
+    if "::" in url:
+        return False                                   # <helper>::<address>
+    scheme, sep, _ = url.partition("://")
+    if sep:
+        return scheme in ("file", "ssh", "git+ssh", "ssh+git", "https")
+    return True                                        # a path, or scp-like host:path (over ssh)
 
 
 def merged_delete(repo, remote, default, names, leases):
@@ -832,11 +845,33 @@ def check_merged_delete(repo, remote, default, names, leases):
     refuses any other remote before this runs), shows its HEAD on the default branch and
     every branch present; the remote's default tip and every branch tip exist here; and
     each branch tip is an ancestor of both the remote's default tip and refs/heads/<default>,
-    so its commits survive in both. Pinned: some --force-with-lease=<branch>:<sha> or
-    refs/heads/<branch>:<sha> names the tip just read and no lease on that branch names
-    another, so git refuses the delete if the branch moved after this read."""
+    so its commits survive in both. A deleted head that is a symref on the remote asks.
+    Pinned: every --force-with-lease on the push (bare and ref-only ones included) is
+    exactly <branch>:<tip> or refs/heads/<branch>:<tip> for a deleted branch and the tip just
+    read, and every deleted branch has one, so git refuses the delete if the branch moved
+    after this read.
+
+    This ls-remote is the guard's first network call and runs outside the sandbox, where git
+    runs any command a config level names for it. A config file the sandbox can write could
+    so run a command unsandboxed, just by a delete-shaped push. core.sshCommand, core.gitProxy
+    and remote.<name>.vcs (which picks a git-remote-<vcs> helper whatever the URL says) ask
+    instead, and so does a URL outside plain_transport, since a protocol.<name>.allow in
+    config outranks the generic override and would let a git-remote-<name> helper run. The -c
+    overrides below, which outrank every config file, drop the other protocols for the
+    transports that remain and clear credential.helper and core.askPass; --upload-pack
+    overrides remote.<name>.uploadpack."""
+    if repo.config("core.sshCommand") is not None or repo.config("core.gitProxy") is not None \
+            or repo.config("remote." + remote + ".vcs") is not None:
+        return None
+    url = repo.run("remote", "get-url", remote)
+    if url is None or not plain_transport(url.strip()):
+        return None
     heads = ["refs/heads/" + n for n in [default] + names]
-    out = repo.run("ls-remote", "--symref", remote, "HEAD", *heads,
+    out = repo.run("-c", "protocol.allow=never", "-c", "protocol.ext.allow=never",
+                   "-c", "protocol.file.allow=always", "-c", "protocol.ssh.allow=always",
+                   "-c", "protocol.https.allow=always", "-c", "credential.helper=",
+                   "-c", "core.askPass=",
+                   "ls-remote", "--upload-pack=git-upload-pack", "--symref", remote, "HEAD", *heads,
                    env=dict(os.environ, GIT_TERMINAL_PROMPT="0"))
     if out is None:
         return None
@@ -848,6 +883,8 @@ def check_merged_delete(repo, remote, default, names, leases):
         if left.startswith("ref: "):
             if ref == "HEAD":
                 remote_head = left[len("ref: "):].strip()
+            elif ref in heads:
+                return None                            # a symref: deleting it is not deleting a branch
         elif ref in heads:
             tips[ref] = left.strip()
     local_default = "refs/heads/" + default
@@ -862,11 +899,11 @@ def check_merged_delete(repo, remote, default, names, leases):
             if repo.run("merge-base", "--is-ancestor", tips["refs/heads/" + n], target) is None:
                 return None
 
-    def pinned(n):
-        shas = [sha for ref, sha in leases if ref in (n, "refs/heads/" + n)]
-        return bool(shas) and all(sha == tips["refs/heads/" + n] for sha in shas)
+    def pin_of(n, lease):
+        return lease in ((n, tips["refs/heads/" + n]), ("refs/heads/" + n, tips["refs/heads/" + n]))
 
-    if all(pinned(n) for n in names):
+    if all(any(pin_of(n, lease) for n in names) for lease in leases) \
+            and all(any(pin_of(n, lease) for lease in leases) for n in names):
         return True
     pins = " ".join("--force-with-lease={}:{}".format(n, tips["refs/heads/" + n]) for n in names)
     return ("Push guard: {} {} merged into {}, on {} and here. Pin the delete to the tip just "

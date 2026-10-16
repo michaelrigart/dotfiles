@@ -634,6 +634,80 @@ PATH="$SLOWGIT:$PATH" expect ask "a merge-base that times out" "$DEL" "git push 
 DPUSH=$(cp -R "$DEL" "$TMP/delpushurl" && printf '%s' "$TMP/delpushurl")
 git -C "$DPUSH" config remote.origin.pushurl "$REMOTES/backup.git"
 expect deny  "a remote with a separate push URL is still refused" "$DPUSH" "git push --force-with-lease=done:$DONE origin --delete done"
+expect deny  "a bare --force-with-lease beside the pin"   "$DEL" "git push --force-with-lease --force-with-lease=done:$DONE origin --delete done"
+expect deny  "a heads/ lease beside the pin"              "$DEL" "git push --force-with-lease=heads/done --force-with-lease=done:$DONE origin --delete done"
+expect deny  "a lease for an unrelated branch beside the pin" "$DEL" "git push --force-with-lease=other:$DONE --force-with-lease=done:$DONE origin --delete done"
+expect ask   "--tags beside a pinned delete"              "$DEL" "git push --tags --force-with-lease=done:$DONE origin --delete done"
+expect ask   "--follow-tags beside a pinned delete"       "$DEL" "git push --follow-tags --force-with-lease=done:$DONE origin --delete done"
+
+# The guard's read of the remote runs outside the sandbox, where git honours any command a
+# config file names. None of these may run one, and a config that would only break the read
+# must not stop it.
+DSSH=$(cp -R "$DEL" "$TMP/delssh" && printf '%s' "$TMP/delssh")
+git -C "$DSSH" config core.sshCommand false
+expect ask   "core.sshCommand is set"                     "$DSSH" "git push --force-with-lease=done:$DONE origin --delete done"
+DPROXY=$(cp -R "$DEL" "$TMP/delproxy" && printf '%s' "$TMP/delproxy")
+git -C "$DPROXY" config core.gitProxy false
+expect ask   "core.gitProxy is set"                       "$DPROXY" "git push --force-with-lease=done:$DONE origin --delete done"
+DUP=$(cp -R "$DEL" "$TMP/delupload" && printf '%s' "$TMP/delupload")
+git -C "$DUP" config remote.origin.uploadpack /nonexistent/upload-pack
+expect allow "remote.origin.uploadpack is overridden"     "$DUP" "git push --force-with-lease=done:$DONE origin --delete done"
+DEXT=$(cp -R "$DEL" "$TMP/delext" && printf '%s' "$TMP/delext")
+EXTMARK="$TMP/ext-marker"
+git -C "$DEXT" config protocol.ext.allow always
+git -C "$DEXT" config "url.ext::touch $EXTMARK.insteadOf" "$REMOTES/del.git"
+expect ask   "an ext:: remote built by insteadOf"         "$DEXT" "git push --force-with-lease=done:$DONE origin --delete done"
+if [ -e "$EXTMARK" ]; then
+  fail=$((fail + 1)); printf '  FAIL %s\n' "the ext:: command ran (the guard's read of the remote executed it)"
+else
+  pass=$((pass + 1)); printf '  ok   %s\n' "the ext:: command did not run"
+fi
+# A protocol.<name>.allow in config outranks the generic override, so a git-remote-<name>
+# helper on PATH would run for a foo:// URL, or for any URL once remote.<name>.vcs names it.
+HELPERS="$TMP/helpers"; mkdir -p "$HELPERS"
+for h in foo bar; do
+  printf '#!/bin/sh\ntouch "%s/%s-marker"\nexit 1\n' "$TMP" "$h" > "$HELPERS/git-remote-$h"
+  chmod 755 "$HELPERS/git-remote-$h"
+done
+DFOO=$(cp -R "$DEL" "$TMP/delfoo" && printf '%s' "$TMP/delfoo")
+git -C "$DFOO" config protocol.foo.allow always
+git -C "$DFOO" config "url.foo://host/del.git.insteadOf" "$REMOTES/del.git"
+PATH="$HELPERS:$PATH" expect ask "a foo:// remote with a helper allowed in config" "$DFOO" "git push --force-with-lease=done:$DONE origin --delete done"
+if [ -e "$TMP/foo-marker" ]; then
+  fail=$((fail + 1)); printf '  FAIL %s\n' "the foo helper ran (the guard's read of the remote executed it)"
+else
+  pass=$((pass + 1)); printf '  ok   %s\n' "the foo helper did not run"
+fi
+DVCS=$(cp -R "$DEL" "$TMP/delvcs" && printf '%s' "$TMP/delvcs")
+git -C "$DVCS" config remote.origin.vcs bar
+git -C "$DVCS" config protocol.bar.allow always
+PATH="$HELPERS:$PATH" expect ask "remote.origin.vcs names a helper" "$DVCS" "git push --force-with-lease=done:$DONE origin --delete done"
+if [ -e "$TMP/bar-marker" ]; then
+  fail=$((fail + 1)); printf '  FAIL %s\n' "the bar helper ran (remote.origin.vcs selected it)"
+else
+  pass=$((pass + 1)); printf '  ok   %s\n' "the bar helper did not run"
+fi
+DGIT=$(cp -R "$DEL" "$TMP/delgit" && printf '%s' "$TMP/delgit")
+git -C "$DGIT" remote set-url origin git://127.0.0.1:9/del.git
+expect ask   "a git:// remote"                            "$DGIT" "git push --force-with-lease=done:$DONE origin --delete done"
+
+# A branch that is a symref on the remote is not a branch to delete.
+cp -R "$REMOTES/del.git" "$REMOTES/delsym.git"
+git --git-dir="$REMOTES/delsym.git" symbolic-ref refs/heads/alias refs/heads/main
+DSYM=$(cp -R "$DEL" "$TMP/delsym" && printf '%s' "$TMP/delsym")
+git -C "$DSYM" remote set-url origin "$REMOTES/delsym.git"
+expect ask   "a branch that is a symref on the remote"    "$DSYM" "git push --force-with-lease=alias:$MAIN origin --delete alias"
+
+# Merged into the local default branch, but not into the remote's.
+cp -R "$REMOTES/del.git" "$REMOTES/delloc.git"
+DLOC=$(cp -R "$DEL" "$TMP/delloc" && printf '%s' "$TMP/delloc")
+git -C "$DLOC" remote set-url origin "$REMOTES/delloc.git"
+git -C "$DLOC" switch -q -c lm main
+git -C "$DLOC" commit -q --allow-empty -m lm
+git -C "$DLOC" push -q origin lm 2>/dev/null
+git -C "$DLOC" switch -q main && git -C "$DLOC" merge -q --ff-only lm
+LM=$(git -C "$DLOC" rev-parse lm)
+expect ask   "merged here but not on the remote"          "$DLOC" "git push --force-with-lease=lm:$LM origin --delete lm"
 
 # From here on the remote moves: another clone merges far into main and pushes both.
 OTHER="$TMP/delother"
