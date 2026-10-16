@@ -858,8 +858,9 @@ def check_merged_delete(repo, remote, default, names, leases):
     instead, and so does a URL outside plain_transport, since a protocol.<name>.allow in
     config outranks the generic override and would let a git-remote-<name> helper run. The -c
     overrides below, which outrank every config file, drop the other protocols for the
-    transports that remain and clear credential.helper and core.askPass; --upload-pack
-    overrides remote.<name>.uploadpack."""
+    transports that remain, clear credential.helper and core.askPass, and pin protocol
+    version 2, the only one whose ls-remote --symref shows the symref a non-HEAD head can be;
+    --upload-pack overrides remote.<name>.uploadpack."""
     if repo.config("core.sshCommand") is not None or repo.config("core.gitProxy") is not None \
             or repo.config("remote." + remote + ".vcs") is not None:
         return None
@@ -867,7 +868,8 @@ def check_merged_delete(repo, remote, default, names, leases):
     if url is None or not plain_transport(url.strip()):
         return None
     heads = ["refs/heads/" + n for n in [default] + names]
-    out = repo.run("-c", "protocol.allow=never", "-c", "protocol.ext.allow=never",
+    out = repo.run("-c", "protocol.version=2",
+                   "-c", "protocol.allow=never", "-c", "protocol.ext.allow=never",
                    "-c", "protocol.file.allow=always", "-c", "protocol.ssh.allow=always",
                    "-c", "protocol.https.allow=always", "-c", "credential.helper=",
                    "-c", "core.askPass=",

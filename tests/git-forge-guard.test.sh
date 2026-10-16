@@ -697,6 +697,10 @@ git --git-dir="$REMOTES/delsym.git" symbolic-ref refs/heads/alias refs/heads/mai
 DSYM=$(cp -R "$DEL" "$TMP/delsym" && printf '%s' "$TMP/delsym")
 git -C "$DSYM" remote set-url origin "$REMOTES/delsym.git"
 expect ask   "a branch that is a symref on the remote"    "$DSYM" "git push --force-with-lease=alias:$MAIN origin --delete alias"
+# Protocol v0 does not advertise a non-HEAD symref, so the guard pins version 2 itself.
+DSYM0=$(cp -R "$DSYM" "$TMP/delsym0" && printf '%s' "$TMP/delsym0")
+git -C "$DSYM0" config protocol.version 0
+expect ask   "a symref, with protocol.version=0 in config" "$DSYM0" "git push --force-with-lease=alias:$MAIN origin --delete alias"
 
 # Merged into the local default branch, but not into the remote's.
 cp -R "$REMOTES/del.git" "$REMOTES/delloc.git"
