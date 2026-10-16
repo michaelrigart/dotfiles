@@ -111,6 +111,11 @@ PUSH_OPTIONS_OK = re.compile(r"ci\.skip|integrations\.skip_ci|ci\.variable=.*", 
 PUSHING_SUBCOMMANDS = {"send-pack", "http-push"}
 # A refspec destination that git resolves as a ref path rather than a branch name.
 DWIM_PREFIXES = ("heads/", "tags/", "remotes/", "refs/")
+# A delete-only push of merged branches needs no ask once each delete is pinned to the tip
+# the guard read (spec 2026-10-16, section 4). A push carrying one of these flags updates,
+# prunes or force-pushes more than the branches it names, so it is never delete-only.
+NOT_DELETE_ONLY = {"--prune", "--mirror", "--all", "--force", "-f", "--tags", "--follow-tags"}
+SHA_RE = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
 
 UNSUPPORTED = ("unsupported push configuration for the push guard: {}; "
                "push by hand or simplify the configuration")
@@ -773,6 +778,104 @@ def default_branch(repo, remote):
     return "main"
 
 
+def delete_targets(flags, refspecs):
+    """The branch names a delete-only push deletes, or None when the push also updates,
+    prunes or force-pushes something, or deletes a ref that is not a plain branch."""
+    if flags & NOT_DELETE_ONLY or not refspecs:
+        return None
+    deleting = "-d" in flags or "--delete" in flags
+    names = []
+    for spec in refspecs:
+        if deleting:
+            dst = spec
+        elif spec.startswith(":"):
+            dst = spec[1:]
+        else:
+            return None                                # it pushes something
+        if dst.startswith("refs/heads/"):
+            dst = dst[len("refs/heads/"):]
+        if not dst or dst in ("HEAD", "@") or dst in CURRENT_BRANCH \
+                or dst.startswith(DWIM_PREFIXES) or dst[0] in "+-:" or ":" in dst:
+            return None
+        names.append(dst)
+    return names
+
+
+def push_leases(args):
+    """(ref, expected sha) for every --force-with-lease=<ref>:<sha> on the push; a bare
+    --force-with-lease or one without a sha pins nothing."""
+    leases = []
+    for a in args:
+        if a.startswith("--force-with-lease="):
+            ref, colon, sha = a[len("--force-with-lease="):].partition(":")
+            if colon:
+                leases.append((ref, sha))
+    return leases
+
+
+def merged_delete(repo, remote, default, names, leases):
+    """Whether a delete-only push of the branches in names goes without an ask: True when
+    every one is merged and pinned; a deny reason naming the pinned command when every one
+    is merged but a pin is missing or names another tip; None (an ask, as before) otherwise,
+    a failed read of the remote included. A timeout anywhere in these checks asks as well:
+    Repo.run raises it as a Deny, which here would turn today's ask into a deny."""
+    try:
+        return check_merged_delete(repo, remote, default, names, leases)
+    except Deny:
+        return None
+
+
+def check_merged_delete(repo, remote, default, names, leases):
+    """merged_delete without the timeout fallback.
+
+    Merged: one ls-remote of the remote, whose single push URL is its fetch URL (evaluate
+    refuses any other remote before this runs), shows its HEAD on the default branch and
+    every branch present; the remote's default tip and every branch tip exist here; and
+    each branch tip is an ancestor of both the remote's default tip and refs/heads/<default>,
+    so its commits survive in both. Pinned: some --force-with-lease=<branch>:<sha> or
+    refs/heads/<branch>:<sha> names the tip just read and no lease on that branch names
+    another, so git refuses the delete if the branch moved after this read."""
+    heads = ["refs/heads/" + n for n in [default] + names]
+    out = repo.run("ls-remote", "--symref", remote, "HEAD", *heads,
+                   env=dict(os.environ, GIT_TERMINAL_PROMPT="0"))
+    if out is None:
+        return None
+    tips, remote_head = {}, None
+    for line in out.splitlines():
+        left, tab, ref = line.partition("\t")
+        if not tab:
+            continue
+        if left.startswith("ref: "):
+            if ref == "HEAD":
+                remote_head = left[len("ref: "):].strip()
+        elif ref in heads:
+            tips[ref] = left.strip()
+    local_default = "refs/heads/" + default
+    if remote_head != local_default or not repo.has_ref(local_default):
+        return None
+    if not all(SHA_RE.fullmatch(tips.get(h, "")) for h in heads):
+        return None
+    if any(repo.run("cat-file", "-e", tips[h] + "^{commit}") is None for h in heads):
+        return None
+    for n in names:
+        for target in (tips[local_default], local_default):
+            if repo.run("merge-base", "--is-ancestor", tips["refs/heads/" + n], target) is None:
+                return None
+
+    def pinned(n):
+        shas = [sha for ref, sha in leases if ref in (n, "refs/heads/" + n)]
+        return bool(shas) and all(sha == tips["refs/heads/" + n] for sha in shas)
+
+    if all(pinned(n) for n in names):
+        return True
+    pins = " ".join("--force-with-lease={}:{}".format(n, tips["refs/heads/" + n]) for n in names)
+    return ("Push guard: {} {} merged into {}, on {} and here. Pin the delete to the tip just "
+            "read, so git refuses it if the branch has moved, and it needs no ask: "
+            "git push {} {} --delete {}").format(
+                ", ".join(names), "is" if len(names) == 1 else "are", default, remote,
+                pins, remote, " ".join(names))
+
+
 # ------------------------------------------------------------------ the secret scan
 def run_gitleaks(cmd, cwd, env):
     """(returncode, stdout, stderr) of gitleaks, within what is left of the budget. It runs
@@ -1108,6 +1211,17 @@ def evaluate(cwd, assigns, repo_opts, config_opts, args):
         scan_sources.append("--all")
     if scan_sources:
         scan(root, remote, scan_sources)
+
+    # A delete-only push of merged branches, each pinned to the tip read here, needs no ask;
+    # merged but unpinned is a silent deny naming the pinned command. delete_targets admits
+    # no flag or refspec that adds any other ask, so the asks it replaces are delete asks.
+    targets = delete_targets(flags, refspecs)
+    if asks and targets is not None and default not in targets:
+        verdict = merged_delete(repo, remote, default, targets, push_leases(args))
+        if verdict is True:
+            return None
+        if verdict:
+            raise Deny(verdict)
 
     if asks:
         return "Push guard: this push needs Michael, because " + "; ".join(asks) + "."
