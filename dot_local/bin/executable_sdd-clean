@@ -3,7 +3,8 @@
 #
 # A workspace is deleted only when it is not a symlink, its real path is
 # <top>/.superpowers/sdd/<name> where <top> is the top level of the git work tree holding
-# it, git ignores it, and git tracks no file inside it. Every argument is checked before
+# it, git ignores it, git tracks no file inside it, and no .git (a nested repository or a
+# linked worktree, whose unpushed or uncommitted work rm -rf would lose) lies inside. Every argument is checked before
 # anything is deleted, so one refusal deletes nothing. The command is allowlisted
 # (Bash(sdd-clean *)): these checks are all that stands between an agent and a silent
 # rm -rf, so each one fails closed.
@@ -37,6 +38,9 @@ for arg in "$@"; do
   if ! git -C "$top" check-ignore -q -- ".superpowers/sdd/$name"; then
     refuse "$arg" "git does not ignore it"; continue
   fi
+  nested=$(find "$real" -mindepth 1 -name .git -print -quit 2>/dev/null) \
+    || { refuse "$arg" "its contents cannot be listed"; continue; }
+  [ -z "$nested" ] || { refuse "$arg" "it holds a git repository or worktree: $nested"; continue; }
   targets+=("$real")
 done
 

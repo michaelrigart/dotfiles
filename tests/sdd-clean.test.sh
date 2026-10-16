@@ -49,9 +49,9 @@ ws "$R/.superpowers/sdd/a";             deleted "an ignored workspace is deleted
 ws "$R/.superpowers/sdd/b"; ws "$R/.superpowers/sdd/c"
 deleted "two workspaces in one call" "$R/.superpowers/sdd/b" "$R/.superpowers/sdd/c"
 ws "$R/.superpowers/sdd/d"
-( CDPATH= cd -- "$R" && "$SC" .superpowers/sdd/d/ ) 2>"$T/err"
-[ ! -e "$R/.superpowers/sdd/d" ] && _pass "a relative path with a trailing slash" \
-  || _fail "a relative path with a trailing slash" "$(cat "$T/err")"
+( CDPATH= cd -- "$R" && "$SC" .superpowers/sdd/d/ ) 2>"$T/err"; rc=$?
+[ "$rc" = 0 ] && [ ! -e "$R/.superpowers/sdd/d" ] && _pass "a relative path with a trailing slash" \
+  || _fail "a relative path with a trailing slash" "rc=$rc, stderr: $(cat "$T/err")"
 
 mkdir -p "$R/docs";                     refused "a directory outside .superpowers/sdd/" "not a workspace directly under" "$R/docs"
 ws "$R/.superpowers/sdd/e/deeper";      refused "a directory two levels down" "not a workspace directly under" "$R/.superpowers/sdd/e/deeper"
@@ -64,6 +64,13 @@ refused "a nested work tree" "not a workspace directly under" "$R/.superpowers/s
 ws "$R/.superpowers/sdd/tracked"; git -C "$R" add -f .superpowers/sdd/tracked/progress.md
 git -C "$R" commit -q -m "track a workspace"
 refused "a workspace git tracks files in" "tracks" "$R/.superpowers/sdd/tracked"
+
+ws "$R/.superpowers/sdd/g"; git init -q "$R/.superpowers/sdd/g/inner"
+git -C "$R/.superpowers/sdd/g/inner" commit -q --allow-empty -m "unpushed work"
+refused "a workspace holding an independent repository" "holds a git repository" "$R/.superpowers/sdd/g"
+ws "$R/.superpowers/sdd/h"; git -C "$R" worktree add -q -b wt-h "$R/.superpowers/sdd/h/wt"
+printf 'uncommitted\n' > "$R/.superpowers/sdd/h/wt/new.txt"
+refused "a workspace holding a linked worktree" "holds a git repository" "$R/.superpowers/sdd/h"
 
 repo plain; printf '' > "$T/plain/.gitignore"; git -C "$T/plain" commit -q -am "ignore nothing"
 ws "$T/plain/.superpowers/sdd/x";       refused "a workspace git does not ignore" "does not ignore" "$T/plain/.superpowers/sdd/x"
