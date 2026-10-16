@@ -412,7 +412,9 @@ Controller steps outside the tasks: set the spec's status to `In progress` befor
   git -C $T/seed add dot_testfile && git -C $T/seed commit -q -m init && git -C $T/seed push -q origin main 2>/dev/null
   WANT=$(git -C $T/seed rev-parse HEAD)
 
-  fresh() { rm -rf $T/co; git clone -q $T/origin.git $T/co 2>/dev/null; export CHECKOUT=$T/co; rm -f $LOG }
+  # --no-local: the checkout gets its own object files, so a forged object in it can never
+  # alter origin's through a hard link.
+  fresh() { rm -rf $T/co; git clone -q --no-local $T/origin.git $T/co 2>/dev/null; export CHECKOUT=$T/co; rm -f $LOG }
   applied_clone() { [[ -f $LOG ]] && grep -q '^SOURCE ' $LOG && grep -qx dot_testfile $LOG && ! grep -q "$1" $LOG }
   tmp_clean() { [[ ! -d $T/cache/chezmoi-apply || -z $(ls -A $T/cache/chezmoi-apply) ]] }
 
@@ -428,12 +430,14 @@ Controller steps outside the tasks: set the spec's status to `In progress` befor
     (( rc == 1 )) && [[ $err == *"put the subcommand first"* ]] && [[ ! -e $LOG ]] \
       && _pass "chezmoi $form is refused: subcommand first" || _fail "chezmoi $form is refused" "rc=$rc err=$err"
   done
-  for form in "apply --source $T/co" "apply --source=$T/co" "apply -S$T/co" "apply --config $T/x.toml" "update --working-tree $T/co"; do
+  for form in "apply --source $T/co" "apply --source=$T/co" "apply -S$T/co" "apply -vS$T/co" "apply -nvc$T/x.toml" \
+              "apply --config $T/x.toml" "update --working-tree $T/co"; do
     fresh; err=$(chezmoi ${=form} 2>&1 >/dev/null); rc=$?
     (( rc == 1 )) && [[ $err == *"the wrapper chooses the source"* ]] && [[ ! -e $LOG ]] \
       && _pass "chezmoi $form is refused" || _fail "chezmoi $form is refused" "rc=$rc err=$err"
   done
-  for form in "init --apply" "init --apply=true" "init -a" "init -va" "edit --apply x" "edit --apply=1 x"; do
+  for form in "init --apply" "init --apply=true" "init -a" "init -va" "init -av" "init -a=true" \
+              "edit --apply x" "edit --apply=1 x"; do
     fresh; err=$(chezmoi ${=form} 2>&1 >/dev/null); rc=$?
     (( rc == 1 )) && [[ $err == *"--apply is refused"* ]] && [[ ! -e $LOG ]] \
       && _pass "chezmoi $form is refused" || _fail "chezmoi $form is refused" "rc=$rc err=$err"
@@ -476,7 +480,20 @@ Controller steps outside the tasks: set the spec's status to `In progress` befor
   if mkevil && mkdir -p ${obj:h} && printf 'tree %s\nauthor x <x> 0 +0000\ncommitter x <x> 0 +0000\n\nforged\n' $EVILTREE \
        | /usr/bin/python3 -c 'import sys,zlib; d=sys.stdin.buffer.read(); sys.stdout.buffer.write(zlib.compress(b"commit %d\0" % len(d) + d))' > $obj \
        && [[ -s $obj ]]; then
-    chezmoi apply >/dev/null 2>&1; applied_clone run_evil.sh && _pass "a forged loose object under origin's commit is not applied" || _fail "forged object" "$(cat $LOG 2>/dev/null)"
+    # Whether git reads the forged loose copy or the packed original decides what the checkout
+    # looks like; either way the outcome must be safe. If it reads the forgery, the checkout no
+    # longer matches its index and the wrapper refuses. If not, it applies the fresh clone.
+    # Never the forged tree.
+    chezmoi apply >/dev/null 2>&1; rc=$?
+    if [[ $(git -C $T/co cat-file -p $WANT | tail -1) == forged ]]; then
+      (( rc == 1 )) && [[ ! -e $LOG ]] && _pass "a forged object that git reads makes the wrapper refuse" \
+        || _fail "forged object read by git" "rc=$rc log=$(cat $LOG 2>/dev/null)"
+    else
+      applied_clone run_evil.sh && _pass "a forged object git ignores leaves the fresh clone applied" \
+        || _fail "forged object ignored by git" "$(cat $LOG 2>/dev/null)"
+    fi
+    [[ $(git -C $T/origin.git cat-file -p $WANT | tail -1) != forged ]] && _pass "origin's own object stays intact" \
+      || _fail "origin's object" "forged through a hard link"
   else _fail "forged-object fixture" "setup failed"; fi
 
   fresh; print change >> $T/co/dot_testfile; chezmoi apply --dirty-ok >/dev/null 2>&1
@@ -500,6 +517,18 @@ Controller steps outside the tasks: set the spec's status to `In progress` befor
   # it, hide files from git status, add replace refs or forge objects. So the checkout must be a
   # clean main equal to origin's, and chezmoi reads a fresh clone of that commit instead of it.
   # --dirty-ok applies the working tree anyway, for a deliberate local change.
+  # _chezmoi_short <token> <letters>: true when <token> is a single-dash option group that names
+  # one of <letters> before a letter taking a value (c, D, o, S, W: the rest is that value).
+  _chezmoi_short() {
+    local t=${1#-} c
+    [[ $1 == -[!-]* ]] || return 1
+    while [[ -n $t ]]; do
+      c=${t[1]}; t=${t[2,-1]}
+      [[ $2 == *$c* ]] && return 0
+      [[ $c == [cDoSW] ]] && return 1
+    done
+    return 1
+  }
   chezmoi() {
     local -a args=("$@")
     local sub=${1:-} a
@@ -516,13 +545,12 @@ Controller steps outside the tasks: set the spec's status to `In progress` befor
     case $sub in
       apply|update) ;;
       init|edit)
-        # --apply in any spelling: --apply, --apply=<value>, -a, or -a inside a short-option group.
+        # --apply in any spelling: --apply, --apply=<value>, or -a anywhere in a short-option group.
         for a in "${args[@]:1}"; do
-          case $a in
-            --apply|--apply=*|-a|-[!-]*a*)
-              print -u2 "chezmoi: $sub --apply is refused; run chezmoi apply, which deploys origin's main"
-              return 1 ;;
-          esac
+          if [[ $a == --apply || $a == --apply=* ]] || _chezmoi_short "$a" a; then
+            print -u2 "chezmoi: $sub --apply is refused; run chezmoi apply, which deploys origin's main"
+            return 1
+          fi
         done
         command chezmoi "$@"; return ;;
       *) command chezmoi "$@"; return ;;
@@ -534,11 +562,11 @@ Controller steps outside the tasks: set the spec's status to `In progress` befor
     fi
     # An option that picks the source or the configuration would undo the choice below.
     for a in "${args[@]}"; do
-      case $a in
-        -S*|--source|--source=*|-W*|--working-tree|--working-tree=*|-c*|--config|--config=*)
-          print -u2 "chezmoi: refusing $sub with $a: the wrapper chooses the source (--dirty-ok passes everything through)"
-          return 1 ;;
-      esac
+      if [[ $a == (--source|--source=*|--working-tree|--working-tree=*|--config|--config=*) ]] \
+         || _chezmoi_short "$a" SWc; then
+        print -u2 "chezmoi: refusing $sub with $a: the wrapper chooses the source (--dirty-ok passes everything through)"
+        return 1
+      fi
     done
     local src st want head url tmp base
     src=$(command chezmoi source-path) || return
