@@ -50,13 +50,18 @@ these places should cost no escapes.
   merges into the sandbox's write denials) adds the executing places inside what stays
   writable, in every remaining write root (`~/Code`, the chezmoi checkout, `~/Documents`, the
   vault):
-  - in any git directory at any depth, its hooks and its configuration files: `hooks/`,
-    `config`, `config.worktree` and the same files under `modules/` and `worktrees/` (a
-    submodule's or a linked worktree's own). Claude Code already denies a repository's
-    top-level `.git/config`; this covers the rest. Only the files that name commands are denied.
-    Objects, refs and the index stay writable, so sandboxed `git add`, `commit` and `fetch` keep
-    working;
+  - in any `.git` directory at any depth, its `hooks/`, and a submodule's under `modules/`. No
+    agent wrote there in 30 days, so this costs no escapes. Objects, refs, the index and the
+    configuration files stay writable, so sandboxed `git add`, `commit`, `fetch`,
+    `branch -u`, `clone` and `git config` keep working;
   - the vault's `.obsidian`.
+- **Git, decided 2026-10-17 (Michael).** The configuration files stay writable; denying them
+  would add escapes for real agent work. Over 30 days, sandboxed outside temporary
+  directories, that work counted `git branch -u` 4 times, `clone` 6, `submodule` 7,
+  `remote add` 3, plus `git config` writes. A path rule also cannot reach a git directory
+  that a worktree's or submodule's `.git` file points at under any other name. So agent-touched
+  repositories remain a place where agent-written git configuration runs when Michael uses git
+  there. This is the same trust as their code, and it is recorded under Out of scope.
 
   The plan picks whichever form the sandbox enforces for a glob, by probe.
 - **Re-allowing.** A path goes back into the write set only when a sandbox denial shows that a
@@ -170,8 +175,9 @@ A zsh wrapper around `chezmoi` handles `apply` and `update`.
     - a moved `refs/remotes/origin/main`.
   - **Override and refusals.** `--dirty-ok` applies the working tree and never reaches
     chezmoi as an argument. `init --apply` and `edit --apply` are refused.
-- **`live-write-boundary`** also covers a repository outside `~/Code` (in `~/Documents`): its
-  `hooks/` and `config` files are denied there too, while its objects and refs stay writable.
+- **`live-write-boundary`** also covers a repository outside `~/Code` (in `~/Documents`). Its
+  `hooks/` is denied there too, while its objects, refs, index and configuration files stay
+  writable. The suite checks that last part, so the change adds no escapes.
 
 ## Out of scope
 
@@ -179,6 +185,11 @@ A zsh wrapper around `chezmoi` handles `apply` and `update`.
   brakeman, glab, the manual-demo server and headless Chrome, `ps`, `mise trust`).
 - Code in a repository that Michael runs himself (tests, `bin/dev`). It is the work product
   and goes through review like any change.
+- A repository's git configuration (`config`, `config.worktree`, `core.hooksPath`,
+  `core.fsmonitor` and the like), and any git directory reached through a `.git` file. Both
+  stay agent-writable (see §1, "Git"). The hooks and statusline already run git with no
+  sandbox-writable `PATH`. Michael's own git in an agent-touched repository trusts that
+  repository's metadata as it trusts its code.
 - Codex's own sandbox, and anything Michael's unsandboxed processes write.
 - The push guard's merged-branch exemption still judges ancestry on the local object store.
   A forged loose object can make an unmerged branch look merged, and the guard then deletes
