@@ -28,6 +28,9 @@
 set -uo pipefail
 
 self=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")
+# Suites run from tests/, so a suite cannot tell which directory the session started in; tell it.
+RUN_SH_START_DIR=$(pwd -P)
+export RUN_SH_START_DIR
 cd "$(dirname "$self")" || exit 2
 repo_root=$(cd .. && pwd)
 
@@ -90,7 +93,8 @@ for f in ./*.test.sh; do
   # three suites whose output matters most. Fall back to the KEY=VALUE shape.
   idiom=prose
   if [ "$((p + fl))" -eq 0 ]; then
-    p=$(printf '%s\n' "$out" | grep -cE '^[A-Za-z_][A-Za-z0-9_.-]*=[A-Za-z_]+$')
+    # A probe that reports SKIPPED did not assert anything, so it is not counted.
+    p=$(printf '%s\n' "$out" | grep -E '^[A-Za-z_][A-Za-z0-9_.-]*=[A-Za-z_]+$' | grep -vcE '=SKIPPED$')
     [ "$p" -gt 0 ] && idiom=kv
   fi
   tot=$((p + fl))

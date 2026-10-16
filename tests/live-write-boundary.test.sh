@@ -52,14 +52,15 @@ allowed() {
   prepare "$1" "$2" || return 0
   if try "$kind" "$target"; then echo "$1=WRITABLE"; else echo "$1=DENIED"; fail=$((fail + 1)); fi
 }
-# allowed_cfg <key> <path>: a git config file. Claude Code's own sandbox rule denies .git/config under
-# the working directory (allowGitConfig stays unset), which is not this spec's rule: skip those.
-cwd=$(pwd -P)
+# allowed_cfg <key> <path>: a .git/config file. Claude Code's own sandbox rule denies that exact file
+# under the session's working directory (allowGitConfig stays unset), which is not this spec's rule:
+# report SKIPPED there. tests/run.sh exports the directory it was started from; run directly, it is pwd.
+base=$(cd "${RUN_SH_START_DIR:-.}" 2>/dev/null && pwd -P)
 allowed_cfg() {
   local d
   d=$(cd "$(dirname "$2")" 2>/dev/null && pwd -P)
   case "${d:-/}/$(basename "$2")" in
-    "$cwd"/*) echo "$1=SKIPPED_CWD"; return 0 ;;
+    "$base"/*) echo "$1=SKIPPED"; return 0 ;;
   esac
   allowed "$1" "$2"
 }
@@ -86,12 +87,12 @@ for root in "$HOME/Code" "$HOME/.local/share/chezmoi" "$HOME/Documents" \
               "$m/plain/hooks" 2>/dev/null; then
     denied "${k}_git_hooks" "$g/hooks/"
     allowed_cfg "${k}_git_config_writable" "$g/config"
-    allowed_cfg "${k}_git_config_worktree_writable" "$g/config.worktree"
+    allowed "${k}_git_config_worktree_writable" "$g/config.worktree"
     denied "${k}_git_module_hooks" "$g/modules/sub/hooks/"
-    allowed_cfg "${k}_git_module_config_writable" "$g/modules/sub/config"
-    allowed_cfg "${k}_git_module_config_worktree_writable" "$g/modules/sub/config.worktree"
-    allowed_cfg "${k}_git_module_worktree_config_writable" "$g/modules/sub/worktrees/swt/config.worktree"
-    allowed_cfg "${k}_git_worktree_config_writable" "$g/worktrees/wt/config.worktree"
+    allowed "${k}_git_module_config_writable" "$g/modules/sub/config"
+    allowed "${k}_git_module_config_worktree_writable" "$g/modules/sub/config.worktree"
+    allowed "${k}_git_module_worktree_config_writable" "$g/modules/sub/worktrees/swt/config.worktree"
+    allowed "${k}_git_worktree_config_writable" "$g/worktrees/wt/config.worktree"
     allowed "${k}_git_objects" "$g/objects/$stamp"
     allowed "${k}_git_index" "$g/index"
     allowed "${k}_git_branch_named_config" "$g/refs/heads/config"

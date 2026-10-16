@@ -34,6 +34,16 @@ echo "    | got: detail"
 echo "  ok  after"
 exit 1
 SUITE
+cat > "$T/startdir.test.sh" <<'SUITE'
+#!/usr/bin/env bash
+if [ "${RUN_SH_START_DIR:-unset}" = "$WANT_START" ]; then echo "  ok  start dir"; else echo "  FAIL: start dir ${RUN_SH_START_DIR:-unset}"; exit 1; fi
+SUITE
+cat > "$T/kvskip.test.sh" <<'SUITE'
+#!/usr/bin/env bash
+echo "first=DENIED"
+echo "second=SKIPPED"
+echo "third=WRITABLE"
+SUITE
 chmod 755 "$T"/*.sh
 
 # ran <label> <yes|no> <extended regex> <output> - run.sh prints `ok    <suite>` for a
@@ -62,6 +72,11 @@ ran "--all lifts the gate"                       yes 'ok +gated-alpha' "$out"
 out="$("$T/run.sh" broken 2>&1)"
 ran "a failing suite's detail line is printed"   yes '\| got: detail' "$out"
 ran "the following ok line is not folded in"     no  '^ +  ok  after' "$out"
+want="$(cd "$T/.." && pwd -P)"
+out="$(cd "$T/.." && WANT_START="$want" "$T/run.sh" startdir 2>&1)"
+ran "RUN_SH_START_DIR is the physical directory run.sh was started from" yes 'ok +startdir' "$out"
+out="$("$T/run.sh" kvskip 2>&1)"
+ran "a SKIPPED key=value line is not counted as an assertion" yes 'ok +kvskip +2/2' "$out"
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
