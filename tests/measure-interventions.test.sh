@@ -203,29 +203,45 @@ is '.human_turns.after_first'         4   "a fork's new turns follow the first i
 is '.sandbox_escapes.main'            2   "a sandbox escape copied into a fork counts once"
 is '.denials["path-resolution-guard"].main' 1 "a denial copied into a fork counts once"
 
-# A fork that copies from the middle of its original: the copied turn keeps the context the
-# original gives it, though the fork sorts first and starts with the copy.
-SUFFIX="$ROOT/suffix/-Users-x-Code-demo"
-mkdir -p "$SUFFIX"
-/usr/bin/python3 - "$SUFFIX" <<'PY'
+# A fork that copies from the middle of its original, sharing the original's first entry: a
+# copied turn, or a copied notification of a failed background xreview call, keeps the
+# context the original gives it, whatever the fork's name.
+for fork_name in a-fork z-fork; do
+  SUFFIX="$ROOT/suffix-$fork_name/-Users-x-Code-demo"
+  mkdir -p "$SUFFIX"
+  /usr/bin/python3 - "$SUFFIX" "$fork_name" <<'PY'
 import datetime, json, os, sys, time
-proj = sys.argv[1]
+proj, fork_name = sys.argv[1], sys.argv[2]
 t0 = time.time() - 3600
+def stamp(m):
+    return datetime.datetime.fromtimestamp(t0 + m * 60, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 def human(u, m, text):
-    stamp = datetime.datetime.fromtimestamp(t0 + m * 60, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-    return {"type": "user", "uuid": u, "timestamp": stamp, "origin": {"kind": "human"},
+    return {"type": "user", "uuid": u, "timestamp": stamp(m), "origin": {"kind": "human"},
             "message": {"role": "user", "content": text}}
-orig = [human("s1", 0, "start"), human("s2", 2, "next")]
-fork = [orig[1], human("s3", 4, "fork step")]
-for name, entries in (("orig.jsonl", orig), ("a-fork.jsonl", fork)):
+system = {"type": "system", "uuid": "m0", "timestamp": stamp(0), "content": "session start"}
+launch = {"type": "assistant", "uuid": "a1", "timestamp": stamp(1.2), "message": {"role": "assistant", "content": [
+    {"type": "tool_use", "id": "b1", "name": "Bash",
+     "input": {"command": "xreview collect xr-9 60", "run_in_background": True}}]}}
+launched = {"type": "user", "uuid": "r1", "timestamp": stamp(1.4), "message": {"role": "user", "content": [
+    {"type": "tool_result", "tool_use_id": "b1", "is_error": False,
+     "content": "Command running in background with ID: bgx. Output is being written to: /x"}]}}
+failed = {"type": "user", "uuid": "n1", "timestamp": stamp(1.6), "origin": {"kind": "task-notification"},
+          "message": {"role": "user", "content": "<task-notification>\n<task-id>bgx</task-id>\n<status>failed</status>\n"
+                      "<summary>Background command \"x\" failed with exit code 3</summary>\n</task-notification>"}}
+orig = [system, human("s1", 1, "start"), launch, launched, failed, human("s2", 2, "next")]
+fork = [system, failed, orig[5], human("s3", 4, "fork step")]
+for name, entries in (("orig.jsonl", orig), (fork_name + ".jsonl", fork)):
     with open(os.path.join(proj, name), "w") as fh:
         for e in entries:
             fh.write(json.dumps(e) + "\n")
 PY
-OUT="$(/usr/bin/python3 "$SCRIPT" --days 14 --projects-dir "$ROOT/suffix" 2>&1)"
-is '.human_turns.total'               3   "a turn copied from mid-session counts once"
-is '.human_turns.after_first'         2   "a copied mid-session turn keeps its original's context"
-is '.autonomous_stretch.n'            2   "a copied mid-session turn closes its original's stretch"
+  OUT="$(/usr/bin/python3 "$SCRIPT" --days 14 --projects-dir "$ROOT/suffix-$fork_name" 2>&1)"
+  is '.human_turns.total'             3   "$fork_name: a turn copied from mid-session counts once"
+  is '.human_turns.after_first'       2   "$fork_name: a copied mid-session turn keeps its original's context"
+  is '.autonomous_stretch.n'          2   "$fork_name: a copied mid-session turn closes its original's stretch"
+  is '.xreview.collects'              1   "$fork_name: a backgrounded collect counts once"
+  is '.xreview.collect_failures'      1   "$fork_name: a copied failure notification keeps its original's call"
+done
 
 out="$(/usr/bin/python3 "$SCRIPT" --days 0 --projects-dir "$ROOT/projects" 2>&1)"; rc=$?
 [ "$rc" -eq 2 ] && _pass "--days 0 is a usage error" || _fail "--days 0 is a usage error" "rc=$rc"
