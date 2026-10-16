@@ -600,6 +600,13 @@ expect allow "two merged deletes, both pinned"            "$DEL" "git push --for
 expect deny  "a merged delete with no pin"                "$DEL" 'git push origin --delete done'
 has_reason   "the deny names the pinned command" \
              "git push --force-with-lease=done:$DONE origin --delete done" "$DEL" 'git push origin --delete done'
+cp -R "$DEL" "$TMP/del work"
+has_reason   "the deny carries the push's -C path into the pinned command" \
+             "git -C $DEL push --force-with-lease=done:$DONE origin --delete done" \
+             "$TMP" "git -C $DEL push origin --delete done"
+has_reason   "and quotes a -C path that needs it" \
+             "git -C '$TMP/del work' push --force-with-lease=done:$DONE origin --delete done" \
+             "$TMP" "git -C '$TMP/del work' push origin --delete done"
 expect deny  "a bare --force-with-lease"                  "$DEL" 'git push --force-with-lease origin --delete done'
 expect deny  "a lease without a sha"                      "$DEL" 'git push --force-with-lease=done origin --delete done'
 expect deny  "a pin to another sha"                       "$DEL" "git push --force-with-lease=done:$OPEN origin --delete done"
@@ -722,6 +729,19 @@ git -C "$OTHER" switch -q main && git -C "$OTHER" merge -q --ff-only far
 git -C "$OTHER" push -q origin main far 2>/dev/null
 FAR=$(git -C "$OTHER" rev-parse far)
 expect ask   "a merged tip this repository lacks"         "$DEL" "git push --force-with-lease=far:$FAR origin --delete far"
+# The remote's default tip is missing here. A remote marked a promisor in config would have
+# git fetch it for the local lookups, running that remote's uploadpack unsandboxed: the
+# lookups run with lazy fetch off, so the delete asks and the command does not run.
+DPROM=$(cp -R "$DEL" "$TMP/delprom" && printf '%s' "$TMP/delprom")
+PROMMARK="$TMP/promisor-marker"
+git -C "$DPROM" config remote.origin.promisor true
+git -C "$DPROM" config remote.origin.uploadpack "touch $PROMMARK; git-upload-pack"
+expect ask   "a promisor remote, its default tip missing here" "$DPROM" "git push --force-with-lease=done:$DONE origin --delete done"
+if [ -e "$PROMMARK" ]; then
+  fail=$((fail + 1)); printf '  FAIL %s\n' "the promisor's uploadpack ran (a local lookup lazy-fetched from the remote)"
+else
+  pass=$((pass + 1)); printf '  ok   %s\n' "the promisor's uploadpack did not run"
+fi
 git -C "$DEL" fetch -q origin
 expect ask   "a tip the local default branch lacks"       "$DEL" "git push --force-with-lease=far:$FAR origin --delete far"
 expect allow "after the fetch, done is still merged and pinned" "$DEL" "git push --force-with-lease=done:$DONE origin --delete done"

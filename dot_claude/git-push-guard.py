@@ -59,6 +59,10 @@ try:
     BUDGET = float(os.environ.get("PUSH_GUARD_BUDGET", "30"))
 except ValueError:
     BUDGET = 30.0
+# Environment for the object lookups that must stay local: lazy fetch off, so a remote that
+# config marks a promisor is never asked for a missing object (that would run its
+# uploadpack, vcs and credential settings, unsandboxed).
+LOCAL_ENV = dict(os.environ, GIT_NO_LAZY_FETCH="1")
 
 PUNCT =";&|()<>\n"
 ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
@@ -280,6 +284,7 @@ def parse_plain(tokens, cwd):
 class Repo:
     def __init__(self, cwd, repo_opts):
         self.base = ["git", "-C", cwd] + list(repo_opts)
+        self.repo_opts = list(repo_opts)
 
     def run(self, *args, env=None, long=False, raw=False):
         """stdout of a git query, or None when git fails. env replaces the environment; long
@@ -860,7 +865,10 @@ def check_merged_delete(repo, remote, default, names, leases):
     overrides below, which outrank every config file, drop the other protocols for the
     transports that remain, clear credential.helper and core.askPass, and pin protocol
     version 2, the only one whose ls-remote --symref shows the symref a non-HEAD head can be;
-    --upload-pack overrides remote.<name>.uploadpack."""
+    --upload-pack overrides remote.<name>.uploadpack. The lookups after it (cat-file and
+    merge-base) read only what is here, with lazy fetch off (LOCAL_ENV): a remote that config
+    marks a promisor would otherwise have git fetch a missing tip from it, running its
+    uploadpack, vcs and credential settings unsandboxed. A missing tip asks."""
     if repo.config("core.sshCommand") is not None or repo.config("core.gitProxy") is not None \
             or repo.config("remote." + remote + ".vcs") is not None:
         return None
@@ -894,11 +902,13 @@ def check_merged_delete(repo, remote, default, names, leases):
         return None
     if not all(SHA_RE.fullmatch(tips.get(h, "")) for h in heads):
         return None
-    if any(repo.run("cat-file", "-e", tips[h] + "^{commit}") is None for h in heads):
+    if any(repo.run("cat-file", "-e", tips[h] + "^{commit}", env=LOCAL_ENV) is None
+           for h in heads):
         return None
     for n in names:
         for target in (tips[local_default], local_default):
-            if repo.run("merge-base", "--is-ancestor", tips["refs/heads/" + n], target) is None:
+            if repo.run("merge-base", "--is-ancestor", tips["refs/heads/" + n], target,
+                        env=LOCAL_ENV) is None:
                 return None
 
     def pin_of(n, lease):
@@ -908,11 +918,12 @@ def check_merged_delete(repo, remote, default, names, leases):
             and all(any(pin_of(n, lease) for lease in leases) for n in names):
         return True
     pins = " ".join("--force-with-lease={}:{}".format(n, tips["refs/heads/" + n]) for n in names)
+    where = "".join(shlex.quote(x) + " " for x in repo.repo_opts)   # git -C <path>, as written
     return ("Push guard: {} {} merged into {}, on {} and here. Pin the delete to the tip just "
             "read, so git refuses it if the branch has moved, and it needs no ask: "
-            "git push {} {} --delete {}").format(
+            "git {}push {} {} --delete {}").format(
                 ", ".join(names), "is" if len(names) == 1 else "are", default, remote,
-                pins, remote, " ".join(names))
+                where, pins, remote, " ".join(names))
 
 
 # ------------------------------------------------------------------ the secret scan
