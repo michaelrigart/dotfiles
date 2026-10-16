@@ -205,13 +205,17 @@ render() {
 # The renderer never truncates, so an optional segment (plan, tagteam) is kept only when the
 # closing separator and at least one column of filler still fit (w <= cols - 2) and every
 # character's width is known (unknown = 0). Then each character takes exactly the one column
-# w counts for it, so the line ends exactly at $cols. The plan segment is dropped first,
-# then tagteam; without both the line is what it always was.
+# w counts for it, so the line ends exactly at $cols. The plan segment is dropped first;
+# when tagteam does not fit either, the plan segment alone is tried; without both the line
+# is what it always was.
 fits() { [ "$w" -le $((cols - 2)) ] && [ "$unknown" -eq 0 ]; }
 use_tt=0; [ -n "$tt" ] && use_tt=1
 kept=0
 if [ -n "$plan" ]; then build_segs "$use_tt" 1; render; fits && kept=1; fi
 if [ "$kept" = 0 ] && [ "$use_tt" = 1 ]; then build_segs 1 0; render; fits && kept=1; fi
+if [ "$kept" = 0 ] && [ -n "$plan" ] && [ "$use_tt" = 1 ]; then
+  build_segs 0 1; render; fits && kept=1
+fi
 [ "$kept" = 0 ] && { build_segs 0 0; render; }
 
 # filler bar to the right edge (total visible width == cols)

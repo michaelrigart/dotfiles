@@ -339,6 +339,14 @@ if [ "$out" = "$(run tt "$((tt_w + 2))" "$TT\n")" ] && has "$(strip "$out")" "$T
   _pass "where only one fits, the plan segment goes and tagteam stays"
 else _fail "plan should drop before tagteam" "$(strip "$out")"; fi
 mv "$T/progress.md.off" "$WS/progress.md"
+# Where tagteam cannot be shown (a character of unknown width), the plan segment that fits
+# alone is still shown, and the line is what a run without tagteam gives.
+out=$(run tt 200 "work\xe9\xa1\xb9 $DOT 5h 31% $DOT 7d 12%\n")
+if has "$(strip "$out")" "plan 1/4" && has "$out" "$ORANGE" && ! has "$out" "$TEAL" \
+   && ! has "$(strip "$out")" "5h 31%" && [ "$(vis "$out")" = 200 ] \
+   && [ "$out" = "$(run none 200)" ] && [ ! -s "$T/stderr" ]; then
+  _pass "tagteam of unknown width and an active plan: the plan segment alone is shown"
+else _fail "plan should be shown alone when tagteam cannot be" "$(strip "$out") | stderr: $(cat "$T/stderr")"; fi
 INPUT=$INPUT_PLAIN
 
 echo "statusline: $pass passed, $fail failed"
