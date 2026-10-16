@@ -203,6 +203,30 @@ is '.human_turns.after_first'         4   "a fork's new turns follow the first i
 is '.sandbox_escapes.main'            2   "a sandbox escape copied into a fork counts once"
 is '.denials["path-resolution-guard"].main' 1 "a denial copied into a fork counts once"
 
+# A fork that copies from the middle of its original: the copied turn keeps the context the
+# original gives it, though the fork sorts first and starts with the copy.
+SUFFIX="$ROOT/suffix/-Users-x-Code-demo"
+mkdir -p "$SUFFIX"
+/usr/bin/python3 - "$SUFFIX" <<'PY'
+import datetime, json, os, sys, time
+proj = sys.argv[1]
+t0 = time.time() - 3600
+def human(u, m, text):
+    stamp = datetime.datetime.fromtimestamp(t0 + m * 60, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    return {"type": "user", "uuid": u, "timestamp": stamp, "origin": {"kind": "human"},
+            "message": {"role": "user", "content": text}}
+orig = [human("s1", 0, "start"), human("s2", 2, "next")]
+fork = [orig[1], human("s3", 4, "fork step")]
+for name, entries in (("orig.jsonl", orig), ("a-fork.jsonl", fork)):
+    with open(os.path.join(proj, name), "w") as fh:
+        for e in entries:
+            fh.write(json.dumps(e) + "\n")
+PY
+OUT="$(/usr/bin/python3 "$SCRIPT" --days 14 --projects-dir "$ROOT/suffix" 2>&1)"
+is '.human_turns.total'               3   "a turn copied from mid-session counts once"
+is '.human_turns.after_first'         2   "a copied mid-session turn keeps its original's context"
+is '.autonomous_stretch.n'            2   "a copied mid-session turn closes its original's stretch"
+
 out="$(/usr/bin/python3 "$SCRIPT" --days 0 --projects-dir "$ROOT/projects" 2>&1)"; rc=$?
 [ "$rc" -eq 2 ] && _pass "--days 0 is a usage error" || _fail "--days 0 is a usage error" "rc=$rc"
 out="$(/usr/bin/python3 "$SCRIPT" --projects-dir "$ROOT/nope" 2>&1)"; rc=$?

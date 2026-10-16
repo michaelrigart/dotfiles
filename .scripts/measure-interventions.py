@@ -28,8 +28,10 @@ Transcript shape (observed 2026-09-30, Claude Code 2.1.285):
   an interrupt is a `user` entry with no origin whose content is a text block starting
   "[Request interrupted by user".
 
-  a forked or resumed session starts its file with copies of earlier entries that keep
-  their uuid; each uuid is counted once, in whichever file is scanned first.
+  a forked or resumed session writes copies of earlier entries, from anywhere in the
+  original, that keep their uuid and timestamp. Main sessions are scanned oldest first, by
+  their first timestamped entry, so an original is scanned before its forks and a copy
+  keeps the context the original gives it; each uuid is counted once.
 
 Known edges of the counts:
   - a session that straddles the cutoff has its first IN-WINDOW human turn treated as
@@ -272,11 +274,29 @@ def scan_file(path, scope, cutoff, totals, counted):
     return seen
 
 
+def first_timestamp(path):
+    """The timestamp of a transcript's first timestamped entry; +inf when it has none."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                try:
+                    entry = json.loads(line)
+                except ValueError:
+                    continue
+                ts = parse_ts(entry.get("timestamp")) if isinstance(entry, dict) else None
+                if ts is not None:
+                    return ts
+    except OSError:
+        pass
+    return float("inf")
+
+
 def measure(projects_dir, days, now=None):
     now = now if now is not None else datetime.datetime.now(datetime.timezone.utc).timestamp()
     cutoff = now - days * 86400
     totals = Totals()
     counted = set()                 # every entry uuid already counted, across files
+    mains = []
     for project in sorted(os.listdir(projects_dir)):
         pdir = os.path.join(projects_dir, project)
         if not os.path.isdir(pdir):
@@ -287,14 +307,16 @@ def measure(projects_dir, days, now=None):
                 continue
             if os.path.getmtime(path) < cutoff:
                 continue
-            if scan_file(path, "main", cutoff, totals, counted):
-                totals.sessions += 1
-            subdir = os.path.join(pdir, name[:-len(".jsonl")], "subagents")
-            if os.path.isdir(subdir):
-                for sub in sorted(os.listdir(subdir)):
-                    spath = os.path.join(subdir, sub)
-                    if sub.endswith(".jsonl") and os.path.getmtime(spath) >= cutoff:
-                        scan_file(spath, "subagent", cutoff, totals, counted)
+            mains.append((first_timestamp(path), project, name, path))
+    for _, project, name, path in sorted(mains):
+        if scan_file(path, "main", cutoff, totals, counted):
+            totals.sessions += 1
+        subdir = os.path.join(projects_dir, project, name[:-len(".jsonl")], "subagents")
+        if os.path.isdir(subdir):
+            for sub in sorted(os.listdir(subdir)):
+                spath = os.path.join(subdir, sub)
+                if sub.endswith(".jsonl") and os.path.getmtime(spath) >= cutoff:
+                    scan_file(spath, "subagent", cutoff, totals, counted)
     x = totals.xreview
     return {
         "window_days": days,
