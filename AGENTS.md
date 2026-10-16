@@ -92,10 +92,10 @@ exact suite name lifts it (so `./tests/run.sh reconcile-agents` runs the suite, 
 | `dev-topology` | unsandboxed + live `herdr` | drives the real binary, whose socket the sandbox denies |
 | `dev-integrations` | live `herdr` + **interactive** | stops midway for an operator to attach the session and start both agents; it exits 2 with no TTY rather than half-running |
 | `live-codex-daemon` | unsandboxed + live `herdr` + clean daemon | drives the real Codex daemon and a scratch tab; the canary for Codex protocol changes. Run from inside a herdr pane after `chezmoi apply` |
-| `live-agent-auth`, `live-agent-signing`, `live-credential-boundary` | **fresh session after `chezmoi apply`, and SANDBOXED** | they measure the sandbox |
+| `live-agent-auth`, `live-agent-signing`, `live-credential-boundary`, `live-write-boundary` | **fresh session after `chezmoi apply`, and SANDBOXED** | they measure the sandbox |
 
-**Never run `live-agent-auth`, `live-agent-signing` or `live-credential-boundary` with
-the sandbox disabled.** They measure the sandbox, so disabling it inverts the result:
+**Never run `live-agent-auth`, `live-agent-signing`, `live-credential-boundary` or `live-write-boundary`
+with the sandbox disabled.** They measure the sandbox, so disabling it inverts the result:
 `live-credential-boundary.test.sh` then reports every private key readable and exits
 12 or more. That is the suite working, not a regression.
 
@@ -128,8 +128,8 @@ target exists and exits 2 if not. Keep that when adding suites — a guard test 
 is missing otherwise reports every "must allow" case as a pass.
 
 Two output idioms exist and `run.sh` counts both: prose (`  ok  …` / `  PASS: …`) and the
-`KEY=VALUE` status the `live-agent-auth`, `live-agent-signing` and
-`live-credential-boundary` suites emit so they never print key material. A kv suite
+`KEY=VALUE` status the `live-agent-auth`, `live-agent-signing`, `live-credential-boundary` and
+`live-write-boundary` suites emit so they never print key material. A kv suite
 encodes failures in its values and exits with the count, so it is judged on exit status
 alone — the prose cross-check does not apply to it.
 
