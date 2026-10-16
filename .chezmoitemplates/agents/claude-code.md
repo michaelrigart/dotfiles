@@ -12,8 +12,8 @@
   - The declaration only applies when the tool is the first command of the Bash call, on
     its own. Do setup in a separate call, and never pipe or prefix these tools.
   - Never pass the escape flag for them.
-- **Path-resolution guard.** Never start a Bash call with `cd`: use absolute paths,
-  `git -C`, or a `cd` in a call of its own. Name directories instead of a recursive
+- **Path-resolution guard.** Never chain commands after a leading `cd`: use absolute paths
+  or `git -C`; a lone `cd` lasts only in the main session. Name directories, not a recursive
   `grep`/`rg` over `.`, which re-prompts in any tree that could hold a deny-glob match.
 - **Plan workspaces.** Delete a finished `.superpowers/sdd/<plan>` workspace with
   `sdd-clean <workspace>`, never `rm -rf`.
