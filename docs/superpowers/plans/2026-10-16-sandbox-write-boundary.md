@@ -421,13 +421,24 @@ Controller steps outside the tasks: set the spec's status to `In progress` befor
      && grep -q "^TMPDIR $T/cache/chezmoi-apply/run\..*/tmp$" $LOG && tmp_clean; then
     _pass "a clean main equal to origin applies a fresh clone kept under the cache, with chezmoi's TMPDIR there"
   else _fail "clean main applies a fresh clone under the cache" "$(cat $LOG 2>/dev/null)"; fi
-  fresh; chezmoi -v apply >/dev/null 2>&1
-  applied_clone NOPE && _pass "a global flag before apply still takes the wrapper's path" || _fail "-v apply" "$(cat $LOG 2>/dev/null)"
-  for form in "--source $T/co apply" "apply --source $T/co" "-S $T/co apply" "apply --config $T/x.toml"; do
+  fresh; chezmoi apply -v >/dev/null 2>&1
+  applied_clone NOPE && grep -q -- ' apply -v$' $LOG && _pass "options after apply take the wrapper's path" || _fail "apply -v" "$(cat $LOG 2>/dev/null)"
+  for form in "-v apply" "--progress auto apply" "--source $T/co apply" "-S $T/co update" "--color off init --apply"; do
+    fresh; err=$(chezmoi ${=form} 2>&1 >/dev/null); rc=$?
+    (( rc == 1 )) && [[ $err == *"put the subcommand first"* ]] && [[ ! -e $LOG ]] \
+      && _pass "chezmoi $form is refused: subcommand first" || _fail "chezmoi $form is refused" "rc=$rc err=$err"
+  done
+  for form in "apply --source $T/co" "apply --source=$T/co" "apply -S$T/co" "apply --config $T/x.toml" "update --working-tree $T/co"; do
     fresh; err=$(chezmoi ${=form} 2>&1 >/dev/null); rc=$?
     (( rc == 1 )) && [[ $err == *"the wrapper chooses the source"* ]] && [[ ! -e $LOG ]] \
       && _pass "chezmoi $form is refused" || _fail "chezmoi $form is refused" "rc=$rc err=$err"
   done
+  for form in "init --apply" "init --apply=true" "init -a" "init -va" "edit --apply x" "edit --apply=1 x"; do
+    fresh; err=$(chezmoi ${=form} 2>&1 >/dev/null); rc=$?
+    (( rc == 1 )) && [[ $err == *"--apply is refused"* ]] && [[ ! -e $LOG ]] \
+      && _pass "chezmoi $form is refused" || _fail "chezmoi $form is refused" "rc=$rc err=$err"
+  done
+  fresh; chezmoi --version >/dev/null 2>&1; grep -q '^ARGS --version$' $LOG && _pass "an option-only command passes through" || _fail "--version" "$(cat $LOG 2>/dev/null)"
   fresh; chezmoi apply --dry-run --verbose >/dev/null 2>&1
   grep -q -- '--dry-run --verbose' $LOG 2>/dev/null && applied_clone NOPE && _pass "the dry-run preview takes the same path" || _fail "dry-run" "$(cat $LOG 2>/dev/null)"
 
@@ -447,20 +458,29 @@ Controller steps outside the tasks: set the spec's status to `In progress` befor
   # Planted content in a checkout that passes the precondition never reaches the source.
   fresh; print 'touch PWNED' > $T/co/run_evil.sh; print run_evil.sh >> $T/co/.git/info/exclude
   chezmoi apply >/dev/null 2>&1; applied_clone run_evil.sh && _pass "a run_ script hidden by .git/info/exclude is not applied" || _fail "excluded run_ script" "$(cat $LOG 2>/dev/null)"
-  fresh; EVIL=$(git -C $T/co commit-tree -m evil $(print 'evil' | git -C $T/co hash-object -w --stdin | { read b; printf '100644 blob %s\trun_evil.sh\n' $b | git -C $T/co mktree }))
-  git -C $T/co replace $WANT $EVIL
-  chezmoi apply >/dev/null 2>&1; applied_clone run_evil.sh && _pass "a replacement ref for origin's commit is not applied" || _fail "replace ref" "$(cat $LOG 2>/dev/null)"
-  fresh; git -C $T/co update-ref refs/remotes/origin/main $EVIL 2>/dev/null || true
-  chezmoi apply >/dev/null 2>&1; applied_clone run_evil.sh && _pass "a moved refs/remotes/origin/main is not applied" || _fail "moved remote ref" "$(cat $LOG 2>/dev/null)"
-  fresh; obj=$T/co/.git/objects/${WANT[1,2]}/${WANT[3,-1]}; mkdir -p ${obj:h}
-  printf 'tree %s\nauthor x <x> 0 +0000\ncommitter x <x> 0 +0000\n\nforged\n' $(git -C $T/co rev-parse $EVIL^{tree}) \
-    | /usr/bin/python3 -c 'import sys,zlib; d=sys.stdin.buffer.read(); sys.stdout.buffer.write(zlib.compress(b"commit %d\0" % len(d) + d))' > $obj
-  chezmoi apply >/dev/null 2>&1; applied_clone run_evil.sh && _pass "a forged loose object under origin's commit is not applied" || _fail "forged object" "$(cat $LOG 2>/dev/null)"
+  # mkevil: in the current checkout, a commit whose tree holds run_evil.sh; sets EVIL and EVILTREE.
+  mkevil() {
+    local blob; blob=$(print 'touch PWNED' | git -C $T/co hash-object -w --stdin) || return 1
+    EVILTREE=$(printf '100644 blob %s\trun_evil.sh\n' $blob | git -C $T/co mktree) || return 1
+    EVIL=$(git -C $T/co commit-tree -m evil $EVILTREE) || return 1
+    [[ -n $EVIL && -n $EVILTREE ]]
+  }
+  fresh; if mkevil && git -C $T/co replace $WANT $EVIL; then
+    chezmoi apply >/dev/null 2>&1; applied_clone run_evil.sh && _pass "a replacement ref for origin's commit is not applied" || _fail "replace ref" "$(cat $LOG 2>/dev/null)"
+  else _fail "replace-ref fixture" "setup failed"; fi
+  fresh; if mkevil && git -C $T/co update-ref refs/remotes/origin/main $EVIL \
+       && [[ $(git -C $T/co rev-parse refs/remotes/origin/main) == $EVIL ]]; then
+    chezmoi apply >/dev/null 2>&1; applied_clone run_evil.sh && _pass "a moved refs/remotes/origin/main is not applied" || _fail "moved remote ref" "$(cat $LOG 2>/dev/null)"
+  else _fail "moved-ref fixture" "setup failed"; fi
+  fresh; obj=$T/co/.git/objects/${WANT[1,2]}/${WANT[3,-1]}
+  if mkevil && mkdir -p ${obj:h} && printf 'tree %s\nauthor x <x> 0 +0000\ncommitter x <x> 0 +0000\n\nforged\n' $EVILTREE \
+       | /usr/bin/python3 -c 'import sys,zlib; d=sys.stdin.buffer.read(); sys.stdout.buffer.write(zlib.compress(b"commit %d\0" % len(d) + d))' > $obj \
+       && [[ -s $obj ]]; then
+    chezmoi apply >/dev/null 2>&1; applied_clone run_evil.sh && _pass "a forged loose object under origin's commit is not applied" || _fail "forged object" "$(cat $LOG 2>/dev/null)"
+  else _fail "forged-object fixture" "setup failed"; fi
 
   fresh; print change >> $T/co/dot_testfile; chezmoi apply --dirty-ok >/dev/null 2>&1
   grep -qx WORKTREE $LOG 2>/dev/null && ! grep -q -- --dirty-ok $LOG && _pass "--dirty-ok applies the working tree and never reaches chezmoi" || _fail "--dirty-ok" "$(cat $LOG 2>/dev/null)"
-  fresh; err=$(chezmoi init --apply 2>&1); (( $? == 1 )) && [[ ! -e $LOG ]] && _pass "init --apply is refused" || _fail "init --apply" "$err"
-  fresh; err=$(chezmoi edit --apply x 2>&1); (( $? == 1 )) && [[ ! -e $LOG ]] && _pass "edit --apply is refused" || _fail "edit --apply" "$err"
   fresh; chezmoi status >/dev/null 2>&1; grep -q '^ARGS status$' $LOG && _pass "other subcommands pass through" || _fail "passthrough" "$(cat $LOG 2>/dev/null)"
   fresh; git -C $T/seed commit -q --allow-empty -m ahead2 && git -C $T/seed push -q origin main 2>/dev/null
   chezmoi update >/dev/null 2>&1
@@ -482,27 +502,33 @@ Controller steps outside the tasks: set the spec's status to `In progress` befor
   # --dirty-ok applies the working tree anyway, for a deliberate local change.
   chezmoi() {
     local -a args=("$@")
-    local sub="" a skip=0
-    # The subcommand is the first word that is neither an option nor an option's value.
-    for a in "${args[@]}"; do
-      if (( skip )); then skip=0; continue; fi
-      case $a in
-        -S|-W|-c|-D|-o|--source|--working-tree|--config|--destination|--output|--cache|\
-        --config-format|--color|--mode|--persistent-state|--override-data|--override-data-file) skip=1 ;;
-        -*) ;;
-        *) sub=$a; break ;;
-      esac
-    done
+    local sub=${1:-} a
+    # chezmoi takes global options before the subcommand, some with a value, and a parser that
+    # misses one would read the value as the subcommand and let apply through. So a command
+    # that names apply, update, init or edit must put the subcommand first.
+    if [[ $sub == -* ]]; then
+      if (( ${args[(Ie)apply]} || ${args[(Ie)update]} || ${args[(Ie)init]} || ${args[(Ie)edit]} )); then
+        print -u2 "chezmoi: put the subcommand first, e.g. chezmoi apply -v"
+        return 1
+      fi
+      command chezmoi "$@"; return
+    fi
     case $sub in
       apply|update) ;;
       init|edit)
-        if (( ${args[(Ie)--apply]} || ${args[(Ie)-a]} )); then
-          print -u2 "chezmoi: $sub --apply is refused; run chezmoi apply, which deploys origin's main"
-          return 1
-        fi
+        # --apply in any spelling: --apply, --apply=<value>, -a, or -a inside a short-option group.
+        for a in "${args[@]:1}"; do
+          case $a in
+            --apply|--apply=*|-a|-[!-]*a*)
+              print -u2 "chezmoi: $sub --apply is refused; run chezmoi apply, which deploys origin's main"
+              return 1 ;;
+          esac
+        done
         command chezmoi "$@"; return ;;
       *) command chezmoi "$@"; return ;;
     esac
+    # Every git read below judges the real objects, never a replacement.
+    local -x GIT_NO_REPLACE_OBJECTS=1
     if (( ${args[(Ie)--dirty-ok]} )); then
       command chezmoi "${(@)args:#--dirty-ok}"; return
     fi
@@ -543,7 +569,7 @@ Controller steps outside the tasks: set the spec's status to `In progress` befor
     base=${XDG_CACHE_HOME:-$HOME/.cache}/chezmoi-apply
     mkdir -p -m 700 "$base" && tmp=$(mktemp -d "$base/run.XXXXXX") || return
     {
-      GIT_NO_REPLACE_OBJECTS=1 git clone -q --depth 1 --branch main --template= -- "$url" "$tmp/src" \
+      git clone -q --depth 1 --branch main --template= -- "$url" "$tmp/src" \
         || { print -u2 "chezmoi: cannot clone origin's main"; return 1 }
       [[ $(git -C "$tmp/src" rev-parse HEAD) == $want ]] \
         || { print -u2 "chezmoi: origin's main moved during the clone; run it again"; return 1 }
