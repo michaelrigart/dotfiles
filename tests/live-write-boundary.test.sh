@@ -24,9 +24,9 @@ trap 'exit 143' TERM
 # try <d|f> <path>: create it (never over an existing file) and remove it again on success.
 try() {
   if [ "$1" = d ]; then
-    mkdir "$2" 2>/dev/null && { rmdir "$2"; return 0; }
+    mkdir "$2" 2>/dev/null && { rmdir "$2" 2>/dev/null; return 0; }
   else
-    ( set -C; : > "$2" ) 2>/dev/null && { rm -f "$2"; return 0; }
+    ( set -C; : > "$2" ) 2>/dev/null && { rm -f "$2" 2>/dev/null; return 0; }
   fi
   return 1
 }
@@ -61,8 +61,8 @@ denied config_mise "$HOME/.config/mise/$stamp"
 denied config_herdr "$HOME/.config/herdr/$stamp"
 denied vault_obsidian "$V/.obsidian/$stamp"
 # Fake repositories at depth 2 in each work root (the layout real repositories have): the deny
-# globs are path rules, so a mkdir'd .git stands in for a real one (git init itself writes
-# .git/config, which is denied). The vault root is probed above Documents/MSB, away from Obsidian.
+# globs are path rules, so a mkdir'd .git stands in for a real one. Only hooks are denied; git
+# configuration files stay writable. The vault root is probed above Documents/MSB, away from Obsidian.
 for root in "$HOME/Code" "$HOME/.local/share/chezmoi" "$HOME/Documents" \
             "$HOME/Library/Mobile Documents/iCloud~md~obsidian"; do
   k=$(basename "$root" | tr -c 'a-zA-Z0-9\n' '_')
@@ -74,13 +74,13 @@ for root in "$HOME/Code" "$HOME/.local/share/chezmoi" "$HOME/Documents" \
   if mkdir -p "$g/objects" "$g/refs/heads" "$g/modules/sub/worktrees/swt" "$g/worktrees/wt" \
               "$m/plain/hooks" 2>/dev/null; then
     denied "${k}_git_hooks" "$g/hooks/"
-    denied "${k}_git_config" "$g/config"
-    denied "${k}_git_config_worktree" "$g/config.worktree"
+    allowed "${k}_git_config_writable" "$g/config"
+    allowed "${k}_git_config_worktree_writable" "$g/config.worktree"
     denied "${k}_git_module_hooks" "$g/modules/sub/hooks/"
-    denied "${k}_git_module_config" "$g/modules/sub/config"
-    denied "${k}_git_module_config_worktree" "$g/modules/sub/config.worktree"
-    denied "${k}_git_module_worktree_config" "$g/modules/sub/worktrees/swt/config.worktree"
-    denied "${k}_git_worktree_config" "$g/worktrees/wt/config.worktree"
+    allowed "${k}_git_module_config_writable" "$g/modules/sub/config"
+    allowed "${k}_git_module_config_worktree_writable" "$g/modules/sub/config.worktree"
+    allowed "${k}_git_module_worktree_config_writable" "$g/modules/sub/worktrees/swt/config.worktree"
+    allowed "${k}_git_worktree_config_writable" "$g/worktrees/wt/config.worktree"
     allowed "${k}_git_objects" "$g/objects/$stamp"
     allowed "${k}_git_index" "$g/index"
     allowed "${k}_git_branch_named_config" "$g/refs/heads/config"
@@ -99,7 +99,6 @@ done
 # The chezmoi checkout's own top-level .git.
 cg="$HOME/.local/share/chezmoi/.git"
 denied chezmoi_top_git_hooks "$cg/hooks/"
-denied chezmoi_top_git_config_worktree "$cg/config.worktree"
 if [ -d "$cg/modules/x" ]; then
   denied chezmoi_top_git_module_hooks "$cg/modules/x/hooks/"
 else
