@@ -89,9 +89,11 @@ these places should cost no escapes.
     base environment: a command prefixed with an assignment is no longer excluded, so it runs
     sandboxed. No sandboxed command can change either environment.
 - **The push guard.** Every git call it makes runs with lazy fetch off
-  (`GIT_NO_LAZY_FETCH=1`, which git 2.54 supports), except the gitleaks scan. That scan may
-  need blobs in a genuine partial clone, and with §1 no sandboxed command can configure a
-  promisor remote any more. This closes the reproduced `rev-list` route.
+  (`GIT_NO_LAZY_FETCH=1`, which git 2.54 supports), its shell entry, the patch listing and
+  gitleaks included. A repository's configuration stays agent-writable (§1, "Git"), so the
+  guard can never trust a promisor remote. A push from a genuine blob-filtered partial clone
+  is therefore denied with the existing "push by hand" message; this machine has none. This
+  closes the reproduced `rev-list` route and its patch-listing variant.
 - **Excluded commands.**
   - `docker`, `basecamp` and `herdr` are binaries, so §1 covers them.
   - `xreview` is a script of ours. It and the helpers it calls (`xreview-rpc`, `codex-daemon`)
@@ -118,10 +120,13 @@ So the deployment input comes from origin, never from the checkout's files or ob
 
 A zsh wrapper around `chezmoi` handles `apply` and `update`.
 - **Precondition.** It refuses, naming the reason, unless the checkout is on `main`, has no
-  uncommitted or untracked changes, and its `HEAD` equals origin's `main`, read with
-  `git ls-remote origin refs/heads/main`. That read runs in Michael's unsandboxed shell,
-  against a remote whose configuration §1 protects. `update` first fast-forwards the checkout
-  with `git pull --ff-only`, then checks the same way.
+  uncommitted or untracked changes, and its `HEAD` equals origin's `main`.
+  - Origin is the dotfiles' published URL, pinned in the wrapper. The checkout's own remote
+    configuration is agent-writable (§1, "Git"), so it does not choose what is deployed.
+  - The wrapper reads `main` with `git ls-remote <pinned URL> refs/heads/main`, in Michael's
+    unsandboxed shell. Its git reads of the checkout run with `core.fsmonitor` off.
+  - `update` checks the branch and the tree first, then fast-forwards with
+    `git pull --ff-only <pinned URL> main`, then compares the same way.
 - **Deployment.**
   - It clones origin's `main` afresh: `git clone --depth 1 --branch main --template=` into a new
     temporary directory. The empty template means no hooks are copied in, and the clone has
@@ -134,7 +139,11 @@ A zsh wrapper around `chezmoi` handles `apply` and `update`.
   - The temporary directory is removed afterwards, whatever the outcome.
 - **Override.** `--dirty-ok`, removed before chezmoi sees it, skips both and applies the
   working tree as today, for a deliberate local change.
-- `init --apply` and `edit --apply` are refused with a pointer to `apply`.
+- Every command that would apply the working tree is refused with a pointer to `apply`:
+  `init --apply`, `init --one-shot`, `edit --apply` and `edit --watch`, in any spelling.
+  Bare `init` is refused too (Michael, 2026-10-17): it renders the checkout's
+  `.chezmoi.toml.tmpl` into the config that every later apply trusts. `chezmoi apply --init`
+  renders it from the verified clone instead.
 - Commits reach origin's `main` only through Michael: his merge, or a default-branch push that
   the push guard put to him. Only Michael runs `chezmoi apply`; agents never do.
 
@@ -178,6 +187,10 @@ A zsh wrapper around `chezmoi` handles `apply` and `update`.
 - **`live-write-boundary`** also covers a repository outside `~/Code` (in `~/Documents`). Its
   `hooks/` is denied there too, while its objects, refs, index and configuration files stay
   writable. The suite checks that last part, so the change adds no escapes.
+  - Claude Code's own built-in rule keeps `.git/config` and `.git/hooks` denied under the
+    session's working directory (unless `sandbox.filesystem.allowGitConfig`, which stays
+    unset). This spec leaves that rule as it is, so the suite skips the config probe under
+    the working directory it runs in.
 
 ## Out of scope
 
@@ -185,6 +198,11 @@ A zsh wrapper around `chezmoi` handles `apply` and `update`.
   brakeman, glab, the manual-demo server and headless Chrome, `ps`, `mise trust`).
 - Code in a repository that Michael runs himself (tests, `bin/dev`). It is the work product
   and goes through review like any change.
+- Templates that `chezmoi diff`, `status` and `cat` render from the working tree in Michael's
+  shell (Michael, 2026-10-17). He runs them to preview agent changes, and that preview is a
+  review step.
+- Bare repositories (`x.git/hooks`, with no `/.git/` component), which the hooks denial does
+  not name.
 - A repository's git configuration (`config`, `config.worktree`, `core.hooksPath`,
   `core.fsmonitor` and the like), and any git directory reached through a `.git` file. Both
   stay agent-writable (see §1, "Git"). The hooks and statusline already run git with no
