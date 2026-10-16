@@ -258,16 +258,18 @@ ledger() {
 # plan_is <label> <expected segment text>: shown in orange, exactly 200 wide.
 plan_is() {
   local out; out=$(run none 200)
-  if has "$(strip "$out")" " $2 " && has "$out" "$ORANGE" && [ "$(vis "$out")" = 200 ]; then
-    _pass "$1 shows '$2', exactly 200 wide"
-  else _fail "$1 should show '$2'" "$(strip "$out")"; fi
+  if has "$(strip "$out")" " $2 " && has "$out" "$ORANGE" && [ "$(vis "$out")" = 200 ] \
+     && [ ! -s "$T/stderr" ]; then
+    _pass "$1 shows '$2', exactly 200 wide, no stderr"
+  else _fail "$1 should show '$2'" "$(strip "$out") | stderr: $(cat "$T/stderr")"; fi
 }
 # no_plan <label>: no plan segment at all.
 no_plan() {
   local out; out=$(run none 200)
-  if ! has "$(strip "$out")" " plan " && ! has "$out" "$ORANGE" && [ "$(vis "$out")" = 200 ]; then
-    _pass "$1 shows no plan segment"
-  else _fail "$1 should show no plan segment" "$(strip "$out")"; fi
+  if ! has "$(strip "$out")" " plan " && ! has "$out" "$ORANGE" && [ "$(vis "$out")" = 200 ] \
+     && [ ! -s "$T/stderr" ]; then
+    _pass "$1 shows no plan segment, no stderr"
+  else _fail "$1 should show no plan segment" "$(strip "$out") | stderr: $(cat "$T/stderr")"; fi
 }
 in_dir repo-plan
 ledger "$WS" 10 "$LHEAD" 1;            plan_is "1 of 4 done after 10 minutes" "plan 1/4 $DOT ~30m"
@@ -293,7 +295,14 @@ ledger "$WS" 10 "# SDD ledger $DASH plan: $PR/docs/plan.md" 1;  plan_is "an abso
 ledger "$WS2" 60 "$LHEAD" 1 2 3; touch -t "$(ago 30)" "$WS2/progress.md"
 ledger "$WS" 10 "$LHEAD" 1;            plan_is "the most recently modified ledger" "plan 1/4 $DOT ~30m"
 rm -rf "$WS2"
-in_dir repo-plan/sub;                  plan_is "from a subdirectory" "plan 1/4 $DOT ~30m"
+# Unreadable files leave the segment out silently: the ledger, and the plan it names.
+ledger "$WS" 10 "$LHEAD" 1; chmod 000 "$WS/progress.md"
+no_plan "an unreadable ledger"
+chmod 644 "$WS/progress.md"
+chmod 000 "$PR/docs/plan.md"
+no_plan "an unreadable plan file"
+chmod 644 "$PR/docs/plan.md"
+in_dir repo-plan/sub;                 plan_is "from a subdirectory" "plan 1/4 $DOT ~30m"
 in_dir repo-plan
 
 # Inside a Herdr pane the directory and branch segments go; the plan stays.

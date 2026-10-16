@@ -102,7 +102,7 @@ plan_progress() {
   mt=$(stat -f %m "$best" 2>/dev/null) || return
   [ $((now - mt)) -le 21600 ] || return
   first=""
-  IFS= read -r first < "$best" || [ -n "$first" ] || return
+  { IFS= read -r first < "$best"; } 2>/dev/null || [ -n "$first" ] || return
   first=${first%$'\r'}
   case $first in "# SDD ledger $DASH plan: "?*) ;; *) return ;; esac
   path=${first#"# SDD ledger $DASH plan: "}
