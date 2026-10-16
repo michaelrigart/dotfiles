@@ -44,9 +44,11 @@ INPUT=$(printf '{"model":{"display_name":"Opus 5.5"},"effort":{"level":"high"},"
   "$T/a-rather-long-project-directory-name")
 
 # run <bin: none|tt> <cols> [TT_OUT] [TT_RC] [TT_ERR] -> the statusline's stdout.
-# Its stderr goes to $T/stderr, so a leak can be asserted on.
+# Its stderr goes to $T/stderr, so a leak can be asserted on. HERDR_PANE, when set, is passed
+# as HERDR_PANE_ID: the statusline then runs as inside a Herdr pane.
 run() {
   printf '%s' "$INPUT" | env -i HOME="$T" PATH="$T/$1:/usr/bin:/bin" COLUMNS="$2" \
+    ${HERDR_PANE:+HERDR_PANE_ID=$HERDR_PANE} \
     STUB_ARGS="$T/args" TT_OUT="${3:-}" TT_RC="${4:-0}" TT_ERR="${5:-}" bash "$SL" 2>"$T/stderr"
 }
 strip() { printf '%s' "$1" | sed $'s/\033\\[[0-9;]*m//g'; }
@@ -230,6 +232,105 @@ out=$(run tt "$tight" "$TT\n")
 if [ "$out" = "$(run none "$tight")" ]; then
   _pass "at COLUMNS - 1 the segment is left out and the line is byte-identical"
 else _fail "segment should be left out at $tight columns" "$(strip "$out")"; fi
+
+# --- plan progress: the newest SDD ledger in the session's repository ---
+INPUT_PLAIN=$INPUT
+ORANGE='38;2;255;158;100'
+mkrepo repo-plan main
+PR="$T/repo-plan"; WS="$PR/.superpowers/sdd/p"; WS2="$PR/.superpowers/sdd/q"
+mkdir -p "$WS" "$PR/docs" "$PR/sub" "$T/outside"
+printf '# Plan\n\n### Task 1: a\n\n### Task 2: b\n\n### Task 3: c\n\n### Task 4: d\n' > "$PR/docs/plan.md"
+cp "$PR/docs/plan.md" "$T/outside/plan.md"
+LHEAD="# SDD ledger $DASH plan: docs/plan.md"
+# ago <minutes>: a touch -t stamp that many minutes in the past.
+ago() { date -v-"$1"M +%Y%m%d%H%M.%S; }
+# ledger <dir> <created minutes ago> <first line> [done task numbers...]: a ledger created
+# that long ago and modified now. touch -t to an earlier time moves the birth time back as
+# well; the appends after it move only the modification time.
+ledger() {
+  local dir=$1 age=$2 first=$3 n; shift 3
+  mkdir -p "$dir"; rm -f "$dir/progress.md"
+  printf '%s\n' "$first" > "$dir/progress.md"
+  touch -t "$(ago "$age")" "$dir/progress.md"
+  for n in "$@"; do printf 'Task %s: complete (abc1234)\n' "$n" >> "$dir/progress.md"; done
+  printf 'note\n' >> "$dir/progress.md"
+}
+# plan_is <label> <expected segment text>: shown in orange, exactly 200 wide.
+plan_is() {
+  local out; out=$(run none 200)
+  if has "$(strip "$out")" " $2 " && has "$out" "$ORANGE" && [ "$(vis "$out")" = 200 ]; then
+    _pass "$1 shows '$2', exactly 200 wide"
+  else _fail "$1 should show '$2'" "$(strip "$out")"; fi
+}
+# no_plan <label>: no plan segment at all.
+no_plan() {
+  local out; out=$(run none 200)
+  if ! has "$(strip "$out")" " plan " && ! has "$out" "$ORANGE" && [ "$(vis "$out")" = 200 ]; then
+    _pass "$1 shows no plan segment"
+  else _fail "$1 should show no plan segment" "$(strip "$out")"; fi
+}
+in_dir repo-plan
+ledger "$WS" 10 "$LHEAD" 1;            plan_is "1 of 4 done after 10 minutes" "plan 1/4 $DOT ~30m"
+ledger "$WS" 120 "$LHEAD" 1 2 3;       plan_is "3 of 4 done after 2 hours" "plan 3/4 $DOT ~40m"
+ledger "$WS" 90 "$LHEAD" 1 2 2;        plan_is "a task completed twice counts once" "plan 2/4 $DOT ~1.5h"
+ledger "$WS" 120 "$LHEAD" 1;           plan_is "1 of 4 done after 2 hours" "plan 1/4 $DOT ~6h"
+ledger "$WS" 780 "$LHEAD" 1 2;         plan_is "a ledger created 13 hours ago" "plan 2/4"
+has "$(strip "$(run none 200)")" "plan 2/4 $DOT" && _fail "no ETA past 12 hours" "ETA shown" \
+  || _pass "no ETA past 12 hours"
+ledger "$WS" 10 "$LHEAD";              plan_is "no finished task yet" "plan 0/4"
+has "$(strip "$(run none 200)")" "plan 0/4 $DOT" && _fail "no ETA before the first finished task" "ETA shown" \
+  || _pass "no ETA before the first finished task"
+ledger "$WS" 10 "$LHEAD" 1 2 3 4;      no_plan "a finished plan"
+ledger "$WS" 500 "$LHEAD" 1; touch -t "$(ago 420)" "$WS/progress.md"
+no_plan "a ledger last modified 7 hours ago"
+ledger "$WS" 10 "# notes" 1;           no_plan "a ledger whose first line names no plan"
+ledger "$WS" 10 "# SDD ledger $DASH plan: docs/missing.md" 1; no_plan "a ledger whose plan file is missing"
+ledger "$WS" 10 "# SDD ledger $DASH plan: ../outside/plan.md" 1; no_plan "a plan path outside the top level"
+ledger "$WS" 10 "# SDD ledger $DASH plan: $T/outside/plan.md" 1; no_plan "an absolute plan path outside the top level"
+ln -s "$T/outside/plan.md" "$PR/docs/link.md"
+ledger "$WS" 10 "# SDD ledger $DASH plan: docs/link.md" 1; no_plan "a plan file that is a symlink to one outside the top level"
+ledger "$WS" 10 "# SDD ledger $DASH plan: $PR/docs/plan.md" 1;  plan_is "an absolute plan path" "plan 1/4 $DOT ~30m"
+ledger "$WS2" 60 "$LHEAD" 1 2 3; touch -t "$(ago 30)" "$WS2/progress.md"
+ledger "$WS" 10 "$LHEAD" 1;            plan_is "the most recently modified ledger" "plan 1/4 $DOT ~30m"
+rm -rf "$WS2"
+in_dir repo-plan/sub;                  plan_is "from a subdirectory" "plan 1/4 $DOT ~30m"
+in_dir repo-plan
+
+# Inside a Herdr pane the directory and branch segments go; the plan stays.
+out=$(HERDR_PANE=w1:p2 run none 200)
+if ! has "$(strip "$out")" "repo-plan" && ! has "$(strip "$out")" "$BR main" \
+   && has "$(strip "$out")" "plan 1/4" && [ "$(vis "$out")" = 200 ]; then
+  _pass "inside a Herdr pane there is no directory or branch segment"
+else _fail "inside a Herdr pane" "$(strip "$out")"; fi
+out=$(run none 200)
+if has "$(strip "$out")" "repo-plan" && has "$(strip "$out")" "$BR main"; then
+  _pass "outside a Herdr pane the directory and branch segments stay"
+else _fail "outside a Herdr pane" "$(strip "$out")"; fi
+
+# The fit boundary: the plan segment is the first one dropped.
+wide=$(strip "$(run none 500)")
+trail=${wide##*[! ]}
+with_w=$((500 - 1 - ${#trail}))
+out=$(run none "$((with_w + 2))")
+if has "$(strip "$out")" "plan 1/4" && [ "$(vis "$out")" = "$((with_w + 2))" ]; then
+  _pass "at COLUMNS - 2 the plan segment is shown"
+else _fail "plan segment should fit at $((with_w + 2)) columns" "$(strip "$out")"; fi
+narrow=$(run none "$((with_w + 1))")
+mv "$WS/progress.md" "$T/progress.md.off"
+if [ "$narrow" = "$(run none "$((with_w + 1))")" ]; then
+  _pass "at COLUMNS - 1 the plan segment is left out and the line is byte-identical"
+else _fail "plan segment should be left out at $((with_w + 1)) columns" "$(strip "$narrow")"; fi
+# With tagteam too, plan goes before tagteam: where only one fits, tagteam stays.
+tt_alone=$(strip "$(run tt 500 "$TT\n")"); trail=${tt_alone##*[! ]}
+tt_w=$((500 - 1 - ${#trail}))
+mv "$T/progress.md.off" "$WS/progress.md"
+out=$(run tt "$((tt_w + 2))" "$TT\n")
+mv "$WS/progress.md" "$T/progress.md.off"
+if [ "$out" = "$(run tt "$((tt_w + 2))" "$TT\n")" ] && has "$(strip "$out")" "$TT"; then
+  _pass "where only one fits, the plan segment goes and tagteam stays"
+else _fail "plan should drop before tagteam" "$(strip "$out")"; fi
+mv "$T/progress.md.off" "$WS/progress.md"
+INPUT=$INPUT_PLAIN
 
 echo "statusline: $pass passed, $fail failed"
 exit "$fail"
