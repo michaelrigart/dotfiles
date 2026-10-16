@@ -39,6 +39,11 @@
 
 set -uo pipefail
 
+# Runs outside the sandbox, so it resolves nothing a sandboxed command can write: no
+# ~/.local/bin, no mise shim (spec 2026-10-16, sandbox write boundary). PINNED_PATH is
+# for the suites only.
+PATH=${PINNED_PATH:-/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin}; export PATH
+
 # A rule-4 ask is held here rather than printed at once, so that a rule 1-2 deny
 # further down still wins over it (deny beats ask). allow() releases it.
 pending=""

@@ -65,7 +65,7 @@ run() {
   local cwd=$1 cmd=$2
   jq -n --arg c "$cmd" --arg d "$cwd" \
     '{hook_event_name:"PreToolUse",tool_name:"Bash",cwd:$d,tool_input:{command:$c}}' \
-    | bash "$GUARD"
+    | PINNED_PATH="$PATH" bash "$GUARD"
 }
 
 # expect <allow|deny> <label> <cwd> <command>
@@ -750,6 +750,36 @@ else
   fail=$((fail + 1)); printf '  FAIL %s\n%s\n' "the deny's command does not parse to the intended argv" "$QREASON"
 fi
 expect allow "the quoted pinned command is allowed as written" "$DQ" "$QPINNED"
+
+# A remote-tracking ref pointing at a missing object, plus a promisor remote whose
+# uploadpack writes a marker: the guard's own git calls must never lazy-fetch (spec
+# 2026-10-16, sandbox write boundary, section 2). The verdict is the usual one for a
+# dangling ref (the outgoing commits cannot be listed: deny), and no marker appears.
+LAZY=$(cp -R "$DEL" "$TMP/dellazy" && printf '%s' "$TMP/dellazy")
+git -C "$LAZY" switch -q work
+git -C "$LAZY" commit -q --allow-empty -m "lazy work"
+printf '%s\n' 1111111111111111111111111111111111111111 > "$LAZY/.git/refs/remotes/origin/ghost"
+git -C "$LAZY" config remote.origin.promisor true
+git -C "$LAZY" config remote.origin.partialclonefilter blob:none
+git -C "$LAZY" config remote.origin.uploadpack "touch $TMP/lazy-marker; git-upload-pack"
+expect deny "a dangling remote ref with a promisor remote" "$LAZY" 'git push origin work'
+if [ -e "$TMP/lazy-marker" ]; then
+  fail=$((fail + 1)); printf '  FAIL %s\n' "the guard lazy-fetched through the promisor remote"
+else
+  pass=$((pass + 1)); printf '  ok   %s\n' "the guard never lazy-fetches"
+fi
+# The guard's PATH is pinned: a git first on the caller's PATH must never run.
+EVIL="$TMP/evilbin"; mkdir -p "$EVIL"
+printf '#!/bin/sh\ntouch "%s/evil-marker"\nexec /usr/bin/git "$@"\n' "$TMP" > "$EVIL/git"; chmod 755 "$EVIL/git"
+( PATH="$EVIL:$PATH"; unset PINNED_PATH
+  jq -n --arg c 'git push origin work' --arg d "$DEL" \
+    '{hook_event_name:"PreToolUse",tool_name:"Bash",cwd:$d,tool_input:{command:$c}}' \
+    | bash "$GUARD" >/dev/null )
+if [ -e "$TMP/evil-marker" ]; then
+  fail=$((fail + 1)); printf '  FAIL %s\n' "the guard ran a git from the caller's PATH"
+else
+  pass=$((pass + 1)); printf '  ok   %s\n' "the guard's PATH is pinned"
+fi
 
 # From here on the remote moves: another clone merges far into main and pushes both.
 OTHER="$TMP/delother"
