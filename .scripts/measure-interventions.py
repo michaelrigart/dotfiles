@@ -8,8 +8,9 @@ hand-labelling pass.
 
     .scripts/measure-interventions.py [--days 14] [--projects-dir ~/.claude/projects]
 
-Prints one JSON object. Streams every file line by line and keeps only per-file state,
-so a month of transcripts never has to fit in memory. Standard library only.
+Prints one JSON object. Streams every file line by line and keeps only per-file state, the
+set of entry uuids already counted and one small record per human turn and per xreview
+failure, so a month of transcripts never has to fit in memory. Standard library only.
 
 Transcript shape (observed 2026-09-30, Claude Code 2.1.285):
   <projects-dir>/<project>/<session>.jsonl                  a main session
@@ -26,6 +27,12 @@ Transcript shape (observed 2026-09-30, Claude Code 2.1.285):
   is in attachment.prompt; it settles the call the same way and is never a human turn.
   an interrupt is a `user` entry with no origin whose content is a text block starting
   "[Request interrupted by user".
+
+  a forked or resumed session writes copies of earlier entries, from anywhere in the
+  original, that keep their uuid and timestamp. Each uuid is counted once. What depends on
+  earlier entries is settled across every occurrence, since a copy may lack them: a human
+  turn takes the occurrence with the most history before it, and an xreview call failed
+  when any occurrence of its outcome shows it failed.
 
 Known edges of the counts:
   - a session that straddles the cutoff has its first IN-WINDOW human turn treated as
@@ -136,9 +143,38 @@ class Totals:
         self.xreview = {"dispatches": 0, "dispatch_failures": 0, "collects": 0, "collect_failures": 0}
         self.stretch_tools = []
         self.stretch_minutes = []
+        self.turns = {}             # human turn uuid -> its best-placed occurrence
+        self.failures = {}          # (outcome entry uuid, call or task id, verb) -> verb
+
+    def add_turn(self, uuid, turn):
+        """turn is (previous human turn's ts or -inf, its stretch's start or -inf, stretch
+        tool calls or -1, stretch minutes or -1, queued). A copy holds a subset of the
+        original's earlier entries, so the original is at least as late or as large in each
+        component, in that order: the greatest occurrence is the original's."""
+        key = uuid if uuid else ("no uuid", len(self.turns))
+        if key not in self.turns or turn > self.turns[key]:
+            self.turns[key] = turn
+
+    def add_failure(self, uuid, call, verb):
+        """A failed xreview call, keyed by the entry that settled it, so every occurrence of
+        that entry adds the same failure."""
+        key = (uuid, call, verb) if uuid else ("no uuid", len(self.failures), verb)
+        self.failures[key] = verb
+
+    def fold(self):
+        for verb in self.failures.values():
+            self.xreview["dispatch_failures" if verb == "dispatch" else "collect_failures"] += 1
+        for prev_ts, _start, tools, minutes, queued in self.turns.values():
+            self.human_total += 1
+            self.human_queued += queued
+            if prev_ts > float("-inf"):
+                self.human_after_first += 1
+            if tools >= 0:
+                self.stretch_tools.append(tools)
+                self.stretch_minutes.append(minutes)
 
 
-def settle_notification(body, pending_background, totals):
+def settle_notification(body, pending_background, totals, uuid):
     """A background task's outcome: count the xreview call it was running if it failed."""
     task = TASK_ID_RE.search(body)
     verbs = pending_background.pop(task.group(1), ()) if task else ()
@@ -150,16 +186,17 @@ def settle_notification(body, pending_background, totals):
     # "(exit code 0)" / "failed with exit code 3": the last one is the outcome
     if (status and status.group(1).strip() == "failed") or (codes and int(codes[-1]) != 0):
         for verb in verbs:
-            key = "dispatch_failures" if verb == "dispatch" else "collect_failures"
-            totals.xreview[key] += 1
+            totals.add_failure(uuid, task.group(1), verb)
 
 
-def scan_file(path, scope, cutoff, totals):
+def scan_file(path, scope, cutoff, totals, counted):
     """One transcript. Returns True when it had any entry inside the window."""
     pending_xreview = {}            # tool_use id -> the xreview verbs that call ran
     pending_background = {}         # background task id -> the xreview verbs it is running
+    scratch = Totals()
     seen = False
     humans = 0
+    prev_human_ts = float("-inf")
     tools_since_human = 0
     last_human_ts = None
     last_agent_ts = None
@@ -179,6 +216,12 @@ def scan_file(path, scope, cutoff, totals):
             if ts is None or ts < cutoff:
                 continue
             seen = True
+            # A forked or resumed session copies earlier entries, uuid and all, into its own
+            # file. A copy still advances this file's state, but counts toward scratch.
+            uuid = entry.get("uuid")
+            t = scratch if uuid in counted else totals
+            if uuid:
+                counted.add(uuid)
             kind = entry.get("type")
             if kind == "assistant":
                 last_agent_ts = ts
@@ -190,11 +233,11 @@ def scan_file(path, scope, cutoff, totals):
                     if block.get("name") != "Bash" or not isinstance(inp, dict):
                         continue
                     if inp.get("dangerouslyDisableSandbox"):
-                        totals.escapes[scope] += 1
+                        t.escapes[scope] += 1
                     command = SINGLE_QUOTED.sub("''", inp.get("command") or "").strip()
                     verbs = set(XREVIEW_RE.findall(command))
                     for verb in verbs:
-                        totals.xreview["dispatches" if verb == "dispatch" else "collects"] += 1
+                        t.xreview["dispatches" if verb == "dispatch" else "collects"] += 1
                     if verbs:
                         pending_xreview[block.get("id")] = verbs
                 continue
@@ -213,7 +256,7 @@ def scan_file(path, scope, cutoff, totals):
                             for name, rx in DENIAL_RES:
                                 if rx.match(text):
                                     denied = name
-                                    totals.denials[name][scope] += 1
+                                    t.denials[name][scope] += 1
                                     break
                         if not verbs or denied:
                             continue           # a refused call never ran: no failure
@@ -224,37 +267,34 @@ def scan_file(path, scope, cutoff, totals):
                             pending_background[background.group(1)] = verbs
                         elif block.get("is_error"):
                             for verb in verbs:
-                                key = "dispatch_failures" if verb == "dispatch" else "collect_failures"
-                                totals.xreview[key] += 1
+                                totals.add_failure(uuid, block.get("tool_use_id"), verb)
                     continue
                 body = text_of(content)
                 if body.startswith(NOTIFICATION):
-                    settle_notification(body, pending_background, totals)
+                    settle_notification(body, pending_background, totals, uuid)
                     continue
                 if is_interrupt(entry):
-                    totals.interrupts[scope] += 1
+                    t.interrupts[scope] += 1
                     continue
             if kind == "attachment":
                 # mid-turn the harness delivers a task notification as a queued_command
                 # attachment whose text is in `prompt`; it is settled, never a human turn
                 prompt = (entry.get("attachment") or {}).get("prompt")
                 if isinstance(prompt, str) and prompt.startswith(NOTIFICATION):
-                    settle_notification(prompt, pending_background, totals)
+                    settle_notification(prompt, pending_background, totals, uuid)
                     continue
             if scope == "main" and is_human(entry):
-                totals.human_total += 1
                 queued = kind == "attachment"
-                if queued:
-                    totals.human_queued += 1
-                if humans > 0:
-                    totals.human_after_first += 1
-                    # The stretch a typed-ahead (queued) message interrupts is not over, so
-                    # only a turn the agent actually waited for closes one.
-                    if not queued and last_human_ts is not None:
-                        totals.stretch_tools.append(tools_since_human)
-                        end = last_agent_ts if last_agent_ts and last_agent_ts >= last_human_ts else last_human_ts
-                        totals.stretch_minutes.append((end - last_human_ts) / 60.0)
+                start, tools, minutes = float("-inf"), -1, -1.0
+                # The stretch a typed-ahead (queued) message interrupts is not over, so
+                # only a turn the agent actually waited for closes one.
+                if humans > 0 and not queued and last_human_ts is not None:
+                    end = last_agent_ts if last_agent_ts and last_agent_ts >= last_human_ts else last_human_ts
+                    start, tools, minutes = last_human_ts, tools_since_human, (end - last_human_ts) / 60.0
+                # every occurrence is offered, a copy included: the best-placed one counts
+                totals.add_turn(uuid, (prev_human_ts, start, tools, minutes, queued))
                 humans += 1
+                prev_human_ts = ts
                 if not queued:
                     tools_since_human = 0
                     last_human_ts = ts
@@ -265,6 +305,7 @@ def measure(projects_dir, days, now=None):
     now = now if now is not None else datetime.datetime.now(datetime.timezone.utc).timestamp()
     cutoff = now - days * 86400
     totals = Totals()
+    counted = set()                 # every entry uuid already counted, across files
     for project in sorted(os.listdir(projects_dir)):
         pdir = os.path.join(projects_dir, project)
         if not os.path.isdir(pdir):
@@ -275,14 +316,15 @@ def measure(projects_dir, days, now=None):
                 continue
             if os.path.getmtime(path) < cutoff:
                 continue
-            if scan_file(path, "main", cutoff, totals):
+            if scan_file(path, "main", cutoff, totals, counted):
                 totals.sessions += 1
             subdir = os.path.join(pdir, name[:-len(".jsonl")], "subagents")
             if os.path.isdir(subdir):
                 for sub in sorted(os.listdir(subdir)):
                     spath = os.path.join(subdir, sub)
                     if sub.endswith(".jsonl") and os.path.getmtime(spath) >= cutoff:
-                        scan_file(spath, "subagent", cutoff, totals)
+                        scan_file(spath, "subagent", cutoff, totals, counted)
+    totals.fold()
     x = totals.xreview
     return {
         "window_days": days,
