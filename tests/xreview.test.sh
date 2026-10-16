@@ -266,6 +266,7 @@ exit 0
 R
 chmod +x "$STUB"/*
 export PATH="$STUB:$PATH"
+export PINNED_PATH="$PATH"
 
 fresh() { # a pane showing U0, idle, its TUI not connected to the daemon; clean log and state
   unset ENSURE_RC CHECK_RC RPC_START_FAIL RPC_START_UNCERTAIN RPC_START_BAD_ID \
@@ -1433,7 +1434,7 @@ exec REALAWK_PLACEHOLDER "$@"
 AWKEOF
 sed -i '' "s#REALAWK_PLACEHOLDER#$REALAWK#" "$STUB2/awk"
 chmod +x "$STUB2/awk"
-out="$(PATH="$STUB2:$PATH" bash "$XREVIEW" round 2>&1)"; rc=$?
+out="$(PATH="$STUB2:$PATH" PINNED_PATH="$STUB2:$PATH" bash "$XREVIEW" round 2>&1)"; rc=$?
 is "O1 'xreview round' does not crash when its awk read fails" "$rc" 0
 is "O1 and still prints a number, not an empty line" "$(printf '%s' "$out" | grep -cE '^[0-9]+$')" 1
 
@@ -1697,6 +1698,20 @@ for form in "help" "-h" "--help" "dispatch --help" "collect xr-1-a -h" "apply --
      "$rc/${missing:-all}/$(wc -c < "$ROOT/help-err" | tr -d ' ')" "0/all/0"
 done
 is "H7 no help form called herdr, the daemon or the reviewer" "$(wc -c < "$CALLS" | tr -d ' ')" 0
+
+# P1-P2: xreview runs outside the sandbox, so a jq or git reached through a mise shim (whose
+# repository mise.toml an agent can edit) or anything else on the caller's PATH must not run.
+HOSTILE="$ROOT/hostile"; mkdir -p "$HOSTILE" "$ROOT/hosthome"
+for t in jq git herdr python3; do
+  printf '#!/bin/sh\necho %s >> "%s/hostile-marker"\nexit 0\n' "$t" "$ROOT" > "$HOSTILE/$t"; chmod 755 "$HOSTILE/$t"
+done
+# bash itself is on the hostile list, and xreview runs as an executable, the way the Bash
+# tool runs an excluded command: its shebang must not resolve bash through PATH.
+printf '#!/bin/sh\necho bash >> "%s/hostile-marker"\nexit 0\n' "$ROOT" > "$HOSTILE/bash"; chmod 755 "$HOSTILE/bash"
+cp "$XREVIEW" "$ROOT/xreview-exec"; chmod 755 "$ROOT/xreview-exec"
+out="$( (unset PINNED_PATH; HOME="$ROOT/hosthome" PATH="$HOSTILE:$PATH" "$ROOT/xreview-exec" round) 2>&1)"
+is "P1 xreview round runs with a hostile PATH (bash included) and no PINNED_PATH" "$( [ -e "$ROOT/hostile-marker" ] && cat "$ROOT/hostile-marker" | tr '\n' ' ' || echo clean)" clean
+is "P2 and still answers" "$(printf '%s' "$out" | grep -c '^[0-9]')" 1
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))

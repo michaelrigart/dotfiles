@@ -65,15 +65,15 @@ echo "$cmd"
 P
 chmod +x "$T/localbin/codex" "$T/cask/bin/codex" "$T/stub/launchctl" "$T/stub/ps"
 
-run() { PATH="$T/stub:$T/localbin:$T/brew:/usr/bin:/bin" XDG_BIN_HOME="$T/localbin" sh "$CD" "$@"; }
+run() { PATH="$T/stub:$T/localbin:$T/brew:/usr/bin:/bin" PINNED_PATH="$T/stub:$T/localbin:$T/brew:/usr/bin:/bin" XDG_BIN_HOME="$T/localbin" sh "$CD" "$@"; }
 real_path="$(cd "$T/cask/bin" && pwd -P)/codex"
 
 echo "A. real-bin"
 is "it skips ~/.local/bin and follows the Homebrew symlink" "$(run real-bin)" "$real_path"
 ln -s "$T/localbin" "$T/lb-link"
 is "a symlinked alias of ~/.local/bin is skipped too" \
-   "$(PATH="$T/lb-link:$T/brew:/usr/bin:/bin" XDG_BIN_HOME="$T/localbin" sh "$CD" real-bin)" "$real_path"
-out="$(PATH="$T/localbin:/usr/bin:/bin" XDG_BIN_HOME="$T/localbin" sh "$CD" real-bin 2>&1)"; rc=$?
+   "$(PATH="$T/lb-link:$T/brew:/usr/bin:/bin" PINNED_PATH="$T/lb-link:$T/brew:/usr/bin:/bin" XDG_BIN_HOME="$T/localbin" sh "$CD" real-bin)" "$real_path"
+out="$(PATH="$T/localbin:/usr/bin:/bin" PINNED_PATH="$T/localbin:/usr/bin:/bin" XDG_BIN_HOME="$T/localbin" sh "$CD" real-bin 2>&1)"; rc=$?
 is "no real codex is an error" "$rc" 1
 is "and it says so" "$(printf '%s' "$out" | grep -c 'no codex on PATH outside')" 1
 

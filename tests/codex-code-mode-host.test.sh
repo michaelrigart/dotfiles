@@ -45,7 +45,7 @@ ln -s "$T/cask/1.0.0/bin/codex" "$T/bin/codex"
 [ -x "$T/bin/codex" ] || { echo "FIXTURE BROKEN: codex link not created" >&2; exit 2; }
 [ -e "$T/bin/codex-code-mode-host" ] && { echo "FIXTURE BROKEN: the cask must NOT link the host" >&2; exit 2; }
 
-run() { PATH="$T/localbin:$T/bin:/usr/bin:/bin" XDG_BIN_HOME="$T/localbin" sh "$SHIM" "$@" 2>&1; }
+run() { PATH="$T/localbin:$T/bin:/usr/bin:/bin" PINNED_PATH="$T/localbin:$T/bin:/usr/bin:/bin" XDG_BIN_HOME="$T/localbin" sh "$SHIM" "$@" 2>&1; }
 
 echo "A. it finds the host the cask did not link"
 is "the host is reached through the codex symlink" "$(run)" "HOST-1.0.0"
@@ -72,7 +72,7 @@ out="$(run)"; rc=$?
 is "a missing host is an error"        "$rc" "127"
 is "and it names where it looked"      "$(printf '%s' "$out" | grep -c 'not found beside')" "1"
 
-out="$(PATH="$T/localbin:/usr/bin:/bin" XDG_BIN_HOME="$T/localbin" sh "$SHIM" 2>&1)"; rc=$?
+out="$(PATH="$T/localbin:/usr/bin:/bin" PINNED_PATH="$T/localbin:/usr/bin:/bin" XDG_BIN_HOME="$T/localbin" sh "$SHIM" 2>&1)"; rc=$?
 is "no codex on PATH is an error"      "$rc" "127"
 is "and it says why"                   "$(printf '%s' "$out" | grep -c 'no real codex on PATH')" "1"
 
@@ -86,7 +86,7 @@ chmod +x "$T/cask/2.0.0/bin/codex-code-mode-host"
 cp "$ROOT/dot_local/bin/executable_codex" "$T/localbin/codex"
 cp "$SHIM" "$T/localbin/codex-code-mode-host"
 chmod +x "$T/localbin/codex" "$T/localbin/codex-code-mode-host"
-( PATH="$T/localbin:$T/bin:/usr/bin:/bin" XDG_BIN_HOME="$T/localbin" \
+( PATH="$T/localbin:$T/bin:/usr/bin:/bin" PINNED_PATH="$T/localbin:$T/bin:/usr/bin:/bin" XDG_BIN_HOME="$T/localbin" \
     sh "$T/localbin/codex-code-mode-host" --x > "$T/d.out" 2>&1 ) &
 dpid=$!
 ( sleep 5; kill "$dpid" 2>/dev/null ) & wpid=$!

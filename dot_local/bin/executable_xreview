@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/opt/homebrew/bin/bash
 # xreview - dispatch a cold review to the repository's Codex pane and collect the answer.
 #
 # Design: docs/superpowers/specs/2026-09-26-xreview-codex-daemon-design.md, section 7, with
@@ -17,6 +17,11 @@
 # PreToolUse guards read the receipts (pre-merge gate, apply window); neither is proven
 # enough to be an authorization boundary - treat findings as evidence.
 set -euo pipefail
+# Runs outside the sandbox (an excluded command), so it resolves no mise shim, which would
+# load a repository's mise.toml (spec 2026-10-16, sandbox write boundary). ~/.local/bin
+# stays first for the codex launcher; the sandbox cannot write it. PINNED_PATH is for the
+# suites only.
+PATH=${PINNED_PATH:-$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin}; export PATH
 # Without this, a `die` inside a function called via $(...) from ANOTHER function that is
 # itself invoked via $(...) (pane_command from inside pane_prepare, say) silently loses its
 # exit status: bash historically runs command substitutions with -e off inside them unless

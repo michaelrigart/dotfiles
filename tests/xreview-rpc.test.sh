@@ -7,6 +7,7 @@
 #
 # Run: ./tests/run.sh xreview-rpc   (sandboxed is fine)
 set -uo pipefail
+export PINNED_PATH="$PATH"
 export PYTHONDONTWRITEBYTECODE=1
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
 RPC="$SRC/dot_local/bin/executable_xreview-rpc"
@@ -1241,6 +1242,18 @@ is "R18 a deadline already passed when the lock is taken exits 1 and asks nothin
 scenario '{"silent":["initialize"]}'
 XREVIEW_RPC_RELEASE_DEADLINE=0.5 rpc release --dir "$W/repo" 2>/dev/null; rc=$?
 is "R18 a connection that runs out of deadline exits 1, not 5" "$rc" 1
+echo "P. a hostile PATH is never consulted (xreview-rpc runs outside the sandbox)"
+# The stdio transport's command runs through a shell on the script's own PATH, so a hostile
+# python3 ahead of the caller's PATH would run if the script did not pin it.
+HOSTILE="$T/hostile"; mkdir -p "$HOSTILE" "$T/hosthome"
+for t in python3 jq git; do
+  printf '#!/bin/sh\necho %s >> "%s/hostile-marker"\nexit 0\n' "$t" "$T" > "$HOSTILE/$t"; chmod 755 "$HOSTILE/$t"
+done
+scenario '{}'
+( unset PINNED_PATH; HOME="$T/hosthome" PATH="$HOSTILE:$PATH" "$RPC" health ) >/dev/null 2>&1; rc=$?
+is "P1 health runs with a hostile PATH and no PINNED_PATH" "$( [ -e "$T/hostile-marker" ] && tr '\n' ' ' < "$T/hostile-marker" || echo clean)" clean
+is "P2 and the daemon still answers" "$rc" 0
+
 unset XDG_STATE_HOME
 echo
 echo "RESULT: $pass passed, $((pass + fail)) total, $fail failed"
