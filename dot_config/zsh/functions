@@ -1276,9 +1276,12 @@ wt-rm() {
 # section 3). The checkout cannot prove what was reviewed: a sandboxed command can commit to
 # it, hide files from git status, add replace refs or forge objects. So the checkout must be a
 # clean main equal to origin's, and chezmoi reads a fresh clone of that commit instead of it.
+# The previews run the working tree's code too (modify_ scripts, template output calls), so
+# diff, status, cat, verify, dump, archive and execute-template take the same path. merge and
+# merge-all write into the source, which a temporary clone would lose: they are refused.
 # Origin is the pinned URL below, never the checkout's remote.origin.url, which the sandbox can
 # write. CHEZMOI_REVIEWED_ORIGIN overrides it from the wrapper's own environment, for the suite.
-# --dirty-ok applies the working tree anyway, for a deliberate local change.
+# --dirty-ok runs the working tree anyway, for a deliberate local change.
 # _chezmoi_short <token> <letters>: true when <token> is a single-dash option group that names
 # one of <letters> before a letter taking a value (c, C, d, D, i, o, S, W, x: the rest is that
 # value).
@@ -1292,21 +1295,41 @@ _chezmoi_short() {
   done
   return 1
 }
+# _chezmoi_help <args>: true when -h or --help is a flag in its own right before any --, not
+# the value of the option ahead of it (--source -h would otherwise read as help and let
+# apply through). Only options known to take no value count as flags ahead of it.
+_chezmoi_help() {
+  local a prev=
+  for a in "$@"; do
+    [[ $a == -- ]] && return 1
+    if [[ $a == (--help|--help=*) ]] || _chezmoi_short "$a" h; then
+      [[ $prev != -* || $prev == *=* || $prev == (--verbose|--dry-run|--force|--keep-going|--recursive|--dirty-ok|--no-pager|--no-tty|-[vnfkr]##) ]] && return 0
+    fi
+    prev=$a
+  done
+  return 1
+}
 chezmoi() {
   local -a args=("$@")
-  local sub=${1:-} a
+  local sub=${1:-} a i
+  if _chezmoi_help "$@"; then
+    command chezmoi "${(@)args:#--dirty-ok}"; return
+  fi
   # chezmoi takes global options before the subcommand, some with a value, and a parser that
   # misses one would read the value as the subcommand and let apply through. So a command
-  # that names apply, update, init or edit must put the subcommand first.
+  # that names one of the commands handled below must put the subcommand first.
   if [[ $sub == -* ]]; then
-    if (( ${args[(Ie)apply]} || ${args[(Ie)update]} || ${args[(Ie)init]} || ${args[(Ie)edit]} )); then
-      print -u2 "chezmoi: put the subcommand first, e.g. chezmoi apply -v"
-      return 1
-    fi
+    for a in apply update diff status cat verify dump archive execute-template merge merge-all init edit; do
+      if (( ${args[(Ie)$a]} )); then
+        print -u2 "chezmoi: put the subcommand first, e.g. chezmoi $a -v"
+        return 1
+      fi
+    done
     command chezmoi "$@"; return
   fi
   case $sub in
-    apply|update) ;;
+    apply|update|diff|status|cat|verify|dump|archive|execute-template) ;;
+    merge|merge-all) ;;
     init|edit)
       # Every spelling that would apply the working tree: --apply, --one-shot, --watch (each
       # also as --flag=<value>) and -a anywhere in a short-option group.
@@ -1337,11 +1360,21 @@ chezmoi() {
   if (( ${args[(Ie)--dirty-ok]} )); then
     command chezmoi "${(@)args:#--dirty-ok}"; return
   fi
-  for a in "${args[@]}"; do
+  if [[ $sub == (merge|merge-all) ]]; then
+    print -u2 "chezmoi: refusing $sub: it writes the merged result into the source, and a temporary clone would lose it (chezmoi $sub --dirty-ok runs on the working tree)"
+    return 1
+  fi
+  for (( i = 1; i <= $#args; i++ )); do
+    a=${args[i]}
     # An option that picks the source or the configuration would undo the choice below.
     if [[ $a == (--source|--source=*|--working-tree|--working-tree=*|--config|--config=*) ]] \
        || _chezmoi_short "$a" SWc; then
       print -u2 "chezmoi: refusing $sub with $a: the wrapper chooses the source (--dirty-ok passes everything through)"
+      return 1
+    fi
+    # --mode symlink would link the targets into the clone, which is removed afterwards.
+    if [[ $a == --mode=* && $a != --mode=file ]] || [[ $a == --mode && ${args[i+1]:-} != file ]]; then
+      print -u2 "chezmoi: refusing $sub with $a ${args[i+1]:-}: only --mode file works from a temporary clone (--dirty-ok passes everything through)"
       return 1
     fi
     # update's own flags would be forwarded to apply, which does not know them.
@@ -1351,30 +1384,35 @@ chezmoi() {
       return 1
     fi
   done
-  local src st want head url tmp base
+  local src st want head url tmp base verb=applies act=applying
+  [[ $sub == (apply|update) ]] || { verb="runs on"; act="running $sub on" }
   local -a g
   url=${CHEZMOI_REVIEWED_ORIGIN:-git@github.com:michaelrigart/dotfiles.git}
   src=$(command chezmoi source-path) || return
   g=(git -c core.fsmonitor=false -C "$src")
+  local hint="  (chezmoi $sub --dirty-ok $verb the working tree anyway)"
   [[ $("${g[@]}" symbolic-ref -q --short HEAD) == main ]] \
-    || { print -u2 "chezmoi: refusing $sub: $src is not on main"; return 1 }
+    || { print -u2 "chezmoi: refusing $sub: $src is not on main"; print -u2 -- $hint; return 1 }
   st=$("${g[@]}" status --porcelain --untracked-files=all) || return
   if [[ -n $st ]]; then
     print -u2 "chezmoi: refusing $sub: $src has uncommitted or untracked changes:"
     print -u2 -r -- "$st"
-    print -u2 "  (chezmoi $sub --dirty-ok applies the working tree anyway)"
+    print -u2 -- $hint
     return 1
   fi
   if [[ $sub == update ]]; then
-    "${g[@]}" pull -q --ff-only "$url" main || { print -u2 "chezmoi: git pull --ff-only failed in $src"; return 1 }
+    # The refspec moves refs/remotes/origin/main with the pull; otherwise the checkout reads
+    # "ahead" of a stale origin/main and the push guard lists the merged commits as outgoing.
+    "${g[@]}" pull -q --ff-only "$url" +refs/heads/main:refs/remotes/origin/main || { print -u2 "chezmoi: git pull --ff-only failed in $src"; return 1 }
   fi
   # -C /: no repository, so no checkout configuration (url rewrites included) reaches these.
-  want=$(git -C / ls-remote "$url" refs/heads/main) || { print -u2 "chezmoi: refusing $sub: cannot read origin's main"; return 1 }
+  want=$(git -C / ls-remote "$url" refs/heads/main) || { print -u2 "chezmoi: refusing $sub: cannot read origin's main"; print -u2 -- $hint; return 1 }
   want=${want%%$'\t'*}
-  [[ $want =~ '^[0-9a-f]{40}([0-9a-f]{24})?$' ]] || { print -u2 "chezmoi: refusing $sub: origin has no main"; return 1 }
+  [[ $want =~ '^[0-9a-f]{40}([0-9a-f]{24})?$' ]] || { print -u2 "chezmoi: refusing $sub: origin has no main"; print -u2 -- $hint; return 1 }
   head=$("${g[@]}" rev-parse HEAD) || return
   [[ $head == $want ]] || {
     print -u2 "chezmoi: refusing $sub: $src is at ${head[1,12]}, origin's main is ${want[1,12]}; pull or push first"
+    print -u2 -- $hint
     return 1
   }
   # The clone lives where the sandbox cannot write (~/.cache is outside its write set), and
@@ -1387,7 +1425,7 @@ chezmoi() {
       || { print -u2 "chezmoi: cannot clone origin's main"; return 1 }
     [[ $(git -C "$tmp/src" rev-parse HEAD) == $want ]] \
       || { print -u2 "chezmoi: origin's main moved during the clone; run it again"; return 1 }
-    print -u2 "chezmoi: applying origin's main ${want[1,12]} from a fresh clone"
+    print -u2 "chezmoi: $act origin's main ${want[1,12]} from a fresh clone"
     [[ $sub == update ]] && args[${args[(i)update]}]=apply
     mkdir -p "$tmp/tmp" && TMPDIR="$tmp/tmp" command chezmoi --source "$tmp/src" "${args[@]}"
   } always {

@@ -111,7 +111,9 @@ fi
 # capturing the machine's CURRENT name — but the name is not chosen until preflight,
 # below. Cloning first also makes the machine allowlist readable before we prompt.
 SRC_DIR="${PROVISION_SRC_OVERRIDE:-${XDG_DATA_HOME}/chezmoi}"
+SRC_PRESENT=0
 if [ -d "${SRC_DIR}/.git" ]; then
+  SRC_PRESENT=1
   log_info "✓ dotfiles source already present"
 else
   log_info "Cloning dotfiles source..."
@@ -214,11 +216,18 @@ log_info "✓ identity set to ${MACHINE_NAME}"
 # 6. Generate the chezmoi config, then apply
 # ============================================================================
 # Only now, with the identity settled, does chezmoi capture it.
-log_info "Generating chezmoi config..."
-chezmoi init
-log_info "Applying dotfiles with chezmoi..."
-# Force apply to overwrite any local changes
-chezmoi apply --force
+# Only on a fresh clone. This runs in zsh as a script, so the chezmoi wrapper that deploys
+# only origin's main is not loaded: on a machine whose checkout already existed, init and
+# apply would deploy the working tree, which the checkout cannot prove was reviewed.
+if [ "$SRC_PRESENT" -eq 1 ]; then
+  warn "Machine already provisioned: chezmoi init and apply are skipped. Run chezmoi apply --init from zsh, which deploys origin's main."
+else
+  log_info "Generating chezmoi config..."
+  chezmoi init
+  log_info "Applying dotfiles with chezmoi..."
+  # Force apply to overwrite any local changes
+  chezmoi apply --force
+fi
 
 # ============================================================================
 # 7. Switch chezmoi remote to SSH for future commits

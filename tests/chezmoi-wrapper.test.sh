@@ -1,7 +1,9 @@
 #!/usr/bin/env zsh
 # Tests the chezmoi wrapper in dot_config/zsh/functions (spec 2026-10-16, sandbox write
 # boundary, section 3): apply and update deploy a fresh clone of origin's main, only from a
-# clean main checkout equal to it; --dirty-ok applies the working tree. chezmoi is a stub
+# clean main checkout equal to it, and the previews that run the working tree's code (diff,
+# status, cat, verify, dump, archive, execute-template) read the same clone; --dirty-ok runs the
+# working tree. chezmoi is a stub
 # that records its arguments and what its --source holds; git is real, origin is a local bare
 # repository.
 #
@@ -195,12 +197,81 @@ fresh; ( export STUBRC=3; chezmoi apply ) >/dev/null 2>&1; rc=$?
 
 fresh; print change >> $T/co/dot_testfile; chezmoi apply --dirty-ok >/dev/null 2>&1
 grep -qx WORKTREE $LOG 2>/dev/null && ! grep -q -- --dirty-ok $LOG && _pass "--dirty-ok applies the working tree and never reaches chezmoi" || _fail "--dirty-ok" "$(cat $LOG 2>/dev/null)"
-fresh; chezmoi status >/dev/null 2>&1; grep -q '^ARGS status$' $LOG && _pass "other subcommands pass through" || _fail "passthrough" "$(cat $LOG 2>/dev/null)"
+fresh; chezmoi managed >/dev/null 2>&1; grep -q '^ARGS managed$' $LOG && _pass "other subcommands pass through" || _fail "passthrough" "$(cat $LOG 2>/dev/null)"
 fresh; git -C $T/seed commit -q --allow-empty -m ahead2 && git -C $T/seed push -q origin main 2>/dev/null
 chezmoi update >/dev/null 2>&1
 grep -q '^ARGS --source .* apply$' $LOG 2>/dev/null && [[ $(git -C $T/co rev-parse HEAD) == $(git -C $T/seed rev-parse HEAD) ]] \
   && _pass "update fast-forwards, then applies a fresh clone" || _fail "update" "$(cat $LOG 2>/dev/null)"
+[[ $(git -C $T/co rev-parse refs/remotes/origin/main) == $(git -C $T/co rev-parse HEAD) ]] \
+  && _pass "update leaves refs/remotes/origin/main at the new HEAD" || _fail "update leaves origin/main stale" "origin/main=$(git -C $T/co rev-parse refs/remotes/origin/main) HEAD=$(git -C $T/co rev-parse HEAD)"
+git -C $T/co status -sb | head -1 | grep -q ahead && _fail "update leaves the checkout ahead of origin/main" "$(git -C $T/co status -sb | head -1)" \
+  || _pass "update leaves the checkout level with origin/main"
 tmp_clean && _pass "no temporary clone is left behind" || _fail "temporary clones" "$(ls -A $T/cache/chezmoi-apply)"
+
+# The previews run modify_ scripts and template output calls from the working tree, so they
+# take apply's path: refused unless the checkout is clean main equal to origin's, else a fresh
+# clone. --dirty-ok runs the working tree.
+GATED=(diff status cat verify dump archive execute-template)
+gated_refuses() { # gated_refuses <label> <command> <expected reason>: refused, reason and pointer named, nothing run
+  local err; err=$(chezmoi ${=2} 2>&1 >/dev/null); local rc=$?
+  if (( rc == 1 )) && [[ $err == *"$3"* && $err == *"chezmoi ${2%% *} --dirty-ok runs on the working tree"* ]] && [[ ! -e $LOG ]] && tmp_clean; then _pass "$1"
+  else _fail "$1" "rc=$rc err=$err log=$(cat $LOG 2>/dev/null)"; fi
+}
+for c in $GATED; do
+  fresh; git -C $T/co switch -q -c other; gated_refuses "chezmoi $c on another branch is refused" "$c" "not on main"
+  fresh; print change >> $T/co/dot_testfile; gated_refuses "chezmoi $c with an uncommitted change is refused" "$c" "uncommitted"
+  fresh; print x > $T/co/newfile; gated_refuses "chezmoi $c with an untracked file is refused" "$c" "uncommitted"
+  fresh; git -C $T/co commit -q --allow-empty -m local; gated_refuses "chezmoi $c with a local commit is refused" "$c" "origin's main is"
+  fresh; chezmoi $c -v >/dev/null 2>&1
+  if applied_clone NOPE && grep -q "^ARGS --source $T/cache/chezmoi-apply/run\..*/src $c -v$" $LOG && tmp_clean; then
+    _pass "chezmoi $c on a clean main runs against a fresh clone, removed afterwards"
+  else _fail "chezmoi $c on a clean main" "$(cat $LOG 2>/dev/null)"; fi
+  fresh; print change >> $T/co/dot_testfile; chezmoi $c --dirty-ok -v >/dev/null 2>&1
+  grep -qx WORKTREE $LOG 2>/dev/null && grep -q "^ARGS $c -v$" $LOG && _pass "chezmoi $c --dirty-ok runs the working tree and never reaches chezmoi" \
+    || _fail "chezmoi $c --dirty-ok" "$(cat $LOG 2>/dev/null)"
+  fresh; err=$(chezmoi $c --source $T/co 2>&1 >/dev/null); rc=$?
+  (( rc == 1 )) && [[ $err == *"the wrapper chooses the source"* ]] && [[ ! -e $LOG ]] \
+    && _pass "chezmoi $c --source is refused" || _fail "chezmoi $c --source" "rc=$rc err=$err"
+done
+fresh; err=$(chezmoi -v diff 2>&1 >/dev/null); rc=$?
+(( rc == 1 )) && [[ $err == *"put the subcommand first"* ]] && [[ ! -e $LOG ]] && _pass "chezmoi -v diff is refused: subcommand first" || _fail "chezmoi -v diff" "rc=$rc err=$err"
+# merge and merge-all write into the source: a temporary clone would lose the result.
+for c in merge merge-all; do
+  fresh; err=$(chezmoi $c x 2>&1 >/dev/null); rc=$?
+  (( rc == 1 )) && [[ $err == *"writes the merged result into the source"* && $err == *"chezmoi $c --dirty-ok"* ]] && [[ ! -e $LOG ]] && tmp_clean \
+    && _pass "chezmoi $c is refused on a clean main, with the reason" || _fail "chezmoi $c refused" "rc=$rc err=$err log=$(cat $LOG 2>/dev/null)"
+  fresh; print change >> $T/co/dot_testfile; chezmoi $c --dirty-ok x >/dev/null 2>&1
+  grep -qx WORKTREE $LOG 2>/dev/null && grep -q "^ARGS $c x$" $LOG && _pass "chezmoi $c --dirty-ok runs on the working tree" || _fail "chezmoi $c --dirty-ok" "$(cat $LOG 2>/dev/null)"
+done
+
+# -h and --help print usage: no precondition, no clone, on any branch. An option's value that
+# reads -h is not help.
+fresh; git -C $T/co switch -q -c other; print change >> $T/co/dot_testfile
+for form in "apply --help" "apply -h" "apply -vh" "diff -h" "update --help" "init --help" "apply --dirty-ok --help"; do
+  rm -f $LOG; chezmoi ${=form} >/dev/null 2>&1; rc=$?
+  expect=${form/ --dirty-ok/}
+  (( rc == 0 )) && grep -qx WORKTREE $LOG 2>/dev/null && grep -qx "ARGS $expect" $LOG && tmp_clean \
+    && _pass "chezmoi $form goes straight to chezmoi on a dirty feature branch" || _fail "chezmoi $form" "rc=$rc $(cat $LOG 2>/dev/null)"
+done
+for form in "apply --source -h" "apply -D -h" "apply -S -h" "apply -- -h" "apply -x -h"; do
+  rm -f $LOG; err=$(chezmoi ${=form} 2>&1 >/dev/null); rc=$?
+  (( rc == 1 )) && [[ ! -e $LOG ]] && _pass "chezmoi $form is not help: refused" || _fail "chezmoi $form" "rc=$rc err=$err log=$(cat $LOG 2>/dev/null)"
+done
+fresh; chezmoi apply -D -h >/dev/null 2>&1
+applied_clone NOPE && grep -q "^ARGS --source .*/src apply -D -h$" $LOG && _pass "-D -h on a clean main still runs against the clone" || _fail "-D -h" "$(cat $LOG 2>/dev/null)"
+
+# --mode symlink would link into the clone, which is removed: only --mode file runs from it.
+for form in "apply --mode symlink" "apply --mode=symlink" "update --mode symlink" "diff --mode=symlink" "apply --mode" "apply --mode=" "apply --mode FILE"; do
+  fresh; err=$(chezmoi ${=form} 2>&1 >/dev/null); rc=$?
+  (( rc == 1 )) && [[ $err == *"only --mode file works from a temporary clone"* ]] && [[ ! -e $LOG ]] \
+    && _pass "chezmoi $form is refused" || _fail "chezmoi $form is refused" "rc=$rc err=$err"
+done
+for form in "apply --mode file" "apply --mode=file" "diff --mode file"; do
+  fresh; chezmoi ${=form} >/dev/null 2>&1
+  applied_clone NOPE && grep -q -- " ${form#* }$" $LOG && _pass "chezmoi $form runs against the clone" || _fail "chezmoi $form" "$(cat $LOG 2>/dev/null)"
+done
+fresh; chezmoi apply --mode symlink --dirty-ok >/dev/null 2>&1
+grep -qx WORKTREE $LOG 2>/dev/null && grep -q '^ARGS apply --mode symlink$' $LOG && _pass "--dirty-ok passes --mode symlink through" || _fail "--dirty-ok --mode" "$(cat $LOG 2>/dev/null)"
 
 print "\npassed: $pass  failed: $fail"
 (( fail == 0 ))

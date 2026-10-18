@@ -69,6 +69,17 @@ printf '#!/usr/bin/env bash\necho "csrutil $*" >> "$CALLS"\nexit 0\n' > "$T/bin/
 for t in op chezmoi git xcode-select mise chsh open curl ssh defaults killall osascript tee; do
   printf '#!/usr/bin/env bash\necho "%s $*" >> "$CALLS"\nexit 0\n' "$t" > "$T/bin/$t"
 done
+# A fresh machine has no checkout: `git clone` copies the fixture source into the target, so
+# the run after it reads the same allowlist and scripts as one with an existing checkout.
+cat > "$T/bin/git" <<'G'
+#!/usr/bin/env bash
+echo "git $*" >> "$CALLS"
+if [ "$1" = clone ]; then
+  for last; do :; done
+  mkdir -p "$last" && cp -R "$SBX_ROOT/src/." "$last"
+fi
+exit 0
+G
 # Scripts provision.sh calls BY PATH bypass $PATH, so stub them by path.
 for sc in configure.sh reconcile-agents.sh; do
   printf '#!/usr/bin/env bash\necho "%s $*" >> "$CALLS"\nexit 0\n' "$sc" > "$T/src/.scripts/$sc"
@@ -134,9 +145,29 @@ called "scutil --set ComputerName hercules"  "ComputerName is set"
 called "scutil --set HostName hercules"      "HostName is set (Borg reads this)"
 called "scutil --set LocalHostName hercules" "LocalHostName is set"
 grep -q '^ComputerName=hercules$' "$IDDB" && _pass "the identity really changed" || _fail "the identity really changed"
+
+echo "B2. a fresh machine inits and applies; one whose checkout existed does neither"
+# This runs in zsh as a script, so the chezmoi wrapper (origin's main only) is not loaded and
+# init/apply would deploy the working tree of a checkout the sandbox may have changed.
+SBX_SRC="$T/fresh"; rm -rf "$SBX_SRC"
+reset; run 'hercules\ny\n'
+called "git clone" "a fresh machine clones the dotfiles"
+called "chezmoi init" "a fresh machine runs chezmoi init"
+called "chezmoi apply --force" "a fresh machine applies"
 la=$(grep -n "scutil --set ComputerName" "$CALLS" | head -1 | cut -d: -f1)
 lb=$(grep -n "chezmoi init" "$CALLS" | head -1 | cut -d: -f1)
 { [ -n "$la" ] && [ -n "$lb" ] && [ "$la" -lt "$lb" ]; } && _pass "identity is set before chezmoi init" || _fail "identity is set before chezmoi init"
+hasnt "already provisioned" "a fresh machine is not told it is already provisioned"
+SBX_SRC="$T/src"
+reset; run 'hercules\ny\n'
+rc_is 0 "a machine with an existing checkout still finishes"
+not_called "git clone" "an existing checkout is not cloned again"
+not_called "chezmoi init" "an existing checkout is not initialised from the working tree"
+not_called "chezmoi apply" "an existing checkout is not applied from the working tree"
+has "already provisioned" "the skip is announced"
+has "chezmoi apply --init" "and Michael is pointed at the wrapper's command"
+called "scutil --set ComputerName hercules" "the rest of the run still happens"
+called "configure.sh --hostname hercules" "including the macOS configuration"
 
 echo "C. consent gates the rename"
 reset; run 'hercules\nn\n'
