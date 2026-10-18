@@ -172,6 +172,14 @@ refused "init --one-shot" "--one-shot is refused"
 refused "init --one-shot=true" "--one-shot is refused"
 refused "edit --watch" "--watch is refused"
 refused "edit --watch=true x" "--watch is refused"
+for form in "edit --init x" "edit x --init" "edit --init=true x" "edit --init=false x" "edit --init=0 x" \
+            "edit -v --init x" "edit --init --dirty-ok x" "edit --dirty-ok --init x" "edit -- --init"; do
+  refused "$form" "edit --init is refused"
+done
+fresh; chezmoi edit x >/dev/null 2>&1
+grep -q '^ARGS edit x$' $LOG 2>/dev/null && grep -qx WORKTREE $LOG && _pass "plain edit passes through" || _fail "plain edit" "$(cat $LOG 2>/dev/null)"
+fresh; chezmoi edit -i x >/dev/null 2>&1
+grep -q '^ARGS edit -i x$' $LOG 2>/dev/null && _pass "edit -i (--include) is not --init and passes through" || _fail "edit -i" "$(cat $LOG 2>/dev/null)"
 refused "init" "chezmoi apply --init"
 refused "init $T/origin.git" "chezmoi apply --init"
 refused "update --apply=false" "update-only flags are not supported"

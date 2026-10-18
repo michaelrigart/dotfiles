@@ -1372,6 +1372,12 @@ chezmoi() {
           print -u2 "chezmoi: edit --watch is refused; run chezmoi apply, which deploys origin's main"
           return 1
         fi
+        # edit --init (long form only; -i on edit is --include) recreates the config from the
+        # checkout's .chezmoi.toml.tmpl, which is what refusing init protects. Any value is refused.
+        if [[ $sub == edit && ( $a == --init || $a == --init=* ) ]]; then
+          print -u2 "chezmoi: edit --init is refused; run chezmoi apply --init, which renders the config from origin's main"
+          return 1
+        fi
       done
       if [[ $sub == init ]]; then
         # init renders the checkout's .chezmoi.toml.tmpl into the config every later apply trusts.
