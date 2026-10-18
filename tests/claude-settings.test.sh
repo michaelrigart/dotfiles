@@ -300,9 +300,9 @@ jq_is ".sandbox.filesystem.allowWrite == $EXP_ALLOW_WRITE" true \
 # (.claude/settings*.json, .mcp.json, .codex) at depth 0, 1 and 2 under each root only: never
 # at any depth, because node_modules packages ship such files (resolve@1.22.12 has a
 # .claude/settings.local.json) and a deny there breaks sandboxed npm ci. Claude Code harness
-# worktrees (<repo>/.claude/worktrees/<name>) get two fixed-depth forms per path,
-# <root>/*/.claude/worktrees/*/<p> and <root>/*/*/.claude/worktrees/*/<p>, which cannot match
-# inside node_modules. Git configuration files, objects, refs and the index stay writable, so sandboxed
+# worktrees (<repo>/.claude/worktrees/<name>) get three fixed-depth forms per path,
+# <root>/.claude/worktrees/*/<p> (a root that is itself a repository), <root>/*/.claude/worktrees/*/<p>
+# and <root>/*/*/.claude/worktrees/*/<p>, which cannot match inside node_modules. Git configuration files, objects, refs and the index stay writable, so sandboxed
 # git config, branch -u, clone and submodule keep working; a branch named config or hooks
 # still is writable, and $TMPDIR is untouched (suites and agents git init there). Michael
 # decided hooks-only for git (spec 83f6b2b) and the agent configuration on 2026-10-18;
@@ -314,7 +314,8 @@ EXP_DENY_WRITE=$(jq -cn --argjson g "$GITFILES" --argjson a "$AGENTFILES" --argj
   [$r[] as $root | $g[] | "\($root)/**/\(.)"]
   + [$g[] | "~/.local/share/chezmoi/\(.)"]
   + [$r[] as $root | $a[] | "\($root)/\(.)", "\($root)/*/\(.)", "\($root)/*/*/\(.)",
-                                        "\($root)/*/.claude/worktrees/*/\(.)", "\($root)/*/*/.claude/worktrees/*/\(.)"]
+                                        "\($root)/.claude/worktrees/*/\(.)", "\($root)/*/.claude/worktrees/*/\(.)",
+                                        "\($root)/*/*/.claude/worktrees/*/\(.)"]
   + ["~/Library/Mobile Documents/iCloud~md~obsidian/Documents/*/.obsidian",
      "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/*/.obsidian/**"]')
 jq_is ".sandbox.filesystem.denyWrite == $EXP_DENY_WRITE" true \
@@ -336,11 +337,11 @@ jq_is ".sandbox.filesystem.denyWrite as \$d | [$ROOTS[] as \$r | $AGENTFILES[] a
         | select(. as \$e | \$d | index(\$e) | not)] | length" 0 \
       "every agent configuration path is denied at depth 0, 1 and 2 in all four roots"
 jq_is ".sandbox.filesystem.denyWrite as \$d | [$ROOTS[] as \$r | $AGENTFILES[] as \$p
-        | (\$r + \"/*/.claude/worktrees/*/\" + \$p, \$r + \"/*/*/.claude/worktrees/*/\" + \$p)
+        | (\$r + \"/.claude/worktrees/*/\" + \$p, \$r + \"/*/.claude/worktrees/*/\" + \$p, \$r + \"/*/*/.claude/worktrees/*/\" + \$p)
         | select(. as \$e | \$d | index(\$e) | not)] | length" 0 \
-      "every agent configuration path has both harness worktree forms in all four roots"
-jq_is '[.sandbox.filesystem.denyWrite[] | select(test("/\\.claude/worktrees/"))] | length' 40 \
-      "exactly 40 harness worktree entries: 4 roots x 5 paths x 2 depths"
+      "every agent configuration path has all three harness worktree forms in all four roots"
+jq_is '[.sandbox.filesystem.denyWrite[] | select(test("/\\.claude/worktrees/"))] | length' 60 \
+      "exactly 60 harness worktree entries: 4 roots x 5 paths x 3 depths"
 jq_is '[.sandbox.filesystem.denyWrite[] | select(test("/\\.claude/settings|/\\.mcp\\.json|/\\.codex")) | sub("/\\.(claude/settings|mcp\\.json|codex).*$"; "") | select(contains("**"))] | length' 0 \
       "no agent configuration entry has an any-depth ** before the file, so node_modules packages stay writable (only the .codex/** tail has one)"
 jq_is '[.sandbox.filesystem.allowWrite[] | select(test("(^|/)\\.ssh(/|$)") or test("(^|/)\\.aws(/|$)") or test("/op(/|$)"))] | length' 0 \

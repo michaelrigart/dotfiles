@@ -83,10 +83,12 @@ these places should cost no escapes.
     fail, and needs Michael's own git.
   - **Harness worktrees (ruling 2026-10-18).** Claude Code's own worktrees live at
     `<repo>/.claude/worktrees/<name>`, and a session there loads that directory's
-    `.claude/settings.json` and the rest, four or five levels below a root. Each of the five
-    paths also has the fixed-depth forms `<root>/*/.claude/worktrees/*/<p>` and
-    `<root>/*/*/.claude/worktrees/*/<p>`. Both name `.claude/worktrees` literally, so neither
-    can match inside `node_modules`. That is 40 more entries (4 roots x 5 paths x 2 forms).
+    `.claude/settings.json` and the rest, three to five levels below a root (three when the
+    root is itself the repository, as the chezmoi checkout is; its `.git/info/exclude` carries
+    `**/.claude/worktrees/`). Each of the five paths also has the fixed-depth forms
+    `<root>/.claude/worktrees/*/<p>`, `<root>/*/.claude/worktrees/*/<p>` and
+    `<root>/*/*/.claude/worktrees/*/<p>`. All three name `.claude/worktrees` literally, so none
+    can match inside `node_modules`. That is 60 more entries (4 roots x 5 paths x 3 forms).
   - **Out of scope here.** Any other session root deeper than two levels below a root (a
     subproject directory, for one) has an unprotected project configuration.
   - `.claude/skills`, `commands` and `agents` stay writable; skill and agent frontmatter
@@ -144,24 +146,33 @@ these places should cost no escapes.
 - **Git that our unsandboxed code runs.** A repository's configuration is agent-writable
   (§1, "Git"), so unsandboxed code runs only git forms that execute nothing from it, or
   neutralises the rest.
-  - Forms that execute nothing: `rev-parse`, `symbolic-ref`, `branch --show-current`,
-    `worktree list`, `rev-list`, `diff` between commits with `--no-ext-diff --no-textconv
-    --submodule=short` and with lazy fetch off, `ls-tree`, `hash-object --no-filters`,
-    `cat-file` (also with lazy fetch off: a missing object lazy-fetches through a promisor
-    remote), `merge-base` and config reads.
+  - **Lazy fetch is off for every git call our unsandboxed code makes**
+    (`GIT_NO_LAZY_FETCH=1`): the push guard (`Repo.run`), the pre-merge gate (its `run()`), the
+    ledger (`git_env`) and `xreview apply`. Object-reading forms lazy-fetch through a promisor
+    remote when an object is missing: `rev-parse` of a revision expression (`<ref>~1`,
+    `^{commit}`), `rev-list`, `merge-base`, `cat-file` and a `diff` between commits. None of
+    them is safe without the switch.
+  - Forms that execute nothing else: `rev-parse`, `symbolic-ref`, `branch --show-current`,
+    `worktree list`, `rev-list`, `diff` between commits with `--no-ext-diff --no-textconv` and
+    a submodule option (below), `ls-tree`, `hash-object --no-filters`, `cat-file`,
+    `merge-base` and config reads, all with lazy fetch off.
   - **Why those two on `diff`.** A submodule child diff otherwise runs that submodule's
-    `diff.external` and textconv under `diff.submodule=diff`, hence `--submodule=short`. A
+    `diff.external` and textconv under `diff.submodule=diff`, hence a submodule option. A
     promisor remote's `uploadpack` otherwise runs when a blob is missing (rename detection
-    reads blobs, for one), hence `GIT_NO_LAZY_FETCH=1`. The push guard's patch listing and
-    gitleaks, the ledger's diffs and `xreview apply` all run that way. The push guard pins
-    `diff.submodule=short`; `xreview apply` also passes `--no-renames`.
+    reads blobs, for one), hence `GIT_NO_LAZY_FETCH=1`. Each caller does it its own way. The
+    push guard's patch listing and gitleaks pass `--submodule=short` and pin
+    `diff.submodule=short`. The ledger's diffs pass `--ignore-submodules=none
+    --submodule=short` and `--no-renames`. `xreview apply` passes `--ignore-submodules=all`
+    (no submodule diff at all, so no child diff can run) and `--no-renames`.
   - Neutralised: the push guard's and the pre-merge gate's `ls-remote` run with a protocol
     allowlist (no `ext`), no credential helper or askpass, `--upload-pack=git-upload-pack` and
     `GIT_TERMINAL_PROMPT=0`, and fail closed when `core.sshCommand`, `core.gitProxy` or
     `remote.origin.vcs` is set or origin's URL is not a plain transport. `xreview apply` runs
     its diffs with `core.fsmonitor=false`, `core.hooksPath=/dev/null` (a diff that refreshes
     the index would otherwise run `post-index-change` from the configured hooks path) and every
-    configured filter emptied. The ledger's patch diff runs with `--submodule=short`:
+    configured filter's `clean`, `smudge` and `process` emptied and `required=false`. It passes
+    these as `GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` pairs, not `-c`, because `-c` splits at
+    the first `=` and a driver named `x=y` survived it. The ledger's patch diff runs with `--submodule=short`:
     under `diff.submodule=diff` the diff of a submodule would otherwise recurse into a child
     diff that runs that submodule's `diff.external` and textconv.
   - Not used: a diff against the index or the work tree, `status`, `ls-files` and `pull`
@@ -230,8 +241,13 @@ A zsh wrapper around `chezmoi` handles `apply`, `update` and the previews below.
   (`-f` and `-p` among them), so the wrapper keeps a per-subcommand table, read from
   chezmoi 2.73.2's help. A chezmoi upgrade that changes a short flag needs that table
   refreshed, or the scan for a joined `-S`/`-c` can stop early. An empty first argument is
-  refused like a leading option: cobra skips `""` when it looks for the subcommand, so
-  `chezmoi "" init --apply` would otherwise have run `init --apply`.
+  refused like a leading option, but only when a gated subcommand follows: cobra skips `""`
+  when it looks for the subcommand, so `chezmoi "" init --apply` would otherwise have run
+  `init --apply`. `chezmoi "" --version` passes through, because nothing gated follows.
+- **Unknown commands.** chezmoi runs a `chezmoi-<name>` plugin from `PATH` for a command it
+  does not know. That is harmless here: after §1 no `PATH` directory is sandbox-writable.
+- **Shell options.** The wrapper functions run under `emulate -L zsh`, so the caller's shell
+  options cannot change their patterns.
 - **Smaller points.** A `--mode` other than `file` is
   refused for runs against the clone. `update`'s pull also updates `refs/remotes/origin/main`,
   so the checkout does not look ahead afterwards. `.scripts/provision.sh` skips
@@ -246,7 +262,7 @@ A zsh wrapper around `chezmoi` handles `apply`, `update` and the previews below.
 - After `chezmoi apply` and a new session, every place in the Problem table is unwritable from
   the sandbox, and no hook, statusline or excluded command can be steered by a sandboxed
   write, except the routes recorded under Out of scope. Other repositories' agent
-  configuration (`.claude/settings*.json`, `.mcp.json`, `.codex`) is unwritable too, at depth 0 to 2 under each work root, and in a harness worktree under `.claude/worktrees`.
+  configuration (`.claude/settings*.json`, `.mcp.json`, `.codex`) is unwritable too, at depth 0 to 2 under each work root, and in a harness worktree under `.claude/worktrees` (three forms per path, 60 entries).
 - The next escape measurement (with the 2026-10-31 re-measure) shows no new cluster of escapes
   for `~/.config` or `~/.local/bin` writes. If one appears, it goes through the re-allow test
   in §1.
@@ -271,7 +287,10 @@ A zsh wrapper around `chezmoi` handles `apply`, `update` and the previews below.
   with the protocol allowlist. `xreview apply`'s diffs fire no fsmonitor, no filter and no hook (the `hooksPath`
   marker never fires), and the ledger's patch diff runs no `diff.external` or textconv from a
   submodule (the submodule case). Promisor fixtures (a remote whose `uploadpack` writes a
-  marker) cover `xreview apply` and the ledger: no marker may appear. H25b sets
+  marker) cover the ledger and `xreview apply`: no marker may appear. The `xreview apply`
+  fixture covers rename detection and a dangling `origin/HEAD` (the `merge-base` call); the
+  dangling ref is what pins the lazy-fetch switch. The pre-merge gate gets a
+  `git merge gone~1` case. H25b sets
   `protocol.evil.allow=always`, so git's own protocol allowlist cannot be what refuses.
 - **`git-forge-guard`.** The reproduced lazy fetch: a dangling remote-tracking ref plus a
   promisor remote whose `uploadpack` writes a marker. The push still gets its usual verdict,
@@ -294,7 +313,7 @@ A zsh wrapper around `chezmoi` handles `apply`, `update` and the previews below.
     shapes (`-h`, `--help`, a short group with `h`) print `chezmoi help <subcommand>` without
     forwarding arguments, asserted against hardcoded subcommand strings with `EXTENDED_GLOB`
     off (Michael's shell), and the `=` forms and `h` after a value-taking option take the normal
-    checks; an empty first argument (`""`, also before `init --apply`) is refused; `--mode` other than `file` is refused for clone runs; `update` moves
+    checks; an empty first argument followed by a gated subcommand (`""`, also before `init --apply`) is refused, while `"" --version` passes through; `--mode` other than `file` is refused for clone runs; `update` moves
     `refs/remotes/origin/main`.
 - **`live-write-boundary`** also covers a repository outside `~/Code` (in `~/Documents`). Its
   `hooks/` is denied there too, while its objects, refs, index and configuration files stay
@@ -305,7 +324,9 @@ A zsh wrapper around `chezmoi` handles `apply`, `update` and the previews below.
     probe at depth 4 (`.claude/settings.local.json`) must stay writable, which proves npm
     keeps working. `.codex/**` is not measurable live, because `.codex` itself is denied.
     A harness worktree probe per root, `<root>/<stamp>/arepo/.claude/worktrees/wt1/.claude/settings.json`,
-    must be denied. `.claude/skills`, `commands` and `agents` stay writable. Its rename probe (a parent directory moved to reach the same
+    must be denied. The depth-0 form (`<root>/.claude/worktrees/*/<p>`) has no live probe: it
+    would need a fixture inside the real `~/.local/share/chezmoi/.claude/worktrees`, which
+    harness worktrees use; `claude-settings` pins the entries. `.claude/skills`, `commands` and `agents` stay writable. Its rename probe (a parent directory moved to reach the same
     result as `core.hooksPath`) is reported as information and not counted.
   - Claude Code's own built-in rule keeps `.git/config` and `.git/hooks` denied under the
     session's working directory (unless `sandbox.filesystem.allowGitConfig`, which stays
