@@ -82,7 +82,9 @@ denied vault_obsidian "$V/.obsidian/$stamp"
 # only at depth 0-2 under a root, where sessions start: probed in a repository two levels down
 # (<root>/<stamp>/arepo). Deeper it stays writable, so a node_modules package that ships one (resolve
 # ships .claude/settings.local.json) keeps npm ci working: probed four levels down. .claude/skills,
-# commands and agents stay writable. .codex cannot be created, so its directory is the probe and
+# commands and agents stay writable. A Claude Code harness worktree (<repo>/.claude/worktrees/<name>)
+# loads its own agent configuration four or five levels down: the fixed-depth worktree forms deny it,
+# probed at <root>/<stamp>/arepo/.claude/worktrees/wt1/.claude/settings.json. .codex cannot be created, so its directory is the probe and
 # .codex/** is not measurable from inside the sandbox.
 for root in "$HOME/Code" "$HOME/.local/share/chezmoi" "$HOME/Documents" \
             "$HOME/Library/Mobile Documents/iCloud~md~obsidian"; do
@@ -96,7 +98,7 @@ for root in "$HOME/Code" "$HOME/.local/share/chezmoi" "$HOME/Documents" \
   probes+=("$b")
   if mkdir -p "$g/objects" "$g/refs/heads" "$g/modules/sub/worktrees/swt" "$g/worktrees/wt" \
               "$m/plain/hooks" "$r/.claude/skills" "$r/.claude/commands" "$r/.claude/agents" \
-              "$ar/.claude" "$nm/.claude" 2>/dev/null; then
+              "$ar/.claude" "$nm/.claude" "$ar/.claude/worktrees/wt1/.claude" 2>/dev/null; then
     denied "${k}_git_hooks" "$g/hooks/"
     allowed_cfg "${k}_git_config_writable" "$g/config"
     allowed "${k}_git_config_worktree_writable" "$g/config.worktree"
@@ -113,6 +115,7 @@ for root in "$HOME/Code" "$HOME/.local/share/chezmoi" "$HOME/Documents" \
     denied "${k}_claude_settings_local" "$ar/.claude/settings.local.json"
     denied "${k}_mcp_json" "$ar/.mcp.json"
     denied "${k}_codex_dir" "$ar/.codex/"
+    denied "${k}_harness_worktree_claude_settings" "$ar/.claude/worktrees/wt1/.claude/settings.json"
     allowed "${k}_node_modules_claude_settings_local_writable" "$nm/.claude/settings.local.json"
     allowed "${k}_claude_skills_writable" "$r/.claude/skills/$stamp.md"
     allowed "${k}_claude_commands_writable" "$r/.claude/commands/$stamp.md"

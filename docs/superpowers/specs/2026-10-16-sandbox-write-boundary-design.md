@@ -81,7 +81,13 @@ these places should cost no escapes.
   - **Cost.** None of the 55 repositories under `~/Code` tracked one of these files at depth 2
     or less on 2026-10-18. A sandboxed clone or pull of a repository that does track one would
     fail, and needs Michael's own git.
-  - **Out of scope here.** A session started deeper than two levels below a root (a
+  - **Harness worktrees (ruling 2026-10-18).** Claude Code's own worktrees live at
+    `<repo>/.claude/worktrees/<name>`, and a session there loads that directory's
+    `.claude/settings.json` and the rest, four or five levels below a root. Each of the five
+    paths also has the fixed-depth forms `<root>/*/.claude/worktrees/*/<p>` and
+    `<root>/*/*/.claude/worktrees/*/<p>`. Both name `.claude/worktrees` literally, so neither
+    can match inside `node_modules`. That is 40 more entries (4 roots x 5 paths x 2 forms).
+  - **Out of scope here.** Any other session root deeper than two levels below a root (a
     subproject directory, for one) has an unprotected project configuration.
   - `.claude/skills`, `commands` and `agents` stay writable; skill and agent frontmatter
     hooks are under Out of scope.
@@ -139,9 +145,16 @@ these places should cost no escapes.
   (§1, "Git"), so unsandboxed code runs only git forms that execute nothing from it, or
   neutralises the rest.
   - Forms that execute nothing: `rev-parse`, `symbolic-ref`, `branch --show-current`,
-    `worktree list`, `rev-list`, `diff` between commits with `--no-ext-diff --no-textconv`,
-    `ls-tree`, `hash-object --no-filters`, `cat-file`, `merge-base` and
-    config reads.
+    `worktree list`, `rev-list`, `diff` between commits with `--no-ext-diff --no-textconv
+    --submodule=short` and with lazy fetch off, `ls-tree`, `hash-object --no-filters`,
+    `cat-file` (also with lazy fetch off: a missing object lazy-fetches through a promisor
+    remote), `merge-base` and config reads.
+  - **Why those two on `diff`.** A submodule child diff otherwise runs that submodule's
+    `diff.external` and textconv under `diff.submodule=diff`, hence `--submodule=short`. A
+    promisor remote's `uploadpack` otherwise runs when a blob is missing (rename detection
+    reads blobs, for one), hence `GIT_NO_LAZY_FETCH=1`. The push guard's patch listing and
+    gitleaks, the ledger's diffs and `xreview apply` all run that way. The push guard pins
+    `diff.submodule=short`; `xreview apply` also passes `--no-renames`.
   - Neutralised: the push guard's and the pre-merge gate's `ls-remote` run with a protocol
     allowlist (no `ext`), no credential helper or askpass, `--upload-pack=git-upload-pack` and
     `GIT_TERMINAL_PROMPT=0`, and fail closed when `core.sshCommand`, `core.gitProxy` or
@@ -152,8 +165,9 @@ these places should cost no escapes.
     under `diff.submodule=diff` the diff of a submodule would otherwise recurse into a child
     diff that runs that submodule's `diff.external` and textconv.
   - Not used: a diff against the index or the work tree, `status`, `ls-files` and `pull`
-    fire configured commands (fsmonitor, filters, hooks), except the chezmoi wrapper's own
-    `status` and `pull` (Out of scope).
+    fire configured commands (fsmonitor, filters, hooks), except `xreview apply`, which runs
+    both diffs neutralised (above), and the chezmoi wrapper's own `status` and `pull` (Out of
+    scope).
   - `hook-path`'s fixture repositories carry fsmonitor, filter, `sshCommand`, `hooksPath` and
     `ext`/`insteadOf` markers, and those config markers enforce the git rule; the pin
     assertions enforce `PATH`.
@@ -208,13 +222,16 @@ A zsh wrapper around `chezmoi` handles `apply`, `update` and the previews below.
   without `--dirty-ok`.
 - **Help.** Help is detected only as an exact `-h` or `--help` token, or a short-option group
   containing `h` with no `=`, before `--`. The wrapper then runs `chezmoi help <subcommand>`
-  itself and never forwards the arguments, so a help flag cannot carry the working tree
+  itself (`chezmoi help <subcommand>` when the first argument is a subcommand word, otherwise
+  plain `chezmoi help`) and never forwards the arguments, so a help flag cannot carry the working tree
   through to a real `apply`. Every `=` form (`--help=false`, `-h=false`) and an `h` that
   follows a value-taking letter in the same group (where it is that option's value) go through
   the normal checks (fail closed). Which short letters take a value differs per subcommand
   (`-f` and `-p` among them), so the wrapper keeps a per-subcommand table, read from
   chezmoi 2.73.2's help. A chezmoi upgrade that changes a short flag needs that table
-  refreshed, or the scan for a joined `-S`/`-c` can stop early.
+  refreshed, or the scan for a joined `-S`/`-c` can stop early. An empty first argument is
+  refused like a leading option: cobra skips `""` when it looks for the subcommand, so
+  `chezmoi "" init --apply` would otherwise have run `init --apply`.
 - **Smaller points.** A `--mode` other than `file` is
   refused for runs against the clone. `update`'s pull also updates `refs/remotes/origin/main`,
   so the checkout does not look ahead afterwards. `.scripts/provision.sh` skips
@@ -229,7 +246,7 @@ A zsh wrapper around `chezmoi` handles `apply`, `update` and the previews below.
 - After `chezmoi apply` and a new session, every place in the Problem table is unwritable from
   the sandbox, and no hook, statusline or excluded command can be steered by a sandboxed
   write, except the routes recorded under Out of scope. Other repositories' agent
-  configuration (`.claude/settings*.json`, `.mcp.json`, `.codex`) is unwritable too, at depth 0 to 2 under each work root.
+  configuration (`.claude/settings*.json`, `.mcp.json`, `.codex`) is unwritable too, at depth 0 to 2 under each work root, and in a harness worktree under `.claude/worktrees`.
 - The next escape measurement (with the 2026-10-31 re-measure) shows no new cluster of escapes
   for `~/.config` or `~/.local/bin` writes. If one appears, it goes through the re-allow test
   in §1.
@@ -246,17 +263,20 @@ A zsh wrapper around `chezmoi` handles `apply`, `update` and the previews below.
   it holds `bash`, `jq`, `git` and `python3` stubs that write a marker. No marker may appear.
   The list of hooks comes from the settings themselves, so a new hook without the pin fails.
   `xreview`, `xreview-rpc` and `codex-daemon` get the same check, with a mise-shim directory
-  holding a stub `jq`. The fixture repository carries fsmonitor, filter, `sshCommand` and
-  `ext`/`insteadOf` markers, none of which may fire, and the suite asserts each pinned
+  holding a stub `jq`. The fixture repositories carry fsmonitor, filter, `sshCommand`,
+  `ext`/`insteadOf` and `hooksPath` (post-index-change) markers, none of which may fire, and the suite asserts each pinned
   script's exact pin line.
 - **`xreview-guard`, `xreview apply` and the ledger.** The pre-merge `ls-remote` fails closed on
   `core.sshCommand`, `core.gitProxy`, `remote.origin.vcs` and a non-plain origin URL, and runs
   with the protocol allowlist. `xreview apply`'s diffs fire no fsmonitor, no filter and no hook (the `hooksPath`
   marker never fires), and the ledger's patch diff runs no `diff.external` or textconv from a
-  submodule (the submodule case).
+  submodule (the submodule case). Promisor fixtures (a remote whose `uploadpack` writes a
+  marker) cover `xreview apply` and the ledger: no marker may appear. H25b sets
+  `protocol.evil.allow=always`, so git's own protocol allowlist cannot be what refuses.
 - **`git-forge-guard`.** The reproduced lazy fetch: a dangling remote-tracking ref plus a
   promisor remote whose `uploadpack` writes a marker. The push still gets its usual verdict,
-  and no marker appears.
+  and no marker appears. A submodule case covers the patch listing and gitleaks: under
+  `diff.submodule=diff` the submodule's `diff.external` must not run.
 - **The `chezmoi` wrapper**, against a local bare "origin":
   - **Refusals.** It refuses, with the reason, each of: another branch; an uncommitted change;
     an untracked file; a local commit that origin lacks; origin ahead of the checkout.
@@ -272,8 +292,9 @@ A zsh wrapper around `chezmoi` handles `apply`, `update` and the previews below.
   - **Previews and the rest.** Each preview command runs against the clone on a clean `main`
     and is refused off it; `merge` and `merge-all` are refused without `--dirty-ok`; the help
     shapes (`-h`, `--help`, a short group with `h`) print `chezmoi help <subcommand>` without
-    forwarding arguments, and the `=` forms and `h` after a value-taking option take the normal
-    checks; `--mode` other than `file` is refused for clone runs; `update` moves
+    forwarding arguments, asserted against hardcoded subcommand strings with `EXTENDED_GLOB`
+    off (Michael's shell), and the `=` forms and `h` after a value-taking option take the normal
+    checks; an empty first argument (`""`, also before `init --apply`) is refused; `--mode` other than `file` is refused for clone runs; `update` moves
     `refs/remotes/origin/main`.
 - **`live-write-boundary`** also covers a repository outside `~/Code` (in `~/Documents`). Its
   `hooks/` is denied there too, while its objects, refs, index and configuration files stay
@@ -283,7 +304,8 @@ A zsh wrapper around `chezmoi` handles `apply`, `update` and the previews below.
     `.claude/settings.json` directly under `~/Code` and `~/Documents`. A `node_modules/<pkg>`
     probe at depth 4 (`.claude/settings.local.json`) must stay writable, which proves npm
     keeps working. `.codex/**` is not measurable live, because `.codex` itself is denied.
-    `.claude/skills`, `commands` and `agents` stay writable. Its rename probe (a parent directory moved to reach the same
+    A harness worktree probe per root, `<root>/<stamp>/arepo/.claude/worktrees/wt1/.claude/settings.json`,
+    must be denied. `.claude/skills`, `commands` and `agents` stay writable. Its rename probe (a parent directory moved to reach the same
     result as `core.hooksPath`) is reported as information and not counted.
   - Claude Code's own built-in rule keeps `.git/config` and `.git/hooks` denied under the
     session's working directory (unless `sandbox.filesystem.allowGitConfig`, which stays
