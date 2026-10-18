@@ -8,6 +8,8 @@
 
 **Tech Stack:** bash (Homebrew bash 5 for hooks), zsh (the wrapper), Python 3 (`/usr/bin/python3`), git, jq, the chezmoi `modify_` settings script.
 
+**Status:** Implemented on `feat/sandbox-write-boundary`. Do not run it again; the spec records what changed after this plan was approved.
+
 **Spec:** `docs/superpowers/specs/2026-10-16-sandbox-write-boundary-design.md` (Approved; §2 corrected in 1721ab7 to cover `xreview`).
 
 ## Global Constraints

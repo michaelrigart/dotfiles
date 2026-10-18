@@ -1,6 +1,6 @@
 # Sandbox write boundary
 
-**Status:** In progress
+**Status:** Implemented
 **Date:** 2026-10-16
 **Branch:** `feat/sandbox-write-boundary`
 
