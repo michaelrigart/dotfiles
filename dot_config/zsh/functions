@@ -1324,13 +1324,19 @@ chezmoi() {
   local -a args=("$@")
   local sub=${1:-} a i
   if _chezmoi_help "$@"; then
-    if [[ $sub == [A-Za-z0-9]([A-Za-z0-9-])# ]]; then command chezmoi help "$sub"; else command chezmoi help; fi
+    # No extended glob here: `chezmoi()` sets no options, and an interactive zsh has EXTENDED_GLOB
+    # off, where a trailing `#` is a literal. A plain word is a letter or digit first, then only
+    # letters, digits and hyphens.
+    if [[ $sub == [A-Za-z0-9]* && $sub != *[^A-Za-z0-9-]* ]]; then command chezmoi help "$sub"; else command chezmoi help; fi
     return
   fi
   # chezmoi takes global options before the subcommand, some with a value, and a parser that
   # misses one would read the value as the subcommand and let apply through. So a command
-  # that names one of the commands handled below must put the subcommand first.
-  if [[ $sub == -* ]]; then
+  # that names one of the commands handled below must put the subcommand first. An empty first
+  # argument counts too: cobra skips "" when it looks for the subcommand, so `chezmoi "" init
+  # --apply` runs `init --apply`. (A whitespace-only word, an upper-case name or an abbreviation
+  # is an unknown command to cobra, which runs nothing.)
+  if [[ $sub == -* || ( $# -gt 0 && -z $sub ) ]]; then
     for a in apply update diff status cat verify dump archive execute-template merge merge-all init edit; do
       if (( ${args[(Ie)$a]} )); then
         print -u2 "chezmoi: put the subcommand first, e.g. chezmoi $a -v"

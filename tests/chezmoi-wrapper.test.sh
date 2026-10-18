@@ -10,6 +10,7 @@
 #   ./tests/chezmoi-wrapper.test.sh   (sandboxed is fine)
 emulate -L zsh
 setopt no_unset pipe_fail
+unsetopt extended_glob
 SRC=${0:A:h:h}
 FUNCS=$SRC/dot_config/zsh/functions
 [[ -f $FUNCS ]] || { print -u2 "missing file under test: $FUNCS"; exit 2 }
@@ -244,19 +245,70 @@ for c in merge merge-all; do
   grep -qx WORKTREE $LOG 2>/dev/null && grep -q "^ARGS $c x$" $LOG && _pass "chezmoi $c --dirty-ok runs on the working tree" || _fail "chezmoi $c --dirty-ok" "$(cat $LOG 2>/dev/null)"
 done
 
+# cobra skips an empty argument when it looks for the subcommand, so `chezmoi "" init --apply`
+# runs `init --apply` in real chezmoi 2.73.2. An empty first argument is treated like a leading
+# option: a command naming a gated subcommand must put it first. A whitespace-only word, an
+# upper-case name or an abbreviation is an unknown command to cobra, which runs nothing.
+empty_refused() { # empty_refused <args...>: refused for the subcommand-first rule, nothing reaches chezmoi
+  local err rc lbl="${(j: :)${(@q-)argv}}"
+  fresh; err=$(chezmoi "$@" 2>&1 >/dev/null); rc=$?
+  (( rc == 1 )) && [[ $err == *"put the subcommand first"* ]] && [[ ! -e $LOG ]] && tmp_clean \
+    && _pass "chezmoi $lbl is refused: subcommand first" || _fail "chezmoi $lbl" "rc=$rc err=$err log=$(cat $LOG 2>/dev/null)"
+}
+empty_refused "" apply
+empty_refused "" init
+empty_refused "" init --apply
+empty_refused "" execute-template X
+empty_refused "" diff
+empty_refused "" status
+empty_refused "" update
+empty_refused "" cat
+empty_refused "" verify
+empty_refused "" dump
+empty_refused "" archive
+empty_refused "" merge x
+empty_refused "" edit --apply x
+empty_refused "" -v apply
+empty_refused "" "" apply
+empty_refused "" apply --dirty-ok
+empty_refused "" apply --help=false
+fresh; chezmoi >/dev/null 2>&1; grep -qx 'ARGS ' $LOG 2>/dev/null && grep -qx WORKTREE $LOG && _pass "bare chezmoi with no arguments passes through" || _fail "bare chezmoi" "$(cat $LOG 2>/dev/null)"
+fresh; chezmoi "" --version >/dev/null 2>&1; grep -qx 'ARGS  --version' $LOG 2>/dev/null && _pass "an empty argument with no gated subcommand passes through" || _fail "empty --version" "$(cat $LOG 2>/dev/null)"
+fresh; chezmoi "" --help >/dev/null 2>&1; grep -qx 'ARGS help' $LOG 2>/dev/null && _pass "chezmoi '' --help prints the general help" || _fail "empty --help" "$(cat $LOG 2>/dev/null)"
+fresh; chezmoi " " apply >/dev/null 2>&1; grep -qx 'ARGS   apply' $LOG 2>/dev/null && _pass "a whitespace-only first word is cobra's unknown command: forwarded, nothing to refuse" || _fail "whitespace first word" "$(cat $LOG 2>/dev/null)"
+
 # Help is an exact -h or --help token (or a short group holding h, with no =) before --. It is
 # never forwarded: the wrapper runs `chezmoi help <subcommand>` (a plain-word subcommand) or
 # `chezmoi help`, so nothing depends on how chezmoi parses the rest, and no precondition or
 # clone is involved, on any branch.
-fresh; git -C $T/co switch -q -c other; print change >> $T/co/dot_testfile
-for form in "apply --help" "apply -h" "apply -vh" "diff -h" "diff --help" "update --help" "init --help" "apply --dirty-ok --help" \
-            "apply --source -h" "apply -D -h" "apply -S -h" "apply -x -h" "apply -h --help=false" "apply --help=false -h" \
-            "execute-template -h" "--help" "-h" "-v apply -h" "--source $T/co apply --help"; do
-  rm -f $LOG; chezmoi ${=form} >/dev/null 2>&1; rc=$?
-  w=${${=form}[1]}; [[ $w == [A-Za-z0-9]([A-Za-z0-9-])# ]] && expect="help $w" || expect=help
-  (( rc == 0 )) && grep -qx WORKTREE $LOG 2>/dev/null && grep -qx "ARGS $expect" $LOG && tmp_clean \
-    && _pass "chezmoi $form prints 'chezmoi $expect' on a dirty feature branch: no checks, no clone" || _fail "chezmoi $form" "rc=$rc $(cat $LOG 2>/dev/null)"
-done
+# The expected page is written out, never derived with the wrapper's own pattern: a mutant that
+# always runs bare `chezmoi help` must fail. The table runs with EXTENDED_GLOB off, as in
+# Michael's interactive shell (the wrapper sets no options of its own), and again with it on.
+HELP_CASES=(
+  "apply --help|help apply" "apply -h|help apply" "apply -vh|help apply" "diff -h|help diff" "diff --help|help diff"
+  "status --help|help status" "update --help|help update" "init --help|help init"
+  "apply --dirty-ok --help|help apply" "apply --source -h|help apply" "apply -D -h|help apply" "apply -S -h|help apply"
+  "apply -x -h|help apply" "apply -h --help=false|help apply" "apply --help=false -h|help apply"
+  "execute-template -h|help execute-template" "dump -h|help dump" "archive --help|help archive"
+  "cat -h|help cat" "verify --help|help verify" "merge-all -h|help merge-all"
+  "--help|help" "-h|help" "-v apply -h|help" "--source $T/co apply --help|help"
+)
+help_table() { # help_table <label>: every HELP_CASES entry on a dirty feature branch
+  local entry form expect rc
+  fresh; git -C $T/co switch -q -c other; print change >> $T/co/dot_testfile
+  for entry in $HELP_CASES; do
+    form=${entry%%|*}; expect=${entry##*|}
+    rm -f $LOG; chezmoi ${=form} >/dev/null 2>&1; rc=$?
+    (( rc == 0 )) && grep -qx WORKTREE $LOG 2>/dev/null && grep -qx "ARGS $expect" $LOG && tmp_clean \
+      && _pass "$1: chezmoi $form prints 'chezmoi $expect' on a dirty feature branch: no checks, no clone" || _fail "$1: chezmoi $form" "rc=$rc $(cat $LOG 2>/dev/null)"
+  done
+}
+unsetopt extended_glob; [[ -o extended_glob ]] && { print -u2 "cannot turn EXTENDED_GLOB off"; exit 2 }
+help_table "EXTENDED_GLOB off"
+# zsh reads `#`, `^` and `~` as pattern operators according to the options in force when the
+# function is parsed, so the second pass must source the file again with the option on.
+setopt extended_glob; source $FUNCS; help_table "EXTENDED_GLOB on"
+unsetopt extended_glob; source $FUNCS
 for form in "apply -- -h" "apply --help=false" "apply -h=false" "apply -vh=false" "diff --help=f" "diff --help=0" "execute-template -ph=x X" \
             "execute-template -h=x X" "dump -fh=x" "archive -fh=x" "status -ph=x" "update --help=false" \
             "--help=false apply" "-h=false apply" "init --help=false --apply" "edit --help=0 --apply" "init -h=1 -a"; do
