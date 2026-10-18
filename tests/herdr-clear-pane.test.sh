@@ -55,7 +55,7 @@ for _ in $(seq 100); do [ -s "$T/ready" ] && break; sleep 0.05; done
 run() {
   local info="$1" i got; shift
   : > "$T/log"; : > "$T/sig"
-  env -i HOME="$T/home" PATH="$T/bin:/usr/bin:/bin" STUB_LOG="$T/log" STUB_INFO="$info" \
+  env -i HOME="$T/home" PATH="$T/bin:/usr/bin:/bin" PINNED_PATH="$T/bin:/usr/bin:/bin" STUB_LOG="$T/log" STUB_INFO="$info" \
     HERDR_ACTIVE_PANE_ID=w1:p2 "$@" /bin/zsh "$SCRIPT" >/dev/null 2>&1
   local rc=$?
   kill -USR1 "$HPID"
@@ -87,6 +87,40 @@ is "no focused pane: herdr is not called" \
    "$(run "$(info "$HPID" "$HPID" zsh)" HERDR_ACTIVE_PANE_ID=)" "rc=0 sig=0 "
 is "HERDR_SESSION is threaded into the call" \
    "$(run "$(info "$HPID" "$HPID" zsh)" HERDR_SESSION=dev)" "rc=0 sig=1 --session dev $CALL"
+
+# The pin. clear-pane.sh runs outside the sandbox (a herdr keybinding), so the PATH of whoever
+# started herdr must not decide which zsh, herdr or jq it runs (spec 2026-10-16, sandbox write
+# boundary). A scratch copy runs through its own shebang with a hostile directory first on PATH,
+# holding a marker-writing stub for every tool it could reach; no marker may appear.
+HOSTILE="$T/hostile"; HM="$T/hostile-marks"; mkdir -p "$HOSTILE" "$HM"
+printf '#!/bin/sh\necho "${0##*/}" >> "%s/marker"\nexit 0\n' "$HM" > "$HOSTILE/.marker"
+chmod 755 "$HOSTILE/.marker"
+for t in git herdr bash zsh python3 jq glab kill; do ln -s .marker "$HOSTILE/$t"; done
+marked() { if [ -e "$HM/marker" ]; then tr '\n' ' ' < "$HM/marker"; else printf clean; fi; }
+cp "$SCRIPT" "$T/clear-pinned.sh"; chmod 755 "$T/clear-pinned.sh"
+
+is "the script has an absolute shebang" "$(head -1 "$SCRIPT")" "#!/bin/zsh"
+is "the script pins its PATH as its first command" \
+   "$(grep -v '^[[:space:]]*#' "$SCRIPT" | grep . | head -1)" \
+   'PATH=${PINNED_PATH:-/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin}; export PATH'
+
+# No focused pane, so the pinned default is the one that runs and herdr is never reached.
+rm -f "$HM/marker"
+env -i HOME="$T/home" PATH="$HOSTILE:/usr/bin:/bin" "$T/clear-pinned.sh" >/dev/null 2>&1; rc=$?
+is "a hostile PATH and no PINNED_PATH: the script still runs" "$rc" "0"
+is "a hostile PATH and no PINNED_PATH: none of the hostile tools run, zsh included" "$(marked)" "clean"
+
+# A real signal through the shebang, the stub herdr behind PINNED_PATH, the hostile directory
+# first on the caller's PATH.
+: > "$T/log"; : > "$T/sig"; rm -f "$HM/marker"
+env -i HOME="$T/home" PATH="$HOSTILE:$T/bin:/usr/bin:/bin" PINNED_PATH="$T/bin:/usr/bin:/bin" \
+  STUB_LOG="$T/log" STUB_INFO="$(info "$HPID" "$HPID" zsh)" HERDR_ACTIVE_PANE_ID=w1:p2 \
+  "$T/clear-pinned.sh" >/dev/null 2>&1; rc=$?
+kill -USR1 "$HPID"
+for i in $(seq 100); do grep -q END "$T/sig" && break; sleep 0.05; done
+is "a hostile directory first on the caller's PATH: the idle zsh still gets one SIGURG" \
+   "rc=$rc sig=$(grep -c URG "$T/sig")" "rc=0 sig=1"
+is "a hostile directory first on the caller's PATH: none of the hostile tools run" "$(marked)" "clean"
 
 # config.toml: alt+k runs this script, and no other binding claims alt+k.
 PY="$(command -v python3)" || { echo "no python3" >&2; exit 2; }

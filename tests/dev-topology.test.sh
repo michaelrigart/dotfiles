@@ -61,6 +61,9 @@ print -r -- "#!/bin/sh
 exec zsh '$SRC_TEARDOWN' \"\$@\"" > "$SCRATCH/bin/wt-teardown"
 chmod +x "$SCRATCH/bin/layout.sh" "$SCRATCH/bin/wt-teardown"
 export PATH="$SCRATCH/bin:$PATH" DEV_LAYOUT="$SCRATCH/bin/layout.sh" XDG_STATE_HOME="$SCRATCH/state"
+# The scripts under test pin their PATH (spec 2026-10-16, sandbox write boundary); the scratch
+# wrappers reach them through PINNED_PATH, which only the suites set.
+export PINNED_PATH="$PATH"
 
 # Start clean as well as finish clean: a run killed mid-way leaves state behind.
 # STOP before DELETE — `session delete` only acts on a stopped session, so deleting

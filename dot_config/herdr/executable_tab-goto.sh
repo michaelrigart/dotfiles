@@ -1,4 +1,4 @@
-#!/usr/bin/env zsh
+#!/bin/zsh
 # tab-goto.sh [--create] <label> — focus a managed tab in the active workspace.
 # Managed by chezmoi (source: dot_config/herdr/executable_tab-goto.sh).
 #
@@ -8,6 +8,10 @@
 # --create makes the tab if the label is absent, by asking layout.sh, which owns what a
 # tab contains. It is for LAZY tabs only (today: editor); a missing eager tab is
 # re-added by layout.sh, and a jump that quietly built one would hide the real fault.
+# Runs outside the sandbox (a herdr keybinding or a shell), so it resolves nothing a sandboxed
+# command can write (spec 2026-10-16, sandbox write boundary): an absolute shebang and a
+# pinned PATH that no caller's direnv or mise entry reaches. PINNED_PATH is for the suite only.
+PATH=${PINNED_PATH:-/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin}; export PATH
 emulate -L zsh
 setopt local_options no_unset pipe_fail
 

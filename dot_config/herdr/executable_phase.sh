@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Badge Herdr spaces with where a worktree sits between "I'm working on this" and
 # "this is waiting to be merged".
 #
@@ -21,6 +21,12 @@
 # When Herdr is not running, `spaces` comes back empty and refresh returns before any git or
 # glab work. It never fetches: `origin/<branch>` is read as-is, and only the MR state, where
 # freshness matters, is cached with a TTL.
+#
+# Runs outside the sandbox (launchd, herdr's hooks and keybindings), so it resolves nothing a
+# sandboxed command can write (spec 2026-10-16, sandbox write boundary): an absolute shebang,
+# the system bash 3.2 (SIP-protected, and what the launchd suite case already runs), and a
+# pinned PATH that no caller's direnv or mise entry reaches. PINNED_PATH is for the suite only.
+PATH=${PINNED_PATH:-/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin}; export PATH
 set -u
 
 SOURCE_ID="herdr-phase"
@@ -32,10 +38,6 @@ HERDR_ARGS=""
 [ -n "${HERDR_SESSION:-}" ] && HERDR_ARGS="--session $HERDR_SESSION"
 TTL="${HERDR_PHASE_TTL:-120}"
 
-# Appended, not prepended: a plugin hook's minimal PATH needs these, but an override earlier
-# in PATH (a test stub) must still win.
-case ":$PATH:" in *:/opt/homebrew/bin:*) ;; *) PATH="$PATH:/opt/homebrew/bin" ;; esac
-
 # Nerd Font private-use codepoints, written as escapes because literals do not survive every
 # editor and pipeline.
 ICON_BRANCH=$(printf '\xee\xb1\xaf')   # U+EC6F cod-git_branch
@@ -43,6 +45,8 @@ ICON_MR=$(printf '\xee\xa9\xa4')       # U+EA64 cod-git_pull_request
 ICON_DRAFT=$(printf '\xee\xaf\x9b')    # U+EBDB cod-git_pull_request_draft
 ICON_MERGE=$(printf '\xee\xab\xbe')    # U+EAFE cod-git_merge
 
+# Run with -I below: isolated mode keeps the current directory (a repository) off sys.path and
+# ignores PYTHON* variables, so a module a sandboxed command wrote there cannot be imported.
 PY=/usr/bin/python3
 [ -x "$PY" ] || PY="$(command -v python3 2>/dev/null || true)"
 
@@ -134,7 +138,7 @@ mr_table() { # mr_table <repo_root> <force>
   merged_json="$(glab mr list --repo "$slug" --merged --output json --per-page 100 2>/dev/null)" || merged_json=""
   [ -n "$merged_json" ] || { merged_json="[]"; cacheable=0; }
 
-  table="$(printf '%s\n%s\n' "$open_json" "$merged_json" | "$PY" -c '
+  table="$(printf '%s\n%s\n' "$open_json" "$merged_json" | "$PY" -I -c '
 import json, sys
 # Two concatenated JSON documents rather than one, so read them off the stream in turn.
 dec, data, i, rows = json.JSONDecoder(), sys.stdin.read(), 0, []
@@ -246,7 +250,7 @@ report() { # report <workspace_id> <phase> <value>
 # Sorted by repo_root because Herdr does not return the list grouped and cmd_refresh holds
 # one MR table at a time. The sort is stable, so Herdr order holds within a repo.
 spaces() {
-  herdr $HERDR_ARGS workspace list 2>/dev/null | "$PY" -c '
+  herdr $HERDR_ARGS workspace list 2>/dev/null | "$PY" -I -c '
 import json, sys
 try:
     d = json.load(sys.stdin)

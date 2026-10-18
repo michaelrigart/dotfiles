@@ -223,7 +223,7 @@ export WSJSON MROPEN MRMERGED CALLS
 
 run() { # run <args...> -> stdout+stderr, sets RC; each run starts a clean call log
   : > "$CALLS"
-  OUT=$(PATH="$BIN:$PATH" \
+  OUT=$(PATH="$BIN:$PATH" PINNED_PATH="$BIN:$PATH" \
         HERDR_PHASE_CACHE_DIR="$T/cache" \
         HERDR_PHASE_TTL="${TTL:-120}" \
         bash "$PHASE" "$@" 2>&1); RC=$?
@@ -613,7 +613,8 @@ J
 # launchd's environment: nothing inherited, the system PATH, Apple's git and bash 3.2.
 launchd_run() { # launchd_run [VAR=value ...]
   rm -f "$M"/*; : > "$CALLS"
-  OUT=$(env -i HOME="$T" PATH="$BIN:/usr/bin:/bin:/usr/sbin:/sbin" CALLS="$CALLS" \
+  OUT=$(env -i HOME="$T" PATH="$BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+        PINNED_PATH="$BIN:/usr/bin:/bin:/usr/sbin:/sbin" CALLS="$CALLS" \
         WSJSON="$T/ws-markers.json" MROPEN="$MROPEN" MRMERGED="$MRMERGED" \
         HERDR_PHASE_CACHE_DIR="$T/cache" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
         "$@" /bin/bash "$PHASE" refresh 2>&1); RC=$?
@@ -639,6 +640,61 @@ case "$(report_for w20)" in *"--token merged=$ICON_MERGE !12"*) _pass "the phase
 rm -f "$M"/*
 WSJSON="$T/ws-markers.json" run refresh
 check "$(ls "$M" | tr '\n' ' ')" "" "a refresh from the suite's environment runs nothing either"
+
+# The pin. phase.sh runs outside the sandbox (launchd, herdr's hooks and keybindings), so the
+# PATH of whoever started it must not decide which git, herdr, glab or bash it runs (spec
+# 2026-10-16, sandbox write boundary). A scratch copy runs through its own shebang with a
+# hostile directory first on PATH, holding a marker-writing stub for every tool it could reach;
+# no marker may appear. The suite's stubs reach it through PINNED_PATH, as in every run above.
+echo
+echo "C. the pinned PATH"
+HOSTILE="$T/hostile"; HM="$T/hostile-marks"; mkdir -p "$HOSTILE" "$HM"
+printf '#!/bin/sh\necho "${0##*/}" >> "%s/marker"\nexit 0\n' "$HM" > "$HOSTILE/.marker"
+chmod 755 "$HOSTILE/.marker"
+for _t in git herdr bash zsh python3 jq glab awk cut tr sort stat date; do ln -s .marker "$HOSTILE/$_t"; done
+marked() { if [ -e "$HM/marker" ]; then tr '\n' ' ' < "$HM/marker"; else printf clean; fi; }
+cp "$PHASE" "$T/phase-pinned.sh"; chmod 755 "$T/phase-pinned.sh"
+
+check "$(head -1 "$PHASE")" "#!/bin/bash" "phase.sh has an absolute shebang"
+check "$(grep -v '^[[:space:]]*#' "$PHASE" | grep . | head -1)" \
+  'PATH=${PINNED_PATH:-/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin}; export PATH' \
+  "phase.sh pins its PATH as its first command"
+
+rm -f "$HM/marker"
+OUT=$(env -i HOME="$T" PATH="$HOSTILE:/usr/bin:/bin" "$T/phase-pinned.sh" --help 2>&1); RC=$?
+check "$RC" "0" "--help runs with a hostile PATH and no PINNED_PATH"
+check "$(marked)" "clean" "a hostile PATH runs none of the hostile tools, bash included"
+
+# A whole refresh, through the status, the MR lookup, herdr and both Python calls, with the
+# hostile directory first on the caller's PATH and the suite's stubs behind PINNED_PATH.
+rm -f "$M"/* "$HM/marker"; : > "$CALLS"
+OUT=$(env -i HOME="$T" PATH="$HOSTILE:$BIN:/usr/bin:/bin" \
+      PINNED_PATH="$BIN:/usr/bin:/bin:/usr/sbin:/sbin" CALLS="$CALLS" \
+      WSJSON="$T/ws-markers.json" MROPEN="$MROPEN" MRMERGED="$MRMERGED" \
+      HERDR_PHASE_CACHE_DIR="$T/cache-hostile" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+      "$T/phase-pinned.sh" refresh 2>&1); RC=$?
+check "$RC" "0" "refresh exits 0 with a hostile directory first on the caller's PATH"
+case "$(report_for w20)" in *"--token merged=$ICON_MERGE !12"*) _pass "the refresh still derived and reported a phase";;
+  *) _fail "the refresh still derived and reported a phase (got: $(report_for w20); $OUT)";; esac
+check "$(marked)" "clean" "a refresh runs none of the hostile tools"
+
+# The two Python calls run isolated: the current directory (a repository) is not on sys.path.
+# The fixture must bite first, or "no import" proves nothing.
+PYH="$T/pyhostile"; mkdir -p "$PYH"
+printf 'open("%s/imported", "a").close()\n' "$HM" > "$PYH/json.py"
+rm -f "$HM/imported"
+( cd "$PYH" && /usr/bin/python3 -c 'import json' >/dev/null 2>&1 )
+[ -e "$HM/imported" ] && _pass "fixture: a bare python3 imports a json.py from the current directory" \
+  || _fail "fixture: a bare python3 imports a json.py from the current directory"
+rm -f "$HM/imported" "$HM/marker"; rm -rf "$T/cache-hostile"; : > "$CALLS"
+( cd "$PYH" && env -i HOME="$T" PATH="$BIN:/usr/bin:/bin" PINNED_PATH="$BIN:/usr/bin:/bin" CALLS="$CALLS" \
+    WSJSON="$T/ws-markers.json" MROPEN="$MROPEN" MRMERGED="$MRMERGED" \
+    HERDR_PHASE_CACHE_DIR="$T/cache-hostile" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+    "$T/phase-pinned.sh" refresh >/dev/null 2>&1 )
+[ -e "$HM/imported" ] && _fail "a module in the current directory is not imported" \
+  || _pass "a module in the current directory is not imported"
+case "$(report_for w20)" in *"--token merged=$ICON_MERGE !12"*) _pass "the isolated Python calls still produce the report";;
+  *) _fail "the isolated Python calls still produce the report (got: $(report_for w20))";; esac
 
 echo
 echo "RESULT: $pass passed, $((pass + fail)) total, $fail failed"
