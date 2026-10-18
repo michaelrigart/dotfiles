@@ -46,6 +46,47 @@ ICON_MERGE=$(printf '\xee\xab\xbe')    # U+EAFE cod-git_merge
 PY=/usr/bin/python3
 [ -x "$PY" ] || PY="$(command -v python3 2>/dev/null || true)"
 
+# This runs unsandboxed (launchd, herdr's hooks) in worktrees whose repository configuration is
+# writable from the sandbox. A partial clone's lazy fetch would run remote.<name>.uploadpack,
+# which that configuration names, so no git call below may fetch; `rev-list` over a missing
+# object then fails and counts as 0 ahead.
+export GIT_NO_LAZY_FETCH=1
+
+# `git status` on a stat-dirty file would run core.fsmonitor and every clean filter, and
+# refresh the index, which fires the post-index-change hook from core.hooksPath and, on git 2.54
+# and later, from any hook.<name>.command with hook.<name>.event=post-index-change. So the status
+# runs with --no-optional-locks (no index write, hence no hook of any source), the monitor and
+# each configured filter driver switched off, and hooks pointed at nothing. The overrides travel
+# as GIT_CONFIG_KEY_n/VALUE_n pairs, never `-c`: git splits `-c key=value` at the first "=", so a
+# driver named "x=y" would survive it. The inherited GIT_CONFIG_COUNT, GIT_CONFIG_KEY_*/VALUE_*
+# and GIT_CONFIG_PARAMETERS are removed first (git reads PARAMETERS after our pairs, and bash
+# reads a count such as 010 as octal), and ours are numbered from 0. Mirrors xreview's cmd_apply.
+set_cfg() { # set_cfg <key> <value> - appends to the caller's `ge` array and `gn` counter
+  ge+=("GIT_CONFIG_KEY_$gn=$1" "GIT_CONFIG_VALUE_$gn=$2"); gn=$((gn + 1))
+}
+repo_status() { # repo_status <checkout_path> -> porcelain status, nothing from config run
+  local path="$1" k d v seen=$'\n' gn=0
+  local -a ge=() unset_args=(-u GIT_CONFIG_COUNT -u GIT_CONFIG_PARAMETERS)
+  while IFS= read -r v; do
+    case $v in GIT_CONFIG_KEY_*|GIT_CONFIG_VALUE_*) unset_args+=(-u "$v") ;; esac
+  done < <(compgen -e)
+  set_cfg core.fsmonitor false
+  set_cfg core.hooksPath /dev/null
+  # The driver name is everything between "filter." and the last "." (it may hold dots or "=");
+  # -z ends each name with a NUL, so no name is cut at a newline or a space.
+  while IFS= read -r -d '' k; do
+    d=${k#filter.}
+    [[ $d == *.* ]] || continue
+    d=${d%.*}
+    [[ $seen == *$'\n'"$d"$'\n'* ]] && continue
+    seen+="$d"$'\n'
+    set_cfg "filter.$d.clean" ""; set_cfg "filter.$d.smudge" ""; set_cfg "filter.$d.process" ""
+    set_cfg "filter.$d.required" false
+  done < <(git -C "$path" config -z --name-only --get-regexp '^filter\.' 2>/dev/null)
+  env "${unset_args[@]}" "${ge[@]}" "GIT_CONFIG_COUNT=$gn" \
+    git --no-optional-locks -C "$path" status --porcelain --ignore-submodules=all 2>/dev/null
+}
+
 usage() {
   cat <<'U'
 phase.sh — badge Herdr spaces with their merge phase
@@ -156,7 +197,7 @@ derive() { # derive <checkout_path> <repo_root> <mr_table>
     return 0
   fi
 
-  if [ -n "$(git -C "$path" status --porcelain 2>/dev/null)" ]; then
+  if [ -n "$(repo_status "$path")" ]; then
     printf 'active %s\n' "$ICON_BRANCH"; return 0
   fi
 

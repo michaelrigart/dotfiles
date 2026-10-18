@@ -529,5 +529,117 @@ else
 fi
 
 echo
+echo "J. a repository's own configuration runs nothing"
+# phase.sh runs unsandboxed (the launchd job, herdr's hooks) and a repository's configuration is
+# writable from the sandbox. For each linked worktree it runs `git status` and `git rev-list`, and
+# these ran: core.fsmonitor; a clean filter (on a file whose stat data differs from the index, so
+# git compares content through the filter); the post-index-change hook that the index refresh
+# fires, from core.hooksPath and from a git 2.54+ config hook (hook.<name>.event); and, from the
+# rev-list over a dangling remote-tracking ref, a promisor remote's uploadpack. Each is a marker
+# script that touches a file. Reproduced 2026-10-18 on git 2.54 and 2.56.
+rm -rf "$T/cache"
+cat > "$BIN/glab" <<'G'
+#!/usr/bin/env bash
+echo "glab $*" >> "$CALLS"
+case " $* " in *" --repo test/proj "*) ;; *) echo '[]'; exit 0 ;; esac
+case " $* " in *" --merged "*) cat "$MRMERGED" ;; *) cat "$MROPEN" ;; esac
+exit 0
+G
+chmod 755 "$BIN/glab"
+
+# mkmarkers <name> -> $T/<name>/{repo,wt1,wt2,marks}. wt1 (feature/merged) is clean apart from the
+# stat data of two tracked files, so its phase is `merged` (a merged MR, no local work); wt2
+# (feature/merged-dirty) has an untracked file, so its phase is `active`. That pair is what
+# tells a status that still works from one that was neutered.
+mkmarkers() {
+  local d="$T/$1" m="$T/$1/marks" c
+  mkdir -p "$m" "$d/hooks"
+  _mark() { # _mark <name> [body]
+    printf '#!/bin/sh\ntouch "%s/%s"\n%bexit 0\n' "$m" "$1" "${2:-}" > "$d/$1"; chmod 755 "$d/$1"; }
+  _mark fsmonitor; _mark clean 'cat\n'; _mark cleanxy 'cat\n'; _mark confighook
+  _mark inherited; _mark uploadpack 'exit 1\n'
+  printf '#!/bin/sh\ntouch "%s/hookspath"\n' "$m" > "$d/hooks/post-index-change"
+  chmod 755 "$d/hooks/post-index-change"
+  q git init -b main "$d/repo"
+  echo gg > "$d/repo/g"; echo hh > "$d/repo/h"; echo base > "$d/repo/f"
+  printf 'g filter=m\nh filter=x=y\n' > "$d/repo/.gitattributes"
+  q git -C "$d/repo" add .
+  q git -C "$d/repo" commit -m base
+  q git -C "$d/repo" worktree add -b feature/merged "$d/wt1" main
+  q git -C "$d/repo" worktree add -b feature/merged-dirty "$d/wt2" main
+  echo untracked > "$d/wt2/new"
+  # Configured only now: the blobs and the checkouts above hold the raw content.
+  c="$d/repo"
+  q git -C "$c" config core.fsmonitor "$d/fsmonitor"
+  q git -C "$c" config core.hooksPath "$d/hooks"
+  q git -C "$c" config hook.evil.command "$d/confighook"
+  q git -C "$c" config hook.evil.event post-index-change
+  q git -C "$c" config filter.m.clean "$d/clean"
+  q git -C "$c" config "filter.x=y.clean" "$d/cleanxy"
+  q git -C "$c" remote add origin git@gitlab.com:test/proj.git
+  q git -C "$c" config remote.pm.url "$d/nowhere"
+  q git -C "$c" config remote.pm.promisor true
+  q git -C "$c" config remote.pm.uploadpack "$d/uploadpack"
+  q git -C "$c" config core.repositoryformatversion 1
+  q git -C "$c" config extensions.partialClone pm
+  # Dangling remote-tracking refs: rev-list over them needs an object that is not there.
+  mkdir -p "$c/.git/refs/remotes/origin/feature"
+  for _b in merged merged-dirty; do
+    printf '1234567890abcdef1234567890abcdef12345678\n' > "$c/.git/refs/remotes/origin/feature/$_b"
+  done
+  touch -t 200001010000 "$d/wt1/g" "$d/wt1/h" "$d/wt2/g" "$d/wt2/h"
+}
+
+# The fixture must fire every marker when git is run bare, or "nothing fired" proves nothing.
+mkmarkers raw
+q git -C "$T/raw/wt1" status --porcelain
+q git -C "$T/raw/wt1" rev-list --count origin/feature/merged..HEAD
+for _m in fsmonitor hookspath clean cleanxy uploadpack; do
+  [ -e "$T/raw/marks/$_m" ] && _pass "fixture: bare git fires the $_m marker" \
+    || _fail "fixture: bare git fires the $_m marker"
+done
+# The config-based hook needs git 2.54; an older git has nothing to fire.
+if [ -e "$T/raw/marks/confighook" ]; then _pass "fixture: bare git fires the confighook marker"
+else echo "  note: git $(git --version | awk '{print $3}') ignores hook.<name>.command; confighook not exercised"; fi
+
+mkmarkers live
+M="$T/live/marks"
+cat > "$T/ws-markers.json" <<J
+{"id":"x","result":{"type":"workspace_list","workspaces":[
+ {"workspace_id":"w20","label":"m1","worktree":{"checkout_path":"$T/live/wt1","is_linked_worktree":true,"repo_root":"$T/live/repo"}},
+ {"workspace_id":"w21","label":"m2","worktree":{"checkout_path":"$T/live/wt2","is_linked_worktree":true,"repo_root":"$T/live/repo"}}
+]}}
+J
+# launchd's environment: nothing inherited, the system PATH, Apple's git and bash 3.2.
+launchd_run() { # launchd_run [VAR=value ...]
+  rm -f "$M"/*; : > "$CALLS"
+  OUT=$(env -i HOME="$T" PATH="$BIN:/usr/bin:/bin:/usr/sbin:/sbin" CALLS="$CALLS" \
+        WSJSON="$T/ws-markers.json" MROPEN="$MROPEN" MRMERGED="$MRMERGED" \
+        HERDR_PHASE_CACHE_DIR="$T/cache" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+        "$@" /bin/bash "$PHASE" refresh 2>&1); RC=$?
+}
+launchd_run
+check "$RC" "0" "refresh exits 0 in launchd's environment"
+check "$(ls "$M" | tr '\n' ' ')" "" "no fsmonitor, filter, hook or uploadpack ran"
+case "$(report_for w20)" in *"--token merged=$ICON_MERGE !12"*) _pass "a stat-only change is not dirty: merged";;
+  *) _fail "a stat-only change is not dirty: merged (got: $(report_for w20); $OUT)";; esac
+case "$(report_for w21)" in *"--token active=$ICON_BRANCH"*) _pass "an untracked file is still dirty: active";;
+  *) _fail "an untracked file is still dirty: active (got: $(report_for w21))";; esac
+
+# Overrides inherited from the caller (GIT_CONFIG_COUNT with its pairs, GIT_CONFIG_PARAMETERS)
+# must neither win over ours nor shift them. A well-formed count: the other git calls here
+# (rev-parse, rev-list) read the inherited environment as it is, and die on a malformed one.
+launchd_run GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0="$T/live/inherited" \
+  GIT_CONFIG_PARAMETERS="'core.fsmonitor=$T/live/inherited'"
+check "$(ls "$M" | tr '\n' ' ')" "" "inherited GIT_CONFIG_COUNT/KEY/VALUE/PARAMETERS run nothing"
+case "$(report_for w20)" in *"--token merged=$ICON_MERGE !12"*) _pass "the phase is unchanged with inherited overrides";;
+  *) _fail "the phase is unchanged with inherited overrides (got: $(report_for w20))";; esac
+
+# And from the suite's own environment, which is how a hook-run refresh looks.
+rm -f "$M"/*
+WSJSON="$T/ws-markers.json" run refresh
+check "$(ls "$M" | tr '\n' ' ')" "" "a refresh from the suite's environment runs nothing either"
+
+echo
 echo "RESULT: $pass passed, $((pass + fail)) total, $fail failed"
 [ "$fail" -eq 0 ]

@@ -147,17 +147,22 @@ these places should cost no escapes.
   (§1, "Git"), so unsandboxed code runs only git forms that execute nothing from it, or
   neutralises the rest.
   - **Every git call that reads objects runs with lazy fetch off** (`GIT_NO_LAZY_FETCH=1`):
-    the push guard (`Repo.run`), the pre-merge gate (its `run()`), the ledger (`git_env`) and
-    `xreview apply`. Object-reading forms lazy-fetch through a promisor remote when an object
+    the push guard (`Repo.run`), the pre-merge gate (its `run()`), the ledger (`git_env`),
+    `xreview apply` and `phase.sh` (which exports it before any git call: its `rev-list` reads
+    objects, and the launchd job and herdr's hooks run it unsandboxed). Object-reading forms lazy-fetch through a promisor remote when an object
     is missing: `rev-parse` of a revision expression (`<ref>~1`, `^{commit}`), `rev-list`,
     `merge-base`, `cat-file` and a `diff` between commits. None of them is safe without the
     switch.
-  - **Callers that run only a few forms do not set it:** `branch --show-current`,
-    `rev-parse --short HEAD`, `rev-parse --abbrev-ref` or `--verify` of a plain ref,
-    `rev-parse --is-inside-work-tree` and `worktree list`. These are the statusline,
-    memory-health, the `xreview apply` guard and `xreview` outside `apply`. Verified
-    2026-10-18: those forms do not fetch, even on a dangling ref or `HEAD` in a promisor
-    clone. `<ref>~1` and `merge-base` do.
+  - **Callers that run only a few forms do not set it.** The forms are `branch --show-current`,
+    `rev-parse --short HEAD`, a bare `rev-parse HEAD`, `rev-parse --abbrev-ref` or `--verify` of
+    a plain ref, `rev-parse --is-inside-work-tree`, `rev-parse --show-toplevel`,
+    `rev-parse --path-format=absolute --git-common-dir` and `worktree list`. By caller: the
+    statusline runs `--is-inside-work-tree`, `branch --show-current`, `--short HEAD` and
+    `--show-toplevel`; memory-health only `--git-common-dir`; the `xreview apply` guard only
+    `--show-toplevel`; `xreview` outside `apply` runs `--show-toplevel`, `worktree list`,
+    `--abbrev-ref HEAD`, `--verify --quiet refs/heads/<branch>` and a bare `rev-parse HEAD`.
+    Verified 2026-10-18: those forms do not fetch, even on a dangling ref or `HEAD` in a
+    promisor clone. `<ref>~1` and `merge-base` do.
   - Forms that execute nothing else: `rev-parse`, `symbolic-ref`, `branch --show-current`,
     `worktree list`, `rev-list`, `diff` between commits with `--no-ext-diff --no-textconv` and
     a submodule option (below), `ls-tree`, `hash-object --no-filters`, `cat-file`,
@@ -174,9 +179,9 @@ these places should cost no escapes.
     allowlist (no `ext`), no credential helper or askpass, `--upload-pack=git-upload-pack` and
     `GIT_TERMINAL_PROMPT=0`, and fail closed when `core.sshCommand`, `core.gitProxy` or
     `remote.origin.vcs` is set or origin's URL is not a plain transport. `xreview apply` runs
-    its diffs with `core.fsmonitor=false`, `core.hooksPath=/dev/null`,
-    `diff.autoRefreshIndex=false` and every configured filter's `clean`, `smudge` and `process`
-    emptied and `required=false`. A porcelain diff that refreshes the index would otherwise run
+    its diffs, and `phase.sh` its `status`, with `core.fsmonitor=false`, `core.hooksPath=/dev/null`,
+    `diff.autoRefreshIndex=false` (the diffs only) and every configured filter's `clean`,
+    `smudge` and `process` emptied and `required=false`. A porcelain diff that refreshes the index would otherwise run
     `post-index-change`. `core.hooksPath=/dev/null` stops a hook from the configured hooks
     path. It does not stop a git 2.54+ config-based hook (`hook.<name>.command` with
     `hook.<name>.event=post-index-change`). `diff.autoRefreshIndex=false` does: the diff never
@@ -190,8 +195,21 @@ these places should cost no escapes.
     diff that runs that submodule's `diff.external` and textconv.
   - Not used: a diff against the index or the work tree, `status`, `ls-files` and `pull`
     fire configured commands (fsmonitor, filters, hooks), except `xreview apply`, which runs
-    both diffs neutralised (above), and the chezmoi wrapper's own `status` and `pull` (Out of
-    scope).
+    both diffs neutralised (above), `phase.sh`, which runs `status` neutralised (next item), and
+    the chezmoi wrapper's own `status` and `pull` (Out of scope).
+  - **`phase.sh`** (the `be.netronix.herdr-phase-refresh` launchd job every 180 s, and herdr's
+    startup and event hooks) runs unsandboxed over every linked worktree. Its dirty check is
+    `git --no-optional-locks -C <path> status --porcelain --ignore-submodules=all` with the
+    same `GIT_CONFIG_KEY_n`/`VALUE_n` overrides as `xreview apply` (`core.fsmonitor=false`,
+    `core.hooksPath=/dev/null`, every filter driver emptied and `required=false`, inherited
+    `GIT_CONFIG_*` removed). `--no-optional-locks` is what stops the index write, and so the
+    `post-index-change` hook of any source, including a git 2.54+ config-based one (measured:
+    without it the config hook fires even with `core.hooksPath=/dev/null`);
+    `diff.autoRefreshIndex` does not apply to `status`. `--ignore-submodules=all` keeps status
+    out of any submodule. Its other calls execute nothing: `remote get-url`, `symbolic-ref
+    --short refs/remotes/origin/HEAD`, `rev-parse --abbrev-ref HEAD` and `rev-parse --verify
+    --quiet origin/<branch>` are config reads and plain refs; `rev-list --count` reads objects
+    and runs with lazy fetch off (a missing object makes it fail, which counts as 0 ahead).
   - `hook-path`'s fixture repositories carry fsmonitor, filter, `sshCommand`, `hooksPath`,
     config-based hook and `ext`/`insteadOf` markers, and those config markers enforce the git rule; the pin
     assertions enforce `PATH`.
@@ -301,6 +319,15 @@ A zsh wrapper around `chezmoi` handles `apply`, `update` and the previews below.
   `ext`/`insteadOf` and `hooksPath` (post-index-change) markers, and a config-based
   `hook.<name>` marker (`hook.<name>.event=post-index-change`), none of which may fire, and
   the suite asserts each pinned script's exact pin line.
+- **`herdr-phase`, the repository's own configuration (section J).** A launchd-like run
+  (`env -i`, system `PATH`, `/bin/bash`, Apple's git) over a linked-worktree fixture whose
+  repository carries a `core.fsmonitor`, a `core.hooksPath` post-index-change hook, a
+  config-based `hook.<name>` post-index-change hook, clean filters (one named `x=y`) on
+  stat-dirty tracked files, and a promisor remote whose `uploadpack` runs in a `rev-list` over
+  a dangling remote-tracking ref. A bare-git pass over a twin fixture must fire every marker
+  first, so a silent run means something. No marker may fire; the phases stay `merged` (stat-only
+  change, merged MR) and `active` (untracked file), which tells a working status from a
+  neutered one; an inherited `GIT_CONFIG_PARAMETERS` and `GIT_CONFIG_COUNT` pairs run nothing.
 - **`xreview-guard`, `xreview apply` and the ledger.** The pre-merge `ls-remote` fails closed on
   `core.sshCommand`, `core.gitProxy`, `remote.origin.vcs` and a non-plain origin URL, and runs
   with the protocol allowlist. `xreview apply`'s diffs fire no fsmonitor, no filter and no hook (neither the
@@ -394,8 +421,8 @@ A zsh wrapper around `chezmoi` handles `apply`, `update` and the previews below.
   trusts that repository's metadata as it trusts its code.
 - Codex's own sandbox, and anything Michael's unsandboxed processes write.
 - The Bash tool's base environment. §2 relies on it for `PINNED_PATH` and the git config
-  environment, and it comes from the shell Claude Code starts in. `~/Code` has one `.envrc`
-  today, with plain exports. direnv checks only the `.envrc` content itself, so a future
+  environment, and it comes from the shell Claude Code starts in. `~/Code` has two `.envrc`
+  files today, both plain exports. direnv checks only the `.envrc` content itself, so a future
   `.envrc` that uses `dotenv` or `source_env` would load a sandbox-writable file into that
   environment at session start. Michael approves each `.envrc`; avoid those directives in one.
 - The push guard's merged-branch exemption still judges ancestry on the local object store.
