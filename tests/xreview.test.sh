@@ -1188,6 +1188,25 @@ for variant in nolock exit1 timeout; do
   fi
   is "P8 $variant: untouched" "$(untouched)" yes
 done
+# P9: the lock helper is inline Python, run unsandboxed from the repository, and a plain
+# `python3 -c` puts the current directory first on sys.path: a sandbox-written fcntl.py there
+# would run outside the sandbox. fcntl is not built in on the system Python, so it is planted
+# in the repository for the dispatch, and must never be imported (-I: no cwd on sys.path).
+fresh; rm -f "$ROOT/pymark"
+printf 'open("%s/pymark", "a").write("fcntl imported from the repository\\n")\n' "$ROOT" > "$ROOT/repo/fcntl.py"
+/usr/bin/python3 -c 'import sys; sys.exit(0 if "fcntl" in sys.builtin_module_names else 1)'
+is "P9 fcntl is not built in, so a planted one would be imported by a bare python3 -c" "$?" 1
+( cd "$ROOT/repo" && /usr/bin/python3 -c 'import fcntl' ) 2>/dev/null
+is "P9 the planted fcntl.py is live from the repository (control)" "$(grep -c imported "$ROOT/pymark" 2>/dev/null)" 1
+rm -f "$ROOT/pymark"
+out="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
+rm -f "$ROOT/repo/fcntl.py"
+is "P9 a dispatch imports nothing from the repository" "$(cat "$ROOT/pymark" 2>/dev/null)" ""
+is "P9 and the dispatch still succeeds" "$rc/$(printf '%s' "$out" | grep -c '^xr-')" "0/1"
+# Every inline or stdin Python in the unsandboxed scripts runs isolated (-I).
+bare=$(grep -nE 'python3? +(-c|-)( |$)' "$XREVIEW" | grep -vE 'python3? +-I +(-c|-)( |$)')
+is "P9 every inline python3 in xreview is isolated with -I" "$bare" ""
+
 # P6 (spec §6): a waiter that gets the lock while the first dispatch's review turn is running
 # refuses as mid-turn, and never sends a key into the pane the first one resumed.
 fresh

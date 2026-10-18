@@ -478,7 +478,7 @@ _dispatch_exit_guard() { # _dispatch_exit_guard <pane>: the EXIT trap armed whil
 
 report_to_herdr() { # report_to_herdr <pane> <thread>
   herdr pane report-agent-session "$1" --source herdr:codex --agent codex \
-    --agent-session-id "$2" --seq "$(/usr/bin/python3 -c 'import time; print(time.time_ns())')" \
+    --agent-session-id "$2" --seq "$(/usr/bin/python3 -I -c 'import time; print(time.time_ns())')" \
     >/dev/null 2>&1 || true
 }
 
@@ -497,7 +497,9 @@ lock_pane() { # lock_pane <pane>: wait, bounded, for the pane's lock; dies at th
   # Exit 75 only when the bound runs out with the lock still held; the helper's own other
   # failure exits 2. Bash trusts only 75 as contention: any other status (1, 2, 127, a signal -
   # no python, no flock on this filesystem) is "cannot lock", never reported as contention.
-  /usr/bin/python3 -c '
+  # -I: the helper runs from the repository, and a plain -c puts that directory first on
+  # sys.path, where a sandbox-written fcntl.py would run unsandboxed.
+  /usr/bin/python3 -I -c '
 import fcntl, sys, time
 try:
     deadline = time.monotonic() + float(sys.argv[1])

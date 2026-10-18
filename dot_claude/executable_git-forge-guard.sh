@@ -178,7 +178,7 @@ case "$cmd" in
     if ! command -v python3 >/dev/null 2>&1; then
       ask "glab api call, and python3 is missing so the read/write check could not run."
     fi
-    verdict=$(printf '%s' "$cmd" | python3 -c 'import sys, shlex
+    verdict=$(printf '%s' "$cmd" | python3 -I -c 'import sys, shlex
 
 OPS = {"|", "||", "&&", ";", "&", "(", ")", "|&", ";;", "\n"}
 WRITE_LONG = {"--field", "--raw-field", "--input", "--form"}

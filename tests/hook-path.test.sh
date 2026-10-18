@@ -6,6 +6,12 @@
 # the settings, so a hook added later without the pin fails here, and so does one whose
 # script is missing from the mirror of ~/.claude this suite builds from the source.
 #
+# Python is the other way a repository reaches code outside the sandbox: `python3 -c` and
+# `python3 -` put the current directory first on sys.path, and the hooks run with the session's
+# repository as their directory. Every hook therefore runs from inside each fixture repository,
+# which holds planted stand-ins for standard-library modules that are not built in; each writes
+# a marker on import, and none may be imported (the inline helpers run with -I).
+#
 #   ./tests/hook-path.test.sh   (sandboxed is fine)
 set -uo pipefail
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
@@ -128,13 +134,30 @@ done
 git -C "$T/repo" rev-parse -q --verify HEAD >/dev/null \
   || { echo "fixture repository has no HEAD" >&2; exit 2; }
 rm -f "$MARKS"/*                                              # building them ran nothing that counts
+# Planted standard-library stand-ins, not built in on the system Python (checked below): any
+# inline Python that has the repository first on sys.path imports one and leaves a marker.
+PLANTED=(json shlex fcntl random socket re select struct subprocess base64 tempfile)
+for r in repo repo-ssh repo-plain repo-hook; do
+  for m in "${PLANTED[@]}"; do
+    printf 'open("%s/pymod-%s", "w").close()\n' "$MARKS" "$m" > "$T/$r/$m.py"
+  done
+done
+builtin=$(/usr/bin/python3 -I -c 'import sys; print(" ".join(sorted(sys.builtin_module_names)))')
+bad=""; for m in "${PLANTED[@]}"; do case " $builtin " in *" $m "*) bad="$bad $m" ;; esac; done
+[ -z "$bad" ] && _pass "the planted modules are not built in on /usr/bin/python3" \
+  || _fail "the planted modules are not built in on /usr/bin/python3" "built in:$bad"
+( cd "$T/repo" && /usr/bin/python3 -c 'import json, shlex' ) >/dev/null 2>&1
+if [ -e "$MARKS/pymod-json" ]; then _pass "a bare python3 -c in a fixture repository imports its planted module (control)"
+else _fail "a bare python3 -c in a fixture repository imports its planted module (control)" "no marker"; fi
+rm -f "$MARKS"/*
 # The PreToolUse payloads: a push, and the two creations that make the pre-merge gate read
 # origin's head with ls-remote.
 payload() { jq -cn --arg d "$1" --arg c "$2" '{hook_event_name:"PreToolUse",tool_name:"Bash",
   session_id:"hook-path",cwd:$d,tool_input:{command:$c},transcript_path:"/nonexistent"}'; }
 COMMANDS=("git push origin main"
           "gh pr create --base main --head feat --title t --body b"
-          "glab mr create -s feat -b main --title t")
+          "glab mr create -s feat -b main --title t"
+          "glab api projects/1/merge_requests")
 
 # The fixtures are live: plain git runs each configured command, so a silent hook is a result.
 # (The sandbox's own GIT_SSH_COMMAND would outrank core.sshCommand, so it is dropped here.)
@@ -174,8 +197,9 @@ while IFS= read -r cmd; do
       inputs=(); for c in "${COMMANDS[@]}"; do inputs+=("$(payload "$r" "$c")"); done ;; esac
     for input in "${inputs[@]}"; do
       bump "$r"
-      printf '%s' "$input" | env -i HOME="$T" XDG_STATE_HOME="$T/state" TMPDIR="$T" \
-        PATH="$HOSTILE:/usr/bin:/bin:/opt/homebrew/bin" /bin/sh -c "$cmd" >/dev/null 2>&1
+      ( cd "$r" && printf '%s' "$input" | env -i HOME="$T" XDG_STATE_HOME="$T/state" TMPDIR="$T" \
+        HERDR_ENV=1 HERDR_SOCKET_PATH="$T/no-herdr.sock" HERDR_PANE_ID=p1 \
+        PATH="$HOSTILE:/usr/bin:/bin:/opt/homebrew/bin" /bin/sh -c "$cmd" >/dev/null 2>&1 )
       what=$(printf '%s' "$input" | jq -r '.tool_input.command // "statusline"')
       [ -e "$T/marker" ] && ran="$ran[PATH: $(tr '\n' ' ' < "$T/marker")| ${r##*/}, $what] "
       [ -n "$(ls "$MARKS")" ] && ran="$ran[config: $(ls "$MARKS" | tr '\n' ' ')| ${r##*/}, $what] "
@@ -232,6 +256,36 @@ if [ "$(grep -c 'os\.environ\["PATH"\]' "$RPC")" = 1 ] && [ "$got_rpc" = "$want_
    && [ -n "$first_use" ] && [ "$pin_line" -lt "$first_use" ]; then
   _pass "xreview-rpc pins its PATH exactly, before any subprocess"
 else _fail "xreview-rpc pins its PATH exactly, before any subprocess" "pin at line ${pin_line:-none}: $got_rpc; first subprocess at line ${first_use:-none}"; fi
+
+# The Codex daemon's session hook (dot_codex), run as configured (`bash '<script>' session`) from
+# inside each fixture repository, with the hostile directory first on PATH and the Herdr
+# variables set so its Python is reached. It has no settings to read here, so it is run directly.
+# The configured launcher is a bare `bash`, which a hostile PATH shadows whatever the script
+# does, so the interpreter here is /bin/bash: the script is what is under test.
+CODEX_HOOK="$SRC/dot_codex/executable_herdr-agent-state.sh"
+[ -f "$CODEX_HOOK" ] || { echo "missing script under test: $CODEX_HOOK" >&2; exit 2; }
+mkdir -p "$T/.codex"; cp "$CODEX_HOOK" "$T/.codex/herdr-agent-state.sh"
+ran=""
+for r in "$T/repo" "$T/repo-ssh" "$T/repo-plain" "$T/repo-hook"; do
+  rm -f "$T/marker" "$MARKS"/*
+  ( cd "$r" && printf '{"hook_event_name":"SessionStart","session_id":"s1"}' | env -i HOME="$T" TMPDIR="$T" \
+      HERDR_ENV=1 HERDR_SOCKET_PATH="$T/no-herdr.sock" HERDR_PANE_ID=p1 \
+      PATH="$HOSTILE:/usr/bin:/bin:/opt/homebrew/bin" /bin/bash "$T/.codex/herdr-agent-state.sh" session >/dev/null 2>&1 )
+  [ -e "$T/marker" ] && ran="$ran[PATH: $(tr '\n' ' ' < "$T/marker")| ${r##*/}] "
+  [ -n "$(ls "$MARKS")" ] && ran="$ran[config: $(ls "$MARKS" | tr '\n' ' ')| ${r##*/}] "
+done
+rm -f "$T/marker" "$MARKS"/*
+if [ -n "$ran" ]; then _fail "no hostile tool, planted module or repository-configured command runs: the Codex session hook" "$ran"
+else _pass "no hostile tool, planted module or repository-configured command runs: the Codex session hook"; fi
+check_pin "the Codex session hook" "$T/.codex/herdr-agent-state.sh" "$SYS_PIN"
+
+# No inline (-c) or stdin (-) Python in unsandboxed code may be left without -I. Python run as a
+# script file is safe: sys.path[0] is the script's directory (~/.claude, ~/.codex, ~/.local/bin),
+# none of which the sandbox can write, and every such interpreter is an absolute path.
+bare=$(grep -rnE '(^|[^[:alnum:]_.-])python3? +(-c|-)( |$)' "$SRC/dot_claude" "$SRC/dot_codex" "$SRC/dot_local/bin" 2>/dev/null \
+  | grep -vE 'python3? +-I +(-c|-)( |$)' | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#')
+if [ -z "$bare" ]; then _pass "every inline or stdin python in dot_claude, dot_codex and dot_local/bin runs with -I"
+else _fail "every inline or stdin python in dot_claude, dot_codex and dot_local/bin runs with -I" "$(printf '%s' "$bare" | head -5 | tr '\n' '|')"; fi
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
