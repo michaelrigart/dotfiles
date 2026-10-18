@@ -1414,6 +1414,32 @@ else
   git -C "$ORPHAN" config log.showRoot false
   expect deny  "a secret in a root commit under log.showRoot=false" "$ORPHAN" 'git push origin orphan'
   has_reason   "and it is found, not merely refused" "rule aws-access-token in creds.txt" "$ORPHAN" 'git push origin orphan'
+  # diff.submodule=diff makes the patch of a bumped gitlink start a child `git diff` inside the
+  # submodule, which has no --no-ext-diff of its own: the submodule's diff.external and textconv
+  # driver would run, unsandboxed, on every push. The scan keeps the gitlink a one-line patch.
+  SMK="$TMP/sm-marks"; SMS="$TMP/sm-src"; mkdir -p "$SMK"
+  git init -q "$SMS"; printf 'one\n' > "$SMS/a.txt"; git -C "$SMS" add a.txt; git -C "$SMS" commit -q -m "first"
+  SUBM=$(clone submodule)
+  git -C "$SUBM" -c protocol.file.allow=always submodule add -q "$SMS" sm 2>/dev/null
+  git -C "$SUBM" commit -q -m "add the submodule"
+  printf 'changed\n' > "$SUBM/sm/a.txt"; git -C "$SUBM/sm" commit -q -am "move the submodule"
+  git -C "$SUBM" add sm; git -C "$SUBM" commit -q -m "bump the gitlink"
+  printf '#!/bin/sh\ntouch "%s/external"\nexit 0\n' "$SMK" > "$TMP/sm-external"; chmod +x "$TMP/sm-external"
+  printf '#!/bin/sh\ntouch "%s/textconv"\ncat "$1"\n' "$SMK" > "$TMP/sm-textconv"; chmod +x "$TMP/sm-textconv"
+  git -C "$SUBM/sm" config diff.external "$TMP/sm-external"
+  git -C "$SUBM/sm" config diff.m.textconv "$TMP/sm-textconv"
+  printf '*.txt diff=m\n' > "$(git -C "$SUBM/sm" rev-parse --path-format=absolute --git-path info/attributes)"
+  git -C "$SUBM" config diff.submodule diff
+  rm -f "$SMK"/*
+  expect allow "a bumped gitlink under diff.submodule=diff is scanned and passes" "$SUBM" 'git push origin feat'
+  is_marks() {
+    if [ -z "$(ls "$SMK" | tr '\n' ' ')" ]; then pass=$((pass + 1)); printf '  ok   %s\n' "$1"
+    else fail=$((fail + 1)); printf '  FAIL %s (ran: %s)\n' "$1" "$(ls "$SMK" | tr '\n' ' ')"; fi
+  }
+  is_marks "and neither the submodule's diff.external nor its textconv ran"
+  git -C "$SUBM/sm" config --unset diff.external; rm -f "$SMK"/*   # the external driver outranks textconv
+  expect allow "the same push with the textconv driver alone" "$SUBM" 'git push origin feat'
+  is_marks "nor the textconv driver alone"
   # None of that may cost an ordinary push its silence. gitleaks counts a commit when its
   # patch has a hunk in a file it does not skip (a deleted one), even a hunk that only
   # removes lines, and the expected count follows the same rule.

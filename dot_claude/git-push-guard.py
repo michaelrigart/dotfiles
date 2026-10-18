@@ -135,6 +135,9 @@ GIT_LOG_DEFAULTS = [("format.pretty", "medium"), ("log.showSignature", "false"),
                     ("log.abbrevCommit", "false"), ("diff.noprefix", "false"),
                     ("diff.mnemonicPrefix", "false"), ("color.ui", "false"),
                     ("color.diff", "false"),
+                    # diff.submodule=diff starts a child diff inside a bumped submodule, which
+                    # has no --no-ext-diff of its own: its diff.external and textconv would run
+                    ("diff.submodule", "short"),
                     # past this size git prints "Binary files differ" for a text file
                     ("core.bigFileThreshold", "2g")]
 # The scan reads a merge as the diff against what git would merge by itself (remerge), so a
@@ -142,7 +145,10 @@ GIT_LOG_DEFAULTS = [("format.pretty", "medium"), ("log.showSignature", "false"),
 MERGE_DIFF = "--diff-merges=remerge"
 # Options that make `git log -p` show every added line: a root commit, a file marked binary
 # or -diff by .gitattributes or .git/info/attributes, a textconv or external diff driver.
-PATCH_OPTS = ["--root", "--text", "--no-textconv", "--no-ext-diff", MERGE_DIFF]
+# --submodule=short keeps a bumped gitlink a one-line patch: under diff.submodule=diff git
+# runs a child diff in the submodule, whose own configuration then runs its drivers.
+PATCH_OPTS = ["--root", "--text", "--no-textconv", "--no-ext-diff", "--submodule=short",
+              MERGE_DIFF]
 # The file that changes what gitleaks reports. Only a committed one is a reviewed exception.
 EXCEPTION_FILES = [".gitleaksignore"]
 # A gitleaks config, in any extension or letter case. gitleaks reads one from the directory
