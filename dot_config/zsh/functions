@@ -1340,8 +1340,10 @@ chezmoi() {
   # argument counts too: cobra skips "" when it looks for the subcommand, so `chezmoi "" init
   # --apply` runs `init --apply`. (A whitespace-only word, an upper-case name or an abbreviation
   # is an unknown command to cobra, which runs a `chezmoi-<name>` plugin from PATH: `chezmoi " "
-  # apply` ran `chezmoi- `. That does not get past the gate: no PATH directory is
-  # sandbox-writable after this branch's write-set change, so nothing sandboxed can plant one.)
+  # apply` ran `chezmoi- `. That does not get past the gate on the default PATH: no directory
+  # on it is sandbox-writable after this branch's write-set change. direnv can add one while
+  # Michael is in a repository (PATH_add, layout node, a mise _.path), where a sandbox-written
+  # `chezmoi-<name>` would run if he typed that unknown subcommand.)
   if [[ $sub == -* || ( $# -gt 0 && -z $sub ) ]]; then
     for a in apply update diff status cat verify dump archive execute-template merge merge-all init edit; do
       if (( ${args[(Ie)$a]} )); then

@@ -250,8 +250,10 @@ done
 # option: a command naming a gated subcommand must put it first. A whitespace-only word, an
 # upper-case name or an abbreviation is an unknown command to cobra, which looks for a
 # `chezmoi-<name>` plugin on PATH and runs it (`chezmoi " " apply` ran `chezmoi- `). That does not
-# get past the gate: no PATH directory is sandbox-writable after this branch's write-set change,
-# so a sandboxed command cannot plant one. The wrapper forwards these unchanged.
+# get past the gate on the default PATH: no directory on it is sandbox-writable after this
+# branch's write-set change. direnv can add one while Michael is in a repository (PATH_add,
+# layout node, a mise _.path), where a sandbox-written `chezmoi-<name>` would run if he typed
+# that unknown subcommand. The wrapper forwards these unchanged.
 empty_refused() { # empty_refused <args...>: refused for the subcommand-first rule, nothing reaches chezmoi
   local err rc lbl="${(j: :)${(@q-)argv}}"
   fresh; err=$(chezmoi "$@" 2>&1 >/dev/null); rc=$?

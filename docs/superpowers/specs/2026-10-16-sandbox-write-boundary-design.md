@@ -146,16 +146,22 @@ these places should cost no escapes.
 - **Git that our unsandboxed code runs.** A repository's configuration is agent-writable
   (§1, "Git"), so unsandboxed code runs only git forms that execute nothing from it, or
   neutralises the rest.
-  - **Lazy fetch is off for every git call our unsandboxed code makes**
-    (`GIT_NO_LAZY_FETCH=1`): the push guard (`Repo.run`), the pre-merge gate (its `run()`), the
-    ledger (`git_env`) and `xreview apply`. Object-reading forms lazy-fetch through a promisor
-    remote when an object is missing: `rev-parse` of a revision expression (`<ref>~1`,
-    `^{commit}`), `rev-list`, `merge-base`, `cat-file` and a `diff` between commits. None of
-    them is safe without the switch.
+  - **Every git call that reads objects runs with lazy fetch off** (`GIT_NO_LAZY_FETCH=1`):
+    the push guard (`Repo.run`), the pre-merge gate (its `run()`), the ledger (`git_env`) and
+    `xreview apply`. Object-reading forms lazy-fetch through a promisor remote when an object
+    is missing: `rev-parse` of a revision expression (`<ref>~1`, `^{commit}`), `rev-list`,
+    `merge-base`, `cat-file` and a `diff` between commits. None of them is safe without the
+    switch.
+  - **Callers that run only a few forms do not set it:** `branch --show-current`,
+    `rev-parse --short HEAD`, `rev-parse --abbrev-ref` or `--verify` of a plain ref,
+    `rev-parse --is-inside-work-tree` and `worktree list`. These are the statusline,
+    memory-health, the `xreview apply` guard and `xreview` outside `apply`. Verified
+    2026-10-18: those forms do not fetch, even on a dangling ref or `HEAD` in a promisor
+    clone. `<ref>~1` and `merge-base` do.
   - Forms that execute nothing else: `rev-parse`, `symbolic-ref`, `branch --show-current`,
     `worktree list`, `rev-list`, `diff` between commits with `--no-ext-diff --no-textconv` and
     a submodule option (below), `ls-tree`, `hash-object --no-filters`, `cat-file`,
-    `merge-base` and config reads, all with lazy fetch off.
+    `merge-base` and config reads. The object-reading ones run with lazy fetch off.
   - **Why those two on `diff`.** A submodule child diff otherwise runs that submodule's
     `diff.external` and textconv under `diff.submodule=diff`, hence a submodule option. A
     promisor remote's `uploadpack` otherwise runs when a blob is missing (rename detection
@@ -168,19 +174,26 @@ these places should cost no escapes.
     allowlist (no `ext`), no credential helper or askpass, `--upload-pack=git-upload-pack` and
     `GIT_TERMINAL_PROMPT=0`, and fail closed when `core.sshCommand`, `core.gitProxy` or
     `remote.origin.vcs` is set or origin's URL is not a plain transport. `xreview apply` runs
-    its diffs with `core.fsmonitor=false`, `core.hooksPath=/dev/null` (a diff that refreshes
-    the index would otherwise run `post-index-change` from the configured hooks path) and every
-    configured filter's `clean`, `smudge` and `process` emptied and `required=false`. It passes
-    these as `GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` pairs, not `-c`, because `-c` splits at
-    the first `=` and a driver named `x=y` survived it. The ledger's patch diff runs with `--submodule=short`:
+    its diffs with `core.fsmonitor=false`, `core.hooksPath=/dev/null`,
+    `diff.autoRefreshIndex=false` and every configured filter's `clean`, `smudge` and `process`
+    emptied and `required=false`. A porcelain diff that refreshes the index would otherwise run
+    `post-index-change`. `core.hooksPath=/dev/null` stops a hook from the configured hooks
+    path. It does not stop a git 2.54+ config-based hook (`hook.<name>.command` with
+    `hook.<name>.event=post-index-change`). `diff.autoRefreshIndex=false` does: the diff never
+    writes the index, so no such hook fires, and a file that changed only in its stat data is
+    now listed in the window. It passes these as `GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` pairs,
+    not `-c`, because `-c` splits at the first `=` and a driver named `x=y` survived it. The
+    diffs first remove the inherited `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_*`,
+    `GIT_CONFIG_VALUE_*` and `GIT_CONFIG_PARAMETERS`, and number our pairs from 0, so an
+    inherited count cannot shift or hide them. The ledger's patch diff runs with `--submodule=short`:
     under `diff.submodule=diff` the diff of a submodule would otherwise recurse into a child
     diff that runs that submodule's `diff.external` and textconv.
   - Not used: a diff against the index or the work tree, `status`, `ls-files` and `pull`
     fire configured commands (fsmonitor, filters, hooks), except `xreview apply`, which runs
     both diffs neutralised (above), and the chezmoi wrapper's own `status` and `pull` (Out of
     scope).
-  - `hook-path`'s fixture repositories carry fsmonitor, filter, `sshCommand`, `hooksPath` and
-    `ext`/`insteadOf` markers, and those config markers enforce the git rule; the pin
+  - `hook-path`'s fixture repositories carry fsmonitor, filter, `sshCommand`, `hooksPath`,
+    config-based hook and `ext`/`insteadOf` markers, and those config markers enforce the git rule; the pin
     assertions enforce `PATH`.
 - **The test override.** Every pinned script takes its `PATH` from `PINNED_PATH` when that is
   set. The suites set it to their stub directories.
@@ -205,7 +218,8 @@ A zsh wrapper around `chezmoi` handles `apply`, `update` and the previews below.
   - The wrapper reads `main` with `git ls-remote <pinned URL> refs/heads/main`, in Michael's
     unsandboxed shell. Its git reads of the checkout run with `core.fsmonitor` off.
   - `update` checks the branch and the tree first, then fast-forwards with
-    `git pull --ff-only <pinned URL> main`, then compares the same way.
+    `git pull --ff-only <pinned URL> +refs/heads/main:refs/remotes/origin/main`, then compares
+    the same way.
 - **Deployment.**
   - It clones origin's `main` afresh: `git clone --depth 1 --branch main --template=` into a new
     temporary directory. The empty template means no hooks are copied in, and the clone has
@@ -245,7 +259,11 @@ A zsh wrapper around `chezmoi` handles `apply`, `update` and the previews below.
   when it looks for the subcommand, so `chezmoi "" init --apply` would otherwise have run
   `init --apply`. `chezmoi "" --version` passes through, because nothing gated follows.
 - **Unknown commands.** chezmoi runs a `chezmoi-<name>` plugin from `PATH` for a command it
-  does not know. That is harmless here: after §1 no `PATH` directory is sandbox-writable.
+  does not know. On the default `PATH` that is harmless here: after §1 no directory on it is
+  sandbox-writable. Michael's shell runs direnv, though. An allowed `PATH_add`, `layout node`
+  or a mise `_.path` puts a repository directory on `PATH` while he is in it, and a
+  sandbox-written `chezmoi-<name>` there would run if he typed that unknown subcommand in that
+  directory. The wrapper's code comment and the test's say the same.
 - **Shell options.** The wrapper functions run under `emulate -L zsh`, so the caller's shell
   options cannot change their patterns.
 - **Smaller points.** A `--mode` other than `file` is
@@ -280,12 +298,16 @@ A zsh wrapper around `chezmoi` handles `apply`, `update` and the previews below.
   The list of hooks comes from the settings themselves, so a new hook without the pin fails.
   `xreview`, `xreview-rpc` and `codex-daemon` get the same check, with a mise-shim directory
   holding a stub `jq`. The fixture repositories carry fsmonitor, filter, `sshCommand`,
-  `ext`/`insteadOf` and `hooksPath` (post-index-change) markers, none of which may fire, and the suite asserts each pinned
-  script's exact pin line.
+  `ext`/`insteadOf` and `hooksPath` (post-index-change) markers, and a config-based
+  `hook.<name>` marker (`hook.<name>.event=post-index-change`), none of which may fire, and
+  the suite asserts each pinned script's exact pin line.
 - **`xreview-guard`, `xreview apply` and the ledger.** The pre-merge `ls-remote` fails closed on
   `core.sshCommand`, `core.gitProxy`, `remote.origin.vcs` and a non-plain origin URL, and runs
-  with the protocol allowlist. `xreview apply`'s diffs fire no fsmonitor, no filter and no hook (the `hooksPath`
-  marker never fires), and the ledger's patch diff runs no `diff.external` or textconv from a
+  with the protocol allowlist. `xreview apply`'s diffs fire no fsmonitor, no filter and no hook (neither the
+  `hooksPath` marker nor the config-based `hook.<name>` marker in its fixture ever fires, and a
+  stat-only change is listed). Its successors to the old driver-name cases cover filter drivers
+  named `x=y`, `x=` and `a.b`, an inherited `GIT_CONFIG_PARAMETERS` and an inherited
+  `GIT_CONFIG_COUNT=010`. The ledger's patch diff runs no `diff.external` or textconv from a
   submodule (the submodule case). Promisor fixtures (a remote whose `uploadpack` writes a
   marker) cover the ledger and `xreview apply`: no marker may appear. The `xreview apply`
   fixture covers rename detection and a dangling `origin/HEAD` (the `merge-base` call); the
@@ -315,6 +337,10 @@ A zsh wrapper around `chezmoi` handles `apply`, `update` and the previews below.
     off (Michael's shell), and the `=` forms and `h` after a value-taking option take the normal
     checks; an empty first argument followed by a gated subcommand (`""`, also before `init --apply`) is refused, while `"" --version` passes through; `--mode` other than `file` is refused for clone runs; `update` moves
     `refs/remotes/origin/main`.
+  - **Hostile shell options.** The help table and the gated cases (refusals, `--dirty-ok`,
+    the clean-`main` clone runs, subcommand-first) run again with `sh_glob`, `ksh_arrays`,
+    `extended_glob`, `no_glob`, and all of those with `sh_word_split`. They must give the same
+    result, because the wrapper runs under `emulate -L zsh`.
 - **`live-write-boundary`** also covers a repository outside `~/Code` (in `~/Documents`). Its
   `hooks/` is denied there too, while its objects, refs, index and configuration files stay
   writable. The suite checks that last part, so the change adds no escapes.
@@ -367,6 +393,11 @@ A zsh wrapper around `chezmoi` handles `apply`, `update` and the previews below.
   our unsandboxed code runs", not `PATH`. Michael's own git in an agent-touched repository
   trusts that repository's metadata as it trusts its code.
 - Codex's own sandbox, and anything Michael's unsandboxed processes write.
+- The Bash tool's base environment. §2 relies on it for `PINNED_PATH` and the git config
+  environment, and it comes from the shell Claude Code starts in. `~/Code` has one `.envrc`
+  today, with plain exports. direnv checks only the `.envrc` content itself, so a future
+  `.envrc` that uses `dotenv` or `source_env` would load a sandbox-writable file into that
+  environment at session start. Michael approves each `.envrc`; avoid those directives in one.
 - The push guard's merged-branch exemption still judges ancestry on the local object store.
   A forged loose object can make an unmerged branch look merged, and the guard then deletes
   it on the remote without asking. Its commits remain in the local objects and the local
