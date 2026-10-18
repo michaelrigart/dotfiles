@@ -1713,5 +1713,32 @@ out="$( (unset PINNED_PATH; HOME="$ROOT/hosthome" PATH="$HOSTILE:$PATH" "$ROOT/x
 is "P1 xreview round runs with a hostile PATH (bash included) and no PINNED_PATH" "$( [ -e "$ROOT/hostile-marker" ] && cat "$ROOT/hostile-marker" | tr '\n' ' ' || echo clean)" clean
 is "P2 and still answers" "$(printf '%s' "$out" | grep -c '^[0-9]')" 1
 
+echo "AP. xreview apply runs no command from the repository's configuration"
+# apply runs unsandboxed and the repository's configuration is writable from the sandbox: a
+# worktree or index diff would run core.fsmonitor and every clean filter. Each writes its own
+# marker; the scope must still list the changed files.
+HR="$ROOT/hostile-repo"; HM="$ROOT/hostile-marks"; mkdir -p "$HR" "$HM"
+printf '#!/bin/sh\ntouch "%s/fsmonitor"\n' "$HM" > "$ROOT/evil-fsmonitor"; chmod +x "$ROOT/evil-fsmonitor"
+printf '#!/bin/sh\ntouch "%s/clean"\ncat\n' "$HM" > "$ROOT/evil-clean"; chmod +x "$ROOT/evil-clean"
+printf '#!/bin/sh\ntouch "%s/process"\n' "$HM" > "$ROOT/evil-process"; chmod +x "$ROOT/evil-process"
+git -C "$HR" init -q -b main && git -C "$HR" config user.email t@t && git -C "$HR" config user.name t
+git -C "$HR" config commit.gpgsign false
+printf '* filter=m\n' > "$HR/.gitattributes"; printf 'one\n' > "$HR/a.txt"
+git -C "$HR" add . && git -C "$HR" commit -q -m init
+git -C "$HR" switch -q -c feat; printf 'two\n' > "$HR/b.txt"
+git -C "$HR" add b.txt && git -C "$HR" commit -q -m "add b"
+printf 'edited\n' > "$HR/a.txt"; printf 'staged\n' > "$HR/c.txt"; git -C "$HR" add c.txt
+git -C "$HR" config core.fsmonitor "$ROOT/evil-fsmonitor"
+git -C "$HR" config filter.m.clean "$ROOT/evil-clean"
+git -C "$HR" config filter.m.process "$ROOT/evil-process"
+rm -f "$HM"/*
+out="$(cd "$HR" && bash "$XREVIEW" apply xr-s1 2>&1)"; rc=$?
+applying="$(cat "$XDG_STATE_HOME/xreview/$(git -C "$HR" rev-parse --show-toplevel | tr '/' '_' | sed 's/^_//')/applying" 2>/dev/null)"
+is "AP1 apply succeeds in a repository whose configuration names commands" "$rc" 0
+is "AP2 and the scope lists the commit, worktree and index changes" \
+   "$(printf '%s' "$applying" | grep '^file=' | tr '\n' ' ')" "file=a.txt file=b.txt file=c.txt "
+is "AP3 neither core.fsmonitor nor a filter ran" "$(ls "$HM" | tr '\n' ' ')" ""
+(cd "$HR" && bash "$XREVIEW" apply --done >/dev/null 2>&1)
+
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))

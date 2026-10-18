@@ -725,11 +725,21 @@ cmd_apply() {
     || die "not inside a git repository; an apply window is scoped to a branch's diff"
   local base; base="$(git merge-base HEAD origin/HEAD 2>/dev/null \
                       || git merge-base HEAD main 2>/dev/null || printf '')"
+  # This runs unsandboxed, and a repository's configuration is writable from the sandbox: a
+  # worktree or index diff would run core.fsmonitor and every clean filter it names. Both are
+  # switched off for each configured filter, whatever its name, and no diff driver runs.
+  local -a g=(git -c core.fsmonitor=false); local k d
+  while IFS= read -r k; do
+    d=${k#filter.}; d=${d%.*}
+    g+=(-c "filter.$d.clean=" -c "filter.$d.smudge=" -c "filter.$d.process="
+        -c "filter.$d.required=false")
+  done < <(git config --name-only --get-regexp '^filter\.' 2>/dev/null)
+  local -a flags=(--name-only --no-ext-diff --no-textconv --ignore-submodules=all)
   mkdir -p "$dir"
   { printf 'nonce=%s\n' "$1"
-    { [ -n "$base" ] && git diff --name-only "$base"..HEAD 2>/dev/null
-      git diff --name-only 2>/dev/null
-      git diff --cached --name-only 2>/dev/null
+    { [ -n "$base" ] && "${g[@]}" diff "${flags[@]}" "$base"..HEAD 2>/dev/null
+      "${g[@]}" diff "${flags[@]}" 2>/dev/null
+      "${g[@]}" diff "${flags[@]}" --cached 2>/dev/null
     } | sort -u | sed 's/^/file=/'
   } > "$dir/applying"
   printf 'xreview: apply window open for %s (%s files in scope)\n' \

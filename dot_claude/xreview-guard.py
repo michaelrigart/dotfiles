@@ -114,6 +114,9 @@ NOT_ON_ORIGIN = ("Pre-merge gate: the branch {} is not on origin, so the change 
                  "propose cannot be read. Publish the branch to origin first, then retry.")
 LS_REMOTE = ("Pre-merge gate: cannot read origin's head of {} (git ls-remote failed), so the "
              "command is refused.")
+LS_REMOTE_CONFIG = ("Pre-merge gate: cannot read origin's head of {}: {}, and git would run a "
+                    "command from the repository's configuration to reach origin, outside the "
+                    "sandbox. The command is refused.")
 DEFERRED = ("Pre-merge gate: {} is a deferred merge (auto-merge, or merge when the pipeline "
             "succeeds), which the gate never allows: the MR/PR could be retargeted while it "
             "waits. Wait for the pipeline, then merge immediately and pinned: {}.")
@@ -1078,10 +1081,10 @@ def one(flags, names, label):
 
 
 # ------------------------------------------------------------------ the repository
-def run(argv, cwd=None):
+def run(argv, cwd=None, env=None):
     """stdout of a command, or None when it fails or cannot start."""
     try:
-        p = subprocess.run(argv, cwd=cwd, capture_output=True, timeout=CALL_TIMEOUT)
+        p = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, timeout=CALL_TIMEOUT)
     except (OSError, subprocess.TimeoutExpired):
         return None
     if p.returncode != 0:
@@ -1285,11 +1288,56 @@ def check_resolved(top, host, path):
             raise Deny(RESOLVED.format(key, value, cli, path, explicit_repo(cli, host, path)))
 
 
+def config_set(top, key):
+    """Whether git config has key. Exit 1 is 'not set'; any other failure, or a timeout, says
+    nothing, so it is a deny."""
+    try:
+        p = subprocess.run(["git", "-C", top, "config", "--get", key], capture_output=True,
+                           timeout=CALL_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired):
+        raise Deny(RESOLVED_UNREADABLE.format(top))
+    if p.returncode not in (0, 1):
+        raise Deny(RESOLVED_UNREADABLE.format(top))
+    return p.returncode == 0
+
+
+def plain_transport(url):
+    """Whether url is a transport git runs without a helper program: a local path, file://,
+    ssh:// (git+ssh:// and ssh+git:// too), https://, or the scp-like [user@]host:path."""
+    if "::" in url:
+        return False                                   # <helper>::<address>
+    scheme, sep, _ = url.partition("://")
+    if sep:
+        return scheme in ("file", "ssh", "git+ssh", "ssh+git", "https")
+    return True                                        # a path, or scp-like host:path (over ssh)
+
+
 def remote_head(top, branch):
-    """origin's head of branch, as git ls-remote reads it: what the forge would propose."""
+    """origin's head of branch, as git ls-remote reads it: what the forge would propose.
+
+    This ls-remote runs outside the sandbox, where git runs any command a config level names
+    for it, and the repository's configuration is writable from inside the sandbox.
+    core.sshCommand, core.gitProxy and remote.origin.vcs (which picks a git-remote-<vcs>
+    helper whatever the URL says) are denied, and so is a URL outside plain_transport, since a
+    protocol.<name>.allow in config outranks the generic override and would let a
+    git-remote-<name> helper run; url.<x>.insteadOf can rewrite origin to ext::<command>, so
+    the URL is read as git resolves it. The -c overrides outrank every config file, and
+    --upload-pack overrides remote.origin.uploadpack."""
     if not literal(branch) or branch.startswith("-"):
         raise Deny(LITERAL.format("the source branch", branch))
-    out = run(["git", "-C", top, "ls-remote", "origin", "refs/heads/" + branch])
+    for key in ("core.sshCommand", "core.gitProxy", "remote.origin.vcs"):
+        if config_set(top, key):
+            raise Deny(LS_REMOTE_CONFIG.format(branch, key + " is set"))
+    url = run(["git", "-C", top, "remote", "get-url", "origin"])
+    if url is None or not plain_transport(url.strip()):
+        raise Deny(LS_REMOTE_CONFIG.format(branch, "origin is not a plain git transport"))
+    out = run(["git", "-C", top,
+               "-c", "protocol.allow=never", "-c", "protocol.ext.allow=never",
+               "-c", "protocol.file.allow=always", "-c", "protocol.ssh.allow=always",
+               "-c", "protocol.https.allow=always", "-c", "credential.helper=",
+               "-c", "core.askPass=",
+               "ls-remote", "--upload-pack=git-upload-pack", "origin", "refs/heads/" + branch],
+              env=dict(os.environ, GIT_TERMINAL_PROMPT="0"))
     if out is None:
         raise Deny(LS_REMOTE.format(branch))
     for line in out.splitlines():

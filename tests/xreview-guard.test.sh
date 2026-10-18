@@ -34,6 +34,8 @@ export GIT_CONFIG_GLOBAL="$ROOT/gitconfig" GIT_CONFIG_NOSYSTEM=1
 printf '[user]\n\tname = t\n\temail = t@t\n[commit]\n\tgpgsign = false\n[init]\n\tdefaultBranch = main\n' \
   > "$GIT_CONFIG_GLOBAL"
 unset XREVIEW_GUARD XREVIEW_GUARD_BUDGET XREVIEW_LEDGER_LOCK_WAIT
+# GIT_SSH_COMMAND in the environment outranks core.sshCommand, which H18-H20 must reach.
+unset GIT_SSH_COMMAND GIT_SSH
 # The forge CLIs pick a host from these when no --hostname or host-qualified -R names one; the
 # fixtures' forge is forge.example. gh's configuration directory starts empty, and glab's
 # config names forge.example as its default host.
@@ -647,6 +649,40 @@ is "H14 -R naming origin's project" "$(decision "$W" 'gh pr create -R acme/app -
 is "H15 gh -R with the host" "$(decision "$W" 'gh pr create -R forge.example/acme/app --head feature --base main')" allow
 is "H16 -R as a URL" "$(decision "$W" 'glab mr create -R https://forge.example/acme/app.git -s feature -b main')" allow
 is "H17 cd <path> && glab mr create is checked in that path" "$(decision "$ROOT/norepo" "cd $W && glab mr create -s feature -b main")" allow
+
+# The gate's ls-remote runs unsandboxed, and a repository's configuration is writable from the
+# sandbox: core.sshCommand and an ext:: rewrite of origin (protocol.ext.allow=always) each name a
+# command git would run. Each one writes its own marker; the creation is denied and none appears.
+# W's config is changed for these cases and restored after.
+MARK="$ROOT/marks"; mkdir -p "$MARK"
+printf '#!/bin/sh\ntouch "%s/ssh"\nexit 1\n' "$MARK" > "$ROOT/evil-ssh"; chmod +x "$ROOT/evil-ssh"
+INSTEAD="url.$ORIGIN.insteadOf"
+git -C "$W" config core.sshCommand "$ROOT/evil-ssh"
+git -C "$W" config --unset "$INSTEAD"
+git -C "$W" config "url.ssh://forge.example/acme/app.git.insteadOf" 'git@forge.example:acme/app.git'
+is "H18 core.sshCommand set: a gh creation is denied, naming it" \
+   "$(decision "$W" 'gh pr create --head feature --base main') $(reason "$W" 'gh pr create --head feature --base main' | grep -c 'core.sshCommand is set')" "deny 1"
+is "H19 and a glab creation" "$(decision "$W" 'glab mr create -s feature -b main')" deny
+is "H20 the sshCommand never ran" "$(ls "$MARK")" ""
+git -C "$W" config --unset core.sshCommand
+git -C "$W" config --unset "url.ssh://forge.example/acme/app.git.insteadOf"
+git -C "$W" config "url.ext::touch $MARK/ext.insteadOf" 'git@forge.example:acme/app.git'
+git -C "$W" config protocol.ext.allow always
+is "H21 origin rewritten to ext:: through insteadOf: a gh creation is denied, naming it" \
+   "$(decision "$W" 'gh pr create --head feature --base main') $(reason "$W" 'gh pr create --head feature --base main' | grep -c 'not a plain git transport')" "deny 1"
+is "H22 and a glab creation" "$(decision "$W" 'glab mr create -s feature -b main')" deny
+is "H23 the ext:: command never ran" "$(ls "$MARK")" ""
+git -C "$W" config --unset protocol.ext.allow
+git -C "$W" config --unset "url.ext::touch $MARK/ext.insteadOf"
+git -C "$W" config "$INSTEAD" 'git@forge.example:acme/app.git'
+git -C "$W" config core.gitProxy "$ROOT/evil-ssh"
+is "H24 core.gitProxy set is denied" "$(decision "$W" 'gh pr create --head feature --base main')" deny
+git -C "$W" config --unset core.gitProxy
+git -C "$W" config remote.origin.vcs evil
+is "H25 remote.origin.vcs set is denied" "$(decision "$W" 'gh pr create --head feature --base main')" deny
+git -C "$W" config --unset remote.origin.vcs
+is "H26 with the configuration restored, the creation is allowed again" \
+   "$(decision "$W" 'gh pr create --head feature --base main')" allow
 
 echo "I. the destination is part of the approval"
 git -C "$W" branch release main && publish release
