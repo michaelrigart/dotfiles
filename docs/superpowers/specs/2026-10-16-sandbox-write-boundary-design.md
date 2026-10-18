@@ -133,7 +133,30 @@ these places should cost no escapes.
     `PATH=$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin`, with no mise
     shims. `~/.local/bin` stays first, so the `codex` launcher still shadows Homebrew's, and §1
     makes it unwritable.
-- **Launchd jobs** resolve through `~/.local/bin` and `~/.config`, which §1 closes.
+- **The Codex session hook (fix round 1).** `~/.codex/hooks.json` runs
+  `~/.codex/herdr-agent-state.sh` inside the Codex daemon, outside the sandbox. It was
+  configured as a bare `bash`, which the daemon's `PATH` resolves before the script's own pin
+  can run. The command now names `/bin/bash`. The script is POSIX sh (it runs under the system
+  bash 3.2), so it does not need the bash 4+ that makes the Claude hooks name
+  `/opt/homebrew/bin/bash`, and `/bin/bash` has no Homebrew dependency inside a launchd-started
+  daemon. The script pins its `PATH` as its first command. The pane-map hook already named
+  `/usr/bin/python3`. Both `herdr-agent-state.sh` files say herdr's integration installer
+  overwrites them; `chezmoi apply` restores ours, and `hook-path` catches a regression.
+- **The herdr scripts (fix round 1).** `phase.sh`, `layout.sh`, `tab-goto.sh` and
+  `clear-pane.sh` run unsandboxed, from the launchd job, herdr's plugin hooks and its key
+  commands, with herdr's environment. They name `/bin/bash` or `/bin/zsh` in the shebang and
+  pin `PATH=${PINNED_PATH:-/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin}` as their first
+  command. `layout.sh` alone passes its caller's `PATH` to the herdr server and client it starts
+  (ruling: the status quo for a server Michael starts from his shell; every script that server
+  runs pins its own `PATH`). Herdr key commands that exec a bare tool (lazygit, `$SHELL`)
+  resolve through herdr's own environment, which comes from Michael's shell. The other
+  launchd jobs resolve through `~/.local/bin` and `~/.config`, which §1 closes.
+- **Inline Python.** Every inline (`-c`) or stdin (`-`) Python invocation in unsandboxed code
+  runs as `python3 -I`. A plain `-c` or `-` puts the current directory first on `sys.path`, so a
+  sandbox-written module in the repository (`fcntl.py`, `json.py`) would run outside the
+  sandbox; pinning `PATH` does not protect imports. Python run as a script file is safe:
+  `sys.path[0]` is the script's own directory (`~/.claude`, `~/.codex`, `~/.local/bin`),
+  outside the sandbox write set.
 - **mise (Michael, 2026-10-18).** The global mise config sets `paranoid = true`. mise then
   trusts a project config by its content hash, so a `mise.toml`, `.tool-versions` or
   `mise.local.toml` edited since it was trusted is untrusted again until Michael re-trusts it.
@@ -253,6 +276,10 @@ A zsh wrapper around `chezmoi` handles `apply`, `update` and the previews below.
   working tree as today, for a deliberate local change.
 - Every command that would apply the working tree is refused with a pointer to `apply`:
   `init --apply`, `init --one-shot`, `edit --apply` and `edit --watch`, in any spelling.
+  `edit --init` and `edit --init=<value>` are refused in every spelling, `--dirty-ok`
+  included, like `edit --apply` and `edit --watch`: they recreate the config from the checkout's
+  `.chezmoi.toml.tmpl`. Only `chezmoi apply --init` regenerates the config, from the verified
+  clone.
   Every `init` is refused too, `init <url>` included (Michael, 2026-10-17; ruling 2026-10-17:
   a missed value-taking option would otherwise let a bare `init` through): `init` renders the
   checkout's `.chezmoi.toml.tmpl` into the config that every later apply trusts.
@@ -319,7 +346,14 @@ A zsh wrapper around `chezmoi` handles `apply`, `update` and the previews below.
   holding a stub `jq`. The fixture repositories carry fsmonitor, filter, `sshCommand`,
   `ext`/`insteadOf` and `hooksPath` (post-index-change) markers, and a config-based
   `hook.<name>` marker (`hook.<name>.event=post-index-change`), none of which may fire, and
-  the suite asserts each pinned script's exact pin line.
+  the suite asserts each pinned script's exact pin line. Hooks run from inside the fixture
+  repositories, and the fixtures plant modules named after the standard library (`json`,
+  `shlex`, `fcntl`, `random`, `socket`, `re`, `select`, `struct`, `subprocess`, `base64`,
+  `tempfile`), none of which may import. A lint fails any inline or stdin Python without `-I` in
+  `dot_claude`, `dot_codex` and `dot_local/bin`. The Codex herdr hook runs under a hostile
+  `PATH` as configured, with an absolute interpreter. `xreview`'s P9 plants an `fcntl.py` in
+  the repository its lock helper runs from. The herdr scripts' hostile-`PATH` cases live in
+  `herdr-phase`, `dev` and `herdr-clear-pane`.
 - **`herdr-phase`, the repository's own configuration (section J).** A launchd-like run
   (`env -i`, system `PATH`, `/bin/bash`, Apple's git) over a linked-worktree fixture whose
   repository carries a `core.fsmonitor`, a `core.hooksPath` post-index-change hook, a
@@ -357,7 +391,7 @@ A zsh wrapper around `chezmoi` handles `apply`, `update` and the previews below.
     - a moved `refs/remotes/origin/main`.
   - **Override and refusals.** `--dirty-ok` applies the working tree and never reaches
     chezmoi as an argument. `init --apply` and `edit --apply` are refused, and so is every
-    `init`.
+    `init`. So are `edit --init` and `edit --init=<value>`, `--dirty-ok` included.
   - **Previews and the rest.** Each preview command runs against the clone on a clean `main`
     and is refused off it; `merge` and `merge-all` are refused without `--dirty-ok`; the help
     shapes (`-h`, `--help`, a short group with `h`) print `chezmoi help <subcommand>` without

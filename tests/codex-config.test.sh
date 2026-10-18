@@ -169,7 +169,7 @@ fi
 echo "H. hooks.json renders the observed Herdr registration"
 MAPCMD="/usr/bin/python3 '$HOME/.codex/herdr-codex-pane-map.py'"
 emit_hooks '{}'
-if printf '%s' "$OUT" | jq -e --arg cmd "bash '$HOME/.codex/herdr-agent-state.sh' session" --arg map "$MAPCMD" '
+if printf '%s' "$OUT" | jq -e --arg cmd "/bin/bash '$HOME/.codex/herdr-agent-state.sh' session" --arg map "$MAPCMD" '
   (keys == ["hooks"])
   and (.hooks | keys == ["SessionStart"])
   and (.hooks.SessionStart | length == 2)
@@ -187,7 +187,7 @@ echo "I. hooks.json preserves unrelated state and stays idempotent"
 fixture='{"other":42,"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"/bin/true"}]},{"hooks":[{"type":"command","command":"bash '\''/old/.codex/herdr-agent-state.sh'\'' session","timeout":5}]},{"hooks":[{"type":"command","command":"python3 '\''/old/.codex/herdr-codex-pane-map.py'\''"}]},{"hooks":[{"type":"command","command":"/bin/keep-me"},{"type":"command","command":"bash '\''/old/.codex/herdr-agent-state.sh'\'' session","timeout":5}]}],"Stop":[{"hooks":[{"type":"command","command":"/bin/false"}]}]}}'
 emit_hooks "$fixture"
 first="$OUT"
-if printf '%s' "$first" | jq -e --arg cmd "bash '$HOME/.codex/herdr-agent-state.sh' session" --arg map "$MAPCMD" '
+if printf '%s' "$first" | jq -e --arg cmd "/bin/bash '$HOME/.codex/herdr-agent-state.sh' session" --arg map "$MAPCMD" '
   .other == 42
   and (.hooks.Stop[0].hooks[0].command == "/bin/false")
   and ([.hooks.SessionStart[] | select(any(.hooks[]?; .command == "/bin/true"))] | length == 1)
