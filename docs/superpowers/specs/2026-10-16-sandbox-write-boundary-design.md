@@ -125,7 +125,8 @@ these places should cost no escapes.
   is therefore denied with the existing "push by hand" message; this machine has none. This
   closes the reproduced `rev-list` route and its patch-listing variant.
 - **Excluded commands.**
-  - `docker`, `basecamp` and `herdr` are binaries, so §1 covers them.
+  - `docker`, `basecamp` and `herdr` are binaries, so §1 closes their `PATH` route. What they
+    run inside a repository is theirs, not ours: see Out of scope for basecamp's git.
   - `xreview` is a script of ours. It and the helpers it calls (`xreview-rpc`, `codex-daemon`)
     look up `jq`, `git` and the rest by name, which would reach a mise shim and so a trusted
     repository's `mise.toml`. They pin
@@ -419,6 +420,13 @@ A zsh wrapper around `chezmoi` handles `apply`, `update` and the previews below.
   stay agent-writable (see §1, "Git"). The justification is the git rule in §2, "Git that
   our unsandboxed code runs", not `PATH`. Michael's own git in an agent-touched repository
   trusts that repository's metadata as it trusts its code.
+- Third-party binaries and plugin hooks that run git in the session's repository (ruling
+  2026-10-18). The basecamp plugin's PostToolUse hook runs `basecamp agent-hook post-commit`
+  unsandboxed, and that runs `git log -1` there. With agent-written `log.showSignature` and
+  `gpg.program`, that `git log` runs the configured program (the primitive was reproduced; the
+  basecamp link is read from its source and its own tests, not run here). We cannot neutralise
+  another program's git calls, so this is the same trust as Michael's own git in an
+  agent-touched repository. The fix belongs upstream or with the plugin's enablement.
 - Codex's own sandbox, and anything Michael's unsandboxed processes write.
 - The Bash tool's base environment. §2 relies on it for `PINNED_PATH` and the git config
   environment, and it comes from the shell Claude Code starts in. `~/Code` has two `.envrc`
