@@ -1282,30 +1282,41 @@ wt-rm() {
 # Origin is the pinned URL below, never the checkout's remote.origin.url, which the sandbox can
 # write. CHEZMOI_REVIEWED_ORIGIN overrides it from the wrapper's own environment, for the suite.
 # --dirty-ok runs the working tree anyway, for a deliberate local change.
-# _chezmoi_short <token> <letters>: true when <token> is a single-dash option group that names
-# one of <letters> before a letter taking a value (c, C, d, D, i, o, S, W, x: the rest is that
-# value).
+# _chezmoi_short <token> <letters> <subcommand>: true when <token> is a single-dash option group
+# that names one of <letters> before a letter taking a value (the rest of the group is that
+# value). Which letters take a value depends on the subcommand (chezmoi 2.73.2): -f is --format
+# for dump and archive but --file for execute-template, -p is --path-style for status and
+# --promptString for execute-template but --purge for init, -i is --init for execute-template,
+# -d and -C take a value only for init. A letter wrongly counted as a value would hide a later
+# -S from the scan, so only the letters that are values for that subcommand stop it.
 _chezmoi_short() {
-  local t=${1#-} c
+  local t=${1#-} c vals
   [[ $1 == -[!-]* ]] || return 1
+  case ${3:-} in
+    execute-template) vals=cDoSWp ;;
+    dump|archive) vals=cDoSWxif ;;
+    status) vals=cDoSWxip ;;
+    init) vals=cDoSWxidC ;;
+    *) vals=cDoSWxi ;;
+  esac
   while [[ -n $t ]]; do
     c=${t[1]}; t=${t[2,-1]}
     [[ $2 == *$c* ]] && return 0
-    [[ $c == [cCdDioSWx] ]] && return 1
+    [[ $vals == *$c* ]] && return 1
   done
   return 1
 }
-# _chezmoi_help <args>: true when -h or --help is a flag in its own right before any --, not
-# the value of the option ahead of it (--source -h would otherwise read as help and let
-# apply through). Only options known to take no value count as flags ahead of it.
+# _chezmoi_help <args>: true when an exact -h or --help token, or a short group with h ahead of
+# any value letter and no =, comes before any --. The caller never forwards these arguments, it
+# runs `chezmoi help <subcommand>`, so a wrong answer here costs a help page or a normal check,
+# never an apply. Every = form (--help=false, -h=false, -vh=false) is not help: pflag reads them
+# as help=false and runs the command, so they take the normal checks.
 _chezmoi_help() {
-  local a prev=
+  local a
   for a in "$@"; do
     [[ $a == -- ]] && return 1
-    if [[ $a == (--help|--help=*) ]] || _chezmoi_short "$a" h; then
-      [[ $prev != -* || $prev == *=* || $prev == (--verbose|--dry-run|--force|--keep-going|--recursive|--dirty-ok|--no-pager|--no-tty|-[vnfkr]##) ]] && return 0
-    fi
-    prev=$a
+    [[ $a == (-h|--help) ]] && return 0
+    [[ $a != *=* ]] && _chezmoi_short "$a" h "$1" && return 0
   done
   return 1
 }
@@ -1313,7 +1324,8 @@ chezmoi() {
   local -a args=("$@")
   local sub=${1:-} a i
   if _chezmoi_help "$@"; then
-    command chezmoi "${(@)args:#--dirty-ok}"; return
+    if [[ $sub == [A-Za-z0-9]([A-Za-z0-9-])# ]]; then command chezmoi help "$sub"; else command chezmoi help; fi
+    return
   fi
   # chezmoi takes global options before the subcommand, some with a value, and a parser that
   # misses one would read the value as the subcommand and let apply through. So a command
@@ -1334,7 +1346,7 @@ chezmoi() {
       # Every spelling that would apply the working tree: --apply, --one-shot, --watch (each
       # also as --flag=<value>) and -a anywhere in a short-option group.
       for a in "${args[@]:1}"; do
-        if [[ $a == --apply || $a == --apply=* ]] || _chezmoi_short "$a" a; then
+        if [[ $a == --apply || $a == --apply=* ]] || _chezmoi_short "$a" a "$sub"; then
           print -u2 "chezmoi: $sub --apply is refused; run chezmoi apply, which deploys origin's main"
           return 1
         fi
@@ -1368,7 +1380,7 @@ chezmoi() {
     a=${args[i]}
     # An option that picks the source or the configuration would undo the choice below.
     if [[ $a == (--source|--source=*|--working-tree|--working-tree=*|--config|--config=*) ]] \
-       || _chezmoi_short "$a" SWc; then
+       || _chezmoi_short "$a" SWc "$sub"; then
       print -u2 "chezmoi: refusing $sub with $a: the wrapper chooses the source (--dirty-ok passes everything through)"
       return 1
     fi
@@ -1379,7 +1391,7 @@ chezmoi() {
     fi
     # update's own flags would be forwarded to apply, which does not know them.
     if [[ $sub == update ]] && { [[ $a == (--apply|--apply=*|--recurse-submodules|--recurse-submodules=*) ]] \
-       || _chezmoi_short "$a" a }; then
+       || _chezmoi_short "$a" a "$sub" }; then
       print -u2 "chezmoi: refusing update with $a: update-only flags are not supported: the wrapper always pulls origin's main and then applies it"
       return 1
     fi

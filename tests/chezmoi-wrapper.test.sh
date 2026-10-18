@@ -244,21 +244,51 @@ for c in merge merge-all; do
   grep -qx WORKTREE $LOG 2>/dev/null && grep -q "^ARGS $c x$" $LOG && _pass "chezmoi $c --dirty-ok runs on the working tree" || _fail "chezmoi $c --dirty-ok" "$(cat $LOG 2>/dev/null)"
 done
 
-# -h and --help print usage: no precondition, no clone, on any branch. An option's value that
-# reads -h is not help.
+# Help is an exact -h or --help token (or a short group holding h, with no =) before --. It is
+# never forwarded: the wrapper runs `chezmoi help <subcommand>` (a plain-word subcommand) or
+# `chezmoi help`, so nothing depends on how chezmoi parses the rest, and no precondition or
+# clone is involved, on any branch.
 fresh; git -C $T/co switch -q -c other; print change >> $T/co/dot_testfile
-for form in "apply --help" "apply -h" "apply -vh" "diff -h" "update --help" "init --help" "apply --dirty-ok --help"; do
+for form in "apply --help" "apply -h" "apply -vh" "diff -h" "diff --help" "update --help" "init --help" "apply --dirty-ok --help" \
+            "apply --source -h" "apply -D -h" "apply -S -h" "apply -x -h" "apply -h --help=false" "apply --help=false -h" \
+            "execute-template -h" "--help" "-h" "-v apply -h" "--source $T/co apply --help"; do
   rm -f $LOG; chezmoi ${=form} >/dev/null 2>&1; rc=$?
-  expect=${form/ --dirty-ok/}
+  w=${${=form}[1]}; [[ $w == [A-Za-z0-9]([A-Za-z0-9-])# ]] && expect="help $w" || expect=help
   (( rc == 0 )) && grep -qx WORKTREE $LOG 2>/dev/null && grep -qx "ARGS $expect" $LOG && tmp_clean \
-    && _pass "chezmoi $form goes straight to chezmoi on a dirty feature branch" || _fail "chezmoi $form" "rc=$rc $(cat $LOG 2>/dev/null)"
+    && _pass "chezmoi $form prints 'chezmoi $expect' on a dirty feature branch: no checks, no clone" || _fail "chezmoi $form" "rc=$rc $(cat $LOG 2>/dev/null)"
 done
-for form in "apply --source -h" "apply -D -h" "apply -S -h" "apply -- -h" "apply -x -h"; do
+for form in "apply -- -h" "apply --help=false" "apply -h=false" "apply -vh=false" "diff --help=f" "diff --help=0" "execute-template -ph=x X" \
+            "execute-template -h=x X" "dump -fh=x" "archive -fh=x" "status -ph=x" "update --help=false" \
+            "--help=false apply" "-h=false apply" "init --help=false --apply" "edit --help=0 --apply" "init -h=1 -a"; do
+  fresh; git -C $T/co switch -q -c other; print change >> $T/co/dot_testfile
   rm -f $LOG; err=$(chezmoi ${=form} 2>&1 >/dev/null); rc=$?
-  (( rc == 1 )) && [[ ! -e $LOG ]] && _pass "chezmoi $form is not help: refused" || _fail "chezmoi $form" "rc=$rc err=$err log=$(cat $LOG 2>/dev/null)"
+  (( rc == 1 )) && [[ ! -e $LOG ]] && tmp_clean && _pass "chezmoi $form is not help: refused, never reaches chezmoi" || _fail "chezmoi $form (dirty branch)" "rc=$rc err=$err log=$(cat $LOG 2>/dev/null)"
 done
-fresh; chezmoi apply -D -h >/dev/null 2>&1
-applied_clone NOPE && grep -q "^ARGS --source .*/src apply -D -h$" $LOG && _pass "-D -h on a clean main still runs against the clone" || _fail "-D -h" "$(cat $LOG 2>/dev/null)"
+# On a clean main the same forms either run against the clone (the gated subcommands) or are
+# refused by the subcommand-first and --apply rules. None runs the working tree.
+for form in "apply --help=false" "apply -h=false" "apply -vh=false" "diff --help=f" "execute-template -ph=x X" "execute-template -h=x X" \
+            "dump -fh=x" "archive -fh=x" "status -ph=x"; do
+  fresh; chezmoi ${=form} >/dev/null 2>&1
+  applied_clone NOPE && grep -q "^ARGS --source $T/cache/chezmoi-apply/run\..*/src ${form}$" $LOG && tmp_clean \
+    && _pass "chezmoi $form on a clean main runs against the clone, not the working tree" || _fail "chezmoi $form (clean main)" "$(cat $LOG 2>/dev/null)"
+done
+fresh; chezmoi update --help=false >/dev/null 2>&1
+applied_clone NOPE && grep -q "^ARGS --source .*/src apply --help=false$" $LOG && tmp_clean \
+  && _pass "chezmoi update --help=false on a clean main runs apply against the clone" || _fail "update --help=false" "$(cat $LOG 2>/dev/null)"
+for form in "--help=false apply" "-h=false apply" "init --help=false --apply" "edit --help=0 --apply" "init -h=1 -a"; do
+  fresh; chezmoi ${=form} >/dev/null 2>&1; rc=$?
+  (( rc == 1 )) && [[ ! -e $LOG ]] && _pass "chezmoi $form on a clean main is refused" || _fail "chezmoi $form (clean main)" "rc=$rc $(cat $LOG 2>/dev/null)"
+done
+# Which short letters take a value depends on the subcommand: a bool letter must not hide a
+# later -S from the scan, a value letter must not be read as the option it contains.
+for form in "execute-template -fS$T/co X" "execute-template -iS$T/co X" "execute-template -fc$T/x.toml X" "init -pS$T/co"; do
+  fresh; err=$(chezmoi ${=form} 2>&1 >/dev/null); rc=$?
+  (( rc == 1 )) && [[ ! -e $LOG ]] && _pass "chezmoi $form is refused" || _fail "chezmoi $form" "rc=$rc err=$err log=$(cat $LOG 2>/dev/null)"
+done
+for form in "dump -fS" "archive -fc" "status -pS" "status -pc$T/x" "execute-template -pS=x X" "apply -xscripts"; do
+  fresh; chezmoi ${=form} >/dev/null 2>&1
+  applied_clone NOPE && grep -q " ${form}$" $LOG && _pass "chezmoi $form: the letter is a value, so apply is not refused" || _fail "chezmoi $form" "$(cat $LOG 2>/dev/null)"
+done
 
 # --mode symlink would link into the clone, which is removed: only --mode file runs from it.
 for form in "apply --mode symlink" "apply --mode=symlink" "update --mode symlink" "diff --mode=symlink" "apply --mode" "apply --mode=" "apply --mode FILE"; do
