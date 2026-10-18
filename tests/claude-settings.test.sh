@@ -296,9 +296,10 @@ EXP_ALLOW_WRITE='["~/Code","~/.local/share/chezmoi","~/Documents","~/Library/Mob
 jq_is ".sandbox.filesystem.allowWrite == $EXP_ALLOW_WRITE" true \
       "allowWrite is exactly the four work roots"
 # denyWrite: in each work root, at any depth, git hooks only (also inside submodules); the
-# chezmoi checkout's own top-level .git; the vault's .obsidian; and every repository's agent
-# configuration (.claude/settings*.json, .mcp.json, .codex), at the root itself and at any
-# depth. Git configuration files, objects, refs and the index stay writable, so sandboxed
+# chezmoi checkout's own top-level .git; the vault's .obsidian; and the agent configuration
+# (.claude/settings*.json, .mcp.json, .codex) at depth 0, 1 and 2 under each root only: never
+# at any depth, because node_modules packages ship such files (resolve@1.22.12 has a
+# .claude/settings.local.json) and a deny there breaks sandboxed npm ci. Git configuration files, objects, refs and the index stay writable, so sandboxed
 # git config, branch -u, clone and submodule keep working; a branch named config or hooks
 # still is writable, and $TMPDIR is untouched (suites and agents git init there). Michael
 # decided hooks-only for git (spec 83f6b2b) and the agent configuration on 2026-10-18;
@@ -309,7 +310,7 @@ ROOTS='["~/Code","~/.local/share/chezmoi","~/Documents","~/Library/Mobile Docume
 EXP_DENY_WRITE=$(jq -cn --argjson g "$GITFILES" --argjson a "$AGENTFILES" --argjson r "$ROOTS" '
   [$r[] as $root | $g[] | "\($root)/**/\(.)"]
   + [$g[] | "~/.local/share/chezmoi/\(.)"]
-  + [$r[] as $root | $a[] | "\($root)/\(.)", "\($root)/**/\(.)"]
+  + [$r[] as $root | $a[] | "\($root)/\(.)", "\($root)/*/\(.)", "\($root)/*/*/\(.)"]
   + ["~/Library/Mobile Documents/iCloud~md~obsidian/Documents/*/.obsidian",
      "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/*/.obsidian/**"]')
 jq_is ".sandbox.filesystem.denyWrite == $EXP_DENY_WRITE" true \
@@ -326,9 +327,12 @@ jq_is '[.sandbox.filesystem.denyWrite[] | select((test("/\\.git/") or test("/\\.
       "every deny glob names a git hooks path, .obsidian or an agent configuration file, never a bare hooks name"
 jq_is '[.sandbox.filesystem.denyWrite[] | select(test("/\\.claude/(skills|commands|agents)"))] | length' 0 \
       "no deny glob reaches .claude skills, commands or agents"
-jq_is ".sandbox.filesystem.denyWrite as \$d | [$ROOTS[] as \$r | (\$r + \"/.claude/settings.json\", \$r + \"/**/.claude/settings.json\", \$r + \"/.codex/**\", \$r + \"/**/.mcp.json\")
+jq_is ".sandbox.filesystem.denyWrite as \$d | [$ROOTS[] as \$r | $AGENTFILES[] as \$p
+        | (\$r + \"/\" + \$p, \$r + \"/*/\" + \$p, \$r + \"/*/*/\" + \$p)
         | select(. as \$e | \$d | index(\$e) | not)] | length" 0 \
-      "agent configuration is denied at the root itself and at any depth, in all four roots"
+      "every agent configuration path is denied at depth 0, 1 and 2 in all four roots"
+jq_is '[.sandbox.filesystem.denyWrite[] | select(test("/\\.claude/settings|/\\.mcp\\.json|/\\.codex")) | sub("/\\.(claude/settings|mcp\\.json|codex).*$"; "") | select(contains("**"))] | length' 0 \
+      "no agent configuration entry has an any-depth ** before the file, so node_modules packages stay writable (only the .codex/** tail has one)"
 jq_is '[.sandbox.filesystem.allowWrite[] | select(test("(^|/)\\.ssh(/|$)") or test("(^|/)\\.aws(/|$)") or test("/op(/|$)"))] | length' 0 \
       "no credential path is writable through allowWrite"
 

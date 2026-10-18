@@ -78,9 +78,12 @@ denied vault_obsidian "$V/.obsidian/$stamp"
 # Fake repositories at depth 2 in each work root (the layout real repositories have): the deny
 # globs are path rules, so a mkdir'd .git stands in for a real one. Only hooks are denied; git
 # configuration files stay writable. The vault root is probed above Documents/MSB, away from Obsidian.
-# The same repositories carry the agent configuration a later session would load (.claude/settings*.json,
-# .mcp.json, .codex): denied; .claude/skills, commands and agents stay writable. .codex cannot be
-# created, so its directory is the probe and .codex/** is not measurable from inside the sandbox.
+# Agent configuration a later session would load (.claude/settings*.json, .mcp.json, .codex) is denied
+# only at depth 0-2 under a root, where sessions start: probed in a repository two levels down
+# (<root>/<stamp>/arepo). Deeper it stays writable, so a node_modules package that ships one (resolve
+# ships .claude/settings.local.json) keeps npm ci working: probed four levels down. .claude/skills,
+# commands and agents stay writable. .codex cannot be created, so its directory is the probe and
+# .codex/** is not measurable from inside the sandbox.
 for root in "$HOME/Code" "$HOME/.local/share/chezmoi" "$HOME/Documents" \
             "$HOME/Library/Mobile Documents/iCloud~md~obsidian"; do
   k=$(basename "$root" | tr -c 'a-zA-Z0-9\n' '_')
@@ -88,9 +91,12 @@ for root in "$HOME/Code" "$HOME/.local/share/chezmoi" "$HOME/Documents" \
   r="$b/org/repo"
   g="$r/.git"
   m="$b/org/mv"
+  ar="$b/arepo"
+  nm="$ar/node_modules/pkg"
   probes+=("$b")
   if mkdir -p "$g/objects" "$g/refs/heads" "$g/modules/sub/worktrees/swt" "$g/worktrees/wt" \
-              "$m/plain/hooks" "$r/.claude/skills" "$r/.claude/commands" "$r/.claude/agents" 2>/dev/null; then
+              "$m/plain/hooks" "$r/.claude/skills" "$r/.claude/commands" "$r/.claude/agents" \
+              "$ar/.claude" "$nm/.claude" 2>/dev/null; then
     denied "${k}_git_hooks" "$g/hooks/"
     allowed_cfg "${k}_git_config_writable" "$g/config"
     allowed "${k}_git_config_worktree_writable" "$g/config.worktree"
@@ -103,10 +109,11 @@ for root in "$HOME/Code" "$HOME/.local/share/chezmoi" "$HOME/Documents" \
     allowed "${k}_git_index" "$g/index"
     allowed "${k}_git_branch_named_config" "$g/refs/heads/config"
     allowed "${k}_git_branch_named_hooks" "$g/refs/heads/hooks"
-    denied "${k}_claude_settings" "$r/.claude/settings.json"
-    denied "${k}_claude_settings_local" "$r/.claude/settings.local.json"
-    denied "${k}_mcp_json" "$r/.mcp.json"
-    denied "${k}_codex_dir" "$r/.codex/"
+    denied "${k}_claude_settings" "$ar/.claude/settings.json"
+    denied "${k}_claude_settings_local" "$ar/.claude/settings.local.json"
+    denied "${k}_mcp_json" "$ar/.mcp.json"
+    denied "${k}_codex_dir" "$ar/.codex/"
+    allowed "${k}_node_modules_claude_settings_local_writable" "$nm/.claude/settings.local.json"
     allowed "${k}_claude_skills_writable" "$r/.claude/skills/$stamp.md"
     allowed "${k}_claude_commands_writable" "$r/.claude/commands/$stamp.md"
     allowed "${k}_claude_agents_writable" "$r/.claude/agents/$stamp.md"
