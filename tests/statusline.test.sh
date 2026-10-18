@@ -360,5 +360,5 @@ if ls "$T"/evil-* >/dev/null 2>&1; then _fail "the statusline's PATH is pinned" 
 else _pass "the statusline's PATH is pinned"; fi
 INPUT=$INPUT_PLAIN
 
-echo "statusline:$pass passed, $fail failed"
+echo "statusline: $pass passed, $fail failed"
 exit "$fail"

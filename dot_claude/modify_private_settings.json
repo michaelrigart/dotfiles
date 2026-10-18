@@ -366,15 +366,22 @@ printf '%s' "$input" | jq \
             "~/Library/Mobile Documents/iCloud~md~obsidian"
           ],
           # What is written under a work root can run outside the sandbox later: git hooks
-          # (also inside submodules) and the vault plugins. Scoped to the work roots, never
-          # a bare glob, so git init in TMPDIR keeps working. Git configuration files,
-          # objects, refs and the index stay writable, so sandboxed git config, branch -u,
-          # clone and submodule keep working. Hooks only, per spec 83f6b2b.
+          # (also inside submodules), the vault plugins, and any repository agent
+          # configuration (.claude/settings*.json hooks, statusLine and env, .mcp.json, .codex),
+          # which the next session in that repo would load; Claude Code built-in denial covers only
+          # the session cwd. Scoped to the work roots, never a bare glob, so git init in
+          # TMPDIR keeps working. Git configuration files, objects, refs and the index stay
+          # writable, so sandboxed git config, branch -u, clone and submodule keep working.
+          # .claude/skills, commands and agents stay writable (projects commit their own).
+          # Hooks only for git, per spec 83f6b2b. Each agent path is listed at the root itself
+          # and at any depth, because **/ is not assumed to match zero segments.
           "denyWrite": (
             ["~/Code", "~/.local/share/chezmoi", "~/Documents", "~/Library/Mobile Documents/iCloud~md~obsidian"] as $roots
             | [".git/hooks", ".git/hooks/**", ".git/modules/**/hooks", ".git/modules/**/hooks/**"] as $git
+            | [".claude/settings.json", ".claude/settings.local.json", ".mcp.json", ".codex", ".codex/**"] as $agent
             | [$roots[] as $root | $git[] | "\($root)/**/\(.)"]
               + [$git[] | "~/.local/share/chezmoi/\(.)"]
+              + [$roots[] as $root | $agent[] | "\($root)/\(.)", "\($root)/**/\(.)"]
               + ["~/Library/Mobile Documents/iCloud~md~obsidian/Documents/*/.obsidian",
                  "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/*/.obsidian/**"])
         },

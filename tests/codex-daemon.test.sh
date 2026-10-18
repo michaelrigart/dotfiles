@@ -77,6 +77,34 @@ out="$(PATH="$T/localbin:/usr/bin:/bin" PINNED_PATH="$T/localbin:/usr/bin:/bin" 
 is "no real codex is an error" "$rc" 1
 is "and it says so" "$(printf '%s' "$out" | grep -c 'no codex on PATH outside')" 1
 
+echo "A2. real-bin under a hostile PATH"
+# The script runs outside the sandbox (spec 2026-10-16, sandbox write boundary), so a sandboxed
+# command that plants executables in a directory first on the caller's PATH must not get them
+# run. No PINNED_PATH and a scratch HOME, so only the script's own pin can keep them out.
+hostile="$T/hostile"; mkdir -p "$hostile" "$T/hh"
+for n in bash sh jq git python3 readlink sed head grep ps launchctl id sleep cat tr awk dirname mise codex; do
+  printf '#!/bin/sh\necho "$0 $*" >> "%s"\necho HOSTILE\n' "$T/marker" > "$hostile/$n"
+  chmod +x "$hostile/$n"
+done
+rm -f "$hostile/sh"   # the suite starts the script with /bin/sh itself
+want=""
+for d in /usr/bin /bin /usr/sbin /sbin /opt/homebrew/bin; do
+  if [ -f "$d/codex" ] && [ -x "$d/codex" ]; then want="$(readlink -f "$d/codex")"; break; fi
+done
+: > "$T/marker"
+out="$(env -i HOME="$T/hh" PATH="$hostile:/usr/bin:/bin" /bin/sh "$CD" real-bin 2>&1)"; rc=$?
+is "no hostile stub runs" "$(wc -c < "$T/marker" | tr -d ' ')" 0
+if [ -n "$want" ]; then
+  is "and real-bin answers from the pinned PATH only" "$rc:$out" "0:$want"
+else
+  is "and real-bin finds no codex on the pinned PATH" "$rc:$(printf '%s' "$out" | grep -c 'no codex on PATH outside')" "1:1"
+fi
+# Control: with the pin line removed, the same stubs do run, so the case above can fail.
+sed '/^PATH=\${PINNED_PATH/d' "$CD" > "$T/unpinned"
+: > "$T/marker"
+env -i HOME="$T/hh" PATH="$hostile:/usr/bin:/bin" /bin/sh "$T/unpinned" real-bin >/dev/null 2>&1
+is "control: without the pin the hostile stubs run" "$([ -s "$T/marker" ] && echo yes || echo no)" yes
+
 echo "B. ensure"
 echo running > "$STATE"; : > "$CALLS"
 run ensure; is "a running daemon needs nothing" "$?" 0

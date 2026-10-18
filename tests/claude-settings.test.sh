@@ -296,19 +296,24 @@ EXP_ALLOW_WRITE='["~/Code","~/.local/share/chezmoi","~/Documents","~/Library/Mob
 jq_is ".sandbox.filesystem.allowWrite == $EXP_ALLOW_WRITE" true \
       "allowWrite is exactly the four work roots"
 # denyWrite: in each work root, at any depth, git hooks only (also inside submodules); the
-# chezmoi checkout's own top-level .git; the vault's .obsidian. Git configuration files,
-# objects, refs and the index stay writable, so sandboxed git config, branch -u, clone and
-# submodule keep working; a branch named config or hooks still is writable, and $TMPDIR is
-# untouched (suites and agents git init there). Michael decided hooks-only, spec 83f6b2b.
+# chezmoi checkout's own top-level .git; the vault's .obsidian; and every repository's agent
+# configuration (.claude/settings*.json, .mcp.json, .codex), at the root itself and at any
+# depth. Git configuration files, objects, refs and the index stay writable, so sandboxed
+# git config, branch -u, clone and submodule keep working; a branch named config or hooks
+# still is writable, and $TMPDIR is untouched (suites and agents git init there). Michael
+# decided hooks-only for git (spec 83f6b2b) and the agent configuration on 2026-10-18;
+# .claude/skills, commands and agents stay writable (projects commit their own).
 GITFILES='[".git/hooks",".git/hooks/**",".git/modules/**/hooks",".git/modules/**/hooks/**"]'
+AGENTFILES='[".claude/settings.json",".claude/settings.local.json",".mcp.json",".codex",".codex/**"]'
 ROOTS='["~/Code","~/.local/share/chezmoi","~/Documents","~/Library/Mobile Documents/iCloud~md~obsidian"]'
-EXP_DENY_WRITE=$(jq -cn --argjson g "$GITFILES" --argjson r "$ROOTS" '
+EXP_DENY_WRITE=$(jq -cn --argjson g "$GITFILES" --argjson a "$AGENTFILES" --argjson r "$ROOTS" '
   [$r[] as $root | $g[] | "\($root)/**/\(.)"]
   + [$g[] | "~/.local/share/chezmoi/\(.)"]
+  + [$r[] as $root | $a[] | "\($root)/\(.)", "\($root)/**/\(.)"]
   + ["~/Library/Mobile Documents/iCloud~md~obsidian/Documents/*/.obsidian",
      "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/*/.obsidian/**"]')
 jq_is ".sandbox.filesystem.denyWrite == $EXP_DENY_WRITE" true \
-      "denyWrite is exactly the git hooks in each work root, and .obsidian"
+      "denyWrite is exactly the git hooks and agent configuration in each work root, and .obsidian"
 jq_is "[.sandbox.filesystem.denyWrite[] | . as \$d
         | select(any($ROOTS[]; . as \$r | \$d | startswith(\$r + \"/\")) | not)] | length" 0 \
       "every deny glob starts with a work root and a slash, so git init in TMPDIR still works"
@@ -316,8 +321,14 @@ jq_is '[.sandbox.filesystem.denyWrite[] | select(test("/refs|/objects|/index$"))
       "no deny glob reaches refs, objects or the index"
 jq_is '[.sandbox.filesystem.denyWrite[] | select(test("config"))] | length' 0 \
       "no deny glob reaches a git configuration file"
-jq_is '[.sandbox.filesystem.denyWrite[] | select((test("/\\.git/") or test("/\\.obsidian(/|$)")) | not)] | length' 0 \
-      "every deny glob names a git hooks path or .obsidian, never a bare hooks name"
+jq_is '[.sandbox.filesystem.denyWrite[] | select((test("/\\.git/") or test("/\\.obsidian(/|$)")
+        or test("/\\.claude/settings(\\.local)?\\.json$") or test("/\\.mcp\\.json$") or test("/\\.codex(/\\*\\*)?$")) | not)] | length' 0 \
+      "every deny glob names a git hooks path, .obsidian or an agent configuration file, never a bare hooks name"
+jq_is '[.sandbox.filesystem.denyWrite[] | select(test("/\\.claude/(skills|commands|agents)"))] | length' 0 \
+      "no deny glob reaches .claude skills, commands or agents"
+jq_is ".sandbox.filesystem.denyWrite as \$d | [$ROOTS[] as \$r | (\$r + \"/.claude/settings.json\", \$r + \"/**/.claude/settings.json\", \$r + \"/.codex/**\", \$r + \"/**/.mcp.json\")
+        | select(. as \$e | \$d | index(\$e) | not)] | length" 0 \
+      "agent configuration is denied at the root itself and at any depth, in all four roots"
 jq_is '[.sandbox.filesystem.allowWrite[] | select(test("(^|/)\\.ssh(/|$)") or test("(^|/)\\.aws(/|$)") or test("/op(/|$)"))] | length' 0 \
       "no credential path is writable through allowWrite"
 
