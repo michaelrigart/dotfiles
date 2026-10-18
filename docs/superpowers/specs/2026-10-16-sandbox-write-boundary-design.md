@@ -209,8 +209,12 @@ A zsh wrapper around `chezmoi` handles `apply`, `update` and the previews below.
 - **Help.** Help is detected only as an exact `-h` or `--help` token, or a short-option group
   containing `h` with no `=`, before `--`. The wrapper then runs `chezmoi help <subcommand>`
   itself and never forwards the arguments, so a help flag cannot carry the working tree
-  through to a real `apply`. Every `=` form (`--help=false`, `-h=false`) and every `h` after
-  a value-taking option goes through the normal checks (fail closed).
+  through to a real `apply`. Every `=` form (`--help=false`, `-h=false`) and an `h` that
+  follows a value-taking letter in the same group (where it is that option's value) go through
+  the normal checks (fail closed). Which short letters take a value differs per subcommand
+  (`-f` and `-p` among them), so the wrapper keeps a per-subcommand table, read from
+  chezmoi 2.73.2's help. A chezmoi upgrade that changes a short flag needs that table
+  refreshed, or the scan for a joined `-S`/`-c` can stop early.
 - **Smaller points.** A `--mode` other than `file` is
   refused for runs against the clone. `update`'s pull also updates `refs/remotes/origin/main`,
   so the checkout does not look ahead afterwards. `.scripts/provision.sh` skips
