@@ -248,7 +248,10 @@ done
 # cobra skips an empty argument when it looks for the subcommand, so `chezmoi "" init --apply`
 # runs `init --apply` in real chezmoi 2.73.2. An empty first argument is treated like a leading
 # option: a command naming a gated subcommand must put it first. A whitespace-only word, an
-# upper-case name or an abbreviation is an unknown command to cobra, which runs nothing.
+# upper-case name or an abbreviation is an unknown command to cobra, which looks for a
+# `chezmoi-<name>` plugin on PATH and runs it (`chezmoi " " apply` ran `chezmoi- `). That does not
+# get past the gate: no PATH directory is sandbox-writable after this branch's write-set change,
+# so a sandboxed command cannot plant one. The wrapper forwards these unchanged.
 empty_refused() { # empty_refused <args...>: refused for the subcommand-first rule, nothing reaches chezmoi
   local err rc lbl="${(j: :)${(@q-)argv}}"
   fresh; err=$(chezmoi "$@" 2>&1 >/dev/null); rc=$?
@@ -283,7 +286,8 @@ fresh; chezmoi " " apply >/dev/null 2>&1; grep -qx 'ARGS   apply' $LOG 2>/dev/nu
 # clone is involved, on any branch.
 # The expected page is written out, never derived with the wrapper's own pattern: a mutant that
 # always runs bare `chezmoi help` must fail. The table runs with EXTENDED_GLOB off, as in
-# Michael's interactive shell (the wrapper sets no options of its own), and again with it on.
+# Michael's interactive shell, and again with it on. The wrapper itself runs under
+# `emulate -L zsh`, so the caller's setting only matters at parse time (see the next comment).
 HELP_CASES=(
   "apply --help|help apply" "apply -h|help apply" "apply -vh|help apply" "diff -h|help diff" "diff --help|help diff"
   "status --help|help status" "update --help|help update" "init --help|help init"
@@ -293,12 +297,13 @@ HELP_CASES=(
   "cat -h|help cat" "verify --help|help verify" "merge-all -h|help merge-all"
   "--help|help" "-h|help" "-v apply -h|help" "--source $T/co apply --help|help"
 )
-help_table() { # help_table <label>: every HELP_CASES entry on a dirty feature branch
+CZ=chezmoi
+help_table() { # help_table <label>: every HELP_CASES entry on a dirty feature branch, run through $CZ
   local entry form expect rc
   fresh; git -C $T/co switch -q -c other; print change >> $T/co/dot_testfile
   for entry in $HELP_CASES; do
     form=${entry%%|*}; expect=${entry##*|}
-    rm -f $LOG; chezmoi ${=form} >/dev/null 2>&1; rc=$?
+    rm -f $LOG; $CZ ${=form} >/dev/null 2>&1; rc=$?
     (( rc == 0 )) && grep -qx WORKTREE $LOG 2>/dev/null && grep -qx "ARGS $expect" $LOG && tmp_clean \
       && _pass "$1: chezmoi $form prints 'chezmoi $expect' on a dirty feature branch: no checks, no clone" || _fail "$1: chezmoi $form" "rc=$rc $(cat $LOG 2>/dev/null)"
   done
@@ -354,6 +359,51 @@ for form in "apply --mode file" "apply --mode=file" "diff --mode file"; do
 done
 fresh; chezmoi apply --mode symlink --dirty-ok >/dev/null 2>&1
 grep -qx WORKTREE $LOG 2>/dev/null && grep -q '^ARGS apply --mode symlink$' $LOG && _pass "--dirty-ok passes --mode symlink through" || _fail "--dirty-ok --mode" "$(cat $LOG 2>/dev/null)"
+
+# The wrapper runs with whatever options the caller set. SH_GLOB, KSH_ARRAYS, EXTENDED_GLOB and
+# NO_GLOB would break its patterns and its array indexing, so each wrapper function starts with
+# `emulate -L zsh`. `hostile` sets the options in a subshell, so this file's own code keeps its
+# normal ones and a wrapper that aborts under them fails one case instead of ending the suite.
+# The file is sourced with EXTENDED_GLOB on first, the way an Oh My Zsh shell parses it.
+HOSTILE_SETS=("sh_glob" "ksh_arrays" "extended_glob" "no_glob" "sh_glob ksh_arrays extended_glob no_glob sh_word_split")
+hostile() { ( setopt $=HOSTILE; chezmoi "$@" ) }
+hostile_case() { # hostile_case <label> <rc> <none|worktree|clone> <err text, or the clone's args> <args...>
+  local lbl=$1 want=$2 kind=$3 text=$4 err rc ok=0; shift 4
+  rm -f $LOG; err=$(hostile "$@" 2>&1 >/dev/null); rc=$?
+  case $kind in
+    none) (( rc == want )) && [[ $err == *"$text"* ]] && [[ ! -e $LOG ]] && tmp_clean && ok=1 ;;
+    worktree) (( rc == want )) && grep -qx WORKTREE $LOG 2>/dev/null && ok=1 ;;
+    clone) (( rc == want )) && applied_clone NOPE && grep -q "^ARGS --source .*/src ${text}\$" $LOG && tmp_clean && ok=1 ;;
+  esac
+  (( ok )) && _pass "[$HOSTILE] $lbl" || _fail "[$HOSTILE] $lbl" "rc=$rc err=$err log=$(cat $LOG 2>/dev/null)"
+}
+setopt extended_glob; source $FUNCS; unsetopt extended_glob
+for HOSTILE in $HOSTILE_SETS; do
+  CZ=hostile; help_table "[$HOSTILE]"; CZ=chezmoi
+  fresh; git -C $T/co switch -q -c other
+  hostile_case "apply on another branch is refused" 1 none "not on main" apply
+  hostile_case "diff on another branch is refused" 1 none "not on main" diff
+  fresh; print change >> $T/co/dot_testfile
+  hostile_case "apply with an uncommitted change is refused" 1 none "uncommitted" apply
+  hostile_case "apply --dirty-ok runs the working tree" 0 worktree "" apply --dirty-ok
+  fresh
+  hostile_case "apply on a clean main runs a fresh clone" 0 clone "apply -v" apply -v
+  hostile_case "update on a clean main runs apply against the clone" 0 clone "apply" update
+  hostile_case "-v apply is refused: subcommand first" 1 none "put the subcommand first" -v apply
+  hostile_case "an empty first word is refused: subcommand first" 1 none "put the subcommand first" "" apply
+  hostile_case "apply -vS is refused" 1 none "the wrapper chooses the source" apply -vS$T/co
+  hostile_case "apply --source= is refused" 1 none "the wrapper chooses the source" apply --source=$T/co
+  hostile_case "apply --mode symlink is refused" 1 none "only --mode file" apply --mode symlink
+  hostile_case "init --apply is refused" 1 none "--apply is refused" init --apply
+  hostile_case "init -va is refused" 1 none "--apply is refused" init -va
+  hostile_case "init is refused" 1 none "chezmoi apply --init" init
+  hostile_case "update -a is refused" 1 none "update-only flags" update -a
+  hostile_case "merge is refused" 1 none "writes the merged result" merge x
+  hostile_case "execute-template -pS=x runs against the clone" 0 clone "execute-template -pS=x X" execute-template -pS=x X
+  hostile_case "a plain subcommand passes through" 0 worktree "" managed
+done
+unset HOSTILE
+unsetopt extended_glob; source $FUNCS
 
 print "\npassed: $pass  failed: $fail"
 (( fail == 0 ))

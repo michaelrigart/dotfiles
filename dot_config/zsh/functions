@@ -1290,6 +1290,7 @@ wt-rm() {
 # -d and -C take a value only for init. A letter wrongly counted as a value would hide a later
 # -S from the scan, so only the letters that are values for that subcommand stop it.
 _chezmoi_short() {
+  emulate -L zsh
   local t=${1#-} c vals
   [[ $1 == -[!-]* ]] || return 1
   case ${3:-} in
@@ -1312,6 +1313,7 @@ _chezmoi_short() {
 # never an apply. Every = form (--help=false, -h=false, -vh=false) is not help: pflag reads them
 # as help=false and runs the command, so they take the normal checks.
 _chezmoi_help() {
+  emulate -L zsh
   local a
   for a in "$@"; do
     [[ $a == -- ]] && return 1
@@ -1321,12 +1323,14 @@ _chezmoi_help() {
   return 1
 }
 chezmoi() {
+  # The caller's options (SH_GLOB, KSH_ARRAYS, EXTENDED_GLOB, NO_GLOB...) would break the
+  # patterns and array indexing below, so every wrapper function runs under zsh's defaults.
+  emulate -L zsh
   local -a args=("$@")
   local sub=${1:-} a i
   if _chezmoi_help "$@"; then
-    # No extended glob here: `chezmoi()` sets no options, and an interactive zsh has EXTENDED_GLOB
-    # off, where a trailing `#` is a literal. A plain word is a letter or digit first, then only
-    # letters, digits and hyphens.
+    # No extended glob here: `emulate -L zsh` leaves EXTENDED_GLOB off, where a trailing `#` is a
+    # literal. A plain word is a letter or digit first, then only letters, digits and hyphens.
     if [[ $sub == [A-Za-z0-9]* && $sub != *[^A-Za-z0-9-]* ]]; then command chezmoi help "$sub"; else command chezmoi help; fi
     return
   fi
@@ -1335,7 +1339,9 @@ chezmoi() {
   # that names one of the commands handled below must put the subcommand first. An empty first
   # argument counts too: cobra skips "" when it looks for the subcommand, so `chezmoi "" init
   # --apply` runs `init --apply`. (A whitespace-only word, an upper-case name or an abbreviation
-  # is an unknown command to cobra, which runs nothing.)
+  # is an unknown command to cobra, which runs a `chezmoi-<name>` plugin from PATH: `chezmoi " "
+  # apply` ran `chezmoi- `. That does not get past the gate: no PATH directory is
+  # sandbox-writable after this branch's write-set change, so nothing sandboxed can plant one.)
   if [[ $sub == -* || ( $# -gt 0 && -z $sub ) ]]; then
     for a in apply update diff status cat verify dump archive execute-template merge merge-all init edit; do
       if (( ${args[(Ie)$a]} )); then
