@@ -1756,6 +1756,37 @@ printf 'one\n' > "$ER/a.txt"; git -C "$ER" add . && git -C "$ER" commit -q -m in
 out="$(cd "$ER" && bash "$XREVIEW" apply xr-e1 2>&1)"
 is "AP5 an empty scope is reported on one line, as 0 files" "$out" "xreview: apply window open for xr-e1 (0 files in scope)"
 (cd "$ER" && bash "$XREVIEW" apply --done >/dev/null 2>&1)
+# Driver names git cannot take through "-c key=value": git splits that at its first "=", so a
+# driver named "x=y" would set the key "filter.x" and leave "filter.x=y.clean" configured; a
+# dot inside the name must not shift where the name ends either. Each driver names a marker
+# command, and its file is stat-dirty, so the index refresh would run the clean filter.
+OR="$ROOT/odd-repo"; OM="$ROOT/odd-marks"; mkdir -p "$OR" "$OM"
+git -C "$OR" init -q -b main && git -C "$OR" config user.email t@t && git -C "$OR" config user.name t
+git -C "$OR" config commit.gpgsign false
+printf 'base\n' > "$OR/base.txt"; git -C "$OR" add . && git -C "$OR" commit -q -m init
+git -C "$OR" switch -q -c feat
+printf 'x.txt filter=x=y\neq.txt filter=x=\ndot.txt filter=a.b\n' > "$OR/.gitattributes"
+printf 'one\n' > "$OR/x.txt"; printf 'one\n' > "$OR/eq.txt"; printf 'one\n' > "$OR/dot.txt"
+git -C "$OR" add . && git -C "$OR" commit -q -m "add files"
+for n in 'x=y' 'x=' 'a.b'; do
+  safe="$(printf '%s' "$n" | tr -c 'A-Za-z0-9' '_')"
+  printf '#!/bin/sh\ntouch "%s/clean-%s"\ncat\n' "$OM" "$safe" > "$ROOT/odd-clean-$safe"
+  chmod +x "$ROOT/odd-clean-$safe"
+  git -C "$OR" config "filter.$n.clean" "$ROOT/odd-clean-$safe"
+done
+touch -t 200001010000 "$OR/x.txt" "$OR/eq.txt" "$OR/dot.txt"
+rm -f "$OM"/*
+out="$(cd "$OR" && bash "$XREVIEW" apply xr-o1 2>&1)"; rc=$?
+applying="$(cat "$XDG_STATE_HOME/xreview/$(git -C "$OR" rev-parse --show-toplevel | tr '/' '_' | sed 's/^_//')/applying" 2>/dev/null)"
+is "AP6 apply succeeds with drivers named x=y, x= and a.b" "$rc" 0
+is "AP7 no clean filter ran, whatever its driver is called" "$(ls "$OM" | tr '\n' ' ')" ""
+is "AP8 and the scope still lists the files" \
+   "$(printf '%s' "$applying" | grep '^file=' | tr '\n' ' ')" "file=.gitattributes file=dot.txt file=eq.txt file=x.txt "
+# Overrides already in the environment keep their place; the hardened ones follow them.
+rm -f "$OM"/*
+out="$(cd "$OR" && GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.abbrev GIT_CONFIG_VALUE_0=7 bash "$XREVIEW" apply xr-o2 2>&1)"; rc=$?
+is "AP9 an environment that already carries GIT_CONFIG_COUNT still gets every override" "$rc/$(ls "$OM" | tr '\n' ' ')" "0/"
+(cd "$OR" && bash "$XREVIEW" apply --done >/dev/null 2>&1)
 
 echo "AL. xreview apply never lazy-fetches from a partial clone's remote"
 # A blob-filtered partial clone fetches a missing blob on demand, and that runs the remote's
@@ -1786,6 +1817,24 @@ is "AL2 the remote's uploadpack never ran" "$(ls "$LM" | tr '\n' ' ')" ""
 is "AL3 and the scope lists both sides of the rename" \
    "$(printf '%s' "$applying" | grep '^file=\(old\|new\).txt$' | tr '\n' ' ')" "file=new.txt file=old.txt "
 (cd "$LC" && bash "$XREVIEW" apply --done >/dev/null 2>&1)
+# Resolving origin/HEAD needs no lazy fetch in the fixture above, since the rename is gone
+# (--no-renames), so the export itself was never exercised. A symbolic origin/HEAD that names
+# a missing commit makes "merge-base HEAD origin/HEAD" fetch it, which runs the uploadpack.
+LD="$ROOT/lazy-dangling"; DM="$ROOT/lazy-dangling-marks"; mkdir -p "$DM"
+git clone -q --no-checkout --filter=blob:none "file://$LO" "$LD" 2>/dev/null
+git -C "$LD" config user.email t@t; git -C "$LD" config user.name t
+git -C "$LD" config remote.origin.uploadpack "$ROOT/evil-uploadpack-dangling"
+printf '#!/bin/sh\ntouch "%s/uploadpack"\nexec git upload-pack "$@"\n' "$DM" > "$ROOT/evil-uploadpack-dangling"
+chmod +x "$ROOT/evil-uploadpack-dangling"
+printf '%s\n' 0123456789abcdef0123456789abcdef01234567 > "$LD/.git/refs/remotes/origin/gone"
+git -C "$LD" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/gone
+is "AL4 the fixture's origin/HEAD names a commit that is not there" \
+   "$(GIT_NO_LAZY_FETCH=1 git -C "$LD" cat-file -e 0123456789abcdef0123456789abcdef01234567 2>/dev/null; echo $?)" 1
+rm -f "$DM"/*
+out="$(cd "$LD" && bash "$XREVIEW" apply xr-l2 2>&1)"; rc=$?
+is "AL5 apply succeeds with a dangling origin/HEAD" "$rc" 0
+is "AL6 and the remote's uploadpack never ran" "$(ls "$DM" | tr '\n' ' ')" ""
+(cd "$LD" && bash "$XREVIEW" apply --done >/dev/null 2>&1)
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))

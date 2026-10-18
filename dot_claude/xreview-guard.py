@@ -1081,10 +1081,19 @@ def one(flags, names, label):
 
 
 # ------------------------------------------------------------------ the repository
+def call_env(env=None):
+    """The environment of every command this guard runs. A partial clone fetches a missing
+    object on demand, which runs the promisor remote's uploadpack command - named by the
+    repository's configuration, which an agent can write - so lazy fetch is always off: a
+    revision like gone~1 (a ref at a missing commit) resolves or fails, and runs nothing."""
+    return dict(os.environ if env is None else env, GIT_NO_LAZY_FETCH="1")
+
+
 def run(argv, cwd=None, env=None):
     """stdout of a command, or None when it fails or cannot start."""
     try:
-        p = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, timeout=CALL_TIMEOUT)
+        p = subprocess.run(argv, cwd=cwd, env=call_env(env), capture_output=True,
+                           timeout=CALL_TIMEOUT)
     except (OSError, subprocess.TimeoutExpired):
         return None
     if p.returncode != 0:
@@ -1273,7 +1282,7 @@ def check_resolved(top, host, path):
     try:
         p = subprocess.run(["git", "-C", top, "config", "--get-regexp",
                             r"^remote\..*\.(gh|glab)-resolved$"], capture_output=True,
-                           timeout=CALL_TIMEOUT)
+                           env=call_env(), timeout=CALL_TIMEOUT)
     except (OSError, subprocess.TimeoutExpired):
         raise Deny(RESOLVED_UNREADABLE.format(top))
     if p.returncode == 1:
@@ -1293,7 +1302,7 @@ def config_set(top, key):
     nothing, so it is a deny."""
     try:
         p = subprocess.run(["git", "-C", top, "config", "--get", key], capture_output=True,
-                           timeout=CALL_TIMEOUT)
+                           env=call_env(), timeout=CALL_TIMEOUT)
     except (OSError, subprocess.TimeoutExpired):
         raise Deny(RESOLVED_UNREADABLE.format(top))
     if p.returncode not in (0, 1):

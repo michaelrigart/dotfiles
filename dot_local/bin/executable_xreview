@@ -737,13 +737,28 @@ cmd_apply() {
   # switched off, hooks point at nothing, and no diff driver runs.
   # The diffs detect no renames (a rename then lists both paths), so none reads a blob outside
   # the changed paths.
-  local -a g=(git -c core.fsmonitor=false -c core.hooksPath=/dev/null)
-  local k d
-  while IFS= read -r k; do
-    d=${k#filter.}; d=${d%.*}
-    g+=(-c "filter.$d.clean=" -c "filter.$d.smudge=" -c "filter.$d.process="
-        -c "filter.$d.required=false")
-  done < <(git config --name-only --get-regexp '^filter\.' 2>/dev/null)
+  # Every override travels as GIT_CONFIG_KEY_n/VALUE_n in the environment of the diffs, never as
+  # a -c argument: git splits "-c key=value" at the first "=", so a driver named "x=y" would
+  # have set the key "filter.x" and left the real "filter.x=y.clean" configured. Entries already
+  # in the environment keep their numbers and ours follow them, so ours win; none is dropped.
+  local -a ge=()
+  local gn="${GIT_CONFIG_COUNT:-0}" k d seen=$'\n'
+  [[ $gn =~ ^[0-9]+$ ]] || gn=0
+  set_cfg() { ge+=("GIT_CONFIG_KEY_$gn=$1" "GIT_CONFIG_VALUE_$gn=$2"); gn=$((gn + 1)); }
+  set_cfg core.fsmonitor false
+  set_cfg core.hooksPath /dev/null
+  # The driver name is everything between "filter." and the last "." (it may hold dots or "=");
+  # -z ends each name with a NUL, so no name is cut at a newline or a space.
+  while IFS= read -r -d '' k; do
+    d=${k#filter.}
+    [[ $d == *.* ]] || continue
+    d=${d%.*}
+    [[ $seen == *$'\n'"$d"$'\n'* ]] && continue
+    seen+="$d"$'\n'
+    set_cfg "filter.$d.clean" ""; set_cfg "filter.$d.smudge" ""; set_cfg "filter.$d.process" ""
+    set_cfg "filter.$d.required" false
+  done < <(git config -z --name-only --get-regexp '^filter\.' 2>/dev/null)
+  local -a g=(env "${ge[@]}" "GIT_CONFIG_COUNT=$gn" git)
   local -a flags=(--name-only --no-ext-diff --no-textconv --no-renames --ignore-submodules=all)
   mkdir -p "$dir"
   { printf 'nonce=%s\n' "$1"

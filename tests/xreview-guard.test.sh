@@ -1182,5 +1182,32 @@ is "R7 a read with an attached header value stays allowed" \
    "$(decision "$W" 'gh api -X GET repos/acme/app/pulls -HX-GitHub-Api-Version:2022-11-28') $(decision "$W" 'glab api -X GET projects/acme%2Fapp/merge_requests -HX-Custom:1')" \
    "allow allow"
 
+echo "S. the guard never lazy-fetches"
+# The hook runs outside the sandbox and the repository's configuration is writable from it. A
+# partial clone fetches a missing object on demand, which runs the promisor remote's uploadpack
+# command; git merge gone~1 makes the guard resolve a revision through a ref at a missing
+# commit. The verdict stays a deny, and the marker is what the uploadpack command leaves.
+PF="$ROOT/work/pf"; PM="$ROOT/pf-marks"; PO="$ROOT/remotes/pf.git"; mkdir -p "$PF" "$PM"
+git init -q --bare "$PO"; git -C "$PF" init -q
+printf 'one\n' > "$PF/a.txt"; git -C "$PF" add a.txt && git -C "$PF" commit -q -m init
+git -C "$PO" fetch -q "$PF" "+refs/heads/main:refs/heads/main"
+git -C "$PF" remote add origin "$PO"; git -C "$PF" fetch -q origin
+git -C "$PF" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+printf '#!/bin/sh\ntouch "%s/uploadpack"\nexec git upload-pack "$@"\n' "$PM" > "$ROOT/pf-uploadpack"
+chmod +x "$ROOT/pf-uploadpack"
+git -C "$PF" config remote.origin.uploadpack "$ROOT/pf-uploadpack"
+git -C "$PF" config remote.origin.promisor true
+git -C "$PF" config remote.origin.partialclonefilter blob:none
+git -C "$PF" config extensions.partialclone origin
+printf '%s\n' 0123456789abcdef0123456789abcdef01234567 > "$PF/.git/refs/heads/gone"
+is "S0 the fixture's ref names a commit that is not there, and resolving it fetches" \
+   "$(git -C "$PF" rev-parse --symbolic-full-name 'gone~1' >/dev/null 2>&1; ls "$PM" | tr '\n' ' ')" "uploadpack "
+for rev in 'gone~1' 'gone^' 'gone^{commit}'; do
+  rm -f "$PM"/*
+  d="$(decision "$PF" "git merge $rev")"
+  is "S1 git merge $rev is denied as before" "$d" deny
+  is "S2 and ran no uploadpack command" "$(ls "$PM" | tr '\n' ' ')" ""
+done
+
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))
