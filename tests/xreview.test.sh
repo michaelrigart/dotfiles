@@ -1732,11 +1732,16 @@ git -C "$HR" config core.fsmonitor "$ROOT/evil-fsmonitor"
 git -C "$HR" config filter.m.clean "$ROOT/evil-clean"
 git -C "$HR" config filter.m.process "$ROOT/evil-process"
 # A tracked file whose stat changed but not its content makes the worktree diff refresh the
-# index and write it back, which runs core.hooksPath's post-index-change.
+# index and write it back, which runs core.hooksPath's post-index-change and, on git 2.54 and
+# later, every hook.<name>.command whose event is post-index-change (core.hooksPath=/dev/null
+# does not switch those off). Each source writes its own marker.
 mkdir -p "$ROOT/evil-hooks"
 printf '#!/bin/sh\ntouch "%s/hook"\n' "$HM" > "$ROOT/evil-hooks/post-index-change"
 chmod +x "$ROOT/evil-hooks/post-index-change"
 git -C "$HR" config core.hooksPath "$ROOT/evil-hooks"
+printf '#!/bin/sh\ntouch "%s/confighook"\n' "$HM" > "$ROOT/evil-confighook"; chmod +x "$ROOT/evil-confighook"
+git -C "$HR" config hook.evil.command "$ROOT/evil-confighook"
+git -C "$HR" config hook.evil.event post-index-change
 touch -t 200001010000 "$HR/b.txt"
 rm -f "$HM"/*
 out="$(cd "$HR" && bash "$XREVIEW" apply xr-s1 2>&1)"; rc=$?
@@ -1744,8 +1749,9 @@ applying="$(cat "$XDG_STATE_HOME/xreview/$(git -C "$HR" rev-parse --show-topleve
 is "AP1 apply succeeds in a repository whose configuration names commands" "$rc" 0
 is "AP2 and the scope lists the commit, worktree and index changes" \
    "$(printf '%s' "$applying" | grep '^file=' | tr '\n' ' ')" "file=a.txt file=b.txt file=c.txt "
-is "AP3 neither core.fsmonitor nor a filter ran" "$(ls "$HM" | grep -v '^hook$' | tr '\n' ' ')" ""
+is "AP3 neither core.fsmonitor nor a filter ran" "$(ls "$HM" | grep -v '^\(hook\|confighook\)$' | tr '\n' ' ')" ""
 is "AP4 and no hook from core.hooksPath ran (the index refresh writes it back)" "$(ls "$HM" | grep -c '^hook$')" 0
+is "AP4b and no hook.<name>.command for post-index-change ran" "$(ls "$HM" | grep -c '^confighook$')" 0
 (cd "$HR" && bash "$XREVIEW" apply --done >/dev/null 2>&1)
 # The scope count prints once: grep -c prints 0 and exits 1 on an empty scope, and a fallback
 # of its own used to add a second 0.
@@ -1782,10 +1788,31 @@ is "AP6 apply succeeds with drivers named x=y, x= and a.b" "$rc" 0
 is "AP7 no clean filter ran, whatever its driver is called" "$(ls "$OM" | tr '\n' ' ')" ""
 is "AP8 and the scope still lists the files" \
    "$(printf '%s' "$applying" | grep '^file=' | tr '\n' ' ')" "file=.gitattributes file=dot.txt file=eq.txt file=x.txt "
-# Overrides already in the environment keep their place; the hardened ones follow them.
+# Command-line-style overrides already in the environment must not reach the diffs: git reads
+# GIT_CONFIG_PARAMETERS after GIT_CONFIG_KEY_n/VALUE_n, so an inherited one would win over ours,
+# and bash reads GIT_CONFIG_COUNT=010 as octal, which misnumbered our pairs and lost the first.
+printf '#!/bin/sh\ntouch "%s/fsmonitor"\n' "$OM" > "$ROOT/odd-fsmonitor"; chmod +x "$ROOT/odd-fsmonitor"
+git -C "$OR" config core.fsmonitor "$ROOT/odd-fsmonitor"
 rm -f "$OM"/*
-out="$(cd "$OR" && GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.abbrev GIT_CONFIG_VALUE_0=7 bash "$XREVIEW" apply xr-o2 2>&1)"; rc=$?
-is "AP9 an environment that already carries GIT_CONFIG_COUNT still gets every override" "$rc/$(ls "$OM" | tr '\n' ' ')" "0/"
+out="$(cd "$OR" && bash "$XREVIEW" apply xr-o0 2>&1)"; rc=$?
+is "AP9 the fixture's own core.fsmonitor is switched off" "$rc/$(ls "$OM" | tr '\n' ' ')" "0/"
+printf '#!/bin/sh\ntouch "%s/inherited-fsmonitor"\n' "$OM" > "$ROOT/odd-inherited-fsmonitor"; chmod +x "$ROOT/odd-inherited-fsmonitor"
+rm -f "$OM"/*
+out="$(cd "$OR" && GIT_CONFIG_PARAMETERS="'core.fsmonitor=$ROOT/odd-inherited-fsmonitor'" bash "$XREVIEW" apply xr-o2 2>&1)"; rc=$?
+applying="$(cat "$XDG_STATE_HOME/xreview/$(git -C "$OR" rev-parse --show-toplevel | tr '/' '_' | sed 's/^_//')/applying" 2>/dev/null)"
+is "AP10 an inherited GIT_CONFIG_PARAMETERS naming a core.fsmonitor does not run it" "$rc/$(ls "$OM" | tr '\n' ' ')" "0/"
+is "AP10b and the scope still lists the files" "$(printf '%s' "$applying" | grep -c '^file=')" 4
+rm -f "$OM"/*
+out="$(cd "$OR" && env GIT_CONFIG_COUNT=010 GIT_CONFIG_KEY_0=core.abbrev GIT_CONFIG_VALUE_0=7 \
+  GIT_CONFIG_KEY_1=core.abbrev GIT_CONFIG_VALUE_1=7 GIT_CONFIG_KEY_2=core.abbrev GIT_CONFIG_VALUE_2=7 \
+  GIT_CONFIG_KEY_3=core.abbrev GIT_CONFIG_VALUE_3=7 GIT_CONFIG_KEY_4=core.abbrev GIT_CONFIG_VALUE_4=7 \
+  GIT_CONFIG_KEY_5=core.abbrev GIT_CONFIG_VALUE_5=7 GIT_CONFIG_KEY_6=core.abbrev GIT_CONFIG_VALUE_6=7 \
+  GIT_CONFIG_KEY_7=core.abbrev GIT_CONFIG_VALUE_7=7 GIT_CONFIG_KEY_8=core.abbrev GIT_CONFIG_VALUE_8=7 \
+  GIT_CONFIG_KEY_9=core.abbrev GIT_CONFIG_VALUE_9=7 \
+  bash "$XREVIEW" apply xr-o3 2>&1)"; rc=$?
+applying="$(cat "$XDG_STATE_HOME/xreview/$(git -C "$OR" rev-parse --show-toplevel | tr '/' '_' | sed 's/^_//')/applying" 2>/dev/null)"
+is "AP11 an inherited GIT_CONFIG_COUNT=010 with pairs does not lose the fsmonitor override" "$rc/$(ls "$OM" | tr '\n' ' ')" "0/"
+is "AP11b and the scope still lists the files" "$(printf '%s' "$applying" | grep -c '^file=')" 4
 (cd "$OR" && bash "$XREVIEW" apply --done >/dev/null 2>&1)
 
 echo "AL. xreview apply never lazy-fetches from a partial clone's remote"

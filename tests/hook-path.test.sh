@@ -76,7 +76,8 @@ done
 # insteadOf with protocol.ext.allow=always ("repo"), core.sshCommand on an ssh URL
 # ("repo-ssh"), or neither on a plain local origin that main is ahead of ("repo-plain"), so
 # the outgoing commits are read to the end. Each also sets core.hooksPath to a post-index-change
-# hook, and b.txt gets a new mtime before every run (a stat change with no content change): any
+# hook and registers a second one as hook.evil.command with hook.evil.event=post-index-change
+# (git 2.54 and later run it, and core.hooksPath=/dev/null does not stop it), and b.txt gets a new mtime before every run (a stat change with no content change): any
 # git that refreshes the index and writes it back runs the hook. The mtime is set to a distinct
 # whole second each time, because git compares seconds, so a plain touch can look unchanged.
 # "repo-hook" carries only that hook: with the failing process filter above, Apple's git 2.54
@@ -85,7 +86,7 @@ export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 MARKS="$T/marks"; EVIL="$T/evil"; mkdir -p "$MARKS" "$EVIL"
 evil() { printf '#!/bin/sh\ntouch "%s/%s"\n%bexit 0\n' "$MARKS" "$1" "$2" > "$EVIL/$1"; chmod 755 "$EVIL/$1"; }
 evil fsmonitor ''; evil clean 'cat\n'; evil smudge 'cat\n'; evil process ''
-evil diff ''; evil textconv 'cat "$1"\n'
+evil diff ''; evil textconv 'cat "$1"\n'; evil confighook ''
 mkdir -p "$EVIL/hooks"; printf '#!/bin/sh\ntouch "%s/hook"\n' "$MARKS" > "$EVIL/hooks/post-index-change"
 chmod 755 "$EVIL/hooks/post-index-change"
 printf '#!/bin/sh\ntouch "%s/ssh"\nexit 1\n' "$MARKS" > "$EVIL/ssh"; chmod 755 "$EVIL/ssh"
@@ -99,6 +100,8 @@ mkrepo() {
   printf '* filter=m diff=m\n' > "$r/.gitattributes"
   git -C "$r" add a.txt b.txt && git -C "$r" "${GIT_T[@]}" commit -q -m init || return 1
   git -C "$r" branch feat
+  git -C "$r" config hook.evil.command "$EVIL/confighook"
+  git -C "$r" config hook.evil.event post-index-change
   [ -z "${3:-}" ] || { git -C "$r" config core.hooksPath "$EVIL/hooks"; return; }   # repo-hook
   git -C "$r" remote add origin 'git@forge.example:acme/app.git'
   git -C "$r" config "url.$rewrite.insteadOf" 'git@forge.example:acme/app.git'
@@ -142,7 +145,7 @@ env -u GIT_SSH_COMMAND git -C "$T/repo" ls-remote origin >/dev/null 2>&1
 env -u GIT_SSH_COMMAND git -C "$T/repo-ssh" ls-remote origin >/dev/null 2>&1
 live=$(ls "$MARKS" | tr '\n' ' ')
 if [ -e "$MARKS/fsmonitor" ] && [ -e "$MARKS/ext" ] && [ -e "$MARKS/ssh" ] \
-   && [ -e "$MARKS/hook" ] && { [ -e "$MARKS/clean" ] || [ -e "$MARKS/process" ]; }; then
+   && [ -e "$MARKS/hook" ] && [ -e "$MARKS/confighook" ] && { [ -e "$MARKS/clean" ] || [ -e "$MARKS/process" ]; }; then
   _pass "the fixture repositories run their configured commands under plain git"
 else _fail "the fixture repositories run their configured commands under plain git" "$live"; fi
 rm -f "$MARKS"/*
