@@ -679,7 +679,12 @@ git -C "$W" config core.gitProxy "$ROOT/evil-ssh"
 is "H24 core.gitProxy set is denied" "$(decision "$W" 'gh pr create --head feature --base main')" deny
 git -C "$W" config --unset core.gitProxy
 git -C "$W" config remote.origin.vcs evil
-is "H25 remote.origin.vcs set is denied" "$(decision "$W" 'gh pr create --head feature --base main')" deny
+# remote.origin.vcs picks a git-remote-evil helper whatever the URL says. One that writes a marker
+# sits on the guard's PATH, so a deny reached only because ls-remote failed would still leave it.
+EVILBIN="$ROOT/evilbin"; mkdir -p "$EVILBIN"
+printf '#!/bin/sh\ntouch "%s/vcs"\nexit 1\n' "$MARK" > "$EVILBIN/git-remote-evil"; chmod +x "$EVILBIN/git-remote-evil"
+is "H25 remote.origin.vcs set is denied" "$(PATH="$EVILBIN:$PATH" decision "$W" 'gh pr create --head feature --base main')" deny
+is "H25b and git-remote-<vcs> never ran" "$(ls "$MARK" | grep -c '^vcs$')" 0
 git -C "$W" config --unset remote.origin.vcs
 is "H26 with the configuration restored, the creation is allowed again" \
    "$(decision "$W" 'gh pr create --head feature --base main')" allow

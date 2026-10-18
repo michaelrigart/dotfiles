@@ -66,7 +66,7 @@ for t in herdr tagteam glab gh gitleaks python python3 jq git bash zsh sh; do
   [ -e "$HOSTILE/$t" ] || ln -s .marker "$HOSTILE/$t"
 done
 
-# Three real repositories for the payloads, built with git isolated from the real global config
+# Four real repositories for the payloads, built with git isolated from the real global config
 # (no signing through the 1Password agent, so no prompt), and an empty state home. A sandboxed
 # command can write a repository's configuration, so each carries configuration that would
 # run a command if any hook's git read it, every command writing its own marker in $T/marks:
@@ -75,20 +75,31 @@ done
 # origin, which each names as the forge project, an ext:: rewrite of its URL through
 # insteadOf with protocol.ext.allow=always ("repo"), core.sshCommand on an ssh URL
 # ("repo-ssh"), or neither on a plain local origin that main is ahead of ("repo-plain"), so
-# the outgoing commits are read to the end.
+# the outgoing commits are read to the end. Each also sets core.hooksPath to a post-index-change
+# hook, and b.txt gets a new mtime before every run (a stat change with no content change): any
+# git that refreshes the index and writes it back runs the hook. The mtime is set to a distinct
+# whole second each time, because git compares seconds, so a plain touch can look unchanged.
+# "repo-hook" carries only that hook: with the failing process filter above, Apple's git 2.54
+# aborts the refresh before it writes the index, which would hide the hook in the others.
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 MARKS="$T/marks"; EVIL="$T/evil"; mkdir -p "$MARKS" "$EVIL"
 evil() { printf '#!/bin/sh\ntouch "%s/%s"\n%bexit 0\n' "$MARKS" "$1" "$2" > "$EVIL/$1"; chmod 755 "$EVIL/$1"; }
 evil fsmonitor ''; evil clean 'cat\n'; evil smudge 'cat\n'; evil process ''
 evil diff ''; evil textconv 'cat "$1"\n'
+mkdir -p "$EVIL/hooks"; printf '#!/bin/sh\ntouch "%s/hook"\n' "$MARKS" > "$EVIL/hooks/post-index-change"
+chmod 755 "$EVIL/hooks/post-index-change"
 printf '#!/bin/sh\ntouch "%s/ssh"\nexit 1\n' "$MARKS" > "$EVIL/ssh"; chmod 755 "$EVIL/ssh"
+BUMP=0
+bump() { BUMP=$((BUMP + 1)); touch -t "$(date -v-${BUMP}d +%Y%m%d%H%M.%S)" "$1/b.txt"; }
 GIT_T=(-c user.name=t -c user.email=t@t -c commit.gpgsign=false)
 mkrepo() {
   local r=$1 rewrite=$2
   git init -q -b main "$r" || return 1
-  printf 'one\n' > "$r/a.txt"; printf '* filter=m diff=m\n' > "$r/.gitattributes"
-  git -C "$r" add a.txt && git -C "$r" "${GIT_T[@]}" commit -q -m init || return 1
+  printf 'one\n' > "$r/a.txt"; printf 'same\n' > "$r/b.txt"
+  printf '* filter=m diff=m\n' > "$r/.gitattributes"
+  git -C "$r" add a.txt b.txt && git -C "$r" "${GIT_T[@]}" commit -q -m init || return 1
   git -C "$r" branch feat
+  [ -z "${3:-}" ] || { git -C "$r" config core.hooksPath "$EVIL/hooks"; return; }   # repo-hook
   git -C "$r" remote add origin 'git@forge.example:acme/app.git'
   git -C "$r" config "url.$rewrite.insteadOf" 'git@forge.example:acme/app.git'
   git -C "$r" config core.fsmonitor "$EVIL/fsmonitor"
@@ -99,8 +110,9 @@ mkrepo() {
   git -C "$r" config diff.m.textconv "$EVIL/textconv"
   git -C "$r" config core.sshCommand "$EVIL/ssh"
   git -C "$r" config protocol.ext.allow always
+  git -C "$r" config core.hooksPath "$EVIL/hooks"
 }
-mkrepo "$T/repo" "ext::touch $MARKS/ext" && mkrepo "$T/repo-ssh" "ssh://forge.example/acme/app.git" \
+mkrepo "$T/repo-hook" "" hook-only && mkrepo "$T/repo" "ext::touch $MARKS/ext" && mkrepo "$T/repo-ssh" "ssh://forge.example/acme/app.git" \
   && git init -q --bare "$T/origin.git" && git -C "$T/origin.git" fetch -q "$T/repo" main:main \
   && mkrepo "$T/repo-plain" "$T/origin.git" \
   && git -C "$T/repo-plain" fetch -q origin main:refs/remotes/origin/main \
@@ -123,12 +135,14 @@ COMMANDS=("git push origin main"
 
 # The fixtures are live: plain git runs each configured command, so a silent hook is a result.
 # (The sandbox's own GIT_SSH_COMMAND would outrank core.sshCommand, so it is dropped here.)
+bump "$T/repo-hook"
+git -C "$T/repo-hook" diff --name-only >/dev/null 2>&1
 env -u GIT_SSH_COMMAND git -C "$T/repo" diff --quiet >/dev/null 2>&1
 env -u GIT_SSH_COMMAND git -C "$T/repo" ls-remote origin >/dev/null 2>&1
 env -u GIT_SSH_COMMAND git -C "$T/repo-ssh" ls-remote origin >/dev/null 2>&1
 live=$(ls "$MARKS" | tr '\n' ' ')
 if [ -e "$MARKS/fsmonitor" ] && [ -e "$MARKS/ext" ] && [ -e "$MARKS/ssh" ] \
-   && { [ -e "$MARKS/clean" ] || [ -e "$MARKS/process" ]; }; then
+   && [ -e "$MARKS/hook" ] && { [ -e "$MARKS/clean" ] || [ -e "$MARKS/process" ]; }; then
   _pass "the fixture repositories run their configured commands under plain git"
 else _fail "the fixture repositories run their configured commands under plain git" "$live"; fi
 rm -f "$MARKS"/*
@@ -151,11 +165,12 @@ while IFS= read -r cmd; do
   # Every hook runs against both repositories with each payload (the statusline reads only the
   # directory); a marker from the hostile PATH or from the repositories' configuration fails it.
   rm -f "$MARKS"/*; ran=""
-  for r in "$T/repo" "$T/repo-ssh" "$T/repo-plain"; do
+  for r in "$T/repo" "$T/repo-ssh" "$T/repo-plain" "$T/repo-hook"; do
     inputs=("$(jq -cn --arg d "$r" '{model:{display_name:"Opus"},workspace:{current_dir:$d}}')")
     case $cmd in *statusline*) ;; *)
       inputs=(); for c in "${COMMANDS[@]}"; do inputs+=("$(payload "$r" "$c")"); done ;; esac
     for input in "${inputs[@]}"; do
+      bump "$r"
       printf '%s' "$input" | env -i HOME="$T" XDG_STATE_HOME="$T/state" TMPDIR="$T" \
         PATH="$HOSTILE:/usr/bin:/bin:/opt/homebrew/bin" /bin/sh -c "$cmd" >/dev/null 2>&1
       what=$(printf '%s' "$input" | jq -r '.tool_input.command // "statusline"')

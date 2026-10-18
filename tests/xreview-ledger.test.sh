@@ -201,6 +201,35 @@ is "A46 the quoted name is what git writes for it" "$(cat "$ROOT/qp.ours")" "$(c
 is "A47 as spelled out: short escapes, then octal" "$(cat "$ROOT/qp.ours")" '"q\a\b\v\f\r\001\303\251\"\\z"'
 git -C "$R" switch -q main
 git -C "$R" switch -q main
+# diff.submodule=diff makes a patch of a bumped gitlink start a child `git diff` inside the
+# submodule, which has no --no-ext-diff of its own: the submodule's diff.external and textconv
+# driver would run. Each writes its own marker; the patch must still show the gitlink.
+SMR="$ROOT/sm-super"; SMS="$ROOT/sm-src"; SMK="$ROOT/sm-marks"; mkdir -p "$SMK"
+mkrepo "$SMS"; mkrepo "$SMR"
+git -C "$SMR" -c protocol.file.allow=always submodule add -q "$SMS" sm 2>/dev/null
+git -C "$SMR" commit -q -m "add the submodule"
+variant "$SMR" bump
+printf 'changed\n' > "$SMR/sm/a.txt"; git -C "$SMR/sm" commit -q -am "move the submodule"
+git -C "$SMR" add sm; git -C "$SMR" commit -q -m "bump the gitlink"
+printf '#!/bin/sh\ntouch "%s/external"\nexit 0\n' "$SMK" > "$ROOT/sm-external"; chmod +x "$ROOT/sm-external"
+printf '#!/bin/sh\ntouch "%s/textconv"\ncat "$1"\n' "$SMK" > "$ROOT/sm-textconv"; chmod +x "$ROOT/sm-textconv"
+git -C "$SMR/sm" config diff.external "$ROOT/sm-external"
+git -C "$SMR/sm" config diff.m.textconv "$ROOT/sm-textconv"
+printf '*.txt diff=m\n' > "$(git -C "$SMR/sm" rev-parse --path-format=absolute --git-path info/attributes)"
+SM_FP="$(fp "$SMR" main bump)"
+git -C "$SMR" config diff.submodule diff
+rm -f "$SMK"/*
+out="$(L diff "$SMR" main bump 2>&1)"
+is "A48 a bumped gitlink under diff.submodule=diff renders as a gitlink" \
+   "$(printf '%s\n' "$out" | grep -c '^+Subproject commit [0-9a-f]\{40\}$')" 1
+is "A49 and neither the submodule's diff.external nor its textconv ran" "$(ls "$SMK" | tr '\n' ' ')" ""
+git -C "$SMR/sm" config --unset diff.external; rm -f "$SMK"/*   # the external driver outranks textconv
+L diff "$SMR" main bump >/dev/null 2>&1
+is "A49b nor the textconv driver alone" "$(ls "$SMK" | tr '\n' ' ')" ""
+is "A50 the fingerprint ignores diff.submodule too" "$(fp "$SMR" main bump)" "$SM_FP"
+git -C "$SMR" config diff.submodule log
+is "A51 diff.submodule=log does not turn the gitlink into prose" \
+   "$(L diff "$SMR" main bump 2>&1 | grep -c '^+Subproject commit [0-9a-f]\{40\}$')" 1
 
 echo "B. range normalization (spec 3.1)"
 N="$ROOT/norm"; mkrepo "$N"

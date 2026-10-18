@@ -1731,13 +1731,21 @@ printf 'edited\n' > "$HR/a.txt"; printf 'staged\n' > "$HR/c.txt"; git -C "$HR" a
 git -C "$HR" config core.fsmonitor "$ROOT/evil-fsmonitor"
 git -C "$HR" config filter.m.clean "$ROOT/evil-clean"
 git -C "$HR" config filter.m.process "$ROOT/evil-process"
+# A tracked file whose stat changed but not its content makes the worktree diff refresh the
+# index and write it back, which runs core.hooksPath's post-index-change.
+mkdir -p "$ROOT/evil-hooks"
+printf '#!/bin/sh\ntouch "%s/hook"\n' "$HM" > "$ROOT/evil-hooks/post-index-change"
+chmod +x "$ROOT/evil-hooks/post-index-change"
+git -C "$HR" config core.hooksPath "$ROOT/evil-hooks"
+touch -t 200001010000 "$HR/b.txt"
 rm -f "$HM"/*
 out="$(cd "$HR" && bash "$XREVIEW" apply xr-s1 2>&1)"; rc=$?
 applying="$(cat "$XDG_STATE_HOME/xreview/$(git -C "$HR" rev-parse --show-toplevel | tr '/' '_' | sed 's/^_//')/applying" 2>/dev/null)"
 is "AP1 apply succeeds in a repository whose configuration names commands" "$rc" 0
 is "AP2 and the scope lists the commit, worktree and index changes" \
    "$(printf '%s' "$applying" | grep '^file=' | tr '\n' ' ')" "file=a.txt file=b.txt file=c.txt "
-is "AP3 neither core.fsmonitor nor a filter ran" "$(ls "$HM" | tr '\n' ' ')" ""
+is "AP3 neither core.fsmonitor nor a filter ran" "$(ls "$HM" | grep -v '^hook$' | tr '\n' ' ')" ""
+is "AP4 and no hook from core.hooksPath ran (the index refresh writes it back)" "$(ls "$HM" | grep -c '^hook$')" 0
 (cd "$HR" && bash "$XREVIEW" apply --done >/dev/null 2>&1)
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"

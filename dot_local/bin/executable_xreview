@@ -726,9 +726,13 @@ cmd_apply() {
   local base; base="$(git merge-base HEAD origin/HEAD 2>/dev/null \
                       || git merge-base HEAD main 2>/dev/null || printf '')"
   # This runs unsandboxed, and a repository's configuration is writable from the sandbox: a
-  # worktree or index diff would run core.fsmonitor and every clean filter it names. Both are
-  # switched off for each configured filter, whatever its name, and no diff driver runs.
-  local -a g=(git -c core.fsmonitor=false); local k d
+  # worktree or index diff would run core.fsmonitor and every clean filter it names, and a stat
+  # change with no content change refreshes the index and writes it back, which runs
+  # core.hooksPath's post-index-change (--no-optional-locks does not stop that write, measured
+  # on git 2.54 and 2.56). The monitor and each configured filter (whatever its name) are
+  # switched off, hooks point at nothing, and no diff driver runs.
+  local -a g=(git -c core.fsmonitor=false -c core.hooksPath=/dev/null)
+  local k d
   while IFS= read -r k; do
     d=${k#filter.}; d=${d%.*}
     g+=(-c "filter.$d.clean=" -c "filter.$d.smudge=" -c "filter.$d.process="
