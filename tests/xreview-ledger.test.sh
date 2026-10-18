@@ -618,5 +618,30 @@ out="$(L decide "$D" main main feature --branch numeric 2>&1)"; rc=$?
 is "H8 a numeric fingerprint is no traceback" "$([ "$rc" -le 1 ] && printf '%s' "$out" | jq -e 'has("allow")' >/dev/null && ! printf '%s' "$out" | grep -q Traceback && echo ok)" ok
 is "H9 and the branch record shows it" "$(printf '%s' "$out" | jq -r '.on_record_branch | join("|")' | grep -c 'pending r4')" 1
 
+echo "I. the diff never lazy-fetches from a partial clone's remote"
+# Reading a blob that a blob-filtered partial clone lacks fetches it, which runs the remote's
+# uploadpack command, named by a configuration the sandbox can write, outside the sandbox. The
+# marker is what that command leaves. The patch needs the blob and so fails closed (non-zero,
+# a reason on stderr, nothing on stdout); the fingerprint reads no blob and still answers.
+LO="$ROOT/lazy-origin"; LC="$ROOT/lazy-clone"; LM="$ROOT/lazy-marks"; mkdir -p "$LO" "$LM"
+git -C "$LO" init -q && git -C "$LO" config uploadpack.allowFilter true
+git -C "$LO" config uploadpack.allowAnySHA1InWant true
+seq 1 40 > "$LO/a.txt"; git -C "$LO" add . && git -C "$LO" commit -q -m init
+git -C "$LO" switch -q -c feat; echo extra >> "$LO/a.txt"; git -C "$LO" add -A && git -C "$LO" commit -q -m edit
+git clone -q --no-checkout --filter=blob:none "file://$LO" "$LC" 2>/dev/null
+git -C "$LC" update-ref refs/heads/feat refs/remotes/origin/feat
+git -C "$LC" update-ref refs/heads/main refs/remotes/origin/main
+printf '#!/bin/sh\ntouch "%s/uploadpack"\nexec git upload-pack "$@"\n' "$LM" > "$ROOT/evil-uploadpack"
+chmod +x "$ROOT/evil-uploadpack"; git -C "$LC" config remote.origin.uploadpack "$ROOT/evil-uploadpack"
+is "I0 the fixture is a blob-filtered partial clone with the new blob missing" \
+   "$(git -C "$LC" config remote.origin.partialclonefilter) $(GIT_NO_LAZY_FETCH=1 git -C "$LC" cat-file -e "$(git -C "$LO" rev-parse feat:a.txt)" 2>/dev/null; echo $?)" "blob:none 1"
+rm -f "$LM"/*
+out="$(L diff "$LC" main feat 2>"$ROOT/lazy.err")"; rc=$?
+is "I1 the diff, which needs the blob, fails closed" "$rc $(printf '%s' "$out" | wc -c | tr -d ' ') $(grep -c . "$ROOT/lazy.err")" "1 0 1"
+is "I2 the remote's uploadpack never ran for it" "$(ls "$LM" | tr '\n' ' ')" ""
+rm -f "$LM"/*
+differs "I3 the fingerprint, which reads no blob, still answers" "$(fp "$LC" main feat)" ""
+is "I4 and the remote's uploadpack never ran for it either" "$(ls "$LM" | tr '\n' ' ')" ""
+
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))

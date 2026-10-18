@@ -1747,6 +1747,45 @@ is "AP2 and the scope lists the commit, worktree and index changes" \
 is "AP3 neither core.fsmonitor nor a filter ran" "$(ls "$HM" | grep -v '^hook$' | tr '\n' ' ')" ""
 is "AP4 and no hook from core.hooksPath ran (the index refresh writes it back)" "$(ls "$HM" | grep -c '^hook$')" 0
 (cd "$HR" && bash "$XREVIEW" apply --done >/dev/null 2>&1)
+# The scope count prints once: grep -c prints 0 and exits 1 on an empty scope, and a fallback
+# of its own used to add a second 0.
+ER="$ROOT/empty-repo"; mkdir -p "$ER"
+git -C "$ER" init -q -b main && git -C "$ER" config user.email t@t && git -C "$ER" config user.name t
+git -C "$ER" config commit.gpgsign false
+printf 'one\n' > "$ER/a.txt"; git -C "$ER" add . && git -C "$ER" commit -q -m init
+out="$(cd "$ER" && bash "$XREVIEW" apply xr-e1 2>&1)"
+is "AP5 an empty scope is reported on one line, as 0 files" "$out" "xreview: apply window open for xr-e1 (0 files in scope)"
+(cd "$ER" && bash "$XREVIEW" apply --done >/dev/null 2>&1)
+
+echo "AL. xreview apply never lazy-fetches from a partial clone's remote"
+# A blob-filtered partial clone fetches a missing blob on demand, and that runs the remote's
+# uploadpack command, which the repository's configuration names (writable from the sandbox).
+# The range holds a rename with an edit, so rename detection would read both blobs, neither of
+# them local. The marker is what the uploadpack command leaves; the scope must still list the
+# renamed paths (apply fails closed on the blob, never on the paths: --no-renames lists both).
+LO="$ROOT/lazy-origin"; LC="$ROOT/lazy-clone"; LM="$ROOT/lazy-marks"; mkdir -p "$LO" "$LM"
+git -C "$LO" init -q -b main && git -C "$LO" config user.email t@t && git -C "$LO" config user.name t
+git -C "$LO" config commit.gpgsign false && git -C "$LO" config uploadpack.allowFilter true
+git -C "$LO" config uploadpack.allowAnySHA1InWant true
+seq 1 40 > "$LO/old.txt"; git -C "$LO" add . && git -C "$LO" commit -q -m init
+git -C "$LO" switch -q -c feat; git -C "$LO" mv old.txt new.txt; echo extra >> "$LO/new.txt"
+git -C "$LO" add -A && git -C "$LO" commit -q -m "rename and edit"; git -C "$LO" switch -q main
+git clone -q --no-checkout --filter=blob:none "file://$LO" "$LC" 2>/dev/null
+git -C "$LC" config user.email t@t; git -C "$LC" config user.name t
+git -C "$LC" update-ref refs/heads/feat refs/remotes/origin/feat
+git -C "$LC" symbolic-ref HEAD refs/heads/feat; git -C "$LC" read-tree HEAD
+printf '#!/bin/sh\ntouch "%s/uploadpack"\nexec git upload-pack "$@"\n' "$LM" > "$ROOT/evil-uploadpack"
+chmod +x "$ROOT/evil-uploadpack"; git -C "$LC" config remote.origin.uploadpack "$ROOT/evil-uploadpack"
+is "AL0 the fixture is a blob-filtered partial clone with the blob missing" \
+   "$(git -C "$LC" config remote.origin.partialclonefilter) $(GIT_NO_LAZY_FETCH=1 git -C "$LC" cat-file -e "$(git -C "$LO" rev-parse feat:new.txt)" 2>/dev/null; echo $?)" "blob:none 1"
+rm -f "$LM"/*
+out="$(cd "$LC" && bash "$XREVIEW" apply xr-l1 2>&1)"; rc=$?
+applying="$(cat "$XDG_STATE_HOME/xreview/$(git -C "$LC" rev-parse --show-toplevel | tr '/' '_' | sed 's/^_//')/applying" 2>/dev/null)"
+is "AL1 apply succeeds in the partial clone" "$rc" 0
+is "AL2 the remote's uploadpack never ran" "$(ls "$LM" | tr '\n' ' ')" ""
+is "AL3 and the scope lists both sides of the rename" \
+   "$(printf '%s' "$applying" | grep '^file=\(old\|new\).txt$' | tr '\n' ' ')" "file=new.txt file=old.txt "
+(cd "$LC" && bash "$XREVIEW" apply --done >/dev/null 2>&1)
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))

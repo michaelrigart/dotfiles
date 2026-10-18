@@ -723,6 +723,10 @@ cmd_apply() {
   [ -n "${1:-}" ] || die "usage: xreview apply <nonce> | xreview apply --done"
   git rev-parse --show-toplevel >/dev/null 2>&1 \
     || die "not inside a git repository; an apply window is scoped to a branch's diff"
+  # A partial clone's lazy fetch would run remote.<name>.uploadpack, which this repository's
+  # configuration (writable from the sandbox) names, and apply runs outside it. No git call
+  # below may fetch; a diff that needs a missing blob fails, and its paths are then not listed.
+  export GIT_NO_LAZY_FETCH=1
   local base; base="$(git merge-base HEAD origin/HEAD 2>/dev/null \
                       || git merge-base HEAD main 2>/dev/null || printf '')"
   # This runs unsandboxed, and a repository's configuration is writable from the sandbox: a
@@ -731,6 +735,8 @@ cmd_apply() {
   # core.hooksPath's post-index-change (--no-optional-locks does not stop that write, measured
   # on git 2.54 and 2.56). The monitor and each configured filter (whatever its name) are
   # switched off, hooks point at nothing, and no diff driver runs.
+  # The diffs detect no renames (a rename then lists both paths), so none reads a blob outside
+  # the changed paths.
   local -a g=(git -c core.fsmonitor=false -c core.hooksPath=/dev/null)
   local k d
   while IFS= read -r k; do
@@ -738,7 +744,7 @@ cmd_apply() {
     g+=(-c "filter.$d.clean=" -c "filter.$d.smudge=" -c "filter.$d.process="
         -c "filter.$d.required=false")
   done < <(git config --name-only --get-regexp '^filter\.' 2>/dev/null)
-  local -a flags=(--name-only --no-ext-diff --no-textconv --ignore-submodules=all)
+  local -a flags=(--name-only --no-ext-diff --no-textconv --no-renames --ignore-submodules=all)
   mkdir -p "$dir"
   { printf 'nonce=%s\n' "$1"
     { [ -n "$base" ] && "${g[@]}" diff "${flags[@]}" "$base"..HEAD 2>/dev/null
@@ -746,8 +752,8 @@ cmd_apply() {
       "${g[@]}" diff "${flags[@]}" --cached 2>/dev/null
     } | sort -u | sed 's/^/file=/'
   } > "$dir/applying"
-  printf 'xreview: apply window open for %s (%s files in scope)\n' \
-    "$1" "$(grep -c '^file=' "$dir/applying" 2>/dev/null || printf 0)"
+  local n; n="$(grep -c '^file=' "$dir/applying" 2>/dev/null || true)"
+  printf 'xreview: apply window open for %s (%s files in scope)\n' "$1" "${n:-0}"
 }
 
 # Everything on record for this repository: its ledger (shared by every worktree), then this

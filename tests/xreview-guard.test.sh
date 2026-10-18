@@ -681,11 +681,16 @@ git -C "$W" config --unset core.gitProxy
 git -C "$W" config remote.origin.vcs evil
 # remote.origin.vcs picks a git-remote-evil helper whatever the URL says. One that writes a marker
 # sits on the guard's PATH, so a deny reached only because ls-remote failed would still leave it.
+# Git's own protocol allowlist refuses an unknown transport ("transport 'evil' not allowed")
+# before the helper starts, so the helper only runs when the repository also sets
+# protocol.evil.allow: without it H25 and H25b pass even if the guard stopped checking the key.
+git -C "$W" config protocol.evil.allow always
 EVILBIN="$ROOT/evilbin"; mkdir -p "$EVILBIN"
 printf '#!/bin/sh\ntouch "%s/vcs"\nexit 1\n' "$MARK" > "$EVILBIN/git-remote-evil"; chmod +x "$EVILBIN/git-remote-evil"
 is "H25 remote.origin.vcs set is denied" "$(PATH="$EVILBIN:$PATH" decision "$W" 'gh pr create --head feature --base main')" deny
 is "H25b and git-remote-<vcs> never ran" "$(ls "$MARK" | grep -c '^vcs$')" 0
 git -C "$W" config --unset remote.origin.vcs
+git -C "$W" config --unset protocol.evil.allow
 is "H26 with the configuration restored, the creation is allowed again" \
    "$(decision "$W" 'gh pr create --head feature --base main')" allow
 
