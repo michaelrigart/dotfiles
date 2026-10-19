@@ -92,9 +92,16 @@ its parents, one per line on stdout as `<path>: trusted` or `<path>: untrusted`,
 with none it prints "No trusted config files found" on stderr. There is no third state (a file
 marked `--ignore` shows as `untrusted`). The `-C` directory is printed canonicalised (`/tmp`
 becomes `/private/tmp`) and the rest of the path as found; a path under `$HOME` is printed as
-`~/…`. Only entries inside `<dest>` matter; the step ignores parent and global configs. Paths
-are compared after resolving them, because `~/Code` may sit behind a symlink (the same reason
-`_wt_assert_worktree` resolves paths). Format measured 2026-10-19 with mise 2026.10.15.
+`~/…`. Format measured 2026-10-19 with mise 2026.10.15.
+
+Only entries inside `<dest>` matter; the step ignores parent and global configs. Membership is
+decided lexically: the step canonicalises `<dest>` itself (as mise does with the `-C`
+directory, and because `~/Code` may sit behind a symlink), maps a leading `~/` back to
+`$HOME`, and takes each entry whose printed path begins with `<canonical dest>/`. It never
+resolves the entry itself: a `mise.toml` that is a symlink to a file outside the worktree would
+then fall outside `<dest>` and be skipped, where rule 1 below must refuse it. The main
+checkout's counterpart is `<canonical main>/<rel>`, matched the same way in its `--show`
+output.
 
 An entry already `trusted` needs nothing. Each `untrusted` entry `<dest>/<rel>` is carried
 only when all of these hold:
@@ -157,11 +164,13 @@ worktree is `untrusted`, it prints one line naming the files and pointing at
 workspace as before. The warning never trusts anything and never stops the reopen; a failed
 read prints that the status could not be read, and also goes on.
 
-### The popup waits on failure
+### The popup waits when there is something to read
 
-`wt-prompt` keeps the popup open when `wt` fails: it prints a line asking for Enter and waits
-for it, so the refusal stays readable. On success it returns at once, as today. The popup's
-size does not change.
+`wt-prompt` keeps the popup open when `wt` fails, and when `wt` succeeds but printed the
+reopen warning: it prints a line asking for Enter and waits for it, so the refusal or warning
+stays readable. The warning is signalled separately from the exit status (a reopen that warns
+still succeeds), for example through a variable `wt` sets. Otherwise it returns at once, as
+today. The popup's size does not change.
 
 ## Testing
 
@@ -174,7 +183,9 @@ stub keeps a fake trust store keyed by path and content hash, answers `-C <dir> 
   and the message names the file, the `diff` and the recovery line.
 - A carried `mise.local.toml` whose main-checkout copy is untrusted: not trusted.
 - A file with no counterpart in the main checkout: not trusted; `review` shows the file.
-- A symlink in either checkout: refused.
+- A symlink in either checkout: refused. That includes a worktree `mise.toml` that is a
+  symlink to a file outside the worktree, and a symlinked directory on the way to a config:
+  both are refused, never skipped as outside the worktree.
 - No `mise` on `PATH`: the step does nothing and the hook runs.
 - `trust --show` failing or printing an unreadable line: nothing trusted, stop.
 - The stub rewrites the file during `mise trust`: `--untrust` follows, and the step stops.
@@ -186,7 +197,8 @@ stub keeps a fake trust store keyed by path and content hash, answers `-C <dir> 
   stops.
 - Reopen: an untrusted config prints the warning and the workspace still opens; a trusted one,
   or no `mise`, prints nothing; reopen never calls `mise trust`.
-- `wt-prompt`: a failing `wt` waits for Enter; a succeeding one does not.
+- `wt-prompt`: a failing `wt` waits for Enter; so does a reopen that printed the warning;
+  a clean success does not.
 
 The stub replaces `mise` for the whole suite, so no case touches the real trust store.
 
