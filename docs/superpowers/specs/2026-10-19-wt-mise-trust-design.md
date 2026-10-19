@@ -83,7 +83,9 @@ and `wt-prepare` re-runs it on the recovery path.
 
 If no `mise` binary is on `PATH` (`$+commands[mise]`, since `mise activate` also defines a
 `mise` shell function), the step does nothing: nothing in the worktree can load a mise config
-either. `wt` calls it as `command mise`, never through a shell function or alias.
+either. `wt` calls it as `command mise`, never through a shell function or alias, with stdin
+from `/dev/null`, so a mise that prompted would fail closed instead of reading Michael's next
+keystroke.
 
 ### Which files
 
@@ -102,6 +104,11 @@ resolves the entry itself: a `mise.toml` that is a symlink to a file outside the
 then fall outside `<dest>` and be skipped, where rule 1 below must refuse it. The main
 checkout's counterpart is `<canonical main>/<rel>`, matched the same way in its `--show`
 output.
+
+An entry that is not an absolute path after the `~/` mapping, and a blank line, make the
+read unreadable, so the step fails closed: mise prints a newline inside a config filename
+raw, and a file named `a: trusted⏎b.toml` would otherwise read as a trusted `a` and hide an
+untrusted `b.toml`.
 
 An entry already `trusted` needs nothing. Each `untrusted` entry `<dest>/<rel>` is carried
 only when all of these hold:
@@ -123,10 +130,12 @@ content), and `mise -C <main> trust --show` must still list `<main>/<rel>` as `t
 the main checkout and the worktree were not rewritten together). If any check fails, it runs
 `command mise trust --untrust <dest>/<rel>` and treats the file as one it could not carry.
 
-A residual remains: a writer that changes the file, lets `mise trust` hash the change, and
-restores it before the re-check leaves a stored hash for content Michael never saw; writing
-that content back later would load it. That takes a process racing a path that exists for a
-few milliseconds, at the moment Michael runs `wt`. Accepted.
+A residual remains: a writer that makes the rollback fail or misdirect, by removing the file
+or swapping in a symlink so that `--untrust` fails or untrusts a link's target, can leave a
+stored hash for content Michael never saw; writing that content back later would load it.
+`wt` reports a failed rollback (see "Failing closed"); a misdirected one is accepted as the
+same class. Either takes a process racing a path that exists for a few milliseconds, at the
+moment Michael runs `wt`. Accepted.
 
 ### When a file cannot be carried
 
@@ -138,9 +147,13 @@ wt: ~/Code/ViuMore/VM.Portal-feature-x/mise.toml is not trusted: it differs from
     then:   mise trust ~/Code/ViuMore/VM.Portal-feature-x/mise.toml
 ```
 
-The reasons are: it differs from the main checkout's; the main checkout has no such file
-(`review` then shows the file itself); the main checkout's is not trusted; it or its
-counterpart is a symlink or not a regular file. After listing every file, the step returns 1,
+The reasons are: it differs from the main checkout's; the main checkout has no such file; the
+main checkout's is not trusted; it or its counterpart is a symlink or not a regular file.
+The `review` line is a `diff` only for the first, where the main checkout's copy is a trusted
+baseline that differs. For every other reason it is `cat` of the worktree file, because a
+`diff` against an unreviewed or identical copy shows nothing. The command lines quote their
+paths, so they paste correctly for a checkout whose path holds spaces or other
+shell-special characters; the headline does not. After listing every file, the step returns 1,
 and `_wt_do_prepare` stops before the setup hook with its existing recovery line ("The
 worktree exists — fix it, then: wt-prepare <branch> && wt <branch>"). After Michael trusts
 the files, `wt-prepare` finds nothing left to carry and goes on to the hook.
@@ -148,7 +161,14 @@ the files, `wt-prepare` finds nothing left to carry and goes on to the hook.
 ### Failing closed
 
 If `mise trust --show` fails or prints a line the step cannot read, the step trusts nothing,
-says so, and returns 1. A failed `mise trust` or `--untrust` does the same.
+says so, and returns 1. A failed `mise trust` does the same. A failed `--untrust` says
+instead that the file may still be trusted, and how to check:
+
+```
+wt: could not withdraw mise trust from <dest>/<rel> — it may still be trusted; check with: mise -C <dest> trust --show
+```
+
+Refusals already collected are printed before the line that stops the step.
 
 ### Output
 
