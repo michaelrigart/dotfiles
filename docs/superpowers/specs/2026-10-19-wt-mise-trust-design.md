@@ -1,6 +1,6 @@
 # wt carries mise trust into new worktrees
 
-**Status:** In progress
+**Status:** Approved
 **Date:** 2026-10-19
 **Branch:** `feat/wt-mise-trust`
 
