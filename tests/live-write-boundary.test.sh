@@ -52,14 +52,15 @@ allowed() {
   prepare "$1" "$2" || return 0
   if try "$kind" "$target"; then echo "$1=WRITABLE"; else echo "$1=DENIED"; fail=$((fail + 1)); fi
 }
-# allowed_cfg <key> <path>: a .git/config file. Claude Code's own sandbox rule denies that exact file
-# under the session's working directory (allowGitConfig stays unset), which is not this spec's rule:
-# report SKIPPED there. tests/run.sh exports the directory it was started from; run directly, it is pwd.
+# allowed_off_base <key> <path>: a .git/config file, or a file in .claude/commands or .claude/agents.
+# Claude Code's own sandbox rules deny those under the session's working directory (allowGitConfig
+# stays unset; commands and agents are measured), which are not this spec's rules: report SKIPPED there.
+# tests/run.sh exports the directory it was started from; run directly, it is pwd.
 # An unenterable RUN_SH_START_DIR falls back to pwd; an empty base would make "$base"/* match every
 # path and skip each .git/config probe silently, so that counts as a failure.
 base=$(cd "${RUN_SH_START_DIR:-.}" 2>/dev/null && pwd -P) || base=$(pwd -P 2>/dev/null) || base=
 if [ -z "$base" ]; then echo "base_dir=UNKNOWN"; fail=$((fail + 1)); fi
-allowed_cfg() {
+allowed_off_base() {
   local d
   d=$(cd "$(dirname "$2")" 2>/dev/null && pwd -P)
   case "${d:-/}/$(basename "$2")" in
@@ -100,7 +101,7 @@ for root in "$HOME/Code" "$HOME/.local/share/chezmoi" "$HOME/Documents" \
               "$m/plain/hooks" "$r/.claude/skills" "$r/.claude/commands" "$r/.claude/agents" \
               "$ar/.claude" "$nm/.claude" "$ar/.claude/worktrees/wt1/.claude" 2>/dev/null; then
     denied "${k}_git_hooks" "$g/hooks/"
-    allowed_cfg "${k}_git_config_writable" "$g/config"
+    allowed_off_base "${k}_git_config_writable" "$g/config"
     allowed "${k}_git_config_worktree_writable" "$g/config.worktree"
     denied "${k}_git_module_hooks" "$g/modules/sub/hooks/"
     allowed "${k}_git_module_config_writable" "$g/modules/sub/config"
@@ -118,12 +119,13 @@ for root in "$HOME/Code" "$HOME/.local/share/chezmoi" "$HOME/Documents" \
     denied "${k}_harness_worktree_claude_settings" "$ar/.claude/worktrees/wt1/.claude/settings.json"
     allowed "${k}_node_modules_claude_settings_local_writable" "$nm/.claude/settings.local.json"
     allowed "${k}_claude_skills_writable" "$r/.claude/skills/$stamp.md"
-    allowed "${k}_claude_commands_writable" "$r/.claude/commands/$stamp.md"
-    allowed "${k}_claude_agents_writable" "$r/.claude/agents/$stamp.md"
+    allowed_off_base "${k}_claude_commands_writable" "$r/.claude/commands/$stamp.md"
+    allowed_off_base "${k}_claude_agents_writable" "$r/.claude/agents/$stamp.md"
     # A directory holding hooks/ under a plain name, renamed to .git. Path rules see only the two
     # ends of a rename, so this reads WRITABLE by design: the same class as core.hooksPath, which
     # Michael accepted. Informational: the # prefix keeps it out of tests/run.sh's count and the exit.
-    if mv "$m/plain" "$m/.git" 2>/dev/null; then v=WRITABLE; else v=DENIED; fi
+    # It is renamed back, because the **/.git/hooks deny would otherwise stop rm -rf from removing it.
+    if mv "$m/plain" "$m/.git" 2>/dev/null; then v=WRITABLE; mv "$m/.git" "$m/plain" 2>/dev/null; else v=DENIED; fi
     echo "# info ${k}_git_rename_dir=$v (accepted: a rename is checked only at its two ends)"
   else
     echo "${k}_root=DENIED"; fail=$((fail + 1))
@@ -143,13 +145,17 @@ else
   if mkdir -p "$cg/modules/x" 2>/dev/null; then
     denied chezmoi_top_git_module_hooks "$cg/modules/x/hooks/"
   else
-    echo "chezmoi_top_git_module_hooks=ABSENT"; fail=$((fail + 1))
+    # Claude Code's own rule also refuses creating .git/modules in the session repository.
+    case "$cg" in
+      "$base"/*) echo "chezmoi_top_git_module_hooks=SKIPPED" ;;
+      *) echo "chezmoi_top_git_module_hooks=ABSENT"; fail=$((fail + 1)) ;;
+    esac
   fi
 fi
 # Outside the work roots nothing changes: a git directory in TMPDIR keeps its config writable.
 tg="${TMPDIR:-/tmp}/$stamp/.git"
 probes+=("${TMPDIR:-/tmp}/$stamp")
-if mkdir -p "$tg" 2>/dev/null; then allowed_cfg tmpdir_git_config "$tg/config"
+if mkdir -p "$tg" 2>/dev/null; then allowed_off_base tmpdir_git_config "$tg/config"
 else echo "tmpdir_root=DENIED"; fail=$((fail + 1)); fi
 rm -rf "${TMPDIR:-/tmp}/${stamp:?}" 2>/dev/null
 # The chezmoi wrapper clones under ~/.cache and points chezmoi's TMPDIR there: the sandbox must

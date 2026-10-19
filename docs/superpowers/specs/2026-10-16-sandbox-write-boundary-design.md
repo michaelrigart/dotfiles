@@ -415,11 +415,14 @@ A zsh wrapper around `chezmoi` handles `apply`, `update` and the previews below.
     must be denied. The depth-0 form (`<root>/.claude/worktrees/*/<p>`) has no live probe: it
     would need a fixture inside the real `~/.local/share/chezmoi/.claude/worktrees`, which
     harness worktrees use; `claude-settings` pins the entries. `.claude/skills`, `commands` and `agents` stay writable. Its rename probe (a parent directory moved to reach the same
-    result as `core.hooksPath`) is reported as information and not counted.
+    result as `core.hooksPath`) is reported as information and not counted; the probe renames
+    the directory back, so the suite can remove its fixtures afterwards.
   - Claude Code's own built-in rule keeps `.git/config` and `.git/hooks` denied under the
     session's working directory (unless `sandbox.filesystem.allowGitConfig`, which stays
-    unset). This spec leaves that rule as it is, so the suite skips the config probe under
-    the working directory it runs in.
+    unset). The same built-in rule also denies files in `.claude/commands` and `.claude/agents`
+    at any depth under the working directory, and creating the session repository's own
+    `.git/modules` (measured 2026-10-19). This spec leaves that rule as it is, so the suite
+    skips those probes under the working directory it runs in.
 
 ## Out of scope
 
