@@ -721,6 +721,29 @@ _wt_do_prepare() {
   return 0
 }
 
+# _wt_mise_reopen_warn <dest> <branch> — on a reopen, say which mise configs are untrusted
+# and where to fix it. It only reads: nothing is trusted here, it never stops the reopen,
+# and it always returns 0. Whatever it prints sets _WT_NOTICE, so `wt-prompt` keeps the
+# popup open for it.
+_wt_mise_reopen_warn() {
+  emulate -L zsh
+  (( $+commands[mise] )) || return 0
+  local dest="$1" qb="${(q-)2}" show line
+  local -a rels
+  show="$(_wt_mise_show "$dest")" || {
+    print -ru2 -- "wt: cannot read mise's trust status for $(_wt_tilde "$dest") — opening anyway."
+    typeset -g _WT_NOTICE=1
+    return 0
+  }
+  for line in ${(f)show}; do
+    [[ "$line" == untrusted$'\t'* ]] && rels+=( "${line#untrusted$'\t'}" )
+  done
+  (( $#rels )) || return 0
+  print -ru2 -- "wt: $(_wt_tilde "$dest") has untrusted mise config (${(j:, :)rels}) — run: wt-prepare $qb"
+  typeset -g _WT_NOTICE=1
+  return 0
+}
+
 # wt-prepare <branch> — re-run preparation against an existing worktree.
 #
 # The recovery path for a partial copy or a failed setup hook; `wt` on an existing
@@ -779,6 +802,7 @@ _wt_create_or_prepare() {
     if [[ -d "$dest" ]]; then
       _wt_assert_worktree "$main" "$dest" "$branch" || return 1
       print -ru2 -- "wt: reopening $dest"; created=
+      _wt_mise_reopen_warn "$dest" "$branch"
     else
       # Pre-validate before creating anything; _wt_hook_run still re-checks.
       _wt_hook_check "$main" >/dev/null 2>&1
@@ -813,6 +837,7 @@ _wt_create_or_prepare() {
 # open the checkout as a native Herdr worktree workspace.
 wt() {
   [[ -n "${1:-}" ]] || { print -ru2 -- "usage: wt <branch> [start-point]"; return 1; }
+  _WT_NOTICE=
   _wt_create_or_prepare "$@" || return 1
   dev "$_WT_DEST"
 }
@@ -829,6 +854,14 @@ wt-prompt() {
     return 1
   fi
   wt "$branch"
+  local rc=$?
+  # Failures and the reopen warning are the lines Michael must be able to read; the popup
+  # closes with the command, so hold it open for them.
+  if (( rc != 0 )) || [[ -n "${_WT_NOTICE:-}" ]]; then
+    print -r -- "Press Enter to close."
+    IFS= read -r || true
+  fi
+  return $rc
 }
 
 # _wt_assert_worktree <root> <dest> <branch> — succeed only if <dest> is a worktree

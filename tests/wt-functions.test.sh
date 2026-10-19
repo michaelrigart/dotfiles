@@ -2107,6 +2107,7 @@ dlogged "--worktree $REPO $HOME/Code/Org/repo-existing" \
 setup
 OUT="$(cd "$REPO" && source "$FUNCS" && print -r -- 'feature/popup' | wt-prompt 2>&1)"; RC=$?
 rc_is 0 "wt-prompt creates a worktree from its interactive branch input"
+hasnt "Press Enter to close." "a clean wt-prompt run closes without waiting"
 POPUP="$HOME/Code/Org/repo-feature-popup"
 [[ -d "$POPUP" ]] && _pass "the popup uses the standard sibling checkout path" \
                       || _fail "the popup uses the standard sibling checkout path"
@@ -3242,6 +3243,74 @@ while IFS= read -r l; do
 done < "$XALL"
 eq "$bad" "" "X13 mise trust is never bare, never --all, never aimed at the main checkout"
 [[ "$(wc -l < "$XALL")" -gt 20 ]] && _pass "X13 the section's log was actually collected" || _fail "X13 the section's log was actually collected"
+
+# --- Y. wt — reopen warning and the popup ---------------------------------------
+# A reopen only reads mise's trust status and warns; it never trusts anything and never stops.
+# ypop <dir> <branch> — wt-prompt as the popup runs it: the branch, then SENTINEL, on stdin.
+# A popup that waited for Enter consumed the sentinel (REST=); one that did not leaves it
+# (REST=SENTINEL). STATUS= is wt-prompt's own exit status, since the group's is always 0.
+ypop() {
+  OUT="$(cd "$1" && source "$FUNCS" && { print -r -- "$2"; print -r -- SENTINEL } | {
+    wt-prompt; s=$?; IFS= read -r rest; print -r -- "REST=$rest"; print -r -- "STATUS=$s" } 2>&1)"
+}
+
+xfix y1; xseed
+run "$REPO" wt y1
+rc_is 0 "Y1 the carry succeeds first"
+print -r -- 'edited' >> "$X/mise.local.toml"
+: > "$MLOG"; : > "$DLOG"
+run "$REPO" wt y1
+rc_is 0 "Y1 reopening a worktree with an untrusted config succeeds"
+has "wt: ~/Code/Org/repo-y1 has untrusted mise config (mise.local.toml) — run: wt-prepare y1" "Y1 the warning names the file and the recovery"
+dlogged "--worktree $REPO $X" "Y1 the workspace still opens"
+grep -q '^trust ' "$MLOG" && _fail "Y1 nothing is trusted" || _pass "Y1 nothing is trusted"
+mlog_line "-C $X trust --show" "Y1 the status was read"
+ypop "$REPO" y1
+has "has untrusted mise config (mise.local.toml)" "Y6 the popup shows the warning"
+has "Press Enter to close." "Y6 and asks for Enter"
+has "STATUS=0" "Y6 the warning does not change the exit status"
+has "REST=" "Y6 it waited for the Enter line"
+hasnt "SENTINEL" "Y6 ... which consumed the sentinel"
+
+xfix y2; xseed
+run "$REPO" wt y2
+: > "$MLOG"
+run "$REPO" wt y2
+rc_is 0 "Y2 reopening with everything trusted succeeds"
+hasnt "untrusted mise config" "Y2 it does not warn"
+
+xfix y3; xseed
+run "$REPO" wt y3
+print -r -- 'edited' >> "$X/mise.local.toml"
+: > "$MLOG"
+PATH="$(nomise_path)" run "$REPO" wt y3
+rc_is 0 "Y3 reopening without mise succeeds"
+hasnt "untrusted mise config" "Y3 it does not warn"
+eq "$(<$MLOG)" "" "Y3 mise is never called"
+
+xfix y4; xseed
+run "$REPO" wt y4
+: > "$DLOG"
+MOCK_MISE_SHOW_RC=1 run "$REPO" wt y4
+rc_is 0 "Y4 a failing status read does not stop the reopen"
+has "wt: cannot read mise's trust status for ~/Code/Org/repo-y4 — opening anyway." "Y4 it says so"
+dlogged "--worktree $REPO $X" "Y4 the workspace opens"
+
+xfix y5
+xbranch y5 'print -r -- "a=2" > "$REPO/mise.toml"; git -C "$REPO" add mise.toml'
+xseed
+ypop "$REPO" y5
+has "STATUS=1" "Y5 a failing wt makes wt-prompt fail"
+has "is not trusted: it differs from the main checkout's." "Y5 the refusal is shown"
+has "Press Enter to close." "Y5 the popup asks for Enter"
+has "REST=" "Y5 it waited for the Enter line"
+hasnt "SENTINEL" "Y5 ... which consumed the sentinel"
+
+xfix y7; xseed
+ypop "$REPO" y7
+has "STATUS=0" "Y7 a clean success returns 0"
+hasnt "Press Enter to close." "Y7 it does not ask for Enter"
+has "REST=SENTINEL" "Y7 ... and reads nothing more"
 
 export HOME="$REAL_HOME"
 print -r -- ""
