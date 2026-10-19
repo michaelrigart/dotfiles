@@ -2923,6 +2923,7 @@ run "$REPO" wt-rm rel-dirty
 rc_is 1 "W7 a dirty checkout is refused at check 1"
 eq "$(<$XLOG)" "" "W7 a refusal before teardown never calls xreview-rpc"
 
+print -r -- "X. wt — mise trust is carried from the main checkout into a new worktree"
 # --- mise trust carried into a new worktree ---------------------------------
 # _wt_mise_show is the reader every later step rests on: what mise says about one
 # checkout, as `trusted<TAB>rel` / `untrusted<TAB>rel`, and nothing about anywhere else.
@@ -3003,6 +3004,244 @@ mise trust --all >/dev/null 2>&1;            eq "$?" "3" "X0s --all is refused"
 mise -C "$REPO" trust --all >/dev/null 2>&1; eq "$?" "3" "X0s -C ... --all is refused"
 eq "$(PATH="$(nomise_path)" whence -p mise)" "" "X0s nomise_path drops every mise"
 eq "$(PATH="$(nomise_path)" whence -p git)" "/usr/bin/git" "X0s ... and git still resolves"
+
+# --- the carry itself --------------------------------------------------------
+# xfix <slug> [repo-dir] — a fresh repository with a tracked mise.toml, a .worktreehook
+# that only records it ran, an untracked mise.local.toml carried by .worktreeinclude, and
+# $X, the worktree `wt <slug>` will make. It first files away the previous scenario's mise
+# log, so X13 can judge the calls of the whole section.
+XALL="$MISESTUBS/x-all.log"; : > "$XALL"; XCOLLECT=""
+xfix() {
+  [[ -n "$XCOLLECT" ]] && cat "$MLOG" >> "$XALL"
+  setup; XCOLLECT=1
+  if [[ -n "${2:-}" ]]; then mv "$REPO" "$HOME/Code/Org/$2"; REPO="$HOME/Code/Org/$2"; fi
+  print -r -- 'a=1' > "$REPO/mise.toml"; git -C "$REPO" add mise.toml
+  mkhook "$REPO" "#!/bin/sh
+touch '$ROOTTMP/hook-ran'"
+  print -r -- 'mise.local.toml' > "$REPO/.worktreeinclude"; print -r -- 'b=1' > "$REPO/mise.local.toml"
+  X="${REPO}-$1"
+}
+# xseed — Michael has trusted both configs of the main checkout.
+xseed() { mise_seed "$REPO/mise.toml"; mise_seed "$REPO/mise.local.toml" }
+# xbranch <name> <commands> — commit <commands>' changes on a branch off main, then come
+# back to main: `wt <slug> <name>` then makes a worktree whose tracked files differ.
+xbranch() {
+  git -C "$REPO" checkout -q -b "$1" && eval "$2" && git -C "$REPO" commit -q -m "$1"
+  git -C "$REPO" checkout -q main
+}
+hook_ran()    { [[ -e "$ROOTTMP/hook-ran" ]] && _pass "$1" || _fail "$1" }
+hook_not_ran() { [[ -e "$ROOTTMP/hook-ran" ]] && _fail "$1" || _pass "$1" }
+mlog_line()   { grep -Fxq -- "$1" "$MLOG" && _pass "$2" || _fail "$2" }
+mlog_no_line() { grep -Fxq -- "$1" "$MLOG" && _fail "$2" || _pass "$2" }
+mlog_count()  { awk -v p="$1" 'index($0, p) == 1 { n++ } END { print n + 0 }' "$MLOG" }
+mlog_ln()     { grep -Fxn -- "$1" "$MLOG" | head -1 | cut -d: -f1 }
+XSYM="it or its main-checkout counterpart is a symlink or not a regular file"
+
+xfix x1; xseed
+run "$REPO" wt x1
+rc_is 0 "X1 identical, trusted configs: wt succeeds"
+mlog_line "trust $X/mise.toml" "X1 the tracked config is trusted in the worktree"
+mlog_line "trust $X/mise.local.toml" "X1 so is the carried local one"
+has "wt: mise trust carried to ~/Code/Org/repo-x1/mise.toml" "X1 each carried file is reported"
+hook_ran "X1 the setup hook runs"
+dlogged "--worktree $REPO $X" "X1 the workspace opens"
+
+xfix x2
+xbranch x2-src 'print -r -- "a=2" > "$REPO/mise.toml"; git -C "$REPO" add mise.toml'
+xseed
+run "$REPO" wt x2 x2-src
+rc_is 1 "X2 a branch config that differs is refused"
+mlog_no_line "trust $X/mise.toml" "X2 it is never trusted"
+has "wt: ~/Code/Org/repo-x2/mise.toml is not trusted: it differs from the main checkout's." "X2 the file and the reason are named"
+has "    review: diff ~/Code/Org/repo/mise.toml ~/Code/Org/repo-x2/mise.toml" "X2 the review line"
+has "    then:   mise trust ~/Code/Org/repo-x2/mise.toml" "X2 the manual trust line"
+has "wt-prepare x2 && wt x2" "X2 the recovery line"
+hook_not_ran "X2 the setup hook does not run"
+dunlogged "--worktree" "X2 no workspace is opened"
+
+xfix x3
+mise_seed "$REPO/mise.toml"
+run "$REPO" wt x3
+rc_is 1 "X3 a main-checkout config that is not trusted is refused"
+has "wt: ~/Code/Org/repo-x3/mise.local.toml is not trusted: the main checkout's is not trusted." "X3 the reason"
+mlog_line "trust $X/mise.toml" "X3 the trusted file is still carried"
+mlog_no_line "trust $X/mise.local.toml" "X3 the other is not"
+hook_not_ran "X3 the setup hook does not run"
+
+xfix x4
+xbranch x4-src 'mkdir -p "$REPO/.config"; print -r -- "c=1" > "$REPO/.config/mise.toml"; git -C "$REPO" add .config/mise.toml'
+xseed
+run "$REPO" wt x4 x4-src
+rc_is 1 "X4 a config with no main-checkout counterpart is refused"
+has "wt: ~/Code/Org/repo-x4/.config/mise.toml is not trusted: the main checkout has no such file." "X4 the reason, with the subdirectory kept"
+has "    review: cat ~/Code/Org/repo-x4/.config/mise.toml" "X4 review shows the file itself"
+mlog_no_line "trust $X/.config/mise.toml" "X4 it is never trusted"
+
+xfix x5a
+print -r -- 'a=1' > "$ROOTTMP/outside.toml"
+xbranch x5a-src 'rm "$REPO/mise.toml"; ln -s "$ROOTTMP/outside.toml" "$REPO/mise.toml"; git -C "$REPO" add mise.toml'
+xseed
+run "$REPO" wt x5a x5a-src
+rc_is 1 "X5a a worktree config that is a symlink out of the tree is refused"
+has "wt: ~/Code/Org/repo-x5a/mise.toml is not trusted: $XSYM." "X5a it is refused, not skipped as outside"
+mlog_no_line "trust $X/mise.toml" "X5a it is never trusted"
+
+xfix x5b
+xbranch x5b-src 'mkdir -p "$ROOTTMP/ext"; print -r -- "a=1" > "$ROOTTMP/ext/mise.toml"; ln -s "$ROOTTMP/ext" "$REPO/.config"; git -C "$REPO" add .config'
+xseed
+run "$REPO" wt x5b x5b-src
+rc_is 1 "X5b a symlinked directory on the way to a config is refused"
+has "wt: ~/Code/Org/repo-x5b/.config/mise.toml is not trusted: $XSYM." "X5b the symlink reason, not the missing-file one"
+mlog_no_line "trust $X/.config/mise.toml" "X5b it is never trusted"
+
+xfix x5c
+print -r -- 'a=1' > "$ROOTTMP/outside.toml"
+rm "$REPO/mise.toml"; ln -s "$ROOTTMP/outside.toml" "$REPO/mise.toml"
+xseed
+run "$REPO" wt x5c
+rc_is 1 "X5c a main-checkout config that became a symlink refuses the worktree's copy"
+has "wt: ~/Code/Org/repo-x5c/mise.toml is not trusted: $XSYM." "X5c the symlink reason"
+mlog_no_line "trust $X/mise.toml" "X5c it is never trusted"
+
+xfix x5d
+mkdir -p "$REPO/.config"; print -r -- 'c=1' > "$REPO/.config/mise.toml"
+git -C "$REPO" add .config/mise.toml; git -C "$REPO" commit -q -m cfg
+mkdir -p "$ROOTTMP/extd"; print -r -- 'c=1' > "$ROOTTMP/extd/mise.toml"
+rm -rf "$REPO/.config"; ln -s "$ROOTTMP/extd" "$REPO/.config"
+xseed; mise_seed "$REPO/.config/mise.toml"
+run "$REPO" wt x5d
+rc_is 1 "X5d a main-checkout directory that became a symlink refuses the worktree's copy"
+has "wt: ~/Code/Org/repo-x5d/.config/mise.toml is not trusted: $XSYM." "X5d the symlink reason"
+mlog_no_line "trust $X/.config/mise.toml" "X5d it is never trusted"
+
+xfix x6; xseed
+PATH="$(nomise_path)" run "$REPO" wt x6
+rc_is 0 "X6 without mise on PATH, wt succeeds"
+hook_ran "X6 the setup hook runs"
+eq "$(<$MLOG)" "" "X6 mise is never called"
+
+xfix x7a; xseed
+MOCK_MISE_SHOW_RC=1 run "$REPO" wt x7a
+rc_is 1 "X7 a failing trust --show stops wt"
+has "wt: cannot read mise's trust status for ~/Code/Org/repo-x7a — trusting nothing." "X7 it says so"
+grep -q '^trust ' "$MLOG" && _fail "X7 nothing is trusted" || _pass "X7 nothing is trusted"
+hook_not_ran "X7 the setup hook does not run"
+xfix x7b; xseed
+MOCK_MISE_SHOW_RAW='garbage\n' run "$REPO" wt x7b
+rc_is 1 "X7 an unreadable --show line stops wt"
+has "cannot read mise's trust status" "X7 it says so"
+grep -q '^trust ' "$MLOG" && _fail "X7 nothing is trusted (raw)" || _pass "X7 nothing is trusted (raw)"
+
+xfix x8; xseed
+MOCK_MISE_RACE_CONTENT='[env]\nX = "evil"\n' run "$REPO" wt x8
+rc_is 1 "X8 a file rewritten while it is trusted is refused"
+mlog_line "trust --untrust $X/mise.toml" "X8 its trust is withdrawn"
+has "wt: ~/Code/Org/repo-x8/mise.toml is not trusted: it changed while wt was trusting it." "X8 the reason"
+hook_not_ran "X8 the setup hook does not run"
+
+xfix x9; xseed
+MOCK_MISE_MAIN_FLIP="$REPO/mise.toml" run "$REPO" wt x9
+rc_is 1 "X9 a main-checkout config that loses its trust meanwhile is refused"
+mlog_line "trust --untrust $X/mise.toml" "X9 the worktree's trust is withdrawn"
+hook_not_ran "X9 the setup hook does not run"
+
+xfix x10; xseed
+print -r -- 'p=1' > "$HOME/Code/Org/mise.toml"
+run "$REPO" wt x10
+rc_is 0 "X10 an untrusted config in a parent directory is ignored"
+hasnt "Code/Org/mise.toml" "X10 no message mentions it"
+
+xfix x11; xseed
+MOCK_MISE_TRUST_RC=1 run "$REPO" wt x11
+rc_is 1 "X11 a failing mise trust stops wt"
+has "wt: mise trust failed for ~/Code/Org/repo-x11/mise.toml — trusting nothing more." "X11 it says which file"
+eq "$(mlog_count "trust $X/")" "1" "X11 nothing more is tried after the failure"
+hook_not_ran "X11 the setup hook does not run"
+
+xfix x11b; xseed
+MOCK_MISE_RACE_CONTENT='raced\n' MOCK_MISE_UNTRUST_RC=1 run "$REPO" wt x11b
+rc_is 1 "X11b a failing rollback stops wt"
+has "wt: mise trust failed for ~/Code/Org/repo-x11b/mise.toml — trusting nothing more." "X11b it says which file"
+mlog_no_line "trust $X/mise.local.toml" "X11b nothing more is carried"
+hook_not_ran "X11b the setup hook does not run"
+
+xfix x12
+xbranch x12-src 'print -r -- "a=2" > "$REPO/mise.toml"; git -C "$REPO" add mise.toml'
+xseed
+run "$REPO" wt x12 x12-src
+rc_is 1 "X12 the refusal comes first"
+mise_seed "$X/mise.toml"
+run "$REPO" wt-prepare x12
+rc_is 0 "X12 after trusting the file by hand, wt-prepare goes on"
+hook_ran "X12 and reaches the setup hook"
+: > "$DLOG"
+run "$REPO" wt x12
+rc_is 0 "X12 wt then opens it"
+dlogged "--worktree $REPO $X" "X12 the workspace opens"
+
+xfix x14 'co: lon'; xseed
+run "$REPO" wt x14
+rc_is 0 "X14 a checkout path containing ': ' is carried"
+has "wt: mise trust carried to ~/Code/Org/co: lon-x14/mise.toml" "X14 reported"
+mlog_line "trust $X/mise.toml" "X14 trusted in the worktree"
+hook_ran "X14 the setup hook runs"
+
+xfix x15
+git -C "$REPO" rm -q -f mise.toml; git -C "$REPO" commit -q -m nocfg; rm -f "$REPO/mise.local.toml" "$REPO/.worktreeinclude"
+MOCK_MISE_SHOW_STDERR='mise WARN noise' run "$REPO" wt x15
+rc_is 0 "X15 no configs and noise on stderr: nothing to carry"
+hook_ran "X15 the setup hook runs"
+hasnt "cannot read" "X15 stderr is never read as a failure"
+hasnt "mise trust carried" "X15 nothing is reported as carried"
+
+xfix x16
+mise_seed "$REPO/mise.toml"
+run "$REPO" wt x16
+rc_is 1 "X16 a partial carry stops wt"
+mlog_line "trust $X/mise.toml" "X16 the trusted file is carried"
+mise_seed "$REPO/mise.local.toml"
+run "$REPO" wt-prepare x16
+rc_is 0 "X16 wt-prepare carries the rest"
+hook_ran "X16 and reaches the setup hook"
+eq "$(mlog_count "trust $X/mise.toml")" "1" "X16 the file already carried is not trusted twice"
+eq "$(mlog_count "trust $X/mise.local.toml")" "1" "X16 the remaining file is trusted once"
+
+xfix x17; xseed
+MOCK_MISE_TRUST_NOOP=1 run "$REPO" wt x17
+rc_is 1 "X17 a trust that did not take is refused"
+mlog_line "trust --untrust $X/mise.toml" "X17 its trust is withdrawn"
+hook_not_ran "X17 the setup hook does not run"
+
+xfix x18
+xbranch x18-src 'print -r -- "a=2" > "$REPO/mise.toml"; mkdir -p "$REPO/.config"; print -r -- "c=1" > "$REPO/.config/mise.toml"; git -C "$REPO" add mise.toml .config/mise.toml'
+xseed
+run "$REPO" wt x18 x18-src
+rc_is 1 "X18 two refusals"
+has "wt: ~/Code/Org/repo-x18/mise.toml is not trusted: it differs from the main checkout's." "X18 the first is named with its reason"
+has "    review: diff ~/Code/Org/repo/mise.toml ~/Code/Org/repo-x18/mise.toml" "X18 and its review line"
+has "wt: ~/Code/Org/repo-x18/.config/mise.toml is not trusted: the main checkout has no such file." "X18 the second is named with its reason"
+has "    review: cat ~/Code/Org/repo-x18/.config/mise.toml" "X18 and its review line"
+
+xfix x19; xseed
+MOCK_MISE_SHOW_FAIL_AFTER_TRUST=1 run "$REPO" wt x19
+rc_is 1 "X19 a failed re-check read stops wt"
+l1="$(mlog_ln "trust $X/mise.toml")"; l2="$(mlog_ln "trust --untrust $X/mise.toml")"
+[[ -n "$l1" && -n "$l2" ]] && (( l1 < l2 )) && _pass "X19 the file just trusted is untrusted again" || _fail "X19 the file just trusted is untrusted again ($l1, $l2)"
+mlog_no_line "trust $X/mise.local.toml" "X19 nothing more is carried"
+has "cannot read mise's trust status" "X19 it says so"
+hook_not_ran "X19 the setup hook does not run"
+
+# X13: over everything above, mise trust is only ever given one worktree file.
+cat "$MLOG" >> "$XALL"
+bad=""
+while IFS= read -r l; do
+  case "$l" in
+    trust|*" trust"|*--all*) bad+="[$l] " ;;
+    "trust "*/Code/Org/repo/*|"trust --untrust "*/Code/Org/repo/*|"trust "*"/co: lon/"*|"trust --untrust "*"/co: lon/"*) bad+="[$l] " ;;
+  esac
+done < "$XALL"
+eq "$bad" "" "X13 mise trust is never bare, never --all, never aimed at the main checkout"
+[[ "$(wc -l < "$XALL")" -gt 20 ]] && _pass "X13 the section's log was actually collected" || _fail "X13 the section's log was actually collected"
 
 export HOME="$REAL_HOME"
 print -r -- ""

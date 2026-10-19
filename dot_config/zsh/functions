@@ -546,8 +546,137 @@ _wt_mise_show() {
   return 0
 }
 
+# _wt_tilde <path> — the path with a leading $HOME/ shown as ~/, for messages only.
+_wt_tilde() {
+  emulate -L zsh
+  if [[ "$1" == "$HOME/"* ]]; then print -rn -- "~/${1#"$HOME/"}"; else print -rn -- "$1"; fi
+}
+
+# _wt_mise_trust_report <main> <dest> <rel<TAB>reason>... — the refusal lines for configs
+# that stay untrusted: what is wrong, how to look at it, how to trust it by hand.
+_wt_mise_trust_report() {
+  emulate -L zsh
+  local main="$1" dest="$2" entry rel reason dp mp
+  shift 2
+  for entry in "$@"; do
+    rel="${entry%%$'\t'*}" reason="${entry#*$'\t'}"
+    dp="$(_wt_tilde "$dest/$rel")" mp="$(_wt_tilde "$main/$rel")"
+    print -ru2 -- "wt: $dp is not trusted: $reason."
+    if [[ "$reason" == "the main checkout has no such file" ]]; then
+      print -ru2 -- "    review: cat $dp"
+    else
+      print -ru2 -- "    review: diff $mp $dp"
+    fi
+    print -ru2 -- "    then:   mise trust $dp"
+  done
+}
+
+# _wt_mise_trust <main> <dest> — carry mise's trust from the main checkout into a new
+# worktree, for the configs that are byte-identical to ones already trusted there, and
+# explain every other one. Returns 0 when there was nothing to carry or all of it was
+# carried, 1 when a config stays untrusted or a read or a trust call failed.
+#
+# Paranoid mode ties trust to file content and no longer inherits it into worktrees, so a
+# config nobody has looked at must never be trusted here: the sandbox can rewrite a branch's
+# committed mise.toml and the main checkout's mise.local.toml (which .worktreeinclude copies).
+# Each untrusted <dest> config is carried only if no component of it or its main-checkout
+# counterpart is a symlink, both are regular files, mise trusts the main one, and `cmp`
+# finds them identical. After `mise trust` the same facts are read again, and a file that no
+# longer holds up is untrusted at once: the content may have changed in between.
+#
+# Ordinary refusals are collected and printed together at the end. A failed read, trust or
+# untrust stops at once, because nothing it says afterwards can be believed; the one call
+# still made then is the untrust of a file that was just trusted.
+_wt_mise_trust() {
+  emulate -L zsh
+  (( $+commands[mise] )) || return 0
+  local main="$1" dest="$2" dshow mshow line rel dp mp comp reason p
+  local -a dlines refused parts
+  local dnow mnow
+  local mshown=0
+
+  dshow="$(_wt_mise_show "$dest")" || {
+    print -ru2 -- "wt: cannot read mise's trust status for $(_wt_tilde "$dest") — trusting nothing."
+    return 1
+  }
+  dlines=( ${(f)dshow} )
+
+  for line in $dlines; do
+    [[ "$line" == untrusted$'\t'* ]] || continue
+    rel="${line#untrusted$'\t'}"
+    dp="$dest/$rel" mp="$main/$rel"
+
+    if (( ! mshown )); then
+      mshow="$(_wt_mise_show "$main")" || {
+        print -ru2 -- "wt: cannot read mise's trust status for $(_wt_tilde "$main") — trusting nothing."
+        return 1
+      }
+      mshow=$'\n'"$mshow"$'\n'; mshown=1
+    fi
+
+    reason=""
+    parts=( ${(s:/:)rel} )
+    for p in "$dest" "$main"; do
+      for comp in $parts; do
+        p="$p/$comp"
+        [[ -L "$p" ]] && { reason="it or its main-checkout counterpart is a symlink or not a regular file"; break 2 }
+      done
+    done
+    if [[ -z "$reason" ]]; then
+      if [[ ! -e "$mp" ]]; then
+        reason="the main checkout has no such file"
+      elif [[ ! -f "$dp" || ! -f "$mp" ]]; then
+        reason="it or its main-checkout counterpart is a symlink or not a regular file"
+      elif [[ "$mshow" != *$'\n'"trusted"$'\t'"$rel"$'\n'* ]]; then
+        reason="the main checkout's is not trusted"
+      elif ! cmp -s -- "$mp" "$dp"; then
+        reason="it differs from the main checkout's"
+      fi
+    fi
+
+    if [[ -z "$reason" ]]; then
+      if ! command mise trust "$dp" >/dev/null 2>&1; then
+        _wt_mise_trust_report "$main" "$dest" $refused
+        print -ru2 -- "wt: mise trust failed for $(_wt_tilde "$dp") — trusting nothing more."
+        return 1
+      fi
+      if ! dnow="$(_wt_mise_show "$dest")"; then
+        command mise trust --untrust "$dp" >/dev/null 2>&1 \
+          || print -ru2 -- "wt: mise trust failed for $(_wt_tilde "$dp") — trusting nothing more."
+        _wt_mise_trust_report "$main" "$dest" $refused
+        print -ru2 -- "wt: cannot read mise's trust status for $(_wt_tilde "$dest") — trusting nothing."
+        return 1
+      fi
+      if ! mnow="$(_wt_mise_show "$main")"; then
+        command mise trust --untrust "$dp" >/dev/null 2>&1 \
+          || print -ru2 -- "wt: mise trust failed for $(_wt_tilde "$dp") — trusting nothing more."
+        _wt_mise_trust_report "$main" "$dest" $refused
+        print -ru2 -- "wt: cannot read mise's trust status for $(_wt_tilde "$main") — trusting nothing."
+        return 1
+      fi
+      if cmp -s -- "$mp" "$dp" \
+         && [[ $'\n'"$dnow"$'\n' == *$'\n'"trusted"$'\t'"$rel"$'\n'* ]] \
+         && [[ $'\n'"$mnow"$'\n' == *$'\n'"trusted"$'\t'"$rel"$'\n'* ]]; then
+        print -r -- "wt: mise trust carried to $(_wt_tilde "$dp")"
+        continue
+      fi
+      if ! command mise trust --untrust "$dp" >/dev/null 2>&1; then
+        _wt_mise_trust_report "$main" "$dest" $refused
+        print -ru2 -- "wt: mise trust failed for $(_wt_tilde "$dp") — trusting nothing more."
+        return 1
+      fi
+      reason="it changed while wt was trusting it"
+    fi
+    refused+=( "$rel"$'\t'"$reason" )
+  done
+
+  (( $#refused )) || return 0
+  _wt_mise_trust_report "$main" "$dest" $refused
+  return 1
+}
+
 # _wt_do_prepare <main> <dest> <branch> <slug> — copy missing manifest entries,
-# then run the project setup hook. The UNLOCKED routine: `wt` calls it under the lock
+# carry mise trust, then run the project setup hook. The UNLOCKED routine: `wt` calls it under the lock
 # it already holds, and `wt-prepare` is the locked wrapper. It must not lock itself
 # (per-process locks, see _wt_lock).
 _wt_do_prepare() {
@@ -578,6 +707,11 @@ _wt_do_prepare() {
       return 1
     fi
   done
+
+  _wt_mise_trust "$main" "$dest" || {
+    print -ru2 -- "    The worktree exists — review the mise config above, then: wt-prepare $qb && wt $qb"
+    return 1
+  }
 
   if ! _wt_hook_run "$main" "$dest" "$branch" "$slug" setup; then
     print -ru2 -- "wt: .worktreehook setup failed for $dest."
