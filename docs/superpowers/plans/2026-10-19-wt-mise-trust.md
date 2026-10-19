@@ -56,7 +56,7 @@
 
 - [ ] **Step 1: Add the `mise` stub in its own directory, `$MISESTUBS`** (created and cleaned up like `$STUBS`, prepended to `PATH` ahead of it, so a test can drop it alone), plus `nomise_path`, which prints the current `PATH` without `$MISESTUBS` and without every directory holding an executable `mise` (here `/opt/homebrew/bin`; git then resolves to `/usr/bin/git`). The stub is bash and logs `"$*"` to `$MLOG`:
   - `-C <dir> trust --show`: unless overridden, walks `$(cd -P <dir> && pwd -P)` up to `/`; for each of `mise.toml mise.local.toml .mise.toml .config/mise.toml` that exists (`-e` or `-L`), prints `<path>: trusted|untrusted` with `$HOME/` printed as `~/`. Trusted iff `$MISE_STUB_STORE` has the line `<path><TAB><sha256 of the file's current content>`. No entries: `mise No trusted config files found.` on stderr. `MOCK_MISE_SHOW_RC` (non-zero: exit with it, print nothing), `MOCK_MISE_SHOW_RAW` (print it with `%b` instead), `MOCK_MISE_SHOW_STDERR` (also print it on stderr).
-  - `trust <file>`: if `MOCK_MISE_RACE_CONTENT` is set, writes it (`%b`) to `<file>` first; if `MOCK_MISE_MAIN_FLIP` names a path, drops that path's store line; then records `<file><TAB><sha>`. `MOCK_MISE_TRUST_RC` non-zero: records nothing, exits with it.
+  - `trust <file>`: if `MOCK_MISE_RACE_CONTENT` is set, writes it (`%b`) to `<file>` first; if `MOCK_MISE_MAIN_FLIP` names a path, drops that path's store line; then records `<file><TAB><sha>`. `MOCK_MISE_TRUST_RC` non-zero: records nothing, exits with it. `MOCK_MISE_TRUST_NOOP` set: records nothing, exits 0 (a trust that silently did not hold).
   - `trust --untrust <file>`: drops `<file>`'s line. `MOCK_MISE_UNTRUST_RC` as above.
   - `trust` with no path, any `--all`, or anything else: `mise stub: unexpected invocation: …` on stderr, exit 3.
   - `setup()` exports fresh `MLOG` and `MISE_STUB_STORE` (empty files under `$ROOTTMP`) and unsets every `MOCK_MISE_*`.
@@ -93,21 +93,25 @@
   - `X3` main `mise.local.toml` not seeded → rc 1, reason `the main checkout's is not trusted`.
   - `X4` branch adds `.config/mise.toml` → rc 1, reason `the main checkout has no such file`, `review: cat ~/Code/Org/repo-x4/.config/mise.toml`.
   - `X5a` branch commits `mise.toml` as a symlink to `$ROOTTMP/outside.toml` → rc 1, the symlink reason naming `…/repo-x5a/mise.toml`. `X5b` worktree `.config` is a symlink to `$ROOTTMP/ext` holding `mise.toml` → refused the same way.
+  - `X5c` main side, leaf: the commit has a regular `mise.toml`; in the main checkout's working tree it is then replaced by a symlink to an outside file with identical content, seeded → the worktree's regular copy is refused with the symlink reason, and `MLOG` has no `trust <dest>/mise.toml`. `X5d` main side, directory: the commit has `.config/mise.toml`; the main checkout's `.config` is then replaced by a symlink to an outside directory holding an identical, seeded `mise.toml` → refused the same way.
   - `X6` no `mise` on `PATH` (`PATH="$(nomise_path)"`) → rc 0, hook ran, `MLOG` empty.
   - `X7` `MOCK_MISE_SHOW_RC=1` → rc 1, `cannot read mise's trust status`, no `trust <` line without `--show` in `MLOG`. Same with `MOCK_MISE_SHOW_RAW`.
   - `X8` `MOCK_MISE_RACE_CONTENT='[env]\nX = "evil"\n'` → `MLOG` has `trust --untrust <dest>/mise.toml`, reason `it changed while wt was trusting it`, rc 1.
   - `X9` `MOCK_MISE_MAIN_FLIP="$REPO/mise.toml"` → untrust follows, rc 1.
   - `X10` an unseeded `$HOME/Code/Org/mise.toml` (parent) → rc 0, no message mentions it.
-  - `X11` `MOCK_MISE_TRUST_RC=1` → `mise trust failed for`, rc 1, hook did not run.
+  - `X11` both files identical and seeded, `MOCK_MISE_TRUST_RC=1` → `mise trust failed for <dest>/mise.toml`, rc 1, hook did not run, and `MLOG` has exactly one `trust <dest>/` line: nothing more is tried after the failure.
+  - `X11b` both files identical and seeded, `MOCK_MISE_RACE_CONTENT` and `MOCK_MISE_UNTRUST_RC=1` → `mise trust failed for <dest>/mise.toml` (the rollback failed), rc 1, hook did not run, no `trust <dest>/mise.local.toml` in `MLOG`.
   - `X12` recovery: after an X2-style refusal, `mise_seed <dest>/mise.toml`, then `wt-prepare x12` → rc 0, hook ran; `wt x12` then opens it.
-  - `X13` over the whole section: no `MLOG` line is `trust`, ends in ` trust`, or contains `--all`.
+  - `X13` over the whole section: no `MLOG` line is `trust`, ends in ` trust`, contains `--all`, or is `trust <path in the main checkout>` (with or without `--untrust`).
   - `X14` (Review Focus 1) repo dir `co: lon` → carried as in X1.
-  - `X15` (Review Focus 2) no configs anywhere plus `MOCK_MISE_SHOW_STDERR='mise WARN noise'` → rc 0, hook ran, no read-failure message.
-  - `X16` (Review Focus 3) `mise.toml` identical, `mise.local.toml` main unseeded → rc 1, `mise.toml` carried; seed main's local and the dest's local, `wt-prepare` → rc 0, exactly one `trust <dest>/mise.toml` in `MLOG` overall.
+  - `X15` (Review Focus 2) no configs anywhere plus `MOCK_MISE_SHOW_STDERR='mise WARN noise'` → rc 0, hook ran, no read-failure message and no `mise trust carried` line.
+  - `X16` (Review Focus 3) `mise.toml` identical, `mise.local.toml` main unseeded → rc 1, `mise.toml` carried; then seed only the main checkout's `mise.local.toml` and run `wt-prepare` → rc 0, hook ran; over both runs `MLOG` has exactly one `trust <dest>/mise.toml` and exactly one `trust <dest>/mise.local.toml` (the retry carries the remaining file itself).
+  - `X17` both files identical and seeded, `MOCK_MISE_TRUST_NOOP=1` (files stay identical, main stays trusted, only the worktree's trust record is missing) → `trust --untrust <dest>/mise.toml` follows, rc 1, hook did not run.
+  - `X18` two refusals: the branch changes `mise.toml` and adds `.config/mise.toml` → rc 1; the output names both paths, each with its own reason and review line.
 
-- [ ] **Step 2: Run** `./tests/wt-functions.test.sh 2>&1 | grep -E 'X[0-9]|passed:'` — expected: X1-X16 FAIL; X0 and pre-existing pass.
+- [ ] **Step 2: Run** `./tests/wt-functions.test.sh 2>&1 | grep -E 'X[0-9]|passed:'` — expected: X1-X18 FAIL (X6, X10 and X15 may already pass, since nothing is trusted yet); X0 and pre-existing pass.
 
-- [ ] **Step 3: Implement `_wt_mise_trust <main> <dest>`** and wire it into `_wt_do_prepare`. Per untrusted entry: per-component symlink check below each root (as `_wt_manifest` does) and `-f` on both; main's status from one `_wt_mise_show <main>`; `cmp -s`; `command mise trust <abs dest path>`; then re-check `cmp -s`, `_wt_mise_show <dest>` and `_wt_mise_show <main>`, and `command mise trust --untrust <abs dest path>` on any failure. Collect refusals, print them all, return 1.
+- [ ] **Step 3: Implement `_wt_mise_trust <main> <dest>`** and wire it into `_wt_do_prepare`. Per untrusted entry: per-component symlink check below each root (as `_wt_manifest` does) and `-f` on both; main's status from one `_wt_mise_show <main>`; `cmp -s`; `command mise trust <abs dest path>`; then re-check `cmp -s`, `_wt_mise_show <dest>` and `_wt_mise_show <main>`, and `command mise trust --untrust <abs dest path>` on any failure. Collect ordinary refusals and print them all before returning 1. A failed `trust` or `--untrust` (and a failed read) stops at once: no further `mise trust` call, print it, return 1.
 
 - [ ] **Step 4: Run** `./tests/wt-functions.test.sh` — expected: all pass.
 
@@ -130,11 +134,12 @@
   - `Y2` reopen with everything trusted → no `untrusted mise config` in output.
   - `Y3` reopen with `PATH="$(nomise_path)"` → rc 0, no warning.
   - `Y4` reopen with `MOCK_MISE_SHOW_RC=1` → rc 0, `— opening anyway.`, `DLOG` has the reopen.
-  - `Y5` `wt-prompt` fed `x2`-style failing branch → rc 1, output has `Press Enter to close.`
-  - `Y6` `wt-prompt` reopening Y1's worktree → rc 0, output has the warning and `Press Enter to close.`
-  - existing wt-prompt success test: add `hasnt "Press Enter to close." "a clean popup run closes at once"`.
+  - The waiting is proven by what `wt-prompt` reads, not by its text: each popup case pipes two lines, `<branch>` then `SENTINEL`, into `{ wt-prompt; IFS= read -r rest; print -r -- "REST=$rest" }`. A popup that waited consumed the sentinel (`REST=`); one that did not leaves it (`REST=SENTINEL`).
+  - `Y5` an `x2`-style failing branch → `wt-prompt` returned 1, output has `Press Enter to close.` and `REST=` with no `SENTINEL`.
+  - `Y6` reopening Y1's worktree → `wt-prompt` returned 0, output has the warning, `Press Enter to close.` and `REST=` with no `SENTINEL`.
+  - `Y7` a clean success → no `Press Enter to close.`, and `REST=SENTINEL`.
 
-- [ ] **Step 2: Run** `./tests/wt-functions.test.sh 2>&1 | grep -E 'Y[0-9]|popup|passed:'` — expected: Y1-Y6 FAIL, the rest pass.
+- [ ] **Step 2: Run** `./tests/wt-functions.test.sh 2>&1 | grep -E 'Y[0-9]|popup|passed:'` — expected: Y1-Y6 FAIL (Y7 may already pass), the rest pass.
 
 - [ ] **Step 3: Implement** `_wt_mise_reopen_warn` (called right after `print -ru2 -- "wt: reopening $dest"`), the `_WT_NOTICE` reset in `wt`, and the wait in `wt-prompt`.
 
