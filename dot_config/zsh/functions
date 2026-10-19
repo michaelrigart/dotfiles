@@ -514,6 +514,38 @@ _wt_manifest() {
   return 0
 }
 
+# _wt_mise_show <dir> — what mise says about the config files of one checkout, as one
+# `trusted<TAB><rel>` or `untrusted<TAB><rel>` line each (rel is relative to the checkout
+# and may contain `/`). Returns 1 when mise fails or prints a line it does not recognise,
+# and prints nothing then: a partial answer is not an answer.
+#
+# `mise trust --show` also lists configs above <dir> and the global one; those are dropped.
+# Membership is decided on the text of the path alone — mise prints $HOME as `~/` and the
+# -C directory canonicalised, nothing else resolved — so only <dir> is canonicalised here
+# and an entry is never resolved. Each line is split on its trailing `: trusted` or
+# `: untrusted`, because the path itself may contain `: `. Only stdout is read.
+_wt_mise_show() {
+  emulate -L zsh
+  (( $+commands[mise] )) || return 0
+  local dir="${1:A}" out line ent state res=""
+  out="$(command mise -C "$dir" trust --show 2>/dev/null)" || return 1
+  for line in "${(@f)out}"; do
+    [[ -z "$line" ]] && continue
+    if [[ "$line" == *': trusted' ]]; then
+      state=trusted; ent="${line%': trusted'}"
+    elif [[ "$line" == *': untrusted' ]]; then
+      state=untrusted; ent="${line%': untrusted'}"
+    else
+      return 1
+    fi
+    [[ "$ent" == '~/'* ]] && ent="$HOME/${ent#'~/'}"
+    [[ "$ent" == "$dir/"* ]] || continue
+    res+="$state"$'\t'"${ent#"$dir/"}"$'\n'
+  done
+  [[ -n "$res" ]] && print -rn -- "$res"
+  return 0
+}
+
 # _wt_do_prepare <main> <dest> <branch> <slug> — copy missing manifest entries,
 # then run the project setup hook. The UNLOCKED routine: `wt` calls it under the lock
 # it already holds, and `wt-prepare` is the locked wrapper. It must not lock itself

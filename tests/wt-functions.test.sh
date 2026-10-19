@@ -1,6 +1,6 @@
 #!/usr/bin/env zsh
 # Mocked test for the worktree/session helpers and the .worktreehook protocol in
-# dot_config/zsh/functions. Nineteen sections, in dependency order — helpers
+# dot_config/zsh/functions. Twenty sections, in dependency order — helpers
 # first, then the commands composed from them:
 #
 #   B  wt                  destination validation (husks, slug collisions)
@@ -22,8 +22,9 @@
 #   U  wt-rm               Herdr workspace shutdown and persisted-state safety
 #   V  wt-rm               live processes still inside the checkout block removal
 #   W  wt-rm               the checkout's Codex sessions are released before check 4
+#   X  wt                  mise trust is carried from the main checkout into a new worktree
 #
-# Herdr and layout.sh are stubbed on PATH and every invocation is logged, so the
+# Herdr, layout.sh and mise are stubbed on PATH and every invocation is logged, so the
 # tests can assert *ordering* — notably that a dirty worktree never loses its terminal
 # workspace — without launching anything. Git is NOT stubbed: real repos are used,
 # because git's own refusals (unmerged branch, dirty tree) are part of what's under
@@ -61,7 +62,8 @@ mkd() { mktemp -d "${TMPROOT%/}/wt-test.XXXXXX" }
 STUBS=$(mkd)
 SIGSTUBS=$(mkd)
 FAILSTUBS=$(mkd)
-trap 'rm -rf "$STUBS" "$SIGSTUBS" "$FAILSTUBS" "${ROOTTMP:-}"' EXIT
+MISESTUBS=$(mkd)
+trap 'rm -rf "$STUBS" "$SIGSTUBS" "$FAILSTUBS" "$MISESTUBS" "${ROOTTMP:-}"' EXIT
 
 cat > "$STUBS/layout.sh" <<'STUB'
 #!/usr/bin/env bash
@@ -174,7 +176,82 @@ cat > "$STUBS/xreview-rpc" <<'STUB'
 exit "${MOCK_XRPC_RC:-0}"
 STUB
 chmod +x "$STUBS/xreview-rpc"
-export PATH="$STUBS:$PATH"
+
+# Never the real mise. Its own directory, so a test can drop it from PATH alone
+# (nomise_path), and a stateful stand-in for the one thing wt asks of it: whether a config
+# file is trusted. The store ($MISE_STUB_STORE) holds one `<path><TAB><sha256>` line per
+# trusted file, so trust follows the file's CONTENT, as mise's does: editing a trusted file
+# makes it untrusted again. `trust --show` lists the config files visible from -C <dir>,
+# walking up to `/`, with $HOME printed as `~/` and the -C directory canonicalised, but no
+# entry resolved — which is what the real binary does.
+#
+# MOCK_MISE_* modes: SHOW_RC, SHOW_RAW (verbatim stdout), SHOW_STDERR, and SHOW_FAIL_AFTER_TRUST
+# fail or replace the read; RACE_CONTENT rewrites the file under `trust`, MAIN_FLIP drops a
+# path's trust under it, TRUST_RC and UNTRUST_RC fail the call, TRUST_NOOP succeeds without
+# recording anything. Any other invocation exits 3, so a call the code was never meant to
+# make (bare `trust`, `--all`) cannot pass quietly.
+cat > "$MISESTUBS/mise" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$MLOG"
+tab=$'\t'
+sha() { shasum -a 256 < "$1" | cut -d' ' -f1; }
+drop() { P="$1" awk -F'\t' '$1 != ENVIRON["P"]' "$MISE_STUB_STORE" > "$MISE_STUB_STORE.n"; mv "$MISE_STUB_STORE.n" "$MISE_STUB_STORE"; }
+if [ "${1:-}" = -C ] && [ "${3:-}" = trust ] && [ "${4:-}" = --show ] && [ $# -eq 4 ]; then
+  [ "${MOCK_MISE_SHOW_RC:-0}" != 0 ] && exit "$MOCK_MISE_SHOW_RC"
+  if [ -n "${MOCK_MISE_SHOW_FAIL_AFTER_TRUST:-}" ] && grep -q '^trust /' "$MLOG"; then exit 1; fi
+  [ -n "${MOCK_MISE_SHOW_STDERR:-}" ] && printf '%b' "$MOCK_MISE_SHOW_STDERR" >&2
+  if [ -n "${MOCK_MISE_SHOW_RAW+x}" ]; then printf '%b' "$MOCK_MISE_SHOW_RAW"; exit 0; fi
+  d=$(cd -P "$2" && pwd -P) || exit 1
+  found=
+  while :; do
+    for name in mise.toml mise.local.toml .mise.toml .config/mise.toml; do
+      f="${d%/}/$name"
+      [ -e "$f" ] || [ -L "$f" ] || continue
+      found=1
+      shown="$f"; case "$f" in "$HOME"/*) shown="~/${f#"$HOME"/}" ;; esac
+      if grep -Fxq -- "$f$tab$(sha "$f" 2>/dev/null)" "$MISE_STUB_STORE"; then
+        printf '%s: trusted\n' "$shown"
+      else
+        printf '%s: untrusted\n' "$shown"
+      fi
+    done
+    [ "$d" = / ] && break
+    d=$(dirname "$d")
+  done
+  [ -n "$found" ] || echo "mise No trusted config files found." >&2
+  exit 0
+fi
+case "$*" in *--all*) echo "mise stub: unexpected invocation: $*" >&2; exit 3 ;; esac
+if [ "${1:-}" = trust ] && [ $# -eq 2 ] && [ "${2#-}" = "$2" ]; then
+  [ -n "${MOCK_MISE_RACE_CONTENT+x}" ] && printf '%b' "$MOCK_MISE_RACE_CONTENT" > "$2"
+  [ -n "${MOCK_MISE_MAIN_FLIP:-}" ] && drop "$MOCK_MISE_MAIN_FLIP"
+  [ "${MOCK_MISE_TRUST_RC:-0}" != 0 ] && exit "$MOCK_MISE_TRUST_RC"
+  [ -n "${MOCK_MISE_TRUST_NOOP:-}" ] && exit 0
+  printf '%s\t%s\n' "$2" "$(sha "$2")" >> "$MISE_STUB_STORE"
+  exit 0
+fi
+if [ "${1:-}" = trust ] && [ "${2:-}" = --untrust ] && [ $# -eq 3 ]; then
+  [ "${MOCK_MISE_UNTRUST_RC:-0}" != 0 ] && exit "$MOCK_MISE_UNTRUST_RC"
+  drop "$3"
+  exit 0
+fi
+echo "mise stub: unexpected invocation: $*" >&2
+exit 3
+STUB
+chmod +x "$MISESTUBS/mise"
+export PATH="$MISESTUBS:$STUBS:$PATH"
+# nomise_path — the current PATH without the stub and without any directory holding a
+# mise, so a test can run wt where mise is not installed (git then resolves to /usr/bin).
+nomise_path() {
+  local d out=""
+  for d in ${(s.:.)PATH}; do
+    [[ "$d" == "$MISESTUBS" || -x "$d/mise" ]] && continue
+    out="${out:+$out:}$d"
+  done
+  print -r -- "$out"
+}
+# mise_seed <file> — record the file's current content as trusted in the stub's store.
+mise_seed() { print -r -- "$1"$'\t'"$(shasum -a 256 < "$1" | cut -d' ' -f1)" >> "$MISE_STUB_STORE" }
 export DEV_LAYOUT="$STUBS/layout.sh"
 
 # --- SIGINT delay injector --------------------------------------------------
@@ -266,8 +343,10 @@ setup() {   # fresh $HOME with Code/Org/repo, fresh logs, default mock behaviour
   git -C "$REPO" commit -q --allow-empty -m init
   export DLOG="$ROOTTMP/layout.log" \
          HLOG="$ROOTTMP/herdr.log" LLOG="$ROOTTMP/lsof.log" SLOG="$ROOTTMP/sleep.log" \
-         FLOG="$ROOTTMP/git-fail.log" XLOG="$ROOTTMP/xreview-rpc.log" MOCK_H_CLOSED_FILE="$ROOTTMP/herdr-closed"
+         FLOG="$ROOTTMP/git-fail.log" XLOG="$ROOTTMP/xreview-rpc.log" MOCK_H_CLOSED_FILE="$ROOTTMP/herdr-closed" \
+         MLOG="$ROOTTMP/mise.log" MISE_STUB_STORE="$ROOTTMP/mise-trusted"
   : > "$DLOG"; : > "$HLOG"; : > "$LLOG"; : > "$FLOG"; : > "$SLOG"; : > "$XLOG"; : > "$MOCK_H_CLOSED_FILE"
+  : > "$MLOG"; : > "$MISE_STUB_STORE"
   export MOCK_LAYOUT_RC=0 MOCK_H_SESSION_LIST='{"sessions":[]}' MOCK_H_SESSION_RC=0 \
          MOCK_H_WORKSPACES='{"result":{"workspaces":[]}}' \
          MOCK_H_PANES='{"result":{"panes":[]}}' MOCK_H_LIST_RC=0 MOCK_H_CLOSE_RC=0 \
@@ -278,7 +357,10 @@ setup() {   # fresh $HOME with Code/Org/repo, fresh logs, default mock behaviour
   export MOCK_LSOF_RC=0 MOCK_LSOF_SPEC="$(lsof_spec 1 launchd /)"
   unset MOCK_LSOF_RAW MOCK_H_TEAM_WORKSPACES MOCK_H_TEAM_PANES \
         MOCK_LSOF_BUSY_N MOCK_LSOF_BUSY_SPEC MOCK_LSOF_THEN_FAIL \
-        MOCK_XRPC_RC MOCK_XRPC_OUT MOCK_XRPC_ERR MOCK_XRPC_SIGNAL MOCK_XRPC_TO_LLOG
+        MOCK_XRPC_RC MOCK_XRPC_OUT MOCK_XRPC_ERR MOCK_XRPC_SIGNAL MOCK_XRPC_TO_LLOG \
+        MOCK_MISE_SHOW_RC MOCK_MISE_SHOW_RAW MOCK_MISE_SHOW_STDERR MOCK_MISE_SHOW_FAIL_AFTER_TRUST \
+        MOCK_MISE_RACE_CONTENT MOCK_MISE_MAIN_FLIP MOCK_MISE_TRUST_RC MOCK_MISE_UNTRUST_RC \
+        MOCK_MISE_TRUST_NOOP
 }
 # run <dir> <command...> — source the functions fresh and run one command in $dir.
 # A subshell per scenario keeps zsh options/state from leaking between tests.
@@ -2840,6 +2922,87 @@ print -r -- "wip" > "$HOME/Code/Org/repo-rel-dirty/dirty.txt"
 run "$REPO" wt-rm rel-dirty
 rc_is 1 "W7 a dirty checkout is refused at check 1"
 eq "$(<$XLOG)" "" "W7 a refusal before teardown never calls xreview-rpc"
+
+# --- mise trust carried into a new worktree ---------------------------------
+# _wt_mise_show is the reader every later step rests on: what mise says about one
+# checkout, as `trusted<TAB>rel` / `untrusted<TAB>rel`, and nothing about anywhere else.
+setup
+print -r -- 'a=1' > "$REPO/mise.toml"; print -r -- 'b=1' > "$REPO/mise.local.toml"
+mise_seed "$REPO/mise.toml"
+run "$REPO" _wt_mise_show "$REPO"
+rc_is 0 "X0a the reader succeeds"
+eq "$(print -r -- "$OUT" | sort)" "$(printf 'trusted\tmise.toml\nuntrusted\tmise.local.toml' | sort)" \
+   "X0a each config is reported with its own state, relative to the checkout"
+eq "$(<$MLOG)" "-C $REPO trust --show" "X0a mise is asked once, about exactly that directory"
+mise_seed "$REPO/mise.local.toml"; print -r -- 'edited' >> "$REPO/mise.toml"
+run "$REPO" _wt_mise_show "$REPO"
+eq "$(print -r -- "$OUT" | sort)" "$(printf 'untrusted\tmise.toml\ntrusted\tmise.local.toml' | sort)" \
+   "X0a trust follows the content: an edited file reads as untrusted again"
+
+setup
+print -r -- 'p=1' > "$HOME/Code/Org/mise.toml"; print -r -- 'g=1' > "$HOME/mise.toml"
+run "$REPO" _wt_mise_show "$REPO"
+rc_is 0 "X0b configs above the checkout succeed"
+eq "$OUT" "" "X0b configs in parents are dropped silently"
+print -r -- 'a=1' > "$REPO/.mise.toml"
+run "$REPO" _wt_mise_show "$REPO"
+eq "$OUT" "$(printf 'untrusted\t.mise.toml')" "X0b only the checkout's own config remains"
+
+setup
+print -r -- 'a=1' > "$REPO/mise.toml"
+MOCK_MISE_SHOW_RC=1 run "$REPO" _wt_mise_show "$REPO"
+rc_is 1 "X0c a non-zero exit from mise is a failed read"
+MOCK_MISE_SHOW_RAW='garbage\n' run "$REPO" _wt_mise_show "$REPO"
+rc_is 1 "X0c a line that is neither trusted nor untrusted is a failed read"
+eq "$OUT" "" "X0c a failed read prints no partial answer"
+MOCK_MISE_SHOW_RAW="$REPO/mise.toml: trusted\ngarbage\n" run "$REPO" _wt_mise_show "$REPO"
+rc_is 1 "X0c one bad line fails the whole read"
+eq "$OUT" "" "X0c ... and the good line before it is not printed"
+
+setup
+mkdir -p "$REPO/.config"; print -r -- 'c=1' > "$REPO/.config/mise.toml"
+run "$REPO" _wt_mise_show "$REPO"
+eq "$OUT" "$(printf 'untrusted\t.config/mise.toml')" "X0d a config below a subdirectory keeps its slash in rel"
+
+setup
+run "$REPO" _wt_mise_show "$REPO"
+rc_is 0 "X0e a checkout with no configs succeeds"
+eq "$OUT" "" "X0e ... and prints nothing (mise's stderr note is never parsed)"
+
+setup
+CO="$HOME/Code/Org/co: lon"; mkdir -p "$CO"; print -r -- 'a=1' > "$CO/mise.toml"; mise_seed "$CO/mise.toml"
+run "$REPO" _wt_mise_show "$CO"
+eq "$OUT" "$(printf 'trusted\tmise.toml')" "X0f a checkout path containing ': ' is split on the trailing state only"
+
+# The stub's own protocol, which the sections below lean on.
+setup
+print -r -- 'a=1' > "$REPO/mise.toml"
+mise trust "$REPO/mise.toml"
+eq "$(mise -C "$REPO" trust --show 2>/dev/null)" "~/Code/Org/repo/mise.toml: trusted" "X0s trust records the content, and ~/ is printed"
+mise trust --untrust "$REPO/mise.toml"
+eq "$(mise -C "$REPO" trust --show 2>/dev/null)" "~/Code/Org/repo/mise.toml: untrusted" "X0s --untrust drops it"
+MOCK_MISE_TRUST_NOOP=1 mise trust "$REPO/mise.toml"
+eq "$(mise -C "$REPO" trust --show 2>/dev/null)" "~/Code/Org/repo/mise.toml: untrusted" "X0s TRUST_NOOP exits 0 and records nothing"
+MOCK_MISE_RACE_CONTENT='raced\n' mise trust "$REPO/mise.toml"
+eq "$(<$REPO/mise.toml)" "raced" "X0s RACE_CONTENT rewrites the file under trust"
+print -r -- 'b=1' > "$REPO/mise.local.toml"; mise_seed "$REPO/mise.local.toml"
+MOCK_MISE_MAIN_FLIP="$REPO/mise.local.toml" mise trust "$REPO/mise.toml"
+eq "$(mise -C "$REPO" trust --show 2>/dev/null | sort | tr '\n' ' ')" \
+   "~/Code/Org/repo/mise.local.toml: untrusted ~/Code/Org/repo/mise.toml: trusted " \
+   "X0s MAIN_FLIP drops another path's trust as the trust lands"
+MOCK_MISE_TRUST_RC=4 mise trust "$REPO/mise.toml"; eq "$?" "4" "X0s TRUST_RC is the exit status"
+MOCK_MISE_UNTRUST_RC=5 mise trust --untrust "$REPO/mise.toml"; eq "$?" "5" "X0s UNTRUST_RC is the exit status"
+: > "$MLOG"
+MOCK_MISE_SHOW_FAIL_AFTER_TRUST=1 mise -C "$REPO" trust --show >/dev/null 2>&1
+eq "$?" "0" "X0s SHOW_FAIL_AFTER_TRUST reads normally before any trust"
+mise trust "$REPO/mise.toml"
+MOCK_MISE_SHOW_FAIL_AFTER_TRUST=1 mise -C "$REPO" trust --show >/dev/null 2>&1
+eq "$?" "1" "X0s ... and fails once a trust has been logged"
+mise trust >/dev/null 2>&1;                  eq "$?" "3" "X0s a bare trust is refused"
+mise trust --all >/dev/null 2>&1;            eq "$?" "3" "X0s --all is refused"
+mise -C "$REPO" trust --all >/dev/null 2>&1; eq "$?" "3" "X0s -C ... --all is refused"
+eq "$(PATH="$(nomise_path)" whence -p mise)" "" "X0s nomise_path drops every mise"
+eq "$(PATH="$(nomise_path)" whence -p git)" "/usr/bin/git" "X0s ... and git still resolves"
 
 export HOME="$REAL_HOME"
 print -r -- ""
