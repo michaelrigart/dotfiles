@@ -47,7 +47,7 @@ INPUT=$(printf '{"model":{"display_name":"Opus 5.5"},"effort":{"level":"high"},"
 # Its stderr goes to $T/stderr, so a leak can be asserted on. HERDR_PANE, when set, is passed
 # as HERDR_PANE_ID: the statusline then runs as inside a Herdr pane.
 run() {
-  printf '%s' "$INPUT" | env -i HOME="$T" PATH="$T/$1:/usr/bin:/bin" COLUMNS="$2" \
+  printf '%s' "$INPUT" | env -i HOME="$T" PATH="$T/$1:/usr/bin:/bin" PINNED_PATH="$T/$1:/usr/bin:/bin" COLUMNS="$2" \
     ${HERDR_PANE:+HERDR_PANE_ID=$HERDR_PANE} \
     STUB_ARGS="$T/args" TT_OUT="${3:-}" TT_RC="${4:-0}" TT_ERR="${5:-}" bash "$SL" 2>"$T/stderr"
 }
@@ -347,6 +347,17 @@ if has "$(strip "$out")" "plan 1/4" && has "$out" "$ORANGE" && ! has "$out" "$TE
    && [ "$out" = "$(run none 200)" ] && [ ! -s "$T/stderr" ]; then
   _pass "tagteam of unknown width and an active plan: the plan segment alone is shown"
 else _fail "plan should be shown alone when tagteam cannot be" "$(strip "$out") | stderr: $(cat "$T/stderr")"; fi
+INPUT=$INPUT_PLAIN
+
+# The statusline runs outside the sandbox: a tool on the caller's PATH must not reach it.
+mkdir -p "$T/evil"
+for t in git jq tagteam; do
+  printf '#!/bin/sh\ntouch "%s/evil-%s"\n' "$T" "$t" > "$T/evil/$t"; chmod 755 "$T/evil/$t"
+done
+in_dir repo-main
+printf '%s' "$INPUT" | env -i HOME="$T" PATH="$T/evil:/usr/bin:/bin" COLUMNS=120 bash "$SL" >/dev/null 2>&1
+if ls "$T"/evil-* >/dev/null 2>&1; then _fail "the statusline's PATH is pinned" "$(ls "$T"/evil-*)"
+else _pass "the statusline's PATH is pinned"; fi
 INPUT=$INPUT_PLAIN
 
 echo "statusline: $pass passed, $fail failed"

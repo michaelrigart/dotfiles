@@ -65,7 +65,7 @@ run() {
   local cwd=$1 cmd=$2
   jq -n --arg c "$cmd" --arg d "$cwd" \
     '{hook_event_name:"PreToolUse",tool_name:"Bash",cwd:$d,tool_input:{command:$c}}' \
-    | bash "$GUARD"
+    | PINNED_PATH="$PATH" bash "$GUARD"
 }
 
 # expect <allow|deny> <label> <cwd> <command>
@@ -751,6 +751,66 @@ else
 fi
 expect allow "the quoted pinned command is allowed as written" "$DQ" "$QPINNED"
 
+# A remote-tracking ref pointing at a missing object, plus a promisor remote whose
+# uploadpack writes a marker: the guard's own git calls must never lazy-fetch (spec
+# 2026-10-16, sandbox write boundary, section 2). The verdict is the usual one for a
+# dangling ref (the outgoing commits cannot be listed: deny), and no marker appears.
+LAZY=$(cp -R "$DEL" "$TMP/dellazy" && printf '%s' "$TMP/dellazy")
+git -C "$LAZY" switch -q work
+git -C "$LAZY" commit -q --allow-empty -m "lazy work"
+printf '%s\n' 1111111111111111111111111111111111111111 > "$LAZY/.git/refs/remotes/origin/ghost"
+git -C "$LAZY" config remote.origin.promisor true
+git -C "$LAZY" config remote.origin.partialclonefilter blob:none
+git -C "$LAZY" config remote.origin.uploadpack "touch $TMP/lazy-marker; git-upload-pack"
+expect deny "a dangling remote ref with a promisor remote" "$LAZY" 'git push origin work'
+if [ -e "$TMP/lazy-marker" ]; then
+  fail=$((fail + 1)); printf '  FAIL %s\n' "the guard lazy-fetched through the promisor remote"
+else
+  pass=$((pass + 1)); printf '  ok   %s\n' "the guard never lazy-fetches"
+fi
+# The guard's PATH is pinned: a git first on the caller's PATH must never run.
+EVIL="$TMP/evilbin"; mkdir -p "$EVIL"
+printf '#!/bin/sh\ntouch "%s/evil-marker"\nexec /usr/bin/git "$@"\n' "$TMP" > "$EVIL/git"; chmod 755 "$EVIL/git"
+PINNED_OUT=$( PATH="$EVIL:$PATH"; unset PINNED_PATH
+  jq -n --arg c 'git push origin work' --arg d "$LAZY" \
+    '{hook_event_name:"PreToolUse",tool_name:"Bash",cwd:$d,tool_input:{command:$c}}' \
+    | bash "$GUARD" )
+if [ -e "$TMP/evil-marker" ]; then
+  fail=$((fail + 1)); printf '  FAIL %s\n' "the guard ran a git from the caller's PATH"
+else
+  pass=$((pass + 1)); printf '  ok   %s\n' "the guard's PATH is pinned"
+fi
+# ...and the pin costs the guard nothing: its verdict is the usual one (the same deny
+# the suite's own PATH gets for this repository).
+if [ -n "$PINNED_OUT" ] && [ "$PINNED_OUT" = "$(run "$LAZY" 'git push origin work')" ] \
+   && printf '%s' "$PINNED_OUT" | jq -e '.hookSpecificOutput.permissionDecision=="deny"' >/dev/null 2>&1; then
+  pass=$((pass + 1)); printf '  ok   %s\n' "under the pinned PATH the verdict is the usual deny"
+else
+  fail=$((fail + 1)); printf '  FAIL %s (said: %s)\n' "under the pinned PATH the verdict is not the usual deny" "$PINNED_OUT"
+fi
+
+# Lazy fetch is off for the patch listing and gitleaks too: the repository's configuration
+# stays agent-writable, so a promisor remote is never trusted. The outgoing commit's tree
+# names a blob that is not present (git mktree --missing), so reading its patch would fetch
+# it from the promisor remote, whose uploadpack writes a marker. The push is denied (the
+# outgoing patches cannot be read: push by hand) and no marker appears.
+LAZYB=$(cp -R "$DEL" "$TMP/dellazyblob" && printf '%s' "$TMP/dellazyblob")
+git -C "$LAZYB" switch -q work
+MISSING_TREE=$(printf '100644 blob 2222222222222222222222222222222222222222\tghost.txt\n' \
+  | git -C "$LAZYB" mktree --missing)
+MISSING_COMMIT=$(git -C "$LAZYB" commit-tree "$MISSING_TREE" -p "$(git -C "$LAZYB" rev-parse work)" -m "missing blob")
+git -C "$LAZYB" update-ref refs/heads/work "$MISSING_COMMIT"
+git -C "$LAZYB" config remote.origin.promisor true
+git -C "$LAZYB" config remote.origin.partialclonefilter blob:none
+git -C "$LAZYB" config remote.origin.uploadpack "touch $TMP/lazyblob-marker; git-upload-pack"
+expect deny "an outgoing commit naming a missing blob, with a promisor remote" "$LAZYB" 'git push origin work'
+has_reason  "and the deny says to push by hand" "Push by hand" "$LAZYB" 'git push origin work'
+if [ -e "$TMP/lazyblob-marker" ]; then
+  fail=$((fail + 1)); printf '  FAIL %s\n' "the patch listing lazy-fetched through the promisor remote"
+else
+  pass=$((pass + 1)); printf '  ok   %s\n' "the patch listing never lazy-fetches"
+fi
+
 # From here on the remote moves: another clone merges far into main and pushes both.
 OTHER="$TMP/delother"
 git clone -q "$REMOTES/del.git" "$OTHER" 2>/dev/null
@@ -1354,6 +1414,32 @@ else
   git -C "$ORPHAN" config log.showRoot false
   expect deny  "a secret in a root commit under log.showRoot=false" "$ORPHAN" 'git push origin orphan'
   has_reason   "and it is found, not merely refused" "rule aws-access-token in creds.txt" "$ORPHAN" 'git push origin orphan'
+  # diff.submodule=diff makes the patch of a bumped gitlink start a child `git diff` inside the
+  # submodule, which has no --no-ext-diff of its own: the submodule's diff.external and textconv
+  # driver would run, unsandboxed, on every push. The scan keeps the gitlink a one-line patch.
+  SMK="$TMP/sm-marks"; SMS="$TMP/sm-src"; mkdir -p "$SMK"
+  git init -q "$SMS"; printf 'one\n' > "$SMS/a.txt"; git -C "$SMS" add a.txt; git -C "$SMS" commit -q -m "first"
+  SUBM=$(clone submodule)
+  git -C "$SUBM" -c protocol.file.allow=always submodule add -q "$SMS" sm 2>/dev/null
+  git -C "$SUBM" commit -q -m "add the submodule"
+  printf 'changed\n' > "$SUBM/sm/a.txt"; git -C "$SUBM/sm" commit -q -am "move the submodule"
+  git -C "$SUBM" add sm; git -C "$SUBM" commit -q -m "bump the gitlink"
+  printf '#!/bin/sh\ntouch "%s/external"\nexit 0\n' "$SMK" > "$TMP/sm-external"; chmod +x "$TMP/sm-external"
+  printf '#!/bin/sh\ntouch "%s/textconv"\ncat "$1"\n' "$SMK" > "$TMP/sm-textconv"; chmod +x "$TMP/sm-textconv"
+  git -C "$SUBM/sm" config diff.external "$TMP/sm-external"
+  git -C "$SUBM/sm" config diff.m.textconv "$TMP/sm-textconv"
+  printf '*.txt diff=m\n' > "$(git -C "$SUBM/sm" rev-parse --path-format=absolute --git-path info/attributes)"
+  git -C "$SUBM" config diff.submodule diff
+  rm -f "$SMK"/*
+  expect allow "a bumped gitlink under diff.submodule=diff is scanned and passes" "$SUBM" 'git push origin feat'
+  is_marks() {
+    if [ -z "$(ls "$SMK" | tr '\n' ' ')" ]; then pass=$((pass + 1)); printf '  ok   %s\n' "$1"
+    else fail=$((fail + 1)); printf '  FAIL %s (ran: %s)\n' "$1" "$(ls "$SMK" | tr '\n' ' ')"; fi
+  }
+  is_marks "and neither the submodule's diff.external nor its textconv ran"
+  git -C "$SUBM/sm" config --unset diff.external; rm -f "$SMK"/*   # the external driver outranks textconv
+  expect allow "the same push with the textconv driver alone" "$SUBM" 'git push origin feat'
+  is_marks "nor the textconv driver alone"
   # None of that may cost an ordinary push its silence. gitleaks counts a commit when its
   # patch has a hunk in a file it does not skip (a deleted one), even a hunk that only
   # removes lines, and the expected count follows the same rule.

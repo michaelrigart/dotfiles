@@ -15,6 +15,11 @@
 #   codex-daemon check      exit 0 only if it answers AND carries no HERDR_* variable
 #   codex-daemon restart    fix a contaminated daemon; disconnects every open Codex TUI
 set -eu
+# Runs outside the sandbox (called by xreview and by Michael), so it resolves no mise shim,
+# which would load a repository's mise.toml (spec 2026-10-16, sandbox write boundary).
+# ~/.local/bin stays first for the codex launcher; the sandbox cannot write it. PINNED_PATH
+# is for the suites only.
+PATH=${PINNED_PATH:-$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin}; export PATH
 
 CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}"
 LABEL="${CODEX_DAEMON_LABEL:-be.netronix.codex-app-server}"

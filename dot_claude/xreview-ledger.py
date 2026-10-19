@@ -42,8 +42,11 @@ CALL_TIMEOUT = 20.0      # per git call; the guard lowers it to fit its own budg
 # user's configuration could change: diff.relative would drop paths outside the current
 # directory, an external or textconv driver would rewrite or hide content, renames would merge
 # a delete and an add, and diff.ignoreSubmodules or submodule.<name>.ignore would hide a gitlink.
+# diff.submodule=diff would start a child `git diff` inside a bumped submodule, which has no
+# --no-ext-diff of its own and runs that submodule's diff.external or textconv driver, outside
+# the sandbox; --submodule=short pins the gitlink to its two-line "Subproject commit" form.
 DIFF_FLAGS = ["--no-relative", "--no-ext-diff", "--no-textconv", "--no-renames",
-              "--ignore-submodules=none"]
+              "--ignore-submodules=none", "--submodule=short"]
 PATHSPEC_VARS = ("GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS",
                  "GIT_ICASE_PATHSPECS")
 DIFF_RAW = ["diff", "--raw", "-z", "--no-abbrev"] + DIFF_FLAGS
@@ -63,8 +66,13 @@ class Fail(Exception):
 def git_env():
     """The environment of every git call, without the variables that change how a pathspec is
     read: a reviewed repository's mise.toml or direnv could set them, and the packet's
-    pathspecs would then match other paths than the ones the fingerprint names."""
-    return {k: v for k, v in os.environ.items() if k not in PATHSPEC_VARS}
+    pathspecs would then match other paths than the ones the fingerprint names. A lazy fetch is
+    off too: in a partial clone a diff would otherwise run the remote's uploadpack from a
+    config the sandbox can write, outside the sandbox; a blob that is not local fails the
+    call, which every caller already treats as a step that could not be completed."""
+    env = {k: v for k, v in os.environ.items() if k not in PATHSPEC_VARS}
+    env["GIT_NO_LAZY_FETCH"] = "1"
+    return env
 
 
 def git(repo, *args, raw=False):

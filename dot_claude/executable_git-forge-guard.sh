@@ -39,6 +39,14 @@
 
 set -uo pipefail
 
+# Runs outside the sandbox, so it resolves nothing a sandboxed command can write: no
+# ~/.local/bin, no mise shim (spec 2026-10-16, sandbox write boundary). PINNED_PATH is
+# for the suites only.
+PATH=${PINNED_PATH:-/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin}; export PATH
+# No lazy fetch from a promisor remote this repository's config names, in any git call the
+# guard makes (its own or the helper's).
+export GIT_NO_LAZY_FETCH=1
+
 # A rule-4 ask is held here rather than printed at once, so that a rule 1-2 deny
 # further down still wins over it (deny beats ask). allow() releases it.
 pending=""
@@ -170,7 +178,7 @@ case "$cmd" in
     if ! command -v python3 >/dev/null 2>&1; then
       ask "glab api call, and python3 is missing so the read/write check could not run."
     fi
-    verdict=$(printf '%s' "$cmd" | python3 -c 'import sys, shlex
+    verdict=$(printf '%s' "$cmd" | python3 -I -c 'import sys, shlex
 
 OPS = {"|", "||", "&&", ";", "&", "(", ")", "|&", ";;", "\n"}
 WRITE_LONG = {"--field", "--raw-field", "--input", "--form"}

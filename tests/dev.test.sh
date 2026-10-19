@@ -66,6 +66,7 @@ trap 'rm -rf "$STUBS" "$XDGSTATE" "${ROOTTMP:-}"' EXIT
 cat > "$STUBS/herdr" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$HLOG"
+[ -n "${MOCK_PATH_FILE:-}" ] && printf '%s\t%s\n' "$*" "$PATH" >> "$MOCK_PATH_FILE"
 # Defaults are plain assignments, NOT ${VAR:-{...}}: a brace inside a :- default ends
 # the expansion early in bash and the remaining "}}" leaks into stdout, appending two
 # stray braces to otherwise-valid JSON. jq still extracts the right value while
@@ -172,6 +173,9 @@ esac
 STUB
 chmod +x "$STUBS/herdr"
 export PATH="$STUBS:$PATH"
+# The scripts under test pin their PATH (spec 2026-10-16, sandbox write boundary); the stubs
+# reach them through PINNED_PATH, which only the suites set.
+export PINNED_PATH="$PATH"
 
 mock_reset() {
   export HLOG="$(mktemp "${TMPROOT%/}/hlog.XXXXXX")"
@@ -1240,5 +1244,73 @@ unlogged "tab focus" "N10 nothing is focused on a null id"
 run_layout "export HERDR_ENV=1; mock_panes '/nowhere'; export MOCK_TAB_CREATE_NO_TAB_ID=1" "$R1"
 rc_is 1 "N10b a build stops on a tab create response with no tab id"
 logged "workspace close w7" "N10b the trap closes the partial workspace"
+
+# --- P: the scripts pin their PATH -------------------------------------------
+# layout.sh and tab-goto.sh run outside the sandbox (dev, herdr's keybindings), so a caller's
+# PATH must not decide which git, herdr, jq or zsh they run (spec 2026-10-16, sandbox write
+# boundary). Each runs from a scratch copy through its own shebang, with a hostile directory
+# first on PATH holding a marker-writing stub for the tools it could reach; no marker may
+# appear. The stubs of this suite reach the scripts through PINNED_PATH, the way the suite's
+# own runs do.
+print -r -- "-- P: pinned PATH"
+HOSTILE=$(mkd); HMARK=$(mkd); PD=$(mkd)
+printf '#!/bin/sh\necho "${0##*/}" >> "%s/marker"\nexit 0\n' "$HMARK" > "$HOSTILE/.marker"
+chmod 755 "$HOSTILE/.marker"
+for t in git herdr bash zsh python3 jq glab grep head sleep env sed tr; do
+  ln -s .marker "$HOSTILE/$t"
+done
+cp "$LAYOUT" "$PD/layout.sh"; cp "${LAYOUT:h}/codex-pane-command" "$PD/codex-pane-command"
+cp "$TABGOTO" "$PD/tab-goto.sh"; chmod 755 "$PD/layout.sh" "$PD/tab-goto.sh"
+marked() { [[ -e "$HMARK/marker" ]] && tr '\n' ' ' < "$HMARK/marker" || print -rn -- clean; }
+
+# The pin is textual too: the shebang is absolute and the pin is the first command (layout.sh
+# keeps the caller's PATH on the line before, an assignment that runs nothing).
+PIN='PATH=${PINNED_PATH:-/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin}; export PATH'
+for f in "$LAYOUT" "$TABGOTO"; do
+  eq "$(head -1 "$f")" "#!/bin/zsh" "P1 ${f:t} has an absolute shebang"
+  eq "$(grep -v '^[[:space:]]*#' "$f" | grep . | grep -v '^HL_CALLER_PATH=' | head -1)" "$PIN" \
+    "P1 ${f:t} pins its PATH as its first command"
+done
+
+rm -f "$HMARK/marker"; mock_reset
+OUT="$(env -i HOME="$ROOTTMP" PATH="$HOSTILE:/usr/bin:/bin" "$PD/layout.sh" --make-tab 2>&1)"; RC=$?
+rc_is 1 "P2 layout.sh run with a hostile PATH and no PINNED_PATH still runs"
+has "usage: layout.sh --make-tab" "P2 it reaches its own usage check"
+eq "$(marked)" "clean" "P2 layout.sh runs none of the hostile tools, its shell included"
+
+rm -f "$HMARK/marker"; mock_reset
+mock_topology "$R1" 'Netronix/curato' $FULL
+OUT="$(env HOME="$ROOTTMP" HERDR_ACTIVE_WORKSPACE_ID=w7 PATH="$HOSTILE:$PATH" PINNED_PATH="$PATH" \
+  "$PD/layout.sh" --make-tab editor 2>&1)"; RC=$?
+rc_is 0 "P3 layout.sh --make-tab succeeds with a hostile directory first on the caller's PATH"
+eq "$OUT" "w7:t5" "P3 it prints the new tab id"
+logged "tab create --workspace w7 --label editor" "P3 the stub herdr was the one that ran"
+eq "$(marked)" "clean" "P3 layout.sh runs none of the hostile tools"
+
+rm -f "$HMARK/marker"; mock_reset
+mock_tabs agents editor runtime
+OUT="$(env HERDR_ACTIVE_WORKSPACE_ID=w7 PATH="$HOSTILE:$PATH" PINNED_PATH="$PATH" \
+  "$PD/tab-goto.sh" runtime 2>&1)"; RC=$?
+rc_is 0 "P4 tab-goto.sh succeeds with a hostile directory first on the caller's PATH"
+logged "tab focus w7:t3" "P4 the stub herdr focused the tab"
+eq "$(marked)" "clean" "P4 tab-goto.sh runs none of the hostile tools, its shell included"
+
+# The one place the caller's PATH survives: the herdr server dev starts and the client it
+# attaches, so their panes are born with the PATH dev was run from, not the pinned one.
+mock_reset
+export MOCK_PATH_FILE="$(mktemp "${TMPROOT%/}/herdr-path.XXXXXX")"
+export MOCK_SERVER_UP=0
+mock_topology "$R1" 'Netronix/curato' $FULL
+OUT="$(env -u HERDR_ENV -u DEV_NO_ATTACH HOME="$ROOTTMP" PATH="$PATH:/caller-only" PINNED_PATH="$PATH" \
+  "$PD/layout.sh" "$R1" 2>&1)"; RC=$?
+rc_is 0 "P5 dev's run starts the server and attaches"
+eq "$(awk -F'\t' '$1 == "server" && $2 ~ /:\/caller-only$/' "$MOCK_PATH_FILE" | wc -l | tr -d ' ')" "1" \
+  "P5 the server it starts keeps the caller's PATH"
+eq "$(awk -F'\t' '$1 == "" && $2 ~ /:\/caller-only$/' "$MOCK_PATH_FILE" | wc -l | tr -d ' ')" "1" \
+  "P5 the client it attaches keeps the caller's PATH"
+eq "$(awk -F'\t' '$1 == "workspace list" && $2 ~ /caller-only/' "$MOCK_PATH_FILE" | wc -l | tr -d ' ')" "0" \
+  "P5 every other herdr call runs with the pinned PATH"
+rm -f "$MOCK_PATH_FILE"; unset MOCK_PATH_FILE
+rm -rf "$HOSTILE" "$HMARK" "$PD"
 
 finish

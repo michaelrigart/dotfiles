@@ -266,6 +266,7 @@ exit 0
 R
 chmod +x "$STUB"/*
 export PATH="$STUB:$PATH"
+export PINNED_PATH="$PATH"
 
 fresh() { # a pane showing U0, idle, its TUI not connected to the daemon; clean log and state
   unset ENSURE_RC CHECK_RC RPC_START_FAIL RPC_START_UNCERTAIN RPC_START_BAD_ID \
@@ -1187,6 +1188,25 @@ for variant in nolock exit1 timeout; do
   fi
   is "P8 $variant: untouched" "$(untouched)" yes
 done
+# P9: the lock helper is inline Python, run unsandboxed from the repository, and a plain
+# `python3 -c` puts the current directory first on sys.path: a sandbox-written fcntl.py there
+# would run outside the sandbox. fcntl is not built in on the system Python, so it is planted
+# in the repository for the dispatch, and must never be imported (-I: no cwd on sys.path).
+fresh; rm -f "$ROOT/pymark"
+printf 'open("%s/pymark", "a").write("fcntl imported from the repository\\n")\n' "$ROOT" > "$ROOT/repo/fcntl.py"
+/usr/bin/python3 -c 'import sys; sys.exit(0 if "fcntl" in sys.builtin_module_names else 1)'
+is "P9 fcntl is not built in, so a planted one would be imported by a bare python3 -c" "$?" 1
+( cd "$ROOT/repo" && /usr/bin/python3 -c 'import fcntl' ) 2>/dev/null
+is "P9 the planted fcntl.py is live from the repository (control)" "$(grep -c imported "$ROOT/pymark" 2>/dev/null)" 1
+rm -f "$ROOT/pymark"
+out="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
+rm -f "$ROOT/repo/fcntl.py"
+is "P9 a dispatch imports nothing from the repository" "$(cat "$ROOT/pymark" 2>/dev/null)" ""
+is "P9 and the dispatch still succeeds" "$rc/$(printf '%s' "$out" | grep -c '^xr-')" "0/1"
+# Every inline or stdin Python in the unsandboxed scripts runs isolated (-I).
+bare=$(grep -nE 'python3? +(-c|-)( |$)' "$XREVIEW" | grep -vE 'python3? +-I +(-c|-)( |$)')
+is "P9 every inline python3 in xreview is isolated with -I" "$bare" ""
+
 # P6 (spec §6): a waiter that gets the lock while the first dispatch's review turn is running
 # refuses as mid-turn, and never sends a key into the pane the first one resumed.
 fresh
@@ -1433,7 +1453,7 @@ exec REALAWK_PLACEHOLDER "$@"
 AWKEOF
 sed -i '' "s#REALAWK_PLACEHOLDER#$REALAWK#" "$STUB2/awk"
 chmod +x "$STUB2/awk"
-out="$(PATH="$STUB2:$PATH" bash "$XREVIEW" round 2>&1)"; rc=$?
+out="$(PATH="$STUB2:$PATH" PINNED_PATH="$STUB2:$PATH" bash "$XREVIEW" round 2>&1)"; rc=$?
 is "O1 'xreview round' does not crash when its awk read fails" "$rc" 0
 is "O1 and still prints a number, not an empty line" "$(printf '%s' "$out" | grep -cE '^[0-9]+$')" 1
 
@@ -1697,6 +1717,170 @@ for form in "help" "-h" "--help" "dispatch --help" "collect xr-1-a -h" "apply --
      "$rc/${missing:-all}/$(wc -c < "$ROOT/help-err" | tr -d ' ')" "0/all/0"
 done
 is "H7 no help form called herdr, the daemon or the reviewer" "$(wc -c < "$CALLS" | tr -d ' ')" 0
+
+# P1-P2: xreview runs outside the sandbox, so a jq or git reached through a mise shim (whose
+# repository mise.toml an agent can edit) or anything else on the caller's PATH must not run.
+HOSTILE="$ROOT/hostile"; mkdir -p "$HOSTILE" "$ROOT/hosthome"
+for t in jq git herdr python3; do
+  printf '#!/bin/sh\necho %s >> "%s/hostile-marker"\nexit 0\n' "$t" "$ROOT" > "$HOSTILE/$t"; chmod 755 "$HOSTILE/$t"
+done
+# bash itself is on the hostile list, and xreview runs as an executable, the way the Bash
+# tool runs an excluded command: its shebang must not resolve bash through PATH.
+printf '#!/bin/sh\necho bash >> "%s/hostile-marker"\nexit 0\n' "$ROOT" > "$HOSTILE/bash"; chmod 755 "$HOSTILE/bash"
+cp "$XREVIEW" "$ROOT/xreview-exec"; chmod 755 "$ROOT/xreview-exec"
+out="$( (unset PINNED_PATH; HOME="$ROOT/hosthome" PATH="$HOSTILE:$PATH" "$ROOT/xreview-exec" round) 2>&1)"
+is "P1 xreview round runs with a hostile PATH (bash included) and no PINNED_PATH" "$( [ -e "$ROOT/hostile-marker" ] && cat "$ROOT/hostile-marker" | tr '\n' ' ' || echo clean)" clean
+is "P2 and still answers" "$(printf '%s' "$out" | grep -c '^[0-9]')" 1
+
+echo "AP. xreview apply runs no command from the repository's configuration"
+# apply runs unsandboxed and the repository's configuration is writable from the sandbox: a
+# worktree or index diff would run core.fsmonitor and every clean filter. Each writes its own
+# marker; the scope must still list the changed files.
+HR="$ROOT/hostile-repo"; HM="$ROOT/hostile-marks"; mkdir -p "$HR" "$HM"
+printf '#!/bin/sh\ntouch "%s/fsmonitor"\n' "$HM" > "$ROOT/evil-fsmonitor"; chmod +x "$ROOT/evil-fsmonitor"
+printf '#!/bin/sh\ntouch "%s/clean"\ncat\n' "$HM" > "$ROOT/evil-clean"; chmod +x "$ROOT/evil-clean"
+printf '#!/bin/sh\ntouch "%s/process"\n' "$HM" > "$ROOT/evil-process"; chmod +x "$ROOT/evil-process"
+git -C "$HR" init -q -b main && git -C "$HR" config user.email t@t && git -C "$HR" config user.name t
+git -C "$HR" config commit.gpgsign false
+printf '* filter=m\n' > "$HR/.gitattributes"; printf 'one\n' > "$HR/a.txt"
+git -C "$HR" add . && git -C "$HR" commit -q -m init
+git -C "$HR" switch -q -c feat; printf 'two\n' > "$HR/b.txt"
+git -C "$HR" add b.txt && git -C "$HR" commit -q -m "add b"
+printf 'edited\n' > "$HR/a.txt"; printf 'staged\n' > "$HR/c.txt"; git -C "$HR" add c.txt
+git -C "$HR" config core.fsmonitor "$ROOT/evil-fsmonitor"
+git -C "$HR" config filter.m.clean "$ROOT/evil-clean"
+git -C "$HR" config filter.m.process "$ROOT/evil-process"
+# A tracked file whose stat changed but not its content makes the worktree diff refresh the
+# index and write it back, which runs core.hooksPath's post-index-change and, on git 2.54 and
+# later, every hook.<name>.command whose event is post-index-change (core.hooksPath=/dev/null
+# does not switch those off). Each source writes its own marker.
+mkdir -p "$ROOT/evil-hooks"
+printf '#!/bin/sh\ntouch "%s/hook"\n' "$HM" > "$ROOT/evil-hooks/post-index-change"
+chmod +x "$ROOT/evil-hooks/post-index-change"
+git -C "$HR" config core.hooksPath "$ROOT/evil-hooks"
+printf '#!/bin/sh\ntouch "%s/confighook"\n' "$HM" > "$ROOT/evil-confighook"; chmod +x "$ROOT/evil-confighook"
+git -C "$HR" config hook.evil.command "$ROOT/evil-confighook"
+git -C "$HR" config hook.evil.event post-index-change
+touch -t 200001010000 "$HR/b.txt"
+rm -f "$HM"/*
+out="$(cd "$HR" && bash "$XREVIEW" apply xr-s1 2>&1)"; rc=$?
+applying="$(cat "$XDG_STATE_HOME/xreview/$(git -C "$HR" rev-parse --show-toplevel | tr '/' '_' | sed 's/^_//')/applying" 2>/dev/null)"
+is "AP1 apply succeeds in a repository whose configuration names commands" "$rc" 0
+is "AP2 and the scope lists the commit, worktree and index changes" \
+   "$(printf '%s' "$applying" | grep '^file=' | tr '\n' ' ')" "file=a.txt file=b.txt file=c.txt "
+is "AP3 neither core.fsmonitor nor a filter ran" "$(ls "$HM" | grep -v '^\(hook\|confighook\)$' | tr '\n' ' ')" ""
+is "AP4 and no hook from core.hooksPath ran (the index refresh writes it back)" "$(ls "$HM" | grep -c '^hook$')" 0
+is "AP4b and no hook.<name>.command for post-index-change ran" "$(ls "$HM" | grep -c '^confighook$')" 0
+(cd "$HR" && bash "$XREVIEW" apply --done >/dev/null 2>&1)
+# The scope count prints once: grep -c prints 0 and exits 1 on an empty scope, and a fallback
+# of its own used to add a second 0.
+ER="$ROOT/empty-repo"; mkdir -p "$ER"
+git -C "$ER" init -q -b main && git -C "$ER" config user.email t@t && git -C "$ER" config user.name t
+git -C "$ER" config commit.gpgsign false
+printf 'one\n' > "$ER/a.txt"; git -C "$ER" add . && git -C "$ER" commit -q -m init
+out="$(cd "$ER" && bash "$XREVIEW" apply xr-e1 2>&1)"
+is "AP5 an empty scope is reported on one line, as 0 files" "$out" "xreview: apply window open for xr-e1 (0 files in scope)"
+(cd "$ER" && bash "$XREVIEW" apply --done >/dev/null 2>&1)
+# Driver names git cannot take through "-c key=value": git splits that at its first "=", so a
+# driver named "x=y" would set the key "filter.x" and leave "filter.x=y.clean" configured; a
+# dot inside the name must not shift where the name ends either. Each driver names a marker
+# command, and its file is stat-dirty, so the index refresh would run the clean filter.
+OR="$ROOT/odd-repo"; OM="$ROOT/odd-marks"; mkdir -p "$OR" "$OM"
+git -C "$OR" init -q -b main && git -C "$OR" config user.email t@t && git -C "$OR" config user.name t
+git -C "$OR" config commit.gpgsign false
+printf 'base\n' > "$OR/base.txt"; git -C "$OR" add . && git -C "$OR" commit -q -m init
+git -C "$OR" switch -q -c feat
+printf 'x.txt filter=x=y\neq.txt filter=x=\ndot.txt filter=a.b\n' > "$OR/.gitattributes"
+printf 'one\n' > "$OR/x.txt"; printf 'one\n' > "$OR/eq.txt"; printf 'one\n' > "$OR/dot.txt"
+git -C "$OR" add . && git -C "$OR" commit -q -m "add files"
+for n in 'x=y' 'x=' 'a.b'; do
+  safe="$(printf '%s' "$n" | tr -c 'A-Za-z0-9' '_')"
+  printf '#!/bin/sh\ntouch "%s/clean-%s"\ncat\n' "$OM" "$safe" > "$ROOT/odd-clean-$safe"
+  chmod +x "$ROOT/odd-clean-$safe"
+  git -C "$OR" config "filter.$n.clean" "$ROOT/odd-clean-$safe"
+done
+touch -t 200001010000 "$OR/x.txt" "$OR/eq.txt" "$OR/dot.txt"
+rm -f "$OM"/*
+out="$(cd "$OR" && bash "$XREVIEW" apply xr-o1 2>&1)"; rc=$?
+applying="$(cat "$XDG_STATE_HOME/xreview/$(git -C "$OR" rev-parse --show-toplevel | tr '/' '_' | sed 's/^_//')/applying" 2>/dev/null)"
+is "AP6 apply succeeds with drivers named x=y, x= and a.b" "$rc" 0
+is "AP7 no clean filter ran, whatever its driver is called" "$(ls "$OM" | tr '\n' ' ')" ""
+is "AP8 and the scope still lists the files" \
+   "$(printf '%s' "$applying" | grep '^file=' | tr '\n' ' ')" "file=.gitattributes file=dot.txt file=eq.txt file=x.txt "
+# Command-line-style overrides already in the environment must not reach the diffs: git reads
+# GIT_CONFIG_PARAMETERS after GIT_CONFIG_KEY_n/VALUE_n, so an inherited one would win over ours,
+# and bash reads GIT_CONFIG_COUNT=010 as octal, which misnumbered our pairs and lost the first.
+printf '#!/bin/sh\ntouch "%s/fsmonitor"\n' "$OM" > "$ROOT/odd-fsmonitor"; chmod +x "$ROOT/odd-fsmonitor"
+git -C "$OR" config core.fsmonitor "$ROOT/odd-fsmonitor"
+rm -f "$OM"/*
+out="$(cd "$OR" && bash "$XREVIEW" apply xr-o0 2>&1)"; rc=$?
+is "AP9 the fixture's own core.fsmonitor is switched off" "$rc/$(ls "$OM" | tr '\n' ' ')" "0/"
+printf '#!/bin/sh\ntouch "%s/inherited-fsmonitor"\n' "$OM" > "$ROOT/odd-inherited-fsmonitor"; chmod +x "$ROOT/odd-inherited-fsmonitor"
+rm -f "$OM"/*
+out="$(cd "$OR" && GIT_CONFIG_PARAMETERS="'core.fsmonitor=$ROOT/odd-inherited-fsmonitor'" bash "$XREVIEW" apply xr-o2 2>&1)"; rc=$?
+applying="$(cat "$XDG_STATE_HOME/xreview/$(git -C "$OR" rev-parse --show-toplevel | tr '/' '_' | sed 's/^_//')/applying" 2>/dev/null)"
+is "AP10 an inherited GIT_CONFIG_PARAMETERS naming a core.fsmonitor does not run it" "$rc/$(ls "$OM" | tr '\n' ' ')" "0/"
+is "AP10b and the scope still lists the files" "$(printf '%s' "$applying" | grep -c '^file=')" 4
+rm -f "$OM"/*
+out="$(cd "$OR" && env GIT_CONFIG_COUNT=010 GIT_CONFIG_KEY_0=core.abbrev GIT_CONFIG_VALUE_0=7 \
+  GIT_CONFIG_KEY_1=core.abbrev GIT_CONFIG_VALUE_1=7 GIT_CONFIG_KEY_2=core.abbrev GIT_CONFIG_VALUE_2=7 \
+  GIT_CONFIG_KEY_3=core.abbrev GIT_CONFIG_VALUE_3=7 GIT_CONFIG_KEY_4=core.abbrev GIT_CONFIG_VALUE_4=7 \
+  GIT_CONFIG_KEY_5=core.abbrev GIT_CONFIG_VALUE_5=7 GIT_CONFIG_KEY_6=core.abbrev GIT_CONFIG_VALUE_6=7 \
+  GIT_CONFIG_KEY_7=core.abbrev GIT_CONFIG_VALUE_7=7 GIT_CONFIG_KEY_8=core.abbrev GIT_CONFIG_VALUE_8=7 \
+  GIT_CONFIG_KEY_9=core.abbrev GIT_CONFIG_VALUE_9=7 \
+  bash "$XREVIEW" apply xr-o3 2>&1)"; rc=$?
+applying="$(cat "$XDG_STATE_HOME/xreview/$(git -C "$OR" rev-parse --show-toplevel | tr '/' '_' | sed 's/^_//')/applying" 2>/dev/null)"
+is "AP11 an inherited GIT_CONFIG_COUNT=010 with pairs does not lose the fsmonitor override" "$rc/$(ls "$OM" | tr '\n' ' ')" "0/"
+is "AP11b and the scope still lists the files" "$(printf '%s' "$applying" | grep -c '^file=')" 4
+(cd "$OR" && bash "$XREVIEW" apply --done >/dev/null 2>&1)
+
+echo "AL. xreview apply never lazy-fetches from a partial clone's remote"
+# A blob-filtered partial clone fetches a missing blob on demand, and that runs the remote's
+# uploadpack command, which the repository's configuration names (writable from the sandbox).
+# The range holds a rename with an edit, so rename detection would read both blobs, neither of
+# them local. The marker is what the uploadpack command leaves; the scope must still list the
+# renamed paths (apply fails closed on the blob, never on the paths: --no-renames lists both).
+LO="$ROOT/lazy-origin"; LC="$ROOT/lazy-clone"; LM="$ROOT/lazy-marks"; mkdir -p "$LO" "$LM"
+git -C "$LO" init -q -b main && git -C "$LO" config user.email t@t && git -C "$LO" config user.name t
+git -C "$LO" config commit.gpgsign false && git -C "$LO" config uploadpack.allowFilter true
+git -C "$LO" config uploadpack.allowAnySHA1InWant true
+seq 1 40 > "$LO/old.txt"; git -C "$LO" add . && git -C "$LO" commit -q -m init
+git -C "$LO" switch -q -c feat; git -C "$LO" mv old.txt new.txt; echo extra >> "$LO/new.txt"
+git -C "$LO" add -A && git -C "$LO" commit -q -m "rename and edit"; git -C "$LO" switch -q main
+git clone -q --no-checkout --filter=blob:none "file://$LO" "$LC" 2>/dev/null
+git -C "$LC" config user.email t@t; git -C "$LC" config user.name t
+git -C "$LC" update-ref refs/heads/feat refs/remotes/origin/feat
+git -C "$LC" symbolic-ref HEAD refs/heads/feat; git -C "$LC" read-tree HEAD
+printf '#!/bin/sh\ntouch "%s/uploadpack"\nexec git upload-pack "$@"\n' "$LM" > "$ROOT/evil-uploadpack"
+chmod +x "$ROOT/evil-uploadpack"; git -C "$LC" config remote.origin.uploadpack "$ROOT/evil-uploadpack"
+is "AL0 the fixture is a blob-filtered partial clone with the blob missing" \
+   "$(git -C "$LC" config remote.origin.partialclonefilter) $(GIT_NO_LAZY_FETCH=1 git -C "$LC" cat-file -e "$(git -C "$LO" rev-parse feat:new.txt)" 2>/dev/null; echo $?)" "blob:none 1"
+rm -f "$LM"/*
+out="$(cd "$LC" && bash "$XREVIEW" apply xr-l1 2>&1)"; rc=$?
+applying="$(cat "$XDG_STATE_HOME/xreview/$(git -C "$LC" rev-parse --show-toplevel | tr '/' '_' | sed 's/^_//')/applying" 2>/dev/null)"
+is "AL1 apply succeeds in the partial clone" "$rc" 0
+is "AL2 the remote's uploadpack never ran" "$(ls "$LM" | tr '\n' ' ')" ""
+is "AL3 and the scope lists both sides of the rename" \
+   "$(printf '%s' "$applying" | grep '^file=\(old\|new\).txt$' | tr '\n' ' ')" "file=new.txt file=old.txt "
+(cd "$LC" && bash "$XREVIEW" apply --done >/dev/null 2>&1)
+# Resolving origin/HEAD needs no lazy fetch in the fixture above, since the rename is gone
+# (--no-renames), so the export itself was never exercised. A symbolic origin/HEAD that names
+# a missing commit makes "merge-base HEAD origin/HEAD" fetch it, which runs the uploadpack.
+LD="$ROOT/lazy-dangling"; DM="$ROOT/lazy-dangling-marks"; mkdir -p "$DM"
+git clone -q --no-checkout --filter=blob:none "file://$LO" "$LD" 2>/dev/null
+git -C "$LD" config user.email t@t; git -C "$LD" config user.name t
+git -C "$LD" config remote.origin.uploadpack "$ROOT/evil-uploadpack-dangling"
+printf '#!/bin/sh\ntouch "%s/uploadpack"\nexec git upload-pack "$@"\n' "$DM" > "$ROOT/evil-uploadpack-dangling"
+chmod +x "$ROOT/evil-uploadpack-dangling"
+printf '%s\n' 0123456789abcdef0123456789abcdef01234567 > "$LD/.git/refs/remotes/origin/gone"
+git -C "$LD" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/gone
+is "AL4 the fixture's origin/HEAD names a commit that is not there" \
+   "$(GIT_NO_LAZY_FETCH=1 git -C "$LD" cat-file -e 0123456789abcdef0123456789abcdef01234567 2>/dev/null; echo $?)" 1
+rm -f "$DM"/*
+out="$(cd "$LD" && bash "$XREVIEW" apply xr-l2 2>&1)"; rc=$?
+is "AL5 apply succeeds with a dangling origin/HEAD" "$rc" 0
+is "AL6 and the remote's uploadpack never ran" "$(ls "$DM" | tr '\n' ' ')" ""
+(cd "$LD" && bash "$XREVIEW" apply --done >/dev/null 2>&1)
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))

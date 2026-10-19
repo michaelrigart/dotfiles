@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Badge Herdr spaces with where a worktree sits between "I'm working on this" and
 # "this is waiting to be merged".
 #
@@ -21,6 +21,12 @@
 # When Herdr is not running, `spaces` comes back empty and refresh returns before any git or
 # glab work. It never fetches: `origin/<branch>` is read as-is, and only the MR state, where
 # freshness matters, is cached with a TTL.
+#
+# Runs outside the sandbox (launchd, herdr's hooks and keybindings), so it resolves nothing a
+# sandboxed command can write (spec 2026-10-16, sandbox write boundary): an absolute shebang,
+# the system bash 3.2 (SIP-protected, and what the launchd suite case already runs), and a
+# pinned PATH that no caller's direnv or mise entry reaches. PINNED_PATH is for the suite only.
+PATH=${PINNED_PATH:-/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin}; export PATH
 set -u
 
 SOURCE_ID="herdr-phase"
@@ -32,10 +38,6 @@ HERDR_ARGS=""
 [ -n "${HERDR_SESSION:-}" ] && HERDR_ARGS="--session $HERDR_SESSION"
 TTL="${HERDR_PHASE_TTL:-120}"
 
-# Appended, not prepended: a plugin hook's minimal PATH needs these, but an override earlier
-# in PATH (a test stub) must still win.
-case ":$PATH:" in *:/opt/homebrew/bin:*) ;; *) PATH="$PATH:/opt/homebrew/bin" ;; esac
-
 # Nerd Font private-use codepoints, written as escapes because literals do not survive every
 # editor and pipeline.
 ICON_BRANCH=$(printf '\xee\xb1\xaf')   # U+EC6F cod-git_branch
@@ -43,8 +45,51 @@ ICON_MR=$(printf '\xee\xa9\xa4')       # U+EA64 cod-git_pull_request
 ICON_DRAFT=$(printf '\xee\xaf\x9b')    # U+EBDB cod-git_pull_request_draft
 ICON_MERGE=$(printf '\xee\xab\xbe')    # U+EAFE cod-git_merge
 
+# Run with -I below: isolated mode keeps the current directory (a repository) off sys.path and
+# ignores PYTHON* variables, so a module a sandboxed command wrote there cannot be imported.
 PY=/usr/bin/python3
 [ -x "$PY" ] || PY="$(command -v python3 2>/dev/null || true)"
+
+# This runs unsandboxed (launchd, herdr's hooks) in worktrees whose repository configuration is
+# writable from the sandbox. A partial clone's lazy fetch would run remote.<name>.uploadpack,
+# which that configuration names, so no git call below may fetch; `rev-list` over a missing
+# object then fails and counts as 0 ahead.
+export GIT_NO_LAZY_FETCH=1
+
+# `git status` on a stat-dirty file would run core.fsmonitor and every clean filter, and
+# refresh the index, which fires the post-index-change hook from core.hooksPath and, on git 2.54
+# and later, from any hook.<name>.command with hook.<name>.event=post-index-change. So the status
+# runs with --no-optional-locks (no index write, hence no hook of any source), the monitor and
+# each configured filter driver switched off, and hooks pointed at nothing. The overrides travel
+# as GIT_CONFIG_KEY_n/VALUE_n pairs, never `-c`: git splits `-c key=value` at the first "=", so a
+# driver named "x=y" would survive it. The inherited GIT_CONFIG_COUNT, GIT_CONFIG_KEY_*/VALUE_*
+# and GIT_CONFIG_PARAMETERS are removed first (git reads PARAMETERS after our pairs, and bash
+# reads a count such as 010 as octal), and ours are numbered from 0. Mirrors xreview's cmd_apply.
+set_cfg() { # set_cfg <key> <value> - appends to the caller's `ge` array and `gn` counter
+  ge+=("GIT_CONFIG_KEY_$gn=$1" "GIT_CONFIG_VALUE_$gn=$2"); gn=$((gn + 1))
+}
+repo_status() { # repo_status <checkout_path> -> porcelain status, nothing from config run
+  local path="$1" k d v seen=$'\n' gn=0
+  local -a ge=() unset_args=(-u GIT_CONFIG_COUNT -u GIT_CONFIG_PARAMETERS)
+  while IFS= read -r v; do
+    case $v in GIT_CONFIG_KEY_*|GIT_CONFIG_VALUE_*) unset_args+=(-u "$v") ;; esac
+  done < <(compgen -e)
+  set_cfg core.fsmonitor false
+  set_cfg core.hooksPath /dev/null
+  # The driver name is everything between "filter." and the last "." (it may hold dots or "=");
+  # -z ends each name with a NUL, so no name is cut at a newline or a space.
+  while IFS= read -r -d '' k; do
+    d=${k#filter.}
+    [[ $d == *.* ]] || continue
+    d=${d%.*}
+    [[ $seen == *$'\n'"$d"$'\n'* ]] && continue
+    seen+="$d"$'\n'
+    set_cfg "filter.$d.clean" ""; set_cfg "filter.$d.smudge" ""; set_cfg "filter.$d.process" ""
+    set_cfg "filter.$d.required" false
+  done < <(git -C "$path" config -z --name-only --get-regexp '^filter\.' 2>/dev/null)
+  env "${unset_args[@]}" "${ge[@]}" "GIT_CONFIG_COUNT=$gn" \
+    git --no-optional-locks -C "$path" status --porcelain --ignore-submodules=all 2>/dev/null
+}
 
 usage() {
   cat <<'U'
@@ -93,7 +138,7 @@ mr_table() { # mr_table <repo_root> <force>
   merged_json="$(glab mr list --repo "$slug" --merged --output json --per-page 100 2>/dev/null)" || merged_json=""
   [ -n "$merged_json" ] || { merged_json="[]"; cacheable=0; }
 
-  table="$(printf '%s\n%s\n' "$open_json" "$merged_json" | "$PY" -c '
+  table="$(printf '%s\n%s\n' "$open_json" "$merged_json" | "$PY" -I -c '
 import json, sys
 # Two concatenated JSON documents rather than one, so read them off the stream in turn.
 dec, data, i, rows = json.JSONDecoder(), sys.stdin.read(), 0, []
@@ -156,7 +201,7 @@ derive() { # derive <checkout_path> <repo_root> <mr_table>
     return 0
   fi
 
-  if [ -n "$(git -C "$path" status --porcelain 2>/dev/null)" ]; then
+  if [ -n "$(repo_status "$path")" ]; then
     printf 'active %s\n' "$ICON_BRANCH"; return 0
   fi
 
@@ -205,7 +250,7 @@ report() { # report <workspace_id> <phase> <value>
 # Sorted by repo_root because Herdr does not return the list grouped and cmd_refresh holds
 # one MR table at a time. The sort is stable, so Herdr order holds within a repo.
 spaces() {
-  herdr $HERDR_ARGS workspace list 2>/dev/null | "$PY" -c '
+  herdr $HERDR_ARGS workspace list 2>/dev/null | "$PY" -I -c '
 import json, sys
 try:
     d = json.load(sys.stdin)

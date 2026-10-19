@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/opt/homebrew/bin/bash
 # xreview - dispatch a cold review to the repository's Codex pane and collect the answer.
 #
 # Design: docs/superpowers/specs/2026-09-26-xreview-codex-daemon-design.md, section 7, with
@@ -17,6 +17,11 @@
 # PreToolUse guards read the receipts (pre-merge gate, apply window); neither is proven
 # enough to be an authorization boundary - treat findings as evidence.
 set -euo pipefail
+# Runs outside the sandbox (an excluded command), so it resolves no mise shim, which would
+# load a repository's mise.toml (spec 2026-10-16, sandbox write boundary). ~/.local/bin
+# stays first for the codex launcher; the sandbox cannot write it. PINNED_PATH is for the
+# suites only.
+PATH=${PINNED_PATH:-$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin}; export PATH
 # Without this, a `die` inside a function called via $(...) from ANOTHER function that is
 # itself invoked via $(...) (pane_command from inside pane_prepare, say) silently loses its
 # exit status: bash historically runs command substitutions with -e off inside them unless
@@ -473,7 +478,7 @@ _dispatch_exit_guard() { # _dispatch_exit_guard <pane>: the EXIT trap armed whil
 
 report_to_herdr() { # report_to_herdr <pane> <thread>
   herdr pane report-agent-session "$1" --source herdr:codex --agent codex \
-    --agent-session-id "$2" --seq "$(/usr/bin/python3 -c 'import time; print(time.time_ns())')" \
+    --agent-session-id "$2" --seq "$(/usr/bin/python3 -I -c 'import time; print(time.time_ns())')" \
     >/dev/null 2>&1 || true
 }
 
@@ -492,7 +497,9 @@ lock_pane() { # lock_pane <pane>: wait, bounded, for the pane's lock; dies at th
   # Exit 75 only when the bound runs out with the lock still held; the helper's own other
   # failure exits 2. Bash trusts only 75 as contention: any other status (1, 2, 127, a signal -
   # no python, no flock on this filesystem) is "cannot lock", never reported as contention.
-  /usr/bin/python3 -c '
+  # -I: the helper runs from the repository, and a plain -c puts that directory first on
+  # sys.path, where a sandbox-written fcntl.py would run unsandboxed.
+  /usr/bin/python3 -I -c '
 import fcntl, sys, time
 try:
     deadline = time.monotonic() + float(sys.argv[1])
@@ -718,17 +725,64 @@ cmd_apply() {
   [ -n "${1:-}" ] || die "usage: xreview apply <nonce> | xreview apply --done"
   git rev-parse --show-toplevel >/dev/null 2>&1 \
     || die "not inside a git repository; an apply window is scoped to a branch's diff"
+  # A partial clone's lazy fetch would run remote.<name>.uploadpack, which this repository's
+  # configuration (writable from the sandbox) names, and apply runs outside it. No git call
+  # below may fetch; a diff that needs a missing blob fails, and its paths are then not listed.
+  export GIT_NO_LAZY_FETCH=1
   local base; base="$(git merge-base HEAD origin/HEAD 2>/dev/null \
                       || git merge-base HEAD main 2>/dev/null || printf '')"
+  # This runs unsandboxed, and a repository's configuration is writable from the sandbox: a
+  # worktree or index diff would run core.fsmonitor and every clean filter it names, and a stat
+  # change with no content change refreshes the index and writes it back, which runs the
+  # post-index-change hook from core.hooksPath and, on git 2.54 and later, from any
+  # hook.<name>.command whose hook.<name>.event is post-index-change (core.hooksPath=/dev/null
+  # does not switch those off, and --no-optional-locks does not stop the write; measured on git
+  # 2.54 and 2.56). The monitor and each configured filter (whatever its name) are switched off,
+  # hooks point at nothing, the porcelain diff never refreshes the index (diff.autoRefreshIndex=
+  # false, so no hook of any source fires; a stat-only change is then listed, which a scoping aid
+  # that fails open can afford), and no diff driver runs.
+  # The diffs detect no renames (a rename then lists both paths), so none reads a blob outside
+  # the changed paths. Of the three diffs only the worktree one refreshes the index; the --cached
+  # and range diffs compare trees and the index without writing it.
+  # Every override travels as GIT_CONFIG_KEY_n/VALUE_n in the environment of the diffs, never as
+  # a -c argument: git splits "-c key=value" at the first "=", so a driver named "x=y" would
+  # have set the key "filter.x" and left the real "filter.x=y.clean" configured. The diffs run
+  # without any command-line-style override they inherited (GIT_CONFIG_COUNT, every
+  # GIT_CONFIG_KEY_*/GIT_CONFIG_VALUE_*, GIT_CONFIG_PARAMETERS): git reads GIT_CONFIG_PARAMETERS
+  # after our pairs, so an inherited one would win, and bash reads a count such as 010 as octal
+  # and misnumbers the pairs. Ours are numbered from 0. Name-only diffs need no inherited
+  # override; system and global configuration are read as git normally reads them.
+  local -a ge=() unset_args=(-u GIT_CONFIG_COUNT -u GIT_CONFIG_PARAMETERS)
+  local gn=0 k d v seen=$'\n'
+  while IFS= read -r v; do
+    case $v in GIT_CONFIG_KEY_*|GIT_CONFIG_VALUE_*) unset_args+=(-u "$v") ;; esac
+  done < <(compgen -e)
+  set_cfg() { ge+=("GIT_CONFIG_KEY_$gn=$1" "GIT_CONFIG_VALUE_$gn=$2"); gn=$((gn + 1)); }
+  set_cfg core.fsmonitor false
+  set_cfg core.hooksPath /dev/null
+  set_cfg diff.autoRefreshIndex false
+  # The driver name is everything between "filter." and the last "." (it may hold dots or "=");
+  # -z ends each name with a NUL, so no name is cut at a newline or a space.
+  while IFS= read -r -d '' k; do
+    d=${k#filter.}
+    [[ $d == *.* ]] || continue
+    d=${d%.*}
+    [[ $seen == *$'\n'"$d"$'\n'* ]] && continue
+    seen+="$d"$'\n'
+    set_cfg "filter.$d.clean" ""; set_cfg "filter.$d.smudge" ""; set_cfg "filter.$d.process" ""
+    set_cfg "filter.$d.required" false
+  done < <(git config -z --name-only --get-regexp '^filter\.' 2>/dev/null)
+  local -a g=(env "${unset_args[@]}" "${ge[@]}" "GIT_CONFIG_COUNT=$gn" git)
+  local -a flags=(--name-only --no-ext-diff --no-textconv --no-renames --ignore-submodules=all)
   mkdir -p "$dir"
   { printf 'nonce=%s\n' "$1"
-    { [ -n "$base" ] && git diff --name-only "$base"..HEAD 2>/dev/null
-      git diff --name-only 2>/dev/null
-      git diff --cached --name-only 2>/dev/null
+    { [ -n "$base" ] && "${g[@]}" diff "${flags[@]}" "$base"..HEAD 2>/dev/null
+      "${g[@]}" diff "${flags[@]}" 2>/dev/null
+      "${g[@]}" diff "${flags[@]}" --cached 2>/dev/null
     } | sort -u | sed 's/^/file=/'
   } > "$dir/applying"
-  printf 'xreview: apply window open for %s (%s files in scope)\n' \
-    "$1" "$(grep -c '^file=' "$dir/applying" 2>/dev/null || printf 0)"
+  local n; n="$(grep -c '^file=' "$dir/applying" 2>/dev/null || true)"
+  printf 'xreview: apply window open for %s (%s files in scope)\n' "$1" "${n:-0}"
 }
 
 # Everything on record for this repository: its ledger (shared by every worktree), then this

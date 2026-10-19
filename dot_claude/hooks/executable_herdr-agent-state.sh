@@ -5,6 +5,9 @@
 # HERDR_INTEGRATION_ID=claude
 # HERDR_INTEGRATION_VERSION=10
 
+# Runs outside the sandbox, so it resolves nothing a sandboxed command can write (spec
+# 2026-10-16, sandbox write boundary). PINNED_PATH is for the suites only.
+PATH=${PINNED_PATH:-/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin}; export PATH
 set -eu
 
 action="${1:-}"
@@ -22,7 +25,7 @@ esac
 [ -n "${HERDR_PANE_ID:-}" ] || exit 0
 command -v python3 >/dev/null 2>&1 || exit 0
 
-HERDR_ACTION="$action" HERDR_HOOK_INPUT_FILE="$hook_input_file" python3 - <<'PY'
+HERDR_ACTION="$action" HERDR_HOOK_INPUT_FILE="$hook_input_file" python3 -I - <<'PY'
 import json
 import os
 import random

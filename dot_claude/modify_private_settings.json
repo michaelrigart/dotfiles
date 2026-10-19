@@ -31,8 +31,8 @@ if ! printf '%s' "$input" | jq empty >/dev/null 2>&1 \
 fi
 
 printf '%s' "$input" | jq \
-  --arg sl "bash $HOME/.claude/statusline.sh" \
-  --arg herdr_hook "bash '$HOME/.claude/hooks/herdr-agent-state.sh' session" \
+  --arg sl "/opt/homebrew/bin/bash $HOME/.claude/statusline.sh" \
+  --arg herdr_hook "/opt/homebrew/bin/bash '$HOME/.claude/hooks/herdr-agent-state.sh' session" \
   --arg agent_socket "$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock" \
   --arg tool_path "$HOME/.local/bin:$HOME/.local/share/mise/shims:$HOME/.cargo/bin:/opt/homebrew/bin:/opt/homebrew/sbin:$HOME/.krew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" '
   # Start from the LIVE file and overlay the owned keys with +, which replaces each named
@@ -234,7 +234,7 @@ printf '%s' "$input" | jq \
             "hooks": [
               {
                 "type": "command",
-                "command": "bash $HOME/.claude/hooks/memory-health.sh",
+                "command": "/opt/homebrew/bin/bash $HOME/.claude/hooks/memory-health.sh",
                 "timeout": 10
               }
             ]
@@ -266,31 +266,31 @@ printf '%s' "$input" | jq \
           {
             "matcher": "Bash",
             "hooks": [
-              { "type": "command", "command": "bash $HOME/.claude/git-forge-guard.sh", "timeout": 60 }
+              { "type": "command", "command": "/opt/homebrew/bin/bash $HOME/.claude/git-forge-guard.sh", "timeout": 60 }
             ]
           },
           {
             "matcher": "Bash",
             "hooks": [
-              { "type": "command", "command": "bash $HOME/.claude/worktree-guard.sh" }
+              { "type": "command", "command": "/opt/homebrew/bin/bash $HOME/.claude/worktree-guard.sh" }
             ]
           },
           {
             "matcher": "Bash",
             "hooks": [
-              { "type": "command", "command": "bash $HOME/.claude/xreview-guard.sh", "timeout": 60 }
+              { "type": "command", "command": "/opt/homebrew/bin/bash $HOME/.claude/xreview-guard.sh", "timeout": 60 }
             ]
           },
           {
             "matcher": "*",
             "hooks": [
-              { "type": "command", "command": "bash $HOME/.claude/xreview-apply-guard.sh" }
+              { "type": "command", "command": "/opt/homebrew/bin/bash $HOME/.claude/xreview-apply-guard.sh" }
             ]
           },
           {
             "matcher": "Bash",
             "hooks": [
-              { "type": "command", "command": "bash $HOME/.claude/path-resolution-guard.sh" }
+              { "type": "command", "command": "/opt/homebrew/bin/bash $HOME/.claude/path-resolution-guard.sh" }
             ]
           }
         ],
@@ -301,7 +301,7 @@ printf '%s' "$input" | jq \
           {
             "matcher": "*",
             "hooks": [
-              { "type": "command", "command": "bash $HOME/.claude/hooks/prompt-audit.sh" }
+              { "type": "command", "command": "/opt/homebrew/bin/bash $HOME/.claude/hooks/prompt-audit.sh" }
             ]
           }
         ]
@@ -355,14 +355,46 @@ printf '%s' "$input" | jq \
             "~/.ssh/michael_rsa.pub",
             "~/.ssh/viumore_rsa.pub"
           ],
+          # Ordinary work only: source trees, the chezmoi source, documents and the vault.
+          # ~/.config and ~/.local/bin are out on purpose (spec 2026-10-16, sandbox write
+          # boundary): what is written there runs later outside the sandbox, as shell
+          # startup, git, mise, herdr, the hooks and the excluded commands.
           "allowWrite": [
             "~/Code",
             "~/.local/share/chezmoi",
-            "~/.local/bin",
-            "~/.config",
             "~/Documents",
             "~/Library/Mobile Documents/iCloud~md~obsidian"
-          ]
+          ],
+          # What is written under a work root can run outside the sandbox later: git hooks
+          # (also inside submodules), the vault plugins, and any repository agent
+          # configuration (.claude/settings*.json hooks, statusLine and env, .mcp.json, .codex),
+          # which the next session in that repo would load; Claude Code built-in denial covers only
+          # the session cwd. Scoped to the work roots, never a bare glob, so git init in
+          # TMPDIR keeps working. Git configuration files, objects, refs and the index stay
+          # writable, so sandboxed git config, branch -u, clone and submodule keep working.
+          # .claude/skills, commands and agents stay writable (projects commit their own).
+          # Hooks only for git, per spec 83f6b2b. Each agent path is listed at depth 0, 1 and 2
+          # under a root (work root, org dir or top-level repo, repo or wt sibling: where
+          # sessions start), never at any depth: npm packages in node_modules ship such files
+          # (resolve ships .claude/settings.local.json), so any depth would break sandboxed
+          # npm ci and rm -rf node_modules. Claude Code harness worktrees live at
+          # <repo>/.claude/worktrees/<name> and load their own agent configuration from there,
+          # three to five levels down (a root that is itself a repository, such as the chezmoi
+          # checkout, has them at depth 0), so each agent path also has the three fixed-depth
+          # forms <root>/.claude/worktrees/*/<path>, <root>/*/.claude/worktrees/*/<path> and
+          # <root>/*/*/.claude/worktrees/*/<path>; all name .claude/worktrees literally, so none
+          # reaches node_modules. A session started anywhere else deeper has no protection.
+          "denyWrite": (
+            ["~/Code", "~/.local/share/chezmoi", "~/Documents", "~/Library/Mobile Documents/iCloud~md~obsidian"] as $roots
+            | [".git/hooks", ".git/hooks/**", ".git/modules/**/hooks", ".git/modules/**/hooks/**"] as $git
+            | [".claude/settings.json", ".claude/settings.local.json", ".mcp.json", ".codex", ".codex/**"] as $agent
+            | [$roots[] as $root | $git[] | "\($root)/**/\(.)"]
+              + [$git[] | "~/.local/share/chezmoi/\(.)"]
+              + [$roots[] as $root | $agent[] | "\($root)/\(.)", "\($root)/*/\(.)", "\($root)/*/*/\(.)",
+                                           "\($root)/.claude/worktrees/*/\(.)", "\($root)/*/.claude/worktrees/*/\(.)",
+                                           "\($root)/*/*/.claude/worktrees/*/\(.)"]
+              + ["~/Library/Mobile Documents/iCloud~md~obsidian/Documents/*/.obsidian",
+                 "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/*/.obsidian/**"])
         },
         # strictAllowlist is what makes this list DO anything: without it non-listed
         # hosts are merely prompted, and autoAllowBashIfSandboxed suppresses that prompt

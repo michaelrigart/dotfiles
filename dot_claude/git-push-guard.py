@@ -135,6 +135,9 @@ GIT_LOG_DEFAULTS = [("format.pretty", "medium"), ("log.showSignature", "false"),
                     ("log.abbrevCommit", "false"), ("diff.noprefix", "false"),
                     ("diff.mnemonicPrefix", "false"), ("color.ui", "false"),
                     ("color.diff", "false"),
+                    # diff.submodule=diff starts a child diff inside a bumped submodule, which
+                    # has no --no-ext-diff of its own: its diff.external and textconv would run
+                    ("diff.submodule", "short"),
                     # past this size git prints "Binary files differ" for a text file
                     ("core.bigFileThreshold", "2g")]
 # The scan reads a merge as the diff against what git would merge by itself (remerge), so a
@@ -142,7 +145,10 @@ GIT_LOG_DEFAULTS = [("format.pretty", "medium"), ("log.showSignature", "false"),
 MERGE_DIFF = "--diff-merges=remerge"
 # Options that make `git log -p` show every added line: a root commit, a file marked binary
 # or -diff by .gitattributes or .git/info/attributes, a textconv or external diff driver.
-PATCH_OPTS = ["--root", "--text", "--no-textconv", "--no-ext-diff", MERGE_DIFF]
+# --submodule=short keeps a bumped gitlink a one-line patch: under diff.submodule=diff git
+# runs a child diff in the submodule, whose own configuration then runs its drivers.
+PATCH_OPTS = ["--root", "--text", "--no-textconv", "--no-ext-diff", "--submodule=short",
+              MERGE_DIFF]
 # The file that changes what gitleaks reports. Only a committed one is a reviewed exception.
 EXCEPTION_FILES = [".gitleaksignore"]
 # A gitleaks config, in any extension or letter case. gitleaks reads one from the directory
@@ -294,10 +300,14 @@ class Repo:
         """stdout of a git query, or None when git fails. env replaces the environment; long
         lifts the per-call limit to what is left of the budget (a patch listing of a large
         push). Output is decoded leniently: git can print any bytes. raw returns the bytes as
-        git wrote them, for a patch listing: text mode also turns every CR into a line break."""
+        git wrote them, for a patch listing: text mode also turns every CR into a line break.
+        Lazy fetch is always off (GIT_NO_LAZY_FETCH): a promisor remote that config names
+        would otherwise run its uploadpack, unsandboxed, for a missing object."""
         remaining = BUDGET - (time.monotonic() - START)
         if remaining <= 0:
             raise Deny(TIMED_OUT)
+        env = dict(env if env is not None else os.environ)
+        env["GIT_NO_LAZY_FETCH"] = "1"
         text = {} if raw else {"encoding": "utf-8", "errors": "replace"}
         try:
             p = subprocess.run(self.base + list(args), capture_output=True, env=env, **text,
@@ -1015,7 +1025,10 @@ def scan(root, remote, sources):
     --mirror) names no refs to compare, so with an exception file present it is refused and
     the refs must be pushed by name. Every git call here runs with
     replace refs off (GIT_NO_REPLACE_OBJECTS), since a push sends the real objects. GITLEAKS_*
-    variables are dropped from the environment for the same reason. Commit and
+    variables are dropped from the environment for the same reason. Lazy fetch is off
+    for every git call and for gitleaks (GIT_NO_LAZY_FETCH): the repository's configuration
+    stays agent-writable, so a promisor remote is never trusted. A genuine blob-filtered
+    partial clone is denied with the "Push by hand" message. Commit and
     annotated-tag messages are not scanned (gitleaks git mode scans patches only)."""
     exe = shutil.which("gitleaks")
     if not exe:
@@ -1027,6 +1040,7 @@ def scan(root, remote, sources):
     # A replace ref swaps an object for another in git log, but pack-objects sends the real
     # one: the scan must read what will be sent, in every git call it makes.
     env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    env["GIT_NO_LAZY_FETCH"] = "1"
     env["GIT_CONFIG_COUNT"] = str(len(GIT_LOG_DEFAULTS))
     for i, (key, value) in enumerate(GIT_LOG_DEFAULTS):
         env["GIT_CONFIG_KEY_%d" % i] = key

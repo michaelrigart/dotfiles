@@ -34,6 +34,8 @@ export GIT_CONFIG_GLOBAL="$ROOT/gitconfig" GIT_CONFIG_NOSYSTEM=1
 printf '[user]\n\tname = t\n\temail = t@t\n[commit]\n\tgpgsign = false\n[init]\n\tdefaultBranch = main\n' \
   > "$GIT_CONFIG_GLOBAL"
 unset XREVIEW_GUARD XREVIEW_GUARD_BUDGET XREVIEW_LEDGER_LOCK_WAIT
+# GIT_SSH_COMMAND in the environment outranks core.sshCommand, which H18-H20 must reach.
+unset GIT_SSH_COMMAND GIT_SSH
 # The forge CLIs pick a host from these when no --hostname or host-qualified -R names one; the
 # fixtures' forge is forge.example. gh's configuration directory starts empty, and glab's
 # config names forge.example as its default host.
@@ -67,7 +69,7 @@ mkdir -p "$ROOT/norepo"
 payload() { jq -n --arg d "$1" --arg c "$2" '{hook_event_name:"PreToolUse",tool_name:"Bash",cwd:$d,tool_input:{command:$c}}'; }
 # The payload is materialised before the pipeline: the guard can exit without reading stdin,
 # and jq writing into a closed pipe prints an error that looks like a test failure.
-run_guard() { local p; p="$(payload "$1" "$2")"; printf '%s' "$p" | bash "$GUARD" 2>/dev/null; }
+run_guard() { local p; p="$(payload "$1" "$2")"; printf '%s' "$p" | PINNED_PATH="$PATH" bash "$GUARD" 2>/dev/null; }
 # decision <cwd> <command>: allow (silence), deny, or what else the guard printed.
 decision() {
   local out; out="$(run_guard "$1" "$2")"
@@ -492,9 +494,9 @@ is "D10 a detached HEAD is no branch, so its merge is not gated" "$(decision "$S
 git -C "$SIDE" switch -q side
 # A payload that is not JSON is read as text.
 is "D11 a truncated payload holding a merge is denied" \
-   "$(printf '%s' '{"tool_input":{"command":"git merge feature"},"cwd":"'"$W"'"' | bash "$GUARD" 2>/dev/null | jq -r .hookSpecificOutput.permissionDecision)" deny
+   "$(printf '%s' '{"tool_input":{"command":"git merge feature"},"cwd":"'"$W"'"' | PINNED_PATH="$PATH" bash "$GUARD" 2>/dev/null | jq -r .hookSpecificOutput.permissionDecision)" deny
 is "D12 one that only mentions merges is let through" \
-   "$(printf '%s' '{"tool_input":{"command":"git log --merges"' | bash "$GUARD" 2>/dev/null)" ""
+   "$(printf '%s' '{"tool_input":{"command":"git log --merges"' | PINNED_PATH="$PATH" bash "$GUARD" 2>/dev/null)" ""
 
 echo "E. the bypass is Michael's"
 is "E1 XREVIEW_GUARD=off on the command" "$(decision "$W" 'XREVIEW_GUARD=off git merge side')" allow
@@ -503,7 +505,7 @@ is "E3 in a trailing comment" "$(decision "$W" 'glab mr create --fill # XREVIEW_
 XREVIEW_GUARD=off; export XREVIEW_GUARD
 is "E4 in the hook's environment" "$(decision "$W" 'git merge side')" allow
 unset XREVIEW_GUARD
-is "E5 an empty payload fails open" "$(printf '' | bash "$GUARD" 2>/dev/null | wc -c | tr -d ' ')" 0
+is "E5 an empty payload fails open" "$(printf '' | PINNED_PATH="$PATH" bash "$GUARD" 2>/dev/null | wc -c | tr -d ' ')" 0
 
 echo "F. the fast path costs nothing, and a helper that cannot run fails closed"
 TRIP="$ROOT/trip"; mkdir -p "$TRIP"
@@ -512,30 +514,30 @@ printf 'import sys\nopen(sys.argv[0] + ".ran", "a").write("x")\n' > "$TRIP/xrevi
 tripped() { [ -e "$TRIP/xreview-guard.py.ran" ] && echo ran || echo idle; }
 for c in 'ls -la' 'git status' 'npm test' 'git log --oneline -5' 'mkdir -p newdir' \
          'for f in a b; do git add "$f"; done' 'git log --format=%ad -3'; do
-  payload /tmp "$c" | bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
+  payload /tmp "$c" | PINNED_PATH="$PATH" bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
 done
 is "F1 commands without a trigger word never start the helper" "$(tripped)" idle
-payload /tmp 'git merge feature' | bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
+payload /tmp 'git merge feature' | PINNED_PATH="$PATH" bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
 is "F2 a gated verb does" "$(tripped)" ran
 printf 'import sys\nsys.exit(3)\n' > "$TRIP/xreview-guard.py"
-out="$(payload "$W" 'git merge feature' | bash "$TRIP/xreview-guard.sh" 2>/dev/null)"
+out="$(payload "$W" 'git merge feature' | PINNED_PATH="$PATH" bash "$TRIP/xreview-guard.sh" 2>/dev/null)"
 is "F3 a helper that cannot run denies a gated verb" "$(printf '%s' "$out" | jq -r .hookSpecificOutput.permissionDecision)" deny
-out="$(payload "$W" 'git commit -m "a new test"' | bash "$TRIP/xreview-guard.sh" 2>/dev/null)"
+out="$(payload "$W" 'git commit -m "a new test"' | PINNED_PATH="$PATH" bash "$TRIP/xreview-guard.sh" 2>/dev/null)"
 is "F4 and leaves an ungated command alone" "$out" ""
 # The fast path reads the payload with quotes, backslashes and continuations dropped.
 printf 'import sys\nopen(sys.argv[0] + ".ran", "a").write("x")\n' > "$TRIP/xreview-guard.py"
 rm -f "$TRIP/xreview-guard.py.ran"
-payload /tmp "g''it mer''ge feature" | bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
+payload /tmp "g''it mer''ge feature" | PINNED_PATH="$PATH" bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
 is "F5 quotes inside a word do not hide a verb from the fast path" "$(tripped)" ran
 rm -f "$TRIP/xreview-guard.py.ran"
 payload /tmp 'git mer\
-ge feature' | bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
+ge feature' | PINNED_PATH="$PATH" bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
 is "F6 nor does a line continuation" "$(tripped)" ran
 is "F7 and the helper reads the merge (side has no change of its own: denied)" "$(decision "$W" "g''it mer''ge side")" deny
 # With the helper missing, the front's own last resort reads whole words, joined lines and
 # words split by quotes.
 NOH="$ROOT/nohelper"; mkdir -p "$NOH"; cp "$GUARD" "$NOH/xreview-guard.sh"
-fallback() { local out; out="$(payload "$W" "$1" | bash "$NOH/xreview-guard.sh" 2>/dev/null)"
+fallback() { local out; out="$(payload "$W" "$1" | PINNED_PATH="$PATH" bash "$NOH/xreview-guard.sh" 2>/dev/null)"
   [ -n "$out" ] && printf '%s' "$out" | jq -r .hookSpecificOutput.permissionDecision || printf allow; }
 is "F8 with the helper missing, fused redirections are denied" \
    "$(fallback 'git>m.log merge feature') $(fallback 'git merge>m.log feature') $(fallback 'glab mr>c.log create -b main')" \
@@ -552,12 +554,13 @@ is "F11 while a mention of merges stays allowed" "$(fallback 'git log --merges')
 # 30 s is cut off and reads "timeout".
 timed() {
   /usr/bin/python3 - "$GUARD" "$1" <<'PY'
-import json, subprocess, sys, time
+import json, os, subprocess, sys, time
 start = time.time()
 try:
     with open(sys.argv[2], "rb") as fh:
         out = subprocess.run(["/bin/bash", sys.argv[1]], stdin=fh, capture_output=True,
-                             timeout=30).stdout
+                             timeout=30,
+                             env={**os.environ, "PINNED_PATH": os.environ["PATH"]}).stdout
     verdict = json.loads(out)["hookSpecificOutput"]["permissionDecision"] if out.strip() else "allow"
 except subprocess.TimeoutExpired:
     verdict = "timeout"
@@ -581,21 +584,21 @@ is "F13 and one with no gated verb is allowed at once" \
 # glab mr for and gh pr revert name no other trigger word: mr with for, and revert, reach the
 # helper (a for loop without mr does not, F1).
 rm -f "$TRIP/xreview-guard.py.ran"
-payload /tmp 'glab mr for 3' | bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
+payload /tmp 'glab mr for 3' | PINNED_PATH="$PATH" bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
 is "F14 glab mr for starts the helper" "$(tripped)" ran
 rm -f "$TRIP/xreview-guard.py.ran"
-payload /tmp 'gh pr revert 9' | bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
+payload /tmp 'gh pr revert 9' | PINNED_PATH="$PATH" bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
 is "F15 so does gh pr revert" "$(tripped)" ran
 # A percent-escape can spell any word of an api call's path (m%65rge_requests), so api with one
 # reaches the helper (a %ad format without api does not, F1).
 rm -f "$TRIP/xreview-guard.py.ran"
-payload /tmp "gh api graph%71l -f query='mutation { enqueuePullRequest(input: {}) { clientMutationId } }'" | bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
+payload /tmp "gh api graph%71l -f query='mutation { enqueuePullRequest(input: {}) { clientMutationId } }'" | PINNED_PATH="$PATH" bash "$TRIP/xreview-guard.sh" >/dev/null 2>&1
 is "F16 an api call with a percent-escape starts the helper" "$(tripped)" ran
 # The deployed layout: the front, the guard and the ledger helper side by side, as in ~/.claude,
 # with no XREVIEW_LEDGER: the guard finds the helper beside itself.
 DEP="$ROOT/deployed"; mkdir -p "$DEP"
 cp "$GUARD" "$DEP/xreview-guard.sh"; cp "$HELPER" "$LEDGER" "$DEP/"
-deployed() { payload "$W" "$1" | env -u XREVIEW_LEDGER bash "$DEP/xreview-guard.sh" 2>/dev/null; }
+deployed() { payload "$W" "$1" | env -u XREVIEW_LEDGER PINNED_PATH="$PATH" bash "$DEP/xreview-guard.sh" 2>/dev/null; }
 is "F17 deployed, an approved merge is decided from the ledger beside the guard" "$(deployed 'git merge feature')" ""
 is "F18 and an unreviewed one is denied for its change" \
    "$(deployed 'git merge side' | jq -r .hookSpecificOutput.permissionDecisionReason | grep -c 'Pre-merge gate: the change is empty')" 1
@@ -646,6 +649,50 @@ is "H14 -R naming origin's project" "$(decision "$W" 'gh pr create -R acme/app -
 is "H15 gh -R with the host" "$(decision "$W" 'gh pr create -R forge.example/acme/app --head feature --base main')" allow
 is "H16 -R as a URL" "$(decision "$W" 'glab mr create -R https://forge.example/acme/app.git -s feature -b main')" allow
 is "H17 cd <path> && glab mr create is checked in that path" "$(decision "$ROOT/norepo" "cd $W && glab mr create -s feature -b main")" allow
+
+# The gate's ls-remote runs unsandboxed, and a repository's configuration is writable from the
+# sandbox: core.sshCommand and an ext:: rewrite of origin (protocol.ext.allow=always) each name a
+# command git would run. Each one writes its own marker; the creation is denied and none appears.
+# W's config is changed for these cases and restored after.
+MARK="$ROOT/marks"; mkdir -p "$MARK"
+printf '#!/bin/sh\ntouch "%s/ssh"\nexit 1\n' "$MARK" > "$ROOT/evil-ssh"; chmod +x "$ROOT/evil-ssh"
+INSTEAD="url.$ORIGIN.insteadOf"
+git -C "$W" config core.sshCommand "$ROOT/evil-ssh"
+git -C "$W" config --unset "$INSTEAD"
+git -C "$W" config "url.ssh://forge.example/acme/app.git.insteadOf" 'git@forge.example:acme/app.git'
+is "H18 core.sshCommand set: a gh creation is denied, naming it" \
+   "$(decision "$W" 'gh pr create --head feature --base main') $(reason "$W" 'gh pr create --head feature --base main' | grep -c 'core.sshCommand is set')" "deny 1"
+is "H19 and a glab creation" "$(decision "$W" 'glab mr create -s feature -b main')" deny
+is "H20 the sshCommand never ran" "$(ls "$MARK")" ""
+git -C "$W" config --unset core.sshCommand
+git -C "$W" config --unset "url.ssh://forge.example/acme/app.git.insteadOf"
+git -C "$W" config "url.ext::touch $MARK/ext.insteadOf" 'git@forge.example:acme/app.git'
+git -C "$W" config protocol.ext.allow always
+is "H21 origin rewritten to ext:: through insteadOf: a gh creation is denied, naming it" \
+   "$(decision "$W" 'gh pr create --head feature --base main') $(reason "$W" 'gh pr create --head feature --base main' | grep -c 'not a plain git transport')" "deny 1"
+is "H22 and a glab creation" "$(decision "$W" 'glab mr create -s feature -b main')" deny
+is "H23 the ext:: command never ran" "$(ls "$MARK")" ""
+git -C "$W" config --unset protocol.ext.allow
+git -C "$W" config --unset "url.ext::touch $MARK/ext.insteadOf"
+git -C "$W" config "$INSTEAD" 'git@forge.example:acme/app.git'
+git -C "$W" config core.gitProxy "$ROOT/evil-ssh"
+is "H24 core.gitProxy set is denied" "$(decision "$W" 'gh pr create --head feature --base main')" deny
+git -C "$W" config --unset core.gitProxy
+git -C "$W" config remote.origin.vcs evil
+# remote.origin.vcs picks a git-remote-evil helper whatever the URL says. One that writes a marker
+# sits on the guard's PATH, so a deny reached only because ls-remote failed would still leave it.
+# Git's own protocol allowlist refuses an unknown transport ("transport 'evil' not allowed")
+# before the helper starts, so the helper only runs when the repository also sets
+# protocol.evil.allow: without it H25 and H25b pass even if the guard stopped checking the key.
+git -C "$W" config protocol.evil.allow always
+EVILBIN="$ROOT/evilbin"; mkdir -p "$EVILBIN"
+printf '#!/bin/sh\ntouch "%s/vcs"\nexit 1\n' "$MARK" > "$EVILBIN/git-remote-evil"; chmod +x "$EVILBIN/git-remote-evil"
+is "H25 remote.origin.vcs set is denied" "$(PATH="$EVILBIN:$PATH" decision "$W" 'gh pr create --head feature --base main')" deny
+is "H25b and git-remote-<vcs> never ran" "$(ls "$MARK" | grep -c '^vcs$')" 0
+git -C "$W" config --unset remote.origin.vcs
+git -C "$W" config --unset protocol.evil.allow
+is "H26 with the configuration restored, the creation is allowed again" \
+   "$(decision "$W" 'gh pr create --head feature --base main')" allow
 
 echo "I. the destination is part of the approval"
 git -C "$W" branch release main && publish release
@@ -1134,6 +1181,33 @@ is "R6 a write the parse cannot place is denied, naming the canonical form" \
 is "R7 a read with an attached header value stays allowed" \
    "$(decision "$W" 'gh api -X GET repos/acme/app/pulls -HX-GitHub-Api-Version:2022-11-28') $(decision "$W" 'glab api -X GET projects/acme%2Fapp/merge_requests -HX-Custom:1')" \
    "allow allow"
+
+echo "S. the guard never lazy-fetches"
+# The hook runs outside the sandbox and the repository's configuration is writable from it. A
+# partial clone fetches a missing object on demand, which runs the promisor remote's uploadpack
+# command; git merge gone~1 makes the guard resolve a revision through a ref at a missing
+# commit. The verdict stays a deny, and the marker is what the uploadpack command leaves.
+PF="$ROOT/work/pf"; PM="$ROOT/pf-marks"; PO="$ROOT/remotes/pf.git"; mkdir -p "$PF" "$PM"
+git init -q --bare "$PO"; git -C "$PF" init -q
+printf 'one\n' > "$PF/a.txt"; git -C "$PF" add a.txt && git -C "$PF" commit -q -m init
+git -C "$PO" fetch -q "$PF" "+refs/heads/main:refs/heads/main"
+git -C "$PF" remote add origin "$PO"; git -C "$PF" fetch -q origin
+git -C "$PF" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+printf '#!/bin/sh\ntouch "%s/uploadpack"\nexec git upload-pack "$@"\n' "$PM" > "$ROOT/pf-uploadpack"
+chmod +x "$ROOT/pf-uploadpack"
+git -C "$PF" config remote.origin.uploadpack "$ROOT/pf-uploadpack"
+git -C "$PF" config remote.origin.promisor true
+git -C "$PF" config remote.origin.partialclonefilter blob:none
+git -C "$PF" config extensions.partialclone origin
+printf '%s\n' 0123456789abcdef0123456789abcdef01234567 > "$PF/.git/refs/heads/gone"
+is "S0 the fixture's ref names a commit that is not there, and resolving it fetches" \
+   "$(git -C "$PF" rev-parse --symbolic-full-name 'gone~1' >/dev/null 2>&1; ls "$PM" | tr '\n' ' ')" "uploadpack "
+for rev in 'gone~1' 'gone^' 'gone^{commit}'; do
+  rm -f "$PM"/*
+  d="$(decision "$PF" "git merge $rev")"
+  is "S1 git merge $rev is denied as before" "$d" deny
+  is "S2 and ran no uploadpack command" "$(ls "$PM" | tr '\n' ' ')" ""
+done
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))

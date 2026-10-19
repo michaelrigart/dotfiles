@@ -8,6 +8,9 @@
 # Every internal failure allows. Bypass: WT_GUARD=off anywhere in the command.
 # Bash 3.2 compatible. Tests: tests/worktree-guard.test.sh
 # Spec: docs/superpowers/specs/2026-10-01-herdr-wt-simplification-design.md §4
+# Runs outside the sandbox, so it resolves nothing a sandboxed command can write (spec
+# 2026-10-16, sandbox write boundary). PINNED_PATH is for the suites only.
+PATH=${PINNED_PATH:-/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin}; export PATH
 set -uo pipefail
 set -f
 

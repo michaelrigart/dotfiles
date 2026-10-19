@@ -4,6 +4,9 @@
 # them)  model  tagteam  most-recent skill/plugin  plan progress, then a bar to the right
 # edge. Receives the session JSON on stdin; terminal width from $COLUMNS.
 export LC_ALL=en_US.UTF-8   # count runes, not bytes, in ${#text} width math
+# Runs outside the sandbox, so it resolves nothing a sandboxed command can write (spec
+# 2026-10-16, sandbox write boundary). PINNED_PATH is for the suite only.
+PATH=${PINNED_PATH:-/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin}; export PATH
 
 input=$(cat)
 model=$(printf '%s' "$input"      | jq -r '.model.display_name // "Claude"')

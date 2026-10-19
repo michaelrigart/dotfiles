@@ -10,9 +10,10 @@
   state that changes lives on GitLab, and opening or merging an MR fires no Herdr event.
   See the header of ~/.config/herdr/phase.sh for the full reasoning.
 
-  phase.sh is invoked directly rather than through a login shell. It appends
-  /opt/homebrew/bin to PATH itself and falls back to the XDG defaults when the variables
-  are unset, which is exactly the environment launchd hands it. When no Herdr server is
+  phase.sh is invoked directly rather than through a login shell. Its shebang is absolute and
+  it pins its own PATH (/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin), and it falls back
+  to the XDG defaults when the variables are unset, which is exactly the environment launchd
+  hands it. When no Herdr server is
   running the run is a sub-100ms no-op: `spaces` is empty and refresh returns before any
   git or glab work.
 -->

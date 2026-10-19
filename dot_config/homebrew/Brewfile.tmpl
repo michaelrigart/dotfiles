@@ -1,5 +1,6 @@
 {{- /* Identity is read LIVE from scutil, not from chezmoi config data, which is rendered
-     only at `chezmoi init` and goes stale after a rename. */ -}}
+     only at `chezmoi init` (re-rendered by `chezmoi apply --init`) and goes stale after a
+     rename. */ -}}
 {{- $live := output "scutil" "--get" "ComputerName" | trim -}}
 {{- $hn := output "scutil" "--get" "HostName" | trim -}}
 {{- if not (has $live .known_hostnames) -}}
@@ -35,6 +36,10 @@ tap "skyhook-io/tap", trusted: true
 brew "arping"                          # edge-node network diagnostics
 brew "awscli"
 brew "azure-cli"
+brew "bash"                            # every Claude Code hook, the statusline and xreview's shebang run
+                                       # /opt/homebrew/bin/bash by absolute path. It was only a dependency
+                                       # of direnv, so dropping direnv would make every hook exit 127
+                                       # and every guard fail open.
 brew "borgbackup"                      # Vorta requires it. The borgbackup-fuse variant
                                        # was dropped 2026-08-28: it exists only for
                                        # `borg mount`, which needs a macFUSE kernel

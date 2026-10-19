@@ -1,4 +1,4 @@
-#!/usr/bin/env zsh
+#!/bin/zsh
 # layout.sh — build or focus a project's Herdr workspace, adding any missing tab.
 # Managed by chezmoi (source: dot_config/herdr/executable_layout.sh).
 #
@@ -10,6 +10,14 @@
 #                           by tab-goto.sh --create for the lazy editor tab
 #
 # The single definition of what a project workspace looks like.
+
+# Runs outside the sandbox (a herdr keybinding or a shell), so it resolves nothing a sandboxed
+# command can write (spec 2026-10-16, sandbox write boundary): an absolute shebang and a
+# pinned PATH that no caller's direnv or mise entry reaches. PINNED_PATH is for the suite only.
+# The caller's PATH survives in one place, hl_handover: the herdr server and client it hands
+# a terminal to keep the PATH they were always started with.
+HL_CALLER_PATH=$PATH
+PATH=${PINNED_PATH:-/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin}; export PATH
 emulate -L zsh
 # no_bg_nice: zsh renices `cmd &` by default; that fails where setpriority is denied
 # (a sandbox, some CI), taking the backgrounded server with it.
@@ -42,6 +50,16 @@ hl_git() {
   command env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR \
     -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_NAMESPACE \
     git "$@"
+}
+
+# hl_handover [args] — exec the herdr found on the pinned PATH, session threaded in as in
+# HL_HERDR, with the caller's PATH in its environment. For the two calls that start a long-lived
+# server or hand the terminal to the client, whose panes and shells would otherwise be born
+# with the pinned PATH instead of the one `dev` was run from.
+hl_handover() {
+  local bin="${commands[herdr]:-}"
+  [[ -n "$bin" ]] || { print -ru2 -- "layout.sh: herdr not found"; return 127 }
+  PATH="$HL_CALLER_PATH" exec "$bin" "${(@)HL_HERDR[3,-1]}" "$@"
 }
 
 # hl_api — run a herdr CLI call, return its JSON on stdout. Non-zero on failure, with
@@ -96,7 +114,7 @@ hl_ensure_server() {
   hl_server_ready && return 0
   # `herdr server` runs in the foreground, so detach it. The start is fire-and-forget
   # because a racing second dev must neither fail nor start a second server.
-  ("${HL_HERDR[@]}" server >/dev/null 2>&1 &) || true
+  (hl_handover server >/dev/null 2>&1 &) || true
   local tries="${HL_READY_TRIES:-40}" i=1
   while (( i <= tries )); do
     hl_server_ready && return 0
@@ -427,7 +445,7 @@ hl_context_repo() {
 hl_attach() {
   [[ -n "${HERDR_ENV:-}" ]] && return 0
   [[ -n "${DEV_NO_ATTACH:-}" ]] && return 0
-  exec "${HL_HERDR[@]}"
+  hl_handover
 }
 
 main() {

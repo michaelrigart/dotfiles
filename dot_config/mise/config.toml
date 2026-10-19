@@ -17,6 +17,14 @@ ansible = "14.2.0"
 [settings]
 idiomatic_version_file_enable_tools = ["ruby"]
 
+# Paranoid mode: mise trusts a project config by its content hash. A mise.toml (or
+# .tool-versions, mise.local.toml) edited since it was trusted -- by an agent in a
+# sandbox-writable repo -- is untrusted again in every consumer (the shell, Claude Code's own
+# PATH and the language servers it starts, the Codex daemon's shims) until re-trusted. Run
+# `mise trust` after each change. Directory trusts from before this setting are not honoured.
+# Spec 2026-10-16 sandbox write boundary.
+paranoid = true
+
 # Install the gems listed in default-gems into every Ruby mise builds (keeps ruby-lsp
 # available per-Ruby without polluting project Gemfiles). Default would be ~/.default-gems;
 # pointed at the XDG location instead.

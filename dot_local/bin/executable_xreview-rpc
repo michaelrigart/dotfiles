@@ -40,6 +40,11 @@ import subprocess
 import sys
 import time
 
+# Runs outside the sandbox (called by xreview), so it resolves no mise shim (spec
+# 2026-10-16, sandbox write boundary). PINNED_PATH is for the suites only.
+os.environ["PATH"] = os.environ.get("PINNED_PATH") or (
+    os.path.expanduser("~/.local/bin") + ":/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin")
+
 TERMINAL = ("completed", "failed", "interrupted")
 
 

@@ -23,7 +23,7 @@ mem() { rm -rf "${ROOT:?}/$1"; mkdir -p "$ROOT/$1/memory"; printf '%s' "$ROOT/$1
 fire() {
   jq -cn --arg t "$ROOT/$1/sess.jsonl" \
     '{hook_event_name:"SessionStart",source:"startup",session_id:"s",transcript_path:$t}' \
-    | bash "$HOOK"
+    | PINNED_PATH="$PATH" bash "$HOOK"
 }
 ctx() { fire "$1" | jq -r '.hookSpecificOutput.additionalContext // empty'; }
 # note <dir> <file> -> a memory file; link <file> -> an index line linking it
@@ -90,15 +90,15 @@ is "the hook never writes to the memory directory" "$(find "$d" -type f -exec sh
 echo "E. fails open and silent"
 mkdir -p "$ROOT/nomem"
 is "no memory directory is silent" "$(fire nomem)" ""
-out="$(printf '%s' '{"hook_event_name":"SessionStart"}' | bash "$HOOK")"; rc=$?
+out="$(printf '%s' '{"hook_event_name":"SessionStart"}' | PINNED_PATH="$PATH" bash "$HOOK")"; rc=$?
 is "no transcript_path is silent, exit 0" "$rc/$out" "0/"
-out="$(printf '%s' 'not json' | bash "$HOOK")"; rc=$?
+out="$(printf '%s' 'not json' | PINNED_PATH="$PATH" bash "$HOOK")"; rc=$?
 is "malformed input is silent, exit 0" "$rc/$out" "0/"
-out="$(bash "$HOOK" </dev/null)"; rc=$?
+out="$(PINNED_PATH="$PATH" bash "$HOOK" </dev/null)"; rc=$?
 is "empty input is silent, exit 0" "$rc/$out" "0/"
 stub="$ROOT/stub"; mkdir -p "$stub"; printf '#!/bin/sh\nexit 2\n' > "$stub/grep"; chmod +x "$stub/grep"
 d="$(mem greperr)"; note "$d" a.md; note "$d" orphan.md; link a.md > "$d/MEMORY.md"
-out="$(jq -cn --arg t "$ROOT/greperr/sess.jsonl" '{transcript_path:$t}' | PATH="$stub:$PATH" bash "$HOOK")"; rc=$?
+out="$(jq -cn --arg t "$ROOT/greperr/sess.jsonl" '{transcript_path:$t}' | PATH="$stub:$PATH" PINNED_PATH="$stub:$PATH" bash "$HOOK")"; rc=$?
 is "a grep read error is silent, exit 0, never 'unindexed' advice" "$rc/$out" "0/"
 
 echo "F. the memory directory follows the repository root, not the session cwd"
@@ -116,7 +116,7 @@ link a.md > "$PROJ/$(key "$REPO")/memory/MEMORY.md"
 # fireat <transcript> <cwd> -> the hook's additionalContext
 fireat() {
   jq -cn --arg t "$1" --arg c "$2" '{hook_event_name:"SessionStart",transcript_path:$t,cwd:$c}' \
-    | bash "$HOOK" | jq -r '.hookSpecificOutput.additionalContext // empty'
+    | PINNED_PATH="$PATH" bash "$HOOK" | jq -r '.hookSpecificOutput.additionalContext // empty'
 }
 out="$(fireat "$PROJ/$(key "$WT")/sess.jsonl" "$WT")"
 has "a linked-worktree session reports the main checkout's memory" "$out" "orphan.md"

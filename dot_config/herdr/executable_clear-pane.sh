@@ -1,4 +1,4 @@
-#!/usr/bin/env zsh
+#!/bin/zsh
 # clear-pane.sh — Cmd-k inside Herdr. Ghostty sends Alt-k, and a [[keys.command]] runs this.
 # Managed by chezmoi (source: dot_config/herdr/executable_clear-pane.sh).
 #
@@ -11,6 +11,10 @@
 # the shell could have started something else (Cmd-k, then Enter on `nvim`), and LazyVim
 # binds <A-k> to "move line up". The signal reaches only the shell, which acts on it only
 # while its line editor is active. SIGURG is ignored by default, so it harms nothing else.
+# Runs outside the sandbox (a herdr keybinding or a shell), so it resolves nothing a sandboxed
+# command can write (spec 2026-10-16, sandbox write boundary): an absolute shebang and a
+# pinned PATH that no caller's direnv or mise entry reaches. PINNED_PATH is for the suite only.
+PATH=${PINNED_PATH:-/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin}; export PATH
 emulate -L zsh
 setopt local_options no_unset pipe_fail
 

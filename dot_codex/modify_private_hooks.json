@@ -16,7 +16,12 @@
 {{- if hasKey $cfg "hooks" -}}{{- $hooks = get $cfg "hooks" -}}{{- end -}}
 {{- $start := list -}}
 {{- if hasKey $hooks "SessionStart" -}}{{- $start = get $hooks "SessionStart" -}}{{- end -}}
-{{- $cmd := printf "bash '%s/.codex/herdr-agent-state.sh' session" .chezmoi.homeDir -}}
+{{- /* Launched by an absolute interpreter: a bare `bash` is resolved through the Codex daemon's
+       PATH, before the script's own PATH pin can run. /bin/bash is the system bash 3.2 and the
+       script is POSIX sh (it also runs under it). The Claude hooks name /opt/homebrew/bin/bash
+       because their scripts need bash 4+; this one does not, and /bin/bash has no Homebrew
+       dependency inside a launchd-started daemon. */ -}}
+{{- $cmd := printf "/bin/bash '%s/.codex/herdr-agent-state.sh' session" .chezmoi.homeDir -}}
 {{- /* The pane-map hook reconciles herdr's session ids from the pane titles. Herdr's own
        hook exits inside the daemon (no pane environment there), so this is the one that
        reports. Spec: docs/superpowers/specs/2026-09-26-xreview-codex-daemon-design.md §6. */ -}}
