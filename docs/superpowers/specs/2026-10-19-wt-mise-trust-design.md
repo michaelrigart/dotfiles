@@ -152,8 +152,9 @@ main checkout's is not trusted; it or its counterpart is a symlink or not a regu
 The `review` line is a `diff` only for the first, where the main checkout's copy is a trusted
 baseline that differs. For every other reason it is `cat` of the worktree file, because a
 `diff` against an unreviewed or identical copy shows nothing. The command lines quote their
-paths, so they paste correctly for a checkout whose path holds spaces or other
-shell-special characters; the headline does not. After listing every file, the step returns 1,
+paths and the branch names in the recovery lines, so they paste correctly for a checkout
+whose path holds spaces, a tab or other shell-special characters; text holding a `!` is
+single-quoted, because a shell expands a bare `!` as history. The headline does not quote. After listing every file, the step returns 1,
 and `_wt_do_prepare` stops before the setup hook with its recovery line ("The worktree
 exists — review the mise config above, then: wt-prepare <branch> && wt <branch>"). After
 Michael trusts the files, `wt-prepare` finds nothing left to carry and goes on to the hook.

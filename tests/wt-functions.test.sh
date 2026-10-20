@@ -185,7 +185,8 @@ chmod +x "$STUBS/xreview-rpc"
 # (nomise_path), and a stateful stand-in for the one thing wt asks of it: whether a config
 # file is trusted. The store ($MISE_STUB_STORE) holds one `<path><TAB><sha256>` line per
 # trusted file, so trust follows the file's CONTENT, as mise's does: editing a trusted file
-# makes it untrusted again. `trust --show` lists the config files visible from -C <dir>,
+# makes it untrusted again. `trust --show` lists the config files visible from -C <dir>
+# (mise.toml, mise.local.toml, .mise.toml, .config/mise.toml and .config/mise/conf.d/*.toml),
 # walking up to `/`, with $HOME printed as `~/` and the -C directory canonicalised, but no
 # entry resolved — which is what the real binary does.
 #
@@ -203,7 +204,7 @@ printf '%s\n' "$*" >> "$MLOG"
 [ /dev/stdin -ef /dev/null ] || printf '%s\n' "$*" >> "$STDIN_LOG"
 tab=$'\t'
 sha() { shasum -a 256 < "$1" | cut -d' ' -f1; }
-drop() { P="$1" awk -F'\t' '$1 != ENVIRON["P"]' "$MISE_STUB_STORE" > "$MISE_STUB_STORE.n"; mv "$MISE_STUB_STORE.n" "$MISE_STUB_STORE"; }
+drop() { P="$1" awk '{ k = ENVIRON["P"] "\t"; if (substr($0, 1, length(k)) != k) print }' "$MISE_STUB_STORE" > "$MISE_STUB_STORE.n"; mv "$MISE_STUB_STORE.n" "$MISE_STUB_STORE"; }
 if [ "${1:-}" = -C ] && [ "${3:-}" = trust ] && [ "${4:-}" = --show ] && [ $# -eq 4 ]; then
   [ "${MOCK_MISE_SHOW_RC:-0}" != 0 ] && exit "$MOCK_MISE_SHOW_RC"
   if [ -n "${MOCK_MISE_SHOW_FAIL_AFTER_TRUST:-}" ] && grep -q '^trust /' "$MLOG"; then exit 1; fi
@@ -215,6 +216,16 @@ if [ "${1:-}" = -C ] && [ "${3:-}" = trust ] && [ "${4:-}" = --show ] && [ $# -e
   while :; do
     for name in mise.toml mise.local.toml .mise.toml .config/mise.toml; do
       f="${d%/}/$name"
+      [ -e "$f" ] || [ -L "$f" ] || continue
+      found=1
+      shown="$f"; case "$f" in "$HOME"/*) shown="~/${f#"$HOME"/}" ;; esac
+      if grep -Fxq -- "$f$tab$(sha "$f" 2>/dev/null)" "$MISE_STUB_STORE"; then
+        printf '%s: trusted\n' "$shown"
+      else
+        printf '%s: untrusted\n' "$shown"
+      fi
+    done
+    for f in "${d%/}"/.config/mise/conf.d/*.toml; do
       [ -e "$f" ] || [ -L "$f" ] || continue
       found=1
       shown="$f"; case "$f" in "$HOME"/*) shown="~/${f#"$HOME"/}" ;; esac
@@ -2540,6 +2551,24 @@ has "Start it with: herdr session attach team" "U21 the refusal gives the attach
 hunlogged "workspace close" "U21 nothing is closed in either session"
 [[ -d "$HSTOP2" ]] && _pass "U21 the checkout survives" || _fail "U21 the checkout survives"
 
+# U21b: a session name with ! is single-quoted in the commands the refusals print.
+setup
+run "$REPO" wt second-bang
+HBANG="$HOME/Code/Org/repo-second-bang"
+mkdir -p "$ROOTTMP/te!am"
+print -r -- "{\"version\":3,\"workspaces\":[{\"id\":\"w3\",\"tabs\":[{\"panes\":{\"1\":{\"cwd\":\"$HBANG\"}}}]}]}" \
+  > "$ROOTTMP/te!am/session.json"
+export MOCK_H_SESSION_LIST="$(sessions "$(session_json default true true)" "$(session_json 'te!am' false false)")"
+export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[{\"workspace_id\":\"w7\",\"worktree\":{\"checkout_path\":\"$HBANG\"}}]}}"
+export MOCK_H_PANES='{"result":{"panes":[]}}'
+HERDR_SESSION='te!am' run "$REPO" wt-rm second-bang
+rc_is 1 "U21b a stopped session named with ! refuses removal"
+has "Start it with: herdr session attach 'te!am'" "U21b the attach command quotes the name"
+unset HERDR_SESSION
+run "$REPO" wt-rm second-bang
+rc_is 1 "U21b a running foreign session named with ! refuses removal"
+has "herdr session delete 'te!am'" "U21b the delete command quotes the name"
+
 # U22: the stopped default session is listed FIRST and the running one LAST, so the
 # caller's `session_dir` still holds the running session's directory when the stopped one
 # is inspected. `_wt_stopped_herdr_has_checkout` must read the state under its own $2; a
@@ -3319,6 +3348,28 @@ mlog_no_line "trust $X/mise.local.toml" "X19 nothing more is carried"
 has "cannot read mise's trust status" "X19 it says so"
 hook_not_ran "X19 the setup hook does not run"
 
+# A refusal record holds its path last, so a config filename containing a tab is not cut
+# at the tab. The path is quoted for pasting (single quotes keep the tab).
+TABF=$'.config/mise/conf.d/a\tb.toml'
+xfix x20; xseed
+mkdir -p "$REPO/.config/mise/conf.d"; print -r -- 't=1' > "$REPO/$TABF"
+git -C "$REPO" add -f -- "$TABF"; git -C "$REPO" commit -q -m tabconf; mise_seed "$REPO/$TABF"
+xbranch x20-src 'print -r -- "t=2" > "$REPO/$TABF"; git -C "$REPO" add -f -- "$TABF"'
+run "$REPO" wt x20 x20-src
+rc_is 1 "X20 a config whose name contains a tab that differs is refused"
+has "wt: ~/Code/Org/repo-x20/.config/mise/conf.d/a"$'\t'"b.toml is not trusted: it differs from the main checkout's." "X20 the headline names the whole filename"
+has "    review: diff ~/'Code/Org/repo/.config/mise/conf.d/a"$'\t'"b.toml' ~/'Code/Org/repo-x20/.config/mise/conf.d/a"$'\t'"b.toml'" "X20 the review line names the whole filename, quoted"
+has "    then:   mise trust ~/'Code/Org/repo-x20/.config/mise/conf.d/a"$'\t'"b.toml'" "X20 the trust line names the whole filename, quoted"
+mlog_no_line "trust $X/$TABF" "X20 it is never trusted"
+
+xfix x21; xseed
+xbranch x21-src 'mkdir -p "$REPO/.config/mise/conf.d"; print -r -- "t=1" > "$REPO/$TABF"; git -C "$REPO" add -f -- "$TABF"'
+run "$REPO" wt x21 x21-src
+rc_is 1 "X21 a tab-named config with no main counterpart is refused"
+has "wt: ~/Code/Org/repo-x21/.config/mise/conf.d/a"$'\t'"b.toml is not trusted: the main checkout has no such file." "X21 the headline names the whole filename"
+has "    review: cat ~/'Code/Org/repo-x21/.config/mise/conf.d/a"$'\t'"b.toml'" "X21 the review line names the whole filename, quoted"
+has "    then:   mise trust ~/'Code/Org/repo-x21/.config/mise/conf.d/a"$'\t'"b.toml'" "X21 the trust line names the whole filename, quoted"
+
 # X13: over everything above, mise trust is only ever given one worktree file.
 cat "$MLOG" >> "$XALL"
 bad=""
@@ -3329,6 +3380,51 @@ while IFS= read -r l; do
   esac
 done < "$XALL"
 eq "$bad" "" "X13 mise trust is never bare, never --all, never aimed at the main checkout"
+# A branch name containing ! (legal in a ref) is single-quoted in every recovery line a
+# person pastes, because (q-) leaves ! bare and interactive zsh then expands it as history.
+# A plain name still prints unchanged.
+run "$REPO" _wt_q 'fix!foo'
+eq "$OUT" "'fix!foo'" "Y9 a name with ! is single-quoted"
+run "$REPO" _wt_q 'plain-name'
+eq "$OUT" "plain-name" "Y9 a plain name prints unchanged"
+run "$REPO" _wt_q 'fix/foo'
+eq "$OUT" "fix/foo" "Y9 a slash is left alone"
+
+xfix 'fix!foo'; xseed
+run "$REPO" wt 'fix!foo'
+rc_is 0 "Y10 a branch with ! is created"
+has "wt: branching 'fix!foo' from" "Y10 the branching line quotes it"
+print -r -- 'edited' >> "$X/mise.local.toml"
+run "$REPO" wt 'fix!foo'
+has "has untrusted mise config (mise.local.toml) — run: wt-prepare 'fix!foo'" "Y10 the reopen warning quotes it"
+hasnt "wt-prepare fix!foo" "Y10 ... and never prints it bare"
+
+xfix 'fix!bar'; xseed
+xbranch fixbar-src 'print -r -- "a=2" > "$REPO/mise.toml"; git -C "$REPO" add mise.toml'
+run "$REPO" wt 'fix!bar' fixbar-src
+rc_is 1 "Y11 a preparation refusal for a branch with !"
+has "review the mise config above, then: wt-prepare 'fix!bar' && wt 'fix!bar'" "Y11 the refusal recovery line quotes it twice"
+
+setup
+mkhook "$REPO" '#!/bin/sh
+[ "$1" = setup ] && exit 5
+[ "$1" = teardown ] && exit 4
+exit 0'
+run "$REPO" wt 'fix!baz'
+rc_is 1 "Y12 a failing setup hook for a branch with !"
+has "fix it, then: wt-prepare 'fix!baz' && wt 'fix!baz'" "Y12 the hook recovery line quotes it"
+run "$REPO" wt-prepare 'fix!baz'
+has "fix it, then: wt-prepare 'fix!baz' && wt 'fix!baz'" "Y12 so does wt-prepare's own"
+run "$REPO" wt-rm 'fix!baz'
+rc_is 1 "Y12 a failing teardown for a branch with !"
+has "Fix it and retry: wt-rm 'fix!baz'" "Y12 the wt-rm retry line quotes it"
+has "Or resume work with: wt-prepare 'fix!baz' && wt 'fix!baz'" "Y12 ... and the resume line"
+
+setup
+git -C "$REPO" branch 'fix!old'
+run "$REPO" wt 'fix!old' main
+has "wt: branch 'fix!old' already exists — drop the start point." "Y13 the existing-branch refusal quotes it"
+
 [[ -e "$STDIN_LOG" ]] && stdin_bad="$(<"$STDIN_LOG")" || stdin_bad=""
 eq "$stdin_bad" "" "X13b every mise call wt makes has stdin from /dev/null"
 : > "$STDIN_LOG"

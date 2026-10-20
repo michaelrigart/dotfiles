@@ -350,7 +350,7 @@ _wt_prepare_for_herdr() {
   expected="${main:h}/${main:t}-${slug}"
   if [[ "${dest:A}" != "${expected:A}" ]]; then
     print -ru2 -- "dev: $dest is not a wt-managed sibling checkout — refusing."
-    print -ru2 -- "    Expected $expected for branch ${(q-)branch}; only that path is removable by command wt-rm."
+    print -ru2 -- "    Expected $expected for branch $(_wt_q "$branch"); only that path is removable by command wt-rm."
     return 1
   fi
   common="$(_wt_git -C "$main" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" \
@@ -558,22 +558,32 @@ _wt_tilde() {
   if [[ "$1" == "$HOME/"* ]]; then print -rn -- "~/${1#"$HOME/"}"; else print -rn -- "$1"; fi
 }
 
-# _wt_tilde_q <path> — like _wt_tilde, quoted for a shell, for lines Michael pastes: the
-# path pastes as itself whatever it holds. A safe path prints unchanged. A path with a `!`
-# is single-quoted, because (q-) leaves `!` bare and both shells expand it as history.
+# _wt_q <text> — the text quoted for a shell, for lines Michael pastes: a branch name, a
+# session name or a path pastes as itself whatever it holds. Safe text prints unchanged.
+# Text with a `!` is single-quoted, because (q-) leaves `!` bare and both shells expand it
+# as history; `!` is legal in a branch name and in a path.
+_wt_q() {
+  emulate -L zsh
+  if [[ "$1" == *'!'* ]]; then
+    print -rn -- "${(qq)1}"
+  else
+    print -rn -- "${(q-)1}"
+  fi
+}
+
+# _wt_tilde_q <path> — like _wt_tilde, quoted for a shell (see _wt_q), for lines Michael
+# pastes. The leading ~/ stays outside the quotes so that it still expands.
 _wt_tilde_q() {
   emulate -L zsh
   local rest="$1" pre=""
   if [[ "$1" == "$HOME/"* ]]; then rest="${1#"$HOME/"}" pre="~/"; fi
-  if [[ "$rest" == *'!'* ]]; then
-    print -rn -- "$pre${(qq)rest}"
-  else
-    print -rn -- "$pre${(q-)rest}"
-  fi
+  print -rn -- "$pre$(_wt_q "$rest")"
 }
 
-# _wt_mise_trust_report <main> <dest> <rel<TAB>reason>... — the refusal lines for configs
-# that stay untrusted: what is wrong, how to look at it, how to trust it by hand. The
+# _wt_mise_trust_report <main> <dest> <reason<TAB>rel>... — the refusal lines for configs
+# that stay untrusted: what is wrong, how to look at it, how to trust it by hand. The path
+# is the last field of a record and is never cut at a tab: only a reason, which has none,
+# is split off the front. The
 # review is a diff only against a main-checkout copy that is trusted and differs; against
 # any other copy a diff would show nothing (or nothing that was ever looked at), so the
 # file itself is shown.
@@ -582,7 +592,7 @@ _wt_mise_trust_report() {
   local main="$1" dest="$2" entry rel reason dp
   shift 2
   for entry in "$@"; do
-    rel="${entry%%$'\t'*}" reason="${entry#*$'\t'}"
+    reason="${entry%%$'\t'*}" rel="${entry#*$'\t'}"
     dp="$(_wt_tilde_q "$dest/$rel")"
     print -ru2 -- "wt: $(_wt_tilde "$dest/$rel") is not trusted: $reason."
     if [[ "$reason" == "it differs from the main checkout's" ]]; then
@@ -594,7 +604,7 @@ _wt_mise_trust_report() {
   done
 }
 
-# _wt_mise_withdraw <main> <dest> <rel> <stop-message> <rel<TAB>reason>... — take back the
+# _wt_mise_withdraw <main> <dest> <rel> <stop-message> <reason<TAB>rel>... — take back the
 # trust just given to <dest>/<rel>. Returns 0 only when that worked and there is no
 # stop-message; otherwise the collected refusals are printed, then a line saying the file may
 # still be trusted if the untrust failed, then the stop-message if any, and it returns 1.
@@ -704,7 +714,7 @@ _wt_mise_trust() {
       }
       reason="it changed while wt was trusting it"
     fi
-    refused+=( "$rel"$'\t'"$reason" )
+    refused+=( "$reason"$'\t'"$rel" )
   done
 
   (( $#refused )) || return 0
@@ -718,7 +728,8 @@ _wt_mise_trust() {
 # (per-process locks, see _wt_lock).
 _wt_do_prepare() {
   emulate -L zsh
-  local main="$1" dest="$2" branch="$3" slug="$4" qb="${(q-)branch}"
+  local main="$1" dest="$2" branch="$3" slug="$4" qb
+  qb="$(_wt_q "$branch")"
 
   # Validate the hook before copying, so a misconfigured repository changes nothing.
   _wt_hook_check "$main" >/dev/null 2>&1
@@ -765,7 +776,8 @@ _wt_do_prepare() {
 _wt_mise_reopen_warn() {
   emulate -L zsh
   (( $+commands[mise] )) || return 0
-  local dest="$1" qb="${(q-)2}" show line
+  local dest="$1" qb show line
+  qb="$(_wt_q "$2")"
   local -a rels
   show="$(_wt_mise_show "$dest")" || {
     print -ru2 -- "wt: cannot read mise's trust status for $(_wt_tilde "$dest") — opening anyway."
@@ -828,7 +840,8 @@ _wt_create_or_prepare() {
   emulate -L zsh
   local branch="$1" start="${2-}"
   [[ -n "$branch" ]] || { print -ru2 -- "usage: wt <branch> [start-point]"; return 1; }
-  local slug="${branch//\//-}" qb="${(q-)branch}" main common dest
+  local slug="${branch//\//-}" qb main common dest
+  qb="$(_wt_q "$branch")"
   main="$(_wt_primary)" || return 1
   common="$(_wt_git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
   dest="${main:h}/${main:t}-${slug}"
@@ -1056,7 +1069,7 @@ _wt_stop_herdr_workspaces() {
     sock="$(print -r -- "$listing" | jq -r --argjson i "$i" '.sessions[$i].socket_path // ""')" || return 1
     if [[ "$is_default" != true && "$name" != "${HERDR_SESSION:-}" ]]; then
       print -ru2 -- "wt-rm: Herdr session '$name' exists, and wt-rm handles only the default session — refusing."
-      print -ru2 -- "    Stop and delete it (herdr session delete ${(q-)name}), then retry command wt-rm."
+      print -ru2 -- "    Stop and delete it (herdr session delete $(_wt_q "$name")), then retry command wt-rm."
       return 1
     fi
     [[ "$is_default" == true ]] && default_name="$name"
@@ -1076,7 +1089,7 @@ _wt_stop_herdr_workspaces() {
           if [[ "${tdefault[i]}" == true ]]; then
             print -ru2 -- "    Start it with: herdr    then retry command wt-rm."
           else
-            print -ru2 -- "    Start it with: herdr session attach ${(q-)name}    then retry command wt-rm."
+            print -ru2 -- "    Start it with: herdr session attach $(_wt_q "$name")    then retry command wt-rm."
           fi
           return 1 ;;
         1) continue ;;
@@ -1314,7 +1327,8 @@ wt-rm() {
   emulate -L zsh
   local branch="$1"
   [[ -n "$branch" ]] || { print -ru2 -- "usage: wt-rm <branch>"; return 1; }
-  local slug="${branch//\//-}" qb="${(q-)branch}" main common dest rel_dir=""
+  local slug="${branch//\//-}" qb main common dest rel_dir=""
+  qb="$(_wt_q "$branch")"
   main="$(_wt_primary)" || return 1
   common="$(_wt_git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
   dest="${main:h}/${main:t}-${slug}"
