@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** In progress
+**Status:** Implemented on `feat/wt-mise-trust`. Do not run it again; the spec records what changed after this plan was approved (the review line, rollback failures, quoting, and the reader's fail-closed rules).
 
 **Goal:** `wt` carries the main checkout's mise trust into a new worktree for byte-identical configs, refuses everything else with a reviewable message, warns on an untrusted reopen, and keeps the Herdr popup open when there is something to read.
 

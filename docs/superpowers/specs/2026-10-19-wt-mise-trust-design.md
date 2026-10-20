@@ -1,6 +1,6 @@
 # wt carries mise trust into new worktrees
 
-**Status:** In progress
+**Status:** Implemented
 **Date:** 2026-10-19
 **Branch:** `feat/wt-mise-trust`
 
@@ -154,9 +154,11 @@ baseline that differs. For every other reason it is `cat` of the worktree file, 
 `diff` against an unreviewed or identical copy shows nothing. The command lines quote their
 paths, so they paste correctly for a checkout whose path holds spaces or other
 shell-special characters; the headline does not. After listing every file, the step returns 1,
-and `_wt_do_prepare` stops before the setup hook with its existing recovery line ("The
-worktree exists — fix it, then: wt-prepare <branch> && wt <branch>"). After Michael trusts
-the files, `wt-prepare` finds nothing left to carry and goes on to the hook.
+and `_wt_do_prepare` stops before the setup hook with its recovery line ("The worktree
+exists — review the mise config above, then: wt-prepare <branch> && wt <branch>"). After
+Michael trusts the files, `wt-prepare` finds nothing left to carry and goes on to the hook.
+The stop holds in a repository with no setup hook too: its workspace opens once the files
+are trusted, or on a later `wt`, which reopens it with the warning below.
 
 ### Failing closed
 
