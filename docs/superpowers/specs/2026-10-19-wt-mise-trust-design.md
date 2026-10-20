@@ -169,6 +169,9 @@ wt: could not withdraw mise trust from <dest>/<rel> — it may still be trusted;
 ```
 
 Refusals already collected are printed before the line that stops the step.
+A file that changed while it was being trusted is untrusted again and listed with the other
+refusals; if that untrust fails too, the withdraw line is followed by `wt: <dest>/<rel> changed
+while wt was trusting it — trusting nothing more.`
 
 ### Output
 

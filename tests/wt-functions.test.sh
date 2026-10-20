@@ -3194,6 +3194,9 @@ has "wt: could not withdraw mise trust from ~/Code/Org/repo-x11b/mise.toml — i
 hasnt "mise trust failed" "X11b ... and not that the trust failed"
 mlog_no_line "trust $X/mise.local.toml" "X11b nothing more is carried"
 hook_not_ran "X11b the setup hook does not run"
+has "wt: ~/Code/Org/repo-x11b/mise.toml changed while wt was trusting it — trusting nothing more." "X11b it ends with the stop line"
+r1="$(oline "mise.toml is not trusted")"; r2="$(oline "could not withdraw")"; r3="$(oline "trusting nothing more")"
+[[ -n "$r2" && -n "$r3" ]] && (( r2 < r3 )) && _pass "X11b the withdraw line comes before the stop" || _fail "X11b the withdraw line comes before the stop ($r2, $r3)"
 
 # A rollback that fails after a failed re-check read: refusals first, then the withdraw line,
 # then the read failure. DIR_AFTER_TRUST aims the failing read at the worktree or at main.
@@ -3255,6 +3258,21 @@ has "    review: diff ~/'Code/Org/co: lon/mise.toml' ~/'Code/Org/co: lon-x14c/mi
 xfix x14d 'co: lon'; xseed
 MOCK_MISE_RACE_CONTENT='raced\n' MOCK_MISE_UNTRUST_RC=1 run "$REPO" wt x14d
 has "check with: mise -C ~/'Code/Org/co: lon-x14d' trust --show" "X14d the check command is quoted"
+
+# A path with `!` is single-quoted: neither bash nor interactive zsh expands history there.
+run "$REPO" _wt_tilde_q "$HOME/Code/Org/a!b"
+eq "$OUT" "~/'Code/Org/a!b'" "X14e a home path containing ! is single-quoted"
+run "$REPO" _wt_tilde_q "/srv/a!b c"
+eq "$OUT" "'/srv/a!b c'" "X14e ... and so is one outside home"
+run "$REPO" _wt_tilde_q "/srv/plain"
+eq "$OUT" "/srv/plain" "X14e a safe path still prints unchanged"
+
+# _wt_mise_withdraw untrusts the dest it was given, not a same-named variable of its caller.
+xfix x14f
+xw_caller() { local dest=OUTER; _wt_mise_withdraw "$REPO" "$X" mise.toml "" }
+run "$REPO" xw_caller
+mlog_line "trust --untrust $X/mise.toml" "X14f withdraw uses the dest it was passed, not its caller's"
+mlog_no_line "trust --untrust OUTER/mise.toml" "X14f ... never the caller's"
 
 xfix x15
 git -C "$REPO" rm -q -f mise.toml; git -C "$REPO" commit -q -m nocfg; rm -f "$REPO/mise.local.toml" "$REPO/.worktreeinclude"

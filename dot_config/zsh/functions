@@ -559,14 +559,16 @@ _wt_tilde() {
 }
 
 # _wt_tilde_q <path> — like _wt_tilde, quoted for a shell, for lines Michael pastes: the
-# path pastes as itself whatever it holds. A safe path prints unchanged.
+# path pastes as itself whatever it holds. A safe path prints unchanged. A path with a `!`
+# is single-quoted, because (q-) leaves `!` bare and both shells expand it as history.
 _wt_tilde_q() {
   emulate -L zsh
-  if [[ "$1" == "$HOME/"* ]]; then
-    local rest="${1#"$HOME/"}"
-    print -rn -- "~/${(q-)rest}"
+  local rest="$1" pre=""
+  if [[ "$1" == "$HOME/"* ]]; then rest="${1#"$HOME/"}" pre="~/"; fi
+  if [[ "$rest" == *'!'* ]]; then
+    print -rn -- "$pre${(qq)rest}"
   else
-    print -rn -- "${(q-)1}"
+    print -rn -- "$pre${(q-)rest}"
   fi
 }
 
@@ -600,7 +602,8 @@ _wt_mise_trust_report() {
 # whatever `mise trust` hashed, so the failure is its own line, not "trust failed".
 _wt_mise_withdraw() {
   emulate -L zsh
-  local main="$1" dest="$2" dp="$dest/$3" msg="$4" failed=0
+  local main="$1" dest="$2" msg="$4" failed=0 dp
+  dp="$dest/$3"   # not on the local line: zsh expands that whole line before assigning
   shift 4
   command mise trust --untrust "$dp" >/dev/null 2>&1 </dev/null || failed=1
   (( failed )) || [[ -n "$msg" ]] || return 0
@@ -695,7 +698,10 @@ _wt_mise_trust() {
         print -r -- "wt: mise trust carried to $(_wt_tilde "$dp")"
         continue
       fi
-      _wt_mise_withdraw "$main" "$dest" "$rel" "" $refused || return 1
+      _wt_mise_withdraw "$main" "$dest" "$rel" "" $refused || {
+        print -ru2 -- "wt: $(_wt_tilde "$dp") changed while wt was trusting it — trusting nothing more."
+        return 1
+      }
       reason="it changed while wt was trusting it"
     fi
     refused+=( "$rel"$'\t'"$reason" )
