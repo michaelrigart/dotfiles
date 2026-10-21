@@ -1,6 +1,6 @@
 # Third-party agent skills as pinned chezmoi externals
 
-**Status:** Approved
+**Status:** In progress on `feat/agent-skills`
 **Date:** 2026-10-21
 **Branch:** `feat/agent-skills`
 
