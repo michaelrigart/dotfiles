@@ -161,7 +161,8 @@ fi
 # on failure prints the cause and returns 1, so a case can show it. Ops:
 #   set    replace `key = …` with `key = <value>`, consuming a multi-line array value
 #   delete drop `key = …` (and its continuation lines)
-#   after  insert `    <value>` as a new line after `key = …`
+#   after  insert `    <value>` as a new line after `key = …` (after a multi-line array's
+#          closing line, with the array left intact)
 # A multi-line array ends on the first line whose last non-blank character is `]`, ignoring
 # a trailing ` # comment`. The edit must change the file, or the case fails.
 edit_entry() {
@@ -169,13 +170,14 @@ edit_entry() {
   out=$(mktemp "$T/mut.XXXXXX")
   awk -v h="[\".agents/skills/$1\"]" -v op="$2" -v key="$3" -v val="${4-}" '
     function closes(l) { sub(/[[:space:]]+#.*$/, "", l); sub(/[[:space:]]+$/, "", l); return l ~ /\]$/ }
-    /^\[/ { sec = ($0 == h); skip = 0 }
+    /^\[/ { sec = ($0 == h); skip = 0; keep = 0 }
     skip { if (closes($0)) skip = 0; next }
+    keep { print; if (closes($0)) { keep = 0; print "    " val }; next }
     sec && $0 ~ "^[[:space:]]*" key "[[:space:]]*=" {
-      if ($0 ~ /=[[:space:]]*\[/ && !closes($0)) skip = 1
-      if (op == "set")   { print "    " key " = " val; next }
-      if (op == "delete") { next }
-      if (op == "after") { print; print "    " val; next }
+      multi = ($0 ~ /=[[:space:]]*\[/ && !closes($0))
+      if (op == "set")    { if (multi) skip = 1; print "    " key " = " val; next }
+      if (op == "delete") { if (multi) skip = 1; next }
+      if (op == "after")  { print; if (multi) keep = 1; else print "    " val; next }
     }
     { print }
   ' "$TOML" > "$out"
