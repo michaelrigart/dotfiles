@@ -18,6 +18,9 @@ docs/
 # Scripts directory (these are helpers, not dotfiles to install)
 .scripts/
 
+# CI workflows for the repository on GitHub — never deployed to $HOME.
+.github/
+
 # Test suites for the managed scripts — versioned with them, never deployed.
 tests/
 
@@ -92,6 +95,7 @@ tests/
 !.claude/skills/live-feedback/
 .claude/skills/live-feedback/*
 !.claude/skills/live-feedback/SKILL.md
+!.claude/skills/clarity
 
 .codex/*
 !.codex/AGENTS.md
