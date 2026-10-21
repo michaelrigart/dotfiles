@@ -50,6 +50,11 @@ echo "  PASS: first"
 printf 'INCONCLUSIVE: chezmoi managed failed: boom\n  warm it: command chezmoi managed\n' >&2
 exit 2
 SUITE
+cat > "$T/coldbare.test.sh" <<'SUITE'
+#!/usr/bin/env bash
+printf 'INCONCLUSIVE: no cache: bare\n  warm it bare: command chezmoi managed\n' >&2
+exit 2
+SUITE
 chmod 755 "$T"/*.sh
 
 # ran <label> <yes|no> <extended regex> <output> - run.sh prints `ok    <suite>` for a
@@ -88,5 +93,10 @@ out="$("$T/run.sh" coldcache 2>&1)"; rc=$?
 ran "an INCONCLUSIVE line is printed under its suite" yes '^ +INCONCLUSIVE: chezmoi managed failed: boom' "$out"
 ran "its indented continuation line is printed too"   yes '^ +warm it: command chezmoi managed' "$out"
 if [ "$rc" -ne 0 ]; then _pass "an inconclusive suite still fails the run"; else _fail "an inconclusive suite still fails the run" "exit $rc"; fi
+out="$("$T/run.sh" coldbare 2>&1)"; rc=$?
+ran "no-assertions branch: the row is reported"                 yes '\?\?\?\? +coldbare +no assertions' "$out"
+ran "no-assertions branch: the INCONCLUSIVE line is printed"    yes '^ +INCONCLUSIVE: no cache: bare' "$out"
+ran "no-assertions branch: the continuation line is printed"    yes '^ +warm it bare: command chezmoi managed' "$out"
+if [ "$rc" -ne 0 ]; then _pass "no-assertions branch: the run still fails"; else _fail "no-assertions branch: the run still fails" "exit $rc"; fi
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

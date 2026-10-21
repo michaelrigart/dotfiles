@@ -296,5 +296,19 @@ if [ "$rc" -eq 2 ] && grep -qxF 'INCONCLUSIVE: chezmoi managed failed: (no stder
   _pass "live-feedback-skill: a silent chezmoi failure reads (no stderr)"
 else _fail "live-feedback-skill: a silent chezmoi failure reads (no stderr)" "exit $rc: $(head -2 "$T/silent.err")"; fi
 
+# The cause is the first non-blank stderr line, not merely the first line.
+mkdir -p "$T/blankfirst"
+cat > "$T/blankfirst/chezmoi" <<'STUB'
+#!/usr/bin/env bash
+printf '   \n\nchezmoi: Get boom\n' >&2
+exit 1
+STUB
+chmod 755 "$T/blankfirst/chezmoi"
+PATH="$T/blankfirst:$PATH" "$SRC/tests/live-feedback-skill.test.sh" >"$T/blankfirst.out" 2>"$T/blankfirst.err"
+rc=$?
+if [ "$rc" -eq 2 ] && grep -qxF 'INCONCLUSIVE: chezmoi managed failed: chezmoi: Get boom' "$T/blankfirst.err"; then
+  _pass "live-feedback-skill: blank leading stderr lines are skipped"
+else _fail "live-feedback-skill: blank leading stderr lines are skipped" "exit $rc: $(head -2 "$T/blankfirst.err")"; fi
+
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
