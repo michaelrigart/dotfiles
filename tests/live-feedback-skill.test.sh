@@ -32,7 +32,7 @@ fi
 # .chezmoiignore is an allowlist for ~/.claude: without its own entries the skill never
 # deploys, and every other check here would still pass.
 if ! managed="$(chezmoi --source "$ROOT" managed 2>"$T/managed.err")"; then
-  printf 'INCONCLUSIVE: chezmoi managed failed: %s\n  a cold external cache does this; warm it outside the sandbox: command chezmoi --source %s managed >/dev/null\n' "$(head -n1 "$T/managed.err")" "$ROOT" >&2
+  printf 'INCONCLUSIVE: chezmoi managed failed: %s\n  a cold external cache does this; warm it outside the sandbox: command chezmoi --source %s managed >/dev/null\n' "$(head -n1 "$T/managed.err" | grep . || echo '(no stderr)')" "$ROOT" >&2
   exit 2
 fi
 if printf '%s\n' "$managed" | grep -qx '.claude/skills/live-feedback/SKILL.md'; then

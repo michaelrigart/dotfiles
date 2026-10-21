@@ -62,6 +62,15 @@ named() { # named <name>
   return 1
 }
 
+# A suite that cannot decide (a cold cache, say) prints `INCONCLUSIVE:` plus indented
+# lines saying how to fix it. It lands in a ???? row, which otherwise hides its output.
+show_inconclusive() {
+  printf '%s\n' "$out" | awk '
+    /^[[:space:]]*INCONCLUSIVE:/ { print; keep = 1; next }
+    keep && /^[[:space:]]+[^[:space:]]/ && !/^[[:space:]]*(ok|PASS|FAIL|not ok)([[:space:]]|:)/ { print; next }
+    { keep = 0 }' | sed 's/^/          /'
+}
+
 suites=0 green=0 red=0 broken=0 skipped=0
 declare -a problems=()
 
@@ -110,10 +119,12 @@ for f in ./*.test.sh; do
   # not an inconsistency.
   if [ "$idiom" = prose ] && { { [ "$rc" -eq 0 ] && [ "$fl" -gt 0 ]; } || { [ "$rc" -ne 0 ] && [ "$fl" -eq 0 ] && [ "$tot" -gt 0 ]; }; }; then
     printf '  ????  %-28s %s/%s asserted but exit=%s — INCONSISTENT%s\n' "$name" "$p" "$tot" "$rc" "$note"
+    show_inconclusive
     problems+=("$name (inconsistent: exit=$rc, $fl failed assertions)")
     broken=$((broken + 1))
   elif [ "$tot" -eq 0 ]; then
     printf '  ????  %-28s no assertions, exit=%s%s\n' "$name" "$rc" "$note"
+    show_inconclusive
     problems+=("$name (asserted nothing)")
     broken=$((broken + 1))
   elif [ "$rc" -eq 0 ]; then

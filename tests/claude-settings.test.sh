@@ -640,7 +640,7 @@ echo "X. every wired hook script is actually managed by chezmoi"
 if command -v chezmoi >/dev/null 2>&1; then
   MT="$(mktemp -d "${TMPDIR:-/tmp}/claude-settings.XXXXXX")"; trap 'rm -rf "$MT"' EXIT
   if ! managed=$(chezmoi --source "$SRC" managed 2>"$MT/managed.err"); then
-    printf 'INCONCLUSIVE: chezmoi managed failed: %s\n  a cold external cache does this; warm it outside the sandbox: command chezmoi --source %s managed >/dev/null\n' "$(head -n1 "$MT/managed.err")" "$SRC" >&2
+    printf 'INCONCLUSIVE: chezmoi managed failed: %s\n  a cold external cache does this; warm it outside the sandbox: command chezmoi --source %s managed >/dev/null\n' "$(head -n1 "$MT/managed.err" | grep . || echo '(no stderr)')" "$SRC" >&2
     exit 2
   fi
   hooks=$(printf '%s' "$OUT" | jq -r '[.hooks[]?[]?.hooks[]?.command] | .[]' \

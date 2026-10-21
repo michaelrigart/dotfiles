@@ -283,5 +283,18 @@ for suite in codex-config claude-settings live-feedback-skill; do
   else _pass "$suite: no per-target chezmoi-managed FAIL"; fi
 done
 
+# A chezmoi that fails without a word must not leave the message dangling.
+mkdir -p "$T/silent"
+cat > "$T/silent/chezmoi" <<'STUB'
+#!/usr/bin/env bash
+exit 1
+STUB
+chmod 755 "$T/silent/chezmoi"
+PATH="$T/silent:$PATH" "$SRC/tests/live-feedback-skill.test.sh" >"$T/silent.out" 2>"$T/silent.err"
+rc=$?
+if [ "$rc" -eq 2 ] && grep -qxF 'INCONCLUSIVE: chezmoi managed failed: (no stderr)' "$T/silent.err"; then
+  _pass "live-feedback-skill: a silent chezmoi failure reads (no stderr)"
+else _fail "live-feedback-skill: a silent chezmoi failure reads (no stderr)" "exit $rc: $(head -2 "$T/silent.err")"; fi
+
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
