@@ -5,12 +5,15 @@
 #
 # Usage: skill-updates.sh [--open-issues] [--externals PATH]
 #   PATH defaults to <script dir>/../.chezmoiexternal.toml. Only [".agents/skills/<name>"]
-#   entries are read. Owner, repo and the pinned SHA come from the archive URL; the pinned
+#   entries are read; any other header that mentions .agents/skills/ is an unparseable entry.
+#   gh runs from the script's own checkout (the script cds to its repository root), so
+#   --open-issues acts on the dotfiles remote whatever the caller's cwd, unless GH_REPO says
+#   otherwise. Owner, repo and the pinned SHA come from the archive URL; the pinned
 #   label is the `# vX` comment directly above `url`, else the first 7 characters of the SHA.
 #
 # CONTRACT: stdout carries ONLY one line per resolved skill:
 #   current: <name> <pinned label>
-#   update: <name> <pinned label> -> <new label> https://github.com/<o>/<r>/compare/<old>...<new>
+#   update: <name> <pinned label> → <new label> https://github.com/<o>/<r>/compare/<old>...<new>
 # Every diagnostic goes to stderr, prefixed `skill-updates: `. A skill that fails to resolve
 # or validate gets neither line; an error is never reported as `current:`.
 #
@@ -33,7 +36,8 @@ set -u
 
 log() { printf 'skill-updates: %s\n' "$*" >&2; }
 
-EXTERNALS="$(cd "$(dirname "$0")/.." && pwd)/.chezmoiexternal.toml"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+EXTERNALS="$REPO_ROOT/.chezmoiexternal.toml"
 OPEN_ISSUES=0
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -47,7 +51,9 @@ while [ $# -gt 0 ]; do
 done
 
 command -v gh >/dev/null 2>&1 || { log "gh not found on PATH"; exit 2; }
+case $EXTERNALS in /*) ;; *) EXTERNALS="$PWD/$EXTERNALS" ;; esac
 [ -f "$EXTERNALS" ] || { log "externals file not found: $EXTERNALS"; exit 2; }
+cd "$REPO_ROOT" || { log "cannot enter $REPO_ROOT"; exit 2; }
 
 ERRF=$(mktemp "${TMPDIR:-/tmp}/skill-updates.XXXXXX") || { log "cannot create a temp file"; exit 2; }
 trap 'rm -f "$ERRF"' EXIT
@@ -62,7 +68,7 @@ gh_get() {
 SHA_RE='^[0-9a-f]{40}$'
 URL_RE='^https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/archive/([0-9a-f]{40})\.tar\.gz$'
 valid_sha() { [[ $1 =~ $SHA_RE ]]; }
-valid_tag() { [ -n "$1" ] && [ "$1" != "null" ] && [[ $1 =~ ^[^[:space:]]+$ ]]; }
+valid_tag() { [ -n "$1" ] && [ "$1" != "null" ] && [[ $1 =~ ^[^[:space:]|]+$ ]]; }
 
 ERRORS=0
 ANY_UPDATE=0
@@ -119,10 +125,12 @@ ENTRIES=$(awk '
   function emit_missing() { if (name != "" && !done) printf "%s||\n", name }
   /^[ \t]*\[/ {
     emit_missing(); name = ""; done = 0; cmt = ""
-    if ($0 ~ /^[ \t]*\["\.agents\/skills\/[^"\/]+"\][ \t]*$/) {
+    if ($0 ~ /^\[".agents\/skills\/[A-Za-z0-9_.-]+"\][ \t]*$/) {
       s = $0
-      sub(/^[ \t]*\["\.agents\/skills\//, "", s); sub(/"\][ \t]*$/, "", s)
+      sub(/^\[".agents\/skills\//, "", s); sub(/"\][ \t]*$/, "", s)
       name = s
+    } else if (index($0, ".agents/skills/") > 0) {
+      b = $0; gsub(/\|/, "_", b); printf "!bad|%s|\n", b
     }
     next
   }
@@ -134,7 +142,6 @@ ENTRIES=$(awk '
     printf "%s|%s|%s\n", name, l, u
     done = 1; cmt = ""; next
   }
-  /^[ \t]*$/ { next }
   { cmt = "" }
   END { emit_missing() }
 ' "$EXTERNALS")
@@ -145,6 +152,9 @@ fi
 
 while IFS='|' read -r e_name e_label e_url; do
   [ -n "$e_name" ] || continue
+  if [ "$e_name" = "!bad" ]; then
+    log "unparseable entry header: $e_label"; ERRORS=1; continue
+  fi
   check_entry "$e_name" "$e_label" "$e_url"
 done <<EOF
 $ENTRIES

@@ -11,6 +11,7 @@ T=$(mktemp -d "${TMPDIR:-/tmp}/skill-updates.XXXXXX") || { echo "cannot create a
 BIN="$T/bin"; NOGH="$T/nogh"; CALLS="$T/calls.log"
 mkdir -p "$BIN" "$NOGH"
 trap 'rm -rf "$T"' EXIT
+PWDLOG="$T/gh-pwd.log"; export PWDLOG
 pass=0; fail=0; OUT=""; ERR=""; RC=0
 
 P=e27ceeff60368cf6966b4ea00a5b9b36418ee9a0
@@ -26,7 +27,7 @@ D=dddddddddddddddddddddddddddddddddddddddd   # the second repo's newer commit
 # An unconfigured call fails loudly (rc 99), so a missing fixture never reads as a pass.
 cat > "$BIN/gh" <<'STUB'
 #!/usr/bin/env bash
-echo "$*" >> "$CALLS"
+echo "$*" >> "$CALLS"; pwd > "$PWDLOG"
 key() { printf '%s' "$1" | tr 'a-z' 'A-Z' | tr -c 'A-Z0-9' '_'; }
 emit() {  # emit <OUT var> <RC var> <ERR var>
   local o=${!1-} r=${!2-99} e=${!3-stub: unconfigured call}
@@ -131,6 +132,11 @@ reset; rel clarity 'v1 beta' 0
 run "$(clarity)"
 rc_is 2 "release tag with whitespace: exit 2"
 
+reset; rel clarity 'v1|x' 0; com clarity 'v1|x' "$B"
+run "$(clarity)"
+rc_is 2 "release tag with a pipe: exit 2"
+out_is "" "release tag with a pipe: no stdout"
+
 reset; com clarity v0.2.1 null 0
 run "$(clarity)"
 rc_is 2 "commit lookup returns null: exit 2"
@@ -185,6 +191,14 @@ reset
 run '[".agents/skills/clarity"]
     type = "archive"
     # v0.2.1
+
+    url = "https://github.com/addyosmani/clarity/archive/'"$P"'.tar.gz"'
+out_is "current: clarity e27ceef" "a blank line between the tag comment and url resets the label"
+
+reset
+run '[".agents/skills/clarity"]
+    type = "archive"
+    # v0.2.1
     exact = true
     url = "https://github.com/addyosmani/clarity/archive/'"$P"'.tar.gz"'
 out_is "current: clarity e27ceef" "a tag comment must sit directly above url"
@@ -203,6 +217,21 @@ out_is "current: clarity v0.2.1" "entries outside .agents/skills are not read"
 rc_is 0 "foreign entry skipped: exit 0"
 
 reset
+run "$(clarity)
+[ \".agents/skills/spaced\" ]
+    url = \"https://github.com/o/spaced/archive/$P.tar.gz\""
+rc_is 2 "header with inner spaces is not silently dropped: exit 2"
+err_has "unparseable entry header" "spaced header: diagnostic"
+out_has "current: clarity" "spaced header: other entries are still checked"
+
+reset
+run "$(clarity)
+[\".agents/skills/noted\"] # note
+    url = \"https://github.com/o/noted/archive/$P.tar.gz\""
+rc_is 2 "header with a trailing comment is not silently dropped: exit 2"
+err_has "unparseable entry header" "commented header: diagnostic"
+
+reset
 run "# only a comment"
 rc_is 2 "zero entries: exit 2"
 
@@ -214,6 +243,16 @@ not_called "api" "unknown option made no gh call"
 reset
 OUT=$(CALLS="$CALLS" PATH="$BIN:$PATH" /bin/bash "$SCRIPT" --externals "$T/missing.toml" 2>"$T/err"); RC=$?; ERR=$(cat "$T/err")
 rc_is 2 "missing externals file: exit 2"
+
+echo "B0. working directory"
+reset
+mkdir -p "$T/elsewhere"; REPO_ROOT="$(cd "$(dirname "$SCRIPT")/.." && pwd)"
+printf '%s\n' "$(clarity)" > "$T/elsewhere/ext.toml"
+rm -f "$PWDLOG"; : > "$CALLS"
+OUT=$(cd "$T/elsewhere" && CALLS="$CALLS" PATH="$BIN:$PATH" /bin/bash "$SCRIPT" --externals ext.toml 2>"$T/err"); RC=$?; ERR=$(cat "$T/err")
+out_is "current: clarity v0.2.1" "relative --externals resolves against the caller's cwd"
+rc_is 0 "run from another directory: exit 0"
+if [ "$(cat "$PWDLOG" 2>/dev/null)" = "$REPO_ROOT" ]; then _pass "gh runs from the script's repository root"; else _fail "gh runs from the script's repository root"; fi
 
 echo "B. --open-issues"
 reset; rel clarity v0.3.0; com clarity v0.3.0 "$B"
@@ -286,6 +325,5 @@ run "$(clarity)" --open-issues
 rc_is 2 "only a failed lookup: exit 2"
 not_called "label" "failed lookup, no updates: no label call"
 
-echo
-echo "$pass/$((pass + fail)) passed"
+echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
