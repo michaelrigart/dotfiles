@@ -131,17 +131,33 @@ It prints one line per skill, either up to date or
 A failed lookup is never reported as up to date. `gh api` works sandboxed (measured
 2026-10-21), so Claude can run the script locally on request ("check skill updates").
 
+With `--open-issues`, the script also turns each update into an issue. All of the issue
+logic lives here, where the suite can test it:
+
+1. **Ensure the label.** `gh label create skill-update --force …` creates the label or
+   updates it in place. The repository has no such label today (checked 2026-10-21), and
+   `gh issue create --label` fails on a missing one.
+2. **Dedupe exactly.** It lists open issues labelled `skill-update` with
+   `gh issue list --json title`, with a `--limit` high enough to see them all, and compares
+   titles exactly. It does not use the search
+   API, which lags.
+3. **Open what's missing.** For each update with no open issue, `gh issue create` makes one
+   titled `Skill update: <name> <new tag>`. The body holds the compare URL and the checklist
+   from "Updating a skill" below.
+
+In this mode it exits 0 once every update has an open issue, and 2 if any lookup, label or
+issue call fails. A pending update is not a failure here, because the issue is the
+notification, so it does not fail the run every week.
+
 **The schedule: `.github/workflows/skill-updates.yml`.** This is the repository's first
 workflow.
 
 - **Triggers:** a weekly `schedule`, plus `workflow_dispatch`.
 - **Permissions:** `contents: read` and `issues: write`, nothing more.
 - **Steps:** `actions/checkout` pinned by commit SHA (`3d3c42e5…`, v7.0.1, with the tag in a
-  comment), then the script with `GH_TOKEN: ${{ github.token }}`.
-- **On exit 1:** for each update line, open an issue labelled `skill-update` titled
-  `Skill update: <name> <new tag>`, unless an open issue already has that title. The body
-  holds the compare URL and the checklist from "Updating a skill" below.
-- **On exit 2:** fail the run. GitHub emails the owner when a scheduled run fails.
+  comment), then `.scripts/skill-updates.sh --open-issues` with
+  `GH_TOKEN: ${{ github.token }}`. The YAML holds no other logic.
+- **On exit 2:** the run fails, and GitHub emails the owner when a scheduled run fails.
 
 **Why an issue rather than a PR (my call).** The bump is one line. The work is reading the
 diff, warming the cache and the cross-review, and that belongs in a session. An issue also
@@ -256,9 +272,20 @@ responses and covers these cases:
 - an unparseable entry: exit 2
 - two skills, one current and one not: exit 1, naming only the stale one
 
-The workflow's YAML gets static checks in the same suite: the permissions block is exactly
-`contents: read` and `issues: write`, every `uses:` is pinned to a 40-hex SHA, and the issue
-title is deduplicated against open issues.
+With `--open-issues`, the stub records every `gh` call:
+
+- an update with no label in the repository: `gh label create skill-update … --force` runs
+  before `gh issue create`, and the exit is 0
+- an open issue with the same title: no `gh issue create`
+- an open issue whose title differs only in the tag: a new issue is created
+- a failing label or issue call: exit 2
+- every pin current: no label or issue calls, exit 0
+
+The workflow's YAML gets static checks in the same suite:
+
+- the permissions block is exactly `contents: read` and `issues: write`
+- every `uses:` is pinned to a 40-hex SHA
+- its run step invokes `.scripts/skill-updates.sh --open-issues`
 
 **Existing suites and a cold cache.** `codex-config`, `claude-settings` and
 `live-feedback-skill` run `chezmoi managed` on the real source with stderr discarded. With a
