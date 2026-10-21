@@ -167,6 +167,7 @@ issue_body() {  # issue_body <name> <old label> <new label> <compare URL>
   printf '%s\n' '- [ ] On a branch, change the SHA and its tag comment in .chezmoiexternal.toml; put `Closes #<this issue>` in the commit message.'
   printf '%s\n' "- [ ] Warm chezmoi's cache outside the sandbox: \`command chezmoi --source <checkout> managed >/dev/null\`."
   printf '%s\n' "- [ ] Confirm \`command chezmoi --source <checkout> managed\` lists \`.agents/skills/$1/SKILL.md\`."
+  printf '%s\n' "- [ ] Confirm \`.scripts/skill-updates.sh\` prints \`current: $1 $3\`."
   printf '%s\n' '- [ ] After merge: `chezmoi apply`.'
 }
 

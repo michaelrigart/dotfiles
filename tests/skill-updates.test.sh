@@ -268,6 +268,7 @@ called "issue list --label skill-update --state open --limit 200 --json title --
 called "issue create --title Skill update: clarity v0.3.0 --label skill-update --body clarity has a newer upstream release: v0.2.1 → v0.3.0." "issue created with title, label and body"
 called "Compare: https://github.com/addyosmani/clarity/compare/$P...$B" "body carries the compare URL"
 called 'lists `.agents/skills/clarity/SKILL.md`' "body names the SKILL.md check"
+called 'prints `current: clarity v0.3.0`' "body names the current-label check"
 called 'put `Closes #<this issue>` in the commit message.' "body keeps the Closes placeholder"
 called 'After merge: `chezmoi apply`.' "body ends with the apply step"
 l=$(line_of "label create"); i=$(line_of "issue create")
