@@ -155,12 +155,52 @@ if [ -z "$names" ]; then
   _fail "entries in .chezmoiexternal.toml" "no [\".agents/skills/<name>\"] entry found"
 fi
 
-# mutate <name> <sed-script> — a copy of the production TOML, edited; prints its path
+# mutate <name> <sed-script> — a copy of the production TOML, edited; prints its path.
+# Fails (a FAIL case, not a silent pass) if the edit changed nothing.
 mutate() {
   local out
   out=$(mktemp "$T/mut.XXXXXX")
   sed "$2" "$TOML" > "$out"
+  if cmp -s "$TOML" "$out"; then echo "mutation changed nothing: $2" >&2; return 1; fi
   echo "$out"
+}
+
+# set_key <name> <key> <value> — a copy of the production TOML with <name>'s `key = …`
+# replaced by `key = <value>`, including a value that spans several lines (an array
+# continued until its closing bracket); prints its path. Fails if nothing changed.
+set_key() {
+  local out
+  out=$(mktemp "$T/mut.XXXXXX")
+  awk -v h="[\".agents/skills/$1\"]" -v key="$2" -v val="$3" '
+    /^\[/ { sec = ($0 == h); skip = 0 }
+    skip { if ($0 ~ /\]/) skip = 0; next }
+    sec && $0 ~ "^[[:space:]]*" key "[[:space:]]*=" {
+      print "    " key " = " val
+      if ($0 ~ /\[/ && $0 !~ /\]/) skip = 1
+      next
+    }
+    { print }
+  ' "$TOML" > "$out"
+  if cmp -s "$TOML" "$out"; then echo "set_key changed nothing: $2" >&2; return 1; fi
+  echo "$out"
+}
+
+# expect_static <label> <reason-regex> <toml> <name> — static_ok must fail, and its reason
+# must match the regex; failing for any other reason is a FAIL.
+expect_static() {
+  local label="$1" re="$2" r
+  if r=$(static_ok "$3" "$4"); then _fail "$label" "static_ok accepted it"
+  elif printf '%s' "$r" | grep -Eq "$re"; then _pass "$label"
+  else _fail "$label" "failed for the wrong reason: $r"; fi
+}
+
+# expect_behaviour <label> <reason-regex> <toml> <ignore> <symdir> <name> — behaviour_ok must
+# fail at the named check, not for an incidental reason such as an invalid TOML.
+expect_behaviour() {
+  local label="$1" re="$2" r
+  if r=$(behaviour_ok "$3" "$4" "$5" "$6"); then _fail "$label" "behaviour_ok accepted it"
+  elif printf '%s' "$r" | grep -Eq "$re"; then _pass "$label"
+  else _fail "$label" "failed for the wrong reason: $r"; fi
 }
 
 for name in $names; do
@@ -173,45 +213,44 @@ for name in $names; do
     _pass "$name: behaviour of the production entry"
   else _fail "$name: behaviour of the production entry" "$r"; fi
 
-  # negative, static
-  m=$(mutate "$name" 's|\(/archive/\)[0-9a-f]\{40\}\.tar\.gz|\1main.tar.gz|')
-  if static_ok "$m" "$name" >/dev/null; then _fail "$name: a branch URL must be rejected" "static_ok accepted it"
-  else _pass "$name: a branch URL is rejected"; fi
+  # negative, static: each must fail at its own field
+  if m=$(set_key "$name" type '"file"'); then
+    expect_static "$name: a non-archive type is rejected" '^type is' "$m" "$name"
+  else _fail "$name: a non-archive type is rejected" "could not build the mutation"; fi
 
-  m=$(mutate "$name" '/^[[:space:]]*url[[:space:]]*=/a\
+  if m=$(mutate "$name" 's|\(/archive/\)[0-9a-f]\{40\}\.tar\.gz|\1main.tar.gz|'); then
+    expect_static "$name: a branch URL is rejected" '^url is not' "$m" "$name"
+  else _fail "$name: a branch URL is rejected" "could not build the mutation"; fi
+
+  if m=$(mutate "$name" '/^[[:space:]]*url[[:space:]]*=/a\
     refreshPeriod = "168h"
-')
-  if static_ok "$m" "$name" >/dev/null; then _fail "$name: a refreshPeriod must be rejected" "static_ok accepted it"
-  else _pass "$name: a refreshPeriod is rejected"; fi
+'); then
+    expect_static "$name: a refreshPeriod is rejected" '^refreshPeriod is set' "$m" "$name"
+  else _fail "$name: a refreshPeriod is rejected" "could not build the mutation"; fi
 
-  # negative, behaviour
-  m=$(mutate "$name" 's|^\([[:space:]]*include[[:space:]]*=[[:space:]]*\).*|\1["*/LICENSE"]|')
-  if behaviour_ok "$m" "$IGNORE" "$SYMDIR" "$name" >/dev/null; then
-    _fail "$name: an incomplete include must be caught" "behaviour_ok accepted it"
-  else _pass "$name: an incomplete include is caught"; fi
+  # negative, behaviour: each must fail at its own check
+  if m=$(set_key "$name" include '["*/LICENSE"]'); then
+    expect_behaviour "$name: an incomplete include is caught" '^file set differs' "$m" "$IGNORE" "$SYMDIR" "$name"
+  else _fail "$name: an incomplete include is caught" "could not build the mutation"; fi
 
-  m=$(mutate "$name" 's|^\([[:space:]]*include[[:space:]]*=[[:space:]]*\).*|\1["**"]|')
-  if behaviour_ok "$m" "$IGNORE" "$SYMDIR" "$name" >/dev/null; then
-    _fail "$name: an overbroad include must be caught" "behaviour_ok accepted it"
-  else _pass "$name: an overbroad include is caught"; fi
+  if m=$(set_key "$name" include '["**"]'); then
+    expect_behaviour "$name: an overbroad include is caught" '^file set differs' "$m" "$IGNORE" "$SYMDIR" "$name"
+  else _fail "$name: an overbroad include is caught" "could not build the mutation"; fi
 
-  m=$(mutate "$name" '/^[[:space:]]*exact[[:space:]]*=/d')
-  if behaviour_ok "$m" "$IGNORE" "$SYMDIR" "$name" >/dev/null; then
-    _fail "$name: a missing exact = true must be caught" "behaviour_ok accepted it"
-  else _pass "$name: a missing exact = true is caught"; fi
+  if m=$(mutate "$name" '/^[[:space:]]*exact[[:space:]]*=/d'); then
+    expect_behaviour "$name: a missing exact = true is caught" '^stale file survived' "$m" "$IGNORE" "$SYMDIR" "$name"
+  else _fail "$name: a missing exact = true is caught" "could not build the mutation"; fi
 
   nosym=$(mktemp -d "$T/nosym.XXXXXX")
-  if behaviour_ok "$TOML" "$IGNORE" "$nosym" "$name" >/dev/null; then
-    _fail "$name: a missing symlink must be caught" "behaviour_ok accepted it"
-  else _pass "$name: a missing symlink is caught"; fi
+  expect_behaviour "$name: a missing symlink is caught" '^readlink ' "$TOML" "$IGNORE" "$nosym" "$name"
 
   noreinc=$(mktemp "$T/ignore.XXXXXX")
   grep -vxF "!.claude/skills/$name" "$IGNORE" > "$noreinc"
   if cmp -s "$IGNORE" "$noreinc"; then
-    _fail "$name: a missing re-include must be caught" "the production .chezmoiignore has no !.claude/skills/$name line to delete"
-  elif behaviour_ok "$TOML" "$noreinc" "$SYMDIR" "$name" >/dev/null; then
-    _fail "$name: a missing re-include must be caught" "behaviour_ok accepted it"
-  else _pass "$name: a missing re-include is caught"; fi
+    _fail "$name: a missing re-include is caught" "the production .chezmoiignore has no !.claude/skills/$name line to delete"
+  else
+    expect_behaviour "$name: a missing re-include is caught" '^readlink ' "$TOML" "$noreinc" "$SYMDIR" "$name"
+  fi
 done
 
 echo; echo "RESULT: $pass passed, $fail failed"
