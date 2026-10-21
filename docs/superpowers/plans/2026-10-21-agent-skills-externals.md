@@ -2,7 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** In progress on `feat/agent-skills`.
+**Status:** Implemented on `feat/agent-skills`. Do not run it again; the spec's Errata section
+records what review rounds changed after this plan was approved.
 
 **Goal:** Install Clarity for Claude Code and Codex as a pinned chezmoi archive external,
 and report new upstream releases as GitHub issues from a weekly workflow.

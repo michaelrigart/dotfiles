@@ -1,6 +1,6 @@
 # Third-party agent skills as pinned chezmoi externals
 
-**Status:** In progress on `feat/agent-skills`
+**Status:** Implemented on `feat/agent-skills` (no MR; dotfiles end at the pushed branch)
 **Date:** 2026-10-21
 **Branch:** `feat/agent-skills`
 
@@ -119,6 +119,10 @@ latest release:
   an annotated tag (Clarity's are annotated)
 - with no releases, it uses the default branch's HEAD
 
+*Erratum (implementation):* the script resolves the tag with `commits/<tag>`, which peels an
+annotated tag in one call (measured 2026-10-21: `v0.2.1` → `e27ceef…`), instead of
+`git/ref/tags/<tag>` plus a dereference.
+
 It prints one line per skill, either up to date or
 `update: <name> <pinned tag or short SHA> → <new tag or short SHA> <compare URL>`. It exits:
 
@@ -173,6 +177,10 @@ GitHub notifications. Claude sees it with `gh issue list --label skill-update`.
   activity. This repository is active, and a disabled workflow shows in the Actions tab.
 - A `.github/` directory in the source would be deployed to `~/.github`, so `.chezmoiignore`
   gets a `.github/` entry beside `.scripts/`.
+
+  *Erratum (final review):* chezmoi 2.73.3 never deploys a dot-prefixed source entry, so
+  `.github/` would not have reached `$HOME` anyway. The entry is kept for consistency with
+  `.scripts/`, and it does no harm.
 
 ### Updating a skill
 
@@ -330,3 +338,25 @@ These are the builder's to decide:
 - the weekly cron time
 - the issue body's wording
 - the exact AGENTS.md wording
+
+## Errata
+
+Changes made during implementation and review, after sign-off. The two inline errata above
+cover `commits/<tag>` and the `.github/` ignore entry.
+
+- **Stricter parsing in `skill-updates.sh`.**
+  - An entry header must be `[".agents/skills/<name>"]` at column 0, with a name made of
+    `[A-Za-z0-9_.-]`.
+  - Any other `[`-line naming `.agents/skills/` is an unparseable entry: a diagnostic, then
+    exit 2.
+  - The tag comment counts only directly above `url`, and only when it holds no `|`.
+  - A tag that contains `|` is rejected.
+- **`--open-issues` acts on its own checkout.** It resolves `--externals` to an absolute path,
+  then `cd`s to the script's repository before any `gh` call, so a run from another
+  repository never files issues there. `GH_REPO` still overrides.
+- **Cold-cache hint.** The three suites take chezmoi's first non-blank stderr line, falling
+  back to `(no stderr)`. `tests/run.sh` prints a suite's `INCONCLUSIVE:` lines, with their
+  indented continuations, under its `????` row; the verdict does not change.
+- **Bump confirmation.** After warming the cache, the bumper also confirms that
+  `.scripts/skill-updates.sh` prints `current: <name> <tag>`. This rules out a SHA that only
+  a fork serves. It appears in the issue checklist and in AGENTS.md.
