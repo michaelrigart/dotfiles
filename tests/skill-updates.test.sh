@@ -184,6 +184,11 @@ run "$(clarity '')"
 out_is "current: clarity e27ceef" "no tag comment: the pinned label is the 7-character SHA"
 
 reset
+run "$(clarity 'v1|x')"
+out_is "current: clarity e27ceef" "a tag comment containing a pipe is ignored, not a corrupt record"
+rc_is 0 "pipe in tag comment: exit 0"
+
+reset
 run "$(clarity 'some prose')"
 out_is "current: clarity e27ceef" "a comment that is not a tag is ignored"
 

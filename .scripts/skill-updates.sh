@@ -138,7 +138,7 @@ ENTRIES=$(awk '
   /^[ \t]*#/ { c = $0; sub(/^[ \t]*#[ \t]*/, "", c); sub(/[ \t]+$/, "", c); cmt = c; next }
   /^[ \t]*url[ \t]*=/ {
     u = $0; sub(/^[ \t]*url[ \t]*=[ \t]*"/, "", u); sub(/".*$/, "", u)
-    l = (cmt ~ /^v[0-9][^ \t]*$/) ? cmt : ""
+    l = (cmt ~ /^v[0-9][^ \t|]*$/) ? cmt : ""
     printf "%s|%s|%s\n", name, l, u
     done = 1; cmt = ""; next
   }
