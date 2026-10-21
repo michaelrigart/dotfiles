@@ -9,7 +9,8 @@
 #     local fixture tarball (`file://`), applied to a scratch destination with its own
 #     config, cache and state. The suite never applies the real https URL, so it needs no
 #     network and no warm cache.
-# Every check has a negative case that must fail.
+# Each check has a negative case that must fail at that check's own reason, except
+# siblings-survive: no single-entry mutation of the TOML exercises it, so it has none.
 #
 # Run: ./tests/agent-skills.test.sh   (sandboxed is fine)
 
@@ -155,33 +156,30 @@ if [ -z "$names" ]; then
   _fail "entries in .chezmoiexternal.toml" "no [\".agents/skills/<name>\"] entry found"
 fi
 
-# mutate <name> <sed-script> — a copy of the production TOML, edited; prints its path.
-# Fails (a FAIL case, not a silent pass) if the edit changed nothing.
-mutate() {
+# edit_entry <name> <op> <key> [value] — a copy of the production TOML with one edit made
+# inside <name>'s section only, so another entry is never touched. Prints the copy's path;
+# on failure prints the cause and returns 1, so a case can show it. Ops:
+#   set    replace `key = …` with `key = <value>`, consuming a multi-line array value
+#   delete drop `key = …` (and its continuation lines)
+#   after  insert `    <value>` as a new line after `key = …`
+# A multi-line array ends on the first line whose last non-blank character is `]`, ignoring
+# a trailing ` # comment`. The edit must change the file, or the case fails.
+edit_entry() {
   local out
   out=$(mktemp "$T/mut.XXXXXX")
-  sed "$2" "$TOML" > "$out"
-  if cmp -s "$TOML" "$out"; then echo "mutation changed nothing: $2" >&2; return 1; fi
-  echo "$out"
-}
-
-# set_key <name> <key> <value> — a copy of the production TOML with <name>'s `key = …`
-# replaced by `key = <value>`, including a value that spans several lines (an array
-# continued until its closing bracket); prints its path. Fails if nothing changed.
-set_key() {
-  local out
-  out=$(mktemp "$T/mut.XXXXXX")
-  awk -v h="[\".agents/skills/$1\"]" -v key="$2" -v val="$3" '
+  awk -v h="[\".agents/skills/$1\"]" -v op="$2" -v key="$3" -v val="${4-}" '
+    function closes(l) { sub(/[[:space:]]+#.*$/, "", l); sub(/[[:space:]]+$/, "", l); return l ~ /\]$/ }
     /^\[/ { sec = ($0 == h); skip = 0 }
-    skip { if ($0 ~ /\]/) skip = 0; next }
+    skip { if (closes($0)) skip = 0; next }
     sec && $0 ~ "^[[:space:]]*" key "[[:space:]]*=" {
-      print "    " key " = " val
-      if ($0 ~ /\[/ && $0 !~ /\]/) skip = 1
-      next
+      if ($0 ~ /=[[:space:]]*\[/ && !closes($0)) skip = 1
+      if (op == "set")   { print "    " key " = " val; next }
+      if (op == "delete") { next }
+      if (op == "after") { print; print "    " val; next }
     }
     { print }
   ' "$TOML" > "$out"
-  if cmp -s "$TOML" "$out"; then echo "set_key changed nothing: $2" >&2; return 1; fi
+  if cmp -s "$TOML" "$out"; then echo "edit_entry $2 $3 changed nothing in [$1]"; return 1; fi
   echo "$out"
 }
 
@@ -214,32 +212,31 @@ for name in $names; do
   else _fail "$name: behaviour of the production entry" "$r"; fi
 
   # negative, static: each must fail at its own field
-  if m=$(set_key "$name" type '"file"'); then
+  if m=$(edit_entry "$name" set type '"file"'); then
     expect_static "$name: a non-archive type is rejected" '^type is' "$m" "$name"
-  else _fail "$name: a non-archive type is rejected" "could not build the mutation"; fi
+  else _fail "$name: a non-archive type is rejected" "$m"; fi
 
-  if m=$(mutate "$name" 's|\(/archive/\)[0-9a-f]\{40\}\.tar\.gz|\1main.tar.gz|'); then
+  branch=$(get "$TOML" "$name" url | sed 's|/archive/[0-9a-f]\{40\}\.tar\.gz|/archive/main.tar.gz|')
+  if m=$(edit_entry "$name" set url "$branch"); then
     expect_static "$name: a branch URL is rejected" '^url is not' "$m" "$name"
-  else _fail "$name: a branch URL is rejected" "could not build the mutation"; fi
+  else _fail "$name: a branch URL is rejected" "$m"; fi
 
-  if m=$(mutate "$name" '/^[[:space:]]*url[[:space:]]*=/a\
-    refreshPeriod = "168h"
-'); then
+  if m=$(edit_entry "$name" after url 'refreshPeriod = "168h"'); then
     expect_static "$name: a refreshPeriod is rejected" '^refreshPeriod is set' "$m" "$name"
-  else _fail "$name: a refreshPeriod is rejected" "could not build the mutation"; fi
+  else _fail "$name: a refreshPeriod is rejected" "$m"; fi
 
   # negative, behaviour: each must fail at its own check
-  if m=$(set_key "$name" include '["*/LICENSE"]'); then
+  if m=$(edit_entry "$name" set include '["*/LICENSE"]'); then
     expect_behaviour "$name: an incomplete include is caught" '^file set differs' "$m" "$IGNORE" "$SYMDIR" "$name"
-  else _fail "$name: an incomplete include is caught" "could not build the mutation"; fi
+  else _fail "$name: an incomplete include is caught" "$m"; fi
 
-  if m=$(set_key "$name" include '["**"]'); then
+  if m=$(edit_entry "$name" set include '["**"]'); then
     expect_behaviour "$name: an overbroad include is caught" '^file set differs' "$m" "$IGNORE" "$SYMDIR" "$name"
-  else _fail "$name: an overbroad include is caught" "could not build the mutation"; fi
+  else _fail "$name: an overbroad include is caught" "$m"; fi
 
-  if m=$(mutate "$name" '/^[[:space:]]*exact[[:space:]]*=/d'); then
+  if m=$(edit_entry "$name" delete exact); then
     expect_behaviour "$name: a missing exact = true is caught" '^stale file survived' "$m" "$IGNORE" "$SYMDIR" "$name"
-  else _fail "$name: a missing exact = true is caught" "could not build the mutation"; fi
+  else _fail "$name: a missing exact = true is caught" "$m"; fi
 
   nosym=$(mktemp -d "$T/nosym.XXXXXX")
   expect_behaviour "$name: a missing symlink is caught" '^readlink ' "$TOML" "$IGNORE" "$nosym" "$name"
