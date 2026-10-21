@@ -332,6 +332,7 @@ not_called "label" "failed lookup, no updates: no label call"
 
 # Static checks on the weekly workflow.
 WF="$(dirname "$SCRIPT")/../.github/workflows/skill-updates.yml"
+: > "$CALLS"
 chk() { if [ "$1" = 0 ]; then _pass "$2"; else OUT=""; ERR=""; _fail "$2"; fi; }
 echo; echo "workflow: static checks"
 if [ -f "$WF" ]; then _pass "workflow exists"; else OUT=""; ERR=""; _fail "workflow exists"; WF=/dev/null; fi
@@ -342,6 +343,9 @@ bad=$(grep -E '^[[:space:]-]*uses:' "$WF" | grep -vcE '@[0-9a-f]{40}( |$)')
 grep -qE '^[[:space:]]+- cron: |^[[:space:]]+cron: ' "$WF" && grep -qE '^[[:space:]]*schedule:' "$WF"; chk $? "a schedule with a cron"
 grep -qE '^[[:space:]]*workflow_dispatch:' "$WF"; chk $? "workflow_dispatch trigger"
 grep -qE '^[[:space:]-]*run: \.scripts/skill-updates\.sh --open-issues$' "$WF"; chk $? "a run: invokes .scripts/skill-updates.sh --open-issues"
+[ "$(grep -cE '^[[:space:]]*permissions:' "$WF")" = 1 ]; chk $? "exactly one permissions: line (no job-level override)"
+grep -qxF '          GH_TOKEN: ${{ github.token }}' "$WF"; chk $? "run step env sets GH_TOKEN: github.token"
+grep -qxF '          GH_REPO: ${{ github.repository }}' "$WF"; chk $? "run step env sets GH_REPO: github.repository"
 grep -qE '^[[:space:]]*persist-credentials: false$' "$WF"; chk $? "checkout sets persist-credentials: false"
 
 echo; echo "RESULT: $pass passed, $fail failed"

@@ -41,7 +41,9 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
   Work here on a branch; a harness worktree reviews in this checkout's Codex pane.
 - `.scripts/` are ad-hoc helpers (`provision.sh`, `configure.sh`,
   `reconcile-agents.sh`, `preflight-ssh-agent.sh`), deliberately not `run_once_`
-  scripts: they change system settings and need interaction. `measure-interventions.py`
+  scripts: they change system settings and need interaction. The exception is
+  `skill-updates.sh`: non-interactive, run weekly by the `skill-updates` workflow.
+  `measure-interventions.py`
   sits beside them: the transcript metrics for the safe-autonomy evaluation. Mode `755`
   — git stores only the exec bit, so a clone yields 755, never 700.
 - `tests/` holds every test suite, one `<subject>.test.sh` per script under test. Same
