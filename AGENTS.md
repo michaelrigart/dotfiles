@@ -46,6 +46,14 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
   — git stores only the exec bit, so a clone yields 755, never 700.
 - `tests/` holds every test suite, one `<subject>.test.sh` per script under test. Same
   mode `755`, and the shebang is load-bearing — see Testing.
+- Third-party skills are pinned archive externals in `.chezmoiexternal.toml`, each with a
+  `symlink_` in `dot_claude/skills/` and a `.chezmoiignore` re-include.
+  `.scripts/skill-updates.sh`, run weekly by the `skill-updates` workflow, reports new
+  releases as `skill-update` issues. A bump reads the upstream diff first, changes the SHA
+  and its tag comment, then warms chezmoi's cache outside the sandbox
+  (`command chezmoi --source <checkout> managed >/dev/null`: sandboxed, Go's TLS fails).
+  Confirm afterwards that `command chezmoi --source <checkout> managed` lists
+  `.agents/skills/<name>/SKILL.md`. The commit message carries `Closes #<issue>`.
 - Permissions: `~/.ssh` 700, private keys 600, public keys 644, sensitive configs 600.
 - Brewfile: only tools actually in use. Add packages via
   `chezmoi edit ~/.config/homebrew/Brewfile`, then `chezmoi apply` and
@@ -69,6 +77,8 @@ dot_claude/  dot_codex/   # agent harness config: settings/config templates, hoo
 private_dot_ssh/          # SSH key templates (1Password)
 Library/…/Alfred/         # only the Relay snippet collection
 docs/superpowers/         # design records (tracked, ignored by chezmoi)
+.chezmoiexternal.toml     # pinned third-party skills (archive externals)
+.github/workflows/        # CI: the weekly skill-update check (ignored)
 ```
 
 ## Testing

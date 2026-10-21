@@ -330,5 +330,19 @@ run "$(clarity)" --open-issues
 rc_is 2 "only a failed lookup: exit 2"
 not_called "label" "failed lookup, no updates: no label call"
 
+# Static checks on the weekly workflow.
+WF="$(dirname "$SCRIPT")/../.github/workflows/skill-updates.yml"
+chk() { if [ "$1" = 0 ]; then _pass "$2"; else OUT=""; ERR=""; _fail "$2"; fi; }
+echo; echo "workflow: static checks"
+if [ -f "$WF" ]; then _pass "workflow exists"; else OUT=""; ERR=""; _fail "workflow exists"; WF=/dev/null; fi
+perms=$(awk '/^permissions:/{f=1;next} f&&/^[^ #]/{f=0} f&&NF' "$WF" | sed 's/^ *//' | sort | tr '\n' '|')
+[ "$perms" = "contents: read|issues: write|" ]; chk $? "permissions are exactly contents: read and issues: write"
+bad=$(grep -E '^[[:space:]-]*uses:' "$WF" | grep -vcE '@[0-9a-f]{40}( |$)')
+[ "$bad" = 0 ] && grep -qE '^[[:space:]-]*uses:' "$WF"; chk $? "every uses: is pinned to a 40-hex commit"
+grep -qE '^[[:space:]]+- cron: |^[[:space:]]+cron: ' "$WF" && grep -qE '^[[:space:]]*schedule:' "$WF"; chk $? "a schedule with a cron"
+grep -qE '^[[:space:]]*workflow_dispatch:' "$WF"; chk $? "workflow_dispatch trigger"
+grep -qE '^[[:space:]-]*run: \.scripts/skill-updates\.sh --open-issues$' "$WF"; chk $? "a run: invokes .scripts/skill-updates.sh --open-issues"
+grep -qE '^[[:space:]]*persist-credentials: false$' "$WF"; chk $? "checkout sets persist-credentials: false"
+
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
