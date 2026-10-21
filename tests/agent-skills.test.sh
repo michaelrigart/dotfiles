@@ -252,5 +252,36 @@ for name in $names; do
   fi
 done
 
+# --- cold external cache --------------------------------------------------------
+# A sandboxed `chezmoi managed` cannot download the pinned archive (OSStatus -26276), so the
+# three suites that read it must report INCONCLUSIVE (exit 2), not a missing target per file.
+echo "cold external cache: a failing chezmoi managed is inconclusive, not a regression"
+REAL_CHEZMOI="$(command -v chezmoi)"
+mkdir -p "$T/stub"
+cat > "$T/stub/chezmoi" <<STUB
+#!/usr/bin/env bash
+for a in "\$@"; do
+  if [ "\$a" = managed ]; then
+    echo 'chezmoi: Get "https://github.com/x/y/archive/0.tar.gz": tls: failed to verify certificate: x509: OSStatus -26276' >&2
+    exit 1
+  fi
+done
+exec "$REAL_CHEZMOI" "\$@"
+STUB
+chmod 755 "$T/stub/chezmoi"
+for suite in codex-config claude-settings live-feedback-skill; do
+  PATH="$T/stub:$PATH" "$SRC/tests/$suite.test.sh" >"$T/$suite.out" 2>"$T/$suite.err"
+  rc=$?
+  if [ "$rc" -eq 2 ]; then _pass "$suite: exits 2 on a failing chezmoi managed"
+  else _fail "$suite: exits 2 on a failing chezmoi managed" "exit $rc"; fi
+  if grep -qF 'INCONCLUSIVE: chezmoi managed failed: chezmoi: Get' "$T/$suite.err" \
+     && grep -qF "command chezmoi --source $SRC managed >/dev/null" "$T/$suite.err"; then
+    _pass "$suite: stderr names the cold cache and the warm-up command"
+  else _fail "$suite: stderr names the cold cache and the warm-up command" "$(head -3 "$T/$suite.err")"; fi
+  if grep -E 'FAIL:.*(chezmoi-managed|chezmoi manages)' "$T/$suite.out" >/dev/null; then
+    _fail "$suite: no per-target chezmoi-managed FAIL" "$(grep -E 'FAIL:.*(chezmoi-managed|chezmoi manages)' "$T/$suite.out" | head -2)"
+  else _pass "$suite: no per-target chezmoi-managed FAIL"; fi
+done
+
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

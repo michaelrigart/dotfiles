@@ -638,7 +638,11 @@ echo "X. every wired hook script is actually managed by chezmoi"
 # hook pointed at a file chezmoi never deployed. Derive the hook list from the emitted
 # settings rather than hardcoding it, so a future third hook is covered automatically.
 if command -v chezmoi >/dev/null 2>&1; then
-  managed=$(chezmoi --source "$SRC" managed 2>/dev/null)
+  MT="$(mktemp -d "${TMPDIR:-/tmp}/claude-settings.XXXXXX")"; trap 'rm -rf "$MT"' EXIT
+  if ! managed=$(chezmoi --source "$SRC" managed 2>"$MT/managed.err"); then
+    printf 'INCONCLUSIVE: chezmoi managed failed: %s\n  a cold external cache does this; warm it outside the sandbox: command chezmoi --source %s managed >/dev/null\n' "$(head -n1 "$MT/managed.err")" "$SRC" >&2
+    exit 2
+  fi
   hooks=$(printf '%s' "$OUT" | jq -r '[.hooks[]?[]?.hooks[]?.command] | .[]' \
              | grep -o '\.claude/[A-Za-z0-9._/-]*\.sh' | sort -u)
   # An empty $hooks would make the loop below assert nothing at all — a silent
