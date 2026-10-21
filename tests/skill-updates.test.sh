@@ -348,6 +348,8 @@ grep -qE '^[[:space:]-]*run: \.scripts/skill-updates\.sh --open-issues$' "$WF"; 
 grep -qxF '          GH_TOKEN: ${{ github.token }}' "$WF"; chk $? "run step env sets GH_TOKEN: github.token"
 grep -qxF '          GH_REPO: ${{ github.repository }}' "$WF"; chk $? "run step env sets GH_REPO: github.repository"
 grep -qE '^[[:space:]]*persist-credentials: false$' "$WF"; chk $? "checkout sets persist-credentials: false"
+conc=$(awk '/^concurrency:/{f=1;next} f&&/^[^ #]/{f=0} f&&NF' "$WF" | sed 's/^ *//' | sort | tr '\n' '|')
+[ "$conc" = "cancel-in-progress: false|group: skill-updates|" ]; chk $? "top-level concurrency: group skill-updates, cancel-in-progress false"
 
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

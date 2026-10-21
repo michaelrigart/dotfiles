@@ -9,6 +9,10 @@ permissions:
   contents: read
   issues: write
 
+concurrency:
+  group: skill-updates
+  cancel-in-progress: false
+
 jobs:
   check:
     runs-on: ubuntu-latest

@@ -360,3 +360,7 @@ cover `commits/<tag>` and the `.github/` ignore entry.
 - **Bump confirmation.** After warming the cache, the bumper also confirms that
   `.scripts/skill-updates.sh` prints `current: <name> <tag>`. This rules out a SHA that only
   a fork serves. It appears in the issue checklist and in AGENTS.md.
+- **Serialized runs.** The workflow has a top-level `concurrency` group (`skill-updates`,
+  `cancel-in-progress: false`). Without it, a manual dispatch that overlaps the scheduled run
+  could list issues before either run creates one, and both would file the same issue (from
+  the pre-merge review).
