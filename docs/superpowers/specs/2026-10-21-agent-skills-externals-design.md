@@ -26,10 +26,12 @@ instructions an agent follows, what gets installed should be content Michael has
 - Every machine gets the same reviewed commit. The skill changes only when a commit to this
   repository changes the pin.
 - Adding the next third-party skill repeats the same small pattern.
+- When a pinned skill has a newer upstream release, Michael is notified and Claude can see it
+  with `gh`, without the pin changing.
 
 ## Non-goals
 
-- An upstream-moved notice. Checking for updates stays manual.
+- Auto-bumping. Nothing edits the pin, pushes a branch or opens a PR on its own.
 - Repositories holding several skills, or a skill below the root. The pattern supports both
   through `include` and `stripComponents`, but nothing here needs them.
 - Clarity's optional `commands/clarity-*.md` shortcuts. `/clarity <mode>` covers them.
@@ -66,13 +68,16 @@ skill. One copy therefore serves both agents. It is also the layout `npx skills`
 ```toml
 [".agents/skills/clarity"]
     type = "archive"
+    # v0.2.1
     url = "https://github.com/addyosmani/clarity/archive/e27ceeff60368cf6966b4ea00a5b9b36418ee9a0.tar.gz"
     exact = true
     stripComponents = 1
     include = ["*/SKILL.md", "*/LICENSE", "*/references", "*/references/**", "*/scripts", "*/scripts/**"]
 ```
 
-- **Pin:** the URL names a full 40-character commit SHA. With `refreshPeriod` left at its
+- **Pin:** the URL names a full 40-character commit SHA: the commit of an upstream release
+  tag when upstream publishes releases (Clarity's `v0.2.1` is exactly `e27ceef`), with the
+  tag in a comment for people. With `refreshPeriod` left at its
   default (0), chezmoi downloads once and re-downloads only when the URL changes. No
   checksum: the commit SHA already fixes the content, and GitHub does not guarantee that a
   generated tarball stays byte-identical. (My call.)
@@ -103,19 +108,74 @@ ignores `.claude/skills/*` and re-includes skills one by one, so it needs
 `!.claude/skills/clarity` beside the existing `cross-review` and `live-feedback` entries.
 Otherwise chezmoi silently drops the link.
 
+### Update notices
+
+**The check: `.scripts/skill-updates.sh`** (mode 755, Bash 3.2). It reads
+`.chezmoiexternal.toml`, and for each `.agents/skills/<name>` archive entry takes
+`owner/repo` and the pinned SHA from the URL. It then asks GitHub through `gh api` for the
+latest release:
+
+- `releases/latest` gives the tag, and `git/ref/tags/<tag>` gives the commit, dereferencing
+  an annotated tag (Clarity's are annotated)
+- with no releases, it uses the default branch's HEAD
+
+It prints one line per skill, either up to date or
+`update: <name> <pinned tag or short SHA> → <new tag or short SHA> <compare URL>`. It exits:
+
+| Exit | Meaning |
+|---|---|
+| 0 | every skill is current |
+| 1 | at least one update exists |
+| 2 | something could not be checked (no `gh`, an API error, an unparseable entry) |
+
+A failed lookup is never reported as up to date. `gh api` works sandboxed (measured
+2026-10-21), so Claude can run the script locally on request ("check skill updates").
+
+**The schedule: `.github/workflows/skill-updates.yml`.** This is the repository's first
+workflow.
+
+- **Triggers:** a weekly `schedule`, plus `workflow_dispatch`.
+- **Permissions:** `contents: read` and `issues: write`, nothing more.
+- **Steps:** `actions/checkout` pinned by commit SHA (`3d3c42e5…`, v7.0.1, with the tag in a
+  comment), then the script with `GH_TOKEN: ${{ github.token }}`.
+- **On exit 1:** for each update line, open an issue labelled `skill-update` titled
+  `Skill update: <name> <new tag>`, unless an open issue already has that title. The body
+  holds the compare URL and the checklist from "Updating a skill" below.
+- **On exit 2:** fail the run. GitHub emails the owner when a scheduled run fails.
+
+**Why an issue rather than a PR (my call).** The bump is one line. The work is reading the
+diff, warming the cache and the cross-review, and that belongs in a session. An issue also
+needs only `issues: write`: no `contents: write`, and no "allow Actions to create pull
+requests" setting.
+
+**Who sees it.** Michael watches his own repository by default, so a new issue reaches his
+GitHub notifications. Claude sees it with `gh issue list --label skill-update`.
+
+**Two GitHub facts to live with:**
+
+- GitHub disables a public repository's scheduled workflows after 60 days with no repository
+  activity. This repository is active, and a disabled workflow shows in the Actions tab.
+- A `.github/` directory in the source would be deployed to `~/.github`, so `.chezmoiignore`
+  gets a `.github/` entry beside `.scripts/`.
+
 ### Updating a skill
 
-1. Read the upstream diff between the pinned SHA and the new one (GitHub compare). Pay
-   particular attention to `SKILL.md`, `references/` and every script.
-2. Change the SHA in `.chezmoiexternal.toml` in a commit on a branch, like any other change.
-3. Warm chezmoi's cache for the new URL outside the sandbox (see Sandbox and previews).
-4. After merge, Michael's `chezmoi apply` installs the new archive.
+1. A `skill-update` issue, or a local run of `.scripts/skill-updates.sh`, names the new
+   release and its compare URL.
+2. Read the upstream diff between the pinned SHA and the new one. Pay particular attention
+   to `SKILL.md`, `references/` and every script.
+3. Change the SHA and its tag comment in `.chezmoiexternal.toml` in a commit on a branch,
+   like any other change.
+4. Warm chezmoi's cache for the new URL outside the sandbox (see Sandbox and previews).
+5. The bump commit's message carries `Closes #<issue>`, so the issue closes when the commit
+   reaches `main`. After merge, Michael's `chezmoi apply` installs the new archive.
 
 AGENTS.md gets one Rules bullet for this. Third-party skills are pinned archive externals in
 `.chezmoiexternal.toml`, each with a `symlink_` in `dot_claude/skills/` and a
-`.chezmoiignore` re-include. A bump means reading the upstream diff first, then warming
-chezmoi's cache outside the sandbox (see below). The Layout block also lists
-`.chezmoiexternal.toml`.
+`.chezmoiignore` re-include. `.scripts/skill-updates.sh`, run weekly by the
+`skill-updates` workflow, reports new releases as `skill-update` issues. A bump means reading
+the upstream diff first, then warming chezmoi's cache outside the sandbox (see below). The
+Layout block also lists `.chezmoiexternal.toml` and `.github/workflows/`.
 
 ### Sandbox and previews
 
@@ -185,6 +245,21 @@ incomplete include (`["*/LICENSE"]`), an overbroad include (`["**"]`), `exact` r
 missing symlink and a missing re-include. Following the repository rule, the suite exits 2
 when `.chezmoiexternal.toml` is missing.
 
+**The update check.** `tests/skill-updates.test.sh` stubs `gh` on `PATH` with fixture
+responses and covers these cases:
+
+- a current pin: exit 0
+- a newer release: exit 1, with the compare URL
+- an annotated tag dereferenced to its commit
+- no releases: falls back to the default branch's HEAD
+- `gh` absent, a failing `gh` call, or garbage JSON: exit 2, never "up to date"
+- an unparseable entry: exit 2
+- two skills, one current and one not: exit 1, naming only the stale one
+
+The workflow's YAML gets static checks in the same suite: the permissions block is exactly
+`contents: read` and `issues: write`, every `uses:` is pinned to a 40-hex SHA, and the issue
+title is deduplicated against open issues.
+
 **Existing suites and a cold cache.** `codex-config`, `claude-settings` and
 `live-feedback-skill` run `chezmoi managed` on the real source with stderr discarded. With a
 cold cache, `managed` fails, its output is empty, and each suite reports every target as
@@ -201,6 +276,8 @@ After merge, Michael runs `chezmoi apply`. Then:
 - a new Claude Code session lists `clarity`
 - `codex debug prompt-input` lists `clarity` under the `~/.agents/skills` root (it needs the
   sandbox escape)
+- a manual `workflow_dispatch` run of `skill-updates` succeeds and opens no issue, because
+  `v0.2.1` is current
 
 ## Security notes
 
@@ -212,8 +289,17 @@ After merge, Michael runs `chezmoi apply`. Then:
 - The pin is the review point. Nothing reaches an agent without a commit here that changes
   the SHA.
 - The repository is public. It names only a public upstream and a commit SHA.
+- The workflow's token can read contents and write issues, nothing else. Its one action is
+  pinned by commit SHA. It never touches the pin.
 
 ## Left to the builder
 
-How the suite reads the TOML (a narrow parser for this file's simple shape is fine), how it
-builds its negative fixtures, and the exact AGENTS.md wording.
+These are the builder's to decide:
+
+- how the suites read the TOML (a narrow parser for this file's simple shape is fine, as
+  long as it ignores comments)
+- how they build their negative fixtures
+- how the script shows the pinned version (the tag comment, or a tag lookup)
+- the weekly cron time
+- the issue body's wording
+- the exact AGENTS.md wording
