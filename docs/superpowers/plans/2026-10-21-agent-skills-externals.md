@@ -262,19 +262,26 @@ cache warm-up.
   - **stdout:** one line per skill, `current: <name> <pinned label>` or
     `update: <name> <pinned label> → <new label> https://github.com/<o>/<r>/compare/<pinned sha>...<new sha>`.
   - **stderr:** diagnostics, prefixed `skill-updates: `.
+  - **Validation of every `gh` answer:** a commit must match `^[0-9a-f]{40}$`, and a tag
+    must be non-empty with no whitespace. Anything else (empty, `null`, a non-SHA string) is
+    an error for that skill, which then gets neither a `current:` nor an `update:` line.
   - **Exit, default mode:** 0 when everything is current, 1 when any update exists, 2 on any
-    error (no `gh`, a `gh` failure other than the 404 fallback, empty or garbage output, an
-    unparseable entry, zero entries, an unknown option). An error is never printed as
-    `current:`.
+    error (no `gh`, a `gh` failure other than the 404 fallback, an answer that fails
+    validation, an unparseable entry, zero entries, an unknown option). An error is never
+    printed as `current:`.
   - **`--open-issues`:** computes the same results, then for the updates:
     1. `gh label create skill-update --color 0E8A16 --description "A pinned agent skill has a newer upstream release" --force`
     2. `gh issue list --label skill-update --state open --limit 200 --json title --jq '.[].title'`
     3. for each update whose title `Skill update: <name> <new label>` is not in that list:
        `gh issue create --title <title> --label skill-update --body <body>`
 
-    It makes no label or issue calls when there are no updates. Exit: 0 when every update
-    has an open issue (or there are none), 2 if any lookup, label, list or create call
-    failed. It still files issues for the updates it could resolve.
+    It makes no label or issue calls when there are no updates. If the label or the list
+    call fails, it creates no issue at all, because without the existing titles it cannot
+    dedupe. It exits 2 in that case.
+
+    Exit: 0 when every update has an open issue (or there are none), 2 if any lookup,
+    label, list or create call failed. A failed lookup for one skill still lets issues be
+    filed for the skills it could resolve.
   - **The issue body**, with substitutions:
     ```
     <name> has a newer upstream release: <pinned label> → <new label>.
@@ -308,6 +315,9 @@ cache warm-up.
       `update: clarity v0.2.1 → ccccccc …`, exit 1
     - releases fail with `HTTP 502`: exit 2, and no `current:` line
     - `gh` returns empty stdout with exit 0: exit 2
+    - the commit lookup returns `null`, or `not-a-sha`, with exit 0: exit 2, and that skill
+      has no `current:` or `update:` line
+    - the release lookup returns `null` with exit 0: exit 2
     - `gh` absent from `PATH`: exit 2
     - an entry whose URL isn't a GitHub archive URL: exit 2
     - no tag comment: the pinned label is `e27ceef`
@@ -320,8 +330,11 @@ cache warm-up.
       `lists \`.agents/skills/clarity/SKILL.md\``; exit 0
     - an open issue `Skill update: clarity v0.3.0` exists: no `issue create`, exit 0
     - an open issue `Skill update: clarity v0.2.9` exists: `issue create` is called, exit 0
-    - `label create` fails: exit 2
+    - `label create` fails: exit 2, and no `issue create`
+    - `issue list` fails: exit 2, and no `issue create`
     - `issue create` fails: exit 2
+    - two entries, one update and one whose commit lookup returns `not-a-sha`: an issue is
+      created for the update only, exit 2
     - every pin current: no `label`/`issue` calls, exit 0
 
 - [ ] **Step 2: Run it and see it fail.** Run `./tests/skill-updates.test.sh`. Expected:
