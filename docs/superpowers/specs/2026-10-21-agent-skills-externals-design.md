@@ -108,39 +108,90 @@ Otherwise chezmoi silently drops the link.
 1. Read the upstream diff between the pinned SHA and the new one (GitHub compare). Pay
    particular attention to `SKILL.md`, `references/` and every script.
 2. Change the SHA in `.chezmoiexternal.toml` in a commit on a branch, like any other change.
-3. After merge, Michael's `chezmoi apply` downloads the new archive.
+3. Warm chezmoi's cache for the new URL outside the sandbox (see Sandbox and previews).
+4. After merge, Michael's `chezmoi apply` installs the new archive.
 
 AGENTS.md gets one Rules bullet for this. Third-party skills are pinned archive externals in
 `.chezmoiexternal.toml`, each with a `symlink_` in `dot_claude/skills/` and a
-`.chezmoiignore` re-include. A bump means reading the upstream diff first. The Layout block
-also lists `.chezmoiexternal.toml`.
+`.chezmoiignore` re-include. A bump means reading the upstream diff first, then warming
+chezmoi's cache outside the sandbox (see below). The Layout block also lists
+`.chezmoiexternal.toml`.
 
 ### Sandbox and previews
 
 chezmoi is a Go binary. In the agent sandbox its TLS verification fails with
-`OSStatus -26276`, because trustd is blocked and Go on macOS ignores `SSL_CERT_FILE`.
-`chezmoi apply --dry-run` therefore cannot download the external sandboxed. Agents preview
-everything else with `--exclude=externals`, and check the external offline (see Testing).
+`OSStatus -26276`, because trustd is blocked and Go on macOS ignores `SSL_CERT_FILE`. So
+chezmoi cannot download the archive sandboxed.
+
+**Every command that reads source state needs the archive.** Measured 2026-10-21 with an
+empty cache, `managed`, `ignored`, `cat`, `diff`, `status` and `apply --dry-run` all try the
+download first and fail sandboxed, with or without `--exclude=externals` and
+`--refresh-externals=never`. `execute-template` does not. With the archive cached, all of
+them work sandboxed and offline.
+
+**The cache is keyed by URL alone.** A file under `~/.cache/chezmoi/external/` is named by
+the URL's sha256, whatever the source directory. Michael's apply (the wrapper's fresh clone)
+and a sandboxed session reading the working tree therefore share one cache entry. In steady
+state the cache is warm:
+
+- on a fresh machine, provisioning's apply fills it
+- after a SHA bump, it is cold until something downloads the new URL outside the sandbox
+
+**After adding or bumping an external, warm the cache once.** Run
+`command chezmoi --source <checkout> managed >/dev/null` outside the sandbox. It
+downloads the archive into the cache and writes nothing else. The implementing branch does
+this once after adding the external. The AGENTS.md bullet records it for every later bump.
+
 Michael's apply runs unsandboxed. On a fresh machine Little Snitch may first ask about
 chezmoi reaching `github.com` and `codeload.github.com`.
 
 ## Testing
 
 A new offline suite, `tests/agent-skills.test.sh`, runs sandboxed with no network. For each
-`.agents/skills/<name>` entry in `.chezmoiexternal.toml`, it asserts:
+`.agents/skills/<name>` entry in `.chezmoiexternal.toml`, it checks what the entry does
+rather than which fields it has.
+
+**Static checks**, for what an apply cannot show:
 
 - `type = "archive"`, and the URL has the form
   `https://github.com/<owner>/<repo>/archive/<40-hex>.tar.gz`, so a branch or tag name is
   rejected
-- `exact = true` and `stripComponents = 1`, with no `refreshPeriod` (or 0)
-- `include` is present, so a whole repository never lands
-- `dot_claude/skills/symlink_<name>` exists and holds exactly `../../.agents/skills/<name>`
-- chezmoi itself treats `.claude/skills/<name>` as managed and not ignored, checked with
-  `--exclude=externals` so nothing is downloaded
+- no `refreshPeriod`, or 0
 
-Each assertion needs a negative case: a fixture with a branch URL, a missing symlink, a
-missing re-include and a missing `include`, each of which must fail. Following the repository
-rule, the suite also exits 2 when `.chezmoiexternal.toml` is missing.
+**Behaviour, through chezmoi.** chezmoi accepts a `file://` archive URL, sandboxed and offline
+(measured 2026-10-21). The suite copies the production entry, swaps only its `url` for a
+local fixture tarball, and applies it to a scratch destination with its own config, cache and
+state.
+
+- **The fixture** mirrors the pinned commit's top-level layout: a `<repo>-<sha>/` top
+  directory holding `SKILL.md`, `LICENSE`, `README.md`, `DESIGN.md`, `PRODUCT.md`,
+  `netlify.toml`, `skills.sh.json`, `.gitignore`, `.claude/`, `.github/`, `commands/`,
+  `evals/`, `references/`, `samples/`, `scripts/` and `site/`, each with at least one file.
+- **Exact file set:** the extracted copy is exactly `SKILL.md`, `LICENSE`, `references/…` and
+  `scripts/…`. A missing `SKILL.md` fails, and so does any stray site, sample, eval or command
+  file.
+- **Stale-file removal:** a file planted in the copy before a second apply is gone after it.
+- **Siblings survive:** a sentinel in `~/.agents/skills/basecamp/` and a real
+  `~/.claude/skills/cross-review/` are untouched.
+- **The link:** `~/.claude/skills/<name>` is a symlink holding exactly
+  `../../.agents/skills/<name>`, and it resolves to the extracted copy. The scratch source is
+  built from the real `.chezmoiignore` (which uses no template syntax) and the real
+  `dot_claude/skills/symlink_<name>`, so the apply proves both the link and its re-include.
+  The suite never reads the real source state with the real URL, so it does not depend on
+  the cache.
+
+Every check needs a negative case that must fail: a branch URL, a `refreshPeriod`, an
+incomplete include (`["*/LICENSE"]`), an overbroad include (`["**"]`), `exact` removed, a
+missing symlink and a missing re-include. Following the repository rule, the suite exits 2
+when `.chezmoiexternal.toml` is missing.
+
+**Existing suites and a cold cache.** `codex-config`, `claude-settings` and
+`live-feedback-skill` run `chezmoi managed` on the real source with stderr discarded. With a
+cold cache, `managed` fails, its output is empty, and each suite reports every target as
+missing from the allowlist: a false regression. Each of the three must instead treat a
+failing `chezmoi managed` as inconclusive. It prints chezmoi's first error line and the
+warm-cache command, and exits 2 rather than failing per target. Each change needs a test
+case that stubs a failing `chezmoi` on `PATH`.
 
 ## Rollout
 
