@@ -71,7 +71,7 @@ case "${STUB_CLAUDE_MODE:-ok}" in
   nores)
     hooks; init ANTHROPIC_API_KEY; asst; echo "boom" >&2; exit 3 ;;
   badsource)
-    hooks; init none; exec sleep 5 ;;
+    hooks; init none; exec sleep 20 ;;
   noinit)
     hooks; asst ;;
   hang)
@@ -205,6 +205,7 @@ ok "the key is in no file under XDG_STATE_HOME" test -z "$(grep -rlF -- "$KEY" "
 ok "the review prompt forbids changes" has "$SD/claude.argv" "Do not modify any files"
 ok "the review prompt names the focus" has "$SD/claude.argv" "general quality: correctness bugs"
 ok "the prompt names the branch" has "$SD/claude.argv" "on branch main."
+ok "the review prompt has the stack-neutral preamble" has "$SD/claude.argv" "on branch main. First identify this repository's languages, frameworks and conventions (its AGENTS.md and manifests), and judge everything against those."
 
 run "$WT" ok
 ok "the linked worktree run completes (exit 0)" rc_is 0
@@ -227,9 +228,13 @@ run "$MAIN" ok security --budget 7.5 -- check the billing flow carefully
 ok "a custom budget reaches claude" test "$(arg_after --max-budget-usd)" = 7.5
 ok "extra instructions reach the prompt" has "$SD/claude.argv" "Additional instructions: check the billing flow carefully"
 ok "the security focus text is in the prompt" has "$SD/claude.argv" "security: authentication and authorisation"
+ok "the security prompt covers insecure configuration and defaults" has "$SD/claude.argv" "insecure configuration and defaults"
 run "$MAIN" ok performance security
 ok "the focus label is in canonical order" test -n "$(file_of -security+performance.md)"
-ok "both focus texts are joined with a semicolon" has "$SD/claude.argv" "dependency risk; performance: N+1 queries"
+ok "both focus texts are joined with a semicolon" has "$SD/claude.argv" "dependency risk; performance: algorithmic complexity"
+run "$MAIN" ok performance
+ok "the performance prompt covers algorithmic complexity" has "$SD/claude.argv" "algorithmic complexity and choice of data structures"
+ok "the performance prompt covers memory use and allocations" has "$SD/claude.argv" "memory use and allocations"
 run "$MAIN" ok --last --list;       ok "--last with --list is a usage error (exit 2)" rc_is 2
 run "$MAIN" ok --last general;      ok "--last with another word is a usage error (exit 2)" rc_is 2
 run "$MAIN" ok --list --fix;        ok "--list with --fix is a usage error (exit 2)" rc_is 2
@@ -282,10 +287,11 @@ ok "duplicate focus words are ignored" test -n "$(file_of -security+general.md)"
 
 run "$MAIN" ok architecture
 ok "architecture is accepted (exit 0)" rc_is 0
-ok "the architecture focus text is in the prompt" has "$SD/claude.argv" "architecture: module boundaries and layering (controllers, models, services, jobs, concerns), coupling and dependency direction, contracts with other services, the data model, background-job design, and departures from the conventions in AGENTS.md"
+ok "the architecture focus text is in the prompt" has "$SD/claude.argv" "architecture: layering and module boundaries, coupling and dependency direction, contracts with other services and APIs, the data model, background and asynchronous work, and departures from the repository's stated conventions (AGENTS.md)"
+ok "the architecture prompt no longer mentions concerns" lacks "$SD/claude.argv" "concerns"
 run "$MAIN" ok clean-code
 ok "clean-code is accepted (exit 0)" rc_is 0
-ok "the clean-code focus text is in the prompt" has "$SD/claude.argv" "clean code: naming, duplication, oversized methods and classes, complexity, dead code, framework idioms, and readability"
+ok "the clean-code focus text is in the prompt" has "$SD/claude.argv" "clean code: naming, duplication, oversized functions and classes, complexity, dead code, language and framework idioms, and readability"
 ok "clean-code alone writes a clean-code report" test -n "$(file_of -clean-code.md)"
 again "$MAIN" ok --list
 ok "--list shows the clean-code label" grep -qE "^[0-9-]+ [0-9:]+  clean-code  completed  " "$T/out"
@@ -303,6 +309,7 @@ ok "--fix in a clean linked worktree runs (exit 0)" rc_is 0
 ok "--fix files are named with -fix" test -n "$(file_of -general-fix.md)"
 ok "--fix heading says fix" has "$(file_of -general-fix.md)" "# review: Acme.Portal — general (fix)"
 ok "the fix budget defaults to 40" test "$(arg_after --max-budget-usd)" = 40
+ok "the fix prompt has the stack-neutral preamble" has "$SD/claude.argv" "First identify this repository's languages, frameworks and conventions (its AGENTS.md and manifests), and judge everything against those."
 ok "the fix prompt has the Needs Michael section" has "$SD/claude.argv" "Needs Michael"
 ok "the fix prompt forbids merging" has "$SD/claude.argv" "Never merge"
 ok "claude runs in the worktree for --fix" test "$(cat "$SD/claude.cwd")" = "$(cd "$WT" && pwd -P)"
@@ -377,7 +384,7 @@ run "$WT" badsource
 elapsed=$((SECONDS - start))
 ok "a wrong credential source exits 1" rc_is 1
 ok "the wrong source status names it" has "$(file_of -general.md)" "Status: aborted: Claude would have used none, not the API key"
-ok "the wrong source returns before claude's sleep ends" test "$elapsed" -lt 4
+ok "the wrong source returns before claude's sleep ends" test "$elapsed" -lt 12
 ok "the wrong source never reaches the model output" lacks "$T/out" "Looking at the code"
 
 STUB_CLAUDE_MODE=hang

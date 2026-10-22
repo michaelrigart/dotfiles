@@ -68,10 +68,10 @@ if [ -z "$budget" ]; then if [ "$fix" = 1 ]; then budget=40; else budget=20; fi;
 
 label=""; focus=""
 add_focus() { label=${label:+$label+}$1; focus=${focus:+$focus; }$2; }
-[ "$want_s" = 1 ] && add_focus security "security: authentication and authorisation, injection (SQL, command, template), secrets handling, unsafe deserialisation, mass assignment, data exposure, dependency risk"
-[ "$want_p" = 1 ] && add_focus performance "performance: N+1 queries, missing indexes, unbounded queries and loops, slow request paths, caching, memory use"
-[ "$want_a" = 1 ] && add_focus architecture "architecture: module boundaries and layering (controllers, models, services, jobs, concerns), coupling and dependency direction, contracts with other services, the data model, background-job design, and departures from the conventions in AGENTS.md"
-[ "$want_c" = 1 ] && add_focus clean-code "clean code: naming, duplication, oversized methods and classes, complexity, dead code, framework idioms, and readability"
+[ "$want_s" = 1 ] && add_focus security "security: authentication and authorisation, injection (SQL, command, template, path), secrets handling, unsafe deserialisation, over-permissive input binding (e.g. mass assignment), data exposure, insecure configuration and defaults, overly broad permissions, dependency risk"
+[ "$want_p" = 1 ] && add_focus performance "performance: algorithmic complexity and choice of data structures, hot loops and repeated work, inefficient data access (e.g. N+1 queries, missing indexes, unbounded queries), I/O and network round-trips, blocking work on request paths, concurrency and contention, caching, memory use and allocations"
+[ "$want_a" = 1 ] && add_focus architecture "architecture: layering and module boundaries, coupling and dependency direction, contracts with other services and APIs, the data model, background and asynchronous work, and departures from the repository's stated conventions (AGENTS.md)"
+[ "$want_c" = 1 ] && add_focus clean-code "clean code: naming, duplication, oversized functions and classes, complexity, dead code, language and framework idioms, and readability"
 [ "$want_u" = 1 ] && add_focus ui "UI and UX, judged from the code because you cannot see the screen: accessibility (labels, alt text, ARIA, colour-only cues, focus and keyboard), consistency of components and styles, missing empty, loading and error states, form validation feedback, responsive layout, and copy"
 [ "$want_g" = 1 ] && add_focus general "general quality: correctness bugs, error handling, maintainability, dead code, test gaps, and concrete improvements"
 
@@ -141,7 +141,7 @@ if ! (set -C; : > "$base.jsonl" && : > "$base.log" && : > "$base.err") 2>/dev/nu
   unset key; rm -f "$base.md"; refuse "cannot create the output files for $base"
 fi
 
-preamble="You are running unattended, started by the review command: nobody can answer questions or permission prompts, so never ask; decide, and record your decisions in your final message. Work in $top on branch ${branch:-(detached HEAD)}."
+preamble="You are running unattended, started by the review command: nobody can answer questions or permission prompts, so never ask; decide, and record your decisions in your final message. Work in $top on branch ${branch:-(detached HEAD)}. First identify this repository's languages, frameworks and conventions (its AGENTS.md and manifests), and judge everything against those."
 if [ "$fix" = 1 ]; then
   body=$(cat <<EOF
 Review this repository for $focus, then fix the findings on this branch, following the workflow in your global instructions as for an approved task, with these overrides because nobody is present:
