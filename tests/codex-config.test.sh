@@ -220,7 +220,10 @@ else
 fi
 
 echo "J. every Codex integration target is managed by chezmoi"
-managed=$(chezmoi --config "$CFG" --config-format toml --persistent-state "$STATE" --source "$SRC" --destination "$HOME" managed 2>/dev/null)
+if ! managed=$(chezmoi --config "$CFG" --config-format toml --persistent-state "$STATE" --source "$SRC" --destination "$HOME" managed 2>"$T/managed.err"); then
+  printf 'INCONCLUSIVE: chezmoi managed failed: %s\n  a cold external cache does this; warm it outside the sandbox: command chezmoi --source %s managed >/dev/null\n' "$(awk 'NF { print; exit }' "$T/managed.err" | grep . || echo '(no stderr)')" "$SRC" >&2
+  exit 2
+fi
 for target in .codex/config.toml .codex/herdr-agent-state.sh .codex/hooks.json .codex/herdr-codex-pane-map.py; do
   case "$managed" in
     *"$target"*) _pass "$target is chezmoi-managed" ;;

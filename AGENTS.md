@@ -41,11 +41,23 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
   Work here on a branch; a harness worktree reviews in this checkout's Codex pane.
 - `.scripts/` are ad-hoc helpers (`provision.sh`, `configure.sh`,
   `reconcile-agents.sh`, `preflight-ssh-agent.sh`), deliberately not `run_once_`
-  scripts: they change system settings and need interaction. `measure-interventions.py`
-  sits beside them: the transcript metrics for the safe-autonomy evaluation. Mode `755`
-  — git stores only the exec bit, so a clone yields 755, never 700.
+  scripts: they change system settings and need interaction.
+  `measure-interventions.py` sits beside them: the transcript metrics for the
+  safe-autonomy evaluation. `skill-updates.sh` is non-interactive too and runs weekly in
+  the `skill-updates` workflow. Mode `755` — git stores only the exec bit, so a clone
+  yields 755, never 700.
 - `tests/` holds every test suite, one `<subject>.test.sh` per script under test. Same
   mode `755`, and the shebang is load-bearing — see Testing.
+- Third-party skills are pinned archive externals in `.chezmoiexternal.toml`, each with a
+  `symlink_` in `dot_claude/skills/` and a `.chezmoiignore` re-include.
+  `.scripts/skill-updates.sh`, run weekly by the `skill-updates` workflow, reports new
+  releases as `skill-update` issues. A bump reads the upstream diff first, changes the SHA
+  and its tag comment, then warms chezmoi's cache outside the sandbox
+  (`command chezmoi --source <checkout> managed >/dev/null`: sandboxed, Go's TLS fails).
+  Confirm afterwards that `command chezmoi --source <checkout> managed` lists
+  `.agents/skills/<name>/SKILL.md`, and that `.scripts/skill-updates.sh` prints
+  `current: <name> <tag>` (a SHA that exists only in a fork still downloads). The commit
+  message carries `Closes #<issue>`.
 - Permissions: `~/.ssh` 700, private keys 600, public keys 644, sensitive configs 600.
 - Brewfile: only tools actually in use. Add packages via
   `chezmoi edit ~/.config/homebrew/Brewfile`, then `chezmoi apply` and
@@ -61,6 +73,7 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
 ```
 .chezmoi.toml.tmpl        # chezmoi's own config; must stay at the source root
 .chezmoiignore            # what never reaches $HOME (see Rules)
+.chezmoiexternal.toml     # pinned third-party skills (archive externals)
 .chezmoitemplates/agents/ # the agent instruction fragments: global.md, claude-code.md (never deployed)
 .scripts/                 # provisioning helpers (ignored)
 tests/                    # test suites, `./tests/run.sh` runs them (ignored)
@@ -69,6 +82,7 @@ dot_claude/  dot_codex/   # agent harness config: settings/config templates, hoo
 private_dot_ssh/          # SSH key templates (1Password)
 Library/…/Alfred/         # only the Relay snippet collection
 docs/superpowers/         # design records (tracked, ignored by chezmoi)
+.github/workflows/        # CI: the weekly skill-update check (ignored)
 ```
 
 ## Testing
@@ -130,6 +144,11 @@ on "map has no entry for key stdin", and its empty-input fixture is `''`, not `'
 because that file is TOML. `herdr-phase` stubs `herdr` and `glab` on `PATH`; the script it
 tests is not runnable sandboxed, since `phase.sh` wraps `herdr` and fails silently when the
 socket is denied.
+
+While chezmoi's external cache is cold (after adding or bumping an external, before the
+warm-up), `codex-config`, `claude-settings` and `live-feedback-skill` exit 2 with an
+`INCONCLUSIVE:` line and the warm-up command, and `run.sh` shows it under their `????` row.
+That is not a regression.
 
 A suite whose subject has moved must fail loudly, not silently pass: each one checks its
 target exists and exits 2 if not. Keep that when adding suites — a guard test whose guard

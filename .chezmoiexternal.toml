@@ -1,0 +1,7 @@
+[".agents/skills/clarity"]
+    type = "archive"
+    # v0.2.1
+    url = "https://github.com/addyosmani/clarity/archive/e27ceeff60368cf6966b4ea00a5b9b36418ee9a0.tar.gz"
+    exact = true
+    stripComponents = 1
+    include = ["*/SKILL.md", "*/LICENSE", "*/references", "*/references/**", "*/scripts", "*/scripts/**"]
