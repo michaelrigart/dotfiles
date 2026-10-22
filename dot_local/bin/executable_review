@@ -1,0 +1,269 @@
+#!/usr/bin/env bash
+# review [security] [performance] [general] [--fix] [--budget USD] [-h|--help] [-- extra instructions...]
+# review --last | --list
+#
+# Runs a headless Claude Code session (claude -p) in the current git repository, billed to a
+# Console API key (monthly API credits) instead of the Max subscription. Plain, it reviews and
+# writes a report; --fix also fixes the findings on the current wt worktree branch and follows
+# the normal workflow (Codex cross-review, push, Draft MR). One key serves every repository:
+# it is read from 1Password (REVIEW_OP_REF, default op://Private/cc-review-api-key/credential)
+# and reaches claude only through its environment: never argv, never a file. The stream is
+# checked for the credential claude reports at init and the run is aborted unless it is the
+# API key. Output lands in ${XDG_STATE_HOME:-~/.local/state}/review/<repo slug>/<stamp>-<label>.{md,log,jsonl,err};
+# --last prints the newest report's path and --list lists them (neither needs op or claude).
+# A claude that ignores TERM is killed after REVIEW_KILL_GRACE seconds (default 10).
+# Exit 0 completed, 1 stopped/incomplete/aborted/interrupted/key failure, 2 usage or refusal.
+# Compatible with macOS /bin/bash 3.2.
+set -uo pipefail
+LC_NUMERIC=C
+
+usage() {
+  cat <<'EOF'
+usage: review [security] [performance] [general] [--fix] [--budget USD] [-h|--help] [-- extra instructions...]
+       review --last | --list
+
+  security | performance | general   what to review (any combination, default general)
+  --fix          review, then fix on this branch, cross-review, push and open a Draft MR
+                 (only from a clean wt worktree on a feature branch)
+  --budget USD   spending cap for the session (default 20, or 40 with --fix)
+  --             everything after it is added to the prompt as extra instructions
+  --last         print the path of the newest report for this repository
+  --list         list this repository's reports, newest first, with status and cost
+                 (--last and --list take no other argument)
+EOF
+}
+usage_err() { printf 'review: %s\n' "$1" >&2; usage >&2; exit 2; }
+refuse() { printf 'review: %s\n' "$1" >&2; exit 2; }
+
+argc=$#; want_s=0; want_p=0; want_g=0; fix=0; last=0; list=0; help=0; budget=""; extra=""
+while [ "$#" -gt 0 ]; do
+  case $1 in
+    security) want_s=1 ;;
+    performance) want_p=1 ;;
+    general) want_g=1 ;;
+    --fix) fix=1 ;;
+    --last) last=1 ;;
+    --list) list=1 ;;
+    --budget)
+      [ "$#" -ge 2 ] || usage_err "--budget needs a value"
+      budget=$2; shift
+      [[ $budget =~ ^[0-9]+(\.[0-9]+)?$ ]] || usage_err "bad budget: $budget"
+      awk -v b="$budget" 'BEGIN { exit !(b > 0) }' || usage_err "bad budget: $budget" ;;
+    -h|--help) help=1 ;;
+    --) shift; extra="$*"; break ;;
+    *) usage_err "unknown argument: $1" ;;
+  esac
+  shift
+done
+if [ "$((last + list))" -gt 0 ] && [ "$argc" -ne 1 ]; then usage_err "--last and --list take no other argument"; fi
+if [ "$help" = 1 ]; then usage; exit 0; fi
+grace=${REVIEW_KILL_GRACE:-10}
+[[ $grace =~ ^[1-9][0-9]*$ ]] || refuse "REVIEW_KILL_GRACE must be a positive integer, not: $grace"
+[ "$((want_s + want_p + want_g))" -gt 0 ] || want_g=1
+if [ -z "$budget" ]; then if [ "$fix" = 1 ]; then budget=40; else budget=20; fi; fi
+
+label=""; focus=""
+add_focus() { label=${label:+$label+}$1; focus=${focus:+$focus; }$2; }
+[ "$want_s" = 1 ] && add_focus security "security: authentication and authorisation, injection (SQL, command, template), secrets handling, unsafe deserialisation, mass assignment, data exposure, dependency risk"
+[ "$want_p" = 1 ] && add_focus performance "performance: N+1 queries, missing indexes, unbounded queries and loops, slow request paths, caching, memory use"
+[ "$want_g" = 1 ] && add_focus general "general quality: correctness bugs, error handling, maintainability, dead code, test gaps, and concrete improvements"
+
+top=$(git rev-parse --show-toplevel 2>/dev/null) || top=""
+[ -n "$top" ] || refuse "not inside a git work tree"
+common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || refuse "cannot resolve the git directory"
+gitdir=$(git rev-parse --path-format=absolute --git-dir 2>/dev/null) || refuse "cannot resolve the git directory"
+case $common in
+  */.git) main=${common%/.git} ;;
+  *) refuse "cannot find the main repository directory from $common" ;;
+esac
+name=${main##*/}
+slug=$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]' | sed -e 's/[^a-z0-9][^a-z0-9]*/-/g' -e 's/^-//' -e 's/-$//')
+[ -n "$slug" ] || refuse "cannot derive a repository slug from $name"
+dir="${XDG_STATE_HOME:-$HOME/.local/state}/review/$slug"
+
+if [ "$((last + list))" -gt 0 ]; then
+  reports=()
+  for f in "$dir"/*.md; do [ -f "$f" ] && reports+=("$f"); done
+  if [ "${#reports[@]}" -eq 0 ]; then echo "review: no reports for $name" >&2; exit 1; fi
+  if [ "$last" = 1 ]; then printf '%s\n' "${reports[$((${#reports[@]} - 1))]}"; exit 0; fi
+  field() { v=$(sed -n "s/^- $2: //p" "$1" | head -n 1); printf '%s' "${v:-?}"; }
+  for ((i = ${#reports[@]} - 1; i >= 0; i--)); do
+    f=${reports[$i]}; b=${f##*/}; b=${b%.md}
+    printf '%s %s:%s:%s  %s  %s  %s  %s\n' "${b:0:10}" "${b:11:2}" "${b:13:2}" "${b:15:2}" "${b:18}" \
+      "$(field "$f" Status)" "$(field "$f" Cost)" "$f"
+  done
+  exit 0
+fi
+
+if git symbolic-ref -q HEAD >/dev/null 2>&1; then branch=$(git symbolic-ref -q --short HEAD); else branch=""; fi
+sha=$(git rev-parse --short HEAD 2>/dev/null) || sha="none"
+
+if [ "$fix" = 1 ]; then
+  [ "$gitdir" != "$common" ] || refuse "--fix does not run in the main checkout; run it from a wt worktree"
+  [ -n "$branch" ] || refuse "--fix does not run on a detached HEAD"
+  dflt=$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null) && dflt=${dflt#origin/} || dflt=""
+  if [ "$branch" = main ] || [ "$branch" = master ] || { [ -n "$dflt" ] && [ "$branch" = "$dflt" ]; }; then
+    refuse "--fix does not run on the default branch ($branch); use a feature branch"
+  fi
+  dirty=$(git status --porcelain --untracked-files=all --ignore-submodules=none 2>/dev/null) || refuse "git status failed; cannot tell whether the work tree is clean"
+  [ -z "$dirty" ] || refuse "--fix needs a clean work tree; commit or stash first"
+fi
+
+for c in claude op jq; do
+  command -v "$c" >/dev/null 2>&1 || refuse "$c not found on PATH"
+done
+
+ref="${REVIEW_OP_REF:-op://Private/cc-review-api-key/credential}"
+key=$(op read "$ref") || key=""
+if [ -z "$key" ]; then echo "review: could not read the API key from $ref" >&2; exit 1; fi
+
+umask 077
+mkdir -p "$dir" || { unset key; refuse "cannot create $dir"; }
+flabel=$label; [ "$fix" = 1 ] && flabel=$label-fix
+# Claim the report with noclobber so a run in the same second (another worktree) cannot share its base.
+tries=0
+while :; do
+  stamp=$(date +%Y-%m-%d-%H%M%S)
+  base="$dir/$stamp-$flabel"
+  (set -C; : > "$base.md") 2>/dev/null && break
+  tries=$((tries + 1))
+  [ "$tries" -lt 5 ] || { unset key; refuse "cannot claim a report file in $dir"; }
+  sleep 1
+done
+if ! (set -C; : > "$base.jsonl" && : > "$base.log" && : > "$base.err") 2>/dev/null; then
+  unset key; rm -f "$base.md"; refuse "cannot create the output files for $base"
+fi
+
+preamble="You are running unattended, started by the review command: nobody can answer questions or permission prompts, so never ask; decide, and record your decisions in your final message. Work in $top on branch ${branch:-(detached HEAD)}."
+if [ "$fix" = 1 ]; then
+  body=$(cat <<EOF
+Review this repository for $focus, then fix the findings on this branch, following the workflow in your global instructions as for an approved task, with these overrides because nobody is present:
+- The findings are the approved brief: skip brainstorming, spec sign-off and plan documents, and do not ask questions.
+- Fix only findings you can verify with the repository's own tests and linters. Skip any finding that changes behaviour users rely on, a public API or the database schema, or that needs a design decision, and list it under "Needs Michael" with the reason.
+- One commit per finding; run the relevant tests and linters before each commit.
+- Run the pre-merge cross-review with Codex and resolve its findings until it converges; record rulings in the merge request.
+- If the Codex pane cannot be reached, stop after committing: do not push, and say so.
+- Otherwise push the branch and open a Draft merge request from the repository's template. Never merge.
+Your final message is the report and nothing else, in Markdown: Fixed (finding, commit SHA), Needs Michael (finding, reason), Skipped (finding, reason), Rulings, the cross-review result, and the merge request link.
+EOF
+)
+else
+  body="Review this repository for $focus. Do not modify any files, commit, push or open merge requests. Your final message is the report and nothing else, in Markdown: findings ranked by severity (Critical, High, Medium, Low), each with file:line, impact, evidence and a suggested fix, then a \"Not checked\" section listing what you did not cover."
+fi
+prompt="$preamble"$'\n\n'"$body"
+[ -z "$extra" ] || prompt="$prompt"$'\n\n'"Additional instructions: $extra"
+
+ftmp=$(mktemp -d "${TMPDIR:-/tmp}/review.XXXXXX") || { unset key; refuse "cannot create a temporary directory"; }
+cpid=""
+trap 'rm -rf "$ftmp"' EXIT
+fifo="$ftmp/stream"
+mkfifo "$fifo" || { unset key; refuse "cannot create a fifo"; }
+
+status=""; sid=""; init_ok=0; have_result=0; r_err=""; r_sub=""; r_text=""; r_cost=""
+emit() { printf '%s\n' "$1"; printf '%s\n' "$1" >> "$base.log"; }
+wdog=""
+# TERM first; a watchdog (started once) sends KILL after the grace if claude ignores it.
+stop_claude() {
+  [ -n "$cpid" ] || return 0
+  kill "$cpid" 2>/dev/null
+  if [ -z "$wdog" ]; then
+    (
+      trap 'kill "$s" 2>/dev/null; exit 0' TERM
+      sleep "$grace" & s=$!
+      wait "$s"; kill -KILL "$cpid" 2>/dev/null
+    ) >/dev/null 2>&1 </dev/null &
+    wdog=$!
+  fi
+  return 0
+}
+on_signal() { status="interrupted"; stop_claude; }
+trap on_signal INT TERM
+
+(
+  cd "$top" || exit 1
+  unset ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY
+  export ANTHROPIC_API_KEY="$key" CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1
+  exec claude -p "$prompt" --permission-mode auto --model opus --max-budget-usd "$budget" --output-format stream-json --verbose
+) >"$fifo" 2>"$base.err" </dev/null &
+cpid=$!
+unset key
+printf 'review: %s %s (%s), budget $%s, log: %s\n' "$name" "$label" "$([ "$fix" = 1 ] && echo fix || echo review)" "$budget" "$base.log"
+
+render='.message.content[]? | if .type == "text" then .text elif .type == "tool_use" then "→ \(.name): \((.input.description // .input.command // .input.file_path // .input.pattern // .input.prompt // "") | tostring | split("\n")[0] | .[0:120])" else empty end'
+
+while [ "$status" != interrupted ] && { IFS= read -r line || [ -n "$line" ]; }; do
+  printf '%s\n' "$line" >> "$base.jsonl"
+  kind=$(printf '%s\n' "$line" | jq -r 'if type == "object" then "\(.type // "")/\(.subtype // "")" else "" end' 2>/dev/null) || continue
+  case $kind in
+    system/init)
+      ak=$(printf '%s\n' "$line" | jq -r '.apiKeySource // ""')
+      sid=$(printf '%s\n' "$line" | jq -r '.session_id // ""')
+      if [ "$ak" != ANTHROPIC_API_KEY ]; then
+        status="aborted: Claude would have used ${ak:-an unknown credential}, not the API key"
+        stop_claude; break
+      fi
+      init_ok=1 ;;
+    assistant/*|result/*)
+      if [ "$init_ok" != 1 ]; then
+        status="aborted: no credential check before the first model call"
+        stop_claude; break
+      fi
+      case $kind in
+        assistant/*)
+          rendered=$(printf '%s\n' "$line" | jq -r "$render" 2>/dev/null)
+          [ -z "$rendered" ] || emit "$rendered" ;;
+        *)
+          have_result=1
+          r_err=$(printf '%s\n' "$line" | jq -r 'if .is_error == false then "false" else "true" end')
+          r_sub=$(printf '%s\n' "$line" | jq -r '.subtype // ""')
+          r_text=$(printf '%s\n' "$line" | jq -r '.result // ""')
+          r_cost=$(printf '%s\n' "$line" | jq -r '.total_cost_usd // ""')
+          rsid=$(printf '%s\n' "$line" | jq -r '.session_id // ""')
+          [ -z "$rsid" ] || sid=$rsid ;;
+      esac ;;
+  esac
+done < "$fifo"
+
+# A trapped signal may end wait early; keep waiting until claude is really gone.
+while :; do
+  wait "$cpid"; crc=$?
+  [ "$crc" -ne 127 ] && kill -0 "$cpid" 2>/dev/null || break
+done
+if [ -n "$wdog" ]; then kill "$wdog" 2>/dev/null; wait "$wdog" 2>/dev/null; fi
+
+if [ -z "$status" ]; then
+  if [ "$have_result" = 1 ]; then
+    if [ "$r_err" = false ] && [ "$r_sub" = success ]; then status="completed"
+    else r_first=$(printf '%s\n' "$r_text" | head -n 1); status="stopped: ${r_first:-$r_sub}"; fi
+  else
+    status="incomplete: Claude exited (code $crc) without a result"
+  fi
+fi
+
+if [[ $r_cost =~ ^[0-9]+(\.[0-9]+)?$ ]]; then cost=$(printf '%.2f' "$r_cost"); else cost=unknown; fi
+[ "$cost" = unknown ] && cost_txt=unknown || cost_txt="\$$cost"
+mode=review; [ "$fix" = 1 ] && mode=fix
+
+{
+  printf '# review: %s — %s (%s)\n\n' "$name" "$label" "$mode"
+  printf -- '- Date: %s\n' "$(date '+%Y-%m-%d %H:%M')"
+  printf -- '- Branch: %s (at %s)\n' "${branch:-detached HEAD}" "$sha"
+  printf -- '- Status: %s\n' "$status"
+  printf -- '- Cost: %s\n' "$cost_txt"
+  [ -z "$sid" ] || printf -- '- Session: %s — resume from %s with `claude --resume %s`\n' "$sid" "$top" "$sid"
+  printf -- '- Log: %s\n' "$base.log"
+  [ -z "$r_text" ] || printf '\n%s\n' "$r_text"
+} > "$base.md"
+
+[ -s "$base.err" ] || rm -f "$base.err"
+
+mr=$(printf '%s\n' "$r_text" | grep -oE 'https://[^ )>"]*/merge_requests/[0-9]+|https://[^ )>"]*/pull/[0-9]+' | head -n 1) || mr=""
+
+printf 'report: %s\nstatus: %s\ncost: %s\n' "$base.md" "$status" "$cost_txt"
+[ -z "$mr" ] || printf 'merge request: %s\n' "$mr"
+
+msg="$name $label: ${status:0:80}, $cost_txt${mr:+ — $mr}"
+msg=$(printf '%s' "$msg" | tr -d '"\\')
+osascript -e "display notification \"$msg\" with title \"review\"" >/dev/null 2>&1 || true
+
+[ "$status" = completed ]
