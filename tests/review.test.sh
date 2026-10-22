@@ -37,6 +37,7 @@ EOF
 cat > "$SD/bin/claude" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$STUB_DIR/claude.argv"
+printf '%s\n' "$$" > "$STUB_DIR/claude.pid"
 pwd -P > "$STUB_DIR/claude.cwd"
 for v in ANTHROPIC_API_KEY CLAUDE_CODE_SUBPROCESS_ENV_SCRUB ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_USE_BEDROCK; do
   if [ -n "${!v+x}" ]; then printf '%s=%s\n' "$v" "${!v}"; else printf '%s=<unset>\n' "$v"; fi
@@ -58,6 +59,12 @@ case "${STUB_CLAUDE_MODE:-ok}" in
   budget)
     hooks; init ANTHROPIC_API_KEY; asst
     printf '%s\n' '{"type":"result","subtype":"error_max_budget_usd","is_error":false,"total_cost_usd":20.01,"session_id":"sess-123"}' ;;
+  noflag)
+    hooks; init ANTHROPIC_API_KEY
+    printf '%s\n' '{"type":"result","subtype":"success","result":"done","total_cost_usd":0.5,"session_id":"sess-123"}' ;;
+  nullflag)
+    hooks; init ANTHROPIC_API_KEY
+    printf '%s\n' '{"type":"result","subtype":"success","is_error":null,"result":"done","total_cost_usd":0.5,"session_id":"sess-123"}' ;;
   nores)
     hooks; init ANTHROPIC_API_KEY; asst; echo "boom" >&2; exit 3 ;;
   badsource)
@@ -70,6 +77,8 @@ case "${STUB_CLAUDE_MODE:-ok}" in
     hooks; init none; trap '' TERM; while [ "$SECONDS" -lt 30 ]; do sleep 0.2; done ;;
   stubborn_ok)
     hooks; init ANTHROPIC_API_KEY; asst; trap '' TERM; while [ "$SECONDS" -lt 30 ]; do sleep 0.2; done ;;
+  stubborn_closed)
+    hooks; init ANTHROPIC_API_KEY; asst; trap '' TERM; exec >/dev/null; while [ "$SECONDS" -lt 30 ]; do sleep 0.2; done ;;
 esac
 EOF
 cat > "$SD/bin/date" <<'EOF'
@@ -324,6 +333,12 @@ ok "a zero cost is reported" has "$(file_of -general.md)" "- Cost: \$0.00"
 run "$WT" budget
 ok "an error subtype without is_error exits 1" rc_is 1
 ok "an error subtype without result text is named in the status" has "$(file_of -general.md)" "Status: stopped: error_max_budget_usd"
+run "$WT" noflag
+ok "a result without is_error exits 1" rc_is 1
+ok "a result without is_error is stopped" has "$(file_of -general.md)" "Status: stopped: done"
+run "$WT" nullflag
+ok "a result with a null is_error exits 1" rc_is 1
+ok "a result with a null is_error is stopped" has "$(file_of -general.md)" "Status: stopped: done"
 run "$WT" nores
 ok "no result exits 1" rc_is 1
 ok "the incomplete status carries the exit code" has "$(file_of -general.md)" "Status: incomplete: Claude exited (code 3) without a result"
@@ -410,6 +425,32 @@ elapsed=$((SECONDS - start))
 ok "a TERM with a TERM-proof claude exits 1" rc_is 1
 ok "a TERM with a TERM-proof claude is reported as interrupted" has "$(file_of -general.md)" "Status: interrupted"
 ok "a TERM with a TERM-proof claude returns after the grace" test "$elapsed" -lt 8
+ok "a TERM with a TERM-proof claude leaves no claude running" bash -c '! kill -0 "$1" 2>/dev/null' _ "$(cat "$SD/claude.pid")"
+
+# A second TERM interrupts the wait for claude; the watchdog must still see it dead.
+n=$((n + 1)); STATE="$T/state/$n"; DIR="$STATE/review/acme-portal"; export XDG_STATE_HOME="$STATE"
+( cd "$WT" && exec env REVIEW_KILL_GRACE=2 "$RV" ) >"$T/out" 2>"$T/err" &
+rpid=$!
+for _ in $(seq 60); do grep -qF "Looking at the code" "$T/out" 2>/dev/null && break; sleep 0.1; done
+kill -TERM "$rpid" 2>/dev/null; sleep 0.5; kill -TERM "$rpid" 2>/dev/null
+wait "$rpid"; rc=$?
+cpid=$(cat "$SD/claude.pid")
+ok "a second TERM still exits 1" rc_is 1
+ok "a second TERM leaves no claude running" bash -c '! kill -0 "$1" 2>/dev/null' _ "$cpid"
+kill -KILL "$cpid" 2>/dev/null
+
+# A claude that closed its output but keeps running: the TERM lands in the wait, not the read.
+STUB_CLAUDE_MODE=stubborn_closed
+n=$((n + 1)); STATE="$T/state/$n"; DIR="$STATE/review/acme-portal"; export XDG_STATE_HOME="$STATE"
+( cd "$WT" && exec env REVIEW_KILL_GRACE=2 "$RV" ) >"$T/out" 2>"$T/err" &
+rpid=$!
+for _ in $(seq 60); do grep -qF "Looking at the code" "$T/out" 2>/dev/null && break; sleep 0.1; done
+sleep 0.5; kill -TERM "$rpid" 2>/dev/null
+wait "$rpid"; rc=$?
+cpid=$(cat "$SD/claude.pid")
+ok "a TERM after claude closed its output exits 1" rc_is 1
+ok "a TERM after claude closed its output leaves no claude running" bash -c '! kill -0 "$1" 2>/dev/null' _ "$cpid"
+kill -KILL "$cpid" 2>/dev/null
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

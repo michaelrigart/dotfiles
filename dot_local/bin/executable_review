@@ -159,7 +159,7 @@ trap 'rm -rf "$ftmp"' EXIT
 fifo="$ftmp/stream"
 mkfifo "$fifo" || { unset key; refuse "cannot create a fifo"; }
 
-status=""; sid=""; init_ok=0; have_result=0; r_err=false; r_sub=""; r_text=""; r_cost=""
+status=""; sid=""; init_ok=0; have_result=0; r_err=""; r_sub=""; r_text=""; r_cost=""
 emit() { printf '%s\n' "$1"; printf '%s\n' "$1" >> "$base.log"; }
 wdog=""
 # TERM first; a watchdog (started once) sends KILL after the grace if claude ignores it.
@@ -214,7 +214,7 @@ while [ "$status" != interrupted ] && { IFS= read -r line || [ -n "$line" ]; }; 
           [ -z "$rendered" ] || emit "$rendered" ;;
         *)
           have_result=1
-          r_err=$(printf '%s\n' "$line" | jq -r '.is_error // false')
+          r_err=$(printf '%s\n' "$line" | jq -r '.is_error | tostring')
           r_sub=$(printf '%s\n' "$line" | jq -r '.subtype // ""')
           r_text=$(printf '%s\n' "$line" | jq -r '.result // ""')
           r_cost=$(printf '%s\n' "$line" | jq -r '.total_cost_usd // ""')
@@ -224,7 +224,11 @@ while [ "$status" != interrupted ] && { IFS= read -r line || [ -n "$line" ]; }; 
   esac
 done < "$fifo"
 
-wait "$cpid"; crc=$?
+# A trapped signal may end wait early; keep waiting until claude is really gone.
+while :; do
+  wait "$cpid"; crc=$?
+  [ "$crc" -ne 127 ] && kill -0 "$cpid" 2>/dev/null || break
+done
 if [ -n "$wdog" ]; then kill "$wdog" 2>/dev/null; wait "$wdog" 2>/dev/null; fi
 
 if [ -z "$status" ]; then
