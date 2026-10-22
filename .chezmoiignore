@@ -95,6 +95,9 @@ tests/
 !.claude/skills/live-feedback/
 .claude/skills/live-feedback/*
 !.claude/skills/live-feedback/SKILL.md
+!.claude/skills/api-review/
+.claude/skills/api-review/*
+!.claude/skills/api-review/SKILL.md
 !.claude/skills/clarity
 
 .codex/*
