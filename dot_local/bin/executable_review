@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # review [security] [performance] [general] [--fix] [--budget USD] [-h|--help] [-- extra instructions...]
+# review --last | --list
 #
 # Runs a headless Claude Code session (claude -p) in the current git repository, billed to a
 # Console API key (monthly API credits) instead of the Max subscription. Plain, it reviews and
 # writes a report; --fix also fixes the findings on the current wt worktree branch and follows
-# the normal workflow (Codex cross-review, push, Draft MR). The key is read from 1Password
-# (REVIEW_OP_REF, default op://Private/cc-<repo slug>-api-key/credential) and reaches claude
-# only through its environment: never argv, never a file. The stream is checked for the
-# credential claude reports at init and the run is aborted unless it is the API key. Output
-# lands in ${XDG_STATE_HOME:-~/.local/state}/review/<repo slug>/<stamp>-<label>.{md,log,jsonl,err}.
+# the normal workflow (Codex cross-review, push, Draft MR). One key serves every repository:
+# it is read from 1Password (REVIEW_OP_REF, default op://Private/cc-review-api-key/credential)
+# and reaches claude only through its environment: never argv, never a file. The stream is
+# checked for the credential claude reports at init and the run is aborted unless it is the
+# API key. Output lands in ${XDG_STATE_HOME:-~/.local/state}/review/<repo slug>/<stamp>-<label>.{md,log,jsonl,err};
+# --last prints the newest report's path and --list lists them (neither needs op or claude).
 # Exit 0 completed, 1 stopped/incomplete/aborted/interrupted/key failure, 2 usage or refusal.
 # Compatible with macOS /bin/bash 3.2.
 set -uo pipefail
@@ -17,24 +19,30 @@ LC_NUMERIC=C
 usage() {
   cat <<'EOF'
 usage: review [security] [performance] [general] [--fix] [--budget USD] [-h|--help] [-- extra instructions...]
+       review --last | --list
 
   security | performance | general   what to review (any combination, default general)
   --fix          review, then fix on this branch, cross-review, push and open a Draft MR
                  (only from a clean wt worktree on a feature branch)
   --budget USD   spending cap for the session (default 20, or 40 with --fix)
   --             everything after it is added to the prompt as extra instructions
+  --last         print the path of the newest report for this repository
+  --list         list this repository's reports, newest first, with status and cost
+                 (--last and --list take no other argument)
 EOF
 }
 usage_err() { printf 'review: %s\n' "$1" >&2; usage >&2; exit 2; }
 refuse() { printf 'review: %s\n' "$1" >&2; exit 2; }
 
-want_s=0; want_p=0; want_g=0; fix=0; budget=""; extra=""
+argc=$#; want_s=0; want_p=0; want_g=0; fix=0; last=0; list=0; budget=""; extra=""
 while [ "$#" -gt 0 ]; do
   case $1 in
     security) want_s=1 ;;
     performance) want_p=1 ;;
     general) want_g=1 ;;
     --fix) fix=1 ;;
+    --last) last=1 ;;
+    --list) list=1 ;;
     --budget)
       [ "$#" -ge 2 ] || usage_err "--budget needs a value"
       budget=$2; shift
@@ -46,6 +54,7 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
+if [ "$((last + list))" -gt 0 ] && [ "$argc" -ne 1 ]; then usage_err "--last and --list take no other argument"; fi
 [ "$((want_s + want_p + want_g))" -gt 0 ] || want_g=1
 if [ -z "$budget" ]; then if [ "$fix" = 1 ]; then budget=40; else budget=20; fi; fi
 
@@ -66,6 +75,21 @@ esac
 name=${main##*/}
 slug=$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]' | sed -e 's/[^a-z0-9][^a-z0-9]*/-/g' -e 's/^-//' -e 's/-$//')
 [ -n "$slug" ] || refuse "cannot derive a repository slug from $name"
+dir="${XDG_STATE_HOME:-$HOME/.local/state}/review/$slug"
+
+if [ "$((last + list))" -gt 0 ]; then
+  reports=()
+  for f in "$dir"/*.md; do [ -f "$f" ] && reports+=("$f"); done
+  if [ "${#reports[@]}" -eq 0 ]; then echo "review: no reports for $name" >&2; exit 1; fi
+  if [ "$last" = 1 ]; then printf '%s\n' "${reports[$((${#reports[@]} - 1))]}"; exit 0; fi
+  field() { v=$(sed -n "s/^- $2: //p" "$1" | head -n 1); printf '%s' "${v:-?}"; }
+  for ((i = ${#reports[@]} - 1; i >= 0; i--)); do
+    f=${reports[$i]}; b=${f##*/}; b=${b%.md}
+    printf '%s %s:%s:%s  %s  %s  %s  %s\n' "${b:0:10}" "${b:11:2}" "${b:13:2}" "${b:15:2}" "${b:18}" \
+      "$(field "$f" Status)" "$(field "$f" Cost)" "$f"
+  done
+  exit 0
+fi
 
 if git symbolic-ref -q HEAD >/dev/null 2>&1; then branch=$(git symbolic-ref -q --short HEAD); else branch=""; fi
 sha=$(git rev-parse --short HEAD 2>/dev/null) || sha="none"
@@ -84,12 +108,11 @@ for c in claude op jq; do
   command -v "$c" >/dev/null 2>&1 || refuse "$c not found on PATH"
 done
 
-ref="${REVIEW_OP_REF:-op://Private/cc-$slug-api-key/credential}"
+ref="${REVIEW_OP_REF:-op://Private/cc-review-api-key/credential}"
 key=$(op read "$ref") || key=""
 if [ -z "$key" ]; then echo "review: could not read the API key from $ref" >&2; exit 1; fi
 
 umask 077
-dir="${XDG_STATE_HOME:-$HOME/.local/state}/review/$slug"
 mkdir -p "$dir" || { unset key; refuse "cannot create $dir"; }
 stamp=$(date +%Y-%m-%d-%H%M%S)
 flabel=$label; [ "$fix" = 1 ] && flabel=$label-fix

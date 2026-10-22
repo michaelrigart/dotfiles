@@ -87,6 +87,13 @@ run() {
   rm -f "$SD"/op.args "$SD"/osascript.args "$SD"/claude.argv "$SD"/claude.cwd "$SD"/claude.env
   ( cd "$d" && "$RV" "$@" ) >"$T/out" 2>"$T/err"; rc=$?
 }
+# again <dir> <claude mode> [args...]: like run, but keeps the current state directory.
+again() {
+  local d=$1; STUB_CLAUDE_MODE=$2; shift 2
+  export STUB_CLAUDE_MODE
+  rm -f "$SD"/op.args "$SD"/osascript.args "$SD"/claude.argv "$SD"/claude.cwd "$SD"/claude.env
+  ( cd "$d" && "$RV" "$@" ) >"$T/out" 2>"$T/err"; rc=$?
+}
 rc_is() { [ "$rc" = "$1" ]; }
 has() { grep -qF -- "$2" "$1"; }
 lacks() { ! grep -qF -- "$2" "$1"; }
@@ -115,7 +122,7 @@ ok "outside a git work tree op is not called" absent "$SD/op.args"
 
 run "$MAIN" ok
 ok "the main checkout run completes (exit 0)" rc_is 0
-ok "key ref is derived from the repository slug" has "$SD/op.args" "read op://Private/cc-acme-portal-api-key/credential"
+ok "the key ref is the one fixed review key" has "$SD/op.args" "read op://Private/cc-review-api-key/credential"
 ok "the report is named by stamp and label" test -n "$(file_of -general.md)"
 REPORT=$(file_of -general.md)
 ok "report heading has repo name, label and mode" has "$REPORT" "# review: Acme.Portal — general (review)"
@@ -160,7 +167,7 @@ ok "the prompt names the branch" has "$SD/claude.argv" "on branch main."
 
 run "$WT" ok
 ok "the linked worktree run completes (exit 0)" rc_is 0
-ok "the key ref comes from the main repository name in a linked worktree" has "$SD/op.args" "read op://Private/cc-acme-portal-api-key/credential"
+ok "the key ref is the same fixed key in a linked worktree" has "$SD/op.args" "read op://Private/cc-review-api-key/credential"
 ok "the linked worktree report is filed under the main repository slug" test -n "$(file_of -general.md)"
 ok "the linked worktree heading uses the main repository name" has "$(file_of -general.md)" "# review: Acme.Portal — general (review)"
 ok "claude runs in the linked worktree" test "$(cat "$SD/claude.cwd")" = "$(cd "$WT" && pwd -P)"
@@ -169,7 +176,7 @@ REVIEW_OP_REF=op://Other/thing/credential run "$MAIN" ok
 ok "REVIEW_OP_REF overrides the key ref" has "$SD/op.args" "read op://Other/thing/credential"
 STUB_OP_FAIL=1 run "$MAIN" ok
 ok "an op failure exits 1" rc_is 1
-ok "an op failure names the ref" has "$T/err" "could not read the API key from op://Private/cc-acme-portal-api-key/credential"
+ok "an op failure names the ref" has "$T/err" "could not read the API key from op://Private/cc-review-api-key/credential"
 ok "an op failure never starts claude" absent "$SD/claude.argv"
 STUB_OP_EMPTY=1 run "$MAIN" ok
 ok "an empty key exits 1" rc_is 1
@@ -182,6 +189,53 @@ ok "the security focus text is in the prompt" has "$SD/claude.argv" "security: a
 run "$MAIN" ok performance security
 ok "the focus label is in canonical order" test -n "$(file_of -security+performance.md)"
 ok "both focus texts are joined with a semicolon" has "$SD/claude.argv" "dependency risk; performance: N+1 queries"
+run "$MAIN" ok --last --list;       ok "--last with --list is a usage error (exit 2)" rc_is 2
+run "$MAIN" ok --last general;      ok "--last with another word is a usage error (exit 2)" rc_is 2
+run "$MAIN" ok --list --fix;        ok "--list with --fix is a usage error (exit 2)" rc_is 2
+run "$MAIN" ok --last --budget 5;   ok "--last with --budget is a usage error (exit 2)" rc_is 2
+run "$MAIN" ok --list -- more;      ok "--list with -- extras is a usage error (exit 2)" rc_is 2
+ok "the --last combination error shows the usage" has "$T/err" "usage: review"
+
+run "$MAIN" ok --last;              ok "--last with no reports exits 1" rc_is 1
+ok "--last with no reports names the repository" has "$T/err" "review: no reports for Acme.Portal"
+ok "--last with no reports prints nothing on stdout" test ! -s "$T/out"
+run "$MAIN" ok --list;              ok "--list with no reports exits 1" rc_is 1
+ok "--list with no reports names the repository" has "$T/err" "review: no reports for Acme.Portal"
+ok "--last and --list never call op or claude without reports" absent "$SD/op.args"
+
+run "$MAIN" ok
+FIRST=$(file_of -general.md)
+sleep 1
+again "$MAIN" error security
+SECOND=$(file_of -security.md)
+ok "the two runs filed two reports" test -n "$FIRST" -a -n "$SECOND"
+again "$MAIN" ok --last
+ok "--last exits 0" rc_is 0
+ok "--last prints the newer report's absolute path" test "$(cat "$T/out")" = "$SECOND"
+ok "--last never calls op" absent "$SD/op.args"
+ok "--last never calls claude" absent "$SD/claude.argv"
+again "$MAIN" ok --list
+ok "--list exits 0" rc_is 0
+ok "--list prints one line per report" test "$(wc -l < "$T/out" | tr -d ' ')" = 2
+ok "--list puts the newer report first" test "$(head -n 1 "$T/out" | awk '{print $NF}')" = "$SECOND"
+ok "--list puts the older report last" test "$(tail -n 1 "$T/out" | awk '{print $NF}')" = "$FIRST"
+ok "--list shows a stamp, label, status and cost for a stopped run" \
+  grep -qE "^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}  security  stopped: Credit balance is too low  \\\$0\\.00  $SECOND\$" "$T/out"
+ok "--list shows a stamp, label, status and cost for a completed run" \
+  grep -qE "^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}  general  completed  \\\$1\\.23  $FIRST\$" "$T/out"
+ok "--list never calls op" absent "$SD/op.args"
+ok "--list never calls claude" absent "$SD/claude.argv"
+again "$WT" ok --last
+ok "--last works from the linked worktree" test "$(cat "$T/out")" = "$SECOND"
+again "$WT" ok --list
+ok "--list works from the linked worktree" test "$(wc -l < "$T/out" | tr -d ' ')" = 2
+ok "--last and --list in the worktree never call op" absent "$SD/op.args"
+printf '# stub\n' > "$DIR/2026-01-01-000000-general-fix.md"
+again "$WT" ok --list
+ok "--list shows ? for a missing status and cost" has "$T/out" "general-fix  ?  ?  $DIR/2026-01-01-000000-general-fix.md"
+again "$WT" ok --fix --last
+ok "--last with --fix is a usage error before the --fix refusals" has "$T/err" "take no other argument"
+
 run "$MAIN" ok general general security
 ok "duplicate focus words are ignored" test -n "$(file_of -security+general.md)"
 
