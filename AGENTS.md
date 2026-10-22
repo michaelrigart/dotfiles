@@ -51,8 +51,9 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
 - Third-party skills are pinned archive externals in `.chezmoiexternal.toml`, each with a
   `symlink_` in `dot_claude/skills/` and a `.chezmoiignore` re-include.
   `.scripts/skill-updates.sh`, run weekly by the `skill-updates` workflow, reports new
-  releases as `skill-update` issues. A bump reads the upstream diff first, changes the SHA
-  and its tag comment, then warms chezmoi's cache outside the sandbox
+  releases as `skill-update` issues. Closing one without a bump declines that release; it is
+  never filed again. A bump reads the upstream diff first, changes the SHA and its tag
+  comment, then warms chezmoi's cache outside the sandbox
   (`command chezmoi --source <checkout> managed >/dev/null`: sandboxed, Go's TLS fails).
   Confirm afterwards that `command chezmoi --source <checkout> managed` lists
   `.agents/skills/<name>/SKILL.md`, and that `.scripts/skill-updates.sh` prints
