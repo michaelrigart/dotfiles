@@ -23,7 +23,8 @@ D=dddddddddddddddddddddddddddddddddddddddd   # the second repo's newer commit
 # gh is stubbed on PATH. Responses come from variables keyed on the repo (and ref):
 #   REL_{OUT,RC,ERR}_<REPO>          api repos/<o>/<r>/releases/latest --jq .tag_name
 #   COM_{OUT,RC,ERR}_<REPO>_<REF>    api repos/<o>/<r>/commits/<ref> --jq .sha
-#   LABEL_{RC,ERR}, LIST_{OUT,RC,ERR}, CREATE_{RC,ERR}
+#   LABEL_{RC,ERR}, LIST_{OUT,CLOSED,RC,ERR}, CREATE_{RC,ERR}
+# `issue list --state all` serves LIST_OUT then LIST_CLOSED; `--state open` serves LIST_OUT only.
 # An unconfigured call fails loudly (rc 99), so a missing fixture never reads as a pass.
 cat > "$BIN/gh" <<'STUB'
 #!/usr/bin/env bash
@@ -44,7 +45,12 @@ case "$*" in
     ref=$(key "$(basename "$p")")
     emit "COM_OUT_${repo}_$ref" "COM_RC_${repo}_$ref" "COM_ERR_${repo}_$ref" ;;
   "label create"*)  r=${LABEL_RC-0}; [ "$r" = 0 ] || printf '%s\n' "${LABEL_ERR-}" >&2; exit "$r" ;;
-  "issue list"*)    emit LIST_OUT LIST_RC LIST_ERR ;;
+  "issue list"*)
+    case "$*" in
+      *"--state all"*) [ -z "${LIST_CLOSED-}" ] || LIST_OUT=$(printf '%s\n%s' "${LIST_OUT-}" "$LIST_CLOSED" | grep -v '^$') ;;
+      *"--state open"*) ;;
+    esac
+    emit LIST_OUT LIST_RC LIST_ERR ;;
   "issue create"*)  r=${CREATE_RC-0}; [ "$r" = 0 ] || printf '%s\n' "${CREATE_ERR-}" >&2; exit "$r" ;;
   *) echo "stub gh: unexpected call: $*" >&2; exit 98 ;;
 esac
@@ -58,7 +64,7 @@ com() { local k; k="$(key "$1")_$(key "$2")"; export "COM_OUT_$k=$3" "COM_RC_$k=
 reset() {
   local v
   for v in $(compgen -v | grep -E '^(REL|COM|LABEL|LIST|CREATE)_'); do unset "$v"; done
-  export LABEL_RC=0 LIST_OUT= LIST_RC=0 CREATE_RC=0
+  export LABEL_RC=0 LIST_OUT= LIST_CLOSED= LIST_RC=0 CREATE_RC=0
   rel clarity v0.2.1; com clarity v0.2.1 "$P"
   : > "$CALLS"
 }
@@ -264,12 +270,13 @@ reset; rel clarity v0.3.0; com clarity v0.3.0 "$B"
 run "$(clarity)" --open-issues
 rc_is 0 "update with no open issue: exit 0"
 called "label create skill-update --color 0E8A16 --description A pinned agent skill has a newer upstream release --force" "label create with its colour, description and --force"
-called "issue list --label skill-update --state open --limit 200 --json title --jq .[].title" "open issues listed"
+called "issue list --label skill-update --state all --limit 200 --json title --jq .[].title" "all issues listed"
 called "issue create --title Skill update: clarity v0.3.0 --label skill-update --body clarity has a newer upstream release: v0.2.1 → v0.3.0." "issue created with title, label and body"
 called "Compare: https://github.com/addyosmani/clarity/compare/$P...$B" "body carries the compare URL"
 called 'lists `.agents/skills/clarity/SKILL.md`' "body names the SKILL.md check"
 called 'prints `current: clarity v0.3.0`' "body names the current-label check"
 called 'put `Closes #<this issue>` in the commit message.' "body keeps the Closes placeholder"
+called 'Closing this issue without a bump declines v0.3.0; it is not filed again.' "body carries the decline line"
 called 'After merge: `chezmoi apply`.' "body ends with the apply step"
 l=$(line_of "label create"); i=$(line_of "issue create")
 if [ -n "$l" ] && [ -n "$i" ] && [ "$l" -lt "$i" ]; then _pass "label create is recorded before issue create"; else _fail "label create is recorded before issue create"; fi
@@ -280,6 +287,18 @@ export LIST_OUT='Skill update: clarity v0.3.0'
 run "$(clarity)" --open-issues
 not_called "issue create" "open issue with the same title: no issue create"
 rc_is 0 "deduped: exit 0"
+
+reset; rel clarity v0.3.0; com clarity v0.3.0 "$B"
+export LIST_CLOSED='Skill update: clarity v0.3.0'
+run "$(clarity)" --open-issues
+not_called "issue create" "closed issue with the same title: no issue create"
+rc_is 0 "closed issue deduped: exit 0"
+
+reset; rel clarity v0.3.0; com clarity v0.3.0 "$B"
+export LIST_CLOSED='Skill update: clarity v0.2.9'
+run "$(clarity)" --open-issues
+called "issue create --title Skill update: clarity v0.3.0" "closed issue for an older version: new release still filed"
+rc_is 0 "closed issue for another version: exit 0"
 
 reset; rel clarity v0.3.0; com clarity v0.3.0 "$B"
 export LIST_OUT='Skill update: clarity v0.2.9

@@ -28,10 +28,11 @@
 #   2 -> any error: no gh, a gh failure other than the 404 fallback, an answer that fails
 #        validation, an unparseable entry, zero entries, an unknown option
 # --open-issues: for each update, create `Skill update: <name> <new label>` (label
-#   skill-update) unless an open issue has that exact title. With no updates it makes no
-#   label or issue call. If the label or the list call fails it creates nothing, because it
-#   cannot dedupe. Exit 0 when every update has an open issue (or there are none), 2 if any
-#   lookup, label, list or create call failed. Skills that resolved still get their issue.
+#   skill-update) unless an issue, open or closed, has that exact title. With no updates it
+#   makes no label or issue call. If the label or the list call fails it creates nothing,
+#   because it cannot dedupe. Exit 0 when every update has an issue (or there are none),
+#   2 if any lookup, label, list or create call failed. Skills that resolved still get
+#   their issue.
 set -u
 
 log() { printf 'skill-updates: %s\n' "$*" >&2; }
@@ -163,6 +164,7 @@ EOF
 issue_body() {  # issue_body <name> <old label> <new label> <compare URL>
   printf '%s has a newer upstream release: %s → %s.\n\n' "$1" "$2" "$3"
   printf 'Compare: %s\n\n' "$4"
+  printf 'Closing this issue without a bump declines %s; it is not filed again.\n\n' "$3"
   printf '%s\n' '- [ ] Read the diff, especially SKILL.md, references/ and every script.'
   printf '%s\n' '- [ ] On a branch, change the SHA and its tag comment in .chezmoiexternal.toml; put `Closes #<this issue>` in the commit message.'
   printf '%s\n' "- [ ] Warm chezmoi's cache outside the sandbox: \`command chezmoi --source <checkout> managed >/dev/null\`."
@@ -178,7 +180,7 @@ if [ "$OPEN_ISSUES" -eq 1 ]; then
     if [ "$G_RC" -ne 0 ]; then
       log "label create failed, creating no issues: $G_ERR"; ERRORS=1
     else
-      gh_get issue list --label skill-update --state open --limit 200 --json title --jq '.[].title'
+      gh_get issue list --label skill-update --state all --limit 200 --json title --jq '.[].title'
       if [ "$G_RC" -ne 0 ]; then
         log "issue list failed, creating no issues: $G_ERR"; ERRORS=1
       else
@@ -187,7 +189,7 @@ if [ "$OPEN_ISSUES" -eq 1 ]; then
           [ -n "$u_name" ] || continue
           title="Skill update: $u_name $u_new"
           if printf '%s\n' "$EXISTING" | grep -Fxq -- "$title"; then
-            log "$title: open issue exists"
+            log "$title: issue exists"
             continue
           fi
           body=$(issue_body "$u_name" "$u_old" "$u_new" "$u_compare")
