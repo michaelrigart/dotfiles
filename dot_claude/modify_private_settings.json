@@ -339,7 +339,12 @@ printf '%s' "$input" | jq \
         # Deliberately narrower than allowlisting the herdr socket under network: that
         # would let ANY sandboxed command drive herdr pane run, which is a sandbox escape.
         # Excluding the herdr client only lets herdr itself out.
-        "excludedCommands": ["docker *", "basecamp *", "herdr *", "xreview *"],
+        #
+        # review is here because it reads its API key with op (the 1Password app
+        # integration) and writes its reports to ~/.local/state/review and the session it
+        # starts to ~/.claude, all denied in the sandbox. The Claude session it launches
+        # runs under its own sandbox.
+        "excludedCommands": ["docker *", "basecamp *", "herdr *", "xreview *", "review *"],
         "filesystem": {
           "allowRead": [
             "~/.ssh/config",

@@ -6,9 +6,9 @@
     `git remote add`, `git config`).
   - Works sandboxed: `git add`, `git commit`, `git push`/`fetch` over SSH, `mise exec`,
     localhost TCP.
-- **Excluded tools.** `docker`, `basecamp`, `herdr` and `xreview` are declared unsandboxed
-  in `sandbox.excludedCommands`. Sandboxed, they return confident wrong answers:
-  "unauthenticated", "no Codex pane", "daemon not running".
+- **Excluded tools.** `docker`, `basecamp`, `herdr`, `xreview` and `review` are declared
+  unsandboxed in `sandbox.excludedCommands`. Sandboxed, they return confident wrong
+  answers: "unauthenticated", "no Codex pane", "daemon not running".
   - The declaration only applies when the tool is the first command of the Bash call, on
     its own. Do setup in a separate call, and never pipe or prefix these tools.
   - Never pass the escape flag for them.
