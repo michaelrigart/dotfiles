@@ -280,6 +280,24 @@ ok "--last with --fix is a usage error before the --fix refusals" has "$T/err" "
 run "$MAIN" ok general general security
 ok "duplicate focus words are ignored" test -n "$(file_of -security+general.md)"
 
+run "$MAIN" ok architecture
+ok "architecture is accepted (exit 0)" rc_is 0
+ok "the architecture focus text is in the prompt" has "$SD/claude.argv" "architecture: module boundaries and layering (controllers, models, services, jobs, concerns), coupling and dependency direction, contracts with other services, the data model, background-job design, and departures from the conventions in AGENTS.md"
+run "$MAIN" ok clean-code
+ok "clean-code is accepted (exit 0)" rc_is 0
+ok "the clean-code focus text is in the prompt" has "$SD/claude.argv" "clean code: naming, duplication, oversized methods and classes, complexity, dead code, framework idioms, and readability"
+ok "clean-code alone writes a clean-code report" test -n "$(file_of -clean-code.md)"
+again "$MAIN" ok --list
+ok "--list shows the clean-code label" grep -qE "^[0-9-]+ [0-9:]+  clean-code  completed  " "$T/out"
+run "$MAIN" ok ui
+ok "ui is accepted (exit 0)" rc_is 0
+ok "the ui focus text is in the prompt" has "$SD/claude.argv" "UI and UX, judged from the code because you cannot see the screen: accessibility (labels, alt text, ARIA, colour-only cues, focus and keyboard), consistency of components and styles, missing empty, loading and error states, form validation feedback, responsive layout, and copy"
+run "$MAIN" ok ui clean-code security architecture
+ok "all four new-order words run (exit 0)" rc_is 0
+ok "the label is in canonical order" test -n "$(file_of -security+architecture+clean-code+ui.md)"
+ok "the report heading carries the canonical label" has "$(file_of -security+architecture+clean-code+ui.md)" "# review: Acme.Portal — security+architecture+clean-code+ui (review)"
+run "$MAIN" ok clean-codee;         ok "a near-miss focus word is a usage error (exit 2)" rc_is 2
+
 run "$WT" ok --fix
 ok "--fix in a clean linked worktree runs (exit 0)" rc_is 0
 ok "--fix files are named with -fix" test -n "$(file_of -general-fix.md)"

@@ -23,8 +23,12 @@ API credits, not to the plan's usage limits. A plain run only reviews and writes
 ## Starting a run
 
 - Only when Michael asks: every run spends credits.
-- `review <security|performance|general>... [--budget USD]` as its own Bash call, with
-  `review` first on the line and nothing chained, piped or prefixed (it is an excluded
-  command). Run it in the background: a run outlasts a foreground call, and you are
-  notified when it exits. The last lines of its output name the report.
+- `review <security|performance|architecture|clean-code|ui|general>... [--budget USD]` as
+  its own Bash call, with `review` first on the line and nothing chained, piped or
+  prefixed (it is an excluded command). Run it in the background: a run outlasts a
+  foreground call, and you are notified when it exits. The last lines of its output name
+  the report.
+- Architecture findings are mostly design decisions: with `--fix` they land under "Needs
+  Michael" rather than being fixed, so an architecture review is usually a plain run with
+  a larger `--budget`.
 - `--fix` only on Michael's explicit request, from a clean `wt` worktree on a feature branch.

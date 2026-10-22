@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# review [security] [performance] [general] [--fix] [--budget USD] [-h|--help] [-- extra instructions...]
+# review [security] [performance] [architecture] [clean-code] [ui] [general] [--fix] [--budget USD] [-h|--help] [-- extra instructions...]
 # review --last | --list
 #
 # Runs a headless Claude Code session (claude -p) in the current git repository, billed to a
@@ -19,10 +19,11 @@ LC_NUMERIC=C
 
 usage() {
   cat <<'EOF'
-usage: review [security] [performance] [general] [--fix] [--budget USD] [-h|--help] [-- extra instructions...]
+usage: review [security] [performance] [architecture] [clean-code] [ui] [general] [--fix] [--budget USD] [-h|--help] [-- extra instructions...]
        review --last | --list
 
-  security | performance | general   what to review (any combination, default general)
+  security | performance | architecture | clean-code | ui | general
+                 what to review (any combination, default general)
   --fix          review, then fix on this branch, cross-review, push and open a Draft MR
                  (only from a clean wt worktree on a feature branch)
   --budget USD   spending cap for the session (default 20, or 40 with --fix)
@@ -35,11 +36,14 @@ EOF
 usage_err() { printf 'review: %s\n' "$1" >&2; usage >&2; exit 2; }
 refuse() { printf 'review: %s\n' "$1" >&2; exit 2; }
 
-argc=$#; want_s=0; want_p=0; want_g=0; fix=0; last=0; list=0; help=0; budget=""; extra=""
+argc=$#; want_s=0; want_p=0; want_a=0; want_c=0; want_u=0; want_g=0; fix=0; last=0; list=0; help=0; budget=""; extra=""
 while [ "$#" -gt 0 ]; do
   case $1 in
     security) want_s=1 ;;
     performance) want_p=1 ;;
+    architecture) want_a=1 ;;
+    clean-code) want_c=1 ;;
+    ui) want_u=1 ;;
     general) want_g=1 ;;
     --fix) fix=1 ;;
     --last) last=1 ;;
@@ -59,13 +63,16 @@ if [ "$((last + list))" -gt 0 ] && [ "$argc" -ne 1 ]; then usage_err "--last and
 if [ "$help" = 1 ]; then usage; exit 0; fi
 grace=${REVIEW_KILL_GRACE:-10}
 [[ $grace =~ ^[1-9][0-9]*$ ]] || refuse "REVIEW_KILL_GRACE must be a positive integer, not: $grace"
-[ "$((want_s + want_p + want_g))" -gt 0 ] || want_g=1
+[ "$((want_s + want_p + want_a + want_c + want_u + want_g))" -gt 0 ] || want_g=1
 if [ -z "$budget" ]; then if [ "$fix" = 1 ]; then budget=40; else budget=20; fi; fi
 
 label=""; focus=""
 add_focus() { label=${label:+$label+}$1; focus=${focus:+$focus; }$2; }
 [ "$want_s" = 1 ] && add_focus security "security: authentication and authorisation, injection (SQL, command, template), secrets handling, unsafe deserialisation, mass assignment, data exposure, dependency risk"
 [ "$want_p" = 1 ] && add_focus performance "performance: N+1 queries, missing indexes, unbounded queries and loops, slow request paths, caching, memory use"
+[ "$want_a" = 1 ] && add_focus architecture "architecture: module boundaries and layering (controllers, models, services, jobs, concerns), coupling and dependency direction, contracts with other services, the data model, background-job design, and departures from the conventions in AGENTS.md"
+[ "$want_c" = 1 ] && add_focus clean-code "clean code: naming, duplication, oversized methods and classes, complexity, dead code, framework idioms, and readability"
+[ "$want_u" = 1 ] && add_focus ui "UI and UX, judged from the code because you cannot see the screen: accessibility (labels, alt text, ARIA, colour-only cues, focus and keyboard), consistency of components and styles, missing empty, loading and error states, form validation feedback, responsive layout, and copy"
 [ "$want_g" = 1 ] && add_focus general "general quality: correctness bugs, error handling, maintainability, dead code, test gaps, and concrete improvements"
 
 top=$(git rev-parse --show-toplevel 2>/dev/null) || top=""
