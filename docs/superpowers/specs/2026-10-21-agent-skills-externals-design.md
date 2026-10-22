@@ -148,8 +148,8 @@ logic lives here, where the suite can test it:
 3. **Open what's missing.** For each update with no open issue, `gh issue create` makes one
    titled `Skill update: <name> <new tag>`. The body holds the compare URL and the checklist
    from "Updating a skill" below.
-   *Erratum (after merge):* the list uses `--state all`, so a closed issue also counts;
-   see Errata.
+   *Erratum (after merge):* the list covers all issues, open and closed, through the
+   paginated REST endpoint; see Errata.
 
 In this mode it exits 0 once every update has an open issue, and 2 if any lookup, label or
 issue call fails. A pending update is not a failure here, because the issue is the
@@ -367,7 +367,9 @@ cover `commits/<tag>` and the `.github/` ignore entry.
   could list issues before either run creates one, and both would file the same issue (from
   the pre-merge review).
 - **Dedupe across all issues.** Michael's decision after merge (2026-10-22): the issue list
-  uses `--state all`, so closing an issue without a bump declines that release and it is
-  never filed again; a newer release gets its own issue. The issue body says so. The
-  `--limit 200` stays: the list is newest first, so only issues for long-superseded
-  releases could fall off it.
+  covers all issues, so closing an issue without a bump declines that release and it is
+  never filed again; a newer release gets its own issue. The issue body says so. The list
+  goes through the REST issues endpoint with `--paginate` (pull requests filtered out), so
+  every labelled issue counts however many there are; `gh issue list` needs a fixed
+  `--limit`, and a capped list could drop a declined release that is still upstream's
+  latest (from the pre-merge review).

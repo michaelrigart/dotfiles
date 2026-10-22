@@ -180,7 +180,7 @@ if [ "$OPEN_ISSUES" -eq 1 ]; then
     if [ "$G_RC" -ne 0 ]; then
       log "label create failed, creating no issues: $G_ERR"; ERRORS=1
     else
-      gh_get issue list --label skill-update --state all --limit 200 --json title --jq '.[].title'
+      gh_get api --paginate 'repos/{owner}/{repo}/issues?labels=skill-update&state=all&per_page=100' --jq '.[] | select(.pull_request == null) | .title'
       if [ "$G_RC" -ne 0 ]; then
         log "issue list failed, creating no issues: $G_ERR"; ERRORS=1
       else
