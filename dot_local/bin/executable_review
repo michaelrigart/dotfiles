@@ -214,7 +214,7 @@ while [ "$status" != interrupted ] && { IFS= read -r line || [ -n "$line" ]; }; 
           [ -z "$rendered" ] || emit "$rendered" ;;
         *)
           have_result=1
-          r_err=$(printf '%s\n' "$line" | jq -r '.is_error | tostring')
+          r_err=$(printf '%s\n' "$line" | jq -r 'if .is_error == false then "false" else "true" end')
           r_sub=$(printf '%s\n' "$line" | jq -r '.subtype // ""')
           r_text=$(printf '%s\n' "$line" | jq -r '.result // ""')
           r_cost=$(printf '%s\n' "$line" | jq -r '.total_cost_usd // ""')

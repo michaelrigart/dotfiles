@@ -65,6 +65,9 @@ case "${STUB_CLAUDE_MODE:-ok}" in
   nullflag)
     hooks; init ANTHROPIC_API_KEY
     printf '%s\n' '{"type":"result","subtype":"success","is_error":null,"result":"done","total_cost_usd":0.5,"session_id":"sess-123"}' ;;
+  strflag)
+    hooks; init ANTHROPIC_API_KEY
+    printf '%s\n' '{"type":"result","subtype":"success","is_error":"false","result":"done","total_cost_usd":0.5,"session_id":"sess-123"}' ;;
   nores)
     hooks; init ANTHROPIC_API_KEY; asst; echo "boom" >&2; exit 3 ;;
   badsource)
@@ -339,6 +342,9 @@ ok "a result without is_error is stopped" has "$(file_of -general.md)" "Status: 
 run "$WT" nullflag
 ok "a result with a null is_error exits 1" rc_is 1
 ok "a result with a null is_error is stopped" has "$(file_of -general.md)" "Status: stopped: done"
+run "$WT" strflag
+ok "a result with a string is_error exits 1" rc_is 1
+ok "a result with a string is_error is stopped" has "$(file_of -general.md)" "Status: stopped: done"
 run "$WT" nores
 ok "no result exits 1" rc_is 1
 ok "the incomplete status carries the exit code" has "$(file_of -general.md)" "Status: incomplete: Claude exited (code 3) without a result"
