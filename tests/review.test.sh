@@ -55,6 +55,9 @@ case "${STUB_CLAUDE_MODE:-ok}" in
   error)
     hooks; init ANTHROPIC_API_KEY
     printf '%s\n' '{"type":"result","subtype":"success","is_error":true,"result":"Credit balance is too low","total_cost_usd":0,"session_id":"sess-123"}' ;;
+  budget)
+    hooks; init ANTHROPIC_API_KEY; asst
+    printf '%s\n' '{"type":"result","subtype":"error_max_budget_usd","is_error":false,"total_cost_usd":20.01,"session_id":"sess-123"}' ;;
   nores)
     hooks; init ANTHROPIC_API_KEY; asst; echo "boom" >&2; exit 3 ;;
   badsource)
@@ -63,9 +66,25 @@ case "${STUB_CLAUDE_MODE:-ok}" in
     hooks; asst ;;
   hang)
     hooks; init ANTHROPIC_API_KEY; asst; exec sleep 30 ;;
+  stubborn)
+    hooks; init none; trap '' TERM; while [ "$SECONDS" -lt 30 ]; do sleep 0.2; done ;;
+  stubborn_ok)
+    hooks; init ANTHROPIC_API_KEY; asst; trap '' TERM; while [ "$SECONDS" -lt 30 ]; do sleep 0.2; done ;;
 esac
 EOF
-chmod 755 "$SD/bin/op" "$SD/bin/osascript" "$SD/bin/claude" "$RV"
+cat > "$SD/bin/date" <<'EOF'
+#!/usr/bin/env bash
+# STUB_DATE_STAMP replaces the file stamp for the first STUB_DATE_TIMES calls (default 1).
+if [ "$1" = "+%Y-%m-%d-%H%M%S" ] && [ -n "${STUB_DATE_STAMP:-}" ]; then
+  c=$(cat "$STUB_DIR/date.count" 2>/dev/null || echo 0)
+  if [ "$c" -lt "${STUB_DATE_TIMES:-1}" ]; then
+    echo $((c + 1)) > "$STUB_DIR/date.count"
+    printf '%s\n' "$STUB_DATE_STAMP"; exit 0
+  fi
+fi
+exec /bin/date "$@"
+EOF
+chmod 755 "$SD/bin/op" "$SD/bin/osascript" "$SD/bin/claude" "$SD/bin/date" "$RV"
 
 git init -q --bare "$T/origin.git"
 git clone -q "$T/origin.git" "$T/seed" 2>/dev/null
@@ -94,6 +113,11 @@ again() {
   rm -f "$SD"/op.args "$SD"/osascript.args "$SD"/claude.argv "$SD"/claude.cwd "$SD"/claude.env
   ( cd "$d" && "$RV" "$@" ) >"$T/out" 2>"$T/err"; rc=$?
 }
+# fresh_state: like run's setup, but creates the state directory so a test can seed it.
+fresh_state() {
+  n=$((n + 1)); STATE="$T/state/$n"; DIR="$STATE/review/acme-portal"; export XDG_STATE_HOME="$STATE"
+  mkdir -p "$DIR"
+}
 rc_is() { [ "$rc" = "$1" ]; }
 has() { grep -qF -- "$2" "$1"; }
 lacks() { ! grep -qF -- "$2" "$1"; }
@@ -116,6 +140,11 @@ run "$MAIN" ok --budget;            ok "--budget without a value is a usage erro
 ok "bad arguments never reach op" absent "$SD/op.args"
 run "$MAIN" ok --help;              ok "--help exits 0" rc_is 0
 ok "--help prints the usage on stdout" has "$T/out" "usage: review"
+run "$MAIN" ok --last --help;       ok "--last --help is a usage error (exit 2)" rc_is 2
+run "$MAIN" ok --help --last;       ok "--help --last is a usage error (exit 2)" rc_is 2
+run "$MAIN" ok --help --list;       ok "--help --list is a usage error (exit 2)" rc_is 2
+run "$MAIN" ok --list -h;           ok "--list -h is a usage error (exit 2)" rc_is 2
+ok "the --help combination error says why" has "$T/err" "take no other argument"
 run "$T/norepo" ok;                 ok "outside a git work tree exits 2" rc_is 2
 ok "outside a git work tree says so" has "$T/err" "not inside a git work tree"
 ok "outside a git work tree op is not called" absent "$SD/op.args"
@@ -260,6 +289,23 @@ run "$WT" ok --fix
 ok "--fix is refused with an untracked file (exit 2)" rc_is 2
 ok "a dirty --fix never calls op" absent "$SD/op.args"
 rm -f "$WT/untracked.txt"
+git -C "$WT" config status.showUntrackedFiles no
+printf 'x\n' > "$WT/untracked.txt"
+run "$WT" ok --fix
+ok "--fix is refused with an untracked file that status hides (exit 2)" rc_is 2
+ok "--fix names the dirty tree for a hidden untracked file" has "$T/err" "needs a clean work tree"
+ok "a hidden-untracked --fix never calls op" absent "$SD/op.args"
+rm -f "$WT/untracked.txt"
+git -C "$WT" config --unset status.showUntrackedFiles
+IDX=$(git -C "$WT" rev-parse --path-format=absolute --git-path index)
+cp "$IDX" "$T/index.bak"; printf 'garbage' > "$IDX"
+run "$WT" ok --fix
+ok "--fix is refused when git status fails (exit 2)" rc_is 2
+ok "--fix says git status failed" has "$T/err" "git status failed"
+ok "a failed-status --fix never calls op" absent "$SD/op.args"
+cp "$T/index.bak" "$IDX"
+run "$WT" ok --fix
+ok "--fix runs again once the index is restored (exit 0)" rc_is 0
 git -C "$MAIN" worktree add -q --detach "$T/Acme.Portal-det"
 run "$T/Acme.Portal-det" ok --fix
 ok "--fix is refused on a detached HEAD (exit 2)" rc_is 2
@@ -275,6 +321,9 @@ run "$WT" error
 ok "a result with is_error exits 1" rc_is 1
 ok "the stopped status carries the first result line" has "$(file_of -general.md)" "Status: stopped: Credit balance is too low"
 ok "a zero cost is reported" has "$(file_of -general.md)" "- Cost: \$0.00"
+run "$WT" budget
+ok "an error subtype without is_error exits 1" rc_is 1
+ok "an error subtype without result text is named in the status" has "$(file_of -general.md)" "Status: stopped: error_max_budget_usd"
 run "$WT" nores
 ok "no result exits 1" rc_is 1
 ok "the incomplete status carries the exit code" has "$(file_of -general.md)" "Status: incomplete: Claude exited (code 3) without a result"
@@ -305,6 +354,62 @@ elapsed=$((SECONDS - start))
 ok "a TERM stops the run with exit 1" rc_is 1
 ok "a TERM is reported as interrupted" has "$(file_of -general.md)" "Status: interrupted"
 ok "a TERM returns promptly" test "$elapsed" -lt 10
+
+# Same-second runs must not share an output base.
+STAMP=2030-01-02-030405
+fresh_state
+printf 'PRE\n' > "$DIR/$STAMP-general.md"
+rm -f "$SD/date.count"
+STUB_DATE_STAMP=$STAMP STUB_DATE_TIMES=1 again "$WT" ok
+ok "a run whose stamp is taken still completes (exit 0)" rc_is 0
+ok "the taken report is left untouched" test "$(cat "$DIR/$STAMP-general.md")" = PRE
+ok "the run files its own second report" test "$(ls "$DIR"/*-general.md | wc -l | tr -d ' ')" = 2
+ok "the taken stamp gets no jsonl" absent "$DIR/$STAMP-general.jsonl"
+ok "the taken stamp gets no log" absent "$DIR/$STAMP-general.log"
+fresh_state
+printf 'PRE\n' > "$DIR/$STAMP-general.md"
+rm -f "$SD/date.count"
+start=$SECONDS
+STUB_DATE_STAMP=$STAMP STUB_DATE_TIMES=99 again "$WT" ok
+elapsed=$((SECONDS - start))
+ok "a stamp that stays taken is refused (exit 2)" rc_is 2
+ok "the refusal names the directory" has "$T/err" "cannot claim a report file in $DIR"
+ok "the refusal is bounded" test "$elapsed" -lt 15
+ok "the refused run left the report untouched" test "$(cat "$DIR/$STAMP-general.md")" = PRE
+ok "the refused run never starts claude" absent "$SD/claude.argv"
+fresh_state
+printf 'KEEP\n' > "$DIR/$STAMP-general.log"
+rm -f "$SD/date.count"
+STUB_DATE_STAMP=$STAMP STUB_DATE_TIMES=1 again "$WT" ok
+ok "a stale log from an earlier run is refused (exit 2)" rc_is 2
+ok "a stale log is not truncated" test "$(cat "$DIR/$STAMP-general.log")" = KEEP
+ok "a refused run leaves no empty report" absent "$DIR/$STAMP-general.md"
+ok "a stale-log refusal never starts claude" absent "$SD/claude.argv"
+rm -f "$SD/date.count"
+
+# A claude that ignores TERM is killed after the grace period.
+REVIEW_KILL_GRACE=abc run "$WT" ok;  ok "a non-numeric kill grace is refused (exit 2)" rc_is 2
+REVIEW_KILL_GRACE=0 run "$WT" ok;    ok "a zero kill grace is refused (exit 2)" rc_is 2
+ok "a bad kill grace never reaches op" absent "$SD/op.args"
+start=$SECONDS
+REVIEW_KILL_GRACE=1 run "$WT" stubborn
+elapsed=$((SECONDS - start))
+ok "a TERM-proof claude with a wrong source exits 1" rc_is 1
+ok "a TERM-proof claude is reported as aborted" has "$(file_of -general.md)" "Status: aborted"
+ok "a TERM-proof claude is killed after the grace" test "$elapsed" -lt 8
+
+STUB_CLAUDE_MODE=stubborn_ok
+n=$((n + 1)); STATE="$T/state/$n"; DIR="$STATE/review/acme-portal"; export XDG_STATE_HOME="$STATE"
+( cd "$WT" && exec env REVIEW_KILL_GRACE=1 "$RV" ) >"$T/out" 2>"$T/err" &
+rpid=$!
+for _ in $(seq 60); do grep -qF "Looking at the code" "$T/out" 2>/dev/null && break; sleep 0.1; done
+start=$SECONDS
+kill -TERM "$rpid" 2>/dev/null
+wait "$rpid"; rc=$?
+elapsed=$((SECONDS - start))
+ok "a TERM with a TERM-proof claude exits 1" rc_is 1
+ok "a TERM with a TERM-proof claude is reported as interrupted" has "$(file_of -general.md)" "Status: interrupted"
+ok "a TERM with a TERM-proof claude returns after the grace" test "$elapsed" -lt 8
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
