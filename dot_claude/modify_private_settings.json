@@ -347,7 +347,13 @@ printf '%s' "$input" | jq \
         # integration) and writes its reports to ~/.local/state/review and the session it
         # starts to ~/.claude, all denied in the sandbox. The Claude session it launches
         # runs under its own sandbox.
-        "excludedCommands": ["docker *", "basecamp *", "herdr *", "xreview *", "review *"],
+        #
+        # The docker context forms are listed separately because `docker *` alone did not
+        # exclude them on 2.1.309: `docker --context X ps`, `--context=X` and `-c X` all ran
+        # sandboxed and failed with "permission denied" on the socket, while `docker ps` was
+        # excluded. The docs say `docker *` should match; this is the observed behaviour.
+        "excludedCommands": ["docker *", "docker --context *", "docker --context=*", "docker -c *",
+                             "basecamp *", "herdr *", "xreview *", "review *"],
         "filesystem": {
           "allowRead": [
             "~/.ssh/config",

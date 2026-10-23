@@ -384,9 +384,10 @@ done
 # earn it for a second reason — sandboxed they return confident wrong answers rather than
 # failing, so the "escalate only on sandbox evidence" rule has nothing to fire on. Adding a
 # sixth entry should require the same justification, which is why this is pinned rather
-# than open-ended.
-jq_is '.sandbox.excludedCommands == ["docker *", "basecamp *", "herdr *", "xreview *", "review *"]' true \
-      "excludedCommands is exactly the five socket/keychain/state tools"
+# than open-ended. docker's three --context forms are the same tool, not new entries: on
+# 2.1.309 `docker *` did not exclude a call whose global flag precedes the subcommand.
+jq_is '.sandbox.excludedCommands == ["docker *", "docker --context *", "docker --context=*", "docker -c *", "basecamp *", "herdr *", "xreview *", "review *"]' true \
+      "excludedCommands is exactly the five socket/keychain/state tools, docker with its context forms"
 jq_is ".sandbox.network.allowUnixSockets == [\"$AGENT_SOCKET\"]" true \
       "allowUnixSockets contains only the stable agent socket"
 
