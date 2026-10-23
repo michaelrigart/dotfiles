@@ -67,8 +67,10 @@ vault; Michael creates it (see Migration).
 3. `cd "$HOME"`, so mise resolves the **global** Python. A project's own `mise.toml` (the
    server starts in whatever directory the session runs) neither changes the Python nor trips
    paranoid mode's untrusted-config refusal.
-4. `exec mise exec -- uvx --python "$(mise which python)" ha-mcp@latest`, calling mise by its
-   Homebrew path because Claude Desktop starts servers without the shell's PATH.
+4. `exec mise exec uv -- uvx --python "$(mise which python)" ha-mcp@latest`, with Homebrew's
+   bin on PATH because Claude Desktop starts servers without the shell's PATH. Naming `uv`
+   matters: a bare `mise exec --` first installs every missing tool in the config, so a
+   Ruby bump not yet installed would make the server compile Ruby before it starts.
 
 `--python` takes the interpreter's full path, so uv uses exactly mise's Python rather than any
 other it finds (Homebrew currently has 3.15 as `python3`; ha-mcp requires `>=3.13,<3.15`).
