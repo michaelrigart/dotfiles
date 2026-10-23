@@ -2,7 +2,8 @@
 # Launcher for the Home Assistant MCP server (ha-mcp): a stdio server that Claude Code and
 # Claude Desktop both run. ha-mcp reads HOMEASSISTANT_URL and HOMEASSISTANT_TOKEN itself from
 # ~/.config/ha-mcp/env (via HAMCP_ENV_FILE), which chezmoi renders from 1Password, so no
-# secret sits in either app's config or in the launcher's environment.
+# secret sits in either app's config or in the launcher's environment. The settings-UI
+# sidecar is disabled, as it would inherit the token.
 # Spec: docs/superpowers/specs/2026-10-23-ha-mcp-design.md
 set -eu
 
@@ -14,6 +15,10 @@ fi
 
 HAMCP_ENV_FILE="$env_file"
 export HAMCP_ENV_FILE
+
+# The settings-UI sidecar would inherit the token in its environment.
+HA_MCP_DISABLE_SETTINGS_UI=1
+export HA_MCP_DISABLE_SETTINGS_UI
 
 # Appended, so a test stub wins and Claude Desktop's bare PATH still finds mise.
 PATH="$PATH:/opt/homebrew/bin"
