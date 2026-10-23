@@ -273,9 +273,24 @@ run "claude_mcp .hidden"
 not_called "mcp "                            "leading-dot name: no mcp call"
 rc_is 1                                      "leading-dot name: exit 1"
 
+LC_ALL=en_US.UTF-8 run "claude_mcp é"
+has "invalid claude_mcp name"                "non-ASCII name (UTF-8 locale): warned"
+not_called "mcp "                            "non-ASCII name: no mcp call"
+rc_is 1                                      "non-ASCII name: exit 1"
+run "claude_mcp -x"
+has "invalid claude_mcp name"                "leading-dash name: warned"
+not_called "mcp "                            "leading-dash name: no mcp call"
+rc_is 1                                      "leading-dash name: exit 1"
+
+reset_mocks; export MOCK_CL_MCP_RC=1
+run "claude_mcp ha-mcp"
+called "mcp add-json ha-mcp"                 "add fails, no ~/.claude.json: add attempted"
+has "failed to add claude mcp"               "add fails: warned"
+rc_is 1                                      "add fails: exit 1"
+
 reset_mocks
 run "claude_mcp ha-mcp"
-has "launcher not found: $L"                 "launcher missing: warned"
+has "launcher not found: $L"               "launcher missing: warned"
 called "mcp add-json ha-mcp"                 "launcher missing: registration still called"
 reset_mocks; mk_launcher
 run "claude_mcp ha-mcp"

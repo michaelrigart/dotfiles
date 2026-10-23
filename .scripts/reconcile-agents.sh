@@ -11,7 +11,7 @@
 # Bash 3.2 compatible (macOS /bin/bash): no associative arrays, mapfile, or ${x,,}.
 # Exit status: 0 = every declared item is present/added; 1 = something could not be
 # reconciled (tool/jq absent, list query failed or returned an unexpected shape,
-# add/install failed, manifest error). A failed query never means "none installed":
+# add/install failed, MCP remove/add failed, manifest error). A failed query never means "none installed":
 # only a valid empty response ([]) does.
 # provision.sh wraps the call with `|| log_warn`, so a non-zero exit stays non-fatal
 # there while remaining truthful for manual/automated callers.
@@ -38,6 +38,15 @@ in_list() {
   local x
   for x in "$@"; do [ "$x" = "$needle" ] && return 0; done
   return 1
+}
+
+# valid_mcp_name <name> -> 0 if the name is ASCII [A-Za-z0-9._-]+ and starts with neither
+# "." nor "-" (a leading "-" would reach `claude mcp` as an option). The C locale keeps
+# the character ranges ASCII-only whatever the caller's LC_ALL.
+valid_mcp_name() {
+  ( LC_ALL=C
+    re='^[A-Za-z0-9._-]+$'
+    [[ $1 =~ $re ]] && case "$1" in .*|-*) false ;; *) true ;; esac )
 }
 
 # normalize_gh <source> -> echoes owner/repo for a GitHub URL, empty otherwise
@@ -82,11 +91,10 @@ parse_manifest() {
         in_list "$value" "${claude_plugins[@]}" && { log_warn "duplicate: $kind $value"; continue; }
         claude_plugins+=("$value") ;;
       claude_mcp)
-        case "$value" in
-          *[!A-Za-z0-9._-]*|.*)
-            log_warn "manifest line $lineno: invalid claude_mcp name '$value' — skipped"
-            status=1; continue ;;
-        esac
+        if ! valid_mcp_name "$value"; then
+          log_warn "manifest line $lineno: invalid claude_mcp name '$value' — skipped"
+          status=1; continue
+        fi
         in_list "$value" "${claude_mcps[@]}" && { log_warn "duplicate: $kind $value"; continue; }
         claude_mcps+=("$value") ;;
       codex_marketplace)
