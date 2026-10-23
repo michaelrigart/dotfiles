@@ -1,6 +1,6 @@
 # Idle MCP servers: ha-mcp only in home sessions, no REPL servers in Codex
 
-**Status:** Approved
+**Status:** In progress (branch `feat/idle-mcp-servers`; the dotfiles have no MR)
 **Date:** 2026-10-24
 **Branch:** `feat/idle-mcp-servers`
 **Builds on:** [2026-10-23 ha-mcp design](2026-10-23-ha-mcp-design.md), whose §5 registers
