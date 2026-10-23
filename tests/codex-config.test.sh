@@ -50,6 +50,13 @@ hasnt() {
   else _pass "$2"; fi
 }
 
+# tq <python expr over d> <expected repr> <label> — query the emitted TOML
+tq() {
+  local got
+  got=$(printf '%s' "$OUT" | python3 -c 'import sys,tomllib; d=tomllib.loads(sys.stdin.read()); print(repr(eval(sys.argv[1])))' "$1" 2>&1)
+  if [ "$got" = "$2" ]; then _pass "$3"; else _fail "$3" "$got"; fi
+}
+
 emit_hooks() {
   OUT=$(printf '%s' "$1" | chezmoi --config "$CFG" --config-format toml --persistent-state "$STATE" \
     --source "$SRC" --destination "$HOME" execute-template --with-stdin --file "$HOOKS_TPL" 2>&1)
@@ -218,6 +225,27 @@ if printf '{broken' | chezmoi --config "$CFG" --config-format toml --persistent-
 else
   _pass "invalid hooks.json is rejected"
 fi
+
+echo "K. REPL MCP servers stay off (spec 2026-10-24 §1)"
+repl=$'[mcp_servers.node_repl]\ncommand = "/x/node_repl"\nenabled = true\nenv_vars = ["A"]\n[mcp_servers.node_repl.env]\nFOO = "bar"\n'
+emit "$repl"
+tq 'd["mcp_servers"]["node_repl"]["enabled"]' 'False' "K.1 node_repl is disabled"
+tq 'd["mcp_servers"]["node_repl"]["command"]' "'/x/node_repl'" "K.1 node_repl command is kept"
+tq 'd["mcp_servers"]["node_repl"]["env_vars"]' "['A']" "K.1 node_repl env_vars are kept"
+tq 'd["mcp_servers"]["node_repl"]["env"]["FOO"]' "'bar'" "K.1 node_repl env is kept"
+first="$OUT"
+emit ''
+tq "'mcp_servers' in d" 'False' "K.2 no node_repl table is created from nothing"
+emit $'[mcp_servers.other]\ncommand = "x"\n'
+tq "'node_repl' in d[\"mcp_servers\"]" 'False' "K.2 no node_repl table beside other servers"
+tq 'd["mcp_servers"]["other"]["command"]' "'x'" "K.2 other servers are untouched"
+emit ''
+tq 'd["plugins"]["unified-computer-use@openai-bundled"]["enabled"]' 'False' "K.3 unified-computer-use is disabled from nothing"
+emit $'[plugins."unified-computer-use@openai-bundled"]\nenabled = true\n[plugins."browser@openai-bundled"]\nenabled = true\n'
+tq 'd["plugins"]["unified-computer-use@openai-bundled"]["enabled"]' 'False' "K.3 unified-computer-use is disabled over true"
+tq 'd["plugins"]["browser@openai-bundled"]["enabled"]' 'True' "K.3 other plugins are untouched"
+emit "$first"
+if [ "$first" = "$OUT" ]; then _pass "K.4 re-rendering is idempotent"; else _fail "K.4 re-rendering is idempotent" "second render differs"; fi
 
 echo "J. every Codex integration target is managed by chezmoi"
 if ! managed=$(chezmoi --config "$CFG" --config-format toml --persistent-state "$STATE" --source "$SRC" --destination "$HOME" managed 2>"$T/managed.err"); then
