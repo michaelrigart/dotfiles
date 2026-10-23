@@ -2,8 +2,7 @@
 # Pins the ha-mcp launcher (dot_local/bin/executable_ha-mcp) and the env-file template
 # (dot_config/private_ha-mcp/private_env.tmpl) both Claude apps run for the Home Assistant
 # MCP server. `mise` is a stub on PATH, so nothing real starts and no secret is touched; the
-# token is the sentinel SECRET-TOKEN-123. The template is rendered with an isolated chezmoi
-# (own config and state, 1Password call replaced by a literal), never the live ones.
+# token is the sentinel SECRET-TOKEN-123.
 #
 # Run: ./tests/ha-mcp.test.sh   (sandboxed is fine)
 
@@ -14,7 +13,6 @@ LAUNCHER="$SRC/dot_local/bin/executable_ha-mcp"
 TPL="$SRC/dot_config/private_ha-mcp/private_env.tmpl"
 [ -f "$LAUNCHER" ] || { echo "missing launcher: $LAUNCHER" >&2; exit 2; }
 [ -f "$TPL" ] || { echo "missing template: $TPL" >&2; exit 2; }
-command -v chezmoi >/dev/null 2>&1 || { echo "chezmoi not on PATH" >&2; exit 2; }
 
 T="$(mktemp -d "${TMPDIR:-/tmp}/ha-mcp.XXXXXX")"
 trap 'rm -rf "$T"' EXIT
