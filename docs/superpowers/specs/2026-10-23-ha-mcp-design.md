@@ -1,6 +1,6 @@
 # Home Assistant MCP server in the dotfiles
 
-**Status:** Approved
+**Status:** In progress (branch `feat/ha-mcp`; the dotfiles have no MR)
 **Date:** 2026-10-23
 **Branch:** `feat/ha-mcp`
 
@@ -63,11 +63,20 @@ vault; Michael creates it (see Migration).
 
 1. If the env file is unreadable, print `ha-mcp: <path> is missing or unreadable — run chezmoi
    apply` to stderr and exit 1.
-2. Export the file's variables (`set -a; . <file>; set +a`). The token is never printed.
+2. Export only `HAMCP_ENV_FILE=<that path>`. ha-mcp loads the file itself (python-dotenv,
+   then pydantic-settings), so the token sits in no process's launch environment. That
+   matters because a sandboxed shell can read another process's launch environment with
+   `sysctl KERN_PROCARGS2`, without `ps` (found in the final review; Michael's decision,
+   2026-10-23). `HAMCP_ENV_FILE` is in ha-mcp's code (8.7.0) but not its README: if a
+   release drops it, the server stops at start with ha-mcp's configuration error naming
+   `HOMEASSISTANT_URL`.
 3. `cd "$HOME"`, so mise resolves the **global** Python. A project's own `mise.toml` (the
    server starts in whatever directory the session runs) neither changes the Python nor trips
    paranoid mode's untrusted-config refusal.
-4. `exec mise exec uv -- uvx --python "$(mise which python)" ha-mcp@latest`, with Homebrew's
+4. Resolve `mise which python`; if mise has no Python for `$HOME`, print
+   `ha-mcp: mise has no Python for $HOME — run mise install` to stderr and exit 1 (mise's own
+   message points at `mise use`, the wrong fix).
+5. `exec mise exec uv -- uvx --python "<that python>" ha-mcp@latest`, with Homebrew's
    bin on PATH because Claude Desktop starts servers without the shell's PATH. Naming `uv`
    matters: a bare `mise exec --` first installs every missing tool in the config, so a
    Ruby bump not yet installed would make the server compile Ruby before it starts.
@@ -82,7 +91,9 @@ discard every cached download.
 `dot_claude/modify_private_settings.json` gains `Read(~/.config/ha-mcp/**)` and
 `Edit(~/.config/ha-mcp/**)` in its deny list. A `Read()` deny is also copied into the sandbox
 read-deny list, so sandboxed Bash can't read the file either. MCP servers start outside the
-Bash sandbox, so the launcher still can; the acceptance checks confirm both.
+Bash sandbox, so ha-mcp still can; the acceptance checks confirm both. The file entry also
+goes in `sandbox.credentials.files`, as `~/.aws/credentials` and `~/.config/op/config` do.
+Launching with `HAMCP_ENV_FILE` (§2) keeps the token out of process environments too.
 
 ### 4. Claude Desktop
 
@@ -123,7 +134,7 @@ there as tools rather than runtimes.
 
 ## Upgrading, reinstalling, debugging
 
-- **Python:** change it in mise; the next server start uses it. Moving mise past ha-mcp's
+- **Python:** change it in mise and run `mise install`; the next server start uses it. Moving mise past ha-mcp's
   supported range (3.15 today) stops the server, with uv naming the Python mismatch.
 - **ha-mcp:** automatic at the next server start. Trade-off accepted by Michael: a new release
   runs with the Home Assistant token without review. Desktop already worked this way.
@@ -136,7 +147,8 @@ there as tools rather than runtimes.
 - **Fresh machine:** no new steps. `provision.sh` already runs `chezmoi apply`,
   `reconcile-agents.sh` and `mise install`.
 - **Debugging:** run `ha-mcp` in a terminal; it either waits for MCP input on stdin or prints
-  its error. Logs: Claude Code `/mcp`, Desktop
+  its error. Status: Claude Code `/mcp`. Logs: Claude Code
+  `~/Library/Caches/claude-cli-nodejs/<cwd-slug>/mcp-logs-ha-mcp/`, Desktop
   `~/Library/Logs/Claude/mcp-server-Home Assistant.log`.
 
 ## Tests
@@ -145,9 +157,10 @@ there as tools rather than runtimes.
 - New `tests/claude-desktop-config.test.sh`: sets the entry on empty input and on a populated
   file; keeps preferences and other servers; replaces a stale `Home Assistant` entry (with env)
   wholesale; refuses invalid JSON and two documents; idempotent.
-- New `tests/ha-mcp.test.sh`: missing env file → exit 1 with the message; with a stub `mise` on
-  a temp HOME, the launcher execs `uvx --python <stub python> ha-mcp@latest` with both variables
-  exported and the token absent from stdout and stderr.
+- New `tests/ha-mcp.test.sh`: missing env file → exit 1 with the message on stderr; with a
+  stub `mise` on a temp HOME, the launcher execs `mise exec uv -- uvx --python <stub python>
+  ha-mcp@latest` from `$HOME` with `HAMCP_ENV_FILE` set and no `HOMEASSISTANT_*` variable in
+  its environment; mise without a Python → the `mise install` message.
 - `tests/reconcile-agents.test.sh`: `claude_mcp` absent → add, matching → no-op, stale (env
   present, different command) → remove + add, other servers untouched, wrong field count
   rejected.
@@ -167,10 +180,16 @@ there as tools rather than runtimes.
 7. Once both work, Michael revokes the old token in Home Assistant. It sat in a 0644,
    agent-readable file and is in the Borg archives.
 
+Until step 7, the old token also surfaces in: `chezmoi diff`, `cat` and `apply --verbose` of
+the Desktop target (a removed line), so nobody previews that target first; and
+`~/.claude/backups/`, which `claude mcp remove` writes. Revocation is the real control.
+
 ## Acceptance
 
-- `jq '.mcpServers' ~/.claude.json` and the Desktop config hold the launcher path and no token
-  (checked by length/hash, never printed).
+- `~/.claude.json` (every scope) and the Desktop config hold the launcher path and no old
+  token (checked by count, never printed).
+- No running ha-mcp process has a `HOMEASSISTANT_TOKEN` in its launch environment (counted,
+  never printed).
 - Claude Code `/mcp` and Claude Desktop both show the Home Assistant server connected, and
   `ha_get_overview` answers.
 - In a new Claude Code session, sandboxed Bash `cat ~/.config/ha-mcp/env` and the Read tool
@@ -185,3 +204,13 @@ there as tools rather than runtimes.
 - Launcher name equals server name, so the manifest line needs no command.
 - Replacing a drifted MCP entry, where plugins are add-only.
 - `cd "$HOME"` in the launcher rather than `mise -C`.
+
+## Rulings during implementation
+
+- `mise exec uv --`, not a bare `mise exec --`, which first installs every missing tool in
+  the config (a Ruby bump would make the server compile Ruby before it starts).
+- `claude_mcp` names are ASCII `[A-Za-z0-9._-]` checked in the C locale, and may not start
+  with `.` or `-` (a leading `-` would reach `claude mcp` as an option).
+- The env file also gets a `sandbox.credentials.files` entry, matching the repo's other
+  single credential files.
+- Launching with `HAMCP_ENV_FILE` instead of exporting the token (Michael's decision).
