@@ -1,0 +1,23 @@
+#!/bin/sh
+# Launcher for the Home Assistant MCP server (ha-mcp): a stdio server that Claude Code and
+# Claude Desktop both run. It reads HOMEASSISTANT_URL and HOMEASSISTANT_TOKEN from
+# ~/.config/ha-mcp/env, which chezmoi renders from 1Password, so no secret sits in either
+# app's config. Spec: docs/superpowers/specs/2026-10-23-ha-mcp-design.md
+set -eu
+
+env_file="$HOME/.config/ha-mcp/env"
+if [ ! -r "$env_file" ]; then
+  echo "ha-mcp: $env_file is missing or unreadable — run chezmoi apply" >&2
+  exit 1
+fi
+
+set -a
+. "$env_file"
+set +a
+
+# Appended, so a test stub wins and Claude Desktop's bare PATH still finds mise.
+PATH="$PATH:/opt/homebrew/bin"
+
+cd "$HOME"
+python=$(mise which python)
+exec mise exec -- uvx --python "$python" ha-mcp@latest

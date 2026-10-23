@@ -8,7 +8,8 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
 
 - **Never commit a secret.** Every secret is a template —
   `{{ onepasswordRead "op://Private/Item/field" }}` (SSH keys: `…?ssh-format=openssh`).
-  SSH keys live in `private_dot_ssh/`, tokens in `dot_config/bundler/config.tmpl`.
+  SSH keys live in `private_dot_ssh/`, tokens in `dot_config/bundler/config.tmpl` and
+  `dot_config/private_ha-mcp/private_env.tmpl`.
   Before committing under those paths: `git diff --cached`, and
   `grep -L onepassword private_dot_ssh/private_*.tmpl` must print nothing.
 - `.chezmoiignore` is an **allowlist** for `~/.claude`, `~/.codex`, and Alfred: ignore
