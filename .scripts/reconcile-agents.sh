@@ -4,6 +4,9 @@
 # Source of truth: ~/.config/agents/plugins.conf (deployed by chezmoi).
 # Idempotent and add-only: queries current state, installs only what is missing,
 # never uninstalls, and respects deliberately-disabled plugins.
+# MCP servers (claude_mcp) are the exception: a server whose entry differs from the
+# declaration is replaced, because the declaration is the whole definition and a
+# hand-made entry is what carries the token.
 #
 # Bash 3.2 compatible (macOS /bin/bash): no associative arrays, mapfile, or ${x,,}.
 # Exit status: 0 = every declared item is present/added; 1 = something could not be
@@ -27,7 +30,7 @@ MANIFEST="${XDG_CONFIG_HOME:-$HOME/.config}/agents/plugins.conf"
 CODEX_SYSTEM_MKTS="openai-bundled openai-primary-runtime openai-curated"
 
 # Deduplicated declaration lists.
-claude_mkts=(); claude_plugins=(); codex_mkts=(); codex_plugins=()
+claude_mkts=(); claude_plugins=(); claude_mcps=(); codex_mkts=(); codex_plugins=()
 
 # in_list <needle> <item>...  -> 0 if needle is among the items
 in_list() {
@@ -78,6 +81,14 @@ parse_manifest() {
       claude_plugin)
         in_list "$value" "${claude_plugins[@]}" && { log_warn "duplicate: $kind $value"; continue; }
         claude_plugins+=("$value") ;;
+      claude_mcp)
+        case "$value" in
+          *[!A-Za-z0-9._-]*|.*)
+            log_warn "manifest line $lineno: invalid claude_mcp name '$value' — skipped"
+            status=1; continue ;;
+        esac
+        in_list "$value" "${claude_mcps[@]}" && { log_warn "duplicate: $kind $value"; continue; }
+        claude_mcps+=("$value") ;;
       codex_marketplace)
         in_list "$value" "${codex_mkts[@]}" && { log_warn "duplicate: $kind $value"; continue; }
         codex_mkts+=("$value") ;;
@@ -135,6 +146,48 @@ project() {
 # ---------------------------------------------------------------------------
 # Claude
 # ---------------------------------------------------------------------------
+
+# MCP servers, user scope. Each name is a launcher at $HOME/.local/bin/<name> that
+# holds its own credentials, so the registered definition never carries any. An
+# existing entry is read only to compare; its content is never printed.
+reconcile_claude_mcp() {
+  [ "${#claude_mcps[@]}" -eq 0 ] && return
+  local cfg="$HOME/.claude.json" name cmd json state
+  if [ -e "$cfg" ] && ! jq -e 'type == "object"' "$cfg" >/dev/null 2>&1; then
+    log_warn "claude mcp: $cfg is not a JSON object — skipping MCP reconcile"
+    status=1; return
+  fi
+  for name in "${claude_mcps[@]}"; do
+    cmd="$HOME/.local/bin/$name"
+    [ -x "$cmd" ] || log_warn "launcher not found: $cmd"
+    json=$(jq -nc --arg c "$cmd" '{type:"stdio",command:$c,args:[],env:{}}') || {
+      log_warn "claude mcp: could not build definition for $name"; status=1; continue
+    }
+    state=absent
+    if [ -e "$cfg" ]; then
+      state=$(jq -r --arg n "$name" --arg c "$cmd" '
+        (.mcpServers // {}) as $m
+        | if ($m | type) != "object" or ($m | has($n) | not) then "absent"
+          elif ($m[$n] | type == "object"
+                and (.type // "stdio") == "stdio" and .command == $c
+                and (.args // []) == [] and (.env // {}) == {}) then "match"
+          else "differs" end' "$cfg" 2>/dev/null) || {
+        log_warn "claude mcp: could not read $cfg — skipping $name"; status=1; continue
+      }
+    fi
+    case "$state" in
+      match)
+        log_info "claude mcp present: $name"; continue ;;
+      differs)
+        log_info "claude mcp replace: $name"
+        claude mcp remove "$name" --scope user || {
+          log_warn "failed to remove claude mcp: $name"; status=1; continue
+        } ;;
+      *) log_info "claude mcp add: $name" ;;
+    esac
+    claude mcp add-json "$name" "$json" --scope user || { log_warn "failed to add claude mcp: $name"; status=1; }
+  done
+}
 reconcile_claude() {
   if ! command -v claude >/dev/null 2>&1; then
     log_warn "claude not found — skipping Claude reconcile (re-run after install/login)"
@@ -188,6 +241,8 @@ reconcile_claude() {
 $proj
 EOF
   fi
+
+  reconcile_claude_mcp
 }
 
 # ---------------------------------------------------------------------------

@@ -23,6 +23,7 @@ case "$*" in
   "plugin list --json")             printf '%s' "$MOCK_CL_PLUGINS"; exit "$MOCK_CL_PLUGINS_RC" ;;
   "plugin install"*)                echo "$*" >> "$CALLS"; exit "$MOCK_CL_INSTALL_RC" ;;
   "plugin marketplace add"*)        echo "$*" >> "$CALLS"; exit 0 ;;
+  "mcp "*)                          echo "$*" >> "$CALLS"; exit "${MOCK_CL_MCP_RC:-0}" ;;
   *) exit 0 ;;
 esac
 STUB
@@ -42,11 +43,13 @@ reset_mocks() {  # sane valid-empty defaults; scenarios override specific ones
   export MOCK_CL_MKT='[]' MOCK_CL_PLUGINS='[]' MOCK_CL_INSTALL_RC=0
   export MOCK_CL_MKT_RC=0 MOCK_CL_PLUGINS_RC=0
   export MOCK_CX_MKT='{"marketplaces":[]}' MOCK_CX_PLUGINS='{"installed":[]}'
+  export MOCK_CL_MCP_RC=0
+  rm -rf "$CFG/.claude.json" "$CFG/.local"   # HOME is $CFG: no MCP state leaks between scenarios
 }
 run() {  # run <manifest> (\n allowed) ; sets $OUT and $RC; resets the call log
   printf '%b\n' "$1" > "$CFG/agents/plugins.conf"
   : > "$CALLS"
-  OUT=$(CALLS="$CALLS" PATH="$BIN:$PATH" XDG_CONFIG_HOME="$CFG" /bin/bash "$RECON" 2>&1); RC=$?
+  OUT=$(CALLS="$CALLS" PATH="$BIN:$PATH" HOME="$CFG" XDG_CONFIG_HOME="$CFG" /bin/bash "$RECON" 2>&1); RC=$?
 }
 _pass() { echo "  PASS: $1"; pass=$((pass + 1)); }
 _fail() { echo "  FAIL: $1"; printf '%s\n' "$OUT" | sed 's/^/    | /'; fail=$((fail + 1)); }
@@ -209,6 +212,81 @@ reset_mocks; export MOCK_CX_PLUGINS='{"installed":[{}]}'
 run "codex_plugin foo@bar"
 has   "codex plugin list: unexpected JSON shape" "codex [{}]-in-installed rejected"
 rc_is 1                                          "codex schema drift exit 1"
+
+echo "H2. claude_mcp — registered in user scope, replaced on drift, content never printed"
+L="$CFG/.local/bin/ha-mcp"
+J='{"type":"stdio","command":"'"$L"'","args":[],"env":{}}'
+mk_launcher() { mkdir -p "$CFG/.local/bin"; printf '#!/bin/sh\n' > "$L"; chmod +x "$L"; }
+
+reset_mocks
+run "claude_mcp ha-mcp"
+called "mcp add-json ha-mcp $J --scope user" "no ~/.claude.json: server registered at user scope"
+not_called "mcp remove"                      "no ~/.claude.json: nothing removed"
+rc_is 0                                      "no ~/.claude.json: exit 0"
+
+reset_mocks; printf '%s' '{"mcpServers":{"other":{"command":"x"}}}' > "$CFG/.claude.json"
+run "claude_mcp ha-mcp"
+called "mcp add-json ha-mcp $J --scope user" "absent from mcpServers: registered"
+not_called "other"                           "absent from mcpServers: other servers never touched"
+rc_is 0                                      "absent from mcpServers: exit 0"
+
+reset_mocks; printf '%s' '{"mcpServers":{"ha-mcp":'"$J"'}}' > "$CFG/.claude.json"
+run "claude_mcp ha-mcp"
+has "claude mcp present: ha-mcp"             "matching entry reported present"
+not_called "mcp "                            "matching entry: no mcp call"
+rc_is 0                                      "matching entry: exit 0"
+
+reset_mocks
+printf '%s' '{"mcpServers":{"ha-mcp":{"type":"stdio","command":"uvx","args":["ha-mcp"],"env":{"HOMEASSISTANT_TOKEN":"SECRET-TOKEN-123"}}}}' > "$CFG/.claude.json"
+run "claude_mcp ha-mcp"
+has "claude mcp replace: ha-mcp"             "stale entry: replacement announced"
+if [ "$(sed -n 1p "$CALLS")" = "mcp remove ha-mcp --scope user" ] \
+   && [ "$(sed -n 2p "$CALLS")" = "mcp add-json ha-mcp $J --scope user" ] \
+   && [ "$(wc -l < "$CALLS" | tr -d ' ')" = "2" ]; then
+  _pass "stale entry: removed, then added"
+else _fail "stale entry: removed, then added"; fi
+hasnt "SECRET-TOKEN-123"                     "stale entry: token absent from output"
+not_called "SECRET-TOKEN-123"                "stale entry: token absent from every CLI call"
+rc_is 0                                      "stale entry: exit 0"
+
+reset_mocks; export MOCK_CL_MCP_RC=1
+printf '%s' '{"mcpServers":{"ha-mcp":{"type":"stdio","command":"uvx","args":["ha-mcp"],"env":{"HOMEASSISTANT_TOKEN":"SECRET-TOKEN-123"}}}}' > "$CFG/.claude.json"
+run "claude_mcp ha-mcp"
+called "mcp remove ha-mcp --scope user"      "remove fails: removal attempted"
+not_called "mcp add-json"                    "remove fails: no add after a failed remove"
+hasnt "SECRET-TOKEN-123"                     "remove fails: token absent from output"
+rc_is 1                                      "remove fails: exit 1"
+
+reset_mocks; printf '%s' 'not json' > "$CFG/.claude.json"
+run "claude_mcp ha-mcp"
+not_called "mcp "                            "invalid ~/.claude.json: no mcp call"
+has "$CFG/.claude.json"                      "invalid ~/.claude.json: warning names the file"
+rc_is 1                                      "invalid ~/.claude.json: exit 1"
+
+reset_mocks
+run "claude_mcp ../x"
+has "../x"                                   "bad name: warned"
+has "skipped"                                "bad name: skipped"
+not_called "mcp "                            "bad name: no mcp call"
+rc_is 1                                      "bad name: exit 1"
+run "claude_mcp .hidden"
+not_called "mcp "                            "leading-dot name: no mcp call"
+rc_is 1                                      "leading-dot name: exit 1"
+
+reset_mocks
+run "claude_mcp ha-mcp"
+has "launcher not found: $L"                 "launcher missing: warned"
+called "mcp add-json ha-mcp"                 "launcher missing: registration still called"
+reset_mocks; mk_launcher
+run "claude_mcp ha-mcp"
+hasnt "launcher not found"                   "launcher present: no warning"
+called "mcp add-json ha-mcp"                 "launcher present: registered"
+
+reset_mocks
+run "claude_mcp ha-mcp\nclaude_mcp ha-mcp"
+has "duplicate: claude_mcp ha-mcp"           "duplicate declaration warned"
+if [ "$(grep -c 'mcp add-json' "$CALLS")" = "1" ]; then _pass "duplicate declaration: registered once"
+else _fail "duplicate declaration: registered once"; fi
 
 echo "I. LIVE contract — the real CLI surface"
 # Everything above this line is mocked, so it agrees with itself no matter what Claude Code
