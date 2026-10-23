@@ -11,8 +11,8 @@
 # Bash 3.2 compatible (macOS /bin/bash): no associative arrays, mapfile, or ${x,,}.
 # Exit status: 0 = every declared item is present/added; 1 = something could not be
 # reconciled (tool/jq absent, list query failed or returned an unexpected shape,
-# add/install failed, MCP remove/add failed, manifest error). A failed query never means "none installed":
-# only a valid empty response ([]) does.
+# add/install failed, MCP remove/add failed, manifest error). A failed query never means
+# "none installed": only a valid empty response ([]) does.
 # provision.sh wraps the call with `|| log_warn`, so a non-zero exit stays non-fatal
 # there while remaining truthful for manual/automated callers.
 
@@ -196,6 +196,7 @@ reconcile_claude_mcp() {
     claude mcp add-json "$name" "$json" --scope user || { log_warn "failed to add claude mcp: $name"; status=1; }
   done
 }
+
 reconcile_claude() {
   if ! command -v claude >/dev/null 2>&1; then
     log_warn "claude not found — skipping Claude reconcile (re-run after install/login)"
