@@ -6,7 +6,8 @@
 # never uninstalls, and respects deliberately-disabled plugins.
 # MCP servers (claude_mcp) are the exception: a server whose entry differs from the
 # declaration is replaced, because the declaration is the whole definition and a
-# hand-made entry is what carries the token.
+# hand-made entry is what carries the token. A claude_mcp line may name a directory,
+# which puts the server in local scope there and removes its user-scope entry.
 #
 # Bash 3.2 compatible (macOS /bin/bash): no associative arrays, mapfile, or ${x,,}.
 # Exit status: 0 = every declared item is present/added; 1 = something could not be
@@ -30,7 +31,7 @@ MANIFEST="${XDG_CONFIG_HOME:-$HOME/.config}/agents/plugins.conf"
 CODEX_SYSTEM_MKTS="openai-bundled openai-primary-runtime openai-curated"
 
 # Deduplicated declaration lists.
-claude_mkts=(); claude_plugins=(); claude_mcps=(); codex_mkts=(); codex_plugins=()
+claude_mkts=(); claude_plugins=(); claude_mcps=(); claude_mcp_dirs=(); codex_mkts=(); codex_plugins=()
 
 # in_list <needle> <item>...  -> 0 if needle is among the items
 in_list() {
@@ -47,6 +48,17 @@ valid_mcp_name() {
   ( LC_ALL=C
     re='^[A-Za-z0-9._-]+$'
     [[ $1 =~ $re ]] && case "$1" in .*|-*) false ;; *) true ;; esac )
+}
+
+# expand_mcp_dir <raw> -> echoes $HOME for "~", $HOME/<rest> for "~/<rest>", the input for
+# an absolute path. Returns 1 for anything else (relative paths, "~user").
+expand_mcp_dir() {
+  case "$1" in
+    "~")   echo "$HOME" ;;
+    "~/"*) echo "$HOME/${1#"~/"}" ;;
+    /*)    echo "$1" ;;
+    *)     return 1 ;;
+  esac
 }
 
 # normalize_gh <source> -> echoes owner/repo for a GitHub URL, empty otherwise
@@ -71,14 +83,19 @@ parse_manifest() {
     status=1
     return
   fi
-  local lineno=0 raw line kind value
+  local lineno=0 raw line kind value dir
   while IFS= read -r raw || [ -n "$raw" ]; do
     lineno=$((lineno + 1))
     line=${raw%%#*}            # strip inline/full-line comment
     # shellcheck disable=SC2086  # intentional field split; set -f above prevents globbing
     set -- $line               # word-split; ignores leading/trailing whitespace
     [ $# -eq 0 ] && continue   # blank or comment-only
-    if [ $# -ne 2 ]; then
+    if [ "$1" = claude_mcp ]; then
+      if [ $# -lt 2 ] || [ $# -gt 3 ]; then
+        log_warn "manifest line $lineno: expected 2 or 3 fields, got $# — skipped"
+        status=1; continue
+      fi
+    elif [ $# -ne 2 ]; then
       log_warn "manifest line $lineno: expected 2 fields, got $# — skipped"
       status=1; continue
     fi
@@ -95,8 +112,15 @@ parse_manifest() {
           log_warn "manifest line $lineno: invalid claude_mcp name '$value' — skipped"
           status=1; continue
         fi
+        dir=""
+        if [ $# -eq 3 ]; then
+          dir=$(expand_mcp_dir "$3") || {
+            log_warn "manifest line $lineno: claude_mcp directory must be ~, ~/<path> or absolute: '$3' — skipped"
+            status=1; continue
+          }
+        fi
         in_list "$value" "${claude_mcps[@]}" && { log_warn "duplicate: $kind $value"; continue; }
-        claude_mcps+=("$value") ;;
+        claude_mcps+=("$value"); claude_mcp_dirs+=("$dir") ;;
       codex_marketplace)
         in_list "$value" "${codex_mkts[@]}" && { log_warn "duplicate: $kind $value"; continue; }
         codex_mkts+=("$value") ;;
@@ -155,45 +179,103 @@ project() {
 # Claude
 # ---------------------------------------------------------------------------
 
-# MCP servers, user scope. Each name is a launcher at $HOME/.local/bin/<name> that
-# holds its own credentials, so the registered definition never carries any. An
-# existing entry is read only to compare; its content is never printed.
+# mcp_entry_state <cfg> <name> <cmd> [<dir>] -> echoes absent | match | differs for
+# .mcpServers[name], or for .projects[dir].mcpServers[name] when dir is given. A match is
+# the stdio definition of <cmd> with no args and no env. An absent file is "absent";
+# returns non-zero when jq fails. The entry is only compared, never printed.
+mcp_entry_state() {
+  local cfg=$1 name=$2 cmd=$3 dir=${4:-}
+  [ -e "$cfg" ] || { echo absent; return 0; }
+  jq -r --arg n "$name" --arg c "$cmd" --arg d "$dir" '
+    (if $d == "" then .mcpServers
+     else (.projects | if type == "object" then .[$d] else null end)
+          | if type == "object" then .mcpServers else null end end) as $m
+    | if ($m | type) != "object" or ($m | has($n) | not) then "absent"
+      elif ($m[$n] | type == "object"
+            and (.type // "stdio") == "stdio" and .command == $c
+            and (.args // []) == [] and (.env // {}) == {}) then "match"
+      else "differs" end' "$cfg" 2>/dev/null
+}
+
+# MCP servers. Each name is a launcher at $HOME/.local/bin/<name> that holds its own
+# credentials, so the registered definition never carries any. An existing entry is read
+# only to compare; its content is never printed. A line without a directory registers the
+# server in user scope. A line with one registers it in local scope for that directory
+# (Claude Code picks the local scope from the working directory), then removes the
+# user-scope entry, and only if the local one succeeded or already matched.
 reconcile_claude_mcp() {
   [ "${#claude_mcps[@]}" -eq 0 ] && return
-  local cfg="$HOME/.claude.json" name cmd json state
+  local cfg="$HOME/.claude.json" i name dir phys cmd json state ustate other
   if [ -e "$cfg" ] && ! jq -e 'type == "object"' "$cfg" >/dev/null 2>&1; then
     log_warn "claude mcp: $cfg is not a JSON object — skipping MCP reconcile"
     status=1; return
   fi
-  for name in "${claude_mcps[@]}"; do
+  for i in "${!claude_mcps[@]}"; do
+    name=${claude_mcps[$i]}; dir=${claude_mcp_dirs[$i]}
     cmd="$HOME/.local/bin/$name"
     [ -x "$cmd" ] || log_warn "launcher not found: $cmd"
     json=$(jq -nc --arg c "$cmd" '{type:"stdio",command:$c,args:[],env:{}}') || {
       log_warn "claude mcp: could not build definition for $name"; status=1; continue
     }
-    state=absent
-    if [ -e "$cfg" ]; then
-      state=$(jq -r --arg n "$name" --arg c "$cmd" '
-        (.mcpServers // {}) as $m
-        | if ($m | type) != "object" or ($m | has($n) | not) then "absent"
-          elif ($m[$n] | type == "object"
-                and (.type // "stdio") == "stdio" and .command == $c
-                and (.args // []) == [] and (.env // {}) == {}) then "match"
-          else "differs" end' "$cfg" 2>/dev/null) || {
+    if [ -z "$dir" ]; then
+      state=$(mcp_entry_state "$cfg" "$name" "$cmd") || {
         log_warn "claude mcp: could not read $cfg — skipping $name"; status=1; continue
       }
+      case "$state" in
+        match)
+          log_info "claude mcp present: $name"; continue ;;
+        differs)
+          log_info "claude mcp replace: $name"
+          claude mcp remove "$name" --scope user || {
+            log_warn "failed to remove claude mcp: $name"; status=1; continue
+          } ;;
+        *) log_info "claude mcp add: $name" ;;
+      esac
+      claude mcp add-json "$name" "$json" --scope user || { log_warn "failed to add claude mcp: $name"; status=1; }
+      continue
     fi
+
+    phys=$(cd "$dir" 2>/dev/null && pwd -P) || {
+      log_warn "claude mcp: directory not found for $name: $dir"; status=1; continue
+    }
+    state=$(mcp_entry_state "$cfg" "$name" "$cmd" "$phys") || {
+      log_warn "claude mcp: could not read $cfg — skipping $name"; status=1; continue
+    }
     case "$state" in
       match)
-        log_info "claude mcp present: $name"; continue ;;
+        log_info "claude mcp present: $name (local: $phys)" ;;
       differs)
-        log_info "claude mcp replace: $name"
-        claude mcp remove "$name" --scope user || {
+        log_info "claude mcp replace: $name (local: $phys)"
+        ( cd "$phys" && claude mcp remove "$name" --scope local ) || {
           log_warn "failed to remove claude mcp: $name"; status=1; continue
         } ;;
-      *) log_info "claude mcp add: $name" ;;
+      *) log_info "claude mcp add: $name (local: $phys)" ;;
     esac
-    claude mcp add-json "$name" "$json" --scope user || { log_warn "failed to add claude mcp: $name"; status=1; }
+    if [ "$state" != match ]; then
+      ( cd "$phys" && claude mcp add-json "$name" "$json" --scope local ) || {
+        log_warn "failed to add claude mcp: $name"; status=1; continue
+      }
+    fi
+
+    ustate=$(mcp_entry_state "$cfg" "$name" "$cmd") || {
+      log_warn "claude mcp: could not read $cfg — leaving the user-scope entry of $name"; status=1; continue
+    }
+    if [ "$ustate" != absent ]; then
+      log_info "claude mcp remove: $name (user scope)"
+      claude mcp remove "$name" --scope user || { log_warn "failed to remove claude mcp: $name"; status=1; }
+    fi
+
+    if [ -e "$cfg" ]; then
+      while IFS= read -r other; do
+        [ -z "$other" ] && continue
+        log_warn "claude mcp: $name is also registered for $other (local scope) — left as-is"
+      done <<EOF
+$(jq -r --arg n "$name" --arg d "$phys" '
+    (.projects // {}) | if type == "object" then to_entries[]
+      | select(.key != $d and (.value | type == "object") and (.value.mcpServers | type == "object")
+               and (.value.mcpServers | has($n))) | .key else empty end' "$cfg" 2>/dev/null)
+EOF
+    fi
   done
 }
 

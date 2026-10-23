@@ -7,7 +7,7 @@
 set -u
 RECON="$(cd "$(dirname "$0")/.." && pwd)/.scripts/reconcile-agents.sh"
 [ -f "$RECON" ] || { echo "missing script under test: $RECON" >&2; exit 2; }
-BIN=$(mktemp -d); CFG=$(mktemp -d); CALLS="$BIN/calls.log"
+BIN=$(mktemp -d); CFG=$(mktemp -d); CALLS="$BIN/calls.log"; MCPCWD="$BIN/mcp-cwd.log"
 mkdir -p "$CFG/agents"
 trap 'rm -rf "$BIN" "$CFG"' EXIT   # clean temp dirs even on interrupt
 pass=0; fail=0; OUT=""; RC=0
@@ -23,7 +23,7 @@ case "$*" in
   "plugin list --json")             printf '%s' "$MOCK_CL_PLUGINS"; exit "$MOCK_CL_PLUGINS_RC" ;;
   "plugin install"*)                echo "$*" >> "$CALLS"; exit "$MOCK_CL_INSTALL_RC" ;;
   "plugin marketplace add"*)        echo "$*" >> "$CALLS"; exit 0 ;;
-  "mcp "*)                          echo "$*" >> "$CALLS"; exit "${MOCK_CL_MCP_RC:-0}" ;;
+  "mcp "*)                          echo "$*" >> "$CALLS"; printf '%s\t%s\n' "$(pwd -P)" "$*" >> "$MCPCWD"; exit "${MOCK_CL_MCP_RC:-0}" ;;
   *) exit 0 ;;
 esac
 STUB
@@ -48,8 +48,8 @@ reset_mocks() {  # sane valid-empty defaults; scenarios override specific ones
 }
 run() {  # run <manifest> (\n allowed) ; sets $OUT and $RC; resets the call log
   printf '%b\n' "$1" > "$CFG/agents/plugins.conf"
-  : > "$CALLS"
-  OUT=$(CALLS="$CALLS" PATH="$BIN:$PATH" HOME="$CFG" XDG_CONFIG_HOME="$CFG" /bin/bash "$RECON" 2>&1); RC=$?
+  : > "$CALLS"; : > "$MCPCWD"
+  OUT=$(CALLS="$CALLS" MCPCWD="$MCPCWD" PATH="$BIN:$PATH" HOME="$CFG" XDG_CONFIG_HOME="$CFG" /bin/bash "$RECON" 2>&1); RC=$?
 }
 _pass() { echo "  PASS: $1"; pass=$((pass + 1)); }
 _fail() { echo "  FAIL: $1"; printf '%s\n' "$OUT" | sed 's/^/    | /'; fail=$((fail + 1)); }
@@ -61,6 +61,8 @@ hasnt() { case "$OUT" in *"$1"*) _fail "$2" ;; *) _pass "$2" ;; esac; }
 # called/not_called look at the add/install calls the claude stub recorded
 called()     { if grep -qF -- "$1" "$CALLS"; then _pass "$2"; else _fail "$2"; fi; }
 not_called() { if grep -qF -- "$1" "$CALLS"; then _fail "$2"; else _pass "$2"; fi; }
+# called_in <dir> <args> <label> — an mcp call with exactly these args ran in <dir>
+called_in() { if grep -qxF -- "$1	$2" "$MCPCWD"; then _pass "$3"; else _fail "$3"; fi; }
 rc_is() { if [ "$RC" -eq "$1" ]; then _pass "$2"; else _fail "$2"; fi; }
 
 echo "A. substring collision — declared code-review, installed only xcode-review"
@@ -302,6 +304,113 @@ run "claude_mcp ha-mcp\nclaude_mcp ha-mcp"
 has "duplicate: claude_mcp ha-mcp"           "duplicate declaration warned"
 if [ "$(grep -c 'mcp add-json' "$CALLS")" = "1" ]; then _pass "duplicate declaration: registered once"
 else _fail "duplicate declaration: registered once"; fi
+
+echo "H3. claude_mcp with a directory — local scope there, user entry removed"
+CFGP=$(cd "$CFG" && pwd -P)
+TOK='{"type":"stdio","command":"uvx","args":["ha-mcp"],"env":{"HOMEASSISTANT_TOKEN":"SECRET-TOKEN-123"}}'
+LOC() { jq -nc --arg d "$1" --argjson j "$J" '{projects:{($d):{mcpServers:{"ha-mcp":$j}}}}'; }
+USR() { jq -nc --argjson t "$TOK" '{mcpServers:{"ha-mcp":$t}}'; }
+two_calls() {  # two_calls <line1> <line2> <label> — the call log is exactly these two lines
+  if [ "$(sed -n 1p "$CALLS")" = "$1" ] && [ "$(sed -n 2p "$CALLS")" = "$2" ] \
+     && [ "$(wc -l < "$CALLS" | tr -d ' ')" = "2" ]; then _pass "$3"; else _fail "$3"; fi
+}
+
+reset_mocks
+run "claude_mcp ha-mcp ~"
+called_in "$CFGP" "mcp add-json ha-mcp $J --scope local" "scoped, no .claude.json: local add runs in the directory"
+not_called "--scope user"                                "scoped, no .claude.json: nothing at user scope"
+has "claude mcp add: ha-mcp (local: $CFGP)"              "scoped, no .claude.json: add announced"
+rc_is 0                                                  "scoped, no .claude.json: exit 0"
+
+reset_mocks; USR > "$CFG/.claude.json"
+run "claude_mcp ha-mcp ~"
+two_calls "mcp add-json ha-mcp $J --scope local" "mcp remove ha-mcp --scope user" "scoped, user entry: local add, then user remove"
+called_in "$CFGP" "mcp add-json ha-mcp $J --scope local" "scoped, user entry: add ran in the directory"
+has "claude mcp remove: ha-mcp (user scope)"             "scoped, user entry: removal announced"
+hasnt "SECRET-TOKEN-123"                                 "scoped, user entry: token absent from output"
+not_called "SECRET-TOKEN-123"                            "scoped, user entry: token absent from every CLI call"
+rc_is 0                                                  "scoped, user entry: exit 0"
+
+reset_mocks; jq -nc --arg d "$CFGP" '{projects:{($d):{allowedTools:[]}}}' > "$CFG/.claude.json"
+run "claude_mcp ha-mcp ~"
+called_in "$CFGP" "mcp add-json ha-mcp $J --scope local" "project without mcpServers: local add called"
+rc_is 0                                                  "project without mcpServers: exit 0"
+
+reset_mocks; LOC "$CFGP" > "$CFG/.claude.json"
+run "claude_mcp ha-mcp ~"
+has "claude mcp present: ha-mcp (local: $CFGP)"          "local entry matches: reported present"
+not_called "mcp "                                        "local entry matches, no user entry: no mcp call"
+rc_is 0                                                  "local entry matches, no user entry: exit 0"
+
+reset_mocks; jq -c --argjson t "$TOK" '. + {mcpServers:{"ha-mcp":$t}}' <<< "$(LOC "$CFGP")" > "$CFG/.claude.json"
+run "claude_mcp ha-mcp ~"
+if [ "$(cat "$CALLS")" = "mcp remove ha-mcp --scope user" ]; then _pass "local matches, user entry: the only call removes the user entry"
+else _fail "local matches, user entry: the only call removes the user entry"; fi
+rc_is 0                                                  "local matches, user entry: exit 0"
+
+reset_mocks; export MOCK_CL_MCP_RC=1; USR > "$CFG/.claude.json"
+run "claude_mcp ha-mcp ~"
+called "mcp add-json ha-mcp $J --scope local"            "local add fails: add attempted"
+not_called "mcp remove ha-mcp --scope user"              "local add fails: user entry kept"
+has "failed to add claude mcp: ha-mcp"                   "local add fails: warned"
+hasnt "SECRET-TOKEN-123"                                 "local add fails: token absent from output"
+not_called "SECRET-TOKEN-123"                            "local add fails: token absent from every CLI call"
+rc_is 1                                                  "local add fails: exit 1"
+
+reset_mocks
+jq -nc --arg d "$CFGP" '{projects:{($d):{mcpServers:{"ha-mcp":{type:"stdio",command:"uvx",args:[],env:{}}}}}}' > "$CFG/.claude.json"
+run "claude_mcp ha-mcp ~"
+two_calls "mcp remove ha-mcp --scope local" "mcp add-json ha-mcp $J --scope local" "local differs: removed, then added"
+called_in "$CFGP" "mcp remove ha-mcp --scope local"      "local differs: remove ran in the directory"
+called_in "$CFGP" "mcp add-json ha-mcp $J --scope local" "local differs: add ran in the directory"
+has "claude mcp replace: ha-mcp (local: $CFGP)"          "local differs: replacement announced"
+rc_is 0                                                  "local differs: exit 0"
+
+reset_mocks; USR > "$CFG/.claude.json"
+run "claude_mcp ha-mcp ~/nope"
+has "claude mcp: directory not found for ha-mcp: $CFG/nope" "missing directory: warned"
+not_called "mcp "                                        "missing directory: nothing changed, user entry included"
+rc_is 1                                                  "missing directory: exit 1"
+
+reset_mocks
+run "claude_mcp ha-mcp sub"
+has "claude_mcp directory must be"                       "relative directory: manifest error"
+not_called "mcp "                                        "relative directory: no mcp call"
+rc_is 1                                                  "relative directory: exit 1"
+run "claude_mcp ha-mcp ~other"
+has "claude_mcp directory must be"                       "~user directory: manifest error"
+not_called "mcp "                                        "~user directory: no mcp call"
+rc_is 1                                                  "~user directory: exit 1"
+run "claude_plugin foo@m extra"
+has "expected 2 fields, got 3"                           "three fields on another kind: manifest error"
+not_called "mcp "                                        "three fields on another kind: no mcp call"
+rc_is 1                                                  "three fields on another kind: exit 1"
+run "claude_mcp ha-mcp ~ extra"
+has "expected 2 or 3 fields, got 4"                      "four fields on claude_mcp: manifest error"
+not_called "mcp "                                        "four fields on claude_mcp: no mcp call"
+rc_is 1                                                  "four fields on claude_mcp: exit 1"
+
+reset_mocks; mkdir -p "$CFG/sub"
+run "claude_mcp ha-mcp ~/sub"
+called_in "$CFGP/sub" "mcp add-json ha-mcp $J --scope local" "~/<path>: add runs in the subdirectory"
+rc_is 0                                                  "~/<path>: exit 0"
+run "claude_mcp ha-mcp $CFG/sub"
+called_in "$CFGP/sub" "mcp add-json ha-mcp $J --scope local" "absolute path: add runs in the directory"
+rc_is 0                                                  "absolute path: exit 0"
+run "claude_mcp ha-mcp ~ # home"
+called_in "$CFGP" "mcp add-json ha-mcp $J --scope local" "inline comment after the directory: add runs in ~"
+rc_is 0                                                  "inline comment after the directory: exit 0"
+
+reset_mocks; mkdir -p "$CFG/sub"; ln -s "$CFG/sub" "$CFG/link"; LOC "$CFGP/sub" > "$CFG/.claude.json"
+run "claude_mcp ha-mcp ~/link"
+has "claude mcp present: ha-mcp (local: $CFGP/sub)"      "symlinked directory: resolved to the physical path"
+not_called "mcp "                                        "symlinked directory: no mcp call"
+
+reset_mocks; jq -c --argjson j "$J" '.projects["/elsewhere"].mcpServers["ha-mcp"] = $j' <<< "$(LOC "$CFGP")" > "$CFG/.claude.json"
+run "claude_mcp ha-mcp ~"
+has "claude mcp: ha-mcp is also registered for /elsewhere (local scope) — left as-is" "stale local elsewhere: warned"
+not_called "mcp "                                        "stale local elsewhere: no mcp call"
+rc_is 0                                                  "stale local elsewhere: exit 0"
 
 echo "I. LIVE contract — the real CLI surface"
 # Everything above this line is mocked, so it agrees with itself no matter what Claude Code
