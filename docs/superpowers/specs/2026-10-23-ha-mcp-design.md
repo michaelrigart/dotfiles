@@ -1,6 +1,6 @@
 # Home Assistant MCP server in the dotfiles
 
-**Status:** In progress (branch `feat/ha-mcp`; the dotfiles have no MR)
+**Status:** Implemented (branch `feat/ha-mcp`; the dotfiles have no MR)
 **Date:** 2026-10-23
 **Branch:** `feat/ha-mcp`
 
@@ -53,7 +53,9 @@ HOMEASSISTANT_URL=<onepasswordRead "op://Private/Home Assistant MCP/hostname">
 HOMEASSISTANT_TOKEN=<onepasswordRead "op://Private/Home Assistant MCP/credential">
 ```
 
-The same pattern as the bundler token. The URL comes from 1Password too, so the repo carries no
+The same pattern as the bundler token. The values are single-quoted (`squote`) and read by
+python-dotenv, which treats `\\` and `\'` inside single quotes as escapes; a JWT token and a
+URL contain neither. The URL comes from 1Password too, so the repo carries no
 internal hostname. The item is an API Credential named `Home Assistant MCP` in the Private
 vault; Michael creates it (see Migration).
 
