@@ -20,4 +20,4 @@ PATH="$PATH:/opt/homebrew/bin"
 
 cd "$HOME"
 python=$(mise which python)
-exec mise exec -- uvx --python "$python" ha-mcp@latest
+exec mise exec uv -- uvx --python "$python" ha-mcp@latest

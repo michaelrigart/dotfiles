@@ -58,7 +58,7 @@ echo "B. launches uvx on mise's Python"
 printf "HOMEASSISTANT_URL='http://h:8123'\nHOMEASSISTANT_TOKEN='%s'\n" "$SENTINEL" > "$ENVF"
 run
 check "exits 0" "0" "$RC"
-check "execs uvx on mise's Python, env exported" "$T/home|exec -- uvx --python /stub/python ha-mcp@latest|http://h:8123|16" "$(cat "$LOG")"
+check "execs uvx on mise's Python, env exported" "$T/home|exec uv -- uvx --python /stub/python ha-mcp@latest|http://h:8123|16" "$(cat "$LOG")"
 check "runs from HOME, not the caller's directory" "$T/home" "$(cut -d'|' -f1 "$LOG")"
 case "$OUT" in *"$SENTINEL"*) _fail "token never printed" "launcher output contains the token" ;; *) _pass "token never printed" ;; esac
 
