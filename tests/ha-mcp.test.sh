@@ -24,7 +24,7 @@ cat > "$T/bin/mise" <<STUB
 #!/bin/sh
 case "\$1" in
   which) [ "\${MOCK_WHICH_RC:-0}" = 0 ] && echo /stub/python; exit "\${MOCK_WHICH_RC:-0}" ;;
-  exec) printf '%s|%s|%s|%s|%s\n' "\$PWD" "\$*" "\${HAMCP_ENV_FILE-unset}" "\${HOMEASSISTANT_URL-unset}" "\${HOMEASSISTANT_TOKEN-unset}" >> "$LOG"; exit 0 ;;
+  exec) printf '%s|%s|%s|%s|%s|%s\n' "\$PWD" "\$*" "\${HAMCP_ENV_FILE-unset}" "\${HOMEASSISTANT_URL-unset}" "\${HOMEASSISTANT_TOKEN-unset}" "\${HA_MCP_DISABLE_SETTINGS_UI-unset}" >> "$LOG"; exit 0 ;;
 esac
 exit 99
 STUB
@@ -58,7 +58,7 @@ echo "B. launches uvx on mise's Python"
 printf "HOMEASSISTANT_URL='http://h:8123'\nHOMEASSISTANT_TOKEN='%s'\n" "$SENTINEL" > "$ENVF"
 run
 check "exits 0" "0" "$RC"
-check "execs uvx on mise's Python, passing the env file path only" "$T/home|exec uv -- uvx --python /stub/python ha-mcp@latest|$T/home/.config/ha-mcp/env|unset|unset" "$(cat "$LOG")"
+check "execs uvx on mise's Python, passing the env file path only" "$T/home|exec uv -- uvx --python /stub/python ha-mcp@latest|$T/home/.config/ha-mcp/env|unset|unset|1" "$(cat "$LOG")"
 check "runs from HOME, not the caller's directory" "$T/home" "$(cut -d'|' -f1 "$LOG")"
 case "$OUT$ERR" in *"$SENTINEL"*) _fail "token never printed" "launcher output contains the token" ;; *) _pass "token never printed" ;; esac
 

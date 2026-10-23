@@ -216,3 +216,8 @@ the Desktop target (a removed line), so nobody previews that target first; and
 - The env file also gets a `sandbox.credentials.files` entry, matching the repo's other
   single credential files.
 - Launching with `HAMCP_ENV_FILE` instead of exporting the token (Michael's decision).
+- The launcher also sets `HA_MCP_DISABLE_SETTINGS_UI=1` (Michael's decision, at cutover).
+  ha-mcp loads the env file into its own environment and then starts a settings-UI
+  sidecar, which inherited `HOMEASSISTANT_TOKEN` in its launch environment (measured:
+  2 `HOMEASSISTANT_*` entries). Without the sidecar, no process launches with the token.
+  The browser settings page is gone with it; set the variable to `0` to bring it back.
