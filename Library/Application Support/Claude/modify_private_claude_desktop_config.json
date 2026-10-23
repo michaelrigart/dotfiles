@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# chezmoi modify_ script for the target ~/Library/Application Support/Claude/claude_desktop_config.json.
+#
+# Owns exactly one key: mcpServers["Home Assistant"], which points at the ha-mcp launcher
+# (the launcher reads the token from its env file, so none is written here). Claude Desktop
+# writes the rest of the file at runtime (preferences, coworkUserFilesPath, other MCP
+# servers), so this starts from the CURRENT file on stdin and leaves every other key
+# untouched. Spec: docs/superpowers/specs/2026-10-23-ha-mcp-design.md
+#
+# private_ prefix => target is deployed 0600. Bash 3.2 compatible.
+set -euo pipefail
+
+input=$(cat)
+# Fresh machine: no existing file => empty stdin => start from {}. A case pattern, not
+# ${input//[[:space:]]/}, which is quadratic on bash 3.2.
+case "$input" in *[![:space:]]*) ;; *) input='{}' ;; esac
+# Never overwrite a broken file: bail with no stdout if the current content isn't valid JSON,
+# or holds more than one document (`{} {}` would otherwise emit two objects).
+if ! printf '%s' "$input" | jq empty >/dev/null 2>&1 \
+  || [ "$(printf '%s' "$input" | jq -s 'length')" != 1 ]; then
+  echo "modify claude_desktop_config.json: current file is not one valid JSON document — refusing to overwrite" >&2
+  exit 1
+fi
+
+printf '%s' "$input" | jq --arg cmd "$HOME/.local/bin/ha-mcp" \
+  '.mcpServers["Home Assistant"] = {command: $cmd}'

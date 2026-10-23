@@ -25,6 +25,7 @@ emit '{}'
 EXP_DENY='["Read(~/.ssh/**)","Edit(~/.ssh/**)",
  "Read(~/.aws/credentials)","Edit(~/.aws/credentials)",
  "Read(~/.config/op/config)","Edit(~/.config/op/config)",
+ "Read(~/.config/ha-mcp/**)","Edit(~/.config/ha-mcp/**)",
  "Read(**/secrets.*.yml)","Edit(**/secrets.*.yml)",
  "Read(**/.env.production*)","Edit(**/.env.production*)",
  "Read(**/*.key)","Edit(**/*.key)",
@@ -236,7 +237,8 @@ EXP_CREDENTIALS='[
   "~/.ssh/michael_rsa",
   "~/.ssh/viumore_rsa",
   "~/.aws/credentials",
-  "~/.config/op/config"
+  "~/.config/op/config",
+  "~/.config/ha-mcp/env"
 ]'
 EXP_ALLOW_READ='[
   "~/.ssh/config",
