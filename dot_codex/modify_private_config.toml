@@ -4,7 +4,8 @@
 {{- /*   - seed model/effort/tier prefs ONLY when absent (so /model and       */ -}}
 {{- /*     fast-mode changes persist),                                        */ -}}
 {{- /*   - enforce UI / keybindings / notify / prevent_idle_sleep,            */ -}}
-{{- /*   - delete the retired js_repl flag.                                   */ -}}
+{{- /*   - delete the retired js_repl flag,                                   */ -}}
+{{- /*   - keep the node_repl / cua_repl MCP servers off.                     */ -}}
 {{- /* NB: TOML comments and key ordering are not preserved (parse→serialize).*/ -}}
 {{- $config := dict -}}
 {{- if .chezmoi.stdin -}}
@@ -77,5 +78,15 @@
        flag. Deleted rather than merely no longer set: this template carries every key it
        does not name, so the old pin would otherwise sit in the live file forever.     */ -}}
 {{- $config = deleteValueAtPath "features.js_repl" $config -}}
+
+{{- /* Codex starts the node_repl MCP server (and the unified-computer-use plugin's
+       cua_repl) in every thread, idle ones included (spec 2026-10-24 §1). node_repl is
+       disabled only when its table already exists: a table holding just `enabled` has no
+       command, and Codex fails on it with "invalid transport". The plugin id is set through
+       a list path so its "@" and "-" are never split as dotted keys.                  */ -}}
+{{- if dig "mcp_servers" "node_repl" "" $config -}}
+{{-   $config = setValueAtPath "mcp_servers.node_repl.enabled" false $config -}}
+{{- end -}}
+{{- $config = setValueAtPath (list "plugins" "unified-computer-use@openai-bundled" "enabled") false $config -}}
 
 {{- $config | toToml -}}
