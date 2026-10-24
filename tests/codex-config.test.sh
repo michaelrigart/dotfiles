@@ -239,13 +239,16 @@ tq "'mcp_servers' in d" 'False' "K.2 no node_repl table is created from nothing"
 emit $'[mcp_servers.other]\ncommand = "x"\n'
 tq "'node_repl' in d[\"mcp_servers\"]" 'False' "K.2 no node_repl table beside other servers"
 tq 'd["mcp_servers"]["other"]["command"]' "'x'" "K.2 other servers are untouched"
+# A table without a command is already invalid to Codex and no `enabled` value fixes it.
+emit $'[mcp_servers.node_repl]\n'
+tq 'd["mcp_servers"]["node_repl"]' '{}' "K.2 a bare node_repl header is left alone"
 emit ''
 tq 'd["plugins"]["unified-computer-use@openai-bundled"]["enabled"]' 'False' "K.3 unified-computer-use is disabled from nothing"
 emit $'[plugins."unified-computer-use@openai-bundled"]\nenabled = true\n[plugins."browser@openai-bundled"]\nenabled = true\n'
 tq 'd["plugins"]["unified-computer-use@openai-bundled"]["enabled"]' 'False' "K.3 unified-computer-use is disabled over true"
 tq 'd["plugins"]["browser@openai-bundled"]["enabled"]' 'True' "K.3 other plugins are untouched"
 emit "$first"
-if [ "$first" = "$OUT" ]; then _pass "K.4 re-rendering is idempotent"; else _fail "K.4 re-rendering is idempotent" "second render differs"; fi
+if [ "$first" = "$OUT" ]; then _pass "K.4 re-rendering is idempotent"; else _fail "K.4 re-rendering is idempotent" "$(diff <(printf '%s' "$first") <(printf '%s' "$OUT") | head -5)"; fi
 
 echo "J. every Codex integration target is managed by chezmoi"
 if ! managed=$(chezmoi --config "$CFG" --config-format toml --persistent-state "$STATE" --source "$SRC" --destination "$HOME" managed 2>"$T/managed.err"); then

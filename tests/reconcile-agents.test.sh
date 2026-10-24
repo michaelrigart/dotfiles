@@ -348,9 +348,19 @@ if [ "$(cat "$CALLS")" = "mcp remove ha-mcp --scope user" ]; then _pass "local m
 else _fail "local matches, user entry: the only call removes the user entry"; fi
 rc_is 0                                                  "local matches, user entry: exit 0"
 
+reset_mocks; export MOCK_CL_MCP_RC=1
+jq -c --argjson t "$TOK" '. + {mcpServers:{"ha-mcp":$t}}' <<< "$(LOC "$CFGP")" > "$CFG/.claude.json"
+run "claude_mcp ha-mcp ~"
+if [ "$(cat "$CALLS")" = "mcp remove ha-mcp --scope user" ]; then _pass "user remove fails: it was the only call"
+else _fail "user remove fails: it was the only call"; fi
+has "failed to remove claude mcp: ha-mcp"                "user remove fails: warned"
+hasnt "SECRET-TOKEN-123"                                 "user remove fails: token absent from output"
+not_called "SECRET-TOKEN-123"                            "user remove fails: token absent from every CLI call"
+rc_is 1                                                  "user remove fails: exit 1"
+
 reset_mocks; export MOCK_CL_MCP_RC=1; USR > "$CFG/.claude.json"
 run "claude_mcp ha-mcp ~"
-called "mcp add-json ha-mcp $J --scope local"            "local add fails: add attempted"
+called_in "$CFGP" "mcp add-json ha-mcp $J --scope local" "local add fails: add attempted in the directory"
 not_called "mcp remove ha-mcp --scope user"              "local add fails: user entry kept"
 has "failed to add claude mcp: ha-mcp"                   "local add fails: warned"
 hasnt "SECRET-TOKEN-123"                                 "local add fails: token absent from output"
@@ -392,8 +402,8 @@ rc_is 1                                                  "four fields on claude_
 
 reset_mocks; mkdir -p "$CFG/sub"
 run "claude_mcp ha-mcp ~/sub"
-called_in "$CFGP/sub" "mcp add-json ha-mcp $J --scope local" "~/<path>: add runs in the subdirectory"
-rc_is 0                                                  "~/<path>: exit 0"
+called_in "$CFGP/sub" "mcp add-json ha-mcp $J --scope local" "home-relative path: add runs in the subdirectory"
+rc_is 0                                                  "home-relative path: exit 0"
 run "claude_mcp ha-mcp $CFG/sub"
 called_in "$CFGP/sub" "mcp add-json ha-mcp $J --scope local" "absolute path: add runs in the directory"
 rc_is 0                                                  "absolute path: exit 0"
@@ -411,6 +421,42 @@ run "claude_mcp ha-mcp ~"
 has "claude mcp: ha-mcp is also registered for /elsewhere (local scope) — left as-is" "stale local elsewhere: warned"
 not_called "mcp "                                        "stale local elsewhere: no mcp call"
 rc_is 0                                                  "stale local elsewhere: exit 0"
+
+reset_mocks; export MOCK_CL_MCP_RC=1
+jq -nc --argjson j "$J" '{projects:{"/elsewhere":{mcpServers:{"ha-mcp":$j}}}}' > "$CFG/.claude.json"
+run "claude_mcp ha-mcp ~"
+has "claude mcp: ha-mcp is also registered for /elsewhere (local scope) — left as-is" "stale local elsewhere, local add fails: still warned"
+has "failed to add claude mcp: ha-mcp"                   "stale local elsewhere, local add fails: add failure warned"
+rc_is 1                                                  "stale local elsewhere, local add fails: exit 1"
+
+reset_mocks; USR > "$CFG/.claude.json"; git init -q "$CFG/repo"
+run "claude_mcp ha-mcp ~/repo"
+has "claude mcp: $CFGP/repo for ha-mcp is inside a git repository (Claude Code keys local scope by the repository root) — skipped" "directory in a git repository: warned"
+not_called "mcp "                                        "directory in a git repository: nothing changed, user entry included"
+hasnt "SECRET-TOKEN-123"                                 "directory in a git repository: token absent from output"
+rc_is 1                                                  "directory in a git repository: exit 1"
+
+reset_mocks
+run "claude_mcp ha-mcp ~\nclaude_mcp ha-mcp ~/other"
+has "manifest line 2: claude_mcp ha-mcp declared for '~/other' conflicts with an earlier declaration — skipped" "conflicting directories: conflict warned"
+hasnt "duplicate: claude_mcp"                            "conflicting directories: not reported as a plain duplicate"
+if [ "$(grep -c 'mcp add-json' "$CALLS")" = "1" ]; then _pass "conflicting directories: registered once"
+else _fail "conflicting directories: registered once"; fi
+called_in "$CFGP" "mcp add-json ha-mcp $J --scope local" "conflicting directories: the first declaration wins"
+rc_is 1                                                  "conflicting directories: exit 1"
+run "claude_mcp ha-mcp\nclaude_mcp ha-mcp ~"
+has "manifest line 2: claude_mcp ha-mcp declared for '~' conflicts with an earlier declaration — skipped" "user scope then scoped: conflict warned"
+called "mcp add-json ha-mcp $J --scope user"             "user scope then scoped: the first declaration wins"
+rc_is 1                                                  "user scope then scoped: exit 1"
+run "claude_mcp ha-mcp ~\nclaude_mcp ha-mcp"
+has "manifest line 2: claude_mcp ha-mcp declared for '(user scope)' conflicts with an earlier declaration — skipped" "scoped then user scope: conflict warned"
+rc_is 1                                                  "scoped then user scope: exit 1"
+run "claude_mcp ha-mcp ~\nclaude_mcp ha-mcp ~"
+has "duplicate: claude_mcp ha-mcp"                       "identical scoped pair: duplicate warned"
+hasnt "conflicts with an earlier declaration"            "identical scoped pair: no conflict"
+if [ "$(grep -c 'mcp add-json' "$CALLS")" = "1" ]; then _pass "identical scoped pair: registered once"
+else _fail "identical scoped pair: registered once"; fi
+rc_is 0                                                  "identical scoped pair: exit 0"
 
 echo "I. LIVE contract — the real CLI surface"
 # Everything above this line is mocked, so it agrees with itself no matter what Claude Code

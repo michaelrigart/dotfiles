@@ -7,7 +7,8 @@
 # MCP servers (claude_mcp) are the exception: a server whose entry differs from the
 # declaration is replaced, because the declaration is the whole definition and a
 # hand-made entry is what carries the token. A claude_mcp line may name a directory,
-# which puts the server in local scope there and removes its user-scope entry.
+# which puts the server in local scope there and removes its user-scope entry; the
+# directory must be outside any git repository, and a name has one directory.
 #
 # Bash 3.2 compatible (macOS /bin/bash): no associative arrays, mapfile, or ${x,,}.
 # Exit status: 0 = every declared item is present/added; 1 = something could not be
@@ -53,6 +54,7 @@ valid_mcp_name() {
 # expand_mcp_dir <raw> -> echoes $HOME for "~", $HOME/<rest> for "~/<rest>", the input for
 # an absolute path. Returns 1 for anything else (relative paths, "~user").
 expand_mcp_dir() {
+  # shellcheck disable=SC2088  # literal tilde from the manifest
   case "$1" in
     "~")   echo "$HOME" ;;
     "~/"*) echo "$HOME/${1#"~/"}" ;;
@@ -83,7 +85,7 @@ parse_manifest() {
     status=1
     return
   fi
-  local lineno=0 raw line kind value dir
+  local lineno=0 raw line kind value dir i found
   while IFS= read -r raw || [ -n "$raw" ]; do
     lineno=$((lineno + 1))
     line=${raw%%#*}            # strip inline/full-line comment
@@ -119,7 +121,17 @@ parse_manifest() {
             status=1; continue
           }
         fi
-        in_list "$value" "${claude_mcps[@]}" && { log_warn "duplicate: $kind $value"; continue; }
+        found=""
+        for i in "${!claude_mcps[@]}"; do [ "${claude_mcps[$i]}" = "$value" ] && { found=$i; break; }; done
+        if [ -n "$found" ]; then
+          if [ "${claude_mcp_dirs[$found]}" != "$dir" ]; then
+            log_warn "manifest line $lineno: claude_mcp $value declared for '${3:-(user scope)}' conflicts with an earlier declaration — skipped"
+            status=1
+          else
+            log_warn "duplicate: $kind $value"
+          fi
+          continue
+        fi
         claude_mcps+=("$value"); claude_mcp_dirs+=("$dir") ;;
       codex_marketplace)
         in_list "$value" "${codex_mkts[@]}" && { log_warn "duplicate: $kind $value"; continue; }
@@ -201,8 +213,9 @@ mcp_entry_state() {
 # credentials, so the registered definition never carries any. An existing entry is read
 # only to compare; its content is never printed. A line without a directory registers the
 # server in user scope. A line with one registers it in local scope for that directory
-# (Claude Code picks the local scope from the working directory), then removes the
-# user-scope entry, and only if the local one succeeded or already matched.
+# (Claude Code picks the local scope from the working directory, or from the repository
+# root inside a git repository, which is refused), then removes the user-scope entry, and
+# only if the local one succeeded or already matched.
 reconcile_claude_mcp() {
   [ "${#claude_mcps[@]}" -eq 0 ] && return
   local cfg="$HOME/.claude.json" i name dir phys cmd json state ustate other
@@ -238,6 +251,23 @@ reconcile_claude_mcp() {
     phys=$(cd "$dir" 2>/dev/null && pwd -P) || {
       log_warn "claude mcp: directory not found for $name: $dir"; status=1; continue
     }
+    if git -C "$phys" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      log_warn "claude mcp: $phys for $name is inside a git repository (Claude Code keys local scope by the repository root) — skipped"
+      status=1; continue
+    fi
+
+    if [ -e "$cfg" ]; then
+      while IFS= read -r other; do
+        [ -z "$other" ] && continue
+        log_warn "claude mcp: $name is also registered for $other (local scope) — left as-is"
+      done <<EOF
+$(jq -r --arg n "$name" --arg d "$phys" '
+    (.projects // {}) | if type == "object" then to_entries[]
+      | select(.key != $d and (.value | type == "object") and (.value.mcpServers | type == "object")
+               and (.value.mcpServers | has($n))) | .key else empty end' "$cfg" 2>/dev/null)
+EOF
+    fi
+
     state=$(mcp_entry_state "$cfg" "$name" "$cmd" "$phys") || {
       log_warn "claude mcp: could not read $cfg — skipping $name"; status=1; continue
     }
@@ -263,18 +293,6 @@ reconcile_claude_mcp() {
     if [ "$ustate" != absent ]; then
       log_info "claude mcp remove: $name (user scope)"
       claude mcp remove "$name" --scope user || { log_warn "failed to remove claude mcp: $name"; status=1; }
-    fi
-
-    if [ -e "$cfg" ]; then
-      while IFS= read -r other; do
-        [ -z "$other" ] && continue
-        log_warn "claude mcp: $name is also registered for $other (local scope) — left as-is"
-      done <<EOF
-$(jq -r --arg n "$name" --arg d "$phys" '
-    (.projects // {}) | if type == "object" then to_entries[]
-      | select(.key != $d and (.value | type == "object") and (.value.mcpServers | type == "object")
-               and (.value.mcpServers | has($n))) | .key else empty end' "$cfg" 2>/dev/null)
-EOF
     fi
   done
 }
