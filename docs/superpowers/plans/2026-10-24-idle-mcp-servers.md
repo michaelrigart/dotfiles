@@ -2,7 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** In progress (branch `feat/idle-mcp-servers`; the dotfiles have no MR)
+**Status:** Implemented (branch `feat/idle-mcp-servers`; the dotfiles have no MR)
+
+> **Completed 2026-10-24** (commits f8bd38b, 7119e82, 5d28197). Do not run this plan again.
 
 **Goal:** Codex threads start no REPL MCP servers, and ha-mcp is registered only for Claude Code sessions started in `~`.
 

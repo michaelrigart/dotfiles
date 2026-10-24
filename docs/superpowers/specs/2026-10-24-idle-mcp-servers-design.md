@@ -1,6 +1,6 @@
 # Idle MCP servers: ha-mcp only in home sessions, no REPL servers in Codex
 
-**Status:** In progress (branch `feat/idle-mcp-servers`; the dotfiles have no MR)
+**Status:** Implemented (branch `feat/idle-mcp-servers`; the dotfiles have no MR)
 **Date:** 2026-10-24
 **Branch:** `feat/idle-mcp-servers`
 **Builds on:** [2026-10-23 ha-mcp design](2026-10-23-ha-mcp-design.md), whose §5 registers
@@ -181,3 +181,19 @@ ha-mcp. The acceptance checks confirm this rather than trust it.
   2026-10-23 design kept local scope out of the reconciler's reach.
 - The 2026-10-23 spec stays as written: its status remains `Implemented`, and this spec
   records the narrowed scope.
+
+## Rulings during implementation
+
+- **A directory inside a git repository is refused.** The final review found that Claude Code
+  (2.1.310) keys local scope by the canonical repository root when the working directory is in
+  a repository (for a `wt` worktree, the main checkout), and by the directory itself otherwise.
+  §2's "exact project directory" holds only outside a repository. Such a line could never
+  reconcile: the entry lands under the root, `.projects[<dir>]` stays absent, and every later
+  run re-adds and fails. The reconciler now warns, sets `status=1` and changes nothing for a
+  directory inside a git work tree; `plugins.conf` says `<dir>` must be outside any repository.
+  `~` is unaffected.
+- **One directory per server.** A second `claude_mcp` line for the same name with a different
+  directory (or one scoped, one not) is a conflict: warned, `status=1`, the first declaration
+  wins. An identical repeat keeps the existing duplicate warning.
+- **The stale-local warning (§2 step 4) runs before step 2**, so a failed add or remove still
+  names the other directories. A missing or refused directory still skips it.
