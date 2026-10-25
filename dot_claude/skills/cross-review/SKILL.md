@@ -115,7 +115,7 @@ reviewed in slices, each on its own fresh thread, with the pane following. Slice
 longer, so give `collect` a larger budget; it runs the remaining slices itself, and exit 3
 is resumed as usual. If a sliced collect stops on a pane or daemon refusal, or on a slice
 with no turn on record, run collect again once it clears. Never re-dispatch a sliced round unless it says to (a slice's packet is gone).
-With `fit` off, as shipped, dispatch refuses a packet over its size cap, and there are no slices or moves.
+With `fit` off, as shipped, dispatch refuses a packet over its size cap (escalate, below), and there are no slices or moves.
 Never put an environment assignment in front of `xreview` to get past a refusal: the sandbox
 exclusion then no longer applies.
 
@@ -262,6 +262,7 @@ Escalate to Michael when, and only when:
   (or cannot create or open its lock file).
 - `xreview` refuses because a pinned review thread cannot hold the packet. The pin is
   Michael's; never drop it with `xreview round --reset`.
+- `xreview` refuses a packet over its size cap while `fit` is off. The cap is Michael's to raise.
 - `xreview` refuses because the pane is resuming something other than a thread id (for
   example `codex resume --last` or a picker). The pane is Michael's.
 

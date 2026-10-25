@@ -530,6 +530,9 @@ else _fail "the skill gives dispatch a five-minute tool timeout" "missing"; fi
 # less for the next one; they must sit under "Acting on findings", where the model reads
 # them while fixing.
 acting="$(sed -n '/^## Acting on findings/,/^## /p' "$SKILL")"
+if [ "$(tail -n 1 <<<"$acting")" = "$(tail -n 1 "$SKILL")" ]; then
+  _fail "the acting range ends at its anchor" "it reached the end of the file"
+else _pass "the acting range ends at its anchor"; fi
 for rule in 'Fix the class, not the instance.' 'One cause, one fix.' \
             'Check each fix against its failure scenario.' \
             'Re-read what depends on the changed text.' 'One dispatch per round.'; do
@@ -573,7 +576,7 @@ for phrase in 'dispatch never refuses on size' \
               'Commit each round'"'"'s plan fixes before re-dispatching' \
               'ambiguous: no turn on record' \
               '`fit` on in `~/.config/xreview/packets.conf`, the packet is xreview'"'"'s to build, and dispatch never refuses on size' \
-              'With `fit` off, as shipped, dispatch refuses a packet over its size cap, and there are no slices or moves' \
+              'With `fit` off, as shipped, dispatch refuses a packet over its size cap (escalate, below), and there are no slices or moves' \
               'and only with `fit` on' \
               'Never put an environment assignment in front of `xreview` to get past a refusal' \
               'Never re-dispatch a sliced round unless it says to (a slice'"'"'s packet is gone)' \
@@ -607,6 +610,7 @@ expected_esc="$(cat <<'EXPECTED_ESC'
   (or cannot create or open its lock file).
 - `xreview` refuses because a pinned review thread cannot hold the packet. The pin is
   Michael's; never drop it with `xreview round --reset`.
+- `xreview` refuses a packet over its size cap while `fit` is off. The cap is Michael's to raise.
 - `xreview` refuses because the pane is resuming something other than a thread id (for
   example `codex resume --last` or a picker). The pane is Michael's.
 EXPECTED_ESC
