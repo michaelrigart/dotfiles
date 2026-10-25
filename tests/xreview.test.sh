@@ -234,6 +234,8 @@ case "$cmd" in
   health) [ -n "${RPC_SWITCH_BRANCH_EARLY:-}" ] && git checkout -q "$RPC_SWITCH_BRANCH_EARLY" 2>/dev/null
           [ -z "${RPC_HEALTH_FAIL:-}" ] || exit 5; exit 0 ;;
   thread-start) [ -n "${RPC_START_THREAD_FAIL:-}" ] && exit 1
+                # $P/thread_start_sh: a script run as a thread is started (a state path blocked, say).
+                if [ -r "$P/thread_start_sh" ]; then sh "$P/thread_start_sh"; fi
                 # $P/uuids: the ids later thread-starts hand out, one per call, in order (slices).
                 if [ -s "$P/uuids" ]; then
                   head -1 "$P/uuids"; tail -n +2 "$P/uuids" > "$P/uuids.t"; mv "$P/uuids.t" "$P/uuids"
@@ -359,7 +361,8 @@ fresh() { # a pane showing U0, idle, its TUI not connected to the daemon; clean 
   rm -f "$P/connected" "$P/argv" "$P/screen" "$P/gone" "$P/procinfo_fail_once"
   rm -f "$P"/running.* "$P/ledger-at-start"
   rm -f "$P/uuids" "$P"/answer.* "$P"/rc.* "$P"/compacted.* "$P"/start_rc.* "$P"/unfound.* \
-        "$P"/hold.* "$P"/holding.* "$P"/waiting.* "$P/ensured" "$P"/start_dir.* "$P"/start_sh.*
+        "$P"/hold.* "$P"/holding.* "$P"/waiting.* "$P/ensured" "$P"/start_dir.* "$P"/start_sh.* \
+        "$P/thread_start_sh"
   mkdir -p "$CODEX_HOME/app-server-daemon"; printf '{"pid":999}\n' > "$CODEX_HOME/app-server-daemon/daemon.pid"
   bash "$XREVIEW" round --reset >/dev/null 2>&1
   rm -rf "$STATE/superseded" "$STATE/pin" "$STATE/turns" "$STATE/missed"
@@ -2218,16 +2221,13 @@ is "X8 and the old thread is archived once the pane shows the new one" "$(called
 # (an errexit) or that and the cleanup's own rm failed too. The exit guard starts a fresh Codex in
 # the pane first, and the pre-turn cleanup still runs behind it: the thread started for the review
 # is archived exactly once, and no packet, targets or labels are left. A failing rm skips neither.
-failing_rm() { # an rm on PATH that fails on any argument ending in $RM_FAIL_SUFFIX, while it exists
-  cat > "$STUB/rm" <<'M'
-#!/bin/sh
-if [ -n "${RM_FAIL_SUFFIX:-}" ]; then
-  for a in "$@"; do case "$a" in *"$RM_FAIL_SUFFIX") exit 1 ;; esac; done
-fi
-exec /bin/rm "$@"
-M
-  chmod +x "$STUB/rm"
+failing_stub() { # failing_stub <cmd> <var>: a <cmd> on PATH, while it exists, that fails on any
+  # argument ending in $<var> and is /bin/<cmd> otherwise
+  printf '#!/bin/sh\nif [ -n "${%s:-}" ]; then\n  for a in "$@"; do case "$a" in *"$%s") exit 1 ;; esac; done\nfi\nexec /bin/%s "$@"\n' \
+    "$2" "$2" "$1" > "$STUB/$1"
+  chmod +x "$STUB/$1"
 }
+failing_rm() { failing_stub rm RM_FAIL_SUFFIX; }
 failing_rm
 for how in turn-start mkdir rm; do
   fresh; packets framing fit; rm -rf "$CODEX_HOME/sessions"; rollout $U0 1000 258400
@@ -2242,7 +2242,7 @@ for how in turn-start mkdir rm; do
      "$(called "$relaunch")/$([ "$(first "$relaunch")" -lt "$(first "xreview-rpc thread-archive --thread $U1")" ] && echo first)" "1/first"
   is "X8 ($how) no review thread is recorded" "$([ -e "$STATE/review-thread" ] && echo left || echo none)" none
   if [ "$how" != rm ]; then
-    is "X8 ($how) and the cleanup ran: no .targets, .shown or packet directory is left" \
+    is "X8 ($how) and the cleanup ran: no turn record, .targets, .shown or packet directory is left" \
        "$(ls "$STATE/turns" 2>/dev/null | wc -l | tr -d ' ')" 0
   fi
 done
@@ -2260,7 +2260,7 @@ for how in RPC_START_UNCERTAIN RPC_START_BAD_ID; do
   is "X8 ($how) and nothing is archived" "$(called 'xreview-rpc thread-archive')" 0
 done
 
-# The turn record is the line: before it a failure is a refusal, after it nothing refuses. A move
+# turn-start is the line: before it a failure is a refusal, after it nothing refuses. A move
 # off U2 whose review-thread is readable but not writable cannot be recorded once the turn exists
 # (started, or sent and unanswered): it warns once, archives nothing, keeps the round's files and
 # prints the nonce, and the turn collects. U2 is not queued, since it is still the review thread.
@@ -2271,7 +2271,7 @@ for how in started unanswered; do
   else out="$(RPC_START_UNCERTAIN=1 bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md 2>&1)"; rc=$?; fi
   chmod u+w "$STATE/review-thread"
   nonce="$(printf '%s' "$out" | grep '^xr-')"
-  is "Z1 ($how) a move that cannot be recorded after the turn record: exit 0, the nonce once" \
+  is "Z1 ($how) a move that cannot be recorded after turn-start: exit 0, the nonce once" \
      "$rc/$(printf '%s' "$out" | grep -c '^xr-')" "0/1"
   is "Z1 ($how) with the warning, once" \
      "$(printf '%s\n' "$out" | grep -cxF "xreview: $U1 could not be recorded as the checkpoint's review thread in $STATE, so the next dispatch starts another and $U1 stays unarchived")" 1
@@ -2288,15 +2288,47 @@ for how in started unanswered; do
     is "Z1 (unanswered) saying not to re-dispatch" "$(printf '%s' "$out" | grep -c 'do NOT re-dispatch')" 1
   fi
 done
-# The turn record itself cannot be written (a directory stands where it goes): still a refusal.
-# The fresh thread is archived exactly once, behind the guard's fresh Codex, and no nonce is printed.
+# turn-start is the line. The turn record goes down before it, in its exit-6 form: a record that
+# cannot be written (a directory stands where it goes) is a refusal with no turn. turn-start is
+# never called, the fresh thread is archived exactly once behind the guard's fresh Codex, no
+# nonce is printed and the cleanup leaves no record behind.
 fresh; packets framing fit; rm -rf "$CODEX_HOME/sessions"; rollout $U0 1000 258400
-printf 'for d in "%s"/turns/*.packets; do mkdir -p "${d%%.packets}"; done\n' "$STATE" > "$P/start_sh.$U1"
+printf 'for d in "%s"/turns/*.packets; do mkdir -p "${d%%.packets}"; done\n' "$STATE" > "$P/thread_start_sh"
 out="$(bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md 2>&1)"; rc=$?
-is "Z1 a turn record that cannot be written refuses, with no nonce" "$rc/$(printf '%s' "$out" | grep -c '^xr-')" "1/0"
-is "Z1 its thread is archived exactly once, behind the guard, and the move is not recorded" \
+rm -f "$P/thread_start_sh"
+is "W1 a turn record that cannot be written before turn-start refuses: no turn, no nonce" \
+   "$rc/$(called 'xreview-rpc turn-start')/$(printf '%s' "$out" | grep -c '^xr-')" "1/0/0"
+is "W1 its thread is archived exactly once, behind the guard, and the move is not recorded" \
    "$(called "xreview-rpc thread-archive --thread $U1")/$(called "$relaunch")/$([ "$(first "$relaunch")" -lt "$(first "xreview-rpc thread-archive --thread $U1")" ] && echo first)/$([ -e "$STATE/review-thread" ] && echo left || echo none)" \
    "1/1/first/none"
+is "W1 and nothing is left in turns/, the blocked record's place included" "$(ls "$STATE/turns" 2>/dev/null | wc -l | tr -d ' ')" 0
+# turn-start answered 0, but its id cannot replace the ? record: the temp file cannot be written
+# (a directory stands there), or cannot be moved into place. Nothing refuses: exit 0 with the
+# nonce, nothing archived, the ? record and .known stand, and collect finds the turn as the one not
+# on the thread before, as after an exit 6.
+for how in write rename; do
+  fresh; packets framing fit; rm -rf "$CODEX_HOME/sessions"; rollout $U0 1000 258400
+  if [ "$how" = write ]; then
+    printf 'for d in "%s"/turns/*.packets; do mkdir -p "${d%%.packets}.tmp"; done\n' "$STATE" > "$P/start_sh.$U1"
+    out="$(bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md 2>&1)"; rc=$?
+  else
+    failing_stub mv MV_FAIL_SUFFIX
+    out="$(MV_FAIL_SUFFIX=.tmp bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md 2>&1)"; rc=$?
+    rm -f "$STUB/mv"
+  fi
+  nonce="$(printf '%s' "$out" | grep '^xr-')"
+  is "W1 ($how) the turn id cannot replace the ? record: exit 0, the nonce once, nothing archived" \
+     "$rc/$(printf '%s' "$out" | grep -c '^xr-')/$(called 'xreview-rpc thread-archive')" "0/1/0"
+  is "W1 ($how) the ? record, .known, .targets and .shown stand" \
+     "$(cat "$STATE/turns/$nonce" 2>/dev/null)/$(for s in known targets shown; do [ -e "$STATE/turns/$nonce.$s" ] || printf 'no-%s ' "$s"; done)" \
+     "$U1 ? plan $(xbranch)/"
+  is "W1 ($how) and the move is made" "$(cat "$STATE/review-thread")" "$U1"
+  : > "$CALLS"
+  RPC_WAIT_OUT='{"verdict":"approve","findings":[],"reviewed_files":["big1.txt","big2.txt","big3.txt"]}' \
+    bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2>/dev/null; rc=$?
+  is "W1 ($how) xreview collect then succeeds, finding the turn as the one new on the thread" \
+     "$rc/$(jq -r .verdict "$ROOT/out")/$(called "turn-wait --thread $U1 --new-since $STATE/turns/$nonce.known")" "0/approve/1"
+done
 # The removals after the turn are best effort too: the sent packets' directory, and the superseded
 # list once its threads are archived. A failing rm of either still prints the nonce.
 failing_rm
@@ -2825,7 +2857,7 @@ for how in pane turn-start; do
      "$rc/$(jq -r .verdict "$ROOT/out")/$(cat "$STATE/review-thread")" "0/approve/$U4"
 done
 
-# A slice's turn record comes first. After it, a move that cannot be recorded (review-thread not
+# After a slice's turn-start, a move that cannot be recorded (review-thread not
 # writable while slice 2 starts, writable again for slice 3) only warns: the round goes on, slice 2
 # is never started again, and nothing is archived until slice 3's move queues slices 1 and 2.
 sliced; approve_all "turn-$U3"
@@ -2841,21 +2873,33 @@ is "Z1 slice 2 started once, and its turn is in the receipt" \
 is "Z1 slices 1 and 2 are archived once each, only after slice 3's turn exists" \
    "$(called "thread-archive --thread $U1")/$(called "thread-archive --thread $U3")/$([ "$(first 'thread-archive')" -gt "$(first "turn-start --thread $U4")" ] && echo after)" "1/1/after"
 is "Z1 and the checkpoint's thread is the last slice's" "$(cat "$STATE/review-thread")" "$U4"
-# The slice's turn record cannot be written: a refusal. The slice's thread is archived exactly once,
-# behind the guard, the move is not recorded, and the next collect finishes the round.
-sliced; approve_all "turn-$U3"
-printf 'chmod a-w "%s"\n' "$STATE/turns/$nonce" > "$P/start_sh.$U3"
-: > "$CALLS"
-bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
-chmod u+w "$STATE/turns/$nonce"
-is "Z1 slice 2's turn record cannot be written: refused" "$rc" 1
-is "Z1 its thread is archived exactly once, behind the guard, and the move is not recorded" \
-   "$(called "thread-archive --thread $U3")/$(called "$relaunch")/$([ "$(first "$relaunch")" -lt "$(first "thread-archive --thread $U3")" ] && echo first)/$(cat "$STATE/review-thread")/$([ -e "$STATE/superseded" ] && echo left || echo none)" \
-   "1/1/first/$U1/none"
-rm -f "$P/start_sh.$U3"; printf '%s\n%s\n' "$U3" "$U4" > "$P/uuids"
-: > "$CALLS"
-bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
-is "Z1 and the next collect finishes the round" "$rc/$(jq -r .verdict "$ROOT/out")" "0/approve"
+# turn-start is the line on the slice path too. Slice 2's turn record cannot be written once its
+# turn has started (a directory stands where its temp file goes, until slice 3 starts): one
+# warning, nothing archived but by the moves, the previous record intact, and slice 2 never
+# started again. The round's state keeps slice 2's turn, so the same collect goes on, and so does
+# the next one, whatever the record names, when this one stops at slice 2 (exit 3).
+for how in same-collect next-collect; do
+  sliced; approve_all "turn-$U3"
+  printf 'mkdir "%s"\n' "$STATE/turns/$nonce.tmp" > "$P/start_sh.$U3"
+  printf 'rmdir "%s"\n' "$STATE/turns/$nonce.tmp" > "$P/start_sh.$U4"
+  if [ "$how" = next-collect ]; then echo 3 > "$P/rc.turn-$U3"; fi
+  : > "$CALLS"
+  bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+  is "W1 ($how) slice 2's turn record cannot be written: one warning, and slice 1's record intact" \
+     "$(grep -c "^xreview: the turn of slice 2 of 3 could not be written to the turn record $STATE/turns/$nonce" "$ROOT/err")/$([ "$how" = same-collect ] || cat "$STATE/turns/$nonce")" \
+     "1/$([ "$how" = same-collect ] || echo "$U1 turn-$U1 pre-merge $YB")"
+  if [ "$how" = next-collect ]; then
+    is "W1 (next-collect) this collect stops at slice 2, which the round's state keeps" \
+       "$rc/$(jq -c '.turns' "$sl")" "3/[\"turn-$U1\",\"turn-$U3\"]"
+    bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+  fi
+  is "W1 ($how) the round finishes" "$rc/$(jq -r .verdict "$ROOT/out")" "0/approve"
+  is "W1 ($how) slice 2 started once, waited on by its id, and its turn is in the receipt" \
+     "$(called "turn-start --thread $U3")/$([ "$(called "turn-wait --thread $U3 --turn turn-$U3 ")" -ge 1 ] && echo waited)/$(receipt "$nonce" | jq -r '.slice_turns[1].turn')" \
+     "1/waited/turn-$U3"
+  is "W1 ($how) nothing archived but by the moves: slices 1 and 2 once each, as the pane moves on" \
+     "$(called "thread-archive --thread $U1")/$(called "thread-archive --thread $U3")/$(called "thread-archive --thread $U4")" "1/1/0"
+done
 
 # Slice 1 lists nothing; slice 2 lists slice 1's label beside its own. Slice 1's label is still
 # missing: slice 2's reviewer never saw that file's patch.

@@ -542,14 +542,14 @@ _dispatch_exit_guard() { # _dispatch_exit_guard <pane>: the EXIT trap armed whil
 
 # move_pane_to <pane> <thread> <proc-json> <start-fn> [start-arg...] - the pane's whole move onto
 # <thread>, in the one order that keeps C1: free the pane (the only point that may send-keys),
-# run <start-fn> (it starts the review turn on <thread>; it dies when the turn is not on record,
-# which fires the exit trap, and it disarms that trap itself once the turn record is written),
+# run <start-fn> (it starts the review turn on <thread>; it dies when turn-start fails outright,
+# which fires the exit trap, and it disarms that trap itself once turn-start answers 0 or 6),
 # then best-effort resume the pane onto <thread> and archive the superseded threads. Dispatch
 # calls it once; a slice's collect calls it again for each next slice's thread. The CALLER HOLDS
 # THE PANE LOCK and has read <proc-json> under it. Never sends a keystroke after <start-fn>
 # returns, and never exits after it either: with the guard disarmed, an exit there would leave a
 # freed pane at a bare shell, so the resume and the archive are both best effort.
-# The caller's PRE_TURN_TRAP is its EXIT trap until the turn is on record: its own cleanup, and
+# The caller's PRE_TURN_TRAP is its EXIT trap until turn-start answers: its own cleanup, and
 # the archive of a thread it started that nothing names yet. The caller has armed it already, and
 # it stays armed through every refusal here, the pane step's included.
 move_pane_to() {
@@ -558,7 +558,7 @@ move_pane_to() {
   # Dies on any failure - nothing has started yet.
   need_resume="$(pane_free "$pane" "$thread" "$proc")"
   # Armed only when pane_free quit the TUI, through a successful turn-start; <start-fn>
-  # disarms it once the turn record is written and pane_resume owns the pane. The guard
+  # disarms it once turn-start answers 0 or 6 and pane_resume owns the pane. The guard
   # goes first, so an archive call can neither delay nor skip the fresh Codex it starts; the
   # pre-turn cleanup still runs behind it.
   if [ "$need_resume" = 1 ]; then
@@ -672,7 +672,7 @@ cmd_init() {
 # $(state_dir)/superseded holds a LIST, one id per line, oldest first: `round --reset`
 # APPENDS to it rather than overwriting, so a thread that a failed pane step left un-archived
 # stays queued across however many later resets happen before a pane step finally succeeds -
-# nothing is ever silently dropped. It runs once the turn is on record, so it never exits: a list
+# nothing is ever silently dropped. It runs once turn-start has answered, so it never exits: a list
 # that cannot be read or removed is left for the next pane step that succeeds.
 archive_superseded() { # archive_superseded <current-thread>
   local f old; f="$(state_dir)/superseded"
@@ -981,55 +981,67 @@ cmd_tier() {
 }
 
 # _dispatch_turn <thread> <packet-file> <schema> <nonce> <checkpoint> <branch> - the turn itself,
-# run by move_pane_to once the pane is free. The turn record is the line. A failure up to and
-# including its write is a refusal, which fires the exit trap: the pane guard, when pane_free quit
-# the TUI, then cmd_dispatch's pre-turn cleanup, which archives a fresh thread. Once it is written
-# the trap is disarmed at once, and dispatch always succeeds and prints the nonce: every later
-# step is best effort, the review runs whatever happens to the pane after, and NOTHING after this
-# may ever send-keys to the pane again (C1), since the resumed TUI is watching a turn that is
-# genuinely running and a ctrl+c would interrupt it. The labels missed last round are spent once
-# the turn exists, if this packet named them (cmd_dispatch's missed_used), and a fresh thread
-# becomes the checkpoint's only then (record_move, with cmd_dispatch's fresh_thread and old).
+# run by move_pane_to once the pane is free. turn-start is the line. Before it, the turn record
+# goes down in its exit-6 form (`<thread> ? <checkpoint> <branch>`), so a turn that exists is
+# always on record; a failure up to and including a definitive turn-start failure is a refusal
+# with no turn, which fires the exit trap: the pane guard, when pane_free quit the TUI, then
+# cmd_dispatch's pre-turn cleanup, which removes the record with the round's files and archives a
+# fresh thread. Once turn-start answers 0 or 6 the trap is disarmed before anything else, and
+# dispatch always succeeds and prints the nonce: every later step is best effort, the review runs
+# whatever happens to the pane after, and NOTHING after this may ever send-keys to the pane again
+# (C1), since the resumed TUI is watching a turn that is genuinely running and a ctrl+c would
+# interrupt it. The labels missed last round are spent once the turn exists, if this packet named
+# them (cmd_dispatch's missed_used), and a fresh thread becomes the checkpoint's only then
+# (record_move, with cmd_dispatch's fresh_thread and old).
 _dispatch_turn() {
   local thread="$1" packet="$2" schema="$3" nonce="$4" checkpoint="$5" branch="$6" dir turn="" rc=0
   dir="$(state_dir)"
   mkdir -p "$dir/turns"
+  printf '%s ? %s %s\n' "$thread" "$checkpoint" "$branch" > "$dir/turns/$nonce"
   turn="$(xreview-rpc turn-start --thread "$thread" --input "$packet" --schema "$schema" \
             --known "$dir/turns/$nonce.known")" || rc=$?
   # A turn-start that returns 0 with a malformed id is handled exactly like exit 6: the
   # turn may still be running on the daemon side, so it is never treated as "not started".
   if [ "$rc" = 0 ] && ! is_safe_id "$turn"; then rc=6; fi
   case "$rc" in
-    0) printf '%s %s %s %s\n' "$thread" "$turn" "$checkpoint" "$branch" > "$dir/turns/$nonce" ;;
-    6) # Sent but not answered (or answered with an id that does not look like one): the
-       # turn may be running. Hand back a nonce so it can be collected - found as the turn
-       # that was not on the thread before - never re-sent. The round is consumed too: a
-       # turn that may be running has already cost one.
-       turn="?"
-       printf '%s ? %s %s\n' "$thread" "$checkpoint" "$branch" > "$dir/turns/$nonce" ;;
-    # The exit trap removes the round's files and archives a fresh thread.
+    0|6) ;;
+    # The exit trap removes the round's files, the record included, and archives a fresh thread.
     *) die "the review turn could not be started on $thread" ;;
   esac
   trap - EXIT
+  if [ "$rc" = 0 ]; then
+    # The turn's id replaces the ? record, atomically, so that a failure can never truncate it. If
+    # it cannot, the ? record and .known stand, and collect finds the turn as the one not on the
+    # thread before, exactly as after an exit 6.
+    if { printf '%s %s %s %s\n' "$thread" "$turn" "$checkpoint" "$branch" > "$dir/turns/$nonce.tmp" \
+         && mv -f "$dir/turns/$nonce.tmp" "$dir/turns/$nonce"; } 2>/dev/null; then
+      rm -f "$dir/turns/$nonce.known" || true
+    else
+      rm -f "$dir/turns/$nonce.tmp" 2>/dev/null || true
+      turn="?"
+    fi
+  else
+    # Sent but not answered (or answered with an id that does not look like one): the turn may
+    # be running. Its ? record is already down, so the nonce can be collected - the turn found
+    # as the one not on the thread before - and it is never re-sent. The round is consumed too:
+    # a turn that may be running has already cost one.
+    turn="?"
+    printf 'xreview: turn/start was sent but not answered - the review may be running. Collect %s; do NOT re-dispatch.\n' "$nonce" >&2
+  fi
   if [ "$fresh_thread" = 1 ] && ! record_move "$thread" "$old"; then
     printf "xreview: %s could not be recorded as the checkpoint's review thread in %s, so the next dispatch starts another and %s stays unarchived\n" \
       "$thread" "$dir" "$thread" >&2
-  fi
-  if [ "$rc" = 0 ]; then
-    rm -f "$dir/turns/$nonce.known" || true
-  else
-    printf 'xreview: turn/start was sent but not answered - the review may be running. Collect %s; do NOT re-dispatch.\n' "$nonce" >&2
   fi
   if [ "$missed_used" = 1 ]; then rm -f "$dir/missed" || true; fi
   _slices_turn "$nonce" "$turn" || true
   bump_round "$branch" >/dev/null || true
 }
 
-# record_move <thread> [<superseded>...] - the move onto <thread>, once its turn is on record:
+# record_move <thread> [<superseded>...] - the move onto <thread>, once turn-start has answered:
 # <thread> becomes the checkpoint's review thread, then each <superseded> joins the superseded
 # list, queued for archive until the pane shows <thread>, as `round --reset` queues it. In that
 # order, so that no thread is ever queued while it is still the review thread. Best effort, as
-# everything after the turn record is: each write is checked by its status, never left to errexit
+# everything after turn-start is: each write is checked by its status, never left to errexit
 # (callers run it as a condition, where errexit is off). It returns 1, having queued nothing, when
 # <thread> cannot be recorded; the caller says what that leaves. A thread it cannot queue is no
 # longer the review thread and is archived by nothing, so that is said here.
@@ -1205,7 +1217,7 @@ cmd_dispatch() {
   nonce="xr-$(date +%s)-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
   out="$dir/turns/$nonce.packets"
   mkdir -p "$out" || die "cannot create $out; no review was started"
-  cleanup="rm -rf $(printf '%q' "$out")"
+  cleanup="rm -rf $(printf '%q' "$out") $(printf '%q' "$dir/turns/$nonce")"
   for s in targets shown slices known; do cleanup+=" $(printf '%q' "$dir/turns/$nonce.$s")"; done
   trap "$cleanup" EXIT
   local framing_on=0 needs_thread=0 pinned=0
@@ -1299,12 +1311,12 @@ Report the remaining disagreement, or: xreview round --reset"
   # archive until the pane shows the new one, as `round --reset` queues it. (A pinned thread
   # never gets here: it was refused above.) The round counter is NOT reset: this is not a new
   # checkpoint. Its id is known from the start, so nothing is ever read back from a title
-  # (spec 7.2/7.3). The move is recorded only once its turn is on record (record_move, in
+  # (spec 7.2/7.3). The move is recorded only once turn-start has answered (record_move, in
   # _dispatch_turn). Until then every refusal (the thread's checks, the pending entry, the pane
-  # step, turn-start, the turn record) leaves the checkpoint's thread as it was and archives the
-  # new one, since nothing else ever would: the archive joins the cleanup in the pre-turn trap. It
-  # comes first there, so a cleanup that fails (errexit holds inside the trap) cannot skip it. An
-  # id assert_id refuses is never used, so it is never archived either.
+  # step, the turn record's ? form, turn-start) leaves the checkpoint's thread as it was and
+  # archives the new one, since nothing else ever would: the archive joins the cleanup in the
+  # pre-turn trap. It comes first there, so a cleanup that fails (errexit holds inside the trap)
+  # cannot skip it. An id assert_id refuses is never used, so it is never archived either.
   local old="$thread" fresh_thread=0 PRE_TURN_TRAP="$cleanup"
   if [ -z "$thread" ] || [ "$action" != send ]; then
     fresh_thread=1
@@ -1675,10 +1687,10 @@ _collect_slices() {
 
 # _slice_start <index> - start slice <index> (from 0) on a fresh thread, as dispatch starts a
 # review on one: its preconditions, then under the pane lock the pane checks, the thread and its
-# checks; then the pane moves onto it around the turn, as dispatch's does. Only once the turn is
-# on record does the previous slice's thread join the superseded list and the new one become the
-# checkpoint's thread (_slice_turn). A refusal before that archives the new thread and leaves the
-# round on record as it was, for the next collect to resume; collect never re-dispatches.
+# checks; then the pane moves onto it around the turn, as dispatch's does. Only once turn-start
+# has answered does the previous slice's thread join the superseded list and the new one become
+# the checkpoint's thread (_slice_turn). A refusal before that archives the new thread and leaves
+# the round on record as it was, for the next collect to resume; collect never re-dispatches.
 _slice_start() {
   local i="$1" file pane proc th prev cur PRE_TURN_TRAP
   file="$(printf '%s' "$sl" | jq -r --argjson i "$i" '.packets[$i].file // empty')"
@@ -1713,7 +1725,7 @@ _slice_start() {
   trap "$PRE_TURN_TRAP" EXIT
   if thread_running "$th"; then die "the review thread $th is still running a turn"; fi
   # What the move supersedes is read now, while a failure still archives the thread; _slice_turn
-  # writes it once the turn is on record.
+  # writes it once turn-start has answered.
   prev="$(printf '%s' "$sl" | jq -r --argjson i "$i" 'if $i > 0 then .threads[$i - 1] // empty else empty end')"
   cur="$(cat "$dir/review-thread" 2>/dev/null || true)"
   move_pane_to "$pane" "$th" "$proc" _slice_turn "$i" "$th" "$file"
@@ -1727,33 +1739,42 @@ _slice_start() {
 
 # _slice_turn <index> <thread> <packet-file> - the slice's turn itself, run by move_pane_to once
 # the pane is free: _dispatch_turn's, except that a slice is no new round, and a turn that did
-# not start leaves the round on record for the next collect. A turn started, or sent but not
-# answered (a ?, found later as the turn not on its thread before and never re-sent), goes into
-# the turn record first. That write is the line, as in _dispatch_turn: a failure up to it is a
-# refusal, the slice's thread archived. After it nothing here refuses: the turn goes into this
-# collect's copy of the round's state (_slice_start saves it), and the move is made, best effort:
-# the slice's thread becomes the checkpoint's, and the previous slice's thread (and a checkpoint
-# thread from before the round) joins the superseded list, as _slice_start read them (its prev and
-# cur). From then on nothing may send-keys to the pane: the pane's resume owns it.
+# not start leaves the round on record for the next collect. turn-start is the line, as in
+# _dispatch_turn: a definitive failure is a refusal, the slice's thread archived. Once it answers
+# 0 or 6 (a ?, found later as the turn not on its thread before and never re-sent), collect's own
+# exit trap is back before anything else, and nothing here refuses. Everything after is best
+# effort: the turn record; this collect's copy of the round's state (_slice_start saves it, and
+# that copy is what keeps a later collect from starting the slice again when the record could not
+# be written); and the move, by which the slice's thread becomes the checkpoint's and the previous
+# slice's thread (and a checkpoint thread from before the round) joins the superseded list, as
+# _slice_start read them (its prev and cur). From then on nothing may send-keys to the pane: the
+# pane's resume owns it.
 _slice_turn() {
   local i="$1" th="$2" file="$3" t="" src=0 upd also=""
   t="$(xreview-rpc turn-start --thread "$th" --input "$file" --schema "$schema" \
          --known "$dir/turns/$nonce.known")" || src=$?
   if [ "$src" = 0 ] && ! is_safe_id "$t"; then src=6; fi
   case "$src" in
-    0) ;;
-    6) t="?"
-       printf 'xreview: turn/start of slice %s of %s was sent but not answered - the review may be running. Collect finds it; do NOT re-dispatch.\n' \
-         "$((i + 1))" "$n" >&2 ;;
+    0|6) ;;
     *) rm -f "$dir/turns/$nonce.known"
        die "the turn of slice $((i + 1)) of $n could not be started on $th" ;;
   esac
-  printf '%s %s %s %s\n' "$th" "$t" "$checkpoint" "$branch" > "$rec"
-  # The turn is on record: the slice has started, and the pane's exit guard and the thread's
-  # archive are done with, so collect's own exit trap takes over again at once. A state copy that
-  # cannot be updated is left as it was; the next collect takes the slice up from the turn record.
+  # The slice has started, or may have: the pane's exit guard and the thread's archive are done
+  # with. A record or state copy that cannot be written is left as it was.
   DIE_NOTE=""
   trap "$collect_trap" EXIT
+  if [ "$src" = 6 ]; then
+    t="?"
+    printf 'xreview: turn/start of slice %s of %s was sent but not answered - the review may be running. Collect finds it; do NOT re-dispatch.\n' \
+      "$((i + 1))" "$n" >&2
+  fi
+  # Atomically, so that a failure never truncates the previous slice's record.
+  if ! { printf '%s %s %s %s\n' "$th" "$t" "$checkpoint" "$branch" > "$rec.tmp" \
+         && mv -f "$rec.tmp" "$rec"; } 2>/dev/null; then
+    rm -f "$rec.tmp" 2>/dev/null || true
+    printf "xreview: the turn of slice %s of %s could not be written to the turn record %s; the round's state keeps it, and collect takes it up from there\n" \
+      "$((i + 1))" "$n" "$rec" >&2
+  fi
   if upd="$(printf '%s' "$sl" | jq -c --argjson i "$i" --arg th "$th" --arg t "$t" \
               '.threads[$i] = $th | .turns[$i] = $t | .next = ($i + 1)')"; then
     sl="$upd"
