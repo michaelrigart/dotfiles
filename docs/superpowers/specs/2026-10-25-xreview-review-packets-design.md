@@ -325,7 +325,7 @@ nothing until a switch makes the gate read it.
   labels; listed plans.
 - **Cross-review skill**:
   - Drop the cap and the advice to slice by hand. xreview picks the packet, and dispatch
-    never refuses on size.
+    never refuses on size, except on a pinned thread (below).
   - xreview may move a checkpoint to a fresh thread when the current one cannot hold the
     next packet. That is mechanical; the agent still never rotates a thread by judgement.
   - A review that is not clean may keep the gate closed: act on its findings and dispatch the
