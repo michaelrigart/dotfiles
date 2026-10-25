@@ -584,7 +584,8 @@ findings were judged known-real.
 Switch states that follow (§5.5):
 
 - **`framing`: on.** F and B recall at least the lower of A and A′, miss no P0/P1 both found,
-  and no framed run failed coverage. B used about 19% fewer tokens than A.
+  and no framed run failed coverage. F (framing alone) used about 3% more tokens than A; B
+  (framing with `omit_plans`) about 19% fewer.
 - **`omit_plans`: on.** B meets the bar on the same cases.
 - **`delta`: off.** B recalled less than both A and A′ and missed a P0/P1 that both found.
 - **`fit`: off.** B recalled less than both A and A′ and missed a P0/P1 that both found, though
