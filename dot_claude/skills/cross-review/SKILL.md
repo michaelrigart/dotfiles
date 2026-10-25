@@ -109,12 +109,15 @@ A budget running out is not automatically a timeout:
 - **Exit 1, "the reviewer turn failed"** — the turn itself did not complete. Report it and
   stop. Never re-dispatch.
 
-The packet is xreview's to build, and dispatch never refuses on size,
+With `fit` on in `~/.config/xreview/packets.conf`, the packet is xreview's to build, and dispatch never refuses on size,
 except on a thread Michael pinned (`xreview init` or `XREVIEW_THREAD`). A very large change is
 reviewed in slices, each on its own fresh thread, with the pane following. Slices take
 longer, so give `collect` a larger budget; it runs the remaining slices itself, and exit 3
 is resumed as usual. If a sliced collect stops on a pane or daemon refusal, or on a slice
 with no turn on record, run collect again once it clears. Never re-dispatch a sliced round unless it says to (a slice's packet is gone).
+With `fit` off, as shipped, dispatch refuses a packet over its size cap, and there are no slices or moves.
+Never put an environment assignment in front of `xreview` to get past a refusal: the sandbox
+exclusion then no longer applies.
 
 A plan review is dispatched with `--diff <dest>...<branch>` once the plan is committed, so
 that pre-merge can bind the plan to its approval. Commit each round's plan fixes before
@@ -230,7 +233,7 @@ thread only ever holds the rounds of one checkpoint.
 - Do not infer staleness from the round number, from how long the exchange feels, or from
   the reviewer agreeing with you.
 - Never rotate a thread within a checkpoint. The one exception is mechanical and is
-  xreview's, not yours: it may move a checkpoint to a fresh thread when the current one
+  xreview's, not yours, and only with `fit` on: it may move a checkpoint to a fresh thread when the current one
   cannot hold the next packet. The agent never rotates a thread by judgement.
 
 Each round re-dispatches the **updated artifact, cold**. Cold describes what you *send* —

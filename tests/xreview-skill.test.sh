@@ -426,6 +426,9 @@ fi
 # (no pane, several panes, the daemon down and staying down) belong on it, not just in
 # the "dispatch refuses" prose above it.
 esc="$(sed -n '/^Escalate to Michael when/,/^That list is exhaustive/p' "$SKILL")"
+if [ "$(tail -n 1 <<<"$esc")" = "$(tail -n 1 "$SKILL")" ]; then
+  _fail "the escalation range ends at its anchor" "it reached the end of the file"
+else _pass "the escalation range ends at its anchor"; fi
 if grep -qi 'no Codex pane' <<<"$esc"; then
   _pass "the escalation list names the no-pane/several-panes refusal"
 else
@@ -503,8 +506,12 @@ if grep -qi 'another dispatch' <<<"$esc"; then
   _fail "the lock refusal is not escalated" "it is on the escalation list"
 else _pass "the lock refusal is not escalated"; fi
 # The refusal list (not just the escalation list) quotes the exact resume refusal and names
-# both pane reads; later rounds find the pane on the thread only while its TUI is connected.
-refusals="$(sed -n '/^Dispatch refuses, before/,/^Only the "no turn on record"/p' "$SKILL")"
+# both pane reads (its end anchor must track the sentence that follows the list); later rounds find the pane on the thread only while its TUI is connected.
+refusals="$(sed -n '/^Dispatch refuses, before/,/^Only the "ambiguous: no turn on record"/p' "$SKILL")"
+# A range whose end anchor went stale runs to EOF and quietly takes in the rest of the skill.
+if [ "$(tail -n 1 <<<"$refusals")" = "$(tail -n 1 "$SKILL")" ]; then
+  _fail "the refusal-list range ends at its anchor" "it reached the end of the file"
+else _pass "the refusal-list range ends at its anchor"; fi
 for phrase in 'is resuming something other than a thread id' 'herdr pane process-info' 'herdr pane get' \
               'cannot read the Codex pane'; do
   if grep -qF "$phrase" <<<"$refusals"; then
@@ -565,6 +572,10 @@ for phrase in 'dispatch never refuses on size' \
               'collect again once it clears' \
               'Commit each round'"'"'s plan fixes before re-dispatching' \
               'ambiguous: no turn on record' \
+              '`fit` on in `~/.config/xreview/packets.conf`, the packet is xreview'"'"'s to build, and dispatch never refuses on size' \
+              'With `fit` off, as shipped, dispatch refuses a packet over its size cap, and there are no slices or moves' \
+              'and only with `fit` on' \
+              'Never put an environment assignment in front of `xreview` to get past a refusal' \
               'Never re-dispatch a sliced round unless it says to (a slice'"'"'s packet is gone)' \
               'its coverage could not be read' \
               'barring xreview'"'"'s own move' \
@@ -604,7 +615,10 @@ actual_esc="$(printf '%s\n' "$esc" | sed '1,2d;$d' | sed '${/^$/d;}')"
 if [ "$actual_esc" = "$expected_esc" ]; then
   _pass "the escalation list is exactly the expected bullets"
 else
-  _fail "the escalation list is exactly the expected bullets" "$(diff <(printf '%s\n' "$expected_esc") <(printf '%s\n' "$actual_esc") | head -6)"
+  _ex="$(mktemp "${TMPDIR:-/tmp}/esc-expected.XXXXXX")"; _ac="$(mktemp "${TMPDIR:-/tmp}/esc-actual.XXXXXX")"
+  printf '%s\n' "$expected_esc" > "$_ex"; printf '%s\n' "$actual_esc" > "$_ac"
+  _fail "the escalation list is exactly the expected bullets" "$(diff "$_ex" "$_ac" | head -6)"
+  rm -f "$_ex" "$_ac"
 fi
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
