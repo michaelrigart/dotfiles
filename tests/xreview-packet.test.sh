@@ -136,9 +136,9 @@ is_("K2 the last line for a key wins", sw("framing=on\nfit=on\nfit=off\n"),
     {"framing": True, "fit": False, "delta": False, "omit_plans": False})
 is_("K2 case matters: ON is not on", sw("framing=ON\n"), OFF)
 is_("K2 the shipped packets.conf turns on what passed the replay (spec 9)",
-    rd(CONF, "packets.conf"), b"framing=on\nfit=off\ndelta=off\nomit_plans=off\n")
+    rd(CONF, "packets.conf"), b"framing=on\nfit=off\ndelta=off\nomit_plans=on\n")
 is_("K2 and parses to it", xp.read_switches(os.path.join(CONF, "packets.conf")),
-    {"framing": True, "fit": False, "delta": False, "omit_plans": False})
+    {"framing": True, "fit": False, "delta": False, "omit_plans": True})
 sw("framing=off\nfit=on\ndelta=off\nomit_plans=on\n")
 is_("K2 the switches framing off ignored are reported", sorted(xp.switches_ignored(cfg)), ["fit", "omit_plans"])
 sw("framing=on\nfit=on\n")
