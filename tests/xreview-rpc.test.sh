@@ -310,7 +310,7 @@ import argparse, importlib.machinery, importlib.util, io, contextlib, socket, sy
 loader = importlib.machinery.SourceFileLoader("xreview_rpc", sys.argv[1])
 spec = importlib.util.spec_from_loader("xreview_rpc", loader)
 m = importlib.util.module_from_spec(spec); loader.exec_module(m)
-args = argparse.Namespace(thread="th", input=sys.argv[2], schema=sys.argv[3], known=None)
+args = argparse.Namespace(thread="th", input=sys.argv[2], schema=sys.argv[3], known=None, cwd=None)
 ANS = {"thread/read": {"thread": {"status": {"type": "idle"}}},
        "mcpServerStatus/list": {"data": []},
        "turn/start": {"turn": {"id": "t1"}}}
@@ -713,6 +713,144 @@ echo "K. thread-archive"
 scenario '{}'
 rpc thread-archive --thread th; is "it exits 0" "$?" 0
 is "it archives that thread" "$(params thread/archive | jq -r .threadId)" th
+
+echo "TT. thread-turns"
+# A listed turn as itemsView "full" shows it: ti <id> <items-json>.
+ti() { jq -nc --arg id "$1" --argjson items "$2" '{id:$id,status:"completed",itemsView:"full",items:$items}'; }
+MSGS='[{"type":"userMessage"},{"type":"agentMessage","text":"x"}]'
+CMPT='{"type":"contextCompaction"}'
+tpage() { jq -nc --argjson d "$1" --arg c "${2:-}" '{result:({data:$d} + (if $c == "" then {} else {nextCursor:$c} end))}'; }
+t1="$(ti t1 "$MSGS")"; t2="$(ti t2 "$MSGS")"; t3="$(ti t3 "$MSGS")"
+# The daemon lists newest first (sortDirection desc); thread-turns hands back oldest first.
+scenario "$(jq -nc --argjson a "$(tpage "[$t3,$t2]" c2)" --argjson b "$(tpage "[$t1]")" '{responses:{"thread/turns/list":[$a,$b]}}')"
+out="$(rpc thread-turns --thread th)"; rc=$?
+is "TT1 it exits 0" "$rc" 0
+is "TT1 both pages come back oldest first" "$(printf '%s' "$out" | jq -c '[.turns[].id]')" '["t1","t2","t3"]'
+is "TT1 the second call carried the first page's cursor" \
+   "$(jq -r 'select(.method=="thread/turns/list") | .params.cursor // "none"' "$FAKE_LOG" | paste -sd, -)" "none,c2"
+is "TT1 every call asks for the thread" "$(jq -r 'select(.method=="thread/turns/list") | .params.threadId' "$FAKE_LOG" | sort -u)" th
+is "TT1 a status rides along" "$(printf '%s' "$out" | jq -c '.turns[0] | keys')" '["compacted","id","status"]'
+
+# A mid-turn compaction flags its own turn; it is not a thread-level one.
+mid="$(ti t2 "[{\"type\":\"userMessage\"},$CMPT,{\"type\":\"agentMessage\"}]")"
+scenario "$(jq -nc --argjson a "$(tpage "[$t3,$mid,$t1]")" '{responses:{"thread/turns/list":$a}}')"
+out="$(rpc thread-turns --thread th)"
+is "TT2 only the turn holding the compaction item is compacted" "$(printf '%s' "$out" | jq -c '[.turns[].compacted]')" '[false,true,false]'
+is "TT2 and a mid-turn compaction is not a thread-level one" "$(printf '%s' "$out" | jq -c .thread_compactions)" 0
+
+scenario '{"responses":{"thread/turns/list":{"error":{"code":-1,"message":"nope"}}}}'
+out="$(rpc thread-turns --thread th 2>/dev/null)"; rc=$?
+is "TT3 a list error exits 1 with nothing on stdout" "$rc/$out" "1/"
+scenario "$(jq -nc --argjson a "$(tpage "[$t3]" c2)" '{responses:{"thread/turns/list":[$a,{error:{code:-1,message:"page 2 gone"}}]}}')"
+out="$(rpc thread-turns --thread th 2>/dev/null)"; rc=$?
+is "TT3 a page that cannot be read is exit 1, never a partial list" "$rc/$out" "1/"
+scenario '{"responses":{"thread/turns/list":{"result":{"data":"x"}}}}'
+rpc thread-turns --thread th >/dev/null 2>&1
+is "TT3 an answer of the wrong shape exits 1" "$?" 1
+scenario "$(jq -nc --argjson a "$(tpage "[$t3]" loop)" '{responses:{"thread/turns/list":$a}}')"
+rpc thread-turns --thread th >/dev/null 2>&1
+is "TT3 a cursor that repeats exits 1" "$?" 1
+XREVIEW_RPC_STDIO=false rpc thread-turns --thread th 2>/dev/null
+is "TT3 an unreachable daemon exits 5" "$?" 5
+
+nld() { jq -nc --arg id "$1" '{id:$id,status:"completed",itemsView:"notLoaded",items:[]}'; }
+scenario "$(jq -nc --argjson a "$(tpage "[$(nld t2),$(nld t1)]")" '{responses:{"thread/turns/list":$a}}')"
+out="$(rpc thread-turns --thread th)"; rc=$?
+is "TT4 items that came back not loaded leave thread_compactions null" "$rc/$(printf '%s' "$out" | jq -c .thread_compactions)" "0/null"
+is "TT4 and no turn is called clean on that evidence" "$(printf '%s' "$out" | jq -c '[.turns[].compacted]')" '[null,null]'
+scenario "$(jq -nc --argjson a "$(tpage "[$(nld t2),$t1]")" '{responses:{"thread/turns/list":$a}}')"
+is "TT4 one turn with items not loaded is enough" "$(rpc thread-turns --thread th | jq -c .thread_compactions)" null
+scenario "$(jq -nc --argjson a "$(tpage "[{\"id\":\"t2\",\"status\":\"completed\"},$t1]")" '{responses:{"thread/turns/list":$a}}')"
+is "TT4 so is a turn with no items key at all" "$(rpc thread-turns --thread th | jq -c .thread_compactions)" null
+
+only="$(ti t2 "[$CMPT]")"
+scenario "$(jq -nc --argjson a "$(tpage "[$t3,$only,$t1]")" '{responses:{"thread/turns/list":$a}}')"
+out="$(rpc thread-turns --thread th)"
+is "TT5 every call lists itemsView full" "$(jq -r 'select(.method=="thread/turns/list") | .params.itemsView' "$FAKE_LOG" | sort -u)" full
+is "TT5 and newest first, so the pages follow in order" "$(jq -r 'select(.method=="thread/turns/list") | .params.sortDirection' "$FAKE_LOG" | sort -u)" desc
+is "TT5 a turn whose only item is a compaction counts as a thread-level one" "$(printf '%s' "$out" | jq -c .thread_compactions)" 1
+is "TT5 and is compacted too" "$(printf '%s' "$out" | jq -c '[.turns[].compacted]')" '[false,true,false]'
+
+echo "TF. thread-fork and thread-unarchive"
+scenario '{"responses":{"thread/fork":{"result":{"thread":{"id":"th-fork-1"}}}}}'
+out="$(rpc thread-fork --thread th --last-turn turn-X --cwd /tmp/scratch)"; rc=$?
+is "TF1 it prints the fork's id" "$rc/$out" "0/th-fork-1"
+p="$(params thread/fork)"
+is "TF1 the fork is of that thread" "$(printf '%s' "$p" | jq -r .threadId)" th
+is "TF1 through lastTurnId" "$(printf '%s' "$p" | jq -r .lastTurnId)" turn-X
+is "TF1 in that cwd" "$(printf '%s' "$p" | jq -r .cwd)" /tmp/scratch
+is "TF1 without copying the turns" "$(printf '%s' "$p" | jq -c .excludeTurns)" true
+scenario '{"responses":{"thread/fork":{"result":{"thread":{"id":"th-fork-2"}}}}}'
+rpc thread-fork --thread th >/dev/null
+is "TF1 --last-turn and --cwd are optional, and absent when not given" \
+   "$(params thread/fork | jq -c 'keys')" '["excludeTurns","threadId"]'
+scenario '{"responses":{"thread/fork":{"error":{"code":-1,"message":"thread th is archived; unarchive it first"}}}}'
+out="$(rpc thread-fork --thread th --last-turn turn-X 2>"$T/err")"; rc=$?
+is "TF2 a refused fork exits 1 with nothing on stdout" "$rc/$out" "1/"
+is "TF2 and says why" "$(grep -c 'unarchive it first' "$T/err")" 1
+scenario '{"responses":{"thread/fork":{"result":{}}}}'
+rpc thread-fork --thread th >/dev/null 2>&1
+is "TF2 an answer with no thread id exits 1" "$?" 1
+XREVIEW_RPC_STDIO=false rpc thread-fork --thread th 2>/dev/null
+is "TF2 an unreachable daemon exits 5" "$?" 5
+
+scenario '{}'
+rpc thread-unarchive --thread th; rc=$?
+is "TF3 thread-unarchive exits 0" "$rc" 0
+is "TF3 and sends thread/unarchive for that thread" "$(params thread/unarchive | jq -r .threadId)" th
+scenario '{"responses":{"thread/unarchive":{"error":{"code":-1,"message":"no such thread"}}}}'
+rpc thread-unarchive --thread th 2>/dev/null
+is "TF3 a refused unarchive exits 1" "$?" 1
+
+echo "TC. turn-start --cwd"
+scenario '{"responses":{"turn/start":{"result":{"turn":{"id":"turn-c1","status":"inProgress"}}}}}'
+is "TC1 it still prints the turn id" "$(rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" --cwd /x)" turn-c1
+is "TC1 --cwd goes into the turn/start params" "$(params turn/start | jq -r .cwd)" /x
+scenario '{"responses":{"turn/start":{"result":{"turn":{"id":"turn-c2","status":"inProgress"}}}}}'
+rpc turn-start --thread th --input "$T/in" --schema "$SCHEMA" >/dev/null
+is "TC2 without --cwd there is no cwd key" "$(params turn/start | jq -c 'has("cwd")')" false
+
+echo "TW. turn-wait --report"
+plain="$(turn completed "$ANSWER")"
+withc="$(printf '%s' "$plain" | jq -c --argjson c "$CMPT" '.items += [$c]')"
+scenario "$(jq -nc --argjson a "$(listing "$plain")" '{responses:{"thread/turns/list":$a}}')"
+want="$(rpc turn-wait --thread th --turn turn-1 --budget 5 --schema "$SCHEMA")"
+# The summary listing hides compactions, so the flag comes from a second, full read.
+scenario "$(jq -nc --argjson a "$(listing "$plain")" --argjson b "$(listing "$withc")" '{responses:{"thread/turns/list":[$a,$b]}}')"
+out="$(rpc turn-wait --thread th --turn turn-1 --budget 5 --schema "$SCHEMA" --report "$T/rep")"; rc=$?
+is "TW1 it exits 0" "$rc" 0
+is "TW1 stdout is today's findings JSON" "$out" "$want"
+is "TW1 the report holds the collected turn's compaction flag" "$(jq -c . "$T/rep")" '{"turn":"turn-1","compacted":true}'
+is "TW1 the flag came from a full re-read of the one turn" \
+   "$(jq -r 'select(.method=="thread/turns/list") | .params.itemsView' "$FAKE_LOG" | paste -sd, -)" "summary,full"
+scenario "$(jq -nc --argjson a "$(listing "$plain")" '{responses:{"thread/turns/list":$a}}')"
+rm -f "$T/rep"
+rpc turn-wait --thread th --turn turn-1 --budget 5 --schema "$SCHEMA" --report "$T/rep" >/dev/null
+is "TW1 a turn without a compaction item reports false" "$(jq -c . "$T/rep")" '{"turn":"turn-1","compacted":false}'
+rm -f "$T/rep"
+rpc turn-wait --thread th --turn turn-1 --budget 5 --schema "$SCHEMA" >/dev/null
+is "TW1 no --report, no file" "$([ -e "$T/rep" ] && echo yes || echo no)" no
+bad='not json at all'
+scenario "$(jq -nc --argjson a "$(listing "$(turn completed "$bad")")" --argjson b "$(listing "$(turn completed "$bad" | jq -c --argjson c "$CMPT" '.items += [$c]')")" '{responses:{"thread/turns/list":[$a,$b]}}')"
+rpc turn-wait --thread th --turn turn-1 --budget 5 --schema "$SCHEMA" --report "$T/rep" >/dev/null 2>&1; rc=$?
+is "TW1 an answer that misses the schema (4) is reported too" "$rc/$(jq -c . "$T/rep")" '4/{"turn":"turn-1","compacted":true}'
+rm -f "$T/rep"
+scenario "$(jq -nc --argjson l "$(listing "$(turn failed "")")" '{responses:{"thread/turns/list":$l}}')"
+rpc turn-wait --thread th --turn turn-1 --budget 5 --schema "$SCHEMA" --report "$T/rep" >/dev/null 2>&1; rc=$?
+is "TW1 a failed turn (1) writes no report" "$rc/$([ -e "$T/rep" ] && echo yes || echo no)" "1/no"
+
+notl="$(printf '%s' "$plain" | jq -c '.itemsView = "notLoaded" | .items = []')"
+scenario "$(jq -nc --argjson a "$(listing "$plain")" --argjson b "$(listing "$notl")" '{responses:{"thread/turns/list":[$a,$b]}}')"
+out="$(rpc turn-wait --thread th --turn turn-1 --budget 5 --schema "$SCHEMA" --report "$T/rep")"; rc=$?
+is "TW2 items that are not in the listing still exit 0 with the findings" "$rc/$(printf '%s' "$out" | jq -r .verdict)" "0/changes"
+is "TW2 and the report says null" "$(jq -c . "$T/rep")" '{"turn":"turn-1","compacted":null}'
+scenario "$(jq -nc --argjson a "$(listing "$plain")" '{responses:{"thread/turns/list":[$a,{error:{code:-1,message:"gone"}}]}}')"
+rpc turn-wait --thread th --turn turn-1 --budget 5 --schema "$SCHEMA" --report "$T/rep" >/dev/null 2>&1; rc=$?
+is "TW2 a full read that fails is null, not a failed wait" "$rc/$(jq -c .compacted "$T/rep")" "0/null"
+noitems="$(printf '%s' "$plain" | jq -c 'del(.items)')"
+scenario "$(jq -nc --argjson a "$(listing "$plain")" --argjson b "$(listing "$noitems")" '{responses:{"thread/turns/list":[$a,$b]}}')"
+rpc turn-wait --thread th --turn turn-1 --budget 5 --schema "$SCHEMA" --report "$T/rep" >/dev/null 2>&1
+is "TW2 a re-read turn with no items key is null too" "$(jq -c .compacted "$T/rep")" null
 
 echo "R0. release building blocks"
 export XDG_STATE_HOME="$T/state"
