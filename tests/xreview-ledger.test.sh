@@ -643,5 +643,268 @@ rm -f "$LM"/*
 differs "I3 the fingerprint, which reads no blob, still answers" "$(fp "$LC" main feat)" ""
 is "I4 and the remote's uploadpack never ran for it either" "$(ls "$LM" | tr '\n' ' ')" ""
 
+echo "J. plan patches and plan blobs (spec 2026-10-25 section 3.5)"
+PXR="$ROOT/px"; mkrepo "$PXR"
+variant "$PXR" px; sed -i '' 's/^two$/TWO/' "$PXR/a.txt"; sed -i '' 's/^    y = 1$/    y = 2/' "$PXR/s.py"
+commit "$PXR" "edit a and s"
+out="$(L diff "$PXR" main px --exclude a.txt)"; rc=$?
+is "PX1 --exclude drops that file's patch, keeps the others, and the header check passes" \
+   "$rc $(printf '%s\n' "$out" | grep -c '^diff --git a/a.txt ') $(printf '%s\n' "$out" | grep -c '^diff --git a/s.py ')" "0 0 1"
+is "PX1b every path excluded leaves an empty packet" "$(L diff "$PXR" main px --exclude a.txt --exclude s.py | wc -c | tr -d ' ')" 0
+is "PX1c without --exclude both are there" "$(L diff "$PXR" main px | grep -c '^diff --git ')" 2
+is "PX1d an exclusion is a literal path: a glob drops nothing" "$(L diff "$PXR" main px --exclude '*.txt' | grep -c '^diff --git ')" 2
+is "PX1e and the fingerprint is the range's, whatever is left out of the packet" \
+   "$(fp "$PXR" main px | grep -cE '^[0-9a-f]{64}$')" 1
+variant "$PXR" pxb; printf '\000\001\002\003\010' > "$PXR/b.bin"; sed -i '' 's/^two$/TWO/' "$PXR/a.txt"; commit "$PXR" "binary and text"
+out="$(L diff "$PXR" main pxb --exclude b.bin)"; rc=$?
+is "PX2 excluding a binary path removes its summary line too" \
+   "$rc $(printf '%s\n' "$out" | grep -c '^Binary file b.bin: ') $(printf '%s\n' "$out" | grep -c '^diff --git a/a.txt ')" "0 0 1"
+is "PX2b and without it the summary is there" "$(L diff "$PXR" main pxb | grep -c '^Binary file b.bin: ')" 1
+variant "$PXR" pxt; rm "$PXR/a.txt"; ln -s target "$PXR/a.txt"; sed -i '' 's/^    y = 1$/    y = 3/' "$PXR/s.py"
+commit "$PXR" "a.txt becomes a symlink, s.py edited"
+out="$(L diff "$PXR" main pxt --exclude a.txt)"; rc=$?
+is "PX3 excluding a file-to-symlink change (two headers, one record) still passes the header check" \
+   "$rc $(printf '%s\n' "$out" | grep -c '^diff --git a/a.txt ') $(printf '%s\n' "$out" | grep -c '^diff --git a/s.py ')" "0 0 1"
+is "PX3b and without it both headers of that change are there" "$(L diff "$PXR" main pxt | grep -c '^diff --git a/a.txt ')" 2
+OB="$(git -C "$PXR" rev-parse main:a.txt)"; NB="$(git -C "$PXR" rev-parse px:a.txt)"
+L blob-patch "$PXR" docs/x.md - "$NB" > "$ROOT/bp-add.patch"; rc=$?
+is "PB1 blob-patch from - renders a whole-file add" "$rc/$(cat "$ROOT/bp-add.patch" | head -5 | tr '\n' '|')" \
+   "0/diff --git a/docs/x.md b/docs/x.md|new file mode 100644|index 0000000..${NB:0:7}|--- /dev/null|+++ b/docs/x.md|"
+is "PB1b with the whole file as additions" "$(grep -c '^+' "$ROOT/bp-add.patch")" 9
+is "PB1c under one hunk header" "$(grep -c '^@@ -0,0 +1,8 @@$' "$ROOT/bp-add.patch")" 1
+L blob-patch "$PXR" docs/x.md "$OB" "$NB" > "$ROOT/bp-mod.patch"; rc=$?
+is "PB2 between two blobs it renders their diff, under the path given" "$rc/$(head -4 "$ROOT/bp-mod.patch" | tr '\n' '|')" \
+   "0/diff --git a/docs/x.md b/docs/x.md|index ${OB:0:7}..${NB:0:7} 100644|--- a/docs/x.md|+++ b/docs/x.md|"
+is "PB2b with the changed line and nothing of the blob ids as a path" \
+   "$(grep -c '^-two$' "$ROOT/bp-mod.patch")/$(grep -c '^+TWO$' "$ROOT/bp-mod.patch")/$(grep -c "a/$OB" "$ROOT/bp-mod.patch")" "1/1/0"
+is "PB3 identical blobs give no patch" "$(L blob-patch "$PXR" docs/x.md "$NB" "$NB" | wc -c | tr -d ' ')" 0
+out="$(L blob-patch "$PXR" docs/x.md "$OB" 0123456789abcdef0123456789abcdef01234567 2>&1)"; rc=$?
+is "PB4 a blob that is not there fails closed" "$rc/$(printf '%s' "$out" | grep -c .)" "1/1"
+git -C "$PXR" config diff.external "$ROOT/silent-diff"
+is "PB5 a configured external diff driver is not run" "$(L blob-patch "$PXR" docs/x.md "$OB" "$NB" | grep -c '^+TWO$')" 1
+git -C "$PXR" config --unset diff.external
+# plan_blobs: a plan added within base..tip, named by its blob at the tip.
+PL="$ROOT/plans"; mkrepo "$PL"
+mkdir -p "$PL/docs/superpowers/plans"
+printf 'unchanged plan\n' > "$PL/docs/superpowers/plans/2026-01-01-unchanged.md"
+printf 'old plan\n' > "$PL/docs/superpowers/plans/2026-01-02-modified.md"
+commit "$PL" "two plans exist"
+variant "$PL" pl
+printf 'new plan\nline two\n' > "$PL/docs/superpowers/plans/2026-02-01-added.md"
+printf 'old plan\nmore\n' > "$PL/docs/superpowers/plans/2026-01-02-modified.md"
+printf 'not a plan\n' > "$PL/docs/superpowers/specs-added.md"
+mkdir -p "$PL/docs/superpowers/plans/sub"; printf 'nested\n' > "$PL/docs/superpowers/plans/sub/n.md"
+commit "$PL" "add a plan, modify one, add a non-plan"
+plan_blobs_json() {
+  /usr/bin/python3 -c '
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("ledger", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print(json.dumps(m.plan_blobs(sys.argv[2], sys.argv[3], sys.argv[4]), sort_keys=True, separators=(",", ":")))
+' "$LEDGER" "$@"
+}
+is "PL1 plan_blobs names the added plans, by blob at the tip, and not the modified or unchanged ones" \
+   "$(plan_blobs_json "$PL" main pl)" \
+   "$(jq -nSc --arg a "$(git -C "$PL" rev-parse pl:docs/superpowers/plans/2026-02-01-added.md)" \
+        --arg n "$(git -C "$PL" rev-parse pl:docs/superpowers/plans/sub/n.md)" \
+        '{"docs/superpowers/plans/2026-02-01-added.md":$a,"docs/superpowers/plans/sub/n.md":$n}')"
+is "PL2 a range with no plan added has none" "$(plan_blobs_json "$PL" pl pl)" "{}"
+
+echo "K. the gate judges wholeness from the receipt alone (spec 2026-10-25 section 3.4-3.7)"
+WH="$ROOT/whole"; mkrepo "$WH"
+git -C "$WH" branch other main
+variant "$WH" feat
+for i in 1 2 3; do printf 'c%s\n' "$i" > "$WH/c$i.txt"; commit "$WH" "c$i"; eval "C$i=\$(git -C \"\$WH\" rev-parse HEAD)"; done
+git -C "$WH" switch -q other; printf 'o\n' > "$WH/o.txt"; commit "$WH" "unrelated"; CO="$(git -C "$WH" rev-parse HEAD)"
+git -C "$WH" switch -q main
+WC="$(L normalize "$WH" main...feat | jq -r .repo)"
+SW_OFF='{"framing":false,"fit":false,"delta":false,"omit_plans":false}'
+SW_FRAME='{"framing":true,"fit":false,"delta":false,"omit_plans":false}'
+SW_FIT='{"framing":true,"fit":true,"delta":false,"omit_plans":false}'
+SW_ALL='{"framing":true,"fit":true,"delta":true,"omit_plans":true}'
+# tx <packet> [delta_from|null] [history-json] [missing-json] [plans_from-json]: a target's
+# new fields. rxj <clean> <compacted|-> <switches-json> [thread] [turn]: a receipt's own.
+tx() {
+  jq -nc --arg p "$1" --argjson d "$(jq -nc --arg d "${2:-null}" 'if $d == "null" then null else $d end')" \
+    --argjson h "${3:-[]}" --argjson m "${4:-[]}" --argjson pl "${5:-[]}" \
+    '{packet:$p,missing:$m,delta_from:$d,history:$h,plans_from:$pl}'
+}
+rxj() {
+  jq -nc --argjson c "$1" --arg k "$2" --argjson s "$3" --arg th "${4:-T1}" --arg tu "${5:-u}" \
+    '{clean:$c,switches:$s,thread:$th,turn:$tu} + (if $k == "-" then {} else {compacted:($k | fromjson)} end)'
+}
+# wrec <nonce> <tip> <checkpoint> <verdict> <receipt-json> [target-json]: a pending entry, then
+# its receipt, for the change main...<tip>, with the receipt's and the target's extra fields.
+wrec() {
+  local at t tx="${6:-}"; [ -n "$tx" ] || tx='{}'
+  at="$(L now)"; t="$(L normalize "$WH" "main...$2" | jq -c --argjson x "$tx" '. + $x')"
+  L append "$WC" "$(jq -nc --arg n "$1" --arg at "$at" --arg cp "$3" --argjson t "$t" \
+    '{v:2,kind:"pending",nonce:$n,dispatched_at:$at,checkpoint:$cp,targets:[$t]}')" >/dev/null
+  L append "$WC" "$(jq -nc --arg n "$1" --arg at "$at" --arg cp "$3" --arg v "$4" --argjson rx "$5" --argjson t "$t" \
+    '{v:2,kind:"receipt",nonce:$n,dispatched_at:$at,checkpoint:$cp,verdict:$v,findings:0,thread:"T1",turn:"u",tier:"",targets:[$t]} + $rx')" >/dev/null
+}
+wgate() { L decide "$WH" main main feat | jq -r 'if .allow then "allow" else "deny" end'; }
+wwhy() { L decide "$WH" main main feat | jq -r .reason; }
+notwhole() { printf '%s' "$1" | grep -c '^the latest approval is not whole: '; }
+# wa <nonce> <target-json> <receipt-json>: an approval of the whole change (tip C3).
+wa() { wrec "$1" "$C3" pre-merge approve "$3" "$2"; }
+# The chain every delta case follows: a full root on T1 at C1, and a delta at C2 from it.
+wrec w-root "$C1" pre-merge approve "$(rxj true false "$SW_ALL" T1 U1)" "$(tx full)"
+wrec w-l2 "$C2" pre-merge approve "$(rxj true false "$SW_ALL" T1 U2)" "$(tx delta w-root '["U1"]')"
+
+wa w1 '{}' '{}'
+is "W1 a receipt with no packet predates the design and is whole" "$(wgate)" allow
+wa w2 "$(tx full)" "$(rxj true false "$SW_FRAME")"
+is "W2 a full packet, framing on, nothing missing: allowed" "$(wgate)" allow
+wa w2b "$(tx full null '[]' '["a.txt"]')" "$(rxj false false "$SW_FRAME")"
+is "W2b framing on and a coverage gap: denied" "$(wgate)" deny
+is "W2c saying the approval is not whole, and why" \
+   "$(notwhole "$(wwhy)")/$(wwhy | grep -c 'missing')" "1/1"
+wa w2c "$(tx full)" "$(rxj true false "$SW_FRAME" | jq -c 'del(.switches)')"
+is "W2d a receipt with no switches treats framing as off" "$(wgate)" allow
+wa w2e "$(tx full null '[]' '["a.txt"]')" "$(rxj true false "$SW_FRAME")"
+is "W2e a coverage gap is denied whatever clean says" "$(wgate)" deny
+wa w2f "$(tx full | jq -c 'del(.missing)')" "$(rxj true false "$SW_FRAME")"
+is "W2f a receipt with framing on and no missing field is denied" "$(wgate)" deny
+wa w2g "$(tx full | jq -c '.missing = null')" "$(rxj true false "$SW_FRAME")"
+is "W2g and so is missing: null" "$(wgate)" deny
+wa w2h "$(tx full | jq -c '.missing = "none"')" "$(rxj true false "$SW_FRAME")"
+is "W2h and a missing that is not a list" "$(wgate)" deny
+wa w3 "$(tx full null '[]' '["a.txt"]')" "$(rxj false false "$SW_OFF")"
+is "W3 framing off ignores missing" "$(wgate)" allow
+wa w3b "$(tx full null '[]' '["a.txt"]')" "$(rxj false false '{"framing":"true","fit":1,"delta":false,"omit_plans":false}')"
+is "W3b a switch that is not exactly true counts as off" "$(wgate)" allow
+wa w4 "$(tx delta w-l2 '["U1","U2"]')" "$(rxj true true "$SW_ALL" T1 U3)"
+is "W4 a compacted delta is denied" "$(wgate)" deny
+is "W4b saying so" "$(wwhy | grep -c 'compact')" 1
+wa w5 "$(tx slices)" "$(rxj true true "$SW_OFF")"
+is "W5 a compacted slices receipt is denied, under any switches" "$(wgate)" deny
+wa w5b "$(tx slices)" "$(rxj true false "$SW_OFF")"
+is "W5b an uncompacted one is allowed" "$(wgate)" allow
+wa w6 "$(tx full)" "$(rxj false true "$SW_FIT")"
+is "W6 a compacted full packet is denied with fit on" "$(wgate)" deny
+wa w7 "$(tx full)" "$(rxj false true "$SW_FRAME")"
+is "W7 and allowed with fit off, as today" "$(wgate)" allow
+wa w7b "$(tx full)" "$(rxj false true "$SW_OFF")"
+is "W7b with every switch off too" "$(wgate)" allow
+wa w8 "$(tx delta w-l2 '["U1","U2"]')" "$(rxj true false "$SW_ALL" T1 U3)"
+is "W8 a valid two-link delta chain is allowed" "$(wgate)" allow
+wa w8b "$(tx delta w-root '["U1"]')" "$(rxj true false "$SW_ALL" T1 U2b)"
+is "W8b so is a one-link chain" "$(wgate)" allow
+wa w9 "$(tx delta w-nowhere '["U1","U2"]')" "$(rxj true false "$SW_ALL" T1 U3)"
+is "W9 a delta whose delta_from is on no receipt is denied" "$(wgate)" deny
+is "W9b saying so" "$(notwhole "$(wwhy)")" 1
+wa w9c "$(tx delta | jq -c '.delta_from = null')" "$(rxj true false "$SW_ALL" T1 U3)"
+is "W9c a delta with no delta_from is denied" "$(wgate)" deny
+wrec w-badbase "$C2" pre-merge approve "$(rxj true false "$SW_ALL" T1 UB)" "$(tx delta w-root '["U1"]' | jq -c '.base = "0123456789abcdef0123456789abcdef01234567"')"
+wa w10 "$(tx delta w-badbase '["U1","UB"]')" "$(rxj true false "$SW_ALL" T1 U3)"
+is "W10 a link on another base is denied" "$(wgate)" deny
+wrec w-unclean "$C2" pre-merge approve "$(rxj false false "$SW_ALL" T1 UU)" "$(tx delta w-root '["U1"]')"
+wa w10b "$(tx delta w-unclean '["U1","UU"]')" "$(rxj true false "$SW_ALL" T1 U3)"
+is "W10b a link that is not clean is denied" "$(wgate)" deny
+wrec w-uncleanroot "$C1" pre-merge approve "$(rxj false false "$SW_ALL" T1 UR)" "$(tx full)"
+wa w10c "$(tx delta w-uncleanroot '["UR"]')" "$(rxj true false "$SW_ALL" T1 U3)"
+is "W10c and so is a root that is not" "$(wgate)" deny
+wrec w-cleannull "$C1" pre-merge approve "$(rxj true false "$SW_ALL" T1 UN | jq -c '.clean = "true"')" "$(tx full)"
+wa w10d "$(tx delta w-cleannull '["UN"]')" "$(rxj true false "$SW_ALL" T1 U3)"
+is "W10d clean is read as exactly true, never for truthiness" "$(wgate)" deny
+wrec w-sroot "$C1" pre-merge approve "$(rxj true false "$SW_ALL" T9 US)" "$(tx slices)"
+wa w10e "$(tx delta w-sroot '["US"]')" "$(rxj true false "$SW_ALL" T9 U3)"
+is "W10e a chain rooted in a sliced round is denied" "$(wgate)" deny
+wrec w-legacyroot "$C1" pre-merge approve "$(rxj true false "$SW_ALL" T1 UL)" '{}'
+wa w10f "$(tx delta w-legacyroot '["UL"]')" "$(rxj true false "$SW_ALL" T1 U3)"
+is "W10f nor does a receipt with no packet root one" "$(wgate)" deny
+wrec w-otherthread "$C1" pre-merge approve "$(rxj true false "$SW_ALL" T2 UT)" "$(tx full)"
+wa w10g "$(tx delta w-otherthread '["UT"]')" "$(rxj true false "$SW_ALL" T1 U3)"
+is "W10g a link on another thread is denied" "$(wgate)" deny
+wrec w-forked "$CO" pre-merge approve "$(rxj true false "$SW_ALL" T1 UF)" "$(tx full)"
+wa w10h "$(tx delta w-forked '["UF"]')" "$(rxj true false "$SW_ALL" T1 U3)"
+is "W10h a link whose tip is not an ancestor of the delta's tip is denied" "$(wgate)" deny
+wrec w-cyc2 "$C2" pre-merge approve "$(rxj true false "$SW_ALL" T1 UC2)" "$(tx delta w-cyc '["UC","UC2"]')"
+wrec w-cyc "$C3" pre-merge approve "$(rxj true false "$SW_ALL" T1 UC)" "$(tx delta w-cyc2 '["UC2","UC"]')"
+is "W10i a cycle is denied, and the walk ends" "$(wgate)" deny
+wa w10j "$(tx delta w10j '["U3"]')" "$(rxj true false "$SW_ALL" T1 U3)"
+is "W10j a delta that follows itself is denied" "$(wgate)" deny
+wrec w-l2c "$C2" pre-merge changes "$(rxj true false "$SW_ALL" T1 U2c)" "$(tx delta w-root '["U1"]')"
+wa w11 "$(tx delta w-l2c '["U1","U2c"]')" "$(rxj true false "$SW_ALL" T1 U3)"
+is "W11 a link whose verdict was changes is allowed" "$(wgate)" allow
+wa w12 "$(tx delta w-l2 '["U2"]')" "$(rxj true false "$SW_ALL" T1 U3)"
+is "W12 a history that omits a chain turn is denied" "$(wgate)" deny
+is "W12b saying so" "$(wwhy | grep -c 'history')" 1
+wa w12b "$(tx delta w-l2 '["U2","U1"]')" "$(rxj true false "$SW_ALL" T1 U3)"
+is "W12c a history that lists them out of order is denied" "$(wgate)" deny
+wa w12c "$(tx delta w-l2 '["U1","X","U2","Y"]')" "$(rxj true false "$SW_ALL" T1 U3)"
+is "W12d turns of the thread's own between chain turns are fine" "$(wgate)" allow
+wa w12d "$(tx delta w-l2 | jq -c 'del(.history)')" "$(rxj true false "$SW_ALL" T1 U3)"
+is "W12e a delta with no history is denied" "$(wgate)" deny
+wa w12e "$(tx delta w-l2 '["U1","U2"]' | jq -c '.history = "U1,U2"')" "$(rxj true false "$SW_ALL" T1 U3)"
+is "W12f and a history that is not a list" "$(wgate)" deny
+# plans_from: each entry {path, nonce, blob} must be backed by a clean, approved plan receipt.
+PP="docs/superpowers/plans/2026-10-25-x.md"
+pf() { jq -nc --arg p "$PP" --arg n "$1" --arg b "$2" '[{path:$p,nonce:$n,blob:$b}]'; }
+wrec w-plan "$C1" plan approve "$(rxj true false "$SW_ALL" TP UP)" "$(tx full | jq -c --arg p "$PP" '.plan_blobs = {($p): "b1"}')"
+wa w13 "$(tx full null '[]' '[]' "$(pf w-plan b1)")" "$(rxj true false "$SW_ALL")"
+is "W13 a plan bound to a clean approved plan receipt that lists the path and blob is allowed" "$(wgate)" allow
+wa w13b "$(tx full null '[]' '[]' "$(pf w-noplan b1)")" "$(rxj true false "$SW_ALL")"
+is "W13b a plans_from naming no receipt is denied" "$(wgate)" deny
+is "W13c saying so" "$(notwhole "$(wwhy)")/$(wwhy | grep -c 'plan')" "1/1"
+wa w13c "$(tx full null '[]' '[]' "$(pf w-plan b2)")" "$(rxj true false "$SW_ALL")"
+is "W13d a blob the plan receipt does not list is denied" "$(wgate)" deny
+wa w13d "$(tx full null '[]' '[]' "$(pf w-plan b1 | jq -c '.[0].path = "docs/superpowers/plans/other.md"')")" "$(rxj true false "$SW_ALL")"
+is "W13e a path the plan receipt does not list is denied" "$(wgate)" deny
+wrec w-plan-unclean "$C1" plan approve "$(rxj false false "$SW_ALL" TP UP2)" "$(tx full | jq -c --arg p "$PP" '.plan_blobs = {($p): "b1"}')"
+wa w13e "$(tx full null '[]' '[]' "$(pf w-plan-unclean b1)")" "$(rxj true false "$SW_ALL")"
+is "W13f an unclean plan receipt is denied" "$(wgate)" deny
+wrec w-plan-changes "$C1" plan changes "$(rxj true false "$SW_ALL" TP UP3)" "$(tx full | jq -c --arg p "$PP" '.plan_blobs = {($p): "b1"}')"
+wa w13f "$(tx full null '[]' '[]' "$(pf w-plan-changes b1)")" "$(rxj true false "$SW_ALL")"
+is "W13g a plan receipt that is not an approval is denied" "$(wgate)" deny
+wrec w-spec "$C1" spec approve "$(rxj true false "$SW_ALL" TP UP4)" "$(tx full | jq -c --arg p "$PP" '.plan_blobs = {($p): "b1"}')"
+wa w13g "$(tx full null '[]' '[]' "$(pf w-spec b1)")" "$(rxj true false "$SW_ALL")"
+is "W13h a receipt of another checkpoint is denied" "$(wgate)" deny
+wrec w-plan-legacy "$C1" plan approve '{}' '{}'
+wa w13h "$(tx full null '[]' '[]' "$(pf w-plan-legacy b1)")" "$(rxj true false "$SW_ALL")"
+is "W13i a plan receipt from before the design, with no plan_blobs, is denied" "$(wgate)" deny
+wa w13i "$(tx full null '[]' '[]' '[{"path":"p"}]')" "$(rxj true false "$SW_ALL")"
+is "W13j a malformed plans_from entry is denied" "$(wgate)" deny
+wa w13j "$(tx delta w-l2 '["U1","U2"]' '[]' "$(pf w-plan b1)")" "$(rxj true false "$SW_ALL" T1 U3)"
+is "W13k a delta with a valid chain and a valid plan binding is allowed" "$(wgate)" allow
+# compacted must be exactly false where it applies; unknown is never clean.
+wa w14 "$(tx full)" "$(rxj false null "$SW_FIT")"
+is "W14 compacted: null on a full packet with fit on is denied" "$(wgate)" deny
+wa w14b "$(tx delta w-l2 '["U1","U2"]')" "$(rxj true null "$SW_ALL" T1 U3)"
+is "W14b on a delta" "$(wgate)" deny
+wa w14c "$(tx slices)" "$(rxj true null "$SW_OFF")"
+is "W14c on slices" "$(wgate)" deny
+wa w14d "$(tx full)" "$(rxj false null "$SW_OFF")"
+is "W14d and allowed on a full packet with every switch off, as today" "$(wgate)" allow
+wa w14e "$(tx full)" "$(rxj true - "$SW_FIT")"
+is "W14e a missing compacted key on full with fit on is denied" "$(wgate)" deny
+wa w14f "$(tx full)" "$(rxj true '"no"' "$SW_FIT")"
+is "W14f a compacted that is the string no is denied" "$(wgate)" deny
+wa w14g "$(tx full)" "$(rxj true 0 "$SW_FIT")"
+is "W14g and 0 is not false" "$(wgate)" deny
+wa w14h "$(tx delta w-l2 '["U1","U2"]')" "$(rxj true - "$SW_ALL" T1 U3)"
+is "W14h a delta with no compacted key is denied" "$(wgate)" deny
+wa w14i "$(tx bogus)" "$(rxj true false "$SW_OFF")"
+is "W14i an unknown packet kind is denied" "$(wgate)" deny
+wa w14j "$(tx full)" "$(rxj true false "$SW_ALL")"
+is "W14j a whole full packet with every switch on is allowed" "$(wgate)" allow
+# The gate judges from the receipt: no switches file is read.
+CFG="$ROOT/xdg-config"; mkdir -p "$CFG/xreview"
+wa w15 "$(tx full null '[]' '["a.txt"]')" "$(rxj false false "$SW_FRAME")"
+res=""
+for state in on off; do
+  printf 'framing=%s\nfit=%s\ndelta=%s\nomit_plans=%s\n' $state $state $state $state > "$CFG/xreview/packets.conf"
+  res="$res $(XDG_CONFIG_HOME="$CFG" L decide "$WH" main main feat | jq -r 'if .allow then "allow" else "deny" end')"
+done
+is "W15 flipping packets.conf changes no decision on record (a gap stays denied)" "$res" " deny deny"
+wa w15b "$(tx full null '[]' '["a.txt"]')" "$(rxj false false "$SW_OFF")"
+res=""
+for state in on off; do
+  printf 'framing=%s\nfit=%s\ndelta=%s\nomit_plans=%s\n' $state $state $state $state > "$CFG/xreview/packets.conf"
+  res="$res $(XDG_CONFIG_HOME="$CFG" L decide "$WH" main main feat | jq -r 'if .allow then "allow" else "deny" end')"
+done
+is "W15b nor one recorded with the switches off (allowed stays allowed)" "$res" " allow allow"
+
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))
