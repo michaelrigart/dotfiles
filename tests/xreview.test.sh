@@ -55,6 +55,8 @@ export CALLS="$ROOT/calls" P CWD
 export U0=aaaaaaaa-0000-4000-8000-000000000000   # the thread the pane shows at the start
 export U1=bbbbbbbb-1111-4111-8111-111111111111   # what xreview-rpc thread-start creates
 export U2=cccccccc-2222-4222-8222-222222222222
+export U3=dddddddd-3333-4333-8333-333333333333   # the threads of a sliced round's later slices
+export U4=eeeeeeee-4444-4444-8444-444444444444
 export NEW_UUID="$U1"
 # Codex truncates the title's thread-id item to 29 chars plus "..." once the thread is named
 # (F11/F21); a realistic stub title never carries more than that.
@@ -217,21 +219,24 @@ cat > "$STUB/xreview-rpc" <<'R'
 #!/bin/sh
 printf '%sxreview-rpc %s\n' "${DISPATCH_ID:+$DISPATCH_ID }" "$*" >> "$CALLS"
 cmd="$1"; shift
-th=""; input=""; known=""; resolved=""; prefix=""; cwd=""
+th=""; input=""; known=""; resolved=""; prefix=""; cwd=""; turn=""; report=""
 while [ "$#" -gt 0 ]; do
   case "$1" in --thread) th="$2"; shift ;; --input) input="$2"; shift ;; --known) known="$2"; shift ;;
                --resolved) resolved="$2"; shift ;; --prefix) prefix="$2"; shift ;;
-               --cwd) cwd="$2"; shift ;; esac; shift
+               --cwd) cwd="$2"; shift ;; --turn) turn="$2"; shift ;; --report) report="$2"; shift ;; esac; shift
 done
 case "$cmd" in
   health) [ -n "${RPC_SWITCH_BRANCH_EARLY:-}" ] && git checkout -q "$RPC_SWITCH_BRANCH_EARLY" 2>/dev/null
           [ -z "${RPC_HEALTH_FAIL:-}" ] || exit 5; exit 0 ;;
   thread-start) [ -n "${RPC_START_THREAD_FAIL:-}" ] && exit 1
-                echo "$NEW_UUID" ;;
+                # $P/uuids: the ids later thread-starts hand out, one per call, in order (slices).
+                if [ -s "$P/uuids" ]; then
+                  head -1 "$P/uuids"; tail -n +2 "$P/uuids" > "$P/uuids.t"; mv "$P/uuids.t" "$P/uuids"
+                else echo "$NEW_UUID"; fi ;;
   thread-resolve)
     # RPC_RESOLVE_RC=<n>: the resolver exits n (5: daemon unreachable, 2: usage, 1: no match).
     [ -n "${RPC_RESOLVE_RC:-}" ] && exit "$RPC_RESOLVE_RC"
-    for u in "$U0" "$U1" "$U2"; do
+    for u in "$U0" "$U1" "$U2" "$U3" "$U4"; do
       case "$u" in "$prefix"*) echo "$u"; exit 0 ;; esac
     done
     exit 1 ;;
@@ -258,6 +263,13 @@ case "$cmd" in
               # back in the foreground before this ran; this is what a race would look like.
               [ -n "${RELIVE_DURING_TURN:-}" ] && printf codex > "$P/agent"
               [ -n "${RPC_SWITCH_BRANCH_TO:-}" ] && git checkout -q "$RPC_SWITCH_BRANCH_TO" 2>/dev/null
+              # LOCK_PROBE=<lock file>: log whether the pane lock is held while the turn starts.
+              if [ -n "${LOCK_PROBE:-}" ]; then
+                if /usr/bin/python3 -I -c 'import fcntl,sys; fcntl.flock(open(sys.argv[1], "a"), fcntl.LOCK_EX | fcntl.LOCK_NB)' "$LOCK_PROBE" 2>/dev/null
+                then echo "lock-probe free" >> "$CALLS"; else echo "lock-probe held" >> "$CALLS"; fi
+              fi
+              # $P/start_rc.<thread>: that one thread's turn-start exits with the code in it.
+              [ -r "$P/start_rc.$th" ] && exit "$(cat "$P/start_rc.$th")"
               [ -n "${RPC_START_FAIL:-}" ] && exit 1
               [ -n "${RPC_START_UNCERTAIN:-}" ] && exit 6
               if [ -n "${RPC_START_BAD_ID:-}" ]; then echo "turn id/with spaces"; exit 0; fi
@@ -265,8 +277,20 @@ case "$cmd" in
   thread-turns) # RPC_TURNS_FAIL: the thread's turns cannot be listed.
                 [ -n "${RPC_TURNS_FAIL:-}" ] && exit 1
                 echo '{"turns":[],"thread_compactions":0}' ;;
-  turn-wait) [ -n "$resolved" ] && echo turn-recovered > "$resolved"
-             printf '%s\n' "${RPC_WAIT_OUT:-}"; exit "${RPC_WAIT_RC:-0}" ;;
+  turn-wait) # $P/unfound.<thread>: the next --new-since wait on it finds nothing yet (exit 3).
+             if [ -n "$resolved" ] && [ -e "$P/unfound.$th" ]; then rm -f "$P/unfound.$th"; exit 3; fi
+             [ -n "$resolved" ] && echo turn-recovered > "$resolved"
+             # Per turn: $P/answer.<turn> is its answer, $P/rc.<turn> its exit code for one wait,
+             # $P/compacted.<turn> its compaction flag; otherwise RPC_WAIT_OUT, RPC_WAIT_RC and
+             # RPC_COMPACTED. The report names RPC_REPORT_TURN instead, when set (a stale one).
+             t="${turn:-turn-recovered}"
+             o="${RPC_WAIT_OUT:-}"; [ -r "$P/answer.$t" ] && o="$(cat "$P/answer.$t")"
+             r="${RPC_WAIT_RC:-0}"; if [ -r "$P/rc.$t" ]; then r="$(cat "$P/rc.$t")"; rm -f "$P/rc.$t"; fi
+             if [ -n "$report" ] && { [ "$r" = 0 ] || [ "$r" = 4 ]; }; then
+               c="${RPC_COMPACTED:-false}"; [ -r "$P/compacted.$t" ] && c="$(cat "$P/compacted.$t")"
+               printf '{"turn":"%s","compacted":%s}\n' "${RPC_REPORT_TURN:-$t}" "$c" > "$report"
+             fi
+             printf '%s\n' "$o"; exit "$r" ;;
 esac
 exit 0
 R
@@ -290,7 +314,7 @@ fresh() { # a pane showing U0, idle, its TUI not connected to the daemon; clean 
         KEY_DELAY DISPATCH_ID XREVIEW_LOCK_WAIT RPC_RUNNING_AFTER_START \
         PROCINFO_FAIL PRESESSION GONE_AFTER_KEYS GONE_AFTER_RUN LSOF_FAIL READ_FAIL \
         RPC_STATUS_FAIL_FOR RPC_STATUS_NOBOOL_FOR CODEX_CHILD XREVIEW_RUNG_WAIT GET_FAIL PROCINFO_BAD RPC_RESOLVE_RC PROCINFO_FG \
-        SNAP_LEDGER XREVIEW_LEDGER_LOCK_WAIT RPC_TURNS_FAIL
+        SNAP_LEDGER XREVIEW_LEDGER_LOCK_WAIT RPC_TURNS_FAIL RPC_COMPACTED RPC_REPORT_TURN LOCK_PROBE
   export NEW_UUID="$U1"
   packets
   printf codex > "$P/agent"; printf '%s | t | d' "$(trunc "$U0")" > "$P/title"; echo idle > "$P/status"
@@ -299,6 +323,7 @@ fresh() { # a pane showing U0, idle, its TUI not connected to the daemon; clean 
         "$P/exit_delay_active" "$P/exit_delay_calls"
   rm -f "$P/connected" "$P/argv" "$P/screen" "$P/gone" "$P/procinfo_fail_once"
   rm -f "$P"/running.* "$P/ledger-at-start"
+  rm -f "$P/uuids" "$P"/answer.* "$P"/rc.* "$P"/compacted.* "$P"/start_rc.* "$P"/unfound.*
   mkdir -p "$CODEX_HOME/app-server-daemon"; printf '{"pid":999}\n' > "$CODEX_HOME/app-server-daemon/daemon.pid"
   bash "$XREVIEW" round --reset >/dev/null 2>&1
   rm -rf "$STATE/superseded" "$STATE/pin" "$STATE/turns" "$STATE/missed"
@@ -1641,8 +1666,9 @@ fresh; export PANE_CWD="$VCWD"
 n4="$(bash "$XREVIEW" dispatch --checkpoint pre-merge --diff main...feature b.md 2>/dev/null)"
 printf 'three\n' >> a.txt && git commit -q -am "after the dispatch"
 RPC_WAIT_OUT="$APPROVE" bash "$XREVIEW" collect "$n4" >/dev/null 2>&1
+# The receipt adds only what collect found (spec 2026-10-25 §3.6): each target's missing labels.
 is "W11 the receipt names the targets fixed at dispatch" \
-   "$(jq -c --arg n "$n4" 'select(.nonce == $n and .kind == "receipt") | .targets' "$VLEDGER")" \
+   "$(jq -c --arg n "$n4" 'select(.nonce == $n and .kind == "receipt") | [.targets[] | del(.missing)]' "$VLEDGER")" \
    "$(jq -c --arg n "$n4" 'select(.nonce == $n and .kind == "pending") | .targets' "$VLEDGER")"
 is "W12 so a commit made after the dispatch is not approved" "$(vgate "$V")" deny
 printf '%s %s %s %s\n' "$U1" "turn-$U1" pre-merge feature > "$VSTATE/turns/xr-1-old"
@@ -2100,6 +2126,326 @@ is "X9 the pending entry and the receipt both record the switches" \
    "[\"pending\",$want] [\"receipt\",$want] "
 is "X9 and they equal the dispatch's own" "$(jq -c .switches "$STATE/turns/$nonce.targets")" "$want"
 packets
+
+echo "Y. collect judges each turn clean or not, and records it (spec 2026-10-25 §3.6, §3.7)"
+printf 'one\n' > cl1.txt; printf 'two\n' > cl2.txt
+git add cl1.txt cl2.txt && git commit -q -m "two small files"
+CLR="$(git rev-parse HEAD~1)..$(git rev-parse HEAD)"
+YB="$(git rev-parse --abbrev-ref HEAD)"
+receipt() { jq -c --arg n "$1" 'select(.nonce == $n and .kind == "receipt")' "${2:-$MAIN_LEDGER}"; }
+framed() { # framed <verdict> <label>...: a framed answer that lists those labels
+  local v="$1"; shift
+  jq -nc --arg v "$v" '{verdict:$v, findings:[], reviewed_files:$ARGS.positional}' --args "$@"
+}
+framed_dispatch() { # framed_dispatch <checkpoint> [--diff ...]: framing and fit on, a first dispatch
+  fresh; packets framing fit; rm -rf "$CODEX_HOME/sessions"; rollout $U0 1000 258400
+  local cp="$1"; shift
+  nonce="$(bash "$XREVIEW" dispatch --checkpoint "$cp" "$@" b.md 2>/dev/null)"
+}
+
+framed_dispatch pre-merge --diff "$CLR"
+RPC_COMPACTED=true RPC_WAIT_OUT="$(framed approve cl1.txt cl2.txt)" bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+is "CL1 a compacted turn with fit on prints the answer and exits 0" "$rc/$(jq -r .verdict "$ROOT/out")" "0/approve"
+is "CL1 and says on stderr that it is not clean and why, and that the gate stays closed" \
+   "$(cat "$ROOT/err")" "xreview: this review is not clean (compacted); the merge gate stays closed for it"
+is "CL1 the receipt records the compaction and that it is not clean" \
+   "$(receipt "$nonce" | jq -c '[.compacted, .clean, .targets[0].missing]')" '[true,false,[]]'
+is "CL1 the wait used the framed schema and asked for the report" \
+   "$(called "turn-wait --thread $U1 --turn turn-$U1 --budget 2700 --schema $XDG_CONFIG_HOME/xreview/findings.framed.schema.json --report $STATE/turns/$nonce.report")" 1
+is "CL1 the report does not linger" "$([ -e "$STATE/turns/$nonce.report" ] && echo left || echo gone)" gone
+
+framed_dispatch pre-merge --diff "$CLR"
+RPC_WAIT_OUT="$(framed changes cl1.txt)" bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+is "CL2 a coverage gap with framing on prints the answer and exits 0" "$rc/$(jq -r .verdict "$ROOT/out")" "0/changes"
+is "CL2 the notice names the labels missed" \
+   "$(cat "$ROOT/err")" "xreview: this review is not clean (missed: cl2.txt); the merge gate stays closed for it"
+is "CL2 the receipt: missing on the target, not compacted, not clean" \
+   "$(receipt "$nonce" | jq -c '[.targets[0].missing, .compacted, .clean]')" '[["cl2.txt"],false,false]'
+is "CL2 the labels missed wait for the next dispatch" "$(cat "$STATE/missed")" cl2.txt
+rollout $U1 1000 258400
+bash "$XREVIEW" dispatch --checkpoint pre-merge --diff "$CLR" b.md >/dev/null 2>&1
+is "CL2 and the next dispatch's packet names them" "$(grep -c 'did not list: cl2.txt\.' "$P/packet")" 1
+
+fresh; printf 'stale\n' > "$STATE/missed"
+nonce="$(bash "$XREVIEW" dispatch --checkpoint pre-merge --diff "$CLR" b.md 2>/dev/null)"
+printf 'stale\n' > "$STATE/missed"
+RPC_WAIT_OUT='{"verdict":"approve","findings":[]}' bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+r="$(receipt "$nonce")"
+is "CL3 with every switch off the receipt still records compacted and clean" "$rc/$(printf '%s' "$r" | jq -c '[.compacted, .clean]')" "0/[false,true]"
+is "CL3 with the switches, and each target's packet and empty missing list" \
+   "$(printf '%s' "$r" | jq -c '[.switches, .targets[0].packet, .targets[0].missing]')" \
+   '[{"framing":false,"fit":false,"delta":false,"omit_plans":false},"full",[]]'
+is "CL3 and no notice" "$(cat "$ROOT/err")" ""
+is "CL3 the wait used today's schema, with the report" \
+   "$(called "--schema $XDG_CONFIG_HOME/xreview/findings.schema.json --report $STATE/turns/$nonce.report")" 1
+is "CL3 nothing missed: the labels file is cleared" "$([ -e "$STATE/missed" ] && echo left || echo gone)" gone
+fresh
+nonce="$(bash "$XREVIEW" dispatch --checkpoint pre-merge --diff "$CLR" b.md 2>/dev/null)"
+RPC_COMPACTED=true RPC_WAIT_OUT='{"verdict":"approve","findings":[]}' bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+is "CL3b every switch off and compacted: not clean, but a full packet with fit off leaves the gate as it was" \
+   "$rc/$(cat "$ROOT/err")" "0/xreview: this review is not clean (compacted); the merge gate is not affected (fit was off)"
+is "CL3b recorded as such" "$(receipt "$nonce" | jq -c '[.compacted, .clean]')" '[true,false]'
+fresh; packets framing
+nonce="$(bash "$XREVIEW" dispatch --checkpoint pre-merge --diff "$CLR" b.md 2>/dev/null)"
+RPC_WAIT_OUT="$(framed approve cl1.txt cl2.txt)" bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+is "CL3c framing on, every shown label listed, no compaction: clean, no notice" \
+   "$rc/$(receipt "$nonce" | jq -c '[.compacted, .clean, .targets[0].missing]')/$(cat "$ROOT/err")" "0/[false,true,[]]/"
+
+framed_dispatch plan --diff "$CLR"
+RPC_COMPACTED=null RPC_WAIT_OUT="$(framed approve cl1.txt cl2.txt)" bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+is "CL4 a report that cannot tell records the compaction as unknown, never clean" \
+   "$rc/$(receipt "$nonce" | jq -c '[.compacted, .clean]')" "0/[null,false]"
+is "CL4 named as unknown; a plan review that is not clean binds no plan" \
+   "$(cat "$ROOT/err")" "xreview: this review is not clean (compaction unknown); it binds no plan for later pre-merge reviews"
+framed_dispatch plan --diff "$CLR"
+RPC_REPORT_TURN=turn-other RPC_WAIT_OUT="$(framed approve cl1.txt cl2.txt)" bash "$XREVIEW" collect "$nonce" >/dev/null 2>&1
+is "CL4b a report about another turn (a stale file) is no report: unknown" \
+   "$(receipt "$nonce" | jq -c '[.compacted, .clean]')" "[null,false]"
+
+framed_dispatch pre-merge --diff "$CLR"
+seq 1 60 | sed 's/^/f/' > "$STATE/turns/$nonce.shown"
+RPC_WAIT_OUT="$(framed approve f1)" bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"
+is "CL5 a target records at most 50 missing labels, in shown order" \
+   "$(receipt "$nonce" | jq -c '.targets[0].missing | [length, first, last]')" '[50,"f2","f51"]'
+is "CL5 the next dispatch gets every one of them" "$(grep -c . "$STATE/missed")/$(tail -1 "$STATE/missed")" "59/f60"
+is "CL5 the notice shows ten and counts the rest" "$(cat "$ROOT/err")" \
+   "xreview: this review is not clean (missed: f2, f3, f4, f5, f6, f7, f8, f9, f10, f11 … (+49 more)); the merge gate stays closed for it"
+
+framed_dispatch pre-merge --diff "$CLR"
+RPC_WAIT_OUT="$(framed approve ./cl1.txt b/cl2.txt)" bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"
+is "CL6 a listed label matches after a/, b/ and ./ are stripped" \
+   "$(receipt "$nonce" | jq -c '[.clean, .targets[0].missing]')/$(cat "$ROOT/err")" "[true,[]]/"
+
+framed_dispatch spec --diff "$CLR"
+RPC_COMPACTED=true RPC_WAIT_OUT="$(framed approve cl1.txt)" bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"
+is "CL7 both reasons, and a spec review names no consequence" \
+   "$(cat "$ROOT/err")" "xreview: this review is not clean (compacted; missed: cl2.txt)"
+
+framed_dispatch pre-merge --diff "$CLR" --diff "$V2:main...feature"
+is "CL8 (setup) two targets, each label carrying its target's" "$(tr '\n' ' ' < "$STATE/turns/$nonce.shown")" ".:cl1.txt .:cl2.txt $V2:a.txt "
+RPC_WAIT_OUT="$(framed approve .:cl1.txt .:cl2.txt)" bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"
+is "CL8 each target records only its own missing labels" \
+   "$(receipt "$nonce" | jq -c '.targets[0].missing')/$(receipt "$nonce" "$V2LEDGER" | jq -c '.targets[0].missing')" "[]/[\"$V2:a.txt\"]"
+is "CL8 and the receipt in each ledger is not clean" \
+   "$(receipt "$nonce" | jq -c .clean)/$(receipt "$nonce" "$V2LEDGER" | jq -c .clean)" "false/false"
+
+echo "PB. a plan review records the plans its packet showed whole (spec 2026-10-25 §3.5)"
+mkdir -p docs/superpowers/plans && printf '# plan\n' > docs/superpowers/plans/2026-10-25-p.md
+git add docs && git commit -q -m "a plan"
+PBR="$(git rev-parse HEAD~1)..$(git rev-parse HEAD)"
+PBLOB="$(git rev-parse HEAD:docs/superpowers/plans/2026-10-25-p.md)"
+fresh
+nonce="$(bash "$XREVIEW" dispatch --checkpoint plan --diff "$PBR" b.md 2>/dev/null)"
+RPC_WAIT_OUT='{"verdict":"approve","findings":[]}' bash "$XREVIEW" collect "$nonce" >/dev/null 2>&1
+is "PB a plan-checkpoint receipt carries plan_blobs on its target" \
+   "$(receipt "$nonce" | jq -c '.targets[0].plan_blobs')" "{\"docs/superpowers/plans/2026-10-25-p.md\":\"$PBLOB\"}"
+fresh
+nonce="$(bash "$XREVIEW" dispatch --checkpoint pre-merge --diff "$PBR" b.md 2>/dev/null)"
+RPC_WAIT_OUT='{"verdict":"approve","findings":[]}' bash "$XREVIEW" collect "$nonce" >/dev/null 2>&1
+is "PB a pre-merge receipt carries none" "$(receipt "$nonce" | jq -c '.targets[0] | has("plan_blobs")')" false
+printf '%s\n' 'import os, runpy, sys' 'if sys.argv[1:2] == ["plan-blobs"]: sys.exit(1)' \
+  'runpy.run_path(os.environ["XREVIEW_REAL_PACKET"], run_name="__main__")' > "$ROOT/fail-blobs.py"
+fresh
+nonce="$(bash "$XREVIEW" dispatch --checkpoint plan --diff "$PBR" b.md 2>/dev/null)"
+XREVIEW_REAL_PACKET="$PACKET" XREVIEW_PACKET="$ROOT/fail-blobs.py" RPC_WAIT_OUT='{"verdict":"approve","findings":[]}' \
+  bash "$XREVIEW" collect "$nonce" >/dev/null 2>&1; rc=$?
+is "PB2 plan-blobs failing records [] and never fails the collect" "$rc/$(receipt "$nonce" | jq -c '.targets[0].plan_blobs')" "0/[]"
+
+echo "SL. collect runs a sliced round to the end, one fresh thread per slice (spec 2026-10-25 §3.3)"
+for n in 1 2 3; do seq 1 1500 | sed "s/^/slice $n line /" > "s$n.txt"; done
+git add s1.txt s2.txt s3.txt && git commit -q -m "three files, a slice each"
+SLR="$(git rev-parse HEAD~1)..$(git rev-parse HEAD)"
+sliced() { # a first pre-merge dispatch of SLR, sliced; sets nonce and sl, and L1-L3 (the labels)
+  fresh; packets framing fit; rm -rf "$CODEX_HOME/sessions"; rollout $U0 1000 114300
+  nonce="$(bash "$XREVIEW" dispatch --checkpoint pre-merge --diff "$SLR" b.md 2>/dev/null)"
+  sl="$STATE/turns/$nonce.slices"
+  L1="$(jq -r '.packets[0].shown[]' "$sl" 2>/dev/null)"; L2="$(jq -r '.packets[1].shown[]' "$sl" 2>/dev/null)"
+  L3="$(jq -r '.packets[2].shown[]' "$sl" 2>/dev/null)"
+  printf '%s\n%s\n' "$U3" "$U4" > "$P/uuids"   # the threads collect starts for slices 2 and 3
+}
+approve_all() { # approve_all <slice-2 turn>: every slice approves, listing its own labels
+  framed approve $L1 > "$P/answer.turn-$U1"; framed approve $L2 > "$P/answer.$1"; framed approve $L3 > "$P/answer.turn-$U4"
+}
+slices_done() { [ -e "$sl" ] && echo left || echo gone; }
+
+sliced
+is "SL1 (setup) the round is three slices, a file each" "$(jq -c '[.packets[].shown]' "$sl")" '[["s1.txt"],["s2.txt"],["s3.txt"]]'
+framed approve $L1 > "$P/answer.turn-$U1"
+jq -nc '{verdict:"changes",findings:[{severity:"P2",file:"s2.txt",line:1,summary:"s",failure_scenario:"f"}],reviewed_files:$ARGS.positional}' \
+  --args $L2 s1.txt > "$P/answer.turn-$U3"
+framed approve $L3 > "$P/answer.turn-$U4"
+: > "$CALLS"
+LOCK_PROBE="$LOCKF" bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+is "SL1 collect runs every slice and exits 0" "$rc" 0
+is "SL1 slices 2 and 3 run on fresh threads of their own" \
+   "$(called 'xreview-rpc thread-start')/$(grep 'xreview-rpc turn-start' "$CALLS" | sed 's/.*--thread \([^ ]*\).*/\1/' | tr '\n' ' ')" "2/$U3 $U4 "
+is "SL1 each slice's turn starts under the pane lock" "$(called 'lock-probe held')/$(called 'lock-probe free')" "2/0"
+is "SL1 the pane is freed for each slice, then follows it" \
+   "$(called 'herdr pane send-keys')/$(resumed "$U3")/$(resumed "$U4")" "4/1/1"
+is "SL1 no keystroke while a turn runs" \
+   "$(awk '/xreview-rpc turn-start/ {r = 1} /xreview-rpc turn-wait/ {r = 0} r && /herdr pane send-keys/ {c++} END {print c + 0}' "$CALLS")" 0
+is "SL1 one merged answer: changes, as one slice asked for them" "$(jq -r .verdict "$ROOT/out")/$(grep -c . "$ROOT/out")" "changes/1"
+is "SL1 with every slice's findings, and reviewed_files the union in first-seen order" \
+   "$(jq -c '[(.findings | length), .reviewed_files]' "$ROOT/out")" '[1,["s1.txt","s2.txt","s3.txt"]]'
+r="$(receipt "$nonce")"
+is "SL1 the receipt names the last slice's thread and turn" "$(printf '%s' "$r" | jq -r '"\(.thread) \(.turn)"')" "$U4 turn-$U4"
+is "SL1 and every slice's turn" "$(printf '%s' "$r" | jq -c '[.slice_turns[] | [.thread, .turn, .compacted]]')" \
+   "[[\"$U1\",\"turn-$U1\",false],[\"$U3\",\"turn-$U3\",false],[\"$U4\",\"turn-$U4\",false]]"
+is "SL1 a slices receipt, clean, with the merged verdict and count" \
+   "$(printf '%s' "$r" | jq -c '[.targets[0].packet, .clean, .compacted, .targets[0].missing, .verdict, .findings]')" \
+   '["slices",true,false,[],"changes",1]'
+is "SL1 no notice" "$(cat "$ROOT/err")" ""
+is "SL1 the last slice's thread is the checkpoint's thread" "$(cat "$STATE/review-thread")" "$U4"
+is "SL1 the earlier slices' threads are archived as the pane moves on" \
+   "$(called "thread-archive --thread $U1")/$(called "thread-archive --thread $U3")/$(called "thread-archive --thread $U4")" "1/1/0"
+is "SL1 the round is the dispatch's" "$(bash "$XREVIEW" round)" 1
+is "SL1 the packets and the slice state are gone" \
+   "$([ -e "$STATE/turns/$nonce.packets" ] && echo left || echo gone)/$(slices_done)" "gone/gone"
+is "SL1 the turn record names the last slice" "$(cat "$STATE/turns/$nonce")" "$U4 turn-$U4 pre-merge $YB"
+: > "$CALLS"
+bash "$XREVIEW" collect "$nonce" > "$ROOT/out2" 2>/dev/null; rc=$?
+is "SL1 collecting a finished round again prints the merged answer, waiting on nothing" \
+   "$rc/$(cmp -s "$ROOT/out" "$ROOT/out2" && echo same)/$(called 'xreview-rpc')" "0/same/0"
+
+sliced; approve_all "turn-$U3"
+echo 3 > "$P/rc.turn-$U3"
+: > "$CALLS"
+bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+is "SL2 exit 3 during slice 2" "$rc/$(grep -c "xreview collect $nonce" "$ROOT/err")" "3/1"
+is "SL2 slice 1's answer is kept, and slice 2's turn is on record" \
+   "$(jq -c '[(.answers | map(select(. != null)) | length), .turns]' "$sl")" "[1,[\"turn-$U1\",\"turn-$U3\"]]"
+: > "$CALLS"
+bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+is "SL2 collecting again finishes the round" "$rc/$(jq -r .verdict "$ROOT/out")" "0/approve"
+is "SL2 it never waits on slice 1 again" "$(called "turn-wait --thread $U1")" 0
+is "SL2 it resumes the wait on slice 2 by its id" "$(called "turn-wait --thread $U3 --turn turn-$U3 ")" 1
+is "SL2 and starts slice 3 alone: nothing twice" "$(called 'xreview-rpc thread-start')/$(called 'xreview-rpc turn-start')" "1/1"
+sliced; approve_all "turn-$U3"
+echo 3 > "$P/rc.turn-$U3"
+bash "$XREVIEW" collect "$nonce" >/dev/null 2>&1
+jq -c 'del(.threads[1], .turns[1])' "$sl" > "$sl.t" && mv "$sl.t" "$sl"   # as if never saved
+: > "$CALLS"
+bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+is "SL2b a slice the turn record shows started, its state unsaved, is taken up from the record" \
+   "$rc/$(called "turn-start --thread $U3")/$(called "turn-wait --thread $U3 --turn turn-$U3 ")" "0/0/1"
+
+sliced; approve_all "turn-$U3"
+rm -f "$ROOT/held"
+/usr/bin/python3 -c 'import fcntl,sys,time
+f = open(sys.argv[1], "a"); fcntl.flock(f, fcntl.LOCK_EX); open(sys.argv[2], "w").close(); time.sleep(1.5)
+open(sys.argv[3], "a").write("holder lets go of the lock\n")' "$LOCKF" "$ROOT/held" "$CALLS" &
+holder=$!
+for _ in $(seq 50); do [ -e "$ROOT/held" ] && break; sleep 0.1; done
+: > "$CALLS"
+XREVIEW_LOCK_WAIT=30 bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+wait "$holder" 2>/dev/null
+is "SL3 a pane lock held by another dispatch: collect waits for it, then finishes" "$rc/$(jq -r .verdict "$ROOT/out")" "0/approve"
+is "SL3 slice 2 starts only once the holder has let go" \
+   "$([ "$(first 'holder lets go')" -lt "$(first "xreview-rpc turn-start --thread $U3")" ] && echo yes || echo no)" yes
+# Another collect of the same round starts slice 2, or runs it to its answer, while this one
+# waits for the lock: the holder stands in for it, writing that into the round's state before it
+# lets go.
+for other in started finished; do
+  sliced; approve_all "turn-$U3"; printf '%s\n' "$U4" > "$P/uuids"
+  rm -f "$ROOT/held"
+  /usr/bin/python3 -c 'import fcntl, json, os, sys, time
+f = open(sys.argv[1], "a"); fcntl.flock(f, fcntl.LOCK_EX); open(sys.argv[2], "w").close()
+s = {}
+for _ in range(200):
+    try:
+        s = json.load(open(sys.argv[3]))
+    except ValueError:
+        s = {}
+    if (s.get("answers") or [None])[0]:
+        break
+    time.sleep(0.05)
+s["threads"].append(sys.argv[4]); s["turns"].append("turn-" + sys.argv[4])
+if sys.argv[5] == "finished":
+    s["answers"].append({"thread": sys.argv[4], "turn": "turn-" + sys.argv[4], "compacted": False,
+                         "answer": {"verdict": "approve", "findings": [], "reviewed_files": ["s2.txt"]}})
+open(sys.argv[3] + ".t", "w").write(json.dumps(s)); os.rename(sys.argv[3] + ".t", sys.argv[3])
+time.sleep(0.3)' "$LOCKF" "$ROOT/held" "$sl" "$U3" "$other" &
+  holder=$!
+  for _ in $(seq 50); do [ -e "$ROOT/held" ] && break; sleep 0.1; done
+  : > "$CALLS"
+  XREVIEW_LOCK_WAIT=30 bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+  wait "$holder" 2>/dev/null
+  is "SL3b a slice another collect $other meanwhile is taken up under the lock, not started again" \
+     "$rc/$(jq -r .verdict "$ROOT/out")/$(called 'xreview-rpc thread-start')/$(grep 'xreview-rpc turn-start' "$CALLS" | grep -c -- "--thread $U3")" \
+     "0/approve/1/0"
+  is "SL3b ($other) waited on only if it had no answer yet" "$(called "turn-wait --thread $U3 --turn turn-$U3 ")" \
+     "$([ "$other" = started ] && echo 1 || echo 0)"
+  is "SL3b ($other) and its turn is in the receipt" "$(receipt "$nonce" | jq -r '.slice_turns[1].turn')" "turn-$U3"
+done
+
+sliced; approve_all turn-recovered
+echo 6 > "$P/start_rc.$U3"; : > "$P/unfound.$U3"
+: > "$CALLS"
+bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+is "SL4 slice 2's turn-start goes unanswered and its turn is not found yet: exit 3" "$rc" 3
+is "SL4 with the warning never to re-dispatch" "$(grep -c 'do NOT re-dispatch' "$ROOT/err")" 1
+is "SL4 the slice's turn is on record as unknown, with what its thread held before" \
+   "$(jq -c .turns "$sl")/$([ -e "$STATE/turns/$nonce.known" ] && echo known)" "[\"turn-$U1\",\"?\"]/known"
+is "SL4 and so is the turn record" "$(cat "$STATE/turns/$nonce")" "$U3 ? pre-merge $YB"
+rm -f "$P/start_rc.$U3"
+: > "$CALLS"
+bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+is "SL4 the next collect finds it as the turn that was not on the thread before" \
+   "$(called "turn-wait --thread $U3 --new-since $STATE/turns/$nonce.known --resolved")" 1
+is "SL4 and never sends it again" "$(called "turn-start --thread $U3")" 0
+is "SL4 the round finishes with the recovered turn" "$rc/$(receipt "$nonce" | jq -c '.slice_turns[1].turn')" '0/"turn-recovered"'
+
+sliced; approve_all "turn-$U3"
+rm -f "$ROOT/held"
+/usr/bin/python3 -c 'import fcntl,sys,time
+f = open(sys.argv[1], "a"); fcntl.flock(f, fcntl.LOCK_EX); open(sys.argv[2], "w").close(); time.sleep(60)' \
+  "$LOCKF" "$ROOT/held" &
+holder=$!
+for _ in $(seq 50); do [ -e "$ROOT/held" ] && break; sleep 0.1; done
+: > "$CALLS"
+XREVIEW_LOCK_WAIT=0.5 bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+kill -9 "$holder"; wait "$holder" 2>/dev/null
+is "SL5 a pane held past the bound refuses before slice 2 starts" \
+   "$rc/$(grep -c 'another dispatch is using the Codex pane w1:p2' "$ROOT/err")" "1/1"
+is "SL5 saying the round is on record and collect can be run again" \
+   "$(grep -c "the round is on record for $nonce; run xreview collect $nonce again" "$ROOT/err")" 1
+is "SL5 no thread or turn was started for it" "$(called 'xreview-rpc thread-start')/$(called 'xreview-rpc turn-start')" "0/0"
+is "SL5 slice 1's answer is kept" "$(jq -c '[(.answers | map(select(. != null)) | length), (.turns | length)]' "$sl")" "[1,1]"
+is "SL5 and the checkpoint's thread is still slice 1's, nothing superseded" \
+   "$(cat "$STATE/review-thread")/$([ -e "$STATE/superseded" ] && echo left || echo none)" "$U1/none"
+: > "$CALLS"
+ENSURE_RC=1 bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+is "SL5 a daemon that will not start refuses the same way, the pane untouched" \
+   "$rc/$(grep -c "the round is on record for $nonce" "$ROOT/err")/$(untouched)" "1/1/yes"
+: > "$CALLS"
+bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+is "SL5 collecting again resumes: slice 2 and 3 start, slice 1 is not waited on" \
+   "$rc/$(jq -r .verdict "$ROOT/out")/$(called 'xreview-rpc turn-start')/$(called "turn-wait --thread $U1")" "0/approve/2/0"
+
+# Slice 1 lists nothing; slice 2 lists slice 1's label beside its own. Slice 1's label is still
+# missing: slice 2's reviewer never saw that file's patch.
+sliced
+framed approve > "$P/answer.turn-$U1"; framed approve $L1 $L2 > "$P/answer.turn-$U3"; framed approve $L3 > "$P/answer.turn-$U4"
+bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"
+is "SL6 a label listed only by a slice that did not show it is not covered" \
+   "$(receipt "$nonce" | jq -c '[.clean, .targets[0].missing]')/$(cat "$STATE/missed")" '[false,["s1.txt"]]/s1.txt'
+is "SL6 though the merged answer still lists what was listed" "$(jq -c .reviewed_files "$ROOT/out")" '["s1.txt","s2.txt","s3.txt"]'
+is "SL6 and the notice names the slice's label" \
+   "$(cat "$ROOT/err")" "xreview: this review is not clean (missed: s1.txt); the merge gate stays closed for it"
+
+sliced; approve_all "turn-$U3"; echo null > "$P/compacted.turn-$U3"
+bash "$XREVIEW" collect "$nonce" >/dev/null 2>&1
+is "SL7 one slice of unknown compaction: the receipt's is unknown, and not clean" \
+   "$(receipt "$nonce" | jq -c '[.compacted, .clean, [.slice_turns[].compacted]]')" '[null,false,[false,null,false]]'
+sliced; approve_all "turn-$U3"; echo null > "$P/compacted.turn-$U3"; echo true > "$P/compacted.turn-$U4"
+bash "$XREVIEW" collect "$nonce" >/dev/null 2>&1
+is "SL7 one compacted slice makes the receipt compacted" "$(receipt "$nonce" | jq -c '[.compacted, .clean]')" '[true,false]'
+
+sliced; approve_all "turn-$U3"; echo 4 > "$P/rc.turn-$U3"; printf 'prose\n' > "$P/answer.turn-$U3"
+bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+is "SL8 a slice's answer off the schema: exit 4, the raw text, nothing recorded" \
+   "$rc/$(cat "$ROOT/out")/$(receipt "$nonce" | grep -c .)" "4/prose/0"
+is "SL8 the round stays where it was" "$(jq -c '[(.answers | map(select(. != null)) | length), (.turns | length)]' "$sl")" "[1,2]"
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))
