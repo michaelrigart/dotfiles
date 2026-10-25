@@ -525,7 +525,7 @@ def swf(**on):
     return wr(os.path.join(ROOT, "sw-{}.conf".format(SCR[0])), text)
 
 
-def rollout(home, thread, ctx, win, archived=False, stamp="2026-10-25T10-00-00"):
+def rollout(home, thread, ctx, win, archived=False, stamp="2026-10-25T10-00-00", compressed=False):
     sub = "archived_sessions" if archived else os.path.join("sessions", "2026", "10", "25")
     path = os.path.join(home, sub, "rollout-{}-{}.jsonl".format(stamp, thread))
     recs = [{"type": "session_meta", "payload": {"id": thread}},
@@ -535,8 +535,14 @@ def rollout(home, thread, ctx, win, archived=False, stamp="2026-10-25T10-00-00")
         recs.append({"type": "event_msg", "payload": {"type": "token_count", "info": {
             "total_token_usage": {"total_tokens": ctx * 3},
             "last_token_usage": {"total_tokens": ctx}, "model_context_window": win}}})
-    wr(path, "".join(json.dumps(r) + "\n" for r in recs))
-    return path
+    text = "".join(json.dumps(r) + "\n" for r in recs)
+    if not compressed:
+        wr(path, text)
+        return path
+    plain = wr(os.path.join(ROOT, "plain-{}-{}.jsonl".format(stamp, thread)), text)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    subprocess.run(["zstd", "-q", "-f", "-o", path + ".zst", plain], check=True)
+    return path + ".zst"
 
 
 def mkhome(name):
@@ -672,6 +678,64 @@ def _r1():
     is_("R1 fresh_window prefers this repository's review thread", xp.fresh_window(home2, tgt["repo"]), 120000)
     is_("R1 else any rollout (the newest)", xp.fresh_window(home2, os.path.join(ROOT, "no-such-common")), 300000)
     is_("R1 and None when nothing can be read", xp.fresh_window(mkhome("empty"), tgt["repo"]), None)
+
+
+# ---------------------------------------------------------------- R1z compressed rollouts
+print("R1z. a rollout Codex compressed to .jsonl.zst is read the same")
+
+
+@guarded("R1z")
+def _r1z():
+    import shutil
+    home = mkhome("r1z")
+    rollout(home, "th-zz1", 4242, 258400, compressed=True)
+    rollout(home, "th-zz1p", 4242, 258400)
+    is_("R1z a thread whose only rollout is .jsonl.zst gives what the plain one does",
+        xp.thread_context(home, "th-zz1"), xp.thread_context(home, "th-zz1p"))
+    is_("R1z that is the records' values", xp.thread_context(home, "th-zz1"), (4242, 258400))
+    rollout(home, "th-zarc", 555, 200000, archived=True, compressed=True)
+    is_("R1z an archived .jsonl.zst is found", xp.thread_context(home, "th-zarc"), (555, 200000))
+    is_("R1z a thread id is still anchored at the name's end", xp.thread_context(home, "zz1"), (None, None))
+    # the newest of both kinds wins, whichever kind it is
+    for newer_zst in (True, False):
+        th = "th-mix-{}".format("z" if newer_zst else "p")
+        old = rollout(home, th, 111, 258400, stamp="2026-10-25T09-00-00", compressed=not newer_zst)
+        new = rollout(home, th, 222, 258400, stamp="2026-10-25T09-30-00", compressed=newer_zst)
+        os.utime(old, (1000000, 1000000))
+        os.utime(new, (2000000, 2000000))
+        is_("R1z a newer {} beats an older {}".format(*(("zst", "plain") if newer_zst else ("plain", "zst"))),
+            xp.thread_context(home, th), (222, 258400))
+    # a corrupt .zst is unreadable, and no partial values come from a stream that fails
+    bad = os.path.join(home, "sessions", "2026", "10", "25", "rollout-2026-10-25T11-00-00-th-zbad.jsonl.zst")
+    wr(bad, b"this is not zstd data\n" + json.dumps({"type": "event_msg", "payload": {"type": "task_started", "model_context_window": 9}}).encode() + b"\n")
+    is_("R1z a corrupt .zst gives (None, None)", xp.thread_context(home, "th-zbad"), (None, None))
+    good = rollout(home, "th-ztrunc", 321, 258400, compressed=True)
+    with open(good, "rb") as f:
+        whole = f.read()
+    with open(good, "wb") as f:
+        f.write(whole[:-6])
+    is_("R1z a truncated stream gives (None, None), not the records read before it broke",
+        xp.thread_context(home, "th-ztrunc"), (None, None))
+    # zstd absent
+    real = shutil.which
+    shutil.which = lambda name, *a, **k: None if name == "zstd" else real(name, *a, **k)
+    try:
+        is_("R1z with zstd absent a .zst-only thread gives (None, None)", xp.thread_context(home, "th-zz1"), (None, None))
+        is_("R1z and a plain rollout is read as before", xp.thread_context(home, "th-zz1p"), (4242, 258400))
+    finally:
+        shutil.which = real
+    # a binary that fails to start
+    shutil.which = lambda name, *a, **k: os.path.join(ROOT, "no-such-zstd") if name == "zstd" else real(name, *a, **k)
+    try:
+        is_("R1z a zstd that fails to start gives (None, None)", xp.thread_context(home, "th-zz1"), (None, None))
+    finally:
+        shutil.which = real
+    # fresh_window's fallback reads a .zst-only home
+    zhome = mkhome("r1z-only")
+    rollout(zhome, "th-only", 9, 187000, compressed=True, stamp="2026-10-25T05-00-00")
+    is_("R1z fresh_window's fallback reads the window from a .zst-only home", xp.fresh_window(zhome, None), 187000)
+    rollout(zhome, "th-only2", 9, 199000, compressed=True, stamp="2026-10-25T06-00-00")
+    is_("R1z and takes the newest by name across them", xp.fresh_window(zhome, None), 199000)
 
 
 # ---------------------------------------------------------------- C1-C6 delta eligibility
@@ -1005,6 +1069,17 @@ def _f():
     is_("F5 an existing thread whose rollout cannot be read: fresh", d["action"], "fresh")
     wr(os.path.join(home, "sessions", "2026", "10", "25", "rollout-2026-10-25T12-00-00-th-garble.jsonl"), "x\n")
     is_("F5 so is one whose rollout is garbled", built(request([ftgt], fsp, switches_file=swf(**FIT), codex_home=home, thread="th-garble"))["action"], "fresh")
+    # F5z: a thread whose rollout is compressed is read, not treated as unreadable
+    zh = mkhome("f5z")
+    os.utime(rollout(zh, "thZ", 100000, 258400, compressed=True), (1000000, 1000000))
+    d = built(request([ftgt], fsp, switches_file=swf(**FIT), codex_home=zh, thread="thZ"))
+    is_("F5z a compressed rollout with room: send on the thread", (d["action"], d["kind"]), ("send", "full"))
+    ok("F5z and the reason carries the real context", "100000 in the context" in d["reason"], d["reason"])
+    os.utime(rollout(zh, "thZ", 232000, 258400, compressed=True, stamp="2026-10-25T11-00-00"), (2000000, 2000000))
+    d = built(request([ftgt], fsp, switches_file=swf(**FIT), codex_home=zh, thread="thZ"))
+    is_("F5z the newer compressed rollout is too full: fresh, for the numbers, not for being unreadable",
+        d["action"], "fresh")
+    ok("F5z and the reason gives them", "232000 in the context" in d["reason"] and "cannot be read" not in d["reason"], d["reason"])
     # F6: no window to be had anywhere: refuse, naming the window
     empty = mkhome("f6")
     for th in (None, "thF"):

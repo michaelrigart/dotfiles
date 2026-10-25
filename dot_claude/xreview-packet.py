@@ -33,6 +33,8 @@ import math
 import os
 import re
 import shlex
+import shutil
+import subprocess
 import sys
 import tempfile
 from fractions import Fraction
@@ -527,24 +529,52 @@ def _count_ok(value, minimum):
 
 
 def _rollout_files(home, thread=None):
-    """The rollout files under home's sessions and archived_sessions: those of one thread, or all
-    of them. A thread id is matched as a file name's end, never as a glob."""
-    name = re.compile(r"\A" + _ROLLOUT_NAME + (re.escape(thread) if thread else r".+") + r"\.jsonl\Z")
+    """The rollout files under home's sessions and archived_sessions, plain `.jsonl` and the
+    `.jsonl.zst` Codex compresses older ones to: those of one thread, or all of them. A thread id
+    is matched as a file name's end, never as a glob."""
+    name = re.compile(r"\A" + _ROLLOUT_NAME + (re.escape(thread) if thread else r".+")
+                      + r"\.jsonl(?:\.zst)?\Z")
     found = []
     for sub in ("sessions", "archived_sessions"):
-        pattern = os.path.join(glob.escape(os.path.join(home, sub)), "**", "rollout-*.jsonl")
+        pattern = os.path.join(glob.escape(os.path.join(home, sub)), "**", "rollout-*.jsonl*")
         found.extend(p for p in glob.glob(pattern, recursive=True) if name.match(os.path.basename(p)))
     return found
+
+
+class _RolloutLines(object):
+    def __init__(self, path):
+        self.path, self.proc, self.handle, self.failed = path, None, None, False
+
+    def __enter__(self):
+        if not self.path.endswith(".zst"):
+            self.handle = open(self.path, "rb")
+            return self.handle
+        zstd = shutil.which("zstd")
+        if not zstd:
+            raise OSError("zstd is not installed, so {} cannot be read".format(self.path))
+        self.proc = subprocess.Popen([zstd, "-dc", self.path], stdin=subprocess.DEVNULL,
+                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        return self.proc.stdout
+
+    def __exit__(self, *_exc):
+        if self.handle is not None:
+            self.handle.close()
+        if self.proc is not None:
+            self.proc.stdout.close()
+            self.failed = self.proc.wait() != 0
+        return False
 
 
 def _rollout_values(path):
     """(context now, window) from one rollout: the latest `event_msg` token_count record gives
     `info.last_token_usage.total_tokens` and `info.model_context_window`; a `task_started` record
     carries the window too. A value that is not a whole number is None, as is a file that cannot
-    be read."""
+    be read. A `.jsonl.zst` is streamed through `zstd -dc`; if zstd is missing, cannot start or
+    exits non-zero (a corrupt or truncated file), nothing is returned, not the records read so far."""
     context = window = None
+    lines = _RolloutLines(path)
     try:
-        with open(path, "rb") as handle:
+        with lines as handle:
             for line in handle:
                 if b'"token_count"' not in line and b'"task_started"' not in line:
                     continue
@@ -567,12 +597,15 @@ def _rollout_values(path):
                         window = info["model_context_window"]
     except OSError:
         return None, None
+    if lines.failed:
+        return None, None
     return context, window
 
 
 def thread_context(codex_home, thread) -> Tuple[Optional[int], Optional[int]]:
-    """(context now, window) of a thread, from its newest rollout under codex_home (CODEX_HOME,
-    else ~/.codex). None for a value that cannot be read; (None, None) when there is no rollout."""
+    """(context now, window) of a thread, from its newest rollout (`.jsonl` or `.jsonl.zst`, by
+    modification time) under codex_home (CODEX_HOME, else ~/.codex). None for a value that cannot
+    be read; (None, None) when there is no rollout or it cannot be read."""
     if not (isinstance(thread, str) and _THREAD_ID.match(thread)):
         return None, None
     files = _rollout_files(_codex_home(codex_home), thread)
