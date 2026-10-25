@@ -2022,8 +2022,17 @@ is "N3 the sent packet is the first of them" "$(cmp -s "$P/packet" "$(jq -r '.pa
 echo "X6. the history, the labels missed last round, duplicate targets and ignored switches"
 fresh; packets framing fit delta; rm -rf "$CODEX_HOME/sessions"; rollout $U2 20000 258400; printf '%s\n' "$U2" > "$STATE/review-thread"
 bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md > "$ROOT/o" 2>&1
-is "thread-turns is asked for the checkpoint's thread when delta is in force" "$(called "xreview-rpc thread-turns --thread $U2")" 1
-for sw in "" "framing fit" "fit delta"; do
+is "thread-turns is not asked at a plan checkpoint, even with delta in force" "$(called 'xreview-rpc thread-turns')" 0
+fresh; packets framing fit delta; rm -rf "$CODEX_HOME/sessions"; rollout $U2 20000 258400; printf '%s\n' "$U2" > "$STATE/review-thread"
+bash "$XREVIEW" dispatch --checkpoint pre-merge "${XD[@]}" b.md > "$ROOT/o" 2>&1
+is "thread-turns is asked for the checkpoint's thread at pre-merge when delta is in force" "$(called "xreview-rpc thread-turns --thread $U2")" 1
+is "and it is asked before the pane is looked at (the window to the ctrl+c stays short)" \
+   "$([ "$(first 'codex-daemon ensure')" -lt "$(first 'xreview-rpc thread-turns')" ] && [ "$(first 'xreview-rpc thread-turns')" -lt "$(first 'herdr pane')" ] && echo yes || echo no)" yes
+fresh; packets framing fit; rm -rf "$CODEX_HOME/sessions"; rollout $U2 250000 258400; printf '%s\n' "$U2" > "$STATE/review-thread"
+bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md > "$ROOT/o" 2>&1
+is "the packet is decided before the pane is looked at, and a thread started only after it" \
+   "$([ "$(first 'codex-daemon ensure')" -lt "$(first 'herdr pane')" ] && [ "$(first 'herdr pane')" -lt "$(first 'xreview-rpc thread-start')" ] && echo yes || echo no)" yes
+fresh;for sw in "" "framing fit" "fit delta"; do
   fresh; packets $sw; rm -rf "$CODEX_HOME/sessions"; printf '%s\n' "$U2" > "$STATE/review-thread"
   bash "$XREVIEW" dispatch --checkpoint plan b.md > "$ROOT/o" 2>&1
   is "thread-turns is not asked with switches [${sw:-none}]: delta is not in force" "$(called 'xreview-rpc thread-turns')" 0
@@ -2046,6 +2055,50 @@ fresh; packets; out="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
 is "with every switch off there is nothing to say" "$(printf '%s' "$out" | grep -c 'packets.conf')" 0
 is "with every switch off the schema is today's" \
    "$(grep 'xreview-rpc turn-start' "$CALLS" | grep -c 'findings.schema.json')" 1
+packets
+
+
+echo "X7. every switch off: a refusal for size is the first thing, as it always was"
+for variant in plain thread_running rounds; do
+  fresh; packets; printf '%s\n' "$U2" > "$STATE/review-thread"
+  case "$variant" in
+    plain) out="$(XREVIEW_MAX_DIFF_BYTES=10 bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md 2>&1)"; rc=$? ;;
+    thread_running) out="$(RPC_THREAD_RUNNING=1 XREVIEW_MAX_DIFF_BYTES=10 bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md 2>&1)"; rc=$? ;;
+    rounds) out="$(ENSURE_RC=1 XREVIEW_MAX_ROUNDS=0 XREVIEW_MAX_DIFF_BYTES=10 bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md 2>&1)"; rc=$? ;;
+  esac
+  is "X7 $variant: the size refusal, in today's words" "$rc/$(printf '%s' "$out" | grep -c 'too large to carry inline')" "1/1"
+  is "X7 $variant: no daemon, rpc or herdr call was made" "$(wc -c < "$CALLS" | tr -d ' ')" 0
+  is "X7 $variant: no round consumed and no thread written" "$(bash "$XREVIEW" round)/$(cat "$STATE/review-thread")" "0/$U2"
+done
+
+echo "X8. a refusal after the packet is built leaves no state behind"
+fresh; packets framing fit; rm -rf "$CODEX_HOME/sessions"; rollout $U2 250000 258400; printf '%s\n' "$U2" > "$STATE/review-thread"
+out="$(RPC_STATUS_FAIL_FOR=$U1 bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md 2>&1)"; rc=$?
+is "X8 a new thread whose state cannot be read refuses" "$rc/$(printf '%s' "$out" | grep -c 'cannot read whether the review thread')" "1/1"
+is "X8 the checkpoint thread was not rewritten and nothing is superseded" \
+   "$(cat "$STATE/review-thread")/$([ -e "$STATE/superseded" ] && echo left || echo none)" "$U2/none"
+is "X8 no packet directory or targets file is left" "$(ls "$STATE/turns" 2>/dev/null | wc -l | tr -d ' ')" 0
+is "X8 the pane was not touched" "$(untouched)" yes
+fresh; packets framing fit; rm -rf "$CODEX_HOME/sessions"; rollout $U2 250000 258400; printf '%s\n' "$U2" > "$STATE/review-thread"
+mkdir -p "$(dirname "$MAIN_LEDGER")" && mkdir "$MAIN_LEDGER.lock"
+out="$(XREVIEW_LEDGER_LOCK_WAIT=0.2 bash "$XREVIEW" dispatch --checkpoint pre-merge "${XD[@]}" b.md 2>&1)"; rc=$?
+rmdir "$MAIN_LEDGER.lock"
+is "X8 a refused pending entry refuses the dispatch" "$rc/$(printf '%s' "$out" | grep -c 'cannot record the pending review')" "1/1"
+is "X8 the checkpoint thread was not rewritten and nothing is superseded" \
+   "$(cat "$STATE/review-thread")/$([ -e "$STATE/superseded" ] && echo left || echo none)" "$U2/none"
+is "X8 no packet directory or targets file is left" "$(ls "$STATE/turns" 2>/dev/null | wc -l | tr -d ' ')" 0
+is "X8 the thread started for it is archived, not kept" "$(called "xreview-rpc thread-archive --thread $U1")" 1
+is "X8 and the pane was not touched" "$(untouched)" yes
+
+echo "X9. the ledger entries carry the dispatch's switches"
+fresh; packets framing fit; rm -rf "$CODEX_HOME/sessions"; rollout $U0 1000 258400
+nonce="$(bash "$XREVIEW" dispatch --checkpoint pre-merge "${XD[@]}" b.md 2>/dev/null)"
+RPC_WAIT_OUT='{"verdict":"approve","findings":[]}' bash "$XREVIEW" collect "$nonce" >/dev/null 2>&1
+want='{"framing":true,"fit":true,"delta":false,"omit_plans":false}'
+is "X9 the pending entry and the receipt both record the switches" \
+   "$(jq -c --arg n "$nonce" 'select(.nonce == $n) | [.kind, .switches]' "$MAIN_LEDGER" | tr '\n' ' ')" \
+   "[\"pending\",$want] [\"receipt\",$want] "
+is "X9 and they equal the dispatch's own" "$(jq -c .switches "$STATE/turns/$nonce.targets")" "$want"
 packets
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"

@@ -63,8 +63,9 @@ packet() { /usr/bin/python3 "${XREVIEW_PACKET:-$HOME/.claude/xreview-packet.py}"
 # repository on sys.path). packet_ignored prints the switches packets.conf turns on that need
 # framing while framing is off, space separated. packet_delta_on succeeds only when the delta
 # switch is in force (read_switches: delta on AND framing on), the one case that needs the
-# thread's turns.
+# thread's turns; packet_framing_on succeeds when framing is on.
 packet_ignored() { _packet_switches 'print(" ".join(module.switches_ignored(sys.argv[2])))'; }
+packet_framing_on() { _packet_switches 'sys.exit(0 if module.read_switches(sys.argv[2])["framing"] else 1)'; }
 packet_delta_on() { _packet_switches 'sys.exit(0 if module.read_switches(sys.argv[2])["delta"] else 1)'; }
 _packet_switches() { # _packet_switches <python statement over module and sys.argv[2]>
   /usr/bin/python3 -I -c "
@@ -966,9 +967,66 @@ _slices_turn() {
   return 0
 }
 
+# _dispatch_decide <thread-or-empty> - the packet and the decision about it (spec 2026-10-25
+# §3.2): send it on the checkpoint's thread, move the checkpoint to a fresh thread, send the
+# first slice, or refuse. It works on cmd_dispatch's locals (checkpoint, body_file, cap, out,
+# TARGETS, TSPECS, dir) and sets decision, action, packet_file, schema and turns_file there. A
+# refusal - including a module that failed, which is as good as one - dies here, before any
+# thread is started or the pane is touched; cmd_dispatch's exit trap removes the packets.
+_dispatch_decide() {
+  local thread="$1" missed='[]' ignored
+  turns_file=""
+  # What the thread holds, for the packet module's delta decision - asked only at pre-merge
+  # (the only checkpoint that deltas) and only when delta is in force, so a dispatch with the
+  # switches off makes no daemon call it did not make before. A thread whose turns cannot be
+  # listed is an unknown history, which only ever makes a full packet; it never refuses.
+  if [ -n "$thread" ] && [ "$checkpoint" = pre-merge ] && packet_delta_on 2>/dev/null \
+     && xreview-rpc thread-turns --thread "$thread" > "$out/thread-turns.json" 2>/dev/null \
+     && [ -s "$out/thread-turns.json" ]; then
+    turns_file="$out/thread-turns.json"
+  fi
+  ignored="$(packet_ignored 2>/dev/null || true)"
+  if [ -n "$ignored" ]; then
+    printf 'xreview: packets.conf turns on %s, which need framing; framing is off, so they stay off\n' \
+      "${ignored// /, }" >&2
+  fi
+  if [ -s "$dir/missed" ]; then
+    missed="$(jq -Rn '[inputs | select(length > 0)]' "$dir/missed" 2>/dev/null)" || missed='[]'
+  fi
+  jq -n --arg checkpoint "$checkpoint" --arg body "$body_file" --arg reviewer "$REVIEWER" \
+        --arg framing "$FRAMING" --arg cap "$cap" --arg switches "$PACKETS_CONF" \
+        --arg home "$CODEX_HOME_DIR" --arg thread "$thread" --arg turns "$turns_file" \
+        --argjson targets "$TARGETS" --argjson missed "$missed" \
+        --argjson specs "$(jq -nc '$ARGS.positional' --args ${TSPECS[@]+"${TSPECS[@]}"})" \
+    '{checkpoint:$checkpoint, body_file:$body, reviewer_md:$reviewer, framing_md:$framing,
+      cap:$cap, switches_file:$switches, codex_home:$home,
+      thread:(if $thread == "" then null else $thread end),
+      turns_file:(if $turns == "" then null else $turns end),
+      targets:$targets, specs:$specs, missed:$missed}' > "$out/request.json" \
+    || die "cannot write the review request; no review was started"
+  decision="$(packet build "$out/request.json" "$out")" \
+    || die "cannot build the review packet (see above); no review was started"
+  rm -f "$out/request.json" "$out/thread-turns.json"
+  action="$(printf '%s' "$decision" | jq -r '.action // empty' 2>/dev/null)" || action=""
+  case "$action" in
+    send|fresh|slices) ;;
+    refuse) die "$(printf '%s' "$decision" | jq -r '.reason')" ;;
+    *) die "the review packet builder answered nothing usable; no review was started" ;;
+  esac
+  packet_file="$(printf '%s' "$decision" | jq -r '.packets[0].file // empty')"
+  [ -n "$packet_file" ] && [ -s "$packet_file" ] \
+    || die "the review packet builder wrote no packet; no review was started"
+  # Framing changes the answer's shape, so it changes the schema the reviewer is held to.
+  schema="$SCHEMA"
+  if [ "$(printf '%s' "$decision" | jq -r '.switches.framing')" = true ]; then
+    schema="$FRAMED_SCHEMA"
+    [ -r "$schema" ] || die "missing framed findings schema $schema"
+  fi
+}
+
 cmd_dispatch() {
   local body_file dir pane proc thread nonce packet_file checkpoint="" \
-        specs=() uniq=() spec seen s cap dispatched doc
+        specs=() uniq=() spec seen s cap dispatched doc out decision action schema turns_file
   # Filled by add_target, one entry per distinct --diff.
   local TARGETS='[]' TSPECS=()
   while [ "$#" -gt 0 ]; do
@@ -1032,9 +1090,44 @@ cmd_dispatch() {
     if [ "$seen" = 0 ]; then uniq+=("$spec"); fi
   done
   for spec in ${uniq[@]+"${uniq[@]}"}; do add_target "$spec"; done
+  # The out directory and its cleanup are armed before the first thing that can refuse, so a
+  # refusal - a die included, from anywhere in this function - leaves no packet behind. The
+  # path travels in the trap string, not a local: on an errexit exit bash 5 has already unwound
+  # those. The trap is replaced by the pane guard and disarmed once a turn exists.
+  nonce="xr-$(date +%s)-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+  out="$dir/turns/$nonce.packets"
+  mkdir -p "$out" || die "cannot create $out; no review was started"
+  trap "rm -rf $(printf '%q' "$out")" EXIT
+  local framing_on=0 pinned=0
+  if packet_framing_on 2>/dev/null; then framing_on=1; fi
+  if [ -n "${XREVIEW_THREAD:-}" ] || [ -r "$dir/pin" ]; then pinned=1; fi
+
+  # With framing off the packet is today's, whatever the thread, and a cap refusal comes first
+  # of all, before any daemon call, exactly where the cap check always sat.
+  if [ "$framing_on" = 0 ]; then
+    _dispatch_decide ""
+  fi
   codex-daemon ensure || die "the Codex daemon is not running; no review was started"
   codex-daemon check || die "refusing to dispatch while the daemon carries a pane's environment (see above)"
   xreview-rpc health || die "cannot reach the Codex daemon through xreview-rpc (see above); no review was started"
+  # With framing on the decision depends on the thread (its context, its turns), and reading
+  # them takes time: all of it is done BEFORE the pane is looked at, so the observation that
+  # pane_free's ctrl+c acts on is as fresh as it ever was.
+  local built_on=""
+  if [ "$framing_on" = 1 ]; then
+    thread="$(target_thread)"
+    if [ -n "$thread" ]; then assert_id "$thread"; fi
+    built_on="$thread"
+    _dispatch_decide "$thread"
+    # A pin or XREVIEW_THREAD is Michael's instruction, never moved silently: a packet it
+    # cannot hold is refused, before any thread is started or the pane is touched.
+    if [ "$pinned" = 1 ] && [ -n "$thread" ] && [ "$action" != send ]; then
+      if [ -n "${XREVIEW_THREAD:-}" ]; then
+        die "the review thread $thread (XREVIEW_THREAD) cannot hold this packet; unset XREVIEW_THREAD to let xreview move the review to a fresh thread. No review was started."
+      fi
+      die "the pinned review thread $thread cannot hold this packet; xreview round --reset drops the pin so the review can move to a fresh thread. No review was started."
+    fi
+  fi
   pane="$(find_pane)"
   lock_pane "$pane"
   # Every pane check runs inside the lock, so it sees the state the previous holder left.
@@ -1058,105 +1151,35 @@ Two models circling the same point is Michael's call, not another turn.
 Report the remaining disagreement, or: xreview round --reset"
   fi
 
-  # The review is fixed now, before the pane is touched (spec 2026-10-02 §3.2-§3.4): its nonce,
-  # its dispatch time and its packet. The packet files stay in turns/<nonce>.packets/ until the
-  # turn has started; a sliced round keeps them for collect.
-  nonce="xr-$(date +%s)-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
-  dispatched="$(ledger now)" || die "cannot read the time through the ledger helper; no review was started"
-  local out="$dir/turns/$nonce.packets"
-  mkdir -p "$out" || die "cannot create $out; no review was started"
-
   # Thread: XREVIEW_THREAD, then the pin, then the recorded checkpoint thread. The chosen
   # thread itself may already be running a turn - a stale pin, or a checkpoint thread another
   # dispatch (or a hand-started `codex resume`) is still using. Refuse before the pane is
   # touched at all; collecting the running turn is the way forward, not a second one racing
-  # it on the same thread.
-  local pinned=0 turns_file=""
-  if [ -n "${XREVIEW_THREAD:-}" ] || [ -r "$dir/pin" ]; then pinned=1; fi
+  # it on the same thread. A packet decided against a thread that another dispatch has since
+  # replaced is stale: dispatch again.
   thread="$(target_thread)"
+  if [ "$framing_on" = 1 ] && [ "$thread" != "$built_on" ]; then
+    die "the review thread changed while the packet was being built; no review was started - dispatch again"
+  fi
   if [ -n "$thread" ]; then
     assert_id "$thread"
     thread_running "$thread" \
       && die "the review thread $thread is still running a turn; collect it first"
-    # What the thread holds, for the packet module's delta decision - asked only when delta is
-    # in force, so a dispatch with the switches off makes no daemon call it did not make before.
-    # A thread whose turns cannot be listed is an unknown history, which only ever makes a full
-    # packet; it never refuses.
-    if packet_delta_on 2>/dev/null \
-       && xreview-rpc thread-turns --thread "$thread" > "$out/thread-turns.json" 2>/dev/null \
-       && [ -s "$out/thread-turns.json" ]; then
-      turns_file="$out/thread-turns.json"
-    fi
-  fi
-
-  # The packet and the decision about it (spec 2026-10-25 §3.2): send it on the checkpoint's
-  # thread, move the checkpoint to a fresh thread, send the first slice, or refuse. A refusal
-  # - including a module that failed, which is as good as one - comes before any thread is
-  # started or the pane is touched.
-  local ignored; ignored="$(packet_ignored 2>/dev/null || true)"
-  if [ -n "$ignored" ]; then
-    printf 'xreview: packets.conf turns on %s, which need framing; framing is off, so they stay off\n' \
-      "${ignored// /, }" >&2
-  fi
-  local missed='[]'
-  if [ -s "$dir/missed" ]; then
-    missed="$(jq -Rn '[inputs | select(length > 0)]' "$dir/missed" 2>/dev/null)" || missed='[]'
-  fi
-  jq -n --arg checkpoint "$checkpoint" --arg body "$body_file" --arg reviewer "$REVIEWER" \
-        --arg framing "$FRAMING" --arg cap "$cap" --arg switches "$PACKETS_CONF" \
-        --arg home "$CODEX_HOME_DIR" --arg thread "$thread" --arg turns "$turns_file" \
-        --argjson targets "$TARGETS" --argjson missed "$missed" \
-        --argjson specs "$(jq -nc '$ARGS.positional' --args ${TSPECS[@]+"${TSPECS[@]}"})" \
-    '{checkpoint:$checkpoint, body_file:$body, reviewer_md:$reviewer, framing_md:$framing,
-      cap:$cap, switches_file:$switches, codex_home:$home,
-      thread:(if $thread == "" then null else $thread end),
-      turns_file:(if $turns == "" then null else $turns end),
-      targets:$targets, specs:$specs, missed:$missed}' > "$out/request.json" \
-    || { rm -rf "$out"; die "cannot write the review request; no review was started"; }
-  local decision action
-  decision="$(packet build "$out/request.json" "$out")" \
-    || { rm -rf "$out"; die "cannot build the review packet (see above); no review was started"; }
-  rm -f "$out/request.json" "$out/thread-turns.json"
-  action="$(printf '%s' "$decision" | jq -r '.action // empty' 2>/dev/null)" || action=""
-  case "$action" in
-    send|fresh|slices) ;;
-    refuse) local reason; reason="$(printf '%s' "$decision" | jq -r '.reason')"
-            rm -rf "$out"; die "$reason" ;;
-    *) rm -rf "$out"; die "the review packet builder answered nothing usable; no review was started" ;;
-  esac
-  # A pin or XREVIEW_THREAD is Michael's instruction, never moved silently: a packet it cannot
-  # hold is refused, before any thread is started or the pane is touched.
-  if [ "$pinned" = 1 ] && [ -n "$thread" ] && [ "$action" != send ]; then
-    rm -rf "$out"
-    if [ -n "${XREVIEW_THREAD:-}" ]; then
-      die "the review thread $thread (XREVIEW_THREAD) cannot hold this packet; unset XREVIEW_THREAD to let xreview move the review to a fresh thread. No review was started."
-    fi
-    die "the pinned review thread $thread cannot hold this packet; xreview round --reset drops the pin so the review can move to a fresh thread. No review was started."
-  fi
-  packet_file="$(printf '%s' "$decision" | jq -r '.packets[0].file // empty')"
-  [ -n "$packet_file" ] && [ -s "$packet_file" ] \
-    || { rm -rf "$out"; die "the review packet builder wrote no packet; no review was started"; }
-  # Framing changes the answer's shape, so it changes the schema the reviewer is held to.
-  local schema="$SCHEMA"
-  if [ "$(printf '%s' "$decision" | jq -r '.switches.framing')" = true ]; then
-    schema="$FRAMED_SCHEMA"
-    [ -r "$schema" ] || { rm -rf "$out"; die "missing framed findings schema $schema"; }
   fi
 
   # A fresh thread: a first dispatch has none, a move off a thread that cannot hold the packet
   # (spec 3.2 step 3) and the first slice (3.3) both leave the old one superseded - queued for
   # archive until the pane shows the new one, as `round --reset` queues it. (A pinned thread
-  # never gets here: it was refused above.) The round counter is NOT reset: this is
-  # not a new checkpoint. Its id is known from the start, so nothing is ever read back from a
-  # title (spec 7.2/7.3). No turn exists yet, so dying here loses nothing.
+  # never gets here: it was refused above.) The round counter is NOT reset: this is not a new
+  # checkpoint. Its id is known from the start, so nothing is ever read back from a title
+  # (spec 7.2/7.3). It is started, and checked, BEFORE anything is written: every check that
+  # can refuse comes before the state that records the move.
+  local old="$thread" fresh_thread=0
   if [ -z "$thread" ] || [ "$action" != send ]; then
-    local old="$thread"
+    fresh_thread=1
     thread="$(xreview-rpc thread-start --cwd "$(repo_root)")" \
-      || { rm -rf "$out"; die "could not start a new review thread; no review was started"; }
+      || die "could not start a new review thread; no review was started"
     assert_id "$thread"
-    mkdir -p "$dir"
-    if [ -n "$old" ]; then printf '%s\n' "$old" >> "$dir/superseded"; fi
-    printf '%s\n' "$thread" > "$dir/review-thread"
     thread_running "$thread" \
       && die "the review thread $thread is still running a turn; collect it first"
   fi
@@ -1165,18 +1188,27 @@ Report the remaining disagreement, or: xreview round --reset"
   # turns/<nonce>.targets for collect, and the labels shown. A pre-merge review then puts a
   # pending entry in every target ledger, or is refused: every pre-merge review that runs is on
   # record before its turn exists.
+  dispatched="$(ledger now)" || die "cannot read the time through the ledger helper; no review was started"
   doc="$(jq -nc --arg n "$nonce" --arg at "$dispatched" --arg cp "$checkpoint" --argjson d "$decision" \
            '{v:2,nonce:$n,dispatched_at:$at,checkpoint:$cp,targets:$d.targets,switches:$d.switches}')"
   printf '%s\n' "$doc" > "$dir/turns/$nonce.targets" \
-    || { rm -rf "$out"; die "cannot record the review's targets in $dir/turns; no review was started"; }
+    || die "cannot record the review's targets in $dir/turns; no review was started"
   printf '%s' "$decision" | jq -r '.packets[0].shown[]?' > "$dir/turns/$nonce.shown"
+  if [ "$checkpoint" = pre-merge ] && ! record_pending "$doc"; then
+    rm -f "$dir/turns/$nonce.targets" "$dir/turns/$nonce.shown"
+    # The thread started for it will never be used.
+    if [ "$fresh_thread" = 1 ]; then xreview-rpc thread-archive --thread "$thread" >/dev/null 2>&1 || true; fi
+    die "cannot record the pending review in every target ledger; no review was started"
+  fi
+  # Nothing can refuse any more: record the move.
+  if [ "$fresh_thread" = 1 ]; then
+    mkdir -p "$dir"
+    if [ -n "$old" ]; then printf '%s\n' "$old" >> "$dir/superseded"; fi
+    printf '%s\n' "$thread" > "$dir/review-thread"
+  fi
   if [ "$action" = slices ]; then
     printf '%s' "$decision" | jq -c --arg t "$thread" '{packets:.packets,next:1,threads:[$t],turns:[]}' \
       > "$dir/turns/$nonce.slices"
-  fi
-  if [ "$checkpoint" = pre-merge ] && ! record_pending "$doc"; then
-    rm -rf "$out"; rm -f "$dir/turns/$nonce.targets" "$dir/turns/$nonce.shown" "$dir/turns/$nonce.slices"
-    die "cannot record the pending review in every target ledger; no review was started"
   fi
 
   # Free the pane, start the turn, resume the pane (spec 7.3; 2026-10-01 §4.4). Provenance is
