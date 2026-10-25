@@ -10,9 +10,11 @@ cross-review skill, a replay harness in `.scripts/`, and their test suites.
 
 ## 1. Problem
 
-Measured on 2026-10-25 over 556 review turns (2026-09-01 to 2026-10-25): every turn record
-in `~/.local/state/xreview/*/turns/` matched to its Codex rollout in `~/.codex/sessions` or
-`~/.codex/archived_sessions`.
+Measured on 2026-10-25 over 556 review turns (2026-09-01 to 2026-10-25). These are the turn
+records in `~/.local/state/xreview/*/turns/` whose Codex rollout, in `~/.codex/sessions` or
+`~/.codex/archived_sessions`, was still plain `.jsonl`: 556 of 1,280. Codex compresses
+older rollouts to `.jsonl.zst`, and those were not read. The figures below describe that
+sample, not every review.
 
 **Michael is prompted to raise the size cap.** `xreview dispatch` refuses a packet whose diffs
 exceed 100 KB (`XREVIEW_MAX_DIFF_BYTES`). Packets run p50 74 KB, p75 117 KB, p90 282 KB, max
@@ -525,9 +527,15 @@ files stay in `~/.local/state/xreview/replay/` and are never committed.
 
 - **Ten cases detect a real quality drop, not a small one.** Differences smaller than the
   noise between two identical runs cannot be told apart, at any sample size this budget allows.
-- **Replay is not production.** Scratch clones lack untracked files and trusted `mise`
-  configuration, so a reviewer that runs code may see different results there. This affects
-  every arm alike.
+- **Replay is not production.** It differs in three ways, each affecting every arm alike:
+  - Scratch clones lack untracked files and trusted `mise` configuration, so a reviewer that
+    runs code may see different results there.
+  - The historical review bodies were temporary files and are gone, so every arm gets the
+    same generic body. Settled points and constraints that the original rounds carried are
+    missing.
+  - A fork that fails makes its arm an error run, and that switch stays incomplete. There
+    is no fallback replay of the earlier rounds (ruling during execution; forking was
+    verified live).
 - **Coverage is self-reported.** `reviewed_files` catches a reviewer that admits skipping a
   file, not one that lists a file it skimmed. Attention cannot be measured from outside.
 - **Constants are measured today.** 3.5 bytes per token, the 30k fresh-thread start, the
