@@ -17,7 +17,8 @@ set -uo pipefail
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
 XREVIEW="$SRC/dot_local/bin/executable_xreview"
 LEDGER="$SRC/dot_claude/xreview-ledger.py"
-for f in "$XREVIEW" "$LEDGER"; do
+PACKET="$SRC/dot_claude/xreview-packet.py"
+for f in "$XREVIEW" "$LEDGER" "$PACKET"; do
   [ -f "$f" ] || { echo "missing file under test: $f" >&2; exit 2; }
 done
 pass=0; fail=0
@@ -30,9 +31,11 @@ trap 'rm -rf "$ROOT"' EXIT
 export XDG_STATE_HOME="$ROOT/state" XDG_CONFIG_HOME="$ROOT/config" CODEX_HOME="$ROOT/codex" \
        TMPDIR="$ROOT/tmp"
 mkdir -p "$XDG_CONFIG_HOME/xreview" "$XDG_CONFIG_HOME/herdr" "$TMPDIR"
-cp "$SRC/dot_config/xreview/findings.schema.json" "$SRC/dot_config/xreview/reviewer.md" "$XDG_CONFIG_HOME/xreview/"
+cp "$SRC/dot_config/xreview/findings.schema.json" "$SRC/dot_config/xreview/reviewer.md" \
+   "$SRC/dot_config/xreview/findings.framed.schema.json" "$SRC/dot_config/xreview/reviewer-framing.md" \
+   "$SRC/dot_config/xreview/packets.conf" "$XDG_CONFIG_HOME/xreview/"
 cp "$SRC/dot_config/herdr/codex-pane-command" "$XDG_CONFIG_HOME/herdr/"
-export XREVIEW_POLL_SECS=0.05 XREVIEW_PANE_WAIT=2 XREVIEW_LEDGER="$LEDGER"
+export XREVIEW_POLL_SECS=0.05 XREVIEW_PANE_WAIT=2 XREVIEW_LEDGER="$LEDGER" XREVIEW_PACKET="$PACKET"
 unset XREVIEW_MAX_ROUNDS XREVIEW_PANE XREVIEW_THREAD XREVIEW_LEDGER_LOCK_WAIT
 PANE_CMD='codex --sandbox read-only --ask-for-approval never'
 
@@ -259,6 +262,9 @@ case "$cmd" in
               [ -n "${RPC_START_UNCERTAIN:-}" ] && exit 6
               if [ -n "${RPC_START_BAD_ID:-}" ]; then echo "turn id/with spaces"; exit 0; fi
               echo "turn-$th" ;;
+  thread-turns) # RPC_TURNS_FAIL: the thread's turns cannot be listed.
+                [ -n "${RPC_TURNS_FAIL:-}" ] && exit 1
+                echo '{"turns":[],"thread_compactions":0}' ;;
   turn-wait) [ -n "$resolved" ] && echo turn-recovered > "$resolved"
              printf '%s\n' "${RPC_WAIT_OUT:-}"; exit "${RPC_WAIT_RC:-0}" ;;
 esac
@@ -267,6 +273,13 @@ R
 chmod +x "$STUB"/*
 export PATH="$STUB:$PATH"
 export PINNED_PATH="$PATH"
+
+packets() { # packets <switch>... : packets.conf with exactly these switches on
+  local s; : > "$XDG_CONFIG_HOME/xreview/packets.conf"
+  for s in framing fit delta omit_plans; do
+    case " $* " in *" $s "*) echo "$s=on" ;; *) echo "$s=off" ;; esac >> "$XDG_CONFIG_HOME/xreview/packets.conf"
+  done
+}
 
 fresh() { # a pane showing U0, idle, its TUI not connected to the daemon; clean log and state
   unset ENSURE_RC CHECK_RC RPC_START_FAIL RPC_START_UNCERTAIN RPC_START_BAD_ID \
@@ -277,8 +290,9 @@ fresh() { # a pane showing U0, idle, its TUI not connected to the daemon; clean 
         KEY_DELAY DISPATCH_ID XREVIEW_LOCK_WAIT RPC_RUNNING_AFTER_START \
         PROCINFO_FAIL PRESESSION GONE_AFTER_KEYS GONE_AFTER_RUN LSOF_FAIL READ_FAIL \
         RPC_STATUS_FAIL_FOR RPC_STATUS_NOBOOL_FOR CODEX_CHILD XREVIEW_RUNG_WAIT GET_FAIL PROCINFO_BAD RPC_RESOLVE_RC PROCINFO_FG \
-        SNAP_LEDGER XREVIEW_LEDGER_LOCK_WAIT
+        SNAP_LEDGER XREVIEW_LEDGER_LOCK_WAIT RPC_TURNS_FAIL
   export NEW_UUID="$U1"
+  packets
   printf codex > "$P/agent"; printf '%s | t | d' "$(trunc "$U0")" > "$P/title"; echo idle > "$P/status"
   echo 0 > "$P/ctrlc"
   rm -f "$P/packet" "$P/reset_calls" "$P/reset_pending" "$P/newtitle" \
@@ -287,7 +301,7 @@ fresh() { # a pane showing U0, idle, its TUI not connected to the daemon; clean 
   rm -f "$P"/running.* "$P/ledger-at-start"
   mkdir -p "$CODEX_HOME/app-server-daemon"; printf '{"pid":999}\n' > "$CODEX_HOME/app-server-daemon/daemon.pid"
   bash "$XREVIEW" round --reset >/dev/null 2>&1
-  rm -rf "$STATE/superseded" "$STATE/pin" "$STATE/turns"
+  rm -rf "$STATE/superseded" "$STATE/pin" "$STATE/turns" "$STATE/missed"
   : > "$CALLS"
 }
 called() { grep -c -- "$1" "$CALLS" 2>/dev/null || true; }
@@ -488,9 +502,18 @@ out="$(XREVIEW_MAX_ROUNDS=0 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1
 is "RC3 a refusal before pane_free (the round cap) refuses" "$(printf '%s' "$out" | grep -c 'exceeds the cap')" 1
 is "RC3 and never runs the relaunch" "$(called "$relaunch")" 0
 is "RC3 and never touches the pane at all" "$(untouched)" yes
-# An errexit exit (not die): mktemp fails after pane_free. The guard must still know the pane.
-fresh; out="$(TMPDIR="$ROOT/no-such-dir" bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
-is "RC4 a failed mktemp after pane_free refuses" "$rc" 1
+# An errexit exit (not die): a mkdir fails after pane_free. The guard must still know the pane.
+# The stub fails only the mkdir of the turns directory, which dispatch makes inside that window.
+cat > "$STUB/mkdir" <<'M'
+#!/bin/sh
+if [ -n "${MKDIR_FAIL_SUFFIX:-}" ]; then
+  for a in "$@"; do case "$a" in *"$MKDIR_FAIL_SUFFIX") exit 1 ;; esac; done
+fi
+exec /bin/mkdir "$@"
+M
+chmod +x "$STUB/mkdir"
+fresh; out="$(MKDIR_FAIL_SUFFIX=/turns bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"; rc=$?
+is "RC4 a failed mkdir after pane_free refuses" "$rc" 1
 is "RC4 and no turn was started" "$(called 'xreview-rpc turn-start')" 0
 is "RC4 and the pane is still relaunched" "$(called "$relaunch")" 1
 
@@ -1881,6 +1904,149 @@ out="$(cd "$LD" && bash "$XREVIEW" apply xr-l2 2>&1)"; rc=$?
 is "AL5 apply succeeds with a dangling origin/HEAD" "$rc" 0
 is "AL6 and the remote's uploadpack never ran" "$(ls "$DM" | tr '\n' ' ')" ""
 (cd "$LD" && bash "$XREVIEW" apply --done >/dev/null 2>&1)
+
+
+echo "X. review packets: the dispatch asks the packet module (spec 2026-10-25 §3.2, §3.3, §3.8)"
+# A rollout is where the module reads a thread's context and its window from. U2 holds the
+# checkpoint's context; the window of every other rollout stands for a fresh thread's.
+rollout() { # rollout <thread> <context tokens> <window>
+  local d="$CODEX_HOME/sessions/2026/10/25"; mkdir -p "$d"
+  printf '{"type":"event_msg","payload":{"type":"task_started","model_context_window":%s}}\n' "$3" \
+    > "$d/rollout-2026-10-25T00-00-00-$1.jsonl"
+  printf '{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":%s},"model_context_window":%s}}}\n' \
+    "$2" "$3" >> "$d/rollout-2026-10-25T00-00-00-$1.jsonl"
+}
+xbranch() { git rev-parse --abbrev-ref HEAD; }
+for n in 1 2 3; do seq 1 3000 | sed "s/^/file $n line /" > "big$n.txt"; done
+git add big1.txt big2.txt big3.txt && git commit -q -m "three big files to review"
+XD=(--diff HEAD~1..HEAD)
+last_nonce() { ls -t "$STATE/turns" | grep -m1 '^xr-[0-9a-f-]*$'; }
+
+fresh; packets framing fit; rm -rf "$CODEX_HOME/sessions"; rollout $U0 1000 258400
+out="$(XREVIEW_MAX_DIFF_BYTES=10 bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md 2>&1)"; rc=$?
+nonce="$(printf '%s' "$out" | grep -m1 '^xr-')"
+is "N1 fit and framing on: a diff over the cap is sent, not refused" "$rc/$(printf '%s' "$out" | grep -c 'too large')" "0/0"
+is "N1 and it has a nonce and a turn" "$(called 'xreview-rpc turn-start')/$([ -n "$nonce" ] && echo yes)" "1/yes"
+is "N1 the packet carries the framing and the file list" \
+   "$(grep -c 'Files in this change (3):' "$P/packet")/$(grep -c '^  shown ' "$P/packet")" "1/3"
+is "N1 the framed schema is what the turn is held to" \
+   "$(grep 'xreview-rpc turn-start' "$CALLS" | grep -c 'findings.framed.schema.json')" 1
+is "N1 a first dispatch starts the thread and writes it down" \
+   "$(called 'xreview-rpc thread-start')/$(cat "$STATE/review-thread")" "1/$U1"
+is "N1 the packet files are gone once the turn has started" "$(ls -d "$STATE/turns/$nonce.packets" 2>/dev/null | wc -l | tr -d ' ')" 0
+labels="$(cat "$STATE/turns/$nonce.shown")"
+is "N1 .shown lists the labels, one per line" "$(printf '%s\n' "$labels" | tr '\n' ' ')" "big1.txt big2.txt big3.txt "
+
+echo "X4. .targets carries the switches and each target's packet fields"
+doc="$STATE/turns/$nonce.targets"
+is "N4 the receipt-level switches" "$(jq -c '.switches' "$doc")" '{"framing":true,"fit":true,"delta":false,"omit_plans":false}'
+is "N4 each target's packet" "$(jq -r '.targets[0] | "\(.packet) \(.delta_from) \(.history) \(.plans_from | length)"' "$doc")" "full null null 0"
+is "N4 and the target's own fields are kept" "$(jq -r '.targets[0] | [.repo, .base, .tip] | map(type) | join(",")' "$doc")" "string,string,string"
+
+echo "X5. a refusal comes before the pane is touched"
+fresh; packets framing fit; rm -rf "$CODEX_HOME/sessions"
+out="$(bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md 2>&1)"; rc=$?
+is "N5 a window nobody can read refuses" "$rc/$(printf '%s' "$out" | grep -c "cannot read the model's context window")" "1/1"
+is "N5 untouched" "$(untouched)" yes
+is "N5 no thread was started for it" "$(called 'xreview-rpc thread-start')" 0
+is "N5 and no round consumed" "$(bash "$XREVIEW" round)" 0
+fresh; packets framing; out="$(XREVIEW_MAX_DIFF_BYTES=10 bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md 2>&1)"; rc=$?
+is "N5 framing with the fit check off keeps the cap, in today's words" \
+   "$rc/$(printf '%s' "$out" | grep -c 'too large to carry inline')/$(printf '%s' "$out" | grep -c 'Review them in slices, or raise XREVIEW_MAX_DIFF_BYTES')" "1/1/1"
+is "N5 untouched here too" "$(untouched)" yes
+fresh
+out="$(XREVIEW_MAX_DIFF_BYTES=12x bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md 2>&1)"; rc=$?
+is "N5 a garbage XREVIEW_MAX_DIFF_BYTES is refused, naming it" "$rc/$(printf '%s' "$out" | grep -c "not '12x'")/$(untouched)" "1/1/yes"
+fresh; printf '%s\n' "$U2" > "$STATE/review-thread"
+out="$(XREVIEW_PACKET="$ROOT/does-not-exist.py" bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md 2>&1)"; rc=$?
+is "N5 a module that fails is a refusal" "$rc/$(printf '%s' "$out" | grep -c 'cannot build the review packet')" "1/1"
+is "N5 and nothing was touched" "$(untouched)/$(called 'xreview-rpc thread-start')" "yes/0"
+
+echo "X2. a thread that cannot hold the packet: the checkpoint moves to a fresh thread"
+fresh; packets framing fit; rm -rf "$CODEX_HOME/sessions"; rollout $U2 250000 258400
+printf '%s\n' "$U2" > "$STATE/review-thread"; mkdir -p "$STATE"; printf '%s=3\n' "$(xbranch)" > "$STATE/rounds"
+NO_TITLE=1 bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md > "$ROOT/o" 2>&1; rc=$?
+is "N2 the dispatch succeeds" "$rc" 0
+is "N2 a new thread was started" "$(called 'xreview-rpc thread-start')" 1
+is "N2 the turn runs on it, not on the old one" \
+   "$(grep 'xreview-rpc turn-start' "$CALLS" | grep -c -- "--thread $U1")/$(grep 'xreview-rpc turn-start' "$CALLS" | grep -c -- "--thread $U2")" "1/0"
+is "N2 it is the checkpoint's thread now" "$(cat "$STATE/review-thread")" "$U1"
+is "N2 the old thread is queued as superseded (the pane could not follow, so it waits)" "$(cat "$STATE/superseded")" "$U2"
+is "N2 the round counter carries on" "$(bash "$XREVIEW" round)" 4
+fresh; packets framing fit; rm -rf "$CODEX_HOME/sessions"; rollout $U2 250000 258400
+printf '%s\n' "$U2" > "$STATE/review-thread"
+bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md > "$ROOT/o" 2>&1; rc=$?
+is "N2 the pane is resumed onto the new thread" "$(resumed $U1)" 1
+is "N2 and the old thread is archived once it shows it" "$(called "xreview-rpc thread-archive --thread $U2")/$([ -e "$STATE/superseded" ] && echo left || echo gone)" "1/gone"
+is "N2 the turn starts before the pane is resumed" \
+   "$([ "$(first 'xreview-rpc turn-start')" -lt "$(first "herdr pane run w1:p2 $PANE_CMD")" ] && echo yes || echo no)" yes
+is "N2 no keystroke after the turn exists (C1)" "$(none_after 'xreview-rpc turn-start' 'herdr pane send-keys')" 0
+is "N2 the pane is freed before the turn" \
+   "$([ "$(first 'herdr pane send-keys')" -lt "$(first 'xreview-rpc turn-start')" ] && echo yes || echo no)" yes
+fresh; packets framing fit; rm -rf "$CODEX_HOME/sessions"; rollout $U2 20000 258400
+printf '%s\n' "$U2" > "$STATE/review-thread"
+bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md > "$ROOT/o" 2>&1
+is "N2 a thread that holds the packet is kept: no new thread, the turn runs on it" \
+   "$(called 'xreview-rpc thread-start')/$(grep 'xreview-rpc turn-start' "$CALLS" | grep -c -- "--thread $U2")" "0/1"
+fresh; packets framing fit; rm -rf "$CODEX_HOME/sessions"; rollout $U2 20000 258400
+printf '%s\n' "$U2" > "$STATE/pin"
+bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md > "$ROOT/o" 2>&1
+is "N2 (control) a pinned thread that fits is used as it is" "$(grep 'xreview-rpc turn-start' "$CALLS" | grep -c -- "--thread $U2")" 1
+for kind in pin env; do
+  fresh; packets framing fit; rm -rf "$CODEX_HOME/sessions"; rollout $U2 250000 258400
+  if [ "$kind" = pin ]; then printf '%s\n' "$U2" > "$STATE/pin"; out="$(bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md 2>&1)"; rc=$?
+  else out="$(XREVIEW_THREAD=$U2 bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md 2>&1)"; rc=$?; fi
+  is "N2 a $kind thread that cannot hold the packet is refused, naming it" "$rc/$(printf '%s' "$out" | grep -c -- "$U2 .*cannot hold this packet")" "1/1"
+  is "N2 and the remedy is named ($kind)" \
+     "$(printf '%s' "$out" | grep -c "$([ "$kind" = pin ] && echo 'round --reset' || echo 'unset XREVIEW_THREAD')")" 1
+  is "N2 untouched, no thread started, nothing superseded ($kind)" \
+     "$(untouched)/$(called 'xreview-rpc thread-start')/$([ -e "$STATE/superseded" ] && echo left || echo none)" "yes/0/none"
+done
+
+echo "X3. a packet too big even for a fresh thread: dispatch starts slice 1 only"
+fresh; packets framing fit; rm -rf "$CODEX_HOME/sessions"; rollout $U0 1000 110000
+out="$(bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md 2>&1)"; rc=$?
+nonce="$(printf '%s' "$out" | grep -m1 '^xr-')"
+is "N3 the dispatch succeeds and prints a nonce" "$rc/$([ -n "$nonce" ] && echo yes)" "0/yes"
+is "N3 one turn, on one new thread" "$(called 'xreview-rpc turn-start')/$(called 'xreview-rpc thread-start')" "1/1"
+sl="$STATE/turns/$nonce.slices"
+is "N3 .slices names every slice, next 1, and slice 1's thread" \
+   "$(jq -r '"\(.packets | length > 1) \(.next) \(.threads | join(",")) \(.turns | length)"' "$sl")" "true 1 $U1 1"
+is "N3 the packet files outlive the dispatch, for collect" \
+   "$(for f in $(jq -r '.packets[].file' "$sl"); do [ -s "$f" ] || echo missing; done | wc -l | tr -d ' ')" 0
+is "N3 the turn sent slice 1" "$(grep -c 'This is slice 1 of' "$P/packet")" 1
+is "N3 .shown holds slice 1's labels" "$(cat "$STATE/turns/$nonce.shown")" "$(jq -r '.packets[0].shown[]' "$sl")"
+is "N3 .targets says the packet was sliced" "$(jq -r '.targets[0].packet' "$STATE/turns/$nonce.targets")" slices
+is "N3 the sent packet is the first of them" "$(cmp -s "$P/packet" "$(jq -r '.packets[0].file' "$sl")" && echo same)" same
+
+echo "X6. the history, the labels missed last round, duplicate targets and ignored switches"
+fresh; packets framing fit delta; rm -rf "$CODEX_HOME/sessions"; rollout $U2 20000 258400; printf '%s\n' "$U2" > "$STATE/review-thread"
+bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md > "$ROOT/o" 2>&1
+is "thread-turns is asked for the checkpoint's thread when delta is in force" "$(called "xreview-rpc thread-turns --thread $U2")" 1
+for sw in "" "framing fit" "fit delta"; do
+  fresh; packets $sw; rm -rf "$CODEX_HOME/sessions"; printf '%s\n' "$U2" > "$STATE/review-thread"
+  bash "$XREVIEW" dispatch --checkpoint plan b.md > "$ROOT/o" 2>&1
+  is "thread-turns is not asked with switches [${sw:-none}]: delta is not in force" "$(called 'xreview-rpc thread-turns')" 0
+done
+fresh; packets framing fit delta; rm -rf "$CODEX_HOME/sessions"; rollout $U2 20000 258400; printf '%s\n' "$U2" > "$STATE/review-thread"
+RPC_TURNS_FAIL=1 bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md > "$ROOT/o" 2>&1; rc=$?
+is "a thread whose turns cannot be listed is not a refusal" "$rc/$(called 'xreview-rpc turn-start')" "0/1"
+fresh; packets framing fit; rm -rf "$CODEX_HOME/sessions"; rollout $U2 20000 258400; printf '%s\n' "$U2" > "$STATE/review-thread"
+mkdir -p "$STATE"; printf 'big2.txt\nbig3.txt\n' > "$STATE/missed"
+bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md > "$ROOT/o" 2>&1
+is "the labels the last reviewer did not list go into the packet" "$(grep -c 'did not list: big2.txt, big3.txt' "$P/packet")" 1
+is "and the file is spent once the turn has started" "$([ -e "$STATE/missed" ] && echo left || echo gone)" gone
+fresh; packets framing fit; rm -rf "$CODEX_HOME/sessions"; rollout $U0 1000 258400
+nonce="$(bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" --diff HEAD~1..HEAD --diff .:HEAD~1..HEAD b.md 2>/dev/null | grep -m1 '^xr-')"
+is "a range named twice is one target" "$(jq '.targets | length' "$STATE/turns/$nonce.targets")" 1
+fresh; packets fit delta; out="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
+is "switches that need framing are named once, and stay off" \
+   "$(printf '%s' "$out" | grep -c 'packets.conf turns on fit, delta, which need framing')/$(grep -c 'Files in this change' "$P/packet")" "1/0"
+fresh; packets; out="$(bash "$XREVIEW" dispatch --checkpoint plan b.md 2>&1)"
+is "with every switch off there is nothing to say" "$(printf '%s' "$out" | grep -c 'packets.conf')" 0
+is "with every switch off the schema is today's" \
+   "$(grep 'xreview-rpc turn-start' "$CALLS" | grep -c 'findings.schema.json')" 1
+packets
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))
