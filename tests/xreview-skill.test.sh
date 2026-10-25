@@ -564,6 +564,9 @@ for phrase in 'dispatch never refuses on size' \
               'Never re-dispatch a sliced round' \
               'collect again once it clears' \
               'Commit each round'"'"'s plan fixes before re-dispatching' \
+              'ambiguous: no turn on record' \
+              'Never re-dispatch a sliced round unless it says to (a slice'"'"'s packet is gone)' \
+              'its coverage could not be read' \
               'barring xreview'"'"'s own move' \
               'unless the thread is full and was moved by xreview'; do
   if printf '%s' "$flat" | grep -qF "$phrase"; then
@@ -574,14 +577,35 @@ if printf '%s' "$flat" | grep -qF -- '`--diff <dest>...<branch>` once the plan i
   _pass "the skill dispatches plan reviews with --diff once the plan is committed"
 else _fail "the skill dispatches plan reviews with --diff once the plan is committed" "missing"; fi
 
-# The escalation list is exactly these bullets: one new (a pinned thread that cannot hold the
-# packet; the pin is Michael's), the rest unchanged.
-nb="$(grep -c '^- ' <<<"$esc")"
-[ "$nb" = 11 ] && _pass "the escalation list has 11 bullets" \
-  || _fail "the escalation list has 11 bullets" "found $nb"
-if printf '%s' "$(tr '\n' ' ' <<<"$esc" | sed 's/  */ /g')" | grep -qF -- '- `xreview` refuses because a pinned review thread cannot hold the packet. The pin is Michael'"'"'s; never drop it with `xreview round --reset`.'; then
-  _pass "the escalation list names the pinned-thread refusal"
-else _fail "the escalation list names the pinned-thread refusal" "missing"; fi
+# The escalation list is exactly these bullets, in this order: any reworded, added or
+# dropped bullet fails here.
+expected_esc="$(cat <<'EXPECTED_ESC'
+- the reviewer **re-raises a finding you already addressed** — that is disagreement,
+  not a missed fix
+- a finding needs design judgement or a trade-off that would change the approved spec
+- you cannot verify a claim
+- `xreview` refuses the round because Michael set `XREVIEW_MAX_ROUNDS` and the review
+  reached it. Unset, rounds are not limited.
+- `xreview` refuses because the Codex daemon carries a pane's environment. The fix disconnects
+  every Codex TUI.
+- `xreview` refuses because there is no Codex pane for the repository, or several.
+- `xreview` refuses because the Codex daemon is down and will not start.
+- `xreview` refuses because the pane would not free (it closed, or its session would not exit).
+- `xreview` refuses because it cannot inspect the Codex pane (`herdr pane process-info` or
+  `herdr pane get`), cannot read whether a thread is running, or cannot lock the Codex pane
+  (or cannot create or open its lock file).
+- `xreview` refuses because a pinned review thread cannot hold the packet. The pin is
+  Michael's; never drop it with `xreview round --reset`.
+- `xreview` refuses because the pane is resuming something other than a thread id (for
+  example `codex resume --last` or a picker). The pane is Michael's.
+EXPECTED_ESC
+)"
+actual_esc="$(printf '%s\n' "$esc" | sed '1,2d;$d' | sed '${/^$/d;}')"
+if [ "$actual_esc" = "$expected_esc" ]; then
+  _pass "the escalation list is exactly the expected bullets"
+else
+  _fail "the escalation list is exactly the expected bullets" "$(diff <(printf '%s\n' "$expected_esc") <(printf '%s\n' "$actual_esc") | head -6)"
+fi
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -102,7 +102,7 @@ A budget running out is not automatically a timeout:
 - **Exit 3 — the turn is on record and still running.** Not ambiguous, not a failure. The
   reviewer is simply still working. Run `xreview collect <nonce> <secs>` again; it
   resumes the wait and does not re-dispatch or cost another turn. Keep waiting.
-- **Exit 1, "no turn on record"** — genuinely ambiguous: the turn may never have started.
+- **Exit 1, "ambiguous: no turn on record"** — genuinely ambiguous: the turn may never have started.
   Report it and stop. Never re-dispatch.
 - **Exit 1, "Codex daemon is unreachable; the turn is on record"** — not the ambiguous
   case above: run `codex-daemon ensure`, then `xreview collect <nonce>` again.
@@ -114,7 +114,7 @@ except on a thread Michael pinned (`xreview init` or `XREVIEW_THREAD`). A very l
 reviewed in slices, each on its own fresh thread, with the pane following. Slices take
 longer, so give `collect` a larger budget; it runs the remaining slices itself, and exit 3
 is resumed as usual. If a sliced collect stops on a pane or daemon refusal, or on a slice
-with no turn on record, run collect again once it clears. Never re-dispatch a sliced round.
+with no turn on record, run collect again once it clears. Never re-dispatch a sliced round unless it says to (a slice's packet is gone).
 
 A plan review is dispatched with `--diff <dest>...<branch>` once the plan is committed, so
 that pre-merge can bind the plan to its approval. Commit each round's plan fixes before
@@ -173,11 +173,11 @@ Dispatch refuses, before starting a turn or touching the pane, when:
   (`cannot lock the Codex pane`, or it cannot create or open the lock file), that is a local
   failure, not contention.
 
-Only the "no turn on record" collect is a timeout, and that one is **ambiguous, never
+Only the "ambiguous: no turn on record" collect is a timeout, and that one is **ambiguous, never
 retried** — report it and stop. A still-running turn is not a timeout; wait it out.
 
-When a review is not clean (it compacted, its compaction could not be read, or it missed
-shown files), collect says so on stderr: `xreview: this review is not clean (…)`. The merge
+When a review is not clean (it compacted, its compaction could not be read, its coverage could
+not be read, or it missed shown files), collect says so on stderr: `xreview: this review is not clean (…)`. The merge
 gate may stay closed, and a plan review that is not clean binds no plan. Act on
 its findings and dispatch the next round as usual; this is not an escalation trigger.
 
