@@ -16,6 +16,9 @@
 #   d1.patch, d2.patch               the two diffs, as the ledger prints them (spec in SPECS below)
 #   {none,one,two}-{nl,nonl}.packet  the six packets
 set -euo pipefail
+# The reference ledger renders with the user's diff settings (diff.noprefix, diff.mnemonicPrefix):
+# none may reach the fixtures. The fixture repository sets its own identity.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 REF=7aab009
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(git -C "$HERE" rev-parse --show-toplevel)"
