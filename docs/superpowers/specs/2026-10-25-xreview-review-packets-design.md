@@ -491,12 +491,14 @@ files stay in `~/.local/state/xreview/replay/` and are never committed.
    - which rollout record carries the context size.
 
    A fact that does not hold changes this spec before any other task starts.
-2. Implement everything with all switches off; `chezmoi apply` (Michael). Behaviour is
-   unchanged: receipts gain the new fields, and the gate reads none of them while every
-   recorded switch is off.
-3. Run the replay. Record the results in §9. Turn on each switch that passed, one commit per
-   switch, citing its result.
+2. Implement everything on the branch with all switches off. With every switch off,
+   behaviour is unchanged: receipts gain the new fields, and the gate reads none of them.
+3. Run the replay from the branch checkout. It imports the working tree's packet builder and
+   runs the working tree's `xreview-rpc`, so nothing needs deploying first. Record the results
+   in §9. Turn on each switch that passed, one commit per switch, citing its result.
 4. A switch that fails stays off. Its follow-up is a change to this spec, not a silent retry.
+5. Pre-merge review, then push the branch. Michael merges and runs `chezmoi apply`, which
+   deploys the code and the switch states together.
 
 ## 8. Risks and limits
 
