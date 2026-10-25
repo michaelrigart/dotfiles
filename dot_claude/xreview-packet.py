@@ -985,7 +985,10 @@ def _slices(c, ts, window):
         data = _framed(c["reviewer"], c["framing"], c["body"],
                        _notes(ts, c["missed"], first=SLICE_HEADER.format(number, len(slices))), listing, blocks)
         if len(data) > top:
-            raise ValueError("slice {} came out at {} bytes, above the {} the window allows".format(number, len(data), top))
+            widest = max(members, key=lambda n: len(units[n][2].text))
+            raise _Refuse("slice {} of the change came out at {} bytes, above the {} a fresh thread allows; "
+                          "the unit that cannot fit is {}".format(number, len(data), top,
+                                                                 ts[units[widest][1]].prefix + units[widest][2].label))
         out.append((data, [ts[units[n][1]].prefix + units[n][2].label for n in members]))
     return out
 
@@ -1007,6 +1010,12 @@ def _load_turns(path):
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) else None
+
+
+def _chars(diff):
+    """What bash's ${#d} counts for a diff taken through $(...): its characters once the trailing
+    newlines are gone, the bytes read as UTF-8 with each undecodable byte counting as one."""
+    return len(diff.rstrip(b"\n").decode("utf-8", "surrogateescape"))
 
 
 def _needed(context_now, nbytes):
@@ -1076,7 +1085,7 @@ def build(request, outdir=None):
 
     if not sw["framing"]:
         diffs = [(s, ledger.patch(t["repo"], t["base"], t["tip"])) for t, s in zip(targets, specs)]
-        total = sum(len(d.rstrip(b"\n")) for _s, d in diffs)
+        total = sum(_chars(d) for _s, d in diffs)
         if total > cap:
             return plain("refuse", CAP_REFUSAL.format(total, cap), [])
         return plain("send", "every switch is off: today's packet",
@@ -1086,7 +1095,7 @@ def build(request, outdir=None):
     ts = _prepare(c, delta_ok)
     kind = "delta" if any(t.kind == "delta" for t in ts) else "full"
     if not sw["fit"]:
-        total = sum(len(t.diff.rstrip(b"\n")) for t in ts)
+        total = sum(_chars(t.diff) for t in ts)
         if total > cap:
             return decide("refuse", CAP_REFUSAL.format(total, cap), kind, [], ts)
         data, shown = _unsliced(c, ts)

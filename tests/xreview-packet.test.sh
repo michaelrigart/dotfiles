@@ -788,6 +788,20 @@ def _k10():
     is_("F1 framing on with fit off refuses the same way", (fo["action"], fo["reason"]), ("refuse", CAP_TEXT.format(n, n - 1)))
     fs = built(request([t1], sp[:1], switches_file=swf(framing=True)))
     ok("F1 framing on with fit off sends a framed packet", fs["action"] == "send" and b"Files in this change (2):" in pkt(fs))
+    # the cap counts characters, as bash's ${#d} does, not bytes
+    ru, bu, tu = mkchange("k10u", {"u.txt": ("\u00e9" * 60000 + "\n").encode()})
+    tgu = target_of(ru, bu, tu)
+    du = LD.patch(tgu["repo"], bu, tu).rstrip(b"\n")
+    nchars = len(du.decode("utf-8"))
+    ok("F1 the fixture has fewer characters than bytes, the cap between them", nchars < 100000 < len(du), (nchars, len(du)))
+    is_("F1 a non-ASCII diff over the cap in bytes but under it in characters is sent", built(request([tgu], [ru + ":main...HEAD"]))["action"], "send")
+    ref = built(request([tgu], [ru + ":main...HEAD"], cap=nchars - 1))
+    is_("F1 and the refusal prints the character count", (ref["action"], ref["reason"]), ("refuse", CAP_TEXT.format(nchars, nchars - 1)))
+    is_("F1 with framing on too", built(request([tgu], [ru + ":main...HEAD"], cap=nchars - 1, switches_file=swf(framing=True)))["reason"], CAP_TEXT.format(nchars, nchars - 1))
+    rb2, bb2, tb2 = mkchange("k10bad", {"bad.txt": b"\xc3\xa9" * 5 + b"\xff" * 3 + b"\n"})
+    tgb = target_of(rb2, bb2, tb2)
+    db = LD.patch(tgb["repo"], bb2, tb2).rstrip(b"\n")
+    is_("F1 each undecodable byte counts as one character", built(request([tgb], [rb2 + ":main...HEAD"], cap=1))["reason"], CAP_TEXT.format(len(db) - 5, 1))
 
 
 # ---------------------------------------------------------------- C7 multi-target, one delta one full
@@ -834,7 +848,11 @@ def _c7():
     is_("C7 shown is exactly the labels to be covered", sorted(dec["packets"][0]["shown"]),
         sorted(["{}:a.py".format(dA), "{}:c.py".format(dA), "{}:b.py".format(dB)]))
     ok("C7 the reviewer instructions and the framing precede the body",
-       text.index("independent reviewer") < text.index("This request opens with a file list") < text.index("Review this."))
+       text.index("independent reviewer") < text.index("Below this request") < text.index("Review this."))
+    ok("C7 the file list follows the body, ahead of the diffs it indexes",
+       text.index("Review this.") < text.index("Files in this change (4):") < text.index("--- diff ("))
+    ok("C7 the framing text says so, and no longer claims the request opens with the list",
+       "precedes the diffs it indexes" in text and "This request opens with a file list" not in text)
     # the gate accepts the chain xreview would record
     rec = rc("xr-c7b", "thD", "tu-c7b", dict(tg[0]))
     ok("C7 a receipt of that delta passes the gate's chain check",
@@ -1044,6 +1062,17 @@ def _f():
     ok("F4 the missed line is in every slice", all(MISSED.format("f01.txt") in rd(p["file"]).decode() for p in d4["packets"]))
     ok("F4 max_packet_bytes is the exact edge of fits",
        xp.fits(xp.FRESH_CONTEXT, 63000, 120000) and not xp.fits(xp.FRESH_CONTEXT, 63001, 120000))
+    # a slice that comes out over the limit is a refusal that names the unit, not a crash
+    keep = xp.SLICE_SLACK
+    xp.SLICE_SLACK = -25000
+    try:
+        over = built(request([stgt], ssp, switches_file=swf(**FIT), codex_home=small))
+    finally:
+        xp.SLICE_SLACK = keep
+    is_("F4 an over-limit slice is a refuse decision", (over["action"], over["packets"]), ("refuse", []))
+    ok("F4 whose reason names the slice and the unit that cannot fit",
+       "above the 63000" in over["reason"] and re.search(r"cannot fit is f\d\d\.txt\Z", over["reason"]) is not None, over["reason"])
+    is_("F4 and the targets are still reported", len(over["targets"]), 1)
 
 
 # ---------------------------------------------------------------- F7 a 20,000-file change

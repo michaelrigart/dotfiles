@@ -1,5 +1,5 @@
-This request opens with a file list: "Files in this change (<n>):", then one line per file or
-part, as `<mark> +<added> -<removed>  <label>`. The mark says where that file's patch is:
+Below this request's text (these instructions, the body and any notes) comes a file list, which
+precedes the diffs it indexes: "Files in this change (<n>):", then one line per file or part, as `<mark> +<added> -<removed>  <label>`. The mark says where that file's patch is:
 - shown: in this request. Review it.
 - earlier: shown in an earlier round of this review. Judge the change as it now stands, with
   what you saw then.
