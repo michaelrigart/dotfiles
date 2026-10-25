@@ -1,0 +1,438 @@
+# Review packets that fit the reviewer
+
+**Status:** Approved
+**Date:** 2026-10-25
+**Scope:** `dot_local/bin/executable_xreview` (dispatch and collect), a new packet builder
+`dot_claude/xreview-packet.py`, `dot_claude/xreview-ledger.py` (the gate's decision),
+`dot_local/bin/executable_xreview-rpc` (thread fork, the turn's compaction flag),
+`dot_config/xreview/` (reviewer instructions, findings schema, a new switch file), the
+cross-review skill, a replay harness in `.scripts/`, and their test suites.
+
+## 1. Problem
+
+Measured on 2026-10-25 over 556 review turns (2026-09-01 to 2026-10-25): every turn record
+in `~/.local/state/xreview/*/turns/` matched to its Codex rollout in `~/.codex/sessions` or
+`~/.codex/archived_sessions`.
+
+**Michael is prompted to raise the size cap.** `xreview dispatch` refuses a packet whose diffs
+exceed 100 KB (`XREVIEW_MAX_DIFF_BYTES`). Packets run p50 74 KB, p75 117 KB, p90 282 KB, max
+992 KB; 174 of 555 turns were over 100 KB. A session cannot raise the cap: an environment
+assignment in front of `xreview` takes it out of `sandbox.excludedCommands`. So every
+oversized review becomes a `! XREVIEW_MAX_DIFF_BYTES=… xreview dispatch …` handed to
+Michael: 34 distinct refusals in the Claude transcripts, overrides from 150 KB to 1.2 MB.
+
+**Inline diffs are right.** A round-1 review with the diff inline takes median 0.33M input
+tokens and 3 tool calls. Pointing the reviewer at paths took ~2.0M tokens and ~16 steps
+(measured 2026-09-01). This design keeps the diff inline whenever it fits.
+
+**Re-sending the full diff every round overflows the reviewer.** Rounds of a checkpoint stay
+on one thread, and each round sends the whole diff again. So the thread holds every earlier
+version of the same hunks. Context at the first step of a turn, median by round: 47k, 99k,
+132k, 159k, 180k, then 199k from round 6 on, against a 258,400-token window. **48 of 556
+turns (9%) compacted mid-review:** Codex summarised its own context, including part of the
+change under review, and still returned a verdict. Compaction fired at about 244k input
+tokens. The compacted turns had packets over 150 KB or were round 3 and later, with
+exceptions. Their verdicts opened the pre-merge gate like any other.
+
+**Compaction does not empty the context.** Every one of the 48 compactions kept the most
+recent user messages verbatim: 275–295 KB of earlier review packets, possibly cut off
+partway. The next model step started at p50 100k, max 123k tokens. Compacting on purpose would
+leave the same stale text, so this design never compacts. It starts a fresh thread instead.
+
+**Plans fill pre-merge packets.** Bytes of pre-merge diffs: code 52.8%, tests 26.5%,
+`docs/superpowers/plans/` 15.1%, other design records 4.6%, lock and generated files 1.1%.
+Plans were already reviewed at their own checkpoint.
+
+Calibration used below, from the same data: a packet costs about 1 token per 3.58 bytes. A
+fresh review thread starts at about 27k tokens before the packet (system prompt, tools,
+repository instructions). A turn grows its context by p50 5.5k, p90 29k, p99 56k, max 71k
+tokens while it investigates.
+
+## 2. Goals, non-goals, anti-goals
+
+Goals:
+
+- Michael is never asked to start or resize a review.
+- Every review turn holds the part of the change it is judging in full, without
+  compaction, and the gate opens only on such reviews.
+- Fewer tokens per round once a review is under way.
+- No change ships that lowers review quality. That is measured (§5), not argued.
+
+Non-goals:
+
+- No change to the checkpoints, the cold-ask rule, the dispatch command line, the pane
+  lifecycle or the tier policy. Claude still dispatches every round with the full range
+  (`--diff <dest>...<branch>`). Which packet that range becomes is xreview's choice.
+- No headless `codex exec` reviews; the live Codex view stays.
+- No change to what the gate binds: the fingerprint of the full range, per destination.
+
+Anti-goals, which would be failures even if everything else worked:
+
+- A review that saw only part of the change opening the gate.
+- A quality loss accepted in exchange for tokens.
+- A new prompt or escalation for Michael in normal operation.
+
+## 3. Design
+
+### 3.1 Packet kinds and framing
+
+xreview builds every packet through `xreview-packet.py`. It lives in `~/.claude` beside the
+ledger, so neither xreview nor the gate runs code from a directory the sandbox can write. The
+replay harness (§5) imports the same module, so the packets it tests are the ones dispatch
+sends. Each target of a dispatch gets one of:
+
+- **full**: the whole `base..tip` patch, rendered by the ledger with its diff flags, as today.
+- **delta**: the patch from the tip the previous round reviewed to the new tip (§3.4).
+- **slice**: part of a full packet, when even a fresh thread cannot hold all of it (§3.3).
+
+**Framing** is what every packet gains when the `framing` switch is on (§3.8). Delta, slices
+and the coverage check all need it.
+
+- **File list.** The packet opens with each changed path and its +/− counts. Each path is
+  marked *shown* (its patch is in this packet), *earlier* (delta: shown in an earlier round),
+  *elsewhere* (slice: shown in another slice) or *listed* (plans omitted, §3.5).
+- **Target labels.** With several targets, a path carries its target's label
+  (`<repo-path>:`), as `--diff` named it.
+- **`reviewed_files`** in the findings schema (§3.6).
+- **Instructions** for both in `reviewer.md`.
+
+### 3.2 Fit check
+
+Before a turn starts, xreview estimates whether it fits:
+
+    need  = context now + ceil(packet bytes / 3.5) + reserve
+    limit = 0.9 × the model's context window
+
+- **Context now**: for an existing thread, input plus output of the latest `token_count`
+  record in its rollout (`last_token_usage`); for a fresh thread, 30,000 (measured ~27k).
+- **The window**: `model_context_window` from the thread's latest `task_started` record. A
+  fresh thread uses the most recent value from this repository's review threads, else from
+  any rollout. If none can be read, dispatch refuses before touching the pane. That is a
+  local failure for the skill to report, not a size question.
+- **Reserve**: 60,000 tokens of working room (p99 growth within a turn is 56k).
+- 0.9 keeps the turn under Codex's own compaction point (seen at ~94% of the window).
+
+Then, in order:
+
+1. Use a delta if the target qualifies (§3.4), otherwise a full packet. A pre-merge target
+   omits plans (§3.5).
+2. If `need ≤ limit` on the checkpoint's thread, send it there.
+3. Otherwise, **move the checkpoint to a fresh thread.** A delta needs the old thread, so the
+   packet is rebuilt as full, and the fit is checked again with fresh-thread context.
+   - Moving works as at a checkpoint's first dispatch: the fresh thread becomes the
+     checkpoint's thread, and the pane is resumed onto it.
+   - The old thread joins the superseded list and is archived once the pane shows the new
+     one, as `round --reset` does today.
+   - The round counter carries on. This is not a new checkpoint.
+4. If a full packet does not fit even a fresh thread, slice it (§3.3).
+
+Step 3 replaces what happens today. Today the same overflow makes Codex compact in the middle
+of the turn and review from its own summary. A fresh thread holds the whole packet instead.
+The reviewer loses its memory of earlier rounds. The body's existing list of settled points
+(alternatives already rejected, named without reasons) is what stops it from re-raising them.
+
+With the fit check on, `XREVIEW_MAX_DIFF_BYTES` no longer applies, and no size is refused.
+
+### 3.3 Slices
+
+A full packet too large for a fresh thread (more than ~500 KB at today's window) is split
+into slices. Each slice is a group of whole files, packed in path order, with each slice's
+`need` at or under `limit` on a fresh thread.
+
+- **Content.** Each slice turn carries the complete file list and its own patches, plus a
+  line saying the other slices are reviewed in their own turns and any file may be opened.
+- **One oversized file.** A file whose patch alone exceeds a slice is shown as a `git diff`
+  command with the ledger's flags. The reviewer reads it in parts in its read-only sandbox,
+  which it already does (it runs `git diff --stat`, `cat` and `rg` today). This is the only
+  case where the reviewer fetches a patch itself.
+
+Every slice runs on a **fresh thread of its own**, one after another, and the pane follows
+each.
+
+- `dispatch` starts slice 1 exactly as it starts any review on a fresh thread, and prints the
+  nonce.
+- `collect` waits for each slice. Then, under the pane lock, it starts the next slice's
+  thread and turn, and resumes the pane onto it. The pane steps are dispatch's own, moved into
+  shared functions. So the existing rules hold: keystrokes only while no turn is running on
+  the pane's thread, and a pane that fails to follow only warns.
+- `collect` keeps its state in `turns/<nonce>.slices`, so exit 3 resumes where it stopped. A
+  slice turn-start that is sent but not answered is recovered as dispatch's exit 6 is (the
+  turn not there before), never re-sent.
+- Slice threads join the superseded list as the pane moves on, and are archived as above.
+- `collect` prints one merged answer: `approve` only if every slice approved, all findings,
+  and the union of `reviewed_files`.
+
+The last slice's thread becomes the checkpoint's thread. A sliced round never roots a delta
+(§3.4), so the next round is full and, at the same size, sliced again.
+
+### 3.4 Delta rounds
+
+A target qualifies for a delta when the previous review on the checkpoint's current thread
+has a collected receipt for the same repository and range, and:
+
+- its base equals the new base (no rebase onto a moved destination);
+- its tip is an ancestor of the new tip;
+- that receipt is clean (§3.6), and so is every receipt back to the chain's root;
+- the chain's root, the first receipt of the chain, is a `full` packet on this same thread.
+  A sliced round never roots a chain: each slice is on its own thread, so no thread holds the
+  whole change.
+
+The packet says, in fixed text, which round it follows, that the change as of that round is
+earlier in the thread, and that the change is to be judged as it now stands, including how
+the new code meets the old. Then it carries the file list for the whole change and the patch
+`prev tip..new tip`. Its receipt records the full range's fingerprint, as every receipt does.
+It also records the receipt it follows (`delta_from`). Otherwise the target gets a full
+packet.
+
+### 3.5 Plans omitted at pre-merge
+
+In a pre-merge packet (full, delta or slice), paths under `docs/superpowers/plans/` are
+*listed*, not shown. A fixed line notes they were reviewed at the plan checkpoint. Specs and
+every other path are still shown. The fingerprint and the gate still cover the plans.
+`xreview-ledger.py diff` gains a path-prefix exclusion. Its header-count check counts the
+records it renders, so the "packet matches the change" check still holds.
+
+### 3.6 Clean turns
+
+A turn is **clean** when both hold:
+
+- **No compaction during the turn**: no `contextCompaction` item in the turn
+  (`thread/turns/list`, which xreview-rpc already reads). If the item is not exposed there,
+  check for a `compacted` record in the rollout after the turn's `task_started`. This check
+  is always made and recorded.
+- **Coverage**, with `framing` on: every *shown* path in the packet appears in the answer's
+  `reviewed_files`, compared after stripping `a/`, `b/` and `./`. The reviewer instructions
+  ask for each shown file it reviewed, and no file it did not read.
+
+A receipt gains:
+
+- `packet`: `full`, `delta` or `slices`;
+- `switches`: the four switch states at dispatch;
+- `compacted`;
+- `missing`: the uncovered paths, at most 50;
+- `clean`;
+- `delta_from`.
+
+For slices, the receipt is clean only if every slice turn is.
+
+When a turn is not clean, `collect` prints the answer as usual and exits 0. It adds a line on
+stderr naming why, and whether the gate stays closed (§3.7). Its findings are acted on as
+normal. The next dispatch's packet already reflects the cause: after a compaction, a full
+packet on a thread that fits it; after a coverage gap, the packet names the files missed last
+round.
+
+### 3.7 The gate
+
+`decide()` still requires the latest review of exactly this change, for this destination, to
+be an `approve` receipt. That receipt must now also be **whole**. Whole is judged from the
+receipt alone, including the `switches` it recorded at dispatch. The gate never reads
+`packets.conf`, so turning a switch on or off never reopens or closes a review already on
+record.
+
+- **Old receipts.** A receipt with no `packet` field predates this design and is whole, so
+  approvals in flight at rollout still open the gate.
+- **Coverage.** When the receipt recorded `framing` on, `missing` must be empty.
+- **Compaction.**
+  - A `delta` or `slices` receipt must not have compacted.
+  - A `full` receipt must not have compacted when it recorded `fit` on. With `fit` off, the
+    packet's size is the old cap's business, so a compacted full review keeps opening the
+    gate as today. Otherwise an oversized review would compact on every retry and never
+    pass.
+- **The chain**, for `delta`. Each `delta_from` names a receipt in the same ledger, and each
+  link must hold:
+  - the same thread, repository, destination and base;
+  - its tip is where this delta starts;
+  - it is clean, under the same rules as above.
+
+  The walk ends at a `full` receipt on that thread. It is iterative, with cycle detection. A
+  link may carry a `changes` verdict.
+
+xreview only builds valid chains. The gate checks them anyway, because the gate is the part
+of this workflow that is enforced rather than trusted.
+
+### 3.8 Switches
+
+`~/.config/xreview/packets.conf` (chezmoi: `dot_config/xreview/packets.conf`) holds four
+`key=on|off` lines:
+
+| Switch | Covers | Off |
+|---|---|---|
+| `framing` | §3.1 framing, the coverage check | today's packet and schema |
+| `fit` | §3.2, §3.3 | today's byte cap and `XREVIEW_MAX_DIFF_BYTES` |
+| `delta` | §3.4 | every round full |
+| `omit_plans` | §3.5 | plans shown |
+
+`fit`, `delta` and `omit_plans` need `framing`. With `framing` off they act as off, and
+xreview says so once per dispatch. All four start `off`. Each is turned on only after it
+passes the replay (§5). Recording whether a turn compacted (§3.6) is always on. It changes
+nothing until a switch makes the gate read it.
+
+## 4. Instructions
+
+- **`reviewer.md`**: the packet kinds and their fixed lines; `reviewed_files`; listed plans.
+- **Cross-review skill**:
+  - Drop the cap and the advice to slice by hand. xreview picks the packet, and dispatch
+    never refuses on size.
+  - xreview may move a checkpoint to a fresh thread when the current one cannot hold the
+    next packet. That is mechanical; the agent still never rotates a thread by judgement.
+  - A review that is not clean may keep the gate closed: act on its findings and dispatch the
+    next round as usual.
+  - Slices take longer, so give `collect` a larger budget.
+  - The escalation list is unchanged.
+- **Memory** `excluded-command-must-lead`: its cap remark is updated once `fit` is on.
+
+## 5. Replay evaluation
+
+`.scripts/xreview-replay.py` measures each switch against today's behaviour on past reviews
+before the switch is turned on.
+
+### 5.1 Cases
+
+From the ledgers, turn records and rollouts: past rounds whose findings parse, whose base and
+tip commits still exist locally, and that hold at least one known-real finding. Most recent
+first, across repositories:
+
+- **`framing` and `omit_plans`** share up to 10 pre-merge rounds whose diff includes plan
+  files.
+- **`delta`**: up to 10 rounds 2 and later, whose previous round was on the same thread with
+  the same base.
+- **`fit`**: round-1 reviews too big for a fresh thread (sliced under §3.3). Seven are on
+  record today, so this switch is judged on at most seven cases, with the count reported.
+  The move to a fresh thread (§3.2 step 3) is not replayed. It replaces a mid-turn
+  compaction with the whole packet in a clean context.
+
+### 5.2 Known-real findings
+
+A historical P0–P2 finding is known-real when the change between that round's tip and the
+next round's tip fixed it. A blind judge decides each one, shown the finding and that
+interdiff, and answers yes, no or unclear. Only "yes" counts.
+
+### 5.3 Arms
+
+Every arm runs on a fresh thread, unless noted:
+
+- **A and A′**: two runs of today's packet with today's schema. They give the noise between
+  identical runs.
+- **F**: framing on, every other switch off. It runs on the shared pre-merge cases only.
+- **B**: framing plus the one switch under test.
+
+For `delta`, round k−1 is replayed once with today's packet. That thread is forked
+(`thread/fork`) three times, and round k runs on each fork. If the fork is unavailable,
+round k−1 is replayed per arm.
+
+### 5.4 Judging
+
+Judges are Claude subagents (`sp-standard`), dispatched by the driving session between the
+harness's phases, batched one case per judge:
+
+1. `cases` selects candidates and writes the known-real judge inputs.
+2. The session judges them.
+3. `run` runs the arms.
+4. `match` writes the matching inputs, one per case, with every run under a random label.
+5. The session judges them.
+6. `report` computes the results.
+
+Matching: for each known-real finding, the judge names the run finding that reports the same
+defect, or none. The arm-to-label map stays in the harness's state. Judge inputs never carry
+it, and judges are told nothing about the design.
+
+### 5.5 Pass bar
+
+For each switch, on its cases:
+
+- F or B recalls the known-real findings at least as often as the lower of A and A′.
+- F or B misses no P0 or P1 that both A and A′ found.
+- Any arm with framing: over 10% of runs that approved but failed coverage means fixing the
+  path normalisation and re-running those cases before the switch is turned on.
+
+The report also gives tokens and compactions per arm. If `framing` fails, the other switches
+stay off as well, and the follow-up is a change to this spec.
+
+### 5.6 Running it
+
+- Turns run through the Codex daemon with `xreview-rpc` primitives, never `xreview dispatch`.
+  No pane, ledger or round counter is touched, so the gate cannot be affected.
+- Each case gets a scratch `git clone --shared` checked out at its tip, as the reviewer's
+  working directory.
+- All arms of a case run back to back at the daemon's current model and effort, which is
+  recorded.
+- At most 3 turns run at once.
+- Tokens are tallied from the rollouts, with a hard stop at 60M. A run that stops early
+  reports what it has.
+- Every thread it creates is recorded as it is created and archived at the end, and the
+  scratch clones are removed.
+- `run` needs the daemon socket, so it runs unsandboxed, in the background.
+- Expected: about 110 turns, 45–60M Codex tokens, 2–3 hours of `run`.
+- The judges use Claude subagents, not Codex tokens.
+
+**Results** go in §9 of this spec, with the switch states that follow from them. Raw run
+files stay in `~/.local/state/xreview/replay/` and are never committed.
+
+## 6. Testing
+
+- **`tests/xreview-packet.test.sh`** (new), against fixture repositories:
+  - framing marks and target labels;
+  - delta eligibility, each condition on its own, including a sliced root;
+  - plan omission keeps the header-count check;
+  - the fit arithmetic at its boundaries;
+  - slice packing, including the single oversized file.
+- **`tests/xreview.test.sh`**, with `xreview-rpc` and `herdr` stubbed:
+  - dispatch picks full, delta, a fresh thread, or slices as the fit says, and moves the pane
+    for a fresh thread;
+  - with `fit` on there is no size refusal, and with it off there is the old one;
+  - collect runs slices on fresh threads, moves the pane between them under its lock, resumes
+    after exit 3, recovers an unanswered slice start and merges the answers;
+  - the not-clean notice;
+  - receipts carry the new fields;
+  - with every switch off, the packet is byte-for-byte today's.
+- **`tests/xreview-rpc.test.sh`**: `thread-fork` and the turn's compaction flag, against the
+  fake server the suite already uses.
+- **`tests/xreview-ledger.test.sh`** and **`tests/xreview-guard.test.sh`**:
+  - legacy receipts stay whole;
+  - each enforcement rule of §3.7, under its recorded switch;
+  - chains: valid, broken link, wrong base, unclean link, sliced root, cycle, a `changes`
+    link;
+  - flipping `packets.conf` changes no decision on record.
+- **`tests/xreview-skill.test.sh`**: the cap text is gone, and the new rules are pinned.
+- **The replay harness** gets a dry-run mode, tested on one fixture case. It builds every
+  arm's packet and the judge inputs without starting turns.
+
+## 7. Rollout
+
+1. The plan's first task checks the protocol facts the design assumes, against the live
+   daemon:
+   - whether `thread/fork` exists and what it copies;
+   - whether a `contextCompaction` item appears in the turn listing that xreview-rpc reads
+     (`itemsView: "summary"`);
+   - which rollout record carries the context size.
+
+   A fact that does not hold changes this spec before any other task starts.
+2. Implement everything with all switches off; `chezmoi apply` (Michael). Behaviour is
+   unchanged: receipts gain the new fields, and the gate reads none of them while every
+   recorded switch is off.
+3. Run the replay. Record the results in §9. Turn on each switch that passed, one commit per
+   switch, citing its result.
+4. A switch that fails stays off. Its follow-up is a change to this spec, not a silent retry.
+
+## 8. Risks and limits
+
+- **Ten cases detect a real quality drop, not a small one.** Differences smaller than the
+  noise between two identical runs cannot be told apart, at any sample size this budget allows.
+- **Replay is not production.** Scratch clones lack untracked files and trusted `mise`
+  configuration, so a reviewer that runs code may see different results there. This affects
+  every arm alike.
+- **Coverage is self-reported.** `reviewed_files` catches a reviewer that admits skipping a
+  file, not one that lists a file it skimmed. Attention cannot be measured from outside.
+- **Constants are measured today.** 3.5 bytes per token, the 30k fresh-thread start, the
+  60k reserve and 0.9 of the window come from current models. The fit check reads the window
+  from the thread itself, but the others are fixed. A turn that compacts anyway is caught by
+  the clean check and costs a round, never a wrong approval.
+- **A fresh thread forgets earlier rounds.** After a move (§3.2 step 3), only the body's
+  settled list stops the reviewer re-raising a point already ruled on. A re-raise still
+  escalates under the skill.
+- **Sliced reviews repeat every round.** 15 of 556 turns today (2.7%) would be sliced. Each
+  of their rounds re-reviews every slice.
+
+## 9. Replay results
+
+(Filled in after the replay.)
