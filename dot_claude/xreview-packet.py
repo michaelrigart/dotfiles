@@ -178,6 +178,13 @@ def label_text(label):
     return label
 
 
+def target_label(prefix, path):
+    """A label as a packet prints it: the target's printed prefix (_label_prefix), then the path
+    through label_text. The prefix stays outside any quotes, so a dispatcher matches a label to its
+    target by that prefix, and a label stays injective within one target."""
+    return prefix + label_text(path)
+
+
 def _line_safe(text):
     """text for a fixed note: quoted only when it holds a control character, so a label the file
     list already printed quoted is named as it was printed."""
@@ -837,11 +844,15 @@ class _Target(object):
 
 def _label_prefix(spec, several):
     """With several targets a path carries its target's label: the part of the --diff spec before
-    its last colon (`.` when it named none), then a colon."""
+    its last colon (`.` when it named none), then a colon. It is the prefix as a packet prints it:
+    as it is, unless it holds a control character; then in double quotes with git's C escapes
+    (label_text). packet_labels reports this to the dispatcher, so a missed label is matched to
+    its target by the very text it was printed with."""
     if not several:
         return ""
     head, sep, _tail = spec.rpartition(":")
-    return (head if sep and head else ".") + ":"
+    prefix = (head if sep and head else ".") + ":"
+    return label_text(prefix) if _has_control(prefix) else prefix
 
 
 def _slurp(path):
@@ -888,7 +899,7 @@ def _static_rows(t):
             mark = "listed"
         else:
             continue
-        rows.append(((t.index, os.fsencode(path), 0), mark, plus, minus, label_text(t.prefix + path)))
+        rows.append(((t.index, os.fsencode(path), 0), mark, plus, minus, target_label(t.prefix, path)))
     return rows
 
 
@@ -901,7 +912,7 @@ def _notes(ts, missed, first=None):
             lines.append((t.prefix + " " if t.prefix else "") + DELTA_HEADER.format(t.follows["nonce"]))
     for t in ts:
         for path in sorted(t.listed):
-            lines.append(LISTED_PLAN.format(label_text(t.prefix + path), t.listed[path]["nonce"]))
+            lines.append(LISTED_PLAN.format(target_label(t.prefix, path), t.listed[path]["nonce"]))
     if missed:
         lines.append(MISSED_FILES.format(", ".join(_line_safe(m) for m in missed)))
     return lines
@@ -962,7 +973,7 @@ def _unsliced(c, ts):
     rows = []
     for t in ts:
         for u in t.units:
-            rows.append((_row_key(t.index, u), "shown", u.plus, u.minus, label_text(t.prefix + u.label)))
+            rows.append((_row_key(t.index, u), "shown", u.plus, u.minus, target_label(t.prefix, u.label)))
         rows.extend(_static_rows(t))
     shown =[r[4] for r in sorted((r for r in rows if r[1] == "shown"), key=lambda r: r[0])]
     listing = _listing_bytes(rows) if ts else os.fsencode(NO_DIFFS + "\n")
@@ -998,7 +1009,7 @@ def _slices(c, ts, window):
     units = []
     for t in ts:
         for u in t.units:
-            room = headroom - len(os.fsencode(label_text(t.prefix + u.path))) - LINE_SLACK
+            room = headroom - len(os.fsencode(target_label(t.prefix, u.path))) - LINE_SLACK
             if len(u.text) <= room:
                 parts = [u]
             elif room < MIN_PART:
@@ -1013,7 +1024,7 @@ def _slices(c, ts, window):
         raise _Refuse("the request alone does not fit a fresh thread, and there is no diff to slice")
     units.sort(key=lambda x: x[0])
     static = [r for t in ts for r in _static_rows(t)]
-    label = lambda i, p: label_text(ts[i].prefix + p.label)
+    label = lambda i, p: target_label(ts[i].prefix, p.label)
     all_rows = [(k, "shown", p.plus, p.minus, label(i, p)) for k, i, p in units] + static
     total = len(all_rows)
     whole_list = len(_listing_bytes(all_rows))

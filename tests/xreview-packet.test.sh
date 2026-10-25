@@ -1345,6 +1345,39 @@ def _l():
        NO_DIFFS not in pkt(built(request([], [], checkpoint="spec"))).decode())
 
 
+@guarded("L4")
+def _l4():
+    # With several targets a label is <printed prefix><label_text(path)>: the prefix stays outside the
+    # quotes, so a dispatcher can match a label to its target by the prefix the module reports.
+    is_("L4 a prefix without a control character is as the spec gave it",
+        [xp._label_prefix(s, True) for s in ("/r/x:main...HEAD", "main...HEAD", "/r/x y:a..b")], ["/r/x:", ".:", "/r/x y:"])
+    is_("L4 one prefix alone is empty", xp._label_prefix("/r/x:main...HEAD", False), "")
+    is_("L4 a prefix that holds a control character is quoted, colon inside",
+        xp._label_prefix("/r/a\nb:main...HEAD", True), '"/r/a\\nb:"')
+    ra, ba, ta = mkchange("l4a", {"a\nb.txt": b"one\n", '"q.txt': b"two\n", "n.txt": b"three\n"})
+    rb, bb, tb = mkchange("l4b", {"x.txt": b"four\n"})
+    d = built(request([target_of(ra, ba, ta), target_of(rb, bb, tb)], [ra + ":main...HEAD", rb + ":main...HEAD"],
+                      switches_file=swf(framing=True)))
+    want = [ra + ':"\\"q.txt"', ra + ':"a\\nb.txt"', ra + ":n.txt", rb + ":x.txt"]
+    is_("L4 a label is the prefix, then the path as it prints", d["packets"][0]["shown"], want)
+    text = pkt(d).decode()
+    listing = text[text.index("Files in this change (4):"):text.index("--- diff (")].rstrip("\n").split("\n")
+    is_("L4 and the file list prints the same labels", listing[1:], ["  shown     +1 -0  " + l for l in want])
+    # The shown labels of a sliced review hold the same form.
+    home = mkhome("l4")
+    rollout(home, "thL4", 1000, 120000)
+    big = dict(("f%d.txt" % i, (b"line %d %s\n" % (i, b"x" * 60)) * 300) for i in range(4))
+    big["a\nb.txt"] = (b"line %s\n" % (b"x" * 60)) * 300
+    rc_, bc_, tc_ = mkchange("l4c", big)
+    rd_, bd_, td_ = mkchange("l4d", {"y.txt": b"y\n" * 300})
+    ds = built(request([target_of(rc_, bc_, tc_), target_of(rd_, bd_, td_)], [rc_ + ":main...HEAD", rd_ + ":main...HEAD"],
+                       switches_file=swf(**FIT), codex_home=home))
+    is_("L4 two targets too big for a fresh thread: slices", ds["action"], "slices")
+    shown = [l for p in ds["packets"] for l in p["shown"]]
+    ok("L4 a sliced review's shown label keeps the prefix outside the quotes",
+       rc_ + ':"a\\nb.txt"' in shown and not any(l.startswith('"') for l in shown), shown)
+
+
 print("K11. the constants")
 is_("K11 constants", (xp.MISSING_CAP, xp.FILE_LIST_SHARE, xp.PLAN_PREFIX), (50, 0.1, "docs/superpowers/plans/"))
 

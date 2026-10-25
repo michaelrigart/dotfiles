@@ -2377,6 +2377,16 @@ rollout $U1 1000 258400
 bash "$XREVIEW" dispatch --checkpoint pre-merge --diff "$NLR" b.md >/dev/null 2>&1
 is "CL11 which names it as the file list printed it" "$(grep -cF -- "did not list: $QN. Review them too." "$P/packet")" 1
 
+# With two targets the prefix stays outside the quotes, so a missed label still finds its target:
+# the file target 1's reviewer left out is missing on target 1 only, never on target 2.
+framed_dispatch pre-merge --diff "$NLR" --diff "$V2:main...feature"
+is "CL12 (setup) each label is its target's prefix, then the path as it prints" \
+   "$(jq -c . "$STATE/turns/$nonce.shown")" "$(jq -nc --arg a ".:$QC" --arg b ".:$QN" --arg c "$V2:a.txt" '[$a, $b, $c]')"
+RPC_WAIT_OUT="$(framed approve ".:$QC" "$V2:a.txt")" bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"
+is "CL12 the file left out is missing on its own target only" \
+   "$(receipt "$nonce" | jq -c '.targets[0].missing')/$(receipt "$nonce" "$V2LEDGER" | jq -c '.targets[0].missing')" \
+   "$(jq -nc --arg b ".:$QN" '[$b]')/[]"
+
 # Two collects of one turn at once: the second one's report never replaces, or removes, the first's.
 framed_dispatch pre-merge --diff "$CLR"
 : > "$P/hold.turn-$U1"
