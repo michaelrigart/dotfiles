@@ -173,7 +173,13 @@ whole; section numbers below are the spec's).
     `target["missing"]`, `target["packet"]`, `target["delta_from"]`, `target["history"]` and
     `target["plans_from"]`.
   - Coverage applies when `switches.framing`. Compaction applies to delta and slices always,
-    and to full when `switches.fit`.
+    and to full when `switches.fit`. Where it applies, `compacted` must be exactly `False`:
+    `None` (unknown), a missing key or any other value is denied, never read for
+    truthiness. The same goes for every other field the rules read:
+    - `clean` must be exactly `True` on chain links and plan receipts;
+    - `missing` must be exactly `[]` under `framing`;
+    - `switches` values must be exactly `True` for a rule to treat that switch as on, and any
+      other value counts as off.
   - Walk the chain iteratively, with a visited set, to a `full` root on the same thread. The
     approving target's `history` must list every chain turn, root first.
   - Check `plans_from` entries `{path, nonce, blob}` against the named receipt's
@@ -203,7 +209,9 @@ whole; section numbers below are the spec's).
     - broken link, wrong base, unclean link, sliced root, cycle — each denied;
     - `changes` link allowed;
     - `history` missing a chain turn denied;
-    - `plans_from` bad receipt, path or blob denied.
+    - `plans_from` bad receipt, path or blob denied;
+    - `W13`: `compacted: null` denied on full with `fit` on, on delta and on slices, and
+      allowed on full with every switch off, as today.
   - Guard suite: one end-to-end deny for an unclean approval and one allow for a whole delta
     chain, through `glab mr create`. Use the suite's existing ledger fixtures.
   - Flipping a `packets.conf` file in `XDG_CONFIG_HOME` changes no `decide` result.
