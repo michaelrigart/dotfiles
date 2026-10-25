@@ -2180,18 +2180,79 @@ is "X8 no packet directory or targets file is left" "$(ls "$STATE/turns" 2>/dev/
 is "X8 the thread started for it is archived, not kept" "$(called "xreview-rpc thread-archive --thread $U1")" 1
 is "X8 and the pane was not touched" "$(untouched)" yes
 
-# Past the point where the move is recorded, a refusal (the pane will not free) keeps the new
-# thread as the checkpoint's review thread: it is not archived, and the next dispatch sends to it.
+# The move to a new thread is recorded only once its turn exists. Until then every refusal, the
+# pane step's included, archives the thread started for it, exactly once, and leaves the
+# checkpoint's thread and the superseded list as they were.
 fresh; packets framing fit; rm -rf "$CODEX_HOME/sessions"; rollout $U0 1000 258400
 out="$(STUCK_TUI=1 XREVIEW_RUNG_WAIT=0.1 XREVIEW_PANE_WAIT=1 bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md 2>&1)"; rc=$?
 is "X8 a first dispatch whose pane will not free refuses" "$rc/$(printf '%s' "$out" | grep -c 'did not exit its session')" "1/1"
-is "X8 the new thread is recorded as the review thread and is not archived" \
-   "$(cat "$STATE/review-thread")/$(called "xreview-rpc thread-archive --thread $U1")/$(called 'xreview-rpc turn-start')" "$U1/0/0"
-rollout $U1 1000 258400
+is "X8 the thread started for it is archived exactly once, and no turn was started" \
+   "$(called "xreview-rpc thread-archive --thread $U1")/$(called 'xreview-rpc turn-start')" "1/0"
+is "X8 no review thread is recorded, nothing is superseded and no state is left" \
+   "$([ -e "$STATE/review-thread" ] && echo left || echo none)/$([ -e "$STATE/superseded" ] && echo left || echo none)/$(ls "$STATE/turns" 2>/dev/null | wc -l | tr -d ' ')" \
+   "none/none/0"
+printf '%s\n' "$U3" > "$P/uuids"
 : > "$CALLS"
 out="$(bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md 2>&1)"; rc=$?
-is "X8 the next dispatch reuses that thread: no second thread-start, and it succeeds" \
-   "$rc/$(called 'xreview-rpc thread-start')/$(called "xreview-rpc turn-start --thread $U1")" "0/0/1"
+is "X8 the next dispatch starts a new thread of its own and succeeds" \
+   "$rc/$(called 'xreview-rpc thread-start')/$(called "xreview-rpc turn-start --thread $U3")/$(cat "$STATE/review-thread")" "0/1/1/$U3"
+fresh; packets framing fit; rm -rf "$CODEX_HOME/sessions"; rollout $U2 250000 258400; printf '%s\n' "$U2" > "$STATE/review-thread"
+out="$(STUCK_TUI=1 XREVIEW_RUNG_WAIT=0.1 XREVIEW_PANE_WAIT=1 bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md 2>&1)"; rc=$?
+is "X8 a move off a thread that cannot hold the packet, whose pane will not free, refuses" \
+   "$rc/$(printf '%s' "$out" | grep -c 'did not exit its session')" "1/1"
+is "X8 the thread started for the move is archived exactly once" "$(called "xreview-rpc thread-archive --thread $U1")" 1
+is "X8 the checkpoint's thread is unchanged and nothing is superseded or archived of it" \
+   "$(cat "$STATE/review-thread")/$([ -e "$STATE/superseded" ] && echo left || echo none)/$(called "xreview-rpc thread-archive --thread $U2")" \
+   "$U2/none/0"
+printf '%s\n' "$U3" > "$P/uuids"
+: > "$CALLS"
+out="$(bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md 2>&1)"; rc=$?
+is "X8 the next dispatch moves to a new thread of its own and succeeds" \
+   "$rc/$(called 'xreview-rpc thread-start')/$(called "xreview-rpc turn-start --thread $U3")/$(cat "$STATE/review-thread")" "0/1/1/$U3"
+is "X8 and the old thread is archived once the pane shows the new one" "$(called "xreview-rpc thread-archive --thread $U2")" 1
+
+# pane_free quit the TUI, then no turn started: turn-start refused (a die), the turns mkdir failed
+# (an errexit) or that and the cleanup's own rm failed too. The exit guard starts a fresh Codex in
+# the pane first, and the pre-turn cleanup still runs behind it: the thread started for the review
+# is archived exactly once, and no packet, targets or labels are left. A failing rm skips neither.
+cat > "$STUB/rm" <<'M'
+#!/bin/sh
+if [ -n "${RM_FAIL_SUFFIX:-}" ]; then
+  for a in "$@"; do case "$a" in *"$RM_FAIL_SUFFIX") exit 1 ;; esac; done
+fi
+exec /bin/rm "$@"
+M
+chmod +x "$STUB/rm"
+for how in turn-start mkdir rm; do
+  fresh; packets framing fit; rm -rf "$CODEX_HOME/sessions"; rollout $U0 1000 258400
+  case "$how" in
+    turn-start) out="$(RPC_START_FAIL=1 bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md 2>&1)"; rc=$? ;;
+    mkdir) out="$(MKDIR_FAIL_SUFFIX=/turns bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md 2>&1)"; rc=$? ;;
+    rm) out="$(RPC_START_FAIL=1 RM_FAIL_SUFFIX=.packets bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md 2>&1)"; rc=$? ;;
+  esac
+  is "X8 ($how) refused once pane_free had quit the TUI" "$rc/$(called 'herdr pane send-keys')/$(printf '%s' "$out" | grep -c '^xr-')" "1/2/0"
+  is "X8 ($how) the thread started for it is archived exactly once" "$(called "xreview-rpc thread-archive --thread $U1")" 1
+  is "X8 ($how) the guard still starts a fresh Codex in the pane, ahead of the archive" \
+     "$(called "$relaunch")/$([ "$(first "$relaunch")" -lt "$(first "xreview-rpc thread-archive --thread $U1")" ] && echo first)" "1/first"
+  is "X8 ($how) no review thread is recorded" "$([ -e "$STATE/review-thread" ] && echo left || echo none)" none
+  if [ "$how" != rm ]; then
+    is "X8 ($how) and the cleanup ran: no .targets, .shown or packet directory is left" \
+       "$(ls "$STATE/turns" 2>/dev/null | wc -l | tr -d ' ')" 0
+  fi
+done
+rm -f "$STUB/rm"
+
+# A turn that may exist (turn-start unanswered, or answered with an id that is not one) is a move
+# made: the new thread is the checkpoint's, the old one is queued, and nothing is archived.
+for how in RPC_START_UNCERTAIN RPC_START_BAD_ID; do
+  fresh; packets framing fit; rm -rf "$CODEX_HOME/sessions"; rollout $U2 250000 258400; printf '%s\n' "$U2" > "$STATE/review-thread"
+  out="$(env "$how=1" NO_TITLE=1 XREVIEW_PANE_WAIT=0.15 bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md 2>&1)"; rc=$?
+  is "X8 ($how) a turn that may be running hands back a nonce" \
+     "$rc/$(printf '%s' "$out" | grep -c '^xr-')/$(printf '%s' "$out" | grep -c 'do NOT re-dispatch')" "0/1/1"
+  is "X8 ($how) the move is recorded: the new thread is the checkpoint's, the old one is queued" \
+     "$(cat "$STATE/review-thread")/$(cat "$STATE/superseded" 2>/dev/null)" "$U1/$U2"
+  is "X8 ($how) and nothing is archived" "$(called 'xreview-rpc thread-archive')" 0
+done
 
 echo "X9. the ledger entries carry the dispatch's switches"
 fresh; packets framing fit; rm -rf "$CODEX_HOME/sessions"; rollout $U0 1000 258400
@@ -2675,6 +2736,39 @@ printf '%s\n%s\n' "$U3" "$U4" > "$P/uuids"
 : > "$CALLS"
 bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
 is "SL5 the next collect finishes the round" "$rc/$(jq -r .verdict "$ROOT/out")" "0/approve"
+
+# The slice's thread is the checkpoint's only once its turn exists. A pane that will not free,
+# or a turn that will not start once pane_free has quit the TUI, refuses with the thread archived
+# exactly once (behind the guard's fresh Codex in the latter), the checkpoint's thread and the
+# superseded list as they were, and the round on record for the next collect, which finishes it.
+for how in pane turn-start; do
+  sliced; approve_all "turn-$U3"
+  : > "$CALLS"
+  if [ "$how" = pane ]; then
+    STUCK_TUI=1 XREVIEW_RUNG_WAIT=0.1 XREVIEW_PANE_WAIT=1 bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+    why='did not exit its session'
+  else
+    echo 1 > "$P/start_rc.$U3"
+    bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+    why="could not be started on $U3"
+  fi
+  is "SL5 ($how) slice 2 refuses, saying the round is on record" \
+     "$rc/$(grep -c "$why" "$ROOT/err")/$(grep -c "the round is on record for $nonce" "$ROOT/err")" "1/1/1"
+  is "SL5 ($how) the slice's thread is archived exactly once" "$(called "thread-archive --thread $U3")" 1
+  is "SL5 ($how) the checkpoint's thread is still slice 1's, nothing superseded" \
+     "$(cat "$STATE/review-thread")/$([ -e "$STATE/superseded" ] && echo left || echo none)" "$U1/none"
+  is "SL5 ($how) the round is on record: slice 1's answer is kept and nothing else" \
+     "$(jq -c '[(.answers | map(select(. != null)) | length), (.turns | length)]' "$sl")" "[1,1]"
+  if [ "$how" = turn-start ]; then
+    is "SL5 (turn-start) the guard starts a fresh Codex in the pane it freed, ahead of the archive" \
+       "$(called "$relaunch")/$([ "$(first "$relaunch")" -lt "$(first "thread-archive --thread $U3")" ] && echo first)" "1/first"
+  fi
+  rm -f "$P/start_rc.$U3"; printf '%s\n%s\n' "$U3" "$U4" > "$P/uuids"
+  : > "$CALLS"
+  bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+  is "SL5 ($how) the next collect finishes the round" \
+     "$rc/$(jq -r .verdict "$ROOT/out")/$(cat "$STATE/review-thread")" "0/approve/$U4"
+done
 
 # Slice 1 lists nothing; slice 2 lists slice 1's label beside its own. Slice 1's label is still
 # missing: slice 2's reviewer never saw that file's patch.
