@@ -539,5 +539,30 @@ for phrase in '(at pre-merge, the whole branch diff)' 'A fix that comes with a t
   else _fail "the fix-round rule text '$phrase' is under Acting on findings" "missing"; fi
 done
 
+# --- review packets (spec 2026-10-25, section 4) --------------------------------
+# xreview picks the packet; the skill states the facts the agent acts on. The cap and
+# the advice to slice by hand are gone and must stay gone.
+flat="$(tr '\n' ' ' < "$SKILL" | sed 's/  */ /g')"
+for neg in 'XREVIEW_MAX_DIFF_BYTES' 'slice by hand'; do
+  if printf '%s' "$flat" | grep -qiF "$neg"; then
+    _fail "the skill does not mention '$neg'" "present"
+  else _pass "the skill does not mention '$neg'"; fi
+done
+for phrase in 'dispatch never refuses on size' \
+              'fresh thread when the current one cannot hold the next packet' \
+              'never rotates a thread by judgement' \
+              'Never rotate a thread within a checkpoint' \
+              'this review is not clean' \
+              'reviewed in slices' \
+              'a larger budget' \
+              'once the plan is committed'; do
+  if printf '%s' "$flat" | grep -qF "$phrase"; then
+    _pass "the skill says '$phrase'"
+  else _fail "the skill says '$phrase'" "missing"; fi
+done
+if printf '%s' "$flat" | grep -qF -- '`--diff <dest>...<branch>` once the plan is committed'; then
+  _pass "the skill dispatches plan reviews with --diff once the plan is committed"
+else _fail "the skill dispatches plan reviews with --diff once the plan is committed" "missing"; fi
+
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

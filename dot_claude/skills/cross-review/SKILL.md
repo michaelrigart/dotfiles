@@ -109,6 +109,14 @@ A budget running out is not automatically a timeout:
 - **Exit 1, "the reviewer turn failed"** — the turn itself did not complete. Report it and
   stop. Never re-dispatch.
 
+The packet is xreview's to build, and dispatch never refuses on size. A very large change is
+reviewed in slices, each on its own fresh thread, with the pane following. Slices take
+longer, so give `collect` a larger budget; it runs the remaining slices itself, and exit 3
+is resumed as usual.
+
+A plan review is dispatched with `--diff <dest>...<branch>` once the plan is committed, so
+that pre-merge can bind the plan to its approval.
+
 `xreview` wraps outbound packets in `<cross-review-request>` and returns the reviewer's
 answer. It applies provenance itself, because Michael is no longer in the channel to
 apply it by hand.
@@ -165,6 +173,10 @@ Dispatch refuses, before starting a turn or touching the pane, when:
 Only the "no turn on record" collect is a timeout, and that one is **ambiguous, never
 retried** — report it and stop. A still-running turn is not a timeout; wait it out.
 
+When a review is not clean (it compacted, or missed shown files), collect says so on
+stderr: `xreview: this review is not clean (…)`, and the merge gate may stay closed. Act on
+its findings and dispatch the next round as usual; this is not an escalation trigger.
+
 **Exit 4: the answer does not match the findings schema.** The raw text is printed and is
 untrusted. Report it; do not re-dispatch.
 
@@ -212,7 +224,9 @@ rounds.
 thread only ever holds the rounds of one checkpoint.
 - Do not infer staleness from the round number, from how long the exchange feels, or from
   the reviewer agreeing with you.
-- Never rotate a thread within a checkpoint.
+- Never rotate a thread within a checkpoint. The one exception is mechanical and is
+  xreview's, not yours: it may move a checkpoint to a fresh thread when the current one
+  cannot hold the next packet. The agent never rotates a thread by judgement.
 
 Each round re-dispatches the **updated artifact, cold**. Cold describes what you *send* —
 the artifact and the constraints, never your reasoning, your transcript or a rebuttal. It
