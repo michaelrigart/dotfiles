@@ -33,7 +33,9 @@ export XDG_STATE_HOME="$ROOT/state" XDG_CONFIG_HOME="$ROOT/config" CODEX_HOME="$
 mkdir -p "$XDG_CONFIG_HOME/xreview" "$XDG_CONFIG_HOME/herdr" "$TMPDIR"
 cp "$SRC/dot_config/xreview/findings.schema.json" "$SRC/dot_config/xreview/reviewer.md" \
    "$SRC/dot_config/xreview/findings.framed.schema.json" "$SRC/dot_config/xreview/reviewer-framing.md" \
-   "$SRC/dot_config/xreview/packets.conf" "$XDG_CONFIG_HOME/xreview/"
+   "$XDG_CONFIG_HOME/xreview/"
+# Every switch off unless a case turns some on, whatever the shipped packets.conf says.
+printf '%s=off\n' framing fit delta omit_plans > "$XDG_CONFIG_HOME/xreview/packets.conf"
 cp "$SRC/dot_config/herdr/codex-pane-command" "$XDG_CONFIG_HOME/herdr/"
 export XREVIEW_POLL_SECS=0.05 XREVIEW_PANE_WAIT=2 XREVIEW_LEDGER="$LEDGER" XREVIEW_PACKET="$PACKET"
 unset XREVIEW_MAX_ROUNDS XREVIEW_PANE XREVIEW_THREAD XREVIEW_LEDGER_LOCK_WAIT
