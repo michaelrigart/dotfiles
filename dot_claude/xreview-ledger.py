@@ -52,7 +52,9 @@ DIFF_FLAGS = ["--no-relative", "--no-ext-diff", "--no-textconv", "--no-renames",
 PATHSPEC_VARS = ("GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS",
                  "GIT_ICASE_PATHSPECS")
 DIFF_RAW = ["diff", "--raw", "-z", "--no-abbrev"] + DIFF_FLAGS
-DIFF_PATCH = ["diff", "--no-color"] + DIFF_FLAGS
+# The patch's header paths are a/<path> and b/<path> whatever diff.noprefix or diff.mnemonicPrefix
+# say: xreview-packet.py reads its labels from those headers. The raw diff has no such paths.
+DIFF_PATCH = ["diff", "--no-color", "--src-prefix=a/", "--dst-prefix=b/"] + DIFF_FLAGS
 USAGE = ("usage: xreview-ledger key COMMON_DIR | path REPO | default-branch REPO | "
          "default-range REPO | fingerprint REPO BASE TIP | "
          "diff REPO BASE TIP [--exclude PATH]... | blob-patch REPO PATH OLD NEW | "

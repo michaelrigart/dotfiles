@@ -13,7 +13,7 @@
 # Writes next to this script:
 #   reviewer.md                    the reviewer instructions the reference dispatched with
 #   body-nl.md, body-nonl.md       the two bodies, ending in a newline and not
-#   d1.diff, d2.diff               the two diffs, as the ledger prints them (spec in SPECS below)
+#   d1.patch, d2.patch               the two diffs, as the ledger prints them (spec in SPECS below)
 #   {none,one,two}-{nl,nonl}.packet  the six packets
 set -euo pipefail
 REF=7aab009
@@ -65,7 +65,7 @@ done
 
 cp "$WORK/body-nl.md" "$WORK/body-nonl.md" "$HERE/"
 cp "$SRC/dot_config/xreview/reviewer.md" "$HERE/reviewer.md"
-python3 "$LEDGER" diff "$PWD" "$(git rev-parse HEAD~1)" "$(git rev-parse HEAD)" > "$HERE/d1.diff"
-python3 "$LEDGER" diff "$PWD" "$(git rev-parse HEAD~2)" "$(git rev-parse HEAD)" > "$HERE/d2.diff"
+python3 "$LEDGER" diff "$PWD" "$(git rev-parse HEAD~1)" "$(git rev-parse HEAD)" > "$HERE/d1.patch"
+python3 "$LEDGER" diff "$PWD" "$(git rev-parse HEAD~2)" "$(git rev-parse HEAD)" > "$HERE/d2.patch"
 chmod 644 "$HERE"/*.packet   # mktemp made them 600
 printf 'wrote %s\n' "$(cd "$HERE" && ls ./*.packet | wc -l | tr -d ' ') packets to $HERE"

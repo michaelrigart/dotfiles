@@ -14,7 +14,10 @@ LEDGER="$SRC/dot_claude/xreview-ledger.py"
 RPC="$SRC/dot_local/bin/executable_xreview-rpc"
 FIX="$SRC/tests/fixtures/xreview-packet"
 CONF="$SRC/dot_config/xreview"
-for f in "$MODULE" "$LEDGER" "$RPC"; do
+for f in "$MODULE" "$LEDGER" "$RPC" "$FIX/reviewer.md" "$FIX/body-nl.md" "$FIX/body-nonl.md" \
+         "$FIX/d1.patch" "$FIX/d2.patch" "$FIX"/{none,one,two}-{nl,nonl}.packet \
+         "$CONF/packets.conf" "$CONF/findings.schema.json" "$CONF/findings.framed.schema.json" \
+         "$CONF/reviewer.md" "$CONF/reviewer-framing.md"; do
   [ -f "$f" ] || { echo "missing file under test: $f" >&2; exit 2; }
 done
 
@@ -87,7 +90,7 @@ def rd(*parts):
 print("K1. every switch off: today_packet equals the golden packets")
 reviewer = rd(FIX, "reviewer.md")
 specs = {"d1": "HEAD~1..HEAD", "d2": "HEAD~2..HEAD"}
-diffs = {k: rd(FIX, k + ".diff") for k in specs}
+diffs = {k: rd(FIX, k + ".patch") for k in specs}
 ok("K1 the golden diffs end in a newline, so the strip is exercised", all(d.endswith(b"\n") for d in diffs.values()))
 for kind in ("nl", "nonl"):
     body = rd(FIX, "body-" + kind + ".md")
@@ -202,6 +205,21 @@ ok("K3b split, every part carries its own section's header and fits",
    [len(p.text) for p in parts])
 is_("K3b and the parts' counts add up", (sum(p.plus for p in parts), sum(p.minus for p in parts)), (sw_.plus, sw_.minus))
 is_("K3b labels run 1..n over both sections", [p.label for p in parts], ["swap#%d/%d" % (i + 1, len(parts)) for i in range(len(parts))])
+
+print("K3c. header paths do not depend on the diff prefix configuration")
+repo = mkrepo("noprefix")
+git(repo, "config", "diff.noprefix", "true")
+git(repo, "config", "diff.mnemonicPrefix", "true")
+put(repo, "seed.txt", b"seed\n")
+base = commit(repo, "seed")
+put(repo, "a.txt", b"one\n")
+put(repo, "d/\u00e4 b.txt", b"two\n")
+tip = commit(repo, "add")
+raw = xp._ledger().patch(repo, base, tip)
+is_("K3c with diff.noprefix and mnemonicPrefix set the headers still say a/ and b/",
+    [l for l in raw.split(b"\n") if l.startswith(b"diff --git ")],
+    [b"diff --git a/a.txt b/a.txt", b'diff --git "a/d/\\303\\244 b.txt" "b/d/\\303\\244 b.txt"'])
+is_("K3c and the labels are the plain paths", [u.label for u in xp.units_for(repo, base, tip)], ["a.txt", "d/\u00e4 b.txt"])
 
 print("K4. a binary file is one binary unit")
 bins = [u for u in units if u.binary]
