@@ -114,8 +114,8 @@ whole; section numbers below are the spec's).
 - `xreview-rpc thread-turns --thread T` prints `{"turns":[{"id":str,"status":str,"compacted":bool}],"thread_compactions":int}`,
   oldest first, every page followed.
   - `compacted` is true when the turn holds the compaction item type that Task 1 recorded.
-  - `thread_compactions` counts thread-level compactions, if Task 1 found a way to see them,
-    else 0.
+  - `thread_compactions` counts thread-level compactions. It is `null` when Task 1 found no
+    way to see them: unknown, never 0.
   - Exit 0 ok, 1 cannot list, 5 daemon unreachable.
 - `xreview-rpc thread-fork --thread T [--before-turn X]` prints the new thread id. It forks,
   then rewinds to just before turn `X` with the method Task 1 recorded. Exit 1 if either step
@@ -123,12 +123,15 @@ whole; section numbers below are the spec's).
 - `xreview-rpc turn-start … [--cwd DIR]` passes `cwd` on `turn/start` (Task 1's parameter
   name).
 - `xreview-rpc turn-wait … [--report FILE]`: on exit 0 or 4 it writes
-  `{"turn":id,"compacted":bool}` to FILE. Stdout is unchanged.
+  `{"turn":id,"compacted":bool|null}` to FILE. It writes `null` when the turn's items cannot be
+  read to tell. Stdout is unchanged.
 
 - [ ] **Step 1: Write the failing tests** in the suite's fake-server style:
   - `TT1`: a two-page `thread/turns/list` gives both pages oldest first.
   - `TT2`: a turn holding the compaction item reports `compacted:true`, and others `false`.
   - `TT3`: a list error gives exit 1.
+  - `TT4`: with no way to observe a thread-level compaction, `thread_compactions` is
+    `null`.
   - `TF1`: fork, then rewind, sends the two methods with Task 1's params and prints the
     fork's id.
   - `TF2`: a refused rewind gives exit 1.
@@ -136,6 +139,7 @@ whole; section numbers below are the spec's).
   - `TC2`: without `--cwd`, there is no `cwd` key.
   - `TW1`: `turn-wait --report F` writes the compaction flag of the collected turn, and stdout
     still equals today's findings JSON.
+  - `TW2`: a turn whose items are not in the listing writes `compacted: null`.
 - [ ] **Step 2:** `./tests/xreview-rpc.test.sh`. Expected: the new cases FAIL, the old ones
   pass.
 - [ ] **Step 3: Implement.** Add `cmd_thread_turns(c, a)` and `cmd_thread_fork(c, a)`, the
@@ -242,20 +246,28 @@ whole; section numbers below are the spec's).
 - `fits(context_now, nbytes, window) -> bool` =
   `context_now + estimate_tokens(nbytes) + RESERVE <= LIMIT_FRACTION * window`.
 - `today_packet(reviewer_md, body, diffs: list[tuple[spec, bytes]]) -> bytes`. It must equal
-  what `cmd_dispatch` writes today: `<cross-review-request>\n`, reviewer.md, `\n`, body, each
-  `\n\n--- diff (<spec>) ---\n<d>\n--- end diff ---` block, then `\n</cross-review-request>\n`.
-  Copy the exact join from `executable_xreview`, including the `printf '%s\n' "$DIFFS"`
-  newline.
+  what `cmd_dispatch` writes today:
+  - `<cross-review-request>\n`, reviewer.md, `\n`, then the body as is;
+  - then each `\n\n--- diff (<spec>) ---\n<d>\n--- end diff ---` block. After the last block
+    comes one `\n`, and only when there is at least one block (today's
+    `[ -z "$DIFFS" ] || printf '%s\n' "$DIFFS"`);
+  - then `</cross-review-request>\n`.
+
+  Note that `$(…)` in today's `add_target` strips trailing newlines from each diff `<d>`.
+  Reproduce that.
 - Fixed framing copy, also in `reviewer-framing.md`:
   - Marks: `shown`, `earlier`, `elsewhere`, `listed`.
   - `reviewer-framing.md` text: "List in `reviewed_files` every file or part label marked
     shown that you reviewed. Do not list a file you did not read."
 
 - [ ] **Step 1: Write the failing tests:**
-  - `K1`: every switch off gives `today_packet` byte-identical to a packet captured from the
-    current `executable_xreview` on a fixture. Generate it in the test by running today's
-    script with the suite's stubbed `xreview-rpc` writing `$P/packet`, as in
-    `tests/xreview.test.sh`.
+  - `K1`: every switch off gives `today_packet` byte-identical to **golden packets** in
+    `tests/fixtures/xreview-packet/`. Capture them once in this task, before Task 6 changes
+    the dispatcher: run the unmodified `executable_xreview` with `tests/xreview.test.sh`'s
+    stubs and copy `$P/packet`. Six fixtures: no diff, one diff, and two diffs, each with a
+    body that ends in a newline and one that does not. Commit them with the task, together
+    with the fixture repo recipe as a script beside them, so they can be regenerated from
+    `git show 7aab009:dot_local/bin/executable_xreview`.
   - `K2`: switch parsing: a missing file, `fit=yes` and `framing` off each force off.
   - `K3`: `units_for` labels a quoted path (`a b.txt`, `ä.txt`) unquoted (Review Focus 2).
   - `K4`: a binary file is one binary unit (Review Focus 3).
@@ -320,7 +332,8 @@ whole; section numbers below are the spec's).
 
 - [ ] **Step 1: Write the failing tests:**
   - `C1`–`C6`: delta eligibility, one per §3.4 condition. Include a sliced root, a missing
-    chain turn, a foreign compacted turn and `thread_compactions > 0`.
+    chain turn, a foreign compacted turn, `thread_compactions > 0`, and `thread_compactions`
+    null, which forces a full packet.
   - `C7`: a multi-target request where one target is delta and one full; each target carries
     its own `packet` (Review Focus 1).
   - `P1`: a bound plan shows only `blob_patch(blob→current)`.
@@ -427,6 +440,9 @@ whole; section numbers below are the spec's).
   - `RP4`: `report`, on canned answers, computes recall and the pass bar for one pass and one
     fail.
   - `RP5`: a run interrupted mid-way archives every thread it recorded.
+  - `RP6`: a run truncated by the token stop, where the cases that finished meet the recall bar,
+    still reports that switch `incomplete` and not passed. `report` marks a switch passed
+    only when every selected case ran every arm.
 - [ ] **Step 2:** `./tests/xreview-replay.test.sh`. Expected: FAIL.
 - [ ] **Step 3:** Implement. Concurrency ≤ 3. Each turn gets a scratch `git clone --shared` at
   the tip of the round it reviews, set per turn with `--cwd`. Use the history method Task 1
@@ -457,6 +473,8 @@ whole; section numbers below are the spec's).
     the next dispatch's request carries `missed`.
   - `CL3`: with everything off, the receipt has `clean` and `compacted` recorded and no
     notice.
+  - `CL4`: a report with `compacted: null` records the receipt as not clean. Unknown is never
+    clean.
   - `SL1`: three slices. Collect runs slice 2 and 3 on fresh threads, moves the pane under its
     lock each time with no send-keys while a turn runs, and prints one merged answer
     (`approve` only if all did).
@@ -492,8 +510,9 @@ whole; section numbers below are the spec's).
   - the escalation list unchanged (the existing pin).
 - [ ] **Step 2:** `./tests/xreview-skill.test.sh`. Expected: FAIL.
 - [ ] **Step 3:** Edit the skill text per spec §4.
-- [ ] **Step 4:** Run the suite. Expected: all pass. Then run `./tests/run.sh` once (the
-  batch's full-suite run).
+- [ ] **Step 4:** Run `./tests/xreview-skill.test.sh` only. Expected: all pass. The full
+  suite runs once the batch is done, by the controller, after Tasks 8 and 9 are both
+  committed.
 
 ### Task 10: Replay, results, switches (controller)
 
@@ -524,3 +543,6 @@ whole; section numbers below are the spec's).
 | 4 | 6, 7 | `executable_xreview` vs `.scripts/` |
 | 5 | 8, 9 | `executable_xreview` vs the skill |
 | 6 | 10 | controller |
+
+After each batch's tasks are committed, the controller runs `./tests/run.sh` once. No
+implementer runs the full suite.
