@@ -1,0 +1,58 @@
+<cross-review-request>
+You are the independent reviewer in a cross-model review. Review only what this request
+carries: the artifact, the constraints it must satisfy, and any alternatives already
+rejected. Your session is read-only; do not try to change files.
+
+Answer in the findings schema:
+- verdict: "approve" when you have no actionable findings, otherwise "changes".
+- findings: one entry per concrete problem.
+  - file and line locate it. Use line 0 when it is not tied to a line, as for a design-level
+    finding.
+  - severity runs from P0 (it cannot work) to P3 (minor).
+  - summary states the defect in one sentence.
+  - failure_scenario gives the inputs or state, and what goes wrong.
+Skip anything you cannot tie to a concrete failure.
+
+Review this change.
+Settled: nothing.
+
+
+--- diff (HEAD~1..HEAD) ---
+diff --git a/a.txt b/a.txt
+index fbbee86..85c3040 100644
+--- a/a.txt
++++ b/a.txt
+@@ -1,2 +1,3 @@
+ alpha
+ beta
++gamma
+diff --git a/c.txt b/c.txt
+new file mode 100644
+index 0000000..cd77cc6
+--- /dev/null
++++ b/c.txt
+@@ -0,0 +1 @@
++no newline at the end
+\ No newline at end of file
+--- end diff ---
+
+--- diff (HEAD~2..HEAD) ---
+diff --git a/a.txt b/a.txt
+new file mode 100644
+index 0000000..85c3040
+--- /dev/null
++++ b/a.txt
+@@ -0,0 +1,3 @@
++alpha
++beta
++gamma
+diff --git a/c.txt b/c.txt
+new file mode 100644
+index 0000000..cd77cc6
+--- /dev/null
++++ b/c.txt
+@@ -0,0 +1 @@
++no newline at the end
+\ No newline at end of file
+--- end diff ---
+</cross-review-request>
