@@ -889,6 +889,86 @@ wa w14i "$(tx bogus)" "$(rxj true false "$SW_OFF")"
 is "W14i an unknown packet kind is denied" "$(wgate)" deny
 wa w14j "$(tx full)" "$(rxj true false "$SW_ALL")"
 is "W14j a whole full packet with every switch on is allowed" "$(wgate)" allow
+# Fix round 1. plans_from is required wherever a packet is recorded.
+wa w16 "$(tx full | jq -c 'del(.plans_from)')" "$(rxj true false "$SW_OFF")"
+is "W16 a packeted target with no plans_from key is denied" "$(wgate)" deny
+wa w16b "$(tx full | jq -c '.plans_from = null')" "$(rxj true false "$SW_OFF")"
+is "W16b and so is plans_from: null" "$(wgate)" deny
+# Every chain link's plan bindings are checked, the root's included.
+wrec w-badroot "$C1" pre-merge approve "$(rxj true false "$SW_ALL" T1 UBR)" "$(tx full null '[]' '[]' "$(pf w-plan-unclean b1)")"
+wa w17 "$(tx delta w-badroot '["UBR"]')" "$(rxj true false "$SW_ALL" T1 U3)"
+is "W17 a clean delta behind a root whose plan binding is an unclean plan receipt is denied" "$(wgate)" deny
+is "W17b saying which link" "$(wwhy | grep -c 'w-badroot, a link of the chain')" 1
+wrec w-badroot2 "$C1" pre-merge approve "$(rxj true false "$SW_ALL" T1 UBR2)" "$(tx full null '[]' '[]' "$(pf w-plan b9)")"
+wa w17c "$(tx delta w-badroot2 '["UBR2"]')" "$(rxj true false "$SW_ALL" T1 U3)"
+is "W17c nor may the root's binding name a blob the plan receipt lacks" "$(wgate)" deny
+wrec w-goodroot "$C1" pre-merge approve "$(rxj true false "$SW_ALL" T1 UGR)" "$(tx full null '[]' '[]' "$(pf w-plan b1)")"
+wa w17d "$(tx delta w-goodroot '["UGR"]')" "$(rxj true false "$SW_ALL" T1 U3)"
+is "W17d a root with a valid binding is allowed" "$(wgate)" allow
+wrec w-badlink "$C2" pre-merge approve "$(rxj true false "$SW_ALL" T1 UBL)" "$(tx delta w-root '["U1"]' '[]' "$(pf w-plan-changes b1)")"
+wa w17e "$(tx delta w-badlink '["U1","UBL"]')" "$(rxj true false "$SW_ALL" T1 U3)"
+is "W17e a middle link bound to a plan receipt that was not an approval is denied" "$(wgate)" deny
+wrec w-noplansroot "$C1" pre-merge approve "$(rxj true false "$SW_ALL" T1 UNP)" "$(tx full | jq -c 'del(.plans_from)')"
+wa w17f "$(tx delta w-noplansroot '["UNP"]')" "$(rxj true false "$SW_ALL" T1 U3)"
+is "W17f a root with no plans_from key is denied" "$(wgate)" deny
+# A receipt can hold several targets of one repository: the link is the one on this destination
+# and base with a full range, never the first of the repository.
+wmulti() {   # wmulti <nonce> <tip> <receipt-json> <decoy-extra-json> <real-extra-json>
+  local at t decoy real
+  at="$(L now)"; t="$(L normalize "$WH" "main...$2")"
+  decoy="$(printf '%s' "$t" | jq -c --argjson x "$4" '. + {full:false} + $x')"
+  real="$(printf '%s' "$t" | jq -c --argjson x "$5" '. + $x')"
+  L append "$WC" "$(jq -nc --arg n "$1" --arg at "$at" --argjson a "$decoy" --argjson b "$real" \
+    '{v:2,kind:"pending",nonce:$n,dispatched_at:$at,checkpoint:"pre-merge",targets:[$a,$b]}')" >/dev/null
+  L append "$WC" "$(jq -nc --arg n "$1" --arg at "$at" --argjson rx "$3" --argjson a "$decoy" --argjson b "$real" \
+    '{v:2,kind:"receipt",nonce:$n,dispatched_at:$at,checkpoint:"pre-merge",verdict:"approve",findings:0,thread:"T1",turn:"u",tier:"",targets:[$a,$b]} + $rx')" >/dev/null
+}
+wmulti w-mt-slices "$C1" "$(rxj true false "$SW_ALL" T1 UMS)" "$(tx full)" "$(tx slices)"
+wa w18 "$(tx delta w-mt-slices '["UMS"]')" "$(rxj true false "$SW_ALL" T1 U3)"
+is "W18 a decoy first target (full packet) does not make a sliced link a root" "$(wgate)" deny
+wmulti w-mt-ok "$C1" "$(rxj true false "$SW_ALL" T1 UMO)" "$(tx slices)" "$(tx full)"
+wa w18b "$(tx delta w-mt-ok '["UMO"]')" "$(rxj true false "$SW_ALL" T1 U3)"
+is "W18b the full-range target is used though it is not the first" "$(wgate)" allow
+wrec w-mt-none "$C1" pre-merge approve "$(rxj true false "$SW_ALL" T1 UMN)" "$(tx full | jq -c '.full = false')"
+wa w18c "$(tx delta w-mt-none '["UMN"]')" "$(rxj true false "$SW_ALL" T1 U3)"
+is "W18c a link with no full-range target is denied" "$(wgate)" deny
+wmulti w-mt-two "$C1" "$(rxj true false "$SW_ALL" T1 UM2)" "$(tx full | jq -c '.full = true')" "$(tx full)"
+wa w18d "$(tx delta w-mt-two '["UM2"]')" "$(rxj true false "$SW_ALL" T1 U3)"
+is "W18d two targets that could both be followed are denied as ambiguous" "$(wgate)" deny
+# Every link and the root are pre-merge reviews.
+wrec w-specroot "$C1" spec approve "$(rxj true false "$SW_ALL" T1 USR)" "$(tx full)"
+wa w19 "$(tx delta w-specroot '["USR"]')" "$(rxj true false "$SW_ALL" T1 U3)"
+is "W19 a spec review as the root is denied" "$(wgate)" deny
+wrec w-planlink "$C2" plan approve "$(rxj true false "$SW_ALL" T1 UPL)" "$(tx delta w-root '["U1"]')"
+wa w19b "$(tx delta w-planlink '["U1","UPL"]')" "$(rxj true false "$SW_ALL" T1 U3)"
+is "W19b and a plan review as a middle link" "$(wgate)" deny
+# whole() needs a repository for the ancestor rule: without one a delta is never whole.
+none="$(/usr/bin/python3 -c '
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ledger", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+rx = {"v": 2, "kind": "receipt", "checkpoint": "pre-merge", "thread": "T", "clean": True, "compacted": False}
+root = dict(rx, nonce="r", turn="U1", targets=[{"repo": "/x", "dest": "main", "base": "b", "tip": "t1", "full": True,
+            "packet": "full", "plans_from": []}])
+tgt = {"repo": "/x", "dest": "main", "base": "b", "tip": "t2", "full": True, "packet": "delta",
+       "delta_from": "r", "history": ["U1"], "plans_from": []}
+head = dict(rx, nonce="h", turn="U2", targets=[tgt])
+print(m.whole([root, head], head, tgt, None)[0])
+try:
+    m.whole([root, head], head, tgt)
+    print("accepted")
+except TypeError:
+    print("repo is required")
+' "$LEDGER")"
+is "W20 whole() without a repository denies a delta, and its repo argument is required" "$none" "$(printf 'False\nrepo is required')"
+# blob_patch takes blobs only: a commit or tree id would render other files' hunks under the path.
+CM="$(git -C "$PXR" rev-parse main)"; CP="$(git -C "$PXR" rev-parse px)"
+out="$(L blob-patch "$PXR" docs/x.md "$CM" "$CP" 2>&1)"; rc=$?
+is "PB6 two commit ids are refused" "$rc/$(printf '%s' "$out" | grep -c 'is not a blob')" "1/1"
+out="$(L blob-patch "$PXR" docs/x.md - "$(git -C "$PXR" rev-parse 'px^{tree}')" 2>&1)"; rc=$?
+is "PB6b so is a tree id as the new side" "$rc/$(printf '%s' "$out" | grep -c 'is not a blob')" "1/1"
+out="$(L blob-patch "$PXR" docs/x.md "$CM" "$NB" 2>&1)"; rc=$?
+is "PB6c and a commit id as the old side" "$rc/$(printf '%s' "$out" | grep -c 'is not a blob')" "1/1"
 # The gate judges from the receipt: no switches file is read.
 CFG="$ROOT/xdg-config"; mkdir -p "$CFG/xreview"
 wa w15 "$(tx full null '[]' '["a.txt"]')" "$(rxj false false "$SW_FRAME")"

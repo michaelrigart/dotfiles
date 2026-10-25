@@ -278,6 +278,9 @@ def blob_patch(repo, path, old_blob, new_blob):
             raise Fail("not a blob id: {}".format(blob))
     if new_blob is None:
         raise Fail("a blob patch needs the new blob")
+    for blob in (old_blob, new_blob):
+        if blob is not None and git(repo, "cat-file", "-t", blob) != "blob":
+            raise Fail("{} is not a blob in {}".format(blob, repo))
     name = os.fsencode(path) if isinstance(path, str) else path
     a, b = quote_path(b"a/" + name), quote_path(b"b/" + name)
     head = b"diff --git " + a + b" " + b + b"\n"
@@ -672,21 +675,24 @@ def switch_on(receipt, name):
 
 
 def receipt_of(entries, nonce, repo):
-    """The v2 receipt of nonce with a target in repo, and that target; (None, None) if the
-    ledger holds none."""
+    """The v2 receipt of nonce and its targets in repo (in order); (None, []) if the ledger
+    holds no such receipt. A receipt can hold several targets of one repository, so a caller
+    picks the one it means; it never takes the first."""
     if not (isinstance(nonce, str) and nonce):
-        return None, None
+        return None, []
     for entry in entries:
         if (entry.get("v") == 2 and entry.get("kind") == "receipt" and entry.get("nonce") == nonce
                 and isinstance(entry.get("targets"), list)):
-            for target in entry["targets"]:
-                if isinstance(target, dict) and target.get("repo") == repo:
-                    return entry, target
-    return None, None
+            found = [t for t in entry["targets"] if isinstance(t, dict) and t.get("repo") == repo]
+            if found:
+                return entry, found
+    return None, []
 
 
 def is_ancestor(repo, older, newer):
     """True only when both are commits of repo and older is newer's ancestor (or newer)."""
+    if not all(isinstance(x, str) and x for x in (repo, older, newer)):
+        return False
     a, b = commit_of(repo, older), commit_of(repo, newer)
     if a is None or b is None:
         return False
@@ -700,10 +706,13 @@ def is_ancestor(repo, older, newer):
 
 def chain_problem(entries, receipt, target, repo):
     """Why the delta chain behind receipt's target is not whole, or None when it is. Each
-    delta_from names a receipt of this ledger on the same thread, repository, destination and
-    base, whose tip is an ancestor of the delta's and that is clean; the walk ends at a full
-    receipt. It is iterative, with a visited set, so a cycle ends it. The target's history must
-    list every chain turn before this one, root first."""
+    delta_from names a pre-merge receipt of this ledger on the same thread, and one of its
+    targets - a full-range target on the same repository, destination and base, never just the
+    first target of the repository - whose tip is an ancestor of the delta's (exactly one such
+    target, or the follow is ambiguous and denied). That link must be
+    clean, record its turn and have every plan it listed backed. The walk ends at a full link.
+    It is iterative, with a visited set, so a cycle ends it. The target's history must list
+    every chain turn before this one, root first."""
     where = target.get("repo")
     seen, turns = {receipt.get("nonce")}, []
     cur, cur_target = receipt, target
@@ -714,26 +723,39 @@ def chain_problem(entries, receipt, target, repo):
         if follows in seen:
             return "the delta chain loops back to {}".format(follows)
         seen.add(follows)
-        prev, prev_target = receipt_of(entries, follows, where)
+        prev, found = receipt_of(entries, follows, where)
         if prev is None:
             return "{} follows {}, which is no receipt in this ledger".format(
                 cur.get("nonce"), follows)
+        if prev.get("checkpoint") != "pre-merge":
+            return "{}, a link of the chain, is not a pre-merge review".format(follows)
         thread = cur.get("thread")
         if not (isinstance(thread, str) and thread and prev.get("thread") == thread):
             return "{} is not on the thread of {}".format(follows, cur.get("nonce"))
-        for field in ("dest", "base"):
-            value = cur_target.get(field)
-            if not (isinstance(value, str) and value and prev_target.get(field) == value):
-                return "{} is not on the {} of {}".format(follows, field, cur.get("nonce"))
-        if repo is not None and not is_ancestor(repo, prev_target.get("tip"),
-                                                cur_target.get("tip")):
+        dest, base = cur_target.get("dest"), cur_target.get("base")
+        if not (isinstance(dest, str) and dest and isinstance(base, str) and base):
+            return "the delta of {} records no destination or base".format(cur.get("nonce"))
+        same = [t for t in found if t.get("full") is True and t.get("dest") == dest
+                and t.get("base") == base]
+        if not same:
+            return "{} has no full-range target on the destination and base of {}".format(
+                follows, cur.get("nonce"))
+        starts = [t for t in same if is_ancestor(repo, t.get("tip"), cur_target.get("tip"))]
+        if not starts:
             return "the tip of {} is not where the delta of {} starts".format(
                 follows, cur.get("nonce"))
+        if len(starts) != 1:
+            return "{} holds several targets that the delta of {} could follow".format(
+                follows, cur.get("nonce"))
+        prev_target = starts[0]
         if prev.get("clean") is not True:
             return "{}, a link of the chain, is not clean".format(follows)
         turn = prev.get("turn")
         if not (isinstance(turn, str) and turn):
             return "{}, a link of the chain, records no turn".format(follows)
+        problem = plans_problem(entries, prev_target)
+        if problem:
+            return "{}, a link of the chain: {}".format(follows, problem)
         turns.append(turn)
         kind = prev_target.get("packet")
         if kind == "full":
@@ -756,34 +778,36 @@ def chain_problem(entries, receipt, target, repo):
 
 
 def plans_problem(entries, target):
-    """Why a plan the packet listed instead of showing is not backed, or None. Each plans_from
-    entry {path, nonce, blob} must name a clean, approved, plan-checkpoint receipt of this
-    ledger whose plan_blobs for this repository lists that path with that blob."""
-    plans = target.get("plans_from", [])
+    """Why a plan the packet listed instead of showing is not backed, or None. plans_from must
+    be recorded as a list (empty when no plan was listed). Each entry {path, nonce, blob} must
+    name a clean, approved, plan-checkpoint receipt of this ledger with a target in this
+    repository whose plan_blobs lists that path with that blob."""
+    plans = target.get("plans_from")
     if not isinstance(plans, list):
-        return "plans_from is not a list"
+        return "plans_from is not recorded as a list"
     for plan in plans:
         fields = [plan.get(k) if isinstance(plan, dict) else None for k in ("path", "nonce", "blob")]
         if not all(isinstance(f, str) and f for f in fields):
             return "a plans_from entry is malformed"
         path, nonce, blob = fields
-        bound, bound_target = receipt_of(entries, nonce, target.get("repo"))
+        bound, found = receipt_of(entries, nonce, target.get("repo"))
         if bound is None:
             return "the plan {} is bound to {}, which is no receipt in this ledger".format(path, nonce)
         if bound.get("checkpoint") != "plan" or bound.get("verdict") != "approve":
             return "the plan {} is bound to {}, which is not an approved plan review".format(path, nonce)
         if bound.get("clean") is not True:
             return "the plan {} is bound to {}, which is not clean".format(path, nonce)
-        blobs = bound_target.get("plan_blobs")
-        if not (isinstance(blobs, dict) and blobs.get(path) == blob):
+        if not any(isinstance(t.get("plan_blobs"), dict) and t["plan_blobs"].get(path) == blob
+                   for t in found):
             return "the plan {} at {} is not in the plan_blobs of {}".format(path, blob[:12], nonce)
     return None
 
 
-def whole(entries, receipt, target, repo=None):
+def whole(entries, receipt, target, repo):
     """(True, why) when the approving receipt is whole for target, else (False, reason). A
     target with no packet field predates the packet design and is whole. entries is the
-    ledger; repo, when given, lets the chain check that each link's tip is an ancestor."""
+    ledger; repo is a git directory of the repository, which the chain needs to check that each
+    link's tip is an ancestor: without a usable one a delta is never whole."""
     if "packet" not in target:
         return True, "a receipt from before review packets"
     packet = target["packet"]
