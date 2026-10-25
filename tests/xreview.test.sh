@@ -190,7 +190,8 @@ cat > "$STUB/codex-daemon" <<'D'
 #!/bin/sh
 echo "codex-daemon $*" >> "$CALLS"
 case "$1" in
-  ensure) exit "${ENSURE_RC:-0}" ;;
+  ensure) [ -n "${ENSURE_MARK:-}" ] && : > "$ENSURE_MARK"   # ENSURE_MARK: say that ensure ran
+          exit "${ENSURE_RC:-0}" ;;
   check) [ "${CHECK_RC:-0}" = 0 ] || echo "codex-daemon: carries a herdr pane's environment" >&2
          exit "${CHECK_RC:-0}" ;;
 esac
@@ -290,6 +291,13 @@ case "$cmd" in
                c="${RPC_COMPACTED:-false}"; [ -r "$P/compacted.$t" ] && c="$(cat "$P/compacted.$t")"
                printf '{"turn":"%s","compacted":%s}\n' "${RPC_REPORT_TURN:-$t}" "$c" > "$report"
              fi
+             # $P/hold.<turn>: the first wait on that turn claims it (it becomes holding.<turn>),
+             # says so in waiting.<turn>, and answers only once holding.<turn> is removed (60 s
+             # at most), with its report already written.
+             if mv "$P/hold.$t" "$P/holding.$t" 2>/dev/null; then
+               : > "$P/waiting.$t"
+               k=0; while [ -e "$P/holding.$t" ] && [ "$k" -lt 600 ]; do sleep 0.1; k=$((k + 1)); done
+             fi
              printf '%s\n' "$o"; exit "$r" ;;
 esac
 exit 0
@@ -314,7 +322,7 @@ fresh() { # a pane showing U0, idle, its TUI not connected to the daemon; clean 
         KEY_DELAY DISPATCH_ID XREVIEW_LOCK_WAIT RPC_RUNNING_AFTER_START \
         PROCINFO_FAIL PRESESSION GONE_AFTER_KEYS GONE_AFTER_RUN LSOF_FAIL READ_FAIL \
         RPC_STATUS_FAIL_FOR RPC_STATUS_NOBOOL_FOR CODEX_CHILD XREVIEW_RUNG_WAIT GET_FAIL PROCINFO_BAD RPC_RESOLVE_RC PROCINFO_FG \
-        SNAP_LEDGER XREVIEW_LEDGER_LOCK_WAIT RPC_TURNS_FAIL RPC_COMPACTED RPC_REPORT_TURN LOCK_PROBE
+        SNAP_LEDGER XREVIEW_LEDGER_LOCK_WAIT RPC_TURNS_FAIL RPC_COMPACTED RPC_REPORT_TURN LOCK_PROBE ENSURE_MARK
   export NEW_UUID="$U1"
   packets
   printf codex > "$P/agent"; printf '%s | t | d' "$(trunc "$U0")" > "$P/title"; echo idle > "$P/status"
@@ -323,7 +331,8 @@ fresh() { # a pane showing U0, idle, its TUI not connected to the daemon; clean 
         "$P/exit_delay_active" "$P/exit_delay_calls"
   rm -f "$P/connected" "$P/argv" "$P/screen" "$P/gone" "$P/procinfo_fail_once"
   rm -f "$P"/running.* "$P/ledger-at-start"
-  rm -f "$P/uuids" "$P"/answer.* "$P"/rc.* "$P"/compacted.* "$P"/start_rc.* "$P"/unfound.*
+  rm -f "$P/uuids" "$P"/answer.* "$P"/rc.* "$P"/compacted.* "$P"/start_rc.* "$P"/unfound.* \
+        "$P"/hold.* "$P"/holding.* "$P"/waiting.* "$P/ensured"
   mkdir -p "$CODEX_HOME/app-server-daemon"; printf '{"pid":999}\n' > "$CODEX_HOME/app-server-daemon/daemon.pid"
   bash "$XREVIEW" round --reset >/dev/null 2>&1
   rm -rf "$STATE/superseded" "$STATE/pin" "$STATE/turns" "$STATE/missed"
@@ -2131,7 +2140,23 @@ echo "Y. collect judges each turn clean or not, and records it (spec 2026-10-25 
 printf 'one\n' > cl1.txt; printf 'two\n' > cl2.txt
 git add cl1.txt cl2.txt && git commit -q -m "two small files"
 CLR="$(git rev-parse HEAD~1)..$(git rev-parse HEAD)"
+BIGR="$(git rev-parse HEAD~2)..$(git rev-parse HEAD~1)"   # the three big files, another range on .
 YB="$(git rev-parse --abbrev-ref HEAD)"
+wait_for() { # wait_for <file>: until it exists, 60 s at most; says so when it gives up
+  local k
+  for k in $(seq 600); do [ -e "$1" ] && return 0; sleep 0.1; done
+  printf '  (gave up after 60 s waiting for %s; the assertions that follow are void)\n' "$1"
+  return 1
+}
+hold_lock() { # hold_lock <secs>: another dispatch takes the pane lock now and holds it that long
+  rm -f "$ROOT/held"
+  /usr/bin/python3 -c 'import fcntl,sys,time
+f = open(sys.argv[1], "a"); fcntl.flock(f, fcntl.LOCK_EX); open(sys.argv[2], "w").close(); time.sleep(float(sys.argv[3]))' \
+    "$LOCKF" "$ROOT/held" "$1" &
+  holder=$!
+  wait_for "$ROOT/held"
+}
+reports_left() { ls "$STATE/turns" 2>/dev/null | grep -c "^$1\.report" || true; }
 receipt() { jq -c --arg n "$1" 'select(.nonce == $n and .kind == "receipt")' "${2:-$MAIN_LEDGER}"; }
 framed() { # framed <verdict> <label>...: a framed answer that lists those labels
   local v="$1"; shift
@@ -2150,9 +2175,9 @@ is "CL1 and says on stderr that it is not clean and why, and that the gate stays
    "$(cat "$ROOT/err")" "xreview: this review is not clean (compacted); the merge gate stays closed for it"
 is "CL1 the receipt records the compaction and that it is not clean" \
    "$(receipt "$nonce" | jq -c '[.compacted, .clean, .targets[0].missing]')" '[true,false,[]]'
-is "CL1 the wait used the framed schema and asked for the report" \
-   "$(called "turn-wait --thread $U1 --turn turn-$U1 --budget 2700 --schema $XDG_CONFIG_HOME/xreview/findings.framed.schema.json --report $STATE/turns/$nonce.report")" 1
-is "CL1 the report does not linger" "$([ -e "$STATE/turns/$nonce.report" ] && echo left || echo gone)" gone
+is "CL1 the wait used the framed schema and asked for a report of this collect's own" \
+   "$(called "turn-wait --thread $U1 --turn turn-$U1 --budget 2700 --schema $XDG_CONFIG_HOME/xreview/findings.framed.schema.json --report $STATE/turns/$nonce\.report\.[0-9][0-9]*$")" 1
+is "CL1 the report does not linger" "$(reports_left "$nonce")" 0
 
 framed_dispatch pre-merge --diff "$CLR"
 RPC_WAIT_OUT="$(framed changes cl1.txt)" bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
@@ -2177,7 +2202,7 @@ is "CL3 with the switches, and each target's packet and empty missing list" \
    '[{"framing":false,"fit":false,"delta":false,"omit_plans":false},"full",[]]'
 is "CL3 and no notice" "$(cat "$ROOT/err")" ""
 is "CL3 the wait used today's schema, with the report" \
-   "$(called "--schema $XDG_CONFIG_HOME/xreview/findings.schema.json --report $STATE/turns/$nonce.report")" 1
+   "$(called "--schema $XDG_CONFIG_HOME/xreview/findings.schema.json --report $STATE/turns/$nonce\.report\.[0-9]")" 1
 is "CL3 nothing missed: the labels file is cleared" "$([ -e "$STATE/missed" ] && echo left || echo gone)" gone
 fresh
 nonce="$(bash "$XREVIEW" dispatch --checkpoint pre-merge --diff "$CLR" b.md 2>/dev/null)"
@@ -2228,6 +2253,39 @@ is "CL8 each target records only its own missing labels" \
    "$(receipt "$nonce" | jq -c '.targets[0].missing')/$(receipt "$nonce" "$V2LEDGER" | jq -c '.targets[0].missing')" "[]/[\"$V2:a.txt\"]"
 is "CL8 and the receipt in each ledger is not clean" \
    "$(receipt "$nonce" | jq -c .clean)/$(receipt "$nonce" "$V2LEDGER" | jq -c .clean)" "false/false"
+
+# Two ranges of one repository both carry the prefix .: a label cannot be told apart by it, so
+# every target it could belong to is held to it (fail closed), never just one of them.
+framed_dispatch pre-merge --diff "$CLR" --diff "$BIGR"
+is "CL8b (setup) two ranges on ., one prefix" "$(tr '\n' ' ' < "$STATE/turns/$nonce.shown")" \
+   ".:cl1.txt .:cl2.txt .:big1.txt .:big2.txt .:big3.txt "
+RPC_WAIT_OUT="$(framed approve .:cl1.txt .:big1.txt .:big2.txt .:big3.txt)" bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"
+is "CL8b a label two targets' prefixes match equally is missing from both" \
+   "$(receipt "$nonce" | jq -c '[.targets[].missing]')" '[[".:cl2.txt"],[".:cl2.txt"]]'
+
+# With framing on, labels shown that cannot be read are no coverage at all: never clean.
+framed_dispatch pre-merge --diff "$CLR"
+rm -f "$STATE/turns/$nonce.shown"; printf 'stale\n' > "$STATE/missed"
+RPC_WAIT_OUT="$(framed approve cl1.txt cl2.txt)" bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+is "CL9 the shown labels gone: the answer is printed, exit 0" "$rc/$(jq -r .verdict "$ROOT/out")" "0/approve"
+is "CL9 coverage cannot be judged, so the notice says so" \
+   "$(cat "$ROOT/err")" "xreview: this review is not clean (coverage unknown); the merge gate stays closed for it"
+is "CL9 not clean, and every target missing the fixed sentinel" \
+   "$(receipt "$nonce" | jq -c '[.clean, .targets[0].missing]')" '[false,["(shown labels unreadable)"]]'
+is "CL9 the sentinel never reaches the next dispatch" "$([ -e "$STATE/missed" ] && cat "$STATE/missed" || echo gone)" gone
+
+# Two collects of one turn at once: the second one's report never replaces, or removes, the first's.
+framed_dispatch pre-merge --diff "$CLR"
+: > "$P/hold.turn-$U1"
+RPC_WAIT_OUT="$(framed approve cl1.txt cl2.txt)" bash "$XREVIEW" collect "$nonce" > "$ROOT/outA" 2> "$ROOT/errA" &
+first_collect=$!
+wait_for "$P/waiting.turn-$U1"
+RPC_WAIT_OUT="$(framed approve cl1.txt cl2.txt)" bash "$XREVIEW" collect "$nonce" > "$ROOT/outB" 2> "$ROOT/errB"; rcB=$?
+rm -f "$P/holding.turn-$U1"
+wait "$first_collect"; rcA=$?
+is "CL10 a collect run while another waits on the same turn reads its own report" "$rcB/$(cat "$ROOT/errB")" "0/"
+is "CL10 and the first, answering after it, still reads its own: no compaction unknown" "$rcA/$(cat "$ROOT/errA")" "0/"
+is "CL10 neither report lingers" "$(reports_left "$nonce")" 0
 
 echo "PB. a plan review records the plans its packet showed whole (spec 2026-10-25 §3.5)"
 mkdir -p docs/superpowers/plans && printf '# plan\n' > docs/superpowers/plans/2026-10-25-p.md
@@ -2344,32 +2402,33 @@ is "SL3 slice 2 starts only once the holder has let go" \
    "$([ "$(first 'holder lets go')" -lt "$(first "xreview-rpc turn-start --thread $U3")" ] && echo yes || echo no)" yes
 # Another collect of the same round starts slice 2, or runs it to its answer, while this one
 # waits for the lock: the holder stands in for it, writing that into the round's state before it
-# lets go.
+# lets go. It writes only once this collect has called codex-daemon ensure for slice 2, which
+# comes after its last save of slice 1's answer and before it asks for the lock (an event, not a
+# timed poll); should that never come, it writes nothing and says so.
 for other in started finished; do
   sliced; approve_all "turn-$U3"; printf '%s\n' "$U4" > "$P/uuids"
-  rm -f "$ROOT/held"
+  rm -f "$ROOT/held" "$ROOT/holder-err"
   /usr/bin/python3 -c 'import fcntl, json, os, sys, time
 f = open(sys.argv[1], "a"); fcntl.flock(f, fcntl.LOCK_EX); open(sys.argv[2], "w").close()
-s = {}
-for _ in range(200):
-    try:
-        s = json.load(open(sys.argv[3]))
-    except ValueError:
-        s = {}
-    if (s.get("answers") or [None])[0]:
-        break
+deadline = time.monotonic() + 60
+while not os.path.exists(sys.argv[6]):
+    if time.monotonic() > deadline:
+        open(sys.argv[7], "w").write("holder: collect never called codex-daemon ensure within 60 s\n")
+        sys.exit(1)
     time.sleep(0.05)
+s = json.load(open(sys.argv[3]))
 s["threads"].append(sys.argv[4]); s["turns"].append("turn-" + sys.argv[4])
 if sys.argv[5] == "finished":
     s["answers"].append({"thread": sys.argv[4], "turn": "turn-" + sys.argv[4], "compacted": False,
                          "answer": {"verdict": "approve", "findings": [], "reviewed_files": ["s2.txt"]}})
 open(sys.argv[3] + ".t", "w").write(json.dumps(s)); os.rename(sys.argv[3] + ".t", sys.argv[3])
-time.sleep(0.3)' "$LOCKF" "$ROOT/held" "$sl" "$U3" "$other" &
+time.sleep(0.3)' "$LOCKF" "$ROOT/held" "$sl" "$U3" "$other" "$P/ensured" "$ROOT/holder-err" &
   holder=$!
-  for _ in $(seq 50); do [ -e "$ROOT/held" ] && break; sleep 0.1; done
+  wait_for "$ROOT/held"
   : > "$CALLS"
-  XREVIEW_LOCK_WAIT=30 bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
-  wait "$holder" 2>/dev/null
+  ENSURE_MARK="$P/ensured" XREVIEW_LOCK_WAIT=90 bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+  wait "$holder"; hrc=$?
+  is "SL3b ($other) the holder stood in for the other collect" "$hrc/$(cat "$ROOT/holder-err" 2>/dev/null)" "0/"
   is "SL3b a slice another collect $other meanwhile is taken up under the lock, not started again" \
      "$rc/$(jq -r .verdict "$ROOT/out")/$(called 'xreview-rpc thread-start')/$(grep 'xreview-rpc turn-start' "$CALLS" | grep -c -- "--thread $U3")" \
      "0/approve/1/0"
@@ -2446,6 +2505,57 @@ bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
 is "SL8 a slice's answer off the schema: exit 4, the raw text, nothing recorded" \
    "$rc/$(cat "$ROOT/out")/$(receipt "$nonce" | grep -c .)" "4/prose/0"
 is "SL8 the round stays where it was" "$(jq -c '[(.answers | map(select(. != null)) | length), (.turns | length)]' "$sl")" "[1,2]"
+
+# Two collects, A and B, wait on slice 1. A gets the answer first, starts slice 2 and saves
+# that; B's copy of the round is then stale. B saving slice 1's answer must keep A's slice 2,
+# so B takes it up instead of starting it again. The test plays A while B's wait is held.
+sliced; approve_all "turn-$U3"; printf '%s\n' "$U4" > "$P/uuids"
+: > "$P/hold.turn-$U1"
+: > "$CALLS"
+bash "$XREVIEW" collect "$nonce" > "$ROOT/outB" 2> "$ROOT/errB" &
+second_collect=$!
+wait_for "$P/waiting.turn-$U1"
+jq -c --arg t "$U3" '.answers = [{thread: .threads[0], turn: .turns[0], compacted: false,
+                                  answer: {verdict: "approve", findings: [], reviewed_files: ["s1.txt"]}}]
+                     | .threads += [$t] | .turns += ["turn-" + $t] | .next = 2' "$sl" > "$sl.t" && mv "$sl.t" "$sl"
+rm -f "$P/holding.turn-$U1"
+wait "$second_collect"; rc=$?
+is "SL9 a collect whose copy went stale keeps the slice another one started, and never starts it again" \
+   "$rc/$(jq -r .verdict "$ROOT/outB")/$(called 'xreview-rpc thread-start')/$(grep 'xreview-rpc turn-start' "$CALLS" | sed 's/.*--thread \([^ ]*\).*/\1/' | tr '\n' ' ')" \
+   "0/approve/1/$U4 "
+is "SL9 and the receipt names the slice 2 turn that A started" "$(receipt "$nonce" | jq -r '.slice_turns[1].turn')" "turn-$U3"
+
+# The budget is measured from collect's start for every wait, the first one included: a
+# resumed collect that starts a slice before its first wait has spent part of it already.
+sliced; approve_all "turn-$U3"
+ENSURE_RC=1 bash "$XREVIEW" collect "$nonce" >/dev/null 2>&1   # slice 1 answered, slice 2 refused
+hold_lock 2.5
+: > "$CALLS"
+bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+wait "$holder" 2>/dev/null
+given="$(grep "turn-wait --thread $U3 " "$CALLS" | sed -n 's/.*--budget \([0-9][0-9]*\) .*/\1/p')"
+is "SL10 a resumed collect's first wait, after a slice start that waited 2.5 s for the lock, gets less than the budget" \
+   "$rc/$([ -n "$given" ] && [ "$given" -lt 2700 ] && [ "$given" -ge 2600 ] && echo less || echo "${given:-none}")" "0/less"
+sliced; approve_all "turn-$U3"
+ENSURE_RC=1 bash "$XREVIEW" collect "$nonce" >/dev/null 2>&1
+hold_lock 2.5
+: > "$CALLS"
+bash "$XREVIEW" collect "$nonce" 2 > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+wait "$holder" 2>/dev/null
+is "SL10 a budget used up by the slice start: exit 3, saying so, with no wait" \
+   "$rc/$(grep -c "the budget of 2s is used up" "$ROOT/err")/$(called "turn-wait --thread $U3")" "3/1/0"
+is "SL10 the slice it started is on record" "$(jq -c .turns "$sl")" "[\"turn-$U1\",\"turn-$U3\"]"
+: > "$CALLS"
+bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+is "SL10 and collecting again resumes it" "$rc/$(jq -r .verdict "$ROOT/out")/$(called "turn-start --thread $U3")" "0/approve/0"
+
+# A slice whose shown labels cannot be read is no coverage at all.
+sliced; approve_all "turn-$U3"
+jq -c 'del(.packets[1].shown)' "$sl" > "$sl.t" && mv "$sl.t" "$sl"
+bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+is "SL11 a slice's shown labels unreadable: not clean, the sentinel on the target, the notice says so" \
+   "$rc/$(receipt "$nonce" | jq -c '[.clean, .targets[0].missing]')/$(cat "$ROOT/err")" \
+   '0/[false,["(shown labels unreadable)"]]/xreview: this review is not clean (coverage unknown); the merge gate stays closed for it'
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))

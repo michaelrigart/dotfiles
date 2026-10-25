@@ -1286,39 +1286,44 @@ COLLECT_BUDGET_DEFAULT=2700
 # is about another turn (a stale file), or cannot tell. Unknown is never clean (spec 2026-10-25
 # §3.6). A "?" is resolved the moment turn-wait finds the turn and written to the turn record,
 # so every later collect and the receipt name it, instead of rediscovering "whatever is new"
-# each time. The first wait gets the whole budget, a later slice's what is left of it. A turn
-# from before review packets is waited on as it always was, with no report.
+# each time. Every wait gets what is left of the budget, counted in whole seconds from the
+# collect's start, so a slice started first (a lock wait, the pane steps) spends from it too;
+# none left is exit 3 at once. The report is this process's own file, so a second collect of the
+# same turn never removes or replaces it. A turn from before review packets is waited on as it
+# always was, with no report.
 _collect_wait() {
-  local th="$1" left="$budget" which asked=() report="$dir/turns/$nonce.report" \
-        resolved="$dir/turns/$nonce.resolved"
+  local th="$1" left which asked=() report="$dir/turns/$nonce.report.$$" \
+        resolved="$dir/turns/$nonce.resolved" said=""
   turn="$2"; out=""; rc=0; compacted=null
   if [ "$turn" = "?" ]; then
     which=(--new-since "$dir/turns/$nonce.known" --resolved "$resolved")
   else
     assert_id "$turn"; which=(--turn "$turn")
   fi
-  if [ "$waited" = 1 ]; then
-    left=$(( budget - (SECONDS - started) ))
-    if [ "$left" -le 0 ]; then rc=3; return 0; fi
-  fi
-  waited=1
+  left="$(LC_ALL=C awk -v s="$started" -v e="$(epoch_now)" -v b="$budget" \
+            'BEGIN { l = b - int(e - s); print (l > 0 ? l : 0) }')"
+  if [ "$left" -le 0 ]; then rc=3; return 0; fi
   if [ "$packeted" = 1 ]; then rm -f "$report"; asked=(--report "$report"); fi
   set +e
   out="$(xreview-rpc turn-wait --thread "$th" "${which[@]}" --budget "$left" --schema "$schema" ${asked[@]+"${asked[@]}"})"
   rc=$?
   set -e
+  # Read and removed at once, before anything below can refuse.
+  if [ "$packeted" = 1 ] && [ "$rc" = 0 ] && [ -s "$report" ]; then
+    said="$(jq -c '{turn, compacted}' "$report" 2>/dev/null)" || said=""
+  fi
+  rm -f "$report"
   if [ "$turn" = "?" ] && [ -s "$resolved" ]; then
     turn="$(head -1 "$resolved")"; assert_id "$turn"
     printf '%s %s%s\n' "$th" "$turn" "${checkpoint:+ $checkpoint${branch:+ $branch}}" > "$rec"
     rm -f "$resolved" "$dir/turns/$nonce.known"
   fi
-  if [ "$packeted" = 1 ] && [ "$rc" = 0 ] && [ -s "$report" ]; then
-    compacted="$(jq -c --arg t "$turn" \
-      'if .turn == $t and (.compacted | type) == "boolean" then .compacted else null end' "$report" 2>/dev/null)" \
+  if [ -n "$said" ]; then
+    compacted="$(printf '%s' "$said" | jq -c --arg t "$turn" \
+      'if .turn == $t and (.compacted | type) == "boolean" then .compacted else null end' 2>/dev/null)" \
       || compacted=null
     [ -n "$compacted" ] || compacted=null
   fi
-  rm -f "$report"
   return 0
 }
 
@@ -1326,7 +1331,7 @@ _collect_wait() {
 # it was. Nothing is recorded for that turn.
 _collect_fail() {
   case "$rc" in
-    3) printf 'xreview: still running after %ss - turn on record for %s.\nWait longer with: xreview collect %s <secs>\n' \
+    3) printf 'xreview: still running - the budget of %ss is used up; turn on record for %s.\nWait longer with: xreview collect %s <secs>\n' \
          "$budget" "$nonce" "$nonce" >&2
        exit 3 ;;
     4) printf '%s\n' "$out"
@@ -1337,6 +1342,9 @@ _collect_fail() {
   esac
 }
 
+# The one missing label a target records when the labels its turn showed cannot be read.
+SHOWN_UNREADABLE='(shown labels unreadable)'
+
 # _collect_record <thread> <turn> <answer> <groups> <compacted> [slice-turns] - judge a round
 # dispatched with review packets and record its receipts (spec 2026-10-25 §3.6). groups is
 # [{shown: [labels], answer}], one per turn: a label is covered only when the answer of the turn
@@ -1345,24 +1353,30 @@ _collect_fail() {
 # off, only compaction decides, and an answer that carries reviewed_files still has what it left
 # out recorded. Each target records its own uncovered labels in shown order, at most the
 # module's cap; the whole list waits in $(state_dir)/missed for the next dispatch, which names
-# it. A round that is not clean says so on stderr, with what that costs at its checkpoint, judged
-# by the ledger's own whole() on the receipt built. Works on cmd_collect's locals; returns 1 when
-# a receipt could not be written.
+# it. With framing on, a turn whose shown labels cannot be read (shown is not a list) cannot be
+# judged covered: the round is not clean, and every target records SHOWN_UNREADABLE as missing,
+# so the gate never reads it as whole. A round that is not clean says so on stderr, with what
+# that costs at its checkpoint, judged by the ledger's own whole() on the receipt built. Works on
+# cmd_collect's locals; returns 1 when a receipt could not be written.
 _collect_record() {
   local th="$1" tn="$2" answer="$3" groups="$4" comp="$5" slices="${6:-null}" uncovered ntargets \
         labels cap=50 prefixes=null missing blobs=null clean found failed=0 reasons="" consequence="" \
-        entries_built=""
+        entries_built="" unknown
   uncovered="$(jq -nc --argjson g "$groups" --argjson framing "$framing" '
     def norm: sub("^(a/|b/|\\./)"; "");
     [$g[] | (.answer | if type == "object" and (.reviewed_files | type) == "array"
                        then [.reviewed_files[] | strings | ., norm] else null end) as $listed
           | select($listed != null or $framing)
           | ($listed // []) as $listed
-          | (.shown // [])[]
+          | (.shown | if type == "array" then .[] else empty end)
           | select(. as $l | $listed | any(.[]; . == $l or . == ($l | norm)) | not)]')"
+  unknown="$(jq -n --argjson g "$groups" --argjson framing "$framing" \
+    '$framing and any($g[]; (.shown | type) != "array")')"
   ntargets="$(jq '.targets | length' "$tfile")"
-  # A label carries its target's prefix when there are several targets (spec 3.1). Without the
-  # dispatch's specs to tell which, every target is held to every label.
+  # A label carries its target's prefix when there are several targets (spec 3.1). Two ranges of
+  # one repository share a prefix, so a label is held against every target whose prefix matches
+  # it longest, never just one of them; without the dispatch's specs to tell, against every
+  # target.
   if [ "$uncovered" != "[]" ]; then
     labels="$(packet_labels "$(jq -c '.specs // null' "$tfile")" 2>/dev/null)" || labels=""
     cap="$(printf '%s' "$labels" | jq -r '.cap | numbers' 2>/dev/null)" || cap=""
@@ -1372,13 +1386,18 @@ _collect_record() {
       || prefixes=null
     [ -n "$prefixes" ] || prefixes=null
   fi
-  missing="$(jq -nc --argjson u "$uncovered" --argjson p "$prefixes" --argjson n "$ntargets" --argjson cap "$cap" '
-    def owner($l): if $p == null then null
+  missing="$(jq -nc --argjson u "$uncovered" --argjson p "$prefixes" --argjson n "$ntargets" --argjson cap "$cap" \
+                    --argjson unknown "$unknown" --arg sentinel "$SHOWN_UNREADABLE" '
+    def owners($l): if $p == null then null
       else [$p | to_entries[] | select(.value as $x | $l | startswith($x))]
-           | if length == 0 then null else max_by(.value | length) | .key end end;
-    [range(0; $n) as $i | [$u[] | select(owner(.) as $o | $o == null or $o == $i)] | .[:$cap]]')"
-  clean="$(jq -n --argjson c "$comp" --argjson u "$uncovered" --argjson framing "$framing" \
-    '$c == false and (($framing | not) or ($u | length) == 0)')"
+           | if length == 0 then null
+             else (map(.value | length) | max) as $top | map(select((.value | length) == $top) | .key) end end;
+    [range(0; $n) as $i
+     | (if $unknown then [$sentinel] else [] end)
+       + [$u[] | select(owners(.) as $o | $o == null or ($o | any(.[]; . == $i)))]
+     | .[:$cap]]')"
+  clean="$(jq -n --argjson c "$comp" --argjson u "$uncovered" --argjson framing "$framing" --argjson unknown "$unknown" \
+    '$c == false and (($framing | not) or (($u | length) == 0 and ($unknown | not)))')"
   if [ "$checkpoint" = plan ]; then blobs="$(_collect_plan_blobs)"; fi
   found="$(jq -nc --argjson c "$comp" --argjson clean "$clean" --argjson s "$slices" --argjson m "$missing" \
                   --argjson b "$blobs" '{compacted:$c, clean:$clean, slice_turns:$s, missing:$m, plan_blobs:$b}' 2>/dev/null)" \
@@ -1400,6 +1419,7 @@ _collect_record() {
     true) reasons="compacted" ;;
     null) reasons="compaction unknown" ;;
   esac
+  if [ "$unknown" = true ]; then reasons="${reasons:+$reasons; }coverage unknown"; fi
   if [ "$framing" = true ] && [ "$uncovered" != "[]" ]; then
     reasons="${reasons:+$reasons; }missed: $(printf '%s' "$uncovered" | jq -r \
       '(.[:10] | join(", ")) + (if length > 10 then " … (+\(length - 10) more)" else "" end)')"
@@ -1445,11 +1465,73 @@ _collect_plan_blobs() {
   printf '%s\n' "$all"
 }
 
-_slices_save() { # write the sliced round's state back, whole; a failure only warns
+# _slices_lock / _slices_unlock - the sliced round's own lock, on descriptor 8: a kernel flock
+# like the pane's (lock_pane), held only around one read-merge-write of the round's state and
+# never while waiting for anything else, so it nests inside the pane lock and never around it.
+# Its file is never deleted, for lock_pane's reason.
+_slices_lock() {
+  local rc=0
+  { exec 8>>"$sfile.lock"; } 2>/dev/null || die "cannot open $sfile.lock"
+  /usr/bin/python3 -I -c '
+import fcntl, sys, time
+try:
+    deadline = time.monotonic() + 30
+    while True:
+        try:
+            fcntl.flock(8, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            sys.exit(0)
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                sys.exit(75)
+            time.sleep(0.05)
+except Exception:
+    sys.exit(2)
+' 2>/dev/null || rc=$?
+  [ "$rc" = 0 ] || die "cannot lock the state of the sliced round ($sfile.lock)"
+}
+
+_slices_unlock() { exec 8>&-; }
+
+# _slices_sync - merge what this collect knows of the sliced round into its state on disk and
+# write that back, under the round's own lock, so that two collects of one round never erase
+# each other's progress: one whose copy went stale while it waited keeps a slice the other has
+# started since, and takes it up instead of starting it again. The disk comes first: an entry it
+# holds is never dropped or replaced, except a "?" turn by the id this collect resolved it to.
+# Afterwards $sl is the merged state. A round another collect has already finished (its state
+# gone, its merged answer kept) ends this collect with that answer.
+_slices_sync() {
+  local disk merged
+  _slices_lock
+  if [ -e "$sfile" ]; then
+    disk="$(jq -c 'select((.packets | type) == "array")' "$sfile" 2>/dev/null)" || disk=""
+    if [ -z "$disk" ]; then
+      _slices_unlock; DIE_NOTE=""
+      die "the state of the sliced round in $sfile cannot be read; run xreview collect $nonce again"
+    fi
+  elif [ -e "$dir/turns/$nonce.merged" ]; then
+    _slices_unlock
+    printf 'xreview: another collect of %s finished the round meanwhile; its answer follows\n' "$nonce" >&2
+    cat "$dir/turns/$nonce.merged"
+    exit 0
+  else
+    disk="$sl"
+  fi
+  merged="$(jq -nc --argjson d "$disk" --argjson m "$sl" '
+    def pair(f): [($d | f) // [], ($m | f) // []] | transpose;
+    $d | .threads = (pair(.threads) | map(.[0] // .[1]))
+       | .turns = (pair(.turns) | map(if .[0] == null or (.[0] == "?" and .[1] != null) then .[1] else .[0] end))
+       | .answers = (pair(.answers) | map(.[0] // .[1]))
+       | .next = ([$d.next, $m.next] | map(numbers) | max)' 2>/dev/null)" || merged=""
+  if [ -z "$merged" ]; then
+    _slices_unlock; DIE_NOTE=""
+    die "cannot merge the state of the sliced round in $sfile; run xreview collect $nonce again"
+  fi
+  sl="$merged"
   if ! { printf '%s\n' "$sl" > "$sfile.tmp" && mv "$sfile.tmp" "$sfile"; } 2>/dev/null; then
     rm -f "$sfile.tmp"
     printf 'xreview: could not save the state of the sliced round in %s\n' "$sfile" >&2
   fi
+  _slices_unlock
 }
 
 # _collect_slices - a sliced round, run to its end (spec 2026-10-25 §3.3). turns/<nonce>.slices
@@ -1473,7 +1555,7 @@ _collect_slices() {
      && [ -z "$(printf '%s' "$sl" | jq -r --argjson i "$i" '.turns[$i] // empty')" ] \
      && printf '%s' "$sl" | jq -e --arg th "$thread" --argjson i "$i" '.threads[:$i] | index([$th]) == null' >/dev/null; then
     sl="$(printf '%s' "$sl" | jq -c --argjson i "$i" --arg th "$thread" --arg t "$turn" '.threads[$i] = $th | .turns[$i] = $t')"
-    _slices_save
+    _slices_sync
   fi
   while [ "$i" -lt "$n" ]; do
     if [ -z "$(printf '%s' "$sl" | jq -r --argjson i "$i" '.turns[$i] // empty')" ]; then
@@ -1481,8 +1563,8 @@ _collect_slices() {
       [ -n "$(printf '%s' "$sl" | jq -r --argjson i "$i" '.turns[$i] // empty')" ] \
         || die "slice $((i + 1)) of $n left no turn on record for $nonce; run xreview collect $nonce again"
     fi
-    # The state read again under the lock may hold this slice's answer: another collect of the
-    # round finished it meanwhile, and its thread may be archived already.
+    # The merged state may hold this slice's answer: another collect of the round finished it
+    # meanwhile, and its thread may be archived already.
     if [ -n "$(printf '%s' "$sl" | jq -r --argjson i "$i" '.answers[$i] // empty')" ]; then
       i=$((i + 1)); continue
     fi
@@ -1492,12 +1574,12 @@ _collect_slices() {
     _collect_wait "$th" "$t"
     if [ "$turn" != "$t" ]; then
       sl="$(printf '%s' "$sl" | jq -c --argjson i "$i" --arg t "$turn" '.turns[$i] = $t')"
-      _slices_save
+      _slices_sync
     fi
     [ "$rc" = 0 ] || _collect_fail
     sl="$(printf '%s' "$sl" | jq -c --argjson i "$i" --arg th "$th" --arg t "$turn" --argjson c "$compacted" \
             --arg a "$out" '.answers[$i] = {thread:$th, turn:$t, compacted:$c, answer:($a | fromjson? // null)}')"
-    _slices_save
+    _slices_sync
     i=$((i + 1))
   done
   merged="$(printf '%s' "$sl" | jq -c '[.answers[].answer] as $a
@@ -1505,8 +1587,9 @@ _collect_slices() {
        findings: [$a[] | objects | .findings // [] | .[]],
        reviewed_files: (reduce ($a[] | objects | .reviewed_files // [] | .[]) as $f
                           ([]; if any(.[]; . == $f) then . else . + [$f] end))}')"
+  # A slice whose shown labels are not a list cannot be judged covered (_collect_record).
   groups="$(printf '%s' "$sl" | jq -c '[range(0; .packets | length) as $k
-    | {shown: (.packets[$k].shown // []), answer: .answers[$k].answer}]')"
+    | {shown: .packets[$k].shown, answer: .answers[$k].answer}]')"
   comp="$(printf '%s' "$sl" | jq -c '[.answers[].compacted]
     | if any(. == true) then true elif any(. == null) then null else false end')"
   sturns="$(printf '%s' "$sl" | jq -c '[.answers[] | {thread, turn, compacted}]')"
@@ -1514,9 +1597,10 @@ _collect_slices() {
   rm -rf "$dir/turns/$nonce.packets"
   printf '%s\n' "$merged"
   # Done only once every receipt is written: until then a later collect records them from here.
-  if _collect_record "${last% *}" "${last#* }" "$merged" "$groups" "$comp" "$sturns" \
-     && printf '%s\n' "$merged" > "$dir/turns/$nonce.merged" 2>/dev/null; then
-    rm -f "$sfile"
+  if _collect_record "${last% *}" "${last#* }" "$merged" "$groups" "$comp" "$sturns"; then
+    _slices_lock
+    if printf '%s\n' "$merged" > "$dir/turns/$nonce.merged" 2>/dev/null; then rm -f "$sfile"; fi
+    _slices_unlock
   fi
 }
 
@@ -1527,7 +1611,7 @@ _collect_slices() {
 # around the turn, as dispatch's does. A refusal before the turn starts leaves the round on
 # record as it was, for the next collect to resume; collect never re-dispatches.
 _slice_start() {
-  local i="$1" file pane proc th prev cur disk
+  local i="$1" file pane proc th prev cur
   file="$(printf '%s' "$sl" | jq -r --argjson i "$i" '.packets[$i].file // empty')"
   [ -n "$file" ] && [ -s "$file" ] \
     || die "the packet of slice $((i + 1)) of $n is gone (${file:-unrecorded}), so the round cannot go on; dispatch the review again"
@@ -1540,17 +1624,9 @@ _slice_start() {
   pane="$(find_pane)"
   lock_pane "$pane"
   # Another collect of this round may have started the slice while this one waited for the
-  # lock: its state on disk is read again, under the lock, and a slice started there is taken
-  # up, never started a second time. What this collect knows and the disk does not is kept.
-  if ! disk="$(jq -c --argjson mem "$sl" 'def both(f): [(.[0] | f) // [], (.[1] | f) // []]
-         | transpose | map(.[0] // .[1]);
-         select((.packets | type) == "array") | . as $d
-         | .threads = ([$d, $mem] | both(.threads)) | .turns = ([$d, $mem] | both(.turns))
-         | .answers = ([$d, $mem] | both(.answers))' "$sfile" 2>/dev/null)" || [ -z "$disk" ]; then
-    DIE_NOTE=""
-    die "the state of the sliced round in $sfile changed under this collect (another collect of $nonce?); run xreview collect $nonce again"
-  fi
-  sl="$disk"
+  # lock: the state is merged with the disk again, under the lock, and a slice started there is
+  # taken up, never started a second time.
+  _slices_sync
   if [ -n "$(printf '%s' "$sl" | jq -r --argjson i "$i" '.turns[$i] // empty')" ]; then
     unlock_pane
     DIE_NOTE=""
@@ -1593,15 +1669,16 @@ _slice_turn() {
   printf '%s %s %s %s\n' "$th" "$t" "$checkpoint" "$branch" > "$rec"
   sl="$(printf '%s' "$sl" | jq -c --argjson i "$i" --arg th "$th" --arg t "$t" \
           '.threads[$i] = $th | .turns[$i] = $t | .next = ($i + 1)')"
-  _slices_save
+  _slices_sync
   DIE_NOTE=""
-  trap - EXIT
+  # The pane's exit guard is done with; collect's own exit trap takes over again.
+  trap "$collect_trap" EXIT
 }
 
 cmd_collect() {
   local nonce="${1:-}" budget="${2:-$COLLECT_BUDGET_DEFAULT}" rec thread turn checkpoint branch out rc \
-        dir tfile sfile schema="$SCHEMA" framing=false packeted=0 started="$SECONDS" waited=0 \
-        compacted=null shown
+        dir tfile sfile schema="$SCHEMA" framing=false packeted=0 started compacted=null shown collect_trap
+  started="$(epoch_now)"
   case "$nonce" in
     xr-*) ;;
     *) die "usage: xreview collect <nonce> [budget] - nonces start with xr-" ;;
@@ -1621,6 +1698,10 @@ cmd_collect() {
   read -r thread turn checkpoint branch < "$rec"
   assert_id "$thread"
   tfile="$dir/turns/$nonce.targets"; sfile="$dir/turns/$nonce.slices"
+  # This collect's own report file goes when it exits, however it exits. The path travels in the
+  # trap string, not a local: on an errexit exit bash 5 has already unwound those.
+  collect_trap="rm -f $(printf '%q' "$dir/turns/$nonce.report.$$")"
+  trap "$collect_trap" EXIT
   # A turn dispatched with review packets has its switches beside its targets (spec 2026-10-25
   # §3.6): it is waited on with the schema they named, and judged clean or not. Any other keeps
   # today's wait and receipt, so every turn in flight at rollout still collects.
@@ -1639,8 +1720,12 @@ cmd_collect() {
   [ "$rc" = 0 ] || _collect_fail
   printf '%s\n' "$out"
   if [ "$packeted" = 1 ]; then
-    shown="$(jq -Rn '[inputs | select(length > 0)]' "$dir/turns/$nonce.shown" 2>/dev/null)" || shown='[]'
-    [ -n "$shown" ] || shown='[]'
+    # Labels shown that cannot be read are null, never an empty list: coverage cannot be judged.
+    shown=null
+    if [ -r "$dir/turns/$nonce.shown" ]; then
+      shown="$(jq -Rn '[inputs | select(length > 0)]' "$dir/turns/$nonce.shown" 2>/dev/null)" || shown=null
+      [ -n "$shown" ] || shown=null
+    fi
     _collect_record "$thread" "$turn" "$out" \
       "$(jq -nc --argjson s "$shown" --arg a "$out" '[{shown:$s, answer:($a | fromjson? // null)}]')" \
       "$compacted" || true
