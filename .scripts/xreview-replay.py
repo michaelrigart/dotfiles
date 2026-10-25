@@ -45,6 +45,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 from datetime import date
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -164,24 +165,28 @@ def rollout_records(thread):
 
 
 def turn_usage(thread, turn):
-    """What one turn used: the sum of last_token_usage over the token_count records between its
-    task_started and its task_complete (or the end of the rollout, for a turn still running), and the
-    model and effort of its turn_context. Nothing before the turn counts, so a fork's inherited history is free."""
-    use, inside = {"tokens": 0, "model": None, "effort": None}, False
+    """What one turn used: the last_token_usage of the token_count records between its task_started and
+    its task_complete (or the end of the rollout, for a turn still running), and the model and effort of
+    its turn_context. A record counts only when the cumulative total_token_usage moved past the previous
+    record's, wherever that record is: after a compaction Codex repeats the total with a last_token_usage
+    that is the compacted context's size, not new usage, and a fork's inherited history precedes the turn."""
+    use, inside, prev = {"tokens": 0, "model": None, "effort": None}, False, None
     for rec in rollout_records(thread):
         p = rec.get("payload") if isinstance(rec.get("payload"), dict) else {}
         kind, ptype = rec.get("type"), p.get("type")
-        if kind == "event_msg" and ptype == "task_started":
+        if kind == "event_msg" and ptype == "token_count" and isinstance(p.get("info"), dict):
+            total, last = p["info"].get("total_token_usage"), p["info"].get("last_token_usage")
+            total = total.get("total_tokens") if isinstance(total, dict) else None
+            last = last.get("total_tokens") if isinstance(last, dict) else None
+            moved = not isinstance(total, int) or prev is None or total > prev
+            if inside and isinstance(last, int) and moved:
+                use["tokens"] += last
+            prev = total if isinstance(total, int) else prev
+        elif kind == "event_msg" and ptype == "task_started":
             inside = p.get("turn_id") == turn
-        elif not inside:
-            continue
-        elif kind == "event_msg" and ptype == "task_complete" and p.get("turn_id") == turn:
+        elif inside and kind == "event_msg" and ptype == "task_complete" and p.get("turn_id") == turn:
             break
-        elif kind == "event_msg" and ptype == "token_count" and isinstance(p.get("info"), dict):
-            last = p["info"].get("last_token_usage")
-            if isinstance(last, dict) and isinstance(last.get("total_tokens"), int):
-                use["tokens"] += last["total_tokens"]
-        elif kind == "turn_context" and p.get("turn_id") == turn:
+        elif inside and kind == "turn_context" and p.get("turn_id") == turn:
             use.update(model=p.get("model"), effort=p.get("effort"))
     return use
 
@@ -569,6 +574,7 @@ def one_turn(thread, packet, schema, cwd, budget, box):
         late = late or left <= 0
     compacted = (jload(report) or {}).get("compacted")
     os.unlink(report)
+    late = late or time.time() > deadline
     if rc == 3:
         raise Failed("interrupted while the turn was still running")
     if late:
@@ -636,28 +642,28 @@ def run_job(a, job):
             res["missing"] = sorted(l for l in set(shown) if norm(l) not in seen)[:XP.MISSING_CAP]
     except Failed as e:
         res["error"] = str(e)
+        res["interrupted"] = STOP.is_set()      # a job that finished before it noticed the stop is complete
     finally:
         if clone:
             shutil.rmtree(clone, ignore_errors=True)
     path = os.path.join(a.state, "runs", job["case"], job["label"] + ".json")
-    if STOP.is_set():
-        res["interrupted"] = True
-        res["error"] = res["error"] or "interrupted"
-    prior = jload(path)
-    if prior:
-        res["tokens"] += prior.get("tokens") or 0       # a retry still counts what the failed attempt spent
+    prior = jload(path) or {}
+    # tokens: this attempt's, which report compares per arm; spent: every attempt's, which the stop counts
+    res["spent"] = res["tokens"] + (prior.get("spent", prior.get("tokens")) or 0)
     jsave(path, res)
     return res
 
 
 def scratch_clone(job, clone):
     """A checkout the reviewer cannot read the future from: an empty repository that borrows the source's
-    objects, with two branches and nothing else. The branch is at the round's tip and the destination
-    at its base, so the packet's range resolves. No remote, no tags, no later branch."""
+    objects, with a branch at the round's tip and the destination at its base (as origin/<dest> too when
+    that is how the range names it), so the packet's range resolves. No remote, no tags, no later branch."""
     t = job["target"]
     branch = t.get("branch") or "replay"
     refs = [("refs/heads/" + t["dest"], t["base"])] if branch != t["dest"] else []
     refs.append(("refs/heads/" + branch, t["tip"]))
+    if t.get("dest_ref") and t["dest_ref"] != t["dest"]:      # origin/<dest>...<branch>
+        refs.append(("refs/remotes/" + t["dest_ref"], t["base"]))
     steps = [["git", "init", "-q", clone]]
     for argv in steps + [None] + [["git", "-C", clone, "update-ref", ref, sha] for ref, sha in refs] \
             + [["git", "-C", clone, "checkout", "-q", branch]]:
@@ -673,7 +679,7 @@ def scratch_clone(job, clone):
 
 
 def spent(state):
-    return sum((jload(p) or {}).get("tokens", 0) for p in glob.glob(os.path.join(glob.escape(state), "runs", "*", "*.json")))
+    return sum((lambda r: r.get("spent", r.get("tokens", 0)))(jload(p) or {}) for p in glob.glob(os.path.join(glob.escape(state), "runs", "*", "*.json")))
 
 
 def on_signal(signum, _frame):
@@ -701,7 +707,7 @@ def cmd_run(a):
             signal.signal(sig, on_signal)
         TH.cleanup()
     prog = jload(os.path.join(a.state, "progress.json"), {})
-    stopped, interrupted = None, False
+    stopped, interrupted, crash = None, False, None
     try:
         jobs = prepare(a, cj["cases"], live)
         if not live:
@@ -729,6 +735,9 @@ def cmd_run(a):
     except KeyboardInterrupt:
         interrupted = True
         say("interrupted: archiving every thread this run used")
+    except Exception:
+        crash = traceback.format_exc()
+        say("the run crashed:\n" + crash)
     finally:
         if live:
             STOP.set()
@@ -737,11 +746,12 @@ def cmd_run(a):
             STOP.clear()
             ok = TH.cleanup()
             shutil.rmtree(os.path.join(a.state, "clones"), ignore_errors=True)
-            prog.update(tokens=spent(a.state), stopped_at=stopped, finished=not interrupted and stopped is None)
+            prog.update(tokens=spent(a.state), stopped_at=stopped, crashed=crash,
+                        finished=not interrupted and stopped is None and crash is None)
             jsave(os.path.join(a.state, "progress.json"), prog)
             if not ok:
                 say("some threads could not be archived: run `cleanup`")
-    return 130 if interrupted else 0
+    return 130 if interrupted else (1 if crash else 0)
 
 
 def cmd_cleanup(a):

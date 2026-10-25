@@ -279,7 +279,7 @@ elif cmd == "turn-start":
         os.makedirs(os.path.join(S, "inputs"), exist_ok=True)
         open(os.path.join(S, "inputs", turn), "w").write(open(opt("--input")).read())
         refs = subprocess.run(["git", "-C", cwd, "for-each-ref", "--format=%(refname) %(objectname)"], capture_output=True, text=True).stdout.splitlines()
-        rng = subprocess.run(["git", "-C", cwd, "rev-parse", "main...feat"], capture_output=True, text=True).returncode
+        rng = subprocess.run(["git", "-C", cwd, "rev-parse", os.environ.get("FAKE_RANGE", "main...feat")], capture_output=True, text=True).returncode
         log(thread=opt("--thread"), turn=turn, cwd=cwd, head=head, schema=os.path.basename(opt("--schema")), refs=refs, range_rc=rng)
         print(turn)
     locked(go)
@@ -654,10 +654,10 @@ is_("RP6 each arm ran exactly once across both runs", turn_count, sum(len(m) for
 # ------------------------------------------------------------------ the fix round
 def fresh(name, **extra):
     state = os.path.join(ROOT, name)
-    harness(state, "cases")
+    harness(state, "cases", **extra)
     for n in nonces:
         shutil_copy(os.path.join(S1, "judge-known", n + ".answer.json"), os.path.join(state, "judge-known", n + ".answer.json"))
-    harness(state, "cases")
+    harness(state, "cases", **extra)
     return state, os.path.join(ROOT, "fake-" + name)
 
 
@@ -687,7 +687,9 @@ ok("RP8 no switch passes on error runs", "pass" not in [v["status"] for v in rep
 subprocess.run([HARNESS, "run", "--state", S8, "--retry-errors"], env=env_for(FAKE_STATE=FAKE8), capture_output=True, text=True)
 rf = runfiles(S8)
 ok("RP8 --retry-errors runs them again and they now succeed", len(rf) == 14 and not any(r["error"] for _c, _a, r in rf), [r["error"] for _c, _a, r in rf][:2])
-is_("RP8 a retried run's tokens add the failed attempt's", sorted(set(r["tokens"] for _c, _a, r in rf)), [2000])
+is_("RP8 N5 a retried run reports its final attempt's tokens, and spent counts every attempt",
+    (sorted(set(r["tokens"] for _c, _a, r in rf)), sorted(set(r["spent"] for _c, _a, r in rf))), ([1000], [2000]))
+is_("RP8 N5 and the stop tally counts every attempt", jl(os.path.join(S8, "progress.json"))["tokens"], 14 * 2000)
 
 print("RP9. I-2: a turn that outlives the budget keeps its slot; its tokens are charged")
 S9, FAKE9 = fresh("s9")
@@ -759,6 +761,106 @@ mk(S12, cases, {"framing": list(cases), "omit_plans": [], "delta": [], "fit": []
 harness(S12, "report")
 is_("RP12 the mixed case is flagged", jl(os.path.join(S12, "report.json"))["mixed_models"], ["c2.pre"])
 ok("RP12 and report.md says so", "different models" in open(os.path.join(S12, "report.md")).read())
+
+print("RP13. N1: a repeated total after a compaction is not new usage")
+homeC = os.path.join(ROOT, "codexC")
+
+
+def tc(total, last):
+    return {"type": "event_msg", "payload": {"type": "token_count", "info": {
+        "total_token_usage": {"total_tokens": total}, "last_token_usage": {"total_tokens": last}, "model_context_window": 258400}}}
+
+
+recs = [tc(700, 700),
+        {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "tuC"}},
+        {"type": "turn_context", "payload": {"turn_id": "tuC", "model": "m-1", "effort": "high"}},
+        tc(1700, 1000), {"type": "compacted", "payload": {"message": ""}}, tc(1700, 90000), tc(3200, 1500),
+        {"type": "event_msg", "payload": {"type": "task_complete", "turn_id": "tuC", "last_agent_message": "{}"}},
+        {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "tuD"}}, tc(3200, 90000), tc(4000, 800)]
+wr(os.path.join(homeC, "sessions", "2026", "10", "20", "rollout-2026-10-20T00-00-00-thC.jsonl"), "".join(json.dumps(r) + "\n" for r in recs))
+os.environ["CODEX_HOME"] = homeC
+is_("RP13 the compacted turn is charged its two real calls, not the compacted context", Hm.turn_usage("thC", "tuC")["tokens"], 2500)
+is_("RP13 a later turn's repeated first total is not charged either", Hm.turn_usage("thC", "tuD")["tokens"], 800)
+
+print("RP14. N2: a range written origin/<dest>...<branch> resolves in the checkout")
+XDG3 = os.path.join(ROOT, "xdg3")
+ld3 = os.path.join(XDG3, "xreview", "ledgers", LD.ledger_key(common))
+R3 = copy_R = json.loads(json.dumps(R))
+for e in R3:
+    e["targets"][0].update(dest_ref="origin/main", range="origin/main...feat")
+wr(os.path.join(ld3, "reviews.jsonl"), "".join(json.dumps(e) + "\n" for e in R3))
+wr(os.path.join(ld3, "repo"), common + "\n")
+S14, FAKE14 = fresh("s14", XDG_STATE_HOME=XDG3)
+subprocess.run([HARNESS, "run", "--state", S14], env=env_for(FAKE_STATE=FAKE14, XDG_STATE_HOME=XDG3, FAKE_RANGE="origin/main...feat"), capture_output=True, text=True)
+t14 = [c for c in calls(FAKE14) if c["cmd"] == "turn-start"]
+is_("RP14 every arm ran", len(t14), 14)
+is_("RP14 origin/main...feat resolves in every turn's checkout", set(t["range_rc"] for t in t14), {0})
+ok("RP14 and the refs are the branch, the destination and origin/<dest> at the base",
+   all(sorted(l.split()[0] for l in t["refs"]) == ["refs/heads/feat", "refs/heads/main", "refs/remotes/origin/main"] for t in t14), t14[0]["refs"])
+ok("RP14 the body quotes that range", "origin/main...feat" in open(os.path.join(S14, "packets", "xr-2-r1.pre", "body.md")).read())
+
+print("RP15. N4: a turn that finishes after the deadline is over budget")
+S15, FAKE15 = fresh("s15")
+subprocess.run([HARNESS, "run", "--state", S15, "--budget", "0.25"], env=env_for(FAKE_STATE=FAKE15, FAKE_WAIT="0.6"), capture_output=True, text=True)
+rf = runfiles(S15)
+ok("RP15 even a turn that finished on its first wait is an error run", len(rf) == 14 and all("budget" in (r["error"] or "") for _c, _a, r in rf), [r["error"] for _c, _a, r in rf][:2])
+
+print("RP16. N5: a job that finished before it noticed the stop is complete")
+import argparse
+homeU = os.path.join(ROOT, "codexU")
+rollout(homeU, "thU", [("tuU", None, APPROVE, False)])
+os.environ["CODEX_HOME"] = homeU
+unit = os.path.join(ROOT, "unit")
+wr(os.path.join(unit, "packet.txt"), "x")
+job = {"case": "c.pre", "arm": "A", "label": "u1u1u1u1", "framing": False, "repo": common, "target": target(c1), "tip": c1, "fork": None,
+       "error": None, "decision": {"kind": "full", "action": "send", "packets": [{"file": os.path.join(unit, "packet.txt"), "shown": []}]}}
+na = argparse.Namespace(state=unit, budget=10)
+Hm.TH = Hm.Threads(unit)
+
+
+def scripted(wait_rc, stop):
+    def fake(*args):
+        if args[0] == "thread-start":
+            return 0, "thU\n", ""
+        if args[0] == "turn-start":
+            return 0, "tuU\n", ""
+        if args[0] == "turn-wait":
+            if stop:
+                Hm.STOP.set()
+            return wait_rc, (json.dumps(APPROVE) if wait_rc == 0 else ""), ""
+        return 0, "", ""
+    return fake
+
+
+Hm.rpc = scripted(0, True)
+res = Hm.run_job(na, job)
+Hm.STOP.clear()
+ok("RP16 a job whose last answer arrived as the stop was set is complete", res["error"] is None and not res.get("interrupted") and res["verdict"] == "approve", res)
+job["label"] = "u2u2u2u2"
+Hm.rpc = scripted(3, True)
+res = Hm.run_job(na, job)
+Hm.STOP.clear()
+ok("RP16 a job cut off by the stop is interrupted", res["interrupted"] is True and "interrupted" in res["error"], res)
+job["label"] = "u3u3u3u3"
+Hm.rpc = scripted(1, False)
+res1 = Hm.run_job(na, job)
+Hm.rpc = scripted(0, False)
+res2 = Hm.run_job(na, job)
+is_("RP16 a retry reports its own tokens and spends both attempts'", (res1["tokens"], res2["tokens"], res2["spent"]), (1000, 1000, 2000))
+
+print("RP17. N6: a crashed run is not recorded as finished")
+Hc = None
+os.environ.update(XREVIEW_REPLAY_RPC=FAKE_BIN, FAKE_STATE=os.path.join(ROOT, "fake-sc"), XDG_STATE_HOME=XDG, CODEX_HOME=CODEX)
+Hc = load(HARNESS, "replay_c")
+SC, _ = fresh("sc")
+Hc.run_job = lambda a, job: (_ for _ in ()).throw(RuntimeError("boom"))
+old = dict((sg, signal.getsignal(sg)) for sg in (signal.SIGINT, signal.SIGTERM))
+rcc = Hc.cmd_run(argparse.Namespace(state=SC, dry_run=False, max_tokens=60000000, budget=10, retry_errors=False))
+for sg, h in old.items():
+    signal.signal(sg, h)
+pc = jl(os.path.join(SC, "progress.json"))
+is_("RP17 the run reports failure", rcc, 1)
+ok("RP17 progress.json says it did not finish, and why", pc["finished"] is False and "boom" in (pc["crashed"] or ""), pc)
 
 # ------------------------------------------------------------------ RP7 rollouts the daemon compressed
 print("RP7. a compressed, archived rollout reads like a plain one")
