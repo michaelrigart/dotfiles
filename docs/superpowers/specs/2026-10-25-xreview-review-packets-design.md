@@ -333,9 +333,11 @@ nothing until a switch makes the gate read it.
   - Slices take longer, so give `collect` a larger budget.
   - Plan reviews are dispatched with `--diff <dest>...<branch>` once the plan is committed,
     so that pre-merge can bind the plan to its approval (§3.5).
-  - The escalation list gains one entry and is otherwise unchanged: a pinned review thread
-    (`xreview init` or `XREVIEW_THREAD`) that cannot hold the next packet. The pin is
-    Michael's, so dispatch refuses rather than move the checkpoint off it.
+  - The escalation list gains two entries and is otherwise unchanged:
+    - a pinned review thread (`xreview init` or `XREVIEW_THREAD`) that cannot hold the next
+      packet. The pin is Michael's, so dispatch refuses rather than move the checkpoint off it;
+    - with `fit` off, a packet over the size cap. The cap is Michael's to raise, and an agent
+      cannot raise it from a session (§1).
 - **Memory** `excluded-command-must-lead`: its cap remark is updated once `fit` is on.
 
 ## 5. Replay evaluation
