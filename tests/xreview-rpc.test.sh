@@ -784,7 +784,7 @@ p="$(params thread/fork)"
 is "TF1 the fork is of that thread" "$(printf '%s' "$p" | jq -r .threadId)" th
 is "TF1 through lastTurnId" "$(printf '%s' "$p" | jq -r .lastTurnId)" turn-X
 is "TF1 in that cwd" "$(printf '%s' "$p" | jq -r .cwd)" /tmp/scratch
-is "TF1 without copying the turns" "$(printf '%s' "$p" | jq -c .excludeTurns)" true
+is "TF1 asking for an answer without the turns (the fork keeps them)" "$(printf '%s' "$p" | jq -c .excludeTurns)" true
 scenario '{"responses":{"thread/fork":{"result":{"thread":{"id":"th-fork-2"}}}}}'
 rpc thread-fork --thread th >/dev/null
 is "TF1 --last-turn and --cwd are optional, and absent when not given" \

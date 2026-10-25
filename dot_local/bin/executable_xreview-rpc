@@ -587,8 +587,9 @@ def cmd_thread_unarchive(c, a):
 
 
 def cmd_thread_fork(c, a):
-    """Fork a.thread through a.last_turn (inclusive; the whole thread without it), in a.cwd,
-    copying no turns into the fork's listing. Prints the new thread's id."""
+    """Fork a.thread through a.last_turn (inclusive; the whole thread without it), in a.cwd.
+    The fork keeps the thread's turns up to and including lastTurnId; excludeTurns only leaves
+    them out of the answer, which is read for nothing but the new thread's id. Prints that id."""
     params = {"threadId": a.thread, "excludeTurns": True}
     if a.last_turn:
         params["lastTurnId"] = a.last_turn
