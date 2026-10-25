@@ -328,7 +328,7 @@ def units_for(repo, base, tip, exclude=()):
     """The review units of base..tip, in patch order, from the ledger's patch: a text file's
     patch is one unit, a binary file's summary line is one binary unit. Labels are unquoted
     paths. exclude is the ledger's: literal top-level paths left out."""
-    return _units(_ledger().patch(repo, base, tip, exclude))
+    return _units(_ledger().patch(repo, base, tip, exclude, prefixed=True))
 
 
 # ------------------------------------------------------------------ cutting a unit into parts
@@ -935,7 +935,10 @@ def _framed(reviewer, framing, body, notes, listing, blocks):
 
 def _prepare(c, delta_ok):
     """Each target of the request as a _Target: a delta where it qualifies (and delta_ok), else
-    a full packet with the plans an approved plan review covers left out when omit_plans is on."""
+    a full packet with the plans an approved plan review covers left out when omit_plans is on.
+    Only a framed request gets here, which reads its labels from the patch headers, so every patch
+    is rendered with a/ and b/ pinned; the all-off path in build() renders under the user's diff
+    configuration, as today's packet always did."""
     ledger = _ledger()
     ts = []
     for index, (target, spec) in enumerate(zip(c["targets"], c["specs"])):
@@ -948,7 +951,7 @@ def _prepare(c, delta_ok):
         previous = delta_base(entries, c["thread"], target, c["turns"]) if delta_ok else None
         if previous is not None:
             link = _link_target(entries, previous, repo, target["dest"], base, tip)
-            diff = ledger.patch(repo, link["tip"], tip)
+            diff = ledger.patch(repo, link["tip"], tip, prefixed=True)
             if diff:
                 t.kind, t.follows, t.diff = "delta", previous, diff
                 t.history = [x["id"] for x in c["turns"]["turns"]]
@@ -956,7 +959,7 @@ def _prepare(c, delta_ok):
         if t.kind == "full":
             if c["sw"]["omit_plans"] and c["checkpoint"] == "pre-merge":
                 t.listed = plan_listing(entries, repo, target)
-            diff = ledger.patch(repo, base, tip, tuple(sorted(t.listed)))
+            diff = ledger.patch(repo, base, tip, tuple(sorted(t.listed)), prefixed=True)
             if t.listed:
                 now = _plan_changes(repo, base, tip)
                 for path in sorted(t.listed):
@@ -1156,6 +1159,7 @@ def build(request, outdir=None):
         return decide(action, reason, kind, [write("packet.txt", data, shown)], ts)
 
     if not sw["framing"]:
+        # Nothing here reads a header path: the diffs go out as git renders them for the user.
         diffs = [(s, ledger.patch(t["repo"], t["base"], t["tip"])) for t, s in zip(targets, specs)]
         total = sum(_chars(d) for _s, d in diffs)
         if total > cap:

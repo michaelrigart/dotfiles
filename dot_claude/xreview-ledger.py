@@ -52,9 +52,11 @@ DIFF_FLAGS = ["--no-relative", "--no-ext-diff", "--no-textconv", "--no-renames",
 PATHSPEC_VARS = ("GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS",
                  "GIT_ICASE_PATHSPECS")
 DIFF_RAW = ["diff", "--raw", "-z", "--no-abbrev"] + DIFF_FLAGS
-# The patch's header paths are a/<path> and b/<path> whatever diff.noprefix or diff.mnemonicPrefix
-# say: xreview-packet.py reads its labels from those headers. The raw diff has no such paths.
-DIFF_PATCH = ["diff", "--no-color", "--src-prefix=a/", "--dst-prefix=b/"] + DIFF_FLAGS
+DIFF_PATCH = ["diff", "--no-color"] + DIFF_FLAGS
+# patch(prefixed=True) pins the header paths to a/<path> and b/<path> whatever diff.noprefix or
+# diff.mnemonicPrefix say: xreview-packet.py reads its labels from those headers when a switch is
+# on. Without it the patch is rendered as it always was, under the user's own diff configuration.
+DIFF_PREFIXES = ["--src-prefix=a/", "--dst-prefix=b/"]
 USAGE = ("usage: xreview-ledger key COMMON_DIR | path REPO | default-branch REPO | "
          "default-range REPO | fingerprint REPO BASE TIP | "
          "diff REPO BASE TIP [--exclude PATH]... | blob-patch REPO PATH OLD NEW | "
@@ -200,7 +202,7 @@ def has_nul(repo, blobs):
     return found
 
 
-def patch(repo, base, tip, exclude=()):
+def patch(repo, base, tip, exclude=(), prefixed=False):
     """The change base..tip as a patch the reviewer can read in full. Binary is decided by the
     content, never by gitattributes (a path marked -diff would otherwise show only a "Binary
     files differ" line for text the fingerprint binds): a path whose old or new blob holds a NUL
@@ -218,7 +220,11 @@ def patch(repo, base, tip, exclude=()):
     exclude is a tuple of literal top-level paths left out: their text patch and, for a binary
     path, their summary line. The header check counts only the records that are rendered, so a
     packet that omits a path on purpose (a plan the plan review covered) still matches. The
-    fingerprint is not affected: it covers the whole change."""
+    fingerprint is not affected: it covers the whole change.
+
+    prefixed pins the header paths to a/<path> and b/<path>, for a caller that reads labels from
+    them (xreview-packet.py with a switch on). The default renders the patch under the user's own
+    diff.noprefix or diff.mnemonicPrefix, as it always was; nothing here reads the header paths."""
     drop = set(os.fsencode(p) if isinstance(p, str) else p for p in exclude)
     every = sorted(raw_records(repo, base, tip))
     left = [b":(top,exclude,literal)" + r[0] for r in every if r[0] in drop]
@@ -242,7 +248,8 @@ def patch(repo, base, tip, exclude=()):
     out = b""
     if texts:
         pathspec = ["--", ":(top)"] + skip if skip else []
-        out = git(repo, *(DIFF_PATCH + ["--text", base, tip] + pathspec), raw=True)
+        flags = DIFF_PATCH + DIFF_PREFIXES if prefixed else DIFF_PATCH
+        out = git(repo, *(flags + ["--text", base, tip] + pathspec), raw=True)
         if out is None:
             raise Fail("cannot diff {}..{} in {}".format(base, tip, repo))
     headers = sum(1 for line in out.split(b"\n") if line.startswith(b"diff --git "))

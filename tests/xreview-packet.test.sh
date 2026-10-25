@@ -216,7 +216,7 @@ base = commit(repo, "seed")
 put(repo, "a.txt", b"one\n")
 put(repo, "d/\u00e4 b.txt", b"two\n")
 tip = commit(repo, "add")
-raw = xp._ledger().patch(repo, base, tip)
+raw = xp._ledger().patch(repo, base, tip, prefixed=True)
 is_("K3c with diff.noprefix and mnemonicPrefix set the headers still say a/ and b/",
     [l for l in raw.split(b"\n") if l.startswith(b"diff --git ")],
     [b"diff --git a/a.txt b/a.txt", b'diff --git "a/d/\\303\\244 b.txt" "b/d/\\303\\244 b.txt"'])
@@ -925,6 +925,36 @@ def _k10():
     tgb = target_of(rb2, bb2, tb2)
     db = LD.patch(tgb["repo"], bb2, tb2).rstrip(b"\n")
     is_("F1 each undecodable byte counts as one character", built(request([tgb], [rb2 + ":main...HEAD"], cap=1))["reason"], CAP_TEXT.format(len(db) - 5, 1))
+
+
+# ---------------------------------------------------------------- X1 diff prefixes
+print("X1. the user's diff prefixes hold with every switch off; a switch on pins a/ and b/")
+
+
+@guarded("X1")
+def _x1():
+    for key in ("diff.noprefix", "diff.mnemonicPrefix"):
+        tag = key.split(".")[1]
+        repo, base, tip = mkchange("x1" + tag, {"a.txt": b"one\ntwo\n", "dir/b.txt": b"b\n"})
+        git(repo, "config", key, "true")
+        tg = target_of(repo, base, tip)
+        sp = [repo + ":main...HEAD"]
+        main_diff = git(repo, "diff", "--no-color", *(LD.DIFF_FLAGS + ["--text", base, tip]))
+        # mnemonicPrefix leaves a commit-to-commit diff at a/ b/ (it changes only diffs that involve the index
+        # or work tree), so only noprefix has a rendering to tell apart; the byte comparison covers both.
+        if tag == "noprefix":
+            ok("X1 {} (setup) git's own rendering is not a/ b/".format(key), b"diff --git a/a.txt b/a.txt" not in main_diff, main_diff[:120])
+        off = built(request([tg], sp))
+        want = xp.today_packet(rd(FIX, "reviewer.md"), b"Review this.\n", [(sp[0], main_diff)])
+        ok("X1 {} all off: the packet carries main's rendering byte for byte".format(key), pkt(off) == want)
+        if tag == "noprefix":
+            ok("X1 {} all off: the headers are not forced to a/ b/".format(key), b"diff --git a/" not in pkt(off))
+        for sws in ({"framing": True}, {"framing": True, "omit_plans": True}):
+            on = built(request([tg], sp, switches_file=swf(**sws)))
+            is_("X1 {} {}: the labels are the plain paths".format(key, sorted(sws)), on["packets"][0]["shown"], ["a.txt", "dir/b.txt"])
+            heads = [l for l in pkt(on).split(b"\n") if l.startswith(b"diff --git ")]
+            is_("X1 {} {}: the diff headers carry a/ and b/".format(key, sorted(sws)), heads,
+                [b"diff --git a/a.txt b/a.txt", b"diff --git a/dir/b.txt b/dir/b.txt"])
 
 
 # ---------------------------------------------------------------- C7 multi-target, one delta one full
