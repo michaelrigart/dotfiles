@@ -400,6 +400,26 @@ for mxx in range(len(HEAD) + 80, len(HEAD) + 140):
     if b"".join(cs) != emoji or any(len(p.text) > mxx for p in ps):
         clean = False
 ok("K5c at every budget from 80 to 140 a 4-byte character is never cut in two", clean)
+# Under 4 bytes of room a range cannot hold a 4-byte character: a ValueError, never a cut inside one.
+u = mkunit(HEAD + b"@@ -0,0 +1 @@\n+" + ("\U0001F600" * 50).encode() + b"\n")
+outcomes = {}
+for mxx in range(len(HEAD) + 1, len(HEAD) + 120):
+    try:
+        ps = xp.split_unit(u, mxx)
+    except ValueError:
+        outcomes[mxx] = "raise"
+        continue
+    cs = [p.text[len(HEAD):].split(b"\n")[1][1:] for p in ps]
+    try:
+        for c in cs:
+            c.decode("utf-8")
+        outcomes[mxx] = "whole" if len(ps) == 1 else ("%d-byte" % len(cs[0]) if len(set(map(len, cs))) == 1 else "mixed")
+    except UnicodeDecodeError:
+        outcomes[mxx] = "cut"
+first = min((m for m, o in outcomes.items() if o != "raise"), default=None)
+ok("K5c a budget under 4 bytes is a ValueError, never a cut inside a character",
+   "cut" not in outcomes.values() and first is not None and outcomes[first] == "4-byte",
+   sorted(set(outcomes.values())))
 
 # --- K5d: a mix: small hunks, one giant hunk, one giant line, in order
 mixed = (b"@@ -1,2 +1,2 @@\n-a\n+b\n"
@@ -627,6 +647,14 @@ LISTED = "{} was shown whole in the approved plan review {}; only its changes si
 MISSED = "The last round's reviewed_files did not list: {}. Review them too."
 CAP_TEXT = ("the diffs are too large to carry inline ({} bytes, cap {}).\n"
             "Review them in slices, or raise XREVIEW_MAX_DIFF_BYTES if the reviewer can hold it.")
+CAP_FRAMED = "the diffs are too large to carry inline ({} bytes, cap {}). The cap is Michael's to raise; no review was started."
+NO_DIFFS = "This review carries no diffs, so there is no file list; return reviewed_files as an empty list."
+HAVE_ZSTD = __import__("shutil").which("zstd") is not None
+
+
+def skip_zstd(name):
+    """A case that needs zstd, when it is not installed: said once, and counted as neither a pass nor a fail."""
+    print("  SKIP: zstd not installed ({})".format(name))
 
 # ---------------------------------------------------------------- R1 rollout records
 print("R1. thread_context and fresh_window read the rollout records")
@@ -688,6 +716,9 @@ print("R1z. a rollout Codex compressed to .jsonl.zst is read the same")
 @guarded("R1z")
 def _r1z():
     import shutil
+    if not HAVE_ZSTD:
+        skip_zstd("R1z")
+        return
     home = mkhome("r1z")
     rollout(home, "th-zz1", 4242, 258400, compressed=True)
     rollout(home, "th-zz1p", 4242, 258400)
@@ -737,6 +768,31 @@ def _r1z():
     is_("R1z fresh_window's fallback reads the window from a .zst-only home", xp.fresh_window(zhome, None), 187000)
     rollout(zhome, "th-only2", 9, 199000, compressed=True, stamp="2026-10-25T06-00-00")
     is_("R1z and takes the newest by name across them", xp.fresh_window(zhome, None), 199000)
+
+
+@guarded("R1za")
+def _r1za():
+    # zstd is told where its options end, whatever the path: no zstd needed, the start is recorded.
+    import io
+    import shutil
+    path = wr(os.path.join(ROOT, "r1za", "-rollout-2026-10-25T00-00-00-th-dash.jsonl.zst"), b"")
+    seen = []
+
+    class Proc(object):
+        def __init__(self, argv, **_kw):
+            seen.append(argv)
+            self.stdout = io.BytesIO(b"")
+
+        def wait(self):
+            return 0
+    real_popen, real_which = xp.subprocess.Popen, shutil.which
+    xp.subprocess.Popen = Proc
+    shutil.which = lambda name, *a, **k: "/zstd" if name == "zstd" else real_which(name, *a, **k)
+    try:
+        xp._rollout_values(path)
+    finally:
+        xp.subprocess.Popen, shutil.which = real_popen, real_which
+    is_("R1za zstd gets -- before the rollout's path", seen, [["/zstd", "-dc", "--", path]])
 
 
 # ---------------------------------------------------------------- C1-C6 delta eligibility
@@ -850,7 +906,9 @@ def _k10():
     m = n + len(LD.patch(t2["repo"], base2, tip2).rstrip(b"\n"))
     is_("F1 the total of all the diffs is compared", built(request([t1, t2], sp, cap=100))["reason"], CAP_TEXT.format(m, 100))
     fo = built(request([t1], sp[:1], cap=n - 1, switches_file=swf(framing=True)))
-    is_("F1 framing on with fit off refuses the same way", (fo["action"], fo["reason"]), ("refuse", CAP_TEXT.format(n, n - 1)))
+    is_("F1 framing on with fit off refuses, saying the cap is Michael's to raise",
+        (fo["action"], fo["reason"]), ("refuse", CAP_FRAMED.format(n, n - 1)))
+    ok("F1 and never offers slicing or the variable", "slices" not in fo["reason"] and "XREVIEW_MAX_DIFF_BYTES" not in fo["reason"], fo["reason"])
     fs = built(request([t1], sp[:1], switches_file=swf(framing=True)))
     ok("F1 framing on with fit off sends a framed packet", fs["action"] == "send" and b"Files in this change (2):" in pkt(fs))
     # the cap counts characters, as bash's ${#d} does, not bytes
@@ -862,7 +920,7 @@ def _k10():
     is_("F1 a non-ASCII diff over the cap in bytes but under it in characters is sent", built(request([tgu], [ru + ":main...HEAD"]))["action"], "send")
     ref = built(request([tgu], [ru + ":main...HEAD"], cap=nchars - 1))
     is_("F1 and the refusal prints the character count", (ref["action"], ref["reason"]), ("refuse", CAP_TEXT.format(nchars, nchars - 1)))
-    is_("F1 with framing on too", built(request([tgu], [ru + ":main...HEAD"], cap=nchars - 1, switches_file=swf(framing=True)))["reason"], CAP_TEXT.format(nchars, nchars - 1))
+    is_("F1 with framing on too", built(request([tgu], [ru + ":main...HEAD"], cap=nchars - 1, switches_file=swf(framing=True)))["reason"], CAP_FRAMED.format(nchars, nchars - 1))
     rb2, bb2, tb2 = mkchange("k10bad", {"bad.txt": b"\xc3\xa9" * 5 + b"\xff" * 3 + b"\n"})
     tgb = target_of(rb2, bb2, tb2)
     db = LD.patch(tgb["repo"], bb2, tb2).rstrip(b"\n")
@@ -1071,16 +1129,19 @@ def _f():
     wr(os.path.join(home, "sessions", "2026", "10", "25", "rollout-2026-10-25T12-00-00-th-garble.jsonl"), "x\n")
     is_("F5 so is one whose rollout is garbled", built(request([ftgt], fsp, switches_file=swf(**FIT), codex_home=home, thread="th-garble"))["action"], "fresh")
     # F5z: a thread whose rollout is compressed is read, not treated as unreadable
-    zh = mkhome("f5z")
-    os.utime(rollout(zh, "thZ", 100000, 258400, compressed=True), (1000000, 1000000))
-    d = built(request([ftgt], fsp, switches_file=swf(**FIT), codex_home=zh, thread="thZ"))
-    is_("F5z a compressed rollout with room: send on the thread", (d["action"], d["kind"]), ("send", "full"))
-    ok("F5z and the reason carries the real context", "100000 in the context" in d["reason"], d["reason"])
-    os.utime(rollout(zh, "thZ", 232000, 258400, compressed=True, stamp="2026-10-25T11-00-00"), (2000000, 2000000))
-    d = built(request([ftgt], fsp, switches_file=swf(**FIT), codex_home=zh, thread="thZ"))
-    is_("F5z the newer compressed rollout is too full: fresh, for the numbers, not for being unreadable",
-        d["action"], "fresh")
-    ok("F5z and the reason gives them", "232000 in the context" in d["reason"] and "cannot be read" not in d["reason"], d["reason"])
+    if HAVE_ZSTD:
+        zh = mkhome("f5z")
+        os.utime(rollout(zh, "thZ", 100000, 258400, compressed=True), (1000000, 1000000))
+        d = built(request([ftgt], fsp, switches_file=swf(**FIT), codex_home=zh, thread="thZ"))
+        is_("F5z a compressed rollout with room: send on the thread", (d["action"], d["kind"]), ("send", "full"))
+        ok("F5z and the reason carries the real context", "100000 in the context" in d["reason"], d["reason"])
+        os.utime(rollout(zh, "thZ", 232000, 258400, compressed=True, stamp="2026-10-25T11-00-00"), (2000000, 2000000))
+        d = built(request([ftgt], fsp, switches_file=swf(**FIT), codex_home=zh, thread="thZ"))
+        is_("F5z the newer compressed rollout is too full: fresh, for the numbers, not for being unreadable",
+            d["action"], "fresh")
+        ok("F5z and the reason gives them", "232000 in the context" in d["reason"] and "cannot be read" not in d["reason"], d["reason"])
+    else:
+        skip_zstd("F5z")
     # F6: no window to be had anywhere: refuse, naming the window
     empty = mkhome("f6")
     for th in (None, "thF"):
@@ -1242,6 +1303,46 @@ def _b():
     ok("B build with an unreadable request fails with a message", nr.returncode != 0 and nr.stderr.strip() != "")
     us = subprocess.run(["/usr/bin/python3", "-I", MODULE], capture_output=True, text=True, env=dict(os.environ))
     is_("B no arguments is a usage error", us.returncode, 2)
+
+
+# ---------------------------------------------------------------- L labels a file name could break
+print("L. a label that holds a control character is quoted, and a review without diffs says so")
+
+
+@guarded("L")
+def _l():
+    is_("L1 a plain label is as it is, non-ASCII included", [xp.label_text(x) for x in ("a/b c.txt", "ö.md", ".:x#1/2")],
+        ["a/b c.txt", "ö.md", ".:x#1/2"])
+    is_("L1 a newline or another control character is quoted as git quotes a path",
+        [xp.label_text(x) for x in ("a\nb.txt", "c\x01d.txt", "t\tab", "del\x7f")],
+        ['"a\\nb.txt"', '"c\\001d.txt"', '"t\\tab"', '"del\\177"'])
+    is_("L1 so is a label that starts with a double quote, so no two labels print alike",
+        xp.label_text('"a\\nb.txt"'), '"\\"a\\\\nb.txt\\""')
+    is_("L1 quoting a quoted label's text never brings a control character back", xp.label_text(xp.label_text("a\nb")).count("\n"), 0)
+    repo, base, tip = mkchange("lq", {"a\nb.txt": b"one\n", "c\x01d.txt": b"two\n", "n.txt": b"three\n"})
+    tgt = target_of(repo, base, tip)
+    d = built(request([tgt], [repo + ":main...HEAD"], switches_file=swf(framing=True),
+                      missed=["x\ny.txt", '"q\\tz.txt"', "plain.txt"]))
+    text = pkt(d).decode("utf-8", "replace")
+    listing = text[text.index("Files in this change (3):"):text.index("--- diff (")].rstrip("\n").split("\n")
+    is_("L2 the file list quotes the labels, one line each", listing,
+        ["Files in this change (3):", '  shown     +1 -0  "a\\nb.txt"', '  shown     +1 -0  "c\\001d.txt"',
+         "  shown     +1 -0  n.txt"])
+    is_("L2 the labels to cover are the ones the file list prints", d["packets"][0]["shown"],
+        ['"a\\nb.txt"', '"c\\001d.txt"', "n.txt"])
+    ok("L2 the missed note quotes a label that holds one, and keeps one the file list printed quoted as it is",
+       MISSED.format('"x\\ny.txt", "q\\tz.txt", plain.txt') in text, text[:1200])
+    ok("L2 and no label's newline reaches the packet outside the diff", "\nb.txt" not in text.split("--- diff (")[0] and "\ny.txt" not in text)
+    # A review with no --diff still gets the framing, and one fixed line instead of a file list.
+    nd = built(request([], [], checkpoint="spec", switches_file=swf(framing=True)))
+    ntext = pkt(nd).decode()
+    ok("L3 a framed review without diffs says there is no file list and reviewed_files is empty",
+       NO_DIFFS + "\n" in ntext and re.search(r"Files in this change \(\d+\):", ntext) is None
+       and "List in `reviewed_files`" in ntext, ntext[-400:])
+    is_("L3 its line closes the request, after the body", ntext.endswith("Review this.\n\n" + NO_DIFFS + "\n</cross-review-request>\n"), True)
+    is_("L3 and nothing is to be covered", nd["packets"][0]["shown"], [])
+    ok("L3 with every switch off the packet is today's, without the line",
+       NO_DIFFS not in pkt(built(request([], [], checkpoint="spec"))).decode())
 
 
 print("K11. the constants")

@@ -193,6 +193,8 @@ cat > "$STUB/codex-daemon" <<'D'
 echo "codex-daemon $*" >> "$CALLS"
 case "$1" in
   ensure) [ -n "${ENSURE_MARK:-}" ] && : > "$ENSURE_MARK"   # ENSURE_MARK: say that ensure ran
+          # ENSURE_WRITES_CONF: packets.conf is rewritten to this while the dispatch runs.
+          [ -n "${ENSURE_WRITES_CONF:-}" ] && printf '%s\n' "$ENSURE_WRITES_CONF" > "$XDG_CONFIG_HOME/xreview/packets.conf"
           exit "${ENSURE_RC:-0}" ;;
   check) [ "${CHECK_RC:-0}" = 0 ] || echo "codex-daemon: carries a herdr pane's environment" >&2
          exit "${CHECK_RC:-0}" ;;
@@ -271,6 +273,9 @@ case "$cmd" in
                 if /usr/bin/python3 -I -c 'import fcntl,sys; fcntl.flock(open(sys.argv[1], "a"), fcntl.LOCK_EX | fcntl.LOCK_NB)' "$LOCK_PROBE" 2>/dev/null
                 then echo "lock-probe free" >> "$CALLS"; else echo "lock-probe held" >> "$CALLS"; fi
               fi
+              # $P/start_dir.<thread>: that one thread's turn-start leaves a directory where the
+              # file it names was, so the next open of it for writing fails.
+              if [ -r "$P/start_dir.$th" ]; then f="$(cat "$P/start_dir.$th")"; rm -f "$f"; mkdir -p "$f"; fi
               # $P/start_rc.<thread>: that one thread's turn-start exits with the code in it.
               [ -r "$P/start_rc.$th" ] && exit "$(cat "$P/start_rc.$th")"
               [ -n "${RPC_START_FAIL:-}" ] && exit 1
@@ -314,6 +319,22 @@ packets() { # packets <switch>... : packets.conf with exactly these switches on
     case " $* " in *" $s "*) echo "$s=on" ;; *) echo "$s=off" ;; esac >> "$XDG_CONFIG_HOME/xreview/packets.conf"
   done
 }
+missed_for() { # missed_for <checkpoint> <branch> <label>...: the labels a last round of that checkpoint missed
+  local cp="$1" b="$2"; shift 2
+  mkdir -p "$STATE"
+  jq -nc --arg cp "$cp" --arg b "$b" '{checkpoint:$cp, branch:$b, thread:"t-last", labels:$ARGS.positional}' \
+    --args "$@" > "$STATE/missed"
+}
+# shim <file> <subcommand> <real-env>: a copy of a helper that fails <subcommand> on the command
+# line and is otherwise the real one (named by the variable <real-env>), imported or run.
+shim() {
+  printf '%s\n' 'import importlib.util, os, sys' \
+    "_spec = importlib.util.spec_from_file_location('xreview_real', os.environ['$3'])" \
+    '_real = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(_real)' \
+    'globals().update((k, v) for k, v in vars(_real).items() if not k.startswith("__"))' \
+    'if __name__ == "__main__":' \
+    "    sys.exit(1 if sys.argv[1:2] == ['$2'] else _real.main(sys.argv[1:]))" > "$1"
+}
 
 fresh() { # a pane showing U0, idle, its TUI not connected to the daemon; clean log and state
   unset ENSURE_RC CHECK_RC RPC_START_FAIL RPC_START_UNCERTAIN RPC_START_BAD_ID \
@@ -324,7 +345,8 @@ fresh() { # a pane showing U0, idle, its TUI not connected to the daemon; clean 
         KEY_DELAY DISPATCH_ID XREVIEW_LOCK_WAIT RPC_RUNNING_AFTER_START \
         PROCINFO_FAIL PRESESSION GONE_AFTER_KEYS GONE_AFTER_RUN LSOF_FAIL READ_FAIL \
         RPC_STATUS_FAIL_FOR RPC_STATUS_NOBOOL_FOR CODEX_CHILD XREVIEW_RUNG_WAIT GET_FAIL PROCINFO_BAD RPC_RESOLVE_RC PROCINFO_FG \
-        SNAP_LEDGER XREVIEW_LEDGER_LOCK_WAIT RPC_TURNS_FAIL RPC_COMPACTED RPC_REPORT_TURN LOCK_PROBE ENSURE_MARK
+        SNAP_LEDGER XREVIEW_LEDGER_LOCK_WAIT RPC_TURNS_FAIL RPC_COMPACTED RPC_REPORT_TURN LOCK_PROBE ENSURE_MARK \
+        ENSURE_WRITES_CONF
   export NEW_UUID="$U1"
   packets
   printf codex > "$P/agent"; printf '%s | t | d' "$(trunc "$U0")" > "$P/title"; echo idle > "$P/status"
@@ -334,7 +356,7 @@ fresh() { # a pane showing U0, idle, its TUI not connected to the daemon; clean 
   rm -f "$P/connected" "$P/argv" "$P/screen" "$P/gone" "$P/procinfo_fail_once"
   rm -f "$P"/running.* "$P/ledger-at-start"
   rm -f "$P/uuids" "$P"/answer.* "$P"/rc.* "$P"/compacted.* "$P"/start_rc.* "$P"/unfound.* \
-        "$P"/hold.* "$P"/holding.* "$P"/waiting.* "$P/ensured"
+        "$P"/hold.* "$P"/holding.* "$P"/waiting.* "$P/ensured" "$P"/start_dir.*
   mkdir -p "$CODEX_HOME/app-server-daemon"; printf '{"pid":999}\n' > "$CODEX_HOME/app-server-daemon/daemon.pid"
   bash "$XREVIEW" round --reset >/dev/null 2>&1
   rm -rf "$STATE/superseded" "$STATE/pin" "$STATE/turns" "$STATE/missed"
@@ -1971,8 +1993,7 @@ is "N1 the framed schema is what the turn is held to" \
 is "N1 a first dispatch starts the thread and writes it down" \
    "$(called 'xreview-rpc thread-start')/$(cat "$STATE/review-thread")" "1/$U1"
 is "N1 the packet files are gone once the turn has started" "$(ls -d "$STATE/turns/$nonce.packets" 2>/dev/null | wc -l | tr -d ' ')" 0
-labels="$(cat "$STATE/turns/$nonce.shown")"
-is "N1 .shown lists the labels, one per line" "$(printf '%s\n' "$labels" | tr '\n' ' ')" "big1.txt big2.txt big3.txt "
+is "N1 .shown holds the labels as one JSON list" "$(cat "$STATE/turns/$nonce.shown")" '["big1.txt","big2.txt","big3.txt"]'
 
 echo "X4. .targets carries the switches and each target's packet fields"
 doc="$STATE/turns/$nonce.targets"
@@ -1988,9 +2009,19 @@ is "N5 untouched" "$(untouched)" yes
 is "N5 no thread was started for it" "$(called 'xreview-rpc thread-start')" 0
 is "N5 and no round consumed" "$(bash "$XREVIEW" round)" 0
 fresh; packets framing; out="$(XREVIEW_MAX_DIFF_BYTES=10 bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md 2>&1)"; rc=$?
-is "N5 framing with the fit check off keeps the cap, in today's words" \
-   "$rc/$(printf '%s' "$out" | grep -c 'too large to carry inline')/$(printf '%s' "$out" | grep -c 'Review them in slices, or raise XREVIEW_MAX_DIFF_BYTES')" "1/1/1"
+is "N5 framing with the fit check off keeps the cap, and says it is Michael's to raise" \
+   "$rc/$(printf '%s' "$out" | grep -c "too large to carry inline ([0-9]* bytes, cap 10). The cap is Michael's to raise; no review was started.$")" "1/1"
+is "N5 and offers neither slicing nor the variable" \
+   "$(printf '%s' "$out" | grep -c 'Review them in slices')/$(printf '%s' "$out" | grep -c 'XREVIEW_MAX_DIFF_BYTES')" "0/0"
 is "N5 untouched here too" "$(untouched)" yes
+is "N5 framing on, fit and delta off: the refusal comes before any daemon, rpc or herdr call" \
+   "$(wc -c < "$CALLS" | tr -d ' ')" 0
+fresh; packets framing omit_plans; out="$(XREVIEW_MAX_DIFF_BYTES=10 bash "$XREVIEW" dispatch --checkpoint pre-merge "${XD[@]}" b.md 2>&1)"; rc=$?
+is "N5 so with omit_plans on too" "$rc/$(wc -c < "$CALLS" | tr -d ' ')" "1/0"
+fresh; packets framing delta; rm -rf "$CODEX_HOME/sessions"; printf '%s\n' "$U2" > "$STATE/review-thread"
+out="$(XREVIEW_MAX_DIFF_BYTES=10 bash "$XREVIEW" dispatch --checkpoint pre-merge "${XD[@]}" b.md 2>&1)"; rc=$?
+is "N5 with delta on the decision needs the thread: the daemon comes first, as before" \
+   "$rc/$(called 'codex-daemon ensure')/$(called "xreview-rpc thread-turns --thread $U2")/$(untouched)" "1/1/1/yes"
 fresh
 out="$(XREVIEW_MAX_DIFF_BYTES=12x bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md 2>&1)"; rc=$?
 is "N5 a garbage XREVIEW_MAX_DIFF_BYTES is refused, naming it" "$rc/$(printf '%s' "$out" | grep -c "not '12x'")/$(untouched)" "1/1/yes"
@@ -2052,7 +2083,7 @@ is "N3 .slices names every slice, next 1, and slice 1's thread" \
 is "N3 the packet files outlive the dispatch, for collect" \
    "$(for f in $(jq -r '.packets[].file' "$sl"); do [ -s "$f" ] || echo missing; done | wc -l | tr -d ' ')" 0
 is "N3 the turn sent slice 1" "$(grep -c 'This is slice 1 of' "$P/packet")" 1
-is "N3 .shown holds slice 1's labels" "$(cat "$STATE/turns/$nonce.shown")" "$(jq -r '.packets[0].shown[]' "$sl")"
+is "N3 .shown holds slice 1's labels" "$(cat "$STATE/turns/$nonce.shown")" "$(jq -c '.packets[0].shown' "$sl")"
 is "N3 .targets says the packet was sliced" "$(jq -r '.targets[0].packet' "$STATE/turns/$nonce.targets")" slices
 is "N3 the sent packet is the first of them" "$(cmp -s "$P/packet" "$(jq -r '.packets[0].file' "$sl")" && echo same)" same
 
@@ -2078,7 +2109,7 @@ fresh; packets framing fit delta; rm -rf "$CODEX_HOME/sessions"; rollout $U2 200
 RPC_TURNS_FAIL=1 bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md > "$ROOT/o" 2>&1; rc=$?
 is "a thread whose turns cannot be listed is not a refusal" "$rc/$(called 'xreview-rpc turn-start')" "0/1"
 fresh; packets framing fit; rm -rf "$CODEX_HOME/sessions"; rollout $U2 20000 258400; printf '%s\n' "$U2" > "$STATE/review-thread"
-mkdir -p "$STATE"; printf 'big2.txt\nbig3.txt\n' > "$STATE/missed"
+missed_for plan "$(xbranch)" big2.txt big3.txt
 bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md > "$ROOT/o" 2>&1
 is "the labels the last reviewer did not list go into the packet" "$(grep -c 'did not list: big2.txt, big3.txt' "$P/packet")" 1
 is "and the file is spent once the turn has started" "$([ -e "$STATE/missed" ] && echo left || echo gone)" gone
@@ -2116,6 +2147,28 @@ is "X8 the checkpoint thread was not rewritten and nothing is superseded" \
    "$(cat "$STATE/review-thread")/$([ -e "$STATE/superseded" ] && echo left || echo none)" "$U2/none"
 is "X8 no packet directory or targets file is left" "$(ls "$STATE/turns" 2>/dev/null | wc -l | tr -d ' ')" 0
 is "X8 the pane was not touched" "$(untouched)" yes
+is "X8 the thread started for it is archived, not left behind" "$(called "xreview-rpc thread-archive --thread $U1")" 1
+fresh; packets framing fit; rm -rf "$CODEX_HOME/sessions"; rollout $U2 250000 258400; printf '%s\n' "$U2" > "$STATE/review-thread"
+out="$(RPC_THREAD_RUNNING_FOR=$U1 bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md 2>&1)"; rc=$?
+is "X8 so is a new thread that reports a turn running" \
+   "$rc/$(printf '%s' "$out" | grep -c "$U1 is still running")/$(called "xreview-rpc thread-archive --thread $U1")" "1/1/1"
+shim "$ROOT/no-now-ledger.py" now XREVIEW_REAL_LEDGER
+fresh; packets framing fit; rm -rf "$CODEX_HOME/sessions"; rollout $U2 250000 258400; printf '%s\n' "$U2" > "$STATE/review-thread"
+out="$(XREVIEW_REAL_LEDGER="$LEDGER" XREVIEW_LEDGER="$ROOT/no-now-ledger.py" bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md 2>&1)"; rc=$?
+is "X8 a clock that cannot be read refuses before any thread is started" \
+   "$rc/$(printf '%s' "$out" | grep -c 'cannot read the time')/$(called 'xreview-rpc thread-start')" "1/1/0"
+is "X8 and leaves no state behind" "$(ls "$STATE/turns" 2>/dev/null | wc -l | tr -d ' ')/$(untouched)" "0/yes"
+# The switches are read when the dispatch is planned and again when the packet is built: a
+# packets.conf changed in between refuses rather than send a packet decided on other terms.
+fresh; packets framing fit; rm -rf "$CODEX_HOME/sessions"; rollout $U2 20000 258400; printf '%s\n' "$U2" > "$STATE/review-thread"
+out="$(ENSURE_WRITES_CONF='framing=off' bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md 2>&1)"; rc=$?
+is "X8 packets.conf changed during the dispatch: refused, saying so" \
+   "$rc/$(printf '%s' "$out" | grep -c '^xreview: packets.conf changed during dispatch; dispatch again$')" "1/1"
+is "X8 before any thread or the pane" "$(called 'xreview-rpc thread-start')/$(untouched)/$(ls "$STATE/turns" 2>/dev/null | wc -l | tr -d ' ')" "0/yes/0"
+fresh; packets framing fit; rm -rf "$CODEX_HOME/sessions"; rollout $U2 20000 258400; printf '%s\n' "$U2" > "$STATE/review-thread"
+out="$(ENSURE_WRITES_CONF="$(printf 'framing=on\nfit=off')" bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md 2>&1)"; rc=$?
+is "X8 and so is fit turned off meanwhile, with framing still on" \
+   "$rc/$(printf '%s' "$out" | grep -c 'packets.conf changed during dispatch')/$(untouched)" "1/1/yes"
 fresh; packets framing fit; rm -rf "$CODEX_HOME/sessions"; rollout $U2 250000 258400; printf '%s\n' "$U2" > "$STATE/review-thread"
 mkdir -p "$(dirname "$MAIN_LEDGER")" && mkdir "$MAIN_LEDGER.lock"
 out="$(XREVIEW_LEDGER_LOCK_WAIT=0.2 bash "$XREVIEW" dispatch --checkpoint pre-merge "${XD[@]}" b.md 2>&1)"; rc=$?
@@ -2188,14 +2241,34 @@ is "CL2 the notice names the labels missed" \
    "$(cat "$ROOT/err")" "xreview: this review is not clean (missed: cl2.txt); the merge gate stays closed for it"
 is "CL2 the receipt: missing on the target, not compacted, not clean" \
    "$(receipt "$nonce" | jq -c '[.targets[0].missing, .compacted, .clean]')" '[["cl2.txt"],false,false]'
-is "CL2 the labels missed wait for the next dispatch" "$(cat "$STATE/missed")" cl2.txt
+is "CL2 the labels missed wait for the next dispatch, with the round that missed them" "$(jq -c . "$STATE/missed")" \
+   "{\"checkpoint\":\"pre-merge\",\"branch\":\"$YB\",\"thread\":\"$U1\",\"labels\":[\"cl2.txt\"]}"
 rollout $U1 1000 258400
 bash "$XREVIEW" dispatch --checkpoint pre-merge --diff "$CLR" b.md >/dev/null 2>&1
 is "CL2 and the next dispatch's packet names them" "$(grep -c 'did not list: cl2.txt\.' "$P/packet")" 1
 
-fresh; printf 'stale\n' > "$STATE/missed"
+# The labels missed reach only a dispatch of the checkpoint and branch whose round missed them.
+framed_dispatch pre-merge --diff "$CLR"
+RPC_WAIT_OUT="$(framed changes cl1.txt)" bash "$XREVIEW" collect "$nonce" >/dev/null 2>&1
+rollout $U1 1000 258400
+bash "$XREVIEW" dispatch --checkpoint spec --diff "$CLR" b.md >/dev/null 2>&1
+is "M4 a spec dispatch does not get the labels a pre-merge round missed" "$(grep -c 'did not list' "$P/packet")" 0
+is "M4 and they stay for the next pre-merge dispatch of the branch" "$(jq -r '.labels | join(" ")' "$STATE/missed" 2>/dev/null)" cl2.txt
+git switch -q -c m4-other
+bash "$XREVIEW" dispatch --checkpoint pre-merge --diff "$CLR" b.md >/dev/null 2>&1
+git switch -q "$YB"
+is "M4 nor does a pre-merge dispatch on another branch" \
+   "$(grep -c 'did not list' "$P/packet")/$(jq -r '.labels | join(" ")' "$STATE/missed" 2>/dev/null)" "0/cl2.txt"
+bash "$XREVIEW" dispatch --checkpoint pre-merge --diff "$CLR" b.md >/dev/null 2>&1
+is "M4 a pre-merge dispatch of the branch gets them, and spends them" \
+   "$(grep -c 'did not list: cl2.txt\.' "$P/packet")/$([ -e "$STATE/missed" ] && echo left || echo gone)" "1/gone"
+printf 'cl2.txt\n' > "$STATE/missed"
+bash "$XREVIEW" dispatch --checkpoint pre-merge --diff "$CLR" b.md >/dev/null 2>&1
+is "M4 a list that names no round is never used" "$(grep -c 'did not list' "$P/packet")" 0
+
+fresh; missed_for pre-merge "$YB" stale
 nonce="$(bash "$XREVIEW" dispatch --checkpoint pre-merge --diff "$CLR" b.md 2>/dev/null)"
-printf 'stale\n' > "$STATE/missed"
+missed_for pre-merge "$YB" stale
 RPC_WAIT_OUT='{"verdict":"approve","findings":[]}' bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
 r="$(receipt "$nonce")"
 is "CL3 with every switch off the receipt still records compacted and clean" "$rc/$(printf '%s' "$r" | jq -c '[.compacted, .clean]')" "0/[false,true]"
@@ -2230,11 +2303,11 @@ is "CL4b a report about another turn (a stale file) is no report: unknown" \
    "$(receipt "$nonce" | jq -c '[.compacted, .clean]')" "[null,false]"
 
 framed_dispatch pre-merge --diff "$CLR"
-seq 1 60 | sed 's/^/f/' > "$STATE/turns/$nonce.shown"
+seq 1 60 | sed 's/^/f/' | jq -Rnc '[inputs]' > "$STATE/turns/$nonce.shown"
 RPC_WAIT_OUT="$(framed approve f1)" bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"
 is "CL5 a target records at most 50 missing labels, in shown order" \
    "$(receipt "$nonce" | jq -c '.targets[0].missing | [length, first, last]')" '[50,"f2","f51"]'
-is "CL5 the next dispatch gets every one of them" "$(grep -c . "$STATE/missed")/$(tail -1 "$STATE/missed")" "59/f60"
+is "CL5 the next dispatch gets every one of them" "$(jq -r '"\(.labels | length)/\(.labels[-1])"' "$STATE/missed")" "59/f60"
 is "CL5 the notice shows ten and counts the rest" "$(cat "$ROOT/err")" \
    "xreview: this review is not clean (missed: f2, f3, f4, f5, f6, f7, f8, f9, f10, f11 … (+49 more)); the merge gate stays closed for it"
 
@@ -2249,7 +2322,7 @@ is "CL7 both reasons, and a spec review names no consequence" \
    "$(cat "$ROOT/err")" "xreview: this review is not clean (compacted; missed: cl2.txt)"
 
 framed_dispatch pre-merge --diff "$CLR" --diff "$V2:main...feature"
-is "CL8 (setup) two targets, each label carrying its target's" "$(tr '\n' ' ' < "$STATE/turns/$nonce.shown")" ".:cl1.txt .:cl2.txt $V2:a.txt "
+is "CL8 (setup) two targets, each label carrying its target's" "$(jq -r 'join(" ")' "$STATE/turns/$nonce.shown")" ".:cl1.txt .:cl2.txt $V2:a.txt"
 RPC_WAIT_OUT="$(framed approve .:cl1.txt .:cl2.txt)" bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"
 is "CL8 each target records only its own missing labels" \
    "$(receipt "$nonce" | jq -c '.targets[0].missing')/$(receipt "$nonce" "$V2LEDGER" | jq -c '.targets[0].missing')" "[]/[\"$V2:a.txt\"]"
@@ -2259,15 +2332,15 @@ is "CL8 and the receipt in each ledger is not clean" \
 # Two ranges of one repository both carry the prefix .: a label cannot be told apart by it, so
 # every target it could belong to is held to it (fail closed), never just one of them.
 framed_dispatch pre-merge --diff "$CLR" --diff "$BIGR"
-is "CL8b (setup) two ranges on ., one prefix" "$(tr '\n' ' ' < "$STATE/turns/$nonce.shown")" \
-   ".:cl1.txt .:cl2.txt .:big1.txt .:big2.txt .:big3.txt "
+is "CL8b (setup) two ranges on ., one prefix" "$(jq -r 'join(" ")' "$STATE/turns/$nonce.shown")" \
+   ".:cl1.txt .:cl2.txt .:big1.txt .:big2.txt .:big3.txt"
 RPC_WAIT_OUT="$(framed approve .:cl1.txt .:big1.txt .:big2.txt .:big3.txt)" bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"
 is "CL8b a label two targets' prefixes match equally is missing from both" \
    "$(receipt "$nonce" | jq -c '[.targets[].missing]')" '[[".:cl2.txt"],[".:cl2.txt"]]'
 
 # With framing on, labels shown that cannot be read are no coverage at all: never clean.
 framed_dispatch pre-merge --diff "$CLR"
-rm -f "$STATE/turns/$nonce.shown"; printf 'stale\n' > "$STATE/missed"
+rm -f "$STATE/turns/$nonce.shown"; missed_for pre-merge "$YB" stale
 RPC_WAIT_OUT="$(framed approve cl1.txt cl2.txt)" bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
 is "CL9 the shown labels gone: the answer is printed, exit 0" "$rc/$(jq -r .verdict "$ROOT/out")" "0/approve"
 is "CL9 coverage cannot be judged, so the notice says so" \
@@ -2275,6 +2348,34 @@ is "CL9 coverage cannot be judged, so the notice says so" \
 is "CL9 not clean, and every target missing the fixed sentinel" \
    "$(receipt "$nonce" | jq -c '[.clean, .targets[0].missing]')" '[false,["(shown labels unreadable)"]]'
 is "CL9 the sentinel never reaches the next dispatch" "$([ -e "$STATE/missed" ] && cat "$STATE/missed" || echo gone)" gone
+# A .shown in the line format, as a dispatch before the JSON one wrote it, fails closed: a label
+# can hold a newline, so lines are not labels.
+framed_dispatch pre-merge --diff "$CLR"
+printf 'cl1.txt\ncl2.txt\n' > "$STATE/turns/$nonce.shown"
+RPC_WAIT_OUT="$(framed approve cl1.txt cl2.txt)" bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+is "CL9b a .shown in lines is not read: not clean, the sentinel, the notice" \
+   "$rc/$(receipt "$nonce" | jq -c '[.clean, .targets[0].missing]')/$(grep -c 'coverage unknown' "$ROOT/err")" \
+   '0/[false,["(shown labels unreadable)"]]/1'
+# A file name that holds a newline or another control character is one label, quoted as git
+# quotes a path, in the packet, in .shown and in what the reviewer is held to.
+printf 'nl\n' > "$(printf 'nl\nname.txt')"; printf 'ctl\n' > "$(printf 'ctl\001name.txt')"
+git add -- "$(printf 'nl\nname.txt')" "$(printf 'ctl\001name.txt')" && git commit -q -m "two names a line-based list would break"
+NLR="$(git rev-parse HEAD~1)..$(git rev-parse HEAD)"
+QN='"nl\nname.txt"'; QC='"ctl\001name.txt"'
+framed_dispatch pre-merge --diff "$NLR"
+is "CL11 .shown holds each name as one quoted label" "$(jq -c . "$STATE/turns/$nonce.shown")" "$(jq -nc --arg a "$QC" --arg b "$QN" '[$a, $b]')"
+is "CL11 and the file list prints them so, a line each" \
+   "$(grep -cxF -- "  shown     +1 -0  $QC" "$P/packet")/$(grep -cxF -- "  shown     +1 -0  $QN" "$P/packet")/$(grep -cx 'name.txt' "$P/packet")" "1/1/0"
+RPC_WAIT_OUT="$(framed approve "$QC" "$QN")" bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"
+is "CL11 a reviewer that lists the labels as printed covers them" \
+   "$(receipt "$nonce" | jq -c '[.clean, .targets[0].missing]')/$(cat "$ROOT/err")" "[true,[]]/"
+framed_dispatch pre-merge --diff "$NLR"
+RPC_WAIT_OUT="$(framed approve "$QC")" bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"
+is "CL11 one it left out is missing by its label, and kept for the next dispatch" \
+   "$(receipt "$nonce" | jq -c '.targets[0].missing')/$(jq -c .labels "$STATE/missed")" "$(jq -nc --arg b "$QN" '[$b]')/$(jq -nc --arg b "$QN" '[$b]')"
+rollout $U1 1000 258400
+bash "$XREVIEW" dispatch --checkpoint pre-merge --diff "$NLR" b.md >/dev/null 2>&1
+is "CL11 which names it as the file list printed it" "$(grep -cF -- "did not list: $QN. Review them too." "$P/packet")" 1
 
 # Two collects of one turn at once: the second one's report never replaces, or removes, the first's.
 framed_dispatch pre-merge --diff "$CLR"
@@ -2310,6 +2411,58 @@ nonce="$(bash "$XREVIEW" dispatch --checkpoint plan --diff "$PBR" b.md 2>/dev/nu
 XREVIEW_REAL_PACKET="$PACKET" XREVIEW_PACKET="$ROOT/fail-blobs.py" RPC_WAIT_OUT='{"verdict":"approve","findings":[]}' \
   bash "$XREVIEW" collect "$nonce" >/dev/null 2>&1; rc=$?
 is "PB2 plan-blobs failing records [] and never fails the collect" "$rc/$(receipt "$nonce" | jq -c '.targets[0].plan_blobs')" "0/[]"
+
+echo "OP. a plan its plan review showed whole leaves the pre-merge packet, end to end (spec 2026-10-25 §3.5)"
+OPP=docs/superpowers/plans/2026-10-25-op.md
+# opr <dir>: a repository on main with a branch, feature, checked out, whose one commit adds a plan.
+opr() {
+  mkdir -p "$1" && git -C "$1" init -q -b main && git -C "$1" config user.email t@t \
+    && git -C "$1" config user.name t && git -C "$1" config commit.gpgsign false
+  printf 'seed\n' > "$1/seed.txt" && git -C "$1" add seed.txt && git -C "$1" commit -q -m init
+  git -C "$1" switch -q -c feature && mkdir -p "$1/docs/superpowers/plans"
+  printf '# op plan\n\n- [ ] one\n- [ ] two\n- [ ] three\n- [ ] four\n- [ ] five\n' > "$1/$OPP"
+  git -C "$1" add "$OPP" && git -C "$1" commit -q -m "the plan"
+  printf 'body\n' > "$1/b.md"
+}
+opgate() { /usr/bin/python3 "$LEDGER" decide "$1" main main feature | jq -r 'if .allow then "allow" else "deny: " + .reason end'; }
+for variant in clean unclean; do
+  OP="$ROOT/op-$variant"; opr "$OP"
+  OPCWD="$(git -C "$OP" rev-parse --show-toplevel)"
+  OPSTATE="$XDG_STATE_HOME/xreview/$(printf '%s' "$OPCWD" | tr '/' '_' | sed 's/^_//')"
+  OPLEDGER="$(/usr/bin/python3 "$LEDGER" path "$OP")"
+  cd "$OP" || exit 1
+  fresh; export PANE_CWD="$OPCWD"; packets framing omit_plans
+  pn="$(bash "$XREVIEW" dispatch --checkpoint plan --diff main...feature b.md 2>/dev/null)"
+  OPBLOB="$(git rev-parse "feature:$OPP")"
+  if [ "$variant" = clean ]; then ans="$(framed approve "$OPP")"; else ans="$(framed approve)"; fi
+  RPC_WAIT_OUT="$ans" bash "$XREVIEW" collect "$pn" >/dev/null 2>&1
+  is "OP ($variant) the plan review's receipt binds the plan it showed whole, by its blob, and is $variant" \
+     "$(receipt "$pn" "$OPLEDGER" | jq -c '[.targets[0].plan_blobs, .clean]')" \
+     "$(jq -nc --arg p "$OPP" --arg b "$OPBLOB" --argjson c "$([ "$variant" = clean ] && echo true || echo false)" '[{($p): $b}, $c]')"
+  printf 'Status: done\n' >> "$OPP" && git add "$OPP" && git commit -q -m "the plan is done"
+  fresh; export PANE_CWD="$OPCWD"; packets framing omit_plans
+  mn="$(bash "$XREVIEW" dispatch --checkpoint pre-merge --diff main...feature b.md 2>/dev/null)"
+  if [ "$variant" = clean ]; then
+    is "OP the pre-merge packet says the plan was shown whole in the plan review" \
+       "$(grep -cxF "$OPP was shown whole in the approved plan review $pn; only its changes since then are shown here." "$P/packet")" 1
+    is "OP and shows only what changed since: the status line, not the plan's own lines" \
+       "$(grep -cx '+Status: done' "$P/packet")/$(grep -cx '+# op plan' "$P/packet")/$(grep -cx '+- \[ \] one' "$P/packet")" "1/0/0"
+    is "OP .targets records the plan, the plan review and the blob it was bound to" \
+       "$(jq -c '.targets[0].plans_from' "$OPSTATE/turns/$mn.targets")" \
+       "$(jq -nc --arg p "$OPP" --arg n "$pn" --arg b "$OPBLOB" '[{path: $p, nonce: $n, blob: $b}]')"
+  else
+    is "OP (unclean) a plan review that was not clean binds nothing: the plan is shown whole" \
+       "$(grep -c 'was shown whole in the approved plan review' "$P/packet")/$(grep -cx '+# op plan' "$P/packet")/$(grep -cx '+Status: done' "$P/packet")" "0/1/1"
+    is "OP (unclean) and .targets records no plans_from entry" "$(jq -c '.targets[0].plans_from' "$OPSTATE/turns/$mn.targets")" "[]"
+  fi
+  RPC_WAIT_OUT="$(framed approve "$OPP")" bash "$XREVIEW" collect "$mn" >/dev/null 2>&1
+  is "OP ($variant) the pre-merge receipt is clean and keeps plans_from" \
+     "$(receipt "$mn" "$OPLEDGER" | jq -c '[.clean, (.targets[0].plans_from | length)]')" \
+     "[true,$([ "$variant" = clean ] && echo 1 || echo 0)]"
+  is "OP ($variant) and the merge gate opens on it" "$(opgate "$OP")" allow
+done
+cd "$ROOT/repo" || exit 1
+unset PANE_CWD
 
 echo "SL. collect runs a sliced round to the end, one fresh thread per slice (spec 2026-10-25 §3.3)"
 for n in 1 2 3; do seq 1 1500 | sed "s/^/slice $n line /" > "s$n.txt"; done
@@ -2489,7 +2642,7 @@ sliced
 framed approve > "$P/answer.turn-$U1"; framed approve $L1 $L2 > "$P/answer.turn-$U3"; framed approve $L3 > "$P/answer.turn-$U4"
 bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"
 is "SL6 a label listed only by a slice that did not show it is not covered" \
-   "$(receipt "$nonce" | jq -c '[.clean, .targets[0].missing]')/$(cat "$STATE/missed")" '[false,["s1.txt"]]/s1.txt'
+   "$(receipt "$nonce" | jq -c '[.clean, .targets[0].missing]')/$(jq -r '.labels | join(" ")' "$STATE/missed")" '[false,["s1.txt"]]/s1.txt'
 is "SL6 though the merged answer still lists what was listed" "$(jq -c .reviewed_files "$ROOT/out")" '["s1.txt","s2.txt","s3.txt"]'
 is "SL6 and the notice names the slice's label" \
    "$(cat "$ROOT/err")" "xreview: this review is not clean (missed: s1.txt); the merge gate stays closed for it"
@@ -2540,7 +2693,7 @@ is "SL10 a resumed collect's first wait, after a slice start that waited 2.5 s f
    "$rc/$([ -n "$given" ] && [ "$given" -lt 2700 ] && [ "$given" -ge 2600 ] && echo less || echo "${given:-none}")" "0/less"
 sliced; approve_all "turn-$U3"
 ENSURE_RC=1 bash "$XREVIEW" collect "$nonce" >/dev/null 2>&1
-hold_lock 2.5
+hold_lock 4   # twice the 2 s budget: the lock wait uses it up with 2 s to spare
 : > "$CALLS"
 bash "$XREVIEW" collect "$nonce" 2 > "$ROOT/out" 2> "$ROOT/err"; rc=$?
 wait "$holder" 2>/dev/null
@@ -2558,6 +2711,25 @@ bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
 is "SL11 a slice's shown labels unreadable: not clean, the sentinel on the target, the notice says so" \
    "$rc/$(receipt "$nonce" | jq -c '[.clean, .targets[0].missing]')/$(cat "$ROOT/err")" \
    '0/[false,["(shown labels unreadable)"]]/xreview: this review is not clean (coverage unknown); the merge gate stays closed for it'
+
+# Once a slice's turn exists, a refusal while its state is saved is collect's own: the pane's exit
+# guard (which relaunches a bare Codex) is disarmed, and nothing says the slice has not started.
+sliced; approve_all "turn-$U3"
+printf '%s\n' "$sl.lock" > "$P/start_dir.$U3"   # the round's lock cannot be opened once slice 2 starts
+: > "$CALLS"
+bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+is "SL12 the state cannot be locked after slice 2's turn started: refused, naming the lock" \
+   "$rc/$(grep -c "cannot open $sl.lock" "$ROOT/err")/$(called "turn-start --thread $U3")" "1/1/1"
+is "SL12 without the stale word that the slice has not started" "$(grep -c 'has not started' "$ROOT/err")" 0
+is "SL12 and no bare Codex is launched into the pane once the turn exists" \
+   "$(awk -v t="turn-start --thread $U3" 'index($0, t) {f = 1} f && /herdr pane run/ && !/ resume / {c++} END {print c + 0}' "$CALLS")" 0
+is "SL12 the pane follows the slice it started first: the refusal comes after the pane step" \
+   "$(resumed "$U3")/$([ "$(first "herdr pane run w1:p2 $PANE_CMD -C .* resume $U3")" -gt "$(first "turn-start --thread $U3")" ] && echo after)" "1/after"
+rm -f "$P/start_dir.$U3"; rmdir "$sl.lock"
+: > "$CALLS"
+bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+is "SL12 collecting again takes slice 2 up from the turn record, never starting it twice" \
+   "$rc/$(jq -r .verdict "$ROOT/out")/$(called "turn-start --thread $U3")/$(called "turn-wait --thread $U3 --turn turn-$U3 ")" "0/approve/0/1"
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))

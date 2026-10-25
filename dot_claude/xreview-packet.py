@@ -77,9 +77,14 @@ SLICE_HEADER = ("This is slice {} of {} of one change. The other slices are revi
 LISTED_PLAN = ("{} was shown whole in the approved plan review {}; only its changes since then are "
                "shown here.")
 MISSED_FILES = "The last round's reviewed_files did not list: {}. Review them too."
-# Today's refusal when the diffs exceed the cap (xreview dispatch), verbatim.
+# The line a framed review without diffs carries where the file list would be (spec 3.1).
+NO_DIFFS = "This review carries no diffs, so there is no file list; return reviewed_files as an empty list."
+# Today's refusal when the diffs exceed the cap (xreview dispatch), verbatim; with framing on, the
+# cap is Michael's to raise, as the cross-review skill says, and nothing offers another way round it.
 CAP_REFUSAL = ("the diffs are too large to carry inline ({} bytes, cap {}).\n"
                "Review them in slices, or raise XREVIEW_MAX_DIFF_BYTES if the reviewer can hold it.")
+CAP_REFUSAL_FRAMED = ("the diffs are too large to carry inline ({} bytes, cap {}). The cap is Michael's to "
+                      "raise; no review was started.")
 # Room a slice keeps for the digits of `slice i of n` and the like, and for a part's own list line.
 SLICE_SLACK = 64
 LINE_SLACK = 96
@@ -159,6 +164,26 @@ def fits(context_now, nbytes, window):
 
 
 # ------------------------------------------------------------------ the file list
+def _has_control(text):
+    return any(ord(c) < 0x20 or c == "\x7f" for c in text)
+
+
+def label_text(label):
+    """A label as a packet prints it, and as the reviewer is held to it: as it is, unless it holds
+    a control character or starts with a double quote; then it is in double quotes with git's C
+    escapes (the ledger's quote_path), so no file name can end a line of the file list or forge
+    one, and no two labels print alike."""
+    if _has_control(label) or label.startswith('"'):
+        return _ledger().quote_path(os.fsencode(label)).decode("ascii")
+    return label
+
+
+def _line_safe(text):
+    """text for a fixed note: quoted only when it holds a control character, so a label the file
+    list already printed quoted is named as it was printed."""
+    return label_text(text) if _has_control(text) else text
+
+
 def file_list(entries):
     """The packet's opening list: `Files in this change (<n>):`, then one line per entry,
     `  <mark:9> +<plus> -<minus>  <label>`. entries is [(mark, plus, minus, label)]. Every line,
@@ -361,7 +386,8 @@ def _byte_parts(header, group, old_next, new_next, max_bytes):
         return _hunk_head(old_next, old_count, new_next, new_count, tail)
 
     budget = max_bytes - len(header) - len(head(size, size)) - len(prefix) - 1 - len(markers)
-    if budget <= 0:
+    # Under 4 bytes a range cannot always hold a whole UTF-8 character, and would cut one.
+    if budget < 4:
         raise ValueError("max_bytes {} is too small to hold part of a {}-byte line".format(max_bytes, size))
     parts, pos = [], 0
     while pos < size:
@@ -552,7 +578,7 @@ class _RolloutLines(object):
         zstd = shutil.which("zstd")
         if not zstd:
             raise OSError("zstd is not installed, so {} cannot be read".format(self.path))
-        self.proc = subprocess.Popen([zstd, "-dc", self.path], stdin=subprocess.DEVNULL,
+        self.proc = subprocess.Popen([zstd, "-dc", "--", self.path], stdin=subprocess.DEVNULL,
                                      stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         return self.proc.stdout
 
@@ -862,7 +888,7 @@ def _static_rows(t):
             mark = "listed"
         else:
             continue
-        rows.append(((t.index, os.fsencode(path), 0), mark, plus, minus, t.prefix + path))
+        rows.append(((t.index, os.fsencode(path), 0), mark, plus, minus, label_text(t.prefix + path)))
     return rows
 
 
@@ -875,9 +901,9 @@ def _notes(ts, missed, first=None):
             lines.append((t.prefix + " " if t.prefix else "") + DELTA_HEADER.format(t.follows["nonce"]))
     for t in ts:
         for path in sorted(t.listed):
-            lines.append(LISTED_PLAN.format(t.prefix + path, t.listed[path]["nonce"]))
+            lines.append(LISTED_PLAN.format(label_text(t.prefix + path), t.listed[path]["nonce"]))
     if missed:
-        lines.append(MISSED_FILES.format(", ".join(missed)))
+        lines.append(MISSED_FILES.format(", ".join(_line_safe(m) for m in missed)))
     return lines
 
 
@@ -936,10 +962,10 @@ def _unsliced(c, ts):
     rows = []
     for t in ts:
         for u in t.units:
-            rows.append((_row_key(t.index, u), "shown", u.plus, u.minus, t.prefix + u.label))
+            rows.append((_row_key(t.index, u), "shown", u.plus, u.minus, label_text(t.prefix + u.label)))
         rows.extend(_static_rows(t))
     shown =[r[4] for r in sorted((r for r in rows if r[1] == "shown"), key=lambda r: r[0])]
-    listing = _listing_bytes(rows) if ts else b""
+    listing = _listing_bytes(rows) if ts else os.fsencode(NO_DIFFS + "\n")
     data = _framed(c["reviewer"], c["framing"], c["body"], _notes(ts, c["missed"]), listing,
                    [(t.spec, t.diff) for t in ts])
     return data, shown
@@ -972,7 +998,7 @@ def _slices(c, ts, window):
     units = []
     for t in ts:
         for u in t.units:
-            room = headroom - len(os.fsencode(t.prefix + u.path)) - LINE_SLACK
+            room = headroom - len(os.fsencode(label_text(t.prefix + u.path))) - LINE_SLACK
             if len(u.text) <= room:
                 parts = [u]
             elif room < MIN_PART:
@@ -987,11 +1013,12 @@ def _slices(c, ts, window):
         raise _Refuse("the request alone does not fit a fresh thread, and there is no diff to slice")
     units.sort(key=lambda x: x[0])
     static = [r for t in ts for r in _static_rows(t)]
-    all_rows = [(k, "shown", p.plus, p.minus, ts[i].prefix + p.label) for k, i, p in units] + static
+    label = lambda i, p: label_text(ts[i].prefix + p.label)
+    all_rows = [(k, "shown", p.plus, p.minus, label(i, p)) for k, i, p in units] + static
     total = len(all_rows)
     whole_list = len(_listing_bytes(all_rows))
     full_mode = whole_list <= share * top
-    own_line = lambda i, p: len(os.fsencode(FILE_LIST_LINE.format("shown", p.plus, p.minus, ts[i].prefix + p.label))) + 1
+    own_line = lambda i, p: len(os.fsencode(FILE_LIST_LINE.format("shown", p.plus, p.minus, label(i, p)))) + 1
     fixed = whole_list if full_mode else len(_cut_listing(total, [], ts))
     budget = top - base_len - SLICE_SLACK - fixed
     slices, used, present = [[]], 0, set()
@@ -1010,7 +1037,7 @@ def _slices(c, ts, window):
     out = []
     for number, members in enumerate(slices, 1):
         mine = set(members)
-        rows = [(k, "shown" if n in mine else "elsewhere", p.plus, p.minus, ts[i].prefix + p.label)
+        rows = [(k, "shown" if n in mine else "elsewhere", p.plus, p.minus, label(i, p))
                 for n, (k, i, p) in enumerate(units) if full_mode or n in mine]
         listing = _listing_bytes(rows + static) if full_mode else _cut_listing(total, rows, ts)
         blocks = [(t.spec, b"".join(units[n][2].text for n in members if units[n][1] == t.index))
@@ -1021,8 +1048,8 @@ def _slices(c, ts, window):
             widest = max(members, key=lambda n: len(units[n][2].text))
             raise _Refuse("slice {} of the change came out at {} bytes, above the {} a fresh thread allows; "
                           "the unit that cannot fit is {}".format(number, len(data), top,
-                                                                 ts[units[widest][1]].prefix + units[widest][2].label))
-        out.append((data, [ts[units[n][1]].prefix + units[n][2].label for n in members]))
+                                                                 label(units[widest][1], units[widest][2])))
+        out.append((data, [label(units[n][1], units[n][2]) for n in members]))
     return out
 
 
@@ -1068,6 +1095,7 @@ def build(request, outdir=None):
         {action: send|fresh|slices|refuse, reason, kind: full|delta|slices,
          packets: [{file, shown: [labels]}], targets: [target + {packet, delta_from, history,
          plans_from}], switches}.
+    A shown label is as the file list prints it (label_text), which is what the reviewer lists.
     With every switch off the packet is today's byte for byte and the cap applies as today. With
     framing on and fit off the cap still applies, to the diffs the packet carries. With fit on
     (spec 3.2): a delta or a full packet; sent on the checkpoint's thread if it fits; else on a
@@ -1130,7 +1158,7 @@ def build(request, outdir=None):
     if not sw["fit"]:
         total = sum(_chars(t.diff) for t in ts)
         if total > cap:
-            return decide("refuse", CAP_REFUSAL.format(total, cap), kind, [], ts)
+            return decide("refuse", CAP_REFUSAL_FRAMED.format(total, cap), kind, [], ts)
         data, shown = _unsliced(c, ts)
         return send("send", "the fit check is off, so the cap holds", kind, ts, data, shown)
 
