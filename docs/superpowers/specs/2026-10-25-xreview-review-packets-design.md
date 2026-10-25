@@ -561,4 +561,30 @@ files stay in `~/.local/state/xreview/replay/` and are never committed.
 
 ## 9. Replay results
 
-(Filled in after the replay.)
+Run 2026-10-25 from this branch: 27 cases, 88 arm turns (all completed, none errored or
+interrupted), 38.1M Codex tokens, no stop (`stopped_at` none), at gpt-6-astra, effort
+medium. 36 historical rounds were judged for known-real findings; 44 of their 47 P0–P2
+findings were judged known-real.
+
+| Switch | Cases | Known-real | Recall A / A′ / F / B | P0/P1 missed | Coverage failures | Tokens A / A′ / F / B | Compactions A / A′ / F / B |
+|---|---|---|---|---|---|---|---|
+| `framing` | 10 | 12 | 0.25 / 0.17 / 0.42 / 0.33 | 0 | 0% | 3.29M / 3.51M / 3.38M / 2.65M | 0 / 0 / 0 / 0 |
+| `omit_plans` | 10 | 12 | 0.25 / 0.17 / – / 0.33 | 0 | 0% | 3.29M / 3.51M / – / 2.65M | 0 / 0 / – / 0 |
+| `delta` | 10 | 13 | 0.62 / 0.62 / – / 0.54 | 1 | 0% | 3.47M / 3.85M / – / 3.03M | 0 / 0 / – / 0 |
+| `fit` | 6 | 6 | 0.83 / 0.67 / – / 0.33 | 1 | 0% | 4.74M / 4.59M / – / 5.64M | 2 / 2 / – / 0 |
+
+- The `framing` cases are the `omit_plans` cases (§5.1), so the two rows share A, A′ and B.
+- `fit` ran on the 6 cases that had local commits and a known-real finding: 2 slicing and
+  4 fresh-thread cases, fewer than §5.1's 7 + 5.
+- Samples are small: one finding moves a recall by 0.08 (framing), 0.08 (delta) or 0.17
+  (fit).
+
+Switch states that follow (§5.5):
+
+- **`framing`: on.** F and B recall at least the lower of A and A′, miss no P0/P1 both found,
+  and no framed run failed coverage. B used about 19% fewer tokens than A.
+- **`omit_plans`: on.** B meets the bar on the same cases.
+- **`delta`: off.** B recalled less than both A and A′ and missed a P0/P1 that both found.
+- **`fit`: off.** B recalled less than both A and A′ and missed a P0/P1 that both found, though
+  it avoided the compactions A and A′ hit. With `fit` off, the size cap stays in force
+  (§3.8), so dispatch still refuses a packet over `XREVIEW_MAX_DIFF_BYTES`.
