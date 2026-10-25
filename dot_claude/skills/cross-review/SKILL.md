@@ -109,13 +109,16 @@ A budget running out is not automatically a timeout:
 - **Exit 1, "the reviewer turn failed"** — the turn itself did not complete. Report it and
   stop. Never re-dispatch.
 
-The packet is xreview's to build, and dispatch never refuses on size. A very large change is
+The packet is xreview's to build, and dispatch never refuses on size,
+except on a thread Michael pinned (`xreview init` or `XREVIEW_THREAD`). A very large change is
 reviewed in slices, each on its own fresh thread, with the pane following. Slices take
 longer, so give `collect` a larger budget; it runs the remaining slices itself, and exit 3
-is resumed as usual.
+is resumed as usual. If a sliced collect stops on a pane or daemon refusal, or on a slice
+with no turn on record, run collect again once it clears. Never re-dispatch a sliced round.
 
 A plan review is dispatched with `--diff <dest>...<branch>` once the plan is committed, so
-that pre-merge can bind the plan to its approval.
+that pre-merge can bind the plan to its approval. Commit each round's plan fixes before
+re-dispatching.
 
 `xreview` wraps outbound packets in `<cross-review-request>` and returns the reviewer's
 answer. It applies provenance itself, because Michael is no longer in the channel to
@@ -173,8 +176,9 @@ Dispatch refuses, before starting a turn or touching the pane, when:
 Only the "no turn on record" collect is a timeout, and that one is **ambiguous, never
 retried** — report it and stop. A still-running turn is not a timeout; wait it out.
 
-When a review is not clean (it compacted, or missed shown files), collect says so on
-stderr: `xreview: this review is not clean (…)`, and the merge gate may stay closed. Act on
+When a review is not clean (it compacted, its compaction could not be read, or it missed
+shown files), collect says so on stderr: `xreview: this review is not clean (…)`. The merge
+gate may stay closed, and a plan review that is not clean binds no plan. Act on
 its findings and dispatch the next round as usual; this is not an escalation trigger.
 
 **Exit 4: the answer does not match the findings schema.** The raw text is printed and is
@@ -214,7 +218,8 @@ Keep going until the review converges or the disagreement is real. Michael is th
 tiebreaker, not the courier — he should hear about a finding because it needs his
 judgement, never because a round ended.
 
-**Rounds within a checkpoint stay on the same thread.** Round 4 of a spec sign-off is
+**Rounds within a checkpoint stay on the same thread** (barring xreview's own move
+when the thread is full, below). Round 4 of a spec sign-off is
 normal operation, not degradation — iterating on one thread is how a review converges,
 and there is no limit on rounds: a review ends when it converges or on a trigger in the
 escalation list below. Never stop, rotate or escalate because a thread has answered a few
@@ -252,6 +257,8 @@ Escalate to Michael when, and only when:
 - `xreview` refuses because it cannot inspect the Codex pane (`herdr pane process-info` or
   `herdr pane get`), cannot read whether a thread is running, or cannot lock the Codex pane
   (or cannot create or open its lock file).
+- `xreview` refuses because a pinned review thread cannot hold the packet. The pin is
+  Michael's; never drop it with `xreview round --reset`.
 - `xreview` refuses because the pane is resuming something other than a thread id (for
   example `codex resume --last` or a picker). The pane is Michael's.
 
@@ -269,7 +276,7 @@ all if the pane never gets there, so a thread that could not be confirmed watche
 listed for the next dispatch that succeeds. Nobody starts a Codex session by hand for this.
 
 Rotation is keyed to **checkpoints, not rounds**. Moving from plan review to the pre-merge
-review rotates; going from round 3 to round 4 of the same plan review does not.
+review rotates; going from round 3 to round 4 of the same plan review does not, unless the thread is full and was moved by xreview.
 
 ## Consultation is not review
 

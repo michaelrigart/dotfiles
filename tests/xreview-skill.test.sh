@@ -555,7 +555,17 @@ for phrase in 'dispatch never refuses on size' \
               'this review is not clean' \
               'reviewed in slices' \
               'a larger budget' \
-              'once the plan is committed'; do
+              'once the plan is committed' \
+              'except on a thread Michael pinned' \
+              'not an escalation trigger' \
+              'dispatch the next round as usual' \
+              'its compaction could not be read' \
+              'binds no plan' \
+              'Never re-dispatch a sliced round' \
+              'collect again once it clears' \
+              'Commit each round'"'"'s plan fixes before re-dispatching' \
+              'barring xreview'"'"'s own move' \
+              'unless the thread is full and was moved by xreview'; do
   if printf '%s' "$flat" | grep -qF "$phrase"; then
     _pass "the skill says '$phrase'"
   else _fail "the skill says '$phrase'" "missing"; fi
@@ -563,6 +573,15 @@ done
 if printf '%s' "$flat" | grep -qF -- '`--diff <dest>...<branch>` once the plan is committed'; then
   _pass "the skill dispatches plan reviews with --diff once the plan is committed"
 else _fail "the skill dispatches plan reviews with --diff once the plan is committed" "missing"; fi
+
+# The escalation list is exactly these bullets: one new (a pinned thread that cannot hold the
+# packet; the pin is Michael's), the rest unchanged.
+nb="$(grep -c '^- ' <<<"$esc")"
+[ "$nb" = 11 ] && _pass "the escalation list has 11 bullets" \
+  || _fail "the escalation list has 11 bullets" "found $nb"
+if printf '%s' "$(tr '\n' ' ' <<<"$esc" | sed 's/  */ /g')" | grep -qF -- '- `xreview` refuses because a pinned review thread cannot hold the packet. The pin is Michael'"'"'s; never drop it with `xreview round --reset`.'; then
+  _pass "the escalation list names the pinned-thread refusal"
+else _fail "the escalation list names the pinned-thread refusal" "missing"; fi
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
