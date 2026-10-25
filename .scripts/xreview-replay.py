@@ -146,7 +146,7 @@ def rollout_records(thread):
         return []
     try:
         if path.endswith(".zst"):
-            raw = subprocess.run(["zstd", "-dc", path], capture_output=True, timeout=300).stdout
+            raw = subprocess.run(["zstd", "-dc", "--", path], capture_output=True, timeout=300).stdout
         else:
             with open(path, "rb") as f:
                 raw = f.read()

@@ -878,6 +878,22 @@ if shutil.which("zstd"):
         (["tuZ"], "changes", 1234, True))
     is_("RP7 m-8 a turn's tokens are the token_counts inside it, not the history before it",
         H.turn_usage("thZ", "tuZ"), {"tokens": 1000, "model": "m-1", "effort": "high"})
+else:
+    print("  SKIP: zstd not installed (RP7)")
+# zstd is told where its options end, whatever the path: no zstd needed, the call is recorded.
+Hz = load(HARNESS, "replay_z")
+home7b = os.path.join(ROOT, "codex7b")
+zpath = os.path.join(home7b, "sessions", "2026", "10", "02", "rollout-2026-10-02T00-00-00-thQ.jsonl.zst")
+os.makedirs(os.path.dirname(zpath))
+open(zpath, "wb").close()
+os.environ["CODEX_HOME"] = home7b
+argvs, real_run = [], Hz.subprocess.run
+Hz.subprocess.run = lambda argv, **kw: argvs.append(argv) or subprocess.CompletedProcess(argv, 0, b"", b"")
+try:
+    Hz.rollout_records("thQ")
+finally:
+    Hz.subprocess.run = real_run
+is_("RP7b zstd gets -- before the rollout's path", argvs, [["zstd", "-dc", "--", zpath]])
 
 PY
 )"
