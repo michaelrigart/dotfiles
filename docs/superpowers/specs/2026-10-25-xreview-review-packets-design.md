@@ -144,12 +144,19 @@ into slices. Each slice is a group of review units, packed in path order, with e
   exceeds a slice is split into **parts**, each with the file's `diff --git` header:
   - groups of whole hunks;
   - a single hunk larger than a slice is split into consecutive line ranges, each with a
-    corrected `@@` header.
+    corrected `@@` header;
+  - a single line larger than a slice (minified or generated content) is split into byte
+    ranges at UTF-8 character boundaries. Each range is a part that names its line and its
+    bytes (`line N, bytes a–b of c`).
 
-  Each part is labelled `<path>#<i>/<n>` and is a unit of its own. So every unit fits a
-  fresh thread, and the reviewer never fetches a patch itself.
+  Each part is labelled `<path>#<i>/<n>` and is a unit of its own. Every split ends at a
+  bounded size, so every unit fits a fresh thread, and the reviewer never fetches a patch
+  itself.
 - **Content.** Each slice turn carries the complete file list and its own units, plus a line
-  saying the other slices are reviewed in their own turns and any file may be opened.
+  saying the other slices are reviewed in their own turns and any file may be opened. The
+  file list is bounded too. If the complete list would take more than a tenth of a slice, a
+  slice carries only its own units' lines, plus the total count of files and the command
+  that lists them all.
 - **Coverage.** Each part's label is its own coverage entry (§3.6).
 
 Every slice runs on a **fresh thread of its own**, one after another, and the pane follows
@@ -204,25 +211,30 @@ packet.
 A plan is left out of a pre-merge packet (full, delta or slice) only as far as an approved
 plan review covered it. For each path under `docs/superpowers/plans/`:
 
-- **The binding.** xreview looks for the latest `plan`-checkpoint receipt in this
-  repository's ledger that is an `approve`, is clean, and whose target tip holds that path.
-  A receipt from before this design has no `clean` field and does not bind. A binding needs
-  a plan review dispatched with `--diff` (§4); a plan pasted into the body leaves no tip to
-  bind to.
-- **If one exists**, the plan is *listed* with the receipt's nonce. Instead of the plan's
-  whole patch, the packet shows only its patch from that tip's version to the current one,
+- **What a plan review proves.** A `plan`-checkpoint receipt records `plan_blobs`: each plan
+  path its packet showed **in full**, meaning the path was added within the reviewed range,
+  so the patch carried the whole file. Each entry carries the blob id at the tip. A plan that
+  existed unchanged in the range, or was only modified in it, is not in `plan_blobs`. Its
+  whole content was not in that packet.
+- **The binding.** For each plan path, xreview looks for the latest `plan`-checkpoint receipt
+  in this repository's ledger that is an `approve`, is clean, and has that path in
+  `plan_blobs`. A receipt from before this design has neither field and does not bind. A
+  binding needs a plan review dispatched with `--diff` (§4); a plan pasted into the body
+  leaves no tip to bind to.
+- **If one exists**, the plan is *listed* with the receipt's nonce and blob. Instead of the
+  plan's whole patch, the packet shows its patch from that blob to the current content,
   usually a few status and progress lines. A fixed line says the rest was reviewed at the
   plan checkpoint.
 - **If none exists**, the plan's whole patch is shown, as today.
 
-So every byte of the plan's current content was either approved at the plan checkpoint or is
-in this packet. Specs and every other path are always shown. The fingerprint and the gate
-still cover the plans.
+So every byte of the plan's current content was either shown whole in an approved plan review
+or is in this packet. Specs and every other path are always shown. The fingerprint and the
+gate still cover the plans.
 
 `xreview-ledger.py diff` gains a path exclusion plus the per-plan patches. Its header-count
 check counts the records it renders, so the "packet matches the change" check still holds.
-The receipt records `plans_from`: each listed plan path with the plan receipt it was bound
-to.
+The receipt records `plans_from`: each listed plan path with the plan receipt and the blob
+it was bound to.
 
 ### 3.6 Clean turns
 
@@ -245,7 +257,7 @@ A receipt gains:
 - `missing`: the uncovered paths or part labels, at most 50;
 - `clean`;
 - `delta_from` and `history` (§3.4);
-- `plans_from` (§3.5).
+- `plans_from`, and on a plan-checkpoint receipt `plan_blobs` (§3.5).
 
 For slices, the receipt is clean only if every slice turn is.
 
@@ -282,7 +294,8 @@ record.
   link may carry a `changes` verdict. The approving receipt's `history` must list every
   chain turn, root first.
 - **Plans**, for each entry in `plans_from`: the named receipt is in the same ledger, is a
-  `plan`-checkpoint `approve`, and is clean.
+  `plan`-checkpoint `approve`, is clean, and lists that path with that blob in its
+  `plan_blobs`.
 
 xreview only builds valid chains. The gate checks them anyway, because the gate is the part
 of this workflow that is enforced rather than trusted.
@@ -334,7 +347,8 @@ first, across repositories:
 
 - **`omit_plans`**: up to 10 pre-merge rounds whose plan files bind to an approved plan
   receipt (§3.5). 20 approved plan receipts with targets are on record today. For these
-  historical receipts, cleanliness is read from their rollouts.
+  historical receipts, cleanliness is read from their rollouts, and `plan_blobs` from git:
+  the plan paths added within each receipt's range.
 - **`framing`**: the `omit_plans` cases, topped up to 10 with other pre-merge rounds. Where a
   case serves both, A and A′ are shared.
 - **`delta`**: up to 10 rounds 2 and later, whose previous round was on the same thread with
@@ -431,11 +445,15 @@ files stay in `~/.local/state/xreview/replay/` and are never committed.
   - framing marks and target labels;
   - delta eligibility, each condition on its own, including a sliced root, a missing chain
     turn, a foreign compacted turn and a thread-level compaction;
-  - plan binding: with an approved plan receipt only the plan's later patch is shown, and
-    with none or an unclean one the whole plan; the header-count check holds either way;
+  - plan binding:
+    - with an approved receipt whose `plan_blobs` has the path, only the plan's later patch
+      is shown;
+    - with none, an unclean one, or one where the plan was unchanged or only modified in its
+      range, the whole plan is shown;
+    - the header-count check holds either way;
   - the fit arithmetic at its boundaries;
-  - slice packing, including a file split by hunks and a single hunk split by lines, with
-    corrected headers and part labels.
+  - slice packing: a file split by hunks, a single hunk split by lines, and a single line
+    split by bytes on a UTF-8 boundary, each with corrected headers and part labels.
 - **`tests/xreview.test.sh`**, with `xreview-rpc` and `herdr` stubbed:
   - dispatch picks full, delta, a fresh thread, or slices as the fit says, and moves the pane
     for a fresh thread;
@@ -452,7 +470,8 @@ files stay in `~/.local/state/xreview/replay/` and are never committed.
   - each enforcement rule of §3.7, under its recorded switch;
   - chains: valid, broken link, wrong base, unclean link, sliced root, cycle, a `changes`
     link, a `history` that omits a chain turn;
-  - `plans_from` naming a missing, unapproved, unclean or non-plan receipt;
+  - `plans_from` naming a missing, unapproved, unclean or non-plan receipt, or a path or
+    blob its `plan_blobs` lacks;
   - flipping `packets.conf` changes no decision on record.
 - **`tests/xreview-skill.test.sh`**: the cap text is gone, and the new rules are pinned.
 - **The replay harness** gets a dry-run mode, tested on one fixture case. It builds every
