@@ -69,6 +69,7 @@ MARKS = (b'"task_started"', b'"task_complete"', b'"token_count"', b'"compacted"'
 
 STOP = threading.Event()
 CHILDREN = set()
+PROTECTED = set()       # thread-creating calls: an interrupt lets them finish, so their thread is recorded
 LOCK = threading.RLock()
 
 
@@ -96,14 +97,17 @@ def jsave(path, data):
     os.replace(tmp, path)
 
 
-def sh(argv, timeout=None):
-    """(rc, stdout, stderr) of a child, which an interrupt can terminate."""
-    if STOP.is_set():
-        return 1, "", "stopped"
+def sh(argv, timeout=None, protect=False):
+    """(rc, stdout, stderr) of a child, which an interrupt can terminate unless it is protected.
+    The stop flag is checked under the lock that registers the child, so a signal cannot slip between."""
     env = L.git_env() if argv and argv[0] == "git" else None
     with LOCK:
+        if STOP.is_set():
+            return 1, "", "stopped"
         proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
         CHILDREN.add(proc)
+        if protect:
+            PROTECTED.add(proc)
     try:
         out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -111,12 +115,13 @@ def sh(argv, timeout=None):
         out, err = proc.communicate()
     finally:
         CHILDREN.discard(proc)
+        PROTECTED.discard(proc)
     return proc.returncode, out.decode("utf-8", "replace"), err.decode("utf-8", "replace")
 
 
 def rpc(*args):
     argv = [RPC] if os.access(RPC, os.X_OK) else ["/usr/bin/python3", "-I", RPC]
-    return sh(argv + list(args))
+    return sh(argv + list(args), protect=bool(args) and args[0] in ("thread-start", "thread-fork", "thread-unarchive"))
 
 
 # ------------------------------------------------------------------ rollouts
@@ -158,16 +163,27 @@ def rollout_records(thread):
     return recs
 
 
-def rollout_total(thread):
-    """The thread's cumulative tokens: the latest token_count's total_token_usage."""
-    total = 0
+def turn_usage(thread, turn):
+    """What one turn used: the sum of last_token_usage over the token_count records between its
+    task_started and its task_complete (or the end of the rollout, for a turn still running), and the
+    model and effort of its turn_context. Nothing before the turn counts, so a fork's inherited history is free."""
+    use, inside = {"tokens": 0, "model": None, "effort": None}, False
     for rec in rollout_records(thread):
         p = rec.get("payload") if isinstance(rec.get("payload"), dict) else {}
-        if rec.get("type") == "event_msg" and p.get("type") == "token_count" and isinstance(p.get("info"), dict):
-            use = p["info"].get("total_token_usage")
-            if isinstance(use, dict) and isinstance(use.get("total_tokens"), int):
-                total = use["total_tokens"]
-    return total
+        kind, ptype = rec.get("type"), p.get("type")
+        if kind == "event_msg" and ptype == "task_started":
+            inside = p.get("turn_id") == turn
+        elif not inside:
+            continue
+        elif kind == "event_msg" and ptype == "task_complete" and p.get("turn_id") == turn:
+            break
+        elif kind == "event_msg" and ptype == "token_count" and isinstance(p.get("info"), dict):
+            last = p["info"].get("last_token_usage")
+            if isinstance(last, dict) and isinstance(last.get("total_tokens"), int):
+                use["tokens"] += last["total_tokens"]
+        elif kind == "turn_context" and p.get("turn_id") == turn:
+            use.update(model=p.get("model"), effort=p.get("effort"))
+    return use
 
 
 _TURNS = {}
@@ -226,7 +242,7 @@ def load_rounds():
                     and all(isinstance(e.get(k), str) and e[k] for k in ("nonce", "thread", "turn", "dispatched_at"))
                     and len(ts) == 1 and ts[0].get("full") is True
                     and all(isinstance(ts[0].get(k), str) for k in ("repo", "base", "tip", "dest"))):
-                chains[e["thread"]].append({"nonce": e["nonce"], "at": e["dispatched_at"], "thread": e["thread"],
+                chains[(e["thread"], ts[0].get("branch"), ts[0]["dest"])].append({"nonce": e["nonce"], "at": e["dispatched_at"], "thread": e["thread"],
                                             "turn": e["turn"], "target": ts[0], "entries": entries})
         for chain in chains.values():
             chain.sort(key=lambda r: r["at"])
@@ -330,7 +346,8 @@ def cmd_cases(a):
             big.append(case_of(c, "big", switches=["fit"]))
         elif prev and info["ctx_before"] is not None and window and not XP.fits(info["ctx_before"], size, window):
             fork = {"thread": r["thread"], "last_turn": prev["turn"]}
-            fresh.append(case_of(c, "ctx", switches=["fit"], fork=fork, own_compacted=info["compacted"]))
+            fresh.append(case_of(c, "ctx", switches=["fit"], fork=fork, own_compacted=info["compacted"],
+                                 ctx_before=info["ctx_before"], window=window))
     fresh.sort(key=lambda c: c["at"], reverse=True)
     fresh.sort(key=lambda c: not c["own_compacted"])
     pool = dict((c["id"], c) for c in plans + other + delta + big + fresh[:QUOTA])
@@ -417,6 +434,25 @@ def arms_of(case):
     return [("A", None), ("A2", None), ("B", "delta" if case["class"] == "inc" else "fit")]
 
 
+def exercised(case, sw, dec):
+    """Why B's packet did not exercise the switch under test, or None. A B that did not is an error
+    run: its result would rest on a packet that is not the thing being measured."""
+    if dec["action"] == "refuse":
+        return "B was refused: " + dec["reason"]
+    if sw == "delta" and dec["kind"] != "delta":
+        return "B built a {} packet, not a delta".format(dec["kind"])
+    if case["class"] == "big" and dec["action"] != "slices":
+        return "B was not sliced ({})".format(dec["action"])
+    if case["class"] == "ctx":
+        size = os.path.getsize(dec["packets"][0]["file"]) if dec["packets"] else 0
+        if dec["action"] == "slices" or (case.get("window") and case.get("ctx_before") is not None
+                                         and XP.fits(case["ctx_before"], size, case["window"])):
+            return "B's packet would have fit the historical thread, so the fit check would not have moved it"
+    if sw == "omit_plans" and not any(t.get("plans_from") for t in dec["targets"]):
+        return "B listed no plan, so omit_plans changed nothing"
+    return None
+
+
 def forks(case, arm):
     return bool(case.get("fork")) and (case["class"] == "inc" or arm in ("A", "A2"))
 
@@ -433,7 +469,9 @@ def prepare(a, cases, live):
         cid, t = case["id"], case["target"]
         pdir = os.path.join(a.state, "packets", cid)
         jsave(os.path.join(pdir, "body.md"), "Pre-merge review of {} against {}: the change is {}. Review the change as it "
-              "now stands.\n".format(t.get("branch") or "the branch", t["dest"], t["range"]))
+              "now stands. Your working directory is this repository at this round's tip: read files only there. Paths "
+              "from earlier turns of this thread name other checkouts; ignore them.\n".format(
+                  t.get("branch") or "the branch", t["dest"], t["range"]))
         home = os.path.join(a.state, "scratch", cid)
         r = rounds[case["round"]]
         entries = enriched(r["entries"], r["at"], r["thread"])
@@ -455,7 +493,7 @@ def prepare(a, cases, live):
                    "cap": UNLIMITED, "switches_file": conf, "codex_home": None, "targets": [t], "specs": [t["range"]],
                    "missed": [], "thread": case["thread"] if (arm == "B" and sw == "delta") else None,
                    "turns_file": turns_file if (arm == "B" and sw == "delta") else None}
-            job = {"case": cid, "arm": arm, "switch": sw, "framing": "framing" in on, "repo": t["repo"], "tip": t["tip"],
+            job = {"case": cid, "arm": arm, "switch": sw, "framing": "framing" in on, "repo": t["repo"], "tip": t["tip"], "target": t,
                    "fork": case["fork"] if forks(case, arm) else None, "error": hist_error if (arm == "B" and sw == "delta") else None,
                    "decision": None}
             old = L.state_home
@@ -464,6 +502,8 @@ def prepare(a, cases, live):
                 if not job["error"]:
                     job["decision"] = XP.build(req, os.path.join(pdir, arm))
                     jsave(os.path.join(pdir, arm, "decision.json"), job["decision"])
+                    if arm == "B":
+                        job["error"] = exercised(case, sw, job["decision"])
             except Exception as e:
                 job["error"] = "cannot build the packet: {}".format(e)
             finally:
@@ -477,7 +517,8 @@ def prepare(a, cases, live):
                 arms.setdefault(cid, {})[label] = {"arm": arm, "switch": sw}
             job["label"] = label
             d = job["decision"] or {}
-            say("{} {}: {} {} ({} packet(s))".format(cid, arm, d.get("action", "error"), d.get("kind", ""), len(d.get("packets") or [])))
+            say("{} {}: {} {} ({} packet(s)){}".format(cid, arm, d.get("action", "error"), d.get("kind", ""), len(d.get("packets") or []),
+                                                         " ERROR: " + job["error"] if job["error"] else ""))
             jobs.append(job)
     jsave(os.path.join(a.state, "arms.json"), arms)
     return jobs
@@ -508,23 +549,33 @@ def norm(label):
     return re.sub(r"\A(?:\./|a/|b/)", "", label)
 
 
-def one_turn(thread, packet, schema, cwd, budget):
+def one_turn(thread, packet, schema, cwd, budget, box):
+    """Start a turn and wait for it. box["turn"] names the turn as soon as it exists, so the caller can
+    charge its tokens whatever happens. A turn that outlives the budget keeps its worker's slot until it
+    is seen to finish (it is still running on the daemon, and 3 at once is the limit)."""
     rc, out, err = rpc("turn-start", "--thread", thread, "--input", packet, "--schema", schema, "--cwd", cwd)
     if rc != 0 or not out.strip():
         raise Failed("turn-start failed ({}): {}".format(rc, err.strip()))
-    turn = out.strip().splitlines()[-1]
+    turn = box["turn"] = out.strip().splitlines()[-1]
     fd, report = tempfile.mkstemp(prefix="report.", dir=os.path.dirname(cwd))
     os.close(fd)
-    deadline = time.time() + budget
+    deadline, late = time.time() + budget, False
     while True:
-        rc, out, err = rpc("turn-wait", "--thread", thread, "--turn", turn, "--budget", str(min(900, max(1, deadline - time.time()))),
+        left = deadline - time.time()
+        rc, out, err = rpc("turn-wait", "--thread", thread, "--turn", turn, "--budget", str(min(900, left) if left > 1 else 30),
                            "--schema", schema, "--report", report)
-        if rc == 3 and time.time() < deadline and not STOP.is_set():
-            continue
-        break
+        if rc != 3 or STOP.is_set():
+            break
+        late = late or left <= 0
     compacted = (jload(report) or {}).get("compacted")
     os.unlink(report)
-    if rc not in (0, 4):
+    if rc == 3:
+        raise Failed("interrupted while the turn was still running")
+    if late:
+        raise Failed("the turn outlived the {:g} s budget (it finished with exit {})".format(budget, rc))
+    if rc == 4:
+        raise Failed("schema-failed: the answer does not match the findings schema")
+    if rc != 0:
         raise Failed("turn-wait failed ({}): {}".format(rc, err.strip()))
     try:
         doc = json.loads(out)
@@ -549,13 +600,9 @@ def run_job(a, job):
         cdir = os.path.join(a.state, "clones")
         os.makedirs(cdir, exist_ok=True)
         clone = tempfile.mkdtemp(prefix="c.", dir=cdir)
-        for argv in (["git", "clone", "--shared", "--no-checkout", "-q", job["repo"], clone],
-                     ["git", "-C", clone, "checkout", "-q", "--detach", job["tip"]]):
-            rc, _o, err = sh(argv)
-            if rc != 0:
-                raise Failed("scratch checkout failed: " + err.strip())
+        scratch_clone(job, clone)
         schema = os.path.join(CONF, "findings.framed.schema.json" if job["framing"] else "findings.schema.json")
-        flags, shown, approvals = [], [], []
+        flags, shown, approvals, models = [], [], [], []
         for i, pk in enumerate(dec["packets"]):
             fk = job["fork"] if i == 0 else None
             if fk:
@@ -566,15 +613,22 @@ def run_job(a, job):
                 raise Failed("cannot open a thread ({}): {}".format("fork" if fk else "start", err.strip()))
             thread = out.strip().splitlines()[-1]
             TH.add(thread, "new")
-            before = rollout_total(thread)
-            doc, compacted = one_turn(thread, pk["file"], schema, clone, a.budget)
-            res["tokens"] += max(0, rollout_total(thread) - before)
+            box = {}
+            try:
+                doc, compacted = one_turn(thread, pk["file"], schema, clone, a.budget, box)
+            finally:
+                if box.get("turn"):
+                    use = turn_usage(thread, box["turn"])
+                    res["tokens"] += use["tokens"]
+                    models.append((use["model"], use["effort"]))
             res["findings"] += [f for f in doc["findings"] if isinstance(f, dict)]
             res["reviewed_files"] += [x for x in doc.get("reviewed_files") or [] if isinstance(x, str)]
             approvals.append(doc.get("verdict") == "approve")
             flags.append(compacted)
             shown += pk.get("shown") or []
             res["slices"] += 1
+        res["model"] = ",".join(sorted(set(m or "?" for m, _e in models)))
+        res["effort"] = ",".join(sorted(set(e or "?" for _m, e in models)))
         res["verdict"] = "approve" if all(approvals) else "changes"
         res["compacted"] = True if True in flags else (None if None in flags else False)
         if job["framing"]:
@@ -585,10 +639,37 @@ def run_job(a, job):
     finally:
         if clone:
             shutil.rmtree(clone, ignore_errors=True)
+    path = os.path.join(a.state, "runs", job["case"], job["label"] + ".json")
     if STOP.is_set():
-        return None
-    jsave(os.path.join(a.state, "runs", job["case"], job["label"] + ".json"), res)
+        res["interrupted"] = True
+        res["error"] = res["error"] or "interrupted"
+    prior = jload(path)
+    if prior:
+        res["tokens"] += prior.get("tokens") or 0       # a retry still counts what the failed attempt spent
+    jsave(path, res)
     return res
+
+
+def scratch_clone(job, clone):
+    """A checkout the reviewer cannot read the future from: an empty repository that borrows the source's
+    objects, with two branches and nothing else. The branch is at the round's tip and the destination
+    at its base, so the packet's range resolves. No remote, no tags, no later branch."""
+    t = job["target"]
+    branch = t.get("branch") or "replay"
+    refs = [("refs/heads/" + t["dest"], t["base"])] if branch != t["dest"] else []
+    refs.append(("refs/heads/" + branch, t["tip"]))
+    steps = [["git", "init", "-q", clone]]
+    for argv in steps + [None] + [["git", "-C", clone, "update-ref", ref, sha] for ref, sha in refs] \
+            + [["git", "-C", clone, "checkout", "-q", branch]]:
+        if argv is None:
+            info = os.path.join(clone, ".git", "objects", "info")
+            os.makedirs(info, exist_ok=True)
+            with open(os.path.join(info, "alternates"), "w") as f:
+                f.write(os.path.join(job["repo"], "objects") + "\n")
+            continue
+        rc, _o, err = sh(argv)
+        if rc != 0:
+            raise Failed("scratch checkout failed: " + err.strip())
 
 
 def spent(state):
@@ -596,8 +677,10 @@ def spent(state):
 
 
 def on_signal(signum, _frame):
-    STOP.set()
-    for proc in list(CHILDREN):
+    with LOCK:
+        STOP.set()
+        victims = [p for p in CHILDREN if p not in PROTECTED]
+    for proc in victims:
         try:
             proc.terminate()
         except OSError:
@@ -623,7 +706,10 @@ def cmd_run(a):
         jobs = prepare(a, cj["cases"], live)
         if not live:
             return 0
-        pending = collections.deque(j for j in jobs if not os.path.isfile(os.path.join(a.state, "runs", j["case"], j["label"] + ".json")))
+        def finished(j):
+            run = jload(os.path.join(a.state, "runs", j["case"], j["label"] + ".json"))
+            return bool(run) and not (run.get("error") and (a.retry_errors or run.get("interrupted")))
+        pending = collections.deque(j for j in jobs if not finished(j))
         total, running = spent(a.state), set()
         with cf.ThreadPoolExecutor(JOBS) as pool:
             while pending or running:
@@ -633,8 +719,10 @@ def cmd_run(a):
                     break
                 done, running = cf.wait(running, return_when=cf.FIRST_COMPLETED, timeout=2)
                 total = spent(a.state)
-                if done and not prog.get("model"):
-                    prog.update(model_of(TH))
+                for f in done:
+                    res = f.result()
+                    if res.get("model") and not prog.get("model"):
+                        prog.update(model=res["model"], effort=res["effort"])
         if pending:
             stopped = {"case": pending[0]["case"], "arm": pending[0]["arm"], "tokens": total}
             say("stopped at the token cap ({} >= {}) before {} {}".format(total, a.max_tokens, stopped["case"], stopped["arm"]))
@@ -654,18 +742,6 @@ def cmd_run(a):
             if not ok:
                 say("some threads could not be archived: run `cleanup`")
     return 130 if interrupted else 0
-
-
-def model_of(th):
-    """The model and effort of the first new thread whose rollout names them (spec 5.6: recorded)."""
-    for t in jload(th.path, {"threads": []})["threads"]:
-        if t["kind"] != "new":
-            continue
-        for info in turns_of(t["thread"]).values():
-            if info["model"]:
-                return {"model": info["model"], "effort": info["effort"]}
-        _TURNS.pop(t["thread"], None)
-    return {}
 
 
 def cmd_cleanup(a):
@@ -701,7 +777,17 @@ def cmd_report(a):
     cj, arms = jload(os.path.join(a.state, "cases.json"), {}), jload(os.path.join(a.state, "arms.json"), {})
     prog = jload(os.path.join(a.state, "progress.json"), {})
     byid = dict((c["id"], c) for c in cj.get("cases", []))
-    out = {}
+    out, errors, mixed = {}, [], []
+    for cid in sorted(set(i for v in (cj.get("selected") or {}).values() for i in v)):
+        models = set()
+        for label, v in sorted(arms.get(cid, {}).items()):
+            run = jload(os.path.join(a.state, "runs", cid, label + ".json"))
+            if run and run.get("error"):
+                errors.append({"case": cid, "arm": v["arm"], "label": label, "error": run["error"], "tokens": run.get("tokens", 0)})
+            if run and run.get("model"):
+                models.add((run["model"], run.get("effort")))
+        if len(models) > 1:
+            mixed.append(cid)
     for sw in SWITCH_ORDER:
         ids = (cj.get("selected") or {}).get(sw) or []
         if not ids:
@@ -761,11 +847,16 @@ def cmd_report(a):
     for sw, v in out.items():
         if v.get("note"):
             lines.append("{}: {}".format(sw, v["note"]))
+    if mixed:
+        lines.append("Arms of these cases ran at different models or efforts, so compare them with care: " + ", ".join(mixed))
+    if errors:
+        lines += ["", "Error runs ({}; `run --retry-errors` runs them again):".format(len(errors))]
+        lines += ["- {case} {arm} ({tokens} tokens): {error}".format(**e) for e in errors]
     text = "\n".join(lines) + "\n"
     say(text)
     if not a.dry_run:
         jsave(os.path.join(a.state, "report.md"), text)
-        jsave(os.path.join(a.state, "report.json"), {"switches": out, "progress": prog})
+        jsave(os.path.join(a.state, "report.json"), {"switches": out, "progress": prog, "errors": errors, "mixed_models": mixed})
     return 0
 
 
@@ -776,6 +867,7 @@ def main(argv):
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--max-tokens", type=int, default=TOKEN_CAP)
     ap.add_argument("--budget", type=float, default=TURN_BUDGET)
+    ap.add_argument("--retry-errors", action="store_true", help="run: run again the arms whose run file is an error")
     a = ap.parse_args(argv)
     a.state = os.path.abspath(a.state)
     os.makedirs(a.state, exist_ok=True)

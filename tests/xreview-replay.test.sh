@@ -238,6 +238,9 @@ def archived_error(st, thread):
 
 
 if cmd == "thread-start":
+    if os.environ.get("FAKE_SLOW_START"):
+        open(os.path.join(S, "starting"), "w").close()
+        time.sleep(float(os.environ["FAKE_SLOW_START"]))
     def go():
         st = state(); t = new_id(st, "th"); save(st)
         log(thread=t, cwd=opt("--cwd")); print(t)
@@ -275,7 +278,9 @@ elif cmd == "turn-start":
         head = subprocess.run(["git", "-C", cwd, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
         os.makedirs(os.path.join(S, "inputs"), exist_ok=True)
         open(os.path.join(S, "inputs", turn), "w").write(open(opt("--input")).read())
-        log(thread=opt("--thread"), turn=turn, cwd=cwd, head=head, schema=os.path.basename(opt("--schema")))
+        refs = subprocess.run(["git", "-C", cwd, "for-each-ref", "--format=%(refname) %(objectname)"], capture_output=True, text=True).stdout.splitlines()
+        rng = subprocess.run(["git", "-C", cwd, "rev-parse", "main...feat"], capture_output=True, text=True).returncode
+        log(thread=opt("--thread"), turn=turn, cwd=cwd, head=head, schema=os.path.basename(opt("--schema")), refs=refs, range_rc=rng)
         print(turn)
     locked(go)
 elif cmd == "turn-wait":
@@ -290,7 +295,12 @@ elif cmd == "turn-wait":
     if "reviewed_files" in open(opt("--schema")).read():
         answer["reviewed_files"] = shown
     def go():
-        st = state(); st["flight"] -= 1
+        st = state()
+        waits = st.setdefault("waits", {})
+        if int(os.environ.get("FAKE_RC3", "0")) > waits.get(turn, 0):
+            waits[turn] = waits.get(turn, 0) + 1; save(st)
+            return None
+        st["flight"] -= 1
         base = 5000 if thread.startswith("frk") and thread not in st["cum"] else 0
         cum = st["cum"].get(thread, base) + int(os.environ.get("FAKE_TOKENS", "1000"))
         st["cum"][thread] = cum; save(st)
@@ -298,9 +308,13 @@ elif cmd == "turn-wait":
         log(thread=thread, turn=turn)
         return answer
     answer = locked(go)
+    if answer is None:
+        sys.exit(3)
     if opt("--report"):
         json.dump({"turn": turn, "compacted": False}, open(opt("--report"), "w"))
     print(json.dumps(answer, indent=2))
+    if os.environ.get("FAKE_RC4"):
+        sys.exit(4)
 else:
     sys.stderr.write("fake rpc: unknown command {}\n".format(cmd)); sys.exit(2)
 '''
@@ -440,6 +454,10 @@ is_("RP2b every arm started one turn", len(turns), len(arms["xr-2-r1.pre"]) + le
 tips = set(t["head"] for t in turns)
 ok("RP2b every turn ran in a scratch checkout at the tip of the round it reviews", tips <= {c1, c2} and tips == {c1, c2}, tips)
 ok("RP2b the scratch checkouts are gone", not [d for d in os.listdir(os.path.join(S1)) if d.startswith("clones") and os.listdir(os.path.join(S1, d))])
+ok("RP2b I-1 a turn's checkout holds only the branch at the round's tip and the destination at its base",
+   all(set(l.split()[1] for l in t["refs"]) <= {t["head"], c0} and t["head"] in set(l.split()[1] for l in t["refs"])
+       and sorted(l.split()[0] for l in t["refs"]) == ["refs/heads/feat", "refs/heads/main"] for t in turns), [t["refs"] for t in turns[:2]])
+is_("RP2b I-1 and the packet's range resolves there", set(t["range_rc"] for t in turns), {0})
 forks = [c for c in cl if c["cmd"] == "thread-fork"]
 is_("RP2b a historical thread is forked only through the turn before the round", set(c["args"][c["args"].index("--last-turn") + 1] for c in forks if "--last-turn" in c["args"]), {"tu1"})
 ok("RP2b the archived historical thread was unarchived before its first fork",
@@ -453,6 +471,7 @@ is_("RP2b framed arms use the framed schema, today's arms the old one", sch, {"f
 prog = jl(os.path.join(S1, "progress.json"))
 is_("RP2b the model and effort are recorded", (prog.get("model"), prog.get("effort")), ("fake-model", "high"))
 ok("RP2b the token tally is recorded and no stop happened", prog["tokens"] > 0 and prog.get("stopped_at") is None, prog)
+is_("RP2b m-7 every run file records its turn's model and effort", set((r["model"], r["effort"]) for r in runs.values()), {("fake-model", "high")})
 ok("RP2b framing runs record coverage", runs[("xr-2-r1.pre", "F")].get("missing") == [], runs[("xr-2-r1.pre", "F")])
 
 # ------------------------------------------------------------------ RP3 match
@@ -631,6 +650,116 @@ ok("RP6 and every arm has run", all(os.path.isfile(os.path.join(S6, "runs", cid,
 turn_count = len([c for c in calls(FAKE6) if c["cmd"] == "turn-start"])
 is_("RP6 each arm ran exactly once across both runs", turn_count, sum(len(m) for m in arms6b.values()))
 
+
+# ------------------------------------------------------------------ the fix round
+def fresh(name, **extra):
+    state = os.path.join(ROOT, name)
+    harness(state, "cases")
+    for n in nonces:
+        shutil_copy(os.path.join(S1, "judge-known", n + ".answer.json"), os.path.join(state, "judge-known", n + ".answer.json"))
+    harness(state, "cases")
+    return state, os.path.join(ROOT, "fake-" + name)
+
+
+def runfiles(state):
+    out = []
+    for cid, m in jl(os.path.join(state, "arms.json")).items():
+        for label, v in m.items():
+            path = os.path.join(state, "runs", cid, label + ".json")
+            if os.path.isfile(path):
+                out.append((cid, v["arm"], jl(path)))
+    return out
+
+
+print("RP8. m-6 and m-2: a schema-failed answer is an error run, shown by report and retried only on request")
+S8, FAKE8 = fresh("s8")
+p = subprocess.run([HARNESS, "run", "--state", S8], env=env_for(FAKE_STATE=FAKE8, FAKE_RC4="1"), capture_output=True, text=True)
+rf = runfiles(S8)
+ok("RP8 every run is an error that says schema-failed", len(rf) == 14 and all("schema-failed" in (r["error"] or "") for _c, _a, r in rf), [r["error"] for _c, _a, r in rf][:2])
+n_turns = len([c for c in calls(FAKE8) if c["cmd"] == "turn-start"])
+subprocess.run([HARNESS, "run", "--state", S8], env=env_for(FAKE_STATE=FAKE8), capture_output=True, text=True)
+is_("RP8 a plain rerun does not retry error runs", len([c for c in calls(FAKE8) if c["cmd"] == "turn-start"]), n_turns)
+harness(S8, "report")
+rep = jl(os.path.join(S8, "report.json"))
+is_("RP8 report lists every error run with its reason", len(rep["errors"]), 14)
+ok("RP8 and report.md shows them", "schema-failed" in open(os.path.join(S8, "report.md")).read())
+ok("RP8 no switch passes on error runs", "pass" not in [v["status"] for v in rep["switches"].values()])
+subprocess.run([HARNESS, "run", "--state", S8, "--retry-errors"], env=env_for(FAKE_STATE=FAKE8), capture_output=True, text=True)
+rf = runfiles(S8)
+ok("RP8 --retry-errors runs them again and they now succeed", len(rf) == 14 and not any(r["error"] for _c, _a, r in rf), [r["error"] for _c, _a, r in rf][:2])
+is_("RP8 a retried run's tokens add the failed attempt's", sorted(set(r["tokens"] for _c, _a, r in rf)), [2000])
+
+print("RP9. I-2: a turn that outlives the budget keeps its slot; its tokens are charged")
+S9, FAKE9 = fresh("s9")
+subprocess.run([HARNESS, "run", "--state", S9, "--budget", "0.25"], env=env_for(FAKE_STATE=FAKE9, FAKE_RC3="5"), capture_output=True, text=True)
+rf = runfiles(S9)
+ok("RP9 every run is an error that names the budget", len(rf) == 14 and all("budget" in (r["error"] or "") for _c, _a, r in rf), [r["error"] for _c, _a, r in rf][:2])
+ok("RP9 and still carries the tokens the late turn used", all(r["tokens"] > 0 for _c, _a, r in rf), [r["tokens"] for _c, _a, r in rf])
+ok("RP9 at most 3 turns were ever running at once", jl(os.path.join(FAKE9, "state.json"))["max"] <= 3, jl(os.path.join(FAKE9, "state.json"))["max"])
+is_("RP9 and the stop counts their tokens", jl(os.path.join(S9, "progress.json"))["tokens"], 14 * 1000)
+
+print("RP5b. I-2: an interrupted job is recorded with its error; m-3: a thread being created is recorded")
+SA, FAKEA = fresh("sa")
+proc = subprocess.Popen([HARNESS, "run", "--state", SA], env=env_for(FAKE_STATE=FAKEA, FAKE_SLOW_START="1.5"), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+t0 = time.time()
+while time.time() - t0 < 30 and not os.path.exists(os.path.join(FAKEA, "starting")):
+    time.sleep(0.05)
+time.sleep(0.3)
+proc.send_signal(signal.SIGTERM)
+proc.wait(timeout=60)
+made = [c["thread"] for c in calls(FAKEA) if c["cmd"] == "thread-start"]
+rec = [t["thread"] for t in jl(os.path.join(SA, "threads.json"))["threads"]]
+stA = jl(os.path.join(FAKEA, "state.json"))
+ok("RP5b a thread whose creation was under way at the signal was allowed to finish, is recorded and archived",
+   made and all(t in rec and t in stA["archived"] for t in made), (made, rec, stA["archived"]))
+rf = runfiles(SA)
+ok("RP5b the interrupted jobs wrote run files that say so", rf and all(r.get("interrupted") and r["error"] for _c, _a, r in rf), rf[:1])
+subprocess.run([HARNESS, "run", "--state", SA], env=env_for(FAKE_STATE=FAKEA), capture_output=True, text=True)
+rf = runfiles(SA)
+ok("RP5b a rerun redoes the interrupted jobs without --retry-errors", len(rf) == 14 and not any(r["error"] for _c, _a, r in rf), [r["error"] for _c, _a, r in rf][:2])
+
+print("RP10. m-1: B must exercise its switch")
+Hm = load(HARNESS, "replay_m")
+dec = lambda **kw: dict({"action": "send", "kind": "full", "reason": "", "packets": [], "targets": [{"plans_from": []}]}, **kw)
+ok("RP10 a delta B that built a full packet is rejected", "not a delta" in (Hm.exercised({"class": "inc"}, "delta", dec()) or ""))
+is_("RP10 a delta B that built a delta is accepted", Hm.exercised({"class": "inc"}, "delta", dec(kind="delta")), None)
+ok("RP10 a big B that was not sliced is rejected", "not sliced" in (Hm.exercised({"class": "big"}, "fit", dec()) or ""))
+is_("RP10 a sliced big B is accepted", Hm.exercised({"class": "big"}, "fit", dec(action="slices", kind="slices")), None)
+big = os.path.join(ROOT, "bigpacket")
+wr(big, "x" * 400000)
+ok("RP10 a ctx B whose packet fits the historical thread is rejected",
+   "would have fit" in (Hm.exercised({"class": "ctx", "ctx_before": 1000, "window": 200000}, "fit", dec(packets=[{"file": big}])) or ""))
+is_("RP10 a ctx B whose packet does not fit it is accepted",
+    Hm.exercised({"class": "ctx", "ctx_before": 175000, "window": 200000}, "fit", dec(packets=[{"file": big}])), None)
+ok("RP10 an omit_plans B that listed no plan is rejected", "no plan" in (Hm.exercised({"class": "pre"}, "omit_plans", dec()) or ""))
+is_("RP10 one that listed a plan is accepted", Hm.exercised({"class": "pre"}, "omit_plans", dec(targets=[{"plans_from": [{"path": "p"}]}])), None)
+ok("RP10 a refused B is rejected", "refused" in (Hm.exercised({"class": "pre"}, "omit_plans", dec(action="refuse", reason="no")) or ""))
+
+print("RP11. m-4: rounds chain by thread, branch and destination")
+XDG2 = os.path.join(ROOT, "xdg2")
+other = dict(target(c2), branch="other")
+E = [receipt("xr-a", 1, "pre-merge", T, "ta", target(c1), "changes"), receipt("xr-b", 2, "pre-merge", T, "tb", other, "changes"),
+     receipt("xr-c", 3, "pre-merge", T, "tc", target(c2), "changes")]
+ld2 = os.path.join(XDG2, "xreview", "ledgers", LD.ledger_key(common))
+wr(os.path.join(ld2, "reviews.jsonl"), "".join(json.dumps(e) + "\n" for e in E))
+wr(os.path.join(ld2, "repo"), common + "\n")
+os.environ["XDG_STATE_HOME"] = XDG2
+got = dict((r["nonce"], (r["k"], r["prev"] and r["prev"]["nonce"], r["next"] and r["next"]["nonce"])) for r in Hm.load_rounds())
+os.environ["XDG_STATE_HOME"] = XDG
+is_("RP11 one thread, two branches: each branch is its own chain", got,
+    {"xr-a": (1, None, "xr-c"), "xr-b": (1, None, None), "xr-c": (2, "xr-a", None)})
+
+print("RP12. m-7: report flags a case whose arms ran at different models")
+S12 = os.path.join(ROOT, "state12")
+rm12 = dict(((c, a), run_of()) for c in cases for a in ("A", "A2", "F"))
+for k in rm12:
+    rm12[k] = dict(rm12[k], model="m-1", effort="high")
+rm12[("c2.pre", "F")] = dict(rm12[("c2.pre", "F")], model="m-2")
+mk(S12, cases, {"framing": list(cases), "omit_plans": [], "delta": [], "fit": []}, amap, rm12, good)
+harness(S12, "report")
+is_("RP12 the mixed case is flagged", jl(os.path.join(S12, "report.json"))["mixed_models"], ["c2.pre"])
+ok("RP12 and report.md says so", "different models" in open(os.path.join(S12, "report.md")).read())
+
 # ------------------------------------------------------------------ RP7 rollouts the daemon compressed
 print("RP7. a compressed, archived rollout reads like a plain one")
 import shutil
@@ -645,7 +774,8 @@ if shutil.which("zstd"):
     is_("RP7 the turn, its final answer, its context and its compaction",
         (list(got), json.loads(got["tuZ"]["final"])["verdict"], got["tuZ"]["ctx_before"], got["tuZ"]["compacted"]),
         (["tuZ"], "changes", 1234, True))
-    is_("RP7 the token total", H.rollout_total("thZ"), 1000)
+    is_("RP7 m-8 a turn's tokens are the token_counts inside it, not the history before it",
+        H.turn_usage("thZ", "tuZ"), {"tokens": 1000, "model": "m-1", "effort": "high"})
 
 PY
 )"
