@@ -760,6 +760,11 @@ is "TT4 items that came back not loaded leave thread_compactions null" "$rc/$(pr
 is "TT4 and no turn is called clean on that evidence" "$(printf '%s' "$out" | jq -c '[.turns[].compacted]')" '[null,null]'
 scenario "$(jq -nc --argjson a "$(tpage "[$(nld t2),$t1]")" '{responses:{"thread/turns/list":$a}}')"
 is "TT4 one turn with items not loaded is enough" "$(rpc thread-turns --thread th | jq -c .thread_compactions)" null
+sumv="$(ti t2 "$MSGS" | jq -c '.itemsView = "summary"')"
+scenario "$(jq -nc --argjson a "$(tpage "[$sumv,$t1]")" '{responses:{"thread/turns/list":$a}}')"
+out="$(rpc thread-turns --thread th)"
+is "TT4 a turn the daemon marks itemsView summary is unknown, not clean" \
+   "$(printf '%s' "$out" | jq -c '[.thread_compactions, .turns[0].compacted, .turns[1].compacted]')" '[null,false,null]'
 scenario "$(jq -nc --argjson a "$(tpage "[{\"id\":\"t2\",\"status\":\"completed\"},$t1]")" '{responses:{"thread/turns/list":$a}}')"
 is "TT4 so is a turn with no items key at all" "$(rpc thread-turns --thread th | jq -c .thread_compactions)" null
 
@@ -847,6 +852,10 @@ is "TW2 and the report says null" "$(jq -c . "$T/rep")" '{"turn":"turn-1","compa
 scenario "$(jq -nc --argjson a "$(listing "$plain")" '{responses:{"thread/turns/list":[$a,{error:{code:-1,message:"gone"}}]}}')"
 rpc turn-wait --thread th --turn turn-1 --budget 5 --schema "$SCHEMA" --report "$T/rep" >/dev/null 2>&1; rc=$?
 is "TW2 a full read that fails is null, not a failed wait" "$rc/$(jq -c .compacted "$T/rep")" "0/null"
+sumr="$(printf '%s' "$plain" | jq -c '.itemsView = "summary"')"
+scenario "$(jq -nc --argjson a "$(listing "$plain")" --argjson b "$(listing "$sumr")" '{responses:{"thread/turns/list":[$a,$b]}}')"
+rpc turn-wait --thread th --turn turn-1 --budget 5 --schema "$SCHEMA" --report "$T/rep" >/dev/null 2>&1; rc=$?
+is "TW2 a re-read turn marked itemsView summary is null, not false" "$rc/$(jq -c .compacted "$T/rep")" "0/null"
 noitems="$(printf '%s' "$plain" | jq -c 'del(.items)')"
 scenario "$(jq -nc --argjson a "$(listing "$plain")" --argjson b "$(listing "$noitems")" '{responses:{"thread/turns/list":[$a,$b]}}')"
 rpc turn-wait --thread th --turn turn-1 --budget 5 --schema "$SCHEMA" --report "$T/rep" >/dev/null 2>&1

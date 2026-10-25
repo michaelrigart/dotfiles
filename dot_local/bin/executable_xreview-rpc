@@ -609,9 +609,10 @@ def cmd_thread_fork(c, a):
 # --- compactions (spec 2026-10-25, 3.4 and 3.6) -----------------------------------------
 
 def items_loaded(turn):
-    """Whether the listing showed this turn's items at all. itemsView "notLoaded" (or no items
-    list) is no evidence either way, which is not the same as a turn without a compaction."""
-    return turn.get("itemsView") != "notLoaded" and isinstance(turn.get("items"), list)
+    """Whether the listing showed this turn's items in full. itemsView "notLoaded" or "summary"
+    (which hides compactions), or no items list, is no evidence either way, which is not the
+    same as a turn without a compaction. An absent itemsView means full."""
+    return turn.get("itemsView", "full") == "full" and isinstance(turn.get("items"), list)
 
 
 def turn_compacted(turn):
