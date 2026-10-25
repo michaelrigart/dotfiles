@@ -1,6 +1,6 @@
 # Review packets that fit the reviewer
 
-**Status:** Approved
+**Status:** Implemented
 **Date:** 2026-10-25
 **Scope:** `dot_local/bin/executable_xreview` (dispatch and collect), a new packet builder
 `dot_claude/xreview-packet.py`, `dot_claude/xreview-ledger.py` (the gate's decision),

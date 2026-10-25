@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** Approved
+**Status:** Implemented
 **Goal:** xreview chooses review packets that fit Codex's context: framing, fit check, fresh
 threads, slices, delta rounds and bound plans. The merge gate opens only on whole reviews.
 Each behaviour sits behind a switch that a replay of past reviews must pass before it is
@@ -72,7 +72,7 @@ whole; section numbers below are the spec's).
 
 **Depends on:** none.
 
-- [ ] Write `spike.py`. It loads `~/.local/bin/xreview-rpc` with `importlib` (SourceFileLoader)
+- [x] Write `spike.py`. It loads `~/.local/bin/xreview-rpc` with `importlib` (SourceFileLoader)
   for its `Client`, then works on a **scratch thread** whose cwd is a scratch git repo, never
   Michael's pane. In order:
   1. `thread/start`, then one tiny turn ("reply OK").
@@ -91,16 +91,16 @@ whole; section numbers below are the spec's).
      (`token_count.info.last_token_usage` vs `token_usage_record.usage`), and where
      `model_context_window` appears.
   8. Archive every thread the spike created.
-- [ ] Run it: `/usr/bin/python3 -I $SCRATCH/spike.py` with the sandbox disabled (daemon
+- [x] Run it: `/usr/bin/python3 -I $SCRATCH/spike.py` with the sandbox disabled (daemon
   socket). Expected: a JSON report on stdout.
-- [ ] Write the facts into spec §7 step 1 as "Verified 2026-10-25:" bullets.
-- [ ] **If a fact does not hold**, stop and amend the spec and this plan before Task 2. The
+- [x] Write the facts into spec §7 step 1 as "Verified 2026-10-25:" bullets.
+- [x] **If a fact does not hold**, stop and amend the spec and this plan before Task 2. The
   facts this plan relies on are:
   - compaction is visible per turn;
   - fork plus rewind exists, else the spec's replay fallback;
   - turn/start takes a cwd, else the replay runs every arm in a clone at the right tip and
     forks are not used.
-- [ ] Commit (controller): `git add docs/superpowers/specs/…; git commit -m "Record the verified Codex protocol facts"`.
+- [x] Commit (controller): `git add docs/superpowers/specs/…; git commit -m "Record the verified Codex protocol facts"`.
 
 ### Task 2: xreview-rpc — thread turns, fork, turn cwd, turn report
 
@@ -131,7 +131,7 @@ whole; section numbers below are the spec's).
   "full"` for the flag, because turn_state's `summary` hides compactions. It writes `null`
   when the full read fails. Stdout is unchanged.
 
-- [ ] **Step 1: Write the failing tests** in the suite's fake-server style:
+- [x] **Step 1: Write the failing tests** in the suite's fake-server style:
   - `TT1`: a two-page `thread/turns/list` gives both pages oldest first.
   - `TT2`: a turn holding the compaction item reports `compacted:true`, and others `false`.
   - `TT3`: a list error gives exit 1.
@@ -148,13 +148,13 @@ whole; section numbers below are the spec's).
   - `TW1`: `turn-wait --report F` writes the compaction flag of the collected turn, and stdout
     still equals today's findings JSON.
   - `TW2`: a turn whose items are not in the listing writes `compacted: null`.
-- [ ] **Step 2:** `./tests/xreview-rpc.test.sh`. Expected: the new cases FAIL, the old ones
+- [x] **Step 2:** `./tests/xreview-rpc.test.sh`. Expected: the new cases FAIL, the old ones
   pass.
-- [ ] **Step 3: Implement.** Add `cmd_thread_turns(c, a)` and `cmd_thread_fork(c, a)`, the
+- [x] **Step 3: Implement.** Add `cmd_thread_turns(c, a)` and `cmd_thread_fork(c, a)`, the
   `--cwd` on turn-start and `--report` on turn-wait. Reuse `turn_state`'s paging pattern for
   thread-turns. The compaction check lives in one function, `turn_compacted(turn) -> bool`,
   which turn-wait's report uses as well.
-- [ ] **Step 4:** `./tests/xreview-rpc.test.sh`. Expected: all pass, as passed/total.
+- [x] **Step 4:** `./tests/xreview-rpc.test.sh`. Expected: all pass, as passed/total.
 
 ### Task 3: Ledger — plan patches, plan blobs, the wholeness gate
 
@@ -197,7 +197,7 @@ whole; section numbers below are the spec's).
 - CLI: `diff REPO BASE TIP [--exclude PATH]...`, and `blob-patch REPO PATH OLD NEW`
   (`OLD` may be `-`).
 
-- [ ] **Step 1: Write the failing tests.**
+- [x] **Step 1: Write the failing tests.**
   - Ledger suite:
     - `PX1`: `diff --exclude` drops that file's patch and keeps the header check passing.
     - `PX2`: excluding a path that is binary in the range removes its summary line too.
@@ -223,10 +223,10 @@ whole; section numbers below are the spec's).
   - Guard suite: one end-to-end deny for an unclean approval and one allow for a whole delta
     chain, through `glab mr create`. Use the suite's existing ledger fixtures.
   - Flipping a `packets.conf` file in `XDG_CONFIG_HOME` changes no `decide` result.
-- [ ] **Step 2:** `./tests/xreview-ledger.test.sh` and `./tests/xreview-guard.test.sh`.
+- [x] **Step 2:** `./tests/xreview-ledger.test.sh` and `./tests/xreview-guard.test.sh`.
   Expected: the new cases FAIL.
-- [ ] **Step 3:** Implement the interfaces above. Keep Python 3.9 syntax.
-- [ ] **Step 4:** Run both suites. Expected: all pass.
+- [x] **Step 3:** Implement the interfaces above. Keep Python 3.9 syntax.
+- [x] **Step 4:** Run both suites. Expected: all pass.
 
 ### Task 4: Packet module core — switches, framing, units, fit, today's packet
 
@@ -276,7 +276,7 @@ whole; section numbers below are the spec's).
   - `reviewer-framing.md` text: "List in `reviewed_files` every file or part label marked
     shown that you reviewed. Do not list a file you did not read."
 
-- [ ] **Step 1: Write the failing tests:**
+- [x] **Step 1: Write the failing tests:**
   - `K1`: every switch off gives `today_packet` byte-identical to **golden packets** in
     `tests/fixtures/xreview-packet/`. Capture them once in this task, before Task 6 changes
     the dispatcher: run the unmodified `executable_xreview` with `tests/xreview.test.sh`'s
@@ -292,9 +292,9 @@ whole; section numbers below are the spec's).
     concatenate back to the original lines.
   - `K6`: `fits` at the exact boundary: true at equality, false one byte over.
   - `K7`: the framed schema validates `reviewed_files` with xreview-rpc's `validate`.
-- [ ] **Step 2:** `./tests/xreview-packet.test.sh`. Expected: FAIL (the module is missing).
-- [ ] **Step 3:** Implement the interfaces, the config files and the `.chezmoiignore` line.
-- [ ] **Step 4:** Run the suite. Expected: all pass. `command chezmoi --source <checkout>
+- [x] **Step 2:** `./tests/xreview-packet.test.sh`. Expected: FAIL (the module is missing).
+- [x] **Step 3:** Implement the interfaces, the config files and the `.chezmoiignore` line.
+- [x] **Step 4:** Run the suite. Expected: all pass. `command chezmoi --source <checkout>
   managed | rg xreview-packet` lists `.claude/xreview-packet.py`.
 
 ### Task 5: Packet module — context, delta, plans, slices, the decision CLI
@@ -346,7 +346,7 @@ whole; section numbers below are the spec's).
 - CLI: `xreview-packet.py build REQUEST.json OUTDIR` writes the packets into OUTDIR and prints
   the decision. `xreview-packet.py plan-blobs REPO BASE TIP` prints the JSON (for collect).
 
-- [ ] **Step 1: Write the failing tests:**
+- [x] **Step 1: Write the failing tests:**
   - `C1`–`C6`: delta eligibility, one per §3.4 condition. Include a sliced root, a missing
     chain turn, a foreign compacted turn, `thread_compactions > 0`, and `thread_compactions`
     null, which forces a full packet.
@@ -364,9 +364,9 @@ whole; section numbers below are the spec's).
   - `F7`: a 20,000-file change cuts the slice file lists.
   - `R1`: rollout fixtures under a fake `CODEX_HOME` give the context and window from the
     records Task 1 named.
-- [ ] **Step 2:** Run the suite. Expected: the new cases FAIL.
-- [ ] **Step 3:** Implement.
-- [ ] **Step 4:** Run the suite. Expected: all pass.
+- [x] **Step 2:** Run the suite. Expected: the new cases FAIL.
+- [x] **Step 3:** Implement.
+- [x] **Step 4:** Run the suite. Expected: all pass.
 
 ### Task 6: xreview dispatch — use the packet module
 
@@ -391,7 +391,7 @@ whole; section numbers below are the spec's).
   - `turns/<nonce>.targets`, now with each target's packet fields and the receipt-level
     `switches`.
 
-- [ ] **Step 1: Write the failing tests:**
+- [x] **Step 1: Write the failing tests:**
   - `B` block, with all switches off: today's assertions unchanged, including the cap refusal.
   - `N1`: `fit` and `framing` on, a big diff sends with no cap refusal.
   - `N2`: decision `fresh` starts a new thread, adds the old one to `superseded`, and resumes
@@ -399,9 +399,9 @@ whole; section numbers below are the spec's).
   - `N3`: decision `slices` starts slice 1 only and writes `.slices` with `next:1`.
   - `N4`: `.targets` carries `switches` and per-target `packet`.
   - `N5`: decision `refuse` dies before the pane is touched (the suite's `untouched`).
-- [ ] **Step 2:** `./tests/xreview.test.sh`. Expected: the new cases FAIL, and today's
+- [x] **Step 2:** `./tests/xreview.test.sh`. Expected: the new cases FAIL, and today's
   pass.
-- [ ] **Step 3: Implement.**
+- [x] **Step 3: Implement.**
   - `add_target` still normalizes, but stops building DIFFS itself.
   - After the thread is chosen and before `pane_free`, call `thread-turns`, if there is a
     thread, then `build`, and act on the decision.
@@ -411,7 +411,7 @@ whole; section numbers below are the spec's).
   - `$(state_dir)/missed` (labels, written by Task 8) goes into the request's `missed`, and is
     removed after a successful turn-start.
   - A `fresh` move keeps the round counter: it is not a checkpoint reset.
-- [ ] **Step 4:** Run the suite. Expected: all pass.
+- [x] **Step 4:** Run the suite. Expected: all pass.
 
 ### Task 7: Replay harness
 
@@ -447,7 +447,7 @@ whole; section numbers below are the spec's).
 
   It writes `report.md`.
 
-- [ ] **Step 1: Write the failing tests** on one fixture case: a fixture git repo, a fake
+- [x] **Step 1: Write the failing tests** on one fixture case: a fixture git repo, a fake
   ledger, a fake rollout and a fake `xreview-rpc` on PATH.
   - `RP1`: `cases --dry-run` selects the fixture and writes a judge input with the interdiff.
   - `RP2`: `run --dry-run` builds every arm's packet with the module (A and A′ byte-identical
@@ -459,11 +459,11 @@ whole; section numbers below are the spec's).
   - `RP6`: a run truncated by the token stop, where the cases that finished meet the recall bar,
     still reports that switch `incomplete` and not passed. `report` marks a switch passed
     only when every selected case ran every arm.
-- [ ] **Step 2:** `./tests/xreview-replay.test.sh`. Expected: FAIL.
-- [ ] **Step 3:** Implement. Concurrency ≤ 3. Each turn gets a scratch `git clone --shared` at
+- [x] **Step 2:** `./tests/xreview-replay.test.sh`. Expected: FAIL.
+- [x] **Step 3:** Implement. Concurrency ≤ 3. Each turn gets a scratch `git clone --shared` at
   the tip of the round it reviews, set per turn with `--cwd`. Use the history method Task 1
   verified, else the §5.3 fallback.
-- [ ] **Step 4:** Run the suite. Expected: all pass.
+- [x] **Step 4:** Run the suite. Expected: all pass.
 
 ### Task 8: xreview collect — clean turns, receipts, slices
 
@@ -482,7 +482,7 @@ whole; section numbers below are the spec's).
   - on plan-checkpoint receipts, per target, `plan_blobs` from `xreview-packet.py
     plan-blobs`.
 
-- [ ] **Step 1: Write the failing tests:**
+- [x] **Step 1: Write the failing tests:**
   - `CL1`: a compacted turn with `fit` on prints the answer, exits 0, and prints
     `xreview: this review is not clean (compacted); the merge gate stays closed for it`.
   - `CL2`: a coverage gap with `framing` on prints the same with `(missed: <labels>)`, and
@@ -499,15 +499,15 @@ whole; section numbers below are the spec's).
     Focus 4).
   - `SL4`: an unanswered slice turn-start is recovered as dispatch's exit 6.
   - `PB`: a plan-checkpoint receipt carries `plan_blobs`.
-- [ ] **Step 2:** Run the suite. Expected: the new cases FAIL.
-- [ ] **Step 3:** Implement.
+- [x] **Step 2:** Run the suite. Expected: the new cases FAIL.
+- [x] **Step 3:** Implement.
   - Merge slice answers with jq.
   - Compute `missing` against `.shown`, with the module's label normalization (`a/`, `b/`,
     `./` stripped).
   - `turn-wait` validates against the schema the `.targets` switches name (framed when
     `framing` was on).
   - A coverage gap writes the missing labels to `$(state_dir)/missed` for the next dispatch.
-- [ ] **Step 4:** Run the suite. Expected: all pass.
+- [x] **Step 4:** Run the suite. Expected: all pass.
 
 ### Task 9: Skill and instructions
 
@@ -517,16 +517,16 @@ whole; section numbers below are the spec's).
 
 **Depends on:** Task 6 (runs beside Task 8).
 
-- [ ] **Step 1: Write the failing pins** in `tests/xreview-skill.test.sh`:
+- [x] **Step 1: Write the failing pins** in `tests/xreview-skill.test.sh`:
   - no `XREVIEW_MAX_DIFF_BYTES` and no "slice by hand";
   - "dispatch never refuses on size";
   - the mechanical fresh-thread move, while "never rotate a thread by judgement" is kept;
   - "not clean";
   - plan reviews with `--diff` once the plan is committed;
   - the escalation list unchanged (the existing pin).
-- [ ] **Step 2:** `./tests/xreview-skill.test.sh`. Expected: FAIL.
-- [ ] **Step 3:** Edit the skill text per spec §4.
-- [ ] **Step 4:** Run `./tests/xreview-skill.test.sh` only. Expected: all pass. The full
+- [x] **Step 2:** `./tests/xreview-skill.test.sh`. Expected: FAIL.
+- [x] **Step 3:** Edit the skill text per spec §4.
+- [x] **Step 4:** Run `./tests/xreview-skill.test.sh` only. Expected: all pass. The full
   suite runs once the batch is done, by the controller, after Tasks 8 and 9 are both
   committed.
 
@@ -534,18 +534,18 @@ whole; section numbers below are the spec's).
 
 **Depends on:** Tasks 1–9.
 
-- [ ] `./tests/run.sh` green, as passed/total.
-- [ ] `cases`, then judge the known-real inputs. Dispatch one `sp-standard` subagent per case
+- [x] `./tests/run.sh` green, as passed/total.
+- [x] `cases`, then judge the known-real inputs. Dispatch one `sp-standard` subagent per case
   file. Its prompt holds only the judge input and the answer schema, nothing about the design.
-- [ ] `run` in the background, sandbox disabled. It takes 3–4 h, with one status line per
+- [x] `run` in the background, sandbox disabled. It takes 3–4 h, with one status line per
   switch's cases finished.
-- [ ] `match`, then judge it the same way, then `report`.
-- [ ] Write spec §9: the report table, `stopped_at` if any, and the switch states that follow.
+- [x] `match`, then judge it the same way, then `report`.
+- [x] Write spec §9: the report table, `stopped_at` if any, and the switch states that follow.
   Commit: "Record the replay results".
-- [ ] For each switch that passed, in order (`framing` first): set it `on` in
+- [x] For each switch that passed, in order (`framing` first): set it `on` in
   `dot_config/xreview/packets.conf`, and commit "Turn on <switch>: <one-line result>".
-- [ ] Update memory `excluded-command-must-lead` if `fit` is on.
-- [ ] Set spec and plan `**Status:** Implemented` in the pre-merge commit. Run the pre-merge
+- [x] Update memory `excluded-command-must-lead` if `fit` is on.
+- [x] Set spec and plan `**Status:** Implemented` in the pre-merge commit. Run the pre-merge
   cross-review (`xreview round --reset`, then `--checkpoint pre-merge --diff main...<branch>`),
   then push the branch.
 
