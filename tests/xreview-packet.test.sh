@@ -493,6 +493,655 @@ alt = subprocess.run(["/usr/bin/python3", "-I", "-c",
                       "s.loader.exec_module(m); print(m.LEDGER_PATH)" % MODULE],
                      capture_output=True, text=True, env={k: v for k, v in os.environ.items() if k != "XREVIEW_LEDGER"}).stdout.strip()
 is_("K9 without it the ledger is beside the module", alt, os.path.join(os.path.dirname(MODULE), "xreview-ledger.py"))
+
+
+
+# ================================================================ Task 5: context, delta, plans, slices, build
+os.environ["XDG_STATE_HOME"] = os.path.join(ROOT, "state")
+LD = xp._ledger()
+SCR = [0]
+
+
+def guarded(name):
+    def deco(fn):
+        try:
+            fn()
+        except Exception:
+            import traceback
+            ok(name + " ran without raising", False, traceback.format_exc()[-700:])
+    return deco
+
+
+def wr(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(data if isinstance(data, bytes) else data.encode())
+    return path
+
+
+def swf(**on):
+    SCR[0] += 1
+    text = "".join("{}={}\n".format(n, "on" if on.get(n) else "off") for n in ("framing", "fit", "delta", "omit_plans"))
+    return wr(os.path.join(ROOT, "sw-{}.conf".format(SCR[0])), text)
+
+
+def rollout(home, thread, ctx, win, archived=False, stamp="2026-10-25T10-00-00"):
+    sub = "archived_sessions" if archived else os.path.join("sessions", "2026", "10", "25")
+    path = os.path.join(home, sub, "rollout-{}-{}.jsonl".format(stamp, thread))
+    recs = [{"type": "session_meta", "payload": {"id": thread}},
+            {"type": "event_msg", "payload": {"type": "task_started", "model_context_window": win}},
+            {"type": "event_msg", "payload": {"type": "token_count", "info": None}}]
+    if ctx is not None:
+        recs.append({"type": "event_msg", "payload": {"type": "token_count", "info": {
+            "total_token_usage": {"total_tokens": ctx * 3},
+            "last_token_usage": {"total_tokens": ctx}, "model_context_window": win}}})
+    wr(path, "".join(json.dumps(r) + "\n" for r in recs))
+    return path
+
+
+def mkhome(name):
+    home = os.path.join(ROOT, "codex-" + name)
+    os.makedirs(home, exist_ok=True)
+    return home
+
+
+def target_of(repo, base, tip, dest="main", rng="main...HEAD"):
+    return {"repo": LD.common_dir(repo), "dest": dest, "dest_ref": dest, "branch": "feat", "range": rng,
+            "base": base, "tip": tip, "full": True, "fingerprint": LD.fingerprint(repo, base, tip)}
+
+
+AT = [0]
+
+
+def rc(nonce, thread, turn, tgt, packet="full", clean=True, checkpoint="pre-merge", delta_from=None,
+       history=None, plans_from=None, verdict="approve", plan_blobs=None, compacted=False):
+    AT[0] += 1
+    t = dict(tgt, packet=packet, missing=[], delta_from=delta_from, history=history,
+             plans_from=[] if plans_from is None else plans_from)
+    if plan_blobs is not None:
+        t["plan_blobs"] = plan_blobs
+    return {"v": 2, "kind": "receipt", "nonce": nonce,
+            "dispatched_at": "2026-10-25T10:{:02d}:{:02d}.000000Z".format(AT[0] // 60, AT[0] % 60),
+            "checkpoint": checkpoint, "verdict": verdict, "findings": 0, "thread": thread, "turn": turn,
+            "tier": "", "switches": {"framing": True, "fit": True, "delta": True, "omit_plans": True},
+            "compacted": compacted, "clean": clean, "targets": [t]}
+
+
+def tns(ids, **kw):
+    comp = kw.get("comp", 0)
+    bad = kw.get("bad", {})
+    return {"turns": [{"id": i, "status": "completed", "compacted": bad.get(i, False)} for i in ids],
+            "thread_compactions": comp}
+
+
+def put_ledger(repo, *entries):
+    common = LD.common_dir(repo)
+    for e in entries:
+        LD.append(common, e)
+
+
+def request(repo_targets, specs, **kw):
+    SCR[0] += 1
+    req = {"checkpoint": "pre-merge", "body_file": wr(os.path.join(ROOT, "body-{}.md".format(SCR[0])), b"Review this.\n"),
+           "reviewer_md": os.path.join(FIX, "reviewer.md"), "framing_md": os.path.join(CONF, "reviewer-framing.md"),
+           "cap": 100000, "switches_file": swf(), "codex_home": mkhome("none"), "thread": None, "turns_file": None,
+           "targets": repo_targets, "specs": specs, "missed": []}
+    req.update(kw)
+    return req
+
+
+def outdir():
+    SCR[0] += 1
+    return os.path.join(ROOT, "out-{}".format(SCR[0]))
+
+
+def built(req):
+    return xp.build(req, outdir())
+
+
+def pkt(dec, i=0):
+    return rd(dec["packets"][i]["file"])
+
+
+def mkchange(name, files):
+    repo = mkrepo(name)
+    put(repo, "seed.txt", b"seed\n")
+    base = commit(repo, "seed")
+    for path, data in files.items():
+        put(repo, path, data)
+    tip = commit(repo, "change")
+    return repo, base, tip
+
+
+DELTA = ("This round follows {} on this thread. The change as of that round is earlier in this thread; "
+         "below is what changed since. Judge the change as it now stands, including how the new code meets the old.")
+SLICE = "This is slice {} of {} of one change. The other slices are reviewed in their own turns. Open any file you need."
+LISTED = "{} was shown whole in the approved plan review {}; only its changes since then are shown here."
+MISSED = "The last round's reviewed_files did not list: {}. Review them too."
+CAP_TEXT = ("the diffs are too large to carry inline ({} bytes, cap {}).\n"
+            "Review them in slices, or raise XREVIEW_MAX_DIFF_BYTES if the reviewer can hold it.")
+
+# ---------------------------------------------------------------- R1 rollout records
+print("R1. thread_context and fresh_window read the rollout records")
+
+
+@guarded("R1")
+def _r1():
+    home = mkhome("r1")
+    rollout(home, "th-aaa", 123456, 258400)
+    is_("R1 context now and window from the latest token_count", xp.thread_context(home, "th-aaa"), (123456, 258400))
+    p = rollout(home, "th-bbb", 1000, 200000)
+    with open(p, "a") as f:
+        f.write(json.dumps({"type": "event_msg", "payload": {"type": "token_count", "info": {
+            "last_token_usage": {"total_tokens": 2222}, "model_context_window": 258400}}}) + "\n")
+        f.write(json.dumps({"type": "response_item", "payload": {"type": "token_count", "info": {
+            "last_token_usage": {"total_tokens": 9}, "model_context_window": 1}}}) + "\n")
+        f.write("not json at all token_count\n")
+    is_("R1 the latest token_count wins, other record types and damaged lines are skipped",
+        xp.thread_context(home, "th-bbb"), (2222, 258400))
+    rollout(home, "th-arc", 777, 258400, archived=True)
+    is_("R1 an archived thread is found under archived_sessions", xp.thread_context(home, "th-arc"), (777, 258400))
+    is_("R1 a thread with no rollout is (None, None)", xp.thread_context(home, "th-none"), (None, None))
+    is_("R1 a thread id is never a glob", xp.thread_context(home, "*"), (None, None))
+    wr(os.path.join(home, "sessions", "2026", "10", "25", "rollout-2026-10-25T11-00-00-th-junk.jsonl"), "garbage\n{\n")
+    is_("R1 an unreadable rollout is (None, None)", xp.thread_context(home, "th-junk"), (None, None))
+    rollout(home, "th-new", None, 100000)
+    is_("R1 a thread that never ran has a window but no context", xp.thread_context(home, "th-new"), (None, 100000))
+    wr(os.path.join(home, "sessions", "2026", "10", "25", "rollout-2026-10-25T11-00-00-th-bad.jsonl"),
+       json.dumps({"type": "event_msg", "payload": {"type": "token_count", "info": {
+           "last_token_usage": {"total_tokens": "7"}, "model_context_window": True}}}) + "\n")
+    is_("R1 a value that is not a whole number is unreadable", xp.thread_context(home, "th-bad"), (None, None))
+    old = os.environ.get("CODEX_HOME")
+    os.environ["CODEX_HOME"] = home
+    is_("R1 CODEX_HOME is honoured when no home is passed", xp.thread_context(None, "th-aaa"), (123456, 258400))
+    if old is None:
+        del os.environ["CODEX_HOME"]
+    else:
+        os.environ["CODEX_HOME"] = old
+    # fresh_window: this repository's review threads first, then any rollout
+    repo = mkrepo("r1repo")
+    put(repo, "s", b"s\n")
+    base = commit(repo, "s")
+    put(repo, "x", b"x\n")
+    tip = commit(repo, "x")
+    home2 = mkhome("r1b")
+    rollout(home2, "th-other", 5, 300000, stamp="2026-10-25T23-00-00")
+    rollout(home2, "th-mine", 5, 120000, stamp="2026-10-25T01-00-00")
+    tgt = target_of(repo, base, tip)
+    put_ledger(repo, rc("xr-m", "th-mine", "tu", tgt))
+    is_("R1 fresh_window prefers this repository's review thread", xp.fresh_window(home2, tgt["repo"]), 120000)
+    is_("R1 else any rollout (the newest)", xp.fresh_window(home2, os.path.join(ROOT, "no-such-common")), 300000)
+    is_("R1 and None when nothing can be read", xp.fresh_window(mkhome("empty"), tgt["repo"]), None)
+
+
+# ---------------------------------------------------------------- C1-C6 delta eligibility
+print("C. delta_base applies spec 3.4 in order")
+crepo = mkrepo("crepo")
+put(crepo, "s.txt", b"seed\n")
+CB = commit(crepo, "seed")
+put(crepo, "a.txt", b"one\n")
+CT1 = commit(crepo, "t1")
+put(crepo, "a.txt", b"one\ntwo\n")
+CT2 = commit(crepo, "t2")
+put(crepo, "a.txt", b"one\ntwo\nthree\n")
+CT3 = commit(crepo, "t3")
+git(crepo, "checkout", "-q", "-b", "side", CB)
+put(crepo, "side.txt", b"side\n")
+CS = commit(crepo, "side")
+git(crepo, "checkout", "-q", "main")
+TH = "th-delta"
+
+
+def ct(tip, **kw):
+    return dict(target_of(crepo, CB, tip), **kw)
+
+
+@guarded("C")
+def _c():
+    r1 = rc("xr-1", TH, "tu-1", ct(CT1))
+    got = xp.delta_base([r1], TH, ct(CT2), tns(["tu-1"]))
+    ok("C0 a clean full receipt on the thread, same base, ancestor tip, history intact: its receipt", got is not None and got["nonce"] == "xr-1", got)
+    ok("C0 a thread with no receipt gives none", xp.delta_base([r1], "th-other", ct(CT2), tns(["tu-1"])) is None)
+    ok("C0 a missing thread gives none", xp.delta_base([r1], None, ct(CT2), tns(["tu-1"])) is None)
+    ok("C0 unknown history (no turns) gives none", xp.delta_base([r1], TH, ct(CT2), None) is None)
+    ok("C0 a partial target gives none", xp.delta_base([r1], TH, ct(CT2, full=False), tns(["tu-1"])) is None)
+    ok("C0 another destination gives none", xp.delta_base([r1], TH, ct(CT2, dest="develop"), tns(["tu-1"])) is None)
+    # C1: the base moved
+    ok("C1 a different base gives none", xp.delta_base([r1], TH, dict(ct(CT2), base=CT1), tns(["tu-1"])) is None)
+    # C2: the old tip is not an ancestor of the new tip
+    ok("C2 a tip that is not a descendant gives none", xp.delta_base([r1], TH, ct(CS), tns(["tu-1"])) is None)
+    ok("C2 an unknown commit gives none", xp.delta_base([r1], TH, dict(ct(CT2), tip="0" * 40), tns(["tu-1"])) is None)
+    # C3: clean, all the way to the root
+    ok("C3 an unclean receipt gives none", xp.delta_base([rc("xr-1", TH, "tu-1", ct(CT1), clean=False)], TH, ct(CT2), tns(["tu-1"])) is None)
+    ok("C3 a receipt with no clean field gives none", xp.delta_base([dict((k, v) for k, v in r1.items() if k != "clean")], TH, ct(CT2), tns(["tu-1"])) is None)
+    d2 = rc("xr-2", TH, "tu-2", ct(CT2), packet="delta", delta_from="xr-1", history=["tu-1"])
+    ids = ["tu-1", "tu-2"]
+    got = xp.delta_base([r1, d2], TH, ct(CT3), tns(ids))
+    ok("C3 a chain of two follows the newest receipt", got is not None and got["nonce"] == "xr-2", got)
+    ok("C3 an unclean middle link gives none", xp.delta_base([r1, rc("xr-2", TH, "tu-2", ct(CT2), packet="delta", delta_from="xr-1", history=["tu-1"], clean=False)], TH, ct(CT3), tns(ids)) is None)
+    ok("C3 an unclean root gives none", xp.delta_base([rc("xr-1", TH, "tu-1", ct(CT1), clean=False), d2], TH, ct(CT3), tns(ids)) is None)
+    ok("C3 a link that found changes is still a link (a changes verdict)",
+       xp.delta_base([r1, rc("xr-2", TH, "tu-2", ct(CT2), packet="delta", delta_from="xr-1", history=["tu-1"], verdict="changes")], TH, ct(CT3), tns(ids)) is not None)
+    # C4: the root is a full packet on this thread
+    ok("C4 a sliced root gives none", xp.delta_base([rc("xr-1", TH, "tu-1", ct(CT1), packet="slices")], TH, ct(CT2), tns(["tu-1"])) is None)
+    ok("C4 a chain whose root is sliced gives none", xp.delta_base([rc("xr-1", TH, "tu-1", ct(CT1), packet="slices"), d2], TH, ct(CT3), tns(ids)) is None)
+    legacy = rc("xr-1", TH, "tu-1", ct(CT1))
+    del legacy["targets"][0]["packet"]
+    ok("C4 a receipt from before packets (no packet field) gives none", xp.delta_base([legacy], TH, ct(CT2), tns(["tu-1"])) is None)
+    ok("C4 a chain that runs off the ledger gives none", xp.delta_base([d2], TH, ct(CT3), tns(ids)) is None)
+    other = dict(r1, thread="th-else")
+    ok("C4 a root on another thread gives none", xp.delta_base([other, d2], TH, ct(CT3), tns(ids)) is None)
+    ok("C4 a plan receipt as the latest on the thread gives none", xp.delta_base([r1, rc("xr-p", TH, "tu-p", ct(CT2), checkpoint="plan")], TH, ct(CT3), tns(["tu-1", "tu-p"])) is None)
+    loop = rc("xr-1", TH, "tu-1", ct(CT1), packet="delta", delta_from="xr-2", history=["tu-2"])
+    ok("C4 a cycle gives none", xp.delta_base([loop, d2], TH, ct(CT3), tns(ids)) is None)
+    two = rc("xr-1", TH, "tu-1", ct(CT1))
+    two["targets"].append(dict(two["targets"][0]))
+    ok("C4 a receipt with two identical targets is ambiguous: none", xp.delta_base([two], TH, ct(CT2), tns(["tu-1"])) is None)
+    # C5: the thread still holds the chain
+    ok("C5 a chain turn missing from the thread gives none", xp.delta_base([r1, d2], TH, ct(CT3), tns(["tu-1"])) is None)
+    ok("C5 a root turn missing from the thread gives none", xp.delta_base([r1], TH, ct(CT2), tns(["tu-x"])) is None)
+    ok("C5 chain turns out of order give none", xp.delta_base([r1, d2], TH, ct(CT3), tns(["tu-2", "tu-1"])) is None)
+    ok("C5 other turns between and after the chain are fine", xp.delta_base([r1, d2], TH, ct(CT3), tns(["tu-0", "tu-1", "tu-m", "tu-2", "tu-z"])) is not None)
+    # C6: no compaction since the root, none at thread level
+    ok("C6 a foreign compacted turn since the root gives none", xp.delta_base([r1], TH, ct(CT2), tns(["tu-1", "tu-m"], bad={"tu-m": True})) is None)
+    ok("C6 the root turn itself compacted gives none", xp.delta_base([r1], TH, ct(CT2), tns(["tu-1"], bad={"tu-1": True})) is None)
+    ok("C6 a turn since the root with compacted unknown gives none", xp.delta_base([r1], TH, ct(CT2), tns(["tu-1", "tu-m"], bad={"tu-m": None})) is None)
+    ok("C6 a compacted turn before the root does not matter", xp.delta_base([r1], TH, ct(CT2), tns(["tu-0", "tu-1"], bad={"tu-0": True})) is not None)
+    ok("C6 thread_compactions above zero gives none", xp.delta_base([r1], TH, ct(CT2), tns(["tu-1"], comp=1)) is None)
+    ok("C6 thread_compactions null gives none", xp.delta_base([r1], TH, ct(CT2), tns(["tu-1"], comp=None)) is None)
+    ok("C6 turns without a list give none", xp.delta_base([r1], TH, ct(CT2), {"thread_compactions": 0}) is None)
+    # a plan listing a link relied on must still hold (the gate checks it)
+    bad_plan = rc("xr-1", TH, "tu-1", ct(CT1), plans_from=[{"path": "docs/superpowers/plans/p.md", "nonce": "xr-none", "blob": "a" * 40}])
+    ok("C6 a link whose plans_from is unbacked gives none", xp.delta_base([bad_plan], TH, ct(CT2), tns(["tu-1"])) is None)
+
+
+# ---------------------------------------------------------------- K10 / F1 every switch off
+print("K10. build with every switch off is today's packet")
+
+
+@guarded("K10")
+def _k10():
+    repo, base, tip = mkchange("k10", {"a.txt": b"one\ntwo\n", "dir/b.txt": b"b\n"})
+    repo2, base2, tip2 = mkchange("k10b", {"c.txt": b"c\n"})
+    t1, t2 = target_of(repo, base, tip), target_of(repo2, base2, tip2)
+    sp = [repo + ":main...HEAD", repo2 + ":main...HEAD"]
+    dec = built(request([t1, t2], sp))
+    want = xp.today_packet(rd(FIX, "reviewer.md"), b"Review this.\n",
+                           [(sp[0], LD.patch(t1["repo"], base, tip)), (sp[1], LD.patch(t2["repo"], base2, tip2))])
+    ok("K10 two targets: byte-identical to today_packet", pkt(dec) == want)
+    is_("K10 the decision is a send of a full packet", (dec["action"], dec["kind"]), ("send", "full"))
+    is_("K10 each target is full, follows nothing, lists no plan",
+        [(t["packet"], t["delta_from"], t["history"], t["plans_from"]) for t in dec["targets"]], [("full", None, None, [])] * 2)
+    is_("K10 the switches are the four states", dec["switches"], OFF)
+    is_("K10 the targets keep their own fields", [t["tip"] for t in dec["targets"]], [tip, tip2])
+    is_("K10 no diff at all is today's packet too", pkt(built(request([], []))),
+        xp.today_packet(rd(FIX, "reviewer.md"), b"Review this.\n", []))
+    n = len(LD.patch(t1["repo"], base, tip).rstrip(b"\n"))
+    over = built(request([t1], sp[:1], cap=n - 1))
+    is_("F1 fit off: a cap overflow refuses", over["action"], "refuse")
+    is_("F1 with today's text, verbatim", over["reason"], CAP_TEXT.format(n, n - 1))
+    ok("F1 and no packet is written", over["packets"] == [])
+    is_("F1 the cap is a strict greater-than", built(request([t1], sp[:1], cap=n))["action"], "send")
+    m = n + len(LD.patch(t2["repo"], base2, tip2).rstrip(b"\n"))
+    is_("F1 the total of all the diffs is compared", built(request([t1, t2], sp, cap=100))["reason"], CAP_TEXT.format(m, 100))
+    fo = built(request([t1], sp[:1], cap=n - 1, switches_file=swf(framing=True)))
+    is_("F1 framing on with fit off refuses the same way", (fo["action"], fo["reason"]), ("refuse", CAP_TEXT.format(n, n - 1)))
+    fs = built(request([t1], sp[:1], switches_file=swf(framing=True)))
+    ok("F1 framing on with fit off sends a framed packet", fs["action"] == "send" and b"Files in this change (2):" in pkt(fs))
+
+
+# ---------------------------------------------------------------- C7 multi-target, one delta one full
+print("C7. a multi-target request where one target is a delta and one is full")
+dA = mkrepo("c7a")
+put(dA, "s", b"s\n")
+dAb = commit(dA, "s")
+put(dA, "a.py", b"a1\na2\n")
+put(dA, "e.py", b"untouched\n")
+dA1 = commit(dA, "t1")
+put(dA, "a.py", b"a1\na2\na3\n")
+put(dA, "c.py", b"c\n")
+dA2 = commit(dA, "t2")
+dB, dBb, dB1 = mkchange("c7b", {"b.py": b"b1\n"})
+
+
+@guarded("C7")
+def _c7():
+    tA1, tA2 = target_of(dA, dAb, dA1), target_of(dA, dAb, dA2)
+    tB = target_of(dB, dBb, dB1)
+    put_ledger(dA, rc("xr-c7", "thD", "tu-c7", tA1))
+    home = mkhome("c7")
+    rollout(home, "thD", 50000, 258400)
+    turns = wr(os.path.join(ROOT, "c7-turns.json"), json.dumps(tns(["tu-c7"])))
+    sp = [dA + ":main...HEAD", dB + ":main...HEAD"]
+    req = request([tA2, tB], sp, switches_file=swf(framing=True, fit=True, delta=True), codex_home=home,
+                  thread="thD", turns_file=turns, missed=["a.py", "x/y.py#1/2"])
+    dec = built(req)
+    is_("C7 sent on the thread", (dec["action"], dec["kind"]), ("send", "delta"))
+    tg = dec["targets"]
+    is_("C7 target A is a delta of xr-c7, with the thread's turn ids", (tg[0]["packet"], tg[0]["delta_from"], tg[0]["history"]), ("delta", "xr-c7", ["tu-c7"]))
+    is_("C7 target B is full, follows nothing", (tg[1]["packet"], tg[1]["delta_from"], tg[1]["history"]), ("full", None, None))
+    is_("C7 each lists no plan", (tg[0]["plans_from"], tg[1]["plans_from"]), ([], []))
+    text = pkt(dec).decode()
+    ok("C7 the delta header names the round, behind A's label", (dA + ": " + DELTA.format("xr-c7")) in text, text[:600])
+    ok("C7 and appears once", text.count("This round follows") == 1)
+    ok("C7 A shows only what changed since", "diff --git a/c.py b/c.py" in text and "+a3" in text and "+a1\n" not in text)
+    ok("C7 B shows its whole patch", "diff --git a/b.py b/b.py" in text and "new file mode" in text)
+    ok("C7 the file list opens with the count of all files", "Files in this change (4):" in text, text[:900])
+    ok("C7 A's changed files are shown, behind its label", "  shown     +1 -0  {}:c.py\n".format(dA) in text and "  shown     +1 -0  {}:a.py\n".format(dA) in text)
+    ok("C7 A's untouched file is earlier, with the whole change's counts", "  earlier   +1 -0  {}:e.py\n".format(dA) in text)
+    ok("C7 B's file is shown", "  shown     +1 -0  {}:b.py\n".format(dB) in text)
+    ok("C7 the missed line is fixed text", MISSED.format("a.py, x/y.py#1/2") in text)
+    is_("C7 shown is exactly the labels to be covered", sorted(dec["packets"][0]["shown"]),
+        sorted(["{}:a.py".format(dA), "{}:c.py".format(dA), "{}:b.py".format(dB)]))
+    ok("C7 the reviewer instructions and the framing precede the body",
+       text.index("independent reviewer") < text.index("This request opens with a file list") < text.index("Review this."))
+    # the gate accepts the chain xreview would record
+    rec = rc("xr-c7b", "thD", "tu-c7b", dict(tg[0]))
+    ok("C7 a receipt of that delta passes the gate's chain check",
+       LD.chain_problem([rc("xr-c7", "thD", "tu-c7", tA1)], rec, dict(tg[0]), dA) is None,
+       LD.chain_problem([rc("xr-c7", "thD", "tu-c7", tA1)], rec, dict(tg[0]), dA))
+    # moving the checkpoint to a fresh thread rebuilds every target as full
+    rollout(home, "thD", 240000, 258400)
+    fresh = built(req)
+    is_("F3 the thread too full: a fresh thread", (fresh["action"], fresh["kind"]), ("fresh", "full"))
+    is_("F3 rebuilt as full for every target", [(t["packet"], t["delta_from"], t["history"]) for t in fresh["targets"]], [("full", None, None)] * 2)
+    ftext = pkt(fresh).decode()
+    ok("F3 and the whole patch is there", "new file mode" in ftext and "+a1\n" in ftext and "This round follows" not in ftext)
+    ok("F3 with no earlier file", "  earlier " not in ftext)
+    rollout(home, "thD", 50000, 258400)
+    nodelta = built(dict(req, switches_file=swf(framing=True, fit=True)))
+    is_("C7 with delta off every target is full", [t["packet"] for t in nodelta["targets"]], ["full", "full"])
+    plan_cp = built(dict(req, checkpoint="plan"))
+    is_("C7 a plan checkpoint is never a delta", [t["packet"] for t in plan_cp["targets"]], ["full", "full"])
+    none_turns = built(dict(req, turns_file=None))
+    is_("C7 no turns file: a full packet, not a refusal", (none_turns["action"], [t["packet"] for t in none_turns["targets"]]), ("send", ["full", "full"]))
+    junk = wr(os.path.join(ROOT, "junk-turns.json"), "{not json")
+    is_("C7 an unreadable turns file is no history either", [t["packet"] for t in built(dict(req, turns_file=junk))["targets"]], ["full", "full"])
+    comp = wr(os.path.join(ROOT, "comp-turns.json"), json.dumps(tns(["tu-c7"], comp=1)))
+    is_("C7 a thread-level compaction: full", [t["packet"] for t in built(dict(req, turns_file=comp))["targets"]], ["full", "full"])
+    same = built(dict(req, targets=[tA1, tB]))
+    is_("C7 an unchanged tip is a full packet, not an empty delta", same["targets"][0]["packet"], "full")
+
+
+# ---------------------------------------------------------------- P1 / P2 plans
+print("P. plans covered by their plan review")
+PL = "docs/superpowers/plans/"
+pr, pbase, ptip0 = mkchange("plans", {PL + "a.md": b"# A\n1\n2\n3\n", PL + "b.md": b"# B\nb1\nb2\n", "src.py": b"print(1)\n"})
+PA0, PB0 = LD.plan_blobs(pr, pbase, ptip0)[PL + "a.md"], LD.plan_blobs(pr, pbase, ptip0)[PL + "b.md"]
+put(pr, PL + "a.md", b"# A\n1\n2\n3\nstatus: done\n")
+put(pr, "src.py", b"print(1)\nprint(2)\n")
+ptip = commit(pr, "work")
+ptgt = target_of(pr, pbase, ptip)
+
+
+@guarded("P")
+def _p():
+    plan_t = target_of(pr, pbase, ptip0)
+    entries = [rc("xr-pl", "thP", "tu-p", plan_t, checkpoint="plan", plan_blobs=LD.plan_blobs(pr, pbase, ptip0))]
+    got = xp.plan_listing(entries, pr, ptgt)
+    is_("P1 both plans are bound to the plan review", got, {PL + "a.md": {"nonce": "xr-pl", "blob": PA0}, PL + "b.md": {"nonce": "xr-pl", "blob": PB0}})
+    put_ledger(pr, entries[0])
+    sp = [pr + ":main...HEAD"]
+    dec = built(request([ptgt], sp, switches_file=swf(framing=True, omit_plans=True)))
+    text = pkt(dec).decode()
+    cur_a = git(pr, "rev-parse", "HEAD:" + PL + "a.md").decode().strip()
+    later = LD.blob_patch(pr, PL + "a.md", PA0, cur_a).decode()
+    ok("P1 a bound plan shows its patch from the bound blob to now", later in text and "+status: done" in text)
+    ok("P1 and not the plan's whole content", "+# A" not in text)
+    ok("P1 a plan with no later change shows nothing of itself", "+b1" not in text and "+# B" not in text)
+    ok("P1 the code is shown whole", "diff --git a/src.py b/src.py" in text and "+print(1)" in text)
+    ok("P1 both listing lines are fixed text", LISTED.format(PL + "a.md", "xr-pl") in text and LISTED.format(PL + "b.md", "xr-pl") in text)
+    ok("P1 the plan with a later change is shown", "  shown     +1 -0  {}a.md\n".format(PL) in text, text[:800])
+    ok("P1 the plan with none is listed, with its whole counts", "  listed    +3 -0  {}b.md\n".format(PL) in text)
+    is_("P1 plans_from records both, by plan path, nonce and blob", dec["targets"][0]["plans_from"],
+        [{"path": PL + "a.md", "nonce": "xr-pl", "blob": PA0}, {"path": PL + "b.md", "nonce": "xr-pl", "blob": PB0}])
+    is_("P1 shown covers the plan with a later patch and the code, not the listed plan",
+        sorted(dec["packets"][0]["shown"]), sorted([PL + "a.md", "src.py"]))
+    gate = rc("xr-gate", "thP", "tu-g", dict(dec["targets"][0]))
+    is_("P1 plans_from is backed by the ledger, as the gate checks", LD.plans_problem(entries, gate["targets"][0]), None)
+    off = built(request([ptgt], sp, switches_file=swf(framing=True)))
+    ok("P1 omit_plans off: the plans are shown whole", "+# A" in pkt(off).decode() and "+# B" in pkt(off).decode())
+    is_("P1 and plans_from is empty", off["targets"][0]["plans_from"], [])
+    spec_cp = built(request([ptgt], sp, checkpoint="spec", switches_file=swf(framing=True, omit_plans=True)))
+    ok("P1 a spec checkpoint lists no plan", "+# A" in pkt(spec_cp).decode())
+
+    def whole_plan(name, ents):
+        r2 = mkrepo("p2-" + name.replace(" ", "-").replace("(", "").replace(")", ""))
+        put(r2, "s", b"s\n")
+        b2 = commit(r2, "s")
+        put(r2, PL + "a.md", b"# A\n1\n2\n3\n")
+        t0 = commit(r2, "plan")
+        put(r2, PL + "a.md", b"# A\n1\n2\n3\nstatus: done\n")
+        t1 = commit(r2, "more")
+        tg0, tg1 = target_of(r2, b2, t0), target_of(r2, b2, t1)
+        es = ents(r2, b2, t0, tg0)
+        put_ledger(r2, *es)
+        listing = xp.plan_listing(es, r2, tg1)
+        d = built(request([tg1], [r2 + ":main...HEAD"], switches_file=swf(framing=True, omit_plans=True)))
+        t = pkt(d).decode()
+        is_("P2 {}: nothing is listed".format(name), listing, {})
+        ok("P2 {}: the whole plan is shown".format(name), "+# A" in t and "+status: done" in t, t[-400:])
+        is_("P2 {}: plans_from is empty".format(name), d["targets"][0]["plans_from"], [])
+        ok("P2 {}: no listing line".format(name), "was shown whole in the approved plan review" not in t)
+
+    whole_plan("unclean", lambda r, b, t0, tg: [rc("xr-1", "thQ", "tu", tg, checkpoint="plan", clean=False, plan_blobs=LD.plan_blobs(r, b, t0))])
+    whole_plan("not approved", lambda r, b, t0, tg: [rc("xr-1", "thQ", "tu", tg, checkpoint="plan", verdict="changes", plan_blobs=LD.plan_blobs(r, b, t0))])
+    whole_plan("a spec review", lambda r, b, t0, tg: [rc("xr-1", "thQ", "tu", tg, checkpoint="spec", plan_blobs=LD.plan_blobs(r, b, t0))])
+    whole_plan("legacy (no plan_blobs)", lambda r, b, t0, tg: [rc("xr-1", "thQ", "tu", tg, checkpoint="plan")])
+    whole_plan("path missing from plan_blobs", lambda r, b, t0, tg: [rc("xr-1", "thQ", "tu", tg, checkpoint="plan", plan_blobs={})])
+    r3 = mkrepo("p2-modonly")
+    put(r3, "s", b"s\n")
+    put(r3, PL + "a.md", b"# A\n1\n")
+    b3 = commit(r3, "plan exists")
+    put(r3, PL + "a.md", b"# A\n1\n2\n")
+    m1 = commit(r3, "modified")
+    put(r3, PL + "a.md", b"# A\n1\n2\n3\n")
+    m2 = commit(r3, "again")
+    mod_entry = rc("xr-1", "thQ", "tu", target_of(r3, b3, m1), checkpoint="plan", plan_blobs=LD.plan_blobs(r3, b3, m1))
+    is_("P2 a plan only modified in the plan review's range is not in plan_blobs", mod_entry["targets"][0]["plan_blobs"], {})
+    is_("P2 so it is not listed", xp.plan_listing([mod_entry], r3, target_of(r3, b3, m2)), {})
+    is_("P2 a plan that is not in the change is not listed", xp.plan_listing(entries, pr, target_of(pr, ptip, ptip)), {})
+    newer = rc("xr-pl2", "thP", "tu-p2", plan_t, checkpoint="plan", plan_blobs={PL + "a.md": PA0})
+    got2 = xp.plan_listing(entries + [newer], pr, ptgt)
+    is_("P2 the latest binding wins", got2[PL + "a.md"]["nonce"], "xr-pl2")
+    is_("P2 and another plan keeps its own", got2[PL + "b.md"]["nonce"], "xr-pl")
+    gone = rc("xr-pl3", "thP", "tu-p3", plan_t, checkpoint="plan", plan_blobs={PL + "a.md": "f" * 40})
+    is_("P2 a bound blob that is not in the repository is not listed", PL + "a.md" in xp.plan_listing(entries + [gone], pr, ptgt), False)
+
+
+# ---------------------------------------------------------------- F fit, fresh, slices
+print("F. the fit check, a fresh thread, slices")
+fr, fb, ft = mkchange("fitrepo", {"a.txt": b"hello\n", "d/b.txt": b"world\n"})
+ftgt = target_of(fr, fb, ft)
+fsp = [fr + ":main...HEAD"]
+FIT = dict(framing=True, fit=True)
+
+
+@guarded("F")
+def _f():
+    home = mkhome("f")
+    rollout(home, "thF", 100000, 258400)
+    d = built(request([ftgt], fsp, switches_file=swf(**FIT), codex_home=home))
+    is_("F2 no thread yet and it fits: send", (d["action"], d["kind"]), ("send", "full"))
+    ok("F2 the packet is framed", b"Files in this change (2):" in pkt(d) and b"independent reviewer" in pkt(d))
+    is_("F2 shown is the files", sorted(d["packets"][0]["shown"]), ["a.txt", "d/b.txt"])
+    d = built(request([ftgt], fsp, switches_file=swf(**FIT), codex_home=home, thread="thF"))
+    is_("F2 on the thread: send", d["action"], "send")
+    ok("F2 the reason gives need and limit", "need" in d["reason"] and "limit" in d["reason"], d["reason"])
+    d = built(request([ftgt], fsp, switches_file=swf(**FIT), codex_home=home, thread="thF", cap=1))
+    is_("F2 with fit on the cap does not apply", d["action"], "send")
+    # F3: too full for the thread, fits a fresh one
+    rollout(home, "thF", 232000, 258400)
+    d = built(request([ftgt], fsp, switches_file=swf(**FIT), codex_home=home, thread="thF"))
+    is_("F3 context + packet + reserve above the limit: fresh", (d["action"], d["kind"]), ("fresh", "full"))
+    is_("F3 one packet", len(d["packets"]), 1)
+    is_("F3 packet kind full", d["targets"][0]["packet"], "full")
+    pk = len(pkt(d))
+    edge_ctx = 232560 - 60000 - xp.estimate_tokens(pk)
+    rollout(home, "thF", edge_ctx, 258400)
+    is_("F3 need == limit stays on the thread", built(request([ftgt], fsp, switches_file=swf(**FIT), codex_home=home, thread="thF"))["action"], "send")
+    rollout(home, "thF", edge_ctx + 1, 258400)
+    is_("F3 one token more moves it", built(request([ftgt], fsp, switches_file=swf(**FIT), codex_home=home, thread="thF"))["action"], "fresh")
+    # F5: a thread whose rollout cannot be read counts as not fitting
+    d = built(request([ftgt], fsp, switches_file=swf(**FIT), codex_home=home, thread="th-unread"))
+    is_("F5 an existing thread whose rollout cannot be read: fresh", d["action"], "fresh")
+    wr(os.path.join(home, "sessions", "2026", "10", "25", "rollout-2026-10-25T12-00-00-th-garble.jsonl"), "x\n")
+    is_("F5 so is one whose rollout is garbled", built(request([ftgt], fsp, switches_file=swf(**FIT), codex_home=home, thread="th-garble"))["action"], "fresh")
+    # F6: no window to be had anywhere: refuse, naming the window
+    empty = mkhome("f6")
+    for th in (None, "thF"):
+        d = built(request([ftgt], fsp, switches_file=swf(**FIT), codex_home=empty, thread=th))
+        is_("F6 an unreadable window refuses (thread {})".format(th), d["action"], "refuse")
+        ok("F6 and names the window", "context window" in d["reason"], d["reason"])
+    # F4: too big for a fresh thread: slices. Window 120000: limit 108000, fresh 30000, reserve 60000
+    # leave 18000 tokens = 63000 bytes of packet.
+    small = mkhome("f4")
+    rollout(small, "thS", 10000, 120000)
+    files = dict(("f{:02d}.txt".format(i), (("line %02d %s\n" % (i, "x" * 60)).encode()) * 280) for i in range(12))
+    sr, sb, st = mkchange("slicerepo", files)
+    stgt = target_of(sr, sb, st)
+    ssp = [sr + ":main...HEAD"]
+    d = built(request([stgt], ssp, switches_file=swf(**FIT), codex_home=small, thread=None))
+    is_("F4 a change too big for a fresh thread: slices", (d["action"], d["kind"]), ("slices", "slices"))
+    n = len(d["packets"])
+    ok("F4 several slices", n >= 3, n)
+    sizes = [len(rd(p["file"])) for p in d["packets"]]
+    ok("F4 each slice's need is within the limit at a fresh thread", all(xp.fits(xp.FRESH_CONTEXT, s, 120000) for s in sizes), sizes)
+    ok("F4 and the slices are well filled (at most one is under half the room)", sum(1 for s in sizes if s < 31500) <= 1, sizes)
+    shown = [l for p in d["packets"] for l in p["shown"]]
+    is_("F4 every file is shown in exactly one slice, in path order", shown, sorted(files))
+    is_("F4 the targets are slices", d["targets"][0]["packet"], "slices")
+    for i, p in enumerate(d["packets"]):
+        t = rd(p["file"]).decode()
+        ok("F4 slice {} says which it is".format(i + 1), SLICE.format(i + 1, n) in t)
+        ok("F4 slice {} carries exactly its own patches".format(i + 1),
+           all(("diff --git a/{} b/{}".format(l, l) in t) == (l in p["shown"]) for l in files))
+        rows = [x for x in t.splitlines() if x.startswith("  shown ") or x.startswith("  elsewhere ")]
+        ok("F4 slice {} lists the complete change, its own as shown and the rest elsewhere".format(i + 1),
+           "Files in this change (12):" in t and len(rows) == 12
+           and sorted(x.split()[-1] for x in rows if x.startswith("  shown ")) == sorted(p["shown"]), rows[:3])
+    is_("F4 a rerun is the same", [rd(p["file"]) for p in built(request([stgt], ssp, switches_file=swf(**FIT), codex_home=small))["packets"]],
+        [rd(p["file"]) for p in d["packets"]])
+    rollout(small, "thS", 100000, 120000)
+    d2 = built(request([stgt], ssp, switches_file=swf(**FIT), codex_home=small, thread="thS"))
+    is_("F4 an existing thread too full, and a fresh one too small: slices", d2["action"], "slices")
+    big = dict(files, **{"huge.txt": b"".join(b"row %05d %s\n" % (i, b"y" * 70) for i in range(2500))})
+    br, bb, bt = mkchange("bigfile", big)
+    d3 = built(request([target_of(br, bb, bt)], [br + ":main...HEAD"], switches_file=swf(**FIT), codex_home=small))
+    labels = [l for p in d3["packets"] for l in p["shown"]]
+    parts = [l for l in labels if l.startswith("huge.txt#")]
+    ok("F4 a file bigger than a slice is split into labelled parts", len(parts) >= 3 and re.match(r"huge\.txt#1/\d+", parts[0]) is not None, labels)
+    ok("F4 no part is left out", parts == ["huge.txt#%d/%d" % (i + 1, len(parts)) for i in range(len(parts))], parts)
+    ok("F4 every slice within the limit", all(xp.fits(xp.FRESH_CONTEXT, len(rd(p["file"])), 120000) for p in d3["packets"]))
+    t0 = rd(d3["packets"][[i for i, p in enumerate(d3["packets"]) if parts[0] in p["shown"]][0]]["file"]).decode()
+    ok("F4 a part has its own line in the list", any(x.endswith(parts[0]) and x.startswith("  shown ") for x in t0.splitlines()))
+    tiny = mkhome("tiny")
+    rollout(tiny, "thT", 1, 90000)
+    dt = built(request([ftgt], fsp, switches_file=swf(**FIT), codex_home=tiny))
+    is_("F4 a window with no room for any packet refuses", dt["action"], "refuse")
+    ok("F4 naming the window", "window" in dt["reason"], dt["reason"])
+    d4 = built(request([stgt], ssp, switches_file=swf(**FIT), codex_home=small, missed=["f01.txt"]))
+    ok("F4 the missed line is in every slice", all(MISSED.format("f01.txt") in rd(p["file"]).decode() for p in d4["packets"]))
+    ok("F4 max_packet_bytes is the exact edge of fits",
+       xp.fits(xp.FRESH_CONTEXT, 63000, 120000) and not xp.fits(xp.FRESH_CONTEXT, 63001, 120000))
+
+
+# ---------------------------------------------------------------- F7 a 20,000-file change
+print("F7. a 20,000-file change cuts the slice file lists")
+
+
+@guarded("F7")
+def _f7():
+    repo = mkrepo("f7")
+    put(repo, "seed.txt", b"seed\n")
+    base = commit(repo, "seed")
+    for i in range(20000):
+        put(repo, "d{:02d}/file{:05d}.txt".format(i // 1000, i), ("content %d\n" % i).encode())
+    tip = commit(repo, "many")
+    home = mkhome("f7")
+    rollout(home, "thW", 1000, 258400)
+    tg = target_of(repo, base, tip)
+    d = built(request([tg], [repo + ":main...HEAD"], switches_file=swf(**FIT), codex_home=home, thread=None))
+    is_("F7 slices", d["action"], "slices")
+    n = len(d["packets"])
+    ok("F7 several slices", n >= 2, n)
+    shown = [l for p in d["packets"] for l in p["shown"]]
+    is_("F7 every file shown once", len(shown), 20000)
+    is_("F7 and in path order", shown, sorted(shown))
+    for i, p in enumerate(d["packets"]):
+        data = rd(p["file"])
+        t = data.decode()
+        lines = [x for x in t.splitlines() if x.startswith("  shown ") or x.startswith("  elsewhere ")]
+        ok("F7 slice {} fits a fresh thread".format(i + 1), xp.fits(xp.FRESH_CONTEXT, len(data), 258400), len(data))
+        is_("F7 slice {} lists only its own files".format(i + 1), len(lines), len(p["shown"]))
+        ok("F7 slice {} says how many files there are, and how to list them all".format(i + 1),
+           "Files in this change (20000):" in t and "git --git-dir=" in t and "diff --stat" in t)
+        ok("F7 no slice names a file elsewhere", not any(x.startswith("  elsewhere ") for x in t.splitlines()))
+    full_list = len(xp.file_list([("shown", 1, 0, l) for l in shown]))
+    ok("F7 the complete list would have been more than a tenth of a slice", full_list > xp.FILE_LIST_SHARE * 499000, full_list)
+
+
+# ---------------------------------------------------------------- F8 slices of several targets
+print("F8. slices of two targets")
+
+
+@guarded("F8")
+def _f8():
+    home = mkhome("f8")
+    rollout(home, "thM", 1000, 120000)
+    mk = lambda tag: dict(("%s%d.txt" % (tag, i), (b"%s line %d %s\n" % (tag.encode(), i, b"x" * 60)) * 300) for i in range(4))
+    ra, ba, ta = mkchange("f8a", mk("a"))
+    rb, bb, tb = mkchange("f8b", mk("b"))
+    d = built(request([target_of(ra, ba, ta), target_of(rb, bb, tb)], [ra + ":main...HEAD", rb + ":main...HEAD"],
+                      switches_file=swf(**FIT), codex_home=home))
+    is_("F8 two targets too big for a fresh thread: slices", d["action"], "slices")
+    shown = [l for p in d["packets"] for l in p["shown"]]
+    is_("F8 every file of both targets, behind its target's label, in target then path order",
+        shown, ["{}:a{}.txt".format(ra, i) for i in range(4)] + ["{}:b{}.txt".format(rb, i) for i in range(4)])
+    is_("F8 each target is slices", [t["packet"] for t in d["targets"]], ["slices", "slices"])
+    for i, p in enumerate(d["packets"]):
+        t = rd(p["file"]).decode()
+        heads = [x for x in t.splitlines() if x.startswith("--- diff (")]
+        want = [ra for l in p["shown"] if l.startswith(ra + ":")][:1] + [rb for l in p["shown"] if l.startswith(rb + ":")][:1]
+        is_("F8 slice {} has a diff block for each target it carries".format(i + 1), len(heads), len(want))
+        ok("F8 slice {} fits a fresh thread".format(i + 1), xp.fits(xp.FRESH_CONTEXT, len(t.encode()), 120000))
+        ok("F8 slice {} header is fixed text".format(i + 1), SLICE.format(i + 1, len(d["packets"])) in t)
+    is_("F8 the same two repositories give two distinct targets", len(set(t["repo"] for t in d["targets"])), 2)
+
+
+# ---------------------------------------------------------------- CLI
+print("B. the command line")
+
+
+@guarded("B")
+def _b():
+    repo, base, tip = mkchange("cli", {"a.txt": b"x\n"})
+    tg = target_of(repo, base, tip)
+    req = request([tg], [repo + ":main...HEAD"])
+    rq = wr(os.path.join(ROOT, "cli-req.json"), json.dumps(req))
+    od = os.path.join(ROOT, "cli-out")
+    p = subprocess.run(["/usr/bin/python3", "-I", MODULE, "build", rq, od], capture_output=True, text=True, env=dict(os.environ))
+    is_("B build exits 0", p.returncode, 0)
+    dec = json.loads(p.stdout)
+    is_("B and prints the decision", (dec["action"], dec["kind"]), ("send", "full"))
+    ok("B the packet is written under OUTDIR", dec["packets"][0]["file"].startswith(od) and os.path.isfile(dec["packets"][0]["file"]))
+    ok("B and is today's bytes", rd(dec["packets"][0]["file"]) == xp.today_packet(rd(FIX, "reviewer.md"), b"Review this.\n", [(req["specs"][0], LD.patch(tg["repo"], base, tip))]))
+    pb = subprocess.run(["/usr/bin/python3", "-I", MODULE, "plan-blobs", repo, base, tip], capture_output=True, text=True, env=dict(os.environ))
+    is_("B plan-blobs exits 0", pb.returncode, 0)
+    is_("B and prints the ledger's plan_blobs as JSON", json.loads(pb.stdout), {})
+    pb2 = subprocess.run(["/usr/bin/python3", "-I", MODULE, "plan-blobs", pr, pbase, ptip0], capture_output=True, text=True, env=dict(os.environ))
+    is_("B plan-blobs lists the added plans", json.loads(pb2.stdout), LD.plan_blobs(pr, pbase, ptip0))
+    bad = subprocess.run(["/usr/bin/python3", "-I", MODULE, "plan-blobs", repo, "nope", tip], capture_output=True, text=True, env=dict(os.environ))
+    ok("B plan-blobs on a bad range fails with a message", bad.returncode != 0 and bad.stderr.strip() != "", bad)
+    nr = subprocess.run(["/usr/bin/python3", "-I", MODULE, "build", os.path.join(ROOT, "missing.json"), od], capture_output=True, text=True, env=dict(os.environ))
+    ok("B build with an unreadable request fails with a message", nr.returncode != 0 and nr.stderr.strip() != "")
+    us = subprocess.run(["/usr/bin/python3", "-I", MODULE], capture_output=True, text=True, env=dict(os.environ))
+    is_("B no arguments is a usage error", us.returncode, 2)
+
+
+print("K11. the constants")
+is_("K11 constants", (xp.MISSING_CAP, xp.FILE_LIST_SHARE, xp.PLAN_PREFIX), (50, 0.1, "docs/superpowers/plans/"))
+
 PY
 )"
 rc=$?

@@ -9,20 +9,34 @@ this module, and the replay harness imports it, so the packets it tests are the 
 sends. It lives in ~/.claude beside the ledger, so neither xreview nor the gate runs code from a
 directory the sandbox can write.
 Design: docs/superpowers/specs/2026-10-25-xreview-review-packets-design.md, sections 3.1
-(framing), 3.2 (the fit arithmetic), 3.3 (review units and parts) and 3.8 (switches).
+(framing), 3.2 (the fit check), 3.3 (slices), 3.4 (delta rounds), 3.5 (plans covered by their
+plan review) and 3.8 (switches).
 
-This part holds the switches, the fixed framing copy, the review units of a patch and how a unit
-is cut into parts, the fit arithmetic, and today's packet, byte for byte. The ledger (the patch
-and its identity) is loaded from XREVIEW_LEDGER, else from beside this file.
+It holds the switches, the fixed framing copy, the review units of a patch and how a unit is cut
+into parts, the fit arithmetic, and today's packet, byte for byte. On top of that it reads a
+thread's context from its rollout, decides whether a round can follow the last one (a delta),
+which plans an approved plan review covers, and builds the packet: `build` turns a request into
+a decision (send, fresh thread, slices or refuse) and the packet files. The ledger (the patch and
+its identity) is loaded from XREVIEW_LEDGER, else from beside this file.
+
+Command line:
+  xreview-packet.py build REQUEST.json OUTDIR   write the packets, print the decision as JSON
+  xreview-packet.py plan-blobs REPO BASE TIP    print the plans BASE..TIP adds, as JSON
 
 Written for /usr/bin/python3 (3.9): no match statements, no X | Y type unions.
 """
 import collections
+import glob
 import importlib.util
+import json
 import math
 import os
 import re
+import shlex
+import sys
+import tempfile
 from fractions import Fraction
+from typing import Optional, Tuple
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LEDGER_PATH = os.environ.get("XREVIEW_LEDGER") or os.path.join(HERE, "xreview-ledger.py")
@@ -35,6 +49,13 @@ LIMIT_FRACTION = 0.9
 RESERVE = 60000
 FRESH_CONTEXT = 30000
 
+# A receipt records at most this many uncovered files or part labels (spec 3.6); collect uses it.
+MISSING_CAP = 50
+# A slice's file list may take at most this share of a slice before it is cut to its own files (3.3).
+FILE_LIST_SHARE = 0.1
+# The plans a plan review can cover (spec 3.5).
+PLAN_PREFIX = "docs/superpowers/plans/"
+
 # The switches of packets.conf (spec 3.8), all off by default. The last three need framing.
 SWITCHES = ("framing", "fit", "delta", "omit_plans")
 NEEDS_FRAMING = ("fit", "delta", "omit_plans")
@@ -45,6 +66,22 @@ REVIEWED_FILES_TEXT = ("List in `reviewed_files` every file or part label marked
                        "reviewed. Do not list a file you did not read.")
 FILE_LIST_HEADER = "Files in this change ({}):"
 FILE_LIST_LINE = "  {:<9} +{} -{}  {}"
+# The fixed lines of a delta, a slice, a listed plan and a coverage gap (spec 3.3 to 3.6).
+DELTA_HEADER = ("This round follows {} on this thread. The change as of that round is earlier in this "
+                "thread; below is what changed since. Judge the change as it now stands, including how "
+                "the new code meets the old.")
+SLICE_HEADER = ("This is slice {} of {} of one change. The other slices are reviewed in their own turns. "
+                "Open any file you need.")
+LISTED_PLAN = ("{} was shown whole in the approved plan review {}; only its changes since then are "
+               "shown here.")
+MISSED_FILES = "The last round's reviewed_files did not list: {}. Review them too."
+# Today's refusal when the diffs exceed the cap (xreview dispatch), verbatim.
+CAP_REFUSAL = ("the diffs are too large to carry inline ({} bytes, cap {}).\n"
+               "Review them in slices, or raise XREVIEW_MAX_DIFF_BYTES if the reviewer can hold it.")
+# Room a slice keeps for the digits of `slice i of n` and the like, and for a part's own list line.
+SLICE_SLACK = 64
+LINE_SLACK = 96
+MIN_PART = 200
 
 # A review unit (spec 3.3): one file's patch, or one part of it. label is the unquoted path,
 # `<path>#<i>/<n>` for a part; path is the file's unquoted path; text is the patch bytes,
@@ -474,3 +511,647 @@ def today_packet(reviewer_md, body, diffs):
         out += [blocks, b"\n"]
     out.append(b"</cross-review-request>\n")
     return b"".join(out)
+
+
+# ------------------------------------------------------------------ the thread's context
+_ROLLOUT_NAME = r"rollout-[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}-"
+_THREAD_ID = re.compile(r"\A[0-9A-Za-z][0-9A-Za-z_-]*\Z")
+
+
+def _codex_home(codex_home):
+    return codex_home or os.environ.get("CODEX_HOME") or os.path.join(os.path.expanduser("~"), ".codex")
+
+
+def _count_ok(value, minimum):
+    return isinstance(value, int) and not isinstance(value, bool) and value >= minimum
+
+
+def _rollout_files(home, thread=None):
+    """The rollout files under home's sessions and archived_sessions: those of one thread, or all
+    of them. A thread id is matched as a file name's end, never as a glob."""
+    name = re.compile(r"\A" + _ROLLOUT_NAME + (re.escape(thread) if thread else r".+") + r"\.jsonl\Z")
+    found = []
+    for sub in ("sessions", "archived_sessions"):
+        pattern = os.path.join(glob.escape(os.path.join(home, sub)), "**", "rollout-*.jsonl")
+        found.extend(p for p in glob.glob(pattern, recursive=True) if name.match(os.path.basename(p)))
+    return found
+
+
+def _rollout_values(path):
+    """(context now, window) from one rollout: the latest `event_msg` token_count record gives
+    `info.last_token_usage.total_tokens` and `info.model_context_window`; a `task_started` record
+    carries the window too. A value that is not a whole number is None, as is a file that cannot
+    be read."""
+    context = window = None
+    try:
+        with open(path, "rb") as handle:
+            for line in handle:
+                if b'"token_count"' not in line and b'"task_started"' not in line:
+                    continue
+                try:
+                    record = json.loads(line.decode("utf-8"))
+                except ValueError:
+                    continue
+                payload = record.get("payload") if isinstance(record, dict) and record.get("type") == "event_msg" else None
+                if not isinstance(payload, dict):
+                    continue
+                if payload.get("type") == "task_started":
+                    if _count_ok(payload.get("model_context_window"), 1):
+                        window = payload["model_context_window"]
+                elif payload.get("type") == "token_count" and isinstance(payload.get("info"), dict):
+                    info = payload["info"]
+                    last = info.get("last_token_usage")
+                    now = last.get("total_tokens") if isinstance(last, dict) else None
+                    context = now if _count_ok(now, 0) else None
+                    if _count_ok(info.get("model_context_window"), 1):
+                        window = info["model_context_window"]
+    except OSError:
+        return None, None
+    return context, window
+
+
+def thread_context(codex_home, thread) -> Tuple[Optional[int], Optional[int]]:
+    """(context now, window) of a thread, from its newest rollout under codex_home (CODEX_HOME,
+    else ~/.codex). None for a value that cannot be read; (None, None) when there is no rollout."""
+    if not (isinstance(thread, str) and _THREAD_ID.match(thread)):
+        return None, None
+    files = _rollout_files(_codex_home(codex_home), thread)
+    if not files:
+        return None, None
+
+    def age(path):
+        try:
+            return os.path.getmtime(path)
+        except OSError:
+            return 0
+    return _rollout_values(max(files, key=age))
+
+
+def _entries(common):
+    """The v2 entries on record for a repository (its git common directory), else none."""
+    ledger = _ledger()
+    try:
+        path = ledger.ledger_file(common)
+        return ledger.read_entries(path) if os.path.lexists(path) else []
+    except (OSError, ledger.Fail):
+        return []
+
+
+def _receipts(entries):
+    return [e for e in entries if isinstance(e, dict) and e.get("v") == 2 and e.get("kind") == "receipt"]
+
+
+def _newest_first(items):
+    """(receipt) entries newest dispatch first; ties in the order they reached the ledger."""
+    keyed = [((e["dispatched_at"] if isinstance(e.get("dispatched_at"), str) else ""), i, e)
+             for i, e in enumerate(items)]
+    return [e for _at, _i, e in sorted(keyed, key=lambda k: (k[0], k[1]), reverse=True)]
+
+
+def fresh_window(codex_home, repo_common) -> Optional[int]:
+    """The window a fresh thread will have: the newest `model_context_window` among this
+    repository's review threads (the `thread` of its ledger's receipts), else among any rollout.
+    None when none can be read."""
+    home = _codex_home(codex_home)
+    seen = set()
+    for receipt in _newest_first(_receipts(_entries(repo_common))) if repo_common else []:
+        thread = receipt.get("thread")
+        if isinstance(thread, str) and thread not in seen:
+            seen.add(thread)
+            window = thread_context(home, thread)[1]
+            if window is not None:
+                return window
+    for path in sorted(_rollout_files(home), key=os.path.basename, reverse=True)[:40]:
+        window = _rollout_values(path)[1]
+        if window is not None:
+            return window
+    return None
+
+
+def max_packet_bytes(context_now, window):
+    """The most bytes a packet may have for `fits(context_now, bytes, window)` to hold; 0 when
+    not even an empty packet fits. Exact: need <= limit is ceil(bytes / 3.5) <= floor(0.9 x
+    window) - context_now - reserve."""
+    room = math.floor(Fraction(str(LIMIT_FRACTION)) * Fraction(window)) - context_now - RESERVE
+    if room <= 0:
+        return 0
+    return int(math.floor(Fraction(room) * Fraction(str(BYTES_PER_TOKEN))))
+
+
+# ------------------------------------------------------------------ delta rounds (spec 3.4)
+def _link_target(entries, receipt, repo, dest, base, newer_tip):
+    """The one target of receipt that a later round on dest and base can follow: a full-range
+    target on the same repository, destination and base whose tip is an ancestor of newer_tip.
+    None when there is none or more than one (the gate denies an ambiguous link)."""
+    ledger = _ledger()
+    _entry, found = ledger.receipt_of(entries, receipt.get("nonce"), repo)
+    same = [t for t in found if t.get("full") is True and t.get("dest") == dest and t.get("base") == base]
+    starts = [t for t in same if ledger.is_ancestor(repo, t.get("tip"), newer_tip)]
+    return starts[0] if len(starts) == 1 else None
+
+
+def delta_base(entries, thread, target, turns):
+    """The receipt a round on `thread` can follow with a delta, or None (then the packet is full).
+    entries is the repository's ledger; turns is `xreview-rpc thread-turns`'s answer, or None
+    when the history is unknown. Spec 3.4, in order:
+      - the newest receipt on the thread is a pre-merge one for the same repository, destination
+        and base, whose tip is an ancestor of the new tip;
+      - it is clean, and so is every receipt back to the chain's root, each link on this thread
+        with its plans backed;
+      - the root is a full packet (a sliced round never roots a chain);
+      - the thread still holds every chain turn, root first; no turn since the root carries a
+        compaction (unknown counts as one); and the thread has no thread-level compaction
+        (unknown counts as one).
+    The gate's own chain check runs last on the receipt this round would record, so xreview
+    never builds a chain the gate would deny."""
+    ledger = _ledger()
+    if not (isinstance(thread, str) and thread and isinstance(turns, dict)):
+        return None
+    listed, compactions = turns.get("turns"), turns.get("thread_compactions")
+    if not (isinstance(listed, list) and all(isinstance(x, dict) and isinstance(x.get("id"), str) for x in listed)):
+        return None
+    if isinstance(compactions, bool) or not isinstance(compactions, int) or compactions != 0:
+        return None
+    repo, dest, base, tip = (target.get(k) for k in ("repo", "dest", "base", "tip"))
+    if target.get("full") is not True or not all(isinstance(x, str) and x for x in (repo, dest, base, tip)):
+        return None
+    ids = [x["id"] for x in listed]
+    on_thread = [e for e in _receipts(entries) if e.get("thread") == thread]
+    if not on_thread:
+        return None
+    newest = _newest_first(on_thread)[0]
+    chain, seen, cur, newer_tip = [], set(), newest, tip
+    while True:
+        nonce = cur.get("nonce")
+        if not isinstance(nonce, str) or nonce in seen:
+            return None
+        seen.add(nonce)
+        if (cur.get("checkpoint") != "pre-merge" or cur.get("thread") != thread
+                or cur.get("clean") is not True):
+            return None
+        turn = cur.get("turn")
+        link = _link_target(entries, cur, repo, dest, base, newer_tip)
+        if not (isinstance(turn, str) and turn) or link is None or ledger.plans_problem(entries, link):
+            return None
+        chain.append(turn)
+        if link.get("packet") == "full":
+            break
+        follows = link.get("delta_from")
+        if link.get("packet") != "delta" or not (isinstance(follows, str) and follows):
+            return None
+        cur, _found = ledger.receipt_of(entries, follows, repo)
+        if cur is None:
+            return None
+        newer_tip = link.get("tip")
+    at, root_at = 0, None
+    for turn in reversed(chain):
+        if turn not in ids[at:]:
+            return None
+        found_at = ids.index(turn, at)
+        root_at = found_at if root_at is None else root_at
+        at = found_at + 1
+    if any(x.get("compacted") is not False for x in listed[root_at:]):
+        return None
+    probe = {"nonce": "xr-delta-probe", "thread": thread}
+    follow = dict(target, packet="delta", delta_from=newest.get("nonce"), history=ids)
+    if ledger.chain_problem(entries, probe, follow, repo) is not None:
+        return None
+    return newest
+
+
+# ------------------------------------------------------------------ plans covered by a plan review (3.5)
+def _plan_changes(repo, base, tip):
+    """The plans base..tip changes and still has, as {path: blob id at tip}: regular files under
+    PLAN_PREFIX that exist at tip."""
+    prefix = PLAN_PREFIX.encode("ascii")
+    found = {}
+    for path, _old_mode, new_mode, _old_blob, new_blob in _ledger().raw_records(repo, base, tip):
+        if path.startswith(prefix) and new_mode in (b"100644", b"100755"):
+            found[os.fsdecode(path)] = new_blob.decode("ascii")
+    return found
+
+
+def plan_listing(entries, repo, target):
+    """The plans of target's range that an approved plan review covers, as
+    {path: {nonce, blob}}. For each plan the range changes, the latest plan-checkpoint receipt of
+    this repository that is an approve, is clean and has the path in a target's plan_blobs binds
+    it, if the patch from that blob to the plan as it now is can be rendered. Anything else is
+    left out, and its whole patch is shown."""
+    ledger = _ledger()
+    scope = target.get("repo")
+    changes = _plan_changes(repo, target["base"], target["tip"])
+    if not changes:
+        return {}
+    plans = _newest_first([e for e in _receipts(entries) if e.get("checkpoint") == "plan"
+                           and e.get("verdict") == "approve" and e.get("clean") is True
+                           and isinstance(e.get("nonce"), str) and e.get("nonce")])
+    listing = {}
+    for path in sorted(changes):
+        for receipt in plans:
+            bound = None
+            for t in receipt.get("targets") or []:
+                blobs = t.get("plan_blobs") if isinstance(t, dict) and t.get("repo") == scope else None
+                if isinstance(blobs, dict) and isinstance(blobs.get(path), str):
+                    bound = blobs[path]
+                    break
+            if bound is None:
+                continue
+            try:
+                ledger.blob_patch(repo, path, bound, changes[path])
+            except ledger.Fail:
+                pass
+            else:
+                listing[path] = {"nonce": receipt["nonce"], "blob": bound}
+            break
+    return listing
+
+
+# ------------------------------------------------------------------ building a packet
+class _Refuse(Exception):
+    """A request that cannot be built; the message is the decision's reason."""
+
+
+class _Target(object):
+    """One target of a request while its packet is built: kind (full or delta), the receipt a
+    delta follows, the plans listed, the patch shown and the units of it."""
+
+
+def _label_prefix(spec, several):
+    """With several targets a path carries its target's label: the part of the --diff spec before
+    its last colon (`.` when it named none), then a colon."""
+    if not several:
+        return ""
+    head, sep, _tail = spec.rpartition(":")
+    return (head if sep and head else ".") + ":"
+
+
+def _slurp(path):
+    with open(path, "rb") as handle:
+        return handle.read()
+
+
+def _nl(data):
+    return data if not data or data.endswith(b"\n") else data + b"\n"
+
+
+def _row_key(index, unit):
+    part = 0
+    if unit.label != unit.path:
+        match = re.search(r"#([0-9]+)/[0-9]+\Z", unit.label)
+        part = int(match.group(1)) if match else 0
+    return (index, os.fsencode(unit.path), part)
+
+
+def _listing_bytes(rows):
+    """The file list of rows [(key, mark, plus, minus, label)], in key order."""
+    ordered = sorted(rows, key=lambda r: r[0])
+    return os.fsencode(file_list([(m, p, n, l) for _k, m, p, n, l in ordered]))
+
+
+def _static_rows(t):
+    """The file-list rows that do not depend on which units a packet carries: the files of a
+    delta's whole change that this packet does not show (earlier), and a listed plan with no
+    later patch (listed), both with the whole change's counts."""
+    rows = []
+    if t.all_units is None:
+        return rows
+    shown = set(u.path for u in t.units)
+    totals = collections.OrderedDict()
+    for u in t.all_units:
+        plus, minus = totals.get(u.path, (0, 0))
+        totals[u.path] = (plus + u.plus, minus + u.minus)
+    for path, (plus, minus) in totals.items():
+        if path in shown:
+            continue
+        if t.kind == "delta":
+            mark = "earlier"
+        elif path in t.listed:
+            mark = "listed"
+        else:
+            continue
+        rows.append(((t.index, os.fsencode(path), 0), mark, plus, minus, t.prefix + path))
+    return rows
+
+
+def _notes(ts, missed, first=None):
+    """The fixed lines between the body and the file list: the slice header, each delta's
+    header, each listed plan's line, then the files missed last round."""
+    lines = [first] if first else []
+    for t in ts:
+        if t.kind == "delta":
+            lines.append((t.prefix + " " if t.prefix else "") + DELTA_HEADER.format(t.follows["nonce"]))
+    for t in ts:
+        for path in sorted(t.listed):
+            lines.append(LISTED_PLAN.format(t.prefix + path, t.listed[path]["nonce"]))
+    if missed:
+        lines.append(MISSED_FILES.format(", ".join(missed)))
+    return lines
+
+
+def _framed(reviewer, framing, body, notes, listing, blocks):
+    """A framed request: the reviewer instructions, the framing text, the body, the fixed notes,
+    the file list, then one diff block per target [(spec, diff bytes)]."""
+    out = [b"<cross-review-request>\n", reviewer, b"\n", _nl(framing), b"\n", _nl(body)]
+    if notes:
+        out.append(b"\n")
+        out.extend(os.fsencode(n) + b"\n" for n in notes)
+    if listing:
+        out += [b"\n", listing]
+    for spec, diff in blocks:
+        out.append(b"\n--- diff (" + os.fsencode(spec) + b") ---\n" + diff.rstrip(b"\n") + b"\n--- end diff ---\n")
+    out.append(b"</cross-review-request>\n")
+    return b"".join(out)
+
+
+def _prepare(c, delta_ok):
+    """Each target of the request as a _Target: a delta where it qualifies (and delta_ok), else
+    a full packet with the plans an approved plan review covers left out when omit_plans is on."""
+    ledger = _ledger()
+    ts = []
+    for index, (target, spec) in enumerate(zip(c["targets"], c["specs"])):
+        t = _Target()
+        t.index, t.target, t.spec = index, target, spec
+        t.prefix = _label_prefix(spec, len(c["targets"]) > 1)
+        t.kind, t.follows, t.history, t.listed, t.all_units = "full", None, None, {}, None
+        repo, base, tip = target["repo"], target["base"], target["tip"]
+        entries = c["entries"](repo)
+        previous = delta_base(entries, c["thread"], target, c["turns"]) if delta_ok else None
+        if previous is not None:
+            link = _link_target(entries, previous, repo, target["dest"], base, tip)
+            diff = ledger.patch(repo, link["tip"], tip)
+            if diff:
+                t.kind, t.follows, t.diff = "delta", previous, diff
+                t.history = [x["id"] for x in c["turns"]["turns"]]
+                t.all_units = units_for(repo, base, tip)
+        if t.kind == "full":
+            if c["sw"]["omit_plans"] and c["checkpoint"] == "pre-merge":
+                t.listed = plan_listing(entries, repo, target)
+            diff = ledger.patch(repo, base, tip, tuple(sorted(t.listed)))
+            if t.listed:
+                now = _plan_changes(repo, base, tip)
+                for path in sorted(t.listed):
+                    diff += ledger.blob_patch(repo, path, t.listed[path]["blob"], now[path])
+                t.all_units = units_for(repo, base, tip)
+            t.diff = diff
+        t.units = _units(t.diff)
+        ts.append(t)
+    return ts
+
+
+def _unsliced(c, ts):
+    """(request bytes, shown labels) of the targets as one packet."""
+    rows = []
+    for t in ts:
+        for u in t.units:
+            rows.append((_row_key(t.index, u), "shown", u.plus, u.minus, t.prefix + u.label))
+        rows.extend(_static_rows(t))
+    shown =[r[4] for r in sorted((r for r in rows if r[1] == "shown"), key=lambda r: r[0])]
+    listing = _listing_bytes(rows) if ts else b""
+    data = _framed(c["reviewer"], c["framing"], c["body"], _notes(ts, c["missed"]), listing,
+                   [(t.spec, t.diff) for t in ts])
+    return data, shown
+
+
+def _cut_listing(total, rows, ts):
+    """A slice's file list when the whole list is too long: its own files only, the number of
+    files in all, and the command that lists them."""
+    lines = [FILE_LIST_HEADER.format(total)]
+    lines += [FILE_LIST_LINE.format(m, p, n, l) for _k, m, p, n, l in sorted(rows, key=lambda r: r[0])]
+    lines.append("The other files are not listed here; these commands list them all:")
+    for t in ts:
+        lines.append("  git --git-dir={} diff --stat {} {} --".format(
+            shlex.quote(t.target["repo"]), t.target["base"], t.target["tip"]))
+    return os.fsencode("\n".join(lines) + "\n")
+
+
+def _slices(c, ts, window):
+    """The request as slices (spec 3.3): [(bytes, shown labels)]. Units are cut into parts to fit,
+    packed in path order, each slice's need within the limit at a fresh thread's start."""
+    top = max_packet_bytes(FRESH_CONTEXT, window)
+    if top <= 0:
+        raise _Refuse("the model's context window of {} tokens leaves no room for a review packet "
+                      "on a fresh thread".format(window))
+    share = Fraction(str(FILE_LIST_SHARE))
+    block = [len(b"\n--- diff (" + os.fsencode(t.spec) + b") ---\n") + len(b"\n--- end diff ---\n") for t in ts]
+    base_len = len(_framed(c["reviewer"], c["framing"], c["body"],
+                           _notes(ts, c["missed"], first=SLICE_HEADER.format(999999, 999999)), b"", []))
+    headroom = top - base_len - int(math.ceil(share * top)) - (max(block) if block else 0) - SLICE_SLACK
+    units = []
+    for t in ts:
+        for u in t.units:
+            room = headroom - len(os.fsencode(t.prefix + u.path)) - LINE_SLACK
+            if len(u.text) <= room:
+                parts = [u]
+            elif room < MIN_PART:
+                raise _Refuse("the packet around a change leaves no room for any of it in a slice")
+            else:
+                try:
+                    parts = split_unit(u, room)
+                except ValueError as e:
+                    raise _Refuse("a file of the change cannot be cut to fit a slice: {}".format(e))
+            units.extend((_row_key(t.index, p), t.index, p) for p in parts)
+    if not units:
+        raise _Refuse("the request alone does not fit a fresh thread, and there is no diff to slice")
+    units.sort(key=lambda x: x[0])
+    static = [r for t in ts for r in _static_rows(t)]
+    all_rows = [(k, "shown", p.plus, p.minus, ts[i].prefix + p.label) for k, i, p in units] + static
+    total = len(all_rows)
+    whole_list = len(_listing_bytes(all_rows))
+    full_mode = whole_list <= share * top
+    own_line = lambda i, p: len(os.fsencode(FILE_LIST_LINE.format("shown", p.plus, p.minus, ts[i].prefix + p.label))) + 1
+    fixed = whole_list if full_mode else len(_cut_listing(total, [], ts))
+    budget = top - base_len - SLICE_SLACK - fixed
+    slices, used, present = [[]], 0, set()
+    for n, (_k, i, p) in enumerate(units):
+        cost = len(p.text) + (0 if full_mode else own_line(i, p))
+        add = cost + (0 if i in present else block[i])
+        if slices[-1] and used + add > budget:
+            slices.append([])
+            used, present = 0, set()
+            add = cost + block[i]
+        if add > budget:
+            raise _Refuse("a part of the change does not fit a slice")
+        slices[-1].append(n)
+        used += add
+        present.add(i)
+    out = []
+    for number, members in enumerate(slices, 1):
+        mine = set(members)
+        rows = [(k, "shown" if n in mine else "elsewhere", p.plus, p.minus, ts[i].prefix + p.label)
+                for n, (k, i, p) in enumerate(units) if full_mode or n in mine]
+        listing = _listing_bytes(rows + static) if full_mode else _cut_listing(total, rows, ts)
+        blocks = [(t.spec, b"".join(units[n][2].text for n in members if units[n][1] == t.index))
+                  for t in ts if any(units[n][1] == t.index for n in members)]
+        data = _framed(c["reviewer"], c["framing"], c["body"],
+                       _notes(ts, c["missed"], first=SLICE_HEADER.format(number, len(slices))), listing, blocks)
+        if len(data) > top:
+            raise ValueError("slice {} came out at {} bytes, above the {} the window allows".format(number, len(data), top))
+        out.append((data, [ts[units[n][1]].prefix + units[n][2].label for n in members]))
+    return out
+
+
+def _target_out(t, packet):
+    return dict(t.target, packet=packet,
+                delta_from=t.follows["nonce"] if t.follows is not None else None,
+                history=t.history if t.kind == "delta" else None,
+                plans_from=[{"path": p, "nonce": t.listed[p]["nonce"], "blob": t.listed[p]["blob"]}
+                            for p in sorted(t.listed)])
+
+
+def _load_turns(path):
+    """`xreview-rpc thread-turns`'s JSON from a file, or None: the history is then unknown."""
+    if not path:
+        return None
+    try:
+        data = json.loads(_slurp(path).decode("utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _needed(context_now, nbytes):
+    return context_now + estimate_tokens(nbytes) + RESERVE
+
+
+def _limit(window):
+    return int(math.floor(Fraction(str(LIMIT_FRACTION)) * Fraction(window)))
+
+
+def build(request, outdir=None):
+    """The decision for a request, with its packets written to outdir. The request is
+        {checkpoint, body_file, reviewer_md, framing_md, cap, switches_file, codex_home,
+         thread: str|null, turns_file: str|null, targets: [normalized targets], specs: [str],
+         missed: [labels]}
+    and the decision
+        {action: send|fresh|slices|refuse, reason, kind: full|delta|slices,
+         packets: [{file, shown: [labels]}], targets: [target + {packet, delta_from, history,
+         plans_from}], switches}.
+    With every switch off the packet is today's byte for byte and the cap applies as today. With
+    framing on and fit off the cap still applies, to the diffs the packet carries. With fit on
+    (spec 3.2): a delta or a full packet; sent on the checkpoint's thread if it fits; else on a
+    fresh thread, as a full packet; else in slices. A thread whose context cannot be read counts
+    as not fitting; a window that cannot be read refuses."""
+    ledger = _ledger()
+    sw = read_switches(request["switches_file"])
+    memo = {}
+
+    def entries_of(repo):
+        if repo not in memo:
+            memo[repo] = _entries(repo)
+        return memo[repo]
+
+    targets = [dict(t) for t in (request.get("targets") or [])]
+    specs = [str(s) for s in (request.get("specs") or [])]
+    if len(specs) != len(targets):
+        raise ValueError("the request names {} targets and {} diff specs".format(len(targets), len(specs)))
+    cap = int(request.get("cap") if request.get("cap") is not None else 100000)
+    thread = request.get("thread") or None
+    out = outdir or request.get("outdir") or tempfile.mkdtemp(prefix="xreview-packet.")
+    os.makedirs(out, exist_ok=True)
+    c = {"reviewer": _slurp(request["reviewer_md"]), "body": _slurp(request["body_file"]),
+         "framing": _slurp(request["framing_md"]) if sw["framing"] else b"",
+         "checkpoint": request.get("checkpoint"), "targets": targets, "specs": specs, "sw": sw,
+         "missed": [str(x) for x in (request.get("missed") or [])], "thread": thread,
+         "turns": _load_turns(request.get("turns_file")) if thread else None, "entries": entries_of}
+
+    def write(name, data, shown):
+        path = os.path.join(out, name)
+        with open(path, "wb") as handle:
+            handle.write(data)
+        return {"file": path, "shown": shown}
+
+    def answer(action, reason, kind, packets, tgs):
+        return {"action": action, "reason": reason, "kind": kind, "packets": packets, "targets": tgs, "switches": sw}
+
+    def plain(action, reason, packets):
+        """A decision for the request's own targets, every one a full packet (framing off)."""
+        return answer(action, reason, "full", packets,
+                      [dict(t, packet="full", delta_from=None, history=None, plans_from=[]) for t in targets])
+
+    def decide(action, reason, kind, packets, ts, packet=None):
+        return answer(action, reason, kind, packets, [_target_out(t, packet or t.kind) for t in ts])
+
+    def send(action, reason, kind, ts, data, shown):
+        return decide(action, reason, kind, [write("packet.txt", data, shown)], ts)
+
+    if not sw["framing"]:
+        diffs = [(s, ledger.patch(t["repo"], t["base"], t["tip"])) for t, s in zip(targets, specs)]
+        total = sum(len(d.rstrip(b"\n")) for _s, d in diffs)
+        if total > cap:
+            return plain("refuse", CAP_REFUSAL.format(total, cap), [])
+        return plain("send", "every switch is off: today's packet",
+                     [write("packet.txt", today_packet(c["reviewer"], c["body"], diffs), [])])
+
+    delta_ok = bool(sw["delta"] and c["checkpoint"] == "pre-merge" and thread and c["turns"] is not None)
+    ts = _prepare(c, delta_ok)
+    kind = "delta" if any(t.kind == "delta" for t in ts) else "full"
+    if not sw["fit"]:
+        total = sum(len(t.diff.rstrip(b"\n")) for t in ts)
+        if total > cap:
+            return decide("refuse", CAP_REFUSAL.format(total, cap), kind, [], ts)
+        data, shown = _unsliced(c, ts)
+        return send("send", "the fit check is off, so the cap holds", kind, ts, data, shown)
+
+    data, shown = _unsliced(c, ts)
+    if thread:
+        context, window = thread_context(request.get("codex_home"), thread)
+        if context is not None and window is not None:
+            detail = "need {} tokens, limit {} ({} in the context, {} bytes of packet)".format(
+                _needed(context, len(data)), _limit(window), context, len(data))
+            if fits(context, len(data), window):
+                return send("send", "fits the review thread: " + detail, kind, ts, data, shown)
+        else:
+            detail = "its context or window cannot be read from its rollout"
+        if kind == "delta":
+            ts, kind = _prepare(c, False), "full"
+            data, shown = _unsliced(c, ts)
+        action = "fresh"
+        lead = "the review thread cannot hold the packet ({}); moving the checkpoint to a fresh thread".format(detail)
+    else:
+        action, lead = "send", "a fresh thread"
+    window = fresh_window(request.get("codex_home"), targets[0]["repo"] if targets else None)
+    if window is None:
+        return decide("refuse", "cannot read the model's context window from any Codex rollout, so the fit "
+                      "of the review cannot be checked; no review was started", kind, [], ts)
+    need, limit = _needed(FRESH_CONTEXT, len(data)), _limit(window)
+    if fits(FRESH_CONTEXT, len(data), window):
+        return send(action, "{}: need {} tokens, limit {} ({} bytes of packet)".format(
+            lead, need, limit, len(data)), kind, ts, data, shown)
+    try:
+        parts = _slices(c, ts, window)
+    except _Refuse as e:
+        return decide("refuse", str(e), kind, [], ts)
+    packets = [write("slice-{:03d}.txt".format(i), d, s) for i, (d, s) in enumerate(parts, 1)]
+    return decide("slices", "a packet of {} bytes does not fit a fresh thread (need {} tokens, limit {}): {} slices".format(
+        len(data), need, limit, len(parts)), "slices", packets, ts, packet="slices")
+
+
+# ------------------------------------------------------------------ the command line
+USAGE = "usage: xreview-packet.py build REQUEST.json OUTDIR | plan-blobs REPO BASE TIP"
+
+
+def main(argv):
+    if len(argv) == 3 and argv[0] == "build":
+        try:
+            with open(argv[1], "rb") as handle:
+                request = json.loads(handle.read().decode("utf-8"))
+            decided = build(request, argv[2])
+        except Exception as e:
+            print("xreview-packet: {}".format(e), file=sys.stderr)
+            return 1
+        print(json.dumps(decided, separators=(",", ":")))
+        return 0
+    if len(argv) == 4 and argv[0] == "plan-blobs":
+        try:
+            found = _ledger().plan_blobs(argv[1], argv[2], argv[3])
+        except Exception as e:
+            print("xreview-packet: {}".format(e), file=sys.stderr)
+            return 1
+        print(json.dumps(found, sort_keys=True, separators=(",", ":")))
+        return 0
+    print(USAGE, file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
