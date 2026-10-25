@@ -536,6 +536,10 @@ files stay in `~/.local/state/xreview/replay/` and are never committed.
   - A fork that fails makes its arm an error run, and that switch stays incomplete. There
     is no fallback replay of the earlier rounds (ruling during execution; forking was
     verified live).
+  - A scratch clone holds only the branch at the round's tip and its destination at the
+    base. It shares the source's object store, though, so a reviewer that deliberately
+    enumerates objects (`git cat-file --batch-all-objects`) could still find later commits.
+    No ref leads to them.
 - **Coverage is self-reported.** `reviewed_files` catches a reviewer that admits skipping a
   file, not one that lists a file it skimmed. Attention cannot be measured from outside.
 - **Constants are measured today.** 3.5 bytes per token, the 30k fresh-thread start, the
