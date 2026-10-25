@@ -277,8 +277,13 @@ receipt alone, including the `switches` it recorded at dispatch. The gate never 
 `packets.conf`, so turning a switch on or off never reopens or closes a review already on
 record.
 
-- **Old receipts.** A receipt with no `packet` field predates this design and is whole, so
-  approvals in flight at rollout still open the gate.
+- **Old receipts.** A receipt with no `packet` field and none of `switches`, `clean` or
+  `compacted` predates this design and is whole, so approvals in flight at rollout still open
+  the gate. A receipt that carries any of those three without a `packet` kind is not one xreview
+  writes, and is denied.
+- **Recorded switches.** A receipt with a `packet` kind must carry `switches` as an object.
+  A `delta` or `slices` receipt must have recorded `framing` on, since coverage is what holds
+  its reviewer to the files.
 - **Coverage.** When the receipt recorded `framing` on, `missing` must be empty.
 - **Compaction.**
   - A `delta` or `slices` receipt must not have compacted.

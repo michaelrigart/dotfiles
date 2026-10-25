@@ -318,13 +318,15 @@ def plan_blobs(repo, base, tip):
     """The plans a patch of base..tip shows in full: each path under docs/superpowers/plans/
     that the range adds (old mode 000000, a regular file), mapped to its blob id at tip. A plan
     only modified in the range, or unchanged in it, is not here: its whole content was not in
-    the patch."""
+    the patch. Nor is one whose blob holds a NUL byte: the patch showed only its Binary file
+    line."""
     found = {}
     for path, old_mode, new_mode, _old_blob, new_blob in raw_records(repo, base, tip):
         if (path.startswith(PLAN_DIR) and old_mode == b"000000"
                 and new_mode in (b"100644", b"100755")):
-            found[os.fsdecode(path)] = new_blob.decode("ascii")
-    return found
+            found[os.fsdecode(path)] = new_blob
+    binary = has_nul(repo, list(found.values()))
+    return {path: blob.decode("ascii") for path, blob in found.items() if blob not in binary}
 
 
 def branch_of(repo, right):
@@ -669,6 +671,8 @@ def branch_record(entries, branch):
 # rule needs: an unknown (None), a missing key or any other type is a denial, never read for
 # truthiness, and a switch counts as on only when it is exactly True.
 PACKETS = ("full", "delta", "slices")
+# The receipt fields only a dispatch with review packets records (spec 2026-10-25 section 3.6).
+PACKETED_FIELDS = ("switches", "clean", "compacted")
 
 
 def switch_on(receipt, name):
@@ -763,8 +767,8 @@ def chain_problem(entries, receipt, target, repo):
         if kind == "full":
             break
         if kind != "delta":
-            return "the chain reaches {}, a {} packet, not a full root".format(
-                follows, kind if isinstance(kind, str) else "unknown")
+            return "the chain reaches {}, {}, not a full root".format(
+                follows, "a {} packet".format(kind) if isinstance(kind, str) else "which records no packet kind")
         cur, cur_target = prev, prev_target
     history = target.get("history")
     if not isinstance(history, list):
@@ -807,14 +811,23 @@ def plans_problem(entries, target):
 
 def whole(entries, receipt, target, repo):
     """(True, why) when the approving receipt is whole for target, else (False, reason). A
-    target with no packet field predates the packet design and is whole. entries is the
-    ledger; repo is a git directory of the repository, which the chain needs to check that each
-    link's tip is an ancestor: without a usable one a delta is never whole."""
+    target with no packet field predates the packet design and is whole, unless its receipt
+    carries a field only a packeted dispatch records (switches, clean, compacted). A packeted
+    receipt records its switches as an object, as xreview always writes them, and a delta or
+    slices packet needs framing on. entries is the ledger; repo is a git directory of the
+    repository, which the chain needs to check that each link's tip is an ancestor: without a
+    usable one a delta is never whole."""
     if "packet" not in target:
+        if any(k in receipt for k in PACKETED_FIELDS):
+            return False, "the packet kind is not recorded"
         return True, "a receipt from before review packets"
     packet = target["packet"]
     if packet not in PACKETS or not isinstance(packet, str):
         return False, "the packet kind is not recorded"
+    if not isinstance(receipt.get("switches"), dict):
+        return False, "the switches at dispatch are not recorded"
+    if packet != "full" and not switch_on(receipt, "framing"):
+        return False, "framing is recorded off, and a {} packet needs it".format(packet)
     if switch_on(receipt, "framing") and target.get("missing") != []:
         return False, "reviewed_files left out files of the packet (missing is not empty)"
     if (packet != "full" or switch_on(receipt, "fit")) and receipt.get("compacted") is not False:
