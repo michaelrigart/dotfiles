@@ -1281,7 +1281,9 @@ Report the remaining disagreement, or: xreview round --reset"
   if [ "$checkpoint" = pre-merge ] && ! record_pending "$doc"; then
     die "cannot record the pending review in every target ledger; no review was started"
   fi
-  # Nothing can refuse any more: record the move.
+  # From here the new thread is the checkpoint's review thread. A later refusal (the pane will
+  # not free, the turn will not start) leaves it recorded and not archived: the next dispatch
+  # sends to it, and the superseded thread stays queued for archive.
   if [ "$fresh_thread" = 1 ]; then
     mkdir -p "$dir"
     if [ -n "$old" ]; then printf '%s\n' "$old" >> "$dir/superseded"; fi
@@ -1672,6 +1674,9 @@ _slice_start() {
   pane_guard "$pane" "$proc"
   th="$(xreview-rpc thread-start --cwd "$(repo_root)")" || die "could not start a new review thread"
   assert_id "$th"
+  # Until the thread is recorded as the checkpoint's, nothing else would ever archive it: a
+  # refusal from here on archives it, and collect's own trap still runs.
+  trap "$collect_trap; xreview-rpc thread-archive --thread $(printf '%q' "$th") >/dev/null 2>&1 || true" EXIT
   if thread_running "$th"; then die "the review thread $th is still running a turn"; fi
   prev="$(printf '%s' "$sl" | jq -r --argjson i "$i" 'if $i > 0 then .threads[$i - 1] // empty else empty end')"
   cur="$(cat "$dir/review-thread" 2>/dev/null || true)"
@@ -1679,6 +1684,7 @@ _slice_start() {
   if [ -n "$prev" ]; then printf '%s\n' "$prev" >> "$dir/superseded"; fi
   if [ -n "$cur" ] && [ "$cur" != "$prev" ] && [ "$cur" != "$th" ]; then printf '%s\n' "$cur" >> "$dir/superseded"; fi
   printf '%s\n' "$th" > "$dir/review-thread"
+  trap "$collect_trap" EXIT
   move_pane_to "$pane" "$th" "$proc" _slice_turn "$i" "$th" "$file"
   # The slice's turn joins the round's state on disk only now, once the pane has followed it,
   # still under the pane lock: a refusal there (the state cannot be locked or read) comes after

@@ -2180,6 +2180,19 @@ is "X8 no packet directory or targets file is left" "$(ls "$STATE/turns" 2>/dev/
 is "X8 the thread started for it is archived, not kept" "$(called "xreview-rpc thread-archive --thread $U1")" 1
 is "X8 and the pane was not touched" "$(untouched)" yes
 
+# Past the point where the move is recorded, a refusal (the pane will not free) keeps the new
+# thread as the checkpoint's review thread: it is not archived, and the next dispatch sends to it.
+fresh; packets framing fit; rm -rf "$CODEX_HOME/sessions"; rollout $U0 1000 258400
+out="$(STUCK_TUI=1 XREVIEW_RUNG_WAIT=0.1 XREVIEW_PANE_WAIT=1 bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md 2>&1)"; rc=$?
+is "X8 a first dispatch whose pane will not free refuses" "$rc/$(printf '%s' "$out" | grep -c 'did not exit its session')" "1/1"
+is "X8 the new thread is recorded as the review thread and is not archived" \
+   "$(cat "$STATE/review-thread")/$(called "xreview-rpc thread-archive --thread $U1")/$(called 'xreview-rpc turn-start')" "$U1/0/0"
+rollout $U1 1000 258400
+: > "$CALLS"
+out="$(bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md 2>&1)"; rc=$?
+is "X8 the next dispatch reuses that thread: no second thread-start, and it succeeds" \
+   "$rc/$(called 'xreview-rpc thread-start')/$(called "xreview-rpc turn-start --thread $U1")" "0/0/1"
+
 echo "X9. the ledger entries carry the dispatch's switches"
 fresh; packets framing fit; rm -rf "$CODEX_HOME/sessions"; rollout $U0 1000 258400
 nonce="$(bash "$XREVIEW" dispatch --checkpoint pre-merge "${XD[@]}" b.md 2>/dev/null)"
@@ -2645,6 +2658,23 @@ is "SL5 a daemon that will not start refuses the same way, the pane untouched" \
 bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
 is "SL5 collecting again resumes: slice 2 and 3 start, slice 1 is not waited on" \
    "$rc/$(jq -r .verdict "$ROOT/out")/$(called 'xreview-rpc turn-start')/$(called "turn-wait --thread $U1")" "0/approve/2/0"
+
+# A slice's new thread that reports a turn running is refused, and the thread started for it is
+# archived once: nothing has recorded it. The round stays on record and the next collect finishes it.
+sliced; approve_all "turn-$U3"
+: > "$CALLS"
+RPC_THREAD_RUNNING_FOR=$U3 bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+is "SL5 a slice thread that reports a turn running refuses" "$rc/$(grep -c "$U3 is still running" "$ROOT/err")" "1/1"
+is "SL5 and the thread started for it is archived exactly once" "$(called "thread-archive --thread $U3")" 1
+is "SL5 no turn was started for it and slice 1 is still the checkpoint's thread" \
+   "$(called 'xreview-rpc turn-start')/$(cat "$STATE/review-thread")/$([ -e "$STATE/superseded" ] && echo left || echo none)" "0/$U1/none"
+is "SL5 the round is on record: slice 1's answer is kept and nothing else" \
+   "$(jq -c '[(.answers | map(select(. != null)) | length), (.turns | length)]' "$sl")" "[1,1]"
+unset RPC_THREAD_RUNNING_FOR
+printf '%s\n%s\n' "$U3" "$U4" > "$P/uuids"
+: > "$CALLS"
+bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+is "SL5 the next collect finishes the round" "$rc/$(jq -r .verdict "$ROOT/out")" "0/approve"
 
 # Slice 1 lists nothing; slice 2 lists slice 1's label beside its own. Slice 1's label is still
 # missing: slice 2's reviewer never saw that file's patch.
