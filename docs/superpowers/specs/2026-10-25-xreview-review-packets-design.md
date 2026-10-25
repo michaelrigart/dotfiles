@@ -491,6 +491,27 @@ files stay in `~/.local/state/xreview/replay/` and are never committed.
    - which rollout record carries the context size.
 
    A fact that does not hold changes this spec before any other task starts.
+
+   **Verified 2026-10-25** (Codex 0.164.0; protocol schema from
+   `codex app-server generate-json-schema`, then two spikes on scratch threads):
+   - **Compaction.** A compaction is a `contextCompaction` item. It is listed only with
+     `itemsView: "full"`; `"summary"` omits it, so every check here lists `full`. A mid-turn
+     compaction is an item inside that review turn. Confirmed on a past review turn whose
+     rollout holds a `compacted` record. A thread-level `/compact` (`thread/compact/start`)
+     is a turn of its own, holding only that item. It also ends a turn still running, as
+     `interrupted`.
+   - **Rewind.** A TUI rewind is `thread/revert` with `beforeTurnId`. It removes that turn and
+     every later one from `thread/turns/list`, so a missing chain turn shows.
+   - **Fork.** `thread/fork` takes `lastTurnId` (fork through that turn, inclusive), `cwd` and
+     `excludeTurns`. Rewinding a fork is forking through the turn before round k; no
+     separate revert is needed. An archived thread is refused ("is archived … unarchive it
+     first"). The replay runs `thread/unarchive`, forks, then archives the thread again.
+   - **Per-turn working directory.** `turn/start` takes `cwd`, applied to this turn and later
+     ones. Confirmed: the turn's `turn_context` and its shell ran in the given directory.
+   - **Context size.** The rollout's latest `event_msg` `token_count` record:
+     `info.last_token_usage.total_tokens` is the context now (after a compaction it already
+     reflects the compacted size, input 0), and `info.model_context_window` is the window.
+     `task_started` carries `model_context_window` too.
 2. Implement everything on the branch with all switches off. With every switch off,
    behaviour is unchanged: receipts gain the new fields, and the gate reads none of them.
 3. Run the replay from the branch checkout. It imports the working tree's packet builder and

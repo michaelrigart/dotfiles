@@ -111,20 +111,25 @@ whole; section numbers below are the spec's).
 **Depends on:** Task 1.
 
 **Interfaces — Produces:**
-- `xreview-rpc thread-turns --thread T` prints `{"turns":[{"id":str,"status":str,"compacted":bool}],"thread_compactions":int}`,
-  oldest first, every page followed.
-  - `compacted` is true when the turn holds the compaction item type that Task 1 recorded.
-  - `thread_compactions` counts thread-level compactions. It is `null` when Task 1 found no
-    way to see them: unknown, never 0.
+- `xreview-rpc thread-turns --thread T` prints `{"turns":[{"id":str,"status":str,"compacted":bool}],"thread_compactions":int|null}`,
+  oldest first, every page followed. It lists with `itemsView: "full"`, because `summary`
+  hides compactions (spec §7, verified).
+  - `compacted` is true when the turn holds a `contextCompaction` item.
+  - `thread_compactions` counts the turns whose items are only `contextCompaction` (a TUI
+    `/compact`).
+  - When any page could not be read in full, the whole answer is exit 1, never a partial
+    list. `null` is kept for a listing whose items came back not loaded.
   - Exit 0 ok, 1 cannot list, 5 daemon unreachable.
-- `xreview-rpc thread-fork --thread T [--before-turn X]` prints the new thread id. It forks,
-  then rewinds to just before turn `X` with the method Task 1 recorded. Exit 1 if either step
-  is refused.
-- `xreview-rpc turn-start … [--cwd DIR]` passes `cwd` on `turn/start` (Task 1's parameter
-  name).
+- `xreview-rpc thread-fork --thread T [--last-turn X] [--cwd DIR]` prints the new thread id.
+  It sends `thread/fork` with `lastTurnId` and `cwd` (verified), and `excludeTurns: true`.
+  Exit 1 if refused.
+- `xreview-rpc thread-unarchive --thread T` sends `thread/unarchive` (exit 1 if refused). It
+  is for the replay, which unarchives a historical thread, forks it, and archives it again.
+- `xreview-rpc turn-start … [--cwd DIR]` passes `cwd` on `turn/start` (verified).
 - `xreview-rpc turn-wait … [--report FILE]`: on exit 0 or 4 it writes
-  `{"turn":id,"compacted":bool|null}` to FILE. It writes `null` when the turn's items cannot be
-  read to tell. Stdout is unchanged.
+  `{"turn":id,"compacted":bool|null}` to FILE. It re-reads that one turn with `itemsView:
+  "full"` for the flag, because turn_state's `summary` hides compactions. It writes `null`
+  when the full read fails. Stdout is unchanged.
 
 - [ ] **Step 1: Write the failing tests** in the suite's fake-server style:
   - `TT1`: a two-page `thread/turns/list` gives both pages oldest first.
@@ -132,9 +137,12 @@ whole; section numbers below are the spec's).
   - `TT3`: a list error gives exit 1.
   - `TT4`: with no way to observe a thread-level compaction, `thread_compactions` is
     `null`.
-  - `TF1`: fork, then rewind, sends the two methods with Task 1's params and prints the
-    fork's id.
-  - `TF2`: a refused rewind gives exit 1.
+  - `TF1`: `thread-fork --last-turn X --cwd D` sends `thread/fork` with `lastTurnId: X`,
+    `cwd: D` and `excludeTurns: true`, and prints the fork's id.
+  - `TF2`: a refused fork gives exit 1.
+  - `TF3`: `thread-unarchive` sends `thread/unarchive`, and a refusal gives exit 1.
+  - `TT5`: thread-turns sends `itemsView: "full"`, and a turn whose only item is
+    `contextCompaction` counts in `thread_compactions`.
   - `TC1`: `turn-start --cwd /x` puts `cwd` in the `turn/start` params.
   - `TC2`: without `--cwd`, there is no `cwd` key.
   - `TW1`: `turn-wait --report F` writes the compaction flag of the collected turn, and stdout
