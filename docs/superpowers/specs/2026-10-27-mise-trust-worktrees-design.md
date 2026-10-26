@@ -118,8 +118,10 @@ unchanged.
 Step 1 ends with the carry, after the lock classification (the checks that write nothing go
 first) and before step 2, when `_wt_hook_check` reports a valid hook (0). If it returns 1, the
 report lines stand, then `wt-rm: nothing was closed or removed — review the mise config above,
-then: wt-rm <branch>`, and `wt-rm` returns 1 before any Herdr call. With no hook (2) there is no
-check.
+then: wt-rm <branch>`, and `wt-rm` returns 1 before any Herdr call. The carry refuses when the
+read of `<dest>` or of the worktree list fails, or a config stays untrusted; a failed candidate
+read only removes that witness, with its "cannot vouch" line, as in §3. With no hook (2) there
+is no check.
 
 Right before `_wt_hook_run … teardown`, a read-only `_wt_mise_show <dest>` must succeed and list
 no `untrusted` entry, or `wt-rm` refuses with "teardown not run, Herdr workspaces closed" and
@@ -161,6 +163,9 @@ stub gains a `trust --show` that fails for one `-C` directory from the start
   without a base, and is `cat` when neither qualifies.
 - `wt-rm` with a hook and an untrusted config refuses with no Herdr call and no hook run; once
   the config is carried, it proceeds through teardown.
+- `wt-rm` whose first candidate's (main's) `trust --show` fails while a later sibling vouches
+  prints the cannot-vouch line, carries the file and proceeds through teardown.
+- `wt-rm` whose read of `<dest>` fails refuses with no Herdr call.
 - `wt-rm` with no hook, and the already-gone path, make no `mise` call.
 - `wt-rm`: a config untrusted after step 1 (the Herdr stub's close rewrites it) stops before
   the hook.
@@ -182,8 +187,10 @@ Settled by Claude, not by Michael; each can be overruled at sign-off: a failed c
 skips that candidate, and a failed read of the worktree list stops (§2, §3); a candidate other
 than main must share main's Git common directory; three refusal reasons, and the success line
 names the vouching checkout; the `wt-rm` carry runs after the lock classification, and teardown
-gets a read-only re-check; the reopen points at the report lines, not `wt-prepare`; the config
-pin lives in `tests/wt-functions.test.sh`.
+gets a read-only re-check; in `wt-rm` too a failed candidate read only skips that candidate,
+and of the reads only a failed one of `<dest>` or of the worktree list refuses; the reopen
+points at the report lines, not `wt-prepare`; the config pin lives in
+`tests/wt-functions.test.sh`.
 
 Left to the builder: how the base reaches `_wt_mise_trust` (an argument through
 `_wt_do_prepare` is enough), the candidate cache's structure, and message wording within the
