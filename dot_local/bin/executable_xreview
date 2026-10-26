@@ -1357,17 +1357,38 @@ Report the remaining disagreement, or: xreview round --reset"
 # sliced round share one budget: it bounds the whole collect.
 COLLECT_BUDGET_DEFAULT=2700
 
+# _resolve_record <thread> <turn> - the turn found for <thread>'s ? goes into the turn record, and
+# .known goes with it, only while the record still names <thread>'s ?. Without the pane lock the
+# record and .known are shared with the round's later slices: a collect that has moved on to the
+# next slice has replaced them with that slice's own (and removed this one's .known before its
+# pre-write), and they are left alone. The record is written through a temp file of this
+# process's own, moved into place, so that no reader ever sees it half-written; never $rec.tmp,
+# which _slice_turn uses under the lock. Best effort: the answer is in hand, so a record that
+# cannot be rewritten keeps its ? and .known, and a later collect resolves the ? again.
+_resolve_record() {
+  local rth="" rt="" rest="" tmp="$rec.resolve.$$"
+  read -r rth rt rest 2>/dev/null < "$rec" || true
+  [ "$rth" = "$1" ] && [ "$rt" = "?" ] || return 0
+  if { printf '%s %s%s\n' "$1" "$2" "${checkpoint:+ $checkpoint${branch:+ $branch}}" > "$tmp" \
+       && mv -f "$tmp" "$rec"; } 2>/dev/null; then
+    rm -f "$dir/turns/$nonce.known" || true
+  else
+    rm -f "$tmp" 2>/dev/null || true
+  fi
+  return 0
+}
+
 # _collect_wait <thread> <turn-or-?> - wait for one review turn. It works on cmd_collect's locals
 # and sets out and rc to turn-wait's answer and exit status, turn to the turn waited on, and
 # compacted to the report's word on that turn: true, false, or null when the report is missing,
 # is about another turn (a stale file), or cannot tell. Unknown is never clean (spec 2026-10-25
-# §3.6). A "?" is resolved the moment turn-wait finds the turn and written to the turn record,
-# so every later collect and the receipt name it, instead of rediscovering "whatever is new"
-# each time. Every wait gets what is left of the budget, counted in whole seconds from the
-# collect's start, so a slice started first (a lock wait, the pane steps) spends from it too;
-# none left is exit 3 at once. The report is this process's own file, so a second collect of the
-# same turn never removes or replaces it. A turn from before review packets is waited on as it
-# always was, with no report.
+# §3.6). A "?" is resolved the moment turn-wait finds the turn and written to the turn record
+# while that still names it (_resolve_record), so every later collect and the receipt name it,
+# instead of rediscovering "whatever is new" each time. Every wait gets what is left of the
+# budget, counted in whole seconds from the collect's start, so a slice started first (a lock
+# wait, the pane steps) spends from it too; none left is exit 3 at once. The report is this
+# process's own file, so a second collect of the same turn never removes or replaces it. A turn
+# from before review packets is waited on as it always was, with no report.
 _collect_wait() {
   local th="$1" left which asked=() report="$dir/turns/$nonce.report.$$" \
         resolved="$dir/turns/$nonce.resolved" said=""
@@ -1392,8 +1413,8 @@ _collect_wait() {
   rm -f "$report"
   if [ "$turn" = "?" ] && [ -s "$resolved" ]; then
     turn="$(head -1 "$resolved")"; assert_id "$turn"
-    printf '%s %s%s\n' "$th" "$turn" "${checkpoint:+ $checkpoint${branch:+ $branch}}" > "$rec"
-    rm -f "$resolved" "$dir/turns/$nonce.known"
+    _resolve_record "$th" "$turn"
+    rm -f "$resolved"
   fi
   if [ -n "$said" ]; then
     compacted="$(printf '%s' "$said" | jq -c --arg t "$turn" \
@@ -1630,17 +1651,10 @@ _collect_slices() {
   [ -n "$sl" ] || die "cannot read the state of the sliced round in $sfile"
   n="$(printf '%s' "$sl" | jq '.packets | length')"
   i="$(printf '%s' "$sl" | jq --argjson n "$n" '[range(0; $n) as $k | select(.answers[$k] == null) | $k] | first // $n')"
-  # A turn the record names, on a thread no earlier slice ran on, is this slice's: it started,
-  # though its state was not saved after it. A ? turn is taken up only beside the .known that
-  # turn-start writes before it sends, and that a definitive failure removes: a ? record without
-  # it is a turn never sent, or one that failed outright, and that slice is started afresh.
-  if [ "$i" -lt "$n" ] && [ -n "$turn" ] \
-     && { [ "$turn" != "?" ] || [ -e "$dir/turns/$nonce.known" ]; } \
-     && [ -z "$(printf '%s' "$sl" | jq -r --argjson i "$i" '.turns[$i] // empty')" ] \
-     && printf '%s' "$sl" | jq -e --arg th "$thread" --argjson i "$i" '.threads[:$i] | index([$th]) == null' >/dev/null; then
-    sl="$(printf '%s' "$sl" | jq -c --argjson i "$i" --arg th "$thread" --arg t "$turn" '.threads[$i] = $th | .turns[$i] = $t')"
-    _slices_sync
-  fi
+  # A slice with no turn in the state goes to _slice_start, which also takes up a turn only the
+  # turn record names. The record is read for that under the pane lock alone: a slice's ? record
+  # exists before its turn does, and the collect starting the slice holds that lock until
+  # turn-start has answered.
   while [ "$i" -lt "$n" ]; do
     if [ -z "$(printf '%s' "$sl" | jq -r --argjson i "$i" '.turns[$i] // empty')" ]; then
       _slice_start "$i"
@@ -1688,15 +1702,38 @@ _collect_slices() {
   fi
 }
 
+# _slice_record_turn <index> - prints "<thread> <turn>" when the turn record names a turn that
+# slice <index> can take up: one that started, though the round's state was not saved after it.
+# Called only under the pane lock (_slice_start): a slice's ? record goes down before its
+# turn-start, and the collect starting it holds that lock until turn-start has answered, so read
+# without it the record could name a turn that never starts. The turn is a safe id, or ? beside
+# the .known that turn-start writes before it sends and a definitive failure removes; its thread is
+# a safe id that no earlier slice ran on.
+_slice_record_turn() {
+  local i="$1" rth="" rt="" rest=""
+  read -r rth rt rest 2>/dev/null < "$rec" || true
+  is_safe_id "$rth" || return 1
+  if [ "$rt" = "?" ]; then
+    [ -e "$dir/turns/$nonce.known" ] || return 1
+  else
+    is_safe_id "$rt" || return 1
+  fi
+  printf '%s' "$sl" | jq -e --arg th "$rth" --argjson i "$i" '.threads[:$i] | index([$th]) == null' \
+    >/dev/null || return 1
+  printf '%s %s\n' "$rth" "$rt"
+}
+
 # _slice_start <index> - start slice <index> (from 0) on a fresh thread, as dispatch starts a
 # review on one: its preconditions, then under the pane lock the pane checks, the thread and its
-# checks; then the pane moves onto it around the turn, as dispatch's does. Only once turn-start
-# has answered does the previous slice's thread join the superseded list and the new one become
-# the checkpoint's thread (_slice_turn). A refusal before that archives the new thread and leaves
-# the round's state as it was (at most with the slice's ? record and no .known, which no collect
-# takes up), for the next collect to resume; collect never re-dispatches.
+# checks; then the pane moves onto it around the turn, as dispatch's does. Under the lock, before
+# any of that, a turn the round's state or the turn record already names for the slice is taken
+# up instead; the record is read for that only here, under the lock (_slice_record_turn). Only
+# once turn-start has answered does the previous slice's thread join the superseded list and the
+# new one become the checkpoint's thread (_slice_turn). A refusal before that archives the new
+# thread and leaves the round's state as it was (at most with the slice's ? record and no .known,
+# which no collect takes up), for the next collect to resume; collect never re-dispatches.
 _slice_start() {
-  local i="$1" file pane proc th prev cur PRE_TURN_TRAP
+  local i="$1" file pane proc th prev cur PRE_TURN_TRAP took
   file="$(printf '%s' "$sl" | jq -r --argjson i "$i" '.packets[$i].file // empty')"
   [ -n "$file" ] && [ -s "$file" ] \
     || die "the packet of slice $((i + 1)) of $n is gone (${file:-unrecorded}), so the round cannot go on; dispatch the review again"
@@ -1710,9 +1747,19 @@ _slice_start() {
   lock_pane "$pane"
   # Another collect of this round may have started the slice while this one waited for the
   # lock: the state is merged with the disk again, under the lock, and a slice started there is
-  # taken up, never started a second time.
+  # taken up, never started a second time. So is a turn only the turn record names, read now that
+  # the lock makes it final (_slice_record_turn); otherwise the slice starts afresh, and its ?
+  # record replaces the one there.
   _slices_sync
   if [ -n "$(printf '%s' "$sl" | jq -r --argjson i "$i" '.turns[$i] // empty')" ]; then
+    unlock_pane
+    DIE_NOTE=""
+    return 0
+  fi
+  if took="$(_slice_record_turn "$i")"; then
+    sl="$(printf '%s' "$sl" | jq -c --argjson i "$i" --arg th "${took% *}" --arg t "${took#* }" \
+            '.threads[$i] = $th | .turns[$i] = $t')"
+    _slices_sync
     unlock_pane
     DIE_NOTE=""
     return 0

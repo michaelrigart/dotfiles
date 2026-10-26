@@ -2991,6 +2991,102 @@ is "V1 the next collect starts slice 2 afresh, never waiting on the thread with 
    "$rc/$(jq -r .verdict "$ROOT/out")/$(called "turn-start --thread $U2")/$(called "turn-wait --thread $U3")" \
    "0/approve/1/0"
 
+# V2. A slice's turn is taken up from the record only under the pane lock, which the collect
+# starting it holds from its ? record until turn-start has answered. Collector A is held inside
+# slice 2's turn-start (its ? record and .known are down) while collector B starts. The pane reads
+# as Codex meanwhile, so that B gets as far as the lock: the lock, not the pane check, is what must
+# keep B out. Then A's turn-start fails outright (failed) or answers 0 (started).
+for how in failed started; do
+  sliced
+  if [ "$how" = failed ]; then
+    approve_all "turn-$U2"; printf '%s\n%s\n%s\n' "$U3" "$U2" "$U4" > "$P/uuids"; echo 1 > "$P/start_rc.$U3"
+  else
+    approve_all "turn-$U3"; printf '%s\n%s\n' "$U3" "$U4" > "$P/uuids"
+  fi
+  rm -f "$P/at_start" "$P/release"
+  printf 'touch "%s"; printf codex > "%s"; while [ ! -e "%s" ]; do sleep 0.1; done; : > "%s"\n' \
+    "$P/at_start" "$P/agent" "$P/release" "$P/agent" > "$P/start_sh.$U3"
+  : > "$CALLS"
+  bash "$XREVIEW" collect "$nonce" > "$ROOT/outA" 2> "$ROOT/errA" &
+  collector_a=$!
+  wait_for "$P/at_start"
+  # B's stub calls carry its name. A is let go only once B has looked for the pane, the step right
+  # before the pane lock (and before any read of the record that did not wait for it), and half a
+  # second more: B is held at the lock meanwhile, so the wait costs nothing but certainty.
+  DISPATCH_ID=B XREVIEW_LOCK_WAIT=60 bash "$XREVIEW" collect "$nonce" > "$ROOT/outB" 2> "$ROOT/errB" &
+  collector_b=$!
+  for _ in $(seq 600); do grep -q '^B herdr pane list' "$CALLS" && break; sleep 0.1; done
+  sleep 0.5
+  touch "$P/release"
+  wait "$collector_a"; ra=$?; wait "$collector_b"; rb=$?
+  rm -f "$P/start_sh.$U3" "$P/start_rc.$U3"
+  if [ "$how" = failed ]; then
+    is "V2 (failed) A's turn-start fails outright, and B finishes the round" \
+       "$ra/$(grep -c "could not be started on $U3" "$ROOT/errA")/$rb/$(jq -r .verdict "$ROOT/outB")" "1/1/0/approve"
+    is "V2 (failed) B never took slice 2 up on A's thread: it started it afresh, on a new one" \
+       "$(called "turn-wait --thread $U3")/$(receipt "$nonce" | jq -c '[.slice_turns[].thread]' | sort -u)" \
+       "0/[\"$U1\",\"$U2\",\"$U4\"]"
+  else
+    is "V2 (started) both collects finish the round with approve" \
+       "$ra/$(jq -r .verdict "$ROOT/outA")/$rb/$(jq -r .verdict "$ROOT/outB")" "0/approve/0/approve"
+    is "V2 (started) slice 2 is started once and waited on by its id, never as a ? from the record" \
+       "$(called 'xreview-rpc turn-start')/$(called 'xreview-rpc thread-start')/$(called "turn-wait --thread $U3 --new-since")/$([ "$(called "turn-wait --thread $U3 --turn turn-$U3 ")" -ge 1 ] && echo by-id)/$(receipt "$nonce" | jq -r '.slice_turns[1].turn' | sort -u)" \
+       "2/2/0/by-id/turn-$U3"
+  fi
+done
+# Slice 1 right after a dispatch whose _slices_turn failed: the state has no turn for it, and the
+# record names it. It is taken up from the record, by way of the slice's start under the pane lock
+# (the pane is looked at first), and never started again.
+sliced; approve_all "turn-$U3"
+jq -c '.turns = []' "$sl" > "$sl.t" && mv "$sl.t" "$sl"
+: > "$CALLS"
+bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+is "V2 slice 1 missing from the state is taken up from the record, never started again" \
+   "$rc/$(jq -r .verdict "$ROOT/out")/$(called "turn-start --thread $U1")/$(called "turn-wait --thread $U1 --turn turn-$U1 ")/$(called 'xreview-rpc thread-start')" \
+   "0/approve/0/1/2"
+is "V2 and only under the pane lock: the pane is looked at before slice 1 is waited on" \
+   "$([ "$(first 'herdr pane list')" -lt "$(first "turn-wait --thread $U1")" ] && echo locked-first)" locked-first
+# A damaged record whose turn is no safe id names no turn: slice 2, which the state does not have,
+# is started afresh, and the record's thread is never waited on.
+sliced; approve_all "turn-$U3"
+ENSURE_RC=1 bash "$XREVIEW" collect "$nonce" >/dev/null 2>&1   # slice 1 answered, slice 2 refused
+printf '%s %s pre-merge %s\n' "$U2" 'turn;damaged' "$YB" > "$STATE/turns/$nonce"
+: > "$CALLS"
+bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+is "V2 a record whose turn is no safe id is not taken up: slice 2 starts afresh" \
+   "$rc/$(jq -r .verdict "$ROOT/out")/$(called "turn-start --thread $U3")/$(called "turn-wait --thread $U2")" "0/approve/1/0"
+
+# V2 addendum. Resolving a ? rewrites the turn record only while it still names this thread's ?,
+# only through a temp file of its own moved into place, and .known goes only with that rewrite.
+# A collect waits on U1's ? (its turn-start went unanswered at dispatch) and is held inside
+# turn-wait. Meanwhile either a later slice's collect puts its own ? record and .known down
+# (replaced), or the rewrite's own temp file is blocked by a directory (blocked). Either way the
+# answer is printed, exit 0, and the record and .known are as the collect found them.
+for how in replaced blocked; do
+  fresh
+  nonce="$(RPC_START_UNCERTAIN=1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>/dev/null)"
+  : > "$P/hold.turn-recovered"
+  : > "$CALLS"
+  RPC_WAIT_OUT='{"verdict":"approve","findings":[]}' bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err" &
+  waiter=$!
+  wait_for "$P/waiting.turn-recovered"
+  if [ "$how" = replaced ]; then
+    printf '%s ? plan %s\n' "$U2" "$BR" > "$STATE/turns/$nonce"; echo '["later"]' > "$STATE/turns/$nonce.known"
+    want_rec="$U2 ? plan $BR"; want_known='["later"]'
+  else
+    mkdir "$STATE/turns/$nonce.resolve.$waiter"
+    want_rec="$U1 ? plan $BR"; want_known='[]'
+  fi
+  rm -f "$P/holding.turn-recovered"
+  wait "$waiter"; rc=$?
+  is "V2a ($how) the ? is resolved: the answer is printed, exit 0" \
+     "$rc/$(jq -r .verdict "$ROOT/out")/$(called "turn-wait --thread $U1 --new-since")" "0/approve/1"
+  is "V2a ($how) the record and .known are as the collect found them" \
+     "$(cat "$STATE/turns/$nonce")/$(cat "$STATE/turns/$nonce.known" 2>/dev/null || echo gone)" "$want_rec/$want_known"
+  is "V2a ($how) no temp file of the rewrite is left" \
+     "$(find "$STATE/turns" -name "$nonce.resolve.*" -type f | wc -l | tr -d ' ')/$([ -e "$STATE/turns/$nonce.tmp" ] && echo tmp || echo none)" "0/none"
+done
+
 # Slice 1 lists nothing; slice 2 lists slice 1's label beside its own. Slice 1's label is still
 # missing: slice 2's reviewer never saw that file's patch.
 sliced
