@@ -165,12 +165,12 @@ STUB
 chmod +x "$STUBS/layout.sh" "$STUBS/herdr" "$STUBS/lsof" "$STUBS/sleep"
 # A stale mise shim for jq (a machine artefact; `mise reshim` removes it) runs the real mise,
 # which reads the mise.toml of the directory it runs in, and every section-X repository holds
-# one: wt-rm's jq calls then fail for reasons that have nothing to do with wt-rm. This stub
-# keeps the suite from ever running the real mise through such a shim: it pins the first jq on
-# PATH that is not one.
+# one: wt-rm's jq calls then fail for reasons that have nothing to do with wt-rm. Wherever a
+# non-shim jq exists, this stub pins the first one on PATH, so the suite does not run the real
+# mise through such a shim; where the only jq is the shim, no stub is written.
 mkjqstub() {
   local candidate
-  for candidate in $(whence -ap jq); do
+  for candidate in ${(f)"$(whence -ap jq)"}; do
     [[ "${candidate:A:t}" == mise ]] && continue
     print -r -- "#!/bin/sh
 exec ${(qq)candidate} \"\$@\"" > "$STUBS/jq"
