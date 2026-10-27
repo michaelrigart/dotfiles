@@ -293,7 +293,7 @@ Expected: FAILs on X23–X36 and on the updated reason lines; no FAIL in section
   - carried, `teardown-ran`, rc 0.
 - XR4 the destination's read fails. `MOCK_MISE_SHOW_FAIL_DIR="$X"`:
   - rc 1;
-  - `wt-rm: cannot read mise's trust status for ~/Code/Org/repo-xr4 — trusting nothing.`;
+  - `wt: cannot read mise's trust status for ~/Code/Org/repo-xr4 — trusting nothing.` (the carry's own line);
   - the step-1 line;
   - `$HLOG` empty.
 - XR5a no hook. A repository with a tracked `mise.toml` and no `.worktreehook`, after `wt`, then `mise_unseed "$X/mise.toml"`: `wt-rm` succeeds, and `$MLOG` stays empty.
