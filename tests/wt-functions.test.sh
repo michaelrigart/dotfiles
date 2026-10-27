@@ -241,7 +241,8 @@ tab=$'\t'
 state="${STDIN_LOG%/*}"
 # A rejected call is also appended here, one record per call with each argument kept apart
 # (the text log joins them with spaces, and a test that ignores the failure would not see it).
-unexpected() { { printf '%q ' "$@"; printf '\n'; } >> "$state/mise-unexpected.log"; }
+# Only X13d's probes redirect it, with MISE_UNEXPECTED_LOG on the command line.
+unexpected() { { printf '%q ' "$@"; printf '\n'; } >> "${MISE_UNEXPECTED_LOG:-$state/mise-unexpected.log}"; }
 sha() { shasum -a 256 < "$1" | cut -d' ' -f1; }
 drop() { P="$1" awk '{ k = ENVIRON["P"] "\t"; if (substr($0, 1, length(k)) != k) print }' "$MISE_STUB_STORE" > "$MISE_STUB_STORE.n"; mv "$MISE_STUB_STORE.n" "$MISE_STUB_STORE"; }
 if [ "${1:-}" = -C ] && [ "${3:-}" = trust ] && [ "${4:-}" = --show ] && [ $# -eq 4 ]; then
@@ -4105,12 +4106,14 @@ mise_sweep "$MISESTUBS/sweep-probe.log"
 
 # X13d: the stub logs every call it rejects, arguments kept apart, and the sweep sees a global
 # option in front of `trust`. The calls go straight to the stub, with the text log pointed at a
-# scratch file and stdin from /dev/null (X13b), and the unexpected log is cleared afterwards.
+# scratch file, its own rejected-call log (so XUNEXP, which X13 judges, is neither fed nor
+# cleared here) and stdin from /dev/null (X13b).
 XP="$MISESTUBS/probe"; mkdir -p "$XP"; print -r -- 'a=1' > "$XP/mise.toml"
+XPU="$MISESTUBS/probe-unexpected.log"
 xprobe() {   # xprobe <argv...> — the stub's exit status in $prc
-  MLOG="$MISESTUBS/probe-mlog.log" "$MISESTUBS/mise" "$@" >/dev/null 2>&1 </dev/null; prc=$?
+  MLOG="$MISESTUBS/probe-mlog.log" MISE_UNEXPECTED_LOG="$XPU" "$MISESTUBS/mise" "$@" >/dev/null 2>&1 </dev/null; prc=$?
 }
-: > "$XUNEXP"
+: > "$XPU"
 xprobe -C "$XP" trust "$XP/mise.toml"
 eq "$prc" "3" "X13d -C <dir> trust <path> is rejected"
 xprobe trust "$XP/mise.toml" "$XP/other file.toml"
@@ -4119,23 +4122,22 @@ xprobe -C "$XP" trust --untrust "$XP/mise.toml"
 eq "$prc" "3" "X13d -C <dir> trust --untrust <path> is rejected"
 xprobe trust --all
 eq "$prc" "3" "X13d trust --all is rejected"
-eq "$(wc -l < "$XUNEXP" | tr -d ' ')" "4" "X13d each rejected call is one record in the unexpected log"
-eq "$(sed -n 2p "$XUNEXP")" "trust $XP/mise.toml $XP/other\\ file.toml " "X13d ... with its arguments kept apart"
-: > "$XUNEXP"
+eq "$(wc -l < "$XPU" | tr -d ' ')" "4" "X13d each rejected call is one record in the unexpected log"
+eq "$(sed -n 2p "$XPU")" "trust $XP/mise.toml $XP/other\\ file.toml " "X13d ... with its arguments kept apart"
+: > "$XPU"
 xprobe -C "$XP" trust --show
 eq "$prc" "0" "X13d the read -C <dir> trust --show is accepted"
 xprobe trust "$XP/mise.toml"
 eq "$prc" "0" "X13d trust <path> is accepted"
 xprobe trust --untrust "$XP/mise.toml"
 eq "$prc" "0" "X13d trust --untrust <path> is accepted"
-eq "$(<$XUNEXP)" "" "X13d ... and none of the three is logged as rejected"
+eq "$(<$XPU)" "" "X13d ... and none of the three is logged as rejected"
 print -r -- "-C /h/Code/Org/repo trust /h/Code/Org/repo/mise.toml" > "$MISESTUBS/sweep-probe.log"
 mise_sweep "$MISESTUBS/sweep-probe.log"
 [[ -n "$bad" ]] && _pass "X13d the sweep flags a trust call with a global option in front" || _fail "X13d the sweep flags a trust call with a global option in front"
 printf '%s\n' "-C /h/Code/Org/repo-a trust --show" "trust /h/Code/Org/repo-a/mise.toml" "trust --untrust /h/Code/Org/repo-a/mise.toml" > "$MISESTUBS/sweep-probe.log"
 mise_sweep "$MISESTUBS/sweep-probe.log"
 [[ -z "$bad" ]] && _pass "X13d ... and passes the three allowed shapes" || _fail "X13d ... and passes the three allowed shapes ($bad)"
-: > "$XUNEXP"
 
 # X13: over everything above, mise trust is only ever given one worktree file.
 cat "$MLOG" >> "$XALL"
