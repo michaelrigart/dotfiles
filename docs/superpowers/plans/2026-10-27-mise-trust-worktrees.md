@@ -2,7 +2,27 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** In progress
+**Status:** Implemented on `feat/mise-trust-worktrees` (no MR; dotfiles end at the pushed
+branch). Do not run it again. The spec's "Rulings and accepted residuals" records what changed
+after this plan was approved:
+- **The reopen helper** is `_wt_mise_reopen_carry <main> <dest> <branch>`, not
+  `_wt_mise_reopen_warn <main> <dest>`.
+- **A carrying reopen** prints a never-prepared `wt-prepare` line and holds the popup, so Y14's
+  popup expectation is flipped.
+- **The `wt-rm` gates** are `hook_rc != 2`, not "On 0".
+- **Identity pinning** (inode and nanosecond change time) closes the check-then-trust window,
+  and a symlinked `<dest>` is refused.
+- **The candidate list** also returns 1 when the porcelain holds no `worktree ` record.
+- **Added cases:**
+  - X25b–d, X32's carry checks, X33–X36's trust and hook assertions;
+  - XC4b, XC6, XR6b, XR6c, XR8, XR9;
+  - Y15–Y17;
+  - the flip-race case, the symlinked-`<dest>` case, and the `wt-rm` no-mise and invalid-hook
+    cases;
+  - the list-read-once case and the carried-count reset case.
+- **Sweeps:** a Y18 sweep of section Y, with X13 and Y18 made allowlists.
+- **The suite** gained a `jq` stub that skips a mise-shim `jq`, and the FUNCS target check exits 2.
+- **The earlier task reviews' minor fixes,** folded into Task 3 as A1–A7.
 
 **Goal:** Ruby's idiomatic version files stop being mise configs, and `wt`, `wt-prepare`, a reopen and `wt-rm` carry mise trust from any checkout of the repository that trusts byte-identical content.
 

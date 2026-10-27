@@ -7,6 +7,10 @@
 A follow-up to the [sandbox write boundary](2026-10-16-sandbox-write-boundary-design.md),
 which turned on mise's paranoid mode globally (merged to main at ab0346a).
 
+Extended on 2026-10-27 by
+[mise trust follows the content across a repository's checkouts](2026-10-27-mise-trust-worktrees-design.md),
+which carries trust from any checkout of the repository.
+
 ## Problem
 
 In paranoid mode, mise loads a project config only once it is trusted, and that trust is tied

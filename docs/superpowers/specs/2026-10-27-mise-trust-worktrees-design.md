@@ -1,6 +1,7 @@
 # mise trust follows the content across a repository's checkouts
 
-**Status:** In progress
+**Status:** Implemented (branch `feat/mise-trust-worktrees`; the dotfiles have no MR, so the
+rulings are recorded under "Rulings and accepted residuals" at the end)
 **Date:** 2026-10-27
 **Branch:** `feat/mise-trust-worktrees`
 
@@ -76,6 +77,10 @@ reopen, `wt-prepare` and `wt-rm` have no base.
 
 ### 3. Carrying one file
 
+`<dest>` itself must not be a symlink: one that points at another checkout would make
+`mise trust <dest>/<rel>` land on that checkout's file, so the step prints `wt: <dest> is a
+symlink — trusting nothing.` and returns 1 (a ruling during execution, see the end).
+
 An `untrusted` entry `<dest>/<rel>` is checked on its own side first: no component below
 `<dest>` a symlink, and a regular file. Then candidate `<c>` vouches when:
 
@@ -87,6 +92,20 @@ The first candidate that vouches ends the search; `command mise trust <dest>/<re
 re-check of old §Closing the check-then-trust window is bound to that candidate: `<c>/<rel>`
 still identical, `<dest>/<rel>` listed `trusted`, `<c>/<rel>` still listed `trusted`. Otherwise
 `--untrust` and refuse, as now; no other candidate is tried for that file.
+
+Those re-reads alone do not close the window: a writer that controls `<dest>/<rel>` can show
+good bytes to the search `cmp`, its own bytes while `mise trust` hashes the file and the
+`-C <dest>` read runs, and good bytes again to the final `cmp`, leaving its own bytes trusted.
+So the step also pins each file's identity, `/usr/bin/stat -f '%i %Fc'` (inode and change time
+in nanoseconds), for `<dest>/<rel>` before its candidate search and for `<c>/<rel>` before its
+search `cmp`, and again for both after the final `cmp`. Any difference, or a failed `stat`,
+means `--untrust` and refuse with `it changed while wt was trusting it` (before any trust, a
+failed first `stat` of `<c>/<rel>` only means `<c>` cannot vouch). A change time cannot be set
+back, so an unchanged pair proves no write happened in between and mise hashed the bytes `cmp`
+compared; a swap for another file or a symlink changes the inode. Controller's ruling during
+execution (2026-10-27): it makes the re-check deliver what the anti-goal already requires.
+Measured on macOS: `%Fc` has nanosecond resolution, a write moves it, and `touch -m` cannot
+move it back.
 
 A candidate's `trust --show` is read lazily, when a file first needs it, and at most once per
 run for the search; the re-check always reads afresh. Old §Failing closed still holds for the
@@ -116,15 +135,19 @@ unchanged.
 ### 5. `wt-rm` checks trust before it disrupts anything
 
 Step 1 ends with the carry, after the lock classification (the checks that write nothing go
-first) and before step 2, when `_wt_hook_check` reports a valid hook (0). If it returns 1, the
+first) and before step 2, unless `_wt_hook_check` reports no hook (2); an invalid hook (1)
+already refused earlier. The gate is "not 2" rather than "is 0" so that it matches
+`_wt_hook_run`, which runs the hook for any status but 1 and 2 (a ruling during execution; equal
+for every status `_wt_hook_check` returns today). If the carry returns 1, the
 report lines stand, then `wt-rm: nothing was closed or removed — review the mise config above,
 then: wt-rm <branch>`, and `wt-rm` returns 1 before any Herdr call. The carry refuses when the
 read of `<dest>` or of the worktree list fails, or a config stays untrusted; a failed candidate
 read only removes that witness, with its "cannot vouch" line, as in §3. With no hook (2) there
 is no check.
 
-Right before `_wt_hook_run … teardown`, a read-only `_wt_mise_show <dest>` must succeed and list
-no `untrusted` entry, or `wt-rm` refuses with "teardown not run, Herdr workspaces closed" and
+Right before `_wt_hook_run … teardown`, under the same gate, a read-only `_wt_mise_show <dest>`
+must succeed and list no `untrusted` entry, or `wt-rm` refuses with "teardown not run, Herdr
+workspaces closed" and
 the retry line. Closing the workspaces can rewrite a git-ignored `mise.local.toml` that check 2
 does not see, and the anti-goal binds at the hook, not at step 1.
 
@@ -176,6 +199,17 @@ stub gains a `trust --show` that fails for one `-C` directory from the start
   prints the never-prepared line, and one that carried nothing does not.
 - `mise trust` never runs without a path or with `--all` (X13, over the new calls too).
 
+Added during execution:
+- the flip-around-the-calls race, driven by the stub, is refused and untrusted;
+- a `<dest>` that is itself a symlink is refused;
+- `wt-rm` with a hook and no mise makes no `mise` call, and one with an invalid hook makes none
+  either;
+- the worktree list is read once per run;
+- `_WT_MISE_CARRIED` is reset per run;
+- the teardown re-check is read-only: with an empty trusted witness, a carrying re-check would
+  trust;
+- the X13 and Y18 sweeps are allowlists: every `trust` path is under a destination checkout.
+
 Existing cases keep their scenarios; X2 to X5 expect the new reasons and `review` lines.
 
 No suite owns `dot_config/mise/config.toml`. Its pin goes in this suite's mise section, since
@@ -192,7 +226,8 @@ skips that candidate, and a failed read of the worktree list stops (§2, §3); a
 than main must share main's Git common directory; three refusal reasons, and the success line
 names the vouching checkout; the `wt-rm` carry runs after the lock classification, and teardown
 gets a read-only re-check; in `wt-rm` too a failed candidate read only skips that candidate,
-and of the reads only a failed one of `<dest>` or of the worktree list refuses; the reopen's
+and of the search reads only a failed one of `<dest>` or of the worktree list refuses (a failed
+re-check read refuses as in §3); the reopen's
 refusal lines point at the report lines, not `wt-prepare`; the config pin lives in
 `tests/wt-functions.test.sh`. Ruled by the controller during execution (2026-10-27): a reopen
 that carried a file adds the never-prepared `wt-prepare` line (§6), and it holds the popup.
@@ -200,3 +235,39 @@ that carried a file adds the never-prepared `wt-prepare` line (§6), and it hold
 Left to the builder: how the base reaches `_wt_mise_trust` (an argument through
 `_wt_do_prepare` is enough), the candidate cache's structure, and message wording within the
 shapes above.
+
+## Rulings and accepted residuals
+
+Rulings made during execution, by the controller unless marked:
+
+- **§6, the never-prepared line and its popup hold.** Controller's ruling; Michael to confirm.
+- **§3, identity pinning.** Controller's ruling on a race the final review verified.
+- **§3, `<dest>` itself must not be a symlink.**
+- **§5, the mise gates use "not 2".**
+- **The reopen helper** became `_wt_mise_reopen_carry <main> <dest> <branch>` (it trusts files,
+  and needs the branch for the never-prepared line).
+- **The candidate list returns 1** when the porcelain holds no `worktree ` record, as well as on
+  a failed read.
+- **The suite pins its FUNCS target to exit 2.**
+- **A suite-local `jq` stub.** It skips a `jq` that is a mise shim (a stale
+  `~/.local/share/mise/shims/jq` on Michael's machine). Without it, a fixture repository holding
+  a `mise.toml` would run the real mise through the shim and fail.
+
+Accepted residuals:
+
+- **Writes inside the clock's resolution.** A write that lands inside the change-time clock's
+  resolution right after the first `stat` would leave the pair unchanged. The clock is
+  nanosecond-grained on APFS.
+- **A candidate's common directory** is checked once, when the list is read. A `.git` file
+  planted in a sandbox-writable directory can forge it, so it is defence in depth. The boundary
+  is mise's store, which the sandbox cannot write, together with the identity pinning, which
+  also catches a vouching copy swapped after the listing.
+- **The re-check does not re-run the plainness check.** Identity pinning now catches a swap of
+  `<dest>/<rel>` for a symlink.
+- **A hook that becomes valid in the main checkout between step 1 and teardown** skips both
+  `wt-rm` checks. Whoever can commit a hook already runs code through it.
+- **Configs that `mise -C <dest> trust --show` does not list** are invisible to every check: a
+  `mise.toml` in a subdirectory the hook enters, or a `MISE_ENV` the hook sets. So are
+  parent-directory configs (old spec's scope).
+
+Live check, pending after `chezmoi apply`: the VM.Portal check under Testing.
