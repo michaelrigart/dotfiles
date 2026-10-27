@@ -3070,6 +3070,51 @@ eq "$(print -r -- "$settings" | grep -c '^idiomatic_version_file_enable_tools = 
 eq "$(print -r -- "$settings" | grep -c '^idiomatic_version_file_enable_tools')" "1" \
    "X22 ... and no other value for it"
 
+# XC: _wt_mise_candidates lists the checkouts that can vouch for a new worktree's mise config
+# (spec §2): main first, then the base branch's checkout, then Git's order; never the
+# destination, a missing directory, or a checkout of another repository.
+xc_list() { _wt_mise_candidates "$@" || return; print -rl -- $_WT_MISE_CANDS "base=$_WT_MISE_BASEDIR" }
+# xsib <git worktree add args...> — a registered sibling checkout, arguments exactly as git takes them.
+xsib() { git -C "$REPO" worktree add -q "$@" >/dev/null 2>&1 || _fail "xsib $*" }
+
+setup
+xsib -b a "$HOME/Code/Org/sib-a"; xsib -b b "$HOME/Code/Org/sib-b"; xsib -b d "$HOME/Code/Org/repo-d"
+run "$REPO" xc_list "$REPO" "$HOME/Code/Org/repo-d" b
+eq "$OUT" "$(print -rl -- "$REPO" "$HOME/Code/Org/sib-b" "$HOME/Code/Org/sib-a" "base=$HOME/Code/Org/sib-b")" \
+   "XC1 main, then the base branch's checkout, then Git's order; the destination is absent"
+
+rm -rf "$HOME/Code/Org/sib-a"
+run "$REPO" xc_list "$REPO" "$HOME/Code/Org/repo-d" b
+rc_is 0 "XC2 a registered checkout whose directory is gone is not an error"
+hasnt "sib-a" "XC2 ... and is absent"
+has "$HOME/Code/Org/sib-b" "XC2 ... the others remain"
+
+setup
+xsib -b a "$HOME/Code/Org/sib-a"; xsib -b d "$HOME/Code/Org/repo-d"
+git init -q "$HOME/Code/Org/other"
+rm -rf "$HOME/Code/Org/sib-a"; ln -s "$HOME/Code/Org/other" "$HOME/Code/Org/sib-a"
+run "$REPO" xc_list "$REPO" "$HOME/Code/Org/repo-d"
+rc_is 0 "XC3 a path that now belongs to another repository is not an error"
+hasnt "sib-a" "XC3 ... and is absent"
+
+setup
+: > "$FLOG"
+PATH="$FAILSTUBS:$PATH" WT_FAIL_MATCH='worktree list' WT_FAIL_NTH=1 WT_FAIL_LOG="$FLOG" run "$REPO" xc_list "$REPO" "$HOME/Code/Org/repo-d"
+rc_is 1 "XC4 a failed worktree list read returns 1"
+has "wt: cannot read Git's worktree list for ~/Code/Org/repo — trusting nothing." "XC4 ... with the list-read-failure line"
+
+setup
+xsib --detach "$HOME/Code/Org/sib-det"; xsib -b a "$HOME/Code/Org/sib-a"; xsib -b d "$HOME/Code/Org/repo-d"
+run "$REPO" xc_list "$REPO" "$HOME/Code/Org/repo-d"
+eq "$OUT" "$(print -rl -- "$REPO" "$HOME/Code/Org/sib-a" "$HOME/Code/Org/sib-det" "base=")" \
+   "XC5 a detached sibling is listed; no base argument gives main first, then the rest"
+run "$REPO" xc_list "$REPO" "$HOME/Code/Org/repo-d" origin/main
+eq "$OUT" "$(print -rl -- "$REPO" "$HOME/Code/Org/sib-a" "$HOME/Code/Org/sib-det" "base=")" \
+   "XC5 a start point that is no local branch leaves the base empty"
+run "$REPO" xc_list "$REPO" "$HOME/Code/Org/repo-d" main
+eq "$(print -r -- "$OUT" | head -n 3)" "$(print -rl -- "$REPO" "$HOME/Code/Org/sib-a" "$HOME/Code/Org/sib-det")" \
+   "XC5 main as the base is not listed twice"
+
 : > "$STDIN_LOG"
 # --- the carry itself --------------------------------------------------------
 # xfix <slug> [repo-dir] — a fresh repository with a tracked mise.toml, a .worktreehook

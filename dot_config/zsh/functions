@@ -552,6 +552,62 @@ _wt_mise_show() {
   return 0
 }
 
+# _wt_mise_candidates <main> <dest> [<base-branch>] — the checkouts of one repository that
+# may vouch for the mise config of the worktree about to be made at <dest> (spec §2).
+# Sets _WT_MISE_CANDS (checkout roots) and _WT_MISE_BASEDIR (the root whose record reads
+# `branch refs/heads/<base-branch>`, or empty), and returns 0. Returns 1 when Git's worktree
+# list cannot be read or has no records: nothing can then vouch, and wt trusts nothing.
+#
+# Order: <main> exactly as passed, then the base branch's checkout, then the others in
+# Git's order; each root once. Left out: <dest> itself, a path that is not a directory, and
+# any other root whose Git common dir is not <main>'s (a path since reused by another
+# repository). Roots other than <main> are as Git prints them; a detached checkout (no
+# `branch` record) is still a candidate. NUL porcelain, parsed as _wt_worktree_record does.
+_wt_mise_candidates() {
+  emulate -L zsh
+  local main="$1" dest="${2:A}" base="${3:-}" rec root common maincommon rc
+  local -a fields roots branches cands
+  typeset -g _WT_MISE_BASEDIR=""
+  typeset -ga _WT_MISE_CANDS=()
+  fields=( ${(0)"$(_wt_git -C "$main" worktree list --porcelain -z 2>/dev/null)"} ); rc=$?
+  if (( rc || ! ${#fields} )); then
+    print -ru2 -- "wt: cannot read Git's worktree list for $(_wt_tilde "$main") — trusting nothing."
+    return 1
+  fi
+  for rec in $fields; do
+    if [[ "$rec" == 'worktree '* ]]; then
+      roots+=( "${rec#worktree }" ); branches+=( "" )
+    elif (( ${#roots} )) && [[ "$rec" == 'branch refs/heads/'* ]]; then
+      branches[-1]="${rec#branch refs/heads/}"
+    fi
+  done
+  maincommon="$(_wt_git -C "$main" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || maincommon=""
+  local i
+  for (( i = 1; i <= ${#roots}; i++ )); do
+    root="${roots[i]}"
+    [[ "${root:A}" == "$dest" ]] && continue
+    if [[ "${root:A}" == "${main:A}" ]]; then
+      [[ -n "$base" && "${branches[i]}" == "$base" ]] && _WT_MISE_BASEDIR="$main"
+      continue
+    fi
+    [[ -d "$root" ]] || continue
+    common="$(_wt_git -C "$root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || continue
+    [[ -n "$common" && -n "$maincommon" && "${common:A}" == "${maincommon:A}" ]] || continue
+    if [[ -n "$base" && -z "$_WT_MISE_BASEDIR" && "${branches[i]}" == "$base" ]]; then
+      _WT_MISE_BASEDIR="$root"
+    fi
+    cands+=( "$root" )
+  done
+  # <main> leads. The base checkout follows it, and the rest keep Git's order.
+  _WT_MISE_CANDS=( "$main" )
+  [[ -n "$_WT_MISE_BASEDIR" && "$_WT_MISE_BASEDIR" != "$main" ]] && _WT_MISE_CANDS+=( "$_WT_MISE_BASEDIR" )
+  for root in $cands; do
+    [[ "$root" == "$_WT_MISE_BASEDIR" ]] && continue
+    _WT_MISE_CANDS+=( "$root" )
+  done
+  return 0
+}
+
 # _wt_tilde <path> — the path with a leading $HOME/ shown as ~/, for messages only.
 _wt_tilde() {
   emulate -L zsh
