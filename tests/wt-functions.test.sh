@@ -3750,8 +3750,8 @@ rc_is 0 "Y10 a branch with ! is created"
 has "wt: branching 'fix!foo' from" "Y10 the branching line quotes it"
 print -r -- 'edited' >> "$X/mise.local.toml"
 run "$REPO" wt 'fix!foo'
-has "has untrusted mise config (mise.local.toml) — run: wt-prepare 'fix!foo'" "Y10 the reopen warning quotes it"
-hasnt "wt-prepare fix!foo" "Y10 ... and never prints it bare"
+has "    then:   mise trust ~/'Code/Org/repo-fix!foo/mise.local.toml'" "Y10 the reopen's trust line quotes the path"
+hasnt "mise trust ~/Code/Org/repo-fix!foo/mise.local.toml" "Y10 ... and never prints it unquoted"
 
 xfix 'fix!bar'; xseed
 xbranch fixbar-src 'print -r -- "a=2" > "$REPO/mise.toml"; git -C "$REPO" add mise.toml'
@@ -3786,7 +3786,8 @@ eq "$stdin_bad" "" "X13b every mise call wt makes has stdin from /dev/null"
 
 print -r -- "Y. wt — reopen warning and the popup"
 # --- Y. wt — reopen warning and the popup ---------------------------------------
-# A reopen only reads mise's trust status and warns; it never trusts anything and never stops.
+# A reopen runs the same carry as a creation (spec §6) but never stops and never runs a hook:
+# what it cannot carry is reported, and the workspace opens anyway.
 # ypop <dir> <branch> — wt-prompt as the popup runs it: the branch, then SENTINEL, on stdin.
 # A popup that waited for Enter consumed the sentinel (REST=); one that did not leaves it
 # (REST=SENTINEL). STATUS= is wt-prompt's own exit status, since the group's is always 0.
@@ -3802,12 +3803,15 @@ print -r -- 'edited' >> "$X/mise.local.toml"
 : > "$MLOG"; : > "$DLOG"
 run "$REPO" wt y1
 rc_is 0 "Y1 reopening a worktree with an untrusted config succeeds"
-has "wt: ~/Code/Org/repo-y1 has untrusted mise config (mise.local.toml) — run: wt-prepare y1" "Y1 the warning names the file and the recovery"
+has "wt: ~/Code/Org/repo-y1/mise.local.toml is not trusted: it matches no trusted copy in this repository's checkouts." "Y1 the refusal names the file and the reason"
+has "    review: diff ~/Code/Org/repo/mise.local.toml ~/Code/Org/repo-y1/mise.local.toml" "Y1 the review line"
+has "wt: opening ~/Code/Org/repo-y1 anyway — its shells load no project mise config until the files above are trusted." "Y1 the reopen line"
+hasnt "wt-prepare" "Y1 no wt-prepare recovery is offered"
 dlogged "--worktree $REPO $X" "Y1 the workspace still opens"
 grep -q '^trust ' "$MLOG" && _fail "Y1 nothing is trusted" || _pass "Y1 nothing is trusted"
 mlog_line "-C $X trust --show" "Y1 the status was read"
 ypop "$REPO" y1
-has "has untrusted mise config (mise.local.toml)" "Y6 the popup shows the warning"
+has "is not trusted" "Y6 the popup shows the warning"
 has "Press Enter to close." "Y6 and asks for Enter"
 has "STATUS=0" "Y6 the warning does not change the exit status"
 hasline "REST=" "Y6 it waited for the Enter line"
@@ -3834,8 +3838,21 @@ run "$REPO" wt y4
 : > "$DLOG"
 MOCK_MISE_SHOW_RC=1 run "$REPO" wt y4
 rc_is 0 "Y4 a failing status read does not stop the reopen"
-has "wt: cannot read mise's trust status for ~/Code/Org/repo-y4 — opening anyway." "Y4 it says so"
+has "wt: cannot read mise's trust status for ~/Code/Org/repo-y4 — trusting nothing." "Y4 it says so"
+has "wt: opening ~/Code/Org/repo-y4 anyway — its shells load no project mise config until the files above are trusted." "Y4 and opens anyway"
 dlogged "--worktree $REPO $X" "Y4 the workspace opens"
+
+xfix y14; mise_seed "$REPO/mise.toml"
+run "$REPO" wt y14
+rc_is 1 "Y14 the first wt refuses the untrusted local config"
+hook_not_ran "Y14 the setup hook does not run"
+mise_seed "$REPO/mise.local.toml"
+ypop "$REPO" y14
+has "STATUS=0" "Y14 the reopen carries and succeeds"
+has "wt: mise trust carried to ~/Code/Org/repo-y14/mise.local.toml (trusted in ~/Code/Org/repo)" "Y14 the carry is reported"
+hasnt "anyway" "Y14 no opening-anyway line"
+hasline "REST=SENTINEL" "Y14 a reopen that carried everything does not hold the popup"
+hook_not_ran "Y14 the setup hook still has not run"
 
 xfix y5
 xbranch y5 'print -r -- "a=2" > "$REPO/mise.toml"; git -C "$REPO" add mise.toml'
