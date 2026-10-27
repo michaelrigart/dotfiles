@@ -224,12 +224,14 @@ chmod +x "$STUBS/xreview-rpc"
 # file's content, writes <bytes> into it and records the hash of <bytes> (what mise read); the
 # next `trust --show` that lists the file prints its listing, `trusted`, and only then writes
 # the saved content back, so every comparison of bytes afterwards sees the good ones.
-# FLIP_VOUCH=<file> is the same race aimed at the vouching copy: any `trust <path>` saves
-# <file>'s content, writes other bytes into it and records their hash (so the listing still
-# says `trusted`), and the next `trust --show` that lists <file> prints its listing and then
-# writes the saved content back. The saved state lives beside the stub (stub-*), which setup()
-# clears. Any other invocation exits 3, so a call the code was never meant to make (bare
-# `trust`, `--all`) cannot pass quietly.
+# FLIP_VOUCH=<file> with FLIP_VOUCH_BYTES=<bytes> is the race a writer of the vouching copy
+# can run: <file> holds good bytes that mise trusts, and the writer shows them to every
+# `trust --show` of the directory holding <file> (written back before the stub hashes and
+# prints, taken from the file the first time) and its own <bytes> to everything else (written
+# after the stub prints), so the listing says `trusted` while every `cmp` sees the writer's
+# bytes. Nothing is written to the store. Its state is stub-vouch-good, beside the stub, which
+# setup() clears with the rest of stub-*. Any other invocation exits 3, so a call the code was
+# never meant to make (bare `trust`, `--all`) cannot pass quietly.
 cat > "$MISESTUBS/mise" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$MLOG"
@@ -248,6 +250,12 @@ if [ "${1:-}" = -C ] && [ "${3:-}" = trust ] && [ "${4:-}" = --show ] && [ $# -e
   [ -n "${MOCK_MISE_SHOW_STDERR:-}" ] && printf '%b' "$MOCK_MISE_SHOW_STDERR" >&2
   if [ -n "${MOCK_MISE_SHOW_RAW+x}" ]; then printf '%b' "$MOCK_MISE_SHOW_RAW"; exit 0; fi
   d=$(cd -P "$2" && pwd -P) || exit 1
+  vouch=
+  if [ -n "${MOCK_MISE_FLIP_VOUCH:-}" ] && [ "$(dirname "$MOCK_MISE_FLIP_VOUCH")" = "$d" ]; then
+    vouch=1
+    [ -e "$state/stub-vouch-good" ] || cat "$MOCK_MISE_FLIP_VOUCH" > "$state/stub-vouch-good"
+    cat "$state/stub-vouch-good" > "$MOCK_MISE_FLIP_VOUCH"
+  fi
   found= seen=
   while :; do
     for name in mise.toml mise.local.toml .mise.toml .config/mise.toml; do
@@ -279,6 +287,7 @@ if [ "${1:-}" = -C ] && [ "${3:-}" = trust ] && [ "${4:-}" = --show ] && [ $# -e
     d=$(dirname "$d")
   done
   [ -n "$found" ] || echo "mise No trusted config files found." >&2
+  [ -z "$vouch" ] || printf '%b' "${MOCK_MISE_FLIP_VOUCH_BYTES:-}" > "$MOCK_MISE_FLIP_VOUCH"
   if [ -e "$state/stub-flip" ]; then
     flipped=$(cat "$state/stub-flip")
     if printf '%s' "$seen" | grep -Fxq -- "$flipped"; then
@@ -294,11 +303,6 @@ if [ "${1:-}" = trust ] && [ $# -eq 2 ] && [ "${2#-}" = "$2" ]; then
   if [ -n "${MOCK_MISE_FLIP_RACE+x}" ]; then
     cat "$2" > "$state/stub-flip.good"; printf '%s' "$2" > "$state/stub-flip"
     printf '%b' "$MOCK_MISE_FLIP_RACE" > "$2"
-  fi
-  if [ -n "${MOCK_MISE_FLIP_VOUCH:-}" ]; then
-    cat "$MOCK_MISE_FLIP_VOUCH" > "$state/stub-flip.good"; printf '%s' "$MOCK_MISE_FLIP_VOUCH" > "$state/stub-flip"
-    printf 'evil=1\n' > "$MOCK_MISE_FLIP_VOUCH"
-    printf '%s\t%s\n' "$MOCK_MISE_FLIP_VOUCH" "$(sha "$MOCK_MISE_FLIP_VOUCH")" >> "$MISE_STUB_STORE"
   fi
   [ -n "${MOCK_MISE_MAIN_FLIP:-}" ] && drop "$MOCK_MISE_MAIN_FLIP"
   [ "${MOCK_MISE_TRUST_RC:-0}" != 0 ] && exit "$MOCK_MISE_TRUST_RC"
@@ -444,7 +448,7 @@ setup() {   # fresh $HOME with Code/Org/repo, fresh logs, default mock behaviour
         MOCK_XRPC_RC MOCK_XRPC_OUT MOCK_XRPC_ERR MOCK_XRPC_SIGNAL MOCK_XRPC_TO_LLOG \
         MOCK_MISE_SHOW_RC MOCK_MISE_SHOW_RAW MOCK_MISE_SHOW_STDERR MOCK_MISE_SHOW_FAIL_AFTER_TRUST \
         MOCK_MISE_SHOW_FAIL_DIR MOCK_MISE_SHOW_FAIL_DIR_AFTER_TRUST MOCK_MISE_RACE_CONTENT MOCK_MISE_MAIN_FLIP MOCK_MISE_TRUST_RC MOCK_MISE_UNTRUST_RC \
-        MOCK_MISE_TRUST_NOOP MOCK_MISE_SHOW_FAIL_WHEN MOCK_MISE_FLIP_RACE MOCK_MISE_FLIP_VOUCH
+        MOCK_MISE_TRUST_NOOP MOCK_MISE_SHOW_FAIL_WHEN MOCK_MISE_FLIP_RACE MOCK_MISE_FLIP_VOUCH MOCK_MISE_FLIP_VOUCH_BYTES
   rm -f -- "$MISESTUBS"/stub-*(N)
 }
 # run <dir> <command...> — source the functions fresh and run one command in $dir.
@@ -3835,20 +3839,25 @@ xseed
 run "$REPO" x40_twice
 eq "$OUT" "$(print -rl -- carried=1 carried=0)" "X40 the count is 1 after a carry and 0 after a run with nothing to carry"
 
-# X41: the check-then-trust race aimed at the vouching copy. While `mise trust` runs, main's
-# copy holds other bytes (listed trusted, since their hash is recorded) and is restored before
-# the final `cmp`, so every comparison of bytes passes; only the copy's identity shows it was
-# written.
+# X41: the race a writer of the vouching copy can run. The worktree's mise.toml holds the
+# writer's bytes from the start (committed on the source branch) and is never written again.
+# Main's copy holds good bytes that mise trusts; the writer shows them to every status read of
+# main and its own bytes to every `cmp`, so each listing says `trusted` and each comparison
+# says identical. Nothing is written to the store. Only the copy's identity shows it was
+# written, so only the vouching half of the pin catches this.
 xfix x41
+xbranch x41-src 'print -r -- "evil=1" > "$REPO/mise.toml"; git -C "$REPO" add mise.toml'
 mise_seed "$REPO/mise.toml"
-MOCK_MISE_FLIP_VOUCH="$REPO/mise.toml" run "$REPO" wt x41
+MOCK_MISE_FLIP_VOUCH="$REPO/mise.toml" MOCK_MISE_FLIP_VOUCH_BYTES='evil=1\n' run "$REPO" wt x41 x41-src
 rc_is 1 "X41 a vouching copy rewritten while the file is being trusted is refused"
 has "wt: ~/Code/Org/repo-x41/mise.toml is not trusted: $XCHG."$'\n'"$XHINT"$'\n'"    review: cat ~/Code/Org/repo-x41/mise.toml" "X41 the reason, the hint and the review line"
 mlog_line "trust $X/mise.toml" "X41 the file was trusted (the race really ran)"
 mlog_line "trust --untrust $X/mise.toml" "X41 the trust is withdrawn"
 hook_not_ran "X41 the setup hook does not run"
 eq "$(awk -v p="$X/mise.toml" 'index($0, p "\t") == 1 { n++ } END { print n + 0 }' "$MISE_STUB_STORE")" "0" "X41 the store holds no entry for the file afterwards"
-eq "$(<$REPO/mise.toml)" "a=1" "X41 the vouching copy is back"
+eq "$(awk -v p="$REPO/mise.toml" 'index($0, p "\t") == 1 { n++ } END { print n + 0 }' "$MISE_STUB_STORE")" "1" "X41 the vouching copy has exactly its seeded store entry"
+grep -Fxq -- "$REPO/mise.toml"$'\t'"$(print -r -- 'a=1' | shasum -a 256 | cut -d' ' -f1)" "$MISE_STUB_STORE" && _pass "X41 ... and it is the hash of the good bytes" || _fail "X41 ... and it is the hash of the good bytes"
+eq "$(<$X/mise.toml)" "evil=1" "X41 the worktree's file holds the writer's bytes throughout"
 hasnt "mise trust carried to ~/Code/Org/repo-x41/mise.toml" "X41 the file is not reported as carried"
 
 # X42, X43: _wt_mise_ident, the file's own pin. X42: an untouched file reads the same twice, as

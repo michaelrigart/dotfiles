@@ -280,12 +280,16 @@ Rulings made during execution, by the controller unless marked:
   - Two re-reviews had extended the pin to each file's lexical and canonical directory chains:
     first after a directory swapped around the trust passed the file pin, then after a symlink
     swapped in before the pin passed the lexical chain.
-  - The controller reversed it on two measurements.
-  - Real runs: `$HOME`'s change time moved once in 80 quarter-second samples, about every 20 s.
-    A pinned chain therefore refused spuriously in a few percent of real runs.
-  - The suite: every fixture sits under the sandbox's shared `$TMPDIR`, which every sandboxed
-    command in every session writes. Four unmutated runs failed 38, 16, 5 and 0 carry-success
-    cases. In one noisy run, the noise also hid a deleted re-check condition.
+  - The controller reversed it on two observations.
+  - Real runs: in one read-only sample, `$HOME`'s change time moved once in 80 quarter-second
+    reads, about every 20 s. By estimate, a pinned chain would refuse spuriously in a few
+    percent of real runs.
+  - The suite: every fixture sits below `/private/tmp/claude-501`, a directory that every
+    sandboxed command in every session writes to.
+    - Four unmutated runs failed 38, 16, 5 and 0 carry-success cases.
+    - The first run overlapped another full suite. The other three used a private `TMPDIR`
+      that was still below that directory.
+    - In one noisy run, the noise also hid a deleted re-check condition.
   - What the chains caught is now accepted under the threat model below.
 - **§4, the changed reason** returns to the old spec's copy, because directories are no longer
   pinned. The rerun hint stays.
@@ -311,7 +315,14 @@ Accepted residuals:
     the identity stays unchanged while the dirty mapping is held.
   - **Path swaps of any directory above the file, or of a symlink's target.** Renaming one
     aside, putting one with the writer's bytes in its place, and restoring it leaves the file's
-    own identity unchanged.
+    own identity unchanged. A variant, recorded at the round 4 re-review:
+    1. before the first pin, the writer hard-links `<dest>/.config/mise.toml` into a
+       directory it controls;
+    2. after the plainness check, it swaps `<dest>/.config` for a symlink to that directory, so
+       the pinned file is the same inode;
+    3. it then swaps the target directory around `mise trust`.
+
+    The pin sees nothing, and the worktree keeps a symlinked `.config`.
   - **A filesystem mounted over a directory on the path** during the window and unmounted
     before the final pin. Mounting needs DiskArbitration or `hdiutil`. Whether the agent
     sandbox can reach them is unverified.

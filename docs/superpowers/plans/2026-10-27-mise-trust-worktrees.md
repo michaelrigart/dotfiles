@@ -21,8 +21,9 @@ plan was approved:
   - X25b–d, X32's carry checks, X33–X36's trust and hook assertions;
   - XC4b, XC6, XR6b, XR6c, XR8, XR9;
   - Y15–Y17;
-  - the flip-race case, the directory-swap case, the symlinked-`<dest>` case, and the `wt-rm`
-    no-mise and invalid-hook cases;
+  - the flip-race cases on `<dest>` (X37) and on the vouching copy (X41), the `_wt_mise_ident`
+    unit cases (X42–X43), the symlinked-`<dest>` case, and the `wt-rm` no-mise and
+    invalid-hook cases;
   - the list-read-once case and the carried-count reset case.
 - **Sweeps:** a Y18 sweep of section Y, with X13 and Y18 made allowlists.
 - **The suite** gained a `jq` stub that skips a mise-shim `jq`, and the FUNCS target check exits 2.
