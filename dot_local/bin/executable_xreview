@@ -33,6 +33,12 @@ CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}"
 XR_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}"
 SCHEMA="${XREVIEW_SCHEMA:-$XR_CONFIG/xreview/findings.schema.json}"
 REVIEWER="${XREVIEW_REVIEWER:-$XR_CONFIG/xreview/reviewer.md}"
+# The packet switches and what framing adds (spec 2026-10-25 §3.1, §3.8): all off unless
+# packets.conf says otherwise, and then the reviewer also gets the framing text and its answer
+# is checked against the schema that carries reviewed_files.
+FRAMING="${XREVIEW_FRAMING:-$XR_CONFIG/xreview/reviewer-framing.md}"
+FRAMED_SCHEMA="${XREVIEW_FRAMED_SCHEMA:-$XR_CONFIG/xreview/findings.framed.schema.json}"
+PACKETS_CONF="${XREVIEW_PACKETS_CONF:-$XR_CONFIG/xreview/packets.conf}"
 PANE_CMD_FILE="$XR_CONFIG/herdr/codex-pane-command"
 # Codex ALWAYS truncates the title's thread-id item to 29 characters plus "..." (F11/F21),
 # so this only ever carries a PREFIX (29-36 chars), never a guaranteed full id. A full id
@@ -40,7 +46,12 @@ PANE_CMD_FILE="$XR_CONFIG/herdr/codex-pane-command"
 # resolved to a full id through `xreview-rpc thread-resolve`, never guessed.
 ID_RE='^[[:space:]]*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{5,12})'
 
-die() { printf 'xreview: %s\n' "$1" >&2; exit 1; }
+die() { printf 'xreview: %s\n' "$1" >&2; die_note; exit 1; }
+
+# DIE_NOTE, when set, follows every refusal on a line of its own. A sliced round's collect sets
+# it while it readies the next slice, so that a refusal from the shared pane steps, whose own
+# words are dispatch's, also says the round is on record and can be collected again.
+die_note() { [ -z "${DIE_NOTE:-}" ] || printf 'xreview: %s\n' "$DIE_NOTE" >&2; }
 
 repo_root() { git rev-parse --show-toplevel 2>/dev/null || pwd; }
 
@@ -48,6 +59,57 @@ repo_root() { git rev-parse --show-toplevel 2>/dev/null || pwd; }
 # helper, shared with the pre-merge guard. It sits beside the guard in ~/.claude, which the
 # sandbox cannot write; XREVIEW_LEDGER points the test suites at the source copy.
 ledger() { /usr/bin/python3 "${XREVIEW_LEDGER:-$HOME/.claude/xreview-ledger.py}" "$@"; }
+
+# The review packet and the decision about it (spec 2026-10-25 §3.2, §3.3) live in one helper
+# too, beside the ledger for the same reason. XREVIEW_PACKET points the test suites at the source.
+packet() { /usr/bin/python3 "${XREVIEW_PACKET:-$HOME/.claude/xreview-packet.py}" "$@"; }
+
+# The module has no command for its switches, so it is imported (-I: no directory of the
+# repository on sys.path). packet_ignored prints the switches packets.conf turns on that need
+# framing while framing is off, space separated. packet_delta_on succeeds only when the delta
+# switch is in force (read_switches: delta on AND framing on), the one case that needs the
+# thread's turns. packet_plan prints what the decision depends on, from one read, as JSON: whether
+# framing is in force, whether fit or delta is (only then does it need the thread, and the
+# daemon), and packets.conf's cap= line as written, or null.
+packet_ignored() { _packet_switches 'print(" ".join(module.switches_ignored(sys.argv[2])))'; }
+packet_plan() { _packet_switches 'import json; print(json.dumps(module.read_plan(sys.argv[2])))'; }
+packet_delta_on() { _packet_switches 'sys.exit(0 if module.read_switches(sys.argv[2])["delta"] else 1)'; }
+_packet_switches() { _python_module "${XREVIEW_PACKET:-$HOME/.claude/xreview-packet.py}" "$1" "$PACKETS_CONF"; }
+# packet_labels <specs-json>: the module's cap on a receipt's missing labels, and the label
+# prefix of each target the specs name, as {"cap", "prefixes"}; prefixes is null when the specs
+# are not a list of strings.
+packet_labels() { _python_module "${XREVIEW_PACKET:-$HOME/.claude/xreview-packet.py}" '
+import json
+specs = json.loads(sys.argv[2])
+known = isinstance(specs, list) and all(isinstance(s, str) for s in specs)
+print(json.dumps({"cap": module.MISSING_CAP,
+                  "prefixes": [module._label_prefix(s, len(specs) > 1) for s in specs] if known else None}))' "$1"; }
+# ledger_whole <receipt-json>: exit 0 when the ledger's own whole() (spec 2026-10-25 §3.7) finds
+# every target of the receipt whole against its repository's ledger, 1 when one is not. Any
+# failure to judge is exit 2.
+ledger_whole() { _python_module "${XREVIEW_LEDGER:-$HOME/.claude/xreview-ledger.py}" '
+import json, os
+try:
+    receipt = json.loads(sys.argv[2])
+    for target in receipt["targets"]:
+        repo = os.path.realpath(target["repo"])
+        path = module.ledger_file(repo)
+        entries = module.read_entries(path) if os.path.lexists(path) else []
+        if not module.whole(entries, receipt, target, repo)[0]:
+            sys.exit(1)
+except Exception:
+    sys.exit(2)' "$1"; }
+_python_module() { # _python_module <file> <python statement over module and sys.argv[2:]> [arg...]
+  local file="$1" code="$2"
+  shift 2
+  /usr/bin/python3 -I -c "
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location('xreview_module', sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+$code
+" "$file" "$@"
+}
 
 state_dir() {
   local root; root="$(repo_root)"
@@ -316,6 +378,7 @@ pane_screen() { # pane_screen <pane>: the bottom of the pane's visible screen - 
 die_with_screen() { # die_with_screen <pane> <message>: die, then show the pane's screen
   printf 'xreview: %s\n' "$2" >&2
   pane_screen "$1" >&2
+  die_note
   exit 1
 }
 
@@ -470,10 +533,51 @@ _dispatch_exit_guard() { # _dispatch_exit_guard <pane>: the EXIT trap armed whil
   # the next dispatch would find no Codex pane. Start a fresh Codex there, best effort; the
   # next dispatch resumes it onto the review thread. The pane comes in through the trap
   # string, not cmd_dispatch's locals: on an errexit exit bash 5 has already unwound those.
+  # It runs first in its trap, ahead of the caller's pre-turn cleanup (move_pane_to), and never
+  # fails: errexit holds inside an EXIT trap, so a failing command there skips all that follows.
   local cmd
   cmd="$(pane_command 2>/dev/null)" || return 0
   herdr pane run "$1" "$cmd" >/dev/null 2>&1 || true
   return 0
+}
+
+# move_pane_to <pane> <thread> <proc-json> <start-fn> [start-arg...] - the pane's whole move onto
+# <thread>, in the one order that keeps C1: free the pane (the only point that may send-keys),
+# run <start-fn> (it starts the review turn on <thread>; it dies when turn-start fails outright,
+# which fires the exit trap, and it disarms that trap itself once turn-start answers 0 or 6),
+# then best-effort resume the pane onto <thread> and archive the superseded threads. Dispatch
+# calls it once; a slice's collect calls it again for each next slice's thread. The CALLER HOLDS
+# THE PANE LOCK and has read <proc-json> under it. Never sends a keystroke after <start-fn>
+# returns, and never exits after it either: with the guard disarmed, an exit there would leave a
+# freed pane at a bare shell, so the resume and the archive are both best effort.
+# The caller's PRE_TURN_TRAP is its EXIT trap until turn-start answers: its own cleanup, and
+# the archive of a thread it started that nothing names yet. The caller has armed it already, and
+# it stays armed through every refusal here, the pane step's included.
+move_pane_to() {
+  local pane="$1" thread="$2" proc="$3" start="$4" need_resume
+  shift 4
+  # Dies on any failure - nothing has started yet.
+  need_resume="$(pane_free "$pane" "$thread" "$proc")"
+  # Armed only when pane_free quit the TUI, through a successful turn-start; <start-fn>
+  # disarms it once turn-start answers 0 or 6 and pane_resume owns the pane. The guard
+  # goes first, so an archive call can neither delay nor skip the fresh Codex it starts; the
+  # pre-turn cleanup still runs behind it.
+  if [ "$need_resume" = 1 ]; then
+    trap "_dispatch_exit_guard $(printf '%q' "$pane")${PRE_TURN_TRAP:+; $PRE_TURN_TRAP}" EXIT
+  fi
+  "$start" "$@"
+  # Resume the pane, best effort, ONLY if pane_free actually quit its TUI - otherwise it is
+  # already showing the thread and there is nothing to resume. Archive the superseded
+  # threads once the pane genuinely shows the new one, whether that took a resume or the
+  # fast path already had it; never otherwise, so a pane step that could not confirm the
+  # pane is watching keeps them queued for the next successful pane step.
+  if [ "$need_resume" = 1 ]; then
+    if pane_resume "$pane" "$thread" "$(repo_root)"; then
+      archive_superseded "$thread"
+    fi
+  else
+    archive_superseded "$thread"
+  fi
 }
 
 report_to_herdr() { # report_to_herdr <pane> <thread>
@@ -569,7 +673,8 @@ cmd_init() {
 # $(state_dir)/superseded holds a LIST, one id per line, oldest first: `round --reset`
 # APPENDS to it rather than overwriting, so a thread that a failed pane step left un-archived
 # stays queued across however many later resets happen before a pane step finally succeeds -
-# nothing is ever silently dropped.
+# nothing is ever silently dropped. It runs once turn-start has answered, so it never exits: a list
+# that cannot be read or removed is left for the next pane step that succeeds.
 archive_superseded() { # archive_superseded <current-thread>
   local f old; f="$(state_dir)/superseded"
   [ -r "$f" ] || return 0
@@ -577,8 +682,8 @@ archive_superseded() { # archive_superseded <current-thread>
     if [ -n "$old" ] && [ "$old" != "$1" ]; then
       xreview-rpc thread-archive --thread "$old" >/dev/null 2>&1 || true
     fi
-  done < "$f"
-  rm -f "$f"
+  done < "$f" || true
+  rm -f "$f" || true
   return 0
 }
 
@@ -629,42 +734,60 @@ record_pending() {
   while IFS= read -r repo; do
     [ -n "$repo" ] || continue
     entry="$(printf '%s' "$1" | jq -c --arg r "$repo" \
-      '{v:2,kind:"pending",nonce,dispatched_at,checkpoint,targets:[.targets[] | select(.repo == $r)]}')" \
+      '{v:2,kind:"pending",nonce,dispatched_at,checkpoint,targets:[.targets[] | select(.repo == $r)]}
+       + (if .switches then {switches} else {} end)')" \
       || return 1
     ledger append "$repo" "$entry" >/dev/null || return 1
   done <<<"$repos"
   return 0
 }
 
-# record_receipts <thread> <nonce> <turn> <findings-json> <targets-file> - spec 2026-10-02
-# §3.5: one receipt per target repository, idempotent per nonce. The targets were fixed at
-# dispatch and nothing about them is read again. A failed write only warns: the pending entry
-# stays the newest state of that change, so the gate stays closed until a later collect.
+# record_receipts <thread> <nonce> <turn> <findings-json> <targets-file> [found-json] - spec
+# 2026-10-02 §3.5: one receipt per target repository, idempotent per nonce. The targets were
+# fixed at dispatch and nothing about them is read again. A failed write only warns: the pending
+# entry stays the newest state of that change, so the gate stays closed until a later collect.
+# found-json is what collect found about a turn dispatched with review packets (spec 2026-10-25
+# §3.6): {compacted, clean, slice_turns|null, missing: [per target], plan_blobs: [per target]|null}.
+# Returns 1 when a receipt could not be written. Each entry it built is left in entries_built,
+# one per line, for the caller to judge.
 record_receipts() {
-  local tier verdict count repos repo entry err
+  local tier verdict count repos repo entry err failed=0
+  entries_built=""
   tier="$(codex_tier "$1" 2>/dev/null)" || tier=""
   verdict="$(printf '%s' "$4" | jq -r '.verdict // ""' 2>/dev/null)" || verdict=""
   count="$(printf '%s' "$4" | jq -r '(.findings // []) | length' 2>/dev/null)" || count=0
   if ! repos="$(jq -r '[.targets[].repo] | unique | .[]' "$5" 2>/dev/null)"; then
     printf 'xreview: could not write the receipt for %s: its targets in %s cannot be read\n' "$2" "$5" >&2
-    return 0
+    return 1
   fi
   while IFS= read -r repo; do
     [ -n "$repo" ] || continue
     err=""
     if ! entry="$(jq -c --arg r "$repo" --arg thread "$1" --arg turn "$3" --arg tier "$tier" \
-                     --arg verdict "$verdict" --argjson findings "${count:-0}" \
+                     --arg verdict "$verdict" --argjson findings "${count:-0}" --argjson x "${6:-null}" \
            '{v:2,kind:"receipt",nonce,dispatched_at,checkpoint,verdict:$verdict,findings:$findings,
-             thread:$thread,turn:$turn,tier:$tier,targets:[.targets[] | select(.repo == $r)]}' \
-           "$5" 2>/dev/null)" \
-       || ! err="$(ledger append "$repo" "$entry" 2>&1 >/dev/null)"; then
+             thread:$thread,turn:$turn,tier:$tier,
+             targets:[.targets | to_entries[] | select(.value.repo == $r) | .key as $i | .value
+                      + (if $x then {missing:$x.missing[$i]} else {} end)
+                      + (if $x.plan_blobs then {plan_blobs:$x.plan_blobs[$i]} else {} end)]}
+           + (if .switches then {switches} else {} end)
+           + (if $x then {compacted:$x.compacted, clean:$x.clean} else {} end)
+           + (if $x.slice_turns then {slice_turns:$x.slice_turns} else {} end)' \
+           "$5" 2>/dev/null)"; then
+      printf 'xreview: could not write the receipt for %s to the ledger of %s\n' "$2" "$repo" >&2
+      failed=1
+      continue
+    fi
+    entries_built+="$entry"$'\n'
+    if ! err="$(ledger append "$repo" "$entry" 2>&1 >/dev/null)"; then
       printf 'xreview: could not write the receipt for %s to the ledger of %s%s\n' "$2" "$repo" \
         "${err:+ ($err)}" >&2
+      failed=1
     else
       [ -z "$err" ] || printf '%s\n' "$err" >&2
     fi
   done <<<"$repos"
-  return 0
+  [ "$failed" = 0 ]
 }
 
 # An apply window bounds the blast radius of acting on a finding. While it is open,
@@ -810,13 +933,14 @@ guard_project_config() {
 }
 
 # add_target <spec> - one --diff [<repo-path>:]<range> (spec 2026-10-02 §3.1, §3.4): normalized
-# by the ledger helper, appended to cmd_dispatch's TARGETS, and its diff to DIFFS. The path is
-# everything before the last colon, since a ref can never hold one. A dispatch that names a
-# path makes the reviewer open it, and every search and read is a full-context model step
-# (measured 2026-09-01: ~16 steps and ~2.0M tokens per review), so the diff travels inline.
-# The diff is base..tip as recorded, rendered by the ledger helper with the fingerprint's own
-# flags, so the reviewer reads every path and byte the receipt will name, whatever
-# diff.relative, an external or textconv driver, or diff.ignoreSubmodules would do.
+# by the ledger helper and appended to cmd_dispatch's TARGETS and TSPECS (the packet module
+# labels a part by its spec). The path is everything before the last colon, since a ref can
+# never hold one. The packet itself is the module's (xreview-packet.py build): the diff is
+# base..tip as recorded, rendered with the fingerprint's own flags, so the reviewer reads every
+# path and byte the receipt will name. This only proves the range resolves and is not empty,
+# so a refusal comes before anything else is touched. A target already on record - the same
+# range named twice, or in two spellings - is skipped: the gate denies a chain it cannot
+# tell apart.
 add_target() {
   local spec="$1" rdir rng t base tip d
   case "$spec" in
@@ -831,9 +955,11 @@ add_target() {
   d="$(ledger diff "$rdir" "$base" "$tip" 2>/dev/null)" \
     || die "cannot diff $spec - check the range resolves in that repository"
   [ -n "$d" ] || die "cannot diff $spec - the range is empty, so there is nothing to review"
+  if printf '%s' "$TARGETS" | jq -e --argjson t "$t" 'index([$t]) != null' >/dev/null; then
+    return 0
+  fi
   TARGETS="$(printf '%s' "$TARGETS" | jq -c --argjson t "$t" '. + [$t]')"
-  DIFF_BYTES=$(( DIFF_BYTES + ${#d} ))
-  DIFFS="$DIFFS$(printf '\n\n--- diff (%s) ---\n%s\n--- end diff ---' "$spec" "$d")"
+  TSPECS+=("$spec")
 }
 
 # Codex writes one `turn_context` record per turn into the thread's rollout file, each
@@ -855,11 +981,184 @@ cmd_tier() {
   codex_tier "$thread" || die "cannot read the reviewer tier for $thread"
 }
 
+# known_file <thread> - where turn-start writes, before it sends, what <thread> held: one file per
+# thread of the round. A wait on a ? reads its own thread's file, so no slice's start, and no other
+# collect, ever touches the one it reads; once written, it is removed only under the pane lock, by
+# the start that put the turn's id in the record or saw turn-start fail outright. Works on the
+# caller's dir and nonce.
+known_file() { printf '%s/turns/%s.%s.known' "$dir" "$nonce" "$1"; }
+
+# _dispatch_turn <thread> <packet-file> <schema> <nonce> <checkpoint> <branch> - the turn itself,
+# run by move_pane_to once the pane is free. turn-start is the line. Before it, the turn record
+# goes down in its exit-6 form (`<thread> ? <checkpoint> <branch>`), as a slice's does, so a turn
+# that exists is always on record; a failure up to and including a definitive turn-start failure
+# is a refusal with no turn, which fires the exit trap: the pane guard, when pane_free quit the
+# TUI, then cmd_dispatch's pre-turn cleanup, which removes the record with the round's files and
+# archives a fresh thread. Once turn-start answers 0 or 6 the trap is disarmed before anything
+# else, and dispatch always succeeds and prints the nonce: every later step is best effort, the
+# review runs whatever happens to the pane after, and NOTHING after this may ever send-keys to the
+# pane again (C1), since the resumed TUI is watching a turn that is genuinely running and a ctrl+c
+# would interrupt it. The labels missed last round are spent once the turn exists, if this packet
+# named them (cmd_dispatch's missed_used), and a fresh thread becomes the checkpoint's only then
+# (record_move, with cmd_dispatch's fresh_thread and old).
+_dispatch_turn() {
+  local thread="$1" packet="$2" schema="$3" nonce="$4" checkpoint="$5" branch="$6" dir turn="" rc=0
+  dir="$(state_dir)"
+  mkdir -p "$dir/turns"
+  printf '%s ? %s %s\n' "$thread" "$checkpoint" "$branch" > "$dir/turns/$nonce"
+  turn="$(xreview-rpc turn-start --thread "$thread" --input "$packet" --schema "$schema" \
+            --known "$(known_file "$thread")")" || rc=$?
+  # A turn-start that returns 0 with a malformed id is handled exactly like exit 6: the
+  # turn may still be running on the daemon side, so it is never treated as "not started".
+  if [ "$rc" = 0 ] && ! is_safe_id "$turn"; then rc=6; fi
+  case "$rc" in
+    0|6) ;;
+    # The exit trap removes the round's files, the record and the thread's .known included, and
+    # archives a fresh thread.
+    *) die "the review turn could not be started on $thread" ;;
+  esac
+  trap - EXIT
+  if [ "$rc" = 0 ]; then
+    # The turn's id replaces the ? record, atomically, so that a failure can never truncate it. If
+    # it cannot, the ? record and the thread's .known stand, and collect finds the turn as the one
+    # not on the thread before, exactly as after an exit 6.
+    if { printf '%s %s %s %s\n' "$thread" "$turn" "$checkpoint" "$branch" > "$dir/turns/$nonce.tmp" \
+         && mv -f "$dir/turns/$nonce.tmp" "$dir/turns/$nonce"; } 2>/dev/null; then
+      rm -f "$(known_file "$thread")" || true
+    else
+      rm -f "$dir/turns/$nonce.tmp" 2>/dev/null || true
+      turn="?"
+    fi
+  else
+    # Sent but not answered (or answered with an id that does not look like one): the turn may
+    # be running. Its ? record is already down, so the nonce can be collected - the turn found
+    # as the one not on the thread before - and it is never re-sent. The round is consumed too:
+    # a turn that may be running has already cost one.
+    turn="?"
+    printf 'xreview: turn/start was sent but not answered - the review may be running. Collect %s; do NOT re-dispatch.\n' "$nonce" >&2
+  fi
+  if [ "$fresh_thread" = 1 ] && ! record_move "$thread" "$old"; then
+    printf "xreview: %s could not be recorded as the checkpoint's review thread in %s, so the next dispatch starts another and %s stays unarchived\n" \
+      "$thread" "$dir" "$thread" >&2
+  fi
+  if [ "$missed_used" = 1 ]; then rm -f "$dir/missed" || true; fi
+  _slices_turn "$nonce" "$turn" || true
+  bump_round "$branch" >/dev/null || true
+}
+
+# record_move <thread> [<superseded>...] - the move onto <thread>, once turn-start has answered:
+# <thread> becomes the checkpoint's review thread, then each <superseded> joins the superseded
+# list, queued for archive until the pane shows <thread>, as `round --reset` queues it. In that
+# order, so that no thread is ever queued while it is still the review thread. Best effort, as
+# everything after turn-start is: each write is checked by its status, never left to errexit
+# (callers run it as a condition, where errexit is off). It returns 1, having queued nothing, when
+# <thread> cannot be recorded; the caller says what that leaves. A thread it cannot queue is no
+# longer the review thread and is archived by nothing, so that is said here.
+record_move() {
+  local d t; d="$(state_dir)"
+  { mkdir -p "$d" && printf '%s\n' "$1" > "$d/review-thread"; } 2>/dev/null || return 1
+  shift
+  for t in "$@"; do
+    if [ -n "$t" ] && ! { printf '%s\n' "$t" >> "$d/superseded"; } 2>/dev/null; then
+      printf 'xreview: %s could not be queued for archive in %s, so it stays unarchived\n' "$t" "$d" >&2
+    fi
+  done
+  return 0
+}
+
+# _slices_turn <nonce> <turn> - slice 1's turn goes into the sliced round's state, beside the
+# thread it runs on, for collect to continue from. A round that is not sliced has no such file.
+_slices_turn() {
+  local f; f="$(state_dir)/turns/$1.slices"
+  [ -e "$f" ] || return 0
+  jq -c --arg t "$2" '.turns = [$t]' "$f" > "$f.tmp" 2>/dev/null && mv "$f.tmp" "$f" || rm -f "$f.tmp"
+  return 0
+}
+
+# missed_labels <checkpoint> <branch> - the labels the last round of this checkpoint on this
+# branch left out of reviewed_files, as a JSON list. $(state_dir)/missed is one entry for the
+# whole checkout, {checkpoint, branch, thread, labels}, written by collect; another checkpoint's
+# or branch's entry, or anything else (a list from before an entry named its round), is [].
+missed_labels() {
+  local f found; f="$(state_dir)/missed"
+  [ -s "$f" ] || { printf '[]\n'; return 0; }
+  found="$(jq -cs --arg cp "$1" --arg b "$2" '
+    if length == 1 and (.[0] | type) == "object" and .[0].checkpoint == $cp and .[0].branch == $b
+       and (.[0].labels | type) == "array"
+    then [.[0].labels[] | strings] else [] end' "$f" 2>/dev/null)" || found='[]'
+  printf '%s\n' "${found:-[]}"
+}
+
+# _dispatch_decide <thread-or-empty> - the packet and the decision about it (spec 2026-10-25
+# §3.2): send it on the checkpoint's thread, move the checkpoint to a fresh thread, send the
+# first slice, or refuse. It works on cmd_dispatch's locals (checkpoint, branch, body_file, cap,
+# out, TARGETS, TSPECS, dir, and framing_on and needs_thread, the switches as the dispatch was
+# planned) and sets decision, action, packet_file, schema, turns_file and missed_used there. A
+# refusal - including a module that failed, which is as good as one - dies here, before any
+# thread is started or the pane is touched; cmd_dispatch's exit trap removes the packets.
+_dispatch_decide() {
+  local thread="$1" missed ignored
+  turns_file=""
+  # What the thread holds, for the packet module's delta decision - asked only at pre-merge
+  # (the only checkpoint that deltas) and only when delta is in force, so a dispatch with the
+  # switches off makes no daemon call it did not make before. A thread whose turns cannot be
+  # listed is an unknown history, which only ever makes a full packet; it never refuses.
+  if [ -n "$thread" ] && [ "$checkpoint" = pre-merge ] && packet_delta_on 2>/dev/null \
+     && xreview-rpc thread-turns --thread "$thread" > "$out/thread-turns.json" 2>/dev/null \
+     && [ -s "$out/thread-turns.json" ]; then
+    turns_file="$out/thread-turns.json"
+  fi
+  ignored="$(packet_ignored 2>/dev/null || true)"
+  if [ -n "$ignored" ]; then
+    printf 'xreview: packets.conf turns on %s, which need framing; framing is off, so they stay off\n' \
+      "${ignored// /, }" >&2
+  fi
+  missed="$(missed_labels "$checkpoint" "$branch")"
+  missed_used=0; [ "$missed" = '[]' ] || missed_used=1
+  jq -n --arg checkpoint "$checkpoint" --arg body "$body_file" --arg reviewer "$REVIEWER" \
+        --arg framing "$FRAMING" --arg cap "$cap" --arg switches "$PACKETS_CONF" \
+        --arg home "$CODEX_HOME_DIR" --arg thread "$thread" --arg turns "$turns_file" \
+        --argjson targets "$TARGETS" --argjson missed "$missed" \
+        --argjson specs "$(jq -nc '$ARGS.positional' --args ${TSPECS[@]+"${TSPECS[@]}"})" \
+    '{checkpoint:$checkpoint, body_file:$body, reviewer_md:$reviewer, framing_md:$framing,
+      cap:(if $cap == "" then null else $cap end), switches_file:$switches, codex_home:$home,
+      thread:(if $thread == "" then null else $thread end),
+      turns_file:(if $turns == "" then null else $turns end),
+      targets:$targets, specs:$specs, missed:$missed}' > "$out/request.json" \
+    || die "cannot write the review request; no review was started"
+  decision="$(packet build "$out/request.json" "$out")" \
+    || die "cannot build the review packet (see above); no review was started"
+  rm -f "$out/request.json" "$out/thread-turns.json"
+  action="$(printf '%s' "$decision" | jq -r '.action // empty' 2>/dev/null)" || action=""
+  case "$action" in
+    send|fresh|slices|refuse) ;;
+    *) die "the review packet builder answered nothing usable; no review was started" ;;
+  esac
+  # The switches and the cap= line were read twice: when the dispatch was planned, and by the
+  # build, each in one read. A packets.conf edited in between would send a packet decided on
+  # other terms than the plan.
+  [ "$(printf '%s' "$decision" | jq -r '[.switches.framing == true, .switches.fit == true or .switches.delta == true]
+       | map(if . then "1" else "0" end) | join(" ")' 2>/dev/null)" = "$framing_on $needs_thread" ] \
+    && [ "$(printf '%s' "$decision" | jq -c '.cap_line' 2>/dev/null)" = "$plan_cap" ] \
+    || die "packets.conf changed during dispatch; dispatch again"
+  if [ "$action" = refuse ]; then die "$(printf '%s' "$decision" | jq -r '.reason')"; fi
+  packet_file="$(printf '%s' "$decision" | jq -r '.packets[0].file // empty')"
+  [ -n "$packet_file" ] && [ -s "$packet_file" ] \
+    || die "the review packet builder wrote no packet; no review was started"
+  # Framing changes the answer's shape, so it changes the schema the reviewer is held to.
+  schema="$SCHEMA"
+  if [ "$(printf '%s' "$decision" | jq -r '.switches.framing')" = true ]; then
+    schema="$FRAMED_SCHEMA"
+    [ -r "$schema" ] || die "missing framed findings schema $schema"
+  fi
+}
+
 cmd_dispatch() {
-  local body_file dir pane proc thread nonce packet turn="" need_resume checkpoint="" \
-        specs=() spec cap dispatched doc
-  # Filled by add_target, one entry per --diff.
-  local TARGETS='[]' DIFFS="" DIFF_BYTES=0
+  local body_file dir pane proc thread nonce packet_file checkpoint="" \
+        specs=() uniq=() spec seen s cap dispatched doc out decision action schema turns_file \
+        missed_used=0 cleanup
+  # Filled by add_target, one entry per distinct --diff.
+  local TARGETS='[]' TSPECS=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --diff) [ "$#" -ge 2 ] || die "--diff needs a range"; specs+=("$2"); shift 2 ;;
@@ -900,6 +1199,13 @@ cmd_dispatch() {
   case "$max" in
     *[!0-9]*) die "XREVIEW_MAX_ROUNDS must be a whole number, not '$max'; no review was started" ;;
   esac
+  # The size cap the packet module applies while the fit check is off; the same rule.
+  # XREVIEW_MAX_DIFF_BYTES, set, is the cap for this one dispatch; unset, the module takes
+  # packets.conf's cap= line, read with the switches, or else 100000 (spec 3.8).
+  cap="${XREVIEW_MAX_DIFF_BYTES:-}"
+  case "$cap" in
+    *[!0-9]*) die "XREVIEW_MAX_DIFF_BYTES must be a whole number, not '$cap'; no review was started" ;;
+  esac
   # The review targets (spec 2026-10-02 §3.4). A pre-merge review that names none reviews the
   # current branch against the default branch; spec and plan reviews may have none at all.
   if [ "${#specs[@]}" -eq 0 ] && [ "$checkpoint" = pre-merge ]; then
@@ -907,17 +1213,64 @@ cmd_dispatch() {
       || die "cannot name the current branch's default target; pass --diff <dest>...<branch>"
     specs=("$spec")
   fi
-  for spec in ${specs[@]+"${specs[@]}"}; do add_target "$spec"; done
-  # Refuse an oversized total rather than truncating it: a reviewer handed half a change
-  # reviews half a change and reports nothing on the rest, which reads as a clean review.
-  cap="${XREVIEW_MAX_DIFF_BYTES:-100000}"
-  if [ "$DIFF_BYTES" -gt "$cap" ]; then
-    die "the diffs are too large to carry inline ($DIFF_BYTES bytes, cap $cap).
-Review them in slices, or raise XREVIEW_MAX_DIFF_BYTES if the reviewer can hold it."
+  # The same --diff named twice is one target (the gate denies two identical ones).
+  for spec in ${specs[@]+"${specs[@]}"}; do
+    seen=0
+    for s in ${uniq[@]+"${uniq[@]}"}; do
+      if [ "$s" = "$spec" ]; then seen=1; fi
+    done
+    if [ "$seen" = 0 ]; then uniq+=("$spec"); fi
+  done
+  for spec in ${uniq[@]+"${uniq[@]}"}; do add_target "$spec"; done
+  # The out directory and its cleanup are armed before the first thing that can refuse, so a
+  # refusal - a die included, from anywhere in this function - leaves no packet, targets,
+  # labels, slices or known turns behind. The paths travel in the trap string, not a local: on
+  # an errexit exit bash 5 has already unwound those. It is the pre-turn trap (PRE_TURN_TRAP,
+  # below), and is disarmed once a turn exists. The turn's .known is its thread's own
+  # (known_file), so it joins the cleanup once the thread is final.
+  nonce="xr-$(date +%s)-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+  out="$dir/turns/$nonce.packets"
+  mkdir -p "$out" || die "cannot create $out; no review was started"
+  cleanup="rm -rf $(printf '%q' "$out") $(printf '%q' "$dir/turns/$nonce")"
+  for s in targets shown slices; do cleanup+=" $(printf '%q' "$dir/turns/$nonce.$s")"; done
+  trap "$cleanup" EXIT
+  local framing_on=0 needs_thread=0 pinned=0 plan plan_cap
+  plan="$(packet_plan 2>/dev/null)" || plan=""
+  case "$(printf '%s' "$plan" | jq -r '"\(.framing) \(.thread)"' 2>/dev/null)" in
+    "true true") framing_on=1; needs_thread=1 ;;
+    "true false") framing_on=1 ;;
+  esac
+  plan_cap="$(printf '%s' "$plan" | jq -c '.cap_line' 2>/dev/null)" || plan_cap=""
+  [ -n "$plan_cap" ] || plan_cap=null
+  if [ -n "${XREVIEW_THREAD:-}" ] || [ -r "$dir/pin" ]; then pinned=1; fi
+
+  # A decision that does not depend on the thread - every switch off, or framing on with fit and
+  # delta off - is made first of all, before any daemon call, so a cap refusal comes exactly
+  # where the cap check always sat.
+  if [ "$needs_thread" = 0 ]; then
+    _dispatch_decide ""
   fi
   codex-daemon ensure || die "the Codex daemon is not running; no review was started"
   codex-daemon check || die "refusing to dispatch while the daemon carries a pane's environment (see above)"
   xreview-rpc health || die "cannot reach the Codex daemon through xreview-rpc (see above); no review was started"
+  # With fit or delta on the decision depends on the thread (its context, its turns), and
+  # reading them takes time: all of it is done BEFORE the pane is looked at, so the observation
+  # that pane_free's ctrl+c acts on is as fresh as it ever was.
+  local built_on=""
+  if [ "$needs_thread" = 1 ]; then
+    thread="$(target_thread)"
+    if [ -n "$thread" ]; then assert_id "$thread"; fi
+    built_on="$thread"
+    _dispatch_decide "$thread"
+    # A pin or XREVIEW_THREAD is Michael's instruction, never moved silently: a packet it
+    # cannot hold is refused, before any thread is started or the pane is touched.
+    if [ "$pinned" = 1 ] && [ -n "$thread" ] && [ "$action" != send ]; then
+      if [ -n "${XREVIEW_THREAD:-}" ]; then
+        die "the review thread $thread (XREVIEW_THREAD) cannot hold this packet; unset XREVIEW_THREAD to let xreview move the review to a fresh thread. No review was started."
+      fi
+      die "the pinned review thread $thread cannot hold this packet; xreview round --reset drops the pin so the review can move to a fresh thread. No review was started."
+    fi
+  fi
   pane="$(find_pane)"
   lock_pane "$pane"
   # Every pane check runs inside the lock, so it sees the state the previous holder left.
@@ -941,114 +1294,598 @@ Two models circling the same point is Michael's call, not another turn.
 Report the remaining disagreement, or: xreview round --reset"
   fi
 
-  # Thread: XREVIEW_THREAD, then the pin, then the recorded checkpoint thread. With none of
-  # those, start a fresh one - its id is known from the start, so nothing is ever read back
-  # from a title (spec 7.2/7.3). No turn exists yet, so dying here loses nothing.
+  # Thread: XREVIEW_THREAD, then the pin, then the recorded checkpoint thread. The chosen
+  # thread itself may already be running a turn - a stale pin, or a checkpoint thread another
+  # dispatch (or a hand-started `codex resume`) is still using. Refuse before the pane is
+  # touched at all; collecting the running turn is the way forward, not a second one racing
+  # it on the same thread. A packet decided against a thread that another dispatch has since
+  # replaced is stale: dispatch again.
   thread="$(target_thread)"
+  if [ "$needs_thread" = 1 ] && [ "$thread" != "$built_on" ]; then
+    die "the review thread changed while the packet was being built; no review was started - dispatch again"
+  fi
   if [ -n "$thread" ]; then
     assert_id "$thread"
-  else
+    thread_running "$thread" \
+      && die "the review thread $thread is still running a turn; collect it first"
+  fi
+
+  # The review's targets (each with the packet it got) and switches, kept in
+  # turns/<nonce>.targets for collect, and the labels shown, as one JSON list (a label can hold a
+  # newline, so it is never a line of its own). The --diff specs go with them, in target order: a
+  # label carries its target's prefix, and collect sorts what was missed by target. They name no
+  # thread, so they are written before one is started.
+  dispatched="$(ledger now)" || die "cannot read the time through the ledger helper; no review was started"
+  doc="$(jq -nc --arg n "$nonce" --arg at "$dispatched" --arg cp "$checkpoint" --argjson d "$decision" \
+           --argjson specs "$(jq -nc '$ARGS.positional' --args ${TSPECS[@]+"${TSPECS[@]}"})" \
+           '{v:2,nonce:$n,dispatched_at:$at,checkpoint:$cp,targets:$d.targets,switches:$d.switches,specs:$specs}')"
+  printf '%s\n' "$doc" > "$dir/turns/$nonce.targets" \
+    || die "cannot record the review's targets in $dir/turns; no review was started"
+  printf '%s' "$decision" | jq -c '.packets[0].shown' > "$dir/turns/$nonce.shown"
+
+  # A fresh thread: a first dispatch has none, a move off a thread that cannot hold the packet
+  # (spec 3.2 step 3) and the first slice (3.3) both leave the old one superseded - queued for
+  # archive until the pane shows the new one, as `round --reset` queues it. (A pinned thread
+  # never gets here: it was refused above.) The round counter is NOT reset: this is not a new
+  # checkpoint. Its id is known from the start, so nothing is ever read back from a title
+  # (spec 7.2/7.3). The move is recorded only once turn-start has answered (record_move, in
+  # _dispatch_turn). Until then every refusal (the thread's checks, the pending entry, the pane
+  # step, the turn record's ? form, turn-start) leaves the checkpoint's thread as it was and
+  # archives the new one, since nothing else ever would: the archive joins the cleanup in the
+  # pre-turn trap. It comes first there, so a cleanup that fails (errexit holds inside the trap)
+  # cannot skip it. An id assert_id refuses is never used, so it is never archived either.
+  local old="$thread" fresh_thread=0 PRE_TURN_TRAP
+  if [ -z "$thread" ] || [ "$action" != send ]; then
+    fresh_thread=1
     thread="$(xreview-rpc thread-start --cwd "$(repo_root)")" \
       || die "could not start a new review thread; no review was started"
     assert_id "$thread"
-    mkdir -p "$dir" && printf '%s\n' "$thread" > "$dir/review-thread"
   fi
-  # The chosen thread itself may already be running a turn - a stale pin, or a checkpoint
-  # thread another dispatch (or a hand-started `codex resume`) is still using. Refuse before
-  # the pane is touched at all; collecting the running turn is the way forward, not a second
-  # one racing it on the same thread.
-  thread_running "$thread" \
-    && die "the review thread $thread is still running a turn; collect it first"
-
-  # The review is fixed now, before the pane is touched (spec 2026-10-02 §3.2-§3.4): its nonce,
-  # its dispatch time and its targets, kept in turns/<nonce>.targets for collect. A pre-merge
-  # review then puts a pending entry in every target ledger, or is refused: every pre-merge
-  # review that runs is on record before its turn exists.
-  nonce="xr-$(date +%s)-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
-  dispatched="$(ledger now)" || die "cannot read the time through the ledger helper; no review was started"
-  doc="$(jq -nc --arg n "$nonce" --arg at "$dispatched" --arg cp "$checkpoint" --argjson t "$TARGETS" \
-           '{v:2,nonce:$n,dispatched_at:$at,checkpoint:$cp,targets:$t}')"
-  mkdir -p "$dir/turns"
-  printf '%s\n' "$doc" > "$dir/turns/$nonce.targets" \
-    || die "cannot record the review's targets in $dir/turns; no review was started"
+  cleanup+=" $(printf '%q' "$(known_file "$thread")")"
+  PRE_TURN_TRAP="$cleanup"
+  if [ "$fresh_thread" = 1 ]; then
+    PRE_TURN_TRAP="xreview-rpc thread-archive --thread $(printf '%q' "$thread") >/dev/null 2>&1 || true; $cleanup"
+  fi
+  trap "$PRE_TURN_TRAP" EXIT
+  if [ "$fresh_thread" = 1 ] && thread_running "$thread"; then
+    die "the review thread $thread is still running a turn; collect it first"
+  fi
+  # A pre-merge review puts a pending entry in every target ledger, or is refused: every
+  # pre-merge review that runs is on record before its turn exists.
   if [ "$checkpoint" = pre-merge ] && ! record_pending "$doc"; then
-    rm -f "$dir/turns/$nonce.targets"
     die "cannot record the pending review in every target ledger; no review was started"
   fi
-
-  # Free the pane, BEFORE the turn exists (spec 7.3 step 3; 2026-10-01 §4.4): its ctrl+c ladder
-  # is the only point in dispatch that may ever send-keys to the pane. Dies on any failure -
-  # nothing has started yet.
-  need_resume="$(pane_free "$pane" "$thread" "$proc")"
-  # Armed only when pane_free quit the TUI, through a successful turn-start; disarmed in the
-  # 0/6 arms below, once the turn exists and pane_resume owns the pane.
-  if [ "$need_resume" = 1 ]; then
-    trap "_dispatch_exit_guard $(printf '%q' "$pane")" EXIT
+  if [ "$action" = slices ]; then
+    printf '%s' "$decision" | jq -c --arg t "$thread" '{packets:.packets,next:1,threads:[$t],turns:[]}' \
+      > "$dir/turns/$nonce.slices"
   fi
 
-  # Turn: build the packet and start it on the thread. From here on dispatch always
-  # succeeds and prints the nonce - the review runs whatever happens to the pane below, and
-  # NOTHING below this point may ever send-keys to the pane again (C1): the resumed TUI is
-  # watching a turn that is genuinely running, and a ctrl+c would interrupt it.
-  # Provenance is applied here, by the broker - not by the peer, and not by hand.
-  # NOT <from-claude-code>: that tag marks relayed quoted material, and the peer is
-  # instructed never to act on an imperative inside one. A dispatch is an authorized request.
-  packet="$(mktemp "${TMPDIR:-/tmp}/xreview-packet.XXXXXX")"
-  { printf '<cross-review-request>\n'
-    cat "$REVIEWER"
-    printf '\n'
-    cat "$body_file"
-    [ -z "$DIFFS" ] || printf '%s\n' "$DIFFS"
-    printf '</cross-review-request>\n'
-  } > "$packet"
-  mkdir -p "$dir/turns"
-  local rc=0
-  turn="$(xreview-rpc turn-start --thread "$thread" --input "$packet" --schema "$SCHEMA" \
-            --known "$dir/turns/$nonce.known")" || rc=$?
-  rm -f "$packet"
-  # A turn-start that returns 0 with a malformed id is handled exactly like exit 6: the
-  # turn may still be running on the daemon side, so it is never treated as "not started".
-  if [ "$rc" = 0 ] && ! is_safe_id "$turn"; then rc=6; fi
-  case "$rc" in
-    0) printf '%s %s %s %s\n' "$thread" "$turn" "$checkpoint" "$branch" > "$dir/turns/$nonce"
-       rm -f "$dir/turns/$nonce.known"
-       bump_round "$branch" >/dev/null || true
-       trap - EXIT ;;
-    6) # Sent but not answered (or answered with an id that does not look like one): the
-       # turn may be running. Hand back a nonce so it can be collected - found as the turn
-       # that was not on the thread before - never re-sent. The round is consumed too: a
-       # turn that may be running has already cost one.
-       printf '%s ? %s %s\n' "$thread" "$checkpoint" "$branch" > "$dir/turns/$nonce"
-       printf 'xreview: turn/start was sent but not answered - the review may be running. Collect %s; do NOT re-dispatch.\n' "$nonce" >&2
-       bump_round "$branch" >/dev/null || true
-       trap - EXIT ;;
-    *) rm -f "$dir/turns/$nonce.known" "$dir/turns/$nonce.targets"
-       die "the review turn could not be started on $thread" ;;
-  esac
-
-  # Resume the pane, best effort, ONLY if step 3 actually quit its TUI - otherwise it is
-  # already showing the thread and there is nothing to resume. Archive the superseded
-  # threads once the pane genuinely shows the new one, whether that took a resume or the
-  # fast path already had it; never otherwise, so a pane step that could not confirm the
-  # pane is watching keeps them queued for the next successful dispatch.
-  if [ "$need_resume" = 1 ]; then
-    if pane_resume "$pane" "$thread" "$(repo_root)"; then
-      archive_superseded "$thread"
-    fi
-  else
-    archive_superseded "$thread"
-  fi
+  # Free the pane, start the turn, resume the pane (spec 7.3; 2026-10-01 §4.4). Provenance is
+  # applied in the packet, by the broker - not by the peer, and not by hand. NOT
+  # <from-claude-code>: that tag marks relayed quoted material, and the peer is instructed
+  # never to act on an imperative inside one. A dispatch is an authorized request.
+  move_pane_to "$pane" "$thread" "$proc" _dispatch_turn \
+    "$thread" "$packet_file" "$schema" "$nonce" "$checkpoint" "$branch"
+  # The slices keep their packets for collect; any other packet has been sent. The turn is on
+  # record, so this is best effort: nothing here may keep the nonce from being printed.
+  if [ "$action" != slices ]; then rm -rf "$out" || true; fi
   unlock_pane
   printf '%s\n' "$nonce"
 }
 
 # The budget is a patience limit, not a verdict. A turn still running when it runs out has
 # demonstrably not been lost, so collecting again is correct and safe (exit 3). Only a nonce
-# with no turn on record is ambiguous, and that one must not be re-dispatched.
+# with no turn on record is ambiguous, and that one must not be re-dispatched. The slices of a
+# sliced round share one budget: it bounds the whole collect.
 COLLECT_BUDGET_DEFAULT=2700
 
+# _resolve_record <thread> <turn> - in an unsliced round, the turn found for <thread>'s ? goes
+# into the turn record, while the record still names <thread>'s ?: nothing else writes the record
+# after dispatch. (In a sliced round the id goes into the round's state instead, and a later
+# slice's start may own the record by then.) The record is written through a temp file of this
+# process's own, moved into place, so that no reader ever sees it half-written; never $rec.tmp,
+# which _slice_turn uses under the lock. It never removes the thread's .known: another collect
+# may be waiting, or about to wait, on the same ? with it, and once the record names the id
+# nothing reads it. Best effort: the answer is in hand, so a record that cannot be rewritten
+# keeps its ?, and a later collect resolves the ? again.
+_resolve_record() {
+  local rth="" rt="" rest="" tmp="$rec.resolve.$$"
+  read -r rth rt rest 2>/dev/null < "$rec" || true
+  [ "$rth" = "$1" ] && [ "$rt" = "?" ] || return 0
+  if ! { printf '%s %s%s\n' "$1" "$2" "${checkpoint:+ $checkpoint${branch:+ $branch}}" > "$tmp" \
+         && mv -f "$tmp" "$rec"; } 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
+  fi
+  return 0
+}
+
+# _collect_wait <thread> <turn-or-?> - wait for one review turn. It works on cmd_collect's locals
+# and sets out and rc to turn-wait's answer and exit status, turn to the turn waited on, and
+# compacted to the report's word on that turn: true, false, or null when the report is missing,
+# is about another turn (a stale file), or cannot tell. Unknown is never clean (spec 2026-10-25
+# §3.6). A "?" is found as the turn new on its thread since its own .known (known_file), and
+# resolved the moment turn-wait finds it: in an unsliced round it is written to the turn record
+# while that still names it (_resolve_record), and in a sliced one the round's state takes it
+# (_collect_slices), so every later collect and the receipt name it, instead of rediscovering
+# "whatever is new" each time. Every wait gets what is left of the budget, counted in whole
+# seconds from the collect's start, so a slice started first (a lock wait, the pane steps) spends
+# from it too; none left is exit 3 at once. The report is this process's own file, so a second
+# collect of the same turn never removes or replaces it. A turn from before review packets is
+# waited on as it always was, with no report.
+_collect_wait() {
+  # The report and the resolved id are this process's own files: every waiter of the round shares
+  # $nonce, and one collect's removal must never take another's.
+  local th="$1" left which asked=() report="$dir/turns/$nonce.report.$$" \
+        resolved="$dir/turns/$nonce.resolved.$$" said=""
+  turn="$2"; out=""; rc=0; compacted=null
+  if [ "$turn" = "?" ]; then
+    # A ? dispatched before .known was keyed by thread has only the round-wide $nonce.known. Such
+    # a round is never sliced, so that file is its one thread's.
+    local known; known="$(known_file "$th")"
+    if [ ! -e "$known" ] && [ -e "$dir/turns/$nonce.known" ]; then known="$dir/turns/$nonce.known"; fi
+    which=(--new-since "$known" --resolved "$resolved")
+  else
+    assert_id "$turn"; which=(--turn "$turn")
+  fi
+  left="$(LC_ALL=C awk -v s="$started" -v e="$(epoch_now)" -v b="$budget" \
+            'BEGIN { l = b - int(e - s); print (l > 0 ? l : 0) }')"
+  if [ "$left" -le 0 ]; then rc=3; return 0; fi
+  if [ "$packeted" = 1 ]; then rm -f "$report"; asked=(--report "$report"); fi
+  set +e
+  out="$(xreview-rpc turn-wait --thread "$th" "${which[@]}" --budget "$left" --schema "$schema" ${asked[@]+"${asked[@]}"})"
+  rc=$?
+  set -e
+  # Read and removed at once, before anything below can refuse.
+  if [ "$packeted" = 1 ] && [ "$rc" = 0 ] && [ -s "$report" ]; then
+    said="$(jq -c '{turn, compacted}' "$report" 2>/dev/null)" || said=""
+  fi
+  rm -f "$report"
+  if [ "$turn" = "?" ] && [ -s "$resolved" ]; then
+    turn="$(head -1 "$resolved")"; assert_id "$turn"
+    if [ "$sliced" = 0 ]; then _resolve_record "$th" "$turn"; fi
+    rm -f "$resolved"
+  fi
+  if [ -n "$said" ]; then
+    compacted="$(printf '%s' "$said" | jq -c --arg t "$turn" \
+      'if .turn == $t and (.compacted | type) == "boolean" then .compacted else null end' 2>/dev/null)" \
+      || compacted=null
+    [ -n "$compacted" ] || compacted=null
+  fi
+  return 0
+}
+
+# _collect_fail - the end of a collect whose wait did not answer, at whichever turn of the round
+# it was. Nothing is recorded for that turn.
+_collect_fail() {
+  case "$rc" in
+    3) printf 'xreview: still running - the budget of %ss is used up; turn on record for %s.\nWait longer with: xreview collect %s <secs>\n' \
+         "$budget" "$nonce" "$nonce" >&2
+       exit 3 ;;
+    4) printf '%s\n' "$out"
+       printf 'xreview: the answer does not match the findings schema - the text above is UNTRUSTED raw output\n' >&2
+       exit 4 ;;
+    5) die "the Codex daemon is unreachable; the turn is on record for $nonce - run codex-daemon ensure, then collect again" ;;
+    *) die "the reviewer turn failed for $nonce (do NOT retry the dispatch)" ;;
+  esac
+}
+
+# The one missing label a target records when the labels its turn showed cannot be read.
+SHOWN_UNREADABLE='(shown labels unreadable)'
+
+# _collect_record <thread> <turn> <answer> <groups> <compacted> [slice-turns] - judge a round
+# dispatched with review packets and record its receipts (spec 2026-10-25 §3.6). groups is
+# [{shown: [labels], answer}], one per turn: a label is covered only when the answer of the turn
+# that showed it lists it in reviewed_files, compared after stripping a/, b/ and ./. With
+# framing on, the round is clean only when no label is uncovered and compacted is false; with it
+# off, only compaction decides, and an answer that carries reviewed_files still has what it left
+# out recorded. Each target records its own uncovered labels in shown order, at most the
+# module's cap; the whole list waits in $(state_dir)/missed for the next dispatch of the same
+# checkpoint and branch, which names it. With framing on, a turn whose shown labels cannot be
+# read (shown is not a list) cannot be judged covered: the round is not clean, and every target
+# records SHOWN_UNREADABLE as missing, so the gate never reads it as whole. A round that is not
+# clean says so on stderr, with what that costs at its checkpoint, judged by the ledger's own
+# whole() on the receipt built. Works on cmd_collect's locals; returns 1 when a receipt could
+# not be written.
+_collect_record() {
+  local th="$1" tn="$2" answer="$3" groups="$4" comp="$5" slices="${6:-null}" uncovered ntargets \
+        labels cap=50 prefixes=null missing blobs=null clean found failed=0 reasons="" consequence="" \
+        entries_built="" unknown
+  uncovered="$(jq -nc --argjson g "$groups" --argjson framing "$framing" '
+    def norm: sub("^(a/|b/|\\./)"; "");
+    [$g[] | (.answer | if type == "object" and (.reviewed_files | type) == "array"
+                       then [.reviewed_files[] | strings | ., norm] else null end) as $listed
+          | select($listed != null or $framing)
+          | ($listed // []) as $listed
+          | (.shown | if type == "array" then .[] else empty end)
+          | select(. as $l | $listed | any(.[]; . == $l or . == ($l | norm)) | not)]')"
+  unknown="$(jq -n --argjson g "$groups" --argjson framing "$framing" \
+    '$framing and any($g[]; (.shown | type) != "array")')"
+  ntargets="$(jq '.targets | length' "$tfile")"
+  # A label carries its target's prefix when there are several targets (spec 3.1). Two ranges of
+  # one repository share a prefix, so a label is held against every target whose prefix matches
+  # it longest, never just one of them; without the dispatch's specs to tell, against every
+  # target.
+  if [ "$uncovered" != "[]" ]; then
+    labels="$(packet_labels "$(jq -c '.specs // null' "$tfile")" 2>/dev/null)" || labels=""
+    cap="$(printf '%s' "$labels" | jq -r '.cap | numbers' 2>/dev/null)" || cap=""
+    [ -n "$cap" ] || cap=50   # the module's MISSING_CAP, should the module fail to load
+    prefixes="$(printf '%s' "$labels" | jq -c --argjson n "$ntargets" \
+      'if (.prefixes | type) == "array" and (.prefixes | length) == $n then .prefixes else null end' 2>/dev/null)" \
+      || prefixes=null
+    [ -n "$prefixes" ] || prefixes=null
+  fi
+  missing="$(jq -nc --argjson u "$uncovered" --argjson p "$prefixes" --argjson n "$ntargets" --argjson cap "$cap" \
+                    --argjson unknown "$unknown" --arg sentinel "$SHOWN_UNREADABLE" '
+    def owners($l): if $p == null then null
+      else [$p | to_entries[] | select(.value as $x | $l | startswith($x))]
+           | if length == 0 then null
+             else (map(.value | length) | max) as $top | map(select((.value | length) == $top) | .key) end end;
+    [range(0; $n) as $i
+     | (if $unknown then [$sentinel] else [] end)
+       + [$u[] | select(owners(.) as $o | $o == null or ($o | any(.[]; . == $i)))]
+     | .[:$cap]]')"
+  clean="$(jq -n --argjson c "$comp" --argjson u "$uncovered" --argjson framing "$framing" --argjson unknown "$unknown" \
+    '$c == false and (($framing | not) or (($u | length) == 0 and ($unknown | not)))')"
+  if [ "$checkpoint" = plan ]; then blobs="$(_collect_plan_blobs)"; fi
+  found="$(jq -nc --argjson c "$comp" --argjson clean "$clean" --argjson s "$slices" --argjson m "$missing" \
+                  --argjson b "$blobs" '{compacted:$c, clean:$clean, slice_turns:$s, missing:$m, plan_blobs:$b}' 2>/dev/null)" \
+    || found=""
+  # A turn that cannot be judged gets no receipt at all, never one without its judgement: the
+  # pending entry stays the newest state, and a later collect tries again.
+  if [ -z "$found" ]; then
+    printf 'xreview: could not judge the review %s, so its receipt was not written\n' "$nonce" >&2
+    return 1
+  fi
+  record_receipts "$th" "$nonce" "$tn" "$answer" "$tfile" "$found" || failed=1
+  # The labels missed are kept with the round that missed them, for the next dispatch of the
+  # same checkpoint and branch only (missed_labels); a round that missed nothing clears its own.
+  if [ "$framing" = true ] && [ "$uncovered" != "[]" ]; then
+    { mkdir -p "$dir" && jq -nc --arg cp "$checkpoint" --arg b "$branch" --arg th "$th" --argjson l "$uncovered" \
+        '{checkpoint:$cp, branch:$b, thread:$th, labels:$l}' > "$dir/missed"; } 2>/dev/null \
+      || printf 'xreview: could not keep the labels missed in %s/missed\n' "$dir" >&2
+  elif [ "$(missed_labels "$checkpoint" "$branch")" != '[]' ]; then
+    rm -f "$dir/missed"
+  fi
+  case "$comp" in
+    true) reasons="compacted" ;;
+    null) reasons="compaction unknown" ;;
+  esac
+  if [ "$unknown" = true ]; then reasons="${reasons:+$reasons; }coverage unknown"; fi
+  if [ "$framing" = true ] && [ "$uncovered" != "[]" ]; then
+    reasons="${reasons:+$reasons; }missed: $(printf '%s' "$uncovered" | jq -r \
+      '(.[:10] | join(", ")) + (if length > 10 then " … (+\(length - 10) more)" else "" end)')"
+  fi
+  if [ -n "$reasons" ]; then
+    case "$checkpoint" in
+      pre-merge) if _gate_closed "$entries_built"; then consequence="; the merge gate stays closed for it"
+                 else consequence="; the merge gate is not affected (fit was off)"; fi ;;
+      plan) consequence="; it binds no plan for later pre-merge reviews" ;;
+    esac
+    printf 'xreview: this review is not clean (%s)%s\n' "$reasons" "$consequence" >&2
+  fi
+  return "$failed"
+}
+
+# _gate_closed <receipts> - whether the pre-merge gate would refuse any of these receipts (one per
+# line) as not whole, judged by the ledger's own whole(), never by rules restated here. No
+# receipt to judge, or a judgement that cannot be made, counts as closed.
+_gate_closed() {
+  local e judged=0
+  while IFS= read -r e; do
+    [ -n "$e" ] || continue
+    judged=1
+    ledger_whole "$e" >/dev/null 2>&1 || return 0
+  done <<<"$1"
+  [ "$judged" = 0 ]
+}
+
+# _collect_plan_blobs - each target's plan_blobs, in target order (spec 2026-10-25 §3.5): the
+# plans its range showed whole, as the module's plan-blobs prints them, or [] when that fails,
+# which binds no plan. A failure never fails the collect.
+_collect_plan_blobs() {
+  local all='[]' k n repo base tip b
+  n="$(jq '.targets | length' "$tfile")"
+  for ((k = 0; k < n; k++)); do
+    repo="$(jq -r --argjson k "$k" '.targets[$k].repo // ""' "$tfile")"
+    base="$(jq -r --argjson k "$k" '.targets[$k].base // ""' "$tfile")"
+    tip="$(jq -r --argjson k "$k" '.targets[$k].tip // ""' "$tfile")"
+    b="$(packet plan-blobs "$repo" "$base" "$tip" 2>/dev/null)" || b=""
+    printf '%s' "$b" | jq -e 'type == "object"' >/dev/null 2>&1 || b='[]'
+    all="$(printf '%s' "$all" | jq -c --argjson b "$b" '. + [$b]')"
+  done
+  printf '%s\n' "$all"
+}
+
+# _slices_lock / _slices_unlock - the sliced round's own lock, on descriptor 8: a kernel flock
+# like the pane's (lock_pane), held only around one read-merge-write of the round's state and
+# never while waiting for anything else, so it nests inside the pane lock and never around it.
+# Its file is never deleted, for lock_pane's reason.
+_slices_lock() {
+  local rc=0
+  { exec 8>>"$sfile.lock"; } 2>/dev/null || die "cannot open $sfile.lock"
+  /usr/bin/python3 -I -c '
+import fcntl, sys, time
+try:
+    deadline = time.monotonic() + 30
+    while True:
+        try:
+            fcntl.flock(8, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            sys.exit(0)
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                sys.exit(75)
+            time.sleep(0.05)
+except Exception:
+    sys.exit(2)
+' 2>/dev/null || rc=$?
+  [ "$rc" = 0 ] || die "cannot lock the state of the sliced round ($sfile.lock)"
+}
+
+_slices_unlock() { exec 8>&-; }
+
+# _slices_sync - merge what this collect knows of the sliced round into its state on disk and
+# write that back, under the round's own lock, so that two collects of one round never erase
+# each other's progress: one whose copy went stale while it waited keeps a slice the other has
+# started since, and takes it up instead of starting it again. The disk comes first: an entry it
+# holds is never dropped or replaced, except a "?" turn by the id this collect resolved it to.
+# Afterwards $sl is the merged state. A round another collect has already finished (its state
+# gone, its merged answer kept) ends this collect with that answer.
+_slices_sync() {
+  local disk merged
+  _slices_lock
+  if [ -e "$sfile" ]; then
+    disk="$(jq -c 'select((.packets | type) == "array")' "$sfile" 2>/dev/null)" || disk=""
+    if [ -z "$disk" ]; then
+      _slices_unlock; DIE_NOTE=""
+      die "the state of the sliced round in $sfile cannot be read; run xreview collect $nonce again"
+    fi
+  elif [ -e "$dir/turns/$nonce.merged" ]; then
+    _slices_unlock
+    printf 'xreview: another collect of %s finished the round meanwhile; its answer follows\n' "$nonce" >&2
+    cat "$dir/turns/$nonce.merged"
+    exit 0
+  else
+    disk="$sl"
+  fi
+  merged="$(jq -nc --argjson d "$disk" --argjson m "$sl" '
+    def pair(f): [($d | f) // [], ($m | f) // []] | transpose;
+    $d | .threads = (pair(.threads) | map(.[0] // .[1]))
+       | .turns = (pair(.turns) | map(if .[0] == null or (.[0] == "?" and .[1] != null) then .[1] else .[0] end))
+       | .answers = (pair(.answers) | map(.[0] // .[1]))
+       | .next = ([$d.next, $m.next] | map(numbers) | max)' 2>/dev/null)" || merged=""
+  if [ -z "$merged" ]; then
+    _slices_unlock; DIE_NOTE=""
+    die "cannot merge the state of the sliced round in $sfile; run xreview collect $nonce again"
+  fi
+  sl="$merged"
+  if ! { printf '%s\n' "$sl" > "$sfile.tmp" && mv "$sfile.tmp" "$sfile"; } 2>/dev/null; then
+    rm -f "$sfile.tmp" 2>/dev/null || true
+    printf 'xreview: could not save the state of the sliced round in %s\n' "$sfile" >&2
+  fi
+  _slices_unlock
+}
+
+# _collect_slices - a sliced round, run to its end (spec 2026-10-25 §3.3). turns/<nonce>.slices
+# holds every slice's packet and labels, the threads and turns started so far, and each slice's
+# answer the moment it completes, so a collect that stops (exit 3, a refusal, a crash) resumes
+# at the first slice without an answer, and never waits on a finished slice or starts one twice.
+# After each slice it starts the next on a fresh thread of its own and the pane follows. The
+# merged answer is printed once: approve only if every slice approved, every finding in slice
+# order, and the union of reviewed_files. The receipt names the last slice's thread and turn,
+# and every slice's in slice_turns. Works on cmd_collect's locals.
+_collect_slices() {
+  local sl n i th t merged groups comp sturns last
+  sl="$(jq -c 'select((.packets | type) == "array" and (.packets | length) > 0)
+               | .threads //= [] | .turns //= [] | .answers //= []' "$sfile" 2>/dev/null)" || sl=""
+  [ -n "$sl" ] || die "cannot read the state of the sliced round in $sfile"
+  n="$(printf '%s' "$sl" | jq '.packets | length')"
+  i="$(printf '%s' "$sl" | jq --argjson n "$n" '[range(0; $n) as $k | select(.answers[$k] == null) | $k] | first // $n')"
+  # A slice with no turn in the state goes to _slice_start, which also takes up a turn only the
+  # turn record names. The record is read for that under the pane lock alone: a slice's ? record
+  # exists before its turn does, and the collect starting the slice holds that lock until
+  # turn-start has answered.
+  while [ "$i" -lt "$n" ]; do
+    if [ -z "$(printf '%s' "$sl" | jq -r --argjson i "$i" '.turns[$i] // empty')" ]; then
+      _slice_start "$i"
+      [ -n "$(printf '%s' "$sl" | jq -r --argjson i "$i" '.turns[$i] // empty')" ] \
+        || die "slice $((i + 1)) of $n left no turn on record for $nonce; run xreview collect $nonce again"
+    fi
+    # The merged state may hold this slice's answer: another collect of the round finished it
+    # meanwhile, and its thread may be archived already.
+    if [ -n "$(printf '%s' "$sl" | jq -r --argjson i "$i" '.answers[$i] // empty')" ]; then
+      i=$((i + 1)); continue
+    fi
+    t="$(printf '%s' "$sl" | jq -r --argjson i "$i" '.turns[$i] // empty')"
+    th="$(printf '%s' "$sl" | jq -r --argjson i "$i" '.threads[$i] // empty')"
+    assert_id "$th"
+    _collect_wait "$th" "$t"
+    if [ "$turn" != "$t" ]; then
+      sl="$(printf '%s' "$sl" | jq -c --argjson i "$i" --arg t "$turn" '.turns[$i] = $t')"
+      _slices_sync
+    fi
+    [ "$rc" = 0 ] || _collect_fail
+    sl="$(printf '%s' "$sl" | jq -c --argjson i "$i" --arg th "$th" --arg t "$turn" --argjson c "$compacted" \
+            --arg a "$out" '.answers[$i] = {thread:$th, turn:$t, compacted:$c, answer:($a | fromjson? // null)}')"
+    _slices_sync
+    i=$((i + 1))
+  done
+  merged="$(printf '%s' "$sl" | jq -c '[.answers[].answer] as $a
+    | {verdict: (if all($a[]; type == "object" and .verdict == "approve") then "approve" else "changes" end),
+       findings: [$a[] | objects | .findings // [] | .[]],
+       reviewed_files: (reduce ($a[] | objects | .reviewed_files // [] | .[]) as $f
+                          ([]; if any(.[]; . == $f) then . else . + [$f] end))}')"
+  # A slice whose shown labels are not a list cannot be judged covered (_collect_record).
+  groups="$(printf '%s' "$sl" | jq -c '[range(0; .packets | length) as $k
+    | {shown: .packets[$k].shown, answer: .answers[$k].answer}]')"
+  comp="$(printf '%s' "$sl" | jq -c '[.answers[].compacted]
+    | if any(. == true) then true elif any(. == null) then null else false end')"
+  sturns="$(printf '%s' "$sl" | jq -c '[.answers[] | {thread, turn, compacted}]')"
+  last="$(printf '%s' "$sl" | jq -r '.answers[-1] | "\(.thread) \(.turn)"')"
+  rm -rf "$dir/turns/$nonce.packets"
+  printf '%s\n' "$merged"
+  # Done only once every receipt is written: until then a later collect records them from here.
+  if _collect_record "${last% *}" "${last#* }" "$merged" "$groups" "$comp" "$sturns"; then
+    _slices_lock
+    if printf '%s\n' "$merged" > "$dir/turns/$nonce.merged" 2>/dev/null; then rm -f "$sfile"; fi
+    _slices_unlock
+  fi
+}
+
+# _slice_record_turn <index> - prints "<thread> <turn>" when the turn record names a turn that
+# slice <index> can take up: one that started, though the round's state was not saved after it.
+# Called only under the pane lock (_slice_start): a slice's ? record goes down before its
+# turn-start, and the collect starting it holds that lock until turn-start has answered, so read
+# without it the record could name a turn that never starts. The turn is a safe id, or ? beside
+# its thread's own .known (known_file), which turn-start writes before it sends and a definitive
+# failure removes; its thread is a safe id that no earlier slice ran on.
+_slice_record_turn() {
+  local i="$1" rth="" rt="" rest=""
+  read -r rth rt rest 2>/dev/null < "$rec" || true
+  is_safe_id "$rth" || return 1
+  if [ "$rt" = "?" ]; then
+    [ -e "$(known_file "$rth")" ] || return 1
+  else
+    is_safe_id "$rt" || return 1
+  fi
+  printf '%s' "$sl" | jq -e --arg th "$rth" --argjson i "$i" '.threads[:$i] | index([$th]) == null' \
+    >/dev/null || return 1
+  printf '%s %s\n' "$rth" "$rt"
+}
+
+# _slice_start <index> - start slice <index> (from 0) on a fresh thread, as dispatch starts a
+# review on one: its preconditions, then under the pane lock the pane checks, the thread and its
+# checks; then the pane moves onto it around the turn, as dispatch's does. Under the lock, before
+# any of that, a turn the round's state or the turn record already names for the slice is taken
+# up instead; the record is read for that only here, under the lock (_slice_record_turn). Only
+# once turn-start has answered does the previous slice's thread join the superseded list and the
+# new one become the checkpoint's thread (_slice_turn). A refusal before that archives the new
+# thread and leaves the round's state as it was (at most with the slice's ? record and no .known,
+# which no collect takes up), for the next collect to resume; collect never re-dispatches.
+_slice_start() {
+  local i="$1" file pane proc th prev cur PRE_TURN_TRAP took
+  file="$(printf '%s' "$sl" | jq -r --argjson i "$i" '.packets[$i].file // empty')"
+  [ -n "$file" ] && [ -s "$file" ] \
+    || die "the packet of slice $((i + 1)) of $n is gone (${file:-unrecorded}), so the round cannot go on; dispatch the review again"
+  DIE_NOTE="slice $((i + 1)) of $n has not started; the round is on record for $nonce; run xreview collect $nonce again (do NOT re-dispatch)"
+  guard_project_config
+  pane_command >/dev/null
+  codex-daemon ensure || die "the Codex daemon is not running"
+  codex-daemon check || die "refusing to start the next slice while the daemon carries a pane's environment (see above)"
+  xreview-rpc health || die "cannot reach the Codex daemon through xreview-rpc (see above)"
+  pane="$(find_pane)"
+  lock_pane "$pane"
+  # Another collect of this round may have started the slice while this one waited for the
+  # lock: the state is merged with the disk again, under the lock, and a slice started there is
+  # taken up, never started a second time. So is a turn only the turn record names, read now that
+  # the lock makes it final (_slice_record_turn); otherwise the slice starts afresh, and its ?
+  # record replaces the one there.
+  _slices_sync
+  if [ -n "$(printf '%s' "$sl" | jq -r --argjson i "$i" '.turns[$i] // empty')" ]; then
+    unlock_pane
+    DIE_NOTE=""
+    return 0
+  fi
+  if took="$(_slice_record_turn "$i")"; then
+    sl="$(printf '%s' "$sl" | jq -c --argjson i "$i" --arg th "${took% *}" --arg t "${took#* }" \
+            '.threads[$i] = $th | .turns[$i] = $t')"
+    _slices_sync
+    unlock_pane
+    DIE_NOTE=""
+    return 0
+  fi
+  proc="$(pane_proc "$pane")" \
+    || die "cannot read the Codex pane $pane's process (herdr pane process-info)"
+  pane_guard "$pane" "$proc"
+  th="$(xreview-rpc thread-start --cwd "$(repo_root)")" || die "could not start a new review thread"
+  assert_id "$th"
+  # Until the thread's turn exists, nothing names the thread, and nothing else would ever archive
+  # it: a refusal from here on - its check, the pane step, turn-start - archives it, and
+  # collect's own trap still runs, after the archive, so that a failing rm cannot skip it.
+  PRE_TURN_TRAP="xreview-rpc thread-archive --thread $(printf '%q' "$th") >/dev/null 2>&1 || true; $collect_trap"
+  trap "$PRE_TURN_TRAP" EXIT
+  if thread_running "$th"; then die "the review thread $th is still running a turn"; fi
+  # What the move supersedes is read now, while a failure still archives the thread; _slice_turn
+  # writes it once turn-start has answered.
+  prev="$(printf '%s' "$sl" | jq -r --argjson i "$i" 'if $i > 0 then .threads[$i - 1] // empty else empty end')"
+  cur="$(cat "$dir/review-thread" 2>/dev/null || true)"
+  move_pane_to "$pane" "$th" "$proc" _slice_turn "$i" "$th" "$file"
+  # The slice's turn joins the round's state on disk only now, once the pane has followed it,
+  # still under the pane lock: a refusal there (the state cannot be locked or read) comes after
+  # the pane step, so the pane still shows the review and the next collect finds it, taking the
+  # slice up from the turn record.
+  _slices_sync
+  unlock_pane
+}
+
+# _slice_turn <index> <thread> <packet-file> - the slice's turn itself, run by move_pane_to once
+# the pane is free: _dispatch_turn's, except that a slice is no new round, and a turn that did
+# not start leaves the round on record for the next collect. As on the dispatch path, the turn
+# record goes down in its ? form before turn-start, so a turn that exists or may exist is always
+# on durable record; it is written atomically, so that a failure never truncates the previous
+# slice's record, and a failure is a refusal with no turn, the slice's thread archived. turn-start
+# is the line: a definitive failure is a refusal too. Once it answers 0 or 6 (a ?, found later as
+# the turn not on its thread before and never re-sent), collect's own exit trap is back before
+# anything else, and nothing here refuses. Everything after is best effort: the turn's id in the
+# record (on 0); this collect's copy of the round's state (_slice_start saves it), the second net
+# after the record; and the move, by which the slice's thread becomes the checkpoint's and the
+# previous slice's thread (and a checkpoint thread from before the round) joins the superseded
+# list, as _slice_start read them (its prev and cur). From then on nothing may send-keys to the
+# pane: the pane's resume owns it.
+_slice_turn() {
+  local i="$1" th="$2" file="$3" t="" src=0 upd also=""
+  # The .known is this thread's own (known_file): an earlier slice's stays as it is, for any collect
+  # still waiting on that slice's ?. One of this thread's, were it there already, goes first, so
+  # that the .known beside this slice's ? record is only ever this turn-start's own: collect takes
+  # a ? up only beside one. Still pre-turn, so a failure is a refusal with no turn.
+  rm -f "$(known_file "$th")"
+  if ! { printf '%s ? %s %s\n' "$th" "$checkpoint" "$branch" > "$rec.tmp" \
+         && mv -f "$rec.tmp" "$rec"; } 2>/dev/null; then
+    rm -f "$rec.tmp" 2>/dev/null || true
+    die "the turn record of slice $((i + 1)) of $n could not be written in $rec; no turn started"
+  fi
+  t="$(xreview-rpc turn-start --thread "$th" --input "$file" --schema "$schema" \
+         --known "$(known_file "$th")")" || src=$?
+  if [ "$src" = 0 ] && ! is_safe_id "$t"; then src=6; fi
+  case "$src" in
+    0|6) ;;
+    # The ? record stays, with no .known: collect starts the slice afresh, never waits on it.
+    *) rm -f "$(known_file "$th")"
+       die "the turn of slice $((i + 1)) of $n could not be started on $th" ;;
+  esac
+  # The slice has started, or may have: the pane's exit guard and the thread's archive are done
+  # with. A record or state copy that cannot be written is left as it was.
+  DIE_NOTE=""
+  trap "$collect_trap" EXIT
+  if [ "$src" = 6 ]; then
+    t="?"
+    printf 'xreview: turn/start of slice %s of %s was sent but not answered - the review may be running. Collect finds it; do NOT re-dispatch.\n' \
+      "$((i + 1))" "$n" >&2
+  elif { printf '%s %s %s %s\n' "$th" "$t" "$checkpoint" "$branch" > "$rec.tmp" \
+         && mv -f "$rec.tmp" "$rec"; } 2>/dev/null; then
+    rm -f "$(known_file "$th")" || true
+  else
+    # The ? record and the thread's .known stand: collect finds the turn by the round's state, or
+    # else as the one not on the thread before.
+    rm -f "$rec.tmp" 2>/dev/null || true
+    printf "xreview: the turn of slice %s of %s could not replace its ? record in %s; collect finds it by the round's state, or as the turn new on its thread\n" \
+      "$((i + 1))" "$n" "$rec" >&2
+  fi
+  if upd="$(printf '%s' "$sl" | jq -c --argjson i "$i" --arg th "$th" --arg t "$t" \
+              '.threads[$i] = $th | .turns[$i] = $t | .next = ($i + 1)')"; then
+    sl="$upd"
+  fi
+  if [ -n "$cur" ] && [ "$cur" != "$prev" ] && [ "$cur" != "$th" ]; then also="$cur"; fi
+  if ! record_move "$th" "$prev" "$also"; then
+    printf "xreview: %s could not be recorded as the checkpoint's review thread in %s; the round goes on, and %s is archived only if a later slice moves on from it\n" \
+      "$th" "$dir" "$th" >&2
+  fi
+}
+
 cmd_collect() {
-  local nonce="${1:-}" budget="${2:-$COLLECT_BUDGET_DEFAULT}" rec thread turn checkpoint branch out rc
+  local nonce="${1:-}" budget="${2:-$COLLECT_BUDGET_DEFAULT}" rec thread turn checkpoint branch out rc \
+        dir tfile sfile schema="$SCHEMA" framing=false packeted=0 started compacted=null shown \
+        collect_trap sliced=0
+  started="$(epoch_now)"
   case "$nonce" in
     xr-*) ;;
     *) die "usage: xreview collect <nonce> [budget] - nonces start with xr-" ;;
@@ -1060,47 +1897,57 @@ cmd_collect() {
     ''|*[!0-9]*) die "usage: xreview collect <nonce> [budget] - budget must be whole seconds" ;;
   esac
   assert_id "$nonce"
-  rec="$(state_dir)/turns/$nonce"
+  dir="$(state_dir)"
+  rec="$dir/turns/$nonce"
   [ -r "$rec" ] || die "ambiguous: no turn on record for $nonce (do NOT retry the dispatch)"
   # A third field names the checkpoint and a fourth the branch dispatched on; a record from
   # before either existed has two or three, and its receipt names the current branch.
   read -r thread turn checkpoint branch < "$rec"
   assert_id "$thread"
-  local which resolved="$(state_dir)/turns/$nonce.resolved"
-  if [ "$turn" = "?" ]; then
-    which=(--new-since "$(state_dir)/turns/$nonce.known" --resolved "$resolved")
+  tfile="$dir/turns/$nonce.targets"; sfile="$dir/turns/$nonce.slices"
+  # This collect's own report and resolved-id files (_collect_wait) go when it exits, however it
+  # exits. The paths travel in the trap string, not a local: on an errexit exit bash 5 has
+  # already unwound those.
+  collect_trap="rm -f $(printf '%q' "$dir/turns/$nonce.report.$$") $(printf '%q' "$dir/turns/$nonce.resolved.$$")"
+  trap "$collect_trap" EXIT
+  # A turn dispatched with review packets has its switches beside its targets (spec 2026-10-25
+  # §3.6): it is waited on with the schema they named, and judged clean or not. Any other keeps
+  # today's wait and receipt, so every turn in flight at rollout still collects.
+  if [ -e "$tfile" ] && jq -e '.switches | type == "object"' "$tfile" >/dev/null 2>&1; then
+    packeted=1
+    framing="$(jq -r '.switches.framing == true' "$tfile")"
+    if [ "$framing" = true ]; then
+      schema="$FRAMED_SCHEMA"
+      [ -r "$schema" ] || die "missing framed findings schema $schema"
+    fi
+    if [ -e "$sfile" ]; then sliced=1; _collect_slices; return 0; fi
+    # A sliced round collected in full: its merged answer again; its receipts are on record.
+    if [ -e "$dir/turns/$nonce.merged" ]; then cat "$dir/turns/$nonce.merged"; return 0; fi
+  fi
+  _collect_wait "$thread" "$turn"
+  [ "$rc" = 0 ] || _collect_fail
+  printf '%s\n' "$out"
+  if [ "$packeted" = 1 ]; then
+    # Labels shown that cannot be read are null, never an empty list: coverage cannot be judged.
+    # .shown is one JSON list of strings; anything else, the line format of a dispatch before it
+    # included, is unreadable (a label can hold a newline, so a line is not a label).
+    shown=null
+    if [ -r "$dir/turns/$nonce.shown" ]; then
+      shown="$(jq -cs 'if length == 1 and (.[0] | type) == "array" and all(.[0][]; type == "string")
+                       then .[0] else null end' "$dir/turns/$nonce.shown" 2>/dev/null)" || shown=null
+      [ -n "$shown" ] || shown=null
+    fi
+    _collect_record "$thread" "$turn" "$out" \
+      "$(jq -nc --argjson s "$shown" --arg a "$out" '[{shown:$s, answer:($a | fromjson? // null)}]')" \
+      "$compacted" || true
+  elif [ -e "$tfile" ]; then
+    # Targets fixed at dispatch, from before review packets: today's receipt.
+    record_receipts "$thread" "$nonce" "$turn" "$out" "$tfile" || true
   else
-    assert_id "$turn"; which=(--turn "$turn")
+    # A turn dispatched before review targets existed has no targets file: its receipt is the
+    # v1 one, as before, so every turn in flight at rollout still collects.
+    record_receipt "$thread" "$nonce" "$turn" "$out" "$checkpoint" "$branch"
   fi
-  set +e
-  out="$(xreview-rpc turn-wait --thread "$thread" "${which[@]}" --budget "$budget" --schema "$SCHEMA")"
-  rc=$?
-  set -e
-  # A recovered turn is recorded the moment it is found, so every later collect and the
-  # receipt name it, instead of rediscovering "whatever is new" each time.
-  if [ "$turn" = "?" ] && [ -s "$resolved" ]; then
-    turn="$(head -1 "$resolved")"; assert_id "$turn"
-    printf '%s %s%s\n' "$thread" "$turn" "${checkpoint:+ $checkpoint${branch:+ $branch}}" > "$rec"
-    rm -f "$resolved" "$(state_dir)/turns/$nonce.known"
-  fi
-  case "$rc" in
-    0) printf '%s\n' "$out"
-       # A turn dispatched before review targets existed has no targets file: its receipt
-       # is the v1 one, as before, so every turn in flight at rollout still collects.
-       if [ -e "$(state_dir)/turns/$nonce.targets" ]; then
-         record_receipts "$thread" "$nonce" "$turn" "$out" "$(state_dir)/turns/$nonce.targets"
-       else
-         record_receipt "$thread" "$nonce" "$turn" "$out" "$checkpoint" "$branch"
-       fi ;;
-    3) printf 'xreview: still running after %ss - turn on record for %s.\nWait longer with: xreview collect %s <secs>\n' \
-         "$budget" "$nonce" "$nonce" >&2
-       exit 3 ;;
-    4) printf '%s\n' "$out"
-       printf 'xreview: the answer does not match the findings schema - the text above is UNTRUSTED raw output\n' >&2
-       exit 4 ;;
-    5) die "the Codex daemon is unreachable; the turn is on record for $nonce - run codex-daemon ensure, then collect again" ;;
-    *) die "the reviewer turn failed for $nonce (do NOT retry the dispatch)" ;;
-  esac
 }
 
 usage() {

@@ -7,14 +7,16 @@ Managed by chezmoi (source: dot_claude/xreview-ledger.py). xreview runs it to wr
 ledger; xreview-guard.py beside it imports it to decide the gate. It lives in ~/.claude, not
 ~/.local/bin, so the gate never executes code from a directory the sandbox can write.
 Design: docs/superpowers/specs/2026-10-02-xreview-receipt-binding-design.md, sections 3.1-3.3
-and the decision in 3.6.
+and the decision in 3.6; the wholeness rules of the gate and the plan patches:
+docs/superpowers/specs/2026-10-25-xreview-review-packets-design.md, sections 3.4-3.7.
 
   key            COMMON_DIR                 SHA-256 of an absolute git common directory
   path           REPO                       the ledger file of the repository REPO is in
   default-branch REPO                       origin/HEAD's branch, else main, else master
   default-range  REPO                       <origin/default or default>...<current branch or HEAD>
   fingerprint    REPO BASE TIP              the change's exact content identity (exit 3: empty)
-  diff           REPO BASE TIP              the change as a patch, for the review packet
+  diff           REPO BASE TIP [--exclude PATH]...   the change as a patch, for the review packet
+  blob-patch     REPO PATH OLD NEW          the patch between two blobs of one path (OLD may be -)
   normalize      REPO RANGE                 one review target, as JSON
   now                                       the UTC time, to the microsecond
   append         COMMON_DIR ENTRY_JSON      one v2 entry, locked, idempotent per (nonce, kind)
@@ -51,8 +53,13 @@ PATHSPEC_VARS = ("GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATH
                  "GIT_ICASE_PATHSPECS")
 DIFF_RAW = ["diff", "--raw", "-z", "--no-abbrev"] + DIFF_FLAGS
 DIFF_PATCH = ["diff", "--no-color"] + DIFF_FLAGS
+# patch(prefixed=True) pins the header paths to a/<path> and b/<path> whatever diff.noprefix or
+# diff.mnemonicPrefix say: xreview-packet.py reads its labels from those headers when a switch is
+# on. Without it the patch is rendered as it always was, under the user's own diff configuration.
+DIFF_PREFIXES = ["--src-prefix=a/", "--dst-prefix=b/"]
 USAGE = ("usage: xreview-ledger key COMMON_DIR | path REPO | default-branch REPO | "
-         "default-range REPO | fingerprint REPO BASE TIP | diff REPO BASE TIP | "
+         "default-range REPO | fingerprint REPO BASE TIP | "
+         "diff REPO BASE TIP [--exclude PATH]... | blob-patch REPO PATH OLD NEW | "
          "normalize REPO RANGE | now | "
          "append COMMON_DIR ENTRY_JSON | decide REPO DEST DEST_REV TIP [--branch NAME] | "
          "show REPO")
@@ -195,7 +202,7 @@ def has_nul(repo, blobs):
     return found
 
 
-def patch(repo, base, tip):
+def patch(repo, base, tip, exclude=(), prefixed=False):
     """The change base..tip as a patch the reviewer can read in full. Binary is decided by the
     content, never by gitattributes (a path marked -diff would otherwise show only a "Binary
     files differ" line for text the fingerprint binds): a path whose old or new blob holds a NUL
@@ -208,8 +215,20 @@ def patch(repo, base, tip):
     The number of `diff --git` headers must equal the number the text records call for: one
     each, two for a change between a regular file, a symlink or a gitlink (git renders that as
     a delete and a create). Otherwise the packet does not match the fingerprint and Fail is
-    raised. Raises Fail when git cannot diff it."""
-    records = sorted(raw_records(repo, base, tip))
+    raised. Raises Fail when git cannot diff it.
+
+    exclude is a tuple of literal top-level paths left out: their text patch and, for a binary
+    path, their summary line. The header check counts only the records that are rendered, so a
+    packet that omits a path on purpose (a plan the plan review covered) still matches. The
+    fingerprint is not affected: it covers the whole change.
+
+    prefixed pins the header paths to a/<path> and b/<path>, for a caller that reads labels from
+    them (xreview-packet.py with a switch on). The default renders the patch under the user's own
+    diff.noprefix or diff.mnemonicPrefix, as it always was; nothing here reads the header paths."""
+    drop = set(os.fsencode(p) if isinstance(p, str) else p for p in exclude)
+    every = sorted(raw_records(repo, base, tip))
+    left = [b":(top,exclude,literal)" + r[0] for r in every if r[0] in drop]
+    records = [r for r in every if r[0] not in drop]
     want = set()
     for _path, old_mode, new_mode, old_blob, new_blob in records:
         if old_mode != b"160000" and old_blob.strip(b"0"):
@@ -217,7 +236,7 @@ def patch(repo, base, tip):
         if new_mode != b"160000" and new_blob.strip(b"0"):
             want.add(new_blob)
     binary = has_nul(repo, want)
-    texts, skip, lines = 0, [], []
+    texts, skip, lines = 0, list(left), []
     for path, old_mode, new_mode, old_blob, new_blob in records:
         if old_blob in binary or new_blob in binary:
             skip.append(b":(top,exclude,literal)" + path)
@@ -229,7 +248,8 @@ def patch(repo, base, tip):
     out = b""
     if texts:
         pathspec = ["--", ":(top)"] + skip if skip else []
-        out = git(repo, *(DIFF_PATCH + ["--text", base, tip] + pathspec), raw=True)
+        flags = DIFF_PATCH + DIFF_PREFIXES if prefixed else DIFF_PATCH
+        out = git(repo, *(flags + ["--text", base, tip] + pathspec), raw=True)
         if out is None:
             raise Fail("cannot diff {}..{} in {}".format(base, tip, repo))
     headers = sum(1 for line in out.split(b"\n") if line.startswith(b"diff --git "))
@@ -250,6 +270,70 @@ def quote_path(path):
              0x0c: b"\\f", 0x0d: b"\\r", 0x22: b'\\"', 0x5c: b"\\\\"}
     return b'"' + b"".join(names.get(c) or (b"\\%03o" % c if c < 0x20 or c >= 0x7f else
                                             bytes([c])) for c in path) + b'"'
+
+
+BLOB_ID = re.compile(r"\A(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
+PLAN_DIR = b"docs/superpowers/plans/"
+
+
+def blob_patch(repo, path, old_blob, new_blob):
+    """The patch from blob old_blob to blob new_blob, as a change to path: a
+    `diff --git a/<path> b/<path>` header (the path quoted as git quotes one) and git's own
+    hunks, under the change's diff flags and `--text`. old_blob None is no file: a whole-file
+    add from /dev/null. Empty bytes when the two blobs are the same. Raises Fail when an id is
+    not a blob id, or git cannot read a blob."""
+    for blob in (old_blob, new_blob):
+        if blob is not None and not (isinstance(blob, str) and BLOB_ID.match(blob)):
+            raise Fail("not a blob id: {}".format(blob))
+    if new_blob is None:
+        raise Fail("a blob patch needs the new blob")
+    for blob in (old_blob, new_blob):
+        if blob is not None and git(repo, "cat-file", "-t", blob) != "blob":
+            raise Fail("{} is not a blob in {}".format(blob, repo))
+    name = os.fsencode(path) if isinstance(path, str) else path
+    a, b = quote_path(b"a/" + name), quote_path(b"b/" + name)
+    head = b"diff --git " + a + b" " + b + b"\n"
+    new7 = new_blob[:7].encode("ascii")
+    if old_blob is None:
+        body = git(repo, "cat-file", "blob", new_blob, raw=True)
+        if body is None:
+            raise Fail("cannot read blob {} in {}".format(new_blob, repo))
+        head += b"new file mode 100644\nindex 0000000.." + new7 + b"\n--- /dev/null\n+++ " + b + b"\n"
+        if not body:
+            return head
+        ends = body.endswith(b"\n")
+        rows = (body[:-1] if ends else body).split(b"\n")
+        count = b"" if len(rows) == 1 else b"," + str(len(rows)).encode("ascii")
+        head += b"@@ -0,0 +1" + count + b" @@\n" + b"".join(b"+" + r + b"\n" for r in rows)
+        return head if ends else head + b"\\ No newline at end of file\n"
+    if old_blob == new_blob:
+        return b""
+    out = git(repo, *(["diff", "--no-color"] + DIFF_FLAGS + ["--text", old_blob, new_blob]),
+              raw=True)
+    if out is None:
+        raise Fail("cannot diff blobs {} and {} in {}".format(old_blob, new_blob, repo))
+    if not out:
+        return b""
+    at = 0 if out.startswith(b"@@") else out.find(b"\n@@") + 1
+    if at == 0 and not out.startswith(b"@@"):
+        raise Fail("unexpected diff output for blobs {} and {}".format(old_blob, new_blob))
+    return (head + b"index " + old_blob[:7].encode("ascii") + b".." + new7 + b" 100644\n--- " + a
+            + b"\n+++ " + b + b"\n" + out[at:])
+
+
+def plan_blobs(repo, base, tip):
+    """The plans a patch of base..tip shows in full: each path under docs/superpowers/plans/
+    that the range adds (old mode 000000, a regular file), mapped to its blob id at tip. A plan
+    only modified in the range, or unchanged in it, is not here: its whole content was not in
+    the patch. Nor is one whose blob holds a NUL byte: the patch showed only its Binary file
+    line."""
+    found = {}
+    for path, old_mode, new_mode, _old_blob, new_blob in raw_records(repo, base, tip):
+        if (path.startswith(PLAN_DIR) and old_mode == b"000000"
+                and new_mode in (b"100644", b"100755")):
+            found[os.fsdecode(path)] = new_blob
+    binary = has_nul(repo, list(found.values()))
+    return {path: blob.decode("ascii") for path, blob in found.items() if blob not in binary}
 
 
 def branch_of(repo, right):
@@ -589,6 +673,182 @@ def branch_record(entries, branch):
     return lines
 
 
+# Wholeness (spec 2026-10-25 section 3.7). A receipt is judged from what it recorded, never from
+# the switches file as it stands now. Every field a rule reads must hold the exact value the
+# rule needs: an unknown (None), a missing key or any other type is a denial, never read for
+# truthiness, and a switch counts as on only when it is exactly True.
+PACKETS = ("full", "delta", "slices")
+# The receipt fields only a dispatch with review packets records (spec 2026-10-25 section 3.6).
+PACKETED_FIELDS = ("switches", "clean", "compacted")
+
+
+def switch_on(receipt, name):
+    switches = receipt.get("switches")
+    return isinstance(switches, dict) and switches.get(name) is True
+
+
+def receipt_of(entries, nonce, repo):
+    """The v2 receipt of nonce and its targets in repo (in order); (None, []) if the ledger
+    holds no such receipt. A receipt can hold several targets of one repository, so a caller
+    picks the one it means; it never takes the first."""
+    if not (isinstance(nonce, str) and nonce):
+        return None, []
+    for entry in entries:
+        if (entry.get("v") == 2 and entry.get("kind") == "receipt" and entry.get("nonce") == nonce
+                and isinstance(entry.get("targets"), list)):
+            found = [t for t in entry["targets"] if isinstance(t, dict) and t.get("repo") == repo]
+            if found:
+                return entry, found
+    return None, []
+
+
+def is_ancestor(repo, older, newer):
+    """True only when both are commits of repo and older is newer's ancestor (or newer)."""
+    if not all(isinstance(x, str) and x for x in (repo, older, newer)):
+        return False
+    a, b = commit_of(repo, older), commit_of(repo, newer)
+    if a is None or b is None:
+        return False
+    try:
+        p = subprocess.run(["git", "-C", repo, "merge-base", "--is-ancestor", a, b],
+                           capture_output=True, timeout=CALL_TIMEOUT, env=git_env())
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return p.returncode == 0
+
+
+def chain_problem(entries, receipt, target, repo):
+    """Why the delta chain behind receipt's target is not whole, or None when it is. Each
+    delta_from names a pre-merge receipt of this ledger on the same thread, and one of its
+    targets - a full-range target on the same repository, destination and base, never just the
+    first target of the repository - whose tip is an ancestor of the delta's (exactly one such
+    target, or the follow is ambiguous and denied). That link must be
+    clean, record its turn and have every plan it listed backed. The walk ends at a full link.
+    It is iterative, with a visited set, so a cycle ends it. The target's history must list
+    every chain turn before this one, root first."""
+    where = target.get("repo")
+    seen, turns = {receipt.get("nonce")}, []
+    cur, cur_target = receipt, target
+    while True:
+        follows = cur_target.get("delta_from")
+        if not (isinstance(follows, str) and follows):
+            return "the delta of {} names no receipt it follows".format(cur.get("nonce"))
+        if follows in seen:
+            return "the delta chain loops back to {}".format(follows)
+        seen.add(follows)
+        prev, found = receipt_of(entries, follows, where)
+        if prev is None:
+            return "{} follows {}, which is no receipt in this ledger".format(
+                cur.get("nonce"), follows)
+        if prev.get("checkpoint") != "pre-merge":
+            return "{}, a link of the chain, is not a pre-merge review".format(follows)
+        thread = cur.get("thread")
+        if not (isinstance(thread, str) and thread and prev.get("thread") == thread):
+            return "{} is not on the thread of {}".format(follows, cur.get("nonce"))
+        dest, base = cur_target.get("dest"), cur_target.get("base")
+        if not (isinstance(dest, str) and dest and isinstance(base, str) and base):
+            return "the delta of {} records no destination or base".format(cur.get("nonce"))
+        same = [t for t in found if t.get("full") is True and t.get("dest") == dest
+                and t.get("base") == base]
+        if not same:
+            return "{} has no full-range target on the destination and base of {}".format(
+                follows, cur.get("nonce"))
+        starts = [t for t in same if is_ancestor(repo, t.get("tip"), cur_target.get("tip"))]
+        if not starts:
+            return "the tip of {} is not where the delta of {} starts".format(
+                follows, cur.get("nonce"))
+        if len(starts) != 1:
+            return "{} holds several targets that the delta of {} could follow".format(
+                follows, cur.get("nonce"))
+        prev_target = starts[0]
+        if prev.get("clean") is not True:
+            return "{}, a link of the chain, is not clean".format(follows)
+        turn = prev.get("turn")
+        if not (isinstance(turn, str) and turn):
+            return "{}, a link of the chain, records no turn".format(follows)
+        problem = plans_problem(entries, prev_target)
+        if problem:
+            return "{}, a link of the chain: {}".format(follows, problem)
+        turns.append(turn)
+        kind = prev_target.get("packet")
+        if kind == "full":
+            break
+        if kind != "delta":
+            return "the chain reaches {}, {}, not a full root".format(
+                follows, "a {} packet".format(kind) if isinstance(kind, str) else "which records no packet kind")
+        cur, cur_target = prev, prev_target
+    history = target.get("history")
+    if not isinstance(history, list):
+        return "the history of the thread is not recorded"
+    at = 0
+    for turn in reversed(turns):
+        while at < len(history) and history[at] != turn:
+            at += 1
+        if at == len(history):
+            return "the history lacks the chain turn {}, or lists it out of order".format(turn)
+        at += 1
+    return None
+
+
+def plans_problem(entries, target):
+    """Why a plan the packet listed instead of showing is not backed, or None. plans_from must
+    be recorded as a list (empty when no plan was listed). Each entry {path, nonce, blob} must
+    name a clean, approved, plan-checkpoint receipt of this ledger with a target in this
+    repository whose plan_blobs lists that path with that blob."""
+    plans = target.get("plans_from")
+    if not isinstance(plans, list):
+        return "plans_from is not recorded as a list"
+    for plan in plans:
+        fields = [plan.get(k) if isinstance(plan, dict) else None for k in ("path", "nonce", "blob")]
+        if not all(isinstance(f, str) and f for f in fields):
+            return "a plans_from entry is malformed"
+        path, nonce, blob = fields
+        bound, found = receipt_of(entries, nonce, target.get("repo"))
+        if bound is None:
+            return "the plan {} is bound to {}, which is no receipt in this ledger".format(path, nonce)
+        if bound.get("checkpoint") != "plan" or bound.get("verdict") != "approve":
+            return "the plan {} is bound to {}, which is not an approved plan review".format(path, nonce)
+        if bound.get("clean") is not True:
+            return "the plan {} is bound to {}, which is not clean".format(path, nonce)
+        if not any(isinstance(t.get("plan_blobs"), dict) and t["plan_blobs"].get(path) == blob
+                   for t in found):
+            return "the plan {} at {} is not in the plan_blobs of {}".format(path, blob[:12], nonce)
+    return None
+
+
+def whole(entries, receipt, target, repo):
+    """(True, why) when the approving receipt is whole for target, else (False, reason). A
+    target with no packet field predates the packet design and is whole, unless its receipt
+    carries a field only a packeted dispatch records (switches, clean, compacted). A packeted
+    receipt records its switches as an object, as xreview always writes them, and a delta or
+    slices packet needs framing on. entries is the ledger; repo is a git directory of the
+    repository, which the chain needs to check that each link's tip is an ancestor: without a
+    usable one a delta is never whole."""
+    if "packet" not in target:
+        if any(k in receipt for k in PACKETED_FIELDS):
+            return False, "the packet kind is not recorded"
+        return True, "a receipt from before review packets"
+    packet = target["packet"]
+    if packet not in PACKETS or not isinstance(packet, str):
+        return False, "the packet kind is not recorded"
+    if not isinstance(receipt.get("switches"), dict):
+        return False, "the switches at dispatch are not recorded"
+    if packet != "full" and not switch_on(receipt, "framing"):
+        return False, "framing is recorded off, and a {} packet needs it".format(packet)
+    if switch_on(receipt, "framing") and target.get("missing") != []:
+        return False, "reviewed_files left out files of the packet (missing is not empty)"
+    if (packet != "full" or switch_on(receipt, "fit")) and receipt.get("compacted") is not False:
+        return False, "the review thread may have compacted during the turn (compacted is not false)"
+    if packet == "delta":
+        problem = chain_problem(entries, receipt, target, repo)
+        if problem:
+            return False, problem
+    problem = plans_problem(entries, target)
+    if problem:
+        return False, problem
+    return True, "whole"
+
+
 def decide(repo, dest, dest_rev, tip, branch=None):
     """The gate's decision for the change tip would land on dest, whose commit is dest_rev,
     in the repository repo is in. A dict: allow, reason (no final period), repo, dest, tip,
@@ -635,15 +895,22 @@ def decide(repo, dest, dest_rev, tip, branch=None):
             legacy = read_entries(old)
         except OSError:
             legacy = []
-    reviews = states_of([e for e in entries if e.get("checkpoint") == "pre-merge"],
-                        lambda t: (t.get("repo") == common and t.get("dest") == dest
-                                   and t.get("full") is True and t.get("fingerprint") == change))
+    def this_change(t):
+        return (t.get("repo") == common and t.get("dest") == dest
+                and t.get("full") is True and t.get("fingerprint") == change)
+    reviews = states_of([e for e in entries if e.get("checkpoint") == "pre-merge"], this_change)
     out["on_record"] = [describe(e) for e in reviews]
     if branch:
         out["on_record_branch"] = branch_record(entries + legacy, branch)
     if reviews and reviews[-1]["kind"] == "receipt" and reviews[-1].get("verdict") == "approve":
-        out["allow"] = True
-        out["reason"] = "approved by the pre-merge review {}".format(reviews[-1]["nonce"])
+        latest = reviews[-1]
+        approved = next(t for t in latest["targets"] if isinstance(t, dict) and this_change(t))
+        ok, why = whole(entries, latest, approved, repo)
+        if ok:
+            out["allow"] = True
+            out["reason"] = "approved by the pre-merge review {}".format(latest["nonce"])
+        else:
+            out["reason"] = "the latest approval is not whole: {}".format(why)
     elif reviews:
         out["reason"] = "the latest review of this change is {}, not an approval".format(
             describe(reviews[-1]))
@@ -691,9 +958,15 @@ def main(argv):
                 return 3
             print(change)
             return 0
-        if cmd == "diff" and len(args) == 3:
+        if cmd == "diff" and len(args) >= 3 and len(args) % 2 == 1 and all(
+                a == "--exclude" for a in args[3::2]):
             sys.stdout.flush()
-            sys.stdout.buffer.write(patch(*args))
+            sys.stdout.buffer.write(patch(args[0], args[1], args[2], tuple(args[4::2])))
+            return 0
+        if cmd == "blob-patch" and len(args) == 4:
+            sys.stdout.flush()
+            sys.stdout.buffer.write(blob_patch(args[0], args[1],
+                                               None if args[2] == "-" else args[2], args[3]))
             return 0
         if cmd == "normalize" and len(args) == 2:
             print(json.dumps(normalize(args[0], args[1]), separators=(",", ":")))

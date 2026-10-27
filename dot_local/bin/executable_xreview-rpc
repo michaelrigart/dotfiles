@@ -15,9 +15,15 @@ tests' fake daemon cannot listen on one.
   thread-start    --cwd DIR                                  prints the new thread's id
   thread-status   --thread ID                               {"loaded", "status", "running"}
   thread-resolve  --prefix PREFIX                            prints the one loaded thread id starting with PREFIX
-  turn-start      --thread ID --input FILE --schema FILE [--known FILE]   prints the turn id
+  turn-start      --thread ID --input FILE --schema FILE [--known FILE] [--cwd DIR]   prints the turn id
   turn-wait       --thread ID (--turn ID | --new-since FILE) --budget SECS [--schema FILE]
+                  [--report FILE]    on exit 0 or 4, writes {"turn", "compacted": bool|null}
   thread-archive  --thread ID
+  thread-unarchive --thread ID
+  thread-fork     --thread ID [--last-turn ID] [--cwd DIR]   prints the new thread's id
+  thread-turns    --thread ID    {"turns": [{"id", "status", "compacted"}], "thread_compactions"}
+                  oldest first; thread_compactions is null when items were not shown
+                  Spec: docs/superpowers/specs/2026-10-25-xreview-review-packets-design.md
   release         --dir DIR                                  unload every thread under DIR
                   (archive, then restore); prints "released <id>" per thread.
                   Spec: docs/superpowers/specs/2026-10-15-wt-rm-codex-session-release-design.md
@@ -523,12 +529,15 @@ def cmd_turn_start(c, a):
     except (Unreachable, Closed) as e:
         err(f"Codex daemon connection lost before the turn was started ({e}); no review was started")
         return 5
+    params = {"threadId": a.thread,
+              "input": [{"type": "text", "text": text}],
+              "outputSchema": schema,
+              "sandboxPolicy": {"type": "readOnly"},
+              "approvalPolicy": "never"}
+    if a.cwd:
+        params["cwd"] = a.cwd    # this turn and the later ones run there
     try:
-        r = c.call("turn/start", {"threadId": a.thread,
-                                  "input": [{"type": "text", "text": text}],
-                                  "outputSchema": schema,
-                                  "sandboxPolicy": {"type": "readOnly"},
-                                  "approvalPolicy": "never"})
+        r = c.call("turn/start", params)
     except NotSent as e:
         err(f"turn/start could not be sent ({e}); no review was started")
         return 1
@@ -567,6 +576,115 @@ def cmd_thread_archive(c, a):
         err("thread/archive refused: " + json.dumps(r["error"]))
         return 1
     return 0
+
+
+def cmd_thread_unarchive(c, a):
+    r = c.call("thread/unarchive", {"threadId": a.thread})
+    if "error" in r:
+        err("thread/unarchive refused: " + json.dumps(r["error"]))
+        return 1
+    return 0
+
+
+def cmd_thread_fork(c, a):
+    """Fork a.thread through a.last_turn (inclusive; the whole thread without it), in a.cwd.
+    The fork keeps the thread's turns up to and including lastTurnId; excludeTurns only leaves
+    them out of the answer, which is read for nothing but the new thread's id. Prints that id."""
+    params = {"threadId": a.thread, "excludeTurns": True}
+    if a.last_turn:
+        params["lastTurnId"] = a.last_turn
+    if a.cwd:
+        params["cwd"] = a.cwd
+    r = c.call("thread/fork", params)
+    if "error" in r:
+        err("thread/fork refused: " + json.dumps(r["error"]))
+        return 1
+    tid = (((r.get("result") or {}).get("thread")) or {}).get("id")
+    if not isinstance(tid, str) or not tid:
+        err("thread/fork answered with no thread id: " + json.dumps(r.get("result")))
+        return 1
+    print(tid)
+    return 0
+
+
+# --- compactions (spec 2026-10-25, 3.4 and 3.6) -----------------------------------------
+
+def items_loaded(turn):
+    """Whether the listing showed this turn's items in full. itemsView "notLoaded" or "summary"
+    (which hides compactions), or no items list, is no evidence either way, which is not the
+    same as a turn without a compaction. An absent itemsView means full."""
+    return turn.get("itemsView", "full") == "full" and isinstance(turn.get("items"), list)
+
+
+def turn_compacted(turn):
+    """Whether the turn holds a contextCompaction item. Only a listing made with itemsView
+    "full" shows one; "summary" hides it. Callers check items_loaded() first."""
+    return any(isinstance(i, dict) and i.get("type") == "contextCompaction"
+               for i in turn.get("items") or [])
+
+
+def thread_level_compaction(turn):
+    """A turn of its own that holds nothing but the compaction, as a TUI /compact leaves."""
+    items = turn.get("items") or []
+    return bool(items) and all(isinstance(i, dict) and i.get("type") == "contextCompaction"
+                               for i in items)
+
+
+def cmd_thread_turns(c, a):
+    """Every turn of a.thread, oldest first, listed with itemsView "full". Any page that cannot
+    be read in full is exit 1: a partial list would read as a history with turns missing."""
+    pages, cursor, seen = [], None, set()
+    while True:
+        params = {"threadId": a.thread, "limit": 50, "sortDirection": "desc", "itemsView": "full"}
+        if cursor:
+            params["cursor"] = cursor
+        r = c.call("thread/turns/list", params)
+        if "error" in r:
+            err("thread/turns/list refused: " + json.dumps(r["error"]))
+            return 1
+        res = r.get("result")
+        if not isinstance(res, dict) or not isinstance(res.get("data"), list):
+            err("thread/turns/list: unexpected answer " + json.dumps(res, separators=(",", ":")))
+            return 1
+        pages.append(res["data"])
+        cursor = res.get("nextCursor")
+        if not cursor:
+            break
+        if cursor in seen:
+            err(f"thread/turns/list: the cursor {cursor!r} repeated")
+            return 1
+        seen.add(cursor)
+    turns = [t for page in reversed(pages) for t in reversed(page)]
+    if not all(isinstance(t, dict) and isinstance(t.get("id"), str) for t in turns):
+        err("thread/turns/list: a turn without an id")
+        return 1
+    # None, not a count, when any turn's items were not shown: there is then no way to see a
+    # thread-level compaction, and a count of zero would claim there was none.
+    known = all(items_loaded(t) for t in turns)
+    print(json.dumps({
+        "turns": [{"id": t["id"], "status": t.get("status"),
+                   "compacted": turn_compacted(t) if items_loaded(t) else None} for t in turns],
+        "thread_compactions": sum(1 for t in turns if thread_level_compaction(t)) if known else None}))
+    return 0
+
+
+def write_report(c, a, turn_id):
+    """Write {"turn", "compacted"} to a.report. The flag comes from a fresh itemsView "full"
+    read of this one turn, because the wait's own listing is a summary, which hides
+    compactions. null when that read fails or does not show the items."""
+    compacted = None
+    try:
+        t = turn_state(c, a.thread, turn_id, None, None, items_view="full")
+        if t is not None and items_loaded(t):
+            compacted = turn_compacted(t)
+    except (Unreachable, Closed):
+        pass
+    try:
+        with open(a.report, "w", encoding="utf-8") as fh:
+            json.dump({"turn": turn_id, "compacted": compacted}, fh)
+            fh.write("\n")
+    except OSError as e:
+        err(f"cannot write the report {a.report}: {e}")
 
 
 # --- release (spec: docs/superpowers/specs/2026-10-15-wt-rm-codex-session-release-design.md)
@@ -900,8 +1018,9 @@ class PagingIncomplete(ListUnreadable):
     plain read-failure exit 1."""
 
 
-def turn_state(c, thread, turn, known=None, deadline=None):
+def turn_state(c, thread, turn, known=None, deadline=None, items_view="summary"):
     """The turn by id, or with known given, the oldest turn whose id is not in it.
+    items_view is the listing's itemsView: "summary" hides compactions, "full" shows them.
 
     A thread/turns/list error is retried within the budget rather than reported as "no
     turn". With no fixed turn (the --new-since case), "nothing new yet" is retried the
@@ -938,7 +1057,7 @@ def turn_state(c, thread, turn, known=None, deadline=None):
             incomplete = False
             while True:
                 params = {"threadId": thread, "limit": 50, "sortDirection": "desc",
-                          "itemsView": "summary"}
+                          "itemsView": items_view}
                 if cursor:
                     params["cursor"] = cursor
                 r = c.call("thread/turns/list", params)
@@ -970,7 +1089,7 @@ def turn_state(c, thread, turn, known=None, deadline=None):
                 return None   # exhausted every page, no error - a fixed turn is not retried
         else:
             r = c.call("thread/turns/list", {"threadId": thread, "limit": 50,
-                                             "sortDirection": "desc", "itemsView": "summary"})
+                                             "sortDirection": "desc", "itemsView": items_view})
             if "error" not in r:
                 last_error = None
                 data = (r.get("result") or {}).get("data") or []
@@ -1056,7 +1175,10 @@ def cmd_turn_wait(a):
                             t = reread
                             break
                         time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
-            return finish(t, schema)
+            rc = finish(t, schema)
+            if a.report and rc in (0, 4):
+                write_report(c, a, turn_id)
+            return rc
         except (Unreachable, Closed) as e:
             last = str(e)
             if time.monotonic() >= deadline:
@@ -1081,6 +1203,13 @@ def main(argv=None):
     p.add_argument("--input", required=True)
     p.add_argument("--schema", required=True)
     p.add_argument("--known")
+    p.add_argument("--cwd")
+    p = sub.add_parser("thread-fork")
+    p.add_argument("--thread", required=True)
+    p.add_argument("--last-turn")
+    p.add_argument("--cwd")
+    for name in ("thread-turns", "thread-unarchive"):
+        sub.add_parser(name).add_argument("--thread", required=True)
     p = sub.add_parser("turn-wait")
     p.add_argument("--thread", required=True)
     which = p.add_mutually_exclusive_group(required=True)
@@ -1089,6 +1218,7 @@ def main(argv=None):
     p.add_argument("--resolved")
     p.add_argument("--budget", type=float, required=True)
     p.add_argument("--schema")
+    p.add_argument("--report")
     sub.add_parser("release").add_argument("--dir", required=True)
     a = ap.parse_args(argv)
     if a.cmd == "release":
@@ -1118,6 +1248,12 @@ def main(argv=None):
             return cmd_thread_resolve(c, a)
         if a.cmd == "turn-start":
             return cmd_turn_start(c, a)
+        if a.cmd == "thread-turns":
+            return cmd_thread_turns(c, a)
+        if a.cmd == "thread-fork":
+            return cmd_thread_fork(c, a)
+        if a.cmd == "thread-unarchive":
+            return cmd_thread_unarchive(c, a)
         return cmd_thread_archive(c, a)
     except (Unreachable, Closed) as e:
         err(f"Codex daemon connection lost: {e}")

@@ -426,6 +426,9 @@ fi
 # (no pane, several panes, the daemon down and staying down) belong on it, not just in
 # the "dispatch refuses" prose above it.
 esc="$(sed -n '/^Escalate to Michael when/,/^That list is exhaustive/p' "$SKILL")"
+if [ "$(tail -n 1 <<<"$esc")" = "$(tail -n 1 "$SKILL")" ]; then
+  _fail "the escalation range ends at its anchor" "it reached the end of the file"
+else _pass "the escalation range ends at its anchor"; fi
 if grep -qi 'no Codex pane' <<<"$esc"; then
   _pass "the escalation list names the no-pane/several-panes refusal"
 else
@@ -503,8 +506,12 @@ if grep -qi 'another dispatch' <<<"$esc"; then
   _fail "the lock refusal is not escalated" "it is on the escalation list"
 else _pass "the lock refusal is not escalated"; fi
 # The refusal list (not just the escalation list) quotes the exact resume refusal and names
-# both pane reads; later rounds find the pane on the thread only while its TUI is connected.
-refusals="$(sed -n '/^Dispatch refuses, before/,/^Only the "no turn on record"/p' "$SKILL")"
+# both pane reads (its end anchor must track the sentence that follows the list); later rounds find the pane on the thread only while its TUI is connected.
+refusals="$(sed -n '/^Dispatch refuses, before/,/^Only the "ambiguous: no turn on record"/p' "$SKILL")"
+# A range whose end anchor went stale runs to EOF and quietly takes in the rest of the skill.
+if [ "$(tail -n 1 <<<"$refusals")" = "$(tail -n 1 "$SKILL")" ]; then
+  _fail "the refusal-list range ends at its anchor" "it reached the end of the file"
+else _pass "the refusal-list range ends at its anchor"; fi
 for phrase in 'is resuming something other than a thread id' 'herdr pane process-info' 'herdr pane get' \
               'cannot read the Codex pane'; do
   if grep -qF "$phrase" <<<"$refusals"; then
@@ -523,6 +530,9 @@ else _fail "the skill gives dispatch a five-minute tool timeout" "missing"; fi
 # less for the next one; they must sit under "Acting on findings", where the model reads
 # them while fixing.
 acting="$(sed -n '/^## Acting on findings/,/^## /p' "$SKILL")"
+if [ "$(tail -n 1 <<<"$acting")" = "$(tail -n 1 "$SKILL")" ]; then
+  _fail "the acting range ends at its anchor" "it reached the end of the file"
+else _pass "the acting range ends at its anchor"; fi
 for rule in 'Fix the class, not the instance.' 'One cause, one fix.' \
             'Check each fix against its failure scenario.' \
             'Re-read what depends on the changed text.' 'One dispatch per round.'; do
@@ -538,6 +548,84 @@ for phrase in '(at pre-merge, the whole branch diff)' 'A fix that comes with a t
     _pass "the fix-round rule text '$phrase' is under Acting on findings"
   else _fail "the fix-round rule text '$phrase' is under Acting on findings" "missing"; fi
 done
+
+# --- review packets (spec 2026-10-25, section 4) --------------------------------
+# xreview picks the packet; the skill states the facts the agent acts on. The cap and
+# the advice to slice by hand are gone and must stay gone.
+flat="$(tr '\n' ' ' < "$SKILL" | sed 's/  */ /g')"
+for neg in 'XREVIEW_MAX_DIFF_BYTES' 'slice by hand'; do
+  if printf '%s' "$flat" | grep -qiF "$neg"; then
+    _fail "the skill does not mention '$neg'" "present"
+  else _pass "the skill does not mention '$neg'"; fi
+done
+for phrase in 'dispatch never refuses on size' \
+              'the cap is `cap=` in `~/.config/xreview/packets.conf`, Michael'"'"'s file outside the sandbox' \
+              'fresh thread when the current one cannot hold the next packet' \
+              'never rotates a thread by judgement' \
+              'Never rotate a thread within a checkpoint' \
+              'this review is not clean' \
+              'reviewed in slices' \
+              'a larger budget' \
+              'once the plan is committed' \
+              'except on a thread Michael pinned' \
+              'not an escalation trigger' \
+              'dispatch the next round as usual' \
+              'its compaction could not be read' \
+              'binds no plan' \
+              'Never re-dispatch a sliced round' \
+              'collect again once it clears' \
+              'Commit each round'"'"'s plan fixes before re-dispatching' \
+              'ambiguous: no turn on record' \
+              '`fit` on in `~/.config/xreview/packets.conf`, the packet is xreview'"'"'s to build, and dispatch never refuses on size' \
+              'With `fit` off, as shipped, dispatch refuses a packet over its size cap (escalate, below), and there are no slices or moves' \
+              'and only with `fit` on' \
+              'Never put an environment assignment in front of `xreview` to get past a refusal' \
+              'Never re-dispatch a sliced round unless it says to (a slice'"'"'s packet is gone)' \
+              'its coverage could not be read' \
+              'barring xreview'"'"'s own move' \
+              'unless the thread is full and was moved by xreview'; do
+  if printf '%s' "$flat" | grep -qF "$phrase"; then
+    _pass "the skill says '$phrase'"
+  else _fail "the skill says '$phrase'" "missing"; fi
+done
+if printf '%s' "$flat" | grep -qF -- '`--diff <dest>...<branch>` once the plan is committed'; then
+  _pass "the skill dispatches plan reviews with --diff once the plan is committed"
+else _fail "the skill dispatches plan reviews with --diff once the plan is committed" "missing"; fi
+
+# The escalation list is exactly these bullets, in this order: any reworded, added or
+# dropped bullet fails here.
+expected_esc="$(cat <<'EXPECTED_ESC'
+- the reviewer **re-raises a finding you already addressed** — that is disagreement,
+  not a missed fix
+- a finding needs design judgement or a trade-off that would change the approved spec
+- you cannot verify a claim
+- `xreview` refuses the round because Michael set `XREVIEW_MAX_ROUNDS` and the review
+  reached it. Unset, rounds are not limited.
+- `xreview` refuses because the Codex daemon carries a pane's environment. The fix disconnects
+  every Codex TUI.
+- `xreview` refuses because there is no Codex pane for the repository, or several.
+- `xreview` refuses because the Codex daemon is down and will not start.
+- `xreview` refuses because the pane would not free (it closed, or its session would not exit).
+- `xreview` refuses because it cannot inspect the Codex pane (`herdr pane process-info` or
+  `herdr pane get`), cannot read whether a thread is running, or cannot lock the Codex pane
+  (or cannot create or open its lock file).
+- `xreview` refuses because a pinned review thread cannot hold the packet. The pin is
+  Michael's; never drop it with `xreview round --reset`.
+- `xreview` refuses a packet over its size cap while `fit` is off. The cap is Michael's to raise:
+  `cap=` in `~/.config/xreview/packets.conf`, his file, outside the sandbox.
+- `xreview` refuses because the pane is resuming something other than a thread id (for
+  example `codex resume --last` or a picker). The pane is Michael's.
+EXPECTED_ESC
+)"
+actual_esc="$(printf '%s\n' "$esc" | sed '1,2d;$d' | sed '${/^$/d;}')"
+if [ "$actual_esc" = "$expected_esc" ]; then
+  _pass "the escalation list is exactly the expected bullets"
+else
+  _ex="$(mktemp "${TMPDIR:-/tmp}/esc-expected.XXXXXX")"; _ac="$(mktemp "${TMPDIR:-/tmp}/esc-actual.XXXXXX")"
+  printf '%s\n' "$expected_esc" > "$_ex"; printf '%s\n' "$actual_esc" > "$_ac"
+  _fail "the escalation list is exactly the expected bullets" "$(diff "$_ex" "$_ac" | head -6)"
+  rm -f "$_ex" "$_ac"
+fi
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

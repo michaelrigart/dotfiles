@@ -1209,5 +1209,45 @@ for rev in 'gone~1' 'gone^' 'gone^{commit}'; do
   is "S2 and ran no uploadpack command" "$(ls "$PM" | tr '\n' ' ')" ""
 done
 
+echo "T. an approval must be whole (spec 2026-10-25 section 3.7)"
+# gatebr: three commits ahead of main, published. A review is recorded the way xreview records
+# one, plus the packet fields a receipt now carries.
+GB="$ROOT/work/app-gatebr"; git -C "$W" worktree add -q -b gatebr "$GB" main
+for i in 1 2 3; do
+  printf 'g%s\n' "$i" > "$GB/g$i.txt"; git -C "$GB" add -A && git -C "$GB" commit -q -m "g$i"
+  eval "GB$i=\$(git -C \"\$GB\" rev-parse HEAD)"
+done
+publish gatebr
+# treview <nonce> <tip> <verdict> <target-json> <receipt-json>: a pending entry, then a receipt,
+# for main...<tip>, each with the extra fields given.
+treview() {
+  local at t common
+  at="$(L now)"; t="$(L normalize "$W" "main...$2" | jq -c --argjson x "$4" '. + $x')"
+  common="$(printf '%s' "$t" | jq -r .repo)"
+  L append "$common" "$(jq -nc --arg n "$1" --arg at "$at" --argjson t "$t" \
+    '{v:2,kind:"pending",nonce:$n,dispatched_at:$at,checkpoint:"pre-merge",targets:[$t]}')" >/dev/null
+  L append "$common" "$(jq -nc --arg n "$1" --arg at "$at" --arg v "$3" --argjson t "$t" --argjson rx "$5" \
+    '{v:2,kind:"receipt",nonce:$n,dispatched_at:$at,checkpoint:"pre-merge",verdict:$v,findings:0,thread:"T1",turn:"u",tier:"",targets:[$t]} + $rx')" >/dev/null
+}
+TSW='{"framing":true,"fit":true,"delta":true,"omit_plans":true}'
+treview t-gap "$GB3" approve '{"packet":"full","missing":["g1.txt"],"delta_from":null,"history":[],"plans_from":[]}' \
+  "{\"switches\":$TSW,\"clean\":false,\"compacted\":false}"
+is "T1 an approval whose reviewed_files left out a file keeps an MR creation closed" \
+   "$(decision "$W" 'glab mr create -s gatebr -b main')" deny
+is "T2 and the reason says the approval is not whole" \
+   "$(reason "$W" 'glab mr create -s gatebr -b main' | grep -c 'the latest approval is not whole: ')" 1
+treview t-root "$GB1" approve '{"packet":"full","missing":[],"delta_from":null,"history":[],"plans_from":[]}' \
+  "{\"switches\":$TSW,\"clean\":true,\"compacted\":false,\"turn\":\"U1\"}"
+treview t-link "$GB2" changes '{"packet":"delta","missing":[],"delta_from":"t-root","history":["U1"],"plans_from":[]}' \
+  "{\"switches\":$TSW,\"clean\":true,\"compacted\":false,\"turn\":\"U2\"}"
+treview t-head "$GB3" approve '{"packet":"delta","missing":[],"delta_from":"t-link","history":["U1","U2"],"plans_from":[]}' \
+  "{\"switches\":$TSW,\"clean\":true,\"compacted\":false,\"turn\":\"U3\"}"
+is "T3 a whole two-link delta chain (one link a changes verdict) opens an MR creation" \
+   "$(decision "$W" 'glab mr create -s gatebr -b main')" allow
+treview t-hole "$GB3" approve '{"packet":"delta","missing":[],"delta_from":"t-link","history":["U2"],"plans_from":[]}' \
+  "{\"switches\":$TSW,\"clean\":true,\"compacted\":false,\"turn\":\"U4\"}"
+is "T4 a later approval whose history lacks a chain turn closes it again" \
+   "$(decision "$W" 'glab mr create -s gatebr -b main')" deny
+
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 (( fail == 0 ))

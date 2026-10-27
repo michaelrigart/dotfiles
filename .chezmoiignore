@@ -71,6 +71,7 @@ tests/
 !.claude/xreview-guard.sh
 !.claude/xreview-guard.py
 !.claude/xreview-ledger.py
+!.claude/xreview-packet.py
 !.claude/xreview-apply-guard.sh
 !.claude/path-resolution-guard.sh
 !.claude/agents/
