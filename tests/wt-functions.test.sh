@@ -22,7 +22,7 @@
 #   U  wt-rm               Herdr workspace shutdown and persisted-state safety
 #   V  wt-rm               live processes still inside the checkout block removal
 #   W  wt-rm               the checkout's Codex sessions are released before check 4
-#   X  wt                  mise trust is carried from any checkout of the repository into a new worktree
+#   X  wt, wt-rm           mise trust is carried from any checkout of the repository into a new worktree; wt-rm checks it before closing anything
 #   Y  wt, wt-prompt      a reopen carries mise trust and reports what stays untrusted; the popup stays open for it
 #
 # Herdr, layout.sh and mise are stubbed on PATH and every invocation is logged, so the
@@ -163,6 +163,16 @@ cat > "$STUBS/sleep" <<'STUB'
 printf '%s\n' "$*" >> "${SLOG:-/dev/null}"
 STUB
 chmod +x "$STUBS/layout.sh" "$STUBS/herdr" "$STUBS/lsof" "$STUBS/sleep"
+# A jq that is a mise shim reads the mise.toml of the directory it runs in, and every section-X
+# repository holds one: wt-rm's jq calls then fail on this machine for reasons that have
+# nothing to do with wt-rm. Pin the first jq on PATH that is not a shim.
+for jqbin in $(whence -ap jq); do
+  [[ "${jqbin:A:t}" == mise ]] && continue
+  print -r -- "#!/bin/sh
+exec '$jqbin' \"\$@\"" > "$STUBS/jq"
+  chmod +x "$STUBS/jq"
+  break
+done
 TEARDOWN_SRC="$(cd "${0:h}/.." && pwd)/dot_local/bin/executable_wt-teardown"
 [[ -r "$TEARDOWN_SRC" ]] || { print -ru2 -- "cannot read $TEARDOWN_SRC"; exit 2 }
 print -r -- "#!/bin/sh
@@ -195,7 +205,9 @@ chmod +x "$STUBS/xreview-rpc"
 # A call whose stdin is not /dev/null is also logged to $STDIN_LOG (X13b).
 # MOCK_MISE_* modes: SHOW_RC, SHOW_RAW (verbatim stdout), SHOW_STDERR, and SHOW_FAIL_AFTER_TRUST
 # fail or replace the read (SHOW_FAIL_DIR fails it for that one -C directory only, from the
-# start; SHOW_FAIL_DIR_AFTER_TRUST does the same but only once a trust has been logged);
+# start; SHOW_FAIL_DIR_AFTER_TRUST does the same but only once a trust has been logged;
+# SHOW_FAIL_WHEN=<file> fails every read while <file> exists, so another stub's side effect,
+# such as the Herdr stub's MOCK_H_CLOSE_TOUCH, can make the read fail from then on);
 # RACE_CONTENT rewrites the file under `trust`, MAIN_FLIP drops a
 # path's trust under it, TRUST_RC and UNTRUST_RC fail the call, TRUST_NOOP succeeds without
 # recording anything. Any other invocation exits 3, so a call the code was never meant to
@@ -211,6 +223,7 @@ drop() { P="$1" awk '{ k = ENVIRON["P"] "\t"; if (substr($0, 1, length(k)) != k)
 if [ "${1:-}" = -C ] && [ "${3:-}" = trust ] && [ "${4:-}" = --show ] && [ $# -eq 4 ]; then
   [ "${MOCK_MISE_SHOW_RC:-0}" != 0 ] && exit "$MOCK_MISE_SHOW_RC"
   if [ -n "${MOCK_MISE_SHOW_FAIL_DIR:-}" ] && [ "$2" = "$MOCK_MISE_SHOW_FAIL_DIR" ]; then exit 1; fi
+  if [ -n "${MOCK_MISE_SHOW_FAIL_WHEN:-}" ] && [ -e "$MOCK_MISE_SHOW_FAIL_WHEN" ]; then exit 1; fi
   if [ -n "${MOCK_MISE_SHOW_FAIL_AFTER_TRUST:-}" ] && grep -q '^trust /' "$MLOG"; then exit 1; fi
   if [ -n "${MOCK_MISE_SHOW_FAIL_DIR_AFTER_TRUST:-}" ] && [ "$2" = "$MOCK_MISE_SHOW_FAIL_DIR_AFTER_TRUST" ] && grep -q '^trust /' "$MLOG"; then exit 1; fi
   [ -n "${MOCK_MISE_SHOW_STDERR:-}" ] && printf '%b' "$MOCK_MISE_SHOW_STDERR" >&2
@@ -276,6 +289,12 @@ nomise_path() {
 }
 # mise_seed <file> — record the file's current content as trusted in the stub's store.
 mise_seed() { print -r -- "$1"$'\t'"$(shasum -a 256 < "$1" | cut -d' ' -f1)" >> "$MISE_STUB_STORE" }
+# mise_unseed <file> — drop the file's entries from the store, keyed exactly as the stub's drop
+# is, so the file is untrusted again with its content unchanged.
+mise_unseed() {
+  P="$1" awk '{ k = ENVIRON["P"] "\t"; if (substr($0, 1, length(k)) != k) print }' "$MISE_STUB_STORE" > "$MISE_STUB_STORE.n"
+  mv "$MISE_STUB_STORE.n" "$MISE_STUB_STORE"
+}
 export DEV_LAYOUT="$STUBS/layout.sh"
 
 # --- SIGINT delay injector --------------------------------------------------
@@ -384,7 +403,7 @@ setup() {   # fresh $HOME with Code/Org/repo, fresh logs, default mock behaviour
         MOCK_XRPC_RC MOCK_XRPC_OUT MOCK_XRPC_ERR MOCK_XRPC_SIGNAL MOCK_XRPC_TO_LLOG \
         MOCK_MISE_SHOW_RC MOCK_MISE_SHOW_RAW MOCK_MISE_SHOW_STDERR MOCK_MISE_SHOW_FAIL_AFTER_TRUST \
         MOCK_MISE_SHOW_FAIL_DIR MOCK_MISE_SHOW_FAIL_DIR_AFTER_TRUST MOCK_MISE_RACE_CONTENT MOCK_MISE_MAIN_FLIP MOCK_MISE_TRUST_RC MOCK_MISE_UNTRUST_RC \
-        MOCK_MISE_TRUST_NOOP
+        MOCK_MISE_TRUST_NOOP MOCK_MISE_SHOW_FAIL_WHEN
 }
 # run <dir> <command...> — source the functions fresh and run one command in $dir.
 # A subshell per scenario keeps zsh options/state from leaking between tests.
@@ -3721,6 +3740,162 @@ has "wt: mise trust carried to ~/Code/Org/repo-x36/mise.toml (trusted in ~/Code/
 mlog_no_line "-C $HOME/Code/Org/sib-a trust --show" "X36 an earlier sibling is never read"
 mlog_line "trust $X/mise.toml" "X36 the tracked config is trusted in the worktree"
 hook_ran "X36 the setup hook runs"
+
+# --- wt-rm checks mise trust before it disrupts anything (spec §5) ---------------------
+# xrfix <slug> — xfix's repository with a git-ignored mise.local.toml (so the worktree stays
+# clean), a hook that records its `setup` and `teardown` verbs, both configs trusted in main,
+# and the worktree $X already made by `wt`, with fresh herdr and mise logs.
+xrfix() {
+  xfix "$1"
+  print -r -- 'mise.local.toml' > "$REPO/.gitignore"
+  git -C "$REPO" add .gitignore; git -C "$REPO" commit -q -m ignore
+  mkhook "$REPO" "#!/bin/sh
+case \"\$1\" in
+  setup) touch '$ROOTTMP/setup-ran' ;;
+  teardown) touch '$ROOTTMP/teardown-ran' ;;
+esac"
+  xseed
+  run "$REPO" wt "$1"
+  [[ "$RC" == 0 ]] || _fail "xrfix $1: wt failed (rc=$RC)"
+  : > "$HLOG"; : > "$MLOG"
+}
+# xr_herdr — a running default Herdr session holding a workspace at $X (section E's fixture),
+# so a close that never happens cannot pass for one that did.
+xr_herdr() {
+  export MOCK_H_SESSION_LIST="{\"sessions\":[{\"default\":true,\"name\":\"default\",\"running\":true,\"session_dir\":\"$ROOTTMP/default\"}]}"
+  export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[{\"workspace_id\":\"wx\",\"worktree\":{\"checkout_path\":\"$X\"}}]}}"
+  export MOCK_H_PANES='{"result":{"panes":[]}}'
+}
+teardown_ran()    { [[ -e "$ROOTTMP/teardown-ran" ]] && _pass "$1" || _fail "$1" }
+teardown_not_ran() { [[ -e "$ROOTTMP/teardown-ran" ]] && _fail "$1" || _pass "$1" }
+dir_there() { [[ -d "$1" ]] && _pass "$2" || _fail "$2" }
+dir_gone()  { [[ -d "$1" ]] && _fail "$2" || _pass "$2" }
+
+# XR1: an untrusted config stops step 1 before any Herdr call, hook or removal.
+xrfix xr1; xr_herdr
+print -r -- 'b=2' > "$X/mise.local.toml"
+run "$REPO" wt-rm xr1
+rc_is 1 "XR1 a config that matches no trusted copy refuses wt-rm"
+has "wt: ~/Code/Org/repo-xr1/mise.local.toml is not trusted: $XNONE." "XR1 the refusal names the file and the new reason"
+has "wt-rm: nothing was closed or removed — review the mise config above, then: wt-rm xr1" "XR1 the step-1 line follows"
+r1="$(oline "mise.local.toml is not trusted")"; r2="$(oline "nothing was closed or removed")"
+[[ -n "$r1" && -n "$r2" ]] && (( r1 < r2 )) && _pass "XR1 the step-1 line comes after the report" || _fail "XR1 the step-1 line comes after the report ($r1, $r2)"
+eq "$(<$HLOG)" "" "XR1 Herdr is not called at all"
+teardown_not_ran "XR1 the teardown hook does not run"
+dir_there "$X" "XR1 the checkout still exists"
+mlog_no_line "trust $X/mise.local.toml" "XR1 nothing is trusted"
+
+# XR2: a config main vouches for is carried, then wt-rm goes through teardown and removal.
+xrfix xr2; xr_herdr
+mise_unseed "$X/mise.local.toml"
+run "$REPO" wt-rm xr2
+rc_is 0 "XR2 a config that main vouches for does not stop wt-rm"
+mlog_line "trust $X/mise.local.toml" "XR2 the config is trusted in the worktree"
+eq "$(mlog_count "trust $X/")" "1" "XR2 ... and only that one"
+has "wt: mise trust carried to ~/Code/Org/repo-xr2/mise.local.toml (trusted in ~/Code/Org/repo)" "XR2 the carried line names main"
+hlogged "workspace close" "XR2 the Herdr workspace is closed"
+teardown_ran "XR2 the teardown hook runs"
+dir_gone "$X" "XR2 the checkout is removed (a Herdr-owned lock, double force)"
+
+# XR3: main's own read fails and a sibling vouches: the cannot-vouch line, then the carry.
+xrfix xr3; xr_herdr
+mise_unseed "$X/mise.local.toml"
+xsib -b s-xr3 "$HOME/Code/Org/sib-xr3"
+print -r -- 'b=1' > "$HOME/Code/Org/sib-xr3/mise.local.toml"; mise_seed "$HOME/Code/Org/sib-xr3/mise.local.toml"
+MOCK_MISE_SHOW_FAIL_DIR="$REPO" run "$REPO" wt-rm xr3
+rc_is 0 "XR3 a sibling vouches when main cannot be read"
+has "wt: cannot read mise's trust status for ~/Code/Org/repo — it cannot vouch." "XR3 main's failed read is reported"
+has "wt: mise trust carried to ~/Code/Org/repo-xr3/mise.local.toml (trusted in ~/Code/Org/sib-xr3)" "XR3 the sibling is named"
+teardown_ran "XR3 the teardown hook runs"
+dir_gone "$X" "XR3 the checkout is removed"
+
+# XR4: the destination's own read fails: nothing is trusted and nothing is closed.
+xrfix xr4; xr_herdr
+MOCK_MISE_SHOW_FAIL_DIR="$X" run "$REPO" wt-rm xr4
+rc_is 1 "XR4 an unreadable destination refuses wt-rm"
+has "wt: cannot read mise's trust status for ~/Code/Org/repo-xr4 — trusting nothing." "XR4 the carry's own line"
+has "wt-rm: nothing was closed or removed — review the mise config above, then: wt-rm xr4" "XR4 the step-1 line"
+eq "$(<$HLOG)" "" "XR4 Herdr is not called at all"
+teardown_not_ran "XR4 the teardown hook does not run"
+dir_there "$X" "XR4 the checkout still exists"
+
+# XR5a: no hook, no check: mise is never called, whatever the configs say.
+cat "$MLOG" >> "$XALL"; setup
+print -r -- 'a=1' > "$REPO/mise.toml"; git -C "$REPO" add mise.toml; git -C "$REPO" commit -q -m cfg
+X="$HOME/Code/Org/repo-xr5a"
+mise_seed "$REPO/mise.toml"
+run "$REPO" wt xr5a
+[[ "$RC" == 0 ]] || _fail "XR5a fixture: wt failed (rc=$RC)"
+mise_unseed "$X/mise.toml"
+: > "$MLOG"
+run "$REPO" wt-rm xr5a
+rc_is 0 "XR5a a repository with no hook removes its worktree despite an untrusted config"
+eq "$(<$MLOG)" "" "XR5a mise is never called"
+dir_gone "$X" "XR5a the checkout is removed"
+
+# XR5b: the checkout is already gone: only the registration is finished, and mise is never called.
+xrfix xr5b
+rm -rf "$X"
+run "$REPO" wt-rm xr5b
+rc_is 0 "XR5b a checkout that is already gone has its registration finished"
+has "✓ removed Git's registration of $X" "XR5b the registration is removed"
+eq "$(<$MLOG)" "" "XR5b mise is never called"
+teardown_not_ran "XR5b the teardown hook does not run"
+
+# XR6: Herdr's close leaves a config untrusted: wt-rm stops at the hook, workspaces closed.
+xrfix xr6; xr_herdr
+MOCK_H_CLOSE_TOUCH="$X/mise.local.toml" run "$REPO" wt-rm xr6
+rc_is 1 "XR6 a config that is untrusted once the workspaces are closed stops wt-rm"
+has "wt-rm: ~/Code/Org/repo-xr6 has untrusted mise config (mise.local.toml) — teardown not run, Herdr workspaces closed." "XR6 the headline names the file"
+has "    Review the mise config, then retry: wt-rm xr6" "XR6 the retry line"
+hlogged "workspace close" "XR6 the workspace was closed"
+teardown_not_ran "XR6 the teardown hook does not run"
+dir_there "$X" "XR6 the checkout still exists"
+hasnt "is not trusted" "XR6 the re-check only reads: it explains nothing"
+grep -q '^trust ' "$MLOG" && _fail "XR6 the re-check trusts nothing" || _pass "XR6 the re-check trusts nothing"
+
+# XR6b: every untrusted file is named, in mise's order. A hard link lets one truncation
+# untrust two names.
+xrfix xr6b; xr_herdr
+print -r -- '.mise.toml' >> "$REPO/.git/info/exclude"
+ln "$X/mise.local.toml" "$X/.mise.toml"
+mise_seed "$X/.mise.toml"; : > "$MLOG"
+MOCK_H_CLOSE_TOUCH="$X/mise.local.toml" run "$REPO" wt-rm xr6b
+rc_is 1 "XR6b two untrusted files stop wt-rm"
+has "has untrusted mise config (mise.local.toml, .mise.toml) — teardown not run, Herdr workspaces closed." "XR6b both are named, comma separated"
+teardown_not_ran "XR6b the teardown hook does not run"
+
+# XR7: the read right before teardown fails.
+xrfix xr7; xr_herdr
+MOCK_H_CLOSE_TOUCH="$ROOTTMP/closed" MOCK_MISE_SHOW_FAIL_WHEN="$ROOTTMP/closed" run "$REPO" wt-rm xr7
+rc_is 1 "XR7 an unreadable trust status before teardown stops wt-rm"
+has "wt-rm: cannot read mise's trust status for ~/Code/Org/repo-xr7 — teardown not run, Herdr workspaces closed." "XR7 the headline"
+has "    Review the mise config, then retry: wt-rm xr7" "XR7 the retry line"
+hlogged "workspace close" "XR7 the workspace was closed"
+teardown_not_ran "XR7 the teardown hook does not run"
+dir_there "$X" "XR7 the checkout still exists"
+hasnt "has untrusted mise config" "XR7 a failed read is not reported as untrusted config"
+
+# XR8: another owner's lock is classified before the carry, so a refused removal makes no mise call.
+xrfix xr8; xr_herdr
+mise_unseed "$X/mise.local.toml"
+git -C "$REPO" worktree unlock "$X" 2>/dev/null
+git -C "$REPO" worktree lock --reason "user maintenance" "$X"
+run "$REPO" wt-rm xr8
+rc_is 1 "XR8 a worktree locked by another owner is refused"
+has "is locked for another reason: user maintenance" "XR8 the lock is the reason"
+eq "$(<$MLOG)" "" "XR8 mise is not called before the lock is classified"
+eq "$(<$HLOG)" "" "XR8 Herdr is not called"
+
+# XR9: the uncommitted-changes check comes first as well.
+xrfix xr9; xr_herdr
+mise_unseed "$X/mise.local.toml"
+print -r -- 'wip' > "$X/dirty.txt"
+run "$REPO" wt-rm xr9
+rc_is 1 "XR9 a dirty worktree is refused"
+has "has uncommitted changes" "XR9 the dirty tree is the reason"
+eq "$(<$MLOG)" "" "XR9 mise is not called before check 1"
+eq "$(<$HLOG)" "" "XR9 Herdr is not called"
 
 # mise_sweep <log> — sets $bad to every trust call in <log> aimed beyond one worktree file.
 mise_sweep() {

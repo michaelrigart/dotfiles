@@ -1404,11 +1404,15 @@ _wt_rm_registration() {
 # same repo, never from inside the one being removed.
 #
 # Each step is guarded right before it happens, and every check fails closed:
-#   1. hook validation and check 1 (_wt_clean), before anything is disrupted
+#   1. check 1 (_wt_clean), hook validation and the lock classification, then the mise trust
+#      carry (_wt_mise_trust, only when the hook is valid): all before anything is
+#      disrupted, the carry last because it is the one that writes
 #   2. stop the checkout's Herdr workspaces: a live process holding the directory
 #      open is how a husk is left behind, so this must come first
 #   3. check 2, because shutdown can flush files (a live app writing on exit)
-#   4. the .worktreehook teardown verb, idempotent so a retry re-runs it
+#   4. the mise trust re-check (_wt_mise_show, read-only, only when the hook is valid),
+#      because shutdown can also rewrite a git-ignored mise config check 2 cannot see;
+#      then the .worktreehook teardown verb, idempotent so a retry re-runs it
 #   5. check 3, tying non-ignored teardown output to its cause
 #   6. release the checkout's Codex sessions (`xreview-rpc release`): the daemon keeps a
 #      thread's MCP helpers running in the checkout for ~60 s after its TUI goes. Only
@@ -1419,7 +1423,7 @@ _wt_rm_registration() {
 #      some processes exit only after their workspace closes. A heuristic, not a proof.
 #
 # A checkout that is gone while Git still registers it — a removal that failed after
-# deleting it — skips hook validation, checks 1-4, teardown and the release (steps 1 and 3-7):
+# deleting it — skips hook validation, the mise trust checks, checks 1-4, teardown and the release (steps 1 and 3-7):
 # _wt_rm_registration proves the absence, reruns the lock classification and step 2,
 # and removes only the registration.
 #
@@ -1455,9 +1459,12 @@ wt-rm() {
          _wt_git -C "$dest" status --porcelain >/dev/null; return 1 ;;
     esac
 
-    # Hook configuration, still before anything is disrupted.
+    # Hook configuration, still before anything is disrupted. Its status is kept: only a
+    # valid hook (0) opts the repository in to the mise trust checks below.
+    local -i hook_rc
     _wt_hook_check "$main" >/dev/null 2>&1
-    (( $? == 1 )) && { _wt_hook_check "$main"; return 1 }
+    hook_rc=$?
+    (( hook_rc == 1 )) && { _wt_hook_check "$main"; return 1 }
 
     # Classify the Git lock before stopping anything. Only our exact reason
     # authorizes the double-force removal; any other lock is a preservation request.
@@ -1469,6 +1476,14 @@ wt-rm() {
       *) return 1 ;;
     esac
 
+    # Mise trust, last of the checks that write nothing and before the first Herdr call: the
+    # teardown hook runs mise in $dest, and a config nobody has looked at must not load
+    # there. Carries what an already-trusted checkout vouches for; refuses the rest.
+    if (( hook_rc == 0 )) && ! _wt_mise_trust "$main" "$dest"; then
+      print -ru2 -- "wt-rm: nothing was closed or removed — review the mise config above, then: wt-rm $qb"
+      return 1
+    fi
+
     # Close the checkout's own Herdr workspaces; refuse first if anything else is in it (spec §1).
     _wt_stop_herdr_workspaces "$dest" || return 1
 
@@ -1479,6 +1494,26 @@ wt-rm() {
       1) print -ru2 -- "wt-rm: closing Herdr workspaces left changes in $dest — inspect it, then retry."; return 1 ;;
       *) print -ru2 -- "wt-rm: cannot determine whether $dest is clean after closing Herdr workspaces — refusing."; return 1 ;;
     esac
+
+    # Mise trust again, read-only: closing the workspaces can rewrite a git-ignored mise config
+    # that check 2 does not see, and the hook must not run against one nobody has trusted.
+    if (( hook_rc == 0 )); then
+      local mise_line mise_shown
+      local -a mise_untrusted
+      if ! mise_shown="$(_wt_mise_show "$dest")"; then
+        print -ru2 -- "wt-rm: cannot read mise's trust status for $(_wt_tilde "$dest") — teardown not run, Herdr workspaces closed."
+        print -ru2 -- "    Review the mise config, then retry: wt-rm $qb"
+        return 1
+      fi
+      for mise_line in ${(f)mise_shown}; do
+        [[ "$mise_line" == untrusted$'\t'* ]] && mise_untrusted+=( "${mise_line#untrusted$'\t'}" )
+      done
+      if (( $#mise_untrusted )); then
+        print -ru2 -- "wt-rm: $(_wt_tilde "$dest") has untrusted mise config (${(j:, :)mise_untrusted}) — teardown not run, Herdr workspaces closed."
+        print -ru2 -- "    Review the mise config, then retry: wt-rm $qb"
+        return 1
+      fi
+    fi
 
     if ! _wt_hook_run "$main" "$dest" "$branch" "$slug" teardown; then
       print -ru2 -- "wt-rm: .worktreehook teardown failed — $dest kept, Herdr workspaces closed."
