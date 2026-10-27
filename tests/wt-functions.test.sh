@@ -3927,7 +3927,7 @@ hasline "REST=SENTINEL" "Y7 ... and reads nothing more"
 eq "$stdin_bad" "" "Y8 no mise call of the reopen carry or the popup reads the terminal"
 cat "$MLOG" >> "$XALL"
 mise_sweep "$XALL"
-eq "$bad" "" "Y18 the reopen's mise trust is never bare, never --all, never aimed at the main checkout"
+eq "$bad" "" "Y18 section Y's mise trust is never bare, never --all, never aimed at the main checkout"
 [[ "$(grep -c '^trust ' "$XALL")" -gt 0 ]] && _pass "Y18 section Y's trust calls were collected" || _fail "Y18 section Y's trust calls were collected"
 
 export HOME="$REAL_HOME"
