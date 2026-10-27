@@ -434,10 +434,13 @@ setup() {   # fresh $HOME with Code/Org/repo, fresh logs, default mock behaviour
   REPO="$HOME/Code/Org/repo"
   git init -q -b main "$REPO"
   git -C "$REPO" commit -q --allow-empty -m init
+  # The mise stub's trust store lives beside the stub, not under $ROOTTMP: `drop` renames a
+  # temp file over it, which would move the change time of $ROOTTMP, a directory above every
+  # checkout, and the carry pins those (X9 and X26 must reach the re-check, not the pin).
   export DLOG="$ROOTTMP/layout.log" \
          HLOG="$ROOTTMP/herdr.log" LLOG="$ROOTTMP/lsof.log" SLOG="$ROOTTMP/sleep.log" \
          FLOG="$ROOTTMP/git-fail.log" XLOG="$ROOTTMP/xreview-rpc.log" MOCK_H_CLOSED_FILE="$ROOTTMP/herdr-closed" \
-         MLOG="$ROOTTMP/mise.log" MISE_STUB_STORE="$ROOTTMP/mise-trusted"
+         MLOG="$ROOTTMP/mise.log" MISE_STUB_STORE="$MISESTUBS/mise-trusted"
   : > "$DLOG"; : > "$HLOG"; : > "$LLOG"; : > "$FLOG"; : > "$SLOG"; : > "$XLOG"; : > "$MOCK_H_CLOSED_FILE"
   : > "$MLOG"; : > "$MISE_STUB_STORE"
   export MOCK_LAYOUT_RC=0 MOCK_H_SESSION_LIST='{"sessions":[]}' MOCK_H_SESSION_RC=0 \
@@ -3805,8 +3808,7 @@ mise_seed "$REPO/mise.toml"
 MOCK_MISE_FLIP_RACE='evil=1\n' run "$REPO" wt x37
 rc_is 1 "X37 a file rewritten while it is being trusted is refused"
 has "wt: ~/Code/Org/repo-x37/mise.toml is not trusted: $XCHG." "X37 the reason"
-hasline "$XHINT" "X37 the hint follows the headline"
-hasline "    review: cat ~/Code/Org/repo-x37/mise.toml" "X37 then the review line"
+has "wt: ~/Code/Org/repo-x37/mise.toml is not trusted: $XCHG."$'\n'"$XHINT"$'\n'"    review: cat ~/Code/Org/repo-x37/mise.toml" "X37 the hint sits between the headline and the review line"
 hasnt "mise.local.toml is not trusted: $XCHG" "X37 the other file is refused for its own reason"
 mlog_line "trust $X/mise.toml" "X37 the file was trusted (the race really ran)"
 mlog_line "trust --untrust $X/mise.toml" "X37 the trust is withdrawn"
@@ -3856,13 +3858,33 @@ xsib "$HOME/Code/Org/sib-x41" x41-src; mise_seed "$HOME/Code/Org/sib-x41/.config
 MOCK_MISE_DIR_SWAP=.config run "$REPO" wt x41 x41-src
 rc_is 1 "X41 a directory swapped while its file is being trusted is refused"
 has "wt: ~/Code/Org/repo-x41/.config/mise.toml is not trusted: $XCHG." "X41 the reason"
-hasline "$XHINT" "X41 the hint follows the headline"
+has "wt: ~/Code/Org/repo-x41/.config/mise.toml is not trusted: $XCHG."$'\n'"$XHINT"$'\n'"    review: cat ~/Code/Org/repo-x41/.config/mise.toml" "X41 the hint sits between the headline and the review line"
 mlog_line "trust $X/.config/mise.toml" "X41 the file was trusted (the swap really ran)"
 mlog_line "trust --untrust $X/.config/mise.toml" "X41 the trust is withdrawn"
 hook_not_ran "X41 the setup hook does not run"
 eq "$(awk -v p="$X/.config/mise.toml" 'index($0, p "\t") == 1 { n++ } END { print n + 0 }' "$MISE_STUB_STORE")" "0" "X41 the store holds no entry for the file afterwards"
 eq "$(<$X/.config/mise.toml)" "c=1" "X41 the original directory is back"
 hasnt "carried to ~/Code/Org/repo-x41/.config" "X41 the file is not reported as carried"
+
+# X42: _wt_mise_ident pins what a symlinked component leads to, not just the link. The path is
+# <base>/link/mise.toml with link -> <elsewhere>/tgt; renaming tgt aside and back moves its own
+# change time and its parent's, neither of which is on the written chain (the link node, its
+# parent <base> and the file are untouched). X43: an untouched path reads the same twice.
+setup
+XI="$ROOTTMP/xi"; mkdir -p "$XI/base" "$XI/elsewhere/tgt"
+print -r -- 'a=1' > "$XI/elsewhere/tgt/mise.toml"; ln -s "$XI/elsewhere/tgt" "$XI/base/link"
+run "$REPO" _wt_mise_ident "$XI/base/link/mise.toml"; xi1="$OUT"
+run "$REPO" _wt_mise_ident "$XI/base/link/mise.toml"; xi1b="$OUT"
+eq "$xi1b" "$xi1" "X43 an untouched path through a symlinked directory reads the same twice"
+mv "$XI/elsewhere/tgt" "$XI/elsewhere/tgt.aside"; mv "$XI/elsewhere/tgt.aside" "$XI/elsewhere/tgt"
+run "$REPO" _wt_mise_ident "$XI/base/link/mise.toml"; xi2="$OUT"
+[[ -n "$xi1" && "$xi2" != "$xi1" ]] && _pass "X42 a symlink's target directory swapped aside and back changes the identity" || _fail "X42 a symlink's target directory swapped aside and back changes the identity"
+run "$REPO" _wt_mise_ident "$XI/base/plain.toml"
+rc_is 1 "X42 a path that does not exist has no identity"
+print -r -- 'a=1' > "$XI/base/plain.toml"
+run "$REPO" _wt_mise_ident "$XI/base/plain.toml"; xi3="$OUT"
+run "$REPO" _wt_mise_ident "$XI/base/plain.toml"
+eq "$OUT" "$xi3" "X43 an untouched plain path reads the same twice"
 
 # --- wt-rm checks mise trust before it disrupts anything (spec §5) ---------------------
 # xrfix <slug> — xfix's repository with a git-ignored mise.local.toml (so the worktree stays
