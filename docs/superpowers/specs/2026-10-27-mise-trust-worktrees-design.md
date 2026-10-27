@@ -192,8 +192,8 @@ skips that candidate, and a failed read of the worktree list stops (§2, §3); a
 than main must share main's Git common directory; three refusal reasons, and the success line
 names the vouching checkout; the `wt-rm` carry runs after the lock classification, and teardown
 gets a read-only re-check; in `wt-rm` too a failed candidate read only skips that candidate,
-and of the reads only a failed one of `<dest>` or of the worktree list refuses; the reopen
-points at the report lines, not `wt-prepare`; the config pin lives in
+and of the reads only a failed one of `<dest>` or of the worktree list refuses; the reopen's
+refusal lines point at the report lines, not `wt-prepare`; the config pin lives in
 `tests/wt-functions.test.sh`. Ruled by the controller during execution (2026-10-27): a reopen
 that carried a file adds the never-prepared `wt-prepare` line (§6), and it holds the popup.
 

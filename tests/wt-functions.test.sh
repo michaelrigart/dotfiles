@@ -3766,7 +3766,7 @@ run "$REPO" wt 'fix!bar' fixbar-src
 rc_is 1 "Y11 a preparation refusal for a branch with !"
 has "review the mise config above, then: wt-prepare 'fix!bar' && wt 'fix!bar'" "Y11 the refusal recovery line quotes it twice"
 
-setup
+cat "$MLOG" >> "$XALL"; setup
 mkhook "$REPO" '#!/bin/sh
 [ "$1" = setup ] && exit 5
 [ "$1" = teardown ] && exit 4
@@ -3781,7 +3781,7 @@ rc_is 1 "Y12 a failing teardown for a branch with !"
 has "Fix it and retry: wt-rm 'fix!baz'" "Y12 the wt-rm retry line quotes it"
 has "Or resume work with: wt-prepare 'fix!baz' && wt 'fix!baz'" "Y12 ... and the resume line"
 
-setup
+cat "$MLOG" >> "$XALL"; setup
 git -C "$REPO" branch 'fix!old'
 run "$REPO" wt 'fix!old' main
 has "wt: branch 'fix!old' already exists — drop the start point." "Y13 the existing-branch refusal quotes it"
@@ -3835,7 +3835,7 @@ rc_is 0 "Y2 reopening with everything trusted succeeds"
 hasnt "anyway" "Y2 it does not say it opens anyway"
 hasnt "is not trusted" "Y2 it reports no refusal"
 hasnt "mise trust carried" "Y2 nothing is carried"
-hasnt "never prepared" "Y16 a reopen that carried nothing prints no never-prepared line"
+hasnt "never prepared" "Y2 a reopen that carried nothing prints no never-prepared line"
 grep -q '^trust ' "$MLOG" && _fail "Y2 mise trust is never called" || _pass "Y2 mise trust is never called"
 
 xfix y3; xseed
@@ -3880,21 +3880,24 @@ MOCK_MISE_RACE_CONTENT='raced\n' MOCK_MISE_UNTRUST_RC=1 run "$REPO" wt y15
 rc_is 0 "Y15 a failed withdraw on a reopen does not stop it"
 has "wt: could not withdraw mise trust from ~/Code/Org/repo-y15/mise.local.toml — it may still be trusted; check with: mise -C ~/Code/Org/repo-y15 trust --show" "Y15 the withdraw line is printed"
 has "wt: opening ~/Code/Org/repo-y15 anyway" "Y15 and the opening-anyway line"
+hasnt "never prepared" "Y15 a withdrawn file is not counted as carried"
 dlogged "--worktree $REPO $X" "Y15 the workspace opens"
 hook_not_ran "Y15 the setup hook does not run"
 
-# Y19: a reopen that carries one file and refuses another prints both closing lines.
+# Y16: a reopen that carries one file and refuses another prints both closing lines.
 xfix y16; mise_seed "$REPO/mise.toml"
 run "$REPO" wt y16
 print -r -- 'edited' >> "$X/mise.toml"
 mise_seed "$REPO/mise.local.toml"
 run "$REPO" wt y16
-rc_is 0 "Y19 a partial carry on a reopen succeeds"
-has "wt: mise trust carried to ~/Code/Org/repo-y16/mise.local.toml" "Y19 one file is carried"
-has "wt: ~/Code/Org/repo-y16/mise.toml is not trusted" "Y19 the other is refused"
-has "wt: opening ~/Code/Org/repo-y16 anyway" "Y19 the opening-anyway line is printed"
-has "wt: if this worktree was never prepared, run: wt-prepare y16" "Y19 so is the never-prepared line"
-hook_not_ran "Y19 the setup hook does not run"
+rc_is 0 "Y16 a partial carry on a reopen succeeds"
+has "wt: mise trust carried to ~/Code/Org/repo-y16/mise.local.toml" "Y16 one file is carried"
+has "wt: ~/Code/Org/repo-y16/mise.toml is not trusted" "Y16 the other is refused"
+has "wt: opening ~/Code/Org/repo-y16 anyway" "Y16 the opening-anyway line is printed"
+has "wt: if this worktree was never prepared, run: wt-prepare y16" "Y16 so is the never-prepared line"
+r1="$(oline "opening ~/Code/Org/repo-y16 anyway")"; r2="$(oline "if this worktree was never prepared")"
+[[ -n "$r1" && -n "$r2" ]] && (( r1 < r2 )) && _pass "Y16 the opening-anyway line comes before the never-prepared line" || _fail "Y16 the opening-anyway line comes before the never-prepared line ($r1, $r2)"
+hook_not_ran "Y16 the setup hook does not run"
 
 # Y17: the never-prepared line quotes a branch with ! like every other recovery line.
 xfix 'y17!b'; mise_seed "$REPO/mise.toml"
