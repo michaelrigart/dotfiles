@@ -3483,6 +3483,7 @@ rc_is 0 "X24 a sibling vouches when main's copy is untrusted"
 has "wt: mise trust carried to ~/Code/Org/repo-x24/mise.toml (trusted in ~/Code/Org/sib-x24)" "X24 the line names the sibling"
 mlog_line "trust $X/mise.toml" "X24 the tracked config is trusted"
 hook_ran "X24 the setup hook runs"
+mlog_line "trust $HOME/Code/Org/repo-x24/mise.toml" "X24 the tracked config is trusted in the worktree"
 
 # X25: only untrusted or differing copies exist.
 xfix x25
@@ -3496,6 +3497,47 @@ has "wt: ~/Code/Org/repo-x25/mise.toml is not trusted: $XNONE." "X25 the new rea
 has "    review: diff ~/Code/Org/repo/mise.toml ~/Code/Org/repo-x25/mise.toml" "X25 the diff is against main's trusted copy, not the base's untrusted one"
 mlog_no_line "trust $X/mise.toml" "X25 it is never trusted"
 hook_not_ran "X25 the setup hook does not run"
+
+# X25b: the review's baseline must be TRUSTED. The base sibling's copy differs and is
+# untrusted; main's differs and is trusted: the diff is against main's.
+xfix x25b
+xbranch x25b-src "$XA2"
+xseed
+xsib "$HOME/Code/Org/sib-x25b" x25b-src
+print -r -- 'a=3' > "$HOME/Code/Org/sib-x25b/mise.toml"
+run "$REPO" wt x25b x25b-src
+rc_is 1 "X25b an untrusted differing base copy is refused"
+has "wt: ~/Code/Org/repo-x25b/mise.toml is not trusted: $XNONE." "X25b the new reason"
+has "    review: diff ~/Code/Org/repo/mise.toml ~/Code/Org/repo-x25b/mise.toml" "X25b the diff skips the base's untrusted copy for main's trusted one"
+hasnt "sib-x25b/mise.toml ~" "X25b ... and never offers the untrusted copy as a baseline"
+mlog_no_line "trust $X/mise.toml" "X25b it is never trusted"
+hook_not_ran "X25b the setup hook does not run"
+
+# X25c: main's copy is plain and differs but is untrusted, and nothing else qualifies: cat.
+xfix x25c
+xbranch x25c-src "$XA2"
+mise_seed "$REPO/mise.local.toml"
+run "$REPO" wt x25c x25c-src
+rc_is 1 "X25c no trusted copy at all is refused"
+has "wt: ~/Code/Org/repo-x25c/mise.toml is not trusted: $XNONE." "X25c the new reason"
+has "    review: cat ~/Code/Org/repo-x25c/mise.toml" "X25c an untrusted differing copy is no baseline: the file itself is shown"
+hasnt "review: diff" "X25c and no diff is offered"
+mlog_no_line "trust $X/mise.toml" "X25c it is never trusted"
+hook_not_ran "X25c the setup hook does not run"
+
+# X25d: main's copy is a symlink to a trusted file that differs: it is no baseline either.
+xfix x25d
+xbranch x25d-src "$XA2"
+print -r -- 'a=1' > "$ROOTTMP/outside.toml"
+rm "$REPO/mise.toml"; ln -s "$ROOTTMP/outside.toml" "$REPO/mise.toml"
+xseed
+run "$REPO" wt x25d x25d-src
+rc_is 1 "X25d a symlinked main copy is refused"
+has "wt: ~/Code/Org/repo-x25d/mise.toml is not trusted: $XNONE." "X25d the new reason"
+has "    review: cat ~/Code/Org/repo-x25d/mise.toml" "X25d a symlinked copy is no baseline: the file itself is shown"
+hasnt "review: diff" "X25d and no diff is offered"
+mlog_no_line "trust $X/mise.toml" "X25d it is never trusted"
+hook_not_ran "X25d the setup hook does not run"
 
 # X26: the re-check is bound to the vouching candidate; no other is tried.
 xfix x26
@@ -3519,7 +3561,9 @@ xsib -b v27 "$HOME/Code/Org/sib-b27" x27a-src; mise_seed "$HOME/Code/Org/sib-b27
 run "$REPO" wt x27a x27a-src
 rc_is 0 "X27a a later sibling vouches past a missing one"
 has "wt: mise trust carried to ~/Code/Org/repo-x27a/mise.toml (trusted in ~/Code/Org/sib-b27)" "X27a the line names the live sibling"
-mlog_no_line "-C $HOME/Code/Org/sib-a27 trust --show" "X27a the missing directory is never read"
+mlog_line "trust $X/mise.toml" "X27a the tracked config is trusted in the worktree"
+hook_ran "X27a the setup hook runs"
+mlog_no_line "-C $HOME/Code/Org/sib-a27 trust --show" "X27a ... and the gone checkout is never read (defence in depth; XC2 pins the skip)"
 
 # X27b: a failed read of a candidate skips it, says so once, and reads it once.
 xfix x27b
@@ -3558,6 +3602,8 @@ run "$REPO" wt x29 x29-src
 rc_is 0 "X29 the base's checkout vouches"
 has "wt: mise trust carried to ~/Code/Org/repo-x29/mise.toml (trusted in ~/Code/Org/sib-z)" "X29 the line names the base checkout, not the earlier sibling"
 mlog_no_line "-C $HOME/Code/Org/sib-a trust --show" "X29 the other sibling is never read"
+mlog_line "trust $X/mise.toml" "X29 the tracked config is trusted in the worktree"
+hook_ran "X29 the setup hook runs"
 
 # X30: the review diffs against the base checkout's trusted, differing copy.
 xfix x30
@@ -3568,9 +3614,13 @@ print -r -- 'a=3' > "$HOME/Code/Org/sib-x30/mise.toml"; mise_seed "$HOME/Code/Or
 run "$REPO" wt x30 x30-src
 rc_is 1 "X30 a trusted copy that differs does not vouch"
 has "    review: diff ~/Code/Org/sib-x30/mise.toml ~/Code/Org/repo-x30/mise.toml" "X30 the diff is against the base checkout's copy"
+mlog_no_line "trust $X/mise.toml" "X30 it is never trusted"
+hook_not_ran "X30 the setup hook does not run"
 run "$REPO" wt-prepare x30
 rc_is 1 "X30 wt-prepare refuses again"
 has "    review: diff ~/Code/Org/repo/mise.toml ~/Code/Org/repo-x30/mise.toml" "X30 with no base the diff is against main's copy"
+mlog_no_line "trust $X/mise.toml" "X30 ... and still never trusted"
+hook_not_ran "X30 ... and the setup hook still does not run"
 
 # X31: a failed read of the worktree list during the carry trusts nothing.
 xfix x31
@@ -3593,9 +3643,11 @@ print -r -- 'b=1' > "$HOME/Code/Org/sib-x32/mise.local.toml"; mise_seed "$HOME/C
 run "$REPO" wt x32
 rc_is 0 "X32 the sibling vouches for the local config at first"
 rm -f "$X/mise.local.toml"; mkdir "$X/mise.local.toml"
-: > "$MLOG"
+cat "$MLOG" >> "$XALL"; : > "$MLOG"
+rm -f "$ROOTTMP/hook-ran"
 run "$REPO" wt-prepare x32
 rc_is 1 "X32 a directory in place of the config is refused"
+hook_not_ran "X32 the setup hook does not run"
 has "wt: ~/Code/Org/repo-x32/mise.local.toml is not trusted: $XSYM." "X32 the worktree's own side is the reason"
 has "    review: cat ~/Code/Org/repo-x32/mise.local.toml" "X32 review shows the file itself"
 mlog_no_line "trust $X/mise.local.toml" "X32 it is never trusted"
@@ -3610,9 +3662,12 @@ run "$REPO" wt x33 x33-src
 rc_is 1 "X33 a nested checkout whose own copy is untrusted does not vouch"
 has "wt: ~/Code/Org/repo-x33/mise.toml is not trusted: $XNONE." "X33 main's trusted parent config did not answer for it"
 mlog_no_line "trust $X/mise.toml" "X33 it is never trusted"
+hook_not_ran "X33 the setup hook does not run"
 mise_seed "$REPO/.claude/worktrees/h1/mise.toml"
 run "$REPO" wt-prepare x33
 rc_is 0 "X33 once its own copy is trusted it vouches"
+mlog_line "trust $X/mise.toml" "X33 the tracked config is trusted in the worktree"
+hook_ran "X33 the setup hook runs"
 has "wt: mise trust carried to ~/Code/Org/repo-x33/mise.toml (trusted in ~/Code/Org/repo/.claude/worktrees/h1)" "X33 the line names the nested checkout"
 
 # X34: the search reads a candidate once, however many files consult it.
@@ -3626,6 +3681,9 @@ run "$REPO" wt x34 x34-src
 rc_is 1 "X34 the tracked config is refused"
 has "wt: ~/Code/Org/repo-x34/mise.toml is not trusted: $XNONE." "X34 with the new reason"
 has "wt: mise trust carried to ~/Code/Org/repo-x34/mise.local.toml (trusted in ~/Code/Org/sib-x34)" "X34 the local config is carried from the sibling"
+mlog_line "trust $X/mise.local.toml" "X34 the local config is trusted in the worktree"
+mlog_no_line "trust $X/mise.toml" "X34 the tracked config is never trusted"
+hook_not_ran "X34 the setup hook does not run"
 cutln="$(mlog_ln "trust $X/mise.local.toml")"
 eq "$(head -n $((cutln - 1)) "$MLOG" | grep -Fxc -- "-C $HOME/Code/Org/sib-x34 trust --show")" "1" "X34 the sibling is read once before the first trust"
 
@@ -3637,6 +3695,8 @@ xsib "$HOME/Code/Org/sib: x35" x35-src; mise_seed "$HOME/Code/Org/sib: x35/mise.
 run "$REPO" wt x35 x35-src
 rc_is 0 "X35 a sibling whose path holds ': ' vouches"
 has "wt: mise trust carried to ~/Code/Org/repo-x35/mise.toml (trusted in ~/Code/Org/sib: x35)" "X35 the carried line shows its tilde path"
+mlog_line "trust $X/mise.toml" "X35 the tracked config is trusted in the worktree"
+hook_ran "X35 the setup hook runs"
 xfix x35
 xbranch x35-src "$XA2"
 xseed
@@ -3645,6 +3705,8 @@ print -r -- 'a=3' > "$HOME/Code/Org/sib: x35/mise.toml"; mise_seed "$HOME/Code/O
 run "$REPO" wt x35 x35-src
 rc_is 1 "X35 a trusted copy that differs is refused"
 has "    review: diff ~/'Code/Org/sib: x35/mise.toml' ~/Code/Org/repo-x35/mise.toml" "X35 the diff quotes the baseline"
+mlog_no_line "trust $X/mise.toml" "X35 it is never trusted"
+hook_not_ran "X35 the setup hook does not run"
 
 # X36: wt run from inside a sibling with no start point: the caller's checkout is the base.
 xfix x36
@@ -3656,6 +3718,8 @@ run "$HOME/Code/Org/sib-c" wt x36
 rc_is 0 "X36 the caller's checkout vouches"
 has "wt: mise trust carried to ~/Code/Org/repo-x36/mise.toml (trusted in ~/Code/Org/sib-c)" "X36 the line names the caller's checkout"
 mlog_no_line "-C $HOME/Code/Org/sib-a trust --show" "X36 an earlier sibling is never read"
+mlog_line "trust $X/mise.toml" "X36 the tracked config is trusted in the worktree"
+hook_ran "X36 the setup hook runs"
 
 # X13: over everything above, mise trust is only ever given one worktree file.
 cat "$MLOG" >> "$XALL"
@@ -3665,6 +3729,7 @@ while IFS= read -r l; do
     trust|*" trust"|*--all*) bad+="[$l] " ;;
     "trust "*/Code/Org/repo/*|"trust --untrust "*/Code/Org/repo/*|"trust "*"/co: lon/"*|"trust --untrust "*"/co: lon/"*) bad+="[$l] " ;;
     "trust "*/Code/Org/sib-*|"trust --untrust "*/Code/Org/sib-*|"trust "*"/sib: "*|"trust --untrust "*"/sib: "*) bad+="[$l] " ;;
+    "trust "*/Code/Org/other28/*|"trust --untrust "*/Code/Org/other28/*) bad+="[$l] " ;;
   esac
 done < "$XALL"
 eq "$bad" "" "X13 mise trust is never bare, never --all, never aimed at the main checkout or a sibling"
