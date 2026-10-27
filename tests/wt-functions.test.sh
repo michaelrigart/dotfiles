@@ -163,16 +163,23 @@ cat > "$STUBS/sleep" <<'STUB'
 printf '%s\n' "$*" >> "${SLOG:-/dev/null}"
 STUB
 chmod +x "$STUBS/layout.sh" "$STUBS/herdr" "$STUBS/lsof" "$STUBS/sleep"
-# A jq that is a mise shim reads the mise.toml of the directory it runs in, and every section-X
-# repository holds one: wt-rm's jq calls then fail on this machine for reasons that have
-# nothing to do with wt-rm. Pin the first jq on PATH that is not a shim.
-for jqbin in $(whence -ap jq); do
-  [[ "${jqbin:A:t}" == mise ]] && continue
-  print -r -- "#!/bin/sh
-exec '$jqbin' \"\$@\"" > "$STUBS/jq"
-  chmod +x "$STUBS/jq"
-  break
-done
+# A stale mise shim for jq (a machine artefact; `mise reshim` removes it) runs the real mise,
+# which reads the mise.toml of the directory it runs in, and every section-X repository holds
+# one: wt-rm's jq calls then fail for reasons that have nothing to do with wt-rm. This stub
+# keeps the suite from ever running the real mise through such a shim: it pins the first jq on
+# PATH that is not one.
+mkjqstub() {
+  local candidate
+  for candidate in $(whence -ap jq); do
+    [[ "${candidate:A:t}" == mise ]] && continue
+    print -r -- "#!/bin/sh
+exec ${(qq)candidate} \"\$@\"" > "$STUBS/jq"
+    chmod +x "$STUBS/jq"
+    return
+  done
+}
+mkjqstub
+unfunction mkjqstub
 TEARDOWN_SRC="$(cd "${0:h}/.." && pwd)/dot_local/bin/executable_wt-teardown"
 [[ -r "$TEARDOWN_SRC" ]] || { print -ru2 -- "cannot read $TEARDOWN_SRC"; exit 2 }
 print -r -- "#!/bin/sh
@@ -2985,7 +2992,7 @@ run "$REPO" wt-rm rel-dirty
 rc_is 1 "W7 a dirty checkout is refused at check 1"
 eq "$(<$XLOG)" "" "W7 a refusal before teardown never calls xreview-rpc"
 
-print -r -- "X. wt — mise trust is carried from any checkout of the repository into a new worktree"
+print -r -- "X. wt, wt-rm — mise trust is carried from any checkout of the repository into a new worktree; wt-rm checks it before closing anything"
 # --- mise trust carried into a new worktree ---------------------------------
 # The runner may give this suite /dev/null for stdin, which would hide a mise call that
 # forgot to redirect its own; from here on stdin is a file, so the stub can tell (X13b).
@@ -3757,7 +3764,7 @@ esac"
   xseed
   run "$REPO" wt "$1"
   [[ "$RC" == 0 ]] || _fail "xrfix $1: wt failed (rc=$RC)"
-  : > "$HLOG"; : > "$MLOG"
+  cat "$MLOG" >> "$XALL"; : > "$HLOG"; : > "$MLOG"
 }
 # xr_herdr — a running default Herdr session holding a workspace at $X (section E's fixture),
 # so a close that never happens cannot pass for one that did.
@@ -3827,7 +3834,7 @@ mise_seed "$REPO/mise.toml"
 run "$REPO" wt xr5a
 [[ "$RC" == 0 ]] || _fail "XR5a fixture: wt failed (rc=$RC)"
 mise_unseed "$X/mise.toml"
-: > "$MLOG"
+cat "$MLOG" >> "$XALL"; : > "$MLOG"
 run "$REPO" wt-rm xr5a
 rc_is 0 "XR5a a repository with no hook removes its worktree despite an untrusted config"
 eq "$(<$MLOG)" "" "XR5a mise is never called"
@@ -3854,12 +3861,23 @@ dir_there "$X" "XR6 the checkout still exists"
 hasnt "is not trusted" "XR6 the re-check only reads: it explains nothing"
 grep -q '^trust ' "$MLOG" && _fail "XR6 the re-check trusts nothing" || _pass "XR6 the re-check trusts nothing"
 
+# XR6c: the re-check only reads. Main trusts an EMPTY copy, and the close leaves the worktree's
+# copy empty too, so a re-check that ran the carry would find a witness and trust it.
+xrfix xr6c; xr_herdr
+: > "$REPO/mise.local.toml"; mise_seed "$REPO/mise.local.toml"
+MOCK_H_CLOSE_TOUCH="$X/mise.local.toml" run "$REPO" wt-rm xr6c
+rc_is 1 "XR6c a config untrusted after the close stops wt-rm even though main trusts identical bytes"
+has "has untrusted mise config (mise.local.toml) — teardown not run, Herdr workspaces closed." "XR6c the headline names the file"
+mlog_no_line "trust $X/mise.local.toml" "XR6c the re-check issues no trust"
+grep -q '^trust ' "$MLOG" && _fail "XR6c no trust call at all in this run" || _pass "XR6c no trust call at all in this run"
+teardown_not_ran "XR6c the teardown hook does not run"
+
 # XR6b: every untrusted file is named, in mise's order. A hard link lets one truncation
 # untrust two names.
 xrfix xr6b; xr_herdr
 print -r -- '.mise.toml' >> "$REPO/.git/info/exclude"
 ln "$X/mise.local.toml" "$X/.mise.toml"
-mise_seed "$X/.mise.toml"; : > "$MLOG"
+mise_seed "$X/.mise.toml"; cat "$MLOG" >> "$XALL"; : > "$MLOG"
 MOCK_H_CLOSE_TOUCH="$X/mise.local.toml" run "$REPO" wt-rm xr6b
 rc_is 1 "XR6b two untrusted files stop wt-rm"
 has "has untrusted mise config (mise.local.toml, .mise.toml) — teardown not run, Herdr workspaces closed." "XR6b both are named, comma separated"

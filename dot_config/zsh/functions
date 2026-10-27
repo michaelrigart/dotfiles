@@ -1405,12 +1405,12 @@ _wt_rm_registration() {
 #
 # Each step is guarded right before it happens, and every check fails closed:
 #   1. check 1 (_wt_clean), hook validation and the lock classification, then the mise trust
-#      carry (_wt_mise_trust, only when the hook is valid): all before anything is
+#      carry (_wt_mise_trust, unless the repository has no hook): all before anything is
 #      disrupted, the carry last because it is the one that writes
 #   2. stop the checkout's Herdr workspaces: a live process holding the directory
 #      open is how a husk is left behind, so this must come first
 #   3. check 2, because shutdown can flush files (a live app writing on exit)
-#   4. the mise trust re-check (_wt_mise_show, read-only, only when the hook is valid),
+#   4. the mise trust re-check (_wt_mise_show, read-only, unless the repository has no hook),
 #      because shutdown can also rewrite a git-ignored mise config check 2 cannot see;
 #      then the .worktreehook teardown verb, idempotent so a retry re-runs it
 #   5. check 3, tying non-ignored teardown output to its cause
@@ -1459,8 +1459,9 @@ wt-rm() {
          _wt_git -C "$dest" status --porcelain >/dev/null; return 1 ;;
     esac
 
-    # Hook configuration, still before anything is disrupted. Its status is kept: only a
-    # valid hook (0) opts the repository in to the mise trust checks below.
+    # Hook configuration, still before anything is disrupted. Its status is kept: the mise trust
+    # checks below run for every status but 2 (no hook, not opted in), as _wt_hook_run runs the
+    # hook for every status but 1 and 2, so a status nobody expects fails closed.
     local -i hook_rc
     _wt_hook_check "$main" >/dev/null 2>&1
     hook_rc=$?
@@ -1479,7 +1480,7 @@ wt-rm() {
     # Mise trust, last of the checks that write nothing and before the first Herdr call: the
     # teardown hook runs mise in $dest, and a config nobody has looked at must not load
     # there. Carries what an already-trusted checkout vouches for; refuses the rest.
-    if (( hook_rc == 0 )) && ! _wt_mise_trust "$main" "$dest"; then
+    if (( hook_rc != 2 )) && ! _wt_mise_trust "$main" "$dest"; then
       print -ru2 -- "wt-rm: nothing was closed or removed — review the mise config above, then: wt-rm $qb"
       return 1
     fi
@@ -1497,7 +1498,7 @@ wt-rm() {
 
     # Mise trust again, read-only: closing the workspaces can rewrite a git-ignored mise config
     # that check 2 does not see, and the hook must not run against one nobody has trusted.
-    if (( hook_rc == 0 )); then
+    if (( hook_rc != 2 )); then
       local mise_line mise_shown
       local -a mise_untrusted
       if ! mise_shown="$(_wt_mise_show "$dest")"; then
