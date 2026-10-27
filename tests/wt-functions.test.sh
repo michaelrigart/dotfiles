@@ -3483,7 +3483,6 @@ rc_is 0 "X24 a sibling vouches when main's copy is untrusted"
 has "wt: mise trust carried to ~/Code/Org/repo-x24/mise.toml (trusted in ~/Code/Org/sib-x24)" "X24 the line names the sibling"
 mlog_line "trust $X/mise.toml" "X24 the tracked config is trusted"
 hook_ran "X24 the setup hook runs"
-mlog_line "trust $HOME/Code/Org/repo-x24/mise.toml" "X24 the tracked config is trusted in the worktree"
 
 # X25: only untrusted or differing copies exist.
 xfix x25
@@ -3642,6 +3641,8 @@ xsib -b s32 "$HOME/Code/Org/sib-x32"
 print -r -- 'b=1' > "$HOME/Code/Org/sib-x32/mise.local.toml"; mise_seed "$HOME/Code/Org/sib-x32/mise.local.toml"
 run "$REPO" wt x32
 rc_is 0 "X32 the sibling vouches for the local config at first"
+mlog_line "trust $X/mise.local.toml" "X32 the local config is trusted in the worktree at first"
+hook_ran "X32 the setup hook runs at first"
 rm -f "$X/mise.local.toml"; mkdir "$X/mise.local.toml"
 cat "$MLOG" >> "$XALL"; : > "$MLOG"
 rm -f "$ROOTTMP/hook-ran"
