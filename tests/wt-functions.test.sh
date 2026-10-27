@@ -223,8 +223,13 @@ chmod +x "$STUBS/xreview-rpc"
 # recording anything. FLIP_RACE=<bytes> is the check-then-trust race: `trust <file>` saves the
 # file's content, writes <bytes> into it and records the hash of <bytes> (what mise read); the
 # next `trust --show` that lists the file prints its listing, `trusted`, and only then writes
-# the saved content back, so every comparison of bytes afterwards sees the good ones. Any other
-# invocation exits 3, so a call the code was never meant to make (bare `trust`, `--all`)
+# the saved content back, so every comparison of bytes afterwards sees the good ones.
+# DIR_SWAP=<subdir> is the same race one directory up: `trust <dest>/<subdir>/<rel>` renames
+# <dest>/<subdir> aside, puts a fresh directory with other bytes at that path and records their
+# hash; the next `trust --show` that lists a file below it prints its listing and then removes
+# the fresh directory and renames the original back. The race state of both modes lives beside
+# the stub (stub-*), not under $ROOTTMP, so it never touches a directory above a checkout. Any
+# other invocation exits 3, so a call the code was never meant to make (bare `trust`, `--all`)
 # cannot pass quietly.
 cat > "$MISESTUBS/mise" <<'STUB'
 #!/usr/bin/env bash
@@ -232,6 +237,7 @@ printf '%s\n' "$*" >> "$MLOG"
 # wt must never let mise read the terminal: a call whose stdin is not /dev/null is recorded.
 [ /dev/stdin -ef /dev/null ] || printf '%s\n' "$*" >> "$STDIN_LOG"
 tab=$'\t'
+state="${STDIN_LOG%/*}"
 sha() { shasum -a 256 < "$1" | cut -d' ' -f1; }
 drop() { P="$1" awk '{ k = ENVIRON["P"] "\t"; if (substr($0, 1, length(k)) != k) print }' "$MISE_STUB_STORE" > "$MISE_STUB_STORE.n"; mv "$MISE_STUB_STORE.n" "$MISE_STUB_STORE"; }
 if [ "${1:-}" = -C ] && [ "${3:-}" = trust ] && [ "${4:-}" = --show ] && [ $# -eq 4 ]; then
@@ -274,11 +280,18 @@ if [ "${1:-}" = -C ] && [ "${3:-}" = trust ] && [ "${4:-}" = --show ] && [ $# -e
     d=$(dirname "$d")
   done
   [ -n "$found" ] || echo "mise No trusted config files found." >&2
-  if [ -e "$MISE_STUB_STORE.flip" ]; then
-    flipped=$(cat "$MISE_STUB_STORE.flip")
+  if [ -e "$state/stub-flip" ]; then
+    flipped=$(cat "$state/stub-flip")
     if printf '%s' "$seen" | grep -Fxq -- "$flipped"; then
-      cat "$MISE_STUB_STORE.flip.good" > "$flipped"
-      rm -f "$MISE_STUB_STORE.flip" "$MISE_STUB_STORE.flip.good"
+      cat "$state/stub-flip.good" > "$flipped"
+      rm -f "$state/stub-flip" "$state/stub-flip.good"
+    fi
+  fi
+  if [ -e "$state/stub-swap" ]; then
+    swapped=$(cat "$state/stub-swap")
+    if printf '%s' "$seen" | grep -Fq -- "$swapped/"; then
+      rm -rf "$swapped"; mv "$swapped.good" "$swapped"
+      rm -f "$state/stub-swap"
     fi
   fi
   exit 0
@@ -287,8 +300,16 @@ case "$*" in *--all*) echo "mise stub: unexpected invocation: $*" >&2; exit 3 ;;
 if [ "${1:-}" = trust ] && [ $# -eq 2 ] && [ "${2#-}" = "$2" ]; then
   [ -n "${MOCK_MISE_RACE_CONTENT+x}" ] && printf '%b' "$MOCK_MISE_RACE_CONTENT" > "$2"
   if [ -n "${MOCK_MISE_FLIP_RACE+x}" ]; then
-    cat "$2" > "$MISE_STUB_STORE.flip.good"; printf '%s' "$2" > "$MISE_STUB_STORE.flip"
+    cat "$2" > "$state/stub-flip.good"; printf '%s' "$2" > "$state/stub-flip"
     printf '%b' "$MOCK_MISE_FLIP_RACE" > "$2"
+  fi
+  if [ -n "${MOCK_MISE_DIR_SWAP:-}" ]; then
+    case "$2" in
+      */"$MOCK_MISE_DIR_SWAP"/*)
+        sd="${2%%/"$MOCK_MISE_DIR_SWAP"/*}/$MOCK_MISE_DIR_SWAP"; sr="${2#"$sd"/}"
+        mv "$sd" "$sd.good"; mkdir -p "$sd/$(dirname "$sr")"; printf 'evil=1\n' > "$sd/$sr"
+        printf '%s' "$sd" > "$state/stub-swap" ;;
+    esac
   fi
   [ -n "${MOCK_MISE_MAIN_FLIP:-}" ] && drop "$MOCK_MISE_MAIN_FLIP"
   [ "${MOCK_MISE_TRUST_RC:-0}" != 0 ] && exit "$MOCK_MISE_TRUST_RC"
@@ -432,7 +453,8 @@ setup() {   # fresh $HOME with Code/Org/repo, fresh logs, default mock behaviour
         MOCK_XRPC_RC MOCK_XRPC_OUT MOCK_XRPC_ERR MOCK_XRPC_SIGNAL MOCK_XRPC_TO_LLOG \
         MOCK_MISE_SHOW_RC MOCK_MISE_SHOW_RAW MOCK_MISE_SHOW_STDERR MOCK_MISE_SHOW_FAIL_AFTER_TRUST \
         MOCK_MISE_SHOW_FAIL_DIR MOCK_MISE_SHOW_FAIL_DIR_AFTER_TRUST MOCK_MISE_RACE_CONTENT MOCK_MISE_MAIN_FLIP MOCK_MISE_TRUST_RC MOCK_MISE_UNTRUST_RC \
-        MOCK_MISE_TRUST_NOOP MOCK_MISE_SHOW_FAIL_WHEN MOCK_MISE_FLIP_RACE
+        MOCK_MISE_TRUST_NOOP MOCK_MISE_SHOW_FAIL_WHEN MOCK_MISE_FLIP_RACE MOCK_MISE_DIR_SWAP
+  rm -f -- "$MISESTUBS"/stub-*(N)
 }
 # run <dir> <command...> — source the functions fresh and run one command in $dir.
 # A subshell per scenario keeps zsh options/state from leaking between tests.
@@ -3224,6 +3246,8 @@ mlog_count()  { awk -v p="$1" 'index($0, p) == 1 { n++ } END { print n + 0 }' "$
 mlog_ln()     { grep -Fxn -- "$1" "$MLOG" | head -1 | cut -d: -f1 }
 XSYM="it is a symlink or not a regular file"
 XNONE="it matches no trusted copy in this repository's checkouts"
+XCHG="it, or a directory above it, changed while wt was trusting it"
+XHINT="    nothing was trusted; if nothing else is writing there, run the command again."
 
 xfix x1; xseed
 run "$REPO" wt x1
@@ -3328,7 +3352,7 @@ xfix x8; xseed
 MOCK_MISE_RACE_CONTENT='[env]\nX = "evil"\n' run "$REPO" wt x8
 rc_is 1 "X8 a file rewritten while it is trusted is refused"
 mlog_line "trust --untrust $X/mise.toml" "X8 its trust is withdrawn"
-has "wt: ~/Code/Org/repo-x8/mise.toml is not trusted: it changed while wt was trusting it." "X8 the reason"
+has "wt: ~/Code/Org/repo-x8/mise.toml is not trusted: $XCHG." "X8 the reason"
 hook_not_ran "X8 the setup hook does not run"
 
 xfix x9; xseed
@@ -3595,7 +3619,7 @@ xsib -b s26b "$HOME/Code/Org/sib-x26b" x26-src; mise_seed "$HOME/Code/Org/sib-x2
 MOCK_MISE_MAIN_FLIP="$HOME/Code/Org/sib-x26/mise.toml" run "$REPO" wt x26 x26-src
 rc_is 1 "X26 a vouching sibling that loses its trust meanwhile is refused"
 mlog_line "trust --untrust $X/mise.toml" "X26 the worktree's trust is withdrawn"
-has "wt: ~/Code/Org/repo-x26/mise.toml is not trusted: it changed while wt was trusting it." "X26 the reason"
+has "wt: ~/Code/Org/repo-x26/mise.toml is not trusted: $XCHG." "X26 the reason"
 eq "$(mlog_count "trust $X/mise.toml")" "1" "X26 the second sibling is not tried"
 hook_not_ran "X26 the setup hook does not run"
 
@@ -3773,12 +3797,17 @@ hook_ran "X36 the setup hook runs"
 # X37: the check-then-trust race. A writer who controls only the worktree file shows good bytes
 # to the search, its own to `mise trust` (which records their hash) and to the first status read,
 # and good bytes again afterwards; every comparison of bytes then passes. The file's identity
-# (inode and change time) cannot be put back, so the carry sees that it was written.
+# (inode and change time) cannot be put back, so the carry sees that it was written. Only
+# mise.toml is trusted in main: the untrusted mise.local.toml that xfix also copies through
+# .worktreeinclude is refused alongside the race, and the assertions below name mise.toml.
 xfix x37
 mise_seed "$REPO/mise.toml"
 MOCK_MISE_FLIP_RACE='evil=1\n' run "$REPO" wt x37
 rc_is 1 "X37 a file rewritten while it is being trusted is refused"
-has "wt: ~/Code/Org/repo-x37/mise.toml is not trusted: it changed while wt was trusting it." "X37 the reason"
+has "wt: ~/Code/Org/repo-x37/mise.toml is not trusted: $XCHG." "X37 the reason"
+hasline "$XHINT" "X37 the hint follows the headline"
+hasline "    review: cat ~/Code/Org/repo-x37/mise.toml" "X37 then the review line"
+hasnt "mise.local.toml is not trusted: $XCHG" "X37 the other file is refused for its own reason"
 mlog_line "trust $X/mise.toml" "X37 the file was trusted (the race really ran)"
 mlog_line "trust --untrust $X/mise.toml" "X37 the trust is withdrawn"
 hook_not_ran "X37 the setup hook does not run"
@@ -3815,6 +3844,25 @@ xsib -b x40 "$X"
 xseed
 run "$REPO" x40_twice
 eq "$OUT" "$(print -rl -- carried=1 carried=0)" "X40 the count is 1 after a carry and 0 after a run with nothing to carry"
+
+# X41: the same race one directory up. <dest>/.config is renamed aside and a fresh one holding
+# other bytes put in its place while `mise trust` hashes them, then the original is renamed back:
+# the original file's own inode and change time are untouched, but the directory's are not.
+# A sibling on the source branch holds the identical, trusted copy that vouches.
+xfix x41
+xbranch x41-src 'mkdir -p "$REPO/.config"; print -r -- "c=1" > "$REPO/.config/mise.toml"; git -C "$REPO" add .config/mise.toml'
+xseed
+xsib "$HOME/Code/Org/sib-x41" x41-src; mise_seed "$HOME/Code/Org/sib-x41/.config/mise.toml"
+MOCK_MISE_DIR_SWAP=.config run "$REPO" wt x41 x41-src
+rc_is 1 "X41 a directory swapped while its file is being trusted is refused"
+has "wt: ~/Code/Org/repo-x41/.config/mise.toml is not trusted: $XCHG." "X41 the reason"
+hasline "$XHINT" "X41 the hint follows the headline"
+mlog_line "trust $X/.config/mise.toml" "X41 the file was trusted (the swap really ran)"
+mlog_line "trust --untrust $X/.config/mise.toml" "X41 the trust is withdrawn"
+hook_not_ran "X41 the setup hook does not run"
+eq "$(awk -v p="$X/.config/mise.toml" 'index($0, p "\t") == 1 { n++ } END { print n + 0 }' "$MISE_STUB_STORE")" "0" "X41 the store holds no entry for the file afterwards"
+eq "$(<$X/.config/mise.toml)" "c=1" "X41 the original directory is back"
+hasnt "carried to ~/Code/Org/repo-x41/.config" "X41 the file is not reported as carried"
 
 # --- wt-rm checks mise trust before it disrupts anything (spec §5) ---------------------
 # xrfix <slug> — xfix's repository with a git-ignored mise.local.toml (so the worktree stays
@@ -4004,19 +4052,29 @@ dir_there "$X" "XR11 the checkout still exists"
 
 # mise_sweep <log> — sets $bad to every trust call in <log> that is not aimed at a file of a
 # destination checkout (an allowlist: `…/Code/Org/repo-<slug>/…` or `…/Code/Org/co: lon-<slug>/…`,
-# which is where wt and the cases above make worktrees), or that is bare or uses --all.
+# which is where wt and the cases above make worktrees), or that is bare or uses --all, or whose
+# path holds a `..` segment (which could satisfy the patterns and still point elsewhere).
 mise_sweep() {
   bad=""
   local l
   while IFS= read -r l; do
     case "$l" in
       trust|*" trust"|*--all*) bad+="[$l] " ;;
+      "trust "*/../*|"trust "*/..) bad+="[$l] " ;;
       "trust "*/Code/Org/repo-*/*|"trust --untrust "*/Code/Org/repo-*/*) ;;
       "trust "*/Code/Org/"co: lon-"*/*|"trust --untrust "*/Code/Org/"co: lon-"*/*) ;;
       "trust "*|"trust --untrust "*) bad+="[$l] " ;;
     esac
   done < "$1"
 }
+
+# X13c: the sweep itself flags a path that satisfies an allowed pattern through a `..` segment.
+print -r -- "trust /h/Code/Org/repo-a/../repo/mise.toml" > "$MISESTUBS/sweep-probe.log"
+mise_sweep "$MISESTUBS/sweep-probe.log"
+[[ -n "$bad" ]] && _pass "X13c the sweep flags a path with a .. segment" || _fail "X13c the sweep flags a path with a .. segment"
+print -r -- "trust --untrust /h/Code/Org/repo-a/mise.toml" > "$MISESTUBS/sweep-probe.log"
+mise_sweep "$MISESTUBS/sweep-probe.log"
+[[ -z "$bad" ]] && _pass "X13c ... and passes the same path without it" || _fail "X13c ... and passes the same path without it"
 
 # X13: over everything above, mise trust is only ever given one worktree file.
 cat "$MLOG" >> "$XALL"
