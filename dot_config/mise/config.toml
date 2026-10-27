@@ -17,7 +17,11 @@ pipx = "latest"
 ansible = "14.2.0"
 
 [settings]
-idiomatic_version_file_enable_tools = ["ruby"]
+# Through mise a Gemfile only selects a Ruby version, and bundler executes the whole Gemfile on
+# every bin/rails anyway, so leaving it out of mise's trust costs nothing paranoid mode protects.
+# Pin Ruby in mise.toml or .tool-versions. Set explicitly so a changed mise default cannot
+# bring it back. Spec 2026-10-27 mise trust worktrees.
+idiomatic_version_file_enable_tools = []
 
 # Paranoid mode: mise trusts a project config by its content hash. A mise.toml (or
 # .tool-versions, mise.local.toml) edited since it was trusted -- by an agent in a

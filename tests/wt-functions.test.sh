@@ -22,8 +22,8 @@
 #   U  wt-rm               Herdr workspace shutdown and persisted-state safety
 #   V  wt-rm               live processes still inside the checkout block removal
 #   W  wt-rm               the checkout's Codex sessions are released before check 4
-#   X  wt                  mise trust is carried from the main checkout into a new worktree
-#   Y  wt, wt-prompt      a reopen warns about untrusted mise config; the popup stays open for it
+#   X  wt, wt-rm           mise trust is carried from any checkout of the repository into a new worktree; wt-rm checks it before closing anything
+#   Y  wt, wt-prompt      a reopen carries mise trust and reports what stays untrusted; the popup stays open for it
 #
 # Herdr, layout.sh and mise are stubbed on PATH and every invocation is logged, so the
 # tests can assert *ordering* — notably that a dirty worktree never loses its terminal
@@ -36,7 +36,9 @@
 set -u
 
 FUNCS="$(cd "${0:h}/.." && pwd)/dot_config/zsh/functions"
-[[ -r "$FUNCS" ]] || { print -ru2 -- "cannot read $FUNCS"; exit 1 }
+[[ -r "$FUNCS" ]] || { print -ru2 -- "cannot read $FUNCS"; exit 2 }
+MISECONF="$(cd "${0:h}/.." && pwd)/dot_config/mise/config.toml"
+[[ -r "$MISECONF" ]] || { print -ru2 -- "cannot read $MISECONF"; exit 2 }
 
 # Isolate git from the real user/system config so tests are reproducible.
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
@@ -149,10 +151,12 @@ if [ -n "${MOCK_LSOF_BUSY_N:-}" ]; then
     exit 0
   fi
 fi
-while IFS=$'\t' read -r pid cmd cwd; do
+# A pipe, not a here-string: bash 3.2 (/bin/bash, which a PATH narrowed by nomise_path
+# resolves to) writes a here-string to a temp file, which the sandbox refused.
+printf '%s\n' "$spec" | while IFS=$'\t' read -r pid cmd cwd; do
   [ -n "$pid" ] || continue
   printf 'p%s\0R1\0c%s\0fcwd\0n%s\0\n' "$pid" "$cmd" "$cwd"
-done <<< "$spec"
+done
 exit "${MOCK_LSOF_RC:-0}"
 STUB
 cat > "$STUBS/sleep" <<'STUB'
@@ -161,10 +165,28 @@ cat > "$STUBS/sleep" <<'STUB'
 printf '%s\n' "$*" >> "${SLOG:-/dev/null}"
 STUB
 chmod +x "$STUBS/layout.sh" "$STUBS/herdr" "$STUBS/lsof" "$STUBS/sleep"
+# A stale mise shim for jq (a machine artefact; `mise reshim` removes it) runs the real mise,
+# which reads the mise.toml of the directory it runs in, and every section-X repository holds
+# one: wt-rm's jq calls then fail for reasons that have nothing to do with wt-rm. Wherever a
+# non-shim jq exists, this stub pins the first one on PATH, so the suite does not run the real
+# mise through such a shim; where the only jq is the shim, no stub is written.
+mkjqstub() {
+  local candidate
+  for candidate in ${(f)"$(whence -ap jq)"}; do
+    [[ "${candidate:A:t}" == mise ]] && continue
+    print -r -- "#!/bin/sh
+exec ${(qq)candidate} \"\$@\"" > "$STUBS/jq"
+    chmod +x "$STUBS/jq"
+    return
+  done
+}
+mkjqstub
+unfunction mkjqstub
 TEARDOWN_SRC="$(cd "${0:h}/.." && pwd)/dot_local/bin/executable_wt-teardown"
 [[ -r "$TEARDOWN_SRC" ]] || { print -ru2 -- "cannot read $TEARDOWN_SRC"; exit 2 }
+# zsh by absolute path: a test that narrows PATH (nomise_path) still runs it with the suite's zsh.
 print -r -- "#!/bin/sh
-exec zsh '$TEARDOWN_SRC' \"\$@\"" > "$STUBS/wt-teardown"
+exec '$(whence -p zsh)' '$TEARDOWN_SRC' \"\$@\"" > "$STUBS/wt-teardown"
 chmod +x "$STUBS/wt-teardown"
 # Never the real daemon. Logs its argv one argument per line, so the --dir value is checked
 # as exactly one argument, then answers as MOCK_XRPC_* say: by default exit 0, nothing
@@ -192,33 +214,61 @@ chmod +x "$STUBS/xreview-rpc"
 #
 # A call whose stdin is not /dev/null is also logged to $STDIN_LOG (X13b).
 # MOCK_MISE_* modes: SHOW_RC, SHOW_RAW (verbatim stdout), SHOW_STDERR, and SHOW_FAIL_AFTER_TRUST
-# fail or replace the read (SHOW_FAIL_DIR_AFTER_TRUST fails it for that one -C directory only);
+# fail or replace the read (SHOW_FAIL_DIR fails it for that one -C directory only, from the
+# start; SHOW_FAIL_DIR_AFTER_TRUST does the same but only once a trust has been logged;
+# SHOW_FAIL_WHEN=<file> fails every read while <file> exists, so another stub's side effect,
+# such as the Herdr stub's MOCK_H_CLOSE_TOUCH, can make the read fail from then on);
 # RACE_CONTENT rewrites the file under `trust`, MAIN_FLIP drops a
 # path's trust under it, TRUST_RC and UNTRUST_RC fail the call, TRUST_NOOP succeeds without
-# recording anything. Any other invocation exits 3, so a call the code was never meant to
-# make (bare `trust`, `--all`) cannot pass quietly.
+# recording anything. FLIP_RACE=<bytes> is the check-then-trust race: `trust <file>` saves the
+# file's content, writes <bytes> into it and records the hash of <bytes> (what mise read); the
+# next `trust --show` that lists the file prints its listing, `trusted`, and only then writes
+# the saved content back, so every comparison of bytes afterwards sees the good ones.
+# FLIP_VOUCH=<file> with FLIP_VOUCH_BYTES=<bytes> is the race a writer of the vouching copy
+# can run: <file> holds good bytes that mise trusts, and the writer shows them to every
+# `trust --show` of the directory holding <file> (written back before the stub hashes and
+# prints, taken from the file the first time) and its own <bytes> to everything else (written
+# after the stub prints), so the listing says `trusted` while every `cmp` sees the writer's
+# bytes. Nothing is written to the store. Its state is stub-vouch-good, beside the stub, which
+# setup() clears with the rest of stub-*. Any other invocation exits 3, so a call the code was
+# never meant to make (bare `trust`, `--all`) cannot pass quietly.
 cat > "$MISESTUBS/mise" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$MLOG"
 # wt must never let mise read the terminal: a call whose stdin is not /dev/null is recorded.
 [ /dev/stdin -ef /dev/null ] || printf '%s\n' "$*" >> "$STDIN_LOG"
 tab=$'\t'
+state="${STDIN_LOG%/*}"
+# A rejected call is also appended here, one record per call with each argument kept apart
+# (the text log joins them with spaces, and a test that ignores the failure would not see it).
+# Only X13d's probes redirect it, with MISE_UNEXPECTED_LOG on the command line.
+unexpected() { { printf '%q ' "$@"; printf '\n'; } >> "${MISE_UNEXPECTED_LOG:-$state/mise-unexpected.log}"; }
 sha() { shasum -a 256 < "$1" | cut -d' ' -f1; }
 drop() { P="$1" awk '{ k = ENVIRON["P"] "\t"; if (substr($0, 1, length(k)) != k) print }' "$MISE_STUB_STORE" > "$MISE_STUB_STORE.n"; mv "$MISE_STUB_STORE.n" "$MISE_STUB_STORE"; }
 if [ "${1:-}" = -C ] && [ "${3:-}" = trust ] && [ "${4:-}" = --show ] && [ $# -eq 4 ]; then
   [ "${MOCK_MISE_SHOW_RC:-0}" != 0 ] && exit "$MOCK_MISE_SHOW_RC"
+  if [ -n "${MOCK_MISE_SHOW_FAIL_DIR:-}" ] && [ "$2" = "$MOCK_MISE_SHOW_FAIL_DIR" ]; then exit 1; fi
+  if [ -n "${MOCK_MISE_SHOW_FAIL_WHEN:-}" ] && [ -e "$MOCK_MISE_SHOW_FAIL_WHEN" ]; then exit 1; fi
   if [ -n "${MOCK_MISE_SHOW_FAIL_AFTER_TRUST:-}" ] && grep -q '^trust /' "$MLOG"; then exit 1; fi
   if [ -n "${MOCK_MISE_SHOW_FAIL_DIR_AFTER_TRUST:-}" ] && [ "$2" = "$MOCK_MISE_SHOW_FAIL_DIR_AFTER_TRUST" ] && grep -q '^trust /' "$MLOG"; then exit 1; fi
   [ -n "${MOCK_MISE_SHOW_STDERR:-}" ] && printf '%b' "$MOCK_MISE_SHOW_STDERR" >&2
   if [ -n "${MOCK_MISE_SHOW_RAW+x}" ]; then printf '%b' "$MOCK_MISE_SHOW_RAW"; exit 0; fi
   d=$(cd -P "$2" && pwd -P) || exit 1
-  found=
+  vouch=
+  if [ -n "${MOCK_MISE_FLIP_VOUCH:-}" ] && [ "$(dirname "$MOCK_MISE_FLIP_VOUCH")" = "$d" ]; then
+    vouch=1
+    [ -e "$state/stub-vouch-good" ] || cat "$MOCK_MISE_FLIP_VOUCH" > "$state/stub-vouch-good"
+    cat "$state/stub-vouch-good" > "$MOCK_MISE_FLIP_VOUCH"
+  fi
+  found= seen=
   while :; do
     for name in mise.toml mise.local.toml .mise.toml .config/mise.toml; do
       f="${d%/}/$name"
       [ -e "$f" ] || [ -L "$f" ] || continue
       found=1
       shown="$f"; case "$f" in "$HOME"/*) shown="~/${f#"$HOME"/}" ;; esac
+      seen="$seen$f
+"
       if grep -Fxq -- "$f$tab$(sha "$f" 2>/dev/null)" "$MISE_STUB_STORE"; then
         printf '%s: trusted\n' "$shown"
       else
@@ -229,6 +279,8 @@ if [ "${1:-}" = -C ] && [ "${3:-}" = trust ] && [ "${4:-}" = --show ] && [ $# -e
       [ -e "$f" ] || [ -L "$f" ] || continue
       found=1
       shown="$f"; case "$f" in "$HOME"/*) shown="~/${f#"$HOME"/}" ;; esac
+      seen="$seen$f
+"
       if grep -Fxq -- "$f$tab$(sha "$f" 2>/dev/null)" "$MISE_STUB_STORE"; then
         printf '%s: trusted\n' "$shown"
       else
@@ -239,11 +291,23 @@ if [ "${1:-}" = -C ] && [ "${3:-}" = trust ] && [ "${4:-}" = --show ] && [ $# -e
     d=$(dirname "$d")
   done
   [ -n "$found" ] || echo "mise No trusted config files found." >&2
+  [ -z "$vouch" ] || printf '%b' "${MOCK_MISE_FLIP_VOUCH_BYTES:-}" > "$MOCK_MISE_FLIP_VOUCH"
+  if [ -e "$state/stub-flip" ]; then
+    flipped=$(cat "$state/stub-flip")
+    if printf '%s' "$seen" | grep -Fxq -- "$flipped"; then
+      cat "$state/stub-flip.good" > "$flipped"
+      rm -f "$state/stub-flip" "$state/stub-flip.good"
+    fi
+  fi
   exit 0
 fi
-case "$*" in *--all*) echo "mise stub: unexpected invocation: $*" >&2; exit 3 ;; esac
+case "$*" in *--all*) echo "mise stub: unexpected invocation: $*" >&2; unexpected "$@"; exit 3 ;; esac
 if [ "${1:-}" = trust ] && [ $# -eq 2 ] && [ "${2#-}" = "$2" ]; then
   [ -n "${MOCK_MISE_RACE_CONTENT+x}" ] && printf '%b' "$MOCK_MISE_RACE_CONTENT" > "$2"
+  if [ -n "${MOCK_MISE_FLIP_RACE+x}" ]; then
+    cat "$2" > "$state/stub-flip.good"; printf '%s' "$2" > "$state/stub-flip"
+    printf '%b' "$MOCK_MISE_FLIP_RACE" > "$2"
+  fi
   [ -n "${MOCK_MISE_MAIN_FLIP:-}" ] && drop "$MOCK_MISE_MAIN_FLIP"
   [ "${MOCK_MISE_TRUST_RC:-0}" != 0 ] && exit "$MOCK_MISE_TRUST_RC"
   [ -n "${MOCK_MISE_TRUST_NOOP:-}" ] && exit 0
@@ -256,6 +320,7 @@ if [ "${1:-}" = trust ] && [ "${2:-}" = --untrust ] && [ $# -eq 3 ]; then
   exit 0
 fi
 echo "mise stub: unexpected invocation: $*" >&2
+unexpected "$@"
 exit 3
 STUB
 chmod +x "$MISESTUBS/mise"
@@ -272,6 +337,12 @@ nomise_path() {
 }
 # mise_seed <file> — record the file's current content as trusted in the stub's store.
 mise_seed() { print -r -- "$1"$'\t'"$(shasum -a 256 < "$1" | cut -d' ' -f1)" >> "$MISE_STUB_STORE" }
+# mise_unseed <file> — drop the file's entries from the store, keyed exactly as the stub's drop
+# is, so the file is untrusted again with its content unchanged.
+mise_unseed() {
+  P="$1" awk '{ k = ENVIRON["P"] "\t"; if (substr($0, 1, length(k)) != k) print }' "$MISE_STUB_STORE" > "$MISE_STUB_STORE.n"
+  mv "$MISE_STUB_STORE.n" "$MISE_STUB_STORE"
+}
 export DEV_LAYOUT="$STUBS/layout.sh"
 
 # --- SIGINT delay injector --------------------------------------------------
@@ -361,10 +432,12 @@ setup() {   # fresh $HOME with Code/Org/repo, fresh logs, default mock behaviour
   REPO="$HOME/Code/Org/repo"
   git init -q -b main "$REPO"
   git -C "$REPO" commit -q --allow-empty -m init
+  # The mise stub's trust store lives beside the stub, not under $ROOTTMP: `drop` renames a
+  # temp file over it, and that rename should touch nothing near the files under test.
   export DLOG="$ROOTTMP/layout.log" \
          HLOG="$ROOTTMP/herdr.log" LLOG="$ROOTTMP/lsof.log" SLOG="$ROOTTMP/sleep.log" \
          FLOG="$ROOTTMP/git-fail.log" XLOG="$ROOTTMP/xreview-rpc.log" MOCK_H_CLOSED_FILE="$ROOTTMP/herdr-closed" \
-         MLOG="$ROOTTMP/mise.log" MISE_STUB_STORE="$ROOTTMP/mise-trusted"
+         MLOG="$ROOTTMP/mise.log" MISE_STUB_STORE="$MISESTUBS/mise-trusted"
   : > "$DLOG"; : > "$HLOG"; : > "$LLOG"; : > "$FLOG"; : > "$SLOG"; : > "$XLOG"; : > "$MOCK_H_CLOSED_FILE"
   : > "$MLOG"; : > "$MISE_STUB_STORE"
   export MOCK_LAYOUT_RC=0 MOCK_H_SESSION_LIST='{"sessions":[]}' MOCK_H_SESSION_RC=0 \
@@ -379,8 +452,9 @@ setup() {   # fresh $HOME with Code/Org/repo, fresh logs, default mock behaviour
         MOCK_LSOF_BUSY_N MOCK_LSOF_BUSY_SPEC MOCK_LSOF_THEN_FAIL \
         MOCK_XRPC_RC MOCK_XRPC_OUT MOCK_XRPC_ERR MOCK_XRPC_SIGNAL MOCK_XRPC_TO_LLOG \
         MOCK_MISE_SHOW_RC MOCK_MISE_SHOW_RAW MOCK_MISE_SHOW_STDERR MOCK_MISE_SHOW_FAIL_AFTER_TRUST \
-        MOCK_MISE_SHOW_FAIL_DIR_AFTER_TRUST MOCK_MISE_RACE_CONTENT MOCK_MISE_MAIN_FLIP MOCK_MISE_TRUST_RC MOCK_MISE_UNTRUST_RC \
-        MOCK_MISE_TRUST_NOOP
+        MOCK_MISE_SHOW_FAIL_DIR MOCK_MISE_SHOW_FAIL_DIR_AFTER_TRUST MOCK_MISE_RACE_CONTENT MOCK_MISE_MAIN_FLIP MOCK_MISE_TRUST_RC MOCK_MISE_UNTRUST_RC \
+        MOCK_MISE_TRUST_NOOP MOCK_MISE_SHOW_FAIL_WHEN MOCK_MISE_FLIP_RACE MOCK_MISE_FLIP_VOUCH MOCK_MISE_FLIP_VOUCH_BYTES
+  rm -f -- "$MISESTUBS"/stub-*(N)
 }
 # run <dir> <command...> — source the functions fresh and run one command in $dir.
 # A subshell per scenario keeps zsh options/state from leaking between tests.
@@ -2962,7 +3036,7 @@ run "$REPO" wt-rm rel-dirty
 rc_is 1 "W7 a dirty checkout is refused at check 1"
 eq "$(<$XLOG)" "" "W7 a refusal before teardown never calls xreview-rpc"
 
-print -r -- "X. wt — mise trust is carried from the main checkout into a new worktree"
+print -r -- "X. wt, wt-rm — mise trust is carried from any checkout of the repository into a new worktree; wt-rm checks it before closing anything"
 # --- mise trust carried into a new worktree ---------------------------------
 # The runner may give this suite /dev/null for stdin, which would hide a mise call that
 # forgot to redirect its own; from here on stdin is a file, so the stub can tell (X13b).
@@ -3060,6 +3134,85 @@ mise -C "$REPO" trust --all >/dev/null 2>&1; eq "$?" "3" "X0s -C ... --all is re
 eq "$(PATH="$(nomise_path)" whence -p mise)" "" "X0s nomise_path drops every mise"
 eq "$(PATH="$(nomise_path)" whence -p git)" "/usr/bin/git" "X0s ... and git still resolves"
 
+# X22: the global mise config keeps Ruby's idiomatic files (Gemfile, .ruby-version) out of mise,
+# so they never become configs paranoid mode hashes. The [settings] table is read up to the next header.
+settings="$(awk '/^\[/{ s = ($0 == "[settings]") ; next } s' "$MISECONF")"
+eq "$(print -r -- "$settings" | grep -c '^idiomatic_version_file_enable_tools = \[\]$')" "1" \
+   "X22 [settings] sets idiomatic_version_file_enable_tools = [] exactly once"
+eq "$(print -r -- "$settings" | grep -c '^idiomatic_version_file_enable_tools[[:space:]]*=')" "1" \
+   "X22 ... and no other value for it"
+
+# XC: _wt_mise_candidates lists the checkouts that can vouch for a new worktree's mise config
+# (spec §2): main first, then the base branch's checkout, then Git's order; never the
+# destination, a missing directory, or a checkout of another repository.
+xc_list() { _wt_mise_candidates "$@" || return; print -rl -- $_WT_MISE_CANDS "base=$_WT_MISE_BASEDIR" }
+# xsib <git worktree add args...> — a registered sibling checkout, arguments exactly as git takes them.
+xsib() { git -C "$REPO" worktree add -q "$@" >/dev/null 2>&1 || _fail "xsib $*" }
+
+setup
+xsib -b a "$HOME/Code/Org/sib-a"; xsib -b b "$HOME/Code/Org/sib-b"; xsib -b d "$HOME/Code/Org/repo-d"
+run "$REPO" xc_list "$REPO" "$HOME/Code/Org/repo-d" b
+eq "$OUT" "$(print -rl -- "$REPO" "$HOME/Code/Org/sib-b" "$HOME/Code/Org/sib-a" "base=$HOME/Code/Org/sib-b")" \
+   "XC1 main, then the base branch's checkout, then Git's order; the destination is absent"
+
+rm -rf "$HOME/Code/Org/sib-a"
+# The injector only logs (NTH=0 never matches a count): it shows which checkouts were asked
+# about, so a missing directory must be skipped by the -d check, not by a failing rev-parse.
+PATH="$FAILSTUBS:$PATH" WT_FAIL_MATCH='rev-parse' WT_FAIL_NTH=0 WT_FAIL_LOG="$FLOG" run "$REPO" xc_list "$REPO" "$HOME/Code/Org/repo-d" b
+rc_is 0 "XC2 a registered checkout whose directory is gone is not an error"
+hasnt "sib-a" "XC2 ... and is absent"
+has "$HOME/Code/Org/sib-b" "XC2 ... the others remain"
+grep -Fq "$HOME/Code/Org/sib-b" "$FLOG" && _pass "XC2 ... and the live sibling was asked about (the log is not vacuous)" || _fail "XC2 ... and the live sibling was asked about (the log is not vacuous)"
+grep -Fq "sib-a" "$FLOG" && _fail "XC2 ... no rev-parse ever names the missing directory" || _pass "XC2 ... no rev-parse ever names the missing directory"
+
+setup
+xsib -b a "$HOME/Code/Org/sib-a"; xsib -b d "$HOME/Code/Org/repo-d"
+git init -q "$HOME/Code/Org/other"
+rm -rf "$HOME/Code/Org/sib-a"; ln -s "$HOME/Code/Org/other" "$HOME/Code/Org/sib-a"
+run "$REPO" xc_list "$REPO" "$HOME/Code/Org/repo-d"
+rc_is 0 "XC3 a path that now belongs to another repository is not an error"
+hasnt "sib-a" "XC3 ... and is absent"
+
+setup
+PATH="$FAILSTUBS:$PATH" WT_FAIL_MATCH='worktree list' WT_FAIL_NTH=1 WT_FAIL_LOG="$FLOG" run "$REPO" xc_list "$REPO" "$HOME/Code/Org/repo-d"
+rc_is 1 "XC4 a failed worktree list read returns 1"
+has "wt: cannot read Git's worktree list for ~/Code/Org/repo — trusting nothing." "XC4 ... with the list-read-failure line"
+
+# A list with fields but no `worktree ` record is no list: only <main> would be left to ask.
+setup
+BARESTUBS=$(mkd)
+cat > "$BARESTUBS/git" <<STUB
+#!/bin/sh
+case " \$* " in
+  *" worktree list "*) printf 'bare\\0'; exit 0 ;;
+esac
+exec $REALGIT "\$@"
+STUB
+chmod +x "$BARESTUBS/git"
+PATH="$BARESTUBS:$PATH" run "$REPO" xc_list "$REPO" "$HOME/Code/Org/repo-d"
+rc_is 1 "XC4b a list without a worktree record returns 1"
+has "wt: cannot read Git's worktree list for ~/Code/Org/repo — trusting nothing." "XC4b ... with the list-read-failure line"
+rm -rf "$BARESTUBS"
+
+setup
+xsib --detach "$HOME/Code/Org/sib-det"; xsib -b a "$HOME/Code/Org/sib-a"; xsib -b d "$HOME/Code/Org/repo-d"
+run "$REPO" xc_list "$REPO" "$HOME/Code/Org/repo-d"
+eq "$OUT" "$(print -rl -- "$REPO" "$HOME/Code/Org/sib-a" "$HOME/Code/Org/sib-det" "base=")" \
+   "XC5 a detached sibling is listed; no base argument gives main first, then the rest"
+run "$REPO" xc_list "$REPO" "$HOME/Code/Org/repo-d" origin/main
+eq "$OUT" "$(print -rl -- "$REPO" "$HOME/Code/Org/sib-a" "$HOME/Code/Org/sib-det" "base=")" \
+   "XC5 a start point that is no local branch leaves the base empty"
+run "$REPO" xc_list "$REPO" "$HOME/Code/Org/repo-d" main
+eq "$OUT" "$(print -rl -- "$REPO" "$HOME/Code/Org/sib-a" "$HOME/Code/Org/sib-det" "base=$REPO")" \
+   "XC5 main as the base is not listed twice, and is the base checkout itself"
+
+# The base branch's own checkout can be the one that is gone: it is not listed, and it is no base.
+setup
+xsib -b a "$HOME/Code/Org/sib-a"; xsib -b d "$HOME/Code/Org/repo-d"
+rm -rf "$HOME/Code/Org/sib-a"
+run "$REPO" xc_list "$REPO" "$HOME/Code/Org/repo-d" a
+eq "$OUT" "$(print -rl -- "$REPO" "base=")" "XC6 a base checkout whose directory is gone is absent and leaves the base empty"
+
 : > "$STDIN_LOG"
 # --- the carry itself --------------------------------------------------------
 # xfix <slug> [repo-dir] — a fresh repository with a tracked mise.toml, a .worktreehook
@@ -3067,6 +3220,7 @@ eq "$(PATH="$(nomise_path)" whence -p git)" "/usr/bin/git" "X0s ... and git stil
 # $X, the worktree `wt <slug>` will make. It first files away the previous scenario's mise
 # log, so X13 can judge the calls of the whole section.
 XALL="$MISESTUBS/x-all.log"; : > "$XALL"; XCOLLECT=""
+XUNEXP="$MISESTUBS/mise-unexpected.log"; : > "$XUNEXP"   # not a stub-* file: setup() leaves it
 xfix() {
   [[ -n "$XCOLLECT" ]] && cat "$MLOG" >> "$XALL"
   setup; XCOLLECT=1
@@ -3091,7 +3245,10 @@ mlog_line()   { grep -Fxq -- "$1" "$MLOG" && _pass "$2" || _fail "$2" }
 mlog_no_line() { grep -Fxq -- "$1" "$MLOG" && _fail "$2" || _pass "$2" }
 mlog_count()  { awk -v p="$1" 'index($0, p) == 1 { n++ } END { print n + 0 }' "$MLOG" }
 mlog_ln()     { grep -Fxn -- "$1" "$MLOG" | head -1 | cut -d: -f1 }
-XSYM="it or its main-checkout counterpart is a symlink or not a regular file"
+XSYM="it is a symlink or not a regular file"
+XNONE="it matches no trusted copy in this repository's checkouts"
+XCHG="it changed while wt was trusting it"
+XHINT="    nothing was trusted; if nothing else is writing there, run the command again."
 
 xfix x1; xseed
 run "$REPO" wt x1
@@ -3108,7 +3265,7 @@ xseed
 run "$REPO" wt x2 x2-src
 rc_is 1 "X2 a branch config that differs is refused"
 mlog_no_line "trust $X/mise.toml" "X2 it is never trusted"
-has "wt: ~/Code/Org/repo-x2/mise.toml is not trusted: it differs from the main checkout's." "X2 the file and the reason are named"
+has "wt: ~/Code/Org/repo-x2/mise.toml is not trusted: it matches no trusted copy in this repository's checkouts." "X2 the file and the reason are named"
 has "    review: diff ~/Code/Org/repo/mise.toml ~/Code/Org/repo-x2/mise.toml" "X2 the review line"
 has "    then:   mise trust ~/Code/Org/repo-x2/mise.toml" "X2 the manual trust line"
 has "wt-prepare x2 && wt x2" "X2 the recovery line"
@@ -3119,7 +3276,7 @@ xfix x3
 mise_seed "$REPO/mise.toml"
 run "$REPO" wt x3
 rc_is 1 "X3 a main-checkout config that is not trusted is refused"
-has "wt: ~/Code/Org/repo-x3/mise.local.toml is not trusted: the main checkout's is not trusted." "X3 the reason"
+has "wt: ~/Code/Org/repo-x3/mise.local.toml is not trusted: it matches no trusted copy in this repository's checkouts." "X3 the reason"
 has "    review: cat ~/Code/Org/repo-x3/mise.local.toml" "X3 review shows the file itself, a diff against an identical copy shows nothing"
 hasnt "review: diff" "X3 and no diff is offered"
 mlog_line "trust $X/mise.toml" "X3 the trusted file is still carried"
@@ -3131,7 +3288,7 @@ xbranch x4-src 'mkdir -p "$REPO/.config"; print -r -- "c=1" > "$REPO/.config/mis
 xseed
 run "$REPO" wt x4 x4-src
 rc_is 1 "X4 a config with no main-checkout counterpart is refused"
-has "wt: ~/Code/Org/repo-x4/.config/mise.toml is not trusted: the main checkout has no such file." "X4 the reason, with the subdirectory kept"
+has "wt: ~/Code/Org/repo-x4/.config/mise.toml is not trusted: it matches no trusted copy in this repository's checkouts." "X4 the reason, with the subdirectory kept"
 has "    review: cat ~/Code/Org/repo-x4/.config/mise.toml" "X4 review shows the file itself"
 mlog_no_line "trust $X/.config/mise.toml" "X4 it is never trusted"
 
@@ -3158,7 +3315,8 @@ rm "$REPO/mise.toml"; ln -s "$ROOTTMP/outside.toml" "$REPO/mise.toml"
 xseed
 run "$REPO" wt x5c
 rc_is 1 "X5c a main-checkout config that became a symlink refuses the worktree's copy"
-has "wt: ~/Code/Org/repo-x5c/mise.toml is not trusted: $XSYM." "X5c the symlink reason"
+has "wt: ~/Code/Org/repo-x5c/mise.toml is not trusted: $XNONE." "X5c main cannot vouch, so no trusted copy"
+has "    review: cat ~/Code/Org/repo-x5c/mise.toml" "X5c review shows the file itself"
 mlog_no_line "trust $X/mise.toml" "X5c it is never trusted"
 
 xfix x5d
@@ -3169,7 +3327,8 @@ rm -rf "$REPO/.config"; ln -s "$ROOTTMP/extd" "$REPO/.config"
 xseed; mise_seed "$REPO/.config/mise.toml"
 run "$REPO" wt x5d
 rc_is 1 "X5d a main-checkout directory that became a symlink refuses the worktree's copy"
-has "wt: ~/Code/Org/repo-x5d/.config/mise.toml is not trusted: $XSYM." "X5d the symlink reason"
+has "wt: ~/Code/Org/repo-x5d/.config/mise.toml is not trusted: $XNONE." "X5d main cannot vouch, so no trusted copy"
+has "    review: cat ~/Code/Org/repo-x5d/.config/mise.toml" "X5d review shows the file itself"
 mlog_no_line "trust $X/.config/mise.toml" "X5d it is never trusted"
 
 xfix x6; xseed
@@ -3194,7 +3353,7 @@ xfix x8; xseed
 MOCK_MISE_RACE_CONTENT='[env]\nX = "evil"\n' run "$REPO" wt x8
 rc_is 1 "X8 a file rewritten while it is trusted is refused"
 mlog_line "trust --untrust $X/mise.toml" "X8 its trust is withdrawn"
-has "wt: ~/Code/Org/repo-x8/mise.toml is not trusted: it changed while wt was trusting it." "X8 the reason"
+has "wt: ~/Code/Org/repo-x8/mise.toml is not trusted: $XCHG." "X8 the reason"
 hook_not_ran "X8 the setup hook does not run"
 
 xfix x9; xseed
@@ -3276,7 +3435,7 @@ hook_ran "X14 the setup hook runs"
 xfix x14b 'co: lon'; mise_seed "$REPO/mise.toml"
 run "$REPO" wt x14b
 rc_is 1 "X14b a refusal in a checkout path with ': ' is reported"
-has "wt: ~/Code/Org/co: lon-x14b/mise.local.toml is not trusted: the main checkout's is not trusted." "X14b the headline stays unquoted"
+has "wt: ~/Code/Org/co: lon-x14b/mise.local.toml is not trusted: it matches no trusted copy in this repository's checkouts." "X14b the headline stays unquoted"
 has "    review: cat ~/'Code/Org/co: lon-x14b/mise.local.toml'" "X14b the review line is quoted"
 has "    then:   mise trust ~/'Code/Org/co: lon-x14b/mise.local.toml'" "X14b the trust line is quoted"
 xfix x14c 'co: lon'
@@ -3298,7 +3457,7 @@ eq "$OUT" "/srv/plain" "X14e a safe path still prints unchanged"
 
 # _wt_mise_withdraw untrusts the dest it was given, not a same-named variable of its caller.
 xfix x14f
-xw_caller() { local dest=OUTER; _wt_mise_withdraw "$REPO" "$X" mise.toml "" }
+xw_caller() { local dest=OUTER; _wt_mise_withdraw "$REPO" "$X" "" mise.toml "" }
 run "$REPO" xw_caller
 mlog_line "trust --untrust $X/mise.toml" "X14f withdraw uses the dest it was passed, not its caller's"
 mlog_no_line "trust --untrust OUTER/mise.toml" "X14f ... never the caller's"
@@ -3334,9 +3493,9 @@ xbranch x18-src 'print -r -- "a=2" > "$REPO/mise.toml"; mkdir -p "$REPO/.config"
 xseed
 run "$REPO" wt x18 x18-src
 rc_is 1 "X18 two refusals"
-has "wt: ~/Code/Org/repo-x18/mise.toml is not trusted: it differs from the main checkout's." "X18 the first is named with its reason"
+has "wt: ~/Code/Org/repo-x18/mise.toml is not trusted: it matches no trusted copy in this repository's checkouts." "X18 the first is named with its reason"
 has "    review: diff ~/Code/Org/repo/mise.toml ~/Code/Org/repo-x18/mise.toml" "X18 and its review line"
-has "wt: ~/Code/Org/repo-x18/.config/mise.toml is not trusted: the main checkout has no such file." "X18 the second is named with its reason"
+has "wt: ~/Code/Org/repo-x18/.config/mise.toml is not trusted: it matches no trusted copy in this repository's checkouts." "X18 the second is named with its reason"
 has "    review: cat ~/Code/Org/repo-x18/.config/mise.toml" "X18 and its review line"
 
 xfix x19; xseed
@@ -3357,7 +3516,7 @@ git -C "$REPO" add -f -- "$TABF"; git -C "$REPO" commit -q -m tabconf; mise_seed
 xbranch x20-src 'print -r -- "t=2" > "$REPO/$TABF"; git -C "$REPO" add -f -- "$TABF"'
 run "$REPO" wt x20 x20-src
 rc_is 1 "X20 a config whose name contains a tab that differs is refused"
-has "wt: ~/Code/Org/repo-x20/.config/mise/conf.d/a"$'\t'"b.toml is not trusted: it differs from the main checkout's." "X20 the headline names the whole filename"
+has "wt: ~/Code/Org/repo-x20/.config/mise/conf.d/a"$'\t'"b.toml is not trusted: it matches no trusted copy in this repository's checkouts." "X20 the headline names the whole filename"
 has "    review: diff ~/'Code/Org/repo/.config/mise/conf.d/a"$'\t'"b.toml' ~/'Code/Org/repo-x20/.config/mise/conf.d/a"$'\t'"b.toml'" "X20 the review line names the whole filename, quoted"
 has "    then:   mise trust ~/'Code/Org/repo-x20/.config/mise/conf.d/a"$'\t'"b.toml'" "X20 the trust line names the whole filename, quoted"
 mlog_no_line "trust $X/$TABF" "X20 it is never trusted"
@@ -3366,20 +3525,626 @@ xfix x21; xseed
 xbranch x21-src 'mkdir -p "$REPO/.config/mise/conf.d"; print -r -- "t=1" > "$REPO/$TABF"; git -C "$REPO" add -f -- "$TABF"'
 run "$REPO" wt x21 x21-src
 rc_is 1 "X21 a tab-named config with no main counterpart is refused"
-has "wt: ~/Code/Org/repo-x21/.config/mise/conf.d/a"$'\t'"b.toml is not trusted: the main checkout has no such file." "X21 the headline names the whole filename"
+has "wt: ~/Code/Org/repo-x21/.config/mise/conf.d/a"$'\t'"b.toml is not trusted: it matches no trusted copy in this repository's checkouts." "X21 the headline names the whole filename"
 has "    review: cat ~/'Code/Org/repo-x21/.config/mise/conf.d/a"$'\t'"b.toml'" "X21 the review line names the whole filename, quoted"
 has "    then:   mise trust ~/'Code/Org/repo-x21/.config/mise/conf.d/a"$'\t'"b.toml'" "X21 the trust line names the whole filename, quoted"
 
+# --- carrying from any checkout of the repository (spec §3, §4) --------------------
+# Siblings are made with xsib under $HOME/Code/Org/sib-*, so X13 can tell them from the
+# worktrees wt makes. `xbranch` puts a=2 on a branch; a sibling on that branch holds a=2.
+XA2='print -r -- "a=2" > "$REPO/mise.toml"; git -C "$REPO" add mise.toml'
+
+# X23: main's copy differs, a sibling's identical copy is trusted: it vouches.
+xfix x23
+xbranch x23-src "$XA2"
+xseed
+xsib "$HOME/Code/Org/sib-x23" x23-src; mise_seed "$HOME/Code/Org/sib-x23/mise.toml"
+run "$REPO" wt x23 x23-src
+rc_is 0 "X23 a sibling vouches when main's copy differs"
+has "wt: mise trust carried to ~/Code/Org/repo-x23/mise.toml (trusted in ~/Code/Org/sib-x23)" "X23 the line names the sibling"
+has "wt: mise trust carried to ~/Code/Org/repo-x23/mise.local.toml (trusted in ~/Code/Org/repo)" "X23 a file main vouches for names main"
+mlog_line "trust $X/mise.toml" "X23 the tracked config is trusted"
+mlog_line "trust $X/mise.local.toml" "X23 so is the local one"
+hook_ran "X23 the setup hook runs"
+
+# X24: main's copy is untrusted, a sibling's identical copy is trusted.
+xfix x24
+mise_seed "$REPO/mise.local.toml"
+xsib -b s24 "$HOME/Code/Org/sib-x24"; mise_seed "$HOME/Code/Org/sib-x24/mise.toml"
+run "$REPO" wt x24
+rc_is 0 "X24 a sibling vouches when main's copy is untrusted"
+has "wt: mise trust carried to ~/Code/Org/repo-x24/mise.toml (trusted in ~/Code/Org/sib-x24)" "X24 the line names the sibling"
+mlog_line "trust $X/mise.toml" "X24 the tracked config is trusted"
+hook_ran "X24 the setup hook runs"
+
+# X25: only untrusted or differing copies exist.
+xfix x25
+xbranch x25-src "$XA2"
+xseed
+xsib "$HOME/Code/Org/sib-x25" x25-src
+xsib -b s25 "$HOME/Code/Org/sib-x25b"; mise_seed "$HOME/Code/Org/sib-x25b/mise.toml"
+run "$REPO" wt x25 x25-src
+rc_is 1 "X25 an untrusted identical copy and a trusted differing one do not vouch"
+has "wt: ~/Code/Org/repo-x25/mise.toml is not trusted: $XNONE." "X25 the new reason"
+has "    review: diff ~/Code/Org/repo/mise.toml ~/Code/Org/repo-x25/mise.toml" "X25 the diff is against main's trusted copy, not the base's untrusted one"
+mlog_no_line "trust $X/mise.toml" "X25 it is never trusted"
+hook_not_ran "X25 the setup hook does not run"
+
+# X25b: the review's baseline must be TRUSTED. The base sibling's copy differs and is
+# untrusted; main's differs and is trusted: the diff is against main's.
+xfix x25b
+xbranch x25b-src "$XA2"
+xseed
+xsib "$HOME/Code/Org/sib-x25b" x25b-src
+print -r -- 'a=3' > "$HOME/Code/Org/sib-x25b/mise.toml"
+run "$REPO" wt x25b x25b-src
+rc_is 1 "X25b an untrusted differing base copy is refused"
+has "wt: ~/Code/Org/repo-x25b/mise.toml is not trusted: $XNONE." "X25b the new reason"
+has "    review: diff ~/Code/Org/repo/mise.toml ~/Code/Org/repo-x25b/mise.toml" "X25b the diff skips the base's untrusted copy for main's trusted one"
+hasnt "sib-x25b/mise.toml ~" "X25b ... and never offers the untrusted copy as a baseline"
+mlog_no_line "trust $X/mise.toml" "X25b it is never trusted"
+hook_not_ran "X25b the setup hook does not run"
+
+# X25c: main's copy is plain and differs but is untrusted, and nothing else qualifies: cat.
+xfix x25c
+xbranch x25c-src "$XA2"
+mise_seed "$REPO/mise.local.toml"
+run "$REPO" wt x25c x25c-src
+rc_is 1 "X25c no trusted copy at all is refused"
+has "wt: ~/Code/Org/repo-x25c/mise.toml is not trusted: $XNONE." "X25c the new reason"
+has "    review: cat ~/Code/Org/repo-x25c/mise.toml" "X25c an untrusted differing copy is no baseline: the file itself is shown"
+hasnt "review: diff" "X25c and no diff is offered"
+mlog_no_line "trust $X/mise.toml" "X25c it is never trusted"
+hook_not_ran "X25c the setup hook does not run"
+
+# X25d: main's copy is a symlink to a trusted file that differs: it is no baseline either.
+xfix x25d
+xbranch x25d-src "$XA2"
+print -r -- 'a=1' > "$ROOTTMP/outside.toml"
+rm "$REPO/mise.toml"; ln -s "$ROOTTMP/outside.toml" "$REPO/mise.toml"
+xseed
+run "$REPO" wt x25d x25d-src
+rc_is 1 "X25d a symlinked main copy is refused"
+has "wt: ~/Code/Org/repo-x25d/mise.toml is not trusted: $XNONE." "X25d the new reason"
+has "    review: cat ~/Code/Org/repo-x25d/mise.toml" "X25d a symlinked copy is no baseline: the file itself is shown"
+hasnt "review: diff" "X25d and no diff is offered"
+mlog_no_line "trust $X/mise.toml" "X25d it is never trusted"
+hook_not_ran "X25d the setup hook does not run"
+
+# X26: the re-check is bound to the vouching candidate; no other is tried.
+xfix x26
+xbranch x26-src "$XA2"
+xseed
+xsib "$HOME/Code/Org/sib-x26" x26-src; mise_seed "$HOME/Code/Org/sib-x26/mise.toml"
+xsib -b s26b "$HOME/Code/Org/sib-x26b" x26-src; mise_seed "$HOME/Code/Org/sib-x26b/mise.toml"
+MOCK_MISE_MAIN_FLIP="$HOME/Code/Org/sib-x26/mise.toml" run "$REPO" wt x26 x26-src
+rc_is 1 "X26 a vouching sibling that loses its trust meanwhile is refused"
+mlog_line "trust --untrust $X/mise.toml" "X26 the worktree's trust is withdrawn"
+has "wt: ~/Code/Org/repo-x26/mise.toml is not trusted: $XCHG." "X26 the reason"
+eq "$(mlog_count "trust $X/mise.toml")" "1" "X26 the second sibling is not tried"
+hook_not_ran "X26 the setup hook does not run"
+
+# X27a: a registered sibling whose directory is gone is skipped without a read.
+xfix x27a
+xbranch x27a-src "$XA2"
+xseed
+xsib -b g27 "$HOME/Code/Org/sib-a27" x27a-src; rm -rf "$HOME/Code/Org/sib-a27"
+xsib -b v27 "$HOME/Code/Org/sib-b27" x27a-src; mise_seed "$HOME/Code/Org/sib-b27/mise.toml"
+run "$REPO" wt x27a x27a-src
+rc_is 0 "X27a a later sibling vouches past a missing one"
+has "wt: mise trust carried to ~/Code/Org/repo-x27a/mise.toml (trusted in ~/Code/Org/sib-b27)" "X27a the line names the live sibling"
+mlog_line "trust $X/mise.toml" "X27a the tracked config is trusted in the worktree"
+hook_ran "X27a the setup hook runs"
+mlog_no_line "-C $HOME/Code/Org/sib-a27 trust --show" "X27a ... and the gone checkout is never read (defence in depth; XC2 pins the skip)"
+
+# X27b: a failed read of a candidate skips it, says so once, and reads it once.
+xfix x27b
+xsib -b s27 "$HOME/Code/Org/sib-x27b"
+print -r -- 'b=1' > "$HOME/Code/Org/sib-x27b/mise.local.toml"
+mise_seed "$HOME/Code/Org/sib-x27b/mise.toml"; mise_seed "$HOME/Code/Org/sib-x27b/mise.local.toml"
+MOCK_MISE_SHOW_FAIL_DIR="$REPO" run "$REPO" wt x27b
+rc_is 0 "X27b a candidate whose trust status cannot be read does not stop the carry"
+eq "$(print -r -- "$OUT" | grep -Fc -- "wt: cannot read mise's trust status for ~/Code/Org/repo — it cannot vouch.")" "1" "X27b the failed read is reported once for two files"
+eq "$(grep -Fxc -- "-C $REPO trust --show" "$MLOG")" "1" "X27b ... and the candidate is read once"
+has "wt: mise trust carried to ~/Code/Org/repo-x27b/mise.toml (trusted in ~/Code/Org/sib-x27b)" "X27b the sibling vouches for the tracked config"
+has "wt: mise trust carried to ~/Code/Org/repo-x27b/mise.local.toml (trusted in ~/Code/Org/sib-x27b)" "X27b ... and for the local one"
+hook_ran "X27b the setup hook runs"
+
+# X28: a registered sibling replaced by a link into another repository never vouches.
+xfix x28
+xbranch x28-src "$XA2"
+xseed
+xsib -b s28 "$HOME/Code/Org/sib-x28" x28-src
+git init -q "$HOME/Code/Org/other28"; print -r -- 'a=2' > "$HOME/Code/Org/other28/mise.toml"; mise_seed "$HOME/Code/Org/other28/mise.toml"
+rm -rf "$HOME/Code/Org/sib-x28"; ln -s "$HOME/Code/Org/other28" "$HOME/Code/Org/sib-x28"
+run "$REPO" wt x28 x28-src
+rc_is 1 "X28 a link into another repository's checkout cannot vouch"
+has "wt: ~/Code/Org/repo-x28/mise.toml is not trusted: $XNONE." "X28 the file is refused"
+mlog_no_line "trust $X/mise.toml" "X28 it is never trusted"
+hook_not_ran "X28 the setup hook does not run"
+
+# X29: the base branch's checkout is asked before the others. Git lists sib-a before sib-z.
+xfix x29
+xbranch x29-src "$XA2"
+xseed
+xsib -b other29 "$HOME/Code/Org/sib-a" x29-src; mise_seed "$HOME/Code/Org/sib-a/mise.toml"
+xsib "$HOME/Code/Org/sib-z" x29-src; mise_seed "$HOME/Code/Org/sib-z/mise.toml"
+eq "$(git -C "$REPO" worktree list --porcelain | sed -n 's|^worktree .*/||p' | tr '\n' ' ')" "repo sib-a sib-z " "X29 precondition: Git lists sib-a before sib-z"
+run "$REPO" wt x29 x29-src
+rc_is 0 "X29 the base's checkout vouches"
+has "wt: mise trust carried to ~/Code/Org/repo-x29/mise.toml (trusted in ~/Code/Org/sib-z)" "X29 the line names the base checkout, not the earlier sibling"
+mlog_no_line "-C $HOME/Code/Org/sib-a trust --show" "X29 the other sibling is never read"
+mlog_line "trust $X/mise.toml" "X29 the tracked config is trusted in the worktree"
+hook_ran "X29 the setup hook runs"
+
+# X30: the review diffs against the base checkout's trusted, differing copy.
+xfix x30
+xbranch x30-src "$XA2"
+xseed
+xsib "$HOME/Code/Org/sib-x30" x30-src
+print -r -- 'a=3' > "$HOME/Code/Org/sib-x30/mise.toml"; mise_seed "$HOME/Code/Org/sib-x30/mise.toml"
+run "$REPO" wt x30 x30-src
+rc_is 1 "X30 a trusted copy that differs does not vouch"
+has "    review: diff ~/Code/Org/sib-x30/mise.toml ~/Code/Org/repo-x30/mise.toml" "X30 the diff is against the base checkout's copy"
+mlog_no_line "trust $X/mise.toml" "X30 it is never trusted"
+hook_not_ran "X30 the setup hook does not run"
+run "$REPO" wt-prepare x30
+rc_is 1 "X30 wt-prepare refuses again"
+has "    review: diff ~/Code/Org/repo/mise.toml ~/Code/Org/repo-x30/mise.toml" "X30 with no base the diff is against main's copy"
+mlog_no_line "trust $X/mise.toml" "X30 ... and still never trusted"
+hook_not_ran "X30 ... and the setup hook still does not run"
+
+# X31: a failed read of the worktree list during the carry trusts nothing.
+xfix x31
+xbranch x31-src "$XA2"
+xseed
+run "$REPO" wt x31 x31-src
+rc_is 1 "X31 the first run is refused, the worktree exists"
+cat "$MLOG" >> "$XALL"; : > "$MLOG"
+PATH="$FAILSTUBS:$PATH" WT_FAIL_MATCH='worktree list' WT_FAIL_NTH=1 WT_FAIL_LOG="$FLOG" run "$REPO" _wt_mise_trust "$REPO" "$X"
+rc_is 1 "X31 an unreadable worktree list returns 1"
+has "wt: cannot read Git's worktree list for ~/Code/Org/repo — trusting nothing." "X31 it says so"
+grep -q '^trust ' "$MLOG" && _fail "X31 nothing is trusted" || _pass "X31 nothing is trusted"
+
+# X32: the worktree's own side is checked first: a directory in place of a config is refused
+# even when a sibling holds a trusted regular copy.
+xfix x32
+mise_seed "$REPO/mise.toml"
+xsib -b s32 "$HOME/Code/Org/sib-x32"
+print -r -- 'b=1' > "$HOME/Code/Org/sib-x32/mise.local.toml"; mise_seed "$HOME/Code/Org/sib-x32/mise.local.toml"
+run "$REPO" wt x32
+rc_is 0 "X32 the sibling vouches for the local config at first"
+mlog_line "trust $X/mise.local.toml" "X32 the local config is trusted in the worktree at first"
+hook_ran "X32 the setup hook runs at first"
+rm -f "$X/mise.local.toml"; mkdir "$X/mise.local.toml"
+cat "$MLOG" >> "$XALL"; : > "$MLOG"
+rm -f "$ROOTTMP/hook-ran"
+run "$REPO" wt-prepare x32
+rc_is 1 "X32 a directory in place of the config is refused"
+hook_not_ran "X32 the setup hook does not run"
+has "wt: ~/Code/Org/repo-x32/mise.local.toml is not trusted: $XSYM." "X32 the worktree's own side is the reason"
+has "    review: cat ~/Code/Org/repo-x32/mise.local.toml" "X32 review shows the file itself"
+mlog_no_line "trust $X/mise.local.toml" "X32 it is never trusted"
+
+# X33: a harness checkout nested inside main. mise lists main's configs as its parents; they
+# must not answer for it.
+xfix x33
+xbranch x33-src "$XA2"
+xseed
+xsib -b h1 "$REPO/.claude/worktrees/h1" x33-src
+run "$REPO" wt x33 x33-src
+rc_is 1 "X33 a nested checkout whose own copy is untrusted does not vouch"
+has "wt: ~/Code/Org/repo-x33/mise.toml is not trusted: $XNONE." "X33 main's trusted parent config did not answer for it"
+mlog_no_line "trust $X/mise.toml" "X33 it is never trusted"
+hook_not_ran "X33 the setup hook does not run"
+mise_seed "$REPO/.claude/worktrees/h1/mise.toml"
+run "$REPO" wt-prepare x33
+rc_is 0 "X33 once its own copy is trusted it vouches"
+mlog_line "trust $X/mise.toml" "X33 the tracked config is trusted in the worktree"
+hook_ran "X33 the setup hook runs"
+has "wt: mise trust carried to ~/Code/Org/repo-x33/mise.toml (trusted in ~/Code/Org/repo/.claude/worktrees/h1)" "X33 the line names the nested checkout"
+
+# X34: the search reads a candidate once, however many files consult it.
+xfix x34
+xbranch x34-src "$XA2"
+mise_seed "$REPO/mise.toml"
+xsib -b s34 "$HOME/Code/Org/sib-x34"
+print -r -- 'a=3' > "$HOME/Code/Org/sib-x34/mise.toml"; print -r -- 'b=1' > "$HOME/Code/Org/sib-x34/mise.local.toml"
+mise_seed "$HOME/Code/Org/sib-x34/mise.toml"; mise_seed "$HOME/Code/Org/sib-x34/mise.local.toml"
+run "$REPO" wt x34 x34-src
+rc_is 1 "X34 the tracked config is refused"
+has "wt: ~/Code/Org/repo-x34/mise.toml is not trusted: $XNONE." "X34 with the new reason"
+has "wt: mise trust carried to ~/Code/Org/repo-x34/mise.local.toml (trusted in ~/Code/Org/sib-x34)" "X34 the local config is carried from the sibling"
+mlog_line "trust $X/mise.local.toml" "X34 the local config is trusted in the worktree"
+mlog_no_line "trust $X/mise.toml" "X34 the tracked config is never trusted"
+hook_not_ran "X34 the setup hook does not run"
+cutln="$(mlog_ln "trust $X/mise.local.toml")"
+eq "$(head -n $((cutln - 1)) "$MLOG" | grep -Fxc -- "-C $HOME/Code/Org/sib-x34 trust --show")" "1" "X34 the sibling is read once before the first trust"
+
+# X35: a sibling whose path holds ': '.
+xfix x35
+xbranch x35-src "$XA2"
+xseed
+xsib "$HOME/Code/Org/sib: x35" x35-src; mise_seed "$HOME/Code/Org/sib: x35/mise.toml"
+run "$REPO" wt x35 x35-src
+rc_is 0 "X35 a sibling whose path holds ': ' vouches"
+has "wt: mise trust carried to ~/Code/Org/repo-x35/mise.toml (trusted in ~/Code/Org/sib: x35)" "X35 the carried line shows its tilde path"
+mlog_line "trust $X/mise.toml" "X35 the tracked config is trusted in the worktree"
+hook_ran "X35 the setup hook runs"
+xfix x35
+xbranch x35-src "$XA2"
+xseed
+xsib "$HOME/Code/Org/sib: x35" x35-src
+print -r -- 'a=3' > "$HOME/Code/Org/sib: x35/mise.toml"; mise_seed "$HOME/Code/Org/sib: x35/mise.toml"
+run "$REPO" wt x35 x35-src
+rc_is 1 "X35 a trusted copy that differs is refused"
+has "    review: diff ~/'Code/Org/sib: x35/mise.toml' ~/Code/Org/repo-x35/mise.toml" "X35 the diff quotes the baseline"
+mlog_no_line "trust $X/mise.toml" "X35 it is never trusted"
+hook_not_ran "X35 the setup hook does not run"
+
+# X36: wt run from inside a sibling with no start point: the caller's checkout is the base.
+xfix x36
+xbranch x36-src "$XA2"
+xseed
+xsib -b a36 "$HOME/Code/Org/sib-a" x36-src; mise_seed "$HOME/Code/Org/sib-a/mise.toml"
+xsib -b c36 "$HOME/Code/Org/sib-c" x36-src; mise_seed "$HOME/Code/Org/sib-c/mise.toml"
+run "$HOME/Code/Org/sib-c" wt x36
+rc_is 0 "X36 the caller's checkout vouches"
+has "wt: mise trust carried to ~/Code/Org/repo-x36/mise.toml (trusted in ~/Code/Org/sib-c)" "X36 the line names the caller's checkout"
+mlog_no_line "-C $HOME/Code/Org/sib-a trust --show" "X36 an earlier sibling is never read"
+mlog_line "trust $X/mise.toml" "X36 the tracked config is trusted in the worktree"
+hook_ran "X36 the setup hook runs"
+
+# X37: the check-then-trust race. A writer who controls only the worktree file shows good bytes
+# to the search, its own to `mise trust` (which records their hash) and to the first status read,
+# and good bytes again afterwards; every comparison of bytes then passes. The file's identity
+# (inode and change time) cannot be put back, so the carry sees that it was written. Only
+# mise.toml is trusted in main: the untrusted mise.local.toml that xfix also copies through
+# .worktreeinclude is refused alongside the race, and the assertions below name mise.toml.
+xfix x37
+mise_seed "$REPO/mise.toml"
+MOCK_MISE_FLIP_RACE='evil=1\n' run "$REPO" wt x37
+rc_is 1 "X37 a file rewritten while it is being trusted is refused"
+has "wt: ~/Code/Org/repo-x37/mise.toml is not trusted: $XCHG." "X37 the reason"
+has "wt: ~/Code/Org/repo-x37/mise.toml is not trusted: $XCHG."$'\n'"$XHINT"$'\n'"    review: cat ~/Code/Org/repo-x37/mise.toml" "X37 the hint sits between the headline and the review line"
+hasnt "mise.local.toml is not trusted: $XCHG" "X37 the other file is refused for its own reason"
+mlog_line "trust $X/mise.toml" "X37 the file was trusted (the race really ran)"
+mlog_line "trust --untrust $X/mise.toml" "X37 the trust is withdrawn"
+hook_not_ran "X37 the setup hook does not run"
+eq "$(awk -v p="$X/mise.toml" 'index($0, p "\t") == 1 { n++ } END { print n + 0 }' "$MISE_STUB_STORE")" "0" "X37 the store holds no entry for the file afterwards"
+hasnt "mise trust carried" "X37 nothing is reported as carried"
+
+# X38: <dest> itself is a symlink to another checkout, which holds an untrusted copy that a
+# trusted one in main equals. Trusting <dest>/mise.toml would land on that other checkout.
+xfix x38; xseed
+xsib -b s38 "$HOME/Code/Org/sib-x38"
+ln -s "$HOME/Code/Org/sib-x38" "$X"
+run "$REPO" _wt_mise_trust "$REPO" "$X"
+rc_is 1 "X38 a destination that is a symlink trusts nothing"
+has "wt: ~/Code/Org/repo-x38 is a symlink — trusting nothing." "X38 it says so"
+grep -q '^trust ' "$MLOG" && _fail "X38 no trust call at all" || _pass "X38 no trust call at all"
+
+# X39: the worktree list is read once per run, however many files need the candidates.
+xfix x39
+xsib -b x39 "$X"; cp -p "$REPO/mise.local.toml" "$X/mise.local.toml"
+xseed
+PATH="$FAILSTUBS:$PATH" WT_FAIL_MATCH='worktree list' WT_FAIL_NTH=0 WT_FAIL_LOG="$FLOG" run "$REPO" _wt_mise_trust "$REPO" "$X"
+rc_is 0 "X39 two untrusted files are carried"
+mlog_line "trust $X/mise.toml" "X39 the tracked config is trusted"
+mlog_line "trust $X/mise.local.toml" "X39 so is the local one"
+eq "$(wc -l < "$FLOG" | tr -d ' ')" "1" "X39 Git's worktree list is read once for both"
+
+# X40: _WT_MISE_CARRIED counts one run: a second run with nothing to carry resets it.
+x40_twice() {
+  _wt_mise_trust "$REPO" "$X" >/dev/null 2>&1; print -r -- "carried=$_WT_MISE_CARRIED"
+  _wt_mise_trust "$REPO" "$X" >/dev/null 2>&1; print -r -- "carried=$_WT_MISE_CARRIED"
+}
+xfix x40
+xsib -b x40 "$X"
+xseed
+run "$REPO" x40_twice
+eq "$OUT" "$(print -rl -- carried=1 carried=0)" "X40 the count is 1 after a carry and 0 after a run with nothing to carry"
+
+# X41: the race a writer of the vouching copy can run. The worktree's mise.toml holds the
+# writer's bytes from the start (committed on the source branch) and is never written again.
+# Main's copy holds good bytes that mise trusts; the writer shows them to every status read of
+# main and its own bytes to every `cmp`, so each listing says `trusted` and each comparison
+# says identical. Nothing is written to the store. Only the copy's identity shows it was
+# written, so only the vouching half of the pin catches this.
+xfix x41
+xbranch x41-src 'print -r -- "evil=1" > "$REPO/mise.toml"; git -C "$REPO" add mise.toml'
+mise_seed "$REPO/mise.toml"
+MOCK_MISE_FLIP_VOUCH="$REPO/mise.toml" MOCK_MISE_FLIP_VOUCH_BYTES='evil=1\n' run "$REPO" wt x41 x41-src
+rc_is 1 "X41 a vouching copy rewritten while the file is being trusted is refused"
+has "wt: ~/Code/Org/repo-x41/mise.toml is not trusted: $XCHG."$'\n'"$XHINT"$'\n'"    review: cat ~/Code/Org/repo-x41/mise.toml" "X41 the reason, the hint and the review line"
+mlog_line "trust $X/mise.toml" "X41 the file was trusted (the race really ran)"
+mlog_line "trust --untrust $X/mise.toml" "X41 the trust is withdrawn"
+hook_not_ran "X41 the setup hook does not run"
+eq "$(awk -v p="$X/mise.toml" 'index($0, p "\t") == 1 { n++ } END { print n + 0 }' "$MISE_STUB_STORE")" "0" "X41 the store holds no entry for the file afterwards"
+eq "$(awk -v p="$REPO/mise.toml" 'index($0, p "\t") == 1 { n++ } END { print n + 0 }' "$MISE_STUB_STORE")" "1" "X41 the vouching copy has exactly its seeded store entry"
+grep -Fxq -- "$REPO/mise.toml"$'\t'"$(print -r -- 'a=1' | shasum -a 256 | cut -d' ' -f1)" "$MISE_STUB_STORE" && _pass "X41 ... and it is the hash of the good bytes" || _fail "X41 ... and it is the hash of the good bytes"
+eq "$(<$X/mise.toml)" "evil=1" "X41 the worktree's file still holds the writer's bytes"
+hasnt "mise trust carried to ~/Code/Org/repo-x41/mise.toml" "X41 the file is not reported as carried"
+
+# X42, X43: _wt_mise_ident, the file's own pin. X42: an untouched file reads the same twice, as
+# one line, and a missing path has none. X43: rewriting the content (same size) and replacing
+# the file with a symlink to an identical copy each change it.
+cat "$MLOG" >> "$XALL"; setup
+XI="$ROOTTMP/xi"; mkdir -p "$XI"
+print -r -- 'a=1' > "$XI/f.toml"
+run "$REPO" _wt_mise_ident "$XI/f.toml"; xi1="$OUT"
+run "$REPO" _wt_mise_ident "$XI/f.toml"
+eq "$OUT" "$xi1" "X42 an untouched file reads the same twice"
+eq "$(print -r -- "$xi1" | wc -l | tr -d ' ')" "1" "X42 ... as exactly one line"
+[[ "$xi1" == <->\ <->.<-> ]] && _pass "X42 ... holding an inode and a change time with a fraction" || _fail "X42 ... holding an inode and a change time with a fraction ('$xi1')"
+run "$REPO" _wt_mise_ident "$XI/missing.toml"
+rc_is 1 "X42 a missing path has no identity"
+print -r -- 'a=2' > "$XI/f.toml"
+run "$REPO" _wt_mise_ident "$XI/f.toml"; xi2="$OUT"
+[[ -n "$xi2" && "$xi2" != "$xi1" ]] && _pass "X43 rewriting the content changes the identity" || _fail "X43 rewriting the content changes the identity"
+cp -p "$XI/f.toml" "$XI/copy.toml"; rm "$XI/f.toml"; ln -s "$XI/copy.toml" "$XI/f.toml"
+run "$REPO" _wt_mise_ident "$XI/f.toml"
+[[ -n "$OUT" && "$OUT" != "$xi2" ]] && _pass "X43 replacing the file with a symlink to an identical copy changes the identity" || _fail "X43 replacing the file with a symlink to an identical copy changes the identity"
+
+# --- wt-rm checks mise trust before it disrupts anything (spec §5) ---------------------
+# xrfix <slug> — xfix's repository with a git-ignored mise.local.toml (so the worktree stays
+# clean), a hook that records its `setup` and `teardown` verbs, both configs trusted in main,
+# and the worktree $X already made by `wt`, with fresh herdr and mise logs.
+xrfix() {
+  xfix "$1"
+  print -r -- 'mise.local.toml' > "$REPO/.gitignore"
+  git -C "$REPO" add .gitignore; git -C "$REPO" commit -q -m ignore
+  mkhook "$REPO" "#!/bin/sh
+case \"\$1\" in
+  setup) touch '$ROOTTMP/setup-ran' ;;
+  teardown) touch '$ROOTTMP/teardown-ran' ;;
+esac"
+  xseed
+  run "$REPO" wt "$1"
+  [[ "$RC" == 0 ]] || _fail "xrfix $1: wt failed (rc=$RC)"
+  cat "$MLOG" >> "$XALL"; : > "$HLOG"; : > "$MLOG"
+}
+# xr_herdr — a running default Herdr session holding a workspace at $X (section E's fixture),
+# so a close that never happens cannot pass for one that did.
+xr_herdr() {
+  export MOCK_H_SESSION_LIST="{\"sessions\":[{\"default\":true,\"name\":\"default\",\"running\":true,\"session_dir\":\"$ROOTTMP/default\"}]}"
+  export MOCK_H_WORKSPACES="{\"result\":{\"workspaces\":[{\"workspace_id\":\"wx\",\"worktree\":{\"checkout_path\":\"$X\"}}]}}"
+  export MOCK_H_PANES='{"result":{"panes":[]}}'
+}
+teardown_ran()    { [[ -e "$ROOTTMP/teardown-ran" ]] && _pass "$1" || _fail "$1" }
+teardown_not_ran() { [[ -e "$ROOTTMP/teardown-ran" ]] && _fail "$1" || _pass "$1" }
+dir_there() { [[ -d "$1" ]] && _pass "$2" || _fail "$2" }
+dir_gone()  { [[ -d "$1" ]] && _fail "$2" || _pass "$2" }
+
+# XR1: an untrusted config stops step 1 before any Herdr call, hook or removal.
+xrfix xr1; xr_herdr
+print -r -- 'b=2' > "$X/mise.local.toml"
+run "$REPO" wt-rm xr1
+rc_is 1 "XR1 a config that matches no trusted copy refuses wt-rm"
+has "wt: ~/Code/Org/repo-xr1/mise.local.toml is not trusted: $XNONE." "XR1 the refusal names the file and the new reason"
+has "wt-rm: nothing was closed or removed — review the mise config above, then: wt-rm xr1" "XR1 the step-1 line follows"
+r1="$(oline "mise.local.toml is not trusted")"; r2="$(oline "nothing was closed or removed")"
+[[ -n "$r1" && -n "$r2" ]] && (( r1 < r2 )) && _pass "XR1 the step-1 line comes after the report" || _fail "XR1 the step-1 line comes after the report ($r1, $r2)"
+eq "$(<$HLOG)" "" "XR1 Herdr is not called at all"
+teardown_not_ran "XR1 the teardown hook does not run"
+dir_there "$X" "XR1 the checkout still exists"
+mlog_no_line "trust $X/mise.local.toml" "XR1 nothing is trusted"
+
+# XR2: a config main vouches for is carried, then wt-rm goes through teardown and removal.
+xrfix xr2; xr_herdr
+mise_unseed "$X/mise.local.toml"
+run "$REPO" wt-rm xr2
+rc_is 0 "XR2 a config that main vouches for does not stop wt-rm"
+mlog_line "trust $X/mise.local.toml" "XR2 the config is trusted in the worktree"
+eq "$(mlog_count "trust $X/")" "1" "XR2 ... and only that one"
+has "wt: mise trust carried to ~/Code/Org/repo-xr2/mise.local.toml (trusted in ~/Code/Org/repo)" "XR2 the carried line names main"
+hlogged "workspace close" "XR2 the Herdr workspace is closed"
+teardown_ran "XR2 the teardown hook runs"
+dir_gone "$X" "XR2 the checkout is removed (a Herdr-owned lock, double force)"
+
+# XR3: main's own read fails and a sibling vouches: the cannot-vouch line, then the carry.
+xrfix xr3; xr_herdr
+mise_unseed "$X/mise.local.toml"
+xsib -b s-xr3 "$HOME/Code/Org/sib-xr3"
+print -r -- 'b=1' > "$HOME/Code/Org/sib-xr3/mise.local.toml"; mise_seed "$HOME/Code/Org/sib-xr3/mise.local.toml"
+MOCK_MISE_SHOW_FAIL_DIR="$REPO" run "$REPO" wt-rm xr3
+rc_is 0 "XR3 a sibling vouches when main cannot be read"
+has "wt: cannot read mise's trust status for ~/Code/Org/repo — it cannot vouch." "XR3 main's failed read is reported"
+has "wt: mise trust carried to ~/Code/Org/repo-xr3/mise.local.toml (trusted in ~/Code/Org/sib-xr3)" "XR3 the sibling is named"
+teardown_ran "XR3 the teardown hook runs"
+dir_gone "$X" "XR3 the checkout is removed"
+
+# XR4: the destination's own read fails: nothing is trusted and nothing is closed.
+xrfix xr4; xr_herdr
+MOCK_MISE_SHOW_FAIL_DIR="$X" run "$REPO" wt-rm xr4
+rc_is 1 "XR4 an unreadable destination refuses wt-rm"
+has "wt: cannot read mise's trust status for ~/Code/Org/repo-xr4 — trusting nothing." "XR4 the carry's own line"
+has "wt-rm: nothing was closed or removed — review the mise config above, then: wt-rm xr4" "XR4 the step-1 line"
+eq "$(<$HLOG)" "" "XR4 Herdr is not called at all"
+teardown_not_ran "XR4 the teardown hook does not run"
+dir_there "$X" "XR4 the checkout still exists"
+
+# XR5a: no hook, no check: mise is never called, whatever the configs say.
+cat "$MLOG" >> "$XALL"; setup
+print -r -- 'a=1' > "$REPO/mise.toml"; git -C "$REPO" add mise.toml; git -C "$REPO" commit -q -m cfg
+X="$HOME/Code/Org/repo-xr5a"
+mise_seed "$REPO/mise.toml"
+run "$REPO" wt xr5a
+[[ "$RC" == 0 ]] || _fail "XR5a fixture: wt failed (rc=$RC)"
+mise_unseed "$X/mise.toml"
+cat "$MLOG" >> "$XALL"; : > "$MLOG"
+run "$REPO" wt-rm xr5a
+rc_is 0 "XR5a a repository with no hook removes its worktree despite an untrusted config"
+eq "$(<$MLOG)" "" "XR5a mise is never called"
+dir_gone "$X" "XR5a the checkout is removed"
+
+# XR5b: the checkout is already gone: only the registration is finished, and mise is never called.
+xrfix xr5b
+rm -rf "$X"
+run "$REPO" wt-rm xr5b
+rc_is 0 "XR5b a checkout that is already gone has its registration finished"
+has "✓ removed Git's registration of $X" "XR5b the registration is removed"
+eq "$(<$MLOG)" "" "XR5b mise is never called"
+teardown_not_ran "XR5b the teardown hook does not run"
+
+# XR6: Herdr's close leaves a config untrusted: wt-rm stops at the hook, workspaces closed.
+xrfix xr6; xr_herdr
+MOCK_H_CLOSE_TOUCH="$X/mise.local.toml" run "$REPO" wt-rm xr6
+rc_is 1 "XR6 a config that is untrusted once the workspaces are closed stops wt-rm"
+has "wt-rm: ~/Code/Org/repo-xr6 has untrusted mise config (mise.local.toml) — teardown not run, Herdr workspaces closed." "XR6 the headline names the file"
+has "    Review the mise config, then retry: wt-rm xr6" "XR6 the retry line"
+hlogged "workspace close" "XR6 the workspace was closed"
+teardown_not_ran "XR6 the teardown hook does not run"
+dir_there "$X" "XR6 the checkout still exists"
+hasnt "is not trusted" "XR6 the re-check only reads: it explains nothing"
+grep -q '^trust ' "$MLOG" && _fail "XR6 the re-check trusts nothing" || _pass "XR6 the re-check trusts nothing"
+
+# XR6c: the re-check only reads. Main trusts an EMPTY copy, and the close leaves the worktree's
+# copy empty too, so a re-check that ran the carry would find a witness and trust it.
+xrfix xr6c; xr_herdr
+: > "$REPO/mise.local.toml"; mise_seed "$REPO/mise.local.toml"
+MOCK_H_CLOSE_TOUCH="$X/mise.local.toml" run "$REPO" wt-rm xr6c
+rc_is 1 "XR6c a config untrusted after the close stops wt-rm even though main trusts identical bytes"
+has "has untrusted mise config (mise.local.toml) — teardown not run, Herdr workspaces closed." "XR6c the headline names the file"
+mlog_no_line "trust $X/mise.local.toml" "XR6c the re-check issues no trust"
+grep -q '^trust ' "$MLOG" && _fail "XR6c no trust call at all in this run" || _pass "XR6c no trust call at all in this run"
+teardown_not_ran "XR6c the teardown hook does not run"
+
+# XR6b: every untrusted file is named, in mise's order. A hard link lets one truncation
+# untrust two names.
+xrfix xr6b; xr_herdr
+print -r -- '.mise.toml' >> "$REPO/.git/info/exclude"
+ln "$X/mise.local.toml" "$X/.mise.toml"
+mise_seed "$X/.mise.toml"; cat "$MLOG" >> "$XALL"; : > "$MLOG"
+MOCK_H_CLOSE_TOUCH="$X/mise.local.toml" run "$REPO" wt-rm xr6b
+rc_is 1 "XR6b two untrusted files stop wt-rm"
+has "has untrusted mise config (mise.local.toml, .mise.toml) — teardown not run, Herdr workspaces closed." "XR6b both are named, comma separated"
+teardown_not_ran "XR6b the teardown hook does not run"
+
+# XR7: the read right before teardown fails.
+xrfix xr7; xr_herdr
+MOCK_H_CLOSE_TOUCH="$ROOTTMP/closed" MOCK_MISE_SHOW_FAIL_WHEN="$ROOTTMP/closed" run "$REPO" wt-rm xr7
+rc_is 1 "XR7 an unreadable trust status before teardown stops wt-rm"
+has "wt-rm: cannot read mise's trust status for ~/Code/Org/repo-xr7 — teardown not run, Herdr workspaces closed." "XR7 the headline"
+has "    Review the mise config, then retry: wt-rm xr7" "XR7 the retry line"
+hlogged "workspace close" "XR7 the workspace was closed"
+teardown_not_ran "XR7 the teardown hook does not run"
+dir_there "$X" "XR7 the checkout still exists"
+hasnt "has untrusted mise config" "XR7 a failed read is not reported as untrusted config"
+
+# XR8: another owner's lock is classified before the carry, so a refused removal makes no mise call.
+xrfix xr8; xr_herdr
+mise_unseed "$X/mise.local.toml"
+git -C "$REPO" worktree unlock "$X" 2>/dev/null
+git -C "$REPO" worktree lock --reason "user maintenance" "$X"
+run "$REPO" wt-rm xr8
+rc_is 1 "XR8 a worktree locked by another owner is refused"
+has "is locked for another reason: user maintenance" "XR8 the lock is the reason"
+eq "$(<$MLOG)" "" "XR8 mise is not called before the lock is classified"
+eq "$(<$HLOG)" "" "XR8 Herdr is not called"
+
+# XR9: the uncommitted-changes check comes first as well.
+xrfix xr9; xr_herdr
+mise_unseed "$X/mise.local.toml"
+print -r -- 'wip' > "$X/dirty.txt"
+run "$REPO" wt-rm xr9
+rc_is 1 "XR9 a dirty worktree is refused"
+has "has uncommitted changes" "XR9 the dirty tree is the reason"
+eq "$(<$MLOG)" "" "XR9 mise is not called before check 1"
+eq "$(<$HLOG)" "" "XR9 Herdr is not called"
+
+# XR10: a valid hook and no mise installed: wt-rm goes through and mise is never called.
+xrfix xr10; xr_herdr
+PATH="$(nomise_path)" run "$REPO" wt-rm xr10
+rc_is 0 "XR10 wt-rm succeeds where mise is not installed"
+teardown_ran "XR10 the teardown hook runs"
+dir_gone "$X" "XR10 the checkout is removed"
+eq "$(<$MLOG)" "" "XR10 mise is never called"
+
+# XR11: an invalid hook is refused before any mise call.
+xrfix xr11; xr_herdr
+git -C "$REPO" update-index --chmod=-x .worktreehook
+run "$REPO" wt-rm xr11
+rc_is 1 "XR11 an invalid hook refuses wt-rm"
+has "wt: .worktreehook is indexed as 100644, not 100755." "XR11 the hook is the reason"
+eq "$(<$MLOG)" "" "XR11 mise is never called"
+eq "$(<$HLOG)" "" "XR11 Herdr is not called"
+teardown_not_ran "XR11 the teardown hook does not run"
+dir_there "$X" "XR11 the checkout still exists"
+
+# mise_sweep <log> — sets $bad to every trust call in <log> that is not aimed at a file of a
+# destination checkout (an allowlist: `…/Code/Org/repo-<slug>/…` or `…/Code/Org/co: lon-<slug>/…`,
+# which is where wt and the cases above make worktrees), or that is bare or uses --all, or whose
+# path holds a `..` segment (which could satisfy the patterns and still point elsewhere), or
+# in which `trust` is a word anywhere but the start (a global option in front of it), except
+# the read `-C <dir> trust --show`. The log joins arguments with spaces, so the stub's
+# $MISESTUBS/mise-unexpected.log (one record per rejected call, arguments kept apart) is what
+# catches an extra path on an otherwise allowed shape.
+mise_sweep() {
+  bad=""
+  local l
+  while IFS= read -r l; do
+    case "$l" in
+      "-C "*" trust --show") ;;
+      *" trust "*) bad+="[$l] " ;;
+      trust|*" trust"|*--all*) bad+="[$l] " ;;
+      "trust "*/../*|"trust "*/..) bad+="[$l] " ;;
+      "trust "*/Code/Org/repo-*/*|"trust --untrust "*/Code/Org/repo-*/*) ;;
+      "trust "*/Code/Org/"co: lon-"*/*|"trust --untrust "*/Code/Org/"co: lon-"*/*) ;;
+      "trust "*|"trust --untrust "*) bad+="[$l] " ;;
+    esac
+  done < "$1"
+}
+
+# X13c: the sweep itself flags a path that satisfies an allowed pattern through a `..` segment.
+print -r -- "trust /h/Code/Org/repo-a/../repo/mise.toml" > "$MISESTUBS/sweep-probe.log"
+mise_sweep "$MISESTUBS/sweep-probe.log"
+[[ -n "$bad" ]] && _pass "X13c the sweep flags a path with a .. segment" || _fail "X13c the sweep flags a path with a .. segment"
+print -r -- "trust --untrust /h/Code/Org/repo-a/mise.toml" > "$MISESTUBS/sweep-probe.log"
+mise_sweep "$MISESTUBS/sweep-probe.log"
+[[ -z "$bad" ]] && _pass "X13c ... and passes the same path without it" || _fail "X13c ... and passes the same path without it"
+
+# X13d: the stub logs every call it rejects, arguments kept apart, and the sweep sees a global
+# option in front of `trust`. The calls go straight to the stub, with the text log pointed at a
+# scratch file, its own rejected-call log (so XUNEXP, which X13 judges, is neither fed nor
+# cleared here) and stdin from /dev/null (X13b).
+XP="$MISESTUBS/probe"; mkdir -p "$XP"; print -r -- 'a=1' > "$XP/mise.toml"
+XPU="$MISESTUBS/probe-unexpected.log"
+xprobe() {   # xprobe <argv...> — the stub's exit status in $prc
+  MLOG="$MISESTUBS/probe-mlog.log" MISE_UNEXPECTED_LOG="$XPU" "$MISESTUBS/mise" "$@" >/dev/null 2>&1 </dev/null; prc=$?
+}
+: > "$XPU"
+xprobe -C "$XP" trust "$XP/mise.toml"
+eq "$prc" "3" "X13d -C <dir> trust <path> is rejected"
+xprobe trust "$XP/mise.toml" "$XP/other file.toml"
+eq "$prc" "3" "X13d trust <a> <b> is rejected"
+xprobe -C "$XP" trust --untrust "$XP/mise.toml"
+eq "$prc" "3" "X13d -C <dir> trust --untrust <path> is rejected"
+xprobe trust --all
+eq "$prc" "3" "X13d trust --all is rejected"
+eq "$(wc -l < "$XPU" | tr -d ' ')" "4" "X13d each rejected call is one record in the unexpected log"
+eq "$(sed -n 2p "$XPU")" "trust $XP/mise.toml $XP/other\\ file.toml " "X13d ... with its arguments kept apart"
+: > "$XPU"
+xprobe -C "$XP" trust --show
+eq "$prc" "0" "X13d the read -C <dir> trust --show is accepted"
+xprobe trust "$XP/mise.toml"
+eq "$prc" "0" "X13d trust <path> is accepted"
+xprobe trust --untrust "$XP/mise.toml"
+eq "$prc" "0" "X13d trust --untrust <path> is accepted"
+eq "$(<$XPU)" "" "X13d ... and none of the three is logged as rejected"
+print -r -- "-C /h/Code/Org/repo trust /h/Code/Org/repo/mise.toml" > "$MISESTUBS/sweep-probe.log"
+mise_sweep "$MISESTUBS/sweep-probe.log"
+[[ -n "$bad" ]] && _pass "X13d the sweep flags a trust call with a global option in front" || _fail "X13d the sweep flags a trust call with a global option in front"
+printf '%s\n' "-C /h/Code/Org/repo-a trust --show" "trust /h/Code/Org/repo-a/mise.toml" "trust --untrust /h/Code/Org/repo-a/mise.toml" > "$MISESTUBS/sweep-probe.log"
+mise_sweep "$MISESTUBS/sweep-probe.log"
+[[ -z "$bad" ]] && _pass "X13d ... and passes the three allowed shapes" || _fail "X13d ... and passes the three allowed shapes ($bad)"
+
 # X13: over everything above, mise trust is only ever given one worktree file.
 cat "$MLOG" >> "$XALL"
-bad=""
-while IFS= read -r l; do
-  case "$l" in
-    trust|*" trust"|*--all*) bad+="[$l] " ;;
-    "trust "*/Code/Org/repo/*|"trust --untrust "*/Code/Org/repo/*|"trust "*"/co: lon/"*|"trust --untrust "*"/co: lon/"*) bad+="[$l] " ;;
-  esac
-done < "$XALL"
-eq "$bad" "" "X13 mise trust is never bare, never --all, never aimed at the main checkout"
+mise_sweep "$XALL"
+eq "$bad" "" "X13 mise trust is never bare, never --all, and only ever aimed at a file of a destination checkout"
+eq "$(<$XUNEXP)" "" "X13 ... and mise rejected no call"; : > "$XUNEXP"
+xn="$(wc -l < "$XALL")"; : > "$XALL"
 # A branch name containing ! (legal in a ref) is single-quoted in every recovery line a
 # person pastes, because (q-) leaves ! bare and interactive zsh then expands it as history.
 # A plain name still prints unchanged.
@@ -3396,8 +4161,8 @@ rc_is 0 "Y10 a branch with ! is created"
 has "wt: branching 'fix!foo' from" "Y10 the branching line quotes it"
 print -r -- 'edited' >> "$X/mise.local.toml"
 run "$REPO" wt 'fix!foo'
-has "has untrusted mise config (mise.local.toml) — run: wt-prepare 'fix!foo'" "Y10 the reopen warning quotes it"
-hasnt "wt-prepare fix!foo" "Y10 ... and never prints it bare"
+has "    then:   mise trust ~/'Code/Org/repo-fix!foo/mise.local.toml'" "Y10 the reopen's trust line quotes the path"
+hasnt "mise trust ~/Code/Org/repo-fix!foo/mise.local.toml" "Y10 ... and never prints it unquoted"
 
 xfix 'fix!bar'; xseed
 xbranch fixbar-src 'print -r -- "a=2" > "$REPO/mise.toml"; git -C "$REPO" add mise.toml'
@@ -3405,7 +4170,7 @@ run "$REPO" wt 'fix!bar' fixbar-src
 rc_is 1 "Y11 a preparation refusal for a branch with !"
 has "review the mise config above, then: wt-prepare 'fix!bar' && wt 'fix!bar'" "Y11 the refusal recovery line quotes it twice"
 
-setup
+cat "$MLOG" >> "$XALL"; setup
 mkhook "$REPO" '#!/bin/sh
 [ "$1" = setup ] && exit 5
 [ "$1" = teardown ] && exit 4
@@ -3420,7 +4185,7 @@ rc_is 1 "Y12 a failing teardown for a branch with !"
 has "Fix it and retry: wt-rm 'fix!baz'" "Y12 the wt-rm retry line quotes it"
 has "Or resume work with: wt-prepare 'fix!baz' && wt 'fix!baz'" "Y12 ... and the resume line"
 
-setup
+cat "$MLOG" >> "$XALL"; setup
 git -C "$REPO" branch 'fix!old'
 run "$REPO" wt 'fix!old' main
 has "wt: branch 'fix!old' already exists — drop the start point." "Y13 the existing-branch refusal quotes it"
@@ -3428,11 +4193,12 @@ has "wt: branch 'fix!old' already exists — drop the start point." "Y13 the exi
 [[ -e "$STDIN_LOG" ]] && stdin_bad="$(<"$STDIN_LOG")" || stdin_bad=""
 eq "$stdin_bad" "" "X13b every mise call wt makes has stdin from /dev/null"
 : > "$STDIN_LOG"
-[[ "$(wc -l < "$XALL")" -gt 20 ]] && _pass "X13 the section's log was actually collected" || _fail "X13 the section's log was actually collected"
+[[ "$xn" -gt 20 ]] && _pass "X13 the section's log was actually collected" || _fail "X13 the section's log was actually collected"
 
-print -r -- "Y. wt — reopen warning and the popup"
-# --- Y. wt — reopen warning and the popup ---------------------------------------
-# A reopen only reads mise's trust status and warns; it never trusts anything and never stops.
+print -r -- "Y. wt — reopen carry and the popup"
+# --- Y. wt — reopen carry and the popup ---------------------------------------
+# A reopen runs the same carry as a creation (spec §6) but never stops and never runs a hook:
+# what it cannot carry is reported, and the workspace opens anyway.
 # ypop <dir> <branch> — wt-prompt as the popup runs it: the branch, then SENTINEL, on stdin.
 # A popup that waited for Enter consumed the sentinel (REST=); one that did not leaves it
 # (REST=SENTINEL). STATUS= is wt-prompt's own exit status, since the group's is always 0.
@@ -3445,15 +4211,21 @@ xfix y1; xseed
 run "$REPO" wt y1
 rc_is 0 "Y1 the carry succeeds first"
 print -r -- 'edited' >> "$X/mise.local.toml"
-: > "$MLOG"; : > "$DLOG"
+cat "$MLOG" >> "$XALL"; : > "$MLOG"; : > "$DLOG"
 run "$REPO" wt y1
 rc_is 0 "Y1 reopening a worktree with an untrusted config succeeds"
-has "wt: ~/Code/Org/repo-y1 has untrusted mise config (mise.local.toml) — run: wt-prepare y1" "Y1 the warning names the file and the recovery"
+has "wt: ~/Code/Org/repo-y1/mise.local.toml is not trusted: it matches no trusted copy in this repository's checkouts." "Y1 the refusal names the file and the reason"
+has "    review: diff ~/Code/Org/repo/mise.local.toml ~/Code/Org/repo-y1/mise.local.toml" "Y1 the review line"
+has "wt: opening ~/Code/Org/repo-y1 anyway — its shells load no project mise config until the files above are trusted." "Y1 the reopen line"
+hasnt "wt-prepare" "Y1 no wt-prepare recovery is offered"
+r1="$(oline "mise.local.toml is not trusted")"; r2="$(oline "opening ~/Code/Org/repo-y1 anyway")"
+[[ -n "$r1" && -n "$r2" ]] && (( r1 < r2 )) && _pass "Y1 the opening-anyway line comes after the report" || _fail "Y1 the opening-anyway line comes after the report ($r1, $r2)"
+hasnt "never prepared" "Y1 nothing was carried, so no never-prepared line"
 dlogged "--worktree $REPO $X" "Y1 the workspace still opens"
 grep -q '^trust ' "$MLOG" && _fail "Y1 nothing is trusted" || _pass "Y1 nothing is trusted"
 mlog_line "-C $X trust --show" "Y1 the status was read"
 ypop "$REPO" y1
-has "has untrusted mise config (mise.local.toml)" "Y6 the popup shows the warning"
+has "is not trusted" "Y6 the popup shows the warning"
 has "Press Enter to close." "Y6 and asks for Enter"
 has "STATUS=0" "Y6 the warning does not change the exit status"
 hasline "REST=" "Y6 it waited for the Enter line"
@@ -3461,18 +4233,23 @@ hasnt "SENTINEL" "Y6 ... which consumed the sentinel"
 
 xfix y2; xseed
 run "$REPO" wt y2
-: > "$MLOG"
+cat "$MLOG" >> "$XALL"; : > "$MLOG"
 run "$REPO" wt y2
 rc_is 0 "Y2 reopening with everything trusted succeeds"
-hasnt "untrusted mise config" "Y2 it does not warn"
+hasnt "anyway" "Y2 it does not say it opens anyway"
+hasnt "is not trusted" "Y2 it reports no refusal"
+hasnt "mise trust carried" "Y2 nothing is carried"
+hasnt "never prepared" "Y2 a reopen that carried nothing prints no never-prepared line"
+grep -q '^trust ' "$MLOG" && _fail "Y2 mise trust is never called" || _pass "Y2 mise trust is never called"
 
 xfix y3; xseed
 run "$REPO" wt y3
 print -r -- 'edited' >> "$X/mise.local.toml"
-: > "$MLOG"
+cat "$MLOG" >> "$XALL"; : > "$MLOG"
 PATH="$(nomise_path)" run "$REPO" wt y3
 rc_is 0 "Y3 reopening without mise succeeds"
-hasnt "untrusted mise config" "Y3 it does not warn"
+hasnt "anyway" "Y3 it does not say it opens anyway"
+hasnt "is not trusted" "Y3 it reports no refusal"
 eq "$(<$MLOG)" "" "Y3 mise is never called"
 
 xfix y4; xseed
@@ -3480,15 +4257,66 @@ run "$REPO" wt y4
 : > "$DLOG"
 MOCK_MISE_SHOW_RC=1 run "$REPO" wt y4
 rc_is 0 "Y4 a failing status read does not stop the reopen"
-has "wt: cannot read mise's trust status for ~/Code/Org/repo-y4 — opening anyway." "Y4 it says so"
+has "wt: cannot read mise's trust status for ~/Code/Org/repo-y4 — trusting nothing." "Y4 it says so"
+has "wt: opening ~/Code/Org/repo-y4 anyway — its shells load no project mise config until the files above are trusted." "Y4 and opens anyway"
 dlogged "--worktree $REPO $X" "Y4 the workspace opens"
+
+xfix y14; mise_seed "$REPO/mise.toml"
+run "$REPO" wt y14
+rc_is 1 "Y14 the first wt refuses the untrusted local config"
+hook_not_ran "Y14 the setup hook does not run"
+mise_seed "$REPO/mise.local.toml"
+ypop "$REPO" y14
+has "STATUS=0" "Y14 the reopen carries and succeeds"
+has "wt: mise trust carried to ~/Code/Org/repo-y14/mise.local.toml (trusted in ~/Code/Org/repo)" "Y14 the carry is reported"
+mlog_line "trust $X/mise.local.toml" "Y14 only the worktree file is trusted"
+hasnt "anyway" "Y14 no opening-anyway line"
+has "wt: if this worktree was never prepared, run: wt-prepare y14" "Y14 the never-prepared line"
+has "Press Enter to close." "Y14 the popup is held for it"
+hasline "REST=" "Y14 it waited for the Enter line"
+hasnt "SENTINEL" "Y14 ... which consumed the sentinel"
+hook_not_ran "Y14 the setup hook still has not run"
+
+xfix y15; mise_seed "$REPO/mise.toml"
+run "$REPO" wt y15
+mise_seed "$REPO/mise.local.toml"; : > "$DLOG"
+MOCK_MISE_RACE_CONTENT='raced\n' MOCK_MISE_UNTRUST_RC=1 run "$REPO" wt y15
+rc_is 0 "Y15 a failed withdraw on a reopen does not stop it"
+has "wt: could not withdraw mise trust from ~/Code/Org/repo-y15/mise.local.toml — it may still be trusted; check with: mise -C ~/Code/Org/repo-y15 trust --show" "Y15 the withdraw line is printed"
+has "wt: opening ~/Code/Org/repo-y15 anyway" "Y15 and the opening-anyway line"
+hasnt "never prepared" "Y15 a withdrawn file is not counted as carried"
+dlogged "--worktree $REPO $X" "Y15 the workspace opens"
+hook_not_ran "Y15 the setup hook does not run"
+
+# Y16: a reopen that carries one file and refuses another prints both closing lines.
+xfix y16; mise_seed "$REPO/mise.toml"
+run "$REPO" wt y16
+print -r -- 'edited' >> "$X/mise.toml"
+mise_seed "$REPO/mise.local.toml"
+run "$REPO" wt y16
+rc_is 0 "Y16 a partial carry on a reopen succeeds"
+has "wt: mise trust carried to ~/Code/Org/repo-y16/mise.local.toml" "Y16 one file is carried"
+has "wt: ~/Code/Org/repo-y16/mise.toml is not trusted" "Y16 the other is refused"
+has "wt: opening ~/Code/Org/repo-y16 anyway" "Y16 the opening-anyway line is printed"
+has "wt: if this worktree was never prepared, run: wt-prepare y16" "Y16 so is the never-prepared line"
+r1="$(oline "opening ~/Code/Org/repo-y16 anyway")"; r2="$(oline "if this worktree was never prepared")"
+[[ -n "$r1" && -n "$r2" ]] && (( r1 < r2 )) && _pass "Y16 the opening-anyway line comes before the never-prepared line" || _fail "Y16 the opening-anyway line comes before the never-prepared line ($r1, $r2)"
+hook_not_ran "Y16 the setup hook does not run"
+
+# Y17: the never-prepared line quotes a branch with ! like every other recovery line.
+xfix 'y17!b'; mise_seed "$REPO/mise.toml"
+run "$REPO" wt 'y17!b'
+mise_seed "$REPO/mise.local.toml"
+run "$REPO" wt 'y17!b'
+has "wt: if this worktree was never prepared, run: wt-prepare 'y17!b'" "Y17 the never-prepared line quotes the branch"
+hasnt "wt-prepare y17!b" "Y17 ... and never prints it bare"
 
 xfix y5
 xbranch y5 'print -r -- "a=2" > "$REPO/mise.toml"; git -C "$REPO" add mise.toml'
 xseed
 ypop "$REPO" y5
 has "STATUS=1" "Y5 a failing wt makes wt-prompt fail"
-has "is not trusted: it differs from the main checkout's." "Y5 the refusal is shown"
+has "is not trusted: it matches no trusted copy in this repository's checkouts." "Y5 the refusal is shown"
 has "Press Enter to close." "Y5 the popup asks for Enter"
 hasline "REST=" "Y5 it waited for the Enter line"
 hasnt "SENTINEL" "Y5 ... which consumed the sentinel"
@@ -3500,7 +4328,12 @@ hasnt "Press Enter to close." "Y7 it does not ask for Enter"
 hasline "REST=SENTINEL" "Y7 ... and reads nothing more"
 
 [[ -e "$STDIN_LOG" ]] && stdin_bad="$(<"$STDIN_LOG")" || stdin_bad=""
-eq "$stdin_bad" "" "Y8 no mise call of the reopen warning or the popup reads the terminal"
+eq "$stdin_bad" "" "Y8 no mise call of the reopen carry or the popup reads the terminal"
+cat "$MLOG" >> "$XALL"
+mise_sweep "$XALL"
+eq "$bad" "" "Y18 section Y's mise trust is never bare, never --all, and only ever aimed at a file of a destination checkout"
+eq "$(<$XUNEXP)" "" "Y18 ... and mise rejected no call"; : > "$XUNEXP"
+[[ "$(grep -c '^trust ' "$XALL")" -gt 0 ]] && _pass "Y18 section Y's trust calls were collected" || _fail "Y18 section Y's trust calls were collected"
 
 export HOME="$REAL_HOME"
 print -r -- ""

@@ -552,6 +552,66 @@ _wt_mise_show() {
   return 0
 }
 
+# _wt_mise_candidates <main> <dest> [<base-branch>] — the checkouts of one repository that
+# may vouch for the mise config of the existing worktree at <dest> (spec §2).
+# Sets _WT_MISE_CANDS (checkout roots) and _WT_MISE_BASEDIR (the root whose record reads
+# `branch refs/heads/<base-branch>`, or empty), and returns 0. Returns 1 when Git's worktree
+# list cannot be read or has no records: nothing can then vouch, and wt trusts nothing.
+#
+# Order: <main> exactly as passed, then the base branch's checkout, then the others in
+# Git's order; each root once. Left out: <dest> itself, a path that is not a directory, and
+# any other root whose Git common dir is not <main>'s (a path since reused by another
+# repository). Roots other than <main> are as Git prints them; a detached checkout (no
+# `branch` record) is still a candidate. NUL porcelain, parsed as _wt_worktree_record does.
+_wt_mise_candidates() {
+  emulate -L zsh
+  local main="$1" dest="${2:A}" base="${3:-}" rec root common maincommon rc
+  local -a fields roots branches cands
+  typeset -g _WT_MISE_BASEDIR=""
+  typeset -ga _WT_MISE_CANDS=()
+  fields=( ${(0)"$(_wt_git -C "$main" worktree list --porcelain -z 2>/dev/null)"} ); rc=$?
+  if (( rc || ! ${#fields} )); then
+    print -ru2 -- "wt: cannot read Git's worktree list for $(_wt_tilde "$main") — trusting nothing."
+    return 1
+  fi
+  for rec in $fields; do
+    if [[ "$rec" == 'worktree '* ]]; then
+      roots+=( "${rec#worktree }" ); branches+=( "" )
+    elif (( ${#roots} )) && [[ "$rec" == 'branch refs/heads/'* ]]; then
+      branches[-1]="${rec#branch refs/heads/}"
+    fi
+  done
+  if (( ! ${#roots} )); then   # fields, but no `worktree ` record among them: no list either
+    print -ru2 -- "wt: cannot read Git's worktree list for $(_wt_tilde "$main") — trusting nothing."
+    return 1
+  fi
+  maincommon="$(_wt_git -C "$main" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || maincommon=""
+  local i
+  for (( i = 1; i <= ${#roots}; i++ )); do
+    root="${roots[i]}"
+    [[ "${root:A}" == "$dest" ]] && continue
+    if [[ "${root:A}" == "${main:A}" ]]; then
+      [[ -n "$base" && "${branches[i]}" == "$base" ]] && _WT_MISE_BASEDIR="$main"
+      continue
+    fi
+    [[ -d "$root" ]] || continue
+    common="$(_wt_git -C "$root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || continue
+    [[ -n "$common" && -n "$maincommon" && "${common:A}" == "${maincommon:A}" ]] || continue
+    if [[ -n "$base" && -z "$_WT_MISE_BASEDIR" && "${branches[i]}" == "$base" ]]; then
+      _WT_MISE_BASEDIR="$root"
+    fi
+    cands+=( "$root" )
+  done
+  # <main> leads. The base checkout follows it, and the rest keep Git's order.
+  _WT_MISE_CANDS=( "$main" )
+  [[ -n "$_WT_MISE_BASEDIR" && "$_WT_MISE_BASEDIR" != "$main" ]] && _WT_MISE_CANDS+=( "$_WT_MISE_BASEDIR" )
+  for root in $cands; do
+    [[ "$root" == "$_WT_MISE_BASEDIR" ]] && continue
+    _WT_MISE_CANDS+=( "$root" )
+  done
+  return 0
+}
+
 # _wt_tilde <path> — the path with a leading $HOME/ shown as ~/, for messages only.
 _wt_tilde() {
   emulate -L zsh
@@ -580,72 +640,143 @@ _wt_tilde_q() {
   print -rn -- "$pre$(_wt_q "$rest")"
 }
 
-# _wt_mise_trust_report <main> <dest> <reason<TAB>rel>... — the refusal lines for configs
-# that stay untrusted: what is wrong, how to look at it, how to trust it by hand. The path
-# is the last field of a record and is never cut at a tab: only a reason, which has none,
-# is split off the front. The
-# review is a diff only against a main-checkout copy that is trusted and differs; against
-# any other copy a diff would show nothing (or nothing that was ever looked at), so the
-# file itself is shown.
+# _wt_mise_plain <root> <rel> — 0 when no component of <root>/<rel> below <root> is a
+# symlink and <root>/<rel> is a regular file: the only kind of config wt compares or carries.
+_wt_mise_plain() {
+  emulate -L zsh
+  local p="$1" comp
+  for comp in ${(s:/:)2}; do
+    p="$p/$comp"
+    [[ -L "$p" ]] && return 1
+  done
+  [[ -f "$p" ]]
+}
+
+# _wt_mise_trust_report <main> <dest> <basedir> <reason<TAB>rel>... — the refusal lines for
+# configs that stay untrusted: what is wrong, how to look at it, how to trust it by hand
+# (spec §4). The path is the last field of a record and is never cut at a tab: only a
+# reason, which has none, is split off the front.
+#
+# The review is a diff only for a "matches no trusted copy" record, and only against a copy
+# that is a plain file, listed `trusted` in _WT_MISE_SHOWN (this run's search reads; mise is
+# never called here) and different from the worktree's: the base checkout's <basedir> first
+# (empty when wt knows no base), then <main>'s. Against any other copy a diff would show
+# nothing, or nothing that was ever looked at, so the file itself is shown.
 _wt_mise_trust_report() {
   emulate -L zsh
-  local main="$1" dest="$2" entry rel reason dp
-  shift 2
+  local main="$1" dest="$2" basedir="$3" entry rel reason dp c review
+  local none="it matches no trusted copy in this repository's checkouts"
+  local changed="it changed while wt was trusting it"
+  typeset -gA _WT_MISE_SHOWN
+  shift 3
   for entry in "$@"; do
     reason="${entry%%$'\t'*}" rel="${entry#*$'\t'}"
     dp="$(_wt_tilde_q "$dest/$rel")"
-    print -ru2 -- "wt: $(_wt_tilde "$dest/$rel") is not trusted: $reason."
-    if [[ "$reason" == "it differs from the main checkout's" ]]; then
-      print -ru2 -- "    review: diff $(_wt_tilde_q "$main/$rel") $dp"
-    else
-      print -ru2 -- "    review: cat $dp"
+    review="cat $dp"
+    if [[ "$reason" == "$none" ]]; then
+      for c in $basedir $main; do
+        [[ -n "$c" ]] && _wt_mise_plain "$c" "$rel" || continue
+        [[ $'\n'"${_WT_MISE_SHOWN[$c]-}"$'\n' == *$'\n'"trusted"$'\t'"$rel"$'\n'* ]] || continue
+        cmp -s -- "$c/$rel" "$dest/$rel"
+        (( $? == 1 )) || continue
+        review="diff $(_wt_tilde_q "$c/$rel") $dp"
+        break
+      done
     fi
+    print -ru2 -- "wt: $(_wt_tilde "$dest/$rel") is not trusted: $reason."
+    [[ "$reason" == "$changed" ]] &&
+      print -ru2 -- "    nothing was trusted; if nothing else is writing there, run the command again."
+    print -ru2 -- "    review: $review"
     print -ru2 -- "    then:   mise trust $dp"
   done
 }
 
-# _wt_mise_withdraw <main> <dest> <rel> <stop-message> <reason<TAB>rel>... — take back the
-# trust just given to <dest>/<rel>. Returns 0 only when that worked and there is no
+# _wt_mise_withdraw <main> <dest> <basedir> <rel> <stop-message> <reason<TAB>rel>... — take
+# back the trust just given to <dest>/<rel>. Returns 0 only when that worked and there is no
 # stop-message; otherwise the collected refusals are printed, then a line saying the file may
 # still be trusted if the untrust failed, then the stop-message if any, and it returns 1.
 # An untrust that fails (it does when the file is gone) can leave the file trusted with
 # whatever `mise trust` hashed, so the failure is its own line, not "trust failed".
 _wt_mise_withdraw() {
   emulate -L zsh
-  local main="$1" dest="$2" msg="$4" failed=0 dp
-  dp="$dest/$3"   # not on the local line: zsh expands that whole line before assigning
-  shift 4
+  local main="$1" dest="$2" basedir="$3" msg="$5" failed=0 dp
+  dp="$dest/$4"   # not on the local line: zsh expands that whole line before assigning
+  shift 5
   command mise trust --untrust "$dp" >/dev/null 2>&1 </dev/null || failed=1
   (( failed )) || [[ -n "$msg" ]] || return 0
-  _wt_mise_trust_report "$main" "$dest" "$@"
+  _wt_mise_trust_report "$main" "$dest" "$basedir" "$@"
   (( failed )) && print -ru2 -- "wt: could not withdraw mise trust from $(_wt_tilde "$dp") — it may still be trusted; check with: mise -C $(_wt_tilde_q "$dest") trust --show"
   [[ -n "$msg" ]] && print -ru2 -- "$msg"
   return 1
 }
 
-# _wt_mise_trust <main> <dest> — carry mise's trust from the main checkout into a new
-# worktree, for the configs that are byte-identical to ones already trusted there, and
-# explain every other one. Returns 0 when there was nothing to carry or all of it was
-# carried, 1 when a config stays untrusted or a read or a trust call failed.
+# _wt_mise_ident <file> — the file's inode and change time (nanoseconds) as one line, from
+# `stat` without following a symlink; returns 1 when it cannot be read. A write, a truncate, a
+# rename or a replacement of the file moves one of the two, and a writer cannot put a change
+# time back (`touch` and `utimes` set atime and mtime only); a file swapped for a symlink is a
+# new inode. Not seen, and accepted at parity with a `mise trust` typed by hand: a directory
+# above the file swapped, a symlink's target swapped, a write through a mapping the writer
+# already holds, a mount over the path, and a change inside the clock's resolution.
+_wt_mise_ident() {
+  emulate -L zsh
+  /usr/bin/stat -f '%i %Fc' -- "$1" 2>/dev/null </dev/null || return 1
+}
+
+# _wt_mise_trust <main> <dest> [<base-branch>] — carry mise's trust from the checkouts of
+# this repository into an existing worktree (a creation, a reopen, `wt-prepare` or `wt-rm`),
+# for the configs that are byte-identical to ones already trusted in one of them, and explain
+# every other one (spec §2–§4). Returns 0 when there was nothing to carry or all of it was
+# carried, 1 when a config stays untrusted or a read or a trust call failed. <base-branch> is
+# set only when wt just made the branch. _WT_MISE_CARRIED counts the files carried in this
+# run, for the reopen's never-prepared line. A <dest> that is itself a symlink trusts nothing:
+# `mise trust` would land on the checkout it points to.
 #
 # Paranoid mode ties trust to file content and no longer inherits it into worktrees, so a
 # config nobody has looked at must never be trusted here: the sandbox can rewrite a branch's
 # committed mise.toml and the main checkout's mise.local.toml (which .worktreeinclude copies).
-# Each untrusted <dest> config is carried only if no component of it or its main-checkout
-# counterpart is a symlink, both are regular files, mise trusts the main one, and `cmp`
-# finds them identical. After `mise trust` the same facts are read again, and a file that no
-# longer holds up is untrusted at once: the content may have changed in between.
+# An untrusted <dest> config is carried only if neither it nor a candidate's counterpart has
+# a symlink on the way or is anything but a regular file, mise lists the candidate's copy as
+# trusted, and `cmp` finds them identical. Candidates (_wt_mise_candidates) are tried in its
+# order, and the first that vouches ends the search for that file. After `mise trust` the
+# same facts are read again, bound to that candidate, and a file that no longer holds up is
+# untrusted at once: the content may have changed in between, and no other candidate is
+# tried for it.
 #
-# Ordinary refusals are collected and printed together at the end. A failed read, trust or
-# untrust stops at once, because nothing it says afterwards can be believed; the one call
-# still made then is the untrust of a file that was just trusted.
+# `cmp` and `mise trust` are two reads of a file a writer may be changing, so the identity of
+# <dest>/<rel> and of the vouching copy (_wt_mise_ident) is taken before the plainness check
+# and again after the final `cmp`, so a symlink put in place after the pin is a new inode and
+# one already there is seen by the check; any difference, or a stat that fails, is a change,
+# whatever the bytes compared as. A file whose identity cannot be read is refused (a symlink
+# or a non-file first, if that is what it is), and a candidate's copy that cannot be read is
+# no voucher.
+#
+# A candidate's `trust --show` is read at most once per run for the search, through
+# _WT_MISE_SHOWN, so a second file never re-reads it; the re-check always reads afresh. A
+# candidate whose read fails is out for the run, with one "cannot vouch" line: trust still
+# needs a successful read of the vouching candidate, so that can only carry fewer files.
+#
+# Ordinary refusals are collected and printed together at the end. A failed read of <dest> or
+# of the worktree list, a failed trust or untrust, and a failed re-check read stop at once,
+# because nothing said afterwards can be believed; the one call still made then is the
+# untrust of a file that was just trusted.
 _wt_mise_trust() {
   emulate -L zsh
+  typeset -g _WT_MISE_CARRIED=0
   (( $+commands[mise] )) || return 0
-  local main="$1" dest="$2" dshow mshow line rel dp mp comp reason p
-  local -a dlines refused parts
-  local dnow mnow
-  local mshown=0
+  local main="$1" dest="$2" base="${3:-}" dshow cshow line rel dp cp c vouch reason basedir="" listed=0
+  local none="it matches no trusted copy in this repository's checkouts"
+  local symlink="it is a symlink or not a regular file"
+  local changed="it changed while wt was trusting it"
+  local -a dlines refused cands
+  local dnow cnow dident cident
+  local -i drc crc
+  typeset -gA _WT_MISE_SHOWN
+  _WT_MISE_SHOWN=()
+
+  if [[ -L "$dest" ]]; then
+    print -ru2 -- "wt: $(_wt_tilde "$dest") is a symlink — trusting nothing."
+    return 1
+  fi
 
   dshow="$(_wt_mise_show "$dest")" || {
     print -ru2 -- "wt: cannot read mise's trust status for $(_wt_tilde "$dest") — trusting nothing."
@@ -656,79 +787,88 @@ _wt_mise_trust() {
   for line in $dlines; do
     [[ "$line" == untrusted$'\t'* ]] || continue
     rel="${line#untrusted$'\t'}"
-    dp="$dest/$rel" mp="$main/$rel"
+    dp="$dest/$rel"
 
-    if (( ! mshown )); then
-      mshow="$(_wt_mise_show "$main")" || {
-        print -ru2 -- "wt: cannot read mise's trust status for $(_wt_tilde "$main") — trusting nothing."
-        return 1
-      }
-      mshow=$'\n'"$mshow"$'\n'; mshown=1
+    if (( ! listed )); then
+      _wt_mise_candidates "$main" "$dest" "$base" || return 1
+      cands=( $_WT_MISE_CANDS ) basedir="$_WT_MISE_BASEDIR" listed=1
     fi
 
-    reason=""
-    parts=( ${(s:/:)rel} )
-    for p in "$dest" "$main"; do
-      for comp in $parts; do
-        p="$p/$comp"
-        [[ -L "$p" ]] && { reason="it or its main-checkout counterpart is a symlink or not a regular file"; break 2 }
+    reason="" vouch=""
+    dident="$(_wt_mise_ident "$dp")"; drc=$?   # pinned before the plainness check
+    if ! _wt_mise_plain "$dest" "$rel"; then
+      reason="$symlink"
+    elif (( drc )); then
+      reason="$changed"   # nothing is trusted yet, so there is nothing to withdraw
+    else
+      for c in $cands; do
+        cident="$(_wt_mise_ident "$c/$rel")"; crc=$?
+        _wt_mise_plain "$c" "$rel" || continue
+        (( crc )) && continue
+        if (( ! $+_WT_MISE_SHOWN[$c] )); then
+          if cshow="$(_wt_mise_show "$c")"; then
+            _WT_MISE_SHOWN[$c]="$cshow"
+          else
+            _WT_MISE_SHOWN[$c]="!"
+            print -ru2 -- "wt: cannot read mise's trust status for $(_wt_tilde "$c") — it cannot vouch."
+          fi
+        fi
+        [[ "${_WT_MISE_SHOWN[$c]}" == "!" ]] && continue
+        [[ $'\n'"${_WT_MISE_SHOWN[$c]}"$'\n' == *$'\n'"trusted"$'\t'"$rel"$'\n'* ]] || continue
+        cmp -s -- "$c/$rel" "$dp" || continue
+        vouch="$c"
+        break
       done
-    done
-    if [[ -z "$reason" ]]; then
-      if [[ ! -e "$mp" ]]; then
-        reason="the main checkout has no such file"
-      elif [[ ! -f "$dp" || ! -f "$mp" ]]; then
-        reason="it or its main-checkout counterpart is a symlink or not a regular file"
-      elif [[ "$mshow" != *$'\n'"trusted"$'\t'"$rel"$'\n'* ]]; then
-        reason="the main checkout's is not trusted"
-      elif ! cmp -s -- "$mp" "$dp"; then
-        reason="it differs from the main checkout's"
-      fi
+      [[ -n "$vouch" ]] || reason="$none"
     fi
 
     if [[ -z "$reason" ]]; then
+      cp="$vouch/$rel"
       if ! command mise trust "$dp" >/dev/null 2>&1 </dev/null; then
-        _wt_mise_trust_report "$main" "$dest" $refused
+        _wt_mise_trust_report "$main" "$dest" "$basedir" $refused
         print -ru2 -- "wt: mise trust failed for $(_wt_tilde "$dp") — trusting nothing more."
         return 1
       fi
       if ! dnow="$(_wt_mise_show "$dest")"; then
-        _wt_mise_withdraw "$main" "$dest" "$rel" \
+        _wt_mise_withdraw "$main" "$dest" "$basedir" "$rel" \
           "wt: cannot read mise's trust status for $(_wt_tilde "$dest") — trusting nothing." $refused
         return 1
       fi
-      if ! mnow="$(_wt_mise_show "$main")"; then
-        _wt_mise_withdraw "$main" "$dest" "$rel" \
-          "wt: cannot read mise's trust status for $(_wt_tilde "$main") — trusting nothing." $refused
+      if ! cnow="$(_wt_mise_show "$vouch")"; then
+        _wt_mise_withdraw "$main" "$dest" "$basedir" "$rel" \
+          "wt: cannot read mise's trust status for $(_wt_tilde "$vouch") — trusting nothing." $refused
         return 1
       fi
-      if cmp -s -- "$mp" "$dp" \
+      if cmp -s -- "$cp" "$dp" \
          && [[ $'\n'"$dnow"$'\n' == *$'\n'"trusted"$'\t'"$rel"$'\n'* ]] \
-         && [[ $'\n'"$mnow"$'\n' == *$'\n'"trusted"$'\t'"$rel"$'\n'* ]]; then
-        print -r -- "wt: mise trust carried to $(_wt_tilde "$dp")"
+         && [[ $'\n'"$cnow"$'\n' == *$'\n'"trusted"$'\t'"$rel"$'\n'* ]] \
+         && [[ "$(_wt_mise_ident "$dp")" == "$dident" && "$(_wt_mise_ident "$cp")" == "$cident" ]]; then
+        print -r -- "wt: mise trust carried to $(_wt_tilde "$dp") (trusted in $(_wt_tilde "$vouch"))"
+        (( ++_WT_MISE_CARRIED ))
         continue
       fi
-      _wt_mise_withdraw "$main" "$dest" "$rel" "" $refused || {
+      _wt_mise_withdraw "$main" "$dest" "$basedir" "$rel" "" $refused || {
         print -ru2 -- "wt: $(_wt_tilde "$dp") changed while wt was trusting it — trusting nothing more."
         return 1
       }
-      reason="it changed while wt was trusting it"
+      reason="$changed"
     fi
     refused+=( "$reason"$'\t'"$rel" )
   done
 
   (( $#refused )) || return 0
-  _wt_mise_trust_report "$main" "$dest" $refused
+  _wt_mise_trust_report "$main" "$dest" "$basedir" $refused
   return 1
 }
 
-# _wt_do_prepare <main> <dest> <branch> <slug> — copy missing manifest entries,
-# carry mise trust, then run the project setup hook. The UNLOCKED routine: `wt` calls it under the lock
+# _wt_do_prepare <main> <dest> <branch> <slug> [<base-branch>] — copy missing manifest
+# entries, carry mise trust (see _wt_mise_trust for <base-branch>), then run the project
+# setup hook. The UNLOCKED routine: `wt` calls it under the lock
 # it already holds, and `wt-prepare` is the locked wrapper. It must not lock itself
 # (per-process locks, see _wt_lock).
 _wt_do_prepare() {
   emulate -L zsh
-  local main="$1" dest="$2" branch="$3" slug="$4" qb
+  local main="$1" dest="$2" branch="$3" slug="$4" base="${5:-}" qb
   qb="$(_wt_q "$branch")"
 
   # Validate the hook before copying, so a misconfigured repository changes nothing.
@@ -756,7 +896,7 @@ _wt_do_prepare() {
     fi
   done
 
-  _wt_mise_trust "$main" "$dest" || {
+  _wt_mise_trust "$main" "$dest" "$base" || {
     print -ru2 -- "    The worktree exists — review the mise config above, then: wt-prepare $qb && wt $qb"
     return 1
   }
@@ -769,35 +909,33 @@ _wt_do_prepare() {
   return 0
 }
 
-# _wt_mise_reopen_warn <dest> <branch> — on a reopen, say which mise configs are untrusted
-# and where to fix it. It only reads: nothing is trusted here, it never stops the reopen,
-# and it always returns 0. Whatever it prints sets _WT_NOTICE, so `wt-prompt` keeps the
-# popup open for it.
-_wt_mise_reopen_warn() {
+# _wt_mise_reopen_carry <main> <dest> <branch> — on a reopen, run the same carry as a creation
+# (spec §6), with no base branch: what it can vouch for is trusted, and what it cannot is
+# reported. A reopen never stops and never runs a hook, so it always returns 0. A carry that
+# left something untrusted prints the opening-anyway line; one that trusted a file prints the
+# never-prepared line, because a creation that stopped at the mise step never ran its setup
+# hook and the reopen would otherwise open it silently. Either sets _WT_NOTICE, so `wt-prompt`
+# keeps the popup open for it.
+_wt_mise_reopen_carry() {
   emulate -L zsh
-  (( $+commands[mise] )) || return 0
-  local dest="$1" qb show line
-  qb="$(_wt_q "$2")"
-  local -a rels
-  show="$(_wt_mise_show "$dest")" || {
-    print -ru2 -- "wt: cannot read mise's trust status for $(_wt_tilde "$dest") — opening anyway."
+  local qb
+  qb="$(_wt_q "$3")"
+  if ! _wt_mise_trust "$1" "$2"; then
+    print -ru2 -- "wt: opening $(_wt_tilde "$2") anyway — its shells load no project mise config until the files above are trusted."
     typeset -g _WT_NOTICE=1
-    return 0
-  }
-  for line in ${(f)show}; do
-    [[ "$line" == untrusted$'\t'* ]] && rels+=( "${line#untrusted$'\t'}" )
-  done
-  (( $#rels )) || return 0
-  print -ru2 -- "wt: $(_wt_tilde "$dest") has untrusted mise config (${(j:, :)rels}) — run: wt-prepare $qb"
-  typeset -g _WT_NOTICE=1
+  fi
+  if (( ${_WT_MISE_CARRIED:-0} )); then
+    print -ru2 -- "wt: if this worktree was never prepared, run: wt-prepare $qb"
+    typeset -g _WT_NOTICE=1
+  fi
   return 0
 }
 
 # wt-prepare <branch> — re-run preparation against an existing worktree.
 #
-# The recovery path for a partial copy or a failed setup hook; `wt` on an existing
-# worktree reopens and skips preparation. It never touches a Herdr workspace, so it
-# may run while the target is live.
+# The recovery path for a partial copy or a failed setup hook. `wt` on an existing worktree
+# only reopens it: it carries mise trust and skips the copy and the setup hook. wt-prepare
+# never touches a Herdr workspace, so it may run while the target is live.
 wt-prepare() {
   emulate -L zsh
   local branch="$1"
@@ -840,7 +978,7 @@ _wt_create_or_prepare() {
   emulate -L zsh
   local branch="$1" start="${2-}"
   [[ -n "$branch" ]] || { print -ru2 -- "usage: wt <branch> [start-point]"; return 1; }
-  local slug="${branch//\//-}" qb main common dest
+  local slug="${branch//\//-}" qb main common dest base=""
   qb="$(_wt_q "$branch")"
   main="$(_wt_primary)" || return 1
   common="$(_wt_git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
@@ -852,7 +990,7 @@ _wt_create_or_prepare() {
     if [[ -d "$dest" ]]; then
       _wt_assert_worktree "$main" "$dest" "$branch" || return 1
       print -ru2 -- "wt: reopening $dest"; created=
-      _wt_mise_reopen_warn "$dest" "$branch"
+      _wt_mise_reopen_carry "$main" "$dest" "$branch"
     else
       # Pre-validate before creating anything; _wt_hook_run still re-checks.
       _wt_hook_check "$main" >/dev/null 2>&1
@@ -863,19 +1001,22 @@ _wt_create_or_prepare() {
           print -ru2 -- "wt: branch $qb already exists — drop the start point."; return 1 }
         _wt_git worktree add --lock --reason "$(_wt_herdr_lock_reason)" "$dest" "$branch" || return 1
       else
-        local base
+        # `base` (the branch whose checkout may vouch for mise config) is set only here, when
+        # wt makes the branch; `from` is just the words for the message below.
+        local from
         if [[ -n "$start" ]]; then
-          base="$start"
+          base="$start" from="$start"
+        elif base="$(_wt_git symbolic-ref --quiet --short HEAD 2>/dev/null)"; then
+          from="$base"
         else
-          base="$(_wt_git symbolic-ref --quiet --short HEAD 2>/dev/null)" \
-            || base="detached@$(_wt_git rev-parse --short HEAD 2>/dev/null)"
+          base="" from="detached@$(_wt_git rev-parse --short HEAD 2>/dev/null)"
         fi
-        print -r -- "wt: branching $qb from $base"
+        print -r -- "wt: branching $qb from $from"
         _wt_git worktree add --lock --reason "$(_wt_herdr_lock_reason)" "$dest" -b "$branch" ${start:+"$start"} || return 1
       fi
     fi
 
-    [[ -n "$created" ]] && { _wt_do_prepare "$main" "$dest" "$branch" "$slug" || return 1 }
+    [[ -n "$created" ]] && { _wt_do_prepare "$main" "$dest" "$branch" "$slug" "$base" || return 1 }
   } always {
     _wt_unlock
   }
@@ -905,8 +1046,9 @@ wt-prompt() {
   fi
   wt "$branch"
   local rc=$?
-  # Failures and the reopen warning are the lines Michael must be able to read; the popup
-  # closes with the command, so hold it open for them.
+  # The popup closes with the command, so hold it open for what Michael must be able to read:
+  # a failure, and the two lines a reopen leaves in _WT_NOTICE (the untrusted-config report,
+  # and the never-prepared line after a carry).
   if (( rc != 0 )) || [[ -n "${_WT_NOTICE:-}" ]]; then
     print -r -- "Press Enter to close."
     IFS= read -r || true
@@ -1301,11 +1443,15 @@ _wt_rm_registration() {
 # same repo, never from inside the one being removed.
 #
 # Each step is guarded right before it happens, and every check fails closed:
-#   1. hook validation and check 1 (_wt_clean), before anything is disrupted
+#   1. check 1 (_wt_clean), hook validation and the lock classification, then the mise trust
+#      carry (_wt_mise_trust, unless the repository has no hook): all before anything is
+#      disrupted, the carry last because it is the one that writes
 #   2. stop the checkout's Herdr workspaces: a live process holding the directory
 #      open is how a husk is left behind, so this must come first
 #   3. check 2, because shutdown can flush files (a live app writing on exit)
-#   4. the .worktreehook teardown verb, idempotent so a retry re-runs it
+#   4. the mise trust re-check (_wt_mise_show, read-only, unless the repository has no hook),
+#      because shutdown can also rewrite a git-ignored mise config check 2 cannot see;
+#      then the .worktreehook teardown verb, idempotent so a retry re-runs it
 #   5. check 3, tying non-ignored teardown output to its cause
 #   6. release the checkout's Codex sessions (`xreview-rpc release`): the daemon keeps a
 #      thread's MCP helpers running in the checkout for ~60 s after its TUI goes. Only
@@ -1316,9 +1462,9 @@ _wt_rm_registration() {
 #      some processes exit only after their workspace closes. A heuristic, not a proof.
 #
 # A checkout that is gone while Git still registers it — a removal that failed after
-# deleting it — skips hook validation, checks 1-4, teardown and the release (steps 1 and 3-7):
-# _wt_rm_registration proves the absence, reruns the lock classification and step 2,
-# and removes only the registration.
+# deleting it — skips hook validation, the mise trust checks, checks 1-4, teardown and the
+# release (steps 1 and 3-7): _wt_rm_registration proves the absence, reruns the lock
+# classification and step 2, and removes only the registration.
 #
 # Runs under the per-target lock, released in an `always` block. An interrupt is not
 # covered by it; see the interruption note above _wt_hook_check for why no INT/TERM
@@ -1352,9 +1498,13 @@ wt-rm() {
          _wt_git -C "$dest" status --porcelain >/dev/null; return 1 ;;
     esac
 
-    # Hook configuration, still before anything is disrupted.
+    # Hook configuration, still before anything is disrupted. Its status is kept: the mise trust
+    # checks below run for every status but 2 (no hook, not opted in), as _wt_hook_run runs the
+    # hook for every status but 1 and 2, so a status nobody expects fails closed.
+    local -i hook_rc
     _wt_hook_check "$main" >/dev/null 2>&1
-    (( $? == 1 )) && { _wt_hook_check "$main"; return 1 }
+    hook_rc=$?
+    (( hook_rc == 1 )) && { _wt_hook_check "$main"; return 1 }
 
     # Classify the Git lock before stopping anything. Only our exact reason
     # authorizes the double-force removal; any other lock is a preservation request.
@@ -1366,6 +1516,14 @@ wt-rm() {
       *) return 1 ;;
     esac
 
+    # Mise trust, last of the checks that write nothing and before the first Herdr call: the
+    # teardown hook runs mise in $dest, and a config nobody has looked at must not load
+    # there. Carries what an already-trusted checkout vouches for; refuses the rest.
+    if (( hook_rc != 2 )) && ! _wt_mise_trust "$main" "$dest"; then
+      print -ru2 -- "wt-rm: nothing was closed or removed — review the mise config above, then: wt-rm $qb"
+      return 1
+    fi
+
     # Close the checkout's own Herdr workspaces; refuse first if anything else is in it (spec §1).
     _wt_stop_herdr_workspaces "$dest" || return 1
 
@@ -1376,6 +1534,26 @@ wt-rm() {
       1) print -ru2 -- "wt-rm: closing Herdr workspaces left changes in $dest — inspect it, then retry."; return 1 ;;
       *) print -ru2 -- "wt-rm: cannot determine whether $dest is clean after closing Herdr workspaces — refusing."; return 1 ;;
     esac
+
+    # Mise trust again, read-only: closing the workspaces can rewrite a git-ignored mise config
+    # that check 2 does not see, and the hook must not run against one nobody has trusted.
+    if (( hook_rc != 2 )); then
+      local mise_line mise_shown
+      local -a mise_untrusted
+      if ! mise_shown="$(_wt_mise_show "$dest")"; then
+        print -ru2 -- "wt-rm: cannot read mise's trust status for $(_wt_tilde "$dest") — teardown not run, Herdr workspaces closed."
+        print -ru2 -- "    Review the mise config, then retry: wt-rm $qb"
+        return 1
+      fi
+      for mise_line in ${(f)mise_shown}; do
+        [[ "$mise_line" == untrusted$'\t'* ]] && mise_untrusted+=( "${mise_line#untrusted$'\t'}" )
+      done
+      if (( $#mise_untrusted )); then
+        print -ru2 -- "wt-rm: $(_wt_tilde "$dest") has untrusted mise config (${(j:, :)mise_untrusted}) — teardown not run, Herdr workspaces closed."
+        print -ru2 -- "    Review the mise config, then retry: wt-rm $qb"
+        return 1
+      fi
+    fi
 
     if ! _wt_hook_run "$main" "$dest" "$branch" "$slug" teardown; then
       print -ru2 -- "wt-rm: .worktreehook teardown failed — $dest kept, Herdr workspaces closed."
