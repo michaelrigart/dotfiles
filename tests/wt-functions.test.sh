@@ -23,7 +23,7 @@
 #   V  wt-rm               live processes still inside the checkout block removal
 #   W  wt-rm               the checkout's Codex sessions are released before check 4
 #   X  wt                  mise trust is carried from any checkout of the repository into a new worktree
-#   Y  wt, wt-prompt      a reopen warns about untrusted mise config; the popup stays open for it
+#   Y  wt, wt-prompt      a reopen carries mise trust and reports what stays untrusted; the popup stays open for it
 #
 # Herdr, layout.sh and mise are stubbed on PATH and every invocation is logged, so the
 # tests can assert *ordering* — notably that a dirty worktree never loses its terminal
@@ -3722,18 +3722,25 @@ mlog_no_line "-C $HOME/Code/Org/sib-a trust --show" "X36 an earlier sibling is n
 mlog_line "trust $X/mise.toml" "X36 the tracked config is trusted in the worktree"
 hook_ran "X36 the setup hook runs"
 
+# mise_sweep <log> — sets $bad to every trust call in <log> aimed beyond one worktree file.
+mise_sweep() {
+  bad=""
+  local l
+  while IFS= read -r l; do
+    case "$l" in
+      trust|*" trust"|*--all*) bad+="[$l] " ;;
+      "trust "*/Code/Org/repo/*|"trust --untrust "*/Code/Org/repo/*|"trust "*"/co: lon/"*|"trust --untrust "*"/co: lon/"*) bad+="[$l] " ;;
+      "trust "*/Code/Org/sib-*|"trust --untrust "*/Code/Org/sib-*|"trust "*"/sib: "*|"trust --untrust "*"/sib: "*) bad+="[$l] " ;;
+      "trust "*/Code/Org/other28/*|"trust --untrust "*/Code/Org/other28/*) bad+="[$l] " ;;
+    esac
+  done < "$1"
+}
+
 # X13: over everything above, mise trust is only ever given one worktree file.
 cat "$MLOG" >> "$XALL"
-bad=""
-while IFS= read -r l; do
-  case "$l" in
-    trust|*" trust"|*--all*) bad+="[$l] " ;;
-    "trust "*/Code/Org/repo/*|"trust --untrust "*/Code/Org/repo/*|"trust "*"/co: lon/"*|"trust --untrust "*"/co: lon/"*) bad+="[$l] " ;;
-    "trust "*/Code/Org/sib-*|"trust --untrust "*/Code/Org/sib-*|"trust "*"/sib: "*|"trust --untrust "*"/sib: "*) bad+="[$l] " ;;
-    "trust "*/Code/Org/other28/*|"trust --untrust "*/Code/Org/other28/*) bad+="[$l] " ;;
-  esac
-done < "$XALL"
+mise_sweep "$XALL"
 eq "$bad" "" "X13 mise trust is never bare, never --all, never aimed at the main checkout or a sibling"
+xn="$(wc -l < "$XALL")"; : > "$XALL"
 # A branch name containing ! (legal in a ref) is single-quoted in every recovery line a
 # person pastes, because (q-) leaves ! bare and interactive zsh then expands it as history.
 # A plain name still prints unchanged.
@@ -3782,10 +3789,10 @@ has "wt: branch 'fix!old' already exists — drop the start point." "Y13 the exi
 [[ -e "$STDIN_LOG" ]] && stdin_bad="$(<"$STDIN_LOG")" || stdin_bad=""
 eq "$stdin_bad" "" "X13b every mise call wt makes has stdin from /dev/null"
 : > "$STDIN_LOG"
-[[ "$(wc -l < "$XALL")" -gt 20 ]] && _pass "X13 the section's log was actually collected" || _fail "X13 the section's log was actually collected"
+[[ "$xn" -gt 20 ]] && _pass "X13 the section's log was actually collected" || _fail "X13 the section's log was actually collected"
 
-print -r -- "Y. wt — reopen warning and the popup"
-# --- Y. wt — reopen warning and the popup ---------------------------------------
+print -r -- "Y. wt — reopen carry and the popup"
+# --- Y. wt — reopen carry and the popup ---------------------------------------
 # A reopen runs the same carry as a creation (spec §6) but never stops and never runs a hook:
 # what it cannot carry is reported, and the workspace opens anyway.
 # ypop <dir> <branch> — wt-prompt as the popup runs it: the branch, then SENTINEL, on stdin.
@@ -3800,13 +3807,16 @@ xfix y1; xseed
 run "$REPO" wt y1
 rc_is 0 "Y1 the carry succeeds first"
 print -r -- 'edited' >> "$X/mise.local.toml"
-: > "$MLOG"; : > "$DLOG"
+cat "$MLOG" >> "$XALL"; : > "$MLOG"; : > "$DLOG"
 run "$REPO" wt y1
 rc_is 0 "Y1 reopening a worktree with an untrusted config succeeds"
 has "wt: ~/Code/Org/repo-y1/mise.local.toml is not trusted: it matches no trusted copy in this repository's checkouts." "Y1 the refusal names the file and the reason"
 has "    review: diff ~/Code/Org/repo/mise.local.toml ~/Code/Org/repo-y1/mise.local.toml" "Y1 the review line"
 has "wt: opening ~/Code/Org/repo-y1 anyway — its shells load no project mise config until the files above are trusted." "Y1 the reopen line"
 hasnt "wt-prepare" "Y1 no wt-prepare recovery is offered"
+r1="$(oline "mise.local.toml is not trusted")"; r2="$(oline "opening ~/Code/Org/repo-y1 anyway")"
+[[ -n "$r1" && -n "$r2" ]] && (( r1 < r2 )) && _pass "Y1 the opening-anyway line comes after the report" || _fail "Y1 the opening-anyway line comes after the report ($r1, $r2)"
+hasnt "never prepared" "Y1 nothing was carried, so no never-prepared line"
 dlogged "--worktree $REPO $X" "Y1 the workspace still opens"
 grep -q '^trust ' "$MLOG" && _fail "Y1 nothing is trusted" || _pass "Y1 nothing is trusted"
 mlog_line "-C $X trust --show" "Y1 the status was read"
@@ -3819,18 +3829,23 @@ hasnt "SENTINEL" "Y6 ... which consumed the sentinel"
 
 xfix y2; xseed
 run "$REPO" wt y2
-: > "$MLOG"
+cat "$MLOG" >> "$XALL"; : > "$MLOG"
 run "$REPO" wt y2
 rc_is 0 "Y2 reopening with everything trusted succeeds"
-hasnt "untrusted mise config" "Y2 it does not warn"
+hasnt "anyway" "Y2 it does not say it opens anyway"
+hasnt "is not trusted" "Y2 it reports no refusal"
+hasnt "mise trust carried" "Y2 nothing is carried"
+hasnt "never prepared" "Y16 a reopen that carried nothing prints no never-prepared line"
+grep -q '^trust ' "$MLOG" && _fail "Y2 mise trust is never called" || _pass "Y2 mise trust is never called"
 
 xfix y3; xseed
 run "$REPO" wt y3
 print -r -- 'edited' >> "$X/mise.local.toml"
-: > "$MLOG"
+cat "$MLOG" >> "$XALL"; : > "$MLOG"
 PATH="$(nomise_path)" run "$REPO" wt y3
 rc_is 0 "Y3 reopening without mise succeeds"
-hasnt "untrusted mise config" "Y3 it does not warn"
+hasnt "anyway" "Y3 it does not say it opens anyway"
+hasnt "is not trusted" "Y3 it reports no refusal"
 eq "$(<$MLOG)" "" "Y3 mise is never called"
 
 xfix y4; xseed
@@ -3850,9 +3865,44 @@ mise_seed "$REPO/mise.local.toml"
 ypop "$REPO" y14
 has "STATUS=0" "Y14 the reopen carries and succeeds"
 has "wt: mise trust carried to ~/Code/Org/repo-y14/mise.local.toml (trusted in ~/Code/Org/repo)" "Y14 the carry is reported"
+mlog_line "trust $X/mise.local.toml" "Y14 only the worktree file is trusted"
 hasnt "anyway" "Y14 no opening-anyway line"
-hasline "REST=SENTINEL" "Y14 a reopen that carried everything does not hold the popup"
+has "wt: if this worktree was never prepared, run: wt-prepare y14" "Y14 the never-prepared line"
+has "Press Enter to close." "Y14 the popup is held for it"
+hasline "REST=" "Y14 it waited for the Enter line"
+hasnt "SENTINEL" "Y14 ... which consumed the sentinel"
 hook_not_ran "Y14 the setup hook still has not run"
+
+xfix y15; mise_seed "$REPO/mise.toml"
+run "$REPO" wt y15
+mise_seed "$REPO/mise.local.toml"; : > "$DLOG"
+MOCK_MISE_RACE_CONTENT='raced\n' MOCK_MISE_UNTRUST_RC=1 run "$REPO" wt y15
+rc_is 0 "Y15 a failed withdraw on a reopen does not stop it"
+has "wt: could not withdraw mise trust from ~/Code/Org/repo-y15/mise.local.toml — it may still be trusted; check with: mise -C ~/Code/Org/repo-y15 trust --show" "Y15 the withdraw line is printed"
+has "wt: opening ~/Code/Org/repo-y15 anyway" "Y15 and the opening-anyway line"
+dlogged "--worktree $REPO $X" "Y15 the workspace opens"
+hook_not_ran "Y15 the setup hook does not run"
+
+# Y19: a reopen that carries one file and refuses another prints both closing lines.
+xfix y16; mise_seed "$REPO/mise.toml"
+run "$REPO" wt y16
+print -r -- 'edited' >> "$X/mise.toml"
+mise_seed "$REPO/mise.local.toml"
+run "$REPO" wt y16
+rc_is 0 "Y19 a partial carry on a reopen succeeds"
+has "wt: mise trust carried to ~/Code/Org/repo-y16/mise.local.toml" "Y19 one file is carried"
+has "wt: ~/Code/Org/repo-y16/mise.toml is not trusted" "Y19 the other is refused"
+has "wt: opening ~/Code/Org/repo-y16 anyway" "Y19 the opening-anyway line is printed"
+has "wt: if this worktree was never prepared, run: wt-prepare y16" "Y19 so is the never-prepared line"
+hook_not_ran "Y19 the setup hook does not run"
+
+# Y17: the never-prepared line quotes a branch with ! like every other recovery line.
+xfix 'y17!b'; mise_seed "$REPO/mise.toml"
+run "$REPO" wt 'y17!b'
+mise_seed "$REPO/mise.local.toml"
+run "$REPO" wt 'y17!b'
+has "wt: if this worktree was never prepared, run: wt-prepare 'y17!b'" "Y17 the never-prepared line quotes the branch"
+hasnt "wt-prepare y17!b" "Y17 ... and never prints it bare"
 
 xfix y5
 xbranch y5 'print -r -- "a=2" > "$REPO/mise.toml"; git -C "$REPO" add mise.toml'
@@ -3871,7 +3921,11 @@ hasnt "Press Enter to close." "Y7 it does not ask for Enter"
 hasline "REST=SENTINEL" "Y7 ... and reads nothing more"
 
 [[ -e "$STDIN_LOG" ]] && stdin_bad="$(<"$STDIN_LOG")" || stdin_bad=""
-eq "$stdin_bad" "" "Y8 no mise call of the reopen warning or the popup reads the terminal"
+eq "$stdin_bad" "" "Y8 no mise call of the reopen carry or the popup reads the terminal"
+cat "$MLOG" >> "$XALL"
+mise_sweep "$XALL"
+eq "$bad" "" "Y18 the reopen's mise trust is never bare, never --all, never aimed at the main checkout"
+[[ "$(grep -c '^trust ' "$XALL")" -gt 0 ]] && _pass "Y18 section Y's trust calls were collected" || _fail "Y18 section Y's trust calls were collected"
 
 export HOME="$REAL_HOME"
 print -r -- ""

@@ -141,9 +141,12 @@ The step list above `wt-rm` gains both checks.
 `wt <branch>` on an existing worktree runs the carry (no base, no setup hook) in place of the
 read-only check, and never stops the reopen. When the carry returns 1, its report lines stand,
 then `wt: opening <dest> anyway — its shells load no project mise config until the files above
-are trusted.`, and `_WT_NOTICE` is set so the popup waits. Nothing points at `wt-prepare` any
-more: the report's `review` and `then: mise trust` lines are the direct route, and `wt-prepare`
-would also re-run the setup hook. A failed withdraw prints its line; the reopen goes on.
+are trusted.`, and `_WT_NOTICE` is set so the popup waits. The refusal lines do not point at
+`wt-prepare`: the report's `review` and `then: mise trust` lines are the direct route, and
+`wt-prepare` would also re-run the setup hook. A failed withdraw prints its line; the reopen goes
+on. When the carry trusted at least one file, the reopen adds `wt: if this worktree was never
+prepared, run: wt-prepare <branch>` (quoted like the other recovery lines) and sets
+`_WT_NOTICE`, because a creation stopped at this step never ran its setup hook.
 
 ## Testing
 
@@ -169,7 +172,8 @@ stub gains a `trust --show` that fails for one `-C` directory from the start
 - `wt-rm` with no hook, and the already-gone path, make no `mise` call.
 - `wt-rm`: a config untrusted after step 1 (the Herdr stub's close rewrites it) stops before
   the hook.
-- Reopen carries, warns only for the rest, never mentions `wt-prepare`, opens, popup waits.
+- Reopen carries, warns only for the rest, opens, popup waits; a reopen that carried a file
+  prints the never-prepared line, and one that carried nothing does not.
 - `mise trust` never runs without a path or with `--all` (X13, over the new calls too).
 
 Existing cases keep their scenarios; X2 to X5 expect the new reasons and `review` lines.
@@ -190,7 +194,8 @@ names the vouching checkout; the `wt-rm` carry runs after the lock classificatio
 gets a read-only re-check; in `wt-rm` too a failed candidate read only skips that candidate,
 and of the reads only a failed one of `<dest>` or of the worktree list refuses; the reopen
 points at the report lines, not `wt-prepare`; the config pin lives in
-`tests/wt-functions.test.sh`.
+`tests/wt-functions.test.sh`. Ruled by the controller during execution (2026-10-27): a reopen
+that carried a file adds the never-prepared `wt-prepare` line (§6), and it holds the popup.
 
 Left to the builder: how the base reaches `_wt_mise_trust` (an argument through
 `_wt_do_prepare` is enough), the candidate cache's structure, and message wording within the

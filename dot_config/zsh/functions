@@ -712,6 +712,7 @@ _wt_mise_withdraw() {
 # already trusted in one of them, and explain every other one (spec §2–§4). Returns 0 when
 # there was nothing to carry or all of it was carried, 1 when a config stays untrusted or a
 # read or a trust call failed. <base-branch> is set only when wt just made the branch.
+# _WT_MISE_CARRIED counts the files carried in this run, for the reopen's never-prepared line.
 #
 # Paranoid mode ties trust to file content and no longer inherits it into worktrees, so a
 # config nobody has looked at must never be trusted here: the sandbox can rewrite a branch's
@@ -735,6 +736,7 @@ _wt_mise_withdraw() {
 # untrust of a file that was just trusted.
 _wt_mise_trust() {
   emulate -L zsh
+  typeset -g _WT_MISE_CARRIED=0
   (( $+commands[mise] )) || return 0
   local main="$1" dest="$2" base="${3:-}" dshow cshow line rel dp cp c vouch reason basedir="" listed=0
   local none="it matches no trusted copy in this repository's checkouts"
@@ -804,6 +806,7 @@ _wt_mise_trust() {
          && [[ $'\n'"$dnow"$'\n' == *$'\n'"trusted"$'\t'"$rel"$'\n'* ]] \
          && [[ $'\n'"$cnow"$'\n' == *$'\n'"trusted"$'\t'"$rel"$'\n'* ]]; then
         print -r -- "wt: mise trust carried to $(_wt_tilde "$dp") (trusted in $(_wt_tilde "$vouch"))"
+        (( _WT_MISE_CARRIED++ ))
         continue
       fi
       _wt_mise_withdraw "$main" "$dest" "$basedir" "$rel" "" $refused || {
@@ -868,24 +871,32 @@ _wt_do_prepare() {
   return 0
 }
 
-# _wt_mise_reopen_warn <main> <dest> — on a reopen, run the same carry as a creation (spec §6),
-# with no base branch: what it can vouch for is trusted, and what it cannot is reported. A
-# reopen never stops and never runs a hook, so it always returns 0; only a carry that left
-# something untrusted prints the opening-anyway line and sets _WT_NOTICE, so `wt-prompt` keeps
-# the popup open for it.
-_wt_mise_reopen_warn() {
+# _wt_mise_reopen_carry <main> <dest> <branch> — on a reopen, run the same carry as a creation
+# (spec §6), with no base branch: what it can vouch for is trusted, and what it cannot is
+# reported. A reopen never stops and never runs a hook, so it always returns 0. A carry that
+# left something untrusted prints the opening-anyway line; one that trusted a file prints the
+# never-prepared line, because a creation that stopped at the mise step never ran its setup
+# hook and the reopen would otherwise open it silently. Either sets _WT_NOTICE, so `wt-prompt`
+# keeps the popup open for it.
+_wt_mise_reopen_carry() {
   emulate -L zsh
-  (( $+commands[mise] )) || return 0
-  _wt_mise_trust "$1" "$2" && return 0
-  print -ru2 -- "wt: opening $(_wt_tilde "$2") anyway — its shells load no project mise config until the files above are trusted."
-  typeset -g _WT_NOTICE=1
+  local qb
+  qb="$(_wt_q "$3")"
+  if ! _wt_mise_trust "$1" "$2"; then
+    print -ru2 -- "wt: opening $(_wt_tilde "$2") anyway — its shells load no project mise config until the files above are trusted."
+    typeset -g _WT_NOTICE=1
+  fi
+  if (( ${_WT_MISE_CARRIED:-0} )); then
+    print -ru2 -- "wt: if this worktree was never prepared, run: wt-prepare $qb"
+    typeset -g _WT_NOTICE=1
+  fi
   return 0
 }
 
 # wt-prepare <branch> — re-run preparation against an existing worktree.
 #
 # The recovery path for a partial copy or a failed setup hook; `wt` on an existing
-# worktree reopens and skips preparation. It never touches a Herdr workspace, so it
+# worktree reopens: it carries mise trust and skips the copy and the setup hook. It never touches a Herdr workspace, so it
 # may run while the target is live.
 wt-prepare() {
   emulate -L zsh
@@ -941,7 +952,7 @@ _wt_create_or_prepare() {
     if [[ -d "$dest" ]]; then
       _wt_assert_worktree "$main" "$dest" "$branch" || return 1
       print -ru2 -- "wt: reopening $dest"; created=
-      _wt_mise_reopen_warn "$main" "$dest"
+      _wt_mise_reopen_carry "$main" "$dest" "$branch"
     else
       # Pre-validate before creating anything; _wt_hook_run still re-checks.
       _wt_hook_check "$main" >/dev/null 2>&1
@@ -997,7 +1008,7 @@ wt-prompt() {
   fi
   wt "$branch"
   local rc=$?
-  # Failures and the reopen warning are the lines Michael must be able to read; the popup
+  # Failures and the reopen's untrusted-config report are the lines Michael must be able to read; the popup
   # closes with the command, so hold it open for them.
   if (( rc != 0 )) || [[ -n "${_WT_NOTICE:-}" ]]; then
     print -r -- "Press Enter to close."
