@@ -239,6 +239,9 @@ printf '%s\n' "$*" >> "$MLOG"
 [ /dev/stdin -ef /dev/null ] || printf '%s\n' "$*" >> "$STDIN_LOG"
 tab=$'\t'
 state="${STDIN_LOG%/*}"
+# A rejected call is also appended here, one record per call with each argument kept apart
+# (the text log joins them with spaces, and a test that ignores the failure would not see it).
+unexpected() { { printf '%q ' "$@"; printf '\n'; } >> "$state/mise-unexpected.log"; }
 sha() { shasum -a 256 < "$1" | cut -d' ' -f1; }
 drop() { P="$1" awk '{ k = ENVIRON["P"] "\t"; if (substr($0, 1, length(k)) != k) print }' "$MISE_STUB_STORE" > "$MISE_STUB_STORE.n"; mv "$MISE_STUB_STORE.n" "$MISE_STUB_STORE"; }
 if [ "${1:-}" = -C ] && [ "${3:-}" = trust ] && [ "${4:-}" = --show ] && [ $# -eq 4 ]; then
@@ -297,7 +300,7 @@ if [ "${1:-}" = -C ] && [ "${3:-}" = trust ] && [ "${4:-}" = --show ] && [ $# -e
   fi
   exit 0
 fi
-case "$*" in *--all*) echo "mise stub: unexpected invocation: $*" >&2; exit 3 ;; esac
+case "$*" in *--all*) echo "mise stub: unexpected invocation: $*" >&2; unexpected "$@"; exit 3 ;; esac
 if [ "${1:-}" = trust ] && [ $# -eq 2 ] && [ "${2#-}" = "$2" ]; then
   [ -n "${MOCK_MISE_RACE_CONTENT+x}" ] && printf '%b' "$MOCK_MISE_RACE_CONTENT" > "$2"
   if [ -n "${MOCK_MISE_FLIP_RACE+x}" ]; then
@@ -316,6 +319,7 @@ if [ "${1:-}" = trust ] && [ "${2:-}" = --untrust ] && [ $# -eq 3 ]; then
   exit 0
 fi
 echo "mise stub: unexpected invocation: $*" >&2
+unexpected "$@"
 exit 3
 STUB
 chmod +x "$MISESTUBS/mise"
@@ -3215,6 +3219,7 @@ eq "$OUT" "$(print -rl -- "$REPO" "base=")" "XC6 a base checkout whose directory
 # $X, the worktree `wt <slug>` will make. It first files away the previous scenario's mise
 # log, so X13 can judge the calls of the whole section.
 XALL="$MISESTUBS/x-all.log"; : > "$XALL"; XCOLLECT=""
+XUNEXP="$MISESTUBS/mise-unexpected.log"; : > "$XUNEXP"   # not a stub-* file: setup() leaves it
 xfix() {
   [[ -n "$XCOLLECT" ]] && cat "$MLOG" >> "$XALL"
   setup; XCOLLECT=1
@@ -4069,12 +4074,18 @@ dir_there "$X" "XR11 the checkout still exists"
 # mise_sweep <log> — sets $bad to every trust call in <log> that is not aimed at a file of a
 # destination checkout (an allowlist: `…/Code/Org/repo-<slug>/…` or `…/Code/Org/co: lon-<slug>/…`,
 # which is where wt and the cases above make worktrees), or that is bare or uses --all, or whose
-# path holds a `..` segment (which could satisfy the patterns and still point elsewhere).
+# path holds a `..` segment (which could satisfy the patterns and still point elsewhere), or
+# in which `trust` is a word anywhere but the start (a global option in front of it), except
+# the read `-C <dir> trust --show`. The log joins arguments with spaces, so the stub's
+# $MISESTUBS/mise-unexpected.log (one record per rejected call, arguments kept apart) is what
+# catches an extra path on an otherwise allowed shape.
 mise_sweep() {
   bad=""
   local l
   while IFS= read -r l; do
     case "$l" in
+      "-C "*" trust --show") ;;
+      *" trust "*) bad+="[$l] " ;;
       trust|*" trust"|*--all*) bad+="[$l] " ;;
       "trust "*/../*|"trust "*/..) bad+="[$l] " ;;
       "trust "*/Code/Org/repo-*/*|"trust --untrust "*/Code/Org/repo-*/*) ;;
@@ -4092,10 +4103,45 @@ print -r -- "trust --untrust /h/Code/Org/repo-a/mise.toml" > "$MISESTUBS/sweep-p
 mise_sweep "$MISESTUBS/sweep-probe.log"
 [[ -z "$bad" ]] && _pass "X13c ... and passes the same path without it" || _fail "X13c ... and passes the same path without it"
 
+# X13d: the stub logs every call it rejects, arguments kept apart, and the sweep sees a global
+# option in front of `trust`. The calls go straight to the stub, with the text log pointed at a
+# scratch file and stdin from /dev/null (X13b), and the unexpected log is cleared afterwards.
+XP="$MISESTUBS/probe"; mkdir -p "$XP"; print -r -- 'a=1' > "$XP/mise.toml"
+xprobe() {   # xprobe <argv...> — the stub's exit status in $prc
+  MLOG="$MISESTUBS/probe-mlog.log" "$MISESTUBS/mise" "$@" >/dev/null 2>&1 </dev/null; prc=$?
+}
+: > "$XUNEXP"
+xprobe -C "$XP" trust "$XP/mise.toml"
+eq "$prc" "3" "X13d -C <dir> trust <path> is rejected"
+xprobe trust "$XP/mise.toml" "$XP/other file.toml"
+eq "$prc" "3" "X13d trust <a> <b> is rejected"
+xprobe -C "$XP" trust --untrust "$XP/mise.toml"
+eq "$prc" "3" "X13d -C <dir> trust --untrust <path> is rejected"
+xprobe trust --all
+eq "$prc" "3" "X13d trust --all is rejected"
+eq "$(wc -l < "$XUNEXP" | tr -d ' ')" "4" "X13d each rejected call is one record in the unexpected log"
+eq "$(sed -n 2p "$XUNEXP")" "trust $XP/mise.toml $XP/other\\ file.toml " "X13d ... with its arguments kept apart"
+: > "$XUNEXP"
+xprobe -C "$XP" trust --show
+eq "$prc" "0" "X13d the read -C <dir> trust --show is accepted"
+xprobe trust "$XP/mise.toml"
+eq "$prc" "0" "X13d trust <path> is accepted"
+xprobe trust --untrust "$XP/mise.toml"
+eq "$prc" "0" "X13d trust --untrust <path> is accepted"
+eq "$(<$XUNEXP)" "" "X13d ... and none of the three is logged as rejected"
+print -r -- "-C /h/Code/Org/repo trust /h/Code/Org/repo/mise.toml" > "$MISESTUBS/sweep-probe.log"
+mise_sweep "$MISESTUBS/sweep-probe.log"
+[[ -n "$bad" ]] && _pass "X13d the sweep flags a trust call with a global option in front" || _fail "X13d the sweep flags a trust call with a global option in front"
+printf '%s\n' "-C /h/Code/Org/repo-a trust --show" "trust /h/Code/Org/repo-a/mise.toml" "trust --untrust /h/Code/Org/repo-a/mise.toml" > "$MISESTUBS/sweep-probe.log"
+mise_sweep "$MISESTUBS/sweep-probe.log"
+[[ -z "$bad" ]] && _pass "X13d ... and passes the three allowed shapes" || _fail "X13d ... and passes the three allowed shapes ($bad)"
+: > "$XUNEXP"
+
 # X13: over everything above, mise trust is only ever given one worktree file.
 cat "$MLOG" >> "$XALL"
 mise_sweep "$XALL"
 eq "$bad" "" "X13 mise trust is never bare, never --all, and only ever aimed at a file of a destination checkout"
+eq "$(<$XUNEXP)" "" "X13 ... and mise rejected no call"; : > "$XUNEXP"
 xn="$(wc -l < "$XALL")"; : > "$XALL"
 # A branch name containing ! (legal in a ref) is single-quoted in every recovery line a
 # person pastes, because (q-) leaves ! bare and interactive zsh then expands it as history.
@@ -4284,6 +4330,7 @@ eq "$stdin_bad" "" "Y8 no mise call of the reopen carry or the popup reads the t
 cat "$MLOG" >> "$XALL"
 mise_sweep "$XALL"
 eq "$bad" "" "Y18 section Y's mise trust is never bare, never --all, and only ever aimed at a file of a destination checkout"
+eq "$(<$XUNEXP)" "" "Y18 ... and mise rejected no call"; : > "$XUNEXP"
 [[ "$(grep -c '^trust ' "$XALL")" -gt 0 ]] && _pass "Y18 section Y's trust calls were collected" || _fail "Y18 section Y's trust calls were collected"
 
 export HOME="$REAL_HOME"

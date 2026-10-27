@@ -241,7 +241,8 @@ Added during execution:
 - `_WT_MISE_CARRIED` is reset per run;
 - the teardown re-check is read-only: with an empty trusted witness, a carrying re-check would
   trust;
-- the X13 and Y18 sweeps are allowlists: every `trust` path is under a destination checkout.
+- the X13 and Y18 sweeps are allowlists: every `trust` path is under a destination checkout,
+  and any call the stub rejects fails them, with argument boundaries kept.
 
 Existing cases keep their scenarios; X2 to X5 expect the new reasons and `review` lines.
 
