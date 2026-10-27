@@ -980,6 +980,13 @@ cmd_tier() {
   codex_tier "$thread" || die "cannot read the reviewer tier for $thread"
 }
 
+# known_file <thread> - where turn-start writes, before it sends, what <thread> held: one file per
+# thread of the round. A wait on a ? reads its own thread's file, so no slice's start, and no other
+# collect, ever touches the one it reads; once written, it is removed only under the pane lock, by
+# the start that put the turn's id in the record or saw turn-start fail outright. Works on the
+# caller's dir and nonce.
+known_file() { printf '%s/turns/%s.%s.known' "$dir" "$nonce" "$1"; }
+
 # _dispatch_turn <thread> <packet-file> <schema> <nonce> <checkpoint> <branch> - the turn itself,
 # run by move_pane_to once the pane is free. turn-start is the line. Before it, the turn record
 # goes down in its exit-6 form (`<thread> ? <checkpoint> <branch>`), as a slice's does, so a turn
@@ -999,23 +1006,24 @@ _dispatch_turn() {
   mkdir -p "$dir/turns"
   printf '%s ? %s %s\n' "$thread" "$checkpoint" "$branch" > "$dir/turns/$nonce"
   turn="$(xreview-rpc turn-start --thread "$thread" --input "$packet" --schema "$schema" \
-            --known "$dir/turns/$nonce.known")" || rc=$?
+            --known "$(known_file "$thread")")" || rc=$?
   # A turn-start that returns 0 with a malformed id is handled exactly like exit 6: the
   # turn may still be running on the daemon side, so it is never treated as "not started".
   if [ "$rc" = 0 ] && ! is_safe_id "$turn"; then rc=6; fi
   case "$rc" in
     0|6) ;;
-    # The exit trap removes the round's files, the record included, and archives a fresh thread.
+    # The exit trap removes the round's files, the record and the thread's .known included, and
+    # archives a fresh thread.
     *) die "the review turn could not be started on $thread" ;;
   esac
   trap - EXIT
   if [ "$rc" = 0 ]; then
     # The turn's id replaces the ? record, atomically, so that a failure can never truncate it. If
-    # it cannot, the ? record and .known stand, and collect finds the turn as the one not on the
-    # thread before, exactly as after an exit 6.
+    # it cannot, the ? record and the thread's .known stand, and collect finds the turn as the one
+    # not on the thread before, exactly as after an exit 6.
     if { printf '%s %s %s %s\n' "$thread" "$turn" "$checkpoint" "$branch" > "$dir/turns/$nonce.tmp" \
          && mv -f "$dir/turns/$nonce.tmp" "$dir/turns/$nonce"; } 2>/dev/null; then
-      rm -f "$dir/turns/$nonce.known" || true
+      rm -f "$(known_file "$thread")" || true
     else
       rm -f "$dir/turns/$nonce.tmp" 2>/dev/null || true
       turn="?"
@@ -1213,12 +1221,13 @@ cmd_dispatch() {
   # refusal - a die included, from anywhere in this function - leaves no packet, targets,
   # labels, slices or known turns behind. The paths travel in the trap string, not a local: on
   # an errexit exit bash 5 has already unwound those. It is the pre-turn trap (PRE_TURN_TRAP,
-  # below), and is disarmed once a turn exists.
+  # below), and is disarmed once a turn exists. The turn's .known is its thread's own
+  # (known_file), so it joins the cleanup once the thread is final.
   nonce="xr-$(date +%s)-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
   out="$dir/turns/$nonce.packets"
   mkdir -p "$out" || die "cannot create $out; no review was started"
   cleanup="rm -rf $(printf '%q' "$out") $(printf '%q' "$dir/turns/$nonce")"
-  for s in targets shown slices known; do cleanup+=" $(printf '%q' "$dir/turns/$nonce.$s")"; done
+  for s in targets shown slices; do cleanup+=" $(printf '%q' "$dir/turns/$nonce.$s")"; done
   trap "$cleanup" EXIT
   local framing_on=0 needs_thread=0 pinned=0
   case "$(packet_plan 2>/dev/null)" in
@@ -1317,16 +1326,21 @@ Report the remaining disagreement, or: xreview round --reset"
   # archives the new one, since nothing else ever would: the archive joins the cleanup in the
   # pre-turn trap. It comes first there, so a cleanup that fails (errexit holds inside the trap)
   # cannot skip it. An id assert_id refuses is never used, so it is never archived either.
-  local old="$thread" fresh_thread=0 PRE_TURN_TRAP="$cleanup"
+  local old="$thread" fresh_thread=0 PRE_TURN_TRAP
   if [ -z "$thread" ] || [ "$action" != send ]; then
     fresh_thread=1
     thread="$(xreview-rpc thread-start --cwd "$(repo_root)")" \
       || die "could not start a new review thread; no review was started"
     assert_id "$thread"
+  fi
+  cleanup+=" $(printf '%q' "$(known_file "$thread")")"
+  PRE_TURN_TRAP="$cleanup"
+  if [ "$fresh_thread" = 1 ]; then
     PRE_TURN_TRAP="xreview-rpc thread-archive --thread $(printf '%q' "$thread") >/dev/null 2>&1 || true; $cleanup"
-    trap "$PRE_TURN_TRAP" EXIT
-    thread_running "$thread" \
-      && die "the review thread $thread is still running a turn; collect it first"
+  fi
+  trap "$PRE_TURN_TRAP" EXIT
+  if [ "$fresh_thread" = 1 ] && thread_running "$thread"; then
+    die "the review thread $thread is still running a turn; collect it first"
   fi
   # A pre-merge review puts a pending entry in every target ledger, or is refused: every
   # pre-merge review that runs is on record before its turn exists.
@@ -1357,22 +1371,21 @@ Report the remaining disagreement, or: xreview round --reset"
 # sliced round share one budget: it bounds the whole collect.
 COLLECT_BUDGET_DEFAULT=2700
 
-# _resolve_record <thread> <turn> - the turn found for <thread>'s ? goes into the turn record, and
-# .known goes with it, only while the record still names <thread>'s ?. Without the pane lock the
-# record and .known are shared with the round's later slices: a collect that has moved on to the
-# next slice has replaced them with that slice's own (and removed this one's .known before its
-# pre-write), and they are left alone. The record is written through a temp file of this
+# _resolve_record <thread> <turn> - in an unsliced round, the turn found for <thread>'s ? goes
+# into the turn record, while the record still names <thread>'s ?: nothing else writes the record
+# after dispatch. (In a sliced round the id goes into the round's state instead, and a later
+# slice's start may own the record by then.) The record is written through a temp file of this
 # process's own, moved into place, so that no reader ever sees it half-written; never $rec.tmp,
-# which _slice_turn uses under the lock. Best effort: the answer is in hand, so a record that
-# cannot be rewritten keeps its ? and .known, and a later collect resolves the ? again.
+# which _slice_turn uses under the lock. It never removes the thread's .known: another collect
+# may be waiting, or about to wait, on the same ? with it, and once the record names the id
+# nothing reads it. Best effort: the answer is in hand, so a record that cannot be rewritten
+# keeps its ?, and a later collect resolves the ? again.
 _resolve_record() {
   local rth="" rt="" rest="" tmp="$rec.resolve.$$"
   read -r rth rt rest 2>/dev/null < "$rec" || true
   [ "$rth" = "$1" ] && [ "$rt" = "?" ] || return 0
-  if { printf '%s %s%s\n' "$1" "$2" "${checkpoint:+ $checkpoint${branch:+ $branch}}" > "$tmp" \
-       && mv -f "$tmp" "$rec"; } 2>/dev/null; then
-    rm -f "$dir/turns/$nonce.known" || true
-  else
+  if ! { printf '%s %s%s\n' "$1" "$2" "${checkpoint:+ $checkpoint${branch:+ $branch}}" > "$tmp" \
+         && mv -f "$tmp" "$rec"; } 2>/dev/null; then
     rm -f "$tmp" 2>/dev/null || true
   fi
   return 0
@@ -1382,19 +1395,23 @@ _resolve_record() {
 # and sets out and rc to turn-wait's answer and exit status, turn to the turn waited on, and
 # compacted to the report's word on that turn: true, false, or null when the report is missing,
 # is about another turn (a stale file), or cannot tell. Unknown is never clean (spec 2026-10-25
-# §3.6). A "?" is resolved the moment turn-wait finds the turn and written to the turn record
-# while that still names it (_resolve_record), so every later collect and the receipt name it,
-# instead of rediscovering "whatever is new" each time. Every wait gets what is left of the
-# budget, counted in whole seconds from the collect's start, so a slice started first (a lock
-# wait, the pane steps) spends from it too; none left is exit 3 at once. The report is this
-# process's own file, so a second collect of the same turn never removes or replaces it. A turn
-# from before review packets is waited on as it always was, with no report.
+# §3.6). A "?" is found as the turn new on its thread since its own .known (known_file), and
+# resolved the moment turn-wait finds it: in an unsliced round it is written to the turn record
+# while that still names it (_resolve_record), and in a sliced one the round's state takes it
+# (_collect_slices), so every later collect and the receipt name it, instead of rediscovering
+# "whatever is new" each time. Every wait gets what is left of the budget, counted in whole
+# seconds from the collect's start, so a slice started first (a lock wait, the pane steps) spends
+# from it too; none left is exit 3 at once. The report is this process's own file, so a second
+# collect of the same turn never removes or replaces it. A turn from before review packets is
+# waited on as it always was, with no report.
 _collect_wait() {
+  # The report and the resolved id are this process's own files: every waiter of the round shares
+  # $nonce, and one collect's removal must never take another's.
   local th="$1" left which asked=() report="$dir/turns/$nonce.report.$$" \
-        resolved="$dir/turns/$nonce.resolved" said=""
+        resolved="$dir/turns/$nonce.resolved.$$" said=""
   turn="$2"; out=""; rc=0; compacted=null
   if [ "$turn" = "?" ]; then
-    which=(--new-since "$dir/turns/$nonce.known" --resolved "$resolved")
+    which=(--new-since "$(known_file "$th")" --resolved "$resolved")
   else
     assert_id "$turn"; which=(--turn "$turn")
   fi
@@ -1413,7 +1430,7 @@ _collect_wait() {
   rm -f "$report"
   if [ "$turn" = "?" ] && [ -s "$resolved" ]; then
     turn="$(head -1 "$resolved")"; assert_id "$turn"
-    _resolve_record "$th" "$turn"
+    if [ "$sliced" = 0 ]; then _resolve_record "$th" "$turn"; fi
     rm -f "$resolved"
   fi
   if [ -n "$said" ]; then
@@ -1707,14 +1724,14 @@ _collect_slices() {
 # Called only under the pane lock (_slice_start): a slice's ? record goes down before its
 # turn-start, and the collect starting it holds that lock until turn-start has answered, so read
 # without it the record could name a turn that never starts. The turn is a safe id, or ? beside
-# the .known that turn-start writes before it sends and a definitive failure removes; its thread is
-# a safe id that no earlier slice ran on.
+# its thread's own .known (known_file), which turn-start writes before it sends and a definitive
+# failure removes; its thread is a safe id that no earlier slice ran on.
 _slice_record_turn() {
   local i="$1" rth="" rt="" rest=""
   read -r rth rt rest 2>/dev/null < "$rec" || true
   is_safe_id "$rth" || return 1
   if [ "$rt" = "?" ]; then
-    [ -e "$dir/turns/$nonce.known" ] || return 1
+    [ -e "$(known_file "$rth")" ] || return 1
   else
     is_safe_id "$rt" || return 1
   fi
@@ -1804,23 +1821,23 @@ _slice_start() {
 # pane: the pane's resume owns it.
 _slice_turn() {
   local i="$1" th="$2" file="$3" t="" src=0 upd also=""
-  # A .known an earlier slice left (its id could not replace its ? record) goes first, so that a
-  # .known beside this slice's ? record is only ever this turn-start's own: collect takes a ? up
-  # only beside one. The earlier slice is answered by now and needs it no more. Still pre-turn, so
-  # a failure is a refusal with no turn.
-  rm -f "$dir/turns/$nonce.known"
+  # The .known is this thread's own (known_file): an earlier slice's stays as it is, for any collect
+  # still waiting on that slice's ?. One of this thread's, were it there already, goes first, so
+  # that the .known beside this slice's ? record is only ever this turn-start's own: collect takes
+  # a ? up only beside one. Still pre-turn, so a failure is a refusal with no turn.
+  rm -f "$(known_file "$th")"
   if ! { printf '%s ? %s %s\n' "$th" "$checkpoint" "$branch" > "$rec.tmp" \
          && mv -f "$rec.tmp" "$rec"; } 2>/dev/null; then
     rm -f "$rec.tmp" 2>/dev/null || true
     die "the turn record of slice $((i + 1)) of $n could not be written in $rec; no turn started"
   fi
   t="$(xreview-rpc turn-start --thread "$th" --input "$file" --schema "$schema" \
-         --known "$dir/turns/$nonce.known")" || src=$?
+         --known "$(known_file "$th")")" || src=$?
   if [ "$src" = 0 ] && ! is_safe_id "$t"; then src=6; fi
   case "$src" in
     0|6) ;;
     # The ? record stays, with no .known: collect starts the slice afresh, never waits on it.
-    *) rm -f "$dir/turns/$nonce.known"
+    *) rm -f "$(known_file "$th")"
        die "the turn of slice $((i + 1)) of $n could not be started on $th" ;;
   esac
   # The slice has started, or may have: the pane's exit guard and the thread's archive are done
@@ -1833,10 +1850,10 @@ _slice_turn() {
       "$((i + 1))" "$n" >&2
   elif { printf '%s %s %s %s\n' "$th" "$t" "$checkpoint" "$branch" > "$rec.tmp" \
          && mv -f "$rec.tmp" "$rec"; } 2>/dev/null; then
-    rm -f "$dir/turns/$nonce.known" || true
+    rm -f "$(known_file "$th")" || true
   else
-    # The ? record and .known stand: collect finds the turn by the round's state, or else as the
-    # one not on the thread before.
+    # The ? record and the thread's .known stand: collect finds the turn by the round's state, or
+    # else as the one not on the thread before.
     rm -f "$rec.tmp" 2>/dev/null || true
     printf "xreview: the turn of slice %s of %s could not replace its ? record in %s; collect finds it by the round's state, or as the turn new on its thread\n" \
       "$((i + 1))" "$n" "$rec" >&2
@@ -1854,7 +1871,8 @@ _slice_turn() {
 
 cmd_collect() {
   local nonce="${1:-}" budget="${2:-$COLLECT_BUDGET_DEFAULT}" rec thread turn checkpoint branch out rc \
-        dir tfile sfile schema="$SCHEMA" framing=false packeted=0 started compacted=null shown collect_trap
+        dir tfile sfile schema="$SCHEMA" framing=false packeted=0 started compacted=null shown \
+        collect_trap sliced=0
   started="$(epoch_now)"
   case "$nonce" in
     xr-*) ;;
@@ -1889,7 +1907,7 @@ cmd_collect() {
       schema="$FRAMED_SCHEMA"
       [ -r "$schema" ] || die "missing framed findings schema $schema"
     fi
-    if [ -e "$sfile" ]; then _collect_slices; return 0; fi
+    if [ -e "$sfile" ]; then sliced=1; _collect_slices; return 0; fi
     # A sliced round collected in full: its merged answer again; its receipts are on record.
     if [ -e "$dir/turns/$nonce.merged" ]; then cat "$dir/turns/$nonce.merged"; return 0; fi
   fi

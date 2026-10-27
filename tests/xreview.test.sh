@@ -224,10 +224,10 @@ cat > "$STUB/xreview-rpc" <<'R'
 #!/bin/sh
 printf '%sxreview-rpc %s\n' "${DISPATCH_ID:+$DISPATCH_ID }" "$*" >> "$CALLS"
 cmd="$1"; shift
-th=""; input=""; known=""; resolved=""; prefix=""; cwd=""; turn=""; report=""
+th=""; input=""; known=""; resolved=""; prefix=""; cwd=""; turn=""; report=""; since=""
 while [ "$#" -gt 0 ]; do
   case "$1" in --thread) th="$2"; shift ;; --input) input="$2"; shift ;; --known) known="$2"; shift ;;
-               --resolved) resolved="$2"; shift ;; --prefix) prefix="$2"; shift ;;
+               --resolved) resolved="$2"; shift ;; --prefix) prefix="$2"; shift ;; --new-since) since="$2"; shift ;;
                --cwd) cwd="$2"; shift ;; --turn) turn="$2"; shift ;; --report) report="$2"; shift ;; esac; shift
 done
 case "$cmd" in
@@ -296,7 +296,12 @@ case "$cmd" in
   thread-turns) # RPC_TURNS_FAIL: the thread's turns cannot be listed.
                 [ -n "${RPC_TURNS_FAIL:-}" ] && exit 1
                 echo '{"turns":[],"thread_compactions":0}' ;;
-  turn-wait) # $P/unfound.<thread>: the next --new-since wait on it finds nothing yet (exit 3).
+  turn-wait) # $P/wait_pre_sh.<thread>: a script run as a wait on that thread begins, before it
+             # reads anything (a collect held there, say).
+             if [ -r "$P/wait_pre_sh.$th" ]; then sh "$P/wait_pre_sh.$th"; fi
+             # Like the real helper, a --new-since wait reads its file first, and fails without it.
+             if [ -n "$since" ] && ! [ -r "$since" ]; then echo "turn-wait: cannot read $since" >&2; exit 1; fi
+             # $P/unfound.<thread>: the next --new-since wait on it finds nothing yet (exit 3).
              if [ -n "$resolved" ] && [ -e "$P/unfound.$th" ]; then rm -f "$P/unfound.$th"; exit 3; fi
              [ -n "$resolved" ] && echo turn-recovered > "$resolved"
              # Per turn: $P/answer.<turn> is its answer, $P/rc.<turn> its exit code for one wait,
@@ -368,7 +373,8 @@ fresh() { # a pane showing U0, idle, its TUI not connected to the daemon; clean 
   rm -f "$P"/running.* "$P/ledger-at-start"
   rm -f "$P/uuids" "$P"/answer.* "$P"/rc.* "$P"/compacted.* "$P"/start_rc.* "$P"/unfound.* \
         "$P"/hold.* "$P"/holding.* "$P"/waiting.* "$P/ensured" "$P"/start_dir.* "$P"/start_sh.* \
-        "$P/thread_start_sh" "$P"/thread_start_sh.* "$P"/start_pre_sh.* "$P/at_start" "$P/release"
+        "$P/thread_start_sh" "$P"/thread_start_sh.* "$P"/start_pre_sh.* "$P/at_start" "$P/release" \
+        "$P"/wait_pre_sh.* "$P"/a_* "$P"/b_* "$P"/mv_*
   mkdir -p "$CODEX_HOME/app-server-daemon"; printf '{"pid":999}\n' > "$CODEX_HOME/app-server-daemon/daemon.pid"
   bash "$XREVIEW" round --reset >/dev/null 2>&1
   rm -rf "$STATE/superseded" "$STATE/pin" "$STATE/turns" "$STATE/missed"
@@ -595,7 +601,7 @@ is "D10 with a do-not-re-dispatch warning" "$(grep -c 'do NOT re-dispatch' "$ROO
 is "D10 the record marks the turn unknown" "$(cat "$STATE/turns/$nonce")" "$U1 ? plan $BR"
 RPC_WAIT_OUT='{"verdict":"approve","findings":[]}' bash "$XREVIEW" collect "$nonce" >/dev/null 2>&1
 is "D10 collect looks for what is new on the thread" \
-   "$(called "turn-wait --thread $U1 --new-since $STATE/turns/$nonce.known --resolved")" 1
+   "$(called "turn-wait --thread $U1 --new-since $STATE/turns/$nonce.$U1.known --resolved")" 1
 is "D10 the recovered turn replaces the unknown in the record" "$(cat "$STATE/turns/$nonce")" "$U1 turn-recovered plan $BR"
 is "D10 and the receipt names it" "$(tail -1 "$MAIN_LEDGER" | jq -r .turn)" turn-recovered
 : > "$CALLS"; bash "$XREVIEW" collect "$nonce" >/dev/null 2>&1
@@ -2326,14 +2332,14 @@ for how in write rename; do
   is "W1 ($how) the turn id cannot replace the ? record: exit 0, the nonce once, nothing archived" \
      "$rc/$(printf '%s' "$out" | grep -c '^xr-')/$(called 'xreview-rpc thread-archive')" "0/1/0"
   is "W1 ($how) the ? record, .known, .targets and .shown stand" \
-     "$(cat "$STATE/turns/$nonce" 2>/dev/null)/$(for s in known targets shown; do [ -e "$STATE/turns/$nonce.$s" ] || printf 'no-%s ' "$s"; done)" \
+     "$(cat "$STATE/turns/$nonce" 2>/dev/null)/$(for s in "$U1.known" targets shown; do [ -e "$STATE/turns/$nonce.$s" ] || printf 'no-%s ' "$s"; done)" \
      "$U1 ? plan $(xbranch)/"
   is "W1 ($how) and the move is made" "$(cat "$STATE/review-thread")" "$U1"
   : > "$CALLS"
   RPC_WAIT_OUT='{"verdict":"approve","findings":[],"reviewed_files":["big1.txt","big2.txt","big3.txt"]}' \
     bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2>/dev/null; rc=$?
   is "W1 ($how) xreview collect then succeeds, finding the turn as the one new on the thread" \
-     "$rc/$(jq -r .verdict "$ROOT/out")/$(called "turn-wait --thread $U1 --new-since $STATE/turns/$nonce.known")" "0/approve/1"
+     "$rc/$(jq -r .verdict "$ROOT/out")/$(called "turn-wait --thread $U1 --new-since $STATE/turns/$nonce.$U1.known")" "0/approve/1"
 done
 # The removals after the turn are best effort too: the sent packets' directory, and the superseded
 # list once its threads are archived. A failing rm of either still prints the nonce.
@@ -2776,13 +2782,13 @@ bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
 is "SL4 slice 2's turn-start goes unanswered and its turn is not found yet: exit 3" "$rc" 3
 is "SL4 with the warning never to re-dispatch" "$(grep -c 'do NOT re-dispatch' "$ROOT/err")" 1
 is "SL4 the slice's turn is on record as unknown, with what its thread held before" \
-   "$(jq -c .turns "$sl")/$([ -e "$STATE/turns/$nonce.known" ] && echo known)" "[\"turn-$U1\",\"?\"]/known"
+   "$(jq -c .turns "$sl")/$([ -e "$STATE/turns/$nonce.$U3.known" ] && echo known)" "[\"turn-$U1\",\"?\"]/known"
 is "SL4 and so is the turn record" "$(cat "$STATE/turns/$nonce")" "$U3 ? pre-merge $YB"
 rm -f "$P/start_rc.$U3"
 : > "$CALLS"
 bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
 is "SL4 the next collect finds it as the turn that was not on the thread before" \
-   "$(called "turn-wait --thread $U3 --new-since $STATE/turns/$nonce.known --resolved")" 1
+   "$(called "turn-wait --thread $U3 --new-since $STATE/turns/$nonce.$U3.known --resolved")" 1
 is "SL4 and never sends it again" "$(called "turn-start --thread $U3")" 0
 is "SL4 the round finishes with the recovered turn" "$rc/$(receipt "$nonce" | jq -c '.slice_turns[1].turn')" '0/"turn-recovered"'
 
@@ -2943,12 +2949,12 @@ for how in readonly rename; do
   is "V1 ($how) neither the id nor the state can be saved after slice 2's turn-start: exit 3, each said once" \
      "$rc/$(grep -c 'could not replace its ? record' "$ROOT/err")/$(grep -c 'could not save the state of the sliced round' "$ROOT/err")" "3/1/1"
   is "V1 ($how) the record is slice 2's ? form, .known stands, and the state on disk still ends at slice 1" \
-     "$(cat "$STATE/turns/$nonce")/$([ -e "$STATE/turns/$nonce.known" ] && echo known)/$(jq -c .turns "$sl")" \
+     "$(cat "$STATE/turns/$nonce")/$([ -e "$STATE/turns/$nonce.$U3.known" ] && echo known)/$(jq -c .turns "$sl")" \
      "$U3 ? pre-merge $YB/known/[\"turn-$U1\"]"
   bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
   is "V1 ($how) the next collect finishes the round" "$rc/$(jq -r .verdict "$ROOT/out")" "0/approve"
   is "V1 ($how) slice 2 is never started again, on any thread: its turn is found as the one new on its own" \
-     "$(called 'xreview-rpc turn-start')/$(called 'xreview-rpc thread-start')/$(called "turn-wait --thread $U3 --new-since $STATE/turns/$nonce.known")/$(receipt "$nonce" | jq -r '.slice_turns[1].turn')" \
+     "$(called 'xreview-rpc turn-start')/$(called 'xreview-rpc thread-start')/$(called "turn-wait --thread $U3 --new-since $STATE/turns/$nonce.$U3.known")/$(receipt "$nonce" | jq -r '.slice_turns[1].turn')" \
      "2/2/1/turn-recovered"
 done
 rm -f "$STUB/mv"
@@ -2960,19 +2966,19 @@ echo 1 > "$P/start_rc.$U3"
 bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
 rm -f "$P/start_rc.$U3"
 is "V1 slice 2's turn-start fails outright: refused, its ? record left with no .known" \
-   "$rc/$(cat "$STATE/turns/$nonce")/$([ -e "$STATE/turns/$nonce.known" ] && echo known || echo none)" "1/$U3 ? pre-merge $YB/none"
+   "$rc/$(cat "$STATE/turns/$nonce")/$([ -e "$STATE/turns/$nonce.$U3.known" ] && echo known || echo none)" "1/$U3 ? pre-merge $YB/none"
 printf '%s\n%s\n' "$U2" "$U4" > "$P/uuids"
 : > "$CALLS"
 bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
 is "V1 the next collect starts slice 2 afresh on a new thread, never waiting on the archived one" \
    "$rc/$(jq -r .verdict "$ROOT/out")/$(called 'xreview-rpc thread-start')/$(called "turn-start --thread $U2")/$(called "turn-wait --thread $U3")" \
    "0/approve/2/1/0"
-# A .known an earlier slice left behind (its id could not replace its ? record) goes before
-# slice 2's ? record does: a collect killed after that record and before turn-start wrote a .known
-# of its own leaves a ? with no .known beside it. The next collect then starts slice 2 afresh,
-# never waiting on a thread that has no turn.
+# A .known an earlier slice left behind (its id could not replace its ? record) is that slice's
+# thread's own and never stands in for slice 2's: a collect killed after slice 2's ? record and
+# before turn-start wrote slice 2's .known leaves a ? with no .known of its thread beside it. The
+# next collect then starts slice 2 afresh, never waiting on a thread that has no turn.
 sliced; approve_all "turn-$U2"
-echo '["stale"]' > "$STATE/turns/$nonce.known"
+echo '["stale"]' > "$STATE/turns/$nonce.$U1.known"
 printf 'touch "%s"; while [ ! -e "%s" ]; do sleep 0.1; done; exit 1\n' "$P/at_start" "$P/release" > "$P/start_pre_sh.$U3"
 : > "$CALLS"
 bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err" &
@@ -2982,7 +2988,7 @@ kill -9 "$victim" 2>/dev/null; wait "$victim" 2>/dev/null
 touch "$P/release"
 rm -f "$P/start_pre_sh.$U3"
 is "V1 a collect killed between slice 2's ? record and its turn-start leaves the ? and no .known" \
-   "$(cat "$STATE/turns/$nonce")/$([ -e "$STATE/turns/$nonce.known" ] && echo known || echo none)" "$U3 ? pre-merge $YB/none"
+   "$(cat "$STATE/turns/$nonce")/$([ -e "$STATE/turns/$nonce.$U3.known" ] && echo known || echo none)" "$U3 ? pre-merge $YB/none"
 printf codex > "$P/agent"   # the killed collect had freed the pane; its operator restarts Codex there
 printf '%s\n%s\n' "$U2" "$U4" > "$P/uuids"
 : > "$CALLS"
@@ -3056,12 +3062,13 @@ bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
 is "V2 a record whose turn is no safe id is not taken up: slice 2 starts afresh" \
    "$rc/$(jq -r .verdict "$ROOT/out")/$(called "turn-start --thread $U3")/$(called "turn-wait --thread $U2")" "0/approve/1/0"
 
-# V2 addendum. Resolving a ? rewrites the turn record only while it still names this thread's ?,
-# only through a temp file of its own moved into place, and .known goes only with that rewrite.
-# A collect waits on U1's ? (its turn-start went unanswered at dispatch) and is held inside
-# turn-wait. Meanwhile either a later slice's collect puts its own ? record and .known down
-# (replaced), or the rewrite's own temp file is blocked by a directory (blocked). Either way the
-# answer is printed, exit 0, and the record and .known are as the collect found them.
+# V2 addendum, with V3. Resolving a ? in an unsliced round rewrites the turn record only while it
+# still names this thread's ?, only through a temp file of its own moved into place, and never
+# removes a .known. A collect waits on U1's ? (its turn-start went unanswered at dispatch) and is
+# held inside turn-wait. Meanwhile either the record comes to name another thread's ?, with that
+# thread's own .known (replaced), or the rewrite's own temp file is blocked by a directory
+# (blocked). Either way the answer is printed, exit 0, and the record and every .known are as the
+# collect found them.
 for how in replaced blocked; do
   fresh
   nonce="$(RPC_START_UNCERTAIN=1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>/dev/null)"
@@ -3071,21 +3078,113 @@ for how in replaced blocked; do
   waiter=$!
   wait_for "$P/waiting.turn-recovered"
   if [ "$how" = replaced ]; then
-    printf '%s ? plan %s\n' "$U2" "$BR" > "$STATE/turns/$nonce"; echo '["later"]' > "$STATE/turns/$nonce.known"
-    want_rec="$U2 ? plan $BR"; want_known='["later"]'
+    printf '%s ? plan %s\n' "$U2" "$BR" > "$STATE/turns/$nonce"; echo '["later"]' > "$STATE/turns/$nonce.$U2.known"
+    want_rec="$U2 ? plan $BR"; want_known='[]/["later"]'
   else
     mkdir "$STATE/turns/$nonce.resolve.$waiter"
-    want_rec="$U1 ? plan $BR"; want_known='[]'
+    want_rec="$U1 ? plan $BR"; want_known='[]/none'
   fi
   rm -f "$P/holding.turn-recovered"
   wait "$waiter"; rc=$?
   is "V2a ($how) the ? is resolved: the answer is printed, exit 0" \
      "$rc/$(jq -r .verdict "$ROOT/out")/$(called "turn-wait --thread $U1 --new-since")" "0/approve/1"
-  is "V2a ($how) the record and .known are as the collect found them" \
-     "$(cat "$STATE/turns/$nonce")/$(cat "$STATE/turns/$nonce.known" 2>/dev/null || echo gone)" "$want_rec/$want_known"
+  is "V2a ($how) the record and every .known are as the collect found them" \
+     "$(cat "$STATE/turns/$nonce")/$(cat "$STATE/turns/$nonce.$U1.known" 2>/dev/null || echo gone)/$(cat "$STATE/turns/$nonce.$U2.known" 2>/dev/null || echo none)" \
+     "$want_rec/$want_known"
   is "V2a ($how) no temp file of the rewrite is left" \
      "$(find "$STATE/turns" -name "$nonce.resolve.*" -type f | wc -l | tr -d ' ')/$([ -e "$STATE/turns/$nonce.tmp" ] && echo tmp || echo none)" "0/none"
 done
+
+# V3. Each thread's turn-start writes a .known of its own ($nonce.<thread>.known), no resolve ever
+# removes one, and a resolve rewrites the turn record only in an unsliced round.
+sliced_q() { # sliced, but slice 1's turn-start at dispatch went unanswered: its record is a ?
+  fresh; packets framing fit; rm -rf "$CODEX_HOME/sessions"; rollout $U0 1000 114300
+  nonce="$(RPC_START_UNCERTAIN=1 bash "$XREVIEW" dispatch --checkpoint pre-merge --diff "$SLR" b.md 2>/dev/null)"
+  sl="$STATE/turns/$nonce.slices"
+  L1="$(jq -r '.packets[0].shown[]' "$sl" 2>/dev/null)"; L2="$(jq -r '.packets[1].shown[]' "$sl" 2>/dev/null)"
+  L3="$(jq -r '.packets[2].shown[]' "$sl" 2>/dev/null)"
+  printf '%s\n%s\n' "$U3" "$U4" > "$P/uuids"
+}
+# A sliced resolve: the id goes into the round's state, the record keeps its ?, and slice 1's own
+# .known stays. The collect then stops at slice 2 (the daemon will not start).
+sliced_q; framed approve $L1 > "$P/answer.turn-recovered"
+ENSURE_RC=1 bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+is "V3 a sliced resolve leaves the record alone; the state holds the id; slice 1's .known stays" \
+   "$rc/$(cat "$STATE/turns/$nonce")/$(jq -r '.turns[0]' "$sl")/$([ -e "$STATE/turns/$nonce.$U1.known" ] && echo known)" \
+   "1/$U1 ? pre-merge $YB/turn-recovered/known"
+# (a) Collect B resolves slice 1's ? and, were it to rename the record, is held there (an mv stub).
+# Meanwhile A answers slice 1, starts slice 2, whose turn-start goes unanswered, and stops (exit
+# 3). Then B finishes, refusing slice 2 itself (the daemon will not start). Slice 2's ? record and
+# its own .known are intact, and the next collect finds slice 2's turn as the new one on its
+# thread. A sliced resolve never renames, so B is not held at all: it is done before A starts.
+sliced_q; approve_all turn-recovered
+echo 6 > "$P/start_rc.$U3"; : > "$P/unfound.$U3"
+printf '#!/bin/sh\nif [ -n "${MV_HOLD:-}" ]; then\n  for a in "$@"; do case "$a" in *.resolve.*) : > "$P/mv_waiting"; while [ -e "$P/mv_hold" ]; do sleep 0.1; done ;; esac; done\nfi\nexec /bin/mv "$@"\n' > "$STUB/mv"
+chmod +x "$STUB/mv"; : > "$P/mv_hold"
+: > "$CALLS"
+MV_HOLD=1 ENSURE_RC=1 bash "$XREVIEW" collect "$nonce" > "$ROOT/outB" 2> "$ROOT/errB" &
+collector_b=$!
+for _ in $(seq 600); do { [ -e "$P/mv_waiting" ] || ! kill -0 "$collector_b" 2>/dev/null; } && break; sleep 0.1; done
+bash "$XREVIEW" collect "$nonce" > "$ROOT/outA" 2> "$ROOT/errA"; ra=$?
+rm -f "$P/mv_hold"; wait "$collector_b"; rm -f "$STUB/mv" "$P/start_rc.$U3"
+is "V3 (a) A stops at slice 2, whose turn is not found yet" "$ra" 3
+is "V3 (a) slice 2's ? record and its own .known are intact once B is done" \
+   "$(cat "$STATE/turns/$nonce")/$([ -e "$STATE/turns/$nonce.$U3.known" ] && echo known)" "$U3 ? pre-merge $YB/known"
+: > "$CALLS"
+bash "$XREVIEW" collect "$nonce" > "$ROOT/out" 2> "$ROOT/err"; rc=$?
+is "V3 (a) the next collect finds slice 2's turn as the new one on its thread, and the round ends with approve" \
+   "$rc/$(jq -r .verdict "$ROOT/out")/$(called "turn-wait --thread $U3 --new-since $STATE/turns/$nonce.$U3.known")" "0/approve/1"
+# (b) Collect B begins its wait on slice 1's ? only once A, having answered slice 1, is held inside
+# slice 2's turn-start: after slice 2's ? record, before its .known. B's wait still finds slice
+# 1's own .known and gets slice 1's answer; B then stops at slice 2 (the daemon will not start).
+sliced_q; approve_all "turn-$U3"; framed approve $L1 > "$P/answer.turn-recovered"
+printf '[ "${DISPATCH_ID:-}" = B ] || exit 0; : > "%s"; while [ ! -e "%s" ]; do sleep 0.1; done\n' \
+  "$P/b_at_wait" "$P/b_release" > "$P/wait_pre_sh.$U1"
+printf ': > "%s"; while [ ! -e "%s" ]; do sleep 0.1; done\n' "$P/a_at_start" "$P/a_release" > "$P/start_pre_sh.$U3"
+: > "$CALLS"
+DISPATCH_ID=B ENSURE_RC=1 bash "$XREVIEW" collect "$nonce" > "$ROOT/outB" 2> "$ROOT/errB" &
+collector_b=$!
+wait_for "$P/b_at_wait"
+bash "$XREVIEW" collect "$nonce" > "$ROOT/outA" 2> "$ROOT/errA" &
+collector_a=$!
+wait_for "$P/a_at_start"
+touch "$P/b_release"; wait "$collector_b"
+touch "$P/a_release"; wait "$collector_a"; ra=$?
+is "V3 (b) B's wait on slice 1 still finds slice 1's own .known and gets its answer" \
+   "$(grep -c 'the reviewer turn failed' "$ROOT/errB")/$(grep -c 'the Codex daemon is not running' "$ROOT/errB")/$(called "B xreview-rpc turn-wait --thread $U1 --new-since $STATE/turns/$nonce.$U1.known")" \
+   "0/1/1"
+is "V3 (b) and A finishes the round" "$ra/$(jq -r .verdict "$ROOT/outA")" "0/approve"
+# (c) Two collects of one unsliced ?. The second reads the ? record, then is held before its wait;
+# the first resolves the ? and rewrites the record; the second's wait, after that, still finds the
+# thread's own .known and succeeds.
+fresh
+nonce="$(RPC_START_UNCERTAIN=1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>/dev/null)"
+printf '[ "${DISPATCH_ID:-}" = B ] || exit 0; : > "%s"; while [ ! -e "%s" ]; do sleep 0.1; done\n' \
+  "$P/b_at_wait" "$P/b_release" > "$P/wait_pre_sh.$U1"
+: > "$CALLS"
+RPC_WAIT_OUT='{"verdict":"approve","findings":[]}' DISPATCH_ID=B bash "$XREVIEW" collect "$nonce" > "$ROOT/outB" 2> "$ROOT/errB" &
+collector_b=$!
+wait_for "$P/b_at_wait"
+RPC_WAIT_OUT='{"verdict":"approve","findings":[]}' bash "$XREVIEW" collect "$nonce" > "$ROOT/outA" 2> "$ROOT/errA"; ra=$?
+touch "$P/b_release"; wait "$collector_b"; rb=$?
+is "V3 (c) the first collect resolves the ? and rewrites the record" \
+   "$ra/$(jq -r .verdict "$ROOT/outA")/$(cat "$STATE/turns/$nonce")" "0/approve/$U1 turn-recovered plan $BR"
+is "V3 (c) the second, waiting after that, still succeeds" "$rb/$(jq -r .verdict "$ROOT/outB")" "0/approve"
+# V3 addendum. Each collect's --resolved file is its own. Two collects wait on one unsliced ?: B's
+# wait has found the turn and is held; A's, meanwhile, finds it too, removes its resolved file and
+# stops on an answer off the schema (exit 4), recording nothing. B still learns the turn's id, so
+# its receipt, the only one, names the real turn, never ?.
+fresh
+clr="$(git log -1 --format=%H -- cl1.txt)"
+nonce="$(RPC_START_UNCERTAIN=1 bash "$XREVIEW" dispatch --checkpoint plan --diff "$clr~1..$clr" b.md 2>/dev/null)"
+: > "$P/hold.turn-recovered"
+RPC_WAIT_OUT='{"verdict":"approve","findings":[]}' bash "$XREVIEW" collect "$nonce" > "$ROOT/outB" 2> "$ROOT/errB" &
+collector_b=$!
+wait_for "$P/waiting.turn-recovered"
+RPC_WAIT_OUT='prose' RPC_WAIT_RC=4 bash "$XREVIEW" collect "$nonce" > "$ROOT/outA" 2> "$ROOT/errA"; ra=$?
+rm -f "$P/holding.turn-recovered"; wait "$collector_b"; rb=$?
+is "V3r A's resolve does not lose B's: B's receipt, the only one, names the real turn, never ?" \
+   "$ra/$rb/$(receipt "$nonce" | jq -r .turn | tr '\n' ' ')" "4/0/turn-recovered "
 
 # Slice 1 lists nothing; slice 2 lists slice 1's label beside its own. Slice 1's label is still
 # missing: slice 2's reviewer never saw that file's patch.
