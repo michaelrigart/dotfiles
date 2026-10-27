@@ -96,57 +96,42 @@ still identical, `<dest>/<rel>` listed `trusted`, `<c>/<rel>` still listed `trus
 Those re-reads alone do not close the window: a writer that controls `<dest>/<rel>` can show
 good bytes to the search `cmp`, its own bytes while `mise trust` hashes the file and the
 `-C <dest>` read runs, and good bytes again to the final `cmp`, leaving its own bytes trusted.
-So the step also pins identities with `/usr/bin/stat -f '%i %Fc'` (inode and change time in
-nanoseconds), in one `stat` call per file, of two chains:
-- the lexical chain: `/`, each component of the path as written, and the file, with symlink
-  nodes pinned as nodes;
-- the canonical chain: `/`, each component of the resolved path `${file:A}`, and the resolved
-  file.
-
-The pins are taken:
+So the step also pins the identity of both files of the pair with
+`/usr/bin/stat -f '%i %Fc'`: the inode and the change time in nanoseconds, without following
+a symlink. The pins are taken:
 - for `<dest>/<rel>`, before its plainness check and candidate search;
 - for `<c>/<rel>`, before its plainness check and search `cmp`;
 - for both files again, after the final `cmp`.
 
 Any difference, or a failed `stat`, means `--untrust` and refuse with the changed reason (§4).
-Before any trust, a failed first `stat` of the destination's chain refuses the file with nothing
-to withdraw, and a failed first `stat` of a candidate's chain only means `<c>` cannot vouch.
+Before any trust, a failed first `stat` of the destination refuses the file with nothing to
+withdraw, and a failed first `stat` of a candidate only means `<c>` cannot vouch.
 
-Why this holds:
-- a change time cannot be set back, so an unchanged file proves no write happened in between,
-  and mise hashed the bytes `cmp` compared;
-- renaming a directory moves that directory's own change time, so swapping `<dest>`, a directory
-  inside it, or one above it (such as `~/Code/Org`) aside and back is caught as well;
-- a swap of the file itself changes its inode;
-- the lexical chain catches a symlink node replaced or re-pointed (a new inode, or its parent's
-  change time);
-- the canonical chain catches writes and swaps inside a symlink's target;
-- taking the first pin before the plainness check means a symlink present at the pin is refused
-  by that check, and one added later changes a pinned entry. A legitimately symlinked directory
-  above the checkout (such as `~/Code`) keeps working.
+**What is detected:** a change that moves the inode or the change time of `<dest>/<rel>` or of
+the vouching copy between the first pin and the final check.
+- These move one of them: a `write()` or truncation, a rename or replacement of the file, and a
+  symlink put in its place.
+- Nothing sets the change time back: `touch` and `utimes` set only the access and modification
+  times.
 
-**Threat model** (controller's ruling, 2026-10-27).
-- **Detected:** any change to the content or identity of the two files, and of their lexical
-  and canonical directory chains, between `wt`'s first pin and its final check.
-- **Accepted residuals,** the same class the 2026-10-19 spec accepted for the rollback:
-  - a race that swaps a path (by rename, symlink or mount) inside the gap between two
-    consecutive calls;
-  - a change inside the change-time clock's resolution.
-- **Stopping rule:** a later finding that is another variant of this class is recorded under
-  "Rulings and accepted residuals" with its scenario, not fixed.
+This closes the cheap content flip, the one a writer gets with no special tooling.
 
-Controller's ruling during execution (2026-10-27): it makes the re-check deliver what the
-anti-goal already requires. Two re-reviews extended it:
-- to the whole chain, after a directory swap passed a file-only pin;
-- to the canonical chain, taken before the plainness check, after a symlink swapped in before the
-  pin passed the lexical chain.
+**Threat model** (controller's ruling, 2026-10-27): parity with Michael's own `mise trust`.
+When he reviews a file and then runs `mise trust` by hand, a process racing that file has the
+same window. The carry is held to that bar, not above it. "Rulings and accepted residuals"
+records what this leaves:
+- writes that do not move the change time;
+- path swaps above the file, or of a symlink's target;
+- a mount-over;
+- changes inside the clock's resolution.
+
+A later finding that is a race achievable by hand against a manual `mise trust` is recorded
+there as a residual and opens no fix round.
 
 Measured on macOS:
-- `%Fc` has nanosecond resolution, a write moves it, and `touch -m` cannot move it back;
-- renaming a directory moves its change time.
-
-The cost is a false refusal when an entry is created, removed or renamed in an ancestor
-directory during the sub-second window; a re-run clears it.
+- `%Fc` has nanosecond resolution;
+- a `write()` moves it, and `touch -m` cannot move it back;
+- a write through a held shared mapping does not move it until the mapping is released.
 
 A candidate's `trust --show` is read lazily, when a file first needs it, and at most once per
 run for the search; the re-check always reads afresh. Old §Failing closed still holds for the
@@ -167,11 +152,10 @@ A carried file's line names its witness: `wt: mise trust carried to <dest>/<rel>
 worktree's own side), `it matches no trusted copy in this repository's checkouts` (every other
 refusal before `mise trust`, replacing the main-checkout reasons), and the changed reason.
 
-The changed reason is `it, or a directory above it, changed while wt was trusting it`. It is
-followed by `    nothing was trusted; if nothing else is writing there, run the command again.`,
-because a chain change can be harmless: an unrelated entry created in `$HOME` or the org
-directory during the window. That copy is the controller's ruling during execution; it replaces
-the old spec's `it changed while wt was trusting it`.
+The changed reason is the old spec's `it changed while wt was trusting it`. It is followed by
+`    nothing was trusted; if nothing else is writing there, run the command again.`, because
+the change can be harmless, such as an editor saving the file during the window. The hint is
+the controller's ruling during execution.
 
 The `review` line is a `diff` against the base checkout's copy when `wt` knows the base and that
 copy meets rules 1 and 2 and differs; otherwise against the main checkout's copy on the same
@@ -246,8 +230,10 @@ stub gains a `trust --show` that fails for one `-C` directory from the start
 - `mise trust` never runs without a path or with `--all` (X13, over the new calls too).
 
 Added during execution:
-- the flip-around-the-calls race, driven by the stub, is refused and untrusted, and so is a
-  swap of a directory inside `<dest>` around the trust;
+- the flip-around-the-calls race, driven by the stub, is refused and untrusted, whether it
+  flips `<dest>/<rel>` or the vouching copy;
+- `_wt_mise_ident` reads the same twice for an untouched file. It differs after a same-size
+  rewrite, or after the file is replaced by a symlink;
 - a `<dest>` that is itself a symlink is refused;
 - `wt-rm` with a hook and no mise makes no `mise` call, and one with an invalid hook makes none
   either;
@@ -288,11 +274,21 @@ shapes above.
 Rulings made during execution, by the controller unless marked:
 
 - **§6, the never-prepared line and its popup hold.** Controller's ruling; Michael to confirm.
-- **§3, identity pinning.** Controller's ruling on a race the final review verified. Re-reviews
-  extended it twice:
-  - to each file's whole directory chain, after a directory swap passed a file-only pin;
-  - to the lexical and canonical chains, with the first pin taken before the plainness check,
-    after a symlink swapped in before the pin passed the lexical chain.
+- **§3, the file-pair identity pin.** It answers a race the final review verified: the content
+  flip around `mise trust`. Its first pin is taken before the plainness check.
+- **§3, the directory-chain pinning was built and then reversed.**
+  - Two re-reviews had extended the pin to each file's lexical and canonical directory chains:
+    first after a directory swapped around the trust passed the file pin, then after a symlink
+    swapped in before the pin passed the lexical chain.
+  - The controller reversed it on two measurements.
+  - Real runs: `$HOME`'s change time moved once in 80 quarter-second samples, about every 20 s.
+    A pinned chain therefore refused spuriously in a few percent of real runs.
+  - The suite: every fixture sits under the sandbox's shared `$TMPDIR`, which every sandboxed
+    command in every session writes. Four unmutated runs failed 38, 16, 5 and 0 carry-success
+    cases. In one noisy run, the noise also hid a deleted re-check condition.
+  - What the chains caught is now accepted under the threat model below.
+- **§4, the changed reason** returns to the old spec's copy, because directories are no longer
+  pinned. The rerun hint stays.
 - **§3, `<dest>` itself must not be a symlink.**
 - **§5, the mise gates use "not 2".**
 - **The reopen helper** became `_wt_mise_reopen_carry <main> <dest> <branch>` (it trusts files,
@@ -306,35 +302,30 @@ Rulings made during execution, by the controller unless marked:
 
 Accepted residuals:
 
-- **The threat model of §3** (controller's ruling).
-  - **Detected:** any change to the content or identity of the two files and of their lexical
-    and canonical directory chains between the first pin and the final check.
-  - **Accepted, the same class as the 2026-10-19 spec's rollback residual:**
-    - a race that swaps a path (by rename, symlink or mount) inside the gap between two
-      consecutive calls;
-    - a change inside the change-time clock's resolution.
-  - **Stopping rule:** a later finding that is another variant of this class is recorded here
-    with its scenario, and opens no fix round. A finding outside the class is fixed as usual.
-
-  Variants of that class are marked "in class" below.
-- **Writes inside the clock's resolution** (in class). A write that lands inside the
-  change-time clock's resolution right after the first `stat` would leave the pair unchanged.
-  The clock is nanosecond-grained on APFS.
-- **False refusals from unrelated changes.** An entry created, removed or renamed in any
-  ancestor directory (`$HOME`, `~/Code`, the org directory, the worktree) during the sub-second
-  window refuses the file. The refusal says so, and a re-run clears it.
+- **The threat model of §3: parity with a manual `mise trust`** (controller's ruling). Each
+  race below is open to a process that races Michael when he reviews a file and trusts it by
+  hand, so the carry is no weaker than that.
+  - **Writes that do not move the change time.** Example: a write through a held shared
+    mapping. A writer maps the file, writes its own bytes while `mise trust` hashes, writes the
+    good bytes back before the final `cmp`, and holds the mapping past the final pin. Measured:
+    the identity stays unchanged while the dirty mapping is held.
+  - **Path swaps of any directory above the file, or of a symlink's target.** Renaming one
+    aside, putting one with the writer's bytes in its place, and restoring it leaves the file's
+    own identity unchanged.
+  - **A filesystem mounted over a directory on the path** during the window and unmounted
+    before the final pin. Mounting needs DiskArbitration or `hdiutil`. Whether the agent
+    sandbox can reach them is unverified.
+  - **Changes inside the change-time clock's resolution**, which is nanosecond-grained on APFS.
+- **Stopping rule** (controller's ruling). A finding that is a race achievable by hand against a
+  manual `mise trust` is recorded here as a residual, and opens no fix round. Any other finding
+  is fixed as usual.
 - **A candidate's common directory** is checked once, when the list is read. A `.git` file
   planted in a sandbox-writable directory can forge it, so it is defence in depth. The boundary
-  is mise's store, which the sandbox cannot write, together with the chain pinning, which also
-  catches a vouching checkout or directory swapped after the listing.
-- **The re-check does not re-run the plainness check.** The two chains catch a swap of the file
-  or of any directory on its path, and a change inside a symlink's target. The first pin
-  precedes the plainness check, so a symlink present then is refused there.
-- **A filesystem mounted over a directory on the chain** (controller's ruling). Mounted during
-  the window and unmounted before the second pin, it leaves both endpoints' identities
-  unchanged, because only the two pins are compared. Mounting needs DiskArbitration or
-  `hdiutil`. Whether the agent sandbox can reach them is unverified, and they are not part of
-  any workflow here.
+  is mise's store, which the sandbox cannot write: a candidate vouches only for bytes mise
+  already trusts at its path.
+- **The re-check does not re-run the plainness check.** A file replaced by a symlink after the
+  first pin is a new inode at its path. A directory on the path swapped for a symlink is the
+  path-swap residual above.
 - **A hook that becomes valid in the main checkout between step 1 and teardown** skips both
   `wt-rm` checks. Whoever can commit a hook already runs code through it.
 - **Configs that `mise -C <dest> trust --show` does not list** are invisible to every check: a

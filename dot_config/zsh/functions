@@ -666,7 +666,7 @@ _wt_mise_trust_report() {
   emulate -L zsh
   local main="$1" dest="$2" basedir="$3" entry rel reason dp c review
   local none="it matches no trusted copy in this repository's checkouts"
-  local changed="it, or a directory above it, changed while wt was trusting it"
+  local changed="it changed while wt was trusting it"
   typeset -gA _WT_MISE_SHOWN
   shift 3
   for entry in "$@"; do
@@ -710,30 +710,16 @@ _wt_mise_withdraw() {
   return 1
 }
 
-# _wt_mise_ident <file> — the inode and change time (nanoseconds) of <file> and of every
-# directory from / down to it, one line each, from one stat call; returns 1 when any of them
-# cannot be read. Two chains are pinned: the path as written, with no symlink resolved, and the
-# canonical path (${file:A}). A writer cannot put a change time back (`touch` and `utimes` set
-# atime and mtime only). So an unchanged file entry shows that nothing wrote to or replaced the
-# file, and unchanged directory entries show that nothing was created, removed or renamed
-# inside them: a directory swapped aside and back is renamed twice, which moves its own change
-# time and its parent's. The written chain pins a symlink as a node, so a symlink replaced or
-# re-pointed is seen; the canonical chain pins what the symlinks lead to, so a swap or write
-# inside a symlink's target is seen too. A symlinked directory above the checkout (~/Code)
-# stays harmless: both chains of an untouched path are the same on every read. Changes
-# elsewhere in an ancestor directory during the window also differ, which only costs a re-run.
+# _wt_mise_ident <file> — the file's inode and change time (nanoseconds) as one line, from
+# `stat` without following a symlink; returns 1 when it cannot be read. A write, a truncate, a
+# rename or a replacement of the file moves one of the two, and a writer cannot put a change
+# time back (`touch` and `utimes` set atime and mtime only); a file swapped for a symlink is a
+# new inode. Not seen, and accepted at parity with a `mise trust` typed by hand: a directory
+# above the file swapped, a symlink's target swapped, a write through a mapping the writer
+# already holds, a mount over the path, and a change inside the clock's resolution.
 _wt_mise_ident() {
   emulate -L zsh
-  local p="$1" q acc comp
-  local -a chain=()
-  [[ "$p" == /* ]] || p="$PWD/$p"
-  for q in "$p" "${p:A}"; do
-    chain+=( / ); acc=""
-    for comp in ${(s:/:)q}; do
-      acc+="/$comp"; chain+=( "$acc" )
-    done
-  done
-  /usr/bin/stat -f '%i %Fc' -- $chain 2>/dev/null </dev/null || return 1
+  /usr/bin/stat -f '%i %Fc' -- "$1" 2>/dev/null </dev/null || return 1
 }
 
 # _wt_mise_trust <main> <dest> [<base-branch>] — carry mise's trust from the checkouts of
@@ -757,12 +743,12 @@ _wt_mise_ident() {
 # tried for it.
 #
 # `cmp` and `mise trust` are two reads of a file a writer may be changing, so the identity of
-# <dest>/<rel> and of the vouching copy, each with every directory above it (_wt_mise_ident),
-# is taken before the plainness check and again after the final `cmp`, so a symlink put in
-# place after the pin changes a pinned entry and one already there is seen by the check; any
-# difference, or a stat that fails, is a change, whatever the bytes compared as. A file whose
-# identity cannot be read is refused (a symlink or a non-file first, if that is what it is),
-# and a candidate's copy that cannot be read is no voucher.
+# <dest>/<rel> and of the vouching copy (_wt_mise_ident) is taken before the plainness check
+# and again after the final `cmp`, so a symlink put in place after the pin is a new inode and
+# one already there is seen by the check; any difference, or a stat that fails, is a change,
+# whatever the bytes compared as. A file whose identity cannot be read is refused (a symlink
+# or a non-file first, if that is what it is), and a candidate's copy that cannot be read is
+# no voucher.
 #
 # A candidate's `trust --show` is read at most once per run for the search, through
 # _WT_MISE_SHOWN, so a second file never re-reads it; the re-check always reads afresh. A
@@ -780,7 +766,7 @@ _wt_mise_trust() {
   local main="$1" dest="$2" base="${3:-}" dshow cshow line rel dp cp c vouch reason basedir="" listed=0
   local none="it matches no trusted copy in this repository's checkouts"
   local symlink="it is a symlink or not a regular file"
-  local changed="it, or a directory above it, changed while wt was trusting it"
+  local changed="it changed while wt was trusting it"
   local -a dlines refused cands
   local dnow cnow dident cident
   local -i drc crc

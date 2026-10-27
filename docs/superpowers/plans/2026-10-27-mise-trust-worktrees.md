@@ -12,9 +12,10 @@ plan was approved:
 - **A carrying reopen** prints a never-prepared `wt-prepare` line and holds the popup, so Y14's
   popup expectation is flipped.
 - **The `wt-rm` gates** are `hook_rc != 2`, not "On 0".
-- **Identity pinning** (inode and nanosecond change time of each file's lexical and canonical
-  directory chains, taken before the plainness check) closes the check-then-trust window, and a
-  symlinked `<dest>` is refused.
+- **Identity pinning** closes the cheap content flip in the check-then-trust window. It pins
+  the inode and nanosecond change time of the destination file and of the vouching copy, taken
+  before the plainness check. Directory-chain pinning was built during execution and then
+  reversed; the spec's Rulings say why. A symlinked `<dest>` is refused.
 - **The candidate list** also returns 1 when the porcelain holds no `worktree ` record.
 - **Added cases:**
   - X25b–d, X32's carry checks, X33–X36's trust and hook assertions;

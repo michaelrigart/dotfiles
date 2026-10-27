@@ -224,13 +224,12 @@ chmod +x "$STUBS/xreview-rpc"
 # file's content, writes <bytes> into it and records the hash of <bytes> (what mise read); the
 # next `trust --show` that lists the file prints its listing, `trusted`, and only then writes
 # the saved content back, so every comparison of bytes afterwards sees the good ones.
-# DIR_SWAP=<subdir> is the same race one directory up: `trust <dest>/<subdir>/<rel>` renames
-# <dest>/<subdir> aside, puts a fresh directory with other bytes at that path and records their
-# hash; the next `trust --show` that lists a file below it prints its listing and then removes
-# the fresh directory and renames the original back. The race state of both modes lives beside
-# the stub (stub-*), not under $ROOTTMP, so it never touches a directory above a checkout. Any
-# other invocation exits 3, so a call the code was never meant to make (bare `trust`, `--all`)
-# cannot pass quietly.
+# FLIP_VOUCH=<file> is the same race aimed at the vouching copy: any `trust <path>` saves
+# <file>'s content, writes other bytes into it and records their hash (so the listing still
+# says `trusted`), and the next `trust --show` that lists <file> prints its listing and then
+# writes the saved content back. The saved state lives beside the stub (stub-*), which setup()
+# clears. Any other invocation exits 3, so a call the code was never meant to make (bare
+# `trust`, `--all`) cannot pass quietly.
 cat > "$MISESTUBS/mise" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$MLOG"
@@ -287,13 +286,6 @@ if [ "${1:-}" = -C ] && [ "${3:-}" = trust ] && [ "${4:-}" = --show ] && [ $# -e
       rm -f "$state/stub-flip" "$state/stub-flip.good"
     fi
   fi
-  if [ -e "$state/stub-swap" ]; then
-    swapped=$(cat "$state/stub-swap")
-    if printf '%s' "$seen" | grep -Fq -- "$swapped/"; then
-      rm -rf "$swapped"; mv "$swapped.good" "$swapped"
-      rm -f "$state/stub-swap"
-    fi
-  fi
   exit 0
 fi
 case "$*" in *--all*) echo "mise stub: unexpected invocation: $*" >&2; exit 3 ;; esac
@@ -303,13 +295,10 @@ if [ "${1:-}" = trust ] && [ $# -eq 2 ] && [ "${2#-}" = "$2" ]; then
     cat "$2" > "$state/stub-flip.good"; printf '%s' "$2" > "$state/stub-flip"
     printf '%b' "$MOCK_MISE_FLIP_RACE" > "$2"
   fi
-  if [ -n "${MOCK_MISE_DIR_SWAP:-}" ]; then
-    case "$2" in
-      */"$MOCK_MISE_DIR_SWAP"/*)
-        sd="${2%%/"$MOCK_MISE_DIR_SWAP"/*}/$MOCK_MISE_DIR_SWAP"; sr="${2#"$sd"/}"
-        mv "$sd" "$sd.good"; mkdir -p "$sd/$(dirname "$sr")"; printf 'evil=1\n' > "$sd/$sr"
-        printf '%s' "$sd" > "$state/stub-swap" ;;
-    esac
+  if [ -n "${MOCK_MISE_FLIP_VOUCH:-}" ]; then
+    cat "$MOCK_MISE_FLIP_VOUCH" > "$state/stub-flip.good"; printf '%s' "$MOCK_MISE_FLIP_VOUCH" > "$state/stub-flip"
+    printf 'evil=1\n' > "$MOCK_MISE_FLIP_VOUCH"
+    printf '%s\t%s\n' "$MOCK_MISE_FLIP_VOUCH" "$(sha "$MOCK_MISE_FLIP_VOUCH")" >> "$MISE_STUB_STORE"
   fi
   [ -n "${MOCK_MISE_MAIN_FLIP:-}" ] && drop "$MOCK_MISE_MAIN_FLIP"
   [ "${MOCK_MISE_TRUST_RC:-0}" != 0 ] && exit "$MOCK_MISE_TRUST_RC"
@@ -435,8 +424,7 @@ setup() {   # fresh $HOME with Code/Org/repo, fresh logs, default mock behaviour
   git init -q -b main "$REPO"
   git -C "$REPO" commit -q --allow-empty -m init
   # The mise stub's trust store lives beside the stub, not under $ROOTTMP: `drop` renames a
-  # temp file over it, which would move the change time of $ROOTTMP, a directory above every
-  # checkout, and the carry pins those (X9 and X26 must reach the re-check, not the pin).
+  # temp file over it, and that rename should touch nothing near the files under test.
   export DLOG="$ROOTTMP/layout.log" \
          HLOG="$ROOTTMP/herdr.log" LLOG="$ROOTTMP/lsof.log" SLOG="$ROOTTMP/sleep.log" \
          FLOG="$ROOTTMP/git-fail.log" XLOG="$ROOTTMP/xreview-rpc.log" MOCK_H_CLOSED_FILE="$ROOTTMP/herdr-closed" \
@@ -456,7 +444,7 @@ setup() {   # fresh $HOME with Code/Org/repo, fresh logs, default mock behaviour
         MOCK_XRPC_RC MOCK_XRPC_OUT MOCK_XRPC_ERR MOCK_XRPC_SIGNAL MOCK_XRPC_TO_LLOG \
         MOCK_MISE_SHOW_RC MOCK_MISE_SHOW_RAW MOCK_MISE_SHOW_STDERR MOCK_MISE_SHOW_FAIL_AFTER_TRUST \
         MOCK_MISE_SHOW_FAIL_DIR MOCK_MISE_SHOW_FAIL_DIR_AFTER_TRUST MOCK_MISE_RACE_CONTENT MOCK_MISE_MAIN_FLIP MOCK_MISE_TRUST_RC MOCK_MISE_UNTRUST_RC \
-        MOCK_MISE_TRUST_NOOP MOCK_MISE_SHOW_FAIL_WHEN MOCK_MISE_FLIP_RACE MOCK_MISE_DIR_SWAP
+        MOCK_MISE_TRUST_NOOP MOCK_MISE_SHOW_FAIL_WHEN MOCK_MISE_FLIP_RACE MOCK_MISE_FLIP_VOUCH
   rm -f -- "$MISESTUBS"/stub-*(N)
 }
 # run <dir> <command...> — source the functions fresh and run one command in $dir.
@@ -3249,7 +3237,7 @@ mlog_count()  { awk -v p="$1" 'index($0, p) == 1 { n++ } END { print n + 0 }' "$
 mlog_ln()     { grep -Fxn -- "$1" "$MLOG" | head -1 | cut -d: -f1 }
 XSYM="it is a symlink or not a regular file"
 XNONE="it matches no trusted copy in this repository's checkouts"
-XCHG="it, or a directory above it, changed while wt was trusting it"
+XCHG="it changed while wt was trusting it"
 XHINT="    nothing was trusted; if nothing else is writing there, run the command again."
 
 xfix x1; xseed
@@ -3847,44 +3835,41 @@ xseed
 run "$REPO" x40_twice
 eq "$OUT" "$(print -rl -- carried=1 carried=0)" "X40 the count is 1 after a carry and 0 after a run with nothing to carry"
 
-# X41: the same race one directory up. <dest>/.config is renamed aside and a fresh one holding
-# other bytes put in its place while `mise trust` hashes them, then the original is renamed back:
-# the original file's own inode and change time are untouched, but the directory's are not.
-# A sibling on the source branch holds the identical, trusted copy that vouches.
+# X41: the check-then-trust race aimed at the vouching copy. While `mise trust` runs, main's
+# copy holds other bytes (listed trusted, since their hash is recorded) and is restored before
+# the final `cmp`, so every comparison of bytes passes; only the copy's identity shows it was
+# written.
 xfix x41
-xbranch x41-src 'mkdir -p "$REPO/.config"; print -r -- "c=1" > "$REPO/.config/mise.toml"; git -C "$REPO" add .config/mise.toml'
-xseed
-xsib "$HOME/Code/Org/sib-x41" x41-src; mise_seed "$HOME/Code/Org/sib-x41/.config/mise.toml"
-MOCK_MISE_DIR_SWAP=.config run "$REPO" wt x41 x41-src
-rc_is 1 "X41 a directory swapped while its file is being trusted is refused"
-has "wt: ~/Code/Org/repo-x41/.config/mise.toml is not trusted: $XCHG." "X41 the reason"
-has "wt: ~/Code/Org/repo-x41/.config/mise.toml is not trusted: $XCHG."$'\n'"$XHINT"$'\n'"    review: cat ~/Code/Org/repo-x41/.config/mise.toml" "X41 the hint sits between the headline and the review line"
-mlog_line "trust $X/.config/mise.toml" "X41 the file was trusted (the swap really ran)"
-mlog_line "trust --untrust $X/.config/mise.toml" "X41 the trust is withdrawn"
+mise_seed "$REPO/mise.toml"
+MOCK_MISE_FLIP_VOUCH="$REPO/mise.toml" run "$REPO" wt x41
+rc_is 1 "X41 a vouching copy rewritten while the file is being trusted is refused"
+has "wt: ~/Code/Org/repo-x41/mise.toml is not trusted: $XCHG."$'\n'"$XHINT"$'\n'"    review: cat ~/Code/Org/repo-x41/mise.toml" "X41 the reason, the hint and the review line"
+mlog_line "trust $X/mise.toml" "X41 the file was trusted (the race really ran)"
+mlog_line "trust --untrust $X/mise.toml" "X41 the trust is withdrawn"
 hook_not_ran "X41 the setup hook does not run"
-eq "$(awk -v p="$X/.config/mise.toml" 'index($0, p "\t") == 1 { n++ } END { print n + 0 }' "$MISE_STUB_STORE")" "0" "X41 the store holds no entry for the file afterwards"
-eq "$(<$X/.config/mise.toml)" "c=1" "X41 the original directory is back"
-hasnt "carried to ~/Code/Org/repo-x41/.config" "X41 the file is not reported as carried"
+eq "$(awk -v p="$X/mise.toml" 'index($0, p "\t") == 1 { n++ } END { print n + 0 }' "$MISE_STUB_STORE")" "0" "X41 the store holds no entry for the file afterwards"
+eq "$(<$REPO/mise.toml)" "a=1" "X41 the vouching copy is back"
+hasnt "mise trust carried to ~/Code/Org/repo-x41/mise.toml" "X41 the file is not reported as carried"
 
-# X42: _wt_mise_ident pins what a symlinked component leads to, not just the link. The path is
-# <base>/link/mise.toml with link -> <elsewhere>/tgt; renaming tgt aside and back moves its own
-# change time and its parent's, neither of which is on the written chain (the link node, its
-# parent <base> and the file are untouched). X43: an untouched path reads the same twice.
-setup
-XI="$ROOTTMP/xi"; mkdir -p "$XI/base" "$XI/elsewhere/tgt"
-print -r -- 'a=1' > "$XI/elsewhere/tgt/mise.toml"; ln -s "$XI/elsewhere/tgt" "$XI/base/link"
-run "$REPO" _wt_mise_ident "$XI/base/link/mise.toml"; xi1="$OUT"
-run "$REPO" _wt_mise_ident "$XI/base/link/mise.toml"; xi1b="$OUT"
-eq "$xi1b" "$xi1" "X43 an untouched path through a symlinked directory reads the same twice"
-mv "$XI/elsewhere/tgt" "$XI/elsewhere/tgt.aside"; mv "$XI/elsewhere/tgt.aside" "$XI/elsewhere/tgt"
-run "$REPO" _wt_mise_ident "$XI/base/link/mise.toml"; xi2="$OUT"
-[[ -n "$xi1" && "$xi2" != "$xi1" ]] && _pass "X42 a symlink's target directory swapped aside and back changes the identity" || _fail "X42 a symlink's target directory swapped aside and back changes the identity"
-run "$REPO" _wt_mise_ident "$XI/base/plain.toml"
-rc_is 1 "X42 a path that does not exist has no identity"
-print -r -- 'a=1' > "$XI/base/plain.toml"
-run "$REPO" _wt_mise_ident "$XI/base/plain.toml"; xi3="$OUT"
-run "$REPO" _wt_mise_ident "$XI/base/plain.toml"
-eq "$OUT" "$xi3" "X43 an untouched plain path reads the same twice"
+# X42, X43: _wt_mise_ident, the file's own pin. X42: an untouched file reads the same twice, as
+# one line, and a missing path has none. X43: rewriting the content (same size) and replacing
+# the file with a symlink to an identical copy each change it.
+cat "$MLOG" >> "$XALL"; setup
+XI="$ROOTTMP/xi"; mkdir -p "$XI"
+print -r -- 'a=1' > "$XI/f.toml"
+run "$REPO" _wt_mise_ident "$XI/f.toml"; xi1="$OUT"
+run "$REPO" _wt_mise_ident "$XI/f.toml"
+eq "$OUT" "$xi1" "X42 an untouched file reads the same twice"
+eq "$(print -r -- "$xi1" | wc -l | tr -d ' ')" "1" "X42 ... as exactly one line"
+[[ "$xi1" == <->\ <->.<-> ]] && _pass "X42 ... holding an inode and a change time with a fraction" || _fail "X42 ... holding an inode and a change time with a fraction ('$xi1')"
+run "$REPO" _wt_mise_ident "$XI/missing.toml"
+rc_is 1 "X42 a missing path has no identity"
+print -r -- 'a=2' > "$XI/f.toml"
+run "$REPO" _wt_mise_ident "$XI/f.toml"; xi2="$OUT"
+[[ -n "$xi2" && "$xi2" != "$xi1" ]] && _pass "X43 rewriting the content changes the identity" || _fail "X43 rewriting the content changes the identity"
+cp -p "$XI/f.toml" "$XI/copy.toml"; rm "$XI/f.toml"; ln -s "$XI/copy.toml" "$XI/f.toml"
+run "$REPO" _wt_mise_ident "$XI/f.toml"
+[[ -n "$OUT" && "$OUT" != "$xi2" ]] && _pass "X43 replacing the file with a symlink to an identical copy changes the identity" || _fail "X43 replacing the file with a symlink to an identical copy changes the identity"
 
 # --- wt-rm checks mise trust before it disrupts anything (spec §5) ---------------------
 # xrfix <slug> — xfix's repository with a git-ignored mise.local.toml (so the worktree stays
