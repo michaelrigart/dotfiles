@@ -3857,7 +3857,7 @@ hook_not_ran "X41 the setup hook does not run"
 eq "$(awk -v p="$X/mise.toml" 'index($0, p "\t") == 1 { n++ } END { print n + 0 }' "$MISE_STUB_STORE")" "0" "X41 the store holds no entry for the file afterwards"
 eq "$(awk -v p="$REPO/mise.toml" 'index($0, p "\t") == 1 { n++ } END { print n + 0 }' "$MISE_STUB_STORE")" "1" "X41 the vouching copy has exactly its seeded store entry"
 grep -Fxq -- "$REPO/mise.toml"$'\t'"$(print -r -- 'a=1' | shasum -a 256 | cut -d' ' -f1)" "$MISE_STUB_STORE" && _pass "X41 ... and it is the hash of the good bytes" || _fail "X41 ... and it is the hash of the good bytes"
-eq "$(<$X/mise.toml)" "evil=1" "X41 the worktree's file holds the writer's bytes throughout"
+eq "$(<$X/mise.toml)" "evil=1" "X41 the worktree's file still holds the writer's bytes"
 hasnt "mise trust carried to ~/Code/Org/repo-x41/mise.toml" "X41 the file is not reported as carried"
 
 # X42, X43: _wt_mise_ident, the file's own pin. X42: an untouched file reads the same twice, as
