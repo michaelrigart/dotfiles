@@ -1419,7 +1419,11 @@ _collect_wait() {
         resolved="$dir/turns/$nonce.resolved.$$" said=""
   turn="$2"; out=""; rc=0; compacted=null
   if [ "$turn" = "?" ]; then
-    which=(--new-since "$(known_file "$th")" --resolved "$resolved")
+    # A ? dispatched before .known was keyed by thread has only the round-wide $nonce.known. Such
+    # a round is never sliced, so that file is its one thread's.
+    local known; known="$(known_file "$th")"
+    if [ ! -e "$known" ] && [ -e "$dir/turns/$nonce.known" ]; then known="$dir/turns/$nonce.known"; fi
+    which=(--new-since "$known" --resolved "$resolved")
   else
     assert_id "$turn"; which=(--turn "$turn")
   fi

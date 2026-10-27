@@ -608,6 +608,18 @@ is "D10 and the receipt names it" "$(tail -1 "$MAIN_LEDGER" | jq -r .turn)" turn
 : > "$CALLS"; bash "$XREVIEW" collect "$nonce" >/dev/null 2>&1
 is "D10 a later collect waits on that turn by id" "$(called "turn-wait --thread $U1 --turn turn-recovered")" 1
 
+echo "D10b. a ? dispatched before .known was keyed by thread is still recovered from the old name"
+# A dispatch from before this change (exit 6) left the round-wide $nonce.known, never the thread's
+# own. Such a round is never sliced, so its one thread's turn is found against the old file.
+fresh
+nonce="$(RPC_START_UNCERTAIN=1 bash "$XREVIEW" dispatch --checkpoint plan --diff HEAD~1..HEAD b.md 2>/dev/null)"
+mv "$STATE/turns/$nonce.$U1.known" "$STATE/turns/$nonce.known"
+: > "$CALLS"
+out="$(RPC_WAIT_OUT='{"verdict":"approve","findings":[]}' bash "$XREVIEW" collect "$nonce" 2>/dev/null)"; rc=$?
+is "D10b collect looks for what is new since the old round-wide file, and recovers the turn" \
+   "$rc/$(printf '%s' "$out" | jq -r .verdict)/$(called "turn-wait --thread $U1 --new-since $STATE/turns/$nonce.known --resolved")/$(cat "$STATE/turns/$nonce")" \
+   "0/approve/1/$U1 turn-recovered plan $BR"
+
 echo "D11. a TUI without a daemon connection is re-pointed even though its title matches"
 # A TUI left over from before a daemon restart keeps its title but holds no connection to the
 # new daemon (G3): the title alone never takes the fast path, the observed connection does.
