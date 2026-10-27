@@ -37,6 +37,8 @@ set -u
 
 FUNCS="$(cd "${0:h}/.." && pwd)/dot_config/zsh/functions"
 [[ -r "$FUNCS" ]] || { print -ru2 -- "cannot read $FUNCS"; exit 1 }
+MISECONF="$(cd "${0:h}/.." && pwd)/dot_config/mise/config.toml"
+[[ -r "$MISECONF" ]] || { print -ru2 -- "cannot read $MISECONF"; exit 2 }
 
 # Isolate git from the real user/system config so tests are reproducible.
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
@@ -3059,6 +3061,14 @@ mise trust --all >/dev/null 2>&1;            eq "$?" "3" "X0s --all is refused"
 mise -C "$REPO" trust --all >/dev/null 2>&1; eq "$?" "3" "X0s -C ... --all is refused"
 eq "$(PATH="$(nomise_path)" whence -p mise)" "" "X0s nomise_path drops every mise"
 eq "$(PATH="$(nomise_path)" whence -p git)" "/usr/bin/git" "X0s ... and git still resolves"
+
+# X22: the global mise config keeps Ruby's idiomatic files (Gemfile, .ruby-version) out of mise,
+# so they never become configs paranoid mode hashes. The [settings] table is read up to the next header.
+settings="$(awk '/^\[/{ s = ($0 == "[settings]") ; next } s' "$MISECONF")"
+eq "$(print -r -- "$settings" | grep -c '^idiomatic_version_file_enable_tools = \[\]$')" "1" \
+   "X22 [settings] sets idiomatic_version_file_enable_tools = [] exactly once"
+eq "$(print -r -- "$settings" | grep -c '^idiomatic_version_file_enable_tools')" "1" \
+   "X22 ... and no other value for it"
 
 : > "$STDIN_LOG"
 # --- the carry itself --------------------------------------------------------
