@@ -310,7 +310,7 @@ of this workflow that is enforced rather than trusted.
 ### 3.8 Switches
 
 `~/.config/xreview/packets.conf` (chezmoi: `dot_config/xreview/packets.conf`) holds four
-`key=on|off` lines:
+`key=on|off` lines, and the `cap=` line below:
 
 | Switch | Covers | Off |
 |---|---|---|
@@ -323,6 +323,15 @@ of this workflow that is enforced rather than trusted.
 xreview says so once per dispatch. All four start `off`. Each is turned on only after it
 passes the replay (§5). Recording whether a turn compacted (§3.6) is always on. It changes
 nothing until a switch makes the gate read it.
+
+A fifth line, `cap=<bytes>`, sets the size cap that applies while `fit` is off. Michael's
+ruling (2026-10-27), after `fit` failed its replay: he is not to be asked to dispatch an
+oversized review by hand. The deployed file lies outside the sandbox, so an agent cannot
+raise the cap, and Michael sets it once through chezmoi. It ships as `cap=700000`, the value
+he used for this branch's own pre-merge rounds. `XREVIEW_MAX_DIFF_BYTES` still overrides it
+for a single dispatch. With neither set, the cap is 100000, as before. A value that is not a
+whole number refuses the dispatch, as the variable does. The cap is read from the same
+snapshot of the file as the switches.
 
 ## 4. Instructions
 
@@ -341,8 +350,8 @@ nothing until a switch makes the gate read it.
   - The escalation list gains two entries and is otherwise unchanged:
     - a pinned review thread (`xreview init` or `XREVIEW_THREAD`) that cannot hold the next
       packet. The pin is Michael's, so dispatch refuses rather than move the checkpoint off it;
-    - with `fit` off, a packet over the size cap. The cap is Michael's to raise, and an agent
-      cannot raise it from a session (§1).
+    - with `fit` off, a packet over the size cap (`cap=` in `packets.conf`, §3.8). The cap is
+      Michael's to raise, and an agent cannot raise it from a session (§1).
 - **Memory** `excluded-command-must-lead`: its cap remark is updated once `fit` is on.
 
 ## 5. Replay evaluation

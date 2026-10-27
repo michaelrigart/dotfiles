@@ -135,8 +135,22 @@ is_("K2 comments, blanks, spaces and unknown keys are tolerated",
 is_("K2 the last line for a key wins", sw("framing=on\nfit=on\nfit=off\n"),
     {"framing": True, "fit": False, "delta": False, "omit_plans": False})
 is_("K2 case matters: ON is not on", sw("framing=ON\n"), OFF)
-is_("K2 the shipped packets.conf turns on what passed the replay (spec 9)",
-    rd(CONF, "packets.conf"), b"framing=on\nfit=off\ndelta=off\nomit_plans=on\n")
+is_("K2 the shipped packets.conf turns on what passed the replay (spec 9), and sets the cap Michael ruled",
+    rd(CONF, "packets.conf"), b"framing=on\nfit=off\ndelta=off\nomit_plans=on\ncap=700000\n")
+
+
+def plan_of(text):
+    with open(cfg, "w") as f:
+        f.write(text)
+    read_plan = getattr(xp, "read_plan", None)
+    return read_plan(cfg) if read_plan else None
+
+
+is_("K2 read_plan gives the cap= line as written, the last one winning, beside the switches",
+    plan_of("framing=on\nfit=on\ncap=5\ncap= 70k \n"), {"framing": True, "thread": True, "cap_line": "70k"})
+is_("K2 and None without a cap= line", plan_of("framing=on\n"), {"framing": True, "thread": False, "cap_line": None})
+is_("K2 the shipped file's plan carries its cap", (getattr(xp, "read_plan", lambda p: None)(os.path.join(CONF, "packets.conf")) or {}).get("cap_line"),
+    "700000")
 is_("K2 and parses to it", xp.read_switches(os.path.join(CONF, "packets.conf")),
     {"framing": True, "fit": False, "delta": False, "omit_plans": True})
 sw("framing=off\nfit=on\ndelta=off\nomit_plans=on\n")
@@ -646,8 +660,10 @@ SLICE = "This is slice {} of {} of one change. The other slices are reviewed in 
 LISTED = "{} was shown whole in the approved plan review {}; only its changes since then are shown here."
 MISSED = "The last round's reviewed_files did not list: {}. Review them too."
 CAP_TEXT = ("the diffs are too large to carry inline ({} bytes, cap {}).\n"
-            "Review them in slices, or raise XREVIEW_MAX_DIFF_BYTES if the reviewer can hold it.")
-CAP_FRAMED = "the diffs are too large to carry inline ({} bytes, cap {}). The cap is Michael's to raise; no review was started."
+            "Review them in slices, or raise the cap if the reviewer can hold it: "
+            "cap= in ~/.config/xreview/packets.conf, or XREVIEW_MAX_DIFF_BYTES for one dispatch.")
+CAP_FRAMED = ("the diffs are too large to carry inline ({} bytes, cap {}). The cap is Michael's to raise, "
+              "as cap= in ~/.config/xreview/packets.conf; no review was started.")
 NO_DIFFS = "This review carries no diffs, so there is no file list; return reviewed_files as an empty list."
 HAVE_ZSTD = __import__("shutil").which("zstd") is not None
 

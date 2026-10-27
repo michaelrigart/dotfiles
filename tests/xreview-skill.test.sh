@@ -559,6 +559,7 @@ for neg in 'XREVIEW_MAX_DIFF_BYTES' 'slice by hand'; do
   else _pass "the skill does not mention '$neg'"; fi
 done
 for phrase in 'dispatch never refuses on size' \
+              'the cap is `cap=` in `~/.config/xreview/packets.conf`, Michael'"'"'s file outside the sandbox' \
               'fresh thread when the current one cannot hold the next packet' \
               'never rotates a thread by judgement' \
               'Never rotate a thread within a checkpoint' \
@@ -610,7 +611,8 @@ expected_esc="$(cat <<'EXPECTED_ESC'
   (or cannot create or open its lock file).
 - `xreview` refuses because a pinned review thread cannot hold the packet. The pin is
   Michael's; never drop it with `xreview round --reset`.
-- `xreview` refuses a packet over its size cap while `fit` is off. The cap is Michael's to raise.
+- `xreview` refuses a packet over its size cap while `fit` is off. The cap is Michael's to raise:
+  `cap=` in `~/.config/xreview/packets.conf`, his file, outside the sandbox.
 - `xreview` refuses because the pane is resuming something other than a thread id (for
   example `codex resume --last` or a picker). The pane is Michael's.
 EXPECTED_ESC

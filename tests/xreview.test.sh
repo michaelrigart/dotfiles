@@ -303,7 +303,8 @@ case "$cmd" in
              if [ -n "$since" ] && ! [ -r "$since" ]; then echo "turn-wait: cannot read $since" >&2; exit 1; fi
              # $P/unfound.<thread>: the next --new-since wait on it finds nothing yet (exit 3).
              if [ -n "$resolved" ] && [ -e "$P/unfound.$th" ]; then rm -f "$P/unfound.$th"; exit 3; fi
-             [ -n "$resolved" ] && echo turn-recovered > "$resolved"
+             # RPC_RESOLVED_ID: the id the wait writes to --resolved (turn-recovered by default).
+             [ -n "$resolved" ] && echo "${RPC_RESOLVED_ID:-turn-recovered}" > "$resolved"
              # Per turn: $P/answer.<turn> is its answer, $P/rc.<turn> its exit code for one wait,
              # $P/compacted.<turn> its compaction flag; otherwise RPC_WAIT_OUT, RPC_WAIT_RC and
              # RPC_COMPACTED. The report names RPC_REPORT_TURN instead, when set (a stale one).
@@ -2028,7 +2029,7 @@ is "N5 no thread was started for it" "$(called 'xreview-rpc thread-start')" 0
 is "N5 and no round consumed" "$(bash "$XREVIEW" round)" 0
 fresh; packets framing; out="$(XREVIEW_MAX_DIFF_BYTES=10 bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md 2>&1)"; rc=$?
 is "N5 framing with the fit check off keeps the cap, and says it is Michael's to raise" \
-   "$rc/$(printf '%s' "$out" | grep -c "too large to carry inline ([0-9]* bytes, cap 10). The cap is Michael's to raise; no review was started.$")" "1/1"
+   "$rc/$(printf '%s' "$out" | grep -c "too large to carry inline ([0-9]* bytes, cap 10). The cap is Michael's to raise, as cap= in ~/.config/xreview/packets.conf; no review was started.$")" "1/1"
 is "N5 and offers neither slicing nor the variable" \
    "$(printf '%s' "$out" | grep -c 'Review them in slices')/$(printf '%s' "$out" | grep -c 'XREVIEW_MAX_DIFF_BYTES')" "0/0"
 is "N5 untouched here too" "$(untouched)" yes
@@ -2362,6 +2363,42 @@ is "X9 the pending entry and the receipt both record the switches" \
    "$(jq -c --arg n "$nonce" 'select(.nonce == $n) | [.kind, .switches]' "$MAIN_LEDGER" | tr '\n' ' ')" \
    "[\"pending\",$want] [\"receipt\",$want] "
 is "X9 and they equal the dispatch's own" "$(jq -c .switches "$STATE/turns/$nonce.targets")" "$want"
+packets
+
+echo "XC. the size cap: cap= in packets.conf, XREVIEW_MAX_DIFF_BYTES over it, 100000 without either"
+capline() { echo "cap=$1" >> "$XDG_CONFIG_HOME/xreview/packets.conf"; }   # packets.conf's cap= line
+# The three big files are about 150000 bytes of diff: over the default, under the shipped cap.
+fresh
+out="$(bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md 2>&1)"; rc=$?
+is "XC with no cap= line the cap is 100000" \
+   "$rc/$(printf '%s' "$out" | grep -c 'too large to carry inline ([0-9]* bytes, cap 100000)')" "1/1"
+is "XC and the refusal names both ways to raise it" \
+   "$(printf '%s' "$out" | grep -c 'cap= in ~/.config/xreview/packets.conf, or XREVIEW_MAX_DIFF_BYTES for one dispatch')" 1
+fresh; capline 700000
+bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md > "$ROOT/o" 2>&1; rc=$?
+is "XC cap= raises it: the same diff is sent" "$rc/$(called 'xreview-rpc turn-start')" "0/1"
+fresh; capline 700000
+out="$(XREVIEW_MAX_DIFF_BYTES=10 bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md 2>&1)"; rc=$?
+is "XC XREVIEW_MAX_DIFF_BYTES below cap= is the cap" "$rc/$(printf '%s' "$out" | grep -c 'bytes, cap 10)')/$(untouched)" "1/1/yes"
+fresh; capline 10
+bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md > "$ROOT/o" 2>&1; rc=$?
+XREVIEW_MAX_DIFF_BYTES=700000 bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md > "$ROOT/o" 2>&1; rc2=$?
+is "XC and above it too: cap=10 alone refuses, the variable over it sends" "$rc/$rc2/$(called 'xreview-rpc turn-start')" "1/0/1"
+fresh; capline 70k
+out="$(bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md 2>&1)"; rc=$?
+is "XC a cap= that is no whole number refuses, naming packets.conf, and starts nothing" \
+   "$rc/$(printf '%s' "$out" | grep -c "cap= in $XDG_CONFIG_HOME/xreview/packets.conf must be a whole number of bytes, not '70k'; no review was started")/$(untouched)" \
+   "1/1/yes"
+fresh; capline 70k
+XREVIEW_MAX_DIFF_BYTES=700000 bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md > "$ROOT/o" 2>&1; rc=$?
+is "XC the variable, when set, is the cap: a broken cap= line is not consulted" "$rc/$(called 'xreview-rpc turn-start')" "0/1"
+is "XC the shipped packets.conf sets cap=700000" "$(grep -cx 'cap=700000' "$SRC/dot_config/xreview/packets.conf")" 1
+# The cap comes from one snapshot with the switches: a cap= rewritten mid-dispatch, the switches as
+# they were, is caught by the same guard as a switch.
+fresh; packets framing fit; rm -rf "$CODEX_HOME/sessions"; rollout $U2 20000 258400; printf '%s\n' "$U2" > "$STATE/review-thread"
+out="$(ENSURE_WRITES_CONF="$(printf 'framing=on\nfit=on\ncap=5')" bash "$XREVIEW" dispatch --checkpoint plan "${XD[@]}" b.md 2>&1)"; rc=$?
+is "XC packets.conf's cap= changed during the dispatch: refused, saying so, before the pane" \
+   "$rc/$(printf '%s' "$out" | grep -c '^xreview: packets.conf changed during dispatch; dispatch again$')/$(untouched)" "1/1/yes"
 packets
 
 echo "Y. collect judges each turn clean or not, and records it (spec 2026-10-25 §3.6, §3.7)"
@@ -3185,6 +3222,14 @@ RPC_WAIT_OUT='prose' RPC_WAIT_RC=4 bash "$XREVIEW" collect "$nonce" > "$ROOT/out
 rm -f "$P/holding.turn-recovered"; wait "$collector_b"; rb=$?
 is "V3r A's resolve does not lose B's: B's receipt, the only one, names the real turn, never ?" \
    "$ra/$rb/$(receipt "$nonce" | jq -r .turn | tr '\n' ' ')" "4/0/turn-recovered "
+# A collect that dies right after its wait wrote the resolved id (here, an id it refuses as unsafe)
+# leaves no file of its own behind: its exit trap removes the resolved file beside the report.
+fresh
+nonce="$(RPC_START_UNCERTAIN=1 bash "$XREVIEW" dispatch --checkpoint plan b.md 2>/dev/null)"
+out="$(RPC_RESOLVED_ID='turn/unsafe' RPC_WAIT_OUT='{"verdict":"approve","findings":[]}' bash "$XREVIEW" collect "$nonce" 2>&1)"; rc=$?
+is "V3r a collect that dies once its wait wrote the resolved id leaves none of its own files" \
+   "$rc/$(printf '%s' "$out" | grep -c 'refusing unsafe identifier')/$(find "$STATE/turns" \( -name "$nonce.resolved.*" -o -name "$nonce.report.*" \) | wc -l | tr -d ' ')" \
+   "1/1/0"
 
 # Slice 1 lists nothing; slice 2 lists slice 1's label beside its own. Slice 1's label is still
 # missing: slice 2's reviewer never saw that file's patch.

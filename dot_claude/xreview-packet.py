@@ -79,12 +79,18 @@ LISTED_PLAN = ("{} was shown whole in the approved plan review {}; only its chan
 MISSED_FILES = "The last round's reviewed_files did not list: {}. Review them too."
 # The line a framed review without diffs carries where the file list would be (spec 3.1).
 NO_DIFFS = "This review carries no diffs, so there is no file list; return reviewed_files as an empty list."
-# Today's refusal when the diffs exceed the cap (xreview dispatch), verbatim; with framing on, the
-# cap is Michael's to raise, as the cross-review skill says, and nothing offers another way round it.
+# The refusal when the diffs exceed the cap: main's, naming packets.conf's cap= beside the variable
+# (spec 3.8). With framing on, the cap is Michael's to raise, as the cross-review skill says: it
+# names his file, which lies outside the sandbox, and nothing offers another way round it.
 CAP_REFUSAL = ("the diffs are too large to carry inline ({} bytes, cap {}).\n"
-               "Review them in slices, or raise XREVIEW_MAX_DIFF_BYTES if the reviewer can hold it.")
+               "Review them in slices, or raise the cap if the reviewer can hold it: "
+               "cap= in ~/.config/xreview/packets.conf, or XREVIEW_MAX_DIFF_BYTES for one dispatch.")
 CAP_REFUSAL_FRAMED = ("the diffs are too large to carry inline ({} bytes, cap {}). The cap is Michael's to "
-                      "raise; no review was started.")
+                      "raise, as cap= in ~/.config/xreview/packets.conf; no review was started.")
+# The cap while fit is off: XREVIEW_MAX_DIFF_BYTES for one dispatch, else packets.conf's cap=
+# line, else this (spec 3.8). A cap= value that is not a whole number refuses, naming the file.
+DEFAULT_CAP = 100000
+CAP_LINE_REFUSAL = "cap= in {} must be a whole number of bytes, not '{}'; no review was started"
 # Room a slice keeps for the digits of `slice i of n` and the like, and for a part's own list line.
 SLICE_SLACK = 64
 LINE_SLACK = 96
@@ -110,16 +116,18 @@ def _ledger():
 
 
 # ------------------------------------------------------------------ switches
-def _requested(path):
-    """The switches as packets.conf asks for them: `key=on` is on; anything else, a missing
-    key, a missing or unreadable file, is off. Unknown keys, comments and blank lines are
-    ignored; the last line for a key wins."""
+def _conf(path):
+    """packets.conf in one read: the switches as it asks for them, and its cap= line's value as
+    written (stripped), or None without one. `key=on` is on; anything else, a missing key, a
+    missing or unreadable file, is off. Unknown keys, comments and blank lines are ignored; the
+    last line for a key wins."""
     found = dict((name, False) for name in SWITCHES)
+    cap = None
     try:
         with open(path, "rb") as handle:
             text = handle.read().decode("utf-8", "replace")
     except OSError:
-        return found
+        return found, cap
     for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
@@ -128,16 +136,35 @@ def _requested(path):
         key = key.strip()
         if sep and key in found:
             found[key] = value.strip() == "on"
+        elif sep and key == "cap":
+            cap = value.strip()
+    return found, cap
+
+
+def _requested(path):
+    """The switches as packets.conf asks for them (_conf)."""
+    return _conf(path)[0]
+
+
+def _in_force(found):
+    """Fit, delta and omit_plans need framing: with framing off they act as off."""
+    if not found["framing"]:
+        return dict((name, False) for name in SWITCHES)
     return found
 
 
 def read_switches(path):
-    """The switches in force, by name, each True or False. Fit, delta and omit_plans need
-    framing: with framing off they act as off."""
-    found = _requested(path)
-    if not found["framing"]:
-        return dict((name, False) for name in SWITCHES)
-    return found
+    """The switches in force, by name, each True or False."""
+    return _in_force(_requested(path))
+
+
+def read_plan(path):
+    """What dispatch plans from, in one read of packets.conf, to hold the build's own read to:
+    whether framing is in force, whether fit or delta is (only then does the decision need the
+    thread), and the cap= line's value as written, or None."""
+    found, cap = _conf(path)
+    sw = _in_force(found)
+    return {"framing": sw["framing"], "thread": sw["fit"] or sw["delta"], "cap_line": cap}
 
 
 def switches_ignored(path):
@@ -1116,7 +1143,10 @@ def build(request, outdir=None):
     fresh thread, as a full packet; else in slices. A thread whose context cannot be read counts
     as not fitting; a window that cannot be read refuses."""
     ledger = _ledger()
-    sw = read_switches(request["switches_file"])
+    # The switches and the cap= line come from one read of packets.conf; the decision carries
+    # the line as read, so dispatch can hold it to its own plan's read (read_plan).
+    found, cap_line = _conf(request["switches_file"])
+    sw = _in_force(found)
     memo = {}
 
     def entries_of(repo):
@@ -1128,7 +1158,6 @@ def build(request, outdir=None):
     specs = [str(s) for s in (request.get("specs") or [])]
     if len(specs) != len(targets):
         raise ValueError("the request names {} targets and {} diff specs".format(len(targets), len(specs)))
-    cap = int(request.get("cap") if request.get("cap") is not None else 100000)
     thread = request.get("thread") or None
     out = outdir or request.get("outdir") or tempfile.mkdtemp(prefix="xreview-packet.")
     os.makedirs(out, exist_ok=True)
@@ -1145,7 +1174,8 @@ def build(request, outdir=None):
         return {"file": path, "shown": shown}
 
     def answer(action, reason, kind, packets, tgs):
-        return {"action": action, "reason": reason, "kind": kind, "packets": packets, "targets": tgs, "switches": sw}
+        return {"action": action, "reason": reason, "kind": kind, "packets": packets, "targets": tgs, "switches": sw,
+                "cap_line": cap_line}
 
     def plain(action, reason, packets):
         """A decision for the request's own targets, every one a full packet (framing off)."""
@@ -1157,6 +1187,18 @@ def build(request, outdir=None):
 
     def send(action, reason, kind, ts, data, shown):
         return decide(action, reason, kind, [write("packet.txt", data, shown)], ts)
+
+    # The cap while fit is off (spec 3.8): the request's (XREVIEW_MAX_DIFF_BYTES, one dispatch),
+    # which when set is the cap and leaves the cap= line unread; else the cap= line, refused when it
+    # is not a whole number, whatever the switches; else DEFAULT_CAP.
+    if request.get("cap") is not None:
+        cap = int(request["cap"])
+    elif cap_line is not None:
+        if not re.fullmatch(r"[0-9]+", cap_line):
+            return plain("refuse", CAP_LINE_REFUSAL.format(request["switches_file"], cap_line), [])
+        cap = int(cap_line)
+    else:
+        cap = DEFAULT_CAP
 
     if not sw["framing"]:
         # Nothing here reads a header path: the diffs go out as git renders them for the user.

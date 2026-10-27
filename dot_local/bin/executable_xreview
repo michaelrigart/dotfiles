@@ -68,10 +68,11 @@ packet() { /usr/bin/python3 "${XREVIEW_PACKET:-$HOME/.claude/xreview-packet.py}"
 # repository on sys.path). packet_ignored prints the switches packets.conf turns on that need
 # framing while framing is off, space separated. packet_delta_on succeeds only when the delta
 # switch is in force (read_switches: delta on AND framing on), the one case that needs the
-# thread's turns. packet_plan prints what the decision depends on, as two digits: whether framing
-# is in force, and whether fit or delta is (only then does it need the thread, and the daemon).
+# thread's turns. packet_plan prints what the decision depends on, from one read, as JSON: whether
+# framing is in force, whether fit or delta is (only then does it need the thread, and the
+# daemon), and packets.conf's cap= line as written, or null.
 packet_ignored() { _packet_switches 'print(" ".join(module.switches_ignored(sys.argv[2])))'; }
-packet_plan() { _packet_switches 'sw = module.read_switches(sys.argv[2]); print(int(sw["framing"]), int(sw["fit"] or sw["delta"]))'; }
+packet_plan() { _packet_switches 'import json; print(json.dumps(module.read_plan(sys.argv[2])))'; }
 packet_delta_on() { _packet_switches 'sys.exit(0 if module.read_switches(sys.argv[2])["delta"] else 1)'; }
 _packet_switches() { _python_module "${XREVIEW_PACKET:-$HOME/.claude/xreview-packet.py}" "$1" "$PACKETS_CONF"; }
 # packet_labels <specs-json>: the module's cap on a receipt's missing labels, and the label
@@ -1120,7 +1121,7 @@ _dispatch_decide() {
         --argjson targets "$TARGETS" --argjson missed "$missed" \
         --argjson specs "$(jq -nc '$ARGS.positional' --args ${TSPECS[@]+"${TSPECS[@]}"})" \
     '{checkpoint:$checkpoint, body_file:$body, reviewer_md:$reviewer, framing_md:$framing,
-      cap:$cap, switches_file:$switches, codex_home:$home,
+      cap:(if $cap == "" then null else $cap end), switches_file:$switches, codex_home:$home,
       thread:(if $thread == "" then null else $thread end),
       turns_file:(if $turns == "" then null else $turns end),
       targets:$targets, specs:$specs, missed:$missed}' > "$out/request.json" \
@@ -1133,10 +1134,12 @@ _dispatch_decide() {
     send|fresh|slices|refuse) ;;
     *) die "the review packet builder answered nothing usable; no review was started" ;;
   esac
-  # The switches were read twice: when the dispatch was planned, and by the build. A
-  # packets.conf edited in between would send a packet decided on other terms than the plan.
+  # The switches and the cap= line were read twice: when the dispatch was planned, and by the
+  # build, each in one read. A packets.conf edited in between would send a packet decided on
+  # other terms than the plan.
   [ "$(printf '%s' "$decision" | jq -r '[.switches.framing == true, .switches.fit == true or .switches.delta == true]
        | map(if . then "1" else "0" end) | join(" ")' 2>/dev/null)" = "$framing_on $needs_thread" ] \
+    && [ "$(printf '%s' "$decision" | jq -c '.cap_line' 2>/dev/null)" = "$plan_cap" ] \
     || die "packets.conf changed during dispatch; dispatch again"
   if [ "$action" = refuse ]; then die "$(printf '%s' "$decision" | jq -r '.reason')"; fi
   packet_file="$(printf '%s' "$decision" | jq -r '.packets[0].file // empty')"
@@ -1197,7 +1200,9 @@ cmd_dispatch() {
     *[!0-9]*) die "XREVIEW_MAX_ROUNDS must be a whole number, not '$max'; no review was started" ;;
   esac
   # The size cap the packet module applies while the fit check is off; the same rule.
-  cap="${XREVIEW_MAX_DIFF_BYTES:-100000}"
+  # XREVIEW_MAX_DIFF_BYTES, set, is the cap for this one dispatch; unset, the module takes
+  # packets.conf's cap= line, read with the switches, or else 100000 (spec 3.8).
+  cap="${XREVIEW_MAX_DIFF_BYTES:-}"
   case "$cap" in
     *[!0-9]*) die "XREVIEW_MAX_DIFF_BYTES must be a whole number, not '$cap'; no review was started" ;;
   esac
@@ -1229,11 +1234,14 @@ cmd_dispatch() {
   cleanup="rm -rf $(printf '%q' "$out") $(printf '%q' "$dir/turns/$nonce")"
   for s in targets shown slices; do cleanup+=" $(printf '%q' "$dir/turns/$nonce.$s")"; done
   trap "$cleanup" EXIT
-  local framing_on=0 needs_thread=0 pinned=0
-  case "$(packet_plan 2>/dev/null)" in
-    "1 1") framing_on=1; needs_thread=1 ;;
-    "1 0") framing_on=1 ;;
+  local framing_on=0 needs_thread=0 pinned=0 plan plan_cap
+  plan="$(packet_plan 2>/dev/null)" || plan=""
+  case "$(printf '%s' "$plan" | jq -r '"\(.framing) \(.thread)"' 2>/dev/null)" in
+    "true true") framing_on=1; needs_thread=1 ;;
+    "true false") framing_on=1 ;;
   esac
+  plan_cap="$(printf '%s' "$plan" | jq -c '.cap_line' 2>/dev/null)" || plan_cap=""
+  [ -n "$plan_cap" ] || plan_cap=null
   if [ -n "${XREVIEW_THREAD:-}" ] || [ -r "$dir/pin" ]; then pinned=1; fi
 
   # A decision that does not depend on the thread - every switch off, or framing on with fit and
@@ -1893,9 +1901,10 @@ cmd_collect() {
   read -r thread turn checkpoint branch < "$rec"
   assert_id "$thread"
   tfile="$dir/turns/$nonce.targets"; sfile="$dir/turns/$nonce.slices"
-  # This collect's own report file goes when it exits, however it exits. The path travels in the
-  # trap string, not a local: on an errexit exit bash 5 has already unwound those.
-  collect_trap="rm -f $(printf '%q' "$dir/turns/$nonce.report.$$")"
+  # This collect's own report and resolved-id files (_collect_wait) go when it exits, however it
+  # exits. The paths travel in the trap string, not a local: on an errexit exit bash 5 has
+  # already unwound those.
+  collect_trap="rm -f $(printf '%q' "$dir/turns/$nonce.report.$$") $(printf '%q' "$dir/turns/$nonce.resolved.$$")"
   trap "$collect_trap" EXIT
   # A turn dispatched with review packets has its switches beside its targets (spec 2026-10-25
   # §3.6): it is waited on with the schema they named, and judged clean or not. Any other keeps
