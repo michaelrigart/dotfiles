@@ -49,27 +49,23 @@ zmodload -F zsh/stat b:zstat && {
 
 - **`preexec`, not `precmd`:** `precmd` runs before a prompt is drawn, so a prompt drawn
   before the apply would run one stale command. `preexec` runs after Enter.
-- **mtime by `zstat`, compared for inequality.** A builtin, so no fork per command, and the
-  value lives in a shell variable; `-nt` needs a per-shell reference file rewritten on every
-  reload. `zmodload -F zsh/stat b:zstat` loads `zstat` alone: a plain `zmodload zsh/stat` adds
-  a `stat` builtin that shadows `/usr/bin/stat` in every shell. Inequality, so an older mtime
-  reloads too. One-second resolution: a second write in the second of a reload waits for the
-  next change. Verified on zsh 5.9: `whence -w stat` stays `command`; `zstat` on a missing
-  file returns 1; `zsh -fn` returns 1 on an unclosed brace and 0 on the real file. Run
-  against a temp file, the sketch met the unchanged, changed, earlier-mtime, syntax-error,
-  mode-000 and missing cases under Tests.
+- **mtime by `zstat`, compared for inequality.** A builtin, so no fork per command; `-nt`
+  needs a per-shell reference file rewritten on every reload. `-F … b:zstat` loads `zstat`
+  alone, because a plain `zmodload zsh/stat` adds a `stat` builtin that shadows
+  `/usr/bin/stat`. Inequality, so an older mtime reloads too. One-second resolution: a second
+  write in the second of a reload waits for the next change. Verified on zsh 5.9: `stat`
+  stays a command; `zsh -fn` returns 0 on the real file. Run against a temp file, the sketch
+  met the unchanged, changed, earlier-mtime, syntax-error, mode-000 and missing cases below.
 - **A failure keeps the old functions.** A `source` that fails halfway has already replaced
   what came before the error, so the file is parsed first (`zsh -fn`, forked only on a change).
-  Missing, unreadable or unparsable: nothing is sourced, one stderr line, the mtime is not
-  recorded and the next command retries; the line repeats only after the mtime changes again.
+  The failure line repeats only after the mtime changes again; every command retries.
 - **A deleted function stays defined** until `exec zsh`. Accepted: removing it needs the names
   the file defined last time, and a name shared with oh-my-zsh would go with it.
 - **Scope: the functions file only.** `aliases`, `config` and `zshenv` run evals (starship,
   direnv, mise) and set state.
 - **Invariant:** the functions file has only function definitions and comments at top level
-  (46 definitions on 2026-10-28). The hook sources it inside a function, where a top-level
+  (46 definitions on 2026-10-28). It is sourced inside a function, where a top-level
   `typeset` would turn local. A test pins it.
-- If `zmodload` fails there is no hook, and startup is as today.
 - **First deployment needs one restart.** A shell opened before the apply that installs this
   hook has no hook, so it needs one `exec zsh`. Every later change to the functions file
   reloads by itself.
@@ -86,25 +82,31 @@ New `permissions.allow` rules in `dot_claude/modify_private_settings.json`:
 | F1 | `Bash(git fetch --prune)` | exact |
 | F2 | `Bash(git fetch --prune origin)` | exact |
 
-**The guarantee.** A `*` in a rule always matches extra arguments, so the patterns do not
-prove a push delete-only. The guarantee is that every push a new rule matches still passes
-through `git-push-guard.py`, which stays silent only for a merged, pinned, delete-only push
-from a bare invocation (below) or a dry run, and otherwise asks or denies; its `ask` or `deny`
-overrides an allow rule (evidence b). Merged and pinned: runs, without the classifier. Merged
-but unpinned: the guard's silent deny naming the pinned command. Anything else (unmerged, the
-default branch, an extra global option, a network error): the guard's ask. A dry run changes
-nothing.
+**The guard mirrors the push rules.** A `*` matches any text, so a pattern cannot prove what
+git will parse. `git-push-guard.py` therefore holds the same A1, A2 and A4 patterns in its own
+list and matches them with Claude Code's semantics (`*` matches anything, spaces included) as
+a search over the raw command text, `\`-newline continuations joined. That is a superset of
+Claude Code's match, which runs per subcommand after stripping wrappers and safe assignments.
+A push whose text matches gets its verdict from what the guard parses:
 
-**Rule 4's silent pass needs a bare invocation (a guard change).** In `git-push-guard.py`,
-the merged-delete pass (`merged_delete` returning `True`) applies only when the git
-invocation carries no global option other than one `-C <path>`, and no leading variable
-assignment (`GIT_EXEC_PATH` is `--exec-path`'s environment form). With `--exec-path[=…]`,
-`--no-pager`, `-p`, `--bare`, a second `-C` or any other global option, the delete ask
-stands, as today. The unpinned silent deny is unchanged. `-c`, `--config-env`, `--git-dir`,
-`--work-tree` and `--namespace` keep today's deny, which `evaluate` raises before rule 4.
-`parse_plain` must therefore record every global option it reads; today it drops
-`--exec-path` silently. This only tightens: no verdict moves toward allow, and pushes other
-than merged deletes are unchanged.
+| Parsed as | Verdict |
+|---|---|
+| delete-only, every branch merged and pinned, bare | silent pass: it runs, the classifier skipped |
+| delete-only, every branch merged, but not bare or not pinned | silent deny; the reason is the bare pinned command |
+| delete-only, with a branch unmerged, the default branch, or a failed merge read | ask, as today |
+| anything else: an update, a mixed push, a delete without a refspec, an option value that swallowed `--delete`, a quoted spoof | silent deny: "this command matches a delete allow rule but git would not parse it as a delete-only push; push normally, without the delete shape" |
+
+- **Bare** means the command is `git [-C <path>] push …`, optionally piped to `tail` or
+  `head`: no other global option (`--exec-path`, `--no-pager`, a second `-C`, …), no `cd`
+  prefix, no variable assignment (`GIT_EXEC_PATH` is `--exec-path`'s environment form) and no
+  wrapper. `parse_plain` records every global option it reads; today it drops `--exec-path`.
+  `-c`, `--config-env`, `--git-dir`, `--work-tree` and `--namespace` keep today's deny.
+- A dry run keeps today's silent early return. A push that matches no pattern keeps today's
+  behaviour exactly.
+- Every row is today's verdict or stricter. A non-bare merged delete went silently to the
+  classifier and now gets a silent deny; no row adds a prompt. The guard's `ask` or `deny`
+  overrides an allow rule (evidence b), so the only push an allow rule runs unjudged is the
+  first row.
 
 **Evidence (a), wildcards.** Permissions docs, "Wildcard patterns" (read 2026-10-28): "A `*`
 in a Bash rule matches any text, including spaces" and "can go anywhere in the rule: at the
@@ -126,37 +128,25 @@ silent hook plus one runs.
 
 Rulings:
 
-- **What the patterns still exclude.** A1, A2 and A4 need `--delete` or `-d` after the
-  remote, and git then deletes every listed ref, so a plainly written update push matches no
-  rule; deleting the default branch asks (rule 4 excludes it). Text quoted inside another
-  argument can still match, and that push still meets the guard.
-- **No `:<ref>` rule.** A `:refs/heads/*` rule would also match a mixed delete and update
-  (`… origin :refs/heads/a feat`), and `… origin :*` never matches (evidence a). Agents use
-  A1 or A4, the form the guard prints.
+- **No `:<ref>` rule.** A `:refs/heads/*` rule would also match a mixed delete and update,
+  and `… origin :*` never matches (evidence a). Agents use A1 or A4, as the guard prints.
 - **Left to the classifier:** remotes other than `origin`, other argument orders, `:<ref>`
-  refspecs, and `-C` with `-d`.
-- **A4 is one rule, so one warning.** Every option the warning names is either denied on a
-  push (`-c`, `--config-env`, `--git-dir`, `--work-tree`, `--namespace`, unknown options) or,
-  after the tightening above, takes away the silent pass (`--exec-path` and the rest).
-- **Fetch: exact rules only.** `fetch.prune = true` in `dot_config/git/config` (here,
-  `git config --get fetch.prune` prints `true`, from `~/.config/git/config`) already makes
-  every fetch prune; F1 and F2 only stop the classifier reacting to the word. No `*` after
-  `--prune`: `git fetch --prune origin '+refs/heads/*:refs/heads/*'` rewrites and prunes local
-  branches. No `-C` form: nothing guards fetch, so `git -C * fetch …` would approve
-  `-c core.sshCommand=…` at its `*`, and `git -C <repo> fetch origin` prunes anyway.
+  refspecs and `-C` with `-d`.
+- **A4's warning is accepted:** one rule, so one warning, and the mirror judges every option
+  it names.
+- **Fetch: exact rules only.** `git config --get fetch.prune` prints `true` here (from
+  `dot_config/git/config`), so every fetch already prunes; F1 and F2 only stop the classifier
+  reacting to the word. No `*` after `--prune`: `git fetch --prune origin
+  '+refs/heads/*:refs/heads/*'` rewrites and prunes local branches. No `-C` form: nothing
+  guards fetch, so `git -C * fetch …` would approve `-c core.sshCommand=…` at its `*`.
 - **No rule for `git branch -d`:** it refuses an unmerged branch itself and was not denied;
   `Bash(git branch -D*)` stays an ask rule.
-- **Residual, accepted: fail direction.** For matched shapes the guard is the only judge. If
-  it is missing or broken and returns no decision, a matching delete runs without the
-  classifier, where before the classifier judged it. The guard fails closed on its own errors
-  (a 30 s budget inside the 60 s hook timeout, a deny on a helper failure), and
-  `disableAllHooks: false` is pinned. The guard and the allow rules deploy together through
-  chezmoi, so they cannot drift apart.
+- **Residual, accepted: fail direction.** If the guard is missing or broken and returns no
+  decision, a matching delete runs without the classifier. The guard fails closed on its own
+  errors (a 30 s budget inside the 60 s hook timeout, a deny on a helper failure),
+  `disableAllHooks: false` is pinned, and the guard and the allow rules deploy together
+  through chezmoi, so they cannot drift apart.
 - A Bash call that passes `allowed_domains` goes to the classifier despite a matching rule.
-  SSH pushes need none.
-- **Not taken:** the guard returning `"allow"` for a proven delete. It fails toward the
-  classifier and matches no text, but it changes the guard's output contract, and the docs do
-  not say whether a hook `"allow"` skips the auto-mode classifier.
 
 ## 3. Instructions
 
@@ -176,8 +166,8 @@ for each deleted branch, as the guard's deny reason prints it.
 ## Non-goals
 
 Reloading aliases, config or zshenv; `wt-rm` keeping branches not merged into main (the
-`blabla` case); harness worktree locks; the push guard's rules, unchanged apart from the
-rule-4 tightening in section 2.
+`blabla` case); harness worktree locks; the push guard's other rules, and its verdicts for a
+push that matches no delete pattern.
 
 ## Tests
 
@@ -192,22 +182,26 @@ rule-4 tightening in section 2.
   defined; the real functions file has only definitions and comments at top level.
 - **`tests/zshrc.test.sh`** (pty), one case: with the prompt drawn the functions file changes,
   and Enter on `f` prints the reload line, then the new output.
-- **`tests/claude-settings.test.sh`:** the five rules pinned as a set. "no mutating verb is
-  allowlisted" exempts exactly A1, A2 and A4, as it does `sdd-clean`. A matcher model of the
-  documented semantics (whole text; `*` any text; a trailing ` *` that is the only `*` also
-  matches the bare command), calibrated on the docs' rows. No rule matches `git push`,
-  `git push origin feat`, `git push --force-with-lease=feat:<sha> origin feat`,
-  `git push origin main`, `git push --force-with-lease=main:<sha> origin main`,
-  `git push --force-with-lease=refs/heads/a:<sha> origin :refs/heads/a feat`,
-  `git -C /r push origin main`, `git fetch --prune origin '+refs/heads/*:refs/heads/*'` or
-  `git -C /r fetch --prune origin`. The printed form with and without `-C`, its `-d`
-  spelling and `git fetch --prune origin` match. No allow rule ends in `:*` with a `*` before
-  it.
+- **`tests/claude-settings.test.sh`:** the five rules pinned as a set; "no mutating verb is
+  allowlisted" exempts exactly A1, A2 and A4, as it does `sdd-clean`. **Parity:** the
+  rendered allow rules that run `git … push` must equal the guard's mirror list.
+  A matcher model of the documented semantics, calibrated on the docs' rows: no rule matches
+  `git push`, `git push origin feat`, `git push --force-with-lease=feat:<sha> origin feat`,
+  `git push origin main`, `git -C /r push origin main`,
+  `git fetch --prune origin '+refs/heads/*:refs/heads/*'` or `git -C /r fetch --prune origin`;
+  the printed form with and without `-C`, its `-d` spelling and `git fetch --prune origin`
+  match. No allow rule ends in `:*` with a `*` before it.
 - **`tests/agent-instructions.test.sh`:** `need` the new exception text; caps unchanged.
-- **`tests/git-forge-guard.test.sh`**, in rule 4's merged-delete section: a merged, pinned
-  delete as `git -C <path> push …` from another directory is silent; the same with
-  `--exec-path=<dir>`, `--no-pager`, a second `-C` or a leading `GIT_EXEC_PATH=<dir>` asks;
-  the same with `-c x.y=z` keeps today's deny. The existing rule-4 cases stay green.
+- **`tests/git-forge-guard.test.sh`**, rule 4's merged-delete section, one case per row:
+  - bare, merged, pinned, with and without `-C <path>`: silent;
+  - merged and pinned with `--exec-path=<dir>`, `--no-pager`, a second `-C` or a leading
+    `GIT_EXEC_PATH=<dir>`: deny naming the bare pinned command; with `-c x.y=z`: today's deny;
+  - a pinned delete of the unmerged branch in A1's shape: ask;
+  - `git push --force-with-lease=feat:<sha> --push-option="ci.variable=X= origin --delete x"
+    origin feat`, `git push --force-with-lease=feat:<sha> -o --delete origin feat` and the
+    refspec-less `git push --force-with-lease=done:<sha> origin --delete --no-verify`: deny;
+  - an update push in no delete shape (`git push --force-with-lease=feat:<sha> origin feat`):
+    today's verdict. The existing rule-4 cases stay green.
 
 ## Verification after Michael's apply
 
@@ -221,6 +215,6 @@ rule-4 tightening in section 2.
 
 ## Expected effect
 
-Net prompts: none added; every delete that asked before still asks. Pinned merged deletes in
-the guard's printed form and `git fetch --prune` go from a classifier denial, then Michael by
-hand, to running.
+Net prompts: none added; every delete that asked before still asks, and nothing else asks.
+Pinned merged deletes in the guard's printed form and `git fetch --prune` go from a classifier
+denial, then Michael by hand, to running.
