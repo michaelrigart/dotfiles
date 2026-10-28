@@ -133,34 +133,29 @@ is "Z10 a function the new file lacks stays defined" "$(ln 2 "$out")" 'g=[gv]'
 # warning from the new block in dot_zshrc (the hook's own stderr is captured by `call`)
 is "Z12 no case script wrote to stderr" "$(cat "$T/all.err" 2>/dev/null)" ''
 
-# Z11: the real functions file holds the invariants the reload relies on. The line check is
-# a cheap first pin; the shell check is the real one: loading the file at top level of a
-# clean shell must add no parameter, alias or option change and print nothing, so an
-# indented top-level statement (which would turn local inside the hook, and run in the
-# trial) is caught.
+# Z11: the real functions file holds the invariants the reload relies on: only function
+# definitions and comments at top level, and no function reading where it was loaded from.
+# The line check below is a cheap first pin. The trace check is the one that decides: sourcing
+# the file under xtrace in a clean shell traces every command the file runs at top level and
+# none of its function definitions, comments or blank lines, so a trace line naming the file
+# means some statement runs at load time (a typeset, an assignment, any command, however it
+# is indented). It sees only what runs when the file is sourced in that clean shell; it does
+# not prove what a function body does when called.
 bad="$(grep -nEv '^(#.*|[[:space:]].*|\}|[A-Za-z_][A-Za-z0-9_.:-]*\(\) \{)?$' "$FUNCS")"
 is "Z11 every top-level line is a comment, blank, } or name() {" "$bad" ''
 reads="$(grep -nF -e '$0' -e funcsourcetrace -e functions_source -e '%x' -e '%N' -e LINENO "$FUNCS")"
 is "Z11 no function reads where it was loaded from" "$reads" ''
 cat > "$T/invariant.zsh" <<'ZSH'
-typeset -a BP AP BA AA NP NA
-typeset -A BO AO
-typeset BS AS REPLY
-state() { local k; for k in ${(ok)options}; do REPLY+="$k=$options[$k];"; done }
-BP=(${(ok)parameters}); BA=(${(ok)aliases} ${(ok)galiases} ${(ok)saliases}); REPLY=; state; BS=$REPLY
-source $FUNCS >$TT/inv.out 2>&1
-AP=(${(ok)parameters}); AA=(${(ok)aliases} ${(ok)galiases} ${(ok)saliases}); REPLY=; state; AS=$REPLY
-NP=(${AP:|BP}); NA=(${AA:|BA})
-print -r -- "params=[$NP]"
-print -r -- "aliases=[$NA]"
-[[ $AS == $BS ]] && print options=same || print options=changed
-print -r -- "output=[$(<$TT/inv.out)]"
+exec 2>$TT/trace
+PS4='+TRACE:%N:%i> '
+setopt xtrace
+source $FUNCS >$TT/inv.out
+unsetopt xtrace
 ZSH
-inv="$(env -i HOME="$HOMEDIR" PATH=/usr/bin:/bin FUNCS="$FUNCS" TT="$T" /bin/zsh -f "$T/invariant.zsh" 2>&1)"
-is "Z11 loading it defines no parameter" "$(ln 1 "$inv")" 'params=[]'
-is "Z11 loading it defines no alias" "$(ln 2 "$inv")" 'aliases=[]'
-is "Z11 loading it changes no option" "$(ln 3 "$inv")" 'options=same'
-is "Z11 loading it prints nothing" "$(ln 4 "$inv")" 'output=[]'
+env -i HOME="$HOMEDIR" PATH=/usr/bin:/bin FUNCS="$FUNCS" TT="$T" /bin/zsh -f "$T/invariant.zsh" 2>&1
+is "Z11 sourcing it at top level runs no statement (no trace line names it)" "$(grep -nF "+TRACE:$FUNCS:" "$T/trace")" ''
+is "Z11 sourcing it writes no stdout" "$(cat "$T/inv.out")" ''
+is "Z11 sourcing it writes no stderr but the trace" "$(grep -v '^+TRACE:' "$T/trace")" ''
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
