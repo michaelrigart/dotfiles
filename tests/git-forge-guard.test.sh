@@ -331,6 +331,16 @@ has_reason() {
     *) fail=$((fail + 1)); printf '  FAIL %s (reason lacks %s: %s)\n' "$label" "$needle" "$got" ;;
   esac
 }
+# lacks_reason <label> <needle> <cwd> <command>: there is a reason, and the needle is not in it
+lacks_reason() {
+  local label=$1 needle=$2 got
+  got=$(reason "$3" "$4")
+  case "$got" in
+    "") fail=$((fail + 1)); printf '  FAIL %s (no reason)\n' "$label" ;;
+    *"$needle"*) fail=$((fail + 1)); printf '  FAIL %s (reason has %s: %s)\n' "$label" "$needle" "$got" ;;
+    *) pass=$((pass + 1)); printf '  ok   %s\n' "$label" ;;
+  esac
+}
 
 echo "== the deny texts =="
 # FORGE_GUARD=off is Michael's to grant: the template deny names it only for that case. The
@@ -600,13 +610,35 @@ expect allow "two merged deletes, both pinned"            "$DEL" "git push --for
 expect deny  "a merged delete with no pin"                "$DEL" 'git push origin --delete done'
 has_reason   "the deny names the pinned command" \
              "git push --force-with-lease=done:$DONE origin --delete done" "$DEL" 'git push origin --delete done'
+# The pinned command is the plain git push form: no allow rule has a git -C form (spec
+# 2026-10-28, section 2, printed commands). A push into another checkout than the session's
+# (the toplevel of the payload's cwd; $TMP is in no repository) names that checkout instead,
+# and says the delete must run from there or Michael runs it. git prints the toplevel with
+# symlinks resolved.
 cp -R "$DEL" "$TMP/del work"
-has_reason   "the deny carries the push's -C path into the pinned command" \
-             "git -C $DEL push --force-with-lease=done:$DONE origin --delete done" \
+DELTOP=$(git -C "$DEL" rev-parse --show-toplevel)
+SPACETOP=$(git -C "$TMP/del work" rev-parse --show-toplevel)
+RUN_HERE="and here. Pin the delete to the tip just read, so git refuses it if the branch has moved, and it needs no ask: git push --force-with-lease=done:$DONE origin --delete done"
+RUN_THERE="which is not this session's checkout. Pin the delete to the tip just read, so git refuses it if the branch has moved; the delete must run from that checkout, or Michael runs it: git push --force-with-lease=done:$DONE origin --delete done"
+has_reason   "a -C push from outside the checkout: the deny names it and who runs the delete" \
+             "Push guard: done is merged into main, on origin and in $DELTOP, $RUN_THERE" \
              "$TMP" "git -C $DEL push origin --delete done"
-has_reason   "and quotes a -C path that needs it" \
-             "git -C '$TMP/del work' push --force-with-lease=done:$DONE origin --delete done" \
+lacks_reason "and it prints no git -C form" "git -C" "$TMP" "git -C $DEL push origin --delete done"
+has_reason   "and quotes a checkout path that needs it" \
+             "Push guard: done is merged into main, on origin and in '$SPACETOP', $RUN_THERE" \
              "$TMP" "git -C '$TMP/del work' push origin --delete done"
+lacks_reason "and prints no git -C form for it either" "git -C" "$TMP" "git -C '$TMP/del work' push origin --delete done"
+has_reason   "a -C push from another repository names the checkout it runs in" \
+             "on origin and in $DELTOP, $RUN_THERE" "$TMP/del work" "git -C $DEL push origin --delete done"
+has_reason   "a -C push into the session's own checkout prints the plain pinned command" \
+             "Push guard: done is merged into main, on origin $RUN_HERE" "$DEL" "git -C $DEL push origin --delete done"
+# The session's toplevel only words the deny and never decides it: a lookup that hangs past
+# the per-call limit (5 s) counts the push's checkout as another one, and the deny stands.
+SLOWTOP="$TMP/slowtop"; mkdir -p "$SLOWTOP"
+printf '#!/bin/sh\ncase "$*" in *"-C %s rev-parse --show-toplevel"*) exec sleep 6 ;; esac\nexec "%s" "$@"\n' \
+  "$TMP" "$(command -v git)" > "$SLOWTOP/git"
+chmod 755 "$SLOWTOP/git"
+PATH="$SLOWTOP:$PATH" expect deny "a session lookup that times out leaves the deny standing" "$TMP" "git -C $DEL push origin --delete done"
 expect deny  "a bare --force-with-lease"                  "$DEL" 'git push --force-with-lease origin --delete done'
 expect deny  "a lease without a sha"                      "$DEL" 'git push --force-with-lease=done origin --delete done'
 expect deny  "a pin to another sha"                       "$DEL" "git push --force-with-lease=done:$OPEN origin --delete done"
@@ -814,37 +846,48 @@ fi
 # The guard mirrors the delete allow rules (spec 2026-10-28, section 2): a command whose text
 # matches one of them gets its verdict from what the guard parses, because a `*` in a rule
 # cannot prove what git will parse. work is checked out at main's tip and is not on the
-# remote, so a push of it scans clean.
+# remote, so a push of it scans clean. No rule has a git -C form (Michael's decision): a -C
+# delete, or any global option between git and push, matches no rule and keeps today's verdict.
 NOT_A_DELETE_PUSH='Push guard: this command matches a delete allow rule but is not a delete push; reword it so it does not carry the delete form (a commit message quoting it, for example).'
 NOT_DELETE_SHAPE='Push guard: this command matches a delete allow rule but git would not parse it as a delete-only push; push normally, without the delete shape.'
-PINNED="git -C $DEL push --force-with-lease=done:$DONE origin --delete done"
-expect allow "M1 mirror: the printed form with -C, merged and pinned"  "$TMP" "git -C $DEL push --force-with-lease=done:$DONE origin --delete done"
-expect allow "M2 mirror: the same through a -C path with a space"      "$TMP" "git -C '$TMP/del work' push --force-with-lease=done:$DONE origin --delete done"
+PLAIN_REASON="Push guard: this command may run git push in a shape the guard does not check. Run the push as a plain command of its own: git push [options] <remote> <branch> (for another repository: git -C <path> push [options] <remote> <branch>; piped only to tail or head). If the command does not push, keep git and push apart in its text, for example rg 'git pu[s]h'."
+PINNED="git push --force-with-lease=done:$DONE origin --delete done"
+expect allow "M1 a -C delete matches no rule: today's verdict"         "$TMP" "git -C $DEL push --force-with-lease=done:$DONE origin --delete done"
+expect allow "M2 the same through a -C path with a space"              "$TMP" "git -C '$TMP/del work' push --force-with-lease=done:$DONE origin --delete done"
 expect allow "mirror: the bare form, piped to tail with 2>&1"          "$DEL" "git push --force-with-lease=done:$DONE origin --delete done 2>&1 | tail -3"
 expect allow "mirror: a line continuation inside the rule's text"      "$DEL" "git push --force-with-lease=done:$DONE origin \\
 --delete done"
-expect deny  "M3 mirror: --no-pager before push is not bare"           "$TMP" "git -C $DEL --no-pager push --force-with-lease=done:$DONE origin --delete done"
-has_reason   "M3 and the deny names the bare pinned command" "$PINNED" "$TMP" "git -C $DEL --no-pager push --force-with-lease=done:$DONE origin --delete done"
-expect deny  "M4 mirror: --exec-path is not bare"                      "$TMP" "git -C $DEL --exec-path=$TMP push --force-with-lease=done:$DONE origin --delete done"
-has_reason   "M4 and the deny names the bare pinned command" "$PINNED" "$TMP" "git -C $DEL --exec-path=$TMP push --force-with-lease=done:$DONE origin --delete done"
-expect deny  "M4 mirror: a second -C is not bare"                      "$TMP" "git -C $DEL -C $DEL push --force-with-lease=done:$DONE origin --delete done"
-has_reason   "M4 and the deny names the bare pinned command" "$PINNED" "$TMP" "git -C $DEL -C $DEL push --force-with-lease=done:$DONE origin --delete done"
-expect deny  "M4 mirror: a leading GIT_EXEC_PATH is not bare"          "$TMP" "GIT_EXEC_PATH=$TMP git -C $DEL push --force-with-lease=done:$DONE origin --delete done"
-has_reason   "M4 and the deny names the bare pinned command" "$PINNED" "$TMP" "GIT_EXEC_PATH=$TMP git -C $DEL push --force-with-lease=done:$DONE origin --delete done"
-expect deny  "mirror: a command wrapper is not bare"                   "$TMP" "command git -C $DEL push --force-with-lease=done:$DONE origin --delete done"
-has_reason   "and the deny names the bare pinned command" "$PINNED" "$TMP" "command git -C $DEL push --force-with-lease=done:$DONE origin --delete done"
-expect deny  "M5 mirror: -c x.y=z keeps today's deny"                  "$TMP" "git -C $DEL -c x.y=z push --force-with-lease=done:$DONE origin --delete done"
+expect allow "M20 mirror: a quoted first word, merged and pinned: the unquoted verdict" "$DEL" "\"git\" push --force-with-lease=done:$DONE origin --delete done"
+expect allow "M3 --no-pager before push matches no rule: today's verdict" "$TMP" "git -C $DEL --no-pager push --force-with-lease=done:$DONE origin --delete done"
+expect allow "M4 --exec-path matches no rule: today's verdict"         "$TMP" "git -C $DEL --exec-path=$TMP push --force-with-lease=done:$DONE origin --delete done"
+expect allow "M4 a second -C matches no rule: today's verdict"         "$TMP" "git -C $DEL -C $DEL push --force-with-lease=done:$DONE origin --delete done"
+expect allow "M4 GIT_EXEC_PATH before git -C matches no rule: today's verdict" "$TMP" "GIT_EXEC_PATH=$TMP git -C $DEL push --force-with-lease=done:$DONE origin --delete done"
+expect allow "a command wrapper before git -C matches no rule: today's verdict" "$TMP" "command git -C $DEL push --force-with-lease=done:$DONE origin --delete done"
+expect deny  "M5 -c x.y=z after -C keeps today's deny"                 "$TMP" "git -C $DEL -c x.y=z push --force-with-lease=done:$DONE origin --delete done"
 has_reason   "M5 and it is the unsupported-configuration deny" "unsupported push configuration" "$TMP" "git -C $DEL -c x.y=z push --force-with-lease=done:$DONE origin --delete done"
-expect deny  "M6 mirror: a cd prefix is not bare"                      "$TMP" "cd $DEL && git push --force-with-lease=done:$DONE origin --delete done"
-has_reason   "M6 and the deny names git -C <cwd> push" "$PINNED" "$TMP" "cd $DEL && git push --force-with-lease=done:$DONE origin --delete done"
+expect deny  "mirror: a command wrapper is not bare"                   "$DEL" "command $PINNED"
+has_reason   "and the deny names the plain pinned command" "$RUN_HERE" "$DEL" "command $PINNED"
+expect deny  "M4 mirror: a leading GIT_EXEC_PATH is not bare"          "$DEL" "GIT_EXEC_PATH=$TMP $PINNED"
+has_reason   "M4 and the deny names the plain pinned command" "$RUN_HERE" "$DEL" "GIT_EXEC_PATH=$TMP $PINNED"
+expect deny  "M6 mirror: a cd prefix is not bare"                      "$TMP" "cd $DEL && $PINNED"
+has_reason   "M6 and, from outside the checkout, the deny names it and who runs the delete" "in $DELTOP, $RUN_THERE" "$TMP" "cd $DEL && $PINNED"
+lacks_reason "M6 and it prints no git -C form" "git -C" "$TMP" "cd $DEL && $PINNED"
 expect deny  "mirror: a cd prefix and an unpinned delete"              "$TMP" "cd $DEL && git push --force-with-lease=done origin --delete done"
-has_reason   "and the deny names git -C <cwd> push with the pin" "$PINNED" "$TMP" "cd $DEL && git push --force-with-lease=done origin --delete done"
+has_reason   "and the deny names the checkout and the pinned command" "in $DELTOP, $RUN_THERE" "$TMP" "cd $DEL && git push --force-with-lease=done origin --delete done"
+expect deny  "mirror: a cd to the session's own checkout is not bare"  "$DEL" "cd $DEL && $PINNED"
+has_reason   "and the deny names the plain pinned command" "$RUN_HERE" "$DEL" "cd $DEL && $PINNED"
+expect deny  "mirror: a cd to another checkout is not bare"            "$DEL" "cd '$TMP/del work' && $PINNED"
+has_reason   "and the deny says the delete runs from that checkout, or Michael runs it" "in '$SPACETOP', $RUN_THERE" "$DEL" "cd '$TMP/del work' && $PINNED"
+lacks_reason "and it prints no git -C form" "git -C" "$DEL" "cd '$TMP/del work' && $PINNED"
 expect ask   "M7 mirror: an unmerged branch, pinned, in A1's shape"    "$DEL" "git push --force-with-lease=open:$OPEN origin --delete open"
-expect ask   "mirror: an unmerged branch behind --no-pager still asks" "$TMP" "git -C $DEL --no-pager push --force-with-lease=open:$OPEN origin --delete open"
+expect ask   "an unmerged branch behind -C and --no-pager still asks"  "$TMP" "git -C $DEL --no-pager push --force-with-lease=open:$OPEN origin --delete open"
 expect ask   "mirror: the default branch, pinned, in A1's shape"       "$DEL" "git push --force-with-lease=main:$MAIN origin --delete main"
 M8="git push --force-with-lease=work:$MAIN --push-option=\"ci.variable=X= origin --delete x\" origin work"
 expect deny  "M8 mirror: a delete shape quoted inside a push option"   "$DEL" "$M8"
 has_reason   "M8 and the reason is the not-a-delete-shape one" "$NOT_DELETE_SHAPE" "$DEL" "$M8"
+M8Q="\"git\" push --force-with-lease=work:$MAIN --push-option=\"ci.variable=X= origin --delete x\" origin work"
+expect deny  "M8Q mirror: the same behind a quoted first word"         "$DEL" "$M8Q"
+has_reason   "M8Q and the reason is the not-a-delete-shape one" "$NOT_DELETE_SHAPE" "$DEL" "$M8Q"
 expect deny  "M9 an option value that swallowed --delete"              "$DEL" "git push --force-with-lease=work:$MAIN -o --delete origin work"
 M10="git push --force-with-lease=done:$DONE origin --delete --no-verify"
 expect deny  "M10 mirror: a delete with no refspec"                    "$DEL" "$M10"
@@ -858,21 +901,38 @@ has_reason   "M12 and the reason is the not-a-delete-shape one" "$NOT_DELETE_SHA
 M12B="git push --force-with-lease=done:$DONE -o 'ci.variable=X= origin --delete x' origin :done"
 expect deny  "mirror: a real :ref delete under a quoted --delete text"  "$DEL" "$M12B"
 has_reason   "and the reason is the not-a-delete-shape one" "$NOT_DELETE_SHAPE" "$DEL" "$M12B"
-M13="git -C $DEL -c core.fsmonitor=true status push --force-with-lease=a origin --delete b"
-expect deny  "M13 mirror: another git subcommand behind A4's wildcard" "$TMP" "$M13"
-has_reason   "M13 and the reason is the not-a-delete-push one" "$NOT_A_DELETE_PUSH" "$TMP" "$M13"
+expect allow "M13 another git subcommand after -C matches no rule: today's verdict" "$TMP" "git -C $DEL -c core.fsmonitor=true status push --force-with-lease=a origin --delete b"
 expect allow "M14 an update push in no delete shape keeps today's verdict" "$DEL" "git push --force-with-lease=work:$MAIN origin work"
-expect allow "M15 mirror: a dry run in A1's shape"                     "$DEL" "git push --force-with-lease=done:$DONE origin --delete done --dry-run"
-M16="git -C $DEL commit --allow-empty -m 'quote: push --force-with-lease=a origin --delete b'"
-expect deny  "M16 mirror: a commit message quoting the delete form"    "$TMP" "$M16"
-has_reason   "M16 and the reason is the not-a-delete-push one" "$NOT_A_DELETE_PUSH" "$TMP" "$M16"
+# A mirrored dry run passes only when it is bare, after the option denies (spec 2026-10-28,
+# dry runs); a dry run that matches no rule keeps today's early return.
+DRY_LEAD='Push guard: this dry run matches a delete allow rule, so it passes only as a bare git push (no wrapper, variable assignment, cd prefix or git option before push)'
+expect allow "M15 mirror: a dry run in A1's shape"                     "$DEL" "$PINNED --dry-run"
+expect deny  "M15W mirror: a dry run behind a command wrapper"         "$DEL" "command $PINNED --dry-run"
+has_reason   "M15W and the deny names the bare dry run" "$DRY_LEAD: $PINNED --dry-run" "$DEL" "command $PINNED --dry-run"
+expect deny  "M15A mirror: a dry run behind an assignment"             "$DEL" "GIT_EXEC_PATH=$TMP $PINNED -n"
+has_reason   "M15A and the deny names the bare dry run" "$DRY_LEAD: $PINNED -n" "$DEL" "GIT_EXEC_PATH=$TMP $PINNED -n"
+expect deny  "M15C mirror: a dry run behind a cd prefix"               "$DEL" "cd $DEL && $PINNED --dry-run"
+has_reason   "M15C and the deny names the bare dry run" "$DRY_LEAD: $PINNED --dry-run" "$DEL" "cd $DEL && $PINNED --dry-run"
+has_reason   "M15C from outside the checkout, it names the checkout" \
+             "$DRY_LEAD. It runs in $DELTOP, which is not this session's checkout, so it must run from that checkout, or Michael runs it: $PINNED --dry-run" \
+             "$TMP" "cd $DEL && $PINNED --dry-run"
+expect deny  "M15G mirror: a dry run keeps the option denies (GIT_DIR)" "$DEL" "GIT_DIR=$DEL/.git $PINNED --dry-run"
+has_reason   "M15G and it is the unsupported-configuration deny" "unsupported push configuration for the push guard: GIT_DIR" "$DEL" "GIT_DIR=$DEL/.git $PINNED --dry-run"
+expect allow "a dry run in no rule's shape keeps today's early return" "$DEL" "GIT_DIR=$DEL/.git git push origin --delete done --dry-run"
+expect allow "a -C dry run matches no rule: today's verdict"          "$TMP" "git -C $DEL push --force-with-lease=done:$DONE origin --delete done --dry-run"
+M16="git commit --allow-empty -m 'git push --force-with-lease=a origin --delete b'"
+expect deny  "M16 mirror: a commit message quoting the delete form"    "$DEL" "$M16"
+has_reason   "M16 and the reason is the not-a-delete-push one" "$NOT_A_DELETE_PUSH" "$DEL" "$M16"
 expect allow "M17 an unrelated commit stays silent"                    "$TMP" "git -C $DEL commit --allow-empty -m 'tidy the fixtures'"
 M18="git fetch -q && git push --force-with-lease=done:$DONE origin --delete done"
 expect deny  "mirror: a compound command carrying the delete form"     "$DEL" "$M18"
-has_reason   "and the reason is the not-a-delete-push one" "$NOT_A_DELETE_PUSH" "$DEL" "$M18"
+has_reason   "and the reason is the plain-command one" "$PLAIN_REASON" "$DEL" "$M18"
 M19="git push --force-with-lease=a origin --delete 'b"
 expect deny  "mirror: unbalanced quotes around the delete form"        "$DEL" "$M19"
-has_reason   "and the reason is the not-a-delete-push one" "$NOT_A_DELETE_PUSH" "$DEL" "$M19"
+has_reason   "and the reason is the plain-command one" "$PLAIN_REASON" "$DEL" "$M19"
+M21="$PINNED && git branch -d done"
+expect deny  "M21 mirror: a pinned delete chained to git branch -d"    "$DEL" "$M21"
+has_reason   "M21 and the reason is the plain-command one" "$PLAIN_REASON" "$DEL" "$M21"
 
 # From here on the remote moves: another clone merges far into main and pushes both.
 OTHER="$TMP/delother"

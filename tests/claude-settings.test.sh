@@ -108,11 +108,11 @@ jq_is '[.permissions.allow[]
 # The delete-push rules are the one exemption: the push guard mirrors them (spec
 # 2026-10-28-reload-functions-merged-deletes, section 2), so a push matching one is
 # re-checked there. Membership in this list is pinned by the checks below.
-DELETE_PUSH_RULES='["Bash(git push --force-with-lease=* origin --delete *)","Bash(git push --force-with-lease=* origin -d *)","Bash(git -C * push --force-with-lease=* origin --delete *)"]'
+DELETE_PUSH_RULES='["Bash(git push --force-with-lease=* origin --delete *)","Bash(git push --force-with-lease=* origin -d *)"]'
 jq_is "[.permissions.allow[]
         | select(. as \$r | $DELETE_PUSH_RULES | index(\$r) | not)
         | select(test(\"\\\\b(create|delete|remove|rm|push|merge|apply|install|publish|close|edit|update|set)\\\\b\"))]
-       | length" 0 "no mutating verb is allowlisted, bar the three pinned delete-push rules"
+       | length" 0 "no mutating verb is allowlisted, bar the two pinned delete-push rules"
 # Bash(spec) or a single-host WebFetch(domain:host) — still a closed form. Widened
 # 2026-08-24 when the launchpad.37signals.com rule (basecamp OAuth) moved here out of
 # settings.local.json; anything looser would re-admit the unclosed-paren class of typo.
@@ -127,14 +127,17 @@ jq_is '.permissions.allow | index("Bash(glab api *)")' null \
 jq_is '.permissions.allow | index("Bash(sdd-clean *)") != null' true \
       "sdd-clean is allowlisted, so a finished plan's cleanup needs no prompt"
 # Merged-branch deletes (spec 2026-10-28-reload-functions-merged-deletes, section 2): the
-# three push rules are mirrored by DELETE_ALLOW_RULES in git-push-guard.py, which denies
-# anything they match that is not a real delete-only push.
+# two push rules are mirrored by DELETE_ALLOW_RULES in git-push-guard.py, which denies
+# anything they match that is not a real delete-only push. No git -C rule (Michael's
+# decision, 2026-10-28): its * before the subcommand matched what the guard cannot judge.
+GIT_RULES='["Bash(git push --force-with-lease=* origin --delete *)","Bash(git push --force-with-lease=* origin -d *)","Bash(git fetch --prune)","Bash(git fetch --prune origin)"]'
 for r in 'Bash(git push --force-with-lease=* origin --delete *)' \
          'Bash(git push --force-with-lease=* origin -d *)' \
-         'Bash(git -C * push --force-with-lease=* origin --delete *)' \
          'Bash(git fetch --prune)' 'Bash(git fetch --prune origin)'; do
   jq_is ".permissions.allow | index(\"$r\") != null" true "allowlisted: $r"
 done
+jq_is "[.permissions.allow[] | select(startswith(\"Bash(git \"))] | sort == ($GIT_RULES | sort)" true \
+      "the allowlisted git rules are exactly the four delete and fetch rules"
 GUARD="$SRC/dot_claude/git-push-guard.py"
 GUARD_RULES=$(/usr/bin/python3 -I -c 'import runpy,json,sys; print(json.dumps(sorted(runpy.run_path(sys.argv[1])["DELETE_ALLOW_RULES"])))' "$GUARD" 2>&1)
 jq_is "[.permissions.allow[] | select(test(\"^Bash\\\\(git .*\\\\bpush\\\\b\"))] | sort == ($GUARD_RULES)" true \
@@ -170,16 +173,26 @@ m_is 'lsof' 0 "model: legacy 'ls:*' does not match 'lsof'"
 OUT=$FIX_SAVE
 for c in 'git push' 'git push origin feat' 'git push --force-with-lease=feat:abc origin feat' \
          'git push origin main' 'git -C /r push origin main' \
+         'git -C /r push --force-with-lease=b:abc origin --delete b' \
          "git fetch --prune origin '+refs/heads/*:refs/heads/*'" 'git -C /r fetch --prune origin'; do
   m_is "$c" 0 "no allow rule matches: $c"
 done
 for c in 'git push --force-with-lease=b:abc origin --delete b' \
-         'git -C /r push --force-with-lease=b:abc origin --delete b' \
          'git push --force-with-lease=b:abc origin -d b' 'git fetch --prune origin'; do
   m_is "$c" 1 "exactly one allow rule matches: $c"
 done
 jq_is '[.permissions.allow[] | select(test("\\*.*:\\*\\)$"))] | length' 0 \
       "no allow rule ends in :* with another * before it"
+# No * before the subcommand: Claude Code warns on such a rule, since for git a -c or
+# --exec-path in it runs any command (spec 2026-10-28, evidence a). The words up to the
+# subcommand are the first word, any words starting with -, then the first other word; a *
+# in any of them fails, bar a lone * argument list right after the command name (sdd-clean *).
+jq_is '[.permissions.allow[] | select(startswith("Bash("))
+        | .[5:-1] | [splits(" +")] | map(select(. != "")) as $w
+        | ([range(1; $w | length) | select($w[.] | startswith("-") | not)] | first // ($w | length)) as $k
+        | select(($w[0:$k + 1] | any(contains("*")))
+                 and (($k == 1 and ($w | length) == 2 and $w[1] == "*") | not))]
+       | length' 0 "no allow rule has a * before its subcommand"
 # Hooks and the statusline run outside the sandbox: their interpreter is named by absolute
 # path, so nothing on PATH can stand in for it (spec 2026-10-16, section 2).
 jq_is '[.hooks[][]?.hooks[]?.command, .statusLine.command

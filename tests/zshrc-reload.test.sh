@@ -64,15 +64,15 @@ run() {
   cat "$T/case.err" >> "$T/all.err"
   return $rc
 }
-# ln <n> <text>: line n of text
-ln() { printf '%s\n' "$2" | sed -n "${1}p"; }
+# line_n <n> <text>: line n of text
+line_n() { printf '%s\n' "$2" | sed -n "${1}p"; }
 want() { printf 'out=[%s] err=[%s] f=[%s]' "$1" "$2" "$3"; }
 
 # Z1: registered in preexec, not precmd; `stat` stays a command
 out="$(run "$V1" 'print -r -- "pre=[$REG_PRE] precmd=[$REG_PRECMD] stat=[$STAT_KIND]"')"
-is "Z1 the hook is in preexec_functions" "$(ln 1 "$out" | sed -n 's/^\(pre=\[[^]]*\]\).*/\1/p')" 'pre=[_zshrc_reload_functions]'
-is "Z1 and not in precmd_functions" "$(ln 1 "$out" | sed -n 's/.*\(precmd=\[[^]]*\]\).*/\1/p')" 'precmd=[]'
-is "Z1 stat is no builtin" "$(ln 1 "$out" | sed -n 's/.*\(stat=\[[^]]*\]\)$/\1/p')" 'stat=[stat: command]'
+is "Z1 the hook is in preexec_functions" "$(line_n 1 "$out" | sed -n 's/^\(pre=\[[^]]*\]\).*/\1/p')" 'pre=[_zshrc_reload_functions]'
+is "Z1 and not in precmd_functions" "$(line_n 1 "$out" | sed -n 's/.*\(precmd=\[[^]]*\]\).*/\1/p')" 'precmd=[]'
+is "Z1 stat is no builtin" "$(line_n 1 "$out" | sed -n 's/.*\(stat=\[[^]]*\]\)$/\1/p')" 'stat=[stat: command]'
 
 # Z2: unchanged file, nothing printed and nothing re-sourced
 out="$(run $'(( ++LOADS ))\n'"$V1" 'L0=$LOADS; call; print -r -- "out=[$CALL_OUT] err=[$CALL_ERR] loads=$L0,$LOADS"')"
@@ -88,29 +88,29 @@ is "Z4 an earlier mtime reloads" "$out" "$(want '' "$RELOADED" v2)"
 
 # Z5: unclosed brace keeps the old function; a second call is silent; a fix reloads
 out="$(run "$V1" "print -r -- 'f() { print BAD' > \$FN; touch -t \$T1 \$FN; call; show; call; show; put v3 \$T2; call; show")"
-is "Z5 a syntax error keeps the old f with one failure line" "$(ln 1 "$out")" "$(want '' "$FAILED" v1)"
-is "Z5 a second call is silent" "$(ln 2 "$out")" "$(want '' '' v1)"
-is "Z5 a fixed file with a new mtime reloads" "$(ln 3 "$out")" "$(want '' "$RELOADED" v3)"
+is "Z5 a syntax error keeps the old f with one failure line" "$(line_n 1 "$out")" "$(want '' "$FAILED" v1)"
+is "Z5 a second call is silent" "$(line_n 2 "$out")" "$(want '' '' v1)"
+is "Z5 a fixed file with a new mtime reloads" "$(line_n 3 "$out")" "$(want '' "$RELOADED" v3)"
 
 # Z6: unreadable file with a new mtime; chmod alone does not retry
 out="$(run "$V1" 'put v2 $T1; chmod 000 $FN; call; show; chmod 644 $FN; call; show')"
-is "Z6 mode 000 keeps the old f with one failure line" "$(ln 1 "$out")" "$(want '' "$FAILED" v1)"
-is "Z6 chmod alone, mtime unchanged, reloads nothing" "$(ln 2 "$out")" "$(want '' '' v1)"
+is "Z6 mode 000 keeps the old f with one failure line" "$(line_n 1 "$out")" "$(want '' "$FAILED" v1)"
+is "Z6 chmod alone, mtime unchanged, reloads nothing" "$(line_n 2 "$out")" "$(want '' '' v1)"
 
 # Z7: file moved away, then back with a new mtime
 out="$(run "$V1" "mv \$FN \$FN.away; call; show; call; show
 print -r -- 'f() { print v2 }' > \$FN.away; touch -t \$T1 \$FN.away; mv \$FN.away \$FN; call; show")"
-is "Z7 a missing file keeps the old f with one failure line" "$(ln 1 "$out")" "$(want '' "$FAILED" v1)"
-is "Z7 a second call is silent" "$(ln 2 "$out")" "$(want '' '' v1)"
-is "Z7 moved back with a new mtime reloads" "$(ln 3 "$out")" "$(want '' "$RELOADED" v2)"
+is "Z7 a missing file keeps the old f with one failure line" "$(line_n 1 "$out")" "$(want '' "$FAILED" v1)"
+is "Z7 a second call is silent" "$(line_n 2 "$out")" "$(want '' '' v1)"
+is "Z7 moved back with a new mtime reloads" "$(line_n 3 "$out")" "$(want '' "$RELOADED" v2)"
 
 # Z8: an alias that clashes with a later definition fails in the live shell, so f stays
 out="$(run "$V1" "alias ll='ls -l'
 print -r -- 'f() { print v2 }
 ll() { print ll }' > \$FN; touch -t \$T1 \$FN; call; show
 unalias ll; touch -t \$T2 \$FN; call; show")"
-is "Z8 an alias clash keeps the old f with one failure line" "$(ln 1 "$out")" "$(want '' "$FAILED" v1)"
-is "Z8 after unalias and a new mtime it reloads" "$(ln 2 "$out")" "$(want '' "$RELOADED" v2)"
+is "Z8 an alias clash keeps the old f with one failure line" "$(line_n 1 "$out")" "$(want '' "$FAILED" v1)"
+is "Z8 after unalias and a new mtime it reloads" "$(line_n 2 "$out")" "$(want '' "$RELOADED" v2)"
 
 # Z9: the file is replaced between the stat and the read. zstat is shadowed by a function
 # that calls the builtin and then, once, renames a newer version over the file.
@@ -120,14 +120,14 @@ zstat() { builtin zstat \"\$@\"; local rc=\$?
   if (( SWAP )); then SWAP=0; print -r -- 'f() { print v3 }' > \$TT/swap; touch -t \$T2 \$TT/swap; mv \$TT/swap \$FN; fi
   return \$rc }
 call; show; call; show; call; show")"
-is "Z9 the newer text is loaded and the reload line printed" "$(ln 1 "$out")" "$(want '' "$RELOADED" v3)"
-is "Z9 the next call reloads it once more" "$(ln 2 "$out")" "$(want '' "$RELOADED" v3)"
-is "Z9 the call after is silent" "$(ln 3 "$out")" "$(want '' '' v3)"
+is "Z9 the newer text is loaded and the reload line printed" "$(line_n 1 "$out")" "$(want '' "$RELOADED" v3)"
+is "Z9 the next call reloads it once more" "$(line_n 2 "$out")" "$(want '' "$RELOADED" v3)"
+is "Z9 the call after is silent" "$(line_n 3 "$out")" "$(want '' '' v3)"
 
 # Z10: a function absent from the new file stays defined
 out="$(run $'f() { print v1 }\ng() { print gv }' 'put v2 $T1; call; show; print -r -- "g=[$(g)]"')"
-is "Z10 the new f is loaded" "$(ln 1 "$out")" "$(want '' "$RELOADED" v2)"
-is "Z10 a function the new file lacks stays defined" "$(ln 2 "$out")" 'g=[gv]'
+is "Z10 the new f is loaded" "$(line_n 1 "$out")" "$(want '' "$RELOADED" v2)"
+is "Z10 a function the new file lacks stays defined" "$(line_n 2 "$out")" 'g=[gv]'
 
 # Z12: nothing a case script did wrote to its stderr, which would be a startup error or
 # warning from the new block in dot_zshrc (the hook's own stderr is captured by `call`)

@@ -100,10 +100,10 @@ and merge the canonical one first.
   passed/total.
 - Never commit, print or log secrets. Check staged changes before every commit and push.
 - Don't create files the task doesn't need, such as unrequested docs, notes or READMEs.
-- **Every agent confirms first** before force-pushing without a lease, rewriting others'
-  history, deleting branches, tags, data or infrastructure, discarding uncommitted work it
-  did not create, or pushing to the default branch. A lease on your own branch needs none, nor
-  does a merged branch's pinned delete and `git branch -d`. Harness prompts are a backstop.
+- **Every agent confirms first** before force-pushing without a lease, rewriting history
+  others have, deleting branches, tags, data or infrastructure, discarding uncommitted work
+  it did not create, or pushing to the default branch. Exempt: a lease on your own branch, a
+  merged branch's pinned delete, `git branch -d`. Harness prompts are a backstop, not the check.
 
 ## Autonomy
 
