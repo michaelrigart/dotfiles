@@ -5,7 +5,37 @@ source "$HOME/.config/zsh/config"
 source "$ZSH/oh-my-zsh.sh"
 source "$HOMEBREW_PREFIX/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"
 source "$HOME/.config/zsh/aliases"
+
+# Reload the functions file when it changes, so a shell opened before `chezmoi apply` does
+# not keep running the old code. `-F … b:zstat` loads zstat alone: a plain `zmodload
+# zsh/stat` adds a `stat` builtin that shadows /usr/bin/stat. The mtime is taken before the
+# text is read, so a file replaced in between reloads once more at the next command. The
+# hook lives here, never in the functions file, so a reload never redefines the running
+# function. It runs on preexec: a prompt drawn before the apply must not run one stale
+# command. A failed load keeps the old functions: the text is tried in a subshell, which
+# inherits the live aliases and options, and only then run for real.
+zmodload -F zsh/stat b:zstat 2>/dev/null && {
+  typeset -g _zshrc_fn=$HOME/.config/zsh/functions
+  typeset -ga _zshrc_fn_mtime
+  zstat -A _zshrc_fn_mtime +mtime -- $_zshrc_fn 2>/dev/null || _zshrc_fn_mtime=missing
+}
 source "$HOME/.config/zsh/functions"
+if (( $+builtins[zstat] )); then
+  _zshrc_reload_functions() {
+    local -a m
+    local body
+    zstat -A m +mtime -- $_zshrc_fn 2>/dev/null || m=missing
+    [[ $m == $_zshrc_fn_mtime ]] && return 0
+    _zshrc_fn_mtime=$m
+    if [[ $m != missing ]] && body=$(<$_zshrc_fn) 2>/dev/null &&
+        ( eval "$body" ) >/dev/null 2>&1 && eval "$body"; then
+      print -ru2 -- 'zsh: reloaded ~/.config/zsh/functions'
+    else
+      print -ru2 -- 'zsh: cannot reload ~/.config/zsh/functions; keeping the old functions'
+    fi
+  }
+  autoload -Uz add-zsh-hook && add-zsh-hook preexec _zshrc_reload_functions
+fi
 
 # Keybindings — must come after oh-my-zsh.sh, which resets the emacs keymap and
 # drops any custom bind set earlier. Ghostty maps Cmd-k → Alt-k (its built-in

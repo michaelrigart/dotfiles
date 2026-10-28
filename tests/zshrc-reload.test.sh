@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+# Tests for the functions reload hook in dot_zshrc: an interactive shell re-reads
+# ~/.config/zsh/functions when its mtime changes (spec 2026-10-28, section 1).
+#
+# Each case starts a fresh `env -i /bin/zsh -f` that sources the SOURCE dot_zshrc with every
+# file it sources stubbed in a temp HOME (whose name holds a space), then a functions
+# fixture. The script asserts the registration, removes it, and calls the hook directly:
+# zsh 5.9 runs preexec hooks before each line of a non-interactive script too, which would
+# reload between the test's own lines. mtimes are set with `touch -t`, never by waiting.
+#
+# Split from zshrc.test.sh, which needs a pty, so this one runs sandboxed.
+#
+#   ./tests/zshrc-reload.test.sh   (sandboxed is fine)
+set -uo pipefail
+SRC="$(cd "$(dirname "$0")/.." && pwd)"
+ZSHRC="$SRC/dot_zshrc"
+FUNCS="$SRC/dot_config/zsh/functions"
+[ -f "$ZSHRC" ] || { echo "missing script under test: $ZSHRC" >&2; exit 2; }
+[ -f "$FUNCS" ] || { echo "missing functions file: $FUNCS" >&2; exit 2; }
+[ -x /bin/zsh ] || { echo "no /bin/zsh" >&2; exit 2; }
+pass=0; fail=0
+_pass() { printf '  PASS: %s\n' "$1"; pass=$((pass + 1)); }
+_fail() { printf '  FAIL: %s\n    | got: %s\n' "$1" "$2"; fail=$((fail + 1)); }
+is() { if [ "$2" = "$3" ]; then _pass "$1"; else _fail "$1" "$2"; fi; }
+
+T="$(mktemp -d "${TMPDIR:-/tmp}/zshrcreload.XXXXXX")"
+trap 'chmod -R u+rw "$T" 2>/dev/null; rm -rf "$T"' EXIT
+HOMEDIR="$T/ho me"
+FN="$HOMEDIR/.config/zsh/functions"
+mkdir -p "$HOMEDIR/.config/zsh" "$T/omz" "$T/brew/share/zsh-syntax-highlighting"
+for f in zshenv config aliases; do : > "$HOMEDIR/.config/zsh/$f"; done
+: > "$T/omz/oh-my-zsh.sh"
+: > "$T/brew/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"
+
+RELOADED='zsh: reloaded ~/.config/zsh/functions'
+FAILED='zsh: cannot reload ~/.config/zsh/functions; keeping the old functions'
+V1='f() { print v1 }'
+
+# The prelude: source dot_zshrc against the fixture, record the registration, remove it, and
+# define the helpers the case bodies use. `call` runs the hook in this shell, stdout and
+# stderr to files; `show` prints what the last call wrote and what `f` now prints.
+cat > "$T/prelude.zsh" <<'ZSH'
+autoload -Uz add-zsh-hook
+FN=$HOME/.config/zsh/functions
+T1=202601010100.00; T2=202601010200.00; T3=202601010300.00
+source $DOTZSHRC
+REG_PRE=${preexec_functions[(r)_zshrc_reload_functions]}
+REG_PRECMD=${precmd_functions[(r)_zshrc_reload_functions]}
+STAT_KIND=$(whence -w stat)
+add-zsh-hook -d preexec _zshrc_reload_functions
+put() { print -r -- "f() { print $1 }" > $FN; touch -t $2 $FN }
+call() { _zshrc_reload_functions >$TT/out 2>$TT/err; CALL_OUT=$(<$TT/out); CALL_ERR=$(<$TT/err) }
+show() { print -r -- "out=[$CALL_OUT] err=[$CALL_ERR] f=[$(f)]" }
+ZSH
+
+# run <fixture text> <case body> -> the case's stdout (the script's own stderr is dropped)
+run() {
+  chmod 644 "$FN" 2>/dev/null; rm -f "$FN" "$FN.away"
+  printf '%s\n' "$1" > "$FN"; touch -t 202601010000.00 "$FN"
+  { cat "$T/prelude.zsh"; printf '%s\n' "$2"; } > "$T/case.zsh"
+  env -i HOME="$HOMEDIR" ZSH="$T/omz" HOMEBREW_PREFIX="$T/brew" PATH=/usr/bin:/bin \
+    DOTZSHRC="$ZSHRC" TT="$T" /bin/zsh -f "$T/case.zsh" 2>"$T/case.err"
+}
+# ln <n> <text>: line n of text
+ln() { printf '%s\n' "$2" | sed -n "${1}p"; }
+want() { printf 'out=[%s] err=[%s] f=[%s]' "$1" "$2" "$3"; }
+
+# Z1: registered in preexec, not precmd; `stat` stays a command
+out="$(run "$V1" 'print -r -- "pre=[$REG_PRE] precmd=[$REG_PRECMD] stat=[$STAT_KIND]"')"
+is "Z1 the hook is in preexec_functions" "$(ln 1 "$out" | sed -n 's/^\(pre=\[[^]]*\]\).*/\1/p')" 'pre=[_zshrc_reload_functions]'
+is "Z1 and not in precmd_functions" "$(ln 1 "$out" | sed -n 's/.*\(precmd=\[[^]]*\]\).*/\1/p')" 'precmd=[]'
+is "Z1 stat is no builtin" "$(ln 1 "$out" | sed -n 's/.*\(stat=\[[^]]*\]\)$/\1/p')" 'stat=[stat: command]'
+
+# Z2: unchanged file, nothing printed and nothing re-sourced
+out="$(run $'(( ++LOADS ))\n'"$V1" 'L0=$LOADS; call; print -r -- "out=[$CALL_OUT] err=[$CALL_ERR] loads=$L0,$LOADS"')"
+is "Z2 an unchanged file is silent and not re-sourced" "$out" 'out=[] err=[] loads=1,1'
+
+# Z3: new body, later mtime
+out="$(run "$V1" 'put v2 $T1; call; show')"
+is "Z3 a changed file loads the new function, stderr is the reload line" "$out" "$(want '' "$RELOADED" v2)"
+
+# Z4: an earlier mtime than the recorded one reloads too
+out="$(run "$V1" 'put v2 201912312359.00; call; show')"
+is "Z4 an earlier mtime reloads" "$out" "$(want '' "$RELOADED" v2)"
+
+# Z5: unclosed brace keeps the old function; a second call is silent; a fix reloads
+out="$(run "$V1" "print -r -- 'f() { print BAD' > \$FN; touch -t \$T1 \$FN; call; show; call; show; put v3 \$T2; call; show")"
+is "Z5 a syntax error keeps the old f with one failure line" "$(ln 1 "$out")" "$(want '' "$FAILED" v1)"
+is "Z5 a second call is silent" "$(ln 2 "$out")" "$(want '' '' v1)"
+is "Z5 a fixed file with a new mtime reloads" "$(ln 3 "$out")" "$(want '' "$RELOADED" v3)"
+
+# Z6: unreadable file with a new mtime; chmod alone does not retry
+out="$(run "$V1" 'put v2 $T1; chmod 000 $FN; call; show; chmod 644 $FN; call; show')"
+is "Z6 mode 000 keeps the old f with one failure line" "$(ln 1 "$out")" "$(want '' "$FAILED" v1)"
+is "Z6 chmod alone, mtime unchanged, reloads nothing" "$(ln 2 "$out")" "$(want '' '' v1)"
+
+# Z7: file moved away, then back with a new mtime
+out="$(run "$V1" "mv \$FN \$FN.away; call; show; call; show
+print -r -- 'f() { print v2 }' > \$FN.away; touch -t \$T1 \$FN.away; mv \$FN.away \$FN; call; show")"
+is "Z7 a missing file keeps the old f with one failure line" "$(ln 1 "$out")" "$(want '' "$FAILED" v1)"
+is "Z7 a second call is silent" "$(ln 2 "$out")" "$(want '' '' v1)"
+is "Z7 moved back with a new mtime reloads" "$(ln 3 "$out")" "$(want '' "$RELOADED" v2)"
+
+# Z8: an alias that clashes with a later definition fails in the live shell, so f stays
+out="$(run "$V1" "alias ll='ls -l'
+print -r -- 'f() { print v2 }
+ll() { print ll }' > \$FN; touch -t \$T1 \$FN; call; show
+unalias ll; touch -t \$T2 \$FN; call; show")"
+is "Z8 an alias clash keeps the old f with one failure line" "$(ln 1 "$out")" "$(want '' "$FAILED" v1)"
+is "Z8 after unalias and a new mtime it reloads" "$(ln 2 "$out")" "$(want '' "$RELOADED" v2)"
+
+# Z9: the file is replaced between the stat and the read. zstat is shadowed by a function
+# that calls the builtin and then, once, renames a newer version over the file.
+out="$(run "$V1" "put v2 \$T1
+SWAP=1
+zstat() { builtin zstat \"\$@\"; local rc=\$?
+  if (( SWAP )); then SWAP=0; print -r -- 'f() { print v3 }' > \$TT/swap; touch -t \$T2 \$TT/swap; mv \$TT/swap \$FN; fi
+  return \$rc }
+call; show; call; show; call; show")"
+is "Z9 the newer text is loaded and the reload line printed" "$(ln 1 "$out")" "$(want '' "$RELOADED" v3)"
+is "Z9 the next call reloads it once more" "$(ln 2 "$out")" "$(want '' "$RELOADED" v3)"
+is "Z9 the call after is silent" "$(ln 3 "$out")" "$(want '' '' v3)"
+
+# Z10: a function absent from the new file stays defined
+out="$(run $'f() { print v1 }\ng() { print gv }' 'put v2 $T1; call; show; print -r -- "g=[$(g)]"')"
+is "Z10 the new f is loaded" "$(ln 1 "$out")" "$(want '' "$RELOADED" v2)"
+is "Z10 a function the new file lacks stays defined" "$(ln 2 "$out")" 'g=[gv]'
+
+# Z11: the real functions file holds the two invariants the reload relies on
+bad="$(grep -nEv '^(#.*|[[:space:]].*|\}|[A-Za-z_][A-Za-z0-9_.:-]*\(\) \{)?$' "$FUNCS")"
+is "Z11 every top-level line is a comment, blank, } or name() {" "$bad" ''
+reads="$(grep -nF -e '$0' -e funcsourcetrace -e functions_source -e '%x' -e '%N' -e LINENO "$FUNCS")"
+is "Z11 no function reads where it was loaded from" "$reads" ''
+
+printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
+[ "$fail" -eq 0 ]

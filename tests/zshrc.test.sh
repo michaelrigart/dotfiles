@@ -9,6 +9,8 @@
 # prompt Ghostty answers ED2 by scrolling the screen into the scrollback. A SIGURG while a
 # command runs must clear nothing, print no error, and not cut the command list short; the
 # command stays blocked on the terminal until the test has signalled and releases it.
+# Last, with the prompt drawn, the functions file changes on disk; Enter on `f` must print the
+# reload line (the preexec hook) and only then the new output.
 #
 # Needs a pseudo-terminal, which the sandbox does not provide; there it exits 2.
 #   ./tests/zshrc.test.sh
@@ -27,13 +29,15 @@ is() { if [ "$2" = "$3" ]; then _pass "$1"; else _fail "$1" "$2"; fi; }
 T="$(mktemp -d "${TMPDIR:-/tmp}/zshrc.XXXXXX")"
 trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/home/.config/zsh" "$T/omz" "$T/brew/share/zsh-syntax-highlighting"
-for f in zshenv config aliases functions; do : > "$T/home/.config/zsh/$f"; done
+for f in zshenv config aliases; do : > "$T/home/.config/zsh/$f"; done
+printf 'f() { print OLD-F }\n' > "$T/home/.config/zsh/functions"
 : > "$T/omz/oh-my-zsh.sh"
 : > "$T/brew/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"
 
 # Prints one line of yes/no fields, or a diagnostic starting with "error": for Alt-k, then
 # for SIGURG at the prompt, "<ed2> <ed3-after-ed2> <prompt-top-after> <prompt-bottom-after>";
-# then, for SIGURG while `head -n 1` holds the foreground, "<ed2> <zle error> <list ran on>".
+# then, for SIGURG while `head -n 1` holds the foreground, "<ed2> <zle error> <list ran on>";
+# then, for a changed functions file and Enter on `f`, "<reload line> <before the new output>".
 # Every wait is for a marker, with a timeout only as a bound.
 result="$("$PY" -I - "$ZSHRC" "$T" <<'PY' 2>"$T/py.err"
 import os, pty, select, signal, sys, time
@@ -86,6 +90,15 @@ os.write(fd, b"release\r")
 busy = read_until(b"AFTER-42")
 busy += read_until(b"BOTTOM> ")
 fields += [yn(b"\x1b[2J" in busy), yn(b"ZLE" in busy), yn(b"AFTER-42" in busy)]
+fnp = tmp + "/home/.config/zsh/functions"
+old = os.stat(fnp).st_mtime
+with open(fnp, "w") as fh:
+    fh.write("f() { print NEW-F }\n")
+os.utime(fnp, (old + 60, old + 60))
+os.write(fd, b"f\r")
+reload_out = read_until(b"NEW-F")
+line = b"zsh: reloaded ~/.config/zsh/functions"
+fields += [yn(line in reload_out), yn(0 <= reload_out.find(line) < reload_out.find(b"NEW-F"))]
 os.kill(pid, 9)
 os.waitpid(pid, 0)
 print(" ".join(fields))
@@ -96,7 +109,7 @@ case "$result" in
   nopty*) echo "INCONCLUSIVE: no pseudo-terminal ($result); run it unsandboxed" >&2; exit 2 ;;
   ''|error*) _fail "the pty run completed" "${result:-$(tail -3 "$T/py.err")}" ;;
   *)
-    read -r k2 k3 ktop kbot u2 u3 utop ubot b2 berr bdone <<<"$result"
+    read -r k2 k3 ktop kbot u2 u3 utop ubot b2 berr bdone rl rlorder <<<"$result"
     is "Alt-k clears the screen (ED2)" "$k2" yes
     is "the scrollback erase (ED3) follows the ED2" "$k3" yes
     is "the prompt's top line is redrawn after the clear" "$ktop" yes
@@ -107,7 +120,9 @@ case "$result" in
     is "and its bottom line" "$ubot" yes
     is "SIGURG while a command runs clears nothing" "$b2" no
     is "and prints no zle error" "$berr" no
-    is "and the command list still runs to the end" "$bdone" yes ;;
+    is "and the command list still runs to the end" "$bdone" yes
+    is "a changed functions file prints the reload line on the next command" "$rl" yes
+    is "and the reload line comes before the new function's output" "$rlorder" yes ;;
 esac
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
