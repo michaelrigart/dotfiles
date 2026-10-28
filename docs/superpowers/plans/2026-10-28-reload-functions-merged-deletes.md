@@ -89,19 +89,20 @@
   - M5 the same with `-c x.y=z`: deny (today's unsupported-configuration reason, unchanged).
   - M6 `cd $DEL && git push --force-with-lease=done:$DONE origin --delete done` from `$TMP`: deny; the reason names `git -C $DEL push …`.
   - M7 A1's shape on the unmerged branch, pinned: ask (existing "an unmerged branch, pinned" already covers it; keep it).
-  - M8 `git push --force-with-lease=feat:$DONE --push-option="ci.variable=X= origin --delete x" origin feat`: deny; `has_reason` matches `NOT_DELETE_SHAPE`.
-  - M9 `git push --force-with-lease=feat:$DONE -o --delete origin feat`: deny (today's push-option check; it does not reach the mirror).
+  - M8, M9, M12 and M14 push `$DEL`'s `work` branch (checked out at `main`'s tip, not on the remote, so its scan is clean) with the lease `work:$MAIN`.
+  - M8 `git push --force-with-lease=work:$MAIN --push-option="ci.variable=X= origin --delete x" origin work`: deny; `has_reason` matches `NOT_DELETE_SHAPE`. Allowed today: the spoofed update gets through.
+  - M9 `git push --force-with-lease=work:$MAIN -o --delete origin work`: deny (today's push-option check; it does not reach the mirror).
   - M10 `git push --force-with-lease=done:$DONE origin --delete --no-verify` (no refspec): deny with `NOT_DELETE_SHAPE`.
   - M11 `git push --force-with-lease=done:$DONE origin --delete done --force`: deny with `NOT_DELETE_SHAPE` (today: ask).
-  - M12 spacing: `git  push --force-with-lease=feat:$DONE --push-option="ci.variable=X=  origin	--delete x" origin feat` (two spaces, a tab): deny with `NOT_DELETE_SHAPE`.
+  - M12 spacing: `git  push --force-with-lease=work:$MAIN --push-option="ci.variable=X=  origin	--delete x" origin work` (two spaces, a tab): deny with `NOT_DELETE_SHAPE`. Allowed today.
   - M13 `git -C $DEL -c core.fsmonitor=true status push --force-with-lease=a origin --delete b`: deny with `NOT_A_DELETE_PUSH` (today: silent).
-  - M14 `git push --force-with-lease=feat:$DONE origin feat` (no delete shape): today's verdict (allow).
+  - M14 `git push --force-with-lease=work:$MAIN origin work` (no delete shape): today's verdict (allow).
   - M15 a dry run in A1's shape (`… origin --delete done --dry-run`): allow.
   - M16 `git -C $DEL commit --allow-empty -m 'quote: push --force-with-lease=a origin --delete b'`: deny with `NOT_A_DELETE_PUSH` (today: silent).
   - M17 `git -C $DEL commit --allow-empty -m 'tidy the fixtures'`: allow (an unrelated commit stays silent).
   Every existing rule-4 case stays as it is.
 
-- [ ] **Step 2: Run it; expect RED.** `./tests/git-forge-guard.test.sh` → M3, M4, M6, M8, M10–M13 and M16 fail; the rest pass.
+- [ ] **Step 2: Run it; expect RED.** `./tests/git-forge-guard.test.sh` → M3, M4, M6, M8, M10–M13 and M16 fail (M8 and M12 because today's guard allows them); the rest pass.
 
 - [ ] **Step 3: Implement.**
   - `rule_pattern`: strip `Bash(` and `)`, split on `*`, `re.escape` each literal part with every escaped space replaced by `\s+`, join with `.*`, compile with `re.S`; used with `.search` (unanchored: a superset of Claude Code's per-subcommand match, which strips wrappers first). `matches_delete_rule` joins `\`-newline continuations before searching.
