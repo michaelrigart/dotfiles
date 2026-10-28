@@ -80,6 +80,15 @@ printf '%s' "$input" | jq \
           # sdd-clean deletes only a git-ignored .superpowers/sdd/<plan> workspace and
           # refuses anything else, so cleaning up a finished plan needs no prompt.
           "Bash(sdd-clean *)",
+          # Merged-branch deletes (spec 2026-10-28-reload-functions-merged-deletes). The
+          # three push rules are mirrored by DELETE_ALLOW_RULES in git-push-guard.py,
+          # which denies anything they match that is not a real delete-only push, so keep
+          # the two lists equal (tests/claude-settings.test.sh pins the parity). The
+          # fetch rules prune only remote-tracking refs.
+          "Bash(git push --force-with-lease=* origin --delete *)",
+          "Bash(git push --force-with-lease=* origin -d *)",
+          "Bash(git -C * push --force-with-lease=* origin --delete *)",
+          "Bash(git fetch --prune)",    "Bash(git fetch --prune origin)",
           # NOTE: no chezmoi cat here. It runs op unsandboxed and can render private
           # keys, so it goes to the auto-mode classifier like any other command.
           # Basecamp: read-only verbs only. These were auto-learned into
