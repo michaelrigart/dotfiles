@@ -27,19 +27,17 @@ functions file, so a reload never redefines the running function. Sketch (the pl
 
 ```zsh
 zmodload -F zsh/stat b:zstat && {
-  typeset -g _zshrc_fn=$HOME/.config/zsh/functions _zshrc_fn_failed
+  typeset -g _zshrc_fn=$HOME/.config/zsh/functions
   typeset -ga _zshrc_fn_mtime
   zstat -A _zshrc_fn_mtime +mtime -- $_zshrc_fn 2>/dev/null || _zshrc_fn_mtime=missing
   _zshrc_reload_functions() {
     local -a m
     zstat -A m +mtime -- $_zshrc_fn 2>/dev/null || m=missing
     [[ $m == $_zshrc_fn_mtime ]] && return 0
-    if [[ $m != missing && -r $_zshrc_fn ]] && zsh -fn -- $_zshrc_fn 2>/dev/null &&
-        source $_zshrc_fn; then
-      _zshrc_fn_mtime=$m _zshrc_fn_failed=
+    _zshrc_fn_mtime=$m
+    if [[ $m != missing ]] && ( source $_zshrc_fn ) >/dev/null 2>&1 && source $_zshrc_fn; then
       print -ru2 -- 'zsh: reloaded ~/.config/zsh/functions'
-    elif [[ $m != $_zshrc_fn_failed ]]; then
-      _zshrc_fn_failed=$m
+    else
       print -ru2 -- 'zsh: cannot reload ~/.config/zsh/functions; keeping the old functions'
     fi
   }
@@ -54,11 +52,22 @@ zmodload -F zsh/stat b:zstat && {
   alone, because a plain `zmodload zsh/stat` adds a `stat` builtin that shadows
   `/usr/bin/stat`. Inequality, so an older mtime reloads too. One-second resolution: a second
   write in the second of a reload waits for the next change. Verified on zsh 5.9: `stat`
-  stays a command; `zsh -fn` returns 0 on the real file. Run against a temp file, the sketch
-  met the unchanged, changed, earlier-mtime, syntax-error, mode-000 and missing cases below.
+  stays a command. Run against a temp file, the sketch met the unchanged, changed,
+  earlier-mtime, syntax-error, alias-clash, mode-000 and missing cases under Tests.
 - **A failure keeps the old functions.** A `source` that fails halfway has already replaced
-  what came before the error, so the file is parsed first (`zsh -fn`, forked only on a change).
-  The failure line repeats only after the mtime changes again; every command retries.
+  what came before the error, so the hook first sources the file in a subshell, which
+  inherits the live shell's aliases and options, and sources it for real only if that
+  succeeds (one fork, only on a change). A parse in a fresh `zsh -fn` is not enough: zsh
+  expands aliases while parsing, so with `alias ll='ls -l'` live, a file defining `f` and then
+  `ll()` passes `zsh -fn` but fails in the live shell (status 126) after replacing `f`;
+  measured, the subshell trial fails there too and leaves `f` alone. The trial has no side
+  effects because the file only defines functions. A failure records the mtime, so nothing
+  retries or reprints until the file changes again; a `chmod` alone, which leaves the mtime,
+  does not trigger a retry.
+- **Residual: two reads.** The trial and the real `source` read the file twice. They see the
+  same content because chezmoi replaces the file atomically (chezmoi 2.73.3 links
+  `google/renameio`, which writes by rename). A writer that rewrote the file in place between
+  the two reads could pass the trial and fail the real source.
 - **A deleted function stays defined** until `exec zsh`. Accepted: removing it needs the names
   the file defined last time, and a name shared with oh-my-zsh would go with it.
 - **Scope: the functions file only.** `aliases`, `config` and `zshenv` run evals (starship,
@@ -167,7 +176,8 @@ for each deleted branch, as the guard's deny reason prints it.
 
 Reloading aliases, config or zshenv; `wt-rm` keeping branches not merged into main (the
 `blabla` case); harness worktree locks; the push guard's other rules, and its verdicts for a
-push that matches no delete pattern.
+push that matches no delete pattern. Observed, not changed: startup sources the functions
+after the aliases and oh-my-zsh, so a function named like a live alias already fails there.
 
 ## Tests
 
@@ -178,8 +188,10 @@ push that matches no delete pattern.
   not `precmd_functions`, and `stat` is no builtin; unchanged file: silent, not re-sourced (the
   fixture counts loads); changed: the new function runs, stderr is exactly the reload line; an
   earlier mtime reloads; a syntax error keeps the old function with one line, a second call is
-  silent, the fixed file reloads; mode 000 and missing files likewise; a removed function stays
-  defined; the real functions file has only definitions and comments at top level.
+  silent, the fixed file reloads; mode 000 and missing files likewise; with `alias ll='ls -l'`
+  live, a file defining `f` then `ll()` keeps the old `f` with one line, and reloads once the
+  alias is gone and the mtime moves; a removed function stays defined; the real functions file
+  has only definitions and comments at top level.
 - **`tests/zshrc.test.sh`** (pty), one case: with the prompt drawn the functions file changes,
   and Enter on `f` prints the reload line, then the new output.
 - **`tests/claude-settings.test.sh`:** the five rules pinned as a set; "no mutating verb is
@@ -199,7 +211,11 @@ push that matches no delete pattern.
   - a pinned delete of the unmerged branch in A1's shape: ask;
   - `git push --force-with-lease=feat:<sha> --push-option="ci.variable=X= origin --delete x"
     origin feat`, `git push --force-with-lease=feat:<sha> -o --delete origin feat` and the
-    refspec-less `git push --force-with-lease=done:<sha> origin --delete --no-verify`: deny;
+    refspec-less `git push --force-with-lease=done:<sha> origin --delete --no-verify`: deny.
+    The `-o --delete` case does not exercise the mirror: its text lacks A1's
+    ` origin --delete `, and today's push-option check already denies it; it pins that deny.
+    No option can swallow `--delete` inside A1's text, since A1 needs `origin` right before
+    it and `origin` takes no value;
   - an update push in no delete shape (`git push --force-with-lease=feat:<sha> origin feat`):
     today's verdict. The existing rule-4 cases stay green.
 
