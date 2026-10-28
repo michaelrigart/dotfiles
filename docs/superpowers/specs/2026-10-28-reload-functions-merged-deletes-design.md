@@ -108,10 +108,12 @@ git will parse. `git-push-guard.py` therefore holds the same A1, A2 and A4 patte
 list and matches them with Claude Code's semantics (`*` matches anything, spaces included) as
 a search over the raw command text, `\`-newline continuations joined. That is a superset of
 Claude Code's match, which runs per subcommand after stripping wrappers and safe assignments.
-A push whose text matches gets its verdict from what the guard parses:
+The search runs first, over the whole command. A command whose text matches (a command, not
+only a push) gets its verdict from what the guard parses:
 
 | Parsed as | Verdict |
 |---|---|
+| not a plain git invocation whose literal subcommand is `push`: another git subcommand behind A4's `*`, a commit message quoting the delete form, a compound command | silent deny: "this command matches a delete allow rule but is not a delete push; reword it so it does not carry the delete form (a commit message quoting it, for example)" |
 | delete-only, every branch merged and pinned, bare | silent pass: it runs, the classifier skipped |
 | delete-only, every branch merged, but not bare or not pinned | silent deny; the reason is the bare pinned command |
 | delete-only, with a branch unmerged, the default branch, or a failed merge read | ask, as today |
@@ -126,8 +128,13 @@ A push whose text matches gets its verdict from what the guard parses:
   behaviour exactly.
 - Every row is today's verdict or stricter. A non-bare merged delete went silently to the
   classifier and now gets a silent deny; no row adds a prompt. The guard's `ask` or `deny`
-  overrides an allow rule (evidence b), so the only push an allow rule runs unjudged is the
-  first row.
+  overrides an allow rule (evidence b), so the only command an allow rule runs unjudged is
+  the pass row.
+- **Controller's ruling, 2026-10-28, after Michael's sign-off: the first row.** It closes a
+  hole without changing his design. A4's `*` comes before the subcommand, so it also matches
+  `git -C <r> -c core.fsmonitor=<cmd> status push --force-with-lease=a origin --delete b`.
+  Today's guard judges only pushes and was silent on it (measured), so the rule would have run
+  it unjudged. The cost is a silent deny for a command that merely quotes the delete form.
 
 **Evidence (a), wildcards.** Permissions docs, "Wildcard patterns" (read 2026-10-28): "A `*`
 in a Bash rule matches any text, including spaces" and "can go anywhere in the rule: at the
