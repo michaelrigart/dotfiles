@@ -138,9 +138,10 @@ matches (a command, not only a push) gets its verdict from what the guard parses
   starts with `=` (zsh's EQUALS expansion; the Bash tool runs Michael's zsh). The allowlist
   is checked under bash and zsh by differential fuzzing (the guard suite's header records
   it). A delete of a branch whose name needs another character is not bare: it gets the
-  not-bare verdicts below, and the agent hands Michael the command. The remote word needs
-  no new check: rule 4 refuses a remote that is not configured ("which is not a configured
-  remote") before any verdict. `parse_plain` records every global option it reads; today it
+  not-bare verdicts below, and the agent hands Michael the command. The remote word must
+  name a configured remote: rule 4 refuses any other ("which is not a configured remote").
+  A mirrored dry run used to return before that check; it now meets it too, so a path or URL
+  in the remote position never passes. `parse_plain` records every global option it reads; today it
   drops `--exec-path`. `-c`, `--config-env`, `--git-dir`, `--work-tree` and `--namespace`
   keep today's deny.
 - **Printed commands** (controller's ruling, from Michael's decision): every deny reason that
