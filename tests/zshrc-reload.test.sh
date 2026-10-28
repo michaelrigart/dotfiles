@@ -145,22 +145,28 @@ bad="$(grep -nEv '^(#.*|[[:space:]].*|\}|[A-Za-z_][A-Za-z0-9_.:-]*\(\) \{)?$' "$
 is "Z11 every top-level line is a comment, blank, } or name() {" "$bad" ''
 reads="$(grep -nF -e '$0' -e funcsourcetrace -e functions_source -e '%x' -e '%N' -e LINENO "$FUNCS")"
 is "Z11 no function reads where it was loaded from" "$reads" ''
+# The probe sources a byte-identical copy at a path the suite controls ($T/probe-functions):
+# xtrace quotes an argument holding a space or other shell-special character ('/a b/functions'),
+# while %N in PS4 does not, so the real path could not be matched against the trace verbatim.
+cp "$FUNCS" "$T/probe-functions"
 cat > "$T/invariant.zsh" <<'ZSH'
 exec 2>$TT/trace
 PS4='+TRACE:%N:%i> '
 setopt xtrace
-source $FUNCS >$TT/inv.out
+source $TT/probe-functions >$TT/inv.out
+print -r -- $? >$TT/source.rc
 unsetopt xtrace
 ZSH
-rm -f "$T/trace" "$T/inv.out"
-inv_msg="$(env -i HOME="$HOMEDIR" PATH=/usr/bin:/bin FUNCS="$FUNCS" TT="$T" /bin/zsh -f "$T/invariant.zsh" 2>&1)"
+rm -f "$T/trace" "$T/inv.out" "$T/source.rc"
+inv_msg="$(env -i HOME="$HOMEDIR" PATH=/usr/bin:/bin TT="$T" /bin/zsh -f "$T/invariant.zsh" 2>&1)"
 inv_rc=$?
-# Positive control: the probe must have traced its own `source` line, or the checks below
-# would compare empty strings and pass without having looked at anything.
-is "Z11 the probe shell exited 0 with nothing before its trace started" "$inv_rc:$inv_msg" '0:'
+# Positive control: the probe must have traced its own `source` line (line 4 of the probe
+# script), or the checks below would compare empty strings and pass without looking at anything.
+is "Z11 the probe script ran to its end and wrote nothing before its trace started" "$inv_rc:$inv_msg" '0:'
 is "Z11 the probe traced its own source line (positive control)" \
-   "$(grep -cF -x "+TRACE:$T/invariant.zsh:4> source $FUNCS" "$T/trace" 2>/dev/null)" 1
-is "Z11 sourcing it at top level runs no statement (no trace line names it)" "$(grep -nF "+TRACE:$FUNCS:" "$T/trace")" ''
+   "$(grep -F "+TRACE:$T/invariant.zsh:4> source " "$T/trace" 2>/dev/null | grep -c 'probe-functions')" 1
+is "Z11 the source of the functions file itself returned status 0" "$(cat "$T/source.rc" 2>/dev/null)" 0
+is "Z11 sourcing it at top level runs no statement (no trace line names it)" "$(grep -nF "+TRACE:$T/probe-functions:" "$T/trace")" ''
 is "Z11 sourcing it writes no stdout" "$(cat "$T/inv.out")" ''
 is "Z11 sourcing it writes no stderr but the trace" "$(grep -v '^+TRACE:' "$T/trace")" ''
 
