@@ -34,7 +34,11 @@
 # Deliberate obfuscation is out of scope, because a text-matching hook cannot close it (a
 # script file always gets round it); the auto-mode classifier and server-side branch
 # protection cover it. For example a push word assembled by expansion (git ${X:-pu}sh) has
-# no literal push in the payload, so the shell fast path never starts this helper.
+# no literal push in the payload, so the shell fast path never starts this helper. The
+# exception is a command that matches a delete allow rule (A1 or A2, below): the allow rule
+# skips the classifier, so this guard is the only gate. For those commands the guard must
+# read the text at least as widely as Claude Code does, and read the words as the shell will
+# run them (quotes, backslashes, line continuations and globs included).
 #
 # The delete allow rules. permissions.allow in dot_claude/modify_private_settings.json holds
 # DELETE_ALLOW_RULES too, so a delete-shaped push can run without the auto-mode classifier. A
@@ -221,24 +225,79 @@ def rule_pattern(rule):
 DELETE_ALLOW_PATTERNS = tuple(rule_pattern(r) for r in DELETE_ALLOW_RULES)
 
 
+QUOTING = re.compile(r"[\"'\\]")
+
+
 def matches_delete_rule(cmd, tokens):
     """Does the command text match one of the delete allow rules? A search over the whole
     text, so a superset of Claude Code's match, which runs per subcommand after stripping
-    wrappers and removing the quotes from the first word. A \\-newline continuation is read
-    as joined (with and without a space) and as written, and when the text tokenizes, its
-    shell words (tokens, quotes removed) are read joined by single spaces, so no reading of
-    the text can match unseen ("git" push ... included). The rules hold no quotes, so each
-    reading only adds matches."""
-    texts = [cmd, cmd.replace("\\\n", " "), cmd.replace("\\\n", "")]
+    wrappers and shell-unquoting the first word (single and double quotes and backslashes:
+    g\\it and "gi"t are git there). A \\-newline continuation is read as joined (with and
+    without a space) and as written; each of those readings is also read with every ", ' and
+    \\ removed, which shows the match when the rest of the command does not tokenize; and
+    when the text tokenizes, its shell words (tokens, quotes removed) are read joined by
+    single spaces. So no reading of the text can match unseen. The rules hold no quotes or
+    backslashes, so each reading only adds matches. No reading drops the leading git: that
+    would mirror every git -C delete, which no rule matches."""
+    joined = cmd.replace("\\\n", "")
+    texts = [cmd, cmd.replace("\\\n", " "), joined, QUOTING.sub("", cmd), QUOTING.sub("", joined)]
     if tokens is not None:
         texts.append(" ".join(tokens))
     return any(p.match(t) for p in DELETE_ALLOW_PATTERNS for t in texts)
 
 
 # ------------------------------------------------------------------ the grammar
+def join_continuations(cmd):
+    """cmd with each \\-newline removed where the shell removes it (bash and zsh agree,
+    measured): outside single quotes, inside double quotes too, so a continuation glued
+    between two words joins them (y\\<newline>z is the word yz). It stays inside '...' and
+    $'...', and after an escaped backslash (\\\\<newline>: that newline ends the command). In
+    a comment it is no continuation: the newline still ends the comment, so the comment's
+    backslashes go (the shell ignores them; for shlex one would escape the newline)."""
+    out, i, n, mode = [], 0, len(cmd), None            # mode: None, ', ", $' or #
+    while i < n:
+        c, nxt = cmd[i], cmd[i + 1:i + 2]
+        if mode == "'":
+            mode = None if c == "'" else mode
+        elif mode == "$'":
+            if c == "\\" and nxt:
+                out.append(c + nxt)                    # \' does not close $'...'
+                i += 2
+                continue
+            mode = None if c == "'" else mode
+        elif mode == "#":
+            if c == "\\":
+                i += 1
+                continue
+            mode = None if c == "\n" else mode
+        elif c == "\\":
+            if nxt == "\n":
+                i += 2                                 # a continuation: both go
+                continue
+            if nxt:
+                out.append(c + nxt)                    # an escaped character, \\ included
+                i += 2
+                continue
+        elif mode == '"':
+            mode = None if c == '"' else mode
+        elif c in "'\"":
+            mode = c
+        elif c == "$" and nxt == "'":
+            out.append("$'")
+            i += 2
+            mode = "$'"
+            continue
+        elif c == "#" and (not out or out[-1][-1] in " \t\n" + PUNCT):
+            mode = "#"                                 # a comment starts a word
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def tokenize(cmd):
-    """Shell words and operator tokens. Raises ValueError on unbalanced quotes."""
-    lx = shlex.shlex(cmd.replace("\\\n", " "), posix=True, punctuation_chars=PUNCT)
+    """Shell words and operator tokens, the line continuations joined as the shell joins them
+    (join_continuations). Raises ValueError on unbalanced quotes."""
+    lx = shlex.shlex(join_continuations(cmd), posix=True, punctuation_chars=PUNCT)
     lx.whitespace = " \t\r"          # a newline separates commands; it is not a blank
     lx.whitespace_split = True
     lx.commenters = ""
@@ -1286,7 +1345,13 @@ def evaluate(cwd, assigns, repo_opts, config_opts, args, session, mirror=None):
     if dry_run:
         # A dry run the allow rule runs without the classifier, after the option denies
         # above: only the bare form passes, since a wrapper, an assignment or a cd prefix can
-        # change what runs (a dry run still reaches the remote).
+        # change what runs (a dry run still reaches the remote). parse_push lets a * through
+        # for the wildcard-refspec deny further on, which a dry run never reaches; here the
+        # shell could expand it to --no-dry-run (a file of that name), so it is refused.
+        for a in args:
+            if a not in CURRENT_BRANCH and dynamic(a):
+                raise Deny(UNSUPPORTED.format(
+                    "the push word " + a + ", which the shell expands before git sees it"))
         if mirror["bare"]:
             return None
         lead = ("Push guard: this dry run matches a delete allow rule, so it passes only as a "

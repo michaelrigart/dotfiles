@@ -933,6 +933,40 @@ has_reason   "and the reason is the plain-command one" "$PLAIN_REASON" "$DEL" "$
 M21="$PINNED && git branch -d done"
 expect deny  "M21 mirror: a pinned delete chained to git branch -d"    "$DEL" "$M21"
 has_reason   "M21 and the reason is the plain-command one" "$PLAIN_REASON" "$DEL" "$M21"
+# For a command that matches A1 or A2 the allow rule skips the classifier, so the guard must
+# read it as the shell will run it. A glob in a bare mirrored dry run can expand to
+# --no-dry-run (a file of that name in the cwd), and the dry run then deletes for real.
+M22="git push --force-with-lease=a -n origin --delete *"
+expect deny  "M22 mirror: a bare dry run with a glob the shell expands" "$DEL" "$M22"
+has_reason   "M22 and the deny names the glob" "the push word *, which the shell expands before git sees it" "$DEL" "$M22"
+# Claude Code removes every quote and backslash from the first word, so g\it and "gi"t match
+# A1 there. When the rest does not tokenize (an apostrophe in a comment), only the text read
+# without quotes and backslashes shows the match.
+M23='g\it push --force-with-lease=a origin --delete yz # don'"'"'t'
+expect deny  "M23 mirror: a backslash in the first word, the rest untokenizable" "$DEL" "$M23"
+has_reason   "M23 and the reason is the plain-command one" "$PLAIN_REASON" "$DEL" "$M23"
+M24='"gi"t push --force-with-lease=a origin --delete yz # don'"'"'t'
+expect deny  "M24 mirror: a part-quoted first word, the rest untokenizable" "$DEL" "$M24"
+has_reason   "M24 and the reason is the plain-command one" "$PLAIN_REASON" "$DEL" "$M24"
+# The shell removes a \-newline outside single quotes, so one glued between two words joins
+# them: y\<newline>z is yz, as bash runs it, not y and z. y and z are merged; yz is not. A
+# backslash escaped before a newline is no continuation: the newline ends the command.
+cp -R "$REMOTES/del.git" "$REMOTES/delglue.git"
+DGLUE=$(cp -R "$DEL" "$TMP/delglue" && printf '%s' "$TMP/delglue")
+git -C "$DGLUE" remote set-url origin "$REMOTES/delglue.git"
+git -C "$DGLUE" branch y main; git -C "$DGLUE" branch z main
+git -C "$DGLUE" switch -q -c yz main; git -C "$DGLUE" commit -q --allow-empty -m yz
+git -C "$DGLUE" switch -q work
+git -C "$DGLUE" push -q origin y z yz 2>/dev/null
+expect allow "R2 control: y and z, merged and pinned"                  "$DGLUE" "git push --force-with-lease=y:$MAIN --force-with-lease=z:$MAIN origin --delete y z"
+expect ask   "R2 mirror: y\\<newline>z deletes the unmerged yz"         "$DGLUE" "git push --force-with-lease=y:$MAIN --force-with-lease=z:$MAIN origin --delete y\\
+z"
+expect ask   "R2 mirror: a glued \\<newline>-n is no dry run"           "$DGLUE" "git push --force-with-lease=y:$MAIN origin --delete y\\
+-n"
+R2E="git push --force-with-lease=y:$MAIN origin --delete y\\\\
+git push origin main"
+expect deny  "R2 an escaped backslash before a newline ends the command" "$DGLUE" "$R2E"
+has_reason   "and the reason is the plain-command one" "$PLAIN_REASON" "$DGLUE" "$R2E"
 
 # From here on the remote moves: another clone merges far into main and pushes both.
 OTHER="$TMP/delother"
