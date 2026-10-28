@@ -114,10 +114,14 @@ git will parse. `git-push-guard.py` therefore holds the same A1 and A2 patterns 
 and matches them with Claude Code's semantics (`*` matches anything, spaces included). It
 searches the raw command text, the text with `\`-newline continuations joined, each of those
 with every quote and backslash removed, and the shell-unquoted tokens joined with spaces. Every
-reading is also taken with ANSI-C `$'…'` quoting decoded and `$"…"` read as `"…"`, as bash and
-zsh read them (controller's ruling, after the final review's fourth re-review: before it,
-`$'\x67it' push …` matched no reading and the guard was silent on it; evidence c). That is a
-superset of Claude Code's match: Claude
+reading is also taken twice more, with ANSI-C `$'…'` quoting decoded as bash decodes it and as
+zsh decodes it, and with `$"…"` read as `"…"` (controller's ruling, after the final review's
+fourth re-review: before it, `$'\x67it' push …` matched no reading and the guard was silent on
+it; evidence c). The two shells differ: zsh reads a `\x`, `\u` or `\U` with no hex digit as a
+NUL and cuts the whole word at a NUL, so `$'\x67it\x' push …` runs git in zsh only. The
+decoder is checked against bash 3.2, bash 5.3 and zsh by enumerating the escape grammar, not
+by sampling it; the guard suite's header records the totals and every accepted mismatch, each
+of which leaves the guard stricter. That is a superset of Claude Code's match: Claude
 Code 2.1.312 (read in the binary) matches each subcommand after stripping wrappers, safe
 assignments and comment lines and after removing the quotes from the first word, so
 `"git" push …` matches A1. The search runs first, over the whole command. A command whose text
@@ -193,8 +197,8 @@ classifier. Measured 2026-08-25 on 2.1.245: hook `ask` plus a matching allow rul
 silent hook plus one runs.
 
 **Evidence (c), ANSI-C quoting.** Two layers cover a delete spelled with `$'…'`. The first is
-the guard: its decoded reading mirrors `$'\x67it' push …` and `git $'\x70ush' …`, which are
-not canonical, so both are denied. The second is Claude Code 2.1.312's command analysis, which
+the guard: its decoded readings mirror `$'\x67it' push …`, `git $'\x70ush' …` and the zsh-only
+`$'\x67it\x' push …`, which are not canonical, so all are denied. The second is Claude Code 2.1.312's command analysis, which
 calls a command whose first word is `$'…'` too complex to match a rule, so the classifier
 judges it. That second layer is inferred from the binary, not measured, and says nothing about
 `$'…'` in a later word; the first layer does not depend on it.
@@ -282,7 +286,8 @@ after the aliases and oh-my-zsh, so a function named like a live alias already f
     `=` (the dry run `git push --force-with-lease=a -n origin --delete =x`, and a merged,
     pinned delete of branch `=e`, whose printed command quotes `'=e'`), a brace, a leading
     newline and a second trailing newline; one trailing newline stays canonical;
-  - ANSI-C quoting, each denied: `$'\x67it' push …` and `git $'\x70ush' …` in A1's shape;
+  - ANSI-C quoting, each denied: `$'\x67it' push …`, `git $'\x70ush' …`, and the zsh-only
+    `$'\x67it\x' push …`, `$'\x67it\0'zz push …` and `git $'\x70ush\u' …` in A1's shape;
   - merged and pinned behind a wrapper (`command`), an assignment or a `cd` to the cwd: deny
     naming the plain pinned `git push …` form; behind a `cd` to another checkout: deny saying
     it must run from that checkout or Michael runs it;
