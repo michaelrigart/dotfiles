@@ -21,9 +21,11 @@ Design approved by Michael on 2026-10-28; this record adds the evidence and the 
 
 ## 1. Reload changed functions
 
-`dot_zshrc`, right after it sources the functions file, records the file's mtime and registers
-a `preexec` hook that reloads on a changed mtime. The hook lives in `dot_zshrc`, never in the
-functions file, so a reload never redefines the running function. Sketch (the plan settles it):
+`dot_zshrc` records the functions file's mtime just before its existing `source` of that file
+(the mtime before the text, as in the hook) and registers a `preexec` hook that reloads on a
+changed mtime. The hook lives in `dot_zshrc`, never in the functions file, so a reload never
+redefines the running function. Sketch, with the startup `source` between the first `zstat`
+and the hook (the plan settles the code):
 
 ```zsh
 zmodload -F zsh/stat b:zstat && {
@@ -32,10 +34,12 @@ zmodload -F zsh/stat b:zstat && {
   zstat -A _zshrc_fn_mtime +mtime -- $_zshrc_fn 2>/dev/null || _zshrc_fn_mtime=missing
   _zshrc_reload_functions() {
     local -a m
-    zstat -A m +mtime -- $_zshrc_fn 2>/dev/null || m=missing
+    local body
+    zstat -A m +mtime -- $_zshrc_fn 2>/dev/null || m=missing   # the mtime before the text
     [[ $m == $_zshrc_fn_mtime ]] && return 0
     _zshrc_fn_mtime=$m
-    if [[ $m != missing ]] && ( source $_zshrc_fn ) >/dev/null 2>&1 && source $_zshrc_fn; then
+    if [[ $m != missing ]] && body=$(<$_zshrc_fn) 2>/dev/null &&
+        ( eval "$body" ) >/dev/null 2>&1 && eval "$body"; then
       print -ru2 -- 'zsh: reloaded ~/.config/zsh/functions'
     else
       print -ru2 -- 'zsh: cannot reload ~/.config/zsh/functions; keeping the old functions'
@@ -53,28 +57,36 @@ zmodload -F zsh/stat b:zstat && {
   `/usr/bin/stat`. Inequality, so an older mtime reloads too. One-second resolution: a second
   write in the second of a reload waits for the next change. Verified on zsh 5.9: `stat`
   stays a command. Run against a temp file, the sketch met the unchanged, changed,
-  earlier-mtime, syntax-error, alias-clash, mode-000 and missing cases under Tests.
+  earlier-mtime, syntax-error, alias-clash, mode-000, missing and replaced-mid-hook cases
+  under Tests.
 - **A failure keeps the old functions.** A `source` that fails halfway has already replaced
-  what came before the error, so the hook first sources the file in a subshell, which
-  inherits the live shell's aliases and options, and sources it for real only if that
-  succeeds (one fork, only on a change). A parse in a fresh `zsh -fn` is not enough: zsh
-  expands aliases while parsing, so with `alias ll='ls -l'` live, a file defining `f` and then
-  `ll()` passes `zsh -fn` but fails in the live shell (status 126) after replacing `f`;
-  measured, the subshell trial fails there too and leaves `f` alone. The trial has no side
-  effects because the file only defines functions. A failure records the mtime, so nothing
-  retries or reprints until the file changes again; a `chmod` alone, which leaves the mtime,
-  does not trigger a retry.
-- **Residual: two reads.** The trial and the real `source` read the file twice. They see the
-  same content because chezmoi replaces the file atomically (chezmoi 2.73.3 links
-  `google/renameio`, which writes by rename). A writer that rewrote the file in place between
-  the two reads could pass the trial and fail the real source.
+  what came before the error. So the hook reads the text once, runs it in a subshell as a
+  trial (which inherits the live shell's aliases and options), and runs that same text for
+  real only if the trial succeeds: one fork, only on a change. A parse in a fresh `zsh -fn`
+  is not enough: zsh expands aliases while parsing, so with `alias ll='ls -l'` live, a file
+  defining `f` and then `ll()` passes `zsh -fn` but fails in the live shell (status 126)
+  after replacing `f`; measured, the subshell trial fails there too and leaves `f` alone. One
+  read means the trial and the load cannot see different versions, whoever writes the file.
+  A failure records the mtime, so nothing retries or reprints until the file changes again; a
+  `chmod` alone, which leaves the mtime, does not trigger a retry.
+- **The mtime is taken before the text is read, and that mtime is recorded.** If the file is
+  replaced between the two, the hook loads the newer text under the older mtime, and the
+  next command reloads once more, which is harmless because loading is idempotent. The other
+  order would load the older text under the newer mtime and stay stale until the next change.
+- **Not taken:** snapshotting `$functions` and restoring it on failure (it rewrites the
+  whole function table and must remove what a partial load added), and sourcing the file
+  twice (a second apply between the reads defeats the trial).
 - **A deleted function stays defined** until `exec zsh`. Accepted: removing it needs the names
   the file defined last time, and a name shared with oh-my-zsh would go with it.
 - **Scope: the functions file only.** `aliases`, `config` and `zshenv` run evals (starship,
   direnv, mise) and set state.
-- **Invariant:** the functions file has only function definitions and comments at top level
-  (46 definitions on 2026-10-28). It is sourced inside a function, where a top-level
-  `typeset` would turn local. A test pins it.
+- **Invariants, both pinned by a test.** The functions file has only function definitions
+  and comments at top level (46 definitions on 2026-10-28): it is loaded inside a function,
+  where a top-level `typeset` would turn local, and the trial must have no side effects. No
+  function reads where it was loaded from (`$0`, `funcsourcetrace`, `functions_source`, `%x`,
+  `%N`, `LINENO`: none on 2026-10-28), so loading by `eval` equals `source`.
+- Claude Code's shell snapshot copies function definitions but not `preexec_functions`
+  (checked in a current snapshot), so agent shells get the hook function, never registered.
 - **First deployment needs one restart.** A shell opened before the apply that installs this
   hook has no hook, so it needs one `exec zsh`. Every later change to the functions file
   reloads by itself.
@@ -183,15 +195,19 @@ after the aliases and oh-my-zsh, so a function named like a live alias already f
 
 - **`tests/zshrc-reload.test.sh`**, new and sandboxed, split from the pty-bound
   `zshrc.test.sh` as `dev-topology` is from `dev`. A non-pty `/bin/zsh -f` sources the source
-  `dot_zshrc` with `zshrc.test.sh`'s stubs and a functions fixture, then calls the hook.
+  `dot_zshrc` with `zshrc.test.sh`'s stubs and a functions fixture, checks the registration,
+  then removes it and calls the hook directly: zsh 5.9 runs `preexec` hooks before each line
+  of a `zsh -f` script too (measured), which would reload between a test's own lines.
   mtimes are set with `touch -t`, never by waiting. Cases: registered in `preexec_functions`,
   not `precmd_functions`, and `stat` is no builtin; unchanged file: silent, not re-sourced (the
   fixture counts loads); changed: the new function runs, stderr is exactly the reload line; an
   earlier mtime reloads; a syntax error keeps the old function with one line, a second call is
   silent, the fixed file reloads; mode 000 and missing files likewise; with `alias ll='ls -l'`
   live, a file defining `f` then `ll()` keeps the old `f` with one line, and reloads once the
-  alias is gone and the mtime moves; a removed function stays defined; the real functions file
-  has only definitions and comments at top level.
+  alias is gone and the mtime moves; replaced between the stat and the read (the test shadows
+  `zstat` with a function that calls `builtin zstat` and then swaps the file in by rename),
+  the newer version is loaded, the next call reloads it once more and the call after is
+  silent; a removed function stays defined; the real functions file holds both invariants.
 - **`tests/zshrc.test.sh`** (pty), one case: with the prompt drawn the functions file changes,
   and Enter on `f` prints the reload line, then the new output.
 - **`tests/claude-settings.test.sh`:** the five rules pinned as a set; "no mutating verb is
