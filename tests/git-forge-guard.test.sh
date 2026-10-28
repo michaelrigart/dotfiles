@@ -15,6 +15,26 @@
 # what currently is. Pass ~/.claude/git-forge-guard.sh to check the deployed copy
 # instead — they should agree, and disagreeing means a hand-edit of a deployed dotfile
 # that `chezmoi apply` is about to discard.
+#
+# Canonical text (git-push-guard.py CANONICAL; spec 2026-10-28, Bare), the only text a
+# bare mirrored delete passes in, was checked by differential runs on 2026-10-28, which
+# are not part of this suite.
+#
+# A. 1558 canonical commands: every allowed character (A-Z a-z 0-9 . _ / : = @ + , % -)
+#    alone, first, last and inside a word (= never first), plus 1500 random ones, spread
+#    over all six trailers. Each ran under bash 3.2, bash 5.3, zsh 5.9 -f, zsh with Claude
+#    Code's NO_EXTENDED_GLOB NO_BARE_GLOB_QUAL, zsh with EXTENDED_GLOB, and zsh with
+#    Michael's Claude Code shell snapshot sourced: 9348 runs. git, tail and head were shell
+#    functions recording their argv, in a cwd holding files named like plain words. Every
+#    run handed git exactly the arguments the guard judged, and tail/head exactly -n N:
+#    0 mismatches. A control showed that the same harness sees brace, glob and zsh
+#    =command expansion.
+# B. 1201 mirrored commands: the six trailer forms, -d, two branches, two dry runs and a
+#    -o ci.skip delete, each with one to three inserted characters (CR, VT, FF, NBSP, ^\,
+#    glob, brace, quote, backslash, blanks, newline, $ ` ~ = # ^ ! % < > : @ -, NUL,
+#    operators, a continuation and word-level forms), against the final guard on a fixture
+#    with merged and unmerged branches. 25 were left silent, all canonical, and bash and
+#    zsh handed git exactly the words the guard judged in each.
 
 set -uo pipefail
 
@@ -762,7 +782,9 @@ printf '%s %s %s\n' "$MAIN" "$DONE" "$OPEN" > "$DGRAFT/.git/info/grafts"
 expect ask   "an unmerged branch made an ancestor by info/grafts" "$DGRAFT" "git push --force-with-lease=open:$OPEN origin --delete open"
 
 # The pinned command in the deny is a command to run, so a branch name with a quote or a
-# semicolon in it must come back as that one argument.
+# semicolon in it must come back as that one argument. Such a name needs quoting, which
+# canonical text (plain words) cannot carry, so the deny says Michael runs it, and the quoted
+# command itself is denied rather than passed.
 DQ=$(cp -R "$DEL" "$TMP/delquote" && printf '%s' "$TMP/delquote")
 cp -R "$REMOTES/del.git" "$REMOTES/delquote.git"
 git -C "$DQ" remote set-url origin "$REMOTES/delquote.git"
@@ -773,7 +795,7 @@ git -C "$DQ" push -q origin main "o'brien" "a;b" 2>/dev/null
 QUOTE_TIP=$(git -C "$DQ" rev-parse "o'brien"); SEMI_TIP=$(git -C "$DQ" rev-parse "a;b")
 QCMD="git push origin --delete \"o'brien\" 'a;b'"
 QREASON=$(reason "$DQ" "$QCMD")
-QPINNED=${QREASON##*needs no ask: }
+QPINNED=${QREASON##*so Michael runs it: }
 QGOT=$(python3 -I -c 'import shlex, sys; print("\n".join(shlex.split(sys.argv[1])))' "$QPINNED" 2>&1)
 QWANT=$(printf '%s\n' git push "--force-with-lease=o'brien:$QUOTE_TIP" "--force-with-lease=a;b:$SEMI_TIP" origin --delete "o'brien" "a;b")
 if [ "$QGOT" = "$QWANT" ]; then
@@ -781,7 +803,10 @@ if [ "$QGOT" = "$QWANT" ]; then
 else
   fail=$((fail + 1)); printf '  FAIL %s\n%s\n' "the deny's command does not parse to the intended argv" "$QREASON"
 fi
-expect allow "the quoted pinned command is allowed as written" "$DQ" "$QPINNED"
+has_reason   "the deny says the quoted names need Michael" \
+             "A branch name here needs quoting, which plain words cannot carry, so Michael runs it: " "$DQ" "$QCMD"
+expect deny  "the quoted pinned command is not plain words: denied" "$DQ" "$QPINNED"
+has_reason   "and that deny says Michael runs it too" "so Michael runs it: " "$DQ" "$QPINNED"
 
 # A remote-tracking ref pointing at a missing object, plus a promisor remote whose
 # uploadpack writes a marker: the guard's own git calls must never lazy-fetch (spec
@@ -854,10 +879,59 @@ PLAIN_REASON="Push guard: this command may run git push in a shape the guard doe
 PINNED="git push --force-with-lease=done:$DONE origin --delete done"
 expect allow "M1 a -C delete matches no rule: today's verdict"         "$TMP" "git -C $DEL push --force-with-lease=done:$DONE origin --delete done"
 expect allow "M2 the same through a -C path with a space"              "$TMP" "git -C '$TMP/del work' push --force-with-lease=done:$DONE origin --delete done"
-expect allow "mirror: the bare form, piped to tail with 2>&1"          "$DEL" "git push --force-with-lease=done:$DONE origin --delete done 2>&1 | tail -3"
-expect allow "mirror: a line continuation inside the rule's text"      "$DEL" "git push --force-with-lease=done:$DONE origin \\
+# Bare is canonical text too (spec 2026-10-28, Bare): git push and plain words separated by
+# single spaces, then at most one trailer. The merged, pinned delete passes with each one,
+# and with outer spaces and a trailing newline, which are stripped. (A leading newline is
+# stripped too, but the grammar has never read one as a plain command: not plain, as for
+# any push.)
+for trailer in '' ' 2>&1' ' | tail -n 3' ' | head -n 3' ' 2>&1 | tail -n 3' ' 2>&1 | head -n 3'; do
+  expect allow "C1 mirror: canonical, trailer [$trailer]"              "$DEL" "$PINNED$trailer"
+done
+expect allow "C1 mirror: canonical, with outer spaces and a trailing newline" "$DEL" "$(printf '  %s  \n ' "$PINNED")"
+expect deny  "C1 mirror: a leading newline is not plain"               "$DEL" "$(printf '\n%s' "$PINNED")"
+PLAIN_NOTE="Push guard: a delete that matches an allow rule passes only when written in plain words: git push and its arguments, each made of letters, digits and ._/:=@+,%- (none starting with =), separated by single spaces, nothing before git, and at most 2>&1 and | tail -n N or | head -n N after. done is merged into main, on origin $RUN_HERE"
+# Anything else is not canonical, so not bare: a merged delete gets the deny naming the plain
+# pinned form, and the note that it must be written in plain words.
+expect deny  "C2 mirror: tail -3 is not a canonical trailer"            "$DEL" "$PINNED 2>&1 | tail -3"
+has_reason   "C2 and the deny names the plain form in plain words" "$PLAIN_NOTE" "$DEL" "$PINNED 2>&1 | tail -3"
+expect deny  "C2 mirror: a line continuation is not canonical"          "$DEL" "git push --force-with-lease=done:$DONE origin \\
 --delete done"
-expect allow "M20 mirror: a quoted first word, merged and pinned: the unquoted verdict" "$DEL" "\"git\" push --force-with-lease=done:$DONE origin --delete done"
+expect deny  "C2 mirror: two spaces between words are not canonical"   "$DEL" "git push --force-with-lease=done:$DONE  origin --delete done"
+expect deny  "C2 mirror: a tab between words is not canonical"         "$DEL" "$(printf 'git push --force-with-lease=done:%s\torigin --delete done' "$DONE")"
+expect deny  "M20 mirror: a quoted first word is not canonical"        "$DEL" "\"git\" push --force-with-lease=done:$DONE origin --delete done"
+has_reason   "M20 and the deny names the plain form in plain words" "$PLAIN_NOTE" "$DEL" "\"git\" push --force-with-lease=done:$DONE origin --delete done"
+# One case per class the final review's rounds found, each on the bare merged pinned delete:
+# a glob or bracket in an option value, a quoted or escaped operator, NUL, CR, NBSP, $, `, ~,
+# a leading = and a brace. Every one is denied.
+C3_DONE="git push --force-with-lease=done:$DONE"
+expect deny  "C3 mirror: a glob in an -o value"                        "$DEL" "$C3_DONE -o ci.variable=X=* origin --delete done"
+has_reason   "C3 and the deny names the plain form" "$RUN_HERE" "$DEL" "$C3_DONE -o ci.variable=X=* origin --delete done"
+expect deny  "C3 mirror: a glob in a --push-option value"              "$DEL" "$C3_DONE --push-option ci.variable=X=* origin --delete done"
+expect deny  "C3 mirror: brackets around a quoted blank in an -o value" "$DEL" "$C3_DONE -o ci.variable=X=[ab' '] origin --delete done"
+expect deny  "C3 mirror: a quoted operator"                            "$DEL" "$PINNED '|' tail"
+expect deny  "C3 mirror: an escaped pipe"                              "$DEL" "$PINNED 2>&1 \\| tail"
+expect deny  "C3 mirror: an escaped redirect and pipe"                 "$DEL" "$PINNED 2 \\>\\& 1 \\| tail"
+# bash cannot hold a NUL in a variable, so this payload is written with a JSON \u0000 escape.
+C3_NUL=$(printf '{"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":"%s","tool_input":{"command":"%s -o ci.variable=X=a\\u0000 origin --delete done"}}' "$DEL" "$C3_DONE" \
+  | PINNED_PATH="$PATH" bash "$GUARD")
+if printf '%s' "$C3_NUL" | jq -e '.hookSpecificOutput.permissionDecision=="deny"' >/dev/null 2>&1; then
+  pass=$((pass + 1)); printf '  ok   %s\n' "C3 mirror: a NUL in an -o value"
+else
+  fail=$((fail + 1)); printf '  FAIL %s (want deny, got %s)\n' "C3 mirror: a NUL in an -o value" "${C3_NUL:-allow}"
+fi
+expect deny  "C3 mirror: a carriage return in an -o value"             "$DEL" "$(printf '%s -o ci.variable=X=a\r origin --delete done' "$C3_DONE")"
+expect deny  "C3 mirror: a no-break space in an -o value"              "$DEL" "$(printf '%s -o ci.variable=X=a\302\240 origin --delete done' "$C3_DONE")"
+expect deny  "C3 mirror: a \$ in an -o value"                          "$DEL" "$C3_DONE -o ci.variable=X=\$HOME origin --delete done"
+expect deny  "C3 mirror: a backtick in an -o value"                    "$DEL" "$C3_DONE -o ci.variable=X=\`id\` origin --delete done"
+expect deny  "C3 mirror: a ~ in an -o value"                           "$DEL" "$C3_DONE -o ci.variable=X=~ origin --delete done"
+expect deny  "C3 mirror: a word starting with ="                       "$DEL" "$C3_DONE -o =ci.skip origin --delete done"
+expect deny  "C3 mirror: a brace around a quoted blank in an -o value" "$DEL" "$C3_DONE -o ci.variable=X={a,' '} origin --delete done"
+# The remote word: every push the guard judges, a mirrored dry run included, must name a
+# configured remote; a path is not one.
+expect deny  "C4 mirror: a delete to a remote that is not configured"  "$DEL" "$C3_DONE $REMOTES/del.git origin --delete done"
+has_reason   "C4 and the deny says so" "which is not a configured remote" "$DEL" "$C3_DONE $REMOTES/del.git origin --delete done"
+expect deny  "C4 mirror: a dry run to a remote that is not configured" "$DEL" "git push --force-with-lease=a -n $REMOTES/del.git origin --delete done"
+has_reason   "C4 and the deny says so" "which is not a configured remote" "$DEL" "git push --force-with-lease=a -n $REMOTES/del.git origin --delete done"
 expect allow "M3 --no-pager before push matches no rule: today's verdict" "$TMP" "git -C $DEL --no-pager push --force-with-lease=done:$DONE origin --delete done"
 expect allow "M4 --exec-path matches no rule: today's verdict"         "$TMP" "git -C $DEL --exec-path=$TMP push --force-with-lease=done:$DONE origin --delete done"
 expect allow "M4 a second -C matches no rule: today's verdict"         "$TMP" "git -C $DEL -C $DEL push --force-with-lease=done:$DONE origin --delete done"
@@ -905,7 +979,7 @@ expect allow "M13 another git subcommand after -C matches no rule: today's verdi
 expect allow "M14 an update push in no delete shape keeps today's verdict" "$DEL" "git push --force-with-lease=work:$MAIN origin work"
 # A mirrored dry run passes only when it is bare, after the option denies (spec 2026-10-28,
 # dry runs); a dry run that matches no rule keeps today's early return.
-DRY_LEAD='Push guard: this dry run matches a delete allow rule, so it passes only as a bare git push (no wrapper, variable assignment, cd prefix or git option before push)'
+DRY_LEAD='Push guard: this dry run matches a delete allow rule, so it passes only as a bare git push in plain words: git push and its arguments, each made of letters, digits and ._/:=@+,%- (none starting with =), separated by single spaces, nothing before git, and at most 2>&1 and | tail -n N or | head -n N after (no wrapper, variable assignment, cd prefix or git option before push)'
 expect allow "M15 mirror: a dry run in A1's shape"                     "$DEL" "$PINNED --dry-run"
 expect deny  "M15W mirror: a dry run behind a command wrapper"         "$DEL" "command $PINNED --dry-run"
 has_reason   "M15W and the deny names the bare dry run" "$DRY_LEAD: $PINNED --dry-run" "$DEL" "command $PINNED --dry-run"
@@ -938,14 +1012,14 @@ has_reason   "M21 and the reason is the plain-command one" "$PLAIN_REASON" "$DEL
 # --no-dry-run (a file of that name in the cwd), and the dry run then deletes for real.
 M22="git push --force-with-lease=a -n origin --delete *"
 expect deny  "M22 mirror: a bare dry run with a glob the shell expands" "$DEL" "$M22"
-has_reason   "M22 and the deny names the glob" "the push word *, which the shell expands before git sees it" "$DEL" "$M22"
+has_reason   "M22 and the deny names the glob" "the push word *, which the shell may expand before git sees it" "$DEL" "$M22"
 # A blank inside a bracket expression, quoted, escaped or one the shell does not split on (a
 # vertical tab, a no-break space), still leaves the bracket a glob, and the tokens no longer
 # show what was quoted: a mirrored dry run may hold no *, ?, [ or brace in any word, option
 # values included.
 M22B="git push --force-with-lease=a -n origin --delete [-\\ ]-no-dry-run yz"
 expect deny  "M22B mirror: a bracket glob around an escaped blank"     "$DEL" "$M22B"
-has_reason   "M22B and the deny names the glob" "the push word [- ]-no-dry-run, which the shell expands before git sees it" "$DEL" "$M22B"
+has_reason   "M22B and the deny names the glob" "the push word [- ]-no-dry-run, which the shell may expand before git sees it" "$DEL" "$M22B"
 M22Q="git push --force-with-lease=a -n origin --delete [-' ']-no-dry-run yz"
 expect deny  "M22Q mirror: a bracket glob around a quoted blank"       "$DEL" "$M22Q"
 M22V=$(printf 'git push --force-with-lease=a -n origin --delete [-\v]-no-dry-run yz')
@@ -962,7 +1036,7 @@ expect ask   "M25 mirror: a carriage return inside a word does not split it" "$D
 # around a no-break space is still a brace list (the shell deletes done and open<NBSP>).
 M26=$(printf 'git push --force-with-lease=done:%s origin --delete {done,open\302\240}' "$DONE")
 expect deny  "M26 mirror: a brace list around a no-break space"        "$DEL" "$M26"
-has_reason   "M26 and the deny names the brace list" "which the shell expands before git sees it" "$DEL" "$M26"
+has_reason   "M26 and the deny names the brace list" "which the shell may expand before git sees it" "$DEL" "$M26"
 # Claude Code removes every quote and backslash from the first word, so g\it and "gi"t match
 # A1 there. When the rest does not tokenize (an apostrophe in a comment), only the text read
 # without quotes and backslashes shows the match.
