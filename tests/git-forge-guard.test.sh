@@ -939,6 +939,30 @@ has_reason   "M21 and the reason is the plain-command one" "$PLAIN_REASON" "$DEL
 M22="git push --force-with-lease=a -n origin --delete *"
 expect deny  "M22 mirror: a bare dry run with a glob the shell expands" "$DEL" "$M22"
 has_reason   "M22 and the deny names the glob" "the push word *, which the shell expands before git sees it" "$DEL" "$M22"
+# A blank inside a bracket expression, quoted, escaped or one the shell does not split on (a
+# vertical tab, a no-break space), still leaves the bracket a glob, and the tokens no longer
+# show what was quoted: a mirrored dry run may hold no *, ?, [ or brace in any word, option
+# values included.
+M22B="git push --force-with-lease=a -n origin --delete [-\\ ]-no-dry-run yz"
+expect deny  "M22B mirror: a bracket glob around an escaped blank"     "$DEL" "$M22B"
+has_reason   "M22B and the deny names the glob" "the push word [- ]-no-dry-run, which the shell expands before git sees it" "$DEL" "$M22B"
+M22Q="git push --force-with-lease=a -n origin --delete [-' ']-no-dry-run yz"
+expect deny  "M22Q mirror: a bracket glob around a quoted blank"       "$DEL" "$M22Q"
+M22V=$(printf 'git push --force-with-lease=a -n origin --delete [-\v]-no-dry-run yz')
+expect deny  "M22V mirror: a bracket glob around a vertical tab"       "$DEL" "$M22V"
+M22N=$(printf 'git push --force-with-lease=a -n origin --delete [-\302\240]-no-dry-run yz')
+expect deny  "M22N mirror: a bracket glob around a no-break space"     "$DEL" "$M22N"
+M22O="git push --force-with-lease=a -n -o 'ci.variable=X=a b*' origin --delete done"
+expect deny  "M22O mirror: a glob character in an option value"        "$DEL" "$M22O"
+# The shell splits words on space and tab only: a carriage return is part of the word, so
+# --force-with-lease=a<CR>-n is one lease and no dry run, and open (unmerged) asks.
+M25=$(printf 'git push --force-with-lease=a\r-n origin --delete open')
+expect ask   "M25 mirror: a carriage return inside a word does not split it" "$DEL" "$M25"
+# For the same reason only a space, tab or newline marks a word as quoted: a brace list
+# around a no-break space is still a brace list (the shell deletes done and open<NBSP>).
+M26=$(printf 'git push --force-with-lease=done:%s origin --delete {done,open\302\240}' "$DONE")
+expect deny  "M26 mirror: a brace list around a no-break space"        "$DEL" "$M26"
+has_reason   "M26 and the deny names the brace list" "which the shell expands before git sees it" "$DEL" "$M26"
 # Claude Code removes every quote and backslash from the first word, so g\it and "gi"t match
 # A1 there. When the rest does not tokenize (an apostrophe in a comment), only the text read
 # without quotes and backslashes shows the match.

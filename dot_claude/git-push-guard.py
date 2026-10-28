@@ -85,6 +85,11 @@ LOCAL_ENV = dict(os.environ, GIT_NO_LAZY_FETCH="1", GIT_NO_REPLACE_OBJECTS="1",
 LOCAL_OPTS = ("-c", "core.commitGraph=false")
 
 PUNCT =";&|()<>\n"
+# The characters the shell splits words on, bash and zsh alike (measured: a carriage return,
+# vertical tab, form feed or no-break space stays inside the word). A newline ends a command.
+BLANKS = " \t"
+# The characters that make a word a glob or a brace list. A mirrored dry run may hold none.
+GLOB_CHARS = "*?[{}"
 ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 # Could this text run git push? git, then push (or a push alias), within one command.
 PUSH_SHAPE = re.compile(r"\bgit\b[^;&|\n]*\bpush\b")
@@ -298,7 +303,7 @@ def tokenize(cmd):
     """Shell words and operator tokens, the line continuations joined as the shell joins them
     (join_continuations). Raises ValueError on unbalanced quotes."""
     lx = shlex.shlex(join_continuations(cmd), posix=True, punctuation_chars=PUNCT)
-    lx.whitespace = " \t\r"          # a newline separates commands; it is not a blank
+    lx.whitespace = BLANKS           # a newline separates commands; it is not a blank
     lx.whitespace_split = True
     lx.commenters = ""
     return list(lx)
@@ -317,10 +322,14 @@ def dynamic(word, dollar=True, star=True):
     brace list, a glob)? The guard reads the literal text, so such a word may run as
     another command or name another ref. dollar=False lets a $ through: the value of -C is
     expanded by this guard itself, and one it cannot expand fails the repository lookup.
-    A word holding whitespace was quoted, so its braces and globs stay literal."""
+    A word holding a blank or a newline was quoted, so its braces and globs are taken as
+    literal: only those characters, since the shell splits on nothing else (a carriage
+    return, vertical tab or no-break space can stand unquoted in a word). That reading is
+    not proof (a quoted blank leaves [- ] a glob), so a mirrored dry run checks its words
+    without it (evaluate)."""
     if "`" in word or (dollar and "$" in word):
         return True
-    if any(c.isspace() for c in word):
+    if any(c in BLANKS + "\n" for c in word):
         return False
     return any(c in word for c in ("{}?[*" if star else "{}?["))
 
@@ -1345,11 +1354,14 @@ def evaluate(cwd, assigns, repo_opts, config_opts, args, session, mirror=None):
     if dry_run:
         # A dry run the allow rule runs without the classifier, after the option denies
         # above: only the bare form passes, since a wrapper, an assignment or a cd prefix can
-        # change what runs (a dry run still reaches the remote). parse_push lets a * through
-        # for the wildcard-refspec deny further on, which a dry run never reaches; here the
-        # shell could expand it to --no-dry-run (a file of that name), so it is refused.
+        # change what runs (a dry run still reaches the remote). A glob or a brace list in any
+        # word, option values included, is refused: the shell could expand it to --no-dry-run
+        # (a file of that name) and the dry run would delete for real. This does not use
+        # dynamic(): a quoted or escaped blank (or an unquoted vertical tab or no-break
+        # space) inside [-' '] still leaves a glob, and the tokens no longer show what was
+        # quoted. A delete dry run never needs these characters.
         for a in args:
-            if a not in CURRENT_BRANCH and dynamic(a):
+            if any(c in GLOB_CHARS for c in a):
                 raise Deny(UNSUPPORTED.format(
                     "the push word " + a + ", which the shell expands before git sees it"))
         if mirror["bare"]:
