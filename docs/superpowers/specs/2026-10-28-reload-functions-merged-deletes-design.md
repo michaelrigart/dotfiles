@@ -99,42 +99,61 @@ New `permissions.allow` rules in `dot_claude/modify_private_settings.json`:
 |---|---|---|
 | A1 | `Bash(git push --force-with-lease=* origin --delete *)` | rule 4's printed form |
 | A2 | `Bash(git push --force-with-lease=* origin -d *)` | its `-d` spelling |
-| A4 | `Bash(git -C * push --force-with-lease=* origin --delete *)` | A1 in another repository |
 | F1 | `Bash(git fetch --prune)` | exact |
 | F2 | `Bash(git fetch --prune origin)` | exact |
 
+**Michael's decision, 2026-10-28, after the final whole-branch review: no `-C` rule.** The
+signed-off design had A4, `Bash(git -C * push --force-with-lease=* origin --delete *)`. Its
+`*` comes before the subcommand, so it matched commands the guard could not judge safely
+(another git subcommand, a quoted first word, injected options on a dry run). It is dropped,
+with its mirror entry. A delete-shaped push in another repository goes to the classifier, and
+the agent hands Michael the command.
+
 **The guard mirrors the push rules.** A `*` matches any text, so a pattern cannot prove what
-git will parse. `git-push-guard.py` therefore holds the same A1, A2 and A4 patterns in its own
-list and matches them with Claude Code's semantics (`*` matches anything, spaces included) as
-a search over the raw command text, `\`-newline continuations joined. That is a superset of
-Claude Code's match, which runs per subcommand after stripping wrappers and safe assignments.
-The search runs first, over the whole command. A command whose text matches (a command, not
-only a push) gets its verdict from what the guard parses:
+git will parse. `git-push-guard.py` therefore holds the same A1 and A2 patterns in its own list
+and matches them with Claude Code's semantics (`*` matches anything, spaces included). It
+searches the raw command text, the text with `\`-newline continuations joined, and the
+shell-unquoted tokens joined with spaces. That is a superset of Claude Code's match: Claude
+Code 2.1.312 (read in the binary) matches each subcommand after stripping wrappers, safe
+assignments and comment lines and after removing the quotes from the first word, so
+`"git" push …` matches A1. The search runs first, over the whole command. A command whose text
+matches (a command, not only a push) gets its verdict from what the guard parses:
 
 | Parsed as | Verdict |
 |---|---|
-| not a plain git invocation whose literal subcommand is `push`: another git subcommand behind A4's `*`, a commit message quoting the delete form, a compound command | silent deny: "this command matches a delete allow rule but is not a delete push; reword it so it does not carry the delete form (a commit message quoting it, for example)" |
+| not a plain command the guard can parse (a compound command, a redirect other than `2>&1`, unbalanced quotes) | silent deny with today's reason: "run the push as a plain command of its own …" |
+| a plain git command whose literal subcommand is not `push` (a commit message quoting the delete form) | silent deny: "this command matches a delete allow rule but is not a delete push; reword it so it does not carry the delete form (a commit message quoting it, for example)" |
 | delete-only, every branch merged and pinned, bare | silent pass: it runs, the classifier skipped |
-| delete-only, every branch merged, but not bare or not pinned | silent deny; the reason is the bare pinned command |
+| delete-only, every branch merged, but not bare or not pinned | silent deny; the reason is the bare pinned command (below) |
 | delete-only, with a branch unmerged, the default branch, or a failed merge read | ask, as today |
 | anything else: an update, a mixed push, a delete without a refspec, an option value that swallowed `--delete`, a quoted spoof | silent deny: "this command matches a delete allow rule but git would not parse it as a delete-only push; push normally, without the delete shape" |
 
-- **Bare** means the command is `git [-C <path>] push …`, optionally piped to `tail` or
-  `head`: no other global option (`--exec-path`, `--no-pager`, a second `-C`, …), no `cd`
-  prefix, no variable assignment (`GIT_EXEC_PATH` is `--exec-path`'s environment form) and no
-  wrapper. `parse_plain` records every global option it reads; today it drops `--exec-path`.
-  `-c`, `--config-env`, `--git-dir`, `--work-tree` and `--namespace` keep today's deny.
-- A dry run keeps today's silent early return. A push that matches no pattern keeps today's
-  behaviour exactly.
+- **Bare** means the command is `git push …`, optionally piped to `tail` or `head` and with
+  `2>&1`: no global option, no `cd` prefix, no variable assignment and no wrapper.
+  `parse_plain` records every global option it reads; today it drops `--exec-path`. `-c`,
+  `--config-env`, `--git-dir`, `--work-tree` and `--namespace` keep today's deny.
+- **Printed commands** (controller's ruling, from Michael's decision): every deny reason that
+  prints a corrected command, mirrored or not, prints the plain `git push …` form when the
+  push's repository is the session's cwd. When it is not, the reason says the delete must run
+  from that checkout, or that Michael runs it; it no longer prints a `git -C … push` form,
+  which no rule allows.
+- **Dry runs** (controller's ruling, final review C1): for a mirrored command the option denies
+  run before the dry-run early return, and a mirrored dry run passes silently only when it is
+  bare; otherwise it is denied. A push option can ride inside A1's or A2's first `*`. A dry run
+  that matches no pattern keeps today's early return, and a push that matches no pattern keeps
+  today's verdict.
+- **Reasons** (controller's ruling, final review I1): a mirrored command the guard cannot parse
+  as a plain command gets today's plain-command reason, which names the form to use;
+  "not a delete push" is kept for a parsed git command that is not a push.
 - Every row is today's verdict or stricter. A non-bare merged delete went silently to the
   classifier and now gets a silent deny; no row adds a prompt. The guard's `ask` or `deny`
   overrides an allow rule (evidence b), so the only command an allow rule runs unjudged is
   the pass row.
-- **Controller's ruling, 2026-10-28, after Michael's sign-off: the first row.** It closes a
-  hole without changing his design. A4's `*` comes before the subcommand, so it also matches
-  `git -C <r> -c core.fsmonitor=<cmd> status push --force-with-lease=a origin --delete b`.
-  Today's guard judges only pushes and was silent on it (measured), so the rule would have run
-  it unjudged. The cost is a silent deny for a command that merely quotes the delete form.
+- **Controller's ruling, 2026-10-28, after Michael's sign-off: the first two rows** (a command,
+  not only a push). They closed a hole in A4, whose `*` before the subcommand matched
+  `git -C <r> -c core.fsmonitor=<cmd> status push --force-with-lease=a origin --delete b`,
+  on which the guard was silent (measured). With A4 dropped they still cover a command that
+  merely quotes the delete form, which the unanchored search matches; that costs a silent deny.
 
 **Evidence (a), wildcards.** Permissions docs, "Wildcard patterns" (read 2026-10-28): "A `*`
 in a Bash rule matches any text, including spaces" and "can go anywhere in the rule: at the
@@ -144,7 +163,8 @@ not `git push origin main`. Each subcommand is matched whole, after splitting on
 a rule ending in `:*` is the legacy prefix form and an earlier `*` is not expanded, so
 `… origin :*` would never match; an allow rule with a `*` before the subcommand is valid but
 raises a settings warning ("has a wildcard before the rest of the command … For git, options
-such as -c and --exec-path can run arbitrary commands"): A4.
+such as -c and --exec-path can run arbitrary commands"). That was A4, now dropped; no
+remaining rule raises it.
 
 **Evidence (b), a hook with an allow rule.** Hooks docs: `"deny"` prevents the call, `"ask"`
 prompts, and "A hook's "ask" also forces a permission prompt in auto mode: the classifier
@@ -157,11 +177,10 @@ silent hook plus one runs.
 Rulings:
 
 - **No `:<ref>` rule.** A `:refs/heads/*` rule would also match a mixed delete and update,
-  and `… origin :*` never matches (evidence a). Agents use A1 or A4, as the guard prints.
+  and `… origin :*` never matches (evidence a). Agents use A1, as the guard prints.
 - **Left to the classifier:** remotes other than `origin`, other argument orders, `:<ref>`
-  refspecs and `-C` with `-d`.
-- **A4's warning is accepted:** one rule, so one warning, and the mirror judges every option
-  it names.
+  refspecs, and every delete push in another repository (`git -C`, or a `cd` to a checkout
+  other than the session's), whose command the agent hands to Michael.
 - **Fetch: exact rules only.** `git config --get fetch.prune` prints `true` here (from
   `dot_config/git/config`), so every fetch already prunes; F1 and F2 only stop the classifier
   reacting to the word. No `*` after `--prune`: `git fetch --prune origin
@@ -179,13 +198,15 @@ Rulings:
 ## 3. Instructions
 
 `.chezmoitemplates/agents/global.md`, the "Every agent confirms first" bullet, reworded in
-place; four lines stay four and the file stays at its 180-line cap:
+place; four lines stay four and the file stays at its 180-line cap. Michael's decision,
+2026-10-28, after the final whole-branch review: this wording, which keeps "history others
+have" and "not the check" from the old rule (the signed-off text had narrowed both):
 
 ```
-- **Every agent confirms first** before force-pushing without a lease, rewriting others'
-  history, deleting branches, tags, data or infrastructure, discarding uncommitted work it
-  did not create, or pushing to the default branch. A lease on your own branch needs none, nor
-  does a merged branch's pinned delete and `git branch -d`. Harness prompts are a backstop.
+- **Every agent confirms first** before force-pushing without a lease, rewriting history
+  others have, deleting branches, tags, data or infrastructure, discarding uncommitted work
+  it did not create, or pushing to the default branch. Exempt: a lease on your own branch, a
+  merged branch's pinned delete, `git branch -d`. Harness prompts are a backstop, not the check.
 ```
 
 A pinned delete is rule 4's shape: a delete-only push carrying `--force-with-lease=<b>:<sha>`
@@ -217,20 +238,28 @@ after the aliases and oh-my-zsh, so a function named like a live alias already f
   silent; a removed function stays defined; the real functions file holds both invariants.
 - **`tests/zshrc.test.sh`** (pty), one case: with the prompt drawn the functions file changes,
   and Enter on `f` prints the reload line, then the new output.
-- **`tests/claude-settings.test.sh`:** the five rules pinned as a set; "no mutating verb is
-  allowlisted" exempts exactly A1, A2 and A4, as it does `sdd-clean`. **Parity:** the
-  rendered allow rules that run `git … push` must equal the guard's mirror list.
+- **`tests/claude-settings.test.sh`:** the four rules pinned as a set; "no mutating verb is
+  allowlisted" exempts exactly A1 and A2, as it does `sdd-clean`. **Parity:** the rendered
+  allow rules that run `git … push` must equal the guard's mirror list.
   A matcher model of the documented semantics, calibrated on the docs' rows: no rule matches
   `git push`, `git push origin feat`, `git push --force-with-lease=feat:<sha> origin feat`,
   `git push origin main`, `git -C /r push origin main`,
+  `git -C /r push --force-with-lease=b:<sha> origin --delete b`,
   `git fetch --prune origin '+refs/heads/*:refs/heads/*'` or `git -C /r fetch --prune origin`;
-  the printed form with and without `-C`, its `-d` spelling and `git fetch --prune origin`
-  match. No allow rule ends in `:*` with a `*` before it.
+  the printed form, its `-d` spelling and `git fetch --prune origin` match. No allow rule ends
+  in `:*` with a `*` before it, and no allow rule has a `*` before its subcommand.
 - **`tests/agent-instructions.test.sh`:** `need` the new exception text; caps unchanged.
 - **`tests/git-forge-guard.test.sh`**, rule 4's merged-delete section, one case per row:
-  - bare, merged, pinned, with and without `-C <path>`: silent;
-  - merged and pinned with `--exec-path=<dir>`, `--no-pager`, a second `-C` or a leading
-    `GIT_EXEC_PATH=<dir>`: deny naming the bare pinned command; with `-c x.y=z`: today's deny;
+  - bare, merged, pinned: silent; the same with a quoted first word (`"git" push …`): silent;
+  - merged and pinned behind a wrapper (`command`), an assignment or a `cd` to the cwd: deny
+    naming the plain pinned `git push …` form; behind a `cd` to another checkout: deny saying
+    it must run from that checkout or Michael runs it;
+  - a `-C` delete matches no rule: today's verdict, and an unpinned one's reason no longer
+    prints a `git -C … push` form (it says run it from that checkout or hand it to Michael);
+  - a mirrored dry run that is not bare (a wrapper, an assignment, a `cd`): deny; a bare one:
+    silent;
+  - a quoted first word on Codex's push-option spoof: deny;
+  - a compound command in A1's shape: today's plain-command reason;
   - a pinned delete of the unmerged branch in A1's shape: ask;
   - `git push --force-with-lease=feat:<sha> --push-option="ci.variable=X= origin --delete x"
     origin feat`, `git push --force-with-lease=feat:<sha> -o --delete origin feat` and the
@@ -250,7 +279,7 @@ after the aliases and oh-my-zsh, so a function named like a live alias already f
    one `exec zsh`.
 2. In a fresh auto-mode session, a pinned delete of a merged throwaway branch runs without a
    prompt or a denial; a pinned delete of an unmerged one prompts.
-3. Startup shows one settings warning, for A4.
+3. Startup shows no settings warning for the new rules.
 
 ## Expected effect
 
