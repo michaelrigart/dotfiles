@@ -112,8 +112,12 @@ the agent hands Michael the command.
 **The guard mirrors the push rules.** A `*` matches any text, so a pattern cannot prove what
 git will parse. `git-push-guard.py` therefore holds the same A1 and A2 patterns in its own list
 and matches them with Claude Code's semantics (`*` matches anything, spaces included). It
-searches the raw command text, the text with `\`-newline continuations joined, and the
-shell-unquoted tokens joined with spaces. That is a superset of Claude Code's match: Claude
+searches the raw command text, the text with `\`-newline continuations joined, each of those
+with every quote and backslash removed, and the shell-unquoted tokens joined with spaces. Every
+reading is also taken with ANSI-C `$'…'` quoting decoded and `$"…"` read as `"…"`, as bash and
+zsh read them (controller's ruling, after the final review's fourth re-review: before it,
+`$'\x67it' push …` matched no reading and the guard was silent on it; evidence c). That is a
+superset of Claude Code's match: Claude
 Code 2.1.312 (read in the binary) matches each subcommand after stripping wrappers, safe
 assignments and comment lines and after removing the quotes from the first word, so
 `"git" push …` matches A1. The search runs first, over the whole command. A command whose text
@@ -131,8 +135,9 @@ matches (a command, not only a push) gets its verdict from what the guard parses
 - **Bare** means the command is `git push …` with no global option, no `cd` prefix, no
   variable assignment and no wrapper, and in canonical text (controller's ruling, 2026-10-28,
   after the final review's fix rounds: an allowlist of the shell surface instead of a
-  denylist). Canonical: the raw command, with leading and trailing spaces and newlines
-  stripped, is `git push` and its arguments separated by single spaces, then at most one
+  denylist). Canonical: the raw command, with at most one trailing newline removed and then
+  its leading and trailing spaces stripped (a leading newline or a second trailing one is not
+  canonical), is `git push` and its arguments separated by single spaces, then at most one
   trailer: ` 2>&1`, ` | tail -n N`, ` | head -n N`, ` 2>&1 | tail -n N` or
   ` 2>&1 | head -n N`, N digits. Every argument matches `^[A-Za-z0-9._/:=@+,%-]+$`, and none
   starts with `=` (zsh's EQUALS expansion; the Bash tool runs Michael's zsh). The allowlist
@@ -148,7 +153,8 @@ matches (a command, not only a push) gets its verdict from what the guard parses
   prints a corrected command, mirrored or not, prints the plain `git push …` form when the
   push's repository is the session's cwd. When it is not, the reason says the delete must run
   from that checkout, or that Michael runs it; it no longer prints a `git -C … push` form,
-  which no rule allows.
+  which no rule allows. A printed word that starts with `=` is quoted, since zsh would expand
+  it.
 - **Dry runs** (controller's ruling, final review C1): for a mirrored command the option denies
   run before the dry-run early return, and a mirrored dry run passes silently only when it is
   bare; otherwise it is denied. A push option can ride inside A1's or A2's first `*`. A dry run
@@ -185,6 +191,13 @@ blocking hook also takes precedence over allow rules". Auto mode, step 1: "Actio
 your allow, ask, or deny rules resolve immediately", so a matched allow rule skips the
 classifier. Measured 2026-08-25 on 2.1.245: hook `ask` plus a matching allow rule prompts; a
 silent hook plus one runs.
+
+**Evidence (c), ANSI-C quoting.** Two layers cover a delete spelled with `$'…'`. The first is
+the guard: its decoded reading mirrors `$'\x67it' push …` and `git $'\x70ush' …`, which are
+not canonical, so both are denied. The second is Claude Code 2.1.312's command analysis, which
+calls a command whose first word is `$'…'` too complex to match a rule, so the classifier
+judges it. That second layer is inferred from the binary, not measured, and says nothing about
+`$'…'` in a later word; the first layer does not depend on it.
 
 Rulings:
 
@@ -266,7 +279,10 @@ after the aliases and oh-my-zsh, so a function named like a live alias already f
     (`"git" push …`): deny naming the plain form;
   - not canonical, one case per class, each denied: a glob in an option value, brackets, a
     quoted operator, an escaped operator, NUL, `\r`, NBSP, `$`, a backtick, `~`, a leading
-    `=` and a brace;
+    `=` (the dry run `git push --force-with-lease=a -n origin --delete =x`, and a merged,
+    pinned delete of branch `=e`, whose printed command quotes `'=e'`), a brace, a leading
+    newline and a second trailing newline; one trailing newline stays canonical;
+  - ANSI-C quoting, each denied: `$'\x67it' push …` and `git $'\x70ush' …` in A1's shape;
   - merged and pinned behind a wrapper (`command`), an assignment or a `cd` to the cwd: deny
     naming the plain pinned `git push …` form; behind a `cd` to another checkout: deny saying
     it must run from that checkout or Michael runs it;
