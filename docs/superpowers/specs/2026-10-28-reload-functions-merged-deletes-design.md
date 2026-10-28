@@ -128,10 +128,21 @@ matches (a command, not only a push) gets its verdict from what the guard parses
 | delete-only, with a branch unmerged, the default branch, or a failed merge read | ask, as today |
 | anything else: an update, a mixed push, a delete without a refspec, an option value that swallowed `--delete`, a quoted spoof | silent deny: "this command matches a delete allow rule but git would not parse it as a delete-only push; push normally, without the delete shape" |
 
-- **Bare** means the command is `git push …`, optionally piped to `tail` or `head` and with
-  `2>&1`: no global option, no `cd` prefix, no variable assignment and no wrapper.
-  `parse_plain` records every global option it reads; today it drops `--exec-path`. `-c`,
-  `--config-env`, `--git-dir`, `--work-tree` and `--namespace` keep today's deny.
+- **Bare** means the command is `git push …` with no global option, no `cd` prefix, no
+  variable assignment and no wrapper, and in canonical text (controller's ruling, 2026-10-28,
+  after the final review's fix rounds: an allowlist of the shell surface instead of a
+  denylist). Canonical: the raw command, with leading and trailing spaces and newlines
+  stripped, is `git push` and its arguments separated by single spaces, then at most one
+  trailer: ` 2>&1`, ` | tail -n N`, ` | head -n N`, ` 2>&1 | tail -n N` or
+  ` 2>&1 | head -n N`, N digits. Every argument matches `^[A-Za-z0-9._/:=@+,%-]+$`, and none
+  starts with `=` (zsh's EQUALS expansion; the Bash tool runs Michael's zsh). The allowlist
+  is checked under bash and zsh by differential fuzzing (the guard suite's header records
+  it). A delete of a branch whose name needs another character is not bare: it gets the
+  not-bare verdicts below, and the agent hands Michael the command. The remote word needs
+  no new check: rule 4 refuses a remote that is not configured ("which is not a configured
+  remote") before any verdict. `parse_plain` records every global option it reads; today it
+  drops `--exec-path`. `-c`, `--config-env`, `--git-dir`, `--work-tree` and `--namespace`
+  keep today's deny.
 - **Printed commands** (controller's ruling, from Michael's decision): every deny reason that
   prints a corrected command, mirrored or not, prints the plain `git push …` form when the
   push's repository is the session's cwd. When it is not, the reason says the delete must run
@@ -250,7 +261,11 @@ after the aliases and oh-my-zsh, so a function named like a live alias already f
   in `:*` with a `*` before it, and no allow rule has a `*` before its subcommand.
 - **`tests/agent-instructions.test.sh`:** `need` the new exception text; caps unchanged.
 - **`tests/git-forge-guard.test.sh`**, rule 4's merged-delete section, one case per row:
-  - bare, merged, pinned: silent; the same with a quoted first word (`"git" push …`): silent;
+  - bare, merged, pinned: silent, once per allowed trailer; a quoted first word
+    (`"git" push …`): deny naming the plain form;
+  - not canonical, one case per class, each denied: a glob in an option value, brackets, a
+    quoted operator, an escaped operator, NUL, `\r`, NBSP, `$`, a backtick, `~`, a leading
+    `=` and a brace;
   - merged and pinned behind a wrapper (`command`), an assignment or a `cd` to the cwd: deny
     naming the plain pinned `git push …` form; behind a `cd` to another checkout: deny saying
     it must run from that checkout or Michael runs it;
