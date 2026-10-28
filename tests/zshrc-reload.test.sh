@@ -152,7 +152,14 @@ setopt xtrace
 source $FUNCS >$TT/inv.out
 unsetopt xtrace
 ZSH
-env -i HOME="$HOMEDIR" PATH=/usr/bin:/bin FUNCS="$FUNCS" TT="$T" /bin/zsh -f "$T/invariant.zsh" 2>&1
+rm -f "$T/trace" "$T/inv.out"
+inv_msg="$(env -i HOME="$HOMEDIR" PATH=/usr/bin:/bin FUNCS="$FUNCS" TT="$T" /bin/zsh -f "$T/invariant.zsh" 2>&1)"
+inv_rc=$?
+# Positive control: the probe must have traced its own `source` line, or the checks below
+# would compare empty strings and pass without having looked at anything.
+is "Z11 the probe shell exited 0 with nothing before its trace started" "$inv_rc:$inv_msg" '0:'
+is "Z11 the probe traced its own source line (positive control)" \
+   "$(grep -cF -x "+TRACE:$T/invariant.zsh:4> source $FUNCS" "$T/trace" 2>/dev/null)" 1
 is "Z11 sourcing it at top level runs no statement (no trace line names it)" "$(grep -nF "+TRACE:$FUNCS:" "$T/trace")" ''
 is "Z11 sourcing it writes no stdout" "$(cat "$T/inv.out")" ''
 is "Z11 sourcing it writes no stderr but the trace" "$(grep -v '^+TRACE:' "$T/trace")" ''
