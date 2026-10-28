@@ -83,8 +83,9 @@ printf '%s' "$input" | jq \
           # Merged-branch deletes (spec 2026-10-28-reload-functions-merged-deletes). The
           # three push rules are mirrored by DELETE_ALLOW_RULES in git-push-guard.py,
           # which denies anything they match that is not a real delete-only push, so keep
-          # the two lists equal (tests/claude-settings.test.sh pins the parity). The
-          # fetch rules prune only remote-tracking refs.
+          # the two lists equal (tests/claude-settings.test.sh pins the parity). The fetch
+          # rules prune no more than a plain fetch already prunes under fetch.prune=true
+          # in dot_config/git/config.
           "Bash(git push --force-with-lease=* origin --delete *)",
           "Bash(git push --force-with-lease=* origin -d *)",
           "Bash(git -C * push --force-with-lease=* origin --delete *)",

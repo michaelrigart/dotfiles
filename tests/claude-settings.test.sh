@@ -141,9 +141,10 @@ jq_is "[.permissions.allow[] | select(test(\"^Bash\\\\(git .*\\\\bpush\\\\b\"))]
       "allowlisted push rules equal the push guard's DELETE_ALLOW_RULES"
 
 # A model of the documented rule semantics: the whole command text; * is any text, spaces
-# included; a trailing " *" that is the rule's only * also matches the bare command.
+# included; a trailing " *" that is the rule's only * also matches the bare command; the
+# legacy trailing ":*" is read as " *".
 MATCHES='def esc: gsub("(?<c>[.+?()\\[\\]{}|^$\\\\])"; "\\" + .c);
-  def hit($cmd): (.[5:-1]) as $s
+  def hit($cmd): (.[5:-1] | if endswith(":*") then .[:-2] + " *" else . end) as $s
     | ($s | esc | gsub("\\*"; ".*")) as $re
     | ($cmd | test("^" + $re + "$"))
       or (($s | endswith(" *")) and (($s | split("*") | length) == 2) and ($cmd == $s[:-2]));'
@@ -162,6 +163,10 @@ m_is 'git log main' 0 "model: 'git log * main' does not match 'git log main'"
 m_is 'git push origin main' 0 "model: 'git log * main' does not match a push"
 m_is 'ls' 1 "model: 'ls *' matches bare 'ls'"
 m_is 'lsof' 0 "model: 'ls *' does not match 'lsof'"
+OUT='{"permissions":{"allow":["Bash(ls:*)"]}}'
+m_is 'ls -la' 1 "model: legacy 'ls:*' matches 'ls -la'"
+m_is 'ls' 1 "model: legacy 'ls:*' matches bare 'ls'"
+m_is 'lsof' 0 "model: legacy 'ls:*' does not match 'lsof'"
 OUT=$FIX_SAVE
 for c in 'git push' 'git push origin feat' 'git push --force-with-lease=feat:abc origin feat' \
          'git push origin main' 'git -C /r push origin main' \
