@@ -60,6 +60,9 @@ run() {
   { cat "$T/prelude.zsh"; printf '%s\n' "$2"; } > "$T/case.zsh"
   env -i HOME="$HOMEDIR" ZSH="$T/omz" HOMEBREW_PREFIX="$T/brew" PATH=/usr/bin:/bin \
     DOTZSHRC="$ZSHRC" TT="$T" /bin/zsh -f "$T/case.zsh" 2>"$T/case.err"
+  local rc=$?
+  cat "$T/case.err" >> "$T/all.err"
+  return $rc
 }
 # ln <n> <text>: line n of text
 ln() { printf '%s\n' "$2" | sed -n "${1}p"; }
@@ -126,11 +129,38 @@ out="$(run $'f() { print v1 }\ng() { print gv }' 'put v2 $T1; call; show; print 
 is "Z10 the new f is loaded" "$(ln 1 "$out")" "$(want '' "$RELOADED" v2)"
 is "Z10 a function the new file lacks stays defined" "$(ln 2 "$out")" 'g=[gv]'
 
-# Z11: the real functions file holds the two invariants the reload relies on
+# Z12: nothing a case script did wrote to its stderr, which would be a startup error or
+# warning from the new block in dot_zshrc (the hook's own stderr is captured by `call`)
+is "Z12 no case script wrote to stderr" "$(cat "$T/all.err" 2>/dev/null)" ''
+
+# Z11: the real functions file holds the invariants the reload relies on. The line check is
+# a cheap first pin; the shell check is the real one: loading the file at top level of a
+# clean shell must add no parameter, alias or option change and print nothing, so an
+# indented top-level statement (which would turn local inside the hook, and run in the
+# trial) is caught.
 bad="$(grep -nEv '^(#.*|[[:space:]].*|\}|[A-Za-z_][A-Za-z0-9_.:-]*\(\) \{)?$' "$FUNCS")"
 is "Z11 every top-level line is a comment, blank, } or name() {" "$bad" ''
 reads="$(grep -nF -e '$0' -e funcsourcetrace -e functions_source -e '%x' -e '%N' -e LINENO "$FUNCS")"
 is "Z11 no function reads where it was loaded from" "$reads" ''
+cat > "$T/invariant.zsh" <<'ZSH'
+typeset -a BP AP BA AA NP NA
+typeset -A BO AO
+typeset BS AS REPLY
+state() { local k; for k in ${(ok)options}; do REPLY+="$k=$options[$k];"; done }
+BP=(${(ok)parameters}); BA=(${(ok)aliases} ${(ok)galiases} ${(ok)saliases}); REPLY=; state; BS=$REPLY
+source $FUNCS >$TT/inv.out 2>&1
+AP=(${(ok)parameters}); AA=(${(ok)aliases} ${(ok)galiases} ${(ok)saliases}); REPLY=; state; AS=$REPLY
+NP=(${AP:|BP}); NA=(${AA:|BA})
+print -r -- "params=[$NP]"
+print -r -- "aliases=[$NA]"
+[[ $AS == $BS ]] && print options=same || print options=changed
+print -r -- "output=[$(<$TT/inv.out)]"
+ZSH
+inv="$(env -i HOME="$HOMEDIR" PATH=/usr/bin:/bin FUNCS="$FUNCS" TT="$T" /bin/zsh -f "$T/invariant.zsh" 2>&1)"
+is "Z11 loading it defines no parameter" "$(ln 1 "$inv")" 'params=[]'
+is "Z11 loading it defines no alias" "$(ln 2 "$inv")" 'aliases=[]'
+is "Z11 loading it changes no option" "$(ln 3 "$inv")" 'options=same'
+is "Z11 loading it prints nothing" "$(ln 4 "$inv")" 'output=[]'
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
