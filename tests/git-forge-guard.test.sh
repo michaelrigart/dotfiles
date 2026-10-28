@@ -811,6 +811,69 @@ else
   pass=$((pass + 1)); printf '  ok   %s\n' "the patch listing never lazy-fetches"
 fi
 
+# The guard mirrors the delete allow rules (spec 2026-10-28, section 2): a command whose text
+# matches one of them gets its verdict from what the guard parses, because a `*` in a rule
+# cannot prove what git will parse. work is checked out at main's tip and is not on the
+# remote, so a push of it scans clean.
+NOT_A_DELETE_PUSH='Push guard: this command matches a delete allow rule but is not a delete push; reword it so it does not carry the delete form (a commit message quoting it, for example).'
+NOT_DELETE_SHAPE='Push guard: this command matches a delete allow rule but git would not parse it as a delete-only push; push normally, without the delete shape.'
+PINNED="git -C $DEL push --force-with-lease=done:$DONE origin --delete done"
+expect allow "M1 mirror: the printed form with -C, merged and pinned"  "$TMP" "git -C $DEL push --force-with-lease=done:$DONE origin --delete done"
+expect allow "M2 mirror: the same through a -C path with a space"      "$TMP" "git -C '$TMP/del work' push --force-with-lease=done:$DONE origin --delete done"
+expect allow "mirror: the bare form, piped to tail with 2>&1"          "$DEL" "git push --force-with-lease=done:$DONE origin --delete done 2>&1 | tail -3"
+expect allow "mirror: a line continuation inside the rule's text"      "$DEL" "git push --force-with-lease=done:$DONE origin \\
+--delete done"
+expect deny  "M3 mirror: --no-pager before push is not bare"           "$TMP" "git -C $DEL --no-pager push --force-with-lease=done:$DONE origin --delete done"
+has_reason   "M3 and the deny names the bare pinned command" "$PINNED" "$TMP" "git -C $DEL --no-pager push --force-with-lease=done:$DONE origin --delete done"
+expect deny  "M4 mirror: --exec-path is not bare"                      "$TMP" "git -C $DEL --exec-path=$TMP push --force-with-lease=done:$DONE origin --delete done"
+has_reason   "M4 and the deny names the bare pinned command" "$PINNED" "$TMP" "git -C $DEL --exec-path=$TMP push --force-with-lease=done:$DONE origin --delete done"
+expect deny  "M4 mirror: a second -C is not bare"                      "$TMP" "git -C $DEL -C $DEL push --force-with-lease=done:$DONE origin --delete done"
+has_reason   "M4 and the deny names the bare pinned command" "$PINNED" "$TMP" "git -C $DEL -C $DEL push --force-with-lease=done:$DONE origin --delete done"
+expect deny  "M4 mirror: a leading GIT_EXEC_PATH is not bare"          "$TMP" "GIT_EXEC_PATH=$TMP git -C $DEL push --force-with-lease=done:$DONE origin --delete done"
+has_reason   "M4 and the deny names the bare pinned command" "$PINNED" "$TMP" "GIT_EXEC_PATH=$TMP git -C $DEL push --force-with-lease=done:$DONE origin --delete done"
+expect deny  "mirror: a command wrapper is not bare"                   "$TMP" "command git -C $DEL push --force-with-lease=done:$DONE origin --delete done"
+has_reason   "and the deny names the bare pinned command" "$PINNED" "$TMP" "command git -C $DEL push --force-with-lease=done:$DONE origin --delete done"
+expect deny  "M5 mirror: -c x.y=z keeps today's deny"                  "$TMP" "git -C $DEL -c x.y=z push --force-with-lease=done:$DONE origin --delete done"
+has_reason   "M5 and it is the unsupported-configuration deny" "unsupported push configuration" "$TMP" "git -C $DEL -c x.y=z push --force-with-lease=done:$DONE origin --delete done"
+expect deny  "M6 mirror: a cd prefix is not bare"                      "$TMP" "cd $DEL && git push --force-with-lease=done:$DONE origin --delete done"
+has_reason   "M6 and the deny names git -C <cwd> push" "$PINNED" "$TMP" "cd $DEL && git push --force-with-lease=done:$DONE origin --delete done"
+expect deny  "mirror: a cd prefix and an unpinned delete"              "$TMP" "cd $DEL && git push --force-with-lease=done origin --delete done"
+has_reason   "and the deny names git -C <cwd> push with the pin" "$PINNED" "$TMP" "cd $DEL && git push --force-with-lease=done origin --delete done"
+expect ask   "M7 mirror: an unmerged branch, pinned, in A1's shape"    "$DEL" "git push --force-with-lease=open:$OPEN origin --delete open"
+expect ask   "mirror: an unmerged branch behind --no-pager still asks" "$TMP" "git -C $DEL --no-pager push --force-with-lease=open:$OPEN origin --delete open"
+expect ask   "mirror: the default branch, pinned, in A1's shape"       "$DEL" "git push --force-with-lease=main:$MAIN origin --delete main"
+M8="git push --force-with-lease=work:$MAIN --push-option=\"ci.variable=X= origin --delete x\" origin work"
+expect deny  "M8 mirror: a delete shape quoted inside a push option"   "$DEL" "$M8"
+has_reason   "M8 and the reason is the not-a-delete-shape one" "$NOT_DELETE_SHAPE" "$DEL" "$M8"
+expect deny  "M9 an option value that swallowed --delete"              "$DEL" "git push --force-with-lease=work:$MAIN -o --delete origin work"
+M10="git push --force-with-lease=done:$DONE origin --delete --no-verify"
+expect deny  "M10 mirror: a delete with no refspec"                    "$DEL" "$M10"
+has_reason   "M10 and the reason is the not-a-delete-shape one" "$NOT_DELETE_SHAPE" "$DEL" "$M10"
+M11="git push --force-with-lease=done:$DONE origin --delete done --force"
+expect deny  "M11 mirror: a forced delete"                             "$DEL" "$M11"
+has_reason   "M11 and the reason is the not-a-delete-shape one" "$NOT_DELETE_SHAPE" "$DEL" "$M11"
+M12=$(printf 'git  push --force-with-lease=work:%s --push-option="ci.variable=X=  origin\t--delete x" origin work' "$MAIN")
+expect deny  "M12 mirror: the rule matches over extra spaces and a tab" "$DEL" "$M12"
+has_reason   "M12 and the reason is the not-a-delete-shape one" "$NOT_DELETE_SHAPE" "$DEL" "$M12"
+M12B="git push --force-with-lease=done:$DONE -o 'ci.variable=X= origin --delete x' origin :done"
+expect deny  "mirror: a real :ref delete under a quoted --delete text"  "$DEL" "$M12B"
+has_reason   "and the reason is the not-a-delete-shape one" "$NOT_DELETE_SHAPE" "$DEL" "$M12B"
+M13="git -C $DEL -c core.fsmonitor=true status push --force-with-lease=a origin --delete b"
+expect deny  "M13 mirror: another git subcommand behind A4's wildcard" "$TMP" "$M13"
+has_reason   "M13 and the reason is the not-a-delete-push one" "$NOT_A_DELETE_PUSH" "$TMP" "$M13"
+expect allow "M14 an update push in no delete shape keeps today's verdict" "$DEL" "git push --force-with-lease=work:$MAIN origin work"
+expect allow "M15 mirror: a dry run in A1's shape"                     "$DEL" "git push --force-with-lease=done:$DONE origin --delete done --dry-run"
+M16="git -C $DEL commit --allow-empty -m 'quote: push --force-with-lease=a origin --delete b'"
+expect deny  "M16 mirror: a commit message quoting the delete form"    "$TMP" "$M16"
+has_reason   "M16 and the reason is the not-a-delete-push one" "$NOT_A_DELETE_PUSH" "$TMP" "$M16"
+expect allow "M17 an unrelated commit stays silent"                    "$TMP" "git -C $DEL commit --allow-empty -m 'tidy the fixtures'"
+M18="git fetch -q && git push --force-with-lease=done:$DONE origin --delete done"
+expect deny  "mirror: a compound command carrying the delete form"     "$DEL" "$M18"
+has_reason   "and the reason is the not-a-delete-push one" "$NOT_A_DELETE_PUSH" "$DEL" "$M18"
+M19="git push --force-with-lease=a origin --delete 'b"
+expect deny  "mirror: unbalanced quotes around the delete form"        "$DEL" "$M19"
+has_reason   "and the reason is the not-a-delete-push one" "$NOT_A_DELETE_PUSH" "$DEL" "$M19"
+
 # From here on the remote moves: another clone merges far into main and pushes both.
 OTHER="$TMP/delother"
 git clone -q "$REMOTES/del.git" "$OTHER" 2>/dev/null

@@ -36,6 +36,14 @@
 # protection cover it. For example a push word assembled by expansion (git ${X:-pu}sh) has
 # no literal push in the payload, so the shell fast path never starts this helper.
 #
+# The delete allow rules. permissions.allow in dot_claude/modify_private_settings.json holds
+# DELETE_ALLOW_RULES too, so a delete-shaped push can run without the auto-mode classifier. A
+# * in a rule matches any text, so a rule cannot prove what git will parse; this guard
+# therefore searches the whole command text for the same rules first (matches_delete_rule),
+# and a command that matches gets its verdict from what the guard parses: a delete-only push
+# of merged branches, each pinned, in the bare form (git [-C <path>] push ...) is the only one
+# that passes silently. Anything else that matches is a deny or, as for any delete, an ask.
+#
 # Written for /usr/bin/python3 (3.9): no match statements, no X | Y type unions.
 import fnmatch
 import json
@@ -125,6 +133,19 @@ DWIM_PREFIXES = ("heads/", "tags/", "remotes/", "refs/")
 NOT_DELETE_ONLY = {"--prune", "--mirror", "--all", "--force", "-f", "--tags", "--follow-tags"}
 SHA_RE = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
 
+# The push rules of permissions.allow that let a pinned delete skip the classifier (spec
+# 2026-10-28, section 2), exactly as dot_claude/modify_private_settings.json spells them.
+DELETE_ALLOW_RULES = (
+    "Bash(git push --force-with-lease=* origin --delete *)",
+    "Bash(git push --force-with-lease=* origin -d *)",
+    "Bash(git -C * push --force-with-lease=* origin --delete *)",
+)
+NOT_A_DELETE_PUSH = ("Push guard: this command matches a delete allow rule but is not a delete "
+                     "push; reword it so it does not carry the delete form (a commit message "
+                     "quoting it, for example).")
+NOT_DELETE_SHAPE = ("Push guard: this command matches a delete allow rule but git would not "
+                    "parse it as a delete-only push; push normally, without the delete shape.")
+
 UNSUPPORTED = ("unsupported push configuration for the push guard: {}; "
                "push by hand or simplify the configuration")
 GITLEAKS_LEAKS_EXIT = 99
@@ -180,6 +201,32 @@ def decision(kind, reason):
     }}, separators=(",", ":"))
 
 
+# ------------------------------------------------------------------ the delete allow rules
+def rule_pattern(rule):
+    """The pattern of one Bash(...) allow rule, with Claude Code's semantics: a * matches any
+    text, spaces and newlines included, and a space in the rule matches any run of white
+    space (a superset of what the rule matches). Use it with .match, not .search: it is
+    unanchored by itself. Each literal part is found by an atomic lookahead, so the match is
+    linear in the command's length; the plain form (the parts joined by .*, used with
+    .search) backtracks cubically on a long command that almost matches."""
+    body = rule[len("Bash("):-1]
+    parts = [re.escape(p).replace(r"\ ", r"\s+") for p in body.split("*") if p]
+    return re.compile("".join("(?=(.*?{}))\\{}".format(p, n) for n, p in enumerate(parts, 1)),
+                      re.S)
+
+
+DELETE_ALLOW_PATTERNS = tuple(rule_pattern(r) for r in DELETE_ALLOW_RULES)
+
+
+def matches_delete_rule(cmd):
+    """Does the command text match one of the delete allow rules? A search over the whole
+    text, so a superset of Claude Code's match, which runs per subcommand after stripping
+    wrappers. A \\-newline continuation is read as joined (with and without a space) and as
+    written, so no reading of the text can match unseen."""
+    texts = (cmd, cmd.replace("\\\n", " "), cmd.replace("\\\n", ""))
+    return any(p.match(t) for p in DELETE_ALLOW_PATTERNS for t in texts)
+
+
 # ------------------------------------------------------------------ the grammar
 def tokenize(cmd):
     """Shell words and operator tokens. Raises ValueError on unbalanced quotes."""
@@ -229,9 +276,12 @@ def parse_plain(tokens, cwd):
     while i < n and ASSIGN_RE.match(t[i]):
         assigns.append(t[i].split("=", 1)[0])
         i += 1
+    wrapper = None
     if i < n and t[i] in ("command", "sudo"):
+        wrapper = t[i]
         i += 1
     elif i < n and t[i] == "env":
+        wrapper = t[i]
         i += 1
         while i < n and ASSIGN_RE.match(t[i]):
             assigns.append(t[i].split("=", 1)[0])
@@ -239,7 +289,7 @@ def parse_plain(tokens, cwd):
     if i >= n or os.path.basename(t[i]) != "git":
         return None
     i += 1
-    repo_opts, config_opts, unknown = [], [], []
+    repo_opts, config_opts, unknown, global_opts = [], [], [], []
     while i < n and t[i].startswith("-") and not is_operator(t[i]):
         w = t[i]
         name = w.split("=", 1)[0]
@@ -258,8 +308,10 @@ def parse_plain(tokens, cwd):
                 return None
             if w not in GIT_FLAGS and not w.startswith("--exec-path"):
                 unknown.append(w)
+            global_opts.append(w)
             i += 1
             continue
+        global_opts.extend(opt)
         if name in GIT_CONFIG_OPTS:
             config_opts.extend(opt)
         else:
@@ -287,7 +339,8 @@ def parse_plain(tokens, cwd):
     if i != n:
         return None
     return {"cwd": cwd, "cd_used": cd_used, "assigns": assigns, "repo_opts": repo_opts,
-            "config_opts": config_opts, "unknown": unknown, "sub": sub, "args": args}
+            "config_opts": config_opts, "unknown": unknown, "sub": sub, "args": args,
+            "global_opts": global_opts, "wrapper": wrapper}
 
 
 # ------------------------------------------------------------------ git queries
@@ -678,8 +731,18 @@ def runs_command_string(sub, args):
     return False
 
 
-def judge(s):
-    """None to allow, a reason to ask; raises Deny. s is a plain command from parse_plain."""
+def is_bare(s):
+    """Is this plain command git [-C <path>] push ..., with nothing else that could change
+    what runs: no cd prefix, no variable assignment (GIT_EXEC_PATH is --exec-path's
+    environment form), no wrapper, and no global option but one -C?"""
+    opts = s["global_opts"]
+    return not (s["cd_used"] or s["assigns"] or s["wrapper"]) and (
+        not opts or (len(opts) == 2 and opts[0] == "-C"))
+
+
+def judge(s, mirrored=False):
+    """None to allow, a reason to ask; raises Deny. s is a plain command from parse_plain.
+    mirrored: its text matched a delete allow rule, and its subcommand is the literal push."""
     sub, args = s["sub"], s["args"]
     if sub != "push" and sub not in GIT_BUILTINS:
         if s["unknown"] or [a for a in s["assigns"] if GIT_ENV_UNSUPPORTED.match(a)]:
@@ -707,7 +770,8 @@ def judge(s):
     if (s["repo_opts"] or s["cd_used"]) and any(a in CURRENT_BRANCH for a in args):
         raise Deny("Push guard: the current-branch substitution runs where the shell is, not "
                    "in the repository -C or cd selects. Name the branch literally.")
-    return evaluate(s["cwd"], s["assigns"], s["repo_opts"], s["config_opts"], args)
+    return evaluate(s["cwd"], s["assigns"], s["repo_opts"], s["config_opts"], args,
+                    {"bare": is_bare(s), "moved": s["cd_used"]} if mirrored else None)
 
 
 def push_option(value, where=""):
@@ -845,19 +909,20 @@ def plain_transport(url):
     return True                                        # a path, or scp-like host:path (over ssh)
 
 
-def merged_delete(repo, remote, default, names, leases):
+def merged_delete(repo, remote, default, names, leases, where):
     """Whether a delete-only push of the branches in names goes without an ask: True when
     every one is merged and pinned; a deny reason naming the pinned command when every one
     is merged but a pin is missing or names another tip; None (an ask, as before) otherwise,
     a failed read of the remote included. A timeout anywhere in these checks asks as well:
-    Repo.run raises it as a Deny, which here would turn today's ask into a deny."""
+    Repo.run raises it as a Deny, which here would turn today's ask into a deny. where is the
+    list of words the pinned command prints between git and push (-C <path>, or none)."""
     try:
-        return check_merged_delete(repo, remote, default, names, leases)
+        return check_merged_delete(repo, remote, default, names, leases, where)
     except Deny:
         return None
 
 
-def check_merged_delete(repo, remote, default, names, leases):
+def check_merged_delete(repo, remote, default, names, leases, where):
     """merged_delete without the timeout fallback.
 
     Merged: one ls-remote of the remote, whose single push URL is its fetch URL (evaluate
@@ -937,7 +1002,7 @@ def check_merged_delete(repo, remote, default, names, leases):
     # to run.
     pins = " ".join(shlex.quote("--force-with-lease={}:{}".format(n, tips["refs/heads/" + n]))
                     for n in names)
-    where = "".join(shlex.quote(x) + " " for x in repo.repo_opts)   # git -C <path>, as written
+    where = "".join(shlex.quote(x) + " " for x in where)            # git -C <path>, as written
     return ("Push guard: {} {} merged into {}, on {} and here. Pin the delete to the tip just "
             "read, so git refuses it if the branch has moved, and it needs no ask: "
             "git {}push {} {} --delete {}").format(
@@ -1156,8 +1221,26 @@ def leak_reason(report, remote):
 
 
 # ------------------------------------------------------------------ one push
-def evaluate(cwd, assigns, repo_opts, config_opts, args):
-    """None to allow, a reason string to ask; raises Deny to deny."""
+def mirror_where(cwd, repo_opts, moved):
+    """The words between git and push in the bare pinned command for a push that matched a
+    delete allow rule: its one -C path as written, the directory the push really runs in
+    when a cd prefix or several -C options moved it (-C values add up), else none. By now
+    evaluate has refused every repo_opts word but -C and its value."""
+    dirs = repo_opts[1::2]
+    if len(dirs) == 1 and not moved:
+        return ["-C", dirs[0]]
+    if not dirs and not moved:
+        return []
+    for d in dirs:
+        cwd = os.path.normpath(os.path.join(cwd, d))
+    return ["-C", cwd]
+
+
+def evaluate(cwd, assigns, repo_opts, config_opts, args, mirror=None):
+    """None to allow, a reason string to ask; raises Deny to deny. mirror is None, or for a
+    push whose text matched a delete allow rule: {"bare": whether it is git [-C <path>]
+    push, "moved": whether a cd prefix changed its directory}. Such a push is judged as a
+    delete-only push or it is denied, and only a bare one can pass silently."""
     flags, remote_arg, refspecs = parse_push(args)
     if "-n" in flags or "--dry-run" in flags:
         return None                                    # never scanned, never asked
@@ -1172,6 +1255,12 @@ def evaluate(cwd, assigns, repo_opts, config_opts, args):
     for name in assigns:
         if GIT_ENV_UNSUPPORTED.match(name):
             raise Deny(UNSUPPORTED.format(name + " set on the push invocation"))
+    if mirror is not None and not (
+            ("-d" in flags or "--delete" in flags) and delete_targets(flags, refspecs) is not None):
+        # The text carries a delete form, but git would not read this as a delete-only push
+        # (an update, a mixed push, no refspec, or the form quoted inside an option value):
+        # the allow rule must not run it.
+        raise Deny(NOT_DELETE_SHAPE)
 
     repo = Repo(cwd, repo_opts)
     root = repo.run("rev-parse", "--show-toplevel")
@@ -1290,10 +1379,17 @@ def evaluate(cwd, assigns, repo_opts, config_opts, args):
     # no flag or refspec that adds any other ask, so the asks it replaces are delete asks.
     targets = delete_targets(flags, refspecs)
     if asks and targets is not None and default not in targets:
-        verdict = merged_delete(repo, remote, default, targets, push_leases(args))
-        if verdict is True:
+        if mirror is None:
+            leases, where = push_leases(args), repo.repo_opts
+        else:
+            # Not bare: no lease counts, so a merged delete cannot come back True and runs
+            # nowhere unjudged; the deny names the bare pinned command to run instead.
+            leases = push_leases(args) if mirror["bare"] else []
+            where = mirror_where(cwd, repo_opts, mirror["moved"])
+        verdict = merged_delete(repo, remote, default, targets, leases, where)
+        if verdict is True and (mirror is None or mirror["bare"]):
             return None
-        if verdict:
+        if isinstance(verdict, str):
             raise Deny(verdict)
 
     if asks:
@@ -1311,24 +1407,30 @@ def main():
     if not cmd:
         return
     shape = None
+    mirrored = None                                    # unset until the search has run
     try:
+        # First, over the whole text: a command matching a delete allow rule may run without
+        # the classifier, so it must be exactly a git push (see the header).
+        mirrored = matches_delete_rule(cmd)
         try:
             tokens = tokenize(cmd)
         except ValueError:
             tokens = None                              # unbalanced quotes: not plain
         if tokens is not None:
             shape = parse_plain(tokens, cwd)
+        if mirrored and (shape is None or shape["sub"] != "push"):
+            raise Deny(NOT_A_DELETE_PUSH)
         if shape is None:
             if could_push(cmd, tokens, cwd):           # the raw text: a superset, never trimmed
                 raise Deny(PLAIN)
             return
-        reason = judge(shape)
+        reason = judge(shape, mirrored)
     except Deny as d:
         print(decision("deny", str(d)))
         return
     except Exception as e:                             # a bug here must not open the gate
         # A plain git command may be an alias push (git pom): it fails closed as well.
-        if shape is not None or PUSH_SHAPE.search(cmd):
+        if shape is not None or mirrored is not False or PUSH_SHAPE.search(cmd):
             print(decision("deny", "Push guard: internal error ({}: {}), so the push is "
                                    "refused. Push by hand.".format(type(e).__name__, e)))
         return
