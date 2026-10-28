@@ -38,7 +38,9 @@
 # exception is a command that matches a delete allow rule (A1 or A2, below): the allow rule
 # skips the classifier, so this guard is the only gate. For those commands the guard must
 # read the text at least as widely as Claude Code does, and passes one silently only in
-# canonical text (plain words, see CANONICAL), which the shell hands git unchanged.
+# canonical text (plain words, see CANONICAL), which the shell hands git unchanged. An
+# ANSI-C $'...' word can spell git or push in escapes, so the shell fast path starts this
+# helper for any payload that holds one, and the search decodes it (decode_ansi_c).
 #
 # The delete allow rules. permissions.allow in dot_claude/modify_private_settings.json holds
 # DELETE_ALLOW_RULES too, so a delete-shaped push can run without the auto-mode classifier. A
@@ -245,22 +247,123 @@ DELETE_ALLOW_PATTERNS = tuple(rule_pattern(r) for r in DELETE_ALLOW_RULES)
 QUOTING = re.compile(r"[\"'\\]")
 
 
+def readings(text, tokens):
+    """The texts matches_delete_rule searches for one form of the command: as written, with
+    each \\-newline continuation joined by a space and by nothing, each of those three with
+    every ", ' and \\ removed, and its shell words (tokens, when it tokenizes) joined by
+    single spaces."""
+    joined = text.replace("\\\n", "")
+    out = [text, text.replace("\\\n", " "), joined, QUOTING.sub("", text), QUOTING.sub("", joined)]
+    if tokens is not None:
+        out.append(" ".join(tokens))
+    return out
+
+
 def matches_delete_rule(cmd, tokens):
     """Does the command text match one of the delete allow rules? A search over the whole
     text, so a superset of Claude Code's match, which runs per subcommand after stripping
     wrappers and shell-unquoting the first word (single and double quotes and backslashes:
-    g\\it and "gi"t are git there). A \\-newline continuation is read as joined (with and
-    without a space) and as written; each of those readings is also read with every ", ' and
-    \\ removed, which shows the match when the rest of the command does not tokenize; and
-    when the text tokenizes, its shell words (tokens, quotes removed) are read joined by
-    single spaces. So no reading of the text can match unseen. The rules hold no quotes or
-    backslashes, so each reading only adds matches. No reading drops the leading git: that
-    would mirror every git -C delete, which no rule matches."""
-    joined = cmd.replace("\\\n", "")
-    texts = [cmd, cmd.replace("\\\n", " "), joined, QUOTING.sub("", cmd), QUOTING.sub("", joined)]
-    if tokens is not None:
-        texts.append(" ".join(tokens))
+    g\\it and "gi"t are git there). It searches every reading (readings) of the command as
+    written, and of the command with its ANSI-C $'...' words decoded ($'\\x67it' is git to
+    bash and zsh), so no reading of the text can match unseen. The quote-stripped readings
+    show a match when the rest of the command does not tokenize. The rules hold no quotes or
+    backslashes and the written readings are always searched, so each reading only adds
+    matches. No reading drops the leading git: that would mirror every git -C delete, which
+    no rule matches."""
+    texts = readings(cmd, tokens)
+    decoded = decode_ansi_c(cmd)
+    if decoded != cmd:
+        try:
+            texts += readings(decoded, tokenize(decoded))
+        except ValueError:
+            texts += readings(decoded, None)
     return any(p.match(t) for p in DELETE_ALLOW_PATTERNS for t in texts)
+
+
+# The escapes bash decodes in $'...' by one letter (\cX, octal, \x, \u and \U in ansi_c).
+ANSI_C_ESCAPES = {"a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "n": "\n",
+                  "r": "\r", "t": "\t", "v": "\v", "\\": "\\", "'": "'", '"': '"', "?": "?"}
+ANSI_C_DIGITS = {"x": 2, "u": 4, "U": 8}
+
+
+def ansi_c(body):
+    """The text bash 5 makes of one $'...' body: \\a \\b \\e \\E \\f \\n \\r \\t \\v \\\\ \\'
+    \\" \\?, \\nnn (octal), \\xHH, \\uHHHH, \\UHHHHHHHH and \\cX; any other backslash stays.
+    The text ends at a NUL, as the word does for bash and zsh alike (measured). zsh differs
+    on an unknown escape (it drops the backslash) and on \\c; the quote-stripped readings,
+    which drop every backslash, cover the first, and the second spells no letters."""
+    out, i, n = [], 0, len(body)
+    while i < n:
+        c, e = body[i], body[i + 1:i + 2]
+        if c != "\\" or not e:
+            out.append(c)
+            i += 1
+        elif e in ANSI_C_ESCAPES:
+            out.append(ANSI_C_ESCAPES[e])
+            i += 2
+        elif e in "01234567":
+            digits = re.match(r"[0-7]{1,3}", body[i + 1:]).group()
+            out.append(chr(int(digits, 8) & 0xFF))
+            i += 1 + len(digits)
+        elif e in ANSI_C_DIGITS:
+            m = re.match(r"[0-9A-Fa-f]{1,%d}" % ANSI_C_DIGITS[e], body[i + 2:])
+            if m:
+                out.append(chr(min(int(m.group(), 16), 0x10FFFF)))
+                i += 2 + len(m.group())
+            else:
+                out.append(c + e)
+                i += 2
+        elif e == "c" and i + 2 < n:
+            x = body[i + 2]
+            i += 3
+            if x == "\\" and body[i:i + 1] == "\\":
+                i += 1                                 # \c\\ is control-backslash
+            out.append("\x7f" if x == "?" else chr(ord(x) & 0x1F))   # upper or lower case alike
+        else:
+            out.append(c + e)
+            i += 2
+    return "".join(out).split("\0", 1)[0]
+
+
+def decode_ansi_c(cmd):
+    """cmd with each $'...' the shell would decode replaced by its text (ansi_c), quoted back
+    as one shell word, and each $"..." read as "...". The shell decodes them only outside
+    quotes and comments and not after a backslash: a $' inside '...' or "..." is literal,
+    and inside $'...' an escaped \\' does not close it."""
+    out, i, n, mode = [], 0, len(cmd), None            # mode: None, ', " or #
+    while i < n:
+        c, nxt = cmd[i], cmd[i + 1:i + 2]
+        if mode == "'":
+            mode = None if c == "'" else mode
+        elif mode == "#":
+            mode = None if c == "\n" else mode
+        elif c == "\\" and nxt:
+            out.append(c + nxt)                        # escaped, in or out of "..."
+            i += 2
+            continue
+        elif mode == '"':
+            mode = None if c == '"' else mode
+        elif c == "$" and nxt == "'":
+            j, body = i + 2, []
+            while j < n and cmd[j] != "'":
+                step = 2 if cmd[j] == "\\" and j + 1 < n else 1
+                body.append(cmd[j:j + step])
+                j += step
+            out.append(shlex.quote(ansi_c("".join(body))))
+            i = j + 1
+            continue
+        elif c == "$" and nxt == '"':
+            out.append('"')
+            i += 2
+            mode = '"'
+            continue
+        elif c in "'\"":
+            mode = c
+        elif c == "#" and (not out or out[-1][-1] in BLANKS + PUNCT):
+            mode = "#"
+        out.append(c)
+        i += 1
+    return "".join(out)
 
 
 # ------------------------------------------------------------------ the grammar
@@ -819,10 +922,12 @@ def runs_command_string(sub, args):
 
 
 def canonical(cmd):
-    """Is the raw command canonical text (CANONICAL, and no argument starting with =)? Only
-    leading and trailing spaces and newlines are stripped first: a tab or a carriage return
-    anywhere, a quote, an escape or any other character makes the text not canonical."""
-    m = CANONICAL.fullmatch(cmd.strip(" \n"))
+    """Is the raw command canonical text (CANONICAL, and no argument starting with =)? First
+    at most one trailing newline is removed, then leading and trailing spaces: any other
+    newline, a tab or a carriage return anywhere, a quote, an escape or any other character
+    makes the text not canonical."""
+    text = cmd[:-1] if cmd.endswith("\n") else cmd
+    m = CANONICAL.fullmatch(text.strip(" "))
     return bool(m) and not any(w.startswith("=") for w in m.group(1).split(" "))
 
 
@@ -1016,10 +1121,18 @@ def other_checkout(root, session):
     return None if here is not None and here.strip() == root else root
 
 
+def shell_word(word):
+    """word quoted for the shell, as a deny reason prints it in a command: shlex.quote, and a
+    word starting with = is quoted too, since zsh (the Bash tool's shell) expands =x to the
+    path of a command x (EQUALS) and shlex counts = as safe."""
+    quoted = shlex.quote(word)
+    return "'" + word + "'" if quoted == word and word.startswith("=") else quoted
+
+
 def plain_push(args):
     """The push as the bare command git push <args>, each word quoted for the shell but a
     current-branch substitution, which must stay one."""
-    return " ".join(["git", "push"] + [a if a in CURRENT_BRANCH else shlex.quote(a) for a in args])
+    return " ".join(["git", "push"] + [a if a in CURRENT_BRANCH else shell_word(a) for a in args])
 
 
 def merged_delete(repo, remote, default, names, leases, root, session, plain=False):
@@ -1114,28 +1227,29 @@ def check_merged_delete(repo, remote, default, names, leases, root, session, pla
     if all(any(pin_of(n, lease) for n in names) for lease in leases) \
             and all(any(pin_of(n, lease) for lease in leases) for n in names):
         return True
-    # Quoted: git allows ', ; $ and backticks in a branch name, and this text is a command
-    # to run.
-    pins = " ".join(shlex.quote("--force-with-lease={}:{}".format(n, tips["refs/heads/" + n]))
+    # Quoted (shell_word): git allows ', ; $, backticks and a leading = in a branch name, and
+    # this text is a command to run.
+    pins = " ".join(shell_word("--force-with-lease={}:{}".format(n, tips["refs/heads/" + n]))
                     for n in names)
     command = "git push {} {} --delete {}".format(
-        pins, shlex.quote(remote), " ".join(shlex.quote(n) for n in names))
+        pins, shell_word(remote), " ".join(shell_word(n) for n in names))
     merged = "Push guard: {}{} {} merged into {}, on {}".format(
         "a delete that matches an allow rule passes only when written in " + PLAIN_WORDS + ". "
         if plain else "", ", ".join(names), "is" if len(names) == 1 else "are", default, remote)
     there = other_checkout(root, session)
     if there is None and not canonical(command):
-        # A branch name that needs quoting: no command for it is canonical, so none passes.
+        # A branch or remote name that needs quoting: no command for it is canonical, so none
+        # passes.
         return ("{} and here. Pin the delete to the tip just read, so git refuses it if the "
-                "branch has moved. A branch name here needs quoting, which plain words cannot "
-                "carry, so Michael runs it: {}").format(merged, command)
+                "branch has moved. A name here needs quoting, which plain words cannot carry, "
+                "so Michael runs it: {}").format(merged, command)
     if there is None:
         return ("{} and here. Pin the delete to the tip just read, so git refuses it if the "
                 "branch has moved, and it needs no ask: {}").format(merged, command)
     # No git -C form: no allow rule matches one, so it would go to the classifier.
     return ("{} and in {}, which is not this session's checkout. Pin the delete to the tip just "
             "read, so git refuses it if the branch has moved; the delete must run from that "
-            "checkout, or Michael runs it: {}").format(merged, shlex.quote(there), command)
+            "checkout, or Michael runs it: {}").format(merged, shell_word(there), command)
 
 
 # ------------------------------------------------------------------ the secret scan
@@ -1413,11 +1527,11 @@ def evaluate(cwd, assigns, repo_opts, config_opts, args, session, mirror=None):
         if there is None and canonical(command):
             raise Deny("{}: {}".format(lead, command))
         if there is None:
-            raise Deny("{}. It needs quoting, which plain words cannot carry, so Michael runs "
-                       "it: {}".format(lead, command))
+            raise Deny("{}. A word here needs quoting, which plain words cannot carry, so "
+                       "Michael runs it: {}".format(lead, command))
         raise Deny("{}. It runs in {}, which is not this session's checkout, so it must run "
                    "from that checkout, or Michael runs it: {}".format(
-                       lead, shlex.quote(there), command))
+                       lead, shell_word(there), command))
     if mirror is not None and not (
             ("-d" in flags or "--delete" in flags) and delete_targets(flags, refspecs) is not None):
         # The text carries a delete form, but git would not read this as a delete-only push

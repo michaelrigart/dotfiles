@@ -28,13 +28,29 @@
 #    functions recording their argv, in a cwd holding files named like plain words. Every
 #    run handed git exactly the arguments the guard judged, and tail/head exactly -n N:
 #    0 mismatches. A control showed that the same harness sees brace, glob and zsh
-#    =command expansion.
+#    =command expansion. A is the check that covers the piped shapes (the four trailers
+#    with | tail or | head).
 # B. 1201 mirrored commands: the six trailer forms, -d, two branches, two dry runs and a
 #    -o ci.skip delete, each with one to three inserted characters (CR, VT, FF, NBSP, ^\,
 #    glob, brace, quote, backslash, blanks, newline, $ ` ~ = # ^ ! % < > : @ -, NUL,
 #    operators, a continuation and word-level forms), against the final guard on a fixture
-#    with merged and unmerged branches. 25 were left silent, all canonical, and bash and
-#    zsh handed git exactly the words the guard judged in each.
+#    with merged and unmerged branches. 25 were left silent, and all 25 were canonical.
+#    For each silent one without a | trailer, bash 5.3 and zsh with Claude Code's options
+#    handed git exactly the words the guard judged. B skips the argv comparison for a
+#    silent command with a | trailer, since git's output then goes into tail or head.
+# The allowlist assumes zsh's MAGIC_EQUAL_SUBST is off, as it is in the snapshot. In the
+# worst case, if it were on, x==cmd becomes x=/abs/path/of/cmd: no new word, no new option.
+#
+# The mirror search decodes ANSI-C $'...' words (git-push-guard.py ansi_c). A differential
+# run compared it with printf %s of the same words: 1489 random $'...' words built from
+# plain characters, every escape bash decodes (\a \b \e \E \f \n \r \t \v \\ \' \" \? \nnn
+# \xHH \uHHHH \UHHHHHHHH \cX), unknown escapes and no-digit \x \u \U. Byte escapes stayed
+# below 0x80, and surrogates were skipped. bash 5.3: 1487 identical, and the other 2 are
+# code points above U+10FFFF, which bash writes as 5- or 6-byte sequences and the guard
+# caps (no ASCII letter). bash 3.2 has no \u or \U. zsh 5.9: 483 identical. The rest are in
+# four classes: an unknown escape (zsh drops the backslash, as the quote-stripped readings
+# do), \c (zsh: a literal c), a NUL (zsh keeps the rest of the word, which git never sees),
+# and a no-digit \x, \u or \U, which zsh reads as a NUL.
 
 set -uo pipefail
 
@@ -804,7 +820,7 @@ else
   fail=$((fail + 1)); printf '  FAIL %s\n%s\n' "the deny's command does not parse to the intended argv" "$QREASON"
 fi
 has_reason   "the deny says the quoted names need Michael" \
-             "A branch name here needs quoting, which plain words cannot carry, so Michael runs it: " "$DQ" "$QCMD"
+             "A name here needs quoting, which plain words cannot carry, so Michael runs it: " "$DQ" "$QCMD"
 expect deny  "the quoted pinned command is not plain words: denied" "$DQ" "$QPINNED"
 has_reason   "and that deny says Michael runs it too" "so Michael runs it: " "$DQ" "$QPINNED"
 
@@ -881,14 +897,17 @@ expect allow "M1 a -C delete matches no rule: today's verdict"         "$TMP" "g
 expect allow "M2 the same through a -C path with a space"              "$TMP" "git -C '$TMP/del work' push --force-with-lease=done:$DONE origin --delete done"
 # Bare is canonical text too (spec 2026-10-28, Bare): git push and plain words separated by
 # single spaces, then at most one trailer. The merged, pinned delete passes with each one,
-# and with outer spaces and a trailing newline, which are stripped. (A leading newline is
-# stripped too, but the grammar has never read one as a plain command: not plain, as for
-# any push.)
+# and with outer spaces and one trailing newline: at most one trailing newline is removed,
+# then leading and trailing spaces. Any other newline is not canonical (a leading one, or
+# a second at the end, is not plain to the grammar either).
 for trailer in '' ' 2>&1' ' | tail -n 3' ' | head -n 3' ' 2>&1 | tail -n 3' ' 2>&1 | head -n 3'; do
   expect allow "C1 mirror: canonical, trailer [$trailer]"              "$DEL" "$PINNED$trailer"
 done
-expect allow "C1 mirror: canonical, with outer spaces and a trailing newline" "$DEL" "$(printf '  %s  \n ' "$PINNED")"
-expect deny  "C1 mirror: a leading newline is not plain"               "$DEL" "$(printf '\n%s' "$PINNED")"
+expect allow "C1 mirror: canonical, with outer spaces and one trailing newline" "$DEL" "  $PINNED  "$'\n'
+expect deny  "C1 mirror: a leading newline is not canonical"           "$DEL" $'\n'"$PINNED"
+expect deny  "C1 mirror: two trailing newlines are not canonical"      "$DEL" "$PINNED"$'\n\n'
+expect deny  "C1 mirror: a space after the trailing newline is not canonical" "$DEL" "  $PINNED  "$'\n '
+expect deny  "C1 mirror: a newline, a space and a newline at the end"  "$DEL" "$PINNED"$'\n \n'
 PLAIN_NOTE="Push guard: a delete that matches an allow rule passes only when written in plain words: git push and its arguments, each made of letters, digits and ._/:=@+,%- (none starting with =), separated by single spaces, nothing before git, and at most 2>&1 and | tail -n N or | head -n N after. done is merged into main, on origin $RUN_HERE"
 # Anything else is not canonical, so not bare: a merged delete gets the deny naming the plain
 # pinned form, and the note that it must be written in plain words.
@@ -924,7 +943,18 @@ expect deny  "C3 mirror: a no-break space in an -o value"              "$DEL" "$
 expect deny  "C3 mirror: a \$ in an -o value"                          "$DEL" "$C3_DONE -o ci.variable=X=\$HOME origin --delete done"
 expect deny  "C3 mirror: a backtick in an -o value"                    "$DEL" "$C3_DONE -o ci.variable=X=\`id\` origin --delete done"
 expect deny  "C3 mirror: a ~ in an -o value"                           "$DEL" "$C3_DONE -o ci.variable=X=~ origin --delete done"
-expect deny  "C3 mirror: a word starting with ="                       "$DEL" "$C3_DONE -o =ci.skip origin --delete done"
+# A word starting with = is not canonical: zsh, the Bash tool's shell, expands =x to the path
+# of a command x (EQUALS). A command a deny prints quotes such a word ('=x'), so it runs as
+# written in zsh. =e is a branch at main's tip, merged, on the remote.
+git -C "$DEL" branch =e main && git -C "$DEL" push -q origin =e 2>/dev/null
+C3_EQ_DRY="git push --force-with-lease=a -n origin --delete =x"
+expect deny  "C3 mirror: a dry run with a word starting with ="        "$DEL" "$C3_EQ_DRY"
+has_reason   "C3 and the printed dry run quotes the word" \
+             "A word here needs quoting, which plain words cannot carry, so Michael runs it: git push --force-with-lease=a -n origin --delete '=x'" "$DEL" "$C3_EQ_DRY"
+C3_EQ_DEL="git push --force-with-lease==e:$MAIN origin --delete =e"
+expect deny  "C3 mirror: the pinned delete of a merged branch named =e" "$DEL" "$C3_EQ_DEL"
+has_reason   "C3 and the printed delete quotes the name" \
+             "A name here needs quoting, which plain words cannot carry, so Michael runs it: git push --force-with-lease==e:$MAIN origin --delete '=e'" "$DEL" "$C3_EQ_DEL"
 expect deny  "C3 mirror: a brace around a quoted blank in an -o value" "$DEL" "$C3_DONE -o ci.variable=X={a,' '} origin --delete done"
 # The remote word: every push the guard judges, a mirrored dry run included, must name a
 # configured remote; a path is not one.
@@ -1046,6 +1076,18 @@ has_reason   "M23 and the reason is the plain-command one" "$PLAIN_REASON" "$DEL
 M24='"gi"t push --force-with-lease=a origin --delete yz # don'"'"'t'
 expect deny  "M24 mirror: a part-quoted first word, the rest untokenizable" "$DEL" "$M24"
 has_reason   "M24 and the reason is the plain-command one" "$PLAIN_REASON" "$DEL" "$M24"
+# bash and zsh decode an ANSI-C $'...' word, so $'\x67it' is git and $'\x70ush' is push: the
+# mirror search reads the command with those words decoded too. Neither is a plain command.
+M27="\$'\\x67it' push --force-with-lease=done:$DONE origin --delete done"
+expect deny  "M27 mirror: an ANSI-C first word spelling git"            "$DEL" "$M27"
+has_reason   "M27 and the reason is the plain-command one" "$PLAIN_REASON" "$DEL" "$M27"
+M28="git \$'\\x70ush' --force-with-lease=done:$DONE origin --delete done"
+expect deny  "M28 mirror: an ANSI-C word spelling push"                 "$DEL" "$M28"
+has_reason   "M28 and the reason is the plain-command one" "$PLAIN_REASON" "$DEL" "$M28"
+# The shell decodes $'...' only outside quotes: in '$'\x67it' ...' the $ is quoted, so the
+# word is the literal $x67it ..., which echo prints and nothing runs.
+M29="echo '\$'\\x67it' push --force-with-lease=a origin --delete b'"
+expect allow "M29 a quoted \$ before a quote is no ANSI-C word"          "$DEL" "$M29"
 # The shell removes a \-newline outside single quotes, so one glued between two words joins
 # them: y\<newline>z is yz, as bash runs it, not y and z. y and z are merged; yz is not. A
 # backslash escaped before a newline is no continuation: the newline ends the command.

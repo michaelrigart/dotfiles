@@ -85,8 +85,10 @@ case "$payload" in
   |*"glab api"*) forge_candidate=1 ;;
 esac
 
-# Rule 4 candidates, from three independent signals:
+# Rule 4 candidates, from four independent signals:
 #   push_word      the payload mentions "push" at all (cheap and broad);
+#   ansi_c         it holds an ANSI-C $'...' word, which can spell git or push in escapes
+#                  ($'\x70ush'); the helper decodes it when it matches a delete allow rule;
 #   push_selector  it mentions git together with something that selects ANOTHER repository
 #                  or configuration (-C, --git-dir, --work-tree, -c, GIT_DIR, GIT_WORK_TREE,
 #                  GIT_CONFIG*, a cd). An alias defined there cannot be listed from here,
@@ -96,8 +98,9 @@ esac
 #                  read from the raw JSON with a builtin match.
 # A payload that mentions neither git nor push costs no subprocess at all, and a plain git
 # command costs one git call, never the helper.
-push_word=0; push_selector=0; push_alias=0
+push_word=0; push_selector=0; push_alias=0; ansi_c=0
 case "$payload" in *push*|*send-pack*) push_word=1 ;; esac
+case "$payload" in *"\$'"*) ansi_c=1 ;; esac
 case "$payload" in
   *git*)
     case "$payload" in
@@ -118,7 +121,7 @@ EOF
     ;;
 esac
 push_candidate=0
-[ "$push_word$push_selector$push_alias" = 000 ] || push_candidate=1
+[ "$push_word$push_selector$push_alias$ansi_c" = 0000 ] || push_candidate=1
 
 [ "$forge_candidate" = 1 ] || [ "$push_candidate" = 1 ] || allow
 
