@@ -41,10 +41,23 @@ under bash 3.2, bash 5.3 and zsh 5.9 (measured with a stub git). `$'git' push �
 
 A scan that tracks shell context (here-documents, comments, arithmetic, nested `$( )`, case
 patterns) hides a `$'` in every context it models wrongly. Round 1 found two such contexts: an
-unquoted here-document body, and `<<` inside `$(( ))`. So the guard tracks no context. Each view
-starts from the text `could_push` already matches, which is `inert_text`'s output. That text is
-raw for any command holding `$'`, a here-document, `$( )` or a backtick. For each reading
-(zsh 5.9, bash 5.3, bash 3.2), a view is built in three steps:
+unquoted here-document body, and `<<` inside `$(( ))`. So the guard tracks no context.
+
+**The starting text.** Each view starts from `inert_text`, applied to the command with each `$`
+directly before a quote deleted, so that shlex reads every `$'…'` as an ordinary single-quoted
+word. The bounds:
+- **No escaped quote.** This applies only when no backslash sits directly before a `'`, `\\'`
+  included. Under that condition, shlex and the shell agree on where every ANSI-C quote ends.
+  Any other command starts from its raw text.
+- **Here-documents, `$( )` and backticks** stay unsplittable and are read raw, as on main.
+- **A failed split** leaves the text raw, which can only add a deny.
+- **Escaped command words.** A command word that held an escape or an ANSI-C quote in the raw
+  command never counts as an inert tool or as git, so redaction never drops the arguments of an
+  escaped git. `$'\x72g' -e $'\x67it' $'\x70ush'` is therefore denied, a deny this rule accepts.
+- **Views only.** The redaction serves only the views. The raw-text check keeps main's own
+  `inert_text`, so `echo $'git push'` stays denied, as on main.
+
+For each reading (zsh 5.9, bash 5.3, bash 3.2), a view is built from that text in three steps:
 1. Delete every backslash-newline pair.
 2. Decode every backslash escape anywhere in the text by the reading's rules. These cover
    `$'…'` bodies, here-document bodies (quoted or not), comments, arithmetic, `$( )` and
@@ -93,15 +106,13 @@ so it always splits. The raw text keeps main's `PUSH_SHAPE` check, and the gramm
 Decoding where the shell would not only adds denies. Examples are a quoted here-document body
 and a single-quoted `printf '\x67it'`. That is the accepted price of a construction with no
 context to get wrong. Inert redaction still applies:
-- `printf '\x67it \x70ush'` alone stays silent;
-- piped into `sh`, the command is read raw and denied;
-- `echo $'\x67it push'` is now denied, as main already denies `echo $'git push'`: a command
-  holding `$'` is read raw.
+- `printf '\x67it \x70ush'` alone stays silent, but piped into `sh` it is denied, because a
+  pipeline into a shell is never redacted;
+- `echo $'\x67it push'` and `rg "git|push" $'\t'` stay silent, because their views are
+  redacted to `echo` and `rg`.
 
-Two denies are accepted by design:
-- `echo $'\x67it push'`;
-- a quoted here-document body that spells a push, such as `cat <<'EOF'` with
-  `$( $'\x67it' $'\x70ush' … )` in its body.
+One deny is accepted by design: a quoted here-document body that spells a push, such as
+`cat <<'EOF'` with `$( $'\x67it' $'\x70ush' … )` in its body.
 
 The cost is measured by the transcript part of the differential under Tests. It counts new
 denies on real commands by class, and it must show 0 on real commands that never push. A real
@@ -259,7 +270,10 @@ The header also records the residual:
   - `cat <<EOF`⏎`it's $'\x67it'`⏎`EOF`;
   - `git status && ./scripts/push.sh`, which holds no hidden-spelling signal, so no view is
     built.
-- `echo $'\x67it push'` is denied by design, as main denies `echo $'git push'`.
+- `echo $'\x67it push'` stays silent, because its view is redacted, and `echo $'git push'` stays
+  denied by main's raw-text check.
+- `$'\x72g' -e $'\x67it' $'\x70ush'` is denied, which pins that an escaped command word is never
+  inert.
 - `git pu"sh" origin main` and `git pu"sh" --force origin main` get the PLAIN deny, not an ask.
   `git pu"sh" origin feature` stays silent.
 
@@ -276,7 +290,7 @@ Three differentials are recorded in the suite header and are not part of the sui
 - **Against main.** The corpus is the merged spec's B shapes, the cases above, and every Bash
   command from the last 30 days of transcripts, run locally and never committed. Across the whole
   corpus the result must be 0 looser verdicts and 0 new asks. The synthetic cases are judged by
-  their expected verdicts, including the two accepted by design in section 1. On the transcript
+  their expected verdicts, including the denies section 1 accepts. On the transcript
   part, new denies are counted by class, and there must be 0 on commands that never push.
 
 `tests/claude-settings.test.sh` checks that:
