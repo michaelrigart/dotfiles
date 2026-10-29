@@ -1516,6 +1516,40 @@ expect deny  "an ANSI-C push word"                   "$R" "git \$'\\x70ush' orig
 expect deny  "an ANSI-C letter inside push"          "$R" "git pu\$'\\x73'h origin main"
 expect ask   "a literal push still asks"             "$R" 'git push origin main'
 expect ask   "a quoted git word, literal push, still asks" "$R" '"git" push origin main'
+expect deny  "a hidden send-pack spelling"           "$R" 'git send-"pack" origin main'
+expect allow "IFS=$'\\n' alone is silent"            "$R" "IFS=\$'\\n'; echo hi"
+expect allow "printf with an ANSI-C string is silent" "$R" "printf \$'a\\tb'"
+expect allow "a sed backreference is silent"         "$R" "sed -E 's/(a)/\\1/' f"
+# Without PUSH_GUARD_LITERAL the helper treats the run as a hidden-spelling start: an ask is a deny.
+hv=$(jq -n --arg d "$R" '{cwd:$d,tool_input:{command:"git push origin main"}}' \
+  | env -u PUSH_GUARD_LITERAL python3 "$(dirname "$GUARD")/git-push-guard.py")
+if printf '%s' "$hv" | jq -e '.hookSpecificOutput.permissionDecision=="deny"' >/dev/null 2>&1; then
+  pass=$((pass + 1)); printf '  ok   %s\n' "the helper without the literal flag denies where it would ask"
+else
+  fail=$((fail + 1)); printf '  FAIL %s (%s)\n' "the helper without the literal flag denies where it would ask" "$hv"
+fi
+# A large payload with no push in it must stay cheap (the hidden-spelling scan is linear).
+big=$(awk 'BEGIN { for (i = 0; i < 20000; i++) print "print(\"abc\", \x27d\x27, x\\y)" }')
+t0=$SECONDS
+run "$R" "cat <<'EOF'
+$big
+EOF" >/dev/null
+if [ $((SECONDS - t0)) -lt 10 ]; then
+  pass=$((pass + 1)); printf '  ok   %s\n' "a large quoted payload with no push stays fast"
+else
+  fail=$((fail + 1)); printf '  FAIL %s (%ss)\n' "a large quoted payload with no push stays fast" "$((SECONDS - t0))"
+fi
+if [ -x /bin/bash ]; then
+  b32=$(jq -n --arg d "$R" '{hook_event_name:"PreToolUse",tool_name:"Bash",cwd:$d,tool_input:{command:"git pu\"sh\" origin main"}}' \
+    | PINNED_PATH="$PATH" /bin/bash "$GUARD")
+  if printf '%s' "$b32" | jq -e '.hookSpecificOutput.permissionDecision=="deny"' >/dev/null 2>&1; then
+    pass=$((pass + 1)); printf '  ok   %s\n' "the guard denies a quoted push word under /bin/bash"
+  else
+    fail=$((fail + 1)); printf '  FAIL %s\n' "the guard denies a quoted push word under /bin/bash"
+  fi
+else
+  printf '  ok   %s\n' "no /bin/bash here: the 3.2 check is skipped"
+fi
 
 echo "== rule 4: aliases that expand to pushing commands =="
 ALIASES=$(clone aliases)
@@ -1581,7 +1615,7 @@ if [ -e "$TRIP/git-push-guard.py.ran" ]; then
 else
   fail=$((fail + 1)); printf '  FAIL %s\n' "a git -C command runs it: its aliases live in that repository"
 fi
-for c in "IFS=\$'\\n'; echo hi" "printf '\\x41'" $'git pu\\\nsh origin main'; do
+for c in "IFS=\$'\\n'; echo hi" "printf '\\x41'" "printf '\\101'" "printf '\\u0041'" "printf '\\U00000041'" "printf '\\cA'" $'git pu\\\nsh origin main'; do
   rm -f "$TRIP/git-push-guard.py.ran"
   run "$R" "$c" >/dev/null
   if [ -e "$TRIP/git-push-guard.py.ran" ]; then

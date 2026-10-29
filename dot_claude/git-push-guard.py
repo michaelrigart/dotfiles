@@ -1483,9 +1483,11 @@ def main():
         return
     except Exception as e:                             # a bug here must not open the gate
         # A plain git command may be an alias push (git pom): it fails closed as well.
-        if shape is not None or PUSH_SHAPE.search(cmd) or not literal_trigger():
+        if shape is not None or PUSH_SHAPE.search(cmd):
             print(decision("deny", "Push guard: internal error ({}: {}), so the push is "
                                    "refused. Push by hand.".format(type(e).__name__, e)))
+        elif not literal_trigger():
+            print(decision("deny", PLAIN))
         return
     if reason:
         if not literal_trigger():

@@ -122,16 +122,20 @@ esac
 literal=0
 [ "$push_word$push_selector$push_alias" = 000 ] || literal=1
 push_hidden=0
-case "$payload" in *"\$'"*) push_hidden=1 ;; esac
-if [ "$push_hidden" = 0 ]; then
-  esc_re='\\\\[xuU0-7c]'
-  [[ $payload =~ $esc_re ]] && push_hidden=1
-fi
-if [ "$push_hidden" = 0 ]; then
-  bsnl='\\\n'
-  flat=${payload//"$bsnl"/}
-  flat=${flat//\"/}; flat=${flat//\'/}; flat=${flat//\\/}
-  case "$flat" in *push*|*send-pack*) push_hidden=1 ;; esac
+# Only when no literal signal fired: with one, the helper starts anyway and these cannot
+# change the decision. Each check is linear in the payload (one pattern or one ERE match).
+if [ "$literal" = 0 ]; then
+  case "$payload" in *"\$'"*) push_hidden=1 ;; esac
+  if [ "$push_hidden" = 0 ]; then
+    esc_re='\\\\[xuU0-7c]'
+    [[ $payload =~ $esc_re ]] && push_hidden=1
+  fi
+  if [ "$push_hidden" = 0 ]; then
+    # push or send-pack with quotes, backslashes or a JSON backslash-newline between letters
+    s='([\\"'"'"']|\\\\\\n)*'
+    flat_re="p${s}u${s}s${s}h|s${s}e${s}n${s}d${s}-${s}p${s}a${s}c${s}k"
+    [[ $payload =~ $flat_re ]] && push_hidden=1
+  fi
 fi
 push_candidate=$literal
 [ "$push_hidden" = 0 ] || push_candidate=1
