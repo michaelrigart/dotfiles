@@ -269,7 +269,7 @@ Rulings:
   early, while the shell runs a real push. Three spellings do this: a carriage return glued to
   `-n`, a continuation, or a glob that expands to `--no-dry-run`. Such a push goes to the
   classifier as before. The rule does not cover it, because the rule admits only the exact
-  plain form, without escapes. It is left for a follow-up.
+  plain form, without escapes.
 - **`autoMode` is owned in part.** chezmoi puts `"$defaults"` and the rule first in
   `autoMode.allow`. Every other entry the live file holds is carried, including what
   `/auto-mode-setup` writes: the environment and private rules. A controller's ruling: owning
