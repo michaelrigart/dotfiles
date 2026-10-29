@@ -225,6 +225,10 @@ unsandboxed or is an excluded command:
 
   The 2026-08-25 measurement, that a silent hook plus a matching allow rule runs, holds only
   for unsandboxed commands. Canonical text and the printed forms survive on rule 4's own pass.
+  The parse-fidelity fixes from those rounds were dropped with the mirror. They concerned how
+  continuations and carriage returns tokenise. With them kept, a 4,131-command corpus gave 103
+  verdicts looser than main's. Rule 4's pass does not need them, because canonical text admits
+  neither.
 - **`autoAllowBashIfSandboxed: false`** (Michael, 2026-10-29). Measured over 46 command shapes,
   it would have added:
   - one prompt, for a write through a symlink that leaves the working directories and the
@@ -258,8 +262,20 @@ Rulings:
   - the guard and the rule deploy together through chezmoi.
 - **Out of scope and known:** a sandboxed session can write the `.git/config` of a repository
   outside its start directory, for example under `~/Code`. A planted `core.fsmonitor` then runs
-  unsandboxed on the next `git status` there, which was measured with a throwaway repository. It
-  gets its own spec and branch.
+  unsandboxed on the next `git status` there, which was measured with a throwaway repository.
+  An agent could also plant `help.autocorrect` there and then type a mistyped subcommand. All
+  of this gets its own spec and branch.
+- **Known, already on main, not widened here:** a dry run that the guard reads as `-n` returns
+  early, while the shell runs a real push. Three spellings do this: a carriage return glued to
+  `-n`, a continuation, or a glob that expands to `--no-dry-run`. Such a push goes to the
+  classifier as before. The rule does not cover it, because the rule admits only the exact
+  plain form, without escapes. It is left for a follow-up.
+- **`autoMode` is owned in part.** chezmoi puts `"$defaults"` and the rule first in
+  `autoMode.allow`. Every other entry the live file holds is carried, including what
+  `/auto-mode-setup` writes: the environment and private rules. A controller's ruling: owning
+  `autoMode` whole would erase that output on every apply. The 2026-10-29 measurements already
+  ran with the live user-level `autoMode` loaded, because the user and flag lists are
+  concatenated.
 
 ## 3. Instructions
 
@@ -320,8 +336,9 @@ function named like a live alias already fails there.
 - **`tests/zshrc.test.sh`** (pty), one case: with the prompt drawn, the functions file changes,
   and Enter on `f` prints the reload line, then the new output.
 - **`tests/claude-settings.test.sh`:**
-  - `autoMode` is exactly `{"allow": ["$defaults", RULE]}`, with `"$defaults"` first, and
-    `soft_deny`, `hard_deny` and `environment` are absent;
+  - from an empty live file, `autoMode` is exactly `{"allow": ["$defaults", RULE]}`, with
+    `"$defaults"` first, and `soft_deny`, `hard_deny` and `environment` are absent;
+  - a live `autoMode` keeps its other keys and allow entries, after those two;
   - `sandbox.autoAllowBashIfSandboxed` is `true`;
   - no allow rule starts with `Bash(git push`, `Bash(git fetch` or `Bash(chezmoi`;
   - the general checks stay: no allow rule has a `*` before its subcommand, and none ends in
@@ -333,16 +350,18 @@ function named like a live alias already fails there.
 - **`tests/git-forge-guard.test.sh`**, rule 4's merged-delete section, one case per row:
   - **Canonical, merged, pinned:** silent, once per allowed trailer, and with one trailing
     newline.
-  - **Not canonical, one case per class, each denied with the plain pinned form printed:**
+  - **Not canonical, one case per class, each denied.** These print the plain pinned form:
     - a glob in an option value;
     - brackets;
     - a quoted operator, and an escaped one;
     - NUL, `\r` and NBSP;
-    - `$`, a backtick, `~` and a brace;
+    - `~` and a brace;
     - a quoted word (`'done'`) and a quoted first word (`"git" push …`);
     - a leading `=`: a merged, pinned delete of branch `=e`, whose printed command quotes
-      `'=e'`;
-    - a leading newline, and a second trailing newline.
+      `'=e'`.
+
+    These keep main's own denies, which come before rule 4: `$`, a backtick, a leading newline,
+    and a second trailing newline.
   - **Merged and pinned behind a wrapper (`command`), an assignment, a `cd` to the cwd, or
     `-C`:** denied, with the plain pinned form printed. Behind a `cd` to another checkout: the
     deny says it must run from that checkout, or Michael runs it.
