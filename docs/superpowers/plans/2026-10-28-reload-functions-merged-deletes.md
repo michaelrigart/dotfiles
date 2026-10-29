@@ -2,7 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** In progress
+**Status:** Implemented on `feat/reload-functions-merged-deletes` (the dotfiles have no MR). Do
+not run it again; the banner below and the spec record what changed after this plan was approved.
 
 > **Superseded in part, 2026-10-29. Do not execute Task 2 or Task 3.** Michael chose option (d),
 > recorded in the spec's section 2 (c9adecf and the spec commits after it). The allow rules A1,

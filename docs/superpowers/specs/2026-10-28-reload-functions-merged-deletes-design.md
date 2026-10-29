@@ -1,6 +1,6 @@
 # Shells reload changed functions; agents delete merged branches
 
-**Status:** In progress
+**Status:** Implemented (branch `feat/reload-functions-merged-deletes`; the dotfiles have no MR)
 **Date:** 2026-10-28
 **Branch:** `feat/reload-functions-merged-deletes`
 
