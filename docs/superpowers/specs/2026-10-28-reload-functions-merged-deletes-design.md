@@ -102,6 +102,83 @@ New `permissions.allow` rules in `dot_claude/modify_private_settings.json`:
 | F1 | `Bash(git fetch --prune)` | exact |
 | F2 | `Bash(git fetch --prune origin)` | exact |
 
+**Michael's decision, 2026-10-29: `sandbox.autoAllowBashIfSandboxed: false`.** While it was on,
+a sandboxed Bash command never reached an allow rule (evidence b), so A1, A2, F1 and F2 would
+have changed nothing for the sandboxed `git push` and `git fetch` that agents run. With it off,
+a sandboxed command that matches an allow rule runs without the classifier, and one that
+matches none goes to the classifier as before. The change was measured first (Step 0, below),
+and Michael accepted it with three costs:
+
+- **One new prompt.** A write through a symlink in the working directory that leads outside
+  both the working directories and the sandbox allowWrite now prompts. The sandbox would block
+  the write anyway. A silent deny for it was tried and not built (below), so it is an accepted
+  exception.
+- **Rarer prompt paths found only in the code.** These are:
+  - `rm` inside `sh -c`, `bash -c` or `eval` with a dangerous or uncheckable target, which
+    raises a dangerous-removal dialog that auto-denies after 120 s. Six such shapes were
+    measured, and all went to the classifier.
+  - A write through an unresolvable link, or into the session-env folder.
+  - An internal hard deny.
+  - A permission check that throws.
+- **Allow becomes deny for some reads.** A Bash command's path arguments now meet the Read()
+  and Edit() deny rules, so `wc -l ~/.ssh/config` is denied. Until now the sandbox's
+  allowWithinDeny let that read through.
+
+**Step 0, measured 2026-10-29 on 2.1.312.** The harness ran nested `claude -p --model haiku
+--permission-mode auto --permission-prompts none` in a scratch repository. `--settings`
+overlaid the switch, on as the control and off as the change. Each tool call's
+`permission_decision.reason_type` in the stream-json output named the decider, and a would-be
+prompt showed as "requires approval … no approval surface".
+
+The results across 46 command shapes:
+- **Same with the switch off:** `a & b`, `ls & pwd`, `sleep 0 &`, `cmd 2>&1 | tail`, `$VAR`
+  uses and assignments, a heredoc, `git commit`, `git push --dry-run`, a for loop, `$(…)`,
+  `find -exec`, a long `rg | sed | sort | head` pipeline, reads and allowWrite writes outside
+  the working directory, `git -C` of another repository, and `rm` inside `bash -c`, `sh -c`,
+  `eval`, `find -exec` and `xargs`. All of these went to the classifier both ways.
+- **Only the decider changed:**
+  - `sdd-clean` and `glab mr view --help` went to the classifier with the switch on and matched
+    their rule with it off.
+  - A pinned merged delete in A1's form, with A1 added to the overlay, went to the classifier on
+    and matched its rule off. The deployed guard was silent and the branch was deleted.
+  - `rm` of a file or directory in the working directory, and a write through an in-cwd or
+    dangling link, went to the classifier on and were decided by `mode` (the acceptEdits path)
+    off.
+- **Prompts both ways, so not new:** a top-level `rm -rf` outside the working directory.
+- **New prompt:** only the link write described above. The same write made directly to the same
+  path went to the classifier both ways, and so did a write through a link into `~/Code`.
+- **Allow becomes deny:** only `wc -l ~/.ssh/config`.
+
+**Silent deny for the link-write prompt: not built.** In 2.1.312 a `PermissionRequest` hook
+receives the common fields plus `tool_name`, `tool_input`, `permission_suggestions` and
+`mcp_server`. It receives no decision reason and no safety-check text (read in the binary at
+`executePermissionRequestHooks`). It does fire under `--permission-prompts none`.
+
+Measured with a logging hook, the inputs were:
+- for the link write: the command plus a suggestion `addDirectories: [~/Desktop]`;
+- for a dangerous-removal prompt: the command alone.
+
+So a hook could recognise the link-write case only by guessing from the command text or from a
+suggested remedy. It cannot see the reason, and a guess could turn another prompt, a
+destructive one included, into a deny.
+
+**Every allow rule now runs without the classifier when sandboxed.** Reviewed one by one:
+- **The glab reads** (`ci list`, `ci get`, `mr view`, `issue view`, `auth status`) stay as they
+  are.
+- **`chezmoi diff` and `chezmoi status` are narrowed to the exact commands.** In the `*` forms,
+  `--config`, `--source` or `--destination` let a configured diff command or a template's
+  `output` call run arbitrary sandboxed code. Nothing in the repository or the instructions
+  passes them arguments: the README's `chezmoi diff --dirty-ok` is Michael's wrapper flag,
+  typed by him.
+- **`sdd-clean *` stays.** It refuses anything but a git-ignored, untracked
+  `<top>/.superpowers/sdd/<name>` that holds no `.git`. The git it runs reads that repository's
+  config, which the sandbox lets an agent write only in the session scratchpad.
+- **A1 and A2** are judged by the guard (below).
+- **F1 and F2** are exact.
+- **The basecamp reads are unaffected:** basecamp is an excluded command, so it already runs
+  unsandboxed and its rules already applied.
+- **`WebFetch(domain:launchpad.37signals.com)`** is not Bash, so the switch does not touch it.
+
 **Michael's decision, 2026-10-28, after the final whole-branch review: no `-C` rule.** The
 signed-off design had A4, `Bash(git -C * push --force-with-lease=* origin --delete *)`. Its
 `*` comes before the subcommand, so it matched commands the guard could not judge safely
@@ -121,11 +198,23 @@ it; evidence c). The two shells differ: zsh reads a `\x`, `\u` or `\U` with no h
 NUL and cuts the whole word at a NUL, so `$'\x67it\x' push …` runs git in zsh only. The
 decoder is checked against bash 3.2, bash 5.3 and zsh by enumerating the escape grammar, not
 by sampling it; the guard suite's header records the totals and every accepted mismatch, each
-of which leaves the guard stricter. That is a superset of Claude Code's match: Claude
-Code 2.1.312 (read in the binary) matches each subcommand after stripping wrappers, safe
-assignments and comment lines and after removing the quotes from the first word, so
-`"git" push …` matches A1. The search runs first, over the whole command. A command whose text
-matches (a command, not only a push) gets its verdict from what the guard parses:
+of which leaves the guard stricter.
+
+The guarantee is that the search is a superset of Claude Code's match. Claude Code 2.1.312
+(read in the binary) matches each subcommand after stripping wrappers, safe assignments and
+comment lines, and after removing the quotes from the first word, so `"git" push …` matches A1.
+
+The guard does not model spellings that only evaluation produces: a variable (`G=git; $G push
+…`), `eval`, a nested shell, or an alias. These match no rule's text in Claude Code either, so
+they reach the classifier.
+
+The `$'…'` decoding is the second layer behind Claude Code's own (evidence c). Controller's
+ruling, after the fifth re-review: no context-free decoding round. Contexts the decoder misreads
+(a `#` after an escaped blank, `$'…'` inside `"$(…)"` or after a heredoc, `$$'` in bash, an
+array in a zsh cut tail) cannot reach A1, because Claude Code declines the command first.
+
+The search runs first, over the whole command. A command whose text matches (a command, not
+only a push) gets its verdict from what the guard parses:
 
 | Parsed as | Verdict |
 |---|---|
@@ -196,12 +285,28 @@ your allow, ask, or deny rules resolve immediately", so a matched allow rule ski
 classifier. Measured 2026-08-25 on 2.1.245: hook `ask` plus a matching allow rule prompts; a
 silent hook plus one runs.
 
-**Evidence (c), ANSI-C quoting.** Two layers cover a delete spelled with `$'…'`. The first is
-the guard: its decoded readings mirror `$'\x67it' push …`, `git $'\x70ush' …` and the zsh-only
-`$'\x67it\x' push …`, which are not canonical, so all are denied. The second is Claude Code 2.1.312's command analysis, which
-calls a command whose first word is `$'…'` too complex to match a rule, so the classifier
-judges it. That second layer is inferred from the binary, not measured, and says nothing about
-`$'…'` in a later word; the first layer does not depend on it.
+Corrected 2026-10-29: that measurement holds only for commands that run unsandboxed. In 2.1.312,
+while `autoAllowBashIfSandboxed` is on, a sandboxed Bash command never reaches the allow rules:
+- The sandbox auto-allow (`gze`) runs before prefix and exact rule matching. It consults only
+  the deny and ask rules, and otherwise allows the command ("Auto-allowed with sandbox").
+- Auto mode then sends that allow to the classifier (`WDr` maps it to "sandbox": "Auto mode held
+  this command for the server-side classifier to review").
+
+The logged decisions agree. Sandboxed, `sdd-clean` was decided by the classifier 27 times out
+of 27 and `glab mr view` 4 of 4; unsandboxed, both were decided by their rule. Step 0 measured
+the same, which is why Michael turned the setting off.
+
+**Evidence (c), ANSI-C quoting.** Two layers cover a delete spelled with `$'…'`.
+
+- **The first is Claude Code.** Its Bash permission check returns an ask for a command too
+  complex to read as simple commands, such as one whose first word is `$'…'`, and it does so
+  before any rule matching (read in 2.1.312). In auto mode that ask goes to the classifier.
+  Measured 2026-10-29 with auto-allow off: `$'\x67lab' mr view --help` went to the classifier,
+  while `glab mr view --help` matched its rule.
+- **The second is the guard.** Its decoded readings mirror `$'\x67it' push …`,
+  `git $'\x70ush' …` and the zsh-only `$'\x67it\x' push …`. None is canonical, so all are
+  denied. For `$'…'` in a later word, which was not measured in Claude Code, the guard denies
+  the command regardless.
 
 Rulings:
 
@@ -277,6 +382,8 @@ after the aliases and oh-my-zsh, so a function named like a live alias already f
   `git fetch --prune origin '+refs/heads/*:refs/heads/*'` or `git -C /r fetch --prune origin`;
   the printed form, its `-d` spelling and `git fetch --prune origin` match. No allow rule ends
   in `:*` with a `*` before it, and no allow rule has a `*` before its subcommand.
+  `sandbox.autoAllowBashIfSandboxed` is pinned to `false`. The chezmoi rules are exactly
+  `chezmoi diff` and `chezmoi status`, with no `*` form.
 - **`tests/agent-instructions.test.sh`:** `need` the new exception text; caps unchanged.
 - **`tests/git-forge-guard.test.sh`**, rule 4's merged-delete section, one case per row:
   - bare, merged, pinned: silent, once per allowed trailer; a quoted first word
@@ -306,7 +413,9 @@ after the aliases and oh-my-zsh, so a function named like a live alias already f
     No option can swallow `--delete` inside A1's text, since A1 needs `origin` right before
     it and `origin` takes no value;
   - an update push in no delete shape (`git push --force-with-lease=feat:<sha> origin feat`):
-    today's verdict. The existing rule-4 cases stay green.
+    today's verdict. The existing rule-4 cases stay green;
+  - a command that pushes nothing and holds a `$'…'` word cut before a substitution
+    (`echo $'\x'$(date +%s)`): silent.
 
 ## Verification after Michael's apply
 
@@ -314,12 +423,26 @@ after the aliases and oh-my-zsh, so a function named like a live alias already f
    command after a later change to the functions file (the next apply that changes it, or a
    `touch` of the deployed file), and runs the new code. Shells opened before this apply get
    one `exec zsh`.
-2. In a fresh auto-mode session, a pinned delete of a merged throwaway branch runs without a
-   prompt or a denial; a pinned delete of an unmerged one prompts.
+2. In a fresh auto-mode session, a pinned delete of a merged throwaway branch in the canonical
+   form runs without the classifier (its logged reasonType is a rule, not the classifier) and
+   without a prompt. A pinned delete of an unmerged one prompts.
 3. Startup shows no settings warning for the new rules.
+4. Sandboxed `glab mr view --help` logs reasonType `rule` or `subcommandResults`, not
+   `classifier`.
+5. Sandboxed `$'\x67lab' mr view --help` does not log `rule`.
+6. A write through a symlink in the working directory to a path outside the working
+   directories and the sandbox allowWrite prompts (the accepted exception). The same write
+   made directly goes to the classifier.
 
 ## Expected effect
 
-Net prompts: none added; every delete that asked before still asks, and nothing else asks.
+Prompts:
+- One rare class is added: the link write in verification item 6. The code-only paths listed
+  in section 2 remain possible.
+- Every delete that asked before still asks.
+
+Bash reads under a Read() deny rule, such as `~/.ssh/config`, are now denied.
+
 Pinned merged deletes in the guard's printed form and `git fetch --prune` go from a classifier
-denial, then Michael by hand, to running.
+denial, then Michael by hand, to running. Sandboxed commands that match an allow rule
+(`sdd-clean`, the glab reads) skip the classifier.
