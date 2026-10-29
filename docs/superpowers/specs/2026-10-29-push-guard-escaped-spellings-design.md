@@ -1,6 +1,6 @@
 # The push guard catches escaped spellings
 
-**Status:** In progress
+**Status:** Approved
 **Date:** 2026-10-29
 **Branch:** `fix/push-guard-escaped-spellings`
 
