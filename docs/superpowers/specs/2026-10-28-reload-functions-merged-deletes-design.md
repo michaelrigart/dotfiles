@@ -197,8 +197,9 @@ fourth re-review: before it, `$'\x67it' push …` matched no reading and the gua
 it; evidence c). The two shells differ: zsh reads a `\x`, `\u` or `\U` with no hex digit as a
 NUL and cuts the whole word at a NUL, so `$'\x67it\x' push …` runs git in zsh only. The
 decoder is checked against bash 3.2, bash 5.3 and zsh by enumerating the escape grammar, not
-by sampling it; the guard suite's header records the totals and every accepted mismatch, each
-of which leaves the guard stricter.
+by sampling it. The guard suite's header records the totals and each accepted class of
+mismatch. The check is that no accepted mismatch drops an ASCII run of a rule's text that the
+shell's word holds.
 
 The guarantee is that the search is a superset of Claude Code's match. Claude Code 2.1.312
 (read in the binary) matches each subcommand after stripping wrappers, safe assignments and
@@ -393,8 +394,19 @@ after the aliases and oh-my-zsh, so a function named like a live alias already f
     `=` (the dry run `git push --force-with-lease=a -n origin --delete =x`, and a merged,
     pinned delete of branch `=e`, whose printed command quotes `'=e'`), a brace, a leading
     newline and a second trailing newline; one trailing newline stays canonical;
-  - ANSI-C quoting, each denied: `$'\x67it' push …`, `git $'\x70ush' …`, and the zsh-only
-    `$'\x67it\x' push …`, `$'\x67it\0'zz push …` and `git $'\x70ush\u' …` in A1's shape;
+  - ANSI-C quoting in A1's shape. Each of these is denied:
+    - `$'\x67it' push …` and `git $'\x70ush' …`;
+    - the zsh-only `$'\x67it\x' push …`, `$'\x67it\0'zz push …`, `git $'\x70ush\u' …` and
+      `$'\x67it\C' push …`;
+    - a code point above U+10FFFF dropped as bash drops it: `$'\x67it\UFFFFFFFF' push …`;
+    - an incomplete `\C`, which zsh reads as empty: `$'gi\C't push …`;
+    - a zsh cut that drops the rest of the shell word: a blank inside the span
+      (`$'\x67it\x x' push …`), quoted text after it (`$'\x67it\x'" x" push …`,
+      `$'\x67it\x'' x' push …`), and a substitution after it with the rule's text visible
+      (`$'\x67it\x'$(echo y) push …`).
+
+    A `$` that is itself quoted starts no ANSI-C word, so
+    `echo '$'\x67it' push --force-with-lease=a origin --delete b'` is allowed;
   - merged and pinned behind a wrapper (`command`), an assignment or a `cd` to the cwd: deny
     naming the plain pinned `git push …` form; behind a `cd` to another checkout: deny saying
     it must run from that checkout or Michael runs it;
