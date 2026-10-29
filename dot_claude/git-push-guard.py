@@ -1057,8 +1057,9 @@ def dry_run_deny(asks, args, root, session):
     printed (the canonical dry run in the session's checkout, or the plain -n form to run from
     the push's own repository); and that the push it previews needs Michael's confirmation, so
     the agent confirms with him rather than preview it this way. It never offers the real push:
-    every push it previews is an unmerged delete or a default-branch push. A printed command
-    stands on a line of its own, so no sentence punctuation runs into it."""
+    every push it previews is one the guard asks about (a delete, a default-branch push, a force
+    push without a lease, or --all or --mirror), each needing Michael's confirmation. A printed
+    command stands on a line of its own, so no sentence punctuation runs into it."""
     command = "git push " + " ".join(shell_word(a) for a in args)
     there = other_checkout(root, session)
     confirm = ("The push it previews needs Michael's confirmation before it runs, because {}: "
