@@ -167,14 +167,20 @@ exception: an ask becomes a silent deny. In practice:
 
 The ask-to-deny step is a controller's ruling under Michael's decision. His standing preference
 is a silent deny over a classifier verdict over an ask, and no change may add prompts. The deny
-gives a runnable way out:
-- it prints the plain canonical dry-run command where it can, meaning the push runs in the
-  session's checkout and the command needs no quoting;
-- otherwise it says to run the plain `git push … -n …` form from that repository, or to drop
-  `-n` so the push is judged as a real one.
+fires only when the real push would ask. So every push it previews is an unmerged delete or a
+default-branch push, and "Every agent confirms first" already requires Michael's confirmation
+before either. A controller's ruling on the re-review's R2 sets the deny text, in this order:
+1. The dry run is refused because it is not in plain form.
+2. Where a plain form can be given, the deny gives it:
+   - in the session's checkout, the canonical `-n` command, printed whole;
+   - in another checkout, a direction to run the plain `git push … -n …` form from that
+     repository.
+3. The push it previews needs Michael's confirmation before it runs, so the agent confirms with
+   him rather than previewing it this way.
 
-A command printed for a dry run always keeps the `-n`, so a preview is never answered with the
-real delete. This change only tightens, and a plain canonical dry run is unchanged.
+The deny never offers the real push as a way out. A command printed for a dry run always keeps
+the `-n`, so a preview is never answered with the real delete. This change only tightens, and a
+plain canonical dry run is unchanged.
 
 - **Canonical text.** A controller's ruling from the final review's fix rounds: an allowlist of
   the shell surface instead of a denylist. The pass needs all of these:
@@ -424,9 +430,10 @@ function named like a live alias already fails there.
     is loaded, the next call reloads it once more, and the call after that is silent;
   - a removed function stays defined;
   - the real functions file holds both invariants;
-  - one read: a fixture whose text, run as the trial, renames a v3 file over the functions file
-    and then defines `f` as v2. After the call, `f` prints v2, so the trial and the load used the
-    same text.
+  - the load uses the text already read (Z13): a fixture whose text, run as the trial, renames a
+    v3 file over the functions file and then defines `f` as v2. After the call, `f` prints v2;
+  - neither the trial nor the load reads the file a second time (Z14). The check is
+    deterministic, so it holds under load and no mutant can hang it.
 - **`tests/zshrc.test.sh`** (pty), one case: with the prompt drawn, the functions file changes,
   and Enter on `f` prints the reload line, then the new output.
 - **`tests/claude-settings.test.sh`:**
@@ -473,9 +480,16 @@ function named like a live alias already fails there.
   - **A plain canonical dry run:** silent, as on main. **An update push:** main's verdict.
   - **Fake dry runs.** These are red against main and judged as a real push:
     - the glob shape, with a `--no-dry-run` file in the cwd, gets main's wildcard deny;
-    - a carriage return glued to `-n`, for an unmerged delete, asks;
-    - a continuation glued to `-n`, for an unmerged delete, asks;
-    - `git -C <checkout> push -n …`, for an unmerged delete, asks.
+    - a carriage return glued to `-n`, for an unmerged delete, gets the silent dry-run deny, not
+      an ask;
+    - a continuation glued to `-n`, for an unmerged delete, the same;
+    - `git -C <checkout> push -n …`, for an unmerged delete, the same, with the "from that
+      repository" advice;
+    - a non-canonical dry run of a default-branch push, the same;
+    - one whose real verdict is allow stays allow, and one whose real verdict is deny stays
+      deny;
+    - every printed command keeps the `-n` and, where it is printed for the agent, is
+      canonical.
 
     The negation shapes keep main's unsupported-option deny and are pinned as denies. They are
     `-n --no-dry-run`, `--dry-run --no-dry-run`, `-n --no-dry`, `-n --no-dr`,
