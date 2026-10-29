@@ -117,8 +117,24 @@ EOF
     fi
     ;;
 esac
-push_candidate=0
-[ "$push_word$push_selector$push_alias" = 000 ] || push_candidate=1
+# literal is main's own evidence (a push the shell would run as written). The signals below
+# find hidden spellings: they start the helper, which denies them and never asks.
+literal=0
+[ "$push_word$push_selector$push_alias" = 000 ] || literal=1
+push_hidden=0
+case "$payload" in *"\$'"*) push_hidden=1 ;; esac
+if [ "$push_hidden" = 0 ]; then
+  esc_re='\\\\[xuU0-7c]'
+  [[ $payload =~ $esc_re ]] && push_hidden=1
+fi
+if [ "$push_hidden" = 0 ]; then
+  bsnl='\\\n'
+  flat=${payload//"$bsnl"/}
+  flat=${flat//\"/}; flat=${flat//\'/}; flat=${flat//\\/}
+  case "$flat" in *push*|*send-pack*) push_hidden=1 ;; esac
+fi
+push_candidate=$literal
+[ "$push_hidden" = 0 ] || push_candidate=1
 
 [ "$forge_candidate" = 1 ] || [ "$push_candidate" = 1 ] || allow
 
@@ -135,7 +151,7 @@ if [ "$push_candidate" = 1 ]; then
   py=/usr/bin/python3
   [ -x "$py" ] || py=python3
   helper="$(dirname "$0")/git-push-guard.py"
-  verdict=$(printf '%s' "$payload" | "$py" "$helper" 2>/dev/null)
+  verdict=$(printf '%s' "$payload" | PUSH_GUARD_LITERAL=$literal "$py" "$helper" 2>/dev/null)
   rc=$?
   case "$verdict" in
     '') ;;

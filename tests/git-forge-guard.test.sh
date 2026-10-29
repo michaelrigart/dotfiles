@@ -1505,6 +1505,18 @@ expect deny  "rebase --exe running a push"            "$R" "git rebase --exe 'gi
 expect deny  "rebase --ex= running a push"            "$R" "git rebase --ex='git push origin main' main"
 expect allow "rebase --autosquash is not --exec"      "$R" 'git rebase -i --autosquash main'
 
+echo "== rule 4: spellings the fast path used to miss =="
+expect deny  "a quoted push word to main"            "$R" 'git pu"sh" origin main'
+has_reason   "it gets the plain-push deny" "in a shape the guard does not check" "$R" 'git pu"sh" origin main'
+expect deny  "a quoted push word, force"             "$R" 'git pu"sh" --force origin main'
+expect deny  "an empty-quote push word"              "$R" "git p''ush origin main"
+expect deny  "an escaped push word"                  "$R" 'git pu\sh origin main'
+expect allow "a quoted push word to a feature branch" "$R" 'git pu"sh" origin feat'
+expect deny  "an ANSI-C push word"                   "$R" "git \$'\\x70ush' origin main"
+expect deny  "an ANSI-C letter inside push"          "$R" "git pu\$'\\x73'h origin main"
+expect ask   "a literal push still asks"             "$R" 'git push origin main'
+expect ask   "a quoted git word, literal push, still asks" "$R" '"git" push origin main'
+
 echo "== rule 4: aliases that expand to pushing commands =="
 ALIASES=$(clone aliases)
 git -C "$ALIASES" config alias.sp send-pack
@@ -1568,6 +1580,22 @@ if [ -e "$TRIP/git-push-guard.py.ran" ]; then
   pass=$((pass + 1)); printf '  ok   %s\n' "a git -C command runs it: its aliases live in that repository"
 else
   fail=$((fail + 1)); printf '  FAIL %s\n' "a git -C command runs it: its aliases live in that repository"
+fi
+for c in "IFS=\$'\\n'; echo hi" "printf '\\x41'" $'git pu\\\nsh origin main'; do
+  rm -f "$TRIP/git-push-guard.py.ran"
+  run "$R" "$c" >/dev/null
+  if [ -e "$TRIP/git-push-guard.py.ran" ]; then
+    pass=$((pass + 1)); printf '  ok   %s\n' "a hidden spelling runs the helper: $c"
+  else
+    fail=$((fail + 1)); printf '  FAIL %s\n' "a hidden spelling runs the helper: $c"
+  fi
+done
+rm -f "$TRIP/git-push-guard.py.ran"
+run "$R" 'echo hi' >/dev/null
+if [ -e "$TRIP/git-push-guard.py.ran" ]; then
+  fail=$((fail + 1)); printf '  FAIL %s\n' "echo hi does not run the helper"
+else
+  pass=$((pass + 1)); printf '  ok   %s\n' "echo hi does not run the helper"
 fi
 GUARD=$SAVED_GUARD
 
