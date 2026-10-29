@@ -36,6 +36,19 @@
 # protection cover it. For example a push word assembled by expansion (git ${X:-pu}sh) has
 # no literal push in the payload, so the shell fast path never starts this helper.
 #
+# Merged-branch deletes (spec 2026-10-28-reload-functions-merged-deletes, section 2). A
+# classifier rule (autoMode.allow in dot_claude/modify_private_settings.json) lets the
+# auto-mode classifier allow the plain pinned delete of a merged branch, trusting this guard
+# to have verified the merge and the pin. So the words verified must be the words the shell
+# runs: a delete-only push of merged branches, each pinned, passes silently only as a bare
+# git push in canonical text (plain words, see CANONICAL), which bash and zsh hand git
+# unchanged, with no wrapper, assignment, cd prefix or global option before push. Merged and
+# pinned in any other text, it is denied with the plain pinned command printed. A deny that
+# prints a corrected push prints the plain git push form when the push runs in the session's
+# own checkout (the toplevel of the payload's cwd); otherwise it names the checkout the push
+# runs in and says the push must run from there or Michael runs it, since the classifier
+# rule names only the plain form.
+#
 # Written for /usr/bin/python3 (3.9): no match statements, no X | Y type unions.
 import fnmatch
 import json
@@ -69,6 +82,27 @@ LOCAL_ENV = dict(os.environ, GIT_NO_LAZY_FETCH="1", GIT_NO_REPLACE_OBJECTS="1",
 LOCAL_OPTS = ("-c", "core.commitGraph=false")
 
 PUNCT =";&|()<>\n"
+# Canonical text (spec 2026-10-28, section 2, canonical text), the only text in which a merged,
+# pinned delete passes silently: the raw command, with at most one trailing newline removed
+# and then its leading and trailing spaces stripped (canonical), is git push and its arguments
+# separated by single spaces, then at most one trailer (2>&1, a tail or head with -n N or -N,
+# or both). Every argument is one plain word that no shell option rewrites (SHELL_REWRITES). An
+# allowlist of the shell surface, not a denylist: bash and zsh hand git exactly these words
+# (differential check and option survey recorded in tests/git-forge-guard.test.sh).
+PLAIN_WORD = "[A-Za-z0-9._/:=@+,%-]+"
+CANONICAL = re.compile("git push((?: " + PLAIN_WORD + ")*)(?: 2>&1)?(?: \\| (?:tail|head) (?:-n [0-9]+|-[0-9]+))?")
+# The plain words a shell option still rewrites, by the survey of every zsh and bash option over
+# the plain-word alphabet: one starting with = (zsh EQUALS: =ls is /bin/ls), one holding == or
+# := (zsh MAGIC_EQUAL_SUBST: x==ls is x=/bin/ls, a=b:=ls is a=b:/bin/ls), and one shaped NAME=
+# or NAME+= (bash set -k moves it into the environment, so git never sees it). canonical()
+# refuses such a word, and shell_word() quotes it.
+SHELL_REWRITES = re.compile(r"^=|==|:=|^[A-Za-z_][A-Za-z0-9_]*\+?=")
+PLAIN_WORDS = ("plain words: git push and its arguments, each made of letters, digits and "
+               "._/:=@+,%- (none starting with =, holding == or :=, or shaped NAME= or NAME+=), "
+               "separated by single spaces, nothing before git, and at most 2>&1 and "
+               "| tail or | head with -n N or -N after")
+# The opening of every deny for a dry run outside canonical text.
+DRY_REFUSED = "Push guard: this dry run is refused because it is not written in " + PLAIN_WORDS + "."
 ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 # Could this text run git push? git, then push (or a push alias), within one command.
 PUSH_SHAPE = re.compile(r"\bgit\b[^;&|\n]*\bpush\b")
@@ -294,7 +328,6 @@ def parse_plain(tokens, cwd):
 class Repo:
     def __init__(self, cwd, repo_opts):
         self.base = ["git", "-C", cwd] + list(repo_opts)
-        self.repo_opts = list(repo_opts)
 
     def run(self, *args, env=None, long=False, raw=False):
         """stdout of a git query, or None when git fails. env replaces the environment; long
@@ -678,8 +711,22 @@ def runs_command_string(sub, args):
     return False
 
 
-def judge(s):
-    """None to allow, a reason to ask; raises Deny. s is a plain command from parse_plain."""
+def canonical(cmd):
+    """Is the raw command canonical text (CANONICAL, and no argument a shell option rewrites:
+    SHELL_REWRITES)? First
+    at most one trailing newline is removed, then leading and trailing spaces: any other
+    newline, a tab or a carriage return anywhere, a quote, an escape or any other character
+    makes the text not canonical. The text starts with git push itself, so canonical text has
+    no cd prefix, assignment, wrapper or global option (-C included: the classifier rule
+    names only the plain form), and no alias."""
+    text = cmd[:-1] if cmd.endswith("\n") else cmd
+    m = CANONICAL.fullmatch(text.strip(" "))
+    return bool(m) and not any(SHELL_REWRITES.search(w) for w in m.group(1).split(" ") if w)
+
+
+def judge(s, session, text=False):
+    """None to allow, a reason to ask; raises Deny. s is a plain command from parse_plain;
+    session is the hook payload's cwd. text: the raw command is canonical text."""
     sub, args = s["sub"], s["args"]
     if sub != "push" and sub not in GIT_BUILTINS:
         if s["unknown"] or [a for a in s["assigns"] if GIT_ENV_UNSUPPORTED.match(a)]:
@@ -707,7 +754,8 @@ def judge(s):
     if (s["repo_opts"] or s["cd_used"]) and any(a in CURRENT_BRANCH for a in args):
         raise Deny("Push guard: the current-branch substitution runs where the shell is, not "
                    "in the repository -C or cd selects. Name the branch literally.")
-    return evaluate(s["cwd"], s["assigns"], s["repo_opts"], s["config_opts"], args)
+    return evaluate(s["cwd"], s["assigns"], s["repo_opts"], s["config_opts"], args, session,
+                    text)
 
 
 def push_option(value, where=""):
@@ -845,19 +893,45 @@ def plain_transport(url):
     return True                                        # a path, or scp-like host:path (over ssh)
 
 
-def merged_delete(repo, remote, default, names, leases):
+def other_checkout(root, session):
+    """None when root, the toplevel of the repository a push runs in, is the toplevel of the
+    session's cwd (the hook payload's); else root. A session cwd outside any repository makes
+    every checkout another one, and so does a lookup that fails or times out: this only words
+    a deny, so it must never raise and turn the deny into merged_delete's ask."""
+    try:
+        here = Repo(session, []).run("rev-parse", "--show-toplevel")
+    except Deny:
+        here = None
+    return None if here is not None and here.strip() == root else root
+
+
+def shell_word(word):
+    """word quoted for the shell, as a deny reason prints it in a command: shlex.quote, and a
+    word a shell option rewrites (SHELL_REWRITES: =x, x==y, a:=b, NAME=) is quoted too, since
+    shlex counts = and : as safe."""
+    quoted = shlex.quote(word)
+    return "'" + word + "'" if quoted == word and SHELL_REWRITES.search(word) else quoted
+
+
+def merged_delete(repo, remote, default, names, leases, root, session, plain=False, dry=False):
     """Whether a delete-only push of the branches in names goes without an ask: True when
     every one is merged and pinned; a deny reason naming the pinned command when every one
     is merged but a pin is missing or names another tip; None (an ask, as before) otherwise,
     a failed read of the remote included. A timeout anywhere in these checks asks as well:
-    Repo.run raises it as a Deny, which here would turn today's ask into a deny."""
+    Repo.run raises it as a Deny, which here would turn today's ask into a deny. root is the
+    toplevel the push runs in and session the payload's cwd: the pinned command is the plain
+    git push form, and when root is not the session's checkout the reason names root. plain:
+    the push is not canonical text, so the reason says a merged delete passes only when
+    written in plain words. dry: the push carries a dry-run flag, so the printed command keeps
+    -n; an agent that wanted a preview is never pointed at the real delete."""
     try:
-        return check_merged_delete(repo, remote, default, names, leases)
+        return check_merged_delete(repo, remote, default, names, leases, root, session, plain, dry)
     except Deny:
         return None
 
 
-def check_merged_delete(repo, remote, default, names, leases):
+def check_merged_delete(repo, remote, default, names, leases, root, session, plain=False,
+                        dry=False):
     """merged_delete without the timeout fallback.
 
     Merged: one ls-remote of the remote, whose single push URL is its fetch URL (evaluate
@@ -933,16 +1007,71 @@ def check_merged_delete(repo, remote, default, names, leases):
     if all(any(pin_of(n, lease) for n in names) for lease in leases) \
             and all(any(pin_of(n, lease) for lease in leases) for n in names):
         return True
-    # Quoted: git allows ', ; $ and backticks in a branch name, and this text is a command
-    # to run.
-    pins = " ".join(shlex.quote("--force-with-lease={}:{}".format(n, tips["refs/heads/" + n]))
+    # Quoted (shell_word): git allows ', ; $, backticks and a leading = in a branch name, and
+    # this text is a command to run.
+    pins = " ".join(shell_word("--force-with-lease={}:{}".format(n, tips["refs/heads/" + n]))
                     for n in names)
-    where = "".join(shlex.quote(x) + " " for x in repo.repo_opts)   # git -C <path>, as written
-    return ("Push guard: {} {} merged into {}, on {} and here. Pin the delete to the tip just "
-            "read, so git refuses it if the branch has moved, and it needs no ask: "
-            "git {}push {} {} --delete {}").format(
-                ", ".join(names), "is" if len(names) == 1 else "are", default, remote,
-                where, pins, shlex.quote(remote), " ".join(shlex.quote(n) for n in names))
+    command = "git push {}{} {} --delete {}".format(
+        "-n " if dry else "", pins, shell_word(remote), " ".join(shell_word(n) for n in names))
+    if dry:
+        lead = DRY_REFUSED + " "
+    elif plain:
+        lead = "Push guard: a merged delete passes only when written in " + PLAIN_WORDS + ". "
+    else:
+        lead = "Push guard: "
+    merged = "{}{} {} merged into {}, on {}".format(
+        lead, ", ".join(names), "is" if len(names) == 1 else "are", default, remote)
+    there = other_checkout(root, session)
+    if dry:
+        # A dry run: worded as one, and the printed command keeps -n.
+        if there is None and canonical(command):
+            return "{} and here. Run the dry run in plain words: {}".format(merged, command)
+        if there is None:
+            return ("{} and here. A name here needs quoting, which plain words cannot carry, so "
+                    "Michael runs the dry run: {}").format(merged, command)
+        if canonical(command):
+            return ("{} and in {}, which is not this session's checkout. Run the plain dry run "
+                    "from that repository: {}").format(merged, shell_word(there), command)
+        return ("{} and in {}, which is not this session's checkout. A name here needs quoting, "
+                "which plain words cannot carry, so Michael runs the dry run there: {}").format(
+                    merged, shell_word(there), command)
+    if there is None and not canonical(command):
+        # A branch or remote name that needs quoting: no command for it is canonical, so none
+        # passes.
+        return ("{} and here. Pin the delete to the tip just read, so git refuses it if the "
+                "branch has moved. A name here needs quoting, which plain words cannot carry, "
+                "so Michael runs it: {}").format(merged, command)
+    if there is None:
+        return ("{} and here. Pin the delete to the tip just read, so git refuses it if the "
+                "branch has moved, and it needs no ask: {}").format(merged, command)
+    # No git -C form: the classifier rule names only the plain form.
+    return ("{} and in {}, which is not this session's checkout. Pin the delete to the tip just "
+            "read, so git refuses it if the branch has moved; the delete must run from that "
+            "checkout, or Michael runs it: {}").format(merged, shell_word(there), command)
+
+
+def dry_run_deny(asks, args, root, session):
+    """The deny for a dry run outside canonical text whose real-push verdict is an ask (spec
+    2026-10-28, section 2, Dry runs): a silent deny costs Michael no prompt. It says, in order:
+    the dry run is refused because it is not in plain words; the plain -n form, where one can be
+    printed (the canonical dry run in the session's checkout, or the plain -n form to run from
+    the push's own repository); and that the push it previews needs Michael's confirmation, so
+    the agent confirms with him rather than preview it this way. It never offers the real push:
+    every push it previews is one the guard asks about (a delete, a default-branch push, a force
+    push without a lease, or --all or --mirror), each needing Michael's confirmation. A printed
+    command stands on a line of its own, so no sentence punctuation runs into it."""
+    command = "git push " + " ".join(shell_word(a) for a in args)
+    there = other_checkout(root, session)
+    confirm = ("The push it previews needs Michael's confirmation before it runs, because {}: "
+               "confirm it with him rather than preview it this way.").format("; ".join(asks))
+    if there is None and canonical(command):
+        return "{}\nRun it in plain words, from this checkout:\n  {}\n{}".format(
+            DRY_REFUSED, command, confirm)
+    if there is not None and canonical(command):
+        return ("{}\nIt runs in {}, which is not this session's checkout. Run the plain -n form "
+                "from that repository:\n  {}\n{}").format(DRY_REFUSED, shell_word(there), command,
+                                                        confirm)
+    return "{} {}".format(DRY_REFUSED, confirm)
 
 
 # ------------------------------------------------------------------ the secret scan
@@ -1156,10 +1285,22 @@ def leak_reason(report, remote):
 
 
 # ------------------------------------------------------------------ one push
-def evaluate(cwd, assigns, repo_opts, config_opts, args):
-    """None to allow, a reason string to ask; raises Deny to deny."""
+def evaluate(cwd, assigns, repo_opts, config_opts, args, session, bare=False):
+    """None to allow, a reason string to ask; raises Deny to deny. session is the hook
+    payload's cwd, for the deny reasons that print a corrected push. bare: the raw command
+    is canonical text (canonical); only a bare delete-only push of merged, pinned branches
+    passes silently."""
     flags, remote_arg, refspecs = parse_push(args)
-    if "-n" in flags or "--dry-run" in flags:
+    # A dry run returns early, never scanned and never asked, only when the raw command is
+    # canonical text and git reads it as a dry run (spec 2026-10-28, section 2, Dry runs).
+    # parse_push has refused every word git could read otherwise: every negation it does not
+    # allow (all but --no-verify, so --no-dry-run and its abbreviations --no-dry and --no-dr),
+    # every abbreviation such as --dry, --, and a -o value outside the allowed ones (-on is a
+    # push option in git). So -n, bundled or not, or --dry-run in flags is git's own
+    # reading (measured against git 2.56). Any other dry run is judged as a real push: its
+    # words may reach git as others, as a glob that expands to --no-dry-run does. Where that
+    # verdict is an ask, the dry run gets a silent deny instead (dry_run_deny): no prompt.
+    if ("-n" in flags or "--dry-run" in flags) and bare:
         return None                                    # never scanned, never asked
     if config_opts:
         raise Deny(UNSUPPORTED.format("a " + config_opts[0] + " option on the push invocation"))
@@ -1285,18 +1426,27 @@ def evaluate(cwd, assigns, repo_opts, config_opts, args):
     if scan_sources:
         scan(root, remote, scan_sources)
 
-    # A delete-only push of merged branches, each pinned to the tip read here, needs no ask;
-    # merged but unpinned is a silent deny naming the pinned command. delete_targets admits
-    # no flag or refspec that adds any other ask, so the asks it replaces are delete asks.
+    # A delete-only push of merged branches, each pinned to the tip read here and written
+    # bare (canonical text, nothing before git or between git and push), needs no ask; merged
+    # but unpinned, or not bare, is a silent deny naming the plain pinned command. The
+    # classifier rule trusts this pass, so the words verified must be the words the shell
+    # runs. delete_targets admits no flag or refspec that adds any other ask, so the asks it
+    # replaces are delete asks.
     targets = delete_targets(flags, refspecs)
     if asks and targets is not None and default not in targets:
-        verdict = merged_delete(repo, remote, default, targets, push_leases(args))
+        # Not bare: no lease counts, so a merged delete cannot come back True; the deny names
+        # the bare pinned command instead.
+        leases = push_leases(args) if bare else []
+        verdict = merged_delete(repo, remote, default, targets, leases, root, session,
+                                plain=not bare, dry="-n" in flags or "--dry-run" in flags)
         if verdict is True:
             return None
         if verdict:
             raise Deny(verdict)
 
     if asks:
+        if "-n" in flags or "--dry-run" in flags:
+            raise Deny(dry_run_deny(asks, args, root, session))
         return "Push guard: this push needs Michael, because " + "; ".join(asks) + "."
     return None
 
@@ -1322,7 +1472,7 @@ def main():
             if could_push(cmd, tokens, cwd):           # the raw text: a superset, never trimmed
                 raise Deny(PLAIN)
             return
-        reason = judge(shape)
+        reason = judge(shape, cwd, canonical(cmd))
     except Deny as d:
         print(decision("deny", str(d)))
         return

@@ -7,7 +7,10 @@
 # linked worktree, whose unpushed or uncommitted work rm -rf would lose) lies inside. Every argument is checked before
 # anything is deleted, so one refusal deletes nothing. The command is allowlisted
 # (Bash(sdd-clean *)): these checks are all that stands between an agent and a silent
-# rm -rf, so each one fails closed.
+# rm -rf, so each one fails closed. Every git call runs with core.fsmonitor off: ls-files and
+# check-ignore would otherwise run the command a repository config names there, and a
+# sandboxed agent can write that config for any repository under TMPDIR or outside its start
+# directory (spec 2026-10-28-reload-functions-merged-deletes, section 2).
 set -uo pipefail
 
 [ "$#" -ge 1 ] || { echo "usage: sdd-clean <workspace>..." >&2; exit 2; }
@@ -23,7 +26,7 @@ for arg in "$@"; do
   if [ ! -d "$p" ]; then refuse "$arg" "it is not a directory"; continue; fi
   real=$(CDPATH= cd -P -- "$p" 2>/dev/null && pwd -P) \
     || { refuse "$arg" "its real path cannot be resolved"; continue; }
-  top=$(git -C "$real" rev-parse --show-toplevel 2>/dev/null) || top=""
+  top=$(git -C "$real" -c core.fsmonitor=false rev-parse --show-toplevel 2>/dev/null) || top=""
   [ -n "$top" ] || { refuse "$arg" "it is not inside a git work tree"; continue; }
   top=$(CDPATH= cd -P -- "$top" 2>/dev/null && pwd -P) \
     || { refuse "$arg" "its work tree cannot be resolved"; continue; }
@@ -32,10 +35,10 @@ for arg in "$@"; do
   if [ "$real" != "$top/.superpowers/sdd/$name" ]; then
     refuse "$arg" "it is not a workspace directly under $top/.superpowers/sdd/"; continue
   fi
-  tracked=$(git -C "$top" ls-files -- ".superpowers/sdd/$name") \
+  tracked=$(git -C "$top" -c core.fsmonitor=false ls-files -- ".superpowers/sdd/$name") \
     || { refuse "$arg" "git cannot list what it tracks"; continue; }
   if [ -n "$tracked" ]; then refuse "$arg" "git tracks files inside it"; continue; fi
-  if ! git -C "$top" check-ignore -q -- ".superpowers/sdd/$name"; then
+  if ! git -C "$top" -c core.fsmonitor=false check-ignore -q -- ".superpowers/sdd/$name"; then
     refuse "$arg" "git does not ignore it"; continue
   fi
   nested=$(find "$real" -mindepth 1 -name .git -print -quit 2>/dev/null) \

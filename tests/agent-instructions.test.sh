@@ -113,6 +113,8 @@ need claude-code.md '`sdd-clean <workspace>`, never `rm -rf`.' \
   "claude-code.md deletes a finished plan workspace with sdd-clean"
 need global.md 'to take over about 15 minutes, give its size and ETA at the start and one line per' \
   "global.md's Momentum rule asks for size and ETA on a long run"
+need global.md '  merged branch'"'"'s pinned delete, `git branch -d`. Harness prompts are a backstop, not the check.' \
+  "global.md exempts a merged branch's pinned delete from confirm-first"
 if grep -qF -- '**Recursive search.**' "$FRAG/claude-code.md"; then
   _fail "the Recursive search bullet is folded into the path-resolution rule" "still present"
 else

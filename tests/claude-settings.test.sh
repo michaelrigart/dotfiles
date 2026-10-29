@@ -94,7 +94,7 @@ jq_is '[.permissions.deny[], .permissions.ask[]
       "every rule is a complete Read/Edit/Bash(spec) form or a named MCP tool"
 
 # The allow list exists to stop prompting on read-only inspection of tools this machine
-# actually drives (glab, chezmoi, basecamp). Its danger is not breadth but KIND: an
+# actually drives (glab, basecamp). Its danger is not breadth but KIND: an
 # interpreter, shell, or package-runner pattern is arbitrary code execution with the prompt
 # removed, and a mutating verb silently approves writes. Both are pinned closed here rather
 # than trusted to review. `mise exec` and `glab api` are deliberately absent — the first
@@ -121,6 +121,68 @@ jq_is '.permissions.allow | index("Bash(glab api *)")' null \
 # git-ignored .superpowers/sdd/<plan> workspace (tests/sdd-clean.test.sh pins that).
 jq_is '.permissions.allow | index("Bash(sdd-clean *)") != null' true \
       "sdd-clean is allowlisted, so a finished plan's cleanup needs no prompt"
+# No chezmoi rule at all (spec 2026-10-28-reload-functions-merged-deletes, section 2): even
+# the exact chezmoi diff and chezmoi status run the modify_ scripts and templates of the
+# writable source, and an allow rule applies only unsandboxed, so it would run code an agent
+# wrote with no classifier.
+jq_is '[.permissions.allow[] | select(startswith("Bash(chezmoi"))] | length' 0 \
+      "no allow rule starts with Bash(chezmoi"
+# No git push or fetch rule: a merged-branch delete goes to the classifier, whose autoMode
+# rule (section U) lets it allow the plain pinned delete the push guard has verified, and a
+# plain git fetch already prunes (fetch.prune=true).
+jq_is '[.permissions.allow[] | select(startswith("Bash(git push") or startswith("Bash(git fetch"))] | length' 0 \
+      "no allow rule starts with Bash(git push or Bash(git fetch"
+# No allow rule matches a git push in any form (spec 2026-10-28-reload-functions-merged-
+# deletes, section 2: every push the guard leaves silent reaches the classifier). A model of
+# Claude Code's matching: the whole command text; * is any text, spaces included; a trailing
+# " *" that is the rule's only * also matches the bare command; the legacy trailing ":*" is a
+# prefix, read as " *".
+MATCHES='def esc: gsub("(?<c>[.+?()\\[\\]{}|^$\\\\])"; "\\" + .c);
+  def hit($cmd): (.[5:-1] | if endswith(":*") then .[:-2] + " *" else . end) as $s
+    | ($s | esc | gsub("\\*"; ".*")) as $re
+    | ($cmd | test("^" + $re + "$"))
+      or (($s | endswith(" *")) and (($s | split("*") | length) == 2) and ($cmd == $s[:-2]));'
+n_match() { # n_match <command> -> how many allow rules match it
+  printf '%s' "$OUT" | jq -r --arg c "$1" "$MATCHES"' [.permissions.allow[] | select(startswith("Bash(")) | select(hit($c))] | length'
+}
+m_is() { # m_is <command> <expected count> <label>
+  got=$(n_match "$1")
+  if [ "$got" = "$2" ]; then _pass "$3"; else _fail "$3" "$got"; fi
+}
+# Calibrate the model on a fixture before trusting it on the real rules.
+FIX_SAVE=$OUT
+OUT='{"permissions":{"allow":["Bash(git *)","Bash(git push *)","Bash(git log * main)","Bash(ls:*)"]}}'
+m_is 'git -C /r push origin --delete b' 1 "model: 'git *' matches a -C push"
+m_is 'git push' 2 "model: 'git *' and 'git push *' both match a bare git push"
+m_is 'git log --oneline main' 2 "model: 'git log * main' and 'git *' match 'git log --oneline main'"
+m_is 'gitk' 0 "model: no rule matches gitk"
+m_is 'ls' 1 "model: legacy 'ls:*' matches bare 'ls'"
+m_is 'ls -la' 1 "model: legacy 'ls:*' matches 'ls -la'"
+m_is 'lsof' 0 "model: legacy 'ls:*' does not match 'lsof'"
+OUT=$FIX_SAVE
+SHA=0123456789abcdef0123456789abcdef01234567
+for c in 'git push' 'git push origin main' "git push --force-with-lease=b:$SHA origin --delete b" \
+         "git push --force-with-lease=refs/heads/b:$SHA origin --delete b" 'git push origin :refs/heads/b' \
+         'git push -d origin b' 'git push --force origin main' 'git push --dry-run origin x' \
+         "git push --force-with-lease=b:$SHA origin --delete b 2>&1 | tail -n 3" \
+         'git -C /r push origin --delete b' 'git --no-pager push origin x' 'git -c a=b push origin x' \
+         'git -C /r -c a=b --no-pager push origin x' '/usr/bin/git push origin x' 'command git push origin x' \
+         'env git push origin x' 'xargs git push origin x' 'nohup git push origin x' 'timeout 9 git push origin x'; do
+  m_is "$c" 0 "no allow rule matches: $c"
+done
+jq_is '[.permissions.allow[] | select(test("\\*.*:\\*\\)$"))] | length' 0 \
+      "no allow rule ends in :* with another * before it"
+# No * before the subcommand: Claude Code warns on such a rule, since for git a -c or
+# --exec-path in it runs any command (spec 2026-10-28-reload-functions-merged-deletes, Tests:
+# the general checks stay). The words up to the
+# subcommand are the first word, any words starting with -, then the first other word; a *
+# in any of them fails, bar a lone * argument list right after the command name (sdd-clean *).
+jq_is '[.permissions.allow[] | select(startswith("Bash("))
+        | .[5:-1] | [splits(" +")] | map(select(. != "")) as $w
+        | ([range(1; $w | length) | select($w[.] | startswith("-") | not)] | first // ($w | length)) as $k
+        | select(($w[0:$k + 1] | any(contains("*")))
+                 and (($k == 1 and ($w | length) == 2 and $w[1] == "*") | not))]
+       | length' 0 "no allow rule has a * before its subcommand"
 # Hooks and the statusline run outside the sandbox: their interpreter is named by absolute
 # path, so nothing on PATH can stand in for it (spec 2026-10-16, section 2).
 jq_is '[.hooks[][]?.hooks[]?.command, .statusLine.command
@@ -420,6 +482,10 @@ jq_is '[.sandbox.network.allowedDomains[] | select(test("^\\*") or . == "*")] | 
 # Adding one is a two-line change here and in the modify script. Little Snitch stays the
 # second, independent gate.
 jq_is '.sandbox.network.strictAllowlist' true "strictAllowlist is on — non-allowlisted hosts are denied"
+# On, a sandboxed command skips the allow rules and auto mode sends it to the classifier, so
+# every sandboxed command keeps the classifier. Off would let Bash rm and file writes in the
+# working directories skip it (spec 2026-10-28-reload-functions-merged-deletes, section 2).
+jq_is '.sandbox.autoAllowBashIfSandboxed' true "sandbox auto-allow is on, so every sandboxed command keeps the classifier"
 
 echo "J. defaultMode is seeded, not enforced"
 # Runtime-mutable via /permissions, like model and effortLevel. Enforcing it would revert
@@ -633,6 +699,50 @@ emit '{}'
 got=$(hook_matchers PermissionRequest '/opt/homebrew/bin/bash $HOME/.claude/hooks/prompt-audit.sh')
 if [ "$got" = "*" ]; then _pass "the prompt-audit hook runs once, on every tool"; else _fail "the prompt-audit hook runs once, on every tool" "$got"; fi
 jq_is '.hooks.PermissionRequest | length' 1 "no other PermissionRequest hook"
+
+echo "U. autoMode: the classifier rule for merged-branch deletes"
+# Spec 2026-10-28-reload-functions-merged-deletes, section 2: the classifier may allow the plain
+# pinned delete of a merged branch, trusting the push guard rule 4 to have verified it. The
+# text is pinned exactly; "$defaults" comes first, since a non-empty list keeps the built-in
+# allow rules only through it.
+RULE='Deleting a remote branch that is already merged into the remote'"'"'s default branch, only when the command is exactly the plain form `git push --force-with-lease=refs/heads/<branch>:<sha> origin --delete <branch>` (the lease may also be written `--force-with-lease=<branch>:<sha>`, and `:refs/heads/<branch>` may stand in place of `--delete <branch>`), with every deleted branch pinned to its tip, and with no quoting, escapes, globs, variables, substitutions or other commands in it. A PreToolUse push guard verifies the merge and the pin before such a push runs and blocks it otherwise. This never covers deleting the default branch, and never a push that creates or updates a branch.'
+emit '{}'
+jq_is ".autoMode == {\"allow\": [\"\$defaults\", $(jq -n --arg r "$RULE" '$r')]}" true \
+      'autoMode is exactly {"allow": ["$defaults", RULE]}'
+jq_is '.autoMode.allow[0]' '$defaults' '"$defaults" comes first'
+# The overlay drops a carried allow entry that starts with the rule's fixed opening, so an
+# edited rule never lingers in its old form; that only works while the rule keeps the opening.
+OPENING='Deleting a remote branch that is already merged into the remote'
+jq_is ".autoMode.allow[1] | startswith(\"$OPENING\")" true "the rule starts with its fixed opening"
+jq_is '.autoMode | has("soft_deny") or has("hard_deny") or has("environment")' false \
+      "the overlay sets no soft_deny, hard_deny or environment"
+# Owned in part, like permissions: what /auto-mode-setup wrote to the live file (the
+# environment, private rules) is carried, since this public repo cannot declare it. Only
+# "$defaults" and the rule are placed, each once, and a live copy of either is not repeated.
+emit "$(jq -n --arg r "$RULE" '{autoMode: {allow: ["Bash(x) in y", $r, "$defaults", $r], environment: ["e1", "e2"], soft_deny: ["s"]}}')"
+jq_is ".autoMode.allow == [\"\$defaults\", $(jq -n --arg r "$RULE" '$r'), \"Bash(x) in y\"]" true \
+      "a live allow entry is carried after the rule, and neither is repeated"
+jq_is '.autoMode.environment == ["e1", "e2"] and .autoMode.soft_deny == ["s"]' true \
+      "a live environment and soft_deny are carried"
+FIRST=$OUT
+emit "$FIRST"
+if [ "$(printf '%s' "$OUT" | jq -S .)" = "$(printf '%s' "$FIRST" | jq -S .)" ]; then
+  _pass "a second apply leaves autoMode as it was"
+else
+  _fail "a second apply leaves autoMode as it was" "the second pass differs from the first"
+fi
+# An older text of the rule (round 8, before globs were named), carried from the live file,
+# is dropped because it starts with the opening; a private rule beside it stays.
+OLD_RULE='Deleting a remote branch that is already merged into the remote'"'"'s default branch, only when the command is exactly the plain form `git push --force-with-lease=refs/heads/<branch>:<sha> origin --delete <branch>` (the lease may also be written `--force-with-lease=<branch>:<sha>`, and `:refs/heads/<branch>` may stand in place of `--delete <branch>`), with every deleted branch pinned to its tip, and with no quoting, escapes, variables, substitutions or other commands in it. A PreToolUse push guard verifies the merge and the pin before such a push runs and blocks it otherwise. This never covers deleting the default branch, and never a push that creates or updates a branch.'
+emit "$(jq -n --arg o "$OLD_RULE" '{autoMode: {allow: ["$defaults", $o, "Bash(x) in y"]}}')"
+jq_is ".autoMode.allow == [\"\$defaults\", $(jq -n --arg r "$RULE" '$r'), \"Bash(x) in y\"]" true \
+      "an older text of the rule in the live allow list is dropped"
+emit '{"autoMode":"junk"}'
+jq_is ".autoMode == {\"allow\": [\"\$defaults\", $(jq -n --arg r "$RULE" '$r')]}" true \
+      "a live autoMode that is not an object is replaced"
+emit '{"autoMode":{"allow":"junk","environment":["e"]}}'
+jq_is ".autoMode == {\"allow\": [\"\$defaults\", $(jq -n --arg r "$RULE" '$r')], \"environment\": [\"e\"]}" true \
+      "a live allow that is not a list is replaced, the rest carried"
 
 echo "X. every wired hook script is actually managed by chezmoi"
 # A hook wired to an unmanaged path never deploys and fails open — silently inert.

@@ -102,8 +102,8 @@ and merge the canonical one first.
 - Don't create files the task doesn't need, such as unrequested docs, notes or READMEs.
 - **Every agent confirms first** before force-pushing without a lease, rewriting history
   others have, deleting branches, tags, data or infrastructure, discarding uncommitted work
-  it did not create, or pushing to the default branch. `--force-with-lease` on your own
-  feature branch needs none. Harness prompts are a backstop, not the check.
+  it did not create, or pushing to the default branch. Exempt: a lease on your own branch, a
+  merged branch's pinned delete, `git branch -d`. Harness prompts are a backstop, not the check.
 
 ## Autonomy
 
