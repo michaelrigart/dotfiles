@@ -141,18 +141,31 @@ only when two things hold:
 - its text is canonical, by the same test rule 4's silent pass uses;
 - git itself would read it as a dry run.
 
-For the second test, the guard follows git's own option parsing:
-- the last of `-n`, `--dry-run` and `--no-dry-run` wins;
-- unambiguous abbreviations count (`--dry`, `--no-dr`);
-- short flags bundle (`-nv`), but in a bundle everything after `-o` is the push option's value
-  (`-on` is not a dry run);
-- `--` ends the options.
+For the second test, the guard's dry-run flag matches git's reading. That holds because main's
+`parse_push`, unchanged here, already refuses every word git could read differently:
+- every `--no-*` negation, including `--no-dry-run`, `--no-dr` and `--no-dry`;
+- every abbreviation, such as `--dr` and `--dry`;
+- `--` and `--end-of-options`;
+- a `-o` value outside the allowed ones, so `-on` is denied as a push option.
 
-Any other push the guard once read as a dry run is judged as a real push. An unmerged delete
-asks. A merged, pinned delete that is not canonical gets the deny naming the plain form.
+This was measured against git 2.56 in a scratch repository. git reads as a dry run `-n`,
+`--dry-run`, `--no-dry-run -n`, bundles such as `-nv`, `-vn` and `-nvo ci.skip`, and an `-n`
+after the refspecs. It reads as a real push `-n --no-dry-run`, `-n --no-dr`, `-on`,
+`-o -n` and `--push-option=-n`. Every shape where the two readings could differ uses a word
+`parse_push` refuses.
 
-This only tightens. A plain canonical dry run is unchanged, and `git push -n --no-dry-run
-origin --delete x` no longer counts as one.
+Any other push the guard once read as a dry run is now judged as a real push:
+- an unmerged delete asks;
+- a merged, pinned delete that is not canonical gets the deny naming the plain form;
+- the glob shape gets main's wildcard deny.
+
+The negation shapes keep main's unsupported-option deny. This change only tightens: a plain
+canonical dry run is unchanged.
+
+It costs prompts. A dry run written outside canonical text now gets a real push's verdict. That
+covers a dry run with `-C`, a `cd` prefix, a wrapper, an alias or a trailer such as `| tail -3`.
+For an unmerged delete or a default-branch push that verdict is an ask. Michael's decision
+covers this cost.
 
 - **Canonical text.** A controller's ruling from the final review's fix rounds: an allowlist of
   the shell surface instead of a denylist. The pass needs all of these:
@@ -169,13 +182,24 @@ origin --delete x` no longer counts as one.
     the `=` expand. That option is off today, but with it set a canonical delete of the merged
     branch `x==ls` deleted the unmerged `x=/bin/ls`. This was measured by the final review;
     a coordinator's ruling;
+  - no argument is a `NAME=` or `NAME+=` word. bash's `set -k` (keyword) moves such words into
+    the environment, so git never sees them. The option survey found this;
   - the remote names a configured remote.
 
   The guard suite's header records two checks of this allowlist under bash and zsh: a
-  differential check, and a survey of the shell options under which an allowlisted word could
-  still change. The survey covers EQUALS, MAGIC_EQUAL_SUBST and its `:` context, BRACE_CCL,
-  EXTENDED_GLOB, KSH_GLOB, GLOB_SUBST, and bash's extglob and globstar. The words it tried hold
-  `%`, `+`, `,`, `@`, `:` and `=`. The ledger lists the totals.
+  differential check, and an option survey.
+
+  The option survey asked under which shell options an allowlisted word could still change. It
+  ran 77,222 words through `/usr/bin/printf` and compared the argv under 340 settings:
+  - every zsh option flipped on its own;
+  - every bash 3.2 and 5.3 `shopt` and `set -o` option;
+  - the six named options together;
+  - Michael's snapshot.
+
+  The words covered all 72 allowlisted characters at lengths 1 and 2, the 16 that matter at
+  lengths 3 and 4, and realistic branch, lease and push-option shapes. Only three shapes changed
+  a word: a leading `=`, `==` or `:=` under MAGIC_EQUAL_SUBST, and a `NAME=` word under bash's
+  `-k`. All three are refused.
   A delete of a branch whose name needs any other character is not canonical. The guard denies
   it, and Michael runs it.
 - **Printed commands.** A controller's ruling from Michael's decision. A deny that prints a
@@ -407,7 +431,9 @@ function named like a live alias already fails there.
     - a quoted word (`'done'`) and a quoted first word (`"git" push …`);
     - a leading `=`: a merged, pinned delete of branch `=e`, whose printed command quotes
       `'=e'`;
-    - `==` or `:=` inside a word, such as a merged, pinned delete of branch `x==ls`.
+    - `==` or `:=` inside a word, such as a merged, pinned delete of branch `x==ls`;
+    - a `NAME=` word, such as a merged, pinned delete of branch `a=b`, whose printed command
+      quotes `'a=b'`.
 
     These keep main's own denies, which come before rule 4: `$`, a backtick, a leading newline,
     and a second trailing newline.
@@ -418,17 +444,15 @@ function named like a live alias already fails there.
   - **An unmerged pinned delete and the default branch:** ask.
   - **An unpinned merged delete:** denied, printing the pinned form.
   - **A plain canonical dry run:** silent, as on main. **An update push:** main's verdict.
-  - **Fake dry runs.** Each case is red against main and is judged as a real push, so an
-    unmerged delete asks:
-    - the glob shape, with a `--no-dry-run` file in the cwd;
-    - a carriage return glued to `-n`;
-    - a line continuation;
-    - each negation shape: `-n … --no-dry-run`, `--dry-run … --no-dry-run`, the abbreviated
-      `--no-dry` and `--no-dr`, a bundled `-nv … --no-dry-run`, and `-on`, which is a push
-      option rather than a dry run.
+  - **Fake dry runs.** These are red against main and judged as a real push:
+    - the glob shape, with a `--no-dry-run` file in the cwd, gets main's wildcard deny;
+    - a carriage return glued to `-n`, for an unmerged delete, asks;
+    - a continuation glued to `-n`, for an unmerged delete, asks;
+    - `git -C <checkout> push -n …`, for an unmerged delete, asks.
 
-    A canonical `git push -n --no-dry-run origin --delete x` is not exempt. A last `-n` after
-    `--no-dry-run` is a dry run.
+    The negation shapes keep main's unsupported-option deny and are pinned as denies. They are
+    `-n --no-dry-run`, `--dry-run --no-dry-run`, `-n --no-dry`, `-n --no-dr`,
+    `-nv --no-dry-run`, `--no-dry-run -n` and `--dry`. `-on` is denied as a push option.
 
 ## Verification after Michael's apply
 
