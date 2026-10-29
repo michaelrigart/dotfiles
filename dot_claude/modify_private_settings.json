@@ -45,7 +45,8 @@ printf '%s' "$input" | jq \
   | ($live.permissions // {}) as $perm
   | (($live.autoMode | objects) // {}) as $auto
   # The classifier rule for merged-branch deletes (spec 2026-10-28-reload-functions-merged-
-  # deletes, section 2), verbatim. Its apostrophe is written as a u0027 escape, since this
+  # deletes, section 2, plus the sentence from spec 2026-10-29-push-guard-escaped-spellings,
+  # section 5). Its apostrophe is written as a u0027 escape, since this
   # program cannot hold one, and jq comments must hold no backslash.
   | ("Deleting a remote branch that is already merged into the remote\u0027s default branch, "
      + "only when the command is exactly the plain form `git push --force-with-lease="

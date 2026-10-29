@@ -704,7 +704,8 @@ echo "U. autoMode: the classifier rule for merged-branch deletes"
 # Spec 2026-10-28-reload-functions-merged-deletes, section 2: the classifier may allow the plain
 # pinned delete of a merged branch, trusting the push guard rule 4 to have verified it. The
 # text is pinned exactly; "$defaults" comes first, since a non-empty list keeps the built-in
-# allow rules only through it.
+# allow rules only through it. Spec 2026-10-29-push-guard-escaped-spellings, section 5, adds the
+# sentence on literal git and push words; MAIN_RULE is the text without it.
 MAIN_RULE='Deleting a remote branch that is already merged into the remote'"'"'s default branch, only when the command is exactly the plain form `git push --force-with-lease=refs/heads/<branch>:<sha> origin --delete <branch>` (the lease may also be written `--force-with-lease=<branch>:<sha>`, and `:refs/heads/<branch>` may stand in place of `--delete <branch>`), with every deleted branch pinned to its tip, and with no quoting, escapes, globs, variables, substitutions or other commands in it. A PreToolUse push guard verifies the merge and the pin before such a push runs and blocks it otherwise. This never covers deleting the default branch, and never a push that creates or updates a branch.'
 RULE='Deleting a remote branch that is already merged into the remote'"'"'s default branch, only when the command is exactly the plain form `git push --force-with-lease=refs/heads/<branch>:<sha> origin --delete <branch>` (the lease may also be written `--force-with-lease=<branch>:<sha>`, and `:refs/heads/<branch>` may stand in place of `--delete <branch>`), with every deleted branch pinned to its tip, and with no quoting, escapes, globs, variables, substitutions or other commands in it. It never applies when git or push is spelled any way other than those literal words, is built at run time, or is run through a script or interpreter. A PreToolUse push guard verifies the merge and the pin before such a push runs and blocks it otherwise. This never covers deleting the default branch, and never a push that creates or updates a branch.'
 emit '{}'
@@ -738,6 +739,7 @@ OLD_RULE='Deleting a remote branch that is already merged into the remote'"'"'s 
 emit "$(jq -n --arg o "$OLD_RULE" '{autoMode: {allow: ["$defaults", $o, "Bash(x) in y"]}}')"
 jq_is ".autoMode.allow == [\"\$defaults\", $(jq -n --arg r "$RULE" '$r'), \"Bash(x) in y\"]" true \
       "an older text of the rule in the live allow list is dropped"
+# main's text of the rule (before the literal-words sentence), carried from the live file, is dropped too.
 emit "$(jq -n --arg m "$MAIN_RULE" '{autoMode: {allow: ["$defaults", $m, "Bash(x) in y"]}}')"
 jq_is ".autoMode.allow == [\"\$defaults\", $(jq -n --arg r "$RULE" '$r'), \"Bash(x) in y\"]" true \
       "main's text of the rule in the live allow list is dropped"
