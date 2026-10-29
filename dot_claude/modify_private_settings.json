@@ -10,8 +10,9 @@
 # because starting from the live file would otherwise keep them forever. model,
 # effortLevel, permissions.defaultMode and outputStyle are seeded only when absent. The
 # plugin/marketplace *intent* is declared in .scripts/reconcile-agents.sh +
-# dot_config/agents/plugins.conf. autoMode is never declared here: it records repo and org
-# names and where secrets live, and this repo is public.
+# dot_config/agents/plugins.conf. autoMode is owned only in part (see its entry): what
+# /auto-mode-setup writes there records repo and org names and where secrets live, and this
+# repo is public, so the live entries are carried.
 #
 # private_ prefix => target is deployed 0600. Bash 3.2 compatible. $HOME (not a hardcoded
 # path) keeps the statusline commands correct on any machine.
@@ -42,6 +43,22 @@ printf '%s' "$input" | jq \
   # NB: no apostrophes anywhere in this program; it is one single-quoted shell string.
   . as $live
   | ($live.permissions // {}) as $perm
+  | (($live.autoMode | objects) // {}) as $auto
+  # The classifier rule for merged-branch deletes (spec 2026-10-28-reload-functions-merged-
+  # deletes, section 2), verbatim. Its apostrophe is written as a u0027 escape, since this
+  # program cannot hold one, and jq comments must hold no backslash.
+  | ("Deleting a remote branch that is already merged into the remote\u0027s default branch, "
+     + "only when the command is exactly the plain form `git push --force-with-lease="
+     + "refs/heads/<branch>:<sha> origin --delete <branch>` (the lease may also be written "
+     + "`--force-with-lease=<branch>:<sha>`, and `:refs/heads/<branch>` may stand in place of "
+     + "`--delete <branch>`), with every deleted branch pinned to its tip, and with no quoting, "
+     + "escapes, variables, substitutions or other commands in it. A PreToolUse push guard "
+     + "verifies the merge and the pin before such a push runs and blocks it otherwise. This "
+     + "never covers deleting the default branch, and never a push that creates or updates a "
+     + "branch.") as $delete_rule
+  # Earlier texts of that rule, deleted by name like the retired keys below, so a changed rule
+  # never lingers as a carried entry. None yet.
+  | [] as $retired_rules
   | $live + {
       "theme": "custom:tokyo-night",
       # 30 days of transcripts: the safe-autonomy evaluation measures over them.
@@ -71,29 +88,23 @@ printf '%s' "$input" | jq \
       # the commit/PR attribution text. The deprecated key is retired (deleted below).
       "attribution": { "commit": "", "pr": "", "sessionUrl": false },
       "permissions": {
+        # With the sandbox auto-allow on, an allow rule applies only to a command that runs
+        # unsandboxed or is an excluded command; a sandboxed one goes to the classifier
+        # (spec 2026-10-28-reload-functions-merged-deletes, section 2).
         "allow": [
           "Bash(glab ci list *)",     "Bash(glab ci get *)",
           "Bash(glab mr view *)",     "Bash(glab issue view *)",
           "Bash(glab auth status)",
-          # Exact commands only: --config, --source and --destination let a configured diff
-          # command or the output call of a template run arbitrary code, and with auto-allow
-          # off an allow rule skips the classifier. Any argument goes to the classifier.
-          "Bash(chezmoi diff)",
-          "Bash(chezmoi status)",
           # sdd-clean deletes only a git-ignored .superpowers/sdd/<plan> workspace and
-          # refuses anything else, so cleaning up a finished plan needs no prompt.
+          # refuses anything else, so cleaning up a finished plan needs no prompt. Its git
+          # calls run no core.fsmonitor a repository config names.
           "Bash(sdd-clean *)",
-          # Merged-branch deletes (spec 2026-10-28-reload-functions-merged-deletes). The
-          # two push rules are mirrored by DELETE_ALLOW_RULES in git-push-guard.py,
-          # which denies anything they match that is not a real delete-only push, so keep
-          # the two lists equal (tests/claude-settings.test.sh pins the parity). The fetch
-          # rules prune no more than a plain fetch already prunes under fetch.prune=true
-          # in dot_config/git/config.
-          "Bash(git push --force-with-lease=* origin --delete *)",
-          "Bash(git push --force-with-lease=* origin -d *)",
-          "Bash(git fetch --prune)",    "Bash(git fetch --prune origin)",
-          # NOTE: no chezmoi cat here. It runs op unsandboxed and can render private
-          # keys, so it goes to the auto-mode classifier like any other command.
+          # NOTE: no chezmoi rule here. chezmoi diff and status run the modify_ scripts and
+          # templates of the writable source, so unsandboxed, where an allow rule applies,
+          # one would run code an agent wrote with no classifier. chezmoi cat also runs op
+          # unsandboxed and can render private keys. All go to the auto-mode classifier.
+          # NOTE: no git push or fetch rule here. A merged-branch delete is allowed by the
+          # classifier rule under autoMode below, after the push guard has verified it.
           # Basecamp: read-only verbs only. These were auto-learned into
           # settings.local.json as `basecamp auth *` / `basecamp projects *`, which
           # quietly pre-approved `auth token` (prints the live OAuth token) and
@@ -204,6 +215,17 @@ printf '%s' "$input" | jq \
           "Bash(terraform apply -destroy*)", "Bash(terraform -chdir=* apply -destroy*)"
         ]
       },
+      # Owned in part, like permissions: allow gets "$defaults" first (the built-in allow
+      # rules, which a non-empty list keeps only through it) and the merged-branch delete
+      # rule, which trusts the push guard rule 4 to have verified the merge and the pin
+      # (spec 2026-10-28-reload-functions-merged-deletes, section 2). Every other allow
+      # entry and every other autoMode key the live file holds (what /auto-mode-setup
+      # writes: the environment, private rules) is carried. Claude Code reads these only from
+      # user, flag and managed settings, never from project settings.
+      "autoMode": ($auto + {
+        "allow": (["$defaults", $delete_rule]
+                  + ((($auto.allow | arrays) // []) - ["$defaults", $delete_rule] - $retired_rules))
+      }),
       "enableAllProjectMcpServers": false,
       "statusLine": { "type": "command", "command": $sl, "padding": 0 },
       # Claude Code injects an UNAUTHENTICATED `nc` GIT_SSH_COMMAND at runtime, which
@@ -322,11 +344,12 @@ printf '%s' "$input" | jq \
       },
       "sandbox": {
         "enabled": true,
-        # Off since 2026-10-29, as Michael decided. While it was on, a sandboxed command
-        # skipped the allow rules and auto mode sent it to the classifier, so the allow rules
-        # did nothing for anything sandboxed. Spec 2026-10-28-reload-functions-merged-deletes,
-        # section 2, evidence (b), records the measurement and the costs of turning it off.
-        "autoAllowBashIfSandboxed": false,
+        # On: a sandboxed command skips the allow rules, and auto mode sends it to the
+        # classifier, so every sandboxed command keeps the classifier. Off was chosen and then
+        # reversed on 2026-10-29, before it shipped: Bash rm and file writes in the working
+        # directories would then skip the classifier (spec 2026-10-28-reload-functions-merged-
+        # deletes, section 2).
+        "autoAllowBashIfSandboxed": true,
         "allowUnsandboxedCommands": true,
         "credentials": {
           "files": [
@@ -420,14 +443,13 @@ printf '%s' "$input" | jq \
               + ["~/Library/Mobile Documents/iCloud~md~obsidian/Documents/*/.obsidian",
                  "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/*/.obsidian/**"])
         },
-        # strictAllowlist is what makes this list DO anything. Now: auto-allow is off, and
-        # strictAllowlist denies an unlisted host with no prompt (read in Claude Code 2.1.312;
-        # nothing measured contradicts it). History: until 2026-08-24 strictAllowlist was off,
-        # a non-listed host was merely prompted, and the auto-allow then on suppressed that
-        # prompt, so the allowlist was decorative (verified then: sandboxed
-        # `curl https://example.com` returned 200). It was reportedly enabled once before and
-        # lost, because this block is owned declaratively and anything set at runtime but not
-        # named here is erased on the next apply. Hence the test assertion.
+        # strictAllowlist is what makes this list DO anything: without it non-listed
+        # hosts are merely prompted, and autoAllowBashIfSandboxed suppresses that prompt
+        # too, so the allowlist was decorative until 2026-08-24 (verified: sandboxed
+        # `curl https://example.com` returned 200). With it, an unlisted host is refused with
+        # no prompt. It was reportedly enabled once before and lost, because this block is
+        # owned declaratively and anything set at runtime but not named here is erased on
+        # the next apply. Hence the test assertion.
         # Adding a host is cheap; the list below is what the toolchain here needs.
         "network": {
           "allowUnixSockets": [$agent_socket],

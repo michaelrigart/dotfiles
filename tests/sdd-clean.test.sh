@@ -82,6 +82,23 @@ refused "a workspace reached through a symlinked sdd directory" "not a workspace
 ws "$R/.superpowers/sdd/f"
 refused "one refusal deletes nothing" "not a workspace directly under" "$R/.superpowers/sdd/f" "$R/docs"
 
+# A repository config can name a core.fsmonitor command, and a sandboxed agent can write that
+# config (spec 2026-10-28-reload-functions-merged-deletes, section 2). sdd-clean is
+# allowlisted, so its git calls must never run it. The control shows git itself runs it here.
+repo fsm; FSM="$T/fsm"; MARK="$T/fsmonitor-ran"
+printf '#!/bin/sh\ntouch "%s"\n' "$MARK" > "$T/fsmonitor.sh"; chmod 755 "$T/fsmonitor.sh"
+git -C "$FSM" config core.fsmonitor "$T/fsmonitor.sh"
+git -C "$FSM" ls-files >/dev/null 2>&1
+if [ -e "$MARK" ]; then _pass "control: git ls-files runs the configured core.fsmonitor command"
+else _fail "control: git ls-files runs the configured core.fsmonitor command" "no marker"; fi
+rm -f "$MARK"
+ws "$FSM/.superpowers/sdd/w"
+deleted "a workspace in a repository whose core.fsmonitor names a command" "$FSM/.superpowers/sdd/w"
+ws "$FSM/.superpowers/sdd/t"; git -C "$FSM" -c core.fsmonitor=false add -f .superpowers/sdd/t/progress.md
+refused "and a workspace there that git tracks files in" "tracks" "$FSM/.superpowers/sdd/t"
+if [ -e "$MARK" ]; then _fail "sdd-clean never runs a core.fsmonitor command" "the command ran"
+else _pass "sdd-clean never runs a core.fsmonitor command"; fi
+
 "$SC" 2>"$T/err"; rc=$?
 [ "$rc" = 2 ] && grep -qF 'usage: sdd-clean' "$T/err" && _pass "no argument is a usage error (exit 2)" \
   || _fail "no argument is a usage error (exit 2)" "rc=$rc, stderr: $(cat "$T/err")"

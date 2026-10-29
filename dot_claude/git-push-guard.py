@@ -34,26 +34,20 @@
 # Deliberate obfuscation is out of scope, because a text-matching hook cannot close it (a
 # script file always gets round it); the auto-mode classifier and server-side branch
 # protection cover it. For example a push word assembled by expansion (git ${X:-pu}sh) has
-# no literal push in the payload, so the shell fast path never starts this helper. The
-# exception is a command that matches a delete allow rule (A1 or A2, below): the allow rule
-# skips the classifier, so this guard is the only gate. For those commands the guard must
-# read the text at least as widely as Claude Code does, and passes one silently only in
-# canonical text (plain words, see CANONICAL), which the shell hands git unchanged. An
-# ANSI-C $'...' word can spell git or push in escapes, so the shell fast path starts this
-# helper for any payload that holds one, and the search decodes it (decode_ansi_c).
+# no literal push in the payload, so the shell fast path never starts this helper.
 #
-# The delete allow rules. permissions.allow in dot_claude/modify_private_settings.json holds
-# DELETE_ALLOW_RULES too, so a delete-shaped push can run without the auto-mode classifier. A
-# * in a rule matches any text, so a rule cannot prove what git will parse; this guard
-# therefore searches the whole command text for the same rules first (matches_delete_rule),
-# and a command that matches gets its verdict from what the guard parses. Two kinds pass
-# silently, both in the bare form (git push ... in canonical text: plain words only, nothing
-# before git or between git and push, at most a 2>&1 and a tail or head after): a delete-only
-# push of merged branches, each pinned, and a dry run. Anything else
-# that matches is a deny or, as for any delete, an ask. A deny that prints a corrected push
-# prints the plain git push form when the push runs in the session's own checkout (the
-# toplevel of the payload's cwd); otherwise it names the checkout the push runs in and says
-# the push must run from there or Michael runs it, since no allow rule has a git -C form.
+# Merged-branch deletes (spec 2026-10-28-reload-functions-merged-deletes, section 2). A
+# classifier rule (autoMode.allow in dot_claude/modify_private_settings.json) lets the
+# auto-mode classifier allow the plain pinned delete of a merged branch, trusting this guard
+# to have verified the merge and the pin. So the words verified must be the words the shell
+# runs: a delete-only push of merged branches, each pinned, passes silently only as a bare
+# git push in canonical text (plain words, see CANONICAL), which bash and zsh hand git
+# unchanged, with no wrapper, assignment, cd prefix or global option before push. Merged and
+# pinned in any other text, it is denied with the plain pinned command printed. A deny that
+# prints a corrected push prints the plain git push form when the push runs in the session's
+# own checkout (the toplevel of the payload's cwd); otherwise it names the checkout the push
+# runs in and says the push must run from there or Michael runs it, since the classifier
+# rule names only the plain form.
 #
 # Written for /usr/bin/python3 (3.9): no match statements, no X | Y type unions.
 import fnmatch
@@ -88,18 +82,13 @@ LOCAL_ENV = dict(os.environ, GIT_NO_LAZY_FETCH="1", GIT_NO_REPLACE_OBJECTS="1",
 LOCAL_OPTS = ("-c", "core.commitGraph=false")
 
 PUNCT =";&|()<>\n"
-# The characters the shell splits words on, bash and zsh alike (measured: a carriage return,
-# vertical tab, form feed or no-break space stays inside the word). A newline ends a command.
-BLANKS = " \t"
-# The characters that make a word a glob or a brace list. A mirrored dry run may hold none.
-GLOB_CHARS = "*?[{}"
-# Canonical text (spec 2026-10-28, section 2, Bare), the only text a bare mirrored command may
-# have: the raw command, with at most one trailing newline removed and then its leading and
-# trailing spaces stripped (canonical), is git push and its arguments separated by single
-# spaces, then at most one trailer (2>&1, a tail or head with -n N, or both). Every argument
-# is one plain word, none starting with = (zsh's EQUALS expansion). An allowlist of the
-# shell surface, not a denylist: bash and zsh hand git
-# exactly these words (differential check recorded in tests/git-forge-guard.test.sh).
+# Canonical text (spec 2026-10-28, section 2, canonical text), the only text in which a merged,
+# pinned delete passes silently: the raw command, with at most one trailing newline removed
+# and then its leading and trailing spaces stripped (canonical), is git push and its arguments
+# separated by single spaces, then at most one trailer (2>&1, a tail or head with -n N, or
+# both). Every argument is one plain word, none starting with = (zsh's EQUALS expansion). An
+# allowlist of the shell surface, not a denylist: bash and zsh hand git exactly these words
+# (differential check recorded in tests/git-forge-guard.test.sh).
 PLAIN_WORD = "[A-Za-z0-9._/:=@+,%-]+"
 CANONICAL = re.compile("git push((?: " + PLAIN_WORD + ")*)(?: 2>&1)?(?: \\| (?:tail|head) -n [0-9]+)?")
 PLAIN_WORDS = ("plain words: git push and its arguments, each made of letters, digits and "
@@ -161,18 +150,6 @@ DWIM_PREFIXES = ("heads/", "tags/", "remotes/", "refs/")
 NOT_DELETE_ONLY = {"--prune", "--mirror", "--all", "--force", "-f", "--tags", "--follow-tags"}
 SHA_RE = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
 
-# The push rules of permissions.allow that let a pinned delete skip the classifier (spec
-# 2026-10-28, section 2), exactly as dot_claude/modify_private_settings.json spells them.
-DELETE_ALLOW_RULES = (
-    "Bash(git push --force-with-lease=* origin --delete *)",
-    "Bash(git push --force-with-lease=* origin -d *)",
-)
-NOT_A_DELETE_PUSH = ("Push guard: this command matches a delete allow rule but is not a delete "
-                     "push; reword it so it does not carry the delete form (a commit message "
-                     "quoting it, for example).")
-NOT_DELETE_SHAPE = ("Push guard: this command matches a delete allow rule but git would not "
-                    "parse it as a delete-only push; push normally, without the delete shape.")
-
 UNSUPPORTED = ("unsupported push configuration for the push guard: {}; "
                "push by hand or simplify the configuration")
 GITLEAKS_LEAKS_EXIT = 99
@@ -228,406 +205,11 @@ def decision(kind, reason):
     }}, separators=(",", ":"))
 
 
-# ------------------------------------------------------------------ the delete allow rules
-def rule_pattern(rule):
-    """The pattern of one Bash(...) allow rule, with Claude Code's semantics: a * matches any
-    text, spaces and newlines included, and a space in the rule matches any run of white
-    space (a superset of what the rule matches). Use it with .match, not .search: it is
-    unanchored by itself. Each literal part is found by an atomic lookahead, so the match is
-    linear in the command's length; the plain form (the parts joined by .*, used with
-    .search) backtracks cubically on a long command that almost matches."""
-    body = rule[len("Bash("):-1]
-    parts = [re.escape(p).replace(r"\ ", r"\s+") for p in body.split("*") if p]
-    return re.compile("".join("(?=(.*?{}))\\{}".format(p, n) for n, p in enumerate(parts, 1)),
-                      re.S)
-
-
-DELETE_ALLOW_PATTERNS = tuple(rule_pattern(r) for r in DELETE_ALLOW_RULES)
-
-
-QUOTING = re.compile(r"[\"'\\]")
-
-
-def readings(text, tokens):
-    """The texts matches_delete_rule searches for one form of the command: as written, with
-    each \\-newline continuation joined by a space and by nothing, each of those three with
-    every ", ' and \\ removed, and its shell words (tokens, when it tokenizes) joined by
-    single spaces."""
-    joined = text.replace("\\\n", "")
-    out = [text, text.replace("\\\n", " "), joined, QUOTING.sub("", text), QUOTING.sub("", joined)]
-    if tokens is not None:
-        out.append(" ".join(tokens))
-    return out
-
-
-def matches_delete_rule(cmd, tokens):
-    """Does the command text match one of the delete allow rules? The search is a superset of
-    Claude Code's match (spec 2026-10-28, section 2), which runs per subcommand after stripping
-    wrappers, safe assignments and comment lines and shell-unquoting the first word (single
-    and double quotes and backslashes: g\\it and "gi"t are git there). It searches every
-    reading (readings) of the command as written, and of the command with its ANSI-C $'...'
-    words decoded as bash and as zsh decode them ($'\\x67it' is git to both). The
-    quote-stripped readings show a match when the rest of the command does not tokenize. The
-    rules hold no quotes or backslashes and the written readings are always searched, so each
-    reading only adds matches. No reading drops the leading git: that would mirror every
-    git -C delete, which no rule matches. The decoding is the second layer (evidence c):
-    Claude Code returns ask for a command too complex to read as simple commands, one whose
-    first word is $'...' among them, before any rule matching, so a shell context the decoder
-    misreads (_decode_spans) cannot reach A1."""
-    texts = readings(cmd, tokens)
-    for decoded in (decode_ansi_c(cmd), decode_ansi_c_zsh(cmd)):
-        if decoded != cmd:
-            try:
-                texts += readings(decoded, tokenize(decoded))
-            except ValueError:
-                texts += readings(decoded, None)
-    return any(p.match(t) for p in DELETE_ALLOW_PATTERNS for t in texts)
-
-
-# The escapes bash and zsh both decode in $'...' by one letter (octal, \x, \u, \U below).
-ANSI_C_ESCAPES = {"a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "n": "\n",
-                  "r": "\r", "t": "\t", "v": "\v", "\\": "\\", "'": "'", '"': '"', "?": "?"}
-ANSI_C_DIGITS = {"x": 2, "u": 4, "U": 8}
-
-
-def codepoint(hexdigits):
-    """The text a \\u/\\U with these hex digits decodes to: the character, or "" above
-    U+10FFFF. bash drops such a value and keeps the rest of the word ($'\\UFFFFFFFFgit' is
-    git), zsh encodes it as a 5- or 6-byte sequence; dropping it matches bash's isolation of
-    the following text, and elsewhere only makes the guard read a character more, never less."""
-    cp = int(hexdigits, 16)
-    return "" if cp > 0x10FFFF else chr(cp)
-
-
-def ansi_c(body):
-    """The text bash 5 makes of one $'...' body: \\a \\b \\e \\E \\f \\n \\r \\t \\v \\\\ \\'
-    \\" \\?, \\nnn (octal), \\xHH, \\uHHHH, \\UHHHHHHHH and \\cX; any other backslash stays
-    (bash keeps it). The span ends at a NUL, so bash keeps the rest of the word AFTER the
-    span (decode_ansi_c puts it there); zsh instead cuts the whole word (ansi_c_zsh /
-    decode_ansi_c_zsh). This reading is bash's."""
-    out, i, n = [], 0, len(body)
-    while i < n:
-        c, e = body[i], body[i + 1:i + 2]
-        if c != "\\" or not e:
-            out.append(c)
-            i += 1
-        elif e in ANSI_C_ESCAPES:
-            out.append(ANSI_C_ESCAPES[e])
-            i += 2
-        elif e in "01234567":
-            digits = re.match(r"[0-7]{1,3}", body[i + 1:]).group()
-            out.append(chr(int(digits, 8) & 0xFF))
-            i += 1 + len(digits)
-        elif e in ANSI_C_DIGITS:
-            m = re.match(r"[0-9A-Fa-f]{1,%d}" % ANSI_C_DIGITS[e], body[i + 2:])
-            if m:
-                out.append(codepoint(m.group()))
-                i += 2 + len(m.group())
-            else:
-                out.append(c + e)
-                i += 2
-        elif e == "c" and i + 2 < n:
-            x = body[i + 2]
-            i += 3
-            if x == "\\" and body[i:i + 1] == "\\":
-                i += 1                                 # \c\\ is control-backslash
-            out.append("\x7f" if x == "?" else chr(ord(x) & 0x1F))   # upper or lower case alike
-        else:
-            out.append(c + e)
-            i += 2
-    return "".join(out).split("\0", 1)[0]
-
-
-def zsh_ctrl_meta(body, i):
-    """Decode a zsh \\C / \\M control-or-meta escape starting at body[i] (a backslash), by what
-    was measured: any run of \\C, \\C-, \\M, \\M- modifiers, then one target character (an
-    escaped \\X counts as one). Control does & 0x1f, meta sets 0x80. An incomplete escape with
-    no target (the modifiers run to the span's end) is empty: the word goes on ($'c\\C'plain is
-    cplain), unlike a no-digit \\x, \\u or \\U, which is a NUL. Returns (text, next index). The
-    byte is control or high-bit, never an ASCII letter, so its exact value only matters to the
-    differential check, not to whether a rule matches."""
-    ctrl = meta = False
-    while i + 1 < len(body) and body[i] == "\\" and body[i + 1] in "CM":
-        ctrl = ctrl or body[i + 1] == "C"
-        meta = meta or body[i + 1] == "M"
-        i += 2
-        if i < len(body) and body[i] == "-":
-            i += 1
-    if i >= len(body):
-        return "", i                                   # \C, \C-, \M, \M- at the end: empty
-    if body[i] == "\\" and i + 1 < len(body):
-        ch, i = body[i + 1], i + 2
-    elif body[i] == "\\":
-        return "", i + 1
-    else:
-        ch, i = body[i], i + 1
-    o = ord(ch)
-    o = (o & 0x1f) if ctrl else (o & 0x7f)
-    return chr(o | 0x80) if meta else chr(o), i
-
-
-def ansi_c_zsh(body):
-    """The text zsh makes of one $'...' body (measured): the letter escapes and octal as bash,
-    \\xHH \\uHHHH \\UHHHHHHHH, the zsh-only \\C/\\M control and meta forms (zsh_ctrl_meta), and
-    any other \\X with the backslash dropped (bash keeps it; \\c is one of these in zsh). A
-    no-digit \\x, \\u or \\U is a NUL. The result may hold a NUL; the caller cuts the word
-    there."""
-    out, i, n = [], 0, len(body)
-    while i < n:
-        c, e = body[i], body[i + 1:i + 2]
-        if c != "\\" or not e:
-            out.append(c)
-            i += 1
-        elif e in ANSI_C_ESCAPES:
-            out.append(ANSI_C_ESCAPES[e])
-            i += 2
-        elif e in "01234567":
-            digits = re.match(r"[0-7]{1,3}", body[i + 1:]).group()
-            out.append(chr(int(digits, 8) & 0xFF))
-            i += 1 + len(digits)
-        elif e in ANSI_C_DIGITS:
-            m = re.match(r"[0-9A-Fa-f]{1,%d}" % ANSI_C_DIGITS[e], body[i + 2:])
-            if m:
-                out.append(codepoint(m.group()))
-                i += 2 + len(m.group())
-            else:
-                out.append("\0")                       # no-digit \x \u \U is a NUL in zsh
-                i += 2
-        elif e in "CM":
-            text, i = zsh_ctrl_meta(body, i)
-            out.append(text)
-        else:
-            out.append(e)                              # unknown escape: zsh drops the backslash
-            i += 2
-    return "".join(out)
-
-
-WORD_END = BLANKS + "\n;&|()<>"
-
-
-def skip_substitution(cmd, i):
-    """From i at a $(, ${ or backtick, the index just past its matching close, tracking
-    quotes, escapes and nesting (the end of the command if it never closes). Used to find
-    where a word holding the substitution ends; its output is not modelled."""
-    n = len(cmd)
-    if cmd[i] == "`":
-        j = i + 1
-        while j < n and cmd[j] != "`":
-            j += 2 if cmd[j] == "\\" and j + 1 < n else 1
-        return min(j + 1, n)
-    opening, closing = ("(", ")") if cmd[i + 1] == "(" else ("{", "}")
-    depth, j, mode = 1, i + 2, None                    # mode: None, ' or "
-    while j < n and depth:
-        c, nxt = cmd[j], cmd[j + 1:j + 2]
-        if mode == "'":
-            mode = None if c == "'" else mode
-            j += 1
-        elif c == "\\" and nxt:
-            j += 2
-        elif mode == '"':
-            mode = None if c == '"' else mode
-            j += 1
-        elif c in "'\"":
-            mode, j = c, j + 1
-        else:
-            depth += 1 if c == opening else -1 if c == closing else 0
-            j += 1
-    return j
-
-
-def skip_zsh_word(cmd, i):
-    """From i (just past a $'...' span whose text held a NUL), the index of the end of the
-    source word as the shell groups it, tracking quotes: the next unquoted blank, newline or
-    operator. zsh cuts the word at the NUL, so this tail is dropped, whatever it holds: a
-    $(...), ${...} or backtick in it is skipped whole (skip_substitution), so a blank inside
-    it does not end the word. Its output is not modelled and needs not be: Claude Code
-    matches rules on the visible text, which the written readings carry, never on what a
-    substitution prints. An array in a cut tail is a known misread (_decode_spans)."""
-    n, mode = len(cmd), None                           # mode: None, ', ", $'
-    while i < n:
-        c, nxt = cmd[i], cmd[i + 1:i + 2]
-        if mode == "'":
-            mode = None if c == "'" else mode
-            i += 1
-        elif mode == "$'":
-            i += 2 if c == "\\" and nxt else 1
-            if c == "'":
-                mode = None
-        elif mode == '"':
-            if c == "\\" and nxt:
-                i += 2
-            elif (c == "$" and nxt in "({") or c == "`":
-                i = skip_substitution(cmd, i)
-            else:
-                mode = None if c == '"' else mode
-                i += 1
-        elif c in WORD_END:
-            break
-        elif c == "\\" and nxt:
-            i += 2
-        elif c == "$" and nxt == "'":
-            mode, i = "$'", i + 2
-        elif (c == "$" and nxt in "({") or c == "`":
-            i = skip_substitution(cmd, i)
-        elif c in "'\"":
-            mode, i = c, i + 1
-        else:
-            i += 1
-    return i
-
-
-def _decode_spans(cmd, span):
-    """cmd with each $'...' the decoder finds replaced by span(body), and each $"..." read as
-    "...". It models shell contexts only as far as the guard suite pins them: a $' inside
-    '...', "..." or a comment, or after a backslash, is literal, and inside $'...' an escaped
-    \\' does not close it. Known misread contexts, none of which can reach A1, because Claude
-    Code returns ask for such a too-complex command first (spec, evidence c): a # after an
-    escaped blank or an operator, or inside backticks; $'...' inside "$(...)", inside
-    backticks, or after a heredoc; $$' in bash; a \\-newline between $ and the quote; an
-    array in a zsh cut tail. span returns the replacement text."""
-    out, i, n, mode = [], 0, len(cmd), None            # mode: None, ', " or #
-    while i < n:
-        c, nxt = cmd[i], cmd[i + 1:i + 2]
-        if mode == "'":
-            mode = None if c == "'" else mode
-        elif mode == "#":
-            mode = None if c == "\n" else mode
-        elif c == "\\" and nxt:
-            out.append(c + nxt)                        # escaped, in or out of "..."
-            i += 2
-            continue
-        elif mode == '"':
-            mode = None if c == '"' else mode
-        elif c == "$" and nxt == "'":
-            j, body = i + 2, []
-            while j < n and cmd[j] != "'":
-                step = 2 if cmd[j] == "\\" and j + 1 < n else 1
-                body.append(cmd[j:j + step])
-                j += step
-            out.append(span("".join(body)))
-            i = j + 1
-            continue
-        elif c == "$" and nxt == '"':
-            out.append('"')
-            i += 2
-            mode = '"'
-            continue
-        elif c in "'\"":
-            mode = c
-        elif c == "#" and (not out or out[-1][-1] in BLANKS + PUNCT):
-            mode = "#"
-        out.append(c)
-        i += 1
-    return "".join(out)
-
-
-def decode_ansi_c(cmd):
-    """cmd read as bash decodes its $'...' and $"..." words: each span's text (ansi_c) quoted
-    back as one word, so the word keeps its boundaries for tokenize."""
-    return _decode_spans(cmd, lambda body: shlex.quote(ansi_c(body)))
-
-
-def decode_ansi_c_zsh(cmd):
-    """cmd read as zsh decodes it. Each $'...' span is decoded (ansi_c_zsh) and quoted back as
-    one word, as the bash reading does, so a decoded blank or quote cannot split or unbalance
-    the reading. When the text holds a NUL, zsh cuts the whole word there: the text before the
-    NUL is emitted (quoted) and the rest of the source word — the span's tail and everything
-    to the next unquoted blank, newline or operator — is dropped (skip_zsh_word), a
-    substitution in it included. $"..." reads as "...". Contexts as in _decode_spans."""
-    out, i, n, mode = [], 0, len(cmd), None            # mode: None, ', " or #
-    while i < n:
-        c, nxt = cmd[i], cmd[i + 1:i + 2]
-        if mode == "'":
-            mode = None if c == "'" else mode
-        elif mode == "#":
-            mode = None if c == "\n" else mode
-        elif c == "\\" and nxt:
-            out.append(c + nxt)                        # escaped, in or out of "..."
-            i += 2
-            continue
-        elif mode == '"':
-            mode = None if c == '"' else mode
-        elif c == "$" and nxt == "'":
-            j, body = i + 2, []
-            while j < n and cmd[j] != "'":
-                step = 2 if cmd[j] == "\\" and j + 1 < n else 1
-                body.append(cmd[j:j + step])
-                j += step
-            text = ansi_c_zsh("".join(body))
-            if "\0" in text:
-                out.append(shlex.quote(text.split("\0", 1)[0]))
-                i = skip_zsh_word(cmd, j + 1)          # drop the rest of the source word
-            else:
-                out.append(shlex.quote(text))
-                i = j + 1
-            continue
-        elif c == "$" and nxt == '"':
-            out.append('"')
-            i += 2
-            mode = '"'
-            continue
-        elif c in "'\"":
-            mode = c
-        elif c == "#" and (not out or out[-1][-1] in BLANKS + PUNCT):
-            mode = "#"
-        out.append(c)
-        i += 1
-    return "".join(out)
-
-
 # ------------------------------------------------------------------ the grammar
-def join_continuations(cmd):
-    """cmd with each \\-newline removed where the shell removes it (bash and zsh agree,
-    measured): outside single quotes, inside double quotes too, so a continuation glued
-    between two words joins them (y\\<newline>z is the word yz). It stays inside '...' and
-    $'...', and after an escaped backslash (\\\\<newline>: that newline ends the command). In
-    a comment it is no continuation: the newline still ends the comment, so the comment's
-    backslashes go (the shell ignores them; for shlex one would escape the newline)."""
-    out, i, n, mode = [], 0, len(cmd), None            # mode: None, ', ", $' or #
-    while i < n:
-        c, nxt = cmd[i], cmd[i + 1:i + 2]
-        if mode == "'":
-            mode = None if c == "'" else mode
-        elif mode == "$'":
-            if c == "\\" and nxt:
-                out.append(c + nxt)                    # \' does not close $'...'
-                i += 2
-                continue
-            mode = None if c == "'" else mode
-        elif mode == "#":
-            if c == "\\":
-                i += 1
-                continue
-            mode = None if c == "\n" else mode
-        elif c == "\\":
-            if nxt == "\n":
-                i += 2                                 # a continuation: both go
-                continue
-            if nxt:
-                out.append(c + nxt)                    # an escaped character, \\ included
-                i += 2
-                continue
-        elif mode == '"':
-            mode = None if c == '"' else mode
-        elif c in "'\"":
-            mode = c
-        elif c == "$" and nxt == "'":
-            out.append("$'")
-            i += 2
-            mode = "$'"
-            continue
-        elif c == "#" and (not out or out[-1][-1] in " \t\n" + PUNCT):
-            mode = "#"                                 # a comment starts a word
-        out.append(c)
-        i += 1
-    return "".join(out)
-
-
 def tokenize(cmd):
-    """Shell words and operator tokens, the line continuations joined as the shell joins them
-    (join_continuations). Raises ValueError on unbalanced quotes."""
-    lx = shlex.shlex(join_continuations(cmd), posix=True, punctuation_chars=PUNCT)
-    lx.whitespace = BLANKS           # a newline separates commands; it is not a blank
+    """Shell words and operator tokens. Raises ValueError on unbalanced quotes."""
+    lx = shlex.shlex(cmd.replace("\\\n", " "), posix=True, punctuation_chars=PUNCT)
+    lx.whitespace = " \t\r"          # a newline separates commands; it is not a blank
     lx.whitespace_split = True
     lx.commenters = ""
     return list(lx)
@@ -646,14 +228,10 @@ def dynamic(word, dollar=True, star=True):
     brace list, a glob)? The guard reads the literal text, so such a word may run as
     another command or name another ref. dollar=False lets a $ through: the value of -C is
     expanded by this guard itself, and one it cannot expand fails the repository lookup.
-    A word holding a blank or a newline was quoted, so its braces and globs are taken as
-    literal: only those characters, since the shell splits on nothing else (a carriage
-    return, vertical tab or no-break space can stand unquoted in a word). That reading is
-    not proof (a quoted blank leaves [- ] a glob), so a mirrored dry run checks its words
-    without it (evaluate)."""
+    A word holding whitespace was quoted, so its braces and globs stay literal."""
     if "`" in word or (dollar and "$" in word):
         return True
-    if any(c in BLANKS + "\n" for c in word):
+    if any(c.isspace() for c in word):
         return False
     return any(c in word for c in ("{}?[*" if star else "{}?["))
 
@@ -676,12 +254,9 @@ def parse_plain(tokens, cwd):
     while i < n and ASSIGN_RE.match(t[i]):
         assigns.append(t[i].split("=", 1)[0])
         i += 1
-    wrapper = None
     if i < n and t[i] in ("command", "sudo"):
-        wrapper = t[i]
         i += 1
     elif i < n and t[i] == "env":
-        wrapper = t[i]
         i += 1
         while i < n and ASSIGN_RE.match(t[i]):
             assigns.append(t[i].split("=", 1)[0])
@@ -689,7 +264,7 @@ def parse_plain(tokens, cwd):
     if i >= n or os.path.basename(t[i]) != "git":
         return None
     i += 1
-    repo_opts, config_opts, unknown, global_opts = [], [], [], []
+    repo_opts, config_opts, unknown = [], [], []
     while i < n and t[i].startswith("-") and not is_operator(t[i]):
         w = t[i]
         name = w.split("=", 1)[0]
@@ -708,10 +283,8 @@ def parse_plain(tokens, cwd):
                 return None
             if w not in GIT_FLAGS and not w.startswith("--exec-path"):
                 unknown.append(w)
-            global_opts.append(w)
             i += 1
             continue
-        global_opts.extend(opt)
         if name in GIT_CONFIG_OPTS:
             config_opts.extend(opt)
         else:
@@ -739,8 +312,7 @@ def parse_plain(tokens, cwd):
     if i != n:
         return None
     return {"cwd": cwd, "cd_used": cd_used, "assigns": assigns, "repo_opts": repo_opts,
-            "config_opts": config_opts, "unknown": unknown, "sub": sub, "args": args,
-            "global_opts": global_opts, "wrapper": wrapper}
+            "config_opts": config_opts, "unknown": unknown, "sub": sub, "args": args}
 
 
 # ------------------------------------------------------------------ git queries
@@ -1134,24 +706,17 @@ def canonical(cmd):
     """Is the raw command canonical text (CANONICAL, and no argument starting with =)? First
     at most one trailing newline is removed, then leading and trailing spaces: any other
     newline, a tab or a carriage return anywhere, a quote, an escape or any other character
-    makes the text not canonical."""
+    makes the text not canonical. The text starts with git push itself, so canonical text has
+    no cd prefix, assignment, wrapper or global option (-C included: the classifier rule
+    names only the plain form), and no alias."""
     text = cmd[:-1] if cmd.endswith("\n") else cmd
     m = CANONICAL.fullmatch(text.strip(" "))
     return bool(m) and not any(w.startswith("=") for w in m.group(1).split(" "))
 
 
-def is_bare(s, text):
-    """Is this plain command git push ..., with nothing else that could change what runs: no
-    cd prefix, no variable assignment (GIT_EXEC_PATH is --exec-path's environment form), no
-    wrapper, no global option (-C included: no delete allow rule has one), and written in
-    canonical text (text is canonical(cmd))?"""
-    return text and not (s["cd_used"] or s["assigns"] or s["wrapper"] or s["global_opts"])
-
-
-def judge(s, session, mirrored=False, text=False):
+def judge(s, session, text=False):
     """None to allow, a reason to ask; raises Deny. s is a plain command from parse_plain;
-    session is the hook payload's cwd. mirrored: its text matched a delete allow rule, and its
-    subcommand is the literal push. text: the raw command is canonical text."""
+    session is the hook payload's cwd. text: the raw command is canonical text."""
     sub, args = s["sub"], s["args"]
     if sub != "push" and sub not in GIT_BUILTINS:
         if s["unknown"] or [a for a in s["assigns"] if GIT_ENV_UNSUPPORTED.match(a)]:
@@ -1180,7 +745,7 @@ def judge(s, session, mirrored=False, text=False):
         raise Deny("Push guard: the current-branch substitution runs where the shell is, not "
                    "in the repository -C or cd selects. Name the branch literally.")
     return evaluate(s["cwd"], s["assigns"], s["repo_opts"], s["config_opts"], args, session,
-                    {"bare": is_bare(s, text)} if mirrored else None)
+                    text)
 
 
 def push_option(value, where=""):
@@ -1202,7 +767,7 @@ def parse_push(args):
     for a in args:
         if a not in CURRENT_BRANCH and dynamic(a, star=False):
             raise Deny(UNSUPPORTED.format(
-                "the push word " + a + ", which the shell may expand before git sees it"))
+                "the push word " + a + ", which the shell expands before git sees it"))
     flags, positional, i, n = set(), [], 0, len(args)
     while i < n:
         a = args[i]
@@ -1338,12 +903,6 @@ def shell_word(word):
     return "'" + word + "'" if quoted == word and word.startswith("=") else quoted
 
 
-def plain_push(args):
-    """The push as the bare command git push <args>, each word quoted for the shell but a
-    current-branch substitution, which must stay one."""
-    return " ".join(["git", "push"] + [a if a in CURRENT_BRANCH else shell_word(a) for a in args])
-
-
 def merged_delete(repo, remote, default, names, leases, root, session, plain=False):
     """Whether a delete-only push of the branches in names goes without an ask: True when
     every one is merged and pinned; a deny reason naming the pinned command when every one
@@ -1352,8 +911,8 @@ def merged_delete(repo, remote, default, names, leases, root, session, plain=Fal
     Repo.run raises it as a Deny, which here would turn today's ask into a deny. root is the
     toplevel the push runs in and session the payload's cwd: the pinned command is the plain
     git push form, and when root is not the session's checkout the reason names root. plain:
-    the push matched a delete allow rule but was not bare, so the reason says to write the
-    delete in plain words."""
+    the push is not canonical text, so the reason says a merged delete passes only when
+    written in plain words."""
     try:
         return check_merged_delete(repo, remote, default, names, leases, root, session, plain)
     except Deny:
@@ -1443,7 +1002,7 @@ def check_merged_delete(repo, remote, default, names, leases, root, session, pla
     command = "git push {} {} --delete {}".format(
         pins, shell_word(remote), " ".join(shell_word(n) for n in names))
     merged = "Push guard: {}{} {} merged into {}, on {}".format(
-        "a delete that matches an allow rule passes only when written in " + PLAIN_WORDS + ". "
+        "a merged delete passes only when written in " + PLAIN_WORDS + ". "
         if plain else "", ", ".join(names), "is" if len(names) == 1 else "are", default, remote)
     there = other_checkout(root, session)
     if there is None and not canonical(command):
@@ -1455,7 +1014,7 @@ def check_merged_delete(repo, remote, default, names, leases, root, session, pla
     if there is None:
         return ("{} and here. Pin the delete to the tip just read, so git refuses it if the "
                 "branch has moved, and it needs no ask: {}").format(merged, command)
-    # No git -C form: no allow rule matches one, so it would go to the classifier.
+    # No git -C form: the classifier rule names only the plain form.
     return ("{} and in {}, which is not this session's checkout. Pin the delete to the tip just "
             "read, so git refuses it if the branch has moved; the delete must run from that "
             "checkout, or Michael runs it: {}").format(merged, shell_word(there), command)
@@ -1672,33 +1231,13 @@ def leak_reason(report, remote):
 
 
 # ------------------------------------------------------------------ one push
-def configured_remote(repo, remote):
-    """Refuse a push whose remote is not a remote configured in the repository (a path, a URL,
-    or none named): the guard reads only what a configured remote's config says."""
-    if remote is None or remote not in (repo.run("remote") or "").split():
-        raise Deny(UNSUPPORTED.format("a push to " + (remote or "no named remote")
-                                      + ", which is not a configured remote"))
-
-
-def toplevel(repo, cwd):
-    """The toplevel of the repository repo runs in; raises Deny when git cannot resolve it."""
-    root = repo.run("rev-parse", "--show-toplevel")
-    if not root or not root.strip():
-        raise Deny("Push guard: cannot resolve the repository this push runs in ({}). Run it "
-                   "from inside the repository, or as git -C <path> push.".format(cwd))
-    return root.strip()
-
-
-def evaluate(cwd, assigns, repo_opts, config_opts, args, session, mirror=None):
+def evaluate(cwd, assigns, repo_opts, config_opts, args, session, bare=False):
     """None to allow, a reason string to ask; raises Deny to deny. session is the hook
-    payload's cwd, for the deny reasons that print a corrected push. mirror is None, or for a
-    push whose text matched a delete allow rule: {"bare": whether it is git push ... in
-    canonical text, with nothing before git or between git and push}. Such a push is judged
-    as a dry run or a delete-only push, or it is denied, and only a bare one can pass
-    silently."""
+    payload's cwd, for the deny reasons that print a corrected push. bare: the raw command
+    is canonical text (canonical); only a bare delete-only push of merged, pinned branches
+    passes silently."""
     flags, remote_arg, refspecs = parse_push(args)
-    dry_run = "-n" in flags or "--dry-run" in flags
-    if dry_run and mirror is None:
+    if "-n" in flags or "--dry-run" in flags:
         return None                                    # never scanned, never asked
     if config_opts:
         raise Deny(UNSUPPORTED.format("a " + config_opts[0] + " option on the push invocation"))
@@ -1711,44 +1250,13 @@ def evaluate(cwd, assigns, repo_opts, config_opts, args, session, mirror=None):
     for name in assigns:
         if GIT_ENV_UNSUPPORTED.match(name):
             raise Deny(UNSUPPORTED.format(name + " set on the push invocation"))
-    repo = Repo(cwd, repo_opts)
-    if dry_run:
-        # A dry run the allow rule runs without the classifier, after the option denies
-        # above. Only the bare form passes, canonical text included, since a wrapper, an
-        # assignment, a cd prefix or a character the shell rewrites can change what runs (a
-        # dry run still reaches the remote): a glob could expand to --no-dry-run, a file of
-        # that name, and the dry run would delete for real. Canonical text already rules out
-        # every glob and brace character; a word holding one is named here so the deny says
-        # why, whether it was quoted or not. The remote must be a configured one, as for
-        # every push the guard judges further on.
-        for a in args:
-            if any(c in GLOB_CHARS for c in a):
-                raise Deny(UNSUPPORTED.format(
-                    "the push word " + a + ", which the shell may expand before git sees it"))
-        configured_remote(repo, remote_arg)
-        if mirror["bare"]:
-            return None
-        lead = ("Push guard: this dry run matches a delete allow rule, so it passes only as a "
-                "bare git push in " + PLAIN_WORDS + " (no wrapper, variable assignment, cd "
-                "prefix or git option before push)")
-        command = plain_push(args)
-        there = other_checkout(toplevel(repo, cwd), session)
-        if there is None and canonical(command):
-            raise Deny("{}: {}".format(lead, command))
-        if there is None:
-            raise Deny("{}. A word here needs quoting, which plain words cannot carry, so "
-                       "Michael runs it: {}".format(lead, command))
-        raise Deny("{}. It runs in {}, which is not this session's checkout, so it must run "
-                   "from that checkout, or Michael runs it: {}".format(
-                       lead, shell_word(there), command))
-    if mirror is not None and not (
-            ("-d" in flags or "--delete" in flags) and delete_targets(flags, refspecs) is not None):
-        # The text carries a delete form, but git would not read this as a delete-only push
-        # (an update, a mixed push, no refspec, or the form quoted inside an option value):
-        # the allow rule must not run it.
-        raise Deny(NOT_DELETE_SHAPE)
 
-    root = toplevel(repo, cwd)
+    repo = Repo(cwd, repo_opts)
+    root = repo.run("rev-parse", "--show-toplevel")
+    if not root or not root.strip():
+        raise Deny("Push guard: cannot resolve the repository this push runs in ({}). Run it "
+                   "from inside the repository, or as git -C <path> push.".format(cwd))
+    root = root.strip()
 
     push_default = repo.config("push.default")
     if push_default not in (None, "simple", "current"):
@@ -1768,7 +1276,8 @@ def evaluate(cwd, assigns, repo_opts, config_opts, args, session, mirror=None):
     if branch and repo.config("branch." + branch + ".pushRemote") is not None:
         raise Deny(UNSUPPORTED.format("branch." + branch + ".pushRemote"))
     remote = remote_arg or (branch and repo.config("branch." + branch + ".remote")) or "origin"
-    configured_remote(repo, remote)
+    if remote not in (repo.run("remote") or "").split():
+        raise Deny(UNSUPPORTED.format("a push to " + remote + ", which is not a configured remote"))
     for key in ("remote." + remote + ".push", "remote." + remote + ".mirror"):
         if repo.config(key) is not None:
             raise Deny(UNSUPPORTED.format(key))
@@ -1854,19 +1363,22 @@ def evaluate(cwd, assigns, repo_opts, config_opts, args, session, mirror=None):
     if scan_sources:
         scan(root, remote, scan_sources)
 
-    # A delete-only push of merged branches, each pinned to the tip read here, needs no ask;
-    # merged but unpinned is a silent deny naming the pinned command. delete_targets admits
-    # no flag or refspec that adds any other ask, so the asks it replaces are delete asks.
+    # A delete-only push of merged branches, each pinned to the tip read here and written
+    # bare (canonical text, nothing before git or between git and push), needs no ask; merged
+    # but unpinned, or not bare, is a silent deny naming the plain pinned command. The
+    # classifier rule trusts this pass, so the words verified must be the words the shell
+    # runs. delete_targets admits no flag or refspec that adds any other ask, so the asks it
+    # replaces are delete asks.
     targets = delete_targets(flags, refspecs)
     if asks and targets is not None and default not in targets:
-        # A mirrored push that is not bare: no lease counts, so a merged delete cannot come
-        # back True and runs nowhere unjudged; the deny names the bare pinned command instead.
-        leases = push_leases(args) if mirror is None or mirror["bare"] else []
+        # Not bare: no lease counts, so a merged delete cannot come back True; the deny names
+        # the bare pinned command instead.
+        leases = push_leases(args) if bare else []
         verdict = merged_delete(repo, remote, default, targets, leases, root, session,
-                                plain=mirror is not None and not mirror["bare"])
-        if verdict is True and (mirror is None or mirror["bare"]):
+                                plain=not bare)
+        if verdict is True:
             return None
-        if isinstance(verdict, str):
+        if verdict:
             raise Deny(verdict)
 
     if asks:
@@ -1884,32 +1396,24 @@ def main():
     if not cmd:
         return
     shape = None
-    mirrored = None                                    # unset until the search has run
     try:
         try:
             tokens = tokenize(cmd)
         except ValueError:
             tokens = None                              # unbalanced quotes: not plain
-        # First, over the whole text: a command matching a delete allow rule may run without
-        # the classifier, so it must be exactly a git push (see the header).
-        mirrored = matches_delete_rule(cmd, tokens)
         if tokens is not None:
             shape = parse_plain(tokens, cwd)
-        if mirrored and shape is None:
-            raise Deny(PLAIN)                          # not a plain command: name the form
-        if mirrored and shape["sub"] != "push":
-            raise Deny(NOT_A_DELETE_PUSH)
         if shape is None:
             if could_push(cmd, tokens, cwd):           # the raw text: a superset, never trimmed
                 raise Deny(PLAIN)
             return
-        reason = judge(shape, cwd, mirrored, canonical(cmd))
+        reason = judge(shape, cwd, canonical(cmd))
     except Deny as d:
         print(decision("deny", str(d)))
         return
     except Exception as e:                             # a bug here must not open the gate
         # A plain git command may be an alias push (git pom): it fails closed as well.
-        if shape is not None or mirrored is not False or PUSH_SHAPE.search(cmd):
+        if shape is not None or PUSH_SHAPE.search(cmd):
             print(decision("deny", "Push guard: internal error ({}: {}), so the push is "
                                    "refused. Push by hand.".format(type(e).__name__, e)))
         return
