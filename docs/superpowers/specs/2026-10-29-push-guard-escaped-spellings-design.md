@@ -43,21 +43,13 @@ A scan that tracks shell context (here-documents, comments, arithmetic, nested `
 patterns) hides a `$'` in every context it models wrongly. Round 1 found two such contexts: an
 unquoted here-document body, and `<<` inside `$(( ))`. So the guard tracks no context.
 
-**The starting text.** Each view starts from `inert_text`, applied to the command with each `$`
-directly before a quote deleted, so that shlex reads every `$'…'` as an ordinary single-quoted
-word. The bounds:
-- **No escaped quote.** This applies only when no backslash sits directly before a `'`, `\\'`
-  included. Under that condition, shlex and the shell agree on where every ANSI-C quote ends.
-  Any other command starts from its raw text.
-- **Here-documents, `$( )` and backticks** stay unsplittable and are read raw, as on main.
-- **A failed split** leaves the text raw, which can only add a deny.
-- **Escaped command words.** A command word that held an escape or an ANSI-C quote in the raw
-  command never counts as an inert tool or as git, so redaction never drops the arguments of an
-  escaped git. `$'\x72g' -e $'\x67it' $'\x70ush'` is therefore denied, a deny this rule accepts.
-- **Views only.** The redaction serves only the views. The raw-text check keeps main's own
-  `inert_text`, so `echo $'git push'` stays denied, as on main.
+Rounds 3 and 4 showed the same loop for inert redaction. Every way of redacting inside the views
+destroyed source spelling that the decoding needs: quote ends for the NUL variant, and
+backslash-newlines inside a word. So the views never redact. Instead, a view reports only
+spellings that are hidden (see "Matching a view" below).
 
-For each reading (zsh 5.9, bash 5.3, bash 3.2), a view is built from that text in three steps:
+Views start from the raw text, always. For each reading (zsh 5.9, bash 5.3, bash 3.2), a view is
+built in three steps. Each view character records the raw span it came from.
 1. Delete every backslash-newline pair.
 2. Decode every backslash escape anywhere in the text by the reading's rules. These cover
    `$'…'` bodies, here-document bodies (quoted or not), comments, arithmetic, `$( )` and
@@ -82,37 +74,55 @@ The views are whole-text variants of step 2:
 
 That gives at most 4 views per reading, and 12 in all once duplicates are removed.
 
-**When views exist.** The helper builds views only when the raw command holds a hidden-spelling
-signal:
+**When views are built.** Views are built only when the raw command holds one of these signals,
+which only saves work, since no word can be hidden without one:
 - `$'` or `$"`;
 - a backslash-newline;
 - a backslash escape sequence (`\x`, `\u`, `\U`, octal, `\c`);
-- a run of quotes and backslashes with a letter or digit on each side (`g"it"`, `p''ush`,
-  `g\it`, `gi\t`).
+- a run of quotes and backslashes with a letter or digit on each side.
 
-Without one, `could_push` is main's, plus section 2.
+**Hidden words.** A `git`, `push`, `send-pack`, `http-push` or push-alias word in a view is
+hidden when its raw span is not exactly that word. The span runs from the raw start of the word's
+first character to the raw end of its last. It also extends over any raw text that a NUL variant
+dropped directly after the word. Without that extension, zsh's `$'git\0'x -c 'x.y=a;b' push`
+would read as a literal git; it runs git push, and main is silent on it (both measured). So a
+span holding `$'`, an escape, a quote, a backslash, a backslash-newline or a NUL cut is hidden.
+`"git"` and `$'git'` are not.
 
-**Matching a view.** The match on a view ignores separators. It needs the word `git` and,
-anywhere later in the same view, the word `push`, `send-pack` or `http-push`, or a push alias
-name. Anything may sit between them, newlines included. A view never uses `PUSH_SHAPE`, because
-that pattern stops at `;`, `&`, `|` and newline, which are exactly the separators that
-normalization pulls out of quoted values. Round 2 caught this with
-`$'\x67it' -c 'x.y=a;b' $'\x70ush' origin main`, which runs git push.
+**Matching a view.** A view denies only when all three hold:
+- it has a `git` word;
+- anywhere later in the same view, it has a push word (`push`, `send-pack`, `http-push` or a
+  push alias name). Anything may sit between the two, newlines and separators included;
+- at least one word of that pair is hidden.
 
-This over-approximation has no parse to get wrong, and its cost lands in the transcript metric.
-`dynamic_git_word` and section 4's check also run on each view's tokens. A view holds no quotes,
-so it always splits. The raw text keeps main's `PUSH_SHAPE` check, and the grammar stays main's.
+A view never uses `PUSH_SHAPE`, because that pattern stops at `;`, `&`, `|` and newline, which
+are exactly the separators that normalization pulls out of quoted values. Round 2 caught this
+with `$'\x67it' -c 'x.y=a;b' $'\x70ush' origin main`, which runs git push.
 
-Decoding where the shell would not only adds denies. Examples are a quoted here-document body
-and a single-quoted `printf '\x67it'`. That is the accepted price of a construction with no
-context to get wrong. Inert redaction still applies:
-- `printf '\x67it \x70ush'` alone stays silent, but piped into `sh` it is denied, because a
-  pipeline into a shell is never redacted;
-- `echo $'\x67it push'` and `rg "git|push" $'\t'` stay silent, because their views are
-  redacted to `echo` and `rg`.
+`dynamic_git_word` and section 4's check also run on each view's tokens, but they count only when
+the git word, the built command word or the push word involved is hidden.
 
-One deny is accepted by design: a quoted here-document body that spells a push, such as
-`cat <<'EOF'` with `$( $'\x67it' $'\x70ush' … )` in its body.
+When both words are literal, the views stay out, and main's raw checks decide exactly as on main.
+So nothing is looser than main, and the views add denies only on hidden spellings. The grammar is
+main's.
+
+**Accepted by design.** Decoding where the shell would not only adds denies. Three classes of
+command never push and are denied by design:
+- a quoted here-document body that spells a push, such as `cat <<'EOF'` with
+  `$( $'\x67it' $'\x70ush' … )` in its body;
+- hidden spellings in arguments that never run, such as `echo $'\x67it push'` and
+  `printf '\x67it \x70ush'`. Main already denies `echo $'git push'`;
+- a hidden push word paired across a separator with a literal git, such as
+  `git status; echo $'\x70ush'`. Main is silent on it, and it runs no push (both measured).
+
+These stay silent, because both words are literal:
+- `rg "git|push" $'\t'`;
+- a commit whose message comes from a quoted here-document,
+  `git commit -m "$(cat <<'EOF'`⏎`… Don't push this yet. …`⏎`EOF`⏎`)"`.
+
+Under round 4's text, that commit was denied: its apostrophe built views, the here-document kept
+the text raw, and the literal git paired with the push in the message. Main is silent on it
+(measured).
 
 The cost is measured by the transcript part of the differential under Tests. It counts new
 denies on real commands by class, and it must show 0 on real commands that never push. A real
@@ -261,19 +271,30 @@ The header also records the residual:
   - `g\`⏎`it pu\`⏎`sh origin main`, `git pu\`⏎`sh origin main` and
     `git pu\`⏎`sh --force origin main` are denied;
   - `git push \`⏎`origin feature` keeps main's verdict.
-- `printf '\x67it \x70ush origin main' | sh` is denied. `printf '\x67it \x70ush'` alone stays
-  silent.
+- Round 4's case, `echo hi; $'gi\0x't $'pu\0x'sh origin main`, is denied. It runs git push under
+  bash (measured).
+- Its continuation sibling, `echo hi; g\`⏎`it pu\`⏎`sh origin main`, is denied. It runs git
+  push under all three shells (measured).
+- A NUL cut after a literal-looking git, `$'git\0'x -c 'x.y=a;b' push origin main`, is denied.
+- `push''y; git''x; $'\x67it' $'\x70ush' origin main` is denied. It pins that hidden-ness belongs
+  to the matched words' positions, not to a count of hidden spans in the command. It runs git
+  push under all three shells (measured).
+- `printf '\x67it \x70ush origin main' | sh` is denied.
+- Denied by design:
+  - `printf '\x67it \x70ush'` alone;
+  - `echo $'\x67it push'`;
+  - `git status; echo $'\x70ush'`;
+  - the quoted here-document body from round 1.
 - These stay silent:
-  - `IFS=$'\n'; echo hi`, `printf $'a\tb'`, `read -r -d $'\0' x`;
-  - `sed -e 's/git|push/x/' f`, `rg "git|push" $'\t'`;
-  - `$HOME/bin/helm push x`, `$PYTHON scripts/push.py`;
+  - `IFS=$'\n'; echo hi`, `printf $'a\tb'` and `read -r -d $'\0' x`;
+  - `sed -e 's/git|push/x/' f` and `rg "git|push" $'\t'`;
+  - `$HOME/bin/helm push x` and `$PYTHON scripts/push.py`;
   - `cat <<EOF`⏎`it's $'\x67it'`⏎`EOF`;
-  - `git status && ./scripts/push.sh`, which holds no hidden-spelling signal, so no view is
-    built.
-- `echo $'\x67it push'` stays silent, because its view is redacted, and `echo $'git push'` stays
-  denied by main's raw-text check.
-- `$'\x72g' -e $'\x67it' $'\x70ush'` is denied, which pins that an escaped command word is never
-  inert.
+  - `git status && ./scripts/push.sh`;
+  - the quoted-here-document commit from section 1, with an apostrophe and `push` in its
+    message;
+  - `git commit -m "fix\npush docs"`, a message holding `\n` inside a word.
+- `echo $'git push'` stays denied by main's raw-text check.
 - `git pu"sh" origin main` and `git pu"sh" --force origin main` get the PLAIN deny, not an ask.
   `git pu"sh" origin feature` stays silent.
 
