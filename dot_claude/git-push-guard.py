@@ -94,10 +94,11 @@ BLANKS = " \t"
 # The characters that make a word a glob or a brace list. A mirrored dry run may hold none.
 GLOB_CHARS = "*?[{}"
 # Canonical text (spec 2026-10-28, section 2, Bare), the only text a bare mirrored command may
-# have: the raw command, its leading and trailing spaces and newlines stripped, is git push and
-# its arguments separated by single spaces, then at most one trailer (2>&1, a tail or head
-# with -n N, or both). Every argument is one plain word, none starting with = (zsh's EQUALS
-# expansion). An allowlist of the shell surface, not a denylist: bash and zsh hand git
+# have: the raw command, with at most one trailing newline removed and then its leading and
+# trailing spaces stripped (canonical), is git push and its arguments separated by single
+# spaces, then at most one trailer (2>&1, a tail or head with -n N, or both). Every argument
+# is one plain word, none starting with = (zsh's EQUALS expansion). An allowlist of the
+# shell surface, not a denylist: bash and zsh hand git
 # exactly these words (differential check recorded in tests/git-forge-guard.test.sh).
 PLAIN_WORD = "[A-Za-z0-9._/:=@+,%-]+"
 CANONICAL = re.compile("git push((?: " + PLAIN_WORD + ")*)(?: 2>&1)?(?: \\| (?:tail|head) -n [0-9]+)?")
@@ -260,22 +261,21 @@ def readings(text, tokens):
 
 
 def matches_delete_rule(cmd, tokens):
-    """Does the command text match one of the delete allow rules? A search over the whole
-    text, so a superset of Claude Code's match, which runs per subcommand after stripping
-    wrappers and shell-unquoting the first word (single and double quotes and backslashes:
-    g\\it and "gi"t are git there). It searches every reading (readings) of the command as
-    written, and of the command with its ANSI-C $'...' words decoded ($'\\x67it' is git to
-    bash and zsh), so no reading of the text can match unseen. The quote-stripped readings
-    show a match when the rest of the command does not tokenize. The rules hold no quotes or
-    backslashes and the written readings are always searched, so each reading only adds
-    matches. No reading drops the leading git: that would mirror every git -C delete, which
-    no rule matches."""
+    """Does the command text match one of the delete allow rules? The search is a superset of
+    Claude Code's match (spec 2026-10-28, section 2), which runs per subcommand after stripping
+    wrappers, safe assignments and comment lines and shell-unquoting the first word (single
+    and double quotes and backslashes: g\\it and "gi"t are git there). It searches every
+    reading (readings) of the command as written, and of the command with its ANSI-C $'...'
+    words decoded as bash and as zsh decode them ($'\\x67it' is git to both). The
+    quote-stripped readings show a match when the rest of the command does not tokenize. The
+    rules hold no quotes or backslashes and the written readings are always searched, so each
+    reading only adds matches. No reading drops the leading git: that would mirror every
+    git -C delete, which no rule matches. The decoding is the second layer (evidence c):
+    Claude Code returns ask for a command too complex to read as simple commands, one whose
+    first word is $'...' among them, before any rule matching, so a shell context the decoder
+    misreads (_decode_spans) cannot reach A1."""
     texts = readings(cmd, tokens)
-    try:
-        decoded_cmds = [decode_ansi_c(cmd), decode_ansi_c_zsh(cmd)]
-    except CutOverSubstitution:
-        return True                                    # a NUL cut would skip a substitution
-    for decoded in decoded_cmds:
+    for decoded in (decode_ansi_c(cmd), decode_ansi_c_zsh(cmd)):
         if decoded != cmd:
             try:
                 texts += readings(decoded, tokenize(decoded))
@@ -402,20 +402,47 @@ def ansi_c_zsh(body):
     return "".join(out)
 
 
-class CutOverSubstitution(Exception):
-    """A zsh NUL word-cut would skip a $(...), ${...} or backtick in the rest of the word.
-    Its expansion cannot be modelled, so matches_delete_rule treats the command as a match
-    and it is denied, never passed silently."""
-
-
 WORD_END = BLANKS + "\n;&|()<>"
+
+
+def skip_substitution(cmd, i):
+    """From i at a $(, ${ or backtick, the index just past its matching close, tracking
+    quotes, escapes and nesting (the end of the command if it never closes). Used to find
+    where a word holding the substitution ends; its output is not modelled."""
+    n = len(cmd)
+    if cmd[i] == "`":
+        j = i + 1
+        while j < n and cmd[j] != "`":
+            j += 2 if cmd[j] == "\\" and j + 1 < n else 1
+        return min(j + 1, n)
+    opening, closing = ("(", ")") if cmd[i + 1] == "(" else ("{", "}")
+    depth, j, mode = 1, i + 2, None                    # mode: None, ' or "
+    while j < n and depth:
+        c, nxt = cmd[j], cmd[j + 1:j + 2]
+        if mode == "'":
+            mode = None if c == "'" else mode
+            j += 1
+        elif c == "\\" and nxt:
+            j += 2
+        elif mode == '"':
+            mode = None if c == '"' else mode
+            j += 1
+        elif c in "'\"":
+            mode, j = c, j + 1
+        else:
+            depth += 1 if c == opening else -1 if c == closing else 0
+            j += 1
+    return j
 
 
 def skip_zsh_word(cmd, i):
     """From i (just past a $'...' span whose text held a NUL), the index of the end of the
     source word as the shell groups it, tracking quotes: the next unquoted blank, newline or
-    operator. zsh cuts the word at the NUL, so this tail is dropped. A $(...), ${...} or
-    backtick in it cannot be modelled: raise CutOverSubstitution."""
+    operator. zsh cuts the word at the NUL, so this tail is dropped, whatever it holds: a
+    $(...), ${...} or backtick in it is skipped whole (skip_substitution), so a blank inside
+    it does not end the word. Its output is not modelled and needs not be: Claude Code
+    matches rules on the visible text, which the written readings carry, never on what a
+    substitution prints. An array in a cut tail is a known misread (_decode_spans)."""
     n, mode = len(cmd), None                           # mode: None, ', ", $'
     while i < n:
         c, nxt = cmd[i], cmd[i + 1:i + 2]
@@ -429,8 +456,8 @@ def skip_zsh_word(cmd, i):
         elif mode == '"':
             if c == "\\" and nxt:
                 i += 2
-            elif (c == "$" and nxt == "(") or c == "`":
-                raise CutOverSubstitution
+            elif (c == "$" and nxt in "({") or c == "`":
+                i = skip_substitution(cmd, i)
             else:
                 mode = None if c == '"' else mode
                 i += 1
@@ -441,7 +468,7 @@ def skip_zsh_word(cmd, i):
         elif c == "$" and nxt == "'":
             mode, i = "$'", i + 2
         elif (c == "$" and nxt in "({") or c == "`":
-            raise CutOverSubstitution
+            i = skip_substitution(cmd, i)
         elif c in "'\"":
             mode, i = c, i + 1
         else:
@@ -450,10 +477,14 @@ def skip_zsh_word(cmd, i):
 
 
 def _decode_spans(cmd, span):
-    """cmd with each $'...' the shell decodes replaced by span(body), and each $"..." read as
-    "...". The shell decodes them only outside quotes and comments and not after a backslash:
-    a $' inside '...' or "..." is literal, and inside $'...' an escaped \\' does not close it.
-    span returns the replacement text."""
+    """cmd with each $'...' the decoder finds replaced by span(body), and each $"..." read as
+    "...". It models shell contexts only as far as the guard suite pins them: a $' inside
+    '...', "..." or a comment, or after a backslash, is literal, and inside $'...' an escaped
+    \\' does not close it. Known misread contexts, none of which can reach A1, because Claude
+    Code returns ask for such a too-complex command first (spec, evidence c): a # after an
+    escaped blank or an operator, or inside backticks; $'...' inside "$(...)", inside
+    backticks, or after a heredoc; $$' in bash; a \\-newline between $ and the quote; an
+    array in a zsh cut tail. span returns the replacement text."""
     out, i, n, mode = [], 0, len(cmd), None            # mode: None, ', " or #
     while i < n:
         c, nxt = cmd[i], cmd[i + 1:i + 2]
@@ -501,8 +532,8 @@ def decode_ansi_c_zsh(cmd):
     one word, as the bash reading does, so a decoded blank or quote cannot split or unbalance
     the reading. When the text holds a NUL, zsh cuts the whole word there: the text before the
     NUL is emitted (quoted) and the rest of the source word — the span's tail and everything
-    to the next unquoted blank, newline or operator — is dropped (skip_zsh_word). A dropped
-    tail with a substitution raises CutOverSubstitution. $"..." reads as "..."."""
+    to the next unquoted blank, newline or operator — is dropped (skip_zsh_word), a
+    substitution in it included. $"..." reads as "...". Contexts as in _decode_spans."""
     out, i, n, mode = [], 0, len(cmd), None            # mode: None, ', " or #
     while i < n:
         c, nxt = cmd[i], cmd[i + 1:i + 2]

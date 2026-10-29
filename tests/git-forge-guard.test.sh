@@ -44,26 +44,38 @@
 # The mirror search decodes each ANSI-C $'...' word two ways: as bash does (ansi_c; a NUL ends
 # the span, bash keeps the rest of the word after it) and as zsh does (ansi_c_zsh; a NUL cuts
 # the whole SOURCE word: the span's tail and everything to the next unquoted blank, newline or
-# operator, quotes tracked; a cut tail holding $(...), ${...} or a backtick is denied, not
-# modelled). Both readings quote each span back as one word. Two differentials ran on
-# 2026-10-28/29 (not part of this suite), over four shells (bash 3.2, bash 5.3, zsh -f, zsh with
-# the snapshot options) and two locales (en_US.UTF-8, the Bash tool's, and C):
-# - Word level: the grammar enumerated (\ before every printable ASCII character; \x \u \U with
-#   0 to the maximum hex digits, out of range, surrogate and non-UTF-8 values; octal 1 to 4
-#   digits; \c before every printable; \0 and early NULs; a span beside plain and quoted text;
-#   $"..."). Each shell's word equalled the decoded word that models it, except 832 holding a
-#   non-ASCII byte and 112 holding another non-rule character, none lacking an ASCII rule-run
-#   (git, push, origin, --delete, -d, --force-with-lease=, a blank) that the guard's word has.
-# - Whole command: 252 commands, a NUL- or empty-producing span (no-digit \x \u \U, \0, an
+# operator, quotes tracked). A cut tail is dropped whatever it holds; a $(...), ${...} or
+# backtick in it is skipped whole and its output is not modelled, since Claude Code matches
+# the visible text, which the written readings carry. Both readings quote each span back as
+# one word. The decoding is the second layer: Claude Code declines a too-complex command, such
+# as one whose first word is $'...', before matching any rule (spec, evidence c). Two
+# differentials ran on 2026-10-28/29 (not part of this suite), over four shells (bash 3.2,
+# bash 5.3, zsh -f, zsh with the snapshot options) and two locales (en_US.UTF-8, the Bash
+# tool's, and C):
+# - Word level: 643 span inputs (\ before every printable ASCII character; \x \u \U with 0 to
+#   the maximum hex digits, out of range, surrogate and non-UTF-8 values; octal 1 to 4 digits;
+#   \c \C \C- \M \M- before every printable; \0 and early NULs) were COMPARED in each shell and
+#   locale: bash 3.2 597 equal / 46 accepted; bash 5.3 611/32 (C), 631/12 (UTF-8); zsh 413/199
+#   (C), 433/210 (UTF-8), both zsh setups alike. zsh under C refuses a non-ASCII \u or \U
+#   ("character not in range") and runs nothing. 1287 more inputs (a span glued to plain text,
+#   beside quoted text, and $"...") were only RUN, not compared; the whole-command check
+#   compares glued and quoted shapes. Accepted: 840 where the shell's word holds a non-ASCII
+#   byte, 114 where it holds another non-rule character; in none does the shell's word hold an
+#   ASCII rule-run (git, push, origin, --delete, -d, --force-with-lease=, a blank) that the
+#   guard's word lacks.
+# - Whole command: 360 commands, a NUL- or empty-producing span (no-digit \x \u \U, \0, an
 #   incomplete \C \M, and spans holding a blank, a quote or further escapes) in the first,
 #   second or a later word, followed by plain text, double- and single-quoted text with blanks,
-#   another span, an escaped blank, or the end. Each shell's argv, joined by single spaces,
-#   appeared among matches_delete_rule's readings, except 84 (zsh only, from $'c\M- z'): zsh
-#   writes meta-space as a raw 0xA0 byte, the guard as U+00A0, one non-ASCII byte encoded two
-#   ways, with every ASCII rule-run present. Operator tails (; | && >) are not run in a live
-#   shell; the zsh reading kept the operator as the word's end in all 96 checked.
+#   another span, an escaped blank, a substitution ($(echo s), "$(echo s t)", a backtick), or
+#   the end. Each shell's argv, joined by single spaces, appeared among matches_delete_rule's
+#   readings, except two accepted classes: 120 (zsh, from $'c\M- z'), where zsh writes
+#   meta-space as a raw 0xA0 byte and the guard as U+00A0, every ASCII rule-run present; and
+#   468 where the line differs only by a substitution's output, and appears among the readings
+#   of the same command with the substitution replaced by that output. Operator tails
+#   (; | && >) are not run live; the zsh reading kept the operator as the word's end in all 96.
 # 0 unaccepted mismatches in either. Accepted classes: a non-ASCII byte or a non-rule character
-# in the shell's word, which A1 and A2 (ASCII rule text) cannot contain. Key differences the
+# in the shell's word, which A1 and A2 (ASCII rule text) cannot contain; and substitution
+# output, which the guard does not model and Claude Code does not match. Key differences the
 # readings cover: zsh drops an unknown escape's backslash (bash keeps it); zsh reads \c as a
 # literal c, bash as a control byte; zsh reads a no-digit \x \u \U and \0 as a NUL that cuts the
 # word, but an incomplete \C or \M at the span's end as empty (the word goes on); bash 5.3 drops
@@ -1145,9 +1157,19 @@ has_reason   "M36 and the reason is the plain-command one" "$PLAIN_REASON" "$DEL
 M37="\$'\\x67it\\x'' x' push --force-with-lease=done:$DONE origin --delete done"
 expect deny  "M37 mirror: single-quoted text after the span is cut too" "$DEL" "$M37"
 has_reason   "M37 and the reason is the plain-command one" "$PLAIN_REASON" "$DEL" "$M37"
-# A substitution in the dropped tail cannot be modelled, so the command is denied outright.
+# A substitution in the dropped tail is dropped like any other tail, skipped whole, so the
+# blank inside $(echo y) does not end the word. Its output is not modelled: Claude Code
+# matches the visible text, which the written readings carry. M38's rule words are visible
+# (git from the span, push ... --delete done after it), so the cut reading still denies it.
 M38="\$'\\x67it\\x'\$(echo y) push --force-with-lease=done:$DONE origin --delete done"
-expect deny  "M38 mirror: a substitution in the cut tail is denied"   "$DEL" "$M38"
+expect deny  "M38 mirror: a substitution in the cut tail is dropped, the rest still denies" "$DEL" "$M38"
+has_reason   "M38 and the reason is the plain-command one" "$PLAIN_REASON" "$DEL" "$M38"
+M40="git push --force-with-lease=done:$DONE origin --delete done \$'\\x'\$(echo y)"
+expect deny  "M40 mirror: visible rule text, a substitution in a cut tail" "$DEL" "$M40"
+has_reason   "M40 and the reason is the plain-command one" "$PLAIN_REASON" "$DEL" "$M40"
+# A NUL cut over a substitution is no match by itself: these mention no push.
+expect allow "M41 a NUL cut over \$(date) is not a push"               "$DEL" "echo \$'\\x'\$(date +%s)"
+expect allow "M42 a NUL cut over a quoted \$(echo) is not a push"      "$DEL" "printf '%s' \$'\\0'\"\$(echo hi)\""
 # The shell removes a \-newline outside single quotes, so one glued between two words joins
 # them: y\<newline>z is yz, as bash runs it, not y and z. y and z are merged; yz is not. A
 # backslash escaped before a newline is no continuation: the newline ends the command.

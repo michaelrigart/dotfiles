@@ -75,8 +75,11 @@ printf '%s' "$input" | jq \
           "Bash(glab ci list *)",     "Bash(glab ci get *)",
           "Bash(glab mr view *)",     "Bash(glab issue view *)",
           "Bash(glab auth status)",
-          "Bash(chezmoi diff)",       "Bash(chezmoi diff *)",
-          "Bash(chezmoi status)",     "Bash(chezmoi status *)",
+          # Exact commands only: --config, --source and --destination let a configured diff
+          # command or the output call of a template run arbitrary code, and with auto-allow
+          # off an allow rule skips the classifier. Any argument goes to the classifier.
+          "Bash(chezmoi diff)",
+          "Bash(chezmoi status)",
           # sdd-clean deletes only a git-ignored .superpowers/sdd/<plan> workspace and
           # refuses anything else, so cleaning up a finished plan needs no prompt.
           "Bash(sdd-clean *)",
@@ -319,7 +322,11 @@ printf '%s' "$input" | jq \
       },
       "sandbox": {
         "enabled": true,
-        "autoAllowBashIfSandboxed": true,
+        # Off since 2026-10-29, as Michael decided. While it was on, a sandboxed command
+        # skipped the allow rules and auto mode sent it to the classifier, so the allow rules
+        # did nothing for anything sandboxed. Spec 2026-10-28-reload-functions-merged-deletes,
+        # section 2, evidence (b), records the measurement and the costs of turning it off.
+        "autoAllowBashIfSandboxed": false,
         "allowUnsandboxedCommands": true,
         "credentials": {
           "files": [
@@ -413,12 +420,14 @@ printf '%s' "$input" | jq \
               + ["~/Library/Mobile Documents/iCloud~md~obsidian/Documents/*/.obsidian",
                  "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/*/.obsidian/**"])
         },
-        # strictAllowlist is what makes this list DO anything: without it non-listed
-        # hosts are merely prompted, and autoAllowBashIfSandboxed suppresses that prompt
-        # too, so the allowlist was decorative until 2026-08-24 (verified: sandboxed
-        # `curl https://example.com` returned 200). It was reportedly enabled once before
-        # and lost, because this block is owned declaratively and anything set at runtime
-        # but not named here is erased on the next apply. Hence the test assertion.
+        # strictAllowlist is what makes this list DO anything. Now: auto-allow is off, and
+        # strictAllowlist denies an unlisted host with no prompt (read in Claude Code 2.1.312;
+        # nothing measured contradicts it). History: until 2026-08-24 strictAllowlist was off,
+        # a non-listed host was merely prompted, and the auto-allow then on suppressed that
+        # prompt, so the allowlist was decorative (verified then: sandboxed
+        # `curl https://example.com` returned 200). It was reportedly enabled once before and
+        # lost, because this block is owned declaratively and anything set at runtime but not
+        # named here is erased on the next apply. Hence the test assertion.
         # Adding a host is cheap; the list below is what the toolchain here needs.
         "network": {
           "allowUnixSockets": [$agent_socket],

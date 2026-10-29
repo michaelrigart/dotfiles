@@ -126,6 +126,13 @@ jq_is '.permissions.allow | index("Bash(glab api *)")' null \
 # git-ignored .superpowers/sdd/<plan> workspace (tests/sdd-clean.test.sh pins that).
 jq_is '.permissions.allow | index("Bash(sdd-clean *)") != null' true \
       "sdd-clean is allowlisted, so a finished plan's cleanup needs no prompt"
+# chezmoi diff and status, exact only: --config, --source and --destination let a configured
+# diff command or a template output call run arbitrary code, and with auto-allow off an
+# allow rule skips the classifier (spec 2026-10-28-reload-functions-merged-deletes, section 2).
+jq_is '[.permissions.allow | index("Bash(chezmoi diff)"), index("Bash(chezmoi status)")] | all(. != null)' true \
+      "the exact chezmoi diff and chezmoi status rules are allowlisted"
+jq_is '[.permissions.allow[] | select(test("^Bash\\(chezmoi (diff|status)")) | select(contains("*"))] | length' 0 \
+      "no chezmoi diff or chezmoi status rule has a *"
 # Merged-branch deletes (spec 2026-10-28-reload-functions-merged-deletes, section 2): the
 # two push rules are mirrored by DELETE_ALLOW_RULES in git-push-guard.py, which denies
 # anything they match that is not a real delete-only push. No git -C rule (Michael's
@@ -473,8 +480,10 @@ jq_is ".sandbox.network.allowedDomains == $EXP_DOMAINS" true \
 jq_is '[.sandbox.network.allowedDomains[] | select(test("^\\*") or . == "*")] | length' 0 \
       "no wildcard domain widens the allowlist"
 # strictAllowlist ON since 2026-08-24, after the question was finally settled by measurement.
-# The 2026-08-03 note kept it off to "be prompted rather than blocked". There is no prompt:
-# autoAllowBashIfSandboxed suppresses it, so sandboxed curl to a non-allowlisted host just
+# Now: auto-allow is off (2026-10-29), and strictAllowlist denies a non-allowlisted host with
+# no prompt (read in Claude Code 2.1.312; nothing measured contradicts it). History: the
+# 2026-08-03 note kept it off to "be prompted rather than blocked", but there was no prompt
+# then: the auto-allow that was on suppressed it, so sandboxed curl to a non-allowlisted host
 # returned 200. The real choice was silently-allow-anything vs block.
 #
 # It was flipped on earlier the same day and reverted because `git ls-remote` failed. That
@@ -492,6 +501,9 @@ jq_is '[.sandbox.network.allowedDomains[] | select(test("^\\*") or . == "*")] | 
 # Adding one is a two-line change here and in the modify script. Little Snitch stays the
 # second, independent gate.
 jq_is '.sandbox.network.strictAllowlist' true "strictAllowlist is on — non-allowlisted hosts are denied"
+# On, a sandboxed command skips the allow rules and goes to the classifier, so no allow rule
+# applies to it (spec 2026-10-28-reload-functions-merged-deletes, section 2, evidence b).
+jq_is '.sandbox.autoAllowBashIfSandboxed' false "sandbox auto-allow is off, so allow rules apply to sandboxed commands"
 
 echo "J. defaultMode is seeded, not enforced"
 # Runtime-mutable via /permissions, like model and effortLevel. Enforcing it would revert
@@ -628,9 +640,10 @@ jq_is '[.permissions.allow[] | select(startswith("Bash(basecamp"))
 
 echo "P. the network allowlist actually enforces"
 emit '{}'
-# Until 2026-08-24 this list was decorative: without strictAllowlist a non-listed host is
-# merely prompted, and autoAllowBashIfSandboxed suppresses the prompt, so sandboxed
-# `curl https://example.com` returned 200. It had reportedly been enabled once and was
+# Until 2026-08-24 this list was decorative: without strictAllowlist a non-listed host was
+# merely prompted, and the auto-allow then on suppressed the prompt, so sandboxed
+# `curl https://example.com` returned 200. Now strictAllowlist denies an unlisted host
+# with no prompt, and the auto-allow is off. It had reportedly been enabled once and was
 # lost, because this block is declaratively owned and runtime-set keys inside it are
 # erased on the next apply. This assertion is the thing that makes the loss loud.
 # Spot-check the hosts whose absence breaks real work, not the whole list: forge, the
