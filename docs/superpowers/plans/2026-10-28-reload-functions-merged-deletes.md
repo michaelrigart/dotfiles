@@ -12,10 +12,18 @@
 > - rule 4's silent pass requiring canonical text;
 > - the `sdd-clean` fsmonitor fix.
 >
-> The removal landed at 5663016 and the fixes after it. Also superseded: this plan's
-> Architecture line on the rules, the Global Constraints that list the five allow rules and the
-> two mirror deny reasons, and Tasks 2 and 3. Task 1 (the reload hook) and the `global.md`
-> wording were implemented as written. The tasks below are left as approved, as history.
+> The removal landed at 5663016 and the fixes after it. Also superseded:
+> - the Goal's "through the push guard instead of the auto-mode classifier": the classifier
+>   still decides, trusting the guard's verification;
+> - the Architecture line on the rules;
+> - the Global Constraints that list the five allow rules and the two mirror deny reasons;
+> - the constraint that a push matching no mirror rule keeps today's verdict exactly. Two kinds
+>   of push now get a stricter verdict: a merged, pinned delete that is not canonical, and a
+>   dry run outside canonical text. "No verdict loosens" and "nothing adds an ask" still hold;
+> - Tasks 2 and 3.
+>
+> Task 1 (the reload hook) and the `global.md` wording were implemented as written. The tasks
+> below are left as approved, as history.
 
 **Goal:** Interactive shells reload `~/.config/zsh/functions` when it changes, and agents delete merged branches through the push guard instead of the auto-mode classifier.
 

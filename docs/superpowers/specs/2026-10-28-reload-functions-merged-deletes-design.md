@@ -143,7 +143,8 @@ only when two things hold:
 
 For the second test, the guard's dry-run flag matches git's reading. That holds because main's
 `parse_push`, unchanged here, already refuses every word git could read differently:
-- every `--no-*` negation, including `--no-dry-run`, `--no-dr` and `--no-dry`;
+- the negations it does not allow, `--no-dry-run`, `--no-dr` and `--no-dry` among them. It
+  allows `--no-verify`, which leaves the dry-run flag alone;
 - every abbreviation, such as `--dr` and `--dry`;
 - `--` and `--end-of-options`;
 - a `-o` value outside the allowed ones, so `-on` is denied as a push option.
@@ -154,18 +155,26 @@ after the refspecs. It reads as a real push `-n --no-dry-run`, `-n --no-dr`, `-o
 `-o -n` and `--push-option=-n`. Every shape where the two readings could differ uses a word
 `parse_push` refuses.
 
-Any other push the guard once read as a dry run is now judged as a real push:
-- an unmerged delete asks;
+Any other push the guard once read as a dry run now gets a real push's verdict, with one
+exception: an ask becomes a silent deny. In practice:
 - a merged, pinned delete that is not canonical gets the deny naming the plain form;
-- the glob shape gets main's wildcard deny.
+- the glob shape gets main's wildcard deny;
+- the negation shapes keep main's unsupported-option deny;
+- a dry run whose real-push verdict would be an ask gets a silent deny instead. That covers an
+  unmerged delete and a default-branch push, written with a CR, a continuation, `-C`, a `cd`
+  prefix, a wrapper or an alias;
+- one whose real-push verdict is allow stays allow.
 
-The negation shapes keep main's unsupported-option deny. This change only tightens: a plain
-canonical dry run is unchanged.
+The ask-to-deny step is a controller's ruling under Michael's decision. His standing preference
+is a silent deny over a classifier verdict over an ask, and no change may add prompts. The deny
+gives a runnable way out:
+- it prints the plain canonical dry-run command where it can, meaning the push runs in the
+  session's checkout and the command needs no quoting;
+- otherwise it says to run the plain `git push … -n …` form from that repository, or to drop
+  `-n` so the push is judged as a real one.
 
-It costs prompts. A dry run written outside canonical text now gets a real push's verdict. That
-covers a dry run with `-C`, a `cd` prefix, a wrapper, an alias or a trailer such as `| tail -3`.
-For an unmerged delete or a default-branch push that verdict is an ask. Michael's decision
-covers this cost.
+A command printed for a dry run always keeps the `-n`, so a preview is never answered with the
+real delete. This change only tightens, and a plain canonical dry run is unchanged.
 
 - **Canonical text.** A controller's ruling from the final review's fix rounds: an allowlist of
   the shell surface instead of a denylist. The pass needs all of these:
@@ -197,15 +206,23 @@ covers this cost.
   - Michael's snapshot.
 
   The words covered all 72 allowlisted characters at lengths 1 and 2, the 16 that matter at
-  lengths 3 and 4, and realistic branch, lease and push-option shapes. Only three shapes changed
-  a word: a leading `=`, `==` or `:=` under MAGIC_EQUAL_SUBST, and a `NAME=` word under bash's
-  `-k`. All three are refused.
+  lengths 3 and 4, and realistic branch, lease and push-option shapes. Only these shapes changed
+  a word:
+  - a leading `=`, under EQUALS, which is on by default;
+  - `==` or `:=`, under MAGIC_EQUAL_SUBST;
+  - a `NAME=` word, under bash's `-k`.
+
+  All are refused. A second survey ran 8,910 accepted words under 1,062 further settings and
+  found no other shape. Those settings were every pair of 46 zsh options that can affect words,
+  the `emulate` modes, the tool shell's own options, bash's posix, extglob, globstar and `-k`
+  combinations, `/bin/sh` and `/bin/ksh`.
   A delete of a branch whose name needs any other character is not canonical. The guard denies
   it, and Michael runs it.
 - **Printed commands.** A controller's ruling from Michael's decision. A deny that prints a
   corrected command prints the plain `git push …` form when the push's repository is the
   session's cwd. Otherwise it says the delete must run from that checkout, or that Michael runs
-  it. A printed word that starts with `=` is quoted.
+  it. A printed word that a refused shape matches is quoted: a leading `=`, `==`, `:=`, or a
+  `NAME=` word. For a dry run, the printed command keeps the `-n`.
 
 **Where autoMode rules are read** (2.1.312, in the binary near byte 218701542):
 - Only from `userSettings`, `flagSettings` and `policySettings`.
@@ -242,6 +259,12 @@ repository with a bare origin, and the deployed (main) guard judged every push.
   - a force-with-lease update of a feature branch: accepted 3 of 3 both with and without the
     rule, so the rule does not widen to updates;
   - a plain `git fetch origin`: accepted 4 of 4.
+- **With globs added to the rule (M-4), from `TASK.md`:**
+  - The plain delete was allowed 3 of 3, and the guard-printed lease spelling 1 of 1.
+  - One of the three allowed runs used `git -C <cwd> push …`. That stretches "exactly the plain
+    form". The branch's guard denies a `-C` delete as not canonical before the classifier sees
+    it, so the stretch is contained.
+  - The glob fake dry run is recorded below.
 - **Caveat on the built-ins surviving.** It is not shown that a built-in soft block still fires
   beside the rule. Every other destructive step tried was either accepted both ways or stopped
   earlier by the guard or an ask rule. The claim rests on the `$defaults` code reading and on
@@ -363,7 +386,8 @@ for each deleted branch, as the guard's deny reason prints it.
 - Reloading aliases, config or zshenv.
 - `wt-rm` keeping branches not merged into main (the `blabla` case).
 - Harness worktree locks.
-- The push guard's other rules, and its verdicts for any push other than a delete-only one.
+- The push guard's other rules, and its verdicts for any push other than a delete-only one,
+  except dry runs (section 2, Dry runs).
 - Repository config that a sandboxed session can write outside its start directory (section 2,
   out of scope and known).
 
@@ -470,7 +494,8 @@ function named like a live alias already fails there.
 
 ## Expected effect
 
-- No prompts are added. Every delete that asked before still asks.
+- No prompts are added. Every delete that asked before still asks. A dry run outside canonical
+  text that would have asked gets a silent deny instead.
 - A pinned delete of a merged branch, in the plain form the guard prints, goes from a classifier
   denial and Michael running it by hand to running after the guard's verification.
 - A plain `git fetch origin` prunes and runs.
