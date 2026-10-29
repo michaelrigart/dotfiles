@@ -271,27 +271,40 @@ def matches_delete_rule(cmd, tokens):
     matches. No reading drops the leading git: that would mirror every git -C delete, which
     no rule matches."""
     texts = readings(cmd, tokens)
-    decoded = decode_ansi_c(cmd)
-    if decoded != cmd:
-        try:
-            texts += readings(decoded, tokenize(decoded))
-        except ValueError:
-            texts += readings(decoded, None)
+    try:
+        decoded_cmds = [decode_ansi_c(cmd), decode_ansi_c_zsh(cmd)]
+    except CutOverSubstitution:
+        return True                                    # a NUL cut would skip a substitution
+    for decoded in decoded_cmds:
+        if decoded != cmd:
+            try:
+                texts += readings(decoded, tokenize(decoded))
+            except ValueError:
+                texts += readings(decoded, None)
     return any(p.match(t) for p in DELETE_ALLOW_PATTERNS for t in texts)
 
 
-# The escapes bash decodes in $'...' by one letter (\cX, octal, \x, \u and \U in ansi_c).
+# The escapes bash and zsh both decode in $'...' by one letter (octal, \x, \u, \U below).
 ANSI_C_ESCAPES = {"a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "n": "\n",
                   "r": "\r", "t": "\t", "v": "\v", "\\": "\\", "'": "'", '"': '"', "?": "?"}
 ANSI_C_DIGITS = {"x": 2, "u": 4, "U": 8}
 
 
+def codepoint(hexdigits):
+    """The text a \\u/\\U with these hex digits decodes to: the character, or "" above
+    U+10FFFF. bash drops such a value and keeps the rest of the word ($'\\UFFFFFFFFgit' is
+    git), zsh encodes it as a 5- or 6-byte sequence; dropping it matches bash's isolation of
+    the following text, and elsewhere only makes the guard read a character more, never less."""
+    cp = int(hexdigits, 16)
+    return "" if cp > 0x10FFFF else chr(cp)
+
+
 def ansi_c(body):
     """The text bash 5 makes of one $'...' body: \\a \\b \\e \\E \\f \\n \\r \\t \\v \\\\ \\'
-    \\" \\?, \\nnn (octal), \\xHH, \\uHHHH, \\UHHHHHHHH and \\cX; any other backslash stays.
-    The text ends at a NUL, as the word does for bash and zsh alike (measured). zsh differs
-    on an unknown escape (it drops the backslash) and on \\c; the quote-stripped readings,
-    which drop every backslash, cover the first, and the second spells no letters."""
+    \\" \\?, \\nnn (octal), \\xHH, \\uHHHH, \\UHHHHHHHH and \\cX; any other backslash stays
+    (bash keeps it). The span ends at a NUL, so bash keeps the rest of the word AFTER the
+    span (decode_ansi_c puts it there); zsh instead cuts the whole word (ansi_c_zsh /
+    decode_ansi_c_zsh). This reading is bash's."""
     out, i, n = [], 0, len(body)
     while i < n:
         c, e = body[i], body[i + 1:i + 2]
@@ -308,7 +321,7 @@ def ansi_c(body):
         elif e in ANSI_C_DIGITS:
             m = re.match(r"[0-9A-Fa-f]{1,%d}" % ANSI_C_DIGITS[e], body[i + 2:])
             if m:
-                out.append(chr(min(int(m.group(), 16), 0x10FFFF)))
+                out.append(codepoint(m.group()))
                 i += 2 + len(m.group())
             else:
                 out.append(c + e)
@@ -325,11 +338,122 @@ def ansi_c(body):
     return "".join(out).split("\0", 1)[0]
 
 
-def decode_ansi_c(cmd):
-    """cmd with each $'...' the shell would decode replaced by its text (ansi_c), quoted back
-    as one shell word, and each $"..." read as "...". The shell decodes them only outside
-    quotes and comments and not after a backslash: a $' inside '...' or "..." is literal,
-    and inside $'...' an escaped \\' does not close it."""
+def zsh_ctrl_meta(body, i):
+    """Decode a zsh \\C / \\M control-or-meta escape starting at body[i] (a backslash), by what
+    was measured: any run of \\C, \\C-, \\M, \\M- modifiers, then one target character (an
+    escaped \\X counts as one). Control does & 0x1f, meta sets 0x80. An incomplete escape with
+    no target (the modifiers run to the span's end) is empty: the word goes on ($'c\\C'plain is
+    cplain), unlike a no-digit \\x, \\u or \\U, which is a NUL. Returns (text, next index). The
+    byte is control or high-bit, never an ASCII letter, so its exact value only matters to the
+    differential check, not to whether a rule matches."""
+    ctrl = meta = False
+    while i + 1 < len(body) and body[i] == "\\" and body[i + 1] in "CM":
+        ctrl = ctrl or body[i + 1] == "C"
+        meta = meta or body[i + 1] == "M"
+        i += 2
+        if i < len(body) and body[i] == "-":
+            i += 1
+    if i >= len(body):
+        return "", i                                   # \C, \C-, \M, \M- at the end: empty
+    if body[i] == "\\" and i + 1 < len(body):
+        ch, i = body[i + 1], i + 2
+    elif body[i] == "\\":
+        return "", i + 1
+    else:
+        ch, i = body[i], i + 1
+    o = ord(ch)
+    o = (o & 0x1f) if ctrl else (o & 0x7f)
+    return chr(o | 0x80) if meta else chr(o), i
+
+
+def ansi_c_zsh(body):
+    """The text zsh makes of one $'...' body (measured): the letter escapes and octal as bash,
+    \\xHH \\uHHHH \\UHHHHHHHH, the zsh-only \\C/\\M control and meta forms (zsh_ctrl_meta), and
+    any other \\X with the backslash dropped (bash keeps it; \\c is one of these in zsh). A
+    no-digit \\x, \\u or \\U is a NUL. The result may hold a NUL; the caller cuts the word
+    there."""
+    out, i, n = [], 0, len(body)
+    while i < n:
+        c, e = body[i], body[i + 1:i + 2]
+        if c != "\\" or not e:
+            out.append(c)
+            i += 1
+        elif e in ANSI_C_ESCAPES:
+            out.append(ANSI_C_ESCAPES[e])
+            i += 2
+        elif e in "01234567":
+            digits = re.match(r"[0-7]{1,3}", body[i + 1:]).group()
+            out.append(chr(int(digits, 8) & 0xFF))
+            i += 1 + len(digits)
+        elif e in ANSI_C_DIGITS:
+            m = re.match(r"[0-9A-Fa-f]{1,%d}" % ANSI_C_DIGITS[e], body[i + 2:])
+            if m:
+                out.append(codepoint(m.group()))
+                i += 2 + len(m.group())
+            else:
+                out.append("\0")                       # no-digit \x \u \U is a NUL in zsh
+                i += 2
+        elif e in "CM":
+            text, i = zsh_ctrl_meta(body, i)
+            out.append(text)
+        else:
+            out.append(e)                              # unknown escape: zsh drops the backslash
+            i += 2
+    return "".join(out)
+
+
+class CutOverSubstitution(Exception):
+    """A zsh NUL word-cut would skip a $(...), ${...} or backtick in the rest of the word.
+    Its expansion cannot be modelled, so matches_delete_rule treats the command as a match
+    and it is denied, never passed silently."""
+
+
+WORD_END = BLANKS + "\n;&|()<>"
+
+
+def skip_zsh_word(cmd, i):
+    """From i (just past a $'...' span whose text held a NUL), the index of the end of the
+    source word as the shell groups it, tracking quotes: the next unquoted blank, newline or
+    operator. zsh cuts the word at the NUL, so this tail is dropped. A $(...), ${...} or
+    backtick in it cannot be modelled: raise CutOverSubstitution."""
+    n, mode = len(cmd), None                           # mode: None, ', ", $'
+    while i < n:
+        c, nxt = cmd[i], cmd[i + 1:i + 2]
+        if mode == "'":
+            mode = None if c == "'" else mode
+            i += 1
+        elif mode == "$'":
+            i += 2 if c == "\\" and nxt else 1
+            if c == "'":
+                mode = None
+        elif mode == '"':
+            if c == "\\" and nxt:
+                i += 2
+            elif (c == "$" and nxt == "(") or c == "`":
+                raise CutOverSubstitution
+            else:
+                mode = None if c == '"' else mode
+                i += 1
+        elif c in WORD_END:
+            break
+        elif c == "\\" and nxt:
+            i += 2
+        elif c == "$" and nxt == "'":
+            mode, i = "$'", i + 2
+        elif (c == "$" and nxt in "({") or c == "`":
+            raise CutOverSubstitution
+        elif c in "'\"":
+            mode, i = c, i + 1
+        else:
+            i += 1
+    return i
+
+
+def _decode_spans(cmd, span):
+    """cmd with each $'...' the shell decodes replaced by span(body), and each $"..." read as
+    "...". The shell decodes them only outside quotes and comments and not after a backslash:
+    a $' inside '...' or "..." is literal, and inside $'...' an escaped \\' does not close it.
+    span returns the replacement text."""
     out, i, n, mode = [], 0, len(cmd), None            # mode: None, ', " or #
     while i < n:
         c, nxt = cmd[i], cmd[i + 1:i + 2]
@@ -349,8 +473,62 @@ def decode_ansi_c(cmd):
                 step = 2 if cmd[j] == "\\" and j + 1 < n else 1
                 body.append(cmd[j:j + step])
                 j += step
-            out.append(shlex.quote(ansi_c("".join(body))))
+            out.append(span("".join(body)))
             i = j + 1
+            continue
+        elif c == "$" and nxt == '"':
+            out.append('"')
+            i += 2
+            mode = '"'
+            continue
+        elif c in "'\"":
+            mode = c
+        elif c == "#" and (not out or out[-1][-1] in BLANKS + PUNCT):
+            mode = "#"
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def decode_ansi_c(cmd):
+    """cmd read as bash decodes its $'...' and $"..." words: each span's text (ansi_c) quoted
+    back as one word, so the word keeps its boundaries for tokenize."""
+    return _decode_spans(cmd, lambda body: shlex.quote(ansi_c(body)))
+
+
+def decode_ansi_c_zsh(cmd):
+    """cmd read as zsh decodes it. Each $'...' span is decoded (ansi_c_zsh) and quoted back as
+    one word, as the bash reading does, so a decoded blank or quote cannot split or unbalance
+    the reading. When the text holds a NUL, zsh cuts the whole word there: the text before the
+    NUL is emitted (quoted) and the rest of the source word — the span's tail and everything
+    to the next unquoted blank, newline or operator — is dropped (skip_zsh_word). A dropped
+    tail with a substitution raises CutOverSubstitution. $"..." reads as "..."."""
+    out, i, n, mode = [], 0, len(cmd), None            # mode: None, ', " or #
+    while i < n:
+        c, nxt = cmd[i], cmd[i + 1:i + 2]
+        if mode == "'":
+            mode = None if c == "'" else mode
+        elif mode == "#":
+            mode = None if c == "\n" else mode
+        elif c == "\\" and nxt:
+            out.append(c + nxt)                        # escaped, in or out of "..."
+            i += 2
+            continue
+        elif mode == '"':
+            mode = None if c == '"' else mode
+        elif c == "$" and nxt == "'":
+            j, body = i + 2, []
+            while j < n and cmd[j] != "'":
+                step = 2 if cmd[j] == "\\" and j + 1 < n else 1
+                body.append(cmd[j:j + step])
+                j += step
+            text = ansi_c_zsh("".join(body))
+            if "\0" in text:
+                out.append(shlex.quote(text.split("\0", 1)[0]))
+                i = skip_zsh_word(cmd, j + 1)          # drop the rest of the source word
+            else:
+                out.append(shlex.quote(text))
+                i = j + 1
             continue
         elif c == "$" and nxt == '"':
             out.append('"')

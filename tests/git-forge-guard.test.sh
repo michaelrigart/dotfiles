@@ -41,16 +41,34 @@
 # The allowlist assumes zsh's MAGIC_EQUAL_SUBST is off, as it is in the snapshot. In the
 # worst case, if it were on, x==cmd becomes x=/abs/path/of/cmd: no new word, no new option.
 #
-# The mirror search decodes ANSI-C $'...' words (git-push-guard.py ansi_c). A differential
-# run compared it with printf %s of the same words: 1489 random $'...' words built from
-# plain characters, every escape bash decodes (\a \b \e \E \f \n \r \t \v \\ \' \" \? \nnn
-# \xHH \uHHHH \UHHHHHHHH \cX), unknown escapes and no-digit \x \u \U. Byte escapes stayed
-# below 0x80, and surrogates were skipped. bash 5.3: 1487 identical, and the other 2 are
-# code points above U+10FFFF, which bash writes as 5- or 6-byte sequences and the guard
-# caps (no ASCII letter). bash 3.2 has no \u or \U. zsh 5.9: 483 identical. The rest are in
-# four classes: an unknown escape (zsh drops the backslash, as the quote-stripped readings
-# do), \c (zsh: a literal c), a NUL (zsh keeps the rest of the word, which git never sees),
-# and a no-digit \x, \u or \U, which zsh reads as a NUL.
+# The mirror search decodes each ANSI-C $'...' word two ways: as bash does (ansi_c; a NUL ends
+# the span, bash keeps the rest of the word after it) and as zsh does (ansi_c_zsh; a NUL cuts
+# the whole SOURCE word: the span's tail and everything to the next unquoted blank, newline or
+# operator, quotes tracked; a cut tail holding $(...), ${...} or a backtick is denied, not
+# modelled). Both readings quote each span back as one word. Two differentials ran on
+# 2026-10-28/29 (not part of this suite), over four shells (bash 3.2, bash 5.3, zsh -f, zsh with
+# the snapshot options) and two locales (en_US.UTF-8, the Bash tool's, and C):
+# - Word level: the grammar enumerated (\ before every printable ASCII character; \x \u \U with
+#   0 to the maximum hex digits, out of range, surrogate and non-UTF-8 values; octal 1 to 4
+#   digits; \c before every printable; \0 and early NULs; a span beside plain and quoted text;
+#   $"..."). Each shell's word equalled the decoded word that models it, except 832 holding a
+#   non-ASCII byte and 112 holding another non-rule character, none lacking an ASCII rule-run
+#   (git, push, origin, --delete, -d, --force-with-lease=, a blank) that the guard's word has.
+# - Whole command: 252 commands, a NUL- or empty-producing span (no-digit \x \u \U, \0, an
+#   incomplete \C \M, and spans holding a blank, a quote or further escapes) in the first,
+#   second or a later word, followed by plain text, double- and single-quoted text with blanks,
+#   another span, an escaped blank, or the end. Each shell's argv, joined by single spaces,
+#   appeared among matches_delete_rule's readings, except 84 (zsh only, from $'c\M- z'): zsh
+#   writes meta-space as a raw 0xA0 byte, the guard as U+00A0, one non-ASCII byte encoded two
+#   ways, with every ASCII rule-run present. Operator tails (; | && >) are not run in a live
+#   shell; the zsh reading kept the operator as the word's end in all 96 checked.
+# 0 unaccepted mismatches in either. Accepted classes: a non-ASCII byte or a non-rule character
+# in the shell's word, which A1 and A2 (ASCII rule text) cannot contain. Key differences the
+# readings cover: zsh drops an unknown escape's backslash (bash keeps it); zsh reads \c as a
+# literal c, bash as a control byte; zsh reads a no-digit \x \u \U and \0 as a NUL that cuts the
+# word, but an incomplete \C or \M at the span's end as empty (the word goes on); bash 5.3 drops
+# a \u or \U above U+10FFFF and keeps the rest of the word, so the decoder drops it rather than
+# cap it. bash 3.2 has no \u or \U (it keeps them literal).
 
 set -uo pipefail
 
@@ -1088,6 +1106,48 @@ has_reason   "M28 and the reason is the plain-command one" "$PLAIN_REASON" "$DEL
 # word is the literal $x67it ..., which echo prints and nothing runs.
 M29="echo '\$'\\x67it' push --force-with-lease=a origin --delete b'"
 expect allow "M29 a quoted \$ before a quote is no ANSI-C word"          "$DEL" "$M29"
+# zsh-only $'...' readings (git-push-guard.py ansi_c_zsh; measured 2026-10-28). zsh reads a
+# no-digit \x, \u or \U as a NUL, and a NUL cuts the whole shell word (bash keeps the rest of
+# it). So $'\x67it\x'zz runs git in zsh. The second decoding and the word-cut catch these.
+M30="\$'\\x67it\\x' push --force-with-lease=done:$DONE origin --delete done"
+expect deny  "M30 mirror: a no-digit \\x is a NUL in zsh"               "$DEL" "$M30"
+has_reason   "M30 and the reason is the plain-command one" "$PLAIN_REASON" "$DEL" "$M30"
+M31="\$'\\x67it\\0'zz push --force-with-lease=done:$DONE origin --delete done"
+expect deny  "M31 mirror: a NUL cuts the whole word in zsh"            "$DEL" "$M31"
+has_reason   "M31 and the reason is the plain-command one" "$PLAIN_REASON" "$DEL" "$M31"
+M32="git \$'\\x70ush\\u' --force-with-lease=done:$DONE origin --delete done"
+expect deny  "M32 mirror: a no-digit \\u is a NUL in zsh"               "$DEL" "$M32"
+has_reason   "M32 and the reason is the plain-command one" "$PLAIN_REASON" "$DEL" "$M32"
+# bash 5.3 drops a \u or \U above U+10FFFF and keeps the rest of the word, so $'\x67it\UFFFFFFFF'
+# is git: the decoder drops it too. A cap would leave a non-ASCII byte between git and the
+# space, which breaks git\s+push (a bare prefix would not, since the match skips it).
+M33="\$'\\x67it\\UFFFFFFFF' push --force-with-lease=done:$DONE origin --delete done"
+expect deny  "M33 mirror: a \\U above U+10FFFF is dropped, not capped" "$DEL" "$M33"
+has_reason   "M33 and the reason is the plain-command one" "$PLAIN_REASON" "$DEL" "$M33"
+# A zsh \C (or \M) with nothing after it at the end of a span is empty, not a NUL: the word
+# goes on. So $'\x67it\C' is git, and $'gi\C't, glued to the text after it, is git too.
+M34="\$'\\x67it\\C' push --force-with-lease=done:$DONE origin --delete done"
+expect deny  "M34 mirror: a trailing \\C is empty in zsh"              "$DEL" "$M34"
+has_reason   "M34 and the reason is the plain-command one" "$PLAIN_REASON" "$DEL" "$M34"
+M39="\$'gi\\C't push --force-with-lease=done:$DONE origin --delete done"
+expect deny  "M39 mirror: an empty \\C glued to the rest of the word"  "$DEL" "$M39"
+has_reason   "M39 and the reason is the plain-command one" "$PLAIN_REASON" "$DEL" "$M39"
+# The NUL cuts the whole shell word, not just to the next blank of the decoded text: a blank
+# inside the span, or quoted text after it, is still part of the word zsh cuts. So each of
+# these runs git push ... --delete done in zsh and must deny. The zsh reading quotes each span
+# back as one word and drops the rest of the SOURCE word at a NUL, tracking quote state.
+M35="\$'\\x67it\\x x' push --force-with-lease=done:$DONE origin --delete done"
+expect deny  "M35 mirror: a blank inside the span is part of the cut word" "$DEL" "$M35"
+has_reason   "M35 and the reason is the plain-command one" "$PLAIN_REASON" "$DEL" "$M35"
+M36="\$'\\x67it\\x'\" x\" push --force-with-lease=done:$DONE origin --delete done"
+expect deny  "M36 mirror: double-quoted text after the span is cut too" "$DEL" "$M36"
+has_reason   "M36 and the reason is the plain-command one" "$PLAIN_REASON" "$DEL" "$M36"
+M37="\$'\\x67it\\x'' x' push --force-with-lease=done:$DONE origin --delete done"
+expect deny  "M37 mirror: single-quoted text after the span is cut too" "$DEL" "$M37"
+has_reason   "M37 and the reason is the plain-command one" "$PLAIN_REASON" "$DEL" "$M37"
+# A substitution in the dropped tail cannot be modelled, so the command is denied outright.
+M38="\$'\\x67it\\x'\$(echo y) push --force-with-lease=done:$DONE origin --delete done"
+expect deny  "M38 mirror: a substitution in the cut tail is denied"   "$DEL" "$M38"
 # The shell removes a \-newline outside single quotes, so one glued between two words joins
 # them: y\<newline>z is yz, as bash runs it, not y and z. y and z are merged; yz is not. A
 # backslash escaped before a newline is no continuation: the newline ends the command.
