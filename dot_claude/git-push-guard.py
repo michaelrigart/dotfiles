@@ -101,6 +101,8 @@ PLAIN_WORDS = ("plain words: git push and its arguments, each made of letters, d
                "._/:=@+,%- (none starting with =, holding == or :=, or shaped NAME= or NAME+=), "
                "separated by single spaces, nothing before git, and at most 2>&1 and "
                "| tail or | head with -n N or -N after")
+# The opening of every deny for a dry run outside canonical text.
+DRY_REFUSED = "Push guard: this dry run is refused because it is not written in " + PLAIN_WORDS + "."
 ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 # Could this text run git push? git, then push (or a push alias), within one command.
 PUSH_SHAPE = re.compile(r"\bgit\b[^;&|\n]*\bpush\b")
@@ -1011,10 +1013,28 @@ def check_merged_delete(repo, remote, default, names, leases, root, session, pla
                     for n in names)
     command = "git push {}{} {} --delete {}".format(
         "-n " if dry else "", pins, shell_word(remote), " ".join(shell_word(n) for n in names))
-    merged = "Push guard: {}{} {} merged into {}, on {}".format(
-        "a merged delete passes only when written in " + PLAIN_WORDS + ". "
-        if plain else "", ", ".join(names), "is" if len(names) == 1 else "are", default, remote)
+    if dry:
+        lead = DRY_REFUSED + " "
+    elif plain:
+        lead = "Push guard: a merged delete passes only when written in " + PLAIN_WORDS + ". "
+    else:
+        lead = "Push guard: "
+    merged = "{}{} {} merged into {}, on {}".format(
+        lead, ", ".join(names), "is" if len(names) == 1 else "are", default, remote)
     there = other_checkout(root, session)
+    if dry:
+        # A dry run: worded as one, and the printed command keeps -n.
+        if there is None and canonical(command):
+            return "{} and here. Run the dry run in plain words: {}".format(merged, command)
+        if there is None:
+            return ("{} and here. A name here needs quoting, which plain words cannot carry, so "
+                    "Michael runs the dry run: {}").format(merged, command)
+        if canonical(command):
+            return ("{} and in {}, which is not this session's checkout. Run the plain dry run "
+                    "from that repository: {}").format(merged, shell_word(there), command)
+        return ("{} and in {}, which is not this session's checkout. A name here needs quoting, "
+                "which plain words cannot carry, so Michael runs the dry run there: {}").format(
+                    merged, shell_word(there), command)
     if there is None and not canonical(command):
         # A branch or remote name that needs quoting: no command for it is canonical, so none
         # passes.
@@ -1032,22 +1052,25 @@ def check_merged_delete(repo, remote, default, names, leases, root, session, pla
 
 def dry_run_deny(asks, args, root, session):
     """The deny for a dry run outside canonical text whose real-push verdict is an ask (spec
-    2026-10-28, section 2, Dry runs): a silent deny costs Michael no prompt. It prints the plain
-    dry run when the push runs in the session's checkout and that command is canonical;
-    otherwise it says where to run the plain form, or to drop the dry-run flag so the push is
-    judged as a real one."""
-    lead = ("Push guard: a dry run returns early only when written in {}. This one is not, and "
-            "as a real push it would need Michael, because {}.").format(PLAIN_WORDS, "; ".join(asks))
+    2026-10-28, section 2, Dry runs): a silent deny costs Michael no prompt. It says, in order:
+    the dry run is refused because it is not in plain words; the plain -n form, where one can be
+    printed (the canonical dry run in the session's checkout, or the plain -n form to run from
+    the push's own repository); and that the push it previews needs Michael's confirmation, so
+    the agent confirms with him rather than preview it this way. It never offers the real push:
+    every push it previews is an unmerged delete or a default-branch push. A printed command
+    stands on a line of its own, so no sentence punctuation runs into it."""
     command = "git push " + " ".join(shell_word(a) for a in args)
     there = other_checkout(root, session)
+    confirm = ("The push it previews needs Michael's confirmation before it runs, because {}: "
+               "confirm it with him rather than preview it this way.").format("; ".join(asks))
     if there is None and canonical(command):
-        return lead + " Run the dry run in plain words: " + command
-    if there is None:
-        return (lead + " A word here cannot be written in plain words. Drop -n (or --dry-run) so "
-                "the push is judged as a real one.")
-    return (lead + " It runs in {}, which is not this session's checkout. Run the plain git push "
-            "... -n ... form from that repository, or drop -n (or --dry-run) so the push is "
-            "judged as a real one.").format(shell_word(there))
+        return "{}\nRun it in plain words, from this checkout:\n  {}\n{}".format(
+            DRY_REFUSED, command, confirm)
+    if there is not None and canonical(command):
+        return ("{}\nIt runs in {}, which is not this session's checkout. Run the plain -n form "
+                "from that repository:\n  {}\n{}").format(DRY_REFUSED, shell_word(there), command,
+                                                        confirm)
+    return "{} {}".format(DRY_REFUSED, confirm)
 
 
 # ------------------------------------------------------------------ the secret scan

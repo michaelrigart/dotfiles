@@ -138,16 +138,28 @@ print -r -- '[[ -e \$TT/v3 ]] && mv \$TT/v3 \$FN
 f() { print v2 }' > \$FN; touch -t \$T1 \$FN; call; show")"
 is "Z13 the load runs the text read, not a second read of the file" "$out" "$(want '' "$RELOADED" v2)"
 
-# Z14: one read, both sides. The functions file is a FIFO whose writer serves the good text on
-# the first open and a failing text (f as v3, then false) on the second. The hook reads once, so
-# the trial and the load both run the good text and f is v2. A second read, by the trial or by
-# the load, gets the failing text, and the call reports the failure line instead. The writer is
-# a background job, so BG_NICE goes off: the sandbox refuses nice(5).
-out="$(run "$V1" "rm -f \$FN; mkfifo \$FN; touch -t \$T1 \$FN; unsetopt bg_nice
-{ print -r -- 'f() { print v2 }' > \$FN; print -r -- 'f() { print v3 }; false' > \$FN } &
+# Z14: one read, both sides. The functions file is a FIFO. Its writer serves the good text once;
+# that text, when run, creates an acknowledgement file. Only after the ack, or after 3 s without
+# one, does the writer serve the failing text (f as v3, then false), on every later open until
+# it is killed. The hook reads once, so the trial runs the good text and writes the ack, and the
+# load runs the same text: f is v2. The first read has ended before the trial starts, so it
+# never sees the failing text. A second read gets the failing text and the call reports the
+# failure line instead:
+# - by the load, after the ack;
+# - by the trial, which blocks until the 3 s pass because no ack comes.
+# The 3 s bound only ever delays a mutant; the correct path never waits on it. A watchdog
+# kills the case and its writer after 30 s, so nothing can hang. The writer and the watchdog are
+# background jobs, so BG_NICE goes off: the sandbox refuses nice(5).
+out="$(run "$V1" "rm -f \$FN \$TT/ack; mkfifo \$FN; touch -t \$T1 \$FN; unsetopt bg_nice
+{ print -r -- ': > \$TT/ack
+f() { print v2 }' > \$FN
+  for i in {1..60}; do [[ -e \$TT/ack ]] && break; sleep 0.05; done
+  while :; do print -r -- 'f() { print v3 }; false' > \$FN; done } >/dev/null 2>&1 &
 W=\$!
+( sleep 30; kill -9 \$W \$\$ ) >/dev/null 2>&1 &
+D=\$!
 call; show
-kill \$W 2>/dev/null; wait \$W 2>/dev/null")"
+kill \$D \$W 2>/dev/null; wait \$W \$D 2>/dev/null")"
 is "Z14 the trial and the load both run the one text read" "$out" "$(want '' "$RELOADED" v2)"
 
 # Z12: nothing a case script did wrote to its stderr, which would be a startup error or

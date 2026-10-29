@@ -1066,11 +1066,24 @@ expect ask   "an unmerged branch behind -C and --no-pager still asks"   "$TMP" "
 expect deny  "an option value that swallowed --delete"                  "$DEL" "git push --force-with-lease=work:$MAIN -o --delete origin work"
 # Dry runs (spec 2026-10-28, section 2): one returns early, unjudged, only when the raw text
 # is canonical and git reads it as a dry run. Any other is judged as a real push, except that
-# where that verdict is an ask, the dry run gets a silent deny instead: no prompt. The deny
-# prints the plain dry run when it can, else says where to run it or to drop -n. On main each
-# of the fakes below returned early while the shell ran a real delete.
-DRY_LEAD="Push guard: a dry run returns early only when written in plain words:"
-DRY_THERE="which is not this session's checkout. Run the plain git push ... -n ... form from that repository, or drop -n (or --dry-run) so the push is judged as a real one."
+# where that verdict is an ask, the dry run gets a silent deny instead: no prompt. That deny
+# says, in order: the dry run is refused because it is not in plain words; the plain -n form
+# where one can be printed (the canonical dry run in this checkout, or the plain -n form to run
+# from the push's own repository); and that the push it previews needs Michael's confirmation.
+# It never offers the real push. A deny for a dry run that prints a pinned delete is worded as a
+# dry run and keeps -n. On main each of the fakes below returned early while the shell ran a
+# real delete.
+DRY_REFUSED="Push guard: this dry run is refused because it is not written in ${PLAIN_LEAD#Push guard: a merged delete passes only when written in }"
+DRY_HERE=$'\nRun it in plain words, from this checkout:\n  '
+CONFIRM_DELETE="The push it previews needs Michael's confirmation before it runs, because it deletes remote refs (--delete, -d or --prune): confirm it with him rather than preview it this way."
+CONFIRM_MAIN="The push it previews needs Michael's confirmation before it runs, because it updates main, the default branch of origin: confirm it with him rather than preview it this way."
+# no_real_push <label> <cwd> <command> [<real push>]: a dry-run deny never offers the real push:
+# no "drop" advice, and never the push it previews printed without -n.
+no_real_push() {
+  lacks_reason "$1: no drop advice" "rop -n" "$2" "$3"
+  lacks_reason "$1: no drop at all" "drop" "$2" "$3"
+  if [ -n "${4:-}" ]; then lacks_reason "$1: never prints the real push" "$4" "$2" "$3"; fi
+}
 expect allow "D1 a canonical dry run of the pinned delete returns early" "$DEL" "$PINNED --dry-run"
 expect allow "D1 a canonical dry run with 2>&1 | head -5 returns early" "$DEL" "git push --force-with-lease=open:$OPEN origin --delete open -n 2>&1 | head -5"
 expect allow "D1 a canonical dry run of an unmerged delete returns early" "$DEL" "git push --force-with-lease=open:$OPEN origin --delete open -n"
@@ -1086,32 +1099,39 @@ has_reason   "D2 and the deny names the wildcard" "the wildcard refspec * can up
 # --force-with-lease=a -n ..., and prints that dry run in plain words.
 D2_CR=$(printf 'git push --force-with-lease=a\r-n origin --delete open')
 expect deny  "D2 a carriage return glued to -n"                         "$DEL" "$D2_CR"
-has_reason   "D2 and the deny prints the plain dry run" "Run the dry run in plain words: git push --force-with-lease=a -n origin --delete open" "$DEL" "$D2_CR"
+has_reason   "D2 and the deny is refused, plain -n form, confirm, in order" \
+             "$DRY_REFUSED${DRY_HERE}git push --force-with-lease=a -n origin --delete open"$'\n'"$CONFIRM_DELETE" "$DEL" "$D2_CR"
+no_real_push "D2 CR" "$DEL" "$D2_CR" "git push --force-with-lease=a origin --delete open"
 # A continuation glued to -n: the shell joins ci.skip\<newline>-n into one push option value.
 D2_CONT="git push --force-with-lease=open:$OPEN -o ci.skip\\
 -n origin --delete open"
 expect deny  "D2 a continuation glued to -n"                            "$DEL" "$D2_CONT"
-has_reason   "D2 and the deny prints the plain dry run" "Run the dry run in plain words: git push --force-with-lease=open:$OPEN -o ci.skip -n origin --delete open" "$DEL" "$D2_CONT"
+has_reason   "D2 and the deny is refused, plain -n form, confirm, in order" \
+             "$DRY_REFUSED${DRY_HERE}git push --force-with-lease=open:$OPEN -o ci.skip -n origin --delete open"$'\n'"$CONFIRM_DELETE" "$DEL" "$D2_CONT"
+no_real_push "D2 continuation" "$DEL" "$D2_CONT" "git push --force-with-lease=open:$OPEN -o ci.skip origin --delete open"
 # Not canonical, judged as a real push: a real deny stays a deny, a real allow stays an allow,
-# and a real ask becomes the dry-run deny.
-# A deny for a dry run that prints a pinned command keeps the dry run (-n), so an agent that
-# wanted a preview is never pointed at the real delete.
+# and a real ask becomes the dry-run deny. A real deny that prints a pinned delete prints its
+# dry run (-n), worded as a dry run.
 DRY_PINNED="git push -n --force-with-lease=done:$DONE origin --delete done"
-REAL_PINNED="no ask: git push --force-with-lease=done:$DONE origin --delete done"
+REAL_PINNED="git push --force-with-lease=done:$DONE origin --delete done"
 expect deny  "D3 real deny: a dry run of the pinned delete with a bare tail" "$DEL" "$PINNED -n 2>&1 | tail"
-has_reason   "D3 and the deny prints the plain pinned dry run" "$PLAIN_LEAD done is merged into main, on origin and here. Pin the delete to the tip just read, so git refuses it if the branch has moved, and it needs no ask: $DRY_PINNED" "$DEL" "$PINNED -n 2>&1 | tail"
-lacks_reason "D3 and it never prints the real delete" "$REAL_PINNED" "$DEL" "$PINNED -n 2>&1 | tail"
+has_reason   "D3 and the deny prints the plain pinned dry run, as a dry run" \
+             "$DRY_REFUSED done is merged into main, on origin and here. Run the dry run in plain words: $DRY_PINNED" "$DEL" "$PINNED -n 2>&1 | tail"
+lacks_reason "D3 and it says nothing of pinning the delete" "Pin the delete" "$DEL" "$PINNED -n 2>&1 | tail"
+no_real_push "D3 bare tail" "$DEL" "$PINNED -n 2>&1 | tail" "$REAL_PINNED"
 D3_W="command git push -n --force-with-lease=done:$DONE origin --delete done"
 expect deny  "D3 real deny: a pinned dry run behind a wrapper"          "$DEL" "$D3_W"
-has_reason   "D3 and the deny prints the pinned dry run" "needs no ask: $DRY_PINNED" "$DEL" "$D3_W"
-lacks_reason "D3 and it never prints the real delete" "$REAL_PINNED" "$DEL" "$D3_W"
+has_reason   "D3 and the deny prints the pinned dry run" "and here. Run the dry run in plain words: $DRY_PINNED" "$DEL" "$D3_W"
+no_real_push "D3 wrapper, pinned" "$DEL" "$D3_W" "$REAL_PINNED"
 D3_U="command git push -n origin --delete done"
 expect deny  "D3 real deny: an unpinned dry run behind a wrapper"       "$DEL" "$D3_U"
-has_reason   "D3 and the deny prints the pinned dry run" "needs no ask: $DRY_PINNED" "$DEL" "$D3_U"
-lacks_reason "D3 and it never prints the real delete" "$REAL_PINNED" "$DEL" "$D3_U"
+has_reason   "D3 and the deny prints the pinned dry run" "and here. Run the dry run in plain words: $DRY_PINNED" "$DEL" "$D3_U"
+no_real_push "D3 wrapper, unpinned" "$DEL" "$D3_U" "$REAL_PINNED"
 D3_UT="git -C $DEL push -n origin --delete done"
 expect deny  "D3 real deny: an unpinned dry run behind -C, from outside" "$TMP" "$D3_UT"
-has_reason   "D3 and the printed pinned command keeps -n" "or Michael runs it: $DRY_PINNED" "$TMP" "$D3_UT"
+has_reason   "D3 and the deny prints the pinned dry run to run from that repository" \
+             "and in $DELTOP, which is not this session's checkout. Run the plain dry run from that repository: $DRY_PINNED" "$TMP" "$D3_UT"
+no_real_push "D3 -C, unpinned" "$TMP" "$D3_UT" "$REAL_PINNED"
 # The re-review's two shapes take a -N trailer, which is canonical now, so they are canonical dry
 # runs: they return early, as on main.
 expect allow "D1 a pinned dry run with 2>&1 | tail -3 returns early"    "$DEL" "git push -n --force-with-lease=done:$DONE origin --delete done 2>&1 | tail -3"
@@ -1119,24 +1139,29 @@ expect allow "D1 an unpinned dry run with | tail -3 returns early"      "$DEL" "
 expect deny  "D3 real deny: a dry run behind GIT_DIR, GIT_DIR refused"  "$DEL" "GIT_DIR=$DEL/.git git push origin --delete done --dry-run"
 has_reason   "D3 and the deny names GIT_DIR" "unsupported push configuration for the push guard: GIT_DIR" "$DEL" "GIT_DIR=$DEL/.git git push origin --delete done --dry-run"
 expect allow "D3 real allow: a dry run of a feature branch behind cd"   "$DEL" "cd $DEL && git push -n origin work"
+# Real asks become the dry-run deny: refused, the plain -n form where printable, confirm.
 D3_C="git -C $DEL push -n --force-with-lease=open:$OPEN origin --delete open"
 expect deny  "D3 real ask: a dry run behind -C, from outside the checkout" "$TMP" "$D3_C"
-has_reason   "D3 and the deny says where to run it, or to drop -n" "$DRY_LEAD" "$TMP" "$D3_C"
-has_reason   "D3 and names the checkout" "It runs in $DELTOP, $DRY_THERE" "$TMP" "$D3_C"
+has_reason   "D3 and the deny is refused, the -n form from that repository, confirm, in order" \
+             "$DRY_REFUSED"$'\n'"It runs in $DELTOP, which is not this session's checkout. Run the plain -n form from that repository:"$'\n'"  git push -n --force-with-lease=open:$OPEN origin --delete open"$'\n'"$CONFIRM_DELETE" "$TMP" "$D3_C"
+no_real_push "D3 -C, unmerged" "$TMP" "$D3_C" "git push --force-with-lease=open:$OPEN origin --delete open"
 D3_MAIN="cd $DEL && git push -n origin main"
 expect deny  "D3 real ask: a dry run of a default-branch push behind cd" "$DEL" "$D3_MAIN"
-has_reason   "D3 and the deny says why it would ask" "as a real push it would need Michael, because it updates main, the default branch of origin." "$DEL" "$D3_MAIN"
-D3_PRINTED=$(reason "$DEL" "$D3_MAIN"); D3_PRINTED=${D3_PRINTED##*Run the dry run in plain words: }
-is_plain() { [ "$1" = "git push -n origin main" ]; }
-if is_plain "$D3_PRINTED"; then
-  pass=$((pass + 1)); printf '  ok   %s\n' "D3 the printed dry run is the plain command"
+has_reason   "D3 and the deny is refused, the canonical dry run, confirm, in order" \
+             "$DRY_REFUSED${DRY_HERE}git push -n origin main"$'\n'"$CONFIRM_MAIN" "$DEL" "$D3_MAIN"
+no_real_push "D3 default branch" "$DEL" "$D3_MAIN" "git push origin main"
+D3_PRINTED=$(reason "$DEL" "$D3_MAIN"); D3_PRINTED=${D3_PRINTED#*from this checkout:$'\n'  }; D3_PRINTED=${D3_PRINTED%%$'\n'*}
+if [ "$D3_PRINTED" = "git push -n origin main" ]; then
+  pass=$((pass + 1)); printf '  ok   %s\n' "D3 the printed dry run is the plain command, on a line of its own"
 else
-  fail=$((fail + 1)); printf '  FAIL %s (printed %s)\n' "D3 the printed dry run is the plain command" "$D3_PRINTED"
+  fail=$((fail + 1)); printf '  FAIL %s (printed %s)\n' "D3 the printed dry run is the plain command, on a line of its own" "$D3_PRINTED"
 fi
 expect allow "D3 and the printed dry run is canonical: it returns early" "$DEL" "$D3_PRINTED"
 D3_Q="git push -n origin --delete 'x y'"
-expect deny  "D3 real ask: a dry run whose word needs quoting"          "$DEL" "$D3_Q"
-has_reason   "D3 and the deny says to drop -n" "A word here cannot be written in plain words. Drop -n (or --dry-run) so the push is judged as a real one." "$DEL" "$D3_Q"
+expect deny  "D3 real ask: a dry run with no plain form (a word needs quoting)" "$DEL" "$D3_Q"
+has_reason   "D3 and the deny is refused, then confirm, and nothing between" "$DRY_REFUSED $CONFIRM_DELETE" "$DEL" "$D3_Q"
+lacks_reason "D3 and it offers no plain form" "Run it in plain words" "$DEL" "$D3_Q"
+no_real_push "D3 quoted word" "$DEL" "$D3_Q" "git push origin --delete"
 # Every word git could read as a negation, an abbreviation or a push option holding the n is
 # refused before the dry-run test, as on main, so -n or --dry-run in the guard's reading is
 # git's own (git 2.56 measured: the last of -n, --dry-run and --no-dry-run wins; --dry and
