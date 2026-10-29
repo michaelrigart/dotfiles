@@ -160,16 +160,17 @@ exception: an ask becomes a silent deny. In practice:
 - a merged, pinned delete that is not canonical gets the deny naming the plain form;
 - the glob shape gets main's wildcard deny;
 - the negation shapes keep main's unsupported-option deny;
-- a dry run whose real-push verdict would be an ask gets a silent deny instead. That covers an
-  unmerged delete and a default-branch push, written with a CR, a continuation, `-C`, a `cd`
+- a dry run whose real-push verdict would be an ask gets a silent deny instead. Examples: an
+  unmerged delete or a default-branch push written with a CR, a continuation, `-C`, a `cd`
   prefix, a wrapper or an alias;
 - one whose real-push verdict is allow stays allow.
 
 The ask-to-deny step is a controller's ruling under Michael's decision. His standing preference
 is a silent deny over a classifier verdict over an ask, and no change may add prompts. The deny
-fires only when the real push would ask. So every push it previews is an unmerged delete or a
-default-branch push, and "Every agent confirms first" already requires Michael's confirmation
-before either. A controller's ruling on the re-review's R2 sets the deny text, in this order:
+fires only when the real push would ask. So every push it previews is one the guard asks about:
+a delete, a default-branch push, a force push without a lease, or a push of every ref (`--all`
+or `--mirror`), which reaches the default branch too. "Every agent confirms first" already
+requires Michael's confirmation before each of these. A controller's ruling on the re-review's R2 sets the deny text, in this order:
 1. The dry run is refused because it is not in plain form.
 2. Where a plain form can be given, the deny gives it:
    - in the session's checkout, the canonical `-n` command, printed whole;
