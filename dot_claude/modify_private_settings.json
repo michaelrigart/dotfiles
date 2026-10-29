@@ -52,12 +52,15 @@ printf '%s' "$input" | jq \
      + "refs/heads/<branch>:<sha> origin --delete <branch>` (the lease may also be written "
      + "`--force-with-lease=<branch>:<sha>`, and `:refs/heads/<branch>` may stand in place of "
      + "`--delete <branch>`), with every deleted branch pinned to its tip, and with no quoting, "
-     + "escapes, variables, substitutions or other commands in it. A PreToolUse push guard "
-     + "verifies the merge and the pin before such a push runs and blocks it otherwise. This "
-     + "never covers deleting the default branch, and never a push that creates or updates a "
-     + "branch.") as $delete_rule
-  # Earlier texts of that rule, deleted by name like the retired keys below, so a changed rule
-  # never lingers as a carried entry. None yet.
+     + "escapes, globs, variables, substitutions or other commands in it. A PreToolUse push "
+     + "guard verifies the merge and the pin before such a push runs and blocks it otherwise. "
+     + "This never covers deleting the default branch, and never a push that creates or "
+     + "updates a branch.") as $delete_rule
+  # The fixed opening of the rule. A carried allow entry that starts with it is an earlier text of
+  # the rule and is dropped, so an edited rule never lingers in its old form. The suite pins
+  # that the rule starts with it.
+  | "Deleting a remote branch that is already merged into the remote" as $rule_opening
+  # Any other retired rule text, deleted by name like the retired keys below. None yet.
   | [] as $retired_rules
   | $live + {
       "theme": "custom:tokyo-night",
@@ -218,13 +221,16 @@ printf '%s' "$input" | jq \
       # Owned in part, like permissions: allow gets "$defaults" first (the built-in allow
       # rules, which a non-empty list keeps only through it) and the merged-branch delete
       # rule, which trusts the push guard rule 4 to have verified the merge and the pin
-      # (spec 2026-10-28-reload-functions-merged-deletes, section 2). Every other allow
-      # entry and every other autoMode key the live file holds (what /auto-mode-setup
+      # (spec 2026-10-28-reload-functions-merged-deletes, section 2). A carried entry that
+      # starts with the opening of the rule is an older text of it and is dropped. Every other
+      # allow entry and every other autoMode key the live file holds (what /auto-mode-setup
       # writes: the environment, private rules) is carried. Claude Code reads these only from
       # user, flag and managed settings, never from project settings.
       "autoMode": ($auto + {
         "allow": (["$defaults", $delete_rule]
-                  + ((($auto.allow | arrays) // []) - ["$defaults", $delete_rule] - $retired_rules))
+                  + ((($auto.allow | arrays) // [])
+                     | map(select((type == "string" and startswith($rule_opening)) | not))
+                       - ["$defaults"] - $retired_rules))
       }),
       "enableAllProjectMcpServers": false,
       "statusLine": { "type": "command", "command": $sl, "padding": 0 },

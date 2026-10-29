@@ -132,10 +132,48 @@ jq_is '[.permissions.allow[] | select(startswith("Bash(chezmoi"))] | length' 0 \
 # plain git fetch already prunes (fetch.prune=true).
 jq_is '[.permissions.allow[] | select(startswith("Bash(git push") or startswith("Bash(git fetch"))] | length' 0 \
       "no allow rule starts with Bash(git push or Bash(git fetch"
+# No allow rule matches a git push in any form (spec 2026-10-28-reload-functions-merged-
+# deletes, section 2: every push the guard leaves silent reaches the classifier). A model of
+# Claude Code's matching: the whole command text; * is any text, spaces included; a trailing
+# " *" that is the rule's only * also matches the bare command; the legacy trailing ":*" is a
+# prefix, read as " *".
+MATCHES='def esc: gsub("(?<c>[.+?()\\[\\]{}|^$\\\\])"; "\\" + .c);
+  def hit($cmd): (.[5:-1] | if endswith(":*") then .[:-2] + " *" else . end) as $s
+    | ($s | esc | gsub("\\*"; ".*")) as $re
+    | ($cmd | test("^" + $re + "$"))
+      or (($s | endswith(" *")) and (($s | split("*") | length) == 2) and ($cmd == $s[:-2]));'
+n_match() { # n_match <command> -> how many allow rules match it
+  printf '%s' "$OUT" | jq -r --arg c "$1" "$MATCHES"' [.permissions.allow[] | select(startswith("Bash(")) | select(hit($c))] | length'
+}
+m_is() { # m_is <command> <expected count> <label>
+  got=$(n_match "$1")
+  if [ "$got" = "$2" ]; then _pass "$3"; else _fail "$3" "$got"; fi
+}
+# Calibrate the model on a fixture before trusting it on the real rules.
+FIX_SAVE=$OUT
+OUT='{"permissions":{"allow":["Bash(git *)","Bash(git push *)","Bash(git log * main)","Bash(ls:*)"]}}'
+m_is 'git -C /r push origin --delete b' 1 "model: 'git *' matches a -C push"
+m_is 'git push' 2 "model: 'git *' and 'git push *' both match a bare git push"
+m_is 'git log --oneline main' 2 "model: 'git log * main' and 'git *' match 'git log --oneline main'"
+m_is 'gitk' 0 "model: no rule matches gitk"
+m_is 'ls' 1 "model: legacy 'ls:*' matches bare 'ls'"
+m_is 'ls -la' 1 "model: legacy 'ls:*' matches 'ls -la'"
+m_is 'lsof' 0 "model: legacy 'ls:*' does not match 'lsof'"
+OUT=$FIX_SAVE
+SHA=0123456789abcdef0123456789abcdef01234567
+for c in 'git push' 'git push origin main' "git push --force-with-lease=b:$SHA origin --delete b" \
+         "git push --force-with-lease=refs/heads/b:$SHA origin --delete b" 'git push origin :refs/heads/b' \
+         'git push -d origin b' 'git push --force origin main' 'git push --dry-run origin x' \
+         "git push --force-with-lease=b:$SHA origin --delete b 2>&1 | tail -n 3" \
+         'git -C /r push origin --delete b' 'git --no-pager push origin x' 'git -c a=b push origin x' \
+         'git -C /r -c a=b --no-pager push origin x' '/usr/bin/git push origin x' 'command git push origin x'; do
+  m_is "$c" 0 "no allow rule matches: $c"
+done
 jq_is '[.permissions.allow[] | select(test("\\*.*:\\*\\)$"))] | length' 0 \
       "no allow rule ends in :* with another * before it"
 # No * before the subcommand: Claude Code warns on such a rule, since for git a -c or
-# --exec-path in it runs any command (spec 2026-10-28, evidence a). The words up to the
+# --exec-path in it runs any command (spec 2026-10-28-reload-functions-merged-deletes, Tests:
+# the general checks stay). The words up to the
 # subcommand are the first word, any words starting with -, then the first other word; a *
 # in any of them fails, bar a lone * argument list right after the command name (sdd-clean *).
 jq_is '[.permissions.allow[] | select(startswith("Bash("))
@@ -666,11 +704,15 @@ echo "U. autoMode: the classifier rule for merged-branch deletes"
 # pinned delete of a merged branch, trusting the push guard rule 4 to have verified it. The
 # text is pinned exactly; "$defaults" comes first, since a non-empty list keeps the built-in
 # allow rules only through it.
-RULE='Deleting a remote branch that is already merged into the remote'"'"'s default branch, only when the command is exactly the plain form `git push --force-with-lease=refs/heads/<branch>:<sha> origin --delete <branch>` (the lease may also be written `--force-with-lease=<branch>:<sha>`, and `:refs/heads/<branch>` may stand in place of `--delete <branch>`), with every deleted branch pinned to its tip, and with no quoting, escapes, variables, substitutions or other commands in it. A PreToolUse push guard verifies the merge and the pin before such a push runs and blocks it otherwise. This never covers deleting the default branch, and never a push that creates or updates a branch.'
+RULE='Deleting a remote branch that is already merged into the remote'"'"'s default branch, only when the command is exactly the plain form `git push --force-with-lease=refs/heads/<branch>:<sha> origin --delete <branch>` (the lease may also be written `--force-with-lease=<branch>:<sha>`, and `:refs/heads/<branch>` may stand in place of `--delete <branch>`), with every deleted branch pinned to its tip, and with no quoting, escapes, globs, variables, substitutions or other commands in it. A PreToolUse push guard verifies the merge and the pin before such a push runs and blocks it otherwise. This never covers deleting the default branch, and never a push that creates or updates a branch.'
 emit '{}'
 jq_is ".autoMode == {\"allow\": [\"\$defaults\", $(jq -n --arg r "$RULE" '$r')]}" true \
       'autoMode is exactly {"allow": ["$defaults", RULE]}'
 jq_is '.autoMode.allow[0]' '$defaults' '"$defaults" comes first'
+# The overlay drops a carried allow entry that starts with the rule's fixed opening, so an
+# edited rule never lingers in its old form; that only works while the rule keeps the opening.
+OPENING='Deleting a remote branch that is already merged into the remote'
+jq_is ".autoMode.allow[1] | startswith(\"$OPENING\")" true "the rule starts with its fixed opening"
 jq_is '.autoMode | has("soft_deny") or has("hard_deny") or has("environment")' false \
       "the overlay sets no soft_deny, hard_deny or environment"
 # Owned in part, like permissions: what /auto-mode-setup wrote to the live file (the
@@ -688,6 +730,12 @@ if [ "$(printf '%s' "$OUT" | jq -S .)" = "$(printf '%s' "$FIRST" | jq -S .)" ]; 
 else
   _fail "a second apply leaves autoMode as it was" "the second pass differs from the first"
 fi
+# An older text of the rule (round 8, before globs were named), carried from the live file,
+# is dropped because it starts with the opening; a private rule beside it stays.
+OLD_RULE='Deleting a remote branch that is already merged into the remote'"'"'s default branch, only when the command is exactly the plain form `git push --force-with-lease=refs/heads/<branch>:<sha> origin --delete <branch>` (the lease may also be written `--force-with-lease=<branch>:<sha>`, and `:refs/heads/<branch>` may stand in place of `--delete <branch>`), with every deleted branch pinned to its tip, and with no quoting, escapes, variables, substitutions or other commands in it. A PreToolUse push guard verifies the merge and the pin before such a push runs and blocks it otherwise. This never covers deleting the default branch, and never a push that creates or updates a branch.'
+emit "$(jq -n --arg o "$OLD_RULE" '{autoMode: {allow: ["$defaults", $o, "Bash(x) in y"]}}')"
+jq_is ".autoMode.allow == [\"\$defaults\", $(jq -n --arg r "$RULE" '$r'), \"Bash(x) in y\"]" true \
+      "an older text of the rule in the live allow list is dropped"
 emit '{"autoMode":"junk"}'
 jq_is ".autoMode == {\"allow\": [\"\$defaults\", $(jq -n --arg r "$RULE" '$r')]}" true \
       "a live autoMode that is not an object is replaced"

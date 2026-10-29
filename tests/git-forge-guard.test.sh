@@ -30,19 +30,45 @@
 #    0 mismatches. A control showed that the same harness sees brace, glob and zsh
 #    =command expansion. A is the check that covers the piped shapes (the four trailers
 #    with | tail or | head).
-# B. 4131 commands, each run from the checkout and from outside any repository against main's
+# B. 5837 commands, each run from the checkout and from outside any repository against main's
 #    guard and this one on 2026-10-29. The set covers delete-only pushes of merged, unmerged,
-#    default and tag branches, pinned and not, plus updates, dry runs and aliases. Each came in
-#    every trailer, behind cd, assignment, wrapper and global-option prefixes, with quoted and
-#    escaped words, continuations, odd whitespace, ANSI-C words, comments and compounds, and
-#    with 40 random insertions of one to three characters. No verdict was looser than main's.
-#    The only change: 550 merged, pinned deletes not in canonical text went from silent to
-#    deny. Every delete-only push this guard leaves silent is canonical text, or one main's
-#    guard also leaves silent because the helper never reads it as git push (no literal git or
-#    push word, or a subcommand word holding another character). That is obfuscation, which
-#    the threat model leaves to the classifier.
-# The allowlist assumes zsh's MAGIC_EQUAL_SUBST is off, as it is in the snapshot. In the
-# worst case, if it were on, x==cmd becomes x=/abs/path/of/cmd: no new word, no new option.
+#    default and tag branches, pinned and not, plus updates, aliases and dry runs (negated,
+#    abbreviated, bundled, -on, a glob). Each came in every trailer, behind cd, assignment,
+#    wrapper and global-option prefixes, with quoted and escaped words, continuations, odd
+#    whitespace, ANSI-C words, comments and compounds, and with 40 random insertions of one to
+#    three characters. No verdict was looser than main's. The changes:
+#    - 550 merged, pinned deletes not in canonical text went from silent to deny;
+#    - 1026 dry runs not in canonical text, which main let return early, are judged as real
+#      pushes: 277 ask, 749 deny.
+#    No canonical dry run changed. Every delete-only push this guard leaves silent is
+#    canonical text, or one main's guard also leaves silent because the helper never reads it
+#    as git push (no literal git or push word, or a subcommand word holding another
+#    character). That is obfuscation, which the threat model leaves to the classifier.
+# C. Which plain words does a shell option still rewrite? Surveyed on 2026-10-29 with zsh 5.9,
+#    bash 3.2.57 and bash 5.3.20 (not part of this suite). The survey ran 77222 words: every
+#    word of length 1 and 2 over the full alphabet, every word of length 3 and 4 over l s x A 0
+#    7 and the ten punctuation characters (letters and digits differ only in the command names
+#    they spell; l and s spell ls), and lease, refs/heads, :refs/heads and push-option shapes
+#    around 300 branch names. Each word was handed unquoted to /usr/bin/printf, and its argv
+#    was compared with the word. The settings were:
+#    - zsh -f with each of its 185 options flipped on its own;
+#    - zsh with EQUALS, MAGIC_EQUAL_SUBST, BRACE_CCL, EXTENDED_GLOB, KSH_GLOB and GLOB_SUBST
+#      together;
+#    - zsh with Michael's Claude Code shell snapshot sourced, alone and with those options;
+#    - bash 3.2 and 5.3 with each shopt and set -o option flipped on its own, and with
+#      extglob, globstar, nocaseglob, dotglob, nullglob and failglob together.
+#    Of 340 settings, 330 handed every one of the 72781 words not starting with = through
+#    unchanged. 6 ran nothing (noexec, onecmd, restricted). The other 4 found three shapes,
+#    and canonical() refuses each (SHELL_REWRITES):
+#    - a word starting with = (zsh EQUALS, on by default: =ls is /bin/ls). It is refused as
+#      before.
+#    - a word holding == or := (zsh MAGIC_EQUAL_SUBST, off in the snapshot). 327 of the 1361
+#      such words changed or failed: x==ls became x=/bin/ls, and --force-with-lease=a:=ls
+#      became --force-with-lease=a:/bin/ls. With the option set, the final review measured a
+#      canonical delete of the merged x==ls that deleted the unmerged x=/bin/ls instead.
+#    - a word shaped NAME= or NAME+= (bash set -o keyword). bash moves exactly these 2398 words
+#      into the environment, so git never sees them.
+#    The snapshot defines no global alias, so no alias rewrites an argument.
 
 set -uo pipefail
 
@@ -647,7 +673,7 @@ has_reason   "the deny names the pinned command" \
 cp -R "$DEL" "$TMP/del work"
 DELTOP=$(git -C "$DEL" rev-parse --show-toplevel)
 SPACETOP=$(git -C "$TMP/del work" rev-parse --show-toplevel)
-PLAIN_LEAD="Push guard: a merged delete passes only when written in plain words: git push and its arguments, each made of letters, digits and ._/:=@+,%- (none starting with =), separated by single spaces, nothing before git, and at most 2>&1 and | tail -n N or | head -n N after."
+PLAIN_LEAD="Push guard: a merged delete passes only when written in plain words: git push and its arguments, each made of letters, digits and ._/:=@+,%- (none starting with =, holding == or :=, or shaped NAME= or NAME+=), separated by single spaces, nothing before git, and at most 2>&1 and | tail -n N or | head -n N after."
 RUN_HERE="and here. Pin the delete to the tip just read, so git refuses it if the branch has moved, and it needs no ask: git push --force-with-lease=done:$DONE origin --delete done"
 RUN_THERE="which is not this session's checkout. Pin the delete to the tip just read, so git refuses it if the branch has moved; the delete must run from that checkout, or Michael runs it: git push --force-with-lease=done:$DONE origin --delete done"
 has_reason   "a -C push from outside the checkout: the deny names it and who runs the delete" \
@@ -954,12 +980,32 @@ expect deny  "C3 a brace around a quoted blank in an -o value"          "$DEL" "
 has_reason   "C3 and the deny names the plain form" "$PLAIN_NOTE" "$DEL" "$C3_DONE -o ci.variable=X={a,' '} origin --delete done"
 # A word starting with = is not canonical: zsh, the Bash tool's shell, expands =x to the path
 # of a command x (EQUALS). A command a deny prints quotes such a word ('=x'), so it runs as
-# written in zsh. =e is a branch at main's tip, merged, on the remote.
+# written in zsh; its lease holds == and is quoted too (MAGIC_EQUAL_SUBST, below). =e is a
+# branch at main's tip, merged, on the remote.
 git -C "$DEL" branch =e main && git -C "$DEL" push -q origin =e 2>/dev/null
 C3_EQ_DEL="git push --force-with-lease==e:$MAIN origin --delete =e"
 expect deny  "C3 the pinned delete of a merged branch named =e"         "$DEL" "$C3_EQ_DEL"
 has_reason   "C3 and the printed delete quotes the name" \
-             "A name here needs quoting, which plain words cannot carry, so Michael runs it: git push --force-with-lease==e:$MAIN origin --delete '=e'" "$DEL" "$C3_EQ_DEL"
+             "A name here needs quoting, which plain words cannot carry, so Michael runs it: git push '--force-with-lease==e:$MAIN' origin --delete '=e'" "$DEL" "$C3_EQ_DEL"
+# A word holding == or := is not canonical: zsh's MAGIC_EQUAL_SUBST expands the text after the
+# = (x==ls is x=/bin/ls, X:=ls is X:/bin/ls). Off today, but with it set a canonical delete of
+# the merged x==ls deleted the unmerged x=/bin/ls (the final review measured it). A word shaped
+# NAME= or NAME+= is not canonical either: bash's set -k moves it into the environment. x==ls
+# and a=b are branches at main's tip, merged, on the remote.
+git -C "$DEL" branch 'x==ls' main && git -C "$DEL" push -q origin 'x==ls' 2>/dev/null
+git -C "$DEL" branch 'a=b' main && git -C "$DEL" push -q origin 'a=b' 2>/dev/null
+C3_EQEQ="git push --force-with-lease=x==ls:$MAIN origin --delete x==ls"
+expect deny  "C3 the pinned delete of a merged branch named x==ls"      "$DEL" "$C3_EQEQ"
+has_reason   "C3 and the printed delete quotes the == words" \
+             "A name here needs quoting, which plain words cannot carry, so Michael runs it: git push '--force-with-lease=x==ls:$MAIN' origin --delete 'x==ls'" "$DEL" "$C3_EQEQ"
+C3_COLEQ="$C3_DONE -o ci.variable=X:=ls origin --delete done"
+expect deny  "C3 a := in an -o value"                                   "$DEL" "$C3_COLEQ"
+has_reason   "C3 and the deny names the plain form" "$PLAIN_NOTE" "$DEL" "$C3_COLEQ"
+C3_NAME="git push --force-with-lease=a=b:$MAIN origin --delete a=b"
+expect deny  "C3 the pinned delete of a merged branch named a=b"        "$DEL" "$C3_NAME"
+has_reason   "C3 and the printed delete quotes the name" \
+             "A name here needs quoting, which plain words cannot carry, so Michael runs it: git push --force-with-lease=a=b:$MAIN origin --delete 'a=b'" "$DEL" "$C3_NAME"
+expect allow "C3 control: a refs/heads/ name holding = stays canonical" "$DEL" "git push --force-with-lease=refs/heads/a=b:$MAIN origin --delete refs/heads/a=b"
 # The remote word: a path or a URL is not a configured remote, as on main.
 expect deny  "C4 a delete to a path that is not a configured remote"    "$DEL" "$C3_DONE $REMOTES/del.git origin --delete done"
 has_reason   "C4 and the deny says so" "which is not a configured remote" "$DEL" "$C3_DONE $REMOTES/del.git origin --delete done"
@@ -1002,9 +1048,43 @@ lacks_reason "B4 and it prints no git -C form" "git -C" "$DEL" "cd '$TMP/del wor
 # Not bare never turns main's ask into a deny: an unmerged branch still asks.
 expect ask   "an unmerged branch behind -C and --no-pager still asks"   "$TMP" "git -C $DEL --no-pager push --force-with-lease=open:$OPEN origin --delete open"
 expect deny  "an option value that swallowed --delete"                  "$DEL" "git push --force-with-lease=work:$MAIN -o --delete origin work"
-# A dry run and an update push keep main's verdicts: a dry run returns early, unjudged.
-expect allow "a dry run of the pinned delete returns early, as on main" "$DEL" "$PINNED --dry-run"
-expect allow "a dry run returns early even behind GIT_DIR, as on main"  "$DEL" "GIT_DIR=$DEL/.git git push origin --delete done --dry-run"
+# Dry runs (spec 2026-10-28, section 2): one returns early, unjudged, only when the raw text
+# is canonical and git reads it as a dry run. Any other is judged as a real push, so an
+# unmerged delete asks. On main each of the fakes below returned early while the shell ran a
+# real delete.
+expect allow "D1 a canonical dry run of the pinned delete returns early" "$DEL" "$PINNED --dry-run"
+expect allow "D1 a canonical dry run of an unmerged delete returns early" "$DEL" "git push --force-with-lease=open:$OPEN origin --delete open -n"
+expect allow "D1 a bundled -nv, canonical, returns early"               "$DEL" "git push -nv --force-with-lease=open:$OPEN origin --delete open"
+# The glob: with a file named --no-dry-run in the cwd, the shell hands git --no-dry-run after
+# -n, and git deletes for real. Judged as a real push, the * is main's wildcard deny.
+DGLOB=$(cp -R "$DEL" "$TMP/delglob" && printf '%s' "$TMP/delglob")
+: > "$DGLOB/--no-dry-run"
+expect deny  "D2 -n and a glob that expands to --no-dry-run"            "$DGLOB" "git push --force-with-lease=open:$OPEN origin --delete open -n *"
+has_reason   "D2 and the deny names the wildcard" "the wildcard refspec * can update any branch" "$DGLOB" "git push --force-with-lease=open:$OPEN origin --delete open -n *"
+# A carriage return glued to -n: the shell keeps it in the lease word, so there is no dry run.
+expect ask   "D2 a carriage return glued to -n"                         "$DEL" "$(printf 'git push --force-with-lease=a\r-n origin --delete open')"
+# A continuation glued to -n: the shell joins ci.skip\<newline>-n into one push option value.
+expect ask   "D2 a continuation glued to -n"                            "$DEL" "git push --force-with-lease=open:$OPEN -o ci.skip\\
+-n origin --delete open"
+# Not canonical: judged as a real push, so a merged, pinned delete gets the plain-form deny and
+# an option main let a dry run carry is refused.
+expect deny  "D3 a dry run of the pinned delete with tail -3"           "$DEL" "$PINNED -n 2>&1 | tail -3"
+has_reason   "D3 and the deny names the plain form" "$PLAIN_NOTE" "$DEL" "$PINNED -n 2>&1 | tail -3"
+expect deny  "D3 a dry run behind GIT_DIR is judged, and GIT_DIR refused" "$DEL" "GIT_DIR=$DEL/.git git push origin --delete done --dry-run"
+has_reason   "D3 and the deny names GIT_DIR" "unsupported push configuration for the push guard: GIT_DIR" "$DEL" "GIT_DIR=$DEL/.git git push origin --delete done --dry-run"
+expect ask   "D3 a dry run behind -C is judged: an unmerged delete asks" "$TMP" "git -C $DEL push -n --force-with-lease=open:$OPEN origin --delete open"
+# Every word git could read as a negation, an abbreviation or a push option holding the n is
+# refused before the dry-run test, as on main, so -n or --dry-run in the guard's reading is
+# git's own (git 2.56 measured: the last of -n, --dry-run and --no-dry-run wins; --dry and
+# --no-dr count; -on is the push option n). Denied, never exempt.
+UNSUP="unsupported push configuration for the push guard: the push option"
+for neg in '-n --no-dry-run' '--dry-run --no-dry-run' '-n --no-dry' '-n --no-dr' '-nv --no-dry-run' '--no-dry-run -n' '--dry'; do
+  expect deny "D4 [$neg] is refused, as on main" "$DEL" "git push $neg --force-with-lease=open:$OPEN origin --delete open"
+done
+has_reason   "D4 and the deny names the option" "$UNSUP --no-dry-run" "$DEL" "git push -n --no-dry-run --force-with-lease=open:$OPEN origin --delete open"
+expect deny  "D4 -on is the push option n, refused, as on main"         "$DEL" "git push -on --force-with-lease=open:$OPEN origin --delete open"
+has_reason   "D4 and the deny names the push option" "the push option n is not one the guard allows" "$DEL" "git push -on --force-with-lease=open:$OPEN origin --delete open"
+# An update push keeps main's verdict.
 expect allow "an update push keeps main's verdict"                      "$DEL" "git push --force-with-lease=work:$MAIN origin work"
 
 # From here on the remote moves: another clone merges far into main and pushes both.

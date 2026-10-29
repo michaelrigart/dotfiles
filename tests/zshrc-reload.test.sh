@@ -129,6 +129,14 @@ out="$(run $'f() { print v1 }\ng() { print gv }' 'put v2 $T1; call; show; print 
 is "Z10 the new f is loaded" "$(line_n 1 "$out")" "$(want '' "$RELOADED" v2)"
 is "Z10 a function the new file lacks stays defined" "$(line_n 2 "$out")" 'g=[gv]'
 
+# Z13: one read. The fixture text, run as the trial, renames a v3 file over the functions file
+# and then defines f as v2. The load runs the same text, so f is v2; a second read of the file
+# would load v3.
+out="$(run "$V1" "print -r -- 'f() { print v3 }' > \$TT/v3; touch -t \$T3 \$TT/v3
+print -r -- '[[ -e \$TT/v3 ]] && mv \$TT/v3 \$FN
+f() { print v2 }' > \$FN; touch -t \$T1 \$FN; call; show")"
+is "Z13 the trial and the load use one read of the file" "$out" "$(want '' "$RELOADED" v2)"
+
 # Z12: nothing a case script did wrote to its stderr, which would be a startup error or
 # warning from the new block in dot_zshrc (the hook's own stderr is captured by `call`)
 is "Z12 no case script wrote to stderr" "$(cat "$T/all.err" 2>/dev/null)" ''

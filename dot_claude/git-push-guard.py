@@ -86,14 +86,21 @@ PUNCT =";&|()<>\n"
 # pinned delete passes silently: the raw command, with at most one trailing newline removed
 # and then its leading and trailing spaces stripped (canonical), is git push and its arguments
 # separated by single spaces, then at most one trailer (2>&1, a tail or head with -n N, or
-# both). Every argument is one plain word, none starting with = (zsh's EQUALS expansion). An
+# both). Every argument is one plain word that no shell option rewrites (SHELL_REWRITES). An
 # allowlist of the shell surface, not a denylist: bash and zsh hand git exactly these words
-# (differential check recorded in tests/git-forge-guard.test.sh).
+# (differential check and option survey recorded in tests/git-forge-guard.test.sh).
 PLAIN_WORD = "[A-Za-z0-9._/:=@+,%-]+"
 CANONICAL = re.compile("git push((?: " + PLAIN_WORD + ")*)(?: 2>&1)?(?: \\| (?:tail|head) -n [0-9]+)?")
+# The plain words a shell option still rewrites, by the survey of every zsh and bash option over
+# the plain-word alphabet: one starting with = (zsh EQUALS: =ls is /bin/ls), one holding == or
+# := (zsh MAGIC_EQUAL_SUBST: x==ls is x=/bin/ls, a=b:=ls is a=b:/bin/ls), and one shaped NAME=
+# or NAME+= (bash set -k moves it into the environment, so git never sees it). canonical()
+# refuses such a word, and shell_word() quotes it.
+SHELL_REWRITES = re.compile(r"^=|==|:=|^[A-Za-z_][A-Za-z0-9_]*\+?=")
 PLAIN_WORDS = ("plain words: git push and its arguments, each made of letters, digits and "
-               "._/:=@+,%- (none starting with =), separated by single spaces, nothing before "
-               "git, and at most 2>&1 and | tail -n N or | head -n N after")
+               "._/:=@+,%- (none starting with =, holding == or :=, or shaped NAME= or NAME+=), "
+               "separated by single spaces, nothing before git, and at most 2>&1 and "
+               "| tail -n N or | head -n N after")
 ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 # Could this text run git push? git, then push (or a push alias), within one command.
 PUSH_SHAPE = re.compile(r"\bgit\b[^;&|\n]*\bpush\b")
@@ -703,7 +710,8 @@ def runs_command_string(sub, args):
 
 
 def canonical(cmd):
-    """Is the raw command canonical text (CANONICAL, and no argument starting with =)? First
+    """Is the raw command canonical text (CANONICAL, and no argument a shell option rewrites:
+    SHELL_REWRITES)? First
     at most one trailing newline is removed, then leading and trailing spaces: any other
     newline, a tab or a carriage return anywhere, a quote, an escape or any other character
     makes the text not canonical. The text starts with git push itself, so canonical text has
@@ -711,7 +719,7 @@ def canonical(cmd):
     names only the plain form), and no alias."""
     text = cmd[:-1] if cmd.endswith("\n") else cmd
     m = CANONICAL.fullmatch(text.strip(" "))
-    return bool(m) and not any(w.startswith("=") for w in m.group(1).split(" "))
+    return bool(m) and not any(SHELL_REWRITES.search(w) for w in m.group(1).split(" ") if w)
 
 
 def judge(s, session, text=False):
@@ -897,10 +905,10 @@ def other_checkout(root, session):
 
 def shell_word(word):
     """word quoted for the shell, as a deny reason prints it in a command: shlex.quote, and a
-    word starting with = is quoted too, since zsh (the Bash tool's shell) expands =x to the
-    path of a command x (EQUALS) and shlex counts = as safe."""
+    word a shell option rewrites (SHELL_REWRITES: =x, x==y, a:=b, NAME=) is quoted too, since
+    shlex counts = and : as safe."""
     quoted = shlex.quote(word)
-    return "'" + word + "'" if quoted == word and word.startswith("=") else quoted
+    return "'" + word + "'" if quoted == word and SHELL_REWRITES.search(word) else quoted
 
 
 def merged_delete(repo, remote, default, names, leases, root, session, plain=False):
@@ -1237,7 +1245,14 @@ def evaluate(cwd, assigns, repo_opts, config_opts, args, session, bare=False):
     is canonical text (canonical); only a bare delete-only push of merged, pinned branches
     passes silently."""
     flags, remote_arg, refspecs = parse_push(args)
-    if "-n" in flags or "--dry-run" in flags:
+    # A dry run returns early, never scanned and never asked, only when the raw command is
+    # canonical text and git reads it as a dry run (spec 2026-10-28, section 2, Dry runs).
+    # parse_push has refused every word git could read otherwise: --no-dry-run and every other
+    # negation, an abbreviation such as --dry, --, and a -o value outside the allowed ones (-on
+    # is a push option in git). So -n, bundled or not, or --dry-run in flags is git's own
+    # reading (measured against git 2.56). Any other dry run is judged as a real push: its
+    # words may reach git as others, as a glob that expands to --no-dry-run does.
+    if ("-n" in flags or "--dry-run" in flags) and bare:
         return None                                    # never scanned, never asked
     if config_opts:
         raise Deny(UNSUPPORTED.format("a " + config_opts[0] + " option on the push invocation"))
