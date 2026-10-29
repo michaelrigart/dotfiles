@@ -201,7 +201,9 @@ expect allow "a \$HOME path to helm push"            "$R" '$HOME/bin/helm push x
 ```
 
   In the "expansion in option values" section, change `$DOCKER push registry/x:1` and
-  `npm run build && $DOCKER push img` from `allow` to `deny`, and update their labels.
+  `npm run build && $DOCKER push img` from `allow` to `deny`, and update their labels. Add a
+  comment citing spec §4: a built command word whose subcommand slot holds push counts as a
+  possible git.
 
 - [ ] **Step 2: Run and confirm RED.**
 - [ ] **Step 3: Implement `built_word_hits`, and extend `odd_command_word` with it.**
@@ -255,11 +257,16 @@ expect allow "a \$HOME path to helm push"            "$R" '$HOME/bin/helm push x
       - `true; g"it" push origin main`;
       - `cat <<EOF`⏎`$( $'\x67it' $'\x70ush' origin main )`⏎`EOF`;
       - `printf '\x67it \x70ush origin main' | sh`;
-    - git and push each spelled by `\xHH`, `\x{HH}`, octal, `\u`, `\U`, zsh's dropped backslash
-      (`$'\g\it'`, `$'\pus\h'`), `gi\t`, a NUL (`$'git\0x'`, `$'gi\0x't`, `$'git\0'x`), split
-      across quotes (`gi$'t'`, `$'g\x69'"t"`), and with both words escaped;
+    - git and push, each spelled in these forms:
+      - inside `$'…'`: `\xHH`, `\x{HH}`, octal, `\u`, `\U`, zsh's dropped backslash
+        (`$'\g\it'`, `$'\pus\h'`) and a NUL (`$'git\0x'`, `$'gi\0x't`, `$'git\0'x`);
+      - split across quotes: `gi$'t'`, `$'g\x69'"t"`;
+      - unquoted: `gi\t`;
+      - with both words escaped;
     - each of those settings:
-      - bare;
+      - bare. The one exception is the unquoted `gi\t` alone,
+        `gi\t push origin main`: it is a plain command, which keeps main's ask (see the rows 8
+        to 10 bullet below);
       - behind `-c $'x.y=\n'`;
       - after `true 'x$';`;
       - after a here-document holding an apostrophe;
@@ -291,7 +298,9 @@ expect allow "a \$HOME path to helm push"            "$R" '$HOME/bin/helm push x
   - **Still denied by main's raw check:** `echo $'git push'`.
   - **Table rows 8 to 10 keep main's verdicts:**
     - deny: `$'git' push origin main`, `$"git" push origin main`, `{git,} push origin main`;
-    - ask: `g\it push origin main`, `'git' push origin main`, `g''it push origin main`.
+    - ask: `g\it push origin main`, `'git' push origin main`, `g''it push origin main`;
+    - ask: `expect ask "an unquoted gi\t, a plain command, still asks" "$R" 'gi\t push origin main'`.
+      In every other setting above, `gi\t` sits outside the grammar and is denied.
   - **Review Focus 4:** a 200 KB `cat > $TMP/big <<'EOF'` body of `\x41` lines is allowed, and
     `SECONDS` shows under 10 s.
 
