@@ -183,7 +183,10 @@ real delete. This change only tightens, and a plain canonical dry run is unchang
   - the raw command, after at most one trailing newline is removed and then its leading and
     trailing spaces are stripped, is `git push` and its arguments separated by single spaces;
   - at most one trailer: ` 2>&1`, ` | tail -n N`, ` | head -n N`, ` 2>&1 | tail -n N` or
-    ` 2>&1 | head -n N`, with N digits;
+    ` 2>&1 | head -n N`, with N digits. The count may also be written `-N` (` | tail -3`).
+    That form was added by a controller's ruling once the option survey found the `-N` words
+    inert in every setting that runs commands. The whole trailers were also checked, over
+    50,800 runs through stub `tail` and `head`;
   - every argument matches `^[A-Za-z0-9._/:=@+,%-]+$`;
   - no argument starts with `=`, which zsh's EQUALS option would expand (the Bash tool runs
     Michael's zsh);
