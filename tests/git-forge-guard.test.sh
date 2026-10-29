@@ -1523,11 +1523,72 @@ expect allow "a sed backreference is silent"         "$R" "sed -E 's/(a)/\\1/' f
 # Without PUSH_GUARD_LITERAL the helper treats the run as a hidden-spelling start: an ask is a deny.
 hv=$(jq -n --arg d "$R" '{cwd:$d,tool_input:{command:"git push origin main"}}' \
   | env -u PUSH_GUARD_LITERAL python3 "$(dirname "$GUARD")/git-push-guard.py")
-if printf '%s' "$hv" | jq -e '.hookSpecificOutput.permissionDecision=="deny"' >/dev/null 2>&1; then
+if printf '%s' "$hv" | jq -e '.hookSpecificOutput.permissionDecision=="deny"' >/dev/null 2>&1 \
+   && printf '%s' "$hv" | grep -q "in a shape the guard does not check"; then
   pass=$((pass + 1)); printf '  ok   %s\n' "the helper without the literal flag denies where it would ask"
 else
   fail=$((fail + 1)); printf '  FAIL %s (%s)\n' "the helper without the literal flag denies where it would ask" "$hv"
 fi
+# The helper's exception branch, driven at unit level: parse_plain and could_push are replaced
+# with functions that raise, so no real input is needed to force it.
+exc_out=$(/usr/bin/python3 - "$(dirname "$GUARD")/git-push-guard.py" <<'PY'
+import importlib.util, io, json, os, sys
+
+spec = importlib.util.spec_from_file_location("guard", sys.argv[1])
+g = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(g)
+
+
+def boom(*a, **k):
+    raise RuntimeError("forced")
+
+
+def run(cmd, literal, patch):
+    if literal is None:
+        os.environ.pop("PUSH_GUARD_LITERAL", None)
+    else:
+        os.environ["PUSH_GUARD_LITERAL"] = literal
+    saved = {k: getattr(g, k) for k in patch}
+    for k, v in patch.items():
+        setattr(g, k, v)
+    sys.stdin = io.StringIO(json.dumps({"cwd": "/nonexistent", "tool_input": {"command": cmd}}))
+    out = io.StringIO()
+    old, sys.stdout = sys.stdout, out
+    try:
+        g.main()
+    finally:
+        sys.stdout = old
+        for k, v in saved.items():
+            setattr(g, k, v)
+    text = out.getvalue().strip()
+    if not text:
+        return "silent"
+    d = json.loads(text)["hookSpecificOutput"]
+    r = d["permissionDecisionReason"]
+    return d["permissionDecision"] + "/" + ("plain" if r == g.PLAIN else "internal" if "internal error" in r else "other")
+
+
+hidden = 'git pu"sh" origin main'
+both = {"parse_plain": boom, "could_push": boom}
+print("exception, no flag, no shape", run(hidden, None, both))
+print("exception, literal=0, no shape", run(hidden, "0", both))
+print("exception, literal=0, push shape", run("git push origin main", "0", {"parse_plain": boom}))
+print("exception, literal=1, no shape", run(hidden, "1", both))
+PY
+)
+while IFS='|' read -r label want; do
+  got=$(printf '%s\n' "$exc_out" | sed -n "s/^$label //p")
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf '  ok   %s\n' "helper exception: $label -> $want"
+  else
+    fail=$((fail + 1)); printf '  FAIL %s (got %s)\n' "helper exception: $label -> $want" "$got"
+  fi
+done <<'EOF'
+exception, no flag, no shape|deny/plain
+exception, literal=0, no shape|deny/plain
+exception, literal=0, push shape|deny/internal
+exception, literal=1, no shape|silent
+EOF
 # A large payload with no push in it must stay cheap (the hidden-spelling scan is linear).
 big=$(awk 'BEGIN { for (i = 0; i < 20000; i++) print "print(\"abc\", \x27d\x27, x\\y)" }')
 t0=$SECONDS
@@ -1548,7 +1609,7 @@ if [ -x /bin/bash ]; then
     fail=$((fail + 1)); printf '  FAIL %s\n' "the guard denies a quoted push word under /bin/bash"
   fi
 else
-  printf '  ok   %s\n' "no /bin/bash here: the 3.2 check is skipped"
+  printf '  skip %s\n' "no /bin/bash here: the 3.2 check is skipped"
 fi
 
 echo "== rule 4: aliases that expand to pushing commands =="
