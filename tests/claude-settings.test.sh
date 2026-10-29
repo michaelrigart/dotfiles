@@ -166,7 +166,8 @@ for c in 'git push' 'git push origin main' "git push --force-with-lease=b:$SHA o
          'git push -d origin b' 'git push --force origin main' 'git push --dry-run origin x' \
          "git push --force-with-lease=b:$SHA origin --delete b 2>&1 | tail -n 3" \
          'git -C /r push origin --delete b' 'git --no-pager push origin x' 'git -c a=b push origin x' \
-         'git -C /r -c a=b --no-pager push origin x' '/usr/bin/git push origin x' 'command git push origin x'; do
+         'git -C /r -c a=b --no-pager push origin x' '/usr/bin/git push origin x' 'command git push origin x' \
+         'env git push origin x' 'xargs git push origin x' 'nohup git push origin x' 'timeout 9 git push origin x'; do
   m_is "$c" 0 "no allow rule matches: $c"
 done
 jq_is '[.permissions.allow[] | select(test("\\*.*:\\*\\)$"))] | length' 0 \

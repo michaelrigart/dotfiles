@@ -129,13 +129,26 @@ out="$(run $'f() { print v1 }\ng() { print gv }' 'put v2 $T1; call; show; print 
 is "Z10 the new f is loaded" "$(line_n 1 "$out")" "$(want '' "$RELOADED" v2)"
 is "Z10 a function the new file lacks stays defined" "$(line_n 2 "$out")" 'g=[gv]'
 
-# Z13: one read. The fixture text, run as the trial, renames a v3 file over the functions file
-# and then defines f as v2. The load runs the same text, so f is v2; a second read of the file
-# would load v3.
+# Z13: the load runs the text it read. The fixture text, run as the trial, renames a v3 file over
+# the functions file and then defines f as v2. The load runs the same text, so f is v2; a second
+# read of the file on the load side would load v3. A second read on the trial side passes here
+# too, so Z14 covers that side.
 out="$(run "$V1" "print -r -- 'f() { print v3 }' > \$TT/v3; touch -t \$T3 \$TT/v3
 print -r -- '[[ -e \$TT/v3 ]] && mv \$TT/v3 \$FN
 f() { print v2 }' > \$FN; touch -t \$T1 \$FN; call; show")"
-is "Z13 the trial and the load use one read of the file" "$out" "$(want '' "$RELOADED" v2)"
+is "Z13 the load runs the text read, not a second read of the file" "$out" "$(want '' "$RELOADED" v2)"
+
+# Z14: one read, both sides. The functions file is a FIFO whose writer serves the good text on
+# the first open and a failing text (f as v3, then false) on the second. The hook reads once, so
+# the trial and the load both run the good text and f is v2. A second read, by the trial or by
+# the load, gets the failing text, and the call reports the failure line instead. The writer is
+# a background job, so BG_NICE goes off: the sandbox refuses nice(5).
+out="$(run "$V1" "rm -f \$FN; mkfifo \$FN; touch -t \$T1 \$FN; unsetopt bg_nice
+{ print -r -- 'f() { print v2 }' > \$FN; print -r -- 'f() { print v3 }; false' > \$FN } &
+W=\$!
+call; show
+kill \$W 2>/dev/null; wait \$W 2>/dev/null")"
+is "Z14 the trial and the load both run the one text read" "$out" "$(want '' "$RELOADED" v2)"
 
 # Z12: nothing a case script did wrote to its stderr, which would be a startup error or
 # warning from the new block in dot_zshrc (the hook's own stderr is captured by `call`)
