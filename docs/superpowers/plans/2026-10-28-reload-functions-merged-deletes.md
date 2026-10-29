@@ -4,6 +4,19 @@
 
 **Status:** In progress
 
+> **Superseded in part, 2026-10-29. Do not execute Task 2 or Task 3.** Michael chose option (d),
+> recorded in the spec's section 2 (c9adecf and the spec commits after it). The allow rules A1,
+> A2, A4, F1 and F2, the guard's mirror of them (`DELETE_ALLOW_RULES`, `NOT_A_DELETE_PUSH`,
+> `NOT_DELETE_SHAPE`), and their parity tests were built and then removed. They are replaced by:
+> - an `autoMode.allow` classifier rule for the exact plain pinned delete of a merged branch;
+> - rule 4's silent pass requiring canonical text;
+> - the `sdd-clean` fsmonitor fix.
+>
+> The removal landed at 5663016 and the fixes after it. Also superseded: this plan's
+> Architecture line on the rules, the Global Constraints that list the five allow rules and the
+> two mirror deny reasons, and Tasks 2 and 3. Task 1 (the reload hook) and the `global.md`
+> wording were implemented as written. The tasks below are left as approved, as history.
+
 **Goal:** Interactive shells reload `~/.config/zsh/functions` when it changes, and agents delete merged branches through the push guard instead of the auto-mode classifier.
 
 **Architecture:** A `preexec` hook in `dot_zshrc` reads the functions file once (mtime first), trials it in a subshell and loads that same text. Three push allow rules and two fetch rules go into the settings modify script; `git-push-guard.py` mirrors the push rules and judges every command that matches one by what git will parse. The "confirm first" rule in `global.md` gets a narrow exception.
