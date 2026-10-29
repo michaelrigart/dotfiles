@@ -52,7 +52,9 @@ printf '%s' "$input" | jq \
      + "refs/heads/<branch>:<sha> origin --delete <branch>` (the lease may also be written "
      + "`--force-with-lease=<branch>:<sha>`, and `:refs/heads/<branch>` may stand in place of "
      + "`--delete <branch>`), with every deleted branch pinned to its tip, and with no quoting, "
-     + "escapes, globs, variables, substitutions or other commands in it. A PreToolUse push "
+     + "escapes, globs, variables, substitutions or other commands in it. It never applies when git or "
+     + "push is spelled any way other than those literal words, is built at run time, or is run "
+     + "through a script or interpreter. A PreToolUse push "
      + "guard verifies the merge and the pin before such a push runs and blocks it otherwise. "
      + "This never covers deleting the default branch, and never a push that creates or "
      + "updates a branch.") as $delete_rule
