@@ -67,9 +67,28 @@ The views are whole-text variants of step 2:
   value there, or everything to the next blank or operator is dropped, as `execve` ends the
   word there. In zsh, `$'git\0'x push` runs git push (measured).
 
-That gives at most 4 views per reading, and 12 in all once duplicates are removed. `could_push`
-matches `PUSH_SHAPE` and the alias pattern against each view, and runs its token checks on each
-view's tokens.
+That gives at most 4 views per reading, and 12 in all once duplicates are removed.
+
+**When views exist.** The helper builds views only when the raw command holds a hidden-spelling
+signal:
+- `$'` or `$"`;
+- a backslash-newline;
+- a backslash escape sequence (`\x`, `\u`, `\U`, octal, `\c`);
+- a run of quotes and backslashes with a letter or digit on each side (`g"it"`, `p''ush`,
+  `g\it`, `gi\t`).
+
+Without one, `could_push` is main's, plus section 2.
+
+**Matching a view.** The match on a view ignores separators. It needs the word `git` and,
+anywhere later in the same view, the word `push`, `send-pack` or `http-push`, or a push alias
+name. Anything may sit between them, newlines included. A view never uses `PUSH_SHAPE`, because
+that pattern stops at `;`, `&`, `|` and newline, which are exactly the separators that
+normalization pulls out of quoted values. Round 2 caught this with
+`$'\x67it' -c 'x.y=a;b' $'\x70ush' origin main`, which runs git push.
+
+This over-approximation has no parse to get wrong, and its cost lands in the transcript metric.
+`dynamic_git_word` and section 4's check also run on each view's tokens. A view holds no quotes,
+so it always splits. The raw text keeps main's `PUSH_SHAPE` check, and the grammar stays main's.
 
 Decoding where the shell would not only adds denies. Examples are a quoted here-document body
 and a single-quoted `printf '\x67it'`. That is the accepted price of a construction with no
@@ -79,9 +98,14 @@ context to get wrong. Inert redaction still applies:
 - `echo $'\x67it push'` is now denied, as main already denies `echo $'git push'`: a command
   holding `$'` is read raw.
 
-The cost is measured by the transcript differential under Tests. It counts new denies on real
-commands by class, and it must show 0 on commands that never push. A real false deny there is a
-finding to fix, not a residual.
+Two denies are accepted by design:
+- `echo $'\x67it push'`;
+- a quoted here-document body that spells a push, such as `cat <<'EOF'` with
+  `$( $'\x67it' $'\x70ush' … )` in its body.
+
+The cost is measured by the transcript part of the differential under Tests. It counts new
+denies on real commands by class, and it must show 0 on real commands that never push. A real
+false deny there is a finding to fix, not a residual.
 
 ## 2. Outside the grammar, and the push shape on tokens
 
@@ -93,10 +117,10 @@ Two kinds of command fall outside the grammar, so `parse_plain` never reads them
 
 If any view of such a command could push, it gets the PLAIN silent deny, never an ask.
 
-`dynamic_git_word` also returns true when the slot past git's global options holds `push`,
-`send-pack` or `http-push`. It applies that check to the raw tokens, as main reads them, and to
-each view's tokens. On the raw tokens it catches a quoted `;`, `|` or newline in an option value
-before push, which a view splits apart. It also catches `git send-pack` in a compound command,
+On the raw tokens, as main reads them, `dynamic_git_word` also returns true when the slot past
+git's global options holds `push`, `send-pack` or `http-push`. This catches a quoted `;`, `|` or
+newline in an option value before a literal push, as in `true; git -c 'x.y=a;b' push`, where no
+hidden-spelling signal builds a view. It also catches `git send-pack` in a compound command,
 which `PUSH_SHAPE` never matched. These checks run only outside the grammar.
 
 ## 3. Fast path: start on hidden spellings, never ask for them
@@ -185,6 +209,9 @@ The guard header's threat model is rewritten:
 The header also records the residual:
 - the raw-token checks (a quoted separator in an option value, `dynamic_git_word`) do not run
   when shlex cannot split the raw text, as on main. The view checks still run;
+- a subcommand built at run time, behind an escaped git and a quoted separator in an option
+  value (`$'\x67it' -c 'a.b=c;d' ${X:-pu}sh`), escapes `dynamic_git_word`: the view's tokens
+  split at the `;`, and there is no push word for the view match;
 - a push alias behind a built command word (`$G pom`) holds no push word.
 
 ## Non-goals
@@ -215,6 +242,10 @@ The header also records the residual:
     denied by design;
   - on the line after `echo $((1<<2))`;
   - as an alias (`$'\x67it' pom`), in the dash form, and as `send-pack`.
+- Round 2's case and its escaped-quote variant are denied:
+  `$'\x67it' -c 'x.y=a;b' $'\x70ush' origin main` and
+  `$'\x67it' -c $'x.y=a\';b' $'\x70ush' origin main`. Both run git push under all three shells
+  (measured).
 - Continuations:
   - `g\`⏎`it pu\`⏎`sh origin main`, `git pu\`⏎`sh origin main` and
     `git pu\`⏎`sh --force origin main` are denied;
@@ -225,7 +256,9 @@ The header also records the residual:
   - `IFS=$'\n'; echo hi`, `printf $'a\tb'`, `read -r -d $'\0' x`;
   - `sed -e 's/git|push/x/' f`, `rg "git|push" $'\t'`;
   - `$HOME/bin/helm push x`, `$PYTHON scripts/push.py`;
-  - `cat <<EOF`⏎`it's $'\x67it'`⏎`EOF`.
+  - `cat <<EOF`⏎`it's $'\x67it'`⏎`EOF`;
+  - `git status && ./scripts/push.sh`, which holds no hidden-spelling signal, so no view is
+    built.
 - `echo $'\x67it push'` is denied by design, as main denies `echo $'git push'`.
 - `git pu"sh" origin main` and `git pu"sh" --force origin main` get the PLAIN deny, not an ask.
   `git pu"sh" origin feature` stays silent.
@@ -241,9 +274,10 @@ Three differentials are recorded in the suite header and are not part of the sui
   git first on PATH, which records its argv. Every command whose stub received push or send-pack
   as its subcommand must get a deny or an ask: 0 silent outside section 7's residual.
 - **Against main.** The corpus is the merged spec's B shapes, the cases above, and every Bash
-  command from the last 30 days of transcripts, run locally and never committed. The result must
-  be 0 looser verdicts and 0 new asks. New denies are counted by class, and there must be 0 on
-  commands that never push.
+  command from the last 30 days of transcripts, run locally and never committed. Across the whole
+  corpus the result must be 0 looser verdicts and 0 new asks. The synthetic cases are judged by
+  their expected verdicts, including the two accepted by design in section 1. On the transcript
+  part, new denies are counted by class, and there must be 0 on commands that never push.
 
 `tests/claude-settings.test.sh` checks that:
 - the RULE pin carries the new text;
