@@ -504,6 +504,27 @@ printf '%s' "$input" | jq \
   # wholesale; every other permissions key in the live file (additionalDirectories, say)
   # is carried, and defaultMode is seeded below.
   | .permissions = ($perm + .permissions)
+  # Extensions that cost listing context every session and are never used (doctor
+  # cleanup, 2026-10-29). Owned only entry by entry: the live enabledPlugins and
+  # skillOverrides are carried, because Claude Code writes both at runtime (/plugin,
+  # /skills), and these entries are forced on every apply. plugins.conf is add-only, so
+  # dropping a line there leaves a plugin installed and enabled; enabledPlugins false is
+  # what turns it off, and the reconciler then leaves it as it is. The cowork plugin is
+  # synced from claude.ai (@synced). skillOverrides does not reach plugin skills (2.1.314
+  # reads it only for skills that are not from a plugin), so its two skills go off with
+  # the plugin. The synced claude.ai skills are keyed anthropic-skills:<name>, as the skill
+  # listing shows them; the bare name matches too. Delete an entry to bring it back.
+  | ["claude-code-setup@claude-plugins-official",
+     "claude-md-management@claude-plugins-official",
+     "cowork-plugin-management@synced"] as $disabled_plugins
+  | (["pptx", "docx", "pdf", "xlsx", "google-workspace", "computer-use", "built-in-browser",
+      "morning", "skill-creator", "mcp-builder", "internal-comms", "canvas-design",
+      "algorithmic-art", "theme-factory", "brand-guidelines", "slack-gif-creator",
+      "import-memory"] | map("anthropic-skills:" + .)) as $off_synced
+  | .enabledPlugins = (((.enabledPlugins | objects) // {})
+      + ($disabled_plugins | map({key: ., value: false}) | from_entries))
+  | .skillOverrides = (((.skillOverrides | objects) // {})
+      + ($off_synced | map({key: ., value: "off"}) | from_entries))
   # Retired keys: owned once, owned no more. Starting from the live file keeps a key
   # forever unless it is deleted here by name. includeCoAuthoredBy is superseded by
   # attribution, voiceEnabled by the voice object; subagentStatusLine never rendered and
