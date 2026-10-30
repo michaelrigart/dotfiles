@@ -495,11 +495,14 @@ The final whole-branch review, and the spec amendment of 2026-10-30 that followe
 the plan in these ways. They supersede the task text above where they differ; the task text is
 left as written.
 
-- **197 entries, not 181.** The review added 16 `denyWrite` entries to the 39 planned
-  (55 new on 142): 12 worktree-module forms (`config*`, `commondir` and `hooks` under
-  `.git/worktrees/*/modules/**`, for each root) and 4 `HEAD` entries (`~/Code/HEAD`,
-  `~/Documents/HEAD`, the vault's `**/HEAD`, `~/Code/*/HEAD`). `claude-settings` pins the exact
-  array of 197, the new glob cases, and the live suite its HEAD and worktree-module probes.
+- **209 entries, not 181.** The reviews added 28 `denyWrite` entries to the 39 planned
+  (67 new on 142): 12 worktree-module forms (`config*`, `commondir` and `hooks` under
+  `.git/worktrees/*/modules/**`, for each root), 4 `HEAD` entries (`~/Code/HEAD`,
+  `~/Documents/HEAD`, the vault's `**/HEAD`, `~/Code/*/HEAD`), and 12 tool-configuration
+  entries (`<root>/**/.lazygit.yml`, `<root>/**/.git/**/lazygit.yml`,
+  `<root>/**/.git/glab-cli/config.yml`). `claude-settings` pins the exact array of 209, the
+  new glob cases and the widened invariant. `live-write-boundary` gets probes for the HEAD,
+  worktree-module and tool-configuration keys, and the three Unicode-fold keys.
 - **The Task 3 escape line is three lines**, not two.
 - **The Apple-git check skips instead of passing.** When Apple git is absent, `git-config`
   prints a skip line that `tests/run.sh` does not count as a pass, not an `ok`.

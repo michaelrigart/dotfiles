@@ -446,6 +446,13 @@ printf '%s' "$input" | jq \
           # are untouched. A config* module entry also denies a
           # submodule git directory whose path has a part starting with config, and its refs and
           # reflogs with such a name. Objects, refs, the index and TMPDIR stay writable.
+          # Per-repository tool configuration that runs as Michael: lazygit loads lazygit.yml
+          # from a git directory and .lazygit.yml from every parent of a repository (its pager
+          # and externalDiffCommand run when he draws a diff), and glab reads
+          # .git/glab-cli/config.yml (its editor and browser run when he uses glab). Only that
+          # one glab file is denied, as glab keeps other state (recover files) in the same
+          # directory. Consequence: .git/**/lazygit.yml also denies a ref or file of that name
+          # inside a git directory.
           # .claude/skills, commands and agents stay writable (projects commit their own).
           # Hooks per spec 83f6b2b. Each agent path is listed at depth 0, 1 and 2
           # under a root (work root, org dir or top-level repo, repo or wt sibling: where
@@ -463,6 +470,7 @@ printf '%s' "$input" | jq \
             | [".git/hooks", ".git/hooks/**", ".git/modules/**/hooks", ".git/modules/**/hooks/**"] as $git
             | [".git/config*", ".git/commondir", ".git/worktrees/*/config*", ".git/worktrees/*/commondir", ".git/modules/**/config*", ".git/modules/**/commondir"] as $gitconf
             | [".git/worktrees/*/modules/**/config*", ".git/worktrees/*/modules/**/commondir", ".git/worktrees/*/modules/**/hooks"] as $wtmod
+            | [".lazygit.yml", ".git/**/lazygit.yml", ".git/glab-cli/config.yml"] as $toolconf
             | [".claude/settings.json", ".claude/settings.local.json", ".mcp.json", ".codex", ".codex/**"] as $agent
             | [$roots[] as $root | $git[] | "\($root)/**/\(.)"]
               + [$git[] | "~/.local/share/chezmoi/\(.)"]
@@ -475,6 +483,7 @@ printf '%s' "$input" | jq \
                                      "\($root)/*/*/.claude/worktrees/*/.git"]
               + ["~/Code/.git", "~/Documents/.git", "~/Library/Mobile Documents/iCloud~md~obsidian/**/.git"]
               + ["~/Code/HEAD", "~/Documents/HEAD", "~/Library/Mobile Documents/iCloud~md~obsidian/**/HEAD", "~/Code/*/HEAD"]
+              + [$roots[] as $root | $toolconf[] | "\($root)/**/\(.)"]
               + ["~/Library/Mobile Documents/iCloud~md~obsidian/Documents/*/.obsidian",
                  "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/*/.obsidian/**"])
         },

@@ -378,9 +378,10 @@ jq_is ".sandbox.filesystem.allowWrite == $EXP_ALLOW_WRITE" true \
 GITFILES='[".git/hooks",".git/hooks/**",".git/modules/**/hooks",".git/modules/**/hooks/**"]'
 GITCONF='[".git/config*",".git/commondir",".git/worktrees/*/config*",".git/worktrees/*/commondir",".git/modules/**/config*",".git/modules/**/commondir"]'
 GITWTMOD='[".git/worktrees/*/modules/**/config*",".git/worktrees/*/modules/**/commondir",".git/worktrees/*/modules/**/hooks"]'
+TOOLCONF='[".lazygit.yml",".git/**/lazygit.yml",".git/glab-cli/config.yml"]'
 AGENTFILES='[".claude/settings.json",".claude/settings.local.json",".mcp.json",".codex",".codex/**"]'
 ROOTS='["~/Code","~/.local/share/chezmoi","~/Documents","~/Library/Mobile Documents/iCloud~md~obsidian"]'
-EXP_DENY_WRITE=$(jq -cn --argjson g "$GITFILES" --argjson c "$GITCONF" --argjson w "$GITWTMOD" --argjson a "$AGENTFILES" --argjson r "$ROOTS" '
+EXP_DENY_WRITE=$(jq -cn --argjson g "$GITFILES" --argjson c "$GITCONF" --argjson w "$GITWTMOD" --argjson t "$TOOLCONF" --argjson a "$AGENTFILES" --argjson r "$ROOTS" '
   [$r[] as $root | $g[] | "\($root)/**/\(.)"]
   + [$g[] | "~/.local/share/chezmoi/\(.)"]
   + [$r[] as $root | $c[] | "\($root)/**/\(.)"]
@@ -391,20 +392,21 @@ EXP_DENY_WRITE=$(jq -cn --argjson g "$GITFILES" --argjson c "$GITCONF" --argjson
   + [$r[] as $root | "\($root)/.claude/worktrees/*/.git", "\($root)/*/.claude/worktrees/*/.git", "\($root)/*/*/.claude/worktrees/*/.git"]
   + ["~/Code/.git", "~/Documents/.git", "~/Library/Mobile Documents/iCloud~md~obsidian/**/.git"]
   + ["~/Code/HEAD", "~/Documents/HEAD", "~/Library/Mobile Documents/iCloud~md~obsidian/**/HEAD", "~/Code/*/HEAD"]
+  + [$r[] as $root | $t[] | "\($root)/**/\(.)"]
   + ["~/Library/Mobile Documents/iCloud~md~obsidian/Documents/*/.obsidian",
      "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/*/.obsidian/**"]')
 jq_is ".sandbox.filesystem.denyWrite == $EXP_DENY_WRITE" true \
-      "denyWrite is exactly the git hooks and configuration, the misplaced .git and HEAD entries, the agent configuration in each work root, and .obsidian"
-jq_is '.sandbox.filesystem.denyWrite | length' 197 "denyWrite has 197 entries"
+      "denyWrite is exactly the git hooks and configuration, the misplaced .git and HEAD entries, the lazygit and glab configuration, the agent configuration in each work root, and .obsidian"
+jq_is '.sandbox.filesystem.denyWrite | length' 209 "denyWrite has 209 entries"
 jq_is "[.sandbox.filesystem.denyWrite[] | . as \$d
         | select(any($ROOTS[]; . as \$r | \$d | startswith(\$r + \"/\")) | not)] | length" 0 \
       "every deny glob starts with a work root and a slash, so git init in TMPDIR still works"
 jq_is '[.sandbox.filesystem.denyWrite[] | select(test("/refs|/objects|/index$"))] | length' 0 \
       "no deny glob reaches refs, objects or the index"
 jq_is '[.sandbox.filesystem.denyWrite[] | select((test("/\\.git/") or test("/\\.obsidian(/|$)")
-        or test("/\\.git$") or test("/HEAD$")
+        or test("/\\.git$") or test("/HEAD$") or test("/\\.lazygit\\.yml$")
         or test("/\\.claude/settings(\\.local)?\\.json$") or test("/\\.mcp\\.json$") or test("/\\.codex(/\\*\\*)?$")) | not)] | length' 0 \
-      "every deny glob names a git path, a fake-repository HEAD, .obsidian or an agent configuration file"
+      "every deny glob names a git path, a fake-repository HEAD, a lazygit file, .obsidian or an agent configuration file"
 jq_is '[.sandbox.filesystem.denyWrite[] | select(test("/\\.claude/(skills|commands|agents)"))] | length' 0 \
       "no deny glob reaches .claude skills, commands or agents"
 jq_is ".sandbox.filesystem.denyWrite as \$d | [$ROOTS[] as \$r | $AGENTFILES[] as \$p
@@ -424,6 +426,13 @@ jq_is ".sandbox.filesystem.denyWrite as \$d | [$ROOTS[] as \$r | $GITNINE[] as \
 jq_is '[.sandbox.filesystem.denyWrite[] | select(test("config\\*$"))
         | select(test("/\\.git/(worktrees/\\*/(modules/\\*\\*/)?|modules/\\*\\*/)?config\\*$") | not)] | length' 0 \
       "every config* entry sits directly in a git directory, a linked worktree'"'"'s, a submodule'"'"'s or a linked worktree'"'"'s submodule'"'"'s"
+jq_is ".sandbox.filesystem.denyWrite as \$d | [$ROOTS[] as \$r | $TOOLCONF[] as \$c
+        | \"\(\$r)/**/\(\$c)\" | select(. as \$e | \$d | index(\$e) | not)] | length" 0 \
+      "each work root denies the per-repository lazygit and glab configuration forms"
+jq_is '[.sandbox.filesystem.denyWrite[] | select(test("lazygit\\.yml$|glab-cli"))] | length' 12 \
+      "12 lazygit and glab entries: 3 forms x 4 roots, and glab only for config.yml"
+jq_is '[.sandbox.filesystem.denyWrite[] | select(test("glab-cli"))] | map(select(endswith("/.git/glab-cli/config.yml") | not)) | length' 0 \
+      "the only glab entry shape is .git/glab-cli/config.yml, so its recover files stay writable"
 jq_is '[.sandbox.filesystem.denyWrite[] | select(test("\\.git/\\*\\*/config"))] | length' 0 \
       "no entry has the shape .git/**/config, so a branch named config stays writable (the modules/**/config* entries are a different shape)"
 jq_is '[.sandbox.filesystem.denyWrite[] | select(test("/\\.git$"))] | length' 15 \
@@ -477,6 +486,16 @@ for p in "$H/Code/Org/repo/.git/config" "$H/Code/tagteam/.git/config.lock" \
          "$H/Code/Org/repo/.git/modules/sub/refs/heads/config"; do
   glob_case denied "$p"
 done
+for root in "$H/Code" "$H/.local/share/chezmoi" "$H/Documents" "$H/Library/Mobile Documents/iCloud~md~obsidian/Documents"; do
+  for p in "$root/.lazygit.yml" "$root/Org/.lazygit.yml" "$root/Org/repo/.lazygit.yml" \
+           "$root/Org/repo/.git/lazygit.yml" "$root/Org/repo/.git/worktrees/w/lazygit.yml" \
+           "$root/Org/repo/.git/glab-cli/config.yml" "$root/.git/glab-cli/config.yml"; do
+    glob_case denied "$p"
+  done
+done
+# Documented consequence: .git/**/lazygit.yml also denies a ref or any file by that name
+# inside a git directory.
+glob_case denied "$H/Code/Org/repo/.git/refs/heads/lazygit.yml"
 for p in "$H/Code/head" "$H/Code/Org/head" "$H/Code/Org/repo/.GIT/CONFIG" \
          "$H/Code/Org/repo/.git/worktrees/w/modules/sub/Hooks/x"; do
   glob_case_i denied "$p"
@@ -491,7 +510,9 @@ for p in "$H/Code/Org/repo/.git/objects/ab/cdef" "$H/Code/Org/repo/.git/index" \
          "$H/Code/Org/repo/.git/HEAD" "$H/Code/tagteam/.git/HEAD" "$H/Code/Org/repo/HEAD" \
          "$H/Code/Org/repo/.git/worktrees/w/modules/sub/objects/x" \
          "$H/Code/Org/repo/.git/modules/sub/objects/ab/cdef" \
-         "$H/Code/Org/repo/.git/modules/sub/refs/heads/main"; do
+         "$H/Code/Org/repo/.git/modules/sub/refs/heads/main" \
+         "$H/Code/Org/repo/.git/glab-cli/recover/x" "$H/Code/Org/repo/lazygit.yml" \
+         "$H/Code/Org/repo/.git/refs/heads/config-ish" "$H/Code/Org/repo/src/.lazygit.yml.bak/x"; do
   glob_case allowed "$p"
 done
 jq_is '[.sandbox.filesystem.denyWrite[] | select(test("/\\.claude/settings|/\\.mcp\\.json|/\\.codex")) | sub("/\\.(claude/settings|mcp\\.json|codex).*$"; "") | select(contains("**"))] | length' 0 \

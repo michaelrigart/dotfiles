@@ -2,7 +2,7 @@
 
 **Status:** In progress
 Signed off 2026-10-30 under Michael's delegation while he was away.
-Amended 2026-10-30 (fake bare repositories at a root's top level; submodules of linked worktrees) under the same delegation.
+Amended 2026-10-30 (fake bare repositories at a root's top level; submodules of linked worktrees; per-repository lazygit and glab configuration) under the same delegation.
 **Date:** 2026-10-30
 **Branch:** `fix/sandbox-git-config-plant`
 
@@ -80,9 +80,10 @@ sandbox:
   2026-10-16 spec closed hooks; this spec closes configuration.
 
 **Goals.**
-1. Under every work root and in every repository, no sandboxed command can write, without the
-   escape:
+1. Under every work root and in every `.git` directory, no sandboxed command can write,
+   without the escape:
    - a git configuration file;
+   - a per-repository tool configuration that runs as Michael (lazygit's, glab's);
    - a configuration redirect (`commondir`);
    - a `.git` entry where no repository may be.
 2. Git outside the sandbox does not treat a directory that only looks like a git directory as
@@ -121,12 +122,16 @@ sandbox:
 | V17 | What herdr reads per directory | git metadata files, plus the git CLI: `rev-parse`, `symbolic-ref`, `worktree list --porcelain`. Its configuration lives in `~/.config/herdr` | covered by this spec |
 | V18 | Renaming a `.git` directory away and back, or moving in one built in `$TMPDIR` | writable: `mv .git .gx`, write `.gx/config`, `mv .gx .git` | residual |
 | V19 | Alternates, legacy `.git/remotes`, in-progress operation state (`rebase-merge/git-rebase-todo`) | writable | out. Alternates and remotes run no code: git refuses `ext::` URLs by default, and a `<helper>::` URL runs a `git-remote-<helper>` from `PATH`, where the sandbox cannot write. A todo's `exec` line runs only when Michael continues an operation he did not start, which the prompt shows (`REBASING`) |
+| V20 | lazygit's per-repository configuration: `<git dir>/lazygit.yml`, and `.lazygit.yml` in the repository or in any parent directory of it | writable. lazygit 0.66.2 loads these, and its `pager` and `externalDiffCommand` settings run as Michael when he draws a diff (read from the binary, not run). No such file exists under any root today | in scope, §1 |
+| V21 | glab's per-repository configuration, `.git/glab-cli/config.yml` | writable. glab reads it, and its local configuration sets `editor` and `browser`, which run as Michael when he uses glab interactively. No such file exists under any root today. glab writes other state under `.git/glab-cli/` (recover files) | in scope, §1: only that file; the rest of the directory stays writable |
 
 ## Design
 
 ### 1. Deny git configuration in every work root
 
-`sandbox.filesystem.denyWrite` gains these nine forms for each work root `<root>` (36 entries):
+`sandbox.filesystem.denyWrite` gains twelve forms for each work root `<root>` (48 entries):
+nine git-configuration forms (36 entries) and three per-repository tool-configuration forms
+(12 entries, the second amendment; below).
 
 ```
 <root>/**/.git/config*                          <root>/**/.git/commondir
@@ -134,6 +139,8 @@ sandbox:
 <root>/**/.git/modules/**/config*               <root>/**/.git/modules/**/commondir
 <root>/**/.git/worktrees/*/modules/**/config*   <root>/**/.git/worktrees/*/modules/**/commondir
 <root>/**/.git/worktrees/*/modules/**/hooks
+
+<root>/**/.lazygit.yml       <root>/**/.git/**/lazygit.yml       <root>/**/.git/glab-cli/config.yml
 ```
 
 - **The three worktree-module forms** (the last three above; added by the 2026-10-30
@@ -145,6 +152,18 @@ sandbox:
     and the trust stance covers hooks.
   - Git exempts `/.git/worktrees/` and `/.git/modules/` paths from `safe.bareRepository`
     (§3), so for these paths the denies are the only barrier.
+- **The three tool-configuration forms** (the last line above; 12 entries; added by the
+  second amendment). The new per-repository tool-configuration entries are these 12; with the
+  36 git-configuration entries and §2's 19, the amendments add 67 entries to the 142 from
+  2026-10-16, 209 in all.
+  - `<root>/**/.lazygit.yml` denies a lazygit configuration in a work tree at any depth, and
+    so a parent directory's, which lazygit also loads (V20).
+  - `<root>/**/.git/**/lazygit.yml` denies `<git dir>/lazygit.yml`. Because `**/` crosses
+    directories, it also denies a ref or tag named `lazygit.yml` inside a git directory
+    (negligible).
+  - `<root>/**/.git/glab-cli/config.yml` denies only that file (V21). glab's other state under
+    `.git/glab-cli/`, such as the recover files, stays writable.
+  - Costs: none exist today, and an agent cannot edit a tracked `.lazygit.yml` (Costs).
 
 - **How these compile** (read from the binary).
   - A glob becomes the Seatbelt regex `^<glob>(/.*)?$`, so each entry also covers everything
@@ -361,6 +380,9 @@ repositories with the deny simulated (a held `config.lock`, the immutable flag o
 `commondir`; `costs.sh`); the last is inferred. The measured three already fail in a session's own repository under Claude
 Code's built-in rule.
 
+- **Tool configuration (V20, V21).** No `.lazygit.yml`, `lazygit.yml` or
+  `.git/glab-cli/config.yml` exists under any root today, so the three forms cost nothing now.
+  An agent could not edit a tracked `.lazygit.yml` afterwards; Michael's own tools can.
 - **Frequency.** Across the 4,148 transcript files of the last 30 days, the only sandboxed
   configuration writes aimed at a repository other than the session's own were three
   cross-repository `git push -u`. All three still push. Every other match was either the
@@ -382,9 +404,11 @@ Code's built-in rule.
 
 - **`claude-settings`.**
   - `denyWrite` equals the expected array exactly: 142 entries from 2026-10-16, plus §1's 36
-    and §2's 19, 197 in all.
+    git-configuration entries, §1's 12 tool-configuration entries and §2's 19, 209 in all.
   - Every entry starts with a work root and a slash, so `$TMPDIR` stays writable.
-  - Each root has all nine §1 forms.
+  - Each root has all twelve §1 forms.
+  - The invariant "every deny glob names a git path, `.obsidian`, an agent configuration file
+    ..." is widened to include a per-repository tool configuration file (lazygit's, glab's).
   - Glob cases (the §1 conversion, evaluated against the rendered array):
     - `HEAD` is denied at `~/Code/HEAD`, `~/Documents/HEAD`, anywhere in the vault and at
       `~/Code/<Org>/HEAD`, and allowed at `~/Code/<Org>/<repo>/.git/HEAD`;
@@ -392,7 +416,10 @@ Code's built-in rule.
       `.git/worktrees/<id>/modules/<name>/`;
     - `modules/sub/refs/heads/config` is denied, and `modules/sub/objects/<xx>/<hash>` and
       `modules/sub/refs/heads/main` are allowed (M2: the wider reach, pinned);
-    - `refs/heads/config` in an ordinary `.git` stays allowed.
+    - `refs/heads/config` in an ordinary `.git` stays allowed;
+    - `.lazygit.yml` (in a repository and in a parent directory), `.git/lazygit.yml` and
+      `.git/glab-cli/config.yml` are denied; `.git/glab-cli/recover/x` and a work-tree
+      `lazygit.yml` without the dot stay writable.
   - No entry reaches objects, refs or the index of an ordinary repository or a linked
     worktree. The module forms with `config*` are the stated exception (§1).
   - No entry has the shape `.git/**/config`, so a branch named `config` stays writable. Only
@@ -417,7 +444,19 @@ The suite runs sandboxed, in a fresh session after `chezmoi apply`.
   - `modules/sub/config`, `modules/sub/commondir`,
     `modules/sub/worktrees/swt/config.worktree`;
   - the worktree-module forms: `worktrees/wt/modules/sub/config`,
-    `worktrees/wt/modules/sub/commondir` and `worktrees/wt/modules/sub/hooks`.
+    `worktrees/wt/modules/sub/commondir` and `worktrees/wt/modules/sub/hooks`;
+  - the tool-configuration forms, in each fixture root: `.git/lazygit.yml`,
+    `.git/glab-cli/config.yml` and a `.lazygit.yml` in the fixture repository's work tree
+    (`.git/glab-cli/recover/x` stays writable);
+  - the three Unicode-fold keys, in the non-vault roots' `.git` fixtures. APFS folds U+FB01
+    (the fi ligature) to "fi", U+017F (long s) to "s" and U+212A (Kelvin) to "k", and git
+    reads `.git/con<U+FB01>g` as `.git/config` and runs hooks from `.git/hook<U+017F>/`. The
+    keys: `config` spelled `con<U+FB01>g` (§1's denial), and `hooks` spelled `hoo<U+212A>s` and
+    `hook<U+017F>` (the 2026-10-16 hooks denial). The suite builds the names with printf
+    escapes, so the file holds no non-ASCII characters, refuses to touch an existing path, and
+    removes whatever a successful create made (the fixture is removed whole). If
+    `con<U+FB01>g` reads WRITABLE after apply, that is a spec change to raise (prefix forms
+    such as `.git/con*`), not a quiet fix.
 
   They replace today's `*_writable` probes. The main `config` probe no longer skips the
   session's base directory. Objects, the index, `refs/heads/config`, `refs/heads/hooks` and
@@ -493,6 +532,13 @@ The suite runs sandboxed, in a fresh session after `chezmoi apply`.
 
   The prompt then runs the filters when it is drawn in or below that directory, unless a
   closer repository with a real `.git` sits between (V10).
+- **Git directories not named `.git`** (M-1). Bare repositories and tool mirrors, such as
+  SwiftPM's `.build/repositories`, keep writable configuration and hooks. This carries the
+  2026-10-16 out-of-scope line about bare repositories' hooks over to configuration. Same
+  trust as V15: building the project already runs agent-writable code.
+- **Unicode-folded names.** If the live fold probe finds `con<U+FB01>g` writable after apply,
+  the §1 glob has a hole that prefix forms (`.git/con*`) would close. That is a spec change,
+  raised with Michael, not a quiet fix (Testing).
 - **Configuration that names tracked files**, such as `presence`'s textconv `bin/rails`: that
   is tracked code, reviewed like any change.
 - **Sessions started in `~`.** Their write scope is all of `$HOME`.
@@ -526,3 +572,9 @@ The suite runs sandboxed, in a fresh session after `chezmoi apply`.
 11. Amendment: deny `config*`, `commondir` and `hooks` in a linked worktree's submodule git
     directories (§1), the one form git exempts from `safe.bareRepository` and the 2026-10-16
     hooks denies missed.
+12. Second amendment: deny lazygit's and glab's per-repository configuration (three forms
+    per root, 12 entries), and only `.git/glab-cli/config.yml` of glab's directory (§1).
+13. Second amendment: leave git directories not named `.git` (bare repositories, tool
+    mirrors) as a residual, on V15's trust.
+14. Second amendment: probe the Unicode-folded names live instead of pinning them by glob; a
+    writable `con<U+FB01>g` is a spec change to raise (Testing).
