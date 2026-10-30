@@ -1646,6 +1646,7 @@ expect_raw() {
   out=$(printf '%s' "$3" | PINNED_PATH="$PATH" bash "$GUARD")
   if [ -z "$out" ]; then got=allow
   elif printf '%s' "$out" | jq -e '.hookSpecificOutput.permissionDecision=="deny"' >/dev/null 2>&1; then got=deny
+  elif printf '%s' "$out" | jq -e '.hookSpecificOutput.permissionDecision=="ask"' >/dev/null 2>&1; then got=ask
   else got="other: $out"; fi
   if [ "$got" = "$want" ] && { [ -z "${4:-}" ] || case "$out" in *"$4"*) true ;; *) false ;; esac; }; then
     pass=$((pass + 1)); printf '  ok   %s\n' "$label"
@@ -1669,8 +1670,17 @@ expect_raw deny  "jq a reversed surrogate pair after a force push to main" "$(ra
 expect_raw deny  "jq a hidden push spelling with a lone surrogate"     "$(rawpayload "$G pu\\\"sh\\\" origin main # "'\ud800')" "$UNREAD"
 expect_raw allow "jq a lone surrogate with no push trigger is silent"  "$(rawpayload 'echo hi # \ud800')"
 expect_raw allow "jq a lone surrogate in a commit command (rules 1-2) stays silent" "$(rawpayload "$G commit -m x # "'\ud800')"
+# Rule 3 fails ASK on an unreadable payload that holds `glab api`; rule 4's deny wins when both apply.
+GAPI='glab api -X DELETE projects/1/merge_requests/2'
+RW="Could not determine whether this \`glab api\` call reads or writes."
+expect_raw ask   "jq a lone high surrogate with a glab api write asks"   "$(rawpayload "$GAPI # "'\ud800')" "$RW"
+expect_raw ask   "jq a reversed surrogate pair with a glab api write asks" "$(rawpayload "$GAPI # "'\udc00\ud800')" "$RW"
+expect_raw ask   "jq a lone high surrogate with a glab api read asks"    "$(rawpayload "glab api projects/1 # "'\ud800')" "$RW"
+expect_raw allow "jq a lone surrogate in a commit with no glab api stays silent" "$(rawpayload "$G commit -m 'x y' # "'\ud800')"
+expect_raw deny  "jq a push candidate plus glab api keeps the push deny" "$(rawpayload "$G $P --force origin main; $GAPI # "'\ud800')" "$UNREAD"
 BS=$(printf '\134'); PAIR="${BS}ud83d${BS}ude00"       # a valid surrogate pair (the emoji), as JSON escapes
 expect_raw allow "jq a valid surrogate pair in a feature push reaches the helper" "$(rawpayload "X=$PAIR $G $P origin feat")"
+expect_raw allow "jq a valid surrogate pair with a glab api read is unchanged" "$(rawpayload "X=$PAIR glab api projects/1")"
 expect_raw deny  "jq a valid surrogate pair in a hidden push still denies" "$(rawpayload "X=$PAIR $G pu\\\"sh\\\" origin main")" "in a shape the guard does not check"
 ask_out=$(printf '%s' "$(rawpayload "X=$PAIR $G $P origin main")" | PINNED_PATH="$PATH" bash "$GUARD")
 if printf '%s' "$ask_out" | jq -e '.hookSpecificOutput.permissionDecision=="ask"' >/dev/null 2>&1; then

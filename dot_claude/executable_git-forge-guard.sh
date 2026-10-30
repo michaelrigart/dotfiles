@@ -143,9 +143,16 @@ push_candidate=$literal
 [ "$forge_candidate" = 1 ] || [ "$push_candidate" = 1 ] || allow
 
 # An unreadable payload (jq rejects a lone UTF-16 surrogate escape) fails closed for rule 4,
-# on the raw-text evidence above; rules 1-2 allow, as everywhere else.
+# on the raw-text evidence above, and asks for rule 3 when the raw text holds `glab api`;
+# rules 1-2 allow, as everywhere else.
 if ! cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command // empty' 2>/dev/null); then
   [ "$push_candidate" = 0 ] || deny "Push guard: this command's payload could not be read, so a possible push is refused. Rewrite it without unusual escape sequences."
+  case "$payload" in
+    *"glab api"*) ask "Could not determine whether this \`glab api\` call reads or writes.
+
+The command payload could not be read (an unusual escape sequence), so it is being
+surfaced rather than assumed safe. Check the method flag by eye." ;;
+  esac
   allow
 fi
 [ -n "$cmd" ] || allow
