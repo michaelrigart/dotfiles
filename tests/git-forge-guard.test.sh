@@ -2123,17 +2123,80 @@ TABLE
 # raises on a bracket range that runs backwards ([:-9], [z-a]), and a failure in the view code
 # denies, so slices and ranges in an edit script, a yaml append, a const array or a plan
 # denied once an apostrophe between letters made the view and a git or push word stood anywhere.
-# A glob that cannot compile is read with each bracket as ?, so a real glob git word still denies.
+# Every bracket expression of a glob command word is read as a single ? before it is matched
+# (conservative: g[z-a]t is treated as a possible git although no shell expands it to one), so a
+# real glob git word still denies.
 run_table <<'TABLE'
 allow ## D1 a python edit script: apostrophe, backwards slice, xs.push, trailing git diff ## python3 - <<'PY'<NL>import re<NL># it's a slice<NL>[:-9].strip()<NL>xs.push(1)<NL>PY<NL>git diff --stat
 allow ## D2 a yaml append: apostrophe, backwards range, trailing git status ## cat >> ci.yml <<'EOF'<NL>  steps:<NL>    # don't reorder<NL>    - run: echo ok<NL>[z-a],x<NL>EOF<NL>git status --short
 allow ## D3 a rust const array: apostrophe, backwards range, trailing git diff ## cat > c.rs <<'EOF'<NL>// it's a table<NL>const T: [&str; 2] = ["a", "b"];<NL>a[b-a]<NL>EOF<NL>git diff --stat
 allow ## D4 plan text: apostrophe, push in prose, backwards range, no git word ## cat > plan.md <<'EOF'<NL>Don't push the plan yet.<NL>[9:-9]+ items<NL>EOF
 allow ## D5 a backwards range with a git word only in the body ## cat > n.md <<'EOF'<NL>it's the git notes<NL>[z-a]x = 1<NL>EOF
-allow ## D6 a backwards range after a closing backtick ## cat > n.md <<'EOF'<NL>it's `git` then<NL>`x` [z-a] push<NL>EOF
+allow ## D6 a backwards range after a closing backtick ## cat > n.md <<'EOF'<NL>it's `git` then<NL>`x` [z-a]x push<NL>EOF
 deny ## D7 a glob git word with a backwards range and a hidden push still denies ## g[z-a]t pu''sh origin main
 deny ## D8 a glob git word with a backwards range, escaped push ## /usr/bin/g[z-a]t $'\x70ush' origin main
 TABLE
+# Fix round 4 (F1): the raw command words use the same safe matcher. A backwards range in a real
+# command word no longer crashes into a deny (a), and bash and zsh expand g[iz-a]t and g[!z-a]t to
+# git, so a hidden push after one denies, with or without a stray literal push word (b).
+run_table <<'TABLE'
+allow ## F1a a python slice and xs.push in a here-document, then an ANSI-C quote ## python3 - <<'PY'<NL>[:-9].strip()<NL>xs.push(1)<NL>PY<NL>echo $'ok'
+allow ## F1a a backwards range and xs.push in a here-document, then printf $'\n' ## cat <<'EOF'<NL>xs.push(1)<NL>[z-a]x<NL>EOF<NL>printf $'\n'
+allow ## F1a a backwards range inside sh -c with push in an echo ## sh -c '[z-a]x; echo push'; printf $'\n'
+allow ## F1a a backwards range as a command word before push ## [z-a]x push; printf $'\n'
+deny ## F1b a bracket with a backwards range that matches i, hidden push, comment ## /usr/bin/g[iz-a]t pu''sh origin main # push
+deny ## F1b the same, push in a later echo ## /usr/bin/g[iz-a]t pu''sh origin main; echo push
+deny ## F1b the same, push as the branch name ## /usr/bin/g[iz-a]t pu''sh origin push
+deny ## F1b the literal twin: a bracket glob git word and a plain push ## /usr/bin/g[iz-a]t push origin main
+deny ## F1b a negated backwards range, hidden push ## /usr/bin/g[!z-a]t pu''sh origin main
+deny ## F1b a negated backwards range, literal push ## /usr/bin/g[!z-a]t push origin main
+deny ## E1 a ^ negation in a glob git word ## /usr/bin/g[^x]t pu''sh origin main
+deny ## E1 a POSIX class in a glob git word ## /usr/bin/g[[:alpha:]]t pu''sh origin main
+deny ## E1 a ] first in a negated bracket ## /usr/bin/g[^]z-a]t pu''sh origin main
+deny ## E1 a ! negation with a range ## /usr/bin/g[!x-z]t pu''sh origin main
+allow ## E1 ls of a ^ glob ## ls /usr/bin/g[^x]t
+allow ## E1 rg for a ^ glob ## rg 'g[^x]t' f
+allow ## E1 a ^ glob git word with no push word ## /usr/bin/g[^x]t status $'\t'
+TABLE
+# Fix round 4 (F4): the glob matcher is linear and never raises, whatever the word's length.
+# Python 3.9's fnmatch.translate is quadratic on a run of [, which once held the hook for minutes;
+# every case below must finish, with a verdict, inside the bound. A word of 14 or more characters
+# that each need one character (a run of [, or [z-a]) can match no git name; a word that is
+# long only through * can, and denies. A pairing still needs a hidden push word (view side) or a
+# literal push in a flag-1 command (raw side).
+BRK=$(head -c 50000 /dev/zero | tr '\0' '[')
+RNG=$(awk 'BEGIN { for (i = 0; i < 10000; i++) printf "[z-a]" }')
+LONG="a?$(head -c 200 /dev/zero | tr '\0' x)"
+STARS=$(head -c 200 /dev/zero | tr '\0' '*')
+t0=$SECONDS
+expect allow "F4 a 50 KB run of [ as a command word, hidden push"              "$R" "$BRK pu''sh origin main"
+expect allow "F4 a 50 KB run of [ as a command word, literal push (raw side)"  "$R" "$BRK push origin main"
+expect allow "F4 a 50 KB run of [ as a command word, no push"                  "$R" "$BRK status"
+expect allow "F4 a 50 KB run of [ as a command word, an ANSI-C tab, no push"   "$R" "$BRK status \$'\\t'"
+expect allow "F4 a 50 KB run of [z-a] as a command word, hidden push"          "$R" "$RNG \$'\\x70ush' origin main"
+expect allow "F4 a 50 KB run of [ in a path word, hidden push"                 "$R" "echo push; /usr/bin/g${BRK}t pu''sh origin main"
+expect allow "F4 a 200-character glob word that is no git name, hidden push"   "$R" "$LONG pu''sh origin main"
+expect allow "F4 a 200-character glob word that is no git name, literal push"  "$R" "$LONG push origin main"
+expect allow "F4 a 200-character word of * only, hidden push"                  "$R" "$STARS pu''sh origin main"
+expect deny  "F4 g, 200 stars, t: a glob that is git, hidden push"             "$R" "g${STARS}t pu''sh origin main"
+expect deny  "F4 g, 200 stars, t: a glob that is git, literal push (raw side)" "$R" "g${STARS}t push origin main"
+expect deny  "F4 a bracket glob after 200 stars is git, hidden push"           "$R" "${STARS}g[i]t pu''sh origin main"
+expect allow "F4 a 50 KB run of [ as an argument, push"                        "$R" "echo push $BRK"
+expect allow "F4 a 50 KB run of [z-a] in a here-document body, push"           "$R" "cat <<'EOF'
+it's
+$RNG push
+EOF
+git status"
+expect allow "F4 a 50 KB run of [ in a here-document body, no push"            "$R" "cat <<'EOF'
+it's
+$BRK
+EOF
+printf \$'\\n'"
+if [ $((SECONDS - t0)) -lt 10 ]; then
+  pass=$((pass + 1)); printf '  ok   %s\n' "F4 the 50 KB and 200-character bracket commands finish under 10 s ($((SECONDS - t0)) s)"
+else
+  fail=$((fail + 1)); printf '  FAIL %s (%ss)\n' "F4 the 50 KB and 200-character bracket commands finish under 10 s" "$((SECONDS - t0))"
+fi
 # Fix round 1 (I1): the helper run directly. An unset flag is the strictest reading (main's raw
 # checks run, an ask becomes a deny); exactly 0 leaves only the view denies; 1 is as before.
 helper_flag() { # helper_flag <deny|silent> <label> <unset|0|1> <command>

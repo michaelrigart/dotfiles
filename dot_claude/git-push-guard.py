@@ -453,6 +453,141 @@ def case_pattern(tokens, k):
     return j < n and is_operator(tokens[j]) and tokens[j].startswith(")")
 
 
+GLOB_REGEX_MAX = 128
+_GLOB_MEMO = {}
+
+
+def _bracket_end(word, i):
+    """The index of the ] that closes the bracket expression opened at word[i], or -1 when it
+    never closes (the [ is then a literal). Read as fnmatch reads it (an optional ! or ^, an
+    optional leading ], then the first ]), and past a [:name:] class when the next ] closes
+    the expression after it, as the shells read it. Linear: it scans forward only."""
+    n = len(word)
+    j = i + 1
+    if j < n and word[j] in "!^":
+        j += 1
+    if j < n and word[j] == "]":
+        j += 1
+    k = word.find("]", j)
+    while k != -1 and k > j and word[k - 1] == ":":
+        p = word.rfind("[", j, k - 1)
+        if p == -1 or word[p + 1] != ":" or not word[p + 2:k - 1].isalpha():
+            break
+        k2 = word.find("]", k + 1)
+        if k2 == -1:
+            break
+        k = k2
+    return k
+
+
+def _glob_elements(word):
+    """The word as a list of elements: a literal character, "?" for one character (a ? or a
+    whole bracket expression, whatever it holds) or "*" (runs collapsed). Linear: once a [ has
+    no ] after it, no later [ has one either. A literal ?, * or [ is a (unescaped) glob
+    character here, as in fnmatch."""
+    out, i, n = [], 0, len(word)
+    last = word.rfind("]")
+    while i < n:
+        c = word[i]
+        if c == "[" and i < last:
+            end = _bracket_end(word, i)
+            if end != -1:
+                out.append(("?",))
+                i = end + 1
+                continue
+        if c == "*":
+            if not out or out[-1] != ("*",):
+                out.append(("*",))
+        elif c == "?":
+            out.append(("?",))
+        else:
+            out.append(c)
+        i += 1
+    return out
+
+
+def _glob_matches(elems, name):
+    """Does the element list match the whole name? Tracks the set of element indexes reached,
+    a * also reaching the elements after it."""
+    def close(reached):
+        out = set(reached)
+        for e in reached:
+            while e < len(elems) and elems[e] == ("*",):
+                e += 1
+                out.add(e)
+        return out
+
+    states = close({0})
+    for ch in name:
+        nxt = set()
+        for e in states:
+            if e < len(elems):
+                el = elems[e]
+                if el == ("*",):
+                    nxt.add(e)
+                elif el == ("?",) or el == ch:
+                    nxt.add(e + 1)
+        states = close(nxt)
+        if not states:
+            return False
+    return len(elems) in states
+
+
+def glob_matches_git_name(word):
+    """Could a glob word expand to git or a git-* name? Every bracket expression is read as a
+    single ? (see _glob_elements) and the rest is matched by a small linear matcher, so the check
+    never raises and costs its length at most. Python 3.9's fnmatch, which main used here,
+    raises re.error on a backwards range ([:-9], [z-a]), reads ^ as a literal rather than a
+    negation, has no [:alpha:] classes, and is quadratic on a run of [. The reading over-matches
+    (g[i]t also matches gxt, and so does g[z-a]t, which no shell expands to git) and accepts
+    everything fnmatch accepted; a pairing still needs a hidden push word."""
+    hit = _GLOB_MEMO.get(word)
+    if hit is not None:
+        return hit
+    elems = _glob_elements(word)
+    # Every element but a * takes exactly one character: more than 13 can match no git name.
+    if sum(1 for e in elems if e != ("*",)) > max(len(g) for g in GIT_NAMES):
+        hit = False
+    else:
+        hit = any(_glob_matches(elems, g) for g in GIT_NAMES)
+    if len(_GLOB_MEMO) > 512:
+        _GLOB_MEMO.clear()
+    _GLOB_MEMO[word] = hit
+    return hit
+
+
+def glob_only(word):
+    """Is the word glob syntax alone (GLOB_ONLY: *, ?, bracket expressions)? Up to
+    GLOB_REGEX_MAX characters the regex decides, as on main; a longer word is scanned
+    linearly (the regex is quadratic on a run of [)."""
+    if len(word) <= GLOB_REGEX_MAX:
+        return GLOB_ONLY.fullmatch(word) is not None
+    i, n = 0, len(word)
+    while i < n:
+        c = word[i]
+        if c in "*?":
+            i += 1
+        elif c == "[":
+            end = _bracket_end(word, i)
+            if end == -1:
+                return False
+            i = end + 1
+        else:
+            return False
+    return True
+
+
+def glob_git_word(tokens, k):
+    """Is the command word at k a glob that can expand to git or a git-* name: a glob (?, [, *)
+    that is not a bare glob (glob_only), not a case pattern, and matches (glob_matches_git_name)?"""
+    base = os.path.basename(tokens[k])
+    if not any(c in base for c in "?[*"):
+        return False
+    if glob_only(base) or case_pattern(tokens, k):
+        return False
+    return glob_matches_git_name(base)
+
+
 def odd_command_word(tokens):
     """A command word that could be git push under another spelling: git-push,
     git-send-pack or git-http-push by name (the dash form, also behind a path), a glob
@@ -467,10 +602,7 @@ def odd_command_word(tokens):
         # Only the last path component decides: $HOME/bin/helm is helm. The glob branch below
         # does not treat $DOCKER as a git spelling; the built-word rule after the loop catches
         # it when its slot is push. A glob is refused when it can match git or a git-* name.
-        if not any(c in base for c in "?[*") or GLOB_ONLY.fullmatch(base) \
-                or case_pattern(tokens, k):
-            continue
-        if any(fnmatch.fnmatchcase(g, base) for g in GIT_NAMES):
+        if glob_git_word(tokens, k):
             return True
     return bool(built_word_hits(tokens))
 
@@ -1237,32 +1369,12 @@ def _command_tokens(vt):
     return out
 
 
-BRACKET_CLASS = re.compile(r"\[[!^]?\]?[^\]]*\]")
-
-
-def glob_matches_git_name(glob):
-    """Does a glob fnmatch git or a git-* name? Python 3.9's fnmatch raises re.error on a
-    bracket range that runs backwards ([:-9], [z-a]); a view reads every line of a here-document
-    body, so such text must not fail the check (a failure in the view code denies). An
-    uncompilable glob is read again with each bracket class as a single ?: a spelling like
-    g[z-a]t stays a possible git, while a slice or range in prose names none."""
-    for pattern in (glob, BRACKET_CLASS.sub("?", glob)):
-        try:
-            return any(fnmatch.fnmatchcase(g, pattern) for g in GIT_NAMES)
-        except re.error:
-            continue
-    return False
-
-
 def _glob_git_spans(toks, vt):
     """The view spans of the command words that odd_command_word's glob branch reads as a git:
     a glob that fnmatches git or a git-* name, not a bare glob, not a case pattern."""
     out = []
     for k in command_words(toks):
-        base = os.path.basename(toks[k])
-        if not any(c in base for c in "?[*") or GLOB_ONLY.fullmatch(base) or case_pattern(toks, k):
-            continue
-        if glob_matches_git_name(base):
+        if glob_git_word(toks, k):
             out.append((vt[k][1], vt[k][2]))
     return out
 
