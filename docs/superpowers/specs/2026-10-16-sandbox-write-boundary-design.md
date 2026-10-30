@@ -460,7 +460,7 @@ A zsh wrapper around `chezmoi` handles `apply`, `update` and the previews below.
   stay agent-writable (see §1, "Git"). The justification is the git rule in §2, "Git that
   our unsandboxed code runs", not `PATH`. Michael's own git in an agent-touched repository
   trusts that repository's metadata as it trusts its code.
-  Superseded on 2026-10-30 by [the git configuration plant spec](2026-10-30-sandbox-git-config-plant-design.md).
+  Superseded for configuration on 2026-10-30 by [the git configuration plant spec](2026-10-30-sandbox-git-config-plant-design.md).
 - Third-party binaries and plugin hooks that run git in the session's repository (ruling
   2026-10-18). The basecamp plugin's PostToolUse hook runs `basecamp agent-hook post-commit`
   unsandboxed, and that runs `git log -1` there. With agent-written `log.showSignature` and

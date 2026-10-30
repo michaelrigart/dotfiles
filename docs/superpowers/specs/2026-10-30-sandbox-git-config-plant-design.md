@@ -87,7 +87,8 @@ sandbox:
    - a `.git` entry where no repository may be.
 2. Git outside the sandbox does not treat a directory that only looks like a git directory as
    a repository. Nor does the prompt, at the top level of `~/Code`, `~/Documents` and the
-   vault and in the organisation directories (§2; elsewhere a residual).
+   vault and in the organisation directories (§2; elsewhere a residual). For the
+   organisation directories this closes one of two doors (§2).
 3. No new prompts. Every escape the change adds is named and measured.
 
 **Non-goals.**
@@ -110,7 +111,7 @@ sandbox:
 | V7 | A `.git` file whose `gitdir:` names a directory the sandbox writes, such as one in `$TMPDIR` | writable. Git in that directory and below read the `$TMPDIR` configuration | in part: §2 covers the top level of `~/Code` and `~/Documents`, the vault and harness worktrees. Elsewhere a residual |
 | V8 | `.git/hooks` outside the start directory | denied since 2026-10-16 (measured again). `mkdir .git/HOOKS` is denied as well | no change |
 | V9 | `include.path`, `includeIf` | Adding one needs a configuration write (V1). The global configuration includes nothing. Of 86 repository configurations under the work roots, none includes a file. One names a work-tree file: in `presence`, Rails set `diff.rails_credentials.textconv = bin/rails credentials:diff` | reduces to V1. `bin/rails` is tracked code (Trust stance) |
-| V10 | A fake git directory: `HEAD`, `objects/`, `refs/` and `config` in a plain directory. Starship walks up from the working directory, so the prompt runs the directory's filters from the directory itself, from a child and from a grandchild, not only inside it | git uses it, even with `core.bare = false` and `core.worktree` set. Starship ran its clean filter in all three positions (1.27.0, `starship-ancestor.sh`), while git with `safe.bareRepository = explicit` refused it from the directory and from a child. With `HEAD` removed, Starship ran nothing from a child or a grandchild (`starship-nohead.sh`). A fake directory at `~/Code` or in `~/Code/<Org>` is therefore found from every prompt below it | for git, in scope (§3). For the prompt, §2's `HEAD` denies stop the directory from forming at the top level of `~/Code`, `~/Documents` and the vault and at the organisation level; elsewhere a residual |
+| V10 | A fake git directory: `HEAD`, `objects/`, `refs/` and `config` in a plain directory. Starship walks up from the working directory, so the prompt runs the directory's filters from the directory itself, from a child and from a grandchild, not only inside it | git uses it, even with `core.bare = false` and `core.worktree` set. Starship ran its clean filter in all three positions (1.27.0, `starship-ancestor.sh`), while git with `safe.bareRepository = explicit` refused it from the directory and from a child. With `HEAD` removed, Starship ran nothing from a child or a grandchild (`starship-nohead.sh`). A fake one planted at a repository's own top level is ignored while that directory's real `.git` exists (Starship showed the real branch and the filter did not run, from the top, a child and a grandchild); with `.git` moved aside it showed the fake's branch and the filter ran. So a fake directory at `~/Code` or in `~/Code/<Org>` is found only from prompts not inside a closer repository: the organisation directory itself, or `ansible-roles` | for git, in scope (§3). For the prompt, §2's `HEAD` denies stop the directory from forming at the top level of `~/Code`, `~/Documents` and the vault and at the organisation level; elsewhere a residual |
 | V11 | Global and system configuration | denied: `~/.config/git/config`, `/opt/homebrew/etc/gitconfig`, and the Command Line Tools' and Xcode's `gitconfig`. `~/.gitconfig` and `/etc/gitconfig` do not exist, and `$HOME` is not in the write set | no change, except in a session started in `~` (Residuals) |
 | V12 | `.gitattributes` and `.git/info/attributes`: filter, diff and merge drivers | An attribute only names a driver, which runs only if configuration defines it. The global and system configurations define none, and git-lfs is not installed | reduces to V1 |
 | V13 | mise | trusts a configuration by its content hash (`paranoid = true`, spec 2026-10-16 §2) | no change |
@@ -222,7 +223,9 @@ sandbox:
   Starship walks up from the working directory and treats a directory holding `HEAD`,
   `objects/` and `refs/` (and a `config`) as a bare repository, its own or an ancestor's
   (V10; `starship-ancestor.sh`). A fake one planted at `~/Code`, or in
-  `~/Code/<Org>`, would run its filters whenever the prompt is drawn anywhere below it.
+  `~/Code/<Org>`, would run its filters when the prompt is drawn in a directory with no
+  closer repository of its own: the organisation directory itself, or `ansible-roles`. A
+  directory with a real `.git` ignores it (V10).
   Git with `safe.bareRepository = explicit` refuses it; Starship does not honour that (§3).
   Denying `HEAD` stops the directory from forming: with `HEAD` removed, Starship ran
   nothing. Real repositories keep `HEAD` inside `.git`, so the entries do not touch them, with the
@@ -230,6 +233,10 @@ sandbox:
   The volume is case-insensitive and Seatbelt matched regardless of case (§1), so `head` is
   denied by the same entries. Organisation directories are the depth-1 directories under
   `~/Code`; a repository at depth 1 (`~/Code/tagteam`) holds its `HEAD` in `.git`.
+  - **One of two doors.** At the organisation level, a `.git` file at `~/Code/<Org>/.git`
+    with `gitdir: <writable directory>` gives the same prompts the attacker's configuration
+    and stays writable (Residuals). The `HEAD` entry closes the fake-bare door only, so the
+    org-level protection is not complete.
   - **Cost.** Matching ignores letter case and each glob ends in `(/.*)?`, so a file or
     directory named `head` (any case), with anything below it, is denied directly at those
     spots: a repository at depth 2 named `head`; a bare repository at depth 1
@@ -293,7 +300,9 @@ sandbox:
   `--git-dir`, and git counts that as explicit. The setting closes V10 for git and everything
   that runs git. For the prompt, §2's `HEAD` entries stop the fake directory from forming at
   the top level of `~/Code`, `~/Documents` and the vault and at the organisation level, and
-  the rest is a residual (the chezmoi checkout, a work root, gets no `HEAD` entry).
+  the rest is a residual. The chezmoi checkout, a work root, gets no `HEAD` entry: its top
+  level is safe because its real `.git` makes Starship ignore a fake one there, and only its
+  subdirectories are residual (a fake inside a repository's work tree).
 
 ### 4. The instructions say so
 
@@ -345,10 +354,11 @@ root. Measured under that built-in rule, on a scratch repository with a bare rem
 | `git branch -m` | renames the branch, then exits 128 ("branch is renamed, but update of config-file failed") |
 | `git worktree remove`; `worktree prune` | `remove` exits 255 and leaves the worktree record behind; `prune` hits the same deny |
 | Tool-made clones under a root (SwiftPM `.build/checkouts/*/.git`, for example `Netronix/muninn`): a new checkout, `swift package reset`, `rm -rf .build` | fail sandboxed |
+| Tools that run `git init` for a new project under a root (`cargo new`, `uv init`, `rails new`, `bundle gem`). Not measured (inferred) | fail or warn sandboxed; use the escape |
 
-The last three rows were added by the 2026-10-30 amendment. They were measured on scratch
+The last four rows were added by the 2026-10-30 amendment. The three before the last were measured on scratch
 repositories with the deny simulated (a held `config.lock`, the immutable flag on
-`commondir`; `costs.sh`). All three already fail in a session's own repository under Claude
+`commondir`; `costs.sh`); the last is inferred. The measured three already fail in a session's own repository under Claude
 Code's built-in rule.
 
 - **Frequency.** Across the 4,148 transcript files of the last 30 days, the only sandboxed
@@ -481,7 +491,8 @@ The suite runs sandboxed, in a fresh session after `chezmoi apply`.
     level of `~/Documents`;
   - one built in `$TMPDIR` and moved in (V18).
 
-  The prompt then runs the filters when it is drawn in or below that directory.
+  The prompt then runs the filters when it is drawn in or below that directory, unless a
+  closer repository with a real `.git` sits between (V10).
 - **Configuration that names tracked files**, such as `presence`'s textconv `bin/rails`: that
   is tracked code, reviewed like any change.
 - **Sessions started in `~`.** Their write scope is all of `$HOME`.
@@ -510,8 +521,8 @@ The suite runs sandboxed, in a fresh session after `chezmoi apply`.
 9. Leave sessions started in `~` to their own spec (Residuals).
 10. Amendment: deny `HEAD` at the top level of `~/Code`, `~/Documents` and the vault and at
     the organisation level, so a
-    fake bare repository cannot form where Starship would find it from every prompt below
-    (§2).
+    fake bare repository cannot form where Starship would find it from prompts not inside a
+    closer repository (§2).
 11. Amendment: deny `config*`, `commondir` and `hooks` in a linked worktree's submodule git
     directories (§1), the one form git exempts from `safe.bareRepository` and the 2026-10-16
     hooks denies missed.

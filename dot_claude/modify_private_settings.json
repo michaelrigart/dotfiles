@@ -439,9 +439,11 @@ printf '%s' "$input" | jq \
           # config, commondir and hooks have their own forms there (amended 2026-10-30; the
           # hooks form closes the same gap in the 2026-10-16 hooks denial). HEAD is denied at
           # ~/Code, ~/Documents, anywhere in the vault and one level under ~/Code: a HEAD there
-          # would let a planted directory pass for a bare repository, which Starship accepts
-          # from any directory below it whatever safe.bareRepository says. Real repositories
-          # keep HEAD inside .git, so they are untouched. A config* module entry also denies a
+          # would let a planted directory pass for a bare repository. Starship ignores
+          # safe.bareRepository and finds such a fake at ~/Code or ~/Code/<Org> from prompts
+          # not inside a closer repository; it ignores one at a repository top level while
+          # that directory has its own .git. Real repositories keep HEAD inside .git, so they
+          # are untouched. A config* module entry also denies a
           # submodule git directory whose path has a part starting with config, and its refs and
           # reflogs with such a name. Objects, refs, the index and TMPDIR stay writable.
           # .claude/skills, commands and agents stay writable (projects commit their own).
