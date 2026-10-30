@@ -543,8 +543,9 @@ SHELL_NAMES = {"sh", "bash", "zsh", "dash", "ksh"}
 
 # Options of a shell that take the next word as their value (-o NAME, -O NAME, --rcfile F).
 SHELL_LONG_WITH_VALUE = {"--rcfile", "--init-file"}
-# What follows timeout or nice before the command they run: options and a duration or niceness.
-RUN_PREFIX_ARG = re.compile(r"-[-A-Za-z0-9.]*|\d+(?:\.\d+)?[smhd]?")
+# The options of timeout and nice that take the next word as their value.
+RUN_OPTS_WITH_VALUE = {"timeout": {"-s", "-k", "--signal", "--kill-after"},
+                       "nice": {"-n", "--adjustment"}}
 
 
 def shell_string(tokens, k):
@@ -572,30 +573,36 @@ def shell_string(tokens, k):
     return None
 
 
-def after_run_prefix(tokens, k):
-    """Index of the word a timeout command word at k runs, past its options and its duration;
-    None when there is none."""
-    j, n = k + 1, len(tokens)
-    while j < n and not is_operator(tokens[j]) and RUN_PREFIX_ARG.fullmatch(tokens[j]):
+def run_target(tokens, k, bound=3):
+    """Indexes of the words that the timeout or nice command word at k runs, past its options
+    (-s SIG, -k DUR, --signal=SIG, --foreground, -n N, ...) and, for timeout, its duration;
+    a timeout or nice there chains on, to a bound of 3."""
+    base = os.path.basename(tokens[k])
+    n, j = len(tokens), k + 1
+    while j < n and not is_operator(tokens[j]) and tokens[j].startswith("-") \
+            and len(tokens[j]) > 1:
+        j += 2 if tokens[j] in RUN_OPTS_WITH_VALUE[base] else 1
+    if base == "timeout":
         j += 1
-    return j if j < n and not is_operator(tokens[j]) else None
+    if j >= n or is_operator(tokens[j]):
+        return []
+    out = [j]
+    if bound > 1 and os.path.basename(tokens[j]) in RUN_OPTS_WITH_VALUE:
+        out.extend(run_target(tokens, j, bound - 1))
+    return out
 
 
 def shell_words(tokens):
-    """Indexes of the words in command position, and of the word that timeout or nice -n N
+    """Indexes of the words in command position, and of the words that a timeout or nice there
     runs (command_words looks past nice's dash options, but not its -n value, and not past
     timeout)."""
     out = list(command_words(tokens))
-    for k in list(out):
-        if os.path.basename(tokens[k]) == "timeout":
-            j = after_run_prefix(tokens, k)
-        elif tokens[k].isdigit() and k >= 2 and tokens[k - 1] == "-n" \
-                and os.path.basename(tokens[k - 2]) == "nice":
-            j = k + 1 if k + 1 < len(tokens) and not is_operator(tokens[k + 1]) else None
-        else:
+    for k, t in enumerate(tokens):
+        if os.path.basename(t) not in RUN_OPTS_WITH_VALUE:
             continue
-        if j is not None:
-            out.append(j)
+        if k == 0 or starts_command(tokens[k - 1]) or ASSIGN_RE.match(tokens[k - 1]) \
+                or tokens[k - 1] in RESERVED or os.path.basename(tokens[k - 1]) in WRAPPERS:
+            out.extend(run_target(tokens, k))
     return out
 
 
@@ -854,18 +861,23 @@ def could_push(cmd, tokens, cwd):
         return False
     if "GIT_CONFIG" in cmd:
         return True
-    selectors = [[]]
+    selectors = {()}                                   # a set: each one costs a git call
     for toks in [tokens or []] + nested:
         for k, tok in enumerate(toks):
             if tok in ("-C", "--git-dir") and k + 1 < len(toks):
-                selectors.append([tok, os.path.expanduser(toks[k + 1])])
+                selectors.add((tok, os.path.expanduser(toks[k + 1])))
             elif tok.startswith("--git-dir="):
-                selectors.append([tok])
+                selectors.add((tok,))
             elif tok.startswith("GIT_DIR="):
-                selectors.append(["--git-dir=" + tok.split("=", 1)[1]])
+                selectors.add(("--git-dir=" + tok.split("=", 1)[1],))
     names = set()
-    for sel in selectors:
-        names |= push_aliases(cwd, sel)
+    for sel in sorted(selectors):
+        try:
+            names |= push_aliases(cwd, list(sel))
+        except Deny:
+            raise
+        except Exception:
+            return True                                # a listing that fails cannot rule a push out
     # A shell string or an eval is read as tokens: a quoted ; in it hides the alias from the
     # text pattern.
     return any(re.search(r"\bgit\b[^;&|\n]*\b" + re.escape(a) + r"\b", text) for a in names) \
@@ -1652,10 +1664,10 @@ def main():
         elif tokens is not None:
             # Outside the grammar: could_push first, which is cheap and denies most; the probe
             # runs the full judge, so it runs only when could_push did not already deny. A
-            # deny from either is the plain-push deny, whatever reason could_push raised.
+            # deny from either is the plain-push deny, and so is a could_push that fails.
             try:
                 hit = could_push(cmd, tokens, cwd)
-            except Deny:
+            except Exception:
                 hit = True
             if hit or probe_refuses(tokens, cmd, cwd):
                 raise Deny(PLAIN)

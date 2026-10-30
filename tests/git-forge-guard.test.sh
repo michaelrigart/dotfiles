@@ -1596,6 +1596,19 @@ expect allow "N4 bash --rcfile F -c, status, is silent"       "$R" "bash --rcfil
 expect allow "N4 bash +e -c, status, is silent"               "$R" "bash +e -c '$G -c \"a;b\" status'"
 expect allow "N4 bash -c -x, status, is silent"               "$R" "bash -c -x '$G -c \"a;b\" status'"
 expect allow "N4 timeout 5 sh -c, status, is silent"          "$R" "timeout 5 sh -c '$G -c \"a;b\" status'"
+# m5: timeout's own options and chained wrappers.
+expect deny  "m5 timeout -s KILL 5 sh -c"                     "$R" "timeout -s KILL 5 sh -c '$G -c \"a;b\" $P origin main'"
+expect deny  "m5 timeout --signal=KILL 5 sh -c"               "$R" "timeout --signal=KILL 5 sh -c '$G -c \"a;b\" $P origin main'"
+expect deny  "m5 timeout --kill-after=2 5 bash -c"            "$R" "timeout --kill-after=2 5 bash -c '$G -c \"a;b\" $P origin main'"
+expect deny  "m5 timeout --foreground --preserve-status -v 5 sh -c" "$R" "timeout --foreground --preserve-status -v 5 sh -c '$G -c \"a;b\" $P origin main'"
+expect deny  "m5 nice -n 5 timeout 3 sh -c"                   "$R" "nice -n 5 timeout 3 sh -c '$G -c \"a;b\" $P origin main'"
+expect deny  "m5 timeout 5 nice -n 5 sh -c"                   "$R" "timeout 5 nice -n 5 sh -c '$G -c \"a;b\" $P origin main'"
+expect deny  "m5 sudo timeout -s KILL 5 sh -c"                "$R" "sudo timeout -s KILL 5 sh -c '$G -c \"a;b\" $P origin main'"
+expect allow "m5 timeout -s KILL 5 sh -c, status, is silent"  "$R" "timeout -s KILL 5 sh -c '$G -c \"a;b\" status'"
+expect allow "m5 timeout --signal=KILL 5 sh -c, status, is silent" "$R" "timeout --signal=KILL 5 sh -c '$G -c \"a;b\" status'"
+expect allow "m5 nice -n 5 timeout 3 sh -c, status, is silent" "$R" "nice -n 5 timeout 3 sh -c '$G -c \"a;b\" status'"
+expect allow "m5 timeout 5 nice -n 5 sh -c, status, is silent" "$R" "timeout 5 nice -n 5 sh -c '$G -c \"a;b\" status'"
+expect allow "m5 echo of a timeout line naming the word is silent" "$R" "echo timeout 5 sh -c '$G -c \"a;b\" $P origin main'"
 expect allow "N4 bash script file named like a push is silent" "$R" "bash -o pipefail $P.sh '$G -c \"a;b\" $P origin main'"
 # N5: a push alias behind a quoted ; inside a shell string or an eval.
 expect deny  "N5 sh -c holding a push alias behind a quoted ;"  "$R" "sh -c '$G -c \"a;b\" pom'"
@@ -1633,7 +1646,14 @@ rawpayload() { printf '{"cwd":"%s","tool_input":{"command":"%s"}}' "$R" "$1"; }
 UNREAD="could not be read"
 expect_raw deny  "jq a lone high surrogate after a force push to main" "$(rawpayload "$G $P --force origin main # "'\ud800')" "$UNREAD"
 # jq reads a lone low surrogate as U+FFFD, so this one reaches the helper, which denies on the comment.
-expect_raw deny  "jq a lone low surrogate after a force push to main"  "$(rawpayload "$G $P --force origin main # "'\udc00')"
+expect_raw deny  "jq a lone low surrogate after a force push to main"  "$(rawpayload "$G $P --force origin main # "'\udc00')" "in a shape the guard does not check"
+# Round 3 (I): the helper keeps a lone low surrogate that jq turned into U+FFFD. A -C selector
+# holding it fails the helper's own git call (UnicodeEncodeError), in a shell string or outside
+# the grammar, and that fails closed as the plain-push deny, as main's did.
+PLAINR="in a shape the guard does not check"
+expect_raw deny  "I a lone low surrogate in a -C selector inside sh -c" "$(rawpayload "sh -c '$G -C \\\"/nx/x"'\udc00'"\\\" pom'")" "$PLAINR"
+expect_raw deny  "I a lone low surrogate in a -C selector, outside the grammar" "$(rawpayload "$G -C '/nx/x"'\udc00'"' pom \$'--verbose'")" "$PLAINR"
+expect_raw deny  "I a lone low surrogate in a -c value, probe judge fails" "$(rawpayload "$G -c 'a.b=x;"'\udc00'"' pom \$'--verbose'")" "$PLAINR"
 expect_raw deny  "jq a reversed surrogate pair after a force push to main" "$(rawpayload "$G $P --force origin main # "'\udc00\ud800')" "$UNREAD"
 expect_raw deny  "jq a hidden push spelling with a lone surrogate"     "$(rawpayload "$G pu\\\"sh\\\" origin main # "'\ud800')" "$UNREAD"
 expect_raw allow "jq a lone surrogate with no push trigger is silent"  "$(rawpayload 'echo hi # \ud800')"
@@ -1724,6 +1744,17 @@ print("exception, literal=0, no shape", run(hidden, "0", both))
 print("exception, literal=0, push shape", run("git push origin main", "0", {"parse_plain": boom}))
 print("exception, literal=1, no shape", run(hidden, "1", both))
 print("N7 probe skipped when could_push denies", run("git pu" + "sh origin main $'x'", "0", {"probe_refuses": boom}))
+calls = []
+
+
+def counted(cwd, selector):
+    calls.append(tuple(selector))
+    return set()
+
+
+many = "sh -c '" + "; ".join(["gi" + "t -C /r status"] * 40) + "'"
+run(many, "1", {"push_aliases": counted})
+print("m3 alias listings for 40 equal selectors", len(calls))
 PY
 )
 while IFS='|' read -r label want; do
@@ -1739,6 +1770,7 @@ exception, literal=0, no shape|deny/plain
 exception, literal=0, push shape|deny/internal
 exception, literal=1, no shape|silent
 N7 probe skipped when could_push denies|deny/plain
+m3 alias listings for 40 equal selectors|2
 EOF
 # A large payload with no push in it must stay cheap (the hidden-spelling scan is linear).
 big=$(awk 'BEGIN { for (i = 0; i < 20000; i++) print "print(\"abc\", \x27d\x27, x\\y)" }')
