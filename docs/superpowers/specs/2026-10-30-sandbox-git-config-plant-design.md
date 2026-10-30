@@ -36,10 +36,11 @@ reading Claude Code's code rather than from a probe.
     gets none of this.
   - **Measured from this harness worktree.** The chezmoi checkout's `.git/config`, the
     worktree's own `.git` file and its `commondir` are denied, and its `gitdir` is writable.
-- **Nothing has to be typed.** Starship draws git status on every prompt, using gitoxide,
-  which runs filter drivers. It calls the git executable only when `core.fsmonitor` is `true`.
+- **Nothing has to be typed.** Starship draws git status on every prompt, with gitoxide.
   Measured: in a repository whose configuration names a clean filter, Starship ran that filter
-  while drawing the prompt. A file's stat data had changed, and no git command was typed.
+  while drawing the prompt. A file's stat data had changed, and no git command was typed. A
+  `core.fsmonitor` hook set in that same repository did not run, so the filter ran inside
+  Starship itself, not in a git it called.
 - **Why the 2026-10-17 decision no longer holds.** That decision kept configuration writable
   for two reasons. Agent-touched repositories were to trust their metadata as they trust their
   code, and a deny would add escapes. Neither still holds:
@@ -106,7 +107,7 @@ sandbox:
 | V8 | `.git/hooks` outside the start directory | denied since 2026-10-16 (measured again). `mkdir .git/HOOKS` is denied as well | no change |
 | V9 | `include.path`, `includeIf` | Adding one needs a configuration write (V1). The global configuration includes nothing. Of 86 repository configurations under the work roots, none includes a file. One names a work-tree file: in `presence`, Rails set `diff.rails_credentials.textconv = bin/rails credentials:diff` | reduces to V1. `bin/rails` is tracked code (Trust stance) |
 | V10 | A fake git directory: `HEAD`, `objects/`, `refs/` and `config` in a plain directory | git uses it, even with `core.bare = false` and `core.worktree` set | for git, in scope (§3). Starship ignores `safe.bareRepository` (residual) |
-| V11 | Global and system configuration | denied: `~/.config/git/config`, `/opt/homebrew/etc/gitconfig`, and the Command Line Tools' and Xcode's `gitconfig`. `~/.gitconfig` and `/etc/gitconfig` do not exist, and `$HOME` is not writable | no change, except in a session started in `~` (Residuals) |
+| V11 | Global and system configuration | denied: `~/.config/git/config`, `/opt/homebrew/etc/gitconfig`, and the Command Line Tools' and Xcode's `gitconfig`. `~/.gitconfig` and `/etc/gitconfig` do not exist, and `$HOME` is not in the write set | no change, except in a session started in `~` (Residuals) |
 | V12 | `.gitattributes` and `.git/info/attributes`: filter, diff and merge drivers | An attribute only names a driver, which runs only if configuration defines it. The global and system configurations define none, and git-lfs is not installed | reduces to V1 |
 | V13 | mise | trusts a configuration by its content hash (`paranoid = true`, spec 2026-10-16 §2) | no change |
 | V14 | direnv | allows an `.envrc` by content hash. Its allow list is outside every work root. The one `.envrc` under `~/Code` has only `export` lines | no change |
@@ -227,8 +228,9 @@ sandbox:
     plugins and Neovim plugins are ordinary clones.
 - **Starship does not honour it** (measured). It found a fake git directory with gitoxide and
   ran its filter, whether or not the setting was on. With `git_status.use_git_executable` on,
-  it then hands git that directory as `--git-dir`, which counts as explicit, so the filter
-  still ran. The setting closes V10 for git and everything that runs git; for the prompt,
+  the filter still ran. The likely reason, read from Starship's binary rather than measured:
+  its git call names the directory it found with `--git-dir`, and git counts that as
+  explicit. The setting closes V10 for git and everything that runs git; for the prompt,
   V10 stays a residual.
 
 ### 4. The instructions say so
@@ -318,7 +320,9 @@ root. Measured under that built-in rule, on a scratch repository with a bare rem
 
 The suite runs sandboxed, in a fresh session after `chezmoi apply`.
 
-- **Fixture repositories.** In each root's fixture (a `mkdir`'d `.git`), these are denied:
+- **Fixture repositories, in the three roots that may hold one** (`~/Code`, the chezmoi
+  checkout, `~/Documents`). In each of these roots' fixtures (a `mkdir`'d `.git`), these are
+  denied:
   - `config`, `config.lock`, `config.worktree`, `commondir`;
   - `worktrees/wt/config.worktree`, `worktrees/wt/commondir`;
   - `modules/sub/config`, `modules/sub/commondir`,
@@ -327,12 +331,17 @@ The suite runs sandboxed, in a fresh session after `chezmoi apply`.
   They replace today's `*_writable` probes. The main `config` probe no longer skips the
   session's base directory. Objects, the index, `refs/heads/config`, `refs/heads/hooks` and
   `worktrees/wt/gitdir` stay writable.
-- **`.git` where no repository may be.** A `.git` file is denied in four places:
-  - directly under `~/Code`;
-  - directly under `~/Documents`;
-  - two levels down in the vault;
-  - at `<root>/<stamp>/arepo/.claude/worktrees/wt1/.git`.
-- **Case.** Writing an existing fixture's `config` as `.git/CONFIG` is denied.
+- **The vault gets no git fixture.** §2 denies `.git` at any depth there, so the suite's
+  `mkdir -p` of a fixture `.git` would fail. The vault's fixture has no `.git`. Its git probes
+  are the `.git` denials below, and its agent-configuration probes run unchanged without one.
+- **`.git` where no repository may be.** Creating `.git` is denied in these places:
+  - directly under `~/Code`, as a file;
+  - directly under `~/Documents`, as a file;
+  - two levels down in the vault, as a directory and as a file;
+  - at `<root>/<stamp>/arepo/.claude/worktrees/wt1/.git`, as a file, in every root.
+- **Case.** In the repository of the behaviour probe below, appending to its existing
+  `config` as `.git/CONFIG` is denied, and so is creating the absent `commondir` as
+  `.git/COMMONDIR`.
 - **Informational, like the rename probe.** A `.git` file in a plain directory two levels
   down, outside the vault, reads WRITABLE (Residuals).
 - **Behaviour.** A repository is built in `$TMPDIR`, with a bare remote there, then moved
