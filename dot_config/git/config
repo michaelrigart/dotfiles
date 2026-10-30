@@ -66,3 +66,5 @@
     prune = true
 [diff]
     algorithm = histogram
+[safe]
+    bareRepository = explicit
