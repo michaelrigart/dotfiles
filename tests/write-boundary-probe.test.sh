@@ -17,15 +17,18 @@ pass=0; fail=0
 _pass() { printf '  PASS: %s\n' "$1"; pass=$((pass + 1)); }
 _fail() { printf '  FAIL: %s\n    | got: %s\n' "$1" "$2"; fail=$((fail + 1)); }
 
-T="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/wbprobe.XXXXXX")" && pwd -P)"
+T=$(mktemp -d "${TMPDIR:-/tmp}/wbprobe.XXXXXX") || exit 2
+T=$(cd "$T" && pwd -P) || exit 2
 trap 'rm -rf "$T"' EXIT
+# git without the global and system configuration: the fixture must not sign through the agent.
+g() { env GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git "$@"; }
 H="$T/home"
 cz="$H/.local/share/chezmoi"
 mkdir -p "$T/bin" "$T/tmp" "$T/start" "$cz"
 # The checkout, a real repository so the harness-worktree case has a common directory to compare.
-git init -q -b main "$cz" \
-  && git -C "$cz" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init \
-  && git -C "$cz" worktree add -q "$T/wt" -b wt \
+g init -q -b main "$cz" \
+  && g -C "$cz" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init \
+  && g -C "$cz" worktree add -q "$T/wt" -b wt \
   || { echo "INCONCLUSIVE: could not build the checkout fixture" >&2; exit 2; }
 cat > "$T/bin/mkdir" <<'STUB'
 #!/bin/sh
@@ -51,9 +54,10 @@ verdict() {
 }
 # listed <output> <yes|no>: whether the closing failed_keys line names the key.
 listed() {
-  local got=no
-  printf '%s\n' "$1" | grep -E '^failed_keys=' | tail -n 1 | tr ',=' '\n\n' | grep -qx "$key" && got=yes
-  if [ "$got" = "$2" ]; then _pass "$3"; else _fail "$3" "$(printf '%s\n' "$1" | grep -E '^failed_keys=' | tail -n 1)"; fi
+  local got=no line
+  line=$(printf '%s\n' "$1" | grep -E '^failed_keys=' | tail -n 1)
+  case ",${line#failed_keys=}," in *",$key,"*) got=yes ;; esac
+  if [ "$got" = "$2" ]; then _pass "$3"; else _fail "$3" "$line"; fi
 }
 
 out=$(run_suite "Operation not permitted" "$T/start")

@@ -160,8 +160,8 @@ Two output idioms exist and `run.sh` counts both: prose (`  ok  …` / `  PASS: 
 `KEY=VALUE` status the `live-agent-auth`, `live-agent-signing`, `live-credential-boundary` and
 `live-write-boundary` suites share (the first three also so they never print key material). A kv suite
 encodes failures in its values and exits with the count, so it is judged on exit status
-alone — the prose cross-check does not apply to it. A failing kv suite closes with one
-`failed_keys=<key>,<key>` line; `run.sh` shows that line (and only it, so no value is echoed)
+alone — the prose cross-check does not apply to it. A kv suite that fails a probe closes with one
+`failed_keys=<key>,<key>` line (not when it dies early, before any key); `run.sh` shows that line (and only it, so no value is echoed)
 under the FAIL row and does not count it as an assertion. A new kv suite should print it.
 `tests/write-boundary-probe.test.sh` drives `live-write-boundary` against a throwaway `HOME`
 and a stubbed `mkdir`, so its `.git/modules` probe and `failed_keys` line are tested without
