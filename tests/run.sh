@@ -132,17 +132,17 @@ for f in ./*.test.sh; do
     green=$((green + p))
   else
     printf '  FAIL  %-28s %s/%s (exit=%s)%s\n' "$name" "$p" "$tot" "$rc" "$note"
-    # Each failure with up to 3 continuation lines (the suite's `| got:` detail).
-    printf '%s\n' "$out" | awk '
-      /^[[:space:]]*(FAIL|not ok)/ { print; keep = 3; next }
-      keep > 0 && /^[[:space:]]+[^[:space:]]/ && !/^[[:space:]]*(ok|PASS)([[:space:]]|:)/ { print; keep--; next }
-      { keep = 0 }' | sed 's/^/          /'
     if [ "$idiom" = kv ]; then
       # A kv suite closes with failed_keys=<key>,<key> when it fails. Only that line is shown, and only
       # when it is made of key characters: nothing else a suite prints is echoed, so no value leaks.
       printf '%s\n' "$out" | grep -E '^failed_keys=[A-Za-z0-9_.,-]+$' | tail -n 1 | sed 's/^/          /'
       problems+=("$name (exit=$rc)")
     else
+      # Each failure with up to 3 continuation lines (the suite's `| got:` detail).
+      printf '%s\n' "$out" | awk '
+        /^[[:space:]]*(FAIL|not ok)/ { print; keep = 3; next }
+        keep > 0 && /^[[:space:]]+[^[:space:]]/ && !/^[[:space:]]*(ok|PASS)([[:space:]]|:)/ { print; keep--; next }
+        { keep = 0 }' | sed 's/^/          /'
       problems+=("$name ($fl failed)")
     fi
     red=$((red + p))

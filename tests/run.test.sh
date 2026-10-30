@@ -65,6 +65,14 @@ echo "first=DENIED"
 echo "second=WRITABLE"
 exit 1
 SUITE
+cat > "$T/kvfaildiag.test.sh" <<'SUITE'
+#!/usr/bin/env bash
+echo "first=DENIED"
+echo "FAILURE: synthetic-private-diagnostic"
+echo "  indented-private-detail"
+echo "failed_keys=first"
+exit 1
+SUITE
 cat > "$T/kvfailok.test.sh" <<'SUITE'
 #!/usr/bin/env bash
 echo "first=DENIED"
@@ -128,6 +136,9 @@ ran "and the suite still fails"                              yes 'FAIL +kvfailod
 out="$("$T/run.sh" kvfailbare 2>&1)"
 ran "a failing kv suite without the line still fails"        yes 'FAIL +kvfailbare +2/2 \(exit=1\)' "$out"
 ran "and shows no failed_keys line"                          no  'failed_keys' "$out"
+out="$("$T/run.sh" kvfaildiag 2>&1)"
+ran "a failing kv suite shows its failed_keys line"          yes '^ +failed_keys=first$' "$out"
+ran "other output of a failing kv suite is not echoed"       no  'synthetic-private-diagnostic|indented-private-detail' "$out"
 out="$("$T/run.sh" kvfailok 2>&1)"
 ran "a passing kv suite does not count a failed_keys line"   yes 'ok +kvfailok +1/1' "$out"
 
