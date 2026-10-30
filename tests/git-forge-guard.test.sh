@@ -2298,17 +2298,51 @@ allow ## R7 I1 a [a-z][0-9] line ## cd /tmp && cat <<'EOF'<NL>xs.push(1)<NL>[a-z
 allow ## R7 I1 a ??? line ## cd /tmp && cat <<'EOF'<NL>xs.push(1)<NL>??? what<NL>EOF<NL>git status
 allow ## R7 I1 a git(1) line ## cd /tmp && cat <<'EOF'<NL>xs.push(1)<NL>git(1) is a man page<NL>EOF<NL>git status
 allow ## R7 I1 a g(1); line ## cd /tmp && cat <<'EOF'<NL>xs.push(1)<NL>g(1);<NL>EOF<NL>git status
-allow ## R7 class A a [$var.name.word[] line with a \u escape in the body ## cd /tmp && cat <<'EOF'<NL>xs.push(1)<NL>é and [$ab.cdefgh.ijklmnopqr[]<NL>[$ab.cdefgh.ijklmnopqr[] x<NL>EOF<NL>git status
+allow ## R7 class A a [$var.name.word[] line with a \u escape in the body ## cd /tmp && cat <<'EOF'<NL>xs.push(1)<NL>\u00e9 and [$ab.cdefgh.ijklmnopqr[]<NL>[$ab.cdefgh.ijklmnopqr[] x<NL>EOF<NL>git status
 allow ## R7 class A a regex range line with a \x escape in the body ## cd /tmp && cat <<'EOF'<NL>xs.push(1)<NL>\x41 [a-z][-z] <NL>[a-z][-z] and [é-ë][-z]<NL>EOF<NL>git status
-allow ## R7 I1 a [a][b] line ##cd /tmp && cat <<'EOF'<NL>xs.push(1)<NL>[a][b] and more<NL>EOF<NL>git status
+allow ## R7 I1 a [a][b] line ## cd /tmp && cat <<'EOF'<NL>xs.push(1)<NL>[a][b] and more<NL>EOF<NL>git status
 allow ## R6 a quoted group is literal ## cd /tmp && echo '(git|nope) push'
 allow ## R6 a case arm is exempt, as on main ## case $x in<NL>*) pu''sh;;<NL>esac
+deny ## R8 C-1 g?t, quoted ; in a -c value, hidden push ## /usr/bin/g?t -c 'x.y=a;b' pu''sh origin main
+deny ## R8 C-1 g[i]t, quoted ; in a -c value, hidden push ## /usr/bin/g[i]t -c 'x.y=a;b' pu''sh origin main
+deny ## R8 C-1 gi?, quoted ; in a -c value, hidden push ## /usr/bin/gi? -c 'x.y=a;b' pu''sh origin main
+deny ## R8 C-1 g*t, quoted ; in a -c value, hidden push ## /usr/bin/g*t -c 'x.y=a;b' pu''sh origin main
+deny ## R8 C-1 [!x]it, quoted ; in a -c value, hidden push ## /usr/bin/[!x]it -c 'x.y=a;b' pu''sh origin main
+deny ## R8 C-1 [g]i[t], quoted ; in a -c value, hidden push ## /usr/bin/[g]i[t] -c 'x.y=a;b' pu''sh origin main
+deny ## R8 C-1 g[[:alpha:]]t, quoted ; in a -c value, hidden push ## /usr/bin/g[[:alpha:]]t -c 'x.y=a;b' pu''sh origin main
+deny ## R8 C-1 a quoted ( ) in a -c value ## /usr/bin/g?t -c 'x.y=(a)' pu''sh origin main
+deny ## R8 C-1 a quoted & in a -c value ## /usr/bin/g?t -c "x.y=a&b" pu''sh origin main
+deny ## R8 C-1 a quoted | in a -c value ## /usr/bin/g?t -c 'x.y=a|b' pu''sh origin main
+deny ## R8 C-1 a quoted newline in a -c value ## /usr/bin/g?t -c "x.y=a<NL>b" pu''sh origin main
+deny ## R8 C-1 a quoted ; in --namespace ## /usr/bin/g?t --namespace='a;b' pu''sh origin main
+deny ## R8 C-1 an ANSI-C escaped push after a quoted ; ## /usr/bin/g?t -c 'x.y=a;b' $'\x70ush' origin main
+deny ## R8 C-1 a backslash-split push after a quoted ; ## /usr/bin/g?t -c 'x.y=a;b' pu\sh origin main
+deny ## R8 C-1 a continuation-split push after a quoted ; ## /usr/bin/g?t -c 'x.y=a;b' p\<NL>ush origin main
+deny ## R8 C-1 a quote-split send-pack after a quoted ; ## /usr/bin/g?t -c 'x.y=a;b' se''nd-pack origin main
+deny ## R8 C-1 a $( ) holding the push word ## /usr/bin/g?t $(echo pu''sh) origin main
+deny ## R8 C-1 a backtick pair holding the push word ## /usr/bin/g?t `echo pu''sh` origin main
+deny ## R8 C-1 a quoted $( ) holding the push word ## /usr/bin/g?t "$(echo pu''sh)" origin main
+deny ## R8 C-1 a $(printf ) holding the push word ## /usr/bin/g?t $(printf pu\\sh) origin main
+deny ## R8 C-1 a collating symbol glob, quoted ; ## /usr/bin/[[.g.]]it -c 'x.y=a;b' pu''sh origin main
+deny ## R8 C-1 a strict-only glob, quoted ; ## /usr/bin/[g][i][t] -c 'x.y=a;b' pu''sh origin main
+allow ## R8 C-1 a strict-only glob, hidden push in the next command ## cd /tmp; /usr/bin/[g][i][t] status; pu''sh
+allow ## R8 I-1 a JSON number grid ## cd /tmp && cat > f.json <<'EOF'<NL>[[0,0],[0,0],[0,0],[0,0],[0,0],[0,0],[0,0],[0,0]]<NL>EOF<NL>git status
+allow ## R8 I-1 a JSON grid under echo push ## echo push; cd /tmp && cat > f.json <<'EOF'<NL>[[0,0],[0,0],[0,0],[0,0],[0,0],[0,0],[0,0],[0,0]]<NL>EOF<NL>git status
+allow ## R8 I-1 nine bracket groups ## cd /tmp && cat <<'EOF'<NL>[1][2][3][4][5][6][7][8][9]<NL>EOF<NL>git status
+allow ## R8 I-1 nested brackets ## cd /tmp && cat <<'EOF'<NL>[[[[[[[[[a]]]]]]]]]<NL>EOF<NL>git status
+allow ## R8 I-1 an apostrophe token over 128 characters ## cd /tmp && cat <<'EOF'<NL>[Don't]<NL>xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx's]<NL>EOF<NL>git status
+allow ## R8 I-1 a 140-character bracket line ## cd /tmp && cat <<'EOF'<NL>[xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx]<NL>EOF<NL>git status
+deny ## R8 I-1 a long dash form of 11 brackets, literal push elsewhere ## echo push; [g][i][t]-[h][t][t][p]-[p][u][s][h] origin main
+deny ## R8 I-1 a long dash form of 11 brackets, hidden push ## [g][i][t]-[h][t][t][p]-[p][u][s][h] pu''sh origin main
+allow ## R8 D a [] word before a lone } in a body ## cd /tmp && cat <<'EOF'<NL>[] }<NL>EOF<NL>git diff --stat
+allow ## R8 D a [] word before a lone { in a body ## cd /tmp && cat <<'EOF'<NL>[] {<NL>EOF<NL>git diff --stat
+allow ## R8 D paren groups with a blank in a code comment ## cd /tmp && python3 - <<'PY'<NL># see (Appendix A.3) and (Appendix A.7)<NL>x = foo(bar(1), baz)<NL>PY<NL>git diff --stat
 TABLE
 # R7: a zsh group longer than 256 characters is read in full, not skipped.
-LONGGRP=$(awk 'BEGIN { printf "("; for (i = 0; i < 70; i++) printf "n%03d|", i; printf "git)" }')
-expect deny  "R7 a 300-character zsh group, literal push"  "$R" "/usr/bin/$LONGGRP push origin main"
-expect deny  "R7 a 300-character zsh group, hidden push"   "$R" "/usr/bin/$LONGGRP pu''sh origin main"
-expect allow "R7 a 300-character zsh group, no push word"  "$R" "cd /tmp && /usr/bin/$LONGGRP status"
+LONGPRE=$(awk 'BEGIN { for (i = 0; i < 70; i++) printf "n%03d|", i }')
+expect deny  "R7 a 300-character zsh group, literal push"  "$R" "/usr/bin/(${LONGPRE}gi)t push origin main"
+expect deny  "R7 a 300-character zsh group, hidden push"   "$R" "/usr/bin/g(${LONGPRE}it) pu''sh origin main"
+expect allow "R7 a 300-character zsh group, no push word"  "$R" "cd /tmp && /usr/bin/g(${LONGPRE}it) status"
 # The same readings against the real shells. Every word a shell expands to git or a git-* name in
 # a directory holding those files must be read as a possible git by glob_matches_git_name, unless
 # a word of * alone exempts it (g.glob_only; main's wider GLOB_ONLY is not used). A word is a pair:
@@ -2396,13 +2430,18 @@ def reads_as_git(w):
     return g.glob_matches_git_name(os.path.basename(g.glue_paren_groups(words_all[w])))
 
 
-def hook_denies(w):
-    cmd = "/usr/bin/" + w + " push origin main"
+def helper_denies(cmd, flag):
     payload = json.dumps({"cwd": sys.argv[3], "tool_input": {"command": cmd}})
-    env = dict(os.environ, PUSH_GUARD_LITERAL="1")
+    env = dict(os.environ, PUSH_GUARD_LITERAL=flag)
     out = subprocess.run(["/usr/bin/python3", "-I", sys.argv[1]], input=payload,
                          capture_output=True, text=True, env=env, timeout=60).stdout
     return '"permissionDecision":"deny"' in out
+
+
+def hook_denies(w):
+    # a literal push (flag 1), and a hidden push after a quoted ; (flag 0: no push text at all)
+    return (helper_denies("/usr/bin/" + w + " push origin main", "1")
+            and helper_denies("/usr/bin/" + w + " -c 'x.y=a;b' pu''sh origin main", "0"))
 
 
 for label, argv, pre in SHELLS:
@@ -2435,11 +2474,20 @@ for label, argv, pre in SHELLS:
     with concurrent.futures.ThreadPoolExecutor(8) as ex:
         res = list(ex.map(hook_denies, sample))
     notden = [sample[i] for i, r in enumerate(res) if not r]
+    shown = [words_all[w] for w in notden[:5]]
     print(("ok " if sample and not notden else "FAIL ") + "%s helper: %d of %d sampled words "
-          "denied before a push word, %d not %s" % (label, len(sample) - len(notden), len(sample),
-                                                    len(notden), [words_all[w] for w in notden[:5]]))
+          "denied before a push word and before a hidden one after a quoted ;, %d not %s"
+          % (label, len(sample) - len(notden), len(sample), len(notden), shown))
 PY
 )
+sh_rc=$?
+sh_lines=$(printf '%s\n' "$sh_out" | grep -c -E '^(ok|FAIL) ')
+sh_skips=$(printf '%s\n' "$sh_out" | grep -c '^skip ')
+if [ "$sh_rc" -ne 0 ] || [ "$sh_lines" -ne $((2 * (3 - sh_skips))) ]; then
+  fail=$((fail + 1))
+  printf '  FAIL shell globs: python status %s, %s result lines for %s skipped shells\n' \
+    "$sh_rc" "$sh_lines" "$sh_skips"
+fi
 while IFS= read -r line; do
   case "$line" in
     "ok "*)   pass=$((pass + 1)); printf '  ok   shell globs: %s\n' "${line#ok }" ;;
