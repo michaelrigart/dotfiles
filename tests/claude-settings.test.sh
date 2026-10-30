@@ -784,6 +784,50 @@ else
   echo "  SKIP: chezmoi absent — hook-script management unverified"
 fi
 
+echo "Y. unused extensions are switched off, the rest of the live state is carried"
+# Doctor cleanup 2026-10-29. plugins.conf is add-only, so dropping a plugin line leaves it
+# installed and enabled; enabledPlugins false is what disables it. Both maps are owned entry
+# by entry: Claude Code writes them at runtime (/plugin, /skills), so the rest must survive.
+SYNCED="pptx docx pdf xlsx google-workspace computer-use built-in-browser morning skill-creator mcp-builder internal-comms canvas-design algorithmic-art theme-factory brand-guidelines slack-gif-creator import-memory"
+emit '{}'
+for p in claude-code-setup claude-md-management; do
+  jq_is ".enabledPlugins[\"$p@claude-plugins-official\"]" false "plugin $p is disabled on a bare file"
+  if grep -q "^claude_plugin[[:space:]]*$p@" "$SRC/dot_config/agents/plugins.conf"; then
+    _fail "plugin $p is no longer declared in plugins.conf" "still declared"
+  else
+    _pass "plugin $p is no longer declared in plugins.conf"
+  fi
+done
+for s in $SYNCED; do
+  jq_is ".skillOverrides[\"anthropic-skills:$s\"]" off "synced skill $s is off"
+done
+# skillOverrides does not reach plugin skills (measured on 2.1.314), so the two cowork skills
+# go off with their plugin, which is synced from claude.ai.
+jq_is '.enabledPlugins["cowork-plugin-management@synced"]' false "the cowork plugin is disabled on a bare file"
+jq_is '.skillOverrides | keys | map(select(startswith("cowork-plugin-management"))) | length' 0 "no plugin skill is listed in skillOverrides"
+jq_is '.skillOverrides | length' 17 "exactly 17 skills are overridden on a bare file"
+jq_is '.skillOverrides | to_entries | all(.value == "off")' true "every owned override is off"
+jq_is '.enabledPlugins | length' 3 "only the three disabled plugins are named on a bare file"
+# Skills that stay on are never named.
+for s in docs deep-research chrome-browser live-feedback clarity api-review; do
+  jq_is ".skillOverrides | keys | map(select(endswith(\":$s\") or . == \"$s\")) | length" 0 "skill $s stays on"
+done
+for p in ruby-lsp rust-analyzer-lsp; do
+  jq_is ".enabledPlugins | has(\"$p@claude-plugins-official\") | not" true "plugin $p stays on"
+done
+emit '{"enabledPlugins":{"x@y":true,"claude-code-setup@claude-plugins-official":true,"rust-analyzer-lsp@claude-plugins-official":true},"skillOverrides":{"mine":"name-only","anthropic-skills:pdf":"on"}}'
+jq_is '.enabledPlugins["x@y"]'                                       true  "a live plugin entry is carried"
+jq_is '.enabledPlugins["rust-analyzer-lsp@claude-plugins-official"]' true  "an enabled live plugin stays enabled"
+jq_is '.enabledPlugins["claude-code-setup@claude-plugins-official"]' false "a live enabled retired plugin is forced off"
+jq_is '.skillOverrides.mine'                                         name-only "a live skill override is carried"
+jq_is '.skillOverrides["anthropic-skills:pdf"]'                      off   "a live override of an owned skill is forced off"
+emit '{"enabledPlugins":"junk","skillOverrides":["junk"]}'
+jq_is '.enabledPlugins | type'   object "a malformed live enabledPlugins is replaced"
+jq_is '.skillOverrides | length' 17     "a malformed live skillOverrides is replaced"
+emit '{}'
+SECOND=$(printf '%s' "$OUT" | /bin/bash "$MOD")
+if [ "$SECOND" = "$OUT" ]; then _pass "applying twice is a no-op"; else _fail "applying twice is a no-op" "second pass differs"; fi
+
 # --- agent definitions must declare a frontmatter name ----------------------
 #
 # An agent .md without a `name:` key does not register. Claude Code treats it as a
