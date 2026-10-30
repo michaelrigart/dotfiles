@@ -50,7 +50,6 @@
 # rule names only the plain form.
 #
 # Written for /usr/bin/python3 (3.9): no match statements, no X | Y type unions.
-import fnmatch
 import json
 import os
 import re
@@ -458,42 +457,54 @@ _GLOB_MEMO = {}
 
 
 def _bracket_end(word, i):
-    """The index of the ] that closes the bracket expression opened at word[i], or -1 when it
-    never closes (the [ is then a literal). Read as fnmatch reads it (an optional ! or ^, an
-    optional leading ], then the first ]), and past a [:name:] class when the next ] closes
-    the expression after it, as the shells read it. Linear: it scans forward only."""
+    """(end, wide) for the bracket expression opened at word[i]: end is the index of its closing
+    ], or -1 when it never closes (the [ is then a literal). Two readings exist and the result
+    covers both. The first closes at the first ] after an optional ! or ^ and an optional leading
+    ] (fnmatch without the ^, bash 3.2 and sh). The second also skips [:name:], [.x.] and [=x=]
+    inside the expression, whatever the name (bash 5, zsh, and an invalid name stays inside). A
+    third reading, zsh's, closes [!] and [^] at the ] right after the ! or ^: such an expression is
+    wide up to the next ] (or ends there when there is none). When the first ] ends such a class
+    the expression is read as extending to the next ] (repeatedly), and wide is true: the caller must let that whole region stand for any number of characters.
+    Linear: every search starts where the previous one stopped."""
     n = len(word)
     j = i + 1
     if j < n and word[j] in "!^":
         j += 1
+    zsh_early = j == i + 2 and word[j:j + 1] == "]"    # zsh closes [!] and [^] at once
     if j < n and word[j] == "]":
         j += 1
     k = word.find("]", j)
-    while k != -1 and k > j and word[k - 1] == ":":
-        p = word.rfind("[", j, k - 1)
-        if p == -1 or word[p + 1] != ":" or not word[p + 2:k - 1].isalpha():
+    if zsh_early and k == -1:
+        return i + 2, False
+    wide, start = zsh_early, j
+    while k != -1 and k - 1 >= start:
+        d = word[k - 1]
+        if d not in ":.=" or word.find("[" + d, start, k - 1) == -1:
             break
         k2 = word.find("]", k + 1)
         if k2 == -1:
             break
-        k = k2
-    return k
+        wide, start, k = True, k + 1, k2
+    return k, wide
 
 
 def _glob_elements(word):
     """The word as a list of elements: a literal character, "?" for one character (a ? or a
-    whole bracket expression, whatever it holds) or "*" (runs collapsed). Linear: once a [ has
-    no ] after it, no later [ has one either. A literal ?, * or [ is a (unescaped) glob
-    character here, as in fnmatch."""
+    bracket expression), "*" for any number (a * or a bracket expression that two readings of
+    the shells end differently, see _bracket_end), runs of * collapsed. Linear: past the last ]
+    a [ is a literal in O(1), and a [ with no ] after it is the last that can fail. An unclosed
+    [ is a literal. The characters are not unescaped."""
     out, i, n = [], 0, len(word)
     last = word.rfind("]")
     while i < n:
         c = word[i]
         if c == "[" and i < last:
-            end = _bracket_end(word, i)
+            end, wide = _bracket_end(word, i)
             if end != -1:
-                out.append(("?",))
+                out.append(("*",) if wide else ("?",))
                 i = end + 1
+                if wide and len(out) > 1 and out[-2] == ("*",):
+                    out.pop()
                 continue
         if c == "*":
             if not out or out[-1] != ("*",):
@@ -534,19 +545,23 @@ def _glob_matches(elems, name):
 
 
 def glob_matches_git_name(word):
-    """Could a glob word expand to git or a git-* name? Every bracket expression is read as a
-    single ? (see _glob_elements) and the rest is matched by a small linear matcher, so the check
+    """Could a glob word expand to git or a git-* name? Each bracket expression is read as one
+    character, or as any number when two readings of the shells end it differently (see
+    _glob_elements), and a small linear matcher compares the elements with the git names. It
     never raises and costs its length at most. Python 3.9's fnmatch, which main used here,
     raises re.error on a backwards range ([:-9], [z-a]), reads ^ as a literal rather than a
-    negation, has no [:alpha:] classes, and is quadratic on a run of [. The reading over-matches
-    (g[i]t also matches gxt, and so does g[z-a]t, which no shell expands to git) and accepts
-    everything fnmatch accepted; a pairing still needs a hidden push word."""
+    negation, has no [:alpha:] or [.x.] classes, and is quadratic on a run of [. The reading
+    over-matches on purpose (g[i]t also matches gxt, and so does g[z-a]t, which no shell expands
+    to git), a word with no literal in it (*, ??, [ab]*) is a bare glob and matches nothing, and
+    a pairing still needs a hidden push word. Measured against main's fnmatch (the round
+    reports hold the differential): every word main accepted is accepted here."""
     hit = _GLOB_MEMO.get(word)
     if hit is not None:
         return hit
     elems = _glob_elements(word)
     # Every element but a * takes exactly one character: more than 13 can match no git name.
-    if sum(1 for e in elems if e != ("*",)) > max(len(g) for g in GIT_NAMES):
+    if all(isinstance(e, tuple) for e in elems) or \
+            sum(1 for e in elems if e != ("*",)) > max(len(g) for g in GIT_NAMES):
         hit = False
     else:
         hit = any(_glob_matches(elems, g) for g in GIT_NAMES)
@@ -568,7 +583,7 @@ def glob_only(word):
         if c in "*?":
             i += 1
         elif c == "[":
-            end = _bracket_end(word, i)
+            end = _bracket_end(word, i)[0]
             if end == -1:
                 return False
             i = end + 1
@@ -1371,7 +1386,7 @@ def _command_tokens(vt):
 
 def _glob_git_spans(toks, vt):
     """The view spans of the command words that odd_command_word's glob branch reads as a git:
-    a glob that fnmatches git or a git-* name, not a bare glob, not a case pattern."""
+    a glob that can expand to git or a git-* name, not a bare glob, not a case pattern."""
     out = []
     for k in command_words(toks):
         if glob_git_word(toks, k):
@@ -1383,7 +1398,7 @@ def view_could_push(cmd, aliases):
     """Could some view of cmd run git push, with a git or push word spelled with a break? A
     word is a maximal run of letters, digits and hyphens. True when, in some view, a hidden
     git-push, git-send-pack or git-http-push word stands, or a git word (git, or a glob
-    command word that fnmatches git) is followed anywhere later by a push word (push,
+    command word that can expand to git) is followed anywhere later by a push word (push,
     send-pack, http-push or an alias in aliases) and at least one of the two is hidden; or
     when git_word_hits or built_word_hits over the view's tokens finds a git word, a built
     command word or a push slot word that is hidden."""

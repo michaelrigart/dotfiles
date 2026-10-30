@@ -2197,6 +2197,95 @@ if [ $((SECONDS - t0)) -lt 10 ]; then
 else
   fail=$((fail + 1)); printf '  FAIL %s (%ss)\n' "F4 the 50 KB and 200-character bracket commands finish under 10 s" "$((SECONDS - t0))"
 fi
+# Fix round 5 (I1, I2): the shells read a bracket expression in more than one way. bash 3.2 and
+# sh close g[[:g:][i]t at the first ] (the set {[ : g}, then [i], then t), bash 5 and zsh skip the
+# class and read one expression; collating symbols [.i.] and equivalence classes [=i=] are bash's;
+# zsh closes [!] at once. The matcher accepts every reading, so each of these denies.
+run_table <<'TABLE'
+deny ## R5 I1 a class that bash 3.2 closes early, hidden push ## /usr/bin/[[:g:][i]t pu''sh origin main
+deny ## R5 I1 the same, literal push ## /usr/bin/[[:g:][i]t push origin main
+deny ## R5 I1 a stray bracket before the class, hidden push ## /usr/bin/[x[:g:][i]t pu''sh origin main
+deny ## R5 I1 under sh -c, double quotes, hidden push ## sh -c "/usr/bin/[[:g:][i]t pu''sh origin main"
+deny ## R5 I1 under sh -c, single quotes, literal push ## sh -c '/usr/bin/[[:g:][i]t push origin main'
+deny ## R5 I1 under sh -c, stray bracket, hidden push ## sh -c "/usr/bin/[x[:g:][i]t pu''sh origin main"
+deny ## R5 I1 a class bash 5 and zsh read through, hidden push ## /usr/bin/g[[:i:][i]t pu''sh origin main
+deny ## R5 I2 a collating symbol, hidden push ## /usr/bin/g[[.i.]]t pu''sh origin main
+deny ## R5 I2 an equivalence class, literal push in sh -c ## sh -c '/usr/bin/g[[=i=]]t push origin main'
+deny ## R5 I2 a collating symbol under sh -c, hidden push ## sh -c "/usr/bin/g[[.i.]]t pu''sh origin main"
+deny ## R5 I2 an equivalence class, hidden push ## /usr/bin/g[[=i=]]t pu''sh origin main
+deny ## R5 zsh closes [!] at once: g[!]t, hidden push ## /usr/bin/g[!]t pu''sh origin main
+deny ## R5 zsh closes [^] at once: [^]it, literal push ## /usr/bin/[^]it push origin main
+deny ## R5 a POSIX class, hidden push ## /usr/bin/g[[:alpha:]]t pu''sh origin main
+allow ## R5 ls of a class glob that matches git ## ls /usr/bin/[[:g:][i]t
+allow ## R5 rg for a class glob ## rg '[[:g:][i]t' f
+allow ## R5 a bare class glob command, ANSI-C tab ## [[:alpha:]]x status $'\t'
+allow ## R5 a bare class glob followed by * (no literal), hidden push ## [[:alpha:]]* pu''sh origin main
+allow ## R5 a regex line in a here-document body, then git status ## cat <<'EOF'<NL>it's<NL>[[:space:]]* push<NL>EOF<NL>git status
+TABLE
+# The same readings against the real shells: every word a shell expands to git (or a git-* name)
+# in a directory holding those files, and that holds a literal outside its brackets (a bare glob
+# is exempt, as on main), must be accepted by glob_matches_git_name. A shell that is not
+# installed is skipped.
+sh_out=$(/usr/bin/python3 - "$(dirname "$GUARD")/git-push-guard.py" "$TMP" <<'PY'
+import importlib.util, itertools, os, subprocess, sys
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("guard", sys.argv[1])
+g = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(g)
+names = sorted(g.GIT_NAMES)
+d = os.path.join(sys.argv[2], "shellglobs")
+os.makedirs(d, exist_ok=True)
+for n in names:
+    open(os.path.join(d, n), "w").close()
+
+
+def slots(c):
+    return [c, "?", "[%s]" % c, "[!x]", "[^x]", "[[:alpha:]]", "[[.%s.]]" % c, "[[=%s=]]" % c,
+            "[x[:%s:][%s]" % (c, c), "[[:%s:][%s]" % (c, c), "[[:alpha:][%s]" % c, "[%s[:alpha:]]" % c,
+            "*", "[a-z]", "[]%s]" % c, "[^]%s]" % c, "[!]", "[^]", "[[:a:][:b:]%s]" % c]
+
+
+words = set()
+for a in slots("g"):
+    for b in slots("i"):
+        for c in slots("t"):
+            words.add(a + b + c)
+words = sorted(words)
+script = "\n".join("echo \"#%d\"; eval 'for f in %s; do echo \"$f\"; done' 2>/dev/null" % (i, w)
+                   for i, w in enumerate(words))
+SHELLS = [("zsh", ["/bin/zsh", "-f"], "setopt nonomatch; "), ("bash32", ["/bin/bash"], ""),
+          ("bash5", ["/opt/homebrew/bin/bash"], "")]
+for label, argv, pre in SHELLS:
+    if not os.path.exists(argv[0]):
+        print("skip " + label + " (not installed)")
+        continue
+    sf = os.path.join(d, "script-" + label)
+    with open(sf, "w") as f:
+        f.write("cd '" + d + "'; " + pre + script)
+    out = subprocess.run(argv + [sf], capture_output=True, text=True, timeout=120).stdout
+    got, cur = {}, None
+    for ln in out.split("\n"):
+        if ln.startswith("#") and ln[1:].isdigit():
+            cur = int(ln[1:])
+        elif cur is not None and ln in names:
+            got[cur] = True
+    seen = [words[i] for i in got]
+    miss = [w for w in seen if not g.glob_matches_git_name(w) and not g.glob_only(w)
+            and any(isinstance(e, str) for e in g._glob_elements(w))]
+    print(("ok " if seen and not miss else "FAIL ") + "%s: %d of %d words expand to a git name, %d missed %s"
+          % (label, len(seen), len(words), len(miss), miss[:5]))
+PY
+)
+while IFS= read -r line; do
+  case "$line" in
+    "ok "*)   pass=$((pass + 1)); printf '  ok   shell globs: %s\n' "${line#ok }" ;;
+    "skip "*) printf '  skip shell globs: %s\n' "${line#skip }" ;;
+    *)        fail=$((fail + 1)); printf '  FAIL shell globs: %s\n' "${line#FAIL }" ;;
+  esac
+done <<EOF
+$sh_out
+EOF
+[ -n "$sh_out" ] || { fail=$((fail + 1)); printf '  FAIL %s\n' "the shell glob check printed nothing"; }
 # Fix round 1 (I1): the helper run directly. An unset flag is the strictest reading (main's raw
 # checks run, an ask becomes a deny); exactly 0 leaves only the view denies; 1 is as before.
 helper_flag() { # helper_flag <deny|silent> <label> <unset|0|1> <command>
