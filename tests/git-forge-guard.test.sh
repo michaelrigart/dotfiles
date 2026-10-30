@@ -2823,8 +2823,8 @@ echo $'git push'
 git ${X:-pu}sh origin main
 GIT_CONFIG=/x git status; git push origin feat $'x'
 CASES
-# Literal-analog parity for payloads that hold no git and no push text: the shell fast path does not
-# start the helper for them (a residual), but the helper denies them as main denies the literal git.
+# Literal-analog parity for payloads that hold no git and no push text: the helper denies them as
+# main denies the literal git. The shell fast path starts it for them in glob mode (below).
 while IFS= read -r c; do
   [ -n "$c" ] || continue
   helper_flag deny "RP helper, flag 1: $c" 1 "$c"
@@ -2834,6 +2834,134 @@ cd /tmp; /usr/bin/[g][i][t] p?sh origin main
 /usr/bin/[g][i][t] -c x=a* status
 sh -c '/usr/bin/[[=g=]]it p?sh origin main'
 CASES
+# Glob mode (PUSH_GUARD_LITERAL=2). A payload with a glob word that a shell can expand to git, and
+# with no git, push, selector, alias or hidden-spelling text, used to start nothing: the four shapes
+# above went through. The fast path now matches the glob word with one ERE and starts the helper
+# with the flag 2, which runs only the strict re-run (the glob word read as git, judged as any
+# command is). The shapes deny through the whole hook, as their literal git versions do.
+run_table <<'TABLE'
+deny ## GM a cd prefix, a glob git word, a glob push word ## cd /tmp; /usr/bin/[g][i][t] p?sh origin main
+deny ## GM an option with a dotted key, then a glob push word ## /usr/bin/[g][i][t] -c x.y=1 p?sh origin main
+deny ## GM an option with a glob value, then a subcommand ## /usr/bin/[g][i][t] -c x=a* status
+deny ## GM the glob git word inside sh -c ## sh -c '/usr/bin/[g][i][t] p?sh origin main'
+deny ## GM an equivalence class word, then a glob push word ## /usr/bin/[[=g=]]it -c x.y=1 p?sh origin main
+deny ## GM a collating element word inside sh -c ## sh -c '/usr/bin/[[.g.]]it p?sh origin main'
+deny ## GM a ? word with a glob push word ## /usr/bin/g?t p?sh origin main
+deny ## GM a zsh group word with a glob push word ## /usr/bin/(git|nope) p?sh origin main
+deny ## GM a glob git word after a newline ## echo hi<NL>/usr/bin/g?t p?sh origin main
+deny ## GM a glob alias push (the shell fast path cannot list aliases) ## /usr/bin/[g][i][t] pom
+deny ## GM a negated bracket with a literal ] ## /usr/bin/g[^]x]t p?sh origin main
+deny ## GM a bracket with a literal ] first ## /usr/bin/g[]i]t p?sh origin main
+allow ## GM a glob git word whose command is no push ## cd /tmp; /usr/bin/[g][i][t] status
+allow ## GM the literal twin of the above ## cd /tmp; /usr/bin/git status
+TABLE
+# The same payloads without a glob git word, or without a glob that can be one, stay silent. None
+# holds git or push text, so the helper starts only when the ERE matches, and it stays silent.
+run_table <<'TABLE'
+allow ## GM silent: ls of a glob that matches git ## ls /usr/bin/g?t
+allow ## GM silent: a bracket glob with no push slot ## ls [g][i][t]
+allow ## GM silent: the literal twin of that ls ## ls git
+allow ## GM silent: a bracket word and a star ## echo [abc]*.md
+allow ## GM silent: a glob push word, no git word ## rg 'p?sh' docs/
+allow ## GM silent: a star glob ## cat *.txt
+allow ## GM silent: a URL with a query ## curl -s 'https://example.com/a?x=1' -o /dev/null
+allow ## GM silent: the test builtin ## [ -f x ] && echo ok
+allow ## GM silent: the test keyword ## [[ -n $x ]] && echo ok
+allow ## GM silent: find with a name glob ## find . -name '*.rb'
+allow ## GM silent: a markdown bold word ## echo '**passed** and **failed**'
+allow ## GM silent: a subshell ## (cd /tmp; ls)
+allow ## GM silent: two ? cannot be git ## ls ??
+allow ## GM silent: digit ranges ## echo [1-9][0-9]*
+allow ## GM silent: a regex class in a pattern ## rg -n '[A-Z_]*' src/
+TABLE
+gm_big=$(awk 'BEGIN { for (i = 0; i < 12000; i++) print "ls [abc]*.md g?t.txt (a|b)x" }')
+t0=$SECONDS
+expect allow "GM a 300 KB command of glob-looking words stays silent" "$R" "$gm_big"
+if [ $((SECONDS - t0)) -lt 10 ]; then
+  pass=$((pass + 1))
+  printf '  ok   %s\n' "GM the 300 KB glob-looking command stays under 10 s ($((SECONDS - t0)) s)"
+else
+  fail=$((fail + 1))
+  printf '  FAIL %s (%ss)\n' "GM the 300 KB glob-looking command under 10 s" "$((SECONDS - t0))"
+fi
+# The helper run directly. Flag 2 runs the strict re-run only, with main's raw checks on the read
+# text, and never asks: a push that would ask is the plain deny. The stand-alone path (a possible
+# git by itself) and the view checks do not run, so a glob git word that runs no push is silent
+# where flag 1 denies it. An unset, lost or garbled flag is not 2: it is the strictest reading.
+gm_hidden=$(printf '%s' "\$'\\x67it' \$'\\x70ush' origin main")
+helper_flag deny   "GM helper, flag 2: a glob git word before a push word" \
+  2 '/usr/bin/g?t push origin main'
+helper_flag deny   "GM helper, flag 2: a push that would ask is a deny" \
+  2 '/usr/bin/g?t push --force origin main'
+helper_flag deny   "GM helper, flag 2: a glob push word" \
+  2 'cd /tmp; /usr/bin/[g][i][t] p?sh origin main'
+helper_flag silent "GM helper, flag 2: a glob git word alone is no push (stand-alone path off)" \
+  2 '/usr/bin/g?t status'
+helper_flag deny   "GM helper, flag 1: the same command is denied by the stand-alone path" \
+  1 '/usr/bin/g?t status'
+helper_flag silent "GM helper, flag 2: no view check runs" 2 "$gm_hidden"
+helper_flag deny   "GM helper, flag 0: the same command is denied by its views" 0 "$gm_hidden"
+helper_flag silent "GM helper, flag 2: a plain command with no glob word" 2 'echo hi'
+for gm_v in "" 22 true " 2" two; do
+  helper_flag deny "GM helper, flag '$gm_v' is the strictest reading, not glob mode" \
+    "$gm_v" 'git pom $'"'x'"
+done
+# A failure: reading a glob word and then failing to judge it denies; a command with no glob word
+# never reaches the re-run, and nothing else runs, so a failure elsewhere cannot deny.
+gm_out=$(/usr/bin/python3 - "$(dirname "$GUARD")/git-push-guard.py" <<'PY'
+import importlib.util, io, json, os, sys
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("guard", sys.argv[1])
+g = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(g)
+
+
+def boom(*a, **k):
+    raise RuntimeError("forced")
+
+
+def run(cmd, name):
+    os.environ["PUSH_GUARD_LITERAL"] = "2"
+    saved = getattr(g, name)
+    setattr(g, name, boom)
+    sys.stdin = io.StringIO(json.dumps({"cwd": "/nonexistent", "tool_input": {"command": cmd}}))
+    out, old = io.StringIO(), sys.stdout
+    sys.stdout = out
+    try:
+        g.main()
+    finally:
+        sys.stdout = old
+        setattr(g, name, saved)
+    text = out.getvalue().strip()
+    return "silent" if not text else json.loads(text)["hookSpecificOutput"]["permissionDecision"]
+
+
+glob = "/usr/bin/g?t status"
+print("the re-run fails, a glob word read |", run(glob, "could_push"))
+print("the re-run fails, no glob word |", run("echo hi", "could_push"))
+for name in ("views", "parse_plain", "judge", "probe_refuses", "push_shape", "nested_token_lists"):
+    print("%s fails |" % name, run(glob, name))
+# push_shape and nested_token_lists run inside the re-run (main's raw checks on the read text), so
+# their failure is a failed re-run; the other four are the paths flag 2 skips.
+PY
+)
+while IFS='|' read -r label want; do
+  got=$(printf '%s\n' "$gm_out" | sed -n "s/^$label |//p" | tr -d ' ')
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf '  ok   GM flag 2, %s: %s\n' "$label" "$want"
+  else
+    fail=$((fail + 1)); printf '  FAIL GM flag 2, %s: %s (got %s)\n' "$label" "$want" "$got"
+  fi
+done <<'EOF'
+the re-run fails, a glob word read|deny
+the re-run fails, no glob word|silent
+views fails|silent
+parse_plain fails|silent
+judge fails|silent
+probe_refuses fails|silent
+push_shape fails|deny
+nested_token_lists fails|deny
+EOF
 has_reason "a hidden spelling gets the plain-push deny" "in a shape the guard does not check" "$R" "$(printf '%s' "\$'\\x67it' push origin --delete wip")"
 has_reason "a continuation spelling gets the plain-push deny" "in a shape the guard does not check" "$R" 'git pu\
 sh origin main'

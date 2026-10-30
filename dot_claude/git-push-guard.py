@@ -62,6 +62,8 @@
 # <( ), $( ) and backtick groups are folded so the slot after one is found (fold_hit, as the
 # stand-alone readings of c67e699 and 1333519 took such a command whole). Assumed: bash, sh and
 # zsh -f without extendedglob or kshglob (# ^ ~ patterns and *(...) forms are out of scope).
+# PUSH_GUARD_LITERAL=2: the fast path found only a glob word that could be git, with no push text
+# anywhere. main() then runs the strict path alone, with main's raw checks on the read text only.
 #
 # Written for /usr/bin/python3 (3.9): no match statements, no X | Y type unions.
 import json
@@ -1513,7 +1515,8 @@ def could_push(cmd, tokens, cwd):
     view_could_push) decodes the escapes and quotes and denies only a git or push word that was
     spelled with a break; it runs whenever the command holds a hidden-spelling signal. Under
     PUSH_GUARD_LITERAL=0 the raw reading never runs, so a command that holds no push word
-    anywhere is judged by its hidden spellings alone."""
+    anywhere is judged by its hidden spellings alone. Under PUSH_GUARD_LITERAL=2 (strict_only) the
+    raw reading runs, on the text the strict path read, and the view reading does not."""
     literal = raw_checks_enabled()
     text, nested = cmd, []
     if literal:
@@ -1526,7 +1529,7 @@ def could_push(cmd, tokens, cwd):
             return True
     # The view side is new code on every path, literal or not: a failure in it denies.
     try:
-        vs = views(cmd) if hidden_signal(cmd) else []
+        vs = views(cmd) if hidden_signal(cmd) and not strict_only() else []
         raw_git = literal and re.search(r"\bgit\b", cmd) is not None
         view_git = [v for v in vs if GIT_WORD.search(v.text)]
         if raw_git and "GIT_CONFIG" in cmd:
@@ -2705,10 +2708,17 @@ def literal_trigger():
     return os.environ.get("PUSH_GUARD_LITERAL") == "1"
 
 
+def strict_only():
+    """True when the fast path found a glob git word alone (a flag of exactly 2): main() runs only
+    the strict re-run, and no view runs. Any other value, a lost or garbled one included, is not."""
+    return os.environ.get("PUSH_GUARD_LITERAL") == "2"
+
+
 def raw_checks_enabled():
     """Main's raw checks run unless the fast path said, with a flag of exactly 0, that no push
     was written: a lost or unset flag is the strictest reading (the raw checks run and an ask
-    becomes a deny), never a looser one."""
+    becomes a deny), never a looser one. A flag of 2 is not 0, so the strict path's re-run of
+    could_push (the only thing that runs under 2) has its raw checks."""
     return os.environ.get("PUSH_GUARD_LITERAL") != "0"
 
 
@@ -2720,6 +2730,19 @@ def main():
     except (ValueError, AttributeError):
         return
     if not cmd:
+        return
+    if strict_only():
+        # Only the strict re-run, which only denies (plain). It fails closed in itself: a failure
+        # once a glob word is read denies. Nothing else runs, so nothing else can fail and deny.
+        try:
+            hit = strict_could_push(cmd, cwd)
+        except Deny as d:
+            print(decision("deny", str(d)))
+            return
+        except Exception:
+            return
+        if hit:
+            print(decision("deny", PLAIN))
         return
     shape = None
     try:

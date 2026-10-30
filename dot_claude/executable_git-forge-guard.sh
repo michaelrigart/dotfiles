@@ -118,7 +118,8 @@ EOF
     ;;
 esac
 # literal is main's own evidence (a push the shell would run as written). The signals below
-# find hidden spellings: they start the helper, which denies them and never asks.
+# find hidden spellings: they start the helper, which denies them and never asks. A glob git
+# word alone (further below) starts it with literal=2: its strict re-run only.
 literal=0
 [ "$push_word$push_selector$push_alias" = 000 ] || literal=1
 push_hidden=0
@@ -139,6 +140,30 @@ if [ "$literal" = 0 ]; then
 fi
 push_candidate=$literal
 [ "$push_hidden" = 0 ] || push_candidate=1
+# A glob word that a shell can expand to git (/usr/bin/[g][i][t], g?t, /usr/bin/(git|x)) leaves no
+# git and no push in a payload like `/usr/bin/[g][i][t] p?sh origin main`. When nothing above
+# fired, start the helper in glob mode (literal=2): it runs only its strict re-run. One ERE match
+# on the raw payload, a necessary condition for the helper's can_be: a word of name letters
+# (g i t p u s h e n d a c k o - and quotes), ? * and [..] or (..) spans, starting with g, a span
+# or a * and ending in t, h, k, a span or a *, with a glob item in it, after a word start or /.
+# A [..] span cannot start with a digit or a capital ([0-9]*, [A-Z_]*), nor can ?? be git.
+push_glob=0
+if [ "$push_candidate" = 0 ]; then
+  case "$payload" in
+    *[?*[\(]*)
+      g_sq="'"; g_nm="gitpushendacko$g_sq\"\\\\-"; g_q="[$g_sq\"\\\\]*"
+      g_bc='[^] ;&|<>()`]'; g_bx='[^] 0-9A-Z;&|<>()`]'; g_gr='\([^();&<>]*\)'
+      g_br="\\[([!^]\\]?$g_bc*|\\]?$g_bx$g_bc*)\\]+"
+      g_it="([$g_nm]|\\?|\\*|$g_br|$g_gr)"; g_end="(t|h|k|\\?|\\*|$g_br|$g_gr)"
+      g_wa="(g|\\*|$g_br)$g_it*(\\?|$g_br|$g_gr)($g_it*$g_end)?"
+      g_wa="$g_wa|$g_br$g_it*$g_end|\\?$g_it*(\\*|$g_br|$g_gr)|\\?$g_it*$g_it$g_end"
+      g_wb="g$g_it*\\*($g_it*$g_end)?|\\*$g_it*((g|i|p|u|s|e|n|d|a|c|o|-)$g_it*$g_end|t|h|k)"
+      g_re="(((^|[ :;&|(<>\`/{]|\\\\[nrt])$g_q($g_wa|$g_wb))|(/$g_gr$g_it*))$g_q"
+      g_re="$g_re([[:space:];&|<>(){}\`\\\\]|\$)"
+      [[ $payload =~ $g_re ]] && push_glob=1 ;;
+  esac
+fi
+[ "$push_glob" = 0 ] || { push_candidate=1; literal=2; }
 
 [ "$forge_candidate" = 1 ] || [ "$push_candidate" = 1 ] || allow
 
