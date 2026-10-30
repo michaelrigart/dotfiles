@@ -1252,7 +1252,11 @@ _RUNNERS = {"caffeinate", "arch", "xcrun", "stdbuf", "mise", "bundle", "op", "uv
             "pnpm", "yarn", "direnv", "script", "setsid", "ionice", "watch", "chrt", "taskset",
             "flock", "chroot", "unbuffer", "sandbox-exec", "systemd-run", "entr", "parallel",
             "nix-shell", "run", "exec", "x", "doas", "dotenv", "foreman", "rbenv", "pyenv",
-            "asdf"}
+            "asdf", "chronic", "rtx", "nix", "firejail", "bwrap", "strace", "ltrace", "valgrind",
+            "perf", "hyperfine", "torsocks", "proxychains", "numactl", "cpulimit", "fakeroot",
+            "faketime", "tmux", "screen", "dtrace", "lldb", "gdb", "rr", "runuser", "pkexec", "sg",
+            "su", "coproc", "ssh", "kubectl", "docker"}
+_POSITIONALS = {"ssh": 1, "docker": 2, "kubectl": 2}   # the positional words before their command
 # The options of a wrapper that take the next word as their value (sudo -u root, env -C dir).
 _VALUE_OPTS = {"sudo": {"-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-T", "-U", "-R"},
                "doas": {"-u", "-C"}, "env": {"-C", "-u"}, "nice": {"-n"},
@@ -1362,12 +1366,12 @@ def strict_text(cmd):
         if prefix_ok and not state0:
             word = m.group().lstrip("$").strip("'\"")
             base_word = os.path.basename(word)
-            runner = not after_option and base_word in _RUNNERS
+            runner = not after_option and base_word in _RUNNERS and budget <= 0
             if not after_option and (base_word in WRAPPERS or base_word == "timeout" or runner):
                 wrapper = base_word
             positional = budget > 0 and not runner and not after_option and not word.startswith("-")
             prefix_ok = _prefix_word(m.group(), after_option or positional)
-            budget = 2 if runner else budget - positional
+            budget = _POSITIONALS.get(base_word, 2) if runner else budget - positional
             after_option = word in _VALUE_OPTS.get(wrapper, ()) and not is_value
         if not any(c in m.group() for c in "?[*" + GLUE_FILL):
             continue

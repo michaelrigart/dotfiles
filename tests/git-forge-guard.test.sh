@@ -2947,6 +2947,16 @@ deny ## R14 M2 a zsh group after empty quotes ## nice ""(g|x)it -C /tmp pu[s]h o
 deny ## R14 I2 script with its two positional words ## script -q /dev/null bin/g?t-push -f origin feat
 deny ## R14 I2 direnv exec . ## direnv exec . /usr/bin/g?t-push origin main
 deny ## R14 I2 flock with a lock file ## flock /tmp/l /usr/bin/g?t-push origin main
+deny ## R14 I2 strace ## strace /usr/bin/g?t-push origin main
+deny ## R14 I2 ssh host ## ssh localhost /usr/bin/[[=g=]]it-push origin main
+deny ## R14 I2 docker run image ## docker run img /usr/bin/g?t-push origin main
+deny ## R14 I2 kubectl exec pod ## kubectl exec pod -- /usr/bin/g?t-push origin main
+deny ## R14 I2 gdb --args ## gdb --args /usr/bin/g?t-push origin main
+deny ## R14 I2 cpulimit with a number ## cpulimit -l 50 -- /usr/bin/g?t-push origin main
+deny ## R14 I2 runuser ## runuser -u me -- /usr/bin/g?t-push origin main
+deny ## R14 I2 tmux new ## tmux new /usr/bin/g?t-push origin main
+allow ## R14 I2 silent: a glob after docker's own command ## docker run img ls git-*
+allow ## R14 I2 silent: ssh then a command that lists ## ssh localhost ls git-pu*
 deny ## R14 M3 a decoy value after sudo -u ## sudo -u g?t /usr/bin/[g][i][t] -C /tmp pu[s]h origin main
 deny ## R14 M3 a decoy value after env -C ## Q=pu; env -C g?t /usr/bin/[g][i][t] -c k=v ${Q}sh origin main
 deny ## R14 M3 a decoy value and a dash name ## sudo -u g?t /usr/bin/git-pu* -f origin feat
