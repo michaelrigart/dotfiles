@@ -5,7 +5,7 @@
   - Needs the escape: `op`, and git configuration writes in any repository: `init`,
     `clone`, `config`, `remote add`, `branch -u`, `submodule`, `worktree add`,
     `switch --track`, or a new branch started from a remote ref (`switch -c b origin/x`).
-  - Works sandboxed: git `add`, `commit`, `push`/`fetch` over SSH, `mise exec`, localhost.
+  - Works sandboxed: git `add`, `commit`, `push`/`fetch` over SSH, `mise exec`, local TCP.
 - **Excluded tools.** `docker`, `basecamp`, `herdr`, `xreview` and `review` are declared
   unsandboxed in `sandbox.excludedCommands`. Sandboxed, they return confident wrong
   answers: "unauthenticated", "no Codex pane", "daemon not running".
