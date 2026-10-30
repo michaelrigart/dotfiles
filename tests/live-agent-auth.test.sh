@@ -8,6 +8,7 @@ repo=${1:?repository path required}
 
 if ! git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
   echo "AUTH=INVALID_REPOSITORY"
+  echo "failed_keys=AUTH"
   exit 1
 fi
 
@@ -16,6 +17,7 @@ case "$remote" in
   git@*:*|ssh://*) ;;
   *)
     echo "AUTH=NON_SSH_REMOTE"
+    echo "failed_keys=AUTH"
     exit 1 ;;
 esac
 
@@ -29,6 +31,7 @@ trap 'rm -f "$diagnostic"' EXIT
 # the meaning of this suite: it failed precisely when the setup was correct.
 if [ "${GIT_SSH_COMMAND:-}" != "$HOME/.local/bin/ssh-sandbox-proxy" ]; then
   echo "AUTH=PROXY_ENV_MISSING"
+  echo "failed_keys=AUTH"
   exit 1
 fi
 
@@ -36,6 +39,7 @@ fi
 case "$(command -v git)" in
   "$HOME/.local/bin/"*)
     echo "AUTH=GIT_SHIM_PRESENT"
+    echo "failed_keys=AUTH"
     exit 1 ;;
 esac
 
@@ -89,5 +93,6 @@ else
   else
     echo "AUTH=FAILED_OTHER"
   fi
+  echo "failed_keys=AUTH"
   exit 1
 fi

@@ -11,6 +11,7 @@ if git -C "$test_root/repo" commit --allow-empty -m "Verify sandbox signing" >/d
   echo "COMMIT=SIGNED"
 else
   echo "COMMIT=FAILED"
+  echo "failed_keys=COMMIT"
   exit 1
 fi
 
@@ -18,6 +19,7 @@ if git -C "$test_root/repo" cat-file commit HEAD | grep -q '^gpgsig '; then
   echo "SIGNATURE=PRESENT"
 else
   echo "SIGNATURE=ABSENT"
+  echo "failed_keys=SIGNATURE"
   exit 1
 fi
 
@@ -25,5 +27,6 @@ if git -C "$test_root/repo" verify-commit HEAD >/dev/null 2>&1; then
   echo "VERIFICATION=GOOD"
 else
   echo "VERIFICATION=FAILED"
+  echo "failed_keys=VERIFICATION"
   exit 1
 fi

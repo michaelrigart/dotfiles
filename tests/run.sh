@@ -103,7 +103,7 @@ for f in ./*.test.sh; do
   idiom=prose
   if [ "$((p + fl))" -eq 0 ]; then
     # A probe that reports SKIPPED did not assert anything, so it is not counted.
-    p=$(printf '%s\n' "$out" | grep -E '^[A-Za-z_][A-Za-z0-9_.-]*=[A-Za-z_]+$' | grep -vcE '=SKIPPED$')
+    p=$(printf '%s\n' "$out" | grep -E '^[A-Za-z_][A-Za-z0-9_.-]*=[A-Za-z_]+$' | grep -vcE '=SKIPPED$|^failed_keys=')
     [ "$p" -gt 0 ] && idiom=kv
   fi
   tot=$((p + fl))
@@ -132,12 +132,19 @@ for f in ./*.test.sh; do
     green=$((green + p))
   else
     printf '  FAIL  %-28s %s/%s (exit=%s)%s\n' "$name" "$p" "$tot" "$rc" "$note"
-    # Each failure with up to 3 continuation lines (the suite's `| got:` detail).
-    printf '%s\n' "$out" | awk '
-      /^[[:space:]]*(FAIL|not ok)/ { print; keep = 3; next }
-      keep > 0 && /^[[:space:]]+[^[:space:]]/ && !/^[[:space:]]*(ok|PASS)([[:space:]]|:)/ { print; keep--; next }
-      { keep = 0 }' | sed 's/^/          /'
-    if [ "$idiom" = kv ]; then problems+=("$name (exit=$rc)"); else problems+=("$name ($fl failed)"); fi
+    if [ "$idiom" = kv ]; then
+      # A kv suite closes with failed_keys=<key>,<key> when it fails. Only that line is shown, and only
+      # when it is made of key characters: nothing else a suite prints is echoed, so no value leaks.
+      printf '%s\n' "$out" | grep -E '^failed_keys=[A-Za-z0-9_.,-]+$' | tail -n 1 | sed 's/^/          /'
+      problems+=("$name (exit=$rc)")
+    else
+      # Each failure with up to 3 continuation lines (the suite's `| got:` detail).
+      printf '%s\n' "$out" | awk '
+        /^[[:space:]]*(FAIL|not ok)/ { print; keep = 3; next }
+        keep > 0 && /^[[:space:]]+[^[:space:]]/ && !/^[[:space:]]*(ok|PASS)([[:space:]]|:)/ { print; keep--; next }
+        { keep = 0 }' | sed 's/^/          /'
+      problems+=("$name ($fl failed)")
+    fi
     red=$((red + p))
   fi
 done

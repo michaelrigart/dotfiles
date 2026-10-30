@@ -2,10 +2,14 @@
 # Run inside a fresh Claude sandbox after chezmoi apply. Tries to create a file in each place
 # the sandbox must not write (specs 2026-10-16, sandbox write boundary, and 2026-10-30, git
 # configuration and .git where no repository may be) and in each work place it must still write;
-# reports KEY=VALUE only and removes what it created.
+# reports KEY=VALUE only and removes what it created. A failing run ends with one
+# failed_keys=<key>,<key> line naming the keys that counted, which tests/run.sh shows.
 # test-requires: sandboxed, fresh-session  # measures the sandbox; unsandboxed every denial reads WRITABLE
 set -u
 fail=0
+failed=()
+# bad <key>: count a failure and remember its key for the closing failed_keys line.
+bad() { fail=$((fail + 1)); failed+=("$1"); }
 stamp="zz-write-boundary-$$"
 # Every path the suite may create; the trap removes them on any exit and reports leftovers.
 probes=("$HOME/.cache/$stamp")
@@ -18,9 +22,10 @@ cleanup() {
   if [ -n "$TB" ] && [ -d "$HOME/Code/$stamp-b/r" ]; then mv "$HOME/Code/$stamp-b/r" "$TB/r-back" 2>/dev/null; fi
   for p in "${probes[@]}"; do rm -rf "$p" 2>/dev/null; done
   for p in "${probes[@]}"; do
-    if [ -e "$p" ] || [ -L "$p" ]; then echo "cleanup=LEFT"; fail=$((fail + 1)); break; fi
+    if [ -e "$p" ] || [ -L "$p" ]; then echo "cleanup=LEFT"; bad cleanup; break; fi
   done
   if [ "$fail" = 0 ] && [ "$rc" != 0 ]; then exit "$rc"; fi
+  if [ "${#failed[@]}" -gt 0 ]; then ( IFS=,; echo "failed_keys=${failed[*]}" ); fi
   exit "$fail"
 }
 trap cleanup EXIT
@@ -41,27 +46,27 @@ try() {
 prepare() {
   target=$2; kind=f
   case $target in */) target=${target%/}; if [ -d "$target" ]; then target="$target/$stamp"; else kind=d; fi ;; esac
-  if [ ! -d "$(dirname "$target")" ]; then echo "$1=ABSENT"; fail=$((fail + 1)); return 1; fi
-  if [ -e "$target" ] || [ -L "$target" ]; then echo "$1=EXISTS"; fail=$((fail + 1)); return 1; fi
+  if [ ! -d "$(dirname "$target")" ]; then echo "$1=ABSENT"; bad "$1"; return 1; fi
+  if [ -e "$target" ] || [ -L "$target" ]; then echo "$1=EXISTS"; bad "$1"; return 1; fi
   probes+=("$target")
 }
 # denied <key> <path>: creating <path> (a file, or a directory when it ends in /) must fail.
 denied() {
   local kind target
   prepare "$1" "$2" || return 0
-  if try "$kind" "$target"; then echo "$1=WRITABLE"; fail=$((fail + 1)); else echo "$1=DENIED"; fi
+  if try "$kind" "$target"; then echo "$1=WRITABLE"; bad "$1"; else echo "$1=DENIED"; fi
 }
 # allowed <key> <path>: creating <path> must succeed; it is removed again.
 allowed() {
   local kind target
   prepare "$1" "$2" || return 0
-  if try "$kind" "$target"; then echo "$1=WRITABLE"; else echo "$1=DENIED"; fail=$((fail + 1)); fi
+  if try "$kind" "$target"; then echo "$1=WRITABLE"; else echo "$1=DENIED"; bad "$1"; fi
 }
 # denied_existing <key> <path>: <path> must be an existing file that cannot be opened for append.
 # The open writes nothing. A missing file reads ABSENT, which counts as a failure.
 denied_existing() {
-  if [ ! -f "$2" ]; then echo "$1=ABSENT"; fail=$((fail + 1)); return 0; fi
-  if ( : >> "$2" ) 2>/dev/null; then echo "$1=WRITABLE"; fail=$((fail + 1)); else echo "$1=DENIED"; fi
+  if [ ! -f "$2" ]; then echo "$1=ABSENT"; bad "$1"; return 0; fi
+  if ( : >> "$2" ) 2>/dev/null; then echo "$1=WRITABLE"; bad "$1"; else echo "$1=DENIED"; fi
 }
 # allowed_off_base <key> <path>: a file in .claude/commands or .claude/agents, or the git config in
 # TMPDIR (tmpdir_git_config).
@@ -72,7 +77,7 @@ denied_existing() {
 # An unenterable RUN_SH_START_DIR falls back to pwd; an empty base would make "$base"/* match every
 # path and skip each probe silently, so that counts as a failure.
 base=$(cd "${RUN_SH_START_DIR:-.}" 2>/dev/null && pwd -P) || base=$(pwd -P 2>/dev/null) || base=
-if [ -z "$base" ]; then echo "base_dir=UNKNOWN"; fail=$((fail + 1)); fi
+if [ -z "$base" ]; then echo "base_dir=UNKNOWN"; bad base_dir; fi
 # git ignoring the global and system configuration (the chezmoi top-level probe and the behaviour probe).
 gi() { GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git "$@"; }
 gc() { gi -c user.name=t -c user.email=t@t "$@"; }
@@ -215,7 +220,7 @@ for root in "$HOME/Code" "$HOME/.local/share/chezmoi" "$HOME/Documents" \
       echo "# info ${k}_git_file_plain_dir=$v (residual: path rules cannot tell a .git file from a .git directory)"
     fi
   else
-    echo "${k}_root=DENIED"; fail=$((fail + 1))
+    echo "${k}_root=DENIED"; bad "${k}_root"
   fi
   rm -rf "${root:?}/${stamp:?}" 2>/dev/null
 done
@@ -243,7 +248,7 @@ if [ -d "$cg/modules/x" ]; then
   denied chezmoi_top_git_module_hooks "$cg/modules/x/hooks/"
 else
   if [ -d "$cg/modules" ]; then probes+=("$cg/modules/x"); else probes+=("$cg/modules"); fi
-  if mkdir -p "$cg/modules/x" 2>/dev/null; then
+  if err=$(mkdir -p "$cg/modules/x" 2>&1); then
     denied chezmoi_top_git_module_hooks "$cg/modules/x/hooks/"
   else
     # Claude Code's own rule also refuses creating .git/modules in the session repository. Started in a
@@ -254,7 +259,15 @@ else
     case "$cg" in
       "$base"/*) echo "chezmoi_top_git_module_hooks=SKIPPED" ;;
       *) if [ -n "$common" ] && [ "$common" = "$cgreal" ]; then echo "chezmoi_top_git_module_hooks=SKIPPED"
-         else echo "chezmoi_top_git_module_hooks=ABSENT"; fail=$((fail + 1)); fi ;;
+         else
+           # Anywhere else a sandbox refusal to create .git/modules is the boundary holding: nothing
+           # below it, hooks included, can be written. Only that message counts; a missing parent or
+           # any other error leaves the probe unmeasured, which is ABSENT.
+           case "$err" in
+             *"Operation not permitted"*) echo "chezmoi_top_git_module_hooks=DENIED" ;;
+             *) echo "chezmoi_top_git_module_hooks=ABSENT"; bad chezmoi_top_git_module_hooks ;;
+           esac
+         fi ;;
     esac
   fi
 fi
@@ -262,7 +275,7 @@ fi
 tg="${TMPDIR:-/tmp}/$stamp/.git"
 probes+=("${TMPDIR:-/tmp}/$stamp")
 if mkdir -p "$tg" 2>/dev/null; then allowed_off_base tmpdir_git_config "$tg/config"
-else echo "tmpdir_root=DENIED"; fail=$((fail + 1)); fi
+else echo "tmpdir_root=DENIED"; bad tmpdir_root; fi
 rm -rf "${TMPDIR:-/tmp}/${stamp:?}" 2>/dev/null
 # The chezmoi wrapper clones under ~/.cache and points chezmoi's TMPDIR there: the sandbox must
 # not be able to write anywhere in ~/.cache between the check and the apply.
@@ -287,20 +300,20 @@ behaviour_setup() {
 }
 if behaviour_setup >/dev/null 2>&1; then
   if gc -C "$R" commit -q --allow-empty -m probe >/dev/null 2>&1; then echo "behaviour_commit=OK"
-  else echo "behaviour_commit=FAIL"; fail=$((fail + 1)); fi
-  if gi -C "$R" config probe.key 1 >/dev/null 2>&1; then echo "behaviour_config=WRITABLE"; fail=$((fail + 1))
+  else echo "behaviour_commit=FAIL"; bad behaviour_commit; fi
+  if gi -C "$R" config probe.key 1 >/dev/null 2>&1; then echo "behaviour_config=WRITABLE"; bad behaviour_config
   else echo "behaviour_config=DENIED"; fi
   if gi -C "$R" push -q -u origin HEAD:refs/heads/b1 >/dev/null 2>&1 \
      && gi --git-dir="$TB/origin.git" rev-parse --verify -q refs/heads/b1 >/dev/null 2>&1 \
      && [ -z "$(gi -C "$R" config branch.main.merge 2>/dev/null)" ]; then echo "behaviour_push_u=OK"
-  else echo "behaviour_push_u=FAIL"; fail=$((fail + 1)); fi
+  else echo "behaviour_push_u=FAIL"; bad behaviour_push_u; fi
   if gi -C "$R" worktree add -q "$HOME/Code/$stamp-b/wt" -b wtb >/dev/null 2>&1; then
-    echo "behaviour_worktree_add=WRITABLE"; fail=$((fail + 1))
+    echo "behaviour_worktree_add=WRITABLE"; bad behaviour_worktree_add
   else echo "behaviour_worktree_add=DENIED"; fi
-  if ( : >> "$R/.git/CONFIG" ) 2>/dev/null; then echo "behaviour_case_config=WRITABLE"; fail=$((fail + 1))
+  if ( : >> "$R/.git/CONFIG" ) 2>/dev/null; then echo "behaviour_case_config=WRITABLE"; bad behaviour_case_config
   else echo "behaviour_case_config=DENIED"; fi
   denied behaviour_case_commondir "$R/.git/COMMONDIR"
 else
-  echo "behaviour_setup=FAIL"; fail=$((fail + 1))
+  echo "behaviour_setup=FAIL"; bad behaviour_setup
 fi
 exit "$fail"

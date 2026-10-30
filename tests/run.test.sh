@@ -44,6 +44,41 @@ echo "first=DENIED"
 echo "second=SKIPPED"
 echo "third=WRITABLE"
 SUITE
+cat > "$T/kvfail.test.sh" <<'SUITE'
+#!/usr/bin/env bash
+echo "first=DENIED"
+echo "second=WRITABLE"
+echo "third=ABSENT"
+echo "failed_keys=second,third"
+exit 2
+SUITE
+cat > "$T/kvfailodd.test.sh" <<'SUITE'
+#!/usr/bin/env bash
+echo "first=DENIED"
+echo "second=WRITABLE"
+echo "failed_keys=sec ond;\$(x)"
+exit 1
+SUITE
+cat > "$T/kvfailbare.test.sh" <<'SUITE'
+#!/usr/bin/env bash
+echo "first=DENIED"
+echo "second=WRITABLE"
+exit 1
+SUITE
+cat > "$T/kvfaildiag.test.sh" <<'SUITE'
+#!/usr/bin/env bash
+echo "first=DENIED"
+echo "FAILURE: synthetic-private-diagnostic"
+echo "  indented-private-detail"
+echo "failed_keys=first"
+exit 1
+SUITE
+cat > "$T/kvfailok.test.sh" <<'SUITE'
+#!/usr/bin/env bash
+echo "first=DENIED"
+echo "failed_keys=first"
+exit 0
+SUITE
 cat > "$T/coldcache.test.sh" <<'SUITE'
 #!/usr/bin/env bash
 echo "  PASS: first"
@@ -88,6 +123,24 @@ out="$(cd "$T/.." && WANT_START="$want" "$T/run.sh" startdir 2>&1)"
 ran "RUN_SH_START_DIR is the physical directory run.sh was started from" yes 'ok +startdir' "$out"
 out="$("$T/run.sh" kvskip 2>&1)"
 ran "a SKIPPED key=value line is not counted as an assertion" yes 'ok +kvskip +2/2' "$out"
+
+out="$("$T/run.sh" kvfail 2>&1)"; rc=$?
+ran "a failing kv suite shows its failed_keys line"          yes '^ +failed_keys=second,third$' "$out"
+ran "failed_keys is not counted as an assertion"             yes 'FAIL +kvfail +3/3 \(exit=2\)' "$out"
+ran "the other kv statuses are not echoed"                   no  'second=WRITABLE|third=ABSENT|first=DENIED' "$out"
+ran "the kv suite is listed under NOT OK with its exit"      yes '  - kvfail \(exit=2\)' "$out"
+if [ "$rc" -ne 0 ]; then _pass "a failing kv suite fails the run"; else _fail "a failing kv suite fails the run" "exit $rc"; fi
+out="$("$T/run.sh" kvfailodd 2>&1)"
+ran "a failed_keys line of other characters is not shown"     no  'failed_keys' "$out"
+ran "and the suite still fails"                              yes 'FAIL +kvfailodd +2/2 \(exit=1\)' "$out"
+out="$("$T/run.sh" kvfailbare 2>&1)"
+ran "a failing kv suite without the line still fails"        yes 'FAIL +kvfailbare +2/2 \(exit=1\)' "$out"
+ran "and shows no failed_keys line"                          no  'failed_keys' "$out"
+out="$("$T/run.sh" kvfaildiag 2>&1)"
+ran "a failing kv suite shows its failed_keys line"          yes '^ +failed_keys=first$' "$out"
+ran "other output of a failing kv suite is not echoed"       no  'synthetic-private-diagnostic|indented-private-detail' "$out"
+out="$("$T/run.sh" kvfailok 2>&1)"
+ran "a passing kv suite does not count a failed_keys line"   yes 'ok +kvfailok +1/1' "$out"
 
 out="$("$T/run.sh" coldcache 2>&1)"; rc=$?
 ran "an INCONCLUSIVE line is printed under its suite" yes '^ +INCONCLUSIVE: chezmoi managed failed: boom' "$out"
