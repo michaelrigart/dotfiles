@@ -1103,11 +1103,12 @@ has_reason   "D2 and the deny is refused, plain -n form, confirm, in order" \
              "$DRY_REFUSED${DRY_HERE}git push --force-with-lease=a -n origin --delete open"$'\n'"$CONFIRM_DELETE" "$DEL" "$D2_CR"
 no_real_push "D2 CR" "$DEL" "$D2_CR" "git push --force-with-lease=a origin --delete open"
 # A continuation glued to -n: the shell joins ci.skip\<newline>-n into one push option value.
+# Spec 2026-10-29 section 2: the guard no longer reads the continuation as a space, so the
+# command leaves the grammar and gets the plain-push deny.
 D2_CONT="git push --force-with-lease=open:$OPEN -o ci.skip\\
 -n origin --delete open"
 expect deny  "D2 a continuation glued to -n"                            "$DEL" "$D2_CONT"
-has_reason   "D2 and the deny is refused, plain -n form, confirm, in order" \
-             "$DRY_REFUSED${DRY_HERE}git push --force-with-lease=open:$OPEN -o ci.skip -n origin --delete open"$'\n'"$CONFIRM_DELETE" "$DEL" "$D2_CONT"
+has_reason   "D2 and a continuation glued to -n leaves the grammar: the plain-push deny" "in a shape the guard does not check" "$DEL" "$D2_CONT"
 no_real_push "D2 continuation" "$DEL" "$D2_CONT" "git push --force-with-lease=open:$OPEN -o ci.skip origin --delete open"
 # Not canonical, judged as a real push: a real deny stays a deny, a real allow stays an allow,
 # and a real ask becomes the dry-run deny. A real deny that prints a pinned delete prints its
@@ -1517,7 +1518,17 @@ expect deny  "an ANSI-C letter inside push"          "$R" "git pu\$'\\x73'h orig
 expect ask   "a literal push still asks"             "$R" 'git push origin main'
 expect ask   "a quoted git word, literal push, still asks" "$R" '"git" push origin main'
 expect deny  "a hidden send-pack spelling"           "$R" 'git send-"pack" origin main'
-expect allow "IFS=$'\\n' alone is silent"            "$R" "IFS=\$'\\n'; echo hi"
+expect deny  "a quoted ; in a -c value before a literal push" "$R" "true; git -c 'x.y=a;b' push origin main"
+expect deny  "git send-pack in a compound command"   "$R" "true; git send-pack $REMOTES/origin.git main"
+expect deny  "an ANSI-C assignment before a feature push" "$R" "IFS=\$'\\n' git push origin feat"
+has_reason   "a \$' command gets the plain-push deny" "in a shape the guard does not check" "$R" "IFS=\$'\\n' git push origin feat"
+expect deny  "a continuation inside a refspec word"  "$R" 'git push -u origin fe\
+at'
+has_reason   "an in-word continuation gets the plain-push deny" "in a shape the guard does not check" "$R" 'git push -u origin fe\
+at'
+expect allow "a continuation between words keeps main's verdict" "$R" 'git push -u \
+origin feat'
+expect allow "IFS=$'\\n' alone is silent"           "$R" "IFS=\$'\\n'; echo hi"
 expect allow "printf with an ANSI-C string is silent" "$R" "printf \$'a\\tb'"
 expect allow "a sed backreference is silent"         "$R" "sed -E 's/(a)/\\1/' f"
 # Without PUSH_GUARD_LITERAL the helper treats the run as a hidden-spelling start: an ask is a deny.

@@ -465,11 +465,16 @@ def odd_command_word(tokens):
     return False
 
 
-def dynamic_git_word(tokens):
-    """Is a git word followed by a global option or a subcommand the shell rewrites (git
-    ${X:-push} ...)? Such a word can name any subcommand, so the text cannot rule out a
-    push. Only a git in command position counts: rg git -g '*.sh' names git as an argument."""
+PUSH_SLOT = {"push", "send-pack", "http-push"}
+
+
+def git_word_hits(tokens):
+    """(git_index, slot_index) for each git command word whose slot past the global options
+    is a subcommand the shell rewrites (git ${X:-push} ...), or is a push by its raw token
+    (push, send-pack, http-push). Such a word can name a push, so the text cannot rule one
+    out. Only a git in command position counts: rg git -g '*.sh' names git as an argument."""
     n = len(tokens)
+    hits = []
     for k in command_words(tokens):
         if os.path.basename(tokens[k]) != "git":
             continue
@@ -479,17 +484,29 @@ def dynamic_git_word(tokens):
             name = w.split("=", 1)[0]
             if w in ("-C", "-c") or (name in GIT_LONG_OPTS_WITH_VALUE and "=" not in w):
                 if dynamic(w) or (j + 1 < n and dynamic(tokens[j + 1], dollar=(w != "-C"))):
-                    return True
+                    hits.append((k, j))
+                    break
                 j += 2
             elif w.startswith("-"):
                 if dynamic(w):
-                    return True
+                    hits.append((k, j))
+                    break
                 j += 1
             else:
-                if dynamic(w):
-                    return True
+                if dynamic(w) or w in PUSH_SLOT:
+                    hits.append((k, j))
                 break
-    return False
+    return hits
+
+
+def dynamic_git_word(tokens):
+    return bool(git_word_hits(tokens))
+
+
+def outside_grammar(cmd):
+    """Text parse_plain cannot judge faithfully: an ANSI-C quote, or a backslash-newline
+    inside a word (a continuation between words leaves the grammar's verdict as it was)."""
+    return "$'" in cmd or re.search(r"\S\\\n\S", cmd) is not None
 
 
 # Tools that never execute their arguments: what follows the command word is data, so a
@@ -1471,7 +1488,7 @@ def main():
             tokens = tokenize(cmd)
         except ValueError:
             tokens = None                              # unbalanced quotes: not plain
-        if tokens is not None:
+        if tokens is not None and not outside_grammar(cmd):
             shape = parse_plain(tokens, cwd)
         if shape is None:
             if could_push(cmd, tokens, cwd):           # the raw text: a superset, never trimmed
