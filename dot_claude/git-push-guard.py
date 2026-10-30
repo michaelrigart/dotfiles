@@ -239,10 +239,10 @@ GLUE_FILL = "\x01"          # fills a glued group: [<SOH>...<SOH>], never a real
 
 
 def glue_paren_groups(text):
-    """text with every in-word (...) group rewritten as [SOH...SOH] (GLUE_FILL) of equal length.
-    zsh reads word(a| b)word as an alternation (with bareglobqual and extendedglob off), so the group is a
-    glob, but the tokenizers split a word at ( and ), which would lose it. A group opens
-    glued to the word before it or to a group just before it (not after whitespace, an operator,
+    """text with every in-word (...) group rewritten as [SOH...SOH] (GLUE_FILL) of equal
+    length. zsh reads word(a| b)word as an alternation (with bareglobqual and extendedglob off),
+    so the group is a glob, but the tokenizers split a word at ( and ), which would lose it. A
+    group opens glued to the word before it or to a group just before it (not after whitespace, an operator,
     $, = or a backtick: those start a subshell, a substitution or an array), is not empty
     (name() defines a function), holds no newline, ; & < or > (so a subshell, a call that spans
     lines or a redirect is never swallowed; blanks are allowed, zsh takes them into the group) and
@@ -866,13 +866,14 @@ def set_reading_matches_git_name(word, names=GIT_NAMES):
     return any(_glob_matches(elems, g) for g in names)
 
 
-CLASS_SYNTAX = re.compile(r"\[[:.=]|\[[!^]\]")
+CLASS_SYNTAX = re.compile(r"\[[:.=]|\[[!^]")
 
 
 def glob_can_be_git(word):
     """Can some shell reading expand the word to git or a git-* name: main's fnmatch, the plain
     set reading, or round 5's reading where it differs from both (class syntax [:x:] [.x.] [=x=]
-    or a zsh [!]; its plain bracket is a ?, which would make [x]it a git)? Only such a word gets
+    or a [! or [^ negation, which bash and zsh read as one but fnmatch and the set reading as a
+    member; its plain bracket is a ?, which would make [x]it a git)? Only such a word gets
     the glob-slot and past-the-option extensions of glob_as_git_hit; [], [!], [x]it or [link](url)
     never do."""
     return (main_glob_matches(word) or set_reading_matches_git_name(word)
@@ -1780,15 +1781,19 @@ def _command_tokens(vt):
 HEREDOC_START = re.compile(r"<<(-?)[ \t]*(?:'([^']*)'|\"([^\"]*)\"|\\?([A-Za-z0-9_.-]+))")
 
 
+CLOSER = {")": ")", "a": ")", "}": "}", "b": "]"}      # the character that pops a frame
+
+
 def quote_mask(cmd):
     """A bytearray over cmd, 1 where the character sits in single or double quotes, an escape, a
     $'..' string, a $( ), <( ), >( ) or ${ } expansion, a backtick pair (delimiters included), a #
     comment or a here-document body: an operator there does not end a command. A stack tracks the
     nesting, so a quote inside $( ) or a backtick inside double quotes is read in its own context;
-    a ( nests only inside $( ), a { never (bash does not nest them in ${ }); an unterminated quote
-    or expansion masks to the end. Comments are skipped as shell text (an apostrophe in one opens
-    nothing) and a << (not <<<, not inside quotes) names a body that runs from the next line to
-    its delimiter line. One linear pass."""
+    a ( nests only inside $( ) and (( )), a { never (bash does not nest them in ${ }); an
+    unterminated quote or expansion masks to the end. Comments and << here-documents are shell text
+    at the top level and inside $( ) and backticks, where an apostrophe in either opens nothing:
+    a # at a word start runs to the end of its line, and a << (not <<<, not in arithmetic: (( )),
+    $(( )), $[ ]) names a body that runs from the next line to its delimiter line. One pass."""
     n = len(cmd)
     mask = bytearray(n)
     stack = []
@@ -1807,17 +1812,24 @@ def quote_mask(cmd):
             mask[i:i + 2] = b"\1" * len(mask[i:i + 2])
             i += 2
             continue
-        if top is None:
+        if top in (None, ")", "`"):
             if c == "#" and (i == 0 or cmd[i - 1] in " \t\n;&|("):
                 j = cmd.find("\n", i)
                 j = n if j == -1 else j
                 mask[i:j] = b"\1" * (j - i)
                 i = j
                 continue
-            if c == "<" and cmd.startswith("<<", i) and not cmd.startswith("<<<", i):
+            if c == "<" and cmd.startswith("<<<", i):
+                if stack:
+                    mask[i:i + 3] = b"\1\1\1"
+                i += 3
+                continue
+            if c == "<" and cmd.startswith("<<", i):
                 m = HEREDOC_START.match(cmd, i)
                 if m:
                     pending.append((m.group(1) == "-", m.group(2) or m.group(3) or m.group(4)))
+                    if stack:
+                        mask[i:m.end()] = b"\1" * (m.end() - i)
                     i = m.end()
                     continue
             if c == "\n" and pending:
@@ -1860,15 +1872,25 @@ def quote_mask(cmd):
                 stack.pop()
             else:
                 stack.append("`")
-        elif (c == "$" and nxt in ("(", "{")) or (c in "<>" and nxt == "(" and top != '"'):
+        elif c == "$" and nxt == "(" and cmd[i + 2:i + 3] == "(":
+            stack += ["a", "a"]                   # $(( ... )): arithmetic
+            step = 3
+        elif c == "$" and nxt == "[":
+            stack.append("b")                     # $[ ... ]: arithmetic
+            step = 2
+        elif (c == "$" and nxt in ("(", "{")) or (
+                c in "<>" and nxt == "(" and top not in ('"', "a", "b")):
             stack.append("}" if nxt == "{" else ")")
             step = 2
-        elif top == ")" and c == "(":
-            stack.append(")")
-        elif top in (")", "}") and c == top:
+        elif c == "(" and nxt == "(" and top is None and (i == 0 or cmd[i - 1] in " \t\n;&|("):
+            stack += ["a", "a"]                   # (( ... )): arithmetic
+            step = 2
+        elif top in (")", "a") and c == "(":
+            stack.append(top)
+        elif top in CLOSER and c == CLOSER[top]:
             stack.pop()
             mask[i] = 1                           # the closer belongs to the expansion
-        if stack or step == 2 or top is not None:
+        if stack or step > 1 or top is not None:
             mask[i:i + step] = b"\1" * len(mask[i:i + step])
         i += step
     return mask
@@ -1917,14 +1939,16 @@ def glob_candidate(text):
 
 def raw_glob_paired(cmd, names, cwd):
     """The raw side of the new glob strictness: in the glued tokens of cmd (and of its sh -c and
-    eval strings) a glob git word whose command main would deny as a git (glob_as_git_hit), or
+    eval strings), read plain (a glob git word inside $( ), <( ) or backticks is a command word)
+    and with each substitution folded into one word (the slot after <(true; true) is found), a
+    glob git word whose command main would deny as a git (glob_as_git_hit), or
     GIT_CONFIG anywhere in cmd, as for a literal git. The push aliases of cwd and of a -C or
     --git-dir the command names are listed only when a candidate exists."""
     try:
         gt = tokenize(cmd, True)
     except ValueError:
         return False
-    lists = [merge_substitutions(t) for t in [gt] + nested_token_lists(gt, 3, True)]
+    lists = [x for t in [gt] + nested_token_lists(gt, 3, True) for x in (t, merge_substitutions(t))]
     cands = [(t, k) for t in lists for k in command_words(t) if glob_git_word(t, k)]
     if not cands:
         return False

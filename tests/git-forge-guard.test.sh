@@ -2418,6 +2418,31 @@ deny ## R10 F3 trade-off: [a-z]* can be git, ??* can be push ## cd /tmp && cat >
 allow ## R10 frames: a lone { inside $( ) ## /usr/bin/[g][i][t] status $(echo {) ; echo pu''sh
 allow ## R10 frames: a lone { in a sed script inside $( ) ## /usr/bin/[g][i][t] status $(sed s/{/x/ f) ; echo pu''sh
 allow ## R10 frames: a lone ( inside ${ } ## /usr/bin/[g][i][t] status ${x:-(} ; echo pu''sh
+deny ## R11 1 a strict-only word inside $( ), plain push ## echo $(/usr/bin/g[[:alpha:]]t push origin main)
+deny ## R11 1 inside $( ) with a redirect ## out=$(/usr/bin/g[[:alpha:]]t push origin main 2>&1)
+deny ## R11 1 inside <( ) after true; ## cat <(true; /usr/bin/g[[:alpha:]]t push origin main)
+deny ## R11 1 inside $( ), ${P} and a quoted && ## P=push; echo $(/usr/bin/g[[:lower:]]t -c 'x.y=a&&b' ${P} origin main)
+deny ## R11 1 inside $( ), a backtick spelling ## echo $(/usr/bin/gi[[:alpha:]] `echo push` origin main)
+deny ## R11 1 inside $( ), an ANSI-C spelling ## echo $(/usr/bin/[[=g=]]it $'push' origin main)
+deny ## R11 2 g[^x]t and a glob slot ## touch push; /usr/bin/g[^x]t pu[s]h origin main
+deny ## R11 2 g[^x]t past a dynamic option ## P=push; /usr/bin/g[^x]t -c x.y=a* $P origin main
+deny ## R11 2 [^x]i[^x] and a glob slot ## touch push; /usr/bin/[^x]i[^x] pus? origin main
+deny ## R11 2 g[^x]t, a quoted | and a glob slot ## touch push; cd . && /usr/bin/g[^x]t -c 'x.y=a|b' pus? origin main
+deny ## R11 2 [^x]i[^x], a glob -C value, then $P ## mkdir -p src; P=push; cd . && /usr/bin/[^x]i[^x] -C ./sr? $P origin main
+deny ## R11 2 g[^x]t, <( ; ) then a glob slot ## touch push; /usr/bin/g[^x]t --namespace <(true; true) pu[s]h origin main
+deny ## R11 2 the same with a trailing comment ## touch push; /usr/bin/g[^x]t --namespace <(true; true) pu[s]h origin main # x
+deny ## R11 2 [^a]it and a glob slot ## touch push; /usr/bin/[^a]it pu[s]h origin main
+deny ## R11 2 gi[^a] and a glob slot ## touch push; /usr/bin/gi[^a] pu[s]h origin main
+deny ## R11 2 g[^a-h]t and a glob slot ## touch push; /usr/bin/g[^a-h]t pu[s]h origin main
+deny ## R11 2 [^0-9]it and a glob slot ## touch push; /usr/bin/[^0-9]it pu[s]h origin main
+allow ## R11 3 a here-string with an apostrophe before ## cat <<< "it's"<NL>/usr/bin/[g][i][t] status; echo pu''sh
+allow ## R11 3 an arithmetic << in (( )) ## ((n=1<<2))<NL>/usr/bin/[g][i][t] status; echo pu''sh
+allow ## R11 3 an arithmetic << in $[ ] ## x=$[1<<2]<NL>/usr/bin/[g][i][t] status; echo pu''sh
+allow ## R11 3 an arithmetic << in $(( )) ## echo $((1<<2))<NL>/usr/bin/[g][i][t] status; echo pu''sh
+deny ## R11 3 an arithmetic << then a real push ## echo $((1<<2)); /usr/bin/[g][i][t] -c 'x.y=a;b' pu''sh origin main
+allow ## R11 3 a commit-message here-document inside $( ) ## x=$(cat <<'EOF'<NL>it's<NL>[a-z]* ??*<NL>EOF<NL>)<NL>echo p"u"sh
+allow ## R11 3 a here-document inside $( ), then ??? status ## msg=$(cat <<'EOF'<NL>it's done<NL>EOF<NL>); ??? status; echo pu''sh
+allow ## R11 3 a comment inside $( ) ## echo $(true # it's<NL>); /usr/bin/[g][i][t] status; echo pu''sh
 TABLE
 # R7: a zsh group longer than 256 characters is read in full, not skipped.
 LONGPRE=$(awk 'BEGIN { for (i = 0; i < 70; i++) printf "n%03d|", i }')
