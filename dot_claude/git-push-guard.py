@@ -470,7 +470,8 @@ PUSH_SLOT = {"push", "send-pack", "http-push"}
 
 def git_word_hits(tokens):
     """(git_index, slot_index) for each git command word whose slot past the global options
-    is a subcommand the shell rewrites (git ${X:-push} ...), or is a push by its raw token
+    (when a dynamic global option or option value is the hit, slot_index is that option's
+    index, since the slot is not reached) is a subcommand the shell rewrites (git ${X:-push} ...), or is a push by its raw token
     (push, send-pack, http-push). Such a word can name a push, so the text cannot rule one
     out. Only a git in command position counts: rg git -g '*.sh' names git as an argument."""
     n = len(tokens)
@@ -503,10 +504,61 @@ def dynamic_git_word(tokens):
     return bool(git_word_hits(tokens))
 
 
+SHELL_NAMES = {"sh", "bash", "zsh", "dash", "ksh"}
+
+
+def nested_git_hits(tokens, depth=3):
+    """Does a shell -c string or an eval, in command position, hold a git word that
+    git_word_hits flags, to a nesting depth of 3? Only the command-string argument (the word
+    after the option bundle holding c) and eval's joined arguments count. A string the
+    tokenizer cannot split says nothing."""
+    if depth <= 0:
+        return False
+    n = len(tokens)
+    for k in command_words(tokens):
+        base = os.path.basename(tokens[k])
+        inner = None
+        if base == "eval":
+            j = k + 1
+            while j < n and not is_operator(tokens[j]):
+                j += 1
+            inner = " ".join(tokens[k + 1:j])
+        elif base in SHELL_NAMES:
+            j = k + 1
+            while j < n and not is_operator(tokens[j]) and tokens[j].startswith("-"):
+                if re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", tokens[j]):
+                    if j + 1 < n and not is_operator(tokens[j + 1]):
+                        inner = tokens[j + 1]
+                    break
+                j += 1
+        if not inner:
+            continue
+        try:
+            sub = tokenize(inner)
+        except ValueError:
+            continue
+        if git_word_hits(sub) or nested_git_hits(sub, depth - 1):
+            return True
+    return False
+
+
 def outside_grammar(cmd):
     """Text parse_plain cannot judge faithfully: an ANSI-C quote, or a backslash-newline
     inside a word (a continuation between words leaves the grammar's verdict as it was)."""
     return "$'" in cmd or re.search(r"\S\\\n\S", cmd) is not None
+
+
+def probe_refuses(tokens, cmd, cwd):
+    """Would the grammar have denied or asked for cmd, had it been judged as written? A
+    command outside the grammar keeps every refusal main gave it, as the plain-push deny.
+    A probe that fails otherwise says nothing: the path after it decides."""
+    try:
+        shape = parse_plain(tokens, cwd)
+        return shape is not None and bool(judge(shape, cwd, canonical(cmd)))
+    except Deny:
+        return True
+    except Exception:
+        return False
 
 
 # Tools that never execute their arguments: what follows the command word is data, so a
@@ -693,7 +745,8 @@ def could_push(cmd, tokens, cwd):
     text = inert_text(cmd, tokens)
     if PUSH_SHAPE.search(text):
         return True
-    if tokens and (dynamic_git_word(tokens) or odd_command_word(tokens)):
+    if tokens and (dynamic_git_word(tokens) or odd_command_word(tokens)
+                   or nested_git_hits(tokens)):
         return True
     if not re.search(r"\bgit\b", cmd):
         return False
@@ -1488,8 +1541,11 @@ def main():
             tokens = tokenize(cmd)
         except ValueError:
             tokens = None                              # unbalanced quotes: not plain
-        if tokens is not None and not outside_grammar(cmd):
-            shape = parse_plain(tokens, cwd)
+        if tokens is not None:
+            if not outside_grammar(cmd):
+                shape = parse_plain(tokens, cwd)
+            elif probe_refuses(tokens, cmd, cwd):
+                raise Deny(PLAIN)
         if shape is None:
             if could_push(cmd, tokens, cwd):           # the raw text: a superset, never trimmed
                 raise Deny(PLAIN)

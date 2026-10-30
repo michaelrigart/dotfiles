@@ -1528,6 +1528,53 @@ has_reason   "an in-word continuation gets the plain-push deny" "in a shape the 
 at'
 expect allow "a continuation between words keeps main's verdict" "$R" 'git push -u \
 origin feat'
+# Fix round 1: a command outside the grammar keeps every refusal main gave it (as the plain deny).
+expect deny  "C1 alias behind a quoted ; and an ANSI-C word"   "$R" "git -c 'a.b=x;y' pom \$'--verbose'"
+expect deny  "C1 alias behind a quoted ; and an in-word continuation" "$R" "git -c 'a.b=x;y' pom --ver\\
+bose"
+expect deny  "C1 alias behind a quoted newline and an ANSI-C word" "$R" "git -c 'a.b=x
+y' pom \$'-q'"
+expect deny  "C1 -C, a quoted ; and a continuation inside an option" "$R" "git -C . -c 'a.b=x;y' pom -\\
+q"
+expect deny  "C1 in-grammar twin: alias behind a quoted ;" "$R" "git -c 'a.b=x;y' pom"
+expect deny  "I1 lfs push hidden in quotes, ANSI-C argument" "$R" "git -C . lfs pu\"sh\" \$'x'"
+expect deny  "I1 lfs push hidden in quotes, continuation" "$R" "git -C . lfs pu\"sh\" origin ma\\
+in"
+expect deny  "I1 alias.x=push hidden in quotes"                "$R" "git -c alias.x=pu\"sh\" x \$'y'"
+expect deny  "I1 alias word hidden in quotes, ANSI-C argument" "$R" "git -C . p\"om\" \$'x'"
+expect deny  "I1 alias word hidden in quotes, continuation"    "$R" "git -C . p\"om\" origin ma\\
+in"
+expect allow "M3 a quoted ; in a -c value, status, echo push"  "$R" "git -c 'x.y=a;b' status; echo push"
+expect allow "M3 log then echo push"                           "$R" "git -C . log; echo push"
+expect deny  "M3 http-push in a compound command"              "$R" "true; git -c 'a;b' http-push $REMOTES/origin.git main"
+expect ask   "M4 an indented continuation stays in the grammar: a push to main keeps main's ask" "$R" "git push -u origin main\\
+  -u"
+expect allow "M4 an indented continuation stays in the grammar: a feature push keeps main's verdict" "$R" "git push -u origin feat\\
+  -u"
+# Accepted by spec section 2, under review: a \$' anywhere in a command that names push is a plain deny.
+expect deny  "I2 a commit message with an ANSI-C quote naming push (accepted by spec section 2, under review)" "$R" "git commit -m \$'Fix push docs\\n\\nbody'"
+expect deny  "I2 a log grep with an ANSI-C quote naming push (accepted by spec section 2, under review)" "$R" "git log --grep \$'push'"
+# Accepted by spec section 2, under review: a here-document body line that starts with git send-pack reads as a command.
+expect deny  "M2 a here-document body line starting with git send-pack (accepted by spec section 2, under review)" "$R" "cat > notes.md <<'EOF'
+git send-pack is the plumbing
+EOF"
+# A bypass on main that this branch closes: the git log's quoted argument swallows the push as
+# shlex reads it, and bash runs a force push to main. Leaving the grammar closes it.
+G="gi""t"; P="pu""sh"
+BYPASS="$G log --grep \$'a\\'b' ; $G $P -f origin main # '"
+expect deny  "a bypass on main that this branch closes" "$R" "$BYPASS"
+has_reason   "the bypass gets the plain-push deny" "in a shape the guard does not check" "$R" "$BYPASS"
+# A shell -c string or an eval is read one level down, to a depth of 3, with the raw-token check.
+expect deny  "sh -c holding a quoted-; -c value before a push"  "$R" "sh -c '$G -c \"a;b\" $P origin main'"
+expect deny  "bash -lc holding a quoted-; -c value before a push" "$R" "bash -lc '$G -c \"a;b\" $P origin main'"
+expect deny  "eval of quoted joined arguments"                "$R" "eval '$G -c \"a;b\" $P origin main'"
+NEST=$(cat <<X
+sh -c "sh -c '$G -c \"a;b\" $P origin main'"
+X
+)
+expect deny  "a sh -c string holding another sh -c"           "$R" "$NEST"
+expect allow "sh -c with a quoted-; -c value and status is silent" "$R" "sh -c '$G -c \"a;b\" status'"
+expect allow "bash -c echo of the word is silent"            "$R" "bash -c 'echo $P'"
 expect allow "IFS=$'\\n' alone is silent"           "$R" "IFS=\$'\\n'; echo hi"
 expect allow "printf with an ANSI-C string is silent" "$R" "printf \$'a\\tb'"
 expect allow "a sed backreference is silent"         "$R" "sed -E 's/(a)/\\1/' f"
@@ -1544,8 +1591,9 @@ fi
 # with functions that raise, so no real input is needed to force it.
 exc_out=$(/usr/bin/python3 - "$(dirname "$GUARD")/git-push-guard.py" <<'PY'
 import importlib.util, io, json, os, sys
+sys.dont_write_bytecode = True
 
-spec = importlib.util.spec_from_file_location("guard", sys.argv[1])
+spec =importlib.util.spec_from_file_location("guard", sys.argv[1])
 g = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(g)
 
