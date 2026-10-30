@@ -1,6 +1,6 @@
 # Sandboxed sessions cannot plant git configuration
 
-**Status:** In progress
+**Status:** Implemented on fix/sandbox-git-config-plant (the dotfiles have no MR)
 Signed off 2026-10-30 under Michael's delegation while he was away.
 Amended 2026-10-30 (fake bare repositories at a root's top level; submodules of linked worktrees; per-repository lazygit and glab configuration) under the same delegation.
 **Date:** 2026-10-30
@@ -90,7 +90,7 @@ sandbox:
    a repository. Nor does the prompt, at the top level of `~/Code`, `~/Documents` and the
    vault and in the organisation directories (§2; elsewhere a residual). For the
    organisation directories this closes one of two doors (§2).
-3. No new prompts. Every escape the change adds is named and measured.
+3. No new prompts. Every escape the change adds is named, and measured where possible.
 
 **Non-goals.**
 - Renaming a git directory, or writing a `.git` file inside a repository's work tree. Path
@@ -143,7 +143,7 @@ nine git-configuration forms (36 entries) and three per-repository tool-configur
 <root>/**/.lazygit.yml       <root>/**/.git/**/lazygit.yml       <root>/**/.git/glab-cli/config.yml
 ```
 
-- **The three worktree-module forms** (the last three above; added by the 2026-10-30
+- **The three worktree-module forms** (the last three of the first group; added by the 2026-10-30
   amendment). A submodule of a linked worktree keeps its git directory at
   `.git/worktrees/<id>/modules/<name>/` (V6), where none of the first six forms reaches.
   - They deny its `config*`, its `commondir` and its `hooks`.
@@ -422,7 +422,9 @@ Code's built-in rule.
       `.git/glab-cli/config.yml` are denied; `.git/glab-cli/recover/x` and a work-tree
       `lazygit.yml` without the dot stay writable.
   - No entry reaches objects, refs or the index of an ordinary repository or a linked
-    worktree. The module forms with `config*` are the stated exception (§1), and so is
+    worktree. The module forms (`config*`, `commondir`, `hooks`) are the stated exception (§1): they also reach
+    refs named exactly `commondir` or `hooks` (pinned: `.git/modules/sub/refs/heads/commondir` and
+    `.git/worktrees/w/modules/sub/refs/heads/hooks` are denied). So is
     `.git/**/lazygit.yml`, which also denies a ref or file named `lazygit.yml` in any git
     directory (pinned: `~/Code/<Org>/<repo>/.git/refs/heads/lazygit.yml` is denied).
   - No entry has the shape `.git/**/config`, so a branch named `config` stays writable. Only
@@ -543,7 +545,10 @@ The suite runs sandboxed, in a fresh session after `chezmoi apply`.
   trust as V15: building the project already runs agent-writable code.
 - **Unicode-folded names.** If the live fold probe finds `con<U+FB01>g` writable after apply,
   the §1 glob has a hole that prefix forms (`.git/con*`) would close. That is a spec change,
-  raised with Michael, not a quiet fix (Testing).
+  raised with Michael, not a quiet fix (Testing). Any such prefix remedy must also cover
+  glab's file (`.git/glab-cli/con*`), which was verified to open under a fold alias on APFS
+  and is normally absent. Worktree and module `config.worktree` names have the same
+  exposure, but git reads those only when `extensions.worktreeConfig` is set.
 - **Configuration that names tracked files**, such as `presence`'s textconv `bin/rails`: that
   is tracked code, reviewed like any change.
 - **Sessions started in `~`.** Their write scope is all of `$HOME`.

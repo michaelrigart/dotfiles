@@ -461,7 +461,7 @@ glob_case() { # glob_case <denied|allowed> <path>
   local want=true label="denied"
   [ "$1" = allowed ] && { want=false; label="allowed"; }
   got=$(glob_denied "$2")
-  if [ "$got" = "$want" ]; then _pass "glob: $2 is $label"; else _fail "glob: $2 is $label" "$got"; fi
+  if [ "$got" = "$want" ]; then _pass "glob: $2 is $label${3:+ ($3)}"; else _fail "glob: $2 is $label${3:+ ($3)}" "$got"; fi
 }
 # Seatbelt matches regardless of letter case on this volume (spec 2026-10-30 section 1), so
 # a case-insensitive sample is checked with the regex i flag.
@@ -494,6 +494,11 @@ for root in "$H/Code" "$H/.local/share/chezmoi" "$H/Documents" "$H/Library/Mobil
     glob_case denied "$p"
   done
 done
+# Documented consequence of ** crossing into refs inside a submodule's git directory.
+glob_case denied "$H/Code/Org/repo/.git/modules/sub/refs/heads/commondir" \
+  "documented consequence: ** crosses into refs"
+glob_case denied "$H/Code/Org/repo/.git/worktrees/w/modules/sub/refs/heads/hooks" \
+  "documented consequence: ** crosses into refs"
 # Documented consequence: .git/**/lazygit.yml also denies a ref or any file by that name
 # inside a git directory.
 glob_case denied "$H/Code/Org/repo/.git/refs/heads/lazygit.yml"

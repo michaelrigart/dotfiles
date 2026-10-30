@@ -2,7 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** In progress
+**Status:** Implemented on fix/sandbox-git-config-plant (the dotfiles have no MR)
+
+> **Completed 2026-10-30. Do not run this plan again.** Its execution banners bound that run
+> only. Where the Post-review amendments section differs from the task text, the amendments
+> and the amended spec win.
 
 **Goal:** No sandboxed command can write git configuration, a configuration redirect, or a
 `.git` entry where no repository may be, under any work root. Git outside the sandbox refuses
