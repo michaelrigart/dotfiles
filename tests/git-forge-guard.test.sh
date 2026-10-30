@@ -2118,6 +2118,22 @@ allow ## residual (spec section 7, a word built at run time; silent on main 9702
 deny ## N1 literal twin: built path, -push ## ${D:-/usr/libexec/git-core/git}-push origin main
 deny ## N1 literal twin: built dash word ## ${X:-git-push} origin main
 TABLE
+# Fix round 3 (class D): a line of a quoted here-document body that starts with bracket text is a
+# command word in a view, and its glob is matched against the git names. Python 3.9's fnmatch
+# raises on a bracket range that runs backwards ([:-9], [z-a]), and a failure in the view code
+# denies, so slices and ranges in an edit script, a yaml append, a const array or a plan
+# denied once an apostrophe between letters made the view and a git or push word stood anywhere.
+# A glob that cannot compile is read with each bracket as ?, so a real glob git word still denies.
+run_table <<'TABLE'
+allow ## D1 a python edit script: apostrophe, backwards slice, xs.push, trailing git diff ## python3 - <<'PY'<NL>import re<NL># it's a slice<NL>[:-9].strip()<NL>xs.push(1)<NL>PY<NL>git diff --stat
+allow ## D2 a yaml append: apostrophe, backwards range, trailing git status ## cat >> ci.yml <<'EOF'<NL>  steps:<NL>    # don't reorder<NL>    - run: echo ok<NL>[z-a],x<NL>EOF<NL>git status --short
+allow ## D3 a rust const array: apostrophe, backwards range, trailing git diff ## cat > c.rs <<'EOF'<NL>// it's a table<NL>const T: [&str; 2] = ["a", "b"];<NL>a[b-a]<NL>EOF<NL>git diff --stat
+allow ## D4 plan text: apostrophe, push in prose, backwards range, no git word ## cat > plan.md <<'EOF'<NL>Don't push the plan yet.<NL>[9:-9]+ items<NL>EOF
+allow ## D5 a backwards range with a git word only in the body ## cat > n.md <<'EOF'<NL>it's the git notes<NL>[z-a]x = 1<NL>EOF
+allow ## D6 a backwards range after a closing backtick ## cat > n.md <<'EOF'<NL>it's `git` then<NL>`x` [z-a] push<NL>EOF
+deny ## D7 a glob git word with a backwards range and a hidden push still denies ## g[z-a]t pu''sh origin main
+deny ## D8 a glob git word with a backwards range, escaped push ## /usr/bin/g[z-a]t $'\x70ush' origin main
+TABLE
 # Fix round 1 (I1): the helper run directly. An unset flag is the strictest reading (main's raw
 # checks run, an ask becomes a deny); exactly 0 leaves only the view denies; 1 is as before.
 helper_flag() { # helper_flag <deny|silent> <label> <unset|0|1> <command>

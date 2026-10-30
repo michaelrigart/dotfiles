@@ -1237,6 +1237,23 @@ def _command_tokens(vt):
     return out
 
 
+BRACKET_CLASS = re.compile(r"\[[!^]?\]?[^\]]*\]")
+
+
+def glob_matches_git_name(glob):
+    """Does a glob fnmatch git or a git-* name? Python 3.9's fnmatch raises re.error on a
+    bracket range that runs backwards ([:-9], [z-a]); a view reads every line of a here-document
+    body, so such text must not fail the check (a failure in the view code denies). An
+    uncompilable glob is read again with each bracket class as a single ?: a spelling like
+    g[z-a]t stays a possible git, while a slice or range in prose names none."""
+    for pattern in (glob, BRACKET_CLASS.sub("?", glob)):
+        try:
+            return any(fnmatch.fnmatchcase(g, pattern) for g in GIT_NAMES)
+        except re.error:
+            continue
+    return False
+
+
 def _glob_git_spans(toks, vt):
     """The view spans of the command words that odd_command_word's glob branch reads as a git:
     a glob that fnmatches git or a git-* name, not a bare glob, not a case pattern."""
@@ -1245,7 +1262,7 @@ def _glob_git_spans(toks, vt):
         base = os.path.basename(toks[k])
         if not any(c in base for c in "?[*") or GLOB_ONLY.fullmatch(base) or case_pattern(toks, k):
             continue
-        if any(fnmatch.fnmatchcase(g, base) for g in GIT_NAMES):
+        if glob_matches_git_name(base):
             out.append((vt[k][1], vt[k][2]))
     return out
 
