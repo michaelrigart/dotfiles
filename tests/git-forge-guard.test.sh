@@ -925,7 +925,7 @@ fi
 # trailer), with no wrapper, assignment, cd prefix or global option before push. Merged and
 # pinned in any other text, the delete is denied with the plain pinned command printed. work
 # is checked out at main's tip and is not on the remote, so a push of it scans clean.
-PLAIN_REASON="Push guard: this command may run git push in a shape the guard does not check. Run the push as a plain command of its own: git push [options] <remote> <branch> (for another repository: git -C <path> push [options] <remote> <branch>; piped only to tail or head). If the command does not push, keep git and push apart in its text, for example rg 'git pu[s]h'."
+PLAIN_REASON="Push guard: this command may run git push in a shape the guard does not check. Run the push as a plain command of its own: git push [options] <remote> <branch> (for another repository: git -C <path> push [options] <remote> <branch>; piped only to tail or head). If the command does not push, keep git and push apart in its text with a bracket, for example rg 'git pu[s]h'; a word split by quotes or backslashes is read as a hidden push."
 PINNED="git push --force-with-lease=done:$DONE origin --delete done"
 PLAIN_NOTE="$PLAIN_LEAD done is merged into main, on origin $RUN_HERE"
 # Canonical: the merged, pinned delete passes with each trailer, and with outer spaces and one
@@ -1433,12 +1433,12 @@ expect deny  "filter-branch running a push"           "$R" "git filter-branch --
 expect allow "submodule foreach that does not push"   "$R" "git submodule foreach 'git status'"
 expect allow "a commit message that mentions a push"  "$R" 'git commit -m "git push later"'
 # A push word assembled by expansion has no literal push in the payload, so the shell fast
-# path never starts the helper; that is a known limit. Driven directly, with the flag a literal
-# trigger would have set (main's raw checks run only then), the helper denies it.
+# path never starts the helper; that is a known limit. Driven directly, with no flag (main's raw
+# checks run unless the flag is exactly 0), the helper denies it.
 helper_denies() { # helper_denies <label> <cwd> <command>
   local out
   out=$(jq -n --arg c "$3" --arg d "$2" '{tool_name:"Bash",cwd:$d,tool_input:{command:$c}}' \
-    | PUSH_GUARD_LITERAL=1 /usr/bin/python3 "$(dirname "$GUARD")/git-push-guard.py")
+    | /usr/bin/python3 "$(dirname "$GUARD")/git-push-guard.py")
   case "$out" in
     *'"permissionDecision":"deny"'*) pass=$((pass + 1)); printf '  ok   %s\n' "$1" ;;
     *) fail=$((fail + 1)); printf '  FAIL %s (helper said: %s)\n' "$1" "$out" ;;
@@ -1811,7 +1811,8 @@ echo "== rule 4: the escape decoder matches the shells =="
 # decoded as latin-1 (a byte above 0x7f is the character of that value). The bash readings
 # compare up to the first NUL, where bash ends the value. A reading whose shell is not
 # installed is skipped. This list is the pinned set; the full differential (every letter,
-# digit count, NUL position and \c, \C, \M form, random bodies too) is recorded in the header.
+# digit count, NUL position and \c, \C, \M form, random bodies too) will be recorded in the
+# header by Task 6.
 dec_out=$(/usr/bin/python3 - "$(dirname "$GUARD")/git-push-guard.py" <<'PY'
 import importlib.util, os, subprocess, sys
 sys.dont_write_bytecode = True
@@ -2073,6 +2074,69 @@ done <<'EOF'
 views raise, literal=1|deny
 views raise, literal=0|deny
 EOF
+# Fix round 1 (I2): a glob command word with a hidden push word, and the built-word twins.
+run_table <<'TABLE'
+deny ## I2 a glob git word, quoted push ## /usr/bin/gi? pu''sh origin main
+deny ## I2 a bracket glob git word, escaped push ## g[i]t $'\x70ush' origin main
+deny ## I2 a bracket glob path, quoted send-pack ## /usr/bin/[g]it send-pa''ck origin main
+deny ## I2 a star glob git word ## /usr/bin/gi* pu''sh origin main
+deny ## I2 a glob git word after true ## true; /usr/bin/gi? pu''sh origin main
+deny ## I2 a glob git word inside sh -c ## sh -c '/usr/bin/gi? pu""sh origin main'
+deny ## I2 a glob git word with an option ## /usr/bin/gi? -C . pu''sh origin main
+deny ## I2 a variable git word, quoted push ## $G pu''sh origin main
+deny ## I2 a built git word, escaped push ## ${X:-gi}t $'\x70ush' origin main
+deny ## I2 a built git word inside backticks ## echo `$G $'\x70ush' origin main`
+deny ## I2 a built git word inside eval ## eval '$G pu""sh origin main'
+allow ## I2 ls of a glob that matches git ## ls /usr/bin/gi?
+allow ## I2 rg for a glob ## rg 'gi?' f
+allow ## I2 a glob git word with no push word ## /usr/bin/gi? status $'\t'
+TABLE
+# Fix round 1 (R1): a word of a view is a maximal run of letters, digits and hyphens.
+run_table <<'TABLE'
+deny ## R1 the hidden dash form behind a path ## /usr/lib/git-core/git-pu""sh -f origin main
+deny ## R1 an escaped git joined to -push ## $'\x67it'-push -f origin main
+deny ## R1 a hidden push in an alias value ## git -c alias.p=pu""sh p origin main
+allow ## R1 sed of the helper's own file name ## sed -n 125,160p "$N/dot_claude/git-pu""sh-guard.py"
+allow ## R1 rg for the helper's file name ## rg -l "git-pus""h-guard|git-forge-guard" tests dot_claude
+allow ## R1 git show of the helper's file ## git -C d show HEAD:dot_claude/git-pu''sh-guard.py
+allow ## R1 cp of the helper's file ## cp x/git-pu""sh-guard.py y
+allow ## R1 git add of the helper's file ## git add dot_claude/git-pu''sh-guard.py
+TABLE
+# Fix round 1 (I1): the helper run directly. An unset flag is the strictest reading (main's raw
+# checks run, an ask becomes a deny); exactly 0 leaves only the view denies; 1 is as before.
+helper_flag() { # helper_flag <deny|silent> <label> <unset|0|1> <command>
+  local out got
+  if [ "$3" = unset ]; then
+    out=$(jq -n --arg c "$4" --arg d "$R" '{tool_name:"Bash",cwd:$d,tool_input:{command:$c}}' \
+      | env -u PUSH_GUARD_LITERAL /usr/bin/python3 "$(dirname "$GUARD")/git-push-guard.py")
+  else
+    out=$(jq -n --arg c "$4" --arg d "$R" '{tool_name:"Bash",cwd:$d,tool_input:{command:$c}}' \
+      | PUSH_GUARD_LITERAL=$3 /usr/bin/python3 "$(dirname "$GUARD")/git-push-guard.py")
+  fi
+  case "$out" in
+    "") got=silent ;;
+    *'"permissionDecision":"deny"'*) got=deny ;;
+    *) got="other: $out" ;;
+  esac
+  if [ "$got" = "$1" ]; then
+    pass=$((pass + 1)); printf '  ok   %s\n' "$2"
+  else
+    fail=$((fail + 1)); printf '  FAIL %s (want %s, got %s)\n' "$2" "$1" "$got"
+  fi
+}
+while IFS= read -r c; do
+  [ -n "$c" ] || continue
+  helper_flag deny   "I1 flag unset: $c" unset "$c"
+  helper_flag deny   "I1 flag 1: $c"     1     "$c"
+  helper_flag silent "I1 flag 0: $c"     0     "$c"
+done <<'CASES'
+git push origin main $'x'
+git pom $'x'
+echo $'git push'
+/usr/bin/gi? push origin main
+git ${X:-pu}sh origin main
+GIT_CONFIG=/x git status; git push origin feat $'x'
+CASES
 has_reason "a hidden spelling gets the plain-push deny" "in a shape the guard does not check" "$R" "$(printf '%s' "\$'\\x67it' push origin --delete wip")"
 has_reason "a continuation spelling gets the plain-push deny" "in a shape the guard does not check" "$R" 'git pu\
 sh origin main'

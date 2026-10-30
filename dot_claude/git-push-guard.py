@@ -196,8 +196,9 @@ ERR_RE = re.compile(r"^\S+\s+ERR\b", re.M)
 PLAIN = ("Push guard: this command may run git push in a shape the guard does not check. Run "
          "the push as a plain command of its own: git push [options] <remote> <branch> "
          "(for another repository: git -C <path> push [options] <remote> <branch>; piped only "
-         "to tail or head). If the command does not push, keep git and push apart in its text, "
-         "for example rg 'git pu[s]h'.")
+         "to tail or head). If the command does not push, keep git and push apart in its text "
+         "with a bracket, for example rg 'git pu[s]h'; a word split by quotes or backslashes is "
+         "read as a hidden push.")
 
 
 TIMED_OUT = "Push guard: the push check timed out, so the push is refused. Retry the push."
@@ -554,8 +555,8 @@ RUN_OPTS_WITH_VALUE = {"timeout": {"-s", "-k", "--signal", "--kill-after"},
                        "nice": {"-n", "--adjustment"}}
 
 
-def shell_string(tokens, k):
-    """The command string of the shell at k, or None. Walks the shell's own options: a bundle
+def shell_string_at(tokens, k):
+    """The index of the command string of the shell at k, or None. Walks the shell's own options: a bundle
     of letters (-x, +e, -lc, -co NAME), an option with a value (-o NAME, -O NAME, --rcfile F,
     --init-file F), a long flag, and -- ending them. The string is the first word past them,
     and only when a bundle held c."""
@@ -575,8 +576,14 @@ def shell_string(tokens, k):
         else:
             break
     if has_c and j < n and not is_operator(tokens[j]):
-        return tokens[j]
+        return j
     return None
+
+
+def shell_string(tokens, k):
+    """The command string of the shell at k, or None (see shell_string_at)."""
+    j = shell_string_at(tokens, k)
+    return None if j is None else tokens[j]
 
 
 def run_target(tokens, k, bound=3):
@@ -851,7 +858,7 @@ def inert_text(cmd, tokens):
 def could_push(cmd, tokens, cwd):
     """For a command outside the grammar: could it run git push? Two readings of the text.
     The raw reading is main's superset and runs only when the fast path saw a push as written
-    (literal_trigger): git and push in its text, git and a push alias (from cwd, or a
+    (raw_checks_enabled): git and push in its text, git and a push alias (from cwd, or a
     repository a -C, --git-dir or GIT_DIR in it names), git under a GIT_CONFIG override, or git
     followed by a subcommand the shell computes. Its text is cmd without the arguments of
     provably inert commands (inert_text); no shape is parsed. The view reading (views,
@@ -859,7 +866,7 @@ def could_push(cmd, tokens, cwd):
     spelled with a break; it runs whenever the command holds a hidden-spelling signal. Under
     PUSH_GUARD_LITERAL=0 the raw reading never runs, so a command that holds no push word
     anywhere is judged by its hidden spellings alone."""
-    literal = literal_trigger()
+    literal = raw_checks_enabled()
     text, nested = cmd, []
     if literal:
         text = inert_text(cmd, tokens)
@@ -917,10 +924,14 @@ READINGS = ("zsh", "bash5", "bash32")
 View = namedtuple("View", "text spans cuts")
 # The commands the views are built for: nothing can be hidden without one of these.
 HIDDEN_SIGNAL = re.compile(r"\$'|\$\"|\\\n|\\[xuUc0-7]|[A-Za-z0-9]['\"\\]+[A-Za-z0-9]")
-GIT_WORD = re.compile(r"\bgit\b")
+# A word of a view is a maximal run of letters, digits and hyphens: git-pu""sh-guard.py holds
+# neither a git word nor a push word, while git-push is both.
+WORD_EDGE = r"(?<![A-Za-z0-9-])%s(?![A-Za-z0-9-])"
+GIT_WORD = re.compile(WORD_EDGE % "git")
+DASH_PUSH_WORD = re.compile(WORD_EDGE % "git-(?:push|send-pack|http-push)")
 BACKSLASH = re.compile(r"\\")
 STEP3 = re.compile(r"\$(?=['\"])|['\"\\]")
-VIEW_TOKEN = re.compile(r"\n|[;&|()<>]+|[^\s;&|()<>]+")
+VIEW_TOKEN = re.compile(r"\n|`|[;&|()<>]+|[^\s;&|()<>`]+")
 WORD_END = re.compile(r"[ \t\n;&|()<>]")
 CTRL_LETTER = {"a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "n": "\n", "r": "\r",
                "t": "\t", "v": "\v"}
@@ -1209,17 +1220,57 @@ def hidden(cmd, view, start, end):
     return i < len(view.cuts) and view.cuts[i] == b
 
 
+def _command_tokens(vt):
+    """The tokens of a view with the command starts a view can show: a backtick starts a
+    command, and so does the command string of a shell -c and the word after eval (the quotes
+    that bounded them are gone)."""
+    toks = [";" if t == "`" else t for t, _, _ in vt]
+    out = list(toks)
+    for k in command_words(toks):
+        base = os.path.basename(toks[k])
+        if base == "eval":
+            out[k] = ";"
+        elif base in SHELL_NAMES:
+            j = shell_string_at(toks, k)
+            if j is not None:
+                out[j - 1] = ";"
+    return out
+
+
+def _glob_git_spans(toks, vt):
+    """The view spans of the command words that odd_command_word's glob branch reads as a git:
+    a glob that fnmatches git or a git-* name, not a bare glob, not a case pattern."""
+    out = []
+    for k in command_words(toks):
+        base = os.path.basename(toks[k])
+        if not any(c in base for c in "?[*") or GLOB_ONLY.fullmatch(base) or case_pattern(toks, k):
+            continue
+        if any(fnmatch.fnmatchcase(g, base) for g in GIT_NAMES):
+            out.append((vt[k][1], vt[k][2]))
+    return out
+
+
 def view_could_push(cmd, aliases):
-    """Could some view of cmd run git push, with a git or push word spelled with a break? True
-    when, in some view, a git word is followed anywhere later by a push word (push, send-pack,
-    http-push or an alias in aliases) and at least one of the two is hidden; or when
-    git_word_hits or built_word_hits over the view's tokens finds a git word, a built command
-    word or a push slot word that is hidden."""
+    """Could some view of cmd run git push, with a git or push word spelled with a break? A
+    word is a maximal run of letters, digits and hyphens. True when, in some view, a hidden
+    git-push, git-send-pack or git-http-push word stands, or a git word (git, or a glob
+    command word that fnmatches git) is followed anywhere later by a push word (push,
+    send-pack, http-push or an alias in aliases) and at least one of the two is hidden; or
+    when git_word_hits or built_word_hits over the view's tokens finds a git word, a built
+    command word or a push slot word that is hidden."""
     names = "push|send-pack|http-push" + "".join("|" + re.escape(a) for a in sorted(aliases) if a)
-    push_re = re.compile(r"\b(?:" + names + r")\b")
+    push_re = re.compile(WORD_EDGE % ("(?:" + names + ")"))
     for v in views(cmd):
+        for m in DASH_PUSH_WORD.finditer(v.text):
+            if hidden(cmd, v, m.start(), m.end()):
+                return True
         gits = [m.span() for m in GIT_WORD.finditer(v.text)]
         pushes = [m.span() for m in push_re.finditer(v.text)]
+        if not gits and not pushes:
+            continue
+        vt = view_tokens(v.text)
+        toks = _command_tokens(vt)
+        gits = sorted(gits + _glob_git_spans(toks, vt))
         if gits and pushes:
             for s, e in gits:                          # the first hidden git is the best one
                 if hidden(cmd, v, s, e):
@@ -1231,10 +1282,6 @@ def view_could_push(cmd, aliases):
                     if gits[0][1] <= s:
                         return True
                     break
-        if not gits and not pushes:
-            continue
-        vt = view_tokens(v.text)
-        toks = [t for t, _, _ in vt]
 
         def word_hidden(k):
             return hidden(cmd, v, vt[k][1], vt[k][2])
@@ -2011,6 +2058,13 @@ def literal_trigger():
     return os.environ.get("PUSH_GUARD_LITERAL") == "1"
 
 
+def raw_checks_enabled():
+    """Main's raw checks run unless the fast path said, with a flag of exactly 0, that no push
+    was written: a lost or unset flag is the strictest reading (the raw checks run and an ask
+    becomes a deny), never a looser one."""
+    return os.environ.get("PUSH_GUARD_LITERAL") != "0"
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -2038,7 +2092,7 @@ def main():
                 hit = could_push(cmd, tokens, cwd)
             except Exception:
                 hit = True
-            if hit or (literal_trigger() and probe_refuses(tokens, cmd, cwd)):
+            if hit or (raw_checks_enabled() and probe_refuses(tokens, cmd, cwd)):
                 raise Deny(PLAIN)
             return
         if shape is None:
