@@ -2855,6 +2855,44 @@ deny ## GM a bracket with a literal ] first ## /usr/bin/g[]i]t p?sh origin main
 allow ## GM a glob git word whose command is no push ## cd /tmp; /usr/bin/[g][i][t] status
 allow ## GM the literal twin of the above ## cd /tmp; /usr/bin/git status
 TABLE
+# Fix round 13. A glob word that can be git-push, git-send-pack or git-http-push (not git) is read
+# wherever a command word can start (after a blank, a wrapper, a reserved word, an assignment), as a
+# literal git-push is; a shell string may follow options between -c and the string (-cx, --, -e,
+# -o NAME), and eval's options; a $'..' string counts; a zsh group after nice, exec or timeout is
+# an argument, so a glob. Each row's literal twin denies on main.
+run_table <<'TABLE'
+deny ## R13 F1 a dash-name glob word after true and a blank ## true; /usr/bin/[[=g=]]it-push origin main
+deny ## R13 F1 a dash-name glob word after nice ## nice /usr/bin/[[=g=]]it-push origin main
+deny ## R13 F1 a dash-name glob word after nice -n 5 ## nice -n 5 /usr/bin/[g][i][t]-push origin main
+deny ## R13 F1 the literal twin after nice -n 5 ## nice -n 5 /usr/bin/git-push origin main
+deny ## R13 F1 a dash-name glob word after && ## cd /tmp && [[=g=]]it-push origin main
+deny ## R13 F1 a send-pack glob word in a subshell ## ( /usr/bin/[[.g.]]it-send-pack origin main )
+deny ## R13 F1 an http-push glob word in a group ## { /usr/bin/[[=g=]]it-http-push origin main; }
+deny ## R13 F1 a dash-name glob word after if/then ## if true; then /usr/bin/[[=g=]]it-push origin main; fi
+deny ## R13 F1 a dash-name glob word after a pipe ## echo x | /usr/bin/[[.g.]]it-push origin main
+deny ## R13 F1 a dash-name glob word after sudo env ## sudo env A=1 /usr/bin/[[=g=]]it-push origin main
+deny ## R13 F1 a ? dash-name glob word after timeout ## timeout 5 /usr/bin/???-push origin main
+deny ## R13 F2 bash -c -- ## bash -c -- '/usr/bin/[[=g=]]it push origin main'
+deny ## R13 F2 bash -cx ## bash -cx '/usr/bin/[[.g.]]it push origin main'
+deny ## R13 F2 sh -c -e ## sh -c -e '/usr/bin/[[=g=]]it push origin main'
+deny ## R13 F2 zsh -c -f ## zsh -c -f '/usr/bin/[[=g=]]it push origin main'
+deny ## R13 F2 bash -c -- with [g][i][t] ## bash -c -- '/usr/bin/[g][i][t] push origin main'
+deny ## R13 F2 bash -cx with [g][i][t] ## bash -cx '/usr/bin/[g][i][t] push origin main'
+deny ## R13 F2 bash -c -e -- ## bash -c -e -- '/usr/bin/[g][i][t] push origin main'
+deny ## R13 F2 bash -o NAME -c ## bash -o pipefail -c '/usr/bin/[g][i][t] push origin main'
+deny ## R13 F2 eval -- ## eval -- '/usr/bin/[g][i][t] push origin main'
+deny ## R13 F2 the literal twin of eval -- ## eval -- '/usr/bin/git push origin main'
+deny ## R13 F2 an ANSI-C string after -c ## sh -c $'[[=g=]]it pu\'\'sh origin main'
+deny ## R13 F2 nice inside a -c string ## bash -c 'nice /usr/bin/[[=g=]]it-push origin main'
+deny ## R13 F3 a zsh group after nice ## nice (git|nope) push origin main
+deny ## R13 F3 a zsh group after exec ## exec (g|x)it -C /tmp push
+deny ## R13 F3 a zsh group after timeout ## timeout 5 (git|nope) push origin main
+allow ## R13 silent: ls of dash-name globs ## ls git-* /usr/libexec/git-core/git-*
+allow ## R13 silent: rm of a dash-name glob ## rm -f git-pu*
+allow ## R13 silent: echo of a dash-name glob ## echo [[=g=]]it-push
+allow ## R13 silent: a dash-name glob in a -c string that is no command word ## bash -c 'ls git-*'
+allow ## R13 silent: tar -cf with a bracket word ## tar -cf '[g][i][t]' x
+TABLE
 # The same payloads without a glob git word, or without a glob that can be one, stay silent. None
 # holds git or push text, so the helper starts only when the ERE matches, and it stays silent.
 run_table <<'TABLE'

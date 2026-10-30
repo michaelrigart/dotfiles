@@ -854,6 +854,13 @@ def alias_slot_hit(tokens, names):
 GLUE_STOP = " \t\r\n;&|()<>`$=\\"
 GLUE_BAD = set("\r\n;&<>")
 GLUE_FILL = "\x01"          # fills a glued group: never a character of a real word
+# Words whose arguments are still arguments in zsh, so a group after them is a glob, not a subshell:
+# the wrappers (not time, a reserved word) and timeout with its duration.
+_ALTERNATION = re.compile(r"\([^\s()]*\|[^\s()]*\)")      # (git|nope): no blank, one |
+_ARGS_OF = re.compile(
+    r"(?:^|[\s;&|(`])(?:(?:[^\s;&|()]*/)?(?:command|env|sudo|nohup|xargs|exec|nice|builtin)"
+    r"|(?:[^\s;&|()]*/)?timeout[ \t]+(?:-\S+[ \t]+(?:[^\s-]\S*[ \t]+)?)*[0-9][0-9.]*[smhd]?)[ \t]+"
+    r"(?:(?:-\S+|[A-Za-z_]\w*=\S*)[ \t]+(?:[^\s-]\S*[ \t]+)?)*$")
 PUSH_NAMES = ("push", "send-pack", "http-push")
 NAME_CHARS = frozenset("".join(GIT_NAMES + PUSH_NAMES))
 
@@ -862,8 +869,9 @@ def glue_paren_groups(text):
     """text with every in-word (...) group rewritten as GLUE_FILL characters, of equal length.
     zsh reads word(a|b)word as an alternation (with bareglobqual and extendedglob off), so the
     group is a glob, but the tokenizers split a word at ( and ), which would lose it. A group
-    opens glued to the word before it or to a group just before it (not after whitespace, an
-    operator, $, = or a backtick: those start a subshell, a substitution or an array), is not
+    opens glued to the word before it, to a group just before it, or after a wrapper (nice, exec,
+    timeout 5: its argument) but not after other whitespace, an operator, $, = or a backtick: those
+    start a subshell, a substitution or an array. It is not
     empty (name() defines a function), holds no newline, ; & < or > (so a subshell, a call that
     spans lines or a redirect is never swallowed; blanks are allowed, zsh takes them into the
     group) and balances. Quotes are not read: a group in a quoted sh -c string is glued as well,
@@ -883,7 +891,9 @@ def glue_paren_groups(text):
         if c in GLUE_BAD:
             stack, open_groups = [], 0
         elif c == "(":
-            glued = i > 0 and (text[i - 1] not in GLUE_STOP or prev_end == i) \
+            glued = i > 0 and (text[i - 1] not in GLUE_STOP or prev_end == i
+                               or (_ARGS_OF.search(text[max(0, i - 80):i]) is not None
+                                   and _ALTERNATION.match(text, i) is not None)) \
                 and text[i + 1:i + 2] != ")"
             stack.append((i, glued))
             open_groups += glued
@@ -1219,8 +1229,29 @@ def fold_hit(tokens, names):
 
 
 STRICT_RUN = re.compile(r"[^\s;&|<>()`]+")
-# The word before a quoted string that a shell runs: a -c bundle (-c, -lc) or eval.
-SHELL_STRING_BEFORE = re.compile(r"(?:^|[\s;&|(])(?:-[A-Za-z]*c|eval)[ \t]+$")
+# The words before a quoted string that a shell runs: a -c bundle (-c, -lc) or eval; and, behind a
+# shell's name, the options shell_string_at walks (-x, +e, -o NAME, --rcfile F, --norc, --) around a
+# bundle that holds c anywhere (-cx), as in bash -c -- 'cmd', eval -- 'cmd'.
+_OPT_VALUE = r"(?:-[A-Za-z]*[oO]|--rcfile|--init-file)[ \t]+[^\s'\"]+"
+_OPT = r"(?:[-+][A-Za-z]+|--[A-Za-z][A-Za-z-]*|--)"
+_OPTS = r"(?:[ \t]+(?:" + _OPT_VALUE + "|" + _OPT + "))*"
+SHELL_STRING_BEFORE = re.compile(
+    r"(?:^|[\s;&|(])(?:(?:-[A-Za-z]*c|eval)(?:[ \t]+--)?"
+    r"|(?:[^\s;&|()]*/)?(?:sh|bash|zsh|dash|ksh)" + _OPTS
+    + r"[ \t]+-[A-Za-z]*c[A-Za-z]*" + _OPTS + ")"
+    r"[ \t]+$")
+# Words that come before a command word without being the command: an assignment, a reserved word,
+# a wrapper, an option, a number (nice -n 5, timeout 5). An option's value joins them.
+_PREFIX_NUMBER = re.compile(r"\d+(?:\.\d+)?[smhd]?$")
+
+
+def _prefix_word(w, after_option):
+    """Is w, a word of a simple command, one that a command word can follow (see above)?
+    after_option: the word before it was an option, so w may be its value."""
+    w = w.lstrip("$").strip("'\"")
+    return (after_option or w in RESERVED or bool(ASSIGN_RE.match(w)) or w.startswith("-")
+            or os.path.basename(w) in WRAPPERS or os.path.basename(w) == "timeout"
+            or bool(_PREFIX_NUMBER.match(w)))
 DASH_NAMES = tuple(sorted(DASH_PUSH))
 RERUN = [False]          # true while strict_could_push re-runs could_push on the read text
 
@@ -1242,8 +1273,20 @@ def strict_text(cmd):
     glued = glue_paren_groups(cmd)
     out, last, n = [], 0, len(glued)
     scan, taken = 0, False            # taken: a word of the current simple command was replaced
+    prefix_ok, prev_end, after_option = True, 0, False
     for m in STRICT_RUN.finditer(glued):
         start, end = m.span()
+        gap = glued[prev_end:start]
+        if any(c in "\n;&|(`" for c in gap) or re.search(r"\)\s", gap):
+            prefix_ok, after_option = True, False
+        prev_end = end
+        opens = glued[start:start + 1] in ("'", '"') or glued[start:start + 2] in ("$'", '$"')
+        if opens and SHELL_STRING_BEFORE.search(glued[max(0, start - 100):start]):
+            prefix_ok, after_option = True, False
+        at_command = prefix_ok
+        if prefix_ok:
+            prefix_ok = _prefix_word(m.group(), after_option)
+            after_option = m.group().startswith("-")
         if not any(c in m.group() for c in "?[*" + GLUE_FILL):
             continue
         if taken and any(c in "\n;&|()`" for c in glued[scan:start]):
@@ -1252,12 +1295,14 @@ def strict_text(cmd):
         if taken:
             continue
         a, b = start, end
+        if glued[a] == "$" and glued[a + 1:a + 2] in ("'", '"'):
+            a += 1
         while a < b and glued[a] in "'\"":
             a += 1
         while b > a and glued[b - 1] in "'\"":
             b -= 1
         quoted = a > start
-        if quoted and not SHELL_STRING_BEFORE.search(glued[max(0, start - 24):start]):
+        if quoted and not SHELL_STRING_BEFORE.search(glued[max(0, start - 100):start]):
             continue
         a = max(a, glued.rfind("/", a, b) + 1)
         part = glued[a:b]
@@ -1269,10 +1314,11 @@ def strict_text(cmd):
         nxt = end
         while nxt < n and glued[nxt] in " \t":
             nxt += 1
-        if nxt < n and glued[nxt] in ")|":
-            continue
-        name = "git" if can_be(base, ("git",)) else None
-        if name is None and (start == 0 or glued[start - 1] in "\n;&|(`" or quoted):
+        git_ok = can_be(base, ("git",))
+        if git_ok and nxt < n and glued[nxt] in ")|":
+            continue          # git has no arguments there; a dash name (git-p..) still acts alone
+        name = "git" if git_ok else None
+        if name is None and (at_command or quoted):
             name = next((d for d in DASH_NAMES if can_be(base, (d,))), None)
         if name is not None:
             out += [cmd[last:a], name]
