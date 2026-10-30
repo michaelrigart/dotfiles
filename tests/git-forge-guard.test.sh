@@ -2173,7 +2173,8 @@ expect allow "F4 a 50 KB run of [ as a command word, hidden push"              "
 expect allow "F4 a 50 KB run of [ as a command word, literal push (raw side)"  "$R" "$BRK push origin main"
 expect allow "F4 a 50 KB run of [ as a command word, no push"                  "$R" "$BRK status"
 expect allow "F4 a 50 KB run of [ as a command word, an ANSI-C tab, no push"   "$R" "$BRK status \$'\\t'"
-expect deny  "F4 a 50 KB run of [z-a] as a command word, hidden push (round 6: the span is a *)" "$R" "$RNG \$'\\x70ush' origin main"
+expect allow "F4 a 50 KB run of [z-a] as a command word, hidden push (no shell expands it)" \
+  "$R" "$RNG \$'\\x70ush' origin main"
 expect allow "F4 a 50 KB run of [ in a path word, hidden push"                 "$R" "echo push; /usr/bin/g${BRK}t pu''sh origin main"
 expect allow "F4 a 200-character glob word that is no git name, hidden push"   "$R" "$LONG pu''sh origin main"
 expect allow "F4 a 200-character glob word that is no git name, literal push"  "$R" "$LONG push origin main"
@@ -2222,9 +2223,30 @@ allow ## R5 a bare class glob command, ANSI-C tab ## [[:alpha:]]x status $'\t'
 deny ## R6 ruling: a class glob with * is not GLOB_ONLY, so a possible git (silent in round 5) ## [[:alpha:]]* pu''sh origin main
 allow ## R5 a regex line in a here-document body, then git status ## cat <<'EOF'<NL>it's<NL>[[:space:]]* push<NL>EOF<NL>git status
 TABLE
-# Fix round 6: the span from the first [ that has a later ] through the last ] is one *, whatever
-# reading a shell has of the brackets inside it. Each shape denies with a literal and with a hidden
-# subcommand word (and under sh -c / bash -c), the quoted-] shapes included.
+# Fix round 6: the span from the first [ that has a later ] through the last ] is read once for
+# every shell (since the restructure: can_be, the strict path). Each shape denies with a literal
+# and with a hidden subcommand word (and under sh -c / bash -c), the quoted-] shapes included.
+# Restructure (coordinator ruling, 2026-10-31): glob words are judged on two paths and either one
+# denies. c67e699's stand-alone path is restored as it was, so [x]it and [0]it are possible gits by
+# themselves again (it reads a bracket as one character; main did not). A strict-only word is read
+# as the literal word git, so it inherits git's view pair rule: a hidden push word anywhere after it
+# denies, as `git status; echo pu''sh` does. The rows marked "the pair rule" were silent while a
+# strict-only word needed the hidden push in its own command (quote_mask, now deleted).
+run_table <<'TABLE'
+deny ## RS the literal twin of the pair rule: git, then a hidden push in the next command ## cd /tmp; git status; echo pu''sh
+deny ## RS a word only the 1333519 reading took, a dash form: a push by itself ## /usr/bin/[[.g.]]it-push origin main
+deny ## RS the same under sh -c ## sh -c '/usr/bin/[[=g=]]it-push origin main'
+deny ## RS a strict-only word with a dynamic option, as for a literal git ## /usr/bin/[g][i][t] -c x.y=a* status; echo push
+deny ## RS its literal twin ## /usr/bin/git -c x.y=a* status; echo push
+deny ## RS a strict-only word, -C $(pwd), then the push word ## echo $(/usr/bin/[[=g=]]it -C $(pwd) push origin main)
+deny ## RS a strict-only word, --namespace <( ; ), inside $( ) ## echo $(/usr/bin/[[=g=]]it --namespace <(true; true) "push" origin main)
+deny ## RS a strict-only word, --namespace=<( ; ), then $P ## P=push; /usr/bin/[[.g.]]it --namespace=<(true; true) $P origin main
+deny ## RS a zsh group in an eval string ## eval '/usr/bin/(gi|x)t push origin main'
+allow ## RS a strict-only word whose command is no push, push in the next one ## cd /tmp; /usr/bin/[[.g.]]it status; echo push
+allow ## RS a word no shell expands to git, a literal push ## cd /tmp; [] push origin main
+allow ## RS [!] alone is one character at most ## cd /tmp; [!] push origin main
+allow ## RS a range span that holds no g ## cd /tmp; [a-f][0-9] push origin main
+TABLE
 run_table <<'TABLE'
 deny ## R6 a collating symbol and a stray [, literal ## /usr/bin/[[.g.]i[t] push origin main
 deny ## R6 a collating symbol and a stray [, hidden ## /usr/bin/[[.g.]i[t] pu''sh origin main
@@ -2247,7 +2269,8 @@ deny ## R6 a backslash-escaped ] under sh -c ## sh -c '/usr/bin/g[i\]]t push ori
 deny ## R6 a backslash-escaped ], hidden ## /usr/bin/g[i\]]t pu''sh origin main
 deny ## R6 a double-quoted ], hidden ## /usr/bin/g[i"]"]t pu''sh origin main
 deny ## R6 a single-quoted ], hidden ## /usr/bin/g[i']']t pu''sh origin main
-deny ## R6 a bracket word with * is no longer exempt ## [abc]* pu''sh origin main
+allow ## R6 [abc]* is no git word in any shell: its first character is a, b or c ## [abc]* pu''sh origin main
+deny ## R6 a bracket word with * that can be git is not exempt ## [abg]* pu''sh origin main
 deny ## R6 bracket words of literals pick out git, literal ## /usr/bin/[g][i][t] push origin main
 deny ## R6 bracket words of literals pick out git, hidden ## /usr/bin/[g][i][t] pu''sh origin main
 deny ## R6 brackets and a ?, force ## /usr/bin/[g][i]? push --force origin main
@@ -2325,7 +2348,7 @@ deny ## R8 C-1 a quoted $( ) holding the push word ## /usr/bin/g?t "$(echo pu''s
 deny ## R8 C-1 a $(printf ) holding the push word ## /usr/bin/g?t $(printf pu\\sh) origin main
 deny ## R8 C-1 a collating symbol glob, quoted ; ## /usr/bin/[[.g.]]it -c 'x.y=a;b' pu''sh origin main
 deny ## R8 C-1 a strict-only glob, quoted ; ## /usr/bin/[g][i][t] -c 'x.y=a;b' pu''sh origin main
-allow ## R8 C-1 a strict-only glob, hidden push in the next command ## cd /tmp; /usr/bin/[g][i][t] status; pu''sh
+deny ## R8 C-1 a strict-only glob, hidden push in the next command (read as git: the pair rule) ## cd /tmp; /usr/bin/[g][i][t] status; pu''sh
 allow ## R8 I-1 a JSON number grid ## cd /tmp && cat > f.json <<'EOF'<NL>[[0,0],[0,0],[0,0],[0,0],[0,0],[0,0],[0,0],[0,0]]<NL>EOF<NL>git status
 allow ## R8 I-1 a JSON grid under echo push ## echo push; cd /tmp && cat > f.json <<'EOF'<NL>[[0,0],[0,0],[0,0],[0,0],[0,0],[0,0],[0,0],[0,0]]<NL>EOF<NL>git status
 allow ## R8 I-1 nine bracket groups ## cd /tmp && cat <<'EOF'<NL>[1][2][3][4][5][6][7][8][9]<NL>EOF<NL>git status
@@ -2366,10 +2389,10 @@ deny ## R9 C-B [g][i][t], glob slot ## touch push; /usr/bin/[g][i][t] pu[s]h ori
 allow ## R9 D a bracket word, an option and a lone * in a body ## cd /tmp && cat <<'EOF'<NL>[g][i][t] -x *<NL>EOF<NL>git diff --stat
 allow ## R9 D [] } in a body (control, as at 95f56bb) ## cd /tmp && cat <<'EOF'<NL>[] }<NL>EOF<NL>git diff --stat
 allow ## R9 D [] { in a body (control, as at 95f56bb) ## cd /tmp && cat <<'EOF'<NL>[] {<NL>EOF<NL>git diff --stat
-allow ## R9 m-3 an odd apostrophe in a comment before a strict-only word ## # don't<NL>/usr/bin/[g][i][t] status<NL>echo pu''sh
-allow ## R9 m-3 an odd apostrophe in a here-document before it ## cat <<'EOF'<NL>it's<NL>EOF<NL>/usr/bin/[g][i][t] status; echo pu''sh
-allow ## R9 m-3 an odd apostrophe in a trailing comment ## /usr/bin/[g][i][t] status # it's<NL>echo pu''sh
-allow ## R9 m-3 a quoted ( inside $( ) ## /usr/bin/[g][i][t] status $(echo '(') ; echo pu''sh
+deny ## R9 m-3 an odd apostrophe in a comment before a strict-only word (read as git: the pair rule) ## # don't<NL>/usr/bin/[g][i][t] status<NL>echo pu''sh
+deny ## R9 m-3 an odd apostrophe in a here-document before it (read as git: the pair rule) ## cat <<'EOF'<NL>it's<NL>EOF<NL>/usr/bin/[g][i][t] status; echo pu''sh
+deny ## R9 m-3 an odd apostrophe in a trailing comment (read as git: the pair rule) ## /usr/bin/[g][i][t] status # it's<NL>echo pu''sh
+deny ## R9 m-3 a quoted ( inside $( ) (read as git: the pair rule) ## /usr/bin/[g][i][t] status $(echo '(') ; echo pu''sh
 deny ## R10 F1 g[[:alpha:]]t, <( ; ) then "push" ## /usr/bin/g[[:alpha:]]t --namespace <(true; true) "push" origin main
 deny ## R10 F1 g[[:alpha:]]t, <( ; ) then $'push' ## /usr/bin/g[[:alpha:]]t --namespace <(true; true) $'push' origin main
 deny ## R10 F1 g[[:alpha:]]t, <( ; ) then $P ## P=push; /usr/bin/g[[:alpha:]]t --namespace <(true; true) $P origin main
@@ -2402,22 +2425,22 @@ deny ## R10 F2 p"u"sh and a comment ## /usr/bin/[g][i][t] -c 'x.y=a;b' p"u"sh or
 deny ## R10 F2 pu\sh and a comment ## /usr/bin/[g][i][t] -c 'x.y=a;b' pu\sh origin main # x
 deny ## R10 F2 ANSI-C hex and a comment ## /usr/bin/[g][i][t] -c 'x.y=a;b' $'\x70ush' origin main # x
 deny ## R10 F2 ANSI-C octal and a comment ## /usr/bin/[g][i][t] -c 'x.y=a;b' $'\160ush' origin main # x
-allow ## R10 F2 an apostrophe in a comment line before a separate command ## # don't<NL>/usr/bin/[g][i][t] status<NL>echo pu''sh
-allow ## R10 F2 an apostrophe in a here-document before it ## cat <<'EOF'<NL>it's<NL>EOF<NL>/usr/bin/[g][i][t] status; echo pu''sh
-allow ## R10 F2 an apostrophe in a trailing comment ## /usr/bin/[g][i][t] status # it's<NL>echo pu''sh
+deny ## R10 F2 an apostrophe in a comment line before a separate command (read as git: the pair rule) ## # don't<NL>/usr/bin/[g][i][t] status<NL>echo pu''sh
+deny ## R10 F2 an apostrophe in a here-document before it (read as git: the pair rule) ## cat <<'EOF'<NL>it's<NL>EOF<NL>/usr/bin/[g][i][t] status; echo pu''sh
+deny ## R10 F2 an apostrophe in a trailing comment (read as git: the pair rule) ## /usr/bin/[g][i][t] status # it's<NL>echo pu''sh
 allow ## R10 F3 [] with a dynamic option and a computed word ## cd /tmp && python3 - <<'PY'<NL>[] -C ./x? $y<NL>PY<NL>git status
 allow ## R10 F3 [^1] and a ???? glob ## cd /tmp && cat > notes.md <<'EOF'<NL>[^1] ????<NL>EOF<NL>git status
 allow ## R10 F3 [!] and *-* ## cd /tmp && cat > g.md <<'EOF'<NL>[!] *-* marks a range<NL>EOF<NL>git diff --stat
 allow ## R10 F3 [*] and p* ## cd /tmp && cat > g.md <<'EOF'<NL>[*] p* matches anything starting with p<NL>EOF<NL>git diff --stat
-allow ## R10 F3 [x]it and ??* ## cd /tmp && cat > g.md <<'EOF'<NL>[x]it ??* is a word<NL>EOF<NL>git status
-allow ## R10 F3 [0]it and p* ## cd /tmp && cat > g.md <<'EOF'<NL>[0]it p*<NL>EOF<NL>git status
+deny ## R10 F3 [x]it and ??* (stand-alone path: [x] is one character) ## cd /tmp && cat > g.md <<'EOF'<NL>[x]it ??* is a word<NL>EOF<NL>git status
+deny ## R10 F3 [0]it and p* (stand-alone path: [x] is one character) ## cd /tmp && cat > g.md <<'EOF'<NL>[0]it p*<NL>EOF<NL>git status
 allow ## R10 F3 a markdown link and ??* ## cd /tmp && cat > g.md <<'EOF'<NL>[link](url) ??* more<NL>EOF<NL>git status
 allow ## R10 F3 a JSON pair and ??* ## cd /tmp && cat > g.json <<'EOF'<NL>[[0,0]] ??*<NL>EOF<NL>git status
 allow ## R10 F3 [] with -c and a computed word ## cd /tmp && cat > g.md <<'EOF'<NL>[] -c a.b=* $HOME<NL>EOF<NL>git status
 deny ## R10 F3 trade-off: [a-z]* can be git, ??* can be push ## cd /tmp && cat > a.txt <<'EOF'<NL>[a-z]* ??* [0-9]*<NL>EOF<NL>git status
-allow ## R10 frames: a lone { inside $( ) ## /usr/bin/[g][i][t] status $(echo {) ; echo pu''sh
-allow ## R10 frames: a lone { in a sed script inside $( ) ## /usr/bin/[g][i][t] status $(sed s/{/x/ f) ; echo pu''sh
-allow ## R10 frames: a lone ( inside ${ } ## /usr/bin/[g][i][t] status ${x:-(} ; echo pu''sh
+deny ## R10 frames: a lone { inside $( ) (read as git: the pair rule) ## /usr/bin/[g][i][t] status $(echo {) ; echo pu''sh
+deny ## R10 frames: a lone { in a sed script inside $( ) (read as git: the pair rule) ## /usr/bin/[g][i][t] status $(sed s/{/x/ f) ; echo pu''sh
+deny ## R10 frames: a lone ( inside ${ } (read as git: the pair rule) ## /usr/bin/[g][i][t] status ${x:-(} ; echo pu''sh
 deny ## R11 1 a strict-only word inside $( ), plain push ## echo $(/usr/bin/g[[:alpha:]]t push origin main)
 deny ## R11 1 inside $( ) with a redirect ## out=$(/usr/bin/g[[:alpha:]]t push origin main 2>&1)
 deny ## R11 1 inside <( ) after true; ## cat <(true; /usr/bin/g[[:alpha:]]t push origin main)
@@ -2435,14 +2458,14 @@ deny ## R11 2 [^a]it and a glob slot ## touch push; /usr/bin/[^a]it pu[s]h origi
 deny ## R11 2 gi[^a] and a glob slot ## touch push; /usr/bin/gi[^a] pu[s]h origin main
 deny ## R11 2 g[^a-h]t and a glob slot ## touch push; /usr/bin/g[^a-h]t pu[s]h origin main
 deny ## R11 2 [^0-9]it and a glob slot ## touch push; /usr/bin/[^0-9]it pu[s]h origin main
-allow ## R11 3 a here-string with an apostrophe before ## cat <<< "it's"<NL>/usr/bin/[g][i][t] status; echo pu''sh
-allow ## R11 3 an arithmetic << in (( )) ## ((n=1<<2))<NL>/usr/bin/[g][i][t] status; echo pu''sh
-allow ## R11 3 an arithmetic << in $[ ] ## x=$[1<<2]<NL>/usr/bin/[g][i][t] status; echo pu''sh
-allow ## R11 3 an arithmetic << in $(( )) ## echo $((1<<2))<NL>/usr/bin/[g][i][t] status; echo pu''sh
+deny ## R11 3 a here-string with an apostrophe before (read as git: the pair rule) ## cat <<< "it's"<NL>/usr/bin/[g][i][t] status; echo pu''sh
+deny ## R11 3 an arithmetic << in (( )) (read as git: the pair rule) ## ((n=1<<2))<NL>/usr/bin/[g][i][t] status; echo pu''sh
+deny ## R11 3 an arithmetic << in $[ ] (read as git: the pair rule) ## x=$[1<<2]<NL>/usr/bin/[g][i][t] status; echo pu''sh
+deny ## R11 3 an arithmetic << in $(( )) (read as git: the pair rule) ## echo $((1<<2))<NL>/usr/bin/[g][i][t] status; echo pu''sh
 deny ## R11 3 an arithmetic << then a real push ## echo $((1<<2)); /usr/bin/[g][i][t] -c 'x.y=a;b' pu''sh origin main
-allow ## R11 3 a commit-message here-document inside $( ) ## x=$(cat <<'EOF'<NL>it's<NL>[a-z]* ??*<NL>EOF<NL>)<NL>echo p"u"sh
-allow ## R11 3 a here-document inside $( ), then ??? status ## msg=$(cat <<'EOF'<NL>it's done<NL>EOF<NL>); ??? status; echo pu''sh
-allow ## R11 3 a comment inside $( ) ## echo $(true # it's<NL>); /usr/bin/[g][i][t] status; echo pu''sh
+deny ## R11 3 a commit-message here-document inside $( ) (read as git: the pair rule) ## x=$(cat <<'EOF'<NL>it's<NL>[a-z]* ??*<NL>EOF<NL>)<NL>echo p"u"sh
+deny ## R11 3 a here-document inside $( ), then ??? status (read as git: the pair rule) ## msg=$(cat <<'EOF'<NL>it's done<NL>EOF<NL>); ??? status; echo pu''sh
+deny ## R11 3 a comment inside $( ) (read as git: the pair rule) ## echo $(true # it's<NL>); /usr/bin/[g][i][t] status; echo pu''sh
 TABLE
 # R7: a zsh group longer than 256 characters is read in full, not skipped.
 LONGPRE=$(awk 'BEGIN { for (i = 0; i < 70; i++) printf "n%03d|", i }')
@@ -2452,19 +2475,33 @@ expect deny  "R7 a 300-character zsh group, hidden push" "$R" \
   "/usr/bin/g(${LONGPRE}it) pu''sh origin main"
 expect allow "R7 a 300-character zsh group, no push word" "$R" \
   "cd /tmp && /usr/bin/g(${LONGPRE}it) status"
-# R9 (I-A): a 500 KB command of strict-only glob words and hidden pushes stays linear.
+# R9 (I-A): a 500 KB command of strict-only glob words stays linear. Each word is read as git, so
+# a hidden push after one denies (the pair rule); a 500 KB command with no push word is judged
+# word by word, on the raw side (cd makes the run literal) and in the views (it''s).
 BIGUNIT="/usr/bin/[g][i][t] x; echo pu''sh; "
 BIG=$(awk -v u="$BIGUNIT" 'BEGIN { for (i = 0; i < 14000; i++) printf "%s", u }')
+QUIETUNIT="/usr/bin/[g][i][t] x; echo it''s; "
+QUIET=$(awk -v u="$QUIETUNIT" 'BEGIN { for (i = 0; i < 14000; i++) printf "%s", u }')
+r9_bound() { # r9_bound <label> <t0>: the commands since t0 finished under 10 s
+  if [ $((SECONDS - $2)) -lt 10 ]; then
+    pass=$((pass + 1)); printf '  ok   %s (%s s)\n' "$1" "$((SECONDS - $2))"
+  else
+    fail=$((fail + 1)); printf '  FAIL %s (%ss)\n' "$1" "$((SECONDS - $2))"
+  fi
+}
 t0=$SECONDS
-expect allow "R9 a 500 KB command of strict-only glob words and hidden pushes" "$R" "$BIG"
+expect deny  "R9 a 500 KB command of strict-only glob words and hidden pushes" "$R" "$BIG"
 expect deny  "R9 the same with a real glob push at the end" "$R" \
   "$BIG/usr/bin/g?t pu''sh origin main"
-R9_NAME="R9 the 500 KB glob commands finish under 10 s"
-if [ $((SECONDS - t0)) -lt 10 ]; then
-  pass=$((pass + 1)); printf '  ok   %s (%s s)\n' "$R9_NAME" "$((SECONDS - t0))"
-else
-  fail=$((fail + 1)); printf '  FAIL %s (%ss)\n' "$R9_NAME" "$((SECONDS - t0))"
-fi
+r9_bound "R9 the 500 KB glob commands finish under 10 s" "$t0"
+t0=$SECONDS
+expect allow "R9 a 500 KB command of strict-only glob words, no push word" "$R" \
+  "${QUIET}cd /tmp; git status"
+r9_bound "R9 the 500 KB command of strict-only words and no push finishes under 10 s" "$t0"
+t0=$SECONDS
+expect deny  "R9 the same with a real strict-only push at the end" "$R" \
+  "${QUIET}cd /tmp; /usr/bin/[g][i][t] pu''sh origin main"
+r9_bound "R9 the 500 KB command with a strict-only push at the end finishes under 10 s" "$t0"
 # R12 (D): the git-then-push and git-then-alias searches are linear. A 160 KB line of git words once
 # held the hook past its 60 s timeout, which is non-blocking, so a padded push went through.
 PADLINE="echo $(awk 'BEGIN { for (i = 0; i < 27000; i++) printf "git x " }')"
@@ -2511,14 +2548,38 @@ case "$ps_out" in
   "ok "*) pass=$((pass + 1)); printf '  ok   %s\n' "${ps_out#ok }" ;;
   *)      fail=$((fail + 1)); printf '  FAIL %s\n' "${ps_out#FAIL }" ;;
 esac
+# can_be, the strict reading, on words: those some shell expands to git, and words of prose, code
+# and data that no shell can (the bracket span of one [ and one ] is one character; a wider span
+# is its own characters unless it holds a wildcard, a group, a negation or a class).
+cb_out=$(/usr/bin/python3 - "$(dirname "$GUARD")/git-push-guard.py" <<'PY'
+import importlib.util, sys
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("guard", sys.argv[1])
+g = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(g)
+F = g.GLUE_FILL
+yes = ["[g][i][t]", "???", "[g][!x][t]", "[[.g.]]it", "[[=g=]]it", "[[:g:][i]t", "g[!]t", "[^]it",
+       "g[i]]t", "[a-z]*", "[a-z][a-z][a-z]", F * 10, "g" + F * 3 + "t", "[^{}n]*"]
+no = ["[]", "[!]", "[*]", "[^1]", "[x]it", "[link]" + F * 5, "[[0,0]]", "[[tool.x]]", "[0][:90]",
+      "[result][thread][id]", "[$n[]", "[!WARNING]", "[:3][::-1]", "[abc]*", "[z-a][z-a][z-a]",
+      "print" + F * 3, "[[:alpha:]]x", "[1][2][3][4][5][6][7][8][9]"]
+bad = [w for w in yes if not g.can_be(w)] + [w for w in no if g.can_be(w)]
+print(("ok " if not bad else "FAIL ") + "can_be reads %d words that can be git and %d that cannot, "
+      "%d wrong %r" % (len(yes), len(no), len(bad), bad[:5]))
+PY
+)
+case "$cb_out" in
+  "ok "*) pass=$((pass + 1)); printf '  ok   %s\n' "${cb_out#ok }" ;;
+  *)      fail=$((fail + 1)); printf '  FAIL %s\n' "${cb_out#FAIL }" ;;
+esac
 # The same readings against the real shells. Every word a shell expands to git or a git-* name in
-# a directory holding those files must be read as a possible git by glob_matches_git_name, unless
-# a word of * alone exempts it (g.glob_only; main's wider GLOB_ONLY is not used). A word is a pair:
-# the text handed to the shell, and the text the helper's tokens hold (quotes and backslashes
-# removed). zsh parenthesis groups, (a|b), run in zsh only. A batch the shell does not finish
-# (bash 3.2 segfaults on some glob words) is rerun word by word; a word that still kills the shell
-# is counted and printed; a shell that finishes nothing fails. A second layer runs a sample of the
-# expanding words through the helper itself, in command position before a push word (so the
+# a directory holding those files must be read as a possible git by the stand-alone matcher
+# (glob_matches_git_name) or the strict reading (can_be), unless it is made of * alone. A word is
+# a pair: the text handed to the shell, and the text the helper's tokens hold (quotes and
+# backslashes removed). zsh parenthesis groups, (a|b), run in zsh only. A batch the shell does not
+# finish (bash 3.2 segfaults on some glob words) is rerun word by word; a word that still kills the
+# shell is counted and printed; a shell that finishes nothing fails. A second layer runs a sample
+# of the expanding words through the helper itself, in command position before a push word (so the
 # tokenizer, the glue and the pairing are exercised), and every one must deny. A shell that is not
 # installed is skipped. Plain zsh (without -f) is not run: it reads the user's own startup files.
 sh_out=$(/usr/bin/python3 - "$(dirname "$GUARD")/git-push-guard.py" "$TMP" "$R" <<'PY'
@@ -2595,7 +2656,8 @@ def run(argv, pre, batch, tag):
 
 
 def reads_as_git(w):
-    return g.glob_matches_git_name(os.path.basename(g.glue_paren_groups(words_all[w])))
+    base = os.path.basename(g.glue_paren_groups(words_all[w]))
+    return g.glob_matches_git_name(base) or g.can_be(base)
 
 
 def helper_denies(cmd, flag):
@@ -2630,7 +2692,7 @@ for label, argv, pre in SHELLS:
                 else:
                     got |= one
         seen |= got
-    bare = [w for w in seen if g.glob_only(words_all[w])]
+    bare = [w for w in seen if not words_all[w].strip("*")]
     miss = [w for w in sorted(seen) if not reads_as_git(w) and w not in bare]
     answered = len(shell_words) - len(crashed)
     good = bool(seen) and not miss and answered > len(shell_words) * 0.99
