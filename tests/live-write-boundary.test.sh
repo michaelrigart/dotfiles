@@ -129,7 +129,7 @@ for root in "$HOME/Code" "$HOME/.local/share/chezmoi" "$HOME/Documents" \
         "$ar/.claude" "$nm/.claude" "$ar/.claude/worktrees/wt1/.claude")
   if [ "$vault" = 0 ]; then
     dirs+=("$g/objects" "$g/refs/heads" "$g/modules/sub/worktrees/swt" "$g/worktrees/wt/modules/sub" "$b/plain" \
-           "$g/glab-cli/recover")
+           "$g/glab-cli/recover" "$g/worktrees/wt/glab-cli/recover")
   else
     dirs+=("$b/vdir")
   fi
@@ -170,6 +170,9 @@ for root in "$HOME/Code" "$HOME/.local/share/chezmoi" "$HOME/Documents" \
       denied "${k}_git_lazygit" "$g/lazygit.yml"
       denied "${k}_git_glab_config" "$g/glab-cli/config.yml"
       allowed "${k}_git_glab_recover" "$g/glab-cli/recover/x"
+      # The same two in a linked worktree's git directory.
+      denied "${k}_git_worktree_glab_config" "$g/worktrees/wt/glab-cli/config.yml"
+      allowed "${k}_git_worktree_glab_recover" "$g/worktrees/wt/glab-cli/recover/x"
       allowed "${k}_worktree_lazygit_plain" "$r/lazygit.yml"
       allowed "${k}_git_objects" "$g/objects/$stamp"
       allowed "${k}_git_index" "$g/index"

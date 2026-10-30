@@ -453,7 +453,8 @@ printf '%s' "$input" | jq \
           # and externalDiffCommand run when he draws a diff), and glab reads
           # .git/glab-cli/config.yml (its editor and browser run when he uses glab). Only that
           # one glab file is denied, as glab keeps other state (recover files) in the same
-          # directory. Consequence: .git/**/lazygit.yml also denies a ref or file of that name
+          # directory. The linked worktree form is defensive: newer glab resolves a worktree
+          # config per rev-parse --git-dir, while glab 1.126.0 does not read it. Consequence: .git/**/lazygit.yml also denies a ref or file of that name
           # inside a git directory.
           # .claude/skills, commands and agents stay writable (projects commit their own).
           # Hooks per spec 83f6b2b. Each agent path is listed at depth 0, 1 and 2
@@ -472,7 +473,7 @@ printf '%s' "$input" | jq \
             | [".git/hooks", ".git/hooks/**", ".git/modules/**/hooks", ".git/modules/**/hooks/**"] as $git
             | [".git/config*", ".git/commondir", ".git/worktrees/*/config*", ".git/worktrees/*/commondir", ".git/modules/**/config*", ".git/modules/**/commondir"] as $gitconf
             | [".git/worktrees/*/modules/**/config*", ".git/worktrees/*/modules/**/commondir", ".git/worktrees/*/modules/**/hooks"] as $wtmod
-            | [".lazygit.yml", ".git/**/lazygit.yml", ".git/glab-cli/config.yml"] as $toolconf
+            | [".lazygit.yml", ".git/**/lazygit.yml", ".git/glab-cli/config.yml", ".git/worktrees/*/glab-cli/config.yml"] as $toolconf
             | [".claude/settings.json", ".claude/settings.local.json", ".mcp.json", ".codex", ".codex/**"] as $agent
             | [$roots[] as $root | $git[] | "\($root)/**/\(.)"]
               + [$git[] | "~/.local/share/chezmoi/\(.)"]

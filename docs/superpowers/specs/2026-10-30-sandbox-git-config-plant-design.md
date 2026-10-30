@@ -123,15 +123,15 @@ sandbox:
 | V18 | Renaming a `.git` directory away and back, or moving in one built in `$TMPDIR` | writable: `mv .git .gx`, write `.gx/config`, `mv .gx .git` | residual |
 | V19 | Alternates, legacy `.git/remotes`, in-progress operation state (`rebase-merge/git-rebase-todo`) | writable | out. Alternates and remotes run no code: git refuses `ext::` URLs by default, and a `<helper>::` URL runs a `git-remote-<helper>` from `PATH`, where the sandbox cannot write. A todo's `exec` line runs only when Michael continues an operation he did not start, which the prompt shows (`REBASING`) |
 | V20 | lazygit's per-repository configuration: `<git dir>/lazygit.yml`, and `.lazygit.yml` in the repository or in any parent directory of it | writable. lazygit 0.66.2 loads these, and its `pager` and `externalDiffCommand` settings run as Michael when he draws a diff (read from the binary, not run). No such file exists under any root today | in scope, §1 |
-| V21 | glab's per-repository configuration, `.git/glab-cli/config.yml` | writable. glab reads it, and its local configuration sets `editor` and `browser`, which run as Michael when he uses glab interactively. No such file exists under any root today. glab writes other state under `.git/glab-cli/` (recover files) | in scope, §1: only that file; the rest of the directory stays writable |
+| V21 | glab's per-repository configuration, `.git/glab-cli/config.yml` | writable. glab reads it, and its local configuration sets `editor` and `browser`, which run as Michael when he uses glab interactively. No such file exists under any root today. glab writes other state under `.git/glab-cli/` (recover files). Measured on glab 1.126.0: the main repository's `.git/glab-cli/config.yml` is read, but a linked worktree's `.git/worktrees/<id>/glab-cli/config.yml` is not (a planted one is ignored, and `glab config set` there fails with "not a Git repository"). The worktree entry is defensive against newer glab, which resolves a linked worktree's configuration per `git rev-parse --git-dir` (gitlab-org/cli `internal/config/local_config.go`, cited, not reproduced here) | in scope, §1: only those files; the rest of the directory stays writable |
 
 ## Design
 
 ### 1. Deny git configuration in every work root
 
-`sandbox.filesystem.denyWrite` gains twelve forms for each work root `<root>` (48 entries):
-nine git-configuration forms (36 entries) and three per-repository tool-configuration forms
-(12 entries, the second amendment; below).
+`sandbox.filesystem.denyWrite` gains thirteen forms for each work root `<root>` (52 entries):
+nine git-configuration forms (36 entries) and four per-repository tool-configuration forms
+(16 entries, the second amendment and its follow-up; below).
 
 ```
 <root>/**/.git/config*                          <root>/**/.git/commondir
@@ -141,6 +141,7 @@ nine git-configuration forms (36 entries) and three per-repository tool-configur
 <root>/**/.git/worktrees/*/modules/**/hooks
 
 <root>/**/.lazygit.yml       <root>/**/.git/**/lazygit.yml       <root>/**/.git/glab-cli/config.yml
+<root>/**/.git/worktrees/*/glab-cli/config.yml
 ```
 
 - **The three worktree-module forms** (the last three of the first group; added by the 2026-10-30
@@ -152,10 +153,10 @@ nine git-configuration forms (36 entries) and three per-repository tool-configur
     and the trust stance covers hooks.
   - Git exempts `/.git/worktrees/` and `/.git/modules/` paths from `safe.bareRepository`
     (§3), so for these paths the denies are the only barrier.
-- **The three tool-configuration forms** (the last line above; 12 entries; added by the
-  second amendment). The new per-repository tool-configuration entries are these 12. In all,
-  the signed-off design added 39 entries and the amendments 28 (16, then 12) to the 142 from
-  2026-10-16: 67 new, 209 in all.
+- **The four tool-configuration forms** (the last two lines above; 16 entries; added by the
+  second amendment). The new per-repository tool-configuration entries are these 16. In all,
+  the signed-off design added 39 entries and the amendments 32 (16, then 12, then 4) to the
+  142 from 2026-10-16: 71 new, 213 in all.
   - `<root>/**/.lazygit.yml` denies a lazygit configuration in a work tree at any depth, and
     so a parent directory's, which lazygit also loads (V20).
   - `<root>/**/.git/**/lazygit.yml` denies `<git dir>/lazygit.yml`. Because `**/` crosses
@@ -163,6 +164,9 @@ nine git-configuration forms (36 entries) and three per-repository tool-configur
     (negligible).
   - `<root>/**/.git/glab-cli/config.yml` denies only that file (V21). glab's other state under
     `.git/glab-cli/`, such as the recover files, stays writable.
+  - `<root>/**/.git/worktrees/*/glab-cli/config.yml` denies the same file for a linked
+    worktree. On glab 1.126.0 that file is not read (V21), so the entry is defensive against
+    a newer glab; it costs nothing, as no such file exists.
   - Costs: none exist today, and an agent cannot edit a tracked `.lazygit.yml` (Costs).
 
 - **How these compile** (read from the binary).
@@ -382,7 +386,7 @@ repositories with the deny simulated (a held `config.lock`, the immutable flag o
 Code's built-in rule.
 
 - **Tool configuration (V20, V21).** No `.lazygit.yml`, `lazygit.yml` or
-  `.git/glab-cli/config.yml` exists under any root today, so the three forms cost nothing now.
+  `.git/glab-cli/config.yml` exists under any root today, so the four forms cost nothing now.
   An agent could not edit a tracked `.lazygit.yml` afterwards; Michael's own tools can.
 - **Frequency.** Across the 4,148 transcript files of the last 30 days, the only sandboxed
   configuration writes aimed at a repository other than the session's own were three
@@ -405,11 +409,13 @@ Code's built-in rule.
 
 - **`claude-settings`.**
   - `denyWrite` equals the expected array exactly: 142 entries from 2026-10-16, plus §1's 36
-    git-configuration entries, §1's 12 tool-configuration entries and §2's 19, 209 in all.
+    git-configuration entries, §1's 16 tool-configuration entries and §2's 19, 213 in all.
   - Every entry starts with a work root and a slash, so `$TMPDIR` stays writable.
-  - Each root has all twelve §1 forms.
+  - Each root has all thirteen §1 forms.
   - The invariant "every deny glob names a git path, `.obsidian`, an agent configuration file
     ..." is widened to include a per-repository tool configuration file (lazygit's, glab's).
+    The glab entries have exactly two shapes, `/.git/glab-cli/config.yml` and
+    `/.git/worktrees/*/glab-cli/config.yml`.
   - Glob cases (the §1 conversion, evaluated against the rendered array):
     - `HEAD` is denied at `~/Code/HEAD`, `~/Documents/HEAD`, anywhere in the vault and at
       `~/Code/<Org>/HEAD`, and allowed at `~/Code/<Org>/<repo>/.git/HEAD`;
@@ -419,7 +425,9 @@ Code's built-in rule.
       `modules/sub/refs/heads/main` are allowed (M2: the wider reach, pinned);
     - `refs/heads/config` in an ordinary `.git` stays allowed;
     - `.lazygit.yml` (in a repository and in a parent directory), `.git/lazygit.yml` and
-      `.git/glab-cli/config.yml` are denied; `.git/glab-cli/recover/x` and a work-tree
+      `.git/glab-cli/config.yml` are denied, and so is
+      `.git/worktrees/w/glab-cli/config.yml`, in all four roots;
+      `.git/glab-cli/recover/x`, `.git/worktrees/w/glab-cli/recover/x` and a work-tree
       `lazygit.yml` without the dot stay writable.
   - No entry reaches objects, refs or the index of an ordinary repository or a linked
     worktree. The module forms (`config*`, `commondir`, `hooks`) are the stated exception (§1): they also reach
@@ -453,8 +461,10 @@ The suite runs sandboxed, in a fresh session after `chezmoi apply`.
   - the tool-configuration forms. In all four roots, including the vault, a `.lazygit.yml`
     at `<root>/<stamp>/.lazygit.yml`, a parent directory of the fixture repository, is
     denied. In the three non-vault roots, `.git/lazygit.yml` and `.git/glab-cli/config.yml`
-    are denied, and `.git/glab-cli/recover/x` and a work-tree `lazygit.yml` without the dot
-    stay writable;
+    are denied, and so is `worktrees/wt/glab-cli/config.yml` (key
+    `${k}_git_worktree_glab_config`). `.git/glab-cli/recover/x`,
+    `worktrees/wt/glab-cli/recover/x` (key `${k}_git_worktree_glab_recover`) and a work-tree
+    `lazygit.yml` without the dot stay writable;
   - the three Unicode-fold keys, in the non-vault roots' `.git` fixtures. APFS folds U+FB01
     (the fi ligature) to "fi", U+017F (long s) to "s" and U+212A (Kelvin) to "k", and git
     reads `.git/con<U+FB01>g` as `.git/config` and runs hooks from `.git/hook<U+017F>/`. The
@@ -588,3 +598,6 @@ The suite runs sandboxed, in a fresh session after `chezmoi apply`.
     mirrors) as a residual, on V15's trust.
 14. Second amendment: probe the Unicode-folded names live instead of pinning them by glob; a
     writable `con<U+FB01>g` is a spec change to raise (Testing).
+15. Follow-up: deny `.git/worktrees/*/glab-cli/config.yml` too (one form per root, 4 entries)
+    as a defensive entry for a behaviour not reproduced on the installed glab 1.126.0, which
+    ignores it; newer glab resolves it (V21).

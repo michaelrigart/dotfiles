@@ -379,7 +379,7 @@ jq_is ".sandbox.filesystem.allowWrite == $EXP_ALLOW_WRITE" true \
 GITFILES='[".git/hooks",".git/hooks/**",".git/modules/**/hooks",".git/modules/**/hooks/**"]'
 GITCONF='[".git/config*",".git/commondir",".git/worktrees/*/config*",".git/worktrees/*/commondir",".git/modules/**/config*",".git/modules/**/commondir"]'
 GITWTMOD='[".git/worktrees/*/modules/**/config*",".git/worktrees/*/modules/**/commondir",".git/worktrees/*/modules/**/hooks"]'
-TOOLCONF='[".lazygit.yml",".git/**/lazygit.yml",".git/glab-cli/config.yml"]'
+TOOLCONF='[".lazygit.yml",".git/**/lazygit.yml",".git/glab-cli/config.yml",".git/worktrees/*/glab-cli/config.yml"]'
 AGENTFILES='[".claude/settings.json",".claude/settings.local.json",".mcp.json",".codex",".codex/**"]'
 ROOTS='["~/Code","~/.local/share/chezmoi","~/Documents","~/Library/Mobile Documents/iCloud~md~obsidian"]'
 EXP_DENY_WRITE=$(jq -cn --argjson g "$GITFILES" --argjson c "$GITCONF" --argjson w "$GITWTMOD" --argjson t "$TOOLCONF" --argjson a "$AGENTFILES" --argjson r "$ROOTS" '
@@ -398,7 +398,7 @@ EXP_DENY_WRITE=$(jq -cn --argjson g "$GITFILES" --argjson c "$GITCONF" --argjson
      "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/*/.obsidian/**"]')
 jq_is ".sandbox.filesystem.denyWrite == $EXP_DENY_WRITE" true \
       "denyWrite is exactly the git hooks and configuration, the misplaced .git and HEAD entries, the lazygit and glab configuration, the agent configuration in each work root, and .obsidian"
-jq_is '.sandbox.filesystem.denyWrite | length' 209 "denyWrite has 209 entries"
+jq_is '.sandbox.filesystem.denyWrite | length' 213 "denyWrite has 213 entries"
 jq_is "[.sandbox.filesystem.denyWrite[] | . as \$d
         | select(any($ROOTS[]; . as \$r | \$d | startswith(\$r + \"/\")) | not)] | length" 0 \
       "every deny glob starts with a work root and a slash, so git init in TMPDIR still works"
@@ -429,11 +429,13 @@ jq_is '[.sandbox.filesystem.denyWrite[] | select(test("config\\*$"))
       "every config* entry sits directly in a git directory, a linked worktree'"'"'s, a submodule'"'"'s or a linked worktree'"'"'s submodule'"'"'s"
 jq_is ".sandbox.filesystem.denyWrite as \$d | [$ROOTS[] as \$r | $TOOLCONF[] as \$c
         | \"\(\$r)/**/\(\$c)\" | select(. as \$e | \$d | index(\$e) | not)] | length" 0 \
-      "each work root denies the per-repository lazygit and glab configuration forms"
-jq_is '[.sandbox.filesystem.denyWrite[] | select(test("lazygit\\.yml$|glab-cli"))] | length' 12 \
-      "12 lazygit and glab entries: 3 forms x 4 roots, and glab only for config.yml"
-jq_is '[.sandbox.filesystem.denyWrite[] | select(test("glab-cli"))] | map(select(endswith("/.git/glab-cli/config.yml") | not)) | length' 0 \
-      "the only glab entry shape is .git/glab-cli/config.yml, so its recover files stay writable"
+      "each work root denies all four per-repository lazygit and glab configuration forms"
+jq_is '[.sandbox.filesystem.denyWrite[] | select(test("lazygit\\.yml$|glab-cli"))] | length' 16 \
+      "16 lazygit and glab entries: 4 forms x 4 roots"
+jq_is '[.sandbox.filesystem.denyWrite[] | select(test("glab-cli"))] | length' 8 \
+      "8 glab entries: the main repository and linked worktree config.yml in each of 4 roots"
+jq_is '[.sandbox.filesystem.denyWrite[] | select(test("glab-cli"))] | map(select((endswith("/.git/glab-cli/config.yml") or endswith("/.git/worktrees/*/glab-cli/config.yml")) | not)) | length' 0 \
+      "the only glab entry shapes are .git/glab-cli/config.yml and .git/worktrees/*/glab-cli/config.yml, so recover files stay writable"
 jq_is '[.sandbox.filesystem.denyWrite[] | select(test("\\.git/\\*\\*/config"))] | length' 0 \
       "no entry has the shape .git/**/config, so a branch named config stays writable (the modules/**/config* entries are a different shape)"
 jq_is '[.sandbox.filesystem.denyWrite[] | select(test("/\\.git$"))] | length' 15 \
@@ -490,7 +492,8 @@ done
 for root in "$H/Code" "$H/.local/share/chezmoi" "$H/Documents" "$H/Library/Mobile Documents/iCloud~md~obsidian/Documents"; do
   for p in "$root/.lazygit.yml" "$root/Org/.lazygit.yml" "$root/Org/repo/.lazygit.yml" \
            "$root/Org/repo/.git/lazygit.yml" "$root/Org/repo/.git/worktrees/w/lazygit.yml" \
-           "$root/Org/repo/.git/glab-cli/config.yml" "$root/.git/glab-cli/config.yml"; do
+           "$root/Org/repo/.git/glab-cli/config.yml" "$root/.git/glab-cli/config.yml" \
+           "$root/Org/repo/.git/worktrees/w/glab-cli/config.yml"; do
     glob_case denied "$p"
   done
 done
@@ -518,6 +521,7 @@ for p in "$H/Code/Org/repo/.git/objects/ab/cdef" "$H/Code/Org/repo/.git/index" \
          "$H/Code/Org/repo/.git/modules/sub/objects/ab/cdef" \
          "$H/Code/Org/repo/.git/modules/sub/refs/heads/main" \
          "$H/Code/Org/repo/.git/glab-cli/recover/x" "$H/Code/Org/repo/lazygit.yml" \
+         "$H/Code/Org/repo/.git/worktrees/w/glab-cli/recover/x" "$H/Code/Org/repo/.git/worktrees/w/glab-cli/other.yml" \
          "$H/Code/Org/repo/.git/refs/heads/config-ish" "$H/Code/Org/repo/src/.lazygit.yml.bak/x"; do
   glob_case allowed "$p"
 done
