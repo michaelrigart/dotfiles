@@ -412,9 +412,11 @@ def starts_command(tok):
     return is_operator(tok) and "<" not in tok and ">" not in tok
 
 
-def command_words(tokens):
+def command_words(tokens, runners=None):
     """Indexes of the words in command position: at the start, after an operator, after
-    VAR=value assignments, and after a wrapper (command, env, sudo, time, xargs, ...)."""
+    VAR=value assignments, and after a wrapper (command, env, sudo, time, xargs, ...).
+    runners, when given, collects the indexes of the nice words that sit in command position
+    (a wrapper, so never listed in the result)."""
     out, i, n, at = [], 0, len(tokens), True
     while i < n:
         t = tokens[i]
@@ -424,6 +426,8 @@ def command_words(tokens):
             if ASSIGN_RE.match(t) or t in RESERVED:
                 pass
             elif os.path.basename(t) in WRAPPERS:
+                if runners is not None and os.path.basename(t) in RUN_OPTS_WITH_VALUE:
+                    runners.append(i)
                 while i + 1 < n and not is_operator(tokens[i + 1]) and (
                         tokens[i + 1].startswith("-") or ASSIGN_RE.match(tokens[i + 1])):
                     i += 1
@@ -593,16 +597,14 @@ def run_target(tokens, k, bound=3):
 
 
 def shell_words(tokens):
-    """Indexes of the words in command position, and of the words that a timeout or nice there
-    runs (command_words looks past nice's dash options, but not its -n value, and not past
-    timeout)."""
-    out = list(command_words(tokens))
-    for k, t in enumerate(tokens):
-        if os.path.basename(t) not in RUN_OPTS_WITH_VALUE:
-            continue
-        if k == 0 or starts_command(tokens[k - 1]) or ASSIGN_RE.match(tokens[k - 1]) \
-                or tokens[k - 1] in RESERVED or os.path.basename(tokens[k - 1]) in WRAPPERS:
-            out.extend(run_target(tokens, k))
+    """Indexes of the words in command position, and of the words that a timeout or nice in
+    command position runs (command_words looks past nice's dash options, but not its -n
+    value, and not past timeout). A timeout or nice that is an argument starts nothing."""
+    runners = []
+    out = list(command_words(tokens, runners))
+    runners.extend(k for k in out if os.path.basename(tokens[k]) == "timeout")
+    for k in runners:
+        out.extend(run_target(tokens, k))
     return out
 
 

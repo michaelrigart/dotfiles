@@ -1609,6 +1609,16 @@ expect allow "m5 timeout --signal=KILL 5 sh -c, status, is silent" "$R" "timeout
 expect allow "m5 nice -n 5 timeout 3 sh -c, status, is silent" "$R" "nice -n 5 timeout 3 sh -c '$G -c \"a;b\" status'"
 expect allow "m5 timeout 5 nice -n 5 sh -c, status, is silent" "$R" "timeout 5 nice -n 5 sh -c '$G -c \"a;b\" status'"
 expect allow "m5 echo of a timeout line naming the word is silent" "$R" "echo timeout 5 sh -c '$G -c \"a;b\" $P origin main'"
+# Round 4: timeout and nice start a read only in command position, never as an argument.
+expect allow "r4 echo sudo timeout is silent"                 "$R" "echo sudo timeout 5 sh -c '$G -c \"a;b\" $P origin main'"
+expect allow "r4 echo nice timeout is silent"                 "$R" "echo nice timeout 5 sh -c '$G -c \"a;b\" $P origin main'"
+expect allow "r4 echo X=1 timeout is silent"                  "$R" "echo X=1 timeout 5 sh -c '$G -c \"a;b\" $P origin main'"
+expect allow "r4 echo then timeout is silent"                 "$R" "echo then timeout 5 sh -c '$G -c \"a;b\" $P origin main'"
+expect allow "r4 echo nice -n 5 is silent"                    "$R" "echo nice -n 5 sh -c '$G -c \"a;b\" $P origin main'"
+expect deny  "r4 X=1 timeout 5 sh -c, an assignment first"    "$R" "X=1 timeout 5 sh -c '$G -c \"a;b\" $P origin main'"
+expect deny  "r4 env X=1 nice -n 5 sh -c"                     "$R" "env X=1 nice -n 5 sh -c '$G -c \"a;b\" $P origin main'"
+expect deny  "r4 true && timeout 5 sh -c"                     "$R" "true && timeout 5 sh -c '$G -c \"a;b\" $P origin main'"
+expect deny  "r4 if true; then timeout 5 sh -c"               "$R" "if true; then timeout 5 sh -c '$G -c \"a;b\" $P origin main'; fi"
 expect allow "N4 bash script file named like a push is silent" "$R" "bash -o pipefail $P.sh '$G -c \"a;b\" $P origin main'"
 # N5: a push alias behind a quoted ; inside a shell string or an eval.
 expect deny  "N5 sh -c holding a push alias behind a quoted ;"  "$R" "sh -c '$G -c \"a;b\" pom'"
