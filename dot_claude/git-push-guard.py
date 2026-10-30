@@ -61,9 +61,8 @@
 # subshell. Assumed: bash, sh and zsh -f with nobareglobqual and without extendedglob or kshglob, so
 # #, ^ and ~ patterns and *(...) forms are out of scope. A zsh group with unbalanced parens ([t(])
 # expands only in a for-list, never at command position, so it is unreachable as a push.
-# Residual: quote_mask models neither # comments nor here-document bodies; a command with a # word
-# or a << gets an all-zero mask (every operator real), so a strict-only glob git word followed by
-# a hidden push after a quoted separator is missed there; a missed pair beats a false deny.
+# quote_mask reads comments and here-document bodies as text, so an apostrophe there flips nothing;
+# an unterminated <( or $( masks to the end of the input.
 #
 # Written for /usr/bin/python3 (3.9): no match statements, no X | Y type unions.
 import fnmatch
@@ -236,11 +235,12 @@ def decision(kind, reason):
 # ------------------------------------------------------------------ the grammar
 GLUE_STOP = " \t\r\n;&|()<>`$=\\"
 GLUE_BAD = set("\r\n;&<>")
+GLUE_FILL = "\x01"          # fills a glued group: [<SOH>...<SOH>], never a real set
 
 
 def glue_paren_groups(text):
-    """text with every in-word (...) group rewritten as [*...*] of the same length. zsh reads
-    word(a| b)word as an alternation (with bareglobqual and extendedglob off), so the group is a
+    """text with every in-word (...) group rewritten as [SOH...SOH] (GLUE_FILL) of equal length.
+    zsh reads word(a| b)word as an alternation (with bareglobqual and extendedglob off), so the group is a
     glob, but the tokenizers split a word at ( and ), which would lose it. A group opens
     glued to the word before it or to a group just before it (not after whitespace, an operator,
     $, = or a backtick: those start a subshell, a substitution or an array), is not empty
@@ -290,7 +290,7 @@ def glue_paren_groups(text):
     out, last = [], 0
     for start, end in groups:
         out.append(text[last:start])
-        out.append("[" + "*" * (end - start - 2) + "]")
+        out.append("[" + GLUE_FILL * (end - start - 2) + "]")
         last = end
     out.append(text[last:])
     return "".join(out)
@@ -565,11 +565,30 @@ def _glob_elements(word):
     else:
         inner = word[first + 1:last]
         one = (inner and "[" not in inner and "]" not in inner and "*" not in inner
-               and inner[0] not in "!^")
+               and GLUE_FILL not in inner and inner[0] not in "!^")
         add(word[:first])
         out.append(("?",) if one else ("*",))
         add(word[last + 1:])
     return out
+
+
+class _CharSet(object):
+    """The characters of a bracket expression read as a plain set: its characters and its a-z
+    ranges (a ! or ^ at the start is a member, a [:alpha:] class is just its characters)."""
+
+    def __init__(self, content):
+        self.singles, self.ranges = set(), []
+        i, n = 0, len(content)
+        while i < n:
+            if i + 2 < n and content[i + 1] == "-":
+                self.ranges.append((content[i], content[i + 2]))
+                i += 3
+            else:
+                self.singles.add(content[i])
+                i += 1
+
+    def __contains__(self, ch):
+        return ch in self.singles or any(a <= ch <= b for a, b in self.ranges)
 
 
 def _glob_matches(elems, name):
@@ -591,7 +610,7 @@ def _glob_matches(elems, name):
                 el = elems[e]
                 if el == ("*",):
                     nxt.add(e)
-                elif el == ("?",) or el == ch:
+                elif el == ("?",) or el == ch or (isinstance(el, _CharSet) and ch in el):
                     nxt.add(e + 1)
         states = close(nxt)
         if not states:
@@ -813,6 +832,53 @@ def glob_reading_word(tokens, k):
     return reading_matches_git_name(base)
 
 
+def set_reading_matches_git_name(word, names=GIT_NAMES):
+    """Does some choice of one character per bracket expression (each read as the plain set of its
+    characters and ranges) and per ? turn the word into one of the names? [g][i][t] and g[a-z]t do;
+    [], [!], [*], [^1], [x]it and [link][...] can never. A glued paren group counts as any
+    character. Linear."""
+    n, i, nxt = len(word), 0, _next_close(word)
+    elems, singles = [], 0
+    while i < n:
+        c = word[i]
+        if c == "[":
+            e = _fnmatch_set_end(word, i, nxt)
+            if e != -1:
+                content = word[i + 1:e]
+                elems.append(("?",) if GLUE_FILL in content else _CharSet(content))
+                singles += 1
+                i = e + 1
+                continue
+            elems.append(c)
+            singles += 1
+        elif c == "*":
+            if not elems or elems[-1] != ("*",):
+                elems.append(("*",))
+        elif c == "?":
+            elems.append(("?",))
+            singles += 1
+        else:
+            elems.append(c)
+            singles += 1
+        i += 1
+    if singles > max(len(g) for g in names):
+        return False
+    return any(_glob_matches(elems, g) for g in names)
+
+
+CLASS_SYNTAX = re.compile(r"\[[:.=]|\[[!^]\]")
+
+
+def glob_can_be_git(word):
+    """Can some shell reading expand the word to git or a git-* name: main's fnmatch, the plain
+    set reading, or round 5's reading where it differs from both (class syntax [:x:] [.x.] [=x=]
+    or a zsh [!]; its plain bracket is a ?, which would make [x]it a git)? Only such a word gets
+    the glob-slot and past-the-option extensions of glob_as_git_hit; [], [!], [x]it or [link](url)
+    never do."""
+    return (main_glob_matches(word) or set_reading_matches_git_name(word)
+            or (CLASS_SYNTAX.search(word) is not None and reading_matches_git_name(word)))
+
+
 def main_glob_word(tokens, k):
     """Is the command word at k a glob git word by itself, as on main: not GLOB_ONLY, not a case
     pattern, and fnmatch accepts it. This stand-alone test keeps main's behaviour exactly,
@@ -830,6 +896,55 @@ def computed_word(word):
     become push? A bare { or } or a glob character is not a computation."""
     return ("$" in word or "`" in word
             or re.search(r"\{[^{}]*(?:,|\.\.)[^{}]*\}", word) is not None)
+
+
+def merge_substitutions(tokens):
+    """tokens with every <( ), >( ), $( ) and backtick group folded into one word, so that an
+    operator inside it (<(true; true)) does not end the command and the slot after it is found.
+    <(...) joins a word that ends in = (--namespace=<(...)); $(...) joins the word before it, so it
+    holds $( and is computed. An unbalanced group runs to the end."""
+    out, i, n = [], 0, len(tokens)
+    while i < n:
+        t = tokens[i]
+        process = is_operator(t) and t.startswith(("<(", ">("))
+        command = (is_operator(t) and t.startswith("(") and out and not is_operator(out[-1])
+                   and out[-1].endswith("$"))
+        if process or command:
+            depth, j, rest = 0, i, ""
+            while j < n and (j == i or depth > 0):
+                if is_operator(tokens[j]):
+                    for pos, ch in enumerate(tokens[j]):
+                        depth += (ch == "(") - (ch == ")")
+                        if depth <= 0 and (j > i or pos > 0) and ch == ")":
+                            rest = tokens[j][pos + 1:]
+                            break
+                    if rest:
+                        j += 1
+                        break
+                j += 1
+            if process:
+                piece = t[:2] + "...)"
+                if out and not is_operator(out[-1]) and out[-1].endswith("="):
+                    out[-1] += piece
+                else:
+                    out.append(piece)
+            else:
+                out[-1] += "(...)"
+            if rest:
+                out.append(rest)
+            i = j
+            continue
+        if not is_operator(t) and t.count("`") % 2 == 1:
+            j = i + 1
+            while j < n and tokens[j].count("`") % 2 == 0:
+                j += 1
+            if j < n:
+                out.append("`...`")
+                i = j + 1
+                continue
+        out.append(t)
+        i += 1
+    return out
 
 
 def segment_end(tokens, k):
@@ -864,10 +979,11 @@ def glob_as_git_hit(tokens, k, names):
         if fake[j] in PUSH_SLOT or computed_word(fake[j]) or (
                 j + 1 < len(fake) and computed_word(fake[j + 1])):
             return True
-    # git_word_hits stops at a dynamic option: the real slot is past it, so judge that too.
+    # git_word_hits stops at a dynamic option: the real slot is past it, so judge that too, and a
+    # glob in the slot that fnmatches a push name; only for a word that can be git at all.
     j, _ = git_slot(fake, 0, stop_dynamic=False)
-    if j < len(fake) and not is_operator(fake[j]) and (
-            fake[j] in PUSH_SLOT or computed_word(fake[j]) or push_glob_slot(fake[j])):
+    if j < len(fake) and not is_operator(fake[j]) and glob_can_be_git(os.path.basename(tokens[k])) \
+            and (fake[j] in PUSH_SLOT or computed_word(fake[j]) or push_glob_slot(fake[j])):
         return True
     if alias_slot_hit(fake, names):
         return True
@@ -1661,23 +1777,22 @@ def _command_tokens(vt):
     return out
 
 
-UNCERTAIN_MASK = re.compile(r"(?:^|[\s;&|(])#|<<")
+HEREDOC_START = re.compile(r"<<(-?)[ \t]*(?:'([^']*)'|\"([^\"]*)\"|\\?([A-Za-z0-9_.-]+))")
 
 
 def quote_mask(cmd):
     """A bytearray over cmd, 1 where the character sits in single or double quotes, an escape, a
-    $'..' string, a $( ), <( ), >( ) or ${ } expansion or a backtick pair (delimiters included):
-    an operator there does not end a command. A stack tracks the nesting, so a quote inside $( ) or
-    a backtick inside double quotes is read in its own context; an unterminated quote or expansion
-    masks to the end. One linear pass. Comments and here-document bodies are not modelled: an
-    odd apostrophe there flips the parity of the rest, so a command holding a # word or a << gets
-    an all-zero mask, every operator real (a strict-only glob then pairs only inside its own
-    unquoted command: a missed pair is a documented residual, a false deny is a regression)."""
+    $'..' string, a $( ), <( ), >( ) or ${ } expansion, a backtick pair (delimiters included), a #
+    comment or a here-document body: an operator there does not end a command. A stack tracks the
+    nesting, so a quote inside $( ) or a backtick inside double quotes is read in its own context;
+    a ( nests only inside $( ), a { never (bash does not nest them in ${ }); an unterminated quote
+    or expansion masks to the end. Comments are skipped as shell text (an apostrophe in one opens
+    nothing) and a << (not <<<, not inside quotes) names a body that runs from the next line to
+    its delimiter line. One linear pass."""
     n = len(cmd)
     mask = bytearray(n)
-    if UNCERTAIN_MASK.search(cmd):
-        return mask
     stack = []
+    pending = []                                 # (strip tabs, delimiter) of open here-documents
     i = 0
     while i < n:
         c = cmd[i]
@@ -1692,6 +1807,39 @@ def quote_mask(cmd):
             mask[i:i + 2] = b"\1" * len(mask[i:i + 2])
             i += 2
             continue
+        if top is None:
+            if c == "#" and (i == 0 or cmd[i - 1] in " \t\n;&|("):
+                j = cmd.find("\n", i)
+                j = n if j == -1 else j
+                mask[i:j] = b"\1" * (j - i)
+                i = j
+                continue
+            if c == "<" and cmd.startswith("<<", i) and not cmd.startswith("<<<", i):
+                m = HEREDOC_START.match(cmd, i)
+                if m:
+                    pending.append((m.group(1) == "-", m.group(2) or m.group(3) or m.group(4)))
+                    i = m.end()
+                    continue
+            if c == "\n" and pending:
+                pos, end_i = i + 1, i + 1
+                for strip, word in pending:
+                    while pos < n:
+                        eol = cmd.find("\n", pos)
+                        eol = n if eol == -1 else eol
+                        line = cmd[pos:eol].lstrip("\t") if strip else cmd[pos:eol]
+                        mask[pos:eol] = b"\1" * (eol - pos)
+                        if line == word:
+                            end_i = eol          # the newline after the delimiter stays real
+                            pos = eol + 1
+                            break
+                        if eol < n:
+                            mask[eol] = 1
+                        pos = eol + 1
+                    else:
+                        end_i = n
+                pending = []
+                i = end_i
+                continue
         nxt = cmd[i + 1:i + 2]
         step = 1
         if top == "A":
@@ -1715,8 +1863,8 @@ def quote_mask(cmd):
         elif (c == "$" and nxt in ("(", "{")) or (c in "<>" and nxt == "(" and top != '"'):
             stack.append("}" if nxt == "{" else ")")
             step = 2
-        elif top in (")", "}") and c in "({":
-            stack.append(")" if c == "(" else "}")
+        elif top == ")" and c == "(":
+            stack.append(")")
         elif top in (")", "}") and c == top:
             stack.pop()
             mask[i] = 1                           # the closer belongs to the expansion
@@ -1776,7 +1924,7 @@ def raw_glob_paired(cmd, names, cwd):
         gt = tokenize(cmd, True)
     except ValueError:
         return False
-    lists = [gt] + nested_token_lists(gt, 3, True)
+    lists = [merge_substitutions(t) for t in [gt] + nested_token_lists(gt, 3, True)]
     cands = [(t, k) for t in lists for k in command_words(t) if glob_git_word(t, k)]
     if not cands:
         return False

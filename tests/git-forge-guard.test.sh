@@ -2370,6 +2370,54 @@ allow ## R9 m-3 an odd apostrophe in a comment before a strict-only word ## # do
 allow ## R9 m-3 an odd apostrophe in a here-document before it ## cat <<'EOF'<NL>it's<NL>EOF<NL>/usr/bin/[g][i][t] status; echo pu''sh
 allow ## R9 m-3 an odd apostrophe in a trailing comment ## /usr/bin/[g][i][t] status # it's<NL>echo pu''sh
 allow ## R9 m-3 a quoted ( inside $( ) ## /usr/bin/[g][i][t] status $(echo '(') ; echo pu''sh
+deny ## R10 F1 g[[:alpha:]]t, <( ; ) then "push" ## /usr/bin/g[[:alpha:]]t --namespace <(true; true) "push" origin main
+deny ## R10 F1 g[[:alpha:]]t, <( ; ) then $'push' ## /usr/bin/g[[:alpha:]]t --namespace <(true; true) $'push' origin main
+deny ## R10 F1 g[[:alpha:]]t, <( ; ) then $P ## P=push; /usr/bin/g[[:alpha:]]t --namespace <(true; true) $P origin main
+deny ## R10 F1 g[[:alpha:]]t, <( ; ) then ${P} ## P=push; /usr/bin/g[[:alpha:]]t --namespace <(true; true) ${P} origin main
+deny ## R10 F1 g[[:alpha:]]t, <( ; ) then "$P" ## P=push; /usr/bin/g[[:alpha:]]t --namespace <(true; true) "$P" origin main
+deny ## R10 F1 g[[:alpha:]]t, <( ; ) then pu[s]h ## touch push; /usr/bin/g[[:alpha:]]t --namespace <(true; true) pu[s]h origin main
+deny ## R10 F1 g[[:alpha:]]t, <( ; ) then $(echo push) ## /usr/bin/g[[:alpha:]]t --namespace <(true; true) $(echo push) origin main
+deny ## R10 F1 [[.g.]]it, <( ; ) then $P ## P=push; /usr/bin/[[.g.]]it --namespace <(true; true) $P origin main
+deny ## R10 F1 g[^x]t, <( ; ) then $'push' ## /usr/bin/g[^x]t --namespace <(true; true) $'push' origin main
+deny ## R10 F1 [[=g=]]it, <( ; ) then "push" ## /usr/bin/[[=g=]]it --namespace <(true; true) "push" origin main
+deny ## R10 F1 [[:alpha:]]it, <( ; ) then "push" ## /usr/bin/[[:alpha:]]it --namespace <(true; true) "push" origin main
+deny ## R10 F1 g[[:lower:]]t, <( ; ) then "push" ## /usr/bin/g[[:lower:]]t --namespace <(true; true) "push" origin main
+deny ## R10 F1 gi[[:alpha:]], <( ; ) then "push" ## /usr/bin/gi[[:alpha:]] --namespace <(true; true) "push" origin main
+deny ## R10 F1 g[^]x]t, <( ; ) then "push" ## /usr/bin/g[^]x]t --namespace <(true; true) "push" origin main
+deny ## R10 F1 >( ; ) then "push" ## /usr/bin/g[[:alpha:]]t --namespace >(true; true) "push" origin main
+deny ## R10 F1 --namespace=<( ; ) then "push" ## /usr/bin/g[[:alpha:]]t --namespace=<(true; true) "push" origin main
+deny ## R10 F1 <( && ) then "push" ## /usr/bin/g[[:alpha:]]t --namespace <(true && true) "push" origin main
+deny ## R10 F1 <( | ) then "push" ## /usr/bin/g[[:alpha:]]t --namespace <(true | true) "push" origin main
+deny ## R10 F1 <( newline ) then "push" ## /usr/bin/g[[:alpha:]]t --namespace <(true<NL>true) "push" origin main
+deny ## R10 F1 <( ; ) then "push" and a trailing comment ## /usr/bin/g[[:alpha:]]t --namespace <(true; true) "push" origin main # x
+deny ## R10 F2 a real push with a trailing comment ## /usr/bin/[g][i][t] -c 'x.y=a;b' pu''sh origin main # note
+deny ## R10 F2 && in a quoted value, apostrophe in a comment ## cd . && /usr/bin/[g][i][t] -c 'x.y=a&&b' pu''sh origin main # it's
+deny ## R10 F2 a comment line before ## # note<NL>/usr/bin/[g][i][t] -c 'x.y=a;b' pu''sh origin main
+deny ## R10 F2 double quotes, comment after ## /usr/bin/[g][i][t] -c "x.y=a;b" pu''sh origin main #note
+deny ## R10 F2 a harmless here-document before ## cat <<'EOF'<NL>plain<NL>EOF<NL>/usr/bin/[g][i][t] -c 'x.y=a;b' pu''sh origin main
+deny ## R10 F2 a here-string after ## /usr/bin/[g][i][t] -c 'x.y=a;b' pu''sh origin main <<< x
+deny ## R10 F2 a backslash-escaped ; and a comment ## /usr/bin/[g][i][t] -c x.y=a\;b pu''sh origin main # x
+deny ## R10 F2 a trailing comment line ## /usr/bin/[g][i][t] -c 'x.y=a;b' pu''sh origin main<NL># trailing
+deny ## R10 F2 p"u"sh and a comment ## /usr/bin/[g][i][t] -c 'x.y=a;b' p"u"sh origin main # x
+deny ## R10 F2 pu\sh and a comment ## /usr/bin/[g][i][t] -c 'x.y=a;b' pu\sh origin main # x
+deny ## R10 F2 ANSI-C hex and a comment ## /usr/bin/[g][i][t] -c 'x.y=a;b' $'\x70ush' origin main # x
+deny ## R10 F2 ANSI-C octal and a comment ## /usr/bin/[g][i][t] -c 'x.y=a;b' $'\160ush' origin main # x
+allow ## R10 F2 an apostrophe in a comment line before a separate command ## # don't<NL>/usr/bin/[g][i][t] status<NL>echo pu''sh
+allow ## R10 F2 an apostrophe in a here-document before it ## cat <<'EOF'<NL>it's<NL>EOF<NL>/usr/bin/[g][i][t] status; echo pu''sh
+allow ## R10 F2 an apostrophe in a trailing comment ## /usr/bin/[g][i][t] status # it's<NL>echo pu''sh
+allow ## R10 F3 [] with a dynamic option and a computed word ## cd /tmp && python3 - <<'PY'<NL>[] -C ./x? $y<NL>PY<NL>git status
+allow ## R10 F3 [^1] and a ???? glob ## cd /tmp && cat > notes.md <<'EOF'<NL>[^1] ????<NL>EOF<NL>git status
+allow ## R10 F3 [!] and *-* ## cd /tmp && cat > g.md <<'EOF'<NL>[!] *-* marks a range<NL>EOF<NL>git diff --stat
+allow ## R10 F3 [*] and p* ## cd /tmp && cat > g.md <<'EOF'<NL>[*] p* matches anything starting with p<NL>EOF<NL>git diff --stat
+allow ## R10 F3 [x]it and ??* ## cd /tmp && cat > g.md <<'EOF'<NL>[x]it ??* is a word<NL>EOF<NL>git status
+allow ## R10 F3 [0]it and p* ## cd /tmp && cat > g.md <<'EOF'<NL>[0]it p*<NL>EOF<NL>git status
+allow ## R10 F3 a markdown link and ??* ## cd /tmp && cat > g.md <<'EOF'<NL>[link](url) ??* more<NL>EOF<NL>git status
+allow ## R10 F3 a JSON pair and ??* ## cd /tmp && cat > g.json <<'EOF'<NL>[[0,0]] ??*<NL>EOF<NL>git status
+allow ## R10 F3 [] with -c and a computed word ## cd /tmp && cat > g.md <<'EOF'<NL>[] -c a.b=* $HOME<NL>EOF<NL>git status
+deny ## R10 F3 trade-off: [a-z]* can be git, ??* can be push ## cd /tmp && cat > a.txt <<'EOF'<NL>[a-z]* ??* [0-9]*<NL>EOF<NL>git status
+allow ## R10 frames: a lone { inside $( ) ## /usr/bin/[g][i][t] status $(echo {) ; echo pu''sh
+allow ## R10 frames: a lone { in a sed script inside $( ) ## /usr/bin/[g][i][t] status $(sed s/{/x/ f) ; echo pu''sh
+allow ## R10 frames: a lone ( inside ${ } ## /usr/bin/[g][i][t] status ${x:-(} ; echo pu''sh
 TABLE
 # R7: a zsh group longer than 256 characters is read in full, not skipped.
 LONGPRE=$(awk 'BEGIN { for (i = 0; i < 70; i++) printf "n%03d|", i }')
