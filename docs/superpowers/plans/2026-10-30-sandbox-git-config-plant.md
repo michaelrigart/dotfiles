@@ -355,8 +355,9 @@ Task 5 follows them.
   - `vault_git_dir`, `vault_git_file`;
   - `code_root_git_file`, `documents_root_git_file`;
   - `chezmoi_top_git_config`;
-  - `behaviour_commit`, `behaviour_config`, `behaviour_push_u`, `behaviour_worktree_add`,
-    `behaviour_case_config`, `behaviour_case_commondir`.
+  - `behaviour_setup` (printed only on failure), `behaviour_commit`, `behaviour_config`,
+    `behaviour_push_u`, `behaviour_worktree_add`, `behaviour_case_config`,
+    `behaviour_case_commondir`.
 
 - [ ] **Step 1: Split the root loop**
 
@@ -382,8 +383,9 @@ Task 5 follows them.
   - In every root: `denied "${k}_harness_worktree_git_file"
     "$ar/.claude/worktrees/wt1/.git"`. Create `$ar/.claude/worktrees/wt1` in the fixture.
   - Informational, outside the vault only, printed with the `# info` prefix like the rename
-    probe and not counted: create the file `$b/plain/.git`, report `WRITABLE` or `DENIED`,
-    then remove it. The text says it is a residual (spec Residuals).
+    probe and not counted. Add `$b/plain` to the fixture's `mkdir -p`. Then create the file
+    `$b/plain/.git`, report `WRITABLE` or `DENIED`, and remove it; report `ABSENT` if
+    `$b/plain` is missing. The text says it is a residual (spec Residuals).
 
 - [ ] **Step 3: Add the top-level probes**
 
@@ -403,7 +405,11 @@ Task 5 follows them.
     - a bare `$TB/origin.git`;
     - `$TB/r` with one commit on `main`, `origin` pointing at the bare repository, and `main`
       pushed;
-    - then `mv "$TB/r" "$HOME/Code/$stamp-b/r"`.
+    - then `mkdir -p "$HOME/Code/$stamp-b"` and `mv "$TB/r" "$HOME/Code/$stamp-b/r"`.
+  - **A setup failure stops the probe.** If any setup command fails, or `R/.git/config`
+    is not a file after the move, the suite prints `behaviour_setup=FAIL`, counts one
+    failure, and runs none of the probes below. Without this, a missing repository would let
+    the denial probes read `DENIED`.
   - **Probes**, with R = `$HOME/Code/$stamp-b/r`:
     - `behaviour_commit`: an empty commit succeeds → `OK`, else `FAIL`;
     - `behaviour_config`: `git -C R config probe.key 1` fails → `DENIED`, else `WRITABLE`;
@@ -424,10 +430,20 @@ Task 5 follows them.
   The sandbox is on, the settings are not yet applied, and the run is not the acceptance run.
   - Run: `bash -n tests/live-write-boundary.test.sh`, then
     `./tests/run.sh live-write-boundary`.
-  - Expected: red, but only on keys that flip at apply: the new git `denied` probes, the
-    `.git` probes, `behaviour_config`, `behaviour_worktree_add` and the two case probes
-    report `WRITABLE`.
-  - Every other key passes, and no `cleanup=LEFT` appears.
+  - Expected: red, but only on keys whose result changes at apply:
+    - `WRITABLE`:
+      - the new git `denied` probes of Step 2 and `${k}_harness_worktree_git_file`;
+      - `vault_git_dir`, `vault_git_file`, `code_root_git_file`, `documents_root_git_file`;
+      - `behaviour_config`, `behaviour_worktree_add`, `behaviour_case_config`,
+        `behaviour_case_commondir`.
+    - `FAIL`: `behaviour_push_u`, because the push records `branch.main.merge` while the
+      repository's configuration is still writable.
+    - The session's own repository and its common directory already fall under Claude
+      Code's built-in rule, so some of these may read `DENIED` already. That is expected:
+      `chezmoi_top_git_config`, and the chezmoi root's fixture probes when the session
+      started in the chezmoi checkout or one of its harness worktrees.
+  - Every other key passes, `behaviour_setup=FAIL` does not appear, and no `cleanup=LEFT`
+    appears.
   - `ls -d ~/Code/zz-write-boundary-* ~/Documents/zz-write-boundary-* ~/Code/.git
     ~/Documents/.git` finds nothing.
 
