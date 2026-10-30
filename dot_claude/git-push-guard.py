@@ -1211,14 +1211,14 @@ def strict_command_hit(words, extra, names):
     return push_shape(text) or alias_text_hit(text, names)
 
 
-def fold_hit(tokens, names):
+def fold_hit(tokens, names, only=None):
     """In the strict re-run: does a git command word in tokens have a command that
     strict_command_hit denies once each group after it is one word? main ends the command at an
     operator inside <( ) or $( ) before the slot, so this keeps the commands the stand-alone
     readings of c67e699 and 1333519 took whole (--namespace <(true; true) $P)."""
     groups = None
     for k in command_words(tokens):
-        if os.path.basename(tokens[k]) != "git":
+        if os.path.basename(tokens[k]) != "git" or (only is not None and k not in only):
             continue
         if groups is None:
             groups = _strict_groups(tokens)
@@ -1245,66 +1245,162 @@ SHELL_STRING_BEFORE = re.compile(
 _PREFIX_NUMBER = re.compile(r"\d+(?:\.\d+)?[smhd]?$")
 
 
+# Commands that run the command word after them (the strict reading only; WRAPPERS is main's list):
+# a dash-name glob word after one of them, or after run/exec, is in command position, behind up
+# to two positional words of its own (script -q /dev/null, flock /tmp/lock, direnv exec .).
+_RUNNERS = {"caffeinate", "arch", "xcrun", "stdbuf", "mise", "bundle", "op", "uv", "poetry", "npx",
+            "pnpm", "yarn", "direnv", "script", "setsid", "ionice", "watch", "chrt", "taskset",
+            "flock", "chroot", "unbuffer", "sandbox-exec", "systemd-run", "entr", "parallel",
+            "nix-shell", "run", "exec", "x", "doas", "dotenv", "foreman", "rbenv", "pyenv",
+            "asdf"}
+# The options of a wrapper that take the next word as their value (sudo -u root, env -C dir).
+_VALUE_OPTS = {"sudo": {"-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-T", "-U", "-R"},
+               "doas": {"-u", "-C"}, "env": {"-C", "-u"}, "nice": {"-n"},
+               "timeout": {"-s", "-k"}, "exec": {"-a"},
+               "xargs": {"-I", "-n", "-L", "-P", "-s", "-E", "-d", "-a"}}
+
+
 def _prefix_word(w, after_option):
     """Is w, a word of a simple command, one that a command word can follow (see above)?
     after_option: the word before it was an option, so w may be its value."""
     w = w.lstrip("$").strip("'\"")
     return (after_option or w in RESERVED or bool(ASSIGN_RE.match(w)) or w.startswith("-")
             or os.path.basename(w) in WRAPPERS or os.path.basename(w) == "timeout"
-            or bool(_PREFIX_NUMBER.match(w)))
+            or os.path.basename(w) in _RUNNERS or bool(_PREFIX_NUMBER.match(w)))
+
+
 DASH_NAMES = tuple(sorted(DASH_PUSH))
 RERUN = [False]          # true while strict_could_push re-runs could_push on the read text
+RAW_OVERRIDE = [None]    # during the re-run: whether main's raw checks run on the read text
+RERUN_ONLY = [None]      # during the re-run: token indexes of the replaced words (fold_hit scope)
+STRICT_SPANS = []        # (start, end) of each replaced name in the text strict_text returned
+
+
+def _scan_quotes(run, state=""):
+    """(g0, qlast, state): the index in run of its first glob character outside quotes (-1 when
+    every glob character sits inside quotes), the index of the last quote character before it (or
+    in the whole run when there is none), and the quote the run ends in. state: the quote the run
+    starts in (a quote that ran across the ( ) of a $( ) in it). A quote that closes before the
+    glob part leaves it unquoted: "$HOME"/bin/[g][i][t], ""[g][i][t]. A backslash before a quote
+    or a backslash escapes it; in double quotes and $'..' it escapes anything."""
+    ansi, i, n, qlast, g0, qbefore = False, 0, len(run), -1, -1, -1
+    while i < n:
+        c = run[i]
+        if not state:
+            if c == "\\" and run[i + 1:i + 2] in ("'", '"', "\\"):
+                i += 1
+            elif c in "'\"":
+                state, ansi, qlast = c, False, i
+            elif c == "$" and run[i + 1:i + 2] in ("'", '"'):
+                i += 1
+                state, ansi, qlast = run[i], run[i] == "'", i
+            elif c in "?[*" + GLUE_FILL and g0 == -1:
+                g0, qbefore = i, qlast
+        else:
+            if c == "\\" and (state == '"' or ansi):
+                i += 1
+            elif c == state:
+                state, qlast = "", i
+        i += 1
+    return g0, (qbefore if g0 != -1 else qlast), state
 
 
 def strict_text(cmd):
     """cmd with every glob word that some shell can expand to git (can_be) read as the literal
     word git, or None when it holds none. A word is a run of characters other than blanks, ; & |
     < > ( ) and a backtick, in a copy of cmd with the in-word groups glued (glue_paren_groups).
-    Quotes around it stay; what follows its last / is replaced, and only when its quotes balance,
-    with quotes and backslashes dropped for the reading. Only the first such word of a simple
-    command (the text between ; & | ( ) a newline or a backtick) is replaced: one after it is its
-    argument, and [a-z]* ??* stays a git with a glob slot. A word that opens a quoted string is
-    taken only when the string is a shell's -c string or eval's (elsewhere a quote makes the glob
-    literal). A word made of * alone is exempt, as is one that a ) or | follows (a case arm, a
-    subshell's or $( )'s last word, a pipe's source: there it has no arguments). One that can be
-    a git-* name but not git becomes that name when it starts a command. Linear."""
+    Quotes around it stay; what follows its last / or its last closing quote is replaced, and only
+    when its quotes balance, with quotes and backslashes dropped for the reading. A run whose glob
+    characters all sit inside a quote it opens is a quoted string: taken only when it is a shell's
+    -c string or eval's (elsewhere a quote makes the glob literal). A glob after the quotes close
+    ("$HOME"/bin/[g][i][t], ''[g][i][t]) expands, so it is read. Only the first such word of a
+    simple command (the text between ; & | ( ) a newline or a backtick) is replaced as git: one
+    after it is its argument, and [a-z]* ??* stays a git with a glob slot; the value of a
+    wrapper's option (sudo -u g?t) is never the command. A word made of * alone is exempt, as is
+    a git one that a ) or | follows (a case arm, a subshell's or $( )'s last word, a pipe's
+    source: there it has no arguments). A word that can be a git-* name but not git becomes that
+    name where a command word can stand (after assignments, wrappers and runners with their
+    options), not as the argument of ls, cp or rm. The offsets of the replaced names in the
+    returned text go to STRICT_SPANS. Linear."""
     if not any(c in cmd for c in "?[*("):
         return None
     glued = glue_paren_groups(cmd)
-    out, last, n = [], 0, len(glued)
-    scan, taken = 0, False            # taken: a word of the current simple command was replaced
-    prefix_ok, prev_end, after_option = True, 0, False
+    out, last, n, pos, spans = [], 0, len(glued), 0, []
+    scan, taken = 0, False            # taken: a git word of the current simple command was replaced
+    prefix_ok, prev_end, after_option, wrapper, qstate, budget = True, 0, False, "", "", 0
+    word_cmd = True                   # the word whose first run is above was in command position
+    parens = []                       # per (: (quote, word_cmd) to restore at its ) if it opens $(
     for m in STRICT_RUN.finditer(glued):
         start, end = m.span()
         gap = glued[prev_end:start]
+        for k, ch in enumerate(gap):
+            if ch == "(":
+                dollar = prev_end + k > 0 and glued[prev_end + k - 1] == "$"
+                parens.append((qstate, word_cmd) if dollar else None)
+                qstate = "" if dollar else qstate
+            elif ch == ")" and parens:
+                saved = parens.pop()
+                if saved is not None:
+                    qstate, word_cmd = saved
+        if re.search(r"\s", gap):
+            qstate = ""
         if any(c in "\n;&|(`" for c in gap) or re.search(r"\)\s", gap):
-            prefix_ok, after_option = True, False
+            prefix_ok, after_option, wrapper, budget = True, False, "", 0
         prev_end = end
-        opens = glued[start:start + 1] in ("'", '"') or glued[start:start + 2] in ("$'", '$"')
+        state0 = qstate
+        g0, qlast, qstate = _scan_quotes(m.group(), state0)
+        opens = not state0 and (glued[start:start + 1] in ("'", '"')
+                                or glued[start:start + 2] in ("$'", '$"'))
         if opens and SHELL_STRING_BEFORE.search(glued[max(0, start - 100):start]):
             prefix_ok, after_option = True, False
+        is_value = prefix_ok and after_option
         at_command = prefix_ok
-        if prefix_ok:
-            prefix_ok = _prefix_word(m.group(), after_option)
-            after_option = m.group().startswith("-")
+        if state0:                    # the rest of a word whose quote ran across a $( ): one word
+            at_command, is_value = word_cmd, False
+        else:
+            word_cmd = prefix_ok
+        if prefix_ok and not state0:
+            word = m.group().lstrip("$").strip("'\"")
+            base_word = os.path.basename(word)
+            runner = not after_option and base_word in _RUNNERS
+            if not after_option and (base_word in WRAPPERS or base_word == "timeout" or runner):
+                wrapper = base_word
+            positional = budget > 0 and not runner and not after_option and not word.startswith("-")
+            prefix_ok = _prefix_word(m.group(), after_option or positional)
+            budget = 2 if runner else budget - positional
+            after_option = word in _VALUE_OPTS.get(wrapper, ()) and not is_value
         if not any(c in m.group() for c in "?[*" + GLUE_FILL):
             continue
         if taken and any(c in "\n;&|()`" for c in glued[scan:start]):
             taken = False
         scan = start
-        if taken:
-            continue
         a, b = start, end
-        if glued[a] == "$" and glued[a + 1:a + 2] in ("'", '"'):
-            a += 1
-        while a < b and glued[a] in "'\"":
-            a += 1
-        while b > a and glued[b - 1] in "'\"":
-            b -= 1
-        quoted = a > start
-        if quoted and not SHELL_STRING_BEFORE.search(glued[max(0, start - 100):start]):
-            continue
-        a = max(a, glued.rfind("/", a, b) + 1)
+        if g0 == -1 and opens:
+            if glued[a] == "$":
+                a += 1
+            if not SHELL_STRING_BEFORE.search(glued[max(0, start - 100):start]):
+                continue
+            q = glued[a]
+            inner = glued[a + 1:b - 1 if b - 1 > a and glued[b - 1] == q else b]
+            ig0, iqlast, _ = _scan_quotes(inner)
+            if ig0 != -1:
+                # a quoted prefix inside the string: '"$HOME/bin/"gi[[=t=]] ...'
+                cut = max(inner.rfind("/", 0, ig0), iqlast if iqlast < ig0 else -1)
+                a, b = a + 1 + cut + 1, a + 1 + len(inner)
+            else:
+                while a < b and glued[a] in "'\"":
+                    a += 1
+                while b > a and glued[b - 1] in "'\"":
+                    b -= 1
+                a = max(a, glued.rfind("/", a, b) + 1)
+        else:
+            if g0 != -1:
+                cut = max(glued.rfind("/", start, start + g0), start + qlast if qlast >= 0 else -1)
+                a = cut + 1 if cut >= 0 else start
+            else:
+                a = max(a, glued.rfind("/", a, b) + 1)
+            while b > a and glued[b - 1] in "'\"":
+                b -= 1
         part = glued[a:b]
         if part.count("'") % 2 or part.count('"') % 2:
             continue
@@ -1315,40 +1411,129 @@ def strict_text(cmd):
         while nxt < n and glued[nxt] in " \t":
             nxt += 1
         git_ok = can_be(base, ("git",))
-        if git_ok and nxt < n and glued[nxt] in ")|":
-            continue          # git has no arguments there; a dash name (git-p..) still acts alone
-        name = "git" if git_ok else None
-        if name is None and (at_command or quoted):
+        if git_ok:
+            # git has no arguments before ) or |; only a command's first candidate is its word
+            if is_value or taken or (nxt < n and glued[nxt] in ")|"):
+                continue
+            name = "git"
+        else:
             name = next((d for d in DASH_NAMES if can_be(base, (d,))), None)
-        if name is not None:
-            out += [cmd[last:a], name]
-            last, taken = b, True
+            if name is None or is_value or not (at_command or opens):
+                continue
+        pos += a - last
+        out += [cmd[last:a], name]
+        spans.append((pos, pos + len(name)))
+        pos += len(name)
+        last = b
+        taken = taken or git_ok
     if not out:
         return None
     out.append(cmd[last:])
+    STRICT_SPANS[:] = spans
     return "".join(out)
+
+
+SELECTOR_TEXT = (" -C", "--git-dir", "--work-tree", " -c", "GIT_DIR", "GIT_WORK_TREE", "GIT_CONFIG",
+                 "cd ")
+
+
+def fast_path_literal(text, cwd):
+    """Would main's shell fast path start the helper for this text as written: a push or send-pack
+    word, git with a selector (-C, -c, cd, GIT_DIR, ...), or git with a push alias? The strict
+    re-run judges the glob command as its literal analog is judged: what main lets by stays by."""
+    if "push" in text or "send-pack" in text:
+        return True
+    if "git" not in text:
+        return False
+    if any(s in text for s in SELECTOR_TEXT):
+        return True
+    return any(a in text for a in push_aliases(cwd, []))
+
+
+def nested_strings(tokens, depth=3):
+    """The command strings, as the shell hands them over (the outer quotes removed), that a shell
+    -c or an eval in command position runs, to a nesting depth of 3 (see nested_token_lists)."""
+    out = []
+    if depth <= 0:
+        return out
+    n = len(tokens)
+    for k in shell_words(tokens):
+        base = os.path.basename(tokens[k])
+        inner = None
+        if base == "eval":
+            j = k + 1
+            while j < n and not is_operator(tokens[j]):
+                j += 1
+            inner = " ".join(tokens[k + 1:j])
+        elif base in SHELL_NAMES:
+            inner = shell_string(tokens, k)
+        if not inner:
+            continue
+        out.append(inner)
+        try:
+            out.extend(nested_strings(tokenize(inner), depth - 1))
+        except ValueError:
+            pass
+    return out
+
+
+def strict_rerun(text, spans, lit, cwd):
+    """Run could_push on a read text (strict_text) once, with RERUN set, main's raw checks on when
+    lit (or the flag), and the fold scoped to the commands that hold a replaced name (spans)."""
+    try:
+        tokens = tokenize(text)
+    except ValueError:
+        tokens = None
+    only = None
+    if tokens is not None and spans:
+        # one more tokenizing, with a mark after each replaced name, gives their token indexes
+        # (a tokenizing per name would be quadratic); a different count reads every git command
+        cuts = [0] + [e for _, e in spans] + [len(text)]
+        marked = "\x01".join(text[a:b] for a, b in zip(cuts, cuts[1:]))
+        try:
+            mtokens = tokenize(marked)
+        except ValueError:
+            mtokens = []
+        if len(mtokens) == len(tokens):
+            only = {k for k, t in enumerate(mtokens) if "\x01" in t}
+    RERUN[0] = True
+    RAW_OVERRIDE[0] = lit or os.environ.get("PUSH_GUARD_LITERAL") not in ("0", "2")
+    RERUN_ONLY[0] = only
+    try:
+        return could_push(text, tokens, cwd)
+    finally:
+        RERUN[0], RAW_OVERRIDE[0], RERUN_ONLY[0] = False, None, None
 
 
 def strict_could_push(cmd, cwd):
     """The strict path: could cmd push once its glob words are read as git (strict_text)? The
     read text goes through could_push once, as any command does, with RERUN set: a dynamic slot
-    then counts only when it can be a push, and a git command's groups are folded (fold_hit). A
-    failure denies."""
+    then counts only when it can be a push, and the groups of a git command that holds a replaced
+    word are folded (fold_hit). So does each shell string the command runs, as the shell hands it
+    over ('\\'' escapes undone), when it holds a glob word of its own. Main's raw checks run on it
+    when its fast path would start the helper for the read text (fast_path_literal) or the flag
+    says a push was written; with the flag 2 and no such evidence nothing is denied. A failure
+    denies."""
     if RERUN[0]:
         return False
     try:
         text = strict_text(cmd)
-        if text is None:
-            return False
+        texts = [] if text is None else [(text, list(STRICT_SPANS))]
         try:
-            tokens = tokenize(text)
+            outer = tokenize(cmd)
         except ValueError:
-            tokens = None
-        RERUN[0] = True
-        try:
-            return could_push(text, tokens, cwd)
-        finally:
-            RERUN[0] = False
+            outer = None
+        for inner in nested_strings(outer) if outer is not None else []:
+            if any(c in inner for c in "?[*("):
+                read = strict_text(inner)
+                if read is not None:
+                    texts.append((read, list(STRICT_SPANS)))
+        if not texts:
+            return False
+        lit = fast_path_literal(cmd if text is None else text, cwd)
+        if strict_only() and not lit:
+            return False
+        return any(strict_rerun(read, spans, lit, cwd) for read, spans in texts)
     except Deny:
         raise
     except Exception:
@@ -1605,7 +1790,8 @@ def could_push(cmd, tokens, cwd):
         if raw_git and (alias_text_hit(text, names)
                         or any(alias_slot_hit(sub, names) for sub in nested)):
             return True
-        if RERUN[0] and raw_git and tokens and any(fold_hit(t, names) for t in [tokens] + nested):
+        if RERUN[0] and raw_git and tokens and (
+                fold_hit(tokens, names, RERUN_ONLY[0]) or any(fold_hit(t, names) for t in nested)):
             return True
         return bool(vs) and view_could_push(cmd, names)
     except Deny:
@@ -2765,6 +2951,8 @@ def raw_checks_enabled():
     was written: a lost or unset flag is the strictest reading (the raw checks run and an ask
     becomes a deny), never a looser one. A flag of 2 is not 0, so the strict path's re-run of
     could_push (the only thing that runs under 2) has its raw checks."""
+    if RAW_OVERRIDE[0] is not None:
+        return RAW_OVERRIDE[0]
     return os.environ.get("PUSH_GUARD_LITERAL") != "0"
 
 

@@ -2819,10 +2819,15 @@ done <<'CASES'
 git push origin main $'x'
 git pom $'x'
 echo $'git push'
-/usr/bin/gi? push origin main
 git ${X:-pu}sh origin main
 GIT_CONFIG=/x git status; git push origin feat $'x'
 CASES
+# R14 (I1): a glob git word with a push word is read as literal git, whose raw reading main's
+# fast path would give: it denies even under a flag of 0 (a hidden signal elsewhere).
+c='/usr/bin/gi? push origin main'
+helper_flag deny   "I1 flag unset: $c" unset "$c"
+helper_flag deny   "I1 flag 1: $c"     1     "$c"
+helper_flag deny   "I1 flag 0, push word read from the strict text: $c" 0 "$c"
 # Literal-analog parity for payloads that hold no git and no push text: the helper denies them as
 # main denies the literal git. The shell fast path starts it for them in glob mode (below).
 while IFS= read -r c; do
@@ -2846,12 +2851,15 @@ deny ## GM an option with a glob value, then a subcommand ## /usr/bin/[g][i][t] 
 deny ## GM the glob git word inside sh -c ## sh -c '/usr/bin/[g][i][t] p?sh origin main'
 deny ## GM an equivalence class word, then a glob push word ## /usr/bin/[[=g=]]it -c x.y=1 p?sh origin main
 deny ## GM a collating element word inside sh -c ## sh -c '/usr/bin/[[.g.]]it p?sh origin main'
-deny ## GM a ? word with a glob push word ## /usr/bin/g?t p?sh origin main
-deny ## GM a zsh group word with a glob push word ## /usr/bin/(git|nope) p?sh origin main
-deny ## GM a glob git word after a newline ## echo hi<NL>/usr/bin/g?t p?sh origin main
+deny ## GM a ? word with a selector and a glob push word ## /usr/bin/g?t -c k=v p?sh origin main
+deny ## GM a zsh group word with a selector ## /usr/bin/(git|nope) -c k=v p?sh origin main
+deny ## GM a glob git word after a newline ## echo hi<NL>/usr/bin/g?t -C /tmp p?sh origin main
+allow ## GM the literal twin of a glob push word with no selector is silent ## /usr/bin/git p?sh origin main
+allow ## GM so is the glob version (main never starts the helper for it) ## /usr/bin/g?t p?sh origin main
+allow ## GM a zsh group, no selector, no push word ## /usr/bin/(git|nope) p?sh origin main
 deny ## GM a glob alias push (the shell fast path cannot list aliases) ## /usr/bin/[g][i][t] pom
-deny ## GM a negated bracket with a literal ] ## /usr/bin/g[^]x]t p?sh origin main
-deny ## GM a bracket with a literal ] first ## /usr/bin/g[]i]t p?sh origin main
+deny ## GM a negated bracket with a literal ] ## /usr/bin/g[^]x]t -c k=v p?sh origin main
+deny ## GM a bracket with a literal ] first ## /usr/bin/g[]i]t -c k=v p?sh origin main
 allow ## GM a glob git word whose command is no push ## cd /tmp; /usr/bin/[g][i][t] status
 allow ## GM the literal twin of the above ## cd /tmp; /usr/bin/git status
 TABLE
@@ -2892,6 +2900,56 @@ allow ## R13 silent: rm of a dash-name glob ## rm -f git-pu*
 allow ## R13 silent: echo of a dash-name glob ## echo [[=g=]]it-push
 allow ## R13 silent: a dash-name glob in a -c string that is no command word ## bash -c 'ls git-*'
 allow ## R13 silent: tar -cf with a bracket word ## tar -cf '[g][i][t]' x
+TABLE
+# Fix round 14. C1: a glob after quotes that close ("$HOME"/bin/W, ""W, '/usr/bin/'W) expands, so it
+# is read. I1: the re-run uses main's raw reading when main's fast path would start the helper for
+# the read text (a push word, a selector, an alias), even with a hidden spelling elsewhere. I2: a
+# dash-name glob word after a runner outside WRAPPERS. I3: only the command that holds the replaced
+# word is folded. M1: with no such evidence the glob command is silent. M2: a zsh group after a
+# blank starts the helper. M3: an option's value spelled like a glob is not the command word.
+run_table <<'TABLE'
+deny ## R14 C1 a quoted $HOME prefix ## "$HOME"/bin/[[=g=]]it push origin main
+deny ## R14 C1 empty quotes before the glob ## ""[[=g=]]it push origin main
+deny ## R14 C1 a quoted directory then the glob ## "/usr/bin/"[[.g.]]it push origin main
+deny ## R14 C1 single quotes, a bracket in the middle ## ''g[[.i.]]t -C /tmp push origin main
+deny ## R14 C1 a quoted prefix and a dash name ## "$HOME"/bin/[[=g=]]it-push origin main
+deny ## R14 C1 after cd ## cd /tmp && "$HOME"/bin/[[.g.]]it push origin main
+deny ## R14 C1 in if/then with an option ## if true; then ''[g][i][t] -c k=v push origin main; fi
+deny ## R14 C1 a quoted $(pwd) prefix ## echo $("$(pwd)"/[[.g.]]it-send-pack origin main)
+deny ## R14 C1 a quoted prefix inside sh -c ## sh -c '"$HOME/bin/"gi[[=t=]] -c k=v push origin main'
+deny ## R14 C1 a quoted prefix in a string with '\'' escapes ## sh -c ''\''/usr/bin/'\''[[.g.]]it -C /tmp push origin main'
+deny ## R14 C1 empty quotes in a string with '\'' escapes ## sh -c ''\'''\''[[=g=]]it -c k=v push origin main'
+deny ## R14 C1 single quotes inside a double-quoted -c string ## bash -c "'/usr/bin/'[[=g=]]it -c k=v push origin main"
+deny ## R14 I1 a hidden push word in a variable ## P=$'\x70ush'; /usr/bin/[g][i][t] -C /tmp $P origin main
+deny ## R14 I1 an escaped push word in a variable ## P=pu\sh; /usr/bin/[g][i][t] -C . $P origin main
+deny ## R14 I1 a dash name after a hidden spelling ## echo $'\t'; /usr/bin/git-pu* origin main
+deny ## R14 I2 caffeinate ## caffeinate -i /usr/bin/[[=g=]]it-push origin main
+deny ## R14 I2 the literal twin of caffeinate ## caffeinate -i /usr/bin/git-push origin main
+deny ## R14 I2 arch ## arch -arm64 /usr/bin/g?t-push origin main
+deny ## R14 I2 xcrun ## xcrun /usr/bin/g*-push origin main
+deny ## R14 I2 stdbuf ## stdbuf -oL /usr/bin/g?t-push origin main
+deny ## R14 I2 mise exec ## mise exec -- /usr/bin/g?t-push origin main
+deny ## R14 I2 bundle exec ## bundle exec /usr/bin/g?t-push origin main
+deny ## R14 I2 op run ## op run -- /usr/bin/g?t-push origin main
+allow ## R14 I2 silent: cp of a dash-name glob ## cp ~/bin/git-* /tmp/
+allow ## R14 I2 silent: find -name with a dash-name glob ## find . -name git-p*
+allow ## R14 I2 silent: echo piped to xargs ls ## echo git-* | xargs ls
+allow ## R14 I3 silent: a glob argument, then a commit that says push ## git add dot_claude/g* && git commit -m "Harden the push guard"
+allow ## R14 I3 silent: the same with a *t glob ## git add tests/*t && git commit -m "Test the push guard"
+allow ## R14 I3 silent: ls g* then a stash push ## ls g*; git stash push -m wip
+allow ## R14 M1 silent: command -v and type -a ## echo $(command -v g?t); type -a g*
+allow ## R14 M1 silent: command -v piped, printf ## command -v g?t | head; printf '%s\n' g?t
+allow ## R14 M1 silent: glob-looking lines in a here-document ## python3 - <<'PY'<NL>"$(pwd)"/g?t<NL>g(it)<NL>PY
+allow ## R14 over silent: an unset slot variable, no selector ## ~/bin/[g]i[t] $P backup
+deny ## R14 M2 a zsh group after nice ## nice (g|x)it -C /tmp pu[s]h origin main
+deny ## R14 M2 a zsh group after exec and an assignment ## Q=pu; exec (g|x)it -C . ${Q}sh origin main
+deny ## R14 M2 a zsh group after empty quotes ## nice ""(g|x)it -C /tmp pu[s]h origin main
+deny ## R14 I2 script with its two positional words ## script -q /dev/null bin/g?t-push -f origin feat
+deny ## R14 I2 direnv exec . ## direnv exec . /usr/bin/g?t-push origin main
+deny ## R14 I2 flock with a lock file ## flock /tmp/l /usr/bin/g?t-push origin main
+deny ## R14 M3 a decoy value after sudo -u ## sudo -u g?t /usr/bin/[g][i][t] -C /tmp pu[s]h origin main
+deny ## R14 M3 a decoy value after env -C ## Q=pu; env -C g?t /usr/bin/[g][i][t] -c k=v ${Q}sh origin main
+deny ## R14 M3 a decoy value and a dash name ## sudo -u g?t /usr/bin/git-pu* -f origin feat
 TABLE
 # The same payloads without a glob git word, or without a glob that can be one, stay silent. None
 # holds git or push text, so the helper starts only when the ERE matches, and it stays silent.
@@ -2974,7 +3032,7 @@ def run(cmd, name):
     return "silent" if not text else json.loads(text)["hookSpecificOutput"]["permissionDecision"]
 
 
-glob = "/usr/bin/g?t status"
+glob = "/usr/bin/g?t -c k=v status"
 print("the re-run fails, a glob word read |", run(glob, "could_push"))
 print("the re-run fails, no glob word |", run("echo hi", "could_push"))
 for name in ("views", "parse_plain", "judge", "probe_refuses", "push_shape", "nested_token_lists"):

@@ -147,6 +147,7 @@ push_candidate=$literal
 # (g i t p u s h e n d a c k o - and quotes), ? * and [..] or (..) spans, starting with g, a span
 # or a * and ending in t, h, k, a span or a *, with a glob item in it, after a word start or /.
 # A [..] span cannot start with a digit or a capital ([0-9]*, [A-Z_]*), nor can ?? be git.
+# A zsh group (a|b) with no blank, after a blank or a quote, can start a word (nice (g|x)it).
 push_glob=0
 if [ "$push_candidate" = 0 ]; then
   case "$payload" in
@@ -158,7 +159,9 @@ if [ "$push_candidate" = 0 ]; then
       g_wa="(g|\\*|$g_br)$g_it*(\\?|$g_br|$g_gr)($g_it*$g_end)?"
       g_wa="$g_wa|$g_br$g_it*$g_end|\\?$g_it*(\\*|$g_br|$g_gr)|\\?$g_it*$g_it$g_end"
       g_wb="g$g_it*\\*($g_it*$g_end)?|\\*$g_it*((g|i|p|u|s|e|n|d|a|c|o|-)$g_it*$g_end|t|h|k)"
-      g_re="(((^|[ :;&|(<>\`/{]|\\\\[nrt])$g_q($g_wa|$g_wb))|(/$g_gr$g_it*))$g_q"
+      g_zg='\([a-z.|-]*\|[a-z.|-]*\)[a-z-]*'
+      g_re="(((^|[ :;&|(<>\`/{]|\\\\[nrt])$g_q($g_wa|$g_wb))|(/$g_gr$g_it*)"
+      g_re="$g_re|([[:space:]$g_sq\"]$g_zg))$g_q"
       g_re="$g_re([[:space:];&|<>(){}\`\\\\]|\$)"
       [[ $payload =~ $g_re ]] && push_glob=1 ;;
   esac
