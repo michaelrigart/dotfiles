@@ -48,11 +48,15 @@ fi
 check_equal "$(git -C "$T/fake" config probe.key 2>/dev/null)" "" \
   "a fake git directory's config is not read"
 
-if git -C "$T/fake2" status >/dev/null 2>&1; then
-  bad "a fake git directory with core.worktree is refused"
-else
+err=$(git -C "$T/fake2" status 2>&1 >/dev/null); rc=$?
+if [ "$rc" -ne 0 ] && printf '%s' "$err" | grep -q 'safe.bareRepository'; then
   ok "a fake git directory with core.worktree is refused"
+else
+  bad "a fake git directory with core.worktree is refused (rc=$rc)"
 fi
+
+check_equal "$(git -C "$T/fake2" config probe.key 2>/dev/null)" "" \
+  "a fake git directory with core.worktree has its config unread"
 
 if [ -x "$APPLE_GIT" ]; then
   rc=0; "$APPLE_GIT" -C "$T/fake" rev-parse --git-dir >/dev/null 2>&1 || rc=$?
@@ -65,10 +69,14 @@ fi
 check_equal "$(git --git-dir="$T/fake" config probe.key 2>/dev/null)" fake \
   "--git-dir still opens it"
 
-git -c init.templateDir= init -q "$T/r" >/dev/null 2>&1
-git -C "$T/r" "${CID[@]}" commit -q --allow-empty -m init >/dev/null 2>&1
-check_equal "$(git -C "$T/r/.git" rev-parse --git-dir 2>/dev/null)" . \
-  "a repository works, inside its .git too"
+repo_ok=1
+git -c init.templateDir= init -q "$T/r" >/dev/null 2>&1 || repo_ok=0
+git -C "$T/r" "${CID[@]}" commit -q --allow-empty -m init >/dev/null 2>&1 || repo_ok=0
+if [ "$repo_ok" -eq 1 ] && [ "$(git -C "$T/r/.git" rev-parse --git-dir 2>/dev/null)" = . ]; then
+  ok "a repository works, inside its .git too"
+else
+  bad "a repository works, inside its .git too (init/commit ok=$repo_ok)"
+fi
 
 git -C "$T/r" worktree add -q "$T/wt" -b b1 >/dev/null 2>&1
 check_ok "a linked worktree works" git -C "$T/wt" status --short
@@ -76,7 +84,7 @@ check_ok "a linked worktree works" git -C "$T/wt" status --short
 bare_ok=1
 git -c init.templateDir= init -q --bare "$T/o.git" >/dev/null 2>&1 || bare_ok=0
 git -C "$T/r" push -q "$T/o.git" HEAD:refs/heads/main >/dev/null 2>&1 || bare_ok=0
-git clone -q "$T/o.git" "$T/c" >/dev/null 2>&1 || bare_ok=0
+git -c init.templateDir= clone -q "$T/o.git" "$T/c" >/dev/null 2>&1 || bare_ok=0
 git -C "$T/c" fetch -q >/dev/null 2>&1 || bare_ok=0
 git ls-remote "$T/o.git" >/dev/null 2>&1 || bare_ok=0
 if [ "$bare_ok" -eq 1 ]; then ok "a bare remote works"; else bad "a bare remote works"; fi
