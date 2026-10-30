@@ -61,6 +61,8 @@ import subprocess
 import sys
 import tempfile
 import time
+from bisect import bisect_left, bisect_right
+from collections import namedtuple
 
 # Claude Code treats a hook that outruns its timeout as non-blocking, so a slow helper
 # would let the push through. The helper therefore gives up first, and a give-up is a
@@ -847,43 +849,406 @@ def inert_text(cmd, tokens):
 
 
 def could_push(cmd, tokens, cwd):
-    """For a command outside the grammar: could it run git push? git and push in its text,
-    git and a push alias (from cwd, or a repository a -C, --git-dir or GIT_DIR in it names),
-    git under a GIT_CONFIG override, or git followed by a subcommand the shell computes.
-    The text is cmd without the arguments of provably inert commands (inert_text); no shape
-    is parsed."""
-    text = inert_text(cmd, tokens)
-    if PUSH_SHAPE.search(text):
+    """For a command outside the grammar: could it run git push? Two readings of the text.
+    The raw reading is main's superset and runs only when the fast path saw a push as written
+    (literal_trigger): git and push in its text, git and a push alias (from cwd, or a
+    repository a -C, --git-dir or GIT_DIR in it names), git under a GIT_CONFIG override, or git
+    followed by a subcommand the shell computes. Its text is cmd without the arguments of
+    provably inert commands (inert_text); no shape is parsed. The view reading (views,
+    view_could_push) decodes the escapes and quotes and denies only a git or push word that was
+    spelled with a break; it runs whenever the command holds a hidden-spelling signal. Under
+    PUSH_GUARD_LITERAL=0 the raw reading never runs, so a command that holds no push word
+    anywhere is judged by its hidden spellings alone."""
+    literal = literal_trigger()
+    text, nested = cmd, []
+    if literal:
+        text = inert_text(cmd, tokens)
+        if PUSH_SHAPE.search(text):
+            return True
+        nested = nested_token_lists(tokens) if tokens else []
+        if tokens and (dynamic_git_word(tokens) or odd_command_word(tokens)
+                       or any(git_word_hits(sub) or odd_command_word(sub) for sub in nested)):
+            return True
+    # The view side is new code on every path, literal or not: a failure in it denies.
+    try:
+        vs = views(cmd) if hidden_signal(cmd) else []
+        raw_git = literal and re.search(r"\bgit\b", cmd) is not None
+        view_git = [v for v in vs if GIT_WORD.search(v.text)]
+        if raw_git and "GIT_CONFIG" in cmd:
+            return True
+        names = set()
+        if raw_git or view_git:
+            selectors = {()}                               # a set: each one costs a git call
+            token_lists = ([tokens or []] + nested) if raw_git else []
+            token_lists += [[t for t, _, _ in view_tokens(v.text)] for v in view_git]
+            for toks in token_lists:
+                for k, tok in enumerate(toks):
+                    if tok in ("-C", "--git-dir") and k + 1 < len(toks):
+                        selectors.add((tok, os.path.expanduser(toks[k + 1])))
+                    elif tok.startswith("--git-dir="):
+                        selectors.add((tok,))
+                    elif tok.startswith("GIT_DIR="):
+                        selectors.add(("--git-dir=" + tok.split("=", 1)[1],))
+            for sel in sorted(selectors):
+                try:
+                    names |= push_aliases(cwd, list(sel))
+                except Deny:
+                    raise
+                except Exception:
+                    return True                            # a listing that fails cannot rule a push out
+        # A shell string or an eval is read as tokens: a quoted ; in it hides the alias from the
+        # text pattern.
+        if raw_git and (any(re.search(r"\bgit\b[^;&|\n]*\b" + re.escape(a) + r"\b", text) for a in names)
+                        or any(alias_slot_hit(sub, names) for sub in nested)):
+            return True
+        return bool(vs) and view_could_push(cmd, names)
+    except Deny:
+        raise
+    except Exception:
         return True
-    nested = nested_token_lists(tokens) if tokens else []
-    if tokens and (dynamic_git_word(tokens) or odd_command_word(tokens)
-                   or any(git_word_hits(sub) or odd_command_word(sub) for sub in nested)):
-        return True
-    if not re.search(r"\bgit\b", cmd):
+
+
+# ------------------------------------------------------------------ normalized views
+# Spec 2026-10-29-push-guard-escaped-spellings, section 1. A view is the command with every
+# backslash escape decoded, wherever it sits, and every quote and leftover backslash deleted;
+# no shell context is tracked. A view reports a git or push word only when that word is hidden,
+# that is, when its raw span is not exactly the word.
+READINGS = ("zsh", "bash5", "bash32")
+View = namedtuple("View", "text spans cuts")
+# The commands the views are built for: nothing can be hidden without one of these.
+HIDDEN_SIGNAL = re.compile(r"\$'|\$\"|\\\n|\\[xuUc0-7]|[A-Za-z0-9]['\"\\]+[A-Za-z0-9]")
+GIT_WORD = re.compile(r"\bgit\b")
+BACKSLASH = re.compile(r"\\")
+STEP3 = re.compile(r"\$(?=['\"])|['\"\\]")
+VIEW_TOKEN = re.compile(r"\n|[;&|()<>]+|[^\s;&|()<>]+")
+WORD_END = re.compile(r"[ \t\n;&|()<>]")
+CTRL_LETTER = {"a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "n": "\n", "r": "\r",
+               "t": "\t", "v": "\v"}
+HEX_DIGITS = "0123456789abcdefABCDEF"
+OCT_DIGITS = "01234567"
+MAX_VIEWS = 12
+
+
+def hidden_signal(cmd):
+    """Does the raw command hold a spelling that could hide a git or push word?"""
+    return HIDDEN_SIGNAL.search(cmd) is not None
+
+
+def _digits(raw, i, allowed, limit):
+    """The end of the run of up to limit characters of allowed that starts at i."""
+    j, n = i, len(raw)
+    while j < n and j - i < limit and raw[j] in allowed:
+        j += 1
+    return j
+
+
+def _code_point(value):
+    """The character of a \\u or \\U value, or nothing for one chr() rejects or a surrogate
+    (which no later encoding could take)."""
+    if value > 0x10FFFF or 0xD800 <= value <= 0xDFFF:
+        return ""
+    return chr(value)
+
+
+def _zsh_key(raw, j, depth):
+    """The argument of zsh's \\C- and \\M- at j: (character, end), the character empty when the
+    argument is an escape that yields none, or None when there is no argument (end of the text,
+    or the quote that closes the body)."""
+    if j >= len(raw) or raw[j] == "'":
+        return None
+    if raw[j] == "\\" and depth > 0 and j + 1 < len(raw):
+        out, end = decode_escape(raw, j, "zsh", False, depth - 1)
+        if out or end > j + 1:
+            return out, end
+        return raw[j + 1], j + 2                       # an unknown escape drops its backslash
+    return raw[j], j + 1
+
+
+def decode_escape(raw, i, reading, bare, depth=3):
+    """The backslash escape at raw[i] under this reading: (text, end). The text is empty, one
+    character, or a kept backslash (bash keeps the backslash of an escape it does not know; the
+    character after it stays in the raw text). bare reads a single-letter escape as its bare
+    letter, as an unquoted backslash does. NUL is the character U+0000. Never raises."""
+    n = len(raw)
+    if i + 1 >= n:
+        return "\\", i + 1                              # a trailing backslash
+    c = raw[i + 1]
+    kept = "" if reading == "zsh" else "\\"
+    if c in CTRL_LETTER:
+        return (c if bare else CTRL_LETTER[c]), i + 2
+    if c in "\\'\"?":
+        return c, i + 2
+    if c in OCT_DIGITS:
+        j = _digits(raw, i + 1, OCT_DIGITS, 3)
+        return chr(int(raw[i + 1:j], 8) & 0xFF), j
+    if c == "x":
+        if reading != "zsh" and raw[i + 2:i + 3] == "{":
+            j = _digits(raw, i + 3, HEX_DIGITS, n)
+            value = int(raw[max(i + 3, j - 2):j], 16) if j > i + 3 else 0
+            if raw[j:j + 1] == "}":
+                j += 1
+            return chr(value & 0xFF), j
+        j = _digits(raw, i + 2, HEX_DIGITS, 2)
+        if j > i + 2:
+            return chr(int(raw[i + 2:j], 16)), j
+        return ("\0", i + 2) if reading == "zsh" else (kept, i + 1)
+    if c in "uU":
+        if reading == "bash32":
+            return kept, i + 1
+        j = _digits(raw, i + 2, HEX_DIGITS, 4 if c == "u" else 8)
+        if j > i + 2:
+            return _code_point(int(raw[i + 2:j], 16)), j
+        return ("\0", i + 2) if reading == "zsh" else (kept, i + 1)
+    if c == "c" and reading != "zsh":
+        a = raw[i + 2:i + 3]
+        if a == "" or a == "'":
+            return ("\\", i + 2) if reading == "bash32" else (kept, i + 1)
+        end = i + 3
+        if a == "\\" and reading == "bash5" and raw[i + 3:i + 4] == "\\":
+            end = i + 4                                 # bash 5 reads \c\\ as control-backslash
+        if ord(a) > 0x7F:
+            return kept, i + 1
+        value = 0x7F if (a == "?" and reading == "bash5") else (ord(a.upper()) & 0x1F)
+        return chr(value), end
+    if c in "CM" and reading == "zsh":
+        j = i + 2
+        if raw[j:j + 1] == "-":
+            j += 1
+        key = _zsh_key(raw, j, depth)
+        if key is None:
+            return "", j
+        ch, end = key
+        if not ch:
+            return "", end
+        if raw[j:j + 1] == "\\" and raw[j + 1:j + 2] in ("u", "U"):
+            return ch, end                              # zsh applies neither to a \u or \U character
+        o = ord(ch)
+        if c == "C":
+            value = 0x7F if ch in "?\x7f" else ((o & 0x1F) | (o & 0x80))
+        else:
+            value = (o | 0x80) if o < 0x100 else o
+        return chr(value), end
+    return kept, i + 1
+
+
+def decode_ansi(body, reading):
+    """The control-character reading of a $'...' body under this reading ("zsh", "bash5" or
+    "bash32"): what printf %s $'<body>' prints, with NUL kept as "\\0", and a byte above 0x7f
+    as the character of that value."""
+    return _decode_pass(body, reading, False, [m.start() for m in BACKSLASH.finditer(body)])[0]
+
+
+def _decode_pass(raw, reading, bare, bslashes):
+    """Steps 1 and 2 of a view: delete the backslash-newline pairs and decode every escape.
+    Returns the text and the marks that map it back to raw spans: parallel lists of the text
+    offset a mark starts at, its raw start, and its raw end (-1 for a run copied as it stands,
+    where each character is its own span)."""
+    parts, mt, mr, me = [], [], [], []
+    tlen = pos = 0
+    for b in bslashes:
+        if b < pos:
+            continue                                   # inside an escape already consumed
+        if b > pos:
+            parts.append(raw[pos:b])
+            mt.append(tlen)
+            mr.append(pos)
+            me.append(-1)
+            tlen += b - pos
+            pos = b
+        if raw[b + 1:b + 2] == "\n":
+            pos = b + 2                                # step 1: a continuation vanishes
+            continue
+        out, end = decode_escape(raw, b, reading, bare)
+        if out:
+            parts.append(out)
+            mt.append(tlen)
+            mr.append(b)
+            me.append(end)
+            tlen += len(out)
+        pos = end
+    if pos < len(raw):
+        parts.append(raw[pos:])
+        mt.append(tlen)
+        mr.append(pos)
+        me.append(-1)
+    return "".join(parts), (mt, mr, me)
+
+
+class Spans(object):
+    """spans[k] is the (start, end) raw span of view character k. Built from the kept stretches
+    of the decoded text and the marks, and looked up on demand, so a large command costs no
+    per-character table."""
+
+    def __init__(self, fstarts, tstarts, length, marks):
+        self.fstarts, self.tstarts, self.length = fstarts, tstarts, length
+        self.mt, self.mr, self.me = marks
+
+    def __len__(self):
+        return self.length
+
+    def __getitem__(self, k):
+        if k < 0:
+            k += self.length
+        if not 0 <= k < self.length:
+            raise IndexError(k)
+        s = bisect_right(self.fstarts, k) - 1
+        t = self.tstarts[s] + (k - self.fstarts[s])
+        m = bisect_right(self.mt, t) - 1
+        if self.me[m] < 0:
+            r = self.mr[m] + (t - self.mt[m])
+            return (r, r + 1)
+        return (self.mr[m], self.me[m])
+
+
+def _raw_origin(marks, t):
+    """Is the decoded character at t one the raw text holds as it stands (not an escape's)?"""
+    mt, _, me = marks
+    return me[bisect_right(mt, t) - 1] < 0
+
+
+def _nul_drops(text, marks, rule):
+    """The stretches of the decoded text a NUL drops, and the raw offsets where each begins.
+    quote: from the NUL to the next quote the raw text holds (bash ends the value there).
+    word: to the next blank or operator the raw text holds (execve ends the word there)."""
+    drops, cuts = [], []
+    mt, mr, me = marks
+    p = text.find("\0")
+    while p != -1:
+        q = p + 1
+        while True:
+            if rule == "quote":
+                q = text.find("'", q)
+                if q == -1:
+                    q = len(text)
+                    break
+            else:
+                m = WORD_END.search(text, q)
+                if m is None:
+                    q = len(text)
+                    break
+                q = m.start()
+            if _raw_origin(marks, q):
+                break
+            q += 1
+        i = bisect_right(mt, p) - 1
+        cuts.append(mr[i] + (p - mt[i]) if me[i] < 0 else mr[i])
+        drops.append((p, q))
+        p = text.find("\0", q)
+    return drops, cuts
+
+
+def _finish(text, marks, drops, cuts):
+    """Step 3, with the NUL drops: delete each $ directly before a quote, then every quote and
+    every leftover backslash. Returns the View."""
+    dels = [(m.start(), m.end()) for m in STEP3.finditer(text)]
+    if drops:
+        dels = sorted(dels + drops)
+    kept, cur = [], 0
+    for a, b in dels:
+        if a > cur:
+            kept.append((cur, a))
+        if b > cur:
+            cur = b
+    if cur < len(text):
+        kept.append((cur, len(text)))
+    fstarts, tstarts, total = [], [], 0
+    for a, b in kept:
+        fstarts.append(total)
+        tstarts.append(a)
+        total += b - a
+    out = "".join([text[a:b] for a, b in kept])
+    return View(out, Spans(fstarts, tstarts, total, marks), sorted(cuts))
+
+
+_VIEWS_MEMO = [None, None]
+
+
+def views(cmd):
+    """The views of cmd, deduplicated by text, at most MAX_VIEWS. Under each reading a view is
+    the command with steps 1 to 3 applied (see above), once with single-letter escapes as
+    control characters and once as bare letters; a NUL, wherever an escape makes one, splits
+    each of those in two (quote and word drops). Never raises."""
+    if _VIEWS_MEMO[0] == cmd and _VIEWS_MEMO[1] is not None:
+        return _VIEWS_MEMO[1]
+    bslashes = [m.start() for m in BACKSLASH.finditer(cmd)]
+    seen, out = {}, []
+    for reading in (READINGS if bslashes else READINGS[:1]):
+        for bare in ((False, True) if bslashes else (False,)):
+            text, marks = _decode_pass(cmd, reading, bare, bslashes)
+            rules = ("quote", "word") if "\0" in text else (None,)
+            for rule in rules:
+                drops, cuts = _nul_drops(text, marks, rule) if rule else ([], [])
+                view = _finish(text, marks, drops, cuts)
+                old = seen.get(view.text)
+                if old is None:
+                    seen[view.text] = view
+                    out.append(view)
+                elif cuts:
+                    old.cuts[:] = sorted(set(old.cuts) | set(cuts))
+    result = out[:MAX_VIEWS]
+    _VIEWS_MEMO[0], _VIEWS_MEMO[1] = cmd, result
+    return result
+
+
+def view_tokens(text):
+    """(token, start, end) for each word, newline and run of operators in a view's text. No
+    shlex: the quotes are already gone."""
+    return [(m.group(), m.start(), m.end()) for m in VIEW_TOKEN.finditer(text)]
+
+
+def hidden(cmd, view, start, end):
+    """Is the word view.text[start:end] hidden? Its raw span runs from the raw start of its
+    first character to the raw end of its last. It is hidden when that raw text is not exactly
+    the word, or when a NUL variant began dropping text right after it."""
+    if end <= start:
         return False
-    if "GIT_CONFIG" in cmd:
+    a, b = view.spans[start][0], view.spans[end - 1][1]
+    if cmd[a:b] != view.text[start:end]:
         return True
-    selectors = {()}                                   # a set: each one costs a git call
-    for toks in [tokens or []] + nested:
-        for k, tok in enumerate(toks):
-            if tok in ("-C", "--git-dir") and k + 1 < len(toks):
-                selectors.add((tok, os.path.expanduser(toks[k + 1])))
-            elif tok.startswith("--git-dir="):
-                selectors.add((tok,))
-            elif tok.startswith("GIT_DIR="):
-                selectors.add(("--git-dir=" + tok.split("=", 1)[1],))
-    names = set()
-    for sel in sorted(selectors):
-        try:
-            names |= push_aliases(cwd, list(sel))
-        except Deny:
-            raise
-        except Exception:
-            return True                                # a listing that fails cannot rule a push out
-    # A shell string or an eval is read as tokens: a quoted ; in it hides the alias from the
-    # text pattern.
-    return any(re.search(r"\bgit\b[^;&|\n]*\b" + re.escape(a) + r"\b", text) for a in names) \
-        or any(alias_slot_hit(sub, names) for sub in nested)
+    i = bisect_left(view.cuts, b)
+    return i < len(view.cuts) and view.cuts[i] == b
+
+
+def view_could_push(cmd, aliases):
+    """Could some view of cmd run git push, with a git or push word spelled with a break? True
+    when, in some view, a git word is followed anywhere later by a push word (push, send-pack,
+    http-push or an alias in aliases) and at least one of the two is hidden; or when
+    git_word_hits or built_word_hits over the view's tokens finds a git word, a built command
+    word or a push slot word that is hidden."""
+    names = "push|send-pack|http-push" + "".join("|" + re.escape(a) for a in sorted(aliases) if a)
+    push_re = re.compile(r"\b(?:" + names + r")\b")
+    for v in views(cmd):
+        gits = [m.span() for m in GIT_WORD.finditer(v.text)]
+        pushes = [m.span() for m in push_re.finditer(v.text)]
+        if gits and pushes:
+            for s, e in gits:                          # the first hidden git is the best one
+                if hidden(cmd, v, s, e):
+                    if pushes[-1][0] >= e:
+                        return True
+                    break
+            for s, e in reversed(pushes):              # the last hidden push is the best one
+                if hidden(cmd, v, s, e):
+                    if gits[0][1] <= s:
+                        return True
+                    break
+        if not gits and not pushes:
+            continue
+        vt = view_tokens(v.text)
+        toks = [t for t, _, _ in vt]
+
+        def word_hidden(k):
+            return hidden(cmd, v, vt[k][1], vt[k][2])
+
+        if gits:
+            for k, j in git_word_hits(toks):
+                # A hit at a dynamic option has no slot word: only the git word can be hidden.
+                if word_hidden(k) or (not toks[j].startswith("-") and word_hidden(j)):
+                    return True
+        if pushes:
+            for k, j in built_word_hits(toks):
+                if word_hidden(k) or word_hidden(j):
+                    return True
+    return False
 
 
 def runs_command_string(sub, args):
@@ -1666,12 +2031,14 @@ def main():
         elif tokens is not None:
             # Outside the grammar: could_push first, which is cheap and denies most; the probe
             # runs the full judge, so it runs only when could_push did not already deny. A
-            # deny from either is the plain-push deny, and so is a could_push that fails.
+            # deny from either is the plain-push deny, and so is a could_push that fails. The
+            # probe is main's own refusal: it runs only when the fast path saw a push as
+            # written, so under PUSH_GUARD_LITERAL=0 only a hidden spelling can deny here.
             try:
                 hit = could_push(cmd, tokens, cwd)
             except Exception:
                 hit = True
-            if hit or probe_refuses(tokens, cmd, cwd):
+            if hit or (literal_trigger() and probe_refuses(tokens, cmd, cwd)):
                 raise Deny(PLAIN)
             return
         if shape is None:

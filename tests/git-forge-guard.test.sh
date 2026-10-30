@@ -1433,11 +1433,12 @@ expect deny  "filter-branch running a push"           "$R" "git filter-branch --
 expect allow "submodule foreach that does not push"   "$R" "git submodule foreach 'git status'"
 expect allow "a commit message that mentions a push"  "$R" 'git commit -m "git push later"'
 # A push word assembled by expansion has no literal push in the payload, so the shell fast
-# path never starts the helper; that is a known limit. Driven directly, the helper denies it.
+# path never starts the helper; that is a known limit. Driven directly, with the flag a literal
+# trigger would have set (main's raw checks run only then), the helper denies it.
 helper_denies() { # helper_denies <label> <cwd> <command>
   local out
   out=$(jq -n --arg c "$3" --arg d "$2" '{tool_name:"Bash",cwd:$d,tool_input:{command:$c}}' \
-    | /usr/bin/python3 "$(dirname "$GUARD")/git-push-guard.py")
+    | PUSH_GUARD_LITERAL=1 /usr/bin/python3 "$(dirname "$GUARD")/git-push-guard.py")
   case "$out" in
     *'"permissionDecision":"deny"'*) pass=$((pass + 1)); printf '  ok   %s\n' "$1" ;;
     *) fail=$((fail + 1)); printf '  FAIL %s (helper said: %s)\n' "$1" "$out" ;;
@@ -1681,7 +1682,7 @@ fi
 # internal-error deny was. The helper gets the lone surrogate through json.loads, and its own
 # git call then fails with UnicodeEncodeError.
 n1_out=$(printf '%s' "$(rawpayload "$G -c 'a.b=x;"'\ud800'"' pom \$'--verbose'")" \
-  | PUSH_GUARD_LITERAL=0 /usr/bin/python3 "$(dirname "$GUARD")/git-push-guard.py")
+  | PUSH_GUARD_LITERAL=1 /usr/bin/python3 "$(dirname "$GUARD")/git-push-guard.py")
 if printf '%s' "$n1_out" | jq -e '.hookSpecificOutput.permissionDecision=="deny"' >/dev/null 2>&1 \
    && printf '%s' "$n1_out" | grep -q "in a shape the guard does not check"; then
   pass=$((pass + 1)); printf '  ok   %s\n' "N1 a probe whose judge fails is the plain-push deny"
@@ -1753,7 +1754,7 @@ print("exception, no flag, no shape", run(hidden, None, both))
 print("exception, literal=0, no shape", run(hidden, "0", both))
 print("exception, literal=0, push shape", run("git push origin main", "0", {"parse_plain": boom}))
 print("exception, literal=1, no shape", run(hidden, "1", both))
-print("N7 probe skipped when could_push denies", run("git pu" + "sh origin main $'x'", "0", {"probe_refuses": boom}))
+print("N7 probe skipped when could_push denies", run("git pu" + "sh origin main $'x'", "1", {"probe_refuses": boom}))
 calls = []
 
 
@@ -1803,6 +1804,289 @@ if [ -x /bin/bash ]; then
   fi
 else
   printf '  skip %s\n' "no /bin/bash here: the 3.2 check is skipped"
+fi
+
+echo "== rule 4: the escape decoder matches the shells =="
+# decode_ansi(body, reading) must equal the shell's printf %s $'<body>', read as bytes and
+# decoded as latin-1 (a byte above 0x7f is the character of that value). The bash readings
+# compare up to the first NUL, where bash ends the value. A reading whose shell is not
+# installed is skipped. This list is the pinned set; the full differential (every letter,
+# digit count, NUL position and \c, \C, \M form, random bodies too) is recorded in the header.
+dec_out=$(/usr/bin/python3 - "$(dirname "$GUARD")/git-push-guard.py" <<'PY'
+import importlib.util, os, subprocess, sys
+sys.dont_write_bytecode = True
+
+spec = importlib.util.spec_from_file_location("guard", sys.argv[1])
+g = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(g)
+
+SHELLS = [("zsh", ["/bin/zsh", "-f", "-c"]), ("bash32", ["/bin/bash", "-c"]),
+          ("bash5", ["/opt/homebrew/bin/bash", "-c"])]
+BODIES = [r"\x67it", r"\147it", r"\0147", "git", r"\U00000067it", r"\g\it", r"\pus\h",
+          r"\x{67}", r"\x", r"\8", r"\cG", r"\c?", r"\C-a", r"\Cx", r"\M-a", r"\e", r"\?",
+          r"gi\0t", r"\400", r"\777"]
+for reading, argv in SHELLS:
+    if not os.path.exists(argv[0]):
+        print("skip " + reading + " (not installed)")
+        continue
+    for body in BODIES:
+        out = subprocess.run(argv + ["printf %s $'" + body + "'"], capture_output=True,
+                             timeout=10).stdout.decode("latin-1")
+        try:
+            got = g.decode_ansi(body, reading)
+        except Exception as e:
+            got = "EXC " + repr(e)
+        want = out
+        if reading != "zsh":
+            want, got = want.split("\0")[0], got.split("\0")[0]
+        if got == want:
+            print("ok " + reading + " " + body)
+        else:
+            print("FAIL " + reading + " " + body + " want " + repr(want) + " got " + repr(got))
+
+
+def check(label, cond):
+    print(("ok " if cond else "FAIL ") + label)
+
+
+# Malformed escapes, code points chr() rejects, NULs and surrogates never raise, and no view
+# holds a lone surrogate (it would break a later subprocess or json encoding).
+ODD = [r"\UFFFFFFFF", r"\ud800", r"\U0000d800", r"\U00110000", r"\x", r"\u", r"\U", r"\c", r"\C",
+       r"\M-", r"\C-\C-\C-\C-\C-\C-\C-\C-a", r"\x{", r"\x{zz}", "\\", "a\\", r"\0", r"\400\777"]
+for r in ("zsh", "bash5", "bash32"):
+    try:
+        ok = all(isinstance(g.decode_ansi(b, r), str) and g.decode_ansi(b, r).encode("utf-8") is not None
+                 for b in ODD)
+    except Exception as e:
+        ok = False
+    check("never raises or yields a lone surrogate (decode_ansi, " + r + ")", ok)
+try:
+    ok = True
+    for cmd in ["printf $'\\UFFFFFFFF\\ud800'", "echo $'foo\\", "printf '%s' $'unterminated \\x",
+                "$'a\\0b\\0c\\0' x"]:
+        for v in g.views(cmd):
+            ok = ok and v.text.encode("utf-8") is not None
+    g.views("\\\ud800 $'\\x67it'")        # a raw lone surrogate is copied, never an error
+    ok = ok and all(len(g.views(c)) <= 12 for c in ["$'a\\0b\\t\\n\\x41' \"c\"'d'", "gi\\t pu\\sh"])
+except Exception as e:
+    ok = False
+check("views never raise on malformed escapes, stay at most 12 and encode", ok)
+
+# hidden(): a word is hidden when its raw span is not exactly the word, or a NUL cut ends it.
+def word_hidden(cmd, word, want_any=True):
+    res = []
+    for v in g.views(cmd):
+        i = v.text.find(word)
+        if i >= 0:
+            res.append(g.hidden(cmd, v, i, i + len(word)))
+    return res
+
+try:
+    check("hidden: a quoted $'git' is not hidden", word_hidden("$'git' x", "git") != [] and not any(word_hidden("$'git' x", "git")))
+    check("hidden: \"git\" is not hidden", word_hidden('"git" x', "git") != [] and not any(word_hidden('"git" x', "git")))
+    check("hidden: g\"it\" is hidden", any(word_hidden('g"it" x', "git")))
+    check("hidden: an escaped $'\\x67it' is hidden", any(word_hidden("$'\\x67it' x", "git")))
+    check("hidden: a word cut by a NUL is hidden", any(word_hidden("$'git\\0'x y", "git")))
+    check("hidden: a continuation inside the word is hidden", any(word_hidden("g\\\nit y", "git")))
+    check("views: a continuation between words is not hidden", not any(word_hidden("git \\\npush", "push")))
+    check("view_tokens splits on blanks, newlines and operators",
+          [t for t, s, e in g.view_tokens("a;b && c\nd")] == ["a", ";", "b", "&&", "c", "\n", "d"])
+except Exception as e:
+    check("hidden() and view_tokens() exist and work (" + repr(e) + ")", False)
+PY
+)
+while IFS= read -r line; do
+  case "$line" in
+    "ok "*)   pass=$((pass + 1)); printf '  ok   decoder: %s\n' "${line#ok }" ;;
+    "skip "*) printf '  skip decoder: %s\n' "${line#skip }" ;;
+    *)        fail=$((fail + 1)); printf '  FAIL decoder: %s\n' "${line#FAIL }" ;;
+  esac
+done <<EOF
+$dec_out
+EOF
+[ -n "$dec_out" ] || { fail=$((fail + 1)); printf '  FAIL %s\n' "the decoder check printed nothing"; }
+
+echo "== rule 4: hidden spellings =="
+# A case table: "<allow|deny|ask> ## <label> ## <command>", verbatim, <NL> is a newline.
+run_table() {
+  local line want rest label cmd
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    want=${line%% ## *}; rest=${line#* ## }; label=${rest%% ## *}; cmd=${rest#* ## }
+    cmd=${cmd//<NL>/$'\n'}
+    expect "$want" "$label" "$R" "$cmd"
+  done
+}
+run_table <<'TABLE'
+deny ## hidden git, delete ## $'\x67it' push origin --delete wip
+deny ## octal git, delete ## $'\147it' push origin --delete wip
+deny ## hidden git, force to main ## $'\x67it' push --force origin main
+deny ## continuation in git and push ## g\<NL>it pu\<NL>sh origin main
+deny ## continuation in push ## git pu\<NL>sh origin main
+deny ## continuation in push, force ## git pu\<NL>sh --force origin main
+deny ## a quoted git word after true ## true; g"it" push origin main
+deny ## escaped words in a command substitution in a here-document ## cat <<EOF<NL>$( $'\x67it' $'\x70ush' origin main )<NL>EOF
+deny ## escapes handed to a shell by printf ## printf '\x67it \x70ush origin main' | sh
+deny ## hidden git, alias ## $'\x67it' pom
+deny ## hidden git, dash form ## $'\x67it-push' origin main
+deny ## hidden git, send-pack ## $'\x67it' send-pack /nonexistent/origin.git main
+deny ## round 2: a quoted ; in a -c value ## $'\x67it' -c 'x.y=a;b' $'\x70ush' origin main
+deny ## round 2: an escaped quote and a ; in a -c value ## $'\x67it' -c $'x.y=a\';b' $'\x70ush' origin main
+deny ## round 4: NUL quote ends in git and push ## echo hi; $'gi\0x't $'pu\0x'sh origin main
+deny ## round 4: continuations after another command ## echo hi; g\<NL>it pu\<NL>sh origin main
+deny ## a NUL cut after a literal-looking git ## $'git\0'x -c 'x.y=a;b' push origin main
+deny ## hidden-ness belongs to the matched words, not to a count of spans ## push''y; git''x; $'\x67it' $'\x70ush' origin main
+deny ## a built git word and a hidden push word ## ${X:-gi}t $'\x70ush' origin main
+deny ## a NUL escaped as \x00 inside git ## $'gi\x00x't push origin main
+deny ## a NUL escaped as \c@ inside git ## $'gi\c@x't push origin main
+deny ## a NUL escaped as \u0000 inside git ## $'gi\u0000x't push origin main
+deny ## a dollar-double-quote git ## $"g"it push origin main
+deny ## row 8: an ANSI-C git word keeps main's deny ## $'git' push origin main
+deny ## row 8: a dollar-double-quote git word keeps main's deny ## $"git" push origin main
+deny ## row 8: a brace list git word keeps main's deny ## {git,} push origin main
+ask ## row 9: an escaped git word keeps main's ask ## g\it push origin main
+ask ## row 9: a quoted git word keeps main's ask ## 'git' push origin main
+ask ## row 9: an empty-quote git word keeps main's ask ## g''it push origin main
+ask ## an unquoted gi\t, a plain command, still asks ## gi\t push origin main
+deny ## echo $'git push' stays denied by main's raw check ## echo $'git push'
+TABLE
+# Denied by design (spec section 1, "Accepted by design"): these never push.
+run_table <<'TABLE'
+deny ## by design: printf of escaped git and push words ## printf '\x67it \x70ush'
+deny ## by design: echo of an ANSI-C string holding escaped git and push ## echo $'\x67it push'
+deny ## by design: a hidden push word paired with a literal git across a separator ## git status; echo $'\x70ush'
+deny ## by design: a quoted here-document body that spells a push ## cat <<'EOF'<NL>$( $'\x67it' $'\x70ush' origin main )<NL>EOF
+TABLE
+run_table <<'TABLE'
+allow ## IFS set to an ANSI-C newline ## IFS=$'\n'; echo hi
+allow ## printf of an ANSI-C string ## printf $'a\tb'
+allow ## read with an ANSI-C NUL delimiter ## read -r -d $'\0' x
+allow ## sed with git|push in a pattern ## sed -e 's/git|push/x/' f
+allow ## rg with git|push and an ANSI-C tab ## rg "git|push" $'\t'
+allow ## a here-document with an apostrophe and an escaped git, no push ## cat <<EOF<NL>it's $'\x67it'<NL>EOF
+allow ## a script named push after git status ## git status && ./scripts/push.sh
+allow ## a commit message from a quoted here-document ## git commit -m "$(cat <<'EOF'<NL>Fix the guard<NL><NL>Don't push this yet.<NL>EOF<NL>)"
+allow ## a commit message holding \n inside a word ## git commit -m "fix\npush docs"
+allow ## Review Focus 1: an unterminated \x ## printf '%s' $'unterminated \x
+allow ## Review Focus 1: a trailing backslash ## echo $'foo\
+allow ## Review Focus 2: an out-of-range code point and a surrogate ## printf $'\UFFFFFFFF\ud800'
+TABLE
+# Every spelling of git and push, each in the settings that used to hide them. Both words are
+# escaped in the same style, so no raw check can see either.
+deny_everywhere() {
+  local l=$1 gw=$2 pw=$3 rest=$4 core="$2 $3 $4"
+  expect deny "$l, bare"                                       "$R" "$core"
+  expect deny "$l, behind -c \$'x.y=\\n'"                      "$R" "$gw -c \$'x.y=\\n' $pw $rest"
+  expect deny "$l, after true 'x\$';"                          "$R" "true 'x\$'; $core"
+  expect deny "$l, after a here-document holding an apostrophe" "$R" "cat <<EOF
+it's here
+EOF
+$core"
+  expect deny "$l, inside \"\$( )\""                           "$R" "echo \"\$( $core )\""
+  expect deny "$l, inside backticks"                           "$R" "echo \`$core\`"
+  expect deny "$l, in an unquoted here-document body"          "$R" "cat <<EOF
+\$( $core )
+EOF"
+  expect deny "$l, in a quoted here-document body (by design)" "$R" "cat <<'EOF'
+\$( $core )
+EOF"
+  expect deny "$l, on the line after echo \$((1<<2))"          "$R" "echo \$((1<<2))
+$core"
+}
+while IFS= read -r line; do
+  [ -n "$line" ] || continue
+  deny_everywhere "${line%% ## *}" "$(rest=${line#* ## }; printf '%s' "${rest%% ## *}")" \
+    "${line##* ## }" "origin main"
+done <<'FORMS'
+xHH ## $'\x67it' ## $'\x70ush'
+x{HH} ## $'\x{67}it' ## $'\x{70}ush'
+octal ## $'\147it' ## $'\160ush'
+u ## $'\u0067it' ## $'\u0070ush'
+U ## $'\U00000067it' ## $'\U00000070ush'
+zsh dropped backslash ## $'\g\it' ## $'\pus\h'
+NUL ends the word ## $'git\0x' ## $'push\0x'
+NUL ends the quote ## $'gi\0x't ## $'pu\0x'sh
+NUL cuts the word ## $'git\0'x ## $'push\0'x
+split dollar-quote ## gi$'t' ## pu$'s'h
+split across quotes ## $'g\x69'"t" ## $'p\x75'"sh"
+unquoted escape ## gi\t ## pu\sh
+FORMS
+# git or push alone in an escaped form, the other literal, bare.
+run_table <<'TABLE'
+deny ## NUL ends the quote in git only ## $'gi\0x't push origin main
+deny ## NUL ends the word in git only ## $'git\0x' push origin main
+deny ## split dollar-quote in git only ## gi$'t' push origin main
+deny ## octal push only ## git $'\160ush' origin main
+deny ## dropped backslash in push only ## git $'\pus\h' origin main
+deny ## NUL cut push only ## git $'push\0'x origin main
+TABLE
+# Gating (the coordinator's ruling): under PUSH_GUARD_LITERAL=0 only a hidden spelling or a
+# helper failure may deny. A $' that the shell never reads as an ANSI-C quote must stay silent.
+run_table <<'TABLE'
+allow ## gating: a quoted here-document holding a regex with a dollar-quote ## cat <<'EOF'<NL>x(r'a$',l) and y('b')<NL>L[s-1:e+1]=out<NL>EOF
+allow ## gating: grep '^$' after a here-document ## cat <<'EOF'<NL>note<NL>EOF<NL>grep '^$' f
+allow ## gating: grep '^$' alone ## grep '^$' f
+deny ## gating counterpart: the same here-document, then a literal push ## cat <<'EOF'<NL>x(r'a$',l) and y('b')<NL>L[s-1:e+1]=out<NL>EOF<NL>git push -f origin main
+deny ## gating counterpart: grep '^$' then a literal push in a compound ## grep '^$' f; git push origin feat
+TABLE
+# A failure in the view code denies, with the push word literal (literal=1) or not (literal=0).
+vf_out=$(/usr/bin/python3 - "$(dirname "$GUARD")/git-push-guard.py" <<'PY'
+import importlib.util, io, json, os, sys
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("guard", sys.argv[1])
+g = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(g)
+
+
+def boom(*a, **k):
+    raise RuntimeError("forced")
+
+
+def run(cmd, literal):
+    os.environ["PUSH_GUARD_LITERAL"] = literal
+    saved = g.views
+    g.views = boom
+    sys.stdin = io.StringIO(json.dumps({"cwd": "/nonexistent", "tool_input": {"command": cmd}}))
+    out, old = io.StringIO(), sys.stdout
+    sys.stdout = out
+    try:
+        g.main()
+    finally:
+        sys.stdout = old
+        g.views = saved
+    text = out.getvalue().strip()
+    return "silent" if not text else json.loads(text)["hookSpecificOutput"]["permissionDecision"]
+
+
+print("views raise, literal=1 |", run("echo $'\\x67it' push", "1"))
+print("views raise, literal=0 |", run("echo $'\\x67it'", "0"))
+PY
+)
+while IFS='|' read -r label want; do
+  got=$(printf '%s\n' "$vf_out" | sed -n "s/^$label |//p" | tr -d ' ')
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf '  ok   %s\n' "$label: $want"
+  else
+    fail=$((fail + 1)); printf '  FAIL %s (got %s)\n' "$label: $want" "$got"
+  fi
+done <<'EOF'
+views raise, literal=1|deny
+views raise, literal=0|deny
+EOF
+has_reason "a hidden spelling gets the plain-push deny" "in a shape the guard does not check" "$R" "$(printf '%s' "\$'\\x67it' push origin --delete wip")"
+has_reason "a continuation spelling gets the plain-push deny" "in a shape the guard does not check" "$R" 'git pu\
+sh origin main'
+# Review Focus 4: a 200 KB payload of escapes is decoded in every view well inside the hook's
+# timeout, and ordinary text stays cheap.
+big=$(awk 'BEGIN { for (i = 0; i < 40000; i++) print "\\x41" }')
+t0=$SECONDS
+expect allow "Review Focus 4: a 200 KB here-document of \\x41 escapes" "$R" "cat > $TMP/big <<'EOF'
+$big
+EOF"
+if [ $((SECONDS - t0)) -lt 10 ]; then
+  pass=$((pass + 1)); printf '  ok   %s\n' "Review Focus 4: the 200 KB escape payload stays under 10 s ($((SECONDS - t0)) s)"
+else
+  fail=$((fail + 1)); printf '  FAIL %s (%ss)\n' "Review Focus 4: the 200 KB escape payload stays under 10 s" "$((SECONDS - t0))"
 fi
 
 echo "== rule 4: aliases that expand to pushing commands =="
