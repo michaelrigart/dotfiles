@@ -128,7 +128,8 @@ for root in "$HOME/Code" "$HOME/.local/share/chezmoi" "$HOME/Documents" \
   dirs=("$m/plain/hooks" "$r/.claude/skills" "$r/.claude/commands" "$r/.claude/agents" \
         "$ar/.claude" "$nm/.claude" "$ar/.claude/worktrees/wt1/.claude")
   if [ "$vault" = 0 ]; then
-    dirs+=("$g/objects" "$g/refs/heads" "$g/modules/sub/worktrees/swt" "$g/worktrees/wt/modules/sub" "$b/plain")
+    dirs+=("$g/objects" "$g/refs/heads" "$g/modules/sub/worktrees/swt" "$g/worktrees/wt/modules/sub" "$b/plain" \
+           "$g/glab-cli/recover")
   else
     dirs+=("$b/vdir")
   fi
@@ -157,6 +158,19 @@ for root in "$HOME/Code" "$HOME/.local/share/chezmoi" "$HOME/Documents" \
       denied "${k}_git_worktree_module_config" "$g/worktrees/wt/modules/sub/config"
       denied "${k}_git_worktree_module_commondir" "$g/worktrees/wt/modules/sub/commondir"
       denied "${k}_git_worktree_module_hooks" "$g/worktrees/wt/modules/sub/hooks/"
+      # Unicode-folded names: APFS folds U+FB01 to "fi", U+017F to "s" and U+212A to "k", and git reads
+      # .git/con<U+FB01>g as .git/config and runs hooks from .git/hook<U+017F>/. The names are built with
+      # printf escapes, so the file stays ASCII. A probe that succeeds creates the folded alias of the
+      # real name; the fixture is removed whole below, and denied/prepare refuse an existing path.
+      denied "${k}_git_config_fi_ligature" "$g/$(printf 'con\xef\xac\x81g')"
+      denied "${k}_git_hooks_kelvin" "$g/$(printf 'hoo\xe2\x84\xaas')/"
+      denied "${k}_git_hooks_long_s" "$g/$(printf 'hook\xc5\xbf')/"
+      # glab's per-repository configuration sets an editor and a browser it runs; only config.yml is
+      # denied, glab's other state under .git/glab-cli stays writable. lazygit reads <git dir>/lazygit.yml.
+      denied "${k}_git_lazygit" "$g/lazygit.yml"
+      denied "${k}_git_glab_config" "$g/glab-cli/config.yml"
+      allowed "${k}_git_glab_recover" "$g/glab-cli/recover/x"
+      allowed "${k}_worktree_lazygit_plain" "$r/lazygit.yml"
       allowed "${k}_git_objects" "$g/objects/$stamp"
       allowed "${k}_git_index" "$g/index"
       allowed "${k}_git_branch_named_config" "$g/refs/heads/config"
@@ -168,6 +182,9 @@ for root in "$HOME/Code" "$HOME/.local/share/chezmoi" "$HOME/Documents" \
     denied "${k}_codex_dir" "$ar/.codex/"
     denied "${k}_harness_worktree_claude_settings" "$ar/.claude/worktrees/wt1/.claude/settings.json"
     denied "${k}_harness_worktree_git_file" "$ar/.claude/worktrees/wt1/.git"
+    # lazygit loads .lazygit.yml from every parent directory of a repository; its pager and
+    # externalDiffCommand run when a diff is drawn. Denied under every root, the vault included.
+    denied "${k}_lazygit_dotfile" "$b/.lazygit.yml"
     allowed "${k}_node_modules_claude_settings_local_writable" "$nm/.claude/settings.local.json"
     allowed "${k}_claude_skills_writable" "$r/.claude/skills/$stamp.md"
     allowed_off_base "${k}_claude_commands_writable" "$r/.claude/commands/$stamp.md"
