@@ -154,7 +154,7 @@ nine git-configuration forms (36 entries) and four per-repository tool-configura
   - Git exempts `/.git/worktrees/` and `/.git/modules/` paths from `safe.bareRepository`
     (§3), so for these paths the denies are the only barrier.
 - **The four tool-configuration forms** (the last two lines above; 16 entries; added by the
-  second amendment). The new per-repository tool-configuration entries are these 16. In all,
+  second amendment and its follow-up). The new per-repository tool-configuration entries are these 16. In all,
   the signed-off design added 39 entries and the amendments 32 (16, then 12, then 4) to the
   142 from 2026-10-16: 71 new, 213 in all.
   - `<root>/**/.lazygit.yml` denies a lazygit configuration in a work tree at any depth, and
