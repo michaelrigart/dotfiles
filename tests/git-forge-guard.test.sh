@@ -2465,6 +2465,52 @@ if [ $((SECONDS - t0)) -lt 10 ]; then
 else
   fail=$((fail + 1)); printf '  FAIL %s (%ss)\n' "$R9_NAME" "$((SECONDS - t0))"
 fi
+# R12 (D): the git-then-push and git-then-alias searches are linear. A 160 KB line of git words once
+# held the hook past its 60 s timeout, which is non-blocking, so a padded push went through.
+PADLINE="echo $(awk 'BEGIN { for (i = 0; i < 27000; i++) printf "git x " }')"
+t0=$SECONDS
+expect deny  "R12 a 160 KB line of git words, then a glob push" "$R" "$PADLINE
+/usr/bin/[g][i][t] -c x.y=a pu''sh origin main"
+expect deny  "R12 a 160 KB line of git words, then a literal push" "$R" "$PADLINE
+git push origin main"
+expect allow "R12 a 160 KB line of git words, then a glob command, no push" "$R" "$PADLINE
+/usr/bin/[g][i][t] status"
+expect allow "R12 a 160 KB line of git words alone" "$R" "$PADLINE"
+R12_NAME="R12 the 160 KB padded commands finish under 10 s"
+if [ $((SECONDS - t0)) -lt 10 ]; then
+  pass=$((pass + 1)); printf '  ok   %s (%s s)\n' "$R12_NAME" "$((SECONDS - t0))"
+else
+  fail=$((fail + 1)); printf '  FAIL %s (%ss)\n' "$R12_NAME" "$((SECONDS - t0))"
+fi
+# push_shape and alias_text_hit against the old quadratic patterns, on short random strings.
+ps_out=$(/usr/bin/python3 - "$(dirname "$GUARD")/git-push-guard.py" <<'PY'
+import importlib.util, random, re, sys
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("guard", sys.argv[1])
+g = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(g)
+old_push = re.compile(r"\bgit\b[^;&|\n]*\bpush\b")
+names = {"pom", "x.y", "lp"}
+parts = ["git", "push", "pom", "x.y", "lp", "gitx", "xgit", "git-push", "git_push", "pushx", ";",
+         "&", "|", "\n", " ", " ", "-C", "'", "a", "b", "\t", ".", "-", "(", ")", "$"]
+random.seed(12)
+diffs = hits = 0
+for _ in range(60000):
+    text = "".join(random.choice(parts) for _ in range(random.randint(1, 40)))
+    want = old_push.search(text) is not None
+    alias = any(re.search(r"\bgit\b[^;&|\n]*\b" + re.escape(a) + r"\b", text) for a in names)
+    hits += want + alias
+    if want != g.push_shape(text) or alias != g.alias_text_hit(text, names):
+        diffs += 1
+print(("ok " if not diffs and hits > 1000 else "FAIL ") +
+      "push_shape and alias_text_hit equal the old patterns: 60000 random strings, "
+      "%d hits, %d differences" % (hits, diffs))
+PY
+)
+case "$ps_out" in
+  "ok "*) pass=$((pass + 1)); printf '  ok   %s\n' "${ps_out#ok }" ;;
+  *)      fail=$((fail + 1)); printf '  FAIL %s\n' "${ps_out#FAIL }" ;;
+esac
 # The same readings against the real shells. Every word a shell expands to git or a git-* name in
 # a directory holding those files must be read as a possible git by glob_matches_git_name, unless
 # a word of * alone exempts it (g.glob_only; main's wider GLOB_ONLY is not used). A word is a pair:

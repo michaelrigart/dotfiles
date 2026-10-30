@@ -122,7 +122,45 @@ PLAIN_WORDS = ("plain words: git push and its arguments, each made of letters, d
 DRY_REFUSED = "Push guard: this dry run is refused because it is not written in " + PLAIN_WORDS + "."
 ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 # Could this text run git push? git, then push (or a push alias), within one command.
+# Quadratic on one long line of git words: the code uses push_shape, which is equivalent.
 PUSH_SHAPE = re.compile(r"\bgit\b[^;&|\n]*\bpush\b")
+GIT_WORD_RE = re.compile(r"\bgit\b")
+PUSH_WORD_RE = re.compile(r"\bpush\b")
+SEGMENT_SPLIT = re.compile(r"[;&|\n]")
+
+
+def git_tails(text):
+    """(segment, end of its first git word) for each segment of text (a maximal run of characters
+    other than ; & | and a newline) that holds a git word. The old pattern, a git word then
+    anything but ; & | and a newline, then WORD, matches exactly when some git word has WORD after
+    it in its segment, and the first git word of a segment is the best one (any later git word's
+    tail is a part of its tail), so one search for WORD from the end of the first git word
+    decides a segment. The old pattern started a scan at every git word and was quadratic on a
+    long line of them. The word boundaries see the real neighbours, a segment edge being a
+    separator."""
+    out = []
+    for seg in SEGMENT_SPLIT.split(text):
+        m = GIT_WORD_RE.search(seg)
+        if m:
+            out.append((seg, m.end()))
+    return out
+
+
+def tails_match(tails, regex):
+    """Does regex match after the first git word of some segment of git_tails?"""
+    return any(regex.search(seg, pos) is not None for seg, pos in tails)
+
+
+def push_shape(text):
+    """PUSH_SHAPE.search(text) is not None, in linear time."""
+    return tails_match(git_tails(text), PUSH_WORD_RE)
+
+
+def alias_text_hit(text, names):
+    """Does git, then one of the alias names as a word, stand in one segment of text (the old
+    pattern, per name)?"""
+    tails = git_tails(text)
+    return any(tails_match(tails, re.compile(r"\b" + re.escape(a) + r"\b")) for a in names)
 TAILS = {"tail", "head"}
 # An alias whose value names one of these may push (http-push contains push): it is a push
 # candidate, and judge decides on what it expands to. The shell fast path keeps the same list.
@@ -242,9 +280,9 @@ def glue_paren_groups(text):
     """text with every in-word (...) group rewritten as [SOH...SOH] (GLUE_FILL) of equal
     length. zsh reads word(a| b)word as an alternation (with bareglobqual and extendedglob off),
     so the group is a glob, but the tokenizers split a word at ( and ), which would lose it. A
-    group opens glued to the word before it or to a group just before it (not after whitespace, an operator,
-    $, = or a backtick: those start a subshell, a substitution or an array), is not empty
-    (name() defines a function), holds no newline, ; & < or > (so a subshell, a call that spans
+    group opens glued to the word before it or to a group just before it (not after
+    whitespace, an operator, $, = or a backtick: those start a subshell, a substitution or an
+    array), is not empty (name() defines a function), holds no newline, ; & < or > (so a subshell, a call that spans
     lines or a redirect is never swallowed; blanks are allowed, zsh takes them into the group) and
     balances. Quotes are skipped, so a quoted ( stays literal. One linear pass with a stack; the
     length is kept, so spans into the original text stay valid.
@@ -989,8 +1027,7 @@ def glob_as_git_hit(tokens, k, names):
     if alias_slot_hit(fake, names):
         return True
     text = " ".join(re.sub(r"[;&|\n]", "_", t) for t in fake)
-    return (PUSH_SHAPE.search(text) is not None
-            or any(re.search(r"\bgit\b[^;&|\n]*\b" + re.escape(a) + r"\b", text) for a in names))
+    return push_shape(text) or alias_text_hit(text, names)
 
 
 def odd_command_word(tokens):
@@ -1407,7 +1444,7 @@ def could_push(cmd, tokens, cwd):
     text, nested = cmd, []
     if literal:
         text = inert_text(cmd, tokens)
-        if PUSH_SHAPE.search(text):
+        if push_shape(text):
             return True
         nested = nested_token_lists(tokens) if tokens else []
         if tokens and (dynamic_git_word(tokens) or odd_command_word(tokens)
@@ -1442,7 +1479,7 @@ def could_push(cmd, tokens, cwd):
                     return True                            # a listing that fails cannot rule a push out
         # A shell string or an eval is read as tokens: a quoted ; in it hides the alias from the
         # text pattern.
-        if raw_git and (any(re.search(r"\bgit\b[^;&|\n]*\b" + re.escape(a) + r"\b", text) for a in names)
+        if raw_git and (alias_text_hit(text, names)
                         or any(alias_slot_hit(sub, names) for sub in nested)):
             return True
         if literal and glob_candidate(cmd) and raw_glob_paired(cmd, names, cwd):
@@ -2838,7 +2875,7 @@ def main():
         return
     except Exception as e:                             # a bug here must not open the gate
         # A plain git command may be an alias push (git pom): it fails closed as well.
-        if shape is not None or PUSH_SHAPE.search(cmd):
+        if shape is not None or push_shape(cmd):
             print(decision("deny", "Push guard: internal error ({}: {}), so the push is "
                                    "refused. Push by hand.".format(type(e).__name__, e)))
         elif not literal_trigger():
