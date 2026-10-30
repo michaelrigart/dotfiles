@@ -4,6 +4,9 @@
 # test-requires: sandboxed, fresh-session  # measures the sandbox; unsandboxed it inverts and exits 12 or more
 set -u
 fail=0
+failed=()
+# bad <key>: count a failure and remember its key for the closing failed_keys line.
+bad() { fail=$((fail + 1)); failed+=("$1"); }
 
 for name in \
   borg \
@@ -20,7 +23,7 @@ for name in \
   viumore_rsa; do
   if dd if="$HOME/.ssh/$name" of=/dev/null bs=1 count=1 2>/dev/null; then
     echo "$name=READABLE"
-    fail=$((fail + 1))
+    bad "$name"
   else
     echo "$name=DENIED"
   fi
@@ -31,7 +34,7 @@ for name in config michael.pub; do
     echo "$name=READABLE"
   else
     echo "$name=DENIED"
-    fail=$((fail + 1))
+    bad "$name"
   fi
 done
 
@@ -39,7 +42,7 @@ if ssh-add -l >/dev/null 2>&1; then
   echo "AGENT=READY"
 else
   echo "AGENT=FAILED"
-  fail=$((fail + 1))
+  bad AGENT
 fi
 
 # tagteam can hold a login in plaintext in three places. A path that does not exist yet was
@@ -61,7 +64,7 @@ probe_dir() { # probe_dir <KEY> <dir>
     case "$err" in *"No such file"* | *"Not a directory"*) st=ABSENT ;; *) st=DENIED ;; esac
   fi
   echo "$key=$st"
-  [ "$st" = READABLE ] && fail=$((fail + 1))
+  [ "$st" = READABLE ] && bad "$key"
   return 0
 }
 probe_dir TAGTEAM_RESCUE "$TT_DATA/rescue"
@@ -74,6 +77,7 @@ for d in "$TT_DATA"/sessions/*/; do
   case "$err" in *"No such file"*) ;; *) st=DENIED ;; esac
 done
 echo "TAGTEAM_SESSION_CREDENTIALS=$st"
-[ "$st" = READABLE ] && fail=$((fail + 1))
+[ "$st" = READABLE ] && bad TAGTEAM_SESSION_CREDENTIALS
 
+if [ "${#failed[@]}" -gt 0 ]; then ( IFS=,; echo "failed_keys=${failed[*]}" ); fi
 exit "$fail"
