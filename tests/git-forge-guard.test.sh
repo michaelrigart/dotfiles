@@ -2173,7 +2173,7 @@ expect allow "F4 a 50 KB run of [ as a command word, hidden push"              "
 expect allow "F4 a 50 KB run of [ as a command word, literal push (raw side)"  "$R" "$BRK push origin main"
 expect allow "F4 a 50 KB run of [ as a command word, no push"                  "$R" "$BRK status"
 expect allow "F4 a 50 KB run of [ as a command word, an ANSI-C tab, no push"   "$R" "$BRK status \$'\\t'"
-expect allow "F4 a 50 KB run of [z-a] as a command word, hidden push"          "$R" "$RNG \$'\\x70ush' origin main"
+expect deny  "F4 a 50 KB run of [z-a] as a command word, hidden push (round 6: the span is a *)" "$R" "$RNG \$'\\x70ush' origin main"
 expect allow "F4 a 50 KB run of [ in a path word, hidden push"                 "$R" "echo push; /usr/bin/g${BRK}t pu''sh origin main"
 expect allow "F4 a 200-character glob word that is no git name, hidden push"   "$R" "$LONG pu''sh origin main"
 expect allow "F4 a 200-character glob word that is no git name, literal push"  "$R" "$LONG push origin main"
@@ -2219,15 +2219,67 @@ deny ## R5 a POSIX class, hidden push ## /usr/bin/g[[:alpha:]]t pu''sh origin ma
 allow ## R5 ls of a class glob that matches git ## ls /usr/bin/[[:g:][i]t
 allow ## R5 rg for a class glob ## rg '[[:g:][i]t' f
 allow ## R5 a bare class glob command, ANSI-C tab ## [[:alpha:]]x status $'\t'
-allow ## R5 a bare class glob followed by * (no literal), hidden push ## [[:alpha:]]* pu''sh origin main
+deny ## R6 ruling: a class glob with * is not GLOB_ONLY, so a possible git (silent in round 5) ## [[:alpha:]]* pu''sh origin main
 allow ## R5 a regex line in a here-document body, then git status ## cat <<'EOF'<NL>it's<NL>[[:space:]]* push<NL>EOF<NL>git status
 TABLE
-# The same readings against the real shells: every word a shell expands to git (or a git-* name)
-# in a directory holding those files, and that holds a literal outside its brackets (a bare glob
-# is exempt, as on main), must be accepted by glob_matches_git_name. A shell that is not
-# installed is skipped.
+# Fix round 6: the span from the first [ that has a later ] through the last ] is one *, whatever
+# reading a shell has of the brackets inside it. Each shape denies with a literal and with a hidden
+# subcommand word (and under sh -c / bash -c), the quoted-] shapes included.
+run_table <<'TABLE'
+deny ## R6 a collating symbol and a stray [, literal ## /usr/bin/[[.g.]i[t] push origin main
+deny ## R6 a collating symbol and a stray [, hidden ## /usr/bin/[[.g.]i[t] pu''sh origin main
+deny ## R6 the same with a trailing *, literal ## /usr/bin/[[.g.]i[t]* push origin main
+deny ## R6 the same with a trailing *, hidden ## /usr/bin/[[.g.]i[t]* pu''sh origin main
+deny ## R6 the same under bash -c ## bash -c '/usr/bin/[[.g.]i[t]* push origin main'
+deny ## R6 a collating symbol then []t], literal ## /usr/bin/g[[.i.][]t] push origin main
+deny ## R6 a collating symbol then []t], hidden ## /usr/bin/g[[.i.][]t] pu''sh origin main
+deny ## R6 an equivalence class then [!]x], literal ## /usr/bin/g[[=i=][!]x] push origin main
+deny ## R6 an equivalence class then [!]x], hidden ## /usr/bin/g[[=i=][!]x] pu''sh origin main
+deny ## R6 a * between the brackets, literal ## /usr/bin/[[.g.]*i[[t] push origin main
+deny ## R6 a * between the brackets, hidden ## /usr/bin/[[.g.]*i[[t] pu''sh origin main
+deny ## R6 a class then []t], literal ## /usr/bin/g[[:i:][]t] push origin main
+deny ## R6 a class then []t], hidden ## /usr/bin/g[[:i:][]t] pu''sh origin main
+deny ## R6 a class with a stray [ under sh -c ## sh -c '/usr/bin/[[:g:]i[t] push origin main'
+deny ## R6 a collating symbol of ] under sh -c, literal ## sh -c '/usr/bin/g[[.].]i]t push origin main'
+deny ## R6 a collating symbol of ] under sh -c, hidden ## sh -c "/usr/bin/g[[.].]i]t pu''sh origin main"
+deny ## R6 an equivalence class of ] under sh -c, hidden ## sh -c "/usr/bin/g[[=]=]i]t pu''sh origin main"
+deny ## R6 a backslash-escaped ] under sh -c ## sh -c '/usr/bin/g[i\]]t push origin main'
+deny ## R6 a backslash-escaped ], hidden ## /usr/bin/g[i\]]t pu''sh origin main
+deny ## R6 a double-quoted ], hidden ## /usr/bin/g[i"]"]t pu''sh origin main
+deny ## R6 a single-quoted ], hidden ## /usr/bin/g[i']']t pu''sh origin main
+deny ## R6 amendment: a bracket word with * is no longer exempt ## [abc]* pu''sh origin main
+deny ## R6 amendment: bracket words of literals pick out git, literal ## /usr/bin/[g][i][t] push origin main
+deny ## R6 amendment: bracket words of literals pick out git, hidden ## /usr/bin/[g][i][t] pu''sh origin main
+deny ## R6 amendment: brackets and a ?, force ## /usr/bin/[g][i]? push --force origin main
+deny ## R6 amendment: ??? picks out git in a git-core directory ## /usr/bin/??? push origin main
+deny ## R6 amendment: a zsh group, literal ## /usr/bin/(git|nope) push origin main
+deny ## R6 amendment: a zsh group, hidden ## /usr/bin/(git|nope) pu''sh origin main
+deny ## R6 amendment: a zsh group inside a word, literal ## /usr/bin/(gi|x)t push origin main
+deny ## R6 amendment: a zsh group inside a word, hidden ## /usr/bin/(gi|x)t pu''sh origin main
+deny ## R6 amendment: a zsh group under sh -c ## sh -c '/usr/bin/(gi|x)t push origin main'
+allow ## R6 amendment: ls of a bracket word of literals ## ls /usr/bin/[g][i][t]
+allow ## R6 amendment: a bracket glob git word, no push word ## /usr/bin/[g]it status
+allow ## R6 amendment: IFS set to an ANSI-C newline ## IFS=$'\n'; echo hi
+allow ## R6 amendment: a function definition and a substitution are no group ## git() { echo hi; }; echo $(date)
+allow ## R6 amendment: a subshell and an arithmetic expansion are no group ## (cd /tmp && ls); echo $((1+2)) $'x'
+allow ## R6 a single bracket of plain characters is one character: a [x] line in a body ## cat <<'EOF'<NL>xs.push(1)<NL>[x] done<NL>EOF
+allow ## R6 a single bracket of plain characters is one character: a [tag] line in a body ## cat <<'EOF'<NL>xs.push(1)<NL>[ok] done<NL>EOF
+allow ## R6 a bracket word of one character, hidden push ## [abcd] pu''sh origin main
+deny ## R6 cost of the amendments: a ??? line at the start of a body is a possible git ## cat <<'EOF'<NL>xs.push(1)<NL>??? what<NL>EOF
+deny ## R6 cost of the amendments: a git(1) line at the start of a body is a possible git ## cat <<'EOF'<NL>xs.push(1)<NL>git(1) is a man page<NL>EOF
+allow ## R6 amendment: a quoted group is literal ## echo '(git|nope) push'
+allow ## R6 amendment: a here-document body with a call, a man page name and git status ## cat <<'EOF'<NL>it's<NL>xs.push(1)<NL>git(1) is a man page<NL>EOF<NL>git status
+allow ## R6 a case arm is exempt, as on main ## case $x in<NL>*) pu''sh;;<NL>esac
+TABLE
+# The same readings against the real shells (round 6: judged with main's GLOB_ONLY only, and the
+# batches are checked, never trusted): every word a shell expands to git or a git-* name in a
+# directory holding those files must be accepted by glob_matches_git_name, unless main's
+# word of * alone exempts it. zsh parenthesis groups, (a|b), are run in zsh only. A word is a pair (the text handed to the shell, the text the helper's
+# tokens hold: quotes and backslashes removed). A batch the shell does not finish (bash 3.2
+# segfaults on some glob words) is rerun word by word, a word that still kills it is counted and
+# printed, and a shell that finishes nothing fails. A shell that is not installed is skipped.
 sh_out=$(/usr/bin/python3 - "$(dirname "$GUARD")/git-push-guard.py" "$TMP" <<'PY'
-import importlib.util, itertools, os, subprocess, sys
+import importlib.util, os, subprocess, sys
 sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location("guard", sys.argv[1])
 g = importlib.util.module_from_spec(spec)
@@ -2240,40 +2292,87 @@ for n in names:
 
 
 def slots(c):
-    return [c, "?", "[%s]" % c, "[!x]", "[^x]", "[[:alpha:]]", "[[.%s.]]" % c, "[[=%s=]]" % c,
-            "[x[:%s:][%s]" % (c, c), "[[:%s:][%s]" % (c, c), "[[:alpha:][%s]" % c, "[%s[:alpha:]]" % c,
-            "*", "[a-z]", "[]%s]" % c, "[^]%s]" % c, "[!]", "[^]", "[[:a:][:b:]%s]" % c]
+    same = ["%s", "?", "[%s]", "[!x]", "[^x]", "[[:alpha:]]", "[[.%s.]]", "[[=%s=]]", "[x[:%s:][%s]",
+            "[[:%s:][%s]", "[[:alpha:][%s]", "[%s[:alpha:]]", "*", "[a-z]", "[]%s]", "[^]%s]", "[!]",
+            "[^]", "[[:a:][:b:]%s]", "[[.%s.]", "[[=%s=]", "[[:%s:]", "[[.%s.][]x]", "[[=%s=][!]x]",
+            "[[:%s:][]x]", "[[.].]%s]", "[[=]=]%s]", "[%s]]", "[]]", "[[.%s.]*", "[%s", "%s]"]
+    out = []
+    for t in same:
+        s = t.replace("%s", c)
+        out.append((s, s))
+    out += [("[%s\\]]" % c, "[%s]]" % c), ('[%s"]"]' % c, "[%s]]" % c), ("[%s']']" % c, "[%s]]" % c)]
+    return out
 
 
-words = set()
+def zslots(c):
+    out = []
+    for t in ["(%s|nope)", "(nope|%s)", "(%s)", "(x|%s|y)", "(|%s)", "(%s|)"]:
+        s = t.replace("%s", c)
+        out.append((s, s))
+    return out
+
+
+words, zwords = {}, {}
 for a in slots("g"):
     for b in slots("i"):
         for c in slots("t"):
-            words.add(a + b + c)
-words = sorted(words)
-script = "\n".join("echo \"#%d\"; eval 'for f in %s; do echo \"$f\"; done' 2>/dev/null" % (i, w)
-                   for i, w in enumerate(words))
+            words[a[0] + b[0] + c[0]] = a[1] + b[1] + c[1]
+for a in slots("g") + zslots("g"):
+    for b in slots("i") + zslots("i"):
+        for c in slots("t") + zslots("t"):
+            w = a[0] + b[0] + c[0]
+            if any(x in w for x in "(|"):
+                # a word that starts with ( is a subshell in command position: reach it as ./
+                zwords[("./" if w[0] == "(" else "") + w] = ("./" if w[0] == "(" else "") + a[1] + b[1] + c[1]
+words_all = dict(words)
+words_all.update(zwords)
 SHELLS = [("zsh", ["/bin/zsh", "-f"], "setopt nonomatch; "), ("bash32", ["/bin/bash"], ""),
           ("bash5", ["/opt/homebrew/bin/bash"], "")]
+
+
+def run(argv, pre, batch, tag):
+    script = "\n".join("echo \"#%d\"; eval 'for f in %s; do echo \"$f\"; done' 2>/dev/null"
+                       % (i, w.replace("'", "'\\''")) for i, w in enumerate(batch))
+    sf = os.path.join(d, "script-" + tag)
+    with open(sf, "w") as f:
+        f.write("cd '" + d + "'; " + pre + script + "\necho DONE\n")
+    p = subprocess.run(argv + [sf], capture_output=True, text=True, timeout=120)
+    if p.returncode != 0 or "\nDONE" not in "\n" + p.stdout:
+        return None
+    got, cur = set(), None
+    for ln in p.stdout.split("\n"):
+        if ln.startswith("#") and ln[1:].isdigit():
+            cur = int(ln[1:])
+        elif cur is not None and (ln[2:] if ln.startswith("./") else ln) in names:
+            got.add(batch[cur])
+    return got
+
+
 for label, argv, pre in SHELLS:
     if not os.path.exists(argv[0]):
         print("skip " + label + " (not installed)")
         continue
-    sf = os.path.join(d, "script-" + label)
-    with open(sf, "w") as f:
-        f.write("cd '" + d + "'; " + pre + script)
-    out = subprocess.run(argv + [sf], capture_output=True, text=True, timeout=120).stdout
-    got, cur = {}, None
-    for ln in out.split("\n"):
-        if ln.startswith("#") and ln[1:].isdigit():
-            cur = int(ln[1:])
-        elif cur is not None and ln in names:
-            got[cur] = True
-    seen = [words[i] for i in got]
-    miss = [w for w in seen if not g.glob_matches_git_name(w) and not g.glob_only(w)
-            and any(isinstance(e, str) for e in g._glob_elements(w))]
-    print(("ok " if seen and not miss else "FAIL ") + "%s: %d of %d words expand to a git name, %d missed %s"
-          % (label, len(seen), len(words), len(miss), miss[:5]))
+    seen, crashed = set(), []
+    shell_words = sorted(words_all if label == "zsh" else words)
+    for k in range(0, len(shell_words), 250):
+        batch = shell_words[k:k + 250]
+        got = run(argv, pre, batch, label)
+        if got is None:
+            got = set()
+            for w in batch:
+                one = run(argv, pre, [w], label)
+                if one is None:
+                    crashed.append(w)
+                else:
+                    got |= one
+        seen |= got
+    miss = [w for w in sorted(seen) if not g.glob_matches_git_name(os.path.basename(g.glue_paren_groups(words_all[w])))
+            and not g.glob_only(words_all[w])]
+    answered = len(shell_words) - len(crashed)
+    good = bool(seen) and not miss and answered > len(shell_words) * 0.99
+    print(("ok " if good else "FAIL ") + "%s: %d of %d words expand to a git name, %d missed %s, "
+          "%d words killed the shell" % (label, len(seen), len(shell_words), len(miss),
+                                         [words_all[w] for w in miss[:5]], len(crashed)))
 PY
 )
 while IFS= read -r line; do

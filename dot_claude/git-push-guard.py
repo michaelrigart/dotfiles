@@ -49,6 +49,14 @@
 # runs in and says the push must run from there or Michael runs it, since the classifier
 # rule names only the plain form.
 #
+# Glob command words (spec section 7). A command word that a shell could expand to git or a
+# git-* name is read as a possible git: the span from the first [ that has a later ] through the
+# last ] is any characters, and so is an in-word (...) group, which zsh reads as an alternation
+# (glue_paren_groups); the rest is matched against the four names. Only a word made of * alone is
+# exempt (a case arm, a markdown bullet), judged on the raw word. Assumed: the shells are bash,
+# sh and zsh -f with nobareglobqual and without extendedglob or kshglob, so #, ^ and ~ patterns
+# (extendedglob) and *(...) forms (kshglob) are out of scope.
+#
 # Written for /usr/bin/python3 (3.9): no match statements, no X | Y type unions.
 import json
 import os
@@ -217,9 +225,69 @@ def decision(kind, reason):
 
 
 # ------------------------------------------------------------------ the grammar
+GLUE_STOP = " \t\r\n;&|()<>`$=\\"
+GLUE_BAD = set(" \t\r\n;&<>")
+GLUE_MAX = 256                      # a longer group is no realistic alternation; keeps it linear
+
+
+def glue_paren_groups(text):
+    """text with every in-word (...) group rewritten as [*...*] of the same length. zsh reads
+    word(a|b)word as an alternation (with bareglobqual and extendedglob off), so the group is a
+    glob, but the tokenizers split a word at ( and ), which would lose it. A group opens
+    glued to the word before it or to a group just before it (not after whitespace, an operator,
+    $, = or a backtick: those start a subshell, a substitution or an array), is not empty
+    (name() defines a function), holds no blank, newline, ; & < or > (so a subshell, a call that
+    spans lines or a redirect is never swallowed), balances, and is at most GLUE_MAX characters
+    long. Quotes are skipped, so a quoted ( stays literal. One linear pass with a stack; the
+    length is kept, so spans into the original text stay valid."""
+    if "(" not in text:
+        return text
+    n, i, prev_end, open_groups = len(text), 0, -1, 0
+    stack, groups = [], []
+    while i < n:
+        c = text[i]
+        if c == "\\":
+            i += 2
+            continue
+        if c == "'" or (c == "$" and text[i + 1:i + 2] == "'"):
+            ansi = c == "$"
+            i += 2 if ansi else 1
+            while i < n and text[i] != "'":
+                i += 2 if (ansi and text[i] == "\\") else 1
+        elif c == '"':
+            i += 1
+            while i < n and text[i] != '"':
+                i += 2 if text[i] == "\\" else 1
+        elif c in GLUE_BAD:
+            stack, open_groups = [], 0
+        elif c == "(":
+            glued = i > 0 and (text[i - 1] not in GLUE_STOP or prev_end == i) \
+                and text[i + 1:i + 2] != ")"
+            stack.append((i, glued))
+            open_groups += glued
+        elif c == ")" and stack:
+            start, glued = stack.pop()
+            if glued:
+                open_groups -= 1
+                if open_groups == 0 and i - start < GLUE_MAX:
+                    groups.append((start, i + 1))
+                    prev_end = i + 1
+        i += 1
+    if not groups:
+        return text
+    out, last = [], 0
+    for start, end in groups:
+        out.append(text[last:start])
+        out.append("[" + "*" * (end - start - 2) + "]")
+        last = end
+    out.append(text[last:])
+    return "".join(out)
+
+
 def tokenize(cmd):
     """Shell words and operator tokens. Raises ValueError on unbalanced quotes."""
-    lx = shlex.shlex(cmd.replace("\\\n", " "), posix=True, punctuation_chars=PUNCT)
+    lx = shlex.shlex(glue_paren_groups(cmd.replace("\\\n", " ")), posix=True,
+                     punctuation_chars=PUNCT)
     lx.whitespace = " \t\r"          # a newline separates commands; it is not a blank
     lx.whitespace_split = True
     lx.commenters = ""
@@ -404,9 +472,6 @@ DASH_PUSH = {"git-push", "git-send-pack", "git-http-push"}
 GIT_NAMES = ("git",) + tuple(sorted(DASH_PUSH))
 # Shell reserved words: the word after one is still in command position.
 RESERVED = {"if", "then", "elif", "else", "do", "while", "until", "!", "{"}
-# A word of glob syntax alone (*, ?, [...]) with no literal outside a bracket: the *) of a
-# case arm, or a markdown bullet (* item) in a here-document. It spells no command name.
-GLOB_ONLY = re.compile(r"(?:[*?]|\[[!^]?\]?[^\]]*\])+")
 
 
 def starts_command(tok):
@@ -452,68 +517,41 @@ def case_pattern(tokens, k):
     return j < n and is_operator(tokens[j]) and tokens[j].startswith(")")
 
 
-GLOB_REGEX_MAX = 128
 _GLOB_MEMO = {}
 
 
-def _bracket_end(word, i):
-    """(end, wide) for the bracket expression opened at word[i]: end is the index of its closing
-    ], or -1 when it never closes (the [ is then a literal). Two readings exist and the result
-    covers both. The first closes at the first ] after an optional ! or ^ and an optional leading
-    ] (fnmatch without the ^, bash 3.2 and sh). The second also skips [:name:], [.x.] and [=x=]
-    inside the expression, whatever the name (bash 5, zsh, and an invalid name stays inside). A
-    third reading, zsh's, closes [!] and [^] at the ] right after the ! or ^: such an expression is
-    wide up to the next ] (or ends there when there is none). When the first ] ends such a class
-    the expression is read as extending to the next ] (repeatedly), and wide is true: the caller must let that whole region stand for any number of characters.
-    Linear: every search starts where the previous one stopped."""
-    n = len(word)
-    j = i + 1
-    if j < n and word[j] in "!^":
-        j += 1
-    zsh_early = j == i + 2 and word[j:j + 1] == "]"    # zsh closes [!] and [^] at once
-    if j < n and word[j] == "]":
-        j += 1
-    k = word.find("]", j)
-    if zsh_early and k == -1:
-        return i + 2, False
-    wide, start = zsh_early, j
-    while k != -1 and k - 1 >= start:
-        d = word[k - 1]
-        if d not in ":.=" or word.find("[" + d, start, k - 1) == -1:
-            break
-        k2 = word.find("]", k + 1)
-        if k2 == -1:
-            break
-        wide, start, k = True, k + 1, k2
-    return k, wide
-
-
 def _glob_elements(word):
-    """The word as a list of elements: a literal character, "?" for one character (a ? or a
-    bracket expression), "*" for any number (a * or a bracket expression that two readings of
-    the shells end differently, see _bracket_end), runs of * collapsed. Linear: past the last ]
-    a [ is a literal in O(1), and a [ with no ] after it is the last that can fail. An unclosed
-    [ is a literal. The characters are not unescaped."""
-    out, i, n = [], 0, len(word)
+    """The word as a list of elements: a literal character, ("?",) for one character, ("*",)
+    for any number (runs collapsed). The span from the first [ that has a later ] through the
+    last ] of the word is one ("*",): whatever a shell makes of the brackets inside it (the first
+    ] closing, classes [:x:] [.x.] [=x=], zsh closing [!] at once, a quoted ] the tokenizer has
+    already unquoted), an expression ends inside the span, so the span stands for any characters.
+    A [ with no ] after it is a literal. The one exception is a span that holds a single [ and a
+    single ] around plain characters (not ! ^ or *: [tag], [x]): every reading agrees that it is one
+    character, so it is ("?",). Linear."""
     last = word.rfind("]")
-    while i < n:
-        c = word[i]
-        if c == "[" and i < last:
-            end, wide = _bracket_end(word, i)
-            if end != -1:
-                out.append(("*",) if wide else ("?",))
-                i = end + 1
-                if wide and len(out) > 1 and out[-2] == ("*",):
-                    out.pop()
-                continue
-        if c == "*":
-            if not out or out[-1] != ("*",):
-                out.append(("*",))
-        elif c == "?":
-            out.append(("?",))
-        else:
-            out.append(c)
-        i += 1
+    first = word.find("[", 0, max(last, 0))
+    out = []
+
+    def add(text):
+        for c in text:
+            if c == "*":
+                if not out or out[-1] != ("*",):
+                    out.append(("*",))
+            elif c == "?":
+                out.append(("?",))
+            else:
+                out.append(c)
+
+    if first == -1:
+        add(word)
+    else:
+        inner = word[first + 1:last]
+        one = (inner and "[" not in inner and "]" not in inner and "*" not in inner
+               and inner[0] not in "!^")
+        add(word[:first])
+        out.append(("?",) if one else ("*",))
+        add(word[last + 1:])
     return out
 
 
@@ -545,23 +583,20 @@ def _glob_matches(elems, name):
 
 
 def glob_matches_git_name(word):
-    """Could a glob word expand to git or a git-* name? Each bracket expression is read as one
-    character, or as any number when two readings of the shells end it differently (see
-    _glob_elements), and a small linear matcher compares the elements with the git names. It
-    never raises and costs its length at most. Python 3.9's fnmatch, which main used here,
-    raises re.error on a backwards range ([:-9], [z-a]), reads ^ as a literal rather than a
-    negation, has no [:alpha:] or [.x.] classes, and is quadratic on a run of [. The reading
-    over-matches on purpose (g[i]t also matches gxt, and so does g[z-a]t, which no shell expands
-    to git), a word with no literal in it (*, ??, [ab]*) is a bare glob and matches nothing, and
-    a pairing still needs a hidden push word. Measured against main's fnmatch (the round
-    reports hold the differential): every word main accepted is accepted here."""
+    """Could a glob word expand to git or a git-* name? The word is read as elements (see
+    _glob_elements: the span from the first [ with a later ] through the last ] is any
+    characters) and a small linear matcher compares them with the four git names. It never
+    raises and costs its length at most, where Python 3.9 fnmatch, which main used here,
+    raises re.error on a backwards range ([:-9]), reads ^ as a literal, has no [:alpha:] class and
+    is quadratic on a run of [. It over-matches on purpose (g[i]t is g*t); a pairing still needs
+    a hidden subcommand word (view side) or a literal one (raw side). Measured against the fnmatch
+    of main in the round 6 report: no word that main accepted is refused."""
     hit = _GLOB_MEMO.get(word)
     if hit is not None:
         return hit
     elems = _glob_elements(word)
     # Every element but a * takes exactly one character: more than 13 can match no git name.
-    if all(isinstance(e, tuple) for e in elems) or \
-            sum(1 for e in elems if e != ("*",)) > max(len(g) for g in GIT_NAMES):
+    if sum(1 for e in elems if e != ("*",)) > max(len(g) for g in GIT_NAMES):
         hit = False
     else:
         hit = any(_glob_matches(elems, g) for g in GIT_NAMES)
@@ -572,24 +607,10 @@ def glob_matches_git_name(word):
 
 
 def glob_only(word):
-    """Is the word glob syntax alone (GLOB_ONLY: *, ?, bracket expressions)? Up to
-    GLOB_REGEX_MAX characters the regex decides, as on main; a longer word is scanned
-    linearly (the regex is quadratic on a run of [)."""
-    if len(word) <= GLOB_REGEX_MAX:
-        return GLOB_ONLY.fullmatch(word) is not None
-    i, n = 0, len(word)
-    while i < n:
-        c = word[i]
-        if c in "*?":
-            i += 1
-        elif c == "[":
-            end = _bracket_end(word, i)[0]
-            if end == -1:
-                return False
-            i = end + 1
-        else:
-            return False
-    return True
+    """Is the raw word made of * alone (a case arm, a markdown bullet)? It spells no command
+    name and is the only exemption: a word of ?, [..] or both (???, [g][i][t]) can single out
+    git, and the collapsed form of [[.g.]i[t] is a *, so the test never looks at the collapse."""
+    return bool(word) and not word.strip("*")
 
 
 def glob_git_word(tokens, k):
@@ -1351,7 +1372,7 @@ def views(cmd):
 def view_tokens(text):
     """(token, start, end) for each word, newline and run of operators in a view's text. No
     shlex: the quotes are already gone."""
-    return [(m.group(), m.start(), m.end()) for m in VIEW_TOKEN.finditer(text)]
+    return [(m.group(), m.start(), m.end()) for m in VIEW_TOKEN.finditer(glue_paren_groups(text))]
 
 
 def hidden(cmd, view, start, end):
