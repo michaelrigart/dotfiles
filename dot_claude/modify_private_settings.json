@@ -434,7 +434,16 @@ printf '%s' "$input" | jq \
           # .git is denied where no repository may be: ~/Code and ~/Documents themselves,
           # anywhere in the vault, and a harness worktree .git file (three fixed depths, as
           # for the agent paths). A deeper .git would deny real repositories, so none is listed.
-          # Objects, refs, the index and TMPDIR stay writable.
+          # A submodule of a linked worktree keeps its git directory at
+          # .git/worktrees/<id>/modules/<name>, which the module forms do not reach, so
+          # config, commondir and hooks have their own forms there (amended 2026-10-30; the
+          # hooks form closes the same gap in the 2026-10-16 hooks denial). HEAD is denied at
+          # ~/Code, ~/Documents, anywhere in the vault and one level under ~/Code: a HEAD there
+          # would let a planted directory pass for a bare repository, which Starship accepts
+          # from any directory below it whatever safe.bareRepository says. Real repositories
+          # keep HEAD inside .git, so they are untouched. A config* module entry also denies a
+          # submodule git directory whose path has a part starting with config, and its refs and
+          # reflogs with such a name. Objects, refs, the index and TMPDIR stay writable.
           # .claude/skills, commands and agents stay writable (projects commit their own).
           # Hooks per spec 83f6b2b. Each agent path is listed at depth 0, 1 and 2
           # under a root (work root, org dir or top-level repo, repo or wt sibling: where
@@ -451,16 +460,19 @@ printf '%s' "$input" | jq \
             ["~/Code", "~/.local/share/chezmoi", "~/Documents", "~/Library/Mobile Documents/iCloud~md~obsidian"] as $roots
             | [".git/hooks", ".git/hooks/**", ".git/modules/**/hooks", ".git/modules/**/hooks/**"] as $git
             | [".git/config*", ".git/commondir", ".git/worktrees/*/config*", ".git/worktrees/*/commondir", ".git/modules/**/config*", ".git/modules/**/commondir"] as $gitconf
+            | [".git/worktrees/*/modules/**/config*", ".git/worktrees/*/modules/**/commondir", ".git/worktrees/*/modules/**/hooks"] as $wtmod
             | [".claude/settings.json", ".claude/settings.local.json", ".mcp.json", ".codex", ".codex/**"] as $agent
             | [$roots[] as $root | $git[] | "\($root)/**/\(.)"]
               + [$git[] | "~/.local/share/chezmoi/\(.)"]
               + [$roots[] as $root | $gitconf[] | "\($root)/**/\(.)"]
+              + [$roots[] as $root | $wtmod[] | "\($root)/**/\(.)"]
               + [$roots[] as $root | $agent[] | "\($root)/\(.)", "\($root)/*/\(.)", "\($root)/*/*/\(.)",
                                            "\($root)/.claude/worktrees/*/\(.)", "\($root)/*/.claude/worktrees/*/\(.)",
                                            "\($root)/*/*/.claude/worktrees/*/\(.)"]
               + [$roots[] as $root | "\($root)/.claude/worktrees/*/.git", "\($root)/*/.claude/worktrees/*/.git",
                                      "\($root)/*/*/.claude/worktrees/*/.git"]
               + ["~/Code/.git", "~/Documents/.git", "~/Library/Mobile Documents/iCloud~md~obsidian/**/.git"]
+              + ["~/Code/HEAD", "~/Documents/HEAD", "~/Library/Mobile Documents/iCloud~md~obsidian/**/HEAD", "~/Code/*/HEAD"]
               + ["~/Library/Mobile Documents/iCloud~md~obsidian/Documents/*/.obsidian",
                  "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/*/.obsidian/**"])
         },
