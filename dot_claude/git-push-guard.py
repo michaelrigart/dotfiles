@@ -462,10 +462,34 @@ def odd_command_word(tokens):
             continue
         if any(fnmatch.fnmatchcase(g, base) for g in GIT_NAMES):
             return True
-    return False
+    return bool(built_word_hits(tokens))
 
 
 PUSH_SLOT = {"push", "send-pack", "http-push"}
+
+
+def git_slot(tokens, k, stop_dynamic=True):
+    """Walk git's global options after the command word at k. Returns (j, at_option): j is
+    the index of the subcommand slot (n, or an operator, when there is none), or, when
+    stop_dynamic and a dynamic option or option value is reached, that option's index with
+    at_option true, since the slot is not reached."""
+    n = len(tokens)
+    j = k + 1
+    while j < n and not is_operator(tokens[j]):
+        w = tokens[j]
+        name = w.split("=", 1)[0]
+        if w in ("-C", "-c") or (name in GIT_LONG_OPTS_WITH_VALUE and "=" not in w):
+            if stop_dynamic and (dynamic(w) or (
+                    j + 1 < n and dynamic(tokens[j + 1], dollar=(w != "-C")))):
+                return j, True
+            j += 2
+        elif w.startswith("-"):
+            if stop_dynamic and dynamic(w):
+                return j, True
+            j += 1
+        else:
+            break
+    return j, False
 
 
 def git_word_hits(tokens):
@@ -479,24 +503,30 @@ def git_word_hits(tokens):
     for k in command_words(tokens):
         if os.path.basename(tokens[k]) != "git":
             continue
-        j = k + 1
-        while j < n and not is_operator(tokens[j]):
-            w = tokens[j]
-            name = w.split("=", 1)[0]
-            if w in ("-C", "-c") or (name in GIT_LONG_OPTS_WITH_VALUE and "=" not in w):
-                if dynamic(w) or (j + 1 < n and dynamic(tokens[j + 1], dollar=(w != "-C"))):
-                    hits.append((k, j))
-                    break
-                j += 2
-            elif w.startswith("-"):
-                if dynamic(w):
-                    hits.append((k, j))
-                    break
-                j += 1
-            else:
-                if dynamic(w) or w in PUSH_SLOT:
-                    hits.append((k, j))
-                break
+        j, at_option = git_slot(tokens, k)
+        if at_option or (j < n and not is_operator(tokens[j])
+                         and (dynamic(tokens[j]) or tokens[j] in PUSH_SLOT)):
+            hits.append((k, j))
+    return hits
+
+
+BUILT_SLOT = {"push", "send-pack"}
+
+
+def built_word_hits(tokens):
+    """(word_index, slot_index) for each command word, in command_words order and not a case
+    pattern, whose last path component holds $, a backtick, { or } (a word the shell builds)
+    and whose slot past git's global options is push or send-pack. Such a word can be a git
+    (spec section 4)."""
+    n = len(tokens)
+    hits = []
+    for k in command_words(tokens):
+        base = os.path.basename(tokens[k])
+        if not any(c in base for c in "$`{}") or case_pattern(tokens, k):
+            continue
+        j, _ = git_slot(tokens, k, stop_dynamic=False)
+        if j < n and not is_operator(tokens[j]) and tokens[j] in BUILT_SLOT:
+            hits.append((k, j))
     return hits
 
 

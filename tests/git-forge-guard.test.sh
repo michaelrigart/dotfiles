@@ -1461,9 +1461,17 @@ expect deny  "a ? glob in the git word"               "$R" '/usr/bin/gi? push or
 expect deny  "a [ ] glob in the git word"             "$R" '/usr/bin/g[i]t push origin main'
 # Only the last path component of a command word decides: a variable or a $VAR/ directory
 # in front of a name that is not git is an ordinary command (docker, helm, gradle).
-expect allow "a variable command that pushes, not git" "$R" '$DOCKER push registry/x:1'
+# Spec section 4: a built command word whose subcommand slot holds push or send-pack counts
+# as a possible git, so a variable command that pushes is denied.
+expect deny  "a variable command that pushes (could be git)" "$R" '$DOCKER push registry/x:1'
 expect allow "a quoted \$HOME path to helm push"      "$R" '"$HOME/bin/helm" push chart.tgz oci://r'
-expect allow "a variable command after &&"            "$R" 'npm run build && $DOCKER push img'
+expect deny  "a variable command that pushes, after &&" "$R" 'npm run build && $DOCKER push img'
+expect deny  "a variable git word with push"         "$R" '$G push origin main'
+expect deny  "a built git word, -C before push"      "$R" '${X:-gi}t -C . push origin main'
+expect deny  "a built path whose last component is gi}t" "$R" '${X:-/usr/bin/gi}t push origin main'
+expect deny  "a built git word, delete"              "$R" '${X:-gi}t push origin --delete wip'
+expect allow "a variable interpreter on a push script" "$R" '$PYTHON scripts/push.py'
+expect allow "a \$HOME path to helm push"            "$R" '$HOME/bin/helm push x'
 expect allow "a quoted \$GOPATH path, -l ."           "$TMP" "cd $R && \"\$GOPATH/bin/gofumpt\" -l ."
 expect allow "a \$HOME path to gradle, -c"            "$R" '$HOME/.local/bin/gradle build -c settings.gradle'
 expect allow "a variable command with no push word"   "$R" '$G status'
