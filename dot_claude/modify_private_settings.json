@@ -445,7 +445,9 @@ printf '%s' "$input" | jq \
           # that directory has its own .git. Real repositories keep HEAD inside .git, so they
           # are untouched. A config* module entry also denies a
           # submodule git directory whose path has a part starting with config, and its refs and
-          # reflogs with such a name. Objects, refs, the index and TMPDIR stay writable.
+          # reflogs with such a name. Objects, refs, the index and TMPDIR stay writable, except refs
+          # named lazygit.yml and, in a submodule, names starting with config or named hooks or
+          # commondir.
           # Per-repository tool configuration that runs as Michael: lazygit loads lazygit.yml
           # from a git directory and .lazygit.yml from every parent of a repository (its pager
           # and externalDiffCommand run when he draws a diff), and glab reads

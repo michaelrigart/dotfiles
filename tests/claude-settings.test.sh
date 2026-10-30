@@ -372,7 +372,8 @@ jq_is ".sandbox.filesystem.allowWrite == $EXP_ALLOW_WRITE" true \
 # linked worktree (.git/worktrees/*/modules/**, amended 2026-10-30); .git is denied at ~/Code,
 # at ~/Documents, anywhere in the vault, and as a harness worktree .git file (section 2), and
 # so is a HEAD that would make a root, the vault or an organisation directory a fake bare
-# repository (amended 2026-10-30). Objects, refs, the index and $TMPDIR stay writable (suites and agents git init there). Michael decided hooks for
+# repository (amended 2026-10-30). Objects, refs, the index and $TMPDIR stay writable, except refs named lazygit.yml and, in a
+# submodule, names starting with config or named hooks or commondir (suites and agents git init there). Michael decided hooks for
 # git (spec 83f6b2b) and the agent configuration on 2026-10-18; .claude/skills, commands and
 # agents stay writable (projects commit their own).
 GITFILES='[".git/hooks",".git/hooks/**",".git/modules/**/hooks",".git/modules/**/hooks/**"]'

@@ -153,9 +153,9 @@ nine git-configuration forms (36 entries) and three per-repository tool-configur
   - Git exempts `/.git/worktrees/` and `/.git/modules/` paths from `safe.bareRepository`
     (§3), so for these paths the denies are the only barrier.
 - **The three tool-configuration forms** (the last line above; 12 entries; added by the
-  second amendment). The new per-repository tool-configuration entries are these 12; with the
-  36 git-configuration entries and §2's 19, the amendments add 67 entries to the 142 from
-  2026-10-16, 209 in all.
+  second amendment). The new per-repository tool-configuration entries are these 12. In all,
+  the signed-off design added 39 entries and the amendments 28 (16, then 12) to the 142 from
+  2026-10-16: 67 new, 209 in all.
   - `<root>/**/.lazygit.yml` denies a lazygit configuration in a work tree at any depth, and
     so a parent directory's, which lazygit also loads (V20).
   - `<root>/**/.git/**/lazygit.yml` denies `<git dir>/lazygit.yml`. Because `**/` crosses
@@ -200,7 +200,8 @@ nine git-configuration forms (36 entries) and three per-repository tool-configur
   - objects, refs, the index, `HEAD`, logs, `info/` and `gitdir`. That includes a branch named
     `config` or `hooks`, because `refs/heads/config` is not `.git/config`. Inside a
     submodule's git directory, only refs whose name starts with `config`, or is exactly
-    `hooks` or `commondir`, are the exception (above);
+    `hooks` or `commondir`, are the exception (above). So is a ref or file named
+    `lazygit.yml`, in any git directory (`.git/**/lazygit.yml`, §1; negligible);
   - everything outside the work roots, `$TMPDIR` included, where the suites build their
     repositories.
 - **Letter case.** The volume here is case-insensitive, and Seatbelt matched regardless of
@@ -421,9 +422,11 @@ Code's built-in rule.
       `.git/glab-cli/config.yml` are denied; `.git/glab-cli/recover/x` and a work-tree
       `lazygit.yml` without the dot stay writable.
   - No entry reaches objects, refs or the index of an ordinary repository or a linked
-    worktree. The module forms with `config*` are the stated exception (§1).
+    worktree. The module forms with `config*` are the stated exception (§1), and so is
+    `.git/**/lazygit.yml`, which also denies a ref or file named `lazygit.yml` in any git
+    directory (pinned: `~/Code/<Org>/<repo>/.git/refs/heads/lazygit.yml` is denied).
   - No entry has the shape `.git/**/config`, so a branch named `config` stays writable. Only
-    the two module forms with `config*` reach refs, and only a submodule's.
+    the two module forms with `config*` reach refs under that name, and only a submodule's.
   - The old assertion "no deny glob reaches a git configuration file" is replaced by these.
 - **The global git configuration**, in `git-signing-config` or a new suite.
   - The rendered file sets `safe.bareRepository = explicit`.
@@ -445,9 +448,11 @@ The suite runs sandboxed, in a fresh session after `chezmoi apply`.
     `modules/sub/worktrees/swt/config.worktree`;
   - the worktree-module forms: `worktrees/wt/modules/sub/config`,
     `worktrees/wt/modules/sub/commondir` and `worktrees/wt/modules/sub/hooks`;
-  - the tool-configuration forms, in each fixture root: `.git/lazygit.yml`,
-    `.git/glab-cli/config.yml` and a `.lazygit.yml` in the fixture repository's work tree
-    (`.git/glab-cli/recover/x` stays writable);
+  - the tool-configuration forms. In all four roots, including the vault, a `.lazygit.yml`
+    at `<root>/<stamp>/.lazygit.yml`, a parent directory of the fixture repository, is
+    denied. In the three non-vault roots, `.git/lazygit.yml` and `.git/glab-cli/config.yml`
+    are denied, and `.git/glab-cli/recover/x` and a work-tree `lazygit.yml` without the dot
+    stay writable;
   - the three Unicode-fold keys, in the non-vault roots' `.git` fixtures. APFS folds U+FB01
     (the fi ligature) to "fi", U+017F (long s) to "s" and U+212A (Kelvin) to "k", and git
     reads `.git/con<U+FB01>g` as `.git/config` and runs hooks from `.git/hook<U+017F>/`. The
