@@ -2231,7 +2231,8 @@ allow ## R5 ls of a class glob that matches git ## ls /usr/bin/[[:g:][i]t
 allow ## R5 rg for a class glob ## rg '[[:g:][i]t' f
 allow ## R5 a bare class glob command, ANSI-C tab ## [[:alpha:]]x status $'\t'
 deny ## R6 ruling: a class glob with * is not GLOB_ONLY, so a possible git (silent in round 5) ## [[:alpha:]]* pu''sh origin main
-allow ## R5 a regex line in a here-document body, then git status ## cat <<'EOF'<NL>it's<NL>[[:space:]]* push<NL>EOF<NL>git status
+deny ## R5 a regex line in a here-document body, then git status (read as git: its literal twin, a git push line, denies on main) ## cat <<'EOF'<NL>it's<NL>[[:space:]]* push<NL>EOF<NL>git status
+allow ## R5 the same regex line with no push word ## cat <<'EOF'<NL>it's<NL>[[:space:]]* is a class<NL>EOF<NL>git status
 TABLE
 # Fix round 6: the span from the first [ that has a later ] through the last ] is read once for
 # every shell (since the restructure: can_be, the strict path). Each shape denies with a literal
@@ -2256,6 +2257,55 @@ allow ## RS a strict-only word whose command is no push, push in the next one ##
 allow ## RS a word no shell expands to git, a literal push ## cd /tmp; [] push origin main
 allow ## RS [!] alone is one character at most ## cd /tmp; [!] push origin main
 allow ## RS a range span that holds no g ## cd /tmp; [a-f][0-9] push origin main
+TABLE
+# Literal-analog parity (coordinator ruling): a glob word that can be git gets the verdict a
+# literal git gets in the same place, because the strict path replaces it by git in the text and
+# judges that text as any command (strict_could_push). Each row's literal twin denies on main.
+run_table <<'TABLE'
+deny ## RP backticks after echo ## echo `/usr/bin/[g][i][t] push origin main`
+deny ## RP a double-quoted $( ) ## echo "$(/usr/bin/[g][i][t] push origin main)"
+deny ## RP a double-quoted $( ) alone ## "$(/usr/bin/[g][i][t] push origin main)"
+deny ## RP backticks in double quotes ## echo "`/usr/bin/[g][i][t] push origin main`"
+deny ## RP an assignment from a double-quoted $( ) ## x="$(/usr/bin/[[=g=]]it push origin main)"
+deny ## RP a double-quoted $( ) in sh -c ## sh -c 'echo "$(/usr/bin/[g][i][t] push origin main)"'
+deny ## RP literal twin: a double-quoted $( ) ## echo "$(git push origin main)"
+deny ## RP after nice -n 5 ## nice -n 5 /usr/bin/[g][i][t] push origin main
+deny ## RP after timeout 5 ## timeout 5 /usr/bin/[[=g=]]it push origin main
+deny ## RP after timeout -s KILL 5 ## timeout -s KILL 5 /usr/bin/[g][i][t] push origin main
+deny ## RP after ionice -c 3 ## ionice -c 3 /usr/bin/[g][i][t] push origin main
+deny ## RP after stdbuf -o0 ## stdbuf -o0 /usr/bin/[g][i][t] push origin main
+deny ## RP after caffeinate -i ## caffeinate -i /usr/bin/[g][i][t] push origin main
+deny ## RP after setsid ## setsid /usr/bin/[g][i][t] push origin main
+deny ## RP after arch -arm64 ## arch -arm64 /usr/bin/[g][i][t] push origin main
+deny ## RP after script -q /dev/null ## script -q /dev/null /usr/bin/[g][i][t] push origin main
+deny ## RP after watch -n 1 ## watch -n 1 /usr/bin/[g][i][t] push origin main
+deny ## RP literal twin: after nice -n 5 ## nice -n 5 git push origin main
+deny ## RP after nice -n 5, a hidden push ## nice -n 5 /usr/bin/[g][i][t] pu''sh origin main
+deny ## RP after timeout 5, a hidden push ## timeout 5 /usr/bin/[[=g=]]it pu''sh origin main
+deny ## RP a quoted ) in $( ), then push ## /usr/bin/[g][i][t] -C $(: ')') push origin main
+deny ## RP a quoted ) in <( ), then push ## /usr/bin/[g][i][t] --namespace <(: ')') push origin main
+deny ## RP a quoted ) in $( ), then a quoted push ## /usr/bin/[g][i][t] -C $(: ')') "push" origin main
+deny ## RP a double-quoted ) in $( ) ## /usr/bin/[g][i][t] -C $(: ")") push origin main
+deny ## RP an escaped ) in $( ) ## /usr/bin/[g][i][t] -C $(: \)) push origin main
+deny ## RP two quoted ) in $( ) ## /usr/bin/[g][i][t] -C $(: ')' ')') push origin main
+deny ## RP a quoted ( in $( ) ## /usr/bin/[g][i][t] -C $(: '(') push origin main
+deny ## RP a quoted ) in $( ) in $( ) ## echo $(/usr/bin/[g][i][t] -C $(: ')') push origin main)
+deny ## RP a quoted ) in sh -c ## sh -c '/usr/bin/[g][i][t] -C $(: ")") push origin main'
+deny ## RP literal twin: a quoted ) in $( ) ## git -C $(: ')') push origin main
+deny ## RP W2 a quoted ) in $( ), then push ## /usr/bin/[[=g=]]it -C $(: ')') push origin main
+deny ## RP W2 a quoted ) in <( ), then push (a real push) ## /usr/bin/[[=g=]]it --namespace <(: ')') push origin main
+deny ## RP W2 a quoted ) in $( ), then a quoted push ## /usr/bin/[[=g=]]it -C $(: ')') "push" origin main
+deny ## RP W2 a quoted ), a ;, then push ## /usr/bin/[[=g=]]it -C $(: ')'; true) push origin main
+deny ## RP W2 a quoted ) in <( ; ), then $P (a real push) ## P=push; /usr/bin/[[=g=]]it --namespace <(: ')'; true) $P origin main
+deny ## RP W2 a double-quoted ) in $( ) ## /usr/bin/[[=g=]]it -C $(: ")") push origin main
+deny ## RP W2 an escaped ) in $( ) ## /usr/bin/[[=g=]]it -C $(: \)) push origin main
+deny ## RP W2 a quoted ) in $( ), then $P ## P=push; /usr/bin/[[=g=]]it -C $(: ')') $P origin main
+deny ## RP W2 two quoted ) in $( ) ## /usr/bin/[[=g=]]it -C $(: ')' ')') push origin main
+deny ## RP W2 a quoted ( in $( ) ## /usr/bin/[[=g=]]it -C $(: '(') push origin main
+deny ## RP W2 a quoted ) in $( ) in $( ) ## echo $(/usr/bin/[[=g=]]it -C $(: ')') push origin main)
+deny ## RP W2 a quoted ) in sh -c ## sh -c '/usr/bin/[[=g=]]it -C $(: ")") push origin main'
+allow ## RP a glob word that a ) follows has no arguments (a case arm) ## case x in [g]i*) echo push;; esac
+allow ## RP a glob argument, push in an inert command ## cd /tmp; rg -n '[a-z]*' push.md
 TABLE
 run_table <<'TABLE'
 deny ## R6 a collating symbol and a stray [, literal ## /usr/bin/[[.g.]i[t] push origin main
@@ -2772,6 +2822,17 @@ echo $'git push'
 /usr/bin/gi? push origin main
 git ${X:-pu}sh origin main
 GIT_CONFIG=/x git status; git push origin feat $'x'
+CASES
+# Literal-analog parity for payloads that hold no git and no push text: the shell fast path does not
+# start the helper for them (a residual), but the helper denies them as main denies the literal git.
+while IFS= read -r c; do
+  [ -n "$c" ] || continue
+  helper_flag deny "RP helper, flag 1: $c" 1 "$c"
+done <<'CASES'
+cd /tmp; /usr/bin/[g][i][t] p?sh origin main
+/usr/bin/[[=g=]]it -c x.y=1 p?sh origin main
+/usr/bin/[g][i][t] -c x=a* status
+sh -c '/usr/bin/[[=g=]]it p?sh origin main'
 CASES
 has_reason "a hidden spelling gets the plain-push deny" "in a shape the guard does not check" "$R" "$(printf '%s' "\$'\\x67it' push origin --delete wip")"
 has_reason "a continuation spelling gets the plain-push deny" "in a shape the guard does not check" "$R" 'git pu\
