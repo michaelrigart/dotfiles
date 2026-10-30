@@ -62,9 +62,11 @@ denied_existing() {
   if [ ! -f "$2" ]; then echo "$1=ABSENT"; fail=$((fail + 1)); return 0; fi
   if ( : >> "$2" ) 2>/dev/null; then echo "$1=WRITABLE"; fail=$((fail + 1)); else echo "$1=DENIED"; fi
 }
-# allowed_off_base <key> <path>: a file in .claude/commands or .claude/agents.
+# allowed_off_base <key> <path>: a file in .claude/commands or .claude/agents, or the git config in
+# TMPDIR (tmpdir_git_config).
 # Claude Code's own sandbox rules deny those under the session's working directory (commands and
-# agents are measured), which are not this spec's rules: report SKIPPED there.
+# agents are measured; a session based under TMPDIR would also cover tmpdir_git_config), which are not
+# this spec's rules: report SKIPPED there.
 # tests/run.sh exports the directory it was started from; run directly, it is pwd.
 # An unenterable RUN_SH_START_DIR falls back to pwd; an empty base would make "$base"/* match every
 # path and skip each probe silently, so that counts as a failure.
@@ -152,11 +154,13 @@ for root in "$HOME/Code" "$HOME/.local/share/chezmoi" "$HOME/Documents" \
     allowed_off_base "${k}_claude_commands_writable" "$r/.claude/commands/$stamp.md"
     allowed_off_base "${k}_claude_agents_writable" "$r/.claude/agents/$stamp.md"
     # A directory holding hooks/ under a plain name, renamed to .git. Path rules see only the two
-    # ends of a rename, so this reads WRITABLE by design: the same class as core.hooksPath, which
-    # Michael accepted. Informational: the # prefix keeps it out of tests/run.sh's count and the exit.
+    # ends of a rename, so outside the vault this reads WRITABLE by design: the same class as
+    # core.hooksPath, which Michael accepted. In the vault it reads DENIED, because the vault denies a
+    # .git at any depth, including the rename's target. Informational: the # prefix keeps it out of
+    # tests/run.sh's count and the exit.
     # It is renamed back, because the **/.git/hooks deny would otherwise stop rm -rf from removing it.
     if mv "$m/plain" "$m/.git" 2>/dev/null; then v=WRITABLE; mv "$m/.git" "$m/plain" 2>/dev/null; else v=DENIED; fi
-    echo "# info ${k}_git_rename_dir=$v (accepted: a rename is checked only at its two ends)"
+    echo "# info ${k}_git_rename_dir=$v (outside the vault WRITABLE is accepted: a rename is checked only at its two ends; in the vault DENIED: no .git at any depth)"
     # A .git file in a plain directory two levels down: path rules cannot tell it from a .git directory,
     # so it reads WRITABLE outside the vault. Informational, like the rename probe (spec Residuals).
     if [ "$vault" = 0 ]; then
