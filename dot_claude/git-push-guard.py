@@ -924,9 +924,9 @@ READINGS = ("zsh", "bash5", "bash32")
 View = namedtuple("View", "text spans cuts")
 # The commands the views are built for: nothing can be hidden without one of these.
 HIDDEN_SIGNAL = re.compile(r"\$'|\$\"|\\\n|\\[xuUc0-7]|[A-Za-z0-9]['\"\\]+[A-Za-z0-9]")
-# A word of a view is a maximal run of letters, digits and hyphens: git-pu""sh-guard.py holds
+# A word of a view is a maximal run of letters, digits, underscores and hyphens: git-pu""sh-guard.py holds
 # neither a git word nor a push word, while git-push is both.
-WORD_EDGE = r"(?<![A-Za-z0-9-])%s(?![A-Za-z0-9-])"
+WORD_EDGE = r"(?<![A-Za-z0-9_-])%s(?![A-Za-z0-9_-])"
 GIT_WORD = re.compile(WORD_EDGE % "git")
 DASH_PUSH_WORD = re.compile(WORD_EDGE % "git-(?:push|send-pack|http-push)")
 BACKSLASH = re.compile(r"\\")

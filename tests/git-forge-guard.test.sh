@@ -2101,6 +2101,22 @@ allow ## R1 rg for the helper's file name ## rg -l "git-pus""h-guard|git-forge-g
 allow ## R1 git show of the helper's file ## git -C d show HEAD:dot_claude/git-pu''sh-guard.py
 allow ## R1 cp of the helper's file ## cp x/git-pu""sh-guard.py y
 allow ## R1 git add of the helper's file ## git add dot_claude/git-pu''sh-guard.py
+allow ## N2 an underscore-joined word is not git or push: rg ## rg "git_pu''sh" f
+allow ## N2 an underscore-joined word is not git or push: sed ## sed -n 1p tests/test_git_pu""sh.py
+allow ## N2 an underscore-joined word is not git or push: python import ## python3 -c 'import git_pu""sh_guard as g'
+TABLE
+# N1 residual (spec section 7: a word built at run time): the dash form assembled by expansion
+# with a hidden suffix is not seen. The literal twins of two shapes are denied, as on main; the
+# literal twins of `G=...git; $G-push` and `${D:-git}-send-pack` are silent on main too, pinned so.
+run_table <<'TABLE'
+allow ## residual (spec section 7: a word built at run time): built path, hidden -push ## ${D:-/usr/libexec/git-core/git}-pu""sh origin main
+allow ## residual (spec section 7: a word built at run time): assigned path, hidden -push ## G=/usr/libexec/git-core/git; $G-pu""sh origin main
+allow ## residual (spec section 7: a word built at run time): built dash word, hidden push ## ${X:-git-pu""sh} origin main
+allow ## residual (spec section 7: a word built at run time): built git, hidden -send-pack ## ${D:-git}-send-pa""ck origin main
+allow ## residual (spec section 7, a word built at run time; silent on main 9702750 too): assigned path, literal -push ## G=/usr/libexec/git-core/git; $G-push origin main
+allow ## residual (spec section 7, a word built at run time; silent on main 9702750 too): built git, literal -send-pack ## ${D:-git}-send-pack origin main
+deny ## N1 literal twin: built path, -push ## ${D:-/usr/libexec/git-core/git}-push origin main
+deny ## N1 literal twin: built dash word ## ${X:-git-push} origin main
 TABLE
 # Fix round 1 (I1): the helper run directly. An unset flag is the strictest reading (main's raw
 # checks run, an ask becomes a deny); exactly 0 leaves only the view denies; 1 is as before.
