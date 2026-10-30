@@ -418,6 +418,8 @@ jq_is ".sandbox.filesystem.denyWrite as \$d | [$ROOTS[] as \$r | $GITCONF[] as \
 jq_is '[.sandbox.filesystem.denyWrite[] | select(test("config\\*$"))
         | select(test("/\\.git/(worktrees/\\*/|modules/\\*\\*/)?config\\*$") | not)] | length' 0 \
       "every config* entry sits directly in a git directory, a linked worktree'"'"'s or a submodule'"'"'s"
+jq_is '[.sandbox.filesystem.denyWrite[] | select(test("\\.git/\\*\\*/config"))] | length' 0 \
+      "no entry has the shape .git/**/config, so a branch named config stays writable (the modules/**/config* entries are a different shape)"
 jq_is '[.sandbox.filesystem.denyWrite[] | select(test("/\\.git$"))] | length' 15 \
       "15 entries end in /.git"
 jq_is '[.sandbox.filesystem.denyWrite[] | select(test("/\\.git$")) | select(test("/\\.claude/worktrees/") | not)]
