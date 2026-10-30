@@ -61,6 +61,9 @@
 # subshell. Assumed: bash, sh and zsh -f with nobareglobqual and without extendedglob or kshglob, so
 # #, ^ and ~ patterns and *(...) forms are out of scope. A zsh group with unbalanced parens ([t(])
 # expands only in a for-list, never at command position, so it is unreachable as a push.
+# Residual: quote_mask models neither # comments nor here-document bodies; a command with a # word
+# or a << gets an all-zero mask (every operator real), so a strict-only glob git word followed by
+# a hidden push after a quoted separator is missed there; a missed pair beats a false deny.
 #
 # Written for /usr/bin/python3 (3.9): no match statements, no X | Y type unions.
 import fnmatch
@@ -692,13 +695,16 @@ def main_glob_only(word):
     return bool(reach[n])
 
 
-def main_glob_matches(base):
+def main_glob_matches(base, names=GIT_NAMES):
     """Main's own decision: does fnmatch accept the word for git or a git-* name? Python 3.9
-    raises re.error on a backwards range ([:-9]); the word is then read again with each set as one
-    ?, so g[z-a]t stays a possible git and prose such as [:-9].strip() names none. Linear and
-    uncapped: a [ with no closing ] (a literal to fnmatch, whose forward scan for the ] is
-    quadratic on a run of them) is rewritten to a character no name holds, and a pattern with more
-    than 13 single-character elements can match no name, so it never reaches the regex."""
+    raises re.error on a backwards range ([:-9]); the word is then read again with each set (as
+    fnmatch.translate parses it) as one ?, so g[z-a]t stays a possible git and prose such as
+    [:-9].strip() names none. Round 3 did the retry with a regex that ends a set at its first ];
+    the two differ on 5 of 201,415 raising words (g[z-a][], [z-a]i[], [z-a][]t), none of which
+    expands to git in bash. names are the names matched (the git names, or the push names).
+    Linear and uncapped: a [ with no closing ] (a literal to fnmatch, whose forward scan for the ]
+    is quadratic on a run of them) is rewritten to a character no name holds, and a pattern with
+    more than 13 single-character elements can match no name, so it never reaches the regex."""
     n, i, nxt = len(base), 0, _next_close(base)
     plain, quest, singles = [], [], 0
     while i < n:
@@ -721,14 +727,90 @@ def main_glob_matches(base):
             quest.append(c)
             singles += 1
         i += 1
-    if singles > max(len(g) for g in GIT_NAMES):
+    if singles > max(len(g) for g in names):
         return False
     for pattern in ("".join(plain), "".join(quest)):
         try:
-            return any(fnmatch.fnmatchcase(g, pattern) for g in GIT_NAMES)
+            return any(fnmatch.fnmatchcase(g, pattern) for g in names)
         except re.error:
             continue
     return False
+
+
+def _reading_bracket_end(word, i):
+    """(end, wide) for the bracket expression opened at word[i]: the index of its closing ], or -1
+    (the [ is a literal). Round 5's reading of the shells: the first ] after an optional ! or ^
+    and an optional leading ]; also past a [:name:], [.x.] or [=x=] class, whatever the name (the
+    expression is then wide: any number of characters); zsh closes [!] and [^] at once."""
+    n = len(word)
+    j = i + 1
+    if j < n and word[j] in "!^":
+        j += 1
+    zsh_early = j == i + 2 and word[j:j + 1] == "]"
+    if j < n and word[j] == "]":
+        j += 1
+    k = word.find("]", j)
+    if zsh_early and k == -1:
+        return i + 2, False
+    wide, start = zsh_early, j
+    while k != -1 and k - 1 >= start:
+        d = word[k - 1]
+        if d not in ":.=" or word.find("[" + d, start, k - 1) == -1:
+            break
+        k2 = word.find("]", k + 1)
+        if k2 == -1:
+            break
+        wide, start, k = True, k + 1, k2
+    return k, wide
+
+
+def _reading_elements(word):
+    """Round 5's elements of a glob word: a literal, ("?",) for a bracket expression, ("*",) for
+    a wide one or a *. Linear."""
+    out, i, n = [], 0, len(word)
+    last = word.rfind("]")
+    while i < n:
+        c = word[i]
+        if c == "[" and i < last:
+            end, wide = _reading_bracket_end(word, i)
+            if end != -1:
+                out.append(("*",) if wide else ("?",))
+                i = end + 1
+                if wide and len(out) > 1 and out[-2] == ("*",):
+                    out.pop()
+                continue
+        if c == "*":
+            if not out or out[-1] != ("*",):
+                out.append(("*",))
+        elif c == "?":
+            out.append(("?",))
+        else:
+            out.append(c)
+        i += 1
+    return out
+
+
+def reading_matches_git_name(word):
+    """Does round 5's reading (a bracket per shell reading, wide when the readings differ) accept
+    the word for git or a git-* name? A word with no literal outside brackets is bare and is not
+    accepted. Third class of the view side: g[[:alpha:]]t, [[.g.]]it, g[^x]t and the like, which
+    that revision denied with a hidden push anywhere later (glob_reading_word)."""
+    elems = _reading_elements(word)
+    if all(isinstance(e, tuple) for e in elems) or \
+            sum(1 for e in elems if e != ("*",)) > max(len(g) for g in GIT_NAMES):
+        return False
+    return any(_glob_matches(elems, g) for g in GIT_NAMES)
+
+
+def glob_reading_word(tokens, k):
+    """Is the command word at k accepted by round 5's reading (reading_matches_git_name), and not
+    exempt as on main (main_glob_only) or a case arm?"""
+    base = os.path.basename(tokens[k])
+    if not any(c in base for c in "?[*"):
+        return False
+    if main_glob_only(base) or case_pattern(tokens, k):
+        return False
+    return reading_matches_git_name(base)
 
 
 def main_glob_word(tokens, k):
@@ -759,19 +841,34 @@ def segment_end(tokens, k):
     return j
 
 
+PUSH_NAMES = ("push", "send-pack", "http-push")
+
+
+def push_glob_slot(slot):
+    """Is the subcommand slot a glob (not * alone) that main's fnmatch accepts for push,
+    send-pack or http-push (pu[s]h, p*sh, ????)? main denies a literal git with such a slot."""
+    return (any(c in slot for c in "?[*") and not glob_only(slot)
+            and main_glob_matches(slot, PUSH_NAMES))
+
+
 def glob_as_git_hit(tokens, k, names):
     """The NEW glob strictness. The glob word at k, which the collapse reads as git but main's
     fnmatch did not accept, is a possible git when main's own raw checks would deny its command
-    read with the literal word git there: a push word, a dynamic or alias subcommand slot, a push
-    alias name or a -c alias in the words up to the next operator token. A hidden push word is the
-    view side's job (_glob_pair_hidden)."""
+    read with the literal word git there: a push word, a computed or alias subcommand slot, a push
+    glob in the slot, a push alias name or a -c alias in the words up to the next operator token.
+    A hidden push word is the view side's job (_glob_pair_hidden)."""
     fake = ["git"] + tokens[k + 1:segment_end(tokens, k)]
     for _, j in git_word_hits(fake):
-        # A dynamic slot or option counts when the shell computes it ($P, ${X:-push}, {a,b}); a
+        # A dynamic option or slot counts when the shell computes it ($P, ${X:-push}, {a,b}); a
         # glob character or a lone brace is no push ([] }, a body line of code or prose).
         if fake[j] in PUSH_SLOT or computed_word(fake[j]) or (
                 j + 1 < len(fake) and computed_word(fake[j + 1])):
             return True
+    # git_word_hits stops at a dynamic option: the real slot is past it, so judge that too.
+    j, _ = git_slot(fake, 0, stop_dynamic=False)
+    if j < len(fake) and not is_operator(fake[j]) and (
+            fake[j] in PUSH_SLOT or computed_word(fake[j]) or push_glob_slot(fake[j])):
+        return True
     if alias_slot_hit(fake, names):
         return True
     text = " ".join(re.sub(r"[;&|\n]", "_", t) for t in fake)
@@ -1564,57 +1661,68 @@ def _command_tokens(vt):
     return out
 
 
+UNCERTAIN_MASK = re.compile(r"(?:^|[\s;&|(])#|<<")
+
+
 def quote_mask(cmd):
     """A bytearray over cmd, 1 where the character sits in single or double quotes, an escape, a
-    $'..' string, a $(..) or ${..} expansion or a backtick pair (delimiters included): an operator
-    there does not end a command. An unterminated quote or expansion masks to the end. One
-    pass; the nesting depth of $( ) and ${ } is counted."""
+    $'..' string, a $( ), <( ), >( ) or ${ } expansion or a backtick pair (delimiters included):
+    an operator there does not end a command. A stack tracks the nesting, so a quote inside $( ) or
+    a backtick inside double quotes is read in its own context; an unterminated quote or expansion
+    masks to the end. One linear pass. Comments and here-document bodies are not modelled: an
+    odd apostrophe there flips the parity of the rest, so a command holding a # word or a << gets
+    an all-zero mask, every operator real (a strict-only glob then pairs only inside its own
+    unquoted command: a missed pair is a documented residual, a false deny is a regression)."""
     n = len(cmd)
     mask = bytearray(n)
+    if UNCERTAIN_MASK.search(cmd):
+        return mask
+    stack = []
     i = 0
     while i < n:
         c = cmd[i]
+        top = stack[-1] if stack else None
+        if top == "'":
+            mask[i] = 1
+            if c == "'":
+                stack.pop()
+            i += 1
+            continue
         if c == "\\":
             mask[i:i + 2] = b"\1" * len(mask[i:i + 2])
             i += 2
             continue
-        end = None
-        if c == "'":
-            end = cmd.find("'", i + 1)
-        elif c == "$" and cmd[i + 1:i + 2] == "'":
-            j = i + 2
-            while j < n and cmd[j] != "'":
-                j += 2 if cmd[j] == "\\" else 1
-            end = j if j < n else -1
+        nxt = cmd[i + 1:i + 2]
+        step = 1
+        if top == "A":
+            if c == "'":
+                stack.pop()
+        elif c == "'" and top != '"':
+            stack.append("'")
+        elif c == "$" and nxt == "'" and top != '"':
+            stack.append("A")
+            step = 2
         elif c == '"':
-            j = i + 1
-            while j < n and cmd[j] != '"':
-                j += 2 if cmd[j] == "\\" else 1
-            end = j if j < n else -1
+            if top == '"':
+                stack.pop()
+            else:
+                stack.append('"')
         elif c == "`":
-            j = i + 1
-            while j < n and cmd[j] != "`":
-                j += 2 if cmd[j] == "\\" else 1
-            end = j if j < n else -1
-        elif c == "$" and cmd[i + 1:i + 2] in ("(", "{"):
-            opener = cmd[i + 1]
-            closer = ")" if opener == "(" else "}"
-            depth, j = 1, i + 2
-            while j < n and depth:
-                if cmd[j] == "\\":
-                    j += 1
-                elif cmd[j] == opener:
-                    depth += 1
-                elif cmd[j] == closer:
-                    depth -= 1
-                j += 1
-            end = j - 1 if depth == 0 else -1
-        if end is None:
-            i += 1
-            continue
-        stop = n - 1 if end == -1 else end
-        mask[i:stop + 1] = b"\1" * (stop + 1 - i)
-        i = stop + 1
+            if top == "`":
+                stack.pop()
+            else:
+                stack.append("`")
+        elif (c == "$" and nxt in ("(", "{")) or (c in "<>" and nxt == "(" and top != '"'):
+            stack.append("}" if nxt == "{" else ")")
+            step = 2
+        elif top in (")", "}") and c in "({":
+            stack.append(")" if c == "(" else "}")
+        elif top in (")", "}") and c == top:
+            stack.pop()
+            mask[i] = 1                           # the closer belongs to the expansion
+        if stack or step == 2 or top is not None:
+            mask[i:i + step] = b"\1" * len(mask[i:i + step])
+        i += step
     return mask
 
 
@@ -1622,7 +1730,8 @@ def _glob_pair_hidden(cmd, v, toks, vt, pushes, mask):
     """Is a command word the collapse reads as git followed, in its command, by a hidden push
     word? toks and vt are the glued tokens of the view (same offsets as v.text). The command ends
     at an operator the shell reads as one: an operator whose characters sit in quotes, an escape or
-    an expansion in cmd (quote_mask, mapped through the view spans) does not end it."""
+    an expansion in cmd (quote_mask, mapped through the view spans) does not end it. Linear: the
+    end of each command comes from one backward pass, the hidden pushes from a prefix count."""
     def ends(j):
         t, start = vt[j][0], vt[j][1]
         if not starts_command(toks[j]):
@@ -1633,17 +1742,22 @@ def _glob_pair_hidden(cmd, v, toks, vt, pushes, mask):
             return True                           # eval, a shell -c string: a new command
         return any(not mask[v.spans[start + m][0]] for m in range(len(t)))
 
+    n = len(toks)
+    bound = [len(v.text)] * (n + 1)
+    for j in range(n - 1, -1, -1):
+        bound[j] = vt[j][1] if ends(j) else bound[j + 1]
+    starts = [s_ for s_, _ in pushes]
+    stops = [e_ for _, e_ in pushes]
+    count = [0]
+    for s_, e_ in pushes:
+        count.append(count[-1] + (1 if hidden(cmd, v, s_, e_) else 0))
     for k in command_words(toks):
         if not glob_git_word(toks, k):
             continue
-        end = len(v.text)
-        for j in range(k + 1, len(toks)):
-            if ends(j):
-                end = vt[j][1]
-                break
-        for s_, e_ in pushes:
-            if vt[k][2] <= s_ and e_ <= end and hidden(cmd, v, s_, e_):
-                return True
+        lo = bisect_left(starts, vt[k][2])
+        hi = bisect_right(stops, bound[k + 1])
+        if hi > lo and count[hi] > count[lo]:
+            return True
     return False
 
 
@@ -1708,11 +1822,11 @@ def view_could_push(cmd, aliases):
         vt = view_tokens(v.text)
         toks = _command_tokens(vt)
         if glob_candidate(v.text):
-            # A glob that main accepts joins the git words (a hidden push anywhere later, as on
-            # the rounds before the pairing); the strict-only ones need a hidden push in their
-            # own command.
+            # A glob that main accepts, or that round 5's reading accepted, joins the git words (a
+            # hidden push anywhere later, as before the pairing); the rest, which no older
+            # revision denied, need a hidden push in their own command.
             gits = sorted(gits + [(vt[k][1], vt[k][2]) for k in command_words(toks)
-                                  if main_glob_word(toks, k)])
+                                  if main_glob_word(toks, k) or glob_reading_word(toks, k)])
             if pushes:
                 gvt = view_tokens(v.text, True)
                 if _glob_pair_hidden(cmd, v, _command_tokens(gvt), gvt, pushes,

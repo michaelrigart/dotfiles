@@ -2336,13 +2336,62 @@ deny ## R8 I-1 a long dash form of 11 brackets, literal push elsewhere ## echo p
 deny ## R8 I-1 a long dash form of 11 brackets, hidden push ## [g][i][t]-[h][t][t][p]-[p][u][s][h] pu''sh origin main
 allow ## R8 D a [] word before a lone } in a body ## cd /tmp && cat <<'EOF'<NL>[] }<NL>EOF<NL>git diff --stat
 allow ## R8 D a [] word before a lone { in a body ## cd /tmp && cat <<'EOF'<NL>[] {<NL>EOF<NL>git diff --stat
-allow ## R8 D paren groups with a blank in a code comment ## cd /tmp && python3 - <<'PY'<NL># see (Appendix A.3) and (Appendix A.7)<NL>x = foo(bar(1), baz)<NL>PY<NL>git diff --stat
+allow ## R8 D control (silent at 95f56bb too): paren groups with a blank in a comment ## cd /tmp && python3 - <<'PY'<NL># see (Appendix A.3) and (Appendix A.7)<NL>x = foo(bar(1), baz)<NL>PY<NL>git diff --stat
+deny ## R9 C-A a $( ) with quotes inside a -c value ## /usr/bin/g[[:alpha:]]t -c "x.y=$(echo "a;b")" pu''sh origin main
+deny ## R9 C-A a process substitution holding a ; ## /usr/bin/g[[:alpha:]]t --namespace <(true; true) pu''sh origin main
+deny ## R9 C-A a backtick pair with quotes inside ## /usr/bin/g[[:alpha:]]t -c "x.y=`echo "a;b"`" pu''sh origin main
+deny ## R9 C-A an odd apostrophe in a comment before ## # it's late<NL>/usr/bin/g[[:alpha:]]t -c 'x.y=a;b' pu''sh origin main
+deny ## R9 C-A an odd apostrophe in a trailing comment ## echo hi # don't<NL>/usr/bin/g[[:alpha:]]t -c 'x.y=a;b' pu''sh origin main
+deny ## R9 C-A quotes and a comment before ## echo "it's" # it's<NL>/usr/bin/g[[:alpha:]]t -c 'x.y=a;b' pu''sh origin main
+deny ## R9 C-A an odd apostrophe in a here-document before ## cat <<'EOF'<NL>it's<NL>EOF<NL>/usr/bin/g[[:alpha:]]t -c 'x.y=a;b' pu''sh origin main
+deny ## R9 C-A a quoted ) inside $( ) ## /usr/bin/g[[:alpha:]]t -c x.y=a$(: ')') -c 'u.v=c;d' pu''sh origin main
+deny ## R9 C-A a quoted ) inside "$( )" ## /usr/bin/g[[:alpha:]]t -c "x.y=$(printf ")")" -c 'u.v=c;d' pu''sh origin main
+deny ## R9 C-A [[.g.]]it with a quoted ; ## /usr/bin/[[.g.]]it -c 'x.y=a;b' pu''sh origin main
+deny ## R9 C-A [[=g=]]it with a quoted ; ## /usr/bin/[[=g=]]it -c 'x.y=a;b' pu''sh origin main
+deny ## R9 C-A g[^x]t with a quoted ; ## /usr/bin/g[^x]t -c 'x.y=a;b' pu''sh origin main
+deny ## R9 C-A two collating symbols with a quoted ; ## /usr/bin/[[.g.]][[.i.]]t -c 'x.y=a;b' pu''sh origin main
+deny ## R9 C-A [[:alpha:]]it with a quoted ; ## /usr/bin/[[:alpha:]]it -c 'x.y=a;b' pu''sh origin main
+deny ## R9 C-A g[[:lower:]]t with a quoted ; ## /usr/bin/g[[:lower:]]t -c 'x.y=a;b' pu''sh origin main
+deny ## R9 C-A gi[[:alpha:]] with a quoted ; ## /usr/bin/gi[[:alpha:]] -c 'x.y=a;b' pu''sh origin main
+deny ## R9 C-A g[^]x]t with a quoted ; ## /usr/bin/g[^]x]t -c 'x.y=a;b' pu''sh origin main
+deny ## R9 C-B a dynamic option value, the slot after it is $P ## P=push; /usr/bin/g[[:alpha:]]t -c x.y=a* $P origin main
+deny ## R9 C-B a glob -C value, the slot after it is $P ## mkdir -p src; P=push; /usr/bin/g[[:alpha:]]t -C ./sr? $P origin main
+deny ## R9 C-B a lone-brace option value, the slot is $P ## P=push; /usr/bin/g[[:alpha:]]t -c x.y={a} $P origin main
+deny ## R9 C-B a set in an option value, the slot is a brace list ## echo push; /usr/bin/g[[:alpha:]]t -c x.y=[ab] {pu,}sh origin main
+deny ## R9 C-B a glob slot that matches push ## touch push; /usr/bin/g[[:alpha:]]t pu[s]h origin main
+deny ## R9 C-B the same word [[.g.]]it, dynamic option ## P=push; /usr/bin/[[.g.]]it -c x.y=a* $P origin main
+deny ## R9 C-B the same word [[.g.]]it, glob slot ## touch push; /usr/bin/[[.g.]]it pu[s]h origin main
+deny ## R9 C-B [g][i][t], dynamic option ## P=push; /usr/bin/[g][i][t] -c x.y=a* $P origin main
+deny ## R9 C-B [g][i][t], glob slot ## touch push; /usr/bin/[g][i][t] pu[s]h origin main
+allow ## R9 D a bracket word, an option and a lone * in a body ## cd /tmp && cat <<'EOF'<NL>[g][i][t] -x *<NL>EOF<NL>git diff --stat
+allow ## R9 D [] } in a body (control, as at 95f56bb) ## cd /tmp && cat <<'EOF'<NL>[] }<NL>EOF<NL>git diff --stat
+allow ## R9 D [] { in a body (control, as at 95f56bb) ## cd /tmp && cat <<'EOF'<NL>[] {<NL>EOF<NL>git diff --stat
+allow ## R9 m-3 an odd apostrophe in a comment before a strict-only word ## # don't<NL>/usr/bin/[g][i][t] status<NL>echo pu''sh
+allow ## R9 m-3 an odd apostrophe in a here-document before it ## cat <<'EOF'<NL>it's<NL>EOF<NL>/usr/bin/[g][i][t] status; echo pu''sh
+allow ## R9 m-3 an odd apostrophe in a trailing comment ## /usr/bin/[g][i][t] status # it's<NL>echo pu''sh
+allow ## R9 m-3 a quoted ( inside $( ) ## /usr/bin/[g][i][t] status $(echo '(') ; echo pu''sh
 TABLE
 # R7: a zsh group longer than 256 characters is read in full, not skipped.
 LONGPRE=$(awk 'BEGIN { for (i = 0; i < 70; i++) printf "n%03d|", i }')
-expect deny  "R7 a 300-character zsh group, literal push"  "$R" "/usr/bin/(${LONGPRE}gi)t push origin main"
-expect deny  "R7 a 300-character zsh group, hidden push"   "$R" "/usr/bin/g(${LONGPRE}it) pu''sh origin main"
-expect allow "R7 a 300-character zsh group, no push word"  "$R" "cd /tmp && /usr/bin/g(${LONGPRE}it) status"
+expect deny  "R7 a 300-character zsh group, literal push" "$R" \
+  "/usr/bin/(${LONGPRE}gi)t push origin main"
+expect deny  "R7 a 300-character zsh group, hidden push" "$R" \
+  "/usr/bin/g(${LONGPRE}it) pu''sh origin main"
+expect allow "R7 a 300-character zsh group, no push word" "$R" \
+  "cd /tmp && /usr/bin/g(${LONGPRE}it) status"
+# R9 (I-A): a 500 KB command of strict-only glob words and hidden pushes stays linear.
+BIGUNIT="/usr/bin/[g][i][t] x; echo pu''sh; "
+BIG=$(awk -v u="$BIGUNIT" 'BEGIN { for (i = 0; i < 14000; i++) printf "%s", u }')
+t0=$SECONDS
+expect allow "R9 a 500 KB command of strict-only glob words and hidden pushes" "$R" "$BIG"
+expect deny  "R9 the same with a real glob push at the end" "$R" \
+  "$BIG/usr/bin/g?t pu''sh origin main"
+R9_NAME="R9 the 500 KB glob commands finish under 10 s"
+if [ $((SECONDS - t0)) -lt 10 ]; then
+  pass=$((pass + 1)); printf '  ok   %s (%s s)\n' "$R9_NAME" "$((SECONDS - t0))"
+else
+  fail=$((fail + 1)); printf '  FAIL %s (%ss)\n' "$R9_NAME" "$((SECONDS - t0))"
+fi
 # The same readings against the real shells. Every word a shell expands to git or a git-* name in
 # a directory holding those files must be read as a possible git by glob_matches_git_name, unless
 # a word of * alone exempts it (g.glob_only; main's wider GLOB_ONLY is not used). A word is a pair:
