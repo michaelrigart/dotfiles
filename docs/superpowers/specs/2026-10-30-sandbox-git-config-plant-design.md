@@ -1,6 +1,6 @@
 # Sandboxed sessions cannot plant git configuration
 
-**Status:** Approved
+**Status:** In progress
 Signed off 2026-10-30 under Michael's delegation while he was away.
 **Date:** 2026-10-30
 **Branch:** `fix/sandbox-git-config-plant`
