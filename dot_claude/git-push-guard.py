@@ -49,15 +49,21 @@
 # runs in and says the push must run from there or Michael runs it, since the classifier
 # rule names only the plain form.
 #
-# Glob command words (spec section 7). A command word that a shell could expand to git or a
-# git-* name is read as a possible git: the span from the first [ that has a later ] through the
-# last ] is any characters, and so is an in-word (...) group, which zsh reads as an alternation
-# (glue_paren_groups); the rest is matched against the four names. Only a word made of * alone is
-# exempt (a case arm, a markdown bullet), judged on the raw word. Assumed: the shells are bash,
-# sh and zsh -f with nobareglobqual and without extendedglob or kshglob, so #, ^ and ~ patterns
-# (extendedglob) and *(...) forms (kshglob) are out of scope.
+# Glob command words (spec section 7). Two strengths. A glob that main's own fnmatch accepts for
+# git or a git-* name (not GLOB_ONLY, not a case arm) denies by itself, exactly as on main. A glob
+# that only the collapse accepts (the span from the first [ that has a later ] through the last ]
+# is any characters, so is an in-word (...) group, which zsh reads as an alternation; see
+# glue_paren_groups) is a possible git only when its own command is one main would deny with the
+# literal word git there (a push word, a dynamic or alias subcommand slot, GIT_CONFIG: the tokens up
+# to the next operator token), or, on the view side, when a hidden push word follows in its segment.
+# Only a word made of * alone is exempt from the collapse, judged on the raw word. The tokens stay
+# plain everywhere else: in bash ( is always a metacharacter, and after a reserved word it opens a
+# subshell. Assumed: bash, sh and zsh -f with nobareglobqual and without extendedglob or kshglob, so
+# #, ^ and ~ patterns and *(...) forms are out of scope. A zsh group with unbalanced parens ([t(])
+# expands only in a for-list, never at command position, so it is unreachable as a push.
 #
 # Written for /usr/bin/python3 (3.9): no match statements, no X | Y type unions.
+import fnmatch
 import json
 import os
 import re
@@ -226,20 +232,23 @@ def decision(kind, reason):
 
 # ------------------------------------------------------------------ the grammar
 GLUE_STOP = " \t\r\n;&|()<>`$=\\"
-GLUE_BAD = set(" \t\r\n;&<>")
-GLUE_MAX = 256                      # a longer group is no realistic alternation; keeps it linear
+GLUE_BAD = set("\r\n;&<>")
 
 
 def glue_paren_groups(text):
     """text with every in-word (...) group rewritten as [*...*] of the same length. zsh reads
-    word(a|b)word as an alternation (with bareglobqual and extendedglob off), so the group is a
+    word(a| b)word as an alternation (with bareglobqual and extendedglob off), so the group is a
     glob, but the tokenizers split a word at ( and ), which would lose it. A group opens
     glued to the word before it or to a group just before it (not after whitespace, an operator,
     $, = or a backtick: those start a subshell, a substitution or an array), is not empty
-    (name() defines a function), holds no blank, newline, ; & < or > (so a subshell, a call that
-    spans lines or a redirect is never swallowed), balances, and is at most GLUE_MAX characters
-    long. Quotes are skipped, so a quoted ( stays literal. One linear pass with a stack; the
-    length is kept, so spans into the original text stay valid."""
+    (name() defines a function), holds no newline, ; & < or > (so a subshell, a call that spans
+    lines or a redirect is never swallowed; blanks are allowed, zsh takes them into the group) and
+    balances. Quotes are skipped, so a quoted ( stays literal. One linear pass with a stack; the
+    length is kept, so spans into the original text stay valid.
+
+    Only the glob judgement reads the glued text (glob_git_word on glued tokens). Every other
+    check reads the plain tokens, because in bash ( is always a metacharacter and, after a
+    reserved word (!, {, time, then, do, if), opens a subshell that must stay visible."""
     if "(" not in text:
         return text
     n, i, prev_end, open_groups = len(text), 0, -1, 0
@@ -269,7 +278,7 @@ def glue_paren_groups(text):
             start, glued = stack.pop()
             if glued:
                 open_groups -= 1
-                if open_groups == 0 and i - start < GLUE_MAX:
+                if open_groups == 0:
                     groups.append((start, i + 1))
                     prev_end = i + 1
         i += 1
@@ -284,9 +293,11 @@ def glue_paren_groups(text):
     return "".join(out)
 
 
-def tokenize(cmd):
-    """Shell words and operator tokens. Raises ValueError on unbalanced quotes."""
-    lx = shlex.shlex(glue_paren_groups(cmd.replace("\\\n", " ")), posix=True,
+def tokenize(cmd, glue=False):
+    """Shell words and operator tokens. Raises ValueError on unbalanced quotes. glue reads the
+    in-word (...) groups as globs (glue_paren_groups); only the glob judgement asks for it."""
+    text = cmd.replace("\\\n", " ")
+    lx = shlex.shlex(glue_paren_groups(text) if glue else text, posix=True,
                      punctuation_chars=PUNCT)
     lx.whitespace = " \t\r"          # a newline separates commands; it is not a blank
     lx.whitespace_split = True
@@ -472,6 +483,12 @@ DASH_PUSH = {"git-push", "git-send-pack", "git-http-push"}
 GIT_NAMES = ("git",) + tuple(sorted(DASH_PUSH))
 # Shell reserved words: the word after one is still in command position.
 RESERVED = {"if", "then", "elif", "else", "do", "while", "until", "!", "{"}
+# A word of glob syntax alone (*, ?, [...]) with no literal outside a bracket: the *) of a
+# case arm, or a markdown bullet (* item) in a here-document. On main it spells no command name.
+GLOB_ONLY = re.compile(r"(?:[*?]|\[[!^]?\]?[^\]]*\])+")
+BRACKET_CLASS = re.compile(r"\[[!^]?\]?[^\]]*\]")
+GLOB_MAIN_MAX = 128          # main's fnmatch is quadratic on a run of [: only short words use it
+GLOB_MAIN_BRACKETS = 8
 
 
 def starts_command(tok):
@@ -608,14 +625,16 @@ def glob_matches_git_name(word):
 
 def glob_only(word):
     """Is the raw word made of * alone (a case arm, a markdown bullet)? It spells no command
-    name and is the only exemption: a word of ?, [..] or both (???, [g][i][t]) can single out
-    git, and the collapsed form of [[.g.]i[t] is a *, so the test never looks at the collapse."""
+    name. The test is on the raw word, never on the collapse of [[.g.]i[t] (which is a *)."""
     return bool(word) and not word.strip("*")
 
 
 def glob_git_word(tokens, k):
-    """Is the command word at k a glob that can expand to git or a git-* name: a glob (?, [, *)
-    that is not a bare glob (glob_only), not a case pattern, and matches (glob_matches_git_name)?"""
+    """Is the command word at k a glob that the collapse reads as git or a git-* name: a glob
+    (?, [, *) that is not a * alone (glob_only), not a case pattern, and matches
+    (glob_matches_git_name)? This is the NEW strictness; on its own it is not a deny, it counts
+    when its command is one main would deny as a git (glob_as_git_hit) or, on the view side, a
+    hidden push word follows in its segment (_glob_pair_hidden)."""
     base = os.path.basename(tokens[k])
     if not any(c in base for c in "?[*"):
         return False
@@ -624,13 +643,64 @@ def glob_git_word(tokens, k):
     return glob_matches_git_name(base)
 
 
+def main_glob_matches(base):
+    """Main's own decision: does fnmatch accept the word for git or a git-* name? Python 3.9
+    raises re.error on a backwards range ([:-9]); the word is then read again with each bracket
+    expression as one ?, so g[z-a]t stays a possible git and prose such as [:-9].strip() names
+    none."""
+    for pattern in (base, BRACKET_CLASS.sub("?", base)):
+        try:
+            return any(fnmatch.fnmatchcase(g, pattern) for g in GIT_NAMES)
+        except re.error:
+            continue
+    return False
+
+
+def main_glob_word(tokens, k):
+    """Is the command word at k a glob git word by itself, as on main: not GLOB_ONLY, not a case
+    pattern, and fnmatch accepts it. This stand-alone test keeps main's behaviour, including the
+    exemption of ???, [ab] and the like. A word over GLOB_MAIN_MAX characters or with more than
+    GLOB_MAIN_BRACKETS [ (fnmatch is quadratic on it) is judged by the collapse instead."""
+    base = os.path.basename(tokens[k])
+    if not any(c in base for c in "?[*"):
+        return False
+    if len(base) > GLOB_MAIN_MAX or base.count("[") > GLOB_MAIN_BRACKETS:
+        return glob_git_word(tokens, k)
+    if GLOB_ONLY.fullmatch(base) or case_pattern(tokens, k):
+        return False
+    return main_glob_matches(base)
+
+
+def segment_end(tokens, k):
+    """The index of the operator token that ends the command holding tokens[k] (or the length):
+    the tokenizer's reading, so a ; inside quotes does not end it."""
+    j = k + 1
+    while j < len(tokens) and not starts_command(tokens[j]):
+        j += 1
+    return j
+
+
+def glob_as_git_hit(tokens, k, names):
+    """The NEW glob strictness. The glob word at k, which the collapse reads as git but main's
+    fnmatch did not accept, is a possible git when main's own raw checks would deny its command
+    read with the literal word git there: a push word, a dynamic or alias subcommand slot, a push
+    alias name or a -c alias in the words up to the next operator token. A hidden push word is the
+    view side's job (_glob_pair_hidden)."""
+    fake = ["git"] + tokens[k + 1:segment_end(tokens, k)]
+    if git_word_hits(fake) or alias_slot_hit(fake, names):
+        return True
+    text = " ".join(re.sub(r"[;&|\n]", "_", t) for t in fake)
+    return (PUSH_SHAPE.search(text) is not None
+            or any(re.search(r"\bgit\b[^;&|\n]*\b" + re.escape(a) + r"\b", text) for a in names))
+
+
 def odd_command_word(tokens):
     """A command word that could be git push under another spelling: git-push,
     git-send-pack or git-http-push by name (the dash form, also behind a path), a glob
-    that matches git or one of those names (gi?, g[i]t), or a built word (a last component
-    holding $, a backtick, { or }) whose subcommand slot is push or send-pack (built_word_hits,
-    the final return). A glob with no literal in it (*) and a case pattern (g*)) are not
-    spellings of a command."""
+    that matches git or one of those names as on main (gi?, g[i]t: main_glob_word), or a built
+    word (a last component holding $, a backtick, { or }) whose subcommand slot is push or
+    send-pack (built_word_hits, the final return). A glob with no literal in it (*) and a case
+    pattern (g*)) are not spellings of a command."""
     for k in command_words(tokens):
         base = os.path.basename(tokens[k])
         if base in DASH_PUSH:
@@ -638,7 +708,7 @@ def odd_command_word(tokens):
         # Only the last path component decides: $HOME/bin/helm is helm. The glob branch below
         # does not treat $DOCKER as a git spelling; the built-word rule after the loop catches
         # it when its slot is push. A glob is refused when it can match git or a git-* name.
-        if glob_git_word(tokens, k):
+        if main_glob_word(tokens, k):
             return True
     return bool(built_word_hits(tokens))
 
@@ -785,7 +855,7 @@ def shell_words(tokens):
     return out
 
 
-def nested_token_lists(tokens, depth=3):
+def nested_token_lists(tokens, depth=3, glue=False):
     """The tokenized command strings that a shell -c string or an eval, in command position,
     runs, to a nesting depth of 3. Only the command-string argument (the word after the
     shell's options) and eval's joined arguments count. A string the tokenizer cannot split
@@ -807,11 +877,11 @@ def nested_token_lists(tokens, depth=3):
         if not inner:
             continue
         try:
-            sub = tokenize(inner)
+            sub = tokenize(inner, glue)
         except ValueError:
             continue
         found.append(sub)
-        found.extend(nested_token_lists(sub, depth - 1))
+        found.extend(nested_token_lists(sub, depth - 1, glue))
     return found
 
 
@@ -1075,6 +1145,8 @@ def could_push(cmd, tokens, cwd):
         # text pattern.
         if raw_git and (any(re.search(r"\bgit\b[^;&|\n]*\b" + re.escape(a) + r"\b", text) for a in names)
                         or any(alias_slot_hit(sub, names) for sub in nested)):
+            return True
+        if literal and glob_candidate(cmd) and raw_glob_paired(cmd, names, cwd):
             return True
         return bool(vs) and view_could_push(cmd, names)
     except Deny:
@@ -1369,10 +1441,12 @@ def views(cmd):
     return result
 
 
-def view_tokens(text):
+def view_tokens(text, glue=False):
     """(token, start, end) for each word, newline and run of operators in a view's text. No
-    shlex: the quotes are already gone."""
-    return [(m.group(), m.start(), m.end()) for m in VIEW_TOKEN.finditer(glue_paren_groups(text))]
+    shlex: the quotes are already gone. glue reads the in-word (...) groups as globs; the offsets
+    are those of text either way."""
+    return [(m.group(), m.start(), m.end())
+            for m in VIEW_TOKEN.finditer(glue_paren_groups(text) if glue else text)]
 
 
 def hidden(cmd, view, start, end):
@@ -1405,14 +1479,61 @@ def _command_tokens(vt):
     return out
 
 
-def _glob_git_spans(toks, vt):
-    """The view spans of the command words that odd_command_word's glob branch reads as a git:
-    a glob that can expand to git or a git-* name, not a bare glob, not a case pattern."""
-    out = []
+def _glob_pair_hidden(cmd, v, toks, vt, pushes):
+    """Is a command word the collapse reads as git followed, in its segment of the view, by a
+    hidden push word? toks and vt are the glued tokens of the view (same offsets as v.text)."""
     for k in command_words(toks):
-        if glob_git_word(toks, k):
-            out.append((vt[k][1], vt[k][2]))
-    return out
+        if not glob_git_word(toks, k):
+            continue
+        end = len(v.text)
+        for j in range(k + 1, len(toks)):
+            if starts_command(toks[j]):
+                end = vt[j][1]
+                break
+        for s_, e_ in pushes:
+            if vt[k][2] <= s_ and e_ <= end and hidden(cmd, v, s_, e_):
+                return True
+    return False
+
+
+def glob_candidate(text):
+    """Cheap test: could text hold a glob command word the collapse reads? A word with a glob
+    character that is not just text: the glued reading needs one of ? [ * (."""
+    return any(c in text for c in "?[*(")
+
+
+def raw_glob_paired(cmd, names, cwd):
+    """The raw side of the new glob strictness: in the glued tokens of cmd (and of its sh -c and
+    eval strings) a glob git word whose command main would deny as a git (glob_as_git_hit), or
+    GIT_CONFIG anywhere in cmd, as for a literal git. The push aliases of cwd and of a -C or
+    --git-dir the command names are listed only when a candidate exists."""
+    try:
+        gt = tokenize(cmd, True)
+    except ValueError:
+        return False
+    lists = [gt] + nested_token_lists(gt, 3, True)
+    cands = [(t, k) for t in lists for k in command_words(t) if glob_git_word(t, k)]
+    if not cands:
+        return False
+    if "GIT_CONFIG" in cmd:
+        return True
+    selectors = {()}
+    for t, k in cands:
+        seg = t[k + 1:segment_end(t, k)]
+        for j, tok in enumerate(seg):
+            if tok in ("-C", "--git-dir") and j + 1 < len(seg):
+                selectors.add((tok, os.path.expanduser(seg[j + 1])))
+            elif tok.startswith("--git-dir="):
+                selectors.add((tok,))
+    aliases = set(names)
+    for sel in sorted(selectors):
+        try:
+            aliases |= push_aliases(cwd, list(sel))
+        except Deny:
+            raise
+        except Exception:
+            return True
+    return any(glob_as_git_hit(t, k, aliases) for t, k in cands)
 
 
 def view_could_push(cmd, aliases):
@@ -1435,7 +1556,10 @@ def view_could_push(cmd, aliases):
             continue
         vt = view_tokens(v.text)
         toks = _command_tokens(vt)
-        gits = sorted(gits + _glob_git_spans(toks, vt))
+        if pushes and glob_candidate(v.text):
+            gvt = view_tokens(v.text, True)
+            if _glob_pair_hidden(cmd, v, _command_tokens(gvt), gvt, pushes):
+                return True
         if gits and pushes:
             for s, e in gits:                          # the first hidden git is the best one
                 if hidden(cmd, v, s, e):

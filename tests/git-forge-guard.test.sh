@@ -2247,39 +2247,80 @@ deny ## R6 a backslash-escaped ] under sh -c ## sh -c '/usr/bin/g[i\]]t push ori
 deny ## R6 a backslash-escaped ], hidden ## /usr/bin/g[i\]]t pu''sh origin main
 deny ## R6 a double-quoted ], hidden ## /usr/bin/g[i"]"]t pu''sh origin main
 deny ## R6 a single-quoted ], hidden ## /usr/bin/g[i']']t pu''sh origin main
-deny ## R6 amendment: a bracket word with * is no longer exempt ## [abc]* pu''sh origin main
-deny ## R6 amendment: bracket words of literals pick out git, literal ## /usr/bin/[g][i][t] push origin main
-deny ## R6 amendment: bracket words of literals pick out git, hidden ## /usr/bin/[g][i][t] pu''sh origin main
-deny ## R6 amendment: brackets and a ?, force ## /usr/bin/[g][i]? push --force origin main
-deny ## R6 amendment: ??? picks out git in a git-core directory ## /usr/bin/??? push origin main
-deny ## R6 amendment: a zsh group, literal ## /usr/bin/(git|nope) push origin main
-deny ## R6 amendment: a zsh group, hidden ## /usr/bin/(git|nope) pu''sh origin main
-deny ## R6 amendment: a zsh group inside a word, literal ## /usr/bin/(gi|x)t push origin main
-deny ## R6 amendment: a zsh group inside a word, hidden ## /usr/bin/(gi|x)t pu''sh origin main
-deny ## R6 amendment: a zsh group under sh -c ## sh -c '/usr/bin/(gi|x)t push origin main'
-allow ## R6 amendment: ls of a bracket word of literals ## ls /usr/bin/[g][i][t]
-allow ## R6 amendment: a bracket glob git word, no push word ## /usr/bin/[g]it status
-allow ## R6 amendment: IFS set to an ANSI-C newline ## IFS=$'\n'; echo hi
-allow ## R6 amendment: a function definition and a substitution are no group ## git() { echo hi; }; echo $(date)
-allow ## R6 amendment: a subshell and an arithmetic expansion are no group ## (cd /tmp && ls); echo $((1+2)) $'x'
-allow ## R6 a single bracket of plain characters is one character: a [x] line in a body ## cat <<'EOF'<NL>xs.push(1)<NL>[x] done<NL>EOF
-allow ## R6 a single bracket of plain characters is one character: a [tag] line in a body ## cat <<'EOF'<NL>xs.push(1)<NL>[ok] done<NL>EOF
+deny ## R6 a bracket word with * is no longer exempt ## [abc]* pu''sh origin main
+deny ## R6 bracket words of literals pick out git, literal ## /usr/bin/[g][i][t] push origin main
+deny ## R6 bracket words of literals pick out git, hidden ## /usr/bin/[g][i][t] pu''sh origin main
+deny ## R6 brackets and a ?, force ## /usr/bin/[g][i]? push --force origin main
+deny ## R6 ??? picks out git in a git-core directory ## /usr/bin/??? push origin main
+deny ## R6 a zsh group, literal ## /usr/bin/(git|nope) push origin main
+deny ## R6 a zsh group per letter, hidden ## /usr/bin/(g|nope)(i|nope)(t|nope) pu''sh origin main
+deny ## R6 a zsh group inside a word, literal ## /usr/bin/(gi|x)t push origin main
+deny ## R6 a zsh group inside a word, hidden ## /usr/bin/(gi|x)t pu''sh origin main
+deny ## R6 a zsh group in a bash -c string (bash errors, zsh -c would not) ## bash -c '/usr/bin/(gi|x)t push origin main'
+deny ## R7 a blank inside a zsh group ## /usr/bin/(git| nope) push origin main
+deny ## R7 a blank inside a zsh group, hidden ## /usr/bin/(gi| x)t pu''sh origin main
+deny ## R7 the push word is in an earlier segment: P=push, then $P ## P=push; /usr/bin/[g][i][t] $P origin main
+deny ## R7 a quoted ; in a -c value, literal push ## /usr/bin/[g][i][t] -c 'x.y=a;b' push origin main
+deny ## R7 a dynamic subcommand slot ## /usr/bin/[g][i][t] ${X:-push} origin main
+deny ## R7 a -c alias that is a push ## /usr/bin/[g][i][t] -c alias.x=push x origin main
+deny ## R7 GIT_CONFIG next to a strict glob git word ## GIT_CONFIG_COUNT=1 /usr/bin/[g][i][t] status; echo push
+allow ## R7 a strict glob git word whose command is no push ## cd /tmp; /usr/bin/[g][i][t] status
+allow ## R7 the same with a push word in the next command ## cd /tmp; /usr/bin/[g][i][t] status; echo push
+allow ## R7 ls of a bracket word of literals, helper reached ## cd /tmp && ls /usr/bin/[g][i][t]; echo push
+allow ## R6 IFS set to an ANSI-C newline ## IFS=$'\n'; echo hi
+deny ## R7 C1 !( subshell with ${IFS}, force ## ls; !(git${IFS}push${IFS}-f${IFS}origin${IFS}main)
+deny ## R7 C1 !( subshell ## ls; !(git${IFS}push${IFS}origin${IFS}main)
+deny ## R7 C1 !( subshell after && ## ls&&!(git${IFS}push${IFS}origin${IFS}main)
+deny ## R7 C1 !( subshell first ## !(git${IFS}push${IFS}origin${IFS}main); ls
+deny ## R7 C1 !( subshell after cd and && ## cd /tmp && ls && !(git${IFS}push${IFS}origin${IFS}main)
+deny ## R7 C1 !( subshell with -C ## ls; !(git${IFS}-C${IFS}.${IFS}push${IFS}origin${IFS}main)
+deny ## R7 C1 !( subshell with the dash form ## ls; !(git-push${IFS}-f${IFS}origin${IFS}main)
+deny ## R7 C1 !( subshell with a brace list ## echo hi; !({git,push,origin,main})
+deny ## R7 C1 time( subshell with a brace list ## echo hi; time({git,push,origin,main})
+deny ## R7 C1 {( subshell ## echo hi;{(git${IFS}push${IFS}origin${IFS}main)}
+deny ## R7 C1 {( subshell after || ## ls||{(git${IFS}push${IFS}origin${IFS}main)}
+deny ## R7 C1 if( then( subshells ## ls; if(true)then(git${IFS}push${IFS}origin${IFS}main)fi
+deny ## R7 C1 coproc( subshell ## echo hi; coproc(git${IFS}push${IFS}origin${IFS}main)
+deny ## R7 C1 !( subshell alone ## !(git${IFS}push${IFS}origin${IFS}main)
+deny ## R7 C1 time( subshell alone ## time(git${IFS}push${IFS}origin${IFS}main)
+allow ## R7 a function definition and a substitution, helper reached ## cd /tmp && git() { echo hi; }; echo $(date)
+allow ## R7 a subshell and a case arm with a group, helper reached ## cd /tmp && (cd x && make); case x in (a|b) ;; esac
+allow ## R7 an arithmetic expansion and a call-like word, helper reached ## cd /tmp && echo $((1+2)) a(b)c; git status
+allow ## R7 an array assignment and a [[ ]] group, helper reached ## cd /tmp && array=(a b c); [[ x == (a|b) ]]; git status
+allow ## R6 a single bracket of plain characters is one character: a [x] line ## cat <<'EOF'<NL>xs.push(1)<NL>[x] done<NL>EOF
+allow ## R6 a single bracket of plain characters is one character: a [tag] line ## cat <<'EOF'<NL>xs.push(1)<NL>[ok] done<NL>EOF
 allow ## R6 a bracket word of one character, hidden push ## [abcd] pu''sh origin main
-deny ## R6 cost of the amendments: a ??? line at the start of a body is a possible git ## cat <<'EOF'<NL>xs.push(1)<NL>??? what<NL>EOF
-deny ## R6 cost of the amendments: a git(1) line at the start of a body is a possible git ## cat <<'EOF'<NL>xs.push(1)<NL>git(1) is a man page<NL>EOF
-allow ## R6 amendment: a quoted group is literal ## echo '(git|nope) push'
-allow ## R6 amendment: a here-document body with a call, a man page name and git status ## cat <<'EOF'<NL>it's<NL>xs.push(1)<NL>git(1) is a man page<NL>EOF<NL>git status
+allow ## R7 I1 a sys.argv[1] body line ## cd /tmp && cat <<'EOF'<NL>xs.push(1)<NL>sys.argv[1]<NL>EOF<NL>git status
+allow ## R7 I1 a TOML [[package]] header ## cd /tmp && cat <<'EOF'<NL>xs.push(1)<NL>[[package]]<NL>EOF<NL>git status
+allow ## R7 I1 a [[bin]] header ## cd /tmp && cat <<'EOF'<NL>xs.push(1)<NL>[[bin]]<NL>EOF<NL>git status
+allow ## R7 I1 a markdown [text][ref] line ## cd /tmp && cat <<'EOF'<NL>xs.push(1)<NL>[docs][1] has the details.<NL>EOF<NL>git status
+allow ## R7 I1 a [a-z][0-9] line ## cd /tmp && cat <<'EOF'<NL>xs.push(1)<NL>[a-z][0-9]<NL>EOF<NL>git status
+allow ## R7 I1 a ??? line ## cd /tmp && cat <<'EOF'<NL>xs.push(1)<NL>??? what<NL>EOF<NL>git status
+allow ## R7 I1 a git(1) line ## cd /tmp && cat <<'EOF'<NL>xs.push(1)<NL>git(1) is a man page<NL>EOF<NL>git status
+allow ## R7 I1 a g(1); line ## cd /tmp && cat <<'EOF'<NL>xs.push(1)<NL>g(1);<NL>EOF<NL>git status
+allow ## R7 class A a [$var.name.word[] line with a \u escape in the body ## cd /tmp && cat <<'EOF'<NL>xs.push(1)<NL>é and [$ab.cdefgh.ijklmnopqr[]<NL>[$ab.cdefgh.ijklmnopqr[] x<NL>EOF<NL>git status
+allow ## R7 class A a regex range line with a \x escape in the body ## cd /tmp && cat <<'EOF'<NL>xs.push(1)<NL>\x41 [a-z][-z] <NL>[a-z][-z] and [é-ë][-z]<NL>EOF<NL>git status
+allow ## R7 I1 a [a][b] line ##cd /tmp && cat <<'EOF'<NL>xs.push(1)<NL>[a][b] and more<NL>EOF<NL>git status
+allow ## R6 a quoted group is literal ## cd /tmp && echo '(git|nope) push'
 allow ## R6 a case arm is exempt, as on main ## case $x in<NL>*) pu''sh;;<NL>esac
 TABLE
-# The same readings against the real shells (round 6: judged with main's GLOB_ONLY only, and the
-# batches are checked, never trusted): every word a shell expands to git or a git-* name in a
-# directory holding those files must be accepted by glob_matches_git_name, unless main's
-# word of * alone exempts it. zsh parenthesis groups, (a|b), are run in zsh only. A word is a pair (the text handed to the shell, the text the helper's
-# tokens hold: quotes and backslashes removed). A batch the shell does not finish (bash 3.2
-# segfaults on some glob words) is rerun word by word, a word that still kills it is counted and
-# printed, and a shell that finishes nothing fails. A shell that is not installed is skipped.
-sh_out=$(/usr/bin/python3 - "$(dirname "$GUARD")/git-push-guard.py" "$TMP" <<'PY'
-import importlib.util, os, subprocess, sys
+# R7: a zsh group longer than 256 characters is read in full, not skipped.
+LONGGRP=$(awk 'BEGIN { printf "("; for (i = 0; i < 70; i++) printf "n%03d|", i; printf "git)" }')
+expect deny  "R7 a 300-character zsh group, literal push"  "$R" "/usr/bin/$LONGGRP push origin main"
+expect deny  "R7 a 300-character zsh group, hidden push"   "$R" "/usr/bin/$LONGGRP pu''sh origin main"
+expect allow "R7 a 300-character zsh group, no push word"  "$R" "cd /tmp && /usr/bin/$LONGGRP status"
+# The same readings against the real shells. Every word a shell expands to git or a git-* name in
+# a directory holding those files must be read as a possible git by glob_matches_git_name, unless
+# a word of * alone exempts it (g.glob_only; main's wider GLOB_ONLY is not used). A word is a pair:
+# the text handed to the shell, and the text the helper's tokens hold (quotes and backslashes
+# removed). zsh parenthesis groups, (a|b), run in zsh only. A batch the shell does not finish
+# (bash 3.2 segfaults on some glob words) is rerun word by word; a word that still kills the shell
+# is counted and printed; a shell that finishes nothing fails. A second layer runs a sample of the
+# expanding words through the helper itself, in command position before a push word (so the
+# tokenizer, the glue and the pairing are exercised), and every one must deny. A shell that is not
+# installed is skipped. Plain zsh (without -f) is not run: it reads the user's own startup files.
+sh_out=$(/usr/bin/python3 - "$(dirname "$GUARD")/git-push-guard.py" "$TMP" "$R" <<'PY'
+import concurrent.futures, importlib.util, json, os, subprocess, sys
 sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location("guard", sys.argv[1])
 g = importlib.util.module_from_spec(spec)
@@ -2292,21 +2333,23 @@ for n in names:
 
 
 def slots(c):
-    same = ["%s", "?", "[%s]", "[!x]", "[^x]", "[[:alpha:]]", "[[.%s.]]", "[[=%s=]]", "[x[:%s:][%s]",
-            "[[:%s:][%s]", "[[:alpha:][%s]", "[%s[:alpha:]]", "*", "[a-z]", "[]%s]", "[^]%s]", "[!]",
-            "[^]", "[[:a:][:b:]%s]", "[[.%s.]", "[[=%s=]", "[[:%s:]", "[[.%s.][]x]", "[[=%s=][!]x]",
-            "[[:%s:][]x]", "[[.].]%s]", "[[=]=]%s]", "[%s]]", "[]]", "[[.%s.]*", "[%s", "%s]"]
+    same = ["%s", "?", "[%s]", "[!x]", "[^x]", "[[:alpha:]]", "[[.%s.]]", "[[=%s=]]",
+            "[x[:%s:][%s]", "[[:%s:][%s]", "[[:alpha:][%s]", "[%s[:alpha:]]", "*", "[a-z]",
+            "[]%s]", "[^]%s]", "[!]", "[^]", "[[:a:][:b:]%s]", "[[.%s.]", "[[=%s=]", "[[:%s:]",
+            "[[.%s.][]x]", "[[=%s=][!]x]", "[[:%s:][]x]", "[[.].]%s]", "[[=]=]%s]", "[%s]]",
+            "[]]", "[[.%s.]*", "[%s", "%s]"]
     out = []
     for t in same:
         s = t.replace("%s", c)
         out.append((s, s))
-    out += [("[%s\\]]" % c, "[%s]]" % c), ('[%s"]"]' % c, "[%s]]" % c), ("[%s']']" % c, "[%s]]" % c)]
+    out += [("[%s\\]]" % c, "[%s]]" % c), ('[%s"]"]' % c, "[%s]]" % c),
+            ("[%s']']" % c, "[%s]]" % c)]
     return out
 
 
 def zslots(c):
     out = []
-    for t in ["(%s|nope)", "(nope|%s)", "(%s)", "(x|%s|y)", "(|%s)", "(%s|)"]:
+    for t in ["(%s|nope)", "(nope|%s)", "(%s)", "(x|%s|y)", "(|%s)", "(%s|)", "(%s| nope)"]:
         s = t.replace("%s", c)
         out.append((s, s))
     return out
@@ -2323,7 +2366,8 @@ for a in slots("g") + zslots("g"):
             w = a[0] + b[0] + c[0]
             if any(x in w for x in "(|"):
                 # a word that starts with ( is a subshell in command position: reach it as ./
-                zwords[("./" if w[0] == "(" else "") + w] = ("./" if w[0] == "(" else "") + a[1] + b[1] + c[1]
+                pre = "./" if w[0] == "(" else ""
+                zwords[pre + w] = pre + a[1] + b[1] + c[1]
 words_all = dict(words)
 words_all.update(zwords)
 SHELLS = [("zsh", ["/bin/zsh", "-f"], "setopt nonomatch; "), ("bash32", ["/bin/bash"], ""),
@@ -2348,6 +2392,19 @@ def run(argv, pre, batch, tag):
     return got
 
 
+def reads_as_git(w):
+    return g.glob_matches_git_name(os.path.basename(g.glue_paren_groups(words_all[w])))
+
+
+def hook_denies(w):
+    cmd = "/usr/bin/" + w + " push origin main"
+    payload = json.dumps({"cwd": sys.argv[3], "tool_input": {"command": cmd}})
+    env = dict(os.environ, PUSH_GUARD_LITERAL="1")
+    out = subprocess.run(["/usr/bin/python3", "-I", sys.argv[1]], input=payload,
+                         capture_output=True, text=True, env=env, timeout=60).stdout
+    return '"permissionDecision":"deny"' in out
+
+
 for label, argv, pre in SHELLS:
     if not os.path.exists(argv[0]):
         print("skip " + label + " (not installed)")
@@ -2366,13 +2423,21 @@ for label, argv, pre in SHELLS:
                 else:
                     got |= one
         seen |= got
-    miss = [w for w in sorted(seen) if not g.glob_matches_git_name(os.path.basename(g.glue_paren_groups(words_all[w])))
-            and not g.glob_only(words_all[w])]
+    bare = [w for w in seen if g.glob_only(words_all[w])]
+    miss = [w for w in sorted(seen) if not reads_as_git(w) and w not in bare]
     answered = len(shell_words) - len(crashed)
     good = bool(seen) and not miss and answered > len(shell_words) * 0.99
     print(("ok " if good else "FAIL ") + "%s: %d of %d words expand to a git name, %d missed %s, "
           "%d words killed the shell" % (label, len(seen), len(shell_words), len(miss),
                                          [words_all[w] for w in miss[:5]], len(crashed)))
+    pool = [w for w in sorted(seen) if w not in bare]
+    sample = pool[::max(1, len(pool) // 120)]
+    with concurrent.futures.ThreadPoolExecutor(8) as ex:
+        res = list(ex.map(hook_denies, sample))
+    notden = [sample[i] for i, r in enumerate(res) if not r]
+    print(("ok " if sample and not notden else "FAIL ") + "%s helper: %d of %d sampled words "
+          "denied before a push word, %d not %s" % (label, len(sample) - len(notden), len(sample),
+                                                    len(notden), [words_all[w] for w in notden[:5]]))
 PY
 )
 while IFS= read -r line; do
