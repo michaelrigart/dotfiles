@@ -6,7 +6,7 @@
 set -u
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
 CONFIG="$SRC/dot_config/git/config"
-APPLE_GIT=/Library/Developer/CommandLineTools/usr/bin/git
+APPLE_GIT=${APPLE_GIT:-/Library/Developer/CommandLineTools/usr/bin/git}
 pass=0; fail=0
 
 if [ ! -f "$CONFIG" ]; then
@@ -63,7 +63,8 @@ if [ -x "$APPLE_GIT" ]; then
   val=$("$APPLE_GIT" -C "$T/fake" config probe.key 2>/dev/null)
   if [ "$rc" -ne 0 ] && [ -z "$val" ]; then ok "Apple git refuses it too"; else bad "Apple git refuses it too (rc=$rc)"; fi
 else
-  ok "Apple git refuses it too (no Command Line Tools git)"
+  # A check whose subject is missing must not read green: tests/run.sh counts only ok/PASS/FAIL lines.
+  echo "  SKIP: Apple git refuses it too (no Command Line Tools git at $APPLE_GIT)"
 fi
 
 check_equal "$(git --git-dir="$T/fake" config probe.key 2>/dev/null)" fake \

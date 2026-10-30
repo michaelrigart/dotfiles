@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Run inside a fresh Claude sandbox after chezmoi apply. Tries to create a file in each place
-# the sandbox must not write (spec 2026-10-16, sandbox write boundary) and in each work place
-# it must still write; reports KEY=VALUE only and removes what it created.
+# the sandbox must not write (specs 2026-10-16, sandbox write boundary, and 2026-10-30, git
+# configuration and .git where no repository may be) and in each work place it must still write;
+# reports KEY=VALUE only and removes what it created.
 # test-requires: sandboxed, fresh-session  # measures the sandbox; unsandboxed every denial reads WRITABLE
 set -u
 fail=0
@@ -72,6 +73,9 @@ denied_existing() {
 # path and skip each probe silently, so that counts as a failure.
 base=$(cd "${RUN_SH_START_DIR:-.}" 2>/dev/null && pwd -P) || base=$(pwd -P 2>/dev/null) || base=
 if [ -z "$base" ]; then echo "base_dir=UNKNOWN"; fail=$((fail + 1)); fi
+# git ignoring the global and system configuration (the chezmoi top-level probe and the behaviour probe).
+gi() { GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git "$@"; }
+gc() { gi -c user.name=t -c user.email=t@t "$@"; }
 allowed_off_base() {
   local d
   d=$(cd "$(dirname "$2")" 2>/dev/null && pwd -P)
@@ -92,8 +96,14 @@ denied vault_obsidian "$V/.obsidian/$stamp"
 # ~/Documents): the deny globs are path rules, so a mkdir'd .git stands in for a real one. Hooks and git
 # configuration (config*, commondir, in the main directory, linked worktrees and submodules) are denied;
 # objects, refs, the index and a worktree's gitdir stay writable. The vault holds no repository: it gets
-# no .git fixture, and a .git at any depth there is denied (probed two levels down, as a directory and as
-# a file). The vault root is probed above Documents/MSB, away from Obsidian.
+# no .git fixture, and a .git at any depth there is denied (probed two levels below the vault root, as a
+# directory in <stamp>/vdir and as a file in <stamp>/org). The vault root is probed above Documents/MSB,
+# away from Obsidian. A repository's git directory inside a linked worktree's submodule
+# (.git/worktrees/wt/modules/sub) is probed too: config, commondir and hooks are denied there.
+# Two different families of deny follow, and they stop different things. The .git-file denies stop a
+# .git entry from pointing git at a directory the sandbox wrote (the root tops, the vault, harness
+# worktrees). The HEAD denies stop a fake bare repository from forming at a root's top level, which
+# Starship would walk up into although git's safe.bareRepository refuses it; they are probed below.
 # Agent configuration a later session would load (.claude/settings*.json, .mcp.json, .codex) is denied
 # only at depth 0-2 under a root, where sessions start: probed in a repository two levels down
 # (<root>/<stamp>/arepo). Deeper it stays writable, so a node_modules package that ships one (resolve
@@ -118,12 +128,18 @@ for root in "$HOME/Code" "$HOME/.local/share/chezmoi" "$HOME/Documents" \
   dirs=("$m/plain/hooks" "$r/.claude/skills" "$r/.claude/commands" "$r/.claude/agents" \
         "$ar/.claude" "$nm/.claude" "$ar/.claude/worktrees/wt1/.claude")
   if [ "$vault" = 0 ]; then
-    dirs+=("$g/objects" "$g/refs/heads" "$g/modules/sub/worktrees/swt" "$g/worktrees/wt" "$b/plain")
+    dirs+=("$g/objects" "$g/refs/heads" "$g/modules/sub/worktrees/swt" "$g/worktrees/wt/modules/sub" "$b/plain")
+  else
+    dirs+=("$b/vdir")
   fi
   if mkdir -p "${dirs[@]}" 2>/dev/null; then
     if [ "$vault" = 1 ]; then
-      denied vault_git_dir "$b/org/repo/.git/"
+      # .git-file/.git-directory denies: both two levels below the vault root (<stamp>/vdir, <stamp>/org).
+      denied vault_git_dir "$b/vdir/.git/"
       denied vault_git_file "$b/org/.git"
+      # Fake-bare-repository denies (HEAD, either case), in the directory of the file above.
+      denied vault_head "$b/org/HEAD"
+      denied vault_head_lower "$b/org/head"
     else
       denied "${k}_git_hooks" "$g/hooks/"
       denied "${k}_git_config" "$g/config"
@@ -138,6 +154,9 @@ for root in "$HOME/Code" "$HOME/.local/share/chezmoi" "$HOME/Documents" \
       denied "${k}_git_module_commondir" "$g/modules/sub/commondir"
       denied "${k}_git_module_config_worktree" "$g/modules/sub/config.worktree"
       denied "${k}_git_module_worktree_config" "$g/modules/sub/worktrees/swt/config.worktree"
+      denied "${k}_git_worktree_module_config" "$g/worktrees/wt/modules/sub/config"
+      denied "${k}_git_worktree_module_commondir" "$g/worktrees/wt/modules/sub/commondir"
+      denied "${k}_git_worktree_module_hooks" "$g/worktrees/wt/modules/sub/hooks/"
       allowed "${k}_git_objects" "$g/objects/$stamp"
       allowed "${k}_git_index" "$g/index"
       allowed "${k}_git_branch_named_config" "$g/refs/heads/config"
@@ -153,6 +172,12 @@ for root in "$HOME/Code" "$HOME/.local/share/chezmoi" "$HOME/Documents" \
     allowed "${k}_claude_skills_writable" "$r/.claude/skills/$stamp.md"
     allowed_off_base "${k}_claude_commands_writable" "$r/.claude/commands/$stamp.md"
     allowed_off_base "${k}_claude_agents_writable" "$r/.claude/agents/$stamp.md"
+    # Fake-bare-repository denies at the organisation level: <stamp> stands for ~/Code/<Org>, so the
+    # suite's own directory is probed and no real organisation directory is touched.
+    if [ "$root" = "$HOME/Code" ]; then
+      denied code_org_head "$b/HEAD"
+      denied code_org_head_lower "$b/head"
+    fi
     # A directory holding hooks/ under a plain name, renamed to .git. Path rules see only the two
     # ends of a rename, so outside the vault this reads WRITABLE by design: the same class as
     # core.hooksPath, which Michael accepted. In the vault it reads DENIED, because the vault denies a
@@ -177,10 +202,19 @@ done
 # The agent configuration directly under a work root (~/Code/.claude and ~/Documents/.claude exist).
 denied code_root_claude_settings "$HOME/Code/.claude/settings.json"
 denied documents_root_claude_settings "$HOME/Documents/.claude/settings.json"
-# Neither ~/Code nor ~/Documents is a repository: a .git file there would pull every directory below it
-# into one whose configuration the sandbox wrote.
+# Neither ~/Code nor ~/Documents is a repository. Two families of deny cover their top level:
+# - .git-file denies: a .git file there would pull every directory below it into a repository whose
+#   configuration the sandbox wrote (git itself would follow it).
 denied code_root_git_file "$HOME/Code/.git"
 denied documents_root_git_file "$HOME/Documents/.git"
+# - fake-bare-repository denies: a directory holding HEAD, objects/ and refs/ is a bare repository to
+#   Starship, which walks up from the prompt's directory and ignores safe.bareRepository. Denying HEAD
+#   (either case: the volume is case-insensitive) stops the directory forming. Real repositories keep
+#   HEAD inside .git. The vault and the organisation level are probed in the fixture loop.
+denied code_root_head "$HOME/Code/HEAD"
+denied code_root_head_lower "$HOME/Code/head"
+denied documents_root_head "$HOME/Documents/HEAD"
+denied documents_root_head_lower "$HOME/Documents/head"
 # The chezmoi checkout's own top-level .git.
 cg="$HOME/.local/share/chezmoi/.git"
 denied chezmoi_top_git_hooks "$cg/hooks/"
@@ -192,10 +226,15 @@ else
   if mkdir -p "$cg/modules/x" 2>/dev/null; then
     denied chezmoi_top_git_module_hooks "$cg/modules/x/hooks/"
   else
-    # Claude Code's own rule also refuses creating .git/modules in the session repository.
+    # Claude Code's own rule also refuses creating .git/modules in the session repository. Started in a
+    # harness worktree of the checkout, the session repository's git directory is the checkout's .git
+    # (the common directory of the base), which is not under the base.
+    common=$(cd "$base" 2>/dev/null && d=$(gi rev-parse --git-common-dir 2>/dev/null) && cd "$d" 2>/dev/null && pwd -P)
+    cgreal=$(cd "$cg" 2>/dev/null && pwd -P)
     case "$cg" in
       "$base"/*) echo "chezmoi_top_git_module_hooks=SKIPPED" ;;
-      *) echo "chezmoi_top_git_module_hooks=ABSENT"; fail=$((fail + 1)) ;;
+      *) if [ -n "$common" ] && [ "$common" = "$cgreal" ]; then echo "chezmoi_top_git_module_hooks=SKIPPED"
+         else echo "chezmoi_top_git_module_hooks=ABSENT"; fail=$((fail + 1)); fi ;;
     esac
   fi
 fi
@@ -216,8 +255,6 @@ allowed vault_note "$V/$stamp.md"
 # commit works, git config and git worktree add are refused, and the upstream-setting push records
 # no upstream. The git calls ignore the global and system configuration. A setup failure stops the
 # probe: without the repository every denial probe below would read DENIED.
-gi() { GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git "$@"; }
-gc() { gi -c user.name=t -c user.email=t@t "$@"; }
 R="$HOME/Code/$stamp-b/r"
 behaviour_setup() {
   TB=$(mktemp -d "${TMPDIR:-/tmp}/$stamp-b.XXXXXX") || return 1
