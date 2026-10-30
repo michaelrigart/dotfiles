@@ -142,15 +142,21 @@ push_candidate=$literal
 
 [ "$forge_candidate" = 1 ] || [ "$push_candidate" = 1 ] || allow
 
-cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command // empty' 2>/dev/null) || allow
+# An unreadable payload (jq rejects a lone UTF-16 surrogate escape) fails closed for rule 4,
+# on the raw-text evidence above; rules 1-2 allow, as everywhere else.
+if ! cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command // empty' 2>/dev/null); then
+  [ "$push_candidate" = 0 ] || deny "Push guard: this command's payload could not be read, so a possible push is refused. Rewrite it without unusual escape sequences."
+  allow
+fi
 [ -n "$cmd" ] || allow
 
 # ------------------------------------------------------------ rule 4: git push
 # The work is in git-push-guard.py beside this file: it prints a finished decision (ask
 # or deny) or nothing. A deny is final. An ask is held in $pending and released by
 # allow(), so the rules below can still deny. FAIL DIRECTION IS CLOSED: if the helper
-# cannot run at all, a command that looks like a push is denied, with a reason the agent
-# can act on. Runs before the FORGE_GUARD=off check below, which never lifts it.
+# cannot run at all, or the payload cannot be read at all (jq failed above), a command that
+# looks like a push is denied, with a reason the agent can act on. Runs before the
+# FORGE_GUARD=off check below, which never lifts it.
 if [ "$push_candidate" = 1 ]; then
   py=/usr/bin/python3
   [ -x "$py" ] || py=python3

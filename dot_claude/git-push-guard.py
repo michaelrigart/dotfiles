@@ -493,11 +493,12 @@ def git_slot(tokens, k, stop_dynamic=True):
 
 
 def git_word_hits(tokens):
-    """(git_index, slot_index) for each git command word whose slot past the global options
-    (when a dynamic global option or option value is the hit, slot_index is that option's
-    index, since the slot is not reached) is a subcommand the shell rewrites (git ${X:-push} ...), or is a push by its raw token
-    (push, send-pack, http-push). Such a word can name a push, so the text cannot rule one
-    out. Only a git in command position counts: rg git -g '*.sh' names git as an argument."""
+    """(git_index, slot_index) for each git command word that can name a push: the word in its
+    slot past the global options is either a subcommand the shell rewrites (git ${X:-push}),
+    or a push by its raw token (push, send-pack, http-push). A dynamic global option or option
+    value is a hit too; slot_index is then that option's index, since the slot is not reached.
+    The text cannot rule such a word out. Only a git in command position counts: rg git -g
+    '*.sh' names git as an argument."""
     n = len(tokens)
     hits = []
     for k in command_words(tokens):
@@ -537,15 +538,74 @@ def dynamic_git_word(tokens):
 SHELL_NAMES = {"sh", "bash", "zsh", "dash", "ksh"}
 
 
-def nested_git_hits(tokens, depth=3):
-    """Does a shell -c string or an eval, in command position, hold a git word that
-    git_word_hits flags, to a nesting depth of 3? Only the command-string argument (the word
-    after the option bundle holding c) and eval's joined arguments count. A string the
-    tokenizer cannot split says nothing."""
+# Options of a shell that take the next word as their value (-o NAME, -O NAME, --rcfile F).
+SHELL_LONG_WITH_VALUE = {"--rcfile", "--init-file"}
+# What follows timeout or nice before the command they run: options and a duration or niceness.
+RUN_PREFIX_ARG = re.compile(r"-[-A-Za-z0-9.]*|\d+(?:\.\d+)?[smhd]?")
+
+
+def shell_string(tokens, k):
+    """The command string of the shell at k, or None. Walks the shell's own options: a bundle
+    of letters (-x, +e, -lc, -co NAME), an option with a value (-o NAME, -O NAME, --rcfile F,
+    --init-file F), a long flag, and -- ending them. The string is the first word past them,
+    and only when a bundle held c."""
+    n, j, has_c = len(tokens), k + 1, False
+    while j < n and not is_operator(tokens[j]):
+        w = tokens[j]
+        if w == "--":
+            j += 1
+            break
+        if w in SHELL_LONG_WITH_VALUE:
+            j += 2
+        elif w.startswith("--") and len(w) > 2:
+            j += 1
+        elif re.fullmatch(r"[-+][A-Za-z]+", w):
+            has_c = has_c or (w[0] == "-" and "c" in w)
+            j += 1 + sum(w.count(c) for c in "oO")
+        else:
+            break
+    if has_c and j < n and not is_operator(tokens[j]):
+        return tokens[j]
+    return None
+
+
+def after_run_prefix(tokens, k):
+    """Index of the word a timeout command word at k runs, past its options and its duration;
+    None when there is none."""
+    j, n = k + 1, len(tokens)
+    while j < n and not is_operator(tokens[j]) and RUN_PREFIX_ARG.fullmatch(tokens[j]):
+        j += 1
+    return j if j < n and not is_operator(tokens[j]) else None
+
+
+def shell_words(tokens):
+    """Indexes of the words in command position, and of the word that timeout or nice -n N
+    runs (command_words looks past nice's dash options, but not its -n value, and not past
+    timeout)."""
+    out = list(command_words(tokens))
+    for k in list(out):
+        if os.path.basename(tokens[k]) == "timeout":
+            j = after_run_prefix(tokens, k)
+        elif tokens[k].isdigit() and k >= 2 and tokens[k - 1] == "-n" \
+                and os.path.basename(tokens[k - 2]) == "nice":
+            j = k + 1 if k + 1 < len(tokens) and not is_operator(tokens[k + 1]) else None
+        else:
+            continue
+        if j is not None:
+            out.append(j)
+    return out
+
+
+def nested_token_lists(tokens, depth=3):
+    """The tokenized command strings that a shell -c string or an eval, in command position,
+    runs, to a nesting depth of 3. Only the command-string argument (the word after the
+    shell's options) and eval's joined arguments count. A string the tokenizer cannot split
+    is dropped."""
     if depth <= 0:
-        return False
+        return []
     n = len(tokens)
-    for k in command_words(tokens):
+    found = []
+    for k in shell_words(tokens):
         base = os.path.basename(tokens[k])
         inner = None
         if base == "eval":
@@ -554,20 +614,26 @@ def nested_git_hits(tokens, depth=3):
                 j += 1
             inner = " ".join(tokens[k + 1:j])
         elif base in SHELL_NAMES:
-            j = k + 1
-            while j < n and not is_operator(tokens[j]) and tokens[j].startswith("-"):
-                if re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", tokens[j]):
-                    if j + 1 < n and not is_operator(tokens[j + 1]):
-                        inner = tokens[j + 1]
-                    break
-                j += 1
+            inner = shell_string(tokens, k)
         if not inner:
             continue
         try:
             sub = tokenize(inner)
         except ValueError:
             continue
-        if git_word_hits(sub) or nested_git_hits(sub, depth - 1):
+        found.append(sub)
+        found.extend(nested_token_lists(sub, depth - 1))
+    return found
+
+
+def alias_slot_hit(tokens, names):
+    """Is the subcommand slot of a git command word in tokens one of these alias names?"""
+    n = len(tokens)
+    for k in command_words(tokens):
+        if os.path.basename(tokens[k]) != "git":
+            continue
+        j, _ = git_slot(tokens, k, stop_dynamic=False)
+        if j < n and not is_operator(tokens[j]) and tokens[j] in names:
             return True
     return False
 
@@ -581,14 +647,16 @@ def outside_grammar(cmd):
 def probe_refuses(tokens, cmd, cwd):
     """Would the grammar have denied or asked for cmd, had it been judged as written? A
     command outside the grammar keeps every refusal main gave it, as the plain-push deny.
-    A probe that fails otherwise says nothing: the path after it decides."""
+    A parse that fails says nothing: the path after it decides. A judge that fails, with a
+    shape in hand, refuses, as main's internal-error deny did."""
+    shape = None
     try:
         shape = parse_plain(tokens, cwd)
         return shape is not None and bool(judge(shape, cwd, canonical(cmd)))
     except Deny:
         return True
     except Exception:
-        return False
+        return shape is not None
 
 
 # Tools that never execute their arguments: what follows the command word is data, so a
@@ -775,25 +843,30 @@ def could_push(cmd, tokens, cwd):
     text = inert_text(cmd, tokens)
     if PUSH_SHAPE.search(text):
         return True
+    nested = nested_token_lists(tokens) if tokens else []
     if tokens and (dynamic_git_word(tokens) or odd_command_word(tokens)
-                   or nested_git_hits(tokens)):
+                   or any(git_word_hits(sub) for sub in nested)):
         return True
     if not re.search(r"\bgit\b", cmd):
         return False
     if "GIT_CONFIG" in cmd:
         return True
     selectors = [[]]
-    for k, tok in enumerate(tokens or []):
-        if tok in ("-C", "--git-dir") and k + 1 < len(tokens):
-            selectors.append([tok, os.path.expanduser(tokens[k + 1])])
-        elif tok.startswith("--git-dir="):
-            selectors.append([tok])
-        elif tok.startswith("GIT_DIR="):
-            selectors.append(["--git-dir=" + tok.split("=", 1)[1]])
+    for toks in [tokens or []] + nested:
+        for k, tok in enumerate(toks):
+            if tok in ("-C", "--git-dir") and k + 1 < len(toks):
+                selectors.append([tok, os.path.expanduser(toks[k + 1])])
+            elif tok.startswith("--git-dir="):
+                selectors.append([tok])
+            elif tok.startswith("GIT_DIR="):
+                selectors.append(["--git-dir=" + tok.split("=", 1)[1]])
     names = set()
     for sel in selectors:
         names |= push_aliases(cwd, sel)
-    return any(re.search(r"\bgit\b[^;&|\n]*\b" + re.escape(a) + r"\b", text) for a in names)
+    # A shell string or an eval is read as tokens: a quoted ; in it hides the alias from the
+    # text pattern.
+    return any(re.search(r"\bgit\b[^;&|\n]*\b" + re.escape(a) + r"\b", text) for a in names) \
+        or any(alias_slot_hit(sub, names) for sub in nested)
 
 
 def runs_command_string(sub, args):
@@ -1571,11 +1644,19 @@ def main():
             tokens = tokenize(cmd)
         except ValueError:
             tokens = None                              # unbalanced quotes: not plain
-        if tokens is not None:
-            if not outside_grammar(cmd):
-                shape = parse_plain(tokens, cwd)
-            elif probe_refuses(tokens, cmd, cwd):
+        if tokens is not None and not outside_grammar(cmd):
+            shape = parse_plain(tokens, cwd)
+        elif tokens is not None:
+            # Outside the grammar: could_push first, which is cheap and denies most; the probe
+            # runs the full judge, so it runs only when could_push did not already deny. A
+            # deny from either is the plain-push deny, whatever reason could_push raised.
+            try:
+                hit = could_push(cmd, tokens, cwd)
+            except Deny:
+                hit = True
+            if hit or probe_refuses(tokens, cmd, cwd):
                 raise Deny(PLAIN)
+            return
         if shape is None:
             if could_push(cmd, tokens, cwd):           # the raw text: a superset, never trimmed
                 raise Deny(PLAIN)

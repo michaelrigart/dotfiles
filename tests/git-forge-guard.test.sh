@@ -1575,7 +1575,76 @@ has_reason   "the bypass gets the plain-push deny" "in a shape the guard does no
 # A shell -c string or an eval is read one level down, to a depth of 3, with the raw-token check.
 expect deny  "sh -c holding a quoted-; -c value before a push"  "$R" "sh -c '$G -c \"a;b\" $P origin main'"
 expect deny  "bash -lc holding a quoted-; -c value before a push" "$R" "bash -lc '$G -c \"a;b\" $P origin main'"
-expect deny  "eval of quoted joined arguments"                "$R" "eval '$G -c \"a;b\" $P origin main'"
+expect deny  "eval of one quoted argument"                    "$R" "eval '$G -c \"a;b\" $P origin main'"
+expect deny  "N6 eval of several arguments, joined"           "$R" "eval $G -c \"'a;b'\" pu\"sh\" origin main"
+expect allow "N6 eval of several arguments, status, is silent" "$R" "eval $G -c \"'a;b'\" status"
+# N4: the shell's own options before the command string.
+expect deny  "N4 bash -o pipefail -c"                         "$R" "bash -o pipefail -c '$G -c \"a;b\" $P origin main'"
+expect deny  "N4 bash --rcfile F -c"                          "$R" "bash --rcfile /dev/null -c '$G -c \"a;b\" $P origin main'"
+expect deny  "N4 bash +e -c"                                  "$R" "bash +e -c '$G -c \"a;b\" $P origin main'"
+expect deny  "N4 bash -c -x STRING"                           "$R" "bash -c -x '$G -c \"a;b\" $P origin main'"
+expect deny  "N4 bash -O extglob -c"                          "$R" "bash -O extglob -c '$G -c \"a;b\" $P origin main'"
+expect deny  "N4 bash -- -c"                                  "$R" "bash -x -c -- '$G -c \"a;b\" $P origin main'"
+expect deny  "N4 timeout 5 sh -c"                             "$R" "timeout 5 sh -c '$G -c \"a;b\" $P origin main'"
+expect deny  "N4 timeout -k 2 10s bash -lc"                   "$R" "timeout -k 2 10s bash -lc '$G -c \"a;b\" $P origin main'"
+expect deny  "N4 nice -n 5 sh -c"                             "$R" "nice -n 5 sh -c '$G -c \"a;b\" $P origin main'"
+expect allow "N4 bash -o pipefail -c, status, is silent"      "$R" "bash -o pipefail -c '$G -c \"a;b\" status'"
+expect allow "N4 bash --rcfile F -c, status, is silent"       "$R" "bash --rcfile /dev/null -c '$G -c \"a;b\" status'"
+expect allow "N4 bash +e -c, status, is silent"               "$R" "bash +e -c '$G -c \"a;b\" status'"
+expect allow "N4 bash -c -x, status, is silent"               "$R" "bash -c -x '$G -c \"a;b\" status'"
+expect allow "N4 timeout 5 sh -c, status, is silent"          "$R" "timeout 5 sh -c '$G -c \"a;b\" status'"
+expect allow "N4 bash script file named like a push is silent" "$R" "bash -o pipefail $P.sh '$G -c \"a;b\" $P origin main'"
+# N5: a push alias behind a quoted ; inside a shell string or an eval.
+expect deny  "N5 sh -c holding a push alias behind a quoted ;"  "$R" "sh -c '$G -c \"a;b\" pom'"
+expect deny  "N5 eval holding a push alias behind a quoted ;"   "$R" "eval \"$G -c 'a;b'\" pom"
+expect deny  "N5 bash -c holding an alias behind a quoted ; and -C" "$R" "bash -c '$G -C . -c \"a;b\" pom'"
+expect allow "N5 sh -c holding a non-push alias is silent"      "$R" "sh -c '$G -c \"a;b\" st'"
+expect allow "N5 eval holding a non-push alias is silent"       "$R" "eval \"$G -c 'a;b'\" st"
+# An unreadable payload (jq rejects a lone or reversed UTF-16 surrogate escape) fails closed for
+# rule 4 when the raw text holds a push trigger, and stays silent for rules 1-2. The payload is
+# built with printf so the \u escape stays literal JSON.
+# expect_raw <allow|deny> <label> <raw JSON payload> [reason needle]
+expect_raw() {
+  local want=$1 label=$2 out got
+  out=$(printf '%s' "$3" | PINNED_PATH="$PATH" bash "$GUARD")
+  if [ -z "$out" ]; then got=allow
+  elif printf '%s' "$out" | jq -e '.hookSpecificOutput.permissionDecision=="deny"' >/dev/null 2>&1; then got=deny
+  else got="other: $out"; fi
+  if [ "$got" = "$want" ] && { [ -z "${4:-}" ] || case "$out" in *"$4"*) true ;; *) false ;; esac; }; then
+    pass=$((pass + 1)); printf '  ok   %s\n' "$label"
+  else
+    fail=$((fail + 1)); printf '  FAIL %s (want %s, got %s)\n' "$label" "$want" "$got"
+  fi
+}
+rawpayload() { printf '{"cwd":"%s","tool_input":{"command":"%s"}}' "$R" "$1"; }
+UNREAD="could not be read"
+expect_raw deny  "jq a lone high surrogate after a force push to main" "$(rawpayload "$G $P --force origin main # "'\ud800')" "$UNREAD"
+# jq reads a lone low surrogate as U+FFFD, so this one reaches the helper, which denies on the comment.
+expect_raw deny  "jq a lone low surrogate after a force push to main"  "$(rawpayload "$G $P --force origin main # "'\udc00')"
+expect_raw deny  "jq a reversed surrogate pair after a force push to main" "$(rawpayload "$G $P --force origin main # "'\udc00\ud800')" "$UNREAD"
+expect_raw deny  "jq a hidden push spelling with a lone surrogate"     "$(rawpayload "$G pu\\\"sh\\\" origin main # "'\ud800')" "$UNREAD"
+expect_raw allow "jq a lone surrogate with no push trigger is silent"  "$(rawpayload 'echo hi # \ud800')"
+expect_raw allow "jq a lone surrogate in a commit command (rules 1-2) stays silent" "$(rawpayload "$G commit -m x # "'\ud800')"
+BS=$(printf '\134'); PAIR="${BS}ud83d${BS}ude00"       # a valid surrogate pair (the emoji), as JSON escapes
+expect_raw allow "jq a valid surrogate pair in a feature push reaches the helper" "$(rawpayload "X=$PAIR $G $P origin feat")"
+expect_raw deny  "jq a valid surrogate pair in a hidden push still denies" "$(rawpayload "X=$PAIR $G pu\\\"sh\\\" origin main")" "in a shape the guard does not check"
+ask_out=$(printf '%s' "$(rawpayload "X=$PAIR $G $P origin main")" | PINNED_PATH="$PATH" bash "$GUARD")
+if printf '%s' "$ask_out" | jq -e '.hookSpecificOutput.permissionDecision=="ask"' >/dev/null 2>&1; then
+  pass=$((pass + 1)); printf '  ok   %s\n' "jq a valid surrogate pair in a push to main still asks"
+else
+  fail=$((fail + 1)); printf '  FAIL %s (%s)\n' "jq a valid surrogate pair in a push to main still asks" "$ask_out"
+fi
+# N1: a judge() failure on a command outside the grammar is the plain-push deny, as main's
+# internal-error deny was. The helper gets the lone surrogate through json.loads, and its own
+# git call then fails with UnicodeEncodeError.
+n1_out=$(printf '%s' "$(rawpayload "$G -c 'a.b=x;"'\ud800'"' pom \$'--verbose'")" \
+  | PUSH_GUARD_LITERAL=0 /usr/bin/python3 "$(dirname "$GUARD")/git-push-guard.py")
+if printf '%s' "$n1_out" | jq -e '.hookSpecificOutput.permissionDecision=="deny"' >/dev/null 2>&1 \
+   && printf '%s' "$n1_out" | grep -q "in a shape the guard does not check"; then
+  pass=$((pass + 1)); printf '  ok   %s\n' "N1 a probe whose judge fails is the plain-push deny"
+else
+  fail=$((fail + 1)); printf '  FAIL %s (%s)\n' "N1 a probe whose judge fails is the plain-push deny" "$n1_out"
+fi
 NEST=$(cat <<X
 sh -c "sh -c '$G -c \"a;b\" $P origin main'"
 X
@@ -1601,7 +1670,7 @@ exc_out=$(/usr/bin/python3 - "$(dirname "$GUARD")/git-push-guard.py" <<'PY'
 import importlib.util, io, json, os, sys
 sys.dont_write_bytecode = True
 
-spec =importlib.util.spec_from_file_location("guard", sys.argv[1])
+spec = importlib.util.spec_from_file_location("guard", sys.argv[1])
 g = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(g)
 
@@ -1641,6 +1710,7 @@ print("exception, no flag, no shape", run(hidden, None, both))
 print("exception, literal=0, no shape", run(hidden, "0", both))
 print("exception, literal=0, push shape", run("git push origin main", "0", {"parse_plain": boom}))
 print("exception, literal=1, no shape", run(hidden, "1", both))
+print("N7 probe skipped when could_push denies", run("git pu" + "sh origin main $'x'", "0", {"probe_refuses": boom}))
 PY
 )
 while IFS='|' read -r label want; do
@@ -1655,6 +1725,7 @@ exception, no flag, no shape|deny/plain
 exception, literal=0, no shape|deny/plain
 exception, literal=0, push shape|deny/internal
 exception, literal=1, no shape|silent
+N7 probe skipped when could_push denies|deny/plain
 EOF
 # A large payload with no push in it must stay cheap (the hidden-spelling scan is linear).
 big=$(awk 'BEGIN { for (i = 0; i < 20000; i++) print "print(\"abc\", \x27d\x27, x\\y)" }')
