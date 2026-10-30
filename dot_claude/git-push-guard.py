@@ -448,15 +448,18 @@ def case_pattern(tokens, k):
 
 def odd_command_word(tokens):
     """A command word that could be git push under another spelling: git-push,
-    git-send-pack or git-http-push by name (the dash form, also behind a path), or a glob
-    that matches git or one of those names (gi?, g[i]t). A glob with no literal in it (*)
-    and a case pattern (g*)) are not spellings of a command."""
+    git-send-pack or git-http-push by name (the dash form, also behind a path), a glob
+    that matches git or one of those names (gi?, g[i]t), or a built word (a last component
+    holding $, a backtick, { or }) whose subcommand slot is push or send-pack (built_word_hits,
+    the final return). A glob with no literal in it (*) and a case pattern (g*)) are not
+    spellings of a command."""
     for k in command_words(tokens):
         base = os.path.basename(tokens[k])
         if base in DASH_PUSH:
             return True
-        # Only the last path component decides: $HOME/bin/helm is helm, and $DOCKER is not
-        # a git spelling. A glob there is refused when it can match git or a git-* name.
+        # Only the last path component decides: $HOME/bin/helm is helm. The glob branch below
+        # does not treat $DOCKER as a git spelling; the built-word rule after the loop catches
+        # it when its slot is push. A glob is refused when it can match git or a git-* name.
         if not any(c in base for c in "?[*") or GLOB_ONLY.fullmatch(base) \
                 or case_pattern(tokens, k):
             continue
@@ -845,7 +848,7 @@ def could_push(cmd, tokens, cwd):
         return True
     nested = nested_token_lists(tokens) if tokens else []
     if tokens and (dynamic_git_word(tokens) or odd_command_word(tokens)
-                   or any(git_word_hits(sub) for sub in nested)):
+                   or any(git_word_hits(sub) or odd_command_word(sub) for sub in nested)):
         return True
     if not re.search(r"\bgit\b", cmd):
         return False

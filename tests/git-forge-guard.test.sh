@@ -1459,14 +1459,17 @@ expect deny  "--push-option with a brace list"        "$R" 'git push --push-opti
 expect deny  "-u -o with a brace list"                "$R" 'git push -u -o {x,origin,main}'
 expect deny  "a ? glob in the git word"               "$R" '/usr/bin/gi? push origin main'
 expect deny  "a [ ] glob in the git word"             "$R" '/usr/bin/g[i]t push origin main'
-# Only the last path component of a command word decides: a variable or a $VAR/ directory
-# in front of a name that is not git is an ordinary command (docker, helm, gradle).
+# Only the last path component of a command word decides: a $VAR/ directory in front of a
+# name that is not git is an ordinary command (helm, gradle).
 # Spec section 4: a built command word whose subcommand slot holds push or send-pack counts
 # as a possible git, so a variable command that pushes is denied.
 expect deny  "a variable command that pushes (could be git)" "$R" '$DOCKER push registry/x:1'
 expect allow "a quoted \$HOME path to helm push"      "$R" '"$HOME/bin/helm" push chart.tgz oci://r'
 expect deny  "a variable command that pushes, after &&" "$R" 'npm run build && $DOCKER push img'
 expect deny  "a variable git word with push"         "$R" '$G push origin main'
+expect deny  "a variable git word with send-pack"    "$R" '$G send-pack x main'
+expect deny  "a variable git word, -c with a variable value, push" "$R" '$G -c $V push origin main'
+expect deny  "a variable git word, -C with a variable directory, push" "$R" '$G -C $D push'
 expect deny  "a built git word, -C before push"      "$R" '${X:-gi}t -C . push origin main'
 expect deny  "a built path whose last component is gi}t" "$R" '${X:-/usr/bin/gi}t push origin main'
 expect deny  "a built git word, delete"              "$R" '${X:-gi}t push origin --delete wip'
@@ -1600,6 +1603,16 @@ expect deny  "N5 eval holding a push alias behind a quoted ;"   "$R" "eval \"$G 
 expect deny  "N5 bash -c holding an alias behind a quoted ; and -C" "$R" "bash -c '$G -C . -c \"a;b\" pom'"
 expect allow "N5 sh -c holding a non-push alias is silent"      "$R" "sh -c '$G -c \"a;b\" st'"
 expect allow "N5 eval holding a non-push alias is silent"       "$R" "eval \"$G -c 'a;b'\" st"
+# A built or glob command word inside a shell string or an eval is a possible git, as at the top level.
+expect deny  "G1 bash -c holding a variable git word with push" "$R" "bash -c 'G=$G; \$G $P origin --delete done'"
+expect deny  "G1 eval of a variable git word with push"         "$R" "eval \"\$G $P origin main\""
+expect deny  "G1 bash -c holding a built git word"              "$R" "bash -c '\${X:-gi}t $P origin main'"
+expect deny  "G1 bash -c holding a glob git word"               "$R" "bash -c '/usr/bin/gi? $P origin main'"
+expect deny  "G1 eval holding a glob git word"                  "$R" "eval '/usr/bin/g[i]t $P origin main'"
+expect deny  "G1 nested sh -c holding a variable git word"      "$R" "bash -c \"sh -c '\\\$G $P origin main'\""
+expect allow "G1 bash -c echoing a variable is silent"          "$R" "bash -c 'echo \$G'"
+expect allow "G1 bash -c echoing a variable and push is silent" "$R" "bash -c 'echo \$G $P'"
+expect allow "G1 sh -c holding a \$HOME path to helm push is silent" "$R" "sh -c '\$HOME/bin/helm $P x'"
 # An unreadable payload (jq rejects a lone or reversed UTF-16 surrogate escape) fails closed for
 # rule 4 when the raw text holds a push trigger, and stays silent for rules 1-2. The payload is
 # built with printf so the \u escape stays literal JSON.
