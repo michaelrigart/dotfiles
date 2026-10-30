@@ -98,13 +98,20 @@ for f in global.md claude-code.md; do
   else _pass "$f contains no template action"; fi
 done
 
-# The rules spec 2026-10-16 adds: both shapes the path-resolution guard denies, the plan
-# workspace cleaner, and progress on a long run. Each is a fixed string on one line.
+# The rules specs 2026-10-16 and 2026-10-30 add: the git configuration escape, both shapes
+# the path-resolution guard denies, the plan workspace cleaner, and progress on a long run.
+# Each is a fixed string on one line.
 need() { # need <fragment> <fixed text> <label>
   if grep -qF -- "$2" "$FRAG/$1"; then _pass "$3"; else _fail "$3" "missing: $2"; fi
 }
 need claude-code.md '- **Path-resolution guard.** Never chain commands after a leading `cd`: use absolute paths' \
   "claude-code.md carries the path-resolution guard rule"
+need claude-code.md '  - Needs the escape: `op`, and git configuration writes in any repository: `init`,' \
+  "claude-code.md names git configuration writes in any repository as needing the escape"
+need claude-code.md '    `clone`, `config`, `remote add`, `branch -u`, `submodule`, `worktree add`,' \
+  "the escape line lists the explicit git commands that write configuration"
+need claude-code.md '    `switch --track`, or a new branch started from a remote ref (`switch -c b origin/x`).' \
+  "the escape line names tracking and a branch started from a remote ref"
 need claude-code.md '  or `git -C`; a lone `cd` lasts only in the main session. Name directories, not a recursive' \
   "the path-resolution rule says a lone cd lasts only in the main session"
 need claude-code.md '`grep`/`rg` over `.`, which re-prompts in any tree that could hold a deny-glob match.' \

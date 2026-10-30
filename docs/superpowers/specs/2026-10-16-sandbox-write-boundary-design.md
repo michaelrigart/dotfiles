@@ -54,6 +54,8 @@ these places should cost no escapes.
     agent wrote there in 30 days, so this costs no escapes. Objects, refs, the index and the
     configuration files stay writable, so sandboxed `git add`, `commit`, `fetch`,
     `branch -u`, `clone` and `git config` keep working;
+    Superseded for configuration on 2026-10-30 by [the git configuration plant spec](2026-10-30-sandbox-git-config-plant-design.md).
+    The same spec adds the form of this `hooks` denial that missed a linked worktree's submodules, `.git/worktrees/*/modules/**/hooks`.
   - the vault's `.obsidian`.
 - **Git, decided 2026-10-17 (Michael).** The configuration files stay writable; denying them
   would add escapes for real agent work. Over 30 days, sandboxed outside temporary
@@ -62,6 +64,7 @@ these places should cost no escapes.
   that a worktree's or submodule's `.git` file points at under any other name. So agent-touched
   repositories remain a place where agent-written git configuration runs when Michael uses git
   there. This is the same trust as their code, and it is recorded under Out of scope.
+  Superseded for configuration on 2026-10-30 by [the git configuration plant spec](2026-10-30-sandbox-git-config-plant-design.md).
 
   The plan picks whichever form the sandbox enforces for a glob, by probe.
 - **Other repositories' agent configuration (Michael, 2026-10-18).** `denyWrite` also names,
@@ -457,6 +460,7 @@ A zsh wrapper around `chezmoi` handles `apply`, `update` and the previews below.
   stay agent-writable (see §1, "Git"). The justification is the git rule in §2, "Git that
   our unsandboxed code runs", not `PATH`. Michael's own git in an agent-touched repository
   trusts that repository's metadata as it trusts its code.
+  Superseded for configuration on 2026-10-30 by [the git configuration plant spec](2026-10-30-sandbox-git-config-plant-design.md).
 - Third-party binaries and plugin hooks that run git in the session's repository (ruling
   2026-10-18). The basecamp plugin's PostToolUse hook runs `basecamp agent-hook post-commit`
   unsandboxed, and that runs `git log -1` there. With agent-written `log.showSignature` and

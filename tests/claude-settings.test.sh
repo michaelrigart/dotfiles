@@ -359,41 +359,55 @@ jq_is '[.sandbox.filesystem.allowRead[]
 EXP_ALLOW_WRITE='["~/Code","~/.local/share/chezmoi","~/Documents","~/Library/Mobile Documents/iCloud~md~obsidian"]'
 jq_is ".sandbox.filesystem.allowWrite == $EXP_ALLOW_WRITE" true \
       "allowWrite is exactly the four work roots"
-# denyWrite: in each work root, at any depth, git hooks only (also inside submodules); the
-# chezmoi checkout's own top-level .git; the vault's .obsidian; and the agent configuration
-# (.claude/settings*.json, .mcp.json, .codex) at depth 0, 1 and 2 under each root only: never
-# at any depth, because node_modules packages ship such files (resolve@1.22.12 has a
-# .claude/settings.local.json) and a deny there breaks sandboxed npm ci. Claude Code harness
-# worktrees (<repo>/.claude/worktrees/<name>) get three fixed-depth forms per path,
-# <root>/.claude/worktrees/*/<p> (a root that is itself a repository), <root>/*/.claude/worktrees/*/<p>
-# and <root>/*/*/.claude/worktrees/*/<p>, which cannot match inside node_modules. Git configuration files, objects, refs and the index stay writable, so sandboxed
-# git config, branch -u, clone and submodule keep working; a branch named config or hooks
-# still is writable, and $TMPDIR is untouched (suites and agents git init there). Michael
-# decided hooks-only for git (spec 83f6b2b) and the agent configuration on 2026-10-18;
-# .claude/skills, commands and agents stay writable (projects commit their own).
+# denyWrite: in each work root, at any depth, git hooks and git configuration (also inside
+# submodules and linked worktrees); the chezmoi checkout's own top-level .git; the vault's
+# .obsidian; and the agent configuration (.claude/settings*.json, .mcp.json, .codex) at
+# depth 0, 1 and 2 under each root only: never at any depth, because node_modules packages
+# ship such files (resolve@1.22.12 has a .claude/settings.local.json) and a deny there
+# breaks sandboxed npm ci. Claude Code harness worktrees (<repo>/.claude/worktrees/<name>)
+# get three fixed-depth forms per path, <root>/.claude/worktrees/*/<p> (a root that is itself
+# a repository), <root>/*/.claude/worktrees/*/<p> and <root>/*/*/.claude/worktrees/*/<p>,
+# which cannot match inside node_modules. Git configuration and commondir are denied in
+# every root (spec 2026-10-30 section 1), including the git directory of a submodule of a
+# linked worktree (.git/worktrees/*/modules/**, amended 2026-10-30); .git is denied at ~/Code,
+# at ~/Documents, anywhere in the vault, and as a harness worktree .git file (section 2), and
+# so is a HEAD that would make a root, the vault or an organisation directory a fake bare
+# repository (amended 2026-10-30). Objects, refs, the index and $TMPDIR stay writable, except refs named lazygit.yml and, in a
+# submodule, names starting with config or named hooks or commondir (suites and agents git init there). Michael decided hooks for
+# git (spec 83f6b2b) and the agent configuration on 2026-10-18; .claude/skills, commands and
+# agents stay writable (projects commit their own).
 GITFILES='[".git/hooks",".git/hooks/**",".git/modules/**/hooks",".git/modules/**/hooks/**"]'
+GITCONF='[".git/config*",".git/commondir",".git/worktrees/*/config*",".git/worktrees/*/commondir",".git/modules/**/config*",".git/modules/**/commondir"]'
+GITWTMOD='[".git/worktrees/*/modules/**/config*",".git/worktrees/*/modules/**/commondir",".git/worktrees/*/modules/**/hooks"]'
+TOOLCONF='[".lazygit.yml",".git/**/lazygit.yml",".git/glab-cli/config.yml",".git/worktrees/*/glab-cli/config.yml"]'
 AGENTFILES='[".claude/settings.json",".claude/settings.local.json",".mcp.json",".codex",".codex/**"]'
 ROOTS='["~/Code","~/.local/share/chezmoi","~/Documents","~/Library/Mobile Documents/iCloud~md~obsidian"]'
-EXP_DENY_WRITE=$(jq -cn --argjson g "$GITFILES" --argjson a "$AGENTFILES" --argjson r "$ROOTS" '
+EXP_DENY_WRITE=$(jq -cn --argjson g "$GITFILES" --argjson c "$GITCONF" --argjson w "$GITWTMOD" --argjson t "$TOOLCONF" --argjson a "$AGENTFILES" --argjson r "$ROOTS" '
   [$r[] as $root | $g[] | "\($root)/**/\(.)"]
   + [$g[] | "~/.local/share/chezmoi/\(.)"]
+  + [$r[] as $root | $c[] | "\($root)/**/\(.)"]
+  + [$r[] as $root | $w[] | "\($root)/**/\(.)"]
   + [$r[] as $root | $a[] | "\($root)/\(.)", "\($root)/*/\(.)", "\($root)/*/*/\(.)",
                                         "\($root)/.claude/worktrees/*/\(.)", "\($root)/*/.claude/worktrees/*/\(.)",
                                         "\($root)/*/*/.claude/worktrees/*/\(.)"]
+  + [$r[] as $root | "\($root)/.claude/worktrees/*/.git", "\($root)/*/.claude/worktrees/*/.git", "\($root)/*/*/.claude/worktrees/*/.git"]
+  + ["~/Code/.git", "~/Documents/.git", "~/Library/Mobile Documents/iCloud~md~obsidian/**/.git"]
+  + ["~/Code/HEAD", "~/Documents/HEAD", "~/Library/Mobile Documents/iCloud~md~obsidian/**/HEAD", "~/Code/*/HEAD"]
+  + [$r[] as $root | $t[] | "\($root)/**/\(.)"]
   + ["~/Library/Mobile Documents/iCloud~md~obsidian/Documents/*/.obsidian",
      "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/*/.obsidian/**"]')
 jq_is ".sandbox.filesystem.denyWrite == $EXP_DENY_WRITE" true \
-      "denyWrite is exactly the git hooks and agent configuration in each work root, and .obsidian"
+      "denyWrite is exactly the git hooks and configuration, the misplaced .git and HEAD entries, the lazygit and glab configuration, the agent configuration in each work root, and .obsidian"
+jq_is '.sandbox.filesystem.denyWrite | length' 213 "denyWrite has 213 entries"
 jq_is "[.sandbox.filesystem.denyWrite[] | . as \$d
         | select(any($ROOTS[]; . as \$r | \$d | startswith(\$r + \"/\")) | not)] | length" 0 \
       "every deny glob starts with a work root and a slash, so git init in TMPDIR still works"
 jq_is '[.sandbox.filesystem.denyWrite[] | select(test("/refs|/objects|/index$"))] | length' 0 \
       "no deny glob reaches refs, objects or the index"
-jq_is '[.sandbox.filesystem.denyWrite[] | select(test("config"))] | length' 0 \
-      "no deny glob reaches a git configuration file"
 jq_is '[.sandbox.filesystem.denyWrite[] | select((test("/\\.git/") or test("/\\.obsidian(/|$)")
+        or test("/\\.git$") or test("/HEAD$") or test("/\\.lazygit\\.yml$")
         or test("/\\.claude/settings(\\.local)?\\.json$") or test("/\\.mcp\\.json$") or test("/\\.codex(/\\*\\*)?$")) | not)] | length' 0 \
-      "every deny glob names a git hooks path, .obsidian or an agent configuration file, never a bare hooks name"
+      "every deny glob names a git path, a fake-repository HEAD, a lazygit file, .obsidian or an agent configuration file"
 jq_is '[.sandbox.filesystem.denyWrite[] | select(test("/\\.claude/(skills|commands|agents)"))] | length' 0 \
       "no deny glob reaches .claude skills, commands or agents"
 jq_is ".sandbox.filesystem.denyWrite as \$d | [$ROOTS[] as \$r | $AGENTFILES[] as \$p
@@ -404,8 +418,113 @@ jq_is ".sandbox.filesystem.denyWrite as \$d | [$ROOTS[] as \$r | $AGENTFILES[] a
         | (\$r + \"/.claude/worktrees/*/\" + \$p, \$r + \"/*/.claude/worktrees/*/\" + \$p, \$r + \"/*/*/.claude/worktrees/*/\" + \$p)
         | select(. as \$e | \$d | index(\$e) | not)] | length" 0 \
       "every agent configuration path has all three harness worktree forms in all four roots"
-jq_is '[.sandbox.filesystem.denyWrite[] | select(test("/\\.claude/worktrees/"))] | length' 60 \
-      "exactly 60 harness worktree entries: 4 roots x 5 paths x 3 depths"
+jq_is '[.sandbox.filesystem.denyWrite[] | select(test("/\\.claude/worktrees/"))] | length' 72 \
+      "exactly 72 harness worktree entries: 4 roots x (5 agent paths + the .git file) x 3 depths"
+GITNINE=$(jq -cn --argjson a "$GITCONF" --argjson b "$GITWTMOD" '$a + $b')
+jq_is ".sandbox.filesystem.denyWrite as \$d | [$ROOTS[] as \$r | $GITNINE[] as \$c
+        | \"\(\$r)/**/\(\$c)\" | select(. as \$e | \$d | index(\$e) | not)] | length" 0 \
+      "each work root denies all nine git configuration forms, three of them for a submodule of a linked worktree"
+jq_is '[.sandbox.filesystem.denyWrite[] | select(test("config\\*$"))
+        | select(test("/\\.git/(worktrees/\\*/(modules/\\*\\*/)?|modules/\\*\\*/)?config\\*$") | not)] | length' 0 \
+      "every config* entry sits directly in a git directory, a linked worktree'"'"'s, a submodule'"'"'s or a linked worktree'"'"'s submodule'"'"'s"
+jq_is ".sandbox.filesystem.denyWrite as \$d | [$ROOTS[] as \$r | $TOOLCONF[] as \$c
+        | \"\(\$r)/**/\(\$c)\" | select(. as \$e | \$d | index(\$e) | not)] | length" 0 \
+      "each work root denies all four per-repository lazygit and glab configuration forms"
+jq_is '[.sandbox.filesystem.denyWrite[] | select(test("lazygit\\.yml$|glab-cli"))] | length' 16 \
+      "16 lazygit and glab entries: 4 forms x 4 roots"
+jq_is '[.sandbox.filesystem.denyWrite[] | select(test("glab-cli"))] | length' 8 \
+      "8 glab entries: the main repository and linked worktree config.yml in each of 4 roots"
+jq_is '[.sandbox.filesystem.denyWrite[] | select(test("glab-cli"))] | map(select((endswith("/.git/glab-cli/config.yml") or endswith("/.git/worktrees/*/glab-cli/config.yml")) | not)) | length' 0 \
+      "the only glab entry shapes are .git/glab-cli/config.yml and .git/worktrees/*/glab-cli/config.yml, so recover files stay writable"
+jq_is '[.sandbox.filesystem.denyWrite[] | select(test("\\.git/\\*\\*/config"))] | length' 0 \
+      "no entry has the shape .git/**/config, so a branch named config stays writable (the modules/**/config* entries are a different shape)"
+jq_is '[.sandbox.filesystem.denyWrite[] | select(test("/\\.git$"))] | length' 15 \
+      "15 entries end in /.git"
+jq_is '[.sandbox.filesystem.denyWrite[] | select(test("/\\.git$")) | select(test("/\\.claude/worktrees/") | not)]
+       | sort == ["~/Code/.git","~/Documents/.git","~/Library/Mobile Documents/iCloud~md~obsidian/**/.git"]' true \
+      "the only entries ending in .git are the three top-level ones and the twelve harness forms"
+jq_is '[.sandbox.filesystem.denyWrite[] | select(test("/HEAD$"))] | sort
+       == ["~/Code/*/HEAD","~/Code/HEAD","~/Documents/HEAD","~/Library/Mobile Documents/iCloud~md~obsidian/**/HEAD"]' true \
+      "exactly four entries end in /HEAD: the roots top level, the vault at any depth, and the organisation level"
+
+# Glob semantics: convert each denyWrite entry to the regex Claude Code compiles it to
+# (spec 2026-10-30 section 1, how these compile) and test sample paths. A path is denied
+# if and only if some entry's regex matches it.
+GLOB_RX='
+  def rx: sub("^~"; $home)
+    | gsub("(?<c>[.+?^$(){}|\\[\\]\\\\])"; "\\\(.c)")
+    | gsub("\\*\\*/"; "\u0001") | gsub("\\*\\*"; "\u0002") | gsub("\\*"; "[^/]*")
+    | gsub("\u0001"; "(.*/)?") | gsub("\u0002"; ".*")
+    | "^" + . + "(/.*)?$";
+  . as $d | any($d[] | rx; . as $r | $p | test($r; $fl))'
+DENY_SET=$(printf '%s' "$OUT" | jq -c '.sandbox.filesystem.denyWrite')
+glob_denied() { printf '%s' "$DENY_SET" | jq --arg home "$HOME" --arg p "$1" --arg fl "${GLOB_FLAGS:-}" "$GLOB_RX" 2>&1; }
+glob_case() { # glob_case <denied|allowed> <path>
+  local want=true label="denied"
+  [ "$1" = allowed ] && { want=false; label="allowed"; }
+  got=$(glob_denied "$2")
+  if [ "$got" = "$want" ]; then _pass "glob: $2 is $label${3:+ ($3)}"; else _fail "glob: $2 is $label${3:+ ($3)}" "$got"; fi
+}
+# Seatbelt matches regardless of letter case on this volume (spec 2026-10-30 section 1), so
+# a case-insensitive sample is checked with the regex i flag.
+glob_case_i() { GLOB_FLAGS=i glob_case "$1" "$2"; }
+H="$HOME"
+for p in "$H/Code/Org/repo/.git/config" "$H/Code/tagteam/.git/config.lock" \
+         "$H/.local/share/chezmoi/.git/config" "$H/Documents/a/b/c/.git/config.worktree" \
+         "$H/Code/Org/repo/.git/commondir" "$H/Code/Org/repo/.git/worktrees/w/commondir" \
+         "$H/Code/Org/repo/.git/worktrees/w/config.worktree" \
+         "$H/Code/Org/repo/.git/modules/plays/roles/x/config" \
+         "$H/Code/Org/repo/.git/modules/x/worktrees/y/config.worktree" \
+         "$H/Code/.git" "$H/Documents/.git" \
+         "$H/Library/Mobile Documents/iCloud~md~obsidian/Documents/MSB/x/.git" \
+         "$H/Code/Org/repo/.claude/worktrees/agent-1/.git" \
+         "$H/.local/share/chezmoi/.claude/worktrees/agent-1/.git" \
+         "$H/Code/HEAD" "$H/Documents/HEAD" \
+         "$H/Library/Mobile Documents/iCloud~md~obsidian/Documents/MSB/x/HEAD" "$H/Code/Org/HEAD" \
+         "$H/Code/Org/repo/.git/worktrees/w/modules/sub/config" \
+         "$H/Code/Org/repo/.git/worktrees/w/modules/sub/config.lock" \
+         "$H/Code/Org/repo/.git/worktrees/w/modules/sub/commondir" \
+         "$H/Code/Org/repo/.git/worktrees/w/modules/sub/hooks" \
+         "$H/Code/Org/repo/.git/worktrees/w/modules/sub/hooks/x" \
+         "$H/Code/Org/repo/.git/modules/sub/refs/heads/config"; do
+  glob_case denied "$p"
+done
+for root in "$H/Code" "$H/.local/share/chezmoi" "$H/Documents" "$H/Library/Mobile Documents/iCloud~md~obsidian/Documents"; do
+  for p in "$root/.lazygit.yml" "$root/Org/.lazygit.yml" "$root/Org/repo/.lazygit.yml" \
+           "$root/Org/repo/.git/lazygit.yml" "$root/Org/repo/.git/worktrees/w/lazygit.yml" \
+           "$root/Org/repo/.git/glab-cli/config.yml" "$root/.git/glab-cli/config.yml" \
+           "$root/Org/repo/.git/worktrees/w/glab-cli/config.yml"; do
+    glob_case denied "$p"
+  done
+done
+# Documented consequence of ** crossing into refs inside a submodule's git directory.
+glob_case denied "$H/Code/Org/repo/.git/modules/sub/refs/heads/commondir" \
+  "documented consequence: ** crosses into refs"
+glob_case denied "$H/Code/Org/repo/.git/worktrees/w/modules/sub/refs/heads/hooks" \
+  "documented consequence: ** crosses into refs"
+# Documented consequence: .git/**/lazygit.yml also denies a ref or any file by that name
+# inside a git directory.
+glob_case denied "$H/Code/Org/repo/.git/refs/heads/lazygit.yml"
+for p in "$H/Code/head" "$H/Code/Org/head" "$H/Code/Org/repo/.GIT/CONFIG" \
+         "$H/Code/Org/repo/.git/worktrees/w/modules/sub/Hooks/x"; do
+  glob_case_i denied "$p"
+done
+for p in "$H/Code/Org/repo/.git/objects/ab/cdef" "$H/Code/Org/repo/.git/index" \
+         "$H/Code/Org/repo/.git/HEAD" "$H/Code/Org/repo/.git/refs/heads/config" \
+         "$H/Code/Org/repo/.git/refs/heads/config-x" "$H/Code/Org/repo/.git/refs/heads/commondir" \
+         "$H/Code/Org/repo/.git/worktrees/w/gitdir" "$H/Code/Org/repo/.git/worktrees/w/HEAD" \
+         "$H/Code/tagteam/.git/index" "$H/Code/Netronix/ansible-roles/r/.git/index" \
+         "$H/Code/Org/repo-branch/.git" "/private/tmp/claude-501/x/.git/config" \
+         "$H/Code/Org/repo/node_modules/pkg/.claude/settings.local.json" \
+         "$H/Code/Org/repo/.git/HEAD" "$H/Code/tagteam/.git/HEAD" "$H/Code/Org/repo/HEAD" \
+         "$H/Code/Org/repo/.git/worktrees/w/modules/sub/objects/x" \
+         "$H/Code/Org/repo/.git/modules/sub/objects/ab/cdef" \
+         "$H/Code/Org/repo/.git/modules/sub/refs/heads/main" \
+         "$H/Code/Org/repo/.git/glab-cli/recover/x" "$H/Code/Org/repo/lazygit.yml" \
+         "$H/Code/Org/repo/.git/worktrees/w/glab-cli/recover/x" "$H/Code/Org/repo/.git/worktrees/w/glab-cli/other.yml" \
+         "$H/Code/Org/repo/.git/refs/heads/config-ish" "$H/Code/Org/repo/src/.lazygit.yml.bak/x"; do
+  glob_case allowed "$p"
+done
 jq_is '[.sandbox.filesystem.denyWrite[] | select(test("/\\.claude/settings|/\\.mcp\\.json|/\\.codex")) | sub("/\\.(claude/settings|mcp\\.json|codex).*$"; "") | select(contains("**"))] | length' 0 \
       "no agent configuration entry has an any-depth ** before the file, so node_modules packages stay writable (only the .codex/** tail has one)"
 jq_is '[.sandbox.filesystem.allowWrite[] | select(test("(^|/)\\.ssh(/|$)") or test("(^|/)\\.aws(/|$)") or test("/op(/|$)"))] | length' 0 \

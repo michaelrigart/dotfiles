@@ -419,14 +419,45 @@ printf '%s' "$input" | jq \
             "~/Library/Mobile Documents/iCloud~md~obsidian"
           ],
           # What is written under a work root can run outside the sandbox later: git hooks
-          # (also inside submodules), the vault plugins, and any repository agent
-          # configuration (.claude/settings*.json hooks, statusLine and env, .mcp.json, .codex),
-          # which the next session in that repo would load; Claude Code built-in denial covers only
-          # the session cwd. Scoped to the work roots, never a bare glob, so git init in
-          # TMPDIR keeps working. Git configuration files, objects, refs and the index stay
-          # writable, so sandboxed git config, branch -u, clone and submodule keep working.
+          # (also inside submodules), git configuration (fsmonitor, filters and the like, run
+          # by Starship, lazygit, herdr and the rest on every prompt), the vault plugins, and
+          # any repository agent configuration (.claude/settings*.json hooks, statusLine and
+          # env, .mcp.json, .codex), which the next session in that repo would load; Claude
+          # Code built-in denial covers only the session cwd. Scoped to the work roots, never
+          # a bare glob, so git init in TMPDIR keeps working.
+          # Git configuration and commondir are denied in every root, in a git directory, a
+          # linked worktree and a submodule (spec 2026-10-30, which supersedes the
+          # configuration-writable decision of spec 2026-10-16). config* also covers the lock
+          # files and config.worktree. The two module forms use ** so a nested submodule is
+          # covered; no entry is shaped .git/**/config, so a branch named config stays writable in
+          # the main repository (inside a submodule a name starting with config is denied).
+          # .git is denied where no repository may be: ~/Code and ~/Documents themselves,
+          # anywhere in the vault, and a harness worktree .git file (three fixed depths, as
+          # for the agent paths). A deeper .git would deny real repositories, so none is listed.
+          # A submodule of a linked worktree keeps its git directory at
+          # .git/worktrees/<id>/modules/<name>, which the module forms do not reach, so
+          # config, commondir and hooks have their own forms there (amended 2026-10-30; the
+          # hooks form closes the same gap in the 2026-10-16 hooks denial). HEAD is denied at
+          # ~/Code, ~/Documents, anywhere in the vault and one level under ~/Code: a HEAD there
+          # would let a planted directory pass for a bare repository. Starship ignores
+          # safe.bareRepository and finds such a fake at ~/Code or ~/Code/<Org> from prompts
+          # not inside a closer repository; it ignores one at a repository top level while
+          # that directory has its own .git. Real repositories keep HEAD inside .git, so they
+          # are untouched. A config* module entry also denies a
+          # submodule git directory whose path has a part starting with config, and its refs and
+          # reflogs with such a name. Objects, refs, the index and TMPDIR stay writable, except refs
+          # named lazygit.yml and, in a submodule, names starting with config or named hooks or
+          # commondir.
+          # Per-repository tool configuration that runs as Michael: lazygit loads lazygit.yml
+          # from a git directory and .lazygit.yml from every parent of a repository (its pager
+          # and externalDiffCommand run when he draws a diff), and glab reads
+          # .git/glab-cli/config.yml (its editor and browser run when he uses glab). Only that
+          # one glab file is denied, as glab keeps other state (recover files) in the same
+          # directory. The linked worktree form is defensive: newer glab resolves a worktree
+          # config per rev-parse --git-dir, while glab 1.126.0 does not read it. Consequence: .git/**/lazygit.yml also denies a ref or file of that name
+          # inside a git directory.
           # .claude/skills, commands and agents stay writable (projects commit their own).
-          # Hooks only for git, per spec 83f6b2b. Each agent path is listed at depth 0, 1 and 2
+          # Hooks per spec 83f6b2b. Each agent path is listed at depth 0, 1 and 2
           # under a root (work root, org dir or top-level repo, repo or wt sibling: where
           # sessions start), never at any depth: npm packages in node_modules ship such files
           # (resolve ships .claude/settings.local.json), so any depth would break sandboxed
@@ -440,12 +471,22 @@ printf '%s' "$input" | jq \
           "denyWrite": (
             ["~/Code", "~/.local/share/chezmoi", "~/Documents", "~/Library/Mobile Documents/iCloud~md~obsidian"] as $roots
             | [".git/hooks", ".git/hooks/**", ".git/modules/**/hooks", ".git/modules/**/hooks/**"] as $git
+            | [".git/config*", ".git/commondir", ".git/worktrees/*/config*", ".git/worktrees/*/commondir", ".git/modules/**/config*", ".git/modules/**/commondir"] as $gitconf
+            | [".git/worktrees/*/modules/**/config*", ".git/worktrees/*/modules/**/commondir", ".git/worktrees/*/modules/**/hooks"] as $wtmod
+            | [".lazygit.yml", ".git/**/lazygit.yml", ".git/glab-cli/config.yml", ".git/worktrees/*/glab-cli/config.yml"] as $toolconf
             | [".claude/settings.json", ".claude/settings.local.json", ".mcp.json", ".codex", ".codex/**"] as $agent
             | [$roots[] as $root | $git[] | "\($root)/**/\(.)"]
               + [$git[] | "~/.local/share/chezmoi/\(.)"]
+              + [$roots[] as $root | $gitconf[] | "\($root)/**/\(.)"]
+              + [$roots[] as $root | $wtmod[] | "\($root)/**/\(.)"]
               + [$roots[] as $root | $agent[] | "\($root)/\(.)", "\($root)/*/\(.)", "\($root)/*/*/\(.)",
                                            "\($root)/.claude/worktrees/*/\(.)", "\($root)/*/.claude/worktrees/*/\(.)",
                                            "\($root)/*/*/.claude/worktrees/*/\(.)"]
+              + [$roots[] as $root | "\($root)/.claude/worktrees/*/.git", "\($root)/*/.claude/worktrees/*/.git",
+                                     "\($root)/*/*/.claude/worktrees/*/.git"]
+              + ["~/Code/.git", "~/Documents/.git", "~/Library/Mobile Documents/iCloud~md~obsidian/**/.git"]
+              + ["~/Code/HEAD", "~/Documents/HEAD", "~/Library/Mobile Documents/iCloud~md~obsidian/**/HEAD", "~/Code/*/HEAD"]
+              + [$roots[] as $root | $toolconf[] | "\($root)/**/\(.)"]
               + ["~/Library/Mobile Documents/iCloud~md~obsidian/Documents/*/.obsidian",
                  "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/*/.obsidian/**"])
         },
