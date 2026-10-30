@@ -2,6 +2,7 @@
 
 **Status:** In progress
 Signed off 2026-10-30 under Michael's delegation while he was away.
+Amended 2026-10-30 (fake bare repositories at a root's top level; submodules of linked worktrees) under the same delegation.
 **Date:** 2026-10-30
 **Branch:** `fix/sandbox-git-config-plant`
 
@@ -9,7 +10,8 @@ This spec closes the open finding of 2026-10-29: a sandboxed session wrote anoth
 repository's git configuration, and git outside the sandbox ran it. It supersedes one decision
 of the [sandbox write boundary](2026-10-16-sandbox-write-boundary-design.md): §1 "Git", under
 which configuration files stay writable, and the matching Out-of-scope entry. That spec's
-hooks denial, `PATH` pins and git neutralisation stay as they are. Its record keeps its text;
+hooks denial, `PATH` pins and git neutralisation stay as they are; §1 below adds the one form
+of its hooks denial that missed a linked worktree's submodules. Its record keeps its text;
 the plan adds a one-line pointer to this spec beside the superseded decision.
 
 All measurements here were taken on 2026-10-30, sandboxed, in a session started in a Claude
@@ -84,7 +86,8 @@ sandbox:
    - a configuration redirect (`commondir`);
    - a `.git` entry where no repository may be.
 2. Git outside the sandbox does not treat a directory that only looks like a git directory as
-   a repository.
+   a repository. Nor does the prompt, at the top level of the work roots and of the
+   organisation directories (§2; elsewhere a residual).
 3. No new prompts. Every escape the change adds is named and measured.
 
 **Non-goals.**
@@ -103,11 +106,11 @@ sandbox:
 | V3 | `.git/commondir` in an ordinary `.git` | writable. Git then reads the `config` of the directory it names; one in `$TMPDIR` was read | in scope, §1 |
 | V4 | `.git/worktrees/<id>/config.worktree` and `commondir` | writable | in scope, §1 |
 | V5 | `.git/worktrees/<id>/gitdir` | writable. Claude Code leaves it writable for the session's own worktree too | out: git reads it only to list, prune and repair worktrees, never for configuration. A bad value can lose a worktree record; it runs nothing |
-| V6 | `.git/modules/**/config`, `config.worktree` and `commondir` | writable | in scope, §1 |
+| V6 | `.git/modules/**/config`, `config.worktree` and `commondir`, and the same under `.git/worktrees/*/modules/`: `git submodule update --init` in a linked worktree puts the submodule's git directory at `.git/worktrees/<id>/modules/<name>/`, with its own `config` and `hooks` (git 2.56.0, `wtsub.sh`) | writable. None of the first six forms (§1) matched the worktree-module path, and neither did the 2026-10-16 `hooks` denies | in scope, §1 |
 | V7 | A `.git` file whose `gitdir:` names a directory the sandbox writes, such as one in `$TMPDIR` | writable. Git in that directory and below read the `$TMPDIR` configuration | in part: §2 covers the roots' top level, the vault and harness worktrees. Elsewhere a residual |
 | V8 | `.git/hooks` outside the start directory | denied since 2026-10-16 (measured again). `mkdir .git/HOOKS` is denied as well | no change |
 | V9 | `include.path`, `includeIf` | Adding one needs a configuration write (V1). The global configuration includes nothing. Of 86 repository configurations under the work roots, none includes a file. One names a work-tree file: in `presence`, Rails set `diff.rails_credentials.textconv = bin/rails credentials:diff` | reduces to V1. `bin/rails` is tracked code (Trust stance) |
-| V10 | A fake git directory: `HEAD`, `objects/`, `refs/` and `config` in a plain directory | git uses it, even with `core.bare = false` and `core.worktree` set | for git, in scope (§3). Starship ignores `safe.bareRepository` (residual) |
+| V10 | A fake git directory: `HEAD`, `objects/`, `refs/` and `config` in a plain directory. Starship walks up from the working directory, so the prompt runs the directory's filters from the directory itself, from a child and from a grandchild, not only inside it | git uses it, even with `core.bare = false` and `core.worktree` set. Starship ran its clean filter in all three positions (1.27.0, `starship-ancestor.sh`), while git with `safe.bareRepository = explicit` refused it from the directory and from a child. With `HEAD` removed, Starship ran nothing from a child or a grandchild (`starship-nohead.sh`). A fake directory at `~/Code` or in `~/Code/<Org>` is therefore found from every prompt below it | for git, in scope (§3). For the prompt, §2's `HEAD` denies stop the directory from forming at the roots' top level and at the organisation level; elsewhere a residual |
 | V11 | Global and system configuration | denied: `~/.config/git/config`, `/opt/homebrew/etc/gitconfig`, and the Command Line Tools' and Xcode's `gitconfig`. `~/.gitconfig` and `/etc/gitconfig` do not exist, and `$HOME` is not in the write set | no change, except in a session started in `~` (Residuals) |
 | V12 | `.gitattributes` and `.git/info/attributes`: filter, diff and merge drivers | An attribute only names a driver, which runs only if configuration defines it. The global and system configurations define none, and git-lfs is not installed | reduces to V1 |
 | V13 | mise | trusts a configuration by its content hash (`paranoid = true`, spec 2026-10-16 §2) | no change |
@@ -122,13 +125,25 @@ sandbox:
 
 ### 1. Deny git configuration in every work root
 
-`sandbox.filesystem.denyWrite` gains these six forms for each work root `<root>` (24 entries):
+`sandbox.filesystem.denyWrite` gains these nine forms for each work root `<root>` (36 entries):
 
 ```
-<root>/**/.git/config*                <root>/**/.git/commondir
-<root>/**/.git/worktrees/*/config*    <root>/**/.git/worktrees/*/commondir
-<root>/**/.git/modules/**/config*     <root>/**/.git/modules/**/commondir
+<root>/**/.git/config*                          <root>/**/.git/commondir
+<root>/**/.git/worktrees/*/config*              <root>/**/.git/worktrees/*/commondir
+<root>/**/.git/modules/**/config*               <root>/**/.git/modules/**/commondir
+<root>/**/.git/worktrees/*/modules/**/config*   <root>/**/.git/worktrees/*/modules/**/commondir
+<root>/**/.git/worktrees/*/modules/**/hooks
 ```
+
+- **The three worktree-module forms** (the last three above; added by the 2026-10-30
+  amendment). A submodule of a linked worktree keeps its git directory at
+  `.git/worktrees/<id>/modules/<name>/` (V6), where none of the first six forms reaches.
+  - They deny its `config*`, its `commondir` and its `hooks`.
+  - They also close a gap in the [2026-10-16 hooks denies](2026-10-16-sandbox-write-boundary-design.md):
+    `.git/hooks` and `.git/modules/**/hooks` never matched this path. Same cause, same fix,
+    and the trust stance covers hooks.
+  - Git exempts `/.git/worktrees/` and `/.git/modules/` paths from `safe.bareRepository`
+    (§3), so for these paths the denies are the only barrier.
 
 - **How these compile** (read from the binary).
   - A glob becomes the Seatbelt regex `^<glob>(/.*)?$`, so each entry also covers everything
@@ -144,16 +159,25 @@ sandbox:
   - Git writes configuration through its lock file. Denying the lock makes git fail before it
     writes anything. Measured under Claude Code's own rule: "could not lock config file …
     Operation not permitted", with no lock file left behind.
-  - Nothing else in a git directory has a name starting with `config`. The exception is
-    `.git/modules/**`, where `**` also reaches a submodule's refs, so a submodule branch whose
-    name starts with `config` cannot be created sandboxed. Only one repository here keeps
-    submodule git directories: `Netronix/ansible-data`, untouched since 2023, with none of its
-    submodules checked out.
+  - Nothing else in an ordinary or worktree git directory has a name starting with `config`.
+    The module forms are the exception, because `**` crosses directories. A glob such as
+    `.git/modules/**/config*` (and `.git/worktrees/*/modules/**/config*`) denies:
+    - the whole git directory of any submodule with a path part starting with `config`
+      (`config/nvim`, `lib/configuration`);
+    - a submodule's remote-tracking refs, tags and reflogs whose name starts with `config`,
+      so a sandboxed fetch fails when the upstream has such a branch or tag.
+
+    The text of the globs reaches no refs, objects or index; what they match inside a
+    submodule's git directory is wider, and the `claude-settings` glob cases pin it
+    (Testing). Only one repository here keeps submodule git directories:
+    `Netronix/ansible-data`, untouched since 2023, with none of its submodules checked out.
 - **`commondir`** decides where git reads `config` from, in an ordinary `.git` (V3) as well as
   in a linked worktree's directory.
 - **What stays writable:**
   - objects, refs, the index, `HEAD`, logs, `info/` and `gitdir`. That includes a branch named
-    `config` or `hooks`, because `refs/heads/config` is not `.git/config`;
+    `config` or `hooks`, because `refs/heads/config` is not `.git/config`. Inside a
+    submodule's git directory, only refs whose name starts with `config` are the exception
+    (above);
   - everything outside the work roots, `$TMPDIR` included, where the suites build their
     repositories.
 - **Letter case.** The volume here is case-insensitive, and Seatbelt matched regardless of
@@ -168,7 +192,7 @@ sandbox:
 
 ### 2. Deny `.git` where no repository may be
 
-`denyWrite` also gains 15 entries.
+`denyWrite` also gains 19 entries.
 
 - **`~/Code/.git` and `~/Documents/.git`.** Neither root is a repository. A `.git` file there
   would pull into a repository, whose configuration the sandbox wrote, every directory below it
@@ -185,6 +209,23 @@ sandbox:
   Without the entry, a sandboxed session in one harness worktree could repoint another
   worktree's `.git` file at a directory it wrote. For the session's own worktree, Claude Code
   already denies it (measured).
+- **`HEAD` at the top level of the roots and of the organisation directories** (added by
+  the 2026-10-30 amendment, four entries):
+  - `~/Code/HEAD`
+  - `~/Documents/HEAD`
+  - `~/Library/Mobile Documents/iCloud~md~obsidian/**/HEAD`
+  - `~/Code/*/HEAD`
+
+  Starship walks up from the working directory and treats a directory holding `HEAD`,
+  `objects/` and `refs/` (and a `config`) as a bare repository, its own or an ancestor's
+  (V10; `starship-ancestor.sh`). A fake one planted at `~/Code`, or in
+  `~/Code/<Org>`, would run its filters whenever the prompt is drawn anywhere below it.
+  Git with `safe.bareRepository = explicit` refuses it; Starship does not honour that (§3).
+  Denying `HEAD` stops the directory from forming: with `HEAD` removed, Starship ran
+  nothing. Real repositories keep `HEAD` inside `.git`, so the entries do not touch them.
+  The volume is case-insensitive and Seatbelt matched regardless of case (§1), so `head` is
+  denied by the same entries. Organisation directories are the depth-1 directories under
+  `~/Code`; a repository at depth 1 (`~/Code/tagteam`) holds its `HEAD` in `.git`.
 - **Not at the organisation level.** Repositories sit at depths 1, 2 and 3 under `~/Code`
   (`~/Code/tagteam`, `~/Code/Netronix/curato`, `~/Code/Netronix/ansible-roles/<role>`).
   - So `~/Code/*/.git` would deny real repositories' `.git` directories, and every write in
@@ -193,6 +234,8 @@ sandbox:
     directory.
   - A `wt` sibling's `.git` file sits at the same depth as a main checkout's `.git`
     directory, so it gets no entry (Residuals).
+  - The `HEAD` entries above do reach the organisation level, because a repository never
+    keeps `HEAD` there.
 
 ### 3. Git refuses fake git directories
 
@@ -227,12 +270,18 @@ sandbox:
     bundler.
   - **The rest.** Cargo, npm and Go hold no bare repositories here. Homebrew taps, mise
     plugins and Neovim plugins are ordinary clones.
-- **Starship does not honour it** (measured). It found a fake git directory with gitoxide and
-  ran its filter, whether or not the setting was on. With `git_status.use_git_executable` on,
-  the filter still ran. The likely reason, read from Starship's binary rather than measured:
-  its git call names the directory it found with `--git-dir`, and git counts that as
-  explicit. The setting closes V10 for git and everything that runs git; for the prompt,
-  V10 stays a residual.
+- **Git exempts two paths from it** (measured, git 2.56.0, `implicit.sh`). With the setting
+  on, a fake git directory at `.git/modules/<m>`, `.git/worktrees/<w>` or
+  `.git/worktrees/<w>/modules/<m>` is still accepted; one in a plain directory is refused.
+  Those paths are what §1's worktree and module forms deny.
+- **The setting does not protect the prompt; the `HEAD` denies do** (measured). Starship
+  found a fake git directory with gitoxide and ran its filter, whether or not the setting
+  was on, from the directory itself, from a child and from a grandchild. With
+  `git_status.use_git_executable` on, the filter still ran. The likely reason, read from
+  Starship's binary rather than measured: its git call names the directory it found with
+  `--git-dir`, and git counts that as explicit. The setting closes V10 for git and everything
+  that runs git. For the prompt, §2's `HEAD` entries stop the fake directory from forming at
+  the roots' top level and the organisation level, and the rest is a residual.
 
 ### 4. The instructions say so
 
@@ -281,6 +330,14 @@ root. Measured under that built-in rule, on a scratch repository with a bare rem
 | `git switch -c <b> --track origin/x`, `git switch -c <b> origin/x`, `git switch <remote-only branch>` | exits 1 and stays on the current branch. The first two leave the new branch created; `--no-track` avoids the failure |
 | `git branch -u`, `remote add`, `config`, `clone`, `init`, `submodule add` or `update`, `worktree add` | fails; needs the escape |
 | `rm -rf` of a repository under a root | removes everything except the repository's configuration (and hooks, if it has any), then fails; needs the escape |
+| `git branch -m` | renames the branch, then exits 128 ("branch is renamed, but update of config-file failed") |
+| `git worktree remove`; `worktree prune` | `remove` exits 255 and leaves the worktree record behind; `prune` hits the same deny |
+| Tool-made clones under a root (SwiftPM `.build/checkouts/*/.git`, for example `Netronix/muninn`): a new checkout, `swift package reset`, `rm -rf .build` | fail sandboxed |
+
+The last three rows were added by the 2026-10-30 amendment. They were measured on scratch
+repositories with the deny simulated (a held `config.lock`, the immutable flag on
+`commondir`; `costs.sh`). All three already fail in a session's own repository under Claude
+Code's built-in rule.
 
 - **Frequency.** Across the 4,148 transcript files of the last 30 days, the only sandboxed
   configuration writes aimed at a repository other than the session's own were three
@@ -302,13 +359,22 @@ root. Measured under that built-in rule, on a scratch repository with a bare rem
 ### Focused suites
 
 - **`claude-settings`.**
-  - `denyWrite` equals the expected array exactly: the 2026-10-16 entries, plus §1's 24 and
-    §2's 15.
+  - `denyWrite` equals the expected array exactly: 142 entries from 2026-10-16, plus §1's 36
+    and §2's 19, 197 in all.
   - Every entry starts with a work root and a slash, so `$TMPDIR` stays writable.
-  - Each root has all six §1 forms.
-  - No entry reaches objects, refs or the index.
+  - Each root has all nine §1 forms.
+  - Glob cases (the §1 conversion, evaluated against the rendered array):
+    - `HEAD` is denied at `~/Code/HEAD`, `~/Documents/HEAD`, anywhere in the vault and at
+      `~/Code/<Org>/HEAD`, and allowed at `~/Code/<Org>/<repo>/.git/HEAD`;
+    - a worktree submodule's `config`, `commondir` and `hooks/<hook>` are denied under
+      `.git/worktrees/<id>/modules/<name>/`;
+    - `modules/sub/refs/heads/config` is denied, and `modules/sub/objects/<xx>/<hash>` and
+      `modules/sub/refs/heads/main` are allowed (M2: the wider reach, pinned);
+    - `refs/heads/config` in an ordinary `.git` stays allowed.
+  - No entry reaches objects, refs or the index of an ordinary repository or a linked
+    worktree. The module forms with `config*` are the stated exception (§1).
   - No entry has the shape `.git/**/config`, so a branch named `config` stays writable. Only
-    `.git/modules/**/config*` reaches refs, and only a submodule's.
+    the two module forms with `config*` reach refs, and only a submodule's.
   - The old assertion "no deny glob reaches a git configuration file" is replaced by these.
 - **The global git configuration**, in `git-signing-config` or a new suite.
   - The rendered file sets `safe.bareRepository = explicit`.
@@ -327,7 +393,9 @@ The suite runs sandboxed, in a fresh session after `chezmoi apply`.
   - `config`, `config.lock`, `config.worktree`, `commondir`;
   - `worktrees/wt/config.worktree`, `worktrees/wt/commondir`;
   - `modules/sub/config`, `modules/sub/commondir`,
-    `modules/sub/worktrees/swt/config.worktree`.
+    `modules/sub/worktrees/swt/config.worktree`;
+  - the worktree-module forms: `worktrees/wt/modules/sub/config`,
+    `worktrees/wt/modules/sub/commondir` and `worktrees/wt/modules/sub/hooks`.
 
   They replace today's `*_writable` probes. The main `config` probe no longer skips the
   session's base directory. Objects, the index, `refs/heads/config`, `refs/heads/hooks` and
@@ -338,8 +406,13 @@ The suite runs sandboxed, in a fresh session after `chezmoi apply`.
 - **`.git` where no repository may be.** Creating `.git` is denied in these places:
   - directly under `~/Code`, as a file;
   - directly under `~/Documents`, as a file;
-  - two levels down in the vault, as a directory and as a file;
+  - in the vault, two levels below its root: a directory at `<vault>/<stamp>/vdir/.git/` and
+    a file at `<vault>/<stamp>/org/.git`;
   - at `<root>/<stamp>/arepo/.claude/worktrees/wt1/.git`, as a file, in every root.
+- **`HEAD` where no repository may be** (added by the 2026-10-30 amendment). Creating
+  `HEAD`, and `head` for the letter case, is denied directly under `~/Code` and
+  `~/Documents`, in the vault (`<vault>/<stamp>/org/HEAD` and `<vault>/<stamp>/org/head`,
+  two levels below its root) and in an organisation directory (`~/Code/<stamp>/`).
 - **Case.** In the repository of the behaviour probe below, appending to its existing
   `config` as `.git/CONFIG` is denied, and so is creating the absent `commondir` as
   `.git/COMMONDIR`.
@@ -380,13 +453,23 @@ The suite runs sandboxed, in a fresh session after `chezmoi apply`.
   wrote:
   - a new one inside a repository's work tree;
   - a new one in a non-repository directory below a root's top level;
-  - an existing one rewritten: a `wt` sibling's, or a submodule's.
+  - an existing one rewritten: a `wt` sibling's, or a submodule's;
+  - the organisation level's own `.git` file (`~/Code/<Org>/.git`), which §2 cannot deny.
 
   Path rules cannot tell a `.git` file from a `.git` directory. Claude Code could close this,
   by denying regular files named `.git` or by extending its own `.git` protection to the
   `allowWrite` roots, but its settings offer neither today.
 - **Starship and fake git directories (V10).** Starship reads a fake git directory and runs
-  its filters despite `safe.bareRepository`. The prompt has to be drawn inside that directory.
+  its filters despite `safe.bareRepository`, from the directory, a child or a grandchild.
+  §2's `HEAD` entries stop one from forming at the top level of `~/Code`, `~/Documents` and
+  the vault, and in `~/Code/<Org>`. What stays residual, in the same class as the `.git`
+  files elsewhere (path rules cannot tell it from ordinary content):
+  - a fake bare repository inside a repository's work tree;
+  - one in a non-repository directory deeper than depth 1 under `~/Code`, or below the top
+    level of `~/Documents`;
+  - one built in `$TMPDIR` and moved in (V18).
+
+  The prompt then runs the filters when it is drawn in or below that directory.
 - **Configuration that names tracked files**, such as `presence`'s textconv `bin/rails`: that
   is tracked code, reviewed like any change.
 - **Sessions started in `~`.** Their write scope is all of `$HOME`.
@@ -401,8 +484,9 @@ The suite runs sandboxed, in a fresh session after `chezmoi apply`.
 ## Calls made in writing this spec
 
 1. Anchor per work root, not at `~/**` (§1).
-2. Use `config*` rather than enumerating names. Its cost is submodule branches whose names
-   start with `config` (§1).
+2. Use `config*` rather than enumerating names. Its cost is wider in submodule git
+   directories than the glob text suggests: a path part or a ref name starting with `config`
+   (§1).
 3. Deny `.git` at `~/Code/.git`, at `~/Documents/.git` and anywhere in the vault, not at the
    organisation level (§2).
 4. Deny harness worktrees' `.git` files, not `wt` siblings' (§2).
@@ -412,3 +496,9 @@ The suite runs sandboxed, in a fresh session after `chezmoi apply`.
 7. Leave `.git/worktrees/*/gitdir` writable (V5).
 8. Use `denyWrite`, not `Edit(…)` rules (Not taken, 7).
 9. Leave sessions started in `~` to their own spec (Residuals).
+10. Amendment: deny `HEAD` at the top level of the roots and at the organisation level, so a
+    fake bare repository cannot form where Starship would find it from every prompt below
+    (§2).
+11. Amendment: deny `config*`, `commondir` and `hooks` in a linked worktree's submodule git
+    directories (§1), the one form git exempts from `safe.bareRepository` and the 2026-10-16
+    hooks denies missed.

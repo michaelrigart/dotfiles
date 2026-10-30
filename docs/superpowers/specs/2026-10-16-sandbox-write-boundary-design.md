@@ -54,6 +54,8 @@ these places should cost no escapes.
     agent wrote there in 30 days, so this costs no escapes. Objects, refs, the index and the
     configuration files stay writable, so sandboxed `git add`, `commit`, `fetch`,
     `branch -u`, `clone` and `git config` keep working;
+    Superseded for configuration on 2026-10-30 by [the git configuration plant spec](2026-10-30-sandbox-git-config-plant-design.md).
+    The same spec adds the form of this `hooks` denial that missed a linked worktree's submodules, `.git/worktrees/*/modules/**/hooks`.
   - the vault's `.obsidian`.
 - **Git, decided 2026-10-17 (Michael).** The configuration files stay writable; denying them
   would add escapes for real agent work. Over 30 days, sandboxed outside temporary

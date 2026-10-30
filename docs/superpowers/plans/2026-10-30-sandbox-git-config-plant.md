@@ -489,6 +489,21 @@ file.
   3. Over the next week, `~/.local/state/agent-audit/prompts.jsonl` shows no prompt naming a
      path these entries cover.
 
+## Post-review amendments
+
+The final whole-branch review, and the spec amendment of 2026-10-30 that followed it, change
+the plan in these ways. They supersede the task text above where they differ; the task text is
+left as written.
+
+- **197 entries, not 181.** The review added 16 `denyWrite` entries to the 39 planned
+  (55 new on 142): 12 worktree-module forms (`config*`, `commondir` and `hooks` under
+  `.git/worktrees/*/modules/**`, for each root) and 4 `HEAD` entries (`~/Code/HEAD`,
+  `~/Documents/HEAD`, the vault's `**/HEAD`, `~/Code/*/HEAD`). `claude-settings` pins the exact
+  array of 197, the new glob cases, and the live suite its HEAD and worktree-module probes.
+- **The Task 3 escape line is three lines**, not two.
+- **The Apple-git check skips instead of passing.** When Apple git is absent, `git-config`
+  prints a skip line that `tests/run.sh` does not count as a pass, not an `ok`.
+
 ## Finishing
 
 The controller, after the whole-branch review and an approving pre-merge cross-review:
