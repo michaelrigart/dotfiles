@@ -62,6 +62,7 @@ these places should cost no escapes.
   that a worktree's or submodule's `.git` file points at under any other name. So agent-touched
   repositories remain a place where agent-written git configuration runs when Michael uses git
   there. This is the same trust as their code, and it is recorded under Out of scope.
+  Superseded for configuration on 2026-10-30 by [the git configuration plant spec](2026-10-30-sandbox-git-config-plant-design.md).
 
   The plan picks whichever form the sandbox enforces for a glob, by probe.
 - **Other repositories' agent configuration (Michael, 2026-10-18).** `denyWrite` also names,
@@ -457,6 +458,7 @@ A zsh wrapper around `chezmoi` handles `apply`, `update` and the previews below.
   stay agent-writable (see §1, "Git"). The justification is the git rule in §2, "Git that
   our unsandboxed code runs", not `PATH`. Michael's own git in an agent-touched repository
   trusts that repository's metadata as it trusts its code.
+  Superseded on 2026-10-30 by [the git configuration plant spec](2026-10-30-sandbox-git-config-plant-design.md).
 - Third-party binaries and plugin hooks that run git in the session's repository (ruling
   2026-10-18). The basecamp plugin's PostToolUse hook runs `basecamp agent-hook post-commit`
   unsandboxed, and that runs `git log -1` there. With agent-written `log.showSignature` and

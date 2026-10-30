@@ -2,8 +2,8 @@
 
 - **Sandbox escapes.** Leave the sandbox only after a command has failed with sandbox
   evidence.
-  - Needs the escape: `op`, and writes to a repository's `.git/config` (`git init`,
-    `git remote add`, `git config`).
+  - Needs the escape: `op`, and git configuration writes in any repository: `init`,
+    `clone`, `config`, `remote add`, `submodule`, `worktree add`, tracking a remote branch.
   - Works sandboxed: `git add`, `git commit`, `git push`/`fetch` over SSH, `mise exec`,
     localhost TCP.
 - **Excluded tools.** `docker`, `basecamp`, `herdr`, `xreview` and `review` are declared
