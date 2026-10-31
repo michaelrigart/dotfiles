@@ -129,6 +129,8 @@ printf '%s' "$input" | jq \
           "Read(~/.config/op/config)",   "Edit(~/.config/op/config)",
           # Home Assistant token, rendered by chezmoi
           "Read(~/.config/ha-mcp/**)",   "Edit(~/.config/ha-mcp/**)",
+          # UniFi controller login, rendered by chezmoi
+          "Read(~/.config/unifi-network/**)", "Edit(~/.config/unifi-network/**)",
           "Read(**/secrets.*.yml)",      "Edit(**/secrets.*.yml)",
           "Read(**/.env.production*)",   "Edit(**/.env.production*)",
           "Read(**/*.key)",              "Edit(**/*.key)",
@@ -376,7 +378,8 @@ printf '%s' "$input" | jq \
             { "path": "~/.ssh/viumore_rsa",                    "mode": "deny" },
             { "path": "~/.aws/credentials",                    "mode": "deny" },
             { "path": "~/.config/op/config",                   "mode": "deny" },
-            { "path": "~/.config/ha-mcp/env",                  "mode": "deny" }
+            { "path": "~/.config/ha-mcp/env",                  "mode": "deny" },
+            { "path": "~/.config/unifi-network/env",           "mode": "deny" }
           ]
         },
         # docker is here because it talks to its own socket. basecamp (macOS Keychain),
@@ -560,7 +563,10 @@ printf '%s' "$input" | jq \
   # listing shows them; the bare name matches too. Delete an entry to bring it back.
   | ["claude-code-setup@claude-plugins-official",
      "claude-md-management@claude-plugins-official",
-     "cowork-plugin-management@synced"] as $disabled_plugins
+     "cowork-plugin-management@synced",
+     # The UniFi server now runs from ~/Code/home-assistant/.mcp.json (launcher
+     # ~/.local/bin/unifi-network-mcp), so the globally enabled plugin copy goes off.
+     "unifi-network@unifi-plugins"] as $disabled_plugins
   | (["pptx", "docx", "pdf", "xlsx", "google-workspace", "computer-use", "built-in-browser",
       "morning", "skill-creator", "mcp-builder", "internal-comms", "canvas-design",
       "algorithmic-art", "theme-factory", "brand-guidelines", "slack-gif-creator",

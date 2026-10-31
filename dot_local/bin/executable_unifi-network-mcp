@@ -1,0 +1,45 @@
+#!/bin/sh
+# Launcher for the UniFi Network MCP server (unifi-network-mcp): a stdio server that Claude
+# Code runs for ~/Code/home-assistant only (its .mcp.json). Unlike ha-mcp, this package only
+# reads its credentials from the process environment, so UNIFI_NETWORK_HOST, _USERNAME and
+# _PASSWORD sit in the server process's environment (and its children's), loaded here from
+# ~/.config/unifi-network/env, which chezmoi renders from 1Password. They are never in
+# Claude Code's config or in any repository file. The permission policy below is not secret.
+set -eu
+
+version=0.27.3
+
+env_file="$HOME/.config/unifi-network/env"
+if [ ! -r "$env_file" ]; then
+  echo "unifi-network-mcp: $env_file is missing or unreadable — run chezmoi apply" >&2
+  exit 1
+fi
+
+set -a
+# shellcheck disable=SC1090
+. "$env_file"
+set +a
+
+# Connection defaults; the env file wins when it sets one.
+: "${UNIFI_NETWORK_PORT:=443}"
+: "${UNIFI_NETWORK_SITE:=default}"
+: "${UNIFI_NETWORK_VERIFY_SSL:=false}"
+: "${UNIFI_TOOL_REGISTRATION_MODE:=lazy}"
+export UNIFI_NETWORK_PORT UNIFI_NETWORK_SITE UNIFI_NETWORK_VERIFY_SSL UNIFI_TOOL_REGISTRATION_MODE
+
+# Permission policy: changes need confirmation, deletes are refused.
+UNIFI_TOOL_PERMISSION_MODE=confirm
+UNIFI_POLICY_NETWORK_CREATE=true
+UNIFI_POLICY_NETWORK_UPDATE=true
+UNIFI_POLICY_NETWORK_DELETE=false
+export UNIFI_TOOL_PERMISSION_MODE UNIFI_POLICY_NETWORK_CREATE UNIFI_POLICY_NETWORK_UPDATE UNIFI_POLICY_NETWORK_DELETE
+
+# Appended, so a test stub wins and a bare PATH still finds mise.
+PATH="$PATH:/opt/homebrew/bin"
+
+cd "$HOME"
+python=$(mise which python) || {
+  echo "unifi-network-mcp: mise has no Python for $HOME — run mise install" >&2
+  exit 1
+}
+exec mise exec uv -- uvx --python "$python" "unifi-network-mcp==$version"
