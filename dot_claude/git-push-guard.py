@@ -67,6 +67,9 @@
 #  - denied by design: quoted here-document bodies that spell a push, hidden spellings in arguments
 #    that never run (printf, echo, test calls), escape text beside a quoted git command; and an
 #    accepted PLAIN deny for a lone surrogate or NUL in a git -C / GIT_DIR selector or in cwd;
+#  - denied as main denies the literal word: a glob argument some shell can expand to git beside a
+#    push word, as in cp g?t push, mv [g]it push or find . -name g?t -o -name push (main denies
+#    cp git push and find . -name git -o -name push alike); inert readers (ls, rg) stay silent;
 #  - glob words: [[=g=]]it and [[.x.]]it deny but push only in bash and sh (zsh -f does not expand
 #    them); a zsh group (g|x)it at a command start, after an operator or time is a subshell, not a
 #    glob; the _ARGS_OF window that finds wrappers before a group is 80 characters (no analog);
