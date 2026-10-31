@@ -310,5 +310,19 @@ if [ "$rc" -eq 2 ] && grep -qxF 'INCONCLUSIVE: chezmoi managed failed: chezmoi: 
   _pass "live-feedback-skill: blank leading stderr lines are skipped"
 else _fail "live-feedback-skill: blank leading stderr lines are skipped" "exit $rc: $(head -2 "$T/blankfirst.err")"; fi
 
+# --- first-party shared skills --------------------------------------------------
+# merge-request and second-brain live in dot_agents/skills/ and are linked into Claude Code
+# like clarity. `managed` must list each SKILL.md and each symlink, so a dropped re-include
+# or a missing source file shows here.
+echo "shared skills: managed lists each SKILL.md and its Claude symlink"
+if managed=$(chezmoi --source "$SRC" managed 2>"$T/managed.err"); then
+  for name in merge-request second-brain; do
+    for path in ".agents/skills/$name/SKILL.md" ".claude/skills/$name"; do
+      if printf '%s\n' "$managed" | grep -qxF "$path"; then _pass "managed lists $path"
+      else _fail "managed lists $path" "absent from chezmoi managed"; fi
+    done
+  done
+else _fail "chezmoi managed runs" "$(head -n 2 "$T/managed.err")"; fi
+
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -100,6 +100,8 @@ tests/
 .claude/skills/api-review/*
 !.claude/skills/api-review/SKILL.md
 !.claude/skills/clarity
+!.claude/skills/merge-request
+!.claude/skills/second-brain
 
 .codex/*
 !.codex/AGENTS.md
