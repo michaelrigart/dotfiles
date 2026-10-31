@@ -26,6 +26,7 @@ EXP_DENY='["Read(~/.ssh/**)","Edit(~/.ssh/**)",
  "Read(~/.aws/credentials)","Edit(~/.aws/credentials)",
  "Read(~/.config/op/config)","Edit(~/.config/op/config)",
  "Read(~/.config/ha-mcp/**)","Edit(~/.config/ha-mcp/**)",
+ "Read(~/.config/unifi-network/**)","Edit(~/.config/unifi-network/**)",
  "Read(**/secrets.*.yml)","Edit(**/secrets.*.yml)",
  "Read(**/.env.production*)","Edit(**/.env.production*)",
  "Read(**/*.key)","Edit(**/*.key)",
@@ -300,7 +301,8 @@ EXP_CREDENTIALS='[
   "~/.ssh/viumore_rsa",
   "~/.aws/credentials",
   "~/.config/op/config",
-  "~/.config/ha-mcp/env"
+  "~/.config/ha-mcp/env",
+  "~/.config/unifi-network/env"
 ]'
 EXP_ALLOW_READ='[
   "~/.ssh/config",
@@ -929,10 +931,18 @@ done
 # skillOverrides does not reach plugin skills (measured on 2.1.314), so the two cowork skills
 # go off with their plugin, which is synced from claude.ai.
 jq_is '.enabledPlugins["cowork-plugin-management@synced"]' false "the cowork plugin is disabled on a bare file"
+# The UniFi server runs from ~/Code/home-assistant/.mcp.json; the marketplace and the plugin
+# line are gone from plugins.conf (add-only, so the installed plugin is kept off here).
+jq_is '.enabledPlugins["unifi-network@unifi-plugins"]' false "the unifi-network plugin is disabled on a bare file"
+if grep -Eq '^claude_(plugin[[:space:]]+unifi-network@|marketplace[[:space:]]+sirkirby/unifi-mcp)' "$SRC/dot_config/agents/plugins.conf"; then
+  _fail "unifi-network is no longer declared in plugins.conf" "still declared"
+else
+  _pass "unifi-network is no longer declared in plugins.conf"
+fi
 jq_is '.skillOverrides | keys | map(select(startswith("cowork-plugin-management"))) | length' 0 "no plugin skill is listed in skillOverrides"
 jq_is '.skillOverrides | length' 17 "exactly 17 skills are overridden on a bare file"
 jq_is '.skillOverrides | to_entries | all(.value == "off")' true "every owned override is off"
-jq_is '.enabledPlugins | length' 3 "only the three disabled plugins are named on a bare file"
+jq_is '.enabledPlugins | length' 4 "only the four disabled plugins are named on a bare file"
 # Skills that stay on are never named.
 for s in docs deep-research chrome-browser live-feedback clarity api-review; do
   jq_is ".skillOverrides | keys | map(select(endswith(\":$s\") or . == \"$s\")) | length" 0 "skill $s stays on"
@@ -940,10 +950,11 @@ done
 for p in ruby-lsp rust-analyzer-lsp; do
   jq_is ".enabledPlugins | has(\"$p@claude-plugins-official\") | not" true "plugin $p stays on"
 done
-emit '{"enabledPlugins":{"x@y":true,"claude-code-setup@claude-plugins-official":true,"rust-analyzer-lsp@claude-plugins-official":true},"skillOverrides":{"mine":"name-only","anthropic-skills:pdf":"on"}}'
+emit '{"enabledPlugins":{"x@y":true,"unifi-network@unifi-plugins":true,"claude-code-setup@claude-plugins-official":true,"rust-analyzer-lsp@claude-plugins-official":true},"skillOverrides":{"mine":"name-only","anthropic-skills:pdf":"on"}}'
 jq_is '.enabledPlugins["x@y"]'                                       true  "a live plugin entry is carried"
 jq_is '.enabledPlugins["rust-analyzer-lsp@claude-plugins-official"]' true  "an enabled live plugin stays enabled"
 jq_is '.enabledPlugins["claude-code-setup@claude-plugins-official"]' false "a live enabled retired plugin is forced off"
+jq_is '.enabledPlugins["unifi-network@unifi-plugins"]'               false "a live enabled unifi-network plugin is forced off"
 jq_is '.skillOverrides.mine'                                         name-only "a live skill override is carried"
 jq_is '.skillOverrides["anthropic-skills:pdf"]'                      off   "a live override of an owned skill is forced off"
 emit '{"enabledPlugins":"junk","skillOverrides":["junk"]}'
