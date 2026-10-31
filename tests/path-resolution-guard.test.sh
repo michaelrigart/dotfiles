@@ -106,7 +106,7 @@ expect allow "find is not a content read"     'find . -name "*.sh"'
 
 echo "Deny reasons carry the fix, not just the complaint:"
 expect_match "rule 1 names the absolute-path fix" 'cd /tmp && ls' 'absolute path'
-expect_match "rule 1 names the separate-call fix" 'cd /tmp && ls' 'separate Bash call'
+expect_match "rule 1 says a subagent's directory does not persist" 'cd /tmp && ls' "does not persist between calls"
 expect_match "rule 2 names the directories fix"   'grep -rn foo .' 'Name the directories'
 
 echo "Fails open:"

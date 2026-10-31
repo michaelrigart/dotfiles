@@ -85,9 +85,11 @@ Re-issue it one of two ways:
   - Drop the \`cd\` and give every file argument an absolute path:
         grep -n 'def foo' -A15 /abs/dir/app/helpers/x.rb
 
-  - If the command genuinely needs a working directory (a test runner, a build),
-    send \`cd /abs/dir\` on its own as a separate Bash call first. The working
-    directory persists between calls, so the following calls inherit it.
+  - If the command genuinely needs a working directory: in the main session, send
+    \`cd /abs/dir\` on its own first, and the following calls inherit it. A subagent's
+    working directory does not persist between calls, and it starts in the session's
+    directory, so drop the \`cd\` when that is already the directory, and otherwise
+    use absolute paths or the tool's directory flag.
 
 Commands that take a directory flag need neither: git -C DIR, make -C DIR,
 npm --prefix DIR."
