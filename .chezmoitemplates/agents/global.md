@@ -19,7 +19,7 @@ repo; edit that and `chezmoi apply`, never a rendered copy. Claude-only rules go
   Python, Rust, .NET) go in mise (`~/.config/mise/config.toml`). Never install ad hoc or as
   global toolchains.
 - **Stack:** Rails first (bundler, pg, vips, jemalloc); Python, Rust, .NET as needed. Ops:
-  Ansible, Kubernetes (`kubectl`, `kubie`, `krew`, k9s), Docker, `az`, Teleport (`tsh`).
+  Ansible, Kubernetes on Talos (`kubectl`, `talosctl`, k9s), Docker, `az`, Teleport (`tsh`).
 - **Firewall:** an outbound firewall (Little Snitch) blocks new or ad-hoc-signed binaries
   until allowed. Suspect it first when a connection fails for no clear reason.
 - **Secrets:** they come from 1Password (`op`). Never print, log or commit one.

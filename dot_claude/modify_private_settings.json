@@ -35,7 +35,7 @@ printf '%s' "$input" | jq \
   --arg sl "/opt/homebrew/bin/bash $HOME/.claude/statusline.sh" \
   --arg herdr_hook "/opt/homebrew/bin/bash '$HOME/.claude/hooks/herdr-agent-state.sh' session" \
   --arg agent_socket "$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock" \
-  --arg tool_path "$HOME/.local/bin:$HOME/.local/share/mise/shims:$HOME/.cargo/bin:/opt/homebrew/bin:/opt/homebrew/sbin:$HOME/.krew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" '
+  --arg tool_path "$HOME/.local/bin:$HOME/.local/share/mise/shims:$HOME/.cargo/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" '
   # Start from the LIVE file and overlay the owned keys with +, which replaces each named
   # key wholesale and leaves every other key alone. Until 2026-09-30 this rebuilt the object
   # and carried a named whitelist, so every runtime key nobody listed (the notification

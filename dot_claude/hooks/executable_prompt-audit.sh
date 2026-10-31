@@ -30,7 +30,7 @@ mkdir -p "$dir" 2>/dev/null || exit 0
 # Tools whose second word is a subcommand. Any other tool logs its first word only: the
 # second word of an arbitrary command (echo, mysql, htpasswd) can be the secret itself, and
 # so can the second word of claude or codex, which is a free-text prompt.
-multi='["git","glab","gh","op","docker","kubectl","helm","az","aws","terraform","brew","mise","chezmoi","basecamp","herdr","xreview","npm","yarn","pnpm","bundle","rails","cargo","go","uv","pip","borg","vorta","tsh","tctl","kubie"]'
+multi='["git","glab","gh","op","docker","kubectl","helm","az","aws","terraform","brew","mise","chezmoi","basecamp","herdr","xreview","npm","yarn","pnpm","bundle","rails","cargo","go","uv","pip","borg","vorta","tsh","tctl"]'
 line=$(printf '%s' "$payload" | jq -c --argjson multi "$multi" '
   def subcommand:
     [splits("[[:space:]]+") | select(length > 0)] as $w
