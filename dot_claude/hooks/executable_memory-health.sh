@@ -13,7 +13,7 @@
 #     25,000 characters (read from the Claude Code 2.1.289 binary), counted on the trimmed
 #     content as Claude Code counts it: characters are UTF-16 code units (a JavaScript
 #     string length), so an emoji counts two.
-#   - an index line longer than 200 characters, counted the same way;
+#   - an index line longer than 200 characters, counted as it stands in the file (untrimmed);
 #   - an index link ](name.md) whose file does not exist;
 #   - a memory file that no index link names.
 # [[name]] links are not checked: a link to a memory not yet written is allowed.
