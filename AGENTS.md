@@ -101,7 +101,7 @@ Suites run in parallel (`RUN_JOBS`, default: half the online CPUs, at least 2; a
 `RUN_JOBS=1` is honoured and restores sequential order). Output is buffered and printed in name order, so the verdicts are
 the same either way; a load-sensitive suite's assertion count can differ (`xreview-packet`
 F7 slices a 20,000-file case into 8 or 9). A suite that cannot share the machine carries a
-`# test-serial` line and runs alone after the parallel ones (none does today), and so does
+`# test-serial` line and runs alone after the parallel ones (today only `xreview`), and so does
 every suite gated on a condition other than `heavy` (a live herdr, a pty, the real daemon).
 
 **The runner locks itself:** one per machine (`lockf` on `/tmp/claude-$(id -u)/tests-run.lock`,

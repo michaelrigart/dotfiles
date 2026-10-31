@@ -375,9 +375,12 @@ The heavy suites, run by name: xreview 672 s, git-forge-guard 242 s, wt-function
    controllers or merges; those go to sp-standard. Implementation only as an escalation after a
    lower tier failed." The spec's verbatim text contradicted the existing "go up a tier" rule and
    the live-feedback skill's escalation to sp-architect.
-2. **No `# test-serial` markers.** Six suites assert on timing; they passed under three times
-   CPU oversubscription, and five parallel runs were byte-identical. If a parallel run turns
-   red, mark these first: herdr-codex-pane-map, xreview-rpc, review, wt-teardown.
+2. **`# test-serial` only with evidence.** Six default suites assert on timing; they passed under
+   three times CPU oversubscription, and five parallel runs were byte-identical. If a parallel
+   run turns red, mark these first: herdr-codex-pane-map, xreview-rpc, review, wt-teardown.
+   The heavy `xreview` suite carries the marker. Its T4b asserts that dispatch returns within
+   `XREVIEW_PANE_WAIT=2`; run beside the `xreview-*` suites it took 2.35 s (pre-merge run,
+   2026-10-31).
 3. **`agent-skills` lists `managed` from a scratch source** (the ignore file, `dot_agents`, the
    symlinks), not the checkout source. That keeps the suite off chezmoi's external cache.
 4. **`live-feedback-skill` signs no fixture commit.** It now runs `-c commit.gpgsign=false`:
