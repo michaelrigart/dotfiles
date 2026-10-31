@@ -1,6 +1,6 @@
 # Workflow tuning: faster runs at the same quality bar
 
-**Status:** In progress (branch `improvements`; the dotfiles have no MR)
+**Status:** Implemented on `improvements` (the dotfiles have no MR; pushed branch is the end)
 **Date:** 2026-10-30
 **Branch:** `improvements`
 **Sign-off:** delegated. On 2026-10-31 Michael said "do what needs to be done so that you can run
@@ -405,8 +405,8 @@ The heavy suites, run by name: xreview 672 s, git-forge-guard 242 s, wt-function
 11. **The Sizing bullet keeps spec §9's mid-way rule** in short form: "Unsure or outgrown: not
     small; say which."
 
-**Open:** `dot_claude/executable_git-forge-guard.sh`, `dot_claude/modify_private_settings.json`
-and `tests/git-forge-guard.test.sh` still point at "the Merge requests section of GLOBAL.md".
-The rule is now a "How to work" bullet plus the `merge-request` skill. These files belong to
-`fix/push-guard-escaped-spellings`, so the reword waits until that branch merges and this one
-is rebased onto it.
+**Done after the rebase:** `dot_claude/executable_git-forge-guard.sh`,
+`dot_claude/modify_private_settings.json` and `tests/git-forge-guard.test.sh` pointed at "the
+Merge requests section of GLOBAL.md". The rule is now a "How to work" bullet plus the
+`merge-request` skill. Those files belonged to `fix/push-guard-escaped-spellings`, so the
+reword waited until that branch merged (33c048c).

@@ -471,11 +471,11 @@ lacks_reason() {
 
 echo "== the deny texts =="
 # FORGE_GUARD=off is Michael's to grant: the template deny names it only for that case. The
-# rules live in the "Merge requests" section of GLOBAL.md, and the deny says so.
+# attribution rule is the "Merge requests" rule in GLOBAL.md, and the deny says so.
 has_reason "the template deny offers FORGE_GUARD=off only when Michael asked" \
            "Only if Michael has asked, in this" "$HEADS" 'glab mr create -t "Fix" --description "Just some prose."'
-has_reason "the attribution deny names the Merge requests section" \
-           '"Merge requests" section of' "$BARE" "git commit -F $ATTRIB_MSG"
+has_reason "the attribution deny names the Merge requests rule" \
+           '"Merge requests" rule in' "$BARE" "git commit -F $ATTRIB_MSG"
 
 # ---------------------------------------------------------------- rule 4 fixtures
 # Two bare remotes and a work repo whose origin/HEAD names main. The repo sits on a

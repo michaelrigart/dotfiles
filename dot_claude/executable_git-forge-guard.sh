@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # PreToolUse(Bash) guard for git commits and forge MR/PR creation.
 #
-# Enforces the two rules from the "Merge requests" section of
-# ~/.config/agents/GLOBAL.md that prose alone cannot guarantee:
+# Enforces the two merge-request rules that prose alone cannot guarantee: the "Merge
+# requests" rule under "How to work" in ~/.config/agents/GLOBAL.md, and the template rule
+# in the merge-request skill:
 #
 #   1. No agent attribution — claude.ai session links, `Claude-Session:` trailers,
 #      `Co-authored-by:` agent lines, "Generated with …" footers.
@@ -470,7 +471,7 @@ if printf '%s' "$haystack" | grep -Eq \
 
 This commit message / MR / PR text contains a session link, a Claude-Session
 trailer, a Co-authored-by agent line, or a \"Generated with …\" footer. Per the
-\"Merge requests\" section of ~/.config/agents/GLOBAL.md, none of that goes
+\"Merge requests\" rule in ~/.config/agents/GLOBAL.md (How to work), none of that goes
 into commit messages, MR/PR titles or descriptions, issue text, or review
 comments.
 
