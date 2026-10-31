@@ -23,11 +23,19 @@ Read it whole before any task: it holds the exact instruction texts this plan ap
 ## Global Constraints
 
 - **Edit only the source.** Never a deployed file, and never `chezmoi apply`: that is Michael's.
-- **Running suites:** execute them, never prefix an interpreter. Until this branch merges, another
-  session runs full suites under `lockf -k /tmp/claude-$(id -u)/chezmoi-fullsuite.lock`. So wrap
-  every run in the same lock, to keep its timing-sensitive suites off a loaded machine:
-  `lockf -k /tmp/claude-$(id -u)/chezmoi-fullsuite.lock ./tests/run.sh <exact-suite-name>`.
-  This is safe after Task 2 too, because the new runner locks a different file.
+- **Running suites:**
+  - Implementers execute their suites directly, never through `run.sh`, which Task 2 is
+    rewriting, and never prefixed with an interpreter.
+  - Until the other session's branch merges, that session runs full suites under
+    `lockf -k /tmp/claude-$(id -u)/chezmoi-fullsuite.lock`. Wrap every run in the same lock, so
+    its timing-sensitive suites stay off a loaded machine:
+    `lockf -k /tmp/claude-$(id -u)/chezmoi-fullsuite.lock ./tests/<suite>.test.sh`.
+  - The controller's full runs use the same wrapper. That is safe after Task 2 too, because the
+    new runner locks a different file.
+- **Pre-existing failures.** A suite that fails on this branch counts as pre-existing only if it
+  also fails on main, with evidence. Run the main checkout's copy (`~/.local/share/chezmoi`)
+  only while that checkout is on `main` at main's tip and is clean. Otherwise the failure is
+  this branch's.
 - **Implementers in a batch** do not commit. They run only their focused suites. The controller
   commits each task on its own and reviews it on exactly that commit.
 - **Commits:**
@@ -71,30 +79,41 @@ Read it whole before any task: it holds the exact instruction texts this plan ap
 | 8 | `dot_claude/executable_path-resolution-guard.sh`, `tests/path-resolution-guard.test.sh` |
 | 9 | `dot_claude/executable_statusline.sh`, `tests/statusline.test.sh` |
 | 10 | `dot_claude/hooks/executable_memory-health.sh`, `tests/memory-health.test.sh` |
-| 11 | `dot_config/xreview/reviewer.md`, `tests/fixtures/xreview-packet/*` |
+| 11 | `dot_config/xreview/reviewer.md`, `tests/fixtures/xreview-packet/regenerate.sh` and its golden files |
 | 12 | `dot_codex/modify_private_config.toml`, `tests/codex-config.test.sh` |
 | 13 | `AGENTS.md` |
 | 14 | `~/.claude/projects/-Users-michael--local-share-chezmoi/memory/MEMORY.md` and topic files (not in the repo) |
 
-Batches:
-- Batch A runs Tasks 2 and 4–12 together. Their files are disjoint, and none of their suites
-  loads another task's files.
-- Task 1 then times the suites on the code as it stands after Batch A. Both modes measure the
+Batches follow what each task's suites read (checked 2026-10-31):
+- `xreview-skill` reads `global.md` and the cross-review skill.
+- `agent-skills` reads the cross-review skill and `.chezmoiignore`, and runs `codex-config` and
+  `live-feedback-skill`.
+- `live-feedback-skill` reads the agent definitions and `.chezmoiignore`.
+
+So:
+- **Batch A:** Tasks 2, 4, 6, 8, 9, 10, 11 and 12, together. Their files are disjoint, and no
+  suite of theirs reads another's files.
+- **Then Task 7**, after Task 4 is committed.
+- **Then Task 5**, after Tasks 6, 7 and 12 are committed.
+- **Then Task 1**, which times the suites on the code as it now stands. Both modes measure the
   same code, so its sequential total is the fair comparison for the parallel runner.
-- Then Task 3, then Task 13.
-- Task 14 runs in the main session at the end.
+- **Then Task 3**, then Task 13.
+- **Task 14** runs in the main session at the end.
 
 ---
 
 ### Task 1: Timing baseline
 
-**Depends on:** Batch A (2, 4–12). **Tier:** controller (no subagent).
+**Depends on:** 2, 4–12. **Tier:** controller (no subagent).
 
 - [ ] Under the other session's lock (Global Constraints), run every suite that has no
       `# test-requires:` line, one at a time. Record the seconds and exit status of each in
       `.superpowers/sdd/2026-10-31-workflow-tuning/baseline.txt`, along with the total.
-- [ ] Note in the ledger every suite over 120 s (heavy candidates) and every suite that fails on
-      the baseline (pre-existing red, not caused by this branch).
+- [ ] Note in the ledger every suite over 120 s (heavy candidates). A suite that fails here is
+      this branch's to fix, unless the Global Constraints' main-checkout evidence shows it fails
+      on main too.
+- [ ] Then run the full suite with the new runner: in parallel, and with `RUN_JOBS=1`. Record
+      both wall times and confirm the verdicts are identical.
 
 ### Task 2: Parallel, self-locking runner
 
@@ -135,8 +154,8 @@ Tests (`tests/run.test.sh`). Every fixture invocation sets `RUN_SH_LOCK` to a te
      - a filtered run does the same.
   4. With the lock held, a runner started with `RUN_SH_LOCKED=1` completes within 10 s. Use a
      background process and a kill timer, because macOS has no `timeout`.
-- [ ] Implement. Run `run`, then a full parallel run of the real suites. Report both totals and
-      the wall time against Task 1's baseline.
+- [ ] Implement, then run `./tests/run.test.sh`. Full runs of the real suites are the
+      controller's, in Task 1.
 - **Commit:** `Run test suites in parallel under a per-machine lock`
 
 ### Task 3: Mark heavy and serial suites
@@ -185,7 +204,7 @@ Apply the spec's texts exactly, adjusting only the line wrapping:
 
 ### Task 5: Shared skills for merge requests and the vault
 
-**Depends on:** none. **Tier:** sp-mechanical.
+**Depends on:** 6, 7, 12. **Tier:** sp-mechanical.
 
 - [ ] `dot_agents/skills/merge-request/SKILL.md`:
   - **Frontmatter:** `name: merge-request`, plus a description that triggers before opening any
@@ -223,11 +242,13 @@ Apply the spec's texts exactly, adjusting only the line wrapping:
 
 ### Task 7: Cross-review skill
 
-**Depends on:** none. **Tier:** sp-mechanical.
+**Depends on:** 4. **Tier:** sp-mechanical.
 
 - [ ] Spec §10: add the escalation trigger to the exhaustive list. The trigger is a loop that
       stops converging: two rounds in a row that mostly find problems in the last round's fixes,
       or a goal that can never be finished. Keep "no round limit".
+- [ ] `xreview-skill` fails if the phrase "round cap" appears in this skill or in `global.md`.
+      Task 4's texts must avoid it too.
 - [ ] Spec §11: fix-round rule 3 gains "Run the focused tests before re-dispatching; the full
       suite runs once the review approves, and a red suite starts a new round."
 - [ ] Run `xreview-skill`.
@@ -269,9 +290,13 @@ Apply the spec's texts exactly, adjusting only the line wrapping:
 **Depends on:** none. **Tier:** sp-standard.
 
 - [ ] Spec §7: replace the closing line of `dot_config/xreview/reviewer.md`.
-- [ ] Run `tests/fixtures/xreview-packet/regenerate.sh`. It copies `reviewer.md` and rebuilds
-      the golden packets with its pinned reference dispatcher. Never point it at a newer one.
-      Check that the diff of the fixtures is only the new reviewer text.
+- [ ] `regenerate.sh` extracts the source tree of its pinned reference revision (`REF=7aab009`),
+      and that tree carries the old `reviewer.md`.
+  - After the extraction, overlay the working tree's `dot_config/xreview/reviewer.md` onto the
+    extracted copy, before anything dispatches. Add a comment saying why.
+  - The dispatcher, ledger and stubs stay the reference revision's. Never point the script at a
+    newer dispatcher.
+- [ ] Run the script. The diff of the golden files must be only the new reviewer text.
 - [ ] Run `xreview-packet`, `xreview-replay` and `xreview`.
 - **Commit:** `Let Codex report quality problems with a concrete cost`
 
