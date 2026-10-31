@@ -103,47 +103,80 @@ if sh -n "$LAUNCHER" 2>/dev/null; then _pass "sh -n passes"; else _fail "sh -n p
 if [ -x "$LAUNCHER" ]; then _pass "launcher is executable"; else _fail "launcher is executable" "mode bits"; fi
 
 echo "F. template"
-EXPECTED='UNIFI_NETWORK_HOST={{ onepasswordRead "op://Private/UniFi Controller/host" | replace "'"'"'" "'"'"'\\'"'"''"'"'" | squote }}
-UNIFI_NETWORK_USERNAME={{ onepasswordRead "op://Private/UniFi Controller/username" | replace "'"'"'" "'"'"'\\'"'"''"'"'" | squote }}
-UNIFI_NETWORK_PASSWORD={{ onepasswordRead "op://Private/UniFi Controller/password" | replace "'"'"'" "'"'"'\\'"'"''"'"'" | squote }}'
-check "references exactly the three 1Password fields, each escaped before squote" "$EXPECTED" "$(cat "$TPL")"
+REFS=$(grep -o 'onepasswordRead "[^"]*"' "$TPL" | sort | tr '\n' ' ')
+check "reads exactly website, username and password from the Login" 'onepasswordRead "op://Private/UniFi Controller/password" onepasswordRead "op://Private/UniFi Controller/username" onepasswordRead "op://Private/UniFi Controller/website" ' "$REFS"
+check "every emitted value is escaped before squote" "4" "$(grep -c "^UNIFI_NETWORK_[A-Z]*={{ .*| replace \"'\" \"'\\\\\\\\''\" | squote }}\$" "$TPL")"
+
+# The real template, with each onepasswordRead call swapped for an env lookup, so the escaping,
+# the address parsing and squote are exactly the production expressions and no 1Password is
+# touched. Values come in as TV_website, TV_username and TV_password.
+render() { # render <outfile>
+  command chezmoi execute-template < <(sed -E 's#onepasswordRead "op://Private/UniFi Controller/(website|username|password)"#env "TV_\1"#' "$TPL") > "$1" 2> "$T/render.err"
+}
+# source <file> <var>...: source the way the launcher does, in a clean shell, print the variables
+source_vars() {
+  f=$1; shift
+  env -i PATH=/usr/bin:/bin sh -c 'f=$1; d=$2; shift 2; cd "$d"; set -a; . "$f"; set +a; for v in "$@"; do eval "printf \"%s=%s\n\" \$v \"\${$v-unset}\""; done' sh "$f" "$T/proj" "$@" 2>&1
+}
 
 echo "G. awkward values survive render and sourcing byte for byte"
-# The real template, with each onepasswordRead call swapped for an env lookup, so the escaping
-# and squote are exactly the production expression and no 1Password is touched.
 if ! command -v chezmoi >/dev/null 2>&1; then
   echo "  SKIP: chezmoi absent — template escaping unverified"
 else
-  MARK="$T/injected"
-  # shellcheck disable=SC2016
+  MARK="$T/proj/injected"
+  # Injection payloads touch a relative path, so they would also fire in a host value, which
+  # may not contain a slash. They run from $T/proj when sourced.
   VALS=(
     "ab'cd"
     "'"
     "a'b'c''d"
-    "x\$(touch $MARK)y"
-    "x\`touch $MARK\`y"
+    'x$(touch injected)y'
+    'x`touch injected`y'
     '$HOME ${HOME} $UNSET_VAR_X'
     "has space  and	tab"
     'say "hi" \ back\\slash \n'
     "k=v=w"
-    "';touch $MARK;'"
+    "';touch injected;'"
   )
   n=0
   for v in "${VALS[@]}"; do
     n=$((n + 1))
     rm -f "$MARK"
-    TV_HOST="h$v" TV_USER="u$v" TV_PASS="p$v" \
-      command chezmoi execute-template < <(sed -E 's/onepasswordRead "op:\/\/Private\/UniFi Controller\/host"/env "TV_HOST"/; s/onepasswordRead "op:\/\/Private\/UniFi Controller\/username"/env "TV_USER"/; s/onepasswordRead "op:\/\/Private\/UniFi Controller\/password"/env "TV_PASS"/' "$TPL") > "$T/rendered" 2> "$T/render.err"
+    TV_website="h$v" TV_username="u$v" TV_password="p$v" render "$T/rendered"
     if [ -s "$T/render.err" ] && [ ! -s "$T/rendered" ]; then
       _fail "value $n renders" "$(head -c 200 "$T/render.err")"
       continue
     fi
-    got=$(env -i PATH=/usr/bin:/bin sh -c 'set -a; . "$1"; set +a; printf "%s\n%s\n%s" "$UNIFI_NETWORK_HOST" "$UNIFI_NETWORK_USERNAME" "$UNIFI_NETWORK_PASSWORD"' sh "$T/rendered" 2>&1)
-    check "value $n round-trips through render and sourcing" "h$v
-u$v
-p$v" "$got"
+    got=$(source_vars "$T/rendered" UNIFI_NETWORK_HOST UNIFI_NETWORK_USERNAME UNIFI_NETWORK_PASSWORD)
+    check "value $n round-trips through render and sourcing" "UNIFI_NETWORK_HOST=h$v
+UNIFI_NETWORK_USERNAME=u$v
+UNIFI_NETWORK_PASSWORD=p$v" "$got"
     if [ -e "$MARK" ]; then _fail "value $n executes nothing" "marker file was created"; else _pass "value $n executes nothing"; fi
   done
+
+  echo "H. the website field gives the host, and a port only when it carries one"
+  while IFS='|' read -r site host port; do
+    TV_website="$site" TV_username=u TV_password=p render "$T/rendered"
+    got=$(source_vars "$T/rendered" UNIFI_NETWORK_HOST UNIFI_NETWORK_PORT)
+    check "$site gives host $host, port $port" "UNIFI_NETWORK_HOST=$host
+UNIFI_NETWORK_PORT=$port" "$got"
+  done <<'CASES'
+https://192.168.1.1|192.168.1.1|unset
+https://unifi.example.lan:8443/|unifi.example.lan|8443
+192.168.1.1|192.168.1.1|unset
+http://10.0.0.1/manage|10.0.0.1|unset
+unifi.lan:8443|unifi.lan|8443
+https://10.0.0.1?x=1|10.0.0.1|unset
+CASES
+  # The launcher default still applies when the website carries no port.
+  TV_website=https://192.168.1.1 TV_username=u TV_password=p render "$T/rendered"
+  cp "$T/rendered" "$ENVF"
+  run
+  check "no port in the website: the launcher default 443 applies" "UNIFI_NETWORK_PORT=443" "$(logged UNIFI_NETWORK_PORT)"
+  TV_website=https://unifi.lan:8443/ TV_username=u TV_password=p render "$T/rendered"
+  cp "$T/rendered" "$ENVF"
+  run
+  check "a port in the website wins over the launcher default" "UNIFI_NETWORK_PORT=8443" "$(logged UNIFI_NETWORK_PORT)"
 fi
 
 echo; echo "RESULT: $pass passed, $fail failed"
