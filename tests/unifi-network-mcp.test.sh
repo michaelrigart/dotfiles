@@ -103,10 +103,48 @@ if sh -n "$LAUNCHER" 2>/dev/null; then _pass "sh -n passes"; else _fail "sh -n p
 if [ -x "$LAUNCHER" ]; then _pass "launcher is executable"; else _fail "launcher is executable" "mode bits"; fi
 
 echo "F. template"
-EXPECTED='UNIFI_NETWORK_HOST={{ onepasswordRead "op://Private/UniFi Controller/host" | squote }}
-UNIFI_NETWORK_USERNAME={{ onepasswordRead "op://Private/UniFi Controller/username" | squote }}
-UNIFI_NETWORK_PASSWORD={{ onepasswordRead "op://Private/UniFi Controller/password" | squote }}'
-check "references exactly the three 1Password fields" "$EXPECTED" "$(cat "$TPL")"
+EXPECTED='UNIFI_NETWORK_HOST={{ onepasswordRead "op://Private/UniFi Controller/host" | replace "'"'"'" "'"'"'\\'"'"''"'"'" | squote }}
+UNIFI_NETWORK_USERNAME={{ onepasswordRead "op://Private/UniFi Controller/username" | replace "'"'"'" "'"'"'\\'"'"''"'"'" | squote }}
+UNIFI_NETWORK_PASSWORD={{ onepasswordRead "op://Private/UniFi Controller/password" | replace "'"'"'" "'"'"'\\'"'"''"'"'" | squote }}'
+check "references exactly the three 1Password fields, each escaped before squote" "$EXPECTED" "$(cat "$TPL")"
+
+echo "G. awkward values survive render and sourcing byte for byte"
+# The real template, with each onepasswordRead call swapped for an env lookup, so the escaping
+# and squote are exactly the production expression and no 1Password is touched.
+if ! command -v chezmoi >/dev/null 2>&1; then
+  echo "  SKIP: chezmoi absent — template escaping unverified"
+else
+  MARK="$T/injected"
+  # shellcheck disable=SC2016
+  VALS=(
+    "ab'cd"
+    "'"
+    "a'b'c''d"
+    "x\$(touch $MARK)y"
+    "x\`touch $MARK\`y"
+    '$HOME ${HOME} $UNSET_VAR_X'
+    "has space  and	tab"
+    'say "hi" \ back\\slash \n'
+    "k=v=w"
+    "';touch $MARK;'"
+  )
+  n=0
+  for v in "${VALS[@]}"; do
+    n=$((n + 1))
+    rm -f "$MARK"
+    TV_HOST="h$v" TV_USER="u$v" TV_PASS="p$v" \
+      command chezmoi execute-template < <(sed -E 's/onepasswordRead "op:\/\/Private\/UniFi Controller\/host"/env "TV_HOST"/; s/onepasswordRead "op:\/\/Private\/UniFi Controller\/username"/env "TV_USER"/; s/onepasswordRead "op:\/\/Private\/UniFi Controller\/password"/env "TV_PASS"/' "$TPL") > "$T/rendered" 2> "$T/render.err"
+    if [ -s "$T/render.err" ] && [ ! -s "$T/rendered" ]; then
+      _fail "value $n renders" "$(head -c 200 "$T/render.err")"
+      continue
+    fi
+    got=$(env -i PATH=/usr/bin:/bin sh -c 'set -a; . "$1"; set +a; printf "%s\n%s\n%s" "$UNIFI_NETWORK_HOST" "$UNIFI_NETWORK_USERNAME" "$UNIFI_NETWORK_PASSWORD"' sh "$T/rendered" 2>&1)
+    check "value $n round-trips through render and sourcing" "h$v
+u$v
+p$v" "$got"
+    if [ -e "$MARK" ]; then _fail "value $n executes nothing" "marker file was created"; else _pass "value $n executes nothing"; fi
+  done
+fi
 
 echo; echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

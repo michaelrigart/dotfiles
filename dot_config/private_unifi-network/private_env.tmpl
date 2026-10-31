@@ -1,3 +1,3 @@
-UNIFI_NETWORK_HOST={{ onepasswordRead "op://Private/UniFi Controller/host" | squote }}
-UNIFI_NETWORK_USERNAME={{ onepasswordRead "op://Private/UniFi Controller/username" | squote }}
-UNIFI_NETWORK_PASSWORD={{ onepasswordRead "op://Private/UniFi Controller/password" | squote }}
+UNIFI_NETWORK_HOST={{ onepasswordRead "op://Private/UniFi Controller/host" | replace "'" "'\\''" | squote }}
+UNIFI_NETWORK_USERNAME={{ onepasswordRead "op://Private/UniFi Controller/username" | replace "'" "'\\''" | squote }}
+UNIFI_NETWORK_PASSWORD={{ onepasswordRead "op://Private/UniFi Controller/password" | replace "'" "'\\''" | squote }}
