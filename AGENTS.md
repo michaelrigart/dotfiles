@@ -93,12 +93,12 @@ Suites live in `tests/`, one `<subject>.test.sh` per script under test.
 
 ```bash
 ./tests/run.sh                 # every suite with no special requirement
-./tests/run.sh --all           # those too — read each `needs:` tag before believing it
+./tests/run.sh --all           # those too, heavy ones included (~11 min) — read each `needs:` tag before believing it
 ./tests/run.sh forge worktree  # only suites whose name contains one of these
 ```
 
-Suites run in parallel (`RUN_JOBS`, default half the online CPUs, minimum 2; `RUN_JOBS=1`
-restores sequential order). Output is buffered and printed in name order, so the report is
+Suites run in parallel (`RUN_JOBS`, default: half the online CPUs, at least 2; an explicit
+`RUN_JOBS=1` is honoured and restores sequential order). Output is buffered and printed in name order, so the report is
 the same either way. A suite that cannot share the machine carries a `# test-serial` line
 and runs alone after the parallel ones (none does today).
 
@@ -115,9 +115,9 @@ is the footgun. `run.sh` executes them for this reason.
 Suites needing conditions `run.sh` cannot create carry a `# test-requires:` line and are
 skipped by default. A substring filter to `./tests/run.sh` keeps that gate; only an
 exact suite name lifts it (so `./tests/run.sh reconcile-agents` runs the suite, while
-`./tests/run.sh reconcile` does not; `./tests/run.sh xreview` is a substring filter that
-also matches the other `xreview-*` suites and stays gated, so the heavy `xreview` suite
-needs that exact name):
+`./tests/run.sh reconcile` does not; `./tests/run.sh xreview` is the exact name, so it
+lifts the gate and also selects every `xreview-*` suite; to run the heavy suite alone,
+execute `./tests/xreview.test.sh`):
 
 | Suite | Needs | Why |
 |---|---|---|

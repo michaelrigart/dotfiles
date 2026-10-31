@@ -34,7 +34,8 @@
 # Never wrap this runner in lockf yourself.
 #
 # Suites with a `# test-requires:` line need conditions this runner cannot create
-# (an unsandboxed shell, a live herdr, a fresh Claude session). They are listed and
+# (an unsandboxed shell, a live herdr, a fresh Claude session) or are `heavy`, a policy
+# choice for their length (minutes), not a missing condition. They are listed and
 # skipped unless named EXACTLY (`./tests/run.sh live-agent-auth`) or --all is passed; a
 # substring filter (`live`) still skips them. Read the tag before believing their output.
 set -uo pipefail
