@@ -1589,7 +1589,7 @@ def strict_text(cmd, alt=0):
                               and not word.startswith("-"))
                 at_command = at_command and not positional
                 prefix_ok = _prefix_word(run, after_option or positional, wrapper)
-                if not prefix_ok and not wrapper:
+                if not prefix_ok:
                     head = base_word
                 budget = _POSITIONALS.get(base_word, 0) if runner else budget - positional
                 after_option = word in _VALUE_OPTS.get(wrapper, ()) and not is_value
@@ -1644,6 +1644,11 @@ def strict_text(cmd, alt=0):
                     and any(can_be(alt_base, (w,)) for w in ("git",) + DASH_NAMES)):
                 a = a2
         part = glued[a:b]
+        if (part.count("'") % 2 or part.count('"') % 2) and b < end:
+            # [[.g.]]"it": the trailing quotes close quotes that began inside the name
+            whole = glued[a:end]
+            if not (whole.count("'") % 2 or whole.count('"') % 2):
+                b, part = end, whole
         if part.count("'") % 2 or part.count('"') % 2:
             continue
         base = part.replace("'", "").replace('"', "").replace("\\", "")

@@ -3199,7 +3199,13 @@ deny ## R16 P7 echo piped into a shell still reads the glob ## echo g?t push | s
 deny ## R16 P7 rg --pre runs its word ## rg --pre g?t push README.md
 deny ## R16 P7 a glob command after an inert one ## echo g?t push; /usr/bin/g?t -c k=v push origin main
 deny ## R16 P7 a glob command in $( ) inside echo ## echo $(/usr/bin/g?t -c k=v push origin main)
-deny ## R16 P7 a wrapper before ls keeps the reading ## sudo ls g?t push
+allow ## R16 P9 silent: a wrapper before an inert tool ## sudo ls g?t push
+allow ## R16 P9 silent: time before cat ## time cat g* push*
+allow ## R16 P9 silent: time before cat, with a redirect ## time cat g?t push-notes.md > out.txt
+deny ## R16 P9 quoted letters after the glob part ## /usr/bin/[[.g.]]"it" -C . push origin main
+deny ## R16 P9 single-quoted letters after the glob part ## /usr/bin/[[.g.]]'it' -C . push origin main
+deny ## R16 P9 a quoted letter in the middle after a bracket ## /usr/bin/[[=g=]]i"t" -C . push origin main
+deny ## R16 P9 the same after a cd ## cd /tmp && /usr/bin/[[.g.]]i"t" -C . push origin main
 allow ## R16 P4 silent: su as an echo argument ## echo su -c "g?t push"
 allow ## R16 P4 silent: su as a pattern argument of rg ## rg -e su -c "g?t push" README.md
 deny ## R16 P4 su after a wrapper still reads its string ## sudo su -c '/usr/bin/g?t -c k=v push origin main'
