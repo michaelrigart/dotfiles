@@ -59,7 +59,8 @@ done
 if [ "$one" -eq 0 ] && [ "${RUN_SH_LOCKED:-}" != 1 ]; then
   lock=${RUN_SH_LOCK:-/tmp/claude-$(id -u)/tests-run.lock}
   mkdir -p "$(dirname "$lock")" || exit 2
-  lockf -k -t 0 "$lock" true 2>/dev/null || echo "run.sh: waiting for the test-run lock $lock, held by another run" >&2
+  lockf -k -t 0 "$lock" true 2>/dev/null
+  [ $? -eq 75 ] && echo "run.sh: waiting for the test-run lock $lock, held by another run" >&2
   RUN_SH_LOCKED=1 exec lockf -k "$lock" "$self" "$@"
 fi
 export RUN_SH_LOCKED=1

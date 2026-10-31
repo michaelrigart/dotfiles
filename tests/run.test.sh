@@ -108,17 +108,22 @@ echo "  ok  $n"
 SUITE
 done
 # The tag is assembled at runtime for the same reason as test-requires above.
-printf '#!/usr/bin/env bash\n# test-serial\n' > "$T/serialz.test.sh"
-cat >> "$T/serialz.test.sh" <<'SUITE'
-: > "$MARK/serialz.running"
+# Two serial fixtures, so serial suites overlapping each other is caught too. Each records
+# whether a parallel suite had already finished when it started.
+for n in serialy serialz; do
+  printf '#!/usr/bin/env bash\n# test-serial\n' > "$T/$n.test.sh"
+  cat >> "$T/$n.test.sh" <<SUITE
+: > "\$MARK/$n.running"
+[ -e "\$MARK/slowa.saw" ] && : > "\$MARK/$n.afterpar"
 bad=0
 for i in 1 2 3 4 5 6 7 8 9 10; do
   sleep 0.1
-  [ "$(ls "$MARK" | grep -c '\.running$')" -gt 1 ] && bad=1
+  [ "\$(ls "\$MARK" | grep -c '\.running\$')" -gt 1 ] && bad=1
 done
-rm -f "$MARK/serialz.running"
-if [ "$bad" -eq 0 ]; then echo "  ok  ran alone"; else echo "  FAIL: another suite ran at the same time"; exit 1; fi
+rm -f "\$MARK/$n.running"
+if [ "\$bad" -eq 0 ]; then echo "  ok  $n ran alone"; else echo "  FAIL: another suite ran at the same time"; exit 1; fi
 SUITE
+done
 cat > "$T/lockheld.test.sh" <<'SUITE'
 #!/usr/bin/env bash
 if [ -z "${HOLDER_DONE:-}" ] || [ -e "$HOLDER_DONE" ]; then echo "  ok  lock was free"; else echo "  FAIL: ran while the lock was held"; exit 1; fi
@@ -190,39 +195,46 @@ ran "no-assertions branch: the continuation line is printed"    yes '^ +warm it 
 if [ "$rc" -ne 0 ]; then _pass "no-assertions branch: the run still fails"; else _fail "no-assertions branch: the run still fails" "exit $rc"; fi
 
 # Parallel run. Bug caught: parallel output differing from the sequential report.
-a="$(RUN_JOBS=1 "$T/run.sh" 2>&1)"
-b="$(RUN_JOBS=4 "$T/run.sh" 2>&1)"
+a="$(RUN_JOBS=1 env -u RUN_SH_LOCKED "$T/run.sh" 2>&1)"
+b="$(RUN_JOBS=4 env -u RUN_SH_LOCKED "$T/run.sh" 2>&1)"
 if [ "$a" = "$b" ]; then _pass "a parallel run prints exactly what RUN_JOBS=1 prints"; else _fail "a parallel run prints exactly what RUN_JOBS=1 prints" "$(printf '%s\n' "$a" > "$T/a.out"; printf '%s\n' "$b" > "$T/b.out"; diff "$T/a.out" "$T/b.out" | tr '\n' '|')"; fi
 ran "the report keeps its totals line"           yes '^[0-9]+ suites run' "$b"
 ran "a nested runner (RUN_SH_LOCKED) reaches suites" yes 'ok +lockenv' "$b"
 
 # Bug caught: RUN_JOBS ignored, so suites never overlap (or always do).
 saw() { cat "$MARK/slowa.saw" "$MARK/slowb.saw" | sort -n | tail -1; }
+rm -f "$MARK"/*.saw
 RUN_JOBS=2 "$T/run.sh" slow >/dev/null 2>&1
 if [ "$(saw)" = 2 ]; then _pass "RUN_JOBS=2 runs two suites at the same time"; else _fail "RUN_JOBS=2 runs two suites at the same time" "peak $(saw)"; fi
+rm -f "$MARK"/*.saw
 RUN_JOBS=1 "$T/run.sh" slow >/dev/null 2>&1
 if [ "$(saw)" = 1 ]; then _pass "RUN_JOBS=1 runs one suite at a time"; else _fail "RUN_JOBS=1 runs one suite at a time" "peak $(saw)"; fi
 
-# Bug caught: a serial suite sharing the machine with parallel ones.
+# Bug caught: serial suites sharing the machine with parallel ones or with each other, or
+# running before the parallel batch.
+rm -f "$MARK"/*.saw "$MARK"/*.afterpar
 out="$(RUN_JOBS=4 "$T/run.sh" 2>&1)"
 ran "a test-serial suite runs alone"             yes 'ok +serialz' "$out"
+ran "a second test-serial suite runs alone too"  yes 'ok +serialy' "$out"
+if [ -e "$MARK/serialy.afterpar" ] && [ -e "$MARK/serialz.afterpar" ]; then _pass "serial suites start after the parallel ones finish"; else _fail "serial suites start after the parallel ones finish" "$(ls "$MARK" | tr '\n' ' ')"; fi
 
-# Locking. hold <seconds> takes the lock in the background and waits until it is held.
+# Locking. hold <tenths> takes the lock in the background, waits until it is held, and
+# releases it after that long or when $T/release appears.
 hold() {
-  rm -f "$T/holder.pid" "$T/holder.done"
-  lockf -k "$L" sh -c 'echo $$ > "$1/holder.pid"; sleep "$2"; touch "$1/holder.done"' sh "$T" "$1" &
+  rm -f "$T/release" "$T/holder.done"
+  lockf -k "$L" sh -c 'i=0; while [ ! -e "$1/release" ] && [ "$i" -lt "$2" ]; do sleep 0.1; i=$((i + 1)); done; touch "$1/holder.done"' sh "$T" "$1" &
   holder=$!
   local i=0
   while lockf -k -t 0 "$L" true 2>/dev/null && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
 }
 # Bug caught: no lock, so two runners share the machine.
 export HOLDER_DONE="$T/holder.done"
-hold 3
+hold 30
 out="$(env -u RUN_SH_LOCKED "$T/run.sh" 2>&1)"
 wait "$holder"
 ran "unfiltered run: says it is waiting for the lock" yes 'wait.*'"$L" "$out"
 ran "unfiltered run: starts only after the holder exits" yes 'ok +lockheld' "$out"
-hold 3
+hold 30
 out="$(env -u RUN_SH_LOCKED "$T/run.sh" lockheld 2>&1)"
 wait "$holder"
 ran "filtered run: says it is waiting for the lock"  yes 'wait.*'"$L" "$out"
@@ -232,14 +244,14 @@ out="$(env -u RUN_SH_LOCKED "$T/run.sh" plain 2>&1)"
 ran "a free lock prints no waiting line"         no  'wait' "$out"
 
 # Bug caught: a runner nested inside a locked one waits for its parent's lock forever.
-hold 30
+hold 600
 RUN_SH_LOCKED=1 "$T/run.sh" plain-alpha > "$T/nested.out" 2>&1 &
 nested=$!
 i=0
 while ! grep -q 'suites passed' "$T/nested.out" && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
 if grep -q 'suites passed' "$T/nested.out"; then _pass "RUN_SH_LOCKED=1 runs while the lock is held"; else _fail "RUN_SH_LOCKED=1 runs while the lock is held" "$(cat "$T/nested.out")"; fi
 kill "$nested" 2>/dev/null
-pkill -P "$(cat "$T/holder.pid")" 2>/dev/null
+touch "$T/release"
 wait "$holder"
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
