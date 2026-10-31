@@ -33,11 +33,11 @@ start_shell() { # start_shell <home> -> prints $HISTFILE after sourcing the conf
 }
 
 # direnv was dropped for mise; a leftover hook would print "command not found" on every
-# shell start once the formula is uninstalled. Starship and mise are the only tools it runs.
+# shell start once the formula is uninstalled. Only starship and mise are stubbed here.
 H="$T/tools"; mkdir -p "$H"
 errs=$(env -i HOME="$H" XDG_CACHE_HOME="$H/.cache" XDG_STATE_HOME="$H/.local/state" \
   PATH="$STUB:/usr/bin:/bin" /bin/zsh -f -c "source \"$CONFIG\"" 2>&1 >/dev/null)
-is "the config calls no tool beyond the stubbed starship and mise" \
+is "sourcing the config hits no missing command" \
    "$(printf '%s\n' "$errs" | grep 'command not found')" ""
 
 H="$T/fresh"; mkdir -p "$H"
