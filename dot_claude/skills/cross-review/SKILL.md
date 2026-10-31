@@ -209,7 +209,9 @@ artifact, and fixes are where the next round's findings come from. Before re-dis
 2. **One cause, one fix.** Findings that share a cause get one fix at the cause, not one
    patch per symptom.
 3. **Check each fix against its failure scenario.** The scenario must now be impossible,
-   not just the cited line changed. A fix that comes with a test runs it.
+   not just the cited line changed. A fix that comes with a test runs it. Run the focused
+   tests before re-dispatching; the full suite runs once the review approves, and a red
+   suite starts a new round.
 4. **Re-read what depends on the changed text.** Summaries, derived sections,
    cross-references, and tests or docs that restate it are where a fix leaves a
    contradiction. Fix those in the same round.
@@ -267,8 +269,11 @@ Escalate to Michael when, and only when:
   `cap=` in `~/.config/xreview/packets.conf`, his file, outside the sandbox.
 - `xreview` refuses because the pane is resuming something other than a thread id (for
   example `codex resume --last` or a picker). The pane is Michael's.
+- the loop stops converging: two rounds in a row that mostly find problems in the last
+  round's fixes, or a goal that can never be finished. Bring Michael the round count, what
+  recurs and a structural option. A loop that converges runs as long as it needs.
 
-That list is exhaustive. A round count is not on it, and neither is a thread that has
+That list is exhaustive. A round count alone is not on it, and neither is a thread that has
 answered several rounds of the checkpoint it is working through.
 
 Converged means the reviewer returns no actionable findings — not that it stopped

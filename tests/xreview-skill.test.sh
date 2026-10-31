@@ -543,7 +543,8 @@ done
 # The rule bodies carry the operative wording; a title alone can survive a rewritten body.
 for phrase in '(at pre-merge, the whole branch diff)' 'A fix that comes with a test runs it.' \
               'Re-dispatch once every finding of the round has been fixed' \
-              'or ruled on, never per finding; a finding that went to Michael waits for his decision.'; do
+              'or ruled on, never per finding; a finding that went to Michael waits for his decision.' \
+              'Run the focused tests before re-dispatching; the full suite runs once the review approves, and a red suite starts a new round.'; do
   if printf '%s\n' "$acting" | tr '\n' ' ' | sed 's/  */ /g' | grep -qF "$phrase"; then
     _pass "the fix-round rule text '$phrase' is under Acting on findings"
   else _fail "the fix-round rule text '$phrase' is under Acting on findings" "missing"; fi
@@ -615,6 +616,9 @@ expected_esc="$(cat <<'EXPECTED_ESC'
   `cap=` in `~/.config/xreview/packets.conf`, his file, outside the sandbox.
 - `xreview` refuses because the pane is resuming something other than a thread id (for
   example `codex resume --last` or a picker). The pane is Michael's.
+- the loop stops converging: two rounds in a row that mostly find problems in the last
+  round's fixes, or a goal that can never be finished. Bring Michael the round count, what
+  recurs and a structural option. A loop that converges runs as long as it needs.
 EXPECTED_ESC
 )"
 actual_esc="$(printf '%s\n' "$esc" | sed '1,2d;$d' | sed '${/^$/d;}')"
