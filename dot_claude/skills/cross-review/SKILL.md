@@ -38,7 +38,7 @@ A dispatch carries:
 - alternatives already rejected, **named without their reasons**: naming them stops the
   reviewer re-raising settled ground, withholding the reasons keeps its evaluation
   independent
-- the response shape wanted — file, line, concrete failure scenario
+- the response shape wanted — file, line, concrete failure scenario or concrete cost
 
 ## Dispatching
 

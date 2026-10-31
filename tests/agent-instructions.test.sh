@@ -98,8 +98,9 @@ for f in global.md claude-code.md; do
   else _pass "$f contains no template action"; fi
 done
 
-# The rules specs 2026-10-16 and 2026-10-30 (workflow-tuning-design) add: the git configuration escape, both shapes
-# the path-resolution guard denies, the plan workspace cleaner, and progress on a long run.
+# The rules specs 2026-10-16 and 2026-10-30 (sandbox-git-config-plant) add: the git
+# configuration escape, both shapes the path-resolution guard denies, the plan workspace
+# cleaner, and progress on a long run.
 # Each is a fixed string on one line.
 need() { # need <fragment> <fixed text> <label>
   if grep -qF -- "$2" "$FRAG/$1"; then _pass "$3"; else _fail "$3" "missing: $2"; fi
