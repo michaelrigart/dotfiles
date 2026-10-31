@@ -242,6 +242,11 @@ ran "filtered run: starts only after the holder exits" yes 'ok +lockheld' "$out"
 unset HOLDER_DONE
 out="$(env -u RUN_SH_LOCKED "$T/run.sh" plain 2>&1)"
 ran "a free lock prints no waiting line"         no  'wait' "$out"
+# Bug caught: a lock file that cannot be opened reported as "held by another run".
+mkdir "$T/rodir"; chmod 555 "$T/rodir"
+out="$(RUN_SH_LOCK="$T/rodir/lock" env -u RUN_SH_LOCKED "$T/run.sh" plain 2>&1)"
+chmod 755 "$T/rodir"
+ran "an unopenable lock file is not reported as held" no  'wait' "$out"
 
 # Bug caught: a runner nested inside a locked one waits for its parent's lock forever.
 hold 600
