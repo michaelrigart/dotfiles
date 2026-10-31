@@ -11,7 +11,11 @@ Answer in the findings schema:
   - severity runs from P0 (it cannot work) to P3 (minor).
   - summary states the defect in one sentence.
   - failure_scenario gives the inputs or state, and what goes wrong.
-Skip anything you cannot tie to a concrete failure.
+A finding is a defect, or a quality problem with a concrete cost: a speculative abstraction, a
+workaround where a refactor belongs, duplicated logic, or a test that would still pass with
+the bug back. Its failure_scenario names the inputs or state and what goes wrong, or the
+concrete cost (for example: a second caller must change this in two places). Skip style
+preferences and anything you cannot tie to a failure or a cost.
 
 Review this change.
 Settled: nothing.</cross-review-request>

@@ -11,7 +11,7 @@
 # point is that they do not change when xreview does.
 #
 # Writes next to this script:
-#   reviewer.md                    the reviewer instructions the reference dispatched with
+#   reviewer.md                    the shipped reviewer instructions, overlaid on the reference tree
 #   body-nl.md, body-nonl.md       the two bodies, ending in a newline and not
 #   d1.patch, d2.patch               the two diffs, as the ledger prints them (spec in SPECS below)
 #   {none,one,two}-{nl,nonl}.packet  the six packets
@@ -29,6 +29,9 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/xreview-golden.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 SRC="$WORK/src"; mkdir -p "$SRC"
 git -C "$REPO_ROOT" archive "$REF" dot_config dot_local dot_claude | tar -x -C "$SRC"
+# The reference tree carries the old reviewer.md; the golden packets follow the shipped one. Overlay it
+# before the stub block copies it into place. The dispatcher, ledger and stubs stay the reference's.
+cp "$REPO_ROOT/dot_config/xreview/reviewer.md" "$SRC/dot_config/xreview/reviewer.md"
 git -C "$REPO_ROOT" show "$REF:tests/xreview.test.sh" > "$WORK/reference-test.sh"
 XREVIEW="$SRC/dot_local/bin/executable_xreview"
 LEDGER="$SRC/dot_claude/xreview-ledger.py"
