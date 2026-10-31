@@ -14,16 +14,16 @@
 
 {{- /* Seed model preferences only when absent */ -}}
 {{- if not (hasKey $config "model") -}}
-{{-   $config = setValueAtPath "model" "gpt-5.6-sol" $config -}}
+{{-   $config = setValueAtPath "model" "gpt-6-astra" $config -}}
 {{- end -}}
 {{- if not (hasKey $config "model_reasoning_effort") -}}
-{{-   $config = setValueAtPath "model_reasoning_effort" "high" $config -}}
+{{-   $config = setValueAtPath "model_reasoning_effort" "medium" $config -}}
 {{- end -}}
 {{- if not (hasKey $config "service_tier") -}}
-{{-   $config = setValueAtPath "service_tier" "fast" $config -}}
+{{-   $config = setValueAtPath "service_tier" "default" $config -}}
 {{- end -}}
 {{- if not (hasKey $config "plan_mode_reasoning_effort") -}}
-{{-   $config = setValueAtPath "plan_mode_reasoning_effort" "xhigh" $config -}}
+{{-   $config = setValueAtPath "plan_mode_reasoning_effort" "high" $config -}}
 {{- end -}}
 
 {{- /* Enforce project instruction discovery */ -}}

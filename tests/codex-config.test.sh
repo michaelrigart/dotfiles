@@ -128,8 +128,10 @@ has 'service_tier = "flex"'          "runtime service_tier kept"
 has 'plan_mode_reasoning_effort = "low"' "runtime plan-mode effort kept"
 
 emit ''
-has 'model = "gpt-5.6-sol"'          "model seeded when absent"
-has 'service_tier = "fast"'          "service_tier seeded when absent"
+has 'model = "gpt-6-astra"'          "model seeded when absent"
+has 'model_reasoning_effort = "medium"' "effort seeded when absent"
+has 'service_tier = "default"'       "service_tier seeded when absent"
+has 'plan_mode_reasoning_effort = "high"' "plan-mode effort seeded when absent"
 
 echo "D. Codex-written state survives untouched"
 # These are written by the tool at runtime and must never be reverted by an apply:
