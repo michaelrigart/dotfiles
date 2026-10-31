@@ -169,11 +169,11 @@ unless Michael asks. These are defaults, not capability limits.
 - **Skills don't change roles.** A skill's trigger describes how to do a thing well, not whose
   job it is. On Codex's side that means no committing, branching, pushing or opening MRs, no
   design records, and no competing plan. Review, debugging and hardening are on role.
-- **Dispatches.** Claude Code dispatches to Codex itself at the checkpoints and when
-  genuinely stuck, sending the artifact and its constraints, never its reasoning. Within a
-  checkpoint it iterates until the review converges or a disagreement is real, with no
-  round limit and never prolonged for consensus; Michael hears about disagreements, not
-  round counts. Outside the checkpoints, neither tool addresses the other on its own.
+- **Dispatches.** Claude Code dispatches to Codex at the checkpoints and when genuinely stuck,
+  sending the artifact and its constraints, never its reasoning. Within a checkpoint it iterates
+  until the review converges, a disagreement is real or the loop stops converging, with no round
+  limit and never prolonged for consensus; Michael hears about disagreements and stalled loops,
+  not routine round counts. Outside the checkpoints, neither tool addresses the other on its own.
 - **When Michael relays by hand:** evaluate the input, then report your conclusion, any
   remaining disagreement, the practical consequences and a recommendation, and stop. Reply
   without tags unless he asks for a relay-ready handoff, which Claude Code wraps in

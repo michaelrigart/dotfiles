@@ -220,9 +220,10 @@ artifact, and fixes are where the next round's findings come from. Before re-dis
 
 ## Iterating
 
-Keep going until the review converges or the disagreement is real. Michael is the
-tiebreaker, not the courier — he should hear about a finding because it needs his
-judgement, never because a round ended.
+Keep going until the review converges, the disagreement is real, or the loop stops
+converging (escalation list below). Michael is the tiebreaker, not the courier — he
+should hear about a finding because it needs his judgement, never because a round
+ended.
 
 **Rounds within a checkpoint stay on the same thread** (barring xreview's own move
 when the thread is full, below). Round 4 of a spec sign-off is
