@@ -1,3 +1,9 @@
-UNIFI_NETWORK_HOST={{ onepasswordRead "op://Private/UniFi Controller/host" | replace "'" "'\\''" | squote }}
+{{- /* The controller address lives in the Login's website field: strip a scheme, a path or query, and a :port (written as UNIFI_NETWORK_PORT). */ -}}
+{{- $site := onepasswordRead "op://Private/UniFi Controller/website" -}}
+{{- $hostport := regexReplaceAll "[/?#].*$" (regexReplaceAll "^[A-Za-z][A-Za-z0-9+.-]*://" $site "") "" -}}
+UNIFI_NETWORK_HOST={{ regexReplaceAll ":[0-9]+$" $hostport "" | replace "'" "'\\''" | squote }}
+{{ if regexMatch ":[0-9]+$" $hostport -}}
+UNIFI_NETWORK_PORT={{ regexReplaceAll "^.*:([0-9]+)$" $hostport "${1}" | replace "'" "'\\''" | squote }}
+{{ end -}}
 UNIFI_NETWORK_USERNAME={{ onepasswordRead "op://Private/UniFi Controller/username" | replace "'" "'\\''" | squote }}
 UNIFI_NETWORK_PASSWORD={{ onepasswordRead "op://Private/UniFi Controller/password" | replace "'" "'\\''" | squote }}
