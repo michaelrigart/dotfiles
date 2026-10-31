@@ -21,6 +21,18 @@
 #
 # A suite may declare arguments with `# test-args:` (`{repo}` = this repo's root).
 #
+# Suites run concurrently, RUN_JOBS at a time (default: half the online CPUs, at least 2;
+# 4 when the count cannot be read). RUN_JOBS=1 restores sequential order. Each suite's
+# output is buffered and printed in name order, so the report is the same either way. A
+# suite that cannot share the machine (timing assertions, fixed ports, shared state)
+# carries a `# test-serial` line and runs alone after the parallel ones.
+#
+# One runner per machine: every invocation, filtered or not, takes a lockf lock on
+# RUN_SH_LOCK (default /tmp/claude-$(id -u)/tests-run.lock) and says so when it has to
+# wait. The runner exports RUN_SH_LOCKED=1 to its suites, and an invocation that sees it
+# does not lock again, so a runner nested in a suite cannot wait for its parent's lock.
+# Never wrap this runner in lockf yourself.
+#
 # Suites with a `# test-requires:` line need conditions this runner cannot create
 # (an unsandboxed shell, a live herdr, a fresh Claude session). They are listed and
 # skipped unless named EXACTLY (`./tests/run.sh live-agent-auth`) or --all is passed; a
@@ -29,21 +41,31 @@ set -uo pipefail
 
 self=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")
 # Suites run from tests/, so a suite cannot tell which directory the session started in; tell it.
-RUN_SH_START_DIR=$(pwd -P)
+[ "${1:-}" = --run-one ] || RUN_SH_START_DIR=$(pwd -P)
 export RUN_SH_START_DIR
-cd "$(dirname "$self")" || exit 2
-repo_root=$(cd .. && pwd)
 
-all=0
+all=0 one=0
 filters=()
 for a in "$@"; do
   case "$a" in
     --all) all=1 ;;
+    --run-one) one=1 ;; # internal: the xargs driver runs a single suite, named by the filter
     -h|--help) sed -n '2,/^set /p' "$self" | sed '$d; s/^#\{0,1\} \{0,1\}//'; exit 0 ;;
     -*) echo "unknown option: $a" >&2; exit 2 ;;
     *) filters+=("$a") ;;
   esac
 done
+
+if [ "$one" -eq 0 ] && [ "${RUN_SH_LOCKED:-}" != 1 ]; then
+  lock=${RUN_SH_LOCK:-/tmp/claude-$(id -u)/tests-run.lock}
+  mkdir -p "$(dirname "$lock")" || exit 2
+  lockf -k -t 0 "$lock" true 2>/dev/null || echo "run.sh: waiting for the test-run lock $lock, held by another run" >&2
+  RUN_SH_LOCKED=1 exec lockf -k "$lock" "$self" "$@"
+fi
+export RUN_SH_LOCKED=1
+
+cd "$(dirname "$self")" || exit 2
+repo_root=$(cd .. && pwd)
 
 matches() { # matches <name>
   [ ${#filters[@]} -eq 0 ] && return 0
@@ -71,29 +93,71 @@ show_inconclusive() {
     { keep = 0 }' | sed 's/^/          /'
 }
 
-suites=0 green=0 red=0 broken=0 skipped=0
-declare -a problems=()
-
-for f in ./*.test.sh; do
-  name=$(basename "$f" .test.sh)
-  matches "$name" || continue
-
-  req=$(sed -n 's/^# test-requires: *//p' "$f" | head -1)
+# select <file> sets name and req; returns 1 when the filters exclude the suite and 2 when
+# its requirement gate skips it.
+select_suite() {
+  name=$(basename "$1" .test.sh)
+  matches "$name" || return 1
+  req=$(sed -n 's/^# test-requires: *//p' "$1" | head -1)
   req=${req%%  #*}
-  if [ -n "$req" ] && [ "$all" -eq 0 ] && ! named "$name"; then
-    printf '  skip  %-28s needs: %s\n' "$name" "$req"
-    skipped=$((skipped + 1))
-    continue
-  fi
+  if [ -n "$req" ] && [ "$all" -eq 0 ] && ! named "$name"; then return 2; fi
+  return 0
+}
 
+if [ "$one" -eq 1 ]; then
+  name=${filters[0]}
+  f=./$name.test.sh
   # A suite may declare its arguments; `{repo}` is this repository's root. Without this
   # live-agent-auth ran with no $1, died in its own usage guard, and reported nothing.
   args=$(sed -n 's/^# test-args: *//p' "$f" | head -1)
   args=${args%%  #*}
   set --
   [ -n "$args" ] && set -- ${args//\{repo\}/$repo_root}
+  "$f" "$@" </dev/null >"$RUN_SH_WORK/$name.out" 2>&1
+  echo $? >"$RUN_SH_WORK/$name.rc"
+  exit 0
+fi
 
-  out=$("$f" "$@" 2>&1); rc=$?
+jobs=${RUN_JOBS:-}
+if [ -z "$jobs" ]; then
+  cpus=$(getconf _NPROCESSORS_ONLN 2>/dev/null)
+  case "$cpus" in
+    ''|*[!0-9]*) jobs=4 ;;
+    *) jobs=$((cpus / 2)); [ "$jobs" -lt 2 ] && jobs=2 ;;
+  esac
+fi
+
+RUN_SH_WORK=$(mktemp -d "${TMPDIR:-/tmp}/run-sh.XXXXXX") || exit 2
+export RUN_SH_WORK
+trap 'rm -rf "$RUN_SH_WORK"' EXIT
+trap 'exit 130' INT TERM
+
+parallel=() serial=()
+for f in ./*.test.sh; do
+  select_suite "$f" || continue
+  if grep -qE '^# test-serial([[:space:]]|$)' "$f"; then serial+=("$name"); else parallel+=("$name"); fi
+done
+[ ${#parallel[@]} -gt 0 ] && printf '%s\0' "${parallel[@]}" | xargs -0 -n1 -P "$jobs" "$self" --run-one
+[ ${#serial[@]} -gt 0 ] && printf '%s\0' "${serial[@]}" | xargs -0 -n1 -P 1 "$self" --run-one
+
+suites=0 green=0 red=0 broken=0 skipped=0
+declare -a problems=()
+
+for f in ./*.test.sh; do
+  select_suite "$f"
+  case $? in
+    1) continue ;;
+    2)
+      printf '  skip  %-28s needs: %s\n' "$name" "$req"
+      skipped=$((skipped + 1))
+      continue ;;
+  esac
+
+  if [ -f "$RUN_SH_WORK/$name.rc" ]; then
+    out=$(<"$RUN_SH_WORK/$name.out"); rc=$(<"$RUN_SH_WORK/$name.rc")
+  else
+    out="run.sh: $name left no result"; rc=70
+  fi
   p=$(printf '%s\n' "$out" | grep -cE '^[[:space:]]*(ok|PASS)([[:space:]]|:)')
   fl=$(printf '%s\n' "$out" | grep -cE '^[[:space:]]*(FAIL|not ok)([[:space:]]|:)')
   # The live-* suites deliberately report machine-readable status (`michael=DENIED`,
