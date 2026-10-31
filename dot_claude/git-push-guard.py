@@ -1337,10 +1337,26 @@ STRING_RUNNERS = SHELL_NAMES | {"eval", "su", "sg", "runuser", "script", "flock"
 
 
 def runs_string(text, start):
-    """Does a string runner stand in the simple command that ends at start in text?"""
+    """Does a string runner stand in command position in the simple command that ends at start
+    in text: only assignments, wrappers, runners (with up to two positional words each),
+    options and their values may come before it? echo su -c "x" and rg -e su -c "x" hold the
+    word su as an argument: no."""
     seg = text[max(0, start - 400):start]
-    seg = seg[max(seg.rfind(c) for c in "\n;&|(`") + 1:]
-    return any(os.path.basename(w.strip("'\"$")) in STRING_RUNNERS for w in seg.split())
+    words = [w.strip("'\"$") for w in seg[max(seg.rfind(c) for c in "\n;&|(`") + 1:].split()]
+    after_option, budget = False, 0
+    for w in words:
+        base = os.path.basename(w)
+        if base in STRING_RUNNERS:
+            return True
+        if base in _RUNNERS and not after_option:
+            budget = 2
+        elif budget > 0 and not w.startswith("-"):
+            budget -= 1
+        elif not (after_option or w.startswith("-") or base in WRAPPERS or base == "timeout"
+                  or base in RESERVED or ASSIGN_RE.match(w) or _PREFIX_NUMBER.match(w)):
+            return False
+        after_option = w.startswith("-")
+    return False
 
 
 # Words that come before a command word without being the command: an assignment, a reserved word,
@@ -1507,7 +1523,12 @@ def strict_text(cmd, alt=0):
     scan, cands = 0, 0                # cands: git words of the current simple command so far
     prefix_ok, prev_end, after_option, wrapper, qstate, budget = True, 0, False, "", "", 0
     word_cmd, word_decoy, cont, dashdash = True, False, False, False
-    parens = []                       # per (: (quote, word_cmd) to restore at its ) if it opens $(
+    head = ""                         # the command word of the simple command, when no wrapper
+    exec_seen = False                 # an option of an inert tool that runs a word (rg --pre)
+    last_pipe = -1                    # a pipe may feed a later shell: echo g?t push | sh
+    for pm in re.finditer(r"(?<!\|)\|(?!\|)", glued):
+        last_pipe = pm.start()
+    parens = []                   # per (: (quote, word_cmd) to restore at its ) if it opens $(
     tick = None                       # (quote, word_cmd) to restore at the closing backtick
     for m in STRICT_RUN.finditer(glued):
         start, end = m.span()
@@ -1533,6 +1554,7 @@ def strict_text(cmd, alt=0):
             qstate = ""
         if not qstate and (any(c in "\n;&|(`" for c in gap) or re.search(r"\)\s", gap)):
             prefix_ok, after_option, wrapper, budget, dashdash = True, False, "", 0, False
+            head, exec_seen = "", False
         prev_end = end
         state0 = qstate
         g0, qlast, qstate = _scan_quotes(run, state0)
@@ -1564,14 +1586,20 @@ def strict_text(cmd, alt=0):
                               and not word.startswith("-"))
                 at_command = at_command and not positional
                 prefix_ok = _prefix_word(run, after_option or positional, wrapper)
+                if not prefix_ok and not wrapper:
+                    head = base_word
                 budget = _POSITIONALS.get(base_word, 0) if runner else budget - positional
                 after_option = word in _VALUE_OPTS.get(wrapper, ()) and not is_value
             elif run == "--" and wrapper in _DASHDASH and not dashdash:
                 prefix_ok, dashdash = True, True
+        if head in TOOL_EXEC_ARG and TOOL_EXEC_ARG[head].match(run):
+            exec_seen = True
         if not any(c in run for c in "?[*" + GLUE_FILL):
             continue
         if inword and g0 == -1:       # every glob character sits inside a quote opened earlier
             continue
+        if head in INERT_TOOLS and not exec_seen and last_pipe < end:
+            continue                  # the arguments of rg, echo, ls ... are data, if nothing reads them
         if cands and any(c in "\n;&|()`" for c in glued[scan:start]):
             cands = 0
         scan = start

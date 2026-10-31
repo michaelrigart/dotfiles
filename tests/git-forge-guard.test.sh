@@ -3181,6 +3181,22 @@ allow ## R16 P5 silent: ag -c then a redirect ## ag -c 'g?t push' README.md > co
 allow ## R16 P5 silent: grep -c then a comment ## grep -c 'g*t push' x # y
 deny ## R16 P5 script -c still reads its string ## script -q /dev/null -c '/usr/bin/g?t -c k=v push origin main'
 deny ## R16 P5 sh -c under a wrapper still reads its string ## sudo env A=1 sh -c '/usr/bin/[g][i][t] -C . ${X:-pu}sh origin main'
+allow ## R16 P6 silent: su as an echo argument, then a comment ## echo su -c "g?t push" # comment
+allow ## R16 P6 silent: su as a pattern, then a redirect ## rg -e su -c "g?t push" README.md > counts.txt
+allow ## R16 P6 silent: sh as a pattern, then a comment ## grep -e sh -c "g?t push" README.md # note
+deny ## R16 P6 setsid sh -c still reads its string ## setsid sh -c '/usr/bin/g?t -c k=v push origin main'
+deny ## R16 P6 docker run image sh -c still reads its string ## docker run img sh -c '/usr/bin/g?t -c k=v push origin main'
+deny ## R16 P6 nice -n 5 bash -lc still reads its string ## nice -n 5 bash -lc '/usr/bin/g?t -c k=v push origin main'
+deny ## R16 P6 a shell after an assignment pair ## A=1 B=2 bash -c '/usr/bin/g?t -c k=v push origin main'
+allow ## R16 P7 silent: cat with a glob and a redirect ## cat g?t push.txt > out.txt
+allow ## R16 P7 silent: ls with two globs and a redirect ## ls g* push* > list.txt
+allow ## R16 P7 silent: echo with a glob and a comment ## echo g?t push # note
+allow ## R16 P7 silent: rg with a glob and a redirect ## rg g?t push README.md > o
+deny ## R16 P7 echo piped into a shell still reads the glob ## echo g?t push | sh
+deny ## R16 P7 rg --pre runs its word ## rg --pre g?t push README.md
+deny ## R16 P7 a glob command after an inert one ## echo g?t push; /usr/bin/g?t -c k=v push origin main
+deny ## R16 P7 a glob command in $( ) inside echo ## echo $(/usr/bin/g?t -c k=v push origin main)
+deny ## R16 P7 a wrapper before ls keeps the reading ## sudo ls g?t push
 allow ## R16 P4 silent: su as an echo argument ## echo su -c "g?t push"
 allow ## R16 P4 silent: su as a pattern argument of rg ## rg -e su -c "g?t push" README.md
 deny ## R16 P4 su after a wrapper still reads its string ## sudo su -c '/usr/bin/g?t -c k=v push origin main'
