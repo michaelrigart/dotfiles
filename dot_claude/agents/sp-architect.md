@@ -1,6 +1,6 @@
 ---
 name: sp-architect
-description: Architecture, design, spec and plan review, and the final whole-branch review — the tasks worth the most capable model. Use for design exploration, cross-cutting refactors, judging whether a plan will actually work, and the last review before a branch merges. Not for implementation, fix rounds, plan-run controllers or merges; those go to sp-standard.
+description: Architecture, design, spec and plan review, and the final whole-branch review — the tasks worth the most capable model. Use for design exploration, cross-cutting refactors, judging whether a plan will actually work, and the last review before a branch merges. Not for routine implementation, fix rounds, plan-run controllers or merges; those go to sp-standard. Implementation only as an escalation after a lower tier failed.
 model: opus
 effort: xhigh
 ---

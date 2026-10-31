@@ -354,3 +354,42 @@ the transcripts, as measured on 2026-10-31:
 
 The quality side must not move: Codex pre-merge findings on the first round, and post-merge
 fixes.
+
+## Implementation notes (2026-10-31)
+
+**Measured.** Sequential baseline, one suite at a time: 1,783 s for 47 suites. Verdicts are
+byte-identical between the parallel runner and `RUN_JOBS=1`.
+
+| Run | Wall time |
+|---|---|
+| Parallel, all 47 suites | 801 s |
+| `RUN_JOBS=1` | 1,708 s |
+| Default full run, after the heavy suites are gated | 176–181 s (44 suites, 4,503 assertions) |
+
+The heavy suites, run by name: xreview 672 s, git-forge-guard 242 s, wt-functions 123 s.
+
+**Rulings:**
+1. **`sp-architect` description.** "Not for routine implementation, fix rounds, plan-run
+   controllers or merges; those go to sp-standard. Implementation only as an escalation after a
+   lower tier failed." The spec's verbatim text contradicted the existing "go up a tier" rule and
+   the live-feedback skill's escalation to sp-architect.
+2. **No `# test-serial` markers.** Six suites assert on timing; they passed under three times
+   CPU oversubscription, and five parallel runs were byte-identical. If a parallel run turns
+   red, mark these first: herdr-codex-pane-map, xreview-rpc, review, wt-teardown.
+3. **`agent-skills` lists `managed` from a scratch source** (the ignore file, `dot_agents`, the
+   symlinks), not the checkout source. That keeps the suite off chezmoi's external cache.
+4. **`live-feedback-skill` signs no fixture commit.** It now runs `-c commit.gpgsign=false`:
+   under parallel load its fixture commit failed whenever the 1Password agent was unavailable.
+5. **The runner gives every suite stdin from `/dev/null`.** An interactive suite run through it
+   now exits instead of blocking on a prompt nobody can see.
+6. **`global.md` stays at 180 lines.** "Claude Code dispatches to Codex itself" became "…
+   dispatches to Codex".
+7. **The other session's lock was bypassed for focused runs.** It held its full-suite lock for
+   45 minutes or more, so implementers ran their focused suites directly. Every full run took
+   the lock.
+
+**Open:** `dot_claude/executable_git-forge-guard.sh`, `dot_claude/modify_private_settings.json`
+and `tests/git-forge-guard.test.sh` still point at "the Merge requests section of GLOBAL.md".
+The rule is now a "How to work" bullet plus the `merge-request` skill. These files belong to
+`fix/push-guard-escaped-spellings`, so the reword waits until that branch merges and this one
+is rebased onto it.
