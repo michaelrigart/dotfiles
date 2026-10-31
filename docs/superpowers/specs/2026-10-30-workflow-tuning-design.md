@@ -1,6 +1,6 @@
 # Workflow tuning: faster runs at the same quality bar
 
-**Status:** Approved
+**Status:** In progress (branch `improvements`; the dotfiles have no MR)
 **Date:** 2026-10-30
 **Branch:** `improvements`
 **Sign-off:** delegated. On 2026-10-31 Michael said "do what needs to be done so that you can run
