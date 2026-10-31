@@ -84,6 +84,63 @@
 #    restricted run nothing. Under the snapshot, the stubs went first on PATH after it was
 #    sourced, since it sets its own PATH, and the snapshot overrides neither tail nor head.
 #    macOS tail and head read -N as -n N; head -0 fails as head -n 0 does.
+# E. The $'...' decoder (decode_ansi in dot_claude/git-pu[s]h-guard.py, unchanged since 9c80632),
+#    checked against the shells on 2026-10-31 under /usr/bin/python3 3.9.6 (not part of
+#    this suite). 8673 bodies: every escape letter a to z and A to Z; every octal escape of 1 to 3
+#    digits, with 4-digit and non-octal followers; NUL at the start, in the middle and at the end,
+#    in 15 spellings; \x with 0 to 2 hex digits (all of them) and 3 (sampled), \x{..}, and a blank
+#    or sign after \x; \u with 0 to 5 and \U with 0 to 9 hex digits (sampled, plus 0, 7f, 80, ff,
+#    the surrogates, 10ffff, 110000, 7fffffff and ffffffff); and \c, \C, \C- and \M- before each
+#    printable ASCII character and before each escape. Each body ran as printf %s $'<body>' under
+#    bash 3.2.57, bash 5.3.20, zsh -f 5.9.2 (and /bin/zsh 5.9), and zsh -f 5.9.2 with Michael's
+#    Claude Code shell snapshot sourced, in an en_US.UTF-8 locale, and its bytes were compared with
+#    decode_ansi under the matching reading (bash readings up to the first NUL):
+#    - bash 3.2.57: 8673/8673 equal.
+#    - bash 5.3.20: 7847/8673 equal. The other 826 each hold a surrogate or a \u or \U above 10ffff,
+#      where the shell prints its own bytes (ED A0 80 for d800) and the decoder prints nothing.
+#    - zsh -f: 7435/8673 equal. The other 1238 are 1176 of that same kind, 30 where \x skips a blank
+#      or sign in its two-character window (\x 67 is 0x06 then 7; \x-8 is 0xF8), 16 where a pending
+#      \C or \M before \u or \U lands on the next character, and 16 with both.
+#    - zsh with the snapshot: byte for byte the zsh -f output on all 8673 bodies, so the snapshot
+#      adds no reading; /bin/zsh 5.9 differs from 5.9.2 on none.
+#    0 mismatches fall outside those families. Each divergence over-denies: the decoder shows a
+#    word that the shell does not run, never the other way round.
+# F. The stub differential (2026-10-31, commit 37cda6f, /usr/bin/python3 3.9.6, not part of this
+#    suite). 34042 commands that push to main were built from 51 spellings of git, 52 of push, 19
+#    dash forms, 17 targets and 9 option sets, in 78 contexts (plain, cd, assignment and wrapper
+#    prefixes, compounds, $( ), backticks, arithmetic, comments with an apostrophe, continuations,
+#    eval, sh -c, printf and echo -e into a shell, here-documents and here-strings), plus 57 whole
+#    shapes (brace lists, aliases, functions, built words). Each ran under bash 3.2.57, bash 5.3.20
+#    and zsh -f 5.9.2 with a stub git (and git-push, git-send-pack and git-http-push) first on PATH
+#    that recorded its argv, in a directory that is no repository, and through this branch's hook in
+#    the fixture repository (on feat, bare origin, aliases pom, shp, lp). The stub got push,
+#    send-pack, http-push or a push alias as its subcommand in 31391 runs under bash 3.2, 32361
+#    under bash 5.3 and 27445 under zsh, from 32369 distinct commands: 27145 got a deny, 529 an ask
+#    and 4695 stayed silent. 0 of the silent ones were denied or asked by main (looser than main: 0
+#    required), 4695 are in the residual families the helper's header lists (both the git word and
+#    the push word are globs 2829; built at run time (section 7) 680; glob subcommand slot behind a
+#    literal or hidden git (main allows it too) 391; escapes layered inside a double-quoted string
+#    handed to a shell 206; quoted separator in an option value (raw-token checks do not run) 205;
+#    alias name hidden by quotes (fast path matches the alias name literally) 104; locale quote
+#    $".." inside a word, no other trigger (fast path) 47; hidden git with an alias (fast path never
+#    starts the helper) 45; printf %b \0nnn or a \\-newline handed to a shell (decoded as $'..') 32;
+#    brace list inside a word (pu{sh,x}, {pu,x}sh) 24; hidden git with a hidden send-pack word 9;
+#    send-pack behind a wrapper or in a comment or backtick context 62; a quoted glob command
+#    string fed to a shell by a pipe, here-string or source 61), and 0 are in none (0 required).
+# G. Against main (2026-10-31, commit 37cda6f, /usr/bin/python3 3.9.6). The non-regression gate ran
+#    the real hook of main (9702750), c67e699, 1333519 and this commit in one fixture repository
+#    (bare origin, the suite's GIT_CONFIG_GLOBAL, a stub gitleaks) on 1,078,240 distinct commands:
+#    the 1,284 this suite sends (every case of the plan), 553,866 rows from the adversarial
+#    reviews of rounds 1 to 15 (grids with their literal analogs; 34,960 are ordinary commands),
+#    357,005 generated grid rows, and 166,085 commands from the last 30 days of Claude Code
+#    transcripts, read locally. Counts only. Verdicts looser than main's: 0. New asks: 0. Internal
+#    errors and crashes: 0, timeouts 0 (main 9, c67e699 5, 1333519 5). Looser than the union of
+#    the three baselines: 0 on the transcripts and 317 grid rows, none a push (bash 3.2 ran them
+#    all; only 1333519 denied them). Denied here and by no baseline: 0 transcript commands and
+#    188,393 synthetic rows (spellings that section 1 of the spec accepts as denies, and glob
+#    words read as git; of 3,000 executed, 1,295 push and 1,705 do not). The head denies 6
+#    transcript commands that main allows: the same 6 that c67e699 denies. Ordinary commands: of
+#    34,960, the head denies 359, every one denied by a baseline too; new denies 0.
 
 set -uo pipefail
 

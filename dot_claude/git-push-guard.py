@@ -30,11 +30,92 @@
 # It never asks on doubt (an ask costs Michael a prompt) and never allows on doubt (a push
 # is the one irreversible outward path).
 #
-# Threat model: rule 4 covers the commands an agent plausibly writes, accidents included.
-# Deliberate obfuscation is out of scope, because a text-matching hook cannot close it (a
-# script file always gets round it); the auto-mode classifier and server-side branch
-# protection cover it. For example a push word assembled by expansion (git ${X:-pu}sh) has
-# no literal push in the payload, so the shell fast path never starts this helper.
+# Threat model (spec 2026-10-29-push-guard-escaped-spellings, section 7). Rule 4 covers the commands
+# an agent plausibly writes, accidents included, and every spelling of git and push the text fixes
+# before anything runs: quoting; escapes anywhere, decoded without regard to context; ANSI-C quotes;
+# $"..."; continuations; brace lists; globs; escapes a printf or echo -e hands to a shell. A word
+# the shell builds at run time is judged where it stands: as git's subcommand, or as a built command
+# word whose subcommand slot holds push. Out of scope, as on main: a command in which no view shows
+# git and push (a script file, an interpreter assembling the words, ${A}${B}, git ${X:-pu}sh, which
+# never starts this helper); the classifier and the GitHub ruleset protect-main cover those.
+# Assumed: bash, sh and zsh -f, no extendedglob or kshglob (# ^ ~ and *(...) patterns are out of
+# scope).
+# The words in a view are whole hyphen-joined words (a maximal run of letters, digits, underscores
+# and hyphens): git, git-push, git-send-pack, git-http-push are git words; push, send-pack,
+# http-push, their dash forms and alias names are push words; so git-pu""sh-guard.py holds neither.
+# Under PUSH_GUARD_LITERAL=0 only a hidden spelling or a helper failure can deny: main's raw checks
+# run only for the commands main already sent to the helper (the flag is 1), and an unset flag runs
+# them too.
+# Residuals (silent here, or denied by design) with the analog, what main says of the same text
+# written with plain git and push:
+#  - the raw-token checks (a quoted separator in an option value, dynamic_git_word) do not run when
+#    shlex cannot split the raw text; the view checks still run (analog: the same on main);
+#  - a push word built behind a quoted separator in an option value ($'\x67it' -c 'a.b=c;d'
+#    ${X:-pu}sh, $G -c 'x.y=a;b' $'\x70ush' origin --delete wip): the view's tokens split at the ;
+#    (analog: deny);
+#  - a push alias behind a built command word ($G pom) or a hidden git (g\<newline>it pom, gi\t pom,
+#    g"it" pom): the fast path never starts the helper (analog: ask);
+#  - a built command word that holds a dash-form push (${D:-git}-pu""sh, $G-push origin main,
+#    ${X:-git-pu""sh}): built at run time (analog: deny, except the spellings main misses itself);
+#  - sudo -u me $G push origin main (the option's value is taken as the command word), $G $OPT push
+#    origin main, gtimeout 5 sh -c ..., four or more chained wrappers (bound 3): analog deny; sudo
+#    -u timeout echo sh -c ... is a PLAIN deny, as a wrapper option value spelled timeout is listed
+#    as a command word;
+#  - env git ${Y:-pu}sh origin main; echo $'x': out of scope (analog: main allows it too);
+#  - denied by design: quoted here-document bodies that spell a push, hidden spellings in arguments
+#    that never run (printf, echo, test calls), escape text beside a quoted git command; and an
+#    accepted PLAIN deny for a lone surrogate or NUL in a git -C / GIT_DIR selector or in cwd;
+#  - glob words: [[=g=]]it and [[.x.]]it deny but push only in bash and sh (zsh -f does not expand
+#    them); a zsh group (g|x)it at a command start, after an operator or time is a subshell, not a
+#    glob; the _ARGS_OF window that finds wrappers before a group is 80 characters (no analog);
+#  - a quoted glob command string fed to a shell by a pipe or here-string, or run by watch, parallel
+#    or ssh (analog: deny; reading every quoted glob would deny ordinary patterns), and the
+#    over-deny command /usr/bin/??? -c alias.zz=push log (analog: allow; it never pushes);
+#  - a dash-name glob behind a runner outside _RUNNERS or past its positional budget, and behind
+#    rake, type, where and which (none runs its argument; analog: deny). cp ~/bin/git-* /tmp/ and
+#    find . -name git-p* are not pushes, and reading every position adds 138 ordinary denies;
+#  - "$HOME"/bin/git push origin main passes, as on main; 298
+#    --git-dir=.g non-push rows and 5 rows with an apostrophe in a comment, which only revision
+#    1333519 denied (none pushes; main allows them);
+#  - GIT, Git and other case variants of the git word (analog: main allows them, and APFS is
+#    case-insensitive); section 7 lists the spellings the text fixes, so this needs its own spec;
+#  - timing: one unbroken multi-megabyte token can pass the 60 s hook timeout (main times out from
+#    about 140 KB; the 500 KB unit is pinned);
+#  - synthetic over-denies: [x]it ??* and [0]it p* deny. Ruling: where main's fast path starts the
+#    helper for the text (a push word, a selector such as cd or -C or -c, an alias name), a
+#    glob-spelled git word followed by a glob subcommand slot denies even where literal git with
+#    the same slot is silent. This is a deliberate step past parity, on the over-deny side. It
+#    keeps the alias shape and cd /tmp; W p?sh origin main closed. A doubly-globbed git command has
+#    no legitimate use, and the corpus has 0 such rows. Cost if wrong: a silent deny on a command
+#    nobody writes. With none of those in the text the helper does not start (g?t p?sh origin main
+#    is silent here, as on main);
+#  - found by the stub differential (record F in tests/git-forge-guard.test.sh), each silent on main
+#    too: a push word the views cannot see with a literal git (git p?sh and git
+#    pu[s]h where a file named push exists; git pu$"s"h; git p""om; git pu{sh,x} and git {pu,x}sh);
+#    nice -n 5 git -c 'a.b=c;d' push origin main (a quoted separator after a wrapper or in a comment
+#    or backtick context: the raw-token checks do not run); nice -n 5 git-send-pack origin main and
+#    $'git' $'send-pack' origin main; escapes in printf '%b' 'g\0151t push origin main' | sh, which
+#    read \0nnn as octal where $'..' does not; escapes doubled by an enclosing double quote (eval
+#    "\$'\\x67it' \$'\\x70ush' origin main"); g?t p?sh origin main with no selector in the command
+#    (both words globs, files named git and push);
+#  - left open by the last review round, each with its analog:
+#    * a dash-name glob that starts with * (/usr/bin/*-push, *sh, ./*sh) is never read as git-push:
+#      the analog git-push origin main is denied, but ./*sh and cp "$HOME"/*sh /tmp are ordinary
+#      commands that no text test can tell apart; g?t-push, ???-push, g*-push stay read;
+#    * a dash-name glob as an assignment value or a redirection target (A=/tmp/g?t-push,
+#      > *-push*) is not read (analog: deny; the same shape is an ordinary glob); a git word there
+#      is read but takes no command slot, and a second reading covers the real command;
+#    * a runner that is not in the table, or an option of a listed runner with a separate value
+#      that the table lacks (env --foo x /usr/bin/g?t-push), and bundle exec rake: the dash name
+#      is not in command position (analog: deny); reading the word after any unknown option adds
+#      ordinary denies (ls, rm, cp behind a runner);
+#    * a quoted glob command string run by watch, ssh, tmux, hyperfine or parallel is not read past
+#      its first word (analog: deny); -c strings of shells, su, sg and runuser are read;
+#    * a part with an odd quote count has no second reading; a stray apostrophe on a line hides
+#      a glob command after it on that line (the line is a shell syntax error, nothing runs);
+#    * a redirection target that main reads as the command (>g?t /usr/bin/[g][i][t] -C /tmp
+#      ${X:-pu}sh origin main) is denied here, as is >log ... (analog: main denies the first only
+#      through its glob reading of the target, and allows the second);
 #
 # Merged-branch deletes (spec 2026-10-28-reload-functions-merged-deletes, section 2). A
 # classifier rule (autoMode.allow in dot_claude/modify_private_settings.json) lets the
