@@ -13,6 +13,7 @@
 # best-effort resumes the pane onto it (F22: a TUI resuming a thread mid-turn replays it from
 # the start). No precondition may be skipped, and no keystroke (send-keys) may ever reach the
 # pane once the turn exists (C1).
+# test-requires: heavy  # 672 s on 2026-10-31; run by name when the xreview dispatcher changes
 set -uo pipefail
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
 XREVIEW="$SRC/dot_local/bin/executable_xreview"

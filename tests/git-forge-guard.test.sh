@@ -142,6 +142,7 @@
 #    transcript commands that main allows: the same 6 that c67e699 denies. Ordinary commands: of
 #    34,960, the head denies 359, every one denied by a baseline too; new denies 0.
 
+# test-requires: heavy  # 242 s on 2026-10-31; run by name when the git-forge-guard hook changes
 set -uo pipefail
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
