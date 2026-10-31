@@ -83,7 +83,7 @@ if [ -n "$lockline" ] && command -v lockf >/dev/null 2>&1; then
   # wt worktrees of one repository share a database, so they must share the lock: from
   # a linked worktree the common directory is the main checkout's .git.
   git init -q "$T/main" \
-    && git -C "$T/main" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init \
+    && git -C "$T/main" -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -q --allow-empty -m init \
     && git -C "$T/main" worktree add -q "$T/wt" -b wt-branch 2>/dev/null
   common="$(git -C "$T/wt" rev-parse --git-common-dir 2>/dev/null)"
   # shellcheck disable=SC2086
