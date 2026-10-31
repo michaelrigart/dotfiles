@@ -3170,6 +3170,8 @@ deny ## R16 P1 a quoted first letter ## "g"[i][t] -C . ${X:-pu}sh origin main
 deny ## R16 P1 a quoted letter after a directory ## /usr/bin/"g"i[t] -c k=v push origin main
 deny ## R16 P1 the same inside a shell string ## sh -c '/usr/bin/g"i"[t] -C . ${X:-pu}sh origin main'
 deny ## R16 P1 a quoted directory prefix still read ## "/usr/bin/"[[.g.]]it -C /tmp push origin main
+deny ## R16 P2 a quoted letter after an option-value decoy ## xargs --arg-file /tmp/g?t /usr/bin/g"i"[t] -C . ${X:-pu}sh origin main
+deny ## R16 P2 the unquoted twin of the decoy row ## xargs --arg-file /tmp/g?t /usr/bin/[g][i][t] -C . ${X:-pu}sh origin main
 allow ## R16 P1 silent: a quoted letter inside an ordinary glob ## ls g"i"[t]*
 allow ## R16 P1 silent: a quoted prefix that is not a git name ## "x"[g][i][t] status
 TABLE

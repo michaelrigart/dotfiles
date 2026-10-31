@@ -1594,9 +1594,9 @@ def strict_text(cmd, alt=0):
                 b -= 1
         if a2 is not None and a2 < a:
             # g"i"[t]: the quoted letters before the last closing quote are part of the name
-            alt = glued[a2:b]
-            alt_base = alt.replace("'", "").replace('"', "").replace("\\", "")
-            if (not (alt.count("'") % 2 or alt.count('"') % 2)
+            with_q = glued[a2:b]
+            alt_base = with_q.replace("'", "").replace('"', "").replace("\\", "")
+            if (not (with_q.count("'") % 2 or with_q.count('"') % 2)
                     and any(can_be(alt_base, (w,)) for w in ("git",) + DASH_NAMES)):
                 a = a2
         part = glued[a:b]
