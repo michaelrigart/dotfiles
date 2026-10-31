@@ -13,6 +13,7 @@
 #     25,000 characters (read from the Claude Code 2.1.289 binary), counted on the trimmed
 #     content as Claude Code counts it: characters are UTF-16 code units (a JavaScript
 #     string length), so an emoji counts two.
+#   - an index line longer than 200 characters, counted the same way;
 #   - an index link ](name.md) whose file does not exist;
 #   - a memory file that no index link names.
 # [[name]] links are not checked: a link to a memory not yet written is allowed.
@@ -25,6 +26,7 @@ set -uo pipefail
 exec 2>/dev/null
 
 LIMIT_LINES=200 LIMIT_CHARS=25000   # Claude Code 2.1.289
+LINE_CHARS=200                      # longest index line left unwarned
 WARN_LINES=180 WARN_CHARS=22500     # 90% of each
 
 command -v jq >/dev/null 2>&1 || exit 0
@@ -66,6 +68,19 @@ if [ -f "$index" ]; then
   if [ "$lines" -ge "$WARN_LINES" ] || [ "$chars" -ge "$WARN_CHARS" ]; then
     add "MEMORY.md is at $lines lines and $chars characters; Claude Code loads at most $LIMIT_LINES lines and $LIMIT_CHARS characters of it. Consolidate the index (merge or shorten entries, one line each) to under $WARN_LINES lines and $WARN_CHARS characters."
   fi
+  longlines=""
+  n=0
+  while IFS= read -r l; do
+    n=$((n + 1))
+    u=$(printf '%s' "$l" | iconv -f UTF-8 -t UTF-16LE | wc -c | tr -d ' ') || exit 0
+    case "$u" in ''|*[!0-9]*) exit 0 ;; esac
+    [ $((u / 2)) -gt "$LINE_CHARS" ] || continue
+    e=$(printf '%s' "$l" | sed -n 's/^[^]]*](\([^)]*\)).*$/\1/p')
+    longlines="${longlines:+$longlines, }${e:-line $n} ($((u / 2)))"
+  done <<LINES
+$content
+LINES
+  [ -z "$longlines" ] || add "MEMORY.md has index lines longer than $LINE_CHARS characters (length in parentheses): $longlines. Shorten each to one short line; move detail into the memory file."
   raw=$(grep -oE '\]\([^)#]+\.md(#[^)]*)?( "[^"]*")?\)' "$index"); rc=$?
   # grep exits 1 when the index has no links; anything above that is a read error, and a
   # read error must stay silent rather than report every file as unindexed.
