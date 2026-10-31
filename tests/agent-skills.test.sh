@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Third-party agent skills are pinned archive externals in .chezmoiexternal.toml, each with
-# a Claude Code symlink in dot_claude/skills/ and a .chezmoiignore re-include.
+# a Claude Code symlink in dot_claude/skills/ and a .chezmoiignore re-include. The
+# first-party shared skills in dot_agents/skills/ get the same symlink and re-include.
 #
 # For every `.agents/skills/<name>` entry this suite checks what the entry DOES, not which
 # fields it has:
@@ -9,8 +10,9 @@
 #     local fixture tarball (`file://`), applied to a scratch destination with its own
 #     config, cache and state. The suite never applies the real https URL, so it needs no
 #     network and no warm cache.
-# Each check has a negative case that must fail at that check's own reason, except
-# siblings-survive: no single-entry mutation of the TOML exercises it, so it has none.
+# Each third-party check has a negative case that must fail at that check's own reason,
+# except siblings-survive: no single-entry mutation of the TOML exercises it, so it has none.
+# The shared-skills block at the end has no negative case; it is mutation-checked by hand.
 #
 # Run: ./tests/agent-skills.test.sh   (sandboxed is fine)
 
@@ -315,7 +317,14 @@ else _fail "live-feedback-skill: blank leading stderr lines are skipped" "exit $
 # like clarity. `managed` must list each SKILL.md and each symlink, so a dropped re-include
 # or a missing source file shows here.
 echo "shared skills: managed lists each SKILL.md and its Claude symlink"
-if managed=$(chezmoi --source "$SRC" managed 2>"$T/managed.err"); then
+# Built from the checkout's .chezmoiignore, dot_agents/ and the skill symlinks only, so the
+# real clarity external is never resolved and the suite keeps needing no network.
+shared="$T/shared/src"
+mkdir -p "$shared/dot_claude/skills"
+cp "$SRC/.chezmoiignore" "$shared/.chezmoiignore"
+cp -R "$SRC/dot_agents" "$shared/dot_agents"
+cp "$SRC"/dot_claude/skills/symlink_* "$shared/dot_claude/skills/"
+if managed=$(chezmoi --config "$T/empty.toml" --source "$shared" managed 2>"$T/managed.err"); then
   for name in merge-request second-brain; do
     for path in ".agents/skills/$name/SKILL.md" ".claude/skills/$name"; do
       if printf '%s\n' "$managed" | grep -qxF "$path"; then _pass "managed lists $path"
