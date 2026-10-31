@@ -13,6 +13,7 @@ model=$(printf '%s' "$input"      | jq -r '.model.display_name // "Claude"')
 cwd=$(printf '%s' "$input"        | jq -r '.workspace.current_dir // .cwd // empty')
 transcript=$(printf '%s' "$input" | jq -r '.transcript_path // empty')
 effort=$(printf '%s' "$input"     | jq -r '.effort.level // empty')
+ctx=$(printf '%s' "$input"        | jq -r '.context_window.total_input_tokens | select(type == "number") | floor')
 
 cols="${COLUMNS:-120}"
 [ "$cols" -gt 0 ] 2>/dev/null || cols=120
@@ -137,6 +138,15 @@ plan_progress() {
 # the model doesn't expose an effort level, i.e. .effort.level is absent)
 model_seg="$model"
 [ -n "$effort" ] && model_seg="$model $(printf '\033[38;2;%sm' "$YELLOW")$DOT $effort"
+
+# the context size in thousands: muted below 200k, yellow from 200k, red from 400k (omitted
+# when .context_window.total_input_tokens is absent, null or 0)
+if [ "${ctx:-0}" -gt 0 ]; then
+  ctx_fg=$COMMENT
+  [ "$ctx" -ge 200000 ] && ctx_fg=$YELLOW
+  [ "$ctx" -ge 400000 ] && ctx_fg=$RED
+  model_seg="$model_seg $(printf '\033[38;2;%sm' "$ctx_fg")$DOT $((ctx / 1000))k"
+fi
 
 # segments: "fg|bg|text"  (';' is used inside colors, so '|' is a safe delimiter)
 # build_segs <tagteam 0|1> <plan 0|1>: 1 adds that segment. The tagteam segment goes after

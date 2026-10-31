@@ -350,6 +350,59 @@ else _fail "plan should be shown alone when tagteam cannot be" "$(strip "$out") 
 INPUT=$INPUT_PLAIN
 
 # The statusline runs outside the sandbox: a tool on the caller's PATH must not reach it.
+# --- the context size sits in the model segment, after the effort: muted below 200,000,
+# yellow from 200,000, red from 400,000, left out when absent, null, 0 or not a number ---
+MUTED='38;2;86;95;137'
+YELLOW='38;2;224;175;104'
+INPUT_CTX=$INPUT_PLAIN
+ctx_run() {
+  INPUT=$(printf '%s' "$INPUT_CTX" | "$JQ" -c --argjson c "$1" '.context_window = {total_input_tokens: $c}')
+  run none 200
+}
+# ctx_is <label> <tokens json> <expected figure> <expected colour>: the figure follows the
+# effort in the stripped line, its escape immediately precedes the dot, the line stays 200 wide.
+ctx_is() {
+  out=$(ctx_run "$2")
+  if has "$(strip "$out")" "Opus 5.5 $DOT high $DOT $3 " && has "$out" "$4m$DOT $3" \
+     && [ "$(vis "$out")" = 200 ]; then _pass "$1"
+  else _fail "$1" "$(strip "$out")"; fi
+}
+ctx_is "199,999 tokens: 199k, muted (rounding up to 200k would colour it wrong)" 199999 199k "$MUTED"
+ctx_is "200,000 tokens: 200k, yellow" 200000 200k "$YELLOW"
+ctx_is "399,999 tokens: 399k, still yellow" 399999 399k "$YELLOW"
+ctx_is "400,000 tokens: 400k, red" 400000 400k "$RED"
+ref=$(run none 200)
+for v in null 0 '"abc"'; do
+  out=$(ctx_run "$v")
+  if [ "$out" = "$ref" ]; then _pass "context $v: no figure, the line is unchanged"
+  else _fail "context $v should leave the line unchanged" "$(strip "$out")"; fi
+done
+INPUT=$(printf '%s' "$INPUT_CTX" | "$JQ" -c '.context_window = {}')
+out=$(run none 200)
+if [ "$out" = "$ref" ]; then _pass "context_window without the field: no figure"
+else _fail "absent field should leave the line unchanged" "$(strip "$out")"; fi
+INPUT=$(printf '%s' "$INPUT_CTX" | "$JQ" -c 'del(.effort) | .context_window = {total_input_tokens: 230000}')
+out=$(run none 200)
+if has "$(strip "$out")" "Opus 5.5 $DOT 230k " && [ "$(vis "$out")" = 200 ]; then
+  _pass "without an effort the figure follows the model name directly"
+else _fail "figure without effort" "$(strip "$out")"; fi
+# The figure is part of the width: tagteam fits at exactly the cluster width with the figure
+# plus its own, and is left out one column short of that.
+INPUT=$(printf '%s' "$INPUT_CTX" | "$JQ" -c '.context_window = {total_input_tokens: 230000}')
+wide=$(strip "$(run none 500)")
+trail=${wide##*[! ]}
+tt_cells=$(printf '%s' "$TT" | LC_ALL=C tr -d '\200-\277' | LC_ALL=C wc -c | tr -d ' ')
+with_w=$((500 - 1 - ${#trail} + tt_cells + 3))
+out=$(run tt "$((with_w + 2))" "$TT\n")
+if has "$(strip "$out")" "230k" && has "$(strip "$out")" "$TT" && [ "$(vis "$out")" = "$((with_w + 2))" ]; then
+  _pass "with the figure, tagteam still fits at the width the figure leaves it"
+else _fail "tagteam should fit with the figure" "$(strip "$out")"; fi
+out=$(run tt "$((with_w + 1))" "$TT\n")
+if [ "$out" = "$(run none "$((with_w + 1))")" ] && has "$(strip "$out")" "230k"; then
+  _pass "one column short, tagteam is left out: the figure is counted in the width"
+else _fail "tagteam should not fit one column short" "$(strip "$out")"; fi
+INPUT=$INPUT_PLAIN
+
 mkdir -p "$T/evil"
 for t in git jq tagteam; do
   printf '#!/bin/sh\ntouch "%s/evil-%s"\n' "$T" "$t" > "$T/evil/$t"; chmod 755 "$T/evil/$t"
