@@ -68,18 +68,21 @@ if [ -f "$index" ]; then
   if [ "$lines" -ge "$WARN_LINES" ] || [ "$chars" -ge "$WARN_CHARS" ]; then
     add "MEMORY.md is at $lines lines and $chars characters; Claude Code loads at most $LIMIT_LINES lines and $LIMIT_CHARS characters of it. Consolidate the index (merge or shorten entries, one line each) to under $WARN_LINES lines and $WARN_CHARS characters."
   fi
+  # UTF-16 units never exceed UTF-8 bytes, so only a line over LINE_CHARS bytes can be too
+  # long; the cheap byte count spares iconv a fork on the rest. n counts file lines.
+  nbytes() { local LC_ALL=C; REPLY=${#1}; }
   longlines=""
   n=0
-  while IFS= read -r l; do
+  while IFS= read -r l || [ -n "$l" ]; do
     n=$((n + 1))
+    nbytes "$l"
+    [ "$REPLY" -gt "$LINE_CHARS" ] || continue
     u=$(printf '%s' "$l" | iconv -f UTF-8 -t UTF-16LE | wc -c | tr -d ' ') || exit 0
     case "$u" in ''|*[!0-9]*) exit 0 ;; esac
     [ $((u / 2)) -gt "$LINE_CHARS" ] || continue
     e=$(printf '%s' "$l" | sed -n 's/^[^]]*](\([^)]*\)).*$/\1/p')
     longlines="${longlines:+$longlines, }${e:-line $n} ($((u / 2)))"
-  done <<LINES
-$content
-LINES
+  done < "$index"
   [ -z "$longlines" ] || add "MEMORY.md has index lines longer than $LINE_CHARS characters (length in parentheses): $longlines. Shorten each to one short line; move detail into the memory file."
   raw=$(grep -oE '\]\([^)#]+\.md(#[^)]*)?( "[^"]*")?\)' "$index"); rc=$?
   # grep exits 1 when the index has no links; anything above that is a read error, and a
