@@ -1665,12 +1665,18 @@ def fast_path_literal(text, cwd):
 
 
 def option_strings(tokens):
-    """The words after a -c bundle (-c, -lc) anywhere: su -c, sg G -c and runuser -c run that
-    word as a command line, as a shell -c does (nested_strings has the shells). Linear."""
-    out = []
+    """The word after a -c bundle (-c, -lc) in a simple command that holds su, sg or runuser:
+    they run that word as a command line, as a shell -c does (nested_strings has the shells).
+    Any other command's -c (rg -c, grep -c, ...) is an option, not a program. Linear."""
+    out, runs = [], False
     for i in range(len(tokens) - 1):
         t = tokens[i]
-        if t[:1] == "-" and t[-1:] == "c" and t[1:2] != "-" and not is_operator(tokens[i + 1]):
+        if is_operator(t):
+            runs = False
+        elif os.path.basename(t) in ("su", "sg", "runuser"):
+            runs = True
+        elif (runs and t[:1] == "-" and t[-1:] == "c" and t[1:2] != "-"
+              and not is_operator(tokens[i + 1])):
             out.append(tokens[i + 1])
     return out
 
