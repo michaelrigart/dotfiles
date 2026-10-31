@@ -201,10 +201,10 @@ render(){ printf '[data]\n  hostname = "%s"\n' "$1" > "$T/c.toml"
         --config "$T/c.toml" --file "$SRC/dot_config/homebrew/Brewfile.tmpl" 2>&1); RC=$?; }
 render fenrir fenrir
 rc_is 0 "matching identity renders"
-has 'cask "jiggler"' "fenrir gets the peripheral casks"
+has 'cask "elgato-control-center"' "fenrir gets the peripheral casks"
 render hercules hercules
 rc_is 0 "the other machine renders"
-hasnt 'cask "jiggler"' "hercules does not get the peripheral casks"
+hasnt 'cask "elgato-control-center"' "hercules does not get the peripheral casks"
 render "MacBook Pro" "MacBook Pro"
 rc_is 1 "an unlisted machine fails the render"
 has "unknown machine" "unlisted machine is named"

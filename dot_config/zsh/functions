@@ -1769,8 +1769,8 @@ chezmoi() {
   # --apply` runs `init --apply`. (A whitespace-only word, an upper-case name or an abbreviation
   # is an unknown command to cobra, which runs a `chezmoi-<name>` plugin from PATH: `chezmoi " "
   # apply` ran `chezmoi- `. That does not get past the gate on the default PATH: no directory
-  # on it is sandbox-writable after this branch's write-set change. direnv can add one while
-  # Michael is in a repository (PATH_add, layout node, a mise _.path), where a sandbox-written
+  # on it is sandbox-writable after this branch's write-set change. A repository's mise.toml
+  # can add one while Michael is in it (an _.path entry), where a sandbox-written
   # `chezmoi-<name>` would run if he typed that unknown subcommand.)
   if [[ $sub == -* || ( $# -gt 0 && -z $sub ) ]]; then
     for a in apply update diff status cat verify dump archive execute-template merge merge-all init edit; do

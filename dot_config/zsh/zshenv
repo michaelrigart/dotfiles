@@ -19,9 +19,7 @@ eval "$(/opt/homebrew/bin/brew shellenv zsh)"
 export HOMEBREW_NO_ANALYTICS=1
 export HOMEBREW_BUNDLE_FILE="$XDG_CONFIG_HOME/homebrew/Brewfile"
 
-# Then the user's own bins, in FRONT of Homebrew: ~/.local/bin first, then krew.
-# tests/zshenv.test.sh pins this order.
-export PATH="${KREW_ROOT:-$HOME/.krew}/bin:$PATH"
+# Then the user's own bins, in FRONT of Homebrew. tests/zshenv.test.sh pins this order.
 export PATH=$XDG_BIN_HOME:$PATH
 
 # NOTE: TERM is intentionally NOT forced here — Ghostty sets xterm-ghostty

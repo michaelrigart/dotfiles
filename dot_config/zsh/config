@@ -4,9 +4,6 @@
 ZSH_THEME=""
 eval "$(starship init zsh)"
 
-# Hook direnv into the shell
-eval "$(direnv hook zsh)"
-
 # Activate mise
 eval "$(mise activate zsh)"
 

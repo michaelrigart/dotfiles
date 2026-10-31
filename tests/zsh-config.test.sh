@@ -6,8 +6,8 @@
 # old file across; it must never clobber a history file that already exists at the new
 # place, because two shells can start at once.
 #
-# Sources the SOURCE config in a clean zsh with stub starship/direnv/mise on PATH,
-# and a temp HOME, so nothing real is read or written.
+# Sources the SOURCE config in a clean zsh with stub starship/mise on PATH, and a temp
+# HOME, so nothing real is read or written.
 #
 #   ./tests/zsh-config.test.sh   (sandboxed is fine)
 set -uo pipefail
@@ -23,7 +23,7 @@ is() { if [ "$2" = "$3" ]; then _pass "$1"; else _fail "$1" "$2"; fi; }
 T="$(mktemp -d "${TMPDIR:-/tmp}/zshconfig.XXXXXX")"
 trap 'rm -rf "$T"' EXIT
 STUB="$T/stub"; mkdir -p "$STUB"
-for tool in starship direnv mise; do
+for tool in starship mise; do
   printf '#!/bin/sh\nexit 0\n' > "$STUB/$tool"; chmod 755 "$STUB/$tool"
 done
 
@@ -31,6 +31,14 @@ start_shell() { # start_shell <home> -> prints $HISTFILE after sourcing the conf
   env -i HOME="$1" XDG_CACHE_HOME="$1/.cache" XDG_STATE_HOME="$1/.local/state" \
     PATH="$STUB:/usr/bin:/bin" /bin/zsh -f -c "source \"$CONFIG\"; print -r -- \$HISTFILE" 2>/dev/null
 }
+
+# direnv was dropped for mise; a leftover hook would print "command not found" on every
+# shell start once the formula is uninstalled. Starship and mise are the only tools it runs.
+H="$T/tools"; mkdir -p "$H"
+errs=$(env -i HOME="$H" XDG_CACHE_HOME="$H/.cache" XDG_STATE_HOME="$H/.local/state" \
+  PATH="$STUB:/usr/bin:/bin" /bin/zsh -f -c "source \"$CONFIG\"" 2>&1 >/dev/null)
+is "the config calls no tool beyond the stubbed starship and mise" \
+   "$(printf '%s\n' "$errs" | grep 'command not found')" ""
 
 H="$T/fresh"; mkdir -p "$H"
 is "HISTFILE is under XDG_STATE_HOME" "$(start_shell "$H")" "$H/.local/state/zsh/zsh_history"

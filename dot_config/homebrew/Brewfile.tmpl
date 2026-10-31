@@ -37,9 +37,9 @@ brew "arping"                          # edge-node network diagnostics
 brew "awscli"
 brew "azure-cli"
 brew "bash"                            # every Claude Code hook, the statusline and xreview's shebang run
-                                       # /opt/homebrew/bin/bash by absolute path. It was only a dependency
-                                       # of direnv, so dropping direnv would make every hook exit 127
-                                       # and every guard fail open.
+                                       # /opt/homebrew/bin/bash by absolute path. Nothing depends on it
+                                       # since direnv went, so undeclared, a cleanup would remove it,
+                                       # every hook would exit 127 and every guard fail open.
 brew "borgbackup"                      # Vorta requires it. The borgbackup-fuse variant
                                        # was dropped 2026-08-28: it exists only for
                                        # `borg mount`, which needs a macFUSE kernel
@@ -50,7 +50,6 @@ brew "borgbackup"                      # Vorta requires it. The borgbackup-fuse 
 brew "btop"
 brew "chezmoi"
 brew "coreutils"
-brew "direnv"
 brew "exiftool"                        # Trainvault lib/active_storage/exif_analyzer.rb (mini_exiftool); Curato
 brew "eza"
 brew "fastfetch"
@@ -68,8 +67,6 @@ brew "jemalloc"                        # Rails
 brew "jpegoptim"                       # michaelrigart Rakefile:82 image optimization
 brew "jq"
 brew "k9s"
-brew "krew"
-brew "kubie"
 brew "lazygit"
 brew "lazysql"
 brew "libpq"                           # Rails / pg
@@ -108,7 +105,6 @@ cask "orbstack"
 cask "battle-net"
 cask "elgato-control-center"
 cask "focusrite-control"
-cask "jiggler"
 {{ end -}}
 cask "firefox"
 cask "ghostty@tip"

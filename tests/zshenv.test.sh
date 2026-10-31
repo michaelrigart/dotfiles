@@ -50,21 +50,11 @@ fi
 
 path=$(probe 'print -r -- $PATH')
 index_of() { printf '%s\n' "$path" | tr ':' '\n' | grep -nxF -- "$1" | head -1 | cut -d: -f1; }
-bin=$(index_of "$FAKE/.local/bin"); krew=$(index_of "$FAKE/.krew/bin"); brew=$(index_of /opt/homebrew/bin)
+bin=$(index_of "$FAKE/.local/bin"); brew=$(index_of /opt/homebrew/bin)
 if [ -n "$bin" ] && [ -n "$brew" ] && [ "$bin" -lt "$brew" ]; then
   _pass "~/.local/bin precedes /opt/homebrew/bin on PATH"
 else
   _fail "~/.local/bin precedes /opt/homebrew/bin on PATH" "$path"
-fi
-if [ -n "$krew" ] && [ -n "$brew" ] && [ "$krew" -lt "$brew" ]; then
-  _pass "the krew bin precedes /opt/homebrew/bin on PATH"
-else
-  _fail "the krew bin precedes /opt/homebrew/bin on PATH" "$path"
-fi
-if [ -n "$bin" ] && [ -n "$krew" ] && [ "$bin" -lt "$krew" ]; then
-  _pass "~/.local/bin leads the krew bin, as it leads Claude's own PATH"
-else
-  _fail "~/.local/bin leads the krew bin, as it leads Claude's own PATH" "$path"
 fi
 
 got=$(probe 'print -r -- $HOMEBREW_PREFIX')
