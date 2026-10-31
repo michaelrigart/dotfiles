@@ -39,11 +39,13 @@ dir=$(basename "${cwd:-$PWD}")
 # --- Tokyo Night (night) palette, "R;G;B" ---
 # Backgrounds are dark shades; accents are used as TEXT (the way Tokyo Night is
 # designed) so nothing glares. Segments alternate two dark shades so the powerline
-# separators stay visible, and every text/background pair clears WCAG AA (>=4.5).
+# separators stay visible, and every text/background pair clears WCAG AA (>=4.5), except the
+# no-skill placeholder dash, which is decoration and deliberately recedes.
 DARK="22;22;30"       # #16161e  filler bar (darkest)
 NIGHT="26;27;38"      # #1a1b26  segment bg
 BGHL="41;46;66"       # #292e42  segment bg (raised)
 COMMENT="86;95;137"   # #565f89  no-skill placeholder text
+FG_DARK="169;177;214" # #a9b1d6  context size below 200k (8.1:1 on NIGHT)
 BLUE="122;162;247"    # #7aa2f7  dir text
 CYAN="125;207;255"    # #7dcfff  model text
 GREEN="158;206;106"   # #9ece6a  branch text
@@ -142,7 +144,7 @@ model_seg="$model"
 # the context size in thousands: muted below 200k, yellow from 200k, red from 400k (omitted
 # when .context_window.total_input_tokens is absent, null or 0)
 if [ "${ctx:-0}" -gt 0 ]; then
-  ctx_fg=$COMMENT
+  ctx_fg=$FG_DARK
   [ "$ctx" -ge 200000 ] && ctx_fg=$YELLOW
   [ "$ctx" -ge 400000 ] && ctx_fg=$RED
   model_seg="$model_seg $(printf '\033[38;2;%sm' "$ctx_fg")$DOT $((ctx / 1000))k"

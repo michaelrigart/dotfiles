@@ -344,4 +344,10 @@ the repo).
 4. Set the spec and plan to `**Status:** Implemented`, and add a completion banner to the plan.
 5. Push `improvements` to origin. For the dotfiles, the pushed branch is the end.
 6. Once Michael merges `fix/push-guard-escaped-spellings`, rebase onto main. A clean rebase over
-   other files keeps the approval. Then report.
+   other files keeps the approval. Then:
+   - reword the stale "Merge requests section of GLOBAL.md" pointers in
+     `dot_claude/executable_git-forge-guard.sh`, `dot_claude/modify_private_settings.json` and
+     `tests/git-forge-guard.test.sh` (spec, Implementation notes, Open);
+   - run `git-forge-guard` by name;
+   - run a new Codex pre-merge round;
+   - report.

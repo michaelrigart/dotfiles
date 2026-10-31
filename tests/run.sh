@@ -23,9 +23,11 @@
 #
 # Suites run concurrently, RUN_JOBS at a time (default: half the online CPUs, at least 2;
 # 4 when the count cannot be read). RUN_JOBS=1 restores sequential order. Each suite's
-# output is buffered and printed in name order, so the report is the same either way. A
-# suite that cannot share the machine (timing assertions, fixed ports, shared state)
-# carries a `# test-serial` line and runs alone after the parallel ones.
+# output is buffered and printed in name order, so the verdicts are the same either way (a
+# load-sensitive suite's assertion count may differ). A suite that cannot share the
+# machine (timing assertions, fixed ports, shared state) carries a `# test-serial` line and
+# runs alone after the parallel ones; so does every suite gated on a condition other than
+# `heavy` (a live herdr, a pty, the real daemon), which --all or an exact name selects.
 #
 # One runner per machine: every invocation, filtered or not, takes a lockf lock on
 # RUN_SH_LOCK (default /tmp/claude-$(id -u)/tests-run.lock) and says so when it has to
@@ -137,7 +139,11 @@ trap 'exit 130' INT TERM
 parallel=() serial=()
 for f in ./*.test.sh; do
   select_suite "$f" || continue
-  if grep -qE '^# test-serial([[:space:]]|$)' "$f"; then serial+=("$name"); else parallel+=("$name"); fi
+  if grep -qE '^# test-serial([[:space:]]|$)' "$f" || { [ -n "$req" ] && [ "$req" != heavy ]; }; then
+    serial+=("$name")
+  else
+    parallel+=("$name")
+  fi
 done
 [ ${#parallel[@]} -gt 0 ] && printf '%s\0' "${parallel[@]}" | xargs -0 -n1 -P "$jobs" "$self" --run-one
 [ ${#serial[@]} -gt 0 ] && printf '%s\0' "${serial[@]}" | xargs -0 -n1 -P 1 "$self" --run-one

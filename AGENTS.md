@@ -98,9 +98,11 @@ Suites live in `tests/`, one `<subject>.test.sh` per script under test.
 ```
 
 Suites run in parallel (`RUN_JOBS`, default: half the online CPUs, at least 2; an explicit
-`RUN_JOBS=1` is honoured and restores sequential order). Output is buffered and printed in name order, so the report is
-the same either way. A suite that cannot share the machine carries a `# test-serial` line
-and runs alone after the parallel ones (none does today).
+`RUN_JOBS=1` is honoured and restores sequential order). Output is buffered and printed in name order, so the verdicts are
+the same either way; a load-sensitive suite's assertion count can differ (`xreview-packet`
+F7 slices a 20,000-file case into 8 or 9). A suite that cannot share the machine carries a
+`# test-serial` line and runs alone after the parallel ones (none does today), and so does
+every suite gated on a condition other than `heavy` (a live herdr, a pty, the real daemon).
 
 **The runner locks itself:** one per machine (`lockf` on `/tmp/claude-$(id -u)/tests-run.lock`,
 `RUN_SH_LOCK` overrides the path), and it says so when it waits. A nested runner sees
@@ -116,12 +118,12 @@ Suites needing conditions `run.sh` cannot create carry a `# test-requires:` line
 skipped by default. A substring filter to `./tests/run.sh` keeps that gate; only an
 exact suite name lifts it (so `./tests/run.sh reconcile-agents` runs the suite, while
 `./tests/run.sh reconcile` does not; `./tests/run.sh xreview` is the exact name, so it
-lifts the gate and also selects every `xreview-*` suite; to run the heavy suite alone,
-execute `./tests/xreview.test.sh`):
+lifts the gate and also selects every `xreview-*` suite, which run beside it at no extra
+wall time):
 
 | Suite | Needs | Why |
 |---|---|---|
-| `xreview`, `git-forge-guard`, `wt-functions` | `heavy`: 672 s, 242 s, 123 s | skipped by default for their length. Run by exact name when their subject changed on the branch, and always before the pre-merge review of such a branch |
+| `xreview`, `git-forge-guard`, `wt-functions` | `heavy`: 672 s, 242 s, 123 s | skipped by default for their length. Run by exact name when a file its tag lists changes, and all three before every pre-merge review: `./tests/run.sh xreview git-forge-guard wt-functions` |
 | `reconcile-agents` | unsandboxed | writes a temp XDG config dir; sandboxed it reports ~18 false failures |
 | `ssh-credential-inventory` | unsandboxed | the `Read(~/.ssh/**)` deny blocks enumeration; it then exits 2 (INCONCLUSIVE) rather than green |
 | `zshrc` | unsandboxed | drives a real zsh on a pseudo-terminal (Alt-k and SIGURG), and the sandbox has no pty devices; it then exits 2 (INCONCLUSIVE) |

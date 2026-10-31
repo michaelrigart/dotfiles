@@ -121,7 +121,7 @@ Michael signs off specs and merges; in between, the driver proceeds on its own.
   config change or contained addition: under ~150 lines of non-test code, no open design
   choice, no safety boundary such as permissions, sandbox, guards, auth, secrets, deletion,
   push or merge tooling, migrations) skips the spec and plan: test first, implement, then a
-  cold diff review and Codex's pre-merge review together. Unsure means not small; say which.
+  cold diff review and Codex's pre-merge review together. Unsure or outgrown: not small; say which.
 - **Plans.** Codex reviews every plan, and execution starts once it approves. If Michael
   asked at spec sign-off to see the plan, stop after Codex approves. Either way, put the
   plan's path in your next status message.

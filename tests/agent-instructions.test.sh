@@ -130,7 +130,7 @@ need_flat() { # need_flat <fragment> <fixed text> <label>
 need global.md '## Engineering judgement' "global.md carries the Engineering judgement section"
 need_flat global.md '- **Sizing.** Size the process to the change, never the quality bar.' \
   "global.md carries the Sizing rule"
-need_flat global.md 'Unsure means not small; say which.' "the Sizing rule treats an unsure change as not small"
+need_flat global.md 'Unsure or outgrown: not small; say which.' "the Sizing rule treats an unsure or outgrown change as not small"
 need_flat global.md '- **Convergence.** A loop converges when each round leaves less to fix.' \
   "global.md carries the Convergence rule"
 need_flat global.md 'Never add agent attribution (session links, `Claude-Session:` trailers, `Co-authored-by:` agent lines, "Generated with…" footers, naming the tool) in commits, MR/PR titles and bodies, issues or review comments.' \

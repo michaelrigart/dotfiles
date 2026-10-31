@@ -351,7 +351,7 @@ INPUT=$INPUT_PLAIN
 
 # --- the context size sits in the model segment, after the effort: muted below 200,000,
 # yellow from 200,000, red from 400,000, left out when absent, null, 0 or not a number ---
-MUTED='38;2;86;95;137'
+MUTED='38;2;169;177;214'
 YELLOW='38;2;224;175;104'
 INPUT_CTX=$INPUT_PLAIN
 ctx_run() {

@@ -13,7 +13,7 @@
 # best-effort resumes the pane onto it (F22: a TUI resuming a thread mid-turn replays it from
 # the start). No precondition may be skipped, and no keystroke (send-keys) may ever reach the
 # pane once the turn exists (C1).
-# test-requires: heavy  # 672 s on 2026-10-31; run by name when the xreview dispatcher changes
+# test-requires: heavy  # 672 s on 2026-10-31; loads dot_local/bin/executable_xreview, dot_claude/xreview-{ledger,packet}.py, dot_config/xreview/*, dot_config/herdr/codex-pane-command
 set -uo pipefail
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
 XREVIEW="$SRC/dot_local/bin/executable_xreview"

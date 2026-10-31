@@ -124,6 +124,10 @@ rm -f "\$MARK/$n.running"
 if [ "\$bad" -eq 0 ]; then echo "  ok  $n ran alone"; else echo "  FAIL: another suite ran at the same time"; exit 1; fi
 SUITE
 done
+# A suite gated on a live condition (anything but `heavy`) drives shared live state, so
+# --all must run it alone too. Same body as the serial fixtures, behind a requirement tag.
+printf '#!/usr/bin/env bash\n%s: a live herdr\n' "$tag" > "$T/gatedlive.test.sh"
+tail -n +3 "$T/serialz.test.sh" | sed 's/serialz/gatedlive/g' >> "$T/gatedlive.test.sh"
 cat > "$T/lockheld.test.sh" <<'SUITE'
 #!/usr/bin/env bash
 if [ -z "${HOLDER_DONE:-}" ] || [ -e "$HOLDER_DONE" ]; then echo "  ok  lock was free"; else echo "  FAIL: ran while the lock was held"; exit 1; fi
@@ -217,6 +221,10 @@ out="$(RUN_JOBS=4 "$T/run.sh" 2>&1)"
 ran "a test-serial suite runs alone"             yes 'ok +serialz' "$out"
 ran "a second test-serial suite runs alone too"  yes 'ok +serialy' "$out"
 if [ -e "$MARK/serialy.afterpar" ] && [ -e "$MARK/serialz.afterpar" ]; then _pass "serial suites start after the parallel ones finish"; else _fail "serial suites start after the parallel ones finish" "$(ls "$MARK" | tr '\n' ' ')"; fi
+
+# Bug caught: --all running a suite gated on a live condition beside other suites.
+out="$(RUN_JOBS=4 "$T/run.sh" --all 2>&1)"
+ran "--all runs a live-gated suite alone"        yes 'ok +gatedlive' "$out"
 
 # Locking. hold <tenths> takes the lock in the background, waits until it is held, and
 # releases it after that long or when $T/release appears.

@@ -358,7 +358,9 @@ fixes.
 ## Implementation notes (2026-10-31)
 
 **Measured.** Sequential baseline, one suite at a time: 1,783 s for 47 suites. Verdicts are
-byte-identical between the parallel runner and `RUN_JOBS=1`.
+identical between the parallel runner and `RUN_JOBS=1`. A load-sensitive suite's assertion
+count can differ: under load, `xreview-packet` F7 slices its 20,000-file case into 9 parts, not
+8. The cause is unconfirmed and the code predates this branch.
 
 | Run | Wall time |
 |---|---|
@@ -387,6 +389,18 @@ The heavy suites, run by name: xreview 672 s, git-forge-guard 242 s, wt-function
 7. **The other session's lock was bypassed for focused runs.** It held its full-suite lock for
    45 minutes or more, so implementers ran their focused suites directly. Every full run took
    the lock.
+8. **Heavy suites run before every pre-merge review**, not only on branches that touch their
+   subject. This is stricter than §11. The final review found that a vague subject could let a
+   change to `git-push-guard.py` merge with no test run against it. Each heavy tag now lists the
+   files it loads.
+9. **The runner runs every suite gated on a condition other than `heavy` in the serial
+   phase.** Under `--all`, live suites (a live herdr, a pty, the real daemon) no longer run
+   beside each other or the heavy ones. Pinned in `run.test.sh`.
+10. **The statusline's muted context figure uses Tokyo Night `fg_dark`.** It is `#a9b1d6`, 8.1:1
+    on the segment background, not `comment` at 2.8:1. The figure carries information; the
+    placeholder dash does not.
+11. **The Sizing bullet keeps spec §9's mid-way rule** in short form: "Unsure or outgrown: not
+    small; say which."
 
 **Open:** `dot_claude/executable_git-forge-guard.sh`, `dot_claude/modify_private_settings.json`
 and `tests/git-forge-guard.test.sh` still point at "the Merge requests section of GLOBAL.md".
