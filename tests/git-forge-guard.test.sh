@@ -84,6 +84,63 @@
 #    restricted run nothing. Under the snapshot, the stubs went first on PATH after it was
 #    sourced, since it sets its own PATH, and the snapshot overrides neither tail nor head.
 #    macOS tail and head read -N as -n N; head -0 fails as head -n 0 does.
+# E. The $'...' decoder (decode_ansi in dot_claude/git-pu[s]h-guard.py, unchanged since 9c80632),
+#    checked against the shells on 2026-10-31 under /usr/bin/python3 3.9.6 (not part of
+#    this suite). 8673 bodies: every escape letter a to z and A to Z; every octal escape of 1 to 3
+#    digits, with 4-digit and non-octal followers; NUL at the start, in the middle and at the end,
+#    in 15 spellings; \x with 0 to 2 hex digits (all of them) and 3 (sampled), \x{..}, and a blank
+#    or sign after \x; \u with 0 to 5 and \U with 0 to 9 hex digits (sampled, plus 0, 7f, 80, ff,
+#    the surrogates, 10ffff, 110000, 7fffffff and ffffffff); and \c, \C, \C- and \M- before each
+#    printable ASCII character and before each escape. Each body ran as printf %s $'<body>' under
+#    bash 3.2.57, bash 5.3.20, zsh -f 5.9.2 (and /bin/zsh 5.9), and zsh -f 5.9.2 with Michael's
+#    Claude Code shell snapshot sourced, in an en_US.UTF-8 locale, and its bytes were compared with
+#    decode_ansi under the matching reading (bash readings up to the first NUL):
+#    - bash 3.2.57: 8673/8673 equal.
+#    - bash 5.3.20: 7847/8673 equal. The other 826 each hold a surrogate or a \u or \U above 10ffff,
+#      where the shell prints its own bytes (ED A0 80 for d800) and the decoder prints nothing.
+#    - zsh -f: 7435/8673 equal. The other 1238 are 1176 of that same kind, 30 where \x skips a blank
+#      or sign in its two-character window (\x 67 is 0x06 then 7; \x-8 is 0xF8), 16 where a pending
+#      \C or \M before \u or \U lands on the next character, and 16 with both.
+#    - zsh with the snapshot: byte for byte the zsh -f output on all 8673 bodies, so the snapshot
+#      adds no reading; /bin/zsh 5.9 differs from 5.9.2 on none.
+#    0 mismatches fall outside those families. Each divergence over-denies: the decoder shows a
+#    word that the shell does not run, never the other way round.
+# F. The stub differential (2026-10-31, commit 37cda6f, /usr/bin/python3 3.9.6, not part of this
+#    suite). 34042 commands that push to main were built from 51 spellings of git, 52 of push, 19
+#    dash forms, 17 targets and 9 option sets, in 78 contexts (plain, cd, assignment and wrapper
+#    prefixes, compounds, $( ), backticks, arithmetic, comments with an apostrophe, continuations,
+#    eval, sh -c, printf and echo -e into a shell, here-documents and here-strings), plus 57 whole
+#    shapes (brace lists, aliases, functions, built words). Each ran under bash 3.2.57, bash 5.3.20
+#    and zsh -f 5.9.2 with a stub git (and git-push, git-send-pack and git-http-push) first on PATH
+#    that recorded its argv, in a directory that is no repository, and through this branch's hook in
+#    the fixture repository (on feat, bare origin, aliases pom, shp, lp). The stub got push,
+#    send-pack, http-push or a push alias as its subcommand in 31391 runs under bash 3.2, 32361
+#    under bash 5.3 and 27445 under zsh, from 32369 distinct commands: 27145 got a deny, 529 an ask
+#    and 4695 stayed silent. 0 of the silent ones were denied or asked by main (looser than main: 0
+#    required), 4695 are in the residual families the helper's header lists (both the git word and
+#    the push word are globs 2829; built at run time (section 7) 680; glob subcommand slot behind a
+#    literal or hidden git (main allows it too) 391; escapes layered inside a double-quoted string
+#    handed to a shell 206; quoted separator in an option value (raw-token checks do not run) 205;
+#    alias name hidden by quotes (fast path matches the alias name literally) 104; locale quote
+#    $".." inside a word, no other trigger (fast path) 47; hidden git with an alias (fast path never
+#    starts the helper) 45; printf %b \0nnn or a \\-newline handed to a shell (decoded as $'..') 32;
+#    brace list inside a word (pu{sh,x}, {pu,x}sh) 24; hidden git with a hidden send-pack word 9;
+#    send-pack behind a wrapper or in a comment or backtick context 62; a quoted glob command
+#    string fed to a shell by a pipe, here-string or source 61), and 0 are in none (0 required).
+# G. Against main (2026-10-31, commit 37cda6f, /usr/bin/python3 3.9.6). The non-regression gate ran
+#    the real hook of main (9702750), c67e699, 1333519 and this commit in one fixture repository
+#    (bare origin, the suite's GIT_CONFIG_GLOBAL, a stub gitleaks) on 1,078,240 distinct commands:
+#    the 1,284 this suite sends (every case of the plan), 553,866 rows from the adversarial
+#    reviews of rounds 1 to 15 (grids with their literal analogs; 34,960 are ordinary commands),
+#    357,005 generated grid rows, and 166,085 commands from the last 30 days of Claude Code
+#    transcripts, read locally. Counts only. Verdicts looser than main's: 0. New asks: 0. Internal
+#    errors and crashes: 0, timeouts 0 (main 9, c67e699 5, 1333519 5). Looser than the union of
+#    the three baselines: 0 on the transcripts and 317 grid rows, none a push (bash 3.2 ran them
+#    all; only 1333519 denied them). Denied here and by no baseline: 0 transcript commands and
+#    188,393 synthetic rows (spellings that section 1 of the spec accepts as denies, and glob
+#    words read as git; of 3,000 executed, 1,295 push and 1,705 do not). The head denies 6
+#    transcript commands that main allows: the same 6 that c67e699 denies. Ordinary commands: of
+#    34,960, the head denies 359, every one denied by a baseline too; new denies 0.
 
 set -uo pipefail
 
@@ -925,7 +982,7 @@ fi
 # trailer), with no wrapper, assignment, cd prefix or global option before push. Merged and
 # pinned in any other text, the delete is denied with the plain pinned command printed. work
 # is checked out at main's tip and is not on the remote, so a push of it scans clean.
-PLAIN_REASON="Push guard: this command may run git push in a shape the guard does not check. Run the push as a plain command of its own: git push [options] <remote> <branch> (for another repository: git -C <path> push [options] <remote> <branch>; piped only to tail or head). If the command does not push, keep git and push apart in its text, for example rg 'git pu[s]h'."
+PLAIN_REASON="Push guard: this command may run git push in a shape the guard does not check. Run the push as a plain command of its own: git push [options] <remote> <branch> (for another repository: git -C <path> push [options] <remote> <branch>; piped only to tail or head). If the command does not push, keep git and push apart in its text with a bracket, for example rg 'git pu[s]h'; a word split by quotes or backslashes is read as a hidden push."
 PINNED="git push --force-with-lease=done:$DONE origin --delete done"
 PLAIN_NOTE="$PLAIN_LEAD done is merged into main, on origin $RUN_HERE"
 # Canonical: the merged, pinned delete passes with each trailer, and with outer spaces and one
@@ -1103,11 +1160,12 @@ has_reason   "D2 and the deny is refused, plain -n form, confirm, in order" \
              "$DRY_REFUSED${DRY_HERE}git push --force-with-lease=a -n origin --delete open"$'\n'"$CONFIRM_DELETE" "$DEL" "$D2_CR"
 no_real_push "D2 CR" "$DEL" "$D2_CR" "git push --force-with-lease=a origin --delete open"
 # A continuation glued to -n: the shell joins ci.skip\<newline>-n into one push option value.
+# Spec 2026-10-29 section 2: the guard no longer reads the continuation as a space, so the
+# command leaves the grammar and gets the plain-push deny.
 D2_CONT="git push --force-with-lease=open:$OPEN -o ci.skip\\
 -n origin --delete open"
 expect deny  "D2 a continuation glued to -n"                            "$DEL" "$D2_CONT"
-has_reason   "D2 and the deny is refused, plain -n form, confirm, in order" \
-             "$DRY_REFUSED${DRY_HERE}git push --force-with-lease=open:$OPEN -o ci.skip -n origin --delete open"$'\n'"$CONFIRM_DELETE" "$DEL" "$D2_CONT"
+has_reason   "D2 and a continuation glued to -n leaves the grammar: the plain-push deny" "in a shape the guard does not check" "$DEL" "$D2_CONT"
 no_real_push "D2 continuation" "$DEL" "$D2_CONT" "git push --force-with-lease=open:$OPEN -o ci.skip origin --delete open"
 # Not canonical, judged as a real push: a real deny stays a deny, a real allow stays an allow,
 # and a real ask becomes the dry-run deny. A real deny that prints a pinned delete prints its
@@ -1432,7 +1490,8 @@ expect deny  "filter-branch running a push"           "$R" "git filter-branch --
 expect allow "submodule foreach that does not push"   "$R" "git submodule foreach 'git status'"
 expect allow "a commit message that mentions a push"  "$R" 'git commit -m "git push later"'
 # A push word assembled by expansion has no literal push in the payload, so the shell fast
-# path never starts the helper; that is a known limit. Driven directly, the helper denies it.
+# path never starts the helper; that is a known limit. Driven directly, with no flag (main's raw
+# checks run unless the flag is exactly 0), the helper denies it.
 helper_denies() { # helper_denies <label> <cwd> <command>
   local out
   out=$(jq -n --arg c "$3" --arg d "$2" '{tool_name:"Bash",cwd:$d,tool_input:{command:$c}}' \
@@ -1458,11 +1517,22 @@ expect deny  "--push-option with a brace list"        "$R" 'git push --push-opti
 expect deny  "-u -o with a brace list"                "$R" 'git push -u -o {x,origin,main}'
 expect deny  "a ? glob in the git word"               "$R" '/usr/bin/gi? push origin main'
 expect deny  "a [ ] glob in the git word"             "$R" '/usr/bin/g[i]t push origin main'
-# Only the last path component of a command word decides: a variable or a $VAR/ directory
-# in front of a name that is not git is an ordinary command (docker, helm, gradle).
-expect allow "a variable command that pushes, not git" "$R" '$DOCKER push registry/x:1'
+# Only the last path component of a command word decides: a $VAR/ directory in front of a
+# name that is not git is an ordinary command (helm, gradle).
+# Spec section 4: a built command word whose subcommand slot holds push or send-pack counts
+# as a possible git, so a variable command that pushes is denied.
+expect deny  "a variable command that pushes (could be git)" "$R" '$DOCKER push registry/x:1'
 expect allow "a quoted \$HOME path to helm push"      "$R" '"$HOME/bin/helm" push chart.tgz oci://r'
-expect allow "a variable command after &&"            "$R" 'npm run build && $DOCKER push img'
+expect deny  "a variable command that pushes, after &&" "$R" 'npm run build && $DOCKER push img'
+expect deny  "a variable git word with push"         "$R" '$G push origin main'
+expect deny  "a variable git word with send-pack"    "$R" '$G send-pack x main'
+expect deny  "a variable git word, -c with a variable value, push" "$R" '$G -c $V push origin main'
+expect deny  "a variable git word, -C with a variable directory, push" "$R" '$G -C $D push'
+expect deny  "a built git word, -C before push"      "$R" '${X:-gi}t -C . push origin main'
+expect deny  "a built path whose last component is gi}t" "$R" '${X:-/usr/bin/gi}t push origin main'
+expect deny  "a built git word, delete"              "$R" '${X:-gi}t push origin --delete wip'
+expect allow "a variable interpreter on a push script" "$R" '$PYTHON scripts/push.py'
+expect allow "a \$HOME path to helm push"            "$R" '$HOME/bin/helm push x'
 expect allow "a quoted \$GOPATH path, -l ."           "$TMP" "cd $R && \"\$GOPATH/bin/gofumpt\" -l ."
 expect allow "a \$HOME path to gradle, -c"            "$R" '$HOME/.local/bin/gradle build -c settings.gradle'
 expect allow "a variable command with no push word"   "$R" '$G status'
@@ -1504,6 +1574,1784 @@ expect deny  "rebase -ix running a push"              "$R" "git rebase -ix 'git 
 expect deny  "rebase --exe running a push"            "$R" "git rebase --exe 'git push origin main' main"
 expect deny  "rebase --ex= running a push"            "$R" "git rebase --ex='git push origin main' main"
 expect allow "rebase --autosquash is not --exec"      "$R" 'git rebase -i --autosquash main'
+
+echo "== rule 4: spellings the fast path used to miss =="
+expect deny  "a quoted push word to main"            "$R" 'git pu"sh" origin main'
+has_reason   "it gets the plain-push deny" "in a shape the guard does not check" "$R" 'git pu"sh" origin main'
+expect deny  "a quoted push word, force"             "$R" 'git pu"sh" --force origin main'
+expect deny  "an empty-quote push word"              "$R" "git p''ush origin main"
+expect deny  "an escaped push word"                  "$R" 'git pu\sh origin main'
+expect allow "a quoted push word to a feature branch" "$R" 'git pu"sh" origin feat'
+expect deny  "an ANSI-C push word"                   "$R" "git \$'\\x70ush' origin main"
+expect deny  "an ANSI-C letter inside push"          "$R" "git pu\$'\\x73'h origin main"
+expect ask   "a literal push still asks"             "$R" 'git push origin main'
+expect ask   "a quoted git word, literal push, still asks" "$R" '"git" push origin main'
+expect deny  "a hidden send-pack spelling"           "$R" 'git send-"pack" origin main'
+expect deny  "a quoted ; in a -c value before a literal push" "$R" "true; git -c 'x.y=a;b' push origin main"
+expect deny  "git send-pack in a compound command"   "$R" "true; git send-pack $REMOTES/origin.git main"
+expect deny  "an ANSI-C assignment before a feature push" "$R" "IFS=\$'\\n' git push origin feat"
+has_reason   "a \$' command gets the plain-push deny" "in a shape the guard does not check" "$R" "IFS=\$'\\n' git push origin feat"
+expect deny  "a continuation inside a refspec word"  "$R" 'git push -u origin fe\
+at'
+has_reason   "an in-word continuation gets the plain-push deny" "in a shape the guard does not check" "$R" 'git push -u origin fe\
+at'
+expect allow "a continuation between words keeps main's verdict" "$R" 'git push -u \
+origin feat'
+# Fix round 1: a command outside the grammar keeps every refusal main gave it (as the plain deny).
+expect deny  "C1 alias behind a quoted ; and an ANSI-C word"   "$R" "git -c 'a.b=x;y' pom \$'--verbose'"
+expect deny  "C1 alias behind a quoted ; and an in-word continuation" "$R" "git -c 'a.b=x;y' pom --ver\\
+bose"
+expect deny  "C1 alias behind a quoted newline and an ANSI-C word" "$R" "git -c 'a.b=x
+y' pom \$'-q'"
+expect deny  "C1 -C, a quoted ; and a continuation inside an option" "$R" "git -C . -c 'a.b=x;y' pom -\\
+q"
+expect deny  "C1 in-grammar twin: alias behind a quoted ;" "$R" "git -c 'a.b=x;y' pom"
+expect deny  "I1 lfs push hidden in quotes, ANSI-C argument" "$R" "git -C . lfs pu\"sh\" \$'x'"
+expect deny  "I1 lfs push hidden in quotes, continuation" "$R" "git -C . lfs pu\"sh\" origin ma\\
+in"
+expect deny  "I1 alias.x=push hidden in quotes"                "$R" "git -c alias.x=pu\"sh\" x \$'y'"
+expect deny  "I1 alias word hidden in quotes, ANSI-C argument" "$R" "git -C . p\"om\" \$'x'"
+expect deny  "I1 alias word hidden in quotes, continuation"    "$R" "git -C . p\"om\" origin ma\\
+in"
+expect allow "M3 a quoted ; in a -c value, status, echo push"  "$R" "git -c 'x.y=a;b' status; echo push"
+expect allow "M3 log then echo push"                           "$R" "git -C . log; echo push"
+expect deny  "M3 http-push in a compound command"              "$R" "true; git -c 'a;b' http-push $REMOTES/origin.git main"
+expect ask   "M4 an indented continuation stays in the grammar: a push to main keeps main's ask" "$R" "git push -u origin main\\
+  -u"
+expect allow "M4 an indented continuation stays in the grammar: a feature push keeps main's verdict" "$R" "git push -u origin feat\\
+  -u"
+# Accepted by spec section 2: a \$' anywhere in a command that names push is a plain deny.
+expect deny  "I2 a commit message with an ANSI-C quote naming push (accepted by spec section 2)" "$R" "git commit -m \$'Fix push docs\\n\\nbody'"
+expect deny  "I2 a log grep with an ANSI-C quote naming push (accepted by spec section 2)" "$R" "git log --grep \$'push'"
+# Accepted by spec section 2: a here-document body line that starts with git send-pack reads as a command.
+expect deny  "M2 a here-document body line starting with git send-pack (accepted by spec section 2)" "$R" "cat > notes.md <<'EOF'
+git send-pack is the plumbing
+EOF"
+# A bypass on main that this branch closes: the git log's quoted argument swallows the push as
+# shlex reads it, and bash runs a force push to main. Leaving the grammar closes it.
+G="gi""t"; P="pu""sh"
+BYPASS="$G log --grep \$'a\\'b' ; $G $P -f origin main # '"
+expect deny  "a bypass on main that this branch closes" "$R" "$BYPASS"
+has_reason   "the bypass gets the plain-push deny" "in a shape the guard does not check" "$R" "$BYPASS"
+# A shell -c string or an eval is read one level down, to a depth of 3, with the raw-token check.
+expect deny  "sh -c holding a quoted-; -c value before a push"  "$R" "sh -c '$G -c \"a;b\" $P origin main'"
+expect deny  "bash -lc holding a quoted-; -c value before a push" "$R" "bash -lc '$G -c \"a;b\" $P origin main'"
+expect deny  "eval of one quoted argument"                    "$R" "eval '$G -c \"a;b\" $P origin main'"
+expect deny  "N6 eval of several arguments, joined"           "$R" "eval $G -c \"'a;b'\" pu\"sh\" origin main"
+expect allow "N6 eval of several arguments, status, is silent" "$R" "eval $G -c \"'a;b'\" status"
+# N4: the shell's own options before the command string.
+expect deny  "N4 bash -o pipefail -c"                         "$R" "bash -o pipefail -c '$G -c \"a;b\" $P origin main'"
+expect deny  "N4 bash --rcfile F -c"                          "$R" "bash --rcfile /dev/null -c '$G -c \"a;b\" $P origin main'"
+expect deny  "N4 bash +e -c"                                  "$R" "bash +e -c '$G -c \"a;b\" $P origin main'"
+expect deny  "N4 bash -c -x STRING"                           "$R" "bash -c -x '$G -c \"a;b\" $P origin main'"
+expect deny  "N4 bash -O extglob -c"                          "$R" "bash -O extglob -c '$G -c \"a;b\" $P origin main'"
+expect deny  "N4 bash -- -c"                                  "$R" "bash -x -c -- '$G -c \"a;b\" $P origin main'"
+expect deny  "N4 timeout 5 sh -c"                             "$R" "timeout 5 sh -c '$G -c \"a;b\" $P origin main'"
+expect deny  "N4 timeout -k 2 10s bash -lc"                   "$R" "timeout -k 2 10s bash -lc '$G -c \"a;b\" $P origin main'"
+expect deny  "N4 nice -n 5 sh -c"                             "$R" "nice -n 5 sh -c '$G -c \"a;b\" $P origin main'"
+expect allow "N4 bash -o pipefail -c, status, is silent"      "$R" "bash -o pipefail -c '$G -c \"a;b\" status'"
+expect allow "N4 bash --rcfile F -c, status, is silent"       "$R" "bash --rcfile /dev/null -c '$G -c \"a;b\" status'"
+expect allow "N4 bash +e -c, status, is silent"               "$R" "bash +e -c '$G -c \"a;b\" status'"
+expect allow "N4 bash -c -x, status, is silent"               "$R" "bash -c -x '$G -c \"a;b\" status'"
+expect allow "N4 timeout 5 sh -c, status, is silent"          "$R" "timeout 5 sh -c '$G -c \"a;b\" status'"
+# m5: timeout's own options and chained wrappers.
+expect deny  "m5 timeout -s KILL 5 sh -c"                     "$R" "timeout -s KILL 5 sh -c '$G -c \"a;b\" $P origin main'"
+expect deny  "m5 timeout --signal=KILL 5 sh -c"               "$R" "timeout --signal=KILL 5 sh -c '$G -c \"a;b\" $P origin main'"
+expect deny  "m5 timeout --kill-after=2 5 bash -c"            "$R" "timeout --kill-after=2 5 bash -c '$G -c \"a;b\" $P origin main'"
+expect deny  "m5 timeout --foreground --preserve-status -v 5 sh -c" "$R" "timeout --foreground --preserve-status -v 5 sh -c '$G -c \"a;b\" $P origin main'"
+expect deny  "m5 nice -n 5 timeout 3 sh -c"                   "$R" "nice -n 5 timeout 3 sh -c '$G -c \"a;b\" $P origin main'"
+expect deny  "m5 timeout 5 nice -n 5 sh -c"                   "$R" "timeout 5 nice -n 5 sh -c '$G -c \"a;b\" $P origin main'"
+expect deny  "m5 sudo timeout -s KILL 5 sh -c"                "$R" "sudo timeout -s KILL 5 sh -c '$G -c \"a;b\" $P origin main'"
+expect allow "m5 timeout -s KILL 5 sh -c, status, is silent"  "$R" "timeout -s KILL 5 sh -c '$G -c \"a;b\" status'"
+expect allow "m5 timeout --signal=KILL 5 sh -c, status, is silent" "$R" "timeout --signal=KILL 5 sh -c '$G -c \"a;b\" status'"
+expect allow "m5 nice -n 5 timeout 3 sh -c, status, is silent" "$R" "nice -n 5 timeout 3 sh -c '$G -c \"a;b\" status'"
+expect allow "m5 timeout 5 nice -n 5 sh -c, status, is silent" "$R" "timeout 5 nice -n 5 sh -c '$G -c \"a;b\" status'"
+expect allow "m5 echo of a timeout line naming the word is silent" "$R" "echo timeout 5 sh -c '$G -c \"a;b\" $P origin main'"
+# Round 4: timeout and nice start a read only in command position, never as an argument.
+expect allow "r4 echo sudo timeout is silent"                 "$R" "echo sudo timeout 5 sh -c '$G -c \"a;b\" $P origin main'"
+expect allow "r4 echo nice timeout is silent"                 "$R" "echo nice timeout 5 sh -c '$G -c \"a;b\" $P origin main'"
+expect allow "r4 echo X=1 timeout is silent"                  "$R" "echo X=1 timeout 5 sh -c '$G -c \"a;b\" $P origin main'"
+expect allow "r4 echo then timeout is silent"                 "$R" "echo then timeout 5 sh -c '$G -c \"a;b\" $P origin main'"
+expect allow "r4 echo nice -n 5 is silent"                    "$R" "echo nice -n 5 sh -c '$G -c \"a;b\" $P origin main'"
+expect deny  "r4 X=1 timeout 5 sh -c, an assignment first"    "$R" "X=1 timeout 5 sh -c '$G -c \"a;b\" $P origin main'"
+expect deny  "r4 env X=1 nice -n 5 sh -c"                     "$R" "env X=1 nice -n 5 sh -c '$G -c \"a;b\" $P origin main'"
+expect deny  "r4 true && timeout 5 sh -c"                     "$R" "true && timeout 5 sh -c '$G -c \"a;b\" $P origin main'"
+expect deny  "r4 if true; then timeout 5 sh -c"               "$R" "if true; then timeout 5 sh -c '$G -c \"a;b\" $P origin main'; fi"
+expect allow "N4 bash script file named like a push is silent" "$R" "bash -o pipefail $P.sh '$G -c \"a;b\" $P origin main'"
+# N5: a push alias behind a quoted ; inside a shell string or an eval.
+expect deny  "N5 sh -c holding a push alias behind a quoted ;"  "$R" "sh -c '$G -c \"a;b\" pom'"
+expect deny  "N5 eval holding a push alias behind a quoted ;"   "$R" "eval \"$G -c 'a;b'\" pom"
+expect deny  "N5 bash -c holding an alias behind a quoted ; and -C" "$R" "bash -c '$G -C . -c \"a;b\" pom'"
+expect allow "N5 sh -c holding a non-push alias is silent"      "$R" "sh -c '$G -c \"a;b\" st'"
+expect allow "N5 eval holding a non-push alias is silent"       "$R" "eval \"$G -c 'a;b'\" st"
+# A built or glob command word inside a shell string or an eval is a possible git, as at the top level.
+expect deny  "G1 bash -c holding a variable git word with push" "$R" "bash -c 'G=$G; \$G $P origin --delete done'"
+expect deny  "G1 eval of a variable git word with push"         "$R" "eval \"\$G $P origin main\""
+expect deny  "G1 bash -c holding a built git word"              "$R" "bash -c '\${X:-gi}t $P origin main'"
+expect deny  "G1 bash -c holding a glob git word"               "$R" "bash -c '/usr/bin/gi? $P origin main'"
+expect deny  "G1 eval holding a glob git word"                  "$R" "eval '/usr/bin/g[i]t $P origin main'"
+expect deny  "G1 nested sh -c holding a variable git word"      "$R" "bash -c \"sh -c '\\\$G $P origin main'\""
+expect allow "G1 bash -c echoing a variable is silent"          "$R" "bash -c 'echo \$G'"
+expect allow "G1 bash -c echoing a variable and push is silent" "$R" "bash -c 'echo \$G $P'"
+expect allow "G1 sh -c holding a \$HOME path to helm push is silent" "$R" "sh -c '\$HOME/bin/helm $P x'"
+# An unreadable payload (jq rejects a lone or reversed UTF-16 surrogate escape) fails closed for
+# rule 4 when the raw text holds a push trigger, and stays silent for rules 1-2. The payload is
+# built with printf so the \u escape stays literal JSON.
+# expect_raw <allow|deny> <label> <raw JSON payload> [reason needle]
+expect_raw() {
+  local want=$1 label=$2 out got
+  out=$(printf '%s' "$3" | PINNED_PATH="$PATH" bash "$GUARD")
+  if [ -z "$out" ]; then got=allow
+  elif printf '%s' "$out" | jq -e '.hookSpecificOutput.permissionDecision=="deny"' >/dev/null 2>&1; then got=deny
+  elif printf '%s' "$out" | jq -e '.hookSpecificOutput.permissionDecision=="ask"' >/dev/null 2>&1; then got=ask
+  else got="other: $out"; fi
+  if [ "$got" = "$want" ] && { [ -z "${4:-}" ] || case "$out" in *"$4"*) true ;; *) false ;; esac; }; then
+    pass=$((pass + 1)); printf '  ok   %s\n' "$label"
+  else
+    fail=$((fail + 1)); printf '  FAIL %s (want %s, got %s)\n' "$label" "$want" "$got"
+  fi
+}
+rawpayload() { printf '{"cwd":"%s","tool_input":{"command":"%s"}}' "$R" "$1"; }
+UNREAD="could not be read"
+expect_raw deny  "jq a lone high surrogate after a force push to main" "$(rawpayload "$G $P --force origin main # "'\ud800')" "$UNREAD"
+# jq reads a lone low surrogate as U+FFFD, so this one reaches the helper, which denies on the comment.
+expect_raw deny  "jq a lone low surrogate after a force push to main"  "$(rawpayload "$G $P --force origin main # "'\udc00')" "in a shape the guard does not check"
+# Round 3 (I): the helper keeps a lone low surrogate that jq turned into U+FFFD. A -C selector
+# holding it fails the helper's own git call (UnicodeEncodeError), in a shell string or outside
+# the grammar, and that fails closed as the plain-push deny, as main's did.
+PLAINR="in a shape the guard does not check"
+expect_raw deny  "I a lone low surrogate in a -C selector inside sh -c" "$(rawpayload "sh -c '$G -C \\\"/nx/x"'\udc00'"\\\" pom'")" "$PLAINR"
+expect_raw deny  "I a lone low surrogate in a -C selector, outside the grammar" "$(rawpayload "$G -C '/nx/x"'\udc00'"' pom \$'--verbose'")" "$PLAINR"
+expect_raw deny  "I a lone low surrogate in a -c value, probe judge fails" "$(rawpayload "$G -c 'a.b=x;"'\udc00'"' pom \$'--verbose'")" "$PLAINR"
+expect_raw deny  "jq a reversed surrogate pair after a force push to main" "$(rawpayload "$G $P --force origin main # "'\udc00\ud800')" "$UNREAD"
+expect_raw deny  "jq a hidden push spelling with a lone surrogate"     "$(rawpayload "$G pu\\\"sh\\\" origin main # "'\ud800')" "$UNREAD"
+expect_raw allow "jq a lone surrogate with no push trigger is silent"  "$(rawpayload 'echo hi # \ud800')"
+expect_raw allow "jq a lone surrogate in a commit command (rules 1-2) stays silent" "$(rawpayload "$G commit -m x # "'\ud800')"
+# Rule 3 fails ASK on an unreadable payload that holds `glab api`; rule 4's deny wins when both apply.
+GAPI='glab api -X DELETE projects/1/merge_requests/2'
+RW="Could not determine whether this \`glab api\` call reads or writes."
+expect_raw ask   "jq a lone high surrogate with a glab api write asks"   "$(rawpayload "$GAPI # "'\ud800')" "$RW"
+expect_raw ask   "jq a reversed surrogate pair with a glab api write asks" "$(rawpayload "$GAPI # "'\udc00\ud800')" "$RW"
+expect_raw ask   "jq a lone high surrogate with a glab api read asks"    "$(rawpayload "glab api projects/1 # "'\ud800')" "$RW"
+expect_raw allow "jq a lone surrogate in a commit with no glab api stays silent" "$(rawpayload "$G commit -m 'x y' # "'\ud800')"
+expect_raw deny  "jq a push candidate plus glab api keeps the push deny" "$(rawpayload "$G $P --force origin main; $GAPI # "'\ud800')" "$UNREAD"
+BS=$(printf '\134'); PAIR="${BS}ud83d${BS}ude00"       # a valid surrogate pair (the emoji), as JSON escapes
+expect_raw allow "jq a valid surrogate pair in a feature push reaches the helper" "$(rawpayload "X=$PAIR $G $P origin feat")"
+expect_raw allow "jq a valid surrogate pair with a glab api read is unchanged" "$(rawpayload "X=$PAIR glab api projects/1")"
+expect_raw deny  "jq a valid surrogate pair in a hidden push still denies" "$(rawpayload "X=$PAIR $G pu\\\"sh\\\" origin main")" "in a shape the guard does not check"
+ask_out=$(printf '%s' "$(rawpayload "X=$PAIR $G $P origin main")" | PINNED_PATH="$PATH" bash "$GUARD")
+if printf '%s' "$ask_out" | jq -e '.hookSpecificOutput.permissionDecision=="ask"' >/dev/null 2>&1; then
+  pass=$((pass + 1)); printf '  ok   %s\n' "jq a valid surrogate pair in a push to main still asks"
+else
+  fail=$((fail + 1)); printf '  FAIL %s (%s)\n' "jq a valid surrogate pair in a push to main still asks" "$ask_out"
+fi
+# N1: a judge() failure on a command outside the grammar is the plain-push deny, as main's
+# internal-error deny was. The helper gets the lone surrogate through json.loads, and its own
+# git call then fails with UnicodeEncodeError.
+n1_out=$(printf '%s' "$(rawpayload "$G -c 'a.b=x;"'\ud800'"' pom \$'--verbose'")" \
+  | PUSH_GUARD_LITERAL=1 /usr/bin/python3 "$(dirname "$GUARD")/git-push-guard.py")
+if printf '%s' "$n1_out" | jq -e '.hookSpecificOutput.permissionDecision=="deny"' >/dev/null 2>&1 \
+   && printf '%s' "$n1_out" | grep -q "in a shape the guard does not check"; then
+  pass=$((pass + 1)); printf '  ok   %s\n' "N1 a probe whose judge fails is the plain-push deny"
+else
+  fail=$((fail + 1)); printf '  FAIL %s (%s)\n' "N1 a probe whose judge fails is the plain-push deny" "$n1_out"
+fi
+NEST=$(cat <<X
+sh -c "sh -c '$G -c \"a;b\" $P origin main'"
+X
+)
+expect deny  "a sh -c string holding another sh -c"           "$R" "$NEST"
+expect allow "sh -c with a quoted-; -c value and status is silent" "$R" "sh -c '$G -c \"a;b\" status'"
+expect allow "bash -c echo of the word is silent"            "$R" "bash -c 'echo $P'"
+expect allow "IFS=$'\\n' alone is silent"           "$R" "IFS=\$'\\n'; echo hi"
+expect allow "printf with an ANSI-C string is silent" "$R" "printf \$'a\\tb'"
+expect allow "a sed backreference is silent"         "$R" "sed -E 's/(a)/\\1/' f"
+# Without PUSH_GUARD_LITERAL the helper treats the run as a hidden-spelling start: an ask is a deny.
+hv=$(jq -n --arg d "$R" '{cwd:$d,tool_input:{command:"git push origin main"}}' \
+  | env -u PUSH_GUARD_LITERAL python3 "$(dirname "$GUARD")/git-push-guard.py")
+if printf '%s' "$hv" | jq -e '.hookSpecificOutput.permissionDecision=="deny"' >/dev/null 2>&1 \
+   && printf '%s' "$hv" | grep -q "in a shape the guard does not check"; then
+  pass=$((pass + 1)); printf '  ok   %s\n' "the helper without the literal flag denies where it would ask"
+else
+  fail=$((fail + 1)); printf '  FAIL %s (%s)\n' "the helper without the literal flag denies where it would ask" "$hv"
+fi
+# The helper's exception branch, driven at unit level: parse_plain and could_push are replaced
+# with functions that raise, so no real input is needed to force it.
+exc_out=$(/usr/bin/python3 - "$(dirname "$GUARD")/git-push-guard.py" <<'PY'
+import importlib.util, io, json, os, sys
+sys.dont_write_bytecode = True
+
+spec = importlib.util.spec_from_file_location("guard", sys.argv[1])
+g = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(g)
+
+
+def boom(*a, **k):
+    raise RuntimeError("forced")
+
+
+def run(cmd, literal, patch):
+    if literal is None:
+        os.environ.pop("PUSH_GUARD_LITERAL", None)
+    else:
+        os.environ["PUSH_GUARD_LITERAL"] = literal
+    saved = {k: getattr(g, k) for k in patch}
+    for k, v in patch.items():
+        setattr(g, k, v)
+    sys.stdin = io.StringIO(json.dumps({"cwd": "/nonexistent", "tool_input": {"command": cmd}}))
+    out = io.StringIO()
+    old, sys.stdout = sys.stdout, out
+    try:
+        g.main()
+    finally:
+        sys.stdout = old
+        for k, v in saved.items():
+            setattr(g, k, v)
+    text = out.getvalue().strip()
+    if not text:
+        return "silent"
+    d = json.loads(text)["hookSpecificOutput"]
+    r = d["permissionDecisionReason"]
+    return d["permissionDecision"] + "/" + ("plain" if r == g.PLAIN else "internal" if "internal error" in r else "other")
+
+
+hidden = 'git pu"sh" origin main'
+both = {"parse_plain": boom, "could_push": boom}
+print("exception, no flag, no shape", run(hidden, None, both))
+print("exception, literal=0, no shape", run(hidden, "0", both))
+print("exception, literal=0, push shape", run("git push origin main", "0", {"parse_plain": boom}))
+print("exception, literal=1, no shape", run(hidden, "1", both))
+print("N7 probe skipped when could_push denies", run("git pu" + "sh origin main $'x'", "1", {"probe_refuses": boom}))
+calls = []
+
+
+def counted(cwd, selector):
+    calls.append(tuple(selector))
+    return set()
+
+
+many = "sh -c '" + "; ".join(["gi" + "t -C /r status"] * 40) + "'"
+run(many, "1", {"push_aliases": counted})
+print("m3 alias listings for 40 equal selectors", len(calls))
+PY
+)
+while IFS='|' read -r label want; do
+  got=$(printf '%s\n' "$exc_out" | sed -n "s/^$label //p")
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf '  ok   %s\n' "helper exception: $label -> $want"
+  else
+    fail=$((fail + 1)); printf '  FAIL %s (got %s)\n' "helper exception: $label -> $want" "$got"
+  fi
+done <<'EOF'
+exception, no flag, no shape|deny/plain
+exception, literal=0, no shape|deny/plain
+exception, literal=0, push shape|deny/internal
+exception, literal=1, no shape|silent
+N7 probe skipped when could_push denies|deny/plain
+m3 alias listings for 40 equal selectors|2
+EOF
+# A large payload with no push in it must stay cheap (the hidden-spelling scan is linear).
+big=$(awk 'BEGIN { for (i = 0; i < 20000; i++) print "print(\"abc\", \x27d\x27, x\\y)" }')
+t0=$SECONDS
+run "$R" "cat <<'EOF'
+$big
+EOF" >/dev/null
+if [ $((SECONDS - t0)) -lt 10 ]; then
+  pass=$((pass + 1)); printf '  ok   %s\n' "a large quoted payload with no push stays fast"
+else
+  fail=$((fail + 1)); printf '  FAIL %s (%ss)\n' "a large quoted payload with no push stays fast" "$((SECONDS - t0))"
+fi
+if [ -x /bin/bash ]; then
+  b32=$(jq -n --arg d "$R" '{hook_event_name:"PreToolUse",tool_name:"Bash",cwd:$d,tool_input:{command:"git pu\"sh\" origin main"}}' \
+    | PINNED_PATH="$PATH" /bin/bash "$GUARD")
+  if printf '%s' "$b32" | jq -e '.hookSpecificOutput.permissionDecision=="deny"' >/dev/null 2>&1; then
+    pass=$((pass + 1)); printf '  ok   %s\n' "the guard denies a quoted push word under /bin/bash"
+  else
+    fail=$((fail + 1)); printf '  FAIL %s\n' "the guard denies a quoted push word under /bin/bash"
+  fi
+else
+  printf '  skip %s\n' "no /bin/bash here: the 3.2 check is skipped"
+fi
+
+echo "== rule 4: the escape decoder matches the shells =="
+# decode_ansi(body, reading) must equal the shell's printf %s $'<body>', read as bytes and
+# decoded as latin-1 (a byte above 0x7f is the character of that value). The bash readings
+# compare up to the first NUL, where bash ends the value. A reading whose shell is not
+# installed is skipped. This list is the pinned set; the full differential (every letter,
+# digit count, NUL position and \c, \C, \M form, random bodies too) is record E in
+# this header.
+dec_out=$(/usr/bin/python3 - "$(dirname "$GUARD")/git-push-guard.py" <<'PY'
+import importlib.util, os, subprocess, sys
+sys.dont_write_bytecode = True
+
+spec = importlib.util.spec_from_file_location("guard", sys.argv[1])
+g = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(g)
+
+SHELLS = [("zsh", ["/bin/zsh", "-f", "-c"]), ("bash32", ["/bin/bash", "-c"]),
+          ("bash5", ["/opt/homebrew/bin/bash", "-c"])]
+BODIES = [r"\x67it", r"\147it", r"\0147", "git", r"\U00000067it", r"\g\it", r"\pus\h",
+          r"\x{67}", r"\x", r"\8", r"\cG", r"\c?", r"\C-a", r"\Cx", r"\M-a", r"\e", r"\?",
+          r"gi\0t", r"\400", r"\777"]
+for reading, argv in SHELLS:
+    if not os.path.exists(argv[0]):
+        print("skip " + reading + " (not installed)")
+        continue
+    for body in BODIES:
+        out = subprocess.run(argv + ["printf %s $'" + body + "'"], capture_output=True,
+                             timeout=10).stdout.decode("latin-1")
+        try:
+            got = g.decode_ansi(body, reading)
+        except Exception as e:
+            got = "EXC " + repr(e)
+        want = out
+        if reading != "zsh":
+            want, got = want.split("\0")[0], got.split("\0")[0]
+        if got == want:
+            print("ok " + reading + " " + body)
+        else:
+            print("FAIL " + reading + " " + body + " want " + repr(want) + " got " + repr(got))
+
+
+def check(label, cond):
+    print(("ok " if cond else "FAIL ") + label)
+
+
+# Malformed escapes, code points chr() rejects, NULs and surrogates never raise, and no view
+# holds a lone surrogate (it would break a later subprocess or json encoding).
+ODD = [r"\UFFFFFFFF", r"\ud800", r"\U0000d800", r"\U00110000", r"\x", r"\u", r"\U", r"\c", r"\C",
+       r"\M-", r"\C-\C-\C-\C-\C-\C-\C-\C-a", r"\x{", r"\x{zz}", "\\", "a\\", r"\0", r"\400\777"]
+for r in ("zsh", "bash5", "bash32"):
+    try:
+        ok = all(isinstance(g.decode_ansi(b, r), str) and g.decode_ansi(b, r).encode("utf-8") is not None
+                 for b in ODD)
+    except Exception as e:
+        ok = False
+    check("never raises or yields a lone surrogate (decode_ansi, " + r + ")", ok)
+try:
+    ok = True
+    for cmd in ["printf $'\\UFFFFFFFF\\ud800'", "echo $'foo\\", "printf '%s' $'unterminated \\x",
+                "$'a\\0b\\0c\\0' x"]:
+        for v in g.views(cmd):
+            ok = ok and v.text.encode("utf-8") is not None
+    g.views("\\\ud800 $'\\x67it'")        # a raw lone surrogate is copied, never an error
+    ok = ok and all(len(g.views(c)) <= 12 for c in ["$'a\\0b\\t\\n\\x41' \"c\"'d'", "gi\\t pu\\sh"])
+except Exception as e:
+    ok = False
+check("views never raise on malformed escapes, stay at most 12 and encode", ok)
+
+# hidden(): a word is hidden when its raw span is not exactly the word, or a NUL cut ends it.
+def word_hidden(cmd, word, want_any=True):
+    res = []
+    for v in g.views(cmd):
+        i = v.text.find(word)
+        if i >= 0:
+            res.append(g.hidden(cmd, v, i, i + len(word)))
+    return res
+
+try:
+    check("hidden: a quoted $'git' is not hidden", word_hidden("$'git' x", "git") != [] and not any(word_hidden("$'git' x", "git")))
+    check("hidden: \"git\" is not hidden", word_hidden('"git" x', "git") != [] and not any(word_hidden('"git" x', "git")))
+    check("hidden: g\"it\" is hidden", any(word_hidden('g"it" x', "git")))
+    check("hidden: an escaped $'\\x67it' is hidden", any(word_hidden("$'\\x67it' x", "git")))
+    check("hidden: a word cut by a NUL is hidden", any(word_hidden("$'git\\0'x y", "git")))
+    check("hidden: a continuation inside the word is hidden", any(word_hidden("g\\\nit y", "git")))
+    check("views: a continuation between words is not hidden", not any(word_hidden("git \\\npush", "push")))
+    check("view_tokens splits on blanks, newlines and operators",
+          [t for t, s, e in g.view_tokens("a;b && c\nd")] == ["a", ";", "b", "&&", "c", "\n", "d"])
+except Exception as e:
+    check("hidden() and view_tokens() exist and work (" + repr(e) + ")", False)
+PY
+)
+while IFS= read -r line; do
+  case "$line" in
+    "ok "*)   pass=$((pass + 1)); printf '  ok   decoder: %s\n' "${line#ok }" ;;
+    "skip "*) printf '  skip decoder: %s\n' "${line#skip }" ;;
+    *)        fail=$((fail + 1)); printf '  FAIL decoder: %s\n' "${line#FAIL }" ;;
+  esac
+done <<EOF
+$dec_out
+EOF
+[ -n "$dec_out" ] || { fail=$((fail + 1)); printf '  FAIL %s\n' "the decoder check printed nothing"; }
+
+echo "== rule 4: hidden spellings =="
+# A case table: "<allow|deny|ask> ## <label> ## <command>", verbatim, <NL> is a newline.
+run_table() {
+  local line want rest label cmd
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    want=${line%% ## *}; rest=${line#* ## }; label=${rest%% ## *}; cmd=${rest#* ## }
+    cmd=${cmd//<NL>/$'\n'}
+    expect "$want" "$label" "$R" "$cmd"
+  done
+}
+run_table <<'TABLE'
+deny ## hidden git, delete ## $'\x67it' push origin --delete wip
+deny ## octal git, delete ## $'\147it' push origin --delete wip
+deny ## hidden git, force to main ## $'\x67it' push --force origin main
+deny ## continuation in git and push ## g\<NL>it pu\<NL>sh origin main
+deny ## continuation in push ## git pu\<NL>sh origin main
+deny ## continuation in push, force ## git pu\<NL>sh --force origin main
+deny ## a quoted git word after true ## true; g"it" push origin main
+deny ## escaped words in a command substitution in a here-document ## cat <<EOF<NL>$( $'\x67it' $'\x70ush' origin main )<NL>EOF
+deny ## escapes handed to a shell by printf ## printf '\x67it \x70ush origin main' | sh
+deny ## hidden git, alias ## $'\x67it' pom
+deny ## hidden git, dash form ## $'\x67it-push' origin main
+deny ## hidden git, send-pack ## $'\x67it' send-pack /nonexistent/origin.git main
+deny ## round 2: a quoted ; in a -c value ## $'\x67it' -c 'x.y=a;b' $'\x70ush' origin main
+deny ## round 2: an escaped quote and a ; in a -c value ## $'\x67it' -c $'x.y=a\';b' $'\x70ush' origin main
+deny ## round 4: NUL quote ends in git and push ## echo hi; $'gi\0x't $'pu\0x'sh origin main
+deny ## round 4: continuations after another command ## echo hi; g\<NL>it pu\<NL>sh origin main
+deny ## a NUL cut after a literal-looking git ## $'git\0'x -c 'x.y=a;b' push origin main
+deny ## hidden-ness belongs to the matched words, not to a count of spans ## push''y; git''x; $'\x67it' $'\x70ush' origin main
+deny ## a built git word and a hidden push word ## ${X:-gi}t $'\x70ush' origin main
+deny ## a NUL escaped as \x00 inside git ## $'gi\x00x't push origin main
+deny ## a NUL escaped as \c@ inside git ## $'gi\c@x't push origin main
+deny ## a NUL escaped as \u0000 inside git ## $'gi\u0000x't push origin main
+deny ## a dollar-double-quote git ## $"g"it push origin main
+deny ## row 8: an ANSI-C git word keeps main's deny ## $'git' push origin main
+deny ## row 8: a dollar-double-quote git word keeps main's deny ## $"git" push origin main
+deny ## row 8: a brace list git word keeps main's deny ## {git,} push origin main
+ask ## row 9: an escaped git word keeps main's ask ## g\it push origin main
+ask ## row 9: a quoted git word keeps main's ask ## 'git' push origin main
+ask ## row 9: an empty-quote git word keeps main's ask ## g''it push origin main
+ask ## an unquoted gi\t, a plain command, still asks ## gi\t push origin main
+deny ## echo $'git push' stays denied by main's raw check ## echo $'git push'
+TABLE
+# Denied by design (spec section 1, "Accepted by design"): these never push.
+run_table <<'TABLE'
+deny ## by design: printf of escaped git and push words ## printf '\x67it \x70ush'
+deny ## by design: echo of an ANSI-C string holding escaped git and push ## echo $'\x67it push'
+deny ## by design: a hidden push word paired with a literal git across a separator ## git status; echo $'\x70ush'
+deny ## by design: a quoted here-document body that spells a push ## cat <<'EOF'<NL>$( $'\x67it' $'\x70ush' origin main )<NL>EOF
+TABLE
+run_table <<'TABLE'
+allow ## IFS set to an ANSI-C newline ## IFS=$'\n'; echo hi
+allow ## printf of an ANSI-C string ## printf $'a\tb'
+allow ## read with an ANSI-C NUL delimiter ## read -r -d $'\0' x
+allow ## sed with git|push in a pattern ## sed -e 's/git|push/x/' f
+allow ## rg with git|push and an ANSI-C tab ## rg "git|push" $'\t'
+allow ## a here-document with an apostrophe and an escaped git, no push ## cat <<EOF<NL>it's $'\x67it'<NL>EOF
+allow ## a script named push after git status ## git status && ./scripts/push.sh
+allow ## a commit message from a quoted here-document ## git commit -m "$(cat <<'EOF'<NL>Fix the guard<NL><NL>Don't push this yet.<NL>EOF<NL>)"
+allow ## a commit message holding \n inside a word ## git commit -m "fix\npush docs"
+allow ## Review Focus 1: an unterminated \x ## printf '%s' $'unterminated \x
+allow ## Review Focus 1: a trailing backslash ## echo $'foo\
+allow ## Review Focus 2: an out-of-range code point and a surrogate ## printf $'\UFFFFFFFF\ud800'
+TABLE
+# Every spelling of git and push, each in the settings that used to hide them. Both words are
+# escaped in the same style, so no raw check can see either.
+deny_everywhere() {
+  local l=$1 gw=$2 pw=$3 rest=$4 core="$2 $3 $4"
+  expect deny "$l, bare"                                       "$R" "$core"
+  expect deny "$l, behind -c \$'x.y=\\n'"                      "$R" "$gw -c \$'x.y=\\n' $pw $rest"
+  expect deny "$l, after true 'x\$';"                          "$R" "true 'x\$'; $core"
+  expect deny "$l, after a here-document holding an apostrophe" "$R" "cat <<EOF
+it's here
+EOF
+$core"
+  expect deny "$l, inside \"\$( )\""                           "$R" "echo \"\$( $core )\""
+  expect deny "$l, inside backticks"                           "$R" "echo \`$core\`"
+  expect deny "$l, in an unquoted here-document body"          "$R" "cat <<EOF
+\$( $core )
+EOF"
+  expect deny "$l, in a quoted here-document body (by design)" "$R" "cat <<'EOF'
+\$( $core )
+EOF"
+  expect deny "$l, on the line after echo \$((1<<2))"          "$R" "echo \$((1<<2))
+$core"
+}
+while IFS= read -r line; do
+  [ -n "$line" ] || continue
+  deny_everywhere "${line%% ## *}" "$(rest=${line#* ## }; printf '%s' "${rest%% ## *}")" \
+    "${line##* ## }" "origin main"
+done <<'FORMS'
+xHH ## $'\x67it' ## $'\x70ush'
+x{HH} ## $'\x{67}it' ## $'\x{70}ush'
+octal ## $'\147it' ## $'\160ush'
+u ## $'\u0067it' ## $'\u0070ush'
+U ## $'\U00000067it' ## $'\U00000070ush'
+zsh dropped backslash ## $'\g\it' ## $'\pus\h'
+NUL ends the word ## $'git\0x' ## $'push\0x'
+NUL ends the quote ## $'gi\0x't ## $'pu\0x'sh
+NUL cuts the word ## $'git\0'x ## $'push\0'x
+split dollar-quote ## gi$'t' ## pu$'s'h
+split across quotes ## $'g\x69'"t" ## $'p\x75'"sh"
+unquoted escape ## gi\t ## pu\sh
+FORMS
+# git or push alone in an escaped form, the other literal, bare.
+run_table <<'TABLE'
+deny ## NUL ends the quote in git only ## $'gi\0x't push origin main
+deny ## NUL ends the word in git only ## $'git\0x' push origin main
+deny ## split dollar-quote in git only ## gi$'t' push origin main
+deny ## octal push only ## git $'\160ush' origin main
+deny ## dropped backslash in push only ## git $'\pus\h' origin main
+deny ## NUL cut push only ## git $'push\0'x origin main
+TABLE
+# Gating (the coordinator's ruling): under PUSH_GUARD_LITERAL=0 only a hidden spelling or a
+# helper failure may deny (the strict re-run of a glob command aside: it runs main's raw checks
+# when main's fast path would have started the helper). A $' that the shell never reads as an ANSI-C quote must stay silent.
+run_table <<'TABLE'
+allow ## gating: a quoted here-document holding a regex with a dollar-quote ## cat <<'EOF'<NL>x(r'a$',l) and y('b')<NL>L[s-1:e+1]=out<NL>EOF
+allow ## gating: grep '^$' after a here-document ## cat <<'EOF'<NL>note<NL>EOF<NL>grep '^$' f
+allow ## gating: grep '^$' alone ## grep '^$' f
+deny ## gating counterpart: the same here-document, then a literal push ## cat <<'EOF'<NL>x(r'a$',l) and y('b')<NL>L[s-1:e+1]=out<NL>EOF<NL>git push -f origin main
+deny ## gating counterpart: grep '^$' then a literal push in a compound ## grep '^$' f; git push origin feat
+TABLE
+# A failure in the view code denies, with the push word literal (literal=1) or not (literal=0).
+vf_out=$(/usr/bin/python3 - "$(dirname "$GUARD")/git-push-guard.py" <<'PY'
+import importlib.util, io, json, os, sys
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("guard", sys.argv[1])
+g = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(g)
+
+
+def boom(*a, **k):
+    raise RuntimeError("forced")
+
+
+def run(cmd, literal):
+    os.environ["PUSH_GUARD_LITERAL"] = literal
+    saved = g.views
+    g.views = boom
+    sys.stdin = io.StringIO(json.dumps({"cwd": "/nonexistent", "tool_input": {"command": cmd}}))
+    out, old = io.StringIO(), sys.stdout
+    sys.stdout = out
+    try:
+        g.main()
+    finally:
+        sys.stdout = old
+        g.views = saved
+    text = out.getvalue().strip()
+    return "silent" if not text else json.loads(text)["hookSpecificOutput"]["permissionDecision"]
+
+
+print("views raise, literal=1 |", run("echo $'\\x67it' push", "1"))
+print("views raise, literal=0 |", run("echo $'\\x67it'", "0"))
+PY
+)
+while IFS='|' read -r label want; do
+  got=$(printf '%s\n' "$vf_out" | sed -n "s/^$label |//p" | tr -d ' ')
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf '  ok   %s\n' "$label: $want"
+  else
+    fail=$((fail + 1)); printf '  FAIL %s (got %s)\n' "$label: $want" "$got"
+  fi
+done <<'EOF'
+views raise, literal=1|deny
+views raise, literal=0|deny
+EOF
+# Fix round 1 (I2): a glob command word with a hidden push word, and the built-word twins.
+run_table <<'TABLE'
+deny ## I2 a glob git word, quoted push ## /usr/bin/gi? pu''sh origin main
+deny ## I2 a bracket glob git word, escaped push ## g[i]t $'\x70ush' origin main
+deny ## I2 a bracket glob path, quoted send-pack ## /usr/bin/[g]it send-pa''ck origin main
+deny ## I2 a star glob git word ## /usr/bin/gi* pu''sh origin main
+deny ## I2 a glob git word after true ## true; /usr/bin/gi? pu''sh origin main
+deny ## I2 a glob git word inside sh -c ## sh -c '/usr/bin/gi? pu""sh origin main'
+deny ## I2 a glob git word with an option ## /usr/bin/gi? -C . pu''sh origin main
+deny ## I2 a variable git word, quoted push ## $G pu''sh origin main
+deny ## I2 a built git word, escaped push ## ${X:-gi}t $'\x70ush' origin main
+deny ## I2 a built git word inside backticks ## echo `$G $'\x70ush' origin main`
+deny ## I2 a built git word inside eval ## eval '$G pu""sh origin main'
+allow ## I2 ls of a glob that matches git ## ls /usr/bin/gi?
+allow ## I2 rg for a glob ## rg 'gi?' f
+allow ## I2 a glob git word with no push word ## /usr/bin/gi? status $'\t'
+TABLE
+# Fix round 1 (R1): a word of a view is a maximal run of letters, digits and hyphens.
+run_table <<'TABLE'
+deny ## R1 the hidden dash form behind a path ## /usr/lib/git-core/git-pu""sh -f origin main
+deny ## R1 an escaped git joined to -push ## $'\x67it'-push -f origin main
+deny ## R1 a hidden push in an alias value ## git -c alias.p=pu""sh p origin main
+allow ## R1 sed of the helper's own file name ## sed -n 125,160p "$N/dot_claude/git-pu""sh-guard.py"
+allow ## R1 rg for the helper's file name ## rg -l "git-pus""h-guard|git-forge-guard" tests dot_claude
+allow ## R1 git show of the helper's file ## git -C d show HEAD:dot_claude/git-pu''sh-guard.py
+allow ## R1 cp of the helper's file ## cp x/git-pu""sh-guard.py y
+allow ## R1 git add of the helper's file ## git add dot_claude/git-pu''sh-guard.py
+allow ## N2 an underscore-joined word is not git or push: rg ## rg "git_pu''sh" f
+allow ## N2 an underscore-joined word is not git or push: sed ## sed -n 1p tests/test_git_pu""sh.py
+allow ## N2 an underscore-joined word is not git or push: python import ## python3 -c 'import git_pu""sh_guard as g'
+TABLE
+# N1 residual (spec section 7: a word built at run time): the dash form assembled by expansion
+# with a hidden suffix is not seen. The literal twins of two shapes are denied, as on main; the
+# literal twins of `G=...git; $G-push` and `${D:-git}-send-pack` are silent on main too, pinned so.
+run_table <<'TABLE'
+allow ## residual (spec section 7: a word built at run time): built path, hidden -push ## ${D:-/usr/libexec/git-core/git}-pu""sh origin main
+allow ## residual (spec section 7: a word built at run time): assigned path, hidden -push ## G=/usr/libexec/git-core/git; $G-pu""sh origin main
+allow ## residual (spec section 7: a word built at run time): built dash word, hidden push ## ${X:-git-pu""sh} origin main
+allow ## residual (spec section 7: a word built at run time): built git, hidden -send-pack ## ${D:-git}-send-pa""ck origin main
+allow ## residual (spec section 7, a word built at run time; silent on main 9702750 too): assigned path, literal -push ## G=/usr/libexec/git-core/git; $G-push origin main
+allow ## residual (spec section 7, a word built at run time; silent on main 9702750 too): built git, literal -send-pack ## ${D:-git}-send-pack origin main
+deny ## N1 literal twin: built path, -push ## ${D:-/usr/libexec/git-core/git}-push origin main
+deny ## N1 literal twin: built dash word ## ${X:-git-push} origin main
+TABLE
+# Fix round 3 (class D): a line of a quoted here-document body that starts with bracket text is a
+# command word in a view, and its glob is matched against the git names. Python 3.9's fnmatch
+# raises on a bracket range that runs backwards ([:-9], [z-a]), and a failure in the view code
+# denies, so slices and ranges in an edit script, a yaml append, a const array or a plan
+# denied once an apostrophe between letters made the view and a git or push word stood anywhere.
+# Every bracket expression of a glob command word is read as a single ? before it is matched
+# (conservative: g[z-a]t is treated as a possible git although no shell expands it to one), so a
+# real glob git word still denies.
+run_table <<'TABLE'
+allow ## D1 a python edit script: apostrophe, backwards slice, xs.push, trailing git diff ## python3 - <<'PY'<NL>import re<NL># it's a slice<NL>[:-9].strip()<NL>xs.push(1)<NL>PY<NL>git diff --stat
+allow ## D2 a yaml append: apostrophe, backwards range, trailing git status ## cat >> ci.yml <<'EOF'<NL>  steps:<NL>    # don't reorder<NL>    - run: echo ok<NL>[z-a],x<NL>EOF<NL>git status --short
+allow ## D3 a rust const array: apostrophe, backwards range, trailing git diff ## cat > c.rs <<'EOF'<NL>// it's a table<NL>const T: [&str; 2] = ["a", "b"];<NL>a[b-a]<NL>EOF<NL>git diff --stat
+allow ## D4 plan text: apostrophe, push in prose, backwards range, no git word ## cat > plan.md <<'EOF'<NL>Don't push the plan yet.<NL>[9:-9]+ items<NL>EOF
+allow ## D5 a backwards range with a git word only in the body ## cat > n.md <<'EOF'<NL>it's the git notes<NL>[z-a]x = 1<NL>EOF
+allow ## D6 a backwards range after a closing backtick ## cat > n.md <<'EOF'<NL>it's `git` then<NL>`x` [z-a]x push<NL>EOF
+deny ## D7 a glob git word with a backwards range and a hidden push still denies ## g[z-a]t pu''sh origin main
+deny ## D8 a glob git word with a backwards range, escaped push ## /usr/bin/g[z-a]t $'\x70ush' origin main
+TABLE
+# Fix round 4 (F1): the raw command words use the same safe matcher. A backwards range in a real
+# command word no longer crashes into a deny (a), and bash and zsh expand g[iz-a]t and g[!z-a]t to
+# git, so a hidden push after one denies, with or without a stray literal push word (b).
+run_table <<'TABLE'
+allow ## F1a a python slice and xs.push in a here-document, then an ANSI-C quote ## python3 - <<'PY'<NL>[:-9].strip()<NL>xs.push(1)<NL>PY<NL>echo $'ok'
+allow ## F1a a backwards range and xs.push in a here-document, then printf $'\n' ## cat <<'EOF'<NL>xs.push(1)<NL>[z-a]x<NL>EOF<NL>printf $'\n'
+allow ## F1a a backwards range inside sh -c with push in an echo ## sh -c '[z-a]x; echo push'; printf $'\n'
+allow ## F1a a backwards range as a command word before push ## [z-a]x push; printf $'\n'
+deny ## F1b a bracket with a backwards range that matches i, hidden push, comment ## /usr/bin/g[iz-a]t pu''sh origin main # push
+deny ## F1b the same, push in a later echo ## /usr/bin/g[iz-a]t pu''sh origin main; echo push
+deny ## F1b the same, push as the branch name ## /usr/bin/g[iz-a]t pu''sh origin push
+deny ## F1b the literal twin: a bracket glob git word and a plain push ## /usr/bin/g[iz-a]t push origin main
+deny ## F1b a negated backwards range, hidden push ## /usr/bin/g[!z-a]t pu''sh origin main
+deny ## F1b a negated backwards range, literal push ## /usr/bin/g[!z-a]t push origin main
+deny ## E1 a ^ negation in a glob git word ## /usr/bin/g[^x]t pu''sh origin main
+deny ## E1 a POSIX class in a glob git word ## /usr/bin/g[[:alpha:]]t pu''sh origin main
+deny ## E1 a ] first in a negated bracket ## /usr/bin/g[^]z-a]t pu''sh origin main
+deny ## E1 a ! negation with a range ## /usr/bin/g[!x-z]t pu''sh origin main
+allow ## E1 ls of a ^ glob ## ls /usr/bin/g[^x]t
+allow ## E1 rg for a ^ glob ## rg 'g[^x]t' f
+allow ## E1 a ^ glob git word with no push word ## /usr/bin/g[^x]t status $'\t'
+TABLE
+# Fix round 4 (F4): the glob matcher is linear and never raises, whatever the word's length.
+# Python 3.9's fnmatch.translate is quadratic on a run of [, which once held the hook for minutes;
+# every case below must finish, with a verdict, inside the bound. A word of 14 or more characters
+# that each need one character (a run of [, or [z-a]) can match no git name; a word that is
+# long only through * can, and denies. A pairing still needs a hidden push word (view side) or a
+# literal push in a flag-1 command (raw side).
+BRK=$(head -c 50000 /dev/zero | tr '\0' '[')
+RNG=$(awk 'BEGIN { for (i = 0; i < 10000; i++) printf "[z-a]" }')
+LONG="a?$(head -c 200 /dev/zero | tr '\0' x)"
+STARS=$(head -c 200 /dev/zero | tr '\0' '*')
+t0=$SECONDS
+expect allow "F4 a 50 KB run of [ as a command word, hidden push"              "$R" "$BRK pu''sh origin main"
+expect allow "F4 a 50 KB run of [ as a command word, literal push (raw side)"  "$R" "$BRK push origin main"
+expect allow "F4 a 50 KB run of [ as a command word, no push"                  "$R" "$BRK status"
+expect allow "F4 a 50 KB run of [ as a command word, an ANSI-C tab, no push"   "$R" "$BRK status \$'\\t'"
+expect allow "F4 a 50 KB run of [z-a] as a command word, hidden push (no shell expands it)" \
+  "$R" "$RNG \$'\\x70ush' origin main"
+expect allow "F4 a 50 KB run of [ in a path word, hidden push"                 "$R" "echo push; /usr/bin/g${BRK}t pu''sh origin main"
+expect allow "F4 a 200-character glob word that is no git name, hidden push"   "$R" "$LONG pu''sh origin main"
+expect allow "F4 a 200-character glob word that is no git name, literal push"  "$R" "$LONG push origin main"
+expect allow "F4 a 200-character word of * only, hidden push"                  "$R" "$STARS pu''sh origin main"
+expect deny  "F4 g, 200 stars, t: a glob that is git, hidden push"             "$R" "g${STARS}t pu''sh origin main"
+expect deny  "F4 g, 200 stars, t: a glob that is git, literal push (raw side)" "$R" "g${STARS}t push origin main"
+expect deny  "F4 a bracket glob after 200 stars is git, hidden push"           "$R" "${STARS}g[i]t pu''sh origin main"
+expect allow "F4 a 50 KB run of [ as an argument, push"                        "$R" "echo push $BRK"
+expect allow "F4 a 50 KB run of [z-a] in a here-document body, push"           "$R" "cat <<'EOF'
+it's
+$RNG push
+EOF
+git status"
+expect allow "F4 a 50 KB run of [ in a here-document body, no push"            "$R" "cat <<'EOF'
+it's
+$BRK
+EOF
+printf \$'\\n'"
+if [ $((SECONDS - t0)) -lt 10 ]; then
+  pass=$((pass + 1)); printf '  ok   %s\n' "F4 the 50 KB and 200-character bracket commands finish under 10 s ($((SECONDS - t0)) s)"
+else
+  fail=$((fail + 1)); printf '  FAIL %s (%ss)\n' "F4 the 50 KB and 200-character bracket commands finish under 10 s" "$((SECONDS - t0))"
+fi
+# Fix round 5 (I1, I2): the shells read a bracket expression in more than one way. bash 3.2 and
+# sh close g[[:g:][i]t at the first ] (the set {[ : g}, then [i], then t), bash 5 and zsh skip the
+# class and read one expression; collating symbols [.i.] and equivalence classes [=i=] are bash's;
+# zsh closes [!] at once. The matcher accepts every reading, so each of these denies.
+run_table <<'TABLE'
+deny ## R5 I1 a class that bash 3.2 closes early, hidden push ## /usr/bin/[[:g:][i]t pu''sh origin main
+deny ## R5 I1 the same, literal push ## /usr/bin/[[:g:][i]t push origin main
+deny ## R5 I1 a stray bracket before the class, hidden push ## /usr/bin/[x[:g:][i]t pu''sh origin main
+deny ## R5 I1 under sh -c, double quotes, hidden push ## sh -c "/usr/bin/[[:g:][i]t pu''sh origin main"
+deny ## R5 I1 under sh -c, single quotes, literal push ## sh -c '/usr/bin/[[:g:][i]t push origin main'
+deny ## R5 I1 under sh -c, stray bracket, hidden push ## sh -c "/usr/bin/[x[:g:][i]t pu''sh origin main"
+deny ## R5 I1 a class bash 5 and zsh read through, hidden push ## /usr/bin/g[[:i:][i]t pu''sh origin main
+deny ## R5 I2 a collating symbol, hidden push ## /usr/bin/g[[.i.]]t pu''sh origin main
+deny ## R5 I2 an equivalence class, literal push in sh -c ## sh -c '/usr/bin/g[[=i=]]t push origin main'
+deny ## R5 I2 a collating symbol under sh -c, hidden push ## sh -c "/usr/bin/g[[.i.]]t pu''sh origin main"
+deny ## R5 I2 an equivalence class, hidden push ## /usr/bin/g[[=i=]]t pu''sh origin main
+deny ## R5 zsh closes [!] at once: g[!]t, hidden push ## /usr/bin/g[!]t pu''sh origin main
+deny ## R5 zsh closes [^] at once: [^]it, literal push ## /usr/bin/[^]it push origin main
+deny ## R5 a POSIX class, hidden push ## /usr/bin/g[[:alpha:]]t pu''sh origin main
+allow ## R5 ls of a class glob that matches git ## ls /usr/bin/[[:g:][i]t
+allow ## R5 rg for a class glob ## rg '[[:g:][i]t' f
+allow ## R5 a bare class glob command, ANSI-C tab ## [[:alpha:]]x status $'\t'
+deny ## R6 ruling: a class glob with * is not GLOB_ONLY, so a possible git (silent in round 5) ## [[:alpha:]]* pu''sh origin main
+deny ## R5 a regex line in a here-document body, then git status (read as git: its literal twin, a git push line, denies on main) ## cat <<'EOF'<NL>it's<NL>[[:space:]]* push<NL>EOF<NL>git status
+allow ## R5 the same regex line with no push word ## cat <<'EOF'<NL>it's<NL>[[:space:]]* is a class<NL>EOF<NL>git status
+TABLE
+# Fix round 6: the span from the first [ that has a later ] through the last ] is read once for
+# every shell (since the restructure: can_be, the strict path). Each shape denies with a literal
+# and with a hidden subcommand word (and under sh -c / bash -c), the quoted-] shapes included.
+# Restructure (coordinator ruling, 2026-10-31): glob words are judged on two paths and either one
+# denies. c67e699's stand-alone path is restored as it was, so [x]it and [0]it are possible gits by
+# themselves again (it reads a bracket as one character; main did not). A strict-only word is read
+# as the literal word git, so it inherits git's view pair rule: a hidden push word anywhere after it
+# denies, as `git status; echo pu''sh` does. The rows marked "the pair rule" were silent while a
+# strict-only word needed the hidden push in its own command (quote_mask, now deleted).
+run_table <<'TABLE'
+deny ## RS the literal twin of the pair rule: git, then a hidden push in the next command ## cd /tmp; git status; echo pu''sh
+deny ## RS a word only the 1333519 reading took, a dash form: a push by itself ## /usr/bin/[[.g.]]it-push origin main
+deny ## RS the same under sh -c ## sh -c '/usr/bin/[[=g=]]it-push origin main'
+deny ## RS a strict-only word with a dynamic option, as for a literal git ## /usr/bin/[g][i][t] -c x.y=a* status; echo push
+deny ## RS its literal twin ## /usr/bin/git -c x.y=a* status; echo push
+deny ## RS a strict-only word, -C $(pwd), then the push word ## echo $(/usr/bin/[[=g=]]it -C $(pwd) push origin main)
+deny ## RS a strict-only word, --namespace <( ; ), inside $( ) ## echo $(/usr/bin/[[=g=]]it --namespace <(true; true) "push" origin main)
+deny ## RS a strict-only word, --namespace=<( ; ), then $P ## P=push; /usr/bin/[[.g.]]it --namespace=<(true; true) $P origin main
+deny ## RS a zsh group in an eval string ## eval '/usr/bin/(gi|x)t push origin main'
+allow ## RS a strict-only word whose command is no push, push in the next one ## cd /tmp; /usr/bin/[[.g.]]it status; echo push
+allow ## RS a word no shell expands to git, a literal push ## cd /tmp; [] push origin main
+allow ## RS [!] alone is one character at most ## cd /tmp; [!] push origin main
+allow ## RS a range span that holds no g ## cd /tmp; [a-f][0-9] push origin main
+TABLE
+# Literal-analog parity (coordinator ruling): a glob word that can be git gets the verdict a
+# literal git gets in the same place, because the strict path replaces it by git in the text and
+# judges that text as any command (strict_could_push). Each row's literal twin denies on main.
+run_table <<'TABLE'
+deny ## RP backticks after echo ## echo `/usr/bin/[g][i][t] push origin main`
+deny ## RP a double-quoted $( ) ## echo "$(/usr/bin/[g][i][t] push origin main)"
+deny ## RP a double-quoted $( ) alone ## "$(/usr/bin/[g][i][t] push origin main)"
+deny ## RP backticks in double quotes ## echo "`/usr/bin/[g][i][t] push origin main`"
+deny ## RP an assignment from a double-quoted $( ) ## x="$(/usr/bin/[[=g=]]it push origin main)"
+deny ## RP a double-quoted $( ) in sh -c ## sh -c 'echo "$(/usr/bin/[g][i][t] push origin main)"'
+deny ## RP literal twin: a double-quoted $( ) ## echo "$(git push origin main)"
+deny ## RP after nice -n 5 ## nice -n 5 /usr/bin/[g][i][t] push origin main
+deny ## RP after timeout 5 ## timeout 5 /usr/bin/[[=g=]]it push origin main
+deny ## RP after timeout -s KILL 5 ## timeout -s KILL 5 /usr/bin/[g][i][t] push origin main
+deny ## RP after ionice -c 3 ## ionice -c 3 /usr/bin/[g][i][t] push origin main
+deny ## RP after stdbuf -o0 ## stdbuf -o0 /usr/bin/[g][i][t] push origin main
+deny ## RP after caffeinate -i ## caffeinate -i /usr/bin/[g][i][t] push origin main
+deny ## RP after setsid ## setsid /usr/bin/[g][i][t] push origin main
+deny ## RP after arch -arm64 ## arch -arm64 /usr/bin/[g][i][t] push origin main
+deny ## RP after script -q /dev/null ## script -q /dev/null /usr/bin/[g][i][t] push origin main
+deny ## RP after watch -n 1 ## watch -n 1 /usr/bin/[g][i][t] push origin main
+deny ## RP literal twin: after nice -n 5 ## nice -n 5 git push origin main
+deny ## RP after nice -n 5, a hidden push ## nice -n 5 /usr/bin/[g][i][t] pu''sh origin main
+deny ## RP after timeout 5, a hidden push ## timeout 5 /usr/bin/[[=g=]]it pu''sh origin main
+deny ## RP a quoted ) in $( ), then push ## /usr/bin/[g][i][t] -C $(: ')') push origin main
+deny ## RP a quoted ) in <( ), then push ## /usr/bin/[g][i][t] --namespace <(: ')') push origin main
+deny ## RP a quoted ) in $( ), then a quoted push ## /usr/bin/[g][i][t] -C $(: ')') "push" origin main
+deny ## RP a double-quoted ) in $( ) ## /usr/bin/[g][i][t] -C $(: ")") push origin main
+deny ## RP an escaped ) in $( ) ## /usr/bin/[g][i][t] -C $(: \)) push origin main
+deny ## RP two quoted ) in $( ) ## /usr/bin/[g][i][t] -C $(: ')' ')') push origin main
+deny ## RP a quoted ( in $( ) ## /usr/bin/[g][i][t] -C $(: '(') push origin main
+deny ## RP a quoted ) in $( ) in $( ) ## echo $(/usr/bin/[g][i][t] -C $(: ')') push origin main)
+deny ## RP a quoted ) in sh -c ## sh -c '/usr/bin/[g][i][t] -C $(: ")") push origin main'
+deny ## RP literal twin: a quoted ) in $( ) ## git -C $(: ')') push origin main
+deny ## RP W2 a quoted ) in $( ), then push ## /usr/bin/[[=g=]]it -C $(: ')') push origin main
+deny ## RP W2 a quoted ) in <( ), then push (a real push) ## /usr/bin/[[=g=]]it --namespace <(: ')') push origin main
+deny ## RP W2 a quoted ) in $( ), then a quoted push ## /usr/bin/[[=g=]]it -C $(: ')') "push" origin main
+deny ## RP W2 a quoted ), a ;, then push ## /usr/bin/[[=g=]]it -C $(: ')'; true) push origin main
+deny ## RP W2 a quoted ) in <( ; ), then $P (a real push) ## P=push; /usr/bin/[[=g=]]it --namespace <(: ')'; true) $P origin main
+deny ## RP W2 a double-quoted ) in $( ) ## /usr/bin/[[=g=]]it -C $(: ")") push origin main
+deny ## RP W2 an escaped ) in $( ) ## /usr/bin/[[=g=]]it -C $(: \)) push origin main
+deny ## RP W2 a quoted ) in $( ), then $P ## P=push; /usr/bin/[[=g=]]it -C $(: ')') $P origin main
+deny ## RP W2 two quoted ) in $( ) ## /usr/bin/[[=g=]]it -C $(: ')' ')') push origin main
+deny ## RP W2 a quoted ( in $( ) ## /usr/bin/[[=g=]]it -C $(: '(') push origin main
+deny ## RP W2 a quoted ) in $( ) in $( ) ## echo $(/usr/bin/[[=g=]]it -C $(: ')') push origin main)
+deny ## RP W2 a quoted ) in sh -c ## sh -c '/usr/bin/[[=g=]]it -C $(: ")") push origin main'
+allow ## RP a glob word that a ) follows has no arguments (a case arm) ## case x in [g]i*) echo push;; esac
+allow ## RP a glob argument, push in an inert command ## cd /tmp; rg -n '[a-z]*' push.md
+TABLE
+run_table <<'TABLE'
+deny ## R6 a collating symbol and a stray [, literal ## /usr/bin/[[.g.]i[t] push origin main
+deny ## R6 a collating symbol and a stray [, hidden ## /usr/bin/[[.g.]i[t] pu''sh origin main
+deny ## R6 the same with a trailing *, literal ## /usr/bin/[[.g.]i[t]* push origin main
+deny ## R6 the same with a trailing *, hidden ## /usr/bin/[[.g.]i[t]* pu''sh origin main
+deny ## R6 the same under bash -c ## bash -c '/usr/bin/[[.g.]i[t]* push origin main'
+deny ## R6 a collating symbol then []t], literal ## /usr/bin/g[[.i.][]t] push origin main
+deny ## R6 a collating symbol then []t], hidden ## /usr/bin/g[[.i.][]t] pu''sh origin main
+deny ## R6 an equivalence class then [!]x], literal ## /usr/bin/g[[=i=][!]x] push origin main
+deny ## R6 an equivalence class then [!]x], hidden ## /usr/bin/g[[=i=][!]x] pu''sh origin main
+deny ## R6 a * between the brackets, literal ## /usr/bin/[[.g.]*i[[t] push origin main
+deny ## R6 a * between the brackets, hidden ## /usr/bin/[[.g.]*i[[t] pu''sh origin main
+deny ## R6 a class then []t], literal ## /usr/bin/g[[:i:][]t] push origin main
+deny ## R6 a class then []t], hidden ## /usr/bin/g[[:i:][]t] pu''sh origin main
+deny ## R6 a class with a stray [ under sh -c ## sh -c '/usr/bin/[[:g:]i[t] push origin main'
+deny ## R6 a collating symbol of ] under sh -c, literal ## sh -c '/usr/bin/g[[.].]i]t push origin main'
+deny ## R6 a collating symbol of ] under sh -c, hidden ## sh -c "/usr/bin/g[[.].]i]t pu''sh origin main"
+deny ## R6 an equivalence class of ] under sh -c, hidden ## sh -c "/usr/bin/g[[=]=]i]t pu''sh origin main"
+deny ## R6 a backslash-escaped ] under sh -c ## sh -c '/usr/bin/g[i\]]t push origin main'
+deny ## R6 a backslash-escaped ], hidden ## /usr/bin/g[i\]]t pu''sh origin main
+deny ## R6 a double-quoted ], hidden ## /usr/bin/g[i"]"]t pu''sh origin main
+deny ## R6 a single-quoted ], hidden ## /usr/bin/g[i']']t pu''sh origin main
+allow ## R6 [abc]* is no git word in any shell: its first character is a, b or c ## [abc]* pu''sh origin main
+deny ## R6 a bracket word with * that can be git is not exempt ## [abg]* pu''sh origin main
+deny ## R6 bracket words of literals pick out git, literal ## /usr/bin/[g][i][t] push origin main
+deny ## R6 bracket words of literals pick out git, hidden ## /usr/bin/[g][i][t] pu''sh origin main
+deny ## R6 brackets and a ?, force ## /usr/bin/[g][i]? push --force origin main
+deny ## R6 ??? picks out git in a git-core directory ## /usr/bin/??? push origin main
+deny ## R6 a zsh group, literal ## /usr/bin/(git|nope) push origin main
+deny ## R6 a zsh group per letter, hidden ## /usr/bin/(g|nope)(i|nope)(t|nope) pu''sh origin main
+deny ## R6 a zsh group inside a word, literal ## /usr/bin/(gi|x)t push origin main
+deny ## R6 a zsh group inside a word, hidden ## /usr/bin/(gi|x)t pu''sh origin main
+deny ## R6 a zsh group in a bash -c string (bash errors, zsh -c would not) ## bash -c '/usr/bin/(gi|x)t push origin main'
+deny ## R7 a blank inside a zsh group ## /usr/bin/(git| nope) push origin main
+deny ## R7 a blank inside a zsh group, hidden ## /usr/bin/(gi| x)t pu''sh origin main
+deny ## R7 the push word is in an earlier segment: P=push, then $P ## P=push; /usr/bin/[g][i][t] $P origin main
+deny ## R7 a quoted ; in a -c value, literal push ## /usr/bin/[g][i][t] -c 'x.y=a;b' push origin main
+deny ## R7 a dynamic subcommand slot ## /usr/bin/[g][i][t] ${X:-push} origin main
+deny ## R7 a -c alias that is a push ## /usr/bin/[g][i][t] -c alias.x=push x origin main
+deny ## R7 GIT_CONFIG next to a strict glob git word ## GIT_CONFIG_COUNT=1 /usr/bin/[g][i][t] status; echo push
+allow ## R7 a strict glob git word whose command is no push ## cd /tmp; /usr/bin/[g][i][t] status
+allow ## R7 the same with a push word in the next command ## cd /tmp; /usr/bin/[g][i][t] status; echo push
+allow ## R7 ls of a bracket word of literals, helper reached ## cd /tmp && ls /usr/bin/[g][i][t]; echo push
+allow ## R6 IFS set to an ANSI-C newline ## IFS=$'\n'; echo hi
+deny ## R7 C1 !( subshell with ${IFS}, force ## ls; !(git${IFS}push${IFS}-f${IFS}origin${IFS}main)
+deny ## R7 C1 !( subshell ## ls; !(git${IFS}push${IFS}origin${IFS}main)
+deny ## R7 C1 !( subshell after && ## ls&&!(git${IFS}push${IFS}origin${IFS}main)
+deny ## R7 C1 !( subshell first ## !(git${IFS}push${IFS}origin${IFS}main); ls
+deny ## R7 C1 !( subshell after cd and && ## cd /tmp && ls && !(git${IFS}push${IFS}origin${IFS}main)
+deny ## R7 C1 !( subshell with -C ## ls; !(git${IFS}-C${IFS}.${IFS}push${IFS}origin${IFS}main)
+deny ## R7 C1 !( subshell with the dash form ## ls; !(git-push${IFS}-f${IFS}origin${IFS}main)
+deny ## R7 C1 !( subshell with a brace list ## echo hi; !({git,push,origin,main})
+deny ## R7 C1 time( subshell with a brace list ## echo hi; time({git,push,origin,main})
+deny ## R7 C1 {( subshell ## echo hi;{(git${IFS}push${IFS}origin${IFS}main)}
+deny ## R7 C1 {( subshell after || ## ls||{(git${IFS}push${IFS}origin${IFS}main)}
+deny ## R7 C1 if( then( subshells ## ls; if(true)then(git${IFS}push${IFS}origin${IFS}main)fi
+deny ## R7 C1 coproc( subshell ## echo hi; coproc(git${IFS}push${IFS}origin${IFS}main)
+deny ## R7 C1 !( subshell alone ## !(git${IFS}push${IFS}origin${IFS}main)
+deny ## R7 C1 time( subshell alone ## time(git${IFS}push${IFS}origin${IFS}main)
+allow ## R7 a function definition and a substitution, helper reached ## cd /tmp && git() { echo hi; }; echo $(date)
+allow ## R7 a subshell and a case arm with a group, helper reached ## cd /tmp && (cd x && make); case x in (a|b) ;; esac
+allow ## R7 an arithmetic expansion and a call-like word, helper reached ## cd /tmp && echo $((1+2)) a(b)c; git status
+allow ## R7 an array assignment and a [[ ]] group, helper reached ## cd /tmp && array=(a b c); [[ x == (a|b) ]]; git status
+allow ## R6 a single bracket of plain characters is one character: a [x] line ## cat <<'EOF'<NL>xs.push(1)<NL>[x] done<NL>EOF
+allow ## R6 a single bracket of plain characters is one character: a [tag] line ## cat <<'EOF'<NL>xs.push(1)<NL>[ok] done<NL>EOF
+allow ## R6 a bracket word of one character, hidden push ## [abcd] pu''sh origin main
+allow ## R7 I1 a sys.argv[1] body line ## cd /tmp && cat <<'EOF'<NL>xs.push(1)<NL>sys.argv[1]<NL>EOF<NL>git status
+allow ## R7 I1 a TOML [[package]] header ## cd /tmp && cat <<'EOF'<NL>xs.push(1)<NL>[[package]]<NL>EOF<NL>git status
+allow ## R7 I1 a [[bin]] header ## cd /tmp && cat <<'EOF'<NL>xs.push(1)<NL>[[bin]]<NL>EOF<NL>git status
+allow ## R7 I1 a markdown [text][ref] line ## cd /tmp && cat <<'EOF'<NL>xs.push(1)<NL>[docs][1] has the details.<NL>EOF<NL>git status
+allow ## R7 I1 a [a-z][0-9] line ## cd /tmp && cat <<'EOF'<NL>xs.push(1)<NL>[a-z][0-9]<NL>EOF<NL>git status
+allow ## R7 I1 a ??? line ## cd /tmp && cat <<'EOF'<NL>xs.push(1)<NL>??? what<NL>EOF<NL>git status
+allow ## R7 I1 a git(1) line ## cd /tmp && cat <<'EOF'<NL>xs.push(1)<NL>git(1) is a man page<NL>EOF<NL>git status
+allow ## R7 I1 a g(1); line ## cd /tmp && cat <<'EOF'<NL>xs.push(1)<NL>g(1);<NL>EOF<NL>git status
+allow ## R7 class A a [$var.name.word[] line with a \u escape in the body ## cd /tmp && cat <<'EOF'<NL>xs.push(1)<NL>\u00e9 and [$ab.cdefgh.ijklmnopqr[]<NL>[$ab.cdefgh.ijklmnopqr[] x<NL>EOF<NL>git status
+allow ## R7 class A a regex range line with a \x escape in the body ## cd /tmp && cat <<'EOF'<NL>xs.push(1)<NL>\x41 [a-z][-z] <NL>[a-z][-z] and [é-ë][-z]<NL>EOF<NL>git status
+allow ## R7 I1 a [a][b] line ## cd /tmp && cat <<'EOF'<NL>xs.push(1)<NL>[a][b] and more<NL>EOF<NL>git status
+allow ## R6 a quoted group is literal ## cd /tmp && echo '(git|nope) push'
+allow ## R6 a case arm is exempt, as on main ## case $x in<NL>*) pu''sh;;<NL>esac
+deny ## R8 C-1 g?t, quoted ; in a -c value, hidden push ## /usr/bin/g?t -c 'x.y=a;b' pu''sh origin main
+deny ## R8 C-1 g[i]t, quoted ; in a -c value, hidden push ## /usr/bin/g[i]t -c 'x.y=a;b' pu''sh origin main
+deny ## R8 C-1 gi?, quoted ; in a -c value, hidden push ## /usr/bin/gi? -c 'x.y=a;b' pu''sh origin main
+deny ## R8 C-1 g*t, quoted ; in a -c value, hidden push ## /usr/bin/g*t -c 'x.y=a;b' pu''sh origin main
+deny ## R8 C-1 [!x]it, quoted ; in a -c value, hidden push ## /usr/bin/[!x]it -c 'x.y=a;b' pu''sh origin main
+deny ## R8 C-1 [g]i[t], quoted ; in a -c value, hidden push ## /usr/bin/[g]i[t] -c 'x.y=a;b' pu''sh origin main
+deny ## R8 C-1 g[[:alpha:]]t, quoted ; in a -c value, hidden push ## /usr/bin/g[[:alpha:]]t -c 'x.y=a;b' pu''sh origin main
+deny ## R8 C-1 a quoted ( ) in a -c value ## /usr/bin/g?t -c 'x.y=(a)' pu''sh origin main
+deny ## R8 C-1 a quoted & in a -c value ## /usr/bin/g?t -c "x.y=a&b" pu''sh origin main
+deny ## R8 C-1 a quoted | in a -c value ## /usr/bin/g?t -c 'x.y=a|b' pu''sh origin main
+deny ## R8 C-1 a quoted newline in a -c value ## /usr/bin/g?t -c "x.y=a<NL>b" pu''sh origin main
+deny ## R8 C-1 a quoted ; in --namespace ## /usr/bin/g?t --namespace='a;b' pu''sh origin main
+deny ## R8 C-1 an ANSI-C escaped push after a quoted ; ## /usr/bin/g?t -c 'x.y=a;b' $'\x70ush' origin main
+deny ## R8 C-1 a backslash-split push after a quoted ; ## /usr/bin/g?t -c 'x.y=a;b' pu\sh origin main
+deny ## R8 C-1 a continuation-split push after a quoted ; ## /usr/bin/g?t -c 'x.y=a;b' p\<NL>ush origin main
+deny ## R8 C-1 a quote-split send-pack after a quoted ; ## /usr/bin/g?t -c 'x.y=a;b' se''nd-pack origin main
+deny ## R8 C-1 a $( ) holding the push word ## /usr/bin/g?t $(echo pu''sh) origin main
+deny ## R8 C-1 a backtick pair holding the push word ## /usr/bin/g?t `echo pu''sh` origin main
+deny ## R8 C-1 a quoted $( ) holding the push word ## /usr/bin/g?t "$(echo pu''sh)" origin main
+deny ## R8 C-1 a $(printf ) holding the push word ## /usr/bin/g?t $(printf pu\\sh) origin main
+deny ## R8 C-1 a collating symbol glob, quoted ; ## /usr/bin/[[.g.]]it -c 'x.y=a;b' pu''sh origin main
+deny ## R8 C-1 a strict-only glob, quoted ; ## /usr/bin/[g][i][t] -c 'x.y=a;b' pu''sh origin main
+deny ## R8 C-1 a strict-only glob, hidden push in the next command (read as git: the pair rule) ## cd /tmp; /usr/bin/[g][i][t] status; pu''sh
+allow ## R8 I-1 a JSON number grid ## cd /tmp && cat > f.json <<'EOF'<NL>[[0,0],[0,0],[0,0],[0,0],[0,0],[0,0],[0,0],[0,0]]<NL>EOF<NL>git status
+allow ## R8 I-1 a JSON grid under echo push ## echo push; cd /tmp && cat > f.json <<'EOF'<NL>[[0,0],[0,0],[0,0],[0,0],[0,0],[0,0],[0,0],[0,0]]<NL>EOF<NL>git status
+allow ## R8 I-1 nine bracket groups ## cd /tmp && cat <<'EOF'<NL>[1][2][3][4][5][6][7][8][9]<NL>EOF<NL>git status
+allow ## R8 I-1 nested brackets ## cd /tmp && cat <<'EOF'<NL>[[[[[[[[[a]]]]]]]]]<NL>EOF<NL>git status
+allow ## R8 I-1 an apostrophe token over 128 characters ## cd /tmp && cat <<'EOF'<NL>[Don't]<NL>xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx's]<NL>EOF<NL>git status
+allow ## R8 I-1 a 140-character bracket line ## cd /tmp && cat <<'EOF'<NL>[xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx]<NL>EOF<NL>git status
+deny ## R8 I-1 a long dash form of 11 brackets, literal push elsewhere ## echo push; [g][i][t]-[h][t][t][p]-[p][u][s][h] origin main
+deny ## R8 I-1 a long dash form of 11 brackets, hidden push ## [g][i][t]-[h][t][t][p]-[p][u][s][h] pu''sh origin main
+allow ## R8 D a [] word before a lone } in a body ## cd /tmp && cat <<'EOF'<NL>[] }<NL>EOF<NL>git diff --stat
+allow ## R8 D a [] word before a lone { in a body ## cd /tmp && cat <<'EOF'<NL>[] {<NL>EOF<NL>git diff --stat
+allow ## R8 D control (silent at 95f56bb too): paren groups with a blank in a comment ## cd /tmp && python3 - <<'PY'<NL># see (Appendix A.3) and (Appendix A.7)<NL>x = foo(bar(1), baz)<NL>PY<NL>git diff --stat
+deny ## R9 C-A a $( ) with quotes inside a -c value ## /usr/bin/g[[:alpha:]]t -c "x.y=$(echo "a;b")" pu''sh origin main
+deny ## R9 C-A a process substitution holding a ; ## /usr/bin/g[[:alpha:]]t --namespace <(true; true) pu''sh origin main
+deny ## R9 C-A a backtick pair with quotes inside ## /usr/bin/g[[:alpha:]]t -c "x.y=`echo "a;b"`" pu''sh origin main
+deny ## R9 C-A an odd apostrophe in a comment before ## # it's late<NL>/usr/bin/g[[:alpha:]]t -c 'x.y=a;b' pu''sh origin main
+deny ## R9 C-A an odd apostrophe in a trailing comment ## echo hi # don't<NL>/usr/bin/g[[:alpha:]]t -c 'x.y=a;b' pu''sh origin main
+deny ## R9 C-A quotes and a comment before ## echo "it's" # it's<NL>/usr/bin/g[[:alpha:]]t -c 'x.y=a;b' pu''sh origin main
+deny ## R9 C-A an odd apostrophe in a here-document before ## cat <<'EOF'<NL>it's<NL>EOF<NL>/usr/bin/g[[:alpha:]]t -c 'x.y=a;b' pu''sh origin main
+deny ## R9 C-A a quoted ) inside $( ) ## /usr/bin/g[[:alpha:]]t -c x.y=a$(: ')') -c 'u.v=c;d' pu''sh origin main
+deny ## R9 C-A a quoted ) inside "$( )" ## /usr/bin/g[[:alpha:]]t -c "x.y=$(printf ")")" -c 'u.v=c;d' pu''sh origin main
+deny ## R9 C-A [[.g.]]it with a quoted ; ## /usr/bin/[[.g.]]it -c 'x.y=a;b' pu''sh origin main
+deny ## R9 C-A [[=g=]]it with a quoted ; ## /usr/bin/[[=g=]]it -c 'x.y=a;b' pu''sh origin main
+deny ## R9 C-A g[^x]t with a quoted ; ## /usr/bin/g[^x]t -c 'x.y=a;b' pu''sh origin main
+deny ## R9 C-A two collating symbols with a quoted ; ## /usr/bin/[[.g.]][[.i.]]t -c 'x.y=a;b' pu''sh origin main
+deny ## R9 C-A [[:alpha:]]it with a quoted ; ## /usr/bin/[[:alpha:]]it -c 'x.y=a;b' pu''sh origin main
+deny ## R9 C-A g[[:lower:]]t with a quoted ; ## /usr/bin/g[[:lower:]]t -c 'x.y=a;b' pu''sh origin main
+deny ## R9 C-A gi[[:alpha:]] with a quoted ; ## /usr/bin/gi[[:alpha:]] -c 'x.y=a;b' pu''sh origin main
+deny ## R9 C-A g[^]x]t with a quoted ; ## /usr/bin/g[^]x]t -c 'x.y=a;b' pu''sh origin main
+deny ## R9 C-B a dynamic option value, the slot after it is $P ## P=push; /usr/bin/g[[:alpha:]]t -c x.y=a* $P origin main
+deny ## R9 C-B a glob -C value, the slot after it is $P ## mkdir -p src; P=push; /usr/bin/g[[:alpha:]]t -C ./sr? $P origin main
+deny ## R9 C-B a lone-brace option value, the slot is $P ## P=push; /usr/bin/g[[:alpha:]]t -c x.y={a} $P origin main
+deny ## R9 C-B a set in an option value, the slot is a brace list ## echo push; /usr/bin/g[[:alpha:]]t -c x.y=[ab] {pu,}sh origin main
+deny ## R9 C-B a glob slot that matches push ## touch push; /usr/bin/g[[:alpha:]]t pu[s]h origin main
+deny ## R9 C-B the same word [[.g.]]it, dynamic option ## P=push; /usr/bin/[[.g.]]it -c x.y=a* $P origin main
+deny ## R9 C-B the same word [[.g.]]it, glob slot ## touch push; /usr/bin/[[.g.]]it pu[s]h origin main
+deny ## R9 C-B [g][i][t], dynamic option ## P=push; /usr/bin/[g][i][t] -c x.y=a* $P origin main
+deny ## R9 C-B [g][i][t], glob slot ## touch push; /usr/bin/[g][i][t] pu[s]h origin main
+allow ## R9 D a bracket word, an option and a lone * in a body ## cd /tmp && cat <<'EOF'<NL>[g][i][t] -x *<NL>EOF<NL>git diff --stat
+allow ## R9 D [] } in a body (control, as at 95f56bb) ## cd /tmp && cat <<'EOF'<NL>[] }<NL>EOF<NL>git diff --stat
+allow ## R9 D [] { in a body (control, as at 95f56bb) ## cd /tmp && cat <<'EOF'<NL>[] {<NL>EOF<NL>git diff --stat
+deny ## R9 m-3 an odd apostrophe in a comment before a strict-only word (read as git: the pair rule) ## # don't<NL>/usr/bin/[g][i][t] status<NL>echo pu''sh
+deny ## R9 m-3 an odd apostrophe in a here-document before it (read as git: the pair rule) ## cat <<'EOF'<NL>it's<NL>EOF<NL>/usr/bin/[g][i][t] status; echo pu''sh
+deny ## R9 m-3 an odd apostrophe in a trailing comment (read as git: the pair rule) ## /usr/bin/[g][i][t] status # it's<NL>echo pu''sh
+deny ## R9 m-3 a quoted ( inside $( ) (read as git: the pair rule) ## /usr/bin/[g][i][t] status $(echo '(') ; echo pu''sh
+deny ## R10 F1 g[[:alpha:]]t, <( ; ) then "push" ## /usr/bin/g[[:alpha:]]t --namespace <(true; true) "push" origin main
+deny ## R10 F1 g[[:alpha:]]t, <( ; ) then $'push' ## /usr/bin/g[[:alpha:]]t --namespace <(true; true) $'push' origin main
+deny ## R10 F1 g[[:alpha:]]t, <( ; ) then $P ## P=push; /usr/bin/g[[:alpha:]]t --namespace <(true; true) $P origin main
+deny ## R10 F1 g[[:alpha:]]t, <( ; ) then ${P} ## P=push; /usr/bin/g[[:alpha:]]t --namespace <(true; true) ${P} origin main
+deny ## R10 F1 g[[:alpha:]]t, <( ; ) then "$P" ## P=push; /usr/bin/g[[:alpha:]]t --namespace <(true; true) "$P" origin main
+deny ## R10 F1 g[[:alpha:]]t, <( ; ) then pu[s]h ## touch push; /usr/bin/g[[:alpha:]]t --namespace <(true; true) pu[s]h origin main
+deny ## R10 F1 g[[:alpha:]]t, <( ; ) then $(echo push) ## /usr/bin/g[[:alpha:]]t --namespace <(true; true) $(echo push) origin main
+deny ## R10 F1 [[.g.]]it, <( ; ) then $P ## P=push; /usr/bin/[[.g.]]it --namespace <(true; true) $P origin main
+deny ## R10 F1 g[^x]t, <( ; ) then $'push' ## /usr/bin/g[^x]t --namespace <(true; true) $'push' origin main
+deny ## R10 F1 [[=g=]]it, <( ; ) then "push" ## /usr/bin/[[=g=]]it --namespace <(true; true) "push" origin main
+deny ## R10 F1 [[:alpha:]]it, <( ; ) then "push" ## /usr/bin/[[:alpha:]]it --namespace <(true; true) "push" origin main
+deny ## R10 F1 g[[:lower:]]t, <( ; ) then "push" ## /usr/bin/g[[:lower:]]t --namespace <(true; true) "push" origin main
+deny ## R10 F1 gi[[:alpha:]], <( ; ) then "push" ## /usr/bin/gi[[:alpha:]] --namespace <(true; true) "push" origin main
+deny ## R10 F1 g[^]x]t, <( ; ) then "push" ## /usr/bin/g[^]x]t --namespace <(true; true) "push" origin main
+deny ## R10 F1 >( ; ) then "push" ## /usr/bin/g[[:alpha:]]t --namespace >(true; true) "push" origin main
+deny ## R10 F1 --namespace=<( ; ) then "push" ## /usr/bin/g[[:alpha:]]t --namespace=<(true; true) "push" origin main
+deny ## R10 F1 <( && ) then "push" ## /usr/bin/g[[:alpha:]]t --namespace <(true && true) "push" origin main
+deny ## R10 F1 <( | ) then "push" ## /usr/bin/g[[:alpha:]]t --namespace <(true | true) "push" origin main
+deny ## R10 F1 <( newline ) then "push" ## /usr/bin/g[[:alpha:]]t --namespace <(true<NL>true) "push" origin main
+deny ## R10 F1 <( ; ) then "push" and a trailing comment ## /usr/bin/g[[:alpha:]]t --namespace <(true; true) "push" origin main # x
+deny ## R10 F2 a real push with a trailing comment ## /usr/bin/[g][i][t] -c 'x.y=a;b' pu''sh origin main # note
+deny ## R10 F2 && in a quoted value, apostrophe in a comment ## cd . && /usr/bin/[g][i][t] -c 'x.y=a&&b' pu''sh origin main # it's
+deny ## R10 F2 a comment line before ## # note<NL>/usr/bin/[g][i][t] -c 'x.y=a;b' pu''sh origin main
+deny ## R10 F2 double quotes, comment after ## /usr/bin/[g][i][t] -c "x.y=a;b" pu''sh origin main #note
+deny ## R10 F2 a harmless here-document before ## cat <<'EOF'<NL>plain<NL>EOF<NL>/usr/bin/[g][i][t] -c 'x.y=a;b' pu''sh origin main
+deny ## R10 F2 a here-string after ## /usr/bin/[g][i][t] -c 'x.y=a;b' pu''sh origin main <<< x
+deny ## R10 F2 a backslash-escaped ; and a comment ## /usr/bin/[g][i][t] -c x.y=a\;b pu''sh origin main # x
+deny ## R10 F2 a trailing comment line ## /usr/bin/[g][i][t] -c 'x.y=a;b' pu''sh origin main<NL># trailing
+deny ## R10 F2 p"u"sh and a comment ## /usr/bin/[g][i][t] -c 'x.y=a;b' p"u"sh origin main # x
+deny ## R10 F2 pu\sh and a comment ## /usr/bin/[g][i][t] -c 'x.y=a;b' pu\sh origin main # x
+deny ## R10 F2 ANSI-C hex and a comment ## /usr/bin/[g][i][t] -c 'x.y=a;b' $'\x70ush' origin main # x
+deny ## R10 F2 ANSI-C octal and a comment ## /usr/bin/[g][i][t] -c 'x.y=a;b' $'\160ush' origin main # x
+deny ## R10 F2 an apostrophe in a comment line before a separate command (read as git: the pair rule) ## # don't<NL>/usr/bin/[g][i][t] status<NL>echo pu''sh
+deny ## R10 F2 an apostrophe in a here-document before it (read as git: the pair rule) ## cat <<'EOF'<NL>it's<NL>EOF<NL>/usr/bin/[g][i][t] status; echo pu''sh
+deny ## R10 F2 an apostrophe in a trailing comment (read as git: the pair rule) ## /usr/bin/[g][i][t] status # it's<NL>echo pu''sh
+allow ## R10 F3 [] with a dynamic option and a computed word ## cd /tmp && python3 - <<'PY'<NL>[] -C ./x? $y<NL>PY<NL>git status
+allow ## R10 F3 [^1] and a ???? glob ## cd /tmp && cat > notes.md <<'EOF'<NL>[^1] ????<NL>EOF<NL>git status
+allow ## R10 F3 [!] and *-* ## cd /tmp && cat > g.md <<'EOF'<NL>[!] *-* marks a range<NL>EOF<NL>git diff --stat
+allow ## R10 F3 [*] and p* ## cd /tmp && cat > g.md <<'EOF'<NL>[*] p* matches anything starting with p<NL>EOF<NL>git diff --stat
+deny ## R10 F3 [x]it and ??* (stand-alone path: [x] is one character) ## cd /tmp && cat > g.md <<'EOF'<NL>[x]it ??* is a word<NL>EOF<NL>git status
+deny ## R10 F3 [0]it and p* (stand-alone path: [x] is one character) ## cd /tmp && cat > g.md <<'EOF'<NL>[0]it p*<NL>EOF<NL>git status
+allow ## R10 F3 a markdown link and ??* ## cd /tmp && cat > g.md <<'EOF'<NL>[link](url) ??* more<NL>EOF<NL>git status
+allow ## R10 F3 a JSON pair and ??* ## cd /tmp && cat > g.json <<'EOF'<NL>[[0,0]] ??*<NL>EOF<NL>git status
+allow ## R10 F3 [] with -c and a computed word ## cd /tmp && cat > g.md <<'EOF'<NL>[] -c a.b=* $HOME<NL>EOF<NL>git status
+deny ## R10 F3 trade-off: [a-z]* can be git, ??* can be push ## cd /tmp && cat > a.txt <<'EOF'<NL>[a-z]* ??* [0-9]*<NL>EOF<NL>git status
+deny ## R10 frames: a lone { inside $( ) (read as git: the pair rule) ## /usr/bin/[g][i][t] status $(echo {) ; echo pu''sh
+deny ## R10 frames: a lone { in a sed script inside $( ) (read as git: the pair rule) ## /usr/bin/[g][i][t] status $(sed s/{/x/ f) ; echo pu''sh
+deny ## R10 frames: a lone ( inside ${ } (read as git: the pair rule) ## /usr/bin/[g][i][t] status ${x:-(} ; echo pu''sh
+deny ## R11 1 a strict-only word inside $( ), plain push ## echo $(/usr/bin/g[[:alpha:]]t push origin main)
+deny ## R11 1 inside $( ) with a redirect ## out=$(/usr/bin/g[[:alpha:]]t push origin main 2>&1)
+deny ## R11 1 inside <( ) after true; ## cat <(true; /usr/bin/g[[:alpha:]]t push origin main)
+deny ## R11 1 inside $( ), ${P} and a quoted && ## P=push; echo $(/usr/bin/g[[:lower:]]t -c 'x.y=a&&b' ${P} origin main)
+deny ## R11 1 inside $( ), a backtick spelling ## echo $(/usr/bin/gi[[:alpha:]] `echo push` origin main)
+deny ## R11 1 inside $( ), an ANSI-C spelling ## echo $(/usr/bin/[[=g=]]it $'push' origin main)
+deny ## R11 2 g[^x]t and a glob slot ## touch push; /usr/bin/g[^x]t pu[s]h origin main
+deny ## R11 2 g[^x]t past a dynamic option ## P=push; /usr/bin/g[^x]t -c x.y=a* $P origin main
+deny ## R11 2 [^x]i[^x] and a glob slot ## touch push; /usr/bin/[^x]i[^x] pus? origin main
+deny ## R11 2 g[^x]t, a quoted | and a glob slot ## touch push; cd . && /usr/bin/g[^x]t -c 'x.y=a|b' pus? origin main
+deny ## R11 2 [^x]i[^x], a glob -C value, then $P ## mkdir -p src; P=push; cd . && /usr/bin/[^x]i[^x] -C ./sr? $P origin main
+deny ## R11 2 g[^x]t, <( ; ) then a glob slot ## touch push; /usr/bin/g[^x]t --namespace <(true; true) pu[s]h origin main
+deny ## R11 2 the same with a trailing comment ## touch push; /usr/bin/g[^x]t --namespace <(true; true) pu[s]h origin main # x
+deny ## R11 2 [^a]it and a glob slot ## touch push; /usr/bin/[^a]it pu[s]h origin main
+deny ## R11 2 gi[^a] and a glob slot ## touch push; /usr/bin/gi[^a] pu[s]h origin main
+deny ## R11 2 g[^a-h]t and a glob slot ## touch push; /usr/bin/g[^a-h]t pu[s]h origin main
+deny ## R11 2 [^0-9]it and a glob slot ## touch push; /usr/bin/[^0-9]it pu[s]h origin main
+deny ## R11 3 a here-string with an apostrophe before (read as git: the pair rule) ## cat <<< "it's"<NL>/usr/bin/[g][i][t] status; echo pu''sh
+deny ## R11 3 an arithmetic << in (( )) (read as git: the pair rule) ## ((n=1<<2))<NL>/usr/bin/[g][i][t] status; echo pu''sh
+deny ## R11 3 an arithmetic << in $[ ] (read as git: the pair rule) ## x=$[1<<2]<NL>/usr/bin/[g][i][t] status; echo pu''sh
+deny ## R11 3 an arithmetic << in $(( )) (read as git: the pair rule) ## echo $((1<<2))<NL>/usr/bin/[g][i][t] status; echo pu''sh
+deny ## R11 3 an arithmetic << then a real push ## echo $((1<<2)); /usr/bin/[g][i][t] -c 'x.y=a;b' pu''sh origin main
+deny ## R11 3 a commit-message here-document inside $( ) (read as git: the pair rule) ## x=$(cat <<'EOF'<NL>it's<NL>[a-z]* ??*<NL>EOF<NL>)<NL>echo p"u"sh
+deny ## R11 3 a here-document inside $( ), then ??? status (read as git: the pair rule) ## msg=$(cat <<'EOF'<NL>it's done<NL>EOF<NL>); ??? status; echo pu''sh
+deny ## R11 3 a comment inside $( ) (read as git: the pair rule) ## echo $(true # it's<NL>); /usr/bin/[g][i][t] status; echo pu''sh
+TABLE
+# R7: a zsh group longer than 256 characters is read in full, not skipped.
+LONGPRE=$(awk 'BEGIN { for (i = 0; i < 70; i++) printf "n%03d|", i }')
+expect deny  "R7 a 300-character zsh group, literal push" "$R" \
+  "/usr/bin/(${LONGPRE}gi)t push origin main"
+expect deny  "R7 a 300-character zsh group, hidden push" "$R" \
+  "/usr/bin/g(${LONGPRE}it) pu''sh origin main"
+expect allow "R7 a 300-character zsh group, no push word" "$R" \
+  "cd /tmp && /usr/bin/g(${LONGPRE}it) status"
+# R9 (I-A): a 500 KB command of strict-only glob words stays linear. Each word is read as git, so
+# a hidden push after one denies (the pair rule); a 500 KB command with no push word is judged
+# word by word, on the raw side (cd makes the run literal) and in the views (it''s).
+BIGUNIT="/usr/bin/[g][i][t] x; echo pu''sh; "
+BIG=$(awk -v u="$BIGUNIT" 'BEGIN { for (i = 0; i < 14000; i++) printf "%s", u }')
+QUIETUNIT="/usr/bin/[g][i][t] x; echo it''s; "
+QUIET=$(awk -v u="$QUIETUNIT" 'BEGIN { for (i = 0; i < 14000; i++) printf "%s", u }')
+r9_bound() { # r9_bound <label> <t0>: the commands since t0 finished under 10 s
+  if [ $((SECONDS - $2)) -lt 10 ]; then
+    pass=$((pass + 1)); printf '  ok   %s (%s s)\n' "$1" "$((SECONDS - $2))"
+  else
+    fail=$((fail + 1)); printf '  FAIL %s (%ss)\n' "$1" "$((SECONDS - $2))"
+  fi
+}
+t0=$SECONDS
+expect deny  "R9 a 500 KB command of strict-only glob words and hidden pushes" "$R" "$BIG"
+expect deny  "R9 the same with a real glob push at the end" "$R" \
+  "$BIG/usr/bin/g?t pu''sh origin main"
+r9_bound "R9 the 500 KB glob commands finish under 10 s" "$t0"
+t0=$SECONDS
+expect allow "R9 a 500 KB command of strict-only glob words, no push word" "$R" \
+  "${QUIET}cd /tmp; git status"
+r9_bound "R9 the 500 KB command of strict-only words and no push finishes under 10 s" "$t0"
+t0=$SECONDS
+expect deny  "R9 the same with a real strict-only push at the end" "$R" \
+  "${QUIET}cd /tmp; /usr/bin/[g][i][t] pu''sh origin main"
+r9_bound "R9 the 500 KB command with a strict-only push at the end finishes under 10 s" "$t0"
+# R12 (D): the git-then-push and git-then-alias searches are linear. A 160 KB line of git words once
+# held the hook past its 60 s timeout, which is non-blocking, so a padded push went through.
+PADLINE="echo $(awk 'BEGIN { for (i = 0; i < 27000; i++) printf "git x " }')"
+t0=$SECONDS
+expect deny  "R12 a 160 KB line of git words, then a glob push" "$R" "$PADLINE
+/usr/bin/[g][i][t] -c x.y=a pu''sh origin main"
+expect deny  "R12 a 160 KB line of git words, then a literal push" "$R" "$PADLINE
+git push origin main"
+expect allow "R12 a 160 KB line of git words, then a glob command, no push" "$R" "$PADLINE
+/usr/bin/[g][i][t] status"
+expect allow "R12 a 160 KB line of git words alone" "$R" "$PADLINE"
+R12_NAME="R12 the 160 KB padded commands finish under 10 s"
+if [ $((SECONDS - t0)) -lt 10 ]; then
+  pass=$((pass + 1)); printf '  ok   %s (%s s)\n' "$R12_NAME" "$((SECONDS - t0))"
+else
+  fail=$((fail + 1)); printf '  FAIL %s (%ss)\n' "$R12_NAME" "$((SECONDS - t0))"
+fi
+# push_shape and alias_text_hit against the old quadratic patterns, on short random strings.
+ps_out=$(/usr/bin/python3 - "$(dirname "$GUARD")/git-push-guard.py" <<'PY'
+import importlib.util, random, re, sys
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("guard", sys.argv[1])
+g = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(g)
+old_push = re.compile(r"\bgit\b[^;&|\n]*\bpush\b")
+names = {"pom", "x.y", "lp"}
+parts = ["git", "push", "pom", "x.y", "lp", "gitx", "xgit", "git-push", "git_push", "pushx", ";",
+         "&", "|", "\n", " ", " ", "-C", "'", "a", "b", "\t", ".", "-", "(", ")", "$"]
+random.seed(12)
+diffs = hits = 0
+for _ in range(60000):
+    text = "".join(random.choice(parts) for _ in range(random.randint(1, 40)))
+    want = old_push.search(text) is not None
+    alias = any(re.search(r"\bgit\b[^;&|\n]*\b" + re.escape(a) + r"\b", text) for a in names)
+    hits += want + alias
+    if want != g.push_shape(text) or alias != g.alias_text_hit(text, names):
+        diffs += 1
+print(("ok " if not diffs and hits > 1000 else "FAIL ") +
+      "push_shape and alias_text_hit equal the old patterns: 60000 random strings, "
+      "%d hits, %d differences" % (hits, diffs))
+PY
+)
+case "$ps_out" in
+  "ok "*) pass=$((pass + 1)); printf '  ok   %s\n' "${ps_out#ok }" ;;
+  *)      fail=$((fail + 1)); printf '  FAIL %s\n' "${ps_out#FAIL }" ;;
+esac
+# can_be, the strict reading, on words: those some shell expands to git, and words of prose, code
+# and data that no shell can (the bracket span of one [ and one ] is one character; a wider span
+# is its own characters unless it holds a wildcard, a group, a negation or a class).
+cb_out=$(/usr/bin/python3 - "$(dirname "$GUARD")/git-push-guard.py" <<'PY'
+import importlib.util, sys
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("guard", sys.argv[1])
+g = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(g)
+F = g.GLUE_FILL
+yes = ["[g][i][t]", "???", "[g][!x][t]", "[[.g.]]it", "[[=g=]]it", "[[:g:][i]t", "g[!]t", "[^]it",
+       "g[i]]t", "[a-z]*", "[a-z][a-z][a-z]", F * 10, "g" + F * 3 + "t", "[^{}n]*"]
+no = ["[]", "[!]", "[*]", "[^1]", "[x]it", "[link]" + F * 5, "[[0,0]]", "[[tool.x]]", "[0][:90]",
+      "[result][thread][id]", "[$n[]", "[!WARNING]", "[:3][::-1]", "[abc]*", "[z-a][z-a][z-a]",
+      "print" + F * 3, "[[:alpha:]]x", "[1][2][3][4][5][6][7][8][9]"]
+bad = [w for w in yes if not g.can_be(w)] + [w for w in no if g.can_be(w)]
+print(("ok " if not bad else "FAIL ") + "can_be reads %d words that can be git and %d that cannot, "
+      "%d wrong %r" % (len(yes), len(no), len(bad), bad[:5]))
+PY
+)
+case "$cb_out" in
+  "ok "*) pass=$((pass + 1)); printf '  ok   %s\n' "${cb_out#ok }" ;;
+  *)      fail=$((fail + 1)); printf '  FAIL %s\n' "${cb_out#FAIL }" ;;
+esac
+# The same readings against the real shells. Every word a shell expands to git or a git-* name in
+# a directory holding those files must be read as a possible git by the stand-alone matcher
+# (glob_matches_git_name) or the strict reading (can_be), unless it is made of * alone. A word is
+# a pair: the text handed to the shell, and the text the helper's tokens hold (quotes and
+# backslashes removed). zsh parenthesis groups, (a|b), run in zsh only. A batch the shell does not
+# finish (bash 3.2 segfaults on some glob words) is rerun word by word; a word that still kills the
+# shell is counted and printed; a shell that finishes nothing fails. A second layer runs a sample
+# of the expanding words through the helper itself, in command position before a push word (so the
+# tokenizer, the glue and the pairing are exercised), and every one must deny. A shell that is not
+# installed is skipped. Plain zsh (without -f) is not run: it reads the user's own startup files.
+sh_out=$(/usr/bin/python3 - "$(dirname "$GUARD")/git-push-guard.py" "$TMP" "$R" <<'PY'
+import concurrent.futures, importlib.util, json, os, subprocess, sys
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("guard", sys.argv[1])
+g = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(g)
+names = sorted(g.GIT_NAMES)
+d = os.path.join(sys.argv[2], "shellglobs")
+os.makedirs(d, exist_ok=True)
+for n in names:
+    open(os.path.join(d, n), "w").close()
+
+
+def slots(c):
+    same = ["%s", "?", "[%s]", "[!x]", "[^x]", "[[:alpha:]]", "[[.%s.]]", "[[=%s=]]",
+            "[x[:%s:][%s]", "[[:%s:][%s]", "[[:alpha:][%s]", "[%s[:alpha:]]", "*", "[a-z]",
+            "[]%s]", "[^]%s]", "[!]", "[^]", "[[:a:][:b:]%s]", "[[.%s.]", "[[=%s=]", "[[:%s:]",
+            "[[.%s.][]x]", "[[=%s=][!]x]", "[[:%s:][]x]", "[[.].]%s]", "[[=]=]%s]", "[%s]]",
+            "[]]", "[[.%s.]*", "[%s", "%s]"]
+    out = []
+    for t in same:
+        s = t.replace("%s", c)
+        out.append((s, s))
+    out += [("[%s\\]]" % c, "[%s]]" % c), ('[%s"]"]' % c, "[%s]]" % c),
+            ("[%s']']" % c, "[%s]]" % c)]
+    return out
+
+
+def zslots(c):
+    out = []
+    for t in ["(%s|nope)", "(nope|%s)", "(%s)", "(x|%s|y)", "(|%s)", "(%s|)", "(%s| nope)"]:
+        s = t.replace("%s", c)
+        out.append((s, s))
+    return out
+
+
+words, zwords = {}, {}
+for a in slots("g"):
+    for b in slots("i"):
+        for c in slots("t"):
+            words[a[0] + b[0] + c[0]] = a[1] + b[1] + c[1]
+for a in slots("g") + zslots("g"):
+    for b in slots("i") + zslots("i"):
+        for c in slots("t") + zslots("t"):
+            w = a[0] + b[0] + c[0]
+            if any(x in w for x in "(|"):
+                # a word that starts with ( is a subshell in command position: reach it as ./
+                pre = "./" if w[0] == "(" else ""
+                zwords[pre + w] = pre + a[1] + b[1] + c[1]
+words_all = dict(words)
+words_all.update(zwords)
+SHELLS = [("zsh", ["/bin/zsh", "-f"], "setopt nonomatch; "), ("bash32", ["/bin/bash"], ""),
+          ("bash5", ["/opt/homebrew/bin/bash"], "")]
+
+
+def run(argv, pre, batch, tag):
+    script = "\n".join("echo \"#%d\"; eval 'for f in %s; do echo \"$f\"; done' 2>/dev/null"
+                       % (i, w.replace("'", "'\\''")) for i, w in enumerate(batch))
+    sf = os.path.join(d, "script-" + tag)
+    with open(sf, "w") as f:
+        f.write("cd '" + d + "'; " + pre + script + "\necho DONE\n")
+    p = subprocess.run(argv + [sf], capture_output=True, text=True, timeout=120)
+    if p.returncode != 0 or "\nDONE" not in "\n" + p.stdout:
+        return None
+    got, cur = set(), None
+    for ln in p.stdout.split("\n"):
+        if ln.startswith("#") and ln[1:].isdigit():
+            cur = int(ln[1:])
+        elif cur is not None and (ln[2:] if ln.startswith("./") else ln) in names:
+            got.add(batch[cur])
+    return got
+
+
+def reads_as_git(w):
+    base = os.path.basename(g.glue_paren_groups(words_all[w]))
+    return g.glob_matches_git_name(base) or g.can_be(base)
+
+
+def helper_denies(cmd, flag):
+    payload = json.dumps({"cwd": sys.argv[3], "tool_input": {"command": cmd}})
+    env = dict(os.environ, PUSH_GUARD_LITERAL=flag)
+    out = subprocess.run(["/usr/bin/python3", "-I", sys.argv[1]], input=payload,
+                         capture_output=True, text=True, env=env, timeout=60).stdout
+    return '"permissionDecision":"deny"' in out
+
+
+def hook_denies(w):
+    # a literal push (flag 1), and a hidden push after a quoted ; (flag 0: no push text at all)
+    return (helper_denies("/usr/bin/" + w + " push origin main", "1")
+            and helper_denies("/usr/bin/" + w + " -c 'x.y=a;b' pu''sh origin main", "0"))
+
+
+for label, argv, pre in SHELLS:
+    if not os.path.exists(argv[0]):
+        print("skip " + label + " (not installed)")
+        continue
+    seen, crashed = set(), []
+    shell_words = sorted(words_all if label == "zsh" else words)
+    for k in range(0, len(shell_words), 250):
+        batch = shell_words[k:k + 250]
+        got = run(argv, pre, batch, label)
+        if got is None:
+            got = set()
+            for w in batch:
+                one = run(argv, pre, [w], label)
+                if one is None:
+                    crashed.append(w)
+                else:
+                    got |= one
+        seen |= got
+    bare = [w for w in seen if not words_all[w].strip("*")]
+    miss = [w for w in sorted(seen) if not reads_as_git(w) and w not in bare]
+    answered = len(shell_words) - len(crashed)
+    good = bool(seen) and not miss and answered > len(shell_words) * 0.99
+    print(("ok " if good else "FAIL ") + "%s: %d of %d words expand to a git name, %d missed %s, "
+          "%d words killed the shell" % (label, len(seen), len(shell_words), len(miss),
+                                         [words_all[w] for w in miss[:5]], len(crashed)))
+    pool = [w for w in sorted(seen) if w not in bare]
+    sample = pool[::max(1, len(pool) // 120)]
+    with concurrent.futures.ThreadPoolExecutor(8) as ex:
+        res = list(ex.map(hook_denies, sample))
+    notden = [sample[i] for i, r in enumerate(res) if not r]
+    shown = [words_all[w] for w in notden[:5]]
+    print(("ok " if sample and not notden else "FAIL ") + "%s helper: %d of %d sampled words "
+          "denied before a push word and before a hidden one after a quoted ;, %d not %s"
+          % (label, len(sample) - len(notden), len(sample), len(notden), shown))
+PY
+)
+sh_rc=$?
+sh_lines=$(printf '%s\n' "$sh_out" | grep -c -E '^(ok|FAIL) ')
+sh_skips=$(printf '%s\n' "$sh_out" | grep -c '^skip ')
+if [ "$sh_rc" -ne 0 ] || [ "$sh_lines" -ne $((2 * (3 - sh_skips))) ]; then
+  fail=$((fail + 1))
+  printf '  FAIL shell globs: python status %s, %s result lines for %s skipped shells\n' \
+    "$sh_rc" "$sh_lines" "$sh_skips"
+fi
+while IFS= read -r line; do
+  case "$line" in
+    "ok "*)   pass=$((pass + 1)); printf '  ok   shell globs: %s\n' "${line#ok }" ;;
+    "skip "*) printf '  skip shell globs: %s\n' "${line#skip }" ;;
+    *)        fail=$((fail + 1)); printf '  FAIL shell globs: %s\n' "${line#FAIL }" ;;
+  esac
+done <<EOF
+$sh_out
+EOF
+[ -n "$sh_out" ] || { fail=$((fail + 1)); printf '  FAIL %s\n' "the shell glob check printed nothing"; }
+# Fix round 1 (I1): the helper run directly. An unset flag is the strictest reading (main's raw
+# checks run, an ask becomes a deny); exactly 0 leaves only the view denies; 1 is as before.
+helper_flag() { # helper_flag <deny|silent> <label> <unset|0|1> <command>
+  local out got
+  if [ "$3" = unset ]; then
+    out=$(jq -n --arg c "$4" --arg d "$R" '{tool_name:"Bash",cwd:$d,tool_input:{command:$c}}' \
+      | env -u PUSH_GUARD_LITERAL /usr/bin/python3 "$(dirname "$GUARD")/git-push-guard.py")
+  else
+    out=$(jq -n --arg c "$4" --arg d "$R" '{tool_name:"Bash",cwd:$d,tool_input:{command:$c}}' \
+      | PUSH_GUARD_LITERAL=$3 /usr/bin/python3 "$(dirname "$GUARD")/git-push-guard.py")
+  fi
+  case "$out" in
+    "") got=silent ;;
+    *'"permissionDecision":"deny"'*) got=deny ;;
+    *) got="other: $out" ;;
+  esac
+  if [ "$got" = "$1" ]; then
+    pass=$((pass + 1)); printf '  ok   %s\n' "$2"
+  else
+    fail=$((fail + 1)); printf '  FAIL %s (want %s, got %s)\n' "$2" "$1" "$got"
+  fi
+}
+while IFS= read -r c; do
+  [ -n "$c" ] || continue
+  helper_flag deny   "I1 flag unset: $c" unset "$c"
+  helper_flag deny   "I1 flag 1: $c"     1     "$c"
+  helper_flag silent "I1 flag 0: $c"     0     "$c"
+done <<'CASES'
+git push origin main $'x'
+git pom $'x'
+echo $'git push'
+git ${X:-pu}sh origin main
+GIT_CONFIG=/x git status; git push origin feat $'x'
+CASES
+# R14 (I1): a glob git word with a push word is read as literal git, whose raw reading main's
+# fast path would give: it denies even under a flag of 0 (a hidden signal elsewhere).
+c='/usr/bin/gi? push origin main'
+helper_flag deny   "I1 flag unset: $c" unset "$c"
+helper_flag deny   "I1 flag 1: $c"     1     "$c"
+helper_flag deny   "I1 flag 0, push word read from the strict text: $c" 0 "$c"
+# Literal-analog parity for payloads that hold no git and no push text: the helper denies them as
+# main denies the literal git. The shell fast path starts it for them in glob mode (below).
+while IFS= read -r c; do
+  [ -n "$c" ] || continue
+  helper_flag deny "RP helper, flag 1: $c" 1 "$c"
+done <<'CASES'
+cd /tmp; /usr/bin/[g][i][t] p?sh origin main
+/usr/bin/[[=g=]]it -c x.y=1 p?sh origin main
+/usr/bin/[g][i][t] -c x=a* status
+sh -c '/usr/bin/[[=g=]]it p?sh origin main'
+CASES
+# Glob mode (PUSH_GUARD_LITERAL=2). A payload with a glob word that a shell can expand to git, and
+# with no git, push, selector, alias or hidden-spelling text, used to start nothing: the four shapes
+# above went through. The fast path now matches the glob word with one ERE and starts the helper
+# with the flag 2, which runs only the strict re-run (the glob word read as git, judged as any
+# command is). The shapes deny through the whole hook, as their literal git versions do.
+run_table <<'TABLE'
+deny ## GM a cd prefix, a glob git word, a glob push word ## cd /tmp; /usr/bin/[g][i][t] p?sh origin main
+deny ## GM an option with a dotted key, then a glob push word ## /usr/bin/[g][i][t] -c x.y=1 p?sh origin main
+deny ## GM an option with a glob value, then a subcommand ## /usr/bin/[g][i][t] -c x=a* status
+deny ## GM the glob git word inside sh -c ## sh -c '/usr/bin/[g][i][t] p?sh origin main'
+deny ## GM an equivalence class word, then a glob push word ## /usr/bin/[[=g=]]it -c x.y=1 p?sh origin main
+deny ## GM a collating element word inside sh -c ## sh -c '/usr/bin/[[.g.]]it p?sh origin main'
+deny ## GM a ? word with a selector and a glob push word ## /usr/bin/g?t -c k=v p?sh origin main
+deny ## GM a zsh group word with a selector ## /usr/bin/(git|nope) -c k=v p?sh origin main
+deny ## GM a glob git word after a newline ## echo hi<NL>/usr/bin/g?t -C /tmp p?sh origin main
+allow ## GM the literal twin of a glob push word with no selector is silent ## /usr/bin/git p?sh origin main
+allow ## GM so is the glob version (main never starts the helper for it) ## /usr/bin/g?t p?sh origin main
+allow ## GM a zsh group, no selector, no push word ## /usr/bin/(git|nope) p?sh origin main
+deny ## GM a glob alias push (the shell fast path cannot list aliases) ## /usr/bin/[g][i][t] pom
+deny ## GM a negated bracket with a literal ] ## /usr/bin/g[^]x]t -c k=v p?sh origin main
+deny ## GM a bracket with a literal ] first ## /usr/bin/g[]i]t -c k=v p?sh origin main
+allow ## GM a glob git word whose command is no push ## cd /tmp; /usr/bin/[g][i][t] status
+allow ## GM the literal twin of the above ## cd /tmp; /usr/bin/git status
+TABLE
+# Fix round 13. A glob word that can be git-push, git-send-pack or git-http-push (not git) is read
+# wherever a command word can start (after a blank, a wrapper, a reserved word, an assignment), as a
+# literal git-push is; a shell string may follow options between -c and the string (-cx, --, -e,
+# -o NAME), and eval's options; a $'..' string counts; a zsh group after nice, exec or timeout is
+# an argument, so a glob. Each row's literal twin denies on main.
+run_table <<'TABLE'
+deny ## R13 F1 a dash-name glob word after true and a blank ## true; /usr/bin/[[=g=]]it-push origin main
+deny ## R13 F1 a dash-name glob word after nice ## nice /usr/bin/[[=g=]]it-push origin main
+deny ## R13 F1 a dash-name glob word after nice -n 5 ## nice -n 5 /usr/bin/[g][i][t]-push origin main
+deny ## R13 F1 the literal twin after nice -n 5 ## nice -n 5 /usr/bin/git-push origin main
+deny ## R13 F1 a dash-name glob word after && ## cd /tmp && [[=g=]]it-push origin main
+deny ## R13 F1 a send-pack glob word in a subshell ## ( /usr/bin/[[.g.]]it-send-pack origin main )
+deny ## R13 F1 an http-push glob word in a group ## { /usr/bin/[[=g=]]it-http-push origin main; }
+deny ## R13 F1 a dash-name glob word after if/then ## if true; then /usr/bin/[[=g=]]it-push origin main; fi
+deny ## R13 F1 a dash-name glob word after a pipe ## echo x | /usr/bin/[[.g.]]it-push origin main
+deny ## R13 F1 a dash-name glob word after sudo env ## sudo env A=1 /usr/bin/[[=g=]]it-push origin main
+deny ## R13 F1 a ? dash-name glob word after timeout ## timeout 5 /usr/bin/???-push origin main
+deny ## R13 F2 bash -c -- ## bash -c -- '/usr/bin/[[=g=]]it push origin main'
+deny ## R13 F2 bash -cx ## bash -cx '/usr/bin/[[.g.]]it push origin main'
+deny ## R13 F2 sh -c -e ## sh -c -e '/usr/bin/[[=g=]]it push origin main'
+deny ## R13 F2 zsh -c -f ## zsh -c -f '/usr/bin/[[=g=]]it push origin main'
+deny ## R13 F2 bash -c -- with [g][i][t] ## bash -c -- '/usr/bin/[g][i][t] push origin main'
+deny ## R13 F2 bash -cx with [g][i][t] ## bash -cx '/usr/bin/[g][i][t] push origin main'
+deny ## R13 F2 bash -c -e -- ## bash -c -e -- '/usr/bin/[g][i][t] push origin main'
+deny ## R13 F2 bash -o NAME -c ## bash -o pipefail -c '/usr/bin/[g][i][t] push origin main'
+deny ## R13 F2 eval -- ## eval -- '/usr/bin/[g][i][t] push origin main'
+deny ## R13 F2 the literal twin of eval -- ## eval -- '/usr/bin/git push origin main'
+deny ## R13 F2 an ANSI-C string after -c ## sh -c $'[[=g=]]it pu\'\'sh origin main'
+deny ## R13 F2 nice inside a -c string ## bash -c 'nice /usr/bin/[[=g=]]it-push origin main'
+deny ## R13 F3 a zsh group after nice ## nice (git|nope) push origin main
+deny ## R13 F3 a zsh group after exec ## exec (g|x)it -C /tmp push
+deny ## R13 F3 a zsh group after timeout ## timeout 5 (git|nope) push origin main
+allow ## R13 silent: ls of dash-name globs ## ls git-* /usr/libexec/git-core/git-*
+allow ## R13 silent: rm of a dash-name glob ## rm -f git-pu*
+allow ## R13 silent: echo of a dash-name glob ## echo [[=g=]]it-push
+allow ## R13 silent: a dash-name glob in a -c string that is no command word ## bash -c 'ls git-*'
+allow ## R13 silent: tar -cf with a bracket word ## tar -cf '[g][i][t]' x
+TABLE
+# Fix round 14. C1: a glob after quotes that close ("$HOME"/bin/W, ""W, '/usr/bin/'W) expands, so it
+# is read. I1: the re-run uses main's raw reading when main's fast path would start the helper for
+# the read text (a push word, a selector, an alias), even with a hidden spelling elsewhere. I2: a
+# dash-name glob word after a runner outside WRAPPERS. I3: only the command that holds the replaced
+# word is folded. M1: with no such evidence the glob command is silent. M2: a zsh group after a
+# blank starts the helper. M3: an option's value spelled like a glob is not the command word.
+run_table <<'TABLE'
+deny ## R14 C1 a quoted $HOME prefix ## "$HOME"/bin/[[=g=]]it push origin main
+deny ## R14 C1 empty quotes before the glob ## ""[[=g=]]it push origin main
+deny ## R14 C1 a quoted directory then the glob ## "/usr/bin/"[[.g.]]it push origin main
+deny ## R14 C1 single quotes, a bracket in the middle ## ''g[[.i.]]t -C /tmp push origin main
+deny ## R14 C1 a quoted prefix and a dash name ## "$HOME"/bin/[[=g=]]it-push origin main
+deny ## R14 C1 after cd ## cd /tmp && "$HOME"/bin/[[.g.]]it push origin main
+deny ## R14 C1 in if/then with an option ## if true; then ''[g][i][t] -c k=v push origin main; fi
+deny ## R14 C1 a quoted $(pwd) prefix ## echo $("$(pwd)"/[[.g.]]it-send-pack origin main)
+deny ## R14 C1 a quoted prefix inside sh -c ## sh -c '"$HOME/bin/"gi[[=t=]] -c k=v push origin main'
+deny ## R14 C1 a quoted prefix in a string with '\'' escapes ## sh -c ''\''/usr/bin/'\''[[.g.]]it -C /tmp push origin main'
+deny ## R14 C1 empty quotes in a string with '\'' escapes ## sh -c ''\'''\''[[=g=]]it -c k=v push origin main'
+deny ## R14 C1 single quotes inside a double-quoted -c string ## bash -c "'/usr/bin/'[[=g=]]it -c k=v push origin main"
+deny ## R14 I1 a hidden push word in a variable ## P=$'\x70ush'; /usr/bin/[g][i][t] -C /tmp $P origin main
+deny ## R14 I1 an escaped push word in a variable ## P=pu\sh; /usr/bin/[g][i][t] -C . $P origin main
+deny ## R14 I1 a dash name after a hidden spelling ## echo $'\t'; /usr/bin/git-pu* origin main
+deny ## R14 I2 caffeinate ## caffeinate -i /usr/bin/[[=g=]]it-push origin main
+deny ## R14 I2 the literal twin of caffeinate ## caffeinate -i /usr/bin/git-push origin main
+deny ## R14 I2 arch ## arch -arm64 /usr/bin/g?t-push origin main
+deny ## R14 I2 xcrun ## xcrun /usr/bin/g*-push origin main
+deny ## R14 I2 stdbuf ## stdbuf -oL /usr/bin/g?t-push origin main
+deny ## R14 I2 mise exec ## mise exec -- /usr/bin/g?t-push origin main
+deny ## R14 I2 bundle exec ## bundle exec /usr/bin/g?t-push origin main
+deny ## R14 I2 op run ## op run -- /usr/bin/g?t-push origin main
+allow ## R14 I2 silent: cp of a dash-name glob ## cp ~/bin/git-* /tmp/
+allow ## R14 I2 silent: find -name with a dash-name glob ## find . -name git-p*
+allow ## R14 I2 silent: echo piped to xargs ls ## echo git-* | xargs ls
+allow ## R14 I3 silent: a glob argument, then a commit that says push ## git add dot_claude/g* && git commit -m "Harden the push guard"
+allow ## R14 I3 silent: the same with a *t glob ## git add tests/*t && git commit -m "Test the push guard"
+allow ## R14 I3 silent: ls g* then a stash push ## ls g*; git stash push -m wip
+allow ## R14 M1 silent: command -v and type -a ## echo $(command -v g?t); type -a g*
+allow ## R14 M1 silent: command -v piped, printf ## command -v g?t | head; printf '%s\n' g?t
+allow ## R14 M1 silent: glob-looking lines in a here-document ## python3 - <<'PY'<NL>"$(pwd)"/g?t<NL>g(it)<NL>PY
+allow ## R14 over silent: an unset slot variable, no selector ## ~/bin/[g]i[t] $P backup
+deny ## R14 M2 a zsh group after nice ## nice (g|x)it -C /tmp pu[s]h origin main
+deny ## R14 M2 a zsh group after exec and an assignment ## Q=pu; exec (g|x)it -C . ${Q}sh origin main
+deny ## R14 M2 a zsh group after empty quotes ## nice ""(g|x)it -C /tmp pu[s]h origin main
+deny ## R14 I2 script with its two positional words ## script -q /dev/null bin/g?t-push -f origin feat
+deny ## R14 I2 direnv exec . ## direnv exec . /usr/bin/g?t-push origin main
+deny ## R14 I2 flock with a lock file ## flock /tmp/l /usr/bin/g?t-push origin main
+deny ## R14 I2 strace ## strace /usr/bin/g?t-push origin main
+deny ## R14 I2 ssh host ## ssh localhost /usr/bin/[[=g=]]it-push origin main
+deny ## R14 I2 docker run image ## docker run img /usr/bin/g?t-push origin main
+deny ## R14 I2 kubectl exec pod ## kubectl exec pod -- /usr/bin/g?t-push origin main
+deny ## R14 I2 gdb --args ## gdb --args /usr/bin/g?t-push origin main
+deny ## R14 I2 cpulimit with a number ## cpulimit -l 50 -- /usr/bin/g?t-push origin main
+deny ## R14 I2 runuser ## runuser -u me -- /usr/bin/g?t-push origin main
+deny ## R14 I2 tmux new ## tmux new /usr/bin/g?t-push origin main
+allow ## R14 I2 silent: a glob after docker's own command ## docker run img ls git-*
+allow ## R14 I2 silent: ssh then a command that lists ## ssh localhost ls git-pu*
+deny ## R14 M3 a decoy value after sudo -u ## sudo -u g?t /usr/bin/[g][i][t] -C /tmp pu[s]h origin main
+deny ## R14 M3 a decoy value after env -C ## Q=pu; env -C g?t /usr/bin/[g][i][t] -c k=v ${Q}sh origin main
+deny ## R14 M3 a decoy value and a dash name ## sudo -u g?t /usr/bin/git-pu* -f origin feat
+TABLE
+# Fix round 15. F1: a blank inside an open quote or after a backslash does not end a word (a
+# quoted path with a blank before a glob git word); F2: an assignment's value or a redirection
+# target is a decoy that no longer takes a command's one git word, and a second candidate is
+# read when the first may be the value of an option the table lacks; F3: a backslash-newline
+# inside a glob git word; F5: the shell trigger reads bracket spans that start with a capital or a
+# digit; F6: the value options of wrappers; F7: ordinary commands stay silent (a quoted prefix is
+# no command position, a runner takes its command word after its own positional words only,
+# a star-led dash-name glob, a lone - and an assignment or redirect target are no command).
+run_table <<'TABLE'
+deny ## R15 F1 a quoted path with a blank, then an equivalence class and -C ## "/opt/my tools/"[[=g=]]it -C /tmp push origin main
+deny ## R15 F1 the same without a selector ## "/opt/my tools/"[[=g=]]it push origin main
+deny ## R15 F1 an ANSI-C quoted path with a blank ## $'/opt/my tools/'[[=g=]]it push origin main
+deny ## R15 F1 a backslash blank in the path, a dash name ## /opt/my\ tools/[[=g=]]it-push origin main
+deny ## R15 F1 the quote closes before the last slash ## "/opt/my tools"/[[=g=]]it-push origin main
+deny ## R15 F1 a quoted assignment value before a dash name ## A="x y" /usr/bin/[[=g=]]it-push origin main
+deny ## R15 F1 an ssh command in the environment ## GIT_SSH_COMMAND='ssh -i k' /usr/bin/[[.g.]]it-send-pack origin main
+deny ## R15 F1 bracket letters after a quoted path with a blank ## "/opt/my tools/"[g][i][t] -C /tmp push origin main
+deny ## R15 F1 g?t after a quoted path with a blank ## "/opt/my tools/"g?t -C /tmp p?sh origin main
+deny ## R15 F1 in if/then ## if true; then "/opt/my tools/"[g][i][t] -c k=v push origin main; fi
+allow ## R15 F1 silent: a quoted string with a blank, then a glob argument ## echo "a b" g?t
+allow ## R15 F1 silent: a quoted directory with a blank, a glob of files ## ls "/opt/my tools/"*.txt
+allow ## R15 F1 silent: the glob sits inside the quote ## echo "a b g?t c"
+allow ## R15 F1 silent: a stray apostrophe on its own line ## echo it's<NL>ls g?t
+deny ## R15 F1 a stray apostrophe on an earlier line does not hide the next ## echo it's<NL>/usr/bin/[g][i][t] -C /tmp push origin main
+deny ## R15 F2 an assignment decoy before a glob git word ## A=/tmp/g?t /usr/bin/[[=g=]]it -c 'a;b' push origin main
+deny ## R15 F2 an assignment decoy, backslash in the string ## A=/tmp/g?t /usr/bin/[[.g.]]it -c "x=\|" push origin main
+deny ## R15 F2 an assignment decoy, a process substitution ## A=/tmp/g?t /usr/bin/[[=g=]]it --namespace <(true; true) push origin main
+deny ## R15 F2 an assignment decoy, a dynamic slot ## A=/tmp/g?t /usr/bin/[g][i][t] -C /tmp ${X:-pu}sh origin main
+deny ## R15 F2 an assignment decoy, -c with a ; ## A=/tmp/g?t /usr/bin/[g][i][t] -c 'a;b' push origin main
+deny ## R15 F2 an env -P value decoy ## env -P /tmp/g?t /usr/bin/[g][i][t] -C /tmp ${X:-pu}sh origin main
+deny ## R15 F2 a decoy before an alias ## A=/tmp/g?t /usr/bin/[[=g=]]it -c 'a;b' pom
+deny ## R15 F2 an unlisted option value takes the first place ## env --unknown g?t /usr/bin/[g][i][t] -C /tmp ${X:-pu}sh origin main
+allow ## R15 F2 silent: an assignment with a glob value, no git ## A=/tmp/g?t ls
+allow ## R15 F2 silent: a redirect to a glob, no push ## echo hi >/tmp/g?t
+deny ## R15 F3 backslash-newline inside an equivalence class word ## /usr/bin/[[=g=]]i\<NL>t -C /tmp push origin main
+deny ## R15 F3 the same with -c and a ; ## /usr/bin/[[=g=]]i\<NL>t -c 'a;b' push origin main
+deny ## R15 F3 bracket letters split by a continuation, dynamic slot ## /usr/bin/[g][i]\<NL>[t] -C /tmp ${X:-pu}sh origin main
+deny ## R15 F3 bracket letters split by a continuation ## /usr/bin/[g][i]\<NL>[t] -C /tmp push origin main
+deny ## R15 F3 g? split by a continuation, a glob slot ## /usr/bin/g?\<NL>t -c k=v p?sh origin main
+allow ## R15 F3 silent: a split glob that is no git ## ls g?\<NL>t
+allow ## R15 F3 silent: a continuation between words ## ls \<NL>g?t
+deny ## R15 F5 a capital in the bracket ## /usr/bin/[Gg]it -C /tmp ${X:-pu}sh origin main
+deny ## R15 F5 a range from A to z ## /usr/bin/[A-z]it -c k=v ${X:-pu}sh origin main
+deny ## R15 F5 a digit range then a letter range ## /usr/bin/[0-9a-z]it -C /tmp ${X:-pu}sh origin main
+deny ## R15 F5 after cd ## cd /tmp; /usr/bin/[Gg]it ${X:-pu}sh origin main
+deny ## R15 F5 an alias ## /usr/bin/[Gg]it pom
+allow ## R15 F5 silent: capital ranges ## ls [A-Z]*
+allow ## R15 F5 silent: a hex class ## echo [0-9a-f]*
+allow ## R15 F5 silent: digits ## ls [0-9]*.txt
+deny ## R15 F6 env -P with a dash name ## env -P /usr/bin /usr/bin/g?t-push origin main
+deny ## R15 F6 env -P with an equivalence class ## env -P /usr/bin /usr/bin/[[=g=]]it-push origin main
+deny ## R15 F6 xargs -J ## echo x | xargs -J % /usr/bin/[[=g=]]it-push origin main
+deny ## R15 F6 timeout --signal ## timeout --signal KILL 5 /usr/bin/[[=g=]]it-push origin main
+deny ## R15 F6 timeout --kill-after ## timeout --kill-after 2 5 /usr/bin/[[=g=]]it-push origin main
+deny ## R15 F6 sudo --user ## sudo --user root /usr/bin/[[=g=]]it-push origin main
+deny ## R15 F6 sudo -c ## sudo -c staff /usr/bin/[[=g=]]it-push origin main
+deny ## R15 F6 nice --adjustment ## nice --adjustment 5 /usr/bin/g?t-push origin main
+deny ## R15 F6 doas -a ## doas -a style /usr/bin/g?t-push origin main
+deny ## R15 F6 env -S ## env -S 'A=1' /usr/bin/g?t-push origin main
+allow ## R15 F6 silent: sudo with an option value and ls ## sudo --user root ls git-pu*
+allow ## R15 F6 silent: timeout with --signal and ls ## timeout --signal KILL 5 ls git-*
+allow ## R15 F7 a quoted $PWD prefix in cp ## cp "$PWD"/docs/superpowers/specs/*push* /tmp/
+allow ## R15 F7 a quoted $PWD prefix in sed ## sed -n 1,5p "$PWD"/docs/superpowers/specs/*push*
+allow ## R15 F7 a quoted $PWD prefix in tar ## tar -czf specs.tgz "$PWD"/docs/superpowers/specs/*push*
+allow ## R15 F7 a quoted $PWD prefix in a for loop ## for f in "$PWD"/docs/superpowers/specs/*push*; do wc -l "$f"; done
+allow ## R15 F7 chmod with a quoted $HOME prefix ## chmod +x "$HOME"/.local/bin/*sh
+allow ## R15 F7 caffeinate then make ## caffeinate -i make -C build *sh
+allow ## R15 F7 uv run pytest ## uv run pytest *sh
+allow ## R15 F7 strace with -o ## strace -f -o /tmp/t ls *sh
+allow ## R15 F7 su -c ## su -c 'ls *-push*' me
+allow ## R15 F7 sg -c ## sg staff -c 'ls *sh'
+allow ## R15 F7 perf record ## perf record -g ./bin/app *-push*
+allow ## R15 F7 a markdown bullet in a here-document ## cat <<'EOF' > notes.md<NL>- run git bar baz<NL>- *sh<NL>EOF
+allow ## R15 F7 a markdown bullet with a push mention ## cat <<'EOF' > notes.md<NL>- run git TODO<NL>- *sh<NL>EOF
+allow ## R15 F7 a star-led word at command position ## *sh --help
+allow ## R15 F7 a dot-slash star-led word ## ./*sh
+allow ## R15 F7 a quoted-prefix star-led word at command position ## "$HOME"/*sh
+allow ## R15 F7 an assignment with a star-led value ## A=/tmp/*sh ls
+allow ## R15 F7 an echo redirected into a glob ## echo "x|y" > *-push*
+allow ## R15 F7 kubectl cp ## kubectl cp pod:/tmp/*-push* ./
+allow ## R15 F7 watch ## watch -n 2 ls *sh
+allow ## R15 F7 exec ## exec ls *-push*
+allow ## R15 F7 hyperfine ## hyperfine 'ls *sh'
+allow ## R15 F7 screen ## screen -dmS s ls *-push*
+allow ## R15 F7 gdb ## gdb --args ./a.out *sh
+allow ## R15 F7 nix run ## nix run nixpkgs#ripgrep -- 'x|y' *sh
+allow ## R15 F7 mise exec ## mise exec -- ls *-push*
+allow ## R15 F7 pnpm exec ## pnpm exec eslint *sh
+allow ## R15 F7 bundle exec ## bundle exec rspec *-push*
+allow ## R15 F7 npx ## npx prettier --write *sh
+allow ## R15 F7 valgrind ## valgrind ./a.out *-push*
+allow ## R15 F7 a quoted $HOME prefix, then cp's target ## cp "$HOME"/*sh /tmp/x/
+deny ## R15 F7 still read: a runner then the command word ## caffeinate -i /usr/bin/g?t-push origin main
+deny ## R15 F7 still read: mise exec with a tool spec and -- ## mise exec node@20 -- /usr/bin/g?t-push origin main
+deny ## R15 F7 still read: strace with -o ## strace -o /tmp/t /usr/bin/g?t-push origin main
+deny ## R15 F7 still read: perf record ## perf record -g /usr/bin/g?t-push origin main
+deny ## R15 F7 still read: su -c with a command in the string ## su -c '/usr/bin/g?t-push origin main' me
+deny ## R15 F7 still read: sg -c with a command later in the string ## sg staff -c 'cd /tmp && /usr/bin/[g][i][t] -C . push origin main'
+deny ## R15 F7 still read: a nested runner in script's window ## script -q /dev/null stdbuf -o L /usr/bin/g?t-push origin main
+deny ## R15 F7 still read: a quoted prefix at command position ## "$HOME"/bin/[[=g=]]it-push origin main
+deny ## R15 F7 still read: a runner inside another runner's window ## caffeinate mise exec node@20 -- /usr/bin/g?t-push origin main
+deny ## R15 F7 still read: a command after a quoted separator ## echo "a;b" ; /usr/bin/g?t-push origin main
+deny ## R15 F7 still read: backticks inside double quotes ## echo "`/usr/bin/g?t-push origin main`"
+allow ## R15 F7 silent: an apostrophe in a quoted word, then ls ## echo "it's" ; ls git-pu*
+deny ## R15 F3 a continuation between the two closing brackets ## cd /tmp && /usr/bin/[[=g=]\<NL>]it ${X:-pu}sh origin main
+deny ## R15 F3 the same with a collating element ## /usr/bin/[[.g.]\<NL>]it -c k=v p?sh origin main
+deny ## R15 F1 a quoted path with a blank inside sh -c, an alias slot ## sh -c '"/opt/my tools/"[[=g=]]it pom origin main'
+deny ## R15 F1 an escaped blank inside bash -c, an alias slot ## bash -c "/opt/my\ tools/g?t pom origin main"
+allow ## R15 F1 silent: sh -c with a quoted path, no push ## sh -c '"/opt/my tools/"g?t status'
+deny ## R15 F2 a redirect decoy ## >g?t /usr/bin/[g][i][t] -C /tmp ${X:-pu}sh origin main
+deny ## R15 F2 an append redirect decoy after true ## true; >>g?t /usr/bin/[[=g=]]it -C /tmp ${X:-pu}sh --force origin main
+allow ## R15 F2 silent: a redirect decoy and a glob argument, no push ## >g?t ls /usr/bin/[g][i][t]
+TABLE
+# F4: the shell fast path tests the whole payload (the description too), the helper's literal
+# evidence must see the same text: a selector or alias name in the description starts main's
+# helper for the literal analog, and so must it for the glob command.
+run_desc_table() {
+  local line want rest label cmd desc out got
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    want=${line%% ## *}; rest=${line#* ## }; label=${rest%% ## *}; rest=${rest#* ## }
+    cmd=${rest%% ## *}; desc=${rest#* ## }
+    out=$(jq -n --arg c "$cmd" --arg d "$desc" --arg w "$R" \
+      '{hook_event_name:"PreToolUse",tool_name:"Bash",cwd:$w,
+        tool_input:{command:$c,description:$d}}' \
+      | PINNED_PATH="$PATH" bash "$GUARD")
+    case "$out" in
+      "") got=allow ;;
+      *'"permissionDecision":"deny"'*) got=deny ;;
+      *) got="other: $out" ;;
+    esac
+    if [ "$got" = "$want" ]; then
+      pass=$((pass + 1)); printf '  ok   %s\n' "$label"
+    else
+      fail=$((fail + 1)); printf '  FAIL %s (want %s, got %s)\n' "$label" "$want" "$got"
+    fi
+  done
+}
+run_desc_table <<'TABLE'
+deny ## R15 F4 a description with cd ## /usr/bin/g?t ${X:-pu}sh origin main ## cd into the checkout and publish
+deny ## R15 F4 a description with make -C ## /usr/bin/g?t ${X:-pu}sh origin main ## Publish via make -C build
+deny ## R15 F4 a description with bash -c ## /usr/bin/[g][i][t] ${X:-pu}sh --force origin main ## Run it under bash -c
+deny ## R15 F4 a description with an alias name ## [g][i][t] ${X:-pu}sh origin --delete main ## Sync pom changes
+allow ## R15 F4 silent: the same command, a description with nothing ## ls g?t ## List the files
+allow ## R15 F4 silent: a glob with a description that mentions -C ## ls /usr/bin/g?t ## Run make -C build
+deny ## R16 P1 a quoted letter inside the basename ## /usr/bin/g"i"[t] -C . ${X:-pu}sh origin main
+deny ## R16 P1 a single-quoted letter inside the basename ## /usr/bin/g'i'[t] -C . ${X:-pu}sh origin main
+deny ## R16 P1 a quoted first letter ## "g"[i][t] -C . ${X:-pu}sh origin main
+deny ## R16 P1 a quoted letter after a directory ## /usr/bin/"g"i[t] -c k=v push origin main
+deny ## R16 P1 the same inside a shell string ## sh -c '/usr/bin/g"i"[t] -C . ${X:-pu}sh origin main'
+deny ## R16 P1 a quoted directory prefix still read ## "/usr/bin/"[[.g.]]it -C /tmp push origin main
+deny ## R16 P2 a quoted letter after an option-value decoy ## xargs --arg-file /tmp/g?t /usr/bin/g"i"[t] -C . ${X:-pu}sh origin main
+deny ## R16 P2 the unquoted twin of the decoy row ## xargs --arg-file /tmp/g?t /usr/bin/[g][i][t] -C . ${X:-pu}sh origin main
+allow ## R16 P3 silent: rg -c counts matches ## rg -c 'g?t push' README.md
+allow ## R16 P3 silent: grep -c counts matches ## grep -c 'g*t push' README.md
+allow ## R16 P3 silent: grep -lc after a pipe ## echo x | grep -lc 'g?t push' README.md
+allow ## R16 P5 silent: rg -c then a comment ## rg -c 'g?t push' README.md # count matches
+allow ## R16 P5 silent: rg -c then a redirect ## rg -c 'g?t push' README.md > counts.txt
+allow ## R16 P5 silent: ag -c then a redirect ## ag -c 'g?t push' README.md > counts.txt
+allow ## R16 P5 silent: grep -c then a comment ## grep -c 'g*t push' x # y
+deny ## R16 P5 script -c still reads its string ## script -q /dev/null -c '/usr/bin/g?t -c k=v push origin main'
+deny ## R16 P5 sh -c under a wrapper still reads its string ## sudo env A=1 sh -c '/usr/bin/[g][i][t] -C . ${X:-pu}sh origin main'
+allow ## R16 P6 silent: su as an echo argument, then a comment ## echo su -c "g?t push" # comment
+allow ## R16 P6 silent: su as a pattern, then a redirect ## rg -e su -c "g?t push" README.md > counts.txt
+allow ## R16 P6 silent: sh as a pattern, then a comment ## grep -e sh -c "g?t push" README.md # note
+deny ## R16 P6 setsid sh -c still reads its string ## setsid sh -c '/usr/bin/g?t -c k=v push origin main'
+deny ## R16 P6 docker run image sh -c still reads its string ## docker run img sh -c '/usr/bin/g?t -c k=v push origin main'
+deny ## R16 P6 nice -n 5 bash -lc still reads its string ## nice -n 5 bash -lc '/usr/bin/g?t -c k=v push origin main'
+deny ## R16 P6 a shell after an assignment pair ## A=1 B=2 bash -c '/usr/bin/g?t -c k=v push origin main'
+allow ## R16 P7 silent: cat with a glob and a redirect ## cat g?t push.txt > out.txt
+allow ## R16 P7 silent: ls with two globs and a redirect ## ls g* push* > list.txt
+allow ## R16 P7 silent: echo with a glob and a comment ## echo g?t push # note
+allow ## R16 P7 silent: rg with a glob and a redirect ## rg g?t push README.md > o
+deny ## R16 P8 a script written by echo and run ## echo /usr/bin/[g][i][t] push origin main > /tmp/push-script; sh /tmp/push-script
+deny ## R16 P8 a script appended by echo and run ## echo /usr/bin/[g][i][t] push origin main >> s && bash s
+deny ## R16 P8 a script written by printf and run ## printf "%s\n" /usr/bin/g?t push origin main > run.sh; ./run.sh
+deny ## R16 P7 echo piped into a shell still reads the glob ## echo g?t push | sh
+deny ## R16 P7 rg --pre runs its word ## rg --pre g?t push README.md
+deny ## R16 P7 a glob command after an inert one ## echo g?t push; /usr/bin/g?t -c k=v push origin main
+deny ## R16 P7 a glob command in $( ) inside echo ## echo $(/usr/bin/g?t -c k=v push origin main)
+allow ## R16 P9 silent: a wrapper before an inert tool ## sudo ls g?t push
+allow ## R16 P9 silent: time before cat ## time cat g* push*
+allow ## R16 P9 silent: time before cat, with a redirect ## time cat g?t push-notes.md > out.txt
+deny ## R16 P9 quoted letters after the glob part ## /usr/bin/[[.g.]]"it" -C . push origin main
+deny ## R16 P9 single-quoted letters after the glob part ## /usr/bin/[[.g.]]'it' -C . push origin main
+deny ## R16 P9 a quoted letter in the middle after a bracket ## /usr/bin/[[=g=]]i"t" -C . push origin main
+deny ## R16 P9 the same after a cd ## cd /tmp && /usr/bin/[[.g.]]i"t" -C . push origin main
+allow ## R16 P4 silent: su as an echo argument ## echo su -c "g?t push"
+allow ## R16 P4 silent: su as a pattern argument of rg ## rg -e su -c "g?t push" README.md
+deny ## R16 P4 su after a wrapper still reads its string ## sudo su -c '/usr/bin/g?t -c k=v push origin main'
+deny ## R16 P3 su -c still reads its string ## su -c '/usr/bin/[g][i][t] -C . ${X:-pu}sh origin main' me
+deny ## R16 P3 sg -c still reads its string ## sg staff -c '/usr/bin/g?t -c k=v push origin main'
+allow ## R16 P1 silent: a quoted letter inside an ordinary glob ## ls g"i"[t]*
+allow ## R16 P1 silent: a quoted prefix that is not a git name ## "x"[g][i][t] status
+TABLE
+# Linear time: 300 KB of quoted blanks, decoys, redirects and continuations stays under 10 s.
+r15_shapes=(
+  "$(awk 'BEGIN { for (i = 0; i < 40000; i++) printf "\"a b\" >g?t A=/tmp/g?t "; print "ls" }')"
+  "$(awk 'BEGIN { printf "echo \""; for (i = 0; i < 60000; i++) printf "a b "; print "g?t" }')"
+  "$(awk 'BEGIN { for (i = 0; i < 12000; i++) print "- *sh \\"; print "x" }')"
+  "$(awk 'BEGIN { printf "ls g?t"; for (i = 0; i < 30000; i++) printf " g?t"; print "" }')"
+)
+for r15_i in 0 1 2 3; do
+  t0=$SECONDS
+  expect allow "R15 a 300 KB command of shape $r15_i stays silent" "$R" "${r15_shapes[$r15_i]}"
+  if [ $((SECONDS - t0)) -lt 10 ]; then
+    pass=$((pass + 1)); printf '  ok   R15 shape %s stays under 10 s (%s s)\n' "$r15_i" "$((SECONDS - t0))"
+  else
+    fail=$((fail + 1)); printf '  FAIL R15 shape %s under 10 s (%ss)\n' "$r15_i" "$((SECONDS - t0))"
+  fi
+done
+# The same payloads without a glob git word, or without a glob that can be one, stay silent. None
+# holds git or push text, so the helper starts only when the ERE matches, and it stays silent.
+run_table <<'TABLE'
+allow ## GM silent: ls of a glob that matches git ## ls /usr/bin/g?t
+allow ## GM silent: a bracket glob with no push slot ## ls [g][i][t]
+allow ## GM silent: the literal twin of that ls ## ls git
+allow ## GM silent: a bracket word and a star ## echo [abc]*.md
+allow ## GM silent: a glob push word, no git word ## rg 'p?sh' docs/
+allow ## GM silent: a star glob ## cat *.txt
+allow ## GM silent: a URL with a query ## curl -s 'https://example.com/a?x=1' -o /dev/null
+allow ## GM silent: the test builtin ## [ -f x ] && echo ok
+allow ## GM silent: the test keyword ## [[ -n $x ]] && echo ok
+allow ## GM silent: find with a name glob ## find . -name '*.rb'
+allow ## GM silent: a markdown bold word ## echo '**passed** and **failed**'
+allow ## GM silent: a subshell ## (cd /tmp; ls)
+allow ## GM silent: two ? cannot be git ## ls ??
+allow ## GM silent: digit ranges ## echo [1-9][0-9]*
+allow ## GM silent: a regex class in a pattern ## rg -n '[A-Z_]*' src/
+TABLE
+gm_big=$(awk 'BEGIN { for (i = 0; i < 12000; i++) print "ls [abc]*.md g?t.txt (a|b)x" }')
+t0=$SECONDS
+expect allow "GM a 300 KB command of glob-looking words stays silent" "$R" "$gm_big"
+if [ $((SECONDS - t0)) -lt 10 ]; then
+  pass=$((pass + 1))
+  printf '  ok   %s\n' "GM the 300 KB glob-looking command stays under 10 s ($((SECONDS - t0)) s)"
+else
+  fail=$((fail + 1))
+  printf '  FAIL %s (%ss)\n' "GM the 300 KB glob-looking command under 10 s" "$((SECONDS - t0))"
+fi
+# The helper run directly. Flag 2 runs the strict re-run only, with main's raw checks on the read
+# text, and never asks: a push that would ask is the plain deny. The stand-alone path (a possible
+# git by itself) and the view checks do not run, so a glob git word that runs no push is silent
+# where flag 1 denies it. An unset, lost or garbled flag is not 2: it is the strictest reading.
+gm_hidden=$(printf '%s' "\$'\\x67it' \$'\\x70ush' origin main")
+helper_flag deny   "GM helper, flag 2: a glob git word before a push word" \
+  2 '/usr/bin/g?t push origin main'
+helper_flag deny   "GM helper, flag 2: a push that would ask is a deny" \
+  2 '/usr/bin/g?t push --force origin main'
+helper_flag deny   "GM helper, flag 2: a glob push word" \
+  2 'cd /tmp; /usr/bin/[g][i][t] p?sh origin main'
+helper_flag silent "GM helper, flag 2: a glob git word alone is no push (stand-alone path off)" \
+  2 '/usr/bin/g?t status'
+helper_flag deny   "GM helper, flag 1: the same command is denied by the stand-alone path" \
+  1 '/usr/bin/g?t status'
+helper_flag silent "GM helper, flag 2: no view check runs" 2 "$gm_hidden"
+helper_flag deny   "GM helper, flag 0: the same command is denied by its views" 0 "$gm_hidden"
+helper_flag silent "GM helper, flag 2: a plain command with no glob word" 2 'echo hi'
+for gm_v in "" 22 true " 2" two; do
+  helper_flag deny "GM helper, flag '$gm_v' is the strictest reading, not glob mode" \
+    "$gm_v" 'git pom $'"'x'"
+done
+# A failure: reading a glob word and then failing to judge it denies; a command with no glob word
+# never reaches the re-run, and nothing else runs, so a failure elsewhere cannot deny.
+gm_out=$(/usr/bin/python3 - "$(dirname "$GUARD")/git-push-guard.py" <<'PY'
+import importlib.util, io, json, os, sys
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("guard", sys.argv[1])
+g = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(g)
+
+
+def boom(*a, **k):
+    raise RuntimeError("forced")
+
+
+def run(cmd, name):
+    os.environ["PUSH_GUARD_LITERAL"] = "2"
+    saved = getattr(g, name)
+    setattr(g, name, boom)
+    sys.stdin = io.StringIO(json.dumps({"cwd": "/nonexistent", "tool_input": {"command": cmd}}))
+    out, old = io.StringIO(), sys.stdout
+    sys.stdout = out
+    try:
+        g.main()
+    finally:
+        sys.stdout = old
+        setattr(g, name, saved)
+    text = out.getvalue().strip()
+    return "silent" if not text else json.loads(text)["hookSpecificOutput"]["permissionDecision"]
+
+
+glob = "/usr/bin/g?t -c k=v status"
+print("the re-run fails, a glob word read |", run(glob, "could_push"))
+print("the re-run fails, no glob word |", run("echo hi", "could_push"))
+for name in ("views", "parse_plain", "judge", "probe_refuses", "push_shape", "nested_token_lists"):
+    print("%s fails |" % name, run(glob, name))
+# push_shape and nested_token_lists run inside the re-run (main's raw checks on the read text), so
+# their failure is a failed re-run; the other four are the paths flag 2 skips.
+PY
+)
+while IFS='|' read -r label want; do
+  got=$(printf '%s\n' "$gm_out" | sed -n "s/^$label |//p" | tr -d ' ')
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf '  ok   GM flag 2, %s: %s\n' "$label" "$want"
+  else
+    fail=$((fail + 1)); printf '  FAIL GM flag 2, %s: %s (got %s)\n' "$label" "$want" "$got"
+  fi
+done <<'EOF'
+the re-run fails, a glob word read|deny
+the re-run fails, no glob word|silent
+views fails|silent
+parse_plain fails|silent
+judge fails|silent
+probe_refuses fails|silent
+push_shape fails|deny
+nested_token_lists fails|deny
+EOF
+has_reason "a hidden spelling gets the plain-push deny" "in a shape the guard does not check" "$R" "$(printf '%s' "\$'\\x67it' push origin --delete wip")"
+has_reason "a continuation spelling gets the plain-push deny" "in a shape the guard does not check" "$R" 'git pu\
+sh origin main'
+# Review Focus 4: a 200 KB payload of escapes is decoded in every view well inside the hook's
+# timeout, and ordinary text stays cheap.
+big=$(awk 'BEGIN { for (i = 0; i < 40000; i++) print "\\x41" }')
+t0=$SECONDS
+expect allow "Review Focus 4: a 200 KB here-document of \\x41 escapes" "$R" "cat > $TMP/big <<'EOF'
+$big
+EOF"
+if [ $((SECONDS - t0)) -lt 10 ]; then
+  pass=$((pass + 1)); printf '  ok   %s\n' "Review Focus 4: the 200 KB escape payload stays under 10 s ($((SECONDS - t0)) s)"
+else
+  fail=$((fail + 1)); printf '  FAIL %s (%ss)\n' "Review Focus 4: the 200 KB escape payload stays under 10 s" "$((SECONDS - t0))"
+fi
 
 echo "== rule 4: aliases that expand to pushing commands =="
 ALIASES=$(clone aliases)
@@ -1568,6 +3416,22 @@ if [ -e "$TRIP/git-push-guard.py.ran" ]; then
   pass=$((pass + 1)); printf '  ok   %s\n' "a git -C command runs it: its aliases live in that repository"
 else
   fail=$((fail + 1)); printf '  FAIL %s\n' "a git -C command runs it: its aliases live in that repository"
+fi
+for c in "IFS=\$'\\n'; echo hi" "printf '\\x41'" "printf '\\101'" "printf '\\u0041'" "printf '\\U00000041'" "printf '\\cA'" $'git pu\\\nsh origin main'; do
+  rm -f "$TRIP/git-push-guard.py.ran"
+  run "$R" "$c" >/dev/null
+  if [ -e "$TRIP/git-push-guard.py.ran" ]; then
+    pass=$((pass + 1)); printf '  ok   %s\n' "a hidden spelling runs the helper: $c"
+  else
+    fail=$((fail + 1)); printf '  FAIL %s\n' "a hidden spelling runs the helper: $c"
+  fi
+done
+rm -f "$TRIP/git-push-guard.py.ran"
+run "$R" 'echo hi' >/dev/null
+if [ -e "$TRIP/git-push-guard.py.ran" ]; then
+  fail=$((fail + 1)); printf '  FAIL %s\n' "echo hi does not run the helper"
+else
+  pass=$((pass + 1)); printf '  ok   %s\n' "echo hi does not run the helper"
 fi
 GUARD=$SAVED_GUARD
 

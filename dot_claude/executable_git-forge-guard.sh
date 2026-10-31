@@ -117,25 +117,88 @@ EOF
     fi
     ;;
 esac
-push_candidate=0
-[ "$push_word$push_selector$push_alias" = 000 ] || push_candidate=1
+# literal is main's own evidence (a push the shell would run as written). The signals below
+# find hidden spellings: they start the helper, which denies them and never asks. A glob git
+# word alone (further below) starts it with literal=2: its strict re-run only.
+literal=0
+[ "$push_word$push_selector$push_alias" = 000 ] || literal=1
+push_hidden=0
+# Only when no literal signal fired: with one, the helper starts anyway and these cannot
+# change the decision. Each check is linear in the payload (one pattern or one ERE match).
+if [ "$literal" = 0 ]; then
+  case "$payload" in *"\$'"*) push_hidden=1 ;; esac
+  if [ "$push_hidden" = 0 ]; then
+    esc_re='\\\\[xuU0-7c]'
+    [[ $payload =~ $esc_re ]] && push_hidden=1
+  fi
+  if [ "$push_hidden" = 0 ]; then
+    # push or send-pack with quotes, backslashes or a JSON backslash-newline between letters
+    s='([\\"'"'"']|\\\\\\n)*'
+    flat_re="p${s}u${s}s${s}h|s${s}e${s}n${s}d${s}-${s}p${s}a${s}c${s}k"
+    [[ $payload =~ $flat_re ]] && push_hidden=1
+  fi
+fi
+push_candidate=$literal
+[ "$push_hidden" = 0 ] || push_candidate=1
+# A glob word that a shell can expand to git (/usr/bin/[g][i][t], g?t, /usr/bin/(git|x)) leaves no
+# git and no push in a payload like `/usr/bin/[g][i][t] p?sh origin main`. When nothing above
+# fired, start the helper in glob mode (literal=2): it runs only its strict re-run. One ERE match
+# on the raw payload, a necessary condition for the helper's can_be: a word of name letters
+# (g i t p u s h e n d a c k o - and quotes), ? * and [..] or (..) spans, starting with g, a span
+# or a * and ending in t, h, k, a span or a *, with a glob item in it, after a word start or /.
+# A [..] span that starts with a digit or a capital ([0-9]*, [A-Z_]*) cannot be git unless it holds
+# g, i or t or a range that ends in a letter from g up ([Gg], [A-z], [0-9a-z]); nor can ?? be git.
+# A zsh group (a|b) with no blank, after a blank or a quote, can start a word (nice (g|x)it).
+push_glob=0
+if [ "$push_candidate" = 0 ]; then
+  case "$payload" in
+    *[?*[\(]*)
+      g_sq="'"; g_nm="gitpushendacko$g_sq\"\\\\-"; g_q="[$g_sq\"\\\\]*"
+      g_bc='[^] ;&|<>()`]'; g_bx='[^] 0-9A-Z;&|<>()`]'; g_gr='\([^();&<>]*\)'
+      g_bd="[0-9A-Z]$g_bc*(-[g-z{|}~]|[git])$g_bc*"
+      g_br="\\[([!^]\\]?$g_bc*|\\]?$g_bx$g_bc*|\\]?$g_bd)\\]+"
+      g_it="([$g_nm]|\\?|\\*|$g_br|$g_gr|n\\])"; g_end="(t|h|k|\\?|\\*|$g_br|$g_gr)"
+      g_wa="(g|\\*|$g_br)$g_it*(\\?|$g_br|$g_gr)($g_it*$g_end)?"
+      g_wa="$g_wa|$g_br$g_it*$g_end|\\?$g_it*(\\*|$g_br|$g_gr)|\\?$g_it*$g_it$g_end"
+      g_wb="g$g_it*\\*($g_it*$g_end)?|\\*$g_it*((g|i|p|u|s|e|n|d|a|c|o|-)$g_it*$g_end|t|h|k)"
+      g_zg='\([a-z.|-]*\|[a-z.|-]*\)[a-z-]*'
+      g_re="(((^|[ :;&|(<>\`/{]|\\\\[nrt])$g_q($g_wa|$g_wb))|(/$g_gr$g_it*)"
+      g_re="$g_re|([[:space:]$g_sq\"]$g_zg))$g_q"
+      g_re="$g_re([[:space:];&|<>(){}\`\\\\]|\$)"
+      [[ $payload =~ $g_re ]] && push_glob=1 ;;
+  esac
+fi
+[ "$push_glob" = 0 ] || { push_candidate=1; literal=2; }
 
 [ "$forge_candidate" = 1 ] || [ "$push_candidate" = 1 ] || allow
 
-cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command // empty' 2>/dev/null) || allow
+# An unreadable payload (jq rejects a lone UTF-16 surrogate escape) fails closed for rule 4,
+# on the raw-text evidence above, and asks for rule 3 when the raw text holds `glab api`;
+# rules 1-2 allow, as everywhere else.
+if ! cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command // empty' 2>/dev/null); then
+  [ "$push_candidate" = 0 ] || deny "Push guard: this command's payload could not be read, so a possible push is refused. Rewrite it without unusual escape sequences."
+  case "$payload" in
+    *"glab api"*) ask "Could not determine whether this \`glab api\` call reads or writes.
+
+The command payload could not be read (an unusual escape sequence), so it is being
+surfaced rather than assumed safe. Check the method flag by eye." ;;
+  esac
+  allow
+fi
 [ -n "$cmd" ] || allow
 
 # ------------------------------------------------------------ rule 4: git push
 # The work is in git-push-guard.py beside this file: it prints a finished decision (ask
 # or deny) or nothing. A deny is final. An ask is held in $pending and released by
 # allow(), so the rules below can still deny. FAIL DIRECTION IS CLOSED: if the helper
-# cannot run at all, a command that looks like a push is denied, with a reason the agent
-# can act on. Runs before the FORGE_GUARD=off check below, which never lifts it.
+# cannot run at all, or the payload cannot be read at all (jq failed above), a command that
+# looks like a push is denied, with a reason the agent can act on. Runs before the
+# FORGE_GUARD=off check below, which never lifts it.
 if [ "$push_candidate" = 1 ]; then
   py=/usr/bin/python3
   [ -x "$py" ] || py=python3
   helper="$(dirname "$0")/git-push-guard.py"
-  verdict=$(printf '%s' "$payload" | "$py" "$helper" 2>/dev/null)
+  verdict=$(printf '%s' "$payload" | PUSH_GUARD_LITERAL=$literal "$py" "$helper" 2>/dev/null)
   rc=$?
   case "$verdict" in
     '') ;;
