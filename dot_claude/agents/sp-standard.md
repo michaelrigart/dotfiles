@@ -1,6 +1,6 @@
 ---
 name: sp-standard
-description: Integration and judgment work — multi-file coordination, matching an existing pattern across a codebase, debugging a failure whose cause is not yet known, and fix rounds that need more than the mechanical tier.
+description: Integration and judgment work — multi-file coordination, matching an existing pattern across a codebase, debugging a failure whose cause is not yet known, fix rounds, plan-run controllers, merge-conflict resolution, and work that needs more than the mechanical tier.
 model: sonnet
 effort: high
 ---

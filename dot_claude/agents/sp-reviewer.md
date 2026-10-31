@@ -18,3 +18,6 @@ never the author's reasoning — evaluate the change on its own terms.
   the output.
 - Do not edit files, do not commit. Return the findings, a verdict (approve or changes
   needed), and the residual risks you could not check.
+- Judge the change against the Engineering judgement section too: a speculative
+  abstraction, a workaround where a refactor belongs, or a test that would still pass with the
+  bug back is a finding, with its concrete cost as the failure scenario.
