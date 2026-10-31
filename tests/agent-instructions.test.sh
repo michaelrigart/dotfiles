@@ -98,7 +98,7 @@ for f in global.md claude-code.md; do
   else _pass "$f contains no template action"; fi
 done
 
-# The rules specs 2026-10-16 and 2026-10-30 add: the git configuration escape, both shapes
+# The rules specs 2026-10-16, 2026-10-30 and 2026-10-31 add: the git configuration escape, both shapes
 # the path-resolution guard denies, the plan workspace cleaner, and progress on a long run.
 # Each is a fixed string on one line.
 need() { # need <fragment> <fixed text> <label>
@@ -122,6 +122,25 @@ need global.md 'to take over about 15 minutes, give its size and ETA at the star
   "global.md's Momentum rule asks for size and ETA on a long run"
 need global.md '  merged branch'"'"'s pinned delete, `git branch -d`. Harness prompts are a backstop, not the check.' \
   "global.md exempts a merged branch's pinned delete from confirm-first"
+# Rules that must survive a rewrap are matched on the whitespace-flattened text.
+need_flat() { # need_flat <fragment> <fixed text> <label>
+  if tr '\n' ' ' < "$FRAG/$1" | tr -s ' ' | grep -qF -- "$2"; then _pass "$3"; else _fail "$3" "missing: $2"; fi
+}
+need global.md '## Engineering judgement' "global.md carries the Engineering judgement section"
+need_flat global.md '- **Sizing.** Size the process to the change, never the quality bar.' \
+  "global.md carries the Sizing rule"
+need_flat global.md 'Unsure means not small; say which.' "the Sizing rule treats an unsure change as not small"
+need_flat global.md '- **Convergence.** A loop converges when each round leaves less to fix.' \
+  "global.md carries the Convergence rule"
+need_flat global.md 'Never add agent attribution (session links, `Claude-Session:` trailers, `Co-authored-by:` agent lines, "Generated with…" footers, naming the tool) in commits, MR/PR titles and bodies, issues or review comments.' \
+  "global.md keeps the no-attribution rule in full"
+need_flat global.md 'write it only when asked' "global.md keeps the vault rule: write a note only when asked"
+need_flat global.md 'Never store secrets, credentials, customer data, raw conversations or transient working notes' \
+  "global.md keeps every never-store category for the vault"
+need_flat claude-code.md 'Other deletions and container removals wait until the run'"'"'s work is done' \
+  "claude-code.md defers other deletions and container removals to the end of the run"
+need_flat claude-code.md '`sp-standard` | integration, debugging, scoped review, fix rounds, plan-run controllers, merges |' \
+  "the subagent table routes fix rounds, controllers and merges to sp-standard"
 if grep -qF -- '**Recursive search.**' "$FRAG/claude-code.md"; then
   _fail "the Recursive search bullet is folded into the path-resolution rule" "still present"
 else

@@ -15,20 +15,20 @@
 - **Path-resolution guard.** Never chain commands after a leading `cd`: use absolute paths
   or `git -C`; a lone `cd` lasts only in the main session. Name directories, not a recursive
   `grep`/`rg` over `.`, which re-prompts in any tree that could hold a deny-glob match.
-- **Plan workspaces.** Delete a finished `.superpowers/sdd/<plan>` workspace with
-  `sdd-clean <workspace>`, never `rm -rf`.
+- **Cleanup never blocks a run.** Delete a finished `.superpowers/sdd/<plan>` workspace with
+  `sdd-clean <workspace>`, never `rm -rf`. Other deletions and container removals wait until
+  the run's work is done and go together, or into the final report as commands.
 - **Subagents.** Use the named types in `~/.claude/agents/`. Each pairs a model with an
   effort, which the Agent tool cannot set per call.
 
   | Type | Use for |
   |---|---|
   | `sp-mechanical` | tasks from a clear plan |
-  | `sp-standard` | integration, debugging, scoped review |
+  | `sp-standard` | integration, debugging, scoped review, fix rounds, plan-run controllers, merges |
   | `sp-reviewer` | cold diff review |
   | `sp-architect` | design, plan review, the final whole-branch review |
 
-  Go up a tier when a task is harder than its label, and say which tier you used when it
-  isn't obvious.
+  Go up a tier when a task is harder than its label; say which tier you used if not obvious.
 - **Parallel tasks.** A plan runs entirely in its own worktree; never create a worktree for
   one of its tasks. Plans give each task a `Depends on:` line. A batch is tasks with no
   pending dependency, disjoint files (neither one's tests load the other's), and no shared
