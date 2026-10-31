@@ -1246,8 +1246,10 @@ _PREFIX_NUMBER = re.compile(r"\d+(?:\.\d+)?[smhd]?$")
 
 
 # Commands that run the command word after them (the strict reading only; WRAPPERS is main's list):
-# a dash-name glob word after one of them, or after run/exec, is in command position, behind up
-# to two positional words of its own (script -q /dev/null, flock /tmp/lock, direnv exec .).
+# a dash-name glob word after one of them, or after run/exec, is in command position. A runner
+# takes no positional word before its command unless _POSITIONALS says so (script FILE, flock
+# FILE, chroot DIR, ssh HOST, docker run IMG, kubectl exec POD, perf record, direnv exec DIR):
+# the word after those is the command, and the words after it are its arguments (ls *sh).
 _RUNNERS = {"caffeinate", "arch", "xcrun", "stdbuf", "mise", "bundle", "op", "uv", "poetry", "npx",
             "pnpm", "yarn", "direnv", "script", "setsid", "ionice", "watch", "chrt", "taskset",
             "flock", "chroot", "unbuffer", "sandbox-exec", "systemd-run", "entr", "parallel",
@@ -1256,19 +1258,59 @@ _RUNNERS = {"caffeinate", "arch", "xcrun", "stdbuf", "mise", "bundle", "op", "uv
             "perf", "hyperfine", "torsocks", "proxychains", "numactl", "cpulimit", "fakeroot",
             "faketime", "tmux", "screen", "dtrace", "lldb", "gdb", "rr", "runuser", "pkexec", "sg",
             "su", "coproc", "ssh", "kubectl", "docker"}
-_POSITIONALS = {"ssh": 1, "docker": 2, "kubectl": 2}   # the positional words before their command
-# The options of a wrapper that take the next word as their value (sudo -u root, env -C dir).
-_VALUE_OPTS = {"sudo": {"-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-T", "-U", "-R"},
-               "doas": {"-u", "-C"}, "env": {"-C", "-u"}, "nice": {"-n"},
-               "timeout": {"-s", "-k"}, "exec": {"-a"},
-               "xargs": {"-I", "-n", "-L", "-P", "-s", "-E", "-d", "-a"}}
+_POSITIONALS = {"ssh": 1, "docker": 2, "kubectl": 2, "script": 1, "flock": 1, "chroot": 1,
+                "direnv": 2, "perf": 1, "rr": 1, "tmux": 1, "faketime": 1, "sg": 1}
+# After a runner's own `--` a command starts again (mise exec node@20 -- cmd, kubectl exec P -- cmd)
+_DASHDASH = {"mise", "rtx", "op", "uv", "poetry", "kubectl", "runuser", "cpulimit", "systemd-run",
+             "pnpm", "npx", "bundle", "direnv", "doas", "sudo", "su", "timeout", "dotenv", "exec"}
+# The options of a wrapper or runner that take the next word as their value (sudo -u root).
+_VALUE_OPTS = {
+    "sudo": {"-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-T", "-U", "-R", "-c", "--user",
+             "--group", "--chdir", "--host", "--prompt", "--role", "--type", "--close-from",
+             "--other-user", "--login-class", "--chroot"},
+    "doas": {"-u", "-C", "-a"}, "env": {"-C", "-u", "-P", "--chdir", "--unset"},
+    "nice": {"-n", "--adjustment"}, "timeout": {"-s", "-k", "--signal", "--kill-after"},
+    "exec": {"-a"}, "xargs": {"-I", "-n", "-L", "-P", "-s", "-E", "-d", "-a", "-J", "-R", "-S"},
+    "caffeinate": {"-w", "-t"}, "flock": {"-w", "-E", "--timeout", "--conflict-exit-code"},
+    "strace": {"-o", "-e", "-p", "-s", "-u", "-E", "-a", "-b", "-I", "-P", "-S", "-X"},
+    "ltrace": {"-o", "-e", "-p", "-s", "-u", "-a", "-n", "-w"},
+    "perf": {"-o", "-e", "-p", "-F", "-C", "-t", "-c", "-G", "-m", "-r"},
+    "hyperfine": {"-w", "-r", "-m", "-M", "-p", "-c", "-s", "-S", "-L", "-n", "-N", "-u", "-i"},
+    "gdb": {"-ex", "-x", "-d", "-p", "-s", "-e", "-iex", "-ix", "-cd", "-tty", "-c"},
+    "screen": {"-S", "-s", "-t", "-c", "-p", "-T", "-h", "-e", "-L"},
+    "tmux": {"-s", "-n", "-c", "-t", "-x", "-y", "-f", "-L", "-S", "-e", "-F", "-P"},
+    "stdbuf": {"-i", "-o", "-e"}, "ionice": {"-c", "-n", "-p", "-P", "-u", "-t"},
+    "taskset": {"-c"}, "chrt": {"-p"},
+    "runuser": {"-u", "-g", "-G", "-l", "-s", "-w"},
+    "su": {"-s", "-g", "-G", "-l", "-w", "-u"},
+    "ssh": {"-i", "-p", "-l", "-o", "-F", "-J", "-L", "-R", "-D", "-b", "-c", "-E", "-e", "-m",
+            "-S", "-w", "-W", "-B", "-I", "-O", "-Q"},
+    "docker": {"-v", "-e", "-w", "-u", "-p", "-l", "-h", "-a", "-c", "-m", "--name",
+               "--network", "--entrypoint", "--user", "--workdir", "--env", "--volume", "--publish",
+               "--mount", "--platform", "--env-file", "--label", "--cpus", "--memory"},
+    "kubectl": {"-n", "-c", "-f", "-s", "--namespace", "--container", "--context", "--cluster",
+                "--user", "--kubeconfig", "--filename", "--server"},
+    "cpulimit": {"-l", "-p", "-e", "-P", "--limit", "--pid", "--exe", "--path"},
+    "numactl": {"-C", "-N", "-m", "-i", "-p"},
+    "sandbox-exec": {"-f", "-p", "-n", "-D"}, "script": {"-t", "-F"},
+    "systemd-run": {"-p", "-u", "-E", "-G", "-H", "-M"}, "fakeroot": {"-s", "-i", "-l"},
+    "faketime": {"-f", "-m"}, "watch": {"-n", "-d"},
+    "pkexec": {"--user"}, "dotenv": {"-f", "-e"},
+    "arch": {"-arch", "-c"}, "xcrun": {"--sdk", "--toolchain", "-sdk"},
+    "mise": {"-C", "--cd", "-E", "--env"},
+    "uv": {"--python", "-p", "--with", "--directory", "--project", "--env-file"},
+    "op": {"--account", "--env-file", "--session"},
+    "parallel": {"-j", "-a", "-n", "-N", "-S", "--jobs"},
+}
 
 
-def _prefix_word(w, after_option):
+def _prefix_word(w, after_option, wrapper=""):
     """Is w, a word of a simple command, one that a command word can follow (see above)?
-    after_option: the word before it was an option, so w may be its value."""
+    after_option: the word before it was an option, so w may be its value. A lone - is an option
+    only behind a wrapper (su -); elsewhere it is a bullet or stdin (a markdown list line)."""
     w = w.lstrip("$").strip("'\"")
-    return (after_option or w in RESERVED or bool(ASSIGN_RE.match(w)) or w.startswith("-")
+    return (after_option or w in RESERVED or bool(ASSIGN_RE.match(w))
+            or (w.startswith("-") and (w != "-" or bool(wrapper)))
             or os.path.basename(w) in WRAPPERS or os.path.basename(w) == "timeout"
             or os.path.basename(w) in _RUNNERS or bool(_PREFIX_NUMBER.match(w)))
 
@@ -1309,33 +1351,64 @@ def _scan_quotes(run, state=""):
     return g0, (qbefore if g0 != -1 else qlast), state
 
 
-def strict_text(cmd):
+_CONTINUATION = re.compile(r"\\[\\\n]")
+_REDIRECT_GAP = re.compile(r"[<>][&|]?[ \t]*$")
+STRICT_MULTI = [False]   # strict_text: a simple command held a second candidate for its git word
+STRICT_DECOY = [False]   # strict_text: a decoy (redirect target, assignment value) read as git
+
+
+def _drop_continuations(text):
+    """(clean, cuts): text without its backslash-newline pairs, and the offsets in clean at which
+    each pair sat. A pair of backslashes is no continuation. Linear."""
+    pieces, cuts, last, size = [], [], 0, 0
+    for m in _CONTINUATION.finditer(text):
+        if m.group() == "\\\n":
+            pieces.append(text[last:m.start()])
+            size += m.start() - last
+            cuts.append(size)
+            last = m.end()
+    pieces.append(text[last:])
+    return "".join(pieces), cuts
+
+
+def strict_text(cmd, alt=0):
     """cmd with every glob word that some shell can expand to git (can_be) read as the literal
     word git, or None when it holds none. A word is a run of characters other than blanks, ; & |
-    < > ( ) and a backtick, in a copy of cmd with the in-word groups glued (glue_paren_groups).
-    Quotes around it stay; what follows its last / or its last closing quote is replaced, and only
-    when its quotes balance, with quotes and backslashes dropped for the reading. A run whose glob
-    characters all sit inside a quote it opens is a quoted string: taken only when it is a shell's
-    -c string or eval's (elsewhere a quote makes the glob literal). A glob after the quotes close
-    ("$HOME"/bin/[g][i][t], ''[g][i][t]) expands, so it is read. Only the first such word of a
-    simple command (the text between ; & | ( ) a newline or a backtick) is replaced as git: one
-    after it is its argument, and [a-z]* ??* stays a git with a glob slot; the value of a
-    wrapper's option (sudo -u g?t) is never the command. A word made of * alone is exempt, as is
-    a git one that a ) or | follows (a case arm, a subshell's or $( )'s last word, a pipe's
-    source: there it has no arguments). A word that can be a git-* name but not git becomes that
-    name where a command word can stand (after assignments, wrappers and runners with their
-    options), not as the argument of ls, cp or rm. The offsets of the replaced names in the
+    < > ( ) and a backtick, in a copy of cmd with the in-word groups glued (glue_paren_groups) and
+    its backslash-newline pairs dropped; a blank inside an open quote or after a backslash does
+    not end it. Quotes around it stay; what follows its last / or its last closing quote is
+    replaced, and only when its quotes balance, with quotes and backslashes dropped for the
+    reading. A run whose glob characters all sit inside a quote it opens is a quoted string: taken
+    only when it is a shell's -c string or eval's (elsewhere a quote makes the glob literal). A
+    glob after the quotes close ("$HOME"/bin/[g][i][t], ''[g][i][t]) expands, so it is read. Only
+    the first such word of a simple command (the text between ; & | ( ) a newline or a backtick)
+    is replaced as git: one after it is its argument, and [a-z]* ??* stays a git with a glob slot;
+    a redirection target and an assignment's value are replaced but never take that place, and the
+    value of a wrapper's option (sudo -u g?t) is never the command. With alt 1 the decoys stay as
+    written (the literal analog of the command), with alt 2 the second such word takes the place
+    of the first (STRICT_MULTI and STRICT_DECOY say whether either differs). A word made of *
+    alone is exempt, as is a git one that a ) or | follows (a case arm, a subshell's or $( )'s
+    last word, a pipe's source: there it has no arguments). A word that can be a git-* name but
+    not git, and does not start with *, becomes that name where a command word can stand (after
+    assignments, wrappers and runners with their options), not as the argument of ls, cp or rm, nor
+    as a redirection target or an assignment's value. The offsets of the replaced names in the
     returned text go to STRICT_SPANS. Linear."""
+    STRICT_MULTI[0] = STRICT_DECOY[0] = False
     if not any(c in cmd for c in "?[*("):
         return None
     glued = glue_paren_groups(cmd)
+    cuts = []
+    if "\\\n" in glued:
+        glued, cuts = _drop_continuations(glued)
     out, last, n, pos, spans = [], 0, len(glued), 0, []
-    scan, taken = 0, False            # taken: a git word of the current simple command was replaced
+    scan, cands = 0, 0                # cands: git words of the current simple command so far
     prefix_ok, prev_end, after_option, wrapper, qstate, budget = True, 0, False, "", "", 0
-    word_cmd = True                   # the word whose first run is above was in command position
+    word_cmd, word_decoy, cont, dashdash = True, False, False, False
     parens = []                       # per (: (quote, word_cmd) to restore at its ) if it opens $(
+    tick = None                       # (quote, word_cmd) to restore at the closing backtick
     for m in STRICT_RUN.finditer(glued):
         start, end = m.span()
+        run = m.group()
         gap = glued[prev_end:start]
         for k, ch in enumerate(gap):
             if ch == "(":
@@ -1346,43 +1419,63 @@ def strict_text(cmd):
                 saved = parens.pop()
                 if saved is not None:
                     qstate, word_cmd = saved
-        if re.search(r"\s", gap):
+            elif ch == "`":               # `..` suspends a quote around it, as $( ) does
+                if tick is None:
+                    tick, qstate = (qstate, word_cmd), ""
+                else:
+                    (qstate, word_cmd), tick = tick, None
+        # a blank inside an open quote, or one after a backslash, does not end the word
+        joined = cont and bool(gap) and not gap.strip(" \t") and (bool(qstate) or len(gap) == 1)
+        if not joined and re.search(r"\s", gap):
             qstate = ""
-        if any(c in "\n;&|(`" for c in gap) or re.search(r"\)\s", gap):
-            prefix_ok, after_option, wrapper, budget = True, False, "", 0
+        if not qstate and (any(c in "\n;&|(`" for c in gap) or re.search(r"\)\s", gap)):
+            prefix_ok, after_option, wrapper, budget, dashdash = True, False, "", 0, False
         prev_end = end
         state0 = qstate
-        g0, qlast, qstate = _scan_quotes(m.group(), state0)
-        opens = not state0 and (glued[start:start + 1] in ("'", '"')
-                                or glued[start:start + 2] in ("$'", '$"'))
-        if opens and SHELL_STRING_BEFORE.search(glued[max(0, start - 100):start]):
+        g0, qlast, qstate = _scan_quotes(run, state0)
+        cont = bool(qstate) or (len(run) - len(run.rstrip("\\"))) % 2 == 1
+        inword = bool(state0) or joined   # the rest of a word that began in an earlier run
+        opens = not inword and (run[:1] in ("'", '"') or run[:2] in ("$'", '$"'))
+        shell_str = False
+        if opens:
+            shell_str = SHELL_STRING_BEFORE.search(glued[max(0, start - 100):start]) is not None
+        if shell_str:
             prefix_ok, after_option = True, False
-        is_value = prefix_ok and after_option
-        at_command = prefix_ok
-        if state0:                    # the rest of a word whose quote ran across a $( ): one word
-            at_command, is_value = word_cmd, False
+        if inword:
+            at_command, is_value, decoy = word_cmd, False, word_decoy
+        elif _REDIRECT_GAP.search(gap):   # a redirection target: no command, no walk
+            at_command = is_value = word_cmd = False
+            decoy = word_decoy = True
         else:
-            word_cmd = prefix_ok
-        if prefix_ok and not state0:
-            word = m.group().lstrip("$").strip("'\"")
-            base_word = os.path.basename(word)
-            runner = not after_option and base_word in _RUNNERS and budget <= 0
-            if not after_option and (base_word in WRAPPERS or base_word == "timeout" or runner):
-                wrapper = base_word
-            positional = budget > 0 and not runner and not after_option and not word.startswith("-")
-            prefix_ok = _prefix_word(m.group(), after_option or positional)
-            budget = _POSITIONALS.get(base_word, 2) if runner else budget - positional
-            after_option = word in _VALUE_OPTS.get(wrapper, ()) and not is_value
-        if not any(c in m.group() for c in "?[*" + GLUE_FILL):
+            is_value = prefix_ok and after_option
+            at_command = word_cmd = prefix_ok
+            decoy = word_decoy = ASSIGN_RE.match(run) is not None
+            if prefix_ok:
+                word = run.lstrip("$").strip("'\"")
+                base_word = os.path.basename(word)
+                runner = not after_option and base_word in _RUNNERS and budget <= 0
+                if not after_option and (base_word in WRAPPERS or base_word == "timeout" or runner):
+                    wrapper = base_word
+                positional = (budget > 0 and not runner and not after_option
+                              and not word.startswith("-"))
+                at_command = at_command and not positional
+                prefix_ok = _prefix_word(run, after_option or positional, wrapper)
+                budget = _POSITIONALS.get(base_word, 0) if runner else budget - positional
+                after_option = word in _VALUE_OPTS.get(wrapper, ()) and not is_value
+            elif run == "--" and wrapper in _DASHDASH and not dashdash:
+                prefix_ok, dashdash = True, True
+        if not any(c in run for c in "?[*" + GLUE_FILL):
             continue
-        if taken and any(c in "\n;&|()`" for c in glued[scan:start]):
-            taken = False
+        if inword and g0 == -1:       # every glob character sits inside a quote opened earlier
+            continue
+        if cands and any(c in "\n;&|()`" for c in glued[scan:start]):
+            cands = 0
         scan = start
         a, b = start, end
         if g0 == -1 and opens:
             if glued[a] == "$":
                 a += 1
-            if not SHELL_STRING_BEFORE.search(glued[max(0, start - 100):start]):
+            if not shell_str:
                 continue
             q = glued[a]
             inner = glued[a + 1:b - 1 if b - 1 > a and glued[b - 1] == q else b]
@@ -1414,22 +1507,31 @@ def strict_text(cmd):
         nxt = end
         while nxt < n and glued[nxt] in " \t":
             nxt += 1
-        git_ok = can_be(base, ("git",))
-        if git_ok:
+        if can_be(base, ("git",)):
             # git has no arguments before ) or |; only a command's first candidate is its word
-            if is_value or taken or (nxt < n and glued[nxt] in ")|"):
+            if is_value or (nxt < n and glued[nxt] in ")|"):
                 continue
+            if decoy:
+                if alt == 1:
+                    continue
+                STRICT_DECOY[0] = True
+            else:
+                cands += 1
+                if cands != (2 if alt == 2 else 1):
+                    STRICT_MULTI[0] = STRICT_MULTI[0] or cands > 1
+                    continue
             name = "git"
         else:
             name = next((d for d in DASH_NAMES if can_be(base, (d,))), None)
-            if name is None or is_value or not (at_command or opens):
+            if (name is None or is_value or decoy or base.startswith("*")
+                    or not (at_command or shell_str)):
                 continue
-        pos += a - last
-        out += [cmd[last:a], name]
+        a0, b0 = a + 2 * bisect_right(cuts, a), b - 1 + 2 * bisect_right(cuts, b - 1) + 1
+        pos += a0 - last
+        out += [cmd[last:a0], name]
         spans.append((pos, pos + len(name)))
         pos += len(name)
-        last = b
-        taken = taken or git_ok
+        last = b0
     if not out:
         return None
     out.append(cmd[last:])
@@ -1441,10 +1543,17 @@ SELECTOR_TEXT = (" -C", "--git-dir", "--work-tree", " -c", "GIT_DIR", "GIT_WORK_
                  "cd ")
 
 
+PAYLOAD_REST = [""]      # main(): the payload's JSON text without the command string
+
+
 def fast_path_literal(text, cwd):
     """Would main's shell fast path start the helper for this text as written: a push or send-pack
-    word, git with a selector (-C, -c, cd, GIT_DIR, ...), or git with a push alias? The strict
-    re-run judges the glob command as its literal analog is judged: what main lets by stays by."""
+    word, git with a selector (-C, -c, cd, GIT_DIR, ...), or git with a push alias? The shell
+    tests the whole payload, so the description, the cwd and the transcript path count as well
+    (PAYLOAD_REST). The strict re-run judges the glob command as its literal analog is judged:
+    what main lets by stays by."""
+    if PAYLOAD_REST[0]:
+        text = text + "\n" + PAYLOAD_REST[0]
     if "push" in text or "send-pack" in text:
         return True
     if "git" not in text:
@@ -1452,6 +1561,17 @@ def fast_path_literal(text, cwd):
     if any(s in text for s in SELECTOR_TEXT):
         return True
     return any(a in text for a in push_aliases(cwd, []))
+
+
+def option_strings(tokens):
+    """The words after a -c bundle (-c, -lc) anywhere: su -c, sg G -c and runuser -c run that
+    word as a command line, as a shell -c does (nested_strings has the shells). Linear."""
+    out = []
+    for i in range(len(tokens) - 1):
+        t = tokens[i]
+        if t[:1] == "-" and t[-1:] == "c" and t[1:2] != "-" and not is_operator(tokens[i + 1]):
+            out.append(tokens[i + 1])
+    return out
 
 
 def nested_strings(tokens, depth=3):
@@ -1521,20 +1641,36 @@ def strict_could_push(cmd, cwd):
     if RERUN[0]:
         return False
     try:
-        text = strict_text(cmd)
-        texts = [] if text is None else [(text, list(STRICT_SPANS))]
+        texts = []
+
+        def reading(line):
+            """The read text of line; also, when a simple command of it held a decoy read as git,
+            the text with the decoys as written, and when it held a second git candidate (the
+            first may be the value of an option the table lacks), the text with the second one
+            read instead."""
+            read = strict_text(line)
+            if read is None:
+                return None
+            texts.append((read, list(STRICT_SPANS)))
+            for alt, flag in ((1, STRICT_DECOY[0]), (2, STRICT_MULTI[0])):
+                other = strict_text(line, alt) if flag else None
+                if other is not None and other != read:
+                    texts.append((other, list(STRICT_SPANS)))
+            return read
+
+        text = reading(cmd)
         try:
             outer = tokenize(cmd)
         except ValueError:
             outer = None
-        for inner in nested_strings(outer) if outer is not None else []:
+        inners = [] if outer is None else nested_strings(outer) + option_strings(outer)
+        for inner in inners:
             if any(c in inner for c in "?[*("):
-                read = strict_text(inner)
-                if read is not None:
-                    texts.append((read, list(STRICT_SPANS)))
+                reading(inner)
         if not texts:
             return False
-        lit = fast_path_literal(cmd if text is None else text, cwd)
+        lit = fast_path_literal(cmd if text is None else text, cwd) or any(
+            fast_path_literal(read, cwd) for read, _ in texts)
         if strict_only() and not lit:
             return False
         return any(strict_rerun(read, spans, lit, cwd) for read, spans in texts)
@@ -2969,6 +3105,12 @@ def main():
         return
     if not cmd:
         return
+    try:
+        # what the shell fast path also tests: the payload text around the command string
+        rest = dict(payload, tool_input=dict(payload["tool_input"], command=""))
+        PAYLOAD_REST[0] = json.dumps(rest, ensure_ascii=False)
+    except (KeyError, TypeError, ValueError):
+        PAYLOAD_REST[0] = ""
     if strict_only():
         # Only the strict re-run, which only denies (plain). It fails closed in itself: a failure
         # once a glob word is read denies. Nothing else runs, so nothing else can fail and deny.

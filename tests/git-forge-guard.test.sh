@@ -2961,6 +2961,168 @@ deny ## R14 M3 a decoy value after sudo -u ## sudo -u g?t /usr/bin/[g][i][t] -C 
 deny ## R14 M3 a decoy value after env -C ## Q=pu; env -C g?t /usr/bin/[g][i][t] -c k=v ${Q}sh origin main
 deny ## R14 M3 a decoy value and a dash name ## sudo -u g?t /usr/bin/git-pu* -f origin feat
 TABLE
+# Fix round 15. F1: a blank inside an open quote or after a backslash does not end a word (a
+# quoted path with a blank before a glob git word); F2: an assignment's value or a redirection
+# target is a decoy that no longer takes a command's one git word, and a second candidate is
+# read when the first may be the value of an option the table lacks; F3: a backslash-newline
+# inside a glob git word; F5: the shell trigger reads bracket spans that start with a capital or a
+# digit; F6: the value options of wrappers; F7: ordinary commands stay silent (a quoted prefix is
+# no command position, a runner takes its command word after its own positional words only,
+# a star-led dash-name glob, a lone - and an assignment or redirect target are no command).
+run_table <<'TABLE'
+deny ## R15 F1 a quoted path with a blank, then an equivalence class and -C ## "/opt/my tools/"[[=g=]]it -C /tmp push origin main
+deny ## R15 F1 the same without a selector ## "/opt/my tools/"[[=g=]]it push origin main
+deny ## R15 F1 an ANSI-C quoted path with a blank ## $'/opt/my tools/'[[=g=]]it push origin main
+deny ## R15 F1 a backslash blank in the path, a dash name ## /opt/my\ tools/[[=g=]]it-push origin main
+deny ## R15 F1 the quote closes before the last slash ## "/opt/my tools"/[[=g=]]it-push origin main
+deny ## R15 F1 a quoted assignment value before a dash name ## A="x y" /usr/bin/[[=g=]]it-push origin main
+deny ## R15 F1 an ssh command in the environment ## GIT_SSH_COMMAND='ssh -i k' /usr/bin/[[.g.]]it-send-pack origin main
+deny ## R15 F1 bracket letters after a quoted path with a blank ## "/opt/my tools/"[g][i][t] -C /tmp push origin main
+deny ## R15 F1 g?t after a quoted path with a blank ## "/opt/my tools/"g?t -C /tmp p?sh origin main
+deny ## R15 F1 in if/then ## if true; then "/opt/my tools/"[g][i][t] -c k=v push origin main; fi
+allow ## R15 F1 silent: a quoted string with a blank, then a glob argument ## echo "a b" g?t
+allow ## R15 F1 silent: a quoted directory with a blank, a glob of files ## ls "/opt/my tools/"*.txt
+allow ## R15 F1 silent: the glob sits inside the quote ## echo "a b g?t c"
+allow ## R15 F1 silent: a stray apostrophe on its own line ## echo it's<NL>ls g?t
+deny ## R15 F1 a stray apostrophe on an earlier line does not hide the next ## echo it's<NL>/usr/bin/[g][i][t] -C /tmp push origin main
+deny ## R15 F2 an assignment decoy before a glob git word ## A=/tmp/g?t /usr/bin/[[=g=]]it -c 'a;b' push origin main
+deny ## R15 F2 an assignment decoy, backslash in the string ## A=/tmp/g?t /usr/bin/[[.g.]]it -c "x=\|" push origin main
+deny ## R15 F2 an assignment decoy, a process substitution ## A=/tmp/g?t /usr/bin/[[=g=]]it --namespace <(true; true) push origin main
+deny ## R15 F2 an assignment decoy, a dynamic slot ## A=/tmp/g?t /usr/bin/[g][i][t] -C /tmp ${X:-pu}sh origin main
+deny ## R15 F2 an assignment decoy, -c with a ; ## A=/tmp/g?t /usr/bin/[g][i][t] -c 'a;b' push origin main
+deny ## R15 F2 an env -P value decoy ## env -P /tmp/g?t /usr/bin/[g][i][t] -C /tmp ${X:-pu}sh origin main
+deny ## R15 F2 a decoy before an alias ## A=/tmp/g?t /usr/bin/[[=g=]]it -c 'a;b' pom
+deny ## R15 F2 an unlisted option value takes the first place ## env --unknown g?t /usr/bin/[g][i][t] -C /tmp ${X:-pu}sh origin main
+allow ## R15 F2 silent: an assignment with a glob value, no git ## A=/tmp/g?t ls
+allow ## R15 F2 silent: a redirect to a glob, no push ## echo hi >/tmp/g?t
+deny ## R15 F3 backslash-newline inside an equivalence class word ## /usr/bin/[[=g=]]i\<NL>t -C /tmp push origin main
+deny ## R15 F3 the same with -c and a ; ## /usr/bin/[[=g=]]i\<NL>t -c 'a;b' push origin main
+deny ## R15 F3 bracket letters split by a continuation, dynamic slot ## /usr/bin/[g][i]\<NL>[t] -C /tmp ${X:-pu}sh origin main
+deny ## R15 F3 bracket letters split by a continuation ## /usr/bin/[g][i]\<NL>[t] -C /tmp push origin main
+deny ## R15 F3 g? split by a continuation, a glob slot ## /usr/bin/g?\<NL>t -c k=v p?sh origin main
+allow ## R15 F3 silent: a split glob that is no git ## ls g?\<NL>t
+allow ## R15 F3 silent: a continuation between words ## ls \<NL>g?t
+deny ## R15 F5 a capital in the bracket ## /usr/bin/[Gg]it -C /tmp ${X:-pu}sh origin main
+deny ## R15 F5 a range from A to z ## /usr/bin/[A-z]it -c k=v ${X:-pu}sh origin main
+deny ## R15 F5 a digit range then a letter range ## /usr/bin/[0-9a-z]it -C /tmp ${X:-pu}sh origin main
+deny ## R15 F5 after cd ## cd /tmp; /usr/bin/[Gg]it ${X:-pu}sh origin main
+deny ## R15 F5 an alias ## /usr/bin/[Gg]it pom
+allow ## R15 F5 silent: capital ranges ## ls [A-Z]*
+allow ## R15 F5 silent: a hex class ## echo [0-9a-f]*
+allow ## R15 F5 silent: digits ## ls [0-9]*.txt
+deny ## R15 F6 env -P with a dash name ## env -P /usr/bin /usr/bin/g?t-push origin main
+deny ## R15 F6 env -P with an equivalence class ## env -P /usr/bin /usr/bin/[[=g=]]it-push origin main
+deny ## R15 F6 xargs -J ## echo x | xargs -J % /usr/bin/[[=g=]]it-push origin main
+deny ## R15 F6 timeout --signal ## timeout --signal KILL 5 /usr/bin/[[=g=]]it-push origin main
+deny ## R15 F6 timeout --kill-after ## timeout --kill-after 2 5 /usr/bin/[[=g=]]it-push origin main
+deny ## R15 F6 sudo --user ## sudo --user root /usr/bin/[[=g=]]it-push origin main
+deny ## R15 F6 sudo -c ## sudo -c staff /usr/bin/[[=g=]]it-push origin main
+deny ## R15 F6 nice --adjustment ## nice --adjustment 5 /usr/bin/g?t-push origin main
+deny ## R15 F6 doas -a ## doas -a style /usr/bin/g?t-push origin main
+deny ## R15 F6 env -S ## env -S 'A=1' /usr/bin/g?t-push origin main
+allow ## R15 F6 silent: sudo with an option value and ls ## sudo --user root ls git-pu*
+allow ## R15 F6 silent: timeout with --signal and ls ## timeout --signal KILL 5 ls git-*
+allow ## R15 F7 a quoted $PWD prefix in cp ## cp "$PWD"/docs/superpowers/specs/*push* /tmp/
+allow ## R15 F7 a quoted $PWD prefix in sed ## sed -n 1,5p "$PWD"/docs/superpowers/specs/*push*
+allow ## R15 F7 a quoted $PWD prefix in tar ## tar -czf specs.tgz "$PWD"/docs/superpowers/specs/*push*
+allow ## R15 F7 a quoted $PWD prefix in a for loop ## for f in "$PWD"/docs/superpowers/specs/*push*; do wc -l "$f"; done
+allow ## R15 F7 chmod with a quoted $HOME prefix ## chmod +x "$HOME"/.local/bin/*sh
+allow ## R15 F7 caffeinate then make ## caffeinate -i make -C build *sh
+allow ## R15 F7 uv run pytest ## uv run pytest *sh
+allow ## R15 F7 strace with -o ## strace -f -o /tmp/t ls *sh
+allow ## R15 F7 su -c ## su -c 'ls *-push*' me
+allow ## R15 F7 sg -c ## sg staff -c 'ls *sh'
+allow ## R15 F7 perf record ## perf record -g ./bin/app *-push*
+allow ## R15 F7 a markdown bullet in a here-document ## cat <<'EOF' > notes.md<NL>- run git bar baz<NL>- *sh<NL>EOF
+allow ## R15 F7 a markdown bullet with a push mention ## cat <<'EOF' > notes.md<NL>- run git TODO<NL>- *sh<NL>EOF
+allow ## R15 F7 a star-led word at command position ## *sh --help
+allow ## R15 F7 a dot-slash star-led word ## ./*sh
+allow ## R15 F7 a quoted-prefix star-led word at command position ## "$HOME"/*sh
+allow ## R15 F7 an assignment with a star-led value ## A=/tmp/*sh ls
+allow ## R15 F7 an echo redirected into a glob ## echo "x|y" > *-push*
+allow ## R15 F7 kubectl cp ## kubectl cp pod:/tmp/*-push* ./
+allow ## R15 F7 watch ## watch -n 2 ls *sh
+allow ## R15 F7 exec ## exec ls *-push*
+allow ## R15 F7 hyperfine ## hyperfine 'ls *sh'
+allow ## R15 F7 screen ## screen -dmS s ls *-push*
+allow ## R15 F7 gdb ## gdb --args ./a.out *sh
+allow ## R15 F7 nix run ## nix run nixpkgs#ripgrep -- 'x|y' *sh
+allow ## R15 F7 mise exec ## mise exec -- ls *-push*
+allow ## R15 F7 pnpm exec ## pnpm exec eslint *sh
+allow ## R15 F7 bundle exec ## bundle exec rspec *-push*
+allow ## R15 F7 npx ## npx prettier --write *sh
+allow ## R15 F7 valgrind ## valgrind ./a.out *-push*
+allow ## R15 F7 a quoted $HOME prefix, then cp's target ## cp "$HOME"/*sh /tmp/x/
+deny ## R15 F7 still read: a runner then the command word ## caffeinate -i /usr/bin/g?t-push origin main
+deny ## R15 F7 still read: mise exec with a tool spec and -- ## mise exec node@20 -- /usr/bin/g?t-push origin main
+deny ## R15 F7 still read: strace with -o ## strace -o /tmp/t /usr/bin/g?t-push origin main
+deny ## R15 F7 still read: perf record ## perf record -g /usr/bin/g?t-push origin main
+deny ## R15 F7 still read: su -c with a command in the string ## su -c '/usr/bin/g?t-push origin main' me
+deny ## R15 F7 still read: sg -c with a command later in the string ## sg staff -c 'cd /tmp && /usr/bin/[g][i][t] -C . push origin main'
+deny ## R15 F7 still read: a nested runner in script's window ## script -q /dev/null stdbuf -o L /usr/bin/g?t-push origin main
+deny ## R15 F7 still read: a quoted prefix at command position ## "$HOME"/bin/[[=g=]]it-push origin main
+deny ## R15 F7 still read: a runner inside another runner's window ## caffeinate mise exec node@20 -- /usr/bin/g?t-push origin main
+deny ## R15 F7 still read: a command after a quoted separator ## echo "a;b" ; /usr/bin/g?t-push origin main
+deny ## R15 F7 still read: backticks inside double quotes ## echo "`/usr/bin/g?t-push origin main`"
+allow ## R15 F7 silent: an apostrophe in a quoted word, then ls ## echo "it's" ; ls git-pu*
+deny ## R15 F3 a continuation between the two closing brackets ## cd /tmp && /usr/bin/[[=g=]\<NL>]it ${X:-pu}sh origin main
+deny ## R15 F3 the same with a collating element ## /usr/bin/[[.g.]\<NL>]it -c k=v p?sh origin main
+deny ## R15 F1 a quoted path with a blank inside sh -c, an alias slot ## sh -c '"/opt/my tools/"[[=g=]]it pom origin main'
+deny ## R15 F1 an escaped blank inside bash -c, an alias slot ## bash -c "/opt/my\ tools/g?t pom origin main"
+allow ## R15 F1 silent: sh -c with a quoted path, no push ## sh -c '"/opt/my tools/"g?t status'
+deny ## R15 F2 a redirect decoy ## >g?t /usr/bin/[g][i][t] -C /tmp ${X:-pu}sh origin main
+deny ## R15 F2 an append redirect decoy after true ## true; >>g?t /usr/bin/[[=g=]]it -C /tmp ${X:-pu}sh --force origin main
+allow ## R15 F2 silent: a redirect decoy and a glob argument, no push ## >g?t ls /usr/bin/[g][i][t]
+TABLE
+# F4: the shell fast path tests the whole payload (the description too), the helper's literal
+# evidence must see the same text: a selector or alias name in the description starts main's
+# helper for the literal analog, and so must it for the glob command.
+run_desc_table() {
+  local line want rest label cmd desc out got
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    want=${line%% ## *}; rest=${line#* ## }; label=${rest%% ## *}; rest=${rest#* ## }
+    cmd=${rest%% ## *}; desc=${rest#* ## }
+    out=$(jq -n --arg c "$cmd" --arg d "$desc" --arg w "$R" \
+      '{hook_event_name:"PreToolUse",tool_name:"Bash",cwd:$w,
+        tool_input:{command:$c,description:$d}}' \
+      | PINNED_PATH="$PATH" bash "$GUARD")
+    case "$out" in
+      "") got=allow ;;
+      *'"permissionDecision":"deny"'*) got=deny ;;
+      *) got="other: $out" ;;
+    esac
+    if [ "$got" = "$want" ]; then
+      pass=$((pass + 1)); printf '  ok   %s\n' "$label"
+    else
+      fail=$((fail + 1)); printf '  FAIL %s (want %s, got %s)\n' "$label" "$want" "$got"
+    fi
+  done
+}
+run_desc_table <<'TABLE'
+deny ## R15 F4 a description with cd ## /usr/bin/g?t ${X:-pu}sh origin main ## cd into the checkout and publish
+deny ## R15 F4 a description with make -C ## /usr/bin/g?t ${X:-pu}sh origin main ## Publish via make -C build
+deny ## R15 F4 a description with bash -c ## /usr/bin/[g][i][t] ${X:-pu}sh --force origin main ## Run it under bash -c
+deny ## R15 F4 a description with an alias name ## [g][i][t] ${X:-pu}sh origin --delete main ## Sync pom changes
+allow ## R15 F4 silent: the same command, a description with nothing ## ls g?t ## List the files
+allow ## R15 F4 silent: a glob with a description that mentions -C ## ls /usr/bin/g?t ## Run make -C build
+TABLE
+# Linear time: 300 KB of quoted blanks, decoys, redirects and continuations stays under 10 s.
+r15_shapes=(
+  "$(awk 'BEGIN { for (i = 0; i < 40000; i++) printf "\"a b\" >g?t A=/tmp/g?t "; print "ls" }')"
+  "$(awk 'BEGIN { printf "echo \""; for (i = 0; i < 60000; i++) printf "a b "; print "g?t" }')"
+  "$(awk 'BEGIN { for (i = 0; i < 12000; i++) print "- *sh \\"; print "x" }')"
+  "$(awk 'BEGIN { printf "ls g?t"; for (i = 0; i < 30000; i++) printf " g?t"; print "" }')"
+)
+for r15_i in 0 1 2 3; do
+  t0=$SECONDS
+  expect allow "R15 a 300 KB command of shape $r15_i stays silent" "$R" "${r15_shapes[$r15_i]}"
+  if [ $((SECONDS - t0)) -lt 10 ]; then
+    pass=$((pass + 1)); printf '  ok   R15 shape %s stays under 10 s (%s s)\n' "$r15_i" "$((SECONDS - t0))"
+  else
+    fail=$((fail + 1)); printf '  FAIL R15 shape %s under 10 s (%ss)\n' "$r15_i" "$((SECONDS - t0))"
+  fi
+done
 # The same payloads without a glob git word, or without a glob that can be one, stay silent. None
 # holds git or push text, so the helper starts only when the ERE matches, and it stays silent.
 run_table <<'TABLE'

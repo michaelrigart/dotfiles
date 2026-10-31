@@ -146,7 +146,8 @@ push_candidate=$literal
 # on the raw payload, a necessary condition for the helper's can_be: a word of name letters
 # (g i t p u s h e n d a c k o - and quotes), ? * and [..] or (..) spans, starting with g, a span
 # or a * and ending in t, h, k, a span or a *, with a glob item in it, after a word start or /.
-# A [..] span cannot start with a digit or a capital ([0-9]*, [A-Z_]*), nor can ?? be git.
+# A [..] span that starts with a digit or a capital ([0-9]*, [A-Z_]*) cannot be git unless it holds
+# g, i or t or a range that ends in a letter from g up ([Gg], [A-z], [0-9a-z]); nor can ?? be git.
 # A zsh group (a|b) with no blank, after a blank or a quote, can start a word (nice (g|x)it).
 push_glob=0
 if [ "$push_candidate" = 0 ]; then
@@ -154,8 +155,9 @@ if [ "$push_candidate" = 0 ]; then
     *[?*[\(]*)
       g_sq="'"; g_nm="gitpushendacko$g_sq\"\\\\-"; g_q="[$g_sq\"\\\\]*"
       g_bc='[^] ;&|<>()`]'; g_bx='[^] 0-9A-Z;&|<>()`]'; g_gr='\([^();&<>]*\)'
-      g_br="\\[([!^]\\]?$g_bc*|\\]?$g_bx$g_bc*)\\]+"
-      g_it="([$g_nm]|\\?|\\*|$g_br|$g_gr)"; g_end="(t|h|k|\\?|\\*|$g_br|$g_gr)"
+      g_bd="[0-9A-Z]$g_bc*(-[g-z{|}~]|[git])$g_bc*"
+      g_br="\\[([!^]\\]?$g_bc*|\\]?$g_bx$g_bc*|\\]?$g_bd)\\]+"
+      g_it="([$g_nm]|\\?|\\*|$g_br|$g_gr|n\\])"; g_end="(t|h|k|\\?|\\*|$g_br|$g_gr)"
       g_wa="(g|\\*|$g_br)$g_it*(\\?|$g_br|$g_gr)($g_it*$g_end)?"
       g_wa="$g_wa|$g_br$g_it*$g_end|\\?$g_it*(\\*|$g_br|$g_gr)|\\?$g_it*$g_it$g_end"
       g_wb="g$g_it*\\*($g_it*$g_end)?|\\*$g_it*((g|i|p|u|s|e|n|d|a|c|o|-)$g_it*$g_end|t|h|k)"
