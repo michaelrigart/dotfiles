@@ -43,9 +43,11 @@
 # The words in a view are whole hyphen-joined words (a maximal run of letters, digits, underscores
 # and hyphens): git, git-push, git-send-pack, git-http-push are git words; push, send-pack,
 # http-push, their dash forms and alias names are push words; so git-pu""sh-guard.py holds neither.
-# Under PUSH_GUARD_LITERAL=0 only a hidden spelling or a helper failure can deny: main's raw checks
-# run only for the commands main already sent to the helper (the flag is 1), and an unset flag runs
-# them too.
+# Under PUSH_GUARD_LITERAL=0 only a hidden spelling or a helper failure can deny, with one
+# exception: the strict re-run of a glob command runs main's raw checks on its read text when main's
+# fast path would have started the helper for that text (fast_path_literal). Otherwise main's raw
+# checks run only for the commands main already sent to the helper (the flag is 1), and an unset
+# flag runs them too.
 # Residuals (silent here, or denied by design) with the analog, what main says of the same text
 # written with plain git and push:
 #  - the raw-token checks (a quoted separator in an option value, dynamic_git_word) do not run when
@@ -74,13 +76,20 @@
 #  - a dash-name glob behind a runner outside _RUNNERS or past its positional budget, and behind
 #    rake, type, where and which (none runs its argument; analog: deny). cp ~/bin/git-* /tmp/ and
 #    find . -name git-p* are not pushes, and reading every position adds 138 ordinary denies;
-#  - "$HOME"/bin/git push origin main passes, as on main; 298
-#    --git-dir=.g non-push rows and 5 rows with an apostrophe in a comment, which only revision
-#    1333519 denied (none pushes; main allows them);
+#  - "$HOME"/bin/git push origin main passes, as on main. The final gate lists 317 rows that only
+#    revision 1333519 denied: 288 with --git-dir, 23 other [[=g=]]it rows that run status, log or
+#    fetch, 5 with an apostrophe in a comment or here-document, and 1 suite row; none is a push of
+#    a glob word. The literal analogs of the apostrophe rows are real pushes that main and this
+#    guard both allow (a shlex split that fails on the apostrophe: the first residual above);
+#  - the glob trigger in git-forge-guard.sh is not a necessary condition for can_be: a word that
+#    only /bin/sh or bash 3.2 expands to git (gi[[=x=]]t] and other brackets that stay open past
+#    the ]) and ./*t* never start the helper when the text holds no push word, selector or alias
+#    (analog: deny). Widening it reads every *t* in an ordinary command;
 #  - GIT, Git and other case variants of the git word (analog: main allows them, and APFS is
 #    case-insensitive); section 7 lists the spellings the text fixes, so this needs its own spec;
 #  - timing: one unbroken multi-megabyte token can pass the 60 s hook timeout (main times out from
-#    about 140 KB; the 500 KB unit is pinned);
+#    about 140 KB; the 500 KB unit is pinned); and thousands of -lc 'g?t x' strings in one command
+#    each list the aliases once (a 48 KB command of 4000 strings times out into a deny);
 #  - synthetic over-denies: [x]it ??* and [0]it p* deny. Ruling: where main's fast path starts the
 #    helper for the text (a push word, a selector such as cd or -C or -c, an alias name), a
 #    glob-spelled git word followed by a glob subcommand slot denies even where literal git with
@@ -144,7 +153,8 @@
 # stand-alone readings of c67e699 and 1333519 took such a command whole). Assumed: bash, sh and
 # zsh -f without extendedglob or kshglob (# ^ ~ patterns and *(...) forms are out of scope).
 # PUSH_GUARD_LITERAL=2: the fast path found only a glob word that could be git, with no push text
-# anywhere. main() then runs the strict path alone, with main's raw checks on the read text only.
+# anywhere. main() then runs the strict path alone; main's raw checks run on a read text only when
+# main's fast path would have started the helper for it (fast_path_literal), else nothing is denied.
 #
 # Written for /usr/bin/python3 (3.9): no match statements, no X | Y type unions.
 import json
@@ -825,8 +835,8 @@ RUN_OPTS_WITH_VALUE = {"timeout": {"-s", "-k", "--signal", "--kill-after"},
 
 
 def shell_string_at(tokens, k):
-    """The index of the command string of the shell at k, or None. Walks the shell's own options: a bundle
-    of letters (-x, +e, -lc, -co NAME), an option with a value (-o NAME, -O NAME, --rcfile F,
+    """The index of the command string of the shell at k, or None. Walks the shell's own options:
+    a bundle of letters (-x, +e, -lc, -co NAME), an option with a value (-o NAME, -O NAME, --rcfile F,
     --init-file F), a long flag, and -- ending them. The string is the first word past them,
     and only when a bundle held c."""
     n, j, has_c = len(tokens), k + 1, False
@@ -1553,6 +1563,7 @@ def strict_text(cmd, alt=0):
             cands = 0
         scan = start
         a, b = start, end
+        a2 = None        # the name's start when quoted letters before the glob part belong to it
         if g0 == -1 and opens:
             if glued[a] == "$":
                 a += 1
@@ -1564,6 +1575,7 @@ def strict_text(cmd, alt=0):
             if ig0 != -1:
                 # a quoted prefix inside the string: '"$HOME/bin/"gi[[=t=]] ...'
                 cut = max(inner.rfind("/", 0, ig0), iqlast if iqlast < ig0 else -1)
+                a2 = a + 1 + inner.rfind("/", 0, ig0) + 1
                 a, b = a + 1 + cut + 1, a + 1 + len(inner)
             else:
                 while a < b and glued[a] in "'\"":
@@ -1575,10 +1587,18 @@ def strict_text(cmd, alt=0):
             if g0 != -1:
                 cut = max(glued.rfind("/", start, start + g0), start + qlast if qlast >= 0 else -1)
                 a = cut + 1 if cut >= 0 else start
+                a2 = max(start, glued.rfind("/", start, start + g0) + 1)
             else:
                 a = max(a, glued.rfind("/", a, b) + 1)
             while b > a and glued[b - 1] in "'\"":
                 b -= 1
+        if a2 is not None and a2 < a:
+            # g"i"[t]: the quoted letters before the last closing quote are part of the name
+            alt = glued[a2:b]
+            alt_base = alt.replace("'", "").replace('"', "").replace("\\", "")
+            if (not (alt.count("'") % 2 or alt.count('"') % 2)
+                    and any(can_be(alt_base, (w,)) for w in ("git",) + DASH_NAMES)):
+                a = a2
         part = glued[a:b]
         if part.count("'") % 2 or part.count('"') % 2:
             continue
@@ -1966,9 +1986,11 @@ def could_push(cmd, tokens, cwd):
     provably inert commands (inert_text); no shape is parsed. The view reading (views,
     view_could_push) decodes the escapes and quotes and denies only a git or push word that was
     spelled with a break; it runs whenever the command holds a hidden-spelling signal. Under
-    PUSH_GUARD_LITERAL=0 the raw reading never runs, so a command that holds no push word
-    anywhere is judged by its hidden spellings alone. Under PUSH_GUARD_LITERAL=2 (strict_only) the
-    raw reading runs, on the text the strict path read, and the view reading does not."""
+    PUSH_GUARD_LITERAL=0 the raw reading does not run, except in the strict re-run when
+    fast_path_literal holds for the read text (RAW_OVERRIDE), so a command that holds no push
+    word anywhere is judged by its hidden spellings alone. Under PUSH_GUARD_LITERAL=2
+    (strict_only) the raw reading runs in the re-run under the same condition, on the text the
+    strict path read, and the view reading does not."""
     literal = raw_checks_enabled()
     text, nested = cmd, []
     if literal:
@@ -2005,7 +2027,7 @@ def could_push(cmd, tokens, cwd):
                 except Deny:
                     raise
                 except Exception:
-                    return True                            # a listing that fails cannot rule a push out
+                    return True                 # a listing that fails cannot rule a push out
         # A shell string or an eval is read as tokens: a quoted ; in it hides the alias from the
         # text pattern.
         if raw_git and (alias_text_hit(text, names)
@@ -2030,8 +2052,8 @@ READINGS = ("zsh", "bash5", "bash32")
 View = namedtuple("View", "text spans cuts")
 # The commands the views are built for: nothing can be hidden without one of these.
 HIDDEN_SIGNAL = re.compile(r"\$'|\$\"|\\\n|\\[xuUc0-7]|[A-Za-z0-9]['\"\\]+[A-Za-z0-9]")
-# A word of a view is a maximal run of letters, digits, underscores and hyphens: git-pu""sh-guard.py holds
-# neither a git word nor a push word, while git-push is both.
+# A word of a view is a maximal run of letters, digits, underscores and hyphens:
+# git-pu""sh-guard.py holds neither a git word nor a push word, while git-push is both.
 WORD_EDGE = r"(?<![A-Za-z0-9_-])%s(?![A-Za-z0-9_-])"
 GIT_WORD = re.compile(WORD_EDGE % "git")
 DASH_PUSH_WORD = re.compile(WORD_EDGE % "git-(?:push|send-pack|http-push)")
@@ -2138,7 +2160,7 @@ def decode_escape(raw, i, reading, bare, depth=3):
         if not ch:
             return "", end
         if raw[j:j + 1] == "\\" and raw[j + 1:j + 2] in ("u", "U"):
-            return ch, end                              # zsh applies neither to a \u or \U character
+            return ch, end                       # zsh applies neither to a \u or \U character
         o = ord(ch)
         if c == "C":
             value = 0x7F if ch in "?\x7f" else ((o & 0x1F) | (o & 0x80))
@@ -2345,7 +2367,8 @@ def _command_tokens(vt):
 
 def _glob_git_spans(toks, vt):
     """The view spans of the command words that odd_command_word's glob branch reads as a git:
-    a glob that fnmatches git or a git-* name, not a bare glob, not a case pattern."""
+    a glob that glob_matches_git_name reads as git or a git-* name, not a bare glob, not a case
+    pattern."""
     out = []
     for k in command_words(toks):
         if glob_git_word(toks, k):
@@ -2357,8 +2380,9 @@ def view_could_push(cmd, aliases):
     """Could some view of cmd run git push, with a git or push word spelled with a break? A
     word is a maximal run of letters, digits and hyphens. True when, in some view, a hidden
     git-push, git-send-pack or git-http-push word stands, or a git word (git, or a glob
-    command word that fnmatches git) is followed anywhere later by a push word (push,
-    send-pack, http-push or an alias in aliases) and at least one of the two is hidden; or
+    command word that glob_matches_git_name reads as git) is followed anywhere later by a push
+    word (push, send-pack, http-push or an alias in aliases) and at least one of the two is hidden;
+    or
     when git_word_hits or built_word_hits over the view's tokens finds a git word, a built
     command word or a push slot word that is hidden."""
     names = "push|send-pack|http-push" + "".join("|" + re.escape(a) for a in sorted(aliases) if a)
@@ -3157,7 +3181,8 @@ def evaluate(cwd, assigns, repo_opts, config_opts, args, session, bare=False):
 
 
 def literal_trigger():
-    """True when the guard's fast path saw the push as written; false when only a hidden spelling started us."""
+    """True when the guard's fast path saw the push as written; false when only a hidden spelling
+    started us."""
     return os.environ.get("PUSH_GUARD_LITERAL") == "1"
 
 
@@ -3170,8 +3195,9 @@ def strict_only():
 def raw_checks_enabled():
     """Main's raw checks run unless the fast path said, with a flag of exactly 0, that no push
     was written: a lost or unset flag is the strictest reading (the raw checks run and an ask
-    becomes a deny), never a looser one. A flag of 2 is not 0, so the strict path's re-run of
-    could_push (the only thing that runs under 2) has its raw checks."""
+    becomes a deny), never a looser one. A flag of 2 is not 0. In the strict path's re-run of
+    could_push (the only thing that runs under 2) RAW_OVERRIDE decides: it is true when
+    fast_path_literal holds for the read text, whatever the flag says."""
     if RAW_OVERRIDE[0] is not None:
         return RAW_OVERRIDE[0]
     return os.environ.get("PUSH_GUARD_LITERAL") != "0"

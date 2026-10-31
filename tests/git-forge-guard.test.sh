@@ -1620,11 +1620,11 @@ expect ask   "M4 an indented continuation stays in the grammar: a push to main k
   -u"
 expect allow "M4 an indented continuation stays in the grammar: a feature push keeps main's verdict" "$R" "git push -u origin feat\\
   -u"
-# Accepted by spec section 2, under review: a \$' anywhere in a command that names push is a plain deny.
-expect deny  "I2 a commit message with an ANSI-C quote naming push (accepted by spec section 2, under review)" "$R" "git commit -m \$'Fix push docs\\n\\nbody'"
-expect deny  "I2 a log grep with an ANSI-C quote naming push (accepted by spec section 2, under review)" "$R" "git log --grep \$'push'"
-# Accepted by spec section 2, under review: a here-document body line that starts with git send-pack reads as a command.
-expect deny  "M2 a here-document body line starting with git send-pack (accepted by spec section 2, under review)" "$R" "cat > notes.md <<'EOF'
+# Accepted by spec section 2: a \$' anywhere in a command that names push is a plain deny.
+expect deny  "I2 a commit message with an ANSI-C quote naming push (accepted by spec section 2)" "$R" "git commit -m \$'Fix push docs\\n\\nbody'"
+expect deny  "I2 a log grep with an ANSI-C quote naming push (accepted by spec section 2)" "$R" "git log --grep \$'push'"
+# Accepted by spec section 2: a here-document body line that starts with git send-pack reads as a command.
+expect deny  "M2 a here-document body line starting with git send-pack (accepted by spec section 2)" "$R" "cat > notes.md <<'EOF'
 git send-pack is the plumbing
 EOF"
 # A bypass on main that this branch closes: the git log's quoted argument swallows the push as
@@ -1878,8 +1878,8 @@ echo "== rule 4: the escape decoder matches the shells =="
 # decoded as latin-1 (a byte above 0x7f is the character of that value). The bash readings
 # compare up to the first NUL, where bash ends the value. A reading whose shell is not
 # installed is skipped. This list is the pinned set; the full differential (every letter,
-# digit count, NUL position and \c, \C, \M form, random bodies too) will be recorded in the
-# header by Task 6.
+# digit count, NUL position and \c, \C, \M form, random bodies too) is record E in
+# this header.
 dec_out=$(/usr/bin/python3 - "$(dirname "$GUARD")/git-push-guard.py" <<'PY'
 import importlib.util, os, subprocess, sys
 sys.dont_write_bytecode = True
@@ -2089,7 +2089,8 @@ deny ## dropped backslash in push only ## git $'\pus\h' origin main
 deny ## NUL cut push only ## git $'push\0'x origin main
 TABLE
 # Gating (the coordinator's ruling): under PUSH_GUARD_LITERAL=0 only a hidden spelling or a
-# helper failure may deny. A $' that the shell never reads as an ANSI-C quote must stay silent.
+# helper failure may deny (the strict re-run of a glob command aside: it runs main's raw checks
+# when main's fast path would have started the helper). A $' that the shell never reads as an ANSI-C quote must stay silent.
 run_table <<'TABLE'
 allow ## gating: a quoted here-document holding a regex with a dollar-quote ## cat <<'EOF'<NL>x(r'a$',l) and y('b')<NL>L[s-1:e+1]=out<NL>EOF
 allow ## gating: grep '^$' after a here-document ## cat <<'EOF'<NL>note<NL>EOF<NL>grep '^$' f
@@ -3163,6 +3164,14 @@ deny ## R15 F4 a description with bash -c ## /usr/bin/[g][i][t] ${X:-pu}sh --for
 deny ## R15 F4 a description with an alias name ## [g][i][t] ${X:-pu}sh origin --delete main ## Sync pom changes
 allow ## R15 F4 silent: the same command, a description with nothing ## ls g?t ## List the files
 allow ## R15 F4 silent: a glob with a description that mentions -C ## ls /usr/bin/g?t ## Run make -C build
+deny ## R16 P1 a quoted letter inside the basename ## /usr/bin/g"i"[t] -C . ${X:-pu}sh origin main
+deny ## R16 P1 a single-quoted letter inside the basename ## /usr/bin/g'i'[t] -C . ${X:-pu}sh origin main
+deny ## R16 P1 a quoted first letter ## "g"[i][t] -C . ${X:-pu}sh origin main
+deny ## R16 P1 a quoted letter after a directory ## /usr/bin/"g"i[t] -c k=v push origin main
+deny ## R16 P1 the same inside a shell string ## sh -c '/usr/bin/g"i"[t] -C . ${X:-pu}sh origin main'
+deny ## R16 P1 a quoted directory prefix still read ## "/usr/bin/"[[.g.]]it -C /tmp push origin main
+allow ## R16 P1 silent: a quoted letter inside an ordinary glob ## ls g"i"[t]*
+allow ## R16 P1 silent: a quoted prefix that is not a git name ## "x"[g][i][t] status
 TABLE
 # Linear time: 300 KB of quoted blanks, decoys, redirects and continuations stays under 10 s.
 r15_shapes=(
