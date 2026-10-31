@@ -98,7 +98,7 @@ for f in global.md claude-code.md; do
   else _pass "$f contains no template action"; fi
 done
 
-# The rules specs 2026-10-16, 2026-10-30 and 2026-10-31 add: the git configuration escape, both shapes
+# The rules specs 2026-10-16 and 2026-10-30 (workflow-tuning-design) add: the git configuration escape, both shapes
 # the path-resolution guard denies, the plan workspace cleaner, and progress on a long run.
 # Each is a fixed string on one line.
 need() { # need <fragment> <fixed text> <label>

@@ -349,7 +349,6 @@ if has "$(strip "$out")" "plan 1/4" && has "$out" "$ORANGE" && ! has "$out" "$TE
 else _fail "plan should be shown alone when tagteam cannot be" "$(strip "$out") | stderr: $(cat "$T/stderr")"; fi
 INPUT=$INPUT_PLAIN
 
-# The statusline runs outside the sandbox: a tool on the caller's PATH must not reach it.
 # --- the context size sits in the model segment, after the effort: muted below 200,000,
 # yellow from 200,000, red from 400,000, left out when absent, null, 0 or not a number ---
 MUTED='38;2;86;95;137'
@@ -403,6 +402,7 @@ if [ "$out" = "$(run none "$((with_w + 1))")" ] && has "$(strip "$out")" "230k";
 else _fail "tagteam should not fit one column short" "$(strip "$out")"; fi
 INPUT=$INPUT_PLAIN
 
+# The statusline runs outside the sandbox: a tool on the caller's PATH must not reach it.
 mkdir -p "$T/evil"
 for t in git jq tagteam; do
   printf '#!/bin/sh\ntouch "%s/evil-%s"\n' "$T" "$t" > "$T/evil/$t"; chmod 755 "$T/evil/$t"

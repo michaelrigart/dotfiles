@@ -91,7 +91,7 @@ and merge the canonical one first.
   review comments. The published record is Michael's.
 - **Second brain.** The Obsidian vault "MSB" lives at
   `~/Library/Mobile Documents/iCloud~md~obsidian/Documents/MSB`; the `second-brain` skill holds
-  its conventions. Offer a note when work produces durable knowledge, write it only when asked.
+  its conventions. Offer a note when work produces durable knowledge and write it only when asked.
   Never store secrets, credentials, customer data, raw conversations or transient working notes.
 
 ## Engineering judgement
