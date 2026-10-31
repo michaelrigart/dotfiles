@@ -3175,6 +3175,9 @@ deny ## R16 P2 the unquoted twin of the decoy row ## xargs --arg-file /tmp/g?t /
 allow ## R16 P3 silent: rg -c counts matches ## rg -c 'g?t push' README.md
 allow ## R16 P3 silent: grep -c counts matches ## grep -c 'g*t push' README.md
 allow ## R16 P3 silent: grep -lc after a pipe ## echo x | grep -lc 'g?t push' README.md
+allow ## R16 P4 silent: su as an echo argument ## echo su -c "g?t push"
+allow ## R16 P4 silent: su as a pattern argument of rg ## rg -e su -c "g?t push" README.md
+deny ## R16 P4 su after a wrapper still reads its string ## sudo su -c '/usr/bin/g?t -c k=v push origin main'
 deny ## R16 P3 su -c still reads its string ## su -c '/usr/bin/[g][i][t] -C . ${X:-pu}sh origin main' me
 deny ## R16 P3 sg -c still reads its string ## sg staff -c '/usr/bin/g?t -c k=v push origin main'
 allow ## R16 P1 silent: a quoted letter inside an ordinary glob ## ls g"i"[t]*

@@ -1665,19 +1665,20 @@ def fast_path_literal(text, cwd):
 
 
 def option_strings(tokens):
-    """The word after a -c bundle (-c, -lc) in a simple command that holds su, sg or runuser:
-    they run that word as a command line, as a shell -c does (nested_strings has the shells).
-    Any other command's -c (rg -c, grep -c, ...) is an option, not a program. Linear."""
-    out, runs = [], False
-    for i in range(len(tokens) - 1):
-        t = tokens[i]
-        if is_operator(t):
-            runs = False
-        elif os.path.basename(t) in ("su", "sg", "runuser"):
-            runs = True
-        elif (runs and t[:1] == "-" and t[-1:] == "c" and t[1:2] != "-"
-              and not is_operator(tokens[i + 1])):
-            out.append(tokens[i + 1])
+    """The word after a -c bundle (-c, -lc) of a su, sg or runuser that stands in command
+    position: they run that word as a command line, as a shell -c does (nested_strings has the
+    shells). Any other command's -c (rg -c, grep -c, echo su -c ...) is an option or data, not a
+    program. Linear."""
+    out, n = [], len(tokens)
+    for k in command_words(tokens):
+        if os.path.basename(tokens[k]) not in ("su", "sg", "runuser"):
+            continue
+        i = k + 1
+        while i < n - 1 and not is_operator(tokens[i]):
+            t = tokens[i]
+            if t[:1] == "-" and t[-1:] == "c" and t[1:2] != "-" and not is_operator(tokens[i + 1]):
+                out.append(tokens[i + 1])
+            i += 1
     return out
 
 
