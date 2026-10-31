@@ -3192,6 +3192,9 @@ allow ## R16 P7 silent: cat with a glob and a redirect ## cat g?t push.txt > out
 allow ## R16 P7 silent: ls with two globs and a redirect ## ls g* push* > list.txt
 allow ## R16 P7 silent: echo with a glob and a comment ## echo g?t push # note
 allow ## R16 P7 silent: rg with a glob and a redirect ## rg g?t push README.md > o
+deny ## R16 P8 a script written by echo and run ## echo /usr/bin/[g][i][t] push origin main > /tmp/push-script; sh /tmp/push-script
+deny ## R16 P8 a script appended by echo and run ## echo /usr/bin/[g][i][t] push origin main >> s && bash s
+deny ## R16 P8 a script written by printf and run ## printf "%s\n" /usr/bin/g?t push origin main > run.sh; ./run.sh
 deny ## R16 P7 echo piped into a shell still reads the glob ## echo g?t push | sh
 deny ## R16 P7 rg --pre runs its word ## rg --pre g?t push README.md
 deny ## R16 P7 a glob command after an inert one ## echo g?t push; /usr/bin/g?t -c k=v push origin main

@@ -1528,6 +1528,9 @@ def strict_text(cmd, alt=0):
     last_pipe = -1                    # a pipe may feed a later shell: echo g?t push | sh
     for pm in re.finditer(r"(?<!\|)\|(?!\|)", glued):
         last_pipe = pm.start()
+    # echo [g][i][t] push > s; sh s: a file the command writes and names again may be run
+    targets = {t for t in re.findall(r"\d*>>?[ \t]*([^\s;&|<>()]+)", glued) if t != "/dev/null"}
+    reused = len(targets) > 40 or any(glued.count(t) > 1 for t in targets)
     parens = []                   # per (: (quote, word_cmd) to restore at its ) if it opens $(
     tick = None                       # (quote, word_cmd) to restore at the closing backtick
     for m in STRICT_RUN.finditer(glued):
@@ -1598,7 +1601,7 @@ def strict_text(cmd, alt=0):
             continue
         if inword and g0 == -1:       # every glob character sits inside a quote opened earlier
             continue
-        if head in INERT_TOOLS and not exec_seen and last_pipe < end:
+        if head in INERT_TOOLS and not exec_seen and last_pipe < end and not reused:
             continue                  # the arguments of rg, echo, ls ... are data, if nothing reads them
         if cands and any(c in "\n;&|()`" for c in glued[scan:start]):
             cands = 0
