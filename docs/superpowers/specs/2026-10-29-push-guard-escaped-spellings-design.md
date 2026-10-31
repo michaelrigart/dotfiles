@@ -1,6 +1,6 @@
 # The push guard catches escaped spellings
 
-**Status:** Approved
+**Status:** Implemented on `fix/push-guard-escaped-spellings` (the dotfiles have no MR)
 **Date:** 2026-10-29
 **Branch:** `fix/push-guard-escaped-spellings`
 

@@ -2,7 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** In progress (branch `fix/push-guard-escaped-spellings`; the dotfiles have no MR)
+**Status:** Implemented on `fix/push-guard-escaped-spellings` (the dotfiles have no MR). Do
+not run it again; the glob handling grew past this plan over fifteen review rounds (a strict
+path that reads a glob word as git by text substitution and one re-run), and the threat-model
+header in `dot_claude/git-pu[s]h-guard.py` and records E, F and G in the guard suite hold the
+final design, residuals and measurements.
 
 **Goal:** Rule 4 denies every spelling of git and push that the command text fixes before
 anything runs, adds no prompt, and is never looser than main (9702750).
