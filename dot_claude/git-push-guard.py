@@ -1331,6 +1331,18 @@ SHELL_STRING_BEFORE = re.compile(
     r"|(?:[^\s;&|()]*/)?(?:sh|bash|zsh|dash|ksh)" + _OPTS
     + r"[ \t]+-[A-Za-z]*c[A-Za-z]*" + _OPTS + ")"
     r"[ \t]+$")
+# The commands whose -c (or eval's) string is a command line. rg -c, grep -c, ag -c and sort -c
+# count or check; their quoted argument is data, so it is no shell string.
+STRING_RUNNERS = SHELL_NAMES | {"eval", "su", "sg", "runuser", "script", "flock"}
+
+
+def runs_string(text, start):
+    """Does a string runner stand in the simple command that ends at start in text?"""
+    seg = text[max(0, start - 400):start]
+    seg = seg[max(seg.rfind(c) for c in "\n;&|(`") + 1:]
+    return any(os.path.basename(w.strip("'\"$")) in STRING_RUNNERS for w in seg.split())
+
+
 # Words that come before a command word without being the command: an assignment, a reserved word,
 # a wrapper, an option, a number (nice -n 5, timeout 5). An option's value joins them.
 _PREFIX_NUMBER = re.compile(r"\d+(?:\.\d+)?[smhd]?$")
@@ -1529,7 +1541,8 @@ def strict_text(cmd, alt=0):
         opens = not inword and (run[:1] in ("'", '"') or run[:2] in ("$'", '$"'))
         shell_str = False
         if opens:
-            shell_str = SHELL_STRING_BEFORE.search(glued[max(0, start - 100):start]) is not None
+            shell_str = (SHELL_STRING_BEFORE.search(glued[max(0, start - 100):start]) is not None
+                         and runs_string(glued, start))
         if shell_str:
             prefix_ok, after_option = True, False
         if inword:
