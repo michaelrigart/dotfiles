@@ -97,6 +97,15 @@ Suites live in `tests/`, one `<subject>.test.sh` per script under test.
 ./tests/run.sh forge worktree  # only suites whose name contains one of these
 ```
 
+Suites run in parallel (`RUN_JOBS`, default half the online CPUs, minimum 2; `RUN_JOBS=1`
+restores sequential order). Output is buffered and printed in name order, so the report is
+the same either way. A suite that cannot share the machine carries a `# test-serial` line
+and runs alone after the parallel ones (none does today).
+
+**The runner locks itself:** one per machine (`lockf` on `/tmp/claude-$(id -u)/tests-run.lock`,
+`RUN_SH_LOCK` overrides the path), and it says so when it waits. A nested runner sees
+`RUN_SH_LOCKED=1` and does not lock again. Never wrap it in `lockf` yourself.
+
 **Execute suites, never prefix an interpreter.** Every suite carries a correct shebang
 (most bash; `wt-functions`, `dev`, `dev-topology` and `dev-integrations` are zsh). Running
 a zsh suite under `bash` reports bogus syntax errors that read exactly like a regression,
@@ -106,10 +115,13 @@ is the footgun. `run.sh` executes them for this reason.
 Suites needing conditions `run.sh` cannot create carry a `# test-requires:` line and are
 skipped by default. A substring filter to `./tests/run.sh` keeps that gate; only an
 exact suite name lifts it (so `./tests/run.sh reconcile-agents` runs the suite, while
-`./tests/run.sh reconcile` does not):
+`./tests/run.sh reconcile` does not; `./tests/run.sh xreview` is a substring filter that
+also matches the other `xreview-*` suites and stays gated, so the heavy `xreview` suite
+needs that exact name):
 
 | Suite | Needs | Why |
 |---|---|---|
+| `xreview`, `git-forge-guard`, `wt-functions` | `heavy`: 672 s, 242 s, 123 s | skipped by default for their length. Run by exact name when their subject changed on the branch, and always before the pre-merge review of such a branch |
 | `reconcile-agents` | unsandboxed | writes a temp XDG config dir; sandboxed it reports ~18 false failures |
 | `ssh-credential-inventory` | unsandboxed | the `Read(~/.ssh/**)` deny blocks enumeration; it then exits 2 (INCONCLUSIVE) rather than green |
 | `zshrc` | unsandboxed | drives a real zsh on a pseudo-terminal (Alt-k and SIGURG), and the sandbox has no pty devices; it then exits 2 (INCONCLUSIVE) |
