@@ -37,9 +37,12 @@ brew "arping"                          # edge-node network diagnostics
 brew "awscli"
 brew "azure-cli"
 brew "bash"                            # every Claude Code hook, the statusline and xreview's shebang run
-                                       # /opt/homebrew/bin/bash by absolute path. Nothing depends on it
-                                       # since direnv went, so undeclared, a cleanup would remove it,
-                                       # every hook would exit 127 and every guard fail open.
+                                       # /opt/homebrew/bin/bash by absolute path; without it every hook
+                                       # exits 127 and every guard fails open. Install it by name
+                                       # (`brew install bash`) so it is marked installed on request:
+                                       # nothing depends on it since direnv went, and the autoremove
+                                       # that `brew uninstall` runs deletes an orphaned dependency
+                                       # whatever this file declares (it did, 2026-10-31).
 brew "borgbackup"                      # Vorta requires it. The borgbackup-fuse variant
                                        # was dropped 2026-08-28: it exists only for
                                        # `borg mount`, which needs a macFUSE kernel
