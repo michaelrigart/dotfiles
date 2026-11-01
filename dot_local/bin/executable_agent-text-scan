@@ -38,27 +38,22 @@ SECRET_PATTERNS = (
 HUNK = re.compile(r"^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 
+def is_invisible(ch):
+    return unicodedata.category(ch) == "Cf" or 0xE0000 <= ord(ch) <= 0xE007F
+
+
 def is_hidden(ch):
-    cp = ord(ch)
-    return (
-        (unicodedata.category(ch) == "Cc" and ch != "\t")
-        or unicodedata.category(ch) == "Cf"
-        or 0xE0000 <= cp <= 0xE007F
-    )
+    return is_invisible(ch) or (unicodedata.category(ch) == "Cc" and ch != "\t")
 
 
 def printable(text):
     return "".join("<U+%04X>" % ord(ch) if is_hidden(ch) else ch for ch in text)
 
 
-def is_invisible(ch):
-    return unicodedata.category(ch) == "Cf" or 0xE0000 <= ord(ch) <= 0xE007F
-
-
 def fold(line):
     out = []
     for ch in line:
-        ch = "'" if ch == "’" else ch.lower()
+        ch = "'" if ch == "\u2019" else ch.lower()
         out.append(ch if len(ch) == 1 else "\0")
     return "".join(out)
 
@@ -67,7 +62,7 @@ def first_hit(line, first_line):
     """The first hit in the line for each class, as {class: character index}."""
     hits = {}
     for i, ch in enumerate(line):
-        if is_invisible(ch) and not (first_line and i == 0 and ch == "﻿"):
+        if is_invisible(ch) and not (first_line and i == 0 and ch == "\ufeff"):
             hits["invisible"] = i
             break
     folded = fold(line)

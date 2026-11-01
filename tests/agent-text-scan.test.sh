@@ -148,6 +148,33 @@ check "an empty diff is clean" 0 ""
 printf 'ok\n\377\n.ssh/\n' > "$T/f.md"; run f.md
 has "a file with invalid UTF-8 is scanned, not an error" 1 "f.md:3: secrets: "
 
+# A BOM is exempt only at column 0 of line 1, in a file and in a diff.
+printf "x\n${BOM}y\n" > "$T/f.md"; run f.md
+has "a BOM at column 0 of file line 2 is flagged" 1 "f.md:2: invisible: <U+FEFF>y"
+printf -- "+++ b/a.md\n@@ -0,0 +1,2 @@\n+x\n+${BOM}y\n" > "$T/d4.diff"; rund "$T/d4.diff" --diff
+check "a BOM at column 0 of new-file line 2 is flagged in a diff" 1 "a.md:2: invisible: <U+FEFF>y"
+printf -- "+++ b/a.md\n@@ -0,0 +1,2 @@\n+${BOM}x\n+y\n" > "$T/d5.diff"; rund "$T/d5.diff" --diff
+check "a BOM at column 0 of new-file line 1 is exempt in a diff" 0 ""
+printf -- "+++ b/a.md\n@@ -4 +4,2 @@\n ctx\n+${BOM}y\n" > "$T/d6.diff"; rund "$T/d6.diff" --diff
+has "a BOM at column 0 of new-file line 5 is flagged in a diff" 1 "a.md:5: invisible: <U+FEFF>y"
+
+# An empty line inside a hunk is a context line and advances the line number.
+printf -- "+++ b/a.md\n@@ -1,2 +1,3 @@\n a\n\n+x${ZWSP}\n" > "$T/d7.diff"; rund "$T/d7.diff" --diff
+has "an empty context line keeps the hunk open and the numbering right" 1 "a.md:3: invisible: x<U+200B>"
+
+# A hidden character in a path is escaped in stdout and in stderr; a tab is left alone.
+printf -- "+++ b/a${ZWSP}b.md\n@@ -0,0 +1 @@\n+.ssh/\n" > "$T/d8.diff"; rund "$T/d8.diff" --diff
+has "a hidden character in a diff path is escaped" 1 "a<U+200B>b.md:1: secrets: .ssh/"
+if printf '%s' "$OUT" | LC_ALL=C grep -qF "$(printf "$ZWSP")"; then _fail "a diff path prints no raw bytes" "$OUT"
+else _pass "a diff path prints no raw bytes"; fi
+run "gone$(printf "$ZWSP").md"
+if [ "$RC" = 2 ] && [[ "$ERR" == *"gone<U+200B>.md: "* ]] && ! printf '%s' "$ERR" | LC_ALL=C grep -qF "$(printf "$ZWSP")"
+then _pass "a hidden character in a missing path is escaped on stderr"
+else _fail "a hidden character in a missing path is escaped on stderr" "rc=$RC err=[$ERR]"; fi
+printf 'x\t.ssh/\n' > "$T/f.md"; run f.md
+if [ "$OUT" = "$(printf 'f.md:1: secrets: x\t.ssh/')" ]; then _pass "a tab in an excerpt stays a tab"
+else _fail "a tab in an excerpt stays a tab" "$OUT"; fi
+
 # Cap: 20 findings per class, then a count.
 for i in $(seq 1 25); do printf "l%d${ZWSP}\n" "$i"; done > "$T/f.md"; run f.md
 n="$(printf '%s\n' "$OUT" | grep -c ': invisible: ')"
