@@ -32,7 +32,11 @@
 #   makes no label or issue call. If the label or the list call fails it creates nothing,
 #   because it cannot dedupe. Exit 0 when every update has an issue (or there are none),
 #   2 if any lookup, label, list or create call failed. Skills that resolved still get
-#   their issue.
+#   their issue. Each issue body ends with a `## Scan of added lines` section: the compare diff
+#   (`gh api` with the diff media type) is piped to dot_local/bin/executable_agent-text-scan --diff,
+#   and the section reads `clean`, the scanner's findings between `~~~` lines, or
+#   `scan failed: <reason>`. A scan failure never blocks the issue, sets an error or changes
+#   the exit codes above.
 set -u
 
 log() { printf 'skill-updates: %s\n' "$*" >&2; }
@@ -173,6 +177,26 @@ issue_body() {  # issue_body <name> <old label> <new label> <compare URL>
   printf '%s\n' '- [ ] After merge: `chezmoi apply`.'
 }
 
+# scan_section <compare URL>: print the issue body's "Scan of added lines" section. It never
+# fails: a fetch or scanner failure is written into the section, not into ERRORS or the exit code.
+scan_section() {
+  local compare=$1 diff scan rc
+  printf '\n## Scan of added lines\n\n'
+  gh_get api -H 'Accept: application/vnd.github.diff' "repos/${compare#https://github.com/}"
+  if [ "$G_RC" -ne 0 ]; then
+    printf 'scan failed: could not fetch the compare diff: %s\n' "$(printf '%s\n' "$G_ERR" | head -n 1)"
+    return 0
+  fi
+  diff=$G_OUT
+  scan=$(printf '%s\n' "$diff" | "$REPO_ROOT/dot_local/bin/executable_agent-text-scan" --diff 2>"$ERRF"); rc=$?
+  case $rc in
+    0) printf 'clean\n' ;;
+    1) printf '~~~\n%s\n~~~\n' "$scan" ;;
+    *) printf 'scan failed: agent-text-scan exited %s: %s\n' "$rc" "$(head -n 1 "$ERRF")" ;;
+  esac
+  return 0
+}
+
 if [ "$OPEN_ISSUES" -eq 1 ]; then
   if [ -n "$UPDATES" ]; then
     gh_get label create skill-update --color 0E8A16 \
@@ -192,7 +216,7 @@ if [ "$OPEN_ISSUES" -eq 1 ]; then
             log "$title: issue exists"
             continue
           fi
-          body=$(issue_body "$u_name" "$u_old" "$u_new" "$u_compare")
+          body=$(issue_body "$u_name" "$u_old" "$u_new" "$u_compare"; scan_section "$u_compare")
           gh_get issue create --title "$title" --label skill-update --body "$body"
           if [ "$G_RC" -ne 0 ]; then
             log "$title: issue create failed: $G_ERR"; ERRORS=1

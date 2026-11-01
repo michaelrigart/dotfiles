@@ -53,7 +53,9 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
   `symlink_` in `dot_claude/skills/` and a `.chezmoiignore` re-include.
   `.scripts/skill-updates.sh`, run weekly by the `skill-updates` workflow, reports new
   releases as `skill-update` issues. Closing one without a bump declines that release; it is
-  never filed again. A bump reads the upstream diff first, changes the SHA and its tag
+  never filed again. A bump reads the upstream diff first and runs `agent-text-scan --diff` on it: an `invisible`
+  finding stops the bump until Michael has seen it, and any other finding that matters goes in
+  the commit message. It then changes the SHA and its tag
   comment, then warms chezmoi's cache outside the sandbox
   (`command chezmoi --source <checkout> managed >/dev/null`: sandboxed, Go's TLS fails).
   Confirm afterwards that `command chezmoi --source <checkout> managed` lists
