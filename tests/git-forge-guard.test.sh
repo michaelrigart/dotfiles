@@ -4070,6 +4070,14 @@ TXNEEDLE="could not run, so this call is refused"
 expect_refused "grep failing on the command-position check: a commit is denied" "$FCSTUBS/grepverb:$PATH" 'git commit -m x' "$TXNEEDLE" 0
 expect_refused "grep failing on the attribution scan: a commit is denied" "$FCSTUBS/greprule1:$PATH" 'git commit -m x' "$TXNEEDLE" 0
 expect_refused "grep failing on the body-file scan: a commit is denied" "$FCSTUBS/grepref:$PATH" 'git commit -F msg.txt' "$TXNEEDLE" 0
+# A message file that exists and is readable but whose cat fails must not read as an empty body.
+mkfailing catfile cat /bin/cat '*?*'
+FCMSG="$TMP/fcmsg.txt"
+printf 'Add the thing\n\nCo-authored-by: Claude <noreply@anthropic.com>\n' > "$FCMSG"
+FCCLEAN="$TMP/fcclean.txt"
+printf 'Add the thing\n' > "$FCCLEAN"
+expect_refused "cat failing on a readable message file: a commit is denied" "$FCSTUBS/catfile:$PATH" "git commit -F $FCMSG" "could not be read, so this command is refused" 0
+expect_quiet "control: a clean message file passes with the real cat" "$PATH" "git commit -F $FCCLEAN"
 IBODY='glab mr create --description "## What & why
 Fixes it.
 

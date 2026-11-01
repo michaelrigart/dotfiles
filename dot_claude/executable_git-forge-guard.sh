@@ -483,8 +483,10 @@ while IFS= read -r ref; do
   ref=$(expand_path "$ref")
 
   if [ -f "$ref" ] && [ -r "$ref" ]; then
+    refbody=$(cat "$ref" 2>/dev/null) ||
+      deny "Forge guard: the message file $ref could not be read, so this command is refused. Check that the file is readable, or pass the message inline."
     haystack="$haystack
-$(cat "$ref" 2>/dev/null)"
+$refbody"
   elif [ "$unambiguous" -eq 1 ]; then
     unresolved=1
   else
