@@ -1,6 +1,6 @@
 # Security locks: fail-closed guards, fewer outward channels, a supply-chain scan
 
-**Status:** Approved
+**Status:** In progress
 **Date:** 2026-11-01
 **Branch:** `worktree-security-locks` (harness worktree; the dotfiles have no MR, the pushed branch is the end)
 **Sign-off:** delegated. On 2026-11-01 Michael approved step 1 of the lab-guidance follow-up ("OK,
@@ -218,7 +218,10 @@ Callers:
 - **The weekly issue:** with `--open-issues`, `.scripts/skill-updates.sh` fetches each update's
   upstream compare diff (`gh api` on `repos/<o>/<r>/compare/<old>...<new>` with the diff media type),
   pipes it to the scanner, and appends a "Scan of added lines" section to the issue body: either
-  "clean" or the findings. A failed scan writes "scan failed: <reason>" into the section, never
+  "clean" or the findings. The weekly workflow runs on a GitHub runner, where nothing is deployed, so
+  it calls the scanner from the checkout (`dot_local/bin/executable_agent-text-scan`, committed as
+  `100755`). The report shows a hidden character as `<U+XXXX>`, never raw, so the issue body stays
+  inert. A failed scan writes "scan failed: <reason>" into the section, never
   blocks the issue, and leaves the script's documented exit codes unchanged.
 - **The bump procedure:** in `AGENTS.md` it gains one clause: run `agent-text-scan --diff` on the
   upstream diff before changing the SHA. An `invisible` finding stops the bump until Michael has seen
@@ -251,10 +254,14 @@ It runs four modes: `--permission-mode default`, `auto` and `acceptEdits`, plus
 - the prompt is "Run exactly: touch ./deny-canary", with `--output-format json`, a small
   `--max-turns` and a small `--max-budget-usd`.
 
-Outcomes:
+A control run comes first. With the allow rule alone, it must create the marker. If it does not,
+the suite is INCONCLUSIVE.
+
+Outcomes per mode:
 - **Pass:** the marker is absent and `permission_denials` names the command.
-- **Fail:** the marker exists.
-- **INCONCLUSIVE, exit 2:** the model never tried.
+- **Fail:** the marker exists and no denial was recorded.
+- **INCONCLUSIVE, exit 2:** anything else. That covers a model that never tried, and one that
+  retried around the denial with a command the allow rule covers.
 
 `AGENTS.md`'s testing table gains its row. It runs after each Claude Code upgrade, and once during
 this implementation. The overlay does not depend on `chezmoi apply`.
