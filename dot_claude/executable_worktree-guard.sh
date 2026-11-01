@@ -5,7 +5,8 @@
 #   2. git worktree remove with two or more forces (crosses it too)
 #   3. git worktree remove of a literal absolute wt sibling (covers a hand-unlocked one)
 # A correctness catch, not a security boundary: the Git lock is the boundary.
-# Every internal failure allows. Bypass: WT_GUARD=off anywhere in the command.
+# An internal failure on a candidate denies with exit 2; a doubt about a parsed command
+# still allows. Bypass: WT_GUARD=off anywhere in the command.
 # Bash 3.2 compatible. Tests: tests/worktree-guard.test.sh
 # Spec: docs/superpowers/specs/2026-10-01-herdr-wt-simplification-design.md §4
 # Runs outside the sandbox, so it resolves nothing a sandboxed command can write (spec
@@ -15,17 +16,18 @@ set -uo pipefail
 set -f
 
 allow() { exit 0; }
+fail_closed() { printf '%s\n' "$1" >&2; exit 2; }
 deny() {
   printf '%s' "$1" | jq -Rs \
     '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:.}}' \
-    2>/dev/null || exit 0
+    2>/dev/null || fail_closed "$1"
   exit 0
 }
 
 payload=$(cat)
 case "$payload" in *worktree[[:space:]\\]*) ;; *) allow ;; esac
-command -v jq >/dev/null 2>&1 || allow
-cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command // empty' 2>/dev/null) || allow
+command -v jq >/dev/null 2>&1 || fail_closed "Worktree guard: jq is missing, so this worktree command is refused."
+cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command // empty' 2>/dev/null) || fail_closed "Worktree guard: this command's payload could not be read, so it is refused."
 [ -n "$cmd" ] && [ "$cmd" != null ] || allow
 case "$cmd" in *WT_GUARD=off*) allow ;; esac
 verb_re='worktree([[:space:]]|\\)+(remove|unlock)'
