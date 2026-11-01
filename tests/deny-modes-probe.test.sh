@@ -40,7 +40,7 @@ while [ $# -gt 0 ]; do
 done
 case "$overlay" in *'"deny"'*) key=$mode ;; *) key=control ;; esac
 printf '%s %s %s\n' "$key" "$cwd" "$(git -C "$cwd" rev-parse --is-inside-work-tree 2>/dev/null)" >> "$STUB_LOG"
-printf '%s|%s\n' "$key" "$ARGV" >> "$STUB_ARGV"
+printf '%s| %s \n' "$key" "$ARGV" >> "$STUB_ARGV"
 how=
 for w in $STUB_PLAN; do
   case "$w" in "$key"=*) how=${w#*=} ;; esac
@@ -59,17 +59,21 @@ printf '{"type":"result","subtype":"%s","result":"%s","permission_denials":%s}\n
 STUB
 chmod 755 "$T/bin/claude"
 
-# argv_all <fixed flag text> <description>: every logged run carries the text.
+# The logged argument lines are padded with spaces, so a wanted flag is matched as whole
+# arguments: `--max-budget-usd 10` does not satisfy `--max-budget-usd 1`.
+# argv_all <flags and values> <description>: every logged run carries them.
 argv_all() {
   local bad
-  bad=$(grep -vF -- "$1" "$T/argv.log")
+  bad=$(grep -vF -- " $1 " "$T/argv.log")
   if [ -z "$bad" ] && [ -s "$T/argv.log" ]; then _pass "$2"; else _fail "$2" "runs missing '$1': ${bad:-<no runs logged>}"; fi
 }
-# argv_of <key> <fixed text> <want yes|no> <description>
+# argv_of <key> <text> <want yes|no> <description>: a wanted text is matched whole; an unwanted
+# one as a substring, which is the stricter test.
 argv_of() {
-  local line got=no
+  local line got=no pat=$2
   line=$(grep "^$1|" "$T/argv.log")
-  case "$line" in *"$2"*) got=yes ;; esac
+  [ "$3" = yes ] && pat=" $2 "
+  case "$line" in *"$pat"*) got=yes ;; esac
   if [ "$got" = "$3" ]; then _pass "$4"; else _fail "$4" "$line"; fi
 }
 BOTH='{"permissions":{"allow":["Bash(touch:*)"],"deny":["Bash(touch ./deny-canary*)"]}}'
