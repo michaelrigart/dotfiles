@@ -169,7 +169,9 @@ printf '%s' "$input" | jq \
           "Bash(gh repo create*)", "Bash(glab repo create*)",
           "Bash(glab snippet create*)",
           "Bash(gh api *gists*)",  "Bash(glab api *snippets*)",
+          # Aliases of the verbs above: gh and glab resolve each to the same command.
           "Bash(gh gist new*)", "Bash(gh repo new*)", "Bash(glab snippet new*)",
+          "Bash(glab project create*)",
           # Lasting mail send-out paths: a server-side rule or an auto-reply keeps
           # sending long after the session that set it up.
           "mcp__claude_ai_Microsoft_365__outlook_create_filter",
@@ -309,17 +311,17 @@ printf '%s' "$input" | jq \
         # Fourth entry: the apply-window guard. Its matcher is a wildcard because it
         # inspects Edit/Write rather than Bash; it is inert unless xreview apply has
         # opened a window.
-        # The forge, worktree and cross-review guards set onFailure "block": a guard that cannot
-        # start, crashes, times out or emits unparseable output blocks the tool call instead of
-        # letting it through. The apply-window and path-resolution guards stay fail-open: their
-        # failure costs a prompt or nothing, and the apply guard matches every tool by wildcard
-        # and would block them all.
         # Fifth entry: the path-resolution guard. Denies the two command shapes that
         # always cost an interactive prompt — a compound command starting with cd, and
         # a recursive grep/rg over dot — because a Read() deny rule cannot be evaluated
         # against them and no hook can lift a deny. Bounces the fix back to the model.
         # Tests in tests/worktree-guard.test.sh, xreview-guard.test.sh,
         # xreview-apply-guard.test.sh and path-resolution-guard.test.sh.
+        # The forge, worktree and cross-review guards set onFailure "block": a guard that cannot
+        # start, crashes, times out or emits unparseable output blocks the tool call instead of
+        # letting it through. The apply-window and path-resolution guards stay fail-open: their
+        # failure costs a prompt or nothing, and the apply guard matches every tool by wildcard
+        # and would block them all.
         "PreToolUse": [
           {
             "matcher": "Bash",

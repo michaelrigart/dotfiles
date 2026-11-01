@@ -126,6 +126,9 @@ Add these to `permissions.deny`:
 - `Bash(glab snippet create*)`
 - `Bash(gh api *gists*)`, `Bash(glab api *snippets*)`
 
+Added during execution, as aliases of the denied verbs: `Bash(gh gist new*)`, `Bash(gh repo new*)`,
+`Bash(glab snippet new*)` and `Bash(glab project create*)` (`project` is an alias of glab's `repo` group).
+
 Agents never need these. When Michael wants one, he runs it himself (`! gh repo create …`). The
 rules close the route that runs on his own `gh` and `glab` logins. A raw `curl` carrying an
 attacker's token stays with the classifier (problem 2). The `claude-settings` suite pins each rule.
