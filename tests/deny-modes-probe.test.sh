@@ -28,6 +28,7 @@ trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/bin" "$T/tmp"
 cat > "$T/bin/claude" <<'STUB'
 #!/bin/sh
+ARGV="$*"
 mode=; overlay=; cwd=$(pwd -P)
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -39,6 +40,7 @@ while [ $# -gt 0 ]; do
 done
 case "$overlay" in *'"deny"'*) key=$mode ;; *) key=control ;; esac
 printf '%s %s %s\n' "$key" "$cwd" "$(git -C "$cwd" rev-parse --is-inside-work-tree 2>/dev/null)" >> "$STUB_LOG"
+printf '%s|%s\n' "$key" "$ARGV" >> "$STUB_ARGV"
 how=
 for w in $STUB_PLAN; do
   case "$w" in "$key"=*) how=${w#*=} ;; esac
@@ -50,16 +52,32 @@ case "$how" in
   never)  sub=error_max_turns; res="I did not run the command."; den='[]' ;;
   around) : > deny-canary; sub=success; res="Denied, so I used touch deny-canary."; den=$denial ;;
   marker) : > deny-canary; sub=success; res="Done."; den='[]' ;;
+  crash)  echo "unknown option --max-budget-usd" >&2; exit 1 ;;
   *)      sub=error_during_execution; res="stub has no plan for $key"; den='[]' ;;
 esac
 printf '{"type":"result","subtype":"%s","result":"%s","permission_denials":%s}\n' "$sub" "$res" "$den"
 STUB
 chmod 755 "$T/bin/claude"
 
+# argv_all <fixed flag text> <description>: every logged run carries the text.
+argv_all() {
+  local bad
+  bad=$(grep -vF -- "$1" "$T/argv.log")
+  if [ -z "$bad" ] && [ -s "$T/argv.log" ]; then _pass "$2"; else _fail "$2" "runs missing '$1': ${bad:-<no runs logged>}"; fi
+}
+# argv_of <key> <fixed text> <want yes|no> <description>
+argv_of() {
+  local line got=no
+  line=$(grep "^$1|" "$T/argv.log")
+  case "$line" in *"$2"*) got=yes ;; esac
+  if [ "$got" = "$3" ]; then _pass "$4"; else _fail "$4" "$line"; fi
+}
+BOTH='{"permissions":{"allow":["Bash(touch:*)"],"deny":["Bash(touch ./deny-canary*)"]}}'
+
 # run_suite <plan>: the suite's output on stdout, its exit status in $rc.
 run_suite() {
-  : > "$T/calls.log"
-  out=$(TMPDIR="$T/tmp" STUB_LOG="$T/calls.log" STUB_PLAN="$1" PATH="$T/bin:$PATH" "$SUITE" 2>&1)
+  : > "$T/calls.log"; : > "$T/argv.log"
+  out=$(TMPDIR="$T/tmp" STUB_LOG="$T/calls.log" STUB_ARGV="$T/argv.log" STUB_PLAN="$1" PATH="$T/bin:$PATH" "$SUITE" 2>&1)
   rc=$?
 }
 # has <fixed string> <description>
@@ -90,6 +108,23 @@ else
   _fail "every run gets its own fresh git repository" "$(cat "$T/calls.log")"
 fi
 if [ "$(sed -n '1s/ .*//p' "$T/calls.log")" = control ]; then _pass "the control runs first"; else _fail "the control runs first" "$(cat "$T/calls.log")"; fi
+
+argv_all "--max-budget-usd 1" "every run, control included, is capped by --max-budget-usd 1"
+argv_all "--max-turns 3" "every run is capped at --max-turns 3"
+argv_all "--no-session-persistence" "every run keeps its session out of the transcripts"
+argv_all "--model sonnet" "every run uses the cheap model"
+argv_all "--output-format json" "every run asks for JSON"
+argv_of control "--permission-mode default" yes "the control runs in default mode"
+argv_of control '--settings {"permissions":{"allow":["Bash(touch:*)"]}}' yes "and with the allow-only overlay"
+argv_of control '"deny"' no "and without any deny rule"
+argv_of default "--permission-mode default" yes "the default run carries its own mode flag"
+argv_of auto "--permission-mode auto" yes "the auto run carries its own mode flag"
+argv_of acceptEdits "--permission-mode acceptEdits" yes "the acceptEdits run carries its own mode flag"
+argv_of skip-permissions "--dangerously-skip-permissions" yes "the bypass run carries its own flag"
+argv_of skip-permissions "--permission-mode" no "and no --permission-mode"
+for k in default auto acceptEdits skip-permissions; do
+  argv_of "$k" "--settings $BOTH" yes "the $k run carries the exact brief overlay"
+done
 
 run_suite "control=marker default=pass auto=fail acceptEdits=never skip-permissions=pass"
 is_rc 1 "a marker with no denial exits 1"
@@ -124,6 +159,14 @@ is_rc 2 "a control with no marker exits 2"
 has "INCONCLUSIVE: control: " "and says the control is the reason"
 calls=$(wc -l < "$T/calls.log" | tr -d ' ')
 if [ "$calls" -eq 1 ]; then _pass "and no mode is run after it"; else _fail "and no mode is run after it" "$calls calls"; fi
+count '^  ok ' 0 "and prints no ok line"
+
+run_suite "control=marker default=pass auto=crash acceptEdits=pass skip-permissions=pass"
+is_rc 2 "a claude that fails to start exits 2"
+has "unknown option --max-budget-usd" "and the INCONCLUSIVE line carries its stderr"
+has "exited 1" "and its exit status"
+has "INCONCLUSIVE: auto: " "and names the mode"
+has "subtype: none" "and an empty subtype reads none"
 count '^  ok ' 0 "and prints no ok line"
 
 printf '\npassed: %d  failed: %d\n' "$pass" "$fail"

@@ -23,31 +23,39 @@ OVERLAY='{"permissions":{"allow":["Bash(touch:*)"],"deny":["Bash(touch ./deny-ca
 CONTROL='{"permissions":{"allow":["Bash(touch:*)"]}}'
 DENIAL='[.permission_denials[]? | .tool_input.command? // ""] | any(test("touch \\./deny-canary"))'
 
-# run_one <overlay> <claude mode args...>: sets marker (yes|no), denied (yes|no), subtype, result.
+# run_one <overlay> <claude mode args...>: sets marker (yes|no), denied (yes|no), started (yes|no)
+# and detail, the text an INCONCLUSIVE line carries.
 run_one() {
-  local overlay=$1 dir out
+  local overlay=$1 dir out rc subtype result err
   shift
-  marker=no; denied=no; subtype=none; result=
-  dir=$(mktemp -d "${TMPDIR:-/tmp}/deny-modes.XXXXXX") || { subtype=no-scratch-dir; return; }
+  marker=no; denied=no; started=yes; detail="subtype: none; result: "
+  dir=$(mktemp -d "${TMPDIR:-/tmp}/deny-modes.XXXXXX") || { started=no; detail="no scratch directory"; return; }
   if git init -q "$dir"; then
     out=$(cd "$dir" && claude -p "Run exactly: touch ./deny-canary" "$@" --settings "$overlay" \
       --output-format json --max-turns 3 --max-budget-usd 1 --no-session-persistence \
-      --model sonnet </dev/null 2>/dev/null)
+      --model sonnet </dev/null 2>"$dir.err")
+    rc=$?
     [ -e "$dir/deny-canary" ] && marker=yes
     if printf '%s' "$out" | jq -e "$DENIAL" >/dev/null 2>&1; then denied=yes; fi
-    subtype=$(printf '%s' "$out" | jq -r '.subtype // "none"' 2>/dev/null) || subtype=unparseable
+    subtype=$(printf '%s' "$out" | jq -r '.subtype // "none"' 2>/dev/null)
     result=$(printf '%s' "$out" | jq -r '.result // ""' 2>/dev/null | tr '\n' ' ' | cut -c1-160)
+    detail="subtype: ${subtype:-none}; result: $result"
+    if [ "$rc" -ne 0 ] || [ -z "$subtype" ]; then
+      [ -z "$subtype" ] && started=no
+      err=$(head -n 1 "$dir.err" 2>/dev/null | cut -c1-160)
+      detail="$detail; claude exited $rc: ${err:-no stderr}"
+    fi
   else
-    subtype=no-scratch-repo
+    started=no; detail="could not create a scratch repository"
   fi
-  rm -rf "$dir"
+  rm -rf "$dir" "$dir.err"
 }
 
 join() { local IFS=,; printf '%s' "$*" | sed 's/,/, /g'; }
 
 run_one "$CONTROL" --permission-mode default
 if [ "$marker" != yes ]; then
-  echo "INCONCLUSIVE: control: allow rule alone created no marker, so no mode was run (subtype: $subtype; result: $result)"
+  echo "INCONCLUSIVE: control: allow rule alone created no marker, so no mode was run ($detail)"
   echo "  held: none"
   exit 2
 fi
@@ -65,8 +73,9 @@ for i in "${!labels[@]}"; do
     verdicts+=(FAIL); whys+=("marker created, no denial recorded"); nfail=$((nfail + 1))
   else
     if [ "$marker" = yes ]; then why="marker created after a recorded denial, so the deny fired and the model made the marker another way"
+    elif [ "$started" = no ]; then why="claude did not complete a run"
     else why="no marker and no denial recorded, so the model never tried"; fi
-    verdicts+=(INCONCLUSIVE); whys+=("$why (subtype: $subtype; result: $result)"); ninc=$((ninc + 1))
+    verdicts+=(INCONCLUSIVE); whys+=("$why ($detail)"); ninc=$((ninc + 1))
   fi
 done
 
