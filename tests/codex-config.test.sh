@@ -246,11 +246,22 @@ emit $'[mcp_servers.node_repl]\n'
 tq 'd["mcp_servers"]["node_repl"]' '{}' "K.2 a bare node_repl header is left alone"
 emit ''
 tq 'd["plugins"]["unified-computer-use@openai-bundled"]["enabled"]' 'False' "K.3 unified-computer-use is disabled from nothing"
-emit $'[plugins."unified-computer-use@openai-bundled"]\nenabled = true\n[plugins."browser@openai-bundled"]\nenabled = true\n'
+emit $'[plugins."unified-computer-use@openai-bundled"]\nenabled = true\n[plugins."documents@openai-primary-runtime"]\nenabled = true\n'
 tq 'd["plugins"]["unified-computer-use@openai-bundled"]["enabled"]' 'False' "K.3 unified-computer-use is disabled over true"
-tq 'd["plugins"]["browser@openai-bundled"]["enabled"]' 'True' "K.3 other plugins are untouched"
+tq 'd["plugins"]["documents@openai-primary-runtime"]["enabled"]' 'True' "K.3 other plugins are untouched"
 emit "$first"
 if [ "$first" = "$OUT" ]; then _pass "K.4 re-rendering is idempotent"; else _fail "K.4 re-rendering is idempotent" "$(diff <(printf '%s' "$first") <(printf '%s' "$OUT") | head -5)"; fi
+
+echo "L. the reviewer has no outward tools (spec 2026-11-01 §5)"
+emit $'web_search = "live"\n[plugins."browser@openai-bundled"]\nenabled = true\nextra = "kept"\n[plugins."computer-use@openai-bundled"]\nenabled = true\n'
+tq 'd["web_search"]' "'disabled'" "L.1 web_search is disabled over live"
+tq 'd["plugins"]["browser@openai-bundled"]["enabled"]' 'False' "L.1 browser is disabled over true"
+tq 'd["plugins"]["computer-use@openai-bundled"]["enabled"]' 'False' "L.1 computer-use is disabled over true"
+tq 'd["plugins"]["browser@openai-bundled"]["extra"]' "'kept'" "L.1 the browser table keeps its other keys"
+emit ''
+tq 'd["web_search"]' "'disabled'" "L.2 web_search is disabled from nothing"
+tq 'd["plugins"]["browser@openai-bundled"]["enabled"]' 'False' "L.2 browser is disabled from nothing"
+tq 'd["plugins"]["computer-use@openai-bundled"]["enabled"]' 'False' "L.2 computer-use is disabled from nothing"
 
 echo "J. every Codex integration target is managed by chezmoi"
 if ! managed=$(chezmoi --config "$CFG" --config-format toml --persistent-state "$STATE" --source "$SRC" --destination "$HOME" managed 2>"$T/managed.err"); then
