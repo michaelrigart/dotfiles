@@ -4016,6 +4016,114 @@ expect_refused "a payload jq cannot read: a commit is refused" "$JQFAIL" 'git co
 expect_quiet   "a jq that cannot read: ls stays silent"         "$JQFAIL" 'ls -la'
 expect_quiet   "a jq that cannot read: git status stays silent" "$JQFAIL" 'git status'
 
+# Rule 3 reads python3's verdict. A python3 that is missing or broken is an internal failure, so
+# the call is denied (JSON, exit 0), never asked. The classifier's own `unparseable` verdict is a
+# doubt about the command, so it still asks.
+mkdir -p "$FCSTUBS/nopy" "$FCSTUBS/pyfail" "$FCSTUBS/pyjunk"
+cat > "$FCSTUBS/nopy/jq" <<EOF
+#!/bin/sh
+PATH="$STUBBASE" exec "$REALJQ" "\$@"
+EOF
+printf '#!/bin/sh\nexit 3\n' > "$FCSTUBS/pyfail/python3"
+printf '#!/bin/sh\necho banana\nexit 0\n' > "$FCSTUBS/pyjunk/python3"
+chmod 755 "$FCSTUBS/nopy/jq" "$FCSTUBS/pyfail/python3" "$FCSTUBS/pyjunk/python3"
+GWRITE='glab api -X DELETE projects/1'
+PYNEEDLE="the glab api read/write check could not run"
+expect_refused "python3 missing: a glab api write is denied, not asked" "$FCSTUBS/nopy:/bin" "$GWRITE" "$PYNEEDLE" 0
+expect_refused "python3 missing: even a glab api read is denied" "$FCSTUBS/nopy:/bin" 'glab api projects/1' "$PYNEEDLE" 0
+expect_refused "a classifier that exits 3: a glab api write is denied, not asked" "$FCSTUBS/pyfail:$PATH" "$GWRITE" "$PYNEEDLE" 0
+expect_refused "a classifier that prints nothing it knows: denied" "$FCSTUBS/pyjunk:$PATH" "$GWRITE" "$PYNEEDLE" 0
+fc_run "$PATH" 'glab api "unbalanced'
+if [ "$fc_rc" -eq 0 ] && printf '%s' "$fc_out" | jq -e '.hookSpecificOutput.permissionDecision=="ask"' >/dev/null 2>&1; then
+  pass=$((pass + 1)); printf '  ok   %s\n' "a command the classifier cannot tokenize still asks"
+else
+  fail=$((fail + 1)); printf '  FAIL %s (rc %s, stdout: %s)\n' "a command the classifier cannot tokenize still asks" "$fc_rc" "$fc_out"
+fi
+expect_quiet   "a read-only glab api call falls through" "$PATH" 'glab api projects/1'
+
+# A text tool that fails on a candidate must not read as "no match". Each stub fails (exit 3) only
+# for the call that decides one rule and is the real tool otherwise, so each case reaches its site.
+# mkfailing <dir> <tool> <real tool path> <glob over "$*">
+mkfailing() {
+  mkdir -p "$FCSTUBS/$1"
+  cat > "$FCSTUBS/$1/$2" <<EOF
+#!/bin/sh
+case "\$*" in $4) exit 3 ;; esac
+exec $3 "\$@"
+EOF
+  chmod 755 "$FCSTUBS/$1/$2"
+}
+mkfailing grepverb grep /usr/bin/grep '*"[;&|(]"*'
+mkfailing greprule1 grep /usr/bin/grep '*claude*'
+mkfailing grepref grep /usr/bin/grep '*body-file*'
+mkfailing greptpl grep /usr/bin/grep '-F*'
+mkfailing sedtpl sed /usr/bin/sed '*"{1,6}"*'
+mkfailing sedalias sed /usr/bin/sed '*"push|send-pack"*'
+mkdir -p "$FCSTUBS/jqcwd"
+cat > "$FCSTUBS/jqcwd/jq" <<EOF
+#!/bin/sh
+for a in "\$@"; do [ "\$a" = '.cwd // empty' ] && exit 1; done
+PATH="$STUBBASE" exec "$REALJQ" "\$@"
+EOF
+chmod 755 "$FCSTUBS/jqcwd/jq"
+TXNEEDLE="could not run, so this call is refused"
+expect_refused "grep failing on the command-position check: a commit is denied" "$FCSTUBS/grepverb:$PATH" 'git commit -m x' "$TXNEEDLE" 0
+expect_refused "grep failing on the attribution scan: a commit is denied" "$FCSTUBS/greprule1:$PATH" 'git commit -m x' "$TXNEEDLE" 0
+expect_refused "grep failing on the body-file scan: a commit is denied" "$FCSTUBS/grepref:$PATH" 'git commit -F msg.txt' "$TXNEEDLE" 0
+IBODY='glab mr create --description "## What & why
+Fixes it.
+
+## Commits
+- one
+
+## Verification
+- [x] tests green
+
+## Checklist
+- [x] docs updated
+
+## Notes
+n/a"'
+fc_run_in() { # fc_run_in <cwd> <PINNED_PATH> <command>
+  local errf="$TMP/fc.err"
+  fc_out=$(cmdpayload "$1" "$3" | PINNED_PATH="$2" bash "$GUARD" 2>"$errf"); fc_rc=$?
+  fc_err=$(cat "$errf")
+}
+fc_run_in "$HEADS" "$FCSTUBS/greptpl:$PATH" "$IBODY"
+if [ "$fc_rc" -eq 0 ] && printf '%s' "$fc_out" | grep -qF "$TXNEEDLE"; then
+  pass=$((pass + 1)); printf '  ok   %s\n' "grep failing on the template marker match: denied for the failure, not for the template"
+else
+  fail=$((fail + 1)); printf '  FAIL %s (rc %s, stdout: %s)\n' "grep failing on the template marker match: denied for the failure, not for the template" "$fc_rc" "$fc_out"
+fi
+fc_run_in "$HEADS" "$PATH" "$IBODY"
+if [ "$fc_rc" -eq 0 ] && [ -z "$fc_out" ]; then
+  pass=$((pass + 1)); printf '  ok   %s\n' "control: the same compliant body passes with the real grep"
+else
+  fail=$((fail + 1)); printf '  FAIL %s (rc %s, stdout: %s)\n' "control: the same compliant body passes with the real grep" "$fc_rc" "$fc_out"
+fi
+fc_run_in "$HEADS" "$FCSTUBS/sedtpl:$PATH" "$IBODY"
+if [ "$fc_rc" -eq 0 ] && printf '%s' "$fc_out" | grep -qF "$TXNEEDLE"; then
+  pass=$((pass + 1)); printf '  ok   %s\n' "sed failing on the template markers: denied, not allowed"
+else
+  fail=$((fail + 1)); printf '  FAIL %s (rc %s, stdout: %s)\n' "sed failing on the template markers: denied, not allowed" "$fc_rc" "$fc_out"
+fi
+fc_run_in "$HEADS" "$FCSTUBS/jqcwd:$PATH" "$IBODY"
+if [ "$fc_rc" -eq 0 ] && printf '%s' "$fc_out" | grep -qF "$TXNEEDLE"; then
+  pass=$((pass + 1)); printf '  ok   %s\n' "jq failing on the cwd read: denied, not allowed"
+else
+  fail=$((fail + 1)); printf '  FAIL %s (rc %s, stdout: %s)\n' "jq failing on the cwd read: denied, not allowed" "$fc_rc" "$fc_out"
+fi
+# The alias scan in the prefilter: a sed that fails there must not hide a push alias.
+fc_run "$FCSTUBS/sedalias:$PATH" 'git pom'
+if [ "$fc_rc" -eq 0 ] && printf '%s' "$fc_out" | jq -e '.hookSpecificOutput.permissionDecision|IN("ask","deny")' >/dev/null 2>&1; then
+  pass=$((pass + 1)); printf '  ok   %s\n' "sed failing in the alias scan: a push alias is still judged"
+else
+  fail=$((fail + 1)); printf '  FAIL %s (rc %s, stdout: %s)\n' "sed failing in the alias scan: a push alias is still judged" "$fc_rc" "$fc_out"
+fi
+expect_quiet   "sed failing in the alias scan: git status stays silent" "$FCSTUBS/sedalias:$PATH" 'git status'
+expect_quiet   "grep failing on the attribution scan: ls stays silent" "$FCSTUBS/greprule1:$PATH" 'ls -la'
+expect_quiet   "sed failing on the template markers: ls stays silent" "$FCSTUBS/sedtpl:$PATH" 'ls -la'
+
 echo
 echo "passed: $pass  failed: $fail"
 [ "$fail" -eq 0 ]

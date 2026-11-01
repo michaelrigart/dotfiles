@@ -79,6 +79,24 @@ ask() {
   exit 0
 }
 
+# A text tool that errors on a candidate is an internal failure, never "no match": the call
+# is refused. $1 names the check.
+check_failed() {
+  deny "Forge guard: the $1 could not run, so this call is refused. Restore the tool, or run the call by hand."
+}
+
+# grep_has <text> <grep args...>: 0 when grep matches the text, 1 when it finds nothing, 2 when
+# grep failed (any other status). grep reads all its input (no -q), so a match can never SIGPIPE
+# the printf and make pipefail report a failure.
+grep_has() {
+  local text=$1 st
+  shift
+  printf '%s' "$text" | grep "$@" >/dev/null
+  st=("${PIPESTATUS[@]}")
+  [ "${st[0]}" -eq 0 ] || return 2
+  case "${st[1]}" in 0) return 0 ;; 1) return 1 ;; *) return 2 ;; esac
+}
+
 payload=$(cat)
 [ -n "$payload" ] || allow
 
@@ -116,12 +134,18 @@ case "$payload" in
       pcwd=.
       cwd_re='"cwd"[[:space:]]*:[[:space:]]*"([^"]*)"'
       [[ $payload =~ $cwd_re ]] && pcwd=${BASH_REMATCH[1]}
-      while IFS= read -r a; do
-        [ -n "$a" ] || continue
-        case "$payload" in *"$a"*) push_alias=1; break ;; esac
-      done <<EOF
-$(git -C "$pcwd" config --get-regexp '^alias\.' 2>/dev/null | sed -n -E 's/^alias\.([^ ]+) .*(push|send-pack).*/\1/p')
+      # git exits 1 for "no aliases", which is not a failure; sed failing is, and then the
+      # aliases cannot be told apart, so the payload counts as a possible push alias.
+      if aliases=$(git -C "$pcwd" config --get-regexp '^alias\.' 2>/dev/null | sed -n -E 's/^alias\.([^ ]+) .*(push|send-pack).*/\1/p'; exit "${PIPESTATUS[1]}"); then
+        while IFS= read -r a; do
+          [ -n "$a" ] || continue
+          case "$payload" in *"$a"*) push_alias=1; break ;; esac
+        done <<EOF
+$aliases
 EOF
+      else
+        push_alias=1
+      fi
     fi
     ;;
 esac
@@ -226,8 +250,10 @@ fi
 # a call that can change something on the forge asks.
 #
 # FAIL DIRECTION IS INVERTED HERE. Rules 1-2 allow on any doubt; this one asks on any
-# doubt — a false ask costs one keystroke, a false silence is an ungated remote
-# mutation. Unparseable command, missing python3, classifier crash => ask.
+# doubt about the COMMAND — a false ask costs one keystroke, a false silence is an ungated
+# remote mutation. A command the classifier cannot tokenize => ask. A failure of the check
+# itself (python3 missing, the classifier exiting non-zero or printing an unknown verdict) is
+# not a doubt about the command: it denies, because a click would let an unjudged write through.
 #
 # It reads SHELL STRUCTURE, never raw text. A first draft also regex-scanned the raw
 # command as a backstop; that fired on every heredoc, python literal and rg pattern that
@@ -241,7 +267,7 @@ fi
 case "$cmd" in
   *"glab api"*)
     if ! command -v python3 >/dev/null 2>&1; then
-      ask "glab api call, and python3 is missing so the read/write check could not run."
+      deny "Forge guard: the glab api read/write check could not run (python3 is missing), so this call is refused. Restore python3, or run the call by hand."
     fi
     verdict=$(printf '%s' "$cmd" | python3 -I -c 'import sys, shlex
 
@@ -310,7 +336,8 @@ def classify(cmd, depth=0):
 # The shell joins `\<newline>` before it ever splits words; shlex does not, and emits the
 # newline as an operator token. Without this join, `glab api p/1 \<newline> -X DELETE` ends
 # its segment at the newline and the flag is never seen. Found by mutation testing.
-print(classify(sys.stdin.read().replace("\\\n", " ")))' 2>/dev/null) || verdict=unparseable
+print(classify(sys.stdin.read().replace("\\\n", " ")))' 2>/dev/null) \
+      || deny "Forge guard: the glab api read/write check could not run (the classifier exited with an error), so this call is refused. Restore python3, or run the call by hand."
     case "$verdict" in
       write)
         ask "This \`glab api\` call writes to the forge.
@@ -324,12 +351,15 @@ Read-only \`glab api\` calls are not gated and do not reach this prompt."
       read)
         : # falls through to the auto-mode classifier
         ;;
-      *)
+      unparseable)
         ask "Could not determine whether this \`glab api\` call reads or writes.
 
 The command did not tokenize cleanly (unbalanced quotes, or a construct the check
 does not model), so it is being surfaced rather than assumed safe. Check the method
 flag by eye."
+        ;;
+      *)
+        deny "Forge guard: the glab api read/write check could not run (the classifier printed no verdict), so this call is refused. Restore python3, or run the call by hand."
         ;;
     esac
     ;;
@@ -343,7 +373,8 @@ case "$cmd" in *FORGE_GUARD=off*) allow ;; esac
 # this, `rg "git commit" docs/` or a heredoc quoting one of these would trip the
 # guard on text it merely mentions.
 verb_re='(^|[;&|(])[[:space:]]*(sudo[[:space:]]+)?(git[[:space:]]+commit|glab[[:space:]]+mr[[:space:]]+(create|update)|gh[[:space:]]+pr[[:space:]]+(create|edit)|az[[:space:]]+repos[[:space:]]+pr[[:space:]]+(create|update))([[:space:]]|$)'
-printf '%s' "$cmd" | grep -Eq "$verb_re" || allow
+grep_has "$cmd" -E -- "$verb_re"
+case $? in 0) ;; 1) allow ;; *) check_failed "command-position check (grep)" ;; esac
 
 # The message/description is normally inline in the command string. When it is
 # not, the command names the file holding it. Scan both — that beats trying to
@@ -408,6 +439,9 @@ ltrim() {
 sq=\'
 ref_re="\\\$\\((cat|<)[^)]*\\)|(--body-file|--description-file|--file|-F)[=[:space:]]+(\"[^\"]*\"|${sq}[^${sq}]*${sq}|[^[:space:]]+)"
 
+refs=$(printf '%s' "$cmd" | grep -oE "$ref_re"; exit "${PIPESTATUS[1]}")
+case $? in 0|1) ;; *) check_failed "body-file scan (grep)" ;; esac
+
 while IFS= read -r ref; do
   [ -n "$ref" ] || continue
 
@@ -462,12 +496,15 @@ $(cat "$ref" 2>/dev/null)"
     esac
   fi
 done <<EOF
-$(printf '%s' "$cmd" | grep -oE "$ref_re")
+$refs
 EOF
 
 # ---------------------------------------------------------------- rule 1: attribution
-if printf '%s' "$haystack" | grep -Eq \
-   'claude\.ai/code|[Cc]laude-[Ss]ession|[Cc]o-[Aa]uthored-[Bb]y:[[:space:]]*(Claude|Codex|Copilot|Cursor)|[Gg]enerated with[^;]{0,24}(Claude|Codex)'; then
+grep_has "$haystack" -E -- \
+  'claude\.ai/code|[Cc]laude-[Ss]ession|[Cc]o-[Aa]uthored-[Bb]y:[[:space:]]*(Claude|Codex|Copilot|Cursor)|[Gg]enerated with[^;]{0,24}(Claude|Codex)'
+attribution=$?
+[ "$attribution" -le 1 ] || check_failed "attribution scan (grep)"
+if [ "$attribution" = 0 ]; then
   deny "Agent attribution is not allowed in the published record.
 
 This commit message / MR / PR text contains a session link, a Claude-Session
@@ -485,7 +522,8 @@ case "$cmd" in
   *) allow ;;
 esac
 
-cwd=$(printf '%s' "$payload" | jq -r '.cwd // empty' 2>/dev/null)
+cwd=$(printf '%s' "$payload" | jq -r '.cwd // empty' 2>/dev/null) \
+  || check_failed "working-directory read (jq)"
 [ -n "$cwd" ] && [ -d "$cwd" ] || cwd=$PWD
 root=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null) || allow
 [ -n "$root" ] || allow
@@ -510,21 +548,29 @@ done
 # Section markers, not just markdown headings: the ViuMore templates label their
 # sections with **Bold** lines and have no `#` heading at all, so a heading-only
 # check would silently pass on exactly the repos this guard is for.
+# Each stage is checked on its own: any sed failure, or a grep status above 1, returns 2
+# (grep -v exits 1 when nothing is left, which is a template with no sections, not a failure).
 markers_of() {
-  sed -nE 's/^#{1,6}[[:space:]]+(.+)$/\1/p; s/^\*\*([^*]+)\*\*.*$/\1/p' "$1" \
-    | sed -E 's/[[:space:]]+$//' | grep -v '^[[:space:]]*$'
+  local m
+  m=$(sed -nE 's/^#{1,6}[[:space:]]+(.+)$/\1/p; s/^\*\*([^*]+)\*\*.*$/\1/p' "$1") || return 2
+  m=$(printf '%s\n' "$m" | sed -E 's/[[:space:]]+$//') || return 2
+  m=$(printf '%s\n' "$m" | grep -v '^[[:space:]]*$')
+  [ $? -le 1 ] || return 2
+  printf '%s\n' "$m"
 }
 
 best_total=0
 while IFS= read -r tpl; do
   [ -n "$tpl" ] || continue
+  markers=$(markers_of "$tpl") || check_failed "template reader (sed)"
   total=0; hits=0
   while IFS= read -r m; do
     [ -n "$m" ] || continue
     total=$((total + 1))
-    printf '%s' "$haystack" | grep -Fqi -- "$m" && hits=$((hits + 1))
+    grep_has "$haystack" -F -i -- "$m"
+    case $? in 0) hits=$((hits + 1)) ;; 1) ;; *) check_failed "template section match (grep)" ;; esac
   done <<EOF
-$(markers_of "$tpl")
+$markers
 EOF
   # Fewer than two markers is not a structure worth judging — don't guess.
   [ "$total" -lt 2 ] && allow
