@@ -907,9 +907,34 @@ if command -v chezmoi >/dev/null 2>&1; then
       *)      _fail "helper $f is chezmoi-managed" "not in \`chezmoi managed\`" ;;
     esac
   done
+  # An agent file chezmoi does not manage never deploys, and its type is then "not found".
+  for a in "$SRC"/dot_claude/agents/*.md; do
+    [ -e "$a" ] || continue
+    f=".claude/agents/$(basename "$a")"
+    if printf '%s\n' "$managed" | grep -qxF -- "$f"; then _pass "agent $f is chezmoi-managed"
+    else _fail "agent $f is chezmoi-managed" "not in \`chezmoi managed\`"; fi
+  done
 else
   echo "  SKIP: chezmoi absent — hook-script management unverified"
 fi
+# An unquoted ": " inside a description breaks the frontmatter YAML and the agent fails to load.
+desc_yaml_ok() { # desc_yaml_ok <file>: true unless the description has an unquoted ": "
+  awk '/^---$/{n++; next} n==1 && /^description:/{sub(/^description:[[:space:]]*/,""); d=$0; exit}
+       END{ if (d ~ /^"/) exit 0; if (d ~ /: /) exit 1; exit 0 }' "$1"
+}
+YF="$(mktemp "${TMPDIR:-/tmp}/claude-settings-agent.XXXXXX")"
+printf -- '---\nname: x\ndescription: Does a thing: badly\n---\n' > "$YF"
+if desc_yaml_ok "$YF"; then _fail "the description check rejects an unquoted colon-space" "fixture passed"
+else _pass "the description check rejects an unquoted colon-space"; fi
+printf -- '---\nname: x\ndescription: "Does a thing: well"\n---\n' > "$YF"
+if desc_yaml_ok "$YF"; then _pass "the description check accepts a double-quoted colon-space"
+else _fail "the description check accepts a double-quoted colon-space" "fixture rejected"; fi
+rm -f "$YF"
+for a in "$SRC"/dot_claude/agents/*.md; do
+  [ -e "$a" ] || continue
+  if desc_yaml_ok "$a"; then _pass "$(basename "$a") description parses as YAML"
+  else _fail "$(basename "$a") description parses as YAML" "unquoted colon-space in description"; fi
+done
 
 echo "Y. unused extensions are switched off, the rest of the live state is carried"
 # Doctor cleanup 2026-10-29. plugins.conf is add-only, so dropping a plugin line leaves it

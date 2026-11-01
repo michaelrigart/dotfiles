@@ -80,6 +80,7 @@ tests/
 !.claude/agents/sp-standard.md
 !.claude/agents/sp-architect.md
 !.claude/agents/sp-reviewer.md
+!.claude/agents/web-researcher.md
 !.claude/themes/
 .claude/themes/*
 !.claude/themes/tokyo-night.json
