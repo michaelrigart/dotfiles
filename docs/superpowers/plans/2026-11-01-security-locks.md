@@ -324,6 +324,8 @@ The test helpers are Task 1's. `cmdpayload` adds `cwd`, as `run()` does. The stu
 - **Input:** bytes are decoded as UTF-8 with `errors="replace"` and split on `\n`.
 - **`invisible`:** `unicodedata.category(ch) == "Cf"` or `0xE0000 <= ord(ch) <= 0xE007F`. U+FEFF is
   exempt as a file's first character. Under `--diff`, that means column 0 of new-file line 1.
+  (Widened during execution to every Default_Ignorable_Code_Point except U+FE0E and U+FE0F; see
+  spec §6.)
 - **`concealment`:** these substrings, case-insensitive, after mapping U+2019 to `'`:
   `do not tell the user`, `don't tell the user`, `do not mention`, `don't mention`,
   `without telling`, `hide this from`.

@@ -46,6 +46,29 @@ inv "right-to-left override" "$RLO" 202E
 inv "left-to-right isolate" "$LRI" 2066
 inv "tag character" "$TAGA" E0041
 
+# Default_Ignorable_Code_Point beyond Cf: variation selectors, fillers, joiners, extra tags.
+inv "variation selector supplement start" '\363\240\204\200' E0100
+inv "variation selector supplement end" '\363\240\207\257' E01EF
+inv "variation selector 1" '\357\270\200' FE00
+inv "hangul filler U+3164" '\343\205\244' 3164
+inv "hangul choseong filler" '\341\205\237' 115F
+inv "halfwidth hangul filler" '\357\276\240' FFA0
+inv "combining grapheme joiner" '\315\217' 034F
+inv "mongolian free variation selector" '\341\240\213' 180B
+inv "tag-block neighbour beyond U+E007F" '\363\240\202\200' E0080
+printf -- '--- a/a.md\n+++ b/a.md\n@@ -0,0 +1,2 @@\n+ok\n+x%sy\n' "$(printf '\363\240\204\200')" > "$T/dv.diff"
+rund "$T/dv.diff" --diff
+check "--diff flags a variation selector, escaped" 1 "a.md:2: invisible: x<U+E0100>y"
+printf -- '--- a/a.md\n+++ b/a.md\n@@ -0,0 +1 @@\n+x%sy\n' "$(printf '\343\205\244')" > "$T/dv.diff"
+rund "$T/dv.diff" --diff
+check "--diff flags a hangul filler, escaped" 1 "a.md:1: invisible: x<U+3164>y"
+
+# Emoji and text presentation selectors are ordinary text.
+printf 'warn \342\232\240\357\270\217 here\n' > "$T/f.md"; run f.md
+check "an emoji with U+FE0F is clean" 0 ""
+printf 'a\357\270\216 b\n' > "$T/f.md"; run f.md
+check "U+FE0E after a character is clean" 0 ""
+
 # A byte-order mark is exempt as the first character of a file, and only there.
 printf "${BOM}hello\nworld\n" > "$T/f.md"; run f.md
 check "a BOM at the start of a file is clean" 0 ""

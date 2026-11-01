@@ -204,8 +204,11 @@ exits 0 when clean, 1 on findings and 2 on error.
 
 It reports three classes:
 - **`invisible`:** format and bidirectional characters, meaning Unicode category Cf (U+200B–U+200F,
-  U+202A–U+202E, U+2060–U+2064, U+2066–U+2069, U+FEFF except at file start) and the tag block
-  U+E0000–U+E007F. This class is precise.
+  U+202A–U+202E, U+2060–U+2064, U+2066–U+2069, U+FEFF except at file start) and every other
+  Default_Ignorable_Code_Point: the tag block, variation selectors (U+FE00–U+FE0D and the supplement
+  U+E0100–U+E01EF, a known channel for smuggled text) and the Hangul fillers. U+FE0E and U+FE0F stay
+  unflagged, because ordinary emoji carry them. This class is precise. (Widened during execution
+  from Cf plus the tag block, under the delegated sign-off.)
 - **`concealment`:** instructions to keep an action from the user, such as "do not tell the user",
   "don't mention", "without telling" or "hide this from". A short, case-insensitive list.
 - **`secrets`:** credential locations (`.ssh/`, `id_rsa`, `id_ed25519`, `.aws/credentials`,
