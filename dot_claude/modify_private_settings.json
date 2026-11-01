@@ -169,6 +169,7 @@ printf '%s' "$input" | jq \
           "Bash(gh repo create*)", "Bash(glab repo create*)",
           "Bash(glab snippet create*)",
           "Bash(gh api *gists*)",  "Bash(glab api *snippets*)",
+          "Bash(gh gist new*)", "Bash(gh repo new*)", "Bash(glab snippet new*)",
           # Lasting mail send-out paths: a server-side rule or an auto-reply keeps
           # sending long after the session that set it up.
           "mcp__claude_ai_Microsoft_365__outlook_create_filter",

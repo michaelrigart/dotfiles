@@ -38,6 +38,7 @@ EXP_DENY='["Read(~/.ssh/**)","Edit(~/.ssh/**)",
  "Bash(tagteam *export*)",
  "Bash(gh gist create*)","Bash(gh gist edit*)","Bash(gh repo create*)","Bash(glab repo create*)",
  "Bash(glab snippet create*)","Bash(gh api *gists*)","Bash(glab api *snippets*)",
+ "Bash(gh gist new*)","Bash(gh repo new*)","Bash(glab snippet new*)",
  "Bash(security *find-generic-password*)","Bash(/usr/bin/security *find-generic-password*)",
  "Bash(security *find-internet-password*)","Bash(/usr/bin/security *find-internet-password*)",
  "Bash(security *dump-keychain*)","Bash(/usr/bin/security *dump-keychain*)",
@@ -161,7 +162,8 @@ m_is() { # m_is <command> <expected count> <label>
 }
 for c in 'gh gist create notes.md' 'gh gist edit 1234' 'gh repo create x --public --source .' \
          'glab repo create x' 'glab snippet create -t t f.txt' 'gh api gists' \
-         'gh api -X POST /gists -f description=x' 'glab api projects/1/snippets' 'glab api -X POST snippets'; do
+         'gh api -X POST /gists -f description=x' 'glab api projects/1/snippets' 'glab api -X POST snippets' \
+         'gh gist new notes.md' 'gh repo new x --public' 'glab snippet new -t t f.txt'; do
   d_is "$c" yes "a deny rule matches: $c"
 done
 for c in 'gh repo view' 'gh gist list' 'gh api repos/o/r/pulls' 'glab api projects/1/merge_requests'; do
