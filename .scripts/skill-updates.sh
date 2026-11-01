@@ -191,7 +191,11 @@ scan_section() {
   scan=$(printf '%s\n' "$diff" | "$REPO_ROOT/dot_local/bin/executable_agent-text-scan" --diff 2>"$ERRF"); rc=$?
   case $rc in
     0) printf 'clean\n' ;;
-    1) printf '~~~\n%s\n~~~\n' "$scan" ;;
+    1) if [ -n "$scan" ]; then
+         printf '~~~\n%s\n~~~\n' "$scan"
+       else
+         printf 'scan failed: agent-text-scan exited 1: %s\n' "$(head -n 1 "$ERRF")"
+       fi ;;
     *) printf 'scan failed: agent-text-scan exited %s: %s\n' "$rc" "$(head -n 1 "$ERRF")" ;;
   esac
   return 0

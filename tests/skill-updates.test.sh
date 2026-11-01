@@ -105,6 +105,12 @@ out_hasnt() { case "$OUT" in *"$1"*) _fail "$2" ;; *) _pass "$2" ;; esac; }
 err_has()   { case "$ERR" in *"$1"*) _pass "$2" ;; *) _fail "$2" ;; esac; }
 rc_is()     { if [ "$RC" -eq "$1" ]; then _pass "$2"; else _fail "$2"; fi; }
 called()     { if grep -qF -- "$1" "$CALLS"; then _pass "$2"; else _fail "$2"; fi; }
+tail_is() {  # tail_is <expected block> <label>: the last lines of the recorded gh calls
+  local want=$1 n got
+  n=$(printf '%s\n' "$want" | wc -l | tr -d ' ')
+  got=$(tail -n "$n" "$CALLS")
+  if [ "$got" = "$want" ]; then _pass "$2"; else _fail "$2"; printf '    want| %s\n' "$want"; printf '    got | %s\n' "$got"; fi
+}
 called_line() { if grep -qxF -- "$1" "$CALLS"; then _pass "$2"; else _fail "$2"; fi; }
 not_called() { if grep -qF -- "$1" "$CALLS"; then _fail "$2"; else _pass "$2"; fi; }
 line_of() { grep -nF -- "$1" "$CALLS" | head -n 1 | cut -d: -f1; }
@@ -285,8 +291,7 @@ called "api --paginate repos/{owner}/{repo}/issues?labels=skill-update&state=all
 called "issue create --title Skill update: clarity v0.3.0 --label skill-update --body clarity has a newer upstream release: v0.2.1 → v0.3.0." "issue created with title, label and body"
 called "Compare: https://github.com/addyosmani/clarity/compare/$P...$B" "body carries the compare URL"
 called "api -H Accept: application/vnd.github.diff repos/addyosmani/clarity/compare/$P...$B" "the compare diff is fetched from the exact path"
-called_line "## Scan of added lines" "body has the scan heading"
-called_line "clean" "a clean diff: the section says clean"
+tail_is "$(printf '\n## Scan of added lines\n\nclean')" "a clean diff: the body ends with the exact scan section"
 called 'lists `.agents/skills/clarity/SKILL.md`' "body names the SKILL.md check"
 called 'prints `current: clarity v0.3.0`' "body names the current-label check"
 called 'put `Closes #<this issue>` in the commit message.' "body keeps the Closes placeholder"
@@ -300,9 +305,36 @@ reset; rel clarity v0.3.0; com clarity v0.3.0 "$B"
 export CMP_OUT="$ZW_DIFF"
 run "$(clarity)" --open-issues
 rc_is 0 "scan finding: exit 0"
-called_line "~~~" "findings sit between ~~~ lines"
-called "README.md:2: invisible: a<U+200B>b" "finding names the file, class and the hidden character as <U+200B>"
+tail_is "$(printf '\n## Scan of added lines\n\n~~~\nREADME.md:2: invisible: a<U+200B>b\n~~~')" "a finding: the body ends with the heading and the finding between two ~~~ fences, with the hidden character as <U+200B>"
 not_called "$ZWSP" "the raw zero-width space never reaches the issue body"
+
+# A stub scanner, to reach branches the real one cannot be made to take: the script is copied
+# beside a fake dot_local/bin because REPO_ROOT comes from $0.
+mkdir -p "$T/fake/.scripts" "$T/fake/dot_local/bin"
+cp "$SCRIPT" "$T/fake/.scripts/skill-updates.sh"
+run_fake() {  # run_fake <stub scanner body> ; one clarity update, --open-issues
+  printf '#!/bin/sh\ncat >/dev/null\n%s\n' "$1" > "$T/fake/dot_local/bin/executable_agent-text-scan"
+  chmod +x "$T/fake/dot_local/bin/executable_agent-text-scan"
+  printf '%s\n' "$(clarity)" > "$T/externals.toml"
+  : > "$CALLS"
+  OUT=$(CALLS="$CALLS" PATH="$BIN:$PATH" /bin/bash "$T/fake/.scripts/skill-updates.sh" --externals "$T/externals.toml" --open-issues 2>"$T/err"); RC=$?
+  ERR=$(cat "$T/err")
+}
+
+reset; rel clarity v0.3.0; com clarity v0.3.0 "$B"
+run_fake 'echo boom >&2; exit 2'
+called "issue create" "scanner error: the issue is still created"
+tail_is "$(printf '\n## Scan of added lines\n\nscan failed: agent-text-scan exited 2: boom')" "scanner error: the body names the exit code and the first stderr line"
+rc_is 0 "scanner error: exit 0, ERRORS untouched"
+
+reset; rel clarity v0.3.0; com clarity v0.3.0 "$B"
+run_fake 'echo crashed >&2; exit 1'
+tail_is "$(printf '\n## Scan of added lines\n\nscan failed: agent-text-scan exited 1: crashed')" "scanner exits 1 with no findings: reported as a failure, not an empty ~~~ block"
+rc_is 0 "scanner exit 1 without output: exit 0"
+
+reset; rel clarity v0.3.0; com clarity v0.3.0 "$B"
+run_fake 'exit 1'
+tail_is "$(printf '\n## Scan of added lines\n\nscan failed: agent-text-scan exited 1: ')" "scanner exits 1, no output, no stderr: still a failure"
 
 reset; rel clarity v0.3.0; com clarity v0.3.0 "$B"
 export CMP_OUT= CMP_RC=1 CMP_ERR="gh: Not Found (HTTP 404)"
