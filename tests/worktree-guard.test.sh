@@ -310,6 +310,38 @@ silent "failing jq: ordinary command allowed"
 guard_with "$TMP/jqfail:/usr/bin:/bin" "$(cmdpayload 'git status')"
 silent "failing jq: git status allowed"
 
+# A text tool that fails on a candidate must not read as "no match" or "nothing extracted".
+# grep exits 1 for no match and 2 or more for an error; sed and dirname fail on any non-zero.
+mkdir -p "$TMP/grepfail" "$TMP/grepnomatch" "$TMP/sedfail" "$TMP/dirfail"
+printf '#!/bin/sh\nexit 3\n' >"$TMP/grepfail/grep"
+printf '#!/bin/sh\nexit 1\n' >"$TMP/grepnomatch/grep"
+printf '#!/bin/sh\nexit 3\n' >"$TMP/sedfail/sed"
+printf '#!/bin/sh\nexit 3\n' >"$TMP/dirfail/dirname"
+printf '#!/bin/sh\nexit 3\n' >"$TMP/dirfail/basename"
+chmod +x "$TMP/grepfail/grep" "$TMP/grepnomatch/grep" "$TMP/sedfail/sed" "$TMP/dirfail/dirname" "$TMP/dirfail/basename"
+guard_with "$TMP/grepfail:/usr/bin:/bin" "$UNLOCK"
+blocked "grep failing: an unlock is refused, not allowed" "could not run"
+guard_with "$TMP/grepfail:/usr/bin:/bin" "$(cmdpayload "git worktree remove --force --force x")"
+blocked "grep failing: a doubly forced remove is refused" "could not run"
+guard_with "$TMP/grepnomatch:/usr/bin:/bin" "$(cmdpayload 'echo worktree remove')"
+silent "grep finding no match: a mention is allowed"
+guard_with "$TMP/grepfail:/usr/bin:/bin" "$(cmdpayload 'ls -la')"
+silent "grep failing: ordinary command allowed"
+guard_with "$TMP/grepfail:/usr/bin:/bin" "$(cmdpayload 'git worktree list')"
+silent "grep failing: worktree list allowed"
+guard_with "$TMP/sedfail:/usr/bin:/bin" "$UNLOCK"
+blocked "sed failing: an unlock is refused, not allowed" "could not run"
+guard_with "$TMP/sedfail:/usr/bin:/bin" "$(cmdpayload 'ls -la')"
+silent "sed failing: ordinary command allowed"
+guard_with "$TMP/sedfail:/usr/bin:/bin" "$(cmdpayload 'git worktree list')"
+silent "sed failing: worktree list allowed"
+guard_with "$TMP/dirfail:/usr/bin:/bin" "$(cmdpayload "git worktree remove $SIB")"
+if [ "$G_RC" -eq 0 ] && printf '%s' "$G_OUT" | jq -e '.hookSpecificOutput.permissionDecision=="deny"' >/dev/null 2>&1; then
+  pass=$((pass + 1)); printf '  ok   %s\n' "dirname and basename failing: a sibling removal is still denied"
+else
+  fail=$((fail + 1)); printf '  FAIL %s (rc %s, stdout "%s")\n' "dirname and basename failing: a sibling removal is still denied" "$G_RC" "$G_OUT"
+fi
+
 echo "== degenerate input =="
 expect_raw_allow "empty payload"        ''
 guard_with "$PATH" 'not json at all { worktree remove'
