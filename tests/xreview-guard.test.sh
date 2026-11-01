@@ -70,9 +70,12 @@ payload() { jq -n --arg d "$1" --arg c "$2" '{hook_event_name:"PreToolUse",tool_
 # The payload is materialised before the pipeline: the guard can exit without reading stdin,
 # and jq writing into a closed pipe prints an error that looks like a test failure.
 run_guard() { local p; p="$(payload "$1" "$2")"; printf '%s' "$p" | PINNED_PATH="$PATH" bash "$GUARD" 2>/dev/null; }
-# decision <cwd> <command>: allow (silence), deny, or what else the guard printed.
+# decision <cwd> <command>: allow (silence), deny, or what else the guard printed. A guard that
+# exits non-zero prints "exit <rc>": the settings run it with onFailure block, so such an exit
+# would block the tool call.
 decision() {
-  local out; out="$(run_guard "$1" "$2")"
+  local out rc; out="$(run_guard "$1" "$2")" && rc=0 || rc=$?
+  [ "$rc" -eq 0 ] || { printf 'exit %s' "$rc"; return; }
   [ -n "$out" ] || { printf 'allow'; return; }
   printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "malformed"' 2>/dev/null || printf 'malformed'
 }

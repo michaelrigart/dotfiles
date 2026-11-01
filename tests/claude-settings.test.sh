@@ -741,9 +741,16 @@ jq_is '.hooks.PreToolUse | length' 5 "no PreToolUse entry beyond the five guards
 jq_is '[.hooks.PreToolUse[].hooks[] | select(.command == "/opt/homebrew/bin/bash $HOME/.claude/git-forge-guard.sh") | .timeout] | join(",")' 60 \
       "the forge guard hook carries an explicit 60 s timeout"
 # The pre-merge guard reads origin (git ls-remote) and the forge (glab, gh). It gives up at
-# 40 s, inside this limit: a hook that outruns its timeout is treated as non-blocking.
+# 40 s, inside this limit: a hook that reaches its timeout is a failure, which onFailure
+# below turns into a block.
 jq_is '[.hooks.PreToolUse[].hooks[] | select(.command == "/opt/homebrew/bin/bash $HOME/.claude/xreview-guard.sh") | .timeout] | join(",")' 60 \
       "the pre-merge guard hook carries an explicit 60 s timeout"
+# The three danger guards fail closed: a guard that cannot start, crashes or times out blocks
+# the tool call instead of letting it through. The other two stay fail-open (ruled).
+for g in git-forge-guard worktree-guard xreview-guard; do
+  jq_is "[.hooks.PreToolUse[].hooks[] | select(.command == \"/opt/homebrew/bin/bash \$HOME/.claude/$g.sh\") | .onFailure] | join(\",\")" block "$g fails closed"
+done
+jq_is '[.hooks[][]?.hooks[]? | select(has("onFailure"))] | length' 3 "no other hook sets onFailure"
 # The SessionStart hooks must survive alongside them — adding PreToolUse replaced the
 # whole hooks object once during development.
 jq_is '.hooks.SessionStart | length' 3 "all three SessionStart hooks present"

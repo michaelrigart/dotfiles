@@ -309,6 +309,11 @@ printf '%s' "$input" | jq \
         # Fourth entry: the apply-window guard. Its matcher is a wildcard because it
         # inspects Edit/Write rather than Bash; it is inert unless xreview apply has
         # opened a window.
+        # The forge, worktree and cross-review guards set onFailure "block": a guard that cannot
+        # start, crashes, times out or emits unparseable output blocks the tool call instead of
+        # letting it through. The apply-window and path-resolution guards stay fail-open: their
+        # failure costs a prompt or nothing, and the apply guard matches every tool by wildcard
+        # and would block them all.
         # Fifth entry: the path-resolution guard. Denies the two command shapes that
         # always cost an interactive prompt — a compound command starting with cd, and
         # a recursive grep/rg over dot — because a Read() deny rule cannot be evaluated
@@ -319,19 +324,19 @@ printf '%s' "$input" | jq \
           {
             "matcher": "Bash",
             "hooks": [
-              { "type": "command", "command": "/opt/homebrew/bin/bash $HOME/.claude/git-forge-guard.sh", "timeout": 60 }
+              { "type": "command", "command": "/opt/homebrew/bin/bash $HOME/.claude/git-forge-guard.sh", "timeout": 60, "onFailure": "block" }
             ]
           },
           {
             "matcher": "Bash",
             "hooks": [
-              { "type": "command", "command": "/opt/homebrew/bin/bash $HOME/.claude/worktree-guard.sh" }
+              { "type": "command", "command": "/opt/homebrew/bin/bash $HOME/.claude/worktree-guard.sh", "onFailure": "block" }
             ]
           },
           {
             "matcher": "Bash",
             "hooks": [
-              { "type": "command", "command": "/opt/homebrew/bin/bash $HOME/.claude/xreview-guard.sh", "timeout": 60 }
+              { "type": "command", "command": "/opt/homebrew/bin/bash $HOME/.claude/xreview-guard.sh", "timeout": 60, "onFailure": "block" }
             ]
           },
           {
