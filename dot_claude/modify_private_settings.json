@@ -164,6 +164,11 @@ printf '%s' "$input" | jq \
           "Bash(op --* items get*)",     "Bash(op --* document get*)",
           "Bash(op --* documents get*)", "Bash(op --* inject*)",
           "Bash(op --* run*)",
+          # Publishing verbs agents never need. They run on the gh and glab logins; Michael runs one himself with !.
+          "Bash(gh gist create*)", "Bash(gh gist edit*)",
+          "Bash(gh repo create*)", "Bash(glab repo create*)",
+          "Bash(glab snippet create*)",
+          "Bash(gh api *gists*)",  "Bash(glab api *snippets*)",
           # Lasting mail send-out paths: a server-side rule or an auto-reply keeps
           # sending long after the session that set it up.
           "mcp__claude_ai_Microsoft_365__outlook_create_filter",
@@ -517,7 +522,7 @@ printf '%s' "$input" | jq \
             "pypi.org", "files.pythonhosted.org",
             "rubygems.org", "index.rubygems.org",
             "index.crates.io", "static.crates.io", "crates.io",
-            # scripts that call the Claude API from sandboxed Bash
+            # tagteam doctor, list and history (OAuth profile and usage), run sandboxed by agents
             "api.anthropic.com",
             # Homebrew
             "formulae.brew.sh", "ghcr.io",

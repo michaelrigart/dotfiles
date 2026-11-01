@@ -36,6 +36,8 @@ EXP_DENY='["Read(~/.ssh/**)","Edit(~/.ssh/**)",
  "Read(~/.local/share/tagteam/displaced/**)","Edit(~/.local/share/tagteam/displaced/**)",
  "Read(~/.local/share/tagteam/sessions/*/.credentials.json)","Edit(~/.local/share/tagteam/sessions/*/.credentials.json)",
  "Bash(tagteam *export*)",
+ "Bash(gh gist create*)","Bash(gh gist edit*)","Bash(gh repo create*)","Bash(glab repo create*)",
+ "Bash(glab snippet create*)","Bash(gh api *gists*)","Bash(glab api *snippets*)",
  "Bash(security *find-generic-password*)","Bash(/usr/bin/security *find-generic-password*)",
  "Bash(security *find-internet-password*)","Bash(/usr/bin/security *find-internet-password*)",
  "Bash(security *dump-keychain*)","Bash(/usr/bin/security *dump-keychain*)",
@@ -146,10 +148,25 @@ MATCHES='def esc: gsub("(?<c>[.+?()\\[\\]{}|^$\\\\])"; "\\" + .c);
 n_match() { # n_match <command> -> how many allow rules match it
   printf '%s' "$OUT" | jq -r --arg c "$1" "$MATCHES"' [.permissions.allow[] | select(startswith("Bash(")) | select(hit($c))] | length'
 }
+d_match() { # d_match <command> -> how many deny rules match it
+  printf '%s' "$OUT" | jq -r --arg c "$1" "$MATCHES"' [.permissions.deny[] | select(startswith("Bash(")) | select(hit($c))] | length'
+}
+d_is() { # d_is <command> <yes|no> <label>
+  got=$(d_match "$1")
+  if [ "$2" = yes ] && [ "$got" -ge 1 ]; then _pass "$3"; elif [ "$2" = no ] && [ "$got" = 0 ]; then _pass "$3"; else _fail "$3" "$got"; fi
+}
 m_is() { # m_is <command> <expected count> <label>
   got=$(n_match "$1")
   if [ "$got" = "$2" ]; then _pass "$3"; else _fail "$3" "$got"; fi
 }
+for c in 'gh gist create notes.md' 'gh gist edit 1234' 'gh repo create x --public --source .' \
+         'glab repo create x' 'glab snippet create -t t f.txt' 'gh api gists' \
+         'gh api -X POST /gists -f description=x' 'glab api projects/1/snippets' 'glab api -X POST snippets'; do
+  d_is "$c" yes "a deny rule matches: $c"
+done
+for c in 'gh repo view' 'gh gist list' 'gh api repos/o/r/pulls' 'glab api projects/1/merge_requests'; do
+  d_is "$c" no "no deny rule matches: $c"
+done
 # Calibrate the model on a fixture before trusting it on the real rules.
 FIX_SAVE=$OUT
 OUT='{"permissions":{"allow":["Bash(git *)","Bash(git push *)","Bash(git log * main)","Bash(ls:*)"]}}'
@@ -259,6 +276,10 @@ for k in awsAuthRefresh awsCredentialExport gcpAuthRefresh otelHeadersHelper; do
   jq_is "has(\"$k\")"                      false  "posture-weakening key $k is reset"
 done
 FIRST=$OUT
+emit '{"env":{"ANTHROPIC_BASE_URL":"https://x.example","ANTHROPIC_API_KEY":"k","OPENAI_BASE_URL":"https://y.example"}}'
+jq_is '[.env | keys[] | select(startswith("ANTHROPIC_"))] | length' 0 "live ANTHROPIC_* env keys never survive an apply"
+emit '{}'
+jq_is '[.env | keys[] | select(startswith("ANTHROPIC_"))] | length' 0 "the owned env carries no ANTHROPIC_* key"
 emit "$FIRST"
 if [ "$(printf '%s' "$OUT" | jq -S .)" = "$(printf '%s' "$FIRST" | jq -S .)" ]; then
   _pass "a second apply changes nothing"
