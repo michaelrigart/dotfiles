@@ -56,6 +56,17 @@ inv "halfwidth hangul filler" '\357\276\240' FFA0
 inv "combining grapheme joiner" '\315\217' 034F
 inv "mongolian free variation selector" '\341\240\213' 180B
 inv "tag-block neighbour beyond U+E007F" '\363\240\202\200' E0080
+# The far end of each range that Cf does not cover: narrowing one to its first code point must fail.
+inv "variation selector 14, end of the FE00 range" '\357\270\215' FE0D
+inv "first code point of the E0000 block" '\363\240\200\200' E0000
+inv "last code point of the E0000 block" '\363\240\277\277' E0FFF
+inv "hangul jungseong filler, end of the 115F range" '\341\205\240' 1160
+inv "khmer inherent vowel aq" '\341\236\264' 17B4
+inv "khmer inherent vowel aa" '\341\236\265' 17B5
+inv "mongolian free variation selector four" '\341\240\217' 180F
+inv "unassigned code point inside the 2060 range" '\342\201\245' 2065
+inv "start of the FFF0 range" '\357\277\260' FFF0
+inv "end of the FFF0 range" '\357\277\270' FFF8
 printf -- '--- a/a.md\n+++ b/a.md\n@@ -0,0 +1,2 @@\n+ok\n+x%sy\n' "$(printf '\363\240\204\200')" > "$T/dv.diff"
 rund "$T/dv.diff" --diff
 check "--diff flags a variation selector, escaped" 1 "a.md:2: invisible: x<U+E0100>y"
