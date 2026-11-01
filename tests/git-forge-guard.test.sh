@@ -1737,12 +1737,13 @@ expect_raw deny  "jq a reversed surrogate pair after a force push to main" "$(ra
 expect_raw deny  "jq a hidden push spelling with a lone surrogate"     "$(rawpayload "$G pu\\\"sh\\\" origin main # "'\ud800')" "$UNREAD"
 expect_raw allow "jq a lone surrogate with no push trigger is silent"  "$(rawpayload 'echo hi # \ud800')"
 expect_raw deny  "jq a lone surrogate in a commit command (rules 1-2) is refused" "$(rawpayload "$G commit -m x # "'\ud800')" "$UNREAD_FORGE"
-# Rule 3 fails ASK on an unreadable payload that holds `glab api`; rule 4's deny wins when both apply.
+# An unreadable payload that holds `glab api` is denied too (deny beats ask: a click would let an
+# unjudged commit through); rule 4's more specific push deny wins when both apply.
 GAPI='glab api -X DELETE projects/1/merge_requests/2'
-RW="Could not determine whether this \`glab api\` call reads or writes."
-expect_raw ask   "jq a lone high surrogate with a glab api write asks"   "$(rawpayload "$GAPI # "'\ud800')" "$RW"
-expect_raw ask   "jq a reversed surrogate pair with a glab api write asks" "$(rawpayload "$GAPI # "'\udc00\ud800')" "$RW"
-expect_raw ask   "jq a lone high surrogate with a glab api read asks"    "$(rawpayload "glab api projects/1 # "'\ud800')" "$RW"
+expect_raw deny  "jq a lone high surrogate with a glab api write is refused"   "$(rawpayload "$GAPI # "'\ud800')" "$UNREAD_FORGE"
+expect_raw deny  "jq a reversed surrogate pair with a glab api write is refused" "$(rawpayload "$GAPI # "'\udc00\ud800')" "$UNREAD_FORGE"
+expect_raw deny  "jq a lone high surrogate with a glab api read is refused"    "$(rawpayload "glab api projects/1 # "'\ud800')" "$UNREAD_FORGE"
+expect_raw deny  "jq a lone surrogate hides an attributed commit behind glab api" "$(rawpayload "$G commit -m x -m \\\"Co-authored-by: Claude <noreply@anthropic.com>\\\"; glab api projects/1 # "'\ud800')" "$UNREAD_FORGE"
 expect_raw deny  "jq a lone surrogate in a commit with no glab api is refused" "$(rawpayload "$G commit -m 'x y' # "'\ud800')" "$UNREAD_FORGE"
 expect_raw deny  "jq a push candidate plus glab api keeps the push deny" "$(rawpayload "$G $P --force origin main; $GAPI # "'\ud800')" "$UNREAD"
 BS=$(printf '\134'); PAIR="${BS}ud83d${BS}ude00"       # a valid surrogate pair (the emoji), as JSON escapes
@@ -3465,6 +3466,12 @@ expect deny  "git http-push with no helper is refused" "$R" 'git http-push origi
 expect deny  "git-push with no helper is refused"      "$R" 'git-push origin main'
 expect deny  "a git-core path to git-send-pack with no helper" "$R" '/usr/libexec/git-core/git-send-pack /r.git main'
 expect allow "git log --grep=push with no helper is untouched" "$R" 'git log --grep=push'
+# A hidden spelling (push_hidden=1) or a glob git word (literal=2) leaves no literal push for the
+# fallback's grep, and no alias or selector; the signal itself must deny when the helper cannot run.
+expect deny  "a quoted git word with no helper is refused" "$R" '"g"it push --force origin main'
+expect deny  "a glob push word with no helper is refused"  "$R" '/usr/bin/[g]it p?sh --force origin main'
+expect deny  "an ANSI-C push word with no helper is refused" "$R" "git \$'pu\\x73h' origin main"
+expect deny  "a glob git word with no helper is refused"   "$R" '/usr/bin/[g][i][t] p?sh origin main'
 # A helper that runs but fails is the same: the fallback decides.
 FAILHELPER="$TMP/failhelper"; mkdir -p "$FAILHELPER"
 cp "$SAVED_GUARD" "$FAILHELPER/git-forge-guard.sh"
@@ -3474,6 +3481,8 @@ for c in "git send-pack $REMOTES/origin.git main" 'git http-push origin main' 'g
          'git push origin feat'; do
   expect deny  "a failing helper: $c is refused"       "$R" "$c"
 done
+expect deny  "a failing helper: a quoted git word is refused"  "$R" '"g"it push --force origin main'
+expect deny  "a failing helper: a glob push word is refused"   "$R" '/usr/bin/[g]it p?sh --force origin main'
 expect allow "a failing helper: git status is untouched" "$R" 'git status'
 GUARD=$SAVED_GUARD
 

@@ -30,10 +30,11 @@
 #
 # SAFETY: a guard that breaks unrelated commands is worse than no guard. There is
 # no `set -e`, and a command that is not a candidate is allowed before any dependency is
-# checked. An internal failure on a candidate (jq missing, a payload jq cannot read, a
-# decision jq cannot write) denies with exit 2 and the reason on stderr. A doubt about a
-# command that parsed keeps its rule's direction: rules 1-2 allow, rule 3 asks, rule 4
-# denies.
+# checked. An internal failure on a candidate fails closed, in the form the failure allows:
+# jq missing, or a deny/ask decision jq cannot write, exits 2 with the reason on stderr; a
+# payload jq cannot read prints a JSON deny (exit 0); a helper that cannot run on a push
+# candidate prints a JSON deny too. A doubt about a command that parsed keeps its rule's
+# direction: rules 1-2 allow, rule 3 asks, rule 4 denies.
 #
 # Bypass for a one-off, only when Michael has asked for it in the conversation: put
 # FORGE_GUARD=off anywhere in the command. It lifts rules 1 and 2 only, the behavioural
@@ -182,17 +183,11 @@ fi
 command -v jq >/dev/null 2>&1 \
   || fail_closed "Forge guard: jq is missing, so this command, which may commit, push or call the forge, is refused."
 
-# An unreadable payload (jq rejects a lone UTF-16 surrogate escape) fails closed for rule 4,
-# on the raw-text evidence above, and asks for rule 3 when the raw text holds `glab api`;
-# rules 1-2 deny, as the payload cannot be judged.
+# An unreadable payload (jq rejects a lone UTF-16 surrogate escape) cannot be judged, so every
+# candidate is denied: the push-specific reason when rule 4 saw a push, otherwise the forge one.
+# Never an ask: a click would let an unjudged commit through, and a deny costs only a retry.
 if ! cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command // empty' 2>/dev/null); then
   [ "$push_candidate" = 0 ] || deny "Push guard: this command's payload could not be read, so a possible push is refused. Rewrite it without unusual escape sequences."
-  case "$payload" in
-    *"glab api"*) ask "Could not determine whether this \`glab api\` call reads or writes.
-
-The command payload could not be read (an unusual escape sequence), so it is being
-surfaced rather than assumed safe. Check the method flag by eye." ;;
-  esac
   deny "Forge guard: this command's payload could not be read, so it is refused. Rewrite it without unusual escape sequences."
 fi
 [ -n "$cmd" ] || allow
@@ -218,11 +213,16 @@ if [ "$push_candidate" = 1 ]; then
   # The fallback denies on the same evidence the fast path acted on: an alias that pushes,
   # a repository selector (whose aliases only the helper can see), or a literal git push,
   # send-pack or http-push, as a subcommand (git send-pack) or in the dash form, behind a
-  # path or not (git-push, /usr/libexec/git-core/git-http-push). The bare word "push" alone
-  # is not enough; it is too common in unrelated commands.
+  # path or not (git-push, /usr/libexec/git-core/git-http-push). A hidden spelling
+  # (push_hidden) or a glob git word (literal=2) is narrow evidence too, and leaves no
+  # literal push for the grep to find. The bare word "push" alone is not enough; it is too
+  # common in unrelated commands.
+  # The grep also reads the command with its quotes and backslashes removed, so a quoted
+  # git word ("g"it push) is a literal push too.
   if [ "$rc" -ne 0 ]; then
-    if [ "$push_alias" = 1 ] || [ "$push_selector" = 1 ] \
-       || printf '%s' "$cmd" | grep -Eq 'git([^;&|]*[[:space:]]|-)(push|send-pack|http-push)([[:space:]]|$)'; then
+    bare=$(printf '%s' "$cmd" | tr -d "\\\\\"'")
+    if [ "$push_alias" = 1 ] || [ "$push_selector" = 1 ] || [ "$push_hidden" = 1 ] || [ "$literal" = 2 ] \
+       || printf '%s\n%s' "$cmd" "$bare" | grep -Eq 'git([^;&|]*[[:space:]]|-)(push|send-pack|http-push)([[:space:]]|$)'; then
       deny "Push guard: the push check could not run ($helper exited $rc), so this command, which may push, is refused. Push by hand, or restore the helper (chezmoi apply)."
     fi
   fi
