@@ -32,8 +32,8 @@
 # no `set -e`, and a command that is not a candidate is allowed before any dependency is
 # checked. An internal failure on a candidate fails closed, in the form the failure allows:
 # jq missing, or a deny/ask decision jq cannot write, exits 2 with the reason on stderr; a
-# payload jq cannot read prints a JSON deny (exit 0); a helper that cannot run on a push
-# candidate prints a JSON deny too. A doubt about a command that parsed keeps its rule's
+# payload jq cannot read prints a JSON deny (exit 0); a helper that cannot run denies every
+# push candidate (JSON deny, exit 0). A doubt about a command that parsed keeps its rule's
 # direction: rules 1-2 allow, rule 3 asks, rule 4 denies.
 #
 # Bypass for a one-off, only when Michael has asked for it in the conversation: put
@@ -131,8 +131,8 @@ esac
 literal=0
 [ "$push_word$push_selector$push_alias" = 000 ] || literal=1
 push_hidden=0
-# Only when no literal signal fired: with one, the helper starts anyway and these cannot
-# change the decision. Each check is linear in the payload (one pattern or one ERE match).
+# Only when no literal signal fired: with one, the command is a candidate and the helper gets
+# literal=1 whatever these find, so they could change neither. Each check is linear in the payload (one pattern or one ERE match).
 if [ "$literal" = 0 ]; then
   case "$payload" in *"\$'"*) push_hidden=1 ;; esac
   if [ "$push_hidden" = 0 ]; then
@@ -195,10 +195,10 @@ fi
 # ------------------------------------------------------------ rule 4: git push
 # The work is in git-push-guard.py beside this file: it prints a finished decision (ask
 # or deny) or nothing. A deny is final. An ask is held in $pending and released by
-# allow(), so the rules below can still deny. FAIL DIRECTION IS CLOSED: if the helper
-# cannot run at all, or the payload cannot be read at all (jq failed above), a command that
-# looks like a push is denied, with a reason the agent can act on. Runs before the
-# FORGE_GUARD=off check below, which never lifts it.
+# allow(), so the rules below can still deny. FAIL DIRECTION IS CLOSED: every push
+# candidate is denied when the helper cannot run (non-zero exit), and when the payload
+# cannot be read at all (jq failed above), each with a reason the agent can act on. Runs
+# before the FORGE_GUARD=off check below, which never lifts it.
 if [ "$push_candidate" = 1 ]; then
   py=/usr/bin/python3
   [ -x "$py" ] || py=python3
@@ -210,21 +210,13 @@ if [ "$push_candidate" = 1 ]; then
     *'"permissionDecision":"ask"'*) pending=$verdict ;;
     *) printf '%s\n' "$verdict"; exit 0 ;;
   esac
-  # The fallback denies on the same evidence the fast path acted on: an alias that pushes,
-  # a repository selector (whose aliases only the helper can see), or a literal git push,
-  # send-pack or http-push, as a subcommand (git send-pack) or in the dash form, behind a
-  # path or not (git-push, /usr/libexec/git-core/git-http-push). A hidden spelling
-  # (push_hidden) or a glob git word (literal=2) is narrow evidence too, and leaves no
-  # literal push for the grep to find. The bare word "push" alone is not enough; it is too
-  # common in unrelated commands.
-  # The grep also reads the command with its quotes and backslashes removed, so a quoted
-  # git word ("g"it push) is a literal push too.
+  # The helper catches its own exceptions and exits 0 on every input, so a non-zero exit
+  # means it could not run (python3 missing or broken, the file missing, a syntax or import
+  # error). The command is already a push candidate, so it is denied, always: nothing here
+  # tries to tell a real push from a mention of one. A command that merely mentions "push" is
+  # refused while the helper is broken; the reason says how to fix that.
   if [ "$rc" -ne 0 ]; then
-    bare=$(printf '%s' "$cmd" | tr -d "\\\\\"'")
-    if [ "$push_alias" = 1 ] || [ "$push_selector" = 1 ] || [ "$push_hidden" = 1 ] || [ "$literal" = 2 ] \
-       || printf '%s\n%s' "$cmd" "$bare" | grep -Eq 'git([^;&|]*[[:space:]]|-)(push|send-pack|http-push)([[:space:]]|$)'; then
-      deny "Push guard: the push check could not run ($helper exited $rc), so this command, which may push, is refused. Push by hand, or restore the helper (chezmoi apply)."
-    fi
+    deny "Push guard: the push check could not run ($helper exited $rc), so this command, which may push, is refused. Push by hand, or restore the helper (chezmoi apply)."
   fi
 fi
 

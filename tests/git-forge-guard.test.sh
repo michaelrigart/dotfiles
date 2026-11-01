@@ -3451,28 +3451,39 @@ NOHELPER="$TMP/nohelper"; mkdir -p "$NOHELPER"
 cp "$GUARD" "$NOHELPER/git-forge-guard.sh"
 SAVED_GUARD=$GUARD; GUARD="$NOHELPER/git-forge-guard.sh"
 expect deny  "a push with no helper is refused"       "$R" 'git push origin feat'
-expect allow "a non-push command is untouched"        "$R" 'echo push'
+expect deny  "a command that only mentions push, with no helper, is refused" "$R" 'echo push'
+expect allow "a command with no push text, with no helper, is untouched" "$R" 'ls -la'
 expect allow "git status is untouched"                "$R" 'git status'
-# The fallback denies on the evidence the fast path used, aliases included.
+# A helper that cannot run denies every push candidate, aliases included.
 expect deny  "an alias push with no helper is refused" "$R" 'git pom'
 # Fail closed: with no helper, the aliases of a -C repository cannot be checked.
 expect deny  "a git -C command with no helper is refused" "$TMP" "git -C $R status"
-# The fallback cannot read quotes, so it cannot tell a comment from code: it fails closed.
+# A candidate is denied without reading its quotes, so a comment is no exception.
 expect deny  "a commented git command with no helper is refused" "$R" 'git status # push later'
 # The fast path sends send-pack, http-push and the git-<sub> dash forms to the helper, so
-# the fallback refuses them too.
+# they are refused too.
 expect deny  "git send-pack with no helper is refused" "$R" "git send-pack $REMOTES/origin.git main"
 expect deny  "git http-push with no helper is refused" "$R" 'git http-push origin main'
 expect deny  "git-push with no helper is refused"      "$R" 'git-push origin main'
 expect deny  "a git-core path to git-send-pack with no helper" "$R" '/usr/libexec/git-core/git-send-pack /r.git main'
-expect allow "git log --grep=push with no helper is untouched" "$R" 'git log --grep=push'
-# A hidden spelling (push_hidden=1) or a glob git word (literal=2) leaves no literal push for the
-# fallback's grep, and no alias or selector; the signal itself must deny when the helper cannot run.
+expect deny  "git log --grep=push with no helper is refused" "$R" 'git log --grep=push'
+# A hidden spelling (push_hidden=1) or a glob git word (literal=2) is a candidate by itself.
 expect deny  "a quoted git word with no helper is refused" "$R" '"g"it push --force origin main'
 expect deny  "a glob push word with no helper is refused"  "$R" '/usr/bin/[g]it p?sh --force origin main'
 expect deny  "an ANSI-C push word with no helper is refused" "$R" "git \$'pu\\x73h' origin main"
 expect deny  "a glob git word with no helper is refused"   "$R" '/usr/bin/[g][i][t] p?sh origin main'
-# A helper that runs but fails is the same: the fallback decides.
+# Leaks the old evidence-based fallback had, each of which must now deny. (1) A command past
+# ~32 KB broke the fallback's printf | grep -q on SIGPIPE under pipefail. (2) A lowercase "push"
+# elsewhere in the payload switched the hidden and glob signals off. (3) A line-continued
+# git, backslash, newline, push matched no pattern.
+BIGTAIL=$(head -c 40000 /dev/zero | tr '\0' a)
+expect deny  "a 40 KB literal force push with no helper is refused" "$R" "git push --force origin main # $BIGTAIL"
+expect deny  "a glob push word after an echo push, no helper, is refused" "$R" 'echo push; /usr/bin/[g]it p?sh --force origin main'
+DESCPAY=$(jq -n --arg d "$R" --arg c "git \$'pu\\x73h' origin main" '{cwd:$d,tool_input:{command:$c,description:"push it"}}')
+expect_raw deny "an ANSI-C push word with push in the description, no helper, is refused" "$DESCPAY" "push check could not run"
+expect deny  "a line-continued git push with no helper is refused" "$R" "git \\
+push origin main"
+# A helper that runs but fails is the same: it denies every candidate.
 FAILHELPER="$TMP/failhelper"; mkdir -p "$FAILHELPER"
 cp "$SAVED_GUARD" "$FAILHELPER/git-forge-guard.sh"
 printf 'import sys\nsys.exit(3)\n' > "$FAILHELPER/git-push-guard.py"
@@ -3483,6 +3494,7 @@ for c in "git send-pack $REMOTES/origin.git main" 'git http-push origin main' 'g
 done
 expect deny  "a failing helper: a quoted git word is refused"  "$R" '"g"it push --force origin main'
 expect deny  "a failing helper: a glob push word is refused"   "$R" '/usr/bin/[g]it p?sh --force origin main'
+expect deny  "a failing helper: a command that only mentions push is refused" "$R" 'echo push'
 expect allow "a failing helper: git status is untouched" "$R" 'git status'
 GUARD=$SAVED_GUARD
 
