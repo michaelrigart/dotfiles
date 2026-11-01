@@ -1,6 +1,6 @@
 # Security locks: fail-closed guards, fewer outward channels, a supply-chain scan
 
-**Status:** In progress
+**Status:** Implemented
 **Date:** 2026-11-01
 **Branch:** `worktree-security-locks` (harness worktree; the dotfiles have no MR, the pushed branch is the end)
 **Sign-off:** delegated. On 2026-11-01 Michael approved step 1 of the lab-guidance follow-up ("OK,

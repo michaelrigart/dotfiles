@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** In progress on `worktree-security-locks` (the dotfiles have no MR)
+**Status:** Implemented on `worktree-security-locks` (the dotfiles have no MR; the pushed branch is the end). This plan is complete: do not run it again.
 
 **Goal:** Three guards fail closed, publishing verbs are denied silently, web research and the Codex
 reviewer lose their outward tools, skill bumps get a supply-chain scan, and a canary checks that
