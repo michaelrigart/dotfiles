@@ -130,6 +130,7 @@ wall time):
 | `dev-topology` | unsandboxed + live `herdr` | drives the real binary, whose socket the sandbox denies |
 | `dev-integrations` | live `herdr` + **interactive** | stops midway for an operator to attach the session and start both agents; it exits 2 with no TTY rather than half-running |
 | `live-codex-daemon` | unsandboxed + live `herdr` + clean daemon | drives the real Codex daemon and a scratch tab; the canary for Codex protocol changes. Run from inside a herdr pane after `chezmoi apply` |
+| `live-deny-modes` | unsandboxed + model | spends model calls (four modes and a control, each capped by `--max-budget-usd`), and `claude` writes session state under `~/.claude`, which the sandbox denies. Run after each Claude Code upgrade |
 | `live-agent-auth`, `live-agent-signing`, `live-credential-boundary`, `live-write-boundary` | **fresh session after `chezmoi apply`, and SANDBOXED** | they measure the sandbox |
 
 **Never run `live-agent-auth`, `live-agent-signing`, `live-credential-boundary` or `live-write-boundary`
