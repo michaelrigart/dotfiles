@@ -29,8 +29,11 @@
 # through to the auto-mode classifier, writes ask.
 #
 # SAFETY: a guard that breaks unrelated commands is worse than no guard. There is
-# no `set -e`; every failure path of rules 1-2 calls allow(); anything unparseable is
-# allowed. Rules 3 and 4 are danger gates and fail the other way (see each).
+# no `set -e`, and a command that is not a candidate is allowed before any dependency is
+# checked. An internal failure on a candidate (jq missing, a payload jq cannot read, a
+# decision jq cannot write) denies with exit 2 and the reason on stderr. A doubt about a
+# command that parsed keeps its rule's direction: rules 1-2 allow, rule 3 asks, rule 4
+# denies.
 #
 # Bypass for a one-off, only when Michael has asked for it in the conversation: put
 # FORGE_GUARD=off anywhere in the command. It lifts rules 1 and 2 only, the behavioural
@@ -53,12 +56,16 @@ export GIT_NO_LAZY_FETCH=1
 pending=""
 allow() { [ -z "$pending" ] || printf '%s\n' "$pending"; exit 0; }
 
+# An internal failure on a candidate: exit 2 blocks the call and stderr is the reason.
+fail_closed() { printf '%s\n' "$1" >&2; exit 2; }
+
 # A deny reason can contain anything (template markdown, quotes, newlines), so it
-# is passed through jq -Rs rather than hand-escaped. If jq fails, allow.
+# is passed through jq -Rs rather than hand-escaped. If jq fails, the reason goes to
+# stderr and the call is blocked.
 deny() {
   printf '%s' "$1" | jq -Rs \
     '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:.}}' \
-    2>/dev/null || exit 0
+    2>/dev/null || fail_closed "$1"
   exit 0
 }
 
@@ -67,13 +74,12 @@ deny() {
 ask() {
   printf '%s' "$1" | jq -Rs \
     '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"ask",permissionDecisionReason:.}}' \
-    2>/dev/null || exit 0
+    2>/dev/null || fail_closed "$1"
   exit 0
 }
 
 payload=$(cat)
 [ -n "$payload" ] || allow
-command -v jq >/dev/null 2>&1 || allow
 
 # Fast path. This hook fires on EVERY Bash call, so the common case must cost no
 # subprocess at all — a shell-builtin substring test on the raw payload, before
@@ -173,9 +179,12 @@ fi
 
 [ "$forge_candidate" = 1 ] || [ "$push_candidate" = 1 ] || allow
 
+command -v jq >/dev/null 2>&1 \
+  || fail_closed "Forge guard: jq is missing, so this command, which may commit, push or call the forge, is refused."
+
 # An unreadable payload (jq rejects a lone UTF-16 surrogate escape) fails closed for rule 4,
 # on the raw-text evidence above, and asks for rule 3 when the raw text holds `glab api`;
-# rules 1-2 allow, as everywhere else.
+# rules 1-2 deny, as the payload cannot be judged.
 if ! cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command // empty' 2>/dev/null); then
   [ "$push_candidate" = 0 ] || deny "Push guard: this command's payload could not be read, so a possible push is refused. Rewrite it without unusual escape sequences."
   case "$payload" in
@@ -184,7 +193,7 @@ if ! cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command // empty' 2>/dev/
 The command payload could not be read (an unusual escape sequence), so it is being
 surfaced rather than assumed safe. Check the method flag by eye." ;;
   esac
-  allow
+  deny "Forge guard: this command's payload could not be read, so it is refused. Rewrite it without unusual escape sequences."
 fi
 [ -n "$cmd" ] || allow
 

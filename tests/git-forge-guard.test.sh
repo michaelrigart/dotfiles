@@ -187,19 +187,25 @@ printf '#!/bin/sh\nexit 0\n' > "$STUBBIN/gitleaks"; chmod 755 "$STUBBIN/gitleaks
 REALPATH=$PATH
 export PATH="$STUBBIN:$PATH"
 
-# run <cwd> <command> -> prints the guard's stdout
-run() {
-  local cwd=$1 cmd=$2
-  jq -n --arg c "$cmd" --arg d "$cwd" \
-    '{hook_event_name:"PreToolUse",tool_name:"Bash",cwd:$d,tool_input:{command:$c}}' \
-    | PINNED_PATH="$PATH" bash "$GUARD"
+# cmdpayload <cwd> <command> -> prints the hook payload
+cmdpayload() {
+  jq -n --arg c "$2" --arg d "$1" \
+    '{hook_event_name:"PreToolUse",tool_name:"Bash",cwd:$d,tool_input:{command:$c}}'
 }
 
-# expect <allow|deny> <label> <cwd> <command>
+# run <cwd> <command> -> prints the guard's stdout
+run() {
+  cmdpayload "$1" "$2" | PINNED_PATH="$PATH" bash "$GUARD"
+}
+
+# expect <allow|deny> <label> <cwd> <command>. Every decision is exit 0: a guard that exits
+# 1 on an allow path blocks ordinary Bash once the hook fails closed.
 expect() {
-  local want=$1 label=$2 cwd=$3 cmd=$4 out got
-  out=$(run "$cwd" "$cmd")
-  if [ -z "$out" ]; then
+  local want=$1 label=$2 cwd=$3 cmd=$4 out got rc
+  out=$(run "$cwd" "$cmd"); rc=$?
+  if [ "$rc" -ne 0 ]; then
+    got="exit $rc"
+  elif [ -z "$out" ]; then
     got=allow
   elif printf '%s' "$out" | jq -e '.hookSpecificOutput.permissionDecision=="deny"' >/dev/null 2>&1; then
     got=deny
@@ -1696,13 +1702,15 @@ expect allow "G1 bash -c echoing a variable is silent"          "$R" "bash -c 'e
 expect allow "G1 bash -c echoing a variable and push is silent" "$R" "bash -c 'echo \$G $P'"
 expect allow "G1 sh -c holding a \$HOME path to helm push is silent" "$R" "sh -c '\$HOME/bin/helm $P x'"
 # An unreadable payload (jq rejects a lone or reversed UTF-16 surrogate escape) fails closed for
-# rule 4 when the raw text holds a push trigger, and stays silent for rules 1-2. The payload is
-# built with printf so the \u escape stays literal JSON.
-# expect_raw <allow|deny> <label> <raw JSON payload> [reason needle]
+# rule 4 when the raw text holds a push trigger, and for rules 1-2 (a commit, an MR or PR
+# command), which are refused. The payload is built with printf so the \u escape stays literal
+# JSON.
+# expect_raw <allow|deny> <label> <raw JSON payload> [reason needle]. Exit 0 on every decision.
 expect_raw() {
-  local want=$1 label=$2 out got
-  out=$(printf '%s' "$3" | PINNED_PATH="$PATH" bash "$GUARD")
-  if [ -z "$out" ]; then got=allow
+  local want=$1 label=$2 out got rc
+  out=$(printf '%s' "$3" | PINNED_PATH="$PATH" bash "$GUARD"); rc=$?
+  if [ "$rc" -ne 0 ]; then got="exit $rc"
+  elif [ -z "$out" ]; then got=allow
   elif printf '%s' "$out" | jq -e '.hookSpecificOutput.permissionDecision=="deny"' >/dev/null 2>&1; then got=deny
   elif printf '%s' "$out" | jq -e '.hookSpecificOutput.permissionDecision=="ask"' >/dev/null 2>&1; then got=ask
   else got="other: $out"; fi
@@ -1714,6 +1722,7 @@ expect_raw() {
 }
 rawpayload() { printf '{"cwd":"%s","tool_input":{"command":"%s"}}' "$R" "$1"; }
 UNREAD="could not be read"
+UNREAD_FORGE="could not be read, so it is refused"
 expect_raw deny  "jq a lone high surrogate after a force push to main" "$(rawpayload "$G $P --force origin main # "'\ud800')" "$UNREAD"
 # jq reads a lone low surrogate as U+FFFD, so this one reaches the helper, which denies on the comment.
 expect_raw deny  "jq a lone low surrogate after a force push to main"  "$(rawpayload "$G $P --force origin main # "'\udc00')" "in a shape the guard does not check"
@@ -1727,14 +1736,14 @@ expect_raw deny  "I a lone low surrogate in a -c value, probe judge fails" "$(ra
 expect_raw deny  "jq a reversed surrogate pair after a force push to main" "$(rawpayload "$G $P --force origin main # "'\udc00\ud800')" "$UNREAD"
 expect_raw deny  "jq a hidden push spelling with a lone surrogate"     "$(rawpayload "$G pu\\\"sh\\\" origin main # "'\ud800')" "$UNREAD"
 expect_raw allow "jq a lone surrogate with no push trigger is silent"  "$(rawpayload 'echo hi # \ud800')"
-expect_raw allow "jq a lone surrogate in a commit command (rules 1-2) stays silent" "$(rawpayload "$G commit -m x # "'\ud800')"
+expect_raw deny  "jq a lone surrogate in a commit command (rules 1-2) is refused" "$(rawpayload "$G commit -m x # "'\ud800')" "$UNREAD_FORGE"
 # Rule 3 fails ASK on an unreadable payload that holds `glab api`; rule 4's deny wins when both apply.
 GAPI='glab api -X DELETE projects/1/merge_requests/2'
 RW="Could not determine whether this \`glab api\` call reads or writes."
 expect_raw ask   "jq a lone high surrogate with a glab api write asks"   "$(rawpayload "$GAPI # "'\ud800')" "$RW"
 expect_raw ask   "jq a reversed surrogate pair with a glab api write asks" "$(rawpayload "$GAPI # "'\udc00\ud800')" "$RW"
 expect_raw ask   "jq a lone high surrogate with a glab api read asks"    "$(rawpayload "glab api projects/1 # "'\ud800')" "$RW"
-expect_raw allow "jq a lone surrogate in a commit with no glab api stays silent" "$(rawpayload "$G commit -m 'x y' # "'\ud800')"
+expect_raw deny  "jq a lone surrogate in a commit with no glab api is refused" "$(rawpayload "$G commit -m 'x y' # "'\ud800')" "$UNREAD_FORGE"
 expect_raw deny  "jq a push candidate plus glab api keeps the push deny" "$(rawpayload "$G $P --force origin main; $GAPI # "'\ud800')" "$UNREAD"
 BS=$(printf '\134'); PAIR="${BS}ud83d${BS}ude00"       # a valid surrogate pair (the emoji), as JSON escapes
 expect_raw allow "jq a valid surrogate pair in a feature push reaches the helper" "$(rawpayload "X=$PAIR $G $P origin feat")"
@@ -3912,6 +3921,79 @@ else
   fail=$((fail + 1)); printf '  FAIL %s\n' "a hung gitleaks is cut off at the budget (${elapsed}s for two pushes)"
 fi
 PATH="$STUBBIN:$REALPATH"
+
+echo "== internal failures fail closed =="
+# fc_run <PINNED_PATH> <command> -> sets fc_out, fc_err and fc_rc from one guard run
+fc_run() {
+  local errf="$TMP/fc.err"
+  fc_out=$(cmdpayload "$BARE" "$2" | PINNED_PATH="$1" bash "$GUARD" 2>"$errf"); fc_rc=$?
+  fc_err=$(cat "$errf")
+}
+# expect_refused <label> <PINNED_PATH> <command> <needle> [exit status]: a candidate is refused, with
+# the needle in the reason. Status 2 (the default) is a refusal with the reason on stderr and nothing
+# on stdout; status 0 is a printed deny.
+expect_refused() {
+  fc_run "$2" "$3"
+  local refused=0
+  if [ "$fc_rc" -eq 2 ] && [ "${5:-2}" -eq 2 ] && [ -z "$fc_out" ]; then
+    refused=1
+  elif [ "$fc_rc" -eq 0 ] && [ "${5:-2}" -eq 0 ] && printf '%s' "$fc_out" | jq -e '.hookSpecificOutput.permissionDecision=="deny"' >/dev/null 2>&1; then
+    refused=1
+  fi
+  if [ "$refused" = 1 ] && case "$fc_out$fc_err" in *"$4"*) true ;; *) false ;; esac; then
+    pass=$((pass + 1)); printf '  ok   %s\n' "$1"
+  else
+    fail=$((fail + 1)); printf '  FAIL %s (rc %s, stdout: %s, stderr: %s)\n' "$1" "$fc_rc" "$fc_out" "$fc_err"
+  fi
+}
+# expect_quiet <label> <PINNED_PATH> <command>: an ordinary command stays silent and exits 0
+expect_quiet() {
+  fc_run "$2" "$3"
+  if [ "$fc_rc" -eq 0 ] && [ -z "$fc_out" ] && [ -z "$fc_err" ]; then
+    pass=$((pass + 1)); printf '  ok   %s\n' "$1"
+  else
+    fail=$((fail + 1)); printf '  FAIL %s (rc %s, stdout: %s, stderr: %s)\n' "$1" "$fc_rc" "$fc_out" "$fc_err"
+  fi
+}
+
+# The real jq may be a mise shim that resolves jq through PATH, so each stub hands it the PATH
+# without the stub directory.
+REALJQ=$(command -v jq)
+STUBBASE=$PATH
+FCSTUBS="$TMP/fcstubs"
+# jq that cannot write a decision: -Rs fails, everything else is the real jq
+mkdir -p "$FCSTUBS/rsfail" "$FCSTUBS/jqfail"
+cat > "$FCSTUBS/rsfail/jq" <<EOF
+#!/bin/sh
+for a in "\$@"; do [ "\$a" = -Rs ] && exit 1; done
+PATH="$STUBBASE" exec "$REALJQ" "\$@"
+EOF
+# jq that cannot read the payload: only -Rs (writing a decision) works
+cat > "$FCSTUBS/jqfail/jq" <<EOF
+#!/bin/sh
+for a in "\$@"; do [ "\$a" = -Rs ] && PATH="$STUBBASE" exec "$REALJQ" "\$@"; done
+exit 1
+EOF
+chmod 755 "$FCSTUBS/rsfail/jq" "$FCSTUBS/jqfail/jq"
+RSFAIL="$FCSTUBS/rsfail:$PATH"
+JQFAIL="$FCSTUBS/jqfail:$PATH"
+
+# /bin holds no jq: a candidate is refused, an ordinary command never notices
+expect_refused "jq missing: a commit is refused" "/bin" 'git commit -m x' "Forge guard: jq is missing"
+expect_refused "jq missing: a push is refused"   "/bin" 'git push origin main' "Forge guard: jq is missing"
+expect_refused "jq missing: a glab api call is refused" "/bin" 'glab api projects/1' "Forge guard: jq is missing"
+expect_quiet   "jq missing: ls stays silent" "/bin" 'ls -la'
+# a jq that cannot write the decision must not turn the deny or ask into a pass
+expect_refused "a deny jq cannot write is refused" "$RSFAIL" \
+  'git commit -m x -m "Co-authored-by: Claude <noreply@anthropic.com>"' "Agent attribution is not allowed"
+expect_refused "an ask jq cannot write is refused" "$RSFAIL" \
+  'glab api -X DELETE projects/1/merge_requests/2' "writes to the forge"
+expect_quiet   "a jq that cannot write: ls stays silent"         "$RSFAIL" 'ls -la'
+expect_quiet   "a jq that cannot write: git status stays silent" "$RSFAIL" 'git status'
+# a jq that cannot read the payload refuses a rule 1-2 candidate, and leaves the rest alone
+expect_refused "a payload jq cannot read: a commit is refused" "$JQFAIL" 'git commit -m x' "could not be read, so it is refused" 0
+expect_quiet   "a jq that cannot read: ls stays silent"         "$JQFAIL" 'ls -la'
+expect_quiet   "a jq that cannot read: git status stays silent" "$JQFAIL" 'git status'
 
 echo
 echo "passed: $pass  failed: $fail"
