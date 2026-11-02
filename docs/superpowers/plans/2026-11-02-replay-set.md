@@ -48,8 +48,9 @@ ends with the branch pushed. **Part B** runs it, from a separate Claude session 
 - **State.** Default `$XDG_STATE_HOME/process-replay/<YYYY-MM-DD>/` (`--state` overrides); the
   memories watcher and the shared Codex login live beside it, undated:
   `$XDG_STATE_HOME/process-replay/memwatch/` and `…/codex-auth/`. Tests use temp dirs only.
-- **Spec values**, used verbatim: P0–P2 counted, P3 listed only; window 2026-10-01 to 2026-11-01
-  (an approved final round dispatched in `[2026-10-01T00:00:00Z, 2026-11-02T00:00:00Z)`); 10–12
+- **Spec values**, used verbatim: P0–P2 counted, P3 listed only; window 2026-10-01 to 2026-11-01,
+  applied to the merge date only (`[2026-10-01T00:00:00Z, 2026-11-02T00:00:00Z)`); a qualifying
+  branch keeps every review and pre-merge round it had, whatever its date; 10–12
   cases, at most 4 per repository, most recent first; 2 runs per case; at most 6 Codex rounds;
   assessable run: ≥ 80% of the pre-merge class recovered and ≤ 25% of the per-task class censored;
   Codex stops: 100M tokens for §4, 20M for §6; at most 3 turns at once; pause while the weekly
@@ -177,8 +178,9 @@ Later tasks rely on these shapes; field names are fixed.
   `cmd_pending(a) -> int` (prints one line per pending judge, final review and recreation, with its
   brief); `snapshot_objects(root, gitdir) -> str|None`; `view(state, gitdir, root) -> str`;
   `git(gitdir, *args) -> str` (raises `Failed`) and `git_ok(gitdir, *args) -> bool`.
-- Produces, `scratch.py`: `build(objects, base, files_dir, out, dest, branch, dest_ref=None) ->
-  str` (tip sha); `export(objects, commit, dest_dir) -> None`;
+- Produces, `scratch.py`: `build(objects, base, files_dir, out, dest, branch, dest_ref=None,
+  expect_tree=None) -> str` (tip sha; raises `Failed` when the tip's tree id is not
+  `expect_tree`, which every caller passes: the tree id of the commit it exported); `export(objects, commit, dest_dir) -> None`;
   `commit_patch(scratch, patch_text, message) -> str|None` (None when the patch does not apply).
 - Produces, `helpers.py`: `ok`, `is_`, `git`, `put`, `commit`, `make_repo(root, name) -> path`,
   `write_ledger(state_home, repo, entries)`, `write_rollout(codex_home, thread, turns)` (records
@@ -207,6 +209,9 @@ Later tasks rely on these shapes; field names are fixed.
     `git diff --no-index` between the files dir and the checkout (minus `.git`) is empty.
   - `scratch_commit_neutral`: the tip's message is `Change under review` and its author is
     `Developer <developer@example.invalid>`.
+  - `scratch_tree_identity`: a source commit holding a `.gitignore` with `*.log` and a force-added
+    `x.log` (absent at the base), an executable file and a symlink: the tip's tree id equals the
+    source commit's; a wrong `expect_tree` raises `Failed`.
   - `commit_patch_one_commit`: a patch adds one commit with the given message; a patch that does
     not apply returns None and leaves `HEAD` and the work tree unchanged.
 
@@ -234,7 +239,9 @@ Later tasks rely on these shapes; field names are fixed.
   - `snapshot_objects`: the name is the basename of the git dir's parent.
   - `scratch.build`: `git init -q out`; `git -C <tmp view> pack-objects --revs --stdout` with `B`
     on stdin, piped to `git -C out index-pack --stdin`; set the refs; check out `B` on `branch`;
-    replace the work tree with `files_dir` (everything but `.git`); `git add -A`; commit with the
+    replace the work tree with `files_dir` (everything but `.git`); `git add -A -f` (the files dir
+    holds exactly the tracked files, ignored ones included); check the staged tree against
+    `expect_tree`; commit with the
     fixed identity and `GIT_AUTHOR_DATE`/`GIT_COMMITTER_DATE` one hour after `B`'s committer date;
     then `git fsck --connectivity-only` must pass. Cache the pack per `(objects, base)` under the
     caller's state when given a `cache` dir (optional keyword, default None).
@@ -334,7 +341,8 @@ Michael's daemon.
 - Create: `.scripts/process_replay/transcripts.py`, `tests/process-replay/t_transcripts.py`
 
 **Interfaces:**
-- Produces: `cmd_snapshot(a)` (flags `--since 2026-10-01`, `--until 2026-11-02`), writing
+- Produces: `cmd_snapshot(a)` (no date filter: which branches count is decided by merge date in
+  Task 5, and a branch merged in October may have been reviewed in September), writing
   `<state>/reviews.json` = `{groups: [{id, project, session, cwd, repo, prefix, task,
   reviews: [{agent, kind: review|re-review, description, start, end, prompt, report,
   ranges: [[a, b]], reviewed_head, tokens, model, transcript}]}]}` and copying transcripts to
@@ -357,7 +365,7 @@ Michael's daemon.
     `/f/Code/repo/.git`; `/f/Code/repox` maps to None.
   - `cost_dedupes_messages`: two streamed entries sharing one `message.id` count once; tokens are
     input + output + cache creation + cache read; start and end are the first and last timestamps.
-  - `window`: a reviewer whose first entry is before `--since` is left out.
+  - `no_date_filter`: a reviewer from September is found and copied like an October one.
   - `read_only`: the fixture projects dir's listing (paths, sizes, mtimes) is unchanged.
 - [ ] **Step 2: Run** it; it fails.
 - [ ] **Step 3: Implement.** A task review is a subagent whose `meta.json` `agentType` is
@@ -386,9 +394,10 @@ Michael's daemon.
 
 - [ ] **Step 1: Write the failing tests** on a fixture repo, ledger, rollouts and `reviews.json`:
   - `candidate_static`: a chain (same repo, branch, dest; ascending `dispatched_at`) whose round 1
-    is a full-branch receipt and whose last approved round is in the window is a candidate; one
-    whose round 1 has `full: false` is not (`why: round 1 is not a full-branch review`); one
-    approved on 2026-11-03 is not (`why: outside the window`); one with no joined task group is not;
+    is a full-branch receipt, whose last round approved and whose merge date is in the window is a
+    candidate, its September rounds and task reviews included; one whose round 1 has
+    `full: false` is not (`why: round 1 is not a full-branch review`); one merged on 2026-11-03 is
+    not (`why: merged outside the window`); one with no joined task group is not;
     one with no merge evidence is not (`why: no merge evidence`);
     one whose round tip resolves neither in the repository nor in the snapshot is not
     (`why: a round tip is gone`).
@@ -685,8 +694,10 @@ Michael's daemon.
   - `seed`: `--seed` with `--seed-at` registers the seed as the first snapshot at that time, after
     its digest is computed from the seed itself.
   - `snapshot_for`: equal hashes around the dispatch → that hash's snapshot; different →
-    `(None, "memories changed around the dispatch")`; polls more than `2 × interval + 30` s apart
-    → `(None, "missing poll")`; no poll after → `(None, "no poll after the dispatch")`.
+    `(None, "memories changed around the dispatch")`; either surrounding poll `unstable` →
+    `(None, "memories changed around the dispatch")`, even with equal hashes and an earlier
+    snapshot of that hash; polls more than `2 × interval + 30` s apart → `(None, "missing poll")`;
+    no poll after → `(None, "no poll after the dispatch")`.
 
   `tests/xreview-replay.test.sh`, new section RP7:
   - `memories_cases`: only k = 1 rounds of branches whose first receipt follows the watcher's
