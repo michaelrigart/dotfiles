@@ -156,7 +156,10 @@ Later tasks rely on these shapes; field names are fixed.
 - **Run state** (`runs/<case>/<label>/state.json`): `{case, label, scratch, thread, round,
   step: final|codex|match|valid|done, reviews: [{id, kind: final|codex, k, findings, verdict,
   tokens, turns, model, effort}], defects: {id: present|recovered|unrecovered|censored},
-  rejected: [str], outside: [str], end: approve|rounds|stalled|void|error|null, voids, tokens}`.
+  rejected: [str], addressed: [str], outside: [str], ledger: path, end:
+  approve|rounds|stalled|void|error|null, voids, tokens}`. `addressed` holds the identifiers of the
+  findings the previous review matched; `ledger` is the per-run scratch ledger `codex.prepare_ledger`
+  writes before any replay home is active (`CODEX_HOME` is process-wide).
 
 ---
 
