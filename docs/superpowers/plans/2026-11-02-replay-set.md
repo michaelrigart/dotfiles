@@ -125,7 +125,7 @@ Later tasks rely on these shapes; field names are fixed.
   |---|---|---|
   | `judge-task` | `{reports: [{index, text}], changes: [{index, note, diff}]}` | `{findings: [{index, report, summary, file, line, failure_scenario, severity: P0-P3, introduced_by: change index/null, fixed_by: [change index], answer: yes/no/unclear}]}` |
   | `judge-known` | xreview-replay's `{case, findings, interdiff}` | `{verdicts: [{index, answer}]}` |
-  | `judge-present` | `{finding: {...}, files: {path: text}}` | `{answer}` |
+  | `judge-present` | `{finding: {...}, files: [{path, text}]}` | `{answer}` |
   | `judge-split` | `{defects: [{index, summary, file, line}], hunks: [{index, file, text}]}` | `{hunks: [{index, defect: int/null/"unsure"}]}` |
   | `judge-dedup` | `{defects: [{index, summary, file, line, failure_scenario}]}` | `{groups: [[index, ...]]}` |
   | `judge-same` | `{original: {finding, fix}, candidate: {patch}}` | `{answer}` |
