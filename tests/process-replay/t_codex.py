@@ -707,3 +707,11 @@ is_("leak_scan: the parent spelled as a path beside the basename, in two command
     leaked("rg -n 'chezmoi' README.md; rg -n '~/.local/share' AGENTS.md", CHZ), CHZN)
 is_("leak_scan: a trailing comment naming Code and a module named like the repo is not a leak", leaked("python -m hulder.cli --help  # Code", HULDER), [])
 is_("leak_scan: a Code glob and an ls of the repo's name is not a leak", leaked("rg 'Code' -g '*.md' && ls hulder", HULDER), [])
+
+# ---- comments in a multi-line command
+is_("tool_words: a comment does not hide the next line", leaked(fc("ls # note\nchezmoi diff"), CHZ), CHZN)
+is_("tool_words: an apostrophe in a comment does not open a quote", leaked(fc("ls # don't\nchezmoi diff"), CHZ), CHZN)
+is_("tool_words: a comment line of its own", leaked(fc("# the chezmoi diff\nls"), CHZ), [])
+is_("tool_words: a # inside a word is not a comment", K._logical("echo a#b; ls"), "echo a#b; ls")
+is_("tool_words: a # in quotes is not a comment", K._logical("echo '# x' \"# y\"\nls"), "echo '# x' \"# y\" ; ls")
+is_("tool_words: a command inside a comment's line is not run", leaked(fc("ls # chezmoi diff"), CHZ), [])

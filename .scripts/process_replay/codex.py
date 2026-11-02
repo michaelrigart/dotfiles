@@ -41,7 +41,8 @@ Known limits of a lexical scan, which are not chased further: a path assembled a
 ~/Code/Org`, then `cat repo/x`) is caught only when a token still names the repo; `cd .. && cat x` is not followed;
 `git -c key.x=../...` and other options that glue a path to a key are not resolved; a workdir held in a variable;
 aliases, functions or variables defined earlier in the session; a command assembled from a substitution's output
-(`$(which chezmoi) diff`).
+(`$(which chezmoi) diff`); a heredoc fed to a shell (`sh <<'EOF' ... EOF`, `cat <<EOF | sh`); a backtick inside a
+quoted string; `find -exec chezmoi`; and a long xargs option with a separate value (`--max-args 1`).
 
 Codex homes are paths (codexhome.py): this module sets CODEX_HOME to the replay home for the rpc calls and the
 rollout reads of a round, and drops an inherited XREVIEW_RPC_SOCK or XREVIEW_RPC_STDIO, which would aim a call
@@ -342,9 +343,10 @@ def _tool_words(path):
 
 
 def _logical(command):
-    """`command` as one line: unquoted newlines become `;` (a backslash-newline is a continuation), heredoc bodies
-    are dropped, and a backtick substitution becomes ( ... ), so every command sits at a command position."""
-    out, quote, i, heredocs, backtick = [], None, 0, [], False
+    """`command` as one line: unquoted newlines become `;` (a backslash-newline is a continuation), an unquoted
+    comment (a # that starts a word, to the end of its line) and heredoc bodies are dropped, and a backtick
+    substitution becomes ( ... ), so every command sits at a command position."""
+    out, quote, i, backtick = [], None, 0, False
     n = len(command)
     while i < n:
         ch = command[i]
@@ -364,6 +366,10 @@ def _logical(command):
         elif ch in "'\"":
             quote = ch
             out.append(ch)
+        elif ch == "#" and (not out or out[-1][-1:] in (" ", "\t", "\n", ";", "&", "|", "(")):
+            while i < n and command[i] != "\n":
+                i += 1
+            continue
         elif ch == "`":
             out.append(" ) " if backtick else " ( ")
             backtick = not backtick
