@@ -566,7 +566,8 @@ def leaks(home, turns, paths, cwd=None):
     checkouts; a wt sibling <path>-<branch> continues the name): ["<path> in <turn>"]. `cwd`, the scratch repository,
     is where a relative path of a call without its own workdir starts. Only the reviewer's own calls
     (custom_tool_call, function_call, local_shell_call) are read, never a user or developer message, which may carry
-    the paths legitimately."""
+    the paths legitimately. A scanned turn whose rollout is missing, unreadable or does not hold the turn counts as a
+    leak ("rollout unreadable in <turn>"): it cannot be shown clean."""
     wanted = {}
     for thread, turn in turns:
         wanted.setdefault(thread, set()).add(turn)
@@ -575,10 +576,13 @@ def leaks(home, turns, paths, cwd=None):
     with homed(home):
         for thread, ours in wanted.items():
             path = XR.rollout_path(thread)
-            if path is None:
-                continue
+            try:
+                lines = _lines(path) if path is not None else []
+            except OSError:
+                lines = []
+            seen = set()
             inside = False
-            for line in _lines(path):
+            for line in lines:
                 call = any(m in line for m in CALLS)
                 if not call and b'"task_started"' not in line and b'"task_complete"' not in line:
                     continue
@@ -590,12 +594,15 @@ def leaks(home, turns, paths, cwd=None):
                 if rec.get("type") == "event_msg" and p.get("type") == "task_started":
                     inside = p.get("turn_id") in ours
                     turn = p.get("turn_id")
+                    seen.add(turn)
                 elif rec.get("type") == "event_msg" and p.get("type") == "task_complete":
                     inside = False
                 elif inside and rec.get("type") == "response_item" and p.get("type") in ("custom_tool_call", "function_call", "local_shell_call"):
                     for text, where, commands in _calls(p, cwd):
                         for name in named(text, where, forbidden, commands):
                             found.add("{} in {}".format(name, turn))
+            for turn in sorted(ours - seen):      # a turn that cannot be read cannot be shown clean: it counts as a leak
+                found.add("rollout unreadable in {}".format(turn))
     return sorted(found)
 
 

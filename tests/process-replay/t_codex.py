@@ -361,7 +361,14 @@ is_("leak_scan: ... and a named turn that leaked is found", K.leaks(lhome, [("lk
 house = os.path.expanduser("~")
 rollout("lk6", [{"turn": "t1", "answer": None, "tools": [tool("custom_tool_call", "cat ~/Code/Org/repo/x")]}])
 is_("leak_scan: the ~ spelling of a path under $HOME is a leak", K.leaks(lhome, [("lk6", "t1")], [house + "/Code/Org/repo/.git"]), [house + "/Code/Org/repo in t1"])
-is_("leak_scan: a thread with no rollout reads as clean", K.leaks(lhome, [("nothing", "t1")], [W]), [])
+is_("leak_scan: a scanned turn whose thread has no rollout cannot be shown clean: it counts as a leak", K.leaks(lhome, [("nothing", "t1")], [W]),
+    ["rollout unreadable in t1"])
+is_("leak_scan: a scanned turn the rollout does not hold counts as a leak too, the turns it holds are still read",
+    K.leaks(lhome, [("lk5", "t1"), ("lk5", "t2"), ("lk5", "t9")], [W]), [W + " in t2", "rollout unreadable in t9"])
+os.makedirs(os.path.join(lhome, "sessions", "2026", "10", "20"), exist_ok=True)
+with open(helpers.rollout_file(lhome, "lkzst", sub="sessions/2026/10/20").replace(".jsonl", ".jsonl.zst"), "wb") as f:
+    f.write(b"this is not a zstd frame")
+is_("leak_scan: a rollout that cannot be decompressed counts as a leak", K.leaks(lhome, [("lkzst", "t1")], [W]), ["rollout unreadable in t1"])
 w = World("leakround")
 home = replay_home("leakround")
 stub = stub_for("leakround", home, {"default": {"answer": ans(), "tools": [tool("custom_tool_call", "cat {}/src/a.py".format(w.workdir))]}})

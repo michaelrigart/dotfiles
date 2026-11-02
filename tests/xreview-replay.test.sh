@@ -1127,6 +1127,8 @@ is_("RP7m memories_leaks: the stop counts every attempt", jl(os.path.join(st1, "
 p, st2, runs2, log2 = leak_run("leak2", {"default": LEAK})
 is_("RP7m memories_leaks: arms that leak twice end as error runs", sorted(set((r["error"] or "")[:10] for r in runs2)), ["void twice"])
 is_("RP7m memories_leaks: each ran exactly twice", len([c for c in log2 if c["cmd"] == "turn-start"]), 12)
+is_("RP7m memories_leaks: and spent counts each of its two attempts once (2000, not 3000)", sorted(set((r["tokens"], r["spent"]) for r in runs2)), [(1000, 2000)])
+is_("RP7m memories_leaks: the stop counts all twelve turns once", jl(os.path.join(st2, "progress.json"))["tokens"], 12000)
 ok("RP7m memories_leaks: and records both voids", all(len(r["voids"]) == 2 for r in runs2), [r.get("voids") for r in runs2][:1])
 subprocess.run([HARNESS, "report", "--state", st2], capture_output=True, text=True, env=menv)
 rep2 = jl(os.path.join(st2, "report.json"))

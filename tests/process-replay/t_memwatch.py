@@ -222,60 +222,57 @@ ok("missing source: the loop went on, and snapshotted once the directory existed
    and polls[2]["hash"] == M.digest(GONE) and bool(polls[2].get("snapshot")), polls)
 ok("missing source: a dispatch beside the unstable poll is not usable", M.snapshot_for(WDIR4, polls[0]["at"])[0] is None)
 
-# ---- links
+# ---- links: any symlink in the tree makes the poll unstable and keeps no snapshot
 XDG5 = os.path.join(ROOT, "xdg5")
 os.environ["XDG_STATE_HOME"] = XDG5
 WDIR5 = os.path.join(XDG5, "process-replay", "memwatch")
-LNK = os.path.join(ROOT, "mem-links")
-put(LNK, "real.md", "real\n")
-put(LNK, "dir/inner.md", "inner\n")
-os.symlink("real.md", os.path.join(LNK, "alias.md"))
-os.symlink("../real.md", os.path.join(LNK, "dir", "up.md"))
-os.symlink("dir", os.path.join(LNK, "dirlink"))
-L0 = M.digest(LNK)
-other_links = os.path.join(ROOT, "mem-links2")
-shutil.copytree(LNK, other_links, symlinks=True)
-os.unlink(os.path.join(other_links, "alias.md"))
-put(other_links, "alias.md", "real\n")
-ok("links: a link is digested as a link, not as the file it names", M.digest(other_links) != L0)
-retarget = os.path.join(ROOT, "mem-links3")
-shutil.copytree(LNK, retarget, symlinks=True)
-os.unlink(os.path.join(retarget, "alias.md"))
-os.symlink("dir/inner.md", os.path.join(retarget, "alias.md"))
-ok("links: and by its target text", M.digest(retarget) != L0)
-put(LNK, "real.md", "real, edited\n")
-ok("links: editing what a link names changes the digest through the named file only", M.digest(LNK) != L0)
-put(LNK, "real.md", "real\n")
-is_("links: and restoring it restores the digest", M.digest(LNK), L0)
-M.cmd_memories_watch(namespace(LNK))
-polls = jl(os.path.join(WDIR5, "polls.jsonl"))
-SL = os.path.join(WDIR5, "snapshots", polls[0]["snapshot"])
-ok("links: links inside the tree are kept as links, with their targets", os.path.islink(os.path.join(SL, "alias.md")) and os.readlink(os.path.join(SL, "alias.md")) == "real.md"
-   and os.path.islink(os.path.join(SL, "dir", "up.md")) and os.path.islink(os.path.join(SL, "dirlink")) and os.readlink(os.path.join(SL, "dirlink")) == "dir",
-   tree(SL))
-is_("links: the snapshot's digest is the poll's", M.digest(SL), polls[0]["hash"])
-TOPLINK = os.path.join(ROOT, "mem-toplink")
-put(TOPLINK, "real.md", "r\n")
-os.symlink("real.md", os.path.join(TOPLINK, "a-first-link"))
-M.cmd_memories_watch(namespace(TOPLINK))
-polls = jl(os.path.join(WDIR5, "polls.jsonl"))
-ok("links: a link at the top of the directory is a link in the snapshot too", os.path.islink(os.path.join(WDIR5, "snapshots", polls[-1]["snapshot"], "a-first-link")), polls[-1])
+REASON = "the memories directory holds a symlink"
 
-# a link out of the snapshot makes the poll unstable and keeps nothing
-for name, target in (("abs", "/etc/hosts"), ("up", "../outside.md"), ("deep", "../../outside.md"), ("home", os.path.join(ROOT, "mem-links", "real.md"))):
-    leak = os.path.join(ROOT, "mem-leak-" + name)
-    put(leak, "real.md", "r\n")
-    put(leak, "dir/inner.md", "i\n")
-    os.symlink(target, os.path.join(leak, "dir", "out.md") if name == "deep" else os.path.join(leak, "out.md"))
-    n_snaps = len(os.listdir(os.path.join(WDIR5, "snapshots")))
-    M.cmd_memories_watch(namespace(leak))
+
+def with_link(name, make):
+    tree_ = os.path.join(ROOT, "mem-link-" + name)
+    put(tree_, "real.md", "real\n")
+    put(tree_, "dir/inner.md", "inner\n")
+    put(os.path.dirname(tree_), "outside/s.md", "secret live memory\n")
+    make(tree_)
+    return tree_
+
+
+def link_poll(tree_):
+    n_snaps = len(os.listdir(os.path.join(WDIR5, "snapshots"))) if os.path.isdir(os.path.join(WDIR5, "snapshots")) else 0
+    M.cmd_memories_watch(namespace(tree_))
     rec = jl(os.path.join(WDIR5, "polls.jsonl"))[-1]
-    ok("links: a link to {} ({}) makes the poll unstable and keeps no snapshot".format(target, name),
-       rec.get("unstable") is True and not rec.get("snapshot") and "link" in rec.get("reason", "") and rec["hash"] == M.digest(leak)
-       and len(os.listdir(os.path.join(WDIR5, "snapshots"))) == n_snaps, rec)
+    left = len(os.listdir(os.path.join(WDIR5, "snapshots"))) if os.path.isdir(os.path.join(WDIR5, "snapshots")) else 0
+    return rec, left == n_snaps
+
+
+def chain(t_):      # here -> . ; peek -> here/../outside/s.md: every target is textually inside, the chain reaches outside
+    os.symlink(".", os.path.join(t_, "here"))
+    os.symlink("here/../outside/s.md", os.path.join(t_, "peek"))
+
+
+for name, make in (("plain", lambda t_: os.symlink("real.md", os.path.join(t_, "alias.md"))),
+                   ("chain", chain),
+                   ("dirlink", lambda t_: os.symlink("dir", os.path.join(t_, "dirlink"))),
+                   ("nested", lambda t_: os.symlink("../real.md", os.path.join(t_, "dir", "up.md"))),
+                   ("abs", lambda t_: os.symlink("/etc/hosts", os.path.join(t_, "out.md"))),
+                   ("broken", lambda t_: os.symlink("nowhere", os.path.join(t_, "dangling.md")))):
+    t_ = with_link(name, make)
+    rec, unchanged = link_poll(t_)
+    ok("links: a {} symlink makes the poll unstable, with the reason, and keeps no snapshot".format(name),
+       rec.get("unstable") is True and rec.get("reason") == REASON and not rec.get("snapshot") and rec["hash"] == M.digest(t_) and unchanged, rec)
+git_only = with_link("gitlink", lambda t_: (os.makedirs(os.path.join(t_, ".git")), os.symlink("/etc/hosts", os.path.join(t_, ".git", "l"))))
+rec, _u = link_poll(git_only)
+ok("links: a link inside .git, which is never read or copied, does not matter", bool(rec.get("snapshot")) and not rec.get("unstable"), rec)
+nolink = with_link("none", lambda t_: put(t_, "extra.md", "a file, no link\n"))
+rec, _u = link_poll(nolink)
+ok("links: control: the same tree without a link is snapshotted", bool(rec.get("snapshot")) and not rec.get("unstable"), rec)
 os.environ["XDG_STATE_HOME"] = os.path.join(ROOT, "xdg6")
-ok("links: a seed with an outside link is refused", raises(M.cmd_memories_watch, namespace(LNK, seed=leak, seed_at="2026-11-02T13:21:00Z")))
-is_("links: and left no log", M.first_poll(os.path.join(ROOT, "xdg6", "process-replay", "memwatch")), None)
+WDIR6 = os.path.join(ROOT, "xdg6", "process-replay", "memwatch")
+for name in ("plain", "chain"):
+    ok("links: a seed holding a {} symlink is refused".format(name),
+       raises(M.cmd_memories_watch, namespace(nolink, seed=os.path.join(ROOT, "mem-link-" + name), seed_at="2026-11-02T13:21:00Z")))
+is_("links: and the refused seed left no log", M.first_poll(WDIR6), None)
 
 # ---- seed
 XDG3 = os.path.join(ROOT, "xdg3")

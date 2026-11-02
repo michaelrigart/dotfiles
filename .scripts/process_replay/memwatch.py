@@ -5,8 +5,7 @@ directory on each change into
   $XDG_STATE_HOME/process-replay/memwatch/
     polls.jsonl                   one {at, hash, interval} line per poll (interval: the seconds the watcher sleeps
                                   after it), plus snapshot (a directory name) when the poll took one, unstable: true
-                                  when the directory changed while it was copied, held a link out of the snapshot or
-                                  was missing (hash is then null when it changed or vanished while it was read, and a
+                                  when the directory changed while it was copied, holds a symlink or was missing (hash is then null when it changed or vanished while it was read, and a
                                   reason is given), seed: true for the seed
     snapshots/<at>-<hash12>/      a copy without .git, kept only when its own digest equals the poll's hash
 
@@ -15,8 +14,7 @@ It reads the source and writes nothing outside that directory, and never the liv
 A poll's hash is a SHA-256 over the sorted relative paths and contents of the tree, `.git` excluded. A snapshot
 is `cp -c -R` (an APFS clone), falling back to a plain copy, and is kept only when the copy's digest equals the
 poll's: a directory that changes between the digest and the copy leaves an unstable poll and no snapshot. A link
-that points out of the snapshot (an absolute target, or a `..` that escapes) does too: a reviewer on a snapshot must
-never read the live memories through it.
+anywhere in the tree does too: a reviewer on a snapshot must never be able to read the live memories through it.
 """
 import calendar
 import hashlib
@@ -85,18 +83,18 @@ def digest(src):
     return h.hexdigest()
 
 
-def _escaping(root):
-    """The links below `root` whose target leaves it: absolute, or a relative target that climbs out of root."""
-    bad = []
+SYMLINK = "the memories directory holds a symlink"
+
+
+def _has_symlink(root):
+    """Whether any link lies below `root` (`.git` excluded). A snapshot is read by a reviewer, and a link in it could
+    lead to the live memories by a route no text check of its target can rule out (a chain of links, `..` through a
+    link), so a tree holding any link is not snapshotted. Codex's memories hold none."""
     for d, dirs, files in os.walk(root):
-        for n in dirs + files:
-            full = os.path.join(d, n)
-            if os.path.islink(full):
-                target = os.readlink(full)
-                where = os.path.normpath(os.path.join(os.path.dirname(full), target))
-                if os.path.isabs(target) or not (where == root or where.startswith(root + os.sep)):
-                    bad.append(os.path.relpath(full, root))
-    return sorted(bad)
+        dirs[:] = [x for x in dirs if x != ".git"]
+        if any(os.path.islink(os.path.join(d, n)) for n in files + dirs if n != ".git"):
+            return True
+    return False
 
 
 def _copy(src, dst):
@@ -166,22 +164,21 @@ def _last_snapshot_hash(wdir):
 
 
 def _keep(wdir, src, at, want):
-    """Copy src into snapshots/<at>-<hash12>: (the directory name, None) when the copy's digest is `want` and no
-    link in it leaves it, else (None, why) with the copy discarded."""
+    """Copy src into snapshots/<at>-<hash12>: (the directory name, None) when the copy's digest is `want` and the tree
+    holds no symlink, else (None, why) with the copy discarded."""
     name = "{}-{}".format(at, want[:12])
     final = os.path.join(wdir, SNAPSHOTS, name)
     tmp = final + ".tmp"
     os.makedirs(os.path.join(wdir, SNAPSHOTS), exist_ok=True)
     shutil.rmtree(tmp, ignore_errors=True)
-    why = None
+    why = SYMLINK if _has_symlink(src) else None
     try:
-        _copy(src, tmp)
-        if digest(tmp) != want:
-            why = "the directory changed while it was copied"
-        else:
-            bad = _escaping(tmp)
-            if bad:
-                why = "a link leaves the snapshot: " + ", ".join(bad[:3])
+        if why is None:
+            _copy(src, tmp)
+            if digest(tmp) != want:
+                why = "the directory changed while it was copied"
+            elif _has_symlink(tmp):
+                why = SYMLINK
     except OSError as e:
         why = "the copy failed: {}".format(e)
     if why:

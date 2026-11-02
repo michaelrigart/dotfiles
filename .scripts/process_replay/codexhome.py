@@ -297,6 +297,14 @@ def _make(state, name, memories_src, use_memories, source, keep_memories):
     return home
 
 
+def _owned(home):
+    """Failed unless `home` lies under $XDG_STATE_HOME/cxh/: stopping a daemon is done only for the homes this
+    module makes, whatever a record or a marker file says."""
+    root = os.path.realpath(os.path.join(common.L.state_home(), "cxh"))
+    if not os.path.realpath(home).startswith(root + os.sep):
+        raise Failed("{} is not a replay home under {}: refusing to stop its daemon".format(home, root))
+
+
 def _record(home):
     rec = jload(os.path.join(home, RECORD))
     if not isinstance(rec, dict) or not rec.get("source"):
@@ -374,6 +382,7 @@ def reclaim(home):
     whether it stopped one; a home that does not exist yet has none; Failed when a live run holds it."""
     if not os.path.isfile(os.path.join(home, RECORD)):
         return False
+    _owned(home)
     return _leftover(home, False)
 
 
@@ -405,6 +414,7 @@ def stop(home):
     """Stop the replay daemon of `home`, then take back a refreshed login. The one-daemon marker goes
     only when the daemon stopped (its stop succeeded or its socket is gone)."""
     _record(home)
+    _owned(home)
     failure = None
     try:
         _daemon(home, "stop")

@@ -855,9 +855,9 @@ def run_job(a, job):
                 break
             # a run that read the original checkout learned the future: it is void, and runs once more
             voids.append(found)
-            wasted += res["tokens"]
-            if attempt == 2:
+            if attempt == 2:       # this attempt's tokens are the run's own: spent counts them once, below
                 raise Failed("void twice: the reviewer read the original checkout ({})".format("; ".join(found)))
+            wasted += res["tokens"]
             res.update(findings=[], reviewed_files=[], tokens=0, compacted=False, slices=0, verdict=None, missing=None)
             shutil.rmtree(clone, ignore_errors=True)
             build_scratch(a, job, clone, cdir)

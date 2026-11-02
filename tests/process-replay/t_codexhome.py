@@ -378,6 +378,19 @@ _res, out = said(H.start, home)
 ok("crashed_run: starting the same home stops its left daemon, then starts it", stops()[-2:] == [("stop", home), ("start", home)] and "left running" in out, stops()[-3:])
 H.stop(home)
 
+# ---- outside_cxh: a recorded home that is not under $XDG_STATE_HOME/cxh is never stopped
+outside = os.path.join(ROOT, "elsewhere", "home")
+put(outside, H.RECORD, json.dumps({"source": SRC, "use_memories": False}))
+put(outside, "app-server-control/app-server-control.sock", "")
+n_calls = len(helpers.read_log(LOG))
+ok("outside_cxh: stop refuses a recorded home outside cxh", raises(H.stop, outside))
+ok("outside_cxh: reclaim refuses it too, though its socket answers", raises(H.reclaim, outside))
+ok("outside_cxh: and no daemon command ran", len(helpers.read_log(LOG)) == n_calls)
+link_in = os.path.join(ROOT, "xdg", "cxh", "linked")
+os.symlink(outside, link_in)
+ok("outside_cxh: nor does a link under cxh that leads out of it", raises(H.stop, link_in) and raises(H.reclaim, link_in))
+os.unlink(link_in)
+
 # ---- snapshot_swap
 bad = os.path.join(ROOT, "snap-bad")
 put(bad, "memory_summary.md", "new")
