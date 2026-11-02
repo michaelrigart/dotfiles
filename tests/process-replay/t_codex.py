@@ -589,3 +589,87 @@ try:
 except K.RoundFailed as e:
     got = (e.tokens, e.leak)
 is_("round_failed: the turns of a failed round are leak-scanned and the leak rides on the exception", got, (300, [w.workdir + " in tu1"]))
+
+
+# ---- leak_scan, round 2: parents only as paths, glued options, workdirs of every call shape, repo-specific tools
+def fc(cmd, **more):
+    return json.dumps(dict({"cmd": cmd}, **more))
+
+
+HULDER = [house + "/Code/hulder/.git"]
+is_("leak_scan: ordinary text naming Code and the repo's name as a word is not a leak (parent only as a path)",
+    leaked("rg -n 'Claude Code' docs; rg -n hulder setup.py", HULDER), [])
+is_("leak_scan: ... while the parent spelled as a path beside the name is", leaked("cd ~/Code && cat hulder/x", HULDER), [house + "/Code/hulder in t1"])
+TAG = [house + "/.local/share/tagteam/.git"]
+is_("leak_scan: another tool reading ~/.local/share/foo is not a leak for a repo beside it", leaked(fc("chezmoi cat ~/.local/share/foo"), TAG), [])
+is_("leak_scan: the bare tail .local/share is never the parent", leaked("rg -n tagteam .local/share/x", TAG), [])
+is_("leak_scan: ${HOME}/.local/share beside the name is", leaked("cd ${HOME}/.local/share && ls tagteam", TAG), [house + "/.local/share/tagteam in t1"])
+DOT = [house + "/dotrepo/.git"]
+is_("leak_scan: a repo directly under $HOME: its parent does not fire on the scratch workdir",
+    leaked("cd {}/.local/state/review-work/scratch/lab1 && cat dotrepo/x".format(house), DOT), [])
+is_("leak_scan: ... its own path still does", leaked("cat ~/dotrepo/x", DOT), [house + "/dotrepo in t1"])
+is_("leak_scan: ... as does $HOME/ or ${HOME}/", (leaked("cat $HOME/dotrepo/x", DOT), leaked("cat ${HOME}/dotrepo/x", DOT)), ([house + "/dotrepo in t1"],) * 2)
+is_("leak_scan: a file named like a repo directly under $HOME is not a leak", leaked("cat src/dotrepo.py", DOT), [])
+SCR2 = house + "/.local/state/review-work/scratch/lab1"
+is_("leak_scan: a .. token that resolves to the parent, beside the name, is a leak", leaked("cd ../../../../share && cat tagteam/x", TAG, cwd=SCR2), [house + "/.local/share/tagteam in t1"])
+is_("leak_scan: git -C glued to a .. path is resolved", leaked("git -C../../orig log", ["/work/orig/.git"]), ["/work/orig in t1"])
+is_("leak_scan: --git-dir= with a .. path is resolved", leaked("git --git-dir=../../orig/.git log", ["/work/orig/.git"]), ["/work/orig in t1"])
+is_("leak_scan: NAME=../x is resolved", leaked("GIT_DIR=../../orig/.git git log", ["/work/orig/.git"]), ["/work/orig in t1"])
+is_("leak_scan: an option glued to a path inside the scratch is not a leak", leaked("git -C../x log", ["/work/orig/.git"]), [])
+
+
+def leaked_payload(payload, paths, cwd=SCR):
+    n_lk[0] += 1
+    thread = "lp{}".format(n_lk[0])
+    recs, _t = helpers.rollout_lines({"turn": "t1", "answer": None, "tools": [tool("function_call", "x")]})
+    for r in recs:
+        if r["type"] == "response_item" and r["payload"].get("type") == "function_call":
+            r["payload"] = payload
+    path = helpers.rollout_file(lhome, thread)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write("".join(json.dumps(r) + "\n" for r in recs))
+    return K.leaks(lhome, [(thread, "t1")], list(paths), cwd)
+
+
+ORIG = ["/work/orig/.git"]
+js = 'text(await tools.exec_command({cmd:"cat ../orig/a",workdir:"/work/scratch"}));\n'
+is_("leak_scan: a Codex exec call's JavaScript workdir is where its relative paths start",
+    leaked_payload({"type": "custom_tool_call", "name": "exec", "input": js}, ORIG, cwd="/elsewhere/a/b"), ["/work/orig in t1"])
+is_("leak_scan: ... with the key quoted as JSON writes it",
+    leaked_payload({"type": "custom_tool_call", "name": "exec", "input": js.replace("workdir:", '"workdir":')}, ORIG, cwd="/elsewhere/a/b"), ["/work/orig in t1"])
+is_("leak_scan: ... and without a workdir the scratch path is the fallback",
+    leaked_payload({"type": "custom_tool_call", "name": "exec", "input": 'text(await tools.exec_command({cmd:"cat ../orig/a"}));'}, ORIG, cwd="/elsewhere/a/b"), [])
+two = 'const r=await Promise.all([tools.exec_command({cmd:"ls ../orig",workdir:"/other/place"}),tools.exec_command({cmd:"ls ../orig",workdir:"/work/scratch"})]);'
+is_("leak_scan: each exec_command of one input has its own workdir",
+    leaked_payload({"type": "custom_tool_call", "name": "exec", "input": two}, ORIG, cwd="/elsewhere/a/b"), ["/work/orig in t1"])
+shell = {"type": "local_shell_call", "action": {"type": "exec", "command": ["bash", "-lc", "cat ../orig/a"], "working_directory": "/work/scratch"}}
+is_("leak_scan: a local_shell_call's working_directory is read", leaked_payload(shell, ORIG, cwd="/elsewhere/a/b"), ["/work/orig in t1"])
+is_("leak_scan: ... and without it the scratch path is the fallback",
+    leaked_payload({"type": "local_shell_call", "action": {"type": "exec", "command": ["bash", "-lc", "cat ../orig/a"]}}, ORIG, cwd="/elsewhere/a/b"), [])
+
+CHZ = [house + "/.local/share/chezmoi/.git"]
+for label, call in (("a bare command", fc("chezmoi apply")), ("after &&", fc("cd /tmp && chezmoi diff")), ("after ;", fc("ls; chezmoi status")),
+                    ("after a pipe", fc("ls | chezmoi execute-template")), ("after command", fc("command chezmoi cat x")),
+                    ("after env and an assignment", fc("env FOO=1 chezmoi managed")), ("by its full path", fc("/opt/homebrew/bin/chezmoi diff")),
+                    ("inside bash -lc", fc(["bash", "-lc", "chezmoi diff"])), ("inside sh -c", fc("sh -c 'cd /tmp; chezmoi diff'"))):
+    is_("tool_words: chezmoi run as a command ({}) is a leak when the original is the chezmoi source".format(label), leaked(call, CHZ), [house + "/.local/share/chezmoi in t1"])
+is_("tool_words: a Codex exec call running chezmoi is a leak",
+    leaked_payload({"type": "custom_tool_call", "name": "exec", "input": 'text(await tools.exec_command({cmd:"chezmoi diff"}));'}, CHZ), [house + "/.local/share/chezmoi in t1"])
+is_("tool_words: $XDG_DATA_HOME/chezmoi is a leak", leaked("cat $XDG_DATA_HOME/chezmoi/AGENTS.md", CHZ), [house + "/.local/share/chezmoi in t1"])
+is_("tool_words: ${XDG_DATA_HOME}/chezmoi is a leak", leaked("cat ${XDG_DATA_HOME}/chezmoi/AGENTS.md", CHZ), [house + "/.local/share/chezmoi in t1"])
+for label, call in (("an argument", fc("rg -n chezmoi docs")), ("a path component", fc("cat docs/chezmoi.md")), ("a quoted string", fc('echo "chezmoi apply"')),
+                    ("a file name", fc("cat /tmp/chezmoi-notes")), ("a longer word", fc("git log -- dot_chezmoi"))):
+    is_("tool_words: chezmoi as {} is not a leak".format(label), leaked(call, CHZ), [])
+is_("tool_words: for any other original, running chezmoi is not a leak", leaked(fc("chezmoi apply"), ORIG), [])
+
+# ---- weekly: a rollout that vanishes while listed
+real_glob = K.glob.glob
+vanished = os.path.join(ROOT, "cxh", "wk-vanish", "sessions", "2026", "rollout-2026-10-20T10-00-00-gone.jsonl")
+K.glob.glob = lambda *a, **k: real_glob(*a, **k) + [vanished]
+try:
+    got = K.weekly(replay_home("wk-vanish"), live=os.path.join(ROOT, "no-such-home"))
+finally:
+    K.glob.glob = real_glob
+is_("weekly_vanish: a rollout that moves between the listing and the read is skipped, not raised", got, None)
+is_("weekly_vanish: a missing file has modification time 0", K._mtime(vanished), 0)

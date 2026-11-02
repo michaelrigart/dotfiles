@@ -30,8 +30,12 @@ what the scan of whatever turns it ran found). The caller adds `tokens` of every
 The leak scan is lexical. It reads a tool call's text for the original checkout's absolute path, its HOME-relative
 tail (Code/Org/repo, which also catches ~/, $HOME/, ${HOME}/ and ../../ spellings, and Code/Org/repo-<sibling>), a
 token naming the checkout beside its parent directory in one call (cd ~/Code/Org && cat repo-feat/x), and each
-path-like token with `..` resolved against the call's cwd. Known limit: a path assembled across separate commands
-(`cd ~/Code/Org`, then `cat repo/x`) is caught only when a token still names the repo.
+path-like token with `..` resolved against the call's cwd (options glued to the path, -C../x, --git-dir=../x and
+NAME=../x, are stripped first), the parent directory counting only when spelled as a path, never as a bare tail
+(Code, .local/share). A repo-specific tool that reads the checkout without naming it (TOOLS: chezmoi for the chezmoi
+source) is a leak when run as a command. Known limits of a lexical scan: a path assembled across separate commands
+(`cd ~/Code/Org`, then `cat repo/x`) is caught only when a token still names the repo, and `cd .. && cat x` is not
+followed.
 
 Codex homes are paths (codexhome.py): this module sets CODEX_HOME to the replay home for the rpc calls and the
 rollout reads of a round, and drops an inherited XREVIEW_RPC_SOCK or XREVIEW_RPC_STDIO, which would aim a call
@@ -43,6 +47,7 @@ import glob
 import json
 import os
 import re
+import shlex
 import subprocess
 import threading
 import time
@@ -204,13 +209,21 @@ def _lines(path):
         return f.read().splitlines()
 
 
+def _mtime(path):
+    """A file's modification time, 0 for one that moved away since it was listed."""
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return 0
+
+
 def _rollouts(home):
     found = []
     for sub in ("sessions", "archived_sessions"):
         base = glob.escape(os.path.join(home, sub))
         found += glob.glob(os.path.join(base, "**", "rollout-*.jsonl*"), recursive=True)
     found = [p for p in found if re.search(r"\.jsonl(\.zst)?\Z", p)]
-    return sorted(found, key=os.path.getmtime, reverse=True)
+    return sorted(found, key=_mtime, reverse=True)
 
 
 def _live_home():
@@ -241,7 +254,7 @@ def weekly(home, live=None):
             try:
                 lines, mtime = _lines(path), os.path.getmtime(path)
             except (OSError, subprocess.SubprocessError):
-                continue
+                continue            # a live rollout may move or vanish while it is read
             for n, line in enumerate(lines):
                 if b'"rate_limits"' not in line:
                     continue
@@ -270,10 +283,19 @@ _TOKEN = re.compile(r"[^\s\"'`;|&<>()\\]+")
 _NOT_WORD = r"(?![A-Za-z0-9_])"
 
 
+# Tools that read an original checkout without naming it, by the work dir they read (HOME-relative): the
+# command words that run them, and other spellings of the checkout's path.
+TOOLS = {".local/share/chezmoi": {"words": ("chezmoi",), "spellings": ("$XDG_DATA_HOME/chezmoi", "${XDG_DATA_HOME}/chezmoi")}}
+SHELLS = ("sh", "bash", "zsh", "dash")
+PREFIXES = ("command", "env", "sudo", "exec", "time", "nohup")
+
+
 def _forbidden(paths):
-    """[(path, [regex naming it], [regex naming its parent directory], regex naming its last component)] for the
-    original checkouts: a git directory stands for its work tree. Under $HOME a path is also matched by its
-    HOME-relative tail wherever a command spells the prefix (~/, $HOME/, ${HOME}/, ../../, /Users/x/)."""
+    """[(path, [regex naming it], [regex naming its parent directory as a path], regex naming its last component)]
+    for the original checkouts: a git directory stands for its work tree. Under $HOME a path is also matched by its
+    HOME-relative tail wherever a command spells the prefix (~/, $HOME/, ${HOME}/, ../../, /Users/x/). A parent
+    directory counts only when spelled as a path (absolute, or ~/, $HOME/, ${HOME}/ + its tail), never as a bare
+    tail (Code, .local/share), and not at all when it is $HOME or /."""
     house = os.path.expanduser("~").rstrip("/")
     out, seen = [], set()
     for path in paths:
@@ -286,27 +308,81 @@ def _forbidden(paths):
             continue
         seen.add(path)
         names = [re.compile(r"(?<![A-Za-z0-9_])" + re.escape(path) + _NOT_WORD)]
-        parents = [re.compile(r"(?<![A-Za-z0-9_])" + re.escape(os.path.dirname(path)) + _NOT_WORD)] if os.path.dirname(path) not in ("", "/") else []
+        parent = os.path.dirname(path)
+        parents = []
+        if parent not in ("", "/", house):
+            parents.append(re.compile(r"(?<![A-Za-z0-9_])" + re.escape(parent) + _NOT_WORD))
         if house and path.startswith(house + "/"):
             tail = path[len(house) + 1:]
-            names.append(re.compile(r"(?<![A-Za-z0-9_.-])" + re.escape(tail) + _NOT_WORD))
+            # a tail of one component is a bare word (foo for ~/foo): it names the checkout only behind ~/ or $HOME/
+            lead = r"(?<![A-Za-z0-9_.-])" if "/" in tail else r"(?:~|\$HOME|\$\{HOME\})/"
+            names.append(re.compile(lead + re.escape(tail) + _NOT_WORD))
             if os.path.dirname(tail):
-                parents.append(re.compile(r"(?<![A-Za-z0-9_.-])" + re.escape(os.path.dirname(tail)) + _NOT_WORD))
+                parents.append(re.compile(r"(?:~|\$HOME|\$\{HOME\})/" + re.escape(os.path.dirname(tail)) + _NOT_WORD))
+            for spelling in TOOLS.get(tail, {}).get("spellings", ()):
+                names.append(re.compile(r"(?<![A-Za-z0-9_])" + re.escape(spelling) + _NOT_WORD))
         out.append((path, names, parents, re.compile(r"(?<![A-Za-z0-9_./-])" + re.escape(os.path.basename(path)) + _NOT_WORD)))
     return out
 
 
-def _named(text, cwd, forbidden):
-    """The forbidden paths one tool call's text names (see the module docstring for what that covers)."""
+def _tool_words(path):
+    house = os.path.expanduser("~").rstrip("/")
+    return TOOLS.get(path[len(house) + 1:] if house and path.startswith(house + "/") else None, {}).get("words", ())
+
+
+def _runs(command, words):
+    """Whether the shell command `command` (a string, or an argv list) runs one of `words` as a command: its
+    first word, or the first after && || ; | and command/env/sudo-like prefixes, looking through `sh -c '...'`.
+    A word that is only an argument, a path component or inside a quoted string does not count."""
+    if isinstance(command, (list, tuple)):
+        argv = [str(x) for x in command]
+        if len(argv) >= 3 and os.path.basename(argv[0]) in SHELLS and any(re.match(r"-[a-z]*c[a-z]*\Z", x) for x in argv[1:-1]):
+            return _runs(argv[-1], words)
+        command = " ".join(shlex.quote(x) for x in argv)
+    if not isinstance(command, str):
+        return False
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        tokens = command.split()
+    start = True
+    for i, tok in enumerate(tokens):
+        if tok in ("&&", "||", ";", "|", ";;", "&", "(", ")"):
+            start = True
+            continue
+        if not start:
+            continue
+        if tok in PREFIXES or re.match(r"[A-Za-z_][A-Za-z0-9_]*=", tok) or (tok.startswith("-") and i and tokens[i - 1] in PREFIXES):
+            continue
+        start = False
+        if os.path.basename(tok) in words:
+            return True
+        if os.path.basename(tok) in SHELLS:
+            for j in range(i + 1, len(tokens) - 1):
+                if re.match(r"-[a-z]*c[a-z]*\Z", tokens[j]):
+                    return _runs(tokens[j + 1], words)
+    return False
+
+
+def _named(text, cwd, forbidden, commands=()):
+    """The forbidden paths one tool call's text names (see the module docstring for what that covers). `commands`
+    are the call's shell commands, read for the tools of TOOLS."""
     house = os.path.expanduser("~").rstrip("/")
     hit = set()
     for path, names, parents, base in forbidden:
         if any(rx.search(text) for rx in names) or (any(rx.search(text) for rx in parents) and base.search(text)):
             hit.add(path)
+        words = _tool_words(path)
+        if words and any(_runs(c, words) for c in commands):
+            hit.add(path)
+    resolved = []
     for token in _TOKEN.findall(text):
         if ".." not in token:
             continue
-        t = token.replace("${HOME}", house).replace("$HOME", house)
+        t = re.sub(r"\A(?:--?[A-Za-z][A-Za-z0-9-]*=|-[A-Za-z]|[A-Za-z_][A-Za-z0-9_]*=)", "", token)       # --git-dir=.., -C.., GIT_DIR=..
+        t = t.replace("${HOME}", house).replace("$HOME", house)
         if t == "~" or t.startswith("~/"):
             t = house + t[1:]
         if not os.path.isabs(t):
@@ -314,10 +390,65 @@ def _named(text, cwd, forbidden):
                 continue
             t = os.path.join(cwd, t)
         t = os.path.normpath(t)
+        resolved.append(t)
         for path, names, _parents, _base in forbidden:
             if names[0].search(t):
                 hit.add(path)
+    for path, _names, parents, base in forbidden:
+        if base.search(text) and any(parents[:1] and parents[0].search(t) for t in resolved):
+            hit.add(path)
     return hit
+
+
+_WORKDIR = re.compile(r"""["']?workdir["']?\s*:\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')""")
+_CMD = re.compile(r"""["']?cmd["']?\s*:\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')""")
+
+
+def _js_string(literal):
+    try:
+        return json.loads(literal) if literal.startswith('"') else literal[1:-1]
+    except ValueError:
+        return literal[1:-1]
+
+
+def _from(cwd, given):
+    return given if os.path.isabs(given) or not cwd else os.path.join(cwd, given)
+
+
+def _calls(p, cwd):
+    """[(text, workdir, [shell commands])] of one tool call payload: its text as it is searched, the directory its
+    relative paths start from (the call's own workdir when it names one, else `cwd`) and its commands. A function_call
+    carries JSON arguments {cmd, workdir}; a local_shell_call an action {command, working_directory}; a Codex `exec`
+    custom_tool_call JavaScript, tools.exec_command({cmd: "...", workdir: "..."}), perhaps several in one input."""
+    kind = p.get("type")
+    if kind == "custom_tool_call" and isinstance(p.get("input"), str):
+        parts = re.split(r"(?=exec_command\s*\()", p["input"])
+        out = []
+        for part in parts:
+            wd, cmds = cwd, [_js_string(m) for m in _CMD.findall(part)]
+            m = _WORKDIR.search(part)
+            if m and _js_string(m.group(1)):
+                wd = _from(cwd, _js_string(m.group(1)))
+            out.append((part, wd, cmds))
+        return out
+    wd, cmds = cwd, []
+    if kind == "function_call":
+        try:
+            doc = json.loads(p.get("arguments"))
+        except (TypeError, ValueError):
+            doc = None
+        if isinstance(doc, dict):
+            given = doc.get("workdir") or doc.get("cwd")
+            if isinstance(given, str) and given:
+                wd = _from(cwd, given)
+            cmds = [doc[k] for k in ("cmd", "command") if isinstance(doc.get(k), (str, list))]
+    elif kind == "local_shell_call" and isinstance(p.get("action"), dict):
+        given = p["action"].get("working_directory")
+        if isinstance(given, str) and given:
+            wd = _from(cwd, given)
+        if isinstance(p["action"].get("command"), (str, list)):
+            cmds = [p["action"]["command"]]
+    return [(json.dumps(p, ensure_ascii=False), wd, cmds)]
 
 
 def leaks(home, turns, paths, cwd=None):
@@ -352,16 +483,9 @@ def leaks(home, turns, paths, cwd=None):
                 elif rec.get("type") == "event_msg" and p.get("type") == "task_complete":
                     inside = False
                 elif inside and rec.get("type") == "response_item" and p.get("type") in ("custom_tool_call", "function_call", "local_shell_call"):
-                    where = cwd
-                    try:
-                        doc = json.loads(p.get("arguments"))
-                        given = doc.get("workdir") or doc.get("cwd") if isinstance(doc, dict) else None
-                        if isinstance(given, str) and given:
-                            where = given if os.path.isabs(given) or not cwd else os.path.join(cwd, given)
-                    except (TypeError, ValueError):
-                        pass
-                    for name in _named(json.dumps(p, ensure_ascii=False), where, forbidden):
-                        found.add("{} in {}".format(name, turn))
+                    for text, where, commands in _calls(p, cwd):
+                        for name in _named(text, where, forbidden, commands):
+                            found.add("{} in {}".format(name, turn))
     return sorted(found)
 
 
