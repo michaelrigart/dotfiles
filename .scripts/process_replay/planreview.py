@@ -386,7 +386,9 @@ def report_section(state):
             if klass == "design" and f["severity"] in ("P0", "P1"):
                 p["design_p0p1"] += 1
     for p in plans.values():
-        p["minutes_per_design"], p["tokens_per_design"] = _per(p["minutes"], p["design_p0p1"]), _per(p["tokens"], p["design_p0p1"])
+        counted = p["design_p0p1"] and p["rounds"]      # a row with no rounds credited (unattributed) has no cost to divide
+        p["minutes_per_design"] = _per(p["minutes"], p["design_p0p1"]) if counted else None
+        p["tokens_per_design"] = _per(p["tokens"], p["design_p0p1"]) if counted else None
     design = classes["design"]["P0"] + classes["design"]["P1"]
     minutes = sum(r["minutes"] for r in rounds)
     tokens = sum(r["tokens"] for r in rounds)

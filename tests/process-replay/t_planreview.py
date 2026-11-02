@@ -376,6 +376,10 @@ _l, rep5 = P.report_section(STATE5)
 is_("unattributed: credited to an (unattributed) row, not to the alphabetically first plan",
     sorted((p["plan"], p["known"], p["design_p0p1"]) for p in rep5["plans"]),
     sorted([(PLAN_A, 0, 0), (PLAN_B, 0, 0), ("(unattributed)", 1, 1)]))
+un = next(p for p in rep5["plans"] if p["plan"] == "(unattributed)")
+is_("unattributed: it has no rounds, so its cost per design-class P0/P1 is n/a, not a free catch",
+    (un["rounds"], un["design_p0p1"], un["minutes_per_design"], un["tokens_per_design"]), (0, 1, None, None))
+ok("unattributed: and the report prints n/a for it", any("(unattributed)" in l and "per one: n/a min, n/a tokens" in l for l in _l), _l)
 is_("next_after_october: the November round costs nothing here", (rep5["rounds"], rep5["tokens"]), (1, 700))
 
 # ---------------------------------------------------------------- scenario 6: a known finding whose plan text cannot be read
@@ -399,3 +403,22 @@ is_("unreadable_plan: the report calls it not sent to a judge, not an unanswered
     (rep6["known"], rep6["unclassifiable"], rep6["pending_class"], rep6["no_input"], rep6["skipped_findings"], rep6["skipped_rounds"], rep6["incomplete"]),
     (1, 1, 0, 0, 1, 0, True))
 ok("unreadable_plan: and so says the pending line", any("1 not sent to a judge" in l and "0 awaiting a class" in l for l in ln6), ln6)
+
+# ---------------------------------------------------------------- scenario 7: a single-plan round credits a finding that names no plan to that plan
+STATE7 = world("w7")
+T7 = "th-plan-7"
+timed_rollout(T7, [
+    {"turn": "j1", "start": t0, "end": t0 + 60, "tokens": 100, "answer": answer("changes", [finding("P1", "src/x.py", 3, "names no plan")])},
+    {"turn": "j2", "start": t0 + 120, "end": t0 + 180, "tokens": 100, "answer": answer("approve", [])}])
+helpers.write_ledger(os.environ["XDG_STATE_HOME"], WT, [
+    plan_receipt("j1", "2026-10-12T10:00:00.000000Z", T7, "j1", WT, BASE, C1, {PLAN_A: A1B}),
+    plan_receipt("j2", "2026-10-12T11:00:00.000000Z", T7, "j2", WT, BASE, C3, {PLAN_A: A2B}, verdict="approve")])
+P.plan_cases(args(STATE7))
+answers(STATE7, "judge-known", "plan-j1", {"verdicts": [{"index": 0, "answer": "yes"}]})
+P.plan_cases(args(STATE7))
+c7 = C.jload(os.path.join(STATE7, "judge-class", "plan-j1-0.json"))
+is_("single_plan: the excerpt is the round's only plan (line 3 of it)", c7["plan_excerpt"], "".join(A1.splitlines(True)[0:43]))
+answers(STATE7, "judge-class", "plan-j1-0", {"class": "design"})
+_l, rep7 = P.report_section(STATE7)
+is_("single_plan: the finding is credited to that plan, not to (unattributed)",
+    [(p["plan"], p["known"], p["design_p0p1"]) for p in rep7["plans"]], [(PLAN_A, 1, 1)])
