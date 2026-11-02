@@ -20,11 +20,17 @@ from process_replay import common as C
 AGENT_TYPES = ("sp-reviewer", "sp-architect")
 DESCRIPTION = re.compile(r"^(Re-review|Review)\s+(.*?)\s*Task\s+(\d+)\b")
 SHA = r"([0-9a-fA-F]{7,40})"
-_SEP = r"[\s*:=`]*"
-_BASE = re.compile(r"\b(?:fix[ _])?base(?:[ _]sha)?" + _SEP + SHA + r"\b", re.I)
-_HEAD = re.compile(r"\bhead(?:[ _]sha)?" + _SEP + SHA + r"\b", re.I)
-_RANGE = re.compile(r"(?<![0-9A-Za-z])" + SHA + r"\.\.\.?" + SHA + r"(?![0-9A-Za-z])")
-_COMMIT = re.compile(r"\bcommits?" + _SEP + SHA + r"\b((?:\s*(?:,|&|\band\b)\s*`?" + SHA + r"\b)*)", re.I)
+# A base or head label counts only with one of : = * ` ] right after it, so "(base HEAD 13ca7437)" in a
+# prompt about uncommitted work names no head. Only the phrase "Fix base X, head Y" may use plain spaces.
+_MARK = r"[*`\]:=]+[\s*:=`\]]*"
+_BASE = re.compile(r"\b(?:fix[ _])?base(?:[ _]sha)?" + _MARK + SHA + r"\b", re.I)
+_HEAD = re.compile(r"\bhead(?:[ _]sha)?" + _MARK + SHA + r"\b", re.I)
+_PROSE = re.compile(r"\bfix\s+base\s+`?" + SHA + r"`?\s*[,;]?\s*head\s+`?" + SHA + r"\b", re.I)
+_DIFF = re.compile(r"(?<![0-9A-Za-z])" + SHA + r"\.\.\.?" + SHA + r"(?=\.diff\b)")
+_RANGE = re.compile(r"(?<![0-9A-Za-z])" + SHA + r"\.\.\.?" + SHA + r"(?![0-9A-Za-z^~])")
+_TAIL = r"`?(?:\s*\([^)\n]{0,80}\))?"
+_COMMIT = re.compile(r"\bcommits?(?:\s+is)?[\s,*:=`]*" + SHA + r"\b" + _TAIL + r"((?:\s*(?:,|&|\band\b)\s*`?" + SHA + r"\b" + _TAIL + r")*)",
+                     re.I)
 _SHA = re.compile(SHA)
 GAP = 300
 
@@ -34,62 +40,76 @@ def add_args(ap):
 
 
 # ------------------------------------------------------------------ prompt parsing
+def _same(a, b):
+    """The same commit written at two lengths."""
+    return a.startswith(b) or b.startswith(a)
+
+
+def _dedupe(items, key=lambda x: x):
+    """Each item once, in order of first appearance; an item whose parts are prefixes of an earlier
+    one's (or the reverse) is the same, and the longer spelling is kept."""
+    out = []
+    for item in items:
+        for i, seen in enumerate(out):
+            if all(_same(x, y) for x, y in zip(key(item), key(seen))):
+                if sum(map(len, key(item))) > sum(map(len, key(seen))):
+                    out[i] = item
+                break
+        else:
+            out.append(item)
+    return out
+
+
 def _scan(text):
-    """([(position, base, head)], [(position, commit)]) of a review prompt: the ranges it names and
-    every commit it names (range heads included), lower case, by position."""
+    """(ranges, commits) of a review prompt, from the strongest source that names anything and never
+    from a weaker one: (1) labelled base and head ("Fix base: A", "**Base:** A" ... "Head: B"),
+    (2) a diff file name review-A..B.diff, (3) a bare A..B, (4) the commits it names (a HEAD label,
+    "commit X", "commits X and Y"). Ranges are (base, head), commits are the heads of the ranges, or
+    for source 4 every commit named; lower case, by position, each once."""
     text = text or ""
-    ranges, commits = [], []
-    heads = list(_HEAD.finditer(text))
+    found = []
     bases = list(_BASE.finditer(text))
+    heads = list(_HEAD.finditer(text))
     for i, b in enumerate(bases):
         end = bases[i + 1].start() if i + 1 < len(bases) else len(text)
         h = next((h for h in heads if h.start() >= b.end() and h.start() - b.end() <= GAP and h.start() < end), None)
         if h:
-            ranges.append((b.start(), b.group(1).lower(), h.group(1).lower(), h.start(1)))
-    for m in _RANGE.finditer(text):
-        ranges.append((m.start(), m.group(1).lower(), m.group(2).lower(), m.start(2)))
-    for _pos, _base, head, hpos in ranges:
-        commits.append((hpos, head))
-    for m in heads:
-        commits.append((m.start(1), m.group(1).lower()))
+            found.append((b.start(), b.group(1).lower(), h.group(1).lower()))
+    for m in _PROSE.finditer(text):
+        found.append((m.start(), m.group(1).lower(), m.group(2).lower()))
+    for rx in (_DIFF, _RANGE):
+        if not found:
+            found = [(m.start(), m.group(1).lower(), m.group(2).lower()) for m in rx.finditer(text)]
+    if found:
+        ranges = _dedupe([(b, h) for _pos, b, h in sorted(found)], key=lambda r: r)
+        return ranges, _dedupe([h for _b, h in ranges], key=lambda h: (h,))
+    commits = [(m.start(1), m.group(1).lower()) for m in heads]
     for m in _COMMIT.finditer(text):
         commits.append((m.start(1), m.group(1).lower()))
         for x in _SHA.finditer(m.group(2)):
             commits.append((m.start(2) + x.start(), x.group(1).lower()))
-    return sorted((r[0], r[1], r[2]) for r in ranges), sorted(commits)
+    return [], _dedupe([c for _pos, c in sorted(commits)], key=lambda c: (c,))
 
 
 def parse_ranges(text):
-    """The (base, head) pairs a review prompt names: a base label ("Fix base", "FIX_BASE", "BASE_SHA",
-    "Base", with a colon, equals sign, Markdown emphasis or backticks around it) followed by the next
-    head label ("head", "HEAD", "HEAD_SHA", "Head"), or abc1234..def5678 anywhere (also in a diff file
-    name, review-A..B.diff). Lower case, each pair once, in order of appearance; SHAs of seven to
-    forty hex digits."""
-    out = []
-    for _pos, base, head in _scan(text)[0]:
-        if (base, head) not in out:
-            out.append((base, head))
-    return out
+    """The (base, head) pairs a review prompt names, from the strongest source present (see _scan).
+    Lower case, each once, in order of appearance; SHAs of seven to forty hex digits."""
+    return _scan(text)[0]
 
 
 def reviewed_commits(prompt):
-    """Every commit the prompt names, in order of appearance, once each: range heads, a HEAD/HEAD_SHA
-    label, and "commit X", "commits X and Y". Never resolved or ordered here: which is newest is a
-    question for the repository."""
-    out = []
-    for _pos, sha in _scan(prompt)[1]:
-        if sha not in out:
-            out.append(sha)
-    return out
+    """Every commit the prompt names, in order of appearance, once each (a SHA written at two lengths
+    counts once): range heads, or, with no range, a HEAD label, "commit X", "commits X and Y". Never
+    resolved or ordered here: which is newest is a question for the repository."""
+    return _scan(prompt)[1]
 
 
 def reviewed_head(prompt):
     """The head the review looked at: the last range's head, else the one commit the prompt names,
     else None (several commits, or none: uncommitted work)."""
-    ranges = parse_ranges(prompt)
+    ranges, commits = _scan(prompt)
     if ranges:
         return ranges[-1][1]
-    commits = reviewed_commits(prompt)
     return commits[0] if len(commits) == 1 else None
 
 
