@@ -18,6 +18,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.dirname(os.path.dirname(HERE))
 SCRIPTS = os.path.join(SRC, ".scripts")
 _ROOTS = []
+_REDIRECTED = set()
 
 
 def setup():
@@ -29,9 +30,17 @@ def setup():
         os.environ["GIT_CONFIG_GLOBAL"] = cfg
         os.environ["GIT_CONFIG_NOSYSTEM"] = "1"
         os.environ["GIT_CEILING_DIRECTORIES"] = base
-        for var, sub in (("HOME", "home"), ("XDG_STATE_HOME", "state"), ("CODEX_HOME", "codex")):
-            os.makedirs(os.path.join(base, sub), exist_ok=True)
-            os.environ[var] = os.path.join(base, sub)
+    # A backstop whatever isolated git already: no suite reaches the real home, state or Codex home.
+    # The wrapper's own redirect (under T_ROOT) is kept.
+    wrapped = os.environ.get("T_ROOT")
+    for var, sub in (("HOME", "home"), ("XDG_STATE_HOME", "state"), ("CODEX_HOME", "codex")):
+        current = os.environ.get(var, "")
+        if wrapped and current.startswith(wrapped + os.sep) or var in _REDIRECTED:
+            continue
+        path = os.path.join(tmp_root(), sub)
+        os.makedirs(path, exist_ok=True)
+        os.environ[var] = path
+        _REDIRECTED.add(var)
     if SCRIPTS not in sys.path:
         sys.path.insert(0, SCRIPTS)
 

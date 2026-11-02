@@ -203,3 +203,9 @@ with open(os.path.join(OUT, "lib.py")) as f:
 is_("commit_patch_one_commit: HEAD and the work tree are unchanged", (git(OUT, "rev-parse", "HEAD"), lib_after, git(OUT, "status", "--porcelain")),
     (head, lib_before, ""))
 is_("commit_patch_one_commit: an empty patch returns None", scratch.commit_patch(OUT, "", "Nothing"), None)
+
+# ---- scratch_commit_neutral: the repository's own config keeps later commands from writing a reflog
+subprocess.run(["git", "-C", OUT, "update-ref", "refs/heads/probe", "HEAD"], capture_output=True, check=True)
+ok("scratch_commit_neutral: a plain command in the scratch repository writes no reflog", not os.path.exists(os.path.join(OUT, ".git", "logs")))
+is_("scratch_commit_neutral: logAllRefUpdates is off in the repository's own config", git(OUT, "config", "--local", "core.logAllRefUpdates"), "false")
+subprocess.run(["git", "-C", OUT, "update-ref", "-d", "refs/heads/probe"], capture_output=True, check=True)

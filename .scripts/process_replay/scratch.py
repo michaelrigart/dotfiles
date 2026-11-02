@@ -156,6 +156,7 @@ def build(objects, base, files_dir, out, dest, branch, dest_ref=None, *, expect_
         g("update-ref", "refs/heads/" + dest, tip)
     if dest_ref and dest_ref != dest:
         g("update-ref", "refs/remotes/" + dest_ref, tip)
+    g("config", "core.logAllRefUpdates", "false")
     g("update-ref", "refs/heads/" + branch, tip)
     g("symbolic-ref", "HEAD", "refs/heads/" + branch)
     g("read-tree", tip)

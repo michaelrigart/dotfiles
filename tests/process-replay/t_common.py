@@ -381,3 +381,31 @@ log = helpers.read_log(os.path.join(ROOT, "fakecodex", "codex.log"))
 is_("stub_codex: argv and CODEX_HOME are logged", (log[0], len(log)), ({"argv": ["app-server", "daemon", "start"], "codex_home": chm}, 5))
 p = cli()
 ok("cli: no command prints the usage to stderr and exits 2", p.returncode == 2 and p.stdout == b"" and b"usage:" in p.stderr, (p.stdout, p.stderr))
+
+# ---- alias: a copied state, a dangling link
+orig = os.path.join(ROOT, "al-orig")
+os.makedirs(orig)
+orig_link = C.alias(orig)
+copy = os.path.join(ROOT, "al-copy")
+shutil.copytree(orig, copy, symlinks=True)
+copy_link = C.alias(copy)
+ok("alias: a state copied with cp -r gets a link of its own", copy_link != orig_link and os.path.realpath(copy_link) == os.path.realpath(copy), copy_link)
+ok("alias: and the original's link still resolves to the original", os.path.realpath(orig_link) == os.path.realpath(orig)
+   and open(os.path.join(orig, "alias")).read().strip() == orig_link and C.alias(orig) == orig_link)
+moved = os.path.join(ROOT, "al-moved")
+os.rename(orig, moved)
+ok("alias: control: moving a state leaves its link dangling", os.path.islink(orig_link) and not os.path.exists(orig_link))
+is_("alias: a dangling link is re-pointed at the same name", C.alias(moved), orig_link)
+ok("alias: and now resolves to the moved state", os.path.realpath(orig_link) == os.path.realpath(moved))
+
+# ---- setup() redirects home, state and Codex home even when git is already isolated
+probe = "import sys; sys.path.insert(0, %r); import helpers, os; helpers.setup(); print(os.environ['HOME'], os.environ['XDG_STATE_HOME'], os.environ['CODEX_HOME'])" % helpers.HERE
+real = {"HOME": "/real/home", "XDG_STATE_HOME": "/real/state", "CODEX_HOME": "/real/codex"}
+env = dict(os.environ, GIT_CONFIG_GLOBAL=os.environ["GIT_CONFIG_GLOBAL"], **real)
+env.pop("T_ROOT", None)
+out = subprocess.run(["/usr/bin/python3", "-I", "-B", "-c", probe], capture_output=True, env=env).stdout.decode().split()
+ok("helpers.setup: redirects the three variables although GIT_CONFIG_GLOBAL is set", len(out) == 3 and not any(v.startswith("/real") for v in out), out)
+env["T_ROOT"] = ROOT
+env.update(HOME=ROOT + "/h", XDG_STATE_HOME=ROOT + "/s", CODEX_HOME=ROOT + "/c")
+out = subprocess.run(["/usr/bin/python3", "-I", "-B", "-c", probe], capture_output=True, env=env).stdout.decode().split()
+is_("helpers.setup: keeps the wrapper's own redirect", out, [ROOT + "/h", ROOT + "/s", ROOT + "/c"])

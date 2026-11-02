@@ -223,7 +223,9 @@ def alias(state):
     """A neutral name for the state directory: a symlink $XDG_STATE_HOME/review-work/<8 hex> to it,
     recorded in <state>/alias. Every path a judge, a final reviewer or a Codex turn is handed goes
     through it, so the state directory's own name (process-replay) never reaches them. It is made
-    once, reused on later calls, and made again at its recorded path when the symlink is gone."""
+    once, reused on later calls, and made again at its recorded path when the symlink is gone or
+    dangling. A record that names a link to another existing directory (a state copied with cp -r)
+    is not taken over: the copy gets a name of its own, and the original's link stays as it was."""
     state = os.path.abspath(state)
     record = os.path.join(state, "alias")
     try:
@@ -233,7 +235,7 @@ def alias(state):
         link = ""
     if link and os.path.islink(link) and os.path.realpath(link) == os.path.realpath(state):
         return link
-    if not link or (os.path.lexists(link) and not os.path.islink(link)):
+    if not link or (os.path.lexists(link) and (not os.path.islink(link) or os.path.exists(link))):
         base = os.path.join(L.state_home(), "review-work")
         os.makedirs(base, exist_ok=True)
         link = os.path.join(base, label(set(os.listdir(base))))
