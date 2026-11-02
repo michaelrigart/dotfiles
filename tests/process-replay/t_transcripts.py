@@ -65,7 +65,7 @@ def tree(root):
     return sorted(out)
 
 
-def run(projects, state, ledger_repos=()):
+def run(projects, state):
     a = argparse.Namespace(state=state, projects_dir=projects, dry_run=False, snapshot_root=os.path.join(ROOT, "no-snapshot"))
     return T.cmd_snapshot(a)
 
@@ -193,17 +193,40 @@ for name, text, want in [
     ("full length SHAs", "Fix base {}, head {}.".format("a" * 40, "b" * 40), [("a" * 40, "b" * 40)]),
     ("upper case is lowered", "Fix base ABCDEF1, head 1234ABC.", [("abcdef1", "1234abc")]),
     ("a six digit word is no SHA", "Fix base 99f08a, head edd1f3.", []),
+    ("Markdown list with colons", "- Fix base: 7342495\n- Head: b52b520", [("7342495", "b52b520")]),
+    ("bold label then a later Head line",
+     "**Fix base:** 7342495 (the head the previous review saw)\n- Diff: review-7342495..b52b520.diff\nHead: b52b520", [("7342495", "b52b520")]),
+    ("bold labels in a list", "- **Base:** 669fd2c\n- **Head:** e4dfa89", [("669fd2c", "e4dfa89")]),
+    ("a bare range in parentheses", "Review the change (669fd2c..e4dfa89) please", [("669fd2c", "e4dfa89")]),
+    ("lower case base_sha and head_sha", "base_sha: a1b2c3d\nhead_sha: e4f5a6b", [("a1b2c3d", "e4f5a6b")]),
+    ("a head with no base is no range", "Head: b52b520", []),
+    ("a prose word after base is no range", "the base branch is main; head of the work is fine", []),
     ("none", "Review the task carefully. Nothing about commits.", []),
     ("empty", "", []),
 ]:
     is_("ranges_table: " + name, T.parse_ranges(text), want)
 is_("ranges_table: a list of tuples", all(isinstance(r, tuple) for r in T.parse_ranges("Fix base 997f08a, head edd1f33.")), True)
 
-# ---- reviewed_head
+# ---- reviewed_head and reviewed_commits
 is_("reviewed_head: the head of the range", T.reviewed_head(RE_PROMPT), "edd1f33")
 is_("reviewed_head: the last range's head", T.reviewed_head("Fix base 1111111, head 2222222. Fix base 3333333, head 4444444."), "4444444")
 is_("reviewed_head: a lone HEAD_SHA", T.reviewed_head("HEAD_SHA: e4f5a6b"), "e4f5a6b")
 is_("reviewed_head: none", T.reviewed_head("Review the task."), None)
+is_("reviewed_head: Markdown labels", T.reviewed_head("- Fix base: 7342495\n- Head: b52b520"), "b52b520")
+for name, text, commits, head in [
+    ("a task commit", "Review Task 4 (commit 97fe373)", ["97fe373"], "97fe373"),
+    ("a diff by git show", "Diff (commit 97fe373 via `git show`)", ["97fe373"], "97fe373"),
+    ("two commits", "Diff (commits 97fe373 and 1a2b3c4 \u2026)", ["97fe373", "1a2b3c4"], None),
+    ("a comma list", "commits 97fe373, 1a2b3c4 and 5d6e7f8", ["97fe373", "1a2b3c4", "5d6e7f8"], None),
+    ("a diff file with its commit", "Diff file: /x/review-97fe373.diff (commit 97fe373)", ["97fe373"], "97fe373"),
+    ("a bare range", "Diff (669fd2c..e4dfa89)", ["e4dfa89"], "e4dfa89"),
+    ("a range and a commit", "Fix base 1111111, head 2222222. Also commit 3333333.", ["2222222", "3333333"], "2222222"),
+    ("a backticked commit", "Review commit `97fe373`.", ["97fe373"], "97fe373"),
+    ("a commit word with no SHA", "Review the commit message and commit history.", [], None),
+    ("uncommitted work", "Review the working tree changes for Task 4.", [], None),
+]:
+    is_("reviewed_commits: " + name, T.reviewed_commits(text), commits)
+    is_("reviewed_head: " + name, T.reviewed_head(text), head)
 
 # ---- repo_for_cwd_prefix
 REPOS = ["/f/Code/repo/.git", "/f/Code/repo-extra/.git", "/f/Code/other.git"]
@@ -258,6 +281,55 @@ rv = [g for g in C.jload(os.path.join(state5, "reviews.json"))["groups"] if g["s
 is_("text: the prompt is the first user entry with text, from blocks", rv["prompt"], "block prompt")
 is_("text: the report is the last assistant text, a streamed message joined", rv["report"], "part one.\npart two.")
 is_("text: tokens count the streamed message once and the tool-use message", rv["tokens"], 4 + 5 + 4)
+
+# ---- the report is the SubagentHandback message
+HB = "77777777-aaaa"
+
+
+def handback(mid, message, minute, name="SubagentHandback"):
+    return {"type": "assistant", "timestamp": ts(minute), "cwd": WORK, "message": {
+        "id": mid, "role": "assistant", "model": "claude-opus-5", "usage": usage(1, 1, 1, 1),
+        "content": [{"type": "tool_use", "id": "tu_" + mid, "name": name, "input": {"message": message}}]}}
+
+
+with_hb = [user("Review Task 8 (commit 97fe373)", 1, WORK), asst("h1", "Thinking about it.", 2, WORK, usage(1, 1, 1, 1)),
+           handback("h2", "early draft", 3), tool_result(4, WORK),
+           asst("h3", "I will now report.", 5, WORK, usage(1, 1, 1, 1)), handback("h4", "## Findings\n- Important: x is wrong", 6)]
+ends_text = [user("Review Task 9", 1, WORK), handback("e1", "not the report: a handback earlier than the last text is still the handback", 2),
+             asst("e2", "closing words", 3, WORK, usage(1, 1, 1, 1))]
+other_tool = [user("Review Task 10", 1, WORK), handback("o1", "wrong tool", 2, name="SendMessage"), asst("o2", "plain closing", 3, WORK, usage(1, 1, 1, 1))]
+helpers.write_transcript(PROJECTS, PROJECT, HB, [], [sub("hb1", "sp-reviewer", "Review Task 8", with_hb),
+                                                     sub("hb2", "sp-reviewer", "Review Task 9", ends_text),
+                                                     sub("hb3", "sp-reviewer", "Review Task 10", other_tool)])
+state_hb = os.path.join(ROOT, "state-hb")
+run(PROJECTS, state_hb)
+hbg = {g["task"]: g["reviews"][0] for g in C.jload(os.path.join(state_hb, "reviews.json"))["groups"] if g["session"] == HB}
+is_("handback: the report is the last SubagentHandback call's message, not a text before it", hbg[8]["report"], "## Findings\n- Important: x is wrong")
+is_("handback: a handback wins over a later plain text", hbg[9]["report"], ends_text[1]["message"]["content"][0]["input"]["message"])
+is_("handback: another tool's message is no report, so the last text is", hbg[10]["report"], "plain closing")
+is_("handback: reviewed_commits and reviewed_head are recorded per review", (hbg[8]["reviewed_commits"], hbg[8]["reviewed_head"]), (["97fe373"], "97fe373"))
+is_("handback: a prompt naming no commit has none", (hbg[9]["reviewed_commits"], hbg[9]["reviewed_head"]), ([], None))
+is_("handback: a plain-text reviewer still reports its last text (fixture r1)", r1["report"], "Findings: none critical")
+
+# ---- a copy that fails leaves no temp file
+src = os.path.join(ROOT, "src.txt")
+open(src, "w").write("x")
+cdest = os.path.join(ROOT, "cdest", "f.txt")
+real_copy2 = T.shutil.copy2
+
+
+def boom(a_, b_):
+    open(b_, "w").write("partial")
+    raise OSError("disk full")
+
+
+T.shutil.copy2 = boom
+try:
+    T._copy(src, cdest)
+except OSError:
+    pass
+T.shutil.copy2 = real_copy2
+is_("copy failure: no temp file is left behind", os.listdir(os.path.dirname(cdest)), [])
 
 # ---- a group whose reviewer has no cwd is not given a repository; a bad meta is skipped
 NC = "66666666-ffff"

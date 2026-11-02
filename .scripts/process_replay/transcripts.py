@@ -20,11 +20,13 @@ from process_replay import common as C
 AGENT_TYPES = ("sp-reviewer", "sp-architect")
 DESCRIPTION = re.compile(r"^(Re-review|Review)\s+(.*?)\s*Task\s+(\d+)\b")
 SHA = r"([0-9a-fA-F]{7,40})"
-_PROSE = re.compile(r"\bfix\s+base\s+`?" + SHA + r"`?\s*[,;]?\s*head\s+`?" + SHA + r"`?\b", re.I)
-_DIFF = re.compile(r"\breview-" + SHA + r"\.\.\.?" + SHA + r"\.diff\b")
-_VARS = re.compile(r"\b(?:FIX_)?BASE(?:_SHA)?\s*[=:]\s*`?" + SHA + r"`?\b(?:(?!\b(?:FIX_)?BASE(?:_SHA)?\s*[=:]).){0,300}?"
-                   r"\bHEAD(?:_SHA)?\s*[=:]\s*`?" + SHA + r"`?\b", re.S)
-_HEAD = re.compile(r"\bHEAD(?:_SHA)?\s*[=:]\s*`?" + SHA + r"`?\b")
+_SEP = r"[\s*:=`]*"
+_BASE = re.compile(r"\b(?:fix[ _])?base(?:[ _]sha)?" + _SEP + SHA + r"\b", re.I)
+_HEAD = re.compile(r"\bhead(?:[ _]sha)?" + _SEP + SHA + r"\b", re.I)
+_RANGE = re.compile(r"(?<![0-9A-Za-z])" + SHA + r"\.\.\.?" + SHA + r"(?![0-9A-Za-z])")
+_COMMIT = re.compile(r"\bcommits?" + _SEP + SHA + r"\b((?:\s*(?:,|&|\band\b)\s*`?" + SHA + r"\b)*)", re.I)
+_SHA = re.compile(SHA)
+GAP = 300
 
 
 def add_args(ap):
@@ -32,30 +34,63 @@ def add_args(ap):
 
 
 # ------------------------------------------------------------------ prompt parsing
+def _scan(text):
+    """([(position, base, head)], [(position, commit)]) of a review prompt: the ranges it names and
+    every commit it names (range heads included), lower case, by position."""
+    text = text or ""
+    ranges, commits = [], []
+    heads = list(_HEAD.finditer(text))
+    bases = list(_BASE.finditer(text))
+    for i, b in enumerate(bases):
+        end = bases[i + 1].start() if i + 1 < len(bases) else len(text)
+        h = next((h for h in heads if h.start() >= b.end() and h.start() - b.end() <= GAP and h.start() < end), None)
+        if h:
+            ranges.append((b.start(), b.group(1).lower(), h.group(1).lower(), h.start(1)))
+    for m in _RANGE.finditer(text):
+        ranges.append((m.start(), m.group(1).lower(), m.group(2).lower(), m.start(2)))
+    for _pos, _base, head, hpos in ranges:
+        commits.append((hpos, head))
+    for m in heads:
+        commits.append((m.start(1), m.group(1).lower()))
+    for m in _COMMIT.finditer(text):
+        commits.append((m.start(1), m.group(1).lower()))
+        for x in _SHA.finditer(m.group(2)):
+            commits.append((m.start(2) + x.start(), x.group(1).lower()))
+    return sorted((r[0], r[1], r[2]) for r in ranges), sorted(commits)
+
+
 def parse_ranges(text):
-    """The (base, head) pairs a review prompt names: "Fix base A, head B", a diff file review-A..B.diff,
-    FIX_BASE=A ... HEAD=B, or BASE_SHA: A ... HEAD_SHA: B. Lower case, each pair once, in order of
-    appearance; SHAs of seven to forty hex digits."""
-    found = []
-    for rx in (_PROSE, _DIFF, _VARS):
-        for m in rx.finditer(text or ""):
-            found.append((m.start(), (m.group(1).lower(), m.group(2).lower())))
+    """The (base, head) pairs a review prompt names: a base label ("Fix base", "FIX_BASE", "BASE_SHA",
+    "Base", with a colon, equals sign, Markdown emphasis or backticks around it) followed by the next
+    head label ("head", "HEAD", "HEAD_SHA", "Head"), or abc1234..def5678 anywhere (also in a diff file
+    name, review-A..B.diff). Lower case, each pair once, in order of appearance; SHAs of seven to
+    forty hex digits."""
     out = []
-    for _pos, pair in sorted(found, key=lambda f: f[0]):
-        if pair not in out:
-            out.append(pair)
+    for _pos, base, head in _scan(text)[0]:
+        if (base, head) not in out:
+            out.append((base, head))
+    return out
+
+
+def reviewed_commits(prompt):
+    """Every commit the prompt names, in order of appearance, once each: range heads, a HEAD/HEAD_SHA
+    label, and "commit X", "commits X and Y". Never resolved or ordered here: which is newest is a
+    question for the repository."""
+    out = []
+    for _pos, sha in _scan(prompt)[1]:
+        if sha not in out:
+            out.append(sha)
     return out
 
 
 def reviewed_head(prompt):
-    """The head the review looked at: the last range's head, else a lone HEAD/HEAD_SHA, else None."""
+    """The head the review looked at: the last range's head, else the one commit the prompt names,
+    else None (several commits, or none: uncommitted work)."""
     ranges = parse_ranges(prompt)
     if ranges:
         return ranges[-1][1]
-    m = None
-    for m in _HEAD.finditer(prompt or ""):
-        pass
-    return m.group(1).lower() if m else None
+    commits = reviewed_commits(prompt)
+    return commits[0] if len(commits) == 1 else None
 
 
 def _work_dir(gitdir):
@@ -147,9 +182,27 @@ def _prompt(entries):
     return ""
 
 
+def _handback(entries):
+    """The message of the last SubagentHandback tool call: how a subagent delivers its report."""
+    out = ""
+    for e in entries:
+        if e.get("type") != "assistant":
+            continue
+        content = _message(e).get("content")
+        for b in content if isinstance(content, list) else []:
+            if (isinstance(b, dict) and b.get("type") == "tool_use" and isinstance(b.get("name"), str)
+                    and b["name"].split("__")[-1] == "SubagentHandback" and isinstance(b.get("input"), dict)
+                    and isinstance(b["input"].get("message"), str) and b["input"]["message"].strip()):
+                out = b["input"]["message"]
+    return out
+
+
 def _report(entries):
-    """The text of the last assistant message that has any; a message streamed over several entries
-    contributes all of them."""
+    """The report: the last SubagentHandback call's message; when there is none, the text of the last
+    assistant message that has any (a message streamed over several entries contributes all of them)."""
+    handed = _handback(entries)
+    if handed:
+        return handed
     by_id = collections.OrderedDict()
     for i, e in enumerate(entries):
         if e.get("type") != "assistant":
@@ -245,8 +298,15 @@ def _copy(src, dest):
         pass
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     tmp = dest + ".tmp{}".format(os.getpid())
-    shutil.copy2(src, tmp)
-    os.replace(tmp, dest)
+    try:
+        shutil.copy2(src, tmp)
+        os.replace(tmp, dest)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def find(projects, repos):
@@ -280,7 +340,7 @@ def find(projects, repos):
         grouped.setdefault((project, session, prefix, task), []).append({
             "agent": aid, "kind": kind, "description": meta["description"], "start": c["start"], "end": c["end"],
             "prompt": prompt, "report": _report(entries), "ranges": [list(r) for r in ranges],
-            "reviewed_head": reviewed_head(prompt), "tokens": c["tokens"], "model": _model(entries),
+            "reviewed_head": reviewed_head(prompt), "reviewed_commits": reviewed_commits(prompt), "tokens": c["tokens"], "model": _model(entries),
             "transcript": dest + ".jsonl", "_cwd": _cwd(entries)})
     groups = []
     for (project, session, prefix, task), reviews in sorted(grouped.items()):
