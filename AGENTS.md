@@ -36,7 +36,7 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
   `claude-code.md` (Claude Code only, opening with `## Claude Code only`) is appended to
   `~/.claude/CLAUDE.md` alone; `codex.md` (Codex only, opening with `## Codex only`) is
   appended to `~/.codex/AGENTS.md` alone. Edit a fragment, then `chezmoi apply`. This repo is
-  public: nothing private goes in them. `global.md` stays within 180 lines,
+  public: nothing private goes in them. `global.md` stays within 150 lines,
   `claude-code.md` within 50 and `codex.md` within 30; `tests/agent-instructions.test.sh`
   pins all three, and the renders.
 - This checkout is shared: other sessions switch branches in it, and uncommitted work

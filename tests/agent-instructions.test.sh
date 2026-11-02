@@ -106,7 +106,9 @@ grep -qF -- "$CODEX_MARKER" "$FRAG/claude-code.md" && _fail "claude-code.md hold
   || _pass "claude-code.md holds no Codex-only heading"
 
 lines=$(wc -l < "$FRAG/global.md" | tr -d ' ')
-[ "$lines" -le 180 ] && _pass "global.md is at most 180 lines ($lines)" || _fail "global.md is at most 180 lines" "$lines"
+[ "$lines" -le 150 ] && _pass "global.md is at most 150 lines ($lines)" || _fail "global.md is at most 150 lines" "$lines"
+too_wide=$(awk 'length($0) > 100 {print FILENAME ":" NR}' "$FRAG/global.md" | head -3)
+[ -z "$too_wide" ] && _pass "global.md has no line wider than 100 columns" || _fail "global.md has no line wider than 100 columns" "$too_wide"
 lines=$(wc -l < "$FRAG/claude-code.md" | tr -d ' ')
 [ "$lines" -le 50 ] && _pass "claude-code.md is at most 50 lines ($lines)" || _fail "claude-code.md is at most 50 lines" "$lines"
 lines=$(wc -l < "$FRAG/codex.md" 2>/dev/null | tr -d ' ')
@@ -146,14 +148,14 @@ need claude-code.md '`grep`/`rg` over `.`, which re-prompts in any tree that cou
   "the path-resolution rule keeps the recursive-search shape"
 need claude-code.md '`sdd-clean <workspace>`, never `rm -rf`.' \
   "claude-code.md deletes a finished plan workspace with sdd-clean"
-need global.md 'to take over about 15 minutes, give its size and ETA at the start and one line per' \
-  "global.md's Momentum rule asks for size and ETA on a long run"
-need global.md '  merged branch'"'"'s pinned delete, `git branch -d`. Harness prompts are a backstop, not the check.' \
-  "global.md exempts a merged branch's pinned delete from confirm-first"
 # Rules that must survive a rewrap are matched on the whitespace-flattened text.
 need_flat() { # need_flat <fragment> <fixed text> <label>
   if tr '\n' ' ' < "$FRAG/$1" | tr -s ' ' | grep -qF -- "$2"; then _pass "$3"; else _fail "$3" "missing: $2"; fi
 }
+need_flat global.md 'to take over about 15 minutes, give its size and ETA at the start and one line per' \
+  "global.md's Momentum rule asks for size and ETA on a long run"
+need_flat global.md "merged branch's pinned delete, \`git branch -d\`. Harness prompts are a backstop, not the check." \
+  "global.md exempts a merged branch's pinned delete from confirm-first"
 need_in() { # need_in <path under $SRC> <fixed text> <label>
   if [ ! -f "$SRC/$1" ]; then _fail "$3" "missing file: $1"
   elif tr '\n' ' ' < "$SRC/$1" | tr -s ' ' | grep -qF -- "$2"; then _pass "$3"
@@ -168,8 +170,47 @@ need_flat global.md '- **Convergence.** A loop converges when each round leaves 
 need_flat global.md 'Never add agent attribution (session links, `Claude-Session:` trailers, `Co-authored-by:` agent lines, "Generated with…" footers, naming the tool) in commits, MR/PR titles and bodies, issues or review comments.' \
   "global.md keeps the no-attribution rule in full"
 need_flat global.md 'write it only when asked' "global.md keeps the vault rule: write a note only when asked"
-need_flat global.md 'Never store secrets, credentials, customer data, raw conversations or transient working notes' \
-  "global.md keeps every never-store category for the vault"
+need_in dot_agents/skills/second-brain/SKILL.md 'secrets, credentials, customer data, raw conversations or transient working notes in the vault' \
+  "second-brain holds every never-store category for the vault"
+# The fix rule (spec 2026-11-01-instruction-layer, section 4): a reviewer can check it by revert.
+need_flat global.md 'a fix ships with a test that fails without it: revert the fix, watch the test fail, restore it.' \
+  "global.md states the fix rule as a revert check"
+if tr '\n' ' ' < "$FRAG/global.md" | tr -s ' ' | grep -qF -- 'a fix gets a test that fails first'; then
+  _fail "global.md no longer carries the old fix wording" "a fix gets a test that fails first is still present"
+else
+  _pass "global.md no longer carries the old fix wording"
+fi
+# The design-records trigger and the skill's description name the same moment (spec section 1).
+need_flat global.md '`design-records`' "global.md names the design-records skill"
+need_flat global.md 'creating, updating, completing or abandoning a spec or plan' "global.md's trigger names the moment"
+need_flat global.md 'setting its Status' "global.md's trigger names setting the Status"
+if grep -m1 '^description:' "$SRC/dot_claude/skills/design-records/SKILL.md" 2>/dev/null | grep -qF -- 'creating, updating, completing or abandoning a spec or plan'; then
+  _pass "the skill description names the same moment as the trigger"
+else
+  _fail "the skill description names the same moment as the trigger" "missing in the design-records description"
+fi
+# Rules the design-records move leaves global (spec section 2; plan calls 13 and 14).
+need_flat global.md 'never deleted, pruned or gitignored' "global.md keeps specs and plans undeletable"
+need_flat global.md 'so it is not run again' "global.md keeps the completed-plan marker"
+need_flat global.md 'both MRs before merging either, and merge the canonical one first' "global.md keeps the cross-repo merge order"
+need_flat global.md 'adds only project-specific supplements' "global.md keeps what an AGENTS.md may add"
+need_flat global.md 'never vary per repository' "global.md keeps what never varies per repository"
+need_flat global.md 'never in raw run files' "global.md keeps lessons out of raw run files"
+# The cross-review trigger stays global; the mechanics live in the skill.
+need_flat global.md 'runs at every checkpoint (spec sign-off, plan completion, pre-merge)' "global.md keeps the cross-review trigger"
+need_flat global.md 'need a new review before you report the work as done' "global.md keeps the review-after-last-commit rule"
+need_flat claude-code.md 'runs through the `cross-review` skill' "claude-code.md names the cross-review skill"
+# The forge guard's deny text cites this bullet by its label.
+need_flat global.md '- **Merge requests.** Load the `merge-request` skill before opening an MR or PR.' \
+  "global.md keeps the Merge requests pointer the forge guard cites"
+# Codex-only text moved to codex.md.
+for gone in "**Skills don't change roles.**" "On Codex's side"; do
+  if tr '\n' ' ' < "$FRAG/global.md" | tr -s ' ' | grep -qF -- "$gone"; then
+    _fail "global.md no longer carries: $gone" "still present"
+  else
+    _pass "global.md no longer carries: $gone"
+  fi
+done
 # The Codex charter (spec 2026-11-01-instruction-layer, section 3): codex.md alone carries it.
 need_flat codex.md 'never implement, commit, branch, push, open merge requests or write design records unless Michael asks' \
   "codex.md keeps Codex a reviewer unless Michael asks"
