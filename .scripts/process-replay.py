@@ -55,9 +55,12 @@ def usage():
 
 
 def main(argv):
-    if not argv or argv[0] in ("-h", "--help"):
-        sys.stdout.write(__doc__ if argv else usage())
-        return 0 if argv else 2
+    if not argv:
+        sys.stderr.write(usage())
+        return 2
+    if argv[0] in ("-h", "--help"):
+        sys.stdout.write(__doc__)
+        return 0
     command = argv[0]
     if command not in COMMANDS:
         sys.stderr.write("process-replay: unknown command {!r}\n{}".format(command, usage()))

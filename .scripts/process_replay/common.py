@@ -219,10 +219,41 @@ def _inputs(state, kind):
     return [n[:-5] for n in names if n.endswith(".json") and not n.endswith(".answer.json")]
 
 
-def pending(state):
-    """[(kind, id, input path, answer path, brief path)] of everything waiting for an agent: judge
-    inputs without an answer, final reviews (final/<id>/brief.md) without answer.md, and
-    recreations (recreate/<id>.json) without recreate/<id>/done."""
+def alias(state):
+    """A neutral name for the state directory: a symlink $XDG_STATE_HOME/review-work/<8 hex> to it,
+    recorded in <state>/alias. Every path a judge, a final reviewer or a Codex turn is handed goes
+    through it, so the state directory's own name (process-replay) never reaches them. It is made
+    once, reused on later calls, and made again at its recorded path when the symlink is gone."""
+    state = os.path.abspath(state)
+    record = os.path.join(state, "alias")
+    try:
+        with open(record) as f:
+            link = f.read().strip()
+    except OSError:
+        link = ""
+    if link and os.path.islink(link) and os.path.realpath(link) == os.path.realpath(state):
+        return link
+    if not link or (os.path.lexists(link) and not os.path.islink(link)):
+        base = os.path.join(L.state_home(), "review-work")
+        os.makedirs(base, exist_ok=True)
+        link = os.path.join(base, label(set(os.listdir(base))))
+    elif os.path.islink(link):
+        os.unlink(link)
+    os.makedirs(os.path.dirname(link), exist_ok=True)
+    os.symlink(state, link)
+    jsave(record, link + "\n")
+    return link
+
+
+def aliased(state, path):
+    """`path`, which lies under `state`, as the same path under the state's alias."""
+    state, path = os.path.abspath(state), os.path.abspath(path)
+    if path != state and not path.startswith(state + os.sep):
+        raise Failed("{} is not under {}".format(path, state))
+    return alias(state) + path[len(state):]
+
+
+def _pending(state):
     out = []
     for kind in JUDGE_KINDS:
         for jid in _inputs(state, kind):
@@ -243,6 +274,14 @@ def pending(state):
     return out
 
 
+def pending(state):
+    """[(kind, id, input path, answer path, brief path)] of everything waiting for an agent: judge
+    inputs without an answer, final reviews (final/<id>/brief.md) without answer.md, and
+    recreations (recreate/<id>.json) without recreate/<id>/done. The brief path is the one to hand
+    out, under the state's alias; the others are the harness's own."""
+    return [item[:4] + (aliased(state, item[4]),) for item in _pending(state)]
+
+
 def write_briefs(state):
     """<state>/judges/<kind>.md for every kind."""
     for kind in JUDGE_KINDS:
@@ -251,34 +290,36 @@ def write_briefs(state):
 
 def brief_for(state, kind, jid):
     """The brief of one pending item. A judge's is <kind>/<id>.brief.md: the kind's brief, then
-    `Input: <input path>` and `Write your answer to: <answer path>`, and nothing else. A final
-    review and a recreation are their own briefs; nothing is written for them."""
-    for item in pending(state):
+    `Input: <input path>` and `Write your answer to: <answer path>`, and nothing else, both under
+    the state's alias. A final review and a recreation are their own briefs; nothing is written for
+    them. Returns the brief's path under the alias."""
+    for item in _pending(state):
         if item[0] == kind and item[1] == jid:
-            return _write_brief(state, item)
+            _write_brief(state, item)
+            return aliased(state, item[4])
     raise Failed("nothing pending for {} {}".format(kind, jid))
 
 
 def _write_brief(state, item):
     kind, _jid, inp, ans, brief = item
     if kind not in JUDGE_KINDS:
-        return brief
+        return
     kind_brief = os.path.join(state, "judges", kind + ".md")
     if not os.path.isfile(kind_brief):
         write_briefs(state)
     with open(kind_brief, encoding="utf-8") as f:
         text = f.read()
-    jsave(brief, text.rstrip("\n") + "\n\nInput: {}\nWrite your answer to: {}\n".format(inp, ans))
-    return brief
+    jsave(brief, text.rstrip("\n") + "\n\nInput: {}\nWrite your answer to: {}\n".format(aliased(state, inp), aliased(state, ans)))
 
 
 def cmd_pending(a):
     """Print one line per pending judge, final review and recreation: kind, id, brief. The briefs
     of the judges are written first."""
     write_briefs(a.state)
-    items = pending(a.state)
+    items = _pending(a.state)
     for item in items:
-        say("{}\t{}\t{}".format(item[0], item[1], _write_brief(a.state, item)))
+        _write_brief(a.state, item)
+        say("{}\t{}\t{}".format(item[0], item[1], aliased(a.state, item[4])))
     if not items:
         say("nothing pending")
     return 0

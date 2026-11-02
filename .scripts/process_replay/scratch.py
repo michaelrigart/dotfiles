@@ -22,7 +22,7 @@ HOUR = 3600
 # repository's commits and trees are the same.
 NEUTRAL = ["-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "core.autocrlf=false",
            "-c", "core.safecrlf=false", "-c", "core.attributesFile=/dev/null", "-c", "core.fsmonitor=false",
-           "-c", "gc.auto=0"]
+           "-c", "gc.auto=0", "-c", "core.logAllRefUpdates=false"]
 
 
 @contextlib.contextmanager
@@ -123,15 +123,16 @@ def _pack(view, objects, base, cache):
     return path, tmpdir
 
 
-def build(objects, base, files_dir, out, dest, branch, dest_ref=None, expect_tree=None, cache=None):
+def build(objects, base, files_dir, out, dest, branch, dest_ref=None, *, expect_tree, cache=None):
     """Build the scratch repository `out` and return its tip.
 
     `out` gets the objects reachable from `base` (from the object store `objects`), refs/heads/<dest>
     at base (omitted when branch is dest), refs/remotes/<dest_ref> at base when dest_ref names a remote
     branch (origin/main), HEAD on refs/heads/<branch>, and one commit above base holding exactly the
     files of `files_dir` (ignored ones included), by a fixed identity an hour after base's date.
-    `expect_tree`, the tree id of the commit `files_dir` was exported from, is checked before the
-    commit: a different tree raises Failed. `cache`, a directory, keeps the pack per (objects, base)."""
+    `expect_tree` (required), the tree id of the commit `files_dir` was exported from, is checked
+    before the commit: a different tree, or none, raises Failed. No reflog is kept: it would carry
+    the operator's identity and the build time. `cache`, a directory, keeps the pack per (objects, base)."""
     if os.path.isdir(out) and os.listdir(out):
         raise Failed("{} is not empty".format(out))
     os.makedirs(out, exist_ok=True)
@@ -168,13 +169,14 @@ def build(objects, base, files_dir, out, dest, branch, dest_ref=None, expect_tre
             shutil.copy2(src, dst, follow_symlinks=False)
     g("add", "-A", "-f", "--", ".")
     staged = g("write-tree")
-    if expect_tree is not None and staged != expect_tree:
+    if not isinstance(expect_tree, str) or staged != expect_tree:
         raise Failed("the scratch tree {} is not the exported commit's tree {}".format(staged, expect_tree))
     when = int(g("log", "-1", "--format=%ct", tip)) + HOUR
     stamp = "{} +0000".format(when)
     env = dict(IDENTITY, GIT_AUTHOR_DATE=stamp, GIT_COMMITTER_DATE=stamp)
     g("commit", "-q", "--allow-empty", "--no-verify", "-m", MESSAGE, env=env)
     g("fsck", "--connectivity-only")
+    shutil.rmtree(os.path.join(out, ".git", "logs"), ignore_errors=True)
     return g("rev-parse", "HEAD")
 
 

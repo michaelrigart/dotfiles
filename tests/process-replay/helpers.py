@@ -29,6 +29,9 @@ def setup():
         os.environ["GIT_CONFIG_GLOBAL"] = cfg
         os.environ["GIT_CONFIG_NOSYSTEM"] = "1"
         os.environ["GIT_CEILING_DIRECTORIES"] = base
+        for var, sub in (("HOME", "home"), ("XDG_STATE_HOME", "state"), ("CODEX_HOME", "codex")):
+            os.makedirs(os.path.join(base, sub), exist_ok=True)
+            os.environ[var] = os.path.join(base, sub)
     if SCRIPTS not in sys.path:
         sys.path.insert(0, SCRIPTS)
 

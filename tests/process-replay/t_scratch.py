@@ -7,10 +7,18 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import helpers
 from helpers import git, git_ok, is_, ok, put
 
+ROOT = helpers.tmp_root()
+# A distinctive operator identity, so any trace of it in a scratch repository shows.
+OPERATOR = "Operator Zed"
+OPERATOR_MAIL = "operator.zed@host.example"
+with open(os.path.join(ROOT, "operator.gitconfig"), "w") as f:
+    f.write("[user]\n\tname = {}\n\temail = {}\n[commit]\n\tgpgsign = false\n[init]\n\tdefaultBranch = main\n".format(OPERATOR, OPERATOR_MAIL))
+os.environ["GIT_CONFIG_GLOBAL"] = os.path.join(ROOT, "operator.gitconfig")
+os.environ["GIT_CONFIG_NOSYSTEM"] = "1"
+os.environ["GIT_CEILING_DIRECTORIES"] = ROOT
 helpers.setup()
 from process_replay import common, scratch  # noqa: E402
 
-ROOT = helpers.tmp_root()
 SRC = helpers.make_repo(ROOT, "src")
 put(SRC, "base.txt", "base\n")
 put(SRC, "lib.py", "def f(x):\n    return x + 2\n")
@@ -56,6 +64,22 @@ ok("scratch_hides_later_fix: no reachable blob holds the fix", blobs_with(OUT, "
 ok("scratch_hides_later_fix: control: the source repository does", blobs_with(SRC, "FIXED") != [])
 ok("scratch_hides_later_fix: no alternates", not os.path.exists(os.path.join(OUT, ".git", "objects", "info", "alternates")))
 is_("scratch_hides_later_fix: no remote", git(OUT, "remote"), "")
+
+
+def object_ids(repo):
+    stored = set(git(repo, "cat-file", "--batch-all-objects", "--batch-check=%(objectname)").split())
+    reachable = set(l.split()[0] for l in git(repo, "rev-list", "--objects", "--all").splitlines())
+    return stored, reachable
+
+
+stored, reachable = object_ids(OUT)
+ok("scratch_hides_later_fix: the whole object store is the base history plus the tip, nothing unreachable", stored == reachable,
+   sorted(stored ^ reachable)[:5])
+ctl_out = os.path.join(ROOT, "ctl-out")
+shutil.copytree(OUT, ctl_out, symlinks=True)
+subprocess.run(["git", "-C", ctl_out, "hash-object", "-w", "--stdin"], input=b"FIXED\n", capture_output=True)
+stored2, reachable2 = object_ids(ctl_out)
+ok("scratch_hides_later_fix: control: a loose unreachable blob holding the fix fails the same check", stored2 != reachable2)
 # the control that makes the checks above mean something: a clone borrowing the source's objects reaches the fix
 borrowed = os.path.join(ROOT, "borrowed")
 git(ROOT, "init", "-q", borrowed)
@@ -93,6 +117,19 @@ base_ct = int(git(OUT, "log", "-1", "--format=%ct", B))
 is_("scratch_commit_neutral: dated an hour after the base", (int(git(OUT, "log", "-1", "--format=%ct", TIP)),
                                                               int(git(OUT, "log", "-1", "--format=%at", TIP))), (base_ct + 3600, base_ct + 3600))
 
+ok("scratch_commit_neutral: no reflog", not os.path.exists(os.path.join(OUT, ".git", "logs")))
+leaks = []
+for d, dirs, files in os.walk(os.path.join(OUT, ".git")):
+    if os.path.basename(d) == "objects" and os.path.dirname(d) == os.path.join(OUT, ".git"):
+        dirs[:] = []
+        continue
+    for name in files:
+        data = open(os.path.join(d, name), "rb").read()
+        if OPERATOR.encode() in data or OPERATOR_MAIL.encode() in data:
+            leaks.append(os.path.join(d, name))
+is_("scratch_commit_neutral: nothing outside the object store names the operator", leaks, [])
+ok("scratch_commit_neutral: control: the source repository's reflog does", OPERATOR in open(os.path.join(SRC, ".git", "logs", "HEAD")).read())
+
 # ---- scratch_tree_identity
 tsrc = helpers.make_repo(ROOT, "tsrc")
 put(tsrc, "keep.txt", "keep\n")
@@ -125,6 +162,18 @@ try:
 except common.Failed:
     raised = True
 ok("scratch_tree_identity: a wrong expect_tree raises Failed", raised)
+try:
+    scratch.build(tobjects, tb, tfiles, os.path.join(ROOT, "tout3"), "main", "work", expect_tree=None)
+    raised = False
+except common.Failed:
+    raised = True
+ok("scratch_tree_identity: expect_tree=None raises Failed", raised)
+try:
+    scratch.build(tobjects, tb, tfiles, os.path.join(ROOT, "tout4"), "main", "work")
+    raised = False
+except TypeError:
+    raised = True
+ok("scratch_tree_identity: expect_tree is required", raised)
 
 # ---- scratch_pack_cache
 cache = os.path.join(ROOT, "cache")

@@ -18,12 +18,14 @@ shopt -s nullglob
 suites=("$SRC"/tests/process-replay/t_*.py)
 [ "${#suites[@]}" -gt 0 ] || { echo "no tests/process-replay/t_*.py" >&2; exit 2; }
 
-ROOT="$(mktemp -d "${TMPDIR:-/tmp}/procreplay.XXXXXX")"
+ROOT="$(mktemp -d "${TMPDIR:-/tmp}/prt.XXXXXX")"
 trap 'rm -rf "$ROOT"' EXIT
 export GIT_CONFIG_GLOBAL="$ROOT/gitconfig" GIT_CONFIG_NOSYSTEM=1 GIT_CEILING_DIRECTORIES="$ROOT"
 printf '[user]\n\tname = t\n\temail = t@t\n[commit]\n\tgpgsign = false\n[init]\n\tdefaultBranch = main\n' \
   > "$GIT_CONFIG_GLOBAL"
-export T_ROOT="$ROOT"
+mkdir -p "$ROOT/home" "$ROOT/state" "$ROOT/codex"
+# A backstop: no t_*.py can reach the real ~/.local/state, ~/.codex or home directory by default.
+export T_ROOT="$ROOT" HOME="$ROOT/home" XDG_STATE_HOME="$ROOT/state" CODEX_HOME="$ROOT/codex"
 
 pass=0 fail=0
 for t in "${suites[@]}"; do

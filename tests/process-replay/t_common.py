@@ -65,7 +65,7 @@ is_("pending_lists_unanswered: both unanswered", sorted(p[1] for p in C.pending(
 jfile(os.path.join(state, "judge-present", "a1.answer.json"), {"answer": "yes"})
 is_("pending_lists_unanswered: an answer takes its input off the list",
     C.pending(state), [("judge-present", "b2", b, os.path.join(state, "judge-present", "b2.answer.json"),
-                        os.path.join(state, "judge-present", "b2.brief.md"))])
+                        C.aliased(state, os.path.join(state, "judge-present", "b2.brief.md")))])
 is_("judge_answer: the parsed answer, or None", (C.judge_answer(state, "judge-present", "a1"), C.judge_answer(state, "judge-present", "b2")),
     ({"answer": "yes"}, None))
 put(state, "final/f1/brief.md", "review the branch\n")
@@ -76,11 +76,12 @@ os.makedirs(os.path.join(state, "recreate", "r1"))
 jfile(os.path.join(state, "recreate", "r2.json"), {"finding": "y"})
 put(state, "recreate/r2/done", "")
 got = C.pending(state)
-want = [("judge-present", "b2", b, os.path.join(state, "judge-present", "b2.answer.json"), os.path.join(state, "judge-present", "b2.brief.md")),
+want = [("judge-present", "b2", b, os.path.join(state, "judge-present", "b2.answer.json"),
+         C.aliased(state, os.path.join(state, "judge-present", "b2.brief.md"))),
         ("final", "f1", os.path.join(state, "final", "f1", "brief.md"), os.path.join(state, "final", "f1", "answer.md"),
-         os.path.join(state, "final", "f1", "brief.md")),
+         C.aliased(state, os.path.join(state, "final", "f1", "brief.md"))),
         ("recreate", "r1", os.path.join(state, "recreate", "r1.json"), os.path.join(state, "recreate", "r1", "done"),
-         os.path.join(state, "recreate", "r1.json"))]
+         C.aliased(state, os.path.join(state, "recreate", "r1.json")))]
 is_("pending_lists_unanswered: final reviews without answer.md and recreations without done are listed too", got, want)
 is_("pending_lists_unanswered: an empty state has nothing", C.pending(os.path.join(ROOT, "nowhere")), [])
 
@@ -94,17 +95,19 @@ texts = {}
 for kind, jid, inp, ans, brief in C.pending(state):
     is_("per_input_briefs: brief_for returns the path pending() names", C.brief_for(state, kind, jid), brief)
     texts[jid] = open(brief).read()
-    ok("per_input_briefs: {} lives beside its input".format(jid), brief == os.path.join(state, "judge-present", jid + ".brief.md"), brief)
-    tail = "Input: {}\nWrite your answer to: {}\n".format(inp, ans)
+    ok("per_input_briefs: {} lives beside its input, under the alias".format(jid),
+       brief == C.aliased(state, os.path.join(state, "judge-present", jid + ".brief.md")) and os.path.samefile(brief, os.path.join(state, "judge-present", jid + ".brief.md")), brief)
+    tail = "Input: {}\nWrite your answer to: {}\n".format(C.aliased(state, inp), C.aliased(state, ans))
     ok("per_input_briefs: {} is the kind's brief, then exactly the two path lines".format(jid),
        texts[jid].startswith(kind_brief) and texts[jid].endswith(tail) and texts[jid][len(kind_brief):-len(tail)].strip() == "", texts[jid][-300:])
-ok("per_input_briefs: each names its own input and answer", x in texts["i-one"] and C.pending(state)[0][3] in texts["i-one"]
-   and y in texts["i-two"] and C.pending(state)[1][3] in texts["i-two"])
-ok("per_input_briefs: and not the other's", y not in texts["i-one"] and "i-two" not in texts["i-one"]
-   and x not in texts["i-two"] and "i-one" not in texts["i-two"])
+ok("per_input_briefs: each names its own input and answer (by alias)", C.aliased(state, x) in texts["i-one"] and C.aliased(state, C.pending(state)[0][3]) in texts["i-one"]
+   and C.aliased(state, y) in texts["i-two"] and C.aliased(state, C.pending(state)[1][3]) in texts["i-two"])
+ok("per_input_briefs: and not the other's", C.aliased(state, y) not in texts["i-one"] and "i-two" not in texts["i-one"]
+   and C.aliased(state, x) not in texts["i-two"] and "i-one" not in texts["i-two"])
+ok("per_input_briefs: and never the real state path", state not in texts["i-one"] and state not in texts["i-two"])
 ok("per_input_briefs: a brief is not an input", [p[1] for p in C.pending(state)] == ["i-one", "i-two"])
 ok("per_input_briefs: a final review is its own brief; nothing is written for it", C.brief_for(os.path.join(ROOT, "st2"), "final", "f1")
-   == os.path.join(ROOT, "st2", "final", "f1", "brief.md"))
+   == C.aliased(os.path.join(ROOT, "st2"), os.path.join(ROOT, "st2", "final", "f1", "brief.md")))
 
 forbidden = re.compile(r"replay|inject|removal|per-task|\barm\b|\brun\b", re.I)
 missing = [k for k in KINDS if not os.path.isfile(os.path.join(state, "judges", k + ".md"))]
@@ -127,7 +130,45 @@ before = open(os.path.join(state, "judges", "judge-task.md")).read()
 C.write_briefs(state)
 is_("briefs_neutral: writing the briefs again changes nothing", open(os.path.join(state, "judges", "judge-task.md")).read(), before)
 
+# ---- briefs_neutral, on the default state layout: nothing handed to a judge says replay
+state = C.state_default()
+ok("briefs_neutral: control: the real state path does say replay", "replay" in state, state)
+for k in KINDS:
+    C.judge_write(state, k, "n-" + k, {"finding": 1})
+put(state, "final/nf/brief.md", "review\n")
+jfile(os.path.join(state, "recreate", "nr.json"), {"finding": "x"})
+C.write_briefs(state)
+seen = []
+for kind, jid, inp, ans, brief in C.pending(state):
+    C.brief_for(state, kind, jid)
+    text = open(brief).read()
+    seen.append(kind)
+    ok("briefs_neutral: {} {} and its path say nothing of replay, inject, removal, per-task, arm or run".format(kind, jid),
+       not forbidden.search(text) and "replay" not in brief and "process-replay" not in text, text[-200:])
+is_("briefs_neutral: every kind's per-input brief was scanned", sorted(seen), sorted(KINDS + ("final", "recreate")))
+
+# ---- the alias
+link = C.alias(state)
+al_base = os.path.join(os.environ["XDG_STATE_HOME"], "review-work")
+ok("alias: a symlink $XDG_STATE_HOME/review-work/<8 hex> to the state", os.path.islink(link) and os.path.dirname(link) == al_base
+   and re.fullmatch(r"[0-9a-f]{8}", os.path.basename(link)) and os.path.realpath(link) == os.path.realpath(state), link)
+is_("alias: recorded in <state>/alias", open(os.path.join(state, "alias")).read().strip(), link)
+is_("alias: stable across calls", (C.alias(state), C.alias(state)), (link, link))
+is_("aliased: a path under the state, as the same path under the alias", C.aliased(state, os.path.join(state, "judge-task", "n-judge-task.json")),
+    os.path.join(link, "judge-task", "n-judge-task.json"))
+ok("aliased: a path outside the state is refused", raises(C.aliased, state, os.path.join(ROOT, "elsewhere")))
+jfile(os.path.join(link, "judge-task", "n-judge-task.answer.json"), {"findings": []})
+is_("alias: an answer written through the aliased path is read by judge_answer", C.judge_answer(state, "judge-task", "n-judge-task"), {"findings": []})
+os.unlink(link)
+is_("alias: recreated at its recorded path when the symlink is gone", (C.alias(state), os.path.islink(link), os.path.realpath(link) == os.path.realpath(state)),
+    (link, True, True))
+other = os.path.join(ROOT, "st-other")
+os.makedirs(other)
+lo = C.alias(other)
+ok("alias: another state gets its own", lo != link and os.path.realpath(lo) == os.path.realpath(other), lo)
+
 # ---- cmd_pending
+state = os.path.join(ROOT, "st3")
 import io  # noqa: E402
 import contextlib  # noqa: E402
 
@@ -144,7 +185,7 @@ with contextlib.redirect_stdout(buf):
     rc = C.cmd_pending(a_)
 lines = buf.getvalue().splitlines()
 ok("cmd_pending: one line per pending item, with its brief", rc == 0 and len(lines) == 2 and "judge-present" in lines[0]
-   and "i-one" in lines[0] and lines[0].rstrip().endswith(os.path.join(state, "judge-present", "i-one.brief.md")), lines)
+   and "i-one" in lines[0] and lines[0].rstrip().endswith(C.aliased(state, os.path.join(state, "judge-present", "i-one.brief.md"))), lines)
 ok("cmd_pending: and the briefs exist", all(os.path.isfile(os.path.join(state, "judge-present", i + ".brief.md")) for i in ("i-one", "i-two")))
 
 # ---- view_reads_snapshot_only_objects
@@ -338,3 +379,5 @@ is_("stub_codex: with no CODEX_HOME a daemon command fails", codex_run("app-serv
 is_("stub_codex: an unknown command exits 2", codex_run("exec").returncode, 2)
 log = helpers.read_log(os.path.join(ROOT, "fakecodex", "codex.log"))
 is_("stub_codex: argv and CODEX_HOME are logged", (log[0], len(log)), ({"argv": ["app-server", "daemon", "start"], "codex_home": chm}, 5))
+p = cli()
+ok("cli: no command prints the usage to stderr and exits 2", p.returncode == 2 and p.stdout == b"" and b"usage:" in p.stderr, (p.stdout, p.stderr))
