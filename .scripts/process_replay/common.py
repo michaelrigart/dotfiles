@@ -384,7 +384,7 @@ def _write_if_changed(path, data):
 
 def _pending(state):
     """[(kind, id, input path, answer path, brief path)], the harness's own paths (the state's), of everything unanswered, except a
-    question its kind's needed.json marks as no longer needed."""
+    question or a recreation its kind's needed.json marks as no longer needed."""
     out = []
     for kind in JUDGE_KINDS:
         obsolete = _not_needed(state, kind)
@@ -402,7 +402,10 @@ def _pending(state):
         if os.path.isfile(brief) and not os.path.exists(os.path.join(fdir, jid, "answer.md")) \
                 and not (staged and os.path.exists(os.path.join(staged, "answer.md"))):
             out.append(("final", jid, brief, os.path.join(fdir, jid, "answer.md"), brief))
+    obsolete = _not_needed(state, "recreate")
     for jid in _inputs(state, "recreate"):
+        if jid in obsolete:
+            continue
         spec = os.path.join(state, "recreate", jid + ".json")
         done = os.path.join(state, "recreate", jid, "done")
         brief = os.path.join(state, "recreate", jid + ".brief.md")

@@ -95,6 +95,11 @@ is_("needed: a question its writer owns and no longer needs is not pending; one 
 ok("needed: the manifest itself is not an input", "needed" not in [p[1] for p in C.pending(state)])
 jfile(os.path.join(state, "judge-present", "needed.json"), {"owned": ["dold-0", "dnow-1"], "needed": ["dold-0", "dnow-1"]})
 is_("needed: needed again, it is pending again", sorted(p[1] for p in C.pending(state) if p[0] == "judge-present"), ["dnow-1", "dold-0", "other-1-d"])
+for rid in ("rold", "rnow"):
+    jfile(os.path.join(state, "recreate", rid + ".json"), {"finding": rid})
+jfile(os.path.join(state, "recreate", "needed.json"), {"owned": ["rold", "rnow"], "needed": ["rnow"]})
+is_("needed: recreations too: one its writer no longer needs is not pending, and the manifest is not a recreation",
+    sorted(p[1] for p in C.pending(state) if p[0] == "recreate"), ["rnow"])
 
 # ---- staged items: one real directory per item, outside the state, holding only that item's files
 state = os.path.join(ROOT, "st-staged")

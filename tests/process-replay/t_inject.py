@@ -756,24 +756,48 @@ is_("adjacent: and one location for the group", r["defects"]["d00000081"]["hunks
 is_("adjacent: the branch is not disqualified for it", (len(cases(S24)["cases"]), cases(S24)["coverage"]), (1, {"unassessable_task": []}))
 INJ.check_invariant(rec_branch("badj00001", RJ, "feat", BJ, JQ, TJ), r["work"], r["final_commit"], r["work_commit"], [("d00000081", pa)])
 
-# the later fix not found: the two are one group, reverted while the older is present; the later one leaves and gets its recreation
+# the later fix not found: the two are one group, reverted while the older is present; the later one leaves, and since its group's revert
+# stays in the tree (its own lines with it), a recreation made against the final tree could not apply: none is asked for
 S24b = setup_state("w-adjacent-no", [rec_branch("badj00001", RJ, "feat", BJ, JQ, TJ)], {"badj00001": [DJP, DJQ]})
 run(S24b)
 say(S24b, "d00000081", "yes")
 say(S24b, "d00000082", "no")
 run(S24b)
 r = inj(S24b, "badj00001")
-is_("adjacent: a member the judge does not find leaves; the group stays reverted while another member is in, and the one that left gets its recreation",
-    (r["defects"]["d00000081"]["status"], r["defects"]["d00000082"]["status"], r["defects"]["d00000081"]["group"] == r["defects"]["d00000082"]["group"],
-     "Q bad" in show(r["work"], r["work_commit"], "a.txt"), inputs(S24b, "recreate")), ("present", "not-present", True, True, ["d00000082"]))
-put(os.path.join(S24b, "recreate", "d00000082", "tree"), "a.txt", "something else\n")
-put(os.path.join(S24b, "recreate", "d00000082"), "done", "")
-run(S24b)
-say(S24b, "d00000082", "no", "judge-same")
-run(S24b)
-r = inj(S24b, "badj00001")
-is_("coverage_gate: unrecreated, it is unassessable and listed; the other is present",
-    (r["defects"]["d00000081"]["status"], r["defects"]["d00000082"]["status"], cases(S24b)["coverage"]), ("present", "unassessable", {"unassessable_task": ["d00000082"]}))
+is_("adjacent: a member the judge does not find leaves; the group stays reverted while another member is in, with the leaver's lines",
+    (r["defects"]["d00000081"]["status"], r["defects"]["d00000081"]["group"] == r["defects"]["d00000082"]["group"], "Q bad" in show(r["work"], r["work_commit"], "a.txt")),
+    ("present", True, True))
+is_("coverage_gate: no recreation is asked of a defect whose group's revert stays in the tree; it is unassessable, says why, and is listed",
+    (inputs(S24b, "recreate"), r["complete"], r["defects"]["d00000082"]["status"], "its group's revert stays in the tree" in r["defects"]["d00000082"]["reason"],
+     cases(S24b)["coverage"]), ([], True, "unassessable", True, {"unassessable_task": ["d00000082"]}))
+
+# when the group's revert leaves the tree after all (the other member leaves too), the held defect gets its recreation then
+RJ3 = helpers.make_repo(ROOT, "adjthree")
+BJ3 = cm(RJ3, "2026-09-20T10:00:00Z", {"README.md": "r\n"}, "base")
+git(RJ3, "checkout", "-q", "-b", "feat")
+AL3 = ["l{}".format(i) for i in range(1, 31)]
+AL3[4], AL3[6], AL3[24] = "P bad", "Q bad", "R bad"
+TJ3 = cm(RJ3, "2026-10-01T09:00:00Z", {"a.txt": SS(AL3), PLAN: "plan\n"}, "task 1")
+AL3[4] = "P good"
+JP3 = cm(RJ3, "2026-10-01T10:00:00Z", {"a.txt": SS(AL3)}, "fix P")
+AL3[6] = "Q good"
+JQ3 = cm(RJ3, "2026-10-01T11:00:00Z", {"a.txt": SS(AL3)}, "fix Q")
+AL3[24] = "R good"
+JR3 = cm(RJ3, "2026-10-01T12:00:00Z", {"a.txt": SS(AL3)}, "fix R")
+git(RJ3, "checkout", "-q", "main")
+S24c = setup_state("w-adjacent-later", [rec_branch("badj00003", RJ3, "feat", BJ3, JR3, TJ3)],
+                   {"badj00003": [dfx("d00000083", "task", "P1", [(TJ3, JP3)], "a.txt"), dfx("d00000084", "task", "P2", [(JP3, JQ3)], "a.txt"),
+                                  dfx("d00000085", "pre", "P2", [(JQ3, JR3)], "a.txt")]})
+run(S24c)
+say(S24c, "d00000083", "yes")
+say(S24c, "d00000084", "no")
+say(S24c, "d00000085", "no")
+run(S24c)
+ok("held: while P keeps the group reverted, Q (out) gets no recreation; P is asked again on the tree without R's revert",
+   inputs(S24c, "recreate") == [] and [of(n) for n in unanswered(S24c, "judge-present")] == ["d00000083"], (inputs(S24c, "recreate"), unanswered(S24c, "judge-present")))
+say(S24c, "d00000083", "no")
+run(S24c)
+is_("held: once P leaves too and the group's revert is out of the tree, both get their recreation", inputs(S24c, "recreate"), ["d00000083", "d00000084"])
 
 # ================================================================ a missing cargo is recorded, not silent
 EMPTY = os.path.join(ROOT, "nobin")
@@ -1336,7 +1360,9 @@ r = inj(S37, "bcargo001")
 is_("build_check: a cargo failure on the tree a recreation joins undoes the recreation, newest first, and keeps the reverts",
     (sorted((k, v["status"]) for k, v in r["defects"].items()), r["defects"]["d00000034"]["reason"].startswith("cargo check failed"), r["build_check"]),
     ([("d00000031", "present"), ("d00000032", "present"), ("d00000033", "present"), ("d00000034", "unassessable")], True, "passed after undoing 1 step(s)"))
-is_("build_check: two trees, two cargo checks, over every run", len(open(LOG + "3").read().split()), 2)
+trees = open(LOG + "3").read().split()
+is_("build_check: two trees; the one that passed is checked once over every run, the one that failed again in each run that builds it",
+    (len(set(trees)), trees.count(trees[0])), (2, 1))
 
 # a repair that stops applying while recreations are on trial is theirs to answer for (a unit test: no fixture reaches it)
 FX = INJ.Fixpoint(Namespace(state=ROOT), {"id": "bunit0001"}, None, None, None,
@@ -1368,3 +1394,31 @@ say(S53, "d0000000f", "yes")
 run(S53)
 is_("needed: answered, nothing of inject's is needed: only the other module's question and the recreation are handed out",
     sorted((p[0], p[1]) for p in C.pending(S53)), [("judge-present", OTHER), ("recreate", "d0000000e")])
+
+
+# ================================================================ a cargo failure is checked again by the next run: it may be the environment
+put(STUB, "cargo", "#!/bin/sh\ngit write-tree >> {0}\nif [ -e {1} ]; then echo 'error: no matching package (offline)' >&2; exit 101; fi\nexit 0\n".format(
+    LOG + "4", os.path.join(ROOT, "crate-missing")))
+put(ROOT, "crate-missing", "")
+S38 = setup_state("w-cargo-env", [CG], {"bcargo001": DG})
+os.environ["PATH"] = STUB + os.pathsep + old_path
+try:
+    run(S38)
+    r = inj(S38, "bcargo001")
+    first = (sorted(v["status"] for v in r["defects"].values()), [c["passed"] for c in r["cargo_checks"]], r["cargo_passed"])
+    asked = sorted(p[1] for p in C.pending(S38) if p[0] == "recreate")
+    os.unlink(os.path.join(ROOT, "crate-missing"))
+    run(S38)
+    r = inj(S38, "bcargo001")
+    second = (sorted(v["status"] for v in r["defects"].values()), [c["passed"] for c in r["cargo_checks"]], r["build_check"])
+    dropped = (sorted(p[1] for p in C.pending(S38) if p[0] == "recreate"), C.jload(os.path.join(S38, "recreate", "needed.json")))
+    run(S38)
+    third = inj(S38, "bcargo001")["cargo_checks"]
+finally:
+    os.environ["PATH"] = old_path
+is_("cargo: a check that fails for want of a crate undoes every revert in that run, each attempt recorded, nothing remembered",
+    first, (["incoherent"] * 3, [False] * 4, []))
+is_("cargo: the next run checks the first tree again; it passes now, so every revert stays", second, (["reverted"] * 3, [True], "passed"))
+is_("needed: the recreations the first run asked for, on a trajectory the next run no longer takes, are no longer handed out",
+    (asked, dropped), (["d00000031", "d00000032", "d00000033"], ([], {"owned": ["d00000031", "d00000032", "d00000033"], "needed": []})))
+is_("cargo: and a pass is remembered: a third run checks nothing", (third, len(open(LOG + "4").read().split())), ([], 5))

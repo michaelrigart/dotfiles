@@ -14,9 +14,10 @@ The fixpoint. A counted defect is in the tree by its revert (its group reverted)
   build    the tree of the active set, from F (the final tip's tree, commit `final_commit` of <state>/work/<branch>): each group with a
            member in by revert, reverted with `git apply -R --index`, latest fix first (topo position, else committer date), tests
            included, and checked (checks.py: syntax and dangling names; a group that does not revert, or fails, is left out); then
-           each recreation, those on trial last (one that does not apply is left out); then `cargo check` for a Rust repository, once
-           per tree id, remembered across runs (on failure the newest step is left out: a trial, a recreation, then the latest
-           fix's revert; a timeout is recorded and leaves nothing out); then docs/superpowers pinned to the plan commit.
+           each recreation, those on trial last (one that does not apply is left out); then `cargo check` for a Rust repository (a
+           pass is remembered per tree id across runs, a failure or a timeout only within the run, so the next run checks again; on
+           failure the newest step is left out: a trial, a recreation, then the latest fix's revert; a timeout is recorded and
+           leaves nothing out); then docs/superpowers pinned to the plan commit.
   locate   every member's repair (its group's patch, or the reverse of its recreation) is applied to that tree on a temporary index
            (patches.locate). A group whose repair does not apply is merged with the oldest other group whose repair, applied
            first, lets it apply (two fixes too close to revert apart are one group), else its members are out. Recreations on
@@ -24,7 +25,9 @@ The fixpoint. A counted defect is in the tree by its revert (its group reverted)
   judge    judge-present for every member on that tree (or, while recreations are on trial, for those alone), keyed by what the
            judge sees (gate.py): a tree state already judged reuses its answer, and no question is ever overwritten. A member
            answered no or unclear is out. A per-task defect that is out gets its one recreation (gate.recreation): when judge-same
-           accepts it, it joins on trial; when judge-present then finds it in the tree, it is in by its recreation.
+           accepts it, it joins on trial; when judge-present then finds it in the tree, it is in by its recreation. Not while its
+           group stays reverted for another member: a recreation is made against F, so its context holds lines that revert
+           changed and it cannot apply. It waits, and if the tree settles with the group still reverted it is unassessable.
   Rounds repeat until a round changes nothing. A round stops the fixpoint while any of its judge-present questions is unanswered,
   or, when it would end or take recreations on trial, while a recreation it could take is unfinished (judge-same unanswered, or
   no `done`); the next `inject` replays the same rounds from the answers on disk and goes on from there.
@@ -43,9 +46,9 @@ Known limit: a group stays reverted while any member is in, so a member judged a
 two fixes too close to revert apart) still has its revert in the shipped tree, inside the group's repair. The invariant holds; a
 reviewer who reports it finds a defect that is not in the case's list.
 
-Writes injected/<branch>.json and cases.json, and per kind of question it asks (judge-split, judge-present, judge-same) a manifest
-<kind>/needed.json, {owned: every id it has asked, needed: the ids it waits on now}: `pending` leaves out a question inject asked and
-no longer needs (one an earlier inventory, or a branch now beyond the limit, led to). `inject` is run again after each judge phase;
+Writes injected/<branch>.json and cases.json, and per kind of item it asks for (judge-split, judge-present, judge-same, recreate) a
+manifest <kind>/needed.json, {owned: every id it has asked for, needed: the ids it waits on now}: `pending` leaves out an item inject
+asked for and no longer needs (one an earlier inventory, a branch now beyond the limit, or a cargo result since changed led to). `inject` is run again after each judge phase;
 it reads what has answered and goes on.
 """
 import collections
@@ -355,13 +358,13 @@ class Fixpoint(object):
     mode {defect: revert|trial|recreated} holds the defects in the tree; out {defect: (status, reason)} those that are not; tried the
     per-task defects whose one recreation is used; left {defect: (status, reason)} why a defect last left by its revert."""
 
-    def __init__(self, a, br, view, work, final, plan, defects, fix_text, counts, cargo, questions):
+    def __init__(self, a, br, view, work, final, plan, defects, fix_text, counts, cargo_passed, questions):
         self.a, self.br, self.view, self.work, self.final, self.counts, self.questions = a, br, view, work, final, counts, questions
         self.defects = dict((d["id"], d) for d in defects)
         self.fix_text = fix_text
         self.groups = list(plan["groups"])
         self.mode, self.out, self.left, self.rec, self.tried = {}, {}, {}, {}, set()
-        self.cargo = dict(cargo)
+        self.passed, self.failed, self.cargo_checks = set(cargo_passed), {}, []
         self.notes, self.undone, self.rounds = [], 0, 0
         self.build_check, self.head, self.located, self.answers, self.waiting = None, None, {}, {}, {}
         for g in self.groups:
@@ -433,26 +436,37 @@ class Fixpoint(object):
         return _commit(work, scratch.MESSAGE), {}
 
     def check_build(self):
-        """[passed (True, False, or None for a timeout), why] of `cargo check` on the work tree, once per tree id; None when there is
-        no Cargo.toml or no cargo. Sets build_check."""
+        """[passed (True, False, or None for a timeout), why] of `cargo check` on the work tree; None when there is no Cargo.toml or no
+        cargo. A pass is remembered per tree id across runs; a failure or a timeout only within this run, since it may come from the
+        environment (a crate not fetched for --offline, a cold target directory): the next run checks again. Each check made is
+        recorded in cargo_checks. Sets build_check."""
         self.build_check = None
         if not os.path.isfile(os.path.join(self.work, "Cargo.toml")):
             return None
         tree = C.git(self.work, "write-tree")
-        if tree not in self.cargo:
+        if tree in self.passed:
+            verdict = [True, ""]
+        elif tree in self.failed:
+            verdict = self.failed[tree]
+        else:
             got = K.cargo_check(self.a, self.work, C.repo_name(self.br["repo"]))
             if got is None:
                 self.build_check = "skipped: cargo not found"
                 return None
-            self.cargo[tree] = [got[0], got[1]]
-        passed, why = self.cargo[tree]
+            verdict = [got[0], "" if got[0] else got[1]]
+            self.cargo_checks.append({"tree": tree, "passed": verdict[0], "why": verdict[1]})
+            if verdict[0]:
+                self.passed.add(tree)
+            else:
+                self.failed[tree] = verdict
+        passed, why = verdict
         if passed:
             self.build_check = "passed" if not self.undone else "passed after undoing {} step(s)".format(self.undone)
         elif passed is None:
             self.build_check = "timed out: " + why
         else:
             self.build_check = "failed with every revert undone: " + why
-        return self.cargo[tree]
+        return verdict
 
     def locate(self, head):
         """({defect: hunks}, None) when every repair applies to the tree at head, else (_, (step, why)): the first that does not, a
@@ -505,14 +519,20 @@ class Fixpoint(object):
                 answers[did] = ans
         return answers, waiting
 
+    def held(self, did):
+        """A defect that is out while its group stays reverted for another member."""
+        g = self.group_of(did)
+        return g is not None and any(self.mode.get(m) == REVERT for m in g["members"])
+
     def second_attempts(self):
-        """Every per-task defect that is out and has not had its recreation: requested (once), then out for good, a candidate, or
-        waiting. ({defect: (patch, reverse)} of the candidates, {kind: [what waits]})."""
+        """Every per-task defect that is out, has not had its recreation and is not held: requested (once), then out for good, a
+        candidate, or waiting. ({defect: (patch, reverse)} of the candidates, {kind: [what waits]})."""
         cands, waiting = {}, {"recreate": [], "judge-same": []}
         for did in sorted(self.out):
-            if not self.task(did) or did in self.tried:
+            if not self.task(did) or did in self.tried or self.held(did):
                 continue
             got = G.recreation(self.a, self.work, self.final, self.defects[did], self.fix_text[did], self.counts)
+            self.questions.note("recreate", did, got["kind"] != "agent")
             if got["same"]:
                 self.questions.note("judge-same", got["same"], got["kind"] != "judge")
             if got["kind"] == "agent":
@@ -565,6 +585,10 @@ class Fixpoint(object):
             if more["recreate"] or more["judge-same"]:
                 return self.wait(more)
             if not cands:
+                for did in [d for d in sorted(self.out) if self.task(d) and d not in self.tried and self.held(d)]:
+                    self.tried.add(did)
+                    self.out[did] = ("unassessable", "its group's revert stays in the tree, so a recreation made against the final tree "
+                                                     "cannot apply")
                 return True
             for did, pair in sorted(cands.items()):
                 self.tried.add(did)
@@ -610,10 +634,10 @@ class Fixpoint(object):
 
 # ------------------------------------------------------------------ one branch
 class Questions(object):
-    """The judge questions of one `inject` run, by kind: those it asked and those it waits on. save() writes <kind>/needed.json,
-    {owned: every id inject has asked in this run or an earlier one, needed: the ids this run waits on}, which `common.pending` reads:
-    a question inject owns and no longer needs is not handed out."""
-    KINDS = ("judge-split", "judge-present", "judge-same")
+    """The judge questions and recreations of one `inject` run, by kind: those it asked for and those it waits on. save() writes
+    <kind>/needed.json, {owned: every id inject has asked for in this run or an earlier one, needed: the ids this run waits on}, which
+    `common.pending` reads: an item inject owns and no longer needs is not handed out."""
+    KINDS = ("judge-split", "judge-present", "judge-same", "recreate")
 
     def __init__(self):
         self.asked, self.needed = collections.defaultdict(set), collections.defaultdict(set)
@@ -682,7 +706,7 @@ def process(a, br, counts, questions):
             fix_text[d["id"]] = planned[d["id"]]["patch"] if d["id"] in planned else "".join(P.fix_patch(view, r[0], r[1]) for r in d.get("fixes") or [])
         except Failed:
             fix_text[d["id"]] = ""
-    fx = Fixpoint(a, br, view, work, final, plan, defects, fix_text, counts, prev.get("cargo") or {}, questions)
+    fx = Fixpoint(a, br, view, work, final, plan, defects, fix_text, counts, prev.get("cargo_passed") or [], questions)
     complete = fx.run()
     if complete:
         check_invariant(br, work, final, fx.head, fx.steps())
@@ -702,7 +726,7 @@ def process(a, br, counts, questions):
     skipped = sorted(set(fx.notes))
     C.jsave(path, {"work": work, "work_commit": fx.head, "plan_commit": br["plan_commit"], "defects": drec, "complete": complete,
                    "waiting": fx.waiting if not complete else {}, "rounds": fx.rounds, "build_check": fx.build_check, "checks_skipped": skipped,
-                   "final_commit": final, "cargo": fx.cargo})
+                   "final_commit": final, "cargo_passed": sorted(fx.passed), "cargo_checks": fx.cargo_checks})
     tally = dict(collections.Counter(v["status"] for v in drec.values()))
     ok_ids = [d["id"] for d in defects if drec[d["id"]]["status"] in OK]
     unassessable = [d["id"] for d in task if drec[d["id"]]["status"] == "unassessable"]
