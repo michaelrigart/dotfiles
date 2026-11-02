@@ -48,9 +48,9 @@ class or the purpose (prior art: `2026-10-25-xreview-review-packets-design.md` �
 
 ## 4. Per-task reviewer: re-inject what it caught
 
-The question: had no per-task reviewer run, would the final gate have caught what it caught? If the
-Codex pre-merge review finds those defects about as readily as it finds its own, the per-task
-reviewer only catches them earlier, at the cost of an Opus subagent per task.
+The question: had no per-task reviewer run, would the gates that stay have caught what it caught?
+If they recover those defects at the rate they recover their own, the per-task reviewer only
+catches them earlier, at the cost of an Opus subagent per task.
 
 ### 4.1 Cases
 
@@ -64,10 +64,9 @@ re-injected (§4.3). Branches whose ledgers point at deleted scratch clones (tag
 `token-report`) cannot qualify.
 
 The final whole-branch review that subagent-driven development runs before pre-merge stays in both
-worlds, because the removal is the per-task reviewer alone. Its fix wave stays applied in the
-injected tree and its findings form no class. It would also have seen the re-injected defects and is
-not replayed, so the result is conservative: the real gate is stronger than the one measured.
-*(My call.)*
+worlds, because the removal is the per-task reviewer alone. Its October fix wave stays applied in
+the injected tree and its findings form no class, and §4.4 runs it again as the first gate on the
+injected tree. *(My call.)*
 
 ### 4.2 Two classes of known defect
 
@@ -98,56 +97,86 @@ together. Each fix is reverted whole, tests included, so its regression test doe
 defect away. The result approximates the tree the first pre-merge round would have met had no
 per-task reviewer run. A fix that does not revert cleanly is dropped, and the drops are counted.
 
+**Validation.** A defect counts only once it is shown present in the finished injected tree. A
+blind judge sees the finding and the tree and answers whether the defect's failure scenario is
+reachable there: yes, no or unclear. Only yes counts; the rest are unassessable. A later refactor
+can leave a reverted helper unused, and a revert can break later code; the judge catches the first
+case, and a coherence check catches the second wherever a repository has a cheap one (`bash -n` or
+`zsh -n` on changed shell files, `cargo check`, a Ruby or Python syntax and load check). A revert
+that breaks coherence is undone, and its defect is unassessable.
+
+**Coverage gate.** A branch qualifies only when every one of its P0/P1 defects, of both classes,
+reverts cleanly and validates; dropped or unassessable P2s are allowed and counted. If more than a
+quarter of the per-task P0/P1 defects on the candidate branches are unassessable, §4 reports
+inconclusive, because the branches that remain would be the easy ones.
+
 `docs/superpowers/` is pinned to its state at plan approval. Spec and plan text edited during
 execution often describes the fixed behaviour, and where it landed outside the fix commits it would
 sit beside the reverted code and give the answer away. Pinning loses spec edits made for other
 reasons, which can only add findings, never hide one. *(My call.)*
 
-The tree goes into a scratch repository whose history is the merge base plus one squashed commit,
-so the reviewer cannot read the original fixes from git. It has no remote, no alternates and
-nothing else that refers to the original checkout, so `xreview-replay.py`'s `scratch_clone`, which
-reads the source's objects through alternates, is not reused for it.
+The tree goes into a scratch repository built as §7.1 describes, so the reviewer cannot read the
+original fixes from git.
 
-### 4.4 Runs
+### 4.4 Runs: the gates that stay
 
-Three independent round-1 pre-merge reviews per case, each on a fresh thread, with today's
-reviewer instructions, findings schema and packet builder (`fit` on). The packet is built as
-today's dispatch would build it for that branch, so the branch's spec and plan files are shown or
-omitted by today's switches. Turns run through `xreview-rpc` primitives, as in packets §5.6: no
-pane, ledger, gate or round counter is touched. Codex memories are off for these turns (§7.2). The
-daemon's model and effort stay as they are and are recorded.
+Equal detectability is not enough: the question is whether the gates that stay would actually
+recover what the per-task reviewer caught. So each run puts the injected tree through those gates,
+in today's order, and two runs per case give the noise:
+
+1. **The final whole-branch review:** an `sp-architect` subagent with the final-review prompt that
+   subagent-driven development uses today, on the scratch repository.
+2. **The Codex pre-merge loop** on one fresh thread, as xreview runs it today: today's reviewer
+   instructions, findings schema and packet builder (`fit` on; the branch's spec and plan shown or
+   omitted by today's switches), through `xreview-rpc` primitives as in packets §5.6, so no pane,
+   ledger, gate or round counter is touched. Codex memories are off for these turns (§7.2). The
+   daemon's model and effort stay as they are and are recorded.
+
+After each review, a blind judge (§4.5) matches its findings to the defects still present. An
+oracle fixer then re-applies the original fix of each matched defect as one commit with a neutral
+message, standing in for Claude's fix round; unmatched findings change nothing. The loop ends at an
+`approve` verdict or after six Codex rounds. A defect is **recovered** when a review in the run
+matched it before the end. *(Six rounds is my call; the report shows each branch's original round
+count beside it.)*
 
 ### 4.5 Matching
 
-One blind judge per case gets the defect list (both classes, shuffled, without class labels) and
-each run's findings under random labels. For each defect it names the run finding that reports it,
-or none.
+One blind judge per review gets the defects still present (both classes, shuffled, without class
+labels) and that review's findings. For each defect it names the finding that reports it, or none.
+No judge learns the run, the class or the purpose.
 
 ### 4.6 Pass bar
 
-Recall per class is the share of that class's defects a run found, pooled over the cases, and the
-comparison uses the mean of the three runs. Noise is the pre-merge class's highest run recall minus
-its lowest.
+Recovery per class is the share of its defects a run recovered, pooled over the cases; the
+comparison uses the mean of the two runs. Noise is the difference between the two runs' pre-merge
+recovery.
 
-- **Pass:** per-task recall is at least pre-merge recall minus the noise, *and* the share of
-  per-task P0/P1 defects found in no run is no higher than the same share in the pre-merge class.
-- **Fail:** both rules fail.
-- **Borderline:** exactly one fails. §4.7 applies.
+- **Calibration first.** The real loop recovered every pre-merge-class defect in October. If the
+  simulation recovers less than 80% of them, it is too weak to judge by, and §4 is inconclusive.
+- **Pass** needs all three:
+  - per-task recovery is at least pre-merge recovery minus the noise;
+  - no per-task P0/P1 defect goes unrecovered in both runs;
+  - the share of per-task P0/P1 defects unrecovered in either run is no higher than that share in
+    the pre-merge class.
+- **Fail:** calibration holds and any of the three fails.
+- **Inconclusive:** calibration or the coverage gate (§4.3) fails. §4.7 applies.
 
-Single-round recall is low in absolute terms (packets §9: 0.17–0.25 on pre-merge rounds), so the
-bar compares the two classes rather than setting a threshold. The pre-merge class is
-Codex-detectable by construction, since Codex found each of its defects once; the per-task class is
-not. That tilts the comparison towards keeping the reviewer, so a pass is strong evidence.
+A pass therefore means the gates that stay recovered the per-task reviewer's catches at the rate
+they recover their own, with no consequential defect left behind in both runs. The pre-merge class
+is Codex-detectable by construction (Codex found each of its defects once) and the per-task class is
+not, which tilts the comparison towards keeping the reviewer.
 
-The report also lists every per-task defect that no run found, with its severity and one line on
-what it was, for Michael to read. It gives the reviewer's October cost as well: dispatches, tokens,
-and wall time per task, from the transcripts.
+The report lists every per-task defect left unrecovered in any run, with its severity and one line
+on what it was, for Michael to read. It also gives the reviewer's October cost (dispatches, tokens,
+and wall time per task, from the transcripts) and the extra rounds the simulation needed without it.
 
 ### 4.7 What it cannot see, and the confirmation
 
 It cannot see knock-on effects: later tasks built on a defect, or an implementer working
-differently because no review follows. After a borderline result, or on Michael's request after a
-pass, a confirmation replay runs: 4 cases × 2 runs × 2 arms (with and without the per-task
+differently because no review follows. The oracle fixer is also better than a real fix round, which
+can introduce new defects (§10: 39 of 130 known-real pre-merge findings came from round 2 or
+later); that tilts towards removal, which is why the P0/P1 rules are absolute. After an
+inconclusive result, or on Michael's request after a pass, a confirmation replay runs: 4 cases × 2 runs × 2 arms (with and without the per-task
 reviewer), each from the case's plan commit, in a scratch clone with no refs past it, through to
 Codex pre-merge approval. That is 16 sessions, and only on Michael's go. Its design is settled
 then, as an amendment to this spec.
@@ -182,33 +211,52 @@ approved plan receipt covers it (packets §3.5), so without the checkpoint every
 shows the whole plan again; packets §9 measured about 19% fewer tokens per pre-merge turn with it.
 The report estimates that lost saving from October's pre-merge receipts.
 
-The recommendation: keep the checkpoint if design-class P0/P1 findings occur in at least two plans;
-otherwise propose removing it. Michael rules. *(My call: an absolute count, because a single
-design-level P0/P1 caught before execution saves a rework.)*
+The recommendation can only be **keep** or **inconclusive**, never remove:
+- **Keep** when any design-class P0/P1 finding occurred. The pre-merge diff cannot show it, so
+  without the checkpoint it ships or costs a rework.
+- **Inconclusive** otherwise. Visible in a diff is not the same as detected, so removing the
+  checkpoint needs downstream evidence of its own: the §4 simulator on injected plan defects, or a
+  §4.7-style replay, designed then as an amendment to this spec.
+
+The inventory and the net cost go to Michael either way, and he rules.
 
 ## 6. Codex memories: a switch in `xreview-replay.py`
 
-A `memories` switch in `.scripts/xreview-replay.py`: arms A and A′ with memories on, as deployed,
-and B with memories off, on up to 10 pre-merge cases with known-real findings, selected as in
-packets §5.1. The pass bar is packets §5.5: B recalls at least the lower of A and A′ and misses no
+A `memories` switch in `.scripts/xreview-replay.py`: arms A and A′ with memories on and B with
+memories off. The pass bar is packets §5.5: B recalls at least the lower of A and A′ and misses no
 P0/P1 that both found. The report adds tokens per turn for each arm.
 
-Today's memories already contain these very reviews, which helps A and A′. A pass for B is
-therefore safe evidence; a fail is ambiguous, and then memories stay on.
+October's reviews cannot be the cases. Today's memories describe them, which would hand A and A′
+the answers, and no older snapshot exists (the memories directory's own git history starts on
+2026-11-02). So §6 runs forward:
+- The memories were frozen on 2026-11-02 at 13:21 UTC, into
+  `~/Code/.replay/snapshot/2026-11-02/codex-memories/`. A and A′ read that frozen copy, never the
+  live one.
+- The cases are pre-merge round-1 reviews with at least one known-real P0–P2 finding, from
+  branches whose first checkpoint review came after the freeze, so nothing about them can be in the
+  frozen copy. Up to 10, taken as they accrue; at Michael's usual pace that is about a week.
+- One bias is left: by the time of a case, the live memories could also hold the same branch's
+  spec and plan reviews, which the frozen copy lacks. That tilts towards B. The report states, per
+  case, whether the live memories mention the branch at run time, and if more than a quarter do, §6
+  is inconclusive.
 
 ## 7. Isolation
 
 ### 7.1 No leaked answers
 
-- Scratch repositories hold the merge base plus one squashed commit (§4.3), or, for §6, the
-  historical round's tip as in packets §5.3. None has a remote.
+- One builder makes every scratch repository, §6's included: only the objects reachable from the
+  merge base, plus one squashed commit of the tree under review, written into an empty object
+  store, with no remote and no alternates. `xreview-replay.py`'s `scratch_clone` is not used,
+  because its alternates let `git fsck` and `git show` reach later fix commits. A test proves that
+  a later fix commit cannot be resolved in a scratch repository.
 - Each run's rollout is scanned for reads or commands that name the original checkout or one of its
   `wt` siblings. Such a run is void and runs once more.
 - Each judge gets only its input file.
 
 ### 7.2 Codex memories
 
-Replay turns neither read memories (except §6's A and A′) nor feed memory generation, so no replay
+Replay turns neither read memories (except §6's A and A′, which read the frozen copy) nor feed
+memory generation, so no replay
 content lands in Michael's memories. The builder settles the mechanism (a per-thread setting, or a
 second daemon with its own configuration that never touches the daemon Michael's panes use) before
 any turn runs. If neither works, stop and report.
@@ -224,11 +272,14 @@ any turn runs. If neither works, stop and report.
 
 ## 8. Budget, order and timing
 
-- Codex: a hard stop at 50M tokens across §4 and §6, with at most three turns at once. For scale,
-  the packets replay ran 88 turns on 38M.
-- Claude: judges are `sp-standard` subagents, one case per judge, as in packets §5.4.
-- The replay runs once it is built and its tests pass; expected wall time is under a day.
-- §4, §5 and §6 run in any order. Adoption follows Michael's order (per-task reviewer, Codex
+- Codex: hard stops at 100M tokens for §4 and 20M for §6, with at most three turns at once. Runs
+  also pause while the latest rollout reports weekly usage at 80% or more, and resume after the
+  reset. For scale, the packets replay ran 88 turns on 38M.
+- Claude: judges are `sp-standard` subagents, as in packets §5.4. The final whole-branch reviews of
+  §4.4 are `sp-architect`, one per run.
+- §4 and §5 run once the harness is built and its tests pass: expected one or two nights. §6 waits
+  for its cases, about a week.
+- §4 and §5 run in either order, §6 once its cases exist. Adoption follows Michael's order (per-task reviewer, Codex
   memories, plan checkpoint), one removal per commit, each recorded with its result.
 
 ## 9. Deliverables
@@ -248,9 +299,16 @@ any turn runs. If neither works, stop and report.
   read-only object source for scratch repositories, never as alternates.
 - The `memories` switch in `.scripts/xreview-replay.py`.
 - `--exclude-project` in `.scripts/measure-interventions.py`.
-- Tests: `tests/process-replay.test.sh`, a dry run on fixture cases covering case selection,
-  injection and squashing, judge inputs that carry no class or arm, and the report arithmetic; and
-  additions to the existing `xreview-replay` and `measure-interventions` suites.
+- Tests: `tests/process-replay.test.sh`, a dry run on fixture cases with a stubbed daemon. It covers:
+  - case selection and the coverage gate;
+  - injection, the oracle fixer re-applying exactly one defect's fix, and squashing;
+  - a scratch repository that cannot resolve a later fix commit;
+  - judge inputs that carry no class, run or arm;
+  - the loop ending at `approve` or after six rounds;
+  - the pass-bar arithmetic, calibration included.
+
+  The existing `xreview-replay` and `measure-interventions` suites get additions for their new
+  options.
 - Results go in §10 of this spec. Raw files stay in `$XDG_STATE_HOME/process-replay/<date>/` and
   are never committed.
 
