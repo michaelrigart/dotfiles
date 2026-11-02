@@ -23,7 +23,8 @@ Claude Code 2.1.316 agent and skill frontmatter, Codex's global `~/.codex/AGENTS
 
 - **Scope.** Edit only this worktree's source. `chezmoi apply` is Michael's. Before Task 1, this
   plan is committed and the spec's Status is set to `In progress`.
-- **Commits.** Imperative mood, no agent attribution. Before each one, check that
+- **Commits.** Only the controller commits; an implementer runs its focused suites and hands back
+  uncommitted. Imperative mood, no agent attribution. Before each commit, check that
   `git branch --show-current` prints `instruction-layer`, then read `git diff --cached`.
 - **Caps.** `global.md` ≤ 130 lines, `claude-code.md` ≤ 50 (not edited), `codex.md` ≤ 30. No
   line is wider than 100 columns, matching the current file.
@@ -82,7 +83,8 @@ Claude Code 2.1.316 agent and skill frontmatter, Codex's global `~/.codex/AGENTS
   so the two texts agree.
 - **Feasibility.** A scratch draft of this table at ≤ 100 columns measured 128 lines, with the
   five checkpoints as one prose paragraph. Its section budgets: header 5, Machine 11, Repos 9,
-  Design records 19, How to work 19, Engineering 13, Autonomy 34, Cross-model 18.
+  Design records 19, How to work 19, Engineering 13, Autonomy 34, Cross-model 18. Call 14 keeps
+  three more sentences in Design records (about 2 lines); find them in the other sections first.
 
 ## Calls this plan makes
 
@@ -93,8 +95,8 @@ Gaps or tensions in the spec, settled here. Michael can overturn any of them at 
    guard's deny cites it and covers only commits and MR/PR text; the suite pins it in full.
 2. **Second brain keeps the pointer and "write it only when asked"** (W17). The vault path (W16)
    and never-store list (W18) drop because the skill holds both; that suite pin moves there.
-3. **Unlisted Design-records sentences go by §2's test:** D1, D2, D3, D19 and D20 move. Two
-   pronouns get their nouns back: D2 "points to these rules", D15 "An abandoned spec".
+3. **Unlisted Design-records sentences go by §2's test:** D1 and D19 move; D2, D3 and D20 stay
+   (call 14). One pronoun gets its noun back: D15 "An abandoned spec".
 4. **Brainstorming is in neither Autonomy list.** A14 stays: it overrides the brainstorming
    skill's one-question-at-a-time default, and no skill of ours loads then. A15 drops as restated.
 5. **Parallel work (R2) is in neither Repositories list.** It stays, merged into the `wt`
@@ -119,6 +121,11 @@ Gaps or tensions in the spec, settled here. Michael can overturn any of them at 
     to the cross-review skill, but A17 binds when work is reported as done, and the skill need not
     be loaded then: moving it would hit the spec's anti-goal of a rule that silently stops
     applying. It joins the A16 trigger line, so it costs no extra line.
+14. **D2, D3 and D20 stay global** (plan review, round 1). D2 and D3 bind whenever a repository's
+    `AGENTS.md` is written, and D20 whenever lessons are recorded, a small change included; none
+    of these moments loads the `design-records` skill. D2 keeps "points here", which still has its
+    referent in `global.md`. The skill keeps D1, D13, D15, D17, D19 and D21. If the three cost the
+    130-line cap, Task 5 stops and reports rather than cutting a rule.
 
 ## The §1 table: every sentence of `global.md`
 
@@ -176,8 +183,8 @@ created, updated, completed or abandoned.
 | ID | Line | Sentence | Disposition |
 |---|---|---|---|
 | D1 | 41 | "Every change except a small one (see Sizing) has a spec and a plan…" | Moved → DR. §2: yes. Sizing keeps the always-binding half |
-| D2 | 42 | "A repository's `AGENTS.md` points here and adds only project-specific supplements." | Moved → DR as "points to these rules" (call 3). §2: yes |
-| D3 | 42-43 | "Where records live, what is tracked and when each is committed never vary per repository." | Moved → DR. §2: yes; it binds when a record is placed or committed |
+| D2 | 42 | "A repository's `AGENTS.md` points here and adds only project-specific supplements." | Kept, joined with D3 in one sentence (call 14). §2: no; it binds whenever an `AGENTS.md` is written |
+| D3 | 42-43 | "Where records live, what is tracked and when each is committed never vary per repository." | Kept, joined with D2 (call 14). §2: no; it is what an `AGENTS.md` may not override |
 | D4 | 45-49 | the paths table | Kept |
 | D5-D6 | 51 | "**Commit at each checkpoint, not at merge.**" / "Brainstorming notes are never committed." | Kept |
 | D7-D11 | 52-57 | checkpoints 1-5 | Kept, as one paragraph |
@@ -189,7 +196,7 @@ created, updated, completed or abandoned.
 | D17 | 65 | "Legacy records keep their status until verified against history." | Moved → DR (spec). §2: yes |
 | D18 | 67-68 | "**Completed documents.** Mark a completed plan so it is not run again; its execution banners…" | Kept (spec, §2: binds when a plan runs) |
 | D19 | 68 | "Don't rewrite point-in-time facts." | Moved → DR (call 3). §2: binds only while a record is updated |
-| D20 | 69 | "Durable lessons go in the spec, plan, ADR or MR description, never in raw run files." | Moved → DR (call 3). §2: binds when a run's lessons are recorded, which is completing a record |
+| D20 | 69 | "Durable lessons go in the spec, plan, ADR or MR description, never in raw run files." | Kept, after D18 (call 14). §2: no; a small change records lessons with no spec or plan |
 | D21 | 71-72 | "**Cross-repo work.** Keep one canonical spec, referenced by repository and path…" | Moved → DR (spec). §2: yes |
 | D22 | 72-73 | "Open both MRs before merging either, and merge the canonical one first." | Kept (spec, §2: binds when landing) |
 | new | — | the trigger: load the `design-records` skill "when creating, updating, completing or abandoning a spec or plan, or setting its Status" | Added (§1: a moved rule leaves its trigger) |
@@ -330,7 +337,7 @@ receive.
     appended to `~/.codex/AGENTS.md` alone, and that it stays within 30 lines. "pins both, and
     the render" becomes "pins all three, and the renders". At `:81`, list `codex.md` too.
 - [ ] **Step 4: Run green** with `./tests/run.sh agent-instructions`.
-- [ ] **Step 5: Commit** as `Give Codex its own instruction fragment`.
+- [ ] **Step 5: Hand back** to the controller, uncommitted. The controller commits it as `Give Codex its own instruction fragment`.
 
 ### Task 2: The design-records skill
 
@@ -352,13 +359,10 @@ receive.
     - `need_in` the skill for each moved sentence:
       ```
       Every change except a small one (see Sizing) has a spec and a plan, versioned with the code.
-      A repository's `AGENTS.md` points to these rules and adds only project-specific supplements.
-      Where records live, what is tracked and when each is committed never vary per repository.
       Use exactly: `Approved`, `In progress`, `Implemented`, `Superseded — see <link>`, `Abandoned — <reason>`.
       An abandoned spec is marked `Abandoned` and merged on its own.
       Legacy records keep their status until verified against history.
       Don't rewrite point-in-time facts.
-      Durable lessons go in the spec, plan, ADR or MR description, never in raw run files.
       Keep one canonical spec, referenced by repository and path, preferably as a forge link and never as a bare path.
       ```
   - **`tests/claude-settings.test.sh`, section X:** after the agent loop (`:941-947`), add a loop.
@@ -368,7 +372,7 @@ receive.
   fail as missing. Once the skill exists, the managed loop fails until the re-include is in.
 - [ ] **Step 3: Implement.**
   - **`SKILL.md`:** frontmatter `name` and `description` as pinned, a `# Design records` title,
-    then the nine sentences above, verbatim, under headings of your choice. Nothing else goes
+    then the six sentences above, verbatim, under headings of your choice. Nothing else goes
     in: everything kept stays in `global.md`, which is always loaded.
   - **`.chezmoiignore`:** after `:102`, add these lines, as cross-review has:
     ```
@@ -377,7 +381,7 @@ receive.
     !.claude/skills/design-records/SKILL.md
     ```
 - [ ] **Step 4: Run green** with `./tests/run.sh agent-instructions claude-settings`.
-- [ ] **Step 5: Commit** as `Add a design-records skill for the record procedures`.
+- [ ] **Step 5: Hand back** to the controller, uncommitted. The controller commits it as `Add a design-records skill for the record procedures`.
 
 ### Task 3: The cross-review skill takes the checkpoint mechanics
 
@@ -409,7 +413,7 @@ Cross-model rows), §4.
   - Add nothing for X16 and X18: the skill already says them (table).
 - [ ] **Step 4: Run green** with `./tests/run.sh agent-instructions xreview-skill`. `xreview-skill`
   checks that every `xreview <subcommand>` and `XREVIEW_*` named in the skill still exists.
-- [ ] **Step 5: Commit** as `Move the plan checkpoint rules into the cross-review skill`.
+- [ ] **Step 5: Hand back** to the controller, uncommitted. The controller commits it as `Move the plan checkpoint rules into the cross-review skill`.
 
 ### Task 4: web-researcher runs without CLAUDE.md
 
@@ -423,7 +427,7 @@ Cross-model rows), §4.
   `dot_claude/agents/web-researcher.md`. Spec facts above record how the key was checked.
 - [ ] **Step 4: Run green** with `./tests/run.sh agent-instructions claude-settings`. Section X
   reads every agent file.
-- [ ] **Step 5: Commit** as `Run web-researcher without the CLAUDE.md instructions`.
+- [ ] **Step 5: Hand back** to the controller, uncommitted. The controller commits it as `Run web-researcher without the CLAUDE.md instructions`.
 
 ### Task 5: Rewrite global.md by the table
 
@@ -444,6 +448,9 @@ its reviewer is sp-reviewer, with the §1 table as the brief. **Spec:** §1, §4
     - `never deleted, pruned or gitignored`
     - `so it is not run again`
     - `both MRs before merging either, and merge the canonical one first`
+    - `adds only project-specific supplements` (D2, call 14)
+    - `never vary per repository` (D3, call 14)
+    - `never in raw run files` (D20, call 14)
   - **The cross-review trigger.** `need_flat global.md` for
     `runs at every checkpoint (spec sign-off, plan completion, pre-merge)` and for
     `need a new review before you report the work as done` (A17, call 13), and
@@ -477,7 +484,7 @@ its reviewer is sp-reviewer, with the §1 table as the brief. **Spec:** §1, §4
   - each Dropped sentence is gone, for the stated reason.
 
   Report any row that does not hold.
-- [ ] **Step 6: Commit** as `Cut global.md to 130 lines and make the fix rule checkable by revert`.
+- [ ] **Step 6: Hand back** to the controller, uncommitted. The controller commits it as `Cut global.md to 130 lines and make the fix rule checkable by revert`.
 
 ### Task 6: Finish
 
