@@ -235,6 +235,10 @@ ok("leak_scan: and so is the scratch root", leaks_of(["ls {}/scratch".format(rev
 ok("leak_scan: its own staged directory and its own scratch are not (a file, the directory, a relative path from the scratch)",
    leaks_of(["cat {}/package.diff".format(own), "ls {}".format(own), "ls {}".format(run["scratch"]), "cat src/a0.py", "git diff HEAD~1..HEAD"], name="allowed") == [])
 ok("leak_scan: a Glob inside its own directory is not", leaks_of(calls=[("Glob", {"pattern": own + "/*.diff"})], name="globown") == [])
+for n, (label, cmd) in enumerate((("the snapshot root", "ls ~/Code/.replay/snapshot"), ("October's Codex rollouts", "rg -n x ~/.codex/sessions"),
+                                 ("October's Codex memories", "cat ~/.codex/memories/MEMORY.md"), ("the Claude transcripts", "ls ~/.claude/projects"),
+                                 ("the xreview ledgers", "cat $XDG_STATE_HOME/xreview/ledgers/k/reviews.jsonl"))):
+    ok("leak_scan: a final reviewer reading {} is a leak".format(label), leaks_of([cmd], name="root{}".format(n)) != [], cmd)
 
 # ---- the reviewer's own subagents are scanned too, through the parentAgentId chain
 ses = "s-sub"

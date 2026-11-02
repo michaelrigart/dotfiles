@@ -295,6 +295,16 @@ is_("seed: the snapshot is named <at>-<hash12>", polls[0]["snapshot"], SEED_AT +
 is_("seed: its contents are the seed's, without .git", sorted(tree(os.path.join(WDIR3, "snapshots", polls[0]["snapshot"]))), ["MEMORY.md"])
 ok("seed: the live poll after it snapshots the live text", len(polls) == 2 and polls[1]["hash"] == M.digest(SRC3) and bool(polls[1].get("snapshot")), polls)
 ok("seed: a seed on a log that has polls is refused", raises(M.cmd_memories_watch, namespace(SRC3, seed=SEED, seed_at="2026-11-02T13:22:00Z")))
+before_snaps = sorted(os.listdir(os.path.join(WDIR3, "snapshots")))
+M.cmd_memories_watch(namespace(SRC3, seed=SEED, seed_at=SEED_AT))
+again = jl(os.path.join(WDIR3, "polls.jsonl"))
+ok("seed: restarting with the same seed and time skips it silently: the first poll is as it was, only a live poll was added",
+   again[:2] == polls and len(again) == 3 and again[2].get("seed") is None and sorted(os.listdir(os.path.join(WDIR3, "snapshots"))) == before_snaps, again)
+OTHER_SEED = os.path.join(ROOT, "seed-other")
+put(OTHER_SEED, "MEMORY.md", "frozen differently\n")
+ok("seed: ... but another seed at the same time is refused", raises(M.cmd_memories_watch, namespace(SRC3, seed=OTHER_SEED, seed_at=SEED_AT)))
+ok("seed: ... and the same seed at another time is refused", raises(M.cmd_memories_watch, namespace(SRC3, seed=SEED, seed_at="2026-11-02T13:21:30Z")))
+is_("seed: and a refused seed added nothing", len(jl(os.path.join(WDIR3, "polls.jsonl"))), 3)
 is_("seed: first_poll of an empty watch dir is None", M.first_poll(os.path.join(ROOT, "nothing")), None)
 
 # ---- snapshot_for

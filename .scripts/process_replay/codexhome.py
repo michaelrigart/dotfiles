@@ -14,13 +14,14 @@ lands in ~/.codex, where it could feed memory generation.
   $XDG_STATE_HOME/process-replay/codex-auth/   the shared login; daemon.json names the home running now
 
 At most one replay daemon runs at a time, and a process that starts one holds an flock on <auth_dir>/run.lock until it
-stops it. A daemon that answers while no process holds that lock was left by a run that died: `start` and `reclaim`
-stop it (and say so) rather than refuse. While one runs, Codex replaces its auth.json link with a
+stops it; a process that only uses a daemon (the loop's `run`) holds it for as long as it does (hold). A daemon that answers
+while no process holds that lock was left by a run that died: `start` and `reclaim` stop it (and say so) rather than refuse. While one runs, Codex replaces its auth.json link with a
 regular file when it refreshes the token; `stop` (and the next `ensure`) copies that file back to the
 shared login when newer and restores the link.
 
 Nothing here reads the source home's auth.json or writes below the source home.
 """
+import contextlib
 import fcntl
 import glob
 import json
@@ -360,6 +361,21 @@ def _acquire(home):
         os.close(fd)
         raise Failed("a replay run holds the replay daemon (lock {}): wait for it to finish".format(_lock_path()))
     _HELD.update(home=home, fd=fd)
+
+
+@contextlib.contextmanager
+def hold(home):
+    """Hold the run lock for as long as a process uses the daemon of `home` that it did not start itself (a `run` finds the
+    daemon `home --start` left): without it that daemon looks left by a crashed run, and another `home --start`, or a `reclaim`,
+    would stop it mid-run. Failed, at once, when another process holds the lock. A lock this process already holds for `home`
+    (it started the daemon) stays held when the block ends."""
+    had = _same(_HELD["home"], home)
+    _acquire(home)
+    try:
+        yield
+    finally:
+        if not had and _same(_HELD["home"], home):
+            _release()
 
 
 def _leftover(home, keep):

@@ -9,9 +9,9 @@ original repository, ~/.claude/projects or ~/.codex.
   cases          pick the branches and the defects of both classes
   inject         build each injected tree, validate its defects, qualify the branches
   run            the gates that stay, on a fresh Codex thread per run
-  match          write the blind matching inputs
+  match          apply the answers that came in (final reviews, matches, rulings) to the runs; starts no round, makes no run
   report         the pass bar and the costs
-  cleanup        archive the threads a crashed run left behind
+  cleanup        archive the runs' threads, stop the replay home's daemon, remove the scratch trees, work and view repositories and staged items
   pending        list what waits for an agent: judge inputs, final reviews, recreations
   home           the replay Codex homes and their daemon
   memories-watch watch the Codex memories directory and snapshot it on change

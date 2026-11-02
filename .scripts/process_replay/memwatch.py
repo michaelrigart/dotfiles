@@ -226,11 +226,17 @@ def poll_once(wdir, source, at=None, interval=None):
 
 
 def register_seed(wdir, seed, at):
-    """The seed directory as the first snapshot, at the time given; its hash is the seed's own digest."""
+    """The seed directory as the first snapshot, at the time given; its hash is the seed's own digest. A log whose first poll is already
+    that seed (the same time and digest: the watcher is restarting with the same command) is left as it is and its record returned;
+    any other log with polls, or another seed, is refused."""
     parse_at(at)
-    if polls(wdir):
-        raise Failed("the watch log already has polls: a seed goes first, into an empty watch directory")
     want = digest(seed)
+    found = polls(wdir)
+    if found:
+        first = found[0]
+        if first.get("seed") and first.get("hash") == want and isinstance(first.get("at"), str) and parse_at(first["at"]) == parse_at(at):
+            return first
+        raise Failed("the watch log already has polls: a seed goes first, into an empty watch directory")
     name, why = _keep(wdir, seed, at, want)
     if name is None:
         raise Failed("the seed cannot be kept ({}): {}".format(why, seed))

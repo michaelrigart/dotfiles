@@ -818,12 +818,15 @@ def review(a, job, dec, clone, schema, res, turns):
         res["missing"] = sorted(l for l in set(shown) if norm(l) not in seen)[:XP.MISSING_CAP]
 
 
-def leak_scan(job, turns, clone):
-    """What the turns' tool calls name of the original checkout and its wt siblings (spec 7.1), as
-    process_replay.codex reads a rollout for it: ["<path> in <turn>"]."""
+def leak_scan(a, job, turns, clone):
+    """What the turns' tool calls name that a replayed reviewer must not read (spec 7.1; process_replay.codex.forbidden): the original
+    checkout and its wt siblings, the replay's state, the snapshot, where October's answers live, the memories watcher's directory
+    and the other runs' directories under review-work. As process_replay.codex reads a rollout for it: ["<path> in <turn>"]."""
     cx = pkg("codex")
+    watch = getattr(a, "memwatch", None) or (jload(os.path.join(a.state, "cases.json"), {}) or {}).get("memwatch") or True
+    paths, walled = cx.forbidden(a.state, {"repo": job["repo"]}, [clone], memwatch=watch)
     try:
-        return cx.leaks(job.get("home_path") or codex_home(), turns, [job["repo"]], cwd=clone)
+        return cx.leaks(job.get("home_path") or codex_home(), turns, paths, cwd=clone, walled=walled)
     except pkg("common").Failed as e:
         raise Failed("cannot scan the rollout for leaks: {}".format(e))
 
@@ -850,7 +853,7 @@ def run_job(a, job):
         for attempt in (1, 2):
             turns = []
             review(a, job, dec, clone, schema, res, turns)
-            found = leak_scan(job, turns, clone) if job.get("scratch") else []
+            found = leak_scan(a, job, turns, clone) if job.get("scratch") else []
             if not found:
                 break
             # a run that read the original checkout learned the future: it is void, and runs once more
@@ -958,6 +961,11 @@ def run_home(a, name, jobs, total, cap, prog, source):
     home = cx.ensure(a.state, name, snap, bool(snap), source=source)
     cx.start(home)
     try:
+        # the arms differ only by this home: prove the daemon serves it (the snapshot's memories reach a turn of A and A2, none reaches B's)
+        res = cx.probe(home, bool(snap), rpc=RPC)
+        if not res["ok"]:
+            raise Failed("the isolation probe of the replay home {} failed ({}); no arm ran: {}".format(
+                home, ", ".join(k for k, v in sorted(res["checks"].items()) if not v) or "no check", "; ".join(res["notes"]) or "no note"))
         for j in jobs:
             j["home_path"] = home
         with codex_env(home):
@@ -1022,6 +1030,9 @@ def cmd_run(a):
     except KeyboardInterrupt:
         interrupted = True
         say("interrupted: archiving every thread this run used")
+    except Failed as e:
+        crash = str(e)
+        say("the run stopped: " + crash)
     except Exception:
         crash = traceback.format_exc()
         say("the run crashed:\n" + crash)

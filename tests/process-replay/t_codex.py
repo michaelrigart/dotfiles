@@ -394,6 +394,59 @@ home = replay_home("cleanround")
 stub = stub_for("cleanround", home, {"default": {"answer": ans(), "tools": [tool("custom_tool_call", "cat src/a.py")]}})
 ok("leak_scan: a round that read only the scratch repository is a review", w.round(home).get("kind") == "codex")
 
+# ---- leak_scan: one forbidden-paths function (K.forbidden) for the Codex round, the final reviewer and xreview-replay
+w = World("wall1")
+w_other = World("wall2")
+home = replay_home("wall1")
+for label, text in (("another run's scratch (../<label>)", "cat ../wall2/src/a.py"),
+                    ("a staged item's input (../../items/<hex>/input.json)", "cat ../../items/0123456789abcdef/input.json"),
+                    ("an alias into the state (../../<8 hex>/repairs)", "ls ../../deadbeef/repairs")):
+    stub = stub_for("wall1", home, {"default": {"answer": ans(), "tools": [tool("custom_tool_call", text)]}})
+    out = w.round(home)
+    ok("leak_scan: a Codex call reading {} voids the round".format(label), set(out) == {"leak", "tokens", "thread", "turns"} and bool(out["leak"]), out)
+stub = stub_for("wall1", home, {"default": {"answer": ans(), "tools": [tool("custom_tool_call", "cat src/a.py; git log; ls .")]}})
+ok("leak_scan: ... while an ordinary read inside its own scratch does not", w.round(home).get("kind") == "codex")
+
+XSH = os.environ["XDG_STATE_HOME"]
+FSTATE = os.path.join(ROOT, "forbidden-state")
+os.makedirs(FSTATE, exist_ok=True)
+OWN = os.path.join(XSH, "review-work", "scratch", "own00001")
+BRANCH = {"repo": house + "/Code/Org/repo/.git"}
+fpaths, fwalled = K.forbidden(FSTATE, BRANCH, [OWN])
+mpaths, mwalled = K.forbidden(FSTATE, BRANCH, [OWN], memwatch=True)
+is_("forbidden: the walled directory is review-work, with the run's own directories allowed", fwalled, (os.path.join(XSH, "review-work"), [OWN]))
+
+
+n_fb = [0]
+
+
+def forbid(text, memwatch=False, cwd=OWN):
+    n_fb[0] += 1
+    thread = "fbd{}".format(n_fb[0])
+    rollout(thread, [{"turn": "t1", "answer": None, "tools": [tool("function_call", text)]}])
+    paths, walled = (mpaths, mwalled) if memwatch else (fpaths, fwalled)
+    return K.leaks(lhome, [(thread, "t1")], list(paths), cwd, walled)
+
+
+for label, text in (("the original checkout", "cat ~/Code/Org/repo/src/a.py"), ("a wt sibling of it", "cat ~/Code/Org/repo-feat/x"),
+                    ("the state directory", "cat {}/inventory/b.json".format(FSTATE)),
+                    ("the snapshot root", "ls ~/Code/.replay/snapshot/2026-11-02"), ("October's codex sessions", "rg -n x ~/.codex/sessions/2026"),
+                    ("October's archived codex sessions", "ls $HOME/.codex/archived_sessions"), ("October's memories", "cat ~/.codex/memories/MEMORY.md"),
+                    ("the Claude transcripts", "ls ~/.claude/projects"), ("the xreview ledgers", "cat $XDG_STATE_HOME/xreview/ledgers/k/reviews.jsonl"),
+                    ("the xreview ledgers by path", "cat {}/xreview/ledgers/k/reviews.jsonl".format(XSH)),
+                    ("another scratch", "cat ../other000/x"), ("a staged item", "cat ../../items/0123456789abcdef/input.json"),
+                    ("an alias link", "cat ../../deadbeef/inventory/b.json"), ("review-work itself", "ls ../.."), ("a stray ../..", "cat ../../../xreview/x")):
+    ok("forbidden: reading {} is a leak".format(label), forbid(text) != [], forbid(text))
+for label, text in (("a file in its own scratch", "cat src/a.py"), ("its own scratch by path", "git -C {} log".format(OWN)), ("a relative path inside it", "cat ./x/../src/a.py"),
+                    ("a code path named like the roots", "rg -n sessions memories projects xreview src")):
+    is_("forbidden: {} is not a leak".format(label), forbid(text), [])
+MW = "cat $XDG_STATE_HOME/process-replay/memwatch/polls.jsonl"
+is_("forbidden: the memories watcher's directory is open to an ordinary run", forbid(MW), [])
+ok("forbidden: ... and forbidden to a memories run", forbid(MW, memwatch=True) != [], forbid(MW, memwatch=True))
+ok("forbidden: ... by its path too", forbid("ls {}/process-replay/memwatch".format(XSH), memwatch=True) != [])
+wp, ww = K.forbidden(FSTATE, BRANCH, [OWN, "/items/own"], snapshot_root="/elsewhere/snap")
+ok("forbidden: a snapshot root given by the caller is forbidden too, and every own directory is allowed", "/elsewhere/snap" in wp and ww[1] == [OWN, "/items/own"], (wp, ww))
+
 # ---- home_env
 w = World("env")
 home = replay_home("env")

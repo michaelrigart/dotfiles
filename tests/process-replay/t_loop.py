@@ -5,6 +5,7 @@ import contextlib
 import fcntl
 import os
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -996,12 +997,17 @@ ok("commit_fails_reset_fails: the run's error names the commit failure and the f
        for x in w.runs()), [(x["end"], x.get("error")) for x in w.runs()])
 
 # ================================================================== repair_fails
+def set_repair(w, did, text):
+    """Replace the repair each run of `w` holds (its own copy)."""
+    for x in w.runs():
+        with open(x["repairs"][did]["repair"], "w") as f:
+            f.write(text)
+
+
 w = World("repair-fails")
 behave(lambda run, k: ("approve", []))
 go(w)
-bad = os.path.join(w.state, "repairs", "dA.patch")
-with open(bad, "w") as f:
-    f.write(w.patches["dA"].replace("a3", "not the line"))
+set_repair(w, "dA", w.patches["dA"].replace("a3", "not the line"))
 drive(w, report=["found dA"])
 go(w)
 drive(w, report=["found dA"])
@@ -1010,12 +1016,29 @@ ok("repair_fails: a repair that no longer applies ends the run error, and names 
 ok("repair_fails: the tree is unchanged by the failed repair", all(git(x["scratch"], "status", "--porcelain") == "" and git(x["scratch"], "rev-list", "--count", w.base + "..HEAD") == "1" for x in w.runs()))
 ok("repair_fails: and no Codex round was started", not CALLS)
 
+# a run applies the repair it started with: inject rewrites and deletes repairs/<defect>.patch whenever it settles the branch again
+w = World("repair-own")
+behave(lambda run, k: ("approve", []))
+go(w)
+ok("repair_copy: each run holds its own copy of every repair, under its own directory", all(
+    r["repairs"][d]["repair"] == os.path.join(w.state, "runs", r["case"], r["label"], "repairs", d + ".patch") and open(r["repairs"][d]["repair"]).read() == w.patches[d]
+    for r in w.runs() for d in r["repairs"]), [r["repairs"]["dA"] for r in w.runs()])
+with open(os.path.join(w.state, "repairs", "dA.patch"), "w") as f:
+    f.write(w.patches["dA"].replace("a3", "not the line"))
+os.unlink(os.path.join(w.state, "repairs", "dC.patch"))
+drive(w, report=["found dA", "found dC"])
+go(w)
+drive(w, report=["found dA", "found dC"])
+go(w)
+ok("repair_copy: rewriting or deleting repairs/<defect>.patch after the run began changes what its oracle applies",
+   all(x["end"] != "error" and by_status(x)["dA"] == "recovered" and by_status(x)["dC"] == "recovered"
+       and git(x["scratch"], "show", "HEAD:src/a.py").splitlines()[4] == "a5" for x in w.runs()), [(x["end"], x.get("error"), by_status(x)) for x in w.runs()])
+
 # ... an empty repair is the third site
 w = World("repair-empty")
 behave(lambda run, k: ("approve", []))
 go(w)
-with open(os.path.join(w.state, "repairs", "dA.patch"), "w") as f:
-    f.write("")
+set_repair(w, "dA", "")
 drive(w, report=["found dA"])
 go(w)
 drive(w, report=["found dA"])
@@ -1025,8 +1048,7 @@ ok("repair_empty: an empty repair ends the run error, naming the defect, with th
 w = World("repair-empty2")
 behave(lambda run, k: ("approve", []))
 go(w)
-with open(os.path.join(w.state, "repairs", "dA.patch"), "w") as f:
-    f.write("")
+set_repair(w, "dA", "")
 drive(w, report=["found dA"])
 go(w)
 drive(w, report=["found dA"])
@@ -1042,8 +1064,7 @@ ok("repair_empty_reset_fails: and when the reset fails too, the error still name
 w = World("repair-fails2")
 behave(lambda run, k: ("approve", []))
 go(w)
-with open(os.path.join(w.state, "repairs", "dA.patch"), "w") as f:
-    f.write(w.patches["dA"].replace("a3", "not the line"))
+set_repair(w, "dA", w.patches["dA"].replace("a3", "not the line"))
 drive(w, report=["found dA"])
 go(w)
 drive(w, report=["found dA"])
@@ -1139,6 +1160,48 @@ except Failed as e:
     got = str(e)
 ok("home: with its daemon not running, run says so and starts no round", "daemon" in got and not CALLS, got)
 P.codexhome.alive = lambda home: True
+
+# ---- the run holds the replay home's lock while it uses the daemon, so nothing reclaims or restarts it mid-run
+CHILD = r"""
+import os, sys
+sys.dont_write_bytecode = True
+sys.path.insert(0, sys.argv[1])
+from process_replay import codexhome as H
+from process_replay.common import Failed
+for label, fn, arg in (("reclaim", H.reclaim, sys.argv[2]), ("start", H.start, sys.argv[3])):
+    try:
+        fn(arg)
+        print(label, "went ahead", flush=True)
+    except Failed:
+        print(label, "refused", flush=True)
+"""
+OTHER_HOME = os.path.join(os.environ["XDG_STATE_HOME"], "cxh", "other")
+helpers.put(OTHER_HOME, "replay-home.json", json.dumps({"source": "x"}))
+helpers.put(NOMEM, "app-server-control/app-server-control.sock", "")
+UP = helpers.stub_rpc(os.path.join(ROOT, "rpc-up"), ROOT, {"health_rc": 0})
+DAEMON = helpers.stub_codex(os.path.join(ROOT, "fake-codex"))
+HELD = {"out": None, "held": None}
+
+
+def asks_child(run, k):
+    if HELD["out"] is None:
+        HELD["held"] = P.codexhome._HELD["home"] == NOMEM
+        HELD["out"] = subprocess.run(["/usr/bin/python3", "-I", "-B", "-c", CHILD, helpers.SCRIPTS, NOMEM, OTHER_HOME], capture_output=True, text=True,
+                                     env=dict(os.environ, XREVIEW_REPLAY_RPC=UP, CODEX_REAL_BIN=DAEMON)).stdout.split()
+    return ("approve", [])
+
+
+wh = World("holds")
+behave(asks_child)
+to_codex(wh)
+go(wh)
+is_("home_lock: while a run uses the replay daemon, a reclaim of it and a start of another home in another process both refuse",
+    HELD["out"], ["reclaim", "refused", "start", "refused"])
+ok("home_lock: the run held the lock for the home it drove", HELD["held"] is True)
+ok("home_lock: and let it go when it ended", P.codexhome._HELD["fd"] is None and P.codexhome._HELD["home"] is None, P.codexhome._HELD)
+os.unlink(os.path.join(NOMEM, "app-server-control", "app-server-control.sock"))
+behave(lambda run, k: ("approve", []))
+
 before = snap(w.state)
 text = go(w, rounds=False)
 ok("match: match never starts a Codex round, and does not need the home", not CALLS and before == snap(w.state))

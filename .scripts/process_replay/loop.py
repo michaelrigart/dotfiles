@@ -15,7 +15,8 @@ A run takes an injected tree through the final whole-branch review, then the Cod
 Both are idempotent: with nothing new answered, no state file changes.
 
 The run state is the Shared record of the plan, plus: base_tip (the scratch commit holding the injected tree), repairs
-({defect: {repair: patch path, group, hunks}}, from injected/<branch>.json when the run was made), judging (what the run
+({defect: {repair: patch path, group, hunks}}, from injected/<branch>.json when the run was made; the patch is the run's own copy,
+runs/<case>/<label>/repairs/<defect>.patch, which a later `inject` leaves alone), judging (what the run
 waits for), failures (consecutive failed rounds), leak, error, and for a voided run replaced_by (its replacement's label)
 or, for the replacement, replaces. A voided run keeps end "void" and voids 1; its replacement starts at voids 1 and ends
 "void" with voids 2 if it leaks as well.
@@ -204,6 +205,21 @@ def _home(a):
     return home
 
 
+def _keep_repair(state, cid, label, did, path):
+    """The run's own copy of a repair, runs/<case>/<label>/repairs/<defect>.patch, whose path the run keeps: `inject` rewrites and deletes
+    repairs/<defect>.patch whenever it settles a branch again, and a run must apply the repair it started with."""
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError as e:
+        raise Failed("the repair of {} cannot be read: {}".format(did, e))
+    mine = os.path.join(state, "runs", cid, label, "repairs", did + ".patch")
+    os.makedirs(os.path.dirname(mine), exist_ok=True)
+    with open(mine, "wb") as f:
+        f.write(data)
+    return mine
+
+
 def start_run(ctx, case, label, voids=0, replaces=None):
     """A fresh run of `case` under `label`: its scratch repository (the work commit's tree on the branch's base history), its
     ledger, and its state. Called with no Codex round in flight: the ledger reads the original Codex home."""
@@ -217,7 +233,8 @@ def start_run(ctx, case, label, voids=0, replaces=None):
         rec = (inj["defects"].get(did) or {})
         if not rec.get("repair"):
             raise Failed("case {}: defect {} has no repair in injected/{}.json".format(case["id"], did, case["branch"]))
-        repairs[did] = {"repair": rec["repair"], "group": rec.get("group") or did, "hunks": rec.get("hunks") or []}
+        repairs[did] = {"repair": _keep_repair(a.state, case["id"], label, did, rec["repair"]), "group": rec.get("group") or did,
+                        "hunks": rec.get("hunks") or []}
     jsave(os.path.join(a.state, "runs", case["id"], label, "scratch.json"), {"scratch": out})      # before the build: cleanup removes what a failure leaves
     tmp = tempfile.mkdtemp(prefix="loop-files.")
     try:
@@ -717,23 +734,25 @@ def _drive(a, rounds):
             raise Failed("another `run` holds {}: only one runs at a time (it keeps to {} Codex turns and alone creates runs)".format(
                 os.path.join(a.state, "run.lock"), TURNS))
     try:
-        home = None
-        while True:
+        with contextlib.ExitStack() as held:
+            home = None
+            while True:
+                runs = runs_of(a)
+                moved = ensure_runs(ctx, runs) if rounds else False
+                for run in runs:
+                    moved |= _settle(ctx, run)
+                if rounds and any(r["end"] is None and r["step"] == "codex" and r["label"] not in ctx.failed for r in runs):
+                    if home is None:
+                        home = _home(a)
+                        held.enter_context(codexhome.hold(home))        # until this run ends: the daemon is not a crashed run's to reclaim
+                    moved |= _rounds(ctx, runs, home)
+                if not moved:
+                    break
             runs = runs_of(a)
-            moved = ensure_runs(ctx, runs) if rounds else False
-            for run in runs:
-                moved |= _settle(ctx, run)
-            if rounds and any(r["end"] is None and r["step"] == "codex" and r["label"] not in ctx.failed for r in runs):
-                if home is None:
-                    home = _home(a)
-                moved |= _rounds(ctx, runs, home)
-            if not moved:
-                break
-        runs = runs_of(a)
-        _summary(runs)
-        waits = C.pending(a.state)
-        if waits:
-            say("{} item(s) wait for an agent: run `process-replay.py pending`, then `{}` again".format(len(waits), getattr(a, "command", "run")))
+            _summary(runs)
+            waits = C.pending(a.state)
+            if waits:
+                say("{} item(s) wait for an agent: run `process-replay.py pending`, then `{}` again".format(len(waits), getattr(a, "command", "run")))
     finally:
         _unlock(fd)
     return 0

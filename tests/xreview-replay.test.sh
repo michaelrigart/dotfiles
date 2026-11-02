@@ -920,6 +920,10 @@ iso = lambda sec: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(sec))
 NAME_A, NAME_B, NAME_C = iso(T0) + "-" + HA[:12], iso(T0 + 600) + "-" + HB[:12], iso(T0 + 1800) + "-" + HC[:12]
 
 
+MEM_A, MEM_B, MEM_C = ("{} memories: the reviewer keeps this one line\n".format(x) for x in "ABC")
+PROBE = {"answer": {"word": "ok"}, "tokens": 10, "developer": "Memories: " + MEM_A + MEM_B + MEM_C}     # the probe's turn: every snapshot's line
+
+
 def mk_watch(path, first=0):
     """Polls every minute at :30 from minute `first` to minute 45; the memories change at minutes 10 and 30."""
     lines = []
@@ -928,7 +932,7 @@ def mk_watch(path, first=0):
         if m == first or m in (10, 30):
             rec["snapshot"] = NAME_A if m < 10 else NAME_B if m < 30 else NAME_C
         lines.append(rec)
-    for name, text in ((NAME_A, "A memories\n"), (NAME_B, "B memories\n"), (NAME_C, "C memories\n")):
+    for name, text in ((NAME_A, MEM_A), (NAME_B, MEM_B), (NAME_C, MEM_C)):
         wr(os.path.join(path, "snapshots", name, "memory_summary.md"), text)
     wr(os.path.join(path, "polls.jsonl"), "".join(json.dumps(l) + "\n" for l in lines))
     return path
@@ -1012,7 +1016,7 @@ is_("RP7m an explicit --max-tokens wins", HM.token_cap(argparse.Namespace(max_to
 MALL = {"verdict": "changes", "findings": [{"severity": "P1", "file": "lib.py", "line": 2, "summary": "adds the wrong offset",
                                             "failure_scenario": "f(1) is 3"}]}
 RPCD, CXD = os.path.join(ROOT, "mem-rpc"), os.path.join(ROOT, "mem-codex")
-STUB_RPC = helpers.stub_rpc(RPCD, CODEX, {"default": {"answer": MALL, "tokens": 1000}})
+STUB_RPC = helpers.stub_rpc(RPCD, CODEX, {"default": {"answer": MALL, "tokens": 1000}, "probe": PROBE})
 STUB_CODEX = helpers.stub_codex(CXD)
 menv = dict(os.environ, XDG_STATE_HOME=XM, CODEX_HOME=CODEX, XREVIEW_REPLAY_RPC=STUB_RPC, CODEX_REAL_BIN=STUB_CODEX)
 for k in ("XREVIEW_RPC_SOCK", "XREVIEW_RPC_STDIO"):
@@ -1060,7 +1064,7 @@ by_home = {}
 for c in rl:
     if c["cmd"] == "turn-start":
         by_home[os.path.basename(c["codex_home"])] = by_home.get(os.path.basename(c["codex_home"]), 0) + 1
-is_("RP7m memories_arms: two turns on each home", by_home, {"nomem": 2, "mem-" + HA[:12]: 2, "mem-" + HB[:12]: 2})
+is_("RP7m memories_arms: two arm turns on each home, after the probe's", by_home, {"nomem": 3, "mem-" + HA[:12]: 3, "mem-" + HB[:12]: 3})
 runs_of_home = []
 for h in homes_used:
     if not runs_of_home or runs_of_home[-1] != h:
@@ -1070,7 +1074,7 @@ cx = [(c["argv"][2], os.path.basename(c["codex_home"])) for c in helpers.read_lo
 is_("RP7m memories_arms: one daemon at a time: each home starts and stops before the next starts", [v for v, _h in cx], ["start", "stop"] * 3)
 is_("RP7m memories_arms: and stops the home it started", [cx[i][1] == cx[i + 1][1] for i in (0, 2, 4)], [True] * 3)
 hm_a = os.path.join(XM, "cxh", "mem-" + HA[:12])
-ok("RP7m memories_arms: the snapshot home holds the snapshot and reads it", open(os.path.join(hm_a, "memories", "memory_summary.md")).read() == "A memories\n"
+ok("RP7m memories_arms: the snapshot home holds the snapshot and reads it", open(os.path.join(hm_a, "memories", "memory_summary.md")).read() == MEM_A
    and "use_memories = true" in open(os.path.join(hm_a, "config.toml")).read())
 ok("RP7m memories_arms: the home for B has no memories and reads none", not os.path.exists(os.path.join(XM, "cxh", "nomem", "memories"))
    and "use_memories = false" in open(os.path.join(XM, "cxh", "nomem", "config.toml")).read())
@@ -1079,8 +1083,9 @@ live_sessions = [f for d, _s, fs in os.walk(os.path.join(CODEX, "sessions")) for
 is_("RP7m memories_arms: no replay rollout lands in the live Codex home", live_sessions, [])
 stm = jl(os.path.join(RPCD, "rpc-state.json"))
 mthreads = jl(os.path.join(SM, "threads.json"))["threads"]
-ok("RP7m memories_arms: every thread is recorded with its home and archived", len(mthreads) == 6 and all(t["done"] and t.get("home") for t in mthreads)
-   and sorted(t["thread"] for t in mthreads) == sorted(stm["archived"]), (mthreads, stm["archived"]))
+ok("RP7m memories_arms: every thread is recorded with its home and archived, and the three probes' threads are archived too", len(mthreads) == 6
+   and all(t["done"] and t.get("home") for t in mthreads) and len(stm["archived"]) == 9
+   and set(t["thread"] for t in mthreads) <= set(stm["archived"]), (mthreads, stm["archived"]))
 n_cx, n_turns = len(helpers.read_log(os.path.join(CXD, "codex.log"))), len([c for c in rl if c["cmd"] == "turn-start"])
 p = subprocess.run([HARNESS, "run", "--state", SM], capture_output=True, text=True, env=menv)
 ok("RP7m memories_arms: a rerun redoes nothing and starts no daemon", p.returncode == 0 and len(helpers.read_log(os.path.join(CXD, "codex.log"))) == n_cx
@@ -1107,10 +1112,10 @@ def leak_run(tag, script):
     state = os.path.join(ROOT, "state-" + tag)
     shutil.copy(os.path.join(SM, "cases.json"), os.path.join(state, "cases.json")) if os.path.isdir(state) else (os.makedirs(state), shutil.copy(os.path.join(SM, "cases.json"), os.path.join(state, "cases.json")))
     rpcd, cxd = os.path.join(ROOT, tag + "-rpc"), os.path.join(ROOT, tag + "-codex")
-    stub = helpers.stub_rpc(rpcd, CODEX, script)
+    stub = helpers.stub_rpc(rpcd, CODEX, dict({"probe": PROBE}, **script))
     env = dict(menv, XDG_STATE_HOME=xdg, XREVIEW_REPLAY_RPC=stub, CODEX_REAL_BIN=helpers.stub_codex(cxd))
     p = subprocess.run([HARNESS, "run", "--state", state, "--codex-source", CODEX], capture_output=True, text=True, env=env)
-    runs = [jl(os.path.join(state, "runs", cid, l + ".json")) for cid, m in jl(os.path.join(state, "arms.json")).items() for l in m]
+    runs = [jl(f) for f in (os.path.join(state, "runs", cid, l + ".json") for cid, m in jl(os.path.join(state, "arms.json")).items() for l in m) if os.path.exists(f)]
     return p, state, runs, helpers.read_log(os.path.join(rpcd, "rpc.log"))
 
 
@@ -1119,14 +1124,14 @@ p, st1, runs1, log1 = leak_run("leak1", {"turns": [LEAK], "default": CLEAN})
 is_("RP7m memories_leaks: a leaking run exits 0", p.returncode, 0)
 ok("RP7m memories_leaks: exactly one run was voided once and ran again, clean", sorted(len(r.get("voids", [])) for r in runs1) == [0] * 5 + [1]
    and not any(r["error"] for r in runs1), [(r.get("voids"), r["error"]) for r in runs1])
-is_("RP7m memories_leaks: the sixth arm took a second turn", len([c for c in log1 if c["cmd"] == "turn-start"]), 7)
+is_("RP7m memories_leaks: the sixth arm took a second turn (and each home had its probe)", len([c for c in log1 if c["cmd"] == "turn-start"]), 10)
 voided = [r for r in runs1 if r.get("voids")][0]
 ok("RP7m memories_leaks: the void names what it read", CHECKOUT in " ".join(voided["voids"][0]), voided["voids"])
 is_("RP7m memories_leaks: the run reports its own attempt's tokens, and the spend counts the voided attempt too", (voided["tokens"], voided["spent"]), (1000, 2000))
 is_("RP7m memories_leaks: the stop counts every attempt", jl(os.path.join(st1, "progress.json"))["tokens"], 7000)
 p, st2, runs2, log2 = leak_run("leak2", {"default": LEAK})
 is_("RP7m memories_leaks: arms that leak twice end as error runs", sorted(set((r["error"] or "")[:10] for r in runs2)), ["void twice"])
-is_("RP7m memories_leaks: each ran exactly twice", len([c for c in log2 if c["cmd"] == "turn-start"]), 12)
+is_("RP7m memories_leaks: each ran exactly twice (and each home had its probe)", len([c for c in log2 if c["cmd"] == "turn-start"]), 15)
 is_("RP7m memories_leaks: and spent counts each of its two attempts once (2000, not 3000)", sorted(set((r["tokens"], r["spent"]) for r in runs2)), [(1000, 2000)])
 is_("RP7m memories_leaks: the stop counts all twelve turns once", jl(os.path.join(st2, "progress.json"))["tokens"], 12000)
 ok("RP7m memories_leaks: and records both voids", all(len(r["voids"]) == 2 for r in runs2), [r.get("voids") for r in runs2][:1])
@@ -1136,6 +1141,23 @@ ok("RP7m memories_leaks: the report lists them and no switch passes on them",
    len(rep2["errors"]) == 6 and all("void twice" in e["error"] for e in rep2["errors"]) and rep2["switches"]["memories"]["n"] == 0
    and rep2["switches"]["memories"]["status"] != "pass", rep2["switches"])
 ok("RP7m memories_leaks: the voided attempts' checkouts are gone", not os.path.exists(SCR) or os.listdir(SCR) == [])
+# memories_probe: a home whose probe fails stops the run before any arm turn
+p, stp, runsp, logp = leak_run("probeA", {"default": CLEAN, "probe": {"answer": None, "rc": 1}})
+ok("RP7m memories_probe: a failing probe stops the run with a clear error", p.returncode == 1 and "isolation probe" in p.stdout and "no arm ran" in p.stdout, (p.returncode, p.stdout[-400:]))
+is_("RP7m memories_probe: no arm turn was started: the probe's is the only one", len([c for c in logp if c["cmd"] == "turn-start"]), 1)
+ok("RP7m memories_probe: no run was recorded, and progress says why", runsp == [] and "isolation probe" in (jl(os.path.join(stp, "progress.json")).get("crashed") or ""), runsp)
+p, stp, runsp, logp = leak_run("probeB", {"default": CLEAN, "probe": dict(PROBE, developer="Nothing is remembered here.")})
+ok("RP7m memories_probe: a snapshot home whose turn shows none of its memories fails the probe, and no arm of it ran",
+   p.returncode == 1 and "memories" in p.stdout and all(r["home"] == "nomem" for r in runsp), (p.returncode, p.stdout[-400:], [r["home"] for r in runsp]))
+
+for tag, cmd, what in (("leak3", "cat $XDG_STATE_HOME/review-work/scratch/other0001/README.md", "another run's scratch"),
+                       ("leak4", "ls $XDG_STATE_HOME/process-replay/memwatch", "the memories watcher's directory"),
+                       ("leak5", "rg -n x ~/.codex/sessions", "October's rollouts")):
+    LEAKX = {"answer": MALL, "tokens": 1000, "tools": [{"type": "function_call", "name": "exec", "arguments": {"cmd": cmd, "workdir": "/"}}]}
+    p, stx, runsx, logx = leak_run(tag, {"turns": [LEAKX], "default": CLEAN})
+    ok("RP7m memories_leaks: a run that read {} is void and runs again, clean".format(what), p.returncode == 0
+       and sorted(len(r.get("voids", [])) for r in runsx) == [0] * 5 + [1] and not any(r["error"] for r in runsx),
+       [(r.get("voids"), r["error"]) for r in runsx])
 for d in cleanup:
     shutil.rmtree(d, ignore_errors=True)
 

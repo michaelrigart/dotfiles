@@ -7,7 +7,8 @@ PER_REPO from one repository (a branch that waits on a judge holds its place, on
                  hunk goes with the defect it tests. A hunk it cannot place ("unsure") makes those defects one group, reverted and
                  re-applied together. Overlapping ranges are one range. A group with no counted defect is never reverted.
   2. fixpoint    the tree a case ships, and which of the branch's counted (P0-P2) defects it holds, settled as below.
-  3. qualifying  two or more assessable per-task defects and every P0/P1 of both classes assessable.
+  3. qualifying  two or more assessable per-task defects, every P0/P1 of both classes assessable, and at least one assessable counted
+                 pre-merge defect (a case without one has nothing to calibrate against; its slot passes to the next candidate).
 
 The fixpoint. A counted defect is in the tree by its revert (its group reverted), on trial or by its recreation, or out. Each round:
 
@@ -71,6 +72,7 @@ MIN_TASK = 2                         # assessable per-task defects a branch need
 HUNK_CAP, FILES_CAP = 20000, 150000
 OK = ("present", "recreated")
 SEVERE = ("P0", "P1")
+NO_PRE = "no pre-merge defect to calibrate against"
 
 fix_patch = P.fix_patch
 coherent = K.coherent
@@ -422,8 +424,14 @@ class Fixpoint(object):
             else:
                 applied.append(g)
         for did in self.recreations():
+            before = C.git(work, "write-tree")
             if _apply(work, [self.rec[did][0]], reverse=False):
                 failed[did] = ("unassessable", "the recreation does not apply to the injected tree")
+                continue
+            good, why = K.coherent(work, P.files_of(self.rec[did][0]), self.notes)       # a hand edit is checked as a revert is
+            if not good:
+                C.git(work, "read-tree", "--reset", "-u", before)
+                failed[did] = ("unassessable", "the recreation breaks " + why)
         if failed:
             return None, failed
         verdict = self.check_build()
@@ -743,6 +751,8 @@ def process(a, br, counts, questions):
         return done("disqualified", "P0/P1 defect(s) not shown present: " + ", ".join(severe), **more)
     if sum(1 for d in task if drec[d["id"]]["status"] in OK) < MIN_TASK:
         return done("disqualified", "fewer than two assessable per-task defects", **more)
+    if not any(drec[d["id"]]["status"] in OK for d in defects if d.get("class") != "task"):
+        return done("disqualified", NO_PRE, **more)
     return done("qualified", None, case_defects=ok_ids, work_commit=fx.head, **more)
 
 
@@ -775,7 +785,10 @@ def cmd_inject(a):
             outcome[br["id"]] = {"state": "waiting", "why": "waiting on the inventory (cases judges pending)", "counts": {}, "case_defects": [],
                                  "unassessable_task": []}
         else:
-            outcome[br["id"]] = process(a, br, counts, questions)
+            try:
+                outcome[br["id"]] = process(a, br, counts, questions)
+            except Failed as e:       # one branch that cannot be built gives up its place; the others go on
+                outcome[br["id"]] = {"state": "disqualified", "why": "error {}".format(e), "counts": {}, "case_defects": [], "unassessable_task": []}
         if outcome[br["id"]]["state"] == "qualified" or (outcome[br["id"]]["state"] == "waiting" and not outcome[br["id"]].get("doomed")):
             total += 1
             per_repo[br["repo"]] += 1

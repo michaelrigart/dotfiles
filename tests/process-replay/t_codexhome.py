@@ -392,6 +392,48 @@ _res, out = said(H.start, home)
 ok("crashed_run: starting the same home stops its left daemon, then starts it", stops()[-2:] == [("stop", home), ("start", home)] and "left running" in out, stops()[-3:])
 H.stop(home)
 
+# ---- hold: a process using a daemon it did not start keeps it from looking like a crashed run's
+CHILD2 = r"""
+import os, sys
+sys.dont_write_bytecode = True
+sys.path.insert(0, sys.argv[1])
+from process_replay import codexhome as H
+from process_replay.common import Failed
+for label, fn, arg in (("reclaim", H.reclaim, sys.argv[2]), ("start", H.start, sys.argv[3])):
+    try:
+        fn(arg)
+        print(label, "went ahead", flush=True)
+    except Failed as e:
+        print(label, "refused", flush=True)
+"""
+proc, first = child("die", home)
+proc.wait(30)
+ok("hold: a run that died leaves its daemon", os.path.exists(SOCK) and first == "started")
+n_calls = len(stops())
+with H.hold(home):
+    got = subprocess.run(["/usr/bin/python3", "-I", "-B", "-c", CHILD2, helpers.SCRIPTS, home, hm], capture_output=True, text=True,
+                         env=dict(os.environ, XREVIEW_REPLAY_RPC=UP)).stdout.split("\n")
+    is_("hold: while one process holds the daemon, another's reclaim and start of another home refuse", got[:2], ["reclaim refused", "start refused"])
+    ok("hold: and neither stopped it", os.path.exists(SOCK) and len(stops()) == n_calls, stops()[n_calls:])
+res, out = said(H.reclaim, home)
+ok("hold: once the block ends the lock is let go: the daemon is a leftover again", res is True and not os.path.exists(SOCK) and "left running" in out, (res, out))
+proc, first = child("wait", home)
+
+
+def enter_hold():
+    with H.hold(home):
+        pass
+
+
+ok("hold: it refuses at once while another process holds the home", raises(enter_hold))
+proc.stdin.close()
+proc.wait(30)
+H.start(home)
+with H.hold(home):
+    pass
+ok("hold: a lock this process holds for the home (it started the daemon) stays held after the block", H._same(H._HELD["home"], home))
+H.stop(home)
+
 # ---- outside_cxh: a recorded home that is not under $XDG_STATE_HOME/cxh is never stopped
 outside = os.path.join(ROOT, "elsewhere", "home")
 put(outside, H.RECORD, json.dumps({"source": SRC, "use_memories": False}))

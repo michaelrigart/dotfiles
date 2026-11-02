@@ -267,7 +267,9 @@ def turn_start(st):
     thread = opt("--thread")
     mine = (SCRIPT.get("threads") or {}).get(thread) or []
     n = st["per_thread"].get(thread, 0)
-    if n < len(mine):
+    if SCRIPT.get("probe") is not None and "Reply with the JSON object" in open(opt("--input")).read():
+        spec = SCRIPT["probe"]      # codexhome.probe's turn: served apart, so it consumes no scripted turn
+    elif n < len(mine):
         spec = mine[n]
         st["per_thread"][thread] = n + 1
     elif st["global"] < len(SCRIPT.get("turns") or []):
@@ -353,6 +355,7 @@ def stub_rpc(dir, codex_home, script):
       {"turns":   [spec, ...],            consumed in turn-start order, by turns no per-thread entry serves
        "threads": {"th2": [spec, ...]},   consumed in that thread's turn-start order, first
        "default": spec,                   used when both are exhausted (without it, turn-start fails)
+       "probe": spec,                     the answer to codexhome.probe's turn, which consumes no entry of the above
        "health_rc": 0}
 
     spec: {"answer": {verdict, findings, reviewed_files}, "tokens": 1000, "compacted": false,

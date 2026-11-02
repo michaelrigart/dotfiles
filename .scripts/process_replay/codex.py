@@ -23,7 +23,8 @@ run["reviews"] and whose `thread` it makes the run's thread:
 or one of
   {paused: str, resets_at: int}         the weekly window is at WEEKLY_PAUSE percent or more; no turn was started
   {stopped: str}                        the token stop was reached; no turn was started
-  {leak: [str], tokens, thread, turns}  a turn named the original checkout: the round is void
+  {leak: [str], tokens, thread, turns}  a turn named a path it must not read (forbidden(): the original checkout, the state, the
+                                        other runs' directories, October's answers): the round is void
 A round that fails raises RoundFailed (a Failed that carries the tokens its turns used, the thread, and `.leak`:
 what the scan of whatever turns it ran found). The caller adds `tokens` of every outcome to the run's.
 
@@ -336,6 +337,10 @@ def forbidden_paths(paths):
                 parents.append(re.compile(r"(?:~|\$HOME|\$\{HOME\})/" + re.escape(os.path.dirname(tail)) + _NOT_WORD))
             for spelling in TOOLS.get(tail, {}).get("spellings", ()):
                 names.append(re.compile(r"(?<![A-Za-z0-9_])" + re.escape(spelling) + _NOT_WORD))
+        state_home = L.state_home().rstrip("/")
+        if state_home and path.startswith(state_home + "/"):
+            for var in ("$XDG_STATE_HOME", "${XDG_STATE_HOME}"):
+                names.append(re.compile(r"(?<![A-Za-z0-9_])" + re.escape(var + path[len(state_home):]) + _NOT_WORD))
         out.append((path, names, parents, re.compile(r"(?<![A-Za-z0-9_./-])" + re.escape(os.path.basename(path)) + _NOT_WORD)))
     return out
 
@@ -561,9 +566,11 @@ def _calls(p, cwd):
     return [(json.dumps(p, ensure_ascii=False), wd, cmds)]
 
 
-def leaks(home, turns, paths, cwd=None):
-    """The tool calls of `turns` ([(thread, turn)]) in `home`'s rollouts that name one of `paths` (the original
-    checkouts; a wt sibling <path>-<branch> continues the name): ["<path> in <turn>"]. `cwd`, the scratch repository,
+def leaks(home, turns, paths, cwd=None, walled=None):
+    """The tool calls of `turns` ([(thread, turn)]) in `home`'s rollouts that name one of `paths` (forbidden(): the original
+    checkouts, a wt sibling <path>-<branch> continuing the name, the state, the snapshot and where October's answers live):
+    ["<path> in <turn>"]. With `walled` = (the review-work directory, [allowed directories]), also any path under review-work that
+    is not inside an allowed directory (walled_leaks). `cwd`, the scratch repository,
     is where a relative path of a call without its own workdir starts. Only the reviewer's own calls
     (custom_tool_call, function_call, local_shell_call) are read, never a user or developer message, which may carry
     the paths legitimately. A scanned turn whose rollout is missing, unreadable or does not hold the turn counts as a
@@ -599,7 +606,10 @@ def leaks(home, turns, paths, cwd=None):
                     inside = False
                 elif inside and rec.get("type") == "response_item" and p.get("type") in ("custom_tool_call", "function_call", "local_shell_call"):
                     for text, where, commands in _calls(p, cwd):
-                        for name in named(text, where, forbidden, commands):
+                        names = set(named(text, where, forbidden, commands))
+                        if walled:
+                            names |= walled_leaks(text, where, walled[0], walled[1])
+                        for name in names:
                             found.add("{} in {}".format(name, turn))
             for turn in sorted(ours - seen):      # a turn that cannot be read cannot be shown clean: it counts as a leak
                 found.add("rollout unreadable in {}".format(turn))
@@ -619,6 +629,75 @@ def _spent(a, run):
 
 def orig_paths(branch):
     return [p for p in (branch.get("repo"), branch.get("objects"), branch.get("view")) if isinstance(p, str)]
+
+
+# What a replayed reviewer must not read, besides the original checkout: where October's answers live (spec 7.1).
+ANSWERS = ("~/.codex/sessions", "~/.codex/archived_sessions", "~/.codex/memories", "~/.claude/projects")
+SNAPSHOT = "~/Code/.replay/snapshot"
+
+
+def forbidden(state, branch, own, snapshot_root=None, memwatch=None):
+    """(paths, walled): everything a replayed reviewer (Codex, or the final reviewer) must not read, for leaks() and
+    final.transcript_leaks(). `paths` go to forbidden_paths: the original checkout, its objects and view (and the wt siblings the
+    scan matches beside them), the state directory (as given, resolved and by its alias), the snapshot root, October's answers
+    (ANSWERS and $XDG_STATE_HOME/xreview), and, for a memories run (`memwatch` is the watcher's directory, or True for the usual
+    one), the watcher's directory. `walled` = (the review-work directory, `own`): everything under it is forbidden but the run's own
+    directories `own` (its scratch, for a final reviewer its staged item directory too): the other runs' scratch, the staged items
+    and the state's alias links."""
+    house = os.path.expanduser("~")
+    state_home = L.state_home().rstrip("/")
+    paths = orig_paths(branch)
+    if state:
+        real = os.path.abspath(state)
+        paths += [real, os.path.realpath(real)]
+        try:
+            with open(os.path.join(real, "alias")) as f:
+                link = f.read().strip()
+        except OSError:
+            link = ""
+        if link:
+            paths.append(link)
+    paths.append(os.path.expanduser(SNAPSHOT))
+    if snapshot_root:
+        paths.append(os.path.abspath(os.path.expanduser(snapshot_root)))
+    paths += [os.path.join(house, x[2:]) for x in ANSWERS] + [os.path.join(state_home, "xreview")]
+    if memwatch:
+        paths.append(os.path.join(state_home, "process-replay", "memwatch"))
+        if isinstance(memwatch, str):
+            paths += [os.path.abspath(memwatch), os.path.realpath(memwatch)]
+    return list(dict.fromkeys(paths)), (os.path.join(state_home, "review-work"), list(own))
+
+
+_WORD = re.compile(r"[^\s\"'`;|&<>()\\]+")
+_OPTION = re.compile(r"\A(?:--?[A-Za-z][A-Za-z0-9-]*=|-[A-Za-z]|[A-Za-z_][A-Za-z0-9_]*=)")
+
+
+def walled_leaks(text, cwd, review_root, allowed):
+    """The paths `text` names under `review_root` (the review-work directory) other than inside `allowed` (the review's own
+    staged directory and its scratch). Every path-like word is resolved against `cwd` (~, $HOME and $XDG_STATE_HOME expanded, `..`
+    followed, a glob pattern taken as written), and a word that names review-work/<rest> in any spelling is also read as
+    <review_root>/<rest>. The review-work directory itself, the items root and the scratch root are named by a listing or a
+    glob, so they count; only a path inside an allowed directory does not."""
+    house = os.path.expanduser("~").rstrip("/")
+    state_home = L.state_home().rstrip("/")
+    root = review_root.rstrip("/")
+    allowed = [x.rstrip("/") for x in allowed]
+    found = set()
+    for word in _WORD.findall(text):
+        for t in dict.fromkeys([word, _OPTION.sub("", word)]):
+            if not t:
+                continue
+            t = t.replace("${HOME}", house).replace("$HOME", house).replace("${XDG_STATE_HOME}", state_home).replace("$XDG_STATE_HOME", state_home)
+            if t == "~" or t.startswith("~/"):
+                t = house + t[1:]
+            cands = [os.path.normpath(t if os.path.isabs(t) else os.path.join(cwd or "/", t))]
+            parts = t.split("/")
+            if "review-work" in parts:
+                cands.append(os.path.normpath(os.path.join(root, *parts[parts.index("review-work") + 1:])))
+            for cand in cands:
+                if (cand == root or cand.startswith(root + "/")) and not any(cand == x or cand.startswith(x + "/") for x in allowed):
+                    found.add(cand)
+    return found
 
 
 def _start(a, cwd):
@@ -671,6 +750,7 @@ def codex_round(a, run, case, branch, home):
 
     res = {"findings": [], "judged": [], "tokens": 0, "turns": [], "models": [], "approvals": []}
     thread = None
+    paths, walled = forbidden(a.state, branch, [scratch], getattr(a, "snapshot_root", None))
     with homed(home):
         for i, pk in enumerate(dec["packets"]):
             try:
@@ -687,14 +767,14 @@ def codex_round(a, run, case, branch, home):
             except Failed as e:
                 failed = RoundFailed(str(e), res["tokens"], thread)
                 try:
-                    failed.leak = leaks(home, res["turns"], orig_paths(branch), cwd)
+                    failed.leak = leaks(home, res["turns"], paths, cwd, walled)
                 except Exception as scan:
                     failed.leak = ["the leak scan failed: {}".format(scan)]
                 raise failed
             res["findings"] += [f for f in doc["findings"] if isinstance(f, dict)]
             res["approvals"].append(doc.get("verdict") == "approve")
             res["judged"].append(([x for x in doc.get("reviewed_files") or [] if isinstance(x, str)], pk.get("shown") or []))
-    found = leaks(home, res["turns"], orig_paths(branch), cwd)
+    found = leaks(home, res["turns"], paths, cwd, walled)
     if found:
         return {"leak": found, "tokens": res["tokens"], "thread": thread, "turns": res["turns"]}
     missing = None
