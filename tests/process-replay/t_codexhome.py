@@ -280,9 +280,31 @@ is_("stale_marker: a marker home whose socket does not answer health is settled 
 H.XR.RPC = UP
 ok("stale_marker: while one that answers still blocks", raises(H.start, home))
 H.stop(hm)
-H.XR.RPC = DOWN
-os.unlink(os.path.join(home, "app-server-control", "app-server-control.sock"))
+os.unlink(os.path.join(home, "app-server-control", "app-server-control.sock"))      # the dead daemon's leftover
+# a marker home whose record is gone still counts while it answers
+H.start(home)
+record = open(os.path.join(home, H.RECORD)).read()
+os.unlink(os.path.join(home, H.RECORD))
+ok("stale_marker: a marker home without its record, whose daemon answers, still blocks another start", raises(H.start, hm))
+ok("stale_marker: and a second daemon was not started", helpers.read_log(LOG)[-1]["codex_home"] == home)
+put(home, H.RECORD, record)
+H.stop(home)
+# a health call that hangs is a daemon that does not answer for start, but one that might be alive for a refresh
+HANG = os.path.join(ROOT, "hang-rpc")
+with open(HANG, "w") as f:
+    f.write("#!/bin/sh\nsleep 4\n")
+os.chmod(HANG, 0o755)
+H.HEALTH_TIMEOUT = 1
+H.start(home)
+H.XR.RPC = HANG
+t0 = time.time()
+ok("stale_marker: a health call that times out blocks a refresh of that home", raises(H.ensure, STATE, "nomem", source=SRC))
+H.start(hm)
+ok("stale_marker: but does not keep another home from starting", json.load(open(H._marker()))["home"] == hm and time.time() - t0 < 4)
 H.XR.RPC = UP
+H.stop(hm)
+os.unlink(os.path.join(home, "app-server-control", "app-server-control.sock"))
+H.HEALTH_TIMEOUT = 15
 
 # ---- refresh_refused_while_running
 H.start(home)
@@ -382,10 +404,26 @@ QUOTED = 'Run "make test" before pushing any branch to origin, and mind the C:\\
 put(qsrc, "memories/memory_summary.md", "# s\n\n" + QUOTED + "\nshort one\n")
 qhome = H.ensure(STATE, "p-q", source=qsrc)
 for where, spec in (("a tool call", {"tools": [{"name": "exec", "arguments": {"cmd": QUOTED}}]}),
-                    ("a tool output record", {"developer": "x" + QUOTED + "y"})):
+                    ("a developer message", {"developer": "x" + QUOTED + "y"})):
     stub = helpers.stub_rpc(os.path.join(ROOT, "rpc-q" + where[:4]), qhome, {"default": dict({"answer": {}}, **spec)})
     res = probe_fresh(qhome, False, rpc=stub)
     ok("probe_checks: a memory line with quotes and a backslash is found in " + where, res["checks"]["memories"] is False, res)
+# a tool's output: records the stub cannot write, appended to the rollout by a wrapper after turn-wait
+for kind, payload in (("function_call_output", {"type": "function_call_output", "call_id": "c1", "output": QUOTED}),
+                      ("function_call_output holding JSON", {"type": "function_call_output", "call_id": "c1",
+                                                              "output": json.dumps({"output": QUOTED, "metadata": {}})}),
+                      ("custom_tool_call_output", {"type": "custom_tool_call_output", "call_id": "c2", "output": QUOTED})):
+    tag = kind.replace(" ", "_")
+    rec = os.path.join(ROOT, "rec-" + tag)
+    with open(rec, "w") as f:
+        f.write(json.dumps({"type": "response_item", "payload": payload}) + "\n")
+    inner = helpers.stub_rpc(os.path.join(ROOT, "rpc-o" + tag), qhome, {"default": {"answer": {}, "developer": "plain"}})
+    wrap = os.path.join(ROOT, "out-rpc-" + tag)
+    with open(wrap, "w") as f:
+        f.write("#!/bin/sh\n%s \"$@\"\nrc=$?\nif [ \"$1\" = turn-wait ]; then cat %s >> \"$CODEX_HOME/sessions/2026/10/20/rollout-2026-10-20T10-00-00-th1.jsonl\"; fi\nexit $rc\n" % (inner, rec))
+    os.chmod(wrap, 0o755)
+    res = probe_fresh(qhome, False, rpc=wrap)
+    ok("probe_checks: a memory line in a {} record is found".format(kind), res["checks"]["memories"] is False, res)
 envlog = os.path.join(ROOT, "env.log")
 envwrap = os.path.join(ROOT, "env-rpc")
 envinner = rpc_for("x", phome, "plain")
@@ -531,3 +569,11 @@ run_cmd("--name", "nomem", "--stop", "--memories", SNAP)
 ok("cmd_home: unless --stop comes with it: stopped, then refreshed",
    [l["argv"][2] for l in helpers.read_log(LOG)[n_stop:]] == ["stop"] and os.path.exists(os.path.join(nm, "memories", "memory_summary.md"))
    and os.path.isdir(os.path.join(nm, "plugins")))
+
+# a crash between the two renames of a snapshot swap: memories gone, the old copy beside it
+run_cmd("--name", "mem-cmd", "--memories", SNAP2)
+os.rename(os.path.join(cmem, "memories"), os.path.join(cmem, ".memories.old"))
+run_cmd("--name", "mem-cmd")
+ok("cmd_home: a refresh puts a crashed swap's old snapshot back first, so a home that wants memories keeps them",
+   open(os.path.join(cmem, "memories", "memory_summary.md")).read() == "second\n" and not os.path.exists(os.path.join(cmem, ".memories.old"))
+   and "use_memories = true" in cfg_of(cmem), os.listdir(cmem))

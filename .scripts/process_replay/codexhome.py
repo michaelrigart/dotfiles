@@ -41,6 +41,7 @@ PROMPT = 'Reply with the JSON object {"word": "ok"}.\n'
 PROBE_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["word"],
                 "properties": {"word": {"type": "string"}}}
 PROBE_BUDGET = 600
+HEALTH_TIMEOUT = 15
 DAEMON_TIMEOUT = 180
 MEMORY_LINES = 3
 
@@ -194,9 +195,23 @@ def _settle_auth(home):
     os.symlink(target, link)
 
 
+def _health(home):
+    """"up" when the daemon of `home` answers health, "down" when it has no socket or refuses, "unknown"
+    when it does not answer within HEALTH_TIMEOUT (it may be busy, not dead)."""
+    if not os.path.exists(_socket(home)):
+        return "down"
+    rc = _call(None, home, "health", timeout=HEALTH_TIMEOUT)[0]
+    return "up" if rc == 0 else "unknown" if rc is None else "down"
+
+
 def _alive(home):
-    """Whether the daemon of `home` answers: its socket is there and `health` succeeds."""
-    return os.path.exists(_socket(home)) and _call(None, home, "health")[0] == 0
+    """Whether the daemon of `home` answers; a timeout counts as not answering."""
+    return _health(home) == "up"
+
+
+def _may_run(home):
+    """Whether a daemon of `home` might be running: never refresh a home under one that could be alive."""
+    return _health(home) != "down"
 
 
 def _register(state, name, home):
@@ -227,10 +242,13 @@ def _make(state, name, memories_src, use_memories, source, keep_memories):
         raise Failed("the daemon socket {} would be over {} bytes, more than a unix socket allows: use a shorter XDG_STATE_HOME".format(
             _socket(home), SOCKET_LIMIT))
     mem = os.path.join(home, "memories")
+    old = os.path.join(home, ".memories.old")
+    if os.path.isfile(os.path.join(home, RECORD)) and _may_run(home):
+        raise Failed("the replay daemon of {} is running (or does not answer health): stop it first".format(home))
+    if not os.path.lexists(mem) and os.path.isdir(old):
+        os.rename(old, mem)         # a crash between the two renames of a snapshot swap
     if use_memories and memories_src is None and not (keep_memories and os.path.isdir(mem)):
         raise Failed("{} would use memories but has no memories snapshot".format(home))
-    if os.path.isfile(os.path.join(home, RECORD)) and _alive(home):
-        raise Failed("the replay daemon of {} is running: stop it first".format(home))
     config = os.path.join(source, "config.toml")
     if not os.path.isfile(config):
         raise Failed("the source home has no config.toml: " + config)
@@ -242,7 +260,7 @@ def _make(state, name, memories_src, use_memories, source, keep_memories):
     os.chmod(home, 0o700)
     os.makedirs(auth_dir(), exist_ok=True)
     os.chmod(auth_dir(), 0o700)
-    new, old = os.path.join(home, ".memories.new"), os.path.join(home, ".memories.old")
+    new = os.path.join(home, ".memories.new")
     _remove(new)
     _remove(old)
     if memories_src is not None:
@@ -307,9 +325,9 @@ def start(home):
     cur = jload(_marker())
     last = cur.get("home") if isinstance(cur, dict) else None
     if last and os.path.realpath(last) != os.path.realpath(home):
+        if _alive(last):
+            raise Failed("the replay daemon of {} is running: stop it first".format(last))
         if os.path.isfile(os.path.join(last, RECORD)):
-            if _alive(last):
-                raise Failed("the replay daemon of {} is running: stop it first".format(last))
             _settle_auth(last)      # a dead daemon's refreshed token is carried forward before another home logs in
         os.unlink(_marker())
     _daemon(home, "start")
@@ -334,15 +352,17 @@ def stop(home):
 
 
 # ------------------------------------------------------------------ the probe
-def _call(rpc, home, *args):
-    """(rc, stdout, stderr) of one xreview-rpc call against the daemon of `home`."""
+def _call(rpc, home, *args, timeout=None):
+    """(rc, stdout, stderr) of one xreview-rpc call against the daemon of `home`; rc None when it timed out."""
     exe = rpc or XR.RPC
     argv = [exe] if os.access(exe, os.X_OK) else ["/usr/bin/python3", "-I", exe]
     env = dict(os.environ, CODEX_HOME=home)
     for var in ("XREVIEW_RPC_SOCK", "XREVIEW_RPC_STDIO"):      # each outranks CODEX_HOME and would aim the call elsewhere
         env.pop(var, None)
     try:
-        p = subprocess.run(argv + list(args), capture_output=True, env=env, timeout=PROBE_BUDGET + 60)
+        p = subprocess.run(argv + list(args), capture_output=True, env=env, timeout=timeout or PROBE_BUDGET + 60)
+    except subprocess.TimeoutExpired as e:
+        return None, "", str(e)
     except (OSError, subprocess.SubprocessError) as e:
         return 1, "", str(e)
     return p.returncode, p.stdout.decode("utf-8", "replace"), p.stderr.decode("utf-8", "replace")
@@ -534,7 +554,7 @@ def cmd_home(a):
         return 0
     status, stopped = 0, False
     if a.start or a.memories or a.use_memories or not (a.stop or a.probe):
-        if os.path.isfile(os.path.join(home, RECORD)) and _alive(home):
+        if os.path.isfile(os.path.join(home, RECORD)) and _may_run(home):
             if not a.stop:
                 raise Failed("the replay daemon of {} is running: stop it first (--stop)".format(home))
             stop(home)
