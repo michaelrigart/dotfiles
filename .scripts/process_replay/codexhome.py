@@ -204,7 +204,7 @@ def _health(home):
     return "up" if rc == 0 else "unknown" if rc is None else "down"
 
 
-def _alive(home):
+def alive(home):
     """Whether the daemon of `home` answers; a timeout counts as not answering."""
     return _health(home) == "up"
 
@@ -325,7 +325,7 @@ def start(home):
     cur = jload(_marker())
     last = cur.get("home") if isinstance(cur, dict) else None
     if last and os.path.realpath(last) != os.path.realpath(home):
-        if _alive(last):
+        if alive(last):
             raise Failed("the replay daemon of {} is running: stop it first".format(last))
         if os.path.isfile(os.path.join(last, RECORD)):
             _settle_auth(last)      # a dead daemon's refreshed token is carried forward before another home logs in

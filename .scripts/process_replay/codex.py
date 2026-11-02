@@ -88,7 +88,7 @@ _ENV_LOCK = threading.Lock()
 
 
 @contextlib.contextmanager
-def _homed(home):
+def homed(home):
     with _ENV_LOCK:
         if _ENV["n"] and _ENV["home"] != home:
             raise Failed("CODEX_HOME is already set to {}: rounds on two homes cannot share a process".format(_ENV["home"]))
@@ -111,6 +111,9 @@ def _homed(home):
                     else:
                         os.environ[v] = old
                 _ENV["home"] = None
+
+
+_homed = homed          # the name t_codex.py uses
 
 
 @contextlib.contextmanager
@@ -302,7 +305,7 @@ WITH_ARG = {"sudo": ("-u", "-g", "-C", "-D", "-h", "-p", "-R", "-r", "-t", "-T",
 WRAPPERS = ("exec", "time", "nohup", "stdbuf", "ionice", "setsid", "builtin", "noglob", "nocorrect")
 
 
-def _forbidden(paths):
+def forbidden_paths(paths):
     """[(path, [regex naming it], [regex naming its parent directory as a path], regex naming its last component)]
     for the original checkouts: a git directory stands for its work tree. Under $HOME a path is also matched by its
     HOME-relative tail wherever a command spells the prefix (~/, $HOME/, ${HOME}/, ../../, /Users/x/). A parent
@@ -470,7 +473,7 @@ def _runs(command, words):
     return False
 
 
-def _named(text, cwd, forbidden, commands=()):
+def named(text, cwd, forbidden, commands=()):
     """The forbidden paths one tool call's text names (see the module docstring for what that covers). `commands`
     are the call's shell commands, read for the tools of TOOLS."""
     house = os.path.expanduser("~").rstrip("/")
@@ -567,9 +570,9 @@ def leaks(home, turns, paths, cwd=None):
     wanted = {}
     for thread, turn in turns:
         wanted.setdefault(thread, set()).add(turn)
-    forbidden = _forbidden(paths)
+    forbidden = forbidden_paths(paths)
     found = set()
-    with _homed(home):
+    with homed(home):
         for thread, ours in wanted.items():
             path = XR.rollout_path(thread)
             if path is None:
@@ -591,7 +594,7 @@ def leaks(home, turns, paths, cwd=None):
                     inside = False
                 elif inside and rec.get("type") == "response_item" and p.get("type") in ("custom_tool_call", "function_call", "local_shell_call"):
                     for text, where, commands in _calls(p, cwd):
-                        for name in _named(text, where, forbidden, commands):
+                        for name in named(text, where, forbidden, commands):
                             found.add("{} in {}".format(name, turn))
     return sorted(found)
 
@@ -607,7 +610,7 @@ def _spent(a, run):
     return total
 
 
-def _orig_paths(branch):
+def orig_paths(branch):
     return [p for p in (branch.get("repo"), branch.get("objects"), branch.get("view")) if isinstance(p, str)]
 
 
@@ -661,7 +664,7 @@ def codex_round(a, run, case, branch, home):
 
     res = {"findings": [], "judged": [], "tokens": 0, "turns": [], "models": [], "approvals": []}
     thread = None
-    with _homed(home):
+    with homed(home):
         for i, pk in enumerate(dec["packets"]):
             try:
                 thread = thread_in if (dec["action"] == "send" and thread_in and i == 0) else _start(a, cwd)
@@ -677,14 +680,14 @@ def codex_round(a, run, case, branch, home):
             except Failed as e:
                 failed = RoundFailed(str(e), res["tokens"], thread)
                 try:
-                    failed.leak = leaks(home, res["turns"], _orig_paths(branch), cwd)
+                    failed.leak = leaks(home, res["turns"], orig_paths(branch), cwd)
                 except Exception as scan:
                     failed.leak = ["the leak scan failed: {}".format(scan)]
                 raise failed
             res["findings"] += [f for f in doc["findings"] if isinstance(f, dict)]
             res["approvals"].append(doc.get("verdict") == "approve")
             res["judged"].append(([x for x in doc.get("reviewed_files") or [] if isinstance(x, str)], pk.get("shown") or []))
-    found = leaks(home, res["turns"], _orig_paths(branch), cwd)
+    found = leaks(home, res["turns"], orig_paths(branch), cwd)
     if found:
         return {"leak": found, "tokens": res["tokens"], "thread": thread, "turns": res["turns"]}
     missing = None
