@@ -1,6 +1,6 @@
 # Replay set: deciding the quality-relevant removals from October's record
 
-**Status:** Approved
+**Status:** In progress (plan docs/superpowers/plans/2026-11-02-replay-set.md, Codex-approved xr-1793629001-9de89da9)
 **Date:** 2026-11-02
 **Branch:** `replay-set` (the dotfiles have no MR; the pushed branch is the end)
 **Sign-off:** Michael, 2026-11-02 (Codex approved round 4, xr-1793626109-f7b04e58)
