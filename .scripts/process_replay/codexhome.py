@@ -6,9 +6,11 @@ lands in ~/.codex, where it could feed memory generation.
 
   $XDG_STATE_HOME/cxh/<name>/      the home (a short undated root: its socket path must fit the 103 bytes a
                                    unix socket allows), listed in <state>/codex-homes.json (name -> path);
-                                   mode 700; config.toml (the source's, with a [memories] table),
-                                   AGENTS.md, skills/rules/plugins as links, auth.json as a link into
-                                   auth_dir, memories/ (a snapshot, when given), replay-home.json (its record)
+                                   mode 700; config.toml (the source's without its notify command, with a
+                                   [memories] table), AGENTS.md, skills/rules/plugins as copies (the daemon
+                                   writes into them at run time, so none may link into the source home),
+                                   auth.json as a link into auth_dir, memories/ (a snapshot, when given),
+                                   replay-home.json (its record)
   $XDG_STATE_HOME/process-replay/codex-auth/   the shared login; daemon.json names the home running now
 
 At most one replay daemon runs at a time. While one runs, Codex replaces its auth.json link with a
@@ -31,11 +33,13 @@ from . import common
 from .common import Failed, XR, jload, jsave, say
 
 RECORD = "replay-home.json"
-LINKED = ("skills", "rules", "plugins")
+COPIED = ("skills", "rules", "plugins")
+CLONED = ("plugins",)      # copied as an APFS clone when possible: it is large
 SOCKET = os.path.join("app-server-control", "app-server-control.sock")
 SOCKET_LIMIT = 103      # bytes a unix socket path may have on macOS
-PROMPT = "Reply with the single word ok.\n"
-PROBE_SCHEMA = {"type": "object"}
+PROMPT = 'Reply with the JSON object {"word": "ok"}.\n'
+PROBE_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["word"],
+                "properties": {"word": {"type": "string"}}}
 PROBE_BUDGET = 600
 DAEMON_TIMEOUT = 180
 MEMORY_LINES = 3
@@ -110,12 +114,57 @@ def _memories_config(text, use):
     return "\n".join(out) + "\n"
 
 
-def _link(target, path):
-    if os.path.islink(path) or os.path.isfile(path):
-        os.unlink(path)
-    elif os.path.isdir(path):
+def _without_notify(text):
+    """`text` without its top-level `notify` key (a command Codex runs after a turn): replay turns run
+    no notifier. The key may span lines; a `notify` inside a table is another key and stays."""
+    out, skipping, depth, in_table = [], False, 0, False
+    for line in text.splitlines():
+        if skipping:
+            depth += _depth(line)
+            skipping = depth > 0
+            continue
+        if not in_table and re.match(r"\s*notify\s*=", line):
+            depth = _depth(line.split("=", 1)[1])
+            skipping = depth > 0
+            continue
+        if re.match(r"\s*\[", line):
+            in_table = True
+        out.append(line)
+    return "\n".join(out) + "\n"
+
+
+def _depth(text):
+    """Brackets opened minus closed in `text`, outside quoted strings and comments."""
+    depth, quote = 0, None
+    for ch in text:
+        if quote:
+            quote = None if ch == quote else quote
+        elif ch in "\"'":
+            quote = ch
+        elif ch == "#":
+            break
+        elif ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+    return depth
+
+
+def _remove(path):
+    if os.path.isdir(path) and not os.path.islink(path):
         shutil.rmtree(path)
-    os.symlink(target, path)
+    elif os.path.lexists(path):
+        os.unlink(path)
+
+
+def _copy(src, dst, clone=False):
+    """A fresh copy of `src` at `dst`. Links inside stay links and are never followed; `clone` asks
+    for an APFS clone first (cp -c), falling back to a plain copy."""
+    _remove(dst)
+    if clone and subprocess.run(["/bin/cp", "-cR", src, dst], capture_output=True).returncode == 0:
+        return
+    _remove(dst)
+    shutil.copytree(src, dst, symlinks=True)
 
 
 def _settle_auth(home):
@@ -168,21 +217,19 @@ def ensure(state, name, memories_src=None, use_memories=False, source=None):
     os.chmod(home, 0o700)
     os.makedirs(auth_dir(), exist_ok=True)
     os.chmod(auth_dir(), 0o700)
-    jsave(os.path.join(home, "config.toml"), _memories_config(text, use_memories))
+    jsave(os.path.join(home, "config.toml"), _memories_config(_without_notify(text), use_memories))
     os.chmod(os.path.join(home, "config.toml"), 0o600)
     agents = os.path.join(source, "AGENTS.md")
     if os.path.isfile(agents):
         shutil.copyfile(agents, os.path.join(home, "AGENTS.md"))
-    for item in LINKED:
-        if os.path.exists(os.path.join(source, item)):
-            _link(os.path.join(real_source, item), os.path.join(home, item))
+    for item in COPIED:
+        if os.path.isdir(os.path.join(source, item)):
+            _copy(os.path.join(real_source, item), os.path.join(home, item), item in CLONED)
+        else:
+            _remove(os.path.join(home, item))
     _settle_auth(home)
     mem = os.path.join(home, "memories")
-    if os.path.lexists(mem):
-        if os.path.isdir(mem) and not os.path.islink(mem):
-            shutil.rmtree(mem)
-        else:
-            os.unlink(mem)
+    _remove(mem)
     if memories_src is not None:
         shutil.copytree(memories_src, mem, symlinks=True, ignore=shutil.ignore_patterns(".git"))
     jsave(os.path.join(home, RECORD), {"source": source, "use_memories": bool(use_memories)})
@@ -232,20 +279,29 @@ def start(home):
     if other:
         raise Failed("the replay daemon of {} is running: stop it first".format(other))
     os.makedirs(auth_dir(), exist_ok=True)
+    cur = jload(_marker())
+    last = cur.get("home") if isinstance(cur, dict) else None
+    if last and os.path.realpath(last) != os.path.realpath(home) and os.path.isfile(os.path.join(last, RECORD)):
+        _settle_auth(last)      # a crashed daemon's refreshed token is carried forward before another home logs in
     _daemon(home, "start")
     jsave(_marker(), {"home": home})
 
 
 def stop(home):
-    """Stop the replay daemon of `home`, then take back a refreshed login."""
+    """Stop the replay daemon of `home`, then take back a refreshed login. The one-daemon marker goes
+    only when the daemon stopped (its stop succeeded or its socket is gone)."""
     _record(home)
+    failure = None
     try:
         _daemon(home, "stop")
-    finally:
-        _settle_auth(home)
-        cur = jload(_marker())
-        if isinstance(cur, dict) and cur.get("home") == home:
-            os.unlink(_marker())
+    except Failed as e:
+        failure = e
+    _settle_auth(home)
+    cur = jload(_marker())
+    if (failure is None or not os.path.exists(_socket(home))) and isinstance(cur, dict) and cur.get("home") == home:
+        os.unlink(_marker())
+    if failure is not None:
+        raise failure
 
 
 # ------------------------------------------------------------------ the probe
@@ -254,6 +310,7 @@ def _call(rpc, home, *args):
     exe = rpc or XR.RPC
     argv = [exe] if os.access(exe, os.X_OK) else ["/usr/bin/python3", "-I", exe]
     env = dict(os.environ, CODEX_HOME=home)
+    env.pop("XREVIEW_RPC_SOCK", None)      # it outranks CODEX_HOME and would aim the call at another daemon
     try:
         p = subprocess.run(argv + list(args), capture_output=True, env=env, timeout=PROBE_BUDGET + 60)
     except (OSError, subprocess.SubprocessError) as e:
@@ -270,14 +327,14 @@ def _rollouts(home, thread):
 
 
 def _read_rollout(path):
-    """(model, effort, [developer message text]) of a plain rollout."""
+    """(model, effort, [developer message text], the whole text) of a plain rollout."""
     model = effort = None
     texts = []
     try:
         with open(path, "rb") as f:
             raw = f.read()
     except OSError:
-        return model, effort, texts
+        return model, effort, texts, ""
     for line in raw.splitlines():
         try:
             rec = json.loads(line.decode("utf-8"))
@@ -290,7 +347,7 @@ def _read_rollout(path):
             for part in p.get("content") or []:
                 if isinstance(part, dict) and isinstance(part.get("text"), str):
                     texts.append(part["text"])
-    return model, effort, texts
+    return model, effort, texts, raw.decode("utf-8", "replace")
 
 
 def _memory_lines(summary):
@@ -361,13 +418,14 @@ def probe(home, expect_memories, rpc=None):
         if leaked:
             notes.append("the probe thread has a rollout under the source home: " + ", ".join(leaked))
         if mine:
-            res["model"], res["effort"], texts = _read_rollout(mine[-1])
+            res["model"], res["effort"], texts, whole = _read_rollout(mine[-1])
         else:
-            texts = []
+            texts, whole = [], ""
         wanted = _memory_lines(os.path.join(home if expect_memories else source, "memories", "memory_summary.md"))
         if not wanted:
             notes.append("no memory lines to look for in {} memory_summary.md".format("the replay home's" if expect_memories else "the source's"))
-        shown = ["\n".join(texts).find(l) >= 0 for l in wanted]
+        haystack = "\n".join(texts) if expect_memories else whole      # nothing of it anywhere when none is expected
+        shown = [haystack.find(l) >= 0 for l in wanted]
         checks["memories"] = (bool(shown) and all(shown)) if expect_memories else not any(shown)
         if not checks["memories"]:
             notes.append("memory lines {} in the developer message while expect_memories is {}".format(
@@ -392,7 +450,23 @@ def add_args(ap):
     ap.add_argument("--stop", action="store_true", help="stop it and take back a refreshed login")
     ap.add_argument("--probe", action="store_true", help="prove the isolation with one turn")
     ap.add_argument("--login-cmd", action="store_true", help="print the command that logs the shared login in")
-    ap.add_argument("--codex-source", default="~/.codex", help="the home whose config the replay homes copy")
+    ap.add_argument("--codex-source", help="the home whose config the replay homes copy (default: the home's own, else ~/.codex)")
+
+
+def _ensure_for(a, home):
+    """ensure() with the flags given; an existing home's own settings (source, memories, whether it
+    uses them) stand for the flags left out."""
+    rec = jload(os.path.join(home, RECORD)) if os.path.isfile(os.path.join(home, RECORD)) else None
+    rec = rec if isinstance(rec, dict) else {}
+    source = os.path.expanduser(a.codex_source) if a.codex_source else rec.get("source")
+    if a.memories or not os.path.isdir(os.path.join(home, "memories")):
+        return ensure(a.state, a.name, a.memories, a.use_memories, source)
+    keep = tempfile.mkdtemp(prefix="memories.")
+    try:
+        shutil.copytree(os.path.join(home, "memories"), os.path.join(keep, "m"), symlinks=True)
+        return ensure(a.state, a.name, os.path.join(keep, "m"), a.use_memories or bool(rec.get("use_memories")), source)
+    finally:
+        shutil.rmtree(keep, ignore_errors=True)
 
 
 def cmd_home(a):
@@ -404,14 +478,12 @@ def cmd_home(a):
         return 0
     if not a.name:
         raise Failed("home needs --name (or --login-cmd)")
-    source = os.path.expanduser(a.codex_source)
     home = home_path(a.name)
     if a.dry_run:
-        say("would use the replay home {} (source {})".format(home, source))
+        say("would use the replay home {} (source {})".format(home, a.codex_source or "its own, else ~/.codex"))
         return 0
-    if a.memories or a.use_memories or not os.path.isfile(os.path.join(home, RECORD)):
-        home = ensure(a.state, a.name, a.memories, a.use_memories, source)
-        say("home: " + home)
+    home = _ensure_for(a, home)
+    say("home: " + home)
     status = 0
     if a.start:
         start(home)

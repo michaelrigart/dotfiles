@@ -24,8 +24,8 @@ LOG = os.path.join(FAKE, "codex.log")
 SUMMARY = ("# Memory summary\n\nThe deploy script lives in bin/deploy-zebra and needs the --quiet flag.\n"
            "Reviews of the quokka module always hit the same off-by-one in the tail.\n"
            "Michael prefers fixture names that start with an unusual marker word: plinth.\n\nshort\n")
-CONFIG = ('model = "m-1"\n\n[features]\nmemories = true\n\n[memories]\nuse_memories = true\nmax_items = 7  # keep\n'
-          'generate_memories = true\n\n[mcp_servers.x]\ncommand = "x"\n')
+CONFIG = ('model = "m-1"\nnotify = [\n  "/bin/notifier", "--flag",  # [x]\n]\nsandbox = "workspace"\n\n[features]\nmemories = true\n\n[memories]\nuse_memories = true\nmax_items = 7  # keep\n'
+          'generate_memories = true\n\n[mcp_servers.x]\ncommand = "x"\nnotify = "stays"\n')
 
 
 def raises(fn, *args, **kw):
@@ -47,6 +47,9 @@ def make_source(name, config=CONFIG, links=True):
     if links:
         for d in ("skills", "rules", "plugins"):
             put(src, d + "/f.txt", d)
+            put(src, d + "/sub/g.txt", d)
+        os.symlink("f.txt", os.path.join(src, "skills", "ln"))
+        os.symlink("/outside/target", os.path.join(src, "rules", "abs"))
     return src
 
 
@@ -81,9 +84,34 @@ cfg2 = open(os.path.join(h2, "config.toml")).read()
 ok("home_config: a source without [memories] gets the table added",
    table(cfg2, "memories") == "use_memories = false\ngenerate_memories = false\n" and table(cfg2, "features") == "memories = false\n\n", cfg2)
 ok("home_config: AGENTS.md is copied", open(os.path.join(home, "AGENTS.md")).read() == "# agents\n")
-ok("home_config: skills, rules and plugins are links to the source's",
-   all(os.path.islink(os.path.join(home, d)) and os.path.realpath(os.path.join(home, d)) == os.path.realpath(os.path.join(SRC, d))
-       for d in ("skills", "rules", "plugins")))
+ok("home_config: skills, rules and plugins are copies with their contents",
+   all(os.path.isdir(os.path.join(home, d)) and not os.path.islink(os.path.join(home, d))
+       and open(os.path.join(home, d, "sub", "g.txt")).read() == d for d in ("skills", "rules", "plugins")))
+ok("home_config: a link inside a copy stays a link and is not followed",
+   os.readlink(os.path.join(home, "skills", "ln")) == "f.txt" and os.readlink(os.path.join(home, "rules", "abs")) == "/outside/target"
+   and os.path.islink(os.path.join(home, "skills", "ln")))
+into_source = []
+for d, dirs, files in os.walk(home):
+    for n in dirs + files:
+        full = os.path.join(d, n)
+        if os.path.islink(full) and os.path.realpath(full).startswith(os.path.realpath(SRC) + os.sep):
+            into_source.append(full)
+is_("home_config: nothing in the home links into the source home", into_source, [])
+before_src = helpers.listing(SRC)
+put(home, "plugins/.plugin-appserver", "x")
+put(home, "plugins/cache/c", "x")
+put(home, "skills/.system/s", "x")
+put(home, "plugins/sub/g.txt", "changed")
+put(home, "skills/f.txt", "changed")
+is_("home_config: writing into the home's plugins and skills leaves the source unchanged", helpers.listing(SRC), before_src)
+ok("home_config: and another ensure refreshes the copies", (H.ensure(STATE, "nomem", source=SRC),
+   not os.path.exists(os.path.join(home, "plugins", ".plugin-appserver")), open(os.path.join(home, "skills", "f.txt")).read() == "skills")[1:] == (True, True))
+ok("home_config: the top-level notify key is dropped, whatever its length",
+   "notify = [" not in cfg and "/bin/notifier" not in cfg and re.search(r"^notify\s*=", cfg.split("[features]")[0], re.M) is None, cfg)
+ok("home_config: its neighbours stay, and a notify key inside a table too",
+   'sandbox = "workspace"' in cfg and 'model = "m-1"' in cfg and '[mcp_servers.x]\ncommand = "x"\nnotify = "stays"' in cfg, cfg)
+single = make_source("src-single", config='notify = ["/bin/n", "a"]\nmodel = "m"\n', links=False)
+ok("home_config: a one-line notify is dropped too", "notify" not in open(os.path.join(H.ensure(STATE, "single", source=single), "config.toml")).read())
 ok("home_config: and absent when the source has none", not any(os.path.lexists(os.path.join(h2, d)) for d in ("skills", "rules", "plugins")))
 auth = os.path.join(home, "auth.json")
 is_("home_config: auth.json is a link to the shared login", (os.path.islink(auth), os.readlink(auth)),
@@ -104,7 +132,10 @@ ok("home_config: and keeps what the daemon wrote there", os.path.exists(os.path.
 
 # ---- home_short_path
 is_("home_short_path: the registry lists the homes by name", H_json(os.path.join(STATE, "codex-homes.json")).get("nomem"), home)
-sock_len = len(os.path.join("/Users/michael/.local/state", "cxh", "mem-0123456789ab", H.SOCKET).encode("utf-8"))
+xdg_saved = os.environ["XDG_STATE_HOME"]
+os.environ["XDG_STATE_HOME"] = "/Users/michael/.local/state"
+sock_len = len(H._socket(H.home_path("mem-0123456789ab")).encode("utf-8"))
+os.environ["XDG_STATE_HOME"] = xdg_saved
 ok("home_short_path: a mem-<hash12> home under a realistic XDG_STATE_HOME has a socket path within 103 bytes", sock_len <= 103, sock_len)
 xdg_saved = os.environ["XDG_STATE_HOME"]
 os.environ["XDG_STATE_HOME"] = os.path.join(ROOT, "x" * 90)
@@ -198,10 +229,32 @@ H.stop(hm)
 is_("start_stop: an older auth.json does not replace the shared login", open(shared).read(), "REFRESHED-TOKEN")
 ok("start_stop: yet the link is restored", os.path.islink(os.path.join(hm, "auth.json")))
 H.start(home)
-os.unlink(SOCK)    # the daemon died without a stop
+os.unlink(SOCK)    # the daemon died without a stop, having refreshed its token
+os.unlink(auth)
+put(home, "auth.json", "CRASHED-TOKEN")
+os.utime(os.path.join(home, "auth.json"), (time.time() + 100, time.time() + 100))
 H.start(hm)
+is_("start_stop: a crashed daemon's refreshed token is carried forward by the next start", open(shared).read(), "CRASHED-TOKEN")
+ok("start_stop: and its link is restored", os.path.islink(auth))
 ok("one_daemon_at_a_time: a marker whose socket is gone does not block", os.path.exists(os.path.join(hm, "app-server-control", "app-server-control.sock")))
 H.stop(hm)
+failing = os.path.join(ROOT, "failing-codex")
+with open(failing, "w") as f:
+    f.write("#!/bin/sh\nif [ \"$3\" = start ]; then mkdir -p \"$CODEX_HOME/app-server-control\"; : > \"$CODEX_HOME/app-server-control/app-server-control.sock\"; exit 0; fi\n"
+            "[ -n \"$STOP_REMOVES\" ] && rm -f \"$CODEX_HOME/app-server-control/app-server-control.sock\"\nexit 1\n")
+os.chmod(failing, 0o755)
+good_bin = os.environ["CODEX_REAL_BIN"]
+os.environ["CODEX_REAL_BIN"] = failing
+H.start(hm)
+ok("start_stop: a failed daemon stop raises", raises(H.stop, hm))
+ok("start_stop: and the marker stays while the socket is still there", raises(H.start, home))
+os.environ["STOP_REMOVES"] = "1"
+ok("start_stop: a failed stop that leaves no socket still raises", raises(H.stop, hm))
+ok("start_stop: and then the marker is gone", not os.path.exists(H._marker()))
+H.start(home)
+del os.environ["STOP_REMOVES"]
+os.environ["CODEX_REAL_BIN"] = good_bin
+H.stop(home)
 
 # ---- probe_checks
 def summary_lines():
@@ -242,7 +295,9 @@ ok("probe_checks: the thread is archived at the end", calls[-1]["cmd"] == "threa
 ok("probe_checks: the turn runs in a temp dir that is gone afterwards",
    calls[1]["cmd"] == "thread-start" and not os.path.exists(calls[1]["cwd"] or ""))
 sent = open(os.path.join(os.path.dirname(stub), "inputs", "tu1")).read()
-is_("probe_checks: the prompt is the single word ok", sent.strip(), "Reply with the single word ok.")
+is_("probe_checks: the prompt asks for {\"word\": \"ok\"}", sent.strip(), 'Reply with the JSON object {"word": "ok"}.')
+is_("probe_checks: and the probe's schema requires that word", H.PROBE_SCHEMA, {"type": "object", "additionalProperties": False,
+    "required": ["word"], "properties": {"word": {"type": "string"}}})
 ok("probe_checks: nothing was written under the source home", H._rollouts(SRC, "th1") == [])
 
 # memories present exactly when expected
@@ -261,6 +316,24 @@ ok("probe_checks: memory text in a nomem home fails", res["ok"] is False and res
 stub = rpc_for("e", phome, "Memory:\n" + lines3[0])
 res = probe_fresh(phome, False, rpc=stub)
 ok("probe_checks: even one memory line in a nomem home fails", res["checks"]["memories"] is False, res)
+stub = helpers.stub_rpc(os.path.join(ROOT, "rpc-w"), phome, {"default": {"answer": {}, "developer": "plain",
+                       "tools": [{"name": "exec", "arguments": {"cmd": "echo " + lines3[1]}}]}})
+res = probe_fresh(phome, False, rpc=stub)
+ok("probe_checks: for a home with no memories, memory text anywhere in the rollout fails", res["checks"]["memories"] is False, res)
+stub = helpers.stub_rpc(os.path.join(ROOT, "rpc-w2"), phm, {"default": {"answer": {}, "developer": "plain",
+                        "tools": [{"name": "exec", "arguments": {"cmd": "echo " + lines3[1]}}]}})
+res = probe_fresh(phm, True, rpc=stub)
+ok("probe_checks: but a memories home needs it in the developer message", res["checks"]["memories"] is False, res)
+envlog = os.path.join(ROOT, "env.log")
+envwrap = os.path.join(ROOT, "env-rpc")
+envinner = rpc_for("x", phome, "plain")
+with open(envwrap, "w") as f:
+    f.write("#!/bin/sh\necho \"${XREVIEW_RPC_SOCK-unset}\" >> %s\nexec %s \"$@\"\n" % (envlog, envinner))
+os.chmod(envwrap, 0o755)
+os.environ["XREVIEW_RPC_SOCK"] = "/elsewhere/sock"
+probe_fresh(phome, False, rpc=envwrap)
+del os.environ["XREVIEW_RPC_SOCK"]
+is_("probe_checks: an inherited XREVIEW_RPC_SOCK never reaches the rpc", set(open(envlog).read().split()), {"unset"})
 stub = rpc_for("f", phome, "nothing")
 res = probe_fresh(phome, True, rpc=stub)
 ok("probe_checks: expecting memories but finding none fails", res["ok"] is False and res["checks"]["memories"] is False, res)
@@ -338,3 +411,17 @@ cmdhome = os.path.join(ROOT, "xdg", "cxh", "nomem")
 is_("cmd_home: --name --start --stop makes the home, starts and stops its daemon", (rc, [(l["argv"][2], l["codex_home"]) for l in log]),
     (0, [("start", cmdhome), ("stop", cmdhome)]))
 ok("cmd_home: --name without --login-cmd or a name is refused", raises(H.cmd_home, ap.parse_args(["--state", ROOT])))
+
+a = ap.parse_args(["--state", os.path.join(ROOT, "cmd-state"), "--name", "mem-cmd", "--codex-source", SRC, "--memories", SNAP, "--use-memories"])
+with contextlib.redirect_stdout(io.StringIO()):
+    H.cmd_home(a)
+cmem = os.path.join(ROOT, "xdg", "cxh", "mem-cmd")
+put(cmem, "plugins/stale", "x")
+cfg_before = open(os.path.join(cmem, "config.toml")).read()
+a = ap.parse_args(["--state", os.path.join(ROOT, "cmd-state"), "--name", "mem-cmd"])
+with contextlib.redirect_stdout(io.StringIO()):
+    H.cmd_home(a)
+ok("cmd_home: an existing home is ensured again (copies refreshed) and keeps its memories and setting",
+   not os.path.exists(os.path.join(cmem, "plugins", "stale")) and os.path.exists(os.path.join(cmem, "memories", "memory_summary.md"))
+   and open(os.path.join(cmem, "config.toml")).read() == cfg_before and "use_memories = true" in cfg_before, cfg_before)
+is_("cmd_home: and it is listed in the state's codex-homes.json", H_json(os.path.join(ROOT, "cmd-state", "codex-homes.json")).get("mem-cmd"), cmem)
