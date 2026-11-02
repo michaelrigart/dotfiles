@@ -161,7 +161,7 @@ def make_plan(a, view, br, defects, counted, counts):
     owners, pending = {}, 0
     for key, r in ranges.items():
         ids = sorted(i for i in r.get("ids", []) if i not in bad)
-        if len(ids) < 2 or not r["items"]:
+        if len(ids) < 2 or not r["items"] or not any(i in counted for i in ids):
             continue
         jid = "{}-{}".format(br["id"], I._hash(*key))
         budget = [FILES_CAP]
@@ -284,16 +284,36 @@ def coherent(work, files, notes=None):
     return True, ""
 
 
-_DEFINES = [re.compile(x) for x in (
-    r"^\s*(?:async\s+)?def\s+([A-Za-z_]\w*)", r"^\s*class\s+([A-Za-z_]\w*)", r"^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_][\w:-]*)",
-    r"^\s*([A-Za-z_][\w-]*)\s*\(\)\s*\{?\s*$", r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+([A-Za-z_]\w*)",
-    r"^([A-Za-z_]\w*)\s*=[^=]")]
+_SHELL_FN = (r"^\s*(?:export\s+)?function\s+([A-Za-z_][\w:-]*)", r"^\s*([A-Za-z_][\w-]*)\s*\(\)\s*\{?\s*$")
+_DEFINES = {
+    "bash": _SHELL_FN, "zsh": _SHELL_FN,
+    "python": (r"^\s*(?:async\s+)?def\s+([A-Za-z_]\w*)", r"^\s*class\s+([A-Za-z_]\w*)", r"^([A-Za-z_]\w*)\s*=[^=]"),
+    "ruby": (r"^\s*def\s+(?:self\.)?([A-Za-z_]\w*[?!]?)", r"^\s*class\s+([A-Za-z_]\w*)", r"^\s*module\s+([A-Za-z_]\w*)"),
+    "rust": (r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+([A-Za-z_]\w*)",),
+    "js": (r"^\s*(?:export\s+)?(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)",
+           r"^\s*(?:export\s+)?(?:(?:const|let|var)\s+)?([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\("),
+}
+_DEFINES = dict((k, [re.compile(x) for x in v]) for k, v in _DEFINES.items())
+_EXT_KIND = {".sh": "bash", ".bash": "bash", ".zsh": "zsh", ".py": "python", ".rb": "ruby", ".rs": "rust", ".js": "js", ".jsx": "js", ".mjs": "js",
+             ".cjs": "js", ".ts": "js", ".tsx": "js"}
 
 
-def defined_by(lines):
+def section_kind(sec):
+    """The language a patch section's file is in, by extension, a zsh/functions path or a shebang on line 1; None for anything else
+    (TOML, YAML, JSON, INI, Markdown, ...): no definition is read from those."""
+    name = sec["file"]
+    if "/zsh/functions/" in "/" + name:
+        return "zsh"
+    for h in sec["hunks"]:
+        if h["ns"] == 1 and h["lines"] and h["lines"][0][1:].startswith("#!"):
+            return "zsh" if "zsh" in h["lines"][0] else "bash" if "bash" in h["lines"][0] else None
+    return _EXT_KIND.get(os.path.splitext(name)[1])
+
+
+def defined_by(lines, kind):
     out = set()
     for line in lines:
-        for rx in _DEFINES:
+        for rx in _DEFINES.get(kind, ()):
             m = rx.match(line)
             if m:
                 out.add(m.group(1))
@@ -301,14 +321,20 @@ def defined_by(lines):
 
 
 def removed_names(patch):
-    """The names a revert of `patch` (a fix) removes: defined by the lines the fix added and not by those it removed."""
-    plus, minus = [], []
-    for line in patch.split("\n"):
-        if line.startswith("+") and not line.startswith("+++"):
-            plus.append(line[1:])
-        elif line.startswith("-") and not line.startswith("---"):
-            minus.append(line[1:])
-    return sorted(defined_by(plus) - defined_by(minus))
+    """The names a revert of `patch` (a fix) removes: defined by the lines the fix added and not by those it removed, where a line defines a
+    name only in a file of a kind in which that is a definition (shell functions in bash and zsh files; def, class and a top-level
+    assignment in Python; def, class and module in Ruby; fn in Rust; function and `X = (` in JS and TS; nothing in TOML, YAML, JSON, INI or Markdown)."""
+    plus, minus = set(), set()
+    try:
+        sections = P.parse_patch(patch)
+    except Failed:
+        return []                                  # lines with no file header: no file kind, no definition
+    for sec in sections:
+        kind = section_kind(sec)
+        for h in sec["hunks"]:
+            plus |= defined_by([x[1:] for x in h["lines"] if x.startswith("+")], kind)
+            minus |= defined_by([x[1:] for x in h["lines"] if x.startswith("-")], kind)
+    return sorted(plus - minus)
 
 
 def dangling(work, patch, files):
@@ -497,6 +523,14 @@ def check_invariant(br, work, final, head, steps):
             br["id"], ", ".join(n for n in names if n)[:300], ", ".join(label for label, _t in steps) or "none"))
 
 
+def merge_groups(g, h):
+    """One group of two: the members, the pieces (latest fix first) and the repair (oldest fix first) of both."""
+    members = sorted(set(g["members"]) | set(h["members"]))
+    pieces = sorted(g["pieces"] + h["pieces"], key=lambda p: p["rank"])
+    patch = "".join(p["text"] for p in reversed(pieces))
+    return {"id": members[0], "members": members, "pieces": pieces, "patch": patch, "files": P.files_of(patch)}
+
+
 # ------------------------------------------------------------------ settling: the tree a case ships
 class Tree(object):
     """The injected tree of one branch as the statuses say it should be. status {defect: (status, reason)}; rec {defect: (patch, reverse)}
@@ -517,12 +551,14 @@ class Tree(object):
                 self.status[m] = (status, why)
 
     def _resolve(self, active, g, why, demote):
-        """The repair of `g` does not apply to the tree. A repair made with an older fix's lines in place needs that fix not reverted:
-        drop the oldest other group whose absence lets it apply; failing that, drop `g`."""
+        """The repair of `g` does not apply to the tree. A repair made with an older fix's lines in place needs that fix not reverted: the
+        two cannot be told apart, so the oldest other group whose absence lets it apply is merged with `g` into one group, reverted and
+        re-applied together (spec 4.3). If no group does, `g` is demoted."""
         for h in sorted((x for x in active if x is not g), key=lambda x: -x["pieces"][0]["rank"]):
             head, _dropped, _failed = assemble(self.work, self.final, self.view, self.br["plan_commit"], [x for x in active if x is not h], [], self.notes)
             if P.locate(self.work, head, g["patch"])[0] is not None:
-                self._demote(h, demote, "dropped so that the repair of {} applies to the finished tree".format(g["id"]))
+                merged = merge_groups(g, h)
+                self.ordered = sorted([x for x in self.ordered if x is not g and x is not h] + [merged], key=lambda x: (x["pieces"][0]["rank"], x["id"]))
                 return
         self._demote(g, demote, "its repair does not apply to the finished tree: " + why)
 
@@ -536,7 +572,7 @@ class Tree(object):
             changed = False
             for g in active:
                 if g["id"] in dropped:
-                    self._demote(g, "dropped-revert", dropped[g["id"]][1])
+                    self._demote(g, dropped[g["id"]][0], dropped[g["id"]][1])
                     changed = True
             for did in failed:
                 self.status[did] = ("unassessable", "the recreation does not apply to the injected tree")
@@ -644,58 +680,99 @@ def process(a, br, counts):
         else:
             status[d["id"]] = ("not-present", "the judge answered {}".format(ans))
 
+    judged = dict((d["id"], first) for d in defects if status[d["id"]][0] == "present")    # the tree each assessable defect was last judged on
+
+    def gate(failed):
+        """One pass of the coverage gate over per-task defects that failed: (agents, judges) still to wait for."""
+        wa = wj = 0
+        got = {}
+        for d in failed:
+            got[d["id"]] = G.recreation(a, work, final, d, fix_text[d["id"]], counts)
+            wa += got[d["id"]][0] == "agent"
+            wj += got[d["id"]][0] == "judge"
+        if wa or wj:
+            return wa, wj
+        cands = {}
+        for d in failed:
+            kind, why, patch, reverse = got[d["id"]]
+            if kind == "unassessable":
+                status[d["id"]] = ("unassessable", why)
+            else:
+                cands[d["id"]] = (patch, reverse)
+        if not cands:
+            return 0, 0
+        head_all, _dropped, bad = tree.build(sorted([(i, p) for i, (p, _r) in tree.rec.items()] + [(i, pr[0]) for i, pr in cands.items()]))
+        for did in bad:
+            status[did] = ("unassessable", "the recreation does not apply to the injected tree")
+            cands.pop(did, None)
+            tree.rec.pop(did, None)
+        accepted = {}
+        for d in failed:
+            if d["id"] not in cands:
+                continue
+            ans = G.validate(state, work, head_all, d, d["id"] + "-r", counts)
+            if ans is None:
+                wj += 1
+            elif ans == "yes":
+                accepted[d["id"]] = cands[d["id"]]
+            else:
+                status[d["id"]] = ("unassessable", "the judge answered {} on the finished tree".format(ans))
+        if not wj:
+            for did, pr in accepted.items():
+                status[did] = ("recreated", "")
+                tree.rec[did] = pr
+                judged[did] = head_all
+        return 0, wj
+
+    def revalidate():
+        """Every assessable defect with a file that differs between the tree it was last judged on and the shipped tree is judged again on
+        the shipped tree (judge-present/<id>-v); one the judge no longer finds is dropped and the tree rebuilt. Judges still to wait for."""
+        while True:
+            pending = changed = 0
+            for d in defects:
+                s_ = status[d["id"]][0]
+                if s_ not in OK or not G.differs(work, judged[d["id"]], tree.head, G.paths_of(d)):
+                    continue
+                ans = G.validate(state, work, tree.head, d, d["id"] + "-v", counts)
+                if ans is None:
+                    pending += 1
+                elif ans == "yes":
+                    judged[d["id"]] = tree.head
+                else:
+                    if s_ == "recreated":
+                        tree.rec.pop(d["id"], None)
+                        status[d["id"]] = ("unassessable", "the judge answered {} on the shipped tree".format(ans))
+                    else:
+                        status[d["id"]] = ("not-present", "the judge answered {} on the shipped tree".format(ans))
+                    changed += 1
+            if pending or not changed:
+                return pending
+            tree.settle("dropped-revert")
+
+    tried = set()
     if wait_judge == 0:
         tree.settle("dropped-revert")
-        failed_task = [d for d in task if status[d["id"]][0] in FAILED]
-        got = {}
-        for d in failed_task:
-            got[d["id"]] = G.recreation(a, work, final, d, fix_text[d["id"]], counts)
-            wait_agent += got[d["id"]][0] == "agent"
-            wait_judge += got[d["id"]][0] == "judge"
-        if failed_task and not wait_agent and not wait_judge:
-            cands = {}
-            for d in failed_task:
-                kind, why, patch, reverse = got[d["id"]]
-                if kind == "unassessable":
-                    status[d["id"]] = ("unassessable", why)
-                else:
-                    cands[d["id"]] = (patch, reverse)
-            if cands:
-                head_all, _dropped, failed = tree.build(sorted((i, pr[0]) for i, pr in cands.items()))
-                for did in failed:
-                    status[did] = ("unassessable", "the recreation does not apply to the injected tree")
-                    del cands[did]
-                accepted = {}
-                for d in failed_task:
-                    if d["id"] not in cands:
-                        continue
-                    ans = G.validate(state, work, head_all, d, d["id"] + "-r", counts)
-                    if ans is None:
-                        wait_judge += 1
-                    elif ans == "yes":
-                        accepted[d["id"]] = cands[d["id"]]
-                    else:
-                        status[d["id"]] = ("unassessable", "the judge answered {} on the finished tree".format(ans))
-                if not wait_judge:
-                    for did, pr in accepted.items():
-                        status[did] = ("recreated", "")
-                        tree.rec[did] = pr
-            if not wait_judge:
-                tree.settle("unassessable")
-                touched = set(f for _p, _r in tree.rec.values() for f in P.files_of(_p))
-                for d in defects:
-                    if status[d["id"]][0] != "present":
-                        continue
-                    g = groups.get(group_of.get(d["id"]))
-                    near = set(g["files"] if g else []) | set(d.get("files") or []) | set([C.norm(d.get("file"))])
-                    if near & touched:
-                        ans = G.validate(state, work, tree.head, d, d["id"] + "-v", counts)
-                        if ans is None:
-                            wait_judge += 1
-                        elif ans != "yes":
-                            status[d["id"]] = ("not-present", "the judge answered {} once the recreations were in".format(ans))
-                if not wait_judge:
-                    tree.settle("unassessable")
+        for pass_no in (1, 2):
+            failed_task = [d for d in task if status[d["id"]][0] in FAILED and d["id"] not in tried]
+            if not failed_task and pass_no == 2:
+                break
+            if failed_task:
+                tried |= set(d["id"] for d in failed_task)
+                wa, wj = gate(failed_task)
+                wait_agent += wa
+                wait_judge += wj
+                if wa or wj:
+                    break
+                tree.settle("dropped-revert")
+            wait_judge += revalidate()
+            if wait_judge:
+                break
+        if not wait_judge and not wait_agent:
+            for d in task:
+                if status[d["id"]][0] in FAILED and d["id"] not in tried:
+                    status[d["id"]] = ("unassessable", "it failed after the tree was rebuilt, when the second attempt was already used")
+    groups = dict((g["id"], g) for g in tree.ordered)
+    group_of = dict((m, gid) for gid, g in groups.items() for m in g["members"])
     complete = wait_judge == 0 and wait_agent == 0
     head = tree.head
     build_check = s1.get("build_check")
@@ -704,7 +781,9 @@ def process(a, br, counts):
         if os.path.isfile(os.path.join(work, "Cargo.toml")) and set(g["id"] for g in tree.active()) != set(
                 gid for gid, r in s1["groups"].items() if r["status"] == "reverted"):
             checked = cargo_check(a, work, C.repo_name(br["repo"]))
-            if checked is not None and not checked[0]:
+            if checked is not None and checked[0] is None:
+                build_check = "timed out on the final tree: " + checked[1]
+            elif checked is not None and not checked[0]:
                 build_check = "the final tree: " + checked[1]
 
     drec = {}

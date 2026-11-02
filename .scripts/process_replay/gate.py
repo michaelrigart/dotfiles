@@ -34,14 +34,24 @@ def finding(d):
     return dict((k, d.get(k)) for k in I.KEYS)
 
 
-def files_input(work, rev, d):
-    """[{path, text}]: the finding's file, then the files its fix changes, as `rev` has them (60000 characters each, 150000 in all)."""
+def paths_of(d):
+    """The files a judge sees for a defect: the finding's file, then the files its fix changes."""
     names = []
     for n in [C.norm(d.get("file"))] + list(d.get("files") or []):
         if n and n not in names:
             names.append(n)
+    return names
+
+
+def differs(work, a, b, paths):
+    """Does any of `paths` have other content at commit a than at commit b."""
+    return a != b and bool(paths) and not C.git_ok(work, "diff", "--quiet", a, b, "--", *[":(top,literal)" + n for n in paths])
+
+
+def files_input(work, rev, d):
+    """[{path, text}]: the finding's file, then the files its fix changes, as `rev` has them (60000 characters each, 150000 in all)."""
     out, room = [], FILES_CAP
-    for n in names:
+    for n in paths_of(d):
         if room <= 0:
             break
         try:
