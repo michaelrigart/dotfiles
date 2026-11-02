@@ -29,8 +29,12 @@
 # through to the auto-mode classifier, writes ask.
 #
 # SAFETY: a guard that breaks unrelated commands is worse than no guard. There is
-# no `set -e`; every failure path of rules 1-2 calls allow(); anything unparseable is
-# allowed. Rules 3 and 4 are danger gates and fail the other way (see each).
+# no `set -e`, and a command that is not a candidate is allowed before any dependency is
+# checked. An internal failure on a candidate fails closed, in the form the failure allows:
+# jq missing, or a deny/ask decision jq cannot write, exits 2 with the reason on stderr; a
+# payload jq cannot read prints a JSON deny (exit 0); a helper that cannot run denies every
+# push candidate (JSON deny, exit 0). A doubt about a command that parsed keeps its rule's
+# direction: rules 1-2 allow, rule 3 asks, rule 4 denies.
 #
 # Bypass for a one-off, only when Michael has asked for it in the conversation: put
 # FORGE_GUARD=off anywhere in the command. It lifts rules 1 and 2 only, the behavioural
@@ -53,12 +57,16 @@ export GIT_NO_LAZY_FETCH=1
 pending=""
 allow() { [ -z "$pending" ] || printf '%s\n' "$pending"; exit 0; }
 
+# An internal failure on a candidate: exit 2 blocks the call and stderr is the reason.
+fail_closed() { printf '%s\n' "$1" >&2; exit 2; }
+
 # A deny reason can contain anything (template markdown, quotes, newlines), so it
-# is passed through jq -Rs rather than hand-escaped. If jq fails, allow.
+# is passed through jq -Rs rather than hand-escaped. If jq fails, the reason goes to
+# stderr and the call is blocked.
 deny() {
   printf '%s' "$1" | jq -Rs \
     '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:.}}' \
-    2>/dev/null || exit 0
+    2>/dev/null || fail_closed "$1"
   exit 0
 }
 
@@ -67,13 +75,30 @@ deny() {
 ask() {
   printf '%s' "$1" | jq -Rs \
     '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"ask",permissionDecisionReason:.}}' \
-    2>/dev/null || exit 0
+    2>/dev/null || fail_closed "$1"
   exit 0
+}
+
+# A text tool that errors on a candidate is an internal failure, never "no match": the call
+# is refused. $1 names the check.
+check_failed() {
+  deny "Forge guard: the $1 could not run, so this call is refused. Restore the tool, or run the call by hand."
+}
+
+# grep_has <text> <grep args...>: 0 when grep matches the text, 1 when it finds nothing, 2 when
+# grep failed (any other status). grep reads all its input (no -q), so a match can never SIGPIPE
+# the printf and make pipefail report a failure.
+grep_has() {
+  local text=$1 st
+  shift
+  printf '%s' "$text" | grep "$@" >/dev/null
+  st=("${PIPESTATUS[@]}")
+  [ "${st[0]}" -eq 0 ] || return 2
+  case "${st[1]}" in 0) return 0 ;; 1) return 1 ;; *) return 2 ;; esac
 }
 
 payload=$(cat)
 [ -n "$payload" ] || allow
-command -v jq >/dev/null 2>&1 || allow
 
 # Fast path. This hook fires on EVERY Bash call, so the common case must cost no
 # subprocess at all — a shell-builtin substring test on the raw payload, before
@@ -109,12 +134,18 @@ case "$payload" in
       pcwd=.
       cwd_re='"cwd"[[:space:]]*:[[:space:]]*"([^"]*)"'
       [[ $payload =~ $cwd_re ]] && pcwd=${BASH_REMATCH[1]}
-      while IFS= read -r a; do
-        [ -n "$a" ] || continue
-        case "$payload" in *"$a"*) push_alias=1; break ;; esac
-      done <<EOF
-$(git -C "$pcwd" config --get-regexp '^alias\.' 2>/dev/null | sed -n -E 's/^alias\.([^ ]+) .*(push|send-pack).*/\1/p')
+      # git exits 1 for "no aliases", which is not a failure; sed failing is, and then the
+      # aliases cannot be told apart, so the payload counts as a possible push alias.
+      if aliases=$(git -C "$pcwd" config --get-regexp '^alias\.' 2>/dev/null | sed -n -E 's/^alias\.([^ ]+) .*(push|send-pack).*/\1/p'; exit "${PIPESTATUS[1]}"); then
+        while IFS= read -r a; do
+          [ -n "$a" ] || continue
+          case "$payload" in *"$a"*) push_alias=1; break ;; esac
+        done <<EOF
+$aliases
 EOF
+      else
+        push_alias=1
+      fi
     fi
     ;;
 esac
@@ -124,8 +155,8 @@ esac
 literal=0
 [ "$push_word$push_selector$push_alias" = 000 ] || literal=1
 push_hidden=0
-# Only when no literal signal fired: with one, the helper starts anyway and these cannot
-# change the decision. Each check is linear in the payload (one pattern or one ERE match).
+# Only when no literal signal fired: with one, the command is a candidate and the helper gets
+# literal=1 whatever these find, so they could change neither. Each check is linear in the payload (one pattern or one ERE match).
 if [ "$literal" = 0 ]; then
   case "$payload" in *"\$'"*) push_hidden=1 ;; esac
   if [ "$push_hidden" = 0 ]; then
@@ -173,28 +204,25 @@ fi
 
 [ "$forge_candidate" = 1 ] || [ "$push_candidate" = 1 ] || allow
 
-# An unreadable payload (jq rejects a lone UTF-16 surrogate escape) fails closed for rule 4,
-# on the raw-text evidence above, and asks for rule 3 when the raw text holds `glab api`;
-# rules 1-2 allow, as everywhere else.
+command -v jq >/dev/null 2>&1 \
+  || fail_closed "Forge guard: jq is missing, so this command, which may commit, push or call the forge, is refused."
+
+# An unreadable payload (jq rejects a lone UTF-16 surrogate escape) cannot be judged, so every
+# candidate is denied: the push-specific reason when rule 4 saw a push, otherwise the forge one.
+# Never an ask: a click would let an unjudged commit through, and a deny costs only a retry.
 if ! cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command // empty' 2>/dev/null); then
   [ "$push_candidate" = 0 ] || deny "Push guard: this command's payload could not be read, so a possible push is refused. Rewrite it without unusual escape sequences."
-  case "$payload" in
-    *"glab api"*) ask "Could not determine whether this \`glab api\` call reads or writes.
-
-The command payload could not be read (an unusual escape sequence), so it is being
-surfaced rather than assumed safe. Check the method flag by eye." ;;
-  esac
-  allow
+  deny "Forge guard: this command's payload could not be read, so it is refused. Rewrite it without unusual escape sequences."
 fi
 [ -n "$cmd" ] || allow
 
 # ------------------------------------------------------------ rule 4: git push
 # The work is in git-push-guard.py beside this file: it prints a finished decision (ask
 # or deny) or nothing. A deny is final. An ask is held in $pending and released by
-# allow(), so the rules below can still deny. FAIL DIRECTION IS CLOSED: if the helper
-# cannot run at all, or the payload cannot be read at all (jq failed above), a command that
-# looks like a push is denied, with a reason the agent can act on. Runs before the
-# FORGE_GUARD=off check below, which never lifts it.
+# allow(), so the rules below can still deny. FAIL DIRECTION IS CLOSED: every push
+# candidate is denied when the helper cannot run (non-zero exit), and when the payload
+# cannot be read at all (jq failed above), each with a reason the agent can act on. Runs
+# before the FORGE_GUARD=off check below, which never lifts it.
 if [ "$push_candidate" = 1 ]; then
   py=/usr/bin/python3
   [ -x "$py" ] || py=python3
@@ -206,16 +234,13 @@ if [ "$push_candidate" = 1 ]; then
     *'"permissionDecision":"ask"'*) pending=$verdict ;;
     *) printf '%s\n' "$verdict"; exit 0 ;;
   esac
-  # The fallback denies on the same evidence the fast path acted on: an alias that pushes,
-  # a repository selector (whose aliases only the helper can see), or a literal git push,
-  # send-pack or http-push, as a subcommand (git send-pack) or in the dash form, behind a
-  # path or not (git-push, /usr/libexec/git-core/git-http-push). The bare word "push" alone
-  # is not enough; it is too common in unrelated commands.
+  # The helper catches its own exceptions and exits 0 on every input, so a non-zero exit
+  # means it could not run (python3 missing or broken, the file missing, a syntax or import
+  # error). The command is already a push candidate, so it is denied, always: nothing here
+  # tries to tell a real push from a mention of one. A command that merely mentions "push" is
+  # refused while the helper is broken; the reason says how to fix that.
   if [ "$rc" -ne 0 ]; then
-    if [ "$push_alias" = 1 ] || [ "$push_selector" = 1 ] \
-       || printf '%s' "$cmd" | grep -Eq 'git([^;&|]*[[:space:]]|-)(push|send-pack|http-push)([[:space:]]|$)'; then
-      deny "Push guard: the push check could not run ($helper exited $rc), so this command, which may push, is refused. Push by hand, or restore the helper (chezmoi apply)."
-    fi
+    deny "Push guard: the push check could not run ($helper exited $rc), so this command, which may push, is refused. Push by hand, or restore the helper (chezmoi apply)."
   fi
 fi
 
@@ -225,8 +250,10 @@ fi
 # a call that can change something on the forge asks.
 #
 # FAIL DIRECTION IS INVERTED HERE. Rules 1-2 allow on any doubt; this one asks on any
-# doubt — a false ask costs one keystroke, a false silence is an ungated remote
-# mutation. Unparseable command, missing python3, classifier crash => ask.
+# doubt about the COMMAND — a false ask costs one keystroke, a false silence is an ungated
+# remote mutation. A command the classifier cannot tokenize => ask. A failure of the check
+# itself (python3 missing, the classifier exiting non-zero or printing an unknown verdict) is
+# not a doubt about the command: it denies, because a click would let an unjudged write through.
 #
 # It reads SHELL STRUCTURE, never raw text. A first draft also regex-scanned the raw
 # command as a backstop; that fired on every heredoc, python literal and rg pattern that
@@ -240,7 +267,7 @@ fi
 case "$cmd" in
   *"glab api"*)
     if ! command -v python3 >/dev/null 2>&1; then
-      ask "glab api call, and python3 is missing so the read/write check could not run."
+      deny "Forge guard: the glab api read/write check could not run (python3 is missing), so this call is refused. Restore python3, or run the call by hand."
     fi
     verdict=$(printf '%s' "$cmd" | python3 -I -c 'import sys, shlex
 
@@ -309,7 +336,8 @@ def classify(cmd, depth=0):
 # The shell joins `\<newline>` before it ever splits words; shlex does not, and emits the
 # newline as an operator token. Without this join, `glab api p/1 \<newline> -X DELETE` ends
 # its segment at the newline and the flag is never seen. Found by mutation testing.
-print(classify(sys.stdin.read().replace("\\\n", " ")))' 2>/dev/null) || verdict=unparseable
+print(classify(sys.stdin.read().replace("\\\n", " ")))' 2>/dev/null) \
+      || deny "Forge guard: the glab api read/write check could not run (the classifier exited with an error), so this call is refused. Restore python3, or run the call by hand."
     case "$verdict" in
       write)
         ask "This \`glab api\` call writes to the forge.
@@ -323,12 +351,15 @@ Read-only \`glab api\` calls are not gated and do not reach this prompt."
       read)
         : # falls through to the auto-mode classifier
         ;;
-      *)
+      unparseable)
         ask "Could not determine whether this \`glab api\` call reads or writes.
 
 The command did not tokenize cleanly (unbalanced quotes, or a construct the check
 does not model), so it is being surfaced rather than assumed safe. Check the method
 flag by eye."
+        ;;
+      *)
+        deny "Forge guard: the glab api read/write check could not run (the classifier printed no verdict), so this call is refused. Restore python3, or run the call by hand."
         ;;
     esac
     ;;
@@ -342,7 +373,8 @@ case "$cmd" in *FORGE_GUARD=off*) allow ;; esac
 # this, `rg "git commit" docs/` or a heredoc quoting one of these would trip the
 # guard on text it merely mentions.
 verb_re='(^|[;&|(])[[:space:]]*(sudo[[:space:]]+)?(git[[:space:]]+commit|glab[[:space:]]+mr[[:space:]]+(create|update)|gh[[:space:]]+pr[[:space:]]+(create|edit)|az[[:space:]]+repos[[:space:]]+pr[[:space:]]+(create|update))([[:space:]]|$)'
-printf '%s' "$cmd" | grep -Eq "$verb_re" || allow
+grep_has "$cmd" -E -- "$verb_re"
+case $? in 0) ;; 1) allow ;; *) check_failed "command-position check (grep)" ;; esac
 
 # The message/description is normally inline in the command string. When it is
 # not, the command names the file holding it. Scan both — that beats trying to
@@ -407,6 +439,9 @@ ltrim() {
 sq=\'
 ref_re="\\\$\\((cat|<)[^)]*\\)|(--body-file|--description-file|--file|-F)[=[:space:]]+(\"[^\"]*\"|${sq}[^${sq}]*${sq}|[^[:space:]]+)"
 
+refs=$(printf '%s' "$cmd" | grep -oE "$ref_re"; exit "${PIPESTATUS[1]}")
+case $? in 0|1) ;; *) check_failed "body-file scan (grep)" ;; esac
+
 while IFS= read -r ref; do
   [ -n "$ref" ] || continue
 
@@ -448,8 +483,10 @@ while IFS= read -r ref; do
   ref=$(expand_path "$ref")
 
   if [ -f "$ref" ] && [ -r "$ref" ]; then
+    refbody=$(cat "$ref" 2>/dev/null) ||
+      deny "Forge guard: the message file $ref could not be read, so this command is refused. Check that the file is readable, or pass the message inline."
     haystack="$haystack
-$(cat "$ref" 2>/dev/null)"
+$refbody"
   elif [ "$unambiguous" -eq 1 ]; then
     unresolved=1
   else
@@ -461,12 +498,15 @@ $(cat "$ref" 2>/dev/null)"
     esac
   fi
 done <<EOF
-$(printf '%s' "$cmd" | grep -oE "$ref_re")
+$refs
 EOF
 
 # ---------------------------------------------------------------- rule 1: attribution
-if printf '%s' "$haystack" | grep -Eq \
-   'claude\.ai/code|[Cc]laude-[Ss]ession|[Cc]o-[Aa]uthored-[Bb]y:[[:space:]]*(Claude|Codex|Copilot|Cursor)|[Gg]enerated with[^;]{0,24}(Claude|Codex)'; then
+grep_has "$haystack" -E -- \
+  'claude\.ai/code|[Cc]laude-[Ss]ession|[Cc]o-[Aa]uthored-[Bb]y:[[:space:]]*(Claude|Codex|Copilot|Cursor)|[Gg]enerated with[^;]{0,24}(Claude|Codex)'
+attribution=$?
+[ "$attribution" -le 1 ] || check_failed "attribution scan (grep)"
+if [ "$attribution" = 0 ]; then
   deny "Agent attribution is not allowed in the published record.
 
 This commit message / MR / PR text contains a session link, a Claude-Session
@@ -484,7 +524,8 @@ case "$cmd" in
   *) allow ;;
 esac
 
-cwd=$(printf '%s' "$payload" | jq -r '.cwd // empty' 2>/dev/null)
+cwd=$(printf '%s' "$payload" | jq -r '.cwd // empty' 2>/dev/null) \
+  || check_failed "working-directory read (jq)"
 [ -n "$cwd" ] && [ -d "$cwd" ] || cwd=$PWD
 root=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null) || allow
 [ -n "$root" ] || allow
@@ -509,21 +550,29 @@ done
 # Section markers, not just markdown headings: the ViuMore templates label their
 # sections with **Bold** lines and have no `#` heading at all, so a heading-only
 # check would silently pass on exactly the repos this guard is for.
+# Each stage is checked on its own: any sed failure, or a grep status above 1, returns 2
+# (grep -v exits 1 when nothing is left, which is a template with no sections, not a failure).
 markers_of() {
-  sed -nE 's/^#{1,6}[[:space:]]+(.+)$/\1/p; s/^\*\*([^*]+)\*\*.*$/\1/p' "$1" \
-    | sed -E 's/[[:space:]]+$//' | grep -v '^[[:space:]]*$'
+  local m
+  m=$(sed -nE 's/^#{1,6}[[:space:]]+(.+)$/\1/p; s/^\*\*([^*]+)\*\*.*$/\1/p' "$1") || return 2
+  m=$(printf '%s\n' "$m" | sed -E 's/[[:space:]]+$//') || return 2
+  m=$(printf '%s\n' "$m" | grep -v '^[[:space:]]*$')
+  [ $? -le 1 ] || return 2
+  printf '%s\n' "$m"
 }
 
 best_total=0
 while IFS= read -r tpl; do
   [ -n "$tpl" ] || continue
+  markers=$(markers_of "$tpl") || check_failed "template reader (sed)"
   total=0; hits=0
   while IFS= read -r m; do
     [ -n "$m" ] || continue
     total=$((total + 1))
-    printf '%s' "$haystack" | grep -Fqi -- "$m" && hits=$((hits + 1))
+    grep_has "$haystack" -F -i -- "$m"
+    case $? in 0) hits=$((hits + 1)) ;; 1) ;; *) check_failed "template section match (grep)" ;; esac
   done <<EOF
-$(markers_of "$tpl")
+$markers
 EOF
   # Fewer than two markers is not a structure worth judging — don't guess.
   [ "$total" -lt 2 ] && allow

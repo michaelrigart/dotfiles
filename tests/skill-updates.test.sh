@@ -23,7 +23,8 @@ D=dddddddddddddddddddddddddddddddddddddddd   # the second repo's newer commit
 # gh is stubbed on PATH. Responses come from variables keyed on the repo (and ref):
 #   REL_{OUT,RC,ERR}_<REPO>          api repos/<o>/<r>/releases/latest --jq .tag_name
 #   COM_{OUT,RC,ERR}_<REPO>_<REF>    api repos/<o>/<r>/commits/<ref> --jq .sha
-#   LABEL_{RC,ERR}, LIST_{OUT,CLOSED,PAGE2,RC,ERR}, CREATE_{RC,ERR}
+#   LABEL_{RC,ERR}, LIST_{OUT,CLOSED,PAGE2,RC,ERR}, CREATE_{RC,ERR}, CMP_{OUT,RC,ERR}
+#   (CMP serves `api -H Accept: application/vnd.github.diff repos/<o>/<r>/compare/<old>...<new>`)
 # `api [--paginate] repos/{owner}/{repo}/issues?...` serves LIST_OUT, plus LIST_CLOSED when the query has
 # state=all, plus LIST_PAGE2 when --paginate is also given.
 # An unconfigured call fails loudly (rc 99), so a missing fixture never reads as a pass.
@@ -52,6 +53,8 @@ case "$*" in
     p=${2#repos/}; repo=$(key "$(basename "$(dirname "$(dirname "$p")")")")
     ref=$(key "$(basename "$p")")
     emit "COM_OUT_${repo}_$ref" "COM_RC_${repo}_$ref" "COM_ERR_${repo}_$ref" ;;
+  "api -H Accept: application/vnd.github.diff repos/"*"/compare/"*)
+    emit CMP_OUT CMP_RC CMP_ERR ;;
   "label create"*)  r=${LABEL_RC-0}; [ "$r" = 0 ] || printf '%s\n' "${LABEL_ERR-}" >&2; exit "$r" ;;
   "issue create"*)  r=${CREATE_RC-0}; [ "$r" = 0 ] || printf '%s\n' "${CREATE_ERR-}" >&2; exit "$r" ;;
   *) echo "stub gh: unexpected call: $*" >&2; exit 98 ;;
@@ -63,10 +66,14 @@ key() { printf '%s' "$1" | tr 'a-z' 'A-Z' | tr -c 'A-Z0-9' '_'; }
 # rel <repo> <out> [rc] [err]   com <repo> <ref> <out> [rc] [err]
 rel() { local r; r=$(key "$1"); export "REL_OUT_$r=$2" "REL_RC_$r=${3:-0}" "REL_ERR_$r=${4:-}"; }
 com() { local k; k="$(key "$1")_$(key "$2")"; export "COM_OUT_$k=$3" "COM_RC_$k=${4:-0}" "COM_ERR_$k=${5:-}"; }
+CLEAN_DIFF=$(printf '%s\n' '--- a/README.md' '+++ b/README.md' '@@ -1,1 +1,2 @@' ' kept' '+an added line')
+ZWSP=$(printf '\342\200\213')
+ZW_DIFF=$(printf '%s\n' '--- a/README.md' '+++ b/README.md' '@@ -1,1 +1,2 @@' ' kept' "+a${ZWSP}b")
 reset() {
   local v
-  for v in $(compgen -v | grep -E '^(REL|COM|LABEL|LIST|CREATE)_'); do unset "$v"; done
+  for v in $(compgen -v | grep -E '^(REL|COM|LABEL|LIST|CREATE|CMP)_'); do unset "$v"; done
   export LABEL_RC=0 LIST_OUT= LIST_CLOSED= LIST_PAGE2= LIST_RC=0 CREATE_RC=0
+  export CMP_OUT="$CLEAN_DIFF" CMP_RC=0 CMP_ERR=
   rel clarity v0.2.1; com clarity v0.2.1 "$P"
   : > "$CALLS"
 }
@@ -98,6 +105,13 @@ out_hasnt() { case "$OUT" in *"$1"*) _fail "$2" ;; *) _pass "$2" ;; esac; }
 err_has()   { case "$ERR" in *"$1"*) _pass "$2" ;; *) _fail "$2" ;; esac; }
 rc_is()     { if [ "$RC" -eq "$1" ]; then _pass "$2"; else _fail "$2"; fi; }
 called()     { if grep -qF -- "$1" "$CALLS"; then _pass "$2"; else _fail "$2"; fi; }
+tail_is() {  # tail_is <expected block> <label>: the last lines of the recorded gh calls
+  local want=$1 n got
+  n=$(printf '%s\n' "$want" | wc -l | tr -d ' ')
+  got=$(tail -n "$n" "$CALLS")
+  if [ "$got" = "$want" ]; then _pass "$2"; else _fail "$2"; printf '    want| %s\n' "$want"; printf '    got | %s\n' "$got"; fi
+}
+called_line() { if grep -qxF -- "$1" "$CALLS"; then _pass "$2"; else _fail "$2"; fi; }
 not_called() { if grep -qF -- "$1" "$CALLS"; then _fail "$2"; else _pass "$2"; fi; }
 line_of() { grep -nF -- "$1" "$CALLS" | head -n 1 | cut -d: -f1; }
 
@@ -106,6 +120,7 @@ reset
 run "$(clarity)"
 out_is "current: clarity v0.2.1" "pin equals the release commit: current line"
 rc_is 0 "current: exit 0"
+not_called "vnd.github.diff" "default mode fetches no compare diff"
 
 reset; rel clarity v0.3.0; com clarity v0.3.0 "$B"
 run "$(clarity)"
@@ -275,6 +290,8 @@ called "label create skill-update --color 0E8A16 --description A pinned agent sk
 called "api --paginate repos/{owner}/{repo}/issues?labels=skill-update&state=all&per_page=100 --jq .[] | select(.pull_request == null) | .title" "all issues listed"
 called "issue create --title Skill update: clarity v0.3.0 --label skill-update --body clarity has a newer upstream release: v0.2.1 → v0.3.0." "issue created with title, label and body"
 called "Compare: https://github.com/addyosmani/clarity/compare/$P...$B" "body carries the compare URL"
+called "api -H Accept: application/vnd.github.diff repos/addyosmani/clarity/compare/$P...$B" "the compare diff is fetched from the exact path"
+tail_is "$(printf '\n## Scan of added lines\n\nclean')" "a clean diff: the body ends with the exact scan section"
 called 'lists `.agents/skills/clarity/SKILL.md`' "body names the SKILL.md check"
 called 'prints `current: clarity v0.3.0`' "body names the current-label check"
 called 'put `Closes #<this issue>` in the commit message.' "body keeps the Closes placeholder"
@@ -285,9 +302,52 @@ if [ -n "$l" ] && [ -n "$i" ] && [ "$l" -lt "$i" ]; then _pass "label create is 
 out_has "update: clarity v0.2.1 → v0.3.0" "--open-issues still prints the update line"
 
 reset; rel clarity v0.3.0; com clarity v0.3.0 "$B"
+export CMP_OUT="$ZW_DIFF"
+run "$(clarity)" --open-issues
+rc_is 0 "scan finding: exit 0"
+tail_is "$(printf '\n## Scan of added lines\n\n~~~\nREADME.md:2: invisible: a<U+200B>b\n~~~')" "a finding: the body ends with the heading and the finding between two ~~~ fences, with the hidden character as <U+200B>"
+not_called "$ZWSP" "the raw zero-width space never reaches the issue body"
+
+# A stub scanner, to reach branches the real one cannot be made to take: the script is copied
+# beside a fake dot_local/bin because REPO_ROOT comes from $0.
+mkdir -p "$T/fake/.scripts" "$T/fake/dot_local/bin"
+cp "$SCRIPT" "$T/fake/.scripts/skill-updates.sh"
+run_fake() {  # run_fake <stub scanner body> ; one clarity update, --open-issues
+  printf '#!/bin/sh\ncat >/dev/null\n%s\n' "$1" > "$T/fake/dot_local/bin/executable_agent-text-scan"
+  chmod +x "$T/fake/dot_local/bin/executable_agent-text-scan"
+  printf '%s\n' "$(clarity)" > "$T/externals.toml"
+  : > "$CALLS"
+  OUT=$(CALLS="$CALLS" PATH="$BIN:$PATH" /bin/bash "$T/fake/.scripts/skill-updates.sh" --externals "$T/externals.toml" --open-issues 2>"$T/err"); RC=$?
+  ERR=$(cat "$T/err")
+}
+
+reset; rel clarity v0.3.0; com clarity v0.3.0 "$B"
+run_fake 'echo boom >&2; exit 2'
+called "issue create" "scanner error: the issue is still created"
+tail_is "$(printf '\n## Scan of added lines\n\nscan failed: agent-text-scan exited 2: boom')" "scanner error: the body names the exit code and the first stderr line"
+rc_is 0 "scanner error: exit 0, ERRORS untouched"
+
+reset; rel clarity v0.3.0; com clarity v0.3.0 "$B"
+run_fake 'echo crashed >&2; exit 1'
+tail_is "$(printf '\n## Scan of added lines\n\nscan failed: agent-text-scan exited 1: crashed')" "scanner exits 1 with no findings: reported as a failure, not an empty ~~~ block"
+rc_is 0 "scanner exit 1 without output: exit 0"
+
+reset; rel clarity v0.3.0; com clarity v0.3.0 "$B"
+run_fake 'exit 1'
+tail_is "$(printf '\n## Scan of added lines\n\nscan failed: agent-text-scan exited 1: ')" "scanner exits 1, no output, no stderr: still a failure"
+
+reset; rel clarity v0.3.0; com clarity v0.3.0 "$B"
+export CMP_OUT= CMP_RC=1 CMP_ERR="gh: Not Found (HTTP 404)"
+run "$(clarity)" --open-issues
+called "issue create" "failed diff fetch: the issue is still created"
+called_line "scan failed: could not fetch the compare diff: gh: Not Found (HTTP 404)" "failed diff fetch: the body says why"
+rc_is 0 "failed diff fetch: exit 0, ERRORS untouched"
+
+reset; rel clarity v0.3.0; com clarity v0.3.0 "$B"
 export LIST_OUT='Skill update: clarity v0.3.0'
 run "$(clarity)" --open-issues
 not_called "issue create" "open issue with the same title: no issue create"
+not_called "vnd.github.diff" "deduped update: no compare diff fetched"
 rc_is 0 "deduped: exit 0"
 
 reset; rel clarity v0.3.0; com clarity v0.3.0 "$B"

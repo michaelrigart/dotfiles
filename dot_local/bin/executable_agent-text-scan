@@ -1,0 +1,215 @@
+#!/usr/bin/env -S python3 -I
+"""agent-text-scan [--diff] [FILE...]
+
+Scan files, or with --diff the added lines of a unified diff on stdin, for hidden
+characters (invisible: Unicode default-ignorable code points and format characters, except
+the emoji presentation selectors U+FE0E and U+FE0F), instructions to keep something from
+the user (concealment) and references to secret paths (secrets). Exit 0 when clean, 1 on findings, 2 on error.
+"""
+import re
+import sys
+import unicodedata
+
+CLASSES = ("invisible", "concealment", "secrets")
+CAP = 20
+WINDOW_BEFORE = 40
+WINDOW_LENGTH = 120
+
+CONCEALMENT = (
+    "do not tell the user",
+    "don't tell the user",
+    "do not mention",
+    "don't mention",
+    "without telling",
+    "hide this from",
+)
+SECRET_SUBSTRINGS = (
+    ".ssh/",
+    "id_rsa",
+    "id_ed25519",
+    ".aws/credentials",
+    "ANTHROPIC_BASE_URL",
+    "OPENAI_BASE_URL",
+)
+SECRET_PATTERNS = (
+    re.compile(r"\bop read\b"),
+    re.compile(r"\bsecurity find-"),
+    re.compile(r"(?:^|(?<=[\s/\"'`=(]))\.env(?=\W|$)"),
+)
+HUNK = re.compile(r"^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+
+
+# Unicode Default_Ignorable_Code_Point, less U+FE0E/U+FE0F: emoji carry those legitimately.
+IGNORABLE = (
+    (0x00AD, 0x00AD), (0x034F, 0x034F), (0x061C, 0x061C), (0x115F, 0x1160),
+    (0x17B4, 0x17B5), (0x180B, 0x180F), (0x200B, 0x200F), (0x202A, 0x202E),
+    (0x2060, 0x206F), (0x3164, 0x3164), (0xFE00, 0xFE0D), (0xFEFF, 0xFEFF),
+    (0xFFA0, 0xFFA0), (0xFFF0, 0xFFF8), (0x1BCA0, 0x1BCA3), (0x1D173, 0x1D17A),
+    (0xE0000, 0xE0FFF),
+)
+
+
+def is_invisible(ch):
+    n = ord(ch)
+    return unicodedata.category(ch) == "Cf" or any(lo <= n <= hi for lo, hi in IGNORABLE)
+
+
+def is_hidden(ch):
+    return is_invisible(ch) or (unicodedata.category(ch) == "Cc" and ch != "\t")
+
+
+def printable(text):
+    return "".join("<U+%04X>" % ord(ch) if is_hidden(ch) else ch for ch in text)
+
+
+def fold(line):
+    out = []
+    for ch in line:
+        ch = "'" if ch == "\u2019" else ch.lower()
+        out.append(ch if len(ch) == 1 else "\0")
+    return "".join(out)
+
+
+def first_hit(line, first_line):
+    """The first hit in the line for each class, as {class: character index}."""
+    hits = {}
+    for i, ch in enumerate(line):
+        if is_invisible(ch) and not (first_line and i == 0 and ch == "\ufeff"):
+            hits["invisible"] = i
+            break
+    folded = fold(line)
+    found = [i for i in (folded.find(p) for p in CONCEALMENT) if i >= 0]
+    if found:
+        hits["concealment"] = min(found)
+    found = [i for i in (line.find(p) for p in SECRET_SUBSTRINGS) if i >= 0]
+    for pattern in SECRET_PATTERNS:
+        m = pattern.search(line)
+        if m:
+            found.append(m.start())
+    if found:
+        hits["secrets"] = min(found)
+    return hits
+
+
+def excerpt(line, hit):
+    start = max(0, hit - WINDOW_BEFORE)
+    return printable(line[start : start + WINDOW_LENGTH].strip())
+
+
+def scan_line(path, number, line, first_line, findings):
+    hits = first_hit(line, first_line)
+    for cls in CLASSES:
+        if cls in hits:
+            findings.append(
+                (cls, "%s:%d: %s: %s" % (printable(path), number, cls, excerpt(line, hits[cls])))
+            )
+
+
+def split_lines(data):
+    return data.decode("utf-8", errors="replace").split("\n")
+
+
+def scan_text(path, data, findings):
+    for number, line in enumerate(split_lines(data), 1):
+        scan_line(path, number, line, number == 1, findings)
+
+
+def new_path(rest):
+    rest = rest.split("\t", 1)[0].strip()
+    if rest == "/dev/null":
+        return None
+    return rest[2:] if rest.startswith("b/") else rest
+
+
+def scan_diff(data, findings):
+    path = None
+    number = 0
+    old_left = new_left = 0
+    for line in split_lines(data):
+        if old_left > 0 or new_left > 0:
+            tag = line[:1]
+            if tag == "+":
+                new_left -= 1
+                scan_line(path or "(stdin)", number, line[1:], number == 1, findings)
+                number += 1
+                continue
+            if tag == " " or line == "":
+                old_left -= 1
+                new_left -= 1
+                number += 1
+                continue
+            if tag == "-":
+                old_left -= 1
+                continue
+            if tag == "\\":
+                continue
+            old_left = new_left = 0
+        header = HUNK.match(line)
+        if header:
+            old_left = int(header.group(1) if header.group(1) is not None else 1)
+            number = int(header.group(2))
+            new_left = int(header.group(3) if header.group(3) is not None else 1)
+        elif line.startswith("+++ "):
+            path = new_path(line[4:])
+
+
+def usage_error(message):
+    sys.stderr.write("agent-text-scan: %s\nusage: agent-text-scan [--diff] [FILE...]\n" % message)
+    return 2
+
+
+def emit(text):
+    sys.stdout.buffer.write(text.encode("utf-8", errors="replace"))
+
+
+def main(argv):
+    diff = False
+    files = []
+    options = True
+    for arg in argv:
+        if options and arg == "--":
+            options = False
+        elif options and arg == "--diff":
+            diff = True
+        elif options and arg.startswith("-") and arg != "-":
+            return usage_error("unknown option: %s" % printable(arg))
+        else:
+            files.append(arg)
+    if diff == bool(files):
+        return usage_error("give files, or --diff with a diff on stdin, not both or neither")
+
+    findings = []
+    status = 0
+    if diff:
+        scan_diff(sys.stdin.buffer.read(), findings)
+    else:
+        for path in files:
+            try:
+                with open(path, "rb") as handle:
+                    data = handle.read()
+            except OSError as err:
+                sys.stderr.write(
+                    "agent-text-scan: %s: %s\n" % (printable(path), err.strerror or err)
+                )
+                status = 2
+                continue
+            scan_text(path, data, findings)
+
+    lines = []
+    counts = dict.fromkeys(CLASSES, 0)
+    for cls, text in findings:
+        counts[cls] += 1
+        if counts[cls] <= CAP:
+            lines.append(text)
+    for cls in CLASSES:
+        if counts[cls] > CAP:
+            lines.append("%s: %d more not shown" % (cls, counts[cls] - CAP))
+    if lines:
+        emit("\n".join(lines) + "\n")
+    if status:
+        return status
+    return 1 if findings else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

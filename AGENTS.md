@@ -53,7 +53,9 @@ Canonical agent context for every agent: Claude Code and Codex both load it nati
   `symlink_` in `dot_claude/skills/` and a `.chezmoiignore` re-include.
   `.scripts/skill-updates.sh`, run weekly by the `skill-updates` workflow, reports new
   releases as `skill-update` issues. Closing one without a bump declines that release; it is
-  never filed again. A bump reads the upstream diff first, changes the SHA and its tag
+  never filed again. A bump reads the upstream diff first and runs `agent-text-scan --diff` on it: an `invisible`
+  finding stops the bump until Michael has seen it, and any other finding that matters goes in
+  the commit message. It then changes the SHA and its tag
   comment, then warms chezmoi's cache outside the sandbox
   (`command chezmoi --source <checkout> managed >/dev/null`: sandboxed, Go's TLS fails).
   Confirm afterwards that `command chezmoi --source <checkout> managed` lists
@@ -130,6 +132,7 @@ wall time):
 | `dev-topology` | unsandboxed + live `herdr` | drives the real binary, whose socket the sandbox denies |
 | `dev-integrations` | live `herdr` + **interactive** | stops midway for an operator to attach the session and start both agents; it exits 2 with no TTY rather than half-running |
 | `live-codex-daemon` | unsandboxed + live `herdr` + clean daemon | drives the real Codex daemon and a scratch tab; the canary for Codex protocol changes. Run from inside a herdr pane after `chezmoi apply` |
+| `live-deny-modes` | unsandboxed + model | spends model calls (four modes and a control, each capped by `--max-budget-usd`), and `claude` writes session state under `~/.claude`, which the sandbox denies. Run after each Claude Code upgrade |
 | `live-agent-auth`, `live-agent-signing`, `live-credential-boundary`, `live-write-boundary` | **fresh session after `chezmoi apply`, and SANDBOXED** | they measure the sandbox |
 
 **Never run `live-agent-auth`, `live-agent-signing`, `live-credential-boundary` or `live-write-boundary`

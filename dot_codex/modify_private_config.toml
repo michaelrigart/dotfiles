@@ -5,7 +5,8 @@
 {{- /*     fast-mode changes persist),                                        */ -}}
 {{- /*   - enforce UI / keybindings / notify / prevent_idle_sleep,            */ -}}
 {{- /*   - delete the retired js_repl flag,                                   */ -}}
-{{- /*   - keep the node_repl / cua_repl MCP servers off.                     */ -}}
+{{- /*   - keep the node_repl / cua_repl MCP servers off,                     */ -}}
+{{- /*   - keep web search, the browser and computer use off.                 */ -}}
 {{- /* NB: TOML comments and key ordering are not preserved (parse→serialize).*/ -}}
 {{- $config := dict -}}
 {{- if .chezmoi.stdin -}}
@@ -88,5 +89,11 @@
 {{-   $config = setValueAtPath "mcp_servers.node_repl.enabled" false $config -}}
 {{- end -}}
 {{- $config = setValueAtPath (list "plugins" "unified-computer-use@openai-bundled" "enabled") false $config -}}
+
+{{- /* The reviewer reads untrusted content, so it gets no outward tools. This applies to
+       every Codex session, the app included (spec 2026-11-01 §5). */ -}}
+{{- $config = setValueAtPath "web_search" "disabled" $config -}}
+{{- $config = setValueAtPath (list "plugins" "browser@openai-bundled" "enabled") false $config -}}
+{{- $config = setValueAtPath (list "plugins" "computer-use@openai-bundled" "enabled") false $config -}}
 
 {{- $config | toToml -}}

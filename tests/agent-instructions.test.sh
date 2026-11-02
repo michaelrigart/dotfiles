@@ -142,6 +142,20 @@ need_flat claude-code.md 'Other deletions and container removals wait until the 
   "claude-code.md defers other deletions and container removals to the end of the run"
 need_flat claude-code.md '`sp-standard` | integration, debugging, scoped review, fix rounds, plan-run controllers, merges |' \
   "the subagent table routes fix rounds, controllers and merges to sp-standard"
+need claude-code.md '- **Subagents.** Use the named types in `~/.claude/agents/`; each pairs a model with an effort.' \
+  "claude-code.md opens the subagent rule without the Agent tool remark"
+need claude-code.md '  | `web-researcher` | all web research, a skill'"'"'s researchers included: it holds only WebFetch and WebSearch, so the dispatcher passes it any reference text and saves its notes |' \
+  "the subagent table routes web research to web-researcher"
+if grep -qF -- 'which the Agent tool cannot set per call' "$FRAG/claude-code.md"; then
+  _fail "the stale Agent tool remark is gone" "still present"
+else
+  _pass "the stale Agent tool remark is gone"
+fi
+WR="$SRC/dot_claude/agents/web-researcher.md"
+for line in 'name: web-researcher' 'tools: WebFetch, WebSearch' 'model: opus' 'effort: medium'; do
+  if [ -f "$WR" ] && awk '/^---$/{n++; next} n==1' "$WR" | grep -qx -- "$line"; then _pass "web-researcher frontmatter has $line"
+  else _fail "web-researcher frontmatter has $line" "missing"; fi
+done
 if grep -qF -- '**Recursive search.**' "$FRAG/claude-code.md"; then
   _fail "the Recursive search bullet is folded into the path-resolution rule" "still present"
 else

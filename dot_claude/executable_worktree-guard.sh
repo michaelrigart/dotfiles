@@ -5,7 +5,9 @@
 #   2. git worktree remove with two or more forces (crosses it too)
 #   3. git worktree remove of a literal absolute wt sibling (covers a hand-unlocked one)
 # A correctness catch, not a security boundary: the Git lock is the boundary.
-# Every internal failure allows. Bypass: WT_GUARD=off anywhere in the command.
+# An internal failure on a candidate denies with exit 2 (a text tool that errors counts, not
+# only a missing one); a doubt about a parsed command still allows.
+# Bypass: WT_GUARD=off anywhere in the command.
 # Bash 3.2 compatible. Tests: tests/worktree-guard.test.sh
 # Spec: docs/superpowers/specs/2026-10-01-herdr-wt-simplification-design.md §4
 # Runs outside the sandbox, so it resolves nothing a sandboxed command can write (spec
@@ -15,17 +17,29 @@ set -uo pipefail
 set -f
 
 allow() { exit 0; }
+fail_closed() { printf '%s\n' "$1" >&2; exit 2; }
 deny() {
   printf '%s' "$1" | jq -Rs \
     '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:.}}' \
-    2>/dev/null || exit 0
+    2>/dev/null || fail_closed "$1"
   exit 0
+}
+
+# ere_match <ERE> <text>: 0 when the text matches, 1 when it does not, 2 when grep itself failed.
+# A grep error (status 2 or more) is no match nobody checked, so callers refuse it. grep reads
+# all its input (no -q), so a match can never SIGPIPE the printf and trip pipefail.
+ere_match() {
+  local st
+  printf '%s' "$2" | grep -E -- "$1" >/dev/null
+  st=("${PIPESTATUS[@]}")
+  [ "${st[0]}" -eq 0 ] || return 2
+  case "${st[1]}" in 0) return 0 ;; 1) return 1 ;; *) return 2 ;; esac
 }
 
 payload=$(cat)
 case "$payload" in *worktree[[:space:]\\]*) ;; *) allow ;; esac
-command -v jq >/dev/null 2>&1 || allow
-cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command // empty' 2>/dev/null) || allow
+command -v jq >/dev/null 2>&1 || fail_closed "Worktree guard: jq is missing, so this worktree command is refused."
+cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command // empty' 2>/dev/null) || fail_closed "Worktree guard: this command's payload could not be read, so it is refused."
 [ -n "$cmd" ] && [ "$cmd" != null ] || allow
 case "$cmd" in *WT_GUARD=off*) allow ;; esac
 verb_re='worktree([[:space:]]|\\)+(remove|unlock)'
@@ -51,7 +65,8 @@ prefix_re='^[[:space:]]*((if|while|until|do|then|else|elif|time|command|!|\{|[A-
 sibling_of() {
   local target=$1 parent base acc="" rest seg
   [ -d "$target" ] || return 1
-  parent=$(dirname "$target"); base=$(basename "$target"); rest=$base
+  parent=${target%/*}; [ -n "$parent" ] || parent=/
+  base=${target##*/}; rest=$base
   while [ "${rest#*-}" != "$rest" ]; do
     seg=${rest%%-*}
     if [ -n "$acc" ]; then acc="$acc-$seg"; else acc=$seg; fi
@@ -90,8 +105,14 @@ check() {
   local seg=$1 sub args force=0 tok f target sib
   seg=${seg%%"$NL"*}   # a quoted string may span lines; only its first line can be a command
   case "$seg" in *worktree*) ;; *) return 0 ;; esac
-  printf '%s' "$seg" | grep -Eq "${prefix_re}(remove|unlock)([[:space:]]|\$)" || return 0
-  sub=$(printf '%s' "$seg" | sed -E "s#${prefix_re}##")
+  ere_match "${prefix_re}(remove|unlock)([[:space:]]|\$)" "$seg"
+  case $? in
+    0) ;;
+    1) return 0 ;;
+    *) fail_closed "Worktree guard: a text check (grep) could not run, so this worktree command is refused." ;;
+  esac
+  sub=$(printf '%s' "$seg" | sed -E "s#${prefix_re}##") \
+    || fail_closed "Worktree guard: a text check (sed) could not run, so this worktree command is refused."
   case "$sub" in
     unlock*) deny "\`git worktree unlock\` crosses the wt lifecycle lock.
 

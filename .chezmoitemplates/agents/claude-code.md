@@ -18,8 +18,7 @@
 - **Cleanup never blocks a run.** Delete a finished `.superpowers/sdd/<plan>` workspace with
   `sdd-clean <workspace>`, never `rm -rf`. Other deletions and container removals wait until
   the run's work is done and go together, or into the final report as commands.
-- **Subagents.** Use the named types in `~/.claude/agents/`. Each pairs a model with an
-  effort, which the Agent tool cannot set per call.
+- **Subagents.** Use the named types in `~/.claude/agents/`; each pairs a model with an effort.
 
   | Type | Use for |
   |---|---|
@@ -27,6 +26,7 @@
   | `sp-standard` | integration, debugging, scoped review, fix rounds, plan-run controllers, merges |
   | `sp-reviewer` | cold diff review |
   | `sp-architect` | design, plan review, the final whole-branch review |
+  | `web-researcher` | all web research, a skill's researchers included: it holds only WebFetch and WebSearch, so the dispatcher passes it any reference text and saves its notes |
 
   Go up a tier when a task is harder than its label; say which tier you used if not obvious.
 - **Parallel tasks.** A plan runs entirely in its own worktree; never create a worktree for

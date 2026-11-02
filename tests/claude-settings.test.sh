@@ -36,6 +36,9 @@ EXP_DENY='["Read(~/.ssh/**)","Edit(~/.ssh/**)",
  "Read(~/.local/share/tagteam/displaced/**)","Edit(~/.local/share/tagteam/displaced/**)",
  "Read(~/.local/share/tagteam/sessions/*/.credentials.json)","Edit(~/.local/share/tagteam/sessions/*/.credentials.json)",
  "Bash(tagteam *export*)",
+ "Bash(gh gist create*)","Bash(gh gist edit*)","Bash(gh repo create*)","Bash(glab repo create*)",
+ "Bash(glab snippet create*)","Bash(gh api *gists*)","Bash(glab api *snippets*)",
+ "Bash(gh gist new*)","Bash(gh repo new*)","Bash(glab snippet new*)","Bash(glab project create*)",
  "Bash(security *find-generic-password*)","Bash(/usr/bin/security *find-generic-password*)",
  "Bash(security *find-internet-password*)","Bash(/usr/bin/security *find-internet-password*)",
  "Bash(security *dump-keychain*)","Bash(/usr/bin/security *dump-keychain*)",
@@ -146,10 +149,27 @@ MATCHES='def esc: gsub("(?<c>[.+?()\\[\\]{}|^$\\\\])"; "\\" + .c);
 n_match() { # n_match <command> -> how many allow rules match it
   printf '%s' "$OUT" | jq -r --arg c "$1" "$MATCHES"' [.permissions.allow[] | select(startswith("Bash(")) | select(hit($c))] | length'
 }
+d_match() { # d_match <command> -> how many deny rules match it
+  printf '%s' "$OUT" | jq -r --arg c "$1" "$MATCHES"' [.permissions.deny[] | select(startswith("Bash(")) | select(hit($c))] | length'
+}
+d_is() { # d_is <command> <yes|no> <label>
+  got=$(d_match "$1")
+  if [ "$2" = yes ] && [ "$got" -ge 1 ]; then _pass "$3"; elif [ "$2" = no ] && [ "$got" = 0 ]; then _pass "$3"; else _fail "$3" "$got"; fi
+}
 m_is() { # m_is <command> <expected count> <label>
   got=$(n_match "$1")
   if [ "$got" = "$2" ]; then _pass "$3"; else _fail "$3" "$got"; fi
 }
+for c in 'gh gist create notes.md' 'gh gist edit 1234' 'gh repo create x --public --source .' \
+         'glab repo create x' 'glab snippet create -t t f.txt' 'gh api gists' \
+         'gh api -X POST /gists -f description=x' 'glab api projects/1/snippets' 'glab api -X POST snippets' \
+         'gh gist new notes.md' 'gh repo new x --public' 'glab snippet new -t t f.txt' \
+         'glab project create x --public'; do
+  d_is "$c" yes "a deny rule matches: $c"
+done
+for c in 'gh repo view' 'gh gist list' 'gh api repos/o/r/pulls' 'glab api projects/1/merge_requests'; do
+  d_is "$c" no "no deny rule matches: $c"
+done
 # Calibrate the model on a fixture before trusting it on the real rules.
 FIX_SAVE=$OUT
 OUT='{"permissions":{"allow":["Bash(git *)","Bash(git push *)","Bash(git log * main)","Bash(ls:*)"]}}'
@@ -259,6 +279,10 @@ for k in awsAuthRefresh awsCredentialExport gcpAuthRefresh otelHeadersHelper; do
   jq_is "has(\"$k\")"                      false  "posture-weakening key $k is reset"
 done
 FIRST=$OUT
+emit '{"env":{"ANTHROPIC_BASE_URL":"https://x.example","ANTHROPIC_API_KEY":"k","OPENAI_BASE_URL":"https://y.example"}}'
+jq_is '[.env | keys[] | select(startswith("ANTHROPIC_"))] | length' 0 "live ANTHROPIC_* env keys never survive an apply"
+emit '{}'
+jq_is '[.env | keys[] | select(startswith("ANTHROPIC_"))] | length' 0 "the owned env carries no ANTHROPIC_* key"
 emit "$FIRST"
 if [ "$(printf '%s' "$OUT" | jq -S .)" = "$(printf '%s' "$FIRST" | jq -S .)" ]; then
   _pass "a second apply changes nothing"
@@ -718,9 +742,16 @@ jq_is '.hooks.PreToolUse | length' 5 "no PreToolUse entry beyond the five guards
 jq_is '[.hooks.PreToolUse[].hooks[] | select(.command == "/opt/homebrew/bin/bash $HOME/.claude/git-forge-guard.sh") | .timeout] | join(",")' 60 \
       "the forge guard hook carries an explicit 60 s timeout"
 # The pre-merge guard reads origin (git ls-remote) and the forge (glab, gh). It gives up at
-# 40 s, inside this limit: a hook that outruns its timeout is treated as non-blocking.
+# 40 s, inside this limit: a hook that reaches its timeout is a failure, which onFailure
+# below turns into a block.
 jq_is '[.hooks.PreToolUse[].hooks[] | select(.command == "/opt/homebrew/bin/bash $HOME/.claude/xreview-guard.sh") | .timeout] | join(",")' 60 \
       "the pre-merge guard hook carries an explicit 60 s timeout"
+# The three danger guards fail closed: a guard that cannot start, crashes or times out blocks
+# the tool call instead of letting it through. The other two stay fail-open (ruled).
+for g in git-forge-guard worktree-guard xreview-guard; do
+  jq_is "[.hooks.PreToolUse[].hooks[] | select(.command == \"/opt/homebrew/bin/bash \$HOME/.claude/$g.sh\") | .onFailure] | join(\",\")" block "$g fails closed"
+done
+jq_is '[.hooks[][]?.hooks[]? | select(has("onFailure"))] | length' 3 "no other hook sets onFailure"
 # The SessionStart hooks must survive alongside them — adding PreToolUse replaced the
 # whole hooks object once during development.
 jq_is '.hooks.SessionStart | length' 3 "all three SessionStart hooks present"
@@ -907,9 +938,34 @@ if command -v chezmoi >/dev/null 2>&1; then
       *)      _fail "helper $f is chezmoi-managed" "not in \`chezmoi managed\`" ;;
     esac
   done
+  # An agent file chezmoi does not manage never deploys, and its type is then "not found".
+  for a in "$SRC"/dot_claude/agents/*.md; do
+    [ -e "$a" ] || continue
+    f=".claude/agents/$(basename "$a")"
+    if printf '%s\n' "$managed" | grep -qxF -- "$f"; then _pass "agent $f is chezmoi-managed"
+    else _fail "agent $f is chezmoi-managed" "not in \`chezmoi managed\`"; fi
+  done
 else
   echo "  SKIP: chezmoi absent — hook-script management unverified"
 fi
+# An unquoted ": " inside a description breaks the frontmatter YAML and the agent fails to load.
+desc_yaml_ok() { # desc_yaml_ok <file>: true unless the description has an unquoted ": "
+  awk '/^---$/{n++; next} n==1 && /^description:/{sub(/^description:[[:space:]]*/,""); d=$0; exit}
+       END{ if (d ~ /^"/) exit 0; if (d ~ /: /) exit 1; exit 0 }' "$1"
+}
+YF="$(mktemp "${TMPDIR:-/tmp}/claude-settings-agent.XXXXXX")"
+printf -- '---\nname: x\ndescription: Does a thing: badly\n---\n' > "$YF"
+if desc_yaml_ok "$YF"; then _fail "the description check rejects an unquoted colon-space" "fixture passed"
+else _pass "the description check rejects an unquoted colon-space"; fi
+printf -- '---\nname: x\ndescription: "Does a thing: well"\n---\n' > "$YF"
+if desc_yaml_ok "$YF"; then _pass "the description check accepts a double-quoted colon-space"
+else _fail "the description check accepts a double-quoted colon-space" "fixture rejected"; fi
+rm -f "$YF"
+for a in "$SRC"/dot_claude/agents/*.md; do
+  [ -e "$a" ] || continue
+  if desc_yaml_ok "$a"; then _pass "$(basename "$a") description parses as YAML"
+  else _fail "$(basename "$a") description parses as YAML" "unquoted colon-space in description"; fi
+done
 
 echo "Y. unused extensions are switched off, the rest of the live state is carried"
 # Doctor cleanup 2026-10-29. plugins.conf is add-only, so dropping a plugin line leaves it

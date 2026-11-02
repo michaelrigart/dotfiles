@@ -28,9 +28,11 @@ run() {
 
 # expect <allow|deny> <label> <cwd> <command>
 expect() {
-  local want=$1 label=$2 cwd=$3 cmd=$4 out got
-  out=$(run "$cwd" "$cmd")
-  if [ -z "$out" ]; then
+  local want=$1 label=$2 cwd=$3 cmd=$4 out got rc
+  out=$(run "$cwd" "$cmd"); rc=$?
+  if [ "$rc" -ne 0 ]; then
+    got="exit $rc"
+  elif [ -z "$out" ]; then
     got=allow
   elif printf '%s' "$out" | jq -e '.hookSpecificOutput.permissionDecision=="deny"' >/dev/null 2>&1; then
     got=deny
@@ -61,12 +63,44 @@ expect_reason_contains() {
 
 # raw <stdin> -> asserts the guard allows whatever degenerate input it is handed
 expect_raw_allow() {
-  local label=$1 payload=$2 out
-  out=$(printf '%s' "$payload" | PINNED_PATH="$PATH" bash "$GUARD" 2>/dev/null)
-  if [ -z "$out" ]; then
+  local label=$1 payload=$2 out rc
+  out=$(printf '%s' "$payload" | PINNED_PATH="$PATH" bash "$GUARD" 2>/dev/null); rc=$?
+  if [ "$rc" -ne 0 ]; then
+    fail=$((fail + 1)); printf '  FAIL %s (want allow, got exit %s)\n' "$label" "$rc"
+  elif [ -z "$out" ]; then
     pass=$((pass + 1)); printf '  ok   %s\n' "$label"
   else
     fail=$((fail + 1)); printf '  FAIL %s (want allow, got %s)\n' "$label" "$out"
+  fi
+}
+
+# cmdpayload <command> -> the hook payload for a command, built with the suite's own jq
+cmdpayload() {
+  jq -n --arg c "$1" '{hook_event_name:"PreToolUse",tool_name:"Bash",tool_input:{command:$c}}'
+}
+
+# guard_with <pinned-path> <raw payload> -> sets G_OUT G_ERR G_RC
+guard_with() {
+  local pinned=$1 payload=$2
+  G_OUT=$(printf '%s' "$payload" | env PATH="$pinned" PINNED_PATH="$pinned" /bin/bash "$GUARD" 2>"$TMP/g-err"); G_RC=$?
+  G_ERR=$(cat "$TMP/g-err")
+}
+
+# blocked <label> <needle> -> asserts rc 2, empty stdout, needle in stderr
+blocked() {
+  if [ "$G_RC" -eq 2 ] && [ -z "$G_OUT" ] && printf '%s' "$G_ERR" | grep -qF "$2"; then
+    pass=$((pass + 1)); printf '  ok   %s\n' "$1"
+  else
+    fail=$((fail + 1)); printf '  FAIL %s (want rc 2 and stderr with "%s"; got rc %s, stdout "%s", stderr "%s")\n' "$1" "$2" "$G_RC" "$G_OUT" "$G_ERR"
+  fi
+}
+
+# silent <label> -> asserts rc 0 and empty stdout
+silent() {
+  if [ "$G_RC" -eq 0 ] && [ -z "$G_OUT" ]; then
+    pass=$((pass + 1)); printf '  ok   %s\n' "$1"
+  else
+    fail=$((fail + 1)); printf '  FAIL %s (want rc 0 and silence; got rc %s, stdout "%s")\n' "$1" "$G_RC" "$G_OUT"
   fi
 }
 
@@ -247,15 +281,71 @@ expect allow "bypass leading"   "$TMP" "WT_GUARD=off git worktree remove $SIB"
 expect allow "bypass middle"    "$TMP" "cd /tmp && WT_GUARD=off git worktree remove $SIB"
 expect allow "bypass trailing"  "$TMP" "git worktree remove $SIB # WT_GUARD=off"
 
-echo "== jq absent fails open =="
-out=$(jq -n --arg c 'git worktree unlock x' '{tool_input:{command:$c}}' \
-      | env PATH=/bin PINNED_PATH=/bin /bin/bash "$GUARD" 2>/dev/null)
-if [ -z "$out" ]; then pass=$((pass + 1)); echo '  ok   no jq allows'
-else fail=$((fail + 1)); echo '  FAIL no jq allows'; fi
+echo "== internal failures fail closed (spec 2026-11-01 §1) =="
+REALJQ=$(command -v jq)
+mkdir -p "$TMP/rsfail" "$TMP/jqfail"
+cat >"$TMP/rsfail/jq" <<STUB
+#!/bin/sh
+for a in "\$@"; do [ "\$a" = -Rs ] && exit 1; done
+PATH="$PATH"
+exec "$REALJQ" "\$@"
+STUB
+printf '#!/bin/sh\nexit 1\n' >"$TMP/jqfail/jq"
+chmod +x "$TMP/rsfail/jq" "$TMP/jqfail/jq"
+UNLOCK=$(cmdpayload 'git worktree unlock x')
+guard_with /bin "$UNLOCK"
+blocked "no jq: candidate refused" "Worktree guard: jq is missing"
+guard_with /bin "$(cmdpayload 'ls -la')"
+silent "no jq: ordinary command allowed"
+guard_with "$TMP/rsfail:/usr/bin:/bin" "$UNLOCK"
+blocked "deny that cannot serialize refuses" "crosses the wt lifecycle lock"
+guard_with "$TMP/rsfail:/usr/bin:/bin" "$(cmdpayload 'ls -la')"
+silent "serialize failure: ordinary command allowed"
+guard_with "$TMP/rsfail:/usr/bin:/bin" "$(cmdpayload 'git worktree list')"
+silent "serialize failure: worktree list allowed"
+guard_with "$TMP/jqfail:/usr/bin:/bin" "$UNLOCK"
+blocked "failing jq: candidate refused" "could not be read"
+guard_with "$TMP/jqfail:/usr/bin:/bin" "$(cmdpayload 'ls -la')"
+silent "failing jq: ordinary command allowed"
+guard_with "$TMP/jqfail:/usr/bin:/bin" "$(cmdpayload 'git status')"
+silent "failing jq: git status allowed"
 
-echo "== degenerate input fails open =="
+# A text tool that fails on a candidate must not read as "no match" or "nothing extracted".
+# grep exits 1 for no match and 2 or more for an error; sed and dirname fail on any non-zero.
+mkdir -p "$TMP/grepfail" "$TMP/grepnomatch" "$TMP/sedfail" "$TMP/dirfail"
+printf '#!/bin/sh\nexit 3\n' >"$TMP/grepfail/grep"
+printf '#!/bin/sh\nexit 1\n' >"$TMP/grepnomatch/grep"
+printf '#!/bin/sh\nexit 3\n' >"$TMP/sedfail/sed"
+printf '#!/bin/sh\nexit 3\n' >"$TMP/dirfail/dirname"
+printf '#!/bin/sh\nexit 3\n' >"$TMP/dirfail/basename"
+chmod +x "$TMP/grepfail/grep" "$TMP/grepnomatch/grep" "$TMP/sedfail/sed" "$TMP/dirfail/dirname" "$TMP/dirfail/basename"
+guard_with "$TMP/grepfail:/usr/bin:/bin" "$UNLOCK"
+blocked "grep failing: an unlock is refused, not allowed" "could not run"
+guard_with "$TMP/grepfail:/usr/bin:/bin" "$(cmdpayload "git worktree remove --force --force x")"
+blocked "grep failing: a doubly forced remove is refused" "could not run"
+guard_with "$TMP/grepnomatch:/usr/bin:/bin" "$(cmdpayload 'echo worktree remove')"
+silent "grep finding no match: a mention is allowed"
+guard_with "$TMP/grepfail:/usr/bin:/bin" "$(cmdpayload 'ls -la')"
+silent "grep failing: ordinary command allowed"
+guard_with "$TMP/grepfail:/usr/bin:/bin" "$(cmdpayload 'git worktree list')"
+silent "grep failing: worktree list allowed"
+guard_with "$TMP/sedfail:/usr/bin:/bin" "$UNLOCK"
+blocked "sed failing: an unlock is refused, not allowed" "could not run"
+guard_with "$TMP/sedfail:/usr/bin:/bin" "$(cmdpayload 'ls -la')"
+silent "sed failing: ordinary command allowed"
+guard_with "$TMP/sedfail:/usr/bin:/bin" "$(cmdpayload 'git worktree list')"
+silent "sed failing: worktree list allowed"
+guard_with "$TMP/dirfail:/usr/bin:/bin" "$(cmdpayload "git worktree remove $SIB")"
+if [ "$G_RC" -eq 0 ] && printf '%s' "$G_OUT" | jq -e '.hookSpecificOutput.permissionDecision=="deny"' >/dev/null 2>&1; then
+  pass=$((pass + 1)); printf '  ok   %s\n' "dirname and basename failing: a sibling removal is still denied"
+else
+  fail=$((fail + 1)); printf '  FAIL %s (rc %s, stdout "%s")\n' "dirname and basename failing: a sibling removal is still denied" "$G_RC" "$G_OUT"
+fi
+
+echo "== degenerate input =="
 expect_raw_allow "empty payload"        ''
-expect_raw_allow "malformed JSON"       'not json at all { worktree remove'
+guard_with "$PATH" 'not json at all { worktree remove'
+blocked "malformed JSON refuses a candidate" "could not be read"
 expect_raw_allow "no command key"       '{"tool_name":"Bash","tool_input":{}}'
 expect_raw_allow "null command"         '{"tool_input":{"command":null}}'
 
