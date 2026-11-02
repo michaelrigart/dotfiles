@@ -508,9 +508,16 @@ Michael's daemon.
   - Coherence after each revert, on the files it changed: `bash -n` for `.sh`, `.bash` or a bash
     shebang; `zsh -n` for `.zsh`, a zsh shebang or a file under a `zsh/functions` dir;
     `python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())'` for `.py`; `ruby -c` for
-    `.rb`; a JSON parse for `.json`. A repository with `Cargo.toml` at its root gets
-    `cargo check --offline --all-targets` once at the end (`CARGO_TARGET_DIR=<state>/cargo/<repo>`,
-    3600 s), undoing reverts latest first until it passes.
+    `.rb`; a JSON parse for `.json`; one file-kind classifier (shebang, then extension, then path
+    conventions) serves these checks and the lexical dangling-name check. A repository with
+    `Cargo.toml` at its root gets `cargo check --offline --all-targets` once per distinct tree
+    (`CARGO_TARGET_DIR=<state>/cargo/<repo>`, 3600 s); a failure takes out the newest recreation
+    first, then the latest revert; a missing cargo or a timeout is recorded, keeping the reverts.
+  - Validation runs to a monotone fixpoint: each round builds the tree from F with the active set,
+    asks content-addressed judge questions (keyed by a digest of exactly what the judge sees), and
+    removes what fails; each per-task defect gets one recreation attempt. The shipped tree is the
+    fixpoint tree, and every counted defect has a yes on it (Michael's restructure decision,
+    2026-11-02).
   - Pin `docs/superpowers/` to `plan_commit`: the tip of the branch's newest approved, clean plan
     receipt; with none, the last commit touching `docs/superpowers/plans/` before the first task
     review began.
@@ -803,8 +810,8 @@ them into a new "Implementation notes" section at the end of the spec with the P
   memory generation, and §6's A and A′ need a home holding a snapshot anyway. Its own login keeps
   token refreshes apart from Michael's daemon. There is no fallback onto the live daemon: if the
   probe fails, the run stops and Michael decides (Part B step 2).
-- **R2 — build checks (§12):** syntax checks per revert, `cargo check` once for Rust; no .NET or
-  JavaScript build (not cheap).
+- **R2 — build checks (§12):** syntax checks per revert and a lexical dangling-name check,
+  `cargo check` once per distinct tree for Rust; no .NET or JavaScript build (not cheap).
 - **R3 — "merged" (§4.1)** needs local merge evidence (ancestry, a rebase by `git cherry`, or a
   squash by tree equality; Task 5) with the merge inside the window. The destination's tip is read
   from the original repository's refs (read only); a branch without evidence is excluded and
