@@ -1,6 +1,6 @@
 # Instruction layer: lean global rules, a Codex reviewer charter, fixes checked by revert
 
-**Status:** Approved
+**Status:** In progress
 **Date:** 2026-11-01. Signed off by Michael on 2026-11-02 ("ok"), §4's new wording included.
 Codex approved round 3 (xr-1793550356-bb5d0e53).
 **Branch:** `instruction-layer`, stacked on `worktree-security-locks` (that branch merges first).
