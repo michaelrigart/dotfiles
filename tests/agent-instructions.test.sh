@@ -176,6 +176,9 @@ need_flat codex.md 'never implement, commit, branch, push, open merge requests o
 need_flat codex.md 'take over the workflow' "codex.md forbids taking over the workflow"
 need_flat codex.md 'competing canonical artifacts' "codex.md forbids competing canonical artifacts"
 need_flat codex.md 'competing plan' "codex.md forbids a competing plan"
+need_flat codex.md 'canonical artifacts, a competing plan included, unless Michael asks' \
+  "codex.md lets Michael lift the no-competing-artifacts rule"
+need_flat codex.md "Michael's own messages come first" "codex.md ranks Michael's own messages above every other source"
 need_flat codex.md "A skill's trigger describes how to do a thing well, not whose job it is" \
   "codex.md says a skill's trigger does not change roles"
 need_flat codex.md 'Review, debugging and hardening are on role' "codex.md keeps review, debugging and hardening on role"
