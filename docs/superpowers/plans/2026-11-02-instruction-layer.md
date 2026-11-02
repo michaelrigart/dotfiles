@@ -2,7 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** In progress on `instruction-layer` (the dotfiles have no MR)
+**Status:** Implemented on `instruction-layer`, stacked on `worktree-security-locks` (the dotfiles
+have no MR; the pushed branch is the end). This plan is complete: do not run it again.
 
 **Goal:** `global.md` drops to at most 150 lines with no rule lost: record procedures move to a
 `design-records` skill, Codex's rules to a Codex-only `codex.md`, checkpoint mechanics to the
@@ -535,5 +536,22 @@ its reviewer is sp-reviewer, with the §1 table as the brief. **Spec:** §1, §4
 
 ## Run notes
 
-*Filled during execution: suite totals, preview results, and any table row the Task 5 review
-flagged.*
+- **Suites on the final code commit (c656773):**
+  - `./tests/run.sh` passed 4870/4870 across 47 suites.
+  - The heavy suites passed: `xreview` 872/872, `wt-functions` 1082/1082 and `git-forge-guard`
+    1948/1948.
+- **Shellcheck:** no new warning class against main. `agent-instructions` has more SC2016 and
+  SC2015 notes, the same two kinds main has: backticks in single-quoted pins, and the
+  `&& _pass || _fail` idiom.
+- **Previews** (`command chezmoi --source <worktree> cat`, from the Task 5 review on 17d81ff):
+  - `GLOBAL.md` is `global.md` alone.
+  - `CLAUDE.md` is `global.md`, a blank line, then `## Claude Code only`.
+  - The Codex `AGENTS.md` is `global.md`, a blank line, then `## Codex only`.
+  - `managed` lists the `design-records` skill.
+- **Task 5 stopped at 146 lines against the 130 cap** with every kept row (call 15). The cap
+  became 150.
+- **The table review then flagged four rows**, restored in c656773 (call 16): X16/X19, D22, M2-M3
+  and R8. `global.md` ends at 150 lines.
+- **Review fixes on Task 1** (3d4a7ef):
+  - "unless Michael asks" covers the no-takeover rule again, as in X3.
+  - Michael's own messages rank first. Spec §3 was amended.
