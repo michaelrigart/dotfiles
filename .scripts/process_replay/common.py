@@ -4,12 +4,18 @@ protocol and its briefs, labels, git calls and the snapshot views.
 Judge files (the controller dispatches the judges between phases; docs/superpowers/plans/
 2026-11-02-replay-set.md, "Shared records"):
   <state>/<kind>/<id>.json           the judge's input, written by judge_write
-  <state>/<kind>/<id>.answer.json    the judge's answer
-  <state>/<kind>/<id>.brief.md       this input's brief (brief_for): the kind's brief and two path lines
+  <state>/<kind>/<id>.answer.json    the judge's answer (collected from the staged item, see below)
   <state>/judges/<kind>.md           the kind's brief (write_briefs)
-A final review is <state>/final/<id>/brief.md with answer.md beside it; a recreation is
+A final review is <state>/final/<id>/brief.md (the harness's marker) with answer.md beside it; a recreation is
 <state>/recreate/<id>.json (its brief is <id>.brief.md beside it), finished when <state>/recreate/<id>/done exists.
+
+Staging. An agent is never handed a path inside the state. Each judge input and each final review is staged in a real
+directory of its own, $XDG_STATE_HOME/review-work/items/<random hex>/ (item_dir; <state>/items.json records which),
+holding only that item's files: a judge's input.json and brief.md, and the answer.json it writes; a final review's
+brief.md and package.diff, and the answer.md the driver writes. judge_answer and collect_final copy an answer back into
+the state when they read it. Recreations keep their aliased paths (alias, aliased).
 """
+import fcntl
 import importlib.util
 import os
 import re
@@ -203,12 +209,60 @@ def judge_write(state, kind, jid, doc):
     _check_id(jid)
     _blind(doc)
     path = os.path.join(state, kind, jid + ".json")
+    if jload(path) != doc:
+        staged = _staged(state, kind, jid)
+        if staged:
+            _unlink(os.path.join(staged, "answer.json"))        # an answer to the old input is not an answer to this one
     jsave(path, doc)
     return path
 
 
+def _unlink(path):
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
 def judge_answer(state, kind, jid):
-    return jload(os.path.join(state, kind, jid + ".answer.json"))
+    """The judge's answer, or None. One written in the staged item's directory is copied into the state (and removed
+    from the item) when it parses."""
+    path = os.path.join(state, kind, jid + ".answer.json")
+    got = jload(path)
+    if got is not None:
+        return got
+    staged = _staged(state, kind, jid)
+    if staged:
+        theirs = os.path.join(staged, "answer.json")
+        got = jload(theirs)
+        if got is not None:
+            with open(theirs, "rb") as f:
+                data = f.read()
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path + ".tmp{}".format(os.getpid()), "wb") as f:
+                f.write(data)
+            os.replace(path + ".tmp{}".format(os.getpid()), path)
+            _unlink(theirs)
+    return got
+
+
+def collect_final(state, jid):
+    """The path of final review `jid`'s answer.md in the state, or None. An answer.md the driver wrote in the staged
+    item's directory is moved into the state first."""
+    path = os.path.join(state, "final", jid, "answer.md")
+    if os.path.isfile(path):
+        return path
+    staged = _staged(state, "final", jid)
+    theirs = os.path.join(staged, "answer.md") if staged else None
+    if theirs and os.path.isfile(theirs):
+        with open(theirs, "rb") as f:
+            data = f.read()
+        with open(path + ".tmp{}".format(os.getpid()), "wb") as f:
+            f.write(data)
+        os.replace(path + ".tmp{}".format(os.getpid()), path)
+        _unlink(theirs)
+        return path
+    return None
 
 
 def _inputs(state, kind):
@@ -256,19 +310,68 @@ def aliased(state, path):
     return alias(state) + path[len(state):]
 
 
+# ------------------------------------------------------------------ staged items
+def items_root():
+    return os.path.join(L.state_home(), "review-work", "items")
+
+
+def _staged(state, kind, jid):
+    """The staged directory of an item that has one, else None (nothing is allocated)."""
+    rec = jload(os.path.join(state, "items.json"))
+    name = rec.get(kind + "/" + jid) if isinstance(rec, dict) else None
+    return os.path.join(items_root(), name) if isinstance(name, str) else None
+
+
+def item_dir(state, kind, jid):
+    """The staged directory of an item, allocated (a random 16-hex name, recorded in <state>/items.json) and made on first use."""
+    os.makedirs(state, exist_ok=True)
+    path = os.path.join(state, "items.json")
+    with open(os.path.join(state, "items.lock"), "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        rec = jload(path)
+        rec = rec if isinstance(rec, dict) else {}
+        key = kind + "/" + jid
+        if key not in rec:
+            while True:
+                name = os.urandom(8).hex()
+                if name not in rec.values() and not os.path.exists(os.path.join(items_root(), name)):
+                    break
+            rec[key] = name
+            jsave(path, rec)
+        d = os.path.join(items_root(), rec[key])
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _write_if_changed(path, data):
+    data = data if isinstance(data, bytes) else data.encode("utf-8")
+    try:
+        with open(path, "rb") as f:
+            if f.read() == data:
+                return
+    except OSError:
+        pass
+    with open(path + ".tmp{}".format(os.getpid()), "wb") as f:
+        f.write(data)
+    os.replace(path + ".tmp{}".format(os.getpid()), path)
+
+
 def _pending(state):
+    """[(kind, id, input path, answer path, brief path)], the harness's own paths (the state's), of everything unanswered."""
     out = []
     for kind in JUDGE_KINDS:
         for jid in _inputs(state, kind):
             base = os.path.join(state, kind, jid)
-            if not os.path.exists(base + ".answer.json"):
+            staged = _staged(state, kind, jid)
+            if not os.path.exists(base + ".answer.json") and not (staged and os.path.exists(os.path.join(staged, "answer.json"))):
                 out.append((kind, jid, base + ".json", base + ".answer.json", base + ".brief.md"))
     fdir = os.path.join(state, "final")
     for jid in sorted(os.listdir(fdir)) if os.path.isdir(fdir) else []:
         brief = os.path.join(fdir, jid, "brief.md")
-        answer = os.path.join(fdir, jid, "answer.md")
-        if os.path.isfile(brief) and not os.path.exists(answer):
-            out.append(("final", jid, brief, answer, brief))
+        staged = _staged(state, "final", jid)
+        if os.path.isfile(brief) and not os.path.exists(os.path.join(fdir, jid, "answer.md")) \
+                and not (staged and os.path.exists(os.path.join(staged, "answer.md"))):
+            out.append(("final", jid, brief, os.path.join(fdir, jid, "answer.md"), brief))
     for jid in _inputs(state, "recreate"):
         spec = os.path.join(state, "recreate", jid + ".json")
         done = os.path.join(state, "recreate", jid, "done")
@@ -278,12 +381,29 @@ def _pending(state):
     return out
 
 
+def _agent_paths(state, item):
+    """(answer path, brief path) as the agent gets them: in the staged directory for a judge or a final review, the aliased
+    state paths for a recreation."""
+    kind, jid, _inp, ans, brief = item
+    if kind in JUDGE_KINDS:
+        d = item_dir(state, kind, jid)
+        return os.path.join(d, "answer.json"), os.path.join(d, "brief.md")
+    if kind == "final":
+        d = item_dir(state, kind, jid)
+        return os.path.join(d, "answer.md"), os.path.join(d, "brief.md")
+    return ans, aliased(state, brief)
+
+
 def pending(state):
-    """[(kind, id, input path, answer path, brief path)] of everything waiting for an agent: judge
-    inputs without an answer, final reviews (final/<id>/brief.md) without answer.md, and
-    recreations (recreate/<id>.json) without recreate/<id>/done. The brief path is the one to hand
-    out, under the state's alias; the others are the harness's own."""
-    return [item[:4] + (aliased(state, item[4]),) for item in _pending(state)]
+    """[(kind, id, input path, answer path, brief path)] of everything waiting for an agent: judge inputs without an answer,
+    final reviews (final/<id>/brief.md) without answer.md, and recreations (recreate/<id>.json) without recreate/<id>/done.
+    The input path is the harness's own. The answer and brief paths are the ones to hand out: in the item's staged
+    directory (answer.json or answer.md, brief.md) for a judge or a final review, the aliased paths for a recreation."""
+    out = []
+    for item in _pending(state):
+        ans, brief = _agent_paths(state, item)
+        out.append(item[:3] + (ans, brief))
+    return out
 
 
 def write_briefs(state):
@@ -293,37 +413,42 @@ def write_briefs(state):
 
 
 def brief_for(state, kind, jid):
-    """The brief of one pending item. A judge's is <kind>/<id>.brief.md: the kind's brief, then
-    `Input: <input path>` and `Write your answer to: <answer path>`, and nothing else, both under
-    the state's alias. A final review and a recreation are their own briefs; nothing is written for
-    them. Returns the brief's path under the alias."""
+    """Stage one pending item and return its brief's path. A judge's staged directory holds input.json (a copy of the input)
+    and brief.md: the kind's brief, then `Input: <input.json>` and `Write your answer to: <answer.json>`, and nothing else.
+    A final review's holds its brief.md (a copy of final/<id>/brief.md) and the package.diff its writer staged; a recreation
+    is its own brief and nothing is staged for it. Returns the brief's path."""
     for item in _pending(state):
         if item[0] == kind and item[1] == jid:
-            _write_brief(state, item)
-            return aliased(state, item[4])
+            return _stage(state, item)
     raise Failed("nothing pending for {} {}".format(kind, jid))
 
 
-def _write_brief(state, item):
-    kind, _jid, inp, ans, brief = item
-    if kind not in JUDGE_KINDS:
-        return
-    kind_brief = os.path.join(state, "judges", kind + ".md")
-    if not os.path.isfile(kind_brief):
-        write_briefs(state)
-    with open(kind_brief, encoding="utf-8") as f:
-        text = f.read()
-    jsave(brief, text.rstrip("\n") + "\n\nInput: {}\nWrite your answer to: {}\n".format(aliased(state, inp), aliased(state, ans)))
+def _stage(state, item):
+    kind, jid, inp, _ans, brief = item
+    ans, agent_brief = _agent_paths(state, item)
+    if kind in JUDGE_KINDS:
+        d = os.path.dirname(agent_brief)
+        kind_brief = os.path.join(state, "judges", kind + ".md")
+        if not os.path.isfile(kind_brief):
+            write_briefs(state)
+        with open(kind_brief, encoding="utf-8") as f:
+            text = f.read()
+        with open(inp, "rb") as f:
+            _write_if_changed(os.path.join(d, "input.json"), f.read())
+        _write_if_changed(agent_brief, text.rstrip("\n") + "\n\nInput: {}\nWrite your answer to: {}\n".format(os.path.join(d, "input.json"), ans))
+    elif kind == "final":
+        with open(brief, "rb") as f:
+            _write_if_changed(agent_brief, f.read())
+    return agent_brief
 
 
 def cmd_pending(a):
-    """Print one line per pending judge, final review and recreation: kind, id, brief. The briefs
-    of the judges are written first."""
+    """Print one line per pending judge, final review and recreation: kind, id, brief. The judges' and final reviews' items are
+    staged first (see the module doc); the brief is the staged one."""
     write_briefs(a.state)
     items = _pending(a.state)
     for item in items:
-        _write_brief(a.state, item)
-        say("{}\t{}\t{}".format(item[0], item[1], aliased(a.state, item[4])))
+        say("{}\t{}\t{}".format(item[0], item[1], _stage(a.state, item)))
     if not items:
         say("nothing pending")
     return 0

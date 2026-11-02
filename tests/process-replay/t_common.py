@@ -63,9 +63,10 @@ a = C.judge_write(state, "judge-present", "a1", {"finding": 1})
 b = C.judge_write(state, "judge-present", "b2", {"finding": 2})
 is_("pending_lists_unanswered: both unanswered", sorted(p[1] for p in C.pending(state)), ["a1", "b2"])
 jfile(os.path.join(state, "judge-present", "a1.answer.json"), {"answer": "yes"})
-is_("pending_lists_unanswered: an answer takes its input off the list",
-    C.pending(state), [("judge-present", "b2", b, os.path.join(state, "judge-present", "b2.answer.json"),
-                        C.aliased(state, os.path.join(state, "judge-present", "b2.brief.md")))])
+got = C.pending(state)
+d_b2 = C.item_dir(state, "judge-present", "b2")
+is_("pending_lists_unanswered: an answer takes its input off the list; the input is the harness's, the answer and brief the staged ones",
+    got, [("judge-present", "b2", b, os.path.join(d_b2, "answer.json"), os.path.join(d_b2, "brief.md"))])
 is_("judge_answer: the parsed answer, or None", (C.judge_answer(state, "judge-present", "a1"), C.judge_answer(state, "judge-present", "b2")),
     ({"answer": "yes"}, None))
 put(state, "final/f1/brief.md", "review the branch\n")
@@ -76,14 +77,59 @@ os.makedirs(os.path.join(state, "recreate", "r1"))
 jfile(os.path.join(state, "recreate", "r2.json"), {"finding": "y"})
 put(state, "recreate/r2/done", "")
 got = C.pending(state)
-want = [("judge-present", "b2", b, os.path.join(state, "judge-present", "b2.answer.json"),
-         C.aliased(state, os.path.join(state, "judge-present", "b2.brief.md"))),
-        ("final", "f1", os.path.join(state, "final", "f1", "brief.md"), os.path.join(state, "final", "f1", "answer.md"),
-         C.aliased(state, os.path.join(state, "final", "f1", "brief.md"))),
+d_f1 = C.item_dir(state, "final", "f1")
+want = [("judge-present", "b2", b, os.path.join(d_b2, "answer.json"), os.path.join(d_b2, "brief.md")),
+        ("final", "f1", os.path.join(state, "final", "f1", "brief.md"), os.path.join(d_f1, "answer.md"), os.path.join(d_f1, "brief.md")),
         ("recreate", "r1", os.path.join(state, "recreate", "r1.json"), os.path.join(state, "recreate", "r1", "done"),
          C.aliased(state, os.path.join(state, "recreate", "r1.json")))]
 is_("pending_lists_unanswered: final reviews without answer.md and recreations without done are listed too", got, want)
 is_("pending_lists_unanswered: an empty state has nothing", C.pending(os.path.join(ROOT, "nowhere")), [])
+
+# ---- staged items: one real directory per item, outside the state, holding only that item's files
+state = os.path.join(ROOT, "st-staged")
+x1 = C.judge_write(state, "judge-present", "s1", {"finding": "one"})
+x2 = C.judge_write(state, "judge-match", "s2", {"defects": []})
+C.jsave(os.path.join(state, "inventory", "secret.json"), {"defects": ["the answers"]})
+C.write_briefs(state)
+b1, b2 = C.brief_for(state, "judge-present", "s1"), C.brief_for(state, "judge-match", "s2")
+d1, d2 = os.path.dirname(b1), os.path.dirname(b2)
+root = os.path.join(os.environ["XDG_STATE_HOME"], "review-work", "items")
+ok("staged: each item has a real directory of its own, under review-work/items/<16 hex>, outside the state",
+   d1 != d2 and os.path.dirname(d1) == root and re.fullmatch(r"[0-9a-f]{16}", os.path.basename(d1)) and not os.path.islink(d1)
+   and os.path.realpath(d1) == d1.replace(os.environ["XDG_STATE_HOME"], os.path.realpath(os.environ["XDG_STATE_HOME"])) and state not in d1, (d1, d2))
+is_("staged: a judge's directory holds its input and brief and nothing else", sorted(os.listdir(d1)), ["brief.md", "input.json"])
+is_("staged: input.json is the input", C.jload(os.path.join(d1, "input.json")), {"finding": "one"})
+ok("staged: the brief names the staged input and answer, never the state", ("Input: " + os.path.join(d1, "input.json")) in open(b1).read()
+   and open(b1).read().endswith("Write your answer to: " + os.path.join(d1, "answer.json") + "\n") and state not in open(b1).read())
+ok("staged: nothing in the directory leads into the state (no link, no state path in any file)",
+   all(not os.path.islink(os.path.join(d1, n)) and state not in open(os.path.join(d1, n)).read() for n in os.listdir(d1)))
+is_("staged: the same item gets the same directory", C.item_dir(state, "judge-present", "s1"), d1)
+jfile(os.path.join(d1, "answer.json"), {"answer": "no"})
+is_("staged: an answer written in the item's directory is read", C.judge_answer(state, "judge-present", "s1"), {"answer": "no"})
+is_("staged: and copied into the state", C.jload(os.path.join(state, "judge-present", "s1.answer.json")), {"answer": "no"})
+ok("staged: the staged copy is gone, so a later input cannot meet a stale answer", not os.path.exists(os.path.join(d1, "answer.json")))
+jfile(os.path.join(d2, "answer.json"), {"matches": []})
+ok("staged: an answer written but not yet collected takes the item off the pending list", [p[1] for p in C.pending(state)] == [])
+open(os.path.join(d2, "answer.json"), "w").write("{half")
+ok("staged: an answer that does not parse yet is not collected, and the item stays pending", C.judge_answer(state, "judge-match", "s2") is None
+   and [p[1] for p in C.pending(state)] == [])
+os.unlink(os.path.join(d2, "answer.json"))
+ok("staged: with no answer there, the item is pending again", [p[1] for p in C.pending(state)] == ["s2"])
+jfile(os.path.join(d2, "answer.json"), {"matches": ["old"]})
+C.judge_write(state, "judge-match", "s2", {"defects": [{"index": 0}]})
+ok("staged: a changed input drops an uncollected answer to the old one", not os.path.exists(os.path.join(d2, "answer.json")) and C.judge_answer(state, "judge-match", "s2") is None)
+put(state, "final/sf/brief.md", "review it\nReview id: sf\n")
+df = C.item_dir(state, "final", "sf")
+put(df, "package.diff", "diff\n")
+bf = C.brief_for(state, "final", "sf")
+is_("staged: a final review's directory holds its brief and package", (bf, sorted(os.listdir(df))), (os.path.join(df, "brief.md"), ["brief.md", "package.diff"]))
+is_("staged: its brief is a copy of the harness's", open(bf).read(), "review it\nReview id: sf\n")
+ok("staged: a final review with no answer is pending, and collect_final finds none", [p[1] for p in C.pending(state) if p[0] == "final"] == ["sf"] and C.collect_final(state, "sf") is None)
+put(df, "answer.md", "### Issues\n")
+got = C.collect_final(state, "sf")
+is_("staged: an answer.md written in the item's directory is moved into the state", (got, open(got).read(), os.path.exists(os.path.join(df, "answer.md"))),
+    (os.path.join(state, "final", "sf", "answer.md"), "### Issues\n", False))
+ok("staged: and the final review is no longer pending", not [p for p in C.pending(state) if p[0] == "final"])
 
 # ---- per_input_briefs and briefs_neutral
 state = os.path.join(ROOT, "st3")
@@ -95,19 +141,19 @@ texts = {}
 for kind, jid, inp, ans, brief in C.pending(state):
     is_("per_input_briefs: brief_for returns the path pending() names", C.brief_for(state, kind, jid), brief)
     texts[jid] = open(brief).read()
-    ok("per_input_briefs: {} lives beside its input, under the alias".format(jid),
-       brief == C.aliased(state, os.path.join(state, "judge-present", jid + ".brief.md")) and os.path.samefile(brief, os.path.join(state, "judge-present", jid + ".brief.md")), brief)
-    tail = "Input: {}\nWrite your answer to: {}\n".format(C.aliased(state, inp), C.aliased(state, ans))
+    d = os.path.dirname(brief)
+    ok("per_input_briefs: {} is staged beside its copy of the input and its answer".format(jid),
+       brief == os.path.join(d, "brief.md") and ans == os.path.join(d, "answer.json") and os.path.dirname(d) == os.path.join(os.environ["XDG_STATE_HOME"], "review-work", "items"), brief)
+    tail = "Input: {}\nWrite your answer to: {}\n".format(os.path.join(d, "input.json"), ans)
     ok("per_input_briefs: {} is the kind's brief, then exactly the two path lines".format(jid),
        texts[jid].startswith(kind_brief) and texts[jid].endswith(tail) and texts[jid][len(kind_brief):-len(tail)].strip() == "", texts[jid][-300:])
-ok("per_input_briefs: each names its own input and answer (by alias)", C.aliased(state, x) in texts["i-one"] and C.aliased(state, C.pending(state)[0][3]) in texts["i-one"]
-   and C.aliased(state, y) in texts["i-two"] and C.aliased(state, C.pending(state)[1][3]) in texts["i-two"])
-ok("per_input_briefs: and not the other's", C.aliased(state, y) not in texts["i-one"] and "i-two" not in texts["i-one"]
-   and C.aliased(state, x) not in texts["i-two"] and "i-one" not in texts["i-two"])
+ok("per_input_briefs: each names its own input and answer", all(os.path.join(os.path.dirname(C.brief_for(state, "judge-present", i)), "input.json") in texts[i] for i in texts))
+ok("per_input_briefs: and not the other's", "i-two" not in texts["i-one"] and "i-one" not in texts["i-two"]
+   and os.path.dirname(C.brief_for(state, "judge-present", "i-two")) not in texts["i-one"])
 ok("per_input_briefs: and never the real state path", state not in texts["i-one"] and state not in texts["i-two"])
 ok("per_input_briefs: a brief is not an input", [p[1] for p in C.pending(state)] == ["i-one", "i-two"])
-ok("per_input_briefs: a final review is its own brief; nothing is written for it", C.brief_for(os.path.join(ROOT, "st2"), "final", "f1")
-   == C.aliased(os.path.join(ROOT, "st2"), os.path.join(ROOT, "st2", "final", "f1", "brief.md")))
+ok("per_input_briefs: a final review's brief is its staged copy", C.brief_for(os.path.join(ROOT, "st2"), "final", "f1")
+   == os.path.join(C.item_dir(os.path.join(ROOT, "st2"), "final", "f1"), "brief.md"))
 
 forbidden = re.compile(r"replay|inject|removal|per-task|\barm\b|\brun\b", re.I)
 missing = [k for k in KINDS if not os.path.isfile(os.path.join(state, "judges", k + ".md"))]
@@ -145,6 +191,9 @@ for kind, jid, inp, ans, brief in C.pending(state):
     seen.append(kind)
     ok("briefs_neutral: {} {} and its path say nothing of replay, inject, removal, per-task, arm or run".format(kind, jid),
        not forbidden.search(text) and "replay" not in brief and "process-replay" not in text, text[-200:])
+    if kind in KINDS + ("final",):
+        ok("briefs_neutral: {} {}: the staged directory leads nowhere into the state".format(kind, jid),
+           all(state not in open(os.path.join(os.path.dirname(brief), n)).read() for n in os.listdir(os.path.dirname(brief))))
 is_("briefs_neutral: every kind's per-input brief was scanned", sorted(seen), sorted(KINDS + ("final", "recreate")))
 
 # ---- the alias
@@ -184,9 +233,9 @@ buf = io.StringIO()
 with contextlib.redirect_stdout(buf):
     rc = C.cmd_pending(a_)
 lines = buf.getvalue().splitlines()
-ok("cmd_pending: one line per pending item, with its brief", rc == 0 and len(lines) == 2 and "judge-present" in lines[0]
-   and "i-one" in lines[0] and lines[0].rstrip().endswith(C.aliased(state, os.path.join(state, "judge-present", "i-one.brief.md"))), lines)
-ok("cmd_pending: and the briefs exist", all(os.path.isfile(os.path.join(state, "judge-present", i + ".brief.md")) for i in ("i-one", "i-two")))
+ok("cmd_pending: one line per pending item, with its staged brief", rc == 0 and len(lines) == 2 and "judge-present" in lines[0]
+   and "i-one" in lines[0] and lines[0].rstrip().endswith(os.path.join(C.item_dir(state, "judge-present", "i-one"), "brief.md")), lines)
+ok("cmd_pending: and the briefs exist", all(os.path.isfile(os.path.join(C.item_dir(state, "judge-present", i), "brief.md")) for i in ("i-one", "i-two")))
 
 # ---- view_reads_snapshot_only_objects
 org =os.path.join(ROOT, "Code", "Org")
@@ -254,8 +303,8 @@ is_("cli: nothing pending says so", p.stdout.decode().strip(), "nothing pending"
 C.judge_write(os.path.join(work, "rel-state"), "judge-class", "k1", {"finding": 1})
 p = cli("pending", "--state", "rel-state", cwd=work)
 out = p.stdout.decode()
-ok("cli: pending lists the input and writes its brief", p.returncode == 0 and "judge-class" in out and "k1" in out
-   and os.path.isfile(os.path.join(work, "rel-state", "judge-class", "k1.brief.md")), out + p.stderr.decode())
+ok("cli: pending lists the input and stages its brief", p.returncode == 0 and "judge-class" in out and "k1" in out
+   and os.path.isfile(out.split("\t")[-1].strip()) and "rel-state" not in out, out + p.stderr.decode())
 p = cli("nonsense")
 ok("cli: an unknown command exits 2", p.returncode == 2 and b"nonsense" in p.stderr, p.stderr)
 p = cli("--help")

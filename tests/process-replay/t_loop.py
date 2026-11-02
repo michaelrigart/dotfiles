@@ -2,6 +2,7 @@ import difflib
 import io
 import json
 import contextlib
+import fcntl
 import os
 import re
 import sys
@@ -75,15 +76,6 @@ echo "wrote ${out}"
 """)
 os.chmod(PKG, 0o755)
 os.environ["PROCESS_REPLAY_SUPERPOWERS"] = SP
-
-# ---- without the variable, the newest version under ~/.claude/plugins/cache
-CACHE = os.path.join(os.path.expanduser("~"), ".claude", "plugins", "cache", "market", "superpowers")
-for v in ("7.0.0", "9.1.0", "10.0.0"):
-    put(os.path.join(CACHE, v), "skills/requesting-code-review/code-reviewer.md", "x")
-del os.environ["PROCESS_REPLAY_SUPERPOWERS"]
-is_("superpowers: the newest version under the plugin cache, compared as numbers", P.superpowers_root(), os.path.join(CACHE, "10.0.0"))
-os.environ["PROCESS_REPLAY_SUPERPOWERS"] = SP
-is_("superpowers: PROCESS_REPLAY_SUPERPOWERS wins", P.superpowers_root(), SP)
 
 # ---- the defects: where they sit in a 40-line file. ("replace", line, text) or ("drop", first, last), fixed coordinates.
 FIXED = {"src/%s.py" % n: ["%s%d\n" % (n, i) for i in range(1, 41)] for n in "abck"}
@@ -160,7 +152,9 @@ class World(object):
             members = [d for d in ids if GROUPS.get(d) == GROUPS.get(did)] if did in GROUPS else [did]
             fixed_ids = [d for d in ids if d not in members]
             path = f
-            patch = make_patch(path, render(path, ids), render(path, fixed_ids))
+            put(work, path, "".join(render(path, fixed_ids)))                 # a real git diff, so it carries the blobs' ids (--3way needs them)
+            patch = git(work, "diff", "--no-color", "--", path) + "\n"
+            git(work, "checkout", "-q", "--", path)
             repair = os.path.join(self.state, "repairs", did + ".patch")
             put(os.path.dirname(repair), os.path.basename(repair), patch)
             self.patches[did] = patch
@@ -324,7 +318,7 @@ def settle(w, limit=40, **kw):
 
 def to_codex(w, **kw):
     """Every run at the Codex step with no round started: the final review answered and matched with nothing."""
-    go(w, rounds=False)
+    go(w)
     drive(w, **kw)
     go(w, rounds=False)
     drive(w, **kw)
@@ -369,23 +363,13 @@ ok("setup: each run has its ledger recorded", all(r["ledger"] and os.path.isdir(
 ok("setup: a final brief waits for every run, and nothing else ran", len(CALLS) == 0 and sorted(i for k, i, *_ in C.pending(w.state) if k == "final") == sorted(labels),
    C.pending(w.state))
 
-# ---- final_brief
+# ---- the final review's brief is staged (the content tests are in t_final.py)
 r0 = w.runs()[0]
-brief = open(os.path.join(w.state, "final", r0["label"], "brief.md")).read()
-tip = git(r0["scratch"], "rev-parse", "HEAD")
-ok("final_brief: the description names the branch", "The change on feat." in brief, brief)
-ok("final_brief: the plan is the scratch's plan file", os.path.join(r0["scratch"], PLAN) in brief)
-ok("final_brief: base and tip are the scratch's", "**Base:** " + w.base in brief and "**Head:** " + tip in brief and "git diff {}..{}".format(w.base, tip) in brief, brief)
-ok("final_brief: no placeholder is left", not re.search(r"\[(DESCRIPTION|PLAN_OR_REQUIREMENTS|BASE_SHA|HEAD_SHA)\]", brief))
-ok("final_brief: the template's framing is not in the brief, its prompt is", "Subagent (general-purpose)" not in brief and "You are a Senior Code Reviewer." in brief)
-pkg_line = [l for l in brief.splitlines() if l.startswith("Review package")]
-ok("final_brief: it names the review package, written by review-package in the scratch, under the state's alias",
-   len(pkg_line) == 1 and os.path.isfile(pkg_line[0].split(": ", 1)[1]) and open(pkg_line[0].split(": ", 1)[1]).read().startswith("# Review package: {}..{}".format(w.base, tip)),
-   pkg_line)
-ok("final_brief: the package path is the alias, not the state", pkg_line and C.alias(w.state) in pkg_line[0] and w.state not in pkg_line[0], pkg_line)
-ok("final_brief: it names the scratch repository", "Repository: " + r0["scratch"] in brief)
-ok("final_brief: its id line is unique and is the run's final review id", brief.count("Review id: ") == 1 and "\nReview id: {}\n".format(r0["label"]) in brief)
-ok("final_brief: it says nothing of the replay", not re.search(r"replay|inject|per-task", brief, re.I), re.findall(r"(?i).{20}(?:replay|inject|per-task).{20}", brief))
+brief_path = os.path.join(C.item_dir(w.state, "final", r0["label"]), "brief.md")
+ok("final_brief: the run's brief is staged and the state keeps its marker copy", os.path.isfile(brief_path)
+   and open(brief_path).read() == open(os.path.join(w.state, "final", r0["label"], "brief.md")).read() and "Review id: " + r0["label"] in open(brief_path).read())
+ok("final_brief: pending hands out the staged brief, not a state path", sorted(b for k, i, _x, _y, b in C.pending(w.state) if k == "final") ==
+   sorted(os.path.join(C.item_dir(w.state, "final", r["label"]), "brief.md") for r in w.runs()))
 
 # ---- idempotent: nothing moves without a new answer
 before = snap(w.state)
@@ -403,9 +387,9 @@ before = snap(w.state)
 go(w, rounds=False)
 ok("final_transcript_missing: and waiting changes no state file", before == snap(w.state))
 for r in w.runs():
-    final_transcript(r["label"], prompt="Read {} and follow it.".format(C.aliased(w.state, os.path.join(w.state, "final", r["label"], "brief.md"))))
+    final_transcript(r["label"], prompt="Read {} and follow it.".format(os.path.join(C.item_dir(w.state, "final", r["label"]), "brief.md")))
 go(w, rounds=False)
-ok("transcript_lookup: a transcript whose first prompt holds the aliased brief path (no id line) is found", all(r["step"] == "match" for r in w.runs()), [r["step"] for r in w.runs()])
+ok("transcript_lookup: a transcript whose first prompt holds the staged brief path (no id line) is found", all(r["step"] == "match" for r in w.runs()), [r["step"] for r in w.runs()])
 
 # several transcripts match: none is picked; --transcript names one, and also stands in when the search finds none
 w = World("transcripts")
@@ -688,7 +672,7 @@ first = sorted(r["label"] for r in w.runs())[0]
 drive(w, transcripts=False)
 for r in w.runs():
     final_transcript(r["label"], commands=["git -C {} show HEAD".format(os.path.dirname(w.common))] if r["label"] == first else ["git show HEAD"])
-text = go(w, rounds=False)
+text = go(w)
 runs = w.runs()
 old = [r for r in runs if r["label"] == first][0]
 ok("void_once_more: a leak in the final reviewer's transcript voids the run, as a Codex leak does",
@@ -713,7 +697,7 @@ st = dict((r["label"], r) for r in w.runs())
 ok("void_once_more: a Read of a file in the original checkout is a leak", st[labs[0]]["end"] == "void", st[labs[0]]["leak"] if "leak" in st[labs[0]] else st[labs[0]]["step"])
 ok("void_once_more: a Read elsewhere is not, and project dirs that merely start with the key are searched", st[labs[1]]["end"] is None and st[labs[1]]["step"] == "match")
 
-# a judge answer that does not fit its input is refused, naming the input, and changes nothing
+# a judge answer that does not fit its input is reported and not used, and never halts the command
 w = World("badanswer")
 behave(lambda run, k: ("approve", []))
 to_codex(w)
@@ -722,12 +706,196 @@ go(w)
 r = sorted(w.runs(), key=lambda x: x["label"])[0]
 C.jsave(os.path.join(w.state, "judge-match", "%s-1.answer.json" % r["label"]), {"matches": [{"defect": 0, "finding": 5}], "unmatched": []})
 before = snap(w.state)
+text = go(w, rounds=False)
+ok("bad_answer: a match naming a finding the input does not have is reported and not used, and the state is as it was",
+   "finding 5" in text and "not used" in text and before == snap(w.state), text)
+other = sorted(w.runs(), key=lambda x: x["label"])[1]
+inp = C.jload(os.path.join(w.state, "judge-match", "%s-1.json" % other["label"]))
+C.jsave(os.path.join(w.state, "judge-match", "%s-1.answer.json" % other["label"]), {"matches": [{"defect": [d["index"] for d in inp["defects"] if d["summary"] == "bug in dA"][0], "finding": 0}], "unmatched": []})
+text = go(w, rounds=False)
+st = dict((x["label"], x) for x in w.runs())
+ok("bad_answer: and another run's good answer is applied in the same command", st[other["label"]]["defects"]["dA"] == "recovered" and st[r["label"]]["step"] == "match", text)
+
+# a final review's findings are taken by their own index; one out of range spoils that review only
+w = World("badindex")
+behave(lambda run, k: ("approve", []))
+go(w)
+drive(w, report=["found dA", "found dB"])
+go(w, rounds=False)
+runs = sorted(w.runs(), key=lambda x: x["label"])
+for r, idx in zip(runs, ([1, 0], [0, 7])):
+    C.jsave(os.path.join(w.state, "judge-match", "%s-0.answer.json" % r["label"]),
+            {"findings": [{"index": idx[0], "summary": "second claim"}, {"index": idx[1], "summary": "first claim"}], "matches": [], "unmatched": []})
+text = go(w, rounds=False)
+st = dict((x["label"], x) for x in w.runs())
+ok("final_findings: the judge's own indices order the findings (not their position in the list)",
+   [f["summary"] for f in st[runs[0]["label"]]["reviews"][0]["findings"]] == ["first claim", "second claim"], st[runs[0]["label"]]["reviews"])
+ok("final_findings: an index out of range spoils that review only, is reported, and halts nothing",
+   st[runs[1]["label"]]["step"] == "match" and st[runs[1]["label"]]["reviews"][0]["findings"] == [] and "not used" in text and "out of range" in text, text)
+
+# a finding a match uses is not also an outside defect
+w = World("usedreal")
+behave(lambda run, k: ("changes", [F("dA")]) if k == 1 else ("approve", []))
+go(w)
+drive(w)
+go(w, rounds=False)
+for r in w.runs():
+    inp = C.jload(os.path.join(w.state, "judge-match", "%s-0.json" % r["label"]))
+    C.jsave(os.path.join(w.state, "judge-match", "%s-0.answer.json" % r["label"]), {"findings": [{"index": 0, "summary": "claim"}],
+            "matches": [{"defect": d["index"], "finding": 0} for d in inp["defects"] if d["summary"] == "bug in dA"], "unmatched": [{"finding": 0, "ruling": "real"}]})
+go(w)
+ok("used_finding_not_outside: a finding some match uses is neither outside nor rejected, whatever the judge also ruled on it",
+   all(x["outside"] == [] and x["rejected"] == [] and x["defects"]["dA"] == "recovered" for x in w.runs()), [(x["outside"], x["rejected"]) for x in w.runs()])
+
+# ================================================================== two commands at once
+# a second `run` refuses while one holds run.lock
+w = World("lock")
+behave(lambda run, k: ("approve", []))
+go(w)
+held = os.open(os.path.join(w.state, "run.lock"), os.O_RDWR | os.O_CREAT)
+fcntl.flock(held, fcntl.LOCK_EX)
 try:
-    go(w, rounds=False)
+    go(w)
     got = "no error"
 except Failed as e:
     got = str(e)
-ok("bad_answer: a match naming a finding the input does not have is refused, and the state is as it was", "finding 5" in got and before == snap(w.state), got)
+ok("run_lock: a second run refuses while another holds run.lock, and says which", "run.lock" in got and "another" in got, got)
+text = go(w, rounds=False)
+ok("run_lock: match is not stopped by it", "waits at final" in text, text)
+fcntl.flock(held, fcntl.LOCK_UN)
+os.close(held)
+go(w)
+
+# match never creates runs: only the run that holds run.lock does
+w = World("nocreate")
+go(w, rounds=False)
+ok("run_lock: match creates no run", not os.path.exists(os.path.join(w.state, "runs")))
+
+# a run whose Codex round is in flight holds its lock: run refuses a second run and match skips the busy run
+w = World("busy")
+behave(lambda run, k: ("approve", []))
+to_codex(w)
+INNER = []
+
+
+def inside(run, k):
+    if run["label"] != sorted(r["label"] for r in w.runs())[0]:
+        return ("approve", [])
+    try:
+        go(w)
+        INNER.append("no error")
+    except Failed as e:
+        INNER.append(str(e))
+    INNER.append(go(w, rounds=False))
+    return ("approve", [])
+
+
+behave(inside)
+go(w)
+ok("run_lock: a run started while another is running refuses", INNER[0].startswith("another `run` holds"), INNER)
+ok("busy: match skips a run whose round is in flight, and says so", "busy" in INNER[1], INNER[1:])
+ok("busy: and the round finished normally", all(x["end"] == "approve" for x in w.runs()))
+
+# the reviewer's sequence: run loads its runs, match applies an answer in between, run goes on: no second oracle, no lost state
+w = World("interleave")
+behave(lambda run, k: ("approve", []))
+go(w)
+drive(w, report=["found dA"])
+go(w, rounds=False)
+drive(w, report=["found dA"])
+real_ensure = P.ensure_runs
+seen = []
+
+
+def interleaved(ctx, runs):
+    if not seen:
+        seen.append(1)
+        go(w, rounds=False)
+    return real_ensure(ctx, runs)
+
+
+P.ensure_runs = interleaved
+go(w)
+P.ensure_runs = real_ensure
+ok("interleave: match ran between run's load and its first step", seen == [1])
+runs = w.runs()
+ok("interleave: one oracle commit per scratch, not two", all(git(x["scratch"], "rev-list", "--count", x["base_tip"] + "..HEAD") == "1" for x in runs),
+   [git(x["scratch"], "log", "--format=%s", x["base_tip"] + "..HEAD") for x in runs])
+ok("interleave: no run ended in error, no review twice, dA recovered once", all(x["end"] == "approve" and x["defects"]["dA"] == "recovered"
+                                                                          and [r["kind"] for r in x["reviews"]] == ["final", "codex"] for x in runs), [(x["end"], x.get("error")) for x in runs])
+
+# two same-file defects matched in one review: the repairs go on one after another, and the second with --3way
+w = World("samefile", ids=("dA", "dF", "dG", "dB"))
+behave(lambda run, k: ("approve", []))
+go(w)
+drive(w, report=["found dA", "found dF"])
+go(w, rounds=False)
+drive(w, report=["found dA", "found dF"])
+go(w, rounds=False)
+runs = w.runs()
+ok("oracle_same_file: dA (line 5) and dF (line 8) overlap in context, and both are repaired in one commit",
+   all(x["defects"]["dA"] == "recovered" and x["defects"]["dF"] == "recovered" and x["end"] is None and x["step"] == "codex"
+       and git(x["scratch"], "rev-list", "--count", x["base_tip"] + "..HEAD") == "1"
+       and git(x["scratch"], "show", "HEAD:src/a.py").splitlines()[4] == "a5" and git(x["scratch"], "show", "HEAD:src/a.py").splitlines()[7] == "a8"
+       and git(x["scratch"], "show", "HEAD:src/a.py").splitlines()[24] == "G_BUG" for x in runs), [(x["end"], x.get("error"), x["defects"]) for x in runs])
+ok("oracle_same_file: the commit is the one named Address review findings", all(git(x["scratch"], "log", "-1", "--format=%s") == "Address review findings" for x in runs))
+
+# one round's exception does not discard another's result
+for name, exc in (("failed", Failed("cannot open a thread")), ("keyerror", KeyError("surprise"))):
+    w = World("mixed-" + name, cases=1)
+    behave(lambda run, k: ("approve", []))
+    to_codex(w)
+    first = sorted(r["label"] for r in w.runs())[0]
+    behave(lambda run, k, exc=exc: exc if run["label"] == first else ("changes", [OTHER("x")]))
+    text = go(w)
+    st = dict((x["label"], x) for x in w.runs())
+    other = [x for x in st.values() if x["label"] != first][0]
+    ok("round_errors: a round raising {} fails that run's round (retry once), not the command".format(type(exc).__name__),
+       st[first]["failures"] == 1 and st[first]["step"] == "codex" and st[first]["end"] is None and "the round failed (1/2)" in text, text)
+    ok("round_errors: and the other run's result was applied and saved", len(other["reviews"]) == 2 and other["reviews"][1]["kind"] == "codex" and other["tokens"] == 100
+       and other["step"] == "match", (other["step"], other["tokens"]))
+
+# a failed build leaves no scratch, and a crash that does is found by cleanup
+w = World("orphan")
+real_build = scratch.build
+
+
+def failing_build(objects, base, files, out, *args, **kw):
+    os.makedirs(out)
+    put(out, "half", "x")
+    raise Failed("the build broke")
+
+
+scratch.build = failing_build
+try:
+    go(w)
+    got = "no error"
+except Failed as e:
+    got = str(e)
+scratch.build = real_build
+orphans = [os.path.join(os.environ["XDG_STATE_HOME"], "review-work", "scratch", d) for d in os.listdir(os.path.join(os.environ["XDG_STATE_HOME"], "review-work", "scratch"))] \
+    if os.path.isdir(os.path.join(os.environ["XDG_STATE_HOME"], "review-work", "scratch")) else []
+recorded = [C.jload(os.path.join(d, f))["scratch"] for d, _x, fs in os.walk(os.path.join(w.state, "runs")) for f in fs if f == "scratch.json"]
+ok("orphan_scratch: a failed build is reported, and removes what it left", "build broke" in got and recorded and not any(os.path.exists(r) for r in recorded), (got, recorded))
+crashed = os.path.join(os.environ["XDG_STATE_HOME"], "review-work", "scratch", "feedface")
+put(crashed, "half", "x")
+C.jsave(os.path.join(w.state, "runs", w.case_ids[0], "feedface", "scratch.json"), {"scratch": crashed})
+with contextlib.redirect_stdout(io.StringIO()):
+    P.cmd_cleanup(w.args())
+ok("orphan_scratch: cleanup removes a scratch recorded before a crash, though no run state names it", not os.path.exists(crashed))
+
+# a final reviewer that reads the state directory voids its run
+w = World("void-state")
+behave(lambda run, k: ("approve", []))
+go(w)
+first = sorted(r["label"] for r in w.runs())[0]
+drive(w, transcripts=False)
+for r in w.runs():
+    final_transcript(r["label"], commands=["ls {}/inventory".format(w.state)] if r["label"] == first else ["git show HEAD"])
+go(w)
+st = dict((x["label"], x) for x in w.runs())
+ok("void_once_more: a final reviewer reading the state directory is a leak", st[first]["end"] == "void" and st[first]["replaced_by"], st[first].get("leak"))
+ok("void_once_more: and the other reviewer is not", all(x["end"] is None for l, x in st.items() if l != first and not x.get("replaces")))
 
 # ================================================================== repair_fails
 w = World("repair-fails")

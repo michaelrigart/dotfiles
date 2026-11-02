@@ -20,23 +20,29 @@ waits for), failures (consecutive failed rounds), leak, error, and for a voided 
 or, for the replacement, replaces. A voided run keeps end "void" and voids 1; its replacement starts at voids 1 and ends
 "void" with voids 2 if it leaks as well.
 
-The final review's id is the run's label: final/<label>/, and `Review id: <label>` in the brief. The driving session dispatches
-the reviewer with the brief's text as its prompt (so the id line is in the subagent's first prompt, where the leak scan finds
-its transcript under --projects-dir) and writes the reply to final/<label>/answer.md.
+The final review's id is the run's label. Its brief is staged (final.py); the driving session hands the reviewer the staged
+brief and writes the reply to the staged directory's answer.md.
+
+Concurrency. `run` holds an exclusive lock on <state>/run.lock for its whole life (a second `run` refuses), keeps to TURNS Codex
+turns, and alone creates runs. Every mutation of a run holds that run's lock (runs/<case>/<label>/lock), re-reading its
+state.json once held; a run whose Codex round is in flight holds its lock throughout, and `match` (or `run`) skips a busy run
+and says so. A voided run's replacement is made by the next `run`.
 """
 import concurrent.futures as cf
+import contextlib
+import fcntl
 import glob
 import json
 import os
 import random
 import re
 import shutil
-import subprocess
 import tempfile
 
 from . import codex as K
 from . import codexhome
 from . import common as C
+from . import final as F
 from . import scratch
 from .common import Failed, L, XR, jload, jsave, say
 
@@ -66,7 +72,7 @@ class Ctx(object):
         self.cases = dict((c["id"], c) for c in doc["cases"] if isinstance(c, dict) and isinstance(c.get("id"), str))
         branches = jload(os.path.join(a.state, "branches.json")) or {}
         self.branches = dict((b["id"], b) for b in branches.get("branches") or [] if isinstance(b, dict) and isinstance(b.get("id"), str))
-        self._inj, self._inv, self._saved = {}, {}, {}
+        self._inj, self._inv = {}, {}
         self.failed = set()            # runs whose round failed in this command: retried by the next one
 
     def branch(self, case):
@@ -90,20 +96,58 @@ class Ctx(object):
             self._inv[case["id"]] = dict((d["id"], d) for d in doc.get("defects") or [] if isinstance(d, dict) and "id" in d)
         return self._inv[case["id"]]
 
+    def path(self, run):
+        return os.path.join(self.a.state, "runs", run["case"], run["label"], "state.json")
+
     def save(self, run):
-        """Write the run's state, unless it is what the file holds already."""
-        path = os.path.join(self.a.state, "runs", run["case"], run["label"], "state.json")
+        """Write the run's state, unless the file holds it already."""
+        path = self.path(run)
         text = json.dumps(run, indent=2)
-        if self._saved.get(path) == text:
-            return
         try:
             with open(path, encoding="utf-8") as f:
-                same = f.read() == text
+                if f.read() == text:
+                    return
         except OSError:
-            same = False
-        if not same:
-            jsave(path, text)
-        self._saved[path] = text
+            pass
+        jsave(path, text)
+
+    def acquire(self, run):
+        """The lock of `run` (its fd), with the run re-read from disk, or None when another command holds it."""
+        fd = _lock(os.path.join(self.a.state, "runs", run["case"], run["label"], "lock"))
+        if fd is not None:
+            fresh = jload(self.path(run))
+            if isinstance(fresh, dict):
+                run.clear()
+                run.update(fresh)
+        return fd
+
+    @contextlib.contextmanager
+    def locked(self, run):
+        fd = self.acquire(run)
+        try:
+            yield fd is not None
+        finally:
+            _unlock(fd)
+
+
+def _lock(path):
+    """An exclusive, non-blocking flock on `path` (made if need be): its fd, or None when it is held."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        return None
+    return fd
+
+
+def _unlock(fd):
+    if fd is not None:
+        try:
+            os.close(fd)                    # closing the descriptor releases the flock
+        except OSError:
+            pass
 
 
 def runs_of(a):
@@ -175,12 +219,16 @@ def start_run(ctx, case, label, voids=0, replaces=None):
         if not rec.get("repair"):
             raise Failed("case {}: defect {} has no repair in injected/{}.json".format(case["id"], did, case["branch"]))
         repairs[did] = {"repair": rec["repair"], "group": rec.get("group") or did, "hunks": rec.get("hunks") or []}
+    jsave(os.path.join(a.state, "runs", case["id"], label, "scratch.json"), {"scratch": out})      # before the build: cleanup removes what a failure leaves
     tmp = tempfile.mkdtemp(prefix="loop-files.")
     try:
         files = os.path.join(tmp, "files")
         scratch.export(os.path.join(work, ".git", "objects"), commit, files)
         tip = scratch.build(objects, branch["base"], files, out, branch["dest"], branch["branch"], branch.get("dest_ref"),
                             expect_tree=C.git(work, "rev-parse", commit + "^{tree}"), cache=os.path.join(a.state, "packs"))
+    except BaseException:
+        shutil.rmtree(out, ignore_errors=True)
+        raise
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     run = {"case": case["id"], "label": label, "scratch": out, "thread": None, "round": 0, "step": "final", "reviews": [],
@@ -219,151 +267,9 @@ def ensure_runs(ctx, runs):
     return made
 
 
-# ------------------------------------------------------------------ the final review
-def _version(path):
-    return [int(x) for x in re.findall(r"\d+", re.search(r"/superpowers/([^/]+)/skills/", path).group(1))]
-
-
-def superpowers_root():
-    """The superpowers version directory: PROCESS_REPLAY_SUPERPOWERS (tests), else the newest under ~/.claude/plugins/cache."""
-    env = os.environ.get("PROCESS_REPLAY_SUPERPOWERS")
-    if env:
-        return env
-    found = glob.glob(os.path.join(glob.escape(os.path.expanduser("~/.claude/plugins/cache")), "*", "superpowers", "*", "skills",
-                                   "requesting-code-review", "code-reviewer.md"))
-    if not found:
-        raise Failed("no superpowers skills under ~/.claude/plugins/cache (set PROCESS_REPLAY_SUPERPOWERS)")
-    return max(found, key=_version).split("/skills/")[0]
-
-
-def _prompt(template):
-    """The prompt of code-reviewer.md: the fenced block's `prompt: |` body, dedented. The whole file if it has none."""
-    lines = template.splitlines()
-    for i, line in enumerate(lines):
-        if re.match(r"\s*prompt:\s*\|\s*\Z", line):
-            body = []
-            for x in lines[i + 1:]:
-                if x == "```":
-                    break
-                body.append(x[4:] if x.startswith("    ") else x)
-            return "\n".join(body).strip("\n") + "\n"
-    return template
-
-
-def _plan(scratch_dir):
-    names = [n for n in C.git(scratch_dir, "ls-files", "docs/superpowers/plans").splitlines() if n.endswith(".md")]
-    if not names:
-        raise Failed("the scratch repository {} holds no plan under docs/superpowers/plans".format(scratch_dir))
-    return os.path.join(scratch_dir, sorted(names)[-1])
-
-
-def final_brief(a, run, branch):
-    """final/<label>/brief.md: code-reviewer.md's prompt for the scratch's range, the review package and the id."""
-    root = superpowers_root()
-    sd = run["scratch"]
-    with open(os.path.join(root, "skills", "requesting-code-review", "code-reviewer.md"), encoding="utf-8") as f:
-        text = _prompt(f.read())
-    tip = C.git(sd, "rev-parse", "HEAD")
-    plan = _plan(sd)
-    package = os.path.join(a.state, "final", run["label"], "package.diff")
-    os.makedirs(os.path.dirname(package), exist_ok=True)
-    p = subprocess.run(["bash", os.path.join(root, "skills", "subagent-driven-development", "scripts", "review-package"), plan, branch["base"], tip, package],
-                       cwd=sd, capture_output=True, env=C.git_env())
-    if p.returncode != 0:
-        raise Failed("review-package failed ({}): {}".format(p.returncode, p.stderr.decode("utf-8", "replace").strip()))
-    for key, value in (("[DESCRIPTION]", "The change on {}.".format(branch["branch"])), ("[PLAN_OR_REQUIREMENTS]", plan),
-                       ("[BASE_SHA]", branch["base"]), ("[HEAD_SHA]", tip)):
-        text = text.replace(key, value)
-    text += "\nReview package (read it first): {}\nRepository: {}\nReview id: {}\n".format(C.aliased(a.state, package), sd, run["label"])
-    jsave(os.path.join(a.state, "final", run["label"], "brief.md"), text)
-
-
-def _key():
-    return re.sub(r"[^A-Za-z0-9]", "-", os.path.abspath(os.path.expanduser("~/Code/.replay")))
-
-
-def _first_prompt(path):
-    """The text of the first user message of a Claude transcript."""
-    try:
-        with open(path, "rb") as f:
-            for line in f:
-                if b'"user"' not in line:
-                    continue
-                try:
-                    rec = json.loads(line.decode("utf-8"))
-                except ValueError:
-                    continue
-                if rec.get("type") != "user":
-                    continue
-                content = (rec.get("message") or {}).get("content")
-                if isinstance(content, list):
-                    content = "\n".join(x.get("text", "") for x in content if isinstance(x, dict))
-                return content if isinstance(content, str) else ""
-    except OSError:
-        pass
-    return ""
-
-
-def transcripts(a, jid):
-    """The transcripts, under the projects of ~/Code/.replay, whose first prompt carries the line `Review id: <jid>` or the aliased
-    path of final/<jid>/brief.md (a driver hands a reviewer its brief by path)."""
-    key, found = _key(), []
-    try:
-        names = sorted(os.listdir(a.projects_dir))
-    except OSError:
-        return found
-    line = re.compile(r"^Review id: " + re.escape(jid) + r"\s*$", re.M)
-    brief = C.aliased(a.state, os.path.join(a.state, "final", jid, "brief.md"))
-    for name in names:
-        if name != key and not name.startswith(key + "-"):
-            continue
-        root = os.path.join(a.projects_dir, name)
-        for path in sorted(glob.glob(os.path.join(glob.escape(root), "**", "*.jsonl"), recursive=True)):
-            first = _first_prompt(path)
-            if line.search(first) or brief in first:
-                found.append(path)
-    return found
-
-
 def add_args_match(ap):
     ap.add_argument("--transcript", action="append", default=[], metavar="ID=PATH",
                     help="the transcript of final review ID, when the search finds none or several")
-
-
-def overrides(a):
-    """{review id: transcript path} of --transcript ID=PATH."""
-    out = {}
-    for item in getattr(a, "transcript", None) or []:
-        jid, sep, path = item.partition("=")
-        if not (sep and jid and path):
-            raise Failed("--transcript wants ID=PATH, not {!r}".format(item))
-        out[jid] = os.path.abspath(os.path.expanduser(path))
-    return out
-
-
-def transcript_leaks(path, forbidden, cwd):
-    """The original checkouts a transcript's tool calls name (Bash commands, Read/Grep/Glob paths), by codex.py's matcher."""
-    found = set()
-    with open(path, "rb") as f:
-        for line in f:
-            if b"tool_use" not in line:
-                continue
-            try:
-                rec = json.loads(line.decode("utf-8"))
-            except ValueError:
-                continue
-            content = (rec.get("message") or {}).get("content") if isinstance(rec, dict) else None
-            for item in content if isinstance(content, list) else []:
-                if not (isinstance(item, dict) and item.get("type") == "tool_use" and isinstance(item.get("input"), dict)):
-                    continue
-                inp = item["input"]
-                parts = [inp[k] for k in ("command", "file_path", "path", "notebook_path") if isinstance(inp.get(k), str)]
-                if item.get("name") == "Glob" and isinstance(inp.get("pattern"), str):
-                    parts.append(inp["pattern"])
-                commands = [inp["command"]] if isinstance(inp.get("command"), str) else []
-                for name in K.named("\n".join(parts), rec.get("cwd") or cwd, forbidden, commands):
-                    found.add(name)
-    return sorted(found)
 
 
 # ------------------------------------------------------------------ the judges
@@ -427,8 +333,10 @@ def _open_valid(ctx, run, ids):
 
 # ------------------------------------------------------------------ the oracle fixer
 def oracle(run, ids):
-    """Re-apply the repairs of `ids` (each group's patch once) as one commit, `Address review findings`; its sha.
-    Raises RepairFailed, leaving the tree as it was, when they do not apply."""
+    """Re-apply the repairs of `ids` (each group's patch once) one after another, `git apply --index` and, when a patch's context
+    changed under an earlier one, `--3way` (the injected blobs are in the scratch), then commit once, `Address review findings`;
+    the commit's sha. Raises RepairFailed, leaving the tree as it was, when one does not apply."""
+    sd = run["scratch"]
     texts, seen = [], set()
     for did in sorted(ids):
         rec = run["repairs"][did]
@@ -436,11 +344,25 @@ def oracle(run, ids):
             continue
         seen.add(rec["group"])
         with open(rec["repair"], "rb") as f:
-            texts.append(f.read().decode("utf-8", "surrogateescape"))
-    sha = scratch.commit_patch(run["scratch"], "".join(t if t.endswith("\n") else t + "\n" for t in texts), COMMIT)
-    if sha is None:
-        raise RepairFailed("the repair of {} does not apply to the tree".format(", ".join(sorted(ids))))
-    return sha
+            texts.append((did, f.read()))
+    for did, data in texts:
+        if not data.strip():
+            C.git(sd, "reset", "-q", "--hard", "HEAD")
+            raise RepairFailed("the repair of {} is empty".format(did))
+        for extra in ([], ["--3way"]):
+            if C.git_run(sd, scratch.NEUTRAL + ["apply", "--index", "--whitespace=nowarn"] + extra + ["-"], input=data).returncode == 0:
+                break
+        else:
+            C.git(sd, "reset", "-q", "--hard", "HEAD")
+            raise RepairFailed("the repair of {} does not apply to the tree".format(did))
+    g = lambda *args, **kw: C.git(sd, *(scratch.NEUTRAL + list(args)), **kw)
+    stamp = "{} +0000".format(int(g("log", "-1", "--format=%ct", "HEAD")) + scratch.HOUR)
+    try:
+        g("commit", "-q", "--no-verify", "-m", COMMIT, env=dict(scratch.IDENTITY, GIT_AUTHOR_DATE=stamp, GIT_COMMITTER_DATE=stamp))
+    except Failed:
+        g("reset", "-q", "--hard", "HEAD")
+        raise
+    return g("rev-parse", "HEAD")
 
 
 def _hunks(sd, a, b, path):
@@ -508,55 +430,62 @@ def _void(ctx, run, leaks):
     run["voids"] += 1
 
 
+def _error(run, why):
+    run["end"], run["step"], run["judging"], run["error"] = "error", "done", None, why
+
+
 def _final(ctx, run):
     a = ctx.a
     branch = ctx.branch(ctx.cases[run["case"]])
     jid = run["label"]
-    brief = os.path.join(a.state, "final", jid, "brief.md")
-    answer = os.path.join(a.state, "final", jid, "answer.md")
-    if not os.path.isfile(brief):
-        final_brief(a, run, branch)
+    if not os.path.isfile(os.path.join(a.state, "final", jid, "brief.md")):
+        try:
+            F.write_brief(a, run, branch)
+        except F.PlanError as e:
+            _error(run, "no final review brief: {}".format(e))
+            say("{}: {}".format(jid, run["error"]))
         return True
-    if not os.path.isfile(answer):
+    report = F.answer(a, jid)
+    if report is None:
         return False
-    given = overrides(a).get(jid)
-    found = [given] if given else transcripts(a, jid)
-    if given and not os.path.isfile(given):
-        say("final review {}: --transcript names {}, which is not a file".format(jid, given))
+    found, note = F.lookup(a, jid)
+    if note:
+        say(note)
         return False
-    if not found:
-        say("final review {}: its answer is in, but no transcript with `Review id: {}` or its brief path was found under {}; point at it "
-            "with `match --transcript {}=<path>`; it is not accepted until then".format(jid, jid, a.projects_dir, jid))
-        return False
-    if len(found) > 1:
-        say("final review {}: {} transcripts match ({}); none is picked: name the right one with `match --transcript {}=<path>`".format(
-            jid, len(found), ", ".join(found), jid))
-        return False
-    forbidden = K.forbidden_paths(K.orig_paths(branch))
-    leaks = sorted(set(x for path in found for x in transcript_leaks(path, forbidden, run["scratch"])))
+    leaks = F.leaks(a, run, branch, found[0])
     if leaks:
         _void(ctx, run, leaks)
-        say("final review {}: its transcript names the original checkout ({}); the run is void".format(jid, ", ".join(leaks)))
+        say("final review {}: its transcript names {}; the run is void".format(jid, ", ".join(leaks)))
         return True
-    with open(answer, encoding="utf-8", errors="replace") as f:
-        report = f.read()
     run["reviews"].append({"id": jid, "kind": "final", "k": 0, "findings": [], "verdict": "report", "tokens": 0, "turns": 0, "model": None, "effort": None})
     run["addressed"] = []
     _open_match(ctx, run, run["reviews"][-1], report=report)
     return True
 
 
+def _report_findings(answer):
+    """The claims of a report-form judge-match answer, by their own `index`; ValueError when the indices are not 0..n-1."""
+    listed = [f for f in answer.get("findings") or [] if isinstance(f, dict)]
+    out = {}
+    for f in listed:
+        i = f.get("index")
+        if not isinstance(i, int) or isinstance(i, bool) or not 0 <= i < len(listed) or i in out:
+            raise ValueError("finding index {!r} is out of range or repeated for {} finding(s)".format(i, len(listed)))
+        out[i] = {"summary": str(f.get("summary"))}
+    return [out[i] for i in range(len(listed))]
+
+
 def _rulings(answer, count):
-    """({defect index: finding index}, {finding index: ruling}) of a judge-match answer; Failed when it does not fit the input."""
+    """({defect index: finding index}, {finding index: ruling}) of a judge-match answer; ValueError when it does not fit the input."""
     matches, rulings = {}, {}
     for m in answer.get("matches") or []:
         if not isinstance(m, dict) or not isinstance(m.get("defect"), int) or isinstance(m.get("defect"), bool):
-            raise Failed("a match has no defect index: {!r}".format(m))
+            raise ValueError("a match has no defect index: {!r}".format(m))
         f = m.get("finding")
         if f is None:
             continue
         if not isinstance(f, int) or isinstance(f, bool) or not 0 <= f < count:
-            raise Failed("a match names finding {!r}, and there are {} finding(s)".format(f, count))
+            raise ValueError("a match names finding {!r}, and there are {} finding(s)".format(f, count))
         matches[m["defect"]] = f
     for u in answer.get("unmatched") or []:
         if isinstance(u, dict) and isinstance(u.get("finding"), int) and 0 <= u["finding"] < count and u.get("ruling") in ("real", "false_positive"):
@@ -565,19 +494,23 @@ def _rulings(answer, count):
 
 
 def _matched(ctx, run):
+    """Apply the run's judge-match answer. An answer that does not fit its input is reported and not used: the run keeps waiting."""
     a = ctx.a
     j = run["judging"]
     answer = C.judge_answer(a.state, "judge-match", j["id"])
     if not isinstance(answer, dict):
         return False
     review = run["reviews"][j["review"]]
-    if review["kind"] == "final":
-        review["findings"] = [{"summary": str(f.get("summary"))} for f in answer.get("findings") or [] if isinstance(f, dict)]
-    count = len(review["findings"])
-    matches, rulings = _rulings(answer, count)
-    for index in matches:
-        if not 0 <= index < len(j["order"]):
-            raise Failed("{}: a match names defect {}, and the input has {}".format(j["id"], index, len(j["order"])))
+    try:
+        findings = _report_findings(answer) if review["kind"] == "final" else review["findings"]
+        matches, rulings = _rulings(answer, len(findings))
+        for index in matches:
+            if not 0 <= index < len(j["order"]):
+                raise ValueError("a match names defect {}, and the input has {}".format(index, len(j["order"])))
+    except ValueError as e:
+        say("{}: the judge's answer is not used: {}".format(j["id"], e))
+        return False
+    review["findings"] = findings
     _apply(ctx, run, review, dict((j["order"][i], f) for i, f in matches.items()), rulings)
     return True
 
@@ -591,14 +524,14 @@ def _apply(ctx, run, review, matches, rulings):
         run["defects"][did] = "recovered"
     used = sorted(set(matches.values()))
     run["addressed"] = list(dict.fromkeys(_ident(findings[i]) for i in used))
-    real = [i for i, r in sorted(rulings.items()) if r == "real"]
+    real = [i for i, r in sorted(rulings.items()) if r == "real" and i not in used]
     for i in real:
         if _ident(findings[i]) not in run["outside"]:
             run["outside"].append(_ident(findings[i]))
     codex = review["kind"] == "codex"
     if codex:
         for i, r in sorted(rulings.items()):
-            if r == "false_positive" and _ident(findings[i]) not in run["rejected"]:
+            if r == "false_positive" and i not in used and _ident(findings[i]) not in run["rejected"]:
                 run["rejected"].append(_ident(findings[i]))
     run["judging"] = None
     if codex and review["verdict"] == "approve":
@@ -617,7 +550,7 @@ def _apply(ctx, run, review, matches, rulings):
     try:
         sha = oracle(run, recovered)
     except RepairFailed as e:
-        run["end"], run["step"], run["error"] = "error", "done", str(e)
+        _error(run, str(e))
         return
     again = touched(run, sha)
     if again:
@@ -639,47 +572,53 @@ def _validated(ctx, run):
 
 
 def _settle(ctx, run):
-    """Everything the run can do without a Codex round or a Claude answer; whether it did anything."""
+    """Everything the run can do without a Codex round or a Claude answer, under its lock; whether it did anything."""
     moved = False
-    while run["end"] is None:
-        step = run["step"]
-        if step == "final":
-            did = _final(ctx, run)
-        elif step == "match":
-            did = _matched(ctx, run)
-        elif step == "valid":
-            did = _validated(ctx, run)
-        else:
-            break
-        if not did:
-            break
-        moved = True
-        ctx.save(run)
+    with ctx.locked(run) as got:
+        if not got:
+            say("{}: busy (another command holds it); skipped".format(run["label"]))
+            return False
+        while run["end"] is None:
+            step = run["step"]
+            if step == "final":
+                did = _final(ctx, run)
+            elif step == "match":
+                did = _matched(ctx, run)
+            elif step == "valid":
+                did = _validated(ctx, run)
+            else:
+                break
+            if not did:
+                break
+            moved = True
+            ctx.save(run)
     return moved
 
 
 # ------------------------------------------------------------------ the Codex rounds
 def _round(ctx, run, home):
+    """One Codex round; whatever it raises is its outcome (so one round's failure cannot discard another's result)."""
     case = ctx.cases[run["case"]]
     try:
         return K.codex_round(ctx.a, run, case, ctx.branch(case), home)
-    except K.RoundFailed as e:
+    except Exception as e:
         return e
 
 
 def _took(ctx, run, out):
     """Apply one round's outcome to its run (the main thread, one at a time). Whether the run moved."""
-    if isinstance(out, K.RoundFailed):
-        run["tokens"] += out.tokens or 0
-        if out.leak:
-            _void(ctx, run, out.leak)
-            say("{}: a round named the original checkout ({}); the run is void".format(run["label"], ", ".join(out.leak)))
+    if isinstance(out, Exception):
+        run["tokens"] += getattr(out, "tokens", 0) or 0
+        leak = getattr(out, "leak", None)
+        if leak:
+            _void(ctx, run, leak)
+            say("{}: a round named the original checkout ({}); the run is void".format(run["label"], ", ".join(leak)))
             return True
         run["failures"] = run.get("failures", 0) + 1
         ctx.failed.add(run["label"])
         say("{}: the round failed ({}/2): {}".format(run["label"], run["failures"], out))
         if run["failures"] >= 2:
-            run["end"], run["step"], run["error"] = "error", "done", str(out)
+            _error(run, str(out))
         return True
     if out.get("paused"):
         say("{}: paused: {}".format(run["label"], out["paused"]))
@@ -705,16 +644,41 @@ def _took(ctx, run, out):
 
 
 def _rounds(ctx, runs, home):
-    ready = [r for r in runs if r["end"] is None and r["step"] == "codex" and r["label"] not in ctx.failed]
-    moved = False
-    if not ready:
-        return moved
-    with cf.ThreadPoolExecutor(TURNS) as pool:
-        futures = dict((pool.submit(_round, ctx, r, home), r) for r in ready)
-        for f in cf.as_completed(futures):
-            run = futures[f]
-            moved |= _took(ctx, run, f.result())
-            ctx.save(run)
+    """One Codex round for each run at the Codex step that no other command holds, at most TURNS at once. Each run's lock is
+    held until its outcome is applied and saved; every outcome is applied before the first error, if any, is raised."""
+    batch = []
+    for r in runs:
+        if r["end"] is not None or r["step"] != "codex" or r["label"] in ctx.failed:
+            continue
+        fd = ctx.acquire(r)
+        if fd is None:
+            say("{}: busy (another command holds it); its round waits".format(r["label"]))
+        elif r["end"] is not None or r["step"] != "codex":
+            _unlock(fd)
+        else:
+            batch.append((r, fd))
+    moved, error = False, None
+    try:
+        with cf.ThreadPoolExecutor(TURNS) as pool:
+            futures = dict((pool.submit(_round, ctx, r, home), (r, fd)) for r, fd in batch)
+            for f in cf.as_completed(futures):
+                run, fd = futures[f]
+                try:
+                    out = f.result()
+                except Exception as e:
+                    out = e
+                try:
+                    moved |= _took(ctx, run, out)
+                    ctx.save(run)
+                except Exception as e:
+                    error = error or e
+                finally:
+                    _unlock(fd)
+    finally:
+        for _r, fd in batch:
+            _unlock(fd)
+    if error is not None:
+        raise error
     return moved
 
 
@@ -727,29 +691,40 @@ def _summary(runs):
 
 def _drive(a, rounds):
     ctx = Ctx(a)
-    runs = runs_of(a)
     if a.dry_run:
+        runs = runs_of(a)
         for cid, case in sorted(ctx.cases.items()):
             mine = [r for r in runs if r["case"] == cid and not r.get("replaces")]
             if len(mine) < RUNS:
                 say("would start {} run(s) of case {}".format(RUNS - len(mine), cid))
         _summary(runs)
         return 0
-    home = None
-    while True:
-        moved = ensure_runs(ctx, runs)
-        for run in runs:
-            moved |= _settle(ctx, run)
-        if rounds and any(r["end"] is None and r["step"] == "codex" and r["label"] not in ctx.failed for r in runs):
-            if home is None:
-                home = _home(a)
-            moved |= _rounds(ctx, runs, home)
-        if not moved:
-            break
-    _summary(runs)
-    waits = C.pending(a.state)
-    if waits:
-        say("{} item(s) wait for an agent: run `process-replay.py pending`, then `{}` again".format(len(waits), getattr(a, "command", "run")))
+    fd = None
+    if rounds:
+        fd = _lock(os.path.join(a.state, "run.lock"))
+        if fd is None:
+            raise Failed("another `run` holds {}: only one runs at a time (it keeps to {} Codex turns and alone creates runs)".format(
+                os.path.join(a.state, "run.lock"), TURNS))
+    try:
+        home = None
+        while True:
+            runs = runs_of(a)
+            moved = ensure_runs(ctx, runs) if rounds else False
+            for run in runs:
+                moved |= _settle(ctx, run)
+            if rounds and any(r["end"] is None and r["step"] == "codex" and r["label"] not in ctx.failed for r in runs):
+                if home is None:
+                    home = _home(a)
+                moved |= _rounds(ctx, runs, home)
+            if not moved:
+                break
+        runs = runs_of(a)
+        _summary(runs)
+        waits = C.pending(a.state)
+        if waits:
+            say("{} item(s) wait for an agent: run `process-replay.py pending`, then `{}` again".format(len(waits), getattr(a, "command", "run")))
+    finally:
+        _unlock(fd)
     return 0
 
 
@@ -766,8 +741,10 @@ def cmd_cleanup(a):
     under review-work/scratch. Every JSON file stays."""
     runs = runs_of(a)
     gone = [os.path.join(a.state, d) for d in ("scratch", "work", "views", "packs")]
-    gone += [r["scratch"] for r in runs if isinstance(r.get("scratch"), str)
-             and os.path.dirname(os.path.abspath(r["scratch"])) == os.path.abspath(scratch_root())]
+    recorded = [r.get("scratch") for r in runs]
+    for path in glob.glob(os.path.join(glob.escape(a.state), "runs", "*", "*", "scratch.json")):
+        recorded.append((jload(path) or {}).get("scratch"))
+    gone += [p for p in dict.fromkeys(recorded) if isinstance(p, str) and os.path.dirname(os.path.abspath(p)) == os.path.abspath(scratch_root())]
     home = codexhome.home_path(HOME)
     if a.dry_run:
         say("would archive the threads of {} and stop its daemon".format(home))
