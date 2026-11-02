@@ -1010,6 +1010,34 @@ ok("repair_fails: a repair that no longer applies ends the run error, and names 
 ok("repair_fails: the tree is unchanged by the failed repair", all(git(x["scratch"], "status", "--porcelain") == "" and git(x["scratch"], "rev-list", "--count", w.base + "..HEAD") == "1" for x in w.runs()))
 ok("repair_fails: and no Codex round was started", not CALLS)
 
+# ... an empty repair is the third site
+w = World("repair-empty")
+behave(lambda run, k: ("approve", []))
+go(w)
+with open(os.path.join(w.state, "repairs", "dA.patch"), "w") as f:
+    f.write("")
+drive(w, report=["found dA"])
+go(w)
+drive(w, report=["found dA"])
+go(w)
+ok("repair_empty: an empty repair ends the run error, naming the defect, with the tree unchanged",
+   all(x["end"] == "error" and "dA is empty" in x["error"] and git(x["scratch"], "status", "--porcelain") == "" for x in w.runs()), [(x["end"], x.get("error")) for x in w.runs()])
+w = World("repair-empty2")
+behave(lambda run, k: ("approve", []))
+go(w)
+with open(os.path.join(w.state, "repairs", "dA.patch"), "w") as f:
+    f.write("")
+drive(w, report=["found dA"])
+go(w)
+drive(w, report=["found dA"])
+C.git = no_reset
+try:
+    go(w)
+finally:
+    C.git = real_git
+ok("repair_empty_reset_fails: and when the reset fails too, the error still names the empty repair, and the reset",
+   all(x["end"] == "error" and "dA is empty" in x["error"] and "cannot lock the index" in x["error"] for x in w.runs()), [(x["end"], x.get("error")) for x in w.runs()])
+
 # ... nor does it hide why a repair would not apply
 w = World("repair-fails2")
 behave(lambda run, k: ("approve", []))
@@ -1146,6 +1174,8 @@ helpers.put(os.path.join(w.state, "recreate", "dX"), "done", "")
 helpers.put(os.path.join(w.state, "recreate"), "dX.json", "{}")
 helpers.put(os.path.join(w.state, "recreate"), "dX.brief.md", "brief")
 helpers.put(os.path.join(w.state, "recreated"), "dX.patch", "p")
+helpers.put(os.path.join(w.state, "recreate", "dY"), "tree/src/a.py", "y = 1\n")        # done, but inject has not yet read it into recreated/dY.patch
+helpers.put(os.path.join(w.state, "recreate", "dY"), "done", "")
 other = os.path.join(want_root, "not-ours")
 os.makedirs(other)
 XR.Threads(w.state).add("th-clean", "new")
@@ -1191,6 +1221,7 @@ rdir = os.path.join(w.state, "recreate")
 ok("cleanup: a recreation's working copy (recreate/<d>/tree) is removed, its spec, brief, done marker and patch stay",
    not os.path.exists(os.path.join(rdir, "dX", "tree")) and os.path.isfile(os.path.join(rdir, "dX", "done")) and os.path.isfile(os.path.join(rdir, "dX.json"))
    and os.path.isfile(os.path.join(rdir, "dX.brief.md")) and os.path.isfile(os.path.join(w.state, "recreated", "dX.patch")))
+ok("cleanup: but a working copy whose recreated/<d>.patch is not yet made stays, for inject to read", os.path.isfile(os.path.join(rdir, "dY", "tree", "src", "a.py")))
 ok("cleanup: another state's scratch directory stays", os.path.isdir(other))
 ok("cleanup: this state's staged item directories are removed, and items.json stays", not any(os.path.exists(i) for i in items) and os.path.isfile(os.path.join(w.state, "items.json")))
 after = sorted(os.path.relpath(os.path.join(d, f), w.state) for d, _x, fs in os.walk(w.state) for f in fs if f.endswith(".json") and "/work/" not in d + "/" and "/scratch/" not in d + "/" and "/tree/" not in d + "/")

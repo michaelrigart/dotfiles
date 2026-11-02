@@ -344,7 +344,8 @@ def _reset(sd):
 def oracle(run, ids):
     """Re-apply the repairs of `ids` (each group's patch once) one after another, `git apply --index` and, when a patch's context
     changed under an earlier one, `--3way` (the injected blobs are in the scratch), then commit once, `Address review findings`;
-    the commit's sha. Raises RepairFailed, leaving the tree as it was, when one does not apply."""
+    the commit's sha. Raises RepairFailed when one is empty, does not apply or cannot be committed, after putting the tree back to HEAD;
+    when that reset fails too, the message says so (the tree is then as the failure left it)."""
     sd = run["scratch"]
     texts, seen = [], set()
     for did in sorted(ids):
@@ -748,13 +749,15 @@ def cmd_match(a):
 
 def cmd_cleanup(a):
     """Stop the replay home's daemon and archive the threads the runs used; remove scratch/, work/, views/, packs/ (a cache), each
-    recreate/<defect>/tree (a working copy of the final tree), the run scratches under review-work/scratch and this state's staged
+    recreate/<defect>/tree (a working copy of the final tree) once recreated/<defect>.patch holds what it made (before that, `inject`
+    still needs it), the run scratches under review-work/scratch and this state's staged
     items under review-work/items. Every JSON file, brief, patch and `done` marker stays. It refuses while a `run` holds run.lock or
     any run's lock is held. Threads are archived on the daemon as it is: run cleanup before `home --stop`, or archiving fails (exit 1)
     though everything else is removed."""
     runs = runs_of(a)
     gone = [os.path.join(a.state, d) for d in ("scratch", "work", "views", "packs")]
-    gone += sorted(glob.glob(os.path.join(glob.escape(a.state), "recreate", "*", "tree")))
+    gone += [t for t in sorted(glob.glob(os.path.join(glob.escape(a.state), "recreate", "*", "tree")))
+             if os.path.isfile(os.path.join(a.state, "recreated", os.path.basename(os.path.dirname(t)) + ".patch"))]
     recorded = [r.get("scratch") for r in runs]
     for path in glob.glob(os.path.join(glob.escape(a.state), "runs", "*", "*", "scratch.json")):
         recorded.append((jload(path) or {}).get("scratch"))

@@ -11,6 +11,7 @@ import io
 import json
 import os
 import re
+import shutil
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -198,9 +199,9 @@ def letter_of(text):
     return m.group(1) if m else None
 
 
-def inventory():
+def inventory(state=None):
     """{letter: defect} of the one inventoried branch."""
-    d = os.path.join(STATE, "inventory")
+    d = os.path.join(state or STATE, "inventory")
     names = sorted(os.listdir(d)) if os.path.isdir(d) else []
     return dict((letter_of(x["summary"]), x) for n in names for x in C.jload(os.path.join(d, n))["defects"])
 
@@ -224,11 +225,39 @@ def recreate(inp, done):
     put(os.path.dirname(done), "done", "")
 
 
-def answer(state):
-    """Answer everything `pending` lists once; how many items. A kind the fixture does not expect fails the test."""
+def listed(state):
+    """[(kind, id, input path, answer path)] as the driving session of Part B reads them: from `pending`'s output, each brief's own lines.
+    A judge's brief names its staged input and answer (`Input:`, `Write your answer to:`); a final review's answer.md sits beside its
+    brief; a recreation's brief names its spec and the done marker. Every path is checked to lie where an agent may be sent."""
+    rc, out = cli("pending", state=state)
+    assert rc == 0, out
+    items = []
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 3:
+            assert line == "nothing pending", line
+            continue
+        kind, jid, brief = parts
+        with open(brief) as f:
+            text = f.read()
+        here = os.path.dirname(brief)
+        if kind == "final":
+            items.append((kind, jid, None, os.path.join(here, "answer.md")))
+        elif kind == "recreate":
+            items.append((kind, jid, re.search(r"Read (\S+\.json)\.", text).group(1), re.search(r"create an empty file at (\S+)\.", text).group(1)))
+        else:
+            inp, ans = re.search(r"^Input: (\S+)\nWrite your answer to: (\S+)$", text, re.M).groups()
+            assert os.path.dirname(inp) == here and os.path.dirname(ans) == here and here.startswith(C.items_root() + os.sep), (inp, ans, brief)
+            items.append((kind, jid, inp, ans))
+    return items
+
+
+def answer(state, finals="AB"):
+    """Answer everything `pending` lists once, working from the staged briefs only; how many items. `finals`: the defects the final
+    reviews report. A kind the fixture does not expect fails the test."""
     n = 0
-    for kind, jid, inp, ans, _brief in C.pending(state):
-        doc = C.jload(inp) if inp.endswith(".json") else None
+    for kind, jid, inp, ans in listed(state):
+        doc = C.jload(inp) if inp and inp.endswith(".json") and kind != "recreate" else None
         if kind == "judge-task":
             found = []
             for ch in doc["changes"]:
@@ -261,9 +290,8 @@ def answer(state):
                 out["findings"] = [{"index": i, "summary": s} for i, s in enumerate(claims)]
             C.jsave(ans, out)
         elif kind == "final":
-            inv = inventory()
             with open(ans, "w") as f:
-                f.write("### Issues\n" + "".join("FINDING: {}\n".format(inv[x]["summary"]) for x in "AB") + "### Assessment\nReady to merge? With fixes\n")
+                f.write("### Issues\n" + "".join("FINDING: {}\n".format(inventory(state)[x]["summary"]) for x in finals) + "### Assessment\nReady to merge? With fixes\n")
             final_transcript(jid)
         elif kind == "recreate":
             recreate(inp, ans)
@@ -273,13 +301,13 @@ def answer(state):
     return n
 
 
-def settle(command, limit=12, *extra):
+def settle(command, limit=12, state=None, finals="AB"):
     """`command`, answer, `command`, ... until nothing is left to answer; the last output."""
     for _ in range(limit):
-        rc, out = cli(command, *extra)
+        rc, out = cli(command, state=state)
         if rc != 0:
             raise AssertionError("{} exited {}: {}".format(command, rc, out))
-        if not answer(STATE):
+        if not answer(state or STATE, finals):
             return out
     raise AssertionError("{} did not settle".format(command))
 
@@ -341,6 +369,10 @@ is_("dry run: no daemon was started and no rpc call was made", (helpers.read_log
 is_("dry run: run, match, report, cleanup and home wrote nothing into the state", tree_listing(STATE), before)
 ok("dry run: and made no replay home and no run", not os.path.exists(NOMEM) and not os.path.exists(os.path.join(STATE, "runs")))
 
+# the same state before any run, for the variant that must fail (a copy takes a name of its own, the original's alias stays)
+STATE2 = os.path.join(ROOT, "state-fail")
+shutil.copytree(STATE, STATE2, symlinks=True)
+
 # ================================================================ home
 rc, out = cli("home", "--login-cmd")
 ok("home: --login-cmd prints the login line for the stub binary", rc == 0 and "login" in out and FAKE_CODEX in out, out)
@@ -370,6 +402,23 @@ ok("pending: each brief is the staged one, in a directory of its own outside the
    all(os.path.dirname(l[2]).startswith(C.items_root() + os.sep) and os.path.basename(l[2]) == "brief.md"
        and os.path.isfile(os.path.join(os.path.dirname(l[2]), "package.diff")) for l in lines), lines)
 ok("pending: and no path it prints names the state", not any(STATE in x or "process-replay" in x for l in lines for x in l), lines)
+def turn_starts():
+    return len([e for e in helpers.read_log(RPC_LOG) if e["cmd"] == "turn-start"])
+
+
+probe_turns = turn_starts()                         # the probe's own turn
+answer(STATE)                                       # the final reviews
+rc, out = cli("run")
+answer(STATE)                                       # their judge-matches
+rc, out = cli("match")
+is_("match: applies the answers and starts no Codex round", (rc, turn_starts()), (0, probe_turns))
+ok("run: every run now waits for a Codex round", all(C.jload(os.path.join(STATE, "runs", CASE["id"], lab, "state.json"))["step"] == "codex"
+                                                     for lab in os.listdir(os.path.join(STATE, "runs", CASE["id"]))))
+before = tree_listing(STATE)
+rc, out = cli("run", "--dry-run")
+is_("dry run: run with Codex rounds due exits 0, starts no turn and changes no state file",
+    (rc, turn_starts(), tree_listing(STATE)), (0, probe_turns, before))
+ok("dry run: and says what it sees", "waits at codex" in out, out)
 out = settle("run", 30)
 rc, match_out = cli("match")
 is_("match: exits 0 with nothing left to apply", rc, 0)
@@ -384,7 +433,7 @@ for r in runs:
         [(v["kind"], len(v["findings"])) for v in r["reviews"]], [("final", 2), ("codex", 1), ("codex", 1), ("codex", 0)])
     is_("run: it spent the Codex tokens of three turns", r["tokens"], 3000)
 log = helpers.read_log(RPC_LOG)
-ok("run: the rpc calls ran against the replay home, never the original", log and all(e["codex_home"] in (NOMEM, None) for e in log if e["cmd"] != "health")
+ok("run: every rpc call but the probe's check of the source home ran against the replay home, never the original", log and all(e["codex_home"] == NOMEM for e in log if e["cmd"] != "health")
    and any(e["cmd"] == "turn-start" for e in log), set(e["codex_home"] for e in log))
 
 # ================================================================ report
@@ -393,6 +442,18 @@ is_("report: exits 0", rc, 0)
 data = C.jload(os.path.join(STATE, "report.json"))
 is_("report: the status is computed: every run assessable and every per-task defect recovered, so pass", data["bar"]["status"], "pass")
 ok("report: report.md says so", open(os.path.join(STATE, "report.md")).read().count("status: PASS") == 1)
+
+# ================================================================ a variant that fails: the final reviews leave B out, so B stays unrecovered
+rc, out = cli("run", state=STATE2)
+out = settle("run", 30, state=STATE2, finals="A")
+runs2 = [C.jload(os.path.join(STATE2, "runs", CASE["id"], lab, "state.json")) for lab in sorted(os.listdir(os.path.join(STATE2, "runs", CASE["id"])))]
+is_("variant: both runs end at approve, with B unrecovered and the rest recovered",
+    [(r["end"], dict((letter_of(d["summary"]), r["defects"][d["id"]]) for d in inv.values())) for r in runs2],
+    [("approve", {"A": "recovered", "B": "unrecovered", "C": "recovered", "D": "recovered"})] * 2)
+rc, out = cli("report", state=STATE2)
+data2 = C.jload(os.path.join(STATE2, "report.json"))
+is_("variant: the status follows the defect outcomes: a per-task P1 unrecovered while the pre-merge P1 was recovered is a fail", (rc, data2["bar"]["status"]), (0, "fail"))
+ok("variant: and the reason names B", any(inv["B"]["id"] in r for r in data2["bar"]["reasons"]), data2["bar"]["reasons"])
 
 # ================================================================ cleanup
 threads = [t["thread"] for t in C.jload(os.path.join(STATE, "threads.json"))["threads"]]
