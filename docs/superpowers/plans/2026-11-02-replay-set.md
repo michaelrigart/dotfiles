@@ -122,7 +122,7 @@ Later tasks rely on these shapes; field names are fixed.
 
   | kind | input | answer |
   |---|---|---|
-  | `judge-task` | `{review: str, changes: [{index, note, diff}]}` | `{findings: [{index, summary, file, line, failure_scenario, severity: P0-P3, fixed_by: [change index], answer: yes/no/unclear}]}` |
+  | `judge-task` | `{reports: [{index, text}], changes: [{index, note, diff}]}` | `{findings: [{index, report, summary, file, line, failure_scenario, severity: P0-P3, introduced_by: change index/null, fixed_by: [change index], answer: yes/no/unclear}]}` |
   | `judge-known` | xreview-replay's `{case, findings, interdiff}` | `{verdicts: [{index, answer}]}` |
   | `judge-present` | `{finding: {...}, files: {path: text}}` | `{answer}` |
   | `judge-split` | `{defects: [{index, summary, file, line}], hunks: [{index, file, text}]}` | `{hunks: [{index, defect: int/null/"unsure"}]}` |
@@ -170,8 +170,10 @@ Later tasks rely on these shapes; field names are fixed.
   `XP = XR.XP`, `Failed = XR.Failed`, `jload`, `jsave`, `say` (from `XR`);
   `state_default() -> str`; `label(taken: set) -> str` (8 hex, unique);
   `judge_write(state, kind, jid, doc) -> str`; `judge_answer(state, kind, jid) -> dict|None`;
-  `pending(state) -> list[(kind, jid, input_path, answer_path)]` (judges without an answer, final
-  briefs without `answer.md`, recreations without `done`); `write_briefs(state) -> None`;
+  `pending(state) -> list[(kind, jid, input_path, answer_path, brief_path)]` (judges without an
+  answer, final briefs without `answer.md`, recreations without `done`); `write_briefs(state) ->
+  None`; `brief_for(state, kind, jid) -> str` (writes `<kind>/<id>.brief.md`: the kind's brief
+  followed by `Input: <input path>` and `Write your answer to: <answer path>`, and nothing else);
   `cmd_pending(a) -> int` (prints one line per pending judge, final review and recreation, with its
   brief); `snapshot_objects(root, gitdir) -> str|None`; `view(state, gitdir, root) -> str`;
   `git(gitdir, *args) -> str` (raises `Failed`) and `git_ok(gitdir, *args) -> bool`.
@@ -212,6 +214,8 @@ Later tasks rely on these shapes; field names are fixed.
   - `blind_refuses_keys`: `judge_write` raises `Failed` for `{"x": [{"class": "task"}]}` and for
     each of `run`, `arm`, `label`, `purpose`; writes `<state>/judge-present/<id>.json` otherwise.
   - `pending_lists_unanswered`: two inputs, one answer → one pending entry.
+  - `per_input_briefs`: two pending `judge-present` inputs get two brief files, each naming its
+    own input and answer path and not the other's.
   - `briefs_neutral`: every `judges/<kind>.md` exists after `write_briefs`; none contains
     `replay`, `inject`, `removal`, `per-task` or ` arm` (case-insensitive).
   - `view_reads_snapshot_only_objects`: a commit made, copied into a snapshot objects dir, then
@@ -385,8 +389,15 @@ Michael's daemon.
     is a full-branch receipt and whose last approved round is in the window is a candidate; one
     whose round 1 has `full: false` is not (`why: round 1 is not a full-branch review`); one
     approved on 2026-11-03 is not (`why: outside the window`); one with no joined task group is not;
+    one with no merge evidence is not (`why: no merge evidence`);
     one whose round tip resolves neither in the repository nor in the snapshot is not
     (`why: a round tip is gone`).
+  - `merge_evidence`: a branch counts as merged, at the committer date of the first-parent commit
+    of the destination's current tip that brings it in, when (a) the final tip is an ancestor of
+    that tip, (b) `git cherry <dest> <final tip> <base>` marks every branch commit `-` (rebase
+    merge), or (c) a first-parent commit `S` has `git merge-tree --write-tree --merge-base=<base>
+    S^ <final tip>` equal to `S^{tree}` (squash merge); the merge date must fall in
+    `[2026-10-01, 2026-11-02)`. A fixture for each of (a), (b), (c), plus one with none.
   - `sliced_round_union`: a round with two `slice_turns` whose answers hold one P1 each yields two
     findings.
   - `task_join`: a group whose re-review fix head is an ancestor of the final tip and not of the
@@ -395,10 +406,14 @@ Michael's daemon.
     commit whose committer date is at or before the re-review's start)`.
   - `ambiguous_sha_skipped`: an ambiguous short SHA drops that range and counts it in
     `branches.json` (`unresolved_ranges`).
-  - `judge_inputs`: one `judge-task` per group (the first review's report; one change per fix
-    range, with the re-review prompt's "Finding under verification" lines as `note`), one
+  - `judge_inputs`: one `judge-task` per group (every review and re-review report of the task, in
+    order; one change per fix range, with the re-review prompt's "Finding under verification"
+    lines as `note`), one
     `judge-known` per round with a next round, and one `judge-present` per known-real finding of a
     round k ≥ 2, holding the round-1 tip's text of the files it names.
+  - `re_review_findings`: a defect first raised by a re-review about code no change introduced
+    (`introduced_by: null`) and fixed by a later change becomes a per-task defect; a finding with
+    `introduced_by` set (breakage a fix brought in) is dropped (`introduced by a fix`).
   - `inventory_after_answers`: per-task `yes` P1 → defect `class: task, counted: true`; per-task
     P3 → `counted: false`; per-task `no` → dropped; round-1 known-real P2 → `class: pre`;
     round-2 known-real with present `yes` → defect, with present `no` → dropped (`introduced
@@ -446,9 +461,11 @@ Michael's daemon.
     passes.
   - `validation`: `judge-present` `yes` → `present`; `no` or `unclear` → `not-present`.
   - `coverage_gate`: an unassessable per-task P1 gets `recreate/<id>.json`
-    (`{finding, fix, tree}` where `tree` is a plain copy of the injected tree); once
-    `recreate/<id>/tree` has been edited, the harness takes the patch, writes `judge-same`, then
-    `judge-present`; both `yes` → `recreated` with `repair` the reverse patch; otherwise it is
+    (`{finding, fix, tree}` where `tree` is a plain copy of the branch's final tree, as §4.3
+    says); once `recreate/<id>/tree` has been edited, the harness takes the patch and writes
+    `judge-same`; on `yes` it applies the patch to the injected tree (`git apply --index`; a
+    failure is `unassessable`) and writes `judge-present` on the finished tree; both `yes` →
+    `recreated` with `repair` the reverse patch; otherwise it is
     `unassessable`, listed in `coverage.unassessable_task`, and its branch does not qualify.
     The agent signals that it is finished by writing `recreate/<id>/done`; `pending` lists a
     recreation until then.
@@ -557,8 +574,8 @@ Michael's daemon.
     its repair stop applying (`git apply --check`), writes `judge-present` for it; `no` or
     `unclear` → `censored`; `yes` → stays `present`.
   - `endings`: `approve` → every present defect `unrecovered`, `end: approve`; six Codex rounds →
-    `end: rounds`; a Codex round with no match and ≥ 1 `real` ruling → `end: stalled`, the present
-    ones `censored`; the same in the final review does not stall (the run goes on to round 1).
+    `end: rounds`; a review, the final review or a Codex round, with no match and ≥ 1 `real` ruling
+    → `end: stalled`, the present ones `censored` (one test for each kind of review).
   - `rejected_carried`: `false_positive` rulings reach the next round's body.
   - `approve_p3_only` and `path_normalized`: `approve` with only P3 findings ends the run;
     findings with `line: null` and paths `a/x` or `./x` reach the judge as `x`.
@@ -572,8 +589,8 @@ Michael's daemon.
   work commit's tree; `final` (brief written, waits for `answer.md`); `match` (judge input, waits);
   `valid` (revalidation inputs, waits); then a Codex round, and so on. `run` advances every run
   that can move without a Claude answer, at most 3 turns at once across runs, and exits when every
-  run waits or is done. `match` applies every answered judge. The stall rule applies to Codex
-  rounds only (ruling R4).
+  run waits or is done. `match` applies every answered judge. The stall rule applies after every
+  review, the final review included (§4.4).
 - [ ] **Step 4: Run** it; it passes.
 - [ ] **Step 5: Commit.** `Drive the replay through the final review and the Codex loop`
 
@@ -662,7 +679,11 @@ Michael's daemon.
   - `polls_and_snapshots`: three polls with no change log three lines and one snapshot; a change
     logs a new snapshot; `.git` is never copied; the source's listing is unchanged; nothing is
     written outside the watch dir.
-  - `seed`: `--seed` with `--seed-at` registers the seed as the first snapshot at that time.
+  - `copy_verified`: when the source changes between the digest and the copy (a test hook runs
+    between them), the copy's digest differs, the copy is discarded, the poll is logged with
+    `unstable: true` and no snapshot is recorded for that hash; the next stable poll snapshots.
+  - `seed`: `--seed` with `--seed-at` registers the seed as the first snapshot at that time, after
+    its digest is computed from the seed itself.
   - `snapshot_for`: equal hashes around the dispatch → that hash's snapshot; different →
     `(None, "memories changed around the dispatch")`; polls more than `2 × interval + 30` s apart
     → `(None, "missing poll")`; no poll after → `(None, "no poll after the dispatch")`.
@@ -678,7 +699,8 @@ Michael's daemon.
     missed by B) plus tokens per turn per arm.
 - [ ] **Step 2: Run** both; they fail.
 - [ ] **Step 3: Implement.** The digest is SHA-256 over sorted relative paths and contents,
-  `.git` excluded. Snapshots are `cp -c -R` (APFS clone), falling back to a plain copy. The
+  `.git` excluded. Snapshots are `cp -c -R` (APFS clone), falling back to a plain copy, and kept
+  only when the copy's own digest equals the poll's. The
   existing switches keep their behaviour except the clone builder; `scratch_clone` is removed.
 - [ ] **Step 4: Run** `t_memwatch.py` and `./tests/xreview-replay.test.sh`; they pass.
 - [ ] **Step 5: Commit.** `Watch Codex memories and add the memories switch to the review replay`
@@ -717,15 +739,14 @@ Michael's daemon.
 
 Driven from `~/Code/.replay` so `measure-interventions.py` leaves it out (§7.3). Harness commands
 run unsandboxed (they read the ledgers, write `$XDG_STATE_HOME`, and talk to the replay daemon).
-Judges are `sp-standard`, final reviewers `sp-architect`; each gets its brief path and nothing
-else (§7.1). `process-replay pending` lists what waits on Claude.
+Judges are `sp-standard`, final reviewers `sp-architect`; each gets its own brief path (the
+per-input `<kind>/<id>.brief.md`, the final review's `brief.md`, or the recreation's JSON) and
+nothing else (§7.1). `process-replay pending` lists what waits on Claude, with each brief path.
 
 1. **Login.** Michael runs the line `process-replay home --login-cmd` prints, as `! …`.
-2. **Mechanism.** `home --name nomem --start --probe`. It must pass every check. If it fails, try
-   the per-thread mechanism (§7.2: `thread/start` with `config` overrides
-   `memories.use_memories=false`, `memories.generate_memories=false`, and `thread/memoryMode/set`)
-   on one probe thread; if that passes, add it as a fix on `replay-set` before any turn; if
-   neither passes, stop and report to Michael.
+2. **Mechanism.** `home --name nomem --start --probe`. It must pass every check. If it fails,
+   stop and report to Michael, before any replay turn: the other §7.2 option, a per-thread setting,
+   would put replay rollouts on his daemon, so it is his call.
 3. `snapshot`, then `cases` and its judges until `cases` reports the inventory complete.
 4. `inject` and its judges and recreations (`sp-standard`, one per `recreate/<id>.json`) until
    `cases.json` is final. Report the case count; fewer than 10 is reported, not padded.
@@ -751,19 +772,19 @@ them into a new "Implementation notes" section at the end of the spec with the P
 - **R1 — memories mechanism (§7.2): a second daemon with its own `CODEX_HOME`**, not a
   per-thread setting. It keeps replay rollouts out of `~/.codex` entirely, so they can never feed
   memory generation, and §6's A and A′ need a home holding a snapshot anyway. Its own login keeps
-  token refreshes apart from Michael's daemon. The per-thread setting is the fallback (Part B
-  step 2).
+  token refreshes apart from Michael's daemon. There is no fallback onto the live daemon: if the
+  probe fails, the run stops and Michael decides (Part B step 2).
 - **R2 — build checks (§12):** syntax checks per revert, `cargo check` once for Rust; no .NET or
   JavaScript build (not cheap).
-- **R3 — "merged" (§4.1)** is read as: the chain's last full-branch pre-merge round approved,
-  inside the window. Squash and rebase merges leave nothing better to test.
-- **R4 — the stall rule (§4.4)** applies to Codex rounds; a real outside-inventory finding of the
-  final review is recorded and the run goes on, because the October fix wave of that review is
-  already in the tree.
-- **R5 — leak scan (§7.1)** also covers the final reviewer's transcript, which can read the
+- **R3 — "merged" (§4.1)** needs local merge evidence (ancestry, a rebase by `git cherry`, or a
+  squash by tree equality; Task 5) with the merge inside the window. The destination's tip is read
+  from the original repository's refs (read only); a branch without evidence is excluded and
+  counted, never assumed merged.
+- **R4 — leak scan (§7.1)** also covers the final reviewer's transcript, which can read the
   original checkout just as Codex can.
-- **R6 — judges.** The per-task finding list, their severities and their fixes come from one
-  `judge-task` per task (reviews are free text); one `judge-dedup` per branch merges duplicates;
+- **R5 — judges.** The per-task finding list, their severities and their fixes come from one
+  `judge-task` per task, which reads every review and re-review report of that task (reviews are
+  free text) and marks breakage a fix introduced; one `judge-dedup` per branch merges duplicates;
   a pre-merge finding from round 2 or later counts only when `judge-present` finds it at the
   round-1 tip.
-- **R7 — `pending`, `home` and `memories-watch`** are added subcommands (§12 leaves names open).
+- **R6 — `pending`, `home` and `memories-watch`** are added subcommands (§12 leaves names open).
