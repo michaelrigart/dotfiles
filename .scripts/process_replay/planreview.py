@@ -48,6 +48,9 @@ def _epoch(stamp):
     return calendar.timegm(tuple(parts) + (0, 0, 0)) + (float(m.group(7)) if m.group(7) else 0.0)
 
 
+epoch = _epoch
+
+
 def wall_minutes(thread, turn):
     """Minutes from the first to the last record of one turn, 0 when the rollout has no timestamps."""
     start = end = None
