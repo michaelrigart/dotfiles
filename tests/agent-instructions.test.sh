@@ -202,7 +202,7 @@ else
   _pass "the stale Agent tool remark is gone"
 fi
 WR="$SRC/dot_claude/agents/web-researcher.md"
-for line in 'name: web-researcher' 'tools: WebFetch, WebSearch' 'model: opus' 'effort: medium'; do
+for line in 'name: web-researcher' 'tools: WebFetch, WebSearch' 'model: opus' 'effort: medium' 'omitClaudeMd: true'; do
   if [ -f "$WR" ] && awk '/^---$/{n++; next} n==1' "$WR" | grep -qx -- "$line"; then _pass "web-researcher frontmatter has $line"
   else _fail "web-researcher frontmatter has $line" "missing"; fi
 done
