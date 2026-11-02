@@ -154,6 +154,11 @@ need global.md '  merged branch'"'"'s pinned delete, `git branch -d`. Harness pr
 need_flat() { # need_flat <fragment> <fixed text> <label>
   if tr '\n' ' ' < "$FRAG/$1" | tr -s ' ' | grep -qF -- "$2"; then _pass "$3"; else _fail "$3" "missing: $2"; fi
 }
+need_in() { # need_in <path under $SRC> <fixed text> <label>
+  if [ ! -f "$SRC/$1" ]; then _fail "$3" "missing file: $1"
+  elif tr '\n' ' ' < "$SRC/$1" | tr -s ' ' | grep -qF -- "$2"; then _pass "$3"
+  else _fail "$3" "missing: $2"; fi
+}
 need global.md '## Engineering judgement' "global.md carries the Engineering judgement section"
 need_flat global.md '- **Sizing.** Size the process to the change, never the quality bar.' \
   "global.md carries the Sizing rule"
@@ -198,6 +203,24 @@ for line in 'name: web-researcher' 'tools: WebFetch, WebSearch' 'model: opus' 'e
   if [ -f "$WR" ] && awk '/^---$/{n++; next} n==1' "$WR" | grep -qx -- "$line"; then _pass "web-researcher frontmatter has $line"
   else _fail "web-researcher frontmatter has $line" "missing"; fi
 done
+# The design-records skill (spec 2026-11-01-instruction-layer, section 2) holds the record procedures.
+DR=dot_claude/skills/design-records/SKILL.md
+for line in 'name: design-records' 'description: Use when creating, updating, completing or abandoning a spec or plan under `docs/superpowers/`, or setting its Status.'; do
+  if [ -f "$SRC/$DR" ] && awk '/^---$/{n++; next} n==1' "$SRC/$DR" | grep -qxF -- "$line"; then _pass "design-records frontmatter has ${line%%:*}"
+  else _fail "design-records frontmatter has ${line%%:*}" "missing: $line"; fi
+done
+need_in "$DR" 'Every change except a small one (see Sizing) has a spec and a plan, versioned with the code.' \
+  "design-records holds the spec-and-plan rule"
+need_in "$DR" 'Use exactly: `Approved`, `In progress`, `Implemented`, `Superseded — see <link>`, `Abandoned — <reason>`.' \
+  "design-records holds the Status vocabulary"
+need_in "$DR" 'An abandoned spec is marked `Abandoned` and merged on its own.' \
+  "design-records holds the abandoned-spec rule"
+need_in "$DR" 'Legacy records keep their status until verified against history.' \
+  "design-records holds the legacy-status rule"
+need_in "$DR" "Don't rewrite point-in-time facts." \
+  "design-records holds the point-in-time rule"
+need_in "$DR" 'Keep one canonical spec, referenced by repository and path, preferably as a forge link and never as a bare path.' \
+  "design-records holds the canonical-spec rule"
 if grep -qF -- '**Recursive search.**' "$FRAG/claude-code.md"; then
   _fail "the Recursive search bullet is folded into the path-resolution rule" "still present"
 else

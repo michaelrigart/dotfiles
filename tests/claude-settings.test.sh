@@ -945,6 +945,13 @@ if command -v chezmoi >/dev/null 2>&1; then
     if printf '%s\n' "$managed" | grep -qxF -- "$f"; then _pass "agent $f is chezmoi-managed"
     else _fail "agent $f is chezmoi-managed" "not in \`chezmoi managed\`"; fi
   done
+  # A skill without its .chezmoiignore re-include never deploys, and its rules silently stop applying.
+  for s in "$SRC"/dot_claude/skills/*/SKILL.md; do
+    [ -e "$s" ] || continue
+    f=".claude/skills/$(basename "$(dirname "$s")")/SKILL.md"
+    if printf '%s\n' "$managed" | grep -qxF -- "$f"; then _pass "skill $f is chezmoi-managed"
+    else _fail "skill $f is chezmoi-managed" "not in \`chezmoi managed\`"; fi
+  done
 else
   echo "  SKIP: chezmoi absent — hook-script management unverified"
 fi
