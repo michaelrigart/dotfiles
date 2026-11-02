@@ -35,7 +35,10 @@ layer ok"). This spec waits for his sign-off because it rewrites his own rules.
 ## Goals, non-goals, anti-goals
 
 - **Goals:**
-  - `global.md` at most 130 lines, with no rule lost that prevents a real mistake;
+  - `global.md` at most 150 lines, with no rule lost that prevents a real mistake. (The first
+    estimate was 130. Written from the plan's sentence table with every kept rule, it measured
+    146; the cap was raised during execution rather than cut a rule to reach a number. The
+    section targets below are that first estimate.)
   - Codex-only rules in a Codex-only fragment;
   - procedures in skills that load when they are needed;
   - a fix rule a reviewer can verify.
@@ -51,7 +54,7 @@ layer ok"). This spec waits for his sign-off because it rewrites his own rules.
 
 ## Design
 
-### 1. `global.md`: per-section disposition (180 to at most 130 lines)
+### 1. `global.md`: per-section disposition (180 to at most 150 lines)
 
 | Section (lines now) | Keeps | Moves to | Target |
 |---|---|---|---|
@@ -71,7 +74,7 @@ Rules:
   to the guard's error message or to the skill.
 - **No kept rule changes meaning.** The plan carries a table that maps every current sentence to
   kept, moved (and where) or dropped (and why). Michael reviews it with the diff.
-- `tests/agent-instructions.test.sh` lowers the `global.md` cap to 130.
+- `tests/agent-instructions.test.sh` lowers the `global.md` cap to 150.
 
 ### 2. New skill `design-records`
 
@@ -131,7 +134,7 @@ red/green stepping pays is an arm of the replay set.
 
 ## Testing
 
-- **`agent-instructions`:** the caps (`global.md` ≤ 130, `claude-code.md` ≤ 50, `codex.md` ≤ 30)
+- **`agent-instructions`:** the caps (`global.md` ≤ 150, `claude-code.md` ≤ 50, `codex.md` ≤ 30)
   and the three renders.
 - **The rendered `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`:** previewed with
   `command chezmoi cat`.

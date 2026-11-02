@@ -4,7 +4,7 @@
 
 **Status:** In progress on `instruction-layer` (the dotfiles have no MR)
 
-**Goal:** `global.md` drops to at most 130 lines with no rule lost: record procedures move to a
+**Goal:** `global.md` drops to at most 150 lines with no rule lost: record procedures move to a
 `design-records` skill, Codex's rules to a Codex-only `codex.md`, checkpoint mechanics to the
 cross-review skill, and the fix rule becomes one a reviewer can check by revert.
 
@@ -26,7 +26,7 @@ Claude Code 2.1.316 agent and skill frontmatter, Codex's global `~/.codex/AGENTS
 - **Commits.** Only the controller commits; an implementer runs its focused suites and hands back
   uncommitted. Imperative mood, no agent attribution. Before each commit, check that
   `git branch --show-current` prints `instruction-layer`, then read `git diff --cached`.
-- **Caps.** `global.md` ≤ 130 lines, `claude-code.md` ≤ 50 (not edited), `codex.md` ≤ 30. No
+- **Caps.** `global.md` ≤ 150 lines (call 15), `claude-code.md` ≤ 50 (not edited), `codex.md` ≤ 30. No
   line is wider than 100 columns, matching the current file.
 - **The fix rule, verbatim (§4):** `a fix ships with a test that fails without it: revert the fix, watch the test fail, restore it.`
 - **The skill description, verbatim (§2):** `` Use when creating, updating, completing or abandoning a spec or plan under `docs/superpowers/`, or setting its Status. ``
@@ -126,6 +126,12 @@ Gaps or tensions in the spec, settled here. Michael can overturn any of them at 
     of these moments loads the `design-records` skill. D2 keeps "points here", which still has its
     referent in `global.md`. The skill keeps D1, D13, D15, D17, D19 and D21. If the three cost the
     130-line cap, Task 5 stops and reports rather than cutting a rule.
+15. **The cap is 150, not 130** (controller's ruling during execution, for Michael to confirm).
+    Task 5 wrote every Kept row and measured 146 lines at 100 columns; the earlier 128-line
+    scratch draft could not have held them all. The options were to cut kept rules (against §1's
+    "no rule lost"), strip the blank lines (a line count gamed, tokens unchanged) or raise the
+    cap. The cap goes to 150. Sizing also states D1's always-binding half ("Every other change
+    has a spec and a plan"), because D1 moved to the skill.
 
 ## The §1 table: every sentence of `global.md`
 
@@ -437,7 +443,7 @@ its reviewer is sp-reviewer, with the §1 table as the brief. **Spec:** §1, §4
 **Interfaces:** `need_in` (Task 2).
 
 - [ ] **Step 1: Failing tests** in `tests/agent-instructions.test.sh`.
-  - **The cap:** at `:83-84`, `180` becomes `130` in both the check and its label.
+  - **The cap:** at `:83-84`, `180` becomes `150` (call 15; first `130`) in both the check and its label.
   - **The fix rule.** `need_flat global.md` for the §4 sentence verbatim. A flattened grep fails
     while `a fix gets a test that fails first` is present.
   - **The trigger pair.** `need_flat global.md` for `` `design-records` ``, for
@@ -475,7 +481,7 @@ its reviewer is sp-reviewer, with the §1 table as the brief. **Spec:** §1, §4
     100 columns or fewer.
   - If it will not fit in 130 lines without dropping or changing a kept rule, stop and report to
     the controller. Never cut a rule to make the cap.
-  - **`AGENTS.md:38`:** 180 becomes 130.
+  - **`AGENTS.md:38`:** 180 becomes 150 (call 15).
 - [ ] **Step 4: Run green** with `./tests/run.sh agent-instructions xreview-skill`.
 - [ ] **Step 5: Table check.** Walk every row of the §1 table against the diff; the task's
   reviewer repeats it, with the table as the brief:
@@ -484,7 +490,7 @@ its reviewer is sp-reviewer, with the §1 table as the brief. **Spec:** §1, §4
   - each Dropped sentence is gone, for the stated reason.
 
   Report any row that does not hold.
-- [ ] **Step 6: Hand back** to the controller, uncommitted. The controller commits it as `Cut global.md to 130 lines and make the fix rule checkable by revert`.
+- [ ] **Step 6: Hand back** to the controller, uncommitted. The controller commits it as `Cut global.md to 146 lines and make the fix rule checkable by revert`.
 
 ### Task 6: Finish
 
@@ -510,7 +516,7 @@ its reviewer is sp-reviewer, with the §1 table as the brief. **Spec:** §1, §4
     - `managed` lists `.claude/skills/design-records/SKILL.md`.
     - `cat ~/.claude/agents/web-researcher.md` shows `omitClaudeMd: true`.
 - [ ] **Update the memory note** `global-agent-instructions.md`, outside the repo, and its line in
-  MEMORY.md. Record: the 130 cap, `codex.md` in the Codex target only, and the `design-records`
+  MEMORY.md. Record: the 150 cap, `codex.md` in the Codex target only, and the `design-records`
   skill.
 - [ ] **Make the final commit.** Set the spec and plan Status to
   `Implemented on instruction-layer (no MR)`, add a completion banner to this plan, and fill in
