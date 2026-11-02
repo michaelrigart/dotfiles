@@ -93,7 +93,7 @@ leaves it in place or the finding is wrong, "unclear" when the input cannot sett
 """ + SCALE + """
 Answer: {"verdicts": [{"index": 0, "answer": "yes"}]}, one verdict per finding.
 """,
-    "judge-present": """The input is {"finding": {...}, "files": {"path": "text"}}: a reported defect, and the text of
+    "judge-present": """The input is {"finding": {...}, "files": [{"path", "text"}]}: a reported defect, and the text of
 the files as they stand.
 
 Decide whether the finding's failure scenario can happen in these files. Answer "yes" when the code
@@ -106,9 +106,10 @@ Answer: {"answer": "yes"}
     "judge-split": """The input is {"defects": [{"index", "summary", "file", "line"}], "hunks": [{"index", "file",
 "text"}]}: some defects, and the hunks of one change that fixed them.
 
-For each hunk give the one defect it fixes, by its index. Give null when the hunk belongs to none of
-the defects (a test, a rename, an unrelated edit). Give "unsure" when you cannot tell which defect
-it belongs to, or when it fixes more than one.
+For each hunk give the one defect it fixes, by its index. A hunk that changes a test belongs to the
+defect it tests; give "unsure" when it tests more than one. Give null only when the hunk belongs to
+none of the defects (a rename, or an edit unrelated to every defect listed). Give "unsure" also when
+you cannot tell which defect a hunk belongs to, or when it fixes more than one.
 
 Answer: {"hunks": [{"index": 0, "defect": 1}]}, one entry per hunk.
 """,

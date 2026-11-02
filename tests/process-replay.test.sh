@@ -12,6 +12,7 @@ for f in "$SRC/.scripts/process-replay.py" "$SRC/.scripts/process_replay/__init_
          "$SRC/.scripts/process_replay/common.py" "$SRC/.scripts/process_replay/scratch.py" \
          "$SRC/.scripts/process_replay/codexhome.py" "$SRC/.scripts/process_replay/inventory.py" \
          "$SRC/.scripts/process_replay/merges.py" "$SRC/.scripts/process_replay/inject.py" \
+         "$SRC/.scripts/process_replay/patches.py" "$SRC/.scripts/process_replay/gate.py" \
          "$SRC/.scripts/xreview-replay.py" "$SRC/dot_claude/xreview-packet.py" \
          "$SRC/dot_claude/xreview-ledger.py" "$SRC/tests/process-replay/helpers.py"; do
   [ -f "$f" ] || { echo "missing file under test: $f" >&2; exit 2; }

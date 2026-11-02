@@ -128,6 +128,7 @@ T1 = cm(R, "2026-10-01T09:00:00Z", {
 FA = cm(R, "2026-10-01T10:00:00Z", {"src/a.py": "def a():\n    return 2  # fixed A\n", "tests/test_a.py": "assert a() == 2\n"}, "fix A")
 FBC = cm(R, "2026-10-01T11:00:00Z", {
     "src/b.py": "def b():\n    return 2  # fixed B\n", "src/c.py": "def c():\n    return 2  # fixed C\n", PLAN: "plan v2 done\n",
+    "tests/test_b.py": "assert b() == 2\n", "tests/test_c.py": "assert c() == 2\n",
     "docs/superpowers/specs/late.md": "late\n"}, "fix B and C")
 LATER = cm(R, "2026-10-02T09:00:00Z", {"src/d.py": "def d():\n    return 1  # bug D\n"}, "later work")
 FD = cm(R, "2026-10-02T10:00:00Z", {"src/d.py": "def d():\n    return 2  # fixed D\n"}, "pre-merge fix")
@@ -154,15 +155,10 @@ def split_answer(state, first, second):
     d = docs[0]
     by_summary = dict((x["summary"], x["index"]) for x in d["defects"])
     files = dict((h["file"], h["index"]) for h in d["hunks"])
-    out = [{"index": files["src/b.py"], "defect": first(by_summary)}, {"index": files["src/c.py"], "defect": second(by_summary)}]
+    out = [{"index": files["src/b.py"], "defect": first(by_summary)}, {"index": files["tests/test_b.py"], "defect": first(by_summary)},
+           {"index": files["src/c.py"], "defect": second(by_summary)}, {"index": files["tests/test_c.py"], "defect": second(by_summary)}]
     answer(state, "judge-split", names[0], {"hunks": out})
 
-
-# ---- fix_patch
-V = C.view(world("w-view"), os.path.join(R, ".git"), NO_SNAPSHOT)
-fp = INJ.fix_patch(V, FA, FBC)
-ok("docs_pinned: fix_patch holds the code of the range and no docs/superpowers path", "src/b.py" in fp and "src/c.py" in fp and "docs/superpowers" not in fp, fp)
-ok("revert_whole_with_tests: fix_patch holds the fix's test files", "tests/test_a.py" in INJ.fix_patch(V, T1, FA))
 
 # ---- the split judge, then the injected tree
 S1 = main_state("w-main")
@@ -171,8 +167,8 @@ is_("exits 0", rc, 0)
 names, docs = split_input(S1)
 is_("split_groups: one judge-split for the range two defects share", len(names), 1)
 d0 = docs[0]
-is_("split_groups: its hunks are the code hunks only, one per file, with fresh indices", [(h["index"], h["file"]) for h in d0["hunks"]],
-    [(0, "src/b.py"), (1, "src/c.py")])
+is_("split_groups: its hunks are the code and test hunks only, one per file, with fresh indices", [(h["index"], h["file"]) for h in d0["hunks"]],
+    [(0, "src/b.py"), (1, "src/c.py"), (2, "tests/test_b.py"), (3, "tests/test_c.py")])
 is_("split_groups: its defects are the two that share the range", sorted(x["summary"] for x in d0["defects"]), ["defect d0000000b", "defect d0000000c"])
 is_("split_groups: input keys", (sorted(d0), sorted(d0["defects"][0])), (["defects", "hunks"], ["file", "index", "line", "summary"]))
 ok("split_groups: nothing is built while the split judge has not answered", not os.path.exists(os.path.join(S1, "work")) and not os.path.exists(os.path.join(S1, "injected")))
@@ -185,6 +181,7 @@ is_("revert_whole_with_tests: the work repository is private to the state", W, o
 ok("revert_whole_with_tests: the injected tree has bug A's code", "bug A" in show(W, WC, "src/a.py"), show(W, WC, "src/a.py"))
 ok("revert_whole_with_tests: and lacks fix A's test change", not has(W, WC, "tests/test_a.py"))
 ok("split_groups: B and C are reverted by their own hunks", "bug B" in show(W, WC, "src/b.py") and "bug C" in show(W, WC, "src/c.py"))
+ok("split_groups: and their regression tests are reverted with them", not has(W, WC, "tests/test_b.py") and not has(W, WC, "tests/test_c.py"))
 ok("revert_whole_with_tests: the pre-merge defect is reverted too", "bug D" in show(W, WC, "src/d.py"))
 is_("docs_pinned: docs/superpowers equals the plan commit's", show(W, WC, PLAN), "plan v1")
 ok("docs_pinned: files added to docs/superpowers later are gone", not has(W, WC, "docs/superpowers/specs/late.md"))
@@ -212,6 +209,8 @@ rep = dict((i, open(os.path.join(S1, "repairs", i + ".patch")).read()) for i in 
 ok("revert_whole_with_tests: A's repair holds its code and its test", "src/a.py" in rep["d0000000a"] and "tests/test_a.py" in rep["d0000000a"])
 ok("split_groups: B's repair holds B's hunk only", "src/b.py" in rep["d0000000b"] and "src/c.py" not in rep["d0000000b"], rep["d0000000b"])
 ok("split_groups: and C's holds C's only", "src/c.py" in rep["d0000000c"] and "src/b.py" not in rep["d0000000c"])
+ok("split_groups: each repair holds its own regression test", "tests/test_b.py" in rep["d0000000b"] and "tests/test_c.py" not in rep["d0000000b"]
+   and "tests/test_c.py" in rep["d0000000c"] and "tests/test_b.py" not in rep["d0000000c"])
 ok("docs_pinned: no repair patch names a docs/superpowers path", all("docs/superpowers" not in t for t in rep.values()))
 is_("split_groups: split defects are groups of their own", (r2["defects"]["d0000000b"]["group"], r2["defects"]["d0000000c"]["group"]),
     ("d0000000b", "d0000000c"))
@@ -231,6 +230,22 @@ is_("qualify: examined and coverage", (examined(S1, "bmain0001")["qualified"], e
 before = (open(os.path.join(S1, "injected", "bmain0001.json")).read(), open(os.path.join(S1, "cases.json")).read())
 run(S1)
 is_("idempotent: a run with no new answer changes nothing", (open(os.path.join(S1, "injected", "bmain0001.json")).read(), open(os.path.join(S1, "cases.json")).read()), before)
+
+# ---- the invariant: the tree holds nothing the repairs do not undo
+r1c = inj(S1, "bmain0001")
+steps = [(i, open(os.path.join(S1, "repairs", i + ".patch")).read()) for i in ("d0000000a", "d0000000b", "d0000000c", "d0000000d")]
+try:
+    INJ.check_invariant(MAIN, r1c["work"], r1c["final_commit"], r1c["work_commit"], steps)
+    got = "holds"
+except C.Failed as e:
+    got = str(e)
+is_("invariant: re-applying every repair, oldest fix first, and restoring docs/superpowers gives the final tree", got, "holds")
+try:
+    INJ.check_invariant(MAIN, r1c["work"], r1c["final_commit"], r1c["work_commit"], [x for x in steps if x[0] != "d0000000c"])
+    got = "holds"
+except C.Failed as e:
+    got = str(e)
+ok("invariant: an edit no repair undoes (here: one repair left out) fails it, naming the branch and the file", "bmain0001" in got and "src/c.py" in got, got)
 
 # ---- an unsure split makes one group, one patch
 S2 = main_state("w-unsure")
@@ -255,7 +270,8 @@ run(S2b)
 names, docs = split_input(S2b)
 fb = dict((h["file"], h["index"]) for h in docs[0]["hunks"])
 bi = dict((x["summary"], x["index"]) for x in docs[0]["defects"])["defect d0000000b"]
-answer(S2b, "judge-split", names[0], {"hunks": [{"index": fb["src/b.py"], "defect": bi}, {"index": fb["src/c.py"], "defect": None}]})
+answer(S2b, "judge-split", names[0], {"hunks": [{"index": fb["src/b.py"], "defect": bi}, {"index": fb["tests/test_b.py"], "defect": bi},
+                                                {"index": fb["src/c.py"], "defect": None}, {"index": fb["tests/test_c.py"], "defect": None}]})
 run(S2b)
 r = inj(S2b, "bmain0001")
 ok("split_groups: a hunk given to none is not reverted", "fixed C" in show(r["work"], r["work_commit"], "src/c.py") and "bug B" in show(r["work"], r["work_commit"], "src/b.py"))
@@ -658,12 +674,6 @@ def shift_state(name):
 
 S21 = shift_state("w-shift")
 r = inj(S21, "bshift001")
-is_("hunks: a defect whose lines another revert shifted is located where it is in the finished tree, not where its patch was made",
-    r["defects"]["d00000052"]["hunks"], [{"file": "s.txt", "start": 5, "end": 11, "new_start": 5, "new_end": 11}])
-ok("hunks: control: the patch itself was made 3 lines lower", "@@ -8,7 +8,7 @@" in open(os.path.join(S21, "repairs", "d00000052.patch")).read(),
-   open(os.path.join(S21, "repairs", "d00000052.patch")).read())
-is_("hunks: and the first change, which sits above, is at the top", r["defects"]["d00000051"]["hunks"],
-    [{"file": "s.txt", "start": 1, "end": 3, "new_start": 1, "new_end": 6}])
 is_("hunks: the dropped defect is waiting for its recreation", (r["defects"]["d00000053"]["status"], inputs(S21, "recreate")), ("dropped-revert", ["d00000053"]))
 
 
@@ -686,8 +696,12 @@ is_("revalidate: after the recreation is applied, each present defect in a file 
 ok("revalidate: and that input shows the finished tree", "l4X" in C.jload(os.path.join(S21, "judge-present", "d00000052-v.json"))["files"][0]["text"])
 is_("revalidate: each stays present when the judge still finds it, and the recreated one is recreated",
     sorted((k, v["status"]) for k, v in r["defects"].items()), [("d00000051", "present"), ("d00000052", "present"), ("d00000053", "recreated")])
-is_("revalidate: the hunks of a defect are located in the finished tree, recreation included", r["defects"]["d00000052"]["hunks"],
-    [{"file": "s.txt", "start": 5, "end": 11, "new_start": 5, "new_end": 11}])
+is_("hunks: a defect whose lines another revert shifted is located where it is in the finished tree, not where its patch was made",
+    r["defects"]["d00000052"]["hunks"], [{"file": "s.txt", "start": 5, "end": 11, "new_start": 5, "new_end": 11}])
+ok("hunks: control: the patch itself was made 3 lines lower", "@@ -8,7 +8,7 @@" in open(os.path.join(S21, "repairs", "d00000052.patch")).read(),
+   open(os.path.join(S21, "repairs", "d00000052.patch")).read())
+is_("hunks: and the first change, which sits above, is at the top", r["defects"]["d00000051"]["hunks"],
+    [{"file": "s.txt", "start": 1, "end": 3, "new_start": 1, "new_end": 6}])
 cs = cases(S21)
 is_("revalidate: the branch qualifies with all three", ([sorted(c["defects"]) for c in cs["cases"]], cs["coverage"]),
     ([["d00000051", "d00000052", "d00000053"]], {"unassessable_task": []}))
@@ -716,13 +730,22 @@ run(S24)
 yes_all(S24, ["d00000081", "d00000082"])
 run(S24)
 r = inj(S24, "badj00001")
-ok("hunks: control: both are reverted in the tree", "P bad" in show(r["work"], r["work_commit"], "a.txt") and "Q bad" in show(r["work"], r["work_commit"], "a.txt"))
-is_("hunks: a repair made with the other fix's lines in place does not apply to the finished tree: unassessable, with the reason, and no repair file",
-    (r["defects"]["d00000082"]["status"], "does not apply" in r["defects"]["d00000082"]["reason"], r["defects"]["d00000082"]["repair"],
-     os.path.exists(os.path.join(S24, "repairs", "d00000082.patch"))), ("unassessable", True, None, False))
-is_("hunks: the other one applies and is located", (r["defects"]["d00000081"]["status"], r["defects"]["d00000081"]["hunks"]),
-    ("present", [{"file": "a.txt", "start": 2, "end": 8, "new_start": 2, "new_end": 8}]))
-is_("hunks: the demoted per-task defect is listed in coverage", cases(S24)["coverage"], {"unassessable_task": ["d00000082"]})
+tx = show(r["work"], r["work_commit"], "a.txt")
+ok("hunks: control: the injected tree holds only what a repair undoes: the later fix is reverted, the earlier one, whose repair needs it, is not",
+   "Q bad" in tx and "P good" in tx and "P bad" not in tx, tx)
+is_("hunks: of two fixes a line apart whose repairs cannot both apply, the older gives way: the later one is present", r["defects"]["d00000082"]["status"], "present")
+is_("hunks: the older one is dropped with the reason, and has no repair file", (r["defects"]["d00000081"]["status"], "repair of d00000082" in r["defects"]["d00000081"]["reason"],
+    r["defects"]["d00000081"]["repair"], os.path.exists(os.path.join(S24, "repairs", "d00000081.patch"))), ("dropped-revert", True, None, False))
+is_("coverage_gate: a per-task defect demoted after validation gets its recreation request", inputs(S24, "recreate"), ["d00000081"])
+put(os.path.join(S24, "recreate", "d00000081"), "done", "")
+put(os.path.join(S24, "recreate", "d00000081", "tree"), "a.txt", "\n".join(["l1", "l2", "l3", "l4", "P bad", "l6", "l7", "l8", "l9", "l10"]) + "\n")
+run(S24)
+answer(S24, "judge-same", "d00000081", {"answer": "no"})
+run(S24)
+is_("hunks: the later one is located in the finished tree once the branch is complete", inj(S24, "badj00001")["defects"]["d00000082"]["hunks"],
+    [{"file": "a.txt", "start": 4, "end": 10, "new_start": 4, "new_end": 10}])
+is_("coverage_gate: and, unrecreated, it is unassessable and listed", (inj(S24, "badj00001")["defects"]["d00000081"]["status"], cases(S24)["coverage"]),
+    ("unassessable", {"unassessable_task": ["d00000081"]}))
 
 # ================================================================ a missing cargo is recorded, not silent
 EMPTY = os.path.join(ROOT, "nobin")
@@ -830,7 +853,166 @@ t, tip, dq = simple(QR, BQR, "qh1", "h1", 12)
 QH = rec_branch("bqh1", QR, "qh1", BQR, tip, t, at="2026-10-20T10:00:00.000000Z")
 S20 = setup_state("w-place", [CONF2, QH], {"bconf0002": D2, "bqh1": dq})
 run(S20)
+is_("waiting: a doomed branch that waits on a judge says so, not recreations", "judge answer" in examined(S20, "bconf0002")["why"] and "recreation" not in examined(S20, "bconf0002")["why"], True)
+yes_all(S20, ["d000000f2"])
+run(S20)
 ok("coverage_gate: a branch that cannot qualify (its pre-merge P1 fails) and waits for its recreation holds no place: the next candidate is built within a limit of one",
    examined(S20, "bconf0002")["qualified"] is False and "recreation" in examined(S20, "bconf0002")["why"] and os.path.exists(os.path.join(S20, "work", "bqh1")),
    (examined(S20, "bconf0002"), os.listdir(os.path.join(S20, "work"))))
 INJ.MAX_CASES = old_limits[0]
+
+
+# ================================================================ the untracked edit: the invariant raises
+real_pin = INJ.pin_docs
+
+
+def stray(work, view, plan):
+    real_pin(work, view, plan)
+    put(work, "README.md", "an edit nobody tracks\n")
+    git(work, "add", "README.md")
+
+
+INJ.pin_docs = stray
+S30 = setup_state("w-stray", [Q["qr1"][0]], {"bqr1": Q["qr1"][1]})
+run(S30)
+yes_all(S30, [d["id"] for d in Q["qr1"][1]])
+try:
+    run(S30)
+    got = "returned"
+except C.Failed as e:
+    got = str(e)
+INJ.pin_docs = real_pin
+ok("invariant: a tree with an edit the harness does not track makes inject fail, naming the branch", "branch bqr1" in got and "README.md" in got, got)
+
+# ================================================================ a defect the judge does not find is reverted no more: its recreation applies
+RN = helpers.make_repo(ROOT, "notrepo")
+BN = cm(RN, "2026-09-20T10:00:00Z", {"README.md": "r\n"}, "base")
+git(RN, "checkout", "-q", "-b", "feat")
+TN = cm(RN, "2026-10-01T09:00:00Z", {"a.py": "a = 1  # bug A\n", "b.py": "b = 1  # bug B\n", "e.py": "l1\ne bug\nl3\n", "tests/test_b.py": "pass\n", PLAN: "plan\n"}, "task 1")
+NA = cm(RN, "2026-10-01T10:00:00Z", {"a.py": "a = 2  # fixed A\n"}, "fix A")
+NB = cm(RN, "2026-10-01T11:00:00Z", {"b.py": "b = 2  # fixed B\n", "tests/test_b.py": "assert b == 2\n"}, "fix B")
+NE = cm(RN, "2026-10-01T12:00:00Z", {"e.py": "l1\ne fixed\nl3\n"}, "fix E")
+NL = cm(RN, "2026-10-02T12:00:00Z", {"e.py": "l1\ne rewritten\nl3\n"}, "rewrite E")
+git(RN, "checkout", "-q", "main")
+DNA = dfx("d000000a1", "task", "P1", [(TN, NA)], "a.py")
+DNB = dfx("d000000b1", "task", "P1", [(NA, NB)], "b.py", files=["b.py", "e.py"])
+DNE = dfx("d000000e1", "task", "P2", [(NB, NE)], "e.py")
+NBR = rec_branch("bnot00001", RN, "feat", BN, NL, TN)
+
+# not-present: its revert is not in the tree, so its recreation (made against the final tree) applies
+S31 = setup_state("w-not", [NBR], {"bnot00001": [DNA, DNB]})
+run(S31)
+answer(S31, "judge-present", "d000000a1", {"answer": "yes"})
+answer(S31, "judge-present", "d000000b1", {"answer": "no"})
+run(S31)
+r = inj(S31, "bnot00001")
+ok("untracked: a defect the judge does not find is not reverted in the tree a case ships", "fixed B" in show(r["work"], r["work_commit"], "b.py")
+   and has(r["work"], r["work_commit"], "tests/test_b.py") and "bug A" in show(r["work"], r["work_commit"], "a.py"), r["defects"])
+is_("untracked: and its recreation is requested", inputs(S31, "recreate"), ["d000000b1"])
+put(os.path.join(S31, "recreate", "d000000b1", "tree"), "b.py", "b = 1  # bug B\n")
+put(os.path.join(S31, "recreate", "d000000b1", "tree"), "tests/test_b.py", "pass\n")
+put(os.path.join(S31, "recreate", "d000000b1"), "done", "")
+run(S31)
+answer(S31, "judge-same", "d000000b1", {"answer": "yes"})
+run(S31)
+answer(S31, "judge-present", "d000000b1-r", {"answer": "yes"})
+run(S31)
+r = inj(S31, "bnot00001")
+is_("untracked: a not-present per-task P1 goes through recreation to recreated", r["defects"]["d000000b1"]["status"], "recreated")
+ok("untracked: and the case holds the recreated defect and the reverted one", len(cases(S31)["cases"]) == 1 and "bug B" in show(r["work"], r["work_commit"], "b.py")
+   and "bug A" in show(r["work"], r["work_commit"], "a.py"), cases(S31))
+
+# a recreation the judge rejects on the finished tree is not in the tree, and feeds nothing
+S32 = setup_state("w-rejected", [NBR], {"bnot00001": [DNA, DNB, DNE]})
+run(S32)
+yes_all(S32, ["d000000a1", "d000000b1"])
+run(S32)
+put(os.path.join(S32, "recreate", "d000000e1", "tree"), "e.py", "l1\ne BROKEN differently\nl3\n")
+put(os.path.join(S32, "recreate", "d000000e1"), "done", "")
+run(S32)
+answer(S32, "judge-same", "d000000e1", {"answer": "yes"})
+run(S32)
+answer(S32, "judge-present", "d000000e1-r", {"answer": "no"})
+run(S32)
+r = inj(S32, "bnot00001")
+is_("rejected: a recreation the judge rejects on the finished tree is unassessable", r["defects"]["d000000e1"]["status"], "unassessable")
+is_("rejected: and is not in the tree a case ships", show(r["work"], r["work_commit"], "e.py"), "l1\ne rewritten\nl3")
+ok("rejected: nor do its files make another present defect be validated again", not [n for n in inputs(S32, "judge-present") if n.endswith("-v")], inputs(S32, "judge-present"))
+
+# ================================================================ an uncounted defect's hunks stay applied
+DC3 = dict(dfx("d0000000c", "task", "P3", [(FA, FBC)], "src/c.py"), counted=False)
+S33 = main_state("w-p3", [DA, DB, DC3, DD])
+run(S33)
+names, docs = split_input(S33)
+is_("uncounted: a range a counted and an uncounted defect share goes to the judge, both listed", sorted(x["summary"] for x in docs[0]["defects"]), ["defect d0000000b", "defect d0000000c"])
+split_answer(S33, lambda m: m["defect d0000000b"], lambda m: m["defect d0000000c"])
+run(S33)
+yes_all(S33, ["d0000000a", "d0000000b", "d0000000d"])
+run(S33)
+r = inj(S33, "bmain0001")
+ok("uncounted: the uncounted defect's fix and test stay applied", "fixed C" in show(r["work"], r["work_commit"], "src/c.py") and has(r["work"], r["work_commit"], "tests/test_c.py")
+   and "bug B" in show(r["work"], r["work_commit"], "src/b.py"), r["defects"])
+is_("uncounted: and it is not among the defects", sorted(r["defects"]), ["d0000000a", "d0000000b", "d0000000d"])
+
+# ================================================================ a revert that leaves a name in use
+RH2 = helpers.make_repo(ROOT, "helperrepo")
+BH2 = cm(RH2, "2026-09-20T10:00:00Z", {"README.md": "r\n"}, "base")
+git(RH2, "checkout", "-q", "-b", "feat")
+TH2 = cm(RH2, "2026-10-01T09:00:00Z", {"a.py": "a = 1  # bug A\n", "b.py": "b = 1  # bug B\n", PLAN: "plan\n"}, "task 1")
+HA = cm(RH2, "2026-10-01T10:00:00Z", {"a.py": "a = 2  # fixed A\n", "helper.py": "def helper():\n    return 2\n"}, "fix A, with a helper")
+HB = cm(RH2, "2026-10-01T11:00:00Z", {"b.py": "b = 2  # fixed B\n"}, "fix B")
+HLATER = cm(RH2, "2026-10-02T09:00:00Z", {"d.py": "from helper import helper\n\ndef d():\n    return helper()\n"}, "later work uses the helper")
+git(RH2, "checkout", "-q", "main")
+DHA = dfx("d00000091", "task", "P1", [(TH2, HA)], "a.py", files=["a.py", "helper.py"])
+DHB = dfx("d00000092", "task", "P2", [(HA, HB)], "b.py")
+S34 = setup_state("w-helper", [rec_branch("bhelp0001", RH2, "feat", BH2, HLATER, TH2)], {"bhelp0001": [DHA, DHB]})
+run(S34)
+r = inj(S34, "bhelp0001")
+is_("coherence_undo: a revert that removes a name another file still uses is undone: incoherent, with the name and the file",
+    (r["defects"]["d00000091"]["status"], "helper is still used by d.py" in r["defects"]["d00000091"]["reason"]), ("incoherent", True))
+ok("coherence_undo: and the helper stays in the tree", has(r["work"], r["work_commit"], "helper.py") and "bug B" in show(r["work"], r["work_commit"], "b.py"))
+is_("coherence_undo: names a revert removes: a def, a class, a function, a fn, a top-level assignment and a shell function, net of what the fix also removed",
+    INJ.removed_names("+def f(x):\n+    pass\n+class K:\n+function g {\n+fn h() {\n+X = 1\n+k() {\n+  y = 2\n-def f(x):\n"), ["K", "X", "g", "h", "k"])
+
+# ================================================================ rank by merge date; a tool that is missing is recorded
+INJ.MAX_CASES, INJ.PER_REPO = 12, 1
+t1_, tip1, d1 = simple(QR, BQR, "qm1", "m1", 13)
+t2_, tip2, d2 = simple(QR, BQR, "qm2", "m2", 14)
+older_merge_later_round = rec_branch("bqm1", QR, "qm1", BQR, tip1, t1_, at="2026-10-31T10:00:00.000000Z", merged="2026-10-20T10:00:00Z")
+newer_merge_earlier_round = rec_branch("bqm2", QR, "qm2", BQR, tip2, t2_, at="2026-10-21T10:00:00.000000Z", merged="2026-10-26T10:00:00Z")
+S35 = setup_state("w-mergerank", [older_merge_later_round, newer_merge_earlier_round], {"bqm1": d1, "bqm2": d2})
+run(S35)
+ok("rank: candidates are ranked by merge date, as `cases --open` does: the later merge keeps the one place of its repository",
+   os.path.exists(os.path.join(S35, "work", "bqm2")) and not os.path.exists(os.path.join(S35, "work", "bqm1")), os.listdir(os.path.join(S35, "work")))
+INJ.MAX_CASES, INJ.PER_REPO = old_limits
+
+NOTOOLS = os.path.join(ROOT, "notools")
+os.makedirs(NOTOOLS)
+notes = []
+os.environ["PATH"] = NOTOOLS
+try:
+    got = INJ.coherent(CO, ["ok.sh"], notes)
+    put(CO, "x.rb", "def (\n")
+    got_rb = INJ.coherent(CO, ["x.rb"], notes)
+finally:
+    os.environ["PATH"] = old_path
+is_("tools: a syntax check whose tool is missing passes but is named in the notes", (got, got_rb, sorted(notes)), ((True, ""), (True, ""), ["bash not found", "ruby not found"]))
+
+# a timeout of cargo is recorded like a missing cargo, and every revert is undone
+put(STUB, "cargo", "#!/bin/sh\nexec sleep 5\n")
+S36 = setup_state("w-cargo-timeout", [CG], {"bcargo001": DG})
+os.environ["PATH"] = STUB + os.pathsep + old_path
+try:
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        INJ.cmd_inject(Namespace(state=S36, dry_run=False, snapshot_root=NO_SNAPSHOT, budget=1, open=16))
+finally:
+    os.environ["PATH"] = old_path
+r = inj(S36, "bcargo001")
+ok("build_check: a cargo check that times out is recorded, every revert is undone, and inject carries on",
+   r["build_check"].startswith("timed out") and all(v["status"] == "incoherent" for v in r["defects"].values()) and "warning: branch bcargo001" in buf.getvalue(), (r["build_check"], buf.getvalue()))
+
+# the judge briefs say what the inputs hold
+ok("briefs: judge-present describes files as a list of {path, text}", '"files": [{"path", "text"}]' in C.BRIEFS["judge-present"])
+ok("briefs: judge-split places a test with the defect it tests, null only for a rename or an unrelated edit",
+   "changes a test belongs to the" in C.BRIEFS["judge-split"].replace("\n", " ") and "a test, a rename" not in C.BRIEFS["judge-split"])
