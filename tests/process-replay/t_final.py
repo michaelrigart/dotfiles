@@ -1,3 +1,4 @@
+import glob
 import json
 import os
 import re
@@ -222,6 +223,18 @@ ok("leak_scan: and a file in it", leaks_of(calls=[("Read", {"file_path": os.path
 ok("leak_scan: through the state's alias too", leaks_of(["cat {}/inventory/b.json".format(alias)], name="alias") != [])
 ok("leak_scan: another staged item is a leak", leaks_of(["cat {}/input.json".format(mine_other)], name="item") != [])
 ok("leak_scan: a Glob over another item is a leak", leaks_of(calls=[("Glob", {"pattern": mine_other + "/*"})], name="glob") != [])
+review_work = os.path.dirname(C.items_root())
+ok("leak_scan: a glob over every item, reached from the review's own directory, is a leak", leaks_of(["cat {}/../*/input.json".format(own)], name="dotdot") != [])
+ok("leak_scan: a Grep whose path is the items root is a leak", leaks_of(calls=[("Grep", {"pattern": "answer", "path": C.items_root()})], name="grep") != [])
+ok("leak_scan: listing the items root is a leak", leaks_of(["ls {}".format(C.items_root())], name="ls") != [])
+ok("leak_scan: so is listing it by a spelling relative to where the command runs", leaks_of(["cd {} && ls review-work/items".format(os.path.dirname(review_work))], name="rel") != [])
+ok("leak_scan: or from the home directory", leaks_of(["ls $XDG_STATE_HOME/review-work/items", "ls ../../review-work/items"], name="home") != [])
+ok("leak_scan: listing review-work itself is a leak", leaks_of(["ls {}".format(review_work)], name="rw") != [])
+ok("leak_scan: another run's scratch is a leak", leaks_of(["cat {}/scratch/other-run/README".format(review_work)], name="scr") != [])
+ok("leak_scan: and so is the scratch root", leaks_of(["ls {}/scratch".format(review_work)], name="scrroot") != [])
+ok("leak_scan: its own staged directory and its own scratch are not (a file, the directory, a relative path from the scratch)",
+   leaks_of(["cat {}/package.diff".format(own), "ls {}".format(own), "ls {}".format(run["scratch"]), "cat src/a0.py", "git diff HEAD~1..HEAD"], name="allowed") == [])
+ok("leak_scan: a Glob inside its own directory is not", leaks_of(calls=[("Glob", {"pattern": own + "/*.diff"})], name="globown") == [])
 
 # ---- the reviewer's own subagents are scanned too, through the parentAgentId chain
 ses = "s-sub"
@@ -237,4 +250,9 @@ ses = "s-clean"
 head2 = transcript(jid, session=ses)
 transcript("kid", agent="kid", parent=jid, session=ses, prompt="look", commands=["git -C {} log".format(run["scratch"])])
 is_("subagents: a clean child leaves the review clean", F.leaks(a, run, branch, head2), [])
-is_("subagents: a transcript that is not a subagent's has none", F.descendants(os.path.join(PROJECTS, KEY, "sess.jsonl")), [])
+sess = os.path.join(PROJECTS, KEY, "sess.jsonl")
+is_("subagents: a session's own file (named by --transcript) has every subagent of that session as a descendant",
+    [os.path.basename(x) for x in F.descendants(sess)], sorted(os.path.basename(x) for x in glob.glob(os.path.join(PROJECTS, KEY, "sess", "subagents", "agent-*.jsonl"))))
+transcript("lonely", session="s-lonely", agent="lonely", prompt="look", commands=["cat {}/inventory/b.json".format(a.state)])
+top = os.path.join(PROJECTS, KEY, "s-lonely.jsonl")
+ok("subagents: a leak by a subagent of a session named by --transcript is found", F.leaks(a, run, branch, top) != [], F.leaks(a, run, branch, top))

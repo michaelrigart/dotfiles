@@ -246,6 +246,20 @@ def judge_answer(state, kind, jid):
     return got
 
 
+def reject_answer(state, kind, jid):
+    """Set a judge's answer aside as <id>.rejected-<n>.answer.json (its content is kept), so the item is pending again in its
+    staged directory and the judge can answer anew. The name it was set aside under, or None when there was no answer."""
+    path = os.path.join(state, kind, jid + ".answer.json")
+    if not os.path.exists(path):
+        return None
+    n = 1
+    while os.path.exists(os.path.join(state, kind, "{}.rejected-{}.answer.json".format(jid, n))):
+        n += 1
+    aside = os.path.join(state, kind, "{}.rejected-{}.answer.json".format(jid, n))
+    os.replace(path, aside)
+    return aside
+
+
 def collect_final(state, jid):
     """The path of final review `jid`'s answer.md in the state, or None. An answer.md the driver wrote in the staged
     item's directory is moved into the state first."""

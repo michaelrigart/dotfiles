@@ -697,24 +697,37 @@ st = dict((r["label"], r) for r in w.runs())
 ok("void_once_more: a Read of a file in the original checkout is a leak", st[labs[0]]["end"] == "void", st[labs[0]]["leak"] if "leak" in st[labs[0]] else st[labs[0]]["step"])
 ok("void_once_more: a Read elsewhere is not, and project dirs that merely start with the key are searched", st[labs[1]]["end"] is None and st[labs[1]]["step"] == "match")
 
-# a judge answer that does not fit its input is reported and not used, and never halts the command
+# a judge answer that does not fit its input is reported and not used, never halts the command, and does not strand the run:
+# it is set aside and the judge-match is pending again in its staged directory, where the judge answers anew
 w = World("badanswer")
 behave(lambda run, k: ("approve", []))
 to_codex(w)
 behave(lambda run, k: ("changes", [F("dA")]))
 go(w)
 r = sorted(w.runs(), key=lambda x: x["label"])[0]
-C.jsave(os.path.join(w.state, "judge-match", "%s-1.answer.json" % r["label"]), {"matches": [{"defect": 0, "finding": 5}], "unmatched": []})
+jid = "%s-1" % r["label"]
+staged = os.path.dirname([p[4] for p in C.pending(w.state) if p[1] == jid][0])
+C.jsave(os.path.join(staged, "answer.json"), {"matches": [{"defect": 0, "finding": 5}], "unmatched": []})
+text = go(w, rounds=False)
+ok("bad_answer: a match naming a finding the input does not have is reported and not used", "finding 5" in text and "not used" in text and "pending again" in text, text)
+ok("bad_answer: the bad answer is set aside, not left as the answer", not os.path.exists(os.path.join(w.state, "judge-match", jid + ".answer.json"))
+   and C.jload(os.path.join(w.state, "judge-match", jid + ".rejected-1.answer.json")) == {"matches": [{"defect": 0, "finding": 5}], "unmatched": []})
+ok("bad_answer: the judge-match is pending again, in its staged directory, and the run keeps waiting",
+   [(p[1], os.path.dirname(p[4])) for p in C.pending(w.state) if p[1] == jid] == [(jid, staged)] and dict((x["label"], x) for x in w.runs())[r["label"]]["step"] == "match")
 before = snap(w.state)
-text = go(w, rounds=False)
-ok("bad_answer: a match naming a finding the input does not have is reported and not used, and the state is as it was",
-   "finding 5" in text and "not used" in text and before == snap(w.state), text)
-other = sorted(w.runs(), key=lambda x: x["label"])[1]
-inp = C.jload(os.path.join(w.state, "judge-match", "%s-1.json" % other["label"]))
-C.jsave(os.path.join(w.state, "judge-match", "%s-1.answer.json" % other["label"]), {"matches": [{"defect": [d["index"] for d in inp["defects"] if d["summary"] == "bug in dA"][0], "finding": 0}], "unmatched": []})
-text = go(w, rounds=False)
+go(w, rounds=False)
+ok("bad_answer: and waiting for the new answer changes no state file", before == snap(w.state))
+inp = C.jload(os.path.join(w.state, "judge-match", jid + ".json"))
+C.jsave(os.path.join(staged, "answer.json"), {"matches": [{"defect": [d["index"] for d in inp["defects"] if d["summary"] == "bug in dA"][0], "finding": 0}], "unmatched": []})
+go(w, rounds=False)
 st = dict((x["label"], x) for x in w.runs())
-ok("bad_answer: and another run's good answer is applied in the same command", st[other["label"]]["defects"]["dA"] == "recovered" and st[r["label"]]["step"] == "match", text)
+ok("bad_answer: the judge's second answer, written in the staged directory, is applied", st[r["label"]]["defects"]["dA"] == "recovered" and st[r["label"]]["step"] == "codex",
+   (st[r["label"]]["step"], st[r["label"]]["defects"]))
+other = [x for l, x in st.items() if l != r["label"]][0]
+C.jsave(os.path.join(w.state, "judge-match", "%s-1.answer.json" % other["label"]), {"matches": [{"defect": 9, "finding": 0}], "unmatched": []})
+text = go(w, rounds=False)
+ok("bad_answer: an answer put straight into the state is set aside the same way, naming the defect it got wrong", "names defect 9" in text and
+   os.path.exists(os.path.join(w.state, "judge-match", "%s-1.rejected-1.answer.json" % other["label"])), text)
 
 # a final review's findings are taken by their own index; one out of range spoils that review only
 w = World("badindex")
@@ -897,6 +910,55 @@ st = dict((x["label"], x) for x in w.runs())
 ok("void_once_more: a final reviewer reading the state directory is a leak", st[first]["end"] == "void" and st[first]["replaced_by"], st[first].get("leak"))
 ok("void_once_more: and the other reviewer is not", all(x["end"] is None for l, x in st.items() if l != first and not x.get("replaces")))
 
+# a lock descriptor is closed once: a second close could be another file's
+w = World("fds")
+behave(lambda run, k: ("approve", []))
+to_codex(w)
+live, bad = set(), []
+real_lock, real_unlock = P._lock, P._unlock
+
+
+def spy_lock(path):
+    fd = real_lock(path)
+    if fd is not None:
+        live.add(fd)
+    return fd
+
+
+def spy_unlock(fd):
+    if fd is not None:
+        if fd not in live:
+            bad.append(fd)
+        live.discard(fd)
+    return real_unlock(fd)
+
+
+P._lock, P._unlock = spy_lock, spy_unlock
+go(w)
+P._lock, P._unlock = real_lock, real_unlock
+ok("lock_fds: each lock descriptor is released once, and none is left held", bad == [] and live == set() and len(CALLS) == 2, (bad, live))
+
+# an oracle commit that fails ends the run error instead of crashing every later match
+w = World("commitfail")
+behave(lambda run, k: ("approve", []))
+go(w)
+drive(w, report=["found dA"])
+go(w, rounds=False)
+drive(w, report=["found dA"])
+P.COMMIT = ""
+try:
+    text = go(w, rounds=False)
+    got = None
+except Failed as e:
+    got = str(e)
+finally:
+    P.COMMIT = "Address review findings"
+ok("commit_fails: a repair that applies but cannot be committed does not raise out of the command", got is None, got)
+ok("commit_fails: the run ends error, saying what failed, with the tree as it was",
+   all(x["end"] == "error" and "not committed" in x["error"] and git(x["scratch"], "status", "--porcelain") == ""
+       and git(x["scratch"], "rev-list", "--count", x["base_tip"] + "..HEAD") == "0" for x in w.runs()), [(x["end"], x.get("error")) for x in w.runs()])
+go(w, rounds=False)
+
 # ================================================================== repair_fails
 w = World("repair-fails")
 behave(lambda run, k: ("approve", []))
@@ -1027,6 +1089,30 @@ helpers.put(os.path.join(w.state, "packs"), "k.pack", "x")
 other = os.path.join(want_root, "not-ours")
 os.makedirs(other)
 XR.Threads(w.state).add("th-clean", "new")
+items = [os.path.join(C.items_root(), n) for n in C.jload(os.path.join(w.state, "items.json")).values()]
+ok("cleanup: control: this state has staged item directories", items and all(os.path.isdir(i) for i in items), items)
+held = os.open(os.path.join(w.state, "run.lock"), os.O_RDWR | os.O_CREAT)
+fcntl.flock(held, fcntl.LOCK_EX)
+try:
+    with contextlib.redirect_stdout(io.StringIO()):
+        P.cmd_cleanup(w.args())
+    got = "no error"
+except Failed as e:
+    got = str(e)
+ok("cleanup: it refuses while a run holds run.lock, and removes nothing", "run.lock" in got and all(os.path.isdir(i) for i in items) and all(os.path.isdir(r["scratch"]) for r in w.runs()), got)
+fcntl.flock(held, fcntl.LOCK_UN)
+os.close(held)
+busy = os.open(os.path.join(w.state, "runs", w.runs()[0]["case"], w.runs()[0]["label"], "lock"), os.O_RDWR | os.O_CREAT)
+fcntl.flock(busy, fcntl.LOCK_EX)
+try:
+    with contextlib.redirect_stdout(io.StringIO()):
+        P.cmd_cleanup(w.args())
+    got = "no error"
+except Failed as e:
+    got = str(e)
+ok("cleanup: and while any run's lock is held", "busy" in got and all(os.path.isdir(i) for i in items), got)
+fcntl.flock(busy, fcntl.LOCK_UN)
+os.close(busy)
 stub = helpers.stub_rpc(os.path.join(ROOT, "rpc-clean"), NOMEM, {})
 XR.RPC = stub
 stops = []
@@ -1042,6 +1128,7 @@ with contextlib.redirect_stdout(io.StringIO()):
 ok("cleanup: it removes this state's scratch/, work/, views/, packs/ and the run scratches under review-work/scratch",
    rc == 0 and not any(os.path.exists(os.path.join(w.state, d)) for d in ("scratch", "work", "views", "packs")) and not any(os.path.exists(r["scratch"]) for r in runs))
 ok("cleanup: another state's scratch directory stays", os.path.isdir(other))
+ok("cleanup: this state's staged item directories are removed, and items.json stays", not any(os.path.exists(i) for i in items) and os.path.isfile(os.path.join(w.state, "items.json")))
 after = sorted(os.path.relpath(os.path.join(d, f), w.state) for d, _x, fs in os.walk(w.state) for f in fs if f.endswith(".json") and "/work/" not in d + "/" and "/scratch/" not in d + "/")
 ok("cleanup: every JSON file stays", jsons == after and "cases.json" in after and any(p.endswith("state.json") for p in after), set(jsons) ^ set(after))
 log = helpers.read_log(os.path.join(os.path.dirname(stub), "rpc.log"))

@@ -359,9 +359,9 @@ def oracle(run, ids):
     stamp = "{} +0000".format(int(g("log", "-1", "--format=%ct", "HEAD")) + scratch.HOUR)
     try:
         g("commit", "-q", "--no-verify", "-m", COMMIT, env=dict(scratch.IDENTITY, GIT_AUTHOR_DATE=stamp, GIT_COMMITTER_DATE=stamp))
-    except Failed:
+    except Failed as e:
         g("reset", "-q", "--hard", "HEAD")
-        raise
+        raise RepairFailed("the repair of {} was applied but not committed: {}".format(", ".join(sorted(ids)), e))
     return g("rev-parse", "HEAD")
 
 
@@ -508,7 +508,9 @@ def _matched(ctx, run):
             if not 0 <= index < len(j["order"]):
                 raise ValueError("a match names defect {}, and the input has {}".format(index, len(j["order"])))
     except ValueError as e:
-        say("{}: the judge's answer is not used: {}".format(j["id"], e))
+        aside = C.reject_answer(a.state, "judge-match", j["id"])
+        say("{}: the judge's answer is not used: {}; it is set aside as {} and the judge-match is pending again".format(
+            j["id"], e, os.path.basename(aside) if aside else "(none)"))
         return False
     review["findings"] = findings
     _apply(ctx, run, review, dict((j["order"][i], f) for i, f in matches.items()), rulings)
@@ -549,10 +551,10 @@ def _apply(ctx, run, review, matches, rulings):
         return
     try:
         sha = oracle(run, recovered)
-    except RepairFailed as e:
+        again = touched(run, sha)
+    except Failed as e:
         _error(run, str(e))
         return
-    again = touched(run, sha)
     if again:
         _open_valid(ctx, run, again)
     else:
@@ -658,6 +660,7 @@ def _rounds(ctx, runs, home):
         else:
             batch.append((r, fd))
     moved, error = False, None
+    held = set(fd for _r, fd in batch)
     try:
         with cf.ThreadPoolExecutor(TURNS) as pool:
             futures = dict((pool.submit(_round, ctx, r, home), (r, fd)) for r, fd in batch)
@@ -674,8 +677,9 @@ def _rounds(ctx, runs, home):
                     error = error or e
                 finally:
                     _unlock(fd)
+                    held.discard(fd)
     finally:
-        for _r, fd in batch:
+        for fd in held:                 # only what no outcome released (an interrupt): a descriptor closed twice may be another's
             _unlock(fd)
     if error is not None:
         raise error
@@ -737,14 +741,17 @@ def cmd_match(a):
 
 
 def cmd_cleanup(a):
-    """Stop the replay home's daemon and archive the threads the runs used; remove scratch/, work/, views/, packs/ (a cache) and the run scratches
-    under review-work/scratch. Every JSON file stays."""
+    """Stop the replay home's daemon and archive the threads the runs used; remove scratch/, work/, views/, packs/ (a cache), the
+    run scratches under review-work/scratch and this state's staged items under review-work/items. Every JSON file stays. It
+    refuses while a `run` holds run.lock or any run's lock is held."""
     runs = runs_of(a)
     gone = [os.path.join(a.state, d) for d in ("scratch", "work", "views", "packs")]
     recorded = [r.get("scratch") for r in runs]
     for path in glob.glob(os.path.join(glob.escape(a.state), "runs", "*", "*", "scratch.json")):
         recorded.append((jload(path) or {}).get("scratch"))
     gone += [p for p in dict.fromkeys(recorded) if isinstance(p, str) and os.path.dirname(os.path.abspath(p)) == os.path.abspath(scratch_root())]
+    items = jload(os.path.join(a.state, "items.json"))
+    gone += [os.path.join(C.items_root(), n) for n in (items.values() if isinstance(items, dict) else []) if isinstance(n, str) and n and "/" not in n]
     home = codexhome.home_path(HOME)
     if a.dry_run:
         say("would archive the threads of {} and stop its daemon".format(home))
@@ -752,17 +759,31 @@ def cmd_cleanup(a):
             if os.path.exists(p):
                 say("would remove " + p)
         return 0
-    ok = True
-    if os.path.isfile(os.path.join(home, codexhome.RECORD)):
-        with K.homed(home):
-            ok = XR.Threads(a.state).cleanup()
-        try:
-            codexhome.stop(home)
-        except Failed as e:
-            say("could not stop the daemon of {}: {}".format(home, e))
-            ok = False
-    for p in gone:
-        if os.path.exists(p):
-            shutil.rmtree(p, ignore_errors=True)
-            say("removed " + p)
+    held = []
+    try:
+        fd = _lock(os.path.join(a.state, "run.lock"))
+        if fd is None:
+            raise Failed("a `run` holds {}: cleanup waits for it".format(os.path.join(a.state, "run.lock")))
+        held.append(fd)
+        for r in runs:
+            fd = _lock(os.path.join(a.state, "runs", r["case"], r["label"], "lock"))
+            if fd is None:
+                raise Failed("run {} is busy (another command holds its lock): cleanup waits for it".format(r["label"]))
+            held.append(fd)
+        ok = True
+        if os.path.isfile(os.path.join(home, codexhome.RECORD)):
+            with K.homed(home):
+                ok = XR.Threads(a.state).cleanup()
+            try:
+                codexhome.stop(home)
+            except Failed as e:
+                say("could not stop the daemon of {}: {}".format(home, e))
+                ok = False
+        for p in gone:
+            if os.path.exists(p):
+                shutil.rmtree(p, ignore_errors=True)
+                say("removed " + p)
+    finally:
+        for fd in held:
+            _unlock(fd)
     return 0 if ok else 1

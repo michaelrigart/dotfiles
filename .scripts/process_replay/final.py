@@ -206,10 +206,13 @@ def forbidden_for(a, branch, jid):
 
 
 def descendants(path):
-    """The transcripts of the subagents a subagent ran: those beside it whose parentAgentId chain leads to it."""
+    """The transcripts of the subagents a transcript ran. For a subagent's: those beside it whose parentAgentId chain leads to
+    it. For a session's own file (`<session>.jsonl`): every transcript in `<session>/subagents/`."""
     m = re.search(r"agent-([^/]+)\.jsonl\Z", path)
     d = os.path.dirname(path)
     if not m or os.path.basename(d) != "subagents":
+        if path.endswith(".jsonl") and not os.path.basename(d) == "subagents":
+            return sorted(glob.glob(os.path.join(glob.escape(path[:-len(".jsonl")]), "subagents", "agent-*.jsonl")))
         return []
     aid = m.group(1)
     parent = {}
@@ -230,8 +233,41 @@ def descendants(path):
     return out
 
 
-def transcript_leaks(path, forbidden, cwd):
-    """The forbidden paths a transcript's tool calls name (Bash commands, Read/Grep/Glob paths), by codex.py's matcher."""
+_WORD = re.compile(r"[^\s\"'`;|&<>()\\]+")
+_OPTION = re.compile(r"\A(?:--?[A-Za-z][A-Za-z0-9-]*=|-[A-Za-z]|[A-Za-z_][A-Za-z0-9_]*=)")
+
+
+def walled_leaks(text, cwd, review_root, allowed):
+    """The paths `text` names under `review_root` (the review-work directory) other than inside `allowed` (the review's own
+    staged directory and its scratch). Every path-like word is resolved against `cwd` (~, $HOME and $XDG_STATE_HOME expanded, `..`
+    followed, a glob pattern taken as written), and a word that names review-work/<rest> in any spelling is also read as
+    <review_root>/<rest>. The review-work directory itself, the items root and the scratch root are named by a listing or a
+    glob, so they count; only a path inside an allowed directory does not."""
+    house = os.path.expanduser("~").rstrip("/")
+    state_home = C.L.state_home().rstrip("/")
+    root = review_root.rstrip("/")
+    allowed = [x.rstrip("/") for x in allowed]
+    found = set()
+    for word in _WORD.findall(text):
+        for t in dict.fromkeys([word, _OPTION.sub("", word)]):
+            if not t:
+                continue
+            t = t.replace("${HOME}", house).replace("$HOME", house).replace("${XDG_STATE_HOME}", state_home).replace("$XDG_STATE_HOME", state_home)
+            if t == "~" or t.startswith("~/"):
+                t = house + t[1:]
+            cands = [os.path.normpath(t if os.path.isabs(t) else os.path.join(cwd or "/", t))]
+            parts = t.split("/")
+            if "review-work" in parts:
+                cands.append(os.path.normpath(os.path.join(root, *parts[parts.index("review-work") + 1:])))
+            for cand in cands:
+                if (cand == root or cand.startswith(root + "/")) and not any(cand == x or cand.startswith(x + "/") for x in allowed):
+                    found.add(cand)
+    return found
+
+
+def transcript_leaks(path, forbidden, cwd, walled=None):
+    """The forbidden paths a transcript's tool calls name (Bash commands, Read/Grep/Glob paths), by codex.py's matcher, and, with
+    `walled` = (review-work directory, [allowed directories]), anything under review-work that is not allowed."""
     found = set()
     with open(path, "rb") as f:
         for line in f:
@@ -252,10 +288,13 @@ def transcript_leaks(path, forbidden, cwd):
                 commands = [inp["command"]] if isinstance(inp.get("command"), str) else []
                 for name in K.named("\n".join(parts), rec.get("cwd") or cwd, forbidden, commands):
                     found.add(name)
+                if walled:
+                    found |= walled_leaks("\n".join(parts), rec.get("cwd") or cwd, walled[0], walled[1])
     return sorted(found)
 
 
 def leaks(a, run, branch, path):
     """What the reviewer's transcript `path` and its subagents' name that they must not."""
     forbidden = forbidden_for(a, branch, run["label"])
-    return sorted(set(x for p in [path] + descendants(path) for x in transcript_leaks(p, forbidden, run["scratch"])))
+    walled = (os.path.dirname(C.items_root()), [C.item_dir(a.state, "final", run["label"]), run["scratch"]])
+    return sorted(set(x for p in [path] + descendants(path) for x in transcript_leaks(p, forbidden, run["scratch"], walled)))
