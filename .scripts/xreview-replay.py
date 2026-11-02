@@ -16,9 +16,12 @@ the pane, the review ledger or the round counter. `run` needs the daemon socket:
   cleanup [--state DIR]   archive the threads a crashed run left behind
 
 `cases --switch memories --memwatch DIR` selects the memories switch's cases instead (spec 2026-11-02-replay-set, section 6):
-round-1 reviews of branches that started after the memories watcher (process-replay memories-watch) whose surrounding
-polls show one hash. Arms A and A2 run on a replay Codex home holding that snapshot, B on a home with no memories; the
-replay daemons run one at a time (process_replay.codexhome), so `run` takes the homes in turn.
+the first pre-merge round of branches that started after the memories watcher (process-replay memories-watch) whose
+surrounding polls show one hash. Arms A and A2 run on a replay Codex home holding that snapshot, B on a home with no
+memories; the replay daemons run one at a time (process_replay.codexhome), so `run` takes the homes in turn. The
+switch has its own state directory ($XDG_STATE_HOME/xreview/replay/memories; pass --switch memories to every command
+or the same --state), each arm's packet is built against its own checkout under $XDG_STATE_HOME/review-work/scratch,
+and a turn whose rollout names the original checkout is void and runs once more (a second leak is an error run).
 
 --dry-run builds and selects but starts no turn and calls no daemon. The default state directory is
 $XDG_STATE_HOME/xreview/replay/<date>. Raw run files are never committed.
@@ -352,37 +355,64 @@ def case_of(c, klass, **extra):
     return case
 
 
-def branch_start(r):
-    """Seconds since the epoch of the first receipt, of any checkpoint, that the round's branch has in its ledger."""
+def branch_receipts(r, pre_merge_only=False):
+    """Seconds since the epoch of every receipt of the round's branch and destination in its ledger, on any
+    thread (only the pre-merge ones with `pre_merge_only`)."""
     t, mw = r["target"], pkg("memwatch")
     times = []
     for e in r["entries"]:
         if e.get("v") == 2 and e.get("kind") == "receipt" and isinstance(e.get("dispatched_at"), str) \
+                and (not pre_merge_only or e.get("checkpoint") == "pre-merge") \
                 and any(isinstance(x, dict) and x.get("branch") == t.get("branch") and x.get("dest") == t["dest"]
                         for x in e.get("targets") or []):
             try:
                 times.append(mw.parse_at(e["dispatched_at"]))
             except pkg("common").Failed:
                 continue
+    return times
+
+
+def branch_start(r):
+    """Seconds since the epoch of the first receipt, of any checkpoint, that the round's branch has in its ledger."""
+    times = branch_receipts(r)
     if not times:
-        raise pkg("common").Failed("no receipt of branch {} has a usable time".format(t.get("branch")))
+        raise pkg("common").Failed("no receipt of branch {} has a usable time".format(r["target"].get("branch")))
     return min(times)
 
 
+def first_pre_merge(r):
+    """Whether no pre-merge receipt of the round's branch and destination precedes it, on any thread: a branch
+    restarted on a fresh thread starts its chain over, but its first round is still the one before."""
+    mine = pkg("memwatch").parse_at(r["at"])
+    return not any(t < mine for t in branch_receipts(r, True))
+
+
+def guard_cases(a, switch):
+    """Refuse to put one switch set's cases where another's are: the state's cases.json and judge answers belong
+    to the set that wrote them."""
+    have = jload(os.path.join(a.state, "cases.json"))
+    if isinstance(have, dict) and have.get("switch") != switch:
+        raise Failed("{} holds cases of {}; use another --state for {}".format(
+            os.path.join(a.state, "cases.json"), have.get("switch") or "the packet switches", switch or "the packet switches"))
+
+
 def cases_memories(a):
-    """The memories switch's cases: round 1 of a branch that started after the watcher's first poll, with a
+    """The memories switch's cases: the first pre-merge round of a branch that started after the watcher's first poll, with a
     known-real P0-P2 finding, and one snapshot of the memories its dispatch had (the poll before and the poll
     after show the same hash). Oldest first, up to MEMORIES_QUOTA: the cases accrue as the watcher runs."""
     mw, common = pkg("memwatch"), pkg("common")
     if not getattr(a, "memwatch", None):
         raise Failed("cases --switch memories needs --memwatch DIR (the watcher's directory)")
+    guard_cases(a, "memories")
     first = mw.first_poll(a.memwatch)
     if first is None:
         say("the watcher has not polled yet: no case can have a snapshot")
         return 0
     started, early, kept, dropped = mw.parse_at(first), 0, [], []
-    for r in sorted((r for r in load_rounds() if r["k"] == 1), key=lambda r: r["at"]):
+    for r in sorted(load_rounds(), key=lambda r: r["at"]):
         try:
+            if not first_pre_merge(r):
+                continue
             if branch_start(r) <= started:
                 early += 1
                 continue
@@ -418,6 +448,7 @@ def cases_memories(a):
 def cmd_cases(a):
     if getattr(a, "switch", None) == "memories":
         return cases_memories(a)
+    guard_cases(a, None)
     cands = [c for c in (candidate(r) for r in load_rounds()) if c]
     pool, plans, other, delta, big, fresh = {}, [], [], [], [], []
     for c in cands:
@@ -600,6 +631,12 @@ def forks(case, arm):
     return bool(case.get("fork")) and (case["class"] == "inc" or arm in ("A", "A2"))
 
 
+def scratch_root():
+    """Where the memories arms' checkouts live: a neutral path, as the reviewer will see it in its cut file lists
+    and as Codex resolves its working directory."""
+    return os.path.join(L.state_home(), "review-work", "scratch")
+
+
 def prepare(a, cases, live):
     """Build every arm's packet with the module, as dispatch would, and return the jobs in the
     spec's order: framing with omit_plans, then delta, then fit."""
@@ -628,6 +665,13 @@ def prepare(a, cases, live):
             except Failed as e:
                 hist_error = str(e)
         for arm, sw in arms_of(case):
+            label = next((l for l, v in arms.get(cid, {}).items() if v["arm"] == arm), None)
+            if label is None:
+                label = os.urandom(4).hex()
+                while label in taken:
+                    label = os.urandom(4).hex()
+                taken.add(label)
+                arms.setdefault(cid, {})[label] = {"arm": arm, "switch": sw}
             on = {"A": [], "A2": [], "F": ["framing"]}.get(arm) if arm != "B" else ["framing", sw]
             if case["class"] == "mem":      # only the Codex home differs between the arms: one packet for all
                 on = []
@@ -640,10 +684,19 @@ def prepare(a, cases, live):
                    "turns_file": turns_file if (arm == "B" and sw == "delta") else None}
             job = {"case": cid, "arm": arm, "switch": sw, "framing": "framing" in on, "repo": t["repo"], "tip": t["tip"], "target": t,
                    "fork": case["fork"] if forks(case, arm) else None, "error": hist_error if (arm == "B" and sw == "delta") else None,
-                   "decision": None, "home": None, "memories": None}
+                   "decision": None, "home": None, "memories": None, "scratch": None, "label": label}
             if case["class"] == "mem":
                 job["home"] = "nomem" if arm == "B" else "mem-" + case["memories"]["hash"][:12]
                 job["memories"] = None if arm == "B" else case["memories"]["dir"]
+                # The packet is built against the arm's own checkout, as the reviewer will read it: a cut file list
+                # names its repository, and that must never be the original (spec 7.1).
+                job["scratch"] = os.path.join(scratch_root(), label)
+                try:
+                    shutil.rmtree(job["scratch"], ignore_errors=True)
+                    build_scratch(a, job, job["scratch"], os.path.join(a.state, "clones"))
+                    req["targets"] = [dict(t, repo=job["scratch"] + "/.git", tip=pkg("common").git(job["scratch"], "rev-parse", "HEAD"))]
+                except Failed as e:
+                    job["error"] = str(e)
             old = L.state_home
             L.state_home = lambda: home
             try:
@@ -656,14 +709,6 @@ def prepare(a, cases, live):
                 job["error"] = "cannot build the packet: {}".format(e)
             finally:
                 L.state_home = old
-            label = next((l for l, v in arms.get(cid, {}).items() if v["arm"] == arm), None)
-            if label is None:
-                label = os.urandom(4).hex()
-                while label in taken:
-                    label = os.urandom(4).hex()
-                taken.add(label)
-                arms.setdefault(cid, {})[label] = {"arm": arm, "switch": sw}
-            job["label"] = label
             d = job["decision"] or {}
             say("{} {}: {} {} ({} packet(s)){}".format(cid, arm, d.get("action", "error"), d.get("kind", ""), len(d.get("packets") or []),
                                                          " ERROR: " + job["error"] if job["error"] else ""))
@@ -735,10 +780,58 @@ def one_turn(thread, packet, schema, cwd, budget, box):
     return doc, compacted
 
 
+def review(a, job, dec, clone, schema, res, turns):
+    """One attempt at a job: a thread and a turn per packet in `clone`, filling `res`. `turns` collects the
+    (thread, turn) pairs that ran."""
+    flags, shown, approvals, models = [], [], [], []
+    for i, pk in enumerate(dec["packets"]):
+        fk = job["fork"] if i == 0 else None
+        if fk:
+            rc, out, err = hist_call(fk["thread"], "thread-fork", "--thread", fk["thread"], "--last-turn", fk["last_turn"], "--cwd", clone)
+        else:
+            rc, out, err = rpc("thread-start", "--cwd", clone)
+        if rc != 0 or not out.strip():
+            raise Failed("cannot open a thread ({}): {}".format("fork" if fk else "start", err.strip()))
+        thread = out.strip().splitlines()[-1]
+        TH.add(thread, "new", job.get("home_path"))
+        box = {}
+        try:
+            doc, compacted = one_turn(thread, pk["file"], schema, clone, a.budget, box)
+        finally:
+            if box.get("turn"):
+                turns.append((thread, box["turn"]))
+                use = turn_usage(thread, box["turn"])
+                res["tokens"] += use["tokens"]
+                models.append((use["model"], use["effort"]))
+        res["findings"] += [f for f in doc["findings"] if isinstance(f, dict)]
+        res["reviewed_files"] += [x for x in doc.get("reviewed_files") or [] if isinstance(x, str)]
+        approvals.append(doc.get("verdict") == "approve")
+        flags.append(compacted)
+        shown += pk.get("shown") or []
+        res["slices"] += 1
+    res["model"] = ",".join(sorted(set(m or "?" for m, _e in models)))
+    res["effort"] = ",".join(sorted(set(e or "?" for _m, e in models)))
+    res["verdict"] = "approve" if all(approvals) else "changes"
+    res["compacted"] = True if True in flags else (None if None in flags else False)
+    if job["framing"]:
+        seen = set(norm(x) for x in res["reviewed_files"])
+        res["missing"] = sorted(l for l in set(shown) if norm(l) not in seen)[:XP.MISSING_CAP]
+
+
+def leak_scan(job, turns, clone):
+    """What the turns' tool calls name of the original checkout and its wt siblings (spec 7.1), as
+    process_replay.codex reads a rollout for it: ["<path> in <turn>"]."""
+    cx = pkg("codex")
+    try:
+        return cx.leaks(job.get("home_path") or codex_home(), turns, [job["repo"]], cwd=clone)
+    except pkg("common").Failed as e:
+        raise Failed("cannot scan the rollout for leaks: {}".format(e))
+
+
 def run_job(a, job):
     res = {"verdict": None, "findings": [], "reviewed_files": [], "tokens": 0, "compacted": False, "slices": 0,
            "kind": None, "missing": None, "error": None, "home": job.get("home")}
-    clone = None
+    clone, own, wasted, voids = None, None, 0, []
     try:
         if job["error"]:
             raise Failed(job["error"])
@@ -748,68 +841,42 @@ def run_job(a, job):
             raise Failed("refused: " + dec["reason"])
         cdir = os.path.join(a.state, "clones")
         os.makedirs(cdir, exist_ok=True)
-        clone = tempfile.mkdtemp(prefix="c.", dir=cdir)
-        build_scratch(a, job, clone, cdir)
+        if job.get("scratch"):      # a memories arm: the checkout its packet was built against
+            clone = job["scratch"]
+        else:
+            clone = own = tempfile.mkdtemp(prefix="c.", dir=cdir)
+            build_scratch(a, job, clone, cdir)
         schema = os.path.join(CONF, "findings.framed.schema.json" if job["framing"] else "findings.schema.json")
-        flags, shown, approvals, models = [], [], [], []
-        for i, pk in enumerate(dec["packets"]):
-            fk = job["fork"] if i == 0 else None
-            if fk:
-                rc, out, err = hist_call(fk["thread"], "thread-fork", "--thread", fk["thread"], "--last-turn", fk["last_turn"], "--cwd", clone)
-            else:
-                rc, out, err = rpc("thread-start", "--cwd", clone)
-            if rc != 0 or not out.strip():
-                raise Failed("cannot open a thread ({}): {}".format("fork" if fk else "start", err.strip()))
-            thread = out.strip().splitlines()[-1]
-            TH.add(thread, "new", job.get("home_path"))
-            box = {}
-            try:
-                doc, compacted = one_turn(thread, pk["file"], schema, clone, a.budget, box)
-            finally:
-                if box.get("turn"):
-                    use = turn_usage(thread, box["turn"])
-                    res["tokens"] += use["tokens"]
-                    models.append((use["model"], use["effort"]))
-            res["findings"] += [f for f in doc["findings"] if isinstance(f, dict)]
-            res["reviewed_files"] += [x for x in doc.get("reviewed_files") or [] if isinstance(x, str)]
-            approvals.append(doc.get("verdict") == "approve")
-            flags.append(compacted)
-            shown += pk.get("shown") or []
-            res["slices"] += 1
-        res["model"] = ",".join(sorted(set(m or "?" for m, _e in models)))
-        res["effort"] = ",".join(sorted(set(e or "?" for _m, e in models)))
-        res["verdict"] = "approve" if all(approvals) else "changes"
-        res["compacted"] = True if True in flags else (None if None in flags else False)
-        if job["framing"]:
-            seen = set(norm(x) for x in res["reviewed_files"])
-            res["missing"] = sorted(l for l in set(shown) if norm(l) not in seen)[:XP.MISSING_CAP]
+        for attempt in (1, 2):
+            turns = []
+            review(a, job, dec, clone, schema, res, turns)
+            found = leak_scan(job, turns, clone) if job.get("scratch") else []
+            if not found:
+                break
+            # a run that read the original checkout learned the future: it is void, and runs once more
+            voids.append(found)
+            wasted += res["tokens"]
+            if attempt == 2:
+                raise Failed("void twice: the reviewer read the original checkout ({})".format("; ".join(found)))
+            res.update(findings=[], reviewed_files=[], tokens=0, compacted=False, slices=0, verdict=None, missing=None)
+            shutil.rmtree(clone, ignore_errors=True)
+            build_scratch(a, job, clone, cdir)
     except Failed as e:
         res["error"] = str(e)
         res["interrupted"] = STOP.is_set()      # a job that finished before it noticed the stop is complete
     finally:
-        if clone:
+        if own:
+            shutil.rmtree(own, ignore_errors=True)
+        elif clone:
             shutil.rmtree(clone, ignore_errors=True)
+    if voids:
+        res["voids"] = voids
     path = os.path.join(a.state, "runs", job["case"], job["label"] + ".json")
     prior = jload(path) or {}
     # tokens: this attempt's, which report compares per arm; spent: every attempt's, which the stop counts
-    res["spent"] = res["tokens"] + (prior.get("spent", prior.get("tokens")) or 0)
+    res["spent"] = res["tokens"] + wasted + (prior.get("spent", prior.get("tokens")) or 0)
     jsave(path, res)
     return res
-
-
-def scratch_source(a, job):
-    """(git directory, object store) that holds the job's base and tip: the repository itself, else its snapshot
-    (--snapshot-root), where a commit the repository has since pruned still resolves."""
-    t, repo, common = job["target"], job["repo"], pkg("common")
-    found = [(repo, os.path.join(repo, "objects"))]
-    root = getattr(a, "snapshot_root", None)
-    objects = common.snapshot_objects(os.path.expanduser(root), repo) if root else None
-    if objects:
-        found.append((common.view(a.state, repo, os.path.expanduser(root)), objects))
-    for gitdir, store in found:
-        if all(common.git_ok(gitdir, "rev-parse", "--verify", "--quiet", x + "^{commit}") for x in (t["base"], t["tip"])):
-            return gitdir, store
-    raise Failed("neither {} nor its snapshot holds {} and {}".format(repo, t["base"], t["tip"]))
 
 
 def build_scratch(a, job, clone, cdir):
@@ -819,9 +886,10 @@ def build_scratch(a, job, clone, cdir):
     remote, no tag, no later commit."""
     sc, common = pkg("scratch"), pkg("common")
     t = job["target"]
+    os.makedirs(cdir, exist_ok=True)
     files = tempfile.mkdtemp(prefix="f.", dir=cdir)
     try:
-        gitdir, store = scratch_source(a, job)
+        gitdir, store = job["repo"], os.path.join(job["repo"], "objects")
         tree = common.git(gitdir, "rev-parse", "--verify", t["tip"] + "^{tree}")
         sc.export(store, t["tip"], os.path.join(files, "tree"))
         sc.build(store, t["base"], os.path.join(files, "tree"), clone, t["dest"], t.get("branch") or "replay", t.get("dest_ref"),
@@ -881,11 +949,12 @@ def run_pool(a, pending, total, cap, prog):
 
 
 def run_home(a, name, jobs, total, cap, prog, source):
-    """The jobs of one replay Codex home: make the home (with the case's memories snapshot, when it has one),
+    """The jobs of one replay Codex home: stop a daemon a crashed run left on it, make the home (with the case's memories snapshot, when it has one),
     start its daemon, run the jobs with CODEX_HOME aimed at it, archive their threads, stop the daemon. Only
     one replay daemon runs at a time, so the caller takes the homes in turn."""
     cx = pkg("codexhome")
     snap = next((j["memories"] for j in jobs if j["memories"]), None)
+    cx.reclaim(cx.home_path(name))      # a daemon of this home that a crashed run left behind is stopped, not a crash
     home = cx.ensure(a.state, name, snap, bool(snap), source=source)
     cx.start(home)
     try:
@@ -904,6 +973,13 @@ def run_home(a, name, jobs, total, cap, prog, source):
                 say("could not stop the replay daemon of {}: {}".format(home, e))
 
 
+def drop_scratch(jobs):
+    """The memories arms' checkouts, which prepare built next to their packets."""
+    for j in jobs:
+        if j.get("scratch"):
+            shutil.rmtree(j["scratch"], ignore_errors=True)
+
+
 def cmd_run(a):
     global TH
     cj = jload(os.path.join(a.state, "cases.json"))
@@ -918,15 +994,17 @@ def cmd_run(a):
             signal.signal(sig, on_signal)
         TH.cleanup()
     prog = jload(os.path.join(a.state, "progress.json"), {})
-    stopped, interrupted, crash = None, False, None
+    stopped, interrupted, crash, jobs = None, False, None, []
     try:
         jobs = prepare(a, cj["cases"], live)
         if not live:
+            drop_scratch(jobs)
             return 0
         def finished(j):
             run = jload(os.path.join(a.state, "runs", j["case"], j["label"] + ".json"))
             return bool(run) and not (run.get("error") and (a.retry_errors or run.get("interrupted")))
         todo = [j for j in jobs if not finished(j)]
+        drop_scratch([j for j in jobs if j not in todo])
         groups = collections.OrderedDict()
         for j in todo:      # a job with a replay home runs on that home's daemon; the others on the one the environment names
             groups.setdefault(j.get("home"), []).append(j)
@@ -951,6 +1029,7 @@ def cmd_run(a):
         if live:
             reap()
             ok = TH.cleanup()
+            drop_scratch(jobs)
             shutil.rmtree(os.path.join(a.state, "clones"), ignore_errors=True)
             prog.update(tokens=spent(a.state), stopped_at=stopped, crashed=crash,
                         finished=not interrupted and stopped is None and crash is None)
@@ -1084,19 +1163,23 @@ def cmd_report(a):
 def main(argv):
     ap = argparse.ArgumentParser(prog="xreview-replay")
     ap.add_argument("command", choices=("cases", "run", "match", "report", "cleanup"))
-    ap.add_argument("--switch", choices=("memories",), help="cases: select this switch's cases only (memories needs --memwatch)")
+    ap.add_argument("--switch", choices=("memories",), help="the memories switch: cases selects its cases (needs --memwatch), and every command "
+                    "defaults to its own state directory, $XDG_STATE_HOME/xreview/replay/memories")
     ap.add_argument("--memwatch", metavar="DIR", help="cases --switch memories: the memories watcher's directory (memwatch/)")
     ap.add_argument("--codex-source", metavar="DIR", help="run: the Codex home the replay homes copy their config from (default ~/.codex, never an inherited CODEX_HOME)")
-    ap.add_argument("--snapshot-root", metavar="DIR", help="run: where a commit the repository has pruned is read from (<root>/<repo>/objects)")
-    ap.add_argument("--state", default=os.path.join(L.state_home(), "xreview", "replay", date.today().isoformat()))
+    ap.add_argument("--state", default=None, help="default $XDG_STATE_HOME/xreview/replay/<date> (memories: .../replay/memories)")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--max-tokens", type=int, default=None, help="the hard stop (default {}; the memories switch {})".format(TOKEN_CAP, TOKEN_CAPS["memories"]))
     ap.add_argument("--budget", type=float, default=TURN_BUDGET)
     ap.add_argument("--retry-errors", action="store_true", help="run: run again the arms whose run file is an error")
     a = ap.parse_args(argv)
-    a.state = os.path.abspath(a.state)
+    a.state = os.path.abspath(a.state or os.path.join(L.state_home(), "xreview", "replay", "memories" if a.switch == "memories" else date.today().isoformat()))
     os.makedirs(a.state, exist_ok=True)
-    return {"cases": cmd_cases, "run": cmd_run, "match": cmd_match, "report": cmd_report, "cleanup": cmd_cleanup}[a.command](a)
+    try:
+        return {"cases": cmd_cases, "run": cmd_run, "match": cmd_match, "report": cmd_report, "cleanup": cmd_cleanup}[a.command](a)
+    except (Failed, pkg("common").Failed) as e:
+        sys.stderr.write("xreview-replay: {}\n".format(e))
+        return 1
 
 
 if __name__ == "__main__":

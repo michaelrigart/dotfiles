@@ -3,16 +3,20 @@
 `memories-watch` hashes the live memories directory every minute, logs every poll, and copies the
 directory on each change into
   $XDG_STATE_HOME/process-replay/memwatch/
-    polls.jsonl                   one {at, hash} line per poll, plus snapshot (a directory name) when the poll
-                                  took one, unstable: true when the directory changed while it was copied
-                                  (hash is then null when it changed while it was read), seed: true for the seed
+    polls.jsonl                   one {at, hash, interval} line per poll (interval: the seconds the watcher sleeps
+                                  after it), plus snapshot (a directory name) when the poll took one, unstable: true
+                                  when the directory changed while it was copied, held a link out of the snapshot or
+                                  was missing (hash is then null when it changed or vanished while it was read, and a
+                                  reason is given), seed: true for the seed
     snapshots/<at>-<hash12>/      a copy without .git, kept only when its own digest equals the poll's hash
 
 It reads the source and writes nothing outside that directory, and never the live memories.
 
 A poll's hash is a SHA-256 over the sorted relative paths and contents of the tree, `.git` excluded. A snapshot
 is `cp -c -R` (an APFS clone), falling back to a plain copy, and is kept only when the copy's digest equals the
-poll's: a directory that changes between the digest and the copy leaves an unstable poll and no snapshot.
+poll's: a directory that changes between the digest and the copy leaves an unstable poll and no snapshot. A link
+that points out of the snapshot (an absolute target, or a `..` that escapes) does too: a reviewer on a snapshot must
+never read the live memories through it.
 """
 import calendar
 import hashlib
@@ -79,6 +83,20 @@ def digest(src):
                 data, kind = f.read(), b"F"
         h.update(kind + b"\0" + rel.encode("utf-8", "surrogateescape") + b"\0" + str(len(data)).encode() + b"\0" + data)
     return h.hexdigest()
+
+
+def _escaping(root):
+    """The links below `root` whose target leaves it: absolute, or a relative target that climbs out of root."""
+    bad = []
+    for d, dirs, files in os.walk(root):
+        for n in dirs + files:
+            full = os.path.join(d, n)
+            if os.path.islink(full):
+                target = os.readlink(full)
+                where = os.path.normpath(os.path.join(os.path.dirname(full), target))
+                if os.path.isabs(target) or not (where == root or where.startswith(root + os.sep)):
+                    bad.append(os.path.relpath(full, root))
+    return sorted(bad)
 
 
 def _copy(src, dst):
@@ -148,46 +166,64 @@ def _last_snapshot_hash(wdir):
 
 
 def _keep(wdir, src, at, want):
-    """Copy src into snapshots/<at>-<hash12>; the directory name when the copy's digest is `want`, else None
-    (the copy is discarded)."""
+    """Copy src into snapshots/<at>-<hash12>: (the directory name, None) when the copy's digest is `want` and no
+    link in it leaves it, else (None, why) with the copy discarded."""
     name = "{}-{}".format(at, want[:12])
     final = os.path.join(wdir, SNAPSHOTS, name)
     tmp = final + ".tmp"
     os.makedirs(os.path.join(wdir, SNAPSHOTS), exist_ok=True)
     shutil.rmtree(tmp, ignore_errors=True)
+    why = None
     try:
         _copy(src, tmp)
-        good = digest(tmp) == want
-    except OSError:
-        good = False
-    if not good:
+        if digest(tmp) != want:
+            why = "the directory changed while it was copied"
+        else:
+            bad = _escaping(tmp)
+            if bad:
+                why = "a link leaves the snapshot: " + ", ".join(bad[:3])
+    except OSError as e:
+        why = "the copy failed: {}".format(e)
+    if why:
         shutil.rmtree(tmp, ignore_errors=True)
-        return None
+        return None, why
     shutil.rmtree(final, ignore_errors=True)
     os.rename(tmp, final)
-    return name
+    return name, None
 
 
-def poll_once(wdir, source, at=None):
+def _sweep(wdir):
+    """A copy a killed watcher left half made."""
+    base = os.path.join(wdir, SNAPSHOTS)
+    if os.path.isdir(base):
+        for n in os.listdir(base):
+            if n.endswith(".tmp"):
+                shutil.rmtree(os.path.join(base, n), ignore_errors=True)
+
+
+def poll_once(wdir, source, at=None, interval=None):
     """One poll: hash the source, copy it when it differs from the last snapshot, log the poll. Returns the
-    logged record."""
+    logged record. A source that is missing or changes under the poll is an unstable poll, not an error."""
     at = at or now()
     rec = {"at": at, "hash": None}
+    if interval is not None:
+        rec["interval"] = int(interval) if float(interval).is_integer() else interval
+    _sweep(wdir)
     try:
         want = digest(source)
-    except OSError:
-        rec["unstable"] = True
+    except (OSError, Failed) as e:
+        rec.update(unstable=True, reason=str(e))
         _append(wdir, rec)
         return rec
     rec["hash"] = want
     if want != _last_snapshot_hash(wdir):
         if BETWEEN is not None:
             BETWEEN()
-        name = _keep(wdir, source, at, want)
+        name, why = _keep(wdir, source, at, want)
         if name:
             rec["snapshot"] = name
         else:
-            rec["unstable"] = True
+            rec.update(unstable=True, reason=why)
     _append(wdir, rec)
     return rec
 
@@ -198,9 +234,9 @@ def register_seed(wdir, seed, at):
     if polls(wdir):
         raise Failed("the watch log already has polls: a seed goes first, into an empty watch directory")
     want = digest(seed)
-    name = _keep(wdir, seed, at, want)
+    name, why = _keep(wdir, seed, at, want)
     if name is None:
-        raise Failed("the seed changed while it was copied: " + seed)
+        raise Failed("the seed cannot be kept ({}): {}".format(why, seed))
     rec = {"at": at, "hash": want, "snapshot": name, "seed": True}
     _append(wdir, rec)
     return rec
@@ -209,8 +245,9 @@ def register_seed(wdir, seed, at):
 # ------------------------------------------------------------------ the lookup
 def snapshot_for(wdir, dispatched_at, interval=60):
     """(snapshot directory, hash) of the memories a review dispatched at `dispatched_at` had, or (None, why).
-    The poll just before and the poll just after the dispatch must be at most 2 x interval + 30 s apart, both
-    stable and of one hash, and that hash must have a snapshot taken at or before the dispatch."""
+    The poll just before and the poll just after the dispatch must be at most 2 x interval + 30 s apart, where
+    the interval is the one the polls logged (`interval` only for polls that logged none), both stable and of
+    one hash, and that hash must have a snapshot taken at or before the dispatch."""
     when = parse_at(dispatched_at)
     found = polls(wdir)
     before = [p for p in found if parse_at(p["at"]) <= when]
@@ -220,7 +257,8 @@ def snapshot_for(wdir, dispatched_at, interval=60):
     if not before:
         return None, "missing poll"
     b, a = before[-1], after[0]
-    if parse_at(a["at"]) - parse_at(b["at"]) > 2 * interval + GRACE:
+    logged = [p["interval"] for p in (b, a) if isinstance(p.get("interval"), (int, float)) and p["interval"] > 0]
+    if parse_at(a["at"]) - parse_at(b["at"]) > 2 * (max(logged) if logged else interval) + GRACE:
         return None, "missing poll"
     if b.get("unstable") or a.get("unstable") or b.get("hash") is None or b.get("hash") != a.get("hash"):
         return None, CHANGED
@@ -250,7 +288,7 @@ def cmd_memories_watch(a):
         say("would watch {} every {:g} s into {}{}".format(source, a.interval, wdir, ", seeded from " + a.seed if a.seed else ""))
         return 0
     if not os.path.isdir(source):
-        raise Failed("not a directory: " + source)
+        say("warning: {} is not a directory: every poll is unstable until it is".format(source))
     if os.path.realpath(wdir) == os.path.realpath(source) or os.path.realpath(wdir).startswith(os.path.realpath(source) + os.sep):
         raise Failed("the watch directory lies inside the source")
     if a.seed:
@@ -258,9 +296,9 @@ def cmd_memories_watch(a):
         say("seed: {} at {}".format(rec["hash"][:12], rec["at"]))
     try:
         while True:
-            rec = poll_once(wdir, source)
+            rec = poll_once(wdir, source, interval=a.interval)
             say("{} {}{}{}".format(rec["at"], (rec["hash"] or "-")[:12], " snapshot" if rec.get("snapshot") else "",
-                                   " UNSTABLE" if rec.get("unstable") else ""))
+                                   " UNSTABLE: " + rec.get("reason", "") if rec.get("unstable") else ""))
             if a.once:
                 return 0
             sleep(a.interval)

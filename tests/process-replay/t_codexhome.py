@@ -316,6 +316,68 @@ ok("refresh_refused_while_running: a socket whose daemon does not answer is not 
 H.XR.RPC = UP
 H.stop(home)
 
+# ---- crashed_run: a daemon left by a run that died is stopped; one a live run holds is not
+import contextlib
+import io
+CHILD = r"""
+import os, sys
+sys.dont_write_bytecode = True
+sys.path.insert(0, sys.argv[1])
+from process_replay import codexhome as H
+H.start(sys.argv[2])
+print("started", flush=True)
+if sys.argv[3] == "die":
+    os._exit(0)
+sys.stdin.read()
+"""
+
+
+def child(mode, which):
+    env = dict(os.environ, XREVIEW_REPLAY_RPC=UP)
+    proc = subprocess.Popen(["/usr/bin/python3", "-I", "-B", "-c", CHILD, helpers.SCRIPTS, which, mode], stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, text=True)
+    first = proc.stdout.readline().strip()
+    return proc, first
+
+
+def stops():
+    return [(c["argv"][2], c["codex_home"]) for c in helpers.read_log(LOG) if c["argv"][:2] == ["app-server", "daemon"]]
+
+
+def said(fn, *a):
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        res = fn(*a)
+    return res, buf.getvalue()
+
+
+H.XR.RPC = UP
+proc, first = child("wait", home)
+is_("crashed_run: a run in another process starts the daemon", (first, os.path.exists(SOCK)), ("started", True))
+n_calls = len(stops())
+ok("crashed_run: a daemon a live run holds is not reclaimed", raises(H.reclaim, home) and len(stops()) == n_calls)
+ok("crashed_run: nor stopped by another home's start", raises(H.start, hm) and len(stops()) == n_calls)
+ok("crashed_run: nor by a start of the same home", raises(H.start, home) and len(stops()) == n_calls)
+proc.stdin.close()
+proc.wait(30)
+ok("crashed_run: the run ended without stopping the daemon", os.path.exists(SOCK))
+res, out = said(H.reclaim, home)
+ok("crashed_run: reclaim stops the daemon nobody holds, and says so", res is True and stops()[-1] == ("stop", home) and not os.path.exists(SOCK)
+   and "left running" in out, (res, stops()[-2:], out))
+is_("crashed_run: with nothing running it does nothing", (H.reclaim(home), H.reclaim(os.path.join(ROOT, "no-such-home"))), (False, False))
+proc, first = child("die", home)
+proc.wait(30)
+ok("crashed_run: a run that died leaves its daemon and marker", os.path.exists(SOCK) and json.load(open(H._marker()))["home"] == home)
+_res, out = said(H.start, hm)
+ok("crashed_run: another home's start stops the dead run's daemon first and says so", stops()[-2:] == [("stop", home), ("start", hm)], stops()[-3:])
+ok("crashed_run: and the new home runs", json.load(open(H._marker()))["home"] == hm and "left running" in out and not os.path.exists(SOCK), out)
+H.stop(hm)
+proc, first = child("die", home)
+proc.wait(30)
+_res, out = said(H.start, home)
+ok("crashed_run: starting the same home stops its left daemon, then starts it", stops()[-2:] == [("stop", home), ("start", home)] and "left running" in out, stops()[-3:])
+H.stop(home)
+
 # ---- snapshot_swap
 bad = os.path.join(ROOT, "snap-bad")
 put(bad, "memory_summary.md", "new")

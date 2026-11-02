@@ -13,12 +13,15 @@ lands in ~/.codex, where it could feed memory generation.
                                    replay-home.json (its record)
   $XDG_STATE_HOME/process-replay/codex-auth/   the shared login; daemon.json names the home running now
 
-At most one replay daemon runs at a time. While one runs, Codex replaces its auth.json link with a
+At most one replay daemon runs at a time, and a process that starts one holds an flock on <auth_dir>/run.lock until it
+stops it. A daemon that answers while no process holds that lock was left by a run that died: `start` and `reclaim`
+stop it (and say so) rather than refuse. While one runs, Codex replaces its auth.json link with a
 regular file when it refreshes the token; `stop` (and the next `ensure`) copies that file back to the
 shared login when newer and restores the link.
 
 Nothing here reads the source home's auth.json or writes below the source home.
 """
+import fcntl
 import glob
 import json
 import os
@@ -318,18 +321,82 @@ def _daemon(home, verb):
         raise Failed("daemon {} failed ({}): {}".format(verb, p.returncode, p.stderr.decode("utf-8", "replace").strip()))
 
 
+_HELD = {"home": None, "fd": None}      # the run lock this process holds, and for which home
+
+
+def _lock_path():
+    return os.path.join(auth_dir(), "run.lock")
+
+
+def _same(a, b):
+    return bool(a) and bool(b) and os.path.realpath(a) == os.path.realpath(b)
+
+
+def _release():
+    if _HELD["fd"] is not None:
+        os.close(_HELD["fd"])       # closing drops the flock
+    _HELD.update(home=None, fd=None)
+
+
+def _acquire(home):
+    """Hold the run lock for `home` (this process may move it from one home to the next); Failed when another
+    process holds it: a run is going."""
+    if _HELD["fd"] is not None and _same(_HELD["home"], home):
+        return
+    _release()
+    os.makedirs(auth_dir(), exist_ok=True)
+    fd = os.open(_lock_path(), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        raise Failed("a replay run holds the replay daemon (lock {}): wait for it to finish".format(_lock_path()))
+    _HELD.update(home=home, fd=fd)
+
+
+def _leftover(home, keep):
+    """Stop the daemon of `home` when it answers and no run holds it: one left behind by a run that died. Returns
+    whether it did; Failed when a run holds it. The lock stays held with `keep` (a start follows), else it is let go."""
+    if _same(_HELD["home"], home) or _health(home) == "down":
+        return False
+    _acquire(home)
+    say("the replay daemon of {} was left running by a run that did not stop it: stopping it".format(home))
+    stop(home)
+    if keep:
+        _acquire(home)
+    else:
+        _release()
+    return True
+
+
+def reclaim(home):
+    """Before a run makes or refreshes `home`: stop a daemon of it that a crashed run left running. Returns
+    whether it stopped one; a home that does not exist yet has none; Failed when a live run holds it."""
+    if not os.path.isfile(os.path.join(home, RECORD)):
+        return False
+    return _leftover(home, False)
+
+
 def start(home):
-    """Start the replay daemon of `home`. One at a time: a second home is refused while another runs."""
+    """Start the replay daemon of `home`. One at a time: a second home is refused while this process runs another.
+    A daemon that answers while no process holds the run lock was left by a crashed run and is stopped first."""
     _record(home)
     os.makedirs(auth_dir(), exist_ok=True)
     cur = jload(_marker())
     last = cur.get("home") if isinstance(cur, dict) else None
-    if last and os.path.realpath(last) != os.path.realpath(home):
+    if last and not _same(last, home):
         if alive(last):
-            raise Failed("the replay daemon of {} is running: stop it first".format(last))
-        if os.path.isfile(os.path.join(last, RECORD)):
+            if _same(_HELD["home"], last):
+                raise Failed("the replay daemon of {} is running: stop it first".format(last))
+            _acquire(home)
+            say("the replay daemon of {} was left running by a run that did not stop it: stopping it".format(last))
+            stop(last)
+        elif os.path.isfile(os.path.join(last, RECORD)):
             _settle_auth(last)      # a dead daemon's refreshed token is carried forward before another home logs in
-        os.unlink(_marker())
+        if os.path.exists(_marker()):
+            os.unlink(_marker())
+    _leftover(home, True)
+    _acquire(home)
     _daemon(home, "start")
     jsave(_marker(), {"home": home})
 
@@ -347,6 +414,8 @@ def stop(home):
     cur = jload(_marker())
     if (failure is None or not os.path.exists(_socket(home))) and isinstance(cur, dict) and cur.get("home") == home:
         os.unlink(_marker())
+    if (failure is None or not os.path.exists(_socket(home))) and _same(_HELD["home"], home):
+        _release()
     if failure is not None:
         raise failure
 

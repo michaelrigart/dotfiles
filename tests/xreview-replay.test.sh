@@ -902,28 +902,33 @@ EM = list(R) + [
     receipt("xr-d1", 10, "pre-merge", DRP, "td1", tgt_for("dropped", c1), "changes"),
     receipt("xr-d2", 11, "pre-merge", DRP, "td2", tgt_for("dropped", c2), "changes"),
     receipt("xr-l1", 20, "pre-merge", LAT, "tl1", tgt_for("later", c1), "changes"),
-    receipt("xr-l2", 21, "pre-merge", LAT, "tl2", tgt_for("later", c2), "changes")]
+    receipt("xr-l2", 21, "pre-merge", LAT, "tl2", tgt_for("later", c2), "changes"),
+    # a branch restarted on a fresh thread: its first round is the 10:30 one, the 10:40 round has an earlier pre-merge round
+    receipt("xr-s1a", 30, "pre-merge", "thS1", "ts1a", tgt_for("restart", c1), "changes"),
+    receipt("xr-s1b", 31, "pre-merge", "thS1", "ts1b", tgt_for("restart", c2), "changes"),
+    receipt("xr-s2a", 40, "pre-merge", "thS2", "ts2a", tgt_for("restart", c1), "changes"),
+    receipt("xr-s2b", 41, "pre-merge", "thS2", "ts2b", tgt_for("restart", c2), "changes")]
 ldm = os.path.join(XM, "xreview", "ledgers", LD.ledger_key(common))
 wr(os.path.join(ldm, "reviews.jsonl"), "".join(json.dumps(e) + "\n" for e in EM))
 wr(os.path.join(ldm, "repo"), common + "\n")
-for th, (t1, t2) in ((OLD, ("to1", "to2")), (DRP, ("td1", "td2")), (LAT, ("tl1", "tl2"))):
+for th, (t1, t2) in ((OLD, ("to1", "to2")), (DRP, ("td1", "td2")), (LAT, ("tl1", "tl2")), ("thS1", ("ts1a", "ts1b")), ("thS2", ("ts2a", "ts2b"))):
     rollout(CODEX, th, [(t1, None, F1, False), (t2, 175000, F2, False)])
 
-HA, HB = "a1" * 32, "b2" * 32
+HA, HB, HC = "a1" * 32, "b2" * 32, "c3" * 32
 T0 = calendar.timegm((2026, 10, 20, 10, 0, 30))
 iso = lambda sec: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(sec))
-NAME_A, NAME_B = iso(T0) + "-" + HA[:12], iso(T0 + 600) + "-" + HB[:12]
+NAME_A, NAME_B, NAME_C = iso(T0) + "-" + HA[:12], iso(T0 + 600) + "-" + HB[:12], iso(T0 + 1800) + "-" + HC[:12]
 
 
 def mk_watch(path, first=0):
-    """Polls every minute at :30 from minute `first` to minute 25; the memories change at minute 10."""
+    """Polls every minute at :30 from minute `first` to minute 45; the memories change at minutes 10 and 30."""
     lines = []
-    for m in range(first, 26):
-        rec = {"at": iso(T0 + 60 * m), "hash": HA if m < 10 else HB}
-        if m == first or m == 10:
-            rec["snapshot"] = NAME_A if m < 10 else NAME_B
+    for m in range(first, 46):
+        rec = {"at": iso(T0 + 60 * m), "hash": HA if m < 10 else HB if m < 30 else HC, "interval": 60}
+        if m == first or m in (10, 30):
+            rec["snapshot"] = NAME_A if m < 10 else NAME_B if m < 30 else NAME_C
         lines.append(rec)
-    for name, text in ((NAME_A, "A memories\n"), (NAME_B, "B memories\n")):
+    for name, text in ((NAME_A, "A memories\n"), (NAME_B, "B memories\n"), (NAME_C, "C memories\n")):
         wr(os.path.join(path, "snapshots", name, "memory_summary.md"), text)
     wr(os.path.join(path, "polls.jsonl"), "".join(json.dumps(l) + "\n" for l in lines))
     return path
@@ -944,7 +949,7 @@ except HM.Failed:
     ok("RP7m cases --switch memories needs --memwatch", True)
 HM.cmd_cases(ns())
 asked = sorted(f for f in os.listdir(os.path.join(SM, "judge-known")) if not f.endswith(".answer.json"))
-is_("RP7m memories_cases: judge inputs for the kept round 1s only (not k=2, not a branch from before the watcher, not the dropped one)",
+is_("RP7m memories_cases: judge inputs for the kept first rounds only (not a later round, not a restarted branch's second chain, not a branch from before the watcher, not the dropped ones)",
     asked, ["xr-2-r1.json", "xr-l1.json"])
 ok("RP7m memories_cases: no cases.json while the judge has not answered", not os.path.exists(os.path.join(SM, "cases.json")) or
    jl(os.path.join(SM, "cases.json"))["cases"] == [])
@@ -956,7 +961,10 @@ mc = dict((c["id"], c) for c in cjm["cases"])
 is_("RP7m memories_cases: the cases, oldest first", cjm["selected"], {"memories": ["xr-2-r1.mem", "xr-l1.mem"]})
 is_("RP7m memories_cases: the file names the switch", cjm["switch"], "memories")
 is_("RP7m memories_cases: a round whose surrounding polls show a change is dropped and reported, with the reason",
-    cjm["dropped"], [{"round": "xr-d1", "why": "memories changed around the dispatch"}])
+    cjm["dropped"][:1], [{"round": "xr-d1", "why": "memories changed around the dispatch"}])
+is_("RP7m memories_cases: a branch restarted on a fresh thread: its first pre-merge round is the case considered (here dropped for a change), "
+    "the later round on the new thread is not a first round at all",
+    ([d["round"] for d in cjm["dropped"]], "xr-s2a.json" in asked), (["xr-d1", "xr-s1a"], False))
 is_("RP7m memories_cases: each case names the snapshot its dispatch had",
     [(mc[c]["memories"]["dir"], mc[c]["memories"]["hash"]) for c in ("xr-2-r1.mem", "xr-l1.mem")],
     [(os.path.join(WD, "snapshots", NAME_A), HA), (os.path.join(WD, "snapshots", NAME_B), HB)])
@@ -978,6 +986,24 @@ ok("RP7m memories_cases: a branch whose first receipt follows the watcher's firs
 SME = os.path.join(ROOT, "statem-empty")
 HM.cmd_cases(ns(state=SME, memwatch=os.path.join(ROOT, "no-watch")))
 ok("RP7m memories_cases: a watcher with no poll yields no case", not os.path.exists(os.path.join(SME, "cases.json")))
+try:
+    HM.cmd_cases(ns(state=S1))
+    ok("RP7m memories_state: cases --switch memories refuses a state that holds the packet switches' cases", False)
+except HM.Failed as e:
+    ok("RP7m memories_state: cases --switch memories refuses a state that holds the packet switches' cases, and leaves them",
+       "packet switches" in str(e) and "switch" not in jl(os.path.join(S1, "cases.json")), str(e))
+try:
+    HM.cmd_cases(ns(switch=None))
+    ok("RP7m memories_state: and the packet switches' cases refuse a state that holds the memories", False)
+except HM.Failed:
+    ok("RP7m memories_state: and the packet switches' cases refuse a state that holds the memories", jl(os.path.join(SM, "cases.json"))["switch"] == "memories")
+menv0 = dict(os.environ, XDG_STATE_HOME=XM, CODEX_HOME=CODEX)
+p = subprocess.run([HARNESS, "cases", "--switch", "memories", "--memwatch", WD, "--dry-run"], capture_output=True, text=True, env=menv0)
+ok("RP7m memories_state: the memories switch has its own default state directory", p.returncode == 0
+   and os.path.isfile(os.path.join(XM, "xreview", "replay", "memories", "judge-known", "xr-2-r1.json")), (p.stdout[-200:], p.stderr[-300:]))
+p = subprocess.run([HARNESS, "cases", "--switch", "memories", "--dry-run"], capture_output=True, text=True, env=menv0)
+ok("RP7m memories_state: a refusal is a message and exit 1, not a traceback", p.returncode == 1 and "--memwatch" in p.stderr and "Traceback" not in p.stderr, p.stderr[-300:])
+ok("RP7m the harness takes no --snapshot-root: it reads the repository's own objects", "snapshot-root" not in subprocess.run([HARNESS, "--help"], capture_output=True, text=True).stdout)
 is_("RP7m the memories switch has its own token stop, 20M", HM.token_cap(argparse.Namespace(max_tokens=None), cjm), 20000000)
 is_("RP7m and the others keep theirs", HM.token_cap(argparse.Namespace(max_tokens=None), {"cases": []}), 60000000)
 is_("RP7m an explicit --max-tokens wins", HM.token_cap(argparse.Namespace(max_tokens=5), cjm), 5)
@@ -1002,6 +1028,16 @@ for cid, tip, rng in (("xr-2-r1.mem", c1, RANGE), ("xr-l1.mem", c1, "main...late
     body = open(os.path.join(SM, "packets", cid, "body.md"), "rb").read()
     today = XP.today_packet(open(os.path.join(CONF, "reviewer.md"), "rb").read(), body, [(rng, LD.patch(repo, c0, tip))])
     ok("RP7m memories_arms: {} gets the same packet in all three arms, today's".format(cid), mpk(cid, "A") == mpk(cid, "A2") == mpk(cid, "B") == today)
+SCR = os.path.join(XM, "review-work", "scratch")
+decs = [(cid, v["arm"], jl(os.path.join(SM, "packets", cid, v["arm"], "decision.json"))) for cid, m in marms.items() for v in m.values()]
+ok("RP7m memories_packets: each arm's packet is built against its own checkout, under the neutral scratch root, not the original repository",
+   len(decs) == 6 and all(d["targets"][0]["repo"].startswith(SCR + os.sep) and d["targets"][0]["repo"].endswith("/.git") for _c, _a, d in decs), [d["targets"][0]["repo"] for _c, _a, d in decs[:2]])
+is_("RP7m memories_packets: the base is unchanged and the tip is the checkout's own", set((d["targets"][0]["base"] == c0, d["targets"][0]["tip"] != c1) for _c, _a, d in decs), {(True, True)})
+is_("RP7m memories_packets: the three arms of a case have three checkouts", len(set(d["targets"][0]["repo"] for _c, _a, d in decs)), 6)
+named = [os.path.join(d, f) for d, _s, fs in os.walk(os.path.join(SM, "packets")) for f in fs
+         if any(x in open(os.path.join(d, f), "rb").read() for x in (common.encode(), repo.encode()))]
+is_("RP7m memories_packets: no packet or decision names the original repository", named, [])
+ok("RP7m memories_packets: and a dry run leaves no checkout behind", not os.path.exists(SCR) or os.listdir(SCR) == [], os.listdir(SCR) if os.path.exists(SCR) else None)
 p = subprocess.run([HARNESS, "run", "--state", SM, "--codex-source", CODEX], capture_output=True, text=True, env=menv)
 is_("RP7m memories_arms: run exits 0", p.returncode, 0)
 if p.returncode:
@@ -1050,8 +1086,56 @@ p = subprocess.run([HARNESS, "run", "--state", SM], capture_output=True, text=Tr
 ok("RP7m memories_arms: a rerun redoes nothing and starts no daemon", p.returncode == 0 and len(helpers.read_log(os.path.join(CXD, "codex.log"))) == n_cx
    and len([c for c in helpers.read_log(os.path.join(RPCD, "rpc.log")) if c["cmd"] == "turn-start"]) == n_turns, p.stderr[-300:])
 ok("RP7m memories_arms: --codex-source names the home the replay homes copy their config from", 'model = "m-1"' in open(os.path.join(hm_a, "config.toml")).read())
+ok("RP7m memories_packets: a run removes its checkouts", not os.path.exists(SCR) or os.listdir(SCR) == [])
 prog = jl(os.path.join(SM, "progress.json"))
 ok("RP7m memories_arms: progress records the run and its tokens", prog["finished"] is True and prog["tokens"] == 6000, prog)
+
+# memories_leaks: a rollout that names the original checkout voids the run; a second leak ends it as an error run
+print("RP7m. memories_leaks")
+CHECKOUT = os.path.dirname(common)
+LEAK = {"answer": MALL, "tokens": 1000, "tools": [{"type": "function_call", "name": "exec", "arguments": {"cmd": "git -C {} log --all".format(CHECKOUT), "workdir": "/"}}]}
+CLEAN = {"answer": MALL, "tokens": 1000, "tools": [{"type": "function_call", "name": "exec", "arguments": {"cmd": "git log -1", "workdir": "/"}}]}
+
+
+def leak_run(tag, script):
+    """A fresh xdg (so fresh homes and thread ids) holding the same ledger, and a run of the memories cases against a stub rpc."""
+    xdg = os.path.join(ROOT, tag[-1])
+    if len(os.path.join(xdg, SOCK_TAIL)) > 100:
+        xdg = tempfile.mkdtemp(prefix="xl.", dir="/tmp")
+        cleanup.append(xdg)
+    shutil.copytree(os.path.join(XM, "xreview"), os.path.join(xdg, "xreview"))
+    state = os.path.join(ROOT, "state-" + tag)
+    shutil.copy(os.path.join(SM, "cases.json"), os.path.join(state, "cases.json")) if os.path.isdir(state) else (os.makedirs(state), shutil.copy(os.path.join(SM, "cases.json"), os.path.join(state, "cases.json")))
+    rpcd, cxd = os.path.join(ROOT, tag + "-rpc"), os.path.join(ROOT, tag + "-codex")
+    stub = helpers.stub_rpc(rpcd, CODEX, script)
+    env = dict(menv, XDG_STATE_HOME=xdg, XREVIEW_REPLAY_RPC=stub, CODEX_REAL_BIN=helpers.stub_codex(cxd))
+    p = subprocess.run([HARNESS, "run", "--state", state, "--codex-source", CODEX], capture_output=True, text=True, env=env)
+    runs = [jl(os.path.join(state, "runs", cid, l + ".json")) for cid, m in jl(os.path.join(state, "arms.json")).items() for l in m]
+    return p, state, runs, helpers.read_log(os.path.join(rpcd, "rpc.log"))
+
+
+cleanup = []
+p, st1, runs1, log1 = leak_run("leak1", {"turns": [LEAK], "default": CLEAN})
+is_("RP7m memories_leaks: a leaking run exits 0", p.returncode, 0)
+ok("RP7m memories_leaks: exactly one run was voided once and ran again, clean", sorted(len(r.get("voids", [])) for r in runs1) == [0] * 5 + [1]
+   and not any(r["error"] for r in runs1), [(r.get("voids"), r["error"]) for r in runs1])
+is_("RP7m memories_leaks: the sixth arm took a second turn", len([c for c in log1 if c["cmd"] == "turn-start"]), 7)
+voided = [r for r in runs1 if r.get("voids")][0]
+ok("RP7m memories_leaks: the void names what it read", CHECKOUT in " ".join(voided["voids"][0]), voided["voids"])
+is_("RP7m memories_leaks: the run reports its own attempt's tokens, and the spend counts the voided attempt too", (voided["tokens"], voided["spent"]), (1000, 2000))
+is_("RP7m memories_leaks: the stop counts every attempt", jl(os.path.join(st1, "progress.json"))["tokens"], 7000)
+p, st2, runs2, log2 = leak_run("leak2", {"default": LEAK})
+is_("RP7m memories_leaks: arms that leak twice end as error runs", sorted(set((r["error"] or "")[:10] for r in runs2)), ["void twice"])
+is_("RP7m memories_leaks: each ran exactly twice", len([c for c in log2 if c["cmd"] == "turn-start"]), 12)
+ok("RP7m memories_leaks: and records both voids", all(len(r["voids"]) == 2 for r in runs2), [r.get("voids") for r in runs2][:1])
+subprocess.run([HARNESS, "report", "--state", st2], capture_output=True, text=True, env=menv)
+rep2 = jl(os.path.join(st2, "report.json"))
+ok("RP7m memories_leaks: the report lists them and no switch passes on them",
+   len(rep2["errors"]) == 6 and all("void twice" in e["error"] for e in rep2["errors"]) and rep2["switches"]["memories"]["n"] == 0
+   and rep2["switches"]["memories"]["status"] != "pass", rep2["switches"])
+ok("RP7m memories_leaks: the voided attempts' checkouts are gone", not os.path.exists(SCR) or os.listdir(SCR) == [])
+for d in cleanup:
+    shutil.rmtree(d, ignore_errors=True)
 
 # memories_report: the bar and tokens per turn
 print("RP7m. memories_report")

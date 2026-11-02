@@ -90,7 +90,8 @@ for _ in range(3):
     M.cmd_memories_watch(namespace(SRC))
 polls = jl(os.path.join(WDIR, "polls.jsonl"))
 is_("polls_and_snapshots: three polls with no change log three lines", len(polls), 3)
-is_("polls_and_snapshots: each line has the poll time and the hash", [sorted(p)[:2] for p in polls[:1]], [["at", "hash"]])
+is_("polls_and_snapshots: each line has the poll time, the hash and the watcher's interval", [sorted(p)[:3] for p in polls[:1]], [["at", "hash", "interval"]])
+is_("polls_and_snapshots: the interval is the one the watcher sleeps", set(p["interval"] for p in polls), {60})
 is_("polls_and_snapshots: every poll holds the digest of the source", set(p["hash"] for p in polls), {D0})
 snaps = [p for p in polls if p.get("snapshot")]
 is_("polls_and_snapshots: only the first poll took a snapshot", [p is polls[0] for p in snaps], [True])
@@ -103,8 +104,9 @@ ok("polls_and_snapshots: .git is never copied", not os.path.exists(os.path.join(
 ok("polls_and_snapshots: the contents are there", os.path.isfile(os.path.join(S1, "rollout_summaries", "a.md")))
 is_("polls_and_snapshots: the source's listing is unchanged (names, sizes, mtimes)", helpers.listing(SRC), before_src)
 new_paths = [p for p in tree(ROOT) if p not in before_all]
+MW = os.path.join("xdg", "process-replay", "memwatch")
 ok("polls_and_snapshots: nothing was written outside the watch dir",
-   all(p == "xdg" or p.startswith(os.path.join("xdg", "process-replay")) for p in new_paths), new_paths)
+   all(p in ("xdg", os.path.join("xdg", "process-replay"), MW) or p.startswith(MW + os.sep) for p in new_paths), new_paths)
 ok("polls_and_snapshots: no temporary copy is left", not [n for n in os.listdir(snap_dir) if n.endswith(".tmp")])
 
 put(SRC, "MEMORY.md", "memory changed\n")
@@ -122,7 +124,14 @@ put(SRC, "MEMORY.md", "memory\n")
 M.cmd_memories_watch(namespace(SRC))
 polls = jl(os.path.join(WDIR, "polls.jsonl"))
 ok("polls_and_snapshots: a change back to an earlier text is a new snapshot", len(os.listdir(snap_dir)) == 3 and bool(polls[-1].get("snapshot")), polls[-1])
-ok("polls_and_snapshots: a missing source is an error", raises(M.cmd_memories_watch, namespace(os.path.join(ROOT, "nope"))))
+ok("polls_and_snapshots: a watch directory inside the source is refused", raises(M.cmd_memories_watch, namespace(os.path.dirname(WDIR))))
+
+# ---- a stale half-made copy is swept at the start of a poll
+stale = os.path.join(snap_dir, "2026-11-03T09:00:00Z-deadbeefdead.tmp")
+put(stale, "x/y", "half")
+M.cmd_memories_watch(namespace(SRC))
+ok("polls_and_snapshots: a leftover snapshots/*.tmp is removed at the start of a poll, the snapshots stay",
+   not os.path.exists(stale) and len(os.listdir(snap_dir)) == 3, os.listdir(snap_dir))
 
 # ---- the loop polls until it is stopped
 slept = []
@@ -185,6 +194,88 @@ M.cmd_memories_watch(namespace(SRC2))
 M.BETWEEN = None
 polls = jl(os.path.join(WDIR2, "polls.jsonl"))
 ok("copy_verified: a file that vanishes mid-copy is an unstable poll too", polls[-1].get("unstable") is True and not polls[-1].get("snapshot"), polls[-1])
+
+# ---- a missing source is an unstable poll, and the watcher keeps going
+XDG4 = os.path.join(ROOT, "xdg4")
+os.environ["XDG_STATE_HOME"] = XDG4
+WDIR4 = os.path.join(XDG4, "process-replay", "memwatch")
+GONE = os.path.join(ROOT, "mem-not-yet")
+is_("missing source: a poll of it returns", M.cmd_memories_watch(namespace(GONE)), 0)
+polls = jl(os.path.join(WDIR4, "polls.jsonl"))
+ok("missing source: logged unstable, with no hash and a reason, no snapshot",
+   len(polls) == 1 and polls[0].get("unstable") is True and polls[0]["hash"] is None and polls[0].get("reason") and not polls[0].get("snapshot"), polls)
+slept = []
+
+
+def appear(seconds):
+    slept.append(seconds)
+    if len(slept) == 1:
+        put(GONE, "MEMORY.md", "now here\n")
+    else:
+        raise KeyboardInterrupt()
+
+
+M.sleep = appear
+M.cmd_memories_watch(namespace(GONE, once=False, interval=5))
+polls = jl(os.path.join(WDIR4, "polls.jsonl"))
+ok("missing source: the loop went on, and snapshotted once the directory existed", len(polls) == 3 and polls[1].get("unstable") is True
+   and polls[2]["hash"] == M.digest(GONE) and bool(polls[2].get("snapshot")), polls)
+ok("missing source: a dispatch beside the unstable poll is not usable", M.snapshot_for(WDIR4, polls[0]["at"])[0] is None)
+
+# ---- links
+XDG5 = os.path.join(ROOT, "xdg5")
+os.environ["XDG_STATE_HOME"] = XDG5
+WDIR5 = os.path.join(XDG5, "process-replay", "memwatch")
+LNK = os.path.join(ROOT, "mem-links")
+put(LNK, "real.md", "real\n")
+put(LNK, "dir/inner.md", "inner\n")
+os.symlink("real.md", os.path.join(LNK, "alias.md"))
+os.symlink("../real.md", os.path.join(LNK, "dir", "up.md"))
+os.symlink("dir", os.path.join(LNK, "dirlink"))
+L0 = M.digest(LNK)
+other_links = os.path.join(ROOT, "mem-links2")
+shutil.copytree(LNK, other_links, symlinks=True)
+os.unlink(os.path.join(other_links, "alias.md"))
+put(other_links, "alias.md", "real\n")
+ok("links: a link is digested as a link, not as the file it names", M.digest(other_links) != L0)
+retarget = os.path.join(ROOT, "mem-links3")
+shutil.copytree(LNK, retarget, symlinks=True)
+os.unlink(os.path.join(retarget, "alias.md"))
+os.symlink("dir/inner.md", os.path.join(retarget, "alias.md"))
+ok("links: and by its target text", M.digest(retarget) != L0)
+put(LNK, "real.md", "real, edited\n")
+ok("links: editing what a link names changes the digest through the named file only", M.digest(LNK) != L0)
+put(LNK, "real.md", "real\n")
+is_("links: and restoring it restores the digest", M.digest(LNK), L0)
+M.cmd_memories_watch(namespace(LNK))
+polls = jl(os.path.join(WDIR5, "polls.jsonl"))
+SL = os.path.join(WDIR5, "snapshots", polls[0]["snapshot"])
+ok("links: links inside the tree are kept as links, with their targets", os.path.islink(os.path.join(SL, "alias.md")) and os.readlink(os.path.join(SL, "alias.md")) == "real.md"
+   and os.path.islink(os.path.join(SL, "dir", "up.md")) and os.path.islink(os.path.join(SL, "dirlink")) and os.readlink(os.path.join(SL, "dirlink")) == "dir",
+   tree(SL))
+is_("links: the snapshot's digest is the poll's", M.digest(SL), polls[0]["hash"])
+TOPLINK = os.path.join(ROOT, "mem-toplink")
+put(TOPLINK, "real.md", "r\n")
+os.symlink("real.md", os.path.join(TOPLINK, "a-first-link"))
+M.cmd_memories_watch(namespace(TOPLINK))
+polls = jl(os.path.join(WDIR5, "polls.jsonl"))
+ok("links: a link at the top of the directory is a link in the snapshot too", os.path.islink(os.path.join(WDIR5, "snapshots", polls[-1]["snapshot"], "a-first-link")), polls[-1])
+
+# a link out of the snapshot makes the poll unstable and keeps nothing
+for name, target in (("abs", "/etc/hosts"), ("up", "../outside.md"), ("deep", "../../outside.md"), ("home", os.path.join(ROOT, "mem-links", "real.md"))):
+    leak = os.path.join(ROOT, "mem-leak-" + name)
+    put(leak, "real.md", "r\n")
+    put(leak, "dir/inner.md", "i\n")
+    os.symlink(target, os.path.join(leak, "dir", "out.md") if name == "deep" else os.path.join(leak, "out.md"))
+    n_snaps = len(os.listdir(os.path.join(WDIR5, "snapshots")))
+    M.cmd_memories_watch(namespace(leak))
+    rec = jl(os.path.join(WDIR5, "polls.jsonl"))[-1]
+    ok("links: a link to {} ({}) makes the poll unstable and keeps no snapshot".format(target, name),
+       rec.get("unstable") is True and not rec.get("snapshot") and "link" in rec.get("reason", "") and rec["hash"] == M.digest(leak)
+       and len(os.listdir(os.path.join(WDIR5, "snapshots"))) == n_snaps, rec)
+os.environ["XDG_STATE_HOME"] = os.path.join(ROOT, "xdg6")
+ok("links: a seed with an outside link is refused", raises(M.cmd_memories_watch, namespace(LNK, seed=leak, seed_at="2026-11-02T13:21:00Z")))
+is_("links: and left no log", M.first_poll(os.path.join(ROOT, "xdg6", "process-replay", "memwatch")), None)
 
 # ---- seed
 XDG3 = os.path.join(ROOT, "xdg3")
@@ -272,3 +363,19 @@ is_("snapshot_for: the latest snapshot of that hash", M.snapshot_for(W, "2026-11
 with open(os.path.join(W, "polls.jsonl"), "a") as f:
     f.write('{"at": "2026-11-03T10:11:00Z", "ha')
 is_("snapshot_for: a half-written last line is ignored", M.snapshot_for(W, "2026-11-03T10:09:30Z")[1], HA)
+
+# ---- the interval the polls logged
+W2 = os.path.join(ROOT, "wsf180")
+write_polls_to = lambda path, lines: (os.makedirs(path, exist_ok=True), open(os.path.join(path, "polls.jsonl"), "w").write("".join(json.dumps(l) + "\n" for l in lines)))
+os.makedirs(os.path.join(W2, "snapshots", "2026-11-03T11:00:00Z-" + HA[:12]))
+slow = [{"at": "2026-11-03T11:00:00Z", "hash": HA, "interval": 180, "snapshot": "2026-11-03T11:00:00Z-" + HA[:12]},
+        {"at": "2026-11-03T11:03:00Z", "hash": HA, "interval": 180}]
+write_polls_to(W2, slow)
+is_("interval: a 180 s watcher's polls 180 s apart are not a missing poll (the logged interval, not the 60 s default)",
+    M.snapshot_for(W2, "2026-11-03T11:01:00Z")[1], HA)
+write_polls_to(W2, [dict(p, interval=60) for p in slow])
+is_("interval: control: the same polls logged at 60 s are a missing poll", M.snapshot_for(W2, "2026-11-03T11:01:00Z"), (None, "missing poll"))
+write_polls_to(W2, [slow[0], {"at": "2026-11-03T11:07:00Z", "hash": HA, "interval": 180}])
+is_("interval: more than 2 x 180 + 30 s apart is a missing poll", M.snapshot_for(W2, "2026-11-03T11:01:00Z"), (None, "missing poll"))
+write_polls_to(W2, [dict(slow[0], interval=180), {"at": "2026-11-03T11:03:00Z", "hash": HA}])
+is_("interval: a poll that logged none falls back on its neighbour's", M.snapshot_for(W2, "2026-11-03T11:01:00Z")[1], HA)
