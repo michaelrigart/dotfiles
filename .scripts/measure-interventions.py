@@ -376,7 +376,8 @@ def main(argv=None):
         ap.error("--days must be positive")
     if not os.path.isdir(args.projects_dir):
         ap.error("no such directory: " + args.projects_dir)
-    exclude = [project_key(os.path.expanduser(p)) for p in ["~/Code/.replay"] + args.exclude_project]
+    paths = ["~/Code/.replay"] + args.exclude_project
+    exclude = list(dict.fromkeys(project_key(os.path.abspath(os.path.expanduser(p))) for p in paths))
     json.dump(measure(args.projects_dir, args.days, exclude=exclude), sys.stdout, indent=2)
     sys.stdout.write("\n")
     return 0
