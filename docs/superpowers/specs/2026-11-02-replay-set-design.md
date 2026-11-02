@@ -105,10 +105,17 @@ case, and a coherence check catches the second wherever a repository has a cheap
 `zsh -n` on changed shell files, `cargo check`, a Ruby or Python syntax and load check). A revert
 that breaks coherence is undone, and its defect is unassessable.
 
-**Coverage gate.** A branch qualifies only when every one of its P0/P1 defects, of both classes,
-reverts cleanly and validates; dropped or unassessable P2s are allowed and counted. If more than a
-quarter of the per-task P0/P1 defects on the candidate branches are unassessable, §4 reports
-inconclusive, because the branches that remain would be the easy ones.
+**Fix groups.** A defect's patch is the part of its fix range that belongs to it. Where one commit
+fixes several defects, a judge splits its hunks by defect; hunks it cannot split make those defects
+one group, reverted and re-applied together.
+
+**Coverage gate.** A per-task P0/P1 defect that will not revert cleanly or validate gets one second
+attempt: an `sp-standard` agent re-creates it by hand in the final tree from the finding and its
+fix, and a blind judge confirms that the result is the same defect. If any per-task P0/P1 defect on
+the candidate branches is still unassessable after that, §4 is inconclusive and the report names
+it, because a removal would give up a consequential catch nobody measured. A branch qualifies only
+when all its P0/P1 defects of both classes are assessable. Unassessable P2s are counted, and if they
+exceed a quarter of the per-task P2s, §4 is inconclusive.
 
 `docs/superpowers/` is pinned to its state at plan approval. Spec and plan text edited during
 execution often describes the fixed behaviour, and where it landed outside the fix commits it would
@@ -132,12 +139,25 @@ in today's order, and two runs per case give the noise:
    ledger, gate or round counter is touched. Codex memories are off for these turns (§7.2). The
    daemon's model and effort stay as they are and are recorded.
 
-After each review, a blind judge (§4.5) matches its findings to the defects still present. An
-oracle fixer then re-applies the original fix of each matched defect as one commit with a neutral
-message, standing in for Claude's fix round; unmatched findings change nothing. The loop ends at an
-`approve` verdict or after six Codex rounds. A defect is **recovered** when a review in the run
-matched it before the end. *(Six rounds is my call; the report shows each branch's original round
-count beside it.)*
+After each review, a blind judge (§4.5) matches its findings to the defects still present, and rules
+on each finding it cannot match: a false positive, or a real defect outside the inventory. An
+oracle fixer then re-applies the patch of each matched defect, or of its group, as one commit with
+a neutral message, standing in for Claude's fix round. Members of a group re-applied for another
+member's match are repaired collaterally. After every re-application, each remaining defect whose
+reverted hunks it touched is validated again (§4.3). The next round's request names the rejected
+false positives, as a fix round's dispatch does today.
+
+A run ends in one of three ways:
+- an `approve` verdict;
+- six Codex rounds *(my call; the report shows each branch's original round count beside it)*;
+- **stalled:** a round matched no remaining defect and reported at least one real defect outside
+  the inventory. The real loop would have fixed that defect and changed the tree; the replay has no
+  fix for it, and reviewing an unchanged tree again would give detection chances the real loop
+  never has.
+
+Per run, each defect ends **recovered** (a review matched it), **unrecovered** (still present at
+`approve` or after six rounds) or **censored** (still present when the run stalled, or repaired
+collaterally). A censored defect is neither recovered nor missed.
 
 ### 4.5 Matching
 
@@ -147,24 +167,23 @@ No judge learns the run, the class or the purpose.
 
 ### 4.6 Pass bar
 
-Recovery per class is the share of its defects a run recovered, pooled over the cases; the
-comparison uses the mean of the two runs. Noise is the difference between the two runs' pre-merge
-recovery.
+The bar holds per run, because a real execution gets one run, not the union of two. It is strict on
+purpose: a removal has to show that it gives up no consequential catch.
 
-- **Calibration first.** The real loop recovered every pre-merge-class defect in October. If the
-  simulation recovers less than 80% of them, it is too weak to judge by, and §4 is inconclusive.
-- **Pass** needs all three:
-  - per-task recovery is at least pre-merge recovery minus the noise;
-  - no per-task P0/P1 defect goes unrecovered in both runs;
-  - the share of per-task P0/P1 defects unrecovered in either run is no higher than that share in
-    the pre-merge class.
-- **Fail:** calibration holds and any of the three fails.
-- **Inconclusive:** calibration or the coverage gate (§4.3) fails. §4.7 applies.
+- **Assessable run.** The real loop recovered every pre-merge-class defect in October. A run is
+  assessable when the simulation recovered at least 80% of that class in it and censored no more
+  than a quarter of its per-task P0/P1 defects.
+- **Fail:** in an assessable run, a per-task P0/P1 defect is unrecovered while every pre-merge P0/P1
+  defect of that case was recovered. The gates that stay demonstrably missed a consequential catch,
+  and the reviewer stays.
+- **Pass** needs every run of every case to be assessable, and in every run:
+  - every per-task P0/P1 defect recovered;
+  - per-task P2 recovery at least the pre-merge class's P2 recovery minus the noise, where noise is
+    the spread of that pre-merge P2 recovery across the runs.
+- **Inconclusive:** anything else, including §4.3's coverage gate. §4.7 applies.
 
-A pass therefore means the gates that stay recovered the per-task reviewer's catches at the rate
-they recover their own, with no consequential defect left behind in both runs. The pre-merge class
-is Codex-detectable by construction (Codex found each of its defects once) and the per-task class is
-not, which tilts the comparison towards keeping the reviewer.
+The pre-merge class is Codex-detectable by construction (Codex found each of its defects once) and
+the per-task class is not, which tilts the comparison towards keeping the reviewer.
 
 The report lists every per-task defect left unrecovered in any run, with its severity and one line
 on what it was, for Michael to read. It also gives the reviewer's October cost (dispatches, tokens,
@@ -228,17 +247,20 @@ P0/P1 that both found. The report adds tokens per turn for each arm.
 
 October's reviews cannot be the cases. Today's memories describe them, which would hand A and A′
 the answers, and no older snapshot exists (the memories directory's own git history starts on
-2026-11-02). So §6 runs forward:
-- The memories were frozen on 2026-11-02 at 13:21 UTC, into
-  `~/Code/.replay/snapshot/2026-11-02/codex-memories/`. A and A′ read that frozen copy, never the
-  live one.
-- The cases are pre-merge round-1 reviews with at least one known-real P0–P2 finding, from
-  branches whose first checkpoint review came after the freeze, so nothing about them can be in the
-  frozen copy. Up to 10, taken as they accrue; at Michael's usual pace that is about a week.
-- One bias is left: by the time of a case, the live memories could also hold the same branch's
-  spec and plan reviews, which the frozen copy lacks. That tilts towards B. The report states, per
-  case, whether the live memories mention the branch at run time, and if more than a quarter do, §6
-  is inconclusive.
+2026-11-02). So §6 runs forward, on snapshots taken just before each case:
+- **Snapshots.** While §6 collects cases, `process-replay memories-watch` checks the live memories
+  every five minutes and, whenever they change, copies them (APFS clones, without `.git`) into the
+  state directory. It reads `~/.codex/memories` and writes nothing outside the state directory.
+  Michael starts it as a background process or a launchd job for the collection period. The copy
+  frozen on 2026-11-02 at 13:21 UTC (`~/Code/.replay/snapshot/2026-11-02/codex-memories/`) is the
+  first snapshot.
+- **Arms.** A and A′ read the latest snapshot taken before the case's round-1 dispatch. That is what
+  the deployed reviewer had then, the branch's earlier spec and plan reviews included, and nothing
+  from the review itself or later. B reads no memories.
+- **Cases.** Pre-merge round-1 reviews with at least one known-real P0–P2 finding, from branches
+  started after the watcher, up to 10, taken as they accrue; at Michael's usual pace that is about a
+  week. A case whose live memories changed between the last snapshot and its dispatch is dropped,
+  because its snapshot would be missing what the deployed reviewer had.
 
 ## 7. Isolation
 
@@ -255,8 +277,8 @@ the answers, and no older snapshot exists (the memories directory's own git hist
 
 ### 7.2 Codex memories
 
-Replay turns neither read memories (except §6's A and A′, which read the frozen copy) nor feed
-memory generation, so no replay
+Replay turns neither read memories (except §6's A and A′, which read a snapshot) nor feed memory
+generation, so no replay
 content lands in Michael's memories. The builder settles the mechanism (a per-thread setting, or a
 second daemon with its own configuration that never touches the daemon Michael's panes use) before
 any turn runs. If neither works, stop and report.
@@ -301,11 +323,15 @@ any turn runs. If neither works, stop and report.
 - `--exclude-project` in `.scripts/measure-interventions.py`.
 - Tests: `tests/process-replay.test.sh`, a dry run on fixture cases with a stubbed daemon. It covers:
   - case selection and the coverage gate;
-  - injection, the oracle fixer re-applying exactly one defect's fix, and squashing;
+  - injection, fix groups, the oracle fixer re-applying exactly one defect's or group's patch,
+    collateral repairs counted as censored, and squashing;
+  - the stall rule and the false-positive rulings carried into the next round;
+  - `memories-watch` taking a snapshot on change, and a case taking the latest snapshot before its
+    dispatch;
   - a scratch repository that cannot resolve a later fix commit;
   - judge inputs that carry no class, run or arm;
   - the loop ending at `approve` or after six rounds;
-  - the pass-bar arithmetic, calibration included.
+  - the per-run pass bar, assessable runs and censoring included.
 
   The existing `xreview-replay` and `measure-interventions` suites get additions for their new
   options.
