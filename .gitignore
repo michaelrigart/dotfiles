@@ -68,3 +68,6 @@ docs/superpowers/runs/
 .chezmoidata.toml
 .chezmoidata.yaml
 .chezmoidata.json
+
+# Python bytecode from running the .scripts helpers or their tests without -B
+__pycache__/
