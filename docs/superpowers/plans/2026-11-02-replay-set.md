@@ -58,6 +58,10 @@ ends with the branch pushed. **Part B** runs it, from a separate Claude session 
 - **Blind judges.** Every judge input goes through `common.judge_write`, which refuses a document
   holding a key named `class`, `run`, `arm`, `label` or `purpose` at any depth. Brief texts never
   say replay, inject, removal, per-task, arm or run. Indices in judge inputs are fresh per input.
+  Every path handed to a judge, a final reviewer or a Codex turn (brief paths, input and answer
+  paths, scratch repositories used as a cwd) goes through `common.aliased`, a neutral symlink
+  `$XDG_STATE_HOME/review-work/<8 hex>` to the state dir, so no path a reviewer or judge sees
+  names the replay; the harness itself uses the real paths.
 - **Dry run.** `--dry-run` starts no daemon and no turn, and writes nothing but judge inputs and
   briefs (as `xreview-replay` does).
 - **Existing failures.** A failure counts as pre-existing only if the same suite fails on `main`.
