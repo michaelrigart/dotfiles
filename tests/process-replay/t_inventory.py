@@ -752,3 +752,85 @@ os.makedirs(os.path.join(ROOT, "no-main-snap", "xrepo", "objects"))
 run_cases(os.path.join(ROOT, "w-x", "state2"), XGROUPS, root=os.path.join(ROOT, "no-main-snap"))
 _d, byx = branches(os.path.join(ROOT, "w-x", "state2"))
 is_("dest_tip_missing: a repository whose destination the snapshot lacks says so", byx["one"]["why"], "destination tip not in the snapshot")
+
+
+# ================================================================ a range must be the branch's own, base to head
+def scope_of(repo, base, tip, exclude=(), bases=None):
+    rows = repo.commits(base, tip, list(exclude))
+    return {"repo": repo, "base": base, "tip": tip, "exclude": list(exclude), "rows": rows, "own": set(s for s, _t in rows), "copies": None,
+            "bases": bases or {base}}
+
+
+# ---- a derived range starts on this branch, not on another branch's commit
+DR = helpers.make_repo(ROOT, "derivrepo")
+with dated("2026-09-01T10:00:00Z"):
+    put(DR, "root.txt", "r\n")
+    helpers.commit(DR, "root")
+with dated("2026-09-02T10:00:00Z"):
+    put(DR, "main.txt", "v0\n")
+    D0 = helpers.commit(DR, "x0")
+DO = make_branch(DR, "one", D0, [("2026-10-01T09:00:00Z", {"one.txt": "o1\n"}, "o1")])
+DT = make_branch(DR, "two", D0, [("2026-10-02T09:00:00Z", {"two.txt": "t1\n"}, "t1"), ("2026-10-02T10:00:00Z", {"two.txt": "t2\n"}, "t2")])
+DEST = world("w-deriv")
+drepo = I.Repo(DEST, C.L.common_dir(DR), NO_SNAPSHOT)
+dscope = scope_of(drepo, D0, DT[-1])
+dgroup = {"id": "gx", "reviews": [
+    review("review", "2026-10-01T09:30:00.000Z", [(D0, DO[0])], DO[0]),
+    review("re-review", "2026-10-02T10:30:00.000Z", [], DT[1])]}
+dres = I.resolve_group(drepo, dgroup)
+pair, why = I.derive(drepo, dscope, dres, 1, dgroup["reviews"][1], [1])
+is_("derive_own_branch: an earlier review that belongs to another branch is not the base", (pair, why[:44]),
+    (None, "no earlier review of the task on this branch"))
+pair, why = I.derive(drepo, dscope, dres, 1, dgroup["reviews"][1], [0, 1])
+is_("derive_own_branch: control: were it this branch's, it would be the base", (pair and pair[0], why), (DO[0], None))
+is_("fix_range_ancestry: a range whose base is not an ancestor of its head is not kept even when b..h are all the branch's own",
+    (all(s in dscope["own"] for s, _t in drepo.commits(DO[0], DT[1])), I.fix_range(drepo, dscope, DO[0], DT[1])), (True, None))
+ok("fix_range_ancestry: control: an ordinary own range is kept", I.fix_range(drepo, dscope, DT[0], DT[1]) == (DT[0], DT[1]))
+
+# ---- a branch that merged main into itself keeps a valid range as it was
+MRE = helpers.make_repo(ROOT, "mergedinrepo")
+with dated("2026-09-01T10:00:00Z"):
+    put(MRE, "root.txt", "r\n")
+    helpers.commit(MRE, "root")
+with dated("2026-09-02T10:00:00Z"):
+    put(MRE, "main.txt", "v0\n")
+    N0 = helpers.commit(MRE, "x0")
+FA1 = make_branch(MRE, "feat", N0, [("2026-10-01T09:00:00Z", {"a.txt": "a1\n"}, "a1")])[0]
+put(MRE, "main.txt", "v1 main moved\n")
+with dated("2026-10-01T10:00:00Z"):
+    N1 = helpers.commit(MRE, "m1")
+git(MRE, "checkout", "-q", "feat")
+with dated("2026-10-01T11:00:00Z"):
+    git(MRE, "merge", "-q", "--no-edit", "main")
+put(MRE, "a.txt", "a2\n")
+with dated("2026-10-01T12:00:00Z"):
+    FA2 = helpers.commit(MRE, "a2")
+git(MRE, "checkout", "-q", "main")
+mrepo2 = I.Repo(world("w-mergedin"), C.L.common_dir(MRE), NO_SNAPSHOT)
+mscope = scope_of(mrepo2, N1, FA2, [N1], {N0, N1})
+rng = I.fix_range(mrepo2, mscope, N0, FA1)
+is_("fix_range_old_base: a valid (old base, head) stays as it was; main's change is not reverted in it", rng, (N0, FA1))
+ok("fix_range_old_base: its patch is the branch's commit only", "main.txt" not in mrepo2.patch(*rng) and "+a1" in mrepo2.patch(*rng))
+is_("fix_range_old_base: the substitution still happens when the range fails as written (a rebased branch: see rebased_between_rounds)",
+    I.fix_range(mrepo2, mscope, N0, FA2), (N1, FA2))
+
+# ---- an inventory goes when its answers do: pending, not opened, no longer a candidate
+os.environ["XDG_STATE_HOME"], os.environ["CODEX_HOME"] = os.path.join(ROOT, "w-x", "xdg"), os.path.join(ROOT, "w-x", "codex")
+RBINV = os.path.join(XSTATE, "inventory", RBID + ".json")
+ok("stale_inventory: control: rb's inventory is there", os.path.exists(RBINV))
+edited2 = [dict(g) for g in edited]
+k = [g["id"] for g in edited2].index("grb")
+edited2[k] = group("grb", XG, [dict(r, report=r["report"] + ", edited") if r["kind"] == "re-review" else r for r in XGROUPS[k]["reviews"]], task=5)
+run_cases(XSTATE, edited2)
+ok("stale_inventory: a changed input makes its branch pending, and its old inventory goes", not os.path.exists(RBINV))
+answers(XSTATE, "judge-task", "grb-" + RBID, {"findings": []})
+run_cases(XSTATE, edited2)
+ok("stale_inventory: answered again, it is written again", os.path.exists(RBINV))
+run_cases(XSTATE, edited2, open=0)
+ok("stale_inventory: a branch no longer opened loses its inventory", not os.path.exists(RBINV))
+C.jsave(os.path.join(XSTATE, "inventory", "bdeadbeef.json"), {"branch": "bdeadbeef", "defects": [], "dropped": []})
+run_cases(XSTATE, edited2)
+ok("stale_inventory: opened again it is back, and one for a branch that is no longer examined is removed",
+   os.path.exists(RBINV) and not os.path.exists(os.path.join(XSTATE, "inventory", "bdeadbeef.json")))
+run_cases(XSTATE, edited2, dry=True, open=0)
+ok("stale_inventory: a dry run removes nothing", os.path.exists(RBINV))

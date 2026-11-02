@@ -251,28 +251,35 @@ def _gone(group, i, kind, why, rng=None):
     return {"group": group["id"], "review": i, "range": rng and list(rng), "kind": kind, "why": why}
 
 
+def _own_range(repo, scope, b, h):
+    """Every commit of b..h is one of the branch's own, there is at least one, and b is an ancestor of h."""
+    inside = repo.commits(b, h)
+    return bool(inside) and all(s in scope["own"] for s, _t in inside) and repo.is_ancestor(b, h)
+
+
 def fix_range(repo, scope, b, h):
-    """(b, h) in the branch's own terms when every commit of b..h is one of its own, else None. A base that was
-    one of the chain's rounds' bases (the branch has since been rebased onto another) stands for the branch's
-    base now."""
+    """(b, h) in the branch's own terms when b is an ancestor of h and every commit of b..h is one of its own,
+    else None. Only when that fails, a base that was one of the chain's rounds' bases (the branch has since been
+    rebased onto another, or main merged into it) stands for the branch's base now."""
     h2 = place(scope, h)
     if h2 is None:
         return None
-    b2 = place(scope, b) or (scope["base"] if b in scope["bases"] else b)
-    inside = repo.commits(b2, h2)
-    if not inside or any(s not in scope["own"] for s, _t in inside):
-        return None
-    return (b2, h2)
+    b2 = place(scope, b) or b
+    if _own_range(repo, scope, b2, h2):
+        return (b2, h2)
+    if b in scope["bases"] and b != scope["base"] and _own_range(repo, scope, scope["base"], h2):
+        return (scope["base"], h2)
+    return None
 
 
-def derive(repo, scope, res, i, r):
+def derive(repo, scope, res, i, r, mine):
     """((base, end), None) for a re-review that names no range, else (None, why). The base is the commit the
-    nearest earlier review of the task looked at. The end is the commit the re-review itself names when it
+    nearest earlier review of the task that belongs to this branch (`mine`, the indices assigned to it) looked at. The end is the commit the re-review itself names when it
     descends from that base; otherwise the last of the branch's own commits committed at or before the
     re-review began. Nothing is guessed past an earlier or own commit that does not resolve."""
-    j = next((j for j in range(i - 1, -1, -1) if res["named"][j]), None)
+    j = next((j for j in range(i - 1, -1, -1) if j in mine and res["named"][j]), None)
     if j is None:
-        return None, "no earlier review of the task names a commit"
+        return None, "no earlier review of the task on this branch names a commit"
     base = res["commits"][j]
     if base is None:
         return None, "the commit an earlier review looked at does not resolve"
@@ -304,7 +311,7 @@ def changes_of(repo, scope, group, res, idxs):
         unjoined += [_gone(group, i, "unresolved", "a named range does not resolve in this repository")] * res["lost"][i]
         pairs = res["ranges"][i]
         if not pairs and not r.get("ranges"):
-            pair, why = derive(repo, scope, res, i, r)
+            pair, why = derive(repo, scope, res, i, r, idxs)
             if pair is None:
                 unjoined.append(_gone(group, i, "unresolved", why))
             pairs = [pair] if pair else []
@@ -596,6 +603,15 @@ def _record(scope):
     br["unresolved_ranges"], br["off_branch_ranges"] = kinds["unresolved"], kinds["off-branch"]
 
 
+def _drop_inventories(state, current):
+    """An inventory is only as good as the answers behind it: remove every one whose branch is pending, no
+    longer a candidate or not opened."""
+    d = os.path.join(state, "inventory")
+    for name in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+        if name.endswith(".json") and name[:-5] not in current:
+            os.unlink(os.path.join(d, name))
+
+
 def cmd_cases(a):
     if getattr(a, "plans", False):
         return planreview.plan_cases(a)
@@ -635,15 +651,18 @@ def cmd_cases(a):
             contexts.append((br, scope))
     contexts.sort(key=lambda bc: (_epoch(bc[0]["merged"]["at"]), bc[0]["rounds"][-1]["at"]), reverse=True)
     limit = getattr(a, "open", OPEN)
-    counts, pending, written = collections.Counter(), 0, 0
+    counts, pending, written, current = collections.Counter(), 0, 0, set()
     for br, scope in contexts[:max(limit, 0)]:
         br["opened"] = True
         inventory, wait = judge_branch(a, br, scope, counts)
         pending += wait
         if inventory is not None:
             written += 1
+            current.add(br["id"])
             if not a.dry_run:
                 C.jsave(os.path.join(a.state, "inventory", br["id"] + ".json"), inventory)
+    if not a.dry_run:
+        _drop_inventories(a.state, current)
     multi = collections.Counter(g for br, _ in contexts for g in br["groups"])
     C.say("chains examined: {}; candidates: {} ({} opened); not candidates: {}".format(
         len(records), len(contexts), sum(1 for br, _ in contexts if br["opened"]), ", ".join("{} {}".format(n, w) for w, n in sorted(why.items())) or "none"))
