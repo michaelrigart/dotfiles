@@ -47,7 +47,9 @@ ends with the branch pushed. **Part B** runs it, from a separate Claude session 
   private view repository (`common.view`). Scratch repositories never use alternates (§7.1).
 - **State.** Default `$XDG_STATE_HOME/process-replay/<YYYY-MM-DD>/` (`--state` overrides); the
   memories watcher and the shared Codex login live beside it, undated:
-  `$XDG_STATE_HOME/process-replay/memwatch/` and `…/codex-auth/`. Tests use temp dirs only.
+  `$XDG_STATE_HOME/process-replay/memwatch/` and `…/codex-auth/`. Replay Codex homes live at
+  `$XDG_STATE_HOME/cxh/<name>`, short enough for the daemon's unix socket (≤ 103 bytes), and
+  `<state>/codex-homes.json` lists the ones a state used. Tests use temp dirs only.
 - **Spec values**, used verbatim: P0–P2 counted, P3 listed only; window 2026-10-01 to 2026-11-01,
   applied to the merge date only (`[2026-10-01T00:00:00Z, 2026-11-02T00:00:00Z)`); a qualifying
   branch keeps every review and pre-merge round it had, whatever its date; 10–12
