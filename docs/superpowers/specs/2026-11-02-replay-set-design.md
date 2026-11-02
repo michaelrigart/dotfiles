@@ -1,9 +1,9 @@
 # Replay set: deciding the quality-relevant removals from October's record
 
-**Status:** In progress
+**Status:** Approved
 **Date:** 2026-11-02
 **Branch:** `replay-set` (the dotfiles have no MR; the pushed branch is the end)
-**Sign-off:** pending
+**Sign-off:** Michael, 2026-11-02 (Codex approved round 4, xr-1793626109-f7b04e58)
 
 ## 1. Why
 
