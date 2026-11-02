@@ -15,6 +15,11 @@ the pane, the review ledger or the round counter. `run` needs the daemon socket:
   report  [--state DIR]   read judge-match/<case>.answer.json, print the pass bar per switch
   cleanup [--state DIR]   archive the threads a crashed run left behind
 
+`cases --switch memories --memwatch DIR` selects the memories switch's cases instead (spec 2026-11-02-replay-set, section 6):
+round-1 reviews of branches that started after the memories watcher (process-replay memories-watch) whose surrounding
+polls show one hash. Arms A and A2 run on a replay Codex home holding that snapshot, B on a home with no memories; the
+replay daemons run one at a time (process_replay.codexhome), so `run` takes the homes in turn.
+
 --dry-run builds and selects but starts no turn and calls no daemon. The default state directory is
 $XDG_STATE_HOME/xreview/replay/<date>. Raw run files are never committed.
 
@@ -32,6 +37,7 @@ Written for /usr/bin/python3 (3.9).
 import argparse
 import collections
 import concurrent.futures as cf
+import contextlib
 import copy
 import glob
 import importlib.util
@@ -60,9 +66,12 @@ L = XP._ledger()
 QUOTA, FIT_FRESH, POOL_EXTRA, MAX_BIG = 10, 5, 5, 12   # spec 5.1 (the pool is judged; the quota is kept)
 JOBS = 3                                               # spec 5.6: at most 3 turns at once
 TOKEN_CAP = 60000000                                   # spec 5.6: the hard stop
+TOKEN_CAPS = {"memories": 20000000}                    # replay-set spec 8: this switch stops at 20M
+MEMORIES_QUOTA = 10                                    # replay-set spec 6: up to 10 cases, taken as they accrue
 TURN_BUDGET = 3600                                     # seconds one turn may take
 UNLIMITED = 10 ** 12                                   # the cap of today's dispatch with the override set
 SWITCH_ORDER = ("framing", "omit_plans", "delta", "fit")
+REPORT_ORDER = SWITCH_ORDER + ("memories",)
 KNOWN_SEVERITIES = ("P0", "P1", "P2")
 MAX_INTERDIFF = 150000
 COVERAGE_LIMIT = 0.1                                   # spec 5.5
@@ -80,6 +89,18 @@ class Failed(Exception):
 
 def say(msg):
     print(msg, flush=True)
+
+
+def pkg(name):
+    """A process_replay module, imported on first use: process_replay.common loads this file, so importing the
+    package at the top would loop. Run as a script, this module is the one the package finds as xreview_replay."""
+    sys.dont_write_bytecode = True
+    scripts = os.path.dirname(os.path.abspath(__file__))
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    if __name__ == "__main__":
+        sys.modules.setdefault("xreview_replay", sys.modules["__main__"])
+    return importlib.import_module("process_replay." + name)
 
 
 def jload(path, default=None):
@@ -331,7 +352,72 @@ def case_of(c, klass, **extra):
     return case
 
 
+def branch_start(r):
+    """Seconds since the epoch of the first receipt, of any checkpoint, that the round's branch has in its ledger."""
+    t, mw = r["target"], pkg("memwatch")
+    times = []
+    for e in r["entries"]:
+        if e.get("v") == 2 and e.get("kind") == "receipt" and isinstance(e.get("dispatched_at"), str) \
+                and any(isinstance(x, dict) and x.get("branch") == t.get("branch") and x.get("dest") == t["dest"]
+                        for x in e.get("targets") or []):
+            try:
+                times.append(mw.parse_at(e["dispatched_at"]))
+            except pkg("common").Failed:
+                continue
+    if not times:
+        raise pkg("common").Failed("no receipt of branch {} has a usable time".format(t.get("branch")))
+    return min(times)
+
+
+def cases_memories(a):
+    """The memories switch's cases: round 1 of a branch that started after the watcher's first poll, with a
+    known-real P0-P2 finding, and one snapshot of the memories its dispatch had (the poll before and the poll
+    after show the same hash). Oldest first, up to MEMORIES_QUOTA: the cases accrue as the watcher runs."""
+    mw, common = pkg("memwatch"), pkg("common")
+    if not getattr(a, "memwatch", None):
+        raise Failed("cases --switch memories needs --memwatch DIR (the watcher's directory)")
+    first = mw.first_poll(a.memwatch)
+    if first is None:
+        say("the watcher has not polled yet: no case can have a snapshot")
+        return 0
+    started, early, kept, dropped = mw.parse_at(first), 0, [], []
+    for r in sorted((r for r in load_rounds() if r["k"] == 1), key=lambda r: r["at"]):
+        try:
+            if branch_start(r) <= started:
+                early += 1
+                continue
+            c = candidate(r)
+            if not c:
+                continue
+            path, why = mw.snapshot_for(a.memwatch, r["at"])
+        except common.Failed as e:
+            dropped.append({"round": r["nonce"], "why": str(e)})
+            continue
+        if path is None:
+            dropped.append({"round": r["nonce"], "why": why})
+            say("dropped {}: {}".format(r["nonce"], why))
+        else:
+            kept.append((c, {"dir": path, "hash": why}))
+    pool = [case_of(c, "mem", switches=["memories"], memories=m) for c, m in kept[:MEMORIES_QUOTA + POOL_EXTRA]]
+    for case, (c, _m) in zip(pool, kept):
+        n = case["round"]
+        jsave(os.path.join(a.state, "judge-known", n + ".json"), judge_input(c))
+        ans = jload(os.path.join(a.state, "judge-known", n + ".answer.json"))
+        yes = set(v.get("index") for v in (ans or {}).get("verdicts", []) if isinstance(v, dict) and v.get("answer") == "yes")
+        case["known"] = None if ans is None else [dict(f, index=i) for i, f in enumerate(f for f in case["findings"] if f["index"] in yes)]
+    chosen = [c for c in pool if (c["known"] if not a.dry_run else c["known"] != [])][:MEMORIES_QUOTA]
+    say("memories: {} case(s); {} dropped; {} on branches that started before the watcher".format(len(chosen), len(dropped), early))
+    say("judge inputs: {} round(s) in {}".format(len(pool), os.path.join(a.state, "judge-known")))
+    if not a.dry_run:
+        jsave(os.path.join(a.state, "cases.json"), {"created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "switch": "memories",
+              "memwatch": os.path.abspath(a.memwatch), "cases": chosen, "selected": {"memories": [c["id"] for c in chosen]},
+              "dropped": dropped})
+    return 0
+
+
 def cmd_cases(a):
+    if getattr(a, "switch", None) == "memories":
+        return cases_memories(a)
     cands = [c for c in (candidate(r) for r in load_rounds()) if c]
     pool, plans, other, delta, big, fresh = {}, [], [], [], [], []
     for c in cands:
@@ -386,6 +472,9 @@ def cmd_cases(a):
 
 
 # ------------------------------------------------------------------ threads
+ANY = object()
+
+
 class Threads(object):
     """Every thread the run creates or unarchives, recorded as it happens in threads.json, so
     cleanup archives them even after a crash."""
@@ -393,29 +482,76 @@ class Threads(object):
     def __init__(self, state):
         self.path = os.path.join(state, "threads.json")
 
-    def add(self, thread, kind):
+    def add(self, thread, kind, home=None):
         with LOCK:
             data = jload(self.path, {"threads": []})
-            data["threads"].append({"thread": thread, "kind": kind, "done": False})
+            data["threads"].append(dict({"thread": thread, "kind": kind, "done": False}, **({"home": home} if home else {})))
             jsave(self.path, data)
 
-    def cleanup(self):
+    def cleanup(self, only=ANY):
+        """Archive the threads not yet archived (those of one replay home with `only`). A thread of a replay
+        home is archived on that home's daemon, started for the purpose when it is not running."""
         with LOCK:
             data = jload(self.path, {"threads": []})
+        homes = collections.OrderedDict()
         for t in data["threads"]:
-            if not t["done"]:
-                rc, _o, err = rpc("thread-archive", "--thread", t["thread"])
-                if rc == 0:
-                    t["done"] = True
-                else:
-                    say("could not archive {}: {}".format(t["thread"], err.strip()))
+            if not t["done"] and (only is ANY or t.get("home") == only):
+                homes.setdefault(t.get("home"), []).append(t)
+        for home, items in homes.items():
+            def archive():
+                for t in items:
+                    rc, _o, err = rpc("thread-archive", "--thread", t["thread"])
+                    if rc == 0:
+                        t["done"] = True
+                    else:
+                        say("could not archive {}: {}".format(t["thread"], err.strip()))
+            if home is None:
+                archive()
+            else:
+                with_daemon(home, archive)
         with LOCK:
             jsave(self.path, data)
-        return all(t["done"] for t in data["threads"])
+        return all(t["done"] for t in data["threads"] if only is ANY or t.get("home") == only)
 
 
 TH = None
 UNARCHIVE = threading.Lock()
+
+
+@contextlib.contextmanager
+def codex_env(home):
+    """CODEX_HOME is `home` for the block, and no socket override aims an rpc call elsewhere (each outranks
+    CODEX_HOME). Rollouts are read from codex_home(), which reads the same variable."""
+    names = ("CODEX_HOME", "XREVIEW_RPC_SOCK", "XREVIEW_RPC_STDIO")
+    saved = dict((k, os.environ.get(k)) for k in names)
+    os.environ["CODEX_HOME"] = home
+    for k in names[1:]:
+        os.environ.pop(k, None)
+    try:
+        yield
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def with_daemon(home, fn):
+    """fn() with the replay daemon of `home` answering: the running one, else one started for the call."""
+    cx = pkg("codexhome")
+    try:
+        with codex_env(home):
+            started = not cx.alive(home)
+            if started:
+                cx.start(home)
+            try:
+                fn()
+            finally:
+                if started:
+                    cx.stop(home)
+    except pkg("common").Failed as e:
+        say("could not reach the replay daemon of {}: {}".format(home, e))
 
 
 def hist_call(thread, *args):
@@ -434,6 +570,8 @@ def hist_call(thread, *args):
 
 # ------------------------------------------------------------------ the arms
 def arms_of(case):
+    if case["class"] == "mem":
+        return [("A", None), ("A2", None), ("B", "memories")]
     if case["class"] == "pre":
         return [("A", None), ("A2", None), ("F", None)] + ([("B", "omit_plans")] if "omit_plans" in case["switches"] else [])
     return [("A", None), ("A2", None), ("B", "delta" if case["class"] == "inc" else "fit")]
@@ -467,7 +605,7 @@ def prepare(a, cases, live):
     spec's order: framing with omit_plans, then delta, then fit."""
     arms = jload(os.path.join(a.state, "arms.json"), {})
     taken = set(l for m in arms.values() for l in m)
-    order = {"pre": 0, "inc": 1, "big": 2, "ctx": 2}
+    order = {"pre": 0, "inc": 1, "big": 2, "ctx": 2, "mem": 3}
     rounds = dict((r["nonce"], r) for r in load_rounds())
     jobs = []
     for case in sorted(sorted(cases, key=lambda c: c["at"], reverse=True), key=lambda c: order[c["class"]]):
@@ -491,6 +629,8 @@ def prepare(a, cases, live):
                 hist_error = str(e)
         for arm, sw in arms_of(case):
             on = {"A": [], "A2": [], "F": ["framing"]}.get(arm) if arm != "B" else ["framing", sw]
+            if case["class"] == "mem":      # only the Codex home differs between the arms: one packet for all
+                on = []
             conf = os.path.join(pdir, arm + ".conf")
             jsave(conf, "".join("{}={}\n".format(k, "on" if k in on else "off") for k in XP.SWITCHES))
             req = {"checkpoint": "pre-merge", "body_file": os.path.join(pdir, "body.md"),
@@ -500,7 +640,10 @@ def prepare(a, cases, live):
                    "turns_file": turns_file if (arm == "B" and sw == "delta") else None}
             job = {"case": cid, "arm": arm, "switch": sw, "framing": "framing" in on, "repo": t["repo"], "tip": t["tip"], "target": t,
                    "fork": case["fork"] if forks(case, arm) else None, "error": hist_error if (arm == "B" and sw == "delta") else None,
-                   "decision": None}
+                   "decision": None, "home": None, "memories": None}
+            if case["class"] == "mem":
+                job["home"] = "nomem" if arm == "B" else "mem-" + case["memories"]["hash"][:12]
+                job["memories"] = None if arm == "B" else case["memories"]["dir"]
             old = L.state_home
             L.state_home = lambda: home
             try:
@@ -594,7 +737,7 @@ def one_turn(thread, packet, schema, cwd, budget, box):
 
 def run_job(a, job):
     res = {"verdict": None, "findings": [], "reviewed_files": [], "tokens": 0, "compacted": False, "slices": 0,
-           "kind": None, "missing": None, "error": None}
+           "kind": None, "missing": None, "error": None, "home": job.get("home")}
     clone = None
     try:
         if job["error"]:
@@ -606,7 +749,7 @@ def run_job(a, job):
         cdir = os.path.join(a.state, "clones")
         os.makedirs(cdir, exist_ok=True)
         clone = tempfile.mkdtemp(prefix="c.", dir=cdir)
-        scratch_clone(job, clone)
+        build_scratch(a, job, clone, cdir)
         schema = os.path.join(CONF, "findings.framed.schema.json" if job["framing"] else "findings.schema.json")
         flags, shown, approvals, models = [], [], [], []
         for i, pk in enumerate(dec["packets"]):
@@ -618,7 +761,7 @@ def run_job(a, job):
             if rc != 0 or not out.strip():
                 raise Failed("cannot open a thread ({}): {}".format("fork" if fk else "start", err.strip()))
             thread = out.strip().splitlines()[-1]
-            TH.add(thread, "new")
+            TH.add(thread, "new", job.get("home_path"))
             box = {}
             try:
                 doc, compacted = one_turn(thread, pk["file"], schema, clone, a.budget, box)
@@ -654,28 +797,39 @@ def run_job(a, job):
     return res
 
 
-def scratch_clone(job, clone):
-    """A checkout the reviewer cannot read the future from: an empty repository that borrows the source's
-    objects, with a branch at the round's tip and the destination at its base (as origin/<dest> too when
-    that is how the range names it), so the packet's range resolves. No remote, no tags, no later branch."""
+def scratch_source(a, job):
+    """(git directory, object store) that holds the job's base and tip: the repository itself, else its snapshot
+    (--snapshot-root), where a commit the repository has since pruned still resolves."""
+    t, repo, common = job["target"], job["repo"], pkg("common")
+    found = [(repo, os.path.join(repo, "objects"))]
+    root = getattr(a, "snapshot_root", None)
+    objects = common.snapshot_objects(os.path.expanduser(root), repo) if root else None
+    if objects:
+        found.append((common.view(a.state, repo, os.path.expanduser(root)), objects))
+    for gitdir, store in found:
+        if all(common.git_ok(gitdir, "rev-parse", "--verify", "--quiet", x + "^{commit}") for x in (t["base"], t["tip"])):
+            return gitdir, store
+    raise Failed("neither {} nor its snapshot holds {} and {}".format(repo, t["base"], t["tip"]))
+
+
+def build_scratch(a, job, clone, cdir):
+    """The checkout a reviewer reads, built by the one scratch builder (process_replay.scratch): the objects
+    reachable from the round's base and one commit of the round's tree on the branch, the destination at the
+    base (as origin/<dest> too when the range names it), so the packet's range resolves. No alternates, no
+    remote, no tag, no later commit."""
+    sc, common = pkg("scratch"), pkg("common")
     t = job["target"]
-    branch = t.get("branch") or "replay"
-    refs = [("refs/heads/" + t["dest"], t["base"])] if branch != t["dest"] else []
-    refs.append(("refs/heads/" + branch, t["tip"]))
-    if t.get("dest_ref") and t["dest_ref"] != t["dest"]:      # origin/<dest>...<branch>
-        refs.append(("refs/remotes/" + t["dest_ref"], t["base"]))
-    steps = [["git", "init", "-q", clone]]
-    for argv in steps + [None] + [["git", "-C", clone, "update-ref", ref, sha] for ref, sha in refs] \
-            + [["git", "-C", clone, "checkout", "-q", branch]]:
-        if argv is None:
-            info = os.path.join(clone, ".git", "objects", "info")
-            os.makedirs(info, exist_ok=True)
-            with open(os.path.join(info, "alternates"), "w") as f:
-                f.write(os.path.join(job["repo"], "objects") + "\n")
-            continue
-        rc, _o, err = sh(argv)
-        if rc != 0:
-            raise Failed("scratch checkout failed: " + err.strip())
+    files = tempfile.mkdtemp(prefix="f.", dir=cdir)
+    try:
+        gitdir, store = scratch_source(a, job)
+        tree = common.git(gitdir, "rev-parse", "--verify", t["tip"] + "^{tree}")
+        sc.export(store, t["tip"], os.path.join(files, "tree"))
+        sc.build(store, t["base"], os.path.join(files, "tree"), clone, t["dest"], t.get("branch") or "replay", t.get("dest_ref"),
+                 expect_tree=tree, cache=os.path.join(a.state, "packs"))
+    except common.Failed as e:
+        raise Failed("scratch checkout failed: {}".format(e))
+    finally:
+        shutil.rmtree(files, ignore_errors=True)
 
 
 def spent(state):
@@ -694,6 +848,62 @@ def on_signal(signum, _frame):
     raise KeyboardInterrupt()
 
 
+def token_cap(a, cj):
+    """The run's hard stop: --max-tokens, else the cap of the cases' switch (the memories switch has its own)."""
+    return a.max_tokens if a.max_tokens is not None else TOKEN_CAPS.get((cj or {}).get("switch"), TOKEN_CAP)
+
+
+def reap():
+    """Terminate the children a stop left behind and clear the flag, so the archiving that follows can call rpc."""
+    STOP.set()
+    for proc in list(CHILDREN):
+        proc.terminate()
+    STOP.clear()
+
+
+def run_pool(a, pending, total, cap, prog):
+    """Run `pending` jobs, JOBS at a time, until they are done or the token stop is reached. Returns what is
+    left of them and the tokens spent."""
+    running = set()
+    with cf.ThreadPoolExecutor(JOBS) as pool:
+        while pending or running:
+            while pending and len(running) < JOBS and total < cap:
+                running.add(pool.submit(run_job, a, pending.popleft()))
+            if not running:
+                break
+            done, running = cf.wait(running, return_when=cf.FIRST_COMPLETED, timeout=2)
+            total = spent(a.state)
+            for f in done:
+                res = f.result()
+                if res.get("model") and not prog.get("model"):
+                    prog.update(model=res["model"], effort=res["effort"])
+    return pending, total
+
+
+def run_home(a, name, jobs, total, cap, prog, source):
+    """The jobs of one replay Codex home: make the home (with the case's memories snapshot, when it has one),
+    start its daemon, run the jobs with CODEX_HOME aimed at it, archive their threads, stop the daemon. Only
+    one replay daemon runs at a time, so the caller takes the homes in turn."""
+    cx = pkg("codexhome")
+    snap = next((j["memories"] for j in jobs if j["memories"]), None)
+    home = cx.ensure(a.state, name, snap, bool(snap), source=source)
+    cx.start(home)
+    try:
+        for j in jobs:
+            j["home_path"] = home
+        with codex_env(home):
+            return run_pool(a, collections.deque(jobs), total, cap, prog)
+    finally:
+        reap()
+        try:
+            TH.cleanup(only=home)
+        finally:
+            try:
+                cx.stop(home)
+            except pkg("common").Failed as e:
+                say("could not stop the replay daemon of {}: {}".format(home, e))
+
+
 def cmd_run(a):
     global TH
     cj = jload(os.path.join(a.state, "cases.json"))
@@ -702,6 +912,7 @@ def cmd_run(a):
         return 2
     TH = Threads(a.state)
     live = not a.dry_run
+    cap, source = token_cap(a, cj), getattr(a, "codex_source", None)      # None: codexhome's default, ~/.codex
     if live:
         for sig in (signal.SIGINT, signal.SIGTERM):
             signal.signal(sig, on_signal)
@@ -715,23 +926,21 @@ def cmd_run(a):
         def finished(j):
             run = jload(os.path.join(a.state, "runs", j["case"], j["label"] + ".json"))
             return bool(run) and not (run.get("error") and (a.retry_errors or run.get("interrupted")))
-        pending = collections.deque(j for j in jobs if not finished(j))
-        total, running = spent(a.state), set()
-        with cf.ThreadPoolExecutor(JOBS) as pool:
-            while pending or running:
-                while pending and len(running) < JOBS and total < a.max_tokens:
-                    running.add(pool.submit(run_job, a, pending.popleft()))
-                if not running:
-                    break
-                done, running = cf.wait(running, return_when=cf.FIRST_COMPLETED, timeout=2)
-                total = spent(a.state)
-                for f in done:
-                    res = f.result()
-                    if res.get("model") and not prog.get("model"):
-                        prog.update(model=res["model"], effort=res["effort"])
+        todo = [j for j in jobs if not finished(j)]
+        groups = collections.OrderedDict()
+        for j in todo:      # a job with a replay home runs on that home's daemon; the others on the one the environment names
+            groups.setdefault(j.get("home"), []).append(j)
+        total, pending = spent(a.state), collections.deque()
+        for name, group in groups.items():
+            if name is None:
+                pending, total = run_pool(a, collections.deque(group), total, cap, prog)
+            else:
+                pending, total = run_home(a, name, group, total, cap, prog, source)
+            if pending:
+                break
         if pending:
             stopped = {"case": pending[0]["case"], "arm": pending[0]["arm"], "tokens": total}
-            say("stopped at the token cap ({} >= {}) before {} {}".format(total, a.max_tokens, stopped["case"], stopped["arm"]))
+            say("stopped at the token cap ({} >= {}) before {} {}".format(total, cap, stopped["case"], stopped["arm"]))
     except KeyboardInterrupt:
         interrupted = True
         say("interrupted: archiving every thread this run used")
@@ -740,10 +949,7 @@ def cmd_run(a):
         say("the run crashed:\n" + crash)
     finally:
         if live:
-            STOP.set()
-            for proc in list(CHILDREN):
-                proc.terminate()
-            STOP.clear()
+            reap()
             ok = TH.cleanup()
             shutil.rmtree(os.path.join(a.state, "clones"), ignore_errors=True)
             prog.update(tokens=spent(a.state), stopped_at=stopped, crashed=crash,
@@ -798,12 +1004,12 @@ def cmd_report(a):
                 models.add((run["model"], run.get("effort")))
         if len(models) > 1:
             mixed.append(cid)
-    for sw in SWITCH_ORDER:
+    for sw in REPORT_ORDER:
         ids = (cj.get("selected") or {}).get(sw) or []
         if not ids:
             continue
         x = "F" if sw == "framing" else "B"
-        sums = dict((arm, {"hit": 0, "tokens": 0, "compactions": 0}) for arm in ("A", "A2", "F", "B"))
+        sums = dict((arm, {"hit": 0, "tokens": 0, "compactions": 0, "turns": 0}) for arm in ("A", "A2", "F", "B"))
         n = known = misses = framed = failed = 0
         for cid in ids:
             amap = dict((v["arm"], l) for l, v in arms.get(cid, {}).items())
@@ -823,13 +1029,14 @@ def cmd_report(a):
                 s = sums[arm]
                 s["hit"] += len(hits[arm])
                 s["tokens"] += run.get("tokens") or 0
+                s["turns"] += run.get("slices") or 0
                 s["compactions"] += 1 if run.get("compacted") else 0
             for k in kn:
                 if k.get("severity") in ("P0", "P1") and k["index"] in hits.get("A", ()) and k["index"] in hits.get("A2", ()) \
                         and k["index"] not in hits.get(x, ()):
                     misses += 1
-            for arm in ("F", "B"):      # every arm with framing counts (spec 5.5)
-                if runs.get(arm):
+            for arm in ("F", "B"):      # every arm with framing counts (spec 5.5); the memories arms have none
+                if runs.get(arm) and sw != "memories":
                     framed += 1
                     failed += 1 if runs[arm].get("verdict") == "approve" and runs[arm].get("missing") else 0
         present = set(v["arm"] for cid in ids for v in arms.get(cid, {}).values())
@@ -840,10 +1047,11 @@ def cmd_report(a):
         status = "incomplete" if n < len(ids) or not known else ("pass" if all(bar.values()) else "fail")
         out[sw] = {"status": status, "n": n, "selected": len(ids), "recall": recall, "misses": misses, "coverage": coverage, "bar": bar,
                    "tokens": dict((k, s["tokens"]) for k, s in sums.items() if k in recall),
+                   "tokens_per_turn": dict((k, round(s["tokens"] / s["turns"]) if s["turns"] else None) for k, s in sums.items() if k in recall),
                    "compactions": dict((k, s["compactions"]) for k, s in sums.items() if k in recall)}
     first = out.get("framing", {}).get("status")
     for sw, v in out.items():
-        if sw != "framing" and v["status"] == "pass" and first != "pass":
+        if sw not in ("framing", "memories") and v["status"] == "pass" and first != "pass":
             v["status"], v["note"] = "hold", "framing did not pass ({}); every switch stays off".format(first or "not selected")
     lines = ["# Replay report", "", "| switch | status | n | recall A/A2/F/B | P0/P1 misses | coverage failures | tokens A/A2/F/B | compactions A/A2/F/B |",
              "|---|---|---|---|---|---|---|---|"]
@@ -851,6 +1059,9 @@ def cmd_report(a):
     for sw, v in out.items():
         lines.append("| {} | {} | {}/{} | {} | {} | {} | {} | {} |".format(
             sw, v["status"], v["n"], v["selected"], cell(v["recall"]), v["misses"], v["coverage"], cell(v["tokens"]), cell(v["compactions"])))
+    if "memories" in out:
+        lines += ["", "Memories, tokens per turn A/A2/B: " + "/".join(
+            str(out["memories"]["tokens_per_turn"].get(k)) if out["memories"]["tokens_per_turn"].get(k) is not None else "-" for k in ("A", "A2", "B"))]
     lines += ["", "Tokens: {}. Model {} effort {}.".format(prog.get("tokens", "unknown"), prog.get("model", "unknown"), prog.get("effort", "unknown"))]
     if prog.get("stopped_at"):
         lines.append("The run stopped at {case} {arm} after {tokens} tokens; the switches that did not finish stay off.".format(**prog["stopped_at"]))
@@ -873,9 +1084,13 @@ def cmd_report(a):
 def main(argv):
     ap = argparse.ArgumentParser(prog="xreview-replay")
     ap.add_argument("command", choices=("cases", "run", "match", "report", "cleanup"))
+    ap.add_argument("--switch", choices=("memories",), help="cases: select this switch's cases only (memories needs --memwatch)")
+    ap.add_argument("--memwatch", metavar="DIR", help="cases --switch memories: the memories watcher's directory (memwatch/)")
+    ap.add_argument("--codex-source", metavar="DIR", help="run: the Codex home the replay homes copy their config from (default ~/.codex, never an inherited CODEX_HOME)")
+    ap.add_argument("--snapshot-root", metavar="DIR", help="run: where a commit the repository has pruned is read from (<root>/<repo>/objects)")
     ap.add_argument("--state", default=os.path.join(L.state_home(), "xreview", "replay", date.today().isoformat()))
     ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--max-tokens", type=int, default=TOKEN_CAP)
+    ap.add_argument("--max-tokens", type=int, default=None, help="the hard stop (default {}; the memories switch {})".format(TOKEN_CAP, TOKEN_CAPS["memories"]))
     ap.add_argument("--budget", type=float, default=TURN_BUDGET)
     ap.add_argument("--retry-errors", action="store_true", help="run: run again the arms whose run file is an error")
     a = ap.parse_args(argv)

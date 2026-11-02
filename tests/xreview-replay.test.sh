@@ -92,6 +92,7 @@ def wr(path, data):
 
 # ------------------------------------------------------------------ the fixture
 XDG, CODEX, FAKE = (os.path.join(ROOT, d) for d in ("xdg", "codex", "fake"))
+PROBE = []      # commits the fake daemon probes in each turn's checkout (set once the fixture's commits exist)
 repo = os.path.join(ROOT, "repo")
 os.makedirs(repo)
 git(repo, "init", "-q")
@@ -110,6 +111,7 @@ c2 = commit(repo, "round 2")
 put(repo, "lib.py", "def f(x):\n    return x + 1  # checked\n")
 c3 = commit(repo, "round 3")
 common = LD.common_dir(repo)
+PROBE.extend([c0, c1, c2, c3])
 RANGE = "main...feat"
 
 
@@ -280,7 +282,12 @@ elif cmd == "turn-start":
         open(os.path.join(S, "inputs", turn), "w").write(open(opt("--input")).read())
         refs = subprocess.run(["git", "-C", cwd, "for-each-ref", "--format=%(refname) %(objectname)"], capture_output=True, text=True).stdout.splitlines()
         rng = subprocess.run(["git", "-C", cwd, "rev-parse", os.environ.get("FAKE_RANGE", "main...feat")], capture_output=True, text=True).returncode
-        log(thread=opt("--thread"), turn=turn, cwd=cwd, head=head, schema=os.path.basename(opt("--schema")), refs=refs, range_rc=rng)
+        tree = subprocess.run(["git", "-C", cwd, "rev-parse", "HEAD^{tree}"], capture_output=True, text=True).stdout.strip()
+        alt = os.path.exists(os.path.join(cwd, ".git", "objects", "info", "alternates"))
+        probe = dict((sha, subprocess.run(["git", "-C", cwd, "cat-file", "-e", sha + "^{commit}"], capture_output=True).returncode == 0)
+                     for sha in os.environ.get("FAKE_PROBE", "").split())
+        log(thread=opt("--thread"), turn=turn, cwd=cwd, head=head, tree=tree, alt=alt, probe=probe, schema=os.path.basename(opt("--schema")),
+            refs=refs, range_rc=rng)
         print(turn)
     locked(go)
 elif cmd == "turn-wait":
@@ -323,7 +330,8 @@ os.chmod(FAKE_BIN, 0o755)
 
 
 def env_for(**extra):
-    env = dict(os.environ, XDG_STATE_HOME=XDG, CODEX_HOME=CODEX, XREVIEW_REPLAY_RPC=FAKE_BIN, FAKE_STATE=FAKE)
+    env = dict(os.environ, XDG_STATE_HOME=XDG, CODEX_HOME=CODEX, XREVIEW_REPLAY_RPC=FAKE_BIN, FAKE_STATE=FAKE,
+               FAKE_PROBE=" ".join(PROBE))
     env.update(extra)
     return env
 
@@ -451,13 +459,19 @@ is_("RP2b a forked run counts only its own tokens, not the inherited history",
 cl = calls()
 turns = [c for c in cl if c["cmd"] == "turn-start"]
 is_("RP2b every arm started one turn", len(turns), len(arms["xr-2-r1.pre"]) + len(arms["xr-3-r2.pre"]) + len(arms["xr-3-r2.inc"]) + len(arms["xr-3-r2.ctx"]))
-tips = set(t["head"] for t in turns)
-ok("RP2b every turn ran in a scratch checkout at the tip of the round it reviews", tips <= {c1, c2} and tips == {c1, c2}, tips)
+trees = set(t["tree"] for t in turns)
+want_trees = {git(repo, "rev-parse", c1 + "^{tree}"), git(repo, "rev-parse", c2 + "^{tree}")}
+ok("RP2b every turn ran in a scratch checkout holding the tree of the round it reviews", trees == want_trees, trees)
+is_("RP2b the scratch checkout is one commit above the base, not the round's own tip",
+    set(subprocess.run(["git", "-C", repo, "rev-parse", "--verify", "--quiet", h + "^{commit}"], capture_output=True).returncode for h in set(t["head"] for t in turns)), {1})
 ok("RP2b the scratch checkouts are gone", not [d for d in os.listdir(os.path.join(S1)) if d.startswith("clones") and os.listdir(os.path.join(S1, d))])
 ok("RP2b I-1 a turn's checkout holds only the branch at the round's tip and the destination at its base",
    all(set(l.split()[1] for l in t["refs"]) <= {t["head"], c0} and t["head"] in set(l.split()[1] for l in t["refs"])
        and sorted(l.split()[0] for l in t["refs"]) == ["refs/heads/feat", "refs/heads/main"] for t in turns), [t["refs"] for t in turns[:2]])
 is_("RP2b I-1 and the packet's range resolves there", set(t["range_rc"] for t in turns), {0})
+ok("RP7m scratch_no_alternates: no checkout borrows another repository's objects", turns and not any(t["alt"] for t in turns), [t["alt"] for t in turns])
+ok("RP7m scratch_no_alternates: the base resolves in every checkout and no later commit does, not even the round's own tip",
+   all(t["probe"] == {c0: True, c1: False, c2: False, c3: False} for t in turns), [t["probe"] for t in turns[:2]])
 forks = [c for c in cl if c["cmd"] == "thread-fork"]
 is_("RP2b a historical thread is forked only through the turn before the round", set(c["args"][c["args"].index("--last-turn") + 1] for c in forks if "--last-turn" in c["args"]), {"tu1"})
 ok("RP2b the archived historical thread was unarchived before its first fork",
@@ -861,6 +875,230 @@ for sg, h in old.items():
 pc = jl(os.path.join(SC, "progress.json"))
 is_("RP17 the run reports failure", rcc, 1)
 ok("RP17 progress.json says it did not finish, and why", pc["finished"] is False and "boom" in (pc["crashed"] or ""), pc)
+
+# ------------------------------------------------------------------ RP7m the memories switch
+print("RP7m. the memories switch")
+import calendar
+import shutil
+import tempfile
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(HARNESS)), "tests", "process-replay"))
+import helpers
+
+XM = os.path.join(ROOT, "m")
+SOCK_TAIL = os.path.join("cxh", "mem-" + "0" * 12, "app-server-control", "app-server-control.sock")
+cleanup_xm = None
+if len(os.path.join(XM, SOCK_TAIL)) > 100:       # the daemon's unix socket path must fit 103 bytes
+    XM = cleanup_xm = tempfile.mkdtemp(prefix="xm.", dir="/tmp")
+OLD, DRP, LAT = "thO", "thD", "thL"
+
+
+def tgt_for(branch, tip):
+    return dict(target(tip), branch=branch, range="main...{}".format(branch))
+
+
+EM = list(R) + [
+    receipt("xr-o1", 0, "pre-merge", OLD, "to1", tgt_for("old", c1), "changes"),
+    receipt("xr-o2", 5, "pre-merge", OLD, "to2", tgt_for("old", c2), "changes"),
+    receipt("xr-d1", 10, "pre-merge", DRP, "td1", tgt_for("dropped", c1), "changes"),
+    receipt("xr-d2", 11, "pre-merge", DRP, "td2", tgt_for("dropped", c2), "changes"),
+    receipt("xr-l1", 20, "pre-merge", LAT, "tl1", tgt_for("later", c1), "changes"),
+    receipt("xr-l2", 21, "pre-merge", LAT, "tl2", tgt_for("later", c2), "changes")]
+ldm = os.path.join(XM, "xreview", "ledgers", LD.ledger_key(common))
+wr(os.path.join(ldm, "reviews.jsonl"), "".join(json.dumps(e) + "\n" for e in EM))
+wr(os.path.join(ldm, "repo"), common + "\n")
+for th, (t1, t2) in ((OLD, ("to1", "to2")), (DRP, ("td1", "td2")), (LAT, ("tl1", "tl2"))):
+    rollout(CODEX, th, [(t1, None, F1, False), (t2, 175000, F2, False)])
+
+HA, HB = "a1" * 32, "b2" * 32
+T0 = calendar.timegm((2026, 10, 20, 10, 0, 30))
+iso = lambda sec: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(sec))
+NAME_A, NAME_B = iso(T0) + "-" + HA[:12], iso(T0 + 600) + "-" + HB[:12]
+
+
+def mk_watch(path, first=0):
+    """Polls every minute at :30 from minute `first` to minute 25; the memories change at minute 10."""
+    lines = []
+    for m in range(first, 26):
+        rec = {"at": iso(T0 + 60 * m), "hash": HA if m < 10 else HB}
+        if m == first or m == 10:
+            rec["snapshot"] = NAME_A if m < 10 else NAME_B
+        lines.append(rec)
+    for name, text in ((NAME_A, "A memories\n"), (NAME_B, "B memories\n")):
+        wr(os.path.join(path, "snapshots", name, "memory_summary.md"), text)
+    wr(os.path.join(path, "polls.jsonl"), "".join(json.dumps(l) + "\n" for l in lines))
+    return path
+
+
+WD = mk_watch(os.path.join(ROOT, "memwatch"))
+wr(os.path.join(CODEX, "config.toml"), 'model = "m-1"\n')
+saved_env = dict((k, os.environ.get(k)) for k in ("XDG_STATE_HOME", "CODEX_HOME"))
+os.environ.update(XDG_STATE_HOME=XM, CODEX_HOME=CODEX)
+HM = load(HARNESS, "replay_mem")
+SM = os.path.join(ROOT, "statem")
+ns = lambda **kw: argparse.Namespace(**dict(dict(state=SM, dry_run=False, switch="memories", memwatch=WD), **kw))
+ok("RP7m scratch_no_alternates: scratch_clone, which borrowed objects, is gone", not hasattr(HM, "scratch_clone"))
+try:
+    HM.cmd_cases(ns(memwatch=None))
+    ok("RP7m cases --switch memories needs --memwatch", False)
+except HM.Failed:
+    ok("RP7m cases --switch memories needs --memwatch", True)
+HM.cmd_cases(ns())
+asked = sorted(f for f in os.listdir(os.path.join(SM, "judge-known")) if not f.endswith(".answer.json"))
+is_("RP7m memories_cases: judge inputs for the kept round 1s only (not k=2, not a branch from before the watcher, not the dropped one)",
+    asked, ["xr-2-r1.json", "xr-l1.json"])
+ok("RP7m memories_cases: no cases.json while the judge has not answered", not os.path.exists(os.path.join(SM, "cases.json")) or
+   jl(os.path.join(SM, "cases.json"))["cases"] == [])
+for n in ("xr-2-r1", "xr-l1"):
+    wr(os.path.join(SM, "judge-known", n + ".answer.json"), {"verdicts": [{"index": 0, "answer": "yes"}]})
+HM.cmd_cases(ns())
+cjm = jl(os.path.join(SM, "cases.json"))
+mc = dict((c["id"], c) for c in cjm["cases"])
+is_("RP7m memories_cases: the cases, oldest first", cjm["selected"], {"memories": ["xr-2-r1.mem", "xr-l1.mem"]})
+is_("RP7m memories_cases: the file names the switch", cjm["switch"], "memories")
+is_("RP7m memories_cases: a round whose surrounding polls show a change is dropped and reported, with the reason",
+    cjm["dropped"], [{"round": "xr-d1", "why": "memories changed around the dispatch"}])
+is_("RP7m memories_cases: each case names the snapshot its dispatch had",
+    [(mc[c]["memories"]["dir"], mc[c]["memories"]["hash"]) for c in ("xr-2-r1.mem", "xr-l1.mem")],
+    [(os.path.join(WD, "snapshots", NAME_A), HA), (os.path.join(WD, "snapshots", NAME_B), HB)])
+is_("RP7m memories_cases: the known-real findings are carried", [k["summary"] for k in mc["xr-2-r1.mem"]["known"]], ["f adds 2, not 1"])
+HM.MEMORIES_QUOTA = 1
+HM.cmd_cases(ns())
+is_("RP7m memories_cases: at most the quota are taken, oldest first", jl(os.path.join(SM, "cases.json"))["selected"], {"memories": ["xr-2-r1.mem"]})
+HM.MEMORIES_QUOTA = 10
+HM.cmd_cases(ns())
+SMD = os.path.join(ROOT, "statem-dry")
+HM.cmd_cases(ns(state=SMD, dry_run=True))
+ok("RP7m memories_cases: --dry-run writes judge inputs and no cases.json",
+   os.path.isfile(os.path.join(SMD, "judge-known", "xr-2-r1.json")) and not os.path.exists(os.path.join(SMD, "cases.json")))
+WD0 = mk_watch(os.path.join(ROOT, "memwatch0"), first=-2)       # a watcher that started before the old branch's first review
+SM0 = os.path.join(ROOT, "statem0")
+HM.cmd_cases(ns(state=SM0, memwatch=WD0))
+ok("RP7m memories_cases: a branch whose first receipt follows the watcher's first poll is taken", os.path.isfile(os.path.join(SM0, "judge-known", "xr-o1.json")),
+   os.listdir(os.path.join(SM0, "judge-known")))
+SME = os.path.join(ROOT, "statem-empty")
+HM.cmd_cases(ns(state=SME, memwatch=os.path.join(ROOT, "no-watch")))
+ok("RP7m memories_cases: a watcher with no poll yields no case", not os.path.exists(os.path.join(SME, "cases.json")))
+is_("RP7m the memories switch has its own token stop, 20M", HM.token_cap(argparse.Namespace(max_tokens=None), cjm), 20000000)
+is_("RP7m and the others keep theirs", HM.token_cap(argparse.Namespace(max_tokens=None), {"cases": []}), 60000000)
+is_("RP7m an explicit --max-tokens wins", HM.token_cap(argparse.Namespace(max_tokens=5), cjm), 5)
+
+# memories_arms: A and A2 on the snapshot's home, B on the home without memories
+MALL = {"verdict": "changes", "findings": [{"severity": "P1", "file": "lib.py", "line": 2, "summary": "adds the wrong offset",
+                                            "failure_scenario": "f(1) is 3"}]}
+RPCD, CXD = os.path.join(ROOT, "mem-rpc"), os.path.join(ROOT, "mem-codex")
+STUB_RPC = helpers.stub_rpc(RPCD, CODEX, {"default": {"answer": MALL, "tokens": 1000}})
+STUB_CODEX = helpers.stub_codex(CXD)
+menv = dict(os.environ, XDG_STATE_HOME=XM, CODEX_HOME=CODEX, XREVIEW_REPLAY_RPC=STUB_RPC, CODEX_REAL_BIN=STUB_CODEX)
+for k in ("XREVIEW_RPC_SOCK", "XREVIEW_RPC_STDIO"):
+    menv.pop(k, None)
+p = subprocess.run([HARNESS, "run", "--dry-run", "--state", SM], capture_output=True, text=True, env=menv)
+is_("RP7m memories_arms: run --dry-run exits 0", p.returncode, 0)
+ok("RP7m memories_arms: a dry run starts no daemon, makes no home and calls no rpc",
+   not os.path.exists(os.path.join(XM, "cxh")) and not helpers.read_log(os.path.join(RPCD, "rpc.log")) and not helpers.read_log(os.path.join(CXD, "codex.log")), p.stderr[-300:])
+marms = jl(os.path.join(SM, "arms.json"))
+is_("RP7m memories_arms: every memories case has A, A2 and B", sorted(sorted(v["arm"] for v in m.values()) for m in marms.values()), [["A", "A2", "B"]] * 2)
+mpk = lambda cid, arm: open(os.path.join(SM, "packets", cid, arm, "packet.txt"), "rb").read()
+for cid, tip, rng in (("xr-2-r1.mem", c1, RANGE), ("xr-l1.mem", c1, "main...later")):
+    body = open(os.path.join(SM, "packets", cid, "body.md"), "rb").read()
+    today = XP.today_packet(open(os.path.join(CONF, "reviewer.md"), "rb").read(), body, [(rng, LD.patch(repo, c0, tip))])
+    ok("RP7m memories_arms: {} gets the same packet in all three arms, today's".format(cid), mpk(cid, "A") == mpk(cid, "A2") == mpk(cid, "B") == today)
+p = subprocess.run([HARNESS, "run", "--state", SM, "--codex-source", CODEX], capture_output=True, text=True, env=menv)
+is_("RP7m memories_arms: run exits 0", p.returncode, 0)
+if p.returncode:
+    print(p.stdout[-800:], p.stderr[-800:])
+want_home = {"A": "mem-" + HA[:12], "A2": "mem-" + HA[:12], "B": "nomem"}
+want_home_l = {"A": "mem-" + HB[:12], "A2": "mem-" + HB[:12], "B": "nomem"}
+mruns = {}
+for cid, m in jl(os.path.join(SM, "arms.json")).items():
+    for label, v in m.items():
+        mruns[(cid, v["arm"])] = jl(os.path.join(SM, "runs", cid, label + ".json"))
+is_("RP7m memories_arms: each run file names its home: the snapshot's for A and A2, none for B",
+    dict(((c, a), r["home"]) for (c, a), r in mruns.items()),
+    dict([(("xr-2-r1.mem", a), h) for a, h in want_home.items()] + [(("xr-l1.mem", a), h) for a, h in want_home_l.items()]))
+ok("RP7m memories_arms: every run read its tokens from its own home's rollout", all(r["tokens"] == 1000 and not r["error"] for r in mruns.values()),
+   [(k, r["tokens"], r["error"]) for k, r in mruns.items()])
+rl = helpers.read_log(os.path.join(RPCD, "rpc.log"))
+homes_used = [c["codex_home"] for c in rl if c["cmd"] != "health"]
+ok("RP7m memories_arms: every rpc call ran with a replay home, never the live one", homes_used and all(h and h.startswith(os.path.join(XM, "cxh") + os.sep) for h in homes_used), set(homes_used))
+by_home = {}
+for c in rl:
+    if c["cmd"] == "turn-start":
+        by_home[os.path.basename(c["codex_home"])] = by_home.get(os.path.basename(c["codex_home"]), 0) + 1
+is_("RP7m memories_arms: two turns on each home", by_home, {"nomem": 2, "mem-" + HA[:12]: 2, "mem-" + HB[:12]: 2})
+runs_of_home = []
+for h in homes_used:
+    if not runs_of_home or runs_of_home[-1] != h:
+        runs_of_home.append(h)
+is_("RP7m memories_arms: the homes are taken in turn, never interleaved", len(runs_of_home), len(set(runs_of_home)))
+cx = [(c["argv"][2], os.path.basename(c["codex_home"])) for c in helpers.read_log(os.path.join(CXD, "codex.log")) if c["argv"][:2] == ["app-server", "daemon"]]
+is_("RP7m memories_arms: one daemon at a time: each home starts and stops before the next starts", [v for v, _h in cx], ["start", "stop"] * 3)
+is_("RP7m memories_arms: and stops the home it started", [cx[i][1] == cx[i + 1][1] for i in (0, 2, 4)], [True] * 3)
+hm_a = os.path.join(XM, "cxh", "mem-" + HA[:12])
+ok("RP7m memories_arms: the snapshot home holds the snapshot and reads it", open(os.path.join(hm_a, "memories", "memory_summary.md")).read() == "A memories\n"
+   and "use_memories = true" in open(os.path.join(hm_a, "config.toml")).read())
+ok("RP7m memories_arms: the home for B has no memories and reads none", not os.path.exists(os.path.join(XM, "cxh", "nomem", "memories"))
+   and "use_memories = false" in open(os.path.join(XM, "cxh", "nomem", "config.toml")).read())
+is_("RP7m memories_arms: the state lists the three homes", sorted(jl(os.path.join(SM, "codex-homes.json"))), sorted(["nomem", "mem-" + HA[:12], "mem-" + HB[:12]]))
+live_sessions = [f for d, _s, fs in os.walk(os.path.join(CODEX, "sessions")) for f in fs if re.search(r"-th\d+\.jsonl\Z", f)]
+is_("RP7m memories_arms: no replay rollout lands in the live Codex home", live_sessions, [])
+stm = jl(os.path.join(RPCD, "rpc-state.json"))
+mthreads = jl(os.path.join(SM, "threads.json"))["threads"]
+ok("RP7m memories_arms: every thread is recorded with its home and archived", len(mthreads) == 6 and all(t["done"] and t.get("home") for t in mthreads)
+   and sorted(t["thread"] for t in mthreads) == sorted(stm["archived"]), (mthreads, stm["archived"]))
+n_cx, n_turns = len(helpers.read_log(os.path.join(CXD, "codex.log"))), len([c for c in rl if c["cmd"] == "turn-start"])
+p = subprocess.run([HARNESS, "run", "--state", SM], capture_output=True, text=True, env=menv)
+ok("RP7m memories_arms: a rerun redoes nothing and starts no daemon", p.returncode == 0 and len(helpers.read_log(os.path.join(CXD, "codex.log"))) == n_cx
+   and len([c for c in helpers.read_log(os.path.join(RPCD, "rpc.log")) if c["cmd"] == "turn-start"]) == n_turns, p.stderr[-300:])
+ok("RP7m memories_arms: --codex-source names the home the replay homes copy their config from", 'model = "m-1"' in open(os.path.join(hm_a, "config.toml")).read())
+prog = jl(os.path.join(SM, "progress.json"))
+ok("RP7m memories_arms: progress records the run and its tokens", prog["finished"] is True and prog["tokens"] == 6000, prog)
+
+# memories_report: the bar and tokens per turn
+print("RP7m. memories_report")
+SR = os.path.join(ROOT, "state-mem-report")
+mcases = {"c1.mem": {"known": ["P1", "P2"]}, "c2.mem": {"known": ["P0", "P2"]}}
+mamap = {"c1.mem": {"A": "a1a1a1a1", "A2": "a2a2a2a2", "B": "a3a3a3a3"}, "c2.mem": {"A": "b1b1b1b1", "A2": "b2b2b2b2", "B": "b3b3b3b3"}}
+mrm = dict(((c, a), dict(run_of(tokens=t), slices=2)) for c in mcases for a, t in (("A", 1000), ("A2", 600), ("B", 400)))
+mgood = {("c1.mem", "A"): [0, 1], ("c2.mem", "A"): [0, 1], ("c1.mem", "A2"): [0], ("c2.mem", "A2"): [0, 1],
+         ("c1.mem", "B"): [0], ("c2.mem", "B"): [0, 1]}
+mk(SR, mcases, {"memories": list(mcases)}, mamap, mrm, mgood)
+harness(SR, "report")
+rep = jl(os.path.join(SR, "report.json"))["switches"]["memories"]
+is_("RP7m memories_report: B recalls at least the lower of A and A2, no P0/P1 both found is missed", (rep["status"], rep["misses"]), ("pass", 0))
+is_("RP7m memories_report: recall per arm", (rep["recall"]["A"], rep["recall"]["A2"], rep["recall"]["B"]), (1.0, 0.75, 0.75))
+is_("RP7m memories_report: tokens per turn for each arm", rep["tokens_per_turn"], {"A": 500, "A2": 300, "B": 200})
+ok("RP7m memories_report: report.md shows them", "tokens per turn" in open(os.path.join(SR, "report.md")).read().lower())
+ok("RP7m memories_report: no framing coverage is asked of it", rep["coverage"] == 0.0 and rep["bar"]["coverage"] is True, rep)
+mbad = dict(mgood)
+mbad[("c1.mem", "B")] = [1]
+mbad[("c2.mem", "B")] = [1]
+mk(SR, mcases, {"memories": list(mcases)}, mamap, mrm, mbad)
+harness(SR, "report")
+rep = jl(os.path.join(SR, "report.json"))["switches"]["memories"]
+is_("RP7m memories_report: B below the lower of A and A2 and missing P0/P1s both found fails", (rep["status"], rep["misses"], rep["bar"]["recall"]), ("fail", 2, False))
+mk(SR, mcases, {"memories": list(mcases)}, mamap, mrm, mgood)
+harness(SR, "report")
+is_("RP7m memories_report: it does not wait on framing passing", jl(os.path.join(SR, "report.json"))["switches"]["memories"]["status"], "pass")
+# the replay homes' source is ~/.codex, never an inherited CODEX_HOME (which may itself be a replay home)
+FH = os.path.join(ROOT, "fakehome")
+wr(os.path.join(FH, ".codex", "config.toml"), 'model = "from-home"\n')
+SM2 = os.path.join(ROOT, "statem2")
+for n in ("xr-2-r1", "xr-l1"):
+    wr(os.path.join(SM2, "judge-known", n + ".answer.json"), {"verdicts": [{"index": 0, "answer": "yes"}]})
+HM.cmd_cases(ns(state=SM2))
+menv2 = dict(menv, HOME=FH, CODEX_HOME=os.path.join(XM, "cxh", "nomem"))
+p = subprocess.run([HARNESS, "run", "--state", SM2], capture_output=True, text=True, env=menv2)
+is_("RP7m memories_arms: a run with CODEX_HOME aimed at a replay home exits 0", p.returncode, 0)
+ok("RP7m memories_arms: without --codex-source the homes copy ~/.codex, not the inherited CODEX_HOME",
+   all('model = "from-home"' in open(os.path.join(XM, "cxh", h, "config.toml")).read() for h in ("nomem", "mem-" + HA[:12], "mem-" + HB[:12])),
+   [open(os.path.join(XM, "cxh", h, "config.toml")).read()[:40] for h in ("nomem", "mem-" + HA[:12])])
+for k, v in saved_env.items():
+    if v is None:
+        os.environ.pop(k, None)
+    else:
+        os.environ[k] = v
+if cleanup_xm:
+    shutil.rmtree(cleanup_xm, ignore_errors=True)
 
 # ------------------------------------------------------------------ RP7 rollouts the daemon compressed
 print("RP7. a compressed, archived rollout reads like a plain one")

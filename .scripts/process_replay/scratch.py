@@ -105,7 +105,9 @@ def _pack(view, objects, base, cache):
         path = os.path.join(cache, key + ".pack")
         if os.path.isfile(path):
             return path, None
-        tmp, tmpdir = path + ".tmp{}".format(os.getpid()), None
+        fd, tmp = tempfile.mkstemp(dir=cache, prefix=key + ".", suffix=".tmp")      # unique: builders may run at once
+        os.close(fd)
+        tmpdir = None
     else:
         tmpdir = tempfile.mkdtemp(prefix="scratch-pack.")
         path = tmp = os.path.join(tmpdir, "base.pack")
@@ -119,7 +121,10 @@ def _pack(view, objects, base, cache):
             os.unlink(tmp)
         raise Failed("cannot pack the base: " + p.stderr.decode("utf-8", "replace").strip())
     if tmp != path:
-        os.replace(tmp, path)
+        if os.path.isfile(path):      # another builder won the race: its pack is the same
+            os.unlink(tmp)
+        else:
+            os.replace(tmp, path)
     return path, tmpdir
 
 

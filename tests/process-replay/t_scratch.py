@@ -183,6 +183,32 @@ packs = [n for n in os.listdir(cache) if n.endswith(".pack")]
 is_("scratch_pack_cache: one pack serves both builds", (len(packs), c1, c2), (1, TIP, TIP))
 ok("scratch_pack_cache: a cached build still hides the fix", not git_ok(os.path.join(ROOT, "oc2"), "cat-file", "-e", C2))
 
+# builders in one process share a cache: each writes its pack under a name of its own
+import threading
+race_cache = os.path.join(ROOT, "race-cache")
+barrier = threading.Barrier(4)
+race = {}
+
+
+def racer(i):
+    try:
+        barrier.wait(timeout=30)
+        race[i] = scratch.build(OBJECTS, B, FILES, os.path.join(ROOT, "race{}".format(i)), "main", "feat", expect_tree=TREE1, cache=race_cache)
+    except Exception as e:      # noqa: BLE001
+        race[i] = repr(e)
+
+
+workers = [threading.Thread(target=racer, args=(i,)) for i in range(4)]
+for w in workers:
+    w.start()
+for w in workers:
+    w.join(60)
+is_("scratch_pack_cache: four threads building with one cache at once all succeed", [v for v in race.values() if len(v) != 40], [])
+is_("scratch_pack_cache: and all return the same tip", set(race.values()), {TIP})
+is_("scratch_pack_cache: and leave one pack and no temporary file", sorted(os.listdir(race_cache)),
+    sorted(n for n in os.listdir(race_cache) if n.endswith(".pack")))
+is_("scratch_pack_cache: exactly one pack", len([n for n in os.listdir(race_cache) if n.endswith(".pack")]), 1)
+
 # ---- commit_patch_one_commit
 patch = git(SRC, "diff", C1, C2) + "\n"
 before = git(OUT, "rev-parse", "HEAD")
