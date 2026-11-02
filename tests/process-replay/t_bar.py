@@ -53,6 +53,7 @@ BASE = case("c1", task=[("t1", "P1"), ("t2", "P2")], pre=[("q1", "P1"), ("q2", "
 ALL_R = sts(t1="r", t2="r", q1="r", q2="r")
 # five pre-merge defects make one miss assessable (4/5 = 80%); four per-task defects allow one censored
 BIG = case("c2", task=[("t1", "P1"), ("t2", "P2"), ("t3", "P2"), ("t4", "P2")], pre=[("q1", "P1")] + [("q%d" % i, "P2") for i in range(2, 6)])
+NOPRE = case("cn", task=[("t1", "P1"), ("t2", "P2")])
 BIG_R = dict((d, "recovered") for d in BIG["defects"])
 
 # ---- the table: (name, cases, runs, coverage, status)
@@ -83,6 +84,14 @@ TABLE = [
      [run("c1", "a", ALL_R), run("c1", "b", sts(t1="p", t2="p", q1="p", q2="p"), end="void", voids=1, replaced_by="b2", leak=["x"]),
       run("c1", "b2", ALL_R, voids=1, replaces="b")], NONE, "pass"),
     ("no cases: inconclusive", [], [], NONE, "inconclusive"),
+    ("per-run, not pooled: one run misses a per-task P1, the other a pre-merge P1: fail", [BIG],
+     [run("c2", "a", dict(BIG_R, t1="unrecovered")), run("c2", "b", dict(BIG_R, q1="unrecovered"))], NONE, "fail"),
+    ("per-run, not pooled: one run misses both, the other recovers all: inconclusive", [BIG],
+     [run("c2", "a", dict(BIG_R, t1="unrecovered", q1="unrecovered")), run("c2", "b", BIG_R)], NONE, "inconclusive"),
+    ("a case with no pre-merge defects: a per-task P1 miss is no fail", [NOPRE],
+     two("cn", sts(t1="u", t2="r")), NONE, "inconclusive"),
+    ("a case with no pre-merge defects cannot support a pass", [NOPRE], two("cn", sts(t1="r", t2="r")), NONE, "inconclusive"),
+    ("a case with no pre-merge defects blocks a pass of the others", [BASE, NOPRE], two("c1", ALL_R) + two("cn", sts(t1="r", t2="r")), NONE, "inconclusive"),
     ("p3_not_counted: a per-task P3 left unrecovered is listed, not counted", [case("c1", task=[("t1", "P1"), ("t2", "P2")], pre=[("q1", "P1")], uncounted=[("t3", "P3")])],
      two("c1", sts(t1="r", t2="r", q1="r")), NONE, "pass"),
     ("a second case missing a run blocks the pass", [BASE, case("c2", task=[("u1", "P1")], pre=[("w1", "P1")])],
@@ -128,6 +137,26 @@ for end in ("void", "error", None):
 c, states = sized(5, 5, 4, 0)
 got = bar.bar([c], [run("ce", "ok", states)] + [run("ce", "old", states, end="void", voids=1, replaced_by="new"), run("ce", "new", states, voids=1, replaces="old")], NONE)
 is_("assessable_edges: a replaced void run is left out of the assessable map", sorted(got["assessable"]), ["new", "ok"])
+
+got = bar.bar([NOPRE], two("cn", sts(t1="u", t2="r")), NONE)
+is_("no pre-merge class: no run is assessable", got["assessable"], {"cna": False, "cnb": False})
+ok("no pre-merge class: the reason says why", any("no pre-merge defects to calibrate against" in r for r in got["reasons"]), got["reasons"])
+is_("no pre-merge class: the case is listed", got["no_pre_cases"], ["cn"])
+is_("no pre-merge class: the case with pre-merge defects is not", bar.bar([BASE], two("c1", ALL_R), NONE)["no_pre_cases"], [])
+got = bar.bar([BIG], [run("c2", "a", dict(BIG_R, t1="unrecovered")), run("c2", "b", dict(BIG_R, q1="unrecovered"))], NONE)
+is_("per-run: both runs are assessable (recall 4/5)", got["assessable"], {"a": True, "b": True})
+
+# a defect of a run missing from the inventory is a Failed naming the case and the defect, never a KeyError
+try:
+    bar.bar([dict(BASE, defects=["t1", "t2", "q1", "q2", "ghost"])], [], NONE)
+    ok("bar: a case defect missing from the inventory raises Failed", False, "returned")
+except C.Failed as e:
+    ok("bar: a case defect missing from the inventory raises Failed naming the case and the defect", "c1" in str(e) and "ghost" in str(e), str(e))
+try:
+    bar.bar([BASE], two("c1", dict(ALL_R, ghost="recovered")), NONE)
+    ok("bar: a run defect missing from the inventory raises Failed", False, "returned")
+except C.Failed as e:
+    ok("bar: a run defect missing from the inventory raises Failed naming the case and the defect", "c1" in str(e) and "ghost" in str(e), str(e))
 
 # ---- unrecovered_task
 got = bar.bar([BASE], [run("c1", "a", sts(t1="u", t2="u", q1="r", q2="r")), run("c1", "b", sts(t1="r", t2="c", q1="r", q2="r"))], NONE)
@@ -193,12 +222,15 @@ for what, needle in (
         ("the P3 per-task defect, listed", "a minor thing"),
         ("the original round count beside the simulated one", "original 2"),
         ("extra rounds, simulated minus original (4 - 2)", "+2"),
-        ("a negative or zero extra", "+1"),
+        ("an extra of +1 (beta: 3 Codex rounds against 2)", "extra +1"),
+        ("an extra of zero (delta: 2 Codex rounds against 2)", "extra +0"),
         ("Codex tokens of the run", "4000"),
         ("model and effort", "gpt-x"),
         ("the effort", "high"),
         ("the end of a run", "stalled"),
         ("a void and its re-run", "gamma"),
+        ("the extra rounds and Codex tokens over the assessable runs", "over the 2 assessable run(s): +2; Codex tokens: 6000"),
+        ("and over the runs that are not assessable, apart", "over the 1 run(s) that are not assessable"),
         ("the October dispatches of task 3", "dispatches 2"),
         ("the October tokens of task 3", "6500"),
         ("the October wall minutes of task 3", "9.0"),
@@ -222,7 +254,39 @@ is_("report.json: the unassessable pre-merge P2 count", rep["drops"]["unassessab
 is_("report.json: the drops by status and reason", rep["drops"]["injected"]["dropped-revert"], {"does not revert cleanly": 2})
 is_("report.json: the not-a-case branches", sorted(e["branch"] for e in rep["examined_not_cases"]), ["bx9", "by8"])
 is_("report.json: no plan section without plan cases", rep.get("planreview"), None)
+ok("report.md: the unassessable runs' extra rounds and tokens are kept apart", "(error, final void, unfinished, too much censored or missed, or no pre-merge class): +1; Codex tokens: 3000" in md, md)
+ok("report.md: cases with no pre-merge defects: none", "Cases with no pre-merge defects, so no run of them is assessable (no pre-merge defects to calibrate against): none" in md, md)
+delta = [r for r in rep["cases"][0]["runs"] if r["label"] == "delta"][0]
+is_("report.json: an extra of zero", delta["extra_rounds"], 0)
 ok("report.md: no plan section without plan cases", "Plan-review checkpoint" not in md)
+
+# ---- a case branch missing from branches.json, a run with fewer rounds than the original, a case with no pre-merge class
+S2 = os.path.join(ROOT, "state2")
+NP = case("cn", task=[("t1", "P1"), ("t2", "P2")], rounds=3)
+C.jsave(os.path.join(S2, "cases.json"), {"cases": [dict((k, v) for k, v in NP.items() if k != "info")], "examined": [], "coverage": {"unassessable_task": []}})
+C.jsave(os.path.join(S2, "branches.json"), {"branches": []})
+C.jsave(os.path.join(S2, "inventory", "bcn.json"), {"branch": "bcn", "dropped": [], "defects": list(NP["info"].values())})
+C.jsave(os.path.join(S2, "reviews.json"), {"groups": []})
+for r in two("cn", sts(t1="r", t2="r"), codex=1):
+    C.jsave(os.path.join(S2, "runs", "cn", r["label"], "state.json"), r)
+bar.cmd_report(Namespace(state=S2, dry_run=False))
+md2 = open(os.path.join(S2, "report.md")).read()
+rep2 = C.jload(os.path.join(S2, "report.json"))
+ok("report.md: a branch missing from branches.json is unknown, and named", "case cn: unknown, branch bcn is not in branches.json" in md2, md2)
+ok("report.md: and not counted as zero in the totals", "all cases: dispatches 0, tokens 0, wall minutes 0.0 (1 case(s) unknown, not included)" in md2, md2)
+is_("report.json: its October cost is null with the reason", (rep2["cases"][0]["october"], rep2["cases"][0]["october_unknown"]), (None, "branch bcn is not in branches.json"))
+ok("report.md: a negative extra is shown with its sign", "extra -2" in md2, md2)
+ok("report.md: a case with no pre-merge defects is listed with the reason", "(no pre-merge defects to calibrate against): cn" in md2, md2)
+is_("report.json: and its runs are not assessable", rep2["bar"]["assessable"], {"cna": False, "cnb": False})
+is_("report.json: negative extra rounds", [r["extra_rounds"] for r in rep2["cases"][0]["runs"]], [-2, -2])
+S3 = os.path.join(ROOT, "state3")
+C.jsave(os.path.join(S3, "cases.json"), {"cases": [dict((k, v) for k, v in BASE.items() if k != "info")], "examined": [], "coverage": {}})
+C.jsave(os.path.join(S3, "inventory", "bc1.json"), {"branch": "bc1", "dropped": [], "defects": [d for d in BASE["info"].values() if d["id"] != "q2"]})
+try:
+    bar.cmd_report(Namespace(state=S3, dry_run=False))
+    ok("cmd_report: an inventory missing a case's defect is an error", False, "returned")
+except C.Failed as e:
+    ok("cmd_report: an inventory missing a case's defect raises Failed naming the case and the defect", "c1" in str(e) and "q2" in str(e), str(e))
 
 # ---- the plan-checkpoint section, when plan-cases.json has a round
 C.jsave(os.path.join(STATE, "plan-cases.json"), {"rounds": [

@@ -30,6 +30,7 @@ CENSORED = (1, 4)             # assessable: at most 1/4 of the per-task class ce
 ENDED = ("approve", "rounds", "stalled")
 SEVERE = ("P0", "P1")
 OK = ("present", "recreated")                      # an injected defect that counts (inject.OK)
+NO_PRE = "no pre-merge defects to calibrate against"
 STATES = ("recovered", "unrecovered", "censored", "present")
 
 
@@ -63,6 +64,8 @@ def _why_not(run, tally):
         return "{} defect(s) were never settled".format(left)
     pre, task = tally["pre"], tally["task"]
     n_pre, n_task = sum(pre.values()), sum(task.values())
+    if not n_pre:
+        return NO_PRE
     if pre["recovered"] * RECALL[1] < n_pre * RECALL[0]:
         return "pre-merge recall {}/{} is under 80%".format(pre["recovered"], n_pre)
     if task["censored"] * CENSORED[1] > n_task * CENSORED[0]:
@@ -87,8 +90,10 @@ def live_runs(runs, cid):
 
 def bar(cases, runs, coverage):
     fails, blocks = [], []
-    assessable, unrecovered, uncounted = {}, [], []
+    assessable, unrecovered, uncounted, no_pre = {}, [], [], []
     for case in cases:
+        if not [d for d in case["defects"] if _info(case, d).get("class") != "task"]:
+            no_pre.append(case["id"])
         mine = live_runs(runs, case["id"])
         if len(mine) < RUNS:
             blocks.append("case {}: {} of {} runs".format(case["id"], len(mine), RUNS))
@@ -125,7 +130,7 @@ def bar(cases, runs, coverage):
         status, reasons = "inconclusive", blocks
     else:
         status, reasons = "pass", ["every run of every case is assessable and every per-task defect was recovered in every run"]
-    return {"status": status, "assessable": assessable, "reasons": reasons, "unrecovered_task": unrecovered, "uncounted_task": uncounted}
+    return {"status": status, "assessable": assessable, "reasons": reasons, "unrecovered_task": unrecovered, "uncounted_task": uncounted, "no_pre_cases": no_pre}
 
 
 # ------------------------------------------------------------------ the report's numbers
@@ -207,17 +212,16 @@ def render(status, doc, cases, runs, rows, cost, dropped, branches, plan_lines):
     out += ["  - " + r for r in status["reasons"]]
     out += ["", "coverage gate: per-task defects unassessable after the second attempt: {}".format(
         ", ".join((doc.get("coverage") or {}).get("unassessable_task") or []) or "none"), "", "Cases"]
-    total_extra = total_tokens = 0
+    total = {True: collections.Counter(), False: collections.Counter()}
     for case in cases:
         br = branches.get(case["branch"]) or {}
         out.append("case {}  branch {} ({}); {} per-task and {} pre-merge counted defects; original pre-merge rounds {}".format(
             case["id"], br.get("branch") or case["branch"], case.get("repo"),
-            sum(1 for d in case["defects"] if case["info"][d].get("class") == "task"),
-            sum(1 for d in case["defects"] if case["info"][d].get("class") != "task"), case.get("original_rounds")))
+            sum(1 for d in case["defects"] if _info(case, d).get("class") == "task"),
+            sum(1 for d in case["defects"] if _info(case, d).get("class") != "task"), case.get("original_rounds")))
         for r in rows[case["id"]]:
             ok_ = status["assessable"].get(r["label"])
-            total_extra += r["extra_rounds"]
-            total_tokens += r["codex_tokens"]
+            total[bool(ok_)].update({"runs": 1, "extra": r["extra_rounds"], "tokens": r["codex_tokens"]})
             out.append("  run {}: ended {}; assessable {}; Codex rounds {} (original {}, extra {:+d}); Codex tokens {} (run total {}); model/effort {}; voids {}".format(
                 r["label"], r["end"], "yes" if ok_ else "no", r["codex_rounds"], r["original_rounds"], r["extra_rounds"], r["codex_tokens"], r["tokens"],
                 ", ".join(r["models"]) or "none", r["voids"]))
@@ -228,7 +232,11 @@ def render(status, doc, cases, runs, rows, cost, dropped, branches, plan_lines):
         live = set(x["label"] for x in live_runs(runs, case["id"]))
         for r in sorted((x for x in runs if x["case"] == case["id"] and x["label"] not in live), key=lambda x: x["label"]):
             out.append("  void run {}: replaced by {}; leak {}".format(r["label"], r.get("replaced_by"), ", ".join(r.get("leak") or []) or "none"))
-    out += ["", "Extra Codex rounds the simulation needed (simulated minus original), all runs: {:+d}; Codex tokens, all runs: {}".format(total_extra, total_tokens),
+    out += ["", "Extra Codex rounds the simulation needed (simulated minus original), over the {} assessable run(s): {:+d}; Codex tokens: {}".format(
+        total[True]["runs"], total[True]["extra"], total[True]["tokens"]),
+            "  over the {} run(s) that are not assessable (error, final void, unfinished, too much censored or missed, or no pre-merge class): {:+d}; Codex tokens: {}".format(
+                total[False]["runs"], total[False]["extra"], total[False]["tokens"]),
+            "", "Cases with no pre-merge defects, so no run of them is assessable ({}): {}".format(NO_PRE, ", ".join(status["no_pre_cases"]) or "none"),
             "", "Per-task defects left unrecovered in any run: {}".format(len(status["unrecovered_task"]))]
     for u in status["unrecovered_task"]:
         out.append("  case {} run {}: {} {}: {}".format(u["case"], u["run"], u["severity"], u["defect"], u["summary"]))
@@ -242,12 +250,17 @@ def render(status, doc, cases, runs, rows, cost, dropped, branches, plan_lines):
         all_ = collections.Counter()
         for case in cases:
             o = cost[case["id"]]
+            if o is None:
+                out.append("case {}: unknown, branch {} is not in branches.json".format(case["id"], case["branch"]))
+                all_["unknown"] += 1
+                continue
             out.append("case {}: dispatches {}, tokens {}, wall minutes {}".format(case["id"], o["dispatches"], o["tokens"], _mins(o["minutes"])))
             for t in o["tasks"]:
                 out.append("  task {}{}: dispatches {}, tokens {}, wall minutes {}".format(t["task"], " ({})".format(t["prefix"]) if t.get("prefix") else "",
                                                                                            t["dispatches"], t["tokens"], _mins(t["minutes"])))
             all_.update({"d": o["dispatches"], "t": o["tokens"], "m": o["minutes"]})
-        out.append("all cases: dispatches {}, tokens {}, wall minutes {}".format(all_["d"], all_["t"], _mins(all_["m"])))
+        out.append("all cases: dispatches {}, tokens {}, wall minutes {}{}".format(
+            all_["d"], all_["t"], _mins(all_["m"]), " ({} case(s) unknown, not included)".format(all_["unknown"]) if all_["unknown"] else ""))
     out += ["", "What the injection and the inventory lost, by reason (case branches)"]
     for s, reasons in sorted(dropped["injected"].items()):
         out.append("  {}: {}".format(s, "; ".join("{}: {}".format(w, n) for w, n in sorted(reasons.items()))))
@@ -275,14 +288,16 @@ def cmd_report(a):
     cost = None
     if isinstance(reviews, dict) and isinstance(reviews.get("groups"), list):
         groups = dict((g["id"], g) for g in reviews["groups"] if isinstance(g, dict) and "id" in g)
-        cost = dict((c["id"], october(branches.get(c["branch"]), groups)) for c in cases)
+        cost = dict((c["id"], october(branches[c["branch"]], groups) if c["branch"] in branches else None) for c in cases)
     dropped = drops(cases, inventories, injected)
     plan_lines, plan_data = planreview.report_section(a.state)
     text = render(status, doc, cases, runs, rows, cost, dropped, branches, plan_lines)
     data = {"bar": status, "coverage": doc.get("coverage") or {}, "drops": dropped, "examined_not_cases": [e for e in doc.get("examined") or []
                                                                                                          if isinstance(e, dict) and not e.get("qualified")],
             "cases": [dict(id=c["id"], branch=c["branch"], repo=c.get("repo"), original_rounds=c.get("original_rounds"), runs=rows[c["id"]],
-                           october=(cost or {}).get(c["id"])) for c in cases],
+                           october=(cost or {}).get(c["id"]),
+                           october_unknown=("branch {} is not in branches.json".format(c["branch"]) if cost is not None and cost.get(c["id"]) is None else None))
+                      for c in cases],
             "planreview": plan_data or None}
     if a.dry_run:
         print(text, end="")
