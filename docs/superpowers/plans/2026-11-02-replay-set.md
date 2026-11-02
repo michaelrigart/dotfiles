@@ -60,10 +60,13 @@ ends with the branch pushed. **Part B** runs it, from a separate Claude session 
 - **Blind judges.** Every judge input goes through `common.judge_write`, which refuses a document
   holding a key named `class`, `run`, `arm`, `label` or `purpose` at any depth. Brief texts never
   say replay, inject, removal, per-task, arm or run. Indices in judge inputs are fresh per input.
-  Every path handed to a judge, a final reviewer or a Codex turn (brief paths, input and answer
-  paths, scratch repositories used as a cwd) goes through `common.aliased`, a neutral symlink
-  `$XDG_STATE_HOME/review-work/<8 hex>` to the state dir, so no path a reviewer or judge sees
-  names the replay; the harness itself uses the real paths. Scratch repositories are not reached
+  Every item handed to a judge or a final reviewer is staged in its own real directory,
+  `$XDG_STATE_HOME/review-work/items/<random hex>/`, holding only that item's files (a judge's
+  `input.json`, `brief.md` and the `answer.json` it writes; a final review's `brief.md` and
+  `package.diff`); the harness copies answers back into the state. No path an agent sees names the
+  replay or leads into the state; the final reviewer's transcript (and its subagents') is
+  leak-scanned for the state's paths and other items as well as the originals. The harness itself
+  uses the real paths. Scratch repositories are not reached
   through that symlink: they live physically under `$XDG_STATE_HOME/review-work/scratch/<label>`,
   because Codex may resolve a symlinked cwd to its real path.
 - **Dry run.** `--dry-run` starts no daemon and no turn, and writes nothing but judge inputs and
