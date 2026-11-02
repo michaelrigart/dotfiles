@@ -211,7 +211,7 @@ for name, text, want in [
     ("mentioned bare ranges when nothing stronger", "MR ranges: plan 1 b7cec6c7..add5fe12, 141be49c..e2bed282",
      [("b7cec6c7", "add5fe12"), ("141be49c", "e2bed282")]),
     ("a head followed by ^ is no range", "see 1111111..2222222^ and 3333333..4444444~2", []),
-    ("the same range at two lengths is listed once, longer kept",
+    ("a labelled range outranks a diff-file name for the same commits",
      "**Base:** 18f644e\n**Head:** ab58108\nreview-18f644e8..ab58108c.diff", [("18f644e", "ab58108")]),
     ("one pair at two lengths in the same source",
      "Fix base: 18f644e, Head: ab58108\nFix base: 18f644e8 Head: ab58108c", [("18f644e8", "ab58108c")]),
