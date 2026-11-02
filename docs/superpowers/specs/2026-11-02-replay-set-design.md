@@ -109,13 +109,12 @@ that breaks coherence is undone, and its defect is unassessable.
 fixes several defects, a judge splits its hunks by defect; hunks it cannot split make those defects
 one group, reverted and re-applied together.
 
-**Coverage gate.** A per-task P0/P1 defect that will not revert cleanly or validate gets one second
+**Coverage gate.** A per-task defect that will not revert cleanly or validate gets one second
 attempt: an `sp-standard` agent re-creates it by hand in the final tree from the finding and its
-fix, and a blind judge confirms that the result is the same defect. If any per-task P0/P1 defect on
-the candidate branches is still unassessable after that, §4 is inconclusive and the report names
-it, because a removal would give up a consequential catch nobody measured. A branch qualifies only
-when all its P0/P1 defects of both classes are assessable. Unassessable P2s are counted, and if they
-exceed a quarter of the per-task P2s, §4 is inconclusive.
+fix, and a blind judge confirms that the result is the same defect. If any per-task defect (P0–P2)
+on the candidate branches is still unassessable after that, §4 is inconclusive and the report names
+it, because a removal would give up a catch nobody measured. A branch qualifies only when all its
+P0/P1 defects of both classes are assessable; its unassessable pre-merge P2s are counted.
 
 `docs/superpowers/` is pinned to its state at plan approval. Spec and plan text edited during
 execution often describes the fixed behaviour, and where it landed outside the fix commits it would
@@ -168,19 +167,19 @@ No judge learns the run, the class or the purpose.
 ### 4.6 Pass bar
 
 The bar holds per run, because a real execution gets one run, not the union of two. It is strict on
-purpose: a removal has to show that it gives up no consequential catch.
+purpose: a removal has to show that it gives up no catch at all, P2 included, because the quality
+constraint covers every defect.
 
 - **Assessable run.** The real loop recovered every pre-merge-class defect in October. A run is
   assessable when the simulation recovered at least 80% of that class in it and censored no more
-  than a quarter of its per-task P0/P1 defects.
+  than a quarter of its per-task defects.
 - **Fail:** in an assessable run, a per-task P0/P1 defect is unrecovered while every pre-merge P0/P1
   defect of that case was recovered. The gates that stay demonstrably missed a consequential catch,
   and the reviewer stays.
-- **Pass** needs every run of every case to be assessable, and in every run:
-  - every per-task P0/P1 defect recovered;
-  - per-task P2 recovery at least the pre-merge class's P2 recovery minus the noise, where noise is
-    the spread of that pre-merge P2 recovery across the runs.
-- **Inconclusive:** anything else, including §4.3's coverage gate. §4.7 applies.
+- **Pass:** every run of every case is assessable, and every per-task defect (P0–P2) is recovered in
+  every run. A censored defect is not recovered, so any censoring rules out a pass.
+- **Inconclusive:** anything else, including §4.3's coverage gate and any unrecovered per-task P2.
+  §4.7 applies.
 
 The pre-merge class is Codex-detectable by construction (Codex found each of its defects once) and
 the per-task class is not, which tilts the comparison towards keeping the reviewer.
@@ -248,9 +247,10 @@ P0/P1 that both found. The report adds tokens per turn for each arm.
 October's reviews cannot be the cases. Today's memories describe them, which would hand A and A′
 the answers, and no older snapshot exists (the memories directory's own git history starts on
 2026-11-02). So §6 runs forward, on snapshots taken just before each case:
-- **Snapshots.** While §6 collects cases, `process-replay memories-watch` checks the live memories
-  every five minutes and, whenever they change, copies them (APFS clones, without `.git`) into the
-  state directory. It reads `~/.codex/memories` and writes nothing outside the state directory.
+- **Snapshots.** While §6 collects cases, `process-replay memories-watch` hashes the live memories
+  every minute, logs every poll with its time and hash, and copies them on each change (APFS clones,
+  without `.git`) into the state directory. It reads `~/.codex/memories` and writes nothing outside
+  the state directory.
   Michael starts it as a background process or a launchd job for the collection period. The copy
   frozen on 2026-11-02 at 13:21 UTC (`~/Code/.replay/snapshot/2026-11-02/codex-memories/`) is the
   first snapshot.
@@ -259,8 +259,10 @@ the answers, and no older snapshot exists (the memories directory's own git hist
   from the review itself or later. B reads no memories.
 - **Cases.** Pre-merge round-1 reviews with at least one known-real P0–P2 finding, from branches
   started after the watcher, up to 10, taken as they accrue; at Michael's usual pace that is about a
-  week. A case whose live memories changed between the last snapshot and its dispatch is dropped,
-  because its snapshot would be missing what the deployed reviewer had.
+  week. A case is kept only when the poll just before its dispatch and the poll just after it log
+  the same hash, so the snapshot is exactly what the reviewer had. A case whose surrounding interval
+  shows a change, or that has a missing poll, is dropped, because the order of change and dispatch
+  cannot be established.
 
 ## 7. Isolation
 
@@ -326,8 +328,9 @@ any turn runs. If neither works, stop and report.
   - injection, fix groups, the oracle fixer re-applying exactly one defect's or group's patch,
     collateral repairs counted as censored, and squashing;
   - the stall rule and the false-positive rulings carried into the next round;
-  - `memories-watch` taking a snapshot on change, and a case taking the latest snapshot before its
-    dispatch;
+  - `memories-watch` logging each poll and snapshotting on change, a case taking the latest
+    snapshot before its dispatch, and a case dropped when its surrounding polls differ or one is
+    missing;
   - a scratch repository that cannot resolve a later fix commit;
   - judge inputs that carry no class, run or arm;
   - the loop ending at `approve` or after six rounds;
