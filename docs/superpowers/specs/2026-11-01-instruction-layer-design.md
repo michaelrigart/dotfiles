@@ -59,7 +59,7 @@ layer ok"). This spec waits for his sign-off because it rewrites his own rules.
 | Section (lines now) | Keeps | Moves to | Target |
 |---|---|---|---|
 | Header (6) | Source, the AGENTS.md-only rule | — | 4 |
-| Machine and toolchain (20) | Facts that change a command: XDG paths, `rg`/`fd`, no `bat`, Brewfile and mise, the firewall, secrets via `op` | Drops what the dotfiles `AGENTS.md` already says | 12 |
+| Machine and toolchain (20) | Facts that change a command: XDG paths, `rg`/`fd`, no `bat`, Brewfile and mise, the firewall, secrets via `op`; "edit the dotfiles source, never a deployed file", which binds in every session (kept during execution) | Drops what the dotfiles `AGENTS.md` already says | 12 |
 | Repositories and worktrees (12) | Layout, `wt` is Michael's, backups need checkpoint commits | — | 9 |
 | Design records (36) | The paths table; the five commit checkpoints; three rules that apply when no record is being edited: "specs and plans are never deleted, pruned or gitignored, except on security or legal grounds (secrets, PII, customer data; rotate anything exposed)", "a completed plan is not run again, and its banners bind that run only", and "open both cross-repo MRs before merging either, and merge the canonical one first" | Status vocabulary, abandoning a spec, legacy records, the cross-repo canonical-spec placement: new skill `design-records` | 17 |
 | How to work (22) | All rules, compressed; merge-request and second-brain become one pointer line each | — | 18 |

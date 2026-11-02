@@ -170,7 +170,7 @@ need_flat global.md '- **Convergence.** A loop converges when each round leaves 
 need_flat global.md 'Never add agent attribution (session links, `Claude-Session:` trailers, `Co-authored-by:` agent lines, "Generated with…" footers, naming the tool) in commits, MR/PR titles and bodies, issues or review comments.' \
   "global.md keeps the no-attribution rule in full"
 need_flat global.md 'write it only when asked' "global.md keeps the vault rule: write a note only when asked"
-need_in dot_agents/skills/second-brain/SKILL.md 'secrets, credentials, customer data, raw conversations or transient working notes in the vault' \
+need_in dot_agents/skills/second-brain/SKILL.md '**Never store** secrets, credentials, customer data, raw conversations or transient working notes in the vault' \
   "second-brain holds every never-store category for the vault"
 # The fix rule (spec 2026-11-01-instruction-layer, section 4): a reviewer can check it by revert.
 need_flat global.md 'a fix ships with a test that fails without it: revert the fix, watch the test fail, restore it.' \
@@ -192,7 +192,12 @@ fi
 # Rules the design-records move leaves global (spec section 2; plan calls 13 and 14).
 need_flat global.md 'never deleted, pruned or gitignored' "global.md keeps specs and plans undeletable"
 need_flat global.md 'so it is not run again' "global.md keeps the completed-plan marker"
-need_flat global.md 'both MRs before merging either, and merge the canonical one first' "global.md keeps the cross-repo merge order"
+need_flat global.md '**Cross-repo work.** Open both MRs before merging either, and merge the one holding the canonical spec first' \
+  "global.md keeps the cross-repo merge order, with or without a spec"
+need_flat global.md 'Claude Code dispatches to Codex at the checkpoints and when genuinely stuck' \
+  "global.md keeps the stuck consultation beside the checkpoints"
+need_flat global.md 'edit the source, never a deployed file' "global.md says to edit the dotfiles source, never a deployed file"
+need_flat global.md "the vault's Backups note" "global.md points at the backup runbook"
 need_flat global.md 'adds only project-specific supplements' "global.md keeps what an AGENTS.md may add"
 need_flat global.md 'never vary per repository' "global.md keeps what never varies per repository"
 need_flat global.md 'never in raw run files' "global.md keeps lessons out of raw run files"

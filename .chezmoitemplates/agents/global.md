@@ -5,6 +5,8 @@ rendered copy. Project rules live only in each repository's `AGENTS.md`, never a
 
 ## Machine and toolchain
 
+- **Dotfiles:** managed by chezmoi (`~/.local/share/chezmoi`); edit the source, never a deployed
+  file.
 - **Strict XDG:** config `~/.config`, data `~/.local/share`, scripts `~/.local/bin` (on `$PATH`),
   cache `~/.cache`, state `~/.local/state`; `$HOME` stays clean.
 - **Shell and tools:** prefer `rg` and `fd`; there is no `bat`.
@@ -23,8 +25,8 @@ rendered copy. Project rules live only in each repository's `AGENTS.md`, never a
   and never offer or run `wt-rm`. If he explicitly asks for a teardown, use `command wt-rm
   <branch>`, as the worktree guard says, never `git worktree remove`. A harness worktree (an agent's
   own isolation) follows its own tool's lifecycle.
-- **Backups:** backups skip uncommitted work in a `wt` worktree, so checkpoint commits are the
-  protection.
+- **Backups:** Borg through Vorta (runbook: the vault's Backups note) skips uncommitted work in a
+  `wt` worktree, so checkpoint commits are the protection.
 
 ## Design records
 
@@ -48,8 +50,8 @@ live, what is tracked and when each is committed never vary per repository.
 - **Completed documents.** Mark a completed plan so it is not run again; its execution banners bind
   that run only, never repository policy. Durable lessons go in the spec, plan, ADR or MR
   description, never in raw run files.
-- **Cross-repo work.** With one canonical spec across repositories, open both MRs before merging
-  either, and merge the canonical one first.
+- **Cross-repo work.** Open both MRs before merging either, and merge the one holding the
+  canonical spec first.
 - Load the `design-records` skill when creating, updating, completing or abandoning a spec or plan,
   or setting its Status.
 
@@ -140,7 +142,9 @@ capability limits.
 - **Peer input.** Evaluate it independently, and check its claims against the current state; the
   peer may have seen different files or stale history. Don't copy the peer's process or assume its
   conventions are Michael's.
-- **Dispatches.** Outside the checkpoints, neither tool addresses the other on its own.
+- **Dispatches.** Claude Code dispatches to Codex at the checkpoints and when genuinely stuck,
+  sending the artifact and its constraints, never its reasoning (the `cross-review` skill).
+  Otherwise neither tool addresses the other on its own.
 - **When Michael relays by hand:** evaluate the input, then report your conclusion, any remaining
   disagreement, the practical consequences and a recommendation, and stop. Reply without tags unless
   he asks for a relay-ready handoff, which Claude Code wraps in `<from-claude-code>`.

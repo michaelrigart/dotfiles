@@ -132,6 +132,12 @@ Gaps or tensions in the spec, settled here. Michael can overturn any of them at 
     "no rule lost"), strip the blank lines (a line count gamed, tokens unchanged) or raise the
     cap. The cap goes to 150. Sizing also states D1's always-binding half ("Every other change
     has a spec and a plan"), because D1 moved to the skill.
+16. **Four rows changed after the Task 5 table review.** X16 (consult Codex when genuinely stuck)
+    stays global, joined with X19: the cross-review skill loads only at checkpoints, so moving it
+    would leave X19 as a ban on the stuck case. D22 names "the one holding the canonical spec", so
+    it binds on cross-repo work without a spec too. M2-M3 (edit the dotfiles source, never a
+    deployed file) stay: they bind in every session. R8 survives as a runbook pointer inside R9.
+    The result is 150 lines, at the cap.
 
 ## The §1 table: every sentence of `global.md`
 
@@ -159,7 +165,7 @@ Each row is one current sentence, identified by its line and opening words.
 | ID | Line | Sentence | Disposition |
 |---|---|---|---|
 | M1 | 9-10 | "**Machine:** MacBook Pro, Apple silicon, macOS Tahoe, provisioned from…" | Dropped: changes no command; the harness states the platform, and AGENTS.md:4 says the repo is public |
-| M2-M3 | 11 | "**Dotfiles:** managed by chezmoi." / "Edit the source, never a deployed file." | Dropped, per the spec: AGENTS.md:21 says it (call 8 keeps its effect on M9) |
+| M2-M3 | 11 | "**Dotfiles:** managed by chezmoi." / "Edit the source, never a deployed file." | Kept after all (call 16): it binds in every session, and AGENTS.md:21 loads only in the dotfiles |
 | M4 | 11-12 | "`chezmoi apply` renders 1Password-backed templates…" | Dropped: `chezmoi apply` is Michael's (AGENTS.md:21-22); its error is in Troubleshooting (:200) |
 | M5 | 13-14 | "**Strict XDG:** config `~/.config`…" | Kept |
 | M6 | 15-16 | "**Shell and tools:** zsh with Oh My Zsh, Starship, Ghostty, Neovim…" | Dropped: the interactive setup; agent shells are non-interactive, and the harness names the shell |
@@ -180,7 +186,7 @@ Each row is one current sentence, identified by its line and opening words.
 | R3-R5 | 32-33 | "**`wt` worktrees are Michael's.**" / "He creates them with `wt`…" / "Never create one, and never offer or run `wt-rm`." | Kept |
 | R6 | 33-34 | "If he explicitly asks for a teardown, use `command wt-rm <branch>`, never `git worktree remove`." | Kept as one clause naming the worktree guard; the command is in its REMEDY (call 7) |
 | R7 | 34-35 | "A harness worktree (an agent's own isolation) follows its own tool's lifecycle." | Kept |
-| R8 | 36 | "**Backups:** Borg runs through Vorta; the runbook is the vault's Backups note." | Dropped: steers no agent action; the second-brain skill finds the note when backups are the task |
+| R8 | 36 | "**Backups:** Borg runs through Vorta; the runbook is the vault's Backups note." | Kept as a pointer in R9 (call 16): no skill loads on a backup task |
 | R9 | 36-37 | "Backups skip uncommitted work in a `wt` worktree…" | Kept |
 
 **Design records (39-74)**: §2's test asks whether a sentence binds only while a record is being
@@ -204,7 +210,7 @@ created, updated, completed or abandoned.
 | D19 | 68 | "Don't rewrite point-in-time facts." | Moved → DR (call 3). §2: binds only while a record is updated |
 | D20 | 69 | "Durable lessons go in the spec, plan, ADR or MR description, never in raw run files." | Kept, after D18 (call 14). §2: no; a small change records lessons with no spec or plan |
 | D21 | 71-72 | "**Cross-repo work.** Keep one canonical spec, referenced by repository and path…" | Moved → DR (spec). §2: yes |
-| D22 | 72-73 | "Open both MRs before merging either, and merge the canonical one first." | Kept (spec, §2: binds when landing) |
+| D22 | 72-73 | "Open both MRs before merging either, and merge the canonical one first." | Kept (spec, §2: binds when landing); "the one holding the canonical spec", so it holds without a spec too (call 16) |
 | new | — | the trigger: load the `design-records` skill "when creating, updating, completing or abandoning a spec or plan, or setting its Status" | Added (§1: a moved rule leaves its trigger) |
 
 **How to work (75-96)**
@@ -270,7 +276,7 @@ created, updated, completed or abandoned.
 | X13 | 169-170 | "**Skills don't change roles.** A skill's trigger describes how to do a thing well, not whose job it is." | Moved → CX, verbatim (spec) |
 | X14 | 170-171 | "On Codex's side that means no committing, branching, pushing or opening MRs, no design records, and no competing plan." | Moved → CX role bullet (spec) |
 | X15 | 171 | "Review, debugging and hardening are on role." | Moved → CX, verbatim (spec) |
-| X16 | 172-173 | "**Dispatches.** Claude Code dispatches to Codex at the checkpoints and when genuinely stuck, sending the artifact…" | Moved → CR, already there: When `:11-19`, cold ask `:23-24`, Consultation `:295-296`. Nothing to add |
+| X16 | 172-173 | "**Dispatches.** Claude Code dispatches to Codex at the checkpoints and when genuinely stuck, sending the artifact…" | Kept, joined with X19 (call 16): the stuck case binds when the skill is not loaded. CR holds the mechanics |
 | X17 | 173-175 | "Within a checkpoint it iterates until…, with no round limit and never prolonged for consensus;" | Moved → CR. `:223-224` and `:231` hold all but the last clause; Task 3 adds "Never prolong a loop for consensus." |
 | X18 | 175-176 | "Michael hears about disagreements and stalled loops, not routine round counts." | Moved → CR, already there: `:224-226` and the escalation list `:251-275`. Nothing to add |
 | X19 | 176 | "Outside the checkpoints, neither tool addresses the other on its own." | Kept (spec) |
