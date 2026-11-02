@@ -605,3 +605,6 @@ Switch states that follow (§5.5):
 - **`fit`: off.** B recalled less than both A and A′ and missed a P0/P1 that both found, though
   it avoided the compactions A and A′ hit. With `fit` off, the size cap stays in force
   (§3.8), so dispatch still refuses a packet over `XREVIEW_MAX_DIFF_BYTES`.
+  Michael's ruling (2026-11-02): `fit` on, against this result. A branch diff of 886 KB was
+  refused under the 700,000-byte cap, and slicing it beats sending it whole, which risks the
+  compactions this replay saw.
