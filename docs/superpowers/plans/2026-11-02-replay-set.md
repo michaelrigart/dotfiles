@@ -349,7 +349,7 @@ Michael's daemon.
   Task 5, and a branch merged in October may have been reviewed in September), writing
   `<state>/reviews.json` = `{groups: [{id, project, session, cwd, repo, prefix, task,
   reviews: [{agent, kind: review|re-review, description, start, end, prompt, report,
-  ranges: [[a, b]], reviewed_head, tokens, model, transcript}]}]}` and copying transcripts to
+  ranges: [[a, b]], reviewed_head, reviewed_commits: [sha], tokens, model, transcript}]}]}` and copying transcripts to
   `<state>/transcripts/<project>/<session>/…`;
   `parse_ranges(text) -> list[(str, str)]`; `reviewed_head(prompt) -> str|None`;
   `repo_for_cwd(cwd, repos: list[str]) -> str|None`; `cost(path) -> {tokens, start, end}`.
@@ -375,7 +375,8 @@ Michael's daemon.
 - [ ] **Step 3: Implement.** A task review is a subagent whose `meta.json` `agentType` is
   `sp-reviewer` or `sp-architect` and whose `description` matches
   `^(Re-review|Review)\s+(.*?)\s*Task\s+(\d+)\b`; group 2, stripped, is the prefix. The prompt is
-  the first user entry's text, the report the last assistant text. `repos` are the git dirs named
+  the first user entry's text; the report is the last `SubagentHandback` call's `input.message`,
+  else the last assistant text (reviewers hand their report back through that tool). `repos` are the git dirs named
   in the xreview ledgers; a cwd matches the repository whose work dir `W` satisfies
   `cwd == W` or `cwd.startswith(W + "-")` or `cwd.startswith(W + "/")`, longest `W` first.
 - [ ] **Step 4: Run** it; it passes.
