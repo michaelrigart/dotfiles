@@ -402,3 +402,110 @@ def view(state, gitdir, root):
         os.makedirs(os.path.dirname(alt), exist_ok=True)
         jsave(alt, source + "\n")
     return path
+
+
+# ------------------------------------------------------------------ reading git through a view
+_HEX = re.compile(r"\A[0-9a-fA-F]{4,40}\Z")
+
+
+def cap(text, limit):
+    """`text` cut to `limit` characters, with a [truncated] line when it was cut."""
+    return text if len(text) <= limit else text[:limit] + "\n[truncated]\n"
+
+
+def norm(path):
+    """A path a reviewer wrote (./x, a/x, b/x) as the repository's own."""
+    path = path if isinstance(path, str) else ""
+    while path.startswith("./"):
+        path = path[2:]
+    if path[:2] in ("a/", "b/"):
+        path = path[2:]
+    return path
+
+
+class Reader(object):
+    """The reads of one repository, through the private view (the snapshot's objects when it has any).
+    The original repository is `gitdir`; nothing here writes to it."""
+
+    def __init__(self, state, gitdir, root):
+        self.state, self.gitdir, self.root = state, gitdir, root
+        self._view = None
+        self._commit, self._pid = {}, {}
+
+    @property
+    def view(self):
+        if self._view is None:
+            self._view = view(self.state, self.gitdir, self.root)
+        return self._view
+
+    def has_commit(self, rev):
+        return git_ok(self.view, "cat-file", "-e", rev + "^{commit}")
+
+    def text(self, blob):
+        try:
+            return git(self.view, "cat-file", "blob", blob, raw=True).decode("utf-8", "replace")
+        except Failed:
+            return None
+
+    def size(self, blob):
+        try:
+            return int(git(self.view, "cat-file", "-s", blob))
+        except (Failed, ValueError):
+            return None
+
+    def file(self, rev, path):
+        """The text of `path` at `rev`, or None."""
+        return self.text("{}:{}".format(rev, path))
+
+    def commit(self, rev):
+        """The full id of the commit that `rev` (hex, any length) names, or None: absent, ambiguous or not hex."""
+        if not isinstance(rev, str) or not _HEX.match(rev):
+            return None
+        key = rev.lower()
+        if key not in self._commit:
+            try:
+                self._commit[key] = git(self.view, "rev-parse", "--verify", "--quiet", key + "^{commit}") or None
+            except Failed:
+                self._commit[key] = None
+        return self._commit[key]
+
+    def is_ancestor(self, older, newer):
+        return git_ok(self.view, "merge-base", "--is-ancestor", older, newer)
+
+    def commits(self, base, tip, exclude=()):
+        """[(sha, committer epoch)] reachable from `tip` and not from `base` or any of `exclude`, newest first."""
+        try:
+            out = git(self.view, "log", "--format=%H %ct", tip, *["^" + x for x in [base] + list(exclude)])
+        except Failed:
+            return []
+        return [(s, int(t)) for s, t in (line.split() for line in out.splitlines())]
+
+    def names(self, older, newer):
+        out = git(self.view, "diff", "--name-only", "-z", *(L.DIFF_FLAGS + [older, newer, "--"]), raw=True)
+        return [n for n in out.decode("utf-8", "replace").split("\0") if n]
+
+    def patch(self, older, newer):
+        """The change from older to newer, capped at XR.MAX_INTERDIFF characters."""
+        out = git(self.view, *(L.DIFF_PATCH + ["--text", older, newer, "--"]), raw=True)
+        return cap(out.decode("utf-8", "replace"), XR.MAX_INTERDIFF)
+
+    def _patch_ids(self, *args):
+        """[(patch id, commit)] of `git log -p <args>`, by `git patch-id --stable` (a merge or an empty commit has none)."""
+        try:
+            log = git(self.view, "log", "-p", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "--format=commit %H",
+                      *args, raw=True)
+            out = git(self.view, "patch-id", "--stable", input=log, raw=True)
+        except Failed:
+            return []
+        return [tuple(line.split()) for line in out.decode("utf-8", "replace").splitlines() if len(line.split()) == 2]
+
+    def patch_id(self, commit):
+        """The stable patch id of one commit, or None."""
+        if commit not in self._pid:
+            found = self._patch_ids("-1", commit)
+            self._pid[commit] = found[0][0] if found else None
+        return self._pid[commit]
+
+    def branch_patch_ids(self, base, tip, exclude=()):
+        """{patch id: commit} of the commits reachable from `tip` and not from `base` or `exclude`; the oldest when two share one."""
+        return dict(self._patch_ids(tip, *["^" + x for x in [base] + list(exclude)])[::-1])

@@ -119,46 +119,6 @@ def codex_answer(verdict, findings):
     return {"verdict": verdict, "findings": findings, "reviewed_files": []}
 
 
-# ================================================================ merge_evidence
-MR = helpers.make_repo(ROOT, "mrepo")
-with dated("2026-09-01T10:00:00Z"):
-    put(MR, "base.txt", "base\n")
-    M0 = helpers.commit(MR, "base")
-FA = make_branch(MR, "fa", M0, [("2026-09-10T10:00:00Z", {"a1.txt": "1\n"}, "a1"), ("2026-09-11T10:00:00Z", {"a2.txt": "2\n"}, "a2")])
-FB = make_branch(MR, "fb", M0, [("2026-09-12T10:00:00Z", {"b1.txt": "1\n"}, "b1"), ("2026-09-13T10:00:00Z", {"b2.txt": "2\n"}, "b2")])
-FC = make_branch(MR, "fc", M0, [("2026-09-14T10:00:00Z", {"c1.txt": "1\n"}, "c1"), ("2026-09-15T10:00:00Z", {"c2.txt": "2\n"}, "c2")])
-FD = make_branch(MR, "fd", M0, [("2026-09-16T10:00:00Z", {"d1.txt": "1\n"}, "d1")])
-merge(MR, "fa", "2026-10-10T12:00:00Z")                                        # (a) a merge commit
-with dated("2026-10-12T12:00:00Z"):
-    git(MR, "cherry-pick", FB[0], FB[1])                                        # (b) a rebase merge
-git(MR, "merge", "--squash", "-q", "fc")                                       # (c) a squash merge
-with dated("2026-10-15T12:00:00Z"):
-    git(MR, "commit", "-q", "-m", "squash c")
-put(MR, "later.txt", "later\n")
-with dated("2026-10-20T12:00:00Z"):
-    helpers.commit(MR, "later")
-MSTATE = world("w-merge")
-MG = C.L.common_dir(MR)
-mrepo = I.Repo(MSTATE, MG, NO_SNAPSHOT)
-for name, tips, how, when in (("a", FA, "ancestry", "2026-10-10T12:00:00Z"), ("b", FB, "rebase", "2026-10-12T12:00:00Z"),
-                              ("c", FC, "squash", "2026-10-15T12:00:00Z")):
-    ev = I.merge_evidence(mrepo, "main", M0, tips[-1])
-    is_("merge_evidence ({}): {} merge, dated by the first-parent commit that brings the branch in".format(name, how),
-        (ev or {}).get("how"), how)
-    is_("merge_evidence ({}): at that commit's committer date".format(name), (ev or {}).get("at"), when)
-is_("merge_evidence (a): the commit is the merge commit, not the branch tip",
-    I.merge_evidence(mrepo, "main", M0, FA[-1])["commit"], git(MR, "rev-list", "--first-parent", "-n1", "--grep=merge fa", "main"))
-is_("merge_evidence (none): an unmerged branch has no evidence", I.merge_evidence(mrepo, "main", M0, FD[-1]), None)
-is_("merge_evidence: a branch of one commit that was never merged is not a squash of the other branches",
-    I.merge_evidence(mrepo, "main", M0, FD[0]), None)
-git(MR, "update-ref", "refs/remotes/origin/main", main_tip(MR))
-git(MR, "update-ref", "refs/heads/main", M0)
-is_("merge_evidence: the destination's tip is origin's, ahead of a stale local branch",
-    (I.merge_evidence(I.Repo(MSTATE, MG, NO_SNAPSHOT), "main", M0, FC[-1]) or {}).get("how"), "squash")
-git(MR, "update-ref", "-d", "refs/remotes/origin/main")
-is_("merge_evidence: without origin's ref, the stale local branch has no evidence",
-    I.merge_evidence(I.Repo(MSTATE, MG, NO_SNAPSHOT), "main", M0, FC[-1]), None)
-
 # ================================================================ chains and round_findings
 CHAIN_ENTRIES = [
     receipt("n2", "2026-10-02T10:00:00.000000Z", "t", "u2", "R", "feat", "b", "t2"),
@@ -202,17 +162,18 @@ PLAN = "docs/superpowers/plans/p.md"
 BR = {}
 BR["ok"] = make_branch(CR, "ok", C0, [("2026-09-24T10:00:00Z", {PLAN: "plan\n"}, "plan"), ("2026-09-25T10:00:00Z", {"ok1.txt": "1\n"}, "ok1"),
                                        ("2026-09-26T10:00:00Z", {"ok2.txt": "2\n"}, "ok2")])
-for name in ("early", "slice", "nogroup", "nomerge", "gone", "open", "edge", "late"):
-    BR[name] = make_branch(CR, name, C0, [("2026-09-28T10:00:00Z", {name + ".txt": name + "\n"}, name + "1")])
+for name in ("early", "slice", "nogroup", "nomerge", "gone", "thin", "open", "edge", "late"):
+    BR[name] = make_branch(CR, name, C0, [("2026-09-28T10:00:00Z", {name + ".txt": name + "\n"}, name + "1")]
+                           + ([("2026-09-28T11:00:00Z", {name + "2.txt": name + "\n"}, name + "2")] if name == "edge" else []))
 MERGED = (("early", "2026-09-30T23:59:59Z"), ("ok", "2026-10-05T10:00:00Z"), ("slice", "2026-10-06T10:00:00Z"),
-          ("nogroup", "2026-10-07T10:00:00Z"), ("gone", "2026-10-08T10:00:00Z"), ("open", "2026-10-09T10:00:00Z"),
+          ("nogroup", "2026-10-07T10:00:00Z"), ("gone", "2026-10-08T10:00:00Z"), ("thin", "2026-10-08T11:00:00Z"), ("open", "2026-10-09T10:00:00Z"),
           ("edge", "2026-11-01T23:30:00Z"), ("late", "2026-11-03T10:00:00Z"))
 for name, when in MERGED:
     merge(CR, name, when)
 CSTATE = world("w-static")
 CG = C.L.common_dir(CR)
 LEDGER = []
-for name in ("early", "slice", "nogroup", "nomerge", "late", "open", "edge"):
+for name in ("early", "slice", "nogroup", "nomerge", "late", "open", "edge", "thin"):
     LEDGER.append(receipt("xr-" + name, "2026-09-29T10:00:00.000000Z", "th-" + name, "tu-" + name, CG, name, C0, BR[name][-1],
                           full=name != "slice", verdict="changes" if name == "open" else "approve"))
 LEDGER.append(receipt("xr-gone", "2026-09-29T10:00:00.000000Z", "th-gone", "tu-gone", CG, "gone", C0, "e" * 40))
@@ -228,8 +189,15 @@ with open(os.path.join(dup, "reviews.jsonl"), "w") as f:
 with open(os.path.join(dup, "repo"), "w") as f:
     f.write(CG + "\n")
 GROUPS = [group("g-" + n, CG, [review("review", "2026-09-28T10:30:00.000Z", [(C0, BR[n][-1])], BR[n][-1])])
-          for n in ("early", "slice", "nomerge", "late", "gone", "open", "edge")]
-GROUPS.append(group("g-ok", CG, [review("review", "2026-09-25T10:00:00.000Z", [(C0, BR["ok"][1])], BR["ok"][1])]))
+          for n in ("early", "slice", "nomerge", "late", "gone", "open")]
+GROUPS.append(group("g-ok", CG, [review("review", "2026-09-25T10:00:00.000Z", [(C0, BR["ok"][1])], BR["ok"][1]),
+                                 review("re-review", "2026-09-25T11:00:00.000Z", [(C0, BR["ok"][1])], BR["ok"][1]),
+                                 review("re-review", "2026-09-26T11:00:00.000Z", [(BR["ok"][1], BR["ok"][2])], BR["ok"][2])]))
+GROUPS.append(group("g-edge", CG, [review("review", "2026-09-28T10:30:00.000Z", [(C0, BR["edge"][0])], BR["edge"][0]),
+                                   review("re-review", "2026-09-28T10:40:00.000Z", [(C0, BR["edge"][0])], BR["edge"][0]),
+                                   review("re-review", "2026-09-28T11:30:00.000Z", [(BR["edge"][0], BR["edge"][1])], BR["edge"][1])]))
+GROUPS.append(group("g-thin", CG, [review("review", "2026-09-28T10:30:00.000Z", [(C0, BR["thin"][0])], BR["thin"][0]),
+                                   review("re-review", "2026-09-28T10:40:00.000Z", [(C0, BR["thin"][0])], BR["thin"][0])]))
 is_("cases: exits 0", run_cases(CSTATE, GROUPS), 0)
 doc, by = branches(CSTATE)
 WHY = {n: by[n]["why"] for n in by}
@@ -243,12 +211,17 @@ is_("candidate_static: merged after the window", WHY["late"], "merged outside th
 is_("candidate_static: merged before the window", WHY["early"], "merged outside the window")
 ok("candidate_static: merged on the window's last day is a candidate", by["edge"]["candidate"], by["edge"])
 is_("candidate_static: no task group", WHY["nogroup"], "no task review joined")
+is_("candidate_static: a joined group with one fix range cannot reach two per-task defects", WHY["thin"], "fewer than two task-review fix ranges")
+ok("candidate_static: and it is not opened, so no judge input is spent on it",
+   not by["thin"]["opened"] and not os.path.exists(os.path.join(CSTATE, "judge-task", "g-thin-" + by["thin"]["id"] + ".json")))
+ok("candidate_static: while a branch with two fix ranges is opened and gets one", by["edge"]["opened"] and os.path.exists(
+    os.path.join(CSTATE, "judge-task", "g-edge-" + by["edge"]["id"] + ".json")))
 is_("candidate_static: never merged", WHY["nomerge"], "no merge evidence")
 is_("candidate_static: a round tip nowhere", WHY["gone"], "a round tip is gone")
 is_("candidate_static: the last round asked for changes", WHY["open"], "the last round did not approve")
 is_("candidate_static: the Branch record's fields", sorted(by["ok"]), sorted([
     "id", "repo", "objects", "view", "dest", "dest_ref", "branch", "base", "rounds", "round1_tip", "final_tip", "plan_commit", "groups",
-    "candidate", "opened", "why", "merged", "unresolved_ranges"]))
+    "joined", "candidate", "opened", "why", "merged", "unresolved_ranges", "off_branch_ranges", "skipped_rounds"]))
 is_("candidate_static: base, round-1 tip and final tip", (by["ok"]["base"], by["ok"]["round1_tip"], by["ok"]["final_tip"]),
     (C0, BR["ok"][1], BR["ok"][2]))
 is_("candidate_static: a round's fields", sorted(by["ok"]["rounds"][0]), sorted(["k", "nonce", "tip", "base", "thread", "turns", "at", "verdict"]))
@@ -266,7 +239,7 @@ with dated("2026-09-20T10:00:00Z"):
     put(SR, "README.md", "readme\n")
     S0 = helpers.commit(SR, "base")
 TMP_TIP = make_branch(SR, "tmp", S0, [("2026-09-27T10:00:00Z", {"t.txt": "t\n"}, "dangling")])[0]
-SB = make_branch(SR, "sb", S0, [("2026-09-28T10:00:00Z", {"s.txt": "s\n"}, "s1")])
+SB = make_branch(SR, "sb", S0, [("2026-09-28T10:00:00Z", {"s.txt": "s\n"}, "s1"), ("2026-09-28T11:00:00Z", {"s2.txt": "s\n"}, "s2")])
 merge(SR, "sb", "2026-10-03T10:00:00Z")
 SNAP = os.path.join(ROOT, "snap")
 shutil.copytree(os.path.join(SR, ".git", "objects"), os.path.join(SNAP, "srepo", "objects"))
@@ -278,8 +251,10 @@ SSTATE = world("w-snap")
 SG = C.L.common_dir(SR)
 helpers.write_ledger(os.environ["XDG_STATE_HOME"], SR, [
     receipt("xr-s1", "2026-09-29T10:00:00.000000Z", "th-s", "tu-s1", SG, "sb", S0, TMP_TIP, verdict="changes"),
-    receipt("xr-s2", "2026-09-30T10:00:00.000000Z", "th-s", "tu-s2", SG, "sb", S0, SB[0])])
-SGROUPS = [group("g-s", SG, [review("review", "2026-09-28T10:30:00.000Z", [(S0, SB[0])], SB[0])])]
+    receipt("xr-s2", "2026-09-30T10:00:00.000000Z", "th-s", "tu-s2", SG, "sb", S0, SB[1])])
+SGROUPS = [group("g-s", SG, [review("review", "2026-09-28T10:30:00.000Z", [(S0, SB[0])], SB[0]),
+                             review("re-review", "2026-09-28T10:40:00.000Z", [(S0, SB[0])], SB[0]),
+                             review("re-review", "2026-09-28T11:30:00.000Z", [(SB[0], SB[1])], SB[1])])]
 run_cases(SSTATE, SGROUPS)
 _d, sb = branches(SSTATE)
 is_("snapshot_only: without the snapshot the dangling round tip is gone", sb["sb"]["why"], "a round tip is gone")
@@ -370,7 +345,7 @@ RGROUPS = [
         review("review", "2026-10-01T09:30:00.000Z", [(R0, T1)], T1, report="Task 1: A and B are wrong."),
         review("re-review", "2026-10-01T10:30:00.000Z", [(T1[:9], F1[:9])], F1[:9], report="A is fixed.",
                prompt="Re-review.\nFinding under verification (Critical): A is ignored.\nFix base " + T1[:9] + ", head " + F1[:9] + "\n"),
-        review("re-review", "2026-10-01T11:30:00.000Z", [], F1, report="B is fixed.", prompt="Re-review.\n" + F2_DOCS + "\nNo range here.\n")]),
+        review("re-review", "2026-10-02T09:30:00.000Z", [], F2, report="B is fixed.", prompt="Re-review.\n" + F2_DOCS + "\nNo range here.\n")]),
     group("g2", RG, [
         review("review", "2026-10-02T09:30:00.000Z", [(F2, T2)], T2, report="Task 2: fine."),
         review("re-review", "2026-10-02T10:30:00.000Z", [(T2, F3)], F3, report="C was already wrong in the task; fixed.",
@@ -391,13 +366,14 @@ written = sorted(os.path.relpath(os.path.join(d, f), DRY) for d, _s, fs_ in os.w
                  if os.sep + "views" + os.sep not in os.path.join(d, f) and not f.endswith("alias") and f != "reviews.json")
 ok("dry_run: nothing but judge inputs and briefs", bool(written) and all(w.startswith("judge") for w in written), written)
 ok("dry_run: no branches.json and no inventory", not os.path.exists(os.path.join(DRY, "branches.json")) and not os.path.exists(os.path.join(DRY, "inventory")))
-dry_task = C.jload(os.path.join(DRY, "judge-task", "g1.json"))
 
 # ---- the real run
 is_("cases: exits 0", run_cases(GS, RGROUPS), 0)
 doc, by = branches(GS)
 rich = by["rich"]
 BID = rich["id"]
+dry_task = C.jload(os.path.join(DRY, "judge-task", "g1-" + BID + ".json"))
+joined = dict((j["group"], j) for j in rich["joined"])
 ok("branch id: b + 8 hex", len(BID) == 9 and BID[0] == "b" and all(c in "0123456789abcdef" for c in BID[1:]), BID)
 ok("candidate_static: the rich branch is a candidate", rich["candidate"], rich)
 is_("task_join: groups whose reviewed commit is on the branch join it, ordered by their first review; another branch's, an "
@@ -408,15 +384,17 @@ is_("plan_commit: the newest approved, clean plan receipt on the branch (not the
     rich["plan_commit"], T1)
 is_("ambiguous_sha_skipped: the ambiguous range is dropped and counted, per branch and in branches.json",
     (rich["unresolved_ranges"], doc["unresolved_ranges"]), (1, 1))
-is_("task_join: branches.json lists each joined group's changes: g1 has the named range and the derived one",
-    doc["groups"]["g1"]["changes"], [[T1, F1], [F1, F2]])
-is_("fix_range_unnamed: a re-review with no range gets (the reviewed head, the last branch commit committed at or before it began)",
-    doc["groups"]["g1"]["changes"][1], [F1, F2])
-is_("ambiguous_sha_skipped: the group with the ambiguous range has no change left", doc["groups"]["gamb"]["changes"], [])
-ok("ambiguous_sha_skipped: and so no judge-task input", not os.path.exists(os.path.join(GS, "judge-task", "gamb.json")))
-is_("judge_inputs: one judge-task per group with a report and a fix range",
-    sorted(n[:-5] for n in os.listdir(os.path.join(GS, "judge-task")) if n.endswith(".json")), ["g1", "g2"])
-t1 = C.jload(os.path.join(GS, "judge-task", "g1.json"))
+is_("task_join: branches.json lists each branch's own changes per group: g1 has the named range and the derived one",
+    joined["g1"]["changes"], [[T1, F1], [F1, F2]])
+is_("fix_range_unnamed: a re-review with no range gets (the commit the earlier review looked at, the re-review's own named fix commit "
+    "when it descends from that), not the last commit made before it began (that would be task 2's)",
+    joined["g1"]["changes"][1], [F1, F2])
+is_("ambiguous_sha_skipped: the group with the ambiguous range has no change left, and says why", (joined["gamb"]["changes"], [
+    (u["kind"], u["review"]) for u in joined["gamb"]["unjoined"]]), ([], [("unresolved", 1)]))
+ok("ambiguous_sha_skipped: and so no judge-task input", not os.path.exists(os.path.join(GS, "judge-task", "gamb-" + BID + ".json")))
+is_("judge_inputs: one judge-task per (group, branch) with a report and a fix range",
+    sorted(n[:-5] for n in os.listdir(os.path.join(GS, "judge-task")) if n.endswith(".json")), ["g1-" + BID, "g2-" + BID])
+t1 = C.jload(os.path.join(GS, "judge-task", "g1-" + BID + ".json"))
 is_("judge_inputs: judge-task holds every report in order, with fresh indices", t1["reports"], [
     {"index": 0, "text": "Task 1: A and B are wrong."}, {"index": 1, "text": "A is fixed."}, {"index": 2, "text": "B is fixed."}])
 is_("judge_inputs: judge-task's changes are the fix ranges, the re-review prompt's 'Finding under verification' lines as the note",
@@ -439,7 +417,7 @@ is_("judge_inputs: no judge-present before judge-known has answered", os.path.is
 ok("inventory: none while judges are pending", not os.path.exists(os.path.join(GS, "inventory", BID + ".json")))
 
 # ---- answers, phase one: judge-task and judge-known
-answers(GS, "judge-task", "g1", {"findings": [
+answers(GS, "judge-task", "g1-" + BID, {"findings": [
     {"index": 0, "report": 0, "summary": "A is ignored", "file": "src/a.py", "line": 2, "failure_scenario": "when a runs", "severity": "P1",
      "introduced_by": None, "fixed_by": [0], "answer": "yes"},
     {"index": 1, "report": 0, "summary": "B leaks", "file": "src/b.py", "line": 2, "failure_scenario": "when the flag is off", "severity": "P3",
@@ -448,7 +426,7 @@ answers(GS, "judge-task", "g1", {"findings": [
      "introduced_by": None, "fixed_by": [0], "answer": "no"},
     {"index": 3, "report": 1, "summary": "Y came in with the fix", "file": "src/a.py", "line": 2, "failure_scenario": "y", "severity": "P1",
      "introduced_by": 0, "fixed_by": [1], "answer": "yes"}]})
-answers(GS, "judge-task", "g2", {"findings": [
+answers(GS, "judge-task", "g2-" + BID, {"findings": [
     {"index": 0, "report": 1, "summary": "C was wrong from the start", "file": "src/c.py", "line": 2, "failure_scenario": "when c runs",
      "severity": "P2", "introduced_by": None, "fixed_by": [0], "answer": "yes"},
     {"index": 1, "report": 1, "summary": "Z is unclear", "file": "src/c.py", "line": 1, "failure_scenario": "z", "severity": "P2",
@@ -591,11 +569,12 @@ helpers.write_ledger(os.environ["XDG_STATE_HOME"], OR, [
     receipt("xr-final", "2026-10-03T10:00:00.000000Z", "th-fi", "tu-fi", OG, "final", O0, FIN[-1])])
 OGROUPS = [
     group("gplain", OG, [review("review", "2026-10-01T09:30:00.000Z", [(O0, PL[0])], PL[0], report="plain review"),
+                         review("re-review", "2026-10-01T10:20:00.000Z", [(O0, PL[0])], PL[0], report="plain fixed first"),
                          review("re-review", "2026-10-01T10:30:00.000Z", [(PL[0], PL[1])], PL[1], report="plain fixed")]),
     group("gwork", OG, [review("review", "2026-10-01T09:30:00.000Z", [(O0, WORK[0])], WORK[0], report="work review"),
                         review("re-review", "2026-10-01T10:30:00.000Z", [(WORK[0], WORK[1])], WORK[1], report="work fixed")]),
     group("gwork2", OG, [review("review", "2026-10-01T09:30:00.000Z", [(O0, WORK[0])], WORK[0], report="work review again"),
-                         review("re-review", "2026-10-02T10:30:00.000Z", [], WORK[0], report="work fixed, no range named")], task=2),
+                         review("re-review", "2026-10-02T10:30:00.000Z", [], None, report="work fixed, no commit named")], task=2),
     group("gstray", OG, [review("review", "2026-10-01T09:30:00.000Z", [(O0, STRAY[0])], STRAY[0]),
                          review("re-review", "2026-10-01T10:30:00.000Z", [(STRAY[0], STRAY[0])], STRAY[0])], task=3)]
 ok("patch_id_join: control: the reviewed commits are not ancestors of the rewritten branch's tip",
@@ -604,25 +583,172 @@ run_cases(OSTATE, OGROUPS, open=1)
 doc, by = branches(OSTATE)
 is_("patch_id_join: a group whose commits survive on the branch only as rewritten copies joins it; a stray commit's group does not",
     by["final"]["groups"], ["gwork", "gwork2"])
-is_("patch_id_join: the group's fix range is the branch's own copy of it, named or derived from the re-review's start",
-    (doc["groups"]["gwork"]["changes"], doc["groups"]["gwork2"]["changes"]), ([[FIN[0], FIN[1]]], [[FIN[0], FIN[1]]]))
-is_("patch_id_join: an ancestry join is unchanged", (by["plain"]["groups"], doc["groups"]["gplain"]["changes"]), (["gplain"], [[PL[0], PL[1]]]))
+jn = lambda b: dict((j["group"], j["changes"]) for j in b["joined"])
+FID, PID = by["final"]["id"], by["plain"]["id"]
+is_("patch_id_join: the group's fix range is the branch's own copy of it, named, or derived for a re-review that names no commit "
+    "(the last own commit made before it began)", (jn(by["final"])["gwork"], jn(by["final"])["gwork2"]), ([[FIN[0], FIN[1]]], [[FIN[0], FIN[1]]]))
+is_("patch_id_join: an ancestry join is unchanged", (by["plain"]["groups"], jn(by["plain"])["gplain"]), (["gplain"], [[O0, PL[0]], [PL[0], PL[1]]]))
 
 # ---- --open: the first N candidates by merge date, most recent first
 is_("open: only the most recently merged candidate is opened", (by["final"]["opened"], by["plain"]["opened"]), (True, False))
 inputs = lambda: sorted(n[:-5] for n in os.listdir(os.path.join(OSTATE, "judge-task")) if n.endswith(".json"))
-is_("open: and only its judge inputs are written", inputs(), ["gwork", "gwork2"])
-ok("open: the diff of a rewritten group's change is the branch copy's", "+a2" in C.jload(os.path.join(OSTATE, "judge-task", "gwork.json"))["changes"][0]["diff"])
-os.utime(os.path.join(OSTATE, "judge-task", "gwork.json"), (1000000000, 1000000000))
-before = os.stat(os.path.join(OSTATE, "judge-task", "gwork.json")).st_mtime_ns
+is_("open: and only its judge inputs are written", inputs(), ["gwork-" + FID, "gwork2-" + FID])
+ok("open: the diff of a rewritten group's change is the branch copy's", "+a2" in C.jload(os.path.join(OSTATE, "judge-task", "gwork-" + FID + ".json"))["changes"][0]["diff"])
+os.utime(os.path.join(OSTATE, "judge-task", "gwork-" + FID + ".json"), (1000000000, 1000000000))
+before = os.stat(os.path.join(OSTATE, "judge-task", "gwork-" + FID + ".json")).st_mtime_ns
 run_cases(OSTATE, OGROUPS, open=2)
 doc, by = branches(OSTATE)
 is_("open: a larger N opens the next candidate", (by["final"]["opened"], by["plain"]["opened"]), (True, True))
-is_("open: and writes its inputs", inputs(), ["gplain", "gwork", "gwork2"])
-is_("open: an input that already exists is not rewritten", os.stat(os.path.join(OSTATE, "judge-task", "gwork.json")).st_mtime_ns, before)
+is_("open: and writes its inputs", inputs(), ["gplain-" + PID, "gwork-" + FID, "gwork2-" + FID])
+is_("open: an input that already exists is not rewritten", os.stat(os.path.join(OSTATE, "judge-task", "gwork-" + FID + ".json")).st_mtime_ns, before)
 run_cases(OSTATE, OGROUPS, open=0)
 doc, by = branches(OSTATE)
 is_("open: N of 0 opens none", (by["final"]["opened"], by["plain"]["opened"]), (False, False))
 run_cases(OSTATE, OGROUPS)
 doc, by = branches(OSTATE)
 is_("open: the default opens up to 16", (by["final"]["opened"], by["plain"]["opened"]), (True, True))
+
+
+# ================================================================ a review joins the one branch whose own commits hold it
+XP = helpers.make_repo(ROOT, "xrepo")
+with dated("2026-09-10T10:00:00Z"):
+    put(XP, "prev.txt", "prev\n")
+    XPREV = helpers.commit(XP, "before the base")
+with dated("2026-09-20T10:00:00Z"):
+    put(XP, "README.md", "readme\n")
+    X0 = helpers.commit(XP, "base")
+ONE = make_branch(XP, "one", X0, [("2026-10-01T09:00:00Z", {"a.txt": "a1\n"}, "o1"), ("2026-10-01T10:00:00Z", {"a.txt": "a2\n"}, "o2")])
+TWO = make_branch(XP, "two", X0, [("2026-10-02T09:00:00Z", {"b.txt": "b1\n"}, "t1"), ("2026-10-02T10:00:00Z", {"b.txt": "b2\n"}, "t2")])
+RB = make_branch(XP, "rb", X0, [("2026-10-07T09:00:00Z", {"r1.txt": "r1\n"}, "rb1"), ("2026-10-07T10:00:00Z", {"r2.txt": "r2\n"}, "rb2")])
+WK = make_branch(XP, "wk", X0, [("2026-10-08T09:00:00Z", {"z.txt": "z\n"}, "z on a work branch")])
+CP1 = make_branch(XP, "cp1", X0, [("2026-10-08T10:00:00Z", {"z.txt": "z\n"}, "z, copy one")])
+CP2 = make_branch(XP, "cp2", X0, [("2026-10-08T11:00:00Z", {"z.txt": "z\n"}, "z, copy two")])
+merge(XP, "one", "2026-10-05T10:00:00Z")
+merge(XP, "two", "2026-10-06T10:00:00Z")
+put(XP, "mm.txt", "main moved\n")
+with dated("2026-10-07T08:00:00Z"):
+    helpers.commit(XP, "main moves on")
+MMTIP = git(XP, "rev-parse", "main")
+git(XP, "checkout", "-q", "rb")
+with dated("2026-10-07T12:00:00Z"):
+    git(XP, "rebase", "-q", "main")                                     # rb is rebased between its rounds
+git(XP, "checkout", "-q", "main")
+RB2 = [git(XP, "rev-parse", "rb~1"), git(XP, "rev-parse", "rb")]
+merge(XP, "cp1", "2026-10-08T12:00:00Z")
+merge(XP, "cp2", "2026-10-08T13:00:00Z")
+merge(XP, "rb", "2026-10-09T10:00:00Z")
+# a branch that merged main into itself: main's commits it took in are not its own
+MG0 = git(XP, "rev-parse", "main")
+MGB = make_branch(XP, "mg", MG0, [("2026-10-10T09:00:00Z", {"m.txt": "m\n"}, "mg1"), ("2026-10-10T10:00:00Z", {"m2.txt": "m\n"}, "mg2")])
+put(XP, "side.txt", "side\n")
+with dated("2026-10-10T12:00:00Z"):
+    SIDE = helpers.commit(XP, "side work on main")
+git(XP, "checkout", "-q", "mg")
+with dated("2026-10-11T09:00:00Z"):
+    git(XP, "merge", "-q", "-m", "update from main", "main")
+git(XP, "checkout", "-q", "main")
+MGTIP = git(XP, "rev-parse", "mg")
+merge(XP, "mg", "2026-10-12T10:00:00Z")
+XAMB, _ids = ambiguous_pair(XP)
+XSTATE = world("w-x")
+XG = C.L.common_dir(XP)
+helpers.write_rollout(os.environ["CODEX_HOME"], "th-rb", [
+    {"turn": "tr-rb1", "answer": codex_answer("changes", [finding("P1", "r1.txt", 1, "r1: wrong before the rebase")])},
+    {"turn": "tr-rb2", "answer": codex_answer("approve", [])}])
+helpers.write_ledger(os.environ["XDG_STATE_HOME"], XP, [
+    receipt("xr-one", "2026-10-04T10:00:00.000000Z", "th-one", "tu-one", XG, "one", X0, ONE[-1]),
+    receipt("xr-two", "2026-10-04T11:00:00.000000Z", "th-two", "tu-two", XG, "two", X0, TWO[-1]),
+    receipt("xr-cp1", "2026-10-08T10:30:00.000000Z", "th-cp1", "tu-cp1", XG, "cp1", X0, CP1[-1]),
+    receipt("xr-cp2", "2026-10-08T11:30:00.000000Z", "th-cp2", "tu-cp2", XG, "cp2", X0, CP2[-1]),
+    receipt("xr-rb-1", "2026-10-07T11:00:00.000000Z", "th-rb", "tr-rb1", XG, "rb", X0, RB[-1], verdict="changes"),
+    receipt("xr-rb-2", "2026-10-08T09:00:00.000000Z", "th-rb", "tr-rb2", XG, "rb", MMTIP, RB2[-1]),
+    receipt("xr-mg", "2026-10-11T10:00:00.000000Z", "th-mg", "tu-mg", XG, "mg", MG0, MGTIP)])
+XGROUPS = [
+    group("gone1", XG, [review("review", "2026-10-01T09:30:00.000Z", [(X0, ONE[0])], ONE[0], report="one: review"),
+                        review("re-review", "2026-10-01T10:30:00.000Z", [(ONE[0], ONE[1])], ONE[1], report="one: fixed"),
+                        review("re-review", "2026-10-01T10:35:00.000Z", [(X0, ONE[0])], ONE[0], report="one: fixed again")]),
+    group("gtask2", XG, [review("review", "2026-10-01T10:45:00.000Z", [(ONE[0], ONE[1])], ONE[1], report="task 2: on branch one"),
+                         review("re-review", "2026-10-02T10:30:00.000Z", [(TWO[0], TWO[1])], TWO[1], report="task 2: on branch two"),
+                         review("re-review", "2026-10-03T10:30:00.000Z", [], None, report="task 2: names no commit")], task=2),
+    group("goff", XG, [review("review", "2026-10-01T09:40:00.000Z", [(X0, ONE[0])], ONE[0], report="off: review"),
+                       review("re-review", "2026-10-01T10:40:00.000Z", [(XPREV, ONE[1])], ONE[1], report="off: fixed")], task=3),
+    group("gh", XG, [review("review", "2026-10-02T09:30:00.000Z", [(X0, TWO[0])], TWO[0], report="h: review"),
+                     review("re-review", "2026-10-02T10:20:00.000Z", [(TWO[0], XAMB)], XAMB, report="h: fixed"),
+                     review("re-review", "2026-10-02T10:40:00.000Z", [], None, report="h: fixed again")], task=4),
+    group("gtwo", XG, [review("review", "2026-10-02T11:30:00.000Z", [(X0, TWO[0])], TWO[0], report="two: review"),
+                       review("re-review", "2026-10-02T11:40:00.000Z", [(X0, TWO[0])], TWO[0], report="two: fixed")], task=9),
+    group("grb", XG, [review("review", "2026-10-07T09:30:00.000Z", [(X0, RB[0])], RB[0], report="rb: review"),
+                      review("re-review", "2026-10-07T10:20:00.000Z", [(X0, RB[0])], RB[0], report="rb: fixed first"),
+                      review("re-review", "2026-10-07T10:30:00.000Z", [(RB[0], RB[1])], RB[1], report="rb: fixed")], task=5),
+    group("gmg", XG, [review("review", "2026-10-10T09:30:00.000Z", [(MG0, MGB[0])], MGB[0], report="mg: review"),
+                      review("re-review", "2026-10-10T10:30:00.000Z", [(MG0, MGB[0])], MGB[0], report="mg: fixed"),
+                      review("re-review", "2026-10-10T10:40:00.000Z", [(MGB[0], MGB[1])], MGB[1], report="mg: fixed again")], task=7),
+    group("gside", XG, [review("review", "2026-10-10T13:00:00.000Z", [(MG0, SIDE)], SIDE, report="the commit main took meanwhile")], task=8),
+    group("gdup", XG, [review("review", "2026-10-08T09:30:00.000Z", [(X0, WK[0])], WK[0], report="a patch two branches carry")], task=6),
+]
+is_("cases: exits 0", run_cases(XSTATE, XGROUPS), 0)
+doc, by = branches(XSTATE)
+ONEID, TWOID, RBID = by["one"]["id"], by["two"]["id"], by["rb"]["id"]
+J = lambda b: dict((j["group"], j) for j in by[b]["joined"])
+is_("rebased_between_rounds: the branch's base is the last full round's, so main's commits in between are not its own",
+    (by["rb"]["base"], by["rb"]["round1_tip"] == RB[-1], by["rb"]["final_tip"]), (MMTIP, True, RB2[-1]))
+is_("rebased_between_rounds: a review of the pre-rebase commits joins the rebased branch by patch id; the merged branches' own commits "
+    "stay with their branches (no review is claimed twice)", (by["rb"]["groups"], doc["ambiguous_reviews"] and [a["group"] for a in doc["ambiguous_reviews"]]),
+    (["grb"], ["gdup"]))
+is_("merged_main_in: a branch that merged main into itself owns the merge and its own commit, not main's commits it took in (the group "
+    "of such a commit joins no branch)", (by["mg"]["groups"], [g for b in by.values() for g in b["groups"] if g == "gside"]), (["gmg"], []))
+is_("rebased_between_rounds: its fix ranges are the rebased copies, and a base that was the branch's old base stands for its new one",
+    J("rb")["grb"]["changes"], [[MMTIP, RB2[0]], [RB2[0], RB2[1]]])
+is_("two_branches_one_patch: a review whose commit's patch two branches carry joins neither, and is listed",
+    ([sorted(a["branches"]) for a in doc["ambiguous_reviews"]], by["cp1"]["why"], by["cp2"]["why"]),
+    ([sorted([by["cp1"]["id"], by["cp2"]["id"]])], "no task review joined", "no task review joined"))
+is_("task_spans_branches: one task's reviews go to the branches their commits are on", (by["one"]["groups"], by["two"]["groups"]),
+    (["gone1", "goff", "gtask2"], ["gh", "gtask2", "gtwo"]))
+is_("task_spans_branches: by review: the first goes to one; the second, and the third that names no commit, to two",
+    (J("one")["gtask2"]["reviews"], J("two")["gtask2"]["reviews"]), ([0], [1, 2]))
+is_("task_spans_branches: a judge-task input per (group, branch), with only that branch's reviews",
+    sorted(n[:-5] for n in os.listdir(os.path.join(XSTATE, "judge-task")) if n.endswith(".json")),
+    sorted(["gone1-" + ONEID, "gtask2-" + TWOID, "gtwo-" + TWOID, "grb-" + RBID, "gmg-" + by["mg"]["id"]]))
+is_("task_spans_branches: and its reports are those reviews' (the third names no commit and no range: nothing to compare)",
+    [r["text"] for r in C.jload(os.path.join(XSTATE, "judge-task", "gtask2-" + TWOID + ".json"))["reports"]],
+    ["task 2: on branch two", "task 2: names no commit"])
+is_("task_spans_branches: its change is branch two's own range (the third review's derived range is empty)", J("two")["gtask2"]["changes"], [[TWO[0], TWO[1]]])
+is_("off_branch_range: a range some of whose commits are not the branch's own is dropped, counted and says why",
+    ([(u["kind"], u["review"], u["range"]) for u in J("one")["goff"]["unjoined"]], J("one")["goff"]["changes"], by["one"]["off_branch_ranges"]),
+    ([("off-branch", 1, [XPREV, ONE[1]])], [], 1))
+is_("unresolved_earlier_commit: a range-less re-review is not given an older review's commit when the nearer one does not resolve",
+    ([(u["kind"], u["review"]) for u in J("two")["gh"]["unjoined"]], J("two")["gh"]["changes"], by["two"]["unresolved_ranges"]),
+    ([("unresolved", 1), ("unresolved", 2)], [], 2))
+ok("unresolved_earlier_commit: and it says which commit it could not use", "does not resolve" in J("two")["gh"]["unjoined"][1]["why"], J("two")["gh"]["unjoined"])
+is_("branches.json totals", (doc["unresolved_ranges"], doc["off_branch_ranges"]), (2, 1))
+
+# ---- skipped rounds: round 1's tip is not an ancestor of round 2's, because rb was rebased
+is_("skipped_rounds: recorded in branches.json with a reason", [(s["k"], s["why"].startswith("round 1 not judged")) for s in by["rb"]["skipped_rounds"]], [(1, True)])
+answers(XSTATE, "judge-task", "grb-" + RBID, {"findings": []})
+run_cases(XSTATE, XGROUPS)
+inv = C.jload(os.path.join(XSTATE, "inventory", RBID + ".json"))
+is_("skipped_rounds: and in the inventory's dropped, one entry per finding of the round", [(d["summary"], d["why"].startswith("round 1 not judged")) for d in inv["dropped"]],
+    [("r1: wrong before the rebase", True)])
+
+# ---- stale inputs: an input whose content changed does not keep its old answer
+SID = "gone1-" + ONEID
+tp = os.path.join(XSTATE, "judge-task", SID)
+answers(XSTATE, "judge-task", SID, {"findings": []})
+run_cases(XSTATE, XGROUPS)
+ok("stale_input: an answer to unchanged content is kept", os.path.exists(tp + ".answer.json"))
+ok("stale_input: a digest sits beside the input", os.path.isfile(tp + ".digest") and len(open(tp + ".digest").read().strip()) == 64)
+edited = [dict(g) for g in XGROUPS]
+edited[0] = group("gone1", XG, [review("review", "2026-10-01T09:30:00.000Z", [(X0, ONE[0])], ONE[0], report="one: review"),
+                                review("re-review", "2026-10-01T10:30:00.000Z", [(ONE[0], ONE[1])], ONE[1], report="one: fixed, edited"),
+                                review("re-review", "2026-10-01T10:35:00.000Z", [(X0, ONE[0])], ONE[0], report="one: fixed again")])
+run_cases(XSTATE, edited)
+ok("stale_input: changed content rewrites the input", "one: fixed, edited" in open(tp + ".json").read())
+ok("stale_input: and sets the old answer aside, under a name that is not an answer",
+   not os.path.exists(tp + ".answer.json") and any(n.startswith(SID + ".stale-") and n.endswith(".answer.json") for n in os.listdir(os.path.dirname(tp))))
+ok("stale_input: so it shows as pending again", ("judge-task", SID) in [(k, j) for k, j, *_ in C.pending(XSTATE)])
+
+# ---- the destination's history is not in the snapshot at all
+os.makedirs(os.path.join(ROOT, "no-main-snap", "xrepo", "objects"))
+run_cases(os.path.join(ROOT, "w-x", "state2"), XGROUPS, root=os.path.join(ROOT, "no-main-snap"))
+_d, byx = branches(os.path.join(ROOT, "w-x", "state2"))
+is_("dest_tip_missing: a repository whose destination the snapshot lacks says so", byx["one"]["why"], "destination tip not in the snapshot")

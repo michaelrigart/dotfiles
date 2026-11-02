@@ -37,8 +37,7 @@ def _in_window(at):
     return isinstance(at, str) and WINDOW[0] <= at < WINDOW[1]
 
 
-def _cap(text, limit):
-    return text if len(text) <= limit else text[:limit] + "\n[truncated]\n"
+_cap = C.cap
 
 
 def _epoch(stamp):
@@ -94,13 +93,7 @@ def _plan_target(e):
     return None
 
 
-def _norm(path):
-    path = path if isinstance(path, str) else ""
-    while path.startswith("./"):
-        path = path[2:]
-    if path[:2] in ("a/", "b/"):
-        path = path[2:]
-    return path
+_norm = C.norm
 
 
 def _plan_of(finding, plans):
@@ -114,34 +107,12 @@ def _plan_of(finding, plans):
 
 
 # ------------------------------------------------------------------ reading git through the view
-class Reader(object):
-    """The reads of one repository, through the private view (the snapshot's objects when it has any)."""
+class Reader(C.Reader):
+    """common.Reader, and the reads that belong to the plan-review checkpoint."""
 
     def __init__(self, state, gitdir, root):
-        self.state, self.gitdir, self.root = state, gitdir, root
-        self._view = None
+        C.Reader.__init__(self, state, gitdir, root)
         self._diffs = {}
-
-    @property
-    def view(self):
-        if self._view is None:
-            self._view = C.view(self.state, self.gitdir, self.root)
-        return self._view
-
-    def has_commit(self, rev):
-        return C.git_ok(self.view, "cat-file", "-e", rev + "^{commit}")
-
-    def text(self, blob):
-        try:
-            return C.git(self.view, "cat-file", "blob", blob, raw=True).decode("utf-8", "replace")
-        except Failed:
-            return None
-
-    def size(self, blob):
-        try:
-            return int(C.git(self.view, "cat-file", "-s", blob))
-        except (Failed, ValueError):
-            return None
 
     def plan_blobs(self, base, tip):
         """{plan path: blob at tip} of the plans base..tip changes and still has (regular files under
