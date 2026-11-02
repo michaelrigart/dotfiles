@@ -135,10 +135,15 @@ def _without_notify(text):
 
 def _depth(text):
     """Brackets opened minus closed in `text`, outside quoted strings and comments."""
-    depth, quote = 0, None
+    depth, quote, skip = 0, None, False
     for ch in text:
-        if quote:
-            quote = None if ch == quote else quote
+        if skip:
+            skip = False
+        elif quote:
+            if ch == "\\" and quote == '"':
+                skip = True
+            elif ch == quote:
+                quote = None
         elif ch in "\"'":
             quote = ch
         elif ch == "#":
@@ -189,11 +194,28 @@ def _settle_auth(home):
     os.symlink(target, link)
 
 
+def _alive(home):
+    """Whether the daemon of `home` answers: its socket is there and `health` succeeds."""
+    return os.path.exists(_socket(home)) and _call(None, home, "health")[0] == 0
+
+
+def _register(state, name, home):
+    registry = os.path.join(state, "codex-homes.json")
+    homes = jload(registry) or {}
+    homes[name] = home
+    jsave(registry, homes)
+
+
 def ensure(state, name, memories_src=None, use_memories=False, source=None):
     """The replay home $XDG_STATE_HOME/cxh/<name>, made or brought up to date and recorded in
-    <state>/codex-homes.json; returns its path.
+    <state>/codex-homes.json; returns its path. Without a snapshot the home has no memories.
     Sessions, sqlite and the rest of what the daemon creates are left alone, so an existing home keeps
-    its rollouts."""
+    its rollouts. A home whose daemon is running is refused."""
+    return _make(state, name, memories_src, use_memories, source, False)
+
+
+def _make(state, name, memories_src, use_memories, source, keep_memories):
+    """ensure(); with keep_memories an existing memories/ stays as it is when there is no snapshot."""
     source = os.path.abspath(source or _default_source())
     home = home_path(name)
     real_home, real_source = os.path.realpath(home), os.path.realpath(source)
@@ -204,8 +226,11 @@ def ensure(state, name, memories_src=None, use_memories=False, source=None):
     if len(_socket(home).encode("utf-8")) > SOCKET_LIMIT:
         raise Failed("the daemon socket {} would be over {} bytes, more than a unix socket allows: use a shorter XDG_STATE_HOME".format(
             _socket(home), SOCKET_LIMIT))
-    if use_memories and memories_src is None:
-        raise Failed("use_memories needs a memories snapshot")
+    mem = os.path.join(home, "memories")
+    if use_memories and memories_src is None and not (keep_memories and os.path.isdir(mem)):
+        raise Failed("{} would use memories but has no memories snapshot".format(home))
+    if os.path.isfile(os.path.join(home, RECORD)) and _alive(home):
+        raise Failed("the replay daemon of {} is running: stop it first".format(home))
     config = os.path.join(source, "config.toml")
     if not os.path.isfile(config):
         raise Failed("the source home has no config.toml: " + config)
@@ -217,6 +242,17 @@ def ensure(state, name, memories_src=None, use_memories=False, source=None):
     os.chmod(home, 0o700)
     os.makedirs(auth_dir(), exist_ok=True)
     os.chmod(auth_dir(), 0o700)
+    new, old = os.path.join(home, ".memories.new"), os.path.join(home, ".memories.old")
+    _remove(new)
+    _remove(old)
+    if memories_src is not None:
+        try:
+            shutil.copytree(memories_src, new, symlinks=True, ignore=shutil.ignore_patterns(".git"))
+        except BaseException as e:
+            _remove(new)
+            if isinstance(e, OSError):      # shutil.Error is one
+                raise Failed("cannot copy the memories snapshot {}: {}".format(memories_src, e))
+            raise
     jsave(os.path.join(home, "config.toml"), _memories_config(_without_notify(text), use_memories))
     os.chmod(os.path.join(home, "config.toml"), 0o600)
     agents = os.path.join(source, "AGENTS.md")
@@ -228,15 +264,15 @@ def ensure(state, name, memories_src=None, use_memories=False, source=None):
         else:
             _remove(os.path.join(home, item))
     _settle_auth(home)
-    mem = os.path.join(home, "memories")
-    _remove(mem)
-    if memories_src is not None:
-        shutil.copytree(memories_src, mem, symlinks=True, ignore=shutil.ignore_patterns(".git"))
+    if memories_src is not None:        # the old copy goes only once the new one is in place
+        if os.path.lexists(mem):
+            os.rename(mem, old)
+        os.rename(new, mem)
+        _remove(old)
+    elif not keep_memories:
+        _remove(mem)
     jsave(os.path.join(home, RECORD), {"source": source, "use_memories": bool(use_memories)})
-    registry = os.path.join(state, "codex-homes.json")
-    homes = jload(registry) or {}
-    homes[name] = home
-    jsave(registry, homes)
+    _register(state, name, home)
     return home
 
 
@@ -264,25 +300,18 @@ def _daemon(home, verb):
         raise Failed("daemon {} failed ({}): {}".format(verb, p.returncode, p.stderr.decode("utf-8", "replace").strip()))
 
 
-def _running_elsewhere(home):
-    cur = jload(_marker())
-    other = cur.get("home") if isinstance(cur, dict) else None
-    if other and os.path.realpath(other) != os.path.realpath(home) and os.path.exists(_socket(other)):
-        return other
-    return None
-
-
 def start(home):
     """Start the replay daemon of `home`. One at a time: a second home is refused while another runs."""
     _record(home)
-    other = _running_elsewhere(home)
-    if other:
-        raise Failed("the replay daemon of {} is running: stop it first".format(other))
     os.makedirs(auth_dir(), exist_ok=True)
     cur = jload(_marker())
     last = cur.get("home") if isinstance(cur, dict) else None
-    if last and os.path.realpath(last) != os.path.realpath(home) and os.path.isfile(os.path.join(last, RECORD)):
-        _settle_auth(last)      # a crashed daemon's refreshed token is carried forward before another home logs in
+    if last and os.path.realpath(last) != os.path.realpath(home):
+        if os.path.isfile(os.path.join(last, RECORD)):
+            if _alive(last):
+                raise Failed("the replay daemon of {} is running: stop it first".format(last))
+            _settle_auth(last)      # a dead daemon's refreshed token is carried forward before another home logs in
+        os.unlink(_marker())
     _daemon(home, "start")
     jsave(_marker(), {"home": home})
 
@@ -310,7 +339,8 @@ def _call(rpc, home, *args):
     exe = rpc or XR.RPC
     argv = [exe] if os.access(exe, os.X_OK) else ["/usr/bin/python3", "-I", exe]
     env = dict(os.environ, CODEX_HOME=home)
-    env.pop("XREVIEW_RPC_SOCK", None)      # it outranks CODEX_HOME and would aim the call at another daemon
+    for var in ("XREVIEW_RPC_SOCK", "XREVIEW_RPC_STDIO"):      # each outranks CODEX_HOME and would aim the call elsewhere
+        env.pop(var, None)
     try:
         p = subprocess.run(argv + list(args), capture_output=True, env=env, timeout=PROBE_BUDGET + 60)
     except (OSError, subprocess.SubprocessError) as e:
@@ -326,20 +356,43 @@ def _rollouts(home, thread):
     return sorted(found)
 
 
+def _strings(obj):
+    """Every string value in a decoded JSON document, and in the JSON a string value itself holds (tool
+    arguments are JSON text): a memory line with a quote or a backslash in it is found as it reads."""
+    if isinstance(obj, str):
+        yield obj
+        if obj.lstrip()[:1] in ("{", "["):
+            try:
+                inner = json.loads(obj)
+            except ValueError:
+                return
+            for x in _strings(inner):
+                yield x
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            for x in _strings(v):
+                yield x
+    elif isinstance(obj, list):
+        for v in obj:
+            for x in _strings(v):
+                yield x
+
+
 def _read_rollout(path):
-    """(model, effort, [developer message text], the whole text) of a plain rollout."""
+    """(model, effort, [developer message text], [every string in the rollout]) of a plain rollout."""
     model = effort = None
-    texts = []
+    texts, everything = [], []
     try:
         with open(path, "rb") as f:
             raw = f.read()
     except OSError:
-        return model, effort, texts, ""
+        return model, effort, texts, everything
     for line in raw.splitlines():
         try:
             rec = json.loads(line.decode("utf-8"))
         except ValueError:
             continue
+        everything.extend(_strings(rec))
         p = rec.get("payload") if isinstance(rec, dict) and isinstance(rec.get("payload"), dict) else {}
         if rec.get("type") == "turn_context":
             model, effort = p.get("model") or model, p.get("effort") or effort
@@ -347,7 +400,7 @@ def _read_rollout(path):
             for part in p.get("content") or []:
                 if isinstance(part, dict) and isinstance(part.get("text"), str):
                     texts.append(part["text"])
-    return model, effort, texts, raw.decode("utf-8", "replace")
+    return model, effort, texts, everything
 
 
 def _memory_lines(summary):
@@ -420,11 +473,11 @@ def probe(home, expect_memories, rpc=None):
         if mine:
             res["model"], res["effort"], texts, whole = _read_rollout(mine[-1])
         else:
-            texts, whole = [], ""
+            texts, whole = [], []
         wanted = _memory_lines(os.path.join(home if expect_memories else source, "memories", "memory_summary.md"))
         if not wanted:
             notes.append("no memory lines to look for in {} memory_summary.md".format("the replay home's" if expect_memories else "the source's"))
-        haystack = "\n".join(texts) if expect_memories else whole      # nothing of it anywhere when none is expected
+        haystack = "\n".join(texts if expect_memories else texts + whole)      # nothing of it anywhere when none is expected
         shown = [haystack.find(l) >= 0 for l in wanted]
         checks["memories"] = (bool(shown) and all(shown)) if expect_memories else not any(shown)
         if not checks["memories"]:
@@ -454,22 +507,19 @@ def add_args(ap):
 
 
 def _ensure_for(a, home):
-    """ensure() with the flags given; an existing home's own settings (source, memories, whether it
-    uses them) stand for the flags left out."""
+    """ensure() with the flags given. What a flag leaves out comes from the home's record: its source and
+    whether it uses memories (--memories replaces the snapshot, never that setting); without --memories
+    an existing snapshot stays."""
     rec = jload(os.path.join(home, RECORD)) if os.path.isfile(os.path.join(home, RECORD)) else None
     rec = rec if isinstance(rec, dict) else {}
     source = os.path.expanduser(a.codex_source) if a.codex_source else rec.get("source")
-    if a.memories or not os.path.isdir(os.path.join(home, "memories")):
-        return ensure(a.state, a.name, a.memories, a.use_memories, source)
-    keep = tempfile.mkdtemp(prefix="memories.")
-    try:
-        shutil.copytree(os.path.join(home, "memories"), os.path.join(keep, "m"), symlinks=True)
-        return ensure(a.state, a.name, os.path.join(keep, "m"), a.use_memories or bool(rec.get("use_memories")), source)
-    finally:
-        shutil.rmtree(keep, ignore_errors=True)
+    use = bool(a.use_memories or rec.get("use_memories"))
+    return _make(a.state, a.name, a.memories, use, source, keep_memories=not a.memories)
 
 
 def cmd_home(a):
+    """Only a creation, a refresh or --start (which refreshes first) changes a home's files; --stop and
+    --probe read its record and leave its files alone, so --stop works on a home whose files are broken."""
     if a.login_cmd:
         if not a.dry_run:
             os.makedirs(auth_dir(), exist_ok=True)
@@ -482,9 +532,19 @@ def cmd_home(a):
     if a.dry_run:
         say("would use the replay home {} (source {})".format(home, a.codex_source or "its own, else ~/.codex"))
         return 0
-    home = _ensure_for(a, home)
-    say("home: " + home)
-    status = 0
+    status, stopped = 0, False
+    if a.start or a.memories or a.use_memories or not (a.stop or a.probe):
+        if os.path.isfile(os.path.join(home, RECORD)) and _alive(home):
+            if not a.stop:
+                raise Failed("the replay daemon of {} is running: stop it first (--stop)".format(home))
+            stop(home)
+            stopped = True
+            say("stopped: " + home)
+        home = _ensure_for(a, home)
+        say("home: " + home)
+    else:
+        _record(home)
+        _register(a.state, a.name, home)
     if a.start:
         start(home)
         say("started: " + home)
@@ -492,7 +552,7 @@ def cmd_home(a):
         res = probe(home, bool(_record(home).get("use_memories")))
         say(json.dumps(res, indent=2))
         status = 0 if res["ok"] else 1
-    if a.stop:
+    if a.stop and (a.start or not stopped):
         stop(home)
         say("stopped: " + home)
     return status

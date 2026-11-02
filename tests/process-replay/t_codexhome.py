@@ -20,6 +20,11 @@ os.environ["XDG_STATE_HOME"] = os.path.join(ROOT, "xdg")
 FAKE = os.path.join(ROOT, "fakecodex")
 os.environ["CODEX_REAL_BIN"] = helpers.stub_codex(FAKE)
 LOG = os.path.join(FAKE, "codex.log")
+ANSWER = {"verdict": "approve", "findings": []}
+# the rpc the module itself uses (XR.RPC) for liveness checks: a daemon that answers health, or one that does not
+UP = helpers.stub_rpc(os.path.join(ROOT, "rpc-up"), ROOT, {"health_rc": 0, "default": {"answer": ANSWER}})
+DOWN = helpers.stub_rpc(os.path.join(ROOT, "rpc-down"), ROOT, {"health_rc": 5})
+H.XR.RPC = UP
 
 SUMMARY = ("# Memory summary\n\nThe deploy script lives in bin/deploy-zebra and needs the --quiet flag.\n"
            "Reviews of the quokka module always hit the same off-by-one in the tail.\n"
@@ -129,6 +134,13 @@ is_("home_config: ensure again changes nothing", sorted(os.listdir(home)), sorte
 put(home, "sessions/keep.txt", "k")
 H.ensure(STATE, "nomem", source=SRC)
 ok("home_config: and keeps what the daemon wrote there", os.path.exists(os.path.join(home, "sessions", "keep.txt")))
+
+# ---- notify_escapes
+ESC = 'notify = ["sh", "-c", "echo \\"[\\""]\nmodel = "m"\n\n[mcp_servers.x]\ncommand = "x"\n'
+got = H._without_notify(ESC)
+ok("notify_escapes: a quoted bracket behind a backslash does not hide what follows", got == 'model = "m"\n\n[mcp_servers.x]\ncommand = "x"\n', got)
+got = H._without_notify('notify = [\n  "a\\\\", "b",\n]\nmodel = "m"\n')
+is_("notify_escapes: nor does an escaped backslash end a string early", got, 'model = "m"\n')
 
 # ---- home_short_path
 is_("home_short_path: the registry lists the homes by name", H_json(os.path.join(STATE, "codex-homes.json")).get("nomem"), home)
@@ -256,6 +268,47 @@ del os.environ["STOP_REMOVES"]
 os.environ["CODEX_REAL_BIN"] = good_bin
 H.stop(home)
 
+# ---- stale_marker: a dead daemon that left its socket does not block another home
+H.start(home)
+os.unlink(auth)
+put(home, "auth.json", "DEAD-TOKEN")
+os.utime(os.path.join(home, "auth.json"), (time.time() + 200, time.time() + 200))
+H.XR.RPC = DOWN
+H.start(hm)
+is_("stale_marker: a marker home whose socket does not answer health is settled and passed over",
+    (open(shared).read(), os.path.islink(auth), json.load(open(H._marker()))["home"]), ("DEAD-TOKEN", True, hm))
+H.XR.RPC = UP
+ok("stale_marker: while one that answers still blocks", raises(H.start, home))
+H.stop(hm)
+H.XR.RPC = DOWN
+os.unlink(os.path.join(home, "app-server-control", "app-server-control.sock"))
+H.XR.RPC = UP
+
+# ---- refresh_refused_while_running
+H.start(home)
+before_files = helpers.listing(home)
+ok("refresh_refused_while_running: ensure on a home whose daemon answers is refused", raises(H.ensure, STATE, "nomem", source=SRC))
+is_("refresh_refused_while_running: and changes nothing", helpers.listing(home), before_files)
+H.XR.RPC = DOWN
+ok("refresh_refused_while_running: a socket whose daemon does not answer is not running", H.ensure(STATE, "nomem", source=SRC) == home)
+H.XR.RPC = UP
+H.stop(home)
+
+# ---- snapshot_swap
+bad = os.path.join(ROOT, "snap-bad")
+put(bad, "memory_summary.md", "new")
+put(bad, "unreadable.md", "x", mode=0)
+H.ensure(STATE, "mem-sw", memories_src=SNAP, use_memories=True, source=SRC)
+swhome = H.home_path("mem-sw")
+ok("snapshot_swap: a snapshot that cannot be copied raises", raises(H.ensure, STATE, "mem-sw", bad, True, SRC))
+ok("snapshot_swap: the old snapshot is untouched and nothing is left beside it",
+   open(os.path.join(swhome, "memories", "memory_summary.md")).read() == SUMMARY
+   and not any(n.startswith(".memories") for n in os.listdir(swhome)), os.listdir(swhome))
+os.chmod(os.path.join(bad, "unreadable.md"), 0o644)
+H.ensure(STATE, "mem-sw", memories_src=bad, use_memories=True, source=SRC)
+ok("snapshot_swap: a good one replaces it", open(os.path.join(swhome, "memories", "memory_summary.md")).read() == "new"
+   and not any(n.startswith(".memories") for n in os.listdir(swhome)))
+
 # ---- probe_checks
 def summary_lines():
     return [l.strip() for l in SUMMARY.splitlines() if len(l.strip()) >= 20 and not l.startswith("#")]
@@ -324,16 +377,27 @@ stub = helpers.stub_rpc(os.path.join(ROOT, "rpc-w2"), phm, {"default": {"answer"
                         "tools": [{"name": "exec", "arguments": {"cmd": "echo " + lines3[1]}}]}})
 res = probe_fresh(phm, True, rpc=stub)
 ok("probe_checks: but a memories home needs it in the developer message", res["checks"]["memories"] is False, res)
+qsrc = make_source("src-q", links=False)
+QUOTED = 'Run "make test" before pushing any branch to origin, and mind the C:\\\\path too.'
+put(qsrc, "memories/memory_summary.md", "# s\n\n" + QUOTED + "\nshort one\n")
+qhome = H.ensure(STATE, "p-q", source=qsrc)
+for where, spec in (("a tool call", {"tools": [{"name": "exec", "arguments": {"cmd": QUOTED}}]}),
+                    ("a tool output record", {"developer": "x" + QUOTED + "y"})):
+    stub = helpers.stub_rpc(os.path.join(ROOT, "rpc-q" + where[:4]), qhome, {"default": dict({"answer": {}}, **spec)})
+    res = probe_fresh(qhome, False, rpc=stub)
+    ok("probe_checks: a memory line with quotes and a backslash is found in " + where, res["checks"]["memories"] is False, res)
 envlog = os.path.join(ROOT, "env.log")
 envwrap = os.path.join(ROOT, "env-rpc")
 envinner = rpc_for("x", phome, "plain")
 with open(envwrap, "w") as f:
-    f.write("#!/bin/sh\necho \"${XREVIEW_RPC_SOCK-unset}\" >> %s\nexec %s \"$@\"\n" % (envlog, envinner))
+    f.write("#!/bin/sh\necho \"${XREVIEW_RPC_SOCK-unset} ${XREVIEW_RPC_STDIO-unset}\" >> %s\nexec %s \"$@\"\n" % (envlog, envinner))
 os.chmod(envwrap, 0o755)
 os.environ["XREVIEW_RPC_SOCK"] = "/elsewhere/sock"
+os.environ["XREVIEW_RPC_STDIO"] = "/bin/false"
 probe_fresh(phome, False, rpc=envwrap)
 del os.environ["XREVIEW_RPC_SOCK"]
-is_("probe_checks: an inherited XREVIEW_RPC_SOCK never reaches the rpc", set(open(envlog).read().split()), {"unset"})
+del os.environ["XREVIEW_RPC_STDIO"]
+is_("probe_checks: an inherited XREVIEW_RPC_SOCK or XREVIEW_RPC_STDIO never reaches the rpc", set(open(envlog).read().split()), {"unset"})
 stub = rpc_for("f", phome, "nothing")
 res = probe_fresh(phome, True, rpc=stub)
 ok("probe_checks: expecting memories but finding none fails", res["ok"] is False and res["checks"]["memories"] is False, res)
@@ -412,16 +476,58 @@ is_("cmd_home: --name --start --stop makes the home, starts and stops its daemon
     (0, [("start", cmdhome), ("stop", cmdhome)]))
 ok("cmd_home: --name without --login-cmd or a name is refused", raises(H.cmd_home, ap.parse_args(["--state", ROOT])))
 
-a = ap.parse_args(["--state", os.path.join(ROOT, "cmd-state"), "--name", "mem-cmd", "--codex-source", SRC, "--memories", SNAP, "--use-memories"])
-with contextlib.redirect_stdout(io.StringIO()):
-    H.cmd_home(a)
+def run_cmd(*argv, state="cmd-state"):
+    with contextlib.redirect_stdout(io.StringIO()):
+        return H.cmd_home(ap.parse_args(["--state", os.path.join(ROOT, state)] + list(argv)))
+
+
+SNAP2 = os.path.join(ROOT, "snap2")
+put(SNAP2, "memory_summary.md", "second\n")
+cfg_of = lambda h: open(os.path.join(h, "config.toml")).read()
+run_cmd("--name", "mem-cmd", "--codex-source", SRC, "--memories", SNAP, "--use-memories")
 cmem = os.path.join(ROOT, "xdg", "cxh", "mem-cmd")
 put(cmem, "plugins/stale", "x")
-cfg_before = open(os.path.join(cmem, "config.toml")).read()
-a = ap.parse_args(["--state", os.path.join(ROOT, "cmd-state"), "--name", "mem-cmd"])
-with contextlib.redirect_stdout(io.StringIO()):
-    H.cmd_home(a)
-ok("cmd_home: an existing home is ensured again (copies refreshed) and keeps its memories and setting",
+run_cmd("--name", "mem-cmd")
+ok("cmd_home: an existing home is refreshed again and keeps its memories and setting",
    not os.path.exists(os.path.join(cmem, "plugins", "stale")) and os.path.exists(os.path.join(cmem, "memories", "memory_summary.md"))
-   and open(os.path.join(cmem, "config.toml")).read() == cfg_before and "use_memories = true" in cfg_before, cfg_before)
+   and "use_memories = true" in cfg_of(cmem), cfg_of(cmem))
+run_cmd("--name", "mem-cmd", "--memories", SNAP2)
+ok("cmd_home: --memories replaces the snapshot but keeps the recorded use_memories",
+   open(os.path.join(cmem, "memories", "memory_summary.md")).read() == "second\n" and "use_memories = true" in cfg_of(cmem)
+   and json.load(open(os.path.join(cmem, H.RECORD)))["use_memories"] is True, cfg_of(cmem))
+shutil.rmtree(os.path.join(cmem, "memories"))
+cfg_before = cfg_of(cmem)
+ok("cmd_home: a home that wants memories but has none, and no --memories, is refused", raises(run_cmd, "--name", "mem-cmd"))
+ok("cmd_home: and nothing flipped", cfg_of(cmem) == cfg_before)
 is_("cmd_home: and it is listed in the state's codex-homes.json", H_json(os.path.join(ROOT, "cmd-state", "codex-homes.json")).get("mem-cmd"), cmem)
+
+# --stop and --probe leave a home's files alone; --stop works on a broken home
+def files_of(h):
+    return [f for f in helpers.listing(h) if not f[0].startswith(("sessions", "archived_sessions", "app-server-control"))]
+
+
+run_cmd("--name", "nomem", "--codex-source", SRC, "--start")
+nm = os.path.join(ROOT, "xdg", "cxh", "nomem")
+os.utime(os.path.join(nm, "plugins", "f.txt"), (1000, 1000))
+files = files_of(nm)
+run_cmd("--name", "nomem", "--probe", state="cmd-state2")
+is_("cmd_home: --probe leaves the home's files as they were", files_of(nm), files)
+is_("cmd_home: and registers the home in this state's codex-homes.json", H_json(os.path.join(ROOT, "cmd-state2", "codex-homes.json")), {"nomem": nm})
+n_stop = len(helpers.read_log(LOG))
+os.unlink(os.path.join(nm, "config.toml"))
+shutil.rmtree(os.path.join(nm, "plugins"))
+files = files_of(nm)
+run_cmd("--name", "nomem", "--stop")
+is_("cmd_home: --stop on a home with broken files still stops its daemon",
+    [(l["argv"][2], l["codex_home"]) for l in helpers.read_log(LOG)[n_stop:]], [("stop", nm)])
+is_("cmd_home: and leaves the files as they were", files_of(nm), files)
+ok("cmd_home: --probe on a name that is no home is refused", raises(run_cmd, "--name", "nowhere", "--probe"))
+
+# a refresh under a running daemon is refused unless it is stopped first
+run_cmd("--name", "nomem", "--codex-source", SRC, "--start")
+ok("cmd_home: a refresh of a running home is refused", raises(run_cmd, "--name", "nomem"))
+n_stop = len(helpers.read_log(LOG))
+run_cmd("--name", "nomem", "--stop", "--memories", SNAP)
+ok("cmd_home: unless --stop comes with it: stopped, then refreshed",
+   [l["argv"][2] for l in helpers.read_log(LOG)[n_stop:]] == ["stop"] and os.path.exists(os.path.join(nm, "memories", "memory_summary.md"))
+   and os.path.isdir(os.path.join(nm, "plugins")))
