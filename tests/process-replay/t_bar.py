@@ -104,6 +104,15 @@ for name, cases, runs, coverage, want in TABLE:
     is_(name, got["status"], want)
     ok(name + " (reasons are strings, one at least)", got["reasons"] and all(isinstance(r, str) for r in got["reasons"]), got["reasons"])
 
+# ---- runs_per_case: report expects as many runs as `run` makes; the count lives in common.RUNS and nowhere else
+C.RUNS = 3
+try:
+    got = bar.bar([BASE], two("c1", ALL_R), NONE)
+finally:
+    C.RUNS = 2
+ok("runs_per_case: a case with two runs of the three common.RUNS asks for is incomplete, and says 2 of 3",
+   got["status"] == "inconclusive" and "case c1: 2 of 3 runs" in got["reasons"], got["reasons"])
+
 # ---- assessable_edges
 def sized(npre, rec_pre, ntask, cens_task, rec_pre_state="recovered"):
     pre = [("p%03d" % i, "P2") for i in range(npre)]

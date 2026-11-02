@@ -46,7 +46,6 @@ from . import final as F
 from . import scratch
 from .common import Failed, L, XR, jload, jsave, say
 
-RUNS = 2                  # runs per case (spec 4.4)
 ROUNDS = 6                # Codex rounds at most (spec 4.4)
 TURNS = 3                 # Codex turns in flight across all runs (spec 8)
 HOME = "nomem"
@@ -259,7 +258,7 @@ def ensure_runs(ctx, runs):
                 runs.append(start_run(ctx, case, r["replaced_by"], voids=r["voids"], replaces=r["label"]))
                 have.add(r["replaced_by"])
                 made = True
-        for _ in range(RUNS - len([r for r in mine if not r.get("replaces")])):
+        for _ in range(C.RUNS - len([r for r in mine if not r.get("replaces")])):
             label = C.label(_taken(a) | have)
             have.add(label)
             runs.append(start_run(ctx, case, label))
@@ -332,6 +331,16 @@ def _open_valid(ctx, run, ids):
 
 
 # ------------------------------------------------------------------ the oracle fixer
+def _reset(sd):
+    """Put the scratch tree back to HEAD. "" when it is, else a note that it could not be, to append to the error being raised, so the
+    failure that made the reset necessary is never replaced by the reset's own."""
+    try:
+        C.git(sd, *(scratch.NEUTRAL + ["reset", "-q", "--hard", "HEAD"]))
+    except Failed as e:
+        return "; the tree could not be put back either: {}".format(e)
+    return ""
+
+
 def oracle(run, ids):
     """Re-apply the repairs of `ids` (each group's patch once) one after another, `git apply --index` and, when a patch's context
     changed under an earlier one, `--3way` (the injected blobs are in the scratch), then commit once, `Address review findings`;
@@ -347,21 +356,18 @@ def oracle(run, ids):
             texts.append((did, f.read()))
     for did, data in texts:
         if not data.strip():
-            C.git(sd, "reset", "-q", "--hard", "HEAD")
-            raise RepairFailed("the repair of {} is empty".format(did))
+            raise RepairFailed("the repair of {} is empty{}".format(did, _reset(sd)))
         for extra in ([], ["--3way"]):
             if C.git_run(sd, scratch.NEUTRAL + ["apply", "--index", "--whitespace=nowarn"] + extra + ["-"], input=data).returncode == 0:
                 break
         else:
-            C.git(sd, "reset", "-q", "--hard", "HEAD")
-            raise RepairFailed("the repair of {} does not apply to the tree".format(did))
+            raise RepairFailed("the repair of {} does not apply to the tree{}".format(did, _reset(sd)))
     g = lambda *args, **kw: C.git(sd, *(scratch.NEUTRAL + list(args)), **kw)
     stamp = "{} +0000".format(int(g("log", "-1", "--format=%ct", "HEAD")) + scratch.HOUR)
     try:
         g("commit", "-q", "--no-verify", "-m", COMMIT, env=dict(scratch.IDENTITY, GIT_AUTHOR_DATE=stamp, GIT_COMMITTER_DATE=stamp))
     except Failed as e:
-        g("reset", "-q", "--hard", "HEAD")
-        raise RepairFailed("the repair of {} was applied but not committed: {}".format(", ".join(sorted(ids)), e))
+        raise RepairFailed("the repair of {} was applied but not committed: {}{}".format(", ".join(sorted(ids)), e, _reset(sd)))
     return g("rev-parse", "HEAD")
 
 
@@ -699,8 +705,8 @@ def _drive(a, rounds):
         runs = runs_of(a)
         for cid, case in sorted(ctx.cases.items()):
             mine = [r for r in runs if r["case"] == cid and not r.get("replaces")]
-            if len(mine) < RUNS:
-                say("would start {} run(s) of case {}".format(RUNS - len(mine), cid))
+            if len(mine) < C.RUNS:
+                say("would start {} run(s) of case {}".format(C.RUNS - len(mine), cid))
         _summary(runs)
         return 0
     fd = None
@@ -741,11 +747,14 @@ def cmd_match(a):
 
 
 def cmd_cleanup(a):
-    """Stop the replay home's daemon and archive the threads the runs used; remove scratch/, work/, views/, packs/ (a cache), the
-    run scratches under review-work/scratch and this state's staged items under review-work/items. Every JSON file stays. It
-    refuses while a `run` holds run.lock or any run's lock is held."""
+    """Stop the replay home's daemon and archive the threads the runs used; remove scratch/, work/, views/, packs/ (a cache), each
+    recreate/<defect>/tree (a working copy of the final tree), the run scratches under review-work/scratch and this state's staged
+    items under review-work/items. Every JSON file, brief, patch and `done` marker stays. It refuses while a `run` holds run.lock or
+    any run's lock is held. Threads are archived on the daemon as it is: run cleanup before `home --stop`, or archiving fails (exit 1)
+    though everything else is removed."""
     runs = runs_of(a)
     gone = [os.path.join(a.state, d) for d in ("scratch", "work", "views", "packs")]
+    gone += sorted(glob.glob(os.path.join(glob.escape(a.state), "recreate", "*", "tree")))
     recorded = [r.get("scratch") for r in runs]
     for path in glob.glob(os.path.join(glob.escape(a.state), "runs", "*", "*", "scratch.json")):
         recorded.append((jload(path) or {}).get("scratch"))

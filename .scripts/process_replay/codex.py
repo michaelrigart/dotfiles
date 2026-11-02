@@ -578,7 +578,7 @@ def leaks(home, turns, paths, cwd=None):
             path = XR.rollout_path(thread)
             try:
                 lines = _lines(path) if path is not None else []
-            except OSError:
+            except (OSError, subprocess.SubprocessError):          # unreadable, or zstd timed out: not shown clean
                 lines = []
             seen = set()
             inside = False

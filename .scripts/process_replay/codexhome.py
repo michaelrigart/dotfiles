@@ -246,7 +246,7 @@ def _make(state, name, memories_src, use_memories, source, keep_memories):
             _socket(home), SOCKET_LIMIT))
     mem = os.path.join(home, "memories")
     old = os.path.join(home, ".memories.old")
-    if os.path.isfile(os.path.join(home, RECORD)) and _may_run(home):
+    if _may_run(home):
         raise Failed("the replay daemon of {} is running (or does not answer health): stop it first".format(home))
     if not os.path.lexists(mem) and os.path.isdir(old):
         os.rename(old, mem)         # a crash between the two renames of a snapshot swap
@@ -633,7 +633,7 @@ def cmd_home(a):
         return 0
     status, stopped = 0, False
     if a.start or a.memories or a.use_memories or not (a.stop or a.probe):
-        if os.path.isfile(os.path.join(home, RECORD)) and _may_run(home):
+        if _may_run(home):
             if not a.stop:
                 raise Failed("the replay daemon of {} is running: stop it first (--stop)".format(home))
             stop(home)

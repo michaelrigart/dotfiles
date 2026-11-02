@@ -48,8 +48,8 @@ reviewer who reports it finds a defect that is not in the case's list.
 
 Writes injected/<branch>.json and cases.json, and per kind of item it asks for (judge-split, judge-present, judge-same, recreate) a
 manifest <kind>/needed.json, {owned: every id it has asked for, needed: the ids it waits on now}: `pending` leaves out an item inject
-asked for and no longer needs (one an earlier inventory, a branch now beyond the limit, or a cargo result since changed led to). `inject` is run again after each judge phase;
-it reads what has answered and goes on.
+asked for and no longer needs (one an earlier inventory, a branch now beyond the limit, or a cargo result since changed led to).
+`inject` is run again after each judge phase; it reads what has answered and goes on.
 """
 import collections
 import os

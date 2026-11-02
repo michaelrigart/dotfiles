@@ -292,7 +292,7 @@ H.stop(home)
 # a health call that hangs is a daemon that does not answer for start, but one that might be alive for a refresh
 HANG = os.path.join(ROOT, "hang-rpc")
 with open(HANG, "w") as f:
-    f.write("#!/bin/sh\nsleep 4\n")
+    f.write("#!/bin/sh\nexec sleep 60\n")
 os.chmod(HANG, 0o755)
 H.HEALTH_TIMEOUT = 1
 H.start(home)
@@ -300,7 +300,9 @@ H.XR.RPC = HANG
 t0 = time.time()
 ok("stale_marker: a health call that times out blocks a refresh of that home", raises(H.ensure, STATE, "nomem", source=SRC))
 H.start(hm)
-ok("stale_marker: but does not keep another home from starting", json.load(open(H._marker()))["home"] == hm and time.time() - t0 < 4)
+# the hung call sleeps 60 s and is cut off at HEALTH_TIMEOUT (1 s here); 30 s is half the sleep, so only a call that is waited out fails the bound,
+# however loaded the machine is
+ok("stale_marker: but does not keep another home from starting", json.load(open(H._marker()))["home"] == hm and time.time() - t0 < 30)
 H.XR.RPC = UP
 H.stop(hm)
 os.unlink(os.path.join(home, "app-server-control", "app-server-control.sock"))
@@ -314,6 +316,18 @@ is_("refresh_refused_while_running: and changes nothing", helpers.listing(home),
 H.XR.RPC = DOWN
 ok("refresh_refused_while_running: a socket whose daemon does not answer is not running", H.ensure(STATE, "nomem", source=SRC) == home)
 H.XR.RPC = UP
+H.stop(home)
+# a daemon that answers guards a refresh whether or not the home still has its record (a refresh never lands under a live daemon)
+H.start(home)
+record = open(os.path.join(home, H.RECORD)).read()
+os.unlink(os.path.join(home, H.RECORD))
+before_files = helpers.listing(home)
+ok("refresh_refused_while_running: ensure on a recordless home whose daemon answers is refused", raises(H.ensure, STATE, "nomem", source=SRC))
+is_("refresh_refused_while_running: and changes nothing", helpers.listing(home), before_files)
+ns = __import__("argparse").Namespace(state=os.path.join(ROOT, "norecord"), dry_run=False, name="nomem", memories=None, use_memories=False, start=True,
+                                       stop=False, probe=False, login_cmd=False, codex_source=SRC)
+ok("refresh_refused_while_running: cmd_home --start on it is refused too, and writes no record", raises(H.cmd_home, ns) and not os.path.exists(os.path.join(home, H.RECORD)))
+put(home, H.RECORD, record)
 H.stop(home)
 
 # ---- crashed_run: a daemon left by a run that died is stopped; one a live run holds is not

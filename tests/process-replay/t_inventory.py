@@ -783,6 +783,15 @@ is_("derive_own_branch: an earlier review that belongs to another branch is not 
     (None, "no earlier review of the task on this branch"))
 pair, why = I.derive(drepo, dscope, dres, 1, dgroup["reviews"][1], [0, 1])
 is_("derive_own_branch: control: were it this branch's, it would be the base", (pair and pair[0], why), (DO[0], None))
+# changes_of hands derive the indices of this branch's reviews: the nearer review on another branch is not the base
+cgroup = group("gy", C.L.common_dir(DR), [
+    review("review", "2026-10-02T09:30:00.000Z", [(D0, DT[0])], DT[0]),
+    review("review", "2026-10-02T09:40:00.000Z", [(D0, DO[0])], DO[0]),
+    review("re-review", "2026-10-02T10:30:00.000Z", [], DT[1])])
+cres = I.resolve_group(drepo, cgroup)
+chs, gone = I.changes_of(drepo, dscope, cgroup, cres, [0, 2])
+is_("changes_of_own_reviews: a range-less re-review of branch two takes the earlier review of branch two as its base, not the nearer review of branch one",
+    ([c["range"] for c in chs], gone), ([(DT[0], DT[1])], []))
 is_("fix_range_ancestry: a range whose base is not an ancestor of its head is not kept even when b..h are all the branch's own",
     (all(s in dscope["own"] for s, _t in drepo.commits(DO[0], DT[1])), I.fix_range(drepo, dscope, DO[0], DT[1])), (True, None))
 ok("fix_range_ancestry: control: an ordinary own range is kept", I.fix_range(drepo, dscope, DT[0], DT[1]) == (DT[0], DT[1]))

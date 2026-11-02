@@ -369,6 +369,21 @@ os.makedirs(os.path.join(lhome, "sessions", "2026", "10", "20"), exist_ok=True)
 with open(helpers.rollout_file(lhome, "lkzst", sub="sessions/2026/10/20").replace(".jsonl", ".jsonl.zst"), "wb") as f:
     f.write(b"this is not a zstd frame")
 is_("leak_scan: a rollout that cannot be decompressed counts as a leak", K.leaks(lhome, [("lkzst", "t1")], [W]), ["rollout unreadable in t1"])
+real_run = K.subprocess.run
+
+
+def zstd_hangs(argv, *args, **kw):
+    if argv and argv[0] == "zstd":
+        raise K.subprocess.TimeoutExpired(argv, kw.get("timeout"))
+    return real_run(argv, *args, **kw)
+
+
+K.subprocess.run = zstd_hangs
+try:
+    hung = K.leaks(lhome, [("lkzst", "t1")], [W])
+finally:
+    K.subprocess.run = real_run
+is_("leak_scan: a rollout whose decompression times out counts as a leak too (the scan does not raise)", hung, ["rollout unreadable in t1"])
 w = World("leakround")
 home = replay_home("leakround")
 stub = stub_for("leakround", home, {"default": {"answer": ans(), "tools": [tool("custom_tool_call", "cat {}/src/a.py".format(w.workdir))]}})

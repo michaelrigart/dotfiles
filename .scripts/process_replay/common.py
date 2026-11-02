@@ -51,6 +51,7 @@ say = XR.say
 JUDGE_KINDS = ("judge-task", "judge-known", "judge-present", "judge-split", "judge-dedup", "judge-same", "judge-match",
                "judge-class")
 BLIND_KEYS = ("class", "run", "arm", "label", "purpose")
+RUNS = 2                  # runs per case (spec 4.4): `run` makes them, `report` expects them
 _ID = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 
 SCALE = """Severity scale, P0 (it cannot work) to P3 (minor):

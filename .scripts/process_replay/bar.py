@@ -24,7 +24,6 @@ from . import common as C
 from . import planreview
 from .common import Failed, jload, say
 
-RUNS = 2                      # runs per case (loop.RUNS; not imported, loop.py is being refactored)
 RECALL = (4, 5)               # assessable: at least 4/5 of the pre-merge class recovered (spec 4.6)
 CENSORED = (1, 4)             # assessable: at most 1/4 of the per-task class censored
 ENDED = ("approve", "rounds", "stalled")
@@ -95,8 +94,8 @@ def bar(cases, runs, coverage):
         if not [d for d in case["defects"] if _info(case, d).get("class") != "task"]:
             no_pre.append(case["id"])
         mine = live_runs(runs, case["id"])
-        if len(mine) < RUNS:
-            blocks.append("case {}: {} of {} runs".format(case["id"], len(mine), RUNS))
+        if len(mine) < C.RUNS:
+            blocks.append("case {}: {} of {} runs".format(case["id"], len(mine), C.RUNS))
         uncounted += [{"case": case["id"], "defect": d["id"], "severity": d.get("severity"), "summary": d.get("summary")}
                       for d in sorted(case["info"].values(), key=lambda x: x["id"]) if d.get("class") == "task" and not d.get("counted")]
         for run in mine:

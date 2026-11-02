@@ -363,6 +363,15 @@ ok("setup: each run has its ledger recorded", all(r["ledger"] and os.path.isdir(
 ok("setup: a final brief waits for every run, and nothing else ran", len(CALLS) == 0 and sorted(i for k, i, *_ in C.pending(w.state) if k == "final") == sorted(labels),
    C.pending(w.state))
 
+# ---- runs_per_case: the number of runs per case is common.RUNS (report reads the same one)
+w3 = World("runs3")
+C.RUNS = 3
+try:
+    go(w3)
+finally:
+    C.RUNS = 2
+is_("runs_per_case: with common.RUNS at 3, run makes three runs of the case", len(w3.runs()), 3)
+
 # ---- the final review's brief is staged (the content tests are in t_final.py)
 r0 = w.runs()[0]
 brief_path = os.path.join(C.item_dir(w.state, "final", r0["label"]), "brief.md")
@@ -959,6 +968,33 @@ ok("commit_fails: the run ends error, saying what failed, with the tree as it wa
        and git(x["scratch"], "rev-list", "--count", x["base_tip"] + "..HEAD") == "0" for x in w.runs()), [(x["end"], x.get("error")) for x in w.runs()])
 go(w, rounds=False)
 
+# a reset that fails after a failed commit does not hide why the commit failed
+w = World("commitfail2")
+behave(lambda run, k: ("approve", []))
+go(w)
+drive(w, report=["found dA"])
+go(w, rounds=False)
+drive(w, report=["found dA"])
+real_git = C.git
+
+
+def no_reset(gitdir, *args, **kw):
+    if "reset" in args:
+        raise Failed("git reset failed (128): cannot lock the index")
+    return real_git(gitdir, *args, **kw)
+
+
+P.COMMIT = ""
+C.git = no_reset
+try:
+    go(w, rounds=False)
+finally:
+    C.git = real_git
+    P.COMMIT = "Address review findings"
+ok("commit_fails_reset_fails: the run's error names the commit failure and the failed reset",
+   all(x["end"] == "error" and "not committed" in x["error"] and "empty commit message" in x["error"].lower() and "cannot lock the index" in x["error"]
+       for x in w.runs()), [(x["end"], x.get("error")) for x in w.runs()])
+
 # ================================================================== repair_fails
 w = World("repair-fails")
 behave(lambda run, k: ("approve", []))
@@ -973,6 +1009,24 @@ text = go(w)
 ok("repair_fails: a repair that no longer applies ends the run error, and names the defect", all(x["end"] == "error" and "dA" in x["error"] for x in w.runs()), [(x["end"], x.get("error")) for x in w.runs()])
 ok("repair_fails: the tree is unchanged by the failed repair", all(git(x["scratch"], "status", "--porcelain") == "" and git(x["scratch"], "rev-list", "--count", w.base + "..HEAD") == "1" for x in w.runs()))
 ok("repair_fails: and no Codex round was started", not CALLS)
+
+# ... nor does it hide why a repair would not apply
+w = World("repair-fails2")
+behave(lambda run, k: ("approve", []))
+go(w)
+with open(os.path.join(w.state, "repairs", "dA.patch"), "w") as f:
+    f.write(w.patches["dA"].replace("a3", "not the line"))
+drive(w, report=["found dA"])
+go(w)
+drive(w, report=["found dA"])
+C.git = no_reset
+try:
+    go(w)
+finally:
+    C.git = real_git
+ok("repair_fails_reset_fails: the run's error names the defect whose repair did not apply and the failed reset",
+   all(x["end"] == "error" and "dA" in x["error"] and "does not apply" in x["error"] and "cannot lock the index" in x["error"] for x in w.runs()),
+   [(x["end"], x.get("error")) for x in w.runs()])
 
 # ================================================================== the turn limits, pause, stop, failures
 w = World("many", cases=3)
@@ -1086,6 +1140,12 @@ os.makedirs(os.path.join(w.state, "scratch", "old"))
 os.makedirs(os.path.join(w.state, "work", "other"))
 os.makedirs(os.path.join(w.state, "packs"), exist_ok=True)
 helpers.put(os.path.join(w.state, "packs"), "k.pack", "x")
+helpers.put(os.path.join(w.state, "recreate", "dX"), "tree/src/a.py", "x = 1\n")
+helpers.put(os.path.join(w.state, "recreate", "dX"), "tree/package.json", "{}")
+helpers.put(os.path.join(w.state, "recreate", "dX"), "done", "")
+helpers.put(os.path.join(w.state, "recreate"), "dX.json", "{}")
+helpers.put(os.path.join(w.state, "recreate"), "dX.brief.md", "brief")
+helpers.put(os.path.join(w.state, "recreated"), "dX.patch", "p")
 other = os.path.join(want_root, "not-ours")
 os.makedirs(other)
 XR.Threads(w.state).add("th-clean", "new")
@@ -1118,7 +1178,7 @@ XR.RPC = stub
 stops = []
 P.codexhome.stop = lambda home: stops.append(home)
 runs = w.runs()
-jsons = sorted(os.path.relpath(os.path.join(d, f), w.state) for d, _x, fs in os.walk(w.state) for f in fs if f.endswith(".json") and "/work/" not in d + "/" and "/scratch/" not in d + "/")
+jsons = sorted(os.path.relpath(os.path.join(d, f), w.state) for d, _x, fs in os.walk(w.state) for f in fs if f.endswith(".json") and "/work/" not in d + "/" and "/scratch/" not in d + "/" and "/tree/" not in d + "/")
 dry = io.StringIO()
 with contextlib.redirect_stdout(dry):
     P.cmd_cleanup(w.args(dry_run=True))
@@ -1127,9 +1187,13 @@ with contextlib.redirect_stdout(io.StringIO()):
     rc = P.cmd_cleanup(w.args())
 ok("cleanup: it removes this state's scratch/, work/, views/, packs/ and the run scratches under review-work/scratch",
    rc == 0 and not any(os.path.exists(os.path.join(w.state, d)) for d in ("scratch", "work", "views", "packs")) and not any(os.path.exists(r["scratch"]) for r in runs))
+rdir = os.path.join(w.state, "recreate")
+ok("cleanup: a recreation's working copy (recreate/<d>/tree) is removed, its spec, brief, done marker and patch stay",
+   not os.path.exists(os.path.join(rdir, "dX", "tree")) and os.path.isfile(os.path.join(rdir, "dX", "done")) and os.path.isfile(os.path.join(rdir, "dX.json"))
+   and os.path.isfile(os.path.join(rdir, "dX.brief.md")) and os.path.isfile(os.path.join(w.state, "recreated", "dX.patch")))
 ok("cleanup: another state's scratch directory stays", os.path.isdir(other))
 ok("cleanup: this state's staged item directories are removed, and items.json stays", not any(os.path.exists(i) for i in items) and os.path.isfile(os.path.join(w.state, "items.json")))
-after = sorted(os.path.relpath(os.path.join(d, f), w.state) for d, _x, fs in os.walk(w.state) for f in fs if f.endswith(".json") and "/work/" not in d + "/" and "/scratch/" not in d + "/")
+after = sorted(os.path.relpath(os.path.join(d, f), w.state) for d, _x, fs in os.walk(w.state) for f in fs if f.endswith(".json") and "/work/" not in d + "/" and "/scratch/" not in d + "/" and "/tree/" not in d + "/")
 ok("cleanup: every JSON file stays", jsons == after and "cases.json" in after and any(p.endswith("state.json") for p in after), set(jsons) ^ set(after))
 log = helpers.read_log(os.path.join(os.path.dirname(stub), "rpc.log"))
 arch = [e for e in log if e["cmd"] == "thread-archive"]
