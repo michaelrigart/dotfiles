@@ -279,13 +279,25 @@ def collect_final(state, jid):
     return None
 
 
+NEEDED = "needed.json"          # <state>/<kind>/needed.json: the questions of a kind its writer still needs (inject.Questions)
+
+
 def _inputs(state, kind):
     d = os.path.join(state, kind)
     try:
         names = sorted(os.listdir(d))
     except OSError:
         return []
-    return [n[:-5] for n in names if n.endswith(".json") and not n.endswith(".answer.json")]
+    return [n[:-5] for n in names if n.endswith(".json") and not n.endswith(".answer.json") and n != NEEDED]
+
+
+def _not_needed(state, kind):
+    """The ids of `kind` that <state>/<kind>/needed.json says its writer asked and no longer waits on: {owned: [id], needed: [id]}.
+    Empty without one; a question its writer does not own (another module's) is never in it."""
+    doc = jload(os.path.join(state, kind, NEEDED))
+    if not isinstance(doc, dict):
+        return set()
+    return set(doc.get("owned") or []) - set(doc.get("needed") or [])
 
 
 def alias(state):
@@ -371,10 +383,14 @@ def _write_if_changed(path, data):
 
 
 def _pending(state):
-    """[(kind, id, input path, answer path, brief path)], the harness's own paths (the state's), of everything unanswered."""
+    """[(kind, id, input path, answer path, brief path)], the harness's own paths (the state's), of everything unanswered, except a
+    question its kind's needed.json marks as no longer needed."""
     out = []
     for kind in JUDGE_KINDS:
+        obsolete = _not_needed(state, kind)
         for jid in _inputs(state, kind):
+            if jid in obsolete:
+                continue
             base = os.path.join(state, kind, jid)
             staged = _staged(state, kind, jid)
             if not os.path.exists(base + ".answer.json") and not (staged and os.path.exists(os.path.join(staged, "answer.json"))):

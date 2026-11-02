@@ -1,41 +1,59 @@
 """inject: the injected tree of each inventoried branch, its defects' validation, the coverage gate and qualification (spec 4.3, 4.1).
 
 For every opened candidate of branches.json, in order of its merge date (newest first, then final round), up to MAX_CASES in all and
-PER_REPO from one repository (a branch that waits on a judge holds its place, one that fails gives it up):
+PER_REPO from one repository (a branch that waits on a judge holds its place, one that fails or can no longer qualify gives it up):
 
-  1. fix groups     a fix range that two defects share (counted or not) is split by a blind judge (judge-split/<branch>-<range>); a
-                    test hunk goes with the defect it tests. A hunk it cannot place ("unsure") makes those defects one group,
-                    reverted and re-applied together. Overlapping ranges are one range. A group with no counted defect is not reverted.
-  2. injected tree  <state>/work/<branch>, private to the harness: the final tip's tree (scratch.build), each group's fix reverted
-                    with `git apply -R --index`, latest fix first, tests included, docs/superpowers pinned to the plan commit.
-                    A patch that does not apply is dropped-revert. A revert that fails the cheap coherence check is undone:
-                    incoherent. A Rust repository gets `cargo check` once, undoing reverts latest first.
-  3. validation     judge-present/<defect>: is the defect's failure scenario reachable in that tree.
-  4. settling       the tree a case ships is REBUILT from the final tree: the reverts of the groups with a present defect, then the
-                    accepted recreations (gate.py), then docs pinned. Nothing else is in it. Each assessable defect's repair is
-                    located in it (patches.locate); one that does not apply there is demoted and the tree rebuilt, until none is.
-                    check_invariant then re-applies every repair and restores docs/superpowers: the result must be the final tree.
-  5. coverage gate  gate.py: a per-task defect that did not revert or validate (or was demoted) gets one hand re-creation.
-  6. qualification  two or more assessable per-task defects and every P0/P1 of both classes assessable.
+  1. fix groups  a fix range that two defects share (counted or not) is split by a blind judge (judge-split/<branch>-<range>); a test
+                 hunk goes with the defect it tests. A hunk it cannot place ("unsure") makes those defects one group, reverted and
+                 re-applied together. Overlapping ranges are one range. A group with no counted defect is never reverted.
+  2. fixpoint    the tree a case ships, and which of the branch's counted (P0-P2) defects it holds, settled as below.
+  3. qualifying  two or more assessable per-task defects and every P0/P1 of both classes assessable.
 
-Build checks (spec 12, R2) are cheap and lexical, not a build: bash -n, zsh -n, Python's ast, ruby -c and a JSON parse on the files a
-revert changed; a revert that removes a definition (def, class, function, fn, a top-level assignment, a shell function) that another
-tracked file still mentions as a word is incoherent; `cargo check --offline --all-targets` once for a Rust repository. A tool that is
-not installed, and a cargo that times out, are recorded (checks_skipped, build_check), never silent and never fatal.
+The fixpoint. A counted defect is in the tree by its revert (its group reverted), on trial or by its recreation, or out. Each round:
 
-Writes injected/<branch>.json, repairs/<defect>.patch (the patch that puts the fix back: `git apply` on the injected tree) and
-cases.json. `inject` is run again after each judge phase; it reads what has answered and goes on.
+  build    the tree of the active set, from F (the final tip's tree, commit `final_commit` of <state>/work/<branch>): each group with a
+           member in by revert, reverted with `git apply -R --index`, latest fix first (topo position, else committer date), tests
+           included, and checked (checks.py: syntax and dangling names; a group that does not revert, or fails, is left out); then
+           each recreation, those on trial last (one that does not apply is left out); then `cargo check` for a Rust repository, once
+           per tree id, remembered across runs (on failure the newest step is left out: a trial, a recreation, then the latest
+           fix's revert; a timeout is recorded and leaves nothing out); then docs/superpowers pinned to the plan commit.
+  locate   every member's repair (its group's patch, or the reverse of its recreation) is applied to that tree on a temporary index
+           (patches.locate). A group whose repair does not apply is merged with the oldest other group whose repair, applied
+           first, lets it apply (two fixes too close to revert apart are one group), else its members are out. Recreations on
+           trial are blamed for any repair that stops applying when they join.
+  judge    judge-present for every member on that tree (or, while recreations are on trial, for those alone), keyed by what the
+           judge sees (gate.py): a tree state already judged reuses its answer, and no question is ever overwritten. A member
+           answered no or unclear is out. A per-task defect that is out gets its one recreation (gate.recreation): when judge-same
+           accepts it, it joins on trial; when judge-present then finds it in the tree, it is in by its recreation.
+  Rounds repeat until a round changes nothing. A round stops the fixpoint while any of its judge-present questions is unanswered,
+  or, when it would end or take recreations on trial, while a recreation it could take is unfinished (judge-same unanswered, or
+  no `done`); the next `inject` replays the same rounds from the answers on disk and goes on from there.
+
+Why it ends. Give each counted defect a stage: 0 in by revert, 1 out awaiting its recreation (per-task only), 2 on trial, 3 in by
+recreation, 4 out for good. A defect only ever moves to a higher stage: nothing that is out comes back by revert, and a recreation is
+tried once. Groups only ever merge. Every round that does not stop or finish moves a defect up a stage or merges two groups, so a
+branch with D counted defects and G groups settles in at most 4*D + G + 1 rounds (exceeding it raises Failed). Its questions are a
+function of the answers on disk, never overwritten, so every run replays the same rounds: there is nothing to alternate between.
+
+The shipped tree is the fixpoint's last tree. check_invariant re-applies every repair to it and restores docs/superpowers: the result
+must be the final tree. Repairs (repairs/<defect>.patch) and hunks (where each repair applies in the shipped tree) are written only when
+the branch is complete.
+
+Known limit: a group stays reverted while any member is in, so a member judged absent (of a split the judge could not make, or of
+two fixes too close to revert apart) still has its revert in the shipped tree, inside the group's repair. The invariant holds; a
+reviewer who reports it finds a defect that is not in the case's list.
+
+Writes injected/<branch>.json and cases.json, and per kind of question it asks (judge-split, judge-present, judge-same) a manifest
+<kind>/needed.json, {owned: every id it has asked, needed: the ids it waits on now}: `pending` leaves out a question inject asked and
+no longer needs (one an earlier inventory, or a branch now beyond the limit, led to). `inject` is run again after each judge phase;
+it reads what has answered and goes on.
 """
 import collections
-import hashlib
-import json
 import os
-import re
 import shutil
-import subprocess
-import sys
 import tempfile
 
+from . import checks as K
 from . import common as C
 from . import gate as G
 from . import inventory as I
@@ -43,19 +61,16 @@ from . import patches as P
 from . import scratch
 from .common import Failed
 
-XR, L = C.XR, C.L
-
 DOCS = P.DOCS
 MAX_CASES = 12                       # spec 4.1: 10-12 cases
 PER_REPO = 4                         # at most four from one repository
 MIN_TASK = 2                         # assessable per-task defects a branch needs
 HUNK_CAP, FILES_CAP = 20000, 150000
-CHECK_TIMEOUT = 60
 OK = ("present", "recreated")
-FAILED = ("dropped-revert", "incoherent", "not-present")
 SEVERE = ("P0", "P1")
 
 fix_patch = P.fix_patch
+coherent = K.coherent
 
 
 # ------------------------------------------------------------------ the position of a fix
@@ -121,11 +136,15 @@ def merge_ranges(view, keys):
     return out
 
 
-def make_plan(a, view, br, defects, counted, counts):
-    """(plan, pending). `defects` are all the branch's, counted or not; `counted` the ids of those whose fix is reverted. A range two
-    of them share is split by a judge, so an uncounted defect's hunks stay applied. plan = {groups: [{id, members, pieces: [{range,
-    rank, text}], patch, files}], bad: {defect: reason}}, with no group that has no counted member; None while a judge-split has not
-    answered (pending counts them)."""
+def _group_order(g):
+    return (g["pieces"][0]["rank"], g["id"])
+
+
+def make_plan(a, view, br, defects, counted, counts, questions):
+    """(plan, [ids of the judge-split questions still waiting]). `defects` are all the branch's, counted or not; `counted` the ids of
+    those whose fix is reverted. A range two of them share is split by a judge, so an uncounted defect's hunks stay applied. plan =
+    {groups: [{id, members, pieces: [{range, rank, text}], patch, files}], bad: {defect: reason}}, with no group that has no counted
+    member; None while a judge-split has not answered. Every split question is noted in `questions`."""
     order = Order(view, br["base"], br["final_tip"])
     ranges, bad = collections.OrderedDict(), {}
     fixes = {}
@@ -158,7 +177,7 @@ def make_plan(a, view, br, defects, counted, counts):
             x = parent[x]
         return x
 
-    owners, pending = {}, 0
+    owners, pending = {}, []
     for key, r in ranges.items():
         ids = sorted(i for i in r.get("ids", []) if i not in bad)
         if len(ids) < 2 or not r["items"] or not any(i in counted for i in ids):
@@ -174,8 +193,9 @@ def make_plan(a, view, br, defects, counted, counts):
             "defects": [{"index": n, "summary": by_id[i].get("summary"), "file": by_id[i].get("file"), "line": by_id[i].get("line")}
                         for n, i in enumerate(ids)], "hunks": hunks}, counts)
         ans = C.judge_answer(a.state, "judge-split", jid)
+        questions.note("judge-split", jid, isinstance(ans, dict))
         if not isinstance(ans, dict):
-            pending += 1
+            pending.append(jid)
             continue
         given = {}
         for e in ans.get("hunks") or []:
@@ -217,152 +237,41 @@ def make_plan(a, view, br, defects, counted, counts):
         pieces.sort(key=lambda p: p["rank"])
         patch = "".join(p["text"] for p in reversed(pieces))
         groups.append({"id": members[0], "members": members, "pieces": pieces, "patch": patch, "files": P.files_of(patch)})
-    groups.sort(key=lambda g: (g["pieces"][0]["rank"], g["id"]))
-    return {"groups": groups, "bad": bad}, 0
+    groups.sort(key=_group_order)
+    return {"groups": groups, "bad": bad}, []
 
 
-# ------------------------------------------------------------------ coherence
-def _kind(path, name):
-    try:
-        with open(path, "rb") as f:
-            first = f.readline(200).decode("utf-8", "replace")
-    except OSError:
-        return None
-    if first.startswith("#!"):
-        if "zsh" in first:
-            return "zsh"
-        if "bash" in first:
-            return "bash"
-    ext = os.path.splitext(name)[1]
-    if ext in (".sh", ".bash"):
-        return "bash"
-    if ext == ".zsh" or "/zsh/functions/" in "/" + name:
-        return "zsh"
-    return {".py": "python", ".rb": "ruby", ".json": "json"}.get(ext)
-
-
-def _run_check(argv, cwd, notes):
-    try:
-        p = subprocess.run(argv, cwd=cwd, stdin=subprocess.DEVNULL, capture_output=True, timeout=CHECK_TIMEOUT)
-    except FileNotFoundError:
-        if notes is not None and "{} not found".format(argv[0]) not in notes:
-            notes.append("{} not found".format(argv[0]))
-        return True, ""
-    except subprocess.TimeoutExpired:
-        return False, "timed out"
-    lines = p.stderr.decode("utf-8", "replace").strip().splitlines()
-    return p.returncode == 0, lines[-1] if lines else ""
-
-
-def coherent(work, files, notes=None):
-    """(True, "") when every file of `files` (paths below `work`) that has a cheap syntax check passes it, else (False, "<path>: <why>").
-    bash -n for .sh, .bash and a bash shebang; zsh -n for .zsh, a zsh shebang or a file under zsh/functions; Python's ast for .py;
-    ruby -c for .rb; a JSON parse for .json. A file that is gone, or has no check, passes. So does one whose tool is not installed,
-    but the tool is then named in `notes` (a list), to be recorded."""
-    for name in sorted(files):
-        path = os.path.join(work, name)
-        if not os.path.isfile(path) or os.path.islink(path):
-            continue
-        kind = _kind(path, name)
-        if kind in ("bash", "zsh"):
-            good, why = _run_check([kind, "-n", path], work, notes)
-        elif kind == "python":
-            good, why = _run_check([shutil.which("python3") or sys.executable, "-c", "import ast,sys; ast.parse(open(sys.argv[1]).read())", path], work, notes)
-        elif kind == "ruby":
-            good, why = _run_check(["ruby", "-c", path], work, notes)
-        elif kind == "json":
-            try:
-                with open(path, "rb") as f:
-                    json.loads(f.read().decode("utf-8"))
-                good, why = True, ""
-            except (ValueError, OSError) as e:
-                good, why = False, str(e)
-        else:
-            continue
-        if not good:
-            return False, "{}: {}".format(name, why)
-    return True, ""
-
-
-_SHELL_FN = (r"^\s*(?:export\s+)?function\s+([A-Za-z_][\w:-]*)", r"^\s*([A-Za-z_][\w-]*)\s*\(\)\s*\{?\s*$")
-_DEFINES = {
-    "bash": _SHELL_FN, "zsh": _SHELL_FN,
-    "python": (r"^\s*(?:async\s+)?def\s+([A-Za-z_]\w*)", r"^\s*class\s+([A-Za-z_]\w*)", r"^([A-Za-z_]\w*)\s*=[^=]"),
-    "ruby": (r"^\s*def\s+(?:self\.)?([A-Za-z_]\w*[?!]?)", r"^\s*class\s+([A-Za-z_]\w*)", r"^\s*module\s+([A-Za-z_]\w*)"),
-    "rust": (r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+([A-Za-z_]\w*)",),
-    "js": (r"^\s*(?:export\s+)?(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)",
-           r"^\s*(?:export\s+)?(?:(?:const|let|var)\s+)?([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\("),
-}
-_DEFINES = dict((k, [re.compile(x) for x in v]) for k, v in _DEFINES.items())
-_EXT_KIND = {".sh": "bash", ".bash": "bash", ".zsh": "zsh", ".py": "python", ".rb": "ruby", ".rs": "rust", ".js": "js", ".jsx": "js", ".mjs": "js",
-             ".cjs": "js", ".ts": "js", ".tsx": "js"}
-
-
-def section_kind(sec):
-    """The language a patch section's file is in, by extension, a zsh/functions path or a shebang on line 1; None for anything else
-    (TOML, YAML, JSON, INI, Markdown, ...): no definition is read from those."""
-    name = sec["file"]
-    if "/zsh/functions/" in "/" + name:
-        return "zsh"
-    for h in sec["hunks"]:
-        if h["ns"] == 1 and h["lines"] and h["lines"][0][1:].startswith("#!"):
-            return "zsh" if "zsh" in h["lines"][0] else "bash" if "bash" in h["lines"][0] else None
-    return _EXT_KIND.get(os.path.splitext(name)[1])
-
-
-def defined_by(lines, kind):
-    out = set()
-    for line in lines:
-        for rx in _DEFINES.get(kind, ()):
-            m = rx.match(line)
-            if m:
-                out.add(m.group(1))
-    return out
-
-
-def removed_names(patch):
-    """The names a revert of `patch` (a fix) removes: defined by the lines the fix added and not by those it removed, where a line defines a
-    name only in a file of a kind in which that is a definition (shell functions in bash and zsh files; def, class and a top-level
-    assignment in Python; def, class and module in Ruby; fn in Rust; function and `X = (` in JS and TS; nothing in TOML, YAML, JSON, INI or Markdown)."""
-    plus, minus = set(), set()
-    try:
-        sections = P.parse_patch(patch)
-    except Failed:
-        return []                                  # lines with no file header: no file kind, no definition
-    for sec in sections:
-        kind = section_kind(sec)
-        for h in sec["hunks"]:
-            plus |= defined_by([x[1:] for x in h["lines"] if x.startswith("+")], kind)
-            minus |= defined_by([x[1:] for x in h["lines"] if x.startswith("-")], kind)
-    return sorted(plus - minus)
-
-
-def dangling(work, patch, files):
-    """(True, "") unless a name the revert of `patch` removed is still used, as a word, by a tracked file it did not change (outside
-    docs/superpowers): then (False, "<name> is still used by <file>"). Lexical: a comment or a string that says the name counts."""
-    skip = [":(top,exclude)" + f for f in [DOCS] + list(files)]
-    for name in removed_names(patch)[:50]:
-        p = C.git_run(work, ["grep", "-l", "-w", "-F", "-I", "-e", name, "--", ":(top)"] + skip)
-        if p.returncode == 0:
-            return False, "{} is still used by {}".format(name, p.stdout.decode("utf-8", "replace").split("\n")[0])
-    return True, ""
-
-
-def cargo_check(a, work, repo_name):
-    """(passed, why) of `cargo check --offline --all-targets` in `work`; None when cargo is not installed; (None, why) on a timeout."""
-    env = dict(os.environ, CARGO_TARGET_DIR=os.path.join(a.state, "cargo", repo_name))
-    budget = getattr(a, "budget", 3600)
-    try:
-        p = subprocess.run(["cargo", "check", "--offline", "--all-targets"], cwd=work, env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=budget)
-    except FileNotFoundError:
-        return None
-    except subprocess.TimeoutExpired:
-        return None, "cargo check did not finish within {} s".format(budget)
-    tail = p.stderr.decode("utf-8", "replace").strip().splitlines()[-3:]
-    return p.returncode == 0, "cargo check failed: " + " | ".join(x.strip() for x in tail)
+def merge_groups(g, h):
+    """One group of two: the members, the pieces (latest fix first) and the repair (oldest fix first) of both."""
+    members = sorted(set(g["members"]) | set(h["members"]))
+    pieces = sorted(g["pieces"] + h["pieces"], key=lambda p: p["rank"])
+    patch = "".join(p["text"] for p in reversed(pieces))
+    return {"id": members[0], "members": members, "pieces": pieces, "patch": patch, "files": P.files_of(patch)}
 
 
 # ------------------------------------------------------------------ the work repository
+def work_repo(a, br, view, prev):
+    """(work, final): <state>/work/<branch>, private to the harness, whose commit `final` holds the final tip's tree. Kept across runs."""
+    work = os.path.join(a.state, "work", br["id"])
+    tree = C.git(view, "rev-parse", "--verify", br["final_tip"] + "^{tree}")
+    final = prev.get("final_commit")
+    if (isinstance(final, str) and os.path.isdir(work) and C.git_ok(work, "cat-file", "-e", final + "^{commit}")
+            and C.git(work, "rev-parse", final + "^{tree}") == tree):
+        return work, final
+    if os.path.exists(work):
+        shutil.rmtree(work)
+    objects = br.get("objects") or os.path.join(br["repo"], "objects")
+    tmp = tempfile.mkdtemp(prefix="inject-files.")
+    try:
+        files = os.path.join(tmp, "files")
+        scratch.export(objects, br["final_tip"], files)
+        final = scratch.build(objects, br["base"], files, work, br["dest"], br["branch"], br.get("dest_ref"), expect_tree=tree,
+                              cache=os.path.join(a.state, "packs"))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return work, final
+
+
 def _clean(work, rev):
     C.git(work, "reset", "-q", "--hard", rev)
     C.git(work, "clean", "-fdxq")
@@ -375,32 +284,17 @@ def _commit(work, message):
     return C.git(work, "rev-parse", "HEAD")
 
 
-def run_reverts(work, final, groups, notes=None):
-    """Reset `work` to `final` and revert each group in order, latest fix first. {group id: (status, reason)}, status reverted,
-    dropped-revert or incoherent; a group that is not reverted leaves the tree as it found it."""
-    _clean(work, final)
-    results = {}
-    for g in groups:
-        before = C.git(work, "write-tree")
-        why = None
-        for piece in g["pieces"]:
-            p = C.git_run(work, scratch.NEUTRAL + ["apply", "-R", "--index", "--whitespace=nowarn", "-"], input=P.to_bytes(piece["text"]))
-            if p.returncode != 0:
-                why = "its fix does not revert: " + (p.stderr.decode("utf-8", "replace").strip().splitlines() or ["git apply failed"])[0]
-                break
-        if why:
+def _apply(work, texts, reverse):
+    """Apply each patch of `texts` to the index and work tree (reversed when `reverse`). None, or why one did not apply: the tree is then
+    as it was."""
+    before = C.git(work, "write-tree")
+    for text in texts:
+        p = C.git_run(work, scratch.NEUTRAL + ["apply"] + (["-R"] if reverse else []) + ["--index", "--whitespace=nowarn", "-"],
+                      input=P.to_bytes(text))
+        if p.returncode != 0:
             C.git(work, "read-tree", "--reset", "-u", before)
-            results[g["id"]] = ("dropped-revert", why)
-            continue
-        good, why = coherent(work, g["files"], notes)
-        if good:
-            good, why = dangling(work, g["patch"], g["files"])
-        if not good:
-            C.git(work, "read-tree", "--reset", "-u", before)
-            results[g["id"]] = ("incoherent", why)
-            continue
-        results[g["id"]] = ("reverted", "")
-    return results
+            return (p.stderr.decode("utf-8", "replace").strip().splitlines() or ["git apply failed"])[0]
+    return None
 
 
 def pin_docs(work, view, plan_commit):
@@ -424,78 +318,6 @@ def pin_docs(work, view, plan_commit):
             os.chmod(full, 0o755 if mode == "100755" else 0o644)
     if os.path.isdir(os.path.join(work, DOCS)):
         C.git(work, *(scratch.NEUTRAL + ["add", "-A", "-f", "--", DOCS]))
-
-
-def stage1(a, br, view, plan, prev, work):
-    """The first injected tree: every group reverted, to be judged. Reused from `prev` when its key (tips, plan commit, every group's
-    patches) is the same and the work repository still has its commit. {key, final_commit, injected_commit, build_check, checks_skipped,
-    groups: {id: {status, reason, members}}}."""
-    key = hashlib.sha256(json.dumps([br["final_tip"], br["base"], br["plan_commit"], sorted(plan["bad"].items()),
-                                     [[g["id"], g["members"], [hashlib.sha1(P.to_bytes(p["text"])).hexdigest() for p in g["pieces"]]] for g in plan["groups"]]]
-                                    ).encode("utf-8")).hexdigest()
-    if (prev and prev.get("key") == key and os.path.isdir(work) and C.git_ok(work, "cat-file", "-e", prev["injected_commit"] + "^{commit}")):
-        return prev
-    if os.path.exists(work):
-        shutil.rmtree(work)
-    objects = br.get("objects") or os.path.join(br["repo"], "objects")
-    tree = C.git(view, "rev-parse", "--verify", br["final_tip"] + "^{tree}")
-    tmp = tempfile.mkdtemp(prefix="inject-files.")
-    try:
-        files = os.path.join(tmp, "files")
-        scratch.export(objects, br["final_tip"], files)
-        final = scratch.build(objects, br["base"], files, work, br["dest"], br["branch"], br.get("dest_ref"), expect_tree=tree,
-                              cache=os.path.join(a.state, "packs"))
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
-    groups, notes = plan["groups"], []
-    results = run_reverts(work, final, groups, notes)
-    build_check = None
-    if os.path.isfile(os.path.join(work, "Cargo.toml")):
-        active = [g for g in groups if results[g["id"]][0] == "reverted"]
-        name = C.repo_name(br["repo"])
-        undone = 0
-        while True:
-            checked = cargo_check(a, work, name)
-            if checked is None:
-                build_check = "skipped: cargo not found"
-                break
-            if checked[0]:
-                build_check = "passed" if not undone else "passed after undoing {} revert(s)".format(undone)
-                break
-            if checked[0] is None or not active:
-                for g in active:
-                    results[g["id"]] = ("incoherent", checked[1])
-                run_reverts(work, final, [], notes)
-                build_check = ("timed out: " if checked[0] is None else "failed with every revert undone: ") + checked[1]
-                break
-            undone += 1
-            victim = active.pop(0)
-            results[victim["id"]] = ("incoherent", checked[1])
-            again = run_reverts(work, final, active, notes)
-            for g in list(active):
-                if again[g["id"]][0] != "reverted":
-                    results[g["id"]] = again[g["id"]]
-                    active.remove(g)
-    pin_docs(work, view, br["plan_commit"])
-    injected = _commit(work, scratch.MESSAGE)
-    return {"key": key, "final_commit": final, "injected_commit": injected, "build_check": build_check, "checks_skipped": sorted(notes),
-            "groups": dict((g["id"], {"status": results[g["id"]][0], "reason": results[g["id"]][1], "members": g["members"]}) for g in groups)}
-
-
-def assemble(work, final, view, plan_commit, groups, patches, notes):
-    """Rebuild `work` from the final tree with nothing but: the reverts of `groups`, docs/superpowers pinned, then `patches` [(id, text)]
-    one commit each. (head, {group id: (status, reason)} of the groups that did not revert, [ids of the patches that did not apply])."""
-    results = run_reverts(work, final, groups, notes)
-    pin_docs(work, view, plan_commit)
-    head = _commit(work, scratch.MESSAGE)
-    failed = []
-    for did, text in patches:
-        sha = scratch.commit_patch(work, text, "Apply change")
-        if sha is None:
-            failed.append(did)
-        else:
-            head = sha
-    return head, dict((g, r) for g, r in results.items() if r[0] != "reverted"), failed
 
 
 def check_invariant(br, work, final, head, steps):
@@ -523,94 +345,293 @@ def check_invariant(br, work, final, head, steps):
             br["id"], ", ".join(n for n in names if n)[:300], ", ".join(label for label, _t in steps) or "none"))
 
 
-def merge_groups(g, h):
-    """One group of two: the members, the pieces (latest fix first) and the repair (oldest fix first) of both."""
-    members = sorted(set(g["members"]) | set(h["members"]))
-    pieces = sorted(g["pieces"] + h["pieces"], key=lambda p: p["rank"])
-    patch = "".join(p["text"] for p in reversed(pieces))
-    return {"id": members[0], "members": members, "pieces": pieces, "patch": patch, "files": P.files_of(patch)}
+# ------------------------------------------------------------------ the fixpoint
+REVERT, TRIAL, RECREATED = "revert", "trial", "recreated"
 
 
-# ------------------------------------------------------------------ settling: the tree a case ships
-class Tree(object):
-    """The injected tree of one branch as the statuses say it should be. status {defect: (status, reason)}; rec {defect: (patch, reverse)}
-    of the accepted recreations. settle() rebuilds the tree from the final tree, locates every assessable defect's repair in it and
-    demotes the ones that do not apply there, until none is demoted."""
+class Fixpoint(object):
+    """The injected tree of one branch and where each counted defect stands in it, settled by run() (see the module docstring).
 
-    def __init__(self, a, br, view, work, s1, plan, status, notes):
-        self.a, self.br, self.view, self.work, self.notes = a, br, view, work, notes
-        self.final, self.head = s1["final_commit"], s1["injected_commit"]
-        self.ordered, self.status, self.rec, self.located = plan["groups"], status, {}, {}
+    mode {defect: revert|trial|recreated} holds the defects in the tree; out {defect: (status, reason)} those that are not; tried the
+    per-task defects whose one recreation is used; left {defect: (status, reason)} why a defect last left by its revert."""
 
-    def active(self):
-        return [g for g in self.ordered if any(self.status.get(m, ("",))[0] == "present" for m in g["members"])]
+    def __init__(self, a, br, view, work, final, plan, defects, fix_text, counts, cargo, questions):
+        self.a, self.br, self.view, self.work, self.final, self.counts, self.questions = a, br, view, work, final, counts, questions
+        self.defects = dict((d["id"], d) for d in defects)
+        self.fix_text = fix_text
+        self.groups = list(plan["groups"])
+        self.mode, self.out, self.left, self.rec, self.tried = {}, {}, {}, {}, set()
+        self.cargo = dict(cargo)
+        self.notes, self.undone, self.rounds = [], 0, 0
+        self.build_check, self.head, self.located, self.answers, self.waiting = None, None, {}, {}, {}
+        for g in self.groups:
+            for m in g["members"]:
+                if m in self.defects:
+                    self.mode[m] = REVERT
+        for did, why in plan["bad"].items():
+            if did in self.defects:
+                self.out[did] = self.left[did] = ("dropped-revert", why)
 
-    def _demote(self, g, status, why):
-        for m in g["members"]:
-            if self.status.get(m, ("",))[0] == "present":
-                self.status[m] = (status, why)
+    # -- where a defect stands
+    def task(self, did):
+        return self.defects[did].get("class") == "task"
 
-    def _resolve(self, active, g, why, demote):
-        """The repair of `g` does not apply to the tree. A repair made with an older fix's lines in place needs that fix not reverted: the
-        two cannot be told apart, so the oldest other group whose absence lets it apply is merged with `g` into one group, reverted and
-        re-applied together (spec 4.3). If no group does, `g` is demoted."""
-        for h in sorted((x for x in active if x is not g), key=lambda x: -x["pieces"][0]["rank"]):
-            head, _dropped, _failed = assemble(self.work, self.final, self.view, self.br["plan_commit"], [x for x in active if x is not h], [], self.notes)
-            if P.locate(self.work, head, g["patch"])[0] is not None:
-                merged = merge_groups(g, h)
-                self.ordered = sorted([x for x in self.ordered if x is not g and x is not h] + [merged], key=lambda x: (x["pieces"][0]["rank"], x["id"]))
+    def gone(self, did):
+        """Out for good: no recreation can bring it back."""
+        return did in self.out and (not self.task(did) or did in self.tried)
+
+    def leave(self, did, status, why):
+        if self.mode.pop(did) == REVERT:
+            self.out[did] = self.left[did] = (status, why)
+        else:
+            del self.rec[did]
+            self.out[did] = ("unassessable", why)
+
+    def reverted(self):
+        return [g for g in self.groups if any(self.mode.get(m) == REVERT for m in g["members"])]
+
+    def recreations(self):
+        """Accepted recreations, then those on trial: the order they are applied in."""
+        return sorted(d for d, m in self.mode.items() if m == RECREATED) + sorted(d for d, m in self.mode.items() if m == TRIAL)
+
+    def trials(self):
+        return sorted(d for d, m in self.mode.items() if m == TRIAL)
+
+    # -- one round
+    def build(self):
+        """(head, {}) of the tree of the defects in, or (None, {defect: (status, why)}) of those that must leave first."""
+        work, failed, applied = self.work, {}, []
+        _clean(work, self.final)
+        for g in self.reverted():
+            before = C.git(work, "write-tree")
+            why = _apply(work, [p["text"] for p in g["pieces"]], reverse=True)
+            if why:
+                bad = ("dropped-revert", "its fix does not revert: " + why)
+            else:
+                good, why = K.coherent(work, g["files"], self.notes)
+                if good:
+                    good, why = K.dangling(work, g["patch"], g["files"])
+                bad = None if good else ("incoherent", why)
+                if bad:
+                    C.git(work, "read-tree", "--reset", "-u", before)
+            if bad:
+                failed.update((m, bad) for m in g["members"] if self.mode.get(m) == REVERT)
+            else:
+                applied.append(g)
+        for did in self.recreations():
+            if _apply(work, [self.rec[did][0]], reverse=False):
+                failed[did] = ("unassessable", "the recreation does not apply to the injected tree")
+        if failed:
+            return None, failed
+        verdict = self.check_build()
+        if verdict is not None and verdict[0] is False:
+            newest = [[d] for d in reversed(self.recreations())] + [[m for m in g["members"] if self.mode.get(m) == REVERT] for g in applied]
+            if newest:
+                self.undone += 1
+                return None, dict((m, ("incoherent", verdict[1])) for m in newest[0])
+        pin_docs(work, self.view, self.br["plan_commit"])
+        return _commit(work, scratch.MESSAGE), {}
+
+    def check_build(self):
+        """[passed (True, False, or None for a timeout), why] of `cargo check` on the work tree, once per tree id; None when there is
+        no Cargo.toml or no cargo. Sets build_check."""
+        self.build_check = None
+        if not os.path.isfile(os.path.join(self.work, "Cargo.toml")):
+            return None
+        tree = C.git(self.work, "write-tree")
+        if tree not in self.cargo:
+            got = K.cargo_check(self.a, self.work, C.repo_name(self.br["repo"]))
+            if got is None:
+                self.build_check = "skipped: cargo not found"
+                return None
+            self.cargo[tree] = [got[0], got[1]]
+        passed, why = self.cargo[tree]
+        if passed:
+            self.build_check = "passed" if not self.undone else "passed after undoing {} step(s)".format(self.undone)
+        elif passed is None:
+            self.build_check = "timed out: " + why
+        else:
+            self.build_check = "failed with every revert undone: " + why
+        return self.cargo[tree]
+
+    def locate(self, head):
+        """({defect: hunks}, None) when every repair applies to the tree at head, else (_, (step, why)): the first that does not, a
+        group or a recreated defect."""
+        located = {}
+        for g in self.reverted():
+            hunks, why = P.locate(self.work, head, g["patch"])
+            if hunks is None:
+                return located, (g, why)
+            located.update((m, hunks) for m in g["members"] if self.mode.get(m) == REVERT)
+        for did in self.recreations():
+            hunks, why = P.locate(self.work, head, self.rec[did][1])
+            if hunks is None:
+                return located, (did, why)
+            located[did] = hunks
+        return located, None
+
+    def resolve(self, head, step, why):
+        """The repair of `step` (a group, or a recreated defect) does not apply to the tree at head. In a round with recreations on
+        trial, the round before took every repair, so the trials broke it: they leave. Else a group is merged with the oldest other
+        reverted group whose repair, applied before it, lets it apply (two fixes too close to revert apart); failing that, or for a
+        recreation, its defects leave."""
+        why = "its repair does not apply to the injected tree: " + why
+        trials = self.trials()
+        if trials and step not in trials:
+            for did in trials:
+                self.leave(did, "unassessable", "on trial, it stopped the repair of another defect from applying")
+            return
+        if not isinstance(step, dict):
+            self.leave(step, "unassessable", why)
+            return
+        for h in sorted((x for x in self.reverted() if x is not step), key=lambda x: -x["pieces"][0]["rank"]):
+            both = merge_groups(step, h)
+            if P.locate(self.work, head, both["patch"])[0] is not None:
+                self.groups = sorted([x for x in self.groups if x is not step and x is not h] + [both], key=_group_order)
                 return
-        self._demote(g, demote, "its repair does not apply to the finished tree: " + why)
+        for m in step["members"]:
+            if self.mode.get(m) == REVERT:
+                self.leave(m, "dropped-revert", why)
 
-    def build(self, patches):
-        return assemble(self.work, self.final, self.view, self.br["plan_commit"], self.active(), patches, self.notes)
+    def judge(self, head, ids):
+        """({defect: answer}, [ids of the questions still waiting]) of judge-present on the tree at head."""
+        answers, waiting = {}, []
+        for did in ids:
+            jid, ans = G.validate(self.a.state, self.work, head, self.defects[did], self.counts)
+            self.questions.note("judge-present", jid, ans is not None)
+            if ans is None:
+                waiting.append(jid)
+            else:
+                answers[did] = ans
+        return answers, waiting
 
-    def settle(self, demote):
-        while True:
-            active = self.active()
-            head, dropped, failed = self.build(sorted((i, p) for i, (p, _r) in self.rec.items()))
-            changed = False
-            for g in active:
-                if g["id"] in dropped:
-                    self._demote(g, dropped[g["id"]][0], dropped[g["id"]][1])
-                    changed = True
-            for did in failed:
-                self.status[did] = ("unassessable", "the recreation does not apply to the injected tree")
-                del self.rec[did]
-                changed = True
-            if changed:
+    def second_attempts(self):
+        """Every per-task defect that is out and has not had its recreation: requested (once), then out for good, a candidate, or
+        waiting. ({defect: (patch, reverse)} of the candidates, {kind: [what waits]})."""
+        cands, waiting = {}, {"recreate": [], "judge-same": []}
+        for did in sorted(self.out):
+            if not self.task(did) or did in self.tried:
                 continue
-            located, failing = {}, []
-            for g in active:
-                hunks, why = P.locate(self.work, head, g["patch"])
-                if hunks is None:
-                    failing.append((g, why))
-                else:
-                    for m in g["members"]:
-                        if self.status.get(m, ("",))[0] == "present":
-                            located[m] = hunks
-            if failing:
-                self._resolve(active, failing[0][0], failing[0][1], demote)
+            got = G.recreation(self.a, self.work, self.final, self.defects[did], self.fix_text[did], self.counts)
+            if got["same"]:
+                self.questions.note("judge-same", got["same"], got["kind"] != "judge")
+            if got["kind"] == "agent":
+                waiting["recreate"].append(got["wait"])
+            elif got["kind"] == "judge":
+                waiting["judge-same"].append(got["wait"])
+            elif got["kind"] == "unassessable":
+                self.tried.add(did)
+                self.out[did] = ("unassessable", got["why"])
+            else:
+                cands[did] = (got["patch"], got["reverse"])
+        return cands, waiting
+
+    def run(self):
+        """Settle. True when the fixpoint is reached, False when it waits (self.waiting says on what)."""
+        bound = 4 * len(self.defects) + len(self.groups) + 1
+        while self.rounds < bound:
+            self.rounds += 1
+            head, failed = self.build()
+            if failed:
+                for did, (status, why) in sorted(failed.items()):
+                    self.leave(did, status, why)
                 continue
-            for did, (_p, reverse) in sorted(self.rec.items()):
-                hunks, why = P.locate(self.work, head, reverse)
-                if hunks is None:
-                    self.status[did] = ("unassessable", "its repair does not apply to the finished tree: " + why)
-                    del self.rec[did]
-                    changed = True
-                else:
-                    located[did] = hunks
-            if not changed:
-                self.head, self.located = head, located
-                return head
+            located, broken = self.locate(head)
+            if broken:
+                self.resolve(head, *broken)
+                continue
+            trials = self.trials()
+            answers, waiting = self.judge(head, trials or sorted(self.mode))
+            self.head, self.located = head, located
+            if trials:
+                if waiting:
+                    return self.wait({"judge-present": waiting})
+                for did in trials:
+                    if answers[did] == "yes":
+                        self.mode[did] = RECREATED
+                    else:
+                        self.leave(did, "unassessable", "the judge answered {} on the injected tree".format(answers[did]))
+                continue
+            self.answers = answers
+            cands, more = self.second_attempts()
+            more["judge-present"] = waiting
+            if waiting:
+                return self.wait(more)
+            gone = [d for d in sorted(answers) if answers[d] != "yes"]
+            for did in gone:
+                self.leave(did, "not-present" if self.mode[did] == REVERT else "unassessable", "the judge answered {}".format(answers[did]))
+            if gone:
+                continue
+            if more["recreate"] or more["judge-same"]:
+                return self.wait(more)
+            if not cands:
+                return True
+            for did, pair in sorted(cands.items()):
+                self.tried.add(did)
+                del self.out[did]
+                self.mode[did], self.rec[did] = TRIAL, pair
+        raise Failed("branch {}: the injected tree did not settle within {} rounds".format(self.br["id"], bound))
+
+    def wait(self, what):
+        self.waiting = dict((k, v) for k, v in sorted(what.items()) if v)
+        return False
+
+    # -- what it settled on
+    def group_of(self, did):
+        for g in self.groups:
+            if did in g["members"]:
+                return g
+        return None
+
+    def status(self, did, complete):
+        mode = self.mode.get(did)
+        if mode == REVERT:
+            return ("present" if complete or self.answers.get(did) == "yes" else "reverted"), ""
+        if mode == RECREATED:
+            return "recreated", ""
+        if mode == TRIAL:
+            return self.left.get(did, ("dropped-revert", ""))
+        return self.out[did]
+
+    def repair(self, did):
+        """(group, repair patch) of a defect in the tree, else (group, None)."""
+        mode, g = self.mode.get(did), self.group_of(did)
+        if mode == REVERT:
+            return g["id"], g["patch"]
+        if mode == RECREATED:
+            return did, self.rec[did][1]
+        return (g["id"] if g else did), None
 
     def steps(self):
         """The repairs in the order that undoes the build: the recreations (last first), then the groups, oldest fix first."""
-        return ([(did, r) for did, (_p, r) in sorted(self.rec.items(), reverse=True)]
-                + [(g["id"], g["patch"]) for g in reversed(self.active())])
+        return ([(did, self.rec[did][1]) for did in reversed(self.recreations())]
+                + [(g["id"], g["patch"]) for g in reversed(self.reverted())])
 
 
 # ------------------------------------------------------------------ one branch
+class Questions(object):
+    """The judge questions of one `inject` run, by kind: those it asked and those it waits on. save() writes <kind>/needed.json,
+    {owned: every id inject has asked in this run or an earlier one, needed: the ids this run waits on}, which `common.pending` reads:
+    a question inject owns and no longer needs is not handed out."""
+    KINDS = ("judge-split", "judge-present", "judge-same")
+
+    def __init__(self):
+        self.asked, self.needed = collections.defaultdict(set), collections.defaultdict(set)
+
+    def note(self, kind, jid, answered):
+        self.asked[kind].add(jid)
+        if not answered:
+            self.needed[kind].add(jid)
+
+    def save(self, state):
+        for kind in self.KINDS:
+            path = os.path.join(state, kind, C.NEEDED)
+            prev = C.jload(path)
+            owned = set((prev or {}).get("owned") or []) | self.asked[kind]
+            if owned:
+                C.jsave(path, {"owned": sorted(owned), "needed": sorted(self.needed[kind])})
+
+
 def _write_repair(state, did, text):
     path = os.path.join(state, "repairs", did + ".patch")
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -619,8 +640,16 @@ def _write_repair(state, did, text):
     return path
 
 
-def process(a, br, counts):
-    """The outcome of one branch: {state: waiting|qualified|disqualified, why, counts, case_defects, unassessable_task, ...}."""
+def _waiting_on(waiting):
+    judges = len(waiting.get("judge-present") or []) + len(waiting.get("judge-same") or [])
+    parts = (["{} judge answer(s)".format(judges)] if judges else []) + (
+        ["{} recreation(s) for the coverage gate".format(len(waiting["recreate"]))] if waiting.get("recreate") else [])
+    return "waiting on " + " and ".join(parts)
+
+
+def process(a, br, counts, questions):
+    """The outcome of one branch: {state: waiting|qualified|disqualified, why, counts, case_defects, unassessable_task, ...}. The judge
+    questions it asks are noted in `questions`."""
     state = a.state
 
     def done(kind, why, **more):
@@ -638,190 +667,59 @@ def process(a, br, counts):
     view = C.view(state, br["repo"], a.snapshot_root)
     if not C.git_ok(view, "cat-file", "-e", br["plan_commit"] + "^{commit}"):
         return done("disqualified", "the plan commit is gone")
-    plan, wait = make_plan(a, view, br, everything, counted, counts)
+    plan, wait = make_plan(a, view, br, everything, counted, counts, questions)
     if plan is None:
-        return done("waiting", "waiting on {} fix-split judge(s)".format(wait))
+        return done("waiting", "waiting on {} fix-split judge(s)".format(len(wait)))
     if a.dry_run:
         return done("waiting", "waiting: dry run")
     path = os.path.join(state, "injected", br["id"] + ".json")
     prev = C.jload(path) or {}
-    work = os.path.join(state, "work", br["id"])
-    s1 = stage1(a, br, view, plan, prev.get("stage1"), work)
-    final, first = s1["final_commit"], s1["injected_commit"]
-    notes = list(s1.get("checks_skipped") or [])
-    groups = dict((g["id"], g) for g in plan["groups"])
-    status = {}
-    for gid, res in s1["groups"].items():
-        for m in res["members"]:
-            if m in counted:
-                status[m] = (res["status"], res["reason"])
-    for did, why in plan["bad"].items():
-        if did in counted:
-            status[did] = ("dropped-revert", why)
-    group_of = dict((m, gid) for gid, g in groups.items() for m in g["members"])
+    work, final = work_repo(a, br, view, prev)
+    planned = dict((m, g) for g in plan["groups"] for m in g["members"])
     fix_text = {}
     for d in defects:
-        g = groups.get(group_of.get(d["id"]))
         try:
-            fix_text[d["id"]] = g["patch"] if g else "".join(P.fix_patch(view, r[0], r[1]) for r in d.get("fixes") or [])
+            fix_text[d["id"]] = planned[d["id"]]["patch"] if d["id"] in planned else "".join(P.fix_patch(view, r[0], r[1]) for r in d.get("fixes") or [])
         except Failed:
             fix_text[d["id"]] = ""
-    tree = Tree(a, br, view, work, s1, plan, status, notes)
-
-    wait_judge = wait_agent = 0
-    for d in defects:
-        if status[d["id"]][0] != "reverted":
-            continue
-        ans = G.validate(state, work, first, d, d["id"], counts)
-        if ans is None:
-            wait_judge += 1
-        elif ans == "yes":
-            status[d["id"]] = ("present", "")
-        else:
-            status[d["id"]] = ("not-present", "the judge answered {}".format(ans))
-
-    judged = dict((d["id"], first) for d in defects if status[d["id"]][0] == "present")    # the tree each assessable defect was last judged on
-
-    def gate(failed):
-        """One pass of the coverage gate over per-task defects that failed: (agents, judges) still to wait for."""
-        wa = wj = 0
-        got = {}
-        for d in failed:
-            got[d["id"]] = G.recreation(a, work, final, d, fix_text[d["id"]], counts)
-            wa += got[d["id"]][0] == "agent"
-            wj += got[d["id"]][0] == "judge"
-        if wa or wj:
-            return wa, wj
-        cands = {}
-        for d in failed:
-            kind, why, patch, reverse = got[d["id"]]
-            if kind == "unassessable":
-                status[d["id"]] = ("unassessable", why)
-            else:
-                cands[d["id"]] = (patch, reverse)
-        if not cands:
-            return 0, 0
-        head_all, _dropped, bad = tree.build(sorted([(i, p) for i, (p, _r) in tree.rec.items()] + [(i, pr[0]) for i, pr in cands.items()]))
-        for did in bad:
-            status[did] = ("unassessable", "the recreation does not apply to the injected tree")
-            cands.pop(did, None)
-            tree.rec.pop(did, None)
-        accepted = {}
-        for d in failed:
-            if d["id"] not in cands:
-                continue
-            ans = G.validate(state, work, head_all, d, d["id"] + "-r", counts)
-            if ans is None:
-                wj += 1
-            elif ans == "yes":
-                accepted[d["id"]] = cands[d["id"]]
-            else:
-                status[d["id"]] = ("unassessable", "the judge answered {} on the finished tree".format(ans))
-        if not wj:
-            for did, pr in accepted.items():
-                status[did] = ("recreated", "")
-                tree.rec[did] = pr
-                judged[did] = head_all
-        return 0, wj
-
-    def revalidate():
-        """Every assessable defect with a file that differs between the tree it was last judged on and the shipped tree is judged again on
-        the shipped tree (judge-present/<id>-v); one the judge no longer finds is dropped and the tree rebuilt. Judges still to wait for."""
-        while True:
-            pending = changed = 0
-            for d in defects:
-                s_ = status[d["id"]][0]
-                if s_ not in OK or not G.differs(work, judged[d["id"]], tree.head, G.paths_of(d)):
-                    continue
-                ans = G.validate(state, work, tree.head, d, d["id"] + "-v", counts)
-                if ans is None:
-                    pending += 1
-                elif ans == "yes":
-                    judged[d["id"]] = tree.head
-                else:
-                    if s_ == "recreated":
-                        tree.rec.pop(d["id"], None)
-                        status[d["id"]] = ("unassessable", "the judge answered {} on the shipped tree".format(ans))
-                    else:
-                        status[d["id"]] = ("not-present", "the judge answered {} on the shipped tree".format(ans))
-                    changed += 1
-            if pending or not changed:
-                return pending
-            tree.settle("dropped-revert")
-
-    tried = set()
-    if wait_judge == 0:
-        tree.settle("dropped-revert")
-        for pass_no in (1, 2):
-            failed_task = [d for d in task if status[d["id"]][0] in FAILED and d["id"] not in tried]
-            if not failed_task and pass_no == 2:
-                break
-            if failed_task:
-                tried |= set(d["id"] for d in failed_task)
-                wa, wj = gate(failed_task)
-                wait_agent += wa
-                wait_judge += wj
-                if wa or wj:
-                    break
-                tree.settle("dropped-revert")
-            wait_judge += revalidate()
-            if wait_judge:
-                break
-        if not wait_judge and not wait_agent:
-            for d in task:
-                if status[d["id"]][0] in FAILED and d["id"] not in tried:
-                    status[d["id"]] = ("unassessable", "it failed after the tree was rebuilt, when the second attempt was already used")
-    groups = dict((g["id"], g) for g in tree.ordered)
-    group_of = dict((m, gid) for gid, g in groups.items() for m in g["members"])
-    complete = wait_judge == 0 and wait_agent == 0
-    head = tree.head
-    build_check = s1.get("build_check")
+    fx = Fixpoint(a, br, view, work, final, plan, defects, fix_text, counts, prev.get("cargo") or {}, questions)
+    complete = fx.run()
     if complete:
-        check_invariant(br, work, final, head, tree.steps())
-        if os.path.isfile(os.path.join(work, "Cargo.toml")) and set(g["id"] for g in tree.active()) != set(
-                gid for gid, r in s1["groups"].items() if r["status"] == "reverted"):
-            checked = cargo_check(a, work, C.repo_name(br["repo"]))
-            if checked is not None and checked[0] is None:
-                build_check = "timed out on the final tree: " + checked[1]
-            elif checked is not None and not checked[0]:
-                build_check = "the final tree: " + checked[1]
+        check_invariant(br, work, final, fx.head, fx.steps())
 
     drec = {}
     for d in defects:
         did = d["id"]
-        s, why = status[did]
-        text = groups[group_of[did]]["patch"] if s == "present" else tree.rec[did][1] if s == "recreated" else None
-        if text is not None and complete:
-            drec[did] = {"status": s, "reason": why, "group": group_of.get(did, did) if s == "present" else did,
-                         "repair": _write_repair(state, did, text), "hunks": tree.located.get(did) or []}
+        status, why = fx.status(did, complete)
+        group, text = fx.repair(did)
+        if complete and text is not None:
+            drec[did] = {"status": status, "reason": why, "group": group, "repair": _write_repair(state, did, text), "hunks": fx.located[did]}
         else:
             stale = os.path.join(state, "repairs", did + ".patch")
             if os.path.exists(stale):
                 os.unlink(stale)
-            drec[did] = {"status": s, "reason": why, "group": group_of.get(did, did), "repair": None, "hunks": []}
-    skipped = sorted(set(notes))
-    C.jsave(path, {"work": work, "work_commit": head, "plan_commit": br["plan_commit"], "defects": drec, "complete": complete,
-                   "build_check": build_check, "checks_skipped": skipped, "final_commit": final, "injected_commit": first, "stage1": s1})
+            drec[did] = {"status": status, "reason": why, "group": group, "repair": None, "hunks": []}
+    skipped = sorted(set(fx.notes))
+    C.jsave(path, {"work": work, "work_commit": fx.head, "plan_commit": br["plan_commit"], "defects": drec, "complete": complete,
+                   "waiting": fx.waiting if not complete else {}, "rounds": fx.rounds, "build_check": fx.build_check, "checks_skipped": skipped,
+                   "final_commit": final, "cargo": fx.cargo})
     tally = dict(collections.Counter(v["status"] for v in drec.values()))
     ok_ids = [d["id"] for d in defects if drec[d["id"]]["status"] in OK]
-    lost = [d for d in defects if drec[d["id"]]["status"] not in OK]
     unassessable = [d["id"] for d in task if drec[d["id"]]["status"] == "unassessable"]
-    more = {"counts": tally, "unassessable_task": unassessable, "build_check": build_check, "checks_skipped": skipped}
-    severe = [d["id"] for d in lost if d.get("severity") in SEVERE]
+    more = {"counts": tally, "unassessable_task": unassessable, "build_check": fx.build_check, "checks_skipped": skipped}
+    severe = [d["id"] for d in defects if d.get("severity") in SEVERE and (fx.gone(d["id"]) if not complete else drec[d["id"]]["status"] not in OK)]
     if not complete:
-        doomed = any(d.get("class") == "pre" and d.get("severity") in SEVERE and drec[d["id"]]["status"] in FAILED for d in defects)
-        cause = ("waiting on {} recreation(s) for the coverage gate".format(wait_agent) if wait_agent
-                 else "waiting on {} judge answer(s)".format(wait_judge))
-        if doomed:
+        cause = _waiting_on(fx.waiting)
+        if severe:
             return done("waiting", "P0/P1 defect(s) not shown present: {}; {}".format(", ".join(severe), cause), doomed=True, **more)
+        if sum(1 for d in task if not fx.gone(d["id"])) < MIN_TASK:
+            return done("waiting", "fewer than two assessable per-task defects; " + cause, doomed=True, **more)
         return done("waiting", cause, **more)
-    if build_check and build_check.startswith("the final tree"):
-        return done("disqualified", "the injected tree does not build: " + build_check, **more)
     if severe:
         return done("disqualified", "P0/P1 defect(s) not shown present: " + ", ".join(severe), **more)
     if sum(1 for d in task if drec[d["id"]]["status"] in OK) < MIN_TASK:
         return done("disqualified", "fewer than two assessable per-task defects", **more)
-    return done("qualified", None, case_defects=ok_ids, work_commit=head, **more)
+    return done("qualified", None, case_defects=ok_ids, work_commit=fx.head, **more)
 
 
 # ------------------------------------------------------------------ the command
@@ -842,7 +740,7 @@ def cmd_inject(a):
     records = [b for b in doc["branches"] if isinstance(b, dict) and isinstance(b.get("id"), str)]
     candidates = [b for b in records if b.get("candidate")]
     ranked = sorted((b for b in candidates if b.get("opened")), key=lambda b: _merged_key(b) + (b["id"],), reverse=True)
-    counts = collections.Counter()
+    counts, questions = collections.Counter(), Questions()
     outcome, total, per_repo = {}, 0, collections.Counter()
     for br in ranked:
         if total >= MAX_CASES or per_repo[br["repo"]] >= PER_REPO:
@@ -853,7 +751,7 @@ def cmd_inject(a):
             outcome[br["id"]] = {"state": "waiting", "why": "waiting on the inventory (cases judges pending)", "counts": {}, "case_defects": [],
                                  "unassessable_task": []}
         else:
-            outcome[br["id"]] = process(a, br, counts)
+            outcome[br["id"]] = process(a, br, counts, questions)
         if outcome[br["id"]]["state"] == "qualified" or (outcome[br["id"]]["state"] == "waiting" and not outcome[br["id"]].get("doomed")):
             total += 1
             per_repo[br["repo"]] += 1
@@ -878,6 +776,7 @@ def cmd_inject(a):
     hint = more_to_open(candidates, outcome, total, per_repo)
     if not a.dry_run:
         C.jsave(os.path.join(a.state, "cases.json"), {"cases": out_cases, "examined": examined, "coverage": {"unassessable_task": sorted(set(unassessable))}})
+        questions.save(a.state)
     states = collections.Counter(o["state"] for o in outcome.values())
     C.say("branches: {} candidate(s), {} opened; qualified {}, waiting {}, disqualified {}, beyond the limit {}".format(
         len(candidates), len(ranked), states["qualified"], states["waiting"], states["disqualified"], states["over"]))

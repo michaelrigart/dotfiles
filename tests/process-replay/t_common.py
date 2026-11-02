@@ -85,6 +85,17 @@ want = [("judge-present", "b2", b, os.path.join(d_b2, "answer.json"), os.path.jo
 is_("pending_lists_unanswered: final reviews without answer.md and recreations without done are listed too", got, want)
 is_("pending_lists_unanswered: an empty state has nothing", C.pending(os.path.join(ROOT, "nowhere")), [])
 
+# ---- needed: a manifest leaves out the questions its writer asked and no longer needs, and nothing else
+state = os.path.join(ROOT, "st-needed")
+for kind, jid in (("judge-present", "dold-0"), ("judge-present", "dnow-1"), ("judge-present", "other-1-d"), ("judge-same", "dold-0")):
+    C.judge_write(state, kind, jid, {"finding": jid})
+jfile(os.path.join(state, "judge-present", "needed.json"), {"owned": ["dold-0", "dnow-1"], "needed": ["dnow-1"]})
+is_("needed: a question its writer owns and no longer needs is not pending; one it needs is, and so is one it does not own; a kind with no manifest is as before",
+    sorted((p[0], p[1]) for p in C.pending(state)), [("judge-present", "dnow-1"), ("judge-present", "other-1-d"), ("judge-same", "dold-0")])
+ok("needed: the manifest itself is not an input", "needed" not in [p[1] for p in C.pending(state)])
+jfile(os.path.join(state, "judge-present", "needed.json"), {"owned": ["dold-0", "dnow-1"], "needed": ["dold-0", "dnow-1"]})
+is_("needed: needed again, it is pending again", sorted(p[1] for p in C.pending(state) if p[0] == "judge-present"), ["dnow-1", "dold-0", "other-1-d"])
+
 # ---- staged items: one real directory per item, outside the state, holding only that item's files
 state = os.path.join(ROOT, "st-staged")
 x1 = C.judge_write(state, "judge-present", "s1", {"finding": "one"})

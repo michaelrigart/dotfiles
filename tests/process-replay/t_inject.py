@@ -106,16 +106,45 @@ def has(work, commit, path):
 
 def inputs(state, kind):
     d = os.path.join(state, kind)
-    return sorted(n[:-5] for n in os.listdir(d) if n.endswith(".json") and not n.endswith(".answer.json")) if os.path.isdir(d) else []
+    return sorted(n[:-5] for n in os.listdir(d) if n.endswith(".json") and not n.endswith(".answer.json") and n != "needed.json") if os.path.isdir(d) else []
 
 
 def examined(state, bid):
     return [e for e in cases(state)["examined"] if e["branch"] == bid][0]
 
 
+def of(name):
+    """The defect a judge input is about: its id is <defect>-<digest of the input>."""
+    return name.split("-")[0]
+
+
+def unanswered(state, kind):
+    return [n for n in inputs(state, kind) if not os.path.exists(os.path.join(state, kind, n + ".answer.json"))]
+
+
+def judged(state, kind, did):
+    """The questions of `kind` asked about `did`."""
+    return [n for n in inputs(state, kind) if of(n) == did]
+
+
+def say(state, did, ans, kind="judge-present"):
+    """Answer every question about `did` that waits; the questions answered."""
+    names = [n for n in unanswered(state, kind) if of(n) == did]
+    for n in names:
+        answer(state, kind, n, {"answer": ans})
+    return names
+
+
+def only(state, did, kind="judge-present"):
+    """The input of the one question about `did`."""
+    names = judged(state, kind, did)
+    assert len(names) == 1, (did, names)
+    return C.jload(os.path.join(state, kind, names[0] + ".json"))
+
+
 def yes_all(state, ids, kind="judge-present"):
     for i in ids:
-        answer(state, kind, i, {"answer": "yes"})
+        say(state, i, "yes", kind)
 
 
 # ================================================================ the main fixture
@@ -189,8 +218,10 @@ is_("docs_pinned: the record names the plan commit", r1["plan_commit"], T1)
 is_("revert_whole_with_tests: the injected commit's parent is the final tree's commit", git(W, "rev-parse", WC + "~1"), r1["final_commit"])
 is_("revert_whole_with_tests: the final tree's commit holds the branch's final tree", git(W, "rev-parse", r1["final_commit"] + "^{tree}"),
     git(R, "rev-parse", FD + "^{tree}"))
-is_("validation: a judge-present per reverted defect is waiting", inputs(S1, "judge-present"), sorted(IDS))
-pi = C.jload(os.path.join(S1, "judge-present", "d0000000a.json"))
+is_("validation: a judge-present per reverted defect is waiting", sorted(of(n) for n in unanswered(S1, "judge-present")), sorted(IDS))
+ok("validation: each is a question keyed by its input: <defect>-<12 hex>", all(re.match(r"\Ad[0-9a-f]{8}-[0-9a-f]{12}\Z", n) for n in inputs(S1, "judge-present")),
+   inputs(S1, "judge-present"))
+pi = only(S1, "d0000000a")
 is_("validation: its input is the finding and the files, as a list", (sorted(pi), sorted(pi["finding"]), [f["path"] for f in pi["files"]]),
     (["files", "finding"], ["failure_scenario", "file", "line", "severity", "summary"], ["src/a.py"]))
 ok("validation: the file is the injected tree's, bug included", "bug A" in pi["files"][0]["text"])
@@ -282,10 +313,10 @@ S3 = main_state("w-valid")
 run(S3)
 split_answer(S3, lambda m: m["defect d0000000b"], lambda m: m["defect d0000000c"])
 run(S3)
-answer(S3, "judge-present", "d0000000a", {"answer": "yes"})
-answer(S3, "judge-present", "d0000000b", {"answer": "no"})
-answer(S3, "judge-present", "d0000000c", {"answer": "unclear"})
-answer(S3, "judge-present", "d0000000d", {"answer": "yes"})
+say(S3, "d0000000a", "yes")
+say(S3, "d0000000b", "no")
+say(S3, "d0000000c", "unclear")
+say(S3, "d0000000d", "yes")
 run(S3)
 r = inj(S3, "bmain0001")
 is_("validation: yes is present; no and unclear are not-present", dict((k, v["status"]) for k, v in r["defects"].items()),
@@ -299,7 +330,7 @@ run(S3b)
 split_answer(S3b, lambda m: m["defect d0000000b"], lambda m: m["defect d0000000c"])
 run(S3b)
 yes_all(S3b, IDS[:3])
-answer(S3b, "judge-present", "d0000000d", {"answer": "no"})
+say(S3b, "d0000000d", "no")
 run(S3b)
 e = examined(S3b, "bmain0001")
 ok("qualify: a pre-merge P1 that is not shown present disqualifies the branch", e["qualified"] is False and "P1" in e["why"] and cases(S3b)["cases"] == [], e)
@@ -310,7 +341,7 @@ run(S3c)
 split_answer(S3c, lambda m: m["defect d0000000b"], lambda m: m["defect d0000000c"])
 run(S3c)
 yes_all(S3c, IDS[:3])
-answer(S3c, "judge-present", "d0000000d", {"answer": "no"})
+say(S3c, "d0000000d", "no")
 run(S3c)
 cs = cases(S3c)
 ok("qualify: an unassessable pre-merge P2 is counted, not disqualifying", len(cs["cases"]) == 1 and sorted(cs["cases"][0]["defects"]) == sorted(IDS[:3]), cs)
@@ -359,8 +390,9 @@ ok("revert_conflict_dropped: with a reason", bool(r["defects"]["d0000000e"]["rea
 ok("revert_conflict_dropped: the others still revert", "bug F" in show(r["work"], r["work_commit"], "src/f.py") and
    show(r["work"], r["work_commit"], "src/e.py") + "\n" == FINAL_E)
 is_("revert_conflict_dropped: the drop is counted in examined", examined(S5, "bconf0001")["counts"].get("dropped-revert"), 1)
-is_("validation: only the reverted defect is sent to a judge", inputs(S5, "judge-present"), ["d0000000f"])
-is_("coverage_gate: no recreation before the validations are in", inputs(S5, "recreate"), [])
+is_("validation: only the reverted defect is sent to a judge", [of(n) for n in inputs(S5, "judge-present")], ["d0000000f"])
+is_("coverage_gate: a per-task defect that leaves the tree gets its recreation request at once: it never comes back by its revert", inputs(S5, "recreate"),
+    ["d0000000e"])
 yes_all(S5, ["d0000000f"])
 run(S5)
 is_("coverage_gate: an unassessable per-task P1 gets a recreation brief", inputs(S5, "recreate"), ["d0000000e"])
@@ -396,21 +428,24 @@ def recreate(state, edits, same, present=None):
     ok("coverage_gate: nothing is judged before the agent signals it is finished", inputs(state, "judge-same") == [], inputs(state, "judge-same"))
     put(os.path.join(state, "recreate", "d0000000e"), "done", "")
     run(state)
-    answer(state, "judge-same", "d0000000e", {"answer": same})
+    say(state, "d0000000e", same, "judge-same")
     run(state)
     if present:
-        answer(state, "judge-present", "d0000000e-r", {"answer": present})
+        ok("coverage_gate: a recreation the judge accepts is judged on the tree it joins, alone", [of(n) for n in unanswered(state, "judge-present")] == ["d0000000e"],
+           unanswered(state, "judge-present"))
+        say(state, "d0000000e", present)
         run(state)
 
 
 run(S5)
 recreate(S5, {"src/e.py": "line1\nline2 BUG E recreated\nline3\n"}, "yes", "yes")
-ok("revalidate: a present defect whose files the recreation did not touch is not asked again", "d0000000f-v" not in inputs(S5, "judge-present"), inputs(S5, "judge-present"))
-js = C.jload(os.path.join(S5, "judge-same", "d0000000e.json"))
+is_("revalidate: a present defect whose files the recreation did not touch is not asked again: the same input is the same question",
+    len(judged(S5, "judge-present", "d0000000f")), 1)
+js = only(S5, "d0000000e", "judge-same")
 is_("coverage_gate: judge-same holds the original finding and fix, and the candidate patch", (sorted(js), sorted(js["original"]), sorted(js["candidate"])),
     (["candidate", "original"], ["finding", "fix"], ["patch"]))
 ok("coverage_gate: the candidate patch is the agent's edit", "+line2 BUG E recreated" in js["candidate"]["patch"] and "-line2 rewritten" in js["candidate"]["patch"], js["candidate"]["patch"])
-pr = C.jload(os.path.join(S5, "judge-present", "d0000000e-r.json"))
+pr = only(S5, "d0000000e")
 ok("coverage_gate: judge-present on the finished tree shows the recreated code", "BUG E recreated" in pr["files"][0]["text"], pr)
 r = inj(S5, "bconf0001")
 is_("coverage_gate: both yes make it recreated", r["defects"]["d0000000e"]["status"], "recreated")
@@ -449,7 +484,7 @@ run(S7)
 recreate(S7, {"src/f.py": "def f():\n    return 3  # recreated\n"}, "yes")
 r = inj(S7, "bconf0001")
 is_("coverage_gate: a patch that does not apply is unassessable", r["defects"]["d0000000e"]["status"], "unassessable")
-ok("coverage_gate: and no judge-present was asked for it", "d0000000e-r" not in inputs(S7, "judge-present"), inputs(S7, "judge-present"))
+is_("coverage_gate: and no judge-present was asked for it", judged(S7, "judge-present", "d0000000e"), [])
 is_("coverage_gate: listed", cases(S7)["coverage"], {"unassessable_task": ["d0000000e"]})
 
 # an untouched tree: nothing to judge
@@ -549,28 +584,6 @@ run(S12b)
 os.environ["PATH"] = old_path
 ok("coherence_undo: a cargo check that passes undoes nothing", all(v["status"] == "reverted" for v in inj(S12b, "bcargo001")["defects"].values()))
 
-# coherent() on its own
-CO = os.path.join(ROOT, "coh")
-for path, text in {"ok.sh": "echo a\n", "bad.sh": "if true; then\n", "ok.py": "x = 1\n", "bad.py": "def (:\n", "ok.json": "{}\n", "bad.json": "{\n",
-                   "shebang": "#!/bin/bash\nif true; then\n", "zshbang": "#!/usr/bin/env zsh\nfor x in 1; do\n", "dot_config/zsh/functions/fn": "f() {\n",
-                   "plain.txt": "if true; then\n", "gone/ok": "x\n"}.items():
-    put(CO, path, text)
-is_("coherent: a good .sh file", INJ.coherent(CO, ["ok.sh"]), (True, ""))
-b = INJ.coherent(CO, ["bad.sh"])
-ok("coherent: bash -n on a .sh file", b[0] is False and "bad.sh" in b[1], b)
-b = INJ.coherent(CO, ["shebang"])
-ok("coherent: bash -n on a bash shebang", b[0] is False, b)
-b = INJ.coherent(CO, ["zshbang"])
-ok("coherent: zsh -n on a zsh shebang", b[0] is False, b)
-b = INJ.coherent(CO, ["dot_config/zsh/functions/fn"])
-ok("coherent: zsh -n on a file under zsh/functions", b[0] is False, b)
-b = INJ.coherent(CO, ["bad.py"])
-ok("coherent: a Python syntax error", b[0] is False and "bad.py" in b[1], b)
-is_("coherent: a good .py and .json", INJ.coherent(CO, ["ok.py", "ok.json"]), (True, ""))
-b = INJ.coherent(CO, ["bad.json"])
-ok("coherent: a JSON parse error", b[0] is False and "bad.json" in b[1], b)
-is_("coherent: a file of no known kind, and a path that is gone, are fine", INJ.coherent(CO, ["plain.txt", "nothere.sh"]), (True, ""))
-
 # ================================================================ order by position, committer date for a head that is not on the branch
 RO = helpers.make_repo(ROOT, "orderrepo")
 BO = cm(RO, "2026-09-20T10:00:00Z", {"README.md": "r\n"}, "base")
@@ -617,8 +630,8 @@ answer(S18, "judge-split", names[0], {"hunks": [{"index": fi["p.py"], "defect": 
 run(S18)
 r = inj(S18, "bovl00001")
 ok("overlap: the shared commit is reverted once: every bug is back and both defects are reverted",
-   all("bug" in show(r["work"], r["work_commit"], f) for f in ("p.py", "q.py", "r.py")) and r["stage1"]["groups"]["d00000061"]["status"] == "reverted"
-   and r["stage1"]["groups"]["d00000062"]["status"] == "reverted", r["stage1"]["groups"])
+   all("bug" in show(r["work"], r["work_commit"], f) for f in ("p.py", "q.py", "r.py")) and r["defects"]["d00000061"]["status"] == "reverted"
+   and r["defects"]["d00000062"]["status"] == "reverted", r["defects"])
 yes_all(S18, ["d00000061", "d00000062"])
 run(S18)
 r = inj(S18, "bovl00001")
@@ -681,19 +694,21 @@ def shift_recreate(st, mv, nv):
     put(os.path.join(st, "recreate", "d00000053", "tree"), "s.txt", SS(["m1", "m2", "m3"] + [("l4X" if x == "l4" else x) for x in LINES_N[3:]]))
     put(os.path.join(st, "recreate", "d00000053"), "done", "")
     run(st)
-    answer(st, "judge-same", "d00000053", {"answer": "yes"})
+    say(st, "d00000053", "yes", "judge-same")
     run(st)
-    answer(st, "judge-present", "d00000053-r", {"answer": "yes"})
-    answer(st, "judge-present", "d00000051-v", {"answer": mv})
-    answer(st, "judge-present", "d00000052-v", {"answer": nv})
+    say(st, "d00000053", "yes")
+    run(st)
+    say(st, "d00000051", mv)
+    say(st, "d00000052", nv)
     run(st)
     return inj(st, "bshift001")
 
 
 r = shift_recreate(S21, "yes", "yes")
-is_("revalidate: after the recreation is applied, each present defect in a file it touched is validated again on the finished tree",
-    sorted(n for n in inputs(S21, "judge-present") if n.endswith("-v")), ["d00000051-v", "d00000052-v"])
-ok("revalidate: and that input shows the finished tree", "l4X" in C.jload(os.path.join(S21, "judge-present", "d00000052-v.json"))["files"][0]["text"])
+is_("revalidate: once the recreation joins, each present defect in a file it touched is judged again on that tree",
+    [len(judged(S21, "judge-present", d)) for d in ("d00000051", "d00000052")], [2, 2])
+ok("revalidate: and that question shows the tree with the recreation", any("l4X" in C.jload(os.path.join(S21, "judge-present", n + ".json"))["files"][0]["text"]
+                                                                          for n in judged(S21, "judge-present", "d00000052")))
 is_("revalidate: each stays present when the judge still finds it, and the recreated one is recreated",
     sorted((k, v["status"]) for k, v in r["defects"].items()), [("d00000051", "present"), ("d00000052", "present"), ("d00000053", "recreated")])
 is_("hunks: a defect whose lines another revert shifted is located where it is in the finished tree, not where its patch was made",
@@ -741,25 +756,24 @@ is_("adjacent: and one location for the group", r["defects"]["d00000081"]["hunks
 is_("adjacent: the branch is not disqualified for it", (len(cases(S24)["cases"]), cases(S24)["coverage"]), (1, {"unassessable_task": []}))
 INJ.check_invariant(rec_branch("badj00001", RJ, "feat", BJ, JQ, TJ), r["work"], r["final_commit"], r["work_commit"], [("d00000081", pa)])
 
-# the later fix not found: the older one's revert, which needs it reverted, fails in the rebuild and it is recreated
+# the later fix not found: the two are one group, reverted while the older is present; the later one leaves and gets its recreation
 S24b = setup_state("w-adjacent-no", [rec_branch("badj00001", RJ, "feat", BJ, JQ, TJ)], {"badj00001": [DJP, DJQ]})
 run(S24b)
-answer(S24b, "judge-present", "d00000081", {"answer": "yes"})
-answer(S24b, "judge-present", "d00000082", {"answer": "no"})
+say(S24b, "d00000081", "yes")
+say(S24b, "d00000082", "no")
 run(S24b)
 r = inj(S24b, "badj00001")
-is_("coverage_gate: a per-task defect that fails in the rebuild before the gate gets its recreation request, with its real reason",
-    (r["defects"]["d00000081"]["status"], "does not revert" in r["defects"]["d00000081"]["reason"], inputs(S24b, "recreate")),
-    ("dropped-revert", True, ["d00000081", "d00000082"]))
-for did in ("d00000081", "d00000082"):
-    put(os.path.join(S24b, "recreate", did, "tree"), "a.txt", "something else\n")
-    put(os.path.join(S24b, "recreate", did), "done", "")
+is_("adjacent: a member the judge does not find leaves; the group stays reverted while another member is in, and the one that left gets its recreation",
+    (r["defects"]["d00000081"]["status"], r["defects"]["d00000082"]["status"], r["defects"]["d00000081"]["group"] == r["defects"]["d00000082"]["group"],
+     "Q bad" in show(r["work"], r["work_commit"], "a.txt"), inputs(S24b, "recreate")), ("present", "not-present", True, True, ["d00000082"]))
+put(os.path.join(S24b, "recreate", "d00000082", "tree"), "a.txt", "something else\n")
+put(os.path.join(S24b, "recreate", "d00000082"), "done", "")
 run(S24b)
-yes_no = {"answer": "no"}
-answer(S24b, "judge-same", "d00000081", yes_no)
-answer(S24b, "judge-same", "d00000082", yes_no)
+say(S24b, "d00000082", "no", "judge-same")
 run(S24b)
-is_("coverage_gate: unrecreated, they are unassessable and listed", cases(S24b)["coverage"], {"unassessable_task": ["d00000081", "d00000082"]})
+r = inj(S24b, "badj00001")
+is_("coverage_gate: unrecreated, it is unassessable and listed; the other is present",
+    (r["defects"]["d00000081"]["status"], r["defects"]["d00000082"]["status"], cases(S24b)["coverage"]), ("present", "unassessable", {"unassessable_task": ["d00000082"]}))
 
 # ================================================================ a missing cargo is recorded, not silent
 EMPTY = os.path.join(ROOT, "nobin")
@@ -824,7 +838,7 @@ ok("qualify: no opening hint while candidates are still in the limits", "cases -
 for n in ("qr1", "qs1"):
     yes_all(S14, [d["id"] for d in Q[n][1]])
 yes_all(S14, ["dxr2", "dyr2"])
-answer(S14, "judge-present", "dzr2", {"answer": "no"})
+say(S14, "dzr2", "no")
 run(S14)
 ok("qualify: a branch that loses a pre-merge P1 frees its place: the next candidate opens", os.path.exists(os.path.join(S14, "work", "bqr3")))
 is_("qualify: and the one that qualified are cases, so far", [c["branch"] for c in cases(S14)["cases"]], ["bqr1", "bqs1"])
@@ -867,12 +881,22 @@ t, tip, dq = simple(QR, BQR, "qh1", "h1", 12)
 QH = rec_branch("bqh1", QR, "qh1", BQR, tip, t, at="2026-10-20T10:00:00.000000Z")
 S20 = setup_state("w-place", [CONF2, QH], {"bconf0002": D2, "bqh1": dq})
 run(S20)
-is_("waiting: a doomed branch that waits on a judge says so, not recreations", "judge answer" in examined(S20, "bconf0002")["why"] and "recreation" not in examined(S20, "bconf0002")["why"], True)
+ok("waiting: a branch that waits says on what: a judge answer and a recreation", "1 judge answer(s) and 1 recreation(s)" in examined(S20, "bconf0002")["why"],
+   examined(S20, "bconf0002"))
 yes_all(S20, ["d000000f2"])
 run(S20)
 ok("coverage_gate: a branch that cannot qualify (its pre-merge P1 fails) and waits for its recreation holds no place: the next candidate is built within a limit of one",
    examined(S20, "bconf0002")["qualified"] is False and "recreation" in examined(S20, "bconf0002")["why"] and os.path.exists(os.path.join(S20, "work", "bqh1")),
    (examined(S20, "bconf0002"), os.listdir(os.path.join(S20, "work"))))
+# a branch that can no longer have two assessable per-task defects holds no place while it waits either
+S20b = setup_state("w-place-few", [rec_branch("bconf0003", RC, "feat", BC, LC, TC, at="2026-10-31T10:00:00.000000Z"), QH], {"bconf0003": [DE2, DF], "bqh1": dq})
+run(S20b)
+ok("place: control: while its recreation may still succeed, the branch holds the one place", not os.path.exists(os.path.join(S20b, "work", "bqh1")))
+put(os.path.join(S20b, "recreate", "d0000000e"), "done", "")
+run(S20b)
+e = examined(S20b, "bconf0003")
+ok("place: once a per-task defect is out for good and too few can still be assessed, it gives up its place while its judge still waits",
+   "fewer than two" in e["why"] and "judge answer" in e["why"] and os.path.exists(os.path.join(S20b, "work", "bqh1")), (e, os.listdir(os.path.join(S20b, "work"))))
 INJ.MAX_CASES = old_limits[0]
 
 
@@ -916,25 +940,41 @@ NBR = rec_branch("bnot00001", RN, "feat", BN, NL, TN)
 # not-present: its revert is not in the tree, so its recreation (made against the final tree) applies
 S31 = setup_state("w-not", [NBR], {"bnot00001": [DNA, DNB]})
 run(S31)
-answer(S31, "judge-present", "d000000a1", {"answer": "yes"})
-answer(S31, "judge-present", "d000000b1", {"answer": "no"})
+say(S31, "d000000a1", "yes")
+say(S31, "d000000b1", "no")
 run(S31)
 r = inj(S31, "bnot00001")
 ok("untracked: a defect the judge does not find is not reverted in the tree a case ships", "fixed B" in show(r["work"], r["work_commit"], "b.py")
    and has(r["work"], r["work_commit"], "tests/test_b.py") and "bug A" in show(r["work"], r["work_commit"], "a.py"), r["defects"])
 is_("untracked: and its recreation is requested", inputs(S31, "recreate"), ["d000000b1"])
-put(os.path.join(S31, "recreate", "d000000b1", "tree"), "b.py", "b = 1  # bug B\n")
+put(os.path.join(S31, "recreate", "d000000b1", "tree"), "b.py", "b = 0  # bug B, by hand\n")
 put(os.path.join(S31, "recreate", "d000000b1", "tree"), "tests/test_b.py", "pass\n")
 put(os.path.join(S31, "recreate", "d000000b1"), "done", "")
 run(S31)
-answer(S31, "judge-same", "d000000b1", {"answer": "yes"})
+say(S31, "d000000b1", "yes", "judge-same")
 run(S31)
-answer(S31, "judge-present", "d000000b1-r", {"answer": "yes"})
+say(S31, "d000000b1", "yes")
 run(S31)
 r = inj(S31, "bnot00001")
 is_("untracked: a not-present per-task P1 goes through recreation to recreated", r["defects"]["d000000b1"]["status"], "recreated")
-ok("untracked: and the case holds the recreated defect and the reverted one", len(cases(S31)["cases"]) == 1 and "bug B" in show(r["work"], r["work_commit"], "b.py")
+ok("untracked: and the case holds the recreated defect and the reverted one", len(cases(S31)["cases"]) == 1 and "bug B, by hand" in show(r["work"], r["work_commit"], "b.py")
    and "bug A" in show(r["work"], r["work_commit"], "a.py"), cases(S31))
+
+# a recreation that gives back a tree the judge has seen asks nothing new: that question was answered
+S31b = setup_state("w-not-again", [NBR], {"bnot00001": [DNA, DNB]})
+run(S31b)
+say(S31b, "d000000a1", "yes")
+say(S31b, "d000000b1", "no")
+run(S31b)
+put(os.path.join(S31b, "recreate", "d000000b1", "tree"), "b.py", "b = 1  # bug B\n")
+put(os.path.join(S31b, "recreate", "d000000b1"), "done", "")
+run(S31b)
+say(S31b, "d000000b1", "yes", "judge-same")
+run(S31b)
+r = inj(S31b, "bnot00001")
+is_("content-addressed: a recreation that rebuilds the very files the judge found the defect absent from is that question again: no new one, the same answer",
+    (r["defects"]["d000000b1"]["status"], r["defects"]["d000000b1"]["reason"], len(judged(S31b, "judge-present", "d000000b1")), unanswered(S31b, "judge-present")),
+    ("unassessable", "the judge answered no on the injected tree", 1, []))
 
 # a recreation the judge rejects on the finished tree is not in the tree, and feeds nothing
 S32 = setup_state("w-rejected", [NBR], {"bnot00001": [DNA, DNB, DNE]})
@@ -944,14 +984,15 @@ run(S32)
 put(os.path.join(S32, "recreate", "d000000e1", "tree"), "e.py", "l1\ne BROKEN differently\nl3\n")
 put(os.path.join(S32, "recreate", "d000000e1"), "done", "")
 run(S32)
-answer(S32, "judge-same", "d000000e1", {"answer": "yes"})
+say(S32, "d000000e1", "yes", "judge-same")
 run(S32)
-answer(S32, "judge-present", "d000000e1-r", {"answer": "no"})
+say(S32, "d000000e1", "no")
 run(S32)
 r = inj(S32, "bnot00001")
 is_("rejected: a recreation the judge rejects on the finished tree is unassessable", r["defects"]["d000000e1"]["status"], "unassessable")
 is_("rejected: and is not in the tree a case ships", show(r["work"], r["work_commit"], "e.py"), "l1\ne rewritten\nl3")
-ok("rejected: nor do its files make another present defect be validated again", not [n for n in inputs(S32, "judge-present") if n.endswith("-v")], inputs(S32, "judge-present"))
+is_("rejected: nor is another present defect judged on a tree with it, though its files are among theirs", [len(judged(S32, "judge-present", d)) for d in ("d000000a1", "d000000b1")],
+    [1, 1])
 
 # ================================================================ an uncounted defect's hunks stay applied
 DC3 = dict(dfx("d0000000c", "task", "P3", [(FA, FBC)], "src/c.py"), counted=False)
@@ -985,19 +1026,8 @@ r = inj(S34, "bhelp0001")
 is_("coherence_undo: a revert that removes a name another file still uses is undone: incoherent, with the name and the file",
     (r["defects"]["d00000091"]["status"], "helper is still used by d.py" in r["defects"]["d00000091"]["reason"]), ("incoherent", True))
 ok("coherence_undo: and the helper stays in the tree", has(r["work"], r["work_commit"], "helper.py") and "bug B" in show(r["work"], r["work_commit"], "b.py"))
-pd = lambda name, body: "diff --git a/{0} b/{0}\n--- a/{0}\n+++ b/{0}\n@@ -1,0 +1,{1} @@\n".format(name, len(body.splitlines())) + body
-is_("lexical: names a revert removes, by file kind: Python def, class, top-level assignment; net of what the fix also removed",
-    INJ.removed_names(pd("m.py", "+def f(x):\n+    pass\n+class K:\n+X = 1\n+    cleanup()\n-def f(x):\n")), ["K", "X"])
-is_("lexical: a bare call in a .py file and a key in a .toml file define nothing", (INJ.removed_names(pd("m.py", "+    cleanup()\n")), INJ.removed_names(pd("c.toml", "+timeout = 30\n"))), ([], []))
-is_("lexical: shell functions in .sh, by shebang, and under zsh/functions", (INJ.removed_names(pd("a.sh", "+k() {\n+function g {\n")),
-    INJ.removed_names(pd("run", "#!/bin/bash\n+k2() {\n".replace("#!/bin/bash\n", "+#!/bin/bash\n"))), INJ.removed_names(pd("dot_config/zsh/functions/z", "+zf() {\n"))),
-    (["g", "k"], ["k2"], ["zf"]))
-is_("lexical: nothing from a .py file that is a shell function", INJ.removed_names(pd("m.py", "+k() {\n")), [])
-is_("lexical: Ruby def, class and module; Rust fn; JS function and X = (", (INJ.removed_names(pd("a.rb", "+def self.go\n+class A\n+module M\n")),
-    INJ.removed_names(pd("a.rs", "+pub fn go() {\n")), INJ.removed_names(pd("a.ts", "+export function f() {}\n+const h = (x) => x\n"))), (["A", "M", "go"], ["go"], ["f", "h"]))
-is_("lexical: and nothing from YAML, INI, JSON or Markdown", [INJ.removed_names(pd(n, "+x = 1\n+def y\n+k() {\n")) for n in ("a.yml", "a.ini", "a.json", "a.md")], [[]] * 4)
 
-# ================================================================ rank by merge date; a tool that is missing is recorded
+# ================================================================ rank by merge date; a cargo that times out
 INJ.MAX_CASES, INJ.PER_REPO = 12, 1
 t1_, tip1, d1 = simple(QR, BQR, "qm1", "m1", 13)
 t2_, tip2, d2 = simple(QR, BQR, "qm2", "m2", 14)
@@ -1009,19 +1039,7 @@ ok("rank: candidates are ranked by merge date, as `cases --open` does: the later
    os.path.exists(os.path.join(S35, "work", "bqm2")) and not os.path.exists(os.path.join(S35, "work", "bqm1")), os.listdir(os.path.join(S35, "work")))
 INJ.MAX_CASES, INJ.PER_REPO = old_limits
 
-NOTOOLS = os.path.join(ROOT, "notools")
-os.makedirs(NOTOOLS)
-notes = []
-os.environ["PATH"] = NOTOOLS
-try:
-    got = INJ.coherent(CO, ["ok.sh"], notes)
-    put(CO, "x.rb", "def (\n")
-    got_rb = INJ.coherent(CO, ["x.rb"], notes)
-finally:
-    os.environ["PATH"] = old_path
-is_("tools: a syntax check whose tool is missing passes but is named in the notes", (got, got_rb, sorted(notes)), ((True, ""), (True, ""), ["bash not found", "ruby not found"]))
-
-# a timeout of cargo is recorded like a missing cargo, and every revert is undone
+# a timeout of cargo is recorded like a missing cargo: its result is unknown, and the reverts stay
 put(STUB, "cargo", "#!/bin/sh\nexec sleep 5\n")
 S36 = setup_state("w-cargo-timeout", [CG], {"bcargo001": DG})
 os.environ["PATH"] = STUB + os.pathsep + old_path
@@ -1032,8 +1050,9 @@ try:
 finally:
     os.environ["PATH"] = old_path
 r = inj(S36, "bcargo001")
-ok("build_check: a cargo check that times out is recorded, every revert is undone, and inject carries on",
-   r["build_check"].startswith("timed out") and all(v["status"] == "incoherent" for v in r["defects"].values()) and "warning: branch bcargo001" in buf.getvalue(), (r["build_check"], buf.getvalue()))
+ok("build_check: a cargo check that times out is recorded and warned, leaves the reverts in (its result is unknown, as with no cargo), and inject carries on",
+   r["build_check"].startswith("timed out") and all(v["status"] == "reverted" for v in r["defects"].values()) and "warning: branch bcargo001: the build check was timed out" in buf.getvalue(),
+   (r["build_check"], r["defects"], buf.getvalue()))
 
 # the judge briefs say what the inputs hold
 ok("briefs: judge-present describes files as a list of {path, text}", '"files": [{"path", "text"}]' in C.BRIEFS["judge-present"])
@@ -1055,31 +1074,46 @@ DAC1 = dfx("d000000c1", "task", "P2", [(AFA, AFX)], "s.txt")
 DAC2 = dfx("d000000c2", "pre", "P2", [(AFX, AFY)], "s.txt")
 S40 = setup_state("w-judged", [rec_branch("bjudg0001", RA, "feat", BA, AFY, TA)], {"bjudg0001": [DAA, DAC1, DAC2]})
 run(S40)
-answer(S40, "judge-present", "d000000a1", {"answer": "yes"})
-answer(S40, "judge-present", "d000000c1", {"answer": "yes"})
-answer(S40, "judge-present", "d000000c2", {"answer": "no"})
+say(S40, "d000000a1", "yes")
+say(S40, "d000000c1", "yes")
+say(S40, "d000000c2", "no")
 run(S40)
 r = inj(S40, "bjudg0001")
-vin = C.jload(os.path.join(S40, "judge-present", "d000000c1-v.json"))
+waits = unanswered(S40, "judge-present")
+vin = C.jload(os.path.join(S40, "judge-present", waits[0] + ".json")) if [of(n) for n in waits] == ["d000000c1"] else None
 ok("revalidate: a present defect judged with a neighbour's revert in place, shipped without it, is judged again on the shipped tree",
    vin is not None and "Y fixed" in vin["files"][0]["text"] and "Y bug" not in vin["files"][0]["text"], vin)
-is_("revalidate: and the branch waits for that answer", (r["complete"], inputs(S40, "judge-present")), (False, ["d000000a1", "d000000c1", "d000000c1-v", "d000000c2"]))
-answer(S40, "judge-present", "d000000c1-v", {"answer": "yes"})
+is_("revalidate: and the branch waits for that answer; the other defects are not asked again", (r["complete"], [len(judged(S40, "judge-present", d)) for d in ("d000000a1", "d000000c1", "d000000c2")]),
+    (False, [1, 2, 1]))
+say(S40, "d000000c1", "yes")
 run(S40)
 r = inj(S40, "bjudg0001")
 is_("revalidate: yes keeps it; a defect whose files did not change is not asked", (r["defects"]["d000000c1"]["status"], r["complete"], len(cases(S40)["cases"])), ("present", True, 1))
 S41 = setup_state("w-judged-no", [rec_branch("bjudg0001", RA, "feat", BA, AFY, TA)], {"bjudg0001": [DAA, DAC1, DAC2]})
 run(S41)
 yes_all(S41, ["d000000a1", "d000000c1"])
-answer(S41, "judge-present", "d000000c2", {"answer": "no"})
+say(S41, "d000000c2", "no")
 run(S41)
-answer(S41, "judge-present", "d000000c1-v", {"answer": "no"})
+say(S41, "d000000c1", "no")
 run(S41)
 r = inj(S41, "bjudg0001")
 is_("revalidate: no drops it, and the tree is rebuilt without it", (r["defects"]["d000000c1"]["status"], "X fixed" in show(r["work"], r["work_commit"], "s.txt")),
     ("not-present", True))
 
-# ================================================================ a group that newly fails after the gate gets the second pass
+# a recreation still being made does not hold up the answers that are in: a defect found absent leaves, and the rest are judged again
+DZ9 = dfx("d000000f9", "task", "P2", [], "a.py")
+S41b = setup_state("w-judged-busy", [rec_branch("bjudg0001", RA, "feat", BA, AFY, TA)], {"bjudg0001": [DAA, DAC1, DAC2, DZ9]})
+run(S41b)
+ok("waiting: a defect with no fix range is out from the start and its recreation is requested", inputs(S41b, "recreate") == ["d000000f9"], inputs(S41b, "recreate"))
+yes_all(S41b, ["d000000a1", "d000000c1"])
+say(S41b, "d000000c2", "no")
+run(S41b)
+r = inj(S41b, "bjudg0001")
+is_("waiting: while that recreation is unfinished, the no is acted on: the tree is rebuilt and the defect whose file changed is asked again",
+    ([of(n) for n in unanswered(S41b, "judge-present")], r["defects"]["d000000c2"]["status"], "Y fixed" in show(r["work"], r["work_commit"], "s.txt"),
+     sorted(r["waiting"])), (["d000000c1"], "not-present", True, ["judge-present", "recreate"]))
+
+# ================================================================ a defect that leaves in a later round gets its recreation then
 RP = helpers.make_repo(ROOT, "passrepo")
 BP = cm(RP, "2026-09-20T10:00:00Z", {"README.md": "r\n"}, "base")
 git(RP, "checkout", "-q", "-b", "feat")
@@ -1105,12 +1139,12 @@ EL2[24] = "e25 touched by the recreation"
 put(os.path.join(S42, "recreate", "d00000a03", "tree"), "e.txt", SS(EL2))
 put(os.path.join(S42, "recreate", "d00000a03"), "done", "")
 run(S42)
-answer(S42, "judge-same", "d00000a03", {"answer": "yes"})
+say(S42, "d00000a03", "yes", "judge-same")
 run(S42)
-answer(S42, "judge-present", "d00000a03-r", {"answer": "yes"})
+say(S42, "d00000a03", "yes")
 run(S42)
-is_("passes: the recreation changed a file of the fix of H, so H is judged again on the shipped tree", "d00000a02-v" in inputs(S42, "judge-present") and "d00000a01-v" not in inputs(S42, "judge-present"), True)
-answer(S42, "judge-present", "d00000a02-v", {"answer": "no"})
+is_("passes: the recreation changed a file of the fix of H, so H alone is judged again on the tree it joined", [of(n) for n in unanswered(S42, "judge-present")], ["d00000a02"])
+say(S42, "d00000a02", "no")
 run(S42)
 r = inj(S42, "bpass0001")
 ok("passes: H no longer found, G's revert is rebuilt without H's and is incoherent (its helper is in use), with the real status and reason",
@@ -1120,12 +1154,11 @@ for did in ("d00000a01", "d00000a02"):
     put(os.path.join(S42, "recreate", did, "tree"), "a.py", "a = 9\n")
     put(os.path.join(S42, "recreate", did), "done", "")
 run(S42)
-yes_no = {"answer": "no"}
-answer(S42, "judge-same", "d00000a01", yes_no)
-answer(S42, "judge-same", "d00000a02", yes_no)
+say(S42, "d00000a01", "no", "judge-same")
+say(S42, "d00000a02", "no", "judge-same")
 run(S42)
 r = inj(S42, "bpass0001")
-is_("passes: and what still fails is unassessable and listed in coverage; the third pass does not exist",
+is_("passes: and what still fails is unassessable and listed in coverage; each had one recreation",
     (r["defects"]["d00000a01"]["status"], r["defects"]["d00000a02"]["status"], r["defects"]["d00000a03"]["status"], cases(S42)["coverage"], r["complete"]),
     ("unassessable", "unassessable", "recreated", {"unassessable_task": ["d00000a01", "d00000a02"]}, True))
 
@@ -1136,18 +1169,202 @@ S43 = main_state("w-uncounted-only", [DA, DU1, DU2, dfx("d0000000e", "task", "P2
 run(S43)
 is_("uncounted: a range only uncounted defects share needs no judge-split", inputs(S43, "judge-split"), [])
 
-# ================================================================ the final tree's cargo check that times out is recorded, not a failure
+# ================================================================ a later tree's cargo check that times out is recorded, not a failure
 put(STUB, "cargo", "#!/bin/sh\nif [ -e {0} ]; then exec sleep 5; fi\ntouch {0}\nexit 0\n".format(os.path.join(ROOT, "cargo-ran-once")))
 DG2 = [DG[0], DG[1], dfx("d00000033", "pre", "P2", DG[2]["fixes"], "src/r3.rs")]
 S44 = setup_state("w-cargo-final", [CG], {"bcargo001": DG2})
-yes_all(S44, ["d00000031", "d00000032"])
-answer(S44, "judge-present", "d00000033", {"answer": "no"})
 os.environ["PATH"] = STUB + os.pathsep + old_path
 try:
-    for _ in range(2):
+    for n in range(2):
         with contextlib.redirect_stdout(io.StringIO()):
             INJ.cmd_inject(Namespace(state=S44, dry_run=False, snapshot_root=NO_SNAPSHOT, budget=1, open=16))
+        if n == 0:
+            yes_all(S44, ["d00000031", "d00000032"])
+            say(S44, "d00000033", "no")
 finally:
     os.environ["PATH"] = old_path
-ok("build_check: a timeout of the final tree's cargo check is recorded as a timeout and the branch still qualifies",
-   inj(S44, "bcargo001")["build_check"].startswith("timed out on the final tree") and len(cases(S44)["cases"]) == 1, (inj(S44, "bcargo001")["build_check"], cases(S44)))
+ok("build_check: a timeout of the shipped tree's cargo check (the first tree's passed) is recorded as a timeout and the branch still qualifies",
+   inj(S44, "bcargo001")["build_check"].startswith("timed out") and len(cases(S44)["cases"]) == 1, (inj(S44, "bcargo001")["build_check"], cases(S44)))
+
+
+# ================================================================ the fixpoint: each question once, nothing alternates, it ends
+def drive(state, rule, limit=40, edit=None):
+    """Run inject and do what `pending` hands out, as the driver does, until it hands out nothing: judges by rule(kind, defect, how many
+    of its questions of that kind were answered before, input), recreations by edit(defect, tree dir) and then done. The number of
+    runs, or None past `limit`."""
+    for n in range(1, limit + 1):
+        run(state)
+        items = C.pending(state)
+        for kind, name, inp, _ans, _brief in items:
+            if kind == "recreate":
+                if edit:
+                    edit(name, os.path.join(state, "recreate", name, "tree"))
+                put(os.path.join(state, "recreate", name), "done", "")
+                continue
+            did = of(name)
+            before = len([x for x in inputs(state, kind) if of(x) == did]) - len([x for x in unanswered(state, kind) if of(x) == did])
+            answer(state, kind, name, {"answer": rule(kind, did, before, C.jload(inp))})
+        if not items:
+            return n
+    return None
+
+
+def stale(state):
+    return sorted(n for kind in ("judge-present", "judge-same") if os.path.isdir(os.path.join(state, kind))
+                  for n in os.listdir(os.path.join(state, kind)) if ".stale-" in n)
+
+
+def snapshot(state):
+    out = {}
+    for d, _s, fs in os.walk(state):
+        for f in fs:
+            p = os.path.join(d, f)
+            if not os.path.islink(p) and f != "items.lock" and os.path.relpath(p, state).split(os.sep)[0] not in ("work", "views", "packs", "cargo"):
+                with open(p, "rb") as h:
+                    out[os.path.relpath(p, state)] = h.read()
+    return out
+
+
+RT = helpers.make_repo(ROOT, "twotrees")
+BT = cm(RT, "2026-09-20T10:00:00Z", {"README.md": "r\n"}, "base")
+git(RT, "checkout", "-q", "-b", "feat")
+three = lambda x, y, z: ("".join("l%d\n" % i for i in range(1, 6)) + x + "\n" + "".join("m%d\n" % i for i in range(1, 12)) + y + "\n"
+                         + "".join("n%d\n" % i for i in range(1, 12)) + z + "\n" + "".join("o%d\n" % i for i in range(1, 6)))
+TT = cm(RT, "2026-10-01T09:00:00Z", {"s.txt": three("X bug", "Y bug", "Z bug"), PLAN: "plan\n"}, "task 1")
+TX = cm(RT, "2026-10-01T10:00:00Z", {"s.txt": three("X fixed", "Y bug", "Z bug")}, "fix X")
+TY = cm(RT, "2026-10-01T11:00:00Z", {"s.txt": three("X fixed", "Y fixed", "Z bug")}, "fix Y")
+TZ = cm(RT, "2026-10-01T12:00:00Z", {"s.txt": three("X fixed", "Y fixed", "Z fixed")}, "fix Z")
+git(RT, "checkout", "-q", "main")
+TWO = rec_branch("btwo00001", RT, "feat", BT, TZ, TT)
+DT = [dfx("d00000c01", "task", "P2", [(TT, TX)], "s.txt"), dfx("d00000c02", "pre", "P2", [(TX, TY)], "s.txt"), dfx("d00000c03", "task", "P2", [(TY, TZ)], "s.txt")]
+S50 = setup_state("w-twotrees", [TWO], {"btwo00001": DT})
+script = {"d00000c01": ["yes", "yes", "yes", "yes"], "d00000c02": ["no"], "d00000c03": ["yes", "no"]}
+runs = drive(S50, lambda kind, did, k, doc: script[did][k] if kind == "judge-present" else "no")
+r = inj(S50, "btwo00001")
+ok("fixpoint (F1): a defect judged on a second and a third tree in one branch settles: it ends", runs is not None and r["complete"], (runs, r and r.get("complete")))
+is_("fixpoint (F1): no answer is ever set aside: another tree is another question", stale(S50), [])
+is_("fixpoint (F1): X is asked once per tree it was in (all three reverts, X and Z, X alone), Y once, Z on two trees",
+    sorted((d, len([n for n in inputs(S50, "judge-present") if of(n) == d])) for d in ("d00000c01", "d00000c02", "d00000c03")),
+    [("d00000c01", 3), ("d00000c02", 1), ("d00000c03", 2)])
+is_("fixpoint (F1): X is present, Y and Z are not", dict((k, v["status"]) for k, v in r["defects"].items()),
+    {"d00000c01": "present", "d00000c02": "not-present", "d00000c03": "unassessable"})
+ok("fixpoint (F1): the shipped tree has X's bug alone", "X bug" in show(r["work"], r["work_commit"], "s.txt") and "Y fixed" in show(r["work"], r["work_commit"], "s.txt")
+   and "Z fixed" in show(r["work"], r["work_commit"], "s.txt"))
+before = snapshot(S50)
+for _ in range(3):
+    run(S50)
+is_("fixpoint (F1): more runs with no new answer change no file (no alternation)", sorted(k for k in set(before) | set(snapshot(S50)) if before.get(k) != snapshot(S50).get(k)), [])
+
+# a judge driven by what it sees: whatever it answers, the fixpoint ends within its bound and asks no question twice
+RW = helpers.make_repo(ROOT, "wobble")
+BW = cm(RW, "2026-09-20T10:00:00Z", {"README.md": "r\n"}, "base")
+git(RW, "checkout", "-q", "-b", "feat")
+REG = ["A", "B", "C", "D", "E"]
+wob = lambda fixed: "".join("".join("{}{}\n".format(r.lower(), i) for i in range(1, 9)) + ("{} fixed\n".format(r) if r in fixed else "{} bug\n".format(r)) for r in REG)
+TWb = cm(RW, "2026-10-01T09:00:00Z", {"w.txt": wob(""), "v.txt": "v1\nv bug\nv3\n", PLAN: "plan\n"}, "task 1")
+heads, prev, done_ = [], TWb, ""
+for i, reg in enumerate(REG):
+    done_ += reg
+    files = {"w.txt": wob(done_)}
+    if reg == "C":
+        files["v.txt"] = "v1\nv fixed\nv3\n"
+    prev2 = cm(RW, "2026-10-01T1{}:00:00Z".format(i), files, "fix " + reg)
+    heads.append((prev, prev2))
+    prev = prev2
+git(RW, "checkout", "-q", "main")
+WOB = rec_branch("bwob00001", RW, "feat", BW, prev, TWb)
+classes = [("task", "P1"), ("task", "P2"), ("pre", "P2"), ("task", "P2"), ("pre", "P2")]
+DW = [dfx("d00000e0" + str(i), cls, sev, [heads[i]], "w.txt", files=["w.txt", "v.txt"] if REG[i] == "C" else ["w.txt"]) for i, (cls, sev) in enumerate(classes)]
+bound = 4 * len(DW) + len(DW) + 2
+import hashlib as _hl
+for seed in range(6):
+    st = setup_state("w-wobble-{}".format(seed), [WOB], {"bwob00001": DW})
+    pick = lambda kind, did, k, doc, seed=seed: ("yes", "no", "unclear")[int(_hl.sha256((str(seed) + json.dumps(doc, sort_keys=True)).encode()).hexdigest(), 16) % 3] \
+        if kind == "judge-present" else ("yes" if int(_hl.sha256((str(seed) + did).encode()).hexdigest(), 16) % 2 else "no")
+    edit = lambda did, tree: put(tree, "w.txt", open(os.path.join(tree, "w.txt")).read() + "recreated " + did + "\n")
+    runs = drive(st, pick, limit=bound + 1, edit=edit)
+    r = inj(st, "bwob00001")
+    ok("fixpoint: seed {}: whatever the judge answers, the branch settles within its bound of rounds".format(seed), runs is not None and r["complete"], (runs, r and r.get("complete")))
+    is_("fixpoint: seed {}: no answer was set aside".format(seed), stale(st), [])
+    shipped = dict((p, show(r["work"], r["work_commit"], p)) for p in ("w.txt", "v.txt"))
+    for did, rec in sorted(r["defects"].items()):
+        if rec["status"] in ("present", "recreated"):
+            d = [x for x in DW if x["id"] == did][0]
+            seen = [C.jload(os.path.join(st, "judge-present", n + ".json")) for n in inputs(st, "judge-present") if of(n) == did]
+            here = [doc for doc in seen if all(f["text"].rstrip("\n") == shipped[f["path"]] for f in doc["files"])]
+            ok("fixpoint: seed {}: {} counts only once a judge saw the shipped tree and said yes".format(seed, did), len(here) == 1 and pick("judge-present", did, 0, here[0]) == "yes", (len(here), rec))
+    before = snapshot(st)
+    run(st)
+    is_("fixpoint: seed {}: a further run changes nothing".format(seed), sorted(k for k in set(before) | set(snapshot(st)) if before.get(k) != snapshot(st).get(k)), [])
+
+# cargo is asked once per tree, however the groups were arrived at (M1: a merge changes the groups, not the tree)
+RK = helpers.make_repo(ROOT, "adjcargo")
+BK = cm(RK, "2026-09-20T10:00:00Z", {"README.md": "r\n"}, "base")
+git(RK, "checkout", "-q", "-b", "feat")
+KL = ["l{}".format(i) for i in range(1, 11)]
+KL[4], KL[6] = "P bad", "Q bad"
+TK = cm(RK, "2026-10-01T09:00:00Z", {"a.txt": SS(KL), "Cargo.toml": "[package]\nname = \"k\"\n", PLAN: "plan\n"}, "task 1")
+KL[4] = "P good"
+KP = cm(RK, "2026-10-01T10:00:00Z", {"a.txt": SS(KL)}, "fix P")
+KL[6] = "Q good"
+KQ = cm(RK, "2026-10-01T11:00:00Z", {"a.txt": SS(KL)}, "fix Q")
+git(RK, "checkout", "-q", "main")
+KLOG = os.path.join(ROOT, "cargo-k.log")
+put(STUB, "cargo", "#!/bin/sh\ngit write-tree >> {}\nexit 0\n".format(KLOG))
+S52 = setup_state("w-adjcargo", [rec_branch("badjk0001", RK, "feat", BK, KQ, TK)], {"badjk0001": [dfx("d00000k01", "task", "P1", [(TK, KP)], "a.txt"),
+                                                                                         dfx("d00000k02", "task", "P2", [(KP, KQ)], "a.txt")]})
+os.environ["PATH"] = STUB + os.pathsep + old_path
+try:
+    runs = drive(S52, lambda kind, did, k, doc: "yes")
+finally:
+    os.environ["PATH"] = old_path
+r = inj(S52, "badjk0001")
+trees = open(KLOG).read().split()
+is_("cargo (M1): the adjacent fixes are one group and both present", (sorted(v["status"] for v in r["defects"].values()), r["defects"]["d00000k01"]["group"] == r["defects"]["d00000k02"]["group"]),
+    (["present", "present"], True))
+is_("cargo (M1): cargo checked each tree once, over every run, though the groups changed", (len(trees), len(set(trees))), (1, 1))
+
+# a cargo check that fails once a recreation joins takes out the recreation on trial, not a revert
+put(STUB, "cargo", "#!/bin/sh\ngit write-tree >> {}\nif grep -rq RECREATED src; then echo 'error: recreated' >&2; exit 1; fi\nexit 0\n".format(LOG + "3"))
+S37 = setup_state("w-cargo-trial", [CG], {"bcargo001": DG + [dfx("d00000034", "task", "P2", [], "src/r4.rs")]})
+os.environ["PATH"] = STUB + os.pathsep + old_path
+try:
+    runs = drive(S37, lambda kind, did, k, doc: "yes", edit=lambda did, tree: put(tree, "src/rec.rs", "// RECREATED\n"))
+finally:
+    os.environ["PATH"] = old_path
+r = inj(S37, "bcargo001")
+is_("build_check: a cargo failure on the tree a recreation joins undoes the recreation, newest first, and keeps the reverts",
+    (sorted((k, v["status"]) for k, v in r["defects"].items()), r["defects"]["d00000034"]["reason"].startswith("cargo check failed"), r["build_check"]),
+    ([("d00000031", "present"), ("d00000032", "present"), ("d00000033", "present"), ("d00000034", "unassessable")], True, "passed after undoing 1 step(s)"))
+is_("build_check: two trees, two cargo checks, over every run", len(open(LOG + "3").read().split()), 2)
+
+# a repair that stops applying while recreations are on trial is theirs to answer for (a unit test: no fixture reaches it)
+FX = INJ.Fixpoint(Namespace(state=ROOT), {"id": "bunit0001"}, None, None, None,
+                  {"groups": [{"id": "d1", "members": ["d1"], "pieces": [{"rank": 0.0, "text": ""}], "patch": "", "files": ["a"]}], "bad": {"d2": "no fix range"}},
+                  [dfx("d1", "task", "P1", [], "a"), dfx("d2", "task", "P2", [], "b")], {}, collections.Counter(), {}, INJ.Questions())
+FX.out.pop("d2")
+FX.tried.add("d2")
+FX.mode["d2"], FX.rec["d2"] = "trial", ("patch", "reverse")
+FX.resolve("HEAD", FX.groups[0], "does not apply")
+is_("trial: a group whose repair stops applying in a trial round keeps its place; the recreation on trial leaves, unassessable",
+    (FX.mode, FX.out), ({"d1": "revert"}, {"d2": ("unassessable", "on trial, it stopped the repair of another defect from applying")}))
+
+# ================================================================ a question the fixpoint no longer needs is not handed out
+S53 = setup_state("w-obsolete", [CONF], {"bconf0001": [DE, DF]})
+run(S53)
+OTHER = "aaaa1111-0-d0000000f"
+C.judge_write(S53, "judge-present", OTHER, {"finding": {"summary": "a question another module asks"}, "files": []})
+pend = lambda: sorted(p[1] for p in C.pending(S53) if p[0] == "judge-present")
+first = judged(S53, "judge-present", "d0000000f")
+is_("needed: the question the fixpoint waits on is pending, beside another module's", pend(), sorted(first + [OTHER]))
+C.jsave(os.path.join(S53, "inventory", "bconf0001.json"), {"branch": "bconf0001", "defects": [DE, dict(DF, summary="defect d0000000f, reworded")], "dropped": []})
+run(S53)
+now = [n for n in judged(S53, "judge-present", "d0000000f") if n not in first]
+is_("needed: once the inventory changes the finding, the old question is no longer pending; the new one and the other module's are",
+    (len(now), pend()), (1, sorted(now + [OTHER])))
+is_("needed: the manifest owns both questions and needs the new one; it knows nothing of the other module's",
+    C.jload(os.path.join(S53, "judge-present", "needed.json")), {"owned": sorted(first + now), "needed": now})
+say(S53, "d0000000f", "yes")
+run(S53)
+is_("needed: answered, nothing of inject's is needed: only the other module's question and the recreation are handed out",
+    sorted((p[0], p[1]) for p in C.pending(S53)), [("judge-present", OTHER), ("recreate", "d0000000e")])
