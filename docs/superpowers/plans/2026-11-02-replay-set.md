@@ -63,7 +63,9 @@ ends with the branch pushed. **Part B** runs it, from a separate Claude session 
   Every path handed to a judge, a final reviewer or a Codex turn (brief paths, input and answer
   paths, scratch repositories used as a cwd) goes through `common.aliased`, a neutral symlink
   `$XDG_STATE_HOME/review-work/<8 hex>` to the state dir, so no path a reviewer or judge sees
-  names the replay; the harness itself uses the real paths.
+  names the replay; the harness itself uses the real paths. Scratch repositories are not reached
+  through that symlink: they live physically under `$XDG_STATE_HOME/review-work/scratch/<label>`,
+  because Codex may resolve a symlinked cwd to its real path.
 - **Dry run.** `--dry-run` starts no daemon and no turn, and writes nothing but judge inputs and
   briefs (as `xreview-replay` does).
 - **Existing failures.** A failure counts as pre-existing only if the same suite fails on `main`.
