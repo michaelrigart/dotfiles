@@ -33,9 +33,15 @@ token naming the checkout beside its parent directory in one call (cd ~/Code/Org
 path-like token with `..` resolved against the call's cwd (options glued to the path, -C../x, --git-dir=../x and
 NAME=../x, are stripped first), the parent directory counting only when spelled as a path, never as a bare tail
 (Code, .local/share). A repo-specific tool that reads the checkout without naming it (TOOLS: chezmoi for the chezmoi
-source) is a leak when run as a command. Known limits of a lexical scan: a path assembled across separate commands
-(`cd ~/Code/Org`, then `cat repo/x`) is caught only when a token still names the repo, and `cd .. && cat x` is not
-followed.
+source) is a leak when run as a command: as the first word of a command, which starts at the beginning, after a
+newline, && || ; | & ( ) { ! then do else, in $( ) and backticks, and after env, sudo, command, xargs, timeout, nice
+and `mise exec --`; looking the binary up (command -v, which, type, hash) is not a run. Exec JavaScript strings may be
+"...", '...' or `...`.
+Known limits of a lexical scan, which are not chased further: a path assembled across separate commands (`cd
+~/Code/Org`, then `cat repo/x`) is caught only when a token still names the repo; `cd .. && cat x` is not followed;
+`git -c key.x=../...` and other options that glue a path to a key are not resolved; a workdir held in a variable;
+aliases, functions or variables defined earlier in the session; a command assembled from a substitution's output
+(`$(which chezmoi) diff`).
 
 Codex homes are paths (codexhome.py): this module sets CODEX_HOME to the replay home for the rpc calls and the
 rollout reads of a round, and drops an inherited XREVIEW_RPC_SOCK or XREVIEW_RPC_STDIO, which would aim a call
@@ -287,7 +293,12 @@ _NOT_WORD = r"(?![A-Za-z0-9_])"
 # command words that run them, and other spellings of the checkout's path.
 TOOLS = {".local/share/chezmoi": {"words": ("chezmoi",), "spellings": ("$XDG_DATA_HOME/chezmoi", "${XDG_DATA_HOME}/chezmoi")}}
 SHELLS = ("sh", "bash", "zsh", "dash")
-PREFIXES = ("command", "env", "sudo", "exec", "time", "nohup")
+KEYWORDS = ("if", "then", "else", "elif", "do", "while", "until", "!", "{", "}", "fi", "done", "esac")
+ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+WITH_ARG = {"sudo": ("-u", "-g", "-C", "-D", "-h", "-p", "-R", "-r", "-t", "-T", "-U"), "env": ("-u", "-C", "-S"),
+            "xargs": ("-I", "-J", "-L", "-n", "-P", "-s", "-d", "-E", "-a"), "timeout": ("-s", "-k"), "nice": ("-n",),
+            "stdbuf": (), "ionice": ("-c", "-n", "-p")}
+WRAPPERS = ("exec", "time", "nohup", "stdbuf", "ionice", "setsid", "builtin", "noglob", "nocorrect")
 
 
 def _forbidden(paths):
@@ -330,10 +341,92 @@ def _tool_words(path):
     return TOOLS.get(path[len(house) + 1:] if house and path.startswith(house + "/") else None, {}).get("words", ())
 
 
+def _logical(command):
+    """`command` as one line: unquoted newlines become `;` (a backslash-newline is a continuation), heredoc bodies
+    are dropped, and a backtick substitution becomes ( ... ), so every command sits at a command position."""
+    out, quote, i, heredocs, backtick = [], None, 0, [], False
+    n = len(command)
+    while i < n:
+        ch = command[i]
+        if quote:
+            out.append(ch)
+            if ch == "\\" and quote == '"' and i + 1 < n:
+                out.append(command[i + 1])
+                i += 1
+            elif ch == quote:
+                quote = None
+        elif ch == "\\" and i + 1 < n:
+            if command[i + 1] == "\n":
+                i += 1
+            else:
+                out.append(ch + command[i + 1])
+                i += 1
+        elif ch in "'\"":
+            quote = ch
+            out.append(ch)
+        elif ch == "`":
+            out.append(" ) " if backtick else " ( ")
+            backtick = not backtick
+        elif ch == "\n":
+            line = "".join(out)
+            out.append(" ; ")
+            m = re.search(r"<<-?\s*(['\"]?)([A-Za-z0-9_]+)\1", line.rsplit(" ; ", 1)[-1])
+            if m:
+                end = re.compile(r"^\s*" + re.escape(m.group(2)) + r"\s*$", re.M)
+                found = end.search(command, i + 1)
+                i = found.end() if found else n
+                continue
+        else:
+            out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _skip(words, base):
+    """words[1:] without the options of a wrapper command and their arguments."""
+    i = 1
+    while i < len(words) and words[i].startswith("-") and words[i] != "--":
+        i += 2 if words[i] in WITH_ARG.get(base, ()) else 1
+    return words[i + 1:] if i < len(words) and words[i] == "--" else words[i:]
+
+
+def _effective(words):
+    """The words of the command a simple command ends up running, looking through shell keywords, assignments and
+    wrappers (env, sudo, command, xargs, timeout, nice, mise exec --, ...); [] for `command -v/-V`, which only finds a
+    binary (which, type and hash are commands of their own, so what they look up is an argument)."""
+    while words:
+        base = os.path.basename(words[0])
+        if words[0] in KEYWORDS or ASSIGNMENT.match(words[0]):
+            words = words[1:]
+        elif base == "command":
+            if any(re.match(r"-[a-zA-Z]*[vV]", w) for w in words[1:2]):
+                return []
+            words = _skip(words, base)
+        elif base == "env":
+            i = 1
+            while i < len(words) and (words[i].startswith("-") or ASSIGNMENT.match(words[i])):
+                i += 2 if words[i] in WITH_ARG["env"] else 1
+            words = words[i:]
+        elif base == "timeout":
+            rest = _skip(words, base)
+            words = rest[1:]                       # the duration
+        elif base == "nice":
+            words = [w for w in _skip(words, base)] if not (len(words) > 1 and re.match(r"-\d+\Z", words[1])) else words[2:]
+        elif base == "mise" and len(words) > 1 and words[1] in ("exec", "x"):
+            words = words[words.index("--") + 1:] if "--" in words else []
+        elif base in WITH_ARG or base in WRAPPERS:
+            words = _skip(words, base)
+        else:
+            return words
+    return []
+
+
 def _runs(command, words):
-    """Whether the shell command `command` (a string, or an argv list) runs one of `words` as a command: its
-    first word, or the first after && || ; | and command/env/sudo-like prefixes, looking through `sh -c '...'`.
-    A word that is only an argument, a path component or inside a quoted string does not count."""
+    """Whether the shell command `command` (a string, or an argv list) runs one of `words` as a command: the first
+    word of a command, where a command starts at the beginning, after a newline, && || ; | & ( ) { then do else !,
+    in $( ) and backticks, after wrappers (command/env/sudo/xargs/timeout/nice/mise exec --), and looking through
+    `sh -c '...'`. A word that is only an argument, a path component, inside a quoted string, or looked up
+    (command -v, which, type, hash) does not count."""
     if isinstance(command, (list, tuple)):
         argv = [str(x) for x in command]
         if len(argv) >= 3 and os.path.basename(argv[0]) in SHELLS and any(re.match(r"-[a-z]*c[a-z]*\Z", x) for x in argv[1:-1]):
@@ -341,28 +434,33 @@ def _runs(command, words):
         command = " ".join(shlex.quote(x) for x in argv)
     if not isinstance(command, str):
         return False
+    command = _logical(command)
     lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
     try:
         tokens = list(lexer)
     except ValueError:
         tokens = command.split()
-    start = True
-    for i, tok in enumerate(tokens):
-        if tok in ("&&", "||", ";", "|", ";;", "&", "(", ")"):
-            start = True
-            continue
-        if not start:
-            continue
-        if tok in PREFIXES or re.match(r"[A-Za-z_][A-Za-z0-9_]*=", tok) or (tok.startswith("-") and i and tokens[i - 1] in PREFIXES):
-            continue
-        start = False
-        if os.path.basename(tok) in words:
+    simple, current = [], []
+    for tok in tokens:
+        if tok in ("&&", "||", ";", "|", ";;", "&", "(", ")", "$"):
+            simple.append(current)
+            current = []
+        else:
+            current.append(tok)
+    simple.append(current)
+    for cmd in simple:
+        eff = _effective(cmd)
+        if eff and os.path.basename(eff[0]) in words:
             return True
-        if os.path.basename(tok) in SHELLS:
-            for j in range(i + 1, len(tokens) - 1):
-                if re.match(r"-[a-z]*c[a-z]*\Z", tokens[j]):
-                    return _runs(tokens[j + 1], words)
+        if eff and os.path.basename(eff[0]) in SHELLS:
+            for j in range(1, len(eff) - 1):
+                if re.match(r"-[a-z]*c[a-z]*\Z", eff[j]) and _runs(eff[j + 1], words):
+                    return True
+        for tok in cmd:                            # "$(chezmoi diff)" inside a quoted word
+            for inner in re.findall(r"\$\(([^()]*)\)", tok):
+                if _runs(inner, words):
+                    return True
     return False
 
 
@@ -400,15 +498,18 @@ def _named(text, cwd, forbidden, commands=()):
     return hit
 
 
-_WORKDIR = re.compile(r"""["']?workdir["']?\s*:\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')""")
-_CMD = re.compile(r"""["']?cmd["']?\s*:\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')""")
+_STRING = r"""("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)"""
+_WORKDIR = re.compile(r"""["']?workdir["']?\s*:\s*""" + _STRING)
+_CMD = re.compile(r"""["']?cmd["']?\s*:\s*""" + _STRING)
 
 
 def _js_string(literal):
-    try:
-        return json.loads(literal) if literal.startswith('"') else literal[1:-1]
-    except ValueError:
-        return literal[1:-1]
+    if literal.startswith('"'):
+        try:
+            return json.loads(literal)
+        except ValueError:
+            pass
+    return re.sub(r"\\(.)", lambda m: {"n": "\n", "t": "\t"}.get(m.group(1), m.group(1)), literal[1:-1])
 
 
 def _from(cwd, given):

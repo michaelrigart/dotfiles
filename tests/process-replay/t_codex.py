@@ -673,3 +673,37 @@ finally:
     K.glob.glob = real_glob
 is_("weekly_vanish: a rollout that moves between the listing and the read is skipped, not raised", got, None)
 is_("weekly_vanish: a missing file has modification time 0", K._mtime(vanished), 0)
+
+# ---- tool_words, round 3: command positions, lookups, template literals
+CHZN = [house + "/.local/share/chezmoi in t1"]
+for label, cmd in (("after a newline", "ls\nchezmoi diff"), ("after an indented newline", "cd /tmp\n  chezmoi cat x"), ("after a CRLF", "echo hi\r\nchezmoi diff"),
+                   ("after then", "if true; then chezmoi diff; fi"), ("after then on its own line", "if true\nthen\n  chezmoi diff\nfi"),
+                   ("after do", "for f in a; do chezmoi cat $f; done"), ("after else", "if false; then ls; else chezmoi diff; fi"),
+                   ("inside braces", "{ chezmoi diff; }"), ("after !", "! chezmoi diff"), ("inside $( )", "echo $(chezmoi diff)"),
+                   ("inside a double-quoted $( )", 'echo "$(chezmoi diff)"'), ("inside backticks", "echo `chezmoi diff`"),
+                   ("under xargs", "xargs chezmoi diff < f"), ("under xargs with options", "ls | xargs -n 1 -I {} chezmoi cat {}"),
+                   ("under timeout", "timeout 10 chezmoi diff"), ("under nice", "nice -n 5 chezmoi diff"), ("under nice", "nice chezmoi diff"),
+                   ("under env -u", "env -u X chezmoi diff"), ("under env with an assignment", "env A=1 -u X chezmoi diff"),
+                   ("under sudo -u", "sudo -u me chezmoi diff"), ("under sudo -E", "sudo -E chezmoi diff"),
+                   ("under mise exec --", "mise exec -- chezmoi diff"), ("with no space after &&", "ls &&chezmoi diff"), ("after a semicolon", "ls;chezmoi diff"),
+                   ("as ./chezmoi", "./chezmoi diff"), ("after a comment-free multi-line script", "set -e\ncd ~/x\nchezmoi apply --dry-run")):
+    is_("tool_words: chezmoi {} is a leak".format(label), leaked(fc(cmd), CHZ), CHZN)
+for label, cmd in (("command -v", "command -v chezmoi"), ("command -V", "command -V chezmoi"), ("which", "which chezmoi"), ("type", "type chezmoi"),
+                   ("hash", "hash chezmoi"), ("a lookup in an if", "if command -v chezmoi >/dev/null; then echo yes; fi"),
+                   ("a lookup after a newline", "ls\ncommand -v chezmoi"), ("a heredoc body", "cat <<EOF\nchezmoi diff\nEOF"),
+                   ("a quoted heredoc body", "cat <<'EOF' > x\nls\nchezmoi apply\nEOF\nls"), ("a quoted multi-line string", "echo 'a\nchezmoi diff'"),
+                   ("an argument of xargs", "ls | xargs rg chezmoi"), ("a lookup under sudo", "sudo which chezmoi")):
+    is_("tool_words: {} only looks the binary up, or is not a command: not a leak".format(label), leaked(fc(cmd), CHZ), [])
+is_("tool_words: the heredoc's later lines are commands again", leaked(fc("cat <<EOF\nx\nEOF\nchezmoi diff"), CHZ), CHZN)
+TL = 'await tools.exec_command({cmd:`ls\nchezmoi diff`, workdir:`/work/scratch`});'
+is_("tool_words: a template-literal cmd is read", leaked_payload({"type": "custom_tool_call", "name": "exec", "input": TL}, CHZ), CHZN)
+TL2 = 'await tools.exec_command({cmd:`cat ../orig/a`, workdir:`/work/scratch`});'
+is_("leak_scan: a template-literal workdir is read", leaked_payload({"type": "custom_tool_call", "name": "exec", "input": TL2}, ORIG, cwd="/elsewhere/a/b"), ["/work/orig in t1"])
+is_("leak_scan: a template-literal cmd with a newline escape and workdir", leaked_payload(
+    {"type": "custom_tool_call", "name": "exec", "input": 'tools.exec_command({cmd:`ls\\ncat ../orig/a`,workdir:`/work/scratch`})'}, ORIG, cwd="/elsewhere/a/b"), ["/work/orig in t1"])
+
+# ---- parent as a path: the reviewer's round-2 probes
+is_("leak_scan: the parent spelled as a path beside the basename, in two commands, stays a leak (original: the chezmoi source)",
+    leaked("rg -n 'chezmoi' README.md; rg -n '~/.local/share' AGENTS.md", CHZ), CHZN)
+is_("leak_scan: a trailing comment naming Code and a module named like the repo is not a leak", leaked("python -m hulder.cli --help  # Code", HULDER), [])
+is_("leak_scan: a Code glob and an ls of the repo's name is not a leak", leaked("rg 'Code' -g '*.md' && ls hulder", HULDER), [])
