@@ -338,7 +338,7 @@ any turn runs. If neither works, stop and report.
 
   The existing `xreview-replay` and `measure-interventions` suites get additions for their new
   options.
-- Results go in §10 of this spec. Raw files stay in `$XDG_STATE_HOME/process-replay/<date>/` and
+- Results go in §11 of this spec. Raw files stay in `$XDG_STATE_HOME/process-replay/<date>/` and
   are never committed.
 
 ## 10. Data checked before sign-off
@@ -367,3 +367,79 @@ Filled in after the run.
 - The memories mechanism of §7.2.
 - Script and subcommand names, if a better fit appears. The judging conventions and the pass bars
   are fixed.
+
+## 13. Implementation notes
+
+Rulings made while building the harness (branch `replay-set`, plan
+`docs/superpowers/plans/2026-11-02-replay-set.md`; the full ledger of rulings lives with the plan's
+execution). They settle what §12 left open and how the pass bars apply to the data as it is. The
+methods and bars above are unchanged except where a line says so.
+
+**Mechanism and isolation (§7)**
+- Memories (§7.2): replay turns run on a second Codex daemon with its own home
+  (`$XDG_STATE_HOME/cxh/<name>`, short enough for its socket) and its own login. A probe must
+  pass before any turn. There is no fallback onto Michael's daemon: if the probe fails, the run
+  stops for Michael. The home copies skills, rules and plugins instead of linking them, and drops
+  `notify`.
+- Scratch repositories live physically under `$XDG_STATE_HOME/review-work/scratch/<label>`.
+  Judges and final reviewers each get their item staged in its own directory under
+  `review-work/items/`, holding only that item's files.
+- The leak scan (§7.1) covers Codex rounds, the final reviewer and its subagents, and §6's arms.
+  It flags any read or command naming the original checkout or a `wt` sibling, the harness's
+  state, another scratch or item, the snapshot, Codex's sessions and memories, Claude's
+  transcripts, or the xreview state. Running `chezmoi` counts as reading the original dotfiles. A
+  rollout that cannot be read counts as a leak. The scan is lexical; its known limits are listed
+  in `codex.py`.
+- Merge evidence runs `git merge-tree` in a private view repository whose alternates are the
+  snapshot (or the original's objects). Git then refreshes those packs' modification times. The
+  content is unchanged.
+
+**Cases and defects (§4.1, §4.2)**
+- "Merged" needs local merge evidence (ancestry, a rebase by `git cherry`, or a squash by tree
+  equality) dated inside the window. A branch keeps every review it had, whatever the date.
+- Each task review joins the one branch whose own commits hold it, by ancestry or else by
+  patch-id. A review claimed by two branches joins neither.
+- A candidate needs at least two task-review fix ranges of its own. Judge inputs are opened in
+  stages, most recent merge first (`cases --open N`).
+- **Qualification also needs at least one counted pre-merge defect that is assessable** (Michael,
+  2026-11-02). Without one, §4.6 has nothing to calibrate a run against, so such a case could never
+  be assessable and would rule out a pass. The slot passes to the next candidate.
+- Each (task, branch) gets one judge, which reads every review and re-review report. Findings that
+  describe breakage a fix introduced are dropped.
+
+**The injected tree (§4.3)**
+- Only counted (P0–P2) defects are reverted. Adjacent fixes that cannot be reverted separately
+  form one group. Test hunks belong to the defect they test.
+- Validation runs to a monotone fixpoint (Michael's restructure, 2026-11-02):
+  - each round builds the tree from the final tree with the active defects reverted;
+  - judge questions are keyed by a digest of exactly what the judge sees;
+  - whatever fails leaves, and the active set only shrinks;
+  - each per-task defect gets one recreation attempt (against the final tree, checked for syntax).
+- The shipped tree is the fixpoint tree, and every counted defect was judged present on it. A
+  defect whose group stays reverted for another member is unassessable, with no recreation.
+- Coherence means a syntax check per revert, a lexical check for names still used elsewhere, and
+  `cargo check` once per distinct tree. A missing or timed-out tool is recorded, not fatal.
+- The coverage gate covers the branches that were built.
+
+**Runs and the bar (§4.4, §4.6)**
+- The stall rule applies after every review, the final review included. At the sixth round,
+  approve outranks rounds, which outranks stalled.
+- A failed Codex round is retried once. Matched repairs are applied one at a time. Collateral
+  group members are censored. The remaining defects are tracked by line.
+- A run of a case with no counted pre-merge defect is not assessable (moot after the
+  qualification rule above). Report totals count assessable runs only.
+
+**Plan checkpoint (§5)**
+- The lost `omit_plans` saving is reported two ways: plan bytes ÷ 3.5, and 0.19 × the tokens of
+  the October pre-merge turns that omitted a plan. Each has its net figure. The recommendation is
+  `keep` or `inconclusive`, with a flag when classification is incomplete.
+
+**Codex memories (§6)**
+- The watcher logs every poll with its interval. A memories directory holding any symlink gives
+  an unstable poll.
+- A case is the branch's first pre-merge round on any thread.
+- Each arm's packet is built on its own scratch, and each memories home is probed before its
+  turns.
+
+**Part B** runs from an export of the pushed commit, never from the shared checkout, and §11
+records that commit.

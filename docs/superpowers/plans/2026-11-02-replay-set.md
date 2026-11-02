@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** In progress (plan review, then Part A).
+**Status:** In progress (Part A built and reviewed; Codex pre-merge review, then Part B).
 
 **Goal:** Build the harness that answers, from October's record, whether the per-task reviewer and
 the plan-review checkpoint can go, and that sets up the forward Codex-memories test; then run §4
@@ -764,41 +764,66 @@ Michael's daemon.
 
 ### Finishing Part A
 
-- [ ] Final whole-branch review (`sp-architect`), then the Codex pre-merge review
-  (`xreview dispatch --checkpoint pre-merge --diff main...replay-set`), fixing every finding.
-- [ ] Mark this plan's Part A done in its Status line; push `replay-set`.
-- [ ] Give Michael the watcher command, so §6's collection starts at once:
-  `.scripts/process-replay.py memories-watch --seed ~/Code/.replay/snapshot/2026-11-02/codex-memories --seed-at 2026-11-02T13:21:43Z`
-  (in a background pane, or as a launchd job if he prefers), and the Part B prompt.
+- [x] Final whole-branch review (`sp-architect`) and its fix wave.
+- [ ] Codex pre-merge review (`xreview dispatch --checkpoint pre-merge --diff main...replay-set`),
+  fixing every finding; the full and heavy suites on the final commit.
+- [ ] Mark Part A done in this Status line; push `replay-set`.
+- [ ] Give Michael the pinned-export commands below (step 0), the watcher command, and the Part B
+  prompt.
 
 ## Part B — the run (a session rooted at `~/Code/.replay`)
 
 Driven from `~/Code/.replay` so `measure-interventions.py` leaves it out (§7.3). Harness commands
 run unsandboxed (they read the ledgers, write `$XDG_STATE_HOME`, and talk to the replay daemon).
-Judges are `sp-standard`, final reviewers `sp-architect`; each gets its own brief path (the
-per-input `<kind>/<id>.brief.md`, the final review's `brief.md`, or the recreation's JSON) and
-nothing else (§7.1). `process-replay pending` lists what waits on Claude, with each brief path.
+Judges are `sp-standard`, final reviewers `sp-architect`, recreations `sp-standard`. Hand each agent
+exactly the brief path `process-replay pending` prints for its item, and nothing else (§7.1):
+judges and final reviews get a staged `review-work/items/<hex>/brief.md`, recreations their
+`recreate/<id>.brief.md`. If an agent's write into its staged item or recreation tree prompts,
+start the session with `--add-dir` for `$XDG_STATE_HOME/review-work` and
+`$XDG_STATE_HOME/process-replay`.
 
-1. **Login.** Michael runs the line `process-replay home --login-cmd` prints, as `! …`.
-2. **Mechanism.** `home --name nomem --start --probe`. It must pass every check. If it fails,
-   stop and report to Michael, before any replay turn: the other §7.2 option, a per-thread setting,
-   would put replay rollouts on his daemon, so it is his call.
-3. `snapshot`, then `cases` and its judges until `cases` reports the inventory complete.
-4. `inject` and its judges and recreations (`sp-standard`, one per `recreate/<id>.json`) until
-   `cases.json` is final. Report the case count; fewer than 10 is reported, not padded.
+0. **Pin the harness.** Export the pushed commit and run everything from the export, never from the
+   shared checkout (other sessions switch branches there):
+   `mkdir -p ~/Code/.replay/harness-<sha7> && git -C ~/.local/share/chezmoi archive <sha> | tar -x -C ~/Code/.replay/harness-<sha7>`;
+   `H=~/Code/.replay/harness-<sha7>`; the commands below are `$H/.scripts/process-replay.py …` and
+   `$H/.scripts/xreview-replay.py …`. §11 records `<sha>`.
+1. **Login.** Michael runs the line `process-replay home --login-cmd` prints (in a terminal if
+   `! …` runs sandboxed).
+2. **Mechanism.** `home --name nomem --start --probe`. It must pass every check; if it fails, stop
+   and report to Michael before any replay turn. The daemon keeps running; start no other replay
+   home while §4's `run` is going (`run` holds the replay run lock and refuses otherwise).
+3. `snapshot`; `cases` (opens 16 candidates); dispatch a judge for every item `pending` lists; run
+   `cases` again; repeat until it reports `judge answers pending: 0` and an inventory for every
+   opened candidate.
+4. `inject`; dispatch the judges and recreations `pending` lists; run `inject` again; repeat. When
+   `inject` prints the hint to open more (`cases --open N`), run it, go through step 3's loop, then
+   `inject` again. `cases.json` is final when `inject` prints neither "answers wait" nor that hint.
+   Report the case count; fewer than 10 is reported, not padded.
 5. Loop `run` (background, unsandboxed) and `match`, dispatching final reviewers and judges, until
-   every run has ended. The driver saves each final reviewer's last message, verbatim, to
-   `final/<id>/answer.md`. A weekly-usage pause waits for the reset and resumes.
-6. `report`. Then `cases --plans`, its judges, and `report` again for §5.
+   every run has ended. The driver saves each final reviewer's last message, verbatim, to the
+   `answer.md` path `pending` names. If `match` cannot find a final reviewer's transcript, point
+   it there with `match --transcript <id>=<path>`. A weekly-usage pause: run `run` again after its
+   `resets_at`. A round that fails twice ends its run as `error`.
+6. `report`. Then §5: `cases --plans`, its judge-known answers, `cases --plans` again (it writes the
+   judge-class inputs), their answers, and `report` again.
 7. In the dotfiles checkout on `replay-set`: §11 of the spec gets the results (tables from
-   `report.md`, the recommendation per removal, the costs); commit; Codex pre-merge review of the
-   results commit; push. Michael rules on each removal; adoption waits until after the 2026-11-15
-   reading.
-8. `cleanup`; `home --name nomem --stop`.
+   `report.md`, the recommendation per removal, the costs, the harness `<sha>`); commit; Codex
+   pre-merge review of the results commit; push. Michael rules on each removal; adoption waits
+   until after the 2026-11-15 reading.
+8. `cleanup` (it also stops the replay daemon). Run `home --name nomem --stop` only if `cleanup`
+   reports it could not stop it.
 
-§6 runs once 10 cases have accrued (about a week): `xreview-replay.py cases --switch memories`,
-its judges, `run` (unsandboxed; it starts each needed home's daemon in turn), `match`, judges,
-`report`; results into §11 the same way.
+**The memories watcher** (started by Michael right after Part A is pushed, from the export):
+`$H/.scripts/process-replay.py memories-watch --seed ~/Code/.replay/snapshot/2026-11-02/codex-memories --seed-at 2026-11-02T13:21:43Z`
+in a background pane or as a launchd job. Restarting with the same command is safe (the seed is
+skipped once logged).
+
+**§6** runs once 10 cases have accrued (about a week), not while §4's `run` is going:
+`xreview-replay.py cases --switch memories --memwatch ~/.local/state/process-replay/memwatch`, its
+judge-known answers, `cases --switch memories …` again for the selection, then
+`run --switch memories` (unsandboxed; it probes each memories home before its turns and starts
+each home's daemon in turn), `match --switch memories`, its judges, `report --switch memories`;
+results into §11 the same way.
 
 ## Rulings
 
