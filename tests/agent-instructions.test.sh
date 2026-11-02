@@ -224,6 +224,23 @@ need_in "$DR" "Don't rewrite point-in-time facts." \
   "design-records holds the point-in-time rule"
 need_in "$DR" 'Keep one canonical spec, referenced by repository and path, preferably as a forge link and never as a bare path.' \
   "design-records holds the canonical-spec rule"
+# The cross-review skill (spec 2026-11-01-instruction-layer, section 1) holds the checkpoint mechanics.
+CR=dot_claude/skills/cross-review/SKILL.md
+need_in "$CR" 'Codex reviews every plan, and execution starts once it approves.' \
+  "cross-review holds the plan-review rule"
+need_in "$CR" 'If Michael asked at spec sign-off to see the plan, stop after Codex approves.' \
+  "cross-review holds the show-the-plan rule"
+need_in "$CR" "Either way, put the plan's path in your next status message." \
+  "cross-review holds the plan-path status rule"
+need_in "$CR" 'Never prolong a loop for consensus.' \
+  "cross-review holds the no-consensus-prolonging rule"
+need_in "$CR" 'a fix ships with a test that fails without it' \
+  "cross-review states the fix rule in the apply window"
+if [ -f "$SRC/$CR" ] && tr '\n' ' ' < "$SRC/$CR" | tr -s ' ' | grep -qF -- 'genuinely written first'; then
+  _fail "cross-review no longer carries the old RED-test wording" "genuinely written first is still present"
+else
+  _pass "cross-review no longer carries the old RED-test wording"
+fi
 if grep -qF -- '**Recursive search.**' "$FRAG/claude-code.md"; then
   _fail "the Recursive search bullet is folded into the path-resolution rule" "still present"
 else

@@ -18,6 +18,10 @@ Three checkpoints, and only these:
 
 Not every turn, and never for reassurance.
 
+Codex reviews every plan, and execution starts once it approves. If Michael asked at spec
+sign-off to see the plan, stop after Codex approves. Either way, put the plan's path in your
+next status message.
+
 ## The cold-ask rule
 
 Send the artifact and the constraints. **Never send your reasoning, your transcript, or
@@ -221,7 +225,7 @@ artifact, and fixes are where the next round's findings come from. Before re-dis
 ## Iterating
 
 Keep going until the review converges, the disagreement is real, or the loop stops
-converging (escalation list below). Michael is the tiebreaker, not the courier — he
+converging (escalation list below). Never prolong a loop for consensus. Michael is the tiebreaker, not the courier — he
 should hear about a finding because it needs his judgement, never because a round
 ended.
 
@@ -338,9 +342,9 @@ xreview apply --done      # closes it
 ```
 
 While open, a second guard denies Edit/Write outside the files the review actually saw.
-Test paths stay writable, because the RED-test rule requires adding one. That bounds
-where a mistake can land; whether a RED test was genuinely written first is not
-mechanisable and remains discipline.
+Test paths stay writable, because a fix ships with a test that fails without it. That bounds
+where a mistake can land; whether that test fails without the fix is for the reviewer to
+check by revert, not for a guard.
 
 The guards are deliberately narrow — pushes, merges in a forge web UI, other CLIs and a
 command assembled from variables fail open, and `XREVIEW_GUARD=off` bypasses it. A guard that never fires spuriously is
