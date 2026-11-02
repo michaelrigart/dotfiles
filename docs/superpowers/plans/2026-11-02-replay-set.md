@@ -786,7 +786,10 @@ start the session with `--add-dir` for `$XDG_STATE_HOME/review-work` and
    shared checkout (other sessions switch branches there):
    `mkdir -p ~/Code/.replay/harness-<sha7> && git -C ~/.local/share/chezmoi archive <sha> | tar -x -C ~/Code/.replay/harness-<sha7>`;
    `H=~/Code/.replay/harness-<sha7>`; the commands below are `$H/.scripts/process-replay.py …` and
-   `$H/.scripts/xreview-replay.py …`. §11 records `<sha>`.
+   `$H/.scripts/xreview-replay.py …`. §11 records `<sha>`. Fix the state dir once,
+   `S=~/.local/state/process-replay/<date of the first command>`, and pass `--state "$S"` to every
+   `process-replay` command (`snapshot`, `cases`, `inject`, `pending`, `run`, `match`, `report`,
+   `cleanup`, `home`): the default is dated by the day it runs, and Part B spans days.
 1. **Login.** Michael runs the line `process-replay home --login-cmd` prints (in a terminal if
    `! …` runs sandboxed).
 2. **Mechanism.** `home --name nomem --start --probe`. It must pass every check; if it fails, stop
@@ -797,11 +800,13 @@ start the session with `--add-dir` for `$XDG_STATE_HOME/review-work` and
    opened candidate.
 4. `inject`; dispatch the judges and recreations `pending` lists; run `inject` again; repeat. When
    `inject` prints the hint to open more (`cases --open N`), run it, go through step 3's loop, then
-   `inject` again. `cases.json` is final when `inject` prints neither "answers wait" nor that hint.
+   `inject` again. From then on every `cases` in step 3's loop is `cases --open N` with the latest
+   N (a plain `cases` opens 16 again and drops the other inventories). `cases.json` is final when
+   `inject` prints neither "answers wait" nor that hint.
    Report the case count; fewer than 10 is reported, not padded.
 5. Loop `run` (background, unsandboxed) and `match`, dispatching final reviewers and judges, until
-   every run has ended. The driver saves each final reviewer's last message, verbatim, to the
-   `answer.md` path `pending` names. If `match` cannot find a final reviewer's transcript, point
+   every run has ended. The driver saves each final reviewer's last message, verbatim, to
+   `answer.md` beside the staged `brief.md` that `pending` names. If `match` cannot find a final reviewer's transcript, point
    it there with `match --transcript <id>=<path>`. A weekly-usage pause: run `run` again after its
    `resets_at`. A round that fails twice ends its run as `error`.
 6. `report`. Then §5: `cases --plans`, its judge-known answers, `cases --plans` again (it writes the
@@ -819,8 +824,10 @@ in a background pane or as a launchd job. Restarting with the same command is sa
 skipped once logged).
 
 **§6** runs once 10 cases have accrued (about a week), not while §4's `run` is going:
-`xreview-replay.py cases --switch memories --memwatch ~/.local/state/process-replay/memwatch`, its
-judge-known answers, `cases --switch memories …` again for the selection, then
+`xreview-replay.py cases --switch memories --memwatch ~/.local/state/process-replay/memwatch`; a
+judge for each `judge-known/<round>.json` in the directory `cases` prints (`judge inputs: N
+round(s) in <dir>`; these are not listed by `process-replay pending`); `cases --switch memories …`
+again for the selection, then
 `run --switch memories` (unsandboxed; it probes each memories home before its turns and starts
 each home's daemon in turn), `match --switch memories`, its judges, `report --switch memories`;
 results into §11 the same way.
