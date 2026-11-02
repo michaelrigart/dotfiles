@@ -85,6 +85,28 @@ if [ -n "$codex_marker_at" ] && [ -n "$codex_shared_at" ] && [ "$codex_shared_at
 else
   _fail "the Codex target is the shared fragment, one blank line, the addendum, no trailing blank" "shared at '$codex_shared_at', marker at '$codex_marker_at' (expected $((frag_lines + 2))), last line '$(tail -n 1 "$codex_out")'"
 fi
+# Byte for byte, so a target that keeps its heading but loses its fragment's body fails.
+renders_exactly() {  # <label> <rendered file> <fragment>...: the fragments joined by one blank line
+  local label=$1 out=$2 want="$T/want" f first=1
+  shift 2
+  : > "$want"
+  for f in "$@"; do
+    [ "$first" = 1 ] || printf '\n' >> "$want"
+    cat "$FRAG/$f" >> "$want"
+    first=0
+  done
+  if cmp -s "$out" "$want"; then
+    _pass "$label"
+  else
+    _fail "$label" "$(diff "$want" "$out" | head -3)"
+  fi
+}
+renders_exactly "the GLOBAL target is global.md exactly" "$T/$(basename "$GLOBAL_T")" global.md
+renders_exactly "the Claude target is global.md, one blank line, claude-code.md exactly" "$claude_out" \
+  global.md claude-code.md
+renders_exactly "the Codex target is global.md, one blank line, codex.md exactly" "$codex_out" \
+  global.md codex.md
+
 for t in "$GLOBAL_T" "$CLAUDE_T"; do
   if grep -qxF -- "$CODEX_MARKER" "$T/$(basename "$t")"; then
     _fail "$t carries no Codex-only section" "found '$CODEX_MARKER'"
