@@ -8,7 +8,7 @@ Judge files (the controller dispatches the judges between phases; docs/superpowe
   <state>/<kind>/<id>.brief.md       this input's brief (brief_for): the kind's brief and two path lines
   <state>/judges/<kind>.md           the kind's brief (write_briefs)
 A final review is <state>/final/<id>/brief.md with answer.md beside it; a recreation is
-<state>/recreate/<id>.json, finished when <state>/recreate/<id>/done exists.
+<state>/recreate/<id>.json (its brief is <id>.brief.md beside it), finished when <state>/recreate/<id>/done exists.
 """
 import importlib.util
 import os
@@ -271,8 +271,9 @@ def _pending(state):
     for jid in _inputs(state, "recreate"):
         spec = os.path.join(state, "recreate", jid + ".json")
         done = os.path.join(state, "recreate", jid, "done")
+        brief = os.path.join(state, "recreate", jid + ".brief.md")
         if not os.path.exists(done):
-            out.append(("recreate", jid, spec, done, spec))
+            out.append(("recreate", jid, spec, done, brief if os.path.isfile(brief) else spec))
     return out
 
 

@@ -511,7 +511,8 @@ Michael's daemon.
   - Pin `docs/superpowers/` to `plan_commit`: the tip of the branch's newest approved, clean plan
     receipt; with none, the last commit touching `docs/superpowers/plans/` before the first task
     review began.
-  - Each defect's `hunks` are its repair's post-image line ranges, kept for Task 8's
+  - Each defect's `hunks` locate it in the finished injected tree: `start`/`end` are the lines its
+    repair changes there (and `new_start`/`new_end` the repaired lines), kept for Task 8's
     collateral check.
 - [ ] **Step 4: Run** it; it passes.
 - [ ] **Step 5: Commit.** `Inject the reviewers' catches back into each branch's final tree`
