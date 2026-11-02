@@ -312,8 +312,9 @@ Michael's daemon.
   - `home_config`: `ensure(state, "nomem")` gives a mode-700 home whose `config.toml` is the
     source's with a `[memories]` table holding `use_memories = false` and
     `generate_memories = false`; a source `[memories]` table keeps its other keys;
-    `[features] memories` is unchanged; `AGENTS.md` is copied; `skills`, `rules`, `plugins` are
-    symlinks when the source has them; `auth.json` is a symlink to `auth_dir()/auth.json`; no
+    `[features] memories` is unchanged and the top-level `notify` is dropped; `AGENTS.md`,
+    `skills` and `rules` are copied and `plugins` is an APFS clone (a replay daemon writes into
+    them, so none may link into the source); `auth.json` is a symlink to `auth_dir()/auth.json`; no
     `sessions`, `archived_sessions`, `sqlite`, `memories` or `.codex-global-state.json`.
   - `home_memories`: `ensure(state, "mem-x", memories_src=snap, use_memories=True)` copies `snap`
     (without `.git`) to `memories/` and sets `use_memories = true`, `generate_memories = false`.
@@ -332,8 +333,9 @@ Michael's daemon.
 - [ ] **Step 2: Run** `t_codexhome.py`; it fails.
 - [ ] **Step 3: Implement.** The config edit is textual: drop any `[memories]` table's
   `use_memories`/`generate_memories` lines, then set them (adding the table if absent). The probe
-  starts a thread in a temp dir, runs one turn ("Reply with the single word ok.") with
-  `findings.schema.json` replaced by a minimal `{"type":"object"}` schema, reads the replay rollout,
+  starts a thread in a temp dir, runs one turn (asking for `{"word":"ok"}`) with the strict schema
+  `{"type":"object","additionalProperties":false,"required":["word"],"properties":{"word":{"type":"string"}}}`,
+  reads the replay rollout,
   and archives the thread. The probe's turn also gives the home a rollout from which
   `XP.fresh_window` reads the context window.
 - [ ] **Step 4: Run** the test file; it passes.
