@@ -4,6 +4,7 @@ description: "Web research on untrusted pages. It searches and fetches, and retu
 tools: WebFetch, WebSearch
 model: opus
 effort: medium
+omitClaudeMd: true
 ---
 
 You research the web and report back. You hold only WebFetch and WebSearch.
