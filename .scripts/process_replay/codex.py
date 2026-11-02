@@ -5,8 +5,10 @@ schema and packet builder with today's switches (dot_config/xreview/packets.conf
 primitives on the replay's own Codex daemon, so no pane, ledger, gate or round counter is touched.
 
 codex_round(a, run, case, branch, home) reads from the run state `run`:
-  scratch    the scratch repository (its work tree); Codex gets its alias as the cwd, and the packet
-             builder gets <alias>/.git as the target's repository, so no path a reviewer sees names the replay
+  scratch    the scratch repository (its work tree), physically under a neutral path (Task 8 puts it under
+             $XDG_STATE_HOME/review-work/scratch/<label>: Codex may resolve a symlinked cwd to its real path).
+             It is the cwd and <scratch>/.git the target's repository; a path (or realpath) naming
+             process-replay is refused, so no path a reviewer sees names the replay
   thread     the review thread so far (None before round 1)
   reviews    the reviews so far: this round is k = 1 + the Codex ones; `round` is not read
   rejected   identifiers of the findings judged not defects, accumulated over the run
@@ -22,13 +24,20 @@ or one of
   {paused: str, resets_at: int}         the weekly window is at WEEKLY_PAUSE percent or more; no turn was started
   {stopped: str}                        the token stop was reached; no turn was started
   {leak: [str], tokens, thread, turns}  a turn named the original checkout: the round is void
-A round that fails raises RoundFailed (a Failed that carries the tokens its turns used and the thread).
-The caller adds `tokens` of every outcome to the run's.
+A round that fails raises RoundFailed (a Failed that carries the tokens its turns used, the thread, and `.leak`:
+what the scan of whatever turns it ran found). The caller adds `tokens` of every outcome to the run's.
+
+The leak scan is lexical. It reads a tool call's text for the original checkout's absolute path, its HOME-relative
+tail (Code/Org/repo, which also catches ~/, $HOME/, ${HOME}/ and ../../ spellings, and Code/Org/repo-<sibling>), a
+token naming the checkout beside its parent directory in one call (cd ~/Code/Org && cat repo-feat/x), and each
+path-like token with `..` resolved against the call's cwd. Known limit: a path assembled across separate commands
+(`cd ~/Code/Org`, then `cat repo/x`) is caught only when a token still names the repo.
 
 Codex homes are paths (codexhome.py): this module sets CODEX_HOME to the replay home for the rpc calls and the
 rollout reads of a round, and drops an inherited XREVIEW_RPC_SOCK or XREVIEW_RPC_STDIO, which would aim a call
 elsewhere. The environment is process-wide: rounds on one home may run together, a second home may not.
 """
+import calendar
 import contextlib
 import glob
 import json
@@ -58,6 +67,7 @@ class RoundFailed(Failed):
         Failed.__init__(self, message)
         self.tokens = tokens
         self.thread = thread
+        self.leak = []
 
 
 # ------------------------------------------------------------------ the replay home in the environment
@@ -95,8 +105,9 @@ def _homed(home):
 def _state_home(home):
     """L.state_home answers `home` for the calling thread while it builds a packet (as XR.prepare swaps it,
     which XP.build's ledger read needs); other threads still see the real one."""
-    me, old = threading.get_ident(), L.state_home
+    me = threading.get_ident()
     with XR.LOCK:
+        old = L.state_home          # read under the lock: an overlapping swap would otherwise be restored as "real"
         L.state_home = lambda: home if threading.get_ident() == me else old()
         try:
             yield
@@ -108,7 +119,8 @@ def _state_home(home):
 def identifier(finding):
     """`<file>:<line> <first 80 chars of the summary>`: how a finding is named to the next round's reviewer."""
     summary = " ".join(str(finding.get("summary") or "").split())[:IDENTIFIER_SUMMARY]
-    return "{}:{} {}".format(finding.get("file"), finding.get("line"), summary)
+    line = finding.get("line")
+    return "{}{} {}".format(finding.get("file"), "" if line is None else ":{}".format(line), summary)
 
 
 def _range(branch):
@@ -147,8 +159,13 @@ def _entries(branch):
 
 
 def _repo(a, run):
-    """The scratch repository's git directory as the packet builder and the ledger name it: through the alias."""
-    return C.aliased(a.state, run["scratch"]).rstrip("/") + "/.git"
+    """The scratch repository's git directory, as the packet builder and the ledger name it. The scratch path
+    must be neutral: one naming process-replay (itself or its realpath) is refused."""
+    scratch = run["scratch"].rstrip("/")
+    for p in (scratch, os.path.realpath(scratch)):
+        if "process-replay" in p:
+            raise Failed("the scratch repository {} names the replay; it must live under a neutral path".format(p))
+    return scratch + "/.git"
 
 
 def prepare_ledger(a, run, case, branch):
@@ -196,60 +213,123 @@ def _rollouts(home):
     return sorted(found, key=os.path.getmtime, reverse=True)
 
 
-def weekly(home):
-    """(used percent, resets_at epoch seconds) of the weekly window, as the newest rollout of `home` that
-    reports one last said, or None. The weekly window is whichever of `primary` and `secondary` has
-    window_minutes == 10080."""
-    for path in _rollouts(home)[:WEEKLY_SCAN]:
-        got = None
-        try:
-            lines = _lines(path)
-        except (OSError, subprocess.SubprocessError):
-            continue
-        for line in lines:
-            if b'"rate_limits"' not in line:
-                continue
+def _live_home():
+    """Michael's Codex home, whose rate limits are the account's: CODEX_HOME as the process had it before a round
+    set the replay home, else ~/.codex. Read only."""
+    with _ENV_LOCK:
+        env = _ENV["saved"]["CODEX_HOME"] if _ENV["n"] else os.environ.get("CODEX_HOME")
+    return env or os.path.join(os.path.expanduser("~"), ".codex")
+
+
+def _epoch(stamp):
+    m = re.match(r"(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)(\.\d+)?", stamp if isinstance(stamp, str) else "")
+    return calendar.timegm(tuple(int(x) for x in m.groups()[:6]) + (0, 0, 0)) + float(m.group(7) or 0) if m else None
+
+
+def weekly(home, live=None):
+    """(used percent, resets_at epoch seconds or None) of the weekly window: the figure of the token_count record
+    with the greatest timestamp (a record without one counts at its file's modification time) among the 8 newest
+    rollouts of `home` and of the live home (`live`, default _live_home(); read only), because the limit is
+    account-wide and the replay home's own figures go stale across an idle gap. None when no record reports one.
+    The weekly window is whichever of `primary` and `secondary` has window_minutes == 10080; one that reports
+    used_percent without resets_at counts, with resets_at None."""
+    live = _live_home() if live is None else live
+    homes = [home] + ([live] if live and os.path.realpath(live) != os.path.realpath(home) else [])
+    best, best_key = None, None
+    for h in homes:
+        for path in _rollouts(h)[:WEEKLY_SCAN]:
             try:
-                rec = json.loads(line.decode("utf-8"))
-            except ValueError:
+                lines, mtime = _lines(path), os.path.getmtime(path)
+            except (OSError, subprocess.SubprocessError):
                 continue
-            p = rec.get("payload") if isinstance(rec, dict) and rec.get("type") == "event_msg" else None
-            limits = p.get("rate_limits") if isinstance(p, dict) and p.get("type") == "token_count" else None
-            for key in ("primary", "secondary"):
-                w = limits.get(key) if isinstance(limits, dict) else None
-                if (isinstance(w, dict) and w.get("window_minutes") == WEEKLY_MINUTES
-                        and isinstance(w.get("used_percent"), (int, float)) and isinstance(w.get("resets_at"), (int, float))):
-                    got = (float(w["used_percent"]), int(w["resets_at"]))
-        if got:
-            return got
-    return None
+            for n, line in enumerate(lines):
+                if b'"rate_limits"' not in line:
+                    continue
+                try:
+                    rec = json.loads(line.decode("utf-8"))
+                except ValueError:
+                    continue
+                p = rec.get("payload") if isinstance(rec, dict) and rec.get("type") == "event_msg" else None
+                limits = p.get("rate_limits") if isinstance(p, dict) and p.get("type") == "token_count" else None
+                for key in ("primary", "secondary"):
+                    w = limits.get(key) if isinstance(limits, dict) else None
+                    if not (isinstance(w, dict) and w.get("window_minutes") == WEEKLY_MINUTES
+                            and isinstance(w.get("used_percent"), (int, float))):
+                        continue
+                    stamp = _epoch(rec.get("timestamp"))
+                    rank = (mtime if stamp is None else stamp, n)
+                    if best_key is None or rank >= best_key:
+                        resets = w.get("resets_at")
+                        best = (float(w["used_percent"]), int(resets) if isinstance(resets, (int, float)) else None)
+                        best_key = rank
+    return best
 
 
 # ------------------------------------------------------------------ the leak scan
-def _spellings(path):
-    """A path as a command may write it: absolute, ~/, $HOME/. A git directory stands for its work tree."""
-    path = path.rstrip("/")
-    if path.endswith("/.git"):
-        path = path[:-len("/.git")]
-    out = [path]
+_TOKEN = re.compile(r"[^\s\"'`;|&<>()\\]+")
+_NOT_WORD = r"(?![A-Za-z0-9_])"
+
+
+def _forbidden(paths):
+    """[(path, [regex naming it], [regex naming its parent directory], regex naming its last component)] for the
+    original checkouts: a git directory stands for its work tree. Under $HOME a path is also matched by its
+    HOME-relative tail wherever a command spells the prefix (~/, $HOME/, ${HOME}/, ../../, /Users/x/)."""
     house = os.path.expanduser("~").rstrip("/")
-    if house and path.startswith(house + "/"):
-        out += ["~" + path[len(house):], "$HOME" + path[len(house):]]
+    out, seen = [], set()
+    for path in paths:
+        if not (isinstance(path, str) and path):
+            continue
+        path = path.rstrip("/")
+        if path.endswith("/.git"):
+            path = path[:-len("/.git")]
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        names = [re.compile(r"(?<![A-Za-z0-9_])" + re.escape(path) + _NOT_WORD)]
+        parents = [re.compile(r"(?<![A-Za-z0-9_])" + re.escape(os.path.dirname(path)) + _NOT_WORD)] if os.path.dirname(path) not in ("", "/") else []
+        if house and path.startswith(house + "/"):
+            tail = path[len(house) + 1:]
+            names.append(re.compile(r"(?<![A-Za-z0-9_.-])" + re.escape(tail) + _NOT_WORD))
+            if os.path.dirname(tail):
+                parents.append(re.compile(r"(?<![A-Za-z0-9_.-])" + re.escape(os.path.dirname(tail)) + _NOT_WORD))
+        out.append((path, names, parents, re.compile(r"(?<![A-Za-z0-9_./-])" + re.escape(os.path.basename(path)) + _NOT_WORD)))
     return out
 
 
-def leaks(home, turns, paths):
+def _named(text, cwd, forbidden):
+    """The forbidden paths one tool call's text names (see the module docstring for what that covers)."""
+    house = os.path.expanduser("~").rstrip("/")
+    hit = set()
+    for path, names, parents, base in forbidden:
+        if any(rx.search(text) for rx in names) or (any(rx.search(text) for rx in parents) and base.search(text)):
+            hit.add(path)
+    for token in _TOKEN.findall(text):
+        if ".." not in token:
+            continue
+        t = token.replace("${HOME}", house).replace("$HOME", house)
+        if t == "~" or t.startswith("~/"):
+            t = house + t[1:]
+        if not os.path.isabs(t):
+            if not cwd:
+                continue
+            t = os.path.join(cwd, t)
+        t = os.path.normpath(t)
+        for path, names, _parents, _base in forbidden:
+            if names[0].search(t):
+                hit.add(path)
+    return hit
+
+
+def leaks(home, turns, paths, cwd=None):
     """The tool calls of `turns` ([(thread, turn)]) in `home`'s rollouts that name one of `paths` (the original
-    checkout, and so each wt sibling <path>-<branch>, whose name continues the path): ["<path> in <turn>"].
-    Only the reviewer's own calls (custom_tool_call, function_call, local_shell_call) are read, never a user or
-    developer message, which may carry the paths legitimately."""
-    wanted, spell = {}, []
+    checkouts; a wt sibling <path>-<branch> continues the name): ["<path> in <turn>"]. `cwd`, the scratch repository,
+    is where a relative path of a call without its own workdir starts. Only the reviewer's own calls
+    (custom_tool_call, function_call, local_shell_call) are read, never a user or developer message, which may carry
+    the paths legitimately."""
+    wanted = {}
     for thread, turn in turns:
         wanted.setdefault(thread, set()).add(turn)
-    for p in paths:
-        if isinstance(p, str) and p:
-            spell += _spellings(p)
-    pats = [(s, re.compile(re.escape(s) + r"(?![A-Za-z0-9_])")) for s in sorted(set(spell))]
+    forbidden = _forbidden(paths)
     found = set()
     with _homed(home):
         for thread, ours in wanted.items():
@@ -272,10 +352,16 @@ def leaks(home, turns, paths):
                 elif rec.get("type") == "event_msg" and p.get("type") == "task_complete":
                     inside = False
                 elif inside and rec.get("type") == "response_item" and p.get("type") in ("custom_tool_call", "function_call", "local_shell_call"):
-                    text = json.dumps(p, ensure_ascii=False)
-                    for s, rx in pats:
-                        if rx.search(text):
-                            found.add("{} in {}".format(s, turn))
+                    where = cwd
+                    try:
+                        doc = json.loads(p.get("arguments"))
+                        given = doc.get("workdir") or doc.get("cwd") if isinstance(doc, dict) else None
+                        if isinstance(given, str) and given:
+                            where = given if os.path.isabs(given) or not cwd else os.path.join(cwd, given)
+                    except (TypeError, ValueError):
+                        pass
+                    for name in _named(json.dumps(p, ensure_ascii=False), where, forbidden):
+                        found.add("{} in {}".format(name, turn))
     return sorted(found)
 
 
@@ -312,13 +398,12 @@ def codex_round(a, run, case, branch, home):
     if spent >= a.max_tokens:
         return {"stopped": "the Codex token stop: {} tokens spent, stop at {}".format(spent, a.max_tokens)}
     wk = weekly(home)
-    if wk and wk[0] >= WEEKLY_PAUSE and wk[1] > time.time():
-        return {"paused": "the weekly window is at {:g}%, resets_at {} ({})".format(
-            wk[0], wk[1], time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(wk[1]))), "resets_at": wk[1]}
+    if wk and wk[0] >= WEEKLY_PAUSE and (wk[1] is None or wk[1] > time.time()):
+        when = "unknown" if wk[1] is None else "{} ({})".format(wk[1], time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(wk[1])))
+        return {"paused": "the weekly window is at {:g}%, resets_at {}".format(wk[0], when), "resets_at": wk[1]}
 
-    scratch = run["scratch"]
-    cwd = C.aliased(a.state, scratch)
     repo = _repo(a, run)
+    scratch = cwd = run["scratch"].rstrip("/")
     rundir = os.path.join(a.state, "runs", case["id"], run["label"])
     target = {"repo": repo, "dest": branch["dest"], "dest_ref": branch.get("dest_ref") or branch["dest"],
               "branch": branch.get("branch"), "range": _range(branch), "base": branch["base"],
@@ -332,15 +417,18 @@ def codex_round(a, run, case, branch, home):
            "cap": None, "switches_file": os.path.join(XR.CONF, "packets.conf"), "codex_home": home,
            "targets": [target], "specs": [target["range"]], "missed": (previous[-1].get("missing") or []) if previous else [],
            "thread": thread_in, "turns_file": None}
-    with _state_home(ledger_home):
-        dec = XP.build(req, os.path.join(out, "packets"))
+    try:
+        with _state_home(ledger_home):
+            dec = XP.build(req, os.path.join(out, "packets"))
+    except Exception as e:
+        raise RoundFailed("cannot build the packet: {}".format(e))
     jsave(os.path.join(out, "decision.json"), dec)
     if dec["action"] == "refuse":
         raise RoundFailed("refused: " + dec["reason"])
     framed = bool(dec["switches"]["framing"])
     schema = os.path.join(XR.CONF, "findings.framed.schema.json" if framed else "findings.schema.json")
 
-    res = {"findings": [], "reviewed": [], "tokens": 0, "turns": [], "shown": [], "models": [], "approvals": []}
+    res = {"findings": [], "judged": [], "tokens": 0, "turns": [], "models": [], "approvals": []}
     thread = None
     with _homed(home):
         for i, pk in enumerate(dec["packets"]):
@@ -356,18 +444,27 @@ def codex_round(a, run, case, branch, home):
                         res["models"].append((use["model"], use["effort"]))
                         res["turns"].append([thread, box["turn"]])
             except Failed as e:
-                raise RoundFailed(str(e), res["tokens"], thread)
+                failed = RoundFailed(str(e), res["tokens"], thread)
+                try:
+                    failed.leak = leaks(home, res["turns"], _orig_paths(branch), cwd)
+                except Exception as scan:
+                    failed.leak = ["the leak scan failed: {}".format(scan)]
+                raise failed
             res["findings"] += [f for f in doc["findings"] if isinstance(f, dict)]
-            res["reviewed"] += [x for x in doc.get("reviewed_files") or [] if isinstance(x, str)]
             res["approvals"].append(doc.get("verdict") == "approve")
-            res["shown"] += pk.get("shown") or []
-    found = leaks(home, res["turns"], _orig_paths(branch))
+            res["judged"].append(([x for x in doc.get("reviewed_files") or [] if isinstance(x, str)], pk.get("shown") or []))
+    found = leaks(home, res["turns"], _orig_paths(branch), cwd)
     if found:
         return {"leak": found, "tokens": res["tokens"], "thread": thread, "turns": res["turns"]}
     missing = None
     if framed:
-        seen = set(XR.norm(x) for x in res["reviewed"])
-        missing = sorted(l for l in set(res["shown"]) if XR.norm(l) not in seen)[:XP.MISSING_CAP]
+        # as xreview's _collect_record: a label is covered only when the turn that showed it lists it (compared
+        # after stripping a/, b/ and ./); the uncovered ones keep their shown order before the cap
+        missing = []
+        for reviewed, shown in res["judged"]:
+            listed = set(reviewed) | set(XR.norm(x) for x in reviewed)
+            missing += [l for l in shown if l not in listed and XR.norm(l) not in listed]
+        missing = missing[:XP.MISSING_CAP]
     return {"kind": "codex", "k": k, "findings": res["findings"], "verdict": "approve" if all(res["approvals"]) else "changes",
             "tokens": res["tokens"], "turns": res["turns"],
             "model": ",".join(sorted(set(m or "?" for m, _e in res["models"]))),

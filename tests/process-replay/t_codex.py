@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import threading
 import time
 from argparse import Namespace
 
@@ -103,7 +104,7 @@ class World(object):
         helpers.write_ledger(os.environ["XDG_STATE_HOME"], self.orig, entries)
         files = os.path.join(ROOT, "files-" + name)
         scratch.export(os.path.join(self.orig, ".git", "objects"), self.tip, files)
-        self.scratch = os.path.join(STATE, "scratch", name)
+        self.scratch = os.path.join(os.environ["XDG_STATE_HOME"], "review-work", "scratch", name)
         scratch.build(os.path.join(self.orig, ".git", "objects"), self.base, files, self.scratch, "main", "feat",
                       expect_tree=git(self.orig, "rev-parse", self.tip + "^{tree}"))
         self.branch = {"id": "b" + name, "repo": self.common, "objects": None, "view": None, "dest": "main", "dest_ref": "main",
@@ -135,11 +136,10 @@ plans_from = rv["decision"]["targets"][0]["plans_from"]
 is_("plans_omitted_as_today: the decision's target names the approved plan", [(p["path"], p["nonce"]) for p in plans_from], [(PLAN, "pn-plans")])
 ok("plans_omitted_as_today: the packet does not carry the plan's text", MARK not in packet(stub, rv["turns"][0][1]))
 is_("plans_omitted_as_today: the target is the scratch repository at its HEAD", rv["decision"]["targets"][0]["tip"], git(w.scratch, "rev-parse", "HEAD"))
-ok("plans_omitted_as_today: the target's repository is the scratch's alias, which names no replay",
-   rv["decision"]["targets"][0]["repo"].endswith("/scratch/plans/.git") and "process-replay" not in rv["decision"]["targets"][0]["repo"],
-   rv["decision"]["targets"][0]["repo"])
+is_("plans_omitted_as_today: the target's repository is the scratch repository's git directory", rv["decision"]["targets"][0]["repo"], w.scratch + "/.git")
 turn_cwd = [e["cwd"] for e in log(stub) if e["cmd"] == "turn-start"][0]
-ok("plans_omitted_as_today: the turn's cwd is the alias of the scratch repository", turn_cwd == C.aliased(STATE, w.scratch) and turn_cwd != w.scratch, turn_cwd)
+is_("plans_omitted_as_today: the turn's cwd is the scratch repository itself, a neutral real path", turn_cwd, w.scratch)
+ok("plans_omitted_as_today: ... which names no replay", "process-replay" not in os.path.realpath(turn_cwd), turn_cwd)
 w2 = World("noplan", plan_receipt=False)
 home2 = replay_home("noplan")
 stub2 = stub_for("noplan", home2, {"default": {"answer": ans()}})
@@ -152,7 +152,7 @@ w = World("ledger")
 led = w.run["ledger"]
 is_("prepare_ledger: it is recorded in the run and lies under the run's directory",
     led, os.path.join(STATE, "runs", "cledger", "lab1", "ledger"))
-alias_repo = C.aliased(STATE, w.scratch) + "/.git"
+alias_repo = w.scratch + "/.git"
 path = os.path.join(led, "xreview", "ledgers", L.ledger_key(alias_repo), "reviews.jsonl")
 entries = L.read_entries(path)
 is_("prepare_ledger: the entries are the ones before the original round 1, under the scratch repository's key",
@@ -264,6 +264,7 @@ is_("body_strings: no branch name reads 'the branch'", K.body({"branch": None, "
     "Pre-merge review of the branch against main: the change is ")
 is_("body_strings: an identifier is file:line and the summary's first 80 characters",
     K.identifier({"file": "x.py", "line": 12, "summary": "s" * 100}), "x.py:12 " + "s" * 80)
+is_("body_strings: a null line writes the file alone, never 'None'", K.identifier({"file": "x.py", "line": None, "summary": "s"}), "x.py s")
 is_("body_strings: a summary's line breaks do not break the line", K.identifier({"file": "x.py", "line": 1, "summary": "a\nb"}), "x.py:1 a b")
 w = World("body")
 home = replay_home("body")
@@ -359,7 +360,7 @@ is_("leak_scan: only the named turns are read", K.leaks(lhome, [("lk5", "t1")], 
 is_("leak_scan: ... and a named turn that leaked is found", K.leaks(lhome, [("lk5", "t1"), ("lk5", "t2")], [W]), [W + " in t2"])
 house = os.path.expanduser("~")
 rollout("lk6", [{"turn": "t1", "answer": None, "tools": [tool("custom_tool_call", "cat ~/Code/Org/repo/x")]}])
-is_("leak_scan: the ~ spelling of a path under $HOME is a leak", K.leaks(lhome, [("lk6", "t1")], [house + "/Code/Org/repo/.git"]), ["~/Code/Org/repo in t1"])
+is_("leak_scan: the ~ spelling of a path under $HOME is a leak", K.leaks(lhome, [("lk6", "t1")], [house + "/Code/Org/repo/.git"]), [house + "/Code/Org/repo in t1"])
 is_("leak_scan: a thread with no rollout reads as clean", K.leaks(lhome, [("nothing", "t1")], [W]), [])
 w = World("leakround")
 home = replay_home("leakround")
@@ -403,3 +404,188 @@ except K.RoundFailed as e:
     got = (e.tokens, e.thread, "schema-failed" in str(e))
 is_("round_failed: a turn that fails raises RoundFailed with its tokens and thread", got, (700, "th1", True))
 ok("round_failed: it is a Failed", issubclass(K.RoundFailed, Failed))
+
+
+# ---- state_home_swap (two overlapping builds must leave L.state_home as it was)
+real_state_home = L.state_home
+in_a, seen_by = threading.Event(), {}
+
+
+def swap_a():
+    with K._state_home("/ledger/A"):
+        in_a.set()
+        seen_by["A_inside"] = L.state_home()
+        time.sleep(0.3)
+        seen_by["main_while_swapped"] = seen_by.get("main_while_swapped")
+    seen_by["A_after"] = L.state_home()
+
+
+def swap_b():
+    in_a.wait()
+    with K._state_home("/ledger/B"):
+        seen_by["B_inside"] = L.state_home()
+
+
+ta, tb = threading.Thread(target=swap_a), threading.Thread(target=swap_b)
+ta.start()
+tb.start()
+in_a.wait()
+other = L.state_home()
+ta.join()
+tb.join()
+ok("state_home_swap: after overlapping swaps L.state_home is the real function", L.state_home is real_state_home)
+is_("state_home_swap: each thread saw its own ledger home while it held the swap", (seen_by["A_inside"], seen_by["B_inside"]), ("/ledger/A", "/ledger/B"))
+ok("state_home_swap: a thread not building saw the real state home meanwhile", other == real_state_home(), other)
+
+# ---- leak_scan: lexical spellings
+house = os.path.expanduser("~")
+REPO = house + "/Code/Org/repo/.git"
+SCR = "/work/scratch/x"
+n_lk = [0]
+
+
+def leaked(text, paths=(REPO,), cwd=SCR, kind="function_call", arguments=None):
+    n_lk[0] += 1
+    thread = "lx{}".format(n_lk[0])
+    rollout(thread, [{"turn": "t1", "answer": None, "tools": [tool(kind, text if arguments is None else arguments)]}])
+    return K.leaks(lhome, [(thread, "t1")], list(paths), cwd)
+
+
+want = [house + "/Code/Org/repo in t1"]
+is_("leak_scan: ../ climbing out of the scratch cwd to ~/Code/Org/repo is a leak", leaked("cat ../../../../../Code/Org/repo/src/a.py"), want)
+is_("leak_scan: ${HOME}/ spelling is a leak", leaked("cat ${HOME}/Code/Org/repo/x"), want)
+is_("leak_scan: $HOME/ spelling is a leak", leaked("cat $HOME/Code/Org/repo/x"), want)
+is_("leak_scan: a sibling named under the HOME-relative tail is a leak", leaked("cat ~/Code/Org/repo-feat/x"), want)
+is_("leak_scan: cd to the parent, then a token naming the sibling, in one call, is a leak", leaked("cd ~/Code/Org && cat repo-feat/x"), want)
+is_("leak_scan: ... and a quoted bash -lc command is read the same", leaked(json.dumps({"cmd": ["bash", "-lc", "cd ~/Code/Org && cat repo/x"]})), want)
+is_("leak_scan: another repository under the same parent is not a leak", leaked("cd ~/Code/Org && cat repox/x; cat ~/Code/Org/other/y"), [])
+is_("leak_scan: the scratch repository's own files are not a leak", leaked("cat src/a.py; ls ../.. ; cat repo/x"), [])
+is_("leak_scan: a relative path with .. that resolves to the original is a leak", leaked("cat ../../orig/src/a.py", ["/work/orig/.git"]), ["/work/orig in t1"])
+is_("leak_scan: ... but only against the cwd it starts from", leaked("cat ../../orig/src/a.py", ["/work/orig/.git"], cwd="/elsewhere/a/b"), [])
+is_("leak_scan: a call's own workdir is where its relative paths start",
+    leaked(None, ["/work/orig/.git"], cwd="/elsewhere/a/b", arguments=json.dumps({"cmd": ["bash", "-lc", "cat ../orig/a"], "workdir": "/work/scratch"})),
+    ["/work/orig in t1"])
+is_("leak_scan: a relative path that resolves inside the scratch is not a leak", leaked("cat ../x/../x/a.py", ["/work/orig/.git"]), [])
+
+# ---- scratch_neutral
+w = World("neutral")
+home = replay_home("neutral")
+stub = stub_for("neutral", home, {"default": {"answer": ans()}})
+saved = w.run["scratch"]
+real_dir = os.path.join(ROOT, "process-replay", "x")
+os.makedirs(real_dir)
+for label, where in (("a path naming process-replay", real_dir),
+                     ("a neutral-looking link into process-replay", os.path.join(ROOT, "neutral-link"))):
+    if where.endswith("neutral-link"):
+        os.symlink(real_dir, where)
+    w.run["scratch"] = where
+    try:
+        w.round(home)
+        got = None
+    except Failed as e:
+        got = str(e)
+    ok("scratch_neutral: " + label + " is refused before any call", got is not None and "names the replay" in got and log(stub) == [], got)
+w.run["scratch"] = saved
+try:
+    K.prepare_ledger(args(), dict(w.run, scratch=real_dir), w.case, w.branch)
+    got = None
+except Failed as e:
+    got = str(e)
+ok("scratch_neutral: prepare_ledger refuses it too", got is not None and "names the replay" in got, got)
+
+# ---- token_stop: the run's own file is not counted twice
+w = World("stop2")
+home = replay_home("stop2")
+stub = stub_for("stop2", home, {"default": {"answer": ans()}})
+STATE2 = os.path.join(ROOT, "state-stop2")
+XR.jsave(os.path.join(STATE2, "runs", "cstop2", "lab1", "state.json"), {"case": "cstop2", "label": "lab1", "tokens": 99999})
+XR.jsave(os.path.join(STATE2, "runs", "cother2", "labx", "state.json"), {"case": "cother2", "label": "labx", "tokens": 500})
+w.run["tokens"] = 100
+out = K.codex_round(args(state=STATE2, max_tokens=1000), w.run, w.case, w.branch, home)
+ok("token_stop: caller 100 + another run's 500 is below 1000: the run's own file (99999) is not counted", out.get("kind") == "codex", out)
+w.run["reviews"], w.run["thread"] = [], None
+out = K.codex_round(args(state=STATE2, max_tokens=600), w.run, w.case, w.branch, home)
+ok("token_stop: ... and 100 + 500 does stop at 600", set(out) == {"stopped"}, out)
+
+# ---- missing_per_turn
+w = World("permissive", big=True)
+home = replay_home("permissive", window=110000)
+stub = stub_for("permissive-probe", home, {"default": {"answer": ans("approve", (), files=())}})
+probe = w.round(home)
+shown1, shown2 = probe["decision"]["packets"][0]["shown"], probe["decision"]["packets"][1]["shown"]
+ok("missing_per_turn: the fixture has two slices with labels of their own", len(probe["turns"]) >= 2 and shown1 and shown2 and not set(shown1) & set(shown2), (shown1, shown2))
+w.run["reviews"], w.run["thread"] = [], None
+home = replay_home("permissive2", window=110000)
+stub = stub_for("permissive-run", home, {"turns": [{"answer": ans("approve", (), files=shown1[1:])}, {"answer": ans("approve", (), files=shown1 + shown2)}],
+                                          "default": {"answer": ans("approve", (), files=())}})
+rv = w.round(home)
+allshown = [l for pk in rv["decision"]["packets"] for l in pk["shown"]]
+rest = [l for pk in rv["decision"]["packets"][2:] for l in pk["shown"]]
+is_("missing_per_turn: a label only slice 2 listed, shown in slice 1, stays missing; shown order is kept",
+    rv["missing"], [shown1[0]] + rest)
+
+# ---- weekly: the greatest timestamp across the replay home and the live home
+def stamped(home, name, pct, stamp, resets=FUTURE, mtime=None):
+    recs, _t = helpers.rollout_lines({"turn": "s1", "answer": None, "rate_limits": {"primary": {"used_percent": pct, "window_minutes": 10080, "resets_at": resets}}})
+    for r in recs:
+        r["timestamp"] = stamp
+    path = helpers.rollout_file(home, name)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write("".join(json.dumps(r) + "\n" for r in recs))
+    if mtime is not None:
+        os.utime(path, (mtime, mtime))
+    return path
+
+
+rep_home, live_home = os.path.join(ROOT, "cxh", "wts-replay"), os.path.join(ROOT, "wts-live")
+stamped(rep_home, "r", 85, "2026-11-02T10:00:00.000Z", mtime=time.time())
+stamped(live_home, "l", 10, "2026-11-02T11:00:00.000Z", mtime=time.time() - 5000)
+is_("weekly_live: the live home's newer figure wins over the replay home's stale one, whatever the file times", K.weekly(rep_home, live=live_home), (10.0, FUTURE))
+stamped(live_home, "l", 10, "2026-11-02T09:00:00.000Z", mtime=time.time() + 5000)
+is_("weekly_live: the replay home's newer figure wins over an older live one", K.weekly(rep_home, live=live_home), (85.0, FUTURE))
+is_("weekly_live: the live home is optional", K.weekly(rep_home, live=os.path.join(ROOT, "no-such-home")), (85.0, FUTURE))
+w = World("livepause")
+home = replay_home("livepause")
+stub = stub_for("livepause", home, {"default": {"answer": ans()}})
+live_file = stamped(ORIGINAL_HOME, "live-lim", 90, "2999-01-01T00:00:00.000Z")
+out = w.round(home)
+os.remove(live_file)
+ok("weekly_live: the pause reads the live home (CODEX_HOME as the process had it) without writing there", "paused" in out and log(stub) == [], out)
+unknown = os.path.join(ROOT, "cxh", "wts-unknown")
+recs, _t = helpers.rollout_lines({"turn": "u1", "answer": None, "rate_limits": {"primary": {"used_percent": 88, "window_minutes": 10080}}})
+os.makedirs(os.path.join(unknown, "sessions", "x"))
+with open(os.path.join(unknown, "sessions", "x", "rollout-2026-10-20T10-00-00-u.jsonl"), "w") as f:
+    f.write("".join(json.dumps(r) + "\n" for r in recs))
+is_("weekly_live: a window without resets_at is still read, with resets_at None", K.weekly(unknown, live=os.path.join(ROOT, "no-such-home")), (88.0, None))
+w = World("unknownpause")
+stub = stub_for("unknownpause", unknown, {"default": {"answer": ans()}})
+helpers.write_rollout(unknown, "probe-u", [{"turn": "pb", "answer": None}])
+os.utime(helpers.rollout_file(unknown, "probe-u"), (time.time() - 50, time.time() - 50))
+out = w.round(unknown)
+ok("weekly_live: ... and pauses, reporting resets_at as unknown", out.get("resets_at", 1) is None and "unknown" in out.get("paused", ""), out)
+
+# ---- build failures and failed rounds
+w = World("buildfail")
+home = replay_home("buildfail")
+stub = stub_for("buildfail", home, {"default": {"answer": ans()}})
+orig_build = K.XP.build
+K.XP.build = lambda *a, **k: (_ for _ in ()).throw(KeyError("boom"))
+try:
+    K.codex_round(args(), w.run, w.case, w.branch, home)
+    got = None
+except K.RoundFailed as e:
+    got = str(e)
+finally:
+    K.XP.build = orig_build
+ok("round_failed: any exception from the packet builder becomes a RoundFailed", got is not None and "cannot build the packet" in got and "boom" in got, got)
+w = World("failleak")
+home = replay_home("failleak")
+stub = stub_for("failleak", home, {"turns": [{"answer": ans(), "tokens": 300, "rc": 4, "raw": "not json",
+                                               "tools": [tool("custom_tool_call", "cat {}/src/a.py".format(w.workdir))]}]})
+try:
+    w.round(home)
+    got = None
+except K.RoundFailed as e:
+    got = (e.tokens, e.leak)
+is_("round_failed: the turns of a failed round are leak-scanned and the leak rides on the exception", got, (300, [w.workdir + " in tu1"]))
